@@ -40,13 +40,12 @@ use crate::{
 ///
 /// ## Arguments
 ///
+/// * `fri_params` - The FRI parameters
+/// * `merkle_scheme` - The Merkle tree scheme
 /// * `codeword_commitment` - The commitment to the codeword
 /// * `transcript` - The transcript containing the prover's messages and randomness for challenges
 /// * `evaluation_claim` - The claimed evaluation of the multilinear polynomial at the evaluation
 ///   point
-/// * `fri_params` - The FRI parameters
-/// * `vcs` - The Merkle tree scheme
-/// * `n_vars` - The number of variables in the multilinear polynomial
 ///
 /// ## Returns
 ///
@@ -55,7 +54,6 @@ use crate::{
 pub fn verify<F, MTScheme, Challenger_>(
 	fri_params: &FRIParams<F>,
 	merkle_scheme: &MTScheme,
-	n_vars: usize,
 	codeword_commitment: MTScheme::Digest,
 	evaluation_claim: F,
 	transcript: &mut VerifierTranscript<Challenger_>,
@@ -68,6 +66,7 @@ where
 	// The multivariate polynomial evaluated is a degree-2 multilinear composite.
 	const DEGREE: usize = 2;
 
+	let n_vars = fri_params.log_msg_len();
 	let mut fri_fold_verifier = FRIFoldVerifier::new(fri_params);
 	let mut challenges = Vec::with_capacity(n_vars);
 	let mut sum = evaluation_claim;

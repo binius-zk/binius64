@@ -196,8 +196,6 @@ mod test {
 		F: BinaryField,
 		P: PackedField<Scalar = F> + PackedExtension<F>,
 	{
-		let n_vars = multilinear.log_len();
-
 		let eval_point_eq = eq_ind_partial_eval::<P>(&evaluation_point);
 
 		let merkle_prover = BinaryMerkleTreeProver::<F, StdDigest, _>::new(
@@ -247,7 +245,6 @@ mod test {
 		} = basefold::verify(
 			&fri_params,
 			merkle_prover.scheme(),
-			n_vars,
 			retrieved_codeword_commitment,
 			evaluation_claim,
 			&mut verifier_transcript,

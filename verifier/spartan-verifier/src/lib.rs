@@ -119,23 +119,15 @@ where
 		let public_eval = evaluate(&public, &r_public).expect("public.log_len() == r_y_head.len()");
 
 		// Verify the wiring reduction
-		let wiring_output =
-			wiring::verify(cs.log_size() as usize, &mulcheck_evals, public_eval, transcript)?;
-		wiring::check_eval(&self.constraint_system, &r_public, &r_x, &wiring_output)?;
-
-		let wiring::Output {
-			r_y, witness_eval, ..
-		} = wiring_output;
-
-		// Verify the PCS opening
-		pcs::verify(
-			transcript,
-			witness_eval,
-			&r_y,
-			trace_commitment,
+		let wiring_output = wiring::verify(
 			&self.fri_params,
 			&self.merkle_scheme,
+			trace_commitment,
+			&mulcheck_evals,
+			public_eval,
+			transcript,
 		)?;
+		wiring::check_eval(&self.constraint_system, &r_public, &r_x, &wiring_output)?;
 
 		Ok(())
 	}

@@ -1,10 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 
-#![allow(dead_code)]
-
 use std::iter;
 
-use binius_field::Field;
+use binius_field::{BinaryField, Field};
 use binius_math::{
 	multilinear::eq::{eq_ind, eq_ind_partial_eval, eq_one_var},
 	univariate::evaluate_univariate,
@@ -14,7 +12,12 @@ use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_verifier::protocols::{sumcheck, sumcheck::SumcheckOutput};
+use binius_utils::DeserializeBytes;
+use binius_verifier::{
+	fri::FRIParams,
+	merkle_tree::MerkleTreeScheme,
+	protocols::{basefold, sumcheck},
+};
 
 #[derive(Debug)]
 pub struct Output<F> {
@@ -25,12 +28,19 @@ pub struct Output<F> {
 	pub witness_eval: F,
 }
 
-pub fn verify<F: Field, Challenger_: Challenger>(
-	n_vars: usize,
+pub fn verify<F, MTScheme, Challenger_>(
+	fri_params: &FRIParams<F>,
+	merkle_scheme: &MTScheme,
+	codeword_commitment: MTScheme::Digest,
 	eval_claims: &[F],
 	public_eval: F,
 	transcript: &mut VerifierTranscript<Challenger_>,
-) -> Result<Output<F>, Error> {
+) -> Result<Output<F>, Error>
+where
+	F: BinaryField,
+	Challenger_: Challenger,
+	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
+{
 	// \lambda is the batching challenge for the constraint operands
 	let lambda = transcript.sample();
 
@@ -41,14 +51,13 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 	// constraint operand evaluation claims (`eval_claims`).
 	let batched_claim = evaluate_univariate(eval_claims, lambda) + batch_coeff * public_eval;
 
-	let SumcheckOutput {
-		eval,
+	let basefold::ReducedOutput {
+		final_fri_value: witness_eval,
+		final_sumcheck_value: eval,
 		challenges: mut r_y,
-	} = sumcheck::verify(n_vars, 2, batched_claim, transcript)?;
+	} = basefold::verify(fri_params, merkle_scheme, codeword_commitment, batched_claim, transcript)?;
 
 	r_y.reverse();
-
-	let witness_eval = transcript.message().read::<F>()?;
 
 	Ok(Output {
 		lambda,
@@ -121,6 +130,8 @@ pub fn evaluate_wiring_mle<F: Field>(
 pub enum Error {
 	#[error("transcript error: {0}")]
 	Transcript(#[from] binius_transcript::Error),
+	#[error("BaseFold error: {0}")]
+	BaseFold(#[from] basefold::Error),
 	#[error("sumcheck error: {0}")]
 	Sumcheck(#[from] sumcheck::Error),
 	#[error("sumcheck composition check failed")]
