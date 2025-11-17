@@ -40,6 +40,10 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 		self.multilinears[0].log_len()
 	}
 
+	fn n_claims(&self) -> usize {
+		1
+	}
+
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
 		let RoundCoeffsOrSum::Sum(last_sum) = &self.last_coeffs_or_sum else {
 			return Err(Error::ExpectedFold);

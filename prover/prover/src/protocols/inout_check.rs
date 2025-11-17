@@ -135,6 +135,10 @@ where
 		self.witness.log_len()
 	}
 
+	fn n_claims(&self) -> usize {
+		1
+	}
+
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
 		let RoundCoeffsOrEval::Eval(last_eval) = &self.last_coeffs_or_eval else {
 			return Err(Error::ExpectedFold);

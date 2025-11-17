@@ -33,6 +33,11 @@ pub trait SumcheckProver<F: Field> {
 	/// variable with a concrete challenge.
 	fn n_vars(&self) -> usize;
 
+	/// Returns the number of claims (composite polynomials) being proved.
+	///
+	/// This is the expected length of the Vec returned by [`Self::execute`].
+	fn n_claims(&self) -> usize;
+
 	/// Computes the prover messages for this round as a univariate polynomial.
 	///
 	/// If [`Self::fold`] has already been called on the prover with the values $r_0$, ...,
@@ -45,6 +50,8 @@ pub trait SumcheckProver<F: Field> {
 	///
 	/// For high-to-low evaluation order the variables are specified in reverse order (starting with
 	/// the highest indexed one) and hypercube sums are performed over the lower indexed variables.
+	///
+	/// The returned Vec must have length equal to [`Self::n_claims`].
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error>;
 
 	/// Folds the sumcheck multilinears with a new verifier challenge.
@@ -63,6 +70,10 @@ where
 {
 	fn n_vars(&self) -> usize {
 		either::for_both!(self, inner => inner.n_vars())
+	}
+
+	fn n_claims(&self) -> usize {
+		either::for_both!(self, inner => inner.n_claims())
 	}
 
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {

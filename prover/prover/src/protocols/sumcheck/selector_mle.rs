@@ -86,6 +86,13 @@ where
 		self.selected.log_len()
 	}
 
+	fn n_claims(&self) -> usize {
+		match &self.last_coeffs_or_sums {
+			RoundCoeffsOrSums::Coeffs(v) => v.len(),
+			RoundCoeffsOrSums::Sums(v) => v.len(),
+		}
+	}
+
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
 		let RoundCoeffsOrSums::Sums(sums) = &self.last_coeffs_or_sums else {
 			return Err(Error::ExpectedFold);

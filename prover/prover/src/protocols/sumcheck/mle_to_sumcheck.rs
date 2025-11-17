@@ -47,6 +47,10 @@ impl<F: Field, InnerProver: MleCheckProver<F>> SumcheckProver<F>
 		self.mlecheck_prover.n_vars()
 	}
 
+	fn n_claims(&self) -> usize {
+		self.mlecheck_prover.n_claims()
+	}
+
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
 		let round_coeffs_multi = self.mlecheck_prover.execute()?;
 
