@@ -488,6 +488,7 @@ mod tests {
 
 	#[test]
 	#[should_panic(expected = "Invalid range")]
+	#[allow(clippy::reversed_empty_ranges)]
 	fn test_slice_const_range_invalid_range() {
 		let b = CircuitBuilder::new();
 		let byte_vec = ByteVec::new_witness(&b, 4);
