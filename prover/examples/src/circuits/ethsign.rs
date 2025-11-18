@@ -1,8 +1,10 @@
 // Copyright 2025 Irreducible Inc.
-use std::array;
+use std::{array, iter};
 
 use anyhow::Result;
-use binius_circuits::{bignum::BigUint, ecdsa::ecrecover, keccak::Keccak256};
+use binius_circuits::{
+	bignum::BigUint, ecdsa::ecrecover, fixed_byte_vec::ByteVec, keccak::Keccak256,
+};
 use binius_core::word::Word;
 use binius_frontend::{
 	CircuitBuilder, Wire, WitnessFiller,
@@ -193,13 +195,13 @@ fn assert_address_eq(b: &CircuitBuilder, digest: &[Wire], address: &[Wire]) {
 	assert_eq!(digest.len(), 4);
 	assert_eq!(address.len(), 3);
 
-	let bytes_12_20 = b.bxor(b.shr(digest[1], 32), b.shl(digest[2], 32));
-	let bytes_20_28 = b.bxor(b.shr(digest[2], 32), b.shl(digest[3], 32));
-	let bytes_28_32 = b.shr(digest[3], 32);
+	let digest_len = b.add_constant_64(32);
+	let digest_byte_vec = ByteVec::new(digest.to_vec(), digest_len);
+	let digest_sliced = digest_byte_vec.slice_const_range(b, 12..32);
 
-	b.assert_eq("address_0_8", bytes_12_20, address[0]);
-	b.assert_eq("address_8_16", bytes_20_28, address[1]);
-	b.assert_eq("address_16_20", bytes_28_32, address[2]);
+	for (i, (&lhs_i, rhs_i)) in iter::zip(address, digest_sliced.data).enumerate() {
+		b.assert_eq(format!("address_word_{i}"), lhs_i, rhs_i);
+	}
 }
 
 fn keccak256(bytes: &[u8]) -> [u8; 32] {
