@@ -511,6 +511,67 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 		Ok(chunks)
 	}
 
+	/// Get a mutable aligned chunk of size `2^log_chunk_size`.
+	///
+	/// This method behaves like [`FieldBuffer::chunk`] but returns a mutable reference.
+	/// For small chunks (log_chunk_size < P::LOG_WIDTH), this returns a wrapper that
+	/// implements deferred writes - modifications are written back when the wrapper is dropped.
+	///
+	/// # Throws
+	///
+	/// * [`Error::ArgumentRangeError`] if `log_chunk_size > log_len` or `chunk_index` is out of
+	///   range.
+	pub fn chunk_mut(
+		&mut self,
+		log_chunk_size: usize,
+		chunk_index: usize,
+	) -> Result<FieldBufferChunkMut<'_, P>, Error> {
+		if log_chunk_size > self.log_len {
+			return Err(Error::ArgumentRangeError {
+				arg: "log_chunk_size".to_string(),
+				range: 0..self.log_len + 1,
+			});
+		}
+
+		let chunk_count = 1 << (self.log_len - log_chunk_size);
+		if chunk_index >= chunk_count {
+			return Err(Error::ArgumentRangeError {
+				arg: "chunk_index".to_string(),
+				range: 0..chunk_count,
+			});
+		}
+
+		let inner = if log_chunk_size >= P::LOG_WIDTH {
+			// Large chunk: return a mutable slice directly
+			let packed_log_chunk_size = log_chunk_size - P::LOG_WIDTH;
+			let chunk = &mut self.values[chunk_index << packed_log_chunk_size..]
+				[..1 << packed_log_chunk_size];
+			FieldBufferChunkMutInner::Slice {
+				log_len: log_chunk_size,
+				chunk,
+			}
+		} else {
+			// Small chunk: extract from a single packed element and defer writes
+			let packed_log_chunks = P::LOG_WIDTH - log_chunk_size;
+			let packed_index = chunk_index >> packed_log_chunks;
+			let chunk_subindex = chunk_index & ((1 << packed_log_chunks) - 1);
+			let chunk_offset = chunk_subindex << log_chunk_size;
+
+			let packed = self.values[packed_index];
+			let chunk =
+				P::from_scalars((0..1 << log_chunk_size).map(|i| packed.get(chunk_offset | i)));
+
+			FieldBufferChunkMutInner::Single {
+				log_len: log_chunk_size,
+				chunk,
+				parent: &mut self.values[packed_index],
+				chunk_offset,
+			}
+		};
+
+		Ok(FieldBufferChunkMut(inner))
+	}
+
 	/// Splits the buffer in half and calls a closure with the two halves.
 	///
 	/// If the buffer contains a single packed element that needs to be split,
@@ -812,6 +873,63 @@ impl<'a, P: PackedField> Drop for FieldBufferSplitMutInner<'a, P> {
 	}
 }
 
+/// Return type of [`FieldBuffer::chunk_mut`] for small chunks.
+#[derive(Debug)]
+pub struct FieldBufferChunkMut<'a, P: PackedField>(FieldBufferChunkMutInner<'a, P>);
+
+impl<'a, P: PackedField> FieldBufferChunkMut<'a, P> {
+	pub fn get(&mut self) -> FieldSliceMut<'_, P> {
+		match &mut self.0 {
+			FieldBufferChunkMutInner::Single {
+				log_len,
+				chunk,
+				parent: _,
+				chunk_offset: _,
+			} => FieldBuffer {
+				log_len: *log_len,
+				values: FieldSliceDataMut::Slice(slice::from_mut(chunk)),
+			},
+			FieldBufferChunkMutInner::Slice { log_len, chunk } => FieldBuffer {
+				log_len: *log_len,
+				values: FieldSliceDataMut::Slice(chunk),
+			},
+		}
+	}
+}
+
+#[derive(Debug)]
+enum FieldBufferChunkMutInner<'a, P: PackedField> {
+	Single {
+		log_len: usize,
+		chunk: P,
+		parent: &'a mut P,
+		chunk_offset: usize,
+	},
+	Slice {
+		log_len: usize,
+		chunk: &'a mut [P],
+	},
+}
+
+impl<'a, P: PackedField> Drop for FieldBufferChunkMutInner<'a, P> {
+	fn drop(&mut self) {
+		match self {
+			Self::Single {
+				log_len,
+				chunk,
+				parent,
+				chunk_offset,
+			} => {
+				// Write back the modified chunk values to the parent packed element
+				for i in 0..1 << *log_len {
+					parent.set(*chunk_offset | i, chunk.get(i));
+				}
+			}
+			Self::Slice { .. } => {}
+		}
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -994,6 +1112,106 @@ mod tests {
 					);
 				}
 			}
+		}
+	}
+
+	#[test]
+	fn test_chunk_mut() {
+		let log_len = 8;
+		let mut buffer = FieldBuffer::<P>::zeros(log_len);
+
+		// Initialize with test data
+		for i in 0..1 << log_len {
+			buffer.set_checked(i, F::new(i as u128)).unwrap();
+		}
+
+		// Test invalid chunk size (too large)
+		assert!(buffer.chunk_mut(log_len + 1, 0).is_err());
+
+		// Test mutations for different chunk sizes
+		for log_chunk_size in 0..=log_len {
+			let chunk_count = 1 << (log_len - log_chunk_size);
+
+			// Test invalid chunk index
+			assert!(buffer.chunk_mut(log_chunk_size, chunk_count).is_err());
+
+			// Modify each chunk by multiplying by 10
+			for chunk_index in 0..chunk_count {
+				let mut chunk_wrapper = buffer.chunk_mut(log_chunk_size, chunk_index).unwrap();
+				let mut chunk = chunk_wrapper.get();
+				for i in 0..1 << log_chunk_size {
+					let old_val = chunk.get_checked(i).unwrap();
+					chunk.set_checked(i, F::new(old_val.val() * 10)).unwrap();
+				}
+				// chunk_wrapper drops here and writes back changes
+			}
+
+			// Verify modifications
+			for chunk_index in 0..chunk_count {
+				for i in 0..1 << log_chunk_size {
+					let index = chunk_index << log_chunk_size | i;
+					let expected = F::new((index as u128) * 10);
+					assert_eq!(
+						buffer.get_checked(index).unwrap(),
+						expected,
+						"Failed at log_chunk_size={}, chunk_index={}, i={}",
+						log_chunk_size,
+						chunk_index,
+						i
+					);
+				}
+			}
+
+			// Reset buffer for next iteration
+			for i in 0..1 << log_len {
+				buffer.set_checked(i, F::new(i as u128)).unwrap();
+			}
+		}
+
+		// Test large chunks (log_chunk_size >= P::LOG_WIDTH)
+		let mut buffer = FieldBuffer::<P>::zeros(6);
+		for i in 0..64 {
+			buffer.set_checked(i, F::new(i as u128)).unwrap();
+		}
+
+		// Modify first chunk of size 16 (log_chunk_size = 4 >= P::LOG_WIDTH = 2)
+		{
+			let mut chunk_wrapper = buffer.chunk_mut(4, 0).unwrap();
+			let mut chunk = chunk_wrapper.get();
+			for i in 0..16 {
+				chunk.set_checked(i, F::new(100 + i as u128)).unwrap();
+			}
+		}
+
+		// Verify large chunk modifications
+		for i in 0..16 {
+			assert_eq!(buffer.get_checked(i).unwrap(), F::new(100 + i as u128));
+		}
+		for i in 16..64 {
+			assert_eq!(buffer.get_checked(i).unwrap(), F::new(i as u128));
+		}
+
+		// Test small chunks (log_chunk_size < P::LOG_WIDTH)
+		let mut buffer = FieldBuffer::<P>::zeros(3);
+		for i in 0..8 {
+			buffer.set_checked(i, F::new(i as u128)).unwrap();
+		}
+
+		// Modify third chunk of size 1 (log_chunk_size = 0 < P::LOG_WIDTH = 2)
+		{
+			let mut chunk_wrapper = buffer.chunk_mut(0, 3).unwrap();
+			let mut chunk = chunk_wrapper.get();
+			chunk.set_checked(0, F::new(42)).unwrap();
+		}
+
+		// Verify small chunk modifications
+		for i in 0..8 {
+			let expected = if i == 3 {
+				F::new(42)
+			} else {
+				F::new(i as u128)
+			};
+			assert_eq!(buffer.get_checked(i).unwrap(), expected);
 		}
 	}
 
