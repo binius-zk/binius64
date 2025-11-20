@@ -2,21 +2,21 @@
 
 use std::iter;
 
-use binius_field::{Field, PackedField};
+use binius_field::{BinaryField, Field, PackedField};
 use binius_math::{
-	FieldBuffer, FieldSlice, multilinear, multilinear::eq::eq_ind_partial_eval,
+	FieldBuffer, FieldSlice, multilinear, multilinear::eq::eq_ind_partial_eval, ntt::AdditiveNTT,
 	univariate::evaluate_univariate,
 };
-use binius_prover::protocols::{
-	sumcheck,
-	sumcheck::{ProveSingleOutput, bivariate_product::BivariateProductSumcheckProver},
+use binius_prover::{
+	fri::FRIFoldProver, merkle_tree::MerkleTreeProver, protocols::basefold::BaseFoldProver,
 };
 use binius_spartan_frontend::constraint_system::{MulConstraint, Operand, WitnessIndex};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_verifier::merkle_tree::MerkleTreeScheme;
 
 use crate::Error;
 
@@ -168,28 +168,31 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 		.expect("FieldBuffer::new should succeed with correct log_witness_size")
 }
 
-/// Output of the wiring check protocol.
-#[derive(Debug)]
-pub struct Output<F> {
-	pub r_y: Vec<F>,
-	pub witness_eval: F,
-}
-
 /// Proves the wiring check protocol.
 ///
 /// This function implements the prover side of the wiring check reduction protocol.
 /// It batches the mulcheck evaluations, runs a sumcheck over the bivariate product
 /// of the witness and folded wiring polynomial, and returns the evaluation point
 /// and witness evaluation.
-pub fn prove<F: Field, P: PackedField<Scalar = F>, Challenger_: Challenger>(
+pub fn prove<F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
 	wiring_transpose: &WiringTranspose,
+	fri_prover: FRIFoldProver<F, P, NTT, MerkleProver>,
 	r_public: &[F],
 	r_x: &[F],
 	witness: FieldBuffer<P>,
 	mulcheck_evals: &[F],
 	transcript: &mut ProverTranscript<Challenger_>,
-) -> Result<Output<F>, Error> {
+) -> Result<(), Error>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	NTT: AdditiveNTT<Field = F> + Sync,
+	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
+	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
+	Challenger_: Challenger,
+{
 	assert!(r_public.len() <= witness.log_len()); // precondition
+	assert_eq!(fri_prover.n_rounds(), witness.log_len()); // precondition
 
 	// Sample batching challenge
 	let lambda = transcript.sample();
@@ -209,27 +212,9 @@ pub fn prove<F: Field, P: PackedField<Scalar = F>, Challenger_: Challenger>(
 
 	// Run sumcheck on bivariate product
 	let batched_sum = evaluate_univariate(mulcheck_evals, lambda) + batch_coeff * public_eval;
-	let wiring_check_prover = BivariateProductSumcheckProver::new([witness, l_poly], batched_sum)
-		.expect("multilinears have equal numbers of variables");
+	BaseFoldProver::new(witness, l_poly, batched_sum, fri_prover).prove(transcript)?;
 
-	let ProveSingleOutput {
-		multilinear_evals,
-		challenges: mut r_y,
-	} = sumcheck::prove_single(wiring_check_prover, transcript)
-		.expect("prover instance satisfies preconditions");
-
-	// Reverse the challenges to get the evaluation point.
-	r_y.reverse();
-
-	// Extract witness evaluation
-	let [witness_eval, _l_poly_eval] = multilinear_evals
-		.try_into()
-		.expect("pubcheck_prover has 1 multilinear polynomial");
-
-	// Write witness evaluation to transcript
-	transcript.message().write(&witness_eval);
-
-	Ok(Output { r_y, witness_eval })
+	Ok(())
 }
 
 /// Witness data for multiplication constraint checking.
@@ -331,10 +316,17 @@ pub fn build_mulcheck_witness<F: Field, P: PackedField<Scalar = F>>(
 mod tests {
 	use binius_field::{BinaryField128bGhash as B128, Field, Random};
 	use binius_math::{
+		BinarySubspace,
 		inner_product::inner_product_buffers,
 		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
+		ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly},
 		test_utils::{Packed128b, random_field_buffer, random_scalars},
 		univariate::evaluate_univariate,
+	};
+	use binius_prover::{
+		fri::{self, CommitOutput, FRIFoldProver},
+		hash::parallel_compression::ParallelCompressionAdaptor,
+		merkle_tree::prover::BinaryMerkleTreeProver,
 	};
 	use binius_spartan_frontend::constraint_system::{
 		ConstraintSystem, MulConstraint, Operand, WitnessIndex,
@@ -344,10 +336,17 @@ mod tests {
 		wiring::{self as verifier_wiring, evaluate_wiring_mle},
 	};
 	use binius_transcript::ProverTranscript;
+	use binius_verifier::{
+		fri::FRIParams,
+		hash::{StdCompression, StdDigest},
+	};
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 	use smallvec::SmallVec;
 
 	use super::*;
+
+	const LOG_INV_RATE: usize = 1;
+	const SECURITY_BITS: usize = 32;
 
 	/// Generate random MulConstraints for testing.
 	/// Each operand has 0-4 random wires.
@@ -504,10 +503,50 @@ mod tests {
 		// Create transposed wiring
 		let wiring_transpose = WiringTranspose::transpose(witness_size, &constraints);
 
+		// Setup FRI
+		let merkle_prover = BinaryMerkleTreeProver::<B128, StdDigest, _>::new(
+			ParallelCompressionAdaptor::new(StdCompression::default()),
+		);
+
+		let subspace = BinarySubspace::with_dim(log_witness_size + LOG_INV_RATE)
+			.expect("subspace creation should succeed");
+		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+		let ntt = NeighborsLastSingleThread::new(domain_context);
+
+		let fri_params = FRIParams::choose_with_constant_fold_arity(
+			&ntt,
+			log_witness_size,
+			SECURITY_BITS,
+			LOG_INV_RATE,
+			2,
+		)
+		.expect("FRI params creation should succeed");
+
+		// Commit witness
+		let CommitOutput {
+			commitment: codeword_commitment,
+			committed: codeword_committed,
+			codeword,
+		} = fri::commit_interleaved(&fri_params, &ntt, &merkle_prover, witness_packed.to_ref())
+			.expect("commit should succeed");
+
+		// Create FRI fold prover
+		let fri_prover = FRIFoldProver::new(
+			&fri_params,
+			&ntt,
+			&merkle_prover,
+			codeword.as_ref(),
+			&codeword_committed,
+		)
+		.expect("FRI fold prover creation should succeed");
+
 		// Prover side
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prover_output = prove(
+		prover_transcript.message().write(&codeword_commitment);
+
+		prove(
 			&wiring_transpose,
+			fri_prover,
 			&r_public,
 			&r_x,
 			witness_packed,
@@ -518,23 +557,20 @@ mod tests {
 
 		// Verifier side
 		let mut verifier_transcript = prover_transcript.into_verifier();
+		let retrieved_codeword_commitment = verifier_transcript
+			.message()
+			.read()
+			.expect("read should succeed");
+
 		let verifier_output = verifier_wiring::verify(
-			log_witness_size,
+			&fri_params,
+			merkle_prover.scheme(),
+			retrieved_codeword_commitment,
 			&mulcheck_evals,
 			public_eval,
 			&mut verifier_transcript,
 		)
 		.expect("verify should succeed");
-
-		// Check that outputs match
-		assert_eq!(
-			prover_output.r_y, verifier_output.r_y,
-			"r_y should match between prover and verifier"
-		);
-		assert_eq!(
-			prover_output.witness_eval, verifier_output.witness_eval,
-			"witness_eval should match between prover and verifier"
-		);
 
 		// Check eval consistency using ConstraintSystem
 		let constraint_system = ConstraintSystem::new(

@@ -7,9 +7,7 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 use binius_utils::SerializeBytes;
-use binius_verifier::{
-	fri::FRIParams, merkle_tree::MerkleTreeScheme, protocols::sumcheck::RoundCoeffs,
-};
+use binius_verifier::{merkle_tree::MerkleTreeScheme, protocols::sumcheck::RoundCoeffs};
 
 use crate::{
 	Error,
@@ -56,38 +54,28 @@ where
 	/// * `multilinear` - the multilinear polynomial
 	/// * `transparent_multilinear` - the transparent multilinear polynomial
 	/// * `claim` - the claim
-	/// * `committed_codeword` - the committed codeword
-	/// * `committed` - the committed Merkle tree
-	/// * `ntt` - the NTT
-	/// * `merkle_prover` - the Merkle prover
-	/// * `fri_params` - the FRI parameters
+	/// * `fri_folder` - the FRI fold prover
 	///
 	/// ## Pre-conditions
 	///  * the multilinear has already been committed to using FRI
 	///  * the length of the multilinear and transparent_multilinear are equal
-	#[allow(clippy::too_many_arguments)]
 	pub fn new(
 		multilinear: FieldBuffer<P>,
 		transparent_multilinear: FieldBuffer<P>,
 		claim: F,
-		committed_codeword: &'a [P],
-		committed: &'a MerkleProver::Committed,
-		merkle_prover: &'a MerkleProver,
-		ntt: &'a NTT,
-		fri_params: &'a FRIParams<F>,
-	) -> Result<Self, Error> {
+		fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
+	) -> Self {
 		assert_eq!(multilinear.log_len(), transparent_multilinear.log_len());
-
-		let fri_folder =
-			FRIFoldProver::new(fri_params, ntt, merkle_prover, committed_codeword, committed)?;
+		assert_eq!(multilinear.log_len(), fri_folder.n_rounds());
 
 		let sumcheck_prover =
-			BivariateProductSumcheckProver::new([multilinear, transparent_multilinear], claim)?;
+			BivariateProductSumcheckProver::new([multilinear, transparent_multilinear], claim)
+				.expect("precondition: multilinear.log_len() == transparent_multilinear.log_len()");
 
-		Ok(Self {
+		Self {
 			sumcheck_prover,
 			fri_folder,
-		})
+		}
 	}
 
 	/// Executes the sumcheck round, producing a round message.
@@ -191,7 +179,7 @@ mod test {
 
 	use super::BaseFoldProver;
 	use crate::{
-		fri::{self, CommitOutput},
+		fri::{self, CommitOutput, FRIFoldProver},
 		hash::parallel_compression::ParallelCompressionAdaptor,
 		merkle_tree::prover::BinaryMerkleTreeProver,
 	};
@@ -208,8 +196,6 @@ mod test {
 		F: BinaryField,
 		P: PackedField<Scalar = F> + PackedExtension<F>,
 	{
-		let n_vars = multilinear.log_len();
-
 		let eval_point_eq = eq_ind_partial_eval::<P>(&evaluation_point);
 
 		let merkle_prover = BinaryMerkleTreeProver::<F, StdDigest, _>::new(
@@ -237,17 +223,15 @@ mod test {
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover_transcript.message().write(&codeword_commitment);
 
-		let prover = BaseFoldProver::new(
-			multilinear,
-			eval_point_eq,
-			evaluation_claim,
+		let fri_folder = FRIFoldProver::new(
+			&fri_params,
+			&ntt,
+			&merkle_prover,
 			codeword.as_ref(),
 			&codeword_committed,
-			&merkle_prover,
-			&ntt,
-			&fri_params,
 		)?;
 
+		let prover = BaseFoldProver::new(multilinear, eval_point_eq, evaluation_claim, fri_folder);
 		prover.prove(&mut prover_transcript)?;
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -261,7 +245,6 @@ mod test {
 		} = basefold::verify(
 			&fri_params,
 			merkle_prover.scheme(),
-			n_vars,
 			retrieved_codeword_commitment,
 			evaluation_claim,
 			&mut verifier_transcript,

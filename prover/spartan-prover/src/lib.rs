@@ -12,7 +12,7 @@ use binius_math::{
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
 };
 use binius_prover::{
-	fri::{self, CommitOutput},
+	fri::{self, CommitOutput, FRIFoldProver},
 	hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression},
 	merkle_tree::prover::BinaryMerkleTreeProver,
 	protocols::sumcheck::{prove_single_mlecheck, quadratic_mle::QuadraticMleCheckProver},
@@ -134,25 +134,21 @@ where
 
 		// Run wiring check protocol
 		let r_public = transcript.sample_vec(cs.log_public() as usize);
-		let wiring_output = wiring::prove(
+
+		let fri_prover = FRIFoldProver::new(
+			self.verifier.fri_params(),
+			&self.ntt,
+			&self.merkle_prover,
+			codeword.as_ref(),
+			&codeword_committed,
+		)?;
+		wiring::prove(
 			&self.wiring_transpose,
+			fri_prover,
 			&r_public,
 			&r_x,
 			witness_packed.clone(),
 			&mulcheck_evals,
-			transcript,
-		)?;
-		let wiring::Output { r_y, witness_eval } = wiring_output;
-
-		// Prove the evaluation
-		let pcs_prover =
-			pcs::PCSProver::new(&self.ntt, &self.merkle_prover, self.verifier.fri_params());
-		pcs_prover.prove(
-			codeword.as_ref(),
-			&codeword_committed,
-			witness_packed,
-			&r_y,
-			witness_eval,
 			transcript,
 		)?;
 

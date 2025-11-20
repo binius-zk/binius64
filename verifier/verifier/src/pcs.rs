@@ -88,7 +88,6 @@ where
 	} = basefold::verify(
 		fri_params,
 		merkle_scheme,
-		eval_point.len() - packing_degree,
 		codeword_commitment,
 		verifier_computed_sumcheck_claim,
 		transcript,

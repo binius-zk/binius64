@@ -37,8 +37,6 @@ where
 	Challenger_: Challenger,
 	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 {
-	let n_vars = eval_point.len();
-
 	let basefold::ReducedOutput {
 		final_fri_value,
 		final_sumcheck_value,
@@ -46,7 +44,6 @@ where
 	} = basefold::verify(
 		fri_params,
 		merkle_scheme,
-		n_vars,
 		codeword_commitment,
 		evaluation_claim,
 		transcript,

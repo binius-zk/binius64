@@ -20,7 +20,7 @@ use binius_verifier::{
 
 use crate::{
 	Error,
-	fri::{self, CommitOutput},
+	fri::{self, CommitOutput, FRIFoldProver},
 	merkle_tree::MerkleTreeProver,
 	protocols::basefold::BaseFoldProver,
 	ring_switch,
@@ -152,17 +152,16 @@ where
 		let rs_eq_ind = tracing::debug_span!("Compute ring-switching equality indicator")
 			.in_scope(|| ring_switch::fold_b128_elems_inplace(suffix_tensor, &eq_r_double_prime));
 
-		let basefold_prover = BaseFoldProver::new(
-			packed_multilin,
-			rs_eq_ind,
-			computed_sumcheck_claim,
+		let fri_folder = FRIFoldProver::new(
+			self.fri_params,
+			self.ntt,
+			self.merkle_prover,
 			committed_codeword,
 			committed,
-			self.merkle_prover,
-			self.ntt,
-			self.fri_params,
 		)?;
 
+		let basefold_prover =
+			BaseFoldProver::new(packed_multilin, rs_eq_ind, computed_sumcheck_claim, fri_folder);
 		basefold_prover.prove(transcript)?;
 
 		Ok(())
