@@ -216,9 +216,7 @@ fn test_xor_unused_preserved() {
 	let v1 = b.add_witness();
 	let _v2 = b.bxor(v0, v1);
 	let cs = compile(b);
-	insta::assert_snapshot!(stringify_constraint_system(&cs), @r"
-	AND[0]: (0xe4 ⊕ v[2]) ∧ (all-1) = (v[3])
-	");
+	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (0xe4 ⊕ v[2]) ∧ (all-1) = (v[3])");
 }
 
 #[test]
