@@ -316,10 +316,17 @@ pub fn build_mulcheck_witness<F: Field, P: PackedField<Scalar = F>>(
 mod tests {
 	use binius_field::{BinaryField128bGhash as B128, Field, Random};
 	use binius_math::{
+		BinarySubspace,
 		inner_product::inner_product_buffers,
 		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
+		ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly},
 		test_utils::{Packed128b, random_field_buffer, random_scalars},
 		univariate::evaluate_univariate,
+	};
+	use binius_prover::{
+		fri::{self, CommitOutput, FRIFoldProver},
+		hash::parallel_compression::ParallelCompressionAdaptor,
+		merkle_tree::prover::BinaryMerkleTreeProver,
 	};
 	use binius_spartan_frontend::constraint_system::{
 		ConstraintSystem, MulConstraint, Operand, WitnessIndex,
@@ -329,10 +336,17 @@ mod tests {
 		wiring::{self as verifier_wiring, evaluate_wiring_mle},
 	};
 	use binius_transcript::ProverTranscript;
+	use binius_verifier::{
+		fri::FRIParams,
+		hash::{StdCompression, StdDigest},
+	};
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 	use smallvec::SmallVec;
 
 	use super::*;
+
+	const LOG_INV_RATE: usize = 1;
+	const SECURITY_BITS: usize = 32;
 
 	/// Generate random MulConstraints for testing.
 	/// Each operand has 0-4 random wires.
@@ -489,10 +503,50 @@ mod tests {
 		// Create transposed wiring
 		let wiring_transpose = WiringTranspose::transpose(witness_size, &constraints);
 
+		// Setup FRI
+		let merkle_prover = BinaryMerkleTreeProver::<B128, StdDigest, _>::new(
+			ParallelCompressionAdaptor::new(StdCompression::default()),
+		);
+
+		let subspace = BinarySubspace::with_dim(log_witness_size + LOG_INV_RATE)
+			.expect("subspace creation should succeed");
+		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+		let ntt = NeighborsLastSingleThread::new(domain_context);
+
+		let fri_params = FRIParams::choose_with_constant_fold_arity(
+			&ntt,
+			log_witness_size,
+			SECURITY_BITS,
+			LOG_INV_RATE,
+			2,
+		)
+		.expect("FRI params creation should succeed");
+
+		// Commit witness
+		let CommitOutput {
+			commitment: codeword_commitment,
+			committed: codeword_committed,
+			codeword,
+		} = fri::commit_interleaved(&fri_params, &ntt, &merkle_prover, witness_packed.to_ref())
+			.expect("commit should succeed");
+
+		// Create FRI fold prover
+		let fri_prover = FRIFoldProver::new(
+			&fri_params,
+			&ntt,
+			&merkle_prover,
+			codeword.as_ref(),
+			&codeword_committed,
+		)
+		.expect("FRI fold prover creation should succeed");
+
 		// Prover side
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prover_output = prove(
+		prover_transcript.message().write(&codeword_commitment);
+
+		prove(
 			&wiring_transpose,
+			fri_prover,
 			&r_public,
 			&r_x,
 			witness_packed,
@@ -503,23 +557,20 @@ mod tests {
 
 		// Verifier side
 		let mut verifier_transcript = prover_transcript.into_verifier();
+		let retrieved_codeword_commitment = verifier_transcript
+			.message()
+			.read()
+			.expect("read should succeed");
+
 		let verifier_output = verifier_wiring::verify(
-			log_witness_size,
+			&fri_params,
+			merkle_prover.scheme(),
+			retrieved_codeword_commitment,
 			&mulcheck_evals,
 			public_eval,
 			&mut verifier_transcript,
 		)
 		.expect("verify should succeed");
-
-		// Check that outputs match
-		assert_eq!(
-			prover_output.r_y, verifier_output.r_y,
-			"r_y should match between prover and verifier"
-		);
-		assert_eq!(
-			prover_output.witness_eval, verifier_output.witness_eval,
-			"witness_eval should match between prover and verifier"
-		);
 
 		// Check eval consistency using ConstraintSystem
 		let constraint_system = ConstraintSystem::new(
