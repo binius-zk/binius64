@@ -64,17 +64,18 @@ where
 		transparent_multilinear: FieldBuffer<P>,
 		claim: F,
 		fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
-	) -> Result<Self, Error> {
+	) -> Self {
 		assert_eq!(multilinear.log_len(), transparent_multilinear.log_len());
 		assert_eq!(multilinear.log_len(), fri_folder.n_rounds());
 
 		let sumcheck_prover =
-			BivariateProductSumcheckProver::new([multilinear, transparent_multilinear], claim)?;
+			BivariateProductSumcheckProver::new([multilinear, transparent_multilinear], claim)
+				.expect("precondition: multilinear.log_len() == transparent_multilinear.log_len()");
 
-		Ok(Self {
+		Self {
 			sumcheck_prover,
 			fri_folder,
-		})
+		}
 	}
 
 	/// Executes the sumcheck round, producing a round message.
@@ -232,8 +233,7 @@ mod test {
 			&codeword_committed,
 		)?;
 
-		let prover = BaseFoldProver::new(multilinear, eval_point_eq, evaluation_claim, fri_folder)?;
-
+		let prover = BaseFoldProver::new(multilinear, eval_point_eq, evaluation_claim, fri_folder);
 		prover.prove(&mut prover_transcript)?;
 
 		let mut verifier_transcript = prover_transcript.into_verifier();

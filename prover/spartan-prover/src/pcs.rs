@@ -122,8 +122,7 @@ where
 
 		// Create and run BaseFold prover
 		let basefold_prover =
-			BaseFoldProver::new(multilinear, eq_ind, evaluation_claim, fri_folder)?;
-
+			BaseFoldProver::new(multilinear, eq_ind, evaluation_claim, fri_folder);
 		basefold_prover.prove(transcript)?;
 
 		Ok(())

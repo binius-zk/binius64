@@ -161,8 +161,7 @@ where
 		)?;
 
 		let basefold_prover =
-			BaseFoldProver::new(packed_multilin, rs_eq_ind, computed_sumcheck_claim, fri_folder)?;
-
+			BaseFoldProver::new(packed_multilin, rs_eq_ind, computed_sumcheck_claim, fri_folder);
 		basefold_prover.prove(transcript)?;
 
 		Ok(())
