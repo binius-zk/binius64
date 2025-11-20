@@ -16,13 +16,15 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: DerefMut<Target = [P]>>(
 	scalar: P::Scalar,
 ) -> Result<(), Error> {
 	let broadcast_scalar = P::broadcast(scalar);
-	values.split_half_mut(|lo, hi| {
+	{
+		let mut split = values.split_half_mut_no_closure()?;
+		let (mut lo, mut hi) = split.halves();
 		(lo.as_mut(), hi.as_mut())
 			.into_par_iter()
 			.for_each(|(zero, one)| {
 				*zero += broadcast_scalar * (*one - *zero);
 			});
-	})?;
+	}
 
 	values.truncate(values.log_len() - 1);
 	Ok(())

@@ -148,13 +148,15 @@ pub fn eq_ind_truncate_low_inplace<P: PackedField, Data: DerefMut<Target = [P]>>
 	}
 
 	for log_len in (truncated_log_len..values.log_len()).rev() {
-		values.split_half_mut(|lo, hi| {
+		{
+			let mut split = values.split_half_mut_no_closure()?;
+			let (mut lo, hi) = split.halves();
 			(lo.as_mut(), hi.as_ref())
 				.into_par_iter()
 				.for_each(|(zero, one)| {
 					*zero += *one;
 				});
-		})?;
+		}
 
 		values.truncate(log_len);
 	}
