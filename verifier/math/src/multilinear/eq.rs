@@ -53,9 +53,7 @@ fn tensor_prod_eq_ind<P: PackedField, Data: DerefMut<Target = [P]>>(
 		let packed_r_i = P::broadcast(r_i);
 
 		values.resize(values.log_len() + 1)?;
-		let mut split = values
-			.split_half_mut_no_closure()
-			.expect("doubled by zero_extend()");
+		let mut split = values.split_half_mut().expect("doubled by zero_extend()");
 		let (mut lo, mut hi) = split.halves();
 
 		(lo.as_mut(), hi.as_mut())
@@ -149,7 +147,7 @@ pub fn eq_ind_truncate_low_inplace<P: PackedField, Data: DerefMut<Target = [P]>>
 
 	for log_len in (truncated_log_len..values.log_len()).rev() {
 		{
-			let mut split = values.split_half_mut_no_closure()?;
+			let mut split = values.split_half_mut()?;
 			let (mut lo, hi) = split.halves();
 			(lo.as_mut(), hi.as_ref())
 				.into_par_iter()

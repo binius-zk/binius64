@@ -17,7 +17,7 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: DerefMut<Target = [P]>>(
 ) -> Result<(), Error> {
 	let broadcast_scalar = P::broadcast(scalar);
 	{
-		let mut split = values.split_half_mut_no_closure()?;
+		let mut split = values.split_half_mut()?;
 		let (mut lo, mut hi) = split.halves();
 		(lo.as_mut(), hi.as_mut())
 			.into_par_iter()

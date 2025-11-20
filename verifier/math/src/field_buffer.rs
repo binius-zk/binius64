@@ -583,7 +583,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// # Throws
 	///
 	/// * [`Error::CannotSplit`] if `self.log_len() == 0`
-	pub fn split_half_mut_no_closure(&mut self) -> Result<FieldBufferSplitMut<'_, P>, Error> {
+	pub fn split_half_mut(&mut self) -> Result<FieldBufferSplitMut<'_, P>, Error> {
 		if self.log_len == 0 {
 			return Err(Error::CannotSplit);
 		}
@@ -733,7 +733,7 @@ impl<'a, P> DerefMut for FieldSliceDataMut<'a, P> {
 	}
 }
 
-/// Return type of [`FieldBuffer::split_half_mut_no_closure`].
+/// Return type of [`FieldBuffer::split_half_mut`].
 #[derive(Debug)]
 pub struct FieldBufferSplitMut<'a, P: PackedField>(FieldBufferSplitMutInner<'a, P>);
 
@@ -1439,7 +1439,7 @@ mod tests {
 		}
 
 		{
-			let mut split = buffer.split_half_mut_no_closure().unwrap();
+			let mut split = buffer.split_half_mut().unwrap();
 			let (mut first, mut second) = split.halves();
 
 			assert_eq!(first.len(), 8);
@@ -1469,7 +1469,7 @@ mod tests {
 		}
 
 		{
-			let mut split = buffer.split_half_mut_no_closure().unwrap();
+			let mut split = buffer.split_half_mut().unwrap();
 			let (mut first, mut second) = split.halves();
 
 			assert_eq!(first.len(), 2);
@@ -1496,7 +1496,7 @@ mod tests {
 		buffer.set_checked(1, F::new(20)).unwrap();
 
 		{
-			let mut split = buffer.split_half_mut_no_closure().unwrap();
+			let mut split = buffer.split_half_mut().unwrap();
 			let (mut first, mut second) = split.halves();
 
 			assert_eq!(first.len(), 1);
@@ -1515,7 +1515,7 @@ mod tests {
 		// Test error case: buffer of size 1
 		let mut buffer = FieldBuffer::<P>::zeros(0); // 1 element
 
-		let result = buffer.split_half_mut_no_closure();
+		let result = buffer.split_half_mut();
 		assert!(matches!(result, Err(Error::CannotSplit)));
 	}
 }
