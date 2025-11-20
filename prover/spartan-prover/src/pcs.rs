@@ -7,7 +7,7 @@ use std::ops::Deref;
 use binius_field::{BinaryField, PackedExtension, PackedField};
 use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval, ntt::AdditiveNTT};
 use binius_prover::{
-	fri::{self, CommitOutput},
+	fri::{self, CommitOutput, FRIFoldProver},
 	merkle_tree::MerkleTreeProver,
 	protocols::basefold::BaseFoldProver,
 };
@@ -111,17 +111,18 @@ where
 		// Compute eq_ind for the evaluation point
 		let eq_ind = eq_ind_partial_eval::<P>(evaluation_point);
 
-		// Create and run BaseFold prover
-		let basefold_prover = BaseFoldProver::new(
-			multilinear,
-			eq_ind,
-			evaluation_claim,
+		// Create FRI fold prover
+		let fri_folder = FRIFoldProver::new(
+			self.fri_params,
+			self.ntt,
+			self.merkle_prover,
 			committed_codeword,
 			committed,
-			self.merkle_prover,
-			self.ntt,
-			self.fri_params,
 		)?;
+
+		// Create and run BaseFold prover
+		let basefold_prover =
+			BaseFoldProver::new(multilinear, eq_ind, evaluation_claim, fri_folder)?;
 
 		basefold_prover.prove(transcript)?;
 
