@@ -1,27 +1,22 @@
 // Copyright 2025 Irreducible Inc.
 
-#![allow(dead_code)]
+use std::iter;
 
 use binius_field::{Field, PackedField};
 use binius_math::{
-	FieldBuffer, FieldSlice, multilinear::eq::eq_ind_partial_eval, univariate::evaluate_univariate,
+	FieldBuffer, FieldSlice, multilinear, multilinear::eq::eq_ind_partial_eval,
+	univariate::evaluate_univariate,
 };
 use binius_prover::protocols::{
-	InOutCheckProver, sumcheck,
-	sumcheck::{
-		MleToSumCheckDecorator, batch::BatchSumcheckOutput,
-		bivariate_product::BivariateProductSumcheckProver,
-	},
+	sumcheck,
+	sumcheck::{ProveSingleOutput, bivariate_product::BivariateProductSumcheckProver},
 };
 use binius_spartan_frontend::constraint_system::{MulConstraint, Operand, WitnessIndex};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_utils::{
-	checked_arithmetics::checked_log_2,
-	rayon::{iter::Either, prelude::*},
-};
+use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
 
 use crate::Error;
 
@@ -165,41 +160,55 @@ pub fn prove<F: Field, P: PackedField<Scalar = F>, Challenger_: Challenger>(
 	mulcheck_evals: &[F],
 	transcript: &mut ProverTranscript<Challenger_>,
 ) -> Result<Output<F>, Error> {
+	assert!(r_public.len() <= witness.log_len()); // precondition
+
 	// Sample batching challenge
 	let lambda = transcript.sample();
 
-	// Fold constraints with batching
-	let l_poly = fold_constraints(wiring_transpose, lambda, r_x);
+	// Coefficient for batching the public input check with the wiring check.
+	let batch_coeff = transcript.sample();
 
-	// Batch the mulcheck evaluations with the public evaluation.
-	let pubcheck_prover = MleToSumCheckDecorator::new(InOutCheckProver::new(
-		// TODO: Eliminate the clone, and ideally the duplicated folding with the other prover.
-		witness.clone(),
-		r_public,
-	));
+	// Fold constraints with batching
+	let mut l_poly = fold_constraints(wiring_transpose, lambda, r_x);
+
+	// Compute the batched polynomial ℓ = w + χ eq(r_pub || 0), where w is the wiring polynomial
+	// and χ is `batch_coeff`. Since eq(r_pub || 0) takes the value 0 on all hypercube vertices
+	// except the first 2^r_pub.len(), only that first chunk needs to be updated.
+	{
+		let mut l_poly_public_chunk = l_poly
+			.chunk_mut(r_public.len(), 0)
+			.expect("precondition: r_public.len() <= witnesses.log_len(); 0 < 2^r_public.len()");
+		let mut l_poly_public_chunk = l_poly_public_chunk.get();
+
+		let eq_public = eq_ind_partial_eval::<P>(r_public);
+
+		let batch_coeff_packed = P::broadcast(batch_coeff);
+		for (dst, src) in iter::zip(l_poly_public_chunk.as_mut(), eq_public.as_ref()) {
+			*dst += *src * batch_coeff_packed;
+		}
+	}
+
+	let public = witness
+		.chunk(r_public.len(), 0)
+		.expect("precondition: r_public.len() <= witnesses.log_len(); 0 < 2^r_public.len()");
+	let public_eval = multilinear::evaluate::evaluate(&public, r_public)
+		.expect("public.log_len() == r_public.len()");
 
 	// Run sumcheck on bivariate product
-	let batched_sum = evaluate_univariate(mulcheck_evals, lambda);
+	let batched_sum = evaluate_univariate(mulcheck_evals, lambda) + batch_coeff * public_eval;
 	let wiring_check_prover = BivariateProductSumcheckProver::new([witness, l_poly], batched_sum)
 		.expect("multilinears have equal numbers of variables");
 
-	let BatchSumcheckOutput {
+	let ProveSingleOutput {
 		multilinear_evals,
-		challenges: r_y,
-	} = sumcheck::batch::batch_prove(
-		vec![
-			Either::Left(pubcheck_prover),
-			Either::Right(wiring_check_prover),
-		],
-		transcript,
-	)
-	.expect("prover instance satisfies preconditions");
+		challenges: mut r_y,
+	} = sumcheck::prove_single(wiring_check_prover, transcript)
+		.expect("prover instance satisfies preconditions");
+
+	r_y.reverse();
 
 	// Extract witness evaluation
-	let [pubcheck_evals, _wiring_check_evals] = multilinear_evals
-		.try_into()
-		.expect("batch_prove called with 2 provers");
-	let [witness_eval] = pubcheck_evals
+	let [witness_eval, _l_poly_eval] = multilinear_evals
 		.try_into()
 		.expect("pubcheck_prover has 1 multilinear polynomial");
 
