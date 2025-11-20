@@ -91,6 +91,35 @@ impl WiringTranspose {
 	}
 }
 
+/// Computes the batched polynomial ℓ = w + χ eq(r_pub || 0), where w is the wiring polynomial
+/// and χ is `batch_coeff`.
+///
+/// Since eq(r_pub || 0) takes the value 0 on all hypercube vertices except the first 2^r_pub.len(),
+/// only that first chunk needs to be updated.
+fn compute_l_poly<F: Field, P: PackedField<Scalar = F>>(
+	wiring_poly: FieldBuffer<P>,
+	r_public: &[F],
+	batch_coeff: F,
+) -> FieldBuffer<P> {
+	let mut l_poly = wiring_poly;
+
+	{
+		let mut l_poly_public_chunk = l_poly
+			.chunk_mut(r_public.len(), 0)
+			.expect("precondition: r_public.len() <= witnesses.log_len(); 0 < 2^r_public.len()");
+		let mut l_poly_public_chunk = l_poly_public_chunk.get();
+
+		let eq_public = eq_ind_partial_eval::<P>(r_public);
+
+		let batch_coeff_packed = P::broadcast(batch_coeff);
+		for (dst, src) in iter::zip(l_poly_public_chunk.as_mut(), eq_public.as_ref()) {
+			*dst += *src * batch_coeff_packed;
+		}
+	}
+
+	l_poly
+}
+
 /// Folds the wiring matrix along the constraint axis by partially evaluating at r_x.
 ///
 /// Also batches the three operands (a, b, c) using powers of lambda.
@@ -168,25 +197,9 @@ pub fn prove<F: Field, P: PackedField<Scalar = F>, Challenger_: Challenger>(
 	// Coefficient for batching the public input check with the wiring check.
 	let batch_coeff = transcript.sample();
 
-	// Fold constraints with batching
-	let mut l_poly = fold_constraints(wiring_transpose, lambda, r_x);
-
-	// Compute the batched polynomial ℓ = w + χ eq(r_pub || 0), where w is the wiring polynomial
-	// and χ is `batch_coeff`. Since eq(r_pub || 0) takes the value 0 on all hypercube vertices
-	// except the first 2^r_pub.len(), only that first chunk needs to be updated.
-	{
-		let mut l_poly_public_chunk = l_poly
-			.chunk_mut(r_public.len(), 0)
-			.expect("precondition: r_public.len() <= witnesses.log_len(); 0 < 2^r_public.len()");
-		let mut l_poly_public_chunk = l_poly_public_chunk.get();
-
-		let eq_public = eq_ind_partial_eval::<P>(r_public);
-
-		let batch_coeff_packed = P::broadcast(batch_coeff);
-		for (dst, src) in iter::zip(l_poly_public_chunk.as_mut(), eq_public.as_ref()) {
-			*dst += *src * batch_coeff_packed;
-		}
-	}
+	// Fold constraints with batching and compute the batched polynomial
+	let wiring_poly = fold_constraints(wiring_transpose, lambda, r_x);
+	let l_poly = compute_l_poly(wiring_poly, r_public, batch_coeff);
 
 	let public = witness
 		.chunk(r_public.len(), 0)
@@ -205,6 +218,7 @@ pub fn prove<F: Field, P: PackedField<Scalar = F>, Challenger_: Challenger>(
 	} = sumcheck::prove_single(wiring_check_prover, transcript)
 		.expect("prover instance satisfies preconditions");
 
+	// Reverse the challenges to get the evaluation point.
 	r_y.reverse();
 
 	// Extract witness evaluation
