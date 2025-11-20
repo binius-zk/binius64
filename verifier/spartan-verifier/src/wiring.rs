@@ -38,8 +38,8 @@ pub fn verify<F, MTScheme, Challenger_>(
 ) -> Result<Output<F>, Error>
 where
 	F: BinaryField,
-	Challenger_: Challenger,
 	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
+	Challenger_: Challenger,
 {
 	// \lambda is the batching challenge for the constraint operands
 	let lambda = transcript.sample();

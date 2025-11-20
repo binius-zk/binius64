@@ -2,21 +2,21 @@
 
 use std::iter;
 
-use binius_field::{Field, PackedField};
+use binius_field::{BinaryField, Field, PackedField};
 use binius_math::{
-	FieldBuffer, FieldSlice, multilinear, multilinear::eq::eq_ind_partial_eval,
+	FieldBuffer, FieldSlice, multilinear, multilinear::eq::eq_ind_partial_eval, ntt::AdditiveNTT,
 	univariate::evaluate_univariate,
 };
-use binius_prover::protocols::{
-	sumcheck,
-	sumcheck::{ProveSingleOutput, bivariate_product::BivariateProductSumcheckProver},
+use binius_prover::{
+	fri::FRIFoldProver, merkle_tree::MerkleTreeProver, protocols::basefold::BaseFoldProver,
 };
 use binius_spartan_frontend::constraint_system::{MulConstraint, Operand, WitnessIndex};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_verifier::merkle_tree::MerkleTreeScheme;
 
 use crate::Error;
 
@@ -168,28 +168,31 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 		.expect("FieldBuffer::new should succeed with correct log_witness_size")
 }
 
-/// Output of the wiring check protocol.
-#[derive(Debug)]
-pub struct Output<F> {
-	pub r_y: Vec<F>,
-	pub witness_eval: F,
-}
-
 /// Proves the wiring check protocol.
 ///
 /// This function implements the prover side of the wiring check reduction protocol.
 /// It batches the mulcheck evaluations, runs a sumcheck over the bivariate product
 /// of the witness and folded wiring polynomial, and returns the evaluation point
 /// and witness evaluation.
-pub fn prove<F: Field, P: PackedField<Scalar = F>, Challenger_: Challenger>(
+pub fn prove<F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
 	wiring_transpose: &WiringTranspose,
+	fri_prover: FRIFoldProver<F, P, NTT, MerkleProver>,
 	r_public: &[F],
 	r_x: &[F],
 	witness: FieldBuffer<P>,
 	mulcheck_evals: &[F],
 	transcript: &mut ProverTranscript<Challenger_>,
-) -> Result<Output<F>, Error> {
+) -> Result<(), Error>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	NTT: AdditiveNTT<Field = F> + Sync,
+	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
+	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
+	Challenger_: Challenger,
+{
 	assert!(r_public.len() <= witness.log_len()); // precondition
+	assert_eq!(fri_prover.n_rounds(), witness.log_len()); // precondition
 
 	// Sample batching challenge
 	let lambda = transcript.sample();
@@ -209,27 +212,9 @@ pub fn prove<F: Field, P: PackedField<Scalar = F>, Challenger_: Challenger>(
 
 	// Run sumcheck on bivariate product
 	let batched_sum = evaluate_univariate(mulcheck_evals, lambda) + batch_coeff * public_eval;
-	let wiring_check_prover = BivariateProductSumcheckProver::new([witness, l_poly], batched_sum)
-		.expect("multilinears have equal numbers of variables");
+	BaseFoldProver::new(witness, l_poly, batched_sum, fri_prover).prove(transcript)?;
 
-	let ProveSingleOutput {
-		multilinear_evals,
-		challenges: mut r_y,
-	} = sumcheck::prove_single(wiring_check_prover, transcript)
-		.expect("prover instance satisfies preconditions");
-
-	// Reverse the challenges to get the evaluation point.
-	r_y.reverse();
-
-	// Extract witness evaluation
-	let [witness_eval, _l_poly_eval] = multilinear_evals
-		.try_into()
-		.expect("pubcheck_prover has 1 multilinear polynomial");
-
-	// Write witness evaluation to transcript
-	transcript.message().write(&witness_eval);
-
-	Ok(Output { r_y, witness_eval })
+	Ok(())
 }
 
 /// Witness data for multiplication constraint checking.
