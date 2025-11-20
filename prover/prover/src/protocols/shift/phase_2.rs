@@ -1,14 +1,18 @@
 // Copyright 2025 Irreducible Inc.
 
+use std::iter;
+
 use binius_core::word::Word;
 use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
-use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
+use binius_math::{
+	FieldBuffer,
+	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
+};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
 use binius_verifier::{config::LOG_WORD_SIZE_BITS, protocols::sumcheck::SumcheckOutput};
-use either::Either;
 use tracing::instrument;
 
 use super::{
@@ -17,13 +21,8 @@ use super::{
 };
 use crate::{
 	fold_word::fold_words,
-	protocols::{
-		inout_check::InOutCheckProver,
-		sumcheck::{
-			MleToSumCheckDecorator,
-			batch::{BatchSumcheckOutput, batch_prove},
-			bivariate_product::BivariateProductSumcheckProver,
-		},
+	protocols::sumcheck::{
+		ProveSingleOutput, bivariate_product::BivariateProductSumcheckProver, prove_single,
 	},
 };
 
@@ -84,19 +83,80 @@ where
 	run_sumcheck(inout_n_vars, r_j_witness, monster_multilinear, r_j, gamma, transcript)
 }
 
+/// Evaluates the r_j_witness multilinear at the inout evaluation point.
+///
+/// This helper function extracts the public input chunk from the r_j_witness
+/// and evaluates it at the given inout_eval_point, corresponding to evaluating
+/// the witness at `(r_j, inout_eval_point || 0)`.
+///
+/// # Parameters
+/// - `r_j_witness`: The witness folded at challenges `r_j`
+/// - `inout_eval_point`: Challenge point for the public input/output variables
+///
+/// # Returns
+/// The evaluation of the public chunk at `inout_eval_point`.
+fn evaluate_public_at_inout<F: Field, P: PackedField<Scalar = F>>(
+	r_j_witness: &FieldBuffer<P>,
+	inout_eval_point: &[F],
+) -> F {
+	let public_chunk = r_j_witness
+		.chunk(inout_eval_point.len(), 0)
+		.expect("inout_eval_point.len() <= r_j_witness.log_len()");
+	evaluate(&public_chunk, inout_eval_point)
+		.expect("public_chunk.log_len() == inout_eval_point.len()")
+}
+
+/// Computes the batched polynomial m = monster + χ eq(inout_eval_point || 0),
+/// where monster is the monster multilinear and χ is `batch_coeff`.
+///
+/// Since eq(inout_eval_point || 0) takes the value 0 on all hypercube vertices
+/// except the first 2^inout_eval_point.len(), only that first chunk needs to be updated.
+///
+/// # Parameters
+/// - `monster_multilinear`: The monster multilinear polynomial
+/// - `inout_eval_point`: Challenge point for the public input/output variables
+/// - `batch_coeff`: Random batching coefficient
+///
+/// # Returns
+/// The combined polynomial `monster_multilinear + batch_coeff * eq(inout_eval_point || 0)`.
+fn compute_monster_with_inout<F: Field, P: PackedField<Scalar = F>>(
+	monster_multilinear: FieldBuffer<P>,
+	inout_eval_point: &[F],
+	batch_coeff: F,
+) -> FieldBuffer<P> {
+	let mut combined_monster = monster_multilinear;
+
+	{
+		let mut public_chunk = combined_monster
+			.chunk_mut(inout_eval_point.len(), 0)
+			.expect("inout_eval_point.len() <= combined_monster.log_len()");
+		let mut public_chunk = public_chunk.get();
+
+		let eq_inout = eq_ind_partial_eval::<P>(inout_eval_point);
+
+		let batch_coeff_packed = P::broadcast(batch_coeff);
+		for (dst, src) in iter::zip(public_chunk.as_mut(), eq_inout.as_ref()) {
+			*dst += *src * batch_coeff_packed;
+		}
+	}
+
+	combined_monster
+}
+
 /// Executes the bivariate product sumcheck for the witness and monster multilinear relationship.
 ///
-/// This helper function runs the actual sumcheck protocol to prove that the claimed
-/// evaluation `gamma` equals the sum over all boolean assignments of the product
-/// `witness(x) * monster_multilinear(x)`.
+/// This helper function runs the sumcheck protocol to prove the relationship between
+/// the witness and monster multilinear, batched with the public input check.
 ///
 /// # Protocol Details
-/// - Uses `BivariateProductSumcheckProver` to handle the product relationship
-/// - Runs batch sumcheck to get new challenges `r_y` and multilinear evaluations
-/// - Extracts witness evaluation and monster multilinear evaluation from the results
+/// - Samples challenge point for public inputs and computes public evaluation
+/// - Samples batching coefficient and merges public check into monster multilinear
+/// - Uses single `BivariateProductSumcheckProver` for the batched relationship
+/// - Extracts witness evaluation from the sumcheck output
 /// - In debug mode, verifies the witness evaluation against expected value
 ///
 /// # Parameters
+/// - `inout_n_vars`: Number of variables for the public input/output point
 /// - `r_j_witness`: The witness folded at challenges `r_j`
 /// - `monster_multilinear`: The monster multilinear polynomial constructed from constraints
 /// - `r_j`: Challenge vector from phase 1 (first `LOG_WORD_SIZE_BITS` challenges)
@@ -117,29 +177,33 @@ fn run_sumcheck<F: Field, P: PackedField<Scalar = F>, C: Challenger>(
 	#[cfg(debug_assertions)]
 	let cloned_r_j_witness_for_debugging = r_j_witness.clone();
 
-	let shift_prover =
-		BivariateProductSumcheckProver::new([r_j_witness.clone(), monster_multilinear], gamma)?;
-
+	// Sample inout evaluation point and compute public evaluation
 	let inout_eval_point = transcript.sample_vec(inout_n_vars);
-	let inout_mle_prover = InOutCheckProver::new(r_j_witness, &inout_eval_point);
-	let inout_prover = MleToSumCheckDecorator::new(inout_mle_prover);
+	let public_eval = evaluate_public_at_inout(&r_j_witness, &inout_eval_point);
 
-	let provers = vec![Either::Left(shift_prover), Either::Right(inout_prover)];
+	// Sample batching coefficient
+	let batch_coeff = transcript.sample();
 
-	let BatchSumcheckOutput {
-		challenges: r_y,
+	// Compute the batched polynomial m = monster + χ eq(inout_eval_point || 0)
+	let combined_monster =
+		compute_monster_with_inout(monster_multilinear, &inout_eval_point, batch_coeff);
+
+	// Run sumcheck on bivariate product
+	let batched_sum = gamma + batch_coeff * public_eval;
+	let prover = BivariateProductSumcheckProver::new([r_j_witness, combined_monster], batched_sum)?;
+
+	let ProveSingleOutput {
 		multilinear_evals,
-	} = batch_prove(provers, transcript)?;
+		challenges: mut r_y,
+	} = prove_single(prover, transcript)?;
 
-	let [shift_evals, inout_evals] = multilinear_evals
+	// Reverse the challenges to get the evaluation point.
+	r_y.reverse();
+
+	// Extract witness evaluation
+	let [witness_eval, _monster_eval] = multilinear_evals
 		.try_into()
-		.expect("batch_prove called with 2 provers");
-	let [witness_eval, _monster_eval] = shift_evals
-		.try_into()
-		.expect("shift_prover has 2 multilinear polynomials");
-	let [_inout_witness_eval] = inout_evals
-		.try_into()
-		.expect("inout_prover has 1 multilinear polynomial");
+		.expect("prover has 2 multilinear polynomials");
 
 	transcript.message().write_scalar(witness_eval);
 
