@@ -118,7 +118,8 @@ where
 			.expect("public.len() checked above");
 		let public_eval = evaluate(&public, &r_public).expect("public.log_len() == r_y_head.len()");
 
-		// Verify the wiring reduction
+		// Verify the wiring check, public input check, and witness commitment opening with a
+		// combined BaseFold reduction.
 		let wiring_output = wiring::verify(
 			&self.fri_params,
 			&self.merkle_scheme,
