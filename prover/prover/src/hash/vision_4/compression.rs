@@ -66,8 +66,8 @@ impl ParallelPseudoCompression<Output<VisionHasherDigest>, 2> for VisionParallel
 		inputs
 			.par_chunks_exact(N * 2)
 			.zip(out.par_chunks_exact_mut(N))
-			.for_each_with([Ghash::ZERO; 2 * MN], |scratchpad, (input_chunk, output_chunk)| {
-				self.compress_batch_parallel(input_chunk, output_chunk, scratchpad);
+			.for_each(|(input_chunk, output_chunk)| {
+				self.compress_batch_parallel(input_chunk, output_chunk);
 			});
 
 		// Handle remaining pairs using batched processing
@@ -83,8 +83,7 @@ impl ParallelPseudoCompression<Output<VisionHasherDigest>, 2> for VisionParallel
 			padded_inputs[..remainder_inputs.len()].copy_from_slice(remainder_inputs);
 
 			// Process full batch (including padding)
-			let mut scratchpad = [Ghash::ZERO; 2 * MN];
-			self.compress_batch_parallel(&padded_inputs, &mut padded_outputs, &mut scratchpad);
+			self.compress_batch_parallel(&padded_inputs, &mut padded_outputs);
 
 			// Copy only the actual results back
 			for (output, padded) in remainder_outputs.iter_mut().zip(padded_outputs) {
@@ -107,7 +106,6 @@ impl VisionParallelCompression {
 		&self,
 		inputs: &[Output<VisionHasherDigest>],
 		out: &mut [MaybeUninit<Output<VisionHasherDigest>>],
-		scratchpad: &mut [Ghash],
 	) {
 		assert_eq!(out.len(), N, "Must process exactly {N} pairs");
 		assert_eq!(inputs.len(), 2 * N, "Must have 2*N inputs");
@@ -131,7 +129,7 @@ impl VisionParallelCompression {
 		let originals: [_; N] = array::from_fn(|i| (states[i * M], states[i * M + 1]));
 
 		// Step 3: Apply parallel permutation to all states
-		batch_permutation::<N, MN>(&mut states, scratchpad);
+		batch_permutation::<N, MN>(&mut states);
 
 		// Step 4: Add original elements back and serialize outputs
 		for i in 0..N {

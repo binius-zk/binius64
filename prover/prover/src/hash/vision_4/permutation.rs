@@ -13,7 +13,7 @@
 //! Each round: inversion → transform → MDS → constants → inversion → transform → MDS → constants
 
 use binius_field::{BinaryField128bGhash as Ghash, arithmetic_traits::Square};
-use binius_math::batch_invert::batch_invert;
+use binius_math::batch_invert::BatchInversion;
 use binius_verifier::hash::vision_4::{
 	constants::{B_FWD_COEFFS, M, NUM_ROUNDS, ROUND_CONSTANTS},
 	permutation::{constants_add, linearized_b_inv_transform_scalar, mds_mul},
@@ -67,17 +67,17 @@ fn batch_constants_add<const N: usize, const MN: usize>(
 #[inline]
 fn batch_round<const N: usize, const MN: usize>(
 	states: &mut [Ghash; MN],
-	scratchpad: &mut [Ghash],
+	inverter: &mut BatchInversion<Ghash>,
 	round_constants_idx: usize,
 ) {
 	// First half-round: inversion → inverse transform → MDS → constants
-	batch_invert::<MN>(states, scratchpad);
+	inverter.invert_or_zero(states);
 	batch_inverse_transform::<N, MN>(states);
 	batch_mds_mul::<N, MN>(states);
 	batch_constants_add::<N, MN>(states, &ROUND_CONSTANTS[round_constants_idx]);
 
 	// Second half-round: inversion → forward transform → MDS → constants
-	batch_invert::<MN>(states, scratchpad);
+	inverter.invert_or_zero(states);
 	batch_forward_transform::<N, MN>(states);
 	batch_mds_mul::<N, MN>(states);
 	batch_constants_add::<N, MN>(states, &ROUND_CONSTANTS[round_constants_idx + 1]);
@@ -85,18 +85,17 @@ fn batch_round<const N: usize, const MN: usize>(
 
 /// Executes the complete Vision-4 permutation on N parallel states.
 ///
-/// Main entry point for parallel Vision-4 hashing. Requires scratchpad ≥ 2×MN-1 elements.
+/// Main entry point for parallel Vision-4 hashing.
 #[inline]
-pub fn batch_permutation<const N: usize, const MN: usize>(
-	states: &mut [Ghash; MN],
-	scratchpad: &mut [Ghash],
-) {
+pub fn batch_permutation<const N: usize, const MN: usize>(states: &mut [Ghash; MN]) {
 	// Initial round constant addition
 	batch_constants_add::<N, MN>(states, &ROUND_CONSTANTS[0]);
 
+	let mut inverter = BatchInversion::<Ghash>::new(MN);
+
 	// Execute all rounds of the permutation
 	for round_num in 0..NUM_ROUNDS {
-		batch_round::<N, MN>(states, scratchpad, 1 + 2 * round_num);
+		batch_round::<N, MN>(states, &mut inverter, 1 + 2 * round_num);
 	}
 }
 
@@ -104,7 +103,7 @@ pub fn batch_permutation<const N: usize, const MN: usize>(
 mod tests {
 	use std::array;
 
-	use binius_field::{Field, Random};
+	use binius_field::Random;
 	use binius_verifier::hash::vision_4::permutation::permutation;
 	use rand::{SeedableRng, rngs::StdRng};
 
@@ -125,8 +124,7 @@ mod tests {
 					let mut single_states: [[Ghash; M]; N] =
 						array::from_fn(|i| array::from_fn(|j| parallel_states[i * M + j]));
 
-					let scratchpad = &mut [Ghash::ZERO; { 2 * MN }];
-					batch_permutation::<N, MN>(&mut parallel_states, scratchpad);
+					batch_permutation::<N, MN>(&mut parallel_states);
 
 					for state in single_states.iter_mut() {
 						permutation(state);

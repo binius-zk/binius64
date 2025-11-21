@@ -23,7 +23,6 @@ use super::{super::parallel_digest::MultiDigest, permutation::batch_permutation}
 #[derive(Clone)]
 pub struct VisionHasherMultiDigest<const N: usize, const MN: usize> {
 	states: [Ghash; MN],
-	scratchpad: Vec<Ghash>,
 	buffers: [[u8; RATE_AS_U8]; N],
 	filled_bytes: usize,
 }
@@ -34,7 +33,6 @@ impl<const N: usize, const MN: usize> Default for VisionHasherMultiDigest<N, MN>
 		assert_eq!(MN, M * N);
 		Self {
 			states: array::from_fn(|_| Ghash::ZERO),
-			scratchpad: vec![Ghash::ZERO; 2 * MN],
 			buffers: array::from_fn(|_| [0; RATE_AS_U8]),
 			filled_bytes: 0,
 		}
@@ -49,7 +47,7 @@ impl<const N: usize, const MN: usize> VisionHasherMultiDigest<N, MN> {
 		}
 	}
 
-	fn permute(states: &mut [Ghash; MN], scratchpad: &mut [Ghash], data: [&[u8]; N]) {
+	fn permute(states: &mut [Ghash; MN], data: [&[u8]; N]) {
 		for (i, data) in data.iter().enumerate() {
 			debug_assert_eq!(data.len(), RATE_AS_U8);
 
@@ -62,24 +60,16 @@ impl<const N: usize, const MN: usize> VisionHasherMultiDigest<N, MN> {
 			}
 		}
 
-		batch_permutation::<N, MN>(states, scratchpad);
+		batch_permutation::<N, MN>(states);
 	}
 	fn finalize(&mut self, out: &mut [MaybeUninit<digest::Output<VisionHasherDigest>>; N]) {
 		if self.filled_bytes != 0 {
 			for i in 0..N {
 				fill_padding(&mut self.buffers[i][self.filled_bytes..]);
 			}
-			Self::permute(
-				&mut self.states,
-				&mut self.scratchpad,
-				array::from_fn(|i| &self.buffers[i][..]),
-			);
+			Self::permute(&mut self.states, array::from_fn(|i| &self.buffers[i][..]));
 		} else {
-			Self::permute(
-				&mut self.states,
-				&mut self.scratchpad,
-				array::from_fn(|_| &PADDING_BLOCK[..]),
-			);
+			Self::permute(&mut self.states, array::from_fn(|_| &PADDING_BLOCK[..]));
 		}
 
 		// Serialize first two state elements for each digest (32 bytes total per digest)
@@ -119,18 +109,14 @@ impl<const N: usize, const MN: usize> MultiDigest<N> for VisionHasherMultiDigest
 			self.filled_bytes += to_copy;
 
 			if self.filled_bytes == RATE_AS_U8 {
-				Self::permute(
-					&mut self.states,
-					&mut self.scratchpad,
-					array::from_fn(|i| &self.buffers[i][..]),
-				);
+				Self::permute(&mut self.states, array::from_fn(|i| &self.buffers[i][..]));
 				self.filled_bytes = 0;
 			}
 		}
 
 		while data[0].len() >= RATE_AS_U8 {
 			let chunks = array::from_fn(|i| &data[i][..RATE_AS_U8]);
-			Self::permute(&mut self.states, &mut self.scratchpad, chunks);
+			Self::permute(&mut self.states, chunks);
 			Self::advance_data(&mut data, RATE_AS_U8);
 		}
 

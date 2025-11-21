@@ -9,7 +9,7 @@ use binius_field::{
 	BinaryField128bGhash as Ghash, Field,
 	byte_iteration::{ByteIteratorCallback, iterate_bytes},
 };
-use binius_math::batch_invert::batch_invert;
+use binius_math::batch_invert::BatchInversion;
 
 use super::{
 	constants::{B_FWD_COEFFS, B_INV_COEFFS, BYTES_PER_GHASH, M, NUM_ROUNDS, ROUND_CONSTANTS},
@@ -62,12 +62,12 @@ pub fn b_inv_transform<const N: usize>(state: &mut [Ghash; N]) {
 }
 
 /// S-box operation: batch inversion followed by polynomial transformation.
-pub fn sbox(state: &mut [Ghash; M], transform: impl Fn(&mut [Ghash; M]), scratchpad: &mut [Ghash]) {
-	// M=6 is not a power of 2, so split into 3 calls of size 2
-	batch_invert::<2>(&mut state[0..2], &mut scratchpad[0..4]);
-	batch_invert::<2>(&mut state[2..4], &mut scratchpad[4..8]);
-	batch_invert::<2>(&mut state[4..6], &mut scratchpad[8..12]);
-
+pub fn sbox(
+	state: &mut [Ghash; M],
+	transform: impl Fn(&mut [Ghash; M]),
+	inverter: &mut BatchInversion<Ghash>,
+) {
+	inverter.invert_or_zero(state);
 	transform(state);
 }
 
@@ -118,13 +118,13 @@ pub fn constants_add(state: &mut [Ghash], constants: &[Ghash]) {
 }
 
 /// Executes a single Vision-6 round with two S-box applications.
-fn round(state: &mut [Ghash; M], round_constants_idx: usize, scratchpad: &mut [Ghash]) {
+fn round(state: &mut [Ghash; M], round_constants_idx: usize, inverter: &mut BatchInversion<Ghash>) {
 	// First half
-	sbox(state, b_inv_transform, scratchpad);
+	sbox(state, b_inv_transform, inverter);
 	mds_mul(state);
 	constants_add(state, &ROUND_CONSTANTS[round_constants_idx]);
 	// Second half
-	sbox(state, b_fwd_transform, scratchpad);
+	sbox(state, b_fwd_transform, inverter);
 	mds_mul(state);
 	constants_add(state, &ROUND_CONSTANTS[round_constants_idx + 1]);
 }
@@ -132,9 +132,9 @@ fn round(state: &mut [Ghash; M], round_constants_idx: usize, scratchpad: &mut [G
 /// Main Vision-6 permutation function operating on 6-element states.
 pub fn permutation(state: &mut [Ghash; M]) {
 	constants_add(state, &ROUND_CONSTANTS[0]);
-	let scratchpad = &mut [Ghash::ZERO; { 2 * M }];
+	let mut inverter = BatchInversion::<Ghash>::new(M);
 	for round_num in 0..NUM_ROUNDS {
-		round(state, 1 + 2 * round_num, scratchpad);
+		round(state, 1 + 2 * round_num, &mut inverter);
 	}
 }
 

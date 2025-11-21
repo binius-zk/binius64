@@ -255,6 +255,7 @@ pub static ROUND_CONSTANTS: [[Ghash; 4]; 1 + 2 * 8] = [
 #[cfg(test)]
 pub mod tests {
 	use binius_field::{Field, Random, arithmetic_traits::Square};
+	use binius_math::batch_invert::BatchInversion;
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::{
@@ -320,13 +321,13 @@ pub mod tests {
 		let mut key_injection = INITIAL_CONSTANT;
 
 		let mut round_key_index = 1;
-		let scratchpad = &mut [Ghash::ZERO; { 2 * M }];
+		let mut inverter = BatchInversion::<Ghash>::new(M);
 		for _ in 0..NUM_ROUNDS {
 			for transform in [b_inv_transform, b_fwd_transform] {
 				key_injection = matrix_mul(&CONSTANTS_MATRIX, &key_injection);
 				constants_add(&mut key_injection, &CONSTANTS_CONSTANT);
 
-				sbox(&mut key_state, transform, scratchpad);
+				sbox(&mut key_state, transform, &mut inverter);
 				mds_mul(&mut key_state);
 				constants_add(&mut key_state, &key_injection);
 
