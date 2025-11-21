@@ -1,5 +1,5 @@
 [workspace]
-members = ["verifier/*", "verifier/frontend/ceck", "prover/*"]
+members = ["crates/*", "crates/frontend/ceck"]
 resolver = "2"
 
 [workspace.package]

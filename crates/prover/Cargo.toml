@@ -8,12 +8,12 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-binius-core = { path = "../../verifier/core" }
-binius-field = { path = "../../verifier/field" }
-binius-math = { path = "../../verifier/math" }
-binius-transcript = { path = "../../verifier/transcript" }
-binius-verifier = { path = "../../verifier/verifier", default-features = false }
-binius-utils = { path = "../../verifier/utils" }
+binius-core = { path = "../core" }
+binius-field = { path = "../field" }
+binius-math = { path = "../math" }
+binius-transcript = { path = "../transcript" }
+binius-verifier = { path = "../verifier", default-features = false }
+binius-utils = { path = "../utils" }
 bytemuck.workspace = true
 bytes.workspace = true
 derive_more.workspace = true
@@ -27,9 +27,9 @@ rand.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
-binius-circuits = { path = "../../verifier/circuits" }
-binius-frontend = { path = "../../verifier/frontend" }
-binius-math = { path = "../../verifier/math", features = ["test-utils"] }
+binius-circuits = { path = "../circuits" }
+binius-frontend = { path = "../frontend" }
+binius-math = { path = "../math", features = ["test-utils"] }
 criterion.workspace = true
 proptest.workspace = true
 rand = { workspace = true, features = ["thread_rng"] }

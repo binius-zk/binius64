@@ -63,29 +63,24 @@ Multithreading is enabled by default using [Rayon](https://github.com/rayon-rs/r
 
 ## Repo Structure
 
-Binius64 consists of several specialized crates, which are split between two directories, `verifier/` and `prover/`. These directories contains the project's Verifier and Prover, respectively, which are offered under different licensing terms. See the [Licensing](#licensing) section below for information. The Prover crates depend on the Verifier crates, but Verifier crates do _not_ depend on Prover crates.
-
-Verifier:
+Binius64 consists of several specialized crates in the `crates/` directory.
 
 - **binius-circuits**: Standard library of circuit gadgets
 - **binius-core**: Modules shared by the frontend and verifier
+- **binius-examples**: Examples and tutorials for learning and performance measurement
 - **binius-field**: Binary field arithmetic with platform-specific optimizations
 - **binius-frontend**: Circuit construction and compilation framework
 - **binius-math**: Mathematical algorithms
+- **binius-prover**: Zero-knowledge proof generation
 - **binius-transcript**: Fiat-Shamir transcript handling
 - **binius-utils**: Common utilities
 - **binius-verifier**: Proof verification
-
-Prover:
-
-- **binius-prover**: Zero-knowledge proof generation
-- **binius-examples**: Examples and tutorials for learning and performance measurement
 
 ## Authors & Supporters
 
 Binius64 was originally developed by [Irreducible](https://www.irreducible.com), with funding from
 [Bain Capital Crypto](https://baincapitalcrypto.com/) and [Paradigm](https://www.paradigm.xyz/).
- 
+
 ## Licensing
 
 ```

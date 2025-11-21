@@ -10,13 +10,13 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
-binius-circuits = { path = "../../verifier/circuits" }
-binius-core = { path = "../../verifier/core" }
-binius-frontend = { path = "../../verifier/frontend" }
+binius-circuits = { path = "../circuits" }
+binius-core = { path = "../core" }
+binius-frontend = { path = "../frontend" }
 binius-prover = { path = "../prover", default-features = false }
-binius-transcript = { path = "../../verifier/transcript" }
-binius-utils = { path = "../../verifier/utils", features = ["platform-diagnostics"] }
-binius-verifier = { path = "../../verifier/verifier", default-features = false }
+binius-transcript = { path = "../transcript" }
+binius-utils = { path = "../utils", features = ["platform-diagnostics"] }
+binius-verifier = { path = "../verifier", default-features = false }
 bitcoin_hashes.workspace = true
 bitcoin.workspace = true
 blake2.workspace = true
