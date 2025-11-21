@@ -24,7 +24,7 @@ fn workspace_root() -> Result<PathBuf> {
 /// Get the snapshot file path for a circuit example
 pub fn snapshot_path(circuit_name: &str) -> Result<PathBuf> {
 	let root = workspace_root()?;
-	Ok(root.join(format!("prover/examples/snapshots/{}.snap", circuit_name)))
+	Ok(root.join(format!("crates/examples/snapshots/{}.snap", circuit_name)))
 }
 
 /// Format circuit statistics for snapshot
