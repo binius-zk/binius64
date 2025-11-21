@@ -1,6 +1,9 @@
 // Copyright 2025 Irreducible Inc.
 
+use std::iter;
+
 use binius_field::{BinaryField128bGhash as Ghash, Field};
+use binius_utils::random_access_sequence::RandomAccessSequence;
 
 /// Efficiently inverts multiple field elements simultaneously using Montgomery's batch inversion
 /// trick.
@@ -110,6 +113,85 @@ pub fn batch_invert<const N: usize>(elements: &mut [Ghash], scratchpad: &mut [Gh
 	}
 }
 
+pub fn min_scratchpad_size(mut n: usize) -> usize {
+	assert!(n > 0);
+
+	let mut size = 0;
+	while n > 1 {
+		n = n.div_ceil(2);
+		size += n;
+	}
+	size
+}
+
+pub fn batch_invert2<F: Field, const N: usize>(elements: &mut [F; N], scratchpad: &mut [F]) {
+	let mut is_zero = [false; N];
+	for (element_i, is_zero_i) in iter::zip(&mut *elements, &mut is_zero) {
+		if *element_i == F::ZERO {
+			*element_i = F::ONE;
+			*is_zero_i = true;
+		}
+	}
+
+	batch_invert2_nonzero(elements, scratchpad);
+
+	for (element_i, is_zero_i) in iter::zip(elements, is_zero) {
+		if is_zero_i {
+			*element_i = F::ZERO;
+		}
+	}
+}
+
+fn batch_invert2_nonzero<F: Field>(elements: &mut [F], scratchpad: &mut [F]) {
+	debug_assert!(!elements.is_empty());
+
+	if elements.len() == 1 {
+		let element = elements.first_mut().expect("len == 1");
+		let inv = element
+			.invert()
+			.expect("precondition: elements contains no zeros");
+		*element = inv;
+		return;
+	}
+
+	let next_layer_len = elements.len().div_ceil(2);
+	let (next_layer, remaining) = scratchpad.split_at_mut(next_layer_len);
+	product_layer(elements, next_layer);
+	batch_invert2_nonzero(next_layer, remaining);
+	unproduct_layer(next_layer, elements);
+}
+
+#[inline]
+fn product_layer<F: Field>(input: &[F], output: &mut [F]) {
+	debug_assert_eq!(output.len(), input.len().div_ceil(2));
+
+	let (in_pairs, in_remaining) = input.as_chunks::<2>();
+	let (out_head, out_remaining) = output.split_at_mut(in_pairs.len());
+	for (out_i, [in_lhs, in_rhs]) in iter::zip(out_head, in_pairs) {
+		*out_i = *in_lhs * *in_rhs;
+	}
+	if !out_remaining.is_empty() {
+		out_remaining[0] = in_remaining[0];
+	}
+}
+
+#[inline]
+fn unproduct_layer<F: Field>(input: &[F], output: &mut [F]) {
+	debug_assert_eq!(input.len(), output.len().div_ceil(2));
+
+	let (out_pairs, out_remaining) = output.as_chunks_mut::<2>();
+	let (in_head, in_remaining) = input.split_at(out_pairs.len());
+	for (in_i, [out_lhs, out_rhs]) in iter::zip(in_head, out_pairs) {
+		let out_lhs_tmp = *out_lhs;
+		let out_rhs_tmp = *out_rhs;
+		*out_lhs = *in_i * out_rhs_tmp;
+		*out_rhs = *in_i * out_lhs_tmp;
+	}
+	if !out_remaining.is_empty() {
+		out_remaining[0] = in_remaining[0];
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use binius_field::{Field, Random, arithmetic_traits::InvertOrZero};
@@ -130,7 +212,7 @@ mod tests {
 		let expected: [Ghash; N] = state.map(|x| x.invert_or_zero());
 
 		let mut scratchpad = vec![Ghash::ZERO; 2 * N - 1];
-		batch_invert::<N>(&mut state, &mut scratchpad);
+		batch_invert2::<_, N>(&mut state, &mut scratchpad);
 
 		assert_eq!(state, expected);
 	}
