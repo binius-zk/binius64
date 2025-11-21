@@ -78,9 +78,9 @@ def main():
     )
     args = parser.parse_args()
 
-    files = get_rust_files("verifier") + get_rust_files("prover")
+    files = get_rust_files("crates")
     if not files:
-        print("No Rust files found in verifier/ and prover/")
+        print("No Rust files found in crates/")
         return 1
 
     # Group files by their first line
