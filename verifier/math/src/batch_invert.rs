@@ -13,7 +13,7 @@ use binius_field::Field;
 /// # Example
 /// ```
 /// use binius_field::{BinaryField128bGhash, Field};
-/// use binius_math::BatchInversion;
+/// use binius_math::batch_invert::BatchInversion;
 ///
 /// let mut inverter = BatchInversion::<BinaryField128bGhash>::new(8);
 /// let mut elements = [BinaryField128bGhash::ONE; 8];
