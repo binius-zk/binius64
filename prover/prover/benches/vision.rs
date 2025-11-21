@@ -2,7 +2,7 @@
 
 use std::{array, mem::MaybeUninit};
 
-use binius_field::{BinaryField128bGhash as Ghash, Field, Random};
+use binius_field::{BinaryField128bGhash as Ghash, Random};
 use binius_prover::hash::{
 	parallel_digest::{MultiDigest, ParallelDigest, ParallelMultidigestImpl},
 	vision_4::{
@@ -25,40 +25,37 @@ use rand::{RngCore, rngs::ThreadRng};
 fn bench_parallel_permutation_for_size<const N: usize, const MN: usize>(
 	group: &mut BenchmarkGroup<WallTime>,
 	rng: &mut ThreadRng,
-	permutation: fn(&mut [Ghash; MN], &mut [Ghash]),
-	scratchpad: &mut [Ghash],
+	permutation: fn(&mut [Ghash; MN]),
 ) {
 	const BYTES_PER_ELEMENT: u64 = 16;
 	group.throughput(Throughput::Bytes(MN as u64 * BYTES_PER_ELEMENT));
 	let mut parallel_states: [Ghash; MN] = array::from_fn(|_| Ghash::random(&mut *rng));
 	group.bench_function(format!("N={N}"), |b| {
 		b.iter(|| {
-			permutation(&mut parallel_states, scratchpad);
+			permutation(&mut parallel_states);
 		})
 	});
 }
 
 macro_rules! bench_parallel_permutation_sizes_4 {
-	($group:expr, $rng:expr, $permutation:ident, $scratchpad:expr, $m:expr, $($n:expr),*) => {
+	($group:expr, $rng:expr, $permutation:ident, $m:expr, $($n:expr),*) => {
 		$(
 			bench_parallel_permutation_for_size::<$n, { $n * $m }>(
 				$group,
 				$rng,
 				$permutation::<$n, { $n * $m }>,
-				$scratchpad,
 			);
 		)*
 	};
 }
 
 macro_rules! bench_parallel_permutation_sizes_6 {
-	($group:expr, $rng:expr, $permutation:ident, $scratchpad:expr, $m:expr, $($n:expr),*) => {
+	($group:expr, $rng:expr, $permutation:ident, $m:expr, $($n:expr),*) => {
 		$(
 			bench_parallel_permutation_for_size::<$n, { $n * $m }>(
 				$group,
 				$rng,
-				$permutation::<$n, { $n * $m }, { $n * $m / 3 }>,
-				$scratchpad,
+				$permutation::<$n, { $n * $m }>,
 			);
 		)*
 	};
@@ -69,12 +66,10 @@ fn bench_parallel_permutation_4(c: &mut Criterion) {
 	let mut group = c.benchmark_group("Parallel Permutation 4");
 	let mut rng = rand::rng();
 
-	let scratchpad = &mut [Ghash::ZERO; 256 * M * 2];
 	bench_parallel_permutation_sizes_4!(
 		&mut group,
 		&mut rng,
 		batch_permutation_4,
-		scratchpad,
 		M,
 		2,
 		4,
@@ -94,12 +89,10 @@ fn bench_parallel_permutation_6(c: &mut Criterion) {
 	let mut group = c.benchmark_group("Parallel Permutation 6");
 	let mut rng = rand::rng();
 
-	let scratchpad = &mut [Ghash::ZERO; 256 * M * 2];
 	bench_parallel_permutation_sizes_6!(
 		&mut group,
 		&mut rng,
 		batch_permutation_6,
-		scratchpad,
 		M,
 		2,
 		4,
@@ -189,7 +182,7 @@ fn bench_hash_vision_6(c: &mut Criterion) {
 		bench.iter(|| {
 			let mut out = [MaybeUninit::<digest::Output<VisionHasherDigest>>::uninit(); N];
 
-			VisionHasherMultiDigest_6::<N, { N * M }, { N * M / 3 }>::digest(
+			VisionHasherMultiDigest_6::<N, { N * M }>::digest(
 				array::from_fn(|i| &data[i * BYTE_COUNT / N..(i + 1) * BYTE_COUNT / N]),
 				&mut out,
 			);
@@ -200,10 +193,8 @@ fn bench_hash_vision_6(c: &mut Criterion) {
 	group.bench_function("ParallelMultiDigest", |bench| {
 		bench.iter(|| {
 			let mut out = [MaybeUninit::<digest::Output<VisionHasherDigest>>::uninit(); N];
-			let hasher = ParallelMultidigestImpl::<
-				VisionHasherMultiDigest_6<N, { N * M }, { N * M / 3 }>,
-				N,
-			>::new();
+			let hasher =
+				ParallelMultidigestImpl::<VisionHasherMultiDigest_6<N, { N * M }>, N>::new();
 
 			hasher.digest(
 				(0..N).into_par_iter().map(|i| {

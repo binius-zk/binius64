@@ -53,8 +53,7 @@ fn bench_sha256_merkle_tree(c: &mut Criterion) {
 }
 
 const N: usize = 128;
-type LeafHasher =
-	ParallelMultidigestImpl<VisionHasherMultiDigest_6<N, { N * 6 }, { N * 6 / 3 }>, N>;
+type LeafHasher = ParallelMultidigestImpl<VisionHasherMultiDigest_6<N, { N * 6 }>, N>;
 
 // Use Vision6 for leaves and Vision4 for compression
 fn bench_vision_merkle_tree(c: &mut Criterion) {
