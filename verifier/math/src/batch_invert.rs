@@ -1,3 +1,4 @@
+// Copyright 2025 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 
 use std::iter;
@@ -113,7 +114,113 @@ pub fn batch_invert<const N: usize>(elements: &mut [Ghash], scratchpad: &mut [Gh
 	}
 }
 
-pub fn min_scratchpad_size(mut n: usize) -> usize {
+/// Reusable batch inversion context that owns its scratch buffers.
+///
+/// This struct manages the memory needed for batch field inversions, allowing
+/// efficient reuse across multiple inversion operations of the same size.
+///
+/// # Example
+/// ```
+/// use binius_field::{BinaryField128bGhash, Field};
+/// use binius_math::BatchInversion;
+///
+/// let mut inverter = BatchInversion::<BinaryField128bGhash>::new(8);
+/// let mut elements = [BinaryField128bGhash::ONE; 8];
+/// inverter.invert(&mut elements);
+/// ```
+pub struct BatchInversion<F: Field> {
+	n: usize,
+	scratchpad: Vec<F>,
+	is_zero: Vec<bool>,
+}
+
+impl<F: Field> BatchInversion<F> {
+	/// Creates a new batch inversion context for slices of size `n`.
+	///
+	/// Allocates the necessary scratch space:
+	/// - `scratchpad`: Storage for intermediate products during recursion
+	/// - `is_zero`: Tracking vector for zero elements
+	///
+	/// # Parameters
+	/// - `n`: The size of slices this instance will handle
+	///
+	/// # Panics
+	/// Panics if `n` is 0.
+	pub fn new(n: usize) -> Self {
+		assert!(n > 0, "n must be greater than 0");
+
+		let scratchpad_size = min_scratchpad_size(n);
+		Self {
+			n,
+			scratchpad: vec![F::ZERO; scratchpad_size],
+			is_zero: vec![false; n],
+		}
+	}
+
+	/// Inverts non-zero elements in-place.
+	///
+	/// # Parameters
+	/// - `elements`: Mutable slice to invert in-place
+	///
+	/// # Preconditions
+	/// All elements must be non-zero. Behavior is undefined if any element is zero.
+	///
+	/// # Panics
+	/// Panics if `elements.len() != n` (the size specified at construction).
+	pub fn invert(&mut self, elements: &mut [F]) {
+		assert_eq!(
+			elements.len(),
+			self.n,
+			"elements.len() must equal n (expected {}, got {})",
+			self.n,
+			elements.len()
+		);
+
+		batch_invert_nonzero(elements, &mut self.scratchpad);
+	}
+
+	/// Inverts elements in-place, handling zeros gracefully.
+	///
+	/// Zero elements remain zero after inversion, while non-zero elements
+	/// are replaced with their multiplicative inverses.
+	///
+	/// # Parameters
+	/// - `elements`: Mutable slice to invert in-place
+	///
+	/// # Panics
+	/// Panics if `elements.len() != n` (the size specified at construction).
+	pub fn invert_or_zero(&mut self, elements: &mut [F]) {
+		assert_eq!(
+			elements.len(),
+			self.n,
+			"elements.len() must equal n (expected {}, got {})",
+			self.n,
+			elements.len()
+		);
+
+		// Mark zeros and replace with ones
+		for (element_i, is_zero_i) in iter::zip(&mut *elements, &mut self.is_zero) {
+			if *element_i == F::ZERO {
+				*element_i = F::ONE;
+				*is_zero_i = true;
+			} else {
+				*is_zero_i = false;
+			}
+		}
+
+		// Perform inversion on non-zero elements
+		self.invert(elements);
+
+		// Restore zeros
+		for (element_i, is_zero_i) in iter::zip(elements, &self.is_zero) {
+			if *is_zero_i {
+				*element_i = F::ZERO;
+			}
+		}
+	}
+}
+
+fn min_scratchpad_size(mut n: usize) -> usize {
 	assert!(n > 0);
 
 	let mut size = 0;
@@ -124,25 +231,7 @@ pub fn min_scratchpad_size(mut n: usize) -> usize {
 	size
 }
 
-pub fn batch_invert2<F: Field, const N: usize>(elements: &mut [F; N], scratchpad: &mut [F]) {
-	let mut is_zero = [false; N];
-	for (element_i, is_zero_i) in iter::zip(&mut *elements, &mut is_zero) {
-		if *element_i == F::ZERO {
-			*element_i = F::ONE;
-			*is_zero_i = true;
-		}
-	}
-
-	batch_invert2_nonzero(elements, scratchpad);
-
-	for (element_i, is_zero_i) in iter::zip(elements, is_zero) {
-		if is_zero_i {
-			*element_i = F::ZERO;
-		}
-	}
-}
-
-fn batch_invert2_nonzero<F: Field>(elements: &mut [F], scratchpad: &mut [F]) {
+fn batch_invert_nonzero<F: Field>(elements: &mut [F], scratchpad: &mut [F]) {
 	debug_assert!(!elements.is_empty());
 
 	if elements.len() == 1 {
@@ -157,7 +246,7 @@ fn batch_invert2_nonzero<F: Field>(elements: &mut [F], scratchpad: &mut [F]) {
 	let next_layer_len = elements.len().div_ceil(2);
 	let (next_layer, remaining) = scratchpad.split_at_mut(next_layer_len);
 	product_layer(elements, next_layer);
-	batch_invert2_nonzero(next_layer, remaining);
+	batch_invert_nonzero(next_layer, remaining);
 	unproduct_layer(next_layer, elements);
 }
 
@@ -195,41 +284,82 @@ fn unproduct_layer<F: Field>(input: &[F], output: &mut [F]) {
 #[cfg(test)]
 mod tests {
 	use binius_field::{Field, Random, arithmetic_traits::InvertOrZero};
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use proptest::prelude::*;
+	use rand::{Rng, SeedableRng, rngs::StdRng, seq::IteratorRandom};
 
 	use super::*;
 
-	fn test_batch_invert_for_size<const N: usize>(rng: &mut StdRng) {
-		let mut state = [Ghash::ZERO; N];
-		for i in 0..N {
-			state[i] = if rng.random::<bool>() {
-				Ghash::ZERO
+	/// Shared helper to test batch inversion with a given inverter.
+	fn invert_with_inverter(
+		inverter: &mut BatchInversion<Ghash>,
+		n: usize,
+		n_zeros: usize,
+		rng: &mut impl Rng,
+	) {
+		assert!(n_zeros <= n, "n_zeros must be <= n");
+
+		// Sample indices for zeros without replacement
+		let zero_indices: Vec<usize> = (0..n).choose_multiple(rng, n_zeros);
+
+		// Create state vector with zeros at sampled indices
+		let mut state = Vec::with_capacity(n);
+		for i in 0..n {
+			if zero_indices.contains(&i) {
+				state.push(Ghash::ZERO);
 			} else {
-				Ghash::random(&mut *rng)
-			};
+				state.push(Ghash::random(&mut *rng));
+			}
 		}
 
-		let expected: [Ghash; N] = state.map(|x| x.invert_or_zero());
+		let expected: Vec<Ghash> = state.iter().map(|x| x.invert_or_zero()).collect();
 
-		let mut scratchpad = vec![Ghash::ZERO; 2 * N - 1];
-		batch_invert2::<_, N>(&mut state, &mut scratchpad);
+		inverter.invert_or_zero(&mut state);
 
 		assert_eq!(state, expected);
 	}
 
-	#[test]
-	fn test_batch_invert() {
-		let mut rng = StdRng::seed_from_u64(0);
+	fn test_batch_inversion_for_size(n: usize, n_zeros: usize, rng: &mut impl Rng) {
+		let mut inverter = BatchInversion::<Ghash>::new(n);
+		invert_with_inverter(&mut inverter, n, n_zeros, rng);
+	}
 
-		for _ in 0..4 {
-			test_batch_invert_for_size::<2>(&mut rng);
-			test_batch_invert_for_size::<4>(&mut rng);
-			test_batch_invert_for_size::<8>(&mut rng);
-			test_batch_invert_for_size::<16>(&mut rng);
-			test_batch_invert_for_size::<32>(&mut rng);
-			test_batch_invert_for_size::<64>(&mut rng);
-			test_batch_invert_for_size::<128>(&mut rng);
-			test_batch_invert_for_size::<256>(&mut rng);
+	fn test_batch_inversion_nonzero_for_size(n: usize, rng: &mut impl Rng) {
+		let mut state = Vec::with_capacity(n);
+		for _ in 0..n {
+			state.push(Ghash::random(&mut *rng));
+		}
+
+		let expected: Vec<Ghash> = state.iter().map(|x| x.invert_or_zero()).collect();
+
+		let mut inverter = BatchInversion::<Ghash>::new(n);
+		inverter.invert(&mut state);
+
+		assert_eq!(state, expected);
+	}
+
+	proptest! {
+		#[test]
+		fn test_batch_inversion(n in 1usize..=16, n_zeros in 0usize..=16) {
+			prop_assume!(n_zeros <= n);
+			let mut rng = StdRng::seed_from_u64(0);
+			test_batch_inversion_for_size(n, n_zeros, &mut rng);
+		}
+
+		#[test]
+		fn test_batch_inversion_nonzero(n in 1usize..=16) {
+			let mut rng = StdRng::seed_from_u64(0);
+			test_batch_inversion_nonzero_for_size(n, &mut rng);
+		}
+	}
+
+	#[test]
+	fn test_batch_inversion_reuse() {
+		let mut rng = StdRng::seed_from_u64(0);
+		let mut inverter = BatchInversion::<Ghash>::new(8);
+
+		// Test reusing the same inverter multiple times
+		for n_zeros in 0..=8 {
+			invert_with_inverter(&mut inverter, 8, n_zeros, &mut rng);
 		}
 	}
 }
