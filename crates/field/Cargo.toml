@@ -40,10 +40,6 @@ name = "binary_field"
 harness = false
 
 [[bench]]
-name = "binary_field_util"
-harness = false
-
-[[bench]]
 name = "packed_field_linear_transform"
 harness = false
 

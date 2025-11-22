@@ -3,10 +3,13 @@
 
 use std::ops::Deref;
 
-use binius_field::{Field, util::inner_product_unchecked};
+use binius_field::Field;
 
 use super::error::Error;
-use crate::field_buffer::FieldBuffer;
+use crate::{
+	field_buffer::FieldBuffer,
+	inner_product::{inner_product, inner_product_buffers},
+};
 
 /// Computes a linear combination of the columns of a matrix.
 ///
@@ -58,9 +61,7 @@ where
 
 	let ret_vals = mat
 		.chunks(log_m)?
-		.map(|row| {
-			inner_product_unchecked(row.as_ref().iter().copied(), vec.as_ref().iter().copied())
-		})
+		.map(|row| inner_product_buffers(&row, vec))
 		.collect::<Box<[_]>>();
 	FieldBuffer::new(log_n, ret_vals)
 }
@@ -117,7 +118,7 @@ where
 	let ret_vals = (0..1 << log_m)
 		.map(|col_i| {
 			let col = (0..1 << log_n).map(|row_i| mat_vals[(row_i << log_m) + col_i]);
-			inner_product_unchecked(col, vec.as_ref().iter().copied())
+			inner_product(col, vec.as_ref().iter().copied())
 		})
 		.collect::<Box<[_]>>();
 	FieldBuffer::new(log_m, ret_vals)

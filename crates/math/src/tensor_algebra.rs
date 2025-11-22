@@ -7,7 +7,9 @@ use std::{
 	ops::{Add, AddAssign, Sub, SubAssign},
 };
 
-use binius_field::{ExtensionField, Field, util::inner_product_unchecked};
+use binius_field::{ExtensionField, Field};
+
+use crate::inner_product::inner_product;
 
 /// An element of the tensor algebra defined as the tensor product of `FE` and `FE` as fields.
 ///
@@ -146,7 +148,7 @@ impl<F: Field, FE: ExtensionField<F>> TensorAlgebra<F, FE> {
 	///
 	/// * `coeffs` must have length $2^\kappa$
 	pub fn fold_vertical(self, coeffs: &[FE]) -> FE {
-		inner_product_unchecked::<FE, _>(self.transpose().elems, coeffs.iter().copied())
+		inner_product(self.transpose().elems, coeffs.iter().copied())
 	}
 }
 
