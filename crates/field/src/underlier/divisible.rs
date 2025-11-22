@@ -1,9 +1,8 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use core::slice;
 use std::{
 	mem::{align_of, size_of},
-	slice::{from_raw_parts, from_raw_parts_mut},
+	slice::{self, from_raw_parts, from_raw_parts_mut},
 };
 
 /// Underlier value that can be split into a slice of smaller `U` values.
@@ -62,6 +61,33 @@ unsafe impl<U: UnderlierType> Divisible<U> for U {
 	}
 }
 
+/// Divides an underlier type into smaller underliers in memory and iterates over them.
+///
+/// [`DivisIterable`] (say that 10 times, fast) provides iteration over the subdivisions of an
+/// underlier type, guaranteeing that iteration proceeds from the least significant bits to the most
+/// significant bits, regardless of the CPU architecture's endianness.
+///
+/// # Endianness Handling
+///
+/// To ensure consistent LSB-to-MSB iteration order across all platforms:
+/// - On little-endian systems: elements are naturally ordered LSB-to-MSB in memory, so iteration
+///   proceeds forward through the array
+/// - On big-endian systems: elements are ordered MSB-to-LSB in memory, so iteration is reversed to
+///   achieve LSB-to-MSB order
+///
+/// This abstraction allows code to work with subdivided underliers in a platform-independent way
+/// while maintaining the invariant that the first element always represents the least significant
+/// portion of the value.
+pub trait DivisIterable<T> {
+	type Iter<'a>: ExactSizeIterator<Item = &'a T>
+	where
+		Self: 'a,
+		T: 'a;
+
+	/// Returns an iterator over subdivisions of this underlier, ordered from LSB to MSB.
+	fn divide(&self) -> Self::Iter<'_>;
+}
+
 macro_rules! impl_divisible {
     (@pairs $name:ty,?) => {};
     (@pairs $bigger:ty, $smaller:ty) => {
@@ -112,6 +138,26 @@ macro_rules! impl_divisible {
                 bytemuck::must_cast_mut::<_, [$smaller;{(4 * <$bigger>::BITS as usize / <$smaller>::BITS as usize ) }]>(&mut self.0)
             }
         }
+
+		#[cfg(target_endian = "little")]
+		impl $crate::underlier::DivisIterable<$smaller> for $bigger {
+			type Iter<'a> = std::slice::Iter<'a, $smaller>;
+
+			fn divide(&self) -> Self::Iter<'_> {
+				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
+				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(self).iter()
+			}
+		}
+
+		#[cfg(target_endian = "big")]
+		impl $crate::underlier::DivisIterable<$smaller> for $bigger {
+			type Iter<'a> = std::iter::Rev<std::slice::Iter<'a, u8>>;
+
+			fn divide(&self) -> Self::Iter<'_> {
+				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
+				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(self).iter().rev()
+			}
+		}
     };
     (@pairs $first:ty, $second:ty, $($tail:ty),*) => {
         impl_divisible!(@pairs $first, $second);

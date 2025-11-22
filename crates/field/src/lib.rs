@@ -50,4 +50,4 @@ pub use packed_extension_ops::*;
 pub use packed_ghash::*;
 pub use random::Random;
 pub use transpose::{Error as TransposeError, square_transpose};
-pub use underlier::{UnderlierWithBitOps, WithUnderlier};
+pub use underlier::{DivisIterable, UnderlierWithBitOps, WithUnderlier};
