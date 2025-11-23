@@ -327,36 +327,25 @@ impl UnderlierWithBitOps for M128 {
 	#[inline(always)]
 	unsafe fn get_subvalue<T>(&self, i: usize) -> T
 	where
-		T: WithUnderlier,
-		T::Underlier: NumCast<Self>,
+		T: UnderlierType + NumCast<Self>,
 	{
-		let result = match T::Underlier::BITS {
+		match T::BITS {
 			1 | 2 | 4 => {
-				let elements_in_8 = 8 / T::Underlier::BITS;
-				let shift = (i % elements_in_8) * T::Underlier::BITS;
-				let mask = (1u8 << T::Underlier::BITS) - 1;
+				let elements_in_8 = 8 / T::BITS;
+				let shift = (i % elements_in_8) * T::BITS;
+				let mask = (1u8 << T::BITS) - 1;
 
-				T::Underlier::num_cast_from(as_array_ref::<_, u8, 16, _>(self, |a| {
+				T::num_cast_from(as_array_ref::<_, u8, 16, _>(self, |a| {
 					Self::from((a[i / elements_in_8] >> shift) & mask)
 				}))
 			}
-			8 => T::Underlier::num_cast_from(as_array_ref::<_, u8, 16, _>(self, |a| {
-				Self::from(a[i])
-			})),
-			16 => T::Underlier::num_cast_from(as_array_ref::<_, u16, 8, _>(self, |a| {
-				Self::from(a[i])
-			})),
-			32 => T::Underlier::num_cast_from(as_array_ref::<_, u32, 4, _>(self, |a| {
-				Self::from(a[i])
-			})),
-			64 => T::Underlier::num_cast_from(as_array_ref::<_, u64, 2, _>(self, |a| {
-				Self::from(a[i])
-			})),
-			128 => T::Underlier::num_cast_from(*self),
+			8 => T::num_cast_from(as_array_ref::<_, u8, 16, _>(self, |a| Self::from(a[i]))),
+			16 => T::num_cast_from(as_array_ref::<_, u16, 8, _>(self, |a| Self::from(a[i]))),
+			32 => T::num_cast_from(as_array_ref::<_, u32, 4, _>(self, |a| Self::from(a[i]))),
+			64 => T::num_cast_from(as_array_ref::<_, u64, 2, _>(self, |a| Self::from(a[i]))),
+			128 => T::num_cast_from(*self),
 			_ => panic!("unsupported bit count"),
-		};
-
-		T::from_underlier(result)
+		}
 	}
 
 	#[inline(always)]

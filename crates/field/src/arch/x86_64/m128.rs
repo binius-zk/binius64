@@ -438,29 +438,29 @@ impl UnderlierWithBitOps for M128 {
 				let shift = (i % elements_in_8) * T::BITS;
 				value_u8 >>= shift;
 
-				T::from_underlier(T::num_cast_from(Self::from(value_u8)))
+				T::num_cast_from(Self::from(value_u8))
 			}
 			8 => {
 				let value_u8 =
 					as_array_ref::<_, u8, 16, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::from_underlier(T::num_cast_from(Self::from(value_u8)))
+				T::num_cast_from(Self::from(value_u8))
 			}
 			16 => {
 				let value_u16 =
 					as_array_ref::<_, u16, 8, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::from_underlier(T::num_cast_from(Self::from(value_u16)))
+				T::num_cast_from(Self::from(value_u16))
 			}
 			32 => {
 				let value_u32 =
 					as_array_ref::<_, u32, 4, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::from_underlier(T::num_cast_from(Self::from(value_u32)))
+				T::num_cast_from(Self::from(value_u32))
 			}
 			64 => {
 				let value_u64 =
 					as_array_ref::<_, u64, 2, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::from_underlier(T::num_cast_from(Self::from(value_u64)))
+				T::num_cast_from(Self::from(value_u64))
 			}
-			128 => T::from_underlier(T::num_cast_from(*self)),
+			128 => T::num_cast_from(*self),
 			_ => panic!("unsupported bit count"),
 		}
 	}

@@ -106,60 +106,6 @@ pub unsafe trait WithUnderlier: Sized + Zeroable + Copy + Send + Sync + 'static 
 	}
 }
 
-unsafe impl<U: UnderlierType> WithUnderlier for U {
-	type Underlier = U;
-
-	#[inline]
-	fn to_underlier(self) -> Self::Underlier {
-		self
-	}
-
-	#[inline]
-	fn to_underlier_ref(&self) -> &Self::Underlier {
-		self
-	}
-
-	#[inline]
-	fn to_underlier_ref_mut(&mut self) -> &mut Self::Underlier {
-		self
-	}
-
-	#[inline]
-	fn to_underliers_ref(val: &[Self]) -> &[Self::Underlier] {
-		val
-	}
-
-	#[inline]
-	fn to_underliers_ref_mut(val: &mut [Self]) -> &mut [Self::Underlier] {
-		val
-	}
-
-	#[inline]
-	fn from_underlier(val: Self::Underlier) -> Self {
-		val
-	}
-
-	#[inline]
-	fn from_underlier_ref(val: &Self::Underlier) -> &Self {
-		val
-	}
-
-	#[inline]
-	fn from_underlier_ref_mut(val: &mut Self::Underlier) -> &mut Self {
-		val
-	}
-
-	#[inline]
-	fn from_underliers_ref(val: &[Self::Underlier]) -> &[Self] {
-		val
-	}
-
-	#[inline]
-	fn from_underliers_ref_mut(val: &mut [Self::Underlier]) -> &mut [Self] {
-		val
-	}
-}
-
 /// A trait that represents potentially lossy numeric cast.
 /// Is a drop-in replacement of `as _` in a generic code.
 pub trait NumCast<From> {
