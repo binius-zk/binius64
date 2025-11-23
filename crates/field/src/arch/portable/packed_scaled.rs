@@ -527,46 +527,6 @@ where
 	PT: WithUnderlier<Underlier: Pod>,
 {
 	type Underlier = ScaledUnderlier<PT::Underlier, N>;
-
-	fn to_underlier(self) -> Self::Underlier {
-		TransparentWrapper::peel(self)
-	}
-
-	fn to_underlier_ref(&self) -> &Self::Underlier {
-		TransparentWrapper::peel_ref(self)
-	}
-
-	fn to_underlier_ref_mut(&mut self) -> &mut Self::Underlier {
-		TransparentWrapper::peel_mut(self)
-	}
-
-	fn to_underliers_ref(val: &[Self]) -> &[Self::Underlier] {
-		TransparentWrapper::peel_slice(val)
-	}
-
-	fn to_underliers_ref_mut(val: &mut [Self]) -> &mut [Self::Underlier] {
-		TransparentWrapper::peel_slice_mut(val)
-	}
-
-	fn from_underlier(val: Self::Underlier) -> Self {
-		TransparentWrapper::wrap(val)
-	}
-
-	fn from_underlier_ref(val: &Self::Underlier) -> &Self {
-		TransparentWrapper::wrap_ref(val)
-	}
-
-	fn from_underlier_ref_mut(val: &mut Self::Underlier) -> &mut Self {
-		TransparentWrapper::wrap_mut(val)
-	}
-
-	fn from_underliers_ref(val: &[Self::Underlier]) -> &[Self] {
-		TransparentWrapper::wrap_slice(val)
-	}
-
-	fn from_underliers_ref_mut(val: &mut [Self::Underlier]) -> &mut [Self] {
-		TransparentWrapper::wrap_slice_mut(val)
-	}
 }
 
 impl<U, F, const N: usize> PackScalar<F> for ScaledUnderlier<U, N>

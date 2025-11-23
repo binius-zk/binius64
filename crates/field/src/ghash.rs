@@ -15,7 +15,7 @@ use binius_utils::{
 	bytes::{Buf, BufMut},
 	iter::IterExtensions,
 };
-use bytemuck::{Pod, TransparentWrapper, Zeroable};
+use bytemuck::{Pod, Zeroable};
 use rand::{
 	Rng,
 	distr::{Distribution, StandardUniform},
@@ -98,56 +98,6 @@ impl BinaryField128bGhash {
 
 unsafe impl WithUnderlier for BinaryField128bGhash {
 	type Underlier = u128;
-
-	#[inline]
-	fn to_underlier(self) -> Self::Underlier {
-		TransparentWrapper::peel(self)
-	}
-
-	#[inline]
-	fn to_underlier_ref(&self) -> &Self::Underlier {
-		TransparentWrapper::peel_ref(self)
-	}
-
-	#[inline]
-	fn to_underlier_ref_mut(&mut self) -> &mut Self::Underlier {
-		TransparentWrapper::peel_mut(self)
-	}
-
-	#[inline]
-	fn to_underliers_ref(val: &[Self]) -> &[Self::Underlier] {
-		TransparentWrapper::peel_slice(val)
-	}
-
-	#[inline]
-	fn to_underliers_ref_mut(val: &mut [Self]) -> &mut [Self::Underlier] {
-		TransparentWrapper::peel_slice_mut(val)
-	}
-
-	#[inline]
-	fn from_underlier(val: Self::Underlier) -> Self {
-		TransparentWrapper::wrap(val)
-	}
-
-	#[inline]
-	fn from_underlier_ref(val: &Self::Underlier) -> &Self {
-		TransparentWrapper::wrap_ref(val)
-	}
-
-	#[inline]
-	fn from_underlier_ref_mut(val: &mut Self::Underlier) -> &mut Self {
-		TransparentWrapper::wrap_mut(val)
-	}
-
-	#[inline]
-	fn from_underliers_ref(val: &[Self::Underlier]) -> &[Self] {
-		TransparentWrapper::wrap_slice(val)
-	}
-
-	#[inline]
-	fn from_underliers_ref_mut(val: &mut [Self::Underlier]) -> &mut [Self] {
-		TransparentWrapper::wrap_slice_mut(val)
-	}
 }
 
 impl Neg for BinaryField128bGhash {

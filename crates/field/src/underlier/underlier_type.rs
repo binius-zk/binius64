@@ -2,7 +2,7 @@
 
 use std::fmt::Debug;
 
-use bytemuck::{NoUninit, Zeroable};
+use bytemuck::{NoUninit, TransparentWrapper, Zeroable};
 
 use crate::Random;
 
@@ -41,57 +41,95 @@ pub trait UnderlierType:
 /// `WithUnderlier` can be implemented for a type only if it's representation is a transparent
 /// `Underlier`'s representation. That's allows us casting references of type and it's underlier in
 /// both directions.
-pub unsafe trait WithUnderlier: Sized + Zeroable + Copy + Send + Sync + 'static {
+pub unsafe trait WithUnderlier:
+	TransparentWrapper<Self::Underlier> + Sized + Zeroable + Copy + Send + Sync + 'static
+{
 	/// Underlier primitive type
 	type Underlier: UnderlierType;
 
 	/// Convert value to underlier.
-	fn to_underlier(self) -> Self::Underlier;
+	#[inline]
+	fn to_underlier(self) -> Self::Underlier {
+		Self::peel(self)
+	}
 
-	fn to_underlier_ref(&self) -> &Self::Underlier;
+	#[inline]
+	fn to_underlier_ref(&self) -> &Self::Underlier {
+		Self::peel_ref(self)
+	}
 
-	fn to_underlier_ref_mut(&mut self) -> &mut Self::Underlier;
+	#[inline]
+	fn to_underlier_ref_mut(&mut self) -> &mut Self::Underlier {
+		Self::peel_mut(self)
+	}
 
-	fn to_underliers_ref(val: &[Self]) -> &[Self::Underlier];
+	#[inline]
+	fn to_underliers_ref(val: &[Self]) -> &[Self::Underlier] {
+		Self::peel_slice(val)
+	}
 
-	fn to_underliers_ref_mut(val: &mut [Self]) -> &mut [Self::Underlier];
+	#[inline]
+	fn to_underliers_ref_mut(val: &mut [Self]) -> &mut [Self::Underlier] {
+		Self::peel_slice_mut(val)
+	}
 
+	#[inline]
 	fn to_underliers_arr<const N: usize>(val: [Self; N]) -> [Self::Underlier; N] {
 		val.map(Self::to_underlier)
 	}
 
+	#[inline]
 	fn to_underliers_arr_ref<const N: usize>(val: &[Self; N]) -> &[Self::Underlier; N] {
 		Self::to_underliers_ref(val)
 			.try_into()
 			.expect("array size is valid")
 	}
 
+	#[inline]
 	fn to_underliers_arr_ref_mut<const N: usize>(val: &mut [Self; N]) -> &mut [Self::Underlier; N] {
 		Self::to_underliers_ref_mut(val)
 			.try_into()
 			.expect("array size is valid")
 	}
 
-	fn from_underlier(val: Self::Underlier) -> Self;
+	#[inline]
+	fn from_underlier(val: Self::Underlier) -> Self {
+		Self::wrap(val)
+	}
 
-	fn from_underlier_ref(val: &Self::Underlier) -> &Self;
+	#[inline]
+	fn from_underlier_ref(val: &Self::Underlier) -> &Self {
+		Self::wrap_ref(val)
+	}
 
-	fn from_underlier_ref_mut(val: &mut Self::Underlier) -> &mut Self;
+	#[inline]
+	fn from_underlier_ref_mut(val: &mut Self::Underlier) -> &mut Self {
+		Self::wrap_mut(val)
+	}
 
-	fn from_underliers_ref(val: &[Self::Underlier]) -> &[Self];
+	#[inline]
+	fn from_underliers_ref(val: &[Self::Underlier]) -> &[Self] {
+		Self::wrap_slice(val)
+	}
 
-	fn from_underliers_ref_mut(val: &mut [Self::Underlier]) -> &mut [Self];
+	#[inline]
+	fn from_underliers_ref_mut(val: &mut [Self::Underlier]) -> &mut [Self] {
+		Self::wrap_slice_mut(val)
+	}
 
+	#[inline]
 	fn from_underliers_arr<const N: usize>(val: [Self::Underlier; N]) -> [Self; N] {
 		val.map(Self::from_underlier)
 	}
 
+	#[inline]
 	fn from_underliers_arr_ref<const N: usize>(val: &[Self::Underlier; N]) -> &[Self; N] {
 		Self::from_underliers_ref(val)
 			.try_into()
 			.expect("array size is valid")
 	}
 
+	#[inline]
 	fn from_underliers_arr_ref_mut<const N: usize>(
 		val: &mut [Self::Underlier; N],
 	) -> &mut [Self; N] {
