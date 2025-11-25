@@ -233,6 +233,72 @@ where
 	}
 }
 
+/// Wraps a transformation on underliers to accept inputs with underliers.
+#[derive(Debug)]
+pub struct InputWrappingTransformation<Inner, Input, Output> {
+	inner: Inner,
+	_marker: PhantomData<(Input, Output)>,
+}
+
+impl<Inner, Input, Output> Transformation<Input, Output>
+	for InputWrappingTransformation<Inner, Input, Output>
+where
+	Inner: Transformation<Input::Underlier, Output>,
+	Input: WithUnderlier,
+	Output: Sync,
+{
+	#[inline]
+	fn transform(&self, data: &Input) -> Output {
+		self.inner.transform(&data.to_underlier())
+	}
+}
+
+/// Factory that wraps an underlier transformation factory to accept inputs with underliers.
+#[derive(Debug)]
+pub struct InputWrappingTransformationFactory<Inner, Input, Output> {
+	inner: Inner,
+	_marker: PhantomData<(Input, Output)>,
+}
+
+impl<Inner, Input, Output> InputWrappingTransformationFactory<Inner, Input, Output>
+where
+	Inner: LinearTransformationFactory<Input::Underlier, Output>,
+	Input: WithUnderlier,
+	Output: Sync,
+{
+	pub fn new(inner: Inner) -> Self {
+		Self {
+			inner,
+			_marker: PhantomData,
+		}
+	}
+}
+
+impl<Inner, Input, Output> LinearTransformationFactory<Input, Output>
+	for InputWrappingTransformationFactory<Inner, Input, Output>
+where
+	Inner: LinearTransformationFactory<Input::Underlier, Output>,
+	Input: WithUnderlier,
+	Output: Sync,
+{
+	type Transform = InputWrappingTransformation<Inner::Transform, Input, Output>;
+
+	#[inline]
+	fn create(&self, cols: &[Output]) -> Self::Transform {
+		InputWrappingTransformation {
+			inner: self.inner.create(cols),
+			_marker: PhantomData,
+		}
+	}
+}
+
+/// Transformation that wraps both input and output, converting between types with underliers.
+pub type WrappingTransformation<Inner, Input, Output> = OutputWrappingTransformation<
+	InputWrappingTransformation<Inner, Input, <Output as WithUnderlier>::Underlier>,
+	Input,
+	Output,
+>;
+
 /// This crates represents a type that creates a packed transformation from `Self` to a packed
 /// field based on the scalar field transformation.
 pub trait PackedTransformationFactory<OP>: PackedBinaryField
