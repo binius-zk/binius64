@@ -13,12 +13,15 @@ use binius_utils::{
 use bytemuck::Zeroable;
 
 use super::{
-	binary_field_arithmetic::TowerFieldArithmetic, error::Error, extension::ExtensionField,
+	UnderlierWithBitOps, WithUnderlier, binary_field_arithmetic::TowerFieldArithmetic,
+	error::Error, extension::ExtensionField,
 };
 use crate::{Field, underlier::U1};
 
 /// A finite field with characteristic 2.
-pub trait BinaryField: ExtensionField<BinaryField1b> {
+pub trait BinaryField:
+	ExtensionField<BinaryField1b> + WithUnderlier<Underlier: UnderlierWithBitOps>
+{
 	const N_BITS: usize = Self::DEGREE;
 	const MULTIPLICATIVE_GENERATOR: Self;
 }

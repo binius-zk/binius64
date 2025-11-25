@@ -6,7 +6,7 @@ use binius_core::{
 	verify::{eval_operand, verify_constraints},
 	word::Word,
 };
-use binius_field::{AESTowerField8b, BinaryField, Field};
+use binius_field::{AESTowerField8b, BinaryField};
 use binius_frontend::{CircuitBuilder, Wire};
 use binius_math::{
 	BinarySubspace,
@@ -210,7 +210,7 @@ fn evaluate_image<F: BinaryField>(
 }
 
 /// Compute inner product of tensor with all bits from words
-pub fn evaluate_witness<F: Field>(words: &[Word], r_j: &[F], r_y: &[F]) -> F {
+pub fn evaluate_witness<F: BinaryField>(words: &[Word], r_j: &[F], r_y: &[F]) -> F {
 	let r_j_tensor = eq_ind_partial_eval::<F>(r_j);
 	let r_y_tensor = eq_ind_partial_eval::<F>(r_y);
 
