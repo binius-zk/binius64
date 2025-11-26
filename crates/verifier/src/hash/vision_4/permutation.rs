@@ -5,10 +5,7 @@
 //! Core permutation functions for the Vision-4 cryptographic hash, operating on 4-element
 //! states over GF(2^128). Each round applies: S-box → MDS → constants → S-box → MDS → constants.
 
-use binius_field::{
-	BinaryField128bGhash as Ghash, Field,
-	byte_iteration::{ByteIteratorCallback, iterate_bytes},
-};
+use binius_field::{BinaryField128bGhash as Ghash, DivisIterable, WithUnderlier};
 use binius_math::batch_invert::BatchInversion;
 
 use super::{
@@ -24,25 +21,10 @@ pub fn linearized_b_inv_transform_scalar(x: &mut Ghash) {
 
 /// Applies linearized transformation using precomputed lookup tables for efficiency.
 pub fn linearized_transform_scalar(x: &mut Ghash, table: &'static [[Ghash; 256]; BYTES_PER_GHASH]) {
-	struct TableCallback {
-		table: &'static [[Ghash; 256]; BYTES_PER_GHASH],
-		result: Ghash,
-	}
-
-	impl ByteIteratorCallback for TableCallback {
-		fn call(&mut self, iter: impl Iterator<Item = u8>) {
-			iter.zip(self.table.iter()).for_each(|(byte, lookup)| {
-				self.result += lookup[byte as usize];
-			});
-		}
-	}
-
-	let mut callback = TableCallback {
-		table,
-		result: Ghash::ZERO,
-	};
-	iterate_bytes(std::slice::from_ref(x), &mut callback);
-	*x = callback.result;
+	*x = <u128 as DivisIterable<u8>>::divide(x.to_underlier_ref())
+		.zip(table)
+		.map(|(&byte, lookup)| lookup[byte as usize])
+		.sum();
 }
 
 /// Applies forward B-polynomial transformation to all elements in state.
