@@ -143,6 +143,7 @@ macro_rules! impl_divisible {
 		impl $crate::underlier::DivisIterable<$smaller> for $bigger {
 			type Iter<'a> = std::slice::Iter<'a, $smaller>;
 
+			#[inline]
 			fn divide(&self) -> Self::Iter<'_> {
 				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
 				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(self).iter()
@@ -153,6 +154,7 @@ macro_rules! impl_divisible {
 		impl $crate::underlier::DivisIterable<$smaller> for $bigger {
 			type Iter<'a> = std::iter::Rev<std::slice::Iter<'a, u8>>;
 
+			#[inline]
 			fn divide(&self) -> Self::Iter<'_> {
 				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
 				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(self).iter().rev()
