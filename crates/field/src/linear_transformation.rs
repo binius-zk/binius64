@@ -101,7 +101,8 @@ where
 			.chunks(BITS_PER_BYTE)
 			.map(|cols| {
 				let cols: [_; BITS_PER_BYTE] = cols.try_into().expect(
-					"chunk size is BITS_PER_BYTE; cols.len() is a multiple of BITS_PER_BYTE",
+					"chunk size is BITS_PER_BYTE; \
+					cols.len() is a multiple of BITS_PER_BYTE",
 				);
 				expand_subset_xors(cols)
 			})

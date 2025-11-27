@@ -9,10 +9,10 @@ use binius_prover::ring_switch::{
 };
 use binius_utils::checked_arithmetics::log2_strict_usize;
 use binius_verifier::config::{B1, B128};
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 
 fn bench_fold_1b_rows_for_b128(c: &mut Criterion) {
-	let mut group = c.benchmark_group("pcs/fold_1b_rows_for_b128");
+	let mut group = c.benchmark_group("fold_1b_rows_for_b128");
 
 	let log_bits = log2_strict_usize(B128::N_BITS);
 	for log_len in [12, 16] {
@@ -47,7 +47,11 @@ fn bench_fold_elems_inplace(c: &mut Criterion) {
 			let vec =
 				random_field_buffer::<B128>(&mut rng, <B128 as ExtensionField<B1>>::LOG_DEGREE);
 
-			b.iter(|| fold_elems_inplace(elems.clone(), &vec));
+			b.iter_batched(
+				|| elems.clone(),
+				|elems| fold_elems_inplace(elems, &vec),
+				BatchSize::SmallInput,
+			);
 		});
 	}
 
@@ -70,7 +74,11 @@ fn bench_fold_b128_elems_inplace(c: &mut Criterion) {
 			let vec =
 				random_field_buffer::<B128>(&mut rng, <B128 as ExtensionField<B1>>::LOG_DEGREE);
 
-			b.iter(|| fold_b128_elems_inplace(elems.clone(), &vec));
+			b.iter_batched(
+				|| elems.clone(),
+				|elems| fold_b128_elems_inplace(elems, &vec),
+				BatchSize::SmallInput,
+			);
 		});
 	}
 
@@ -78,9 +86,9 @@ fn bench_fold_b128_elems_inplace(c: &mut Criterion) {
 }
 
 criterion_group!(
-	pcs,
+	ring_switch,
 	bench_fold_1b_rows_for_b128,
 	bench_fold_elems_inplace,
 	bench_fold_b128_elems_inplace
 );
-criterion_main!(pcs);
+criterion_main!(ring_switch);

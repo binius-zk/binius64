@@ -5,7 +5,7 @@
 //! Core permutation functions for the Vision-6 cryptographic hash, operating on 6-element
 //! states over GF(2^128). Each round applies: S-box → MDS → constants → S-box → MDS → constants.
 
-use binius_field::{BinaryField128bGhash as Ghash, DivisIterable, Field, WithUnderlier};
+use binius_field::{BinaryField128bGhash as Ghash, DivisIterable, WithUnderlier};
 use binius_math::batch_invert::BatchInversion;
 
 use super::{
@@ -125,7 +125,7 @@ mod tests {
 
 	use std::array;
 
-	use binius_field::Random;
+	use binius_field::{Field, Random};
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;

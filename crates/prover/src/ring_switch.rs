@@ -3,14 +3,14 @@
 use std::{iter, ops::Deref};
 
 use binius_field::{
-	BinaryField, ExtensionField, Field, PackedExtension, PackedField,
-	byte_iteration::{
-		ByteIteratorCallback, can_iterate_bytes, create_partial_sums_lookup_tables, iterate_bytes,
+	BinaryField, DivisIterable, ExtensionField, Field, PackedExtension, PackedField,
+	linear_transformation::{
+		BytewiseLookupTransformationFactory, InputWrappingTransformationFactory,
+		LinearTransformationFactory, OutputWrappingTransformationFactory, Transformation,
 	},
 };
 use binius_math::{
-	FieldBuffer, inner_product::inner_product_subfield, multilinear::eq::eq_ind_partial_eval,
-	span::expand_subset_sums_array,
+	FieldBuffer, multilinear::eq::eq_ind_partial_eval, span::expand_subset_sums_array,
 };
 use binius_utils::{
 	checked_arithmetics::{checked_int_div, checked_log_2},
@@ -37,7 +37,11 @@ use itertools::izip;
 /// * the length of batching challenges must equal `FE::LOG_DEGREE`
 ///
 /// [DP24]: <https://eprint.iacr.org/2024/504>
-pub fn rs_eq_ind<F: BinaryField>(batching_challenges: &[F], z_vals: &[F]) -> FieldBuffer<F> {
+pub fn rs_eq_ind<F>(batching_challenges: &[F], z_vals: &[F]) -> FieldBuffer<F>
+where
+	F: BinaryField,
+	F::Underlier: DivisIterable<u8>,
+{
 	assert_eq!(batching_challenges.len(), F::LOG_DEGREE);
 
 	let z_vals_eq_ind = eq_ind_partial_eval::<F>(z_vals);
@@ -47,57 +51,42 @@ pub fn rs_eq_ind<F: BinaryField>(batching_challenges: &[F], z_vals: &[F]) -> Fie
 
 /// Transforms a [`FieldBuffer`] by mapping every scalar to the inner product of its B1 components
 /// and a given vector of field elements.
-//
+///
+/// ## Arguments
+///
+/// * `elems` - the buffer of `F` elements to transform
+/// * `vec` - the vector of `F` field elements (must have length equal to extension degree)
+///
+/// ## Returns
+///
+/// The transformed buffer with each element replaced by its inner product result
+///
 /// ## Preconditions
+///
 /// * `vec` has length equal to the extension degree of `F` over `B1`
 pub fn fold_elems_inplace<F, P>(mut elems: FieldBuffer<P>, vec: &FieldBuffer<F>) -> FieldBuffer<P>
 where
 	F: BinaryField,
+	F::Underlier: DivisIterable<u8>,
 	P: PackedField<Scalar = F>,
 {
 	assert_eq!(vec.log_len(), F::LOG_DEGREE); // precondition
 
-	let lookup_table = if can_iterate_bytes::<F>() {
-		create_partial_sums_lookup_tables::<F>(vec.as_ref())
-	} else {
-		Vec::new()
-	};
+	// Create transformation factory with proper wrapping
+	let factory = OutputWrappingTransformationFactory::new(
+		InputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory),
+	);
 
+	// Create the transformation from the vector
+	let transform = factory.create(vec.as_ref());
+
+	// Apply transformation to each scalar in each packed element
 	elems.as_mut().par_iter_mut().for_each(|packed_elem| {
-		*packed_elem = P::from_scalars(packed_elem.into_iter().map(|scalar| {
-			// The first branch is an optimized version of the second one for the case
-			// when `F` can be byte-iterated.
-			if can_iterate_bytes::<F>() {
-				struct Callback<'a, F: Field> {
-					accumulator: F,
-					lookup_table: &'a [F],
-				}
-
-				impl<'a, F: Field> ByteIteratorCallback for Callback<'a, F> {
-					fn call(&mut self, bytes: impl Iterator<Item = u8>) {
-						assert_eq!(self.lookup_table.len(), 256 * std::mem::size_of::<F>());
-
-						for (i, byte) in bytes.enumerate() {
-							self.accumulator +=
-								// Safety: the size of the table is checked by the assert above
-								unsafe {
-								*self.lookup_table.get_unchecked(i * 256 + (byte as usize))
-							};
-						}
-					}
-				}
-
-				let mut callback = Callback {
-					accumulator: F::ZERO,
-					lookup_table: &lookup_table,
-				};
-				iterate_bytes(&[scalar], &mut callback);
-				callback.accumulator
-			} else {
-				// Fallback to the inner product with the basis elements.
-				inner_product_subfield(scalar.into_iter_bases(), vec.as_ref().iter().copied())
-			}
-		}));
+		*packed_elem = P::from_scalars(
+			packed_elem
+				.into_iter()
+				.map(|scalar| transform.transform(&scalar)),
+		);
 	});
 
 	elems
@@ -321,7 +310,7 @@ mod test {
 	};
 	use binius_math::{
 		FieldBuffer,
-		inner_product::inner_product_buffers,
+		inner_product::{inner_product_buffers, inner_product_subfield},
 		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate_inplace},
 		test_utils::{index_to_hypercube_point, random_field_buffer, random_scalars},
 	};
