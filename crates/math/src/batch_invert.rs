@@ -177,34 +177,51 @@ impl<P: PackedField> BatchInversion<P> {
 	}
 }
 
+/// Computes element-wise products of top and bottom halves.
+///
+/// Pairs `input[i]` with `input[half + i]` for parallel efficiency.
+/// For odd-length inputs, the middle element is copied through.
 #[inline]
 fn product_layer<P: PackedField>(input: &[P], output: &mut [P]) {
 	debug_assert_eq!(output.len(), input.len().div_ceil(2));
 
-	let (in_pairs, in_remaining) = input.as_chunks::<2>();
-	let (out_head, out_remaining) = output.split_at_mut(in_pairs.len());
-	for (out_i, [in_lhs, in_rhs]) in iter::zip(out_head, in_pairs) {
-		*out_i = *in_lhs * *in_rhs;
+	let (lo, hi) = input.split_at(output.len());
+	let mut out_lo_iter = iter::zip(output, lo);
+
+	if hi.len() < out_lo_iter.len() {
+		let Some((out_i, lo_i)) = out_lo_iter.next_back() else {
+			unreachable!("out_lo_iter.len() must be greater than zero");
+		};
+		*out_i = *lo_i;
 	}
-	if !out_remaining.is_empty() {
-		out_remaining[0] = in_remaining[0];
+	for ((out_i, &lo_i), &hi_i) in iter::zip(out_lo_iter, hi) {
+		*out_i = lo_i * hi_i;
 	}
 }
 
+/// Unwinds product_layer to recover individual inverses.
+///
+/// Given inverted products and original values, recovers:
+/// - `output[i] = input[i] * output[half + i]` (inverse of lo half element)
+/// - `output[half + i] = input[i] * output[i]` (inverse of hi half element)
 #[inline]
 fn unproduct_layer<P: PackedField>(input: &[P], output: &mut [P]) {
 	debug_assert_eq!(input.len(), output.len().div_ceil(2));
 
-	let (out_pairs, out_remaining) = output.as_chunks_mut::<2>();
-	let (in_head, in_remaining) = input.split_at(out_pairs.len());
-	for (in_i, [out_lhs, out_rhs]) in iter::zip(in_head, out_pairs) {
-		let out_lhs_tmp = *out_lhs;
-		let out_rhs_tmp = *out_rhs;
-		*out_lhs = *in_i * out_rhs_tmp;
-		*out_rhs = *in_i * out_lhs_tmp;
+	let (lo, hi) = output.split_at_mut(input.len());
+	let mut lo_in_iter = iter::zip(lo, input);
+
+	if hi.len() < lo_in_iter.len() {
+		let Some((lo_i, in_i)) = lo_in_iter.next_back() else {
+			unreachable!("out_lo_iter.len() must be greater than zero");
+		};
+		*lo_i = *in_i;
 	}
-	if !out_remaining.is_empty() {
-		out_remaining[0] = in_remaining[0];
+	for ((lo_i, &in_i), hi_i) in iter::zip(lo_in_iter, hi) {
+		let lo_tmp = *lo_i;
+		let hi_tmp = *hi_i;
+		*lo_i = in_i * hi_tmp;
+		*hi_i = in_i * lo_tmp;
 	}
 }
 
