@@ -3,7 +3,7 @@
 
 use std::iter;
 
-use binius_field::Field;
+use binius_field::{Field, PackedField};
 
 /// Reusable batch inversion context that owns its scratch buffers.
 ///
@@ -19,21 +19,26 @@ use binius_field::Field;
 /// let mut elements = [BinaryField128bGhash::ONE; 8];
 /// inverter.invert_or_zero(&mut elements);
 /// ```
-pub struct BatchInversion<F: Field> {
+pub struct BatchInversion<P: PackedField> {
 	n: usize,
-	scratchpad: Vec<F>,
+	scratchpad: Vec<P>,
 	is_zero: Vec<bool>,
+	/// Nested inverter for handling the base case when WIDTH > 1.
+	/// When we recurse down to a single packed element, we need to
+	/// batch-invert its WIDTH scalar elements.
+	scalar_inverter: Option<Box<BatchInversion<P::Scalar>>>,
 }
 
-impl<F: Field> BatchInversion<F> {
+impl<P: PackedField> BatchInversion<P> {
 	/// Creates a new batch inversion context for slices of size `n`.
 	///
 	/// Allocates the necessary scratch space:
 	/// - `scratchpad`: Storage for intermediate products during recursion
-	/// - `is_zero`: Tracking vector for zero elements
+	/// - `is_zero`: Tracking vector for zero elements (one per scalar)
+	/// - `scalar_inverter`: Nested inverter for base case when WIDTH > 1
 	///
 	/// # Parameters
-	/// - `n`: The size of slices this instance will handle
+	/// - `n`: The number of packed elements this instance will handle
 	///
 	/// # Panics
 	/// Panics if `n` is 0.
@@ -41,10 +46,16 @@ impl<F: Field> BatchInversion<F> {
 		assert!(n > 0, "n must be greater than 0");
 
 		let scratchpad_size = min_scratchpad_size(n);
+		let scalar_inverter = if P::WIDTH > 1 {
+			Some(Box::new(BatchInversion::<P::Scalar>::new(P::WIDTH)))
+		} else {
+			None
+		};
 		Self {
 			n,
-			scratchpad: vec![F::ZERO; scratchpad_size],
-			is_zero: vec![false; n],
+			scratchpad: vec![P::zero(); scratchpad_size],
+			is_zero: vec![false; n * P::WIDTH],
+			scalar_inverter,
 		}
 	}
 
@@ -54,11 +65,11 @@ impl<F: Field> BatchInversion<F> {
 	/// - `elements`: Mutable slice to invert in-place
 	///
 	/// # Preconditions
-	/// All elements must be non-zero. Behavior is undefined if any element is zero.
+	/// All scalar elements must be non-zero. Behavior is undefined if any scalar is zero.
 	///
 	/// # Panics
 	/// Panics if `elements.len() != n` (the size specified at construction).
-	pub fn invert_nonzero(&mut self, elements: &mut [F]) {
+	pub fn invert_nonzero(&mut self, elements: &mut [P]) {
 		assert_eq!(
 			elements.len(),
 			self.n,
@@ -67,12 +78,12 @@ impl<F: Field> BatchInversion<F> {
 			elements.len()
 		);
 
-		batch_invert_nonzero(elements, &mut self.scratchpad);
+		self.batch_invert_nonzero(elements);
 	}
 
 	/// Inverts elements in-place, handling zeros gracefully.
 	///
-	/// Zero elements remain zero after inversion, while non-zero elements
+	/// Zero scalar elements remain zero after inversion, while non-zero scalars
 	/// are replaced with their multiplicative inverses.
 	///
 	/// # Parameters
@@ -80,7 +91,7 @@ impl<F: Field> BatchInversion<F> {
 	///
 	/// # Panics
 	/// Panics if `elements.len() != n` (the size specified at construction).
-	pub fn invert_or_zero(&mut self, elements: &mut [F]) {
+	pub fn invert_or_zero(&mut self, elements: &mut [P]) {
 		assert_eq!(
 			elements.len(),
 			self.n,
@@ -89,23 +100,30 @@ impl<F: Field> BatchInversion<F> {
 			elements.len()
 		);
 
-		// Mark zeros and replace with ones
-		for (element_i, is_zero_i) in iter::zip(&mut *elements, &mut self.is_zero) {
-			if *element_i == F::ZERO {
-				*element_i = F::ONE;
-				*is_zero_i = true;
-			} else {
-				*is_zero_i = false;
+		// Mark zeros at scalar level and replace with ones
+		for (packed_idx, packed) in elements.iter_mut().enumerate() {
+			for lane in 0..P::WIDTH {
+				let scalar_idx = packed_idx * P::WIDTH + lane;
+				let scalar = packed.get(lane);
+				if scalar == P::Scalar::ZERO {
+					packed.set(lane, P::Scalar::ONE);
+					self.is_zero[scalar_idx] = true;
+				} else {
+					self.is_zero[scalar_idx] = false;
+				}
 			}
 		}
 
 		// Perform inversion on non-zero elements
 		self.invert_nonzero(elements);
 
-		// Restore zeros
-		for (element_i, is_zero_i) in iter::zip(elements, &self.is_zero) {
-			if *is_zero_i {
-				*element_i = F::ZERO;
+		// Restore zeros at scalar level
+		for (packed_idx, packed) in elements.iter_mut().enumerate() {
+			for lane in 0..P::WIDTH {
+				let scalar_idx = packed_idx * P::WIDTH + lane;
+				if self.is_zero[scalar_idx] {
+					packed.set(lane, P::Scalar::ZERO);
+				}
 			}
 		}
 	}
@@ -122,27 +140,45 @@ fn min_scratchpad_size(mut n: usize) -> usize {
 	size
 }
 
-fn batch_invert_nonzero<F: Field>(elements: &mut [F], scratchpad: &mut [F]) {
-	debug_assert!(!elements.is_empty());
-
-	if elements.len() == 1 {
-		let element = elements.first_mut().expect("len == 1");
-		let inv = element
-			.invert()
-			.expect("precondition: elements contains no zeros");
-		*element = inv;
-		return;
+impl<P: PackedField> BatchInversion<P> {
+	fn batch_invert_nonzero(&mut self, elements: &mut [P]) {
+		self.batch_invert_nonzero_with_scratchpad(elements, &mut self.scratchpad.clone());
 	}
 
-	let next_layer_len = elements.len().div_ceil(2);
-	let (next_layer, remaining) = scratchpad.split_at_mut(next_layer_len);
-	product_layer(elements, next_layer);
-	batch_invert_nonzero(next_layer, remaining);
-	unproduct_layer(next_layer, elements);
+	fn batch_invert_nonzero_with_scratchpad(&mut self, elements: &mut [P], scratchpad: &mut [P]) {
+		debug_assert!(!elements.is_empty());
+
+		if elements.len() == 1 {
+			let packed = &mut elements[0];
+			if P::WIDTH == 1 {
+				// Direct scalar inversion
+				let scalar = packed.get(0);
+				let inv = scalar
+					.invert()
+					.expect("precondition: elements contains no zeros");
+				packed.set(0, inv);
+			} else {
+				// Unpack, batch invert scalars, repack
+				let mut scalars = packed.into_iter().collect::<Vec<_>>();
+				self.scalar_inverter
+					.as_mut()
+					.expect("scalar_inverter must be Some when WIDTH > 1")
+					.invert_nonzero(&mut scalars);
+				*packed = P::from_scalars(scalars);
+			}
+			return;
+		}
+
+		let next_layer_len = elements.len().div_ceil(2);
+		let (next_layer, remaining) = scratchpad.split_at_mut(next_layer_len);
+		product_layer(elements, next_layer);
+		self.batch_invert_nonzero_with_scratchpad(next_layer, remaining);
+		unproduct_layer(next_layer, elements);
+	}
 }
 
 #[inline]
-fn product_layer<F: Field>(input: &[F], output: &mut [F]) {
+fn product_layer<P: PackedField>(input: &[P], output: &mut [P]) {
 	debug_assert_eq!(output.len(), input.len().div_ceil(2));
 
 	let (in_pairs, in_remaining) = input.as_chunks::<2>();
@@ -156,7 +192,7 @@ fn product_layer<F: Field>(input: &[F], output: &mut [F]) {
 }
 
 #[inline]
-fn unproduct_layer<F: Field>(input: &[F], output: &mut [F]) {
+fn unproduct_layer<P: PackedField>(input: &[P], output: &mut [P]) {
 	debug_assert_eq!(input.len(), output.len().div_ceil(2));
 
 	let (out_pairs, out_remaining) = output.as_chunks_mut::<2>();
@@ -202,7 +238,10 @@ mod tests {
 			}
 		}
 
-		let expected: Vec<Ghash> = state.iter().map(|x| x.invert_or_zero()).collect();
+		let expected: Vec<Ghash> = state
+			.iter()
+			.map(|x| InvertOrZero::invert_or_zero(*x))
+			.collect();
 
 		inverter.invert_or_zero(&mut state);
 
@@ -220,7 +259,10 @@ mod tests {
 			state.push(Ghash::random(&mut *rng));
 		}
 
-		let expected: Vec<Ghash> = state.iter().map(|x| x.invert_or_zero()).collect();
+		let expected: Vec<Ghash> = state
+			.iter()
+			.map(|x| InvertOrZero::invert_or_zero(*x))
+			.collect();
 
 		let mut inverter = BatchInversion::<Ghash>::new(n);
 		inverter.invert_nonzero(&mut state);
@@ -252,5 +294,39 @@ mod tests {
 		for n_zeros in 0..=8 {
 			invert_with_inverter(&mut inverter, 8, n_zeros, &mut rng);
 		}
+	}
+
+	/// Test batch inversion with a packed field (WIDTH > 1)
+	#[test]
+	fn test_batch_inversion_packed() {
+		use crate::test_utils::Packed128b;
+
+		let mut rng = StdRng::seed_from_u64(0);
+		const N: usize = 4;
+
+		// Create packed elements with some zeros at various positions
+		let mut state: Vec<Packed128b> = (0..N)
+			.map(|i| {
+				Packed128b::from_fn(|lane| {
+					// Put zeros at specific positions
+					if (i == 1 && lane == 0) || (i == 2 && lane == 2) {
+						Ghash::ZERO
+					} else {
+						Ghash::random(&mut rng)
+					}
+				})
+			})
+			.collect();
+
+		// Compute expected by inverting each scalar
+		let expected: Vec<Packed128b> = state
+			.iter()
+			.map(|packed| Packed128b::from_scalars(packed.iter().map(InvertOrZero::invert_or_zero)))
+			.collect();
+
+		let mut inverter = BatchInversion::<Packed128b>::new(N);
+		inverter.invert_or_zero(&mut state);
+
+		assert_eq!(state, expected);
 	}
 }
