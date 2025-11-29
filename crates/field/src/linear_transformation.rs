@@ -129,7 +129,7 @@ where
 				// - lookup.len() == 2^(UIn::LOG_BITS - LOG_BITS_PER_BYTE) by struct invariant
 				// - take limits iteration calls to 2^(UIn::LOG_BITS - LOG_BITS_PER_BYTE)
 				let lookup = unsafe { self.lookup.get_unchecked(i) };
-				lookup[*byte as usize]
+				lookup[byte as usize]
 			})
 			.reduce(BitXor::bitxor)
 			.unwrap_or(UOut::ZERO)
