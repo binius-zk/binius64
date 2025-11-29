@@ -1,22 +1,9 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use super::{BinaryField128bGhash, PackedField};
 pub use crate::arch::{
 	packed_ghash_128::PackedBinaryGhash1x128b, packed_ghash_256::PackedBinaryGhash2x128b,
 	packed_ghash_512::PackedBinaryGhash4x128b,
 };
-
-// TODO: move to PackedField for an optimized SIMD version
-#[inline]
-pub fn mul_x<P: PackedField<Scalar = BinaryField128bGhash>>(x: P) -> P {
-	P::from_scalars(x.iter().map(|scalar| scalar.mul_x()))
-}
-
-// TODO: move to PackedField for an optimized SIMD version
-#[inline]
-pub fn mul_inv_x<P: PackedField<Scalar = BinaryField128bGhash>>(x: P) -> P {
-	P::from_scalars(x.iter().map(|scalar| scalar.mul_inv_x()))
-}
 
 #[cfg(test)]
 mod test_utils {
