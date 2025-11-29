@@ -97,13 +97,10 @@ pub trait UnderlierWithBitOps:
 	unsafe fn set_subvalue<T>(&mut self, i: usize, val: T)
 	where
 		T: UnderlierWithBitOps,
-		Self: From<T>,
+		Self: Divisible<T>,
 	{
 		debug_assert!(i < checked_int_div(Self::BITS, T::BITS));
-		let mask = Self::from(single_element_mask::<T>());
-
-		*self &= !(mask << (i * T::BITS));
-		*self |= Self::from(val) << (i * T::BITS);
+		*self = (*self).set(i, val);
 	}
 
 	/// Spread takes a block of sub_elements of `T` type within the current value and
@@ -154,16 +151,6 @@ pub trait UnderlierWithBitOps:
 	fn unpack_hi_128b_lanes(self, other: Self, log_block_len: usize) -> Self {
 		unpack_hi_128b_fallback(self, other, log_block_len)
 	}
-}
-
-/// Returns a bit mask for a single `T` element inside underlier type.
-/// This function is completely optimized out by the compiler in release version
-/// because all the values are known at compile time.
-fn single_element_mask<T>() -> T
-where
-	T: UnderlierWithBitOps,
-{
-	single_element_mask_bits(T::BITS)
 }
 
 /// A helper function to apply unpack_lo/hi_128b_lanes for two values in an array
