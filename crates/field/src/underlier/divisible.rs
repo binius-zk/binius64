@@ -78,7 +78,7 @@ unsafe impl<U: UnderlierType> Divisible<U> for U {
 /// This abstraction allows code to work with subdivided underliers in a platform-independent way
 /// while maintaining the invariant that the first element always represents the least significant
 /// portion of the value.
-pub trait DivisIterable<T> {
+pub trait DivisIterable<T>: Copy {
 	type Iter<'a>: ExactSizeIterator<Item = &'a T>
 	where
 		Self: 'a,
@@ -86,6 +86,12 @@ pub trait DivisIterable<T> {
 
 	/// Returns an iterator over subdivisions of this underlier, ordered from LSB to MSB.
 	fn divide(&self) -> Self::Iter<'_>;
+
+	/// Get element at index (LSB-first ordering).
+	fn get(self, index: usize) -> T;
+
+	/// Set element at index (LSB-first ordering), returning modified value.
+	fn set(self, index: usize, val: T) -> Self;
 }
 
 macro_rules! impl_divisible {
@@ -148,16 +154,44 @@ macro_rules! impl_divisible {
 				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
 				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(self).iter()
 			}
+
+			#[inline]
+			fn get(self, index: usize) -> $smaller {
+				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
+				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(&self)[index]
+			}
+
+			#[inline]
+			fn set(self, index: usize, val: $smaller) -> Self {
+				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
+				let mut arr = *::bytemuck::must_cast_ref::<Self, [$smaller; N]>(&self);
+				arr[index] = val;
+				::bytemuck::must_cast(arr)
+			}
 		}
 
 		#[cfg(target_endian = "big")]
 		impl $crate::underlier::DivisIterable<$smaller> for $bigger {
-			type Iter<'a> = std::iter::Rev<std::slice::Iter<'a, u8>>;
+			type Iter<'a> = std::iter::Rev<std::slice::Iter<'a, $smaller>>;
 
 			#[inline]
 			fn divide(&self) -> Self::Iter<'_> {
 				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
 				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(self).iter().rev()
+			}
+
+			#[inline]
+			fn get(self, index: usize) -> $smaller {
+				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
+				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(&self)[N - 1 - index]
+			}
+
+			#[inline]
+			fn set(self, index: usize, val: $smaller) -> Self {
+				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
+				let mut arr = *::bytemuck::must_cast_ref::<Self, [$smaller; N]>(&self);
+				arr[N - 1 - index] = val;
+				::bytemuck::must_cast(arr)
 			}
 		}
     };
