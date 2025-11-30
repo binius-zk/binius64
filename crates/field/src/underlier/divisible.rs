@@ -79,18 +79,31 @@ unsafe impl<U: UnderlierType> Divisible<U> for U {
 /// while maintaining the invariant that the first element always represents the least significant
 /// portion of the value.
 pub trait DivisIterable<T>: Copy {
+	/// The number of `T` elements that fit in `Self`.
+	const N: usize;
+
 	type Iter<'a>: ExactSizeIterator<Item = T>
 	where
 		Self: 'a,
 		T: 'a;
 
 	/// Returns an iterator over subdivisions of this underlier, ordered from LSB to MSB.
+	///
+	/// The iterator yields exactly [`Self::N`] elements.
 	fn divide(&self) -> Self::Iter<'_>;
 
 	/// Get element at index (LSB-first ordering).
+	///
+	/// # Panics
+	///
+	/// Panics if `index >= Self::N`.
 	fn get(self, index: usize) -> T;
 
 	/// Set element at index (LSB-first ordering), returning modified value.
+	///
+	/// # Panics
+	///
+	/// Panics if `index >= Self::N`.
 	fn set(self, index: usize, val: T) -> Self;
 }
 
@@ -203,6 +216,8 @@ macro_rules! impl_divisible {
 
 		#[cfg(target_endian = "little")]
 		impl $crate::underlier::DivisIterable<$smaller> for $bigger {
+			const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
+
 			type Iter<'a> = std::iter::Copied<std::slice::Iter<'a, $smaller>>;
 
 			#[inline]
@@ -228,6 +243,8 @@ macro_rules! impl_divisible {
 
 		#[cfg(target_endian = "big")]
 		impl $crate::underlier::DivisIterable<$smaller> for $bigger {
+			const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
+
 			type Iter<'a> = std::iter::Copied<std::iter::Rev<std::slice::Iter<'a, $smaller>>>;
 
 			#[inline]
@@ -256,6 +273,8 @@ macro_rules! impl_divisible {
 	// Uses direct shifting/masking on the bigger type
 	(@small_pair $bigger:ty, $bits:expr) => {
 		impl $crate::underlier::DivisIterable<$crate::underlier::SmallU<$bits>> for $bigger {
+			const N: usize = <$bigger>::BITS as usize / $bits;
+
 			type Iter<'a> = $crate::underlier::SmallUDivisIter<
 				<$bigger as $crate::underlier::DivisIterable<u8>>::Iter<'a>,
 				$bits
@@ -306,6 +325,8 @@ impl_divisible!(u128, u64, u32, u16, u8);
 macro_rules! impl_divisible_u8_small {
 	($bits:expr) => {
 		impl DivisIterable<SmallU<$bits>> for u8 {
+			const N: usize = 8 / $bits;
+
 			type Iter<'a> = SmallUDivisIter<std::iter::Once<u8>, $bits>;
 
 			#[inline]
