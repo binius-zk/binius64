@@ -298,6 +298,42 @@ pub mod bitmask {
 	}
 }
 
+/// Helper functions for DivisIterable implementations using the get method.
+///
+/// These functions create iterators by mapping indices through `DivisIterable::get`,
+/// useful for SIMD types where extract intrinsics provide efficient element access.
+pub mod mapget {
+	use super::DivisIterable;
+	use binius_utils::iter::IterExtensions;
+
+	/// Create an iterator over subdivisions by mapping get over indices.
+	#[inline]
+	pub fn value_iter<Big, Small>(value: Big) -> impl ExactSizeIterator<Item = Small> + Send + Clone
+	where
+		Big: DivisIterable<Small> + Send,
+		Small: Send,
+	{
+		(0..Big::N).map_skippable(move |i| DivisIterable::<Small>::get(value, i))
+	}
+
+	/// Create a slice iterator by computing global index and using get.
+	#[inline]
+	pub fn slice_iter<Big, Small>(
+		slice: &[Big],
+	) -> impl ExactSizeIterator<Item = Small> + Send + Clone + '_
+	where
+		Big: DivisIterable<Small> + Send + Sync,
+		Small: Send,
+	{
+		let total = slice.len() * Big::N;
+		(0..total).map_skippable(move |global_idx| {
+			let elem_idx = global_idx / Big::N;
+			let sub_idx = global_idx % Big::N;
+			DivisIterable::<Small>::get(slice[elem_idx], sub_idx)
+		})
+	}
+}
+
 /// Iterator for dividing an underlier into sub-byte elements (SmallU<N>).
 ///
 /// This iterator wraps a byte iterator and extracts sub-byte elements from each byte.

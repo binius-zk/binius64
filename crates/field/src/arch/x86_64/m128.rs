@@ -31,9 +31,9 @@ use crate::{
 	},
 	arithmetic_traits::Broadcast,
 	underlier::{
-		NumCast, SmallU, SpreadToByte, U1, U2, U4, UnderlierType, UnderlierWithBitOps,
-		WithUnderlier, impl_divis_iterable_bitmask, impl_divis_iterable_memcast, impl_divisible,
-		impl_iteration, spread_fallback, unpack_hi_128b_fallback, unpack_lo_128b_fallback,
+		DivisIterable, NumCast, SmallU, SpreadToByte, U1, U2, U4, UnderlierType, UnderlierWithBitOps,
+		WithUnderlier, impl_divis_iterable_bitmask, impl_divisible, impl_iteration, mapget,
+		spread_fallback, unpack_hi_128b_fallback, unpack_lo_128b_fallback,
 	},
 };
 
@@ -145,7 +145,6 @@ impl DeserializeBytes for M128 {
 }
 
 impl_divisible!(@pairs M128, u128, u64, u32, u16, u8);
-impl_divis_iterable_memcast!(M128, u128, u64, u32, u16, u8);
 impl_divis_iterable_bitmask!(M128, 1, 2, 4);
 impl_pack_scalar!(M128);
 
@@ -950,6 +949,247 @@ unsafe fn interleave_bits_imm<const BLOCK_LEN: i32>(
 		let a_prime = _mm_xor_si128(a, _mm_slli_epi64::<BLOCK_LEN>(t));
 		let b_prime = _mm_xor_si128(b, t);
 		(a_prime, b_prime)
+	}
+}
+
+// DivisIterable implementations using SIMD extract/insert intrinsics
+
+impl DivisIterable<u128> for M128 {
+	const LOG_N: usize = 0;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u128> + Send + Clone {
+		std::iter::once(u128::from(value))
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u128> + Send + Clone + '_ {
+		std::iter::once(u128::from(*value))
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u128> + Send + Clone + '_ {
+		slice.iter().map(|&v| u128::from(v))
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u128 {
+		assert!(index == 0, "index out of bounds");
+		u128::from(self)
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u128) -> Self {
+		assert!(index == 0, "index out of bounds");
+		Self::from(val)
+	}
+}
+
+impl DivisIterable<u64> for M128 {
+	const LOG_N: usize = 1;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u64> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u64> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u64> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u64 {
+		unsafe {
+			match index {
+				0 => _mm_extract_epi64(self.0, 0) as u64,
+				1 => _mm_extract_epi64(self.0, 1) as u64,
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u64) -> Self {
+		unsafe {
+			match index {
+				0 => Self(_mm_insert_epi64(self.0, val as i64, 0)),
+				1 => Self(_mm_insert_epi64(self.0, val as i64, 1)),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+}
+
+impl DivisIterable<u32> for M128 {
+	const LOG_N: usize = 2;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u32> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u32> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u32> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u32 {
+		unsafe {
+			match index {
+				0 => _mm_extract_epi32(self.0, 0) as u32,
+				1 => _mm_extract_epi32(self.0, 1) as u32,
+				2 => _mm_extract_epi32(self.0, 2) as u32,
+				3 => _mm_extract_epi32(self.0, 3) as u32,
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u32) -> Self {
+		unsafe {
+			match index {
+				0 => Self(_mm_insert_epi32(self.0, val as i32, 0)),
+				1 => Self(_mm_insert_epi32(self.0, val as i32, 1)),
+				2 => Self(_mm_insert_epi32(self.0, val as i32, 2)),
+				3 => Self(_mm_insert_epi32(self.0, val as i32, 3)),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+}
+
+impl DivisIterable<u16> for M128 {
+	const LOG_N: usize = 3;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u16> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u16> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u16> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u16 {
+		unsafe {
+			match index {
+				0 => _mm_extract_epi16(self.0, 0) as u16,
+				1 => _mm_extract_epi16(self.0, 1) as u16,
+				2 => _mm_extract_epi16(self.0, 2) as u16,
+				3 => _mm_extract_epi16(self.0, 3) as u16,
+				4 => _mm_extract_epi16(self.0, 4) as u16,
+				5 => _mm_extract_epi16(self.0, 5) as u16,
+				6 => _mm_extract_epi16(self.0, 6) as u16,
+				7 => _mm_extract_epi16(self.0, 7) as u16,
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u16) -> Self {
+		unsafe {
+			match index {
+				0 => Self(_mm_insert_epi16(self.0, val as i32, 0)),
+				1 => Self(_mm_insert_epi16(self.0, val as i32, 1)),
+				2 => Self(_mm_insert_epi16(self.0, val as i32, 2)),
+				3 => Self(_mm_insert_epi16(self.0, val as i32, 3)),
+				4 => Self(_mm_insert_epi16(self.0, val as i32, 4)),
+				5 => Self(_mm_insert_epi16(self.0, val as i32, 5)),
+				6 => Self(_mm_insert_epi16(self.0, val as i32, 6)),
+				7 => Self(_mm_insert_epi16(self.0, val as i32, 7)),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+}
+
+impl DivisIterable<u8> for M128 {
+	const LOG_N: usize = 4;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u8> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u8> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u8> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u8 {
+		unsafe {
+			match index {
+				0 => _mm_extract_epi8(self.0, 0) as u8,
+				1 => _mm_extract_epi8(self.0, 1) as u8,
+				2 => _mm_extract_epi8(self.0, 2) as u8,
+				3 => _mm_extract_epi8(self.0, 3) as u8,
+				4 => _mm_extract_epi8(self.0, 4) as u8,
+				5 => _mm_extract_epi8(self.0, 5) as u8,
+				6 => _mm_extract_epi8(self.0, 6) as u8,
+				7 => _mm_extract_epi8(self.0, 7) as u8,
+				8 => _mm_extract_epi8(self.0, 8) as u8,
+				9 => _mm_extract_epi8(self.0, 9) as u8,
+				10 => _mm_extract_epi8(self.0, 10) as u8,
+				11 => _mm_extract_epi8(self.0, 11) as u8,
+				12 => _mm_extract_epi8(self.0, 12) as u8,
+				13 => _mm_extract_epi8(self.0, 13) as u8,
+				14 => _mm_extract_epi8(self.0, 14) as u8,
+				15 => _mm_extract_epi8(self.0, 15) as u8,
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u8) -> Self {
+		unsafe {
+			match index {
+				0 => Self(_mm_insert_epi8(self.0, val as i32, 0)),
+				1 => Self(_mm_insert_epi8(self.0, val as i32, 1)),
+				2 => Self(_mm_insert_epi8(self.0, val as i32, 2)),
+				3 => Self(_mm_insert_epi8(self.0, val as i32, 3)),
+				4 => Self(_mm_insert_epi8(self.0, val as i32, 4)),
+				5 => Self(_mm_insert_epi8(self.0, val as i32, 5)),
+				6 => Self(_mm_insert_epi8(self.0, val as i32, 6)),
+				7 => Self(_mm_insert_epi8(self.0, val as i32, 7)),
+				8 => Self(_mm_insert_epi8(self.0, val as i32, 8)),
+				9 => Self(_mm_insert_epi8(self.0, val as i32, 9)),
+				10 => Self(_mm_insert_epi8(self.0, val as i32, 10)),
+				11 => Self(_mm_insert_epi8(self.0, val as i32, 11)),
+				12 => Self(_mm_insert_epi8(self.0, val as i32, 12)),
+				13 => Self(_mm_insert_epi8(self.0, val as i32, 13)),
+				14 => Self(_mm_insert_epi8(self.0, val as i32, 14)),
+				15 => Self(_mm_insert_epi8(self.0, val as i32, 15)),
+				_ => panic!("index out of bounds"),
+			}
+		}
 	}
 }
 
