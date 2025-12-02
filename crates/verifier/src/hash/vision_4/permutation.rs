@@ -21,9 +21,9 @@ pub fn linearized_b_inv_transform_scalar(x: &mut Ghash) {
 
 /// Applies linearized transformation using precomputed lookup tables for efficiency.
 pub fn linearized_transform_scalar(x: &mut Ghash, table: &'static [[Ghash; 256]; BYTES_PER_GHASH]) {
-	*x = <u128 as DivisIterable<u8>>::divide(x.to_underlier_ref())
+	*x = <u128 as DivisIterable<u8>>::ref_iter(x.to_underlier_ref())
 		.zip(table)
-		.map(|(&byte, lookup)| lookup[byte as usize])
+		.map(|(byte, lookup)| lookup[byte as usize])
 		.sum();
 }
 

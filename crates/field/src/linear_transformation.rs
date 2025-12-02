@@ -121,7 +121,7 @@ where
 	UOut: UnderlierWithBitOps,
 {
 	fn transform(&self, data: &UIn) -> UOut {
-		data.divide()
+		DivisIterable::<u8>::ref_iter(data)
 			.enumerate()
 			.take(1 << (UIn::LOG_BITS - LOG_BITS_PER_BYTE))
 			.map(|(i, byte)| {

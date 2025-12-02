@@ -79,18 +79,20 @@ unsafe impl<U: UnderlierType> Divisible<U> for U {
 /// while maintaining the invariant that the first element always represents the least significant
 /// portion of the value.
 pub trait DivisIterable<T>: Copy {
+	/// The log2 of the number of `T` elements that fit in `Self`.
+	const LOG_N: usize;
+
 	/// The number of `T` elements that fit in `Self`.
-	const N: usize;
+	const N: usize = 1 << Self::LOG_N;
 
-	type Iter<'a>: ExactSizeIterator<Item = T>
-	where
-		Self: 'a,
-		T: 'a;
+	/// Returns an iterator over subdivisions of this underlier value, ordered from LSB to MSB.
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = T> + Send + Clone;
 
-	/// Returns an iterator over subdivisions of this underlier, ordered from LSB to MSB.
-	///
-	/// The iterator yields exactly [`Self::N`] elements.
-	fn divide(&self) -> Self::Iter<'_>;
+	/// Returns an iterator over subdivisions of this underlier reference, ordered from LSB to MSB.
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = T> + Send + Clone + '_;
+
+	/// Returns an iterator over subdivisions of a slice of underliers, ordered from LSB to MSB.
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = T> + Send + Clone + '_;
 
 	/// Get element at index (LSB-first ordering).
 	///
@@ -111,6 +113,7 @@ pub trait DivisIterable<T>: Copy {
 ///
 /// This iterator wraps a byte iterator and extracts sub-byte elements from each byte.
 /// Generic over the byte iterator type `I`.
+#[derive(Clone)]
 pub struct SmallUDivisIter<I, const N: usize> {
 	byte_iter: I,
 	current_byte: Option<u8>,
@@ -216,14 +219,23 @@ macro_rules! impl_divisible {
 
 		#[cfg(target_endian = "little")]
 		impl $crate::underlier::DivisIterable<$smaller> for $bigger {
-			const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
-
-			type Iter<'a> = std::iter::Copied<std::slice::Iter<'a, $smaller>>;
+			const LOG_N: usize = (size_of::<$bigger>() / size_of::<$smaller>()).ilog2() as usize;
 
 			#[inline]
-			fn divide(&self) -> Self::Iter<'_> {
+			fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $smaller> + Send + Clone {
 				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
-				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(self).iter().copied()
+				::bytemuck::must_cast::<Self, [$smaller; N]>(value).into_iter()
+			}
+
+			#[inline]
+			fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $smaller> + Send + Clone + '_ {
+				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
+				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(value).iter().copied()
+			}
+
+			#[inline]
+			fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $smaller> + Send + Clone + '_ {
+				::bytemuck::must_cast_slice::<Self, $smaller>(slice).iter().copied()
 			}
 
 			#[inline]
@@ -243,14 +255,33 @@ macro_rules! impl_divisible {
 
 		#[cfg(target_endian = "big")]
 		impl $crate::underlier::DivisIterable<$smaller> for $bigger {
-			const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
-
-			type Iter<'a> = std::iter::Copied<std::iter::Rev<std::slice::Iter<'a, $smaller>>>;
+			const LOG_N: usize = (size_of::<$bigger>() / size_of::<$smaller>()).ilog2() as usize;
 
 			#[inline]
-			fn divide(&self) -> Self::Iter<'_> {
+			fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $smaller> + Send + Clone {
 				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
-				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(self).iter().rev().copied()
+				::bytemuck::must_cast::<Self, [$smaller; N]>(value).into_iter().rev()
+			}
+
+			#[inline]
+			fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $smaller> + Send + Clone + '_ {
+				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
+				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(value).iter().rev().copied()
+			}
+
+			#[inline]
+			fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $smaller> + Send + Clone + '_ {
+				// For big-endian: iterate through the raw slice, but for each element's
+				// subdivisions, reverse the index to maintain LSB-first ordering.
+				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
+				let raw_slice = ::bytemuck::must_cast_slice::<Self, $smaller>(slice);
+				(0..raw_slice.len()).map(move |i| {
+					let element_idx = i >> Self::LOG_N;
+					let sub_idx = i & (N - 1);
+					let reversed_sub_idx = N - 1 - sub_idx;
+					let raw_idx = element_idx * N + reversed_sub_idx;
+					raw_slice[raw_idx]
+				})
 			}
 
 			#[inline]
@@ -273,17 +304,26 @@ macro_rules! impl_divisible {
 	// Uses direct shifting/masking on the bigger type
 	(@small_pair $bigger:ty, $bits:expr) => {
 		impl $crate::underlier::DivisIterable<$crate::underlier::SmallU<$bits>> for $bigger {
-			const N: usize = <$bigger>::BITS as usize / $bits;
-
-			type Iter<'a> = $crate::underlier::SmallUDivisIter<
-				<$bigger as $crate::underlier::DivisIterable<u8>>::Iter<'a>,
-				$bits
-			>;
+			const LOG_N: usize = (<$bigger>::BITS as usize / $bits).ilog2() as usize;
 
 			#[inline]
-			fn divide(&self) -> Self::Iter<'_> {
+			fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone {
 				$crate::underlier::SmallUDivisIter::new(
-					$crate::underlier::DivisIterable::<u8>::divide(self)
+					$crate::underlier::DivisIterable::<u8>::value_iter(value)
+				)
+			}
+
+			#[inline]
+			fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone + '_ {
+				$crate::underlier::SmallUDivisIter::new(
+					$crate::underlier::DivisIterable::<u8>::ref_iter(value)
+				)
+			}
+
+			#[inline]
+			fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone + '_ {
+				$crate::underlier::SmallUDivisIter::new(
+					$crate::underlier::DivisIterable::<u8>::slice_iter(slice)
 				)
 			}
 
@@ -325,13 +365,21 @@ impl_divisible!(u128, u64, u32, u16, u8);
 macro_rules! impl_divisible_u8_small {
 	($bits:expr) => {
 		impl DivisIterable<SmallU<$bits>> for u8 {
-			const N: usize = 8 / $bits;
-
-			type Iter<'a> = SmallUDivisIter<std::iter::Once<u8>, $bits>;
+			const LOG_N: usize = (8usize / $bits).ilog2() as usize;
 
 			#[inline]
-			fn divide(&self) -> Self::Iter<'_> {
-				SmallUDivisIter::new(std::iter::once(*self))
+			fn value_iter(value: Self) -> impl ExactSizeIterator<Item = SmallU<$bits>> + Send + Clone {
+				SmallUDivisIter::new(std::iter::once(value))
+			}
+
+			#[inline]
+			fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = SmallU<$bits>> + Send + Clone + '_ {
+				SmallUDivisIter::new(std::iter::once(*value))
+			}
+
+			#[inline]
+			fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = SmallU<$bits>> + Send + Clone + '_ {
+				SmallUDivisIter::new(slice.iter().copied())
 			}
 
 			#[inline]
@@ -386,11 +434,26 @@ mod tests {
 		let modified = DivisIterable::<U4>::set(val, 1, U4::new(0xA));
 		assert_eq!(modified, 0xA4);
 
-		// Test divide iterator
-		let parts: Vec<U4> = DivisIterable::<U4>::divide(&val).collect();
+		// Test ref_iter
+		let parts: Vec<U4> = DivisIterable::<U4>::ref_iter(&val).collect();
 		assert_eq!(parts.len(), 2);
 		assert_eq!(parts[0], U4::new(0x4));
 		assert_eq!(parts[1], U4::new(0x3));
+
+		// Test value_iter
+		let parts: Vec<U4> = DivisIterable::<U4>::value_iter(val).collect();
+		assert_eq!(parts.len(), 2);
+		assert_eq!(parts[0], U4::new(0x4));
+		assert_eq!(parts[1], U4::new(0x3));
+
+		// Test slice_iter
+		let vals = [0x34u8, 0x56u8];
+		let parts: Vec<U4> = DivisIterable::<U4>::slice_iter(&vals).collect();
+		assert_eq!(parts.len(), 4);
+		assert_eq!(parts[0], U4::new(0x4));
+		assert_eq!(parts[1], U4::new(0x3));
+		assert_eq!(parts[2], U4::new(0x6));
+		assert_eq!(parts[3], U4::new(0x5));
 	}
 
 	#[test]
@@ -407,8 +470,8 @@ mod tests {
 		let modified = DivisIterable::<U4>::set(val, 1, U4::new(0xF));
 		assert_eq!(modified, 0x12F4);
 
-		// Test divide iterator
-		let parts: Vec<U4> = DivisIterable::<U4>::divide(&val).collect();
+		// Test ref_iter
+		let parts: Vec<U4> = DivisIterable::<U4>::ref_iter(&val).collect();
 		assert_eq!(parts.len(), 4);
 		assert_eq!(parts[0], U4::new(0x4));
 		assert_eq!(parts[3], U4::new(0x1));
@@ -424,8 +487,8 @@ mod tests {
 		assert_eq!(DivisIterable::<U2>::get(val, 1), U2::new(0b00)); // bits 2-3
 		assert_eq!(DivisIterable::<U2>::get(val, 7), U2::new(0b10)); // bits 14-15
 
-		// Test divide iterator
-		let parts: Vec<U2> = DivisIterable::<U2>::divide(&val).collect();
+		// Test ref_iter
+		let parts: Vec<U2> = DivisIterable::<U2>::ref_iter(&val).collect();
 		assert_eq!(parts.len(), 8);
 		assert_eq!(parts[0], U2::new(0b11));
 		assert_eq!(parts[7], U2::new(0b10));
@@ -445,8 +508,8 @@ mod tests {
 		let modified = DivisIterable::<U1>::set(val, 0, U1::new(0));
 		assert_eq!(modified, 0b1010110000110100);
 
-		// Test divide iterator
-		let parts: Vec<U1> = DivisIterable::<U1>::divide(&val).collect();
+		// Test ref_iter
+		let parts: Vec<U1> = DivisIterable::<U1>::ref_iter(&val).collect();
 		assert_eq!(parts.len(), 16);
 		assert_eq!(parts[0], U1::new(1));
 		assert_eq!(parts[15], U1::new(1));
@@ -461,8 +524,26 @@ mod tests {
 		assert_eq!(DivisIterable::<U4>::get(val, 1), U4::new(0xF));
 		assert_eq!(DivisIterable::<U4>::get(val, 15), U4::new(0x1));
 
-		// Test divide iterator
-		let parts: Vec<U4> = DivisIterable::<U4>::divide(&val).collect();
+		// Test ref_iter
+		let parts: Vec<U4> = DivisIterable::<U4>::ref_iter(&val).collect();
 		assert_eq!(parts.len(), 16);
+	}
+
+	#[test]
+	fn test_divisiterable_u32_u8_slice() {
+		let vals: [u32; 2] = [0x04030201, 0x08070605];
+
+		// Test slice_iter
+		let parts: Vec<u8> = DivisIterable::<u8>::slice_iter(&vals).collect();
+		assert_eq!(parts.len(), 8);
+		// LSB-first ordering within each u32
+		assert_eq!(parts[0], 0x01);
+		assert_eq!(parts[1], 0x02);
+		assert_eq!(parts[2], 0x03);
+		assert_eq!(parts[3], 0x04);
+		assert_eq!(parts[4], 0x05);
+		assert_eq!(parts[5], 0x06);
+		assert_eq!(parts[6], 0x07);
+		assert_eq!(parts[7], 0x08);
 	}
 }
