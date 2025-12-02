@@ -35,10 +35,10 @@ use crate::{
 	},
 	arithmetic_traits::Broadcast,
 	underlier::{
-		NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
-		get_block_values, get_spread_bytes, impl_divis_iterable_bitmask,
-		impl_divis_iterable_memcast, impl_divisible, impl_iteration, spread_fallback,
-		unpack_hi_128b_fallback, unpack_lo_128b_fallback,
+		DivisIterable, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps,
+		WithUnderlier, get_block_values, get_spread_bytes, impl_divis_iterable_bitmask,
+		impl_divisible, impl_iteration, mapget, spread_fallback, unpack_hi_128b_fallback,
+		unpack_lo_128b_fallback,
 	},
 };
 
@@ -162,7 +162,6 @@ impl DeserializeBytes for M512 {
 }
 
 impl_divisible!(@pairs M512, M256, M128, u128, u64, u32, u16, u8);
-impl_divis_iterable_memcast!(M512, M256, M128, u128, u64, u32, u16, u8);
 impl_divis_iterable_bitmask!(M512, 1, 2, 4);
 impl_pack_scalar!(M512);
 
@@ -1307,6 +1306,271 @@ impl_iteration!(M512,
 	@strategy FallbackStrategy, U2, U4,
 	@strategy DivisibleStrategy, u8, u16, u32, u64, u128, M128, M256, M512,
 );
+
+// DivisIterable implementations using SIMD extract/insert intrinsics
+
+impl DivisIterable<M256> for M512 {
+	const LOG_N: usize = 1;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = M256> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = M256> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = M256> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> M256 {
+		unsafe {
+			match index {
+				0 => M256(_mm512_extracti64x4_epi64(self.0, 0)),
+				1 => M256(_mm512_extracti64x4_epi64(self.0, 1)),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: M256) -> Self {
+		unsafe {
+			match index {
+				0 => Self(_mm512_inserti64x4(self.0, val.0, 0)),
+				1 => Self(_mm512_inserti64x4(self.0, val.0, 1)),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+}
+
+impl DivisIterable<M128> for M512 {
+	const LOG_N: usize = 2;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = M128> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = M128> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = M128> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> M128 {
+		unsafe {
+			match index {
+				0 => M128(_mm512_extracti32x4_epi32(self.0, 0)),
+				1 => M128(_mm512_extracti32x4_epi32(self.0, 1)),
+				2 => M128(_mm512_extracti32x4_epi32(self.0, 2)),
+				3 => M128(_mm512_extracti32x4_epi32(self.0, 3)),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: M128) -> Self {
+		unsafe {
+			match index {
+				0 => Self(_mm512_inserti32x4(self.0, val.0, 0)),
+				1 => Self(_mm512_inserti32x4(self.0, val.0, 1)),
+				2 => Self(_mm512_inserti32x4(self.0, val.0, 2)),
+				3 => Self(_mm512_inserti32x4(self.0, val.0, 3)),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+}
+
+impl DivisIterable<u128> for M512 {
+	const LOG_N: usize = 2;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u128> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u128> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u128> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u128 {
+		u128::from(DivisIterable::<M128>::get(self, index))
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u128) -> Self {
+		DivisIterable::<M128>::set(self, index, M128::from(val))
+	}
+}
+
+impl DivisIterable<u64> for M512 {
+	const LOG_N: usize = 3;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u64> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u64> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u64> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u64 {
+		// Extract M128 lane, then use M128's get
+		let lane_idx = index / 2;
+		let sub_idx = index % 2;
+		let lane = DivisIterable::<M128>::get(self, lane_idx);
+		DivisIterable::<u64>::get(lane, sub_idx)
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u64) -> Self {
+		let lane_idx = index / 2;
+		let sub_idx = index % 2;
+		let lane = DivisIterable::<M128>::get(self, lane_idx);
+		let new_lane = DivisIterable::<u64>::set(lane, sub_idx, val);
+		DivisIterable::<M128>::set(self, lane_idx, new_lane)
+	}
+}
+
+impl DivisIterable<u32> for M512 {
+	const LOG_N: usize = 4;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u32> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u32> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u32> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u32 {
+		// Extract M128 lane, then use M128's get
+		let lane_idx = index / 4;
+		let sub_idx = index % 4;
+		let lane = DivisIterable::<M128>::get(self, lane_idx);
+		DivisIterable::<u32>::get(lane, sub_idx)
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u32) -> Self {
+		let lane_idx = index / 4;
+		let sub_idx = index % 4;
+		let lane = DivisIterable::<M128>::get(self, lane_idx);
+		let new_lane = DivisIterable::<u32>::set(lane, sub_idx, val);
+		DivisIterable::<M128>::set(self, lane_idx, new_lane)
+	}
+}
+
+impl DivisIterable<u16> for M512 {
+	const LOG_N: usize = 5;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u16> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u16> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u16> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u16 {
+		// Extract M128 lane, then use M128's get
+		let lane_idx = index / 8;
+		let sub_idx = index % 8;
+		let lane = DivisIterable::<M128>::get(self, lane_idx);
+		DivisIterable::<u16>::get(lane, sub_idx)
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u16) -> Self {
+		let lane_idx = index / 8;
+		let sub_idx = index % 8;
+		let lane = DivisIterable::<M128>::get(self, lane_idx);
+		let new_lane = DivisIterable::<u16>::set(lane, sub_idx, val);
+		DivisIterable::<M128>::set(self, lane_idx, new_lane)
+	}
+}
+
+impl DivisIterable<u8> for M512 {
+	const LOG_N: usize = 6;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u8> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u8> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u8> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u8 {
+		// Extract M128 lane, then use M128's get
+		let lane_idx = index / 16;
+		let sub_idx = index % 16;
+		let lane = DivisIterable::<M128>::get(self, lane_idx);
+		DivisIterable::<u8>::get(lane, sub_idx)
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u8) -> Self {
+		let lane_idx = index / 16;
+		let sub_idx = index % 16;
+		let lane = DivisIterable::<M128>::get(self, lane_idx);
+		let new_lane = DivisIterable::<u8>::set(lane, sub_idx, val);
+		DivisIterable::<M128>::set(self, lane_idx, new_lane)
+	}
+}
 
 #[cfg(test)]
 mod tests {
