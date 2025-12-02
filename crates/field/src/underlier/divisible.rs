@@ -109,6 +109,195 @@ pub trait DivisIterable<T>: Copy {
 	fn set(self, index: usize, val: T) -> Self;
 }
 
+/// Helper functions for DivisIterable implementations using bytemuck memory casting.
+///
+/// These functions handle the endianness-aware iteration over subdivisions of an underlier type.
+pub mod memcast {
+	use bytemuck::Pod;
+
+	/// Returns an iterator over subdivisions of a value, ordered from LSB to MSB.
+	#[cfg(target_endian = "little")]
+	#[inline]
+	pub fn value_iter<Big, Small, const N: usize>(
+		value: Big,
+	) -> impl ExactSizeIterator<Item = Small> + Send + Clone
+	where
+		Big: Pod,
+		Small: Pod + Send,
+	{
+		bytemuck::must_cast::<Big, [Small; N]>(value).into_iter()
+	}
+
+	/// Returns an iterator over subdivisions of a value, ordered from LSB to MSB.
+	#[cfg(target_endian = "big")]
+	#[inline]
+	pub fn value_iter<Big, Small, const N: usize>(
+		value: Big,
+	) -> impl ExactSizeIterator<Item = Small> + Send + Clone
+	where
+		Big: Pod,
+		Small: Pod + Send,
+	{
+		bytemuck::must_cast::<Big, [Small; N]>(value).into_iter().rev()
+	}
+
+	/// Returns an iterator over subdivisions of a reference, ordered from LSB to MSB.
+	#[cfg(target_endian = "little")]
+	#[inline]
+	pub fn ref_iter<Big, Small, const N: usize>(
+		value: &Big,
+	) -> impl ExactSizeIterator<Item = Small> + Send + Clone + '_
+	where
+		Big: Pod,
+		Small: Pod + Send + Sync,
+	{
+		bytemuck::must_cast_ref::<Big, [Small; N]>(value)
+			.iter()
+			.copied()
+	}
+
+	/// Returns an iterator over subdivisions of a reference, ordered from LSB to MSB.
+	#[cfg(target_endian = "big")]
+	#[inline]
+	pub fn ref_iter<Big, Small, const N: usize>(
+		value: &Big,
+	) -> impl ExactSizeIterator<Item = Small> + Send + Clone + '_
+	where
+		Big: Pod,
+		Small: Pod + Send + Sync,
+	{
+		bytemuck::must_cast_ref::<Big, [Small; N]>(value)
+			.iter()
+			.rev()
+			.copied()
+	}
+
+	/// Returns an iterator over subdivisions of a slice, ordered from LSB to MSB.
+	#[cfg(target_endian = "little")]
+	#[inline]
+	pub fn slice_iter<Big, Small>(
+		slice: &[Big],
+	) -> impl ExactSizeIterator<Item = Small> + Send + Clone + '_
+	where
+		Big: Pod,
+		Small: Pod + Send + Sync,
+	{
+		bytemuck::must_cast_slice::<Big, Small>(slice)
+			.iter()
+			.copied()
+	}
+
+	/// Returns an iterator over subdivisions of a slice, ordered from LSB to MSB.
+	///
+	/// For big-endian: iterate through the raw slice, but for each element's
+	/// subdivisions, reverse the index to maintain LSB-first ordering.
+	#[cfg(target_endian = "big")]
+	#[inline]
+	pub fn slice_iter<Big, Small, const LOG_N: usize>(
+		slice: &[Big],
+	) -> impl ExactSizeIterator<Item = Small> + Send + Clone + '_
+	where
+		Big: Pod,
+		Small: Pod + Send + Sync,
+	{
+		const N: usize = 1 << LOG_N;
+		let raw_slice = bytemuck::must_cast_slice::<Big, Small>(slice);
+		(0..raw_slice.len()).map(move |i| {
+			let element_idx = i >> LOG_N;
+			let sub_idx = i & (N - 1);
+			let reversed_sub_idx = N - 1 - sub_idx;
+			let raw_idx = element_idx * N + reversed_sub_idx;
+			raw_slice[raw_idx]
+		})
+	}
+
+	/// Get element at index (LSB-first ordering).
+	#[cfg(target_endian = "little")]
+	#[inline]
+	pub fn get<Big, Small, const N: usize>(value: &Big, index: usize) -> Small
+	where
+		Big: Pod,
+		Small: Pod,
+	{
+		bytemuck::must_cast_ref::<Big, [Small; N]>(value)[index]
+	}
+
+	/// Get element at index (LSB-first ordering).
+	#[cfg(target_endian = "big")]
+	#[inline]
+	pub fn get<Big, Small, const N: usize>(value: &Big, index: usize) -> Small
+	where
+		Big: Pod,
+		Small: Pod,
+	{
+		bytemuck::must_cast_ref::<Big, [Small; N]>(value)[N - 1 - index]
+	}
+
+	/// Set element at index (LSB-first ordering), returning modified value.
+	#[cfg(target_endian = "little")]
+	#[inline]
+	pub fn set<Big, Small, const N: usize>(value: &Big, index: usize, val: Small) -> Big
+	where
+		Big: Pod,
+		Small: Pod,
+	{
+		let mut arr = *bytemuck::must_cast_ref::<Big, [Small; N]>(value);
+		arr[index] = val;
+		bytemuck::must_cast(arr)
+	}
+
+	/// Set element at index (LSB-first ordering), returning modified value.
+	#[cfg(target_endian = "big")]
+	#[inline]
+	pub fn set<Big, Small, const N: usize>(value: &Big, index: usize, val: Small) -> Big
+	where
+		Big: Pod,
+		Small: Pod,
+	{
+		let mut arr = *bytemuck::must_cast_ref::<Big, [Small; N]>(value);
+		arr[N - 1 - index] = val;
+		bytemuck::must_cast(arr)
+	}
+}
+
+/// Helper functions for DivisIterable implementations using bitmask operations on sub-byte elements.
+///
+/// These functions work on any type that implements `DivisIterable<u8>` by extracting
+/// and modifying sub-byte elements through the byte interface.
+pub mod bitmask {
+	use super::{DivisIterable, SmallU};
+
+	/// Get a sub-byte element at index (LSB-first ordering).
+	#[inline]
+	pub fn get<Big, const BITS: usize>(value: Big, index: usize) -> SmallU<BITS>
+	where
+		Big: DivisIterable<u8>,
+	{
+		let elems_per_byte = 8 / BITS;
+		let byte_index = index / elems_per_byte;
+		let sub_index = index % elems_per_byte;
+		let byte = DivisIterable::<u8>::get(value, byte_index);
+		let shift = sub_index * BITS;
+		SmallU::<BITS>::new(byte >> shift)
+	}
+
+	/// Set a sub-byte element at index (LSB-first ordering), returning modified value.
+	#[inline]
+	pub fn set<Big, const BITS: usize>(value: Big, index: usize, val: SmallU<BITS>) -> Big
+	where
+		Big: DivisIterable<u8>,
+	{
+		let elems_per_byte = 8 / BITS;
+		let byte_index = index / elems_per_byte;
+		let sub_index = index % elems_per_byte;
+		let byte = DivisIterable::<u8>::get(value, byte_index);
+		let shift = sub_index * BITS;
+		let mask = (1u8 << BITS) - 1;
+		let new_byte = (byte & !(mask << shift)) | (val.val() << shift);
+		DivisIterable::<u8>::set(value, byte_index, new_byte)
+	}
+}
+
 /// Iterator for dividing an underlier into sub-byte elements (SmallU<N>).
 ///
 /// This iterator wraps a byte iterator and extracts sub-byte elements from each byte.
@@ -166,254 +355,233 @@ impl<I: ExactSizeIterator<Item = u8>, const N: usize> Iterator for SmallUDivisIt
 
 impl<I: ExactSizeIterator<Item = u8>, const N: usize> ExactSizeIterator for SmallUDivisIter<I, N> {}
 
+/// Implements `Divisible` trait for a bigger type over smaller types using bytemuck casting.
+///
+/// This macro generates `Divisible` implementations for the big type and all smaller types,
+/// as well as for `ScaledUnderlier<_, 2>` and `ScaledUnderlier<ScaledUnderlier<_, 2>, 2>` variants.
 macro_rules! impl_divisible {
-    (@pairs $name:ty,?) => {};
-    (@pairs $bigger:ty, $smaller:ty) => {
-        unsafe impl $crate::underlier::Divisible<$smaller> for $bigger {
-            type Array = [$smaller; {size_of::<Self>() / size_of::<$smaller>()}];
+	(@pairs $name:ty,?) => {};
+	(@pairs $bigger:ty, $smaller:ty) => {
+		unsafe impl $crate::underlier::Divisible<$smaller> for $bigger {
+			type Array = [$smaller; {size_of::<Self>() / size_of::<$smaller>()}];
 
-            fn split_val(self) -> Self::Array {
-                bytemuck::must_cast::<_, Self::Array>(self)
-            }
+			fn split_val(self) -> Self::Array {
+				bytemuck::must_cast::<_, Self::Array>(self)
+			}
 
-            fn split_ref(&self) -> &[$smaller] {
-                bytemuck::must_cast_ref::<_, [$smaller;{(<$bigger>::BITS as usize / <$smaller>::BITS as usize ) }]>(self)
-            }
+			fn split_ref(&self) -> &[$smaller] {
+				bytemuck::must_cast_ref::<_, [$smaller;{(<$bigger>::BITS as usize / <$smaller>::BITS as usize ) }]>(self)
+			}
 
-            fn split_mut(&mut self) -> &mut [$smaller] {
-                bytemuck::must_cast_mut::<_, [$smaller;{(<$bigger>::BITS as usize / <$smaller>::BITS as usize ) }]>(self)
-            }
-        }
+			fn split_mut(&mut self) -> &mut [$smaller] {
+				bytemuck::must_cast_mut::<_, [$smaller;{(<$bigger>::BITS as usize / <$smaller>::BITS as usize ) }]>(self)
+			}
+		}
 
 		unsafe impl $crate::underlier::Divisible<$smaller> for $crate::underlier::ScaledUnderlier<$bigger, 2> {
-            type Array = [$smaller; {2 * size_of::<$bigger>() / size_of::<$smaller>()}];
+			type Array = [$smaller; {2 * size_of::<$bigger>() / size_of::<$smaller>()}];
 
-            fn split_val(self) -> Self::Array {
-                bytemuck::must_cast::<_, Self::Array>(self)
-            }
+			fn split_val(self) -> Self::Array {
+				bytemuck::must_cast::<_, Self::Array>(self)
+			}
 
-            fn split_ref(&self) -> &[$smaller] {
-                bytemuck::must_cast_ref::<_, [$smaller;{(2 * <$bigger>::BITS as usize / <$smaller>::BITS as usize ) }]>(&self.0)
-            }
+			fn split_ref(&self) -> &[$smaller] {
+				bytemuck::must_cast_ref::<_, [$smaller;{(2 * <$bigger>::BITS as usize / <$smaller>::BITS as usize ) }]>(&self.0)
+			}
 
-            fn split_mut(&mut self) -> &mut [$smaller] {
-                bytemuck::must_cast_mut::<_, [$smaller;{(2 * <$bigger>::BITS as usize / <$smaller>::BITS as usize ) }]>(&mut self.0)
-            }
-        }
+			fn split_mut(&mut self) -> &mut [$smaller] {
+				bytemuck::must_cast_mut::<_, [$smaller;{(2 * <$bigger>::BITS as usize / <$smaller>::BITS as usize ) }]>(&mut self.0)
+			}
+		}
 
 		unsafe impl $crate::underlier::Divisible<$smaller> for $crate::underlier::ScaledUnderlier<$crate::underlier::ScaledUnderlier<$bigger, 2>, 2> {
-            type Array = [$smaller; {4 * size_of::<$bigger>() / size_of::<$smaller>()}];
+			type Array = [$smaller; {4 * size_of::<$bigger>() / size_of::<$smaller>()}];
 
-            fn split_val(self) -> Self::Array {
-                bytemuck::must_cast::<_, Self::Array>(self)
-            }
-
-            fn split_ref(&self) -> &[$smaller] {
-                bytemuck::must_cast_ref::<_, [$smaller;{(4 * <$bigger>::BITS as usize / <$smaller>::BITS as usize ) }]>(&self.0)
-            }
-
-            fn split_mut(&mut self) -> &mut [$smaller] {
-                bytemuck::must_cast_mut::<_, [$smaller;{(4 * <$bigger>::BITS as usize / <$smaller>::BITS as usize ) }]>(&mut self.0)
-            }
-        }
-
-		#[cfg(target_endian = "little")]
-		impl $crate::underlier::DivisIterable<$smaller> for $bigger {
-			const LOG_N: usize = (size_of::<$bigger>() / size_of::<$smaller>()).ilog2() as usize;
-
-			#[inline]
-			fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $smaller> + Send + Clone {
-				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
-				::bytemuck::must_cast::<Self, [$smaller; N]>(value).into_iter()
+			fn split_val(self) -> Self::Array {
+				bytemuck::must_cast::<_, Self::Array>(self)
 			}
 
-			#[inline]
-			fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $smaller> + Send + Clone + '_ {
-				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
-				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(value).iter().copied()
+			fn split_ref(&self) -> &[$smaller] {
+				bytemuck::must_cast_ref::<_, [$smaller;{(4 * <$bigger>::BITS as usize / <$smaller>::BITS as usize ) }]>(&self.0)
 			}
 
-			#[inline]
-			fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $smaller> + Send + Clone + '_ {
-				::bytemuck::must_cast_slice::<Self, $smaller>(slice).iter().copied()
-			}
-
-			#[inline]
-			fn get(self, index: usize) -> $smaller {
-				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
-				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(&self)[index]
-			}
-
-			#[inline]
-			fn set(self, index: usize, val: $smaller) -> Self {
-				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
-				let mut arr = *::bytemuck::must_cast_ref::<Self, [$smaller; N]>(&self);
-				arr[index] = val;
-				::bytemuck::must_cast(arr)
-			}
-		}
-
-		#[cfg(target_endian = "big")]
-		impl $crate::underlier::DivisIterable<$smaller> for $bigger {
-			const LOG_N: usize = (size_of::<$bigger>() / size_of::<$smaller>()).ilog2() as usize;
-
-			#[inline]
-			fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $smaller> + Send + Clone {
-				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
-				::bytemuck::must_cast::<Self, [$smaller; N]>(value).into_iter().rev()
-			}
-
-			#[inline]
-			fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $smaller> + Send + Clone + '_ {
-				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
-				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(value).iter().rev().copied()
-			}
-
-			#[inline]
-			fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $smaller> + Send + Clone + '_ {
-				// For big-endian: iterate through the raw slice, but for each element's
-				// subdivisions, reverse the index to maintain LSB-first ordering.
-				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
-				let raw_slice = ::bytemuck::must_cast_slice::<Self, $smaller>(slice);
-				(0..raw_slice.len()).map(move |i| {
-					let element_idx = i >> Self::LOG_N;
-					let sub_idx = i & (N - 1);
-					let reversed_sub_idx = N - 1 - sub_idx;
-					let raw_idx = element_idx * N + reversed_sub_idx;
-					raw_slice[raw_idx]
-				})
-			}
-
-			#[inline]
-			fn get(self, index: usize) -> $smaller {
-				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
-				::bytemuck::must_cast_ref::<Self, [$smaller; N]>(&self)[N - 1 - index]
-			}
-
-			#[inline]
-			fn set(self, index: usize, val: $smaller) -> Self {
-				const N: usize = size_of::<$bigger>() / size_of::<$smaller>();
-				let mut arr = *::bytemuck::must_cast_ref::<Self, [$smaller; N]>(&self);
-				arr[N - 1 - index] = val;
-				::bytemuck::must_cast(arr)
-			}
-		}
-    };
-
-	// Small underlier implementation (SmallU<N>)
-	// Uses direct shifting/masking on the bigger type
-	(@small_pair $bigger:ty, $bits:expr) => {
-		impl $crate::underlier::DivisIterable<$crate::underlier::SmallU<$bits>> for $bigger {
-			const LOG_N: usize = (<$bigger>::BITS as usize / $bits).ilog2() as usize;
-
-			#[inline]
-			fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone {
-				$crate::underlier::SmallUDivisIter::new(
-					$crate::underlier::DivisIterable::<u8>::value_iter(value)
-				)
-			}
-
-			#[inline]
-			fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone + '_ {
-				$crate::underlier::SmallUDivisIter::new(
-					$crate::underlier::DivisIterable::<u8>::ref_iter(value)
-				)
-			}
-
-			#[inline]
-			fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone + '_ {
-				$crate::underlier::SmallUDivisIter::new(
-					$crate::underlier::DivisIterable::<u8>::slice_iter(slice)
-				)
-			}
-
-			#[inline]
-			fn get(self, index: usize) -> $crate::underlier::SmallU<$bits> {
-				let shift = index * $bits;
-				$crate::underlier::SmallU::<$bits>::new((self >> shift) as u8)
-			}
-
-			#[inline]
-			fn set(self, index: usize, val: $crate::underlier::SmallU<$bits>) -> Self {
-				let shift = index * $bits;
-				let mask = ((1 as $bigger) << $bits) - 1;
-				(self & !(mask << shift)) | ((val.val() as $bigger) << shift)
+			fn split_mut(&mut self) -> &mut [$smaller] {
+				bytemuck::must_cast_mut::<_, [$smaller;{(4 * <$bigger>::BITS as usize / <$smaller>::BITS as usize ) }]>(&mut self.0)
 			}
 		}
 	};
 
-    (@pairs $first:ty, $second:ty, $($tail:ty),*) => {
-        impl_divisible!(@pairs $first, $second);
-        impl_divisible!(@pairs $first, $($tail),*);
-    };
-    ($_:ty) => {};
-    ($head:ty, $($tail:ty),*) => {
-        impl_divisible!(@pairs $head, $($tail),*);
-        impl_divisible!($($tail),*);
-    }
+	(@pairs $first:ty, $second:ty, $($tail:ty),*) => {
+		impl_divisible!(@pairs $first, $second);
+		impl_divisible!(@pairs $first, $($tail),*);
+	};
+	($_:ty) => {};
+	($head:ty, $($tail:ty),*) => {
+		impl_divisible!(@pairs $head, $($tail),*);
+		impl_divisible!($($tail),*);
+	}
 }
 
 #[allow(unused)]
 pub(crate) use impl_divisible;
 
-use super::{UnderlierType, small_uint::SmallU};
+/// Implements `DivisIterable` trait using bytemuck memory casting.
+///
+/// This macro generates `DivisIterable` implementations for a big type over smaller types.
+/// The implementations use the helper functions in the `memcast` module.
+macro_rules! impl_divis_iterable_memcast {
+	($big:ty, $($small:ty),+) => {
+		$(
+			impl $crate::underlier::DivisIterable<$small> for $big {
+				const LOG_N: usize = (size_of::<$big>() / size_of::<$small>()).ilog2() as usize;
 
-impl_divisible!(u128, u64, u32, u16, u8);
+				#[inline]
+				fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $small> + Send + Clone {
+					const N: usize = size_of::<$big>() / size_of::<$small>();
+					$crate::underlier::memcast::value_iter::<$big, $small, N>(value)
+				}
 
-// Implement DivisIterable for small underliers (SmallU<N>)
-// Special case for u8: operates directly on the byte
-macro_rules! impl_divisible_u8_small {
-	($bits:expr) => {
-		impl DivisIterable<SmallU<$bits>> for u8 {
-			const LOG_N: usize = (8usize / $bits).ilog2() as usize;
+				#[inline]
+				fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $small> + Send + Clone + '_ {
+					const N: usize = size_of::<$big>() / size_of::<$small>();
+					$crate::underlier::memcast::ref_iter::<$big, $small, N>(value)
+				}
 
-			#[inline]
-			fn value_iter(value: Self) -> impl ExactSizeIterator<Item = SmallU<$bits>> + Send + Clone {
-				SmallUDivisIter::new(std::iter::once(value))
+				#[inline]
+				#[cfg(target_endian = "little")]
+				fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $small> + Send + Clone + '_ {
+					$crate::underlier::memcast::slice_iter::<$big, $small>(slice)
+				}
+
+				#[inline]
+				#[cfg(target_endian = "big")]
+				fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $small> + Send + Clone + '_ {
+					const LOG_N: usize = (size_of::<$big>() / size_of::<$small>()).ilog2() as usize;
+					$crate::underlier::memcast::slice_iter::<$big, $small, LOG_N>(slice)
+				}
+
+				#[inline]
+				fn get(self, index: usize) -> $small {
+					const N: usize = size_of::<$big>() / size_of::<$small>();
+					$crate::underlier::memcast::get::<$big, $small, N>(&self, index)
+				}
+
+				#[inline]
+				fn set(self, index: usize, val: $small) -> Self {
+					const N: usize = size_of::<$big>() / size_of::<$small>();
+					$crate::underlier::memcast::set::<$big, $small, N>(&self, index, val)
+				}
 			}
-
-			#[inline]
-			fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = SmallU<$bits>> + Send + Clone + '_ {
-				SmallUDivisIter::new(std::iter::once(*value))
-			}
-
-			#[inline]
-			fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = SmallU<$bits>> + Send + Clone + '_ {
-				SmallUDivisIter::new(slice.iter().copied())
-			}
-
-			#[inline]
-			fn get(self, index: usize) -> SmallU<$bits> {
-				let shift = index * $bits;
-				SmallU::<$bits>::new(self >> shift)
-			}
-
-			#[inline]
-			fn set(self, index: usize, val: SmallU<$bits>) -> Self {
-				let shift = index * $bits;
-				let mask = (1u8 << $bits) - 1;
-				(self & !(mask << shift)) | (val.val() << shift)
-			}
-		}
+		)+
 	};
 }
 
-impl_divisible_u8_small!(1);
-impl_divisible_u8_small!(2);
-impl_divisible_u8_small!(4);
+#[allow(unused)]
+pub(crate) use impl_divis_iterable_memcast;
 
-impl_divisible!(@small_pair u16, 1);
-impl_divisible!(@small_pair u16, 2);
-impl_divisible!(@small_pair u16, 4);
-impl_divisible!(@small_pair u32, 1);
-impl_divisible!(@small_pair u32, 2);
-impl_divisible!(@small_pair u32, 4);
-impl_divisible!(@small_pair u64, 1);
-impl_divisible!(@small_pair u64, 2);
-impl_divisible!(@small_pair u64, 4);
-impl_divisible!(@small_pair u128, 1);
-impl_divisible!(@small_pair u128, 2);
-impl_divisible!(@small_pair u128, 4);
+/// Implements `DivisIterable` trait for SmallU types using bitmask operations.
+///
+/// This macro generates `DivisIterable<SmallU<BITS>>` implementations for a big type
+/// by wrapping byte iteration with bitmasking to extract sub-byte elements.
+macro_rules! impl_divis_iterable_bitmask {
+	// Special case for u8: operates directly on the byte without needing DivisIterable::<u8>
+	(u8, $($bits:expr),+) => {
+		$(
+			impl $crate::underlier::DivisIterable<$crate::underlier::SmallU<$bits>> for u8 {
+				const LOG_N: usize = (8usize / $bits).ilog2() as usize;
+
+				#[inline]
+				fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone {
+					$crate::underlier::SmallUDivisIter::new(std::iter::once(value))
+				}
+
+				#[inline]
+				fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone + '_ {
+					$crate::underlier::SmallUDivisIter::new(std::iter::once(*value))
+				}
+
+				#[inline]
+				fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone + '_ {
+					$crate::underlier::SmallUDivisIter::new(slice.iter().copied())
+				}
+
+				#[inline]
+				fn get(self, index: usize) -> $crate::underlier::SmallU<$bits> {
+					let shift = index * $bits;
+					$crate::underlier::SmallU::<$bits>::new(self >> shift)
+				}
+
+				#[inline]
+				fn set(self, index: usize, val: $crate::underlier::SmallU<$bits>) -> Self {
+					let shift = index * $bits;
+					let mask = (1u8 << $bits) - 1;
+					(self & !(mask << shift)) | (val.val() << shift)
+				}
+			}
+		)+
+	};
+
+	// General case for types larger than u8: wraps byte iteration
+	($big:ty, $($bits:expr),+) => {
+		$(
+			impl $crate::underlier::DivisIterable<$crate::underlier::SmallU<$bits>> for $big {
+				const LOG_N: usize = (8 * size_of::<$big>() / $bits).ilog2() as usize;
+
+				#[inline]
+				fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone {
+					$crate::underlier::SmallUDivisIter::new(
+						$crate::underlier::DivisIterable::<u8>::value_iter(value)
+					)
+				}
+
+				#[inline]
+				fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone + '_ {
+					$crate::underlier::SmallUDivisIter::new(
+						$crate::underlier::DivisIterable::<u8>::ref_iter(value)
+					)
+				}
+
+				#[inline]
+				fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $crate::underlier::SmallU<$bits>> + Send + Clone + '_ {
+					$crate::underlier::SmallUDivisIter::new(
+						$crate::underlier::DivisIterable::<u8>::slice_iter(slice)
+					)
+				}
+
+				#[inline]
+				fn get(self, index: usize) -> $crate::underlier::SmallU<$bits> {
+					$crate::underlier::bitmask::get::<Self, $bits>(self, index)
+				}
+
+				#[inline]
+				fn set(self, index: usize, val: $crate::underlier::SmallU<$bits>) -> Self {
+					$crate::underlier::bitmask::set::<Self, $bits>(self, index, val)
+				}
+			}
+		)+
+	};
+}
+
+#[allow(unused)]
+pub(crate) use impl_divis_iterable_bitmask;
+
+use super::{UnderlierType, small_uint::SmallU};
+
+// Implement Divisible trait for primitive types
+impl_divisible!(u128, u64, u32, u16, u8);
+
+// Implement DivisIterable using memcast for primitive types
+impl_divis_iterable_memcast!(u128, u64, u32, u16, u8);
+impl_divis_iterable_memcast!(u64, u32, u16, u8);
+impl_divis_iterable_memcast!(u32, u16, u8);
+impl_divis_iterable_memcast!(u16, u8);
+
+// Implement DivisIterable using bitmask for SmallU types
+impl_divis_iterable_bitmask!(u8, 1, 2, 4);
+impl_divis_iterable_bitmask!(u16, 1, 2, 4);
+impl_divis_iterable_bitmask!(u32, 1, 2, 4);
+impl_divis_iterable_bitmask!(u64, 1, 2, 4);
+impl_divis_iterable_bitmask!(u128, 1, 2, 4);
 
 #[cfg(test)]
 mod tests {

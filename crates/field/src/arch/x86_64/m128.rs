@@ -32,8 +32,8 @@ use crate::{
 	arithmetic_traits::Broadcast,
 	underlier::{
 		NumCast, SmallU, SpreadToByte, U1, U2, U4, UnderlierType, UnderlierWithBitOps,
-		WithUnderlier, impl_divisible, impl_iteration, spread_fallback, unpack_hi_128b_fallback,
-		unpack_lo_128b_fallback,
+		WithUnderlier, impl_divis_iterable_bitmask, impl_divis_iterable_memcast, impl_divisible,
+		impl_iteration, spread_fallback, unpack_hi_128b_fallback, unpack_lo_128b_fallback,
 	},
 };
 
@@ -145,6 +145,8 @@ impl DeserializeBytes for M128 {
 }
 
 impl_divisible!(@pairs M128, u128, u64, u32, u16, u8);
+impl_divis_iterable_memcast!(M128, u128, u64, u32, u16, u8);
+impl_divis_iterable_bitmask!(M128, 1, 2, 4);
 impl_pack_scalar!(M128);
 
 impl<U: NumCast<u128>> NumCast<M128> for U {
