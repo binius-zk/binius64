@@ -27,7 +27,8 @@ use crate::{
 	arithmetic_traits::Broadcast,
 	underlier::{
 		NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
-		impl_divis_iterable_bitmask, impl_divis_iterable_memcast, impl_divisible, impl_iteration,
+		divisible::{DivisIterable, mapget},
+		impl_divis_iterable_bitmask, impl_divisible, impl_iteration,
 		unpack_lo_128b_fallback,
 	},
 };
@@ -219,9 +220,259 @@ impl DeserializeBytes for M128 {
 }
 
 impl_divisible!(@pairs M128, u128, u64, u32, u16, u8);
-impl_divis_iterable_memcast!(M128, u128, u64, u32, u16, u8);
 impl_divis_iterable_bitmask!(M128, 1, 2, 4);
 impl_pack_scalar!(M128);
+
+// Manual DivisIterable implementations using NEON intrinsics
+
+impl DivisIterable<u128> for M128 {
+	const LOG_N: usize = 0;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u128> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u128> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u128> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u128 {
+		match index {
+			0 => self.into(),
+			_ => panic!("index out of bounds"),
+		}
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u128) -> Self {
+		match index {
+			0 => Self::from(val),
+			_ => panic!("index out of bounds"),
+		}
+	}
+}
+
+impl DivisIterable<u64> for M128 {
+	const LOG_N: usize = 1;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u64> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u64> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u64> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u64 {
+		unsafe {
+			match index {
+				0 => vgetq_lane_u64(self.0, 0),
+				1 => vgetq_lane_u64(self.0, 1),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u64) -> Self {
+		unsafe {
+			match index {
+				0 => Self(vsetq_lane_u64(val, self.0, 0)),
+				1 => Self(vsetq_lane_u64(val, self.0, 1)),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+}
+
+impl DivisIterable<u32> for M128 {
+	const LOG_N: usize = 2;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u32> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u32> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u32> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u32 {
+		unsafe {
+			let v: uint32x4_t = self.into();
+			match index {
+				0 => vgetq_lane_u32(v, 0),
+				1 => vgetq_lane_u32(v, 1),
+				2 => vgetq_lane_u32(v, 2),
+				3 => vgetq_lane_u32(v, 3),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u32) -> Self {
+		unsafe {
+			let v: uint32x4_t = self.into();
+			match index {
+				0 => Self::from(vsetq_lane_u32(val, v, 0)),
+				1 => Self::from(vsetq_lane_u32(val, v, 1)),
+				2 => Self::from(vsetq_lane_u32(val, v, 2)),
+				3 => Self::from(vsetq_lane_u32(val, v, 3)),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+}
+
+impl DivisIterable<u16> for M128 {
+	const LOG_N: usize = 3;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u16> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u16> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u16> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u16 {
+		unsafe {
+			let v: uint16x8_t = self.into();
+			match index {
+				0 => vgetq_lane_u16(v, 0),
+				1 => vgetq_lane_u16(v, 1),
+				2 => vgetq_lane_u16(v, 2),
+				3 => vgetq_lane_u16(v, 3),
+				4 => vgetq_lane_u16(v, 4),
+				5 => vgetq_lane_u16(v, 5),
+				6 => vgetq_lane_u16(v, 6),
+				7 => vgetq_lane_u16(v, 7),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u16) -> Self {
+		unsafe {
+			let v: uint16x8_t = self.into();
+			match index {
+				0 => Self::from(vsetq_lane_u16(val, v, 0)),
+				1 => Self::from(vsetq_lane_u16(val, v, 1)),
+				2 => Self::from(vsetq_lane_u16(val, v, 2)),
+				3 => Self::from(vsetq_lane_u16(val, v, 3)),
+				4 => Self::from(vsetq_lane_u16(val, v, 4)),
+				5 => Self::from(vsetq_lane_u16(val, v, 5)),
+				6 => Self::from(vsetq_lane_u16(val, v, 6)),
+				7 => Self::from(vsetq_lane_u16(val, v, 7)),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+}
+
+impl DivisIterable<u8> for M128 {
+	const LOG_N: usize = 4;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u8> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u8> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u8> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> u8 {
+		unsafe {
+			let v: uint8x16_t = self.into();
+			match index {
+				0 => vgetq_lane_u8(v, 0),
+				1 => vgetq_lane_u8(v, 1),
+				2 => vgetq_lane_u8(v, 2),
+				3 => vgetq_lane_u8(v, 3),
+				4 => vgetq_lane_u8(v, 4),
+				5 => vgetq_lane_u8(v, 5),
+				6 => vgetq_lane_u8(v, 6),
+				7 => vgetq_lane_u8(v, 7),
+				8 => vgetq_lane_u8(v, 8),
+				9 => vgetq_lane_u8(v, 9),
+				10 => vgetq_lane_u8(v, 10),
+				11 => vgetq_lane_u8(v, 11),
+				12 => vgetq_lane_u8(v, 12),
+				13 => vgetq_lane_u8(v, 13),
+				14 => vgetq_lane_u8(v, 14),
+				15 => vgetq_lane_u8(v, 15),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u8) -> Self {
+		unsafe {
+			let v: uint8x16_t = self.into();
+			match index {
+				0 => Self::from(vsetq_lane_u8(val, v, 0)),
+				1 => Self::from(vsetq_lane_u8(val, v, 1)),
+				2 => Self::from(vsetq_lane_u8(val, v, 2)),
+				3 => Self::from(vsetq_lane_u8(val, v, 3)),
+				4 => Self::from(vsetq_lane_u8(val, v, 4)),
+				5 => Self::from(vsetq_lane_u8(val, v, 5)),
+				6 => Self::from(vsetq_lane_u8(val, v, 6)),
+				7 => Self::from(vsetq_lane_u8(val, v, 7)),
+				8 => Self::from(vsetq_lane_u8(val, v, 8)),
+				9 => Self::from(vsetq_lane_u8(val, v, 9)),
+				10 => Self::from(vsetq_lane_u8(val, v, 10)),
+				11 => Self::from(vsetq_lane_u8(val, v, 11)),
+				12 => Self::from(vsetq_lane_u8(val, v, 12)),
+				13 => Self::from(vsetq_lane_u8(val, v, 13)),
+				14 => Self::from(vsetq_lane_u8(val, v, 14)),
+				15 => Self::from(vsetq_lane_u8(val, v, 15)),
+				_ => panic!("index out of bounds"),
+			}
+		}
+	}
+}
 
 impl Not for M128 {
 	type Output = Self;
