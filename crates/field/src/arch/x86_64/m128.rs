@@ -31,8 +31,8 @@ use crate::{
 	},
 	arithmetic_traits::Broadcast,
 	underlier::{
-		DivisIterable, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, UnderlierWithBitOps,
-		WithUnderlier, impl_divis_iterable_bitmask, mapget, spread_fallback,
+		Divisible, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, UnderlierWithBitOps,
+		WithUnderlier, impl_divisible_bitmask, mapget, spread_fallback,
 		unpack_hi_128b_fallback, unpack_lo_128b_fallback,
 	},
 };
@@ -144,7 +144,7 @@ impl DeserializeBytes for M128 {
 	}
 }
 
-impl_divis_iterable_bitmask!(M128, 1, 2, 4);
+impl_divisible_bitmask!(M128, 1, 2, 4);
 impl_pack_scalar!(M128);
 
 impl<U: NumCast<u128>> NumCast<M128> for U {
@@ -427,7 +427,7 @@ impl UnderlierWithBitOps for M128 {
 	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
 	where
 		T: UnderlierWithBitOps + NumCast<Self>,
-		Self: DivisIterable<T> + From<T>,
+		Self: Divisible<T> + From<T>,
 	{
 		match T::LOG_BITS {
 			0 => match log_block_len {
@@ -870,9 +870,9 @@ unsafe fn interleave_bits_imm<const BLOCK_LEN: i32>(
 	}
 }
 
-// DivisIterable implementations using SIMD extract/insert intrinsics
+// Divisible implementations using SIMD extract/insert intrinsics
 
-impl DivisIterable<u128> for M128 {
+impl Divisible<u128> for M128 {
 	const LOG_N: usize = 0;
 
 	#[inline]
@@ -903,7 +903,7 @@ impl DivisIterable<u128> for M128 {
 	}
 }
 
-impl DivisIterable<u64> for M128 {
+impl Divisible<u64> for M128 {
 	const LOG_N: usize = 1;
 
 	#[inline]
@@ -944,7 +944,7 @@ impl DivisIterable<u64> for M128 {
 	}
 }
 
-impl DivisIterable<u32> for M128 {
+impl Divisible<u32> for M128 {
 	const LOG_N: usize = 2;
 
 	#[inline]
@@ -989,7 +989,7 @@ impl DivisIterable<u32> for M128 {
 	}
 }
 
-impl DivisIterable<u16> for M128 {
+impl Divisible<u16> for M128 {
 	const LOG_N: usize = 3;
 
 	#[inline]
@@ -1042,7 +1042,7 @@ impl DivisIterable<u16> for M128 {
 	}
 }
 
-impl DivisIterable<u8> for M128 {
+impl Divisible<u8> for M128 {
 	const LOG_N: usize = 4;
 
 	#[inline]

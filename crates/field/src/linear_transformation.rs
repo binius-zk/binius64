@@ -7,7 +7,7 @@ use rand::RngCore;
 use crate::{
 	BinaryField, BinaryField1b, ExtensionField, UnderlierWithBitOps, WithUnderlier,
 	packed::PackedBinaryField,
-	underlier::{DivisIterable, UnderlierType},
+	underlier::{Divisible, UnderlierType},
 };
 
 /// Generic transformation trait that is used both for scalars and packed fields
@@ -90,7 +90,7 @@ pub struct BytewiseLookupTransformation<UIn, UOut> {
 
 impl<UIn, UOut> BytewiseLookupTransformation<UIn, UOut>
 where
-	UIn: UnderlierType + DivisIterable<u8>,
+	UIn: UnderlierType + Divisible<u8>,
 	UOut: UnderlierWithBitOps,
 {
 	pub fn new(cols: &[UOut]) -> Self {
@@ -117,11 +117,11 @@ where
 
 impl<UIn, UOut> Transformation<UIn, UOut> for BytewiseLookupTransformation<UIn, UOut>
 where
-	UIn: UnderlierType + DivisIterable<u8>,
+	UIn: UnderlierType + Divisible<u8>,
 	UOut: UnderlierWithBitOps,
 {
 	fn transform(&self, data: &UIn) -> UOut {
-		DivisIterable::<u8>::ref_iter(data)
+		Divisible::<u8>::ref_iter(data)
 			.enumerate()
 			.take(1 << (UIn::LOG_BITS - LOG_BITS_PER_BYTE))
 			.map(|(i, byte)| {
@@ -165,7 +165,7 @@ pub trait LinearTransformationFactory<Input, Output> {
 
 impl<UIn, UOut> LinearTransformationFactory<UIn, UOut> for BytewiseLookupTransformationFactory
 where
-	UIn: UnderlierType + DivisIterable<u8>,
+	UIn: UnderlierType + Divisible<u8>,
 	UOut: UnderlierWithBitOps,
 {
 	type Transform = BytewiseLookupTransformation<UIn, UOut>;

@@ -451,19 +451,19 @@ macro_rules! impl_field_extension {
 
 			#[inline]
 			fn iter_bases(&self) -> impl Iterator<Item = $subfield_name> {
-				use $crate::underlier::{WithUnderlier, DivisIterable};
+				use $crate::underlier::{WithUnderlier, Divisible};
 				use binius_utils::iter::IterExtensions;
 
-				DivisIterable::<<$subfield_name as WithUnderlier>::Underlier>::ref_iter(&self.0)
+				Divisible::<<$subfield_name as WithUnderlier>::Underlier>::ref_iter(&self.0)
 					.map_skippable($subfield_name::from)
 			}
 
 			#[inline]
 			fn into_iter_bases(self) -> impl Iterator<Item = $subfield_name> {
-				use $crate::underlier::{WithUnderlier, DivisIterable};
+				use $crate::underlier::{WithUnderlier, Divisible};
 				use binius_utils::iter::IterExtensions;
 
-				DivisIterable::<<$subfield_name as WithUnderlier>::Underlier>::value_iter(self.0)
+				Divisible::<<$subfield_name as WithUnderlier>::Underlier>::value_iter(self.0)
 					.map_skippable($subfield_name::from)
 			}
 

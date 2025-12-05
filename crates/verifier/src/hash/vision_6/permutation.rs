@@ -5,7 +5,7 @@
 //! Core permutation functions for the Vision-6 cryptographic hash, operating on 6-element
 //! states over GF(2^128). Each round applies: S-box → MDS → constants → S-box → MDS → constants.
 
-use binius_field::{BinaryField128bGhash as Ghash, DivisIterable, WithUnderlier};
+use binius_field::{BinaryField128bGhash as Ghash, Divisible, WithUnderlier};
 use binius_math::batch_invert::BatchInversion;
 
 use super::{
@@ -21,7 +21,7 @@ pub fn linearized_b_inv_transform_scalar(x: &mut Ghash) {
 
 /// Applies linearized transformation using precomputed lookup tables for efficiency.
 pub fn linearized_transform_scalar(x: &mut Ghash, table: &'static [[Ghash; 256]; BYTES_PER_GHASH]) {
-	*x = <u128 as DivisIterable<u8>>::ref_iter(x.to_underlier_ref())
+	*x = <u128 as Divisible<u8>>::ref_iter(x.to_underlier_ref())
 		.zip(table)
 		.map(|(byte, lookup)| lookup[byte as usize])
 		.sum();

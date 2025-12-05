@@ -33,8 +33,8 @@ use crate::{
 	},
 	arithmetic_traits::Broadcast,
 	underlier::{
-		DivisIterable, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps,
-		WithUnderlier, get_block_values, get_spread_bytes, impl_divis_iterable_bitmask, mapget,
+		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps,
+		WithUnderlier, get_block_values, get_spread_bytes, impl_divisible_bitmask, mapget,
 		spread_fallback, unpack_hi_128b_fallback, unpack_lo_128b_fallback,
 	},
 };
@@ -148,7 +148,7 @@ impl DeserializeBytes for M256 {
 	}
 }
 
-impl_divis_iterable_bitmask!(M256, 1, 2, 4);
+impl_divisible_bitmask!(M256, 1, 2, 4);
 impl_pack_scalar!(M256);
 
 impl<U: NumCast<u128>> NumCast<M256> for U {
@@ -475,7 +475,7 @@ impl UnderlierWithBitOps for M256 {
 	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
 	where
 		T: UnderlierWithBitOps + NumCast<Self>,
-		Self: DivisIterable<T> + From<T>,
+		Self: Divisible<T> + From<T>,
 	{
 		match T::LOG_BITS {
 			0 => match log_block_len {
@@ -1094,9 +1094,9 @@ cfg_if! {
 	}
 }
 
-// DivisIterable implementations using SIMD extract/insert intrinsics
+// Divisible implementations using SIMD extract/insert intrinsics
 
-impl DivisIterable<M128> for M256 {
+impl Divisible<M128> for M256 {
 	const LOG_N: usize = 1;
 
 	#[inline]
@@ -1137,7 +1137,7 @@ impl DivisIterable<M128> for M256 {
 	}
 }
 
-impl DivisIterable<u128> for M256 {
+impl Divisible<u128> for M256 {
 	const LOG_N: usize = 1;
 
 	#[inline]
@@ -1157,16 +1157,16 @@ impl DivisIterable<u128> for M256 {
 
 	#[inline]
 	fn get(self, index: usize) -> u128 {
-		u128::from(DivisIterable::<M128>::get(self, index))
+		u128::from(Divisible::<M128>::get(self, index))
 	}
 
 	#[inline]
 	fn set(self, index: usize, val: u128) -> Self {
-		DivisIterable::<M128>::set(self, index, M128::from(val))
+		Divisible::<M128>::set(self, index, M128::from(val))
 	}
 }
 
-impl DivisIterable<u64> for M256 {
+impl Divisible<u64> for M256 {
 	const LOG_N: usize = 2;
 
 	#[inline]
@@ -1211,7 +1211,7 @@ impl DivisIterable<u64> for M256 {
 	}
 }
 
-impl DivisIterable<u32> for M256 {
+impl Divisible<u32> for M256 {
 	const LOG_N: usize = 3;
 
 	#[inline]
@@ -1264,7 +1264,7 @@ impl DivisIterable<u32> for M256 {
 	}
 }
 
-impl DivisIterable<u16> for M256 {
+impl Divisible<u16> for M256 {
 	const LOG_N: usize = 4;
 
 	#[inline]
@@ -1333,7 +1333,7 @@ impl DivisIterable<u16> for M256 {
 	}
 }
 
-impl DivisIterable<u8> for M256 {
+impl Divisible<u8> for M256 {
 	const LOG_N: usize = 5;
 
 	#[inline]

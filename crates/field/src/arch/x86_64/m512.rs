@@ -35,8 +35,8 @@ use crate::{
 	},
 	arithmetic_traits::Broadcast,
 	underlier::{
-		DivisIterable, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps,
-		WithUnderlier, get_block_values, get_spread_bytes, impl_divis_iterable_bitmask, mapget,
+		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps,
+		WithUnderlier, get_block_values, get_spread_bytes, impl_divisible_bitmask, mapget,
 		spread_fallback, unpack_hi_128b_fallback, unpack_lo_128b_fallback,
 	},
 };
@@ -160,7 +160,7 @@ impl DeserializeBytes for M512 {
 	}
 }
 
-impl_divis_iterable_bitmask!(M512, 1, 2, 4);
+impl_divisible_bitmask!(M512, 1, 2, 4);
 impl_pack_scalar!(M512);
 
 impl Default for M512 {
@@ -1299,9 +1299,9 @@ unsafe fn transpose_with_shuffle(a: __m512i, b: __m512i, shuffle: __m512i) -> (_
 	}
 }
 
-// DivisIterable implementations using SIMD extract/insert intrinsics
+// Divisible implementations using SIMD extract/insert intrinsics
 
-impl DivisIterable<M256> for M512 {
+impl Divisible<M256> for M512 {
 	const LOG_N: usize = 1;
 
 	#[inline]
@@ -1342,7 +1342,7 @@ impl DivisIterable<M256> for M512 {
 	}
 }
 
-impl DivisIterable<M128> for M512 {
+impl Divisible<M128> for M512 {
 	const LOG_N: usize = 2;
 
 	#[inline]
@@ -1387,7 +1387,7 @@ impl DivisIterable<M128> for M512 {
 	}
 }
 
-impl DivisIterable<u128> for M512 {
+impl Divisible<u128> for M512 {
 	const LOG_N: usize = 2;
 
 	#[inline]
@@ -1407,16 +1407,16 @@ impl DivisIterable<u128> for M512 {
 
 	#[inline]
 	fn get(self, index: usize) -> u128 {
-		u128::from(DivisIterable::<M128>::get(self, index))
+		u128::from(Divisible::<M128>::get(self, index))
 	}
 
 	#[inline]
 	fn set(self, index: usize, val: u128) -> Self {
-		DivisIterable::<M128>::set(self, index, M128::from(val))
+		Divisible::<M128>::set(self, index, M128::from(val))
 	}
 }
 
-impl DivisIterable<u64> for M512 {
+impl Divisible<u64> for M512 {
 	const LOG_N: usize = 3;
 
 	#[inline]
@@ -1439,21 +1439,21 @@ impl DivisIterable<u64> for M512 {
 		// Extract M128 lane, then use M128's get
 		let lane_idx = index / 2;
 		let sub_idx = index % 2;
-		let lane = DivisIterable::<M128>::get(self, lane_idx);
-		DivisIterable::<u64>::get(lane, sub_idx)
+		let lane = Divisible::<M128>::get(self, lane_idx);
+		Divisible::<u64>::get(lane, sub_idx)
 	}
 
 	#[inline]
 	fn set(self, index: usize, val: u64) -> Self {
 		let lane_idx = index / 2;
 		let sub_idx = index % 2;
-		let lane = DivisIterable::<M128>::get(self, lane_idx);
-		let new_lane = DivisIterable::<u64>::set(lane, sub_idx, val);
-		DivisIterable::<M128>::set(self, lane_idx, new_lane)
+		let lane = Divisible::<M128>::get(self, lane_idx);
+		let new_lane = Divisible::<u64>::set(lane, sub_idx, val);
+		Divisible::<M128>::set(self, lane_idx, new_lane)
 	}
 }
 
-impl DivisIterable<u32> for M512 {
+impl Divisible<u32> for M512 {
 	const LOG_N: usize = 4;
 
 	#[inline]
@@ -1476,21 +1476,21 @@ impl DivisIterable<u32> for M512 {
 		// Extract M128 lane, then use M128's get
 		let lane_idx = index / 4;
 		let sub_idx = index % 4;
-		let lane = DivisIterable::<M128>::get(self, lane_idx);
-		DivisIterable::<u32>::get(lane, sub_idx)
+		let lane = Divisible::<M128>::get(self, lane_idx);
+		Divisible::<u32>::get(lane, sub_idx)
 	}
 
 	#[inline]
 	fn set(self, index: usize, val: u32) -> Self {
 		let lane_idx = index / 4;
 		let sub_idx = index % 4;
-		let lane = DivisIterable::<M128>::get(self, lane_idx);
-		let new_lane = DivisIterable::<u32>::set(lane, sub_idx, val);
-		DivisIterable::<M128>::set(self, lane_idx, new_lane)
+		let lane = Divisible::<M128>::get(self, lane_idx);
+		let new_lane = Divisible::<u32>::set(lane, sub_idx, val);
+		Divisible::<M128>::set(self, lane_idx, new_lane)
 	}
 }
 
-impl DivisIterable<u16> for M512 {
+impl Divisible<u16> for M512 {
 	const LOG_N: usize = 5;
 
 	#[inline]
@@ -1513,21 +1513,21 @@ impl DivisIterable<u16> for M512 {
 		// Extract M128 lane, then use M128's get
 		let lane_idx = index / 8;
 		let sub_idx = index % 8;
-		let lane = DivisIterable::<M128>::get(self, lane_idx);
-		DivisIterable::<u16>::get(lane, sub_idx)
+		let lane = Divisible::<M128>::get(self, lane_idx);
+		Divisible::<u16>::get(lane, sub_idx)
 	}
 
 	#[inline]
 	fn set(self, index: usize, val: u16) -> Self {
 		let lane_idx = index / 8;
 		let sub_idx = index % 8;
-		let lane = DivisIterable::<M128>::get(self, lane_idx);
-		let new_lane = DivisIterable::<u16>::set(lane, sub_idx, val);
-		DivisIterable::<M128>::set(self, lane_idx, new_lane)
+		let lane = Divisible::<M128>::get(self, lane_idx);
+		let new_lane = Divisible::<u16>::set(lane, sub_idx, val);
+		Divisible::<M128>::set(self, lane_idx, new_lane)
 	}
 }
 
-impl DivisIterable<u8> for M512 {
+impl Divisible<u8> for M512 {
 	const LOG_N: usize = 6;
 
 	#[inline]
@@ -1550,17 +1550,17 @@ impl DivisIterable<u8> for M512 {
 		// Extract M128 lane, then use M128's get
 		let lane_idx = index / 16;
 		let sub_idx = index % 16;
-		let lane = DivisIterable::<M128>::get(self, lane_idx);
-		DivisIterable::<u8>::get(lane, sub_idx)
+		let lane = Divisible::<M128>::get(self, lane_idx);
+		Divisible::<u8>::get(lane, sub_idx)
 	}
 
 	#[inline]
 	fn set(self, index: usize, val: u8) -> Self {
 		let lane_idx = index / 16;
 		let sub_idx = index % 16;
-		let lane = DivisIterable::<M128>::get(self, lane_idx);
-		let new_lane = DivisIterable::<u8>::set(lane, sub_idx, val);
-		DivisIterable::<M128>::set(self, lane_idx, new_lane)
+		let lane = Divisible::<M128>::get(self, lane_idx);
+		let new_lane = Divisible::<u8>::set(lane, sub_idx, val);
+		Divisible::<M128>::set(self, lane_idx, new_lane)
 	}
 }
 

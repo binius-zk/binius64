@@ -36,7 +36,7 @@ use crate::{
 		invert_or_zero_using_packed, multiple_using_packed, square_using_packed,
 	},
 	transpose::square_transforms_extension_field,
-	underlier::{DivisIterable, NumCast, U1, UnderlierWithBitOps},
+	underlier::{Divisible, NumCast, U1, UnderlierWithBitOps},
 };
 
 #[derive(
@@ -421,12 +421,12 @@ impl ExtensionField<BinaryField1b> for BinaryField128bGhash {
 
 	#[inline]
 	fn iter_bases(&self) -> impl Iterator<Item = BinaryField1b> {
-		DivisIterable::<U1>::value_iter(self.0).map_skippable(BinaryField1b::from)
+		Divisible::<U1>::value_iter(self.0).map_skippable(BinaryField1b::from)
 	}
 
 	#[inline]
 	fn into_iter_bases(self) -> impl Iterator<Item = BinaryField1b> {
-		DivisIterable::<U1>::value_iter(self.0).map_skippable(BinaryField1b::from)
+		Divisible::<U1>::value_iter(self.0).map_skippable(BinaryField1b::from)
 	}
 
 	#[inline]

@@ -27,8 +27,8 @@ use crate::{
 	arithmetic_traits::Broadcast,
 	underlier::{
 		NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
-		divisible::{DivisIterable, mapget},
-		impl_divis_iterable_bitmask, unpack_lo_128b_fallback,
+		divisible::{Divisible, mapget},
+		impl_divisible_bitmask, unpack_lo_128b_fallback,
 	},
 };
 
@@ -218,12 +218,12 @@ impl DeserializeBytes for M128 {
 	}
 }
 
-impl_divis_iterable_bitmask!(M128, 1, 2, 4);
+impl_divisible_bitmask!(M128, 1, 2, 4);
 impl_pack_scalar!(M128);
 
-// Manual DivisIterable implementations using NEON intrinsics
+// Manual Divisible implementations using NEON intrinsics
 
-impl DivisIterable<u128> for M128 {
+impl Divisible<u128> for M128 {
 	const LOG_N: usize = 0;
 
 	#[inline]
@@ -258,7 +258,7 @@ impl DivisIterable<u128> for M128 {
 	}
 }
 
-impl DivisIterable<u64> for M128 {
+impl Divisible<u64> for M128 {
 	const LOG_N: usize = 1;
 
 	#[inline]
@@ -299,7 +299,7 @@ impl DivisIterable<u64> for M128 {
 	}
 }
 
-impl DivisIterable<u32> for M128 {
+impl Divisible<u32> for M128 {
 	const LOG_N: usize = 2;
 
 	#[inline]
@@ -346,7 +346,7 @@ impl DivisIterable<u32> for M128 {
 	}
 }
 
-impl DivisIterable<u16> for M128 {
+impl Divisible<u16> for M128 {
 	const LOG_N: usize = 3;
 
 	#[inline]
@@ -401,7 +401,7 @@ impl DivisIterable<u16> for M128 {
 	}
 }
 
-impl DivisIterable<u8> for M128 {
+impl Divisible<u8> for M128 {
 	const LOG_N: usize = 4;
 
 	#[inline]

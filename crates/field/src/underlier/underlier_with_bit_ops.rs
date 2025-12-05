@@ -3,7 +3,7 @@
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
 
 use binius_utils::checked_arithmetics::{checked_int_div, checked_log_2};
-use crate::DivisIterable;
+use crate::Divisible;
 use super::{
 	U1, U2, U4,
 	underlier_type::{NumCast, UnderlierType},
@@ -75,7 +75,7 @@ pub trait UnderlierWithBitOps:
 	unsafe fn get_subvalue<T>(&self, i: usize) -> T
 	where
 		T: UnderlierType,
-		Self: DivisIterable<T>,
+		Self: Divisible<T>,
 	{
 		debug_assert!(
 			i < checked_int_div(Self::BITS, T::BITS),
@@ -84,7 +84,7 @@ pub trait UnderlierWithBitOps:
 			Self::BITS,
 			T::BITS
 		);
-		DivisIterable::<T>::get(*self, i)
+		Divisible::<T>::get(*self, i)
 	}
 
 	/// Sets the subvalue in the given position.
@@ -115,7 +115,7 @@ pub trait UnderlierWithBitOps:
 	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
 	where
 		T: UnderlierWithBitOps + NumCast<Self>,
-		Self: DivisIterable<T> + From<T>,
+		Self: Divisible<T> + From<T>,
 	{
 		unsafe { spread_fallback(self, log_block_len, block_idx) }
 	}
@@ -189,7 +189,7 @@ pub(crate) fn pair_unpack_lo_hi_128b_lanes<U: UnderlierWithBitOps>(
 /// `block_idx` must be less than `1 << (U::LOG_BITS - log_block_len)`.
 pub(crate) unsafe fn spread_fallback<U, T>(value: U, log_block_len: usize, block_idx: usize) -> U
 where
-	U: UnderlierWithBitOps + From<T> + DivisIterable<T>,
+	U: UnderlierWithBitOps + From<T> + Divisible<T>,
 	T: UnderlierWithBitOps + NumCast<U>,
 {
 	debug_assert!(
@@ -329,7 +329,7 @@ pub(crate) unsafe fn get_block_values<U, T, const BLOCK_LEN: usize>(
 	block_idx: usize,
 ) -> [T; BLOCK_LEN]
 where
-	U: UnderlierWithBitOps + From<T> + DivisIterable<T>,
+	U: UnderlierWithBitOps + From<T> + Divisible<T>,
 	T: UnderlierType + NumCast<U>,
 {
 	std::array::from_fn(|i| unsafe { value.get_subvalue::<T>(block_idx * BLOCK_LEN + i) })
@@ -346,7 +346,7 @@ pub(crate) unsafe fn get_spread_bytes<U, T, const BLOCK_LEN: usize>(
 	block_idx: usize,
 ) -> [u8; BLOCK_LEN]
 where
-	U: UnderlierWithBitOps + From<T> + DivisIterable<T>,
+	U: UnderlierWithBitOps + From<T> + Divisible<T>,
 	T: UnderlierType + SpreadToByte + NumCast<U>,
 {
 	unsafe { get_block_values::<U, T, BLOCK_LEN>(value, block_idx) }

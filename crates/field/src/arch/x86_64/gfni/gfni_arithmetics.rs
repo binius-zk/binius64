@@ -5,7 +5,7 @@ use std::array;
 use binius_utils::checked_arithmetics::checked_int_div;
 
 use crate::{
-	BinaryField, DivisIterable, PackedField, TowerField,
+	BinaryField, Divisible, PackedField, TowerField,
 	arch::{
 		GfniStrategy,
 		portable::packed::PackedPrimitiveType,
@@ -100,7 +100,7 @@ pub(super) fn get_8x8_matrix<OF, Data>(
 	col: usize,
 ) -> i64
 where
-	OF: BinaryField<Underlier: DivisIterable<u8>>,
+	OF: BinaryField<Underlier: Divisible<u8>>,
 	Data: AsRef<[OF]> + Sync,
 {
 	transpose_8x8(i64::from_le_bytes(array::from_fn(|k| {
@@ -181,7 +181,7 @@ where
 impl<OP, const BLOCKS: usize, const MATRICES: usize> GfniTransformationNxN<OP, BLOCKS, MATRICES>
 where
 	OP: WithUnderlier<Underlier: GfniType>
-		+ PackedBinaryField<Scalar: WithUnderlier<Underlier: DivisIterable<u8>>>,
+		+ PackedBinaryField<Scalar: WithUnderlier<Underlier: Divisible<u8>>>,
 	[[OP::Underlier; MATRICES]; BLOCKS]: Default,
 {
 	pub fn new<Data: AsRef<[OP::Scalar]> + Sync>(
@@ -280,7 +280,7 @@ macro_rules! impl_transformation_with_gfni_nxn {
 		where
 			OP: $crate::packed::PackedBinaryField<
 					Scalar: $crate::underlier::WithUnderlier<
-						Underlier: $crate::underlier::DivisIterable<u8>,
+						Underlier: $crate::underlier::Divisible<u8>,
 					>,
 				> + $crate::underlier::WithUnderlier<
 					Underlier = <$name as $crate::underlier::WithUnderlier>::Underlier,

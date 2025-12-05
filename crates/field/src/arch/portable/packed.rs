@@ -22,7 +22,7 @@ use rand::{
 
 use super::packed_arithmetic::UnderlierWithBitConstants;
 use crate::{
-	BinaryField, DivisIterable, PackedField,
+	BinaryField, Divisible, PackedField,
 	arithmetic_traits::{Broadcast, InvertOrZero, MulAlpha, Square},
 	underlier::{NumCast, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier},
 };
@@ -276,7 +276,7 @@ impl<U: UnderlierWithBitOps, Scalar> PackedField for PackedPrimitiveType<U, Scal
 where
 	Self: Broadcast<Scalar> + Square + InvertOrZero + Mul<Output = Self>,
 	U: UnderlierWithBitConstants
-		+ DivisIterable<Scalar::Underlier>
+		+ Divisible<Scalar::Underlier>
 		+ From<Scalar::Underlier>
 		+ Send
 		+ Sync
@@ -307,19 +307,19 @@ where
 
 	#[inline]
 	fn iter(&self) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
-		DivisIterable::<Scalar::Underlier>::ref_iter(&self.0)
+		Divisible::<Scalar::Underlier>::ref_iter(&self.0)
 			.map(|underlier| Scalar::from_underlier(underlier))
 	}
 
 	#[inline]
 	fn into_iter(self) -> impl Iterator<Item = Self::Scalar> + Send + Clone {
-		DivisIterable::<Scalar::Underlier>::value_iter(self.0)
+		Divisible::<Scalar::Underlier>::value_iter(self.0)
 			.map(|underlier| Scalar::from_underlier(underlier))
 	}
 
 	#[inline]
 	fn iter_slice(slice: &[Self]) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
-		DivisIterable::<Scalar::Underlier>::slice_iter(Self::to_underliers_ref(slice))
+		Divisible::<Scalar::Underlier>::slice_iter(Self::to_underliers_ref(slice))
 			.map_skippable(|underlier| Scalar::from_underlier(underlier))
 	}
 

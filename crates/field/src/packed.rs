@@ -319,7 +319,7 @@ pub fn get_packed_slice<P: PackedField>(packed: &[P], i: usize) -> P::Scalar {
 /// The caller must ensure that `i` is less than `P::WIDTH * packed.len()`.
 #[inline(always)]
 pub unsafe fn get_packed_slice_unchecked<P: PackedField>(packed: &[P], i: usize) -> P::Scalar {
-	// TODO: Consider putting a get_in_slice method on DivisIterable
+	// TODO: Consider putting a get_in_slice method on Divisible
 
 	// Safety:
 	// - `i / P::WIDTH` is within the bounds of `packed` if `i` is less than
@@ -357,7 +357,7 @@ pub unsafe fn set_packed_slice_unchecked<P: PackedField>(
 	i: usize,
 	scalar: P::Scalar,
 ) {
-	// TODO: Consider putting a set_in_slice method on DivisIterable
+	// TODO: Consider putting a set_in_slice method on Divisible
 
 	// Safety: if `i` is less than `len_packed_slice(packed)`, then
 	// - `i / P::WIDTH` is within the bounds of `packed`

@@ -3,7 +3,7 @@
 use std::{iter, ops::Deref};
 
 use binius_field::{
-	BinaryField, DivisIterable, ExtensionField, Field, PackedExtension, PackedField,
+	BinaryField, Divisible, ExtensionField, Field, PackedExtension, PackedField,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, InputWrappingTransformationFactory,
 		LinearTransformationFactory, OutputWrappingTransformationFactory, Transformation,
@@ -40,7 +40,7 @@ use itertools::izip;
 pub fn rs_eq_ind<F>(batching_challenges: &[F], z_vals: &[F]) -> FieldBuffer<F>
 where
 	F: BinaryField,
-	F::Underlier: DivisIterable<u8>,
+	F::Underlier: Divisible<u8>,
 {
 	assert_eq!(batching_challenges.len(), F::LOG_DEGREE);
 
@@ -67,7 +67,7 @@ where
 pub fn fold_elems_inplace<F, P>(mut elems: FieldBuffer<P>, vec: &FieldBuffer<F>) -> FieldBuffer<P>
 where
 	F: BinaryField,
-	F::Underlier: DivisIterable<u8>,
+	F::Underlier: Divisible<u8>,
 	P: PackedField<Scalar = F>,
 {
 	assert_eq!(vec.log_len(), F::LOG_DEGREE); // precondition
