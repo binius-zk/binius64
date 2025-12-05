@@ -82,46 +82,6 @@ where
 	}
 }
 
-/// Compile-time known constants needed for packed multiply implementation.
-pub(crate) trait TowerConstants<U> {
-	/// Alpha values in odd positions, zeroes in even.
-	const ALPHAS_ODD: U;
-}
-
-macro_rules! impl_tower_constants {
-	($tower_field:path, $underlier:ty, $value:tt) => {
-		impl $crate::arch::portable::packed_arithmetic::TowerConstants<$underlier>
-			for $tower_field
-		{
-			const ALPHAS_ODD: $underlier = $value;
-		}
-	};
-}
-
-pub(crate) use impl_tower_constants;
-
-/// Generate the mask with alphas in the odd packed element positions and zeros in even
-macro_rules! alphas {
-	($underlier:ty, $tower_level:literal) => {{
-		let mut alphas: $underlier = if $tower_level == 0 {
-			1
-		} else {
-			1 << (1 << ($tower_level - 1))
-		};
-
-		let log_width = <$underlier as $crate::underlier::UnderlierType>::LOG_BITS - $tower_level;
-		let mut i = 1;
-		while i < log_width {
-			alphas |= alphas << (1 << ($tower_level + i));
-			i += 1;
-		}
-
-		alphas
-	}};
-}
-
-pub(crate) use alphas;
-
 /// Generate the mask with ones in the odd packed element positions and zeros in even
 macro_rules! interleave_mask_even {
 	($underlier:ty, $tower_level:literal) => {{

@@ -2,11 +2,7 @@
 
 use super::{m128::M128, packed_macros::*};
 use crate::{
-	arch::portable::{
-		packed::PackedPrimitiveType,
-		packed_arithmetic::{alphas, impl_tower_constants},
-		packed_macros::*,
-	},
+	arch::portable::{packed::PackedPrimitiveType, packed_macros::*},
 	arithmetic_traits::impl_transformation_with_strategy,
 };
 

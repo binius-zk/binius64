@@ -2,12 +2,8 @@
 
 use cfg_if::cfg_if;
 
-use super::{
-	packed::PackedPrimitiveType, packed_arithmetic::impl_tower_constants,
-	packed_macros::impl_broadcast,
-};
+use super::{packed::PackedPrimitiveType, packed_macros::impl_broadcast};
 use crate::{
-	AESTowerField8b,
 	arch::portable::packed_macros::{portable_macros::*, *},
 	arithmetic_traits::{
 		impl_invert_with, impl_mul_alpha_with, impl_mul_with, impl_square_with,
@@ -30,5 +26,3 @@ define_packed_binary_fields!(
 		},
 	]
 );
-
-impl_tower_constants!(AESTowerField8b, u32, 0x00d300d3);
