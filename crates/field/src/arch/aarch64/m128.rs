@@ -28,8 +28,7 @@ use crate::{
 	underlier::{
 		NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
 		divisible::{DivisIterable, mapget},
-		impl_divis_iterable_bitmask, impl_divisible,
-		unpack_lo_128b_fallback,
+		impl_divis_iterable_bitmask, unpack_lo_128b_fallback,
 	},
 };
 
@@ -219,7 +218,6 @@ impl DeserializeBytes for M128 {
 	}
 }
 
-impl_divisible!(@pairs M128, u128, u64, u32, u16, u8);
 impl_divis_iterable_bitmask!(M128, 1, 2, 4);
 impl_pack_scalar!(M128);
 

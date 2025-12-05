@@ -6,13 +6,13 @@ use std::{
 };
 
 use binius_utils::checked_arithmetics::checked_log_2;
-use bytemuck::{NoUninit, Pod, Zeroable, must_cast_mut, must_cast_ref};
+use bytemuck::{Pod, Zeroable};
 use rand::{
 	Rng,
 	distr::{Distribution, StandardUniform},
 };
 
-use super::{Divisible, NumCast, UnderlierType, UnderlierWithBitOps};
+use super::{NumCast, UnderlierType, UnderlierWithBitOps};
 use crate::Random;
 
 /// A type that represents a pair of elements of the same underlier type.
@@ -57,52 +57,6 @@ unsafe impl<U: Pod, const N: usize> Pod for ScaledUnderlier<U, N> {}
 
 impl<U: UnderlierType + Pod, const N: usize> UnderlierType for ScaledUnderlier<U, N> {
 	const LOG_BITS: usize = U::LOG_BITS + checked_log_2(N);
-}
-
-unsafe impl<U, const N: usize> Divisible<U> for ScaledUnderlier<U, N>
-where
-	Self: UnderlierType,
-	U: UnderlierType,
-{
-	type Array = [U; N];
-
-	#[inline]
-	fn split_val(self) -> Self::Array {
-		self.0
-	}
-
-	#[inline]
-	fn split_ref(&self) -> &[U] {
-		&self.0
-	}
-
-	#[inline]
-	fn split_mut(&mut self) -> &mut [U] {
-		&mut self.0
-	}
-}
-
-unsafe impl<U> Divisible<U> for ScaledUnderlier<ScaledUnderlier<U, 2>, 2>
-where
-	Self: UnderlierType + NoUninit,
-	U: UnderlierType + Pod,
-{
-	type Array = [U; 4];
-
-	#[inline]
-	fn split_val(self) -> Self::Array {
-		bytemuck::must_cast(self)
-	}
-
-	#[inline]
-	fn split_ref(&self) -> &[U] {
-		must_cast_ref::<Self, [U; 4]>(self)
-	}
-
-	#[inline]
-	fn split_mut(&mut self) -> &mut [U] {
-		must_cast_mut::<Self, [U; 4]>(self)
-	}
 }
 
 impl<U: BitAnd<Output = U> + Copy, const N: usize> BitAnd for ScaledUnderlier<U, N> {
