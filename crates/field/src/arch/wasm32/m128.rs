@@ -23,7 +23,7 @@ use crate::{
 	arithmetic_traits::Broadcast,
 	underlier::{
 		NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
-		impl_divis_iterable_bitmask, impl_divis_iterable_memcast, impl_divisible, impl_iteration,
+		impl_divis_iterable_bitmask, impl_divis_iterable_memcast, impl_divisible,
 	},
 };
 
@@ -494,12 +494,6 @@ impl UnderlierWithBitConstants for M128 {
 		}
 	}
 }
-
-impl_iteration!(M128,
-	@strategy BitIterationStrategy, U1,
-	@strategy FallbackStrategy, U2, U4,
-	@strategy DivisibleStrategy, u8, u16, u32, u64, u128, M128,
-);
 
 impl<Scalar: BinaryField> From<u128> for PackedPrimitiveType<M128, Scalar> {
 	#[inline]

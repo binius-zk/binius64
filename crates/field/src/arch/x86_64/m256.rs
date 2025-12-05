@@ -22,7 +22,7 @@ use seq_macro::seq;
 use crate::{
 	BinaryField,
 	arch::{
-		binary_utils::{as_array_mut, as_array_ref, make_func_to_i8},
+		binary_utils::make_func_to_i8,
 		portable::{
 			packed::{PackedPrimitiveType, impl_pack_scalar},
 			packed_arithmetic::{
@@ -35,8 +35,7 @@ use crate::{
 	underlier::{
 		DivisIterable, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps,
 		WithUnderlier, get_block_values, get_spread_bytes, impl_divis_iterable_bitmask,
-		impl_divisible, impl_iteration, mapget, spread_fallback, unpack_hi_128b_fallback,
-		unpack_lo_128b_fallback,
+		impl_divisible, mapget, spread_fallback, unpack_hi_128b_fallback, unpack_lo_128b_fallback,
 	},
 };
 
@@ -474,95 +473,10 @@ impl UnderlierWithBitOps for M256 {
 	}
 
 	#[inline(always)]
-	unsafe fn get_subvalue<T>(&self, i: usize) -> T
-	where
-		T: UnderlierType + NumCast<Self>,
-	{
-		match T::BITS {
-			1 | 2 | 4 => {
-				let elements_in_8 = 8 / T::BITS;
-				let mut value_u8 = as_array_ref::<_, u8, 32, _>(self, |arr| unsafe {
-					*arr.get_unchecked(i / elements_in_8)
-				});
-
-				let shift = (i % elements_in_8) * T::BITS;
-				value_u8 >>= shift;
-
-				T::num_cast_from(Self::from(value_u8))
-			}
-			8 => {
-				let value_u8 =
-					as_array_ref::<_, u8, 32, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::num_cast_from(Self::from(value_u8))
-			}
-			16 => {
-				let value_u16 =
-					as_array_ref::<_, u16, 16, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::num_cast_from(Self::from(value_u16))
-			}
-			32 => {
-				let value_u32 =
-					as_array_ref::<_, u32, 8, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::num_cast_from(Self::from(value_u32))
-			}
-			64 => {
-				let value_u64 =
-					as_array_ref::<_, u64, 4, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::num_cast_from(Self::from(value_u64))
-			}
-			128 => {
-				let value_u128 =
-					as_array_ref::<_, u128, 2, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::num_cast_from(Self::from(value_u128))
-			}
-			_ => panic!("unsupported bit count"),
-		}
-	}
-
-	#[inline(always)]
-	unsafe fn set_subvalue<T>(&mut self, i: usize, val: T)
-	where
-		T: UnderlierWithBitOps,
-		Self: From<T>,
-	{
-		match T::BITS {
-			1 | 2 | 4 => {
-				let elements_in_8 = 8 / T::BITS;
-				let mask = (1u8 << T::BITS) - 1;
-				let shift = (i % elements_in_8) * T::BITS;
-				let val = u8::num_cast_from(Self::from(val)) << shift;
-				let mask = mask << shift;
-
-				as_array_mut::<_, u8, 32>(self, |array| unsafe {
-					let element = array.get_unchecked_mut(i / elements_in_8);
-					*element &= !mask;
-					*element |= val;
-				});
-			}
-			8 => as_array_mut::<_, u8, 32>(self, |array| unsafe {
-				*array.get_unchecked_mut(i) = u8::num_cast_from(Self::from(val));
-			}),
-			16 => as_array_mut::<_, u16, 16>(self, |array| unsafe {
-				*array.get_unchecked_mut(i) = u16::num_cast_from(Self::from(val));
-			}),
-			32 => as_array_mut::<_, u32, 8>(self, |array| unsafe {
-				*array.get_unchecked_mut(i) = u32::num_cast_from(Self::from(val));
-			}),
-			64 => as_array_mut::<_, u64, 4>(self, |array| unsafe {
-				*array.get_unchecked_mut(i) = u64::num_cast_from(Self::from(val));
-			}),
-			128 => as_array_mut::<_, u128, 2>(self, |array| unsafe {
-				*array.get_unchecked_mut(i) = u128::num_cast_from(Self::from(val));
-			}),
-			_ => panic!("unsupported bit count"),
-		}
-	}
-
-	#[inline(always)]
 	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
 	where
 		T: UnderlierWithBitOps + NumCast<Self>,
-		Self: From<T>,
+		Self: DivisIterable<T> + From<T>,
 	{
 		match T::LOG_BITS {
 			0 => match log_block_len {
@@ -1181,12 +1095,6 @@ cfg_if! {
 	}
 }
 
-impl_iteration!(M256,
-	@strategy BitIterationStrategy, U1,
-	@strategy FallbackStrategy, U2, U4,
-	@strategy DivisibleStrategy, u8, u16, u32, u64, u128, M128, M256,
-);
-
 // DivisIterable implementations using SIMD extract/insert intrinsics
 
 impl DivisIterable<M128> for M256 {
@@ -1404,22 +1312,22 @@ impl DivisIterable<u16> for M256 {
 	fn set(self, index: usize, val: u16) -> Self {
 		unsafe {
 			match index {
-				0 => Self(_mm256_insert_epi16(self.0, val as i32, 0)),
-				1 => Self(_mm256_insert_epi16(self.0, val as i32, 1)),
-				2 => Self(_mm256_insert_epi16(self.0, val as i32, 2)),
-				3 => Self(_mm256_insert_epi16(self.0, val as i32, 3)),
-				4 => Self(_mm256_insert_epi16(self.0, val as i32, 4)),
-				5 => Self(_mm256_insert_epi16(self.0, val as i32, 5)),
-				6 => Self(_mm256_insert_epi16(self.0, val as i32, 6)),
-				7 => Self(_mm256_insert_epi16(self.0, val as i32, 7)),
-				8 => Self(_mm256_insert_epi16(self.0, val as i32, 8)),
-				9 => Self(_mm256_insert_epi16(self.0, val as i32, 9)),
-				10 => Self(_mm256_insert_epi16(self.0, val as i32, 10)),
-				11 => Self(_mm256_insert_epi16(self.0, val as i32, 11)),
-				12 => Self(_mm256_insert_epi16(self.0, val as i32, 12)),
-				13 => Self(_mm256_insert_epi16(self.0, val as i32, 13)),
-				14 => Self(_mm256_insert_epi16(self.0, val as i32, 14)),
-				15 => Self(_mm256_insert_epi16(self.0, val as i32, 15)),
+				0 => Self(_mm256_insert_epi16(self.0, val as i16, 0)),
+				1 => Self(_mm256_insert_epi16(self.0, val as i16, 1)),
+				2 => Self(_mm256_insert_epi16(self.0, val as i16, 2)),
+				3 => Self(_mm256_insert_epi16(self.0, val as i16, 3)),
+				4 => Self(_mm256_insert_epi16(self.0, val as i16, 4)),
+				5 => Self(_mm256_insert_epi16(self.0, val as i16, 5)),
+				6 => Self(_mm256_insert_epi16(self.0, val as i16, 6)),
+				7 => Self(_mm256_insert_epi16(self.0, val as i16, 7)),
+				8 => Self(_mm256_insert_epi16(self.0, val as i16, 8)),
+				9 => Self(_mm256_insert_epi16(self.0, val as i16, 9)),
+				10 => Self(_mm256_insert_epi16(self.0, val as i16, 10)),
+				11 => Self(_mm256_insert_epi16(self.0, val as i16, 11)),
+				12 => Self(_mm256_insert_epi16(self.0, val as i16, 12)),
+				13 => Self(_mm256_insert_epi16(self.0, val as i16, 13)),
+				14 => Self(_mm256_insert_epi16(self.0, val as i16, 14)),
+				15 => Self(_mm256_insert_epi16(self.0, val as i16, 15)),
 				_ => panic!("index out of bounds"),
 			}
 		}
@@ -1489,38 +1397,38 @@ impl DivisIterable<u8> for M256 {
 	fn set(self, index: usize, val: u8) -> Self {
 		unsafe {
 			match index {
-				0 => Self(_mm256_insert_epi8(self.0, val as i32, 0)),
-				1 => Self(_mm256_insert_epi8(self.0, val as i32, 1)),
-				2 => Self(_mm256_insert_epi8(self.0, val as i32, 2)),
-				3 => Self(_mm256_insert_epi8(self.0, val as i32, 3)),
-				4 => Self(_mm256_insert_epi8(self.0, val as i32, 4)),
-				5 => Self(_mm256_insert_epi8(self.0, val as i32, 5)),
-				6 => Self(_mm256_insert_epi8(self.0, val as i32, 6)),
-				7 => Self(_mm256_insert_epi8(self.0, val as i32, 7)),
-				8 => Self(_mm256_insert_epi8(self.0, val as i32, 8)),
-				9 => Self(_mm256_insert_epi8(self.0, val as i32, 9)),
-				10 => Self(_mm256_insert_epi8(self.0, val as i32, 10)),
-				11 => Self(_mm256_insert_epi8(self.0, val as i32, 11)),
-				12 => Self(_mm256_insert_epi8(self.0, val as i32, 12)),
-				13 => Self(_mm256_insert_epi8(self.0, val as i32, 13)),
-				14 => Self(_mm256_insert_epi8(self.0, val as i32, 14)),
-				15 => Self(_mm256_insert_epi8(self.0, val as i32, 15)),
-				16 => Self(_mm256_insert_epi8(self.0, val as i32, 16)),
-				17 => Self(_mm256_insert_epi8(self.0, val as i32, 17)),
-				18 => Self(_mm256_insert_epi8(self.0, val as i32, 18)),
-				19 => Self(_mm256_insert_epi8(self.0, val as i32, 19)),
-				20 => Self(_mm256_insert_epi8(self.0, val as i32, 20)),
-				21 => Self(_mm256_insert_epi8(self.0, val as i32, 21)),
-				22 => Self(_mm256_insert_epi8(self.0, val as i32, 22)),
-				23 => Self(_mm256_insert_epi8(self.0, val as i32, 23)),
-				24 => Self(_mm256_insert_epi8(self.0, val as i32, 24)),
-				25 => Self(_mm256_insert_epi8(self.0, val as i32, 25)),
-				26 => Self(_mm256_insert_epi8(self.0, val as i32, 26)),
-				27 => Self(_mm256_insert_epi8(self.0, val as i32, 27)),
-				28 => Self(_mm256_insert_epi8(self.0, val as i32, 28)),
-				29 => Self(_mm256_insert_epi8(self.0, val as i32, 29)),
-				30 => Self(_mm256_insert_epi8(self.0, val as i32, 30)),
-				31 => Self(_mm256_insert_epi8(self.0, val as i32, 31)),
+				0 => Self(_mm256_insert_epi8(self.0, val as i8, 0)),
+				1 => Self(_mm256_insert_epi8(self.0, val as i8, 1)),
+				2 => Self(_mm256_insert_epi8(self.0, val as i8, 2)),
+				3 => Self(_mm256_insert_epi8(self.0, val as i8, 3)),
+				4 => Self(_mm256_insert_epi8(self.0, val as i8, 4)),
+				5 => Self(_mm256_insert_epi8(self.0, val as i8, 5)),
+				6 => Self(_mm256_insert_epi8(self.0, val as i8, 6)),
+				7 => Self(_mm256_insert_epi8(self.0, val as i8, 7)),
+				8 => Self(_mm256_insert_epi8(self.0, val as i8, 8)),
+				9 => Self(_mm256_insert_epi8(self.0, val as i8, 9)),
+				10 => Self(_mm256_insert_epi8(self.0, val as i8, 10)),
+				11 => Self(_mm256_insert_epi8(self.0, val as i8, 11)),
+				12 => Self(_mm256_insert_epi8(self.0, val as i8, 12)),
+				13 => Self(_mm256_insert_epi8(self.0, val as i8, 13)),
+				14 => Self(_mm256_insert_epi8(self.0, val as i8, 14)),
+				15 => Self(_mm256_insert_epi8(self.0, val as i8, 15)),
+				16 => Self(_mm256_insert_epi8(self.0, val as i8, 16)),
+				17 => Self(_mm256_insert_epi8(self.0, val as i8, 17)),
+				18 => Self(_mm256_insert_epi8(self.0, val as i8, 18)),
+				19 => Self(_mm256_insert_epi8(self.0, val as i8, 19)),
+				20 => Self(_mm256_insert_epi8(self.0, val as i8, 20)),
+				21 => Self(_mm256_insert_epi8(self.0, val as i8, 21)),
+				22 => Self(_mm256_insert_epi8(self.0, val as i8, 22)),
+				23 => Self(_mm256_insert_epi8(self.0, val as i8, 23)),
+				24 => Self(_mm256_insert_epi8(self.0, val as i8, 24)),
+				25 => Self(_mm256_insert_epi8(self.0, val as i8, 25)),
+				26 => Self(_mm256_insert_epi8(self.0, val as i8, 26)),
+				27 => Self(_mm256_insert_epi8(self.0, val as i8, 27)),
+				28 => Self(_mm256_insert_epi8(self.0, val as i8, 28)),
+				29 => Self(_mm256_insert_epi8(self.0, val as i8, 29)),
+				30 => Self(_mm256_insert_epi8(self.0, val as i8, 30)),
+				31 => Self(_mm256_insert_epi8(self.0, val as i8, 31)),
 				_ => panic!("index out of bounds"),
 			}
 		}

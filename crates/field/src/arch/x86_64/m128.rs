@@ -21,7 +21,7 @@ use seq_macro::seq;
 use crate::{
 	BinaryField,
 	arch::{
-		binary_utils::{as_array_mut, as_array_ref, make_func_to_i8},
+		binary_utils::make_func_to_i8,
 		portable::{
 			packed::{PackedPrimitiveType, impl_pack_scalar},
 			packed_arithmetic::{
@@ -31,9 +31,9 @@ use crate::{
 	},
 	arithmetic_traits::Broadcast,
 	underlier::{
-		DivisIterable, NumCast, SmallU, SpreadToByte, U1, U2, U4, UnderlierType, UnderlierWithBitOps,
-		WithUnderlier, impl_divis_iterable_bitmask, impl_divisible, impl_iteration, mapget,
-		spread_fallback, unpack_hi_128b_fallback, unpack_lo_128b_fallback,
+		DivisIterable, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, UnderlierWithBitOps,
+		WithUnderlier, impl_divis_iterable_bitmask, impl_divisible, mapget, spread_fallback,
+		unpack_hi_128b_fallback, unpack_lo_128b_fallback,
 	},
 };
 
@@ -425,91 +425,10 @@ impl UnderlierWithBitOps for M128 {
 	}
 
 	#[inline(always)]
-	unsafe fn get_subvalue<T>(&self, i: usize) -> T
-	where
-		T: UnderlierType + NumCast<Self>,
-	{
-		match T::BITS {
-			1 | 2 | 4 => {
-				let elements_in_8 = 8 / T::BITS;
-				let mut value_u8 = as_array_ref::<_, u8, 16, _>(self, |arr| unsafe {
-					*arr.get_unchecked(i / elements_in_8)
-				});
-
-				let shift = (i % elements_in_8) * T::BITS;
-				value_u8 >>= shift;
-
-				T::num_cast_from(Self::from(value_u8))
-			}
-			8 => {
-				let value_u8 =
-					as_array_ref::<_, u8, 16, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::num_cast_from(Self::from(value_u8))
-			}
-			16 => {
-				let value_u16 =
-					as_array_ref::<_, u16, 8, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::num_cast_from(Self::from(value_u16))
-			}
-			32 => {
-				let value_u32 =
-					as_array_ref::<_, u32, 4, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::num_cast_from(Self::from(value_u32))
-			}
-			64 => {
-				let value_u64 =
-					as_array_ref::<_, u64, 2, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::num_cast_from(Self::from(value_u64))
-			}
-			128 => T::num_cast_from(*self),
-			_ => panic!("unsupported bit count"),
-		}
-	}
-
-	#[inline(always)]
-	unsafe fn set_subvalue<T>(&mut self, i: usize, val: T)
-	where
-		T: UnderlierWithBitOps,
-		Self: From<T>,
-	{
-		match T::BITS {
-			1 | 2 | 4 => {
-				let elements_in_8 = 8 / T::BITS;
-				let mask = (1u8 << T::BITS) - 1;
-				let shift = (i % elements_in_8) * T::BITS;
-				let val = u8::num_cast_from(Self::from(val)) << shift;
-				let mask = mask << shift;
-
-				as_array_mut::<_, u8, 16>(self, |array| unsafe {
-					let element = array.get_unchecked_mut(i / elements_in_8);
-					*element &= !mask;
-					*element |= val;
-				});
-			}
-			8 => as_array_mut::<_, u8, 16>(self, |array| unsafe {
-				*array.get_unchecked_mut(i) = u8::num_cast_from(Self::from(val));
-			}),
-			16 => as_array_mut::<_, u16, 8>(self, |array| unsafe {
-				*array.get_unchecked_mut(i) = u16::num_cast_from(Self::from(val));
-			}),
-			32 => as_array_mut::<_, u32, 4>(self, |array| unsafe {
-				*array.get_unchecked_mut(i) = u32::num_cast_from(Self::from(val));
-			}),
-			64 => as_array_mut::<_, u64, 2>(self, |array| unsafe {
-				*array.get_unchecked_mut(i) = u64::num_cast_from(Self::from(val));
-			}),
-			128 => {
-				*self = Self::from(val);
-			}
-			_ => panic!("unsupported bit count"),
-		}
-	}
-
-	#[inline(always)]
 	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
 	where
 		T: UnderlierWithBitOps + NumCast<Self>,
-		Self: From<T>,
+		Self: DivisIterable<T> + From<T>,
 	{
 		match T::LOG_BITS {
 			0 => match log_block_len {
@@ -1192,12 +1111,6 @@ impl DivisIterable<u8> for M128 {
 		}
 	}
 }
-
-impl_iteration!(M128,
-	@strategy BitIterationStrategy, U1,
-	@strategy FallbackStrategy, U2, U4,
-	@strategy DivisibleStrategy, u8, u16, u32, u64, u128, M128,
-);
 
 #[cfg(test)]
 mod tests {

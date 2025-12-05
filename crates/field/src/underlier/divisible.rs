@@ -619,6 +619,130 @@ impl_divis_iterable_bitmask!(u32, 1, 2, 4);
 impl_divis_iterable_bitmask!(u64, 1, 2, 4);
 impl_divis_iterable_bitmask!(u128, 1, 2, 4);
 
+// DivisIterable for SmallU types that subdivide into smaller SmallU types
+impl DivisIterable<SmallU<1>> for SmallU<2> {
+	const LOG_N: usize = 1;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = SmallU<1>> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = SmallU<1>> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = SmallU<1>> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> SmallU<1> {
+		SmallU::<1>::new(self.val() >> index)
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: SmallU<1>) -> Self {
+		let mask = 1u8 << index;
+		SmallU::<2>::new((self.val() & !mask) | (val.val() << index))
+	}
+}
+
+impl DivisIterable<SmallU<1>> for SmallU<4> {
+	const LOG_N: usize = 2;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = SmallU<1>> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = SmallU<1>> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = SmallU<1>> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> SmallU<1> {
+		SmallU::<1>::new(self.val() >> index)
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: SmallU<1>) -> Self {
+		let mask = 1u8 << index;
+		SmallU::<4>::new((self.val() & !mask) | (val.val() << index))
+	}
+}
+
+impl DivisIterable<SmallU<2>> for SmallU<4> {
+	const LOG_N: usize = 1;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = SmallU<2>> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = SmallU<2>> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = SmallU<2>> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> SmallU<2> {
+		SmallU::<2>::new(self.val() >> (index * 2))
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: SmallU<2>) -> Self {
+		let shift = index * 2;
+		let mask = 0b11u8 << shift;
+		SmallU::<4>::new((self.val() & !mask) | (val.val() << shift))
+	}
+}
+
+// Blanket reflexive implementation: any type divides into itself once
+impl<T: Copy + Send + Sync> DivisIterable<T> for T {
+	const LOG_N: usize = 0;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = T> + Send + Clone {
+		std::iter::once(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = T> + Send + Clone + '_ {
+		std::iter::once(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = T> + Send + Clone + '_ {
+		slice.iter().copied()
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> T {
+		debug_assert_eq!(index, 0);
+		self
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: T) -> Self {
+		debug_assert_eq!(index, 0);
+		val
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

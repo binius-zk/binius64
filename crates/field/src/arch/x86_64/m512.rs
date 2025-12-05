@@ -37,7 +37,7 @@ use crate::{
 	underlier::{
 		DivisIterable, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps,
 		WithUnderlier, get_block_values, get_spread_bytes, impl_divis_iterable_bitmask,
-		impl_divisible, impl_iteration, mapget, spread_fallback, unpack_hi_128b_fallback,
+		impl_divisible, mapget, spread_fallback, unpack_hi_128b_fallback,
 		unpack_lo_128b_fallback,
 	},
 };
@@ -1300,12 +1300,6 @@ unsafe fn transpose_with_shuffle(a: __m512i, b: __m512i, shuffle: __m512i) -> (_
 		)
 	}
 }
-
-impl_iteration!(M512,
-	@strategy BitIterationStrategy, U1,
-	@strategy FallbackStrategy, U2, U4,
-	@strategy DivisibleStrategy, u8, u16, u32, u64, u128, M128, M256, M512,
-);
 
 // DivisIterable implementations using SIMD extract/insert intrinsics
 

@@ -22,12 +22,9 @@ use rand::{
 
 use super::packed_arithmetic::UnderlierWithBitConstants;
 use crate::{
-	BinaryField, PackedField,
+	BinaryField, DivisIterable, PackedField,
 	arithmetic_traits::{Broadcast, InvertOrZero, MulAlpha, Square},
-	underlier::{
-		IterationMethods, IterationStrategy, NumCast, U1, U2, U4, UnderlierType,
-		UnderlierWithBitOps, WithUnderlier,
-	},
+	underlier::{NumCast, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier},
 };
 
 #[derive(PartialEq, Eq, Clone, Copy, Default, bytemuck::TransparentWrapper)]
@@ -278,10 +275,14 @@ unsafe impl<U: UnderlierType + Pod, Scalar: BinaryField> Pod for PackedPrimitive
 impl<U: UnderlierWithBitOps, Scalar> PackedField for PackedPrimitiveType<U, Scalar>
 where
 	Self: Broadcast<Scalar> + Square + InvertOrZero + Mul<Output = Self>,
-	U: UnderlierWithBitConstants + From<Scalar::Underlier> + Send + Sync + 'static,
+	U: UnderlierWithBitConstants
+		+ DivisIterable<Scalar::Underlier>
+		+ From<Scalar::Underlier>
+		+ Send
+		+ Sync
+		+ 'static,
 	Scalar: BinaryField + WithUnderlier<Underlier: UnderlierWithBitOps>,
 	Scalar::Underlier: NumCast<U>,
-	IterationMethods<Scalar::Underlier, U>: IterationStrategy<Scalar::Underlier, U>,
 {
 	type Scalar = Scalar;
 
@@ -306,19 +307,19 @@ where
 
 	#[inline]
 	fn iter(&self) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
-		IterationMethods::<Scalar::Underlier, U>::ref_iter(&self.0)
+		DivisIterable::<Scalar::Underlier>::ref_iter(&self.0)
 			.map(|underlier| Scalar::from_underlier(underlier))
 	}
 
 	#[inline]
 	fn into_iter(self) -> impl Iterator<Item = Self::Scalar> + Send + Clone {
-		IterationMethods::<Scalar::Underlier, U>::value_iter(self.0)
+		DivisIterable::<Scalar::Underlier>::value_iter(self.0)
 			.map(|underlier| Scalar::from_underlier(underlier))
 	}
 
 	#[inline]
 	fn iter_slice(slice: &[Self]) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
-		IterationMethods::<Scalar::Underlier, U>::slice_iter(Self::to_underliers_ref(slice))
+		DivisIterable::<Scalar::Underlier>::slice_iter(Self::to_underliers_ref(slice))
 			.map_skippable(|underlier| Scalar::from_underlier(underlier))
 	}
 

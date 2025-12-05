@@ -28,7 +28,7 @@ use crate::{
 	underlier::{
 		NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
 		divisible::{DivisIterable, mapget},
-		impl_divis_iterable_bitmask, impl_divisible, impl_iteration,
+		impl_divis_iterable_bitmask, impl_divisible,
 		unpack_lo_128b_fallback,
 	},
 };
@@ -813,12 +813,6 @@ where
 		value.into()
 	}
 }
-
-impl_iteration!(M128,
-	@strategy BitIterationStrategy, U1,
-	@strategy FallbackStrategy, U2, U4,
-	@strategy DivisibleStrategy, u8, u16, u32, u64, u128, M128,
-);
 
 #[cfg(test)]
 mod tests {
