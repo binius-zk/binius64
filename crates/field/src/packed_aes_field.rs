@@ -226,16 +226,11 @@ mod tests {
 	use proptest::prelude::*;
 
 	use super::test_utils::{define_invert_tests, define_multiply_tests, define_square_tests};
-	use crate::{PackedField, linear_transformation::PackedTransformationFactory};
+	use crate::PackedField;
 
 	define_multiply_tests!(Mul::mul, PackedField);
 
 	define_square_tests!(PackedField::square, PackedField);
 
 	define_invert_tests!(PackedField::invert_or_zero, PackedField);
-
-	#[allow(unused)]
-	trait SelfTransformationFactory: PackedTransformationFactory<Self> {}
-
-	impl<T: PackedTransformationFactory<T>> SelfTransformationFactory for T {}
 }

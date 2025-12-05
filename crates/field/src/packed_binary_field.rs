@@ -10,8 +10,7 @@ pub use crate::arch::{
 #[cfg(test)]
 pub mod test_utils {
 	use crate::{
-		BinaryField, PackedField,
-		linear_transformation::PackedTransformationFactory,
+		PackedField,
 		underlier::{U1, U2, U4, WithUnderlier},
 	};
 
@@ -421,14 +420,6 @@ pub mod test_utils {
 	pub(crate) use define_invert_tests;
 	pub(crate) use define_multiply_tests;
 	pub(crate) use define_square_tests;
-
-	/// Helper function for compile-time checks
-	#[allow(unused)]
-	pub const fn implements_transformation_factory<
-		P1: PackedField<Scalar: BinaryField>,
-		P2: PackedTransformationFactory<P1>,
-	>() {
-	}
 
 	pub fn check_interleave<P: PackedField + WithUnderlier>(
 		lhs: P::Underlier,

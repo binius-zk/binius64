@@ -2,7 +2,6 @@
 
 use crate::{
 	PackedExtension, PackedField, TowerField,
-	arithmetic_traits::TaggedPackedTransformationFactory,
 	binary_field::{BinaryField, TowerExtensionField},
 	linear_transformation::{FieldLinearTransformation, Transformation},
 	packed::PackedBinaryField,
@@ -110,8 +109,6 @@ macro_rules! interleave_mask_odd {
 
 pub(crate) use interleave_mask_odd;
 
-use crate::arch::PackedStrategy;
-
 /// View the inputs as vectors of packed binary tower elements and transpose as 2x2 square matrices.
 /// Given vectors <a_0, a_1, a_2, a_3, ...> and <b_0, b_1, b_2, b_3, ...>, returns a tuple with
 /// <a0, b0, a2, b2, ...> and <a1, b1, a3, b3>.
@@ -197,20 +194,6 @@ where
 		}
 
 		result
-	}
-}
-
-impl<IP, OP> TaggedPackedTransformationFactory<PackedStrategy, OP> for IP
-where
-	IP: PackedBinaryField + WithUnderlier<Underlier: UnderlierWithBitOps>,
-	OP: PackedBinaryField + WithUnderlier<Underlier = IP::Underlier>,
-{
-	type PackedTransformation<Data: AsRef<[OP::Scalar]> + Sync> = PackedTransformation<OP>;
-
-	fn make_packed_transformation<Data: AsRef<[OP::Scalar]> + Sync>(
-		transformation: FieldLinearTransformation<OP::Scalar, Data>,
-	) -> Self::PackedTransformation<Data> {
-		PackedTransformation::new(&transformation)
 	}
 }
 

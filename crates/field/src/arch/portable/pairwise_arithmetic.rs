@@ -3,11 +3,10 @@
 use crate::{
 	arch::PairwiseStrategy,
 	arithmetic_traits::{
-		InvertOrZero, MulAlpha, Square, TaggedInvertOrZero, TaggedMul, TaggedMulAlpha,
-		TaggedPackedTransformationFactory, TaggedSquare,
+		InvertOrZero, MulAlpha, Square, TaggedInvertOrZero, TaggedMul, TaggedMulAlpha, TaggedSquare,
 	},
-	linear_transformation::{FieldLinearTransformation, Transformation},
-	packed::{PackedBinaryField, PackedField},
+	linear_transformation::Transformation,
+	packed::PackedField,
 };
 
 impl<PT: PackedField> TaggedMul<PairwiseStrategy> for PT {
@@ -86,20 +85,5 @@ where
 {
 	fn transform(&self, data: &IP) -> OP {
 		OP::from_fn(|i| self.inner.transform(&data.get(i)))
-	}
-}
-
-impl<IP, OP> TaggedPackedTransformationFactory<PairwiseStrategy, OP> for IP
-where
-	IP: PackedBinaryField,
-	OP: PackedBinaryField,
-{
-	type PackedTransformation<Data: AsRef<[OP::Scalar]> + Sync> =
-		PairwiseTransformation<FieldLinearTransformation<OP::Scalar, Data>>;
-
-	fn make_packed_transformation<Data: AsRef<[OP::Scalar]> + Sync>(
-		transformation: FieldLinearTransformation<OP::Scalar, Data>,
-	) -> Self::PackedTransformation<Data> {
-		PairwiseTransformation::new(transformation)
 	}
 }
