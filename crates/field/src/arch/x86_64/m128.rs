@@ -32,8 +32,8 @@ use crate::{
 	arithmetic_traits::Broadcast,
 	underlier::{
 		Divisible, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, UnderlierWithBitOps,
-		WithUnderlier, impl_divisible_bitmask, mapget, spread_fallback,
-		unpack_hi_128b_fallback, unpack_lo_128b_fallback,
+		WithUnderlier, impl_divisible_bitmask, mapget, spread_fallback, unpack_hi_128b_fallback,
+		unpack_lo_128b_fallback,
 	},
 };
 

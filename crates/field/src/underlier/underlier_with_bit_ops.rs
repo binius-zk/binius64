@@ -3,11 +3,12 @@
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
 
 use binius_utils::checked_arithmetics::{checked_int_div, checked_log_2};
-use crate::Divisible;
+
 use super::{
 	U1, U2, U4,
 	underlier_type::{NumCast, UnderlierType},
 };
+use crate::Divisible;
 
 /// Underlier type that supports bit arithmetic.
 pub trait UnderlierWithBitOps:
