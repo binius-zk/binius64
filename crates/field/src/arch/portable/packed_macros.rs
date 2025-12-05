@@ -140,7 +140,7 @@ macro_rules! define_packed_binary_field {
 		impl_strategy!(impl_mul_alpha_with $name, ($($mul_alpha)*));
 
 		// Define linear transformations
-		impl_transformation!($name, ($($transform)*));
+		//impl_transformation!($name, ($($transform)*));
 	};
 }
 
@@ -205,13 +205,6 @@ pub(crate) mod portable_macros {
 		};
 	}
 
-	macro_rules! impl_transformation {
-		($name:ident, ($strategy:ident)) => {
-			impl_transformation_with_strategy!($name, $crate::arch::$strategy);
-		};
-	}
-
 	pub(crate) use impl_strategy;
-	pub(crate) use impl_transformation;
 	pub(crate) use maybe_impl_broadcast;
 }

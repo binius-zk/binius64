@@ -33,7 +33,7 @@ fn create_transformation_main<PT: TransformToSelfFactory>() -> impl Transformati
 cfg_if! {
 	if #[cfg(feature = "benchmark_alternative_strategies")] {
 		use binius_field::{
-			arch::{PackedStrategy,  PairwiseStrategy, SimdStrategy,},
+			arch::{PackedStrategy,  PairwiseStrategy, },
 			arithmetic_traits::TaggedPackedTransformationFactory
 		};
 
@@ -69,17 +69,6 @@ cfg_if! {
 			PT::make_packed_transformation(transformation)
 		}
 
-		fn create_transformation_simd<PT: TaggedTransformToSelfFactory<SimdStrategy>>(
-		) -> impl Transformation<PT, PT> {
-			let mut rng = rand::rng();
-			let bases: Vec<_> = (0..PT::Scalar::DEGREE)
-				.map(|_| PT::Scalar::random(&mut rng))
-				.collect();
-			let transformation = FieldLinearTransformation::<PT::Scalar, Vec<PT::Scalar>>::new(bases);
-
-			PT::make_packed_transformation(transformation)
-		}
-
 		benchmark_packed_operation!(
 			op_name @ linear_transform,
 			bench_type @ transformation,
@@ -87,7 +76,6 @@ cfg_if! {
 				(main, TransformToSelfFactory, create_transformation_main),
 				(pairwise, TaggedTransformToSelfFactory::<PairwiseStrategy>, create_transformation_pairwise),
 				(packed, TaggedTransformToSelfFactory::<PackedStrategy>, create_transformation_packed),
-				(simd, TaggedTransformToSelfFactory::<SimdStrategy>, create_transformation_simd),
 			)
 		);
 	} else {

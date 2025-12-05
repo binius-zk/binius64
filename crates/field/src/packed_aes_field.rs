@@ -214,69 +214,9 @@ mod test_utils {
 		};
 	}
 
-	macro_rules! define_transformation_tests {
-		($constraint:path) => {
-			$crate::packed_binary_field::test_utils::define_check_packed_transformation!(
-				$constraint
-			);
-
-			proptest::proptest! {
-				#[test]
-				fn test_transformation_packed_aes_8(a_val in proptest::prelude::any::<u8>()) {
-					use crate::arch::packed_aes_8::*;
-
-					TestTransformation::<PackedAESBinaryField1x8b>::test_transformation(a_val.into());
-				}
-
-				#[test]
-				fn test_transformation_packed_aes_16(a_val in proptest::prelude::any::<u16>()) {
-					use crate::arch::packed_aes_16::*;
-
-					TestTransformation::<PackedAESBinaryField2x8b>::test_transformation(a_val.into());
-				}
-
-				#[test]
-				fn test_transformation_packed_aes_32(a_val in proptest::prelude::any::<u32>()) {
-					use crate::arch::packed_aes_32::*;
-
-					TestTransformation::<PackedAESBinaryField4x8b>::test_transformation(a_val.into());
-				}
-
-				#[test]
-				fn test_transformation_packed_aes_64(a_val in proptest::prelude::any::<u64>()) {
-					use crate::arch::packed_aes_64::*;
-
-					TestTransformation::<PackedAESBinaryField8x8b>::test_transformation(a_val.into());
-				}
-
-				#[test]
-				fn test_transformation_packed_aes_128(a_val in proptest::prelude::any::<u128>()) {
-					use crate::arch::packed_aes_128::*;
-
-					TestTransformation::<PackedAESBinaryField16x8b>::test_transformation(a_val.into());
-				}
-
-				#[test]
-				fn test_transformation_packed_aes_256(a_val in proptest::prelude::any::<[u128; 2]>()) {
-					use crate::arch::packed_aes_256::*;
-
-					TestTransformation::<PackedAESBinaryField32x8b>::test_transformation(a_val.into());
-				}
-
-				#[test]
-				fn test_transformation_packed_aes_512(a_val in proptest::prelude::any::<[u128; 4]>()) {
-					use crate::arch::packed_aes_512::*;
-
-					TestTransformation::<PackedAESBinaryField64x8b>::test_transformation(a_val.into());
-				}
-			}
-		};
-	}
-
 	pub(crate) use define_invert_tests;
 	pub(crate) use define_multiply_tests;
 	pub(crate) use define_square_tests;
-	pub(crate) use define_transformation_tests;
 }
 
 #[cfg(test)]
@@ -285,10 +225,7 @@ mod tests {
 
 	use proptest::prelude::*;
 
-	use super::test_utils::{
-		define_invert_tests, define_multiply_tests, define_square_tests,
-		define_transformation_tests,
-	};
+	use super::test_utils::{define_invert_tests, define_multiply_tests, define_square_tests};
 	use crate::{PackedField, linear_transformation::PackedTransformationFactory};
 
 	define_multiply_tests!(Mul::mul, PackedField);
@@ -301,6 +238,4 @@ mod tests {
 	trait SelfTransformationFactory: PackedTransformationFactory<Self> {}
 
 	impl<T: PackedTransformationFactory<T>> SelfTransformationFactory for T {}
-
-	define_transformation_tests!(SelfTransformationFactory);
 }

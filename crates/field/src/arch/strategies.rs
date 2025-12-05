@@ -11,8 +11,6 @@ pub struct PairwiseRecursiveStrategy;
 pub struct PairwiseStrategy;
 /// Get result of operation from the table for each sub-element
 pub struct PairwiseTableStrategy;
-/// Similar to `PackedStrategy`, but uses SIMD operations supported by the platform.
-pub struct SimdStrategy;
 /// Applicable only for multiply by alpha and square operations.
 /// Reuse multiplication operation for that.
 pub struct ReuseMultiplyStrategy;

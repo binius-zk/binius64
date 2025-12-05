@@ -25,7 +25,7 @@ cfg_if! {
 	if #[cfg(feature = "benchmark_alternative_strategies")] {
 		use binius_field::{
 			arch::{PackedStrategy, PairwiseRecursiveStrategy, PairwiseStrategy,
-				PairwiseTableStrategy, SimdStrategy,},
+				PairwiseTableStrategy, },
 			arithmetic_traits::TaggedMul
 		};
 
@@ -45,10 +45,6 @@ cfg_if! {
 			TaggedMul::<PackedStrategy>::mul(lhs, rhs)
 		}
 
-		fn mul_simd<T: TaggedMul<SimdStrategy>>(lhs: T, rhs: T) -> T {
-			TaggedMul::<SimdStrategy>::mul(lhs, rhs)
-		}
-
 		benchmark_packed_operation!(
 			op_name @ multiply,
 			bench_type @ binary_op,
@@ -58,7 +54,6 @@ cfg_if! {
 				(pairwise_recursive, TaggedMul::<PairwiseRecursiveStrategy>, mul_pairwise_recursive),
 				(pairwise_table, TaggedMul::<PairwiseTableStrategy>, mul_pairwise_table),
 				(packed, TaggedMul::<PackedStrategy>, mul_packed),
-				(simd, TaggedMul::<SimdStrategy>, mul_simd),
 			)
 		);
 	} else {

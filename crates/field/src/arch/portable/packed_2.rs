@@ -3,7 +3,6 @@
 use super::packed::PackedPrimitiveType;
 use crate::{
 	arch::portable::packed_macros::{portable_macros::*, *},
-	arithmetic_traits::impl_transformation_with_strategy,
 	underlier::{U2, UnderlierType},
 };
 

@@ -1,10 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 
 use super::{m256::M256, packed_macros::*};
-use crate::{
-	arch::portable::{packed::PackedPrimitiveType, packed_macros::*},
-	arithmetic_traits::impl_transformation_with_strategy,
-};
+use crate::arch::portable::{packed::PackedPrimitiveType, packed_macros::*};
 
 define_packed_binary_fields!(
 	underlier: M256,

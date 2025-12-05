@@ -20,30 +20,5 @@ macro_rules! impl_strategy {
 	};
 }
 
-macro_rules! impl_transformation {
-	($name:ident, (if $cond:ident $num:literal else $fallback:tt)) => {
-		cfg_if::cfg_if! {
-			if #[cfg(target_feature = "gfni")] {
-				crate::arch::x86_64::gfni::gfni_arithmetics::impl_transformation_with_gfni_nxn!($name, $num);
-			} else {
-				impl_transformation_with_strategy!($name, $crate::arch::$fallback);
-			}
-		}
-	};
-	($name:ident, (if $cond:ident $gfni_strategy:tt else $fallback:tt)) => {
-		cfg_if::cfg_if! {
-			if #[cfg(target_feature = "gfni")] {
-				impl_transformation_with_strategy!($name, $crate::arch::$gfni_strategy);
-			} else {
-				impl_transformation_with_strategy!($name, $crate::arch::$fallback);
-			}
-		}
-	};
-	($name:ident, ($strategy:tt)) => {
-		impl_transformation_with_strategy!($name, $crate::arch::$strategy);
-	};
-}
-
 pub(crate) use impl_strategy;
-pub(crate) use impl_transformation;
 pub(crate) use maybe_impl_broadcast;
