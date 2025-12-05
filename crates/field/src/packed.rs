@@ -22,8 +22,7 @@ use super::{
 	binary_field_arithmetic::TowerFieldArithmetic,
 };
 use crate::{
-	BinaryField, Field, PackedExtension, arithmetic_traits::InvertOrZero,
-	is_packed_field_indexable, underlier::WithUnderlier,
+	BinaryField, Field, PackedExtension, arithmetic_traits::InvertOrZero, underlier::WithUnderlier,
 };
 
 /// A packed field represents a vector of underlying field elements.
@@ -220,11 +219,11 @@ pub trait PackedField:
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self);
 
 	/// Unzips interleaved blocks of this packed vector with another packed vector.
-	/// 
+	///
 	/// Consider this example, where `LOG_WIDTH` is 3 and `log_block_len` is 1:
 	///    A = [a0, a1, b0, b1, a2, a3, b2, b3]
 	///    B = [a4, a5, b4, b5, a6, a7, b6, b7]
-	/// 
+	///
 	/// The transposed result is
 	///    A' = [a0, a1, a2, a3, a4, a5, a6, a7]
 	///    B' = [b0, b1, b2, b3, b4, b5, b6, b7]
@@ -320,21 +319,16 @@ pub fn get_packed_slice<P: PackedField>(packed: &[P], i: usize) -> P::Scalar {
 /// The caller must ensure that `i` is less than `P::WIDTH * packed.len()`.
 #[inline(always)]
 pub unsafe fn get_packed_slice_unchecked<P: PackedField>(packed: &[P], i: usize) -> P::Scalar {
-	if is_packed_field_indexable::<P>() {
-		// Safety:
-		//  - We can safely cast the pointer to `P::Scalar` because `P` is `PackedFieldIndexable`
-		//  - `i` is guaranteed to be less than `len_packed_slice(packed)`
-		unsafe { *(packed.as_ptr() as *const P::Scalar).add(i) }
-	} else {
-		// Safety:
-		// - `i / P::WIDTH` is within the bounds of `packed` if `i` is less than
-		//   `len_packed_slice(packed)`
-		// - `i % P::WIDTH` is always less than `P::WIDTH
-		unsafe {
-			packed
-				.get_unchecked(i >> P::LOG_WIDTH)
-				.get_unchecked(i % P::WIDTH)
-		}
+	// TODO: Consider putting a get_in_slice method on DivisIterable
+
+	// Safety:
+	// - `i / P::WIDTH` is within the bounds of `packed` if `i` is less than
+	//   `len_packed_slice(packed)`
+	// - `i % P::WIDTH` is always less than `P::WIDTH
+	unsafe {
+		packed
+			.get_unchecked(i >> P::LOG_WIDTH)
+			.get_unchecked(i % P::WIDTH)
 	}
 }
 
@@ -363,22 +357,15 @@ pub unsafe fn set_packed_slice_unchecked<P: PackedField>(
 	i: usize,
 	scalar: P::Scalar,
 ) {
-	if is_packed_field_indexable::<P>() {
-		// Safety:
-		//  - We can safely cast the pointer to `P::Scalar` because `P` is `PackedFieldIndexable`
-		//  - `i` is guaranteed to be less than `len_packed_slice(packed)`
-		unsafe {
-			*(packed.as_mut_ptr() as *mut P::Scalar).add(i) = scalar;
-		}
-	} else {
-		// Safety: if `i` is less than `len_packed_slice(packed)`, then
-		// - `i / P::WIDTH` is within the bounds of `packed`
-		// - `i % P::WIDTH` is always less than `P::WIDTH
-		unsafe {
-			packed
-				.get_unchecked_mut(i >> P::LOG_WIDTH)
-				.set_unchecked(i % P::WIDTH, scalar)
-		}
+	// TODO: Consider putting a set_in_slice method on DivisIterable
+
+	// Safety: if `i` is less than `len_packed_slice(packed)`, then
+	// - `i / P::WIDTH` is within the bounds of `packed`
+	// - `i % P::WIDTH` is always less than `P::WIDTH
+	unsafe {
+		packed
+			.get_unchecked_mut(i >> P::LOG_WIDTH)
+			.set_unchecked(i % P::WIDTH, scalar)
 	}
 }
 

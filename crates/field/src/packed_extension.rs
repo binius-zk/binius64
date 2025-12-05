@@ -1,63 +1,8 @@
 // Copyright 2023-2025 Irreducible Inc.
 
 use crate::{
-	ExtensionField, Field, PackedField,
-	as_packed_field::PackScalar,
-	underlier::{Divisible, WithUnderlier},
+	ExtensionField, Field, PackedField, as_packed_field::PackScalar, underlier::WithUnderlier,
 };
-
-/// This is a marker trait showing that [`PackedField`] can be safely cast to a slice of scalars.
-///
-/// Not all packed fields can index individual scalar elements. Notably, packed fields of
-/// $\mathbb{F}_2$ elements can pack multiple scalars into a single byte.
-///
-///
-/// # Safety
-///
-/// In order for the above relation to be guaranteed, the memory representation of a slice of
-/// `PackedExtensionIndexable` elements must be the same as a slice of the underlying scalar
-/// elements, differing only in the slice lengths.
-unsafe trait PackedFieldIndexable: PackedField {}
-
-unsafe impl<S, P> PackedFieldIndexable for P
-where
-	S: Field,
-	P: PackedDivisible<S, Scalar = S>,
-{
-}
-
-/// Check if `P` implements `PackedFieldIndexable`.
-/// This functions gets optimized out by the compiler so if it is used in a generic context
-/// as an `if` condition, the non-meaningful branch will be optimized out.
-#[inline(always)]
-#[allow(clippy::redundant_clone)]
-pub fn is_packed_field_indexable<P: PackedField>() -> bool {
-	// Use a hack that array of copyable elements won't call clone when the array is cloned.
-
-	struct X<T> {
-		cloned: bool,
-		_pd: std::marker::PhantomData<T>,
-	}
-
-	impl<T> Clone for X<T> {
-		fn clone(&self) -> Self {
-			Self {
-				cloned: true,
-				_pd: std::marker::PhantomData,
-			}
-		}
-	}
-
-	impl<T: PackedFieldIndexable> Copy for X<T> {}
-
-	let arr = [X::<P> {
-		cloned: false,
-		_pd: std::marker::PhantomData,
-	}];
-	let cloned = arr.clone();
-
-	!cloned[0].cloned
-}
 
 /// Trait represents a relationship between a packed struct of field elements and a packed struct
 /// of elements from an extension field.
@@ -253,28 +198,5 @@ impl<PT1, PT2> RepackedExtension<PT1> for PT2
 where
 	PT1: PackedField,
 	PT2: PackedExtension<PT1::Scalar, PackedSubfield = PT1, Scalar: ExtensionField<PT1::Scalar>>,
-{
-}
-
-/// A marker trait that represents a relationship between a packed struct of field elements and a
-/// smaller packed struct the same field elements.
-///
-/// This trait can be used to safely cast memory slices from larger packed fields to smaller ones.
-///
-/// # Safety
-///
-/// In order for the above relation to be guaranteed, the memory representation of a slice of
-/// `PackedDivisible` elements must be the same as a slice of the underlying `PackedField`
-/// elements, differing only in the slice lengths.
-unsafe trait PackedDivisible<P>: PackedField
-where
-	P: PackedField<Scalar = Self::Scalar>,
-{
-}
-
-unsafe impl<PT1, PT2> PackedDivisible<PT2> for PT1
-where
-	PT2: PackedField + WithUnderlier,
-	PT1: PackedField<Scalar = PT2::Scalar> + WithUnderlier<Underlier: Divisible<PT2::Underlier>>,
 {
 }
