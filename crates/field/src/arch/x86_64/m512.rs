@@ -629,95 +629,10 @@ impl UnderlierWithBitOps for M512 {
 	}
 
 	#[inline(always)]
-	unsafe fn get_subvalue<T>(&self, i: usize) -> T
-	where
-		T: UnderlierType + NumCast<Self>,
-	{
-		match T::BITS {
-			1 | 2 | 4 => {
-				let elements_in_8 = 8 / T::BITS;
-				let mut value_u8 = as_array_ref::<_, u8, 64, _>(self, |arr| unsafe {
-					*arr.get_unchecked(i / elements_in_8)
-				});
-
-				let shift = (i % elements_in_8) * T::BITS;
-				value_u8 >>= shift;
-
-				T::from_underlier(T::num_cast_from(Self::from(value_u8)))
-			}
-			8 => {
-				let value_u8 =
-					as_array_ref::<_, u8, 64, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::from_underlier(T::num_cast_from(Self::from(value_u8)))
-			}
-			16 => {
-				let value_u16 =
-					as_array_ref::<_, u16, 32, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::from_underlier(T::num_cast_from(Self::from(value_u16)))
-			}
-			32 => {
-				let value_u32 =
-					as_array_ref::<_, u32, 16, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::from_underlier(T::num_cast_from(Self::from(value_u32)))
-			}
-			64 => {
-				let value_u64 =
-					as_array_ref::<_, u64, 8, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::from_underlier(T::num_cast_from(Self::from(value_u64)))
-			}
-			128 => {
-				let value_u128 =
-					as_array_ref::<_, u128, 4, _>(self, |arr| unsafe { *arr.get_unchecked(i) });
-				T::from_underlier(T::num_cast_from(Self::from(value_u128)))
-			}
-			_ => panic!("unsupported bit count"),
-		}
-	}
-
-	#[inline(always)]
-	unsafe fn set_subvalue<T>(&mut self, i: usize, val: T)
-	where
-		T: UnderlierWithBitOps,
-		Self: From<T>,
-	{
-		match T::BITS {
-			1 | 2 | 4 => {
-				let elements_in_8 = 8 / T::BITS;
-				let mask = (1u8 << T::BITS) - 1;
-				let shift = (i % elements_in_8) * T::BITS;
-				let val = u8::num_cast_from(Self::from(val)) << shift;
-				let mask = mask << shift;
-
-				as_array_mut::<_, u8, 64>(self, |array| unsafe {
-					let element = array.get_unchecked_mut(i / elements_in_8);
-					*element &= !mask;
-					*element |= val;
-				});
-			}
-			8 => as_array_mut::<_, u8, 64>(self, |array| unsafe {
-				*array.get_unchecked_mut(i) = u8::num_cast_from(Self::from(val));
-			}),
-			16 => as_array_mut::<_, u16, 32>(self, |array| unsafe {
-				*array.get_unchecked_mut(i) = u16::num_cast_from(Self::from(val));
-			}),
-			32 => as_array_mut::<_, u32, 16>(self, |array| unsafe {
-				*array.get_unchecked_mut(i) = u32::num_cast_from(Self::from(val));
-			}),
-			64 => as_array_mut::<_, u64, 8>(self, |array| unsafe {
-				*array.get_unchecked_mut(i) = u64::num_cast_from(Self::from(val));
-			}),
-			128 => as_array_mut::<_, u128, 4>(self, |array| unsafe {
-				*array.get_unchecked_mut(i) = u128::num_cast_from(Self::from(val));
-			}),
-			_ => panic!("unsupported bit count"),
-		}
-	}
-
-	#[inline(always)]
 	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
 	where
 		T: UnderlierWithBitOps + NumCast<Self>,
-		Self: From<T>,
+		Self: Divisible<T> + From<T>,
 	{
 		match T::LOG_BITS {
 			0 => match log_block_len {

@@ -23,10 +23,9 @@ use super::super::portable::{
 };
 use crate::{
 	BinaryField,
-	arch::binary_utils::{as_array_mut, as_array_ref},
 	arithmetic_traits::Broadcast,
 	underlier::{
-		NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
+		NumCast, SmallU, UnderlierType, UnderlierWithBitOps, WithUnderlier,
 		divisible::{Divisible, mapget},
 		impl_divisible_bitmask, unpack_lo_128b_fallback,
 	},
@@ -574,69 +573,6 @@ impl UnderlierWithBitOps for M128 {
 
 	fn fill_with_bit(val: u8) -> Self {
 		Self(unsafe { vdupq_n_u64(u64::fill_with_bit(val)) })
-	}
-
-	#[inline(always)]
-	unsafe fn get_subvalue<T>(&self, i: usize) -> T
-	where
-		T: UnderlierType + NumCast<Self>,
-	{
-		match T::BITS {
-			1 | 2 | 4 => {
-				let elements_in_8 = 8 / T::BITS;
-				let shift = (i % elements_in_8) * T::BITS;
-				let mask = (1u8 << T::BITS) - 1;
-
-				T::num_cast_from(as_array_ref::<_, u8, 16, _>(self, |a| {
-					Self::from((a[i / elements_in_8] >> shift) & mask)
-				}))
-			}
-			8 => T::num_cast_from(as_array_ref::<_, u8, 16, _>(self, |a| Self::from(a[i]))),
-			16 => T::num_cast_from(as_array_ref::<_, u16, 8, _>(self, |a| Self::from(a[i]))),
-			32 => T::num_cast_from(as_array_ref::<_, u32, 4, _>(self, |a| Self::from(a[i]))),
-			64 => T::num_cast_from(as_array_ref::<_, u64, 2, _>(self, |a| Self::from(a[i]))),
-			128 => T::num_cast_from(*self),
-			_ => panic!("unsupported bit count"),
-		}
-	}
-
-	#[inline(always)]
-	unsafe fn set_subvalue<T>(&mut self, i: usize, val: T)
-	where
-		T: UnderlierWithBitOps,
-		Self: From<T>,
-	{
-		match T::BITS {
-			1 | 2 | 4 => {
-				let elements_in_8 = 8 / T::BITS;
-				let mask = (1u8 << T::BITS) - 1;
-				let shift = (i % elements_in_8) * T::BITS;
-				let val = u8::num_cast_from(Self::from(val)) << shift;
-				let mask = mask << shift;
-
-				as_array_mut::<_, u8, 16>(self, |array| {
-					let element = &mut array[i / elements_in_8];
-					*element &= !mask;
-					*element |= val;
-				});
-			}
-			8 => as_array_mut::<_, u8, 16>(self, |array| {
-				array[i] = u8::num_cast_from(Self::from(val));
-			}),
-			16 => as_array_mut::<_, u16, 8>(self, |array| {
-				array[i] = u16::num_cast_from(Self::from(val));
-			}),
-			32 => as_array_mut::<_, u32, 4>(self, |array| {
-				array[i] = u32::num_cast_from(Self::from(val));
-			}),
-			64 => as_array_mut::<_, u64, 2>(self, |array| {
-				array[i] = u64::num_cast_from(Self::from(val));
-			}),
-			128 => {
-				*self = Self::from(val);
-			}
-			_ => panic!("unsupported bit count"),
-		}
 	}
 
 	#[inline(always)]

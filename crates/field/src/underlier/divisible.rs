@@ -278,7 +278,7 @@ pub mod mapget {
 	}
 }
 
-/// Iterator for dividing an underlier into sub-byte elements (SmallU<N>).
+/// Iterator for dividing an underlier into sub-byte elements (ie. [`SmallU`]).
 ///
 /// This iterator wraps a byte iterator and extracts sub-byte elements from each byte.
 /// Generic over the byte iterator type `I`.

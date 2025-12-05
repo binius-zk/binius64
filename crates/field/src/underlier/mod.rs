@@ -1,6 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-mod divisible;
+pub(crate) mod divisible;
 mod scaled;
 mod small_uint;
 mod underlier_impls;
