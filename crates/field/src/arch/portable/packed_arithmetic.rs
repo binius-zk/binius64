@@ -1,11 +1,11 @@
 // Copyright 2024-2025 Irreducible Inc.
 
 use crate::{
-	PackedExtension, PackedField, TowerField,
-	binary_field::{BinaryField, TowerExtensionField},
+	PackedField, TowerField,
+	binary_field::BinaryField,
 	linear_transformation::{FieldLinearTransformation, Transformation},
 	packed::PackedBinaryField,
-	underlier::{UnderlierType, UnderlierWithBitOps, WithUnderlier},
+	underlier::{UnderlierWithBitOps, WithUnderlier},
 };
 
 pub trait UnderlierWithBitConstants: UnderlierWithBitOps
@@ -41,43 +41,6 @@ where
 		}
 
 		(self, other)
-	}
-}
-
-/// Abstraction for a packed tower field of height greater than 0.
-///
-/// Helper trait
-pub(crate) trait PackedTowerField: PackedField + WithUnderlier {
-	/// A scalar of a lower height
-	type DirectSubfield: TowerField;
-	/// Packed type with the same underlier with a lower height
-	type PackedDirectSubfield: PackedField<Scalar = Self::DirectSubfield>
-		+ WithUnderlier<Underlier = Self::Underlier>;
-
-	/// Reinterpret value as a packed field over a lower height
-	fn as_packed_subfield(self) -> Self::PackedDirectSubfield;
-
-	/// Reinterpret packed subfield as a current type
-	fn from_packed_subfield(value: Self::PackedDirectSubfield) -> Self;
-}
-
-impl<F, P, U: UnderlierType> PackedTowerField for P
-where
-	F: TowerExtensionField,
-	P: PackedField<Scalar = F> + PackedExtension<F::DirectSubfield> + WithUnderlier<Underlier = U>,
-	P::PackedSubfield: WithUnderlier<Underlier = U>,
-{
-	type DirectSubfield = F::DirectSubfield;
-	type PackedDirectSubfield = <Self as PackedExtension<F::DirectSubfield>>::PackedSubfield;
-
-	#[inline]
-	fn as_packed_subfield(self) -> Self::PackedDirectSubfield {
-		P::cast_base(self)
-	}
-
-	#[inline]
-	fn from_packed_subfield(value: Self::PackedDirectSubfield) -> Self {
-		P::cast_ext(value)
 	}
 }
 
