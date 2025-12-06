@@ -6,8 +6,9 @@ use std::{
 	iter::{Product, Sum},
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
-use bytemuck::Zeroable;
+
 use binius_utils::{DeserializeBytes, SerializeBytes};
+use bytemuck::Zeroable;
 
 use crate::{
 	Random,

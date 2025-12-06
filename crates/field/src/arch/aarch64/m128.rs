@@ -574,16 +574,6 @@ impl UnderlierWithBitOps for M128 {
 	fn fill_with_bit(val: u8) -> Self {
 		Self(unsafe { vdupq_n_u64(u64::fill_with_bit(val)) })
 	}
-
-	#[inline(always)]
-	fn shl_128b_lanes(self, rhs: usize) -> Self {
-		self << rhs
-	}
-
-	#[inline(always)]
-	fn shr_128b_lanes(self, rhs: usize) -> Self {
-		self >> rhs
-	}
 }
 
 impl UnderlierWithBitConstants for M128 {

@@ -161,6 +161,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(unused)]
 pub(crate) fn single_element_mask_bits<T: UnderlierWithBitOps>(bits_count: usize) -> T {
 	if bits_count == T::BITS {
 		!T::ZERO
