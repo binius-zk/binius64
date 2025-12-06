@@ -244,6 +244,7 @@ impl Field for BinaryField128bGhash {
 	const ZERO: Self = Self(0);
 	const ONE: Self = Self(1);
 	const CHARACTERISTIC: usize = 2;
+	const MULTIPLICATIVE_GENERATOR: Self = Self(0x494ef99794d5244f9152df59d87a9186);
 
 	fn double(&self) -> Self {
 		Self(0)
@@ -456,9 +457,7 @@ impl DeserializeBytes for BinaryField128bGhash {
 	}
 }
 
-impl BinaryField for BinaryField128bGhash {
-	const MULTIPLICATIVE_GENERATOR: Self = Self(0x494ef99794d5244f9152df59d87a9186);
-}
+impl BinaryField for BinaryField128bGhash {}
 
 impl TowerField for BinaryField128bGhash {
 	fn min_tower_level(self) -> usize {

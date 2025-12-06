@@ -402,7 +402,7 @@ impl<'a> CircuitBuilder for WitnessGenerator<'a> {
 mod tests {
 	use std::iter::successors;
 
-	use binius_field::{BinaryField, Field, PackedField};
+	use binius_field::{Field, PackedField};
 
 	use super::*;
 

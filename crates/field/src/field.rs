@@ -64,6 +64,9 @@ pub trait Field:
 	/// The characteristic of the field.
 	const CHARACTERISTIC: usize;
 
+	/// Fixed generator of the multiplicative group.
+	const MULTIPLICATIVE_GENERATOR: Self;
+
 	/// Returns true iff this element is zero.
 	fn is_zero(&self) -> bool {
 		*self == Self::ZERO

@@ -12,7 +12,7 @@ pub fn powers<F: Field>(val: F) -> impl Iterator<Item = F> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{BinaryField, BinaryField128bGhash};
+	use crate::BinaryField128bGhash;
 
 	#[test]
 	fn test_powers_against_pow() {

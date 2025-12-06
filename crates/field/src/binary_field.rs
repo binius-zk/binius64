@@ -23,9 +23,6 @@ pub trait BinaryField:
 	ExtensionField<BinaryField1b> + WithUnderlier<Underlier: UnderlierWithBitOps>
 {
 	const N_BITS: usize = Self::DEGREE;
-
-	// TODO: Move this to Field from BinaryField
-	const MULTIPLICATIVE_GENERATOR: Self;
 }
 
 /// A binary field *isomorphic* to a binary tower field.
@@ -256,6 +253,7 @@ macro_rules! binary_field {
 			const ZERO: Self = $name::new(<$typ as $crate::underlier::UnderlierWithBitOps>::ZERO);
 			const ONE: Self = $name::new(<$typ as $crate::underlier::UnderlierWithBitOps>::ONE);
 			const CHARACTERISTIC: usize = 2;
+			const MULTIPLICATIVE_GENERATOR: $name = $name($gen);
 
 			fn double(&self) -> Self {
 				Self::ZERO
@@ -282,9 +280,7 @@ macro_rules! binary_field {
 			}
 		}
 
-		impl BinaryField for $name {
-			const MULTIPLICATIVE_GENERATOR: $name = $name($gen);
-		}
+		impl BinaryField for $name {}
 
 		impl From<$typ> for $name {
 			fn from(val: $typ) -> Self {
