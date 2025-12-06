@@ -6,14 +6,12 @@ use std::{
 	iter::{Product, Sum},
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
-
+use bytemuck::Zeroable;
 use binius_utils::{DeserializeBytes, SerializeBytes};
 
 use crate::{
 	Random,
 	arithmetic_traits::{InvertOrZero, Square},
-	as_packed_field::PackScalar,
-	underlier::WithUnderlier,
 };
 
 /// This trait is based on `ff::Field` with some unused functionality removed.
@@ -49,9 +47,7 @@ pub trait Field:
 	+ Square
 	+ InvertOrZero
 	+ Random
-	// `Underlier: PackScalar<Self>` is an obvious property but it can't be deduced by the compiler so we are id here.
-	// TODO: Move this to BinaryField instead of Field
-	+ WithUnderlier<Underlier: PackScalar<Self>>
+	+ Zeroable
 	+ SerializeBytes
 	+ DeserializeBytes
 {

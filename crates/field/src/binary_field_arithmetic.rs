@@ -16,10 +16,10 @@ macro_rules! impl_arithmetic_using_packed {
 		impl InvertOrZero for $name {
 			#[inline]
 			fn invert_or_zero(self) -> Self {
-				use $crate::as_packed_field::AsPackedField;
+				use $crate::packed_extension::PackedSubfield;
 
 				$crate::binary_field_arithmetic::invert_or_zero_using_packed::<
-					<Self as AsPackedField<$name>>::Packed,
+					PackedSubfield<Self, Self>,
 				>(self)
 			}
 		}
@@ -27,29 +27,29 @@ macro_rules! impl_arithmetic_using_packed {
 		impl TowerFieldArithmetic for $name {
 			#[inline]
 			fn multiply(self, rhs: Self) -> Self {
-				use $crate::as_packed_field::AsPackedField;
+				use $crate::packed_extension::PackedSubfield;
 
-				$crate::binary_field_arithmetic::multiple_using_packed::<
-					<Self as AsPackedField<$name>>::Packed,
-				>(self, rhs)
+				$crate::binary_field_arithmetic::multiple_using_packed::<PackedSubfield<Self, Self>>(
+					self, rhs,
+				)
 			}
 
 			#[inline]
 			fn multiply_alpha(self) -> Self {
-				use $crate::as_packed_field::AsPackedField;
+				use $crate::packed_extension::PackedSubfield;
 
-				$crate::binary_field_arithmetic::mul_alpha_using_packed::<
-					<Self as AsPackedField<$name>>::Packed,
-				>(self)
+				$crate::binary_field_arithmetic::mul_alpha_using_packed::<PackedSubfield<Self, Self>>(
+					self,
+				)
 			}
 
 			#[inline]
 			fn square(self) -> Self {
-				use $crate::as_packed_field::AsPackedField;
+				use $crate::packed_extension::PackedSubfield;
 
-				$crate::binary_field_arithmetic::square_using_packed::<
-					<Self as AsPackedField<$name>>::Packed,
-				>(self)
+				$crate::binary_field_arithmetic::square_using_packed::<PackedSubfield<Self, Self>>(
+					self,
+				)
 			}
 		}
 	};

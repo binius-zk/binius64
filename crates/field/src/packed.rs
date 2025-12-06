@@ -17,13 +17,11 @@ use binius_utils::{
 use bytemuck::Zeroable;
 
 use super::{
-	Error, Random,
+	Error, PackedExtension, Random,
 	arithmetic_traits::{Broadcast, MulAlpha, Square},
 	binary_field_arithmetic::TowerFieldArithmetic,
 };
-use crate::{
-	BinaryField, Field, PackedExtension, arithmetic_traits::InvertOrZero, underlier::WithUnderlier,
-};
+use crate::{BinaryField, Field, arithmetic_traits::InvertOrZero};
 
 /// A packed field represents a vector of underlying field elements.
 ///
@@ -412,18 +410,7 @@ pub fn packed_from_fn_with_offset<P: PackedField>(
 
 /// Multiply packed field element by a subfield scalar.
 pub fn mul_by_subfield_scalar<P: PackedExtension<FS>, FS: Field>(val: P, multiplier: FS) -> P {
-	use crate::underlier::UnderlierType;
-
-	// This is a workaround not to make the multiplication slower in certain cases.
-	// TODO: implement efficient strategy to multiply packed field by a subfield scalar.
-	let subfield_bits = FS::Underlier::BITS;
-	let extension_bits = <<P as PackedField>::Scalar as WithUnderlier>::Underlier::BITS;
-
-	if (subfield_bits == 1 && extension_bits > 8) || extension_bits >= 32 {
-		P::from_fn(|i| unsafe { val.get_unchecked(i) } * multiplier)
-	} else {
-		P::cast_ext(P::cast_base(val) * P::PackedSubfield::broadcast(multiplier))
-	}
+	P::cast_ext(P::cast_base(val) * P::PackedSubfield::broadcast(multiplier))
 }
 
 /// Pack a slice of scalars into a vector of packed field elements.
