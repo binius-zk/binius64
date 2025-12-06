@@ -8,8 +8,6 @@
 
 use std::ops::Mul;
 
-use cfg_if::cfg_if;
-
 use crate::{
 	BinaryField128bGhash,
 	arch::{

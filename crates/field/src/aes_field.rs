@@ -1,7 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 
 use std::{
-	any::TypeId,
 	fmt::{Debug, Display, Formatter},
 	iter::{Product, Sum},
 	marker::PhantomData,
@@ -60,12 +59,6 @@ impl TowerField for AESTowerField8b {
 	}
 }
 
-/// Returns true if `F`` is AES tower field.
-#[inline(always)]
-pub fn is_aes_tower<F: TowerField>() -> bool {
-	TypeId::of::<F>() == TypeId::of::<AESTowerField8b>()
-}
-
 /// A 3- step transformation :
 /// 1. Cast to base b-bit packed field
 /// 2. Apply linear transformation between aes and binary b8 tower fields
@@ -96,26 +89,20 @@ const ISOMORPHIC_ALPHAS: [AESTowerField8b; 3] = [
 	AESTowerField8b(0xD3),
 ];
 
-macro_rules! serialize_deserialize_non_canonical {
-	($field:ident, canonical=$canonical:ident) => {
-		impl SerializeBytes for $field {
-			fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
-				self.0.serialize(write_buf)
-			}
-		}
-
-		impl DeserializeBytes for $field {
-			fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError>
-			where
-				Self: Sized,
-			{
-				Ok(Self(DeserializeBytes::deserialize(read_buf)?))
-			}
-		}
-	};
+impl SerializeBytes for AESTowerField8b {
+	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
+		self.0.serialize(write_buf)
+	}
 }
 
-serialize_deserialize_non_canonical!(AESTowerField8b, canonical = BinaryField8b);
+impl DeserializeBytes for AESTowerField8b {
+	fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError>
+	where
+		Self: Sized,
+	{
+		Ok(Self(DeserializeBytes::deserialize(read_buf)?))
+	}
+}
 
 #[cfg(test)]
 mod tests {

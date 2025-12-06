@@ -50,6 +50,7 @@ pub trait Field:
 	+ InvertOrZero
 	+ Random
 	// `Underlier: PackScalar<Self>` is an obvious property but it can't be deduced by the compiler so we are id here.
+	// TODO: Move this to BinaryField instead of Field
 	+ WithUnderlier<Underlier: PackScalar<Self>>
 	+ SerializeBytes
 	+ DeserializeBytes
