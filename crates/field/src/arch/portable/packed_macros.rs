@@ -127,9 +127,6 @@ macro_rules! define_packed_binary_field {
 		// Define operations for height 0
 		maybe_impl_ops!($name, $alpha_idx);
 
-		// Define constants
-		maybe_impl_tower_constants!($scalar, $underlier, $alpha_idx);
-
 		// Define multiplication
 		impl_strategy!(impl_mul_with       $name, ($($mul)*));
 
@@ -143,7 +140,7 @@ macro_rules! define_packed_binary_field {
 		impl_strategy!(impl_mul_alpha_with $name, ($($mul_alpha)*));
 
 		// Define linear transformations
-		impl_transformation!($name, ($($transform)*));
+		//impl_transformation!($name, ($($transform)*));
 	};
 }
 
@@ -192,13 +189,6 @@ pub(crate) mod portable_macros {
 		};
 	}
 
-	macro_rules! maybe_impl_tower_constants {
-		($scalar:path, $underlier:ty, _) => {};
-		($scalar:path, $underlier:ty, $alpha_idx:tt) => {
-			impl_tower_constants!($scalar, $underlier, { alphas!($underlier, $alpha_idx) });
-		};
-	}
-
 	macro_rules! impl_strategy {
 		($impl_macro:ident $name:ident, (None)) => {};
 		($impl_macro:ident $name:ident, (if $cond:ident $gfni_x86_strategy:tt else $fallback:tt)) => {
@@ -215,14 +205,6 @@ pub(crate) mod portable_macros {
 		};
 	}
 
-	macro_rules! impl_transformation {
-		($name:ident, ($strategy:ident)) => {
-			impl_transformation_with_strategy!($name, $crate::arch::$strategy);
-		};
-	}
-
 	pub(crate) use impl_strategy;
-	pub(crate) use impl_transformation;
 	pub(crate) use maybe_impl_broadcast;
-	pub(crate) use maybe_impl_tower_constants;
 }

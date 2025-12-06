@@ -5,14 +5,13 @@ use std::array;
 use binius_utils::checked_arithmetics::checked_int_div;
 
 use crate::{
-	BinaryField, Divisible, PackedField, TowerField,
+	AESTowerField8b, BinaryField, Divisible, PackedField, TowerField,
 	arch::{
 		GfniStrategy,
 		portable::packed::PackedPrimitiveType,
 		x86_64::{m128::m128_from_u128, simd::simd_arithmetic::TowerSimdType},
 	},
 	arithmetic_traits::{TaggedInvertOrZero, TaggedMul, TaggedPackedTransformationFactory},
-	is_aes_tower,
 	linear_transformation::{FieldLinearTransformation, Transformation},
 	packed::PackedBinaryField,
 	underlier::{UnderlierType, WithUnderlier},
@@ -36,8 +35,8 @@ pub(super) trait GfniType: Copy + TowerSimdType {
 	fn gf2p8affineinv_epi64_epi8(x: Self, a: Self) -> Self;
 }
 
-impl<U: GfniType + UnderlierType, Scalar: BinaryField> TaggedMul<GfniStrategy>
-	for PackedPrimitiveType<U, Scalar>
+impl<U: GfniType + UnderlierType> TaggedMul<GfniStrategy>
+	for PackedPrimitiveType<U, AESTowerField8b>
 {
 	#[inline(always)]
 	fn mul(self, rhs: Self) -> Self {
@@ -45,14 +44,11 @@ impl<U: GfniType + UnderlierType, Scalar: BinaryField> TaggedMul<GfniStrategy>
 	}
 }
 
-impl<U: GfniType + UnderlierType, Scalar: TowerField> TaggedInvertOrZero<GfniStrategy>
-	for PackedPrimitiveType<U, Scalar>
+impl<U: GfniType + UnderlierType> TaggedInvertOrZero<GfniStrategy>
+	for PackedPrimitiveType<U, AESTowerField8b>
 {
 	#[inline(always)]
 	fn invert_or_zero(self) -> Self {
-		assert!(is_aes_tower::<Scalar>());
-		assert!(Scalar::N_BITS == 8);
-
 		let val_gfni = self.to_underlier();
 
 		// Calculate inversion and linear transformation to the original field with a single

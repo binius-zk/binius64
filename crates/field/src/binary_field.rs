@@ -23,6 +23,8 @@ pub trait BinaryField:
 	ExtensionField<BinaryField1b> + WithUnderlier<Underlier: UnderlierWithBitOps>
 {
 	const N_BITS: usize = Self::DEGREE;
+
+	// TODO: Move this to Field from BinaryField
 	const MULTIPLICATIVE_GENERATOR: Self;
 }
 

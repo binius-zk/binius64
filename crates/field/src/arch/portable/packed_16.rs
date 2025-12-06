@@ -1,13 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use super::{
-	packed::PackedPrimitiveType,
-	packed_arithmetic::{alphas, impl_tower_constants},
-};
-use crate::{
-	arch::portable::packed_macros::{portable_macros::*, *},
-	arithmetic_traits::impl_transformation_with_strategy,
-};
+use super::packed::PackedPrimitiveType;
+use crate::arch::portable::packed_macros::{portable_macros::*, *};
 
 define_packed_binary_fields!(
 	underlier: u16,

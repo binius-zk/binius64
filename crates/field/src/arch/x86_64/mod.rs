@@ -5,8 +5,6 @@ use cfg_if::cfg_if;
 #[cfg(target_feature = "gfni")]
 mod gfni;
 
-mod simd;
-
 cfg_if! {
 	if #[cfg(target_feature = "sse2")] {
 		pub(super) mod m128;

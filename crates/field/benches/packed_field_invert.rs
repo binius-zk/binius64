@@ -21,7 +21,7 @@ cfg_if! {
 	if #[cfg(feature = "benchmark_alternative_strategies")] {
 		use binius_field::{
 			arch::{PackedStrategy, PairwiseRecursiveStrategy, PairwiseStrategy,
-				PairwiseTableStrategy, SimdStrategy,},
+				PairwiseTableStrategy, },
 			arithmetic_traits::TaggedInvertOrZero,
 		};
 
@@ -41,10 +41,6 @@ cfg_if! {
 			val.invert_or_zero()
 		}
 
-		fn invert_simd<T: TaggedInvertOrZero<SimdStrategy>>(val: T) -> T {
-			val.invert_or_zero()
-		}
-
 		benchmark_packed_operation!(
 			op_name @ invert,
 			bench_type @ unary_op,
@@ -54,7 +50,6 @@ cfg_if! {
 				(pairwise_recursive, TaggedInvertOrZero::<PairwiseRecursiveStrategy>, invert_pairwise_recursive),
 				(pairwise_table, TaggedInvertOrZero::<PairwiseTableStrategy>, invert_pairwise_table),
 				(packed, TaggedInvertOrZero::<PackedStrategy>, invert_packed),
-				(simd, TaggedInvertOrZero::<SimdStrategy>, invert_simd),
 			)
 		);
 	} else {

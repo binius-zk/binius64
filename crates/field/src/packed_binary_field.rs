@@ -10,8 +10,7 @@ pub use crate::arch::{
 #[cfg(test)]
 pub mod test_utils {
 	use crate::{
-		BinaryField, PackedField,
-		linear_transformation::PackedTransformationFactory,
+		PackedField,
 		underlier::{U1, U2, U4, WithUnderlier},
 	};
 
@@ -171,46 +170,6 @@ pub mod test_utils {
 	}
 
 	pub(crate) use define_check_packed_inverse;
-
-	macro_rules! define_check_packed_transformation {
-		($constraint:path) => {
-			#[allow(unused)]
-			trait TestTransformationTrait<T> {
-				fn test_transformation(_a: T) {}
-			}
-
-			impl<T> TestTransformationTrait<$crate::packed_binary_field::test_utils::Unit> for T {}
-
-			struct TestTransformation<T>(std::marker::PhantomData<T>);
-
-			impl<T: $constraint + PackedField + $crate::underlier::WithUnderlier>
-				TestTransformation<T>
-			{
-				fn test_transformation(a: <T as $crate::underlier::WithUnderlier>::Underlier) {
-					use ::rand::prelude::*;
-					use $crate::linear_transformation::{
-						FieldLinearTransformation, Transformation,
-					};
-
-					let a = T::from_underlier(a);
-
-					// TODO: think how we can use random seed from proptests here
-					let rng = StdRng::seed_from_u64(0);
-					let field_transformation =
-						FieldLinearTransformation::<T::Scalar, _>::random(rng);
-					let packed_transformation =
-						T::make_packed_transformation(field_transformation.clone());
-
-					let c = packed_transformation.transform(&a);
-					for i in 0..T::WIDTH {
-						assert_eq!(c.get(i), field_transformation.transform(&a.get(i)));
-					}
-				}
-			}
-		};
-	}
-
-	pub(crate) use define_check_packed_transformation;
 
 	/// Test if `mult_func` operation is a valid multiply operation on the given values for
 	/// all possible packed fields defined on u128.
@@ -458,120 +417,9 @@ pub mod test_utils {
 		};
 	}
 
-	/// Test if `$constraint::make_packed_transformation` operation creates a valid transformation
-	/// operation on the given value for all possible packed fields.
-	macro_rules! define_transformation_tests {
-		($constraint:path) => {
-			$crate::packed_binary_field::test_utils::define_check_packed_transformation!(
-				$constraint
-			);
-
-			proptest::proptest! {
-				#[test]
-				fn test_transformation_packed_1(a_val in 0..2u8) {
-					use crate::arch::packed_1::*;
-
-					TestTransformation::<PackedBinaryField1x1b>::test_transformation($crate::underlier::U1::new_unchecked(a_val).into());
-				}
-
-				#[test]
-				fn test_transformation_packed_2(a_val in 0..4u8) {
-					use crate::arch::packed_2::*;
-
-					TestTransformation::<PackedBinaryField2x1b>::test_transformation($crate::underlier::U2::new_unchecked(a_val).into());
-				}
-
-				#[test]
-				fn test_transformation_packed_4(a_val in 0..16u8) {
-					use crate::arch::packed_4::*;
-
-					TestTransformation::<PackedBinaryField4x1b>::test_transformation($crate::underlier::U4::new_unchecked(a_val).into());
-				}
-
-				#[test]
-				fn test_transformation_packed_8(a_val in proptest::prelude::any::<u8>()) {
-					use crate::arch::packed_8::*;
-					use crate::arch::packed_aes_8::*;
-
-					TestTransformation::<PackedBinaryField8x1b>::test_transformation(a_val.into());
-					TestTransformation::<PackedAESBinaryField1x8b>::test_transformation(a_val.into());
-				}
-
-				#[test]
-				fn test_transformation_packed_16(a_val in proptest::prelude::any::<u16>()) {
-					use crate::arch::packed_16::*;
-					use crate::arch::packed_aes_16::*;
-
-					TestTransformation::<PackedBinaryField16x1b>::test_transformation(a_val.into());
-					TestTransformation::<PackedAESBinaryField2x8b>::test_transformation(a_val.into());
-				}
-
-				#[test]
-				fn test_transformation_packed_32(a_val in proptest::prelude::any::<u32>()) {
-					use crate::arch::packed_32::*;
-					use crate::arch::packed_aes_32::*;
-
-					TestTransformation::<PackedBinaryField32x1b>::test_transformation(a_val.into());
-					TestTransformation::<PackedAESBinaryField4x8b>::test_transformation(a_val.into());
-				}
-
-				#[test]
-				fn test_transformation_packed_64(a_val in proptest::prelude::any::<u64>()) {
-					use $crate::arch::packed_64::*;
-					use $crate::arch::packed_aes_64::*;
-
-					TestTransformation::<PackedBinaryField64x1b>::test_transformation(a_val.into());
-					TestTransformation::<PackedAESBinaryField8x8b>::test_transformation(a_val.into());
-				}
-
-				#[test]
-				fn test_transformation_packed_128(a_val in proptest::prelude::any::<u128>()) {
-					use $crate::arch::packed_128::*;
-					use $crate::arch::packed_aes_128::*;
-					use $crate::arch::packed_ghash_128::*;
-
-					TestTransformation::<PackedBinaryField128x1b>::test_transformation(a_val.into());
-					TestTransformation::<PackedAESBinaryField16x8b>::test_transformation(a_val.into());
-					TestTransformation::<PackedBinaryGhash1x128b>::test_transformation(a_val.into());
-				}
-
-				#[test]
-				fn test_transformation_packed_256(a_val in proptest::prelude::any::<[u128; 2]>()) {
-					use $crate::arch::packed_256::*;
-					use $crate::arch::packed_aes_256::*;
-					use $crate::arch::packed_ghash_256::*;
-
-					TestTransformation::<PackedBinaryField256x1b>::test_transformation(a_val.into());
-					TestTransformation::<PackedAESBinaryField32x8b>::test_transformation(a_val.into());
-					TestTransformation::<PackedBinaryGhash2x128b>::test_transformation(a_val.into());
-				}
-
-				#[test]
-				fn test_transformation_packed_512(a_val in proptest::prelude::any::<[u128; 4]>()) {
-					use $crate::arch::packed_512::*;
-					use $crate::arch::packed_aes_512::*;
-					use $crate::arch::packed_ghash_512::*;
-
-					TestTransformation::<PackedBinaryField512x1b>::test_transformation(a_val.into());
-					TestTransformation::<PackedAESBinaryField64x8b>::test_transformation(a_val.into());
-					TestTransformation::<PackedBinaryGhash4x128b>::test_transformation(a_val.into());
-				}
-			}
-		};
-	}
-
 	pub(crate) use define_invert_tests;
 	pub(crate) use define_multiply_tests;
 	pub(crate) use define_square_tests;
-	pub(crate) use define_transformation_tests;
-
-	/// Helper function for compile-time checks
-	#[allow(unused)]
-	pub const fn implements_transformation_factory<
-		P1: PackedField<Scalar: BinaryField>,
-		P2: PackedTransformationFactory<P1>,
-	>() {
-	}
 
 	pub fn check_interleave<P: PackedField + WithUnderlier>(
 		lhs: P::Underlier,
@@ -670,16 +518,12 @@ mod tests {
 	use test_utils::check_interleave_all_heights;
 
 	use super::{
-		test_utils::{
-			define_invert_tests, define_multiply_tests, define_square_tests,
-			define_transformation_tests,
-		},
+		test_utils::{define_invert_tests, define_multiply_tests, define_square_tests},
 		*,
 	};
 	use crate::{
 		PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
 		Random,
-		linear_transformation::PackedTransformationFactory,
 		test_utils::check_transpose_all_heights,
 		underlier::{U2, U4},
 	};
@@ -818,13 +662,6 @@ mod tests {
 	define_square_tests!(PackedField::square, PackedField);
 
 	define_invert_tests!(PackedField::invert_or_zero, PackedField);
-
-	#[allow(unused)]
-	trait SelfTransformationFactory: PackedTransformationFactory<Self> {}
-
-	impl<T: PackedTransformationFactory<T>> SelfTransformationFactory for T {}
-
-	define_transformation_tests!(SelfTransformationFactory);
 
 	proptest! {
 		#[test]

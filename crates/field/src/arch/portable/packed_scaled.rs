@@ -21,10 +21,7 @@ use crate::{
 	Field, PackedField,
 	arithmetic_traits::MulAlpha,
 	as_packed_field::PackScalar,
-	linear_transformation::{
-		FieldLinearTransformation, PackedTransformationFactory, Transformation,
-	},
-	packed::PackedBinaryField,
+	linear_transformation::Transformation,
 	underlier::{ScaledUnderlier, UnderlierType, WithUnderlier},
 };
 
@@ -414,27 +411,6 @@ where
 {
 	fn transform(&self, data: &ScaledPackedField<IP, N>) -> ScaledPackedField<OP, N> {
 		ScaledPackedField::from_direct_packed_fn(|i| self.inner.transform(&data.0[i]))
-	}
-}
-
-impl<OP, IP, const N: usize> PackedTransformationFactory<ScaledPackedField<OP, N>>
-	for ScaledPackedField<IP, N>
-where
-	Self: PackedBinaryField,
-	ScaledPackedField<OP, N>: PackedBinaryField<Scalar = OP::Scalar>,
-	OP: PackedBinaryField,
-	IP: PackedTransformationFactory<OP>,
-{
-	type PackedTransformation<Data: AsRef<[OP::Scalar]> + Sync> =
-		ScaledTransformation<IP::PackedTransformation<Data>>;
-
-	fn make_packed_transformation<Data: AsRef<[OP::Scalar]> + Sync>(
-		transformation: FieldLinearTransformation<
-			<ScaledPackedField<OP, N> as PackedField>::Scalar,
-			Data,
-		>,
-	) -> Self::PackedTransformation<Data> {
-		ScaledTransformation::new(IP::make_packed_transformation(transformation))
 	}
 }
 

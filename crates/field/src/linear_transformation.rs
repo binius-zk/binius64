@@ -300,19 +300,6 @@ pub type WrappingTransformation<Inner, Input, Output> = OutputWrappingTransforma
 	Output,
 >;
 
-/// This crates represents a type that creates a packed transformation from `Self` to a packed
-/// field based on the scalar field transformation.
-pub trait PackedTransformationFactory<OP>: PackedBinaryField
-where
-	OP: PackedBinaryField,
-{
-	type PackedTransformation<Data: AsRef<[OP::Scalar]> + Sync>: Transformation<Self, OP>;
-
-	fn make_packed_transformation<Data: AsRef<[OP::Scalar]> + Sync>(
-		transformation: FieldLinearTransformation<OP::Scalar, Data>,
-	) -> Self::PackedTransformation<Data>;
-}
-
 pub struct IDTransformation;
 
 impl<OP: PackedBinaryField> Transformation<OP, OP> for IDTransformation {

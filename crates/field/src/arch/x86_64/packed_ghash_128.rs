@@ -100,17 +100,5 @@ impl InvertOrZero for PackedBinaryGhash1x128b {
 	}
 }
 
-cfg_if! {
-	if #[cfg(target_feature = "gfni")] {
-		use crate::arch::x86_64::gfni::gfni_arithmetics::impl_transformation_with_gfni_nxn;
-		impl_transformation_with_gfni_nxn!(PackedBinaryGhash1x128b, 16);
-	} else {
-		crate::arithmetic_traits::impl_transformation_with_strategy!(
-			PackedBinaryGhash1x128b,
-			crate::arch::SimdStrategy
-		);
-	}
-}
-
 // Define (de)serialize
 impl_serialize_deserialize_for_packed_binary_field!(PackedBinaryGhash1x128b);
