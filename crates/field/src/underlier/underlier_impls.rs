@@ -23,16 +23,6 @@ macro_rules! impl_underlier_type {
 				debug_assert!(val == 0 || val == 1);
 				(val as Self).wrapping_neg()
 			}
-
-			#[inline(always)]
-			fn shl_128b_lanes(self, rhs: usize) -> Self {
-				self << rhs
-			}
-
-			#[inline(always)]
-			fn shr_128b_lanes(self, rhs: usize) -> Self {
-				self >> rhs
-			}
 		}
 	};
 	() => {};

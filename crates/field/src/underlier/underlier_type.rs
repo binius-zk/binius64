@@ -9,20 +9,7 @@ use crate::Random;
 /// Primitive integer underlying a binary field or packed binary field implementation.
 /// Note that this type is not guaranteed to be POD, U1, U2 and U4 have some unused bits.
 pub trait UnderlierType:
-	Debug
-	+ Default
-	+ PartialEq
-	+ Eq
-	+ PartialOrd
-	+ Ord
-	+ Copy
-	+ Random
-	+ NoUninit
-	+ Zeroable
-	+ Sized
-	+ Send
-	+ Sync
-	+ 'static
+	Debug + Default + Eq + Ord + Copy + Random + NoUninit + Zeroable + Sized + Send + Sync + 'static
 {
 	/// Number of bits in value
 	const LOG_BITS: usize;

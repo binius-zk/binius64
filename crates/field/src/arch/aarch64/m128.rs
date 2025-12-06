@@ -27,7 +27,7 @@ use crate::{
 	underlier::{
 		NumCast, SmallU, UnderlierType, UnderlierWithBitOps, WithUnderlier,
 		divisible::{Divisible, mapget},
-		impl_divisible_bitmask, unpack_lo_128b_fallback,
+		impl_divisible_bitmask,
 	},
 };
 
@@ -583,30 +583,6 @@ impl UnderlierWithBitOps for M128 {
 	#[inline(always)]
 	fn shr_128b_lanes(self, rhs: usize) -> Self {
 		self >> rhs
-	}
-
-	#[inline(always)]
-	fn unpack_lo_128b_lanes(self, rhs: Self, log_block_len: usize) -> Self {
-		match log_block_len {
-			0..3 => unpack_lo_128b_fallback(self, rhs, log_block_len),
-			3 => unsafe { vzip1q_u8(self.into(), rhs.into()).into() },
-			4 => unsafe { vzip1q_u16(self.into(), rhs.into()).into() },
-			5 => unsafe { vzip1q_u32(self.into(), rhs.into()).into() },
-			6 => unsafe { vzip1q_u64(self.into(), rhs.into()).into() },
-			_ => panic!("Unsupported block length"),
-		}
-	}
-
-	#[inline(always)]
-	fn unpack_hi_128b_lanes(self, rhs: Self, log_block_len: usize) -> Self {
-		match log_block_len {
-			0..3 => unpack_lo_128b_fallback(self, rhs, log_block_len),
-			3 => unsafe { vzip2q_u8(self.into(), rhs.into()).into() },
-			4 => unsafe { vzip2q_u16(self.into(), rhs.into()).into() },
-			5 => unsafe { vzip2q_u32(self.into(), rhs.into()).into() },
-			6 => unsafe { vzip2q_u64(self.into(), rhs.into()).into() },
-			_ => panic!("Unsupported block length"),
-		}
 	}
 }
 

@@ -17,7 +17,6 @@ use rand::{
 	Rng,
 	distr::{Distribution, StandardUniform},
 };
-use seq_macro::seq;
 
 use crate::{
 	BinaryField,
@@ -29,13 +28,11 @@ use crate::{
 				UnderlierWithBitConstants, interleave_mask_even, interleave_mask_odd,
 			},
 		},
-		x86_64::m128::bitshift_128b,
 	},
 	arithmetic_traits::Broadcast,
 	underlier::{
 		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
 		get_block_values, get_spread_bytes, impl_divisible_bitmask, mapget, spread_fallback,
-		unpack_hi_128b_fallback, unpack_lo_128b_fallback,
 	},
 };
 
@@ -761,58 +758,6 @@ impl UnderlierWithBitOps for M256 {
 				_ => panic!("unsupported block length"),
 			},
 			_ => unsafe { spread_fallback(self, log_block_len, block_idx) },
-		}
-	}
-
-	#[inline]
-	fn shr_128b_lanes(self, rhs: usize) -> Self {
-		// This implementation is effective when `rhs` is known at compile-time.
-		// In our code this is always the case.
-		bitshift_128b!(
-			self.0,
-			rhs,
-			_mm256_bsrli_epi128,
-			_mm256_srli_epi64,
-			_mm256_slli_epi64,
-			_mm256_or_si256
-		)
-	}
-
-	#[inline]
-	fn shl_128b_lanes(self, rhs: usize) -> Self {
-		// This implementation is effective when `rhs` is known at compile-time.
-		// In our code this is always the case.
-		bitshift_128b!(
-			self.0,
-			rhs,
-			_mm256_bslli_epi128,
-			_mm256_slli_epi64,
-			_mm256_srli_epi64,
-			_mm256_or_si256
-		);
-	}
-
-	#[inline]
-	fn unpack_lo_128b_lanes(self, other: Self, log_block_len: usize) -> Self {
-		match log_block_len {
-			0..3 => unpack_lo_128b_fallback(self, other, log_block_len),
-			3 => unsafe { _mm256_unpacklo_epi8(self.0, other.0).into() },
-			4 => unsafe { _mm256_unpacklo_epi16(self.0, other.0).into() },
-			5 => unsafe { _mm256_unpacklo_epi32(self.0, other.0).into() },
-			6 => unsafe { _mm256_unpacklo_epi64(self.0, other.0).into() },
-			_ => panic!("unsupported block length"),
-		}
-	}
-
-	#[inline]
-	fn unpack_hi_128b_lanes(self, other: Self, log_block_len: usize) -> Self {
-		match log_block_len {
-			0..3 => unpack_hi_128b_fallback(self, other, log_block_len),
-			3 => unsafe { _mm256_unpackhi_epi8(self.0, other.0).into() },
-			4 => unsafe { _mm256_unpackhi_epi16(self.0, other.0).into() },
-			5 => unsafe { _mm256_unpackhi_epi32(self.0, other.0).into() },
-			6 => unsafe { _mm256_unpackhi_epi64(self.0, other.0).into() },
-			_ => panic!("unsupported block length"),
 		}
 	}
 }
@@ -1563,36 +1508,6 @@ mod tests {
 				assert_eq!(get(c, height, i+1), get(b, height, i));
 				assert_eq!(get(d, height, i), get(a, height, i+1));
 				assert_eq!(get(d, height, i+1), get(b, height, i+1));
-			}
-		}
-
-		#[test]
-		fn test_unpack_lo(a in any::<[u128; 2]>(), b in any::<[u128; 2]>(), height in 0usize..7) {
-			let a = M256::from(a);
-			let b = M256::from(b);
-
-			let result = a.unpack_lo_128b_lanes(b, height);
-			let half_block_count = 128>>(height + 1);
-			for i in 0..half_block_count {
-				assert_eq!(get(result, height, 2*i), get(a, height, i));
-				assert_eq!(get(result, height, 2*i+1), get(b, height, i));
-				assert_eq!(get(result, height, 2*(i + half_block_count)), get(a, height, 2 * half_block_count + i));
-				assert_eq!(get(result, height, 2*(i + half_block_count)+1), get(b, height, 2 * half_block_count + i));
-			}
-		}
-
-		#[test]
-		fn test_unpack_hi(a in any::<[u128; 2]>(), b in any::<[u128; 2]>(), height in 0usize..7) {
-			let a = M256::from(a);
-			let b = M256::from(b);
-
-			let result = a.unpack_hi_128b_lanes(b, height);
-			let half_block_count = 128>>(height + 1);
-			for i in 0..half_block_count {
-				assert_eq!(get(result, height, 2*i), get(a, height, i + half_block_count));
-				assert_eq!(get(result, height, 2*i+1), get(b, height, i + half_block_count));
-				assert_eq!(get(result, height, 2*(half_block_count + i)), get(a, height, 3*half_block_count + i));
-				assert_eq!(get(result, height, 2*(half_block_count + i) +1), get(b, height, 3*half_block_count + i));
 			}
 		}
 	}

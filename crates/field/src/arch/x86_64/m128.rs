@@ -32,8 +32,7 @@ use crate::{
 	arithmetic_traits::Broadcast,
 	underlier::{
 		Divisible, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, UnderlierWithBitOps,
-		WithUnderlier, impl_divisible_bitmask, mapget, spread_fallback, unpack_hi_128b_fallback,
-		unpack_lo_128b_fallback,
+		WithUnderlier, impl_divisible_bitmask, mapget, spread_fallback,
 	},
 };
 
@@ -632,40 +631,6 @@ impl UnderlierWithBitOps for M128 {
 			_ => panic!("unsupported bit length"),
 		}
 	}
-
-	#[inline]
-	fn shl_128b_lanes(self, shift: usize) -> Self {
-		self << shift
-	}
-
-	#[inline]
-	fn shr_128b_lanes(self, shift: usize) -> Self {
-		self >> shift
-	}
-
-	#[inline]
-	fn unpack_lo_128b_lanes(self, other: Self, log_block_len: usize) -> Self {
-		match log_block_len {
-			0..3 => unpack_lo_128b_fallback(self, other, log_block_len),
-			3 => unsafe { _mm_unpacklo_epi8(self.0, other.0).into() },
-			4 => unsafe { _mm_unpacklo_epi16(self.0, other.0).into() },
-			5 => unsafe { _mm_unpacklo_epi32(self.0, other.0).into() },
-			6 => unsafe { _mm_unpacklo_epi64(self.0, other.0).into() },
-			_ => panic!("unsupported block length"),
-		}
-	}
-
-	#[inline]
-	fn unpack_hi_128b_lanes(self, other: Self, log_block_len: usize) -> Self {
-		match log_block_len {
-			0..3 => unpack_hi_128b_fallback(self, other, log_block_len),
-			3 => unsafe { _mm_unpackhi_epi8(self.0, other.0).into() },
-			4 => unsafe { _mm_unpackhi_epi16(self.0, other.0).into() },
-			5 => unsafe { _mm_unpackhi_epi32(self.0, other.0).into() },
-			6 => unsafe { _mm_unpackhi_epi64(self.0, other.0).into() },
-			_ => panic!("unsupported block length"),
-		}
-	}
 }
 
 unsafe impl Zeroable for M128 {}
@@ -1118,7 +1083,6 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::underlier::single_element_mask_bits;
 
 	fn check_roundtrip<T>(val: M128)
 	where
@@ -1136,7 +1100,7 @@ mod tests {
 	}
 
 	fn get(value: M128, log_block_len: usize, index: usize) -> M128 {
-		(value >> (index << log_block_len)) & single_element_mask_bits::<M128>(1 << log_block_len)
+		(value >> (index << log_block_len)) & M128::from(1u128 << log_block_len)
 	}
 
 	proptest! {
@@ -1177,31 +1141,6 @@ mod tests {
 				assert_eq!(get(c, height, i+1), get(b, height, i));
 				assert_eq!(get(d, height, i), get(a, height, i+1));
 				assert_eq!(get(d, height, i+1), get(b, height, i+1));
-			}
-		}
-
-		#[test]
-		fn test_unpack_lo(a in any::<u128>(), b in any::<u128>(), height in 1usize..7) {
-			let a = M128::from(a);
-			let b = M128::from(b);
-
-			let result = a.unpack_lo_128b_lanes(b, height);
-			for i in 0..128>>(height + 1) {
-				assert_eq!(get(result, height, 2*i), get(a, height, i));
-				assert_eq!(get(result, height, 2*i+1), get(b, height, i));
-			}
-		}
-
-		#[test]
-		fn test_unpack_hi(a in any::<u128>(), b in any::<u128>(), height in 1usize..7) {
-			let a = M128::from(a);
-			let b = M128::from(b);
-
-			let result = a.unpack_hi_128b_lanes(b, height);
-			let half_block_count = 128>>(height + 1);
-			for i in 0..half_block_count {
-				assert_eq!(get(result, height, 2*i), get(a, height, i + half_block_count));
-				assert_eq!(get(result, height, 2*i+1), get(b, height, i + half_block_count));
 			}
 		}
 	}
