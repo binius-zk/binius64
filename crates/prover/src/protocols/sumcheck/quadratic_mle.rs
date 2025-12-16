@@ -1,5 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
+use std::ops::DerefMut;
+
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
@@ -18,20 +20,26 @@ use crate::protocols::sumcheck::common::MleCheckProver;
 /// to claims about the individual multilinear evaluations, employing the Karatsuba optimization
 /// for efficient degree-2 polynomial interpolation.
 #[derive(Debug, Clone)]
-pub struct QuadraticMleCheckProver<P: PackedField, Composition, InfinityComposition, const N: usize>
-{
-	multilinears: [FieldBuffer<P>; N],
+pub struct QuadraticMleCheckProver<
+	P: PackedField,
+	Data: DerefMut<Target = [P]>,
+	Composition,
+	InfinityComposition,
+	const N: usize,
+> {
+	multilinears: [FieldBuffer<P, Data>; N],
 	composition: Composition,
 	infinity_composition: InfinityComposition,
 	last_coeffs_or_eval: RoundCoeffsOrEval<P::Scalar>,
 	gruen32: Gruen32<P>,
 }
 
-impl<F, P, Composition, InfinityComposition, const N: usize>
-	QuadraticMleCheckProver<P, Composition, InfinityComposition, N>
+impl<F, P, Data, Composition, InfinityComposition, const N: usize>
+	QuadraticMleCheckProver<P, Data, Composition, InfinityComposition, N>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
+	Data: DerefMut<Target = [P]>,
 	Composition: Fn([P; N]) -> P + Sync,
 	InfinityComposition: Fn([P; N]) -> P + Sync,
 {
@@ -70,7 +78,7 @@ where
 	/// Returns `Error::MultilinearSizeMismatch` if any multilinear has a different number of
 	/// variables than the length of `eval_point`.
 	pub fn new(
-		multilinears: [FieldBuffer<P>; N],
+		multilinears: [FieldBuffer<P, Data>; N],
 		composition: Composition,
 		infinity_composition: InfinityComposition,
 		eval_point: &[F],
@@ -97,11 +105,12 @@ where
 	}
 }
 
-impl<F, P, Composition, InfinityComposition, const N: usize> SumcheckProver<F>
-	for QuadraticMleCheckProver<P, Composition, InfinityComposition, N>
+impl<F, P, Data, Composition, InfinityComposition, const N: usize> SumcheckProver<F>
+	for QuadraticMleCheckProver<P, Data, Composition, InfinityComposition, N>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
+	Data: DerefMut<Target = [P]> + Sync,
 	Composition: Fn([P; N]) -> P + Sync,
 	InfinityComposition: Fn([P; N]) -> P + Sync,
 {
@@ -219,11 +228,12 @@ where
 	}
 }
 
-impl<F, P, Composition, InfinityComposition, const N: usize> MleCheckProver<F>
-	for QuadraticMleCheckProver<P, Composition, InfinityComposition, N>
+impl<F, P, Data, Composition, InfinityComposition, const N: usize> MleCheckProver<F>
+	for QuadraticMleCheckProver<P, Data, Composition, InfinityComposition, N>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
+	Data: DerefMut<Target = [P]> + Sync,
 	Composition: Fn([P; N]) -> P + Sync,
 	InfinityComposition: Fn([P; N]) -> P + Sync,
 {
@@ -255,8 +265,8 @@ mod tests {
 	use super::*;
 	use crate::protocols::sumcheck::prove_single_mlecheck;
 
-	fn test_mlecheck_prove_verify<F, P, Composition, InfinityComposition, const N: usize>(
-		prover: QuadraticMleCheckProver<P, Composition, InfinityComposition, N>,
+	fn test_mlecheck_prove_verify<F, P, Data, Composition, InfinityComposition, const N: usize>(
+		prover: QuadraticMleCheckProver<P, Data, Composition, InfinityComposition, N>,
 		composition: Composition,
 		eval_claim: F,
 		eval_point: &[F],
@@ -264,6 +274,7 @@ mod tests {
 	) where
 		F: Field,
 		P: PackedField<Scalar = F>,
+		Data: DerefMut<Target = [P]> + Sync,
 		Composition: Fn([P; N]) -> P + Sync,
 		InfinityComposition: Fn([P; N]) -> P + Sync,
 	{

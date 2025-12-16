@@ -19,7 +19,8 @@ use super::{
 	sumcheck_round_messages, utils::multivariate::OneBitOblongMultilinear,
 };
 use crate::protocols::sumcheck::{
-	Error, ProveSingleOutput, prove_single_mlecheck, quadratic_mle::QuadraticMleCheckProver,
+	Error, ProveSingleOutput, common::MleCheckProver, prove_single_mlecheck,
+	quadratic_mle::QuadraticMleCheckProver,
 };
 
 /// Prover for the AND constraint reduction protocol via oblong univariate zerocheck.
@@ -158,12 +159,7 @@ where
 		self,
 		round_message_domain: BinarySubspace<FChallenge>,
 		challenge: FChallenge,
-	) -> QuadraticMleCheckProver<
-		FChallenge,
-		impl Fn([FChallenge; 3]) -> FChallenge,
-		impl Fn([FChallenge; 3]) -> FChallenge,
-		3,
-	> {
+	) -> impl MleCheckProver<FChallenge> {
 		let univariate_domain = round_message_domain
 			.reduce_dim(round_message_domain.dim() - 1)
 			.expect("message domain should have dim>=1");
