@@ -3,6 +3,7 @@
 pub mod basefold;
 mod inout_check;
 pub mod intmul;
+pub mod prodcheck;
 pub mod shift;
 pub mod sumcheck;
 
