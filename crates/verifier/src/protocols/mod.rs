@@ -4,5 +4,6 @@ pub mod basefold;
 pub mod intmul;
 pub mod mlecheck;
 pub mod pubcheck;
+pub mod prodcheck;
 pub mod shift;
 pub mod sumcheck;
