@@ -41,33 +41,40 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 	claim: MultilinearEvalClaim<F>,
 	transcript: &mut VerifierTranscript<Challenger_>,
 ) -> Result<MultilinearEvalClaim<F>, Error> {
-	(0..k).try_fold(claim, |claim, i| -> Result<_, Error> {
-		let MultilinearEvalClaim { eval, point } = claim;
+	if k == 0 {
+		return Ok(claim);
+	}
 
-		// Reduce p_i evaluation to two evaluations of p_{i+1}.
-		let SumcheckOutput { eval, challenges } = mlecheck::verify(&point, 2, eval, transcript)?;
+	let MultilinearEvalClaim { eval, point } = claim;
 
-		// Read evaluations of p_{i+1)(0, \ldots) and p_{i+1}(1, \ldots).
-		let [eval_0, eval_1] = transcript.message().read()?;
+	// Reduce p_i evaluation to two evaluations of p_{i+1}.
+	let SumcheckOutput { eval, challenges } = mlecheck::verify(&point, 2, eval, transcript)?;
 
-		if eval_0 * eval_1 != eval {
-			return Err(VerificationError::IncorrectRoundEvaluation { round: i }.into());
-		}
+	// Read evaluations of p_{i+1)(0, \ldots) and p_{i+1}(1, \ldots).
+	let [eval_0, eval_1] = transcript.message().read()?;
 
-		// Reduce evaluations of p_{i+1}(0, \ldots) and p_{i+1}(1, \ldots) to single eval at
-		// p_{i+1}(r, \ldots).
-		let r = transcript.sample();
+	if eval_0 * eval_1 != eval {
+		return Err(VerificationError::IncorrectRoundEvaluation { round: k }.into());
+	}
 
-		let next_eval = extrapolate_line_packed(eval_0, eval_1, r);
+	// Reduce evaluations of p_{i+1}(0, \ldots) and p_{i+1}(1, \ldots) to single eval at
+	// p_{i+1}(r, \ldots).
+	let r = transcript.sample();
 
-		let mut next_point = challenges;
-		next_point.insert(0, r);
+	let next_eval = extrapolate_line_packed(eval_0, eval_1, r);
 
-		Ok(MultilinearEvalClaim {
+	let mut next_point = challenges;
+	next_point.reverse();
+	next_point.push(r);
+
+	verify(
+		k - 1,
+		MultilinearEvalClaim {
 			eval: next_eval,
 			point: next_point,
-		})
-	})
+		},
+		transcript,
+	)
 }
 
 #[derive(Debug, thiserror::Error)]
