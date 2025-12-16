@@ -57,7 +57,13 @@ where
 		final_fri_value: witness_eval,
 		final_sumcheck_value: eval,
 		challenges: mut r_y,
-	} = basefold::verify(fri_params, merkle_scheme, codeword_commitment, batched_claim, transcript)?;
+	} = basefold::verify_zk(
+		fri_params,
+		merkle_scheme,
+		codeword_commitment,
+		batched_claim,
+		transcript,
+	)?;
 
 	r_y.reverse();
 
