@@ -29,7 +29,7 @@ use super::{
 use crate::protocols::sumcheck::{
 	MleToSumCheckDecorator,
 	batch::{BatchSumcheckOutput, batch_prove_and_write_evals},
-	bivariate_product_mle::BivariateProductMlecheckProver,
+	bivariate_product_mle,
 	bivariate_product_multi_mle::BivariateProductMultiMlecheckProver,
 	rerand_mle::RerandMlecheckProver,
 	selector_mle::{Claim, SelectorMlecheckProver},
@@ -266,7 +266,7 @@ where
 			SelectorMlecheckProver::new(selector, selector_claims, b_exponents, self.switchover)?;
 
 		let c_root_sumcheck_prover =
-			BivariateProductMlecheckProver::new(c_lo_hi_roots, c_eval_point, c_root_eval)?;
+			bivariate_product_mle::new(c_lo_hi_roots, c_eval_point, c_root_eval)?;
 
 		let c_root_prover = MleToSumCheckDecorator::new(c_root_sumcheck_prover);
 

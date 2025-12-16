@@ -15,8 +15,8 @@ use super::{
 };
 
 // A helper struct that implements an Mlecheck degree lowering logic using tricks from [Gruen24]
-// section 3.2 (hence the name). See a docstring to `BivariateProductMlecheckProver` implementation
-// for more in-depth explanation.
+// section 3.2 (hence the name). See a docstring to `bivariate_product_mle::new` for more in-depth
+// explanation.
 //
 // It's initialized with a point from an evaluation claim, and takes care of folding the eq
 // indicator expansion, updating prefix product and multiplying by the linear part (denoted (3), (1)

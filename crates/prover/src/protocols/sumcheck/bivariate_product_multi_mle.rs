@@ -206,9 +206,7 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::protocols::sumcheck::{
-		MleToSumCheckDecorator, bivariate_product_mle::BivariateProductMlecheckProver,
-	};
+	use crate::protocols::sumcheck::{MleToSumCheckDecorator, bivariate_product_mle};
 
 	#[test]
 	fn test_bivariate_multi_mlecheck_conforms_to_single_bivariate_mlecheck() {
@@ -235,8 +233,7 @@ mod tests {
 		let multilinears = [multilinear_a, multilinear_b];
 
 		let mut single_prover =
-			BivariateProductMlecheckProver::new(multilinears.clone(), &eval_point, eval_claim)
-				.unwrap();
+			bivariate_product_mle::new(multilinears.clone(), &eval_point, eval_claim).unwrap();
 
 		let mut multi_prover = BivariateProductMultiMlecheckProver::new(
 			[multilinears].to_vec(),

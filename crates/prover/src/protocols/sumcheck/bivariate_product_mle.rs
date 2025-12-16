@@ -1,16 +1,15 @@
 // Copyright 2023-2025 Irreducible Inc.
 
-use binius_field::{Field, PackedField};
-use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
-use binius_utils::rayon::prelude::*;
-use binius_verifier::protocols::sumcheck::RoundCoeffs;
+use std::ops::DerefMut;
 
-use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::RoundEvals2};
+use binius_field::{Field, PackedField};
+use binius_math::FieldBuffer;
+
+use super::{error::Error, quadratic_mle::QuadraticMleCheckProver};
 use crate::protocols::sumcheck::common::MleCheckProver;
 
-/// A [`SumcheckProver`] implementation that reduces an evaluation claim on a multilinear extension
-/// of the product of two multilinears to evaluation claims on said multilinears. We call such
-/// reductions Mlechecks.
+/// Creates an [`MleCheckProver`] that reduces an evaluation claim on a multilinear extension
+/// of the product of two multilinears to evaluation claims on said multilinears.
 ///
 /// ## Mathematical Definition
 /// * $n \in N$ - number of variables in multilinear polynomials
@@ -51,161 +50,24 @@ use crate::protocols::sumcheck::common::MleCheckProver;
 ///
 /// Note 2: evaluation points are 0 (implicit), 1 and Karatsuba infinity.
 ///
-/// # Invariants
-///
-/// - The length of both multilinears is always equal.
-///
 /// [Gruen24]: <https://eprint.iacr.org/2024/108>
-#[derive(Debug, Clone)]
-pub struct BivariateProductMlecheckProver<P: PackedField> {
-	multilinears: [FieldBuffer<P>; 2],
-	last_coeffs_or_eval: RoundCoeffsOrEval<P::Scalar>,
-	gruen32: Gruen32<P>,
-}
-
-impl<F: Field, P: PackedField<Scalar = F>> BivariateProductMlecheckProver<P> {
-	/// Constructs a prover, given the multilinear polynomial evaluations and the evaluation
-	/// claim on the multilinear extension of their product.
-	pub fn new(
-		multilinears: [FieldBuffer<P>; 2],
-		eval_point: &[F],
-		eval_claim: F,
-	) -> Result<Self, Error> {
-		if multilinears[0].log_len() != multilinears[1].log_len() {
-			return Err(Error::MultilinearSizeMismatch);
-		}
-
-		if multilinears[0].log_len() != eval_point.len() {
-			return Err(Error::EvalPointLengthMismatch);
-		}
-
-		let last_coeffs_or_sum = RoundCoeffsOrEval::Eval(eval_claim);
-
-		let gruen32 = Gruen32::new(eval_point);
-
-		Ok(Self {
-			multilinears,
-			last_coeffs_or_eval: last_coeffs_or_sum,
-			gruen32,
-		})
-	}
-}
-
-impl<F, P> SumcheckProver<F> for BivariateProductMlecheckProver<P>
+pub fn new<F, P, Data>(
+	multilinears: [FieldBuffer<P, Data>; 2],
+	eval_point: &[F],
+	eval_claim: F,
+) -> Result<impl MleCheckProver<F>, Error>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
+	Data: DerefMut<Target = [P]> + Sync,
 {
-	fn n_vars(&self) -> usize {
-		self.gruen32.n_vars_remaining()
-	}
-
-	fn n_claims(&self) -> usize {
-		1
-	}
-
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
-		let RoundCoeffsOrEval::Eval(last_eval) = &self.last_coeffs_or_eval else {
-			return Err(Error::ExpectedFold);
-		};
-
-		// Multilinear inputs are the same length by invariant
-		debug_assert_eq!(self.multilinears[0].len(), self.multilinears[1].len());
-
-		let n_vars_remaining = self.n_vars();
-		assert!(n_vars_remaining > 0);
-
-		// For P' the eq expansion does not depend on the currently specialized variable and
-		// thus doesn't need to be interpolated.
-		let eq_expansion = self.gruen32.eq_expansion();
-
-		let (evals_a_0, evals_a_1) = self.multilinears[0].split_half()?;
-		let (evals_b_0, evals_b_1) = self.multilinears[1].split_half()?;
-
-		// Compute F(1) and F(∞) where F = ∑_{v ∈ B} A(v || X) B(v || X) eq(v, z)
-		let round_evals = (
-			eq_expansion.as_ref(),
-			evals_a_0.as_ref(),
-			evals_a_1.as_ref(),
-			evals_b_0.as_ref(),
-			evals_b_1.as_ref(),
-		)
-			.into_par_iter()
-			.map(|(&eq_i, &evals_a_0_i, &evals_a_1_i, &evals_b_0_i, &evals_b_1_i)| {
-				// Evaluate M(∞) = M(0) + M(1)
-				let evals_a_inf_i = evals_a_0_i + evals_a_1_i;
-				let evals_b_inf_i = evals_b_0_i + evals_b_1_i;
-
-				let prod_1_i = eq_i * evals_a_1_i * evals_b_1_i;
-				let prod_inf_i = eq_i * evals_a_inf_i * evals_b_inf_i;
-
-				RoundEvals2 {
-					y_1: prod_1_i,
-					y_inf: prod_inf_i,
-				}
-			})
-			.reduce(RoundEvals2::default, |lhs, rhs| lhs + &rhs)
-			.sum_scalars(n_vars_remaining);
-
-		let alpha = self.gruen32.next_coordinate();
-		let round_coeffs = round_evals.interpolate_eq(*last_eval, alpha);
-
-		self.last_coeffs_or_eval = RoundCoeffsOrEval::Coeffs(round_coeffs.clone());
-		Ok(vec![round_coeffs])
-	}
-
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
-		let RoundCoeffsOrEval::Coeffs(prime_coeffs) = &self.last_coeffs_or_eval else {
-			return Err(Error::ExpectedExecute);
-		};
-
-		assert!(self.n_vars() > 0);
-
-		let sum = prime_coeffs.evaluate(challenge);
-
-		self.multilinears
-			.par_iter_mut()
-			.try_for_each(|multilinear| fold_highest_var_inplace(multilinear, challenge))?;
-
-		self.gruen32.fold(challenge)?;
-		self.last_coeffs_or_eval = RoundCoeffsOrEval::Eval(sum);
-		Ok(())
-	}
-
-	fn finish(self) -> Result<Vec<F>, Error> {
-		if self.n_vars() > 0 {
-			let error = match self.last_coeffs_or_eval {
-				RoundCoeffsOrEval::Coeffs(_) => Error::ExpectedFold,
-				RoundCoeffsOrEval::Eval(_) => Error::ExpectedExecute,
-			};
-
-			return Err(error);
-		}
-
-		let multilinear_evals = self
-			.multilinears
-			.into_iter()
-			.map(|multilinear| multilinear.get_checked(0).expect("multilinear.len() == 1"))
-			.collect();
-
-		Ok(multilinear_evals)
-	}
-}
-
-impl<F, P> MleCheckProver<F> for BivariateProductMlecheckProver<P>
-where
-	F: Field,
-	P: PackedField<Scalar = F>,
-{
-	fn eval_point(&self) -> &[F] {
-		&self.gruen32.eval_point()[..self.n_vars()]
-	}
-}
-
-#[derive(Debug, Clone)]
-enum RoundCoeffsOrEval<F: Field> {
-	Coeffs(RoundCoeffs<F>),
-	Eval(F),
+	QuadraticMleCheckProver::new(
+		multilinears,
+		|[a, b]| a * b,
+		|[a, b]| a * b,
+		eval_point,
+		eval_claim,
+	)
 }
 
 #[cfg(test)]
@@ -385,23 +247,23 @@ mod tests {
 		let eval_claim = evaluate(&product_buffer, &eval_point).unwrap();
 
 		// Create the prover
-		let mlecheck_prover = BivariateProductMlecheckProver::new(
-			[multilinear_a.clone(), multilinear_b.clone()],
-			&eval_point,
-			eval_claim,
-		)
-		.unwrap();
+		let mlecheck_prover =
+			new([multilinear_a.clone(), multilinear_b.clone()], &eval_point, eval_claim).unwrap();
 
 		test_mlecheck_prove_verify(
-			mlecheck_prover.clone(),
+			mlecheck_prover,
 			eval_claim,
 			&eval_point,
 			multilinear_a.clone(),
 			multilinear_b.clone(),
 		);
 
+		// Create another prover for the wrapped test
+		let mlecheck_prover =
+			new([multilinear_a.clone(), multilinear_b.clone()], &eval_point, eval_claim).unwrap();
+
 		test_wrapped_sumcheck_prove_verify(
-			mlecheck_prover.clone(),
+			mlecheck_prover,
 			eval_claim,
 			&eval_point,
 			multilinear_a.clone(),
