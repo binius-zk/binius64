@@ -74,6 +74,10 @@ harness = false
 name = "vision"
 harness = false
 
+[[bench]]
+name = "prodcheck"
+harness = false
+
 [features]
 default = ["rayon"]
 rayon = ["binius-utils/rayon"]
