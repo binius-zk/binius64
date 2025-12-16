@@ -28,7 +28,7 @@ use crate::protocols::{
 	sumcheck::{self, SumcheckOutput},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultilinearEvalClaim<F: Field> {
 	/// The evaluation of the multilinear.
 	pub eval: F,

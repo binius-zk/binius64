@@ -24,7 +24,6 @@ pub enum Error {
 /// This prover reduces the claim that a multilinear polynomial evaluates to a product over a
 /// Boolean hypercube to a single multilinear evaluation claim.
 pub struct ProdcheckProver<P: PackedField> {
-	claim: MultilinearEvalClaim<P::Scalar>,
 	/// Product layers from largest (original witness) to smallest (final products).
 	/// `layers[0]` is the original witness, `layers[k]` is the final product layer.
 	layers: Vec<FieldBuffer<P>>,
@@ -40,13 +39,12 @@ where
 	/// # Arguments
 	/// * `k` - The number of variables over which the product is taken. Each reduction step
 	///   reduces one variable by computing pairwise products.
-	/// * `claim` - The initial multilinear evaluation claim
 	/// * `witness` - The witness polynomial
 	///
 	/// # Preconditions
-	/// * `witness.log_len() == k + claim.point.len()`
-	pub fn new(k: usize, claim: MultilinearEvalClaim<F>, witness: FieldBuffer<P>) -> Self {
-		assert_eq!(witness.log_len(), k + claim.point.len()); // precondition
+	/// * `witness.log_len() >= k`
+	pub fn new(k: usize, witness: FieldBuffer<P>) -> Self {
+		assert!(witness.log_len() >= k); // precondition
 
 		let mut layers = Vec::with_capacity(k + 1);
 		layers.push(witness);
@@ -67,7 +65,7 @@ where
 			layers.push(next_layer);
 		}
 
-		Self { claim, layers }
+		Self { layers }
 	}
 
 	/// Returns the final product layer as a [`FieldSlice`].
@@ -81,18 +79,25 @@ where
 	///
 	/// This consumes the prover and runs sumcheck reductions from the smallest layer back to
 	/// the largest.
+	///
+	/// # Arguments
+	/// * `claim` - The initial multilinear evaluation claim
+	/// * `transcript` - The prover transcript
+	///
+	/// # Preconditions
+	/// * `claim.point.len() == witness.log_len() - k` (where k is the number of reduction layers)
 	pub fn prove<Challenger_>(
 		self,
+		claim: MultilinearEvalClaim<F>,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<MultilinearEvalClaim<F>, Error>
 	where
 		Challenger_: Challenger,
 	{
-		let Self {
-			claim,
-			mut layers,
-		} = self;
+		let Self { mut layers } = self;
 		let k = layers.len() - 1;
+
+		assert_eq!(claim.point.len(), layers[0].log_len() - k); // precondition
 
 		if k == 0 {
 			return Ok(claim);
@@ -135,5 +140,95 @@ where
 		}
 
 		Ok(claim)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_field::PackedField;
+	use binius_math::{
+		multilinear::evaluate::evaluate,
+		test_utils::{Packed128b, random_field_buffer, random_scalars},
+	};
+	use binius_transcript::ProverTranscript;
+	use binius_verifier::{config::StdChallenger, protocols::prodcheck};
+	use rand::{SeedableRng, rngs::StdRng};
+
+	use super::*;
+
+	fn test_prodcheck_prove_verify_helper<P: PackedField>(n: usize, k: usize) {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// 1. Create random witness with log_len = n + k
+		let witness = random_field_buffer::<P>(&mut rng, n + k);
+
+		// 2. Create prover (computes product layers)
+		let prover = ProdcheckProver::new(k, witness.clone());
+
+		// 3. Generate random n-dimensional challenge point
+		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
+
+		// 4. Evaluate products layer at challenge point to create claim
+		let products_eval = evaluate(&prover.products(), &eval_point).unwrap();
+		let claim = MultilinearEvalClaim {
+			eval: products_eval,
+			point: eval_point,
+		};
+
+		// 5. Run prover
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let prover_output = prover.prove(claim.clone(), &mut prover_transcript).unwrap();
+
+		// 6. Run verifier
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let verifier_output = prodcheck::verify(k, claim, &mut verifier_transcript).unwrap();
+
+		// 7. Check outputs match
+		assert_eq!(prover_output, verifier_output);
+
+		// 8. Verify multilinear evaluation of original witness
+		let expected_eval = evaluate(&witness, &verifier_output.point).unwrap();
+		assert_eq!(verifier_output.eval, expected_eval);
+	}
+
+	#[test]
+	fn test_prodcheck_prove_verify() {
+		test_prodcheck_prove_verify_helper::<Packed128b>(4, 3);
+	}
+
+	#[test]
+	fn test_prodcheck_full_prove_verify() {
+		test_prodcheck_prove_verify_helper::<Packed128b>(0, 4);
+	}
+
+	fn test_prodcheck_layer_computation_helper<P: PackedField>(n: usize, k: usize) {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Create random witness with log_len = n + k
+		let witness = random_field_buffer::<P>(&mut rng, n + k);
+
+		// Create prover (computes product layers)
+		let prover = ProdcheckProver::new(k, witness.clone());
+
+		// Get the products layer
+		let products = prover.products();
+
+		// For each index i in the products layer, verify it equals the product of witness values
+		// at indices i + z * 2^n for z in 0..2^k (strided access, not contiguous)
+		let stride = 1 << n;
+		let num_terms = 1 << k;
+		for i in 0..(1 << n) {
+			let mut expected_product = P::Scalar::ONE;
+			for z in 0..num_terms {
+				expected_product *= witness.get_checked(i + z * stride).unwrap();
+			}
+			let actual = products.get_checked(i).unwrap();
+			assert_eq!(actual, expected_product, "Product mismatch at index {i}");
+		}
+	}
+
+	#[test]
+	fn test_prodcheck_layer_computation() {
+		test_prodcheck_layer_computation_helper::<Packed128b>(4, 3);
 	}
 }
