@@ -146,7 +146,7 @@ where
 			.iter()
 			.map(|multilinear| {
 				multilinear
-					.split_half()
+					.split_half_ref()
 					.expect("n_vars_remaining > 0 => multilinear.log_len() > 0")
 			})
 			.unzip::<_, _, Vec<_>, Vec<_>>();

@@ -344,7 +344,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// # Throws
 	///
 	/// * [`Error::CannotSplit`] if `self.log_len() == 0`
-	pub fn split_half(&self) -> Result<(FieldSlice<'_, P>, FieldSlice<'_, P>), Error> {
+	pub fn split_half_ref(&self) -> Result<(FieldSlice<'_, P>, FieldSlice<'_, P>), Error> {
 		if self.log_len == 0 {
 			return Err(Error::CannotSplit);
 		}
@@ -577,25 +577,23 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 		Ok(FieldBufferChunkMut(inner))
 	}
 
-	/// Splits the buffer in half and returns a [`FieldBufferSplitMut`] for accessing the halves.
+	/// Consumes the buffer and splits it in half, returning a [`FieldBufferSplitMut`].
 	///
-	/// This returns an object that can be used to access mutable references to the two halves.
-	/// This method unfortunately can't simply return a tuple of slices because the buffer may have
-	/// only one packed element. If the buffer contains a single packed element that needs to be
-	/// split, this method will create temporary copies, call the closure, and then write the
-	/// results back to the original buffer when the returned [`FieldBufferSplitMut`] is dropped.
+	/// This returns an object that owns the buffer data and can be used to access mutable
+	/// references to the two halves. If the buffer contains a single packed element that needs
+	/// to be split, the returned struct will create temporary copies and write the results back
+	/// to the original buffer when dropped.
 	///
 	/// # Throws
 	///
 	/// * [`Error::CannotSplit`] if `self.log_len() == 0`
-	pub fn split_half_mut(&mut self) -> Result<FieldBufferSplitMut<P, &'_ mut [P]>, Error> {
+	pub fn split_half(self) -> Result<FieldBufferSplitMut<P, Data>, Error> {
 		if self.log_len == 0 {
 			return Err(Error::CannotSplit);
 		}
 
 		let new_log_len = self.log_len - 1;
 		let singles = if new_log_len < P::LOG_WIDTH {
-			// Extract the values using interleave
 			let packed = self.values[0];
 			let zeros = P::default();
 			let (lo_half, hi_half) = packed.interleave(zeros, new_log_len);
@@ -607,8 +605,19 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 		Ok(FieldBufferSplitMut {
 			log_len: new_log_len,
 			singles,
-			data: &mut self.values,
+			data: self.values,
 		})
+	}
+
+	/// Splits the buffer in half and returns a [`FieldBufferSplitMut`] for accessing the halves.
+	///
+	/// This is a convenience method equivalent to `self.to_mut().split_half()`.
+	///
+	/// # Throws
+	///
+	/// * [`Error::CannotSplit`] if `self.log_len() == 0`
+	pub fn split_half_mut(&mut self) -> Result<FieldBufferSplitMut<P, &'_ mut [P]>, Error> {
+		self.to_mut().split_half()
 	}
 }
 
@@ -1214,7 +1223,7 @@ mod tests {
 		// Leave spare capacity for 32 elements
 		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 5).unwrap();
 
-		let (first, second) = buffer.split_half().unwrap();
+		let (first, second) = buffer.split_half_ref().unwrap();
 		assert_eq!(first.len(), 8);
 		assert_eq!(second.len(), 8);
 
@@ -1230,7 +1239,7 @@ mod tests {
 		let values: Vec<F> = (0..4).map(F::new).collect();
 		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 3).unwrap();
 
-		let (first, second) = buffer.split_half().unwrap();
+		let (first, second) = buffer.split_half_ref().unwrap();
 		assert_eq!(first.len(), 2);
 		assert_eq!(second.len(), 2);
 
@@ -1254,7 +1263,7 @@ mod tests {
 		let values: Vec<F> = vec![F::new(10), F::new(20)];
 		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 3).unwrap();
 
-		let (first, second) = buffer.split_half().unwrap();
+		let (first, second) = buffer.split_half_ref().unwrap();
 		assert_eq!(first.len(), 1);
 		assert_eq!(second.len(), 1);
 
@@ -1275,7 +1284,7 @@ mod tests {
 		let values = vec![F::new(42)];
 		let buffer = FieldBuffer::<P>::from_values(&values).unwrap();
 
-		let result = buffer.split_half();
+		let result = buffer.split_half_ref();
 		assert!(matches!(result, Err(Error::CannotSplit)));
 	}
 

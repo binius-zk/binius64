@@ -95,7 +95,7 @@ impl<F: Field, P: PackedField<Scalar = F>> InOutCheckProver<P> {
 		let eq_expansion = self.gruen32.eq_expansion();
 		let (_, witness_1) = self
 			.witness
-			.split_half()
+			.split_half_ref()
 			.expect("pre-condition: witness.log_len() > 0");
 
 		inner_product_buffers(&witness_1, eq_expansion)
@@ -115,7 +115,7 @@ impl<F: Field, P: PackedField<Scalar = F>> InOutCheckProver<P> {
 		// last coordinate of the evaluation point.
 		let eq_expansion = gruen32.eq_expansion();
 		let (multilin_0, multilin_1) = multilin
-			.split_half()
+			.split_half_ref()
 			.expect("early return above if multilin.log_len() == 0");
 
 		let lo = inner_product_buffers(&multilin_0, eq_expansion);

@@ -95,8 +95,8 @@ where
 					for (round_evals, (evals_a, evals_b)) in
 						izip!(&mut packed_prime_evals, self.multilinears.iter().tuples())
 					{
-						let (evals_a_0, evals_a_1) = evals_a.split_half()?;
-						let (evals_b_0, evals_b_1) = evals_b.split_half()?;
+						let (evals_a_0, evals_a_1) = evals_a.split_half_ref()?;
+						let (evals_b_0, evals_b_1) = evals_b.split_half_ref()?;
 
 						let evals_a_0_chunk = evals_a_0.chunk(chunk_vars, chunk_index)?;
 						let evals_b_0_chunk = evals_b_0.chunk(chunk_vars, chunk_index)?;
@@ -318,7 +318,7 @@ mod tests {
 				let lerps = folded_multilinears
 					.iter()
 					.map(|multilinear| {
-						let (evals_0, evals_1) = multilinear.split_half().unwrap();
+						let (evals_0, evals_1) = multilinear.split_half_ref().unwrap();
 						izip!(evals_0.as_ref(), evals_1.as_ref())
 							.map(|(&eval_0, &eval_1)| eval_0 + (eval_1 - eval_0) * sample_broadcast)
 							.collect_vec()

@@ -55,8 +55,8 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 		let n_vars_remaining = self.n_vars();
 		assert!(n_vars_remaining > 0);
 
-		let (evals_a_0, evals_a_1) = self.multilinears[0].split_half()?;
-		let (evals_b_0, evals_b_1) = self.multilinears[1].split_half()?;
+		let (evals_a_0, evals_a_1) = self.multilinears[0].split_half_ref()?;
+		let (evals_b_0, evals_b_1) = self.multilinears[1].split_half_ref()?;
 
 		// Compute F(1) and F(∞) where F = ∑_{v ∈ B} A(v || X) B(v || X)
 		let round_evals =

@@ -129,7 +129,7 @@ where
 				|(mut packed_prime_evals, mut binary_chunk_0, mut binary_chunk_1),
 				 chunk_index|
 				 -> Result<_, Error> {
-					let (selected_0, selected_1) = self.selected.split_half()?;
+					let (selected_0, selected_1) = self.selected.split_half_ref()?;
 
 					let selected_0_chunk = selected_0.chunk(chunk_vars, chunk_index)?;
 					let selected_1_chunk = selected_1.chunk(chunk_vars, chunk_index)?;
