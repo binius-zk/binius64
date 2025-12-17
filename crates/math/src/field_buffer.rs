@@ -17,6 +17,11 @@ use bytemuck::zeroed_vec;
 
 use crate::Error;
 
+/// Trait for types that can provide multiple mutable field slices.
+pub trait AsSlicesMut<P: PackedField, const N: usize> {
+	fn as_slices_mut(&mut self) -> [FieldSliceMut<'_, P>; N];
+}
+
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.
 ///
 /// This struct maintains a set of invariants:
@@ -630,6 +635,14 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> AsMut<[P]> for FieldBuffer<P,
 	}
 }
 
+impl<P: PackedField, Data: DerefMut<Target = [P]>, const N: usize> AsSlicesMut<P, N>
+	for [FieldBuffer<P, Data>; N]
+{
+	fn as_slices_mut(&mut self) -> [FieldSliceMut<'_, P>; N] {
+		self.each_mut().map(|buf| buf.to_mut())
+	}
+}
+
 impl<F: Field, Data: Deref<Target = [F]>> Index<usize> for FieldBuffer<F, Data> {
 	type Output = F;
 
@@ -770,6 +783,13 @@ impl<'a, P: PackedField> FieldBufferSplitMut<'a, P> {
 				},
 			),
 		}
+	}
+}
+
+impl<'a, P: PackedField> AsSlicesMut<P, 2> for FieldBufferSplitMut<'a, P> {
+	fn as_slices_mut(&mut self) -> [FieldSliceMut<'_, P>; 2] {
+		let (first, second) = self.halves();
+		[first, second]
 	}
 }
 
