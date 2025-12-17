@@ -588,7 +588,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// # Throws
 	///
 	/// * [`Error::CannotSplit`] if `self.log_len() == 0`
-	pub fn split_half_mut(&mut self) -> Result<FieldBufferSplitMut<'_, P>, Error> {
+	pub fn split_half_mut(&mut self) -> Result<FieldBufferSplitMut<P, &'_ mut [P]>, Error> {
 		if self.log_len == 0 {
 			return Err(Error::CannotSplit);
 		}
@@ -713,13 +713,13 @@ impl<'a, P> Deref for FieldSliceData<'a, P> {
 
 /// Return type of [`FieldBuffer::split_half_mut`].
 #[derive(Debug)]
-pub struct FieldBufferSplitMut<'a, P: PackedField> {
+pub struct FieldBufferSplitMut<P: PackedField, Data: DerefMut<Target = [P]>> {
 	log_len: usize,
 	singles: Option<[P; 2]>,
-	data: &'a mut [P],
+	data: Data,
 }
 
-impl<'a, P: PackedField> FieldBufferSplitMut<'a, P> {
+impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBufferSplitMut<P, Data> {
 	pub fn halves(&mut self) -> (FieldSliceMut<'_, P>, FieldSliceMut<'_, P>) {
 		match &mut self.singles {
 			Some([lo_half, hi_half]) => (
@@ -750,7 +750,7 @@ impl<'a, P: PackedField> FieldBufferSplitMut<'a, P> {
 	}
 }
 
-impl<'a, P: PackedField> Drop for FieldBufferSplitMut<'a, P> {
+impl<P: PackedField, Data: DerefMut<Target = [P]>> Drop for FieldBufferSplitMut<P, Data> {
 	fn drop(&mut self) {
 		if let Some([lo_half, hi_half]) = self.singles {
 			// Write back the results by interleaving them back together
@@ -760,7 +760,7 @@ impl<'a, P: PackedField> Drop for FieldBufferSplitMut<'a, P> {
 	}
 }
 
-impl<'a, P: PackedField> AsSlicesMut<P, 2> for FieldBufferSplitMut<'a, P> {
+impl<P: PackedField, Data: DerefMut<Target = [P]>> AsSlicesMut<P, 2> for FieldBufferSplitMut<P, Data> {
 	fn as_slices_mut(&mut self) -> [FieldSliceMut<'_, P>; 2] {
 		let (first, second) = self.halves();
 		[first, second]
