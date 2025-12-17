@@ -510,7 +510,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 			.take(chunk_count)
 			.map(move |chunk| FieldBuffer {
 				log_len: log_chunk_size,
-				values: FieldSliceDataMut::Slice(chunk),
+				values: chunk,
 			});
 
 		Ok(chunks)
@@ -594,30 +594,21 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 		}
 
 		let new_log_len = self.log_len - 1;
-		if new_log_len < P::LOG_WIDTH {
+		let singles = if new_log_len < P::LOG_WIDTH {
 			// Extract the values using interleave
 			let packed = self.values[0];
 			let zeros = P::default();
 			let (lo_half, hi_half) = packed.interleave(zeros, new_log_len);
-
-			Ok(FieldBufferSplitMut(FieldBufferSplitMutInner::Singles {
-				log_len: new_log_len,
-				lo_half,
-				hi_half,
-				parent: &mut self.values[0],
-			}))
+			Some([lo_half, hi_half])
 		} else {
-			// Normal case: split the packed values slice in half
-			let half_len = 1 << (new_log_len - P::LOG_WIDTH);
-			let (lo_half, hi_half) = self.values.split_at_mut(half_len);
-			let hi_half = &mut hi_half[..half_len];
+			None
+		};
 
-			Ok(FieldBufferSplitMut(FieldBufferSplitMutInner::Slices {
-				log_len: new_log_len,
-				lo_half,
-				hi_half,
-			}))
-		}
+		Ok(FieldBufferSplitMut {
+			log_len: new_log_len,
+			singles,
+			data: &mut self.values,
+		})
 	}
 }
 
@@ -661,7 +652,7 @@ impl<F: Field, Data: DerefMut<Target = [F]>> IndexMut<usize> for FieldBuffer<F, 
 pub type FieldSlice<'a, P> = FieldBuffer<P, FieldSliceData<'a, P>>;
 
 /// Alias for a field buffer over a mutably borrowed slice.
-pub type FieldSliceMut<'a, P> = FieldBuffer<P, FieldSliceDataMut<'a, P>>;
+pub type FieldSliceMut<'a, P> = FieldBuffer<P, &'a mut [P]>;
 
 impl<'a, P: PackedField> FieldSlice<'a, P> {
 	/// Create a new FieldSlice from a slice of packed values.
@@ -691,7 +682,7 @@ impl<'a, P: PackedField> FieldSliceMut<'a, P> {
 	/// * `IncorrectArgumentLength` if the number of field elements does not fit the `slice.len()`
 	///   exactly.
 	pub fn from_slice(log_len: usize, slice: &'a mut [P]) -> Result<Self, Error> {
-		FieldBuffer::new(log_len, FieldSliceDataMut::Slice(slice))
+		FieldBuffer::new(log_len, slice)
 	}
 }
 
@@ -720,68 +711,51 @@ impl<'a, P> Deref for FieldSliceData<'a, P> {
 	}
 }
 
-#[derive(Debug)]
-pub enum FieldSliceDataMut<'a, P> {
-	Single(P),
-	Slice(&'a mut [P]),
-}
-
-impl<'a, P> Deref for FieldSliceDataMut<'a, P> {
-	type Target = [P];
-
-	fn deref(&self) -> &Self::Target {
-		match self {
-			FieldSliceDataMut::Single(val) => slice::from_ref(val),
-			FieldSliceDataMut::Slice(slice) => slice,
-		}
-	}
-}
-
-impl<'a, P> DerefMut for FieldSliceDataMut<'a, P> {
-	fn deref_mut(&mut self) -> &mut Self::Target {
-		match self {
-			FieldSliceDataMut::Single(val) => slice::from_mut(val),
-			FieldSliceDataMut::Slice(slice) => slice,
-		}
-	}
-}
-
 /// Return type of [`FieldBuffer::split_half_mut`].
 #[derive(Debug)]
-pub struct FieldBufferSplitMut<'a, P: PackedField>(FieldBufferSplitMutInner<'a, P>);
+pub struct FieldBufferSplitMut<'a, P: PackedField> {
+	log_len: usize,
+	singles: Option<[P; 2]>,
+	data: &'a mut [P],
+}
 
 impl<'a, P: PackedField> FieldBufferSplitMut<'a, P> {
 	pub fn halves(&mut self) -> (FieldSliceMut<'_, P>, FieldSliceMut<'_, P>) {
-		match &mut self.0 {
-			FieldBufferSplitMutInner::Singles {
-				log_len,
-				lo_half,
-				hi_half,
-				parent: _,
-			} => (
+		match &mut self.singles {
+			Some([lo_half, hi_half]) => (
 				FieldBuffer {
-					log_len: *log_len,
-					values: FieldSliceDataMut::Slice(slice::from_mut(lo_half)),
+					log_len: self.log_len,
+					values: slice::from_mut(lo_half),
 				},
 				FieldBuffer {
-					log_len: *log_len,
-					values: FieldSliceDataMut::Slice(slice::from_mut(hi_half)),
+					log_len: self.log_len,
+					values: slice::from_mut(hi_half),
 				},
 			),
-			FieldBufferSplitMutInner::Slices {
-				log_len,
-				lo_half,
-				hi_half,
-			} => (
-				FieldBuffer {
-					log_len: *log_len,
-					values: FieldSliceDataMut::Slice(lo_half),
-				},
-				FieldBuffer {
-					log_len: *log_len,
-					values: FieldSliceDataMut::Slice(hi_half),
-				},
-			),
+			None => {
+				let half_len = 1 << (self.log_len - P::LOG_WIDTH);
+				let (lo_half, hi_half) = self.data.split_at_mut(half_len);
+				(
+					FieldBuffer {
+						log_len: self.log_len,
+						values: lo_half,
+					},
+					FieldBuffer {
+						log_len: self.log_len,
+						values: hi_half,
+					},
+				)
+			}
+		}
+	}
+}
+
+impl<'a, P: PackedField> Drop for FieldBufferSplitMut<'a, P> {
+	fn drop(&mut self) {
+		if let Some([lo_half, hi_half]) = self.singles {
+			// Write back the results by interleaving them back together
+			// The arrays may have been modified by the closure
+			(self.data[0], _) = lo_half.interleave(hi_half, self.log_len);
 		}
 	}
 }
@@ -790,39 +764,6 @@ impl<'a, P: PackedField> AsSlicesMut<P, 2> for FieldBufferSplitMut<'a, P> {
 	fn as_slices_mut(&mut self) -> [FieldSliceMut<'_, P>; 2] {
 		let (first, second) = self.halves();
 		[first, second]
-	}
-}
-
-#[derive(Debug)]
-enum FieldBufferSplitMutInner<'a, P: PackedField> {
-	Singles {
-		log_len: usize,
-		lo_half: P,
-		hi_half: P,
-		parent: &'a mut P,
-	},
-	Slices {
-		log_len: usize,
-		lo_half: &'a mut [P],
-		hi_half: &'a mut [P],
-	},
-}
-
-impl<'a, P: PackedField> Drop for FieldBufferSplitMutInner<'a, P> {
-	fn drop(&mut self) {
-		match self {
-			Self::Singles {
-				log_len,
-				lo_half,
-				hi_half,
-				parent,
-			} => {
-				// Write back the results by interleaving them back together
-				// The arrays may have been modified by the closure
-				(**parent, _) = (*lo_half).interleave(*hi_half, *log_len);
-			}
-			Self::Slices { .. } => {}
-		}
 	}
 }
 
@@ -840,11 +781,11 @@ impl<'a, P: PackedField> FieldBufferChunkMut<'a, P> {
 				chunk_offset: _,
 			} => FieldBuffer {
 				log_len: *log_len,
-				values: FieldSliceDataMut::Slice(slice::from_mut(chunk)),
+				values: slice::from_mut(chunk),
 			},
 			FieldBufferChunkMutInner::Slice { log_len, chunk } => FieldBuffer {
 				log_len: *log_len,
-				values: FieldSliceDataMut::Slice(chunk),
+				values: chunk,
 			},
 		}
 	}
