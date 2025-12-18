@@ -1,9 +1,7 @@
 // Copyright 2023-2025 Irreducible Inc.
 
-use std::ops::DerefMut;
-
 use binius_field::{Field, PackedField};
-use binius_math::FieldBuffer;
+use binius_math::AsSlicesMut;
 
 use super::{error::Error, quadratic_mle::QuadraticMleCheckProver};
 use crate::protocols::sumcheck::common::MleCheckProver;
@@ -51,15 +49,14 @@ use crate::protocols::sumcheck::common::MleCheckProver;
 /// Note 2: evaluation points are 0 (implicit), 1 and Karatsuba infinity.
 ///
 /// [Gruen24]: <https://eprint.iacr.org/2024/108>
-pub fn new<F, P, Data>(
-	multilinears: [FieldBuffer<P, Data>; 2],
+pub fn new<F, P>(
+	multilinears: impl AsSlicesMut<P, 2> + Send + 'static,
 	eval_point: &[F],
 	eval_claim: F,
 ) -> Result<impl MleCheckProver<F>, Error>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	Data: DerefMut<Target = [P]> + Sync,
 {
 	QuadraticMleCheckProver::new(
 		multilinears,
@@ -74,6 +71,7 @@ where
 mod tests {
 	use binius_field::arch::{OptimalB128, OptimalPackedB128};
 	use binius_math::{
+		FieldBuffer,
 		multilinear::{eq::eq_ind, evaluate::evaluate},
 		test_utils::{random_field_buffer, random_scalars},
 	};

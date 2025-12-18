@@ -1,9 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::ops::DerefMut;
-
 use binius_field::{Field, PackedField};
-use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
+use binius_math::{AsSlicesMut, FieldSliceMut, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 use binius_verifier::protocols::sumcheck::RoundCoeffs;
 
@@ -19,27 +17,20 @@ use crate::protocols::sumcheck::common::MleCheckProver;
 /// The prover uses the sumcheck protocol to reduce claims about this multilinear extension
 /// to claims about the individual multilinear evaluations, employing the Karatsuba optimization
 /// for efficient degree-2 polynomial interpolation.
-#[derive(Debug, Clone)]
-pub struct QuadraticMleCheckProver<
-	P: PackedField,
-	Data: DerefMut<Target = [P]>,
-	Composition,
-	InfinityComposition,
-	const N: usize,
-> {
-	multilinears: [FieldBuffer<P, Data>; N],
+pub struct QuadraticMleCheckProver<P: PackedField, Composition, InfinityComposition, const N: usize>
+{
+	multilinears: Box<dyn AsSlicesMut<P, N> + Send>,
 	composition: Composition,
 	infinity_composition: InfinityComposition,
 	last_coeffs_or_eval: RoundCoeffsOrEval<P::Scalar>,
 	gruen32: Gruen32<P>,
 }
 
-impl<F, P, Data, Composition, InfinityComposition, const N: usize>
-	QuadraticMleCheckProver<P, Data, Composition, InfinityComposition, N>
+impl<F, P, Composition, InfinityComposition, const N: usize>
+	QuadraticMleCheckProver<P, Composition, InfinityComposition, N>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	Data: DerefMut<Target = [P]>,
 	Composition: Fn([P; N]) -> P + Sync,
 	InfinityComposition: Fn([P; N]) -> P + Sync,
 {
@@ -78,7 +69,7 @@ where
 	/// Returns `Error::MultilinearSizeMismatch` if any multilinear has a different number of
 	/// variables than the length of `eval_point`.
 	pub fn new(
-		multilinears: [FieldBuffer<P, Data>; N],
+		mut multilinears: impl AsSlicesMut<P, N> + Send + 'static,
 		composition: Composition,
 		infinity_composition: InfinityComposition,
 		eval_point: &[F],
@@ -86,7 +77,7 @@ where
 	) -> Result<Self, Error> {
 		let n_vars = eval_point.len();
 
-		for multilinear in &multilinears {
+		for multilinear in &multilinears.as_slices_mut() {
 			if multilinear.log_len() != n_vars {
 				return Err(Error::MultilinearSizeMismatch);
 			}
@@ -96,21 +87,30 @@ where
 		let gruen32 = Gruen32::new(eval_point);
 
 		Ok(Self {
-			multilinears,
+			multilinears: Box::new(multilinears),
 			composition,
 			infinity_composition,
 			last_coeffs_or_eval,
 			gruen32,
 		})
 	}
+
+	/// Gets mutable slices of the multilinears, truncated to the current number of variables.
+	fn multilinears_mut(&mut self) -> [FieldSliceMut<'_, P>; N] {
+		let n_vars = self.gruen32.n_vars_remaining();
+		let mut slices = self.multilinears.as_slices_mut();
+		for slice in &mut slices {
+			slice.truncate(n_vars);
+		}
+		slices
+	}
 }
 
-impl<F, P, Data, Composition, InfinityComposition, const N: usize> SumcheckProver<F>
-	for QuadraticMleCheckProver<P, Data, Composition, InfinityComposition, N>
+impl<F, P, Composition, InfinityComposition, const N: usize> SumcheckProver<F>
+	for QuadraticMleCheckProver<P, Composition, InfinityComposition, N>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	Data: DerefMut<Target = [P]> + Sync,
 	Composition: Fn([P; N]) -> P + Sync,
 	InfinityComposition: Fn([P; N]) -> P + Sync,
 {
@@ -123,26 +123,29 @@ where
 	}
 
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
-		let RoundCoeffsOrEval::Eval(last_eval) = &self.last_coeffs_or_eval else {
-			return Err(Error::ExpectedFold);
+		let last_eval = match &self.last_coeffs_or_eval {
+			RoundCoeffsOrEval::Eval(eval) => *eval,
+			RoundCoeffsOrEval::Coeffs(_) => return Err(Error::ExpectedFold),
 		};
 
-		// All multilinears have same length by invariant
-		debug_assert!(
-			self.multilinears
-				.iter()
-				.all(|m| m.log_len() == self.n_vars())
-		);
-
-		let n_vars_remaining = self.n_vars();
+		let n_vars_remaining = self.gruen32.n_vars_remaining();
 		assert!(n_vars_remaining > 0);
 
 		let eq_expansion = self.gruen32.eq_expansion();
 		assert_eq!(eq_expansion.log_len(), n_vars_remaining - 1);
 
+		// Get references to compositions - these don't conflict with multilinears borrow
+		let composition = &self.composition;
+		let infinity_composition = &self.infinity_composition;
+
+		// Get multilinear slices and truncate to current n_vars
+		let mut multilinears = self.multilinears.as_slices_mut();
+		for slice in &mut multilinears {
+			slice.truncate(n_vars_remaining);
+		}
+
 		// Split each multilinear in half
-		let (splits_0, splits_1) = self
-			.multilinears
+		let (splits_0, splits_1) = multilinears
 			.iter()
 			.map(|multilinear| {
 				multilinear
@@ -167,10 +170,10 @@ where
 				}
 
 				// Evaluate composition at X=1
-				let y_1 = (self.composition)(evals_1) * eq_i;
+				let y_1 = composition(evals_1) * eq_i;
 
 				// Evaluate composition at X=∞ (where M(∞) = M(0) + M(1))
-				let y_inf = (self.infinity_composition)(evals_inf) * eq_i;
+				let y_inf = infinity_composition(evals_inf) * eq_i;
 
 				RoundEvals2 { y_1, y_inf }
 			})
@@ -178,7 +181,7 @@ where
 			.sum_scalars(n_vars_remaining - 1);
 
 		let alpha = self.gruen32.next_coordinate();
-		let round_coeffs = round_evals.interpolate_eq(*last_eval, alpha);
+		let round_coeffs = round_evals.interpolate_eq(last_eval, alpha);
 
 		self.last_coeffs_or_eval = RoundCoeffsOrEval::Coeffs(round_coeffs.clone());
 		Ok(vec![round_coeffs])
@@ -199,7 +202,7 @@ where
 
 		let eval = coeffs.evaluate(challenge);
 
-		for multilinear in &mut self.multilinears {
+		for multilinear in &mut self.multilinears_mut() {
 			fold_highest_var_inplace(multilinear, challenge)?;
 		}
 
@@ -208,7 +211,7 @@ where
 		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
+	fn finish(mut self) -> Result<Vec<F>, Error> {
 		if self.n_vars() > 0 {
 			let error = match self.last_coeffs_or_eval {
 				RoundCoeffsOrEval::Coeffs(_) => Error::ExpectedFold,
@@ -219,7 +222,7 @@ where
 		}
 
 		let multilinear_evals = self
-			.multilinears
+			.multilinears_mut()
 			.into_iter()
 			.map(|multilinear| multilinear.get_checked(0).expect("multilinear.len() == 1"))
 			.collect();
@@ -228,12 +231,11 @@ where
 	}
 }
 
-impl<F, P, Data, Composition, InfinityComposition, const N: usize> MleCheckProver<F>
-	for QuadraticMleCheckProver<P, Data, Composition, InfinityComposition, N>
+impl<F, P, Composition, InfinityComposition, const N: usize> MleCheckProver<F>
+	for QuadraticMleCheckProver<P, Composition, InfinityComposition, N>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	Data: DerefMut<Target = [P]> + Sync,
 	Composition: Fn([P; N]) -> P + Sync,
 	InfinityComposition: Fn([P; N]) -> P + Sync,
 {
@@ -254,6 +256,7 @@ mod tests {
 
 	use binius_field::arch::OptimalPackedB128;
 	use binius_math::{
+		FieldBuffer,
 		multilinear::evaluate::evaluate,
 		test_utils::{random_field_buffer, random_scalars},
 	};
@@ -265,8 +268,8 @@ mod tests {
 	use super::*;
 	use crate::protocols::sumcheck::prove_single_mlecheck;
 
-	fn test_mlecheck_prove_verify<F, P, Data, Composition, InfinityComposition, const N: usize>(
-		prover: QuadraticMleCheckProver<P, Data, Composition, InfinityComposition, N>,
+	fn test_mlecheck_prove_verify<F, P, Composition, InfinityComposition, const N: usize>(
+		prover: QuadraticMleCheckProver<P, Composition, InfinityComposition, N>,
 		composition: Composition,
 		eval_claim: F,
 		eval_point: &[F],
@@ -274,7 +277,6 @@ mod tests {
 	) where
 		F: Field,
 		P: PackedField<Scalar = F>,
-		Data: DerefMut<Target = [P]> + Sync,
 		Composition: Fn([P; N]) -> P + Sync,
 		InfinityComposition: Fn([P; N]) -> P + Sync,
 	{
@@ -362,7 +364,7 @@ mod tests {
 		.unwrap();
 
 		test_mlecheck_prove_verify(
-			mlecheck_prover.clone(),
+			mlecheck_prover,
 			composition,
 			eval_claim,
 			&eval_point,
