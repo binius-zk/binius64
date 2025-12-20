@@ -169,7 +169,7 @@ fn bench(c: &mut Criterion) {
 				proving_polys,
 				|[a, b, c]| a * b - c,
 				|[a, b, _]| a * b,
-				&multilinear_zerocheck_challenges,
+				multilinear_zerocheck_challenges.clone(),
 				next_round_claim,
 			)
 			.expect("multilinears should have consistent dimensions");

@@ -1,7 +1,7 @@
 // Copyright 2025 The Binius Developers
 
 use binius_field::{Field, PackedField};
-use binius_math::{FieldBuffer, FieldSlice, line::extrapolate_line_packed};
+use binius_math::{FieldBuffer, line::extrapolate_line_packed};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
@@ -10,7 +10,9 @@ use binius_utils::rayon::prelude::*;
 use binius_verifier::protocols::prodcheck::MultilinearEvalClaim;
 
 use crate::protocols::sumcheck::{
-	Error as SumcheckError, ProveSingleOutput, bivariate_product_mle, prove_single_mlecheck,
+	Error as SumcheckError, ProveSingleOutput, bivariate_product_mle,
+	common::MleCheckProver,
+	prove_single_mlecheck,
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -24,8 +26,9 @@ pub enum Error {
 /// This prover reduces the claim that a multilinear polynomial evaluates to a product over a
 /// Boolean hypercube to a single multilinear evaluation claim.
 pub struct ProdcheckProver<P: PackedField> {
-	/// Product layers from largest (original witness) to smallest (final products).
-	/// `layers[0]` is the original witness, `layers[k]` is the final product layer.
+	/// Product layers from largest (original witness) to second-smallest.
+	/// `layers[0]` is the original witness. The final products layer is returned
+	/// separately from the constructor.
 	layers: Vec<FieldBuffer<P>>,
 }
 
@@ -36,6 +39,9 @@ where
 {
 	/// Creates a new [`ProdcheckProver`].
 	///
+	/// Returns `(prover, products)` where `products` is the final layer containing the
+	/// products over all `k` variables.
+	///
 	/// # Arguments
 	/// * `k` - The number of variables over which the product is taken. Each reduction step
 	///   reduces one variable by computing pairwise products.
@@ -43,7 +49,7 @@ where
 	///
 	/// # Preconditions
 	/// * `witness.log_len() >= k`
-	pub fn new(k: usize, witness: FieldBuffer<P>) -> Self {
+	pub fn new(k: usize, witness: FieldBuffer<P>) -> (Self, FieldBuffer<P>) {
 		assert!(witness.log_len() >= k); // precondition
 
 		let mut layers = Vec::with_capacity(k + 1);
@@ -52,7 +58,7 @@ where
 		for _ in 0..k {
 			let prev_layer = layers.last().expect("layers is non-empty");
 			let (half_0, half_1) = prev_layer
-				.split_half()
+				.split_half_ref()
 				.expect("layer has at least one variable");
 
 			let next_layer_evals = (half_0.as_ref(), half_1.as_ref())
@@ -65,14 +71,36 @@ where
 			layers.push(next_layer);
 		}
 
-		Self { layers }
+		let products = layers.pop().expect("layers has k+1 elements");
+		(Self { layers }, products)
 	}
 
-	/// Returns the final product layer as a [`FieldSlice`].
+	/// Returns the number of remaining layers to prove.
+	pub fn n_layers(&self) -> usize {
+		self.layers.len()
+	}
+
+	/// Pops the last layer and returns an MLE-check prover for it.
 	///
-	/// This is the smallest computed layer containing the products over all `k` variables.
-	pub fn products(&self) -> FieldSlice<'_, P> {
-		self.layers.last().expect("layers is non-empty").to_ref()
+	/// Returns `(layer_prover, remaining)` where:
+	/// - `layer_prover` is an MLE-check prover for the popped layer
+	/// - `remaining` is `Some(self)` if there are more layers, `None` otherwise
+	pub fn layer_prover(
+		mut self,
+		claim: MultilinearEvalClaim<F>,
+	) -> Result<(impl MleCheckProver<F>, Option<Self>), Error> {
+		let layer = self.layers.pop().expect("layers is non-empty");
+		let split = layer.split_half().expect("layer has at least one variable");
+
+		let remaining = if self.layers.is_empty() {
+			None
+		} else {
+			Some(self)
+		};
+
+		let prover = bivariate_product_mle::new(split, claim.point, claim.eval)?;
+
+		Ok((prover, remaining))
 	}
 
 	/// Runs the product check protocol and returns the final evaluation claim.
@@ -94,31 +122,17 @@ where
 	where
 		Challenger_: Challenger,
 	{
-		let Self { mut layers } = self;
-		let k = layers.len() - 1;
-
-		assert_eq!(claim.point.len(), layers[0].log_len() - k); // precondition
-
-		if k == 0 {
-			return Ok(claim);
-		}
-
+		let mut prover_opt = Some(self);
 		let mut claim = claim;
 
-		// Iterate from the smallest layer back to the largest.
-		// Sumchecks run on layers[k-1], layers[k-2], ..., layers[0].
-		for i in (0..k).rev() {
-			let layer = &mut layers[i];
-			let mut split = layer
-				.split_half_mut()
-				.expect("layer has at least one variable");
-			let (half_0, half_1) = split.halves();
+		while let Some(prover) = prover_opt {
+			let (mle_prover, remaining) = prover.layer_prover(claim.clone())?;
+			prover_opt = remaining;
 
-			let prover = bivariate_product_mle::new([half_0, half_1], &claim.point, claim.eval)?;
 			let ProveSingleOutput {
 				multilinear_evals,
 				challenges,
-			} = prove_single_mlecheck(prover, transcript)?;
+			} = prove_single_mlecheck(mle_prover, transcript)?;
 
 			let [eval_0, eval_1] = multilinear_evals
 				.try_into()
@@ -163,13 +177,13 @@ mod tests {
 		let witness = random_field_buffer::<P>(&mut rng, n + k);
 
 		// 2. Create prover (computes product layers)
-		let prover = ProdcheckProver::new(k, witness.clone());
+		let (prover, products) = ProdcheckProver::new(k, witness.clone());
 
 		// 3. Generate random n-dimensional challenge point
 		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
 
 		// 4. Evaluate products layer at challenge point to create claim
-		let products_eval = evaluate(&prover.products(), &eval_point).unwrap();
+		let products_eval = evaluate(&products, &eval_point).unwrap();
 		let claim = MultilinearEvalClaim {
 			eval: products_eval,
 			point: eval_point,
@@ -208,10 +222,7 @@ mod tests {
 		let witness = random_field_buffer::<P>(&mut rng, n + k);
 
 		// Create prover (computes product layers)
-		let prover = ProdcheckProver::new(k, witness.clone());
-
-		// Get the products layer
-		let products = prover.products();
+		let (_prover, products) = ProdcheckProver::new(k, witness.clone());
 
 		// For each index i in the products layer, verify it equals the product of witness values
 		// at indices i + z * 2^n for z in 0..2^k (strided access, not contiguous)

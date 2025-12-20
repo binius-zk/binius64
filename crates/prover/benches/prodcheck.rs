@@ -47,8 +47,8 @@ fn bench_prodcheck_prove(c: &mut Criterion) {
 			let witness = random_field_buffer::<P>(&mut rng, n_vars);
 
 			// Pre-compute the claim (products layer evaluation at empty point)
-			let prover = ProdcheckProver::new(k, witness.clone());
-			let products_eval = evaluate(&prover.products(), &[]).unwrap();
+			let (_prover, products) = ProdcheckProver::new(k, witness.clone());
+			let products_eval = evaluate(&products, &[]).unwrap();
 			let claim = MultilinearEvalClaim {
 				eval: products_eval,
 				point: vec![],
@@ -57,7 +57,10 @@ fn bench_prodcheck_prove(c: &mut Criterion) {
 			let mut transcript = ProverTranscript::new(StdChallenger::default());
 
 			b.iter_batched(
-				|| (ProdcheckProver::new(k, witness.clone()), claim.clone()),
+				|| {
+					let (prover, _products) = ProdcheckProver::new(k, witness.clone());
+					(prover, claim.clone())
+				},
 				|(prover, claim)| prover.prove(claim, &mut transcript).unwrap(),
 				BatchSize::SmallInput,
 			);

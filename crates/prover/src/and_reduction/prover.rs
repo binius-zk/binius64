@@ -195,7 +195,7 @@ where
 			proving_polys,
 			|[a, b, c]| a * b - c,
 			|[a, b, _]| a * b,
-			&verifier_field_zerocheck_challenges,
+			verifier_field_zerocheck_challenges,
 			first_round_message.evaluate_at_challenge(challenge),
 		)
 		.expect("multilinears should have consistent dimensions")

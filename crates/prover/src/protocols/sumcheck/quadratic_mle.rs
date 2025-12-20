@@ -72,7 +72,7 @@ where
 		mut multilinears: impl AsSlicesMut<P, N> + Send + 'static,
 		composition: Composition,
 		infinity_composition: InfinityComposition,
-		eval_point: &[F],
+		eval_point: Vec<F>,
 		eval_claim: F,
 	) -> Result<Self, Error> {
 		let n_vars = eval_point.len();
@@ -84,7 +84,7 @@ where
 		}
 
 		let last_coeffs_or_eval = RoundCoeffsOrEval::Eval(eval_claim);
-		let gruen32 = Gruen32::new(eval_point);
+		let gruen32 = Gruen32::new(&eval_point);
 
 		Ok(Self {
 			multilinears: Box::new(multilinears),
@@ -358,7 +358,7 @@ mod tests {
 			multilinears.clone(),
 			composition.clone(),
 			infinity_composition,
-			&eval_point,
+			eval_point.clone(),
 			eval_claim,
 		)
 		.unwrap();

@@ -172,7 +172,7 @@ where
 			[mulcheck_witness.a, mulcheck_witness.b, mulcheck_witness.c],
 			|[a, b, c]| a * b - c, // composition
 			|[a, b, _c]| a * b,    // infinity_composition (quadratic term only)
-			&r_mulcheck,
+			r_mulcheck,
 			F::ZERO, // eval_claim: zerocheck
 		)?;
 

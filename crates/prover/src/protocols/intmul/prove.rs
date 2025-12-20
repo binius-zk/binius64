@@ -266,7 +266,7 @@ where
 			SelectorMlecheckProver::new(selector, selector_claims, b_exponents, self.switchover)?;
 
 		let c_root_sumcheck_prover =
-			bivariate_product_mle::new(c_lo_hi_roots, c_eval_point, c_root_eval)?;
+			bivariate_product_mle::new(c_lo_hi_roots, c_eval_point.to_vec(), c_root_eval)?;
 
 		let c_root_prover = MleToSumCheckDecorator::new(c_root_sumcheck_prover);
 

@@ -51,7 +51,7 @@ use crate::protocols::sumcheck::common::MleCheckProver;
 /// [Gruen24]: <https://eprint.iacr.org/2024/108>
 pub fn new<F, P>(
 	multilinears: impl AsSlicesMut<P, 2> + Send + 'static,
-	eval_point: &[F],
+	eval_point: Vec<F>,
 	eval_claim: F,
 ) -> Result<impl MleCheckProver<F>, Error>
 where
@@ -246,7 +246,7 @@ mod tests {
 
 		// Create the prover
 		let mlecheck_prover =
-			new([multilinear_a.clone(), multilinear_b.clone()], &eval_point, eval_claim).unwrap();
+			new([multilinear_a.clone(), multilinear_b.clone()], eval_point.clone(), eval_claim).unwrap();
 
 		test_mlecheck_prove_verify(
 			mlecheck_prover,
@@ -258,7 +258,7 @@ mod tests {
 
 		// Create another prover for the wrapped test
 		let mlecheck_prover =
-			new([multilinear_a.clone(), multilinear_b.clone()], &eval_point, eval_claim).unwrap();
+			new([multilinear_a.clone(), multilinear_b.clone()], eval_point.clone(), eval_claim).unwrap();
 
 		test_wrapped_sumcheck_prove_verify(
 			mlecheck_prover,

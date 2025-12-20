@@ -74,7 +74,7 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 						multilinears,
 						|[a, b]| a * b,
 						|[a, b]| a * b,
-						&eval_point,
+						eval_point.clone(),
 						eval_claim,
 					)
 					.unwrap();
@@ -117,7 +117,7 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 						multilinears,
 						|[a, b, c]| a * b - c,
 						|[a, b, _c]| a * b,
-						&eval_point,
+						eval_point.clone(),
 						eval_claim,
 					)
 					.unwrap();

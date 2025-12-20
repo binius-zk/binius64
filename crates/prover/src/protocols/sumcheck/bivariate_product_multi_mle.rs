@@ -233,7 +233,7 @@ mod tests {
 		let multilinears = [multilinear_a, multilinear_b];
 
 		let mut single_prover =
-			bivariate_product_mle::new(multilinears.clone(), &eval_point, eval_claim).unwrap();
+			bivariate_product_mle::new(multilinears.clone(), eval_point.clone(), eval_claim).unwrap();
 
 		let mut multi_prover = BivariateProductMultiMlecheckProver::new(
 			[multilinears].to_vec(),
