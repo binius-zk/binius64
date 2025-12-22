@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::{marker::PhantomData, ops::Deref};
+use std::{iter, marker::PhantomData, ops::Deref};
 
 use binius_field::{BinaryField, Field, PackedField};
 use binius_math::field_buffer::FieldBuffer;
@@ -23,9 +23,11 @@ use super::error::Error;
 /// All four values are of the same bit width that is passed to the prover via `log_bits` parameter
 /// (also denoted $m$). In Binius64, `log_bits = 6` for 64-bit multiplicands and 128-bit product.
 ///
-/// A full binary tree (see [`BinaryTree`]) is constructed from each of `a`, `b`, `c_lo`, `c_hi`:
+/// A full binary tree (see [`BinaryTree`]) is constructed from each of `a`, `c_lo`, `c_hi`:
 ///  1) `a` and `c_lo` select a multiplicative group generator $G$
 ///  2) `c_hi` selects $G^{2^{2^m}}$
+///
+/// For `b`, we only store the leaves (for prodcheck) and the root (for initial evaluation):
 ///  3) `b` selects variable base which is equal to the root of the `a` tree
 ///
 /// Protocol proves that ${(G^a)}^b = G^{c\\_lo} \times (G^{2^{2^m}})^{c\\_hi}$, which is equivalent
@@ -35,7 +37,13 @@ use super::error::Error;
 #[getset(get = "pub")]
 pub struct Witness<P: PackedField, B: Bitwise, S: AsRef<[B]> + Sync> {
 	pub a: BinaryTree<P, B, S>,
-	pub b: BinaryTree<P, B, S>,
+	/// The exponents for `b` (needed for phase 5).
+	pub b_exponents: S,
+	/// Concatenated b leaves for prodcheck: [L_0, L_1, ..., L_{2^k-1}].
+	/// Has log_len = n_vars + log_bits.
+	pub b_leaves: FieldBuffer<P>,
+	/// The root of the b tree (product of all leaves element-wise).
+	pub b_root: FieldBuffer<P>,
 	pub c_lo: BinaryTree<P, B, S>,
 	pub c_hi: BinaryTree<P, B, S>,
 	pub c_root: FieldBuffer<P>,
@@ -75,20 +83,86 @@ where
 		let c_lo = BinaryTree::constant_base(log_bits, g, c_lo);
 		let c_hi = BinaryTree::constant_base(log_bits, g_c_hi, c_hi);
 
+		// Compute b_leaves as concatenated leaves for prodcheck
 		let variable_base = a.root().clone();
-		let b = BinaryTree::variable_base(log_bits, variable_base, b);
+		let b_leaves = compute_b_leaves(log_bits, variable_base, &b);
+
+		// Compute b_root by taking the element-wise product of all leaves
+		let b_root = compute_b_root(&b_leaves, log_bits);
 
 		// The root of a `log_bits + 1` deep tree of the full product `c`.
 		let c_root = buffer_bivariate_product(c_lo.root(), c_hi.root());
 
 		Ok(Self {
 			a,
-			b,
+			b_exponents: b,
+			b_leaves,
+			b_root,
 			c_lo,
 			c_hi,
 			c_root,
 		})
 	}
+}
+
+/// Compute concatenated b_leaves for prodcheck.
+///
+/// Each leaf L_z contains: if bit z of exponent[i] is set then bases[i]^{2^z} else 1
+/// The leaves are concatenated: [L_0, L_1, ..., L_{2^k-1}]
+fn compute_b_leaves<F, P, B, S>(
+	log_bits: usize,
+	bases: FieldBuffer<P>,
+	exponents: &S,
+) -> FieldBuffer<P>
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+	B: Bitwise,
+	S: AsRef<[B]> + Sync,
+{
+	let n_vars = bases.log_len();
+
+	// TODO: optimize this by allocating uninitialized memory
+	let mut out = FieldBuffer::zeros(n_vars + log_bits);
+
+	let mut chunks = out.chunks_mut(n_vars)
+	.expect("out has log_len = n_vars + log_bits")
+	.collect::<Vec<_>>();
+
+	// TODO: Parallelize this loop with rayon
+	let one_bit = B::from(1u8);
+	for (i, (mut base, &exp)) in iter::zip(bases.iter_scalars(), exponents.as_ref()).enumerate() {
+		for z in 0..1 << log_bits {
+			let bit = (exp >> z) & one_bit == one_bit;
+
+			// TODO: Need the masking API for field elements
+			chunks[z].set(i, if bit { base } else { F::ONE });
+
+			base = base.square();
+		}
+	}
+
+	out
+}
+
+/// Compute b_root as the element-wise product of all leaves.
+fn compute_b_root<P: PackedField>(b_leaves: &FieldBuffer<P>, log_bits: usize) -> FieldBuffer<P> {
+	let n_vars = b_leaves.log_len() - log_bits;
+	let leaf_len = 1 << n_vars.saturating_sub(P::LOG_WIDTH);
+
+	// Start with the first leaf
+	let first_leaf = b_leaves.chunk(n_vars, 0).expect("at least one leaf");
+	let mut result: Vec<P> = first_leaf.as_ref().to_vec();
+
+	// Multiply by each subsequent leaf
+	for z in 1..1 << log_bits {
+		let leaf = b_leaves.chunk(n_vars, z).expect("valid chunk index");
+		for (i, &leaf_val) in leaf.as_ref().iter().enumerate().take(leaf_len) {
+			result[i] *= leaf_val;
+		}
+	}
+
+	FieldBuffer::new(n_vars, result.into_boxed_slice()).expect("correct length")
 }
 
 /// A helper structure which handles full GKR binary tree for the bivariate product.
@@ -303,7 +377,7 @@ mod tests {
 	fn check_consistency<P: PackedField, B: Bitwise, S: AsRef<[B]> + Sync>(
 		witness: &Witness<P, B, S>,
 	) {
-		let b_root = witness.b().root();
+		let b_root = witness.b_root();
 		let c_root = witness.c_root();
 		assert_eq!(b_root, c_root);
 	}

@@ -5,6 +5,7 @@ use std::marker::PhantomData;
 use binius_field::{BinaryField, PackedField};
 use binius_math::{
 	field_buffer::FieldBuffer,
+	inner_product::inner_product_buffers,
 	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
 };
 use binius_transcript::{
@@ -14,10 +15,14 @@ use binius_transcript::{
 use binius_utils::{
 	bitwise::{BitSelector, Bitwise},
 	random_access_sequence::RandomAccessSequence,
+	rayon::prelude::*,
 };
-use binius_verifier::protocols::intmul::common::{
-	IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, Phase5Output,
-	frobenius_twist, make_phase_3_output, normalize_a_c_exponent_evals,
+use binius_verifier::protocols::{
+	intmul::common::{
+		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, Phase5Output,
+		frobenius_twist, make_phase_3_output, normalize_a_c_exponent_evals,
+	},
+	prodcheck::MultilinearEvalClaim,
 };
 use either::Either;
 use itertools::{Itertools, izip};
@@ -26,13 +31,16 @@ use super::{
 	error::Error,
 	witness::{Witness, two_valued_field_buffer},
 };
-use crate::protocols::sumcheck::{
-	MleToSumCheckDecorator,
-	batch::{BatchSumcheckOutput, batch_prove_and_write_evals},
-	bivariate_product_mle,
-	bivariate_product_multi_mle::BivariateProductMultiMlecheckProver,
-	rerand_mle::RerandMlecheckProver,
-	selector_mle::{Claim, SelectorMlecheckProver},
+use crate::protocols::{
+	prodcheck::ProdcheckProver,
+	sumcheck::{
+		MleToSumCheckDecorator,
+		batch::{BatchSumcheckOutput, batch_prove_and_write_evals},
+		bivariate_product_mle,
+		bivariate_product_multi_mle::BivariateProductMultiMlecheckProver,
+		rerand_mle::RerandMlecheckProver,
+		selector_mle::{Claim, SelectorMlecheckProver},
+	},
 };
 
 /// A helper structure that encapsulates switchover settings and the prover transcript for
@@ -91,7 +99,9 @@ where
 	pub fn prove(&mut self, witness: Witness<P, B, S>) -> Result<IntMulOutput<F>, Error> {
 		let Witness {
 			a,
-			b,
+			b_exponents,
+			b_leaves,
+			b_root: _b_root,
 			c_lo,
 			c_hi,
 			c_root,
@@ -102,18 +112,16 @@ where
 
 		let initial_eval_point = self.transcript.sample_vec(n_vars);
 
-		let (b_exponents, _b_root, b_layers) = b.split();
-
 		let exp_eval = evaluate(&c_root, &initial_eval_point)?;
 
 		let mut writer = self.transcript.message();
 		writer.write_scalar(exp_eval);
 
-		// Phase 1
+		// Phase 1: Prodcheck reduction on b_leaves
 		let Phase1Output {
 			eval_point: phase1_eval_point,
 			b_leaves_evals,
-		} = self.phase1(log_bits, &initial_eval_point, (exp_eval, b_layers.into_iter()))?;
+		} = self.phase1(log_bits, &initial_eval_point, b_leaves, exp_eval)?;
 
 		// Phase 2
 		let Phase2Output { twisted_claims } =
@@ -196,42 +204,40 @@ where
 		&mut self,
 		log_bits: usize,
 		eval_point: &[F],
-		(b_root_eval, b_layers): (F, impl ExactSizeIterator<Item = Vec<FieldBuffer<P>>>),
+		b_leaves: FieldBuffer<P>,
+		b_root_eval: F,
 	) -> Result<Phase1Output<F>, Error> {
-		assert_eq!(b_layers.len(), log_bits);
-		let mut eval_point = eval_point.to_vec();
-		let mut evals = vec![b_root_eval];
+		let n_vars = eval_point.len();
 
-		for (depth, layer) in b_layers.enumerate() {
-			assert_eq!(evals.len(), 1 << depth);
-			assert_eq!(layer.len(), 2 << depth);
+		// Create ProdcheckProver from concatenated leaves
+		let (prover, _products) = ProdcheckProver::new(log_bits, b_leaves.clone());
 
-			let a_sumcheck_prover = BivariateProductMultiMlecheckProver::new(
-				make_pairs(layer),
-				&eval_point,
-				evals.clone(),
-			)?;
+		// Create initial claim
+		let claim = MultilinearEvalClaim {
+			eval: b_root_eval,
+			point: eval_point.to_vec(),
+		};
 
-			let a_prover = MleToSumCheckDecorator::new(a_sumcheck_prover);
+		// Run prodcheck - reduces to claim on concatenated b_leaves
+		let output_claim = prover.prove(claim, self.transcript)?;
 
-			let BatchSumcheckOutput {
-				challenges,
-				mut multilinear_evals,
-			} = batch_prove_and_write_evals(vec![a_prover], self.transcript)?;
+		// Split output point: first n are x-point, last k are z-challenges
+		let (x_point, _z_suffix) = output_claim.point.split_at(n_vars);
 
-			assert_eq!(multilinear_evals.len(), 1);
+		// Compute leaf evaluations at x_point
+		let x_tensor = eq_ind_partial_eval(x_point);
+		let b_leaves_evals = b_leaves
+			.chunks_par(n_vars)
+			.expect("b_leaves.log_len() == n_vars + log_bits")
+			.map(|b_leaf| inner_product_buffers(&b_leaf, &x_tensor))
+			.collect::<Vec<_>>();
 
-			eval_point = challenges;
-			evals = multilinear_evals
-				.pop()
-				.expect("multilinear_evals.len() == 1");
-		}
-
-		assert_eq!(evals.len(), 1 << log_bits);
+		// Write leaf evaluations to transcript
+		self.transcript.message().write_slice(&b_leaves_evals);
 
 		Ok(Phase1Output {
-			eval_point,
-			b_leaves_evals: evals,
+			eval_point: x_point.to_vec(),
+			b_leaves_evals,
 		})
 	}
 

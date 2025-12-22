@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
-use crate::protocols::sumcheck::Error as SumcheckError;
+use crate::protocols::{prodcheck::Error as ProdcheckError, sumcheck::Error as SumcheckError};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -12,6 +12,8 @@ pub enum Error {
 	Transcript(#[from] binius_transcript::Error),
 	#[error("sumcheck error: {0}")]
 	Sumcheck(#[from] SumcheckError),
+	#[error("prodcheck error: {0}")]
+	Prodcheck(#[from] ProdcheckError),
 	#[error("math error: {0}")]
 	Math(#[from] binius_math::Error),
 }

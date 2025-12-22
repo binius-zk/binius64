@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{BinaryField, Field};
-use binius_math::{multilinear::eq::eq_ind, univariate::evaluate_univariate};
+use binius_math::{FieldBuffer, multilinear::{self, eq::eq_ind}, univariate::evaluate_univariate};
 use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
@@ -15,7 +15,10 @@ use super::{
 	},
 	error::Error,
 };
-use crate::protocols::sumcheck::{BatchSumcheckOutput, batch_verify};
+use crate::protocols::{
+	prodcheck::{self, MultilinearEvalClaim},
+	sumcheck::{BatchSumcheckOutput, batch_verify},
+};
 
 fn read_scalar_slice<F: Field, C: Challenger>(
 	transcript: &mut VerifierTranscript<C>,
@@ -70,26 +73,35 @@ fn verify_phase_1<F: Field, C: Challenger>(
 	initial_b_eval: F,
 	transcript: &mut VerifierTranscript<C>,
 ) -> Result<Phase1Output<F>, Error> {
-	let mut eval_point = initial_eval_point.to_vec();
-	let mut evals = vec![initial_b_eval];
+	let n_vars = initial_eval_point.len();
 
-	for depth in 0..log_bits {
-		assert_eq!(evals.len(), 1 << depth);
+	// Run prodcheck verification
+	let claim = MultilinearEvalClaim {
+		eval: initial_b_eval,
+		point: initial_eval_point.to_vec(),
+	};
+	let output_claim = prodcheck::verify(log_bits, claim, transcript)?;
 
-		let BivariateProductMleLayerOutput {
-			challenges,
-			multilinear_evals,
-		} = verify_multi_bivariate_product_mle_layer::<F, C>(&eval_point, &evals, transcript)?;
+	// Split output point: first n are x-point, last k are z-challenges
+	let (eval_point, z_suffix) = output_claim.point.split_at(n_vars);
 
-		eval_point = challenges;
-		evals = multilinear_evals;
+	// Read 2^k leaf evaluations from transcript
+	let b_leaves_evals: Vec<F> = read_scalar_slice(transcript, 1 << log_bits)?;
+
+	// Verify: output_claim.eval = multilinear_eval(b_leaves_evals, z_suffix)
+	// The leaf evals form a multilinear over log_bits variables; evaluate at z_suffix
+	let b_leaves_buffer = FieldBuffer::new(log_bits, b_leaves_evals.as_slice())
+	.expect("b_leaves_evals read with length 1 << log_bits");
+	let expected_eval = multilinear::evaluate::evaluate(&b_leaves_buffer, z_suffix)
+	.expect("z_suffix length is log_bits");
+
+	if expected_eval != output_claim.eval {
+		return Err(Error::LeafEvalMismatch);
 	}
 
-	assert_eq!(evals.len(), 1 << log_bits);
-
 	Ok(Phase1Output {
-		eval_point,
-		b_leaves_evals: evals,
+		eval_point: eval_point.to_vec(),
+		b_leaves_evals,
 	})
 }
 
