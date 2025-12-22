@@ -337,15 +337,15 @@ pub fn verify<F: BinaryField, C: Challenger>(
 	assert!(log_bits >= 1);
 	let initial_eval_point: Vec<F> = transcript.sample_vec(n_vars);
 
+	// Read the evaluation of the multilinear extension of the powers of the generator.
 	let mut reader = transcript.message();
-	let initial_b_eval: F = reader.read_scalar::<F>()?;
-	let initial_c_eval: F = reader.read_scalar::<F>()?;
+	let exp_eval: F = reader.read_scalar::<F>()?;
 
 	// Phase 1
 	let Phase1Output {
 		eval_point: phase_1_eval_point,
 		b_leaves_evals,
-	} = verify_phase_1(log_bits, &initial_eval_point, initial_b_eval, transcript)?;
+	} = verify_phase_1(log_bits, &initial_eval_point, exp_eval, transcript)?;
 
 	assert_eq!(phase_1_eval_point.len(), n_vars);
 	assert_eq!(b_leaves_evals.len(), 1 << log_bits);
@@ -360,7 +360,7 @@ pub fn verify<F: BinaryField, C: Challenger>(
 		selector_eval,
 		c_lo_root_eval,
 		c_hi_root_eval,
-	} = verify_phase_3(log_bits, phase2_output, &initial_eval_point, initial_c_eval, transcript)?;
+	} = verify_phase_3(log_bits, phase2_output, &initial_eval_point, exp_eval, transcript)?;
 
 	// Phase 4
 	let Phase4Output {

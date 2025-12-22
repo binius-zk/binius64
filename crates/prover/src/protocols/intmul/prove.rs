@@ -102,20 +102,18 @@ where
 
 		let initial_eval_point = self.transcript.sample_vec(n_vars);
 
-		let (b_exponents, b_root, b_layers) = b.split();
+		let (b_exponents, _b_root, b_layers) = b.split();
 
-		let b_eval = evaluate(&b_root, &initial_eval_point)?;
-		let c_eval = evaluate(&c_root, &initial_eval_point)?;
+		let exp_eval = evaluate(&c_root, &initial_eval_point)?;
 
 		let mut writer = self.transcript.message();
-		writer.write_scalar(b_eval);
-		writer.write_scalar(c_eval);
+		writer.write_scalar(exp_eval);
 
 		// Phase 1
 		let Phase1Output {
 			eval_point: phase1_eval_point,
 			b_leaves_evals,
-		} = self.phase1(log_bits, &initial_eval_point, (b_eval, b_layers.into_iter()))?;
+		} = self.phase1(log_bits, &initial_eval_point, (exp_eval, b_layers.into_iter()))?;
 
 		// Phase 2
 		let Phase2Output { twisted_claims } =
@@ -144,7 +142,7 @@ where
 			b_exponents.as_ref(),
 			[c_lo_root, c_hi_root],
 			&initial_eval_point,
-			c_eval,
+			exp_eval,
 		)?;
 
 		// Phase 4
