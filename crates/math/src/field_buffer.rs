@@ -769,7 +769,9 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> Drop for FieldBufferSplitMut<
 	}
 }
 
-impl<P: PackedField, Data: DerefMut<Target = [P]>> AsSlicesMut<P, 2> for FieldBufferSplitMut<P, Data> {
+impl<P: PackedField, Data: DerefMut<Target = [P]>> AsSlicesMut<P, 2>
+	for FieldBufferSplitMut<P, Data>
+{
 	fn as_slices_mut(&mut self) -> [FieldSliceMut<'_, P>; 2] {
 		let (first, second) = self.halves();
 		[first, second]
