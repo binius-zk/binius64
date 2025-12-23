@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::{iter, marker::PhantomData, ops::Deref};
+use std::{iter, marker::PhantomData, mem::MaybeUninit, ops::Deref};
 
 use binius_field::{BinaryField, Field, PackedField};
 use binius_math::field_buffer::FieldBuffer;
@@ -9,6 +9,7 @@ use binius_utils::{
 	checked_arithmetics::{checked_log_2, strict_log_2},
 	random_access_sequence::RandomAccessSequence,
 	rayon::prelude::*,
+	strided_array::StridedArray2DViewMut,
 };
 use derive_more::IntoIterator;
 use getset::Getters;
@@ -122,27 +123,82 @@ where
 {
 	let n_vars = bases.log_len();
 
-	// TODO: optimize this by allocating uninitialized memory
+	if P::LOG_WIDTH <= n_vars {
+		// Parallel optimized path
+		return compute_b_leaves_parallel(log_bits, &bases, exponents);
+	}
+
+	// Fallback: bases is too small to parallelize (n_vars < P::LOG_WIDTH)
 	let mut out = FieldBuffer::zeros(n_vars + log_bits);
+	let n_elems = 1 << n_vars;
 
-	let mut chunks = out.chunks_mut(n_vars)
-	.expect("out has log_len = n_vars + log_bits")
-	.collect::<Vec<_>>();
-
-	// TODO: Parallelize this loop with rayon
 	let one_bit = B::from(1u8);
 	for (i, (mut base, &exp)) in iter::zip(bases.iter_scalars(), exponents.as_ref()).enumerate() {
 		for z in 0..1 << log_bits {
 			let bit = (exp >> z) & one_bit == one_bit;
 
-			// TODO: Need the masking API for field elements
-			chunks[z].set(i, if bit { base } else { F::ONE });
+			out.set(z * n_elems + i, if bit { base } else { F::ONE });
 
 			base = base.square();
 		}
 	}
 
 	out
+}
+
+/// Parallel implementation of compute_b_leaves for when bases is large enough to parallelize.
+fn compute_b_leaves_parallel<F, P, B, S>(
+	log_bits: usize,
+	bases: &FieldBuffer<P>,
+	exponents: &S,
+) -> FieldBuffer<P>
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+	B: Bitwise,
+	S: AsRef<[B]> + Sync,
+{
+	let n_vars = bases.log_len();
+	let n_packed = bases.as_ref().len();
+	let height = 1 << log_bits;
+	let total = n_packed * height;
+
+	let mut out_vec: Vec<P> = Vec::with_capacity(total);
+
+	{
+		let spare: &mut [MaybeUninit<P>] = out_vec.spare_capacity_mut();
+
+		let mut strided = StridedArray2DViewMut::without_stride(spare, height, n_packed)
+			.expect("dimensions match capacity");
+
+		let one_bit = B::from(1u8);
+
+		(strided.par_iter_cols(), bases.as_ref(), exponents.as_ref().par_chunks(P::WIDTH))
+			.into_par_iter()
+			.for_each(|(mut col, packed_base, exp_chunk)| {
+				// Keep base as packed element for efficient squaring
+				let mut packed_base = *packed_base;
+
+				for z in 0..height {
+					// Decompose to scalars, apply bit selection, recompose
+					// TODO: Optimize with bit-masking for selection
+					let scalars = packed_base.iter().zip(exp_chunk).map(|(base, &exp)| {
+						let bit = (exp >> z) & one_bit == one_bit;
+						if bit { base } else { F::ONE }
+					});
+
+					col[z].write(P::from_scalars(scalars));
+
+					// Square packed base for next iteration
+					packed_base = packed_base.square();
+				}
+			});
+	}
+
+	// SAFETY: All elements initialized in the parallel loop above
+	unsafe { out_vec.set_len(total) };
+
+	FieldBuffer::new(n_vars + log_bits, out_vec.into_boxed_slice()).expect("correct length")
 }
 
 /// Compute b_root as the element-wise product of all leaves.
