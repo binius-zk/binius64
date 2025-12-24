@@ -1,7 +1,11 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{BinaryField, Field};
-use binius_math::{FieldBuffer, multilinear::{self, eq::eq_ind}, univariate::evaluate_univariate};
+use binius_math::{
+	FieldBuffer,
+	multilinear::{self, eq::eq_ind},
+	univariate::evaluate_univariate,
+};
 use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
@@ -91,9 +95,9 @@ fn verify_phase_1<F: Field, C: Challenger>(
 	// Verify: output_claim.eval = multilinear_eval(b_leaves_evals, z_suffix)
 	// The leaf evals form a multilinear over log_bits variables; evaluate at z_suffix
 	let b_leaves_buffer = FieldBuffer::new(log_bits, b_leaves_evals.as_slice())
-	.expect("b_leaves_evals read with length 1 << log_bits");
+		.expect("b_leaves_evals read with length 1 << log_bits");
 	let expected_eval = multilinear::evaluate::evaluate(&b_leaves_buffer, z_suffix)
-	.expect("z_suffix length is log_bits");
+		.expect("z_suffix length is log_bits");
 
 	if expected_eval != output_claim.eval {
 		return Err(Error::LeafEvalMismatch);

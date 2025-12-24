@@ -101,7 +101,8 @@ where
 			a,
 			b_exponents,
 			b_leaves,
-			b_root: _b_root,
+			b_prodcheck,
+			b_root: _,
 			c_lo,
 			c_hi,
 			c_root,
@@ -121,7 +122,7 @@ where
 		let Phase1Output {
 			eval_point: phase1_eval_point,
 			b_leaves_evals,
-		} = self.phase1(log_bits, &initial_eval_point, b_leaves, exp_eval)?;
+		} = self.phase1(&initial_eval_point, b_prodcheck, &b_leaves, exp_eval)?;
 
 		// Phase 2
 		let Phase2Output { twisted_claims } =
@@ -202,15 +203,12 @@ where
 
 	fn phase1(
 		&mut self,
-		log_bits: usize,
 		eval_point: &[F],
-		b_leaves: FieldBuffer<P>,
+		b_prover: ProdcheckProver<P>,
+		b_leaves: &FieldBuffer<P>,
 		b_root_eval: F,
 	) -> Result<Phase1Output<F>, Error> {
 		let n_vars = eval_point.len();
-
-		// Create ProdcheckProver from concatenated leaves
-		let (prover, _products) = ProdcheckProver::new(log_bits, b_leaves.clone());
 
 		// Create initial claim
 		let claim = MultilinearEvalClaim {
@@ -219,7 +217,7 @@ where
 		};
 
 		// Run prodcheck - reduces to claim on concatenated b_leaves
-		let output_claim = prover.prove(claim, self.transcript)?;
+		let output_claim = b_prover.prove(claim, self.transcript)?;
 
 		// Split output point: first n are x-point, last k are z-challenges
 		let (x_point, _z_suffix) = output_claim.point.split_at(n_vars);

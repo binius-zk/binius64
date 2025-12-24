@@ -24,6 +24,7 @@ pub enum Error {
 ///
 /// This prover reduces the claim that a multilinear polynomial evaluates to a product over a
 /// Boolean hypercube to a single multilinear evaluation claim.
+#[derive(Clone)]
 pub struct ProdcheckProver<P: PackedField> {
 	/// Product layers from largest (original witness) to second-smallest.
 	/// `layers[0]` is the original witness. The final products layer is returned

@@ -16,6 +16,7 @@ use getset::Getters;
 use itertools::{Itertools, iterate};
 
 use super::error::Error;
+use crate::protocols::prodcheck::ProdcheckProver;
 
 /// An integer multiplication protocol witness. Created from integer slices, consumed during
 /// proving.
@@ -43,6 +44,8 @@ pub struct Witness<P: PackedField, B: Bitwise, S: AsRef<[B]> + Sync> {
 	/// Concatenated b leaves for prodcheck: [L_0, L_1, ..., L_{2^k-1}].
 	/// Has log_len = n_vars + log_bits.
 	pub b_leaves: FieldBuffer<P>,
+	/// The prover for the prodcheck reduction on b_leaves.
+	pub b_prodcheck: ProdcheckProver<P>,
 	/// The root of the b tree (product of all leaves element-wise).
 	pub b_root: FieldBuffer<P>,
 	pub c_lo: BinaryTree<P, B, S>,
@@ -88,8 +91,8 @@ where
 		let variable_base = a.root().clone();
 		let b_leaves = compute_b_leaves(log_bits, variable_base, &b);
 
-		// Compute b_root by taking the element-wise product of all leaves
-		let b_root = compute_b_root(&b_leaves, log_bits);
+		// Create the prodcheck prover; its products layer becomes b_root
+		let (b_prodcheck, b_root) = ProdcheckProver::new(log_bits, b_leaves.clone());
 
 		// The root of a `log_bits + 1` deep tree of the full product `c`.
 		let c_root = buffer_bivariate_product(c_lo.root(), c_hi.root());
@@ -98,6 +101,7 @@ where
 			a,
 			b_exponents: b,
 			b_leaves,
+			b_prodcheck,
 			b_root,
 			c_lo,
 			c_hi,
@@ -199,26 +203,6 @@ where
 	unsafe { out_vec.set_len(total) };
 
 	FieldBuffer::new(n_vars + log_bits, out_vec.into_boxed_slice()).expect("correct length")
-}
-
-/// Compute b_root as the element-wise product of all leaves.
-fn compute_b_root<P: PackedField>(b_leaves: &FieldBuffer<P>, log_bits: usize) -> FieldBuffer<P> {
-	let n_vars = b_leaves.log_len() - log_bits;
-	let leaf_len = 1 << n_vars.saturating_sub(P::LOG_WIDTH);
-
-	// Start with the first leaf
-	let first_leaf = b_leaves.chunk(n_vars, 0).expect("at least one leaf");
-	let mut result: Vec<P> = first_leaf.as_ref().to_vec();
-
-	// Multiply by each subsequent leaf
-	for z in 1..1 << log_bits {
-		let leaf = b_leaves.chunk(n_vars, z).expect("valid chunk index");
-		for (i, &leaf_val) in leaf.as_ref().iter().enumerate().take(leaf_len) {
-			result[i] *= leaf_val;
-		}
-	}
-
-	FieldBuffer::new(n_vars, result.into_boxed_slice()).expect("correct length")
 }
 
 /// A helper structure which handles full GKR binary tree for the bivariate product.
