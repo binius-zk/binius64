@@ -112,8 +112,8 @@ where
 
 /// Compute concatenated b_leaves for prodcheck.
 ///
-/// Each leaf L_z contains: if bit z of exponent[i] is set then bases[i]^{2^z} else 1
-/// The leaves are concatenated: [L_0, L_1, ..., L_{2^k-1}]
+/// Each leaf `L_z` contains: if bit z of `exponents[i]` is set then `bases[i]^{2^z}` else 1
+/// The leaves are concatenated: `[L_0, L_1, ..., L_{2^k-1}]`
 fn compute_b_leaves<F, P, B, S>(
 	log_bits: usize,
 	bases: FieldBuffer<P>,
