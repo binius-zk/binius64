@@ -246,7 +246,8 @@ mod tests {
 
 		// Create the prover
 		let mlecheck_prover =
-			new([multilinear_a.clone(), multilinear_b.clone()], eval_point.clone(), eval_claim).unwrap();
+			new([multilinear_a.clone(), multilinear_b.clone()], eval_point.clone(), eval_claim)
+				.unwrap();
 
 		test_mlecheck_prove_verify(
 			mlecheck_prover,
@@ -258,7 +259,8 @@ mod tests {
 
 		// Create another prover for the wrapped test
 		let mlecheck_prover =
-			new([multilinear_a.clone(), multilinear_b.clone()], eval_point.clone(), eval_claim).unwrap();
+			new([multilinear_a.clone(), multilinear_b.clone()], eval_point.clone(), eval_claim)
+				.unwrap();
 
 		test_wrapped_sumcheck_prove_verify(
 			mlecheck_prover,

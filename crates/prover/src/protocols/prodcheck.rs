@@ -10,8 +10,7 @@ use binius_utils::rayon::prelude::*;
 use binius_verifier::protocols::prodcheck::MultilinearEvalClaim;
 
 use crate::protocols::sumcheck::{
-	Error as SumcheckError, ProveSingleOutput, bivariate_product_mle,
-	common::MleCheckProver,
+	Error as SumcheckError, ProveSingleOutput, bivariate_product_mle, common::MleCheckProver,
 	prove_single_mlecheck,
 };
 
@@ -43,8 +42,8 @@ where
 	/// products over all `k` variables.
 	///
 	/// # Arguments
-	/// * `k` - The number of variables over which the product is taken. Each reduction step
-	///   reduces one variable by computing pairwise products.
+	/// * `k` - The number of variables over which the product is taken. Each reduction step reduces
+	///   one variable by computing pairwise products.
 	/// * `witness` - The witness polynomial
 	///
 	/// # Preconditions
