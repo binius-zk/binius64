@@ -11,7 +11,7 @@ use binius_field::{
 };
 use binius_utils::{
 	checked_arithmetics::{checked_log_2, strict_log_2},
-	rayon::{prelude::*, slice::ParallelSlice},
+	rayon::{iter::Either, prelude::*, slice::ParallelSlice},
 };
 use bytemuck::zeroed_vec;
 
@@ -313,30 +313,49 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// # Throws
 	///
-	/// * [`Error::ArgumentRangeError`] if `log_chunk_size < P::LOG_WIDTH` or `log_chunk_size >
-	///   log_len`.
+	/// * [`Error::ArgumentRangeError`] if `log_chunk_size > log_len`.
 	pub fn chunks_par(
 		&self,
 		log_chunk_size: usize,
 	) -> Result<impl IndexedParallelIterator<Item = FieldSlice<'_, P>>, Error> {
-		if log_chunk_size < P::LOG_WIDTH || log_chunk_size > self.log_len {
+		if log_chunk_size > self.log_len {
 			return Err(Error::ArgumentRangeError {
 				arg: "log_chunk_size".to_string(),
-				range: P::LOG_WIDTH..self.log_len + 1,
+				range: 0..self.log_len + 1,
 			});
 		}
 
-		let log_len = log_chunk_size.min(self.log_len);
-		let packed_chunk_size = 1 << (log_chunk_size - P::LOG_WIDTH);
-		let chunks = self
-			.values
-			.par_chunks(packed_chunk_size)
-			.map(move |chunk| FieldBuffer {
-				log_len,
-				values: FieldSliceData::Slice(chunk),
-			});
+		let iter = if log_chunk_size >= P::LOG_WIDTH {
+			// Each chunk spans one or more packed elements
+			let packed_chunk_size = 1 << (log_chunk_size - P::LOG_WIDTH);
+			Either::Left(
+				self.as_ref()
+					.par_chunks(packed_chunk_size)
+					.map(move |chunk| FieldBuffer {
+						log_len: log_chunk_size,
+						values: FieldSliceData::Slice(chunk),
+					}),
+			)
+		} else {
+			// Multiple chunks fit within a single packed element
+			let chunk_count = 1 << (self.log_len - log_chunk_size);
+			let packed_log_chunks = P::LOG_WIDTH - log_chunk_size;
+			let values = self.as_ref();
+			Either::Right((0..chunk_count).into_par_iter().map(move |chunk_index| {
+				let packed = values[chunk_index >> packed_log_chunks];
+				let chunk_subindex = chunk_index & ((1 << packed_log_chunks) - 1);
+				let chunk = P::from_scalars(
+					(0..1 << log_chunk_size)
+						.map(|i| packed.get(chunk_subindex << log_chunk_size | i)),
+				);
+				FieldBuffer {
+					log_len: log_chunk_size,
+					values: FieldSliceData::Single(chunk),
+				}
+			}))
+		};
 
-		Ok(chunks)
+		Ok(iter)
 	}
 
 	/// Splits the buffer in half and returns a pair of borrowed slices.
@@ -1166,10 +1185,27 @@ mod tests {
 		// Test invalid chunk size (too large)
 		assert!(buffer.chunks_par(5).is_err());
 
-		// Test invalid chunk size (too small - below P::LOG_WIDTH)
-		// P::LOG_WIDTH = 2, so chunks_par(0) and chunks_par(1) should fail
-		assert!(buffer.chunks_par(0).is_err());
-		assert!(buffer.chunks_par(1).is_err());
+		// Test small chunk sizes (below P::LOG_WIDTH)
+		// P::LOG_WIDTH = 2, so chunks_par(0) and chunks_par(1) should work
+		// Split into 8 chunks of size 2 (log_chunk_size = 1)
+		let chunks: Vec<_> = buffer.chunks_par(1).unwrap().collect();
+		assert_eq!(chunks.len(), 8);
+		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
+			assert_eq!(chunk.len(), 2);
+			for i in 0..2 {
+				let expected = F::new((chunk_idx * 2 + i) as u128);
+				assert_eq!(chunk.get_checked(i).unwrap(), expected);
+			}
+		}
+
+		// Split into 16 chunks of size 1 (log_chunk_size = 0)
+		let chunks: Vec<_> = buffer.chunks_par(0).unwrap().collect();
+		assert_eq!(chunks.len(), 16);
+		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
+			assert_eq!(chunk.len(), 1);
+			let expected = F::new(chunk_idx as u128);
+			assert_eq!(chunk.get_checked(0).unwrap(), expected);
+		}
 	}
 
 	#[test]

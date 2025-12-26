@@ -183,6 +183,10 @@ impl<T> IndexedParallelIteratorInner for std::vec::IntoIter<T> {}
 impl<T, const N: usize> IndexedParallelIteratorInner for std::array::IntoIter<T, N> {}
 impl<T: Clone> IndexedParallelIteratorInner for std::iter::RepeatN<T> {}
 impl<I: IndexedParallelIteratorInner> IndexedParallelIteratorInner for std::iter::Skip<I> {}
+impl<L: IndexedParallelIteratorInner, R: IndexedParallelIteratorInner<Item = L::Item>>
+	IndexedParallelIteratorInner for itertools::Either<L, R>
+{
+}
 
 #[allow(private_bounds)]
 pub trait IndexedParallelIterator:
@@ -296,6 +300,13 @@ pub trait IndexedParallelIterator:
 }
 
 impl<I: IndexedParallelIteratorInner> IndexedParallelIterator for ParallelWrapper<I> {}
+
+impl<L, R> IndexedParallelIterator for itertools::Either<L, R>
+where
+	L: IndexedParallelIterator,
+	R: IndexedParallelIterator<Item = L::Item>,
+{
+}
 
 #[cfg(test)]
 mod tests {

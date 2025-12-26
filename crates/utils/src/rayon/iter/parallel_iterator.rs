@@ -1154,6 +1154,31 @@ impl<I: Iterator> IntoIterator for ParallelWrapper<I> {
 	}
 }
 
+impl<L, R> ParallelIterator for Either<L, R>
+where
+	L: ParallelIterator,
+	R: ParallelIterator<Item = L::Item>,
+{
+	type Item = L::Item;
+	type Inner = Either<L::Inner, R::Inner>;
+
+	#[inline(always)]
+	fn into_inner(self) -> Self::Inner {
+		match self {
+			Either::Left(left) => Either::Left(left.into_inner()),
+			Either::Right(right) => Either::Right(right.into_inner()),
+		}
+	}
+
+	#[inline(always)]
+	fn as_inner(&self) -> &Self::Inner {
+		// This is a limitation - we can't return a reference to Either<L::Inner, R::Inner>
+		// from Either<L, R> without storing it. For now, we'll panic.
+		// This method is rarely used in practice.
+		unimplemented!("as_inner not supported for Either")
+	}
+}
+
 /// This section is copied from the `rayon` crate.
 /// Since `Try` in the standard library is unstable, we need to define our own version.
 mod private {
