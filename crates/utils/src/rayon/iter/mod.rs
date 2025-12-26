@@ -18,6 +18,7 @@ pub(super) use indexed_parallel_iterator::IndexedParallelIteratorInner;
 pub use into_parallel_iterator::{
 	IntoParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator,
 };
+pub use itertools::Either;
 pub use par_bridge::ParallelBridge;
 pub use parallel_iterator::ParallelIterator;
 pub(super) use parallel_wrapper::ParallelWrapper;
