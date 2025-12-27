@@ -48,6 +48,9 @@ pub trait Divisible<T>: Copy {
 	///
 	/// Panics if `index >= Self::N`.
 	fn set(self, index: usize, val: T) -> Self;
+
+	/// Create a value with `val` broadcast to all `N` positions.
+	fn broadcast(val: T) -> Self;
 }
 
 /// Helper functions for Divisible implementations using bytemuck memory casting.
@@ -200,6 +203,16 @@ pub mod memcast {
 		let mut arr = *bytemuck::must_cast_ref::<Big, [Small; N]>(value);
 		arr[N - 1 - index] = val;
 		bytemuck::must_cast(arr)
+	}
+
+	/// Broadcast a value to all positions.
+	#[inline]
+	pub fn broadcast<Big, Small, const N: usize>(val: Small) -> Big
+	where
+		Big: Pod,
+		Small: Pod + Copy,
+	{
+		bytemuck::must_cast::<[Small; N], Big>([val; N])
 	}
 }
 
@@ -381,6 +394,12 @@ macro_rules! impl_divisible_memcast {
 					const N: usize = size_of::<$big>() / size_of::<$small>();
 					$crate::underlier::memcast::set::<$big, $small, N>(&self, index, val)
 				}
+
+				#[inline]
+				fn broadcast(val: $small) -> Self {
+					const N: usize = size_of::<$big>() / size_of::<$small>();
+					$crate::underlier::memcast::broadcast::<$big, $small, N>(val)
+				}
 			}
 		)+
 	};
@@ -427,6 +446,18 @@ macro_rules! impl_divisible_bitmask {
 					let mask = (1u8 << $bits) - 1;
 					(self & !(mask << shift)) | (val.val() << shift)
 				}
+
+				#[inline]
+				fn broadcast(val: $crate::underlier::SmallU<$bits>) -> Self {
+					let mut result = val.val();
+					// Self-replicate to fill the byte
+					let mut current_bits = $bits;
+					while current_bits < 8 {
+						result |= result << current_bits;
+						current_bits *= 2;
+					}
+					result
+				}
 			}
 		)+
 	};
@@ -466,6 +497,13 @@ macro_rules! impl_divisible_bitmask {
 				#[inline]
 				fn set(self, index: usize, val: $crate::underlier::SmallU<$bits>) -> Self {
 					$crate::underlier::bitmask::set::<Self, $bits>(self, index, val)
+				}
+
+				#[inline]
+				fn broadcast(val: $crate::underlier::SmallU<$bits>) -> Self {
+					// First splat to u8, then splat the byte to fill Self
+					let byte = $crate::underlier::Divisible::<$crate::underlier::SmallU<$bits>>::broadcast(val);
+					$crate::underlier::Divisible::<u8>::broadcast(byte)
 				}
 			}
 		)+
@@ -519,6 +557,13 @@ impl Divisible<SmallU<1>> for SmallU<2> {
 		let mask = 1u8 << index;
 		SmallU::<2>::new((self.val() & !mask) | (val.val() << index))
 	}
+
+	#[inline]
+	fn broadcast(val: SmallU<1>) -> Self {
+		// 0b0 -> 0b00, 0b1 -> 0b11
+		let v = val.val();
+		SmallU::<2>::new(v | (v << 1))
+	}
 }
 
 impl Divisible<SmallU<1>> for SmallU<4> {
@@ -548,6 +593,15 @@ impl Divisible<SmallU<1>> for SmallU<4> {
 	fn set(self, index: usize, val: SmallU<1>) -> Self {
 		let mask = 1u8 << index;
 		SmallU::<4>::new((self.val() & !mask) | (val.val() << index))
+	}
+
+	#[inline]
+	fn broadcast(val: SmallU<1>) -> Self {
+		// 0b0 -> 0b0000, 0b1 -> 0b1111
+		let mut v = val.val();
+		v |= v << 1;
+		v |= v << 2;
+		SmallU::<4>::new(v)
 	}
 }
 
@@ -580,6 +634,13 @@ impl Divisible<SmallU<2>> for SmallU<4> {
 		let mask = 0b11u8 << shift;
 		SmallU::<4>::new((self.val() & !mask) | (val.val() << shift))
 	}
+
+	#[inline]
+	fn broadcast(val: SmallU<2>) -> Self {
+		// 0bXX -> 0bXXXX
+		let v = val.val();
+		SmallU::<4>::new(v | (v << 2))
+	}
 }
 
 // Blanket reflexive implementation: any type divides into itself once
@@ -610,6 +671,11 @@ impl<T: Copy + Send + Sync> Divisible<T> for T {
 	#[inline]
 	fn set(self, index: usize, val: T) -> Self {
 		debug_assert_eq!(index, 0);
+		val
+	}
+
+	#[inline]
+	fn broadcast(val: T) -> Self {
 		val
 	}
 }
@@ -744,5 +810,79 @@ mod tests {
 		assert_eq!(parts[5], 0x06);
 		assert_eq!(parts[6], 0x07);
 		assert_eq!(parts[7], 0x08);
+	}
+
+	#[test]
+	fn test_broadcast_u32_u8() {
+		let result: u32 = Divisible::<u8>::broadcast(0xAB);
+		assert_eq!(result, 0xABABABAB);
+	}
+
+	#[test]
+	fn test_broadcast_u64_u16() {
+		let result: u64 = Divisible::<u16>::broadcast(0x1234);
+		assert_eq!(result, 0x1234123412341234);
+	}
+
+	#[test]
+	fn test_broadcast_u128_u32() {
+		let result: u128 = Divisible::<u32>::broadcast(0xDEADBEEF);
+		assert_eq!(result, 0xDEADBEEFDEADBEEFDEADBEEFDEADBEEF);
+	}
+
+	#[test]
+	fn test_broadcast_u8_u4() {
+		let result: u8 = Divisible::<U4>::broadcast(U4::new(0x5));
+		assert_eq!(result, 0x55);
+	}
+
+	#[test]
+	fn test_broadcast_u16_u4() {
+		let result: u16 = Divisible::<U4>::broadcast(U4::new(0xA));
+		assert_eq!(result, 0xAAAA);
+	}
+
+	#[test]
+	fn test_broadcast_u8_u2() {
+		let result: u8 = Divisible::<U2>::broadcast(U2::new(0b11));
+		assert_eq!(result, 0xFF);
+		let result: u8 = Divisible::<U2>::broadcast(U2::new(0b01));
+		assert_eq!(result, 0x55);
+	}
+
+	#[test]
+	fn test_broadcast_u8_u1() {
+		let result: u8 = Divisible::<U1>::broadcast(U1::new(0));
+		assert_eq!(result, 0x00);
+		let result: u8 = Divisible::<U1>::broadcast(U1::new(1));
+		assert_eq!(result, 0xFF);
+	}
+
+	#[test]
+	fn test_broadcast_smallu2_from_smallu1() {
+		let result: SmallU<2> = Divisible::<SmallU<1>>::broadcast(SmallU::<1>::new(0));
+		assert_eq!(result.val(), 0b00);
+		let result: SmallU<2> = Divisible::<SmallU<1>>::broadcast(SmallU::<1>::new(1));
+		assert_eq!(result.val(), 0b11);
+	}
+
+	#[test]
+	fn test_broadcast_smallu4_from_smallu1() {
+		let result: SmallU<4> = Divisible::<SmallU<1>>::broadcast(SmallU::<1>::new(0));
+		assert_eq!(result.val(), 0b0000);
+		let result: SmallU<4> = Divisible::<SmallU<1>>::broadcast(SmallU::<1>::new(1));
+		assert_eq!(result.val(), 0b1111);
+	}
+
+	#[test]
+	fn test_broadcast_smallu4_from_smallu2() {
+		let result: SmallU<4> = Divisible::<SmallU<2>>::broadcast(SmallU::<2>::new(0b10));
+		assert_eq!(result.val(), 0b1010);
+	}
+
+	#[test]
+	fn test_broadcast_reflexive() {
+		let result: u64 = Divisible::<u64>::broadcast(0x123456789ABCDEF0);
+		assert_eq!(result, 0x123456789ABCDEF0);
 	}
 }

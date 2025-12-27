@@ -194,7 +194,7 @@ where
 	type Output = Self;
 
 	fn add(self, rhs: Scalar) -> Self::Output {
-		self + Self::broadcast(rhs)
+		self + <Self as Broadcast<Scalar>>::broadcast(rhs)
 	}
 }
 
@@ -205,7 +205,7 @@ where
 	type Output = Self;
 
 	fn sub(self, rhs: Scalar) -> Self::Output {
-		self - Self::broadcast(rhs)
+		self - <Self as Broadcast<Scalar>>::broadcast(rhs)
 	}
 }
 
@@ -216,7 +216,7 @@ where
 	type Output = Self;
 
 	fn mul(self, rhs: Scalar) -> Self::Output {
-		self * Self::broadcast(rhs)
+		self * <Self as Broadcast<Scalar>>::broadcast(rhs)
 	}
 }
 
@@ -225,7 +225,7 @@ where
 	Self: Broadcast<Scalar> + AddAssign<Self>,
 {
 	fn add_assign(&mut self, rhs: Scalar) {
-		*self += Self::broadcast(rhs);
+		*self += <Self as Broadcast<Scalar>>::broadcast(rhs);
 	}
 }
 
@@ -234,7 +234,7 @@ where
 	Self: Broadcast<Scalar> + SubAssign<Self>,
 {
 	fn sub_assign(&mut self, rhs: Scalar) {
-		*self -= Self::broadcast(rhs);
+		*self -= <Self as Broadcast<Scalar>>::broadcast(rhs);
 	}
 }
 
@@ -243,7 +243,7 @@ where
 	Self: Broadcast<Scalar> + MulAssign<Self>,
 {
 	fn mul_assign(&mut self, rhs: Scalar) {
-		*self *= Self::broadcast(rhs);
+		*self *= <Self as Broadcast<Scalar>>::broadcast(rhs);
 	}
 }
 
@@ -261,7 +261,7 @@ where
 	Self: Broadcast<Scalar> + Mul<Output = Self>,
 {
 	fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
-		iter.fold(Self::broadcast(Scalar::ONE), |result, next| result * next)
+		iter.fold(<Self as Broadcast<Scalar>>::broadcast(Scalar::ONE), |result, next| result * next)
 	}
 }
 

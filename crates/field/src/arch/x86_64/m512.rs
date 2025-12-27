@@ -1203,6 +1203,11 @@ impl Divisible<M256> for M512 {
 			}
 		}
 	}
+
+	#[inline]
+	fn broadcast(val: M256) -> Self {
+		unsafe { Self(_mm512_broadcast_i64x4(val.0)) }
+	}
 }
 
 impl Divisible<M128> for M512 {
@@ -1248,6 +1253,11 @@ impl Divisible<M128> for M512 {
 			}
 		}
 	}
+
+	#[inline]
+	fn broadcast(val: M128) -> Self {
+		unsafe { Self(_mm512_broadcast_i32x4(val.0)) }
+	}
 }
 
 impl Divisible<u128> for M512 {
@@ -1276,6 +1286,11 @@ impl Divisible<u128> for M512 {
 	#[inline]
 	fn set(self, index: usize, val: u128) -> Self {
 		Divisible::<M128>::set(self, index, M128::from(val))
+	}
+
+	#[inline]
+	fn broadcast(val: u128) -> Self {
+		Divisible::<M128>::broadcast(M128::from(val))
 	}
 }
 
@@ -1314,6 +1329,11 @@ impl Divisible<u64> for M512 {
 		let new_lane = Divisible::<u64>::set(lane, sub_idx, val);
 		Divisible::<M128>::set(self, lane_idx, new_lane)
 	}
+
+	#[inline]
+	fn broadcast(val: u64) -> Self {
+		unsafe { Self(_mm512_set1_epi64(val as i64)) }
+	}
 }
 
 impl Divisible<u32> for M512 {
@@ -1350,6 +1370,11 @@ impl Divisible<u32> for M512 {
 		let lane = Divisible::<M128>::get(self, lane_idx);
 		let new_lane = Divisible::<u32>::set(lane, sub_idx, val);
 		Divisible::<M128>::set(self, lane_idx, new_lane)
+	}
+
+	#[inline]
+	fn broadcast(val: u32) -> Self {
+		unsafe { Self(_mm512_set1_epi32(val as i32)) }
 	}
 }
 
@@ -1388,6 +1413,11 @@ impl Divisible<u16> for M512 {
 		let new_lane = Divisible::<u16>::set(lane, sub_idx, val);
 		Divisible::<M128>::set(self, lane_idx, new_lane)
 	}
+
+	#[inline]
+	fn broadcast(val: u16) -> Self {
+		unsafe { Self(_mm512_set1_epi16(val as i16)) }
+	}
 }
 
 impl Divisible<u8> for M512 {
@@ -1424,6 +1454,11 @@ impl Divisible<u8> for M512 {
 		let lane = Divisible::<M128>::get(self, lane_idx);
 		let new_lane = Divisible::<u8>::set(lane, sub_idx, val);
 		Divisible::<M128>::set(self, lane_idx, new_lane)
+	}
+
+	#[inline]
+	fn broadcast(val: u8) -> Self {
+		unsafe { Self(_mm512_set1_epi8(val as i8)) }
 	}
 }
 

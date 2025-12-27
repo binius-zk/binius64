@@ -255,6 +255,11 @@ impl Divisible<u128> for M128 {
 			_ => panic!("index out of bounds"),
 		}
 	}
+
+	#[inline]
+	fn broadcast(val: u128) -> Self {
+		Self::from(val)
+	}
 }
 
 impl Divisible<u64> for M128 {
@@ -295,6 +300,11 @@ impl Divisible<u64> for M128 {
 				_ => panic!("index out of bounds"),
 			}
 		}
+	}
+
+	#[inline]
+	fn broadcast(val: u64) -> Self {
+		unsafe { Self(vdupq_n_u64(val)) }
 	}
 }
 
@@ -342,6 +352,11 @@ impl Divisible<u32> for M128 {
 				_ => panic!("index out of bounds"),
 			}
 		}
+	}
+
+	#[inline]
+	fn broadcast(val: u32) -> Self {
+		unsafe { Self::from(vdupq_n_u32(val)) }
 	}
 }
 
@@ -397,6 +412,11 @@ impl Divisible<u16> for M128 {
 				_ => panic!("index out of bounds"),
 			}
 		}
+	}
+
+	#[inline]
+	fn broadcast(val: u16) -> Self {
+		unsafe { Self::from(vdupq_n_u16(val)) }
 	}
 }
 
@@ -468,6 +488,11 @@ impl Divisible<u8> for M128 {
 				_ => panic!("index out of bounds"),
 			}
 		}
+	}
+
+	#[inline]
+	fn broadcast(val: u8) -> Self {
+		unsafe { Self::from(vdupq_n_u8(val)) }
 	}
 }
 

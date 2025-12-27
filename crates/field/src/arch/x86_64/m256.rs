@@ -1080,6 +1080,11 @@ impl Divisible<M128> for M256 {
 			}
 		}
 	}
+
+	#[inline]
+	fn broadcast(val: M128) -> Self {
+		unsafe { Self(_mm256_broadcastsi128_si256(val.0)) }
+	}
 }
 
 impl Divisible<u128> for M256 {
@@ -1108,6 +1113,11 @@ impl Divisible<u128> for M256 {
 	#[inline]
 	fn set(self, index: usize, val: u128) -> Self {
 		Divisible::<M128>::set(self, index, M128::from(val))
+	}
+
+	#[inline]
+	fn broadcast(val: u128) -> Self {
+		Divisible::<M128>::broadcast(M128::from(val))
 	}
 }
 
@@ -1153,6 +1163,11 @@ impl Divisible<u64> for M256 {
 				_ => panic!("index out of bounds"),
 			}
 		}
+	}
+
+	#[inline]
+	fn broadcast(val: u64) -> Self {
+		unsafe { Self(_mm256_set1_epi64x(val as i64)) }
 	}
 }
 
@@ -1206,6 +1221,11 @@ impl Divisible<u32> for M256 {
 				_ => panic!("index out of bounds"),
 			}
 		}
+	}
+
+	#[inline]
+	fn broadcast(val: u32) -> Self {
+		unsafe { Self(_mm256_set1_epi32(val as i32)) }
 	}
 }
 
@@ -1275,6 +1295,11 @@ impl Divisible<u16> for M256 {
 				_ => panic!("index out of bounds"),
 			}
 		}
+	}
+
+	#[inline]
+	fn broadcast(val: u16) -> Self {
+		unsafe { Self(_mm256_set1_epi16(val as i16)) }
 	}
 }
 
@@ -1376,6 +1401,11 @@ impl Divisible<u8> for M256 {
 				_ => panic!("index out of bounds"),
 			}
 		}
+	}
+
+	#[inline]
+	fn broadcast(val: u8) -> Self {
+		unsafe { Self(_mm256_set1_epi8(val as i8)) }
 	}
 }
 
