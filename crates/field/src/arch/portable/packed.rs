@@ -7,7 +7,6 @@
 #![allow(clippy::multiple_bound_locations)]
 
 use std::{
-	array,
 	fmt::Debug,
 	iter::{Product, Sum},
 	marker::PhantomData,
@@ -378,48 +377,6 @@ where
 	}
 }
 
-impl<U: UnderlierType + Pod, Scalar: BinaryField, const N: usize> Mul
-	for PackedPrimitiveType<ScaledUnderlier<U, N>, Scalar>
-where
-	PackedPrimitiveType<U, Scalar>: Mul<Output = PackedPrimitiveType<U, Scalar>>,
-{
-	type Output = Self;
-
-	fn mul(self, rhs: Self) -> Self::Output {
-		Self::wrap(ScaledUnderlier(array::from_fn(|i| {
-			let lhs_i = self.0.0[i];
-			let rhs_i = rhs.0.0[i];
-			PackedPrimitiveType::peel(
-				PackedPrimitiveType::wrap(lhs_i) * PackedPrimitiveType::wrap(rhs_i),
-			)
-		})))
-	}
-}
-
-impl<U: UnderlierType + Pod, Scalar: BinaryField, const N: usize> Square
-	for PackedPrimitiveType<ScaledUnderlier<U, N>, Scalar>
-where
-	PackedPrimitiveType<U, Scalar>: Square,
-{
-	fn square(self) -> Self {
-		Self::wrap(ScaledUnderlier(self.0.0.map(|sub_underlier| {
-			PackedPrimitiveType::peel(PackedPrimitiveType::wrap(sub_underlier).square())
-		})))
-	}
-}
-
-impl<U: UnderlierType + Pod, Scalar: BinaryField, const N: usize> InvertOrZero
-	for PackedPrimitiveType<ScaledUnderlier<U, N>, Scalar>
-where
-	PackedPrimitiveType<U, Scalar>: InvertOrZero,
-{
-	fn invert_or_zero(self) -> Self {
-		Self::wrap(ScaledUnderlier(self.0.0.map(|sub_underlier| {
-			PackedPrimitiveType::peel(PackedPrimitiveType::wrap(sub_underlier).invert_or_zero())
-		})))
-	}
-}
-
 impl<U: UnderlierType, Scalar: BinaryField> Distribution<PackedPrimitiveType<U, Scalar>>
 	for StandardUniform
 {
@@ -511,8 +468,6 @@ macro_rules! impl_pack_scalar {
 }
 
 pub(crate) use impl_pack_scalar;
-
-use crate::underlier::ScaledUnderlier;
 
 impl_pack_scalar!(U1);
 impl_pack_scalar!(U2);

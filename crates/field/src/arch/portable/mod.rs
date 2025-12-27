@@ -37,4 +37,5 @@ pub(super) mod pairwise_arithmetic;
 pub(super) mod pairwise_recursive_arithmetic;
 pub(super) mod pairwise_table_arithmetic;
 pub(super) mod reuse_multiply_arithmetic;
+pub(super) mod scaled_arithmetic;
 pub(super) mod underlier_constants;
