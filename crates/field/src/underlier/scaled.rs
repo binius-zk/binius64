@@ -5,7 +5,11 @@ use std::{
 	ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr},
 };
 
-use binius_utils::checked_arithmetics::checked_log_2;
+use binius_utils::{
+	DeserializeBytes, SerializeBytes, SerializationError,
+	bytes::{Buf, BufMut},
+	checked_arithmetics::checked_log_2,
+};
 use bytemuck::{Pod, Zeroable};
 use rand::{
 	Rng,
@@ -260,6 +264,18 @@ where
 	#[inline]
 	fn from_iter(mut iter: impl Iterator<Item = T>) -> Self {
 		Self(array::from_fn(|_| Divisible::<T>::from_iter(&mut iter)))
+	}
+}
+
+impl<U: SerializeBytes, const N: usize> SerializeBytes for ScaledUnderlier<U, N> {
+	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
+		self.0.serialize(write_buf)
+	}
+}
+
+impl<U: DeserializeBytes, const N: usize> DeserializeBytes for ScaledUnderlier<U, N> {
+	fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError> {
+		<[U; N]>::deserialize(read_buf).map(Self)
 	}
 }
 
