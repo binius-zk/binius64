@@ -12,7 +12,6 @@ define_packed_binary_fields!(
 		packed_field {
 			name: PackedAESBinaryField2x8b,
 			scalar: AESTowerField8b,
-			alpha_idx: _,
 			mul: (PairwiseTableStrategy),
 			square: (PairwiseTableStrategy),
 			invert: (PairwiseTableStrategy),

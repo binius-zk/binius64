@@ -35,43 +35,6 @@ macro_rules! impl_broadcast {
 	};
 }
 
-macro_rules! impl_ops_for_zero_height {
-	($name:ty) => {
-		impl std::ops::Mul for $name {
-			type Output = Self;
-
-			#[allow(clippy::suspicious_arithmetic_impl)]
-			#[inline]
-			fn mul(self, b: Self) -> Self {
-				crate::tracing::trace_multiplication!($name);
-
-				(self.to_underlier() & b.to_underlier()).into()
-			}
-		}
-
-		impl $crate::arithmetic_traits::MulAlpha for $name {
-			#[inline]
-			fn mul_alpha(self) -> Self {
-				self
-			}
-		}
-
-		impl $crate::arithmetic_traits::Square for $name {
-			#[inline]
-			fn square(self) -> Self {
-				self
-			}
-		}
-
-		impl $crate::arithmetic_traits::InvertOrZero for $name {
-			#[inline]
-			fn invert_or_zero(self) -> Self {
-				self
-			}
-		}
-	};
-}
-
 macro_rules! define_packed_binary_fields {
     (
         underlier: $underlier:ident,
@@ -80,7 +43,6 @@ macro_rules! define_packed_binary_fields {
                 packed_field {
                     name: $name:ident,
                     scalar: $scalar:ident,
-                    alpha_idx: $alpha_idx:tt,
                     mul: ($($mul:tt)*),
                     square: ($($square:tt)*),
                     invert: ($($invert:tt)*),
@@ -95,7 +57,6 @@ macro_rules! define_packed_binary_fields {
                 $name,
                 $crate::$scalar,
                 $underlier,
-                $alpha_idx,
                 ($($mul)*),
                 ($($square)*),
                 ($($invert)*),
@@ -108,7 +69,7 @@ macro_rules! define_packed_binary_fields {
 
 macro_rules! define_packed_binary_field {
 	(
-		$name:ident, $scalar:path, $underlier:ident, $alpha_idx:tt,
+		$name:ident, $scalar:path, $underlier:ident,
 		($($mul:tt)*),
 		($($square:tt)*),
 		($($invert:tt)*),
@@ -123,9 +84,6 @@ macro_rules! define_packed_binary_field {
 
 		// Define broadcast
 		maybe_impl_broadcast!($underlier, $scalar);
-
-		// Define operations for height 0
-		maybe_impl_ops!($name, $alpha_idx);
 
 		// Define multiplication
 		impl_strategy!(impl_mul_with       $name, ($($mul)*));
@@ -168,19 +126,14 @@ macro_rules! impl_serialize_deserialize_for_packed_binary_field {
 	};
 }
 
-macro_rules! maybe_impl_ops {
-	($name:ident, 0) => {
-		impl_ops_for_zero_height!($name);
-	};
-	($name:ident, $other_idx:tt) => {};
-}
-
 pub(crate) use define_packed_binary_field;
 pub(crate) use define_packed_binary_fields;
 pub(crate) use impl_broadcast;
-pub(crate) use impl_ops_for_zero_height;
 pub(crate) use impl_serialize_deserialize_for_packed_binary_field;
-pub(crate) use maybe_impl_ops;
+
+pub(crate) use crate::arithmetic_traits::{
+	impl_invert_with, impl_mul_alpha_with, impl_mul_with, impl_square_with,
+};
 
 pub(crate) mod portable_macros {
 	macro_rules! maybe_impl_broadcast {

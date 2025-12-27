@@ -20,3 +20,6 @@ pub struct GfniStrategy;
 /// Specialized versions of the above to resolve conflicting implementations
 pub struct GfniSpecializedStrategy256b;
 pub struct GfniSpecializedStrategy512b;
+
+/// Strategy for BinaryField1b operations using bitwise AND for multiplication.
+pub struct BitwiseAndStrategy;

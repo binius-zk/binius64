@@ -9,11 +9,10 @@ define_packed_binary_fields!(
 		packed_field {
 			name: PackedBinaryField8x1b,
 			scalar: BinaryField1b,
-			alpha_idx: 0,
-			mul: (None),
-			square: (None),
-			invert: (None),
-			mul_alpha: (None),
+			mul: (BitwiseAndStrategy),
+			square: (BitwiseAndStrategy),
+			invert: (BitwiseAndStrategy),
+			mul_alpha: (BitwiseAndStrategy),
 			transform: (PackedStrategy),
 		},
 	]

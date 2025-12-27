@@ -2,22 +2,21 @@
 
 use super::packed::PackedPrimitiveType;
 use crate::{
-	BinaryField1b,
-	arch::portable::packed_macros::{
-		impl_broadcast, impl_ops_for_zero_height,
-		impl_serialize_deserialize_for_packed_binary_field,
-	},
-	underlier::U1,
+	arch::portable::packed_macros::{portable_macros::*, *},
+	underlier::{U1, UnderlierType},
 };
 
-// Define 1 bit packed field types
-pub type PackedBinaryField1x1b = PackedPrimitiveType<U1, BinaryField1b>;
-
-// Define (de)serialize
-impl_serialize_deserialize_for_packed_binary_field!(PackedBinaryField1x1b);
-
-// Define broadcast
-impl_broadcast!(U1, BinaryField1b);
-
-// Define operations for height 0
-impl_ops_for_zero_height!(PackedBinaryField1x1b);
+define_packed_binary_fields!(
+	underlier: U1,
+	packed_fields: [
+		packed_field {
+			name: PackedBinaryField1x1b,
+			scalar: BinaryField1b,
+			mul: (BitwiseAndStrategy),
+			square: (BitwiseAndStrategy),
+			invert: (BitwiseAndStrategy),
+			mul_alpha: (BitwiseAndStrategy),
+			transform: (PackedStrategy),
+		},
+	]
+);

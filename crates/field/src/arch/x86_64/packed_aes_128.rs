@@ -14,7 +14,6 @@ define_packed_binary_fields!(
 		packed_field {
 			name: PackedAESBinaryField16x8b,
 			scalar: AESTowerField8b,
-			alpha_idx: _,
 			mul:       (if gfni GfniStrategy else PairwiseTableStrategy),
 			square:    (if gfni ReuseMultiplyStrategy else PairwiseTableStrategy),
 			invert:    (if gfni GfniStrategy else PairwiseTableStrategy),

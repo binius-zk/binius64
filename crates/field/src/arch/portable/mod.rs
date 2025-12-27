@@ -31,6 +31,7 @@ pub(crate) mod univariate_mul_utils_128;
 
 pub(super) mod packed_scaled;
 
+pub(super) mod bitwise_and_arithmetic;
 pub(super) mod packed_arithmetic;
 pub(super) mod pairwise_arithmetic;
 pub(super) mod pairwise_recursive_arithmetic;

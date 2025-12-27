@@ -12,15 +12,11 @@ define_packed_binary_fields!(
 		packed_field {
 			name: PackedBinaryField2x1b,
 			scalar: BinaryField1b,
-			alpha_idx: _,
-			mul: (None),
-			square: (None),
-			invert: (None),
-			mul_alpha: (None),
+			mul: (BitwiseAndStrategy),
+			square: (BitwiseAndStrategy),
+			invert: (BitwiseAndStrategy),
+			mul_alpha: (BitwiseAndStrategy),
 			transform: (PackedStrategy),
 		},
 	]
 );
-
-// Define operations for height 0
-impl_ops_for_zero_height!(PackedBinaryField2x1b);
