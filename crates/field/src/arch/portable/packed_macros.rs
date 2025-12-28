@@ -63,7 +63,7 @@ macro_rules! define_packed_binary_field {
 		impl_serialize_deserialize_for_packed_binary_field!($name);
 
 		// Define broadcast
-		maybe_impl_broadcast!($underlier, $scalar);
+		impl_broadcast!($underlier, $scalar);
 
 		// Define multiplication
 		impl_strategy!(impl_mul_with       $name, ($($mul)*));
@@ -116,12 +116,6 @@ pub(crate) use crate::arithmetic_traits::{
 };
 
 pub(crate) mod portable_macros {
-	macro_rules! maybe_impl_broadcast {
-		($underlier:ty, $scalar:path) => {
-			impl_broadcast!($underlier, $scalar);
-		};
-	}
-
 	macro_rules! impl_strategy {
 		($impl_macro:ident $name:ident, (None)) => {};
 		($impl_macro:ident $name:ident, (if $cond:ident $gfni_x86_strategy:tt else $fallback:tt)) => {
@@ -139,5 +133,4 @@ pub(crate) mod portable_macros {
 	}
 
 	pub(crate) use impl_strategy;
-	pub(crate) use maybe_impl_broadcast;
 }
