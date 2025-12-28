@@ -142,6 +142,9 @@ where
 			});
 		}
 
+		// Prover observes the public input (includes it in Fiat-Shamir).
+		transcript.observe().write_slice(&public);
+
 		let _prove_guard = tracing::info_span!(
 			"Prove",
 			operation = "prove",

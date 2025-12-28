@@ -107,6 +107,10 @@ where
 
 		let log_mul_constraints = checked_log_2(cs.mul_constraints().len());
 
+		// Prover observes the public input (includes it in Fiat-Shamir).
+		let public = &witness[..1 << cs.log_public()];
+		transcript.observe().write_slice(public);
+
 		// Pack witness into field elements
 		// TODO: Populate witness directly into a FieldBuffer
 		let witness_packed = pack_witness::<_, P>(cs.log_size() as usize, witness);

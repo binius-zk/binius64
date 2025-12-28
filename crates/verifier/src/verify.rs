@@ -153,6 +153,9 @@ where
 			});
 		}
 
+		// Verifier observes the public input (includes it in Fiat-Shamir).
+		transcript.observe().write_slice(public);
+
 		let subfield_subspace = BinarySubspace::<B8>::default().isomorphic();
 		let extended_subspace = subfield_subspace
 			.reduce_dim(LOG_WORD_SIZE_BITS + 1)

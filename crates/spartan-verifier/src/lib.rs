@@ -104,6 +104,9 @@ where
 			});
 		}
 
+		// Verifier observes the public input (includes it in Fiat-Shamir).
+		transcript.observe().write_slice(public);
+
 		// Receive the trace commitment.
 		let trace_commitment = transcript.message().read::<Output<MerkleHash>>()?;
 
