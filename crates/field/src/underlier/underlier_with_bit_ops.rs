@@ -2,7 +2,7 @@
 
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
 
-use binius_utils::checked_arithmetics::{checked_int_div, checked_log_2};
+use binius_utils::checked_arithmetics::checked_int_div;
 
 use super::{
 	U1, U2, U4,
@@ -54,17 +54,9 @@ pub trait UnderlierWithBitOps:
 	fn broadcast_subvalue<T>(value: T) -> Self
 	where
 		T: UnderlierType,
-		Self: From<T>,
+		Self: Divisible<T>,
 	{
-		// This implementation is optimal for the case when `Self` us u8..u128.
-		// For SIMD types/arrays specialization would be more performant.
-		let height = checked_log_2(checked_int_div(Self::BITS, T::BITS));
-		let mut result = Self::from(value);
-		for i in 0..height {
-			result |= result << ((1 << i) * T::BITS);
-		}
-
-		result
+		Divisible::<T>::broadcast(value)
 	}
 
 	/// Gets the subvalue from the given position.
@@ -163,6 +155,8 @@ where
 #[cfg(test)]
 #[allow(unused)]
 pub(crate) fn single_element_mask_bits<T: UnderlierWithBitOps>(bits_count: usize) -> T {
+    use binius_utils::checked_arithmetics::checked_log_2;
+
 	if bits_count == T::BITS {
 		!T::ZERO
 	} else {

@@ -1,10 +1,10 @@
 // Copyright 2025 Irreducible Inc.
 
-use crate::underlier::UnderlierWithBitOps;
+use crate::{Divisible, underlier::UnderlierWithBitOps};
 
 /// Trait for underliers that support CLMUL operations which are needed for the
 /// GHASH multiplication algorithm.
-pub trait ClMulUnderlier: UnderlierWithBitOps + From<u64> + From<u128> {
+pub trait ClMulUnderlier: UnderlierWithBitOps + Divisible<u128> {
 	/// Performs CLMUL operation on two 64-bit values that are selected from 128-bit lanes
 	/// by the bytes of the IMM8 parameter.
 	fn clmulepi64<const IMM8: i32>(a: Self, b: Self) -> Self;
