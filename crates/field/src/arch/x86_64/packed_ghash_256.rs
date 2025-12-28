@@ -13,23 +13,18 @@ use crate::{
 	arch::{
 		portable::{
 			packed::PackedPrimitiveType,
-			packed_macros::impl_serialize_deserialize_for_packed_binary_field,
+			packed_macros::{impl_broadcast, impl_serialize_deserialize_for_packed_binary_field},
 		},
 		x86_64::{m128::M128, m256::M256, packed_ghash_128::PackedBinaryGhash1x128b},
 	},
-	arithmetic_traits::{Broadcast, InvertOrZero, Square},
-	underlier::{Divisible, UnderlierWithBitOps, WithUnderlier},
+	arithmetic_traits::{InvertOrZero, Square},
+	underlier::UnderlierWithBitOps,
 };
 
 pub type PackedBinaryGhash2x128b = PackedPrimitiveType<M256, BinaryField128bGhash>;
 
 // Define broadcast
-impl Broadcast<BinaryField128bGhash> for PackedBinaryGhash2x128b {
-	#[inline]
-	fn broadcast(scalar: BinaryField128bGhash) -> Self {
-		Self::from_underlier(Divisible::<u128>::broadcast(scalar.to_underlier()))
-	}
-}
+impl_broadcast!(M256, BinaryField128bGhash);
 
 #[cfg(target_feature = "vpclmulqdq")]
 mod vpclmulqdq {

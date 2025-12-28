@@ -10,12 +10,14 @@ use super::{
 };
 use crate::{
 	aes_field::AESTowerField8b,
-	arch::portable::packed::PackedPrimitiveType,
+	arch::portable::{packed::PackedPrimitiveType, packed_macros::impl_broadcast},
 	arithmetic_traits::{InvertOrZero, MulAlpha, Square},
 	underlier::WithUnderlier,
 };
 
 pub type PackedAESBinaryField16x8b = PackedPrimitiveType<M128, AESTowerField8b>;
+
+impl_broadcast!(M128, AESTowerField8b);
 
 impl Mul for PackedAESBinaryField16x8b {
 	type Output = Self;

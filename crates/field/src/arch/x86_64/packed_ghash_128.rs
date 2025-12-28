@@ -13,10 +13,11 @@ use cfg_if::cfg_if;
 use super::{super::portable::packed::PackedPrimitiveType, m128::M128};
 use crate::{
 	BinaryField128bGhash,
-	arch::portable::packed_macros::impl_serialize_deserialize_for_packed_binary_field,
-	arithmetic_traits::{Broadcast, InvertOrZero, Square},
+	arch::portable::packed_macros::{
+		impl_broadcast, impl_serialize_deserialize_for_packed_binary_field,
+	},
+	arithmetic_traits::{InvertOrZero, Square},
 	packed::PackedField,
-	underlier::WithUnderlier,
 };
 
 #[cfg(target_feature = "pclmulqdq")]
@@ -35,12 +36,7 @@ impl crate::arch::shared::ghash::ClMulUnderlier for M128 {
 pub type PackedBinaryGhash1x128b = PackedPrimitiveType<M128, BinaryField128bGhash>;
 
 // Define broadcast
-impl Broadcast<BinaryField128bGhash> for PackedBinaryGhash1x128b {
-	#[inline]
-	fn broadcast(scalar: BinaryField128bGhash) -> Self {
-		Self::from_underlier(M128::from(scalar.to_underlier()))
-	}
-}
+impl_broadcast!(M128, BinaryField128bGhash);
 
 // Define multiply
 cfg_if! {

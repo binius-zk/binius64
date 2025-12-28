@@ -11,7 +11,7 @@ use binius_utils::{
 	bytes::{Buf, BufMut},
 	serialization::{assert_enough_data_for, assert_enough_space_for},
 };
-use bytemuck::{Pod, Zeroable, must_cast};
+use bytemuck::{Pod, Zeroable};
 use cfg_if::cfg_if;
 use rand::{
 	Rng,

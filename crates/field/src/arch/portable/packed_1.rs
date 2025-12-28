@@ -3,7 +3,7 @@
 use super::packed::PackedPrimitiveType;
 use crate::{
 	arch::portable::packed_macros::{portable_macros::*, *},
-	underlier::{U1, UnderlierType},
+	underlier::U1,
 };
 
 define_packed_binary_fields!(
