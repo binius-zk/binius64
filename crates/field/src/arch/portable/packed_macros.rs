@@ -1,35 +1,15 @@
 // Copyright 2024-2025 Irreducible Inc.
 
 macro_rules! impl_broadcast {
-	($name:ty, BinaryField1b) => {
-		impl $crate::arithmetic_traits::Broadcast<BinaryField1b>
-			for PackedPrimitiveType<$name, BinaryField1b>
-		{
-			#[inline]
-			fn broadcast(scalar: BinaryField1b) -> Self {
-				use $crate::underlier::{UnderlierWithBitOps, WithUnderlier};
-
-				<Self as WithUnderlier>::Underlier::fill_with_bit(scalar.0.into()).into()
-			}
-		}
-	};
 	($name:ty, $scalar_type:path) => {
 		impl $crate::arithmetic_traits::Broadcast<$scalar_type>
 			for PackedPrimitiveType<$name, $scalar_type>
 		{
 			#[inline]
 			fn broadcast(scalar: $scalar_type) -> Self {
-				let mut value = <$name>::from(scalar.0);
-				// For PackedBinaryField1x128b, the log bits is 7, so this is
-				// an empty range. This is safe behavior.
-				#[allow(clippy::reversed_empty_ranges)]
-				for i in <$scalar_type as $crate::binary_field::BinaryField>::N_BITS.ilog2()
-					..<$name>::BITS.ilog2()
-				{
-					value = value << (1 << i) | value;
-				}
+				use $crate::underlier::UnderlierWithBitOps;
 
-				value.into()
+				<$name>::broadcast_subvalue(scalar.0).into()
 			}
 		}
 	};

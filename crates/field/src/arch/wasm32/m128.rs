@@ -20,7 +20,6 @@ use crate::{
 		packed::{PackedPrimitiveType, impl_pack_scalar},
 		packed_arithmetic::{UnderlierWithBitConstants, interleave_mask_even, interleave_mask_odd},
 	},
-	arithmetic_traits::Broadcast,
 	underlier::{
 		NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
 		impl_divisible_bitmask, impl_divisible_memcast,
@@ -305,47 +304,6 @@ impl UnderlierWithBitOps for M128 {
 	#[inline(always)]
 	fn shr_128b_lanes(self, shift: usize) -> Self {
 		self >> shift
-	}
-}
-
-impl<Scalar: BinaryField> Broadcast<Scalar> for PackedPrimitiveType<M128, Scalar>
-where
-	u128: From<Scalar::Underlier>,
-{
-	#[inline(always)]
-	fn broadcast(scalar: Scalar) -> Self {
-		let tower_level = Scalar::N_BITS.ilog2() as usize;
-		let underlier = match tower_level {
-			0..=3 => {
-				let mut value = u128::from(scalar.to_underlier()) as u8;
-				for n in tower_level..3 {
-					value |= value << (1 << n);
-				}
-
-				u8x16_splat(value).into()
-			}
-			4 => {
-				let value = u128::from(scalar.to_underlier()) as u16;
-				u16x8_splat(value).into()
-			}
-			5 => {
-				let value = u128::from(scalar.to_underlier()) as u32;
-				u32x4_splat(value).into()
-			}
-			6 => {
-				let value = u128::from(scalar.to_underlier()) as u64;
-				u64x2_splat(value).into()
-			}
-			7 => {
-				let value = u128::from(scalar.to_underlier());
-				value.into()
-			}
-			_ => {
-				unreachable!("invalid tower level")
-			}
-		};
-
-		Self::from_underlier(underlier)
 	}
 }
 

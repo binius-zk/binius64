@@ -14,7 +14,9 @@ use super::{super::portable::packed::PackedPrimitiveType, m512::M512};
 use crate::{
 	BinaryField128bGhash,
 	arch::portable::packed_macros::impl_serialize_deserialize_for_packed_binary_field,
-	arithmetic_traits::InvertOrZero, packed::PackedField, underlier::UnderlierWithBitOps,
+	arithmetic_traits::{Broadcast, InvertOrZero},
+	packed::PackedField,
+	underlier::{Divisible, UnderlierWithBitOps, WithUnderlier},
 };
 
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
@@ -37,6 +39,14 @@ impl crate::arch::shared::ghash::ClMulUnderlier for M512 {
 }
 
 pub type PackedBinaryGhash4x128b = PackedPrimitiveType<M512, BinaryField128bGhash>;
+
+// Define broadcast
+impl Broadcast<BinaryField128bGhash> for PackedBinaryGhash4x128b {
+	#[inline]
+	fn broadcast(scalar: BinaryField128bGhash) -> Self {
+		Self::from_underlier(Divisible::<u128>::broadcast(scalar.to_underlier()))
+	}
+}
 
 // Define multiply
 cfg_if! {

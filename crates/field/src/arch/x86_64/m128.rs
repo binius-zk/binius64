@@ -29,7 +29,6 @@ use crate::{
 			},
 		},
 	},
-	arithmetic_traits::Broadcast,
 	underlier::{
 		Divisible, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, UnderlierWithBitOps,
 		WithUnderlier, impl_divisible_bitmask, mapget, spread_fallback,
@@ -731,45 +730,6 @@ impl<Scalar: BinaryField> From<u128> for PackedPrimitiveType<M128, Scalar> {
 impl<Scalar: BinaryField> From<PackedPrimitiveType<M128, Scalar>> for __m128i {
 	fn from(value: PackedPrimitiveType<M128, Scalar>) -> Self {
 		value.to_underlier().into()
-	}
-}
-
-impl<Scalar: BinaryField> Broadcast<Scalar> for PackedPrimitiveType<M128, Scalar>
-where
-	u128: From<Scalar::Underlier>,
-{
-	#[inline(always)]
-	fn broadcast(scalar: Scalar) -> Self {
-		let tower_level = Scalar::N_BITS.ilog2() as usize;
-		match tower_level {
-			0..=3 => {
-				let mut value = u128::from(scalar.to_underlier()) as u8;
-				for n in tower_level..3 {
-					value |= value << (1 << n);
-				}
-
-				unsafe { _mm_set1_epi8(value as i8) }.into()
-			}
-			4 => {
-				let value = u128::from(scalar.to_underlier()) as u16;
-				unsafe { _mm_set1_epi16(value as i16) }.into()
-			}
-			5 => {
-				let value = u128::from(scalar.to_underlier()) as u32;
-				unsafe { _mm_set1_epi32(value as i32) }.into()
-			}
-			6 => {
-				let value = u128::from(scalar.to_underlier()) as u64;
-				unsafe { _mm_set1_epi64x(value as i64) }.into()
-			}
-			7 => {
-				let value = u128::from(scalar.to_underlier());
-				value.into()
-			}
-			_ => {
-				unreachable!("invalid tower level")
-			}
-		}
 	}
 }
 

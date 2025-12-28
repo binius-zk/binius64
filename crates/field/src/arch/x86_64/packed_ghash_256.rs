@@ -17,11 +17,19 @@ use crate::{
 		},
 		x86_64::{m128::M128, m256::M256, packed_ghash_128::PackedBinaryGhash1x128b},
 	},
-	arithmetic_traits::{InvertOrZero, Square},
-	underlier::UnderlierWithBitOps,
+	arithmetic_traits::{Broadcast, InvertOrZero, Square},
+	underlier::{Divisible, UnderlierWithBitOps, WithUnderlier},
 };
 
 pub type PackedBinaryGhash2x128b = PackedPrimitiveType<M256, BinaryField128bGhash>;
+
+// Define broadcast
+impl Broadcast<BinaryField128bGhash> for PackedBinaryGhash2x128b {
+	#[inline]
+	fn broadcast(scalar: BinaryField128bGhash) -> Self {
+		Self::from_underlier(Divisible::<u128>::broadcast(scalar.to_underlier()))
+	}
+}
 
 #[cfg(target_feature = "vpclmulqdq")]
 mod vpclmulqdq {

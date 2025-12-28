@@ -18,11 +18,20 @@ use crate::{
 			univariate_mul_utils_128::{Underlier128bLanes, spread_bits_64},
 		},
 	},
-	arithmetic_traits::{InvertOrZero, Square, impl_transformation_with_strategy},
+	arithmetic_traits::{Broadcast, InvertOrZero, Square, impl_transformation_with_strategy},
 	packed::PackedField,
+	underlier::WithUnderlier,
 };
 
 pub type PackedBinaryGhash1x128b = PackedPrimitiveType<M128, BinaryField128bGhash>;
+
+// Define broadcast
+impl Broadcast<BinaryField128bGhash> for PackedBinaryGhash1x128b {
+	#[inline]
+	fn broadcast(scalar: BinaryField128bGhash) -> Self {
+		Self::from_underlier(M128::from(scalar.to_underlier()))
+	}
+}
 
 // Define multiply
 impl Mul for PackedBinaryGhash1x128b {

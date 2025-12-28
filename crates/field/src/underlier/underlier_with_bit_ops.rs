@@ -155,7 +155,7 @@ where
 #[cfg(test)]
 #[allow(unused)]
 pub(crate) fn single_element_mask_bits<T: UnderlierWithBitOps>(bits_count: usize) -> T {
-    use binius_utils::checked_arithmetics::checked_log_2;
+	use binius_utils::checked_arithmetics::checked_log_2;
 
 	if bits_count == T::BITS {
 		!T::ZERO

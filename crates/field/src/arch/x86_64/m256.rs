@@ -29,7 +29,6 @@ use crate::{
 			},
 		},
 	},
-	arithmetic_traits::Broadcast,
 	underlier::{
 		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
 		get_block_values, get_spread_bytes, impl_divisible_bitmask, mapget, spread_fallback,
@@ -785,28 +784,6 @@ impl<Scalar: BinaryField> From<[u128; 2]> for PackedPrimitiveType<M256, Scalar> 
 impl<Scalar: BinaryField> From<PackedPrimitiveType<M256, Scalar>> for __m256i {
 	fn from(value: PackedPrimitiveType<M256, Scalar>) -> Self {
 		value.to_underlier().into()
-	}
-}
-
-impl<Scalar: BinaryField> Broadcast<Scalar> for PackedPrimitiveType<M256, Scalar>
-where
-	u128: From<Scalar::Underlier>,
-{
-	fn broadcast(scalar: Scalar) -> Self {
-		let tower_level = Scalar::N_BITS.ilog2() as usize;
-		let mut value = u128::from(scalar.to_underlier());
-		for n in tower_level..3 {
-			value |= value << (1 << n);
-		}
-
-		match tower_level {
-			0..=3 => unsafe { _mm256_broadcastb_epi8(must_cast(value)).into() },
-			4 => unsafe { _mm256_broadcastw_epi16(must_cast(value)).into() },
-			5 => unsafe { _mm256_broadcastd_epi32(must_cast(value)).into() },
-			6 => unsafe { _mm256_broadcastq_epi64(must_cast(value)).into() },
-			7 => [value, value].into(),
-			_ => unreachable!(),
-		}
 	}
 }
 

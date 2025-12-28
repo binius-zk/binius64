@@ -16,8 +16,9 @@ use crate::{
 		portable::packed_macros::impl_serialize_deserialize_for_packed_binary_field,
 		shared::ghash::ClMulUnderlier,
 	},
-	arithmetic_traits::{InvertOrZero, Square},
+	arithmetic_traits::{Broadcast, InvertOrZero, Square},
 	packed::PackedField,
+	underlier::WithUnderlier,
 };
 
 impl ClMulUnderlier for M128 {
@@ -49,6 +50,14 @@ impl ClMulUnderlier for M128 {
 }
 
 pub type PackedBinaryGhash1x128b = PackedPrimitiveType<M128, BinaryField128bGhash>;
+
+// Define broadcast
+impl Broadcast<BinaryField128bGhash> for PackedBinaryGhash1x128b {
+	#[inline]
+	fn broadcast(scalar: BinaryField128bGhash) -> Self {
+		Self::from_underlier(M128::from(scalar.to_underlier()))
+	}
+}
 
 // Define multiply
 impl Mul for PackedBinaryGhash1x128b {
