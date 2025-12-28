@@ -12,7 +12,7 @@ use rand::{
 	distr::{Distribution, StandardUniform},
 };
 
-use super::{NumCast, UnderlierType, UnderlierWithBitOps};
+use super::{Divisible, NumCast, UnderlierType, UnderlierWithBitOps, mapget};
 use crate::Random;
 
 /// A type that represents a pair of elements of the same underlier type.
@@ -189,6 +189,50 @@ where
 {
 	fn from(val: u8) -> Self {
 		Self(array::from_fn(|_| U::from(val)))
+	}
+}
+
+impl<U, T, const N: usize> Divisible<T> for ScaledUnderlier<U, N>
+where
+	U: Divisible<T> + Pod + Send + Sync,
+	T: Send + 'static,
+{
+	const LOG_N: usize = <U as Divisible<T>>::LOG_N + checked_log_2(N);
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = T> + Send + Clone {
+		mapget::value_iter(value)
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = T> + Send + Clone + '_ {
+		mapget::value_iter(*value)
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = T> + Send + Clone + '_ {
+		mapget::slice_iter(slice)
+	}
+
+	#[inline]
+	fn get(self, index: usize) -> T {
+		let u_index = index >> <U as Divisible<T>>::LOG_N;
+		let sub_index = index & (<U as Divisible<T>>::N - 1);
+		Divisible::<T>::get(self.0[u_index], sub_index)
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: T) -> Self {
+		let u_index = index >> <U as Divisible<T>>::LOG_N;
+		let sub_index = index & (<U as Divisible<T>>::N - 1);
+		let mut arr = self.0;
+		arr[u_index] = Divisible::<T>::set(arr[u_index], sub_index, val);
+		Self(arr)
+	}
+
+	#[inline]
+	fn broadcast(val: T) -> Self {
+		Self([Divisible::<T>::broadcast(val); N])
 	}
 }
 

@@ -643,42 +643,50 @@ impl Divisible<SmallU<2>> for SmallU<4> {
 	}
 }
 
-// Blanket reflexive implementation: any type divides into itself once
-impl<T: Copy + Send + Sync> Divisible<T> for T {
-	const LOG_N: usize = 0;
+/// Implements reflexive `Divisible<Self>` for a type (dividing into itself once).
+macro_rules! impl_divisible_self {
+	($($ty:ty),+) => {
+		$(
+			impl Divisible<$ty> for $ty {
+				const LOG_N: usize = 0;
 
-	#[inline]
-	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = T> + Send + Clone {
-		std::iter::once(value)
-	}
+				#[inline]
+				fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $ty> + Send + Clone {
+					std::iter::once(value)
+				}
 
-	#[inline]
-	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = T> + Send + Clone + '_ {
-		std::iter::once(*value)
-	}
+				#[inline]
+				fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $ty> + Send + Clone + '_ {
+					std::iter::once(*value)
+				}
 
-	#[inline]
-	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = T> + Send + Clone + '_ {
-		slice.iter().copied()
-	}
+				#[inline]
+				fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $ty> + Send + Clone + '_ {
+					slice.iter().copied()
+				}
 
-	#[inline]
-	fn get(self, index: usize) -> T {
-		debug_assert_eq!(index, 0);
-		self
-	}
+				#[inline]
+				fn get(self, index: usize) -> $ty {
+					debug_assert_eq!(index, 0);
+					self
+				}
 
-	#[inline]
-	fn set(self, index: usize, val: T) -> Self {
-		debug_assert_eq!(index, 0);
-		val
-	}
+				#[inline]
+				fn set(self, index: usize, val: $ty) -> Self {
+					debug_assert_eq!(index, 0);
+					val
+				}
 
-	#[inline]
-	fn broadcast(val: T) -> Self {
-		val
-	}
+				#[inline]
+				fn broadcast(val: $ty) -> Self {
+					val
+				}
+			}
+		)+
+	};
 }
+
+impl_divisible_self!(u8, u16, u32, u64, u128, SmallU<1>, SmallU<2>, SmallU<4>);
 
 #[cfg(test)]
 mod tests {
