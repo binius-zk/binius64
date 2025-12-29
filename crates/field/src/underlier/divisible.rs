@@ -51,13 +51,19 @@ pub trait Divisible<T>: Copy {
 
 	/// Create a value with `val` broadcast to all `N` positions.
 	fn broadcast(val: T) -> Self;
+
+	/// Construct a value from an iterator of elements.
+	///
+	/// Consumes at most `N` elements from the iterator. If the iterator
+	/// yields fewer than `N` elements, remaining positions are filled with zeros.
+	fn from_iter(iter: impl Iterator<Item = T>) -> Self;
 }
 
 /// Helper functions for Divisible implementations using bytemuck memory casting.
 ///
 /// These functions handle the endianness-aware iteration over subdivisions of an underlier type.
 pub mod memcast {
-	use bytemuck::Pod;
+	use bytemuck::{Pod, Zeroable};
 
 	/// Returns an iterator over subdivisions of a value, ordered from LSB to MSB.
 	#[cfg(target_endian = "little")]
@@ -213,6 +219,36 @@ pub mod memcast {
 		Small: Pod + Copy,
 	{
 		bytemuck::must_cast::<[Small; N], Big>([val; N])
+	}
+
+	/// Construct a value from an iterator of elements.
+	#[cfg(target_endian = "little")]
+	#[inline]
+	pub fn from_iter<Big, Small, const N: usize>(iter: impl Iterator<Item = Small>) -> Big
+	where
+		Big: Pod,
+		Small: Pod,
+	{
+		let mut arr: [Small; N] = Zeroable::zeroed();
+		for (i, val) in iter.take(N).enumerate() {
+			arr[i] = val;
+		}
+		bytemuck::must_cast(arr)
+	}
+
+	/// Construct a value from an iterator of elements.
+	#[cfg(target_endian = "big")]
+	#[inline]
+	pub fn from_iter<Big, Small, const N: usize>(iter: impl Iterator<Item = Small>) -> Big
+	where
+		Big: Pod,
+		Small: Pod,
+	{
+		let mut arr: [Small; N] = Zeroable::zeroed();
+		for (i, val) in iter.take(N).enumerate() {
+			arr[N - 1 - i] = val;
+		}
+		bytemuck::must_cast(arr)
 	}
 }
 
@@ -400,6 +436,12 @@ macro_rules! impl_divisible_memcast {
 					const N: usize = size_of::<$big>() / size_of::<$small>();
 					$crate::underlier::memcast::broadcast::<$big, $small, N>(val)
 				}
+
+				#[inline]
+				fn from_iter(iter: impl Iterator<Item = $small>) -> Self {
+					const N: usize = size_of::<$big>() / size_of::<$small>();
+					$crate::underlier::memcast::from_iter::<$big, $small, N>(iter)
+				}
 			}
 		)+
 	};
@@ -458,6 +500,16 @@ macro_rules! impl_divisible_bitmask {
 					}
 					result
 				}
+
+				#[inline]
+				fn from_iter(iter: impl Iterator<Item = $crate::underlier::SmallU<$bits>>) -> Self {
+					const N: usize = 8 / $bits;
+					let mut result: Self = 0;
+					for (i, val) in iter.take(N).enumerate() {
+						result = $crate::underlier::Divisible::<$crate::underlier::SmallU<$bits>>::set(result, i, val);
+					}
+					result
+				}
 			}
 		)+
 	};
@@ -504,6 +556,16 @@ macro_rules! impl_divisible_bitmask {
 					// First splat to u8, then splat the byte to fill Self
 					let byte = $crate::underlier::Divisible::<$crate::underlier::SmallU<$bits>>::broadcast(val);
 					$crate::underlier::Divisible::<u8>::broadcast(byte)
+				}
+
+				#[inline]
+				fn from_iter(iter: impl Iterator<Item = $crate::underlier::SmallU<$bits>>) -> Self {
+					const N: usize = 8 * size_of::<$big>() / $bits;
+					let mut result: Self = bytemuck::Zeroable::zeroed();
+					for (i, val) in iter.take(N).enumerate() {
+						result = $crate::underlier::Divisible::<$crate::underlier::SmallU<$bits>>::set(result, i, val);
+					}
+					result
 				}
 			}
 		)+
@@ -564,6 +626,14 @@ impl Divisible<SmallU<1>> for SmallU<2> {
 		let v = val.val();
 		SmallU::<2>::new(v | (v << 1))
 	}
+
+	#[inline]
+	fn from_iter(iter: impl Iterator<Item = SmallU<1>>) -> Self {
+		iter.chain(std::iter::repeat(SmallU::<1>::new(0)))
+			.take(2)
+			.enumerate()
+			.fold(SmallU::<2>::new(0), |acc, (i, val)| acc.set(i, val))
+	}
 }
 
 impl Divisible<SmallU<1>> for SmallU<4> {
@@ -603,6 +673,14 @@ impl Divisible<SmallU<1>> for SmallU<4> {
 		v |= v << 2;
 		SmallU::<4>::new(v)
 	}
+
+	#[inline]
+	fn from_iter(iter: impl Iterator<Item = SmallU<1>>) -> Self {
+		iter.chain(std::iter::repeat(SmallU::<1>::new(0)))
+			.take(4)
+			.enumerate()
+			.fold(SmallU::<4>::new(0), |acc, (i, val)| acc.set(i, val))
+	}
 }
 
 impl Divisible<SmallU<2>> for SmallU<4> {
@@ -640,6 +718,14 @@ impl Divisible<SmallU<2>> for SmallU<4> {
 		// 0bXX -> 0bXXXX
 		let v = val.val();
 		SmallU::<4>::new(v | (v << 2))
+	}
+
+	#[inline]
+	fn from_iter(iter: impl Iterator<Item = SmallU<2>>) -> Self {
+		iter.chain(std::iter::repeat(SmallU::<2>::new(0)))
+			.take(2)
+			.enumerate()
+			.fold(SmallU::<4>::new(0), |acc, (i, val)| acc.set(i, val))
 	}
 }
 
@@ -680,6 +766,11 @@ macro_rules! impl_divisible_self {
 				#[inline]
 				fn broadcast(val: $ty) -> Self {
 					val
+				}
+
+				#[inline]
+				fn from_iter(mut iter: impl Iterator<Item = $ty>) -> Self {
+					iter.next().unwrap_or_else(bytemuck::Zeroable::zeroed)
 				}
 			}
 		)+
@@ -892,5 +983,45 @@ mod tests {
 	fn test_broadcast_reflexive() {
 		let result: u64 = Divisible::<u64>::broadcast(0x123456789ABCDEF0);
 		assert_eq!(result, 0x123456789ABCDEF0);
+	}
+
+	#[test]
+	fn test_from_iter_full() {
+		let result: u32 = Divisible::<u8>::from_iter([0x01, 0x02, 0x03, 0x04].into_iter());
+		assert_eq!(result, 0x04030201);
+	}
+
+	#[test]
+	fn test_from_iter_partial() {
+		// Only 2 elements, remaining should be 0
+		let result: u32 = Divisible::<u8>::from_iter([0xAB, 0xCD].into_iter());
+		assert_eq!(result, 0x0000CDAB);
+	}
+
+	#[test]
+	fn test_from_iter_empty() {
+		let result: u32 = Divisible::<u8>::from_iter(std::iter::empty());
+		assert_eq!(result, 0);
+	}
+
+	#[test]
+	fn test_from_iter_excess() {
+		// More than N elements, only first 4 should be consumed
+		let result: u32 =
+			Divisible::<u8>::from_iter([0x01, 0x02, 0x03, 0x04, 0x05, 0x06].into_iter());
+		assert_eq!(result, 0x04030201);
+	}
+
+	#[test]
+	fn test_from_iter_u64_u16() {
+		let result: u64 = Divisible::<u16>::from_iter([0x1234, 0x5678, 0x9ABC].into_iter());
+		// Only 3 elements provided, 4th should be 0
+		assert_eq!(result, 0x0000_9ABC_5678_1234);
+	}
+
+	#[test]
+	fn test_from_iter_smallu() {
+		let result: u8 = Divisible::<U4>::from_iter([U4::new(0xA), U4::new(0xB)].into_iter());
+		assert_eq!(result, 0xBA);
 	}
 }

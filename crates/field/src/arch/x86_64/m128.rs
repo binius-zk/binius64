@@ -831,6 +831,11 @@ impl Divisible<u128> for M128 {
 	fn broadcast(val: u128) -> Self {
 		Self::from(val)
 	}
+
+	#[inline]
+	fn from_iter(mut iter: impl Iterator<Item = u128>) -> Self {
+		iter.next().map(Self::from).unwrap_or(Self::ZERO)
+	}
 }
 
 impl Divisible<u64> for M128 {
@@ -876,6 +881,16 @@ impl Divisible<u64> for M128 {
 	#[inline]
 	fn broadcast(val: u64) -> Self {
 		unsafe { Self(_mm_set1_epi64x(val as i64)) }
+	}
+
+	#[inline]
+	fn from_iter(iter: impl Iterator<Item = u64>) -> Self {
+		let mut result = Self::ZERO;
+		let arr: &mut [u64; 2] = bytemuck::cast_mut(&mut result);
+		for (i, val) in iter.take(2).enumerate() {
+			arr[i] = val;
+		}
+		result
 	}
 }
 
@@ -926,6 +941,16 @@ impl Divisible<u32> for M128 {
 	#[inline]
 	fn broadcast(val: u32) -> Self {
 		unsafe { Self(_mm_set1_epi32(val as i32)) }
+	}
+
+	#[inline]
+	fn from_iter(iter: impl Iterator<Item = u32>) -> Self {
+		let mut result = Self::ZERO;
+		let arr: &mut [u32; 4] = bytemuck::cast_mut(&mut result);
+		for (i, val) in iter.take(4).enumerate() {
+			arr[i] = val;
+		}
+		result
 	}
 }
 
@@ -984,6 +1009,16 @@ impl Divisible<u16> for M128 {
 	#[inline]
 	fn broadcast(val: u16) -> Self {
 		unsafe { Self(_mm_set1_epi16(val as i16)) }
+	}
+
+	#[inline]
+	fn from_iter(iter: impl Iterator<Item = u16>) -> Self {
+		let mut result = Self::ZERO;
+		let arr: &mut [u16; 8] = bytemuck::cast_mut(&mut result);
+		for (i, val) in iter.take(8).enumerate() {
+			arr[i] = val;
+		}
+		result
 	}
 }
 
@@ -1058,6 +1093,16 @@ impl Divisible<u8> for M128 {
 	#[inline]
 	fn broadcast(val: u8) -> Self {
 		unsafe { Self(_mm_set1_epi8(val as i8)) }
+	}
+
+	#[inline]
+	fn from_iter(iter: impl Iterator<Item = u8>) -> Self {
+		let mut result = Self::ZERO;
+		let arr: &mut [u8; 16] = bytemuck::cast_mut(&mut result);
+		for (i, val) in iter.take(16).enumerate() {
+			arr[i] = val;
+		}
+		result
 	}
 }
 

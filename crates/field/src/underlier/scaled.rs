@@ -234,6 +234,11 @@ where
 	fn broadcast(val: T) -> Self {
 		Self([Divisible::<T>::broadcast(val); N])
 	}
+
+	#[inline]
+	fn from_iter(mut iter: impl Iterator<Item = T>) -> Self {
+		Self(array::from_fn(|_| Divisible::<T>::from_iter(&mut iter)))
+	}
 }
 
 #[cfg(test)]
