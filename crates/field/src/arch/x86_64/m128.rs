@@ -20,13 +20,9 @@ use seq_macro::seq;
 
 use crate::{
 	BinaryField,
-	arch::{
-		portable::{
-			packed::{PackedPrimitiveType, impl_pack_scalar},
-			packed_arithmetic::{
-				UnderlierWithBitConstants, interleave_mask_even, interleave_mask_odd,
-			},
-		},
+	arch::portable::{
+		packed::{PackedPrimitiveType, impl_pack_scalar},
+		packed_arithmetic::{UnderlierWithBitConstants, interleave_mask_even, interleave_mask_odd},
 	},
 	underlier::{
 		Divisible, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, UnderlierWithBitOps,
