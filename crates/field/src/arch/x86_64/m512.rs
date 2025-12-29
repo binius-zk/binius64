@@ -21,7 +21,6 @@ use seq_macro::seq;
 use crate::{
 	BinaryField,
 	arch::{
-		binary_utils::make_func_to_i8,
 		portable::{
 			packed::{PackedPrimitiveType, impl_pack_scalar},
 			packed_arithmetic::{

@@ -20,14 +20,9 @@ use rand::{
 
 use crate::{
 	BinaryField,
-	arch::{
-		binary_utils::make_func_to_i8,
-		portable::{
-			packed::{PackedPrimitiveType, impl_pack_scalar},
-			packed_arithmetic::{
-				UnderlierWithBitConstants, interleave_mask_even, interleave_mask_odd,
-			},
-		},
+	arch::portable::{
+		packed::{PackedPrimitiveType, impl_pack_scalar},
+		packed_arithmetic::{UnderlierWithBitConstants, interleave_mask_even, interleave_mask_odd},
 	},
 	underlier::{
 		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,

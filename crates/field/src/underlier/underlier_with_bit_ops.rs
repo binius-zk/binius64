@@ -32,12 +32,12 @@ pub trait UnderlierWithBitOps:
 	fn fill_with_bit(val: u8) -> Self;
 
 	#[inline]
-	fn from_fn<T>(mut f: impl FnMut(usize) -> T) -> Self
+	fn from_fn<T>(f: impl FnMut(usize) -> T) -> Self
 	where
 		T: UnderlierType,
 		Self: Divisible<T>,
 	{
-		Self::from_iter((0..Self::N).map(|i| f(i)))
+		Self::from_iter((0..Self::N).map(f))
 	}
 
 	/// Broadcast subvalue to fill `Self`.
