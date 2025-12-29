@@ -21,10 +21,7 @@ use seq_macro::seq;
 use crate::{
 	BinaryField,
 	arch::{
-		portable::{
-			packed::{PackedPrimitiveType, impl_pack_scalar},
-			packed_arithmetic::UnderlierWithBitConstants,
-		},
+		portable::packed::{PackedPrimitiveType, impl_pack_scalar},
 		x86_64::{
 			m128::{M128, bitshift_128b},
 			m256::M256,
@@ -392,6 +389,18 @@ impl UnderlierWithBitOps for M512 {
 	}
 
 	#[inline(always)]
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		let (a, b) = unsafe { interleave_bits(self.0, other.0, log_block_len) };
+		(Self(a), Self(b))
+	}
+
+	#[inline(always)]
+	fn transpose(self, other: Self, log_bit_len: usize) -> (Self, Self) {
+		let (a, b) = unsafe { transpose_bits(self.0, other.0, log_bit_len) };
+		(Self(a), Self(b))
+	}
+
+	#[inline(always)]
 	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
 	where
 		T: UnderlierWithBitOps,
@@ -560,6 +569,18 @@ impl UnderlierWithBitOps for M512 {
 			_ => unsafe { spread_fallback(self, log_block_len, block_idx) },
 		}
 	}
+
+	#[inline(always)]
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		let (a, b) = unsafe { interleave_bits(self.0, other.0, log_block_len) };
+		(Self(a), Self(b))
+	}
+
+	#[inline(always)]
+	fn transpose(self, other: Self, log_bit_len: usize) -> (Self, Self) {
+		let (a, b) = unsafe { transpose_bits(self.0, other.0, log_bit_len) };
+		(Self(a), Self(b))
+	}
 }
 
 unsafe impl Zeroable for M512 {}
@@ -585,20 +606,6 @@ impl<Scalar: BinaryField> From<[u128; 4]> for PackedPrimitiveType<M512, Scalar> 
 impl<Scalar: BinaryField> From<PackedPrimitiveType<M512, Scalar>> for __m512i {
 	fn from(value: PackedPrimitiveType<M512, Scalar>) -> Self {
 		value.to_underlier().into()
-	}
-}
-
-impl UnderlierWithBitConstants for M512 {
-	#[inline(always)]
-	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
-		let (a, b) = unsafe { interleave_bits(self.0, other.0, log_block_len) };
-		(Self(a), Self(b))
-	}
-
-	#[inline(always)]
-	fn transpose(self, other: Self, log_bit_len: usize) -> (Self, Self) {
-		let (a, b) = unsafe { transpose_bits(self.0, other.0, log_bit_len) };
-		(Self(a), Self(b))
 	}
 }
 

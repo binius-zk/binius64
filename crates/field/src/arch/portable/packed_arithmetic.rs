@@ -8,24 +8,9 @@ use crate::{
 	underlier::{UnderlierWithBitOps, WithUnderlier},
 };
 
-pub trait UnderlierWithBitConstants: UnderlierWithBitOps {
-	/// Interleave with the given bit size
-	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self);
-
-	/// Transpose with the given bit size
-	fn transpose(mut self, mut other: Self, log_block_len: usize) -> (Self, Self) {
-		assert!(log_block_len < Self::LOG_BITS);
-
-		for log_block_len in (log_block_len..Self::LOG_BITS).rev() {
-			(self, other) = self.interleave(other, log_block_len);
-		}
-
-		(self, other)
-	}
-}
-
 /// Interleave using the provided even mask slice.
-/// See Hacker's Delight, Section 7-3: https://dl.acm.org/doi/10.5555/2462741
+///
+/// See [Hacker's Delight](https://dl.acm.org/doi/10.5555/2462741), Section 7-3.
 pub fn interleave_with_mask<U: UnderlierWithBitOps>(
 	a: U,
 	b: U,

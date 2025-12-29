@@ -19,7 +19,7 @@ use seq_macro::seq;
 
 use super::super::portable::{
 	packed::{PackedPrimitiveType, impl_pack_scalar},
-	packed_arithmetic::{UnderlierWithBitConstants, interleave_mask_even},
+	packed_arithmetic::interleave_mask_even,
 };
 use crate::{
 	BinaryField,
@@ -643,9 +643,7 @@ impl UnderlierWithBitOps for M128 {
 	fn fill_with_bit(val: u8) -> Self {
 		Self(unsafe { vdupq_n_u64(u64::fill_with_bit(val)) })
 	}
-}
 
-impl UnderlierWithBitConstants for M128 {
 	#[inline]
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		const MASKS: [M128; 3] = [

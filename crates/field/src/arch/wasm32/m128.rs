@@ -18,7 +18,7 @@ use crate::{
 	BinaryField, Random,
 	arch::portable::{
 		packed::{PackedPrimitiveType, impl_pack_scalar},
-		packed_arithmetic::{UnderlierWithBitConstants, interleave_mask_even},
+		packed_arithmetic::interleave_mask_even,
 	},
 	underlier::{
 		NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
@@ -296,18 +296,6 @@ impl UnderlierWithBitOps for M128 {
 		Self(u64x2_splat(u64::fill_with_bit(val)))
 	}
 
-	#[inline(always)]
-	fn shl_128b_lanes(self, shift: usize) -> Self {
-		self << shift
-	}
-
-	#[inline(always)]
-	fn shr_128b_lanes(self, shift: usize) -> Self {
-		self >> shift
-	}
-}
-
-impl UnderlierWithBitConstants for M128 {
 	#[inline(always)]
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		const MASKS: [M128; 3] = [

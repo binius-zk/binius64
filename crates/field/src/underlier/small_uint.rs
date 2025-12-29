@@ -20,6 +20,7 @@ use rand::{
 };
 
 use super::{UnderlierType, underlier_with_bit_ops::UnderlierWithBitOps};
+use crate::arch::{interleave_mask_even, interleave_with_mask};
 
 /// Unsigned type with a size strictly less than 8 bits.
 #[derive(
@@ -45,6 +46,9 @@ impl<const N: usize> SmallU<N> {
 	const _CHECK_SIZE: () = {
 		assert!(N < 8);
 	};
+
+	/// All bits set to one.
+	pub const ONES: Self = Self((1u8 << N) - 1);
 
 	#[inline(always)]
 	pub const fn new(val: u8) -> Self {
@@ -136,13 +140,50 @@ impl<const N: usize> UnderlierType for SmallU<N> {
 	const LOG_BITS: usize = checked_log_2(N);
 }
 
-impl<const N: usize> UnderlierWithBitOps for SmallU<N> {
+impl UnderlierWithBitOps for U1 {
 	const ZERO: Self = Self(0);
 	const ONE: Self = Self(1);
-	const ONES: Self = Self((1u8 << N) - 1);
+	const ONES: Self = Self(1);
 
 	fn fill_with_bit(val: u8) -> Self {
 		Self(u8::fill_with_bit(val)) & Self::ONES
+	}
+
+	fn interleave(self, _other: Self, _log_block_len: usize) -> (Self, Self) {
+		panic!("interleave not supported for U1")
+	}
+}
+
+impl UnderlierWithBitOps for U2 {
+	const ZERO: Self = Self(0);
+	const ONE: Self = Self(1);
+	const ONES: Self = Self(0b11);
+
+	fn fill_with_bit(val: u8) -> Self {
+		Self(u8::fill_with_bit(val)) & Self::ONES
+	}
+
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: &[U2] = &[U2::new(interleave_mask_even!(u8, 0))];
+		interleave_with_mask(self, other, log_block_len, MASKS)
+	}
+}
+
+impl UnderlierWithBitOps for U4 {
+	const ZERO: Self = Self(0);
+	const ONE: Self = Self(1);
+	const ONES: Self = Self(0b1111);
+
+	fn fill_with_bit(val: u8) -> Self {
+		Self(u8::fill_with_bit(val)) & Self::ONES
+	}
+
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: &[U4] = &[
+			U4::new(interleave_mask_even!(u8, 0)),
+			U4::new(interleave_mask_even!(u8, 1)),
+		];
+		interleave_with_mask(self, other, log_block_len, MASKS)
 	}
 }
 

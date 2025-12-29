@@ -31,6 +31,20 @@ pub trait UnderlierWithBitOps:
 	/// `val` must be 0 or 1.
 	fn fill_with_bit(val: u8) -> Self;
 
+	/// Interleave with the given bit size
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self);
+
+	/// Transpose with the given bit size
+	fn transpose(mut self, mut other: Self, log_block_len: usize) -> (Self, Self) {
+		assert!(log_block_len < Self::LOG_BITS);
+
+		for log_block_len in (log_block_len..Self::LOG_BITS).rev() {
+			(self, other) = self.interleave(other, log_block_len);
+		}
+
+		(self, other)
+	}
+
 	#[inline]
 	fn from_fn<T>(f: impl FnMut(usize) -> T) -> Self
 	where

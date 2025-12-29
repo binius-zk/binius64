@@ -20,7 +20,6 @@ use rand::{
 	distr::{Distribution, StandardUniform},
 };
 
-use super::packed_arithmetic::UnderlierWithBitConstants;
 use crate::{
 	BinaryField, Divisible, PackedField,
 	arithmetic_traits::{Broadcast, InvertOrZero, MulAlpha, Square},
@@ -275,12 +274,7 @@ unsafe impl<U: UnderlierType + Pod, Scalar: BinaryField> Pod for PackedPrimitive
 impl<U: UnderlierWithBitOps, Scalar> PackedField for PackedPrimitiveType<U, Scalar>
 where
 	Self: Broadcast<Scalar> + Square + InvertOrZero + Mul<Output = Self>,
-	U: UnderlierWithBitConstants
-		+ Divisible<Scalar::Underlier>
-		+ From<Scalar::Underlier>
-		+ Send
-		+ Sync
-		+ 'static,
+	U: Divisible<Scalar::Underlier> + From<Scalar::Underlier> + Send + Sync + 'static,
 	Scalar: BinaryField + WithUnderlier<Underlier: UnderlierWithBitOps>,
 	Scalar::Underlier: NumCast<U>,
 {

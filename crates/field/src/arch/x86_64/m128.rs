@@ -20,10 +20,7 @@ use seq_macro::seq;
 
 use crate::{
 	BinaryField,
-	arch::portable::{
-		packed::{PackedPrimitiveType, impl_pack_scalar},
-		packed_arithmetic::UnderlierWithBitConstants,
-	},
+	arch::portable::packed::{PackedPrimitiveType, impl_pack_scalar},
 	underlier::{
 		Divisible, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, UnderlierWithBitOps,
 		WithUnderlier, impl_divisible_bitmask, mapget, spread_fallback,
@@ -344,6 +341,18 @@ impl UnderlierWithBitOps for M128 {
 	}
 
 	#[inline(always)]
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		unsafe {
+			let (c, d) = interleave_bits(
+				Into::<Self>::into(self).into(),
+				Into::<Self>::into(other).into(),
+				log_block_len,
+			);
+			(Self::from(c), Self::from(d))
+		}
+	}
+
+	#[inline(always)]
 	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
 	where
 		T: UnderlierWithBitOps,
@@ -601,20 +610,6 @@ const fn precompute_spread_mask<const BLOCK_IDX_AMOUNT: usize>(
 	}
 
 	m128_masks
-}
-
-impl UnderlierWithBitConstants for M128 {
-	#[inline(always)]
-	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
-		unsafe {
-			let (c, d) = interleave_bits(
-				Into::<Self>::into(self).into(),
-				Into::<Self>::into(other).into(),
-				log_block_len,
-			);
-			(Self::from(c), Self::from(d))
-		}
-	}
 }
 
 impl<Scalar: BinaryField> From<__m128i> for PackedPrimitiveType<M128, Scalar> {

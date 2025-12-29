@@ -5,24 +5,13 @@ use super::{
 	underlier_type::{NumCast, UnderlierType},
 	underlier_with_bit_ops::UnderlierWithBitOps,
 };
+use crate::arch::{interleave_mask_even, interleave_with_mask};
 
 macro_rules! impl_underlier_type {
 	($name:ty) => {
 		impl UnderlierType for $name {
 			const LOG_BITS: usize =
 				binius_utils::checked_arithmetics::checked_log_2(Self::BITS as _);
-		}
-
-        impl UnderlierWithBitOps for $name {
-			const ZERO: Self = 0;
-			const ONE: Self = 1;
-			const ONES: Self = <$name>::MAX;
-
-			#[inline(always)]
-			fn fill_with_bit(val: u8) -> Self {
-				debug_assert!(val == 0 || val == 1);
-				(val as Self).wrapping_neg()
-			}
 		}
 	};
 	() => {};
@@ -33,6 +22,121 @@ macro_rules! impl_underlier_type {
 }
 
 impl_underlier_type!(u8, u16, u32, u64, u128);
+
+impl UnderlierWithBitOps for u8 {
+	const ZERO: Self = 0;
+	const ONE: Self = 1;
+	const ONES: Self = Self::MAX;
+
+	#[inline(always)]
+	fn fill_with_bit(val: u8) -> Self {
+		debug_assert!(val == 0 || val == 1);
+		(val as Self).wrapping_neg()
+	}
+
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: &[u8] = &[
+			interleave_mask_even!(u8, 0),
+			interleave_mask_even!(u8, 1),
+			interleave_mask_even!(u8, 2),
+		];
+		interleave_with_mask(self, other, log_block_len, MASKS)
+	}
+}
+
+impl UnderlierWithBitOps for u16 {
+	const ZERO: Self = 0;
+	const ONE: Self = 1;
+	const ONES: Self = Self::MAX;
+
+	#[inline(always)]
+	fn fill_with_bit(val: u8) -> Self {
+		debug_assert!(val == 0 || val == 1);
+		(val as Self).wrapping_neg()
+	}
+
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: &[u16] = &[
+			interleave_mask_even!(u16, 0),
+			interleave_mask_even!(u16, 1),
+			interleave_mask_even!(u16, 2),
+			interleave_mask_even!(u16, 3),
+		];
+		interleave_with_mask(self, other, log_block_len, MASKS)
+	}
+}
+
+impl UnderlierWithBitOps for u32 {
+	const ZERO: Self = 0;
+	const ONE: Self = 1;
+	const ONES: Self = Self::MAX;
+
+	#[inline(always)]
+	fn fill_with_bit(val: u8) -> Self {
+		debug_assert!(val == 0 || val == 1);
+		(val as Self).wrapping_neg()
+	}
+
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: &[u32] = &[
+			interleave_mask_even!(u32, 0),
+			interleave_mask_even!(u32, 1),
+			interleave_mask_even!(u32, 2),
+			interleave_mask_even!(u32, 3),
+			interleave_mask_even!(u32, 4),
+		];
+		interleave_with_mask(self, other, log_block_len, MASKS)
+	}
+}
+
+impl UnderlierWithBitOps for u64 {
+	const ZERO: Self = 0;
+	const ONE: Self = 1;
+	const ONES: Self = Self::MAX;
+
+	#[inline(always)]
+	fn fill_with_bit(val: u8) -> Self {
+		debug_assert!(val == 0 || val == 1);
+		(val as Self).wrapping_neg()
+	}
+
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: &[u64] = &[
+			interleave_mask_even!(u64, 0),
+			interleave_mask_even!(u64, 1),
+			interleave_mask_even!(u64, 2),
+			interleave_mask_even!(u64, 3),
+			interleave_mask_even!(u64, 4),
+			interleave_mask_even!(u64, 5),
+		];
+		interleave_with_mask(self, other, log_block_len, MASKS)
+	}
+}
+
+impl UnderlierWithBitOps for u128 {
+	const ZERO: Self = 0;
+	const ONE: Self = 1;
+	const ONES: Self = Self::MAX;
+
+	#[inline(always)]
+	fn fill_with_bit(val: u8) -> Self {
+		debug_assert!(val == 0 || val == 1);
+		(val as Self).wrapping_neg()
+	}
+
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: &[u128] = &[
+			interleave_mask_even!(u128, 0),
+			interleave_mask_even!(u128, 1),
+			interleave_mask_even!(u128, 2),
+			interleave_mask_even!(u128, 3),
+			interleave_mask_even!(u128, 4),
+			interleave_mask_even!(u128, 5),
+			interleave_mask_even!(u128, 6),
+		];
+		interleave_with_mask(self, other, log_block_len, MASKS)
+	}
+}
 
 macro_rules! impl_num_cast {
 	(@pair U1, U2) => {impl_num_cast!(@small_u_from_small_u U1, U2);};

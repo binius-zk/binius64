@@ -6,14 +6,14 @@ use std::{
 };
 
 use binius_utils::checked_arithmetics::checked_log_2;
-use bytemuck::{ Pod, Zeroable};
+use bytemuck::{Pod, Zeroable};
 use rand::{
 	Rng,
 	distr::{Distribution, StandardUniform},
 };
 
 use super::{Divisible, NumCast, UnderlierType, UnderlierWithBitOps, mapget};
-use crate::{Random, arch::UnderlierWithBitConstants};
+use crate::Random;
 
 /// A type that represents a pair of elements of the same underlier type.
 /// We use it as an underlier for the `ScaledPackedField` type.
@@ -170,6 +170,30 @@ where
 	fn fill_with_bit(val: u8) -> Self {
 		Self(array::from_fn(|_| U::fill_with_bit(val)))
 	}
+
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		if log_block_len < U::LOG_BITS {
+			// Case 1: Delegate to element-wise interleave
+			let pairs: [(U, U); N] =
+				array::from_fn(|i| self.0[i].interleave(other.0[i], log_block_len));
+			(Self(array::from_fn(|i| pairs[i].0)), Self(array::from_fn(|i| pairs[i].1)))
+		} else {
+			// Case 2: Interleave at element level by swapping array elements
+			// Each super-block of 2*block_len elements gets transposed as a 2x2 matrix of blocks
+			let block_len = 1 << (log_block_len - U::LOG_BITS);
+
+			let mut a = self.0;
+			let mut b = other.0;
+			for super_block in 0..(N / (2 * block_len)) {
+				let base = super_block * 2 * block_len;
+				for offset in 0..block_len {
+					mem::swap(&mut a[base + block_len + offset], &mut b[base + offset]);
+				}
+			}
+
+			(Self(a), Self(b))
+		}
+	}
 }
 
 impl<U: UnderlierType, const N: usize> NumCast<ScaledUnderlier<U, N>> for u8
@@ -236,35 +260,6 @@ where
 	#[inline]
 	fn from_iter(mut iter: impl Iterator<Item = T>) -> Self {
 		Self(array::from_fn(|_| Divisible::<T>::from_iter(&mut iter)))
-	}
-}
-
-impl<U, const N: usize> UnderlierWithBitConstants for ScaledUnderlier<U, N>
-where
-	U: UnderlierWithBitConstants + Pod,
-{
-	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
-		if log_block_len < U::LOG_BITS {
-			// Case 1: Delegate to element-wise interleave
-			let pairs: [(U, U); N] =
-				array::from_fn(|i| self.0[i].interleave(other.0[i], log_block_len));
-			(Self(array::from_fn(|i| pairs[i].0)), Self(array::from_fn(|i| pairs[i].1)))
-		} else {
-			// Case 2: Interleave at element level by swapping array elements
-			// Each super-block of 2*block_len elements gets transposed as a 2x2 matrix of blocks
-			let block_len = 1 << (log_block_len - U::LOG_BITS);
-
-			let mut a = self.0;
-			let mut b = other.0;
-			for super_block in 0..(N / (2 * block_len)) {
-				let base = super_block * 2 * block_len;
-				for offset in 0..block_len {
-					mem::swap(&mut a[base + block_len + offset], &mut b[base + offset]);
-				}
-			}
-
-			(Self(a), Self(b))
-		}
 	}
 }
 

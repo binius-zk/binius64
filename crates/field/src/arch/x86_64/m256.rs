@@ -20,12 +20,7 @@ use rand::{
 
 use crate::{
 	BinaryField,
-	arch::{
-		portable::{
-			packed::{PackedPrimitiveType, impl_pack_scalar},
-			packed_arithmetic::UnderlierWithBitConstants,
-		},
-	},
+	arch::portable::packed::{PackedPrimitiveType, impl_pack_scalar},
 	underlier::{
 		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
 		get_block_values, get_spread_bytes, impl_divisible_bitmask, mapget, spread_fallback,
@@ -630,6 +625,18 @@ impl UnderlierWithBitOps for M256 {
 			_ => unsafe { spread_fallback(self, log_block_len, block_idx) },
 		}
 	}
+
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		let (a, b) = unsafe { interleave_bits(self.0, other.0, log_block_len) };
+		(Self(a), Self(b))
+	}
+
+	fn transpose(mut self, mut other: Self, log_block_len: usize) -> (Self, Self) {
+		let (a, b) = unsafe { transpose_bits(self.0, other.0, log_block_len) };
+		self.0 = a;
+		other.0 = b;
+		(self, other)
+	}
 }
 
 unsafe impl Zeroable for M256 {}
@@ -655,20 +662,6 @@ impl<Scalar: BinaryField> From<[u128; 2]> for PackedPrimitiveType<M256, Scalar> 
 impl<Scalar: BinaryField> From<PackedPrimitiveType<M256, Scalar>> for __m256i {
 	fn from(value: PackedPrimitiveType<M256, Scalar>) -> Self {
 		value.to_underlier().into()
-	}
-}
-
-impl UnderlierWithBitConstants for M256 {
-	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
-		let (a, b) = unsafe { interleave_bits(self.0, other.0, log_block_len) };
-		(Self(a), Self(b))
-	}
-
-	fn transpose(mut self, mut other: Self, log_block_len: usize) -> (Self, Self) {
-		let (a, b) = unsafe { transpose_bits(self.0, other.0, log_block_len) };
-		self.0 = a;
-		other.0 = b;
-		(self, other)
 	}
 }
 
