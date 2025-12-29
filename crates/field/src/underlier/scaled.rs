@@ -1,19 +1,19 @@
 // Copyright 2024-2025 Irreducible Inc.
 
 use std::{
-	array,
+	array, mem,
 	ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr},
 };
 
 use binius_utils::checked_arithmetics::checked_log_2;
-use bytemuck::{Pod, Zeroable};
+use bytemuck::{ Pod, Zeroable};
 use rand::{
 	Rng,
 	distr::{Distribution, StandardUniform},
 };
 
 use super::{Divisible, NumCast, UnderlierType, UnderlierWithBitOps, mapget};
-use crate::Random;
+use crate::{Random, arch::UnderlierWithBitConstants};
 
 /// A type that represents a pair of elements of the same underlier type.
 /// We use it as an underlier for the `ScaledPackedField` type.
@@ -52,7 +52,6 @@ impl<T: Copy, U: From<[T; 2]>> From<[T; 4]> for ScaledUnderlier<U, 2> {
 }
 
 unsafe impl<U: Zeroable, const N: usize> Zeroable for ScaledUnderlier<U, N> {}
-
 unsafe impl<U: Pod, const N: usize> Pod for ScaledUnderlier<U, N> {}
 
 impl<U: UnderlierType + Pod, const N: usize> UnderlierType for ScaledUnderlier<U, N> {
@@ -155,10 +154,9 @@ impl<U: Not<Output = U>, const N: usize> Not for ScaledUnderlier<U, N> {
 	}
 }
 
-impl<U, const N: usize> UnderlierWithBitOps for ScaledUnderlier<U, N>
+impl<U: UnderlierWithBitOps, const N: usize> UnderlierWithBitOps for ScaledUnderlier<U, N>
 where
-	U: UnderlierWithBitOps + Pod + From<u8>,
-	u8: NumCast<U>,
+	Self: UnderlierType,
 {
 	const ZERO: Self = Self([U::ZERO; N]);
 	const ONE: Self = {
@@ -241,6 +239,35 @@ where
 	}
 }
 
+impl<U, const N: usize> UnderlierWithBitConstants for ScaledUnderlier<U, N>
+where
+	U: UnderlierWithBitConstants + Pod,
+{
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		if log_block_len < U::LOG_BITS {
+			// Case 1: Delegate to element-wise interleave
+			let pairs: [(U, U); N] =
+				array::from_fn(|i| self.0[i].interleave(other.0[i], log_block_len));
+			(Self(array::from_fn(|i| pairs[i].0)), Self(array::from_fn(|i| pairs[i].1)))
+		} else {
+			// Case 2: Interleave at element level by swapping array elements
+			// Each super-block of 2*block_len elements gets transposed as a 2x2 matrix of blocks
+			let block_len = 1 << (log_block_len - U::LOG_BITS);
+
+			let mut a = self.0;
+			let mut b = other.0;
+			for super_block in 0..(N / (2 * block_len)) {
+				let base = super_block * 2 * block_len;
+				for offset in 0..block_len {
+					mem::swap(&mut a[base + block_len + offset], &mut b[base + offset]);
+				}
+			}
+
+			(Self(a), Self(b))
+		}
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -273,5 +300,41 @@ mod tests {
 		assert_eq!(val << 2, ScaledUnderlier::<u8, 4>([0, 4, 8, 12]));
 		assert_eq!(val << 8, ScaledUnderlier::<u8, 4>([0, 0, 1, 2]));
 		assert_eq!(val << 9, ScaledUnderlier::<u8, 4>([0, 0, 2, 4]));
+	}
+
+	#[test]
+	fn test_interleave_within_element() {
+		// Test case 1: log_block_len < U::LOG_BITS
+		// ScaledUnderlier<u8, 4> has LOG_BITS = 5 (32 bits total)
+		// u8 has LOG_BITS = 3
+		let a = ScaledUnderlier::<u8, 4>([0b01010101, 0b11110000, 0b00001111, 0b10101010]);
+		let b = ScaledUnderlier::<u8, 4>([0b10101010, 0b00001111, 0b11110000, 0b01010101]);
+
+		// At log_block_len = 0 (1-bit blocks), should delegate to u8::interleave
+		let (c, d) = a.interleave(b, 0);
+
+		// Verify element-wise interleave occurred
+		for i in 0..4 {
+			let (expected_c, expected_d) = a.0[i].interleave(b.0[i], 0);
+			assert_eq!(c.0[i], expected_c);
+			assert_eq!(d.0[i], expected_d);
+		}
+	}
+
+	#[test]
+	fn test_interleave_across_elements() {
+		// Test case 2: log_block_len >= U::LOG_BITS
+		let a = ScaledUnderlier::<u8, 4>([0, 1, 2, 3]);
+		let b = ScaledUnderlier::<u8, 4>([4, 5, 6, 7]);
+
+		// At log_block_len = 3 (8-bit blocks = 1 element), swap individual elements
+		let (c, d) = a.interleave(b, 3);
+		assert_eq!(c.0, [0, 4, 2, 6]);
+		assert_eq!(d.0, [1, 5, 3, 7]);
+
+		// At log_block_len = 4 (16-bit blocks = 2 elements), swap pairs
+		let (c, d) = a.interleave(b, 4);
+		assert_eq!(c.0, [0, 1, 4, 5]);
+		assert_eq!(d.0, [2, 3, 6, 7]);
 	}
 }
