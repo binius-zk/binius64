@@ -21,7 +21,6 @@ use seq_macro::seq;
 use crate::{
 	BinaryField,
 	arch::{
-		binary_utils::make_func_to_i8,
 		portable::{
 			packed::{PackedPrimitiveType, impl_pack_scalar},
 			packed_arithmetic::{
@@ -346,79 +345,6 @@ impl UnderlierWithBitOps for M128 {
 	fn fill_with_bit(val: u8) -> Self {
 		assert!(val == 0 || val == 1);
 		Self(unsafe { _mm_set1_epi8(val.wrapping_neg() as i8) })
-	}
-
-	#[inline(always)]
-	fn from_fn<T>(mut f: impl FnMut(usize) -> T) -> Self
-	where
-		T: UnderlierType,
-		Self: From<T>,
-	{
-		match T::BITS {
-			1 | 2 | 4 => {
-				let mut f = make_func_to_i8::<T, Self>(f);
-
-				unsafe {
-					_mm_set_epi8(
-						f(15),
-						f(14),
-						f(13),
-						f(12),
-						f(11),
-						f(10),
-						f(9),
-						f(8),
-						f(7),
-						f(6),
-						f(5),
-						f(4),
-						f(3),
-						f(2),
-						f(1),
-						f(0),
-					)
-				}
-				.into()
-			}
-			8 => {
-				let mut f = |i| u8::num_cast_from(Self::from(f(i))) as i8;
-				unsafe {
-					_mm_set_epi8(
-						f(15),
-						f(14),
-						f(13),
-						f(12),
-						f(11),
-						f(10),
-						f(9),
-						f(8),
-						f(7),
-						f(6),
-						f(5),
-						f(4),
-						f(3),
-						f(2),
-						f(1),
-						f(0),
-					)
-				}
-				.into()
-			}
-			16 => {
-				let mut f = |i| u16::num_cast_from(Self::from(f(i))) as i16;
-				unsafe { _mm_set_epi16(f(7), f(6), f(5), f(4), f(3), f(2), f(1), f(0)) }.into()
-			}
-			32 => {
-				let mut f = |i| u32::num_cast_from(Self::from(f(i))) as i32;
-				unsafe { _mm_set_epi32(f(3), f(2), f(1), f(0)) }.into()
-			}
-			64 => {
-				let mut f = |i| u64::num_cast_from(Self::from(f(i))) as i64;
-				unsafe { _mm_set_epi64x(f(1), f(0)) }.into()
-			}
-			128 => Self::from(f(0)),
-			_ => panic!("unsupported bit count"),
-		}
 	}
 
 	#[inline(always)]

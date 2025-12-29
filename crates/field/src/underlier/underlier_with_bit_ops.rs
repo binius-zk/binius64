@@ -35,17 +35,9 @@ pub trait UnderlierWithBitOps:
 	fn from_fn<T>(mut f: impl FnMut(usize) -> T) -> Self
 	where
 		T: UnderlierType,
-		Self: From<T>,
+		Self: Divisible<T>,
 	{
-		// This implementation is optimal for the case when `Self` us u8..u128.
-		// For SIMD types/arrays specialization would be more performant.
-		let mut result = Self::default();
-		let width = checked_int_div(Self::BITS, T::BITS);
-		for i in 0..width {
-			result |= Self::from(f(i)) << (i * T::BITS);
-		}
-
-		result
+		Self::from_iter((0..Self::N).map(|i| f(i)))
 	}
 
 	/// Broadcast subvalue to fill `Self`.
