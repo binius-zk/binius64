@@ -339,8 +339,8 @@ impl UnderlierWithBitOps for M256 {
 	#[inline(always)]
 	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
 	where
-		T: UnderlierWithBitOps + NumCast<Self>,
-		Self: Divisible<T> + From<T>,
+		T: UnderlierWithBitOps,
+		Self: Divisible<T>,
 	{
 		match T::LOG_BITS {
 			0 => match log_block_len {
