@@ -18,7 +18,7 @@ use crate::{
 	BinaryField, Random,
 	arch::portable::{
 		packed::{PackedPrimitiveType, impl_pack_scalar},
-		packed_arithmetic::{UnderlierWithBitConstants, interleave_mask_even, interleave_mask_odd},
+		packed_arithmetic::{UnderlierWithBitConstants, interleave_mask_even},
 	},
 	underlier::{
 		NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
@@ -308,33 +308,20 @@ impl UnderlierWithBitOps for M128 {
 }
 
 impl UnderlierWithBitConstants for M128 {
-	const INTERLEAVE_EVEN_MASK: &'static [Self] = &[
-		Self::from_u128(interleave_mask_even!(u128, 0)),
-		Self::from_u128(interleave_mask_even!(u128, 1)),
-		Self::from_u128(interleave_mask_even!(u128, 2)),
-		Self::from_u128(interleave_mask_even!(u128, 3)),
-		Self::from_u128(interleave_mask_even!(u128, 4)),
-		Self::from_u128(interleave_mask_even!(u128, 5)),
-		Self::from_u128(interleave_mask_even!(u128, 6)),
-	];
-	const INTERLEAVE_ODD_MASK: &'static [Self] = &[
-		Self::from_u128(interleave_mask_odd!(u128, 0)),
-		Self::from_u128(interleave_mask_odd!(u128, 1)),
-		Self::from_u128(interleave_mask_odd!(u128, 2)),
-		Self::from_u128(interleave_mask_odd!(u128, 3)),
-		Self::from_u128(interleave_mask_odd!(u128, 4)),
-		Self::from_u128(interleave_mask_odd!(u128, 5)),
-		Self::from_u128(interleave_mask_odd!(u128, 6)),
-	];
-
 	#[inline(always)]
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: [M128; 3] = [
+			M128::from_u128(interleave_mask_even!(u128, 0)),
+			M128::from_u128(interleave_mask_even!(u128, 1)),
+			M128::from_u128(interleave_mask_even!(u128, 2)),
+		];
+
 		match log_block_len {
 			// Bitwise/masked interleave
 			0..=2 => {
 				let a: v128 = self.into();
 				let b: v128 = other.into();
-				let mask: v128 = Self::INTERLEAVE_EVEN_MASK[log_block_len].into();
+				let mask: v128 = MASKS[log_block_len].into();
 				let shift_amt = 1 << log_block_len;
 				let t = v128_and(v128_xor(i64x2_shr(a, shift_amt as u32), b), mask);
 				let c = v128_xor(a, i64x2_shl(t, shift_amt as u32));

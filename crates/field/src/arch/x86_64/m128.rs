@@ -22,7 +22,7 @@ use crate::{
 	BinaryField,
 	arch::portable::{
 		packed::{PackedPrimitiveType, impl_pack_scalar},
-		packed_arithmetic::{UnderlierWithBitConstants, interleave_mask_even, interleave_mask_odd},
+		packed_arithmetic::UnderlierWithBitConstants,
 	},
 	underlier::{
 		Divisible, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, UnderlierWithBitOps,
@@ -604,26 +604,6 @@ const fn precompute_spread_mask<const BLOCK_IDX_AMOUNT: usize>(
 }
 
 impl UnderlierWithBitConstants for M128 {
-	const INTERLEAVE_EVEN_MASK: &'static [Self] = &[
-		Self::from_u128(interleave_mask_even!(u128, 0)),
-		Self::from_u128(interleave_mask_even!(u128, 1)),
-		Self::from_u128(interleave_mask_even!(u128, 2)),
-		Self::from_u128(interleave_mask_even!(u128, 3)),
-		Self::from_u128(interleave_mask_even!(u128, 4)),
-		Self::from_u128(interleave_mask_even!(u128, 5)),
-		Self::from_u128(interleave_mask_even!(u128, 6)),
-	];
-
-	const INTERLEAVE_ODD_MASK: &'static [Self] = &[
-		Self::from_u128(interleave_mask_odd!(u128, 0)),
-		Self::from_u128(interleave_mask_odd!(u128, 1)),
-		Self::from_u128(interleave_mask_odd!(u128, 2)),
-		Self::from_u128(interleave_mask_odd!(u128, 3)),
-		Self::from_u128(interleave_mask_odd!(u128, 4)),
-		Self::from_u128(interleave_mask_odd!(u128, 5)),
-		Self::from_u128(interleave_mask_odd!(u128, 6)),
-	];
-
 	#[inline(always)]
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		unsafe {

@@ -20,9 +20,11 @@ use rand::{
 
 use crate::{
 	BinaryField,
-	arch::portable::{
-		packed::{PackedPrimitiveType, impl_pack_scalar},
-		packed_arithmetic::{UnderlierWithBitConstants, interleave_mask_even, interleave_mask_odd},
+	arch::{
+		portable::{
+			packed::{PackedPrimitiveType, impl_pack_scalar},
+			packed_arithmetic::UnderlierWithBitConstants,
+		},
 	},
 	underlier::{
 		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
@@ -657,26 +659,6 @@ impl<Scalar: BinaryField> From<PackedPrimitiveType<M256, Scalar>> for __m256i {
 }
 
 impl UnderlierWithBitConstants for M256 {
-	const INTERLEAVE_EVEN_MASK: &'static [Self] = &[
-		Self::from_equal_u128s(interleave_mask_even!(u128, 0)),
-		Self::from_equal_u128s(interleave_mask_even!(u128, 1)),
-		Self::from_equal_u128s(interleave_mask_even!(u128, 2)),
-		Self::from_equal_u128s(interleave_mask_even!(u128, 3)),
-		Self::from_equal_u128s(interleave_mask_even!(u128, 4)),
-		Self::from_equal_u128s(interleave_mask_even!(u128, 5)),
-		Self::from_equal_u128s(interleave_mask_even!(u128, 6)),
-	];
-
-	const INTERLEAVE_ODD_MASK: &'static [Self] = &[
-		Self::from_equal_u128s(interleave_mask_odd!(u128, 0)),
-		Self::from_equal_u128s(interleave_mask_odd!(u128, 1)),
-		Self::from_equal_u128s(interleave_mask_odd!(u128, 2)),
-		Self::from_equal_u128s(interleave_mask_odd!(u128, 3)),
-		Self::from_equal_u128s(interleave_mask_odd!(u128, 4)),
-		Self::from_equal_u128s(interleave_mask_odd!(u128, 5)),
-		Self::from_equal_u128s(interleave_mask_odd!(u128, 6)),
-	];
-
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		let (a, b) = unsafe { interleave_bits(self.0, other.0, log_block_len) };
 		(Self(a), Self(b))

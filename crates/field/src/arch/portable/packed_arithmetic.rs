@@ -1,40 +1,20 @@
 // Copyright 2024-2025 Irreducible Inc.
 
 use crate::{
-	PackedField, TowerField,
+	PackedField,
 	binary_field::BinaryField,
 	linear_transformation::{FieldLinearTransformation, Transformation},
 	packed::PackedBinaryField,
 	underlier::{UnderlierWithBitOps, WithUnderlier},
 };
 
-pub trait UnderlierWithBitConstants: UnderlierWithBitOps
-where
-	Self: 'static,
-{
-	const INTERLEAVE_EVEN_MASK: &'static [Self];
-	const INTERLEAVE_ODD_MASK: &'static [Self];
-
+pub trait UnderlierWithBitConstants: UnderlierWithBitOps {
 	/// Interleave with the given bit size
-	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
-		// There are 2^7 = 128 bits in a u128
-		assert!(log_block_len < Self::INTERLEAVE_EVEN_MASK.len());
-
-		let block_len = 1 << log_block_len;
-
-		// See Hacker's Delight, Section 7-3.
-		// https://dl.acm.org/doi/10.5555/2462741
-		let t = ((self >> block_len) ^ other) & Self::INTERLEAVE_EVEN_MASK[log_block_len];
-		let c = self ^ t << block_len;
-		let d = other ^ t;
-
-		(c, d)
-	}
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self);
 
 	/// Transpose with the given bit size
 	fn transpose(mut self, mut other: Self, log_block_len: usize) -> (Self, Self) {
-		// There are 2^7 = 128 bits in a u128
-		assert!(log_block_len < Self::INTERLEAVE_EVEN_MASK.len());
+		assert!(log_block_len < Self::LOG_BITS);
 
 		for log_block_len in (log_block_len..Self::LOG_BITS).rev() {
 			(self, other) = self.interleave(other, log_block_len);
@@ -42,6 +22,24 @@ where
 
 		(self, other)
 	}
+}
+
+/// Interleave using the provided even mask slice.
+/// See Hacker's Delight, Section 7-3: https://dl.acm.org/doi/10.5555/2462741
+pub fn interleave_with_mask<U: UnderlierWithBitOps>(
+	a: U,
+	b: U,
+	log_block_len: usize,
+	even_mask: &[U],
+) -> (U, U) {
+	assert!(log_block_len < even_mask.len());
+
+	let block_len = 1 << log_block_len;
+	let t = ((a >> block_len) ^ b) & even_mask[log_block_len];
+	let c = a ^ t << block_len;
+	let d = b ^ t;
+
+	(c, d)
 }
 
 /// Generate the mask with ones in the odd packed element positions and zeros in even
@@ -62,40 +60,6 @@ macro_rules! interleave_mask_even {
 }
 
 pub(crate) use interleave_mask_even;
-
-/// Generate the mask with ones in the even packed element positions and zeros in odd
-macro_rules! interleave_mask_odd {
-	($underlier:ty, $tower_level:literal) => {
-		interleave_mask_even!($underlier, $tower_level) << (1 << $tower_level)
-	};
-}
-
-pub(crate) use interleave_mask_odd;
-
-/// View the inputs as vectors of packed binary tower elements and transpose as 2x2 square matrices.
-/// Given vectors <a_0, a_1, a_2, a_3, ...> and <b_0, b_1, b_2, b_3, ...>, returns a tuple with
-/// <a0, b0, a2, b2, ...> and <a1, b1, a3, b3>.
-fn interleave<U: UnderlierWithBitConstants, F: TowerField>(a: U, b: U) -> (U, U) {
-	let mask = U::INTERLEAVE_EVEN_MASK[F::TOWER_LEVEL];
-
-	let block_len = F::N_BITS;
-	let t = ((a >> block_len) ^ b) & mask;
-	let c = a ^ (t << block_len);
-	let d = b ^ t;
-
-	(c, d)
-}
-
-/// View the input as a vector of packed binary tower elements and add the adjacent ones.
-/// Given a vector <a_0, a_1, a_2, a_3, ...>, returns <a0 + a1, a0 + a1, a2 + a3, a2 + a3, ...>.
-fn xor_adjacent<U: UnderlierWithBitConstants, F: TowerField>(a: U) -> U {
-	let mask = U::INTERLEAVE_EVEN_MASK[F::TOWER_LEVEL];
-
-	let block_len = F::N_BITS;
-	let t = ((a >> block_len) ^ a) & mask;
-
-	t ^ (t << block_len)
-}
 
 /// Packed transformation implementation.
 /// Stores bases in a form of:
@@ -157,29 +121,5 @@ where
 		}
 
 		result
-	}
-}
-
-#[cfg(test)]
-mod tests {
-
-	use super::*;
-	use crate::BinaryField1b;
-
-	const NUM_TESTS: u64 = 100;
-
-	fn check_interleave<F: TowerField>(a: u128, b: u128, c: u128, d: u128) {
-		assert_eq!(interleave::<u128, F>(a, b), (c, d));
-		assert_eq!(interleave::<u128, F>(c, d), (a, b));
-	}
-
-	#[test]
-	fn test_interleave() {
-		check_interleave::<BinaryField1b>(
-			0x0000000000000000FFFFFFFFFFFFFFFF,
-			0xFFFFFFFFFFFFFFFF0000000000000000,
-			0xAAAAAAAAAAAAAAAA5555555555555555,
-			0xAAAAAAAAAAAAAAAA5555555555555555,
-		);
 	}
 }

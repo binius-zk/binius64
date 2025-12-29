@@ -23,9 +23,7 @@ use crate::{
 	arch::{
 		portable::{
 			packed::{PackedPrimitiveType, impl_pack_scalar},
-			packed_arithmetic::{
-				UnderlierWithBitConstants, interleave_mask_even, interleave_mask_odd,
-			},
+			packed_arithmetic::UnderlierWithBitConstants,
 		},
 		x86_64::{
 			m128::{M128, bitshift_128b},
@@ -590,28 +588,7 @@ impl<Scalar: BinaryField> From<PackedPrimitiveType<M512, Scalar>> for __m512i {
 	}
 }
 
-// TODO: Add efficient interleave specialization for 512-bit values
 impl UnderlierWithBitConstants for M512 {
-	const INTERLEAVE_EVEN_MASK: &'static [Self] = &[
-		Self::from_equal_u128s(interleave_mask_even!(u128, 0)),
-		Self::from_equal_u128s(interleave_mask_even!(u128, 1)),
-		Self::from_equal_u128s(interleave_mask_even!(u128, 2)),
-		Self::from_equal_u128s(interleave_mask_even!(u128, 3)),
-		Self::from_equal_u128s(interleave_mask_even!(u128, 4)),
-		Self::from_equal_u128s(interleave_mask_even!(u128, 5)),
-		Self::from_equal_u128s(interleave_mask_even!(u128, 6)),
-	];
-
-	const INTERLEAVE_ODD_MASK: &'static [Self] = &[
-		Self::from_equal_u128s(interleave_mask_odd!(u128, 0)),
-		Self::from_equal_u128s(interleave_mask_odd!(u128, 1)),
-		Self::from_equal_u128s(interleave_mask_odd!(u128, 2)),
-		Self::from_equal_u128s(interleave_mask_odd!(u128, 3)),
-		Self::from_equal_u128s(interleave_mask_odd!(u128, 4)),
-		Self::from_equal_u128s(interleave_mask_odd!(u128, 5)),
-		Self::from_equal_u128s(interleave_mask_odd!(u128, 6)),
-	];
-
 	#[inline(always)]
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		let (a, b) = unsafe { interleave_bits(self.0, other.0, log_block_len) };

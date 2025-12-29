@@ -1,120 +1,94 @@
 // Copyright 2024-2025 Irreducible Inc.
 
 use super::packed_arithmetic::{
-	UnderlierWithBitConstants, interleave_mask_even, interleave_mask_odd,
+	UnderlierWithBitConstants, interleave_mask_even, interleave_with_mask,
 };
 use crate::underlier::{U1, U2, U4, UnderlierType};
 
 impl UnderlierWithBitConstants for U1 {
-	const INTERLEAVE_EVEN_MASK: &'static [Self] = &[];
-
-	const INTERLEAVE_ODD_MASK: &'static [Self] = &[];
+	fn interleave(self, _other: Self, _log_block_len: usize) -> (Self, Self) {
+		panic!("interleave not supported for U1");
+	}
 }
 
 impl UnderlierWithBitConstants for U2 {
-	const INTERLEAVE_EVEN_MASK: &'static [Self] = &[Self::new(interleave_mask_even!(u8, 0))];
-
-	const INTERLEAVE_ODD_MASK: &'static [Self] = &[Self::new(interleave_mask_odd!(u8, 0))];
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: &[U2] = &[U2::new(interleave_mask_even!(u8, 0))];
+		interleave_with_mask(self, other, log_block_len, MASKS)
+	}
 }
 
 impl UnderlierWithBitConstants for U4 {
-	const INTERLEAVE_EVEN_MASK: &'static [Self] = &[
-		Self::new(interleave_mask_even!(u8, 0)),
-		Self::new(interleave_mask_even!(u8, 1)),
-	];
-
-	const INTERLEAVE_ODD_MASK: &'static [Self] = &[
-		Self::new(interleave_mask_odd!(u8, 0)),
-		Self::new(interleave_mask_odd!(u8, 1)),
-	];
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: &[U4] = &[
+			U4::new(interleave_mask_even!(u8, 0)),
+			U4::new(interleave_mask_even!(u8, 1)),
+		];
+		interleave_with_mask(self, other, log_block_len, MASKS)
+	}
 }
 
 impl UnderlierWithBitConstants for u8 {
-	const INTERLEAVE_EVEN_MASK: &'static [Self] = &[
-		interleave_mask_even!(Self, 0),
-		interleave_mask_even!(Self, 1),
-		interleave_mask_even!(Self, 2),
-	];
-
-	const INTERLEAVE_ODD_MASK: &'static [Self] = &[
-		interleave_mask_odd!(Self, 0),
-		interleave_mask_odd!(Self, 1),
-		interleave_mask_odd!(Self, 2),
-	];
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: &[u8] = &[
+			interleave_mask_even!(u8, 0),
+			interleave_mask_even!(u8, 1),
+			interleave_mask_even!(u8, 2),
+		];
+		interleave_with_mask(self, other, log_block_len, MASKS)
+	}
 }
 
 impl UnderlierWithBitConstants for u16 {
-	const INTERLEAVE_EVEN_MASK: &'static [Self] = &[
-		interleave_mask_even!(Self, 0),
-		interleave_mask_even!(Self, 1),
-		interleave_mask_even!(Self, 2),
-		interleave_mask_even!(Self, 3),
-	];
-
-	const INTERLEAVE_ODD_MASK: &'static [Self] = &[
-		interleave_mask_odd!(Self, 0),
-		interleave_mask_odd!(Self, 1),
-		interleave_mask_odd!(Self, 2),
-		interleave_mask_odd!(Self, 3),
-	];
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: &[u16] = &[
+			interleave_mask_even!(u16, 0),
+			interleave_mask_even!(u16, 1),
+			interleave_mask_even!(u16, 2),
+			interleave_mask_even!(u16, 3),
+		];
+		interleave_with_mask(self, other, log_block_len, MASKS)
+	}
 }
 
 impl UnderlierWithBitConstants for u32 {
-	const INTERLEAVE_EVEN_MASK: &'static [Self] = &[
-		interleave_mask_even!(Self, 0),
-		interleave_mask_even!(Self, 1),
-		interleave_mask_even!(Self, 2),
-		interleave_mask_even!(Self, 3),
-		interleave_mask_even!(Self, 4),
-	];
-
-	const INTERLEAVE_ODD_MASK: &'static [Self] = &[
-		interleave_mask_odd!(Self, 0),
-		interleave_mask_odd!(Self, 1),
-		interleave_mask_odd!(Self, 2),
-		interleave_mask_odd!(Self, 3),
-		interleave_mask_odd!(Self, 4),
-	];
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: &[u32] = &[
+			interleave_mask_even!(u32, 0),
+			interleave_mask_even!(u32, 1),
+			interleave_mask_even!(u32, 2),
+			interleave_mask_even!(u32, 3),
+			interleave_mask_even!(u32, 4),
+		];
+		interleave_with_mask(self, other, log_block_len, MASKS)
+	}
 }
 
 impl UnderlierWithBitConstants for u64 {
-	const INTERLEAVE_EVEN_MASK: &'static [Self] = &[
-		interleave_mask_even!(Self, 0),
-		interleave_mask_even!(Self, 1),
-		interleave_mask_even!(Self, 2),
-		interleave_mask_even!(Self, 3),
-		interleave_mask_even!(Self, 4),
-		interleave_mask_even!(Self, 5),
-	];
-
-	const INTERLEAVE_ODD_MASK: &'static [Self] = &[
-		interleave_mask_odd!(Self, 0),
-		interleave_mask_odd!(Self, 1),
-		interleave_mask_odd!(Self, 2),
-		interleave_mask_odd!(Self, 3),
-		interleave_mask_odd!(Self, 4),
-		interleave_mask_odd!(Self, 5),
-	];
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: &[u64] = &[
+			interleave_mask_even!(u64, 0),
+			interleave_mask_even!(u64, 1),
+			interleave_mask_even!(u64, 2),
+			interleave_mask_even!(u64, 3),
+			interleave_mask_even!(u64, 4),
+			interleave_mask_even!(u64, 5),
+		];
+		interleave_with_mask(self, other, log_block_len, MASKS)
+	}
 }
 
 impl UnderlierWithBitConstants for u128 {
-	const INTERLEAVE_EVEN_MASK: &'static [Self] = &[
-		interleave_mask_even!(Self, 0),
-		interleave_mask_even!(Self, 1),
-		interleave_mask_even!(Self, 2),
-		interleave_mask_even!(Self, 3),
-		interleave_mask_even!(Self, 4),
-		interleave_mask_even!(Self, 5),
-		interleave_mask_even!(Self, 6),
-	];
-
-	const INTERLEAVE_ODD_MASK: &'static [Self] = &[
-		interleave_mask_odd!(Self, 0),
-		interleave_mask_odd!(Self, 1),
-		interleave_mask_odd!(Self, 2),
-		interleave_mask_odd!(Self, 3),
-		interleave_mask_odd!(Self, 4),
-		interleave_mask_odd!(Self, 5),
-		interleave_mask_odd!(Self, 6),
-	];
+	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
+		const MASKS: &[u128] = &[
+			interleave_mask_even!(u128, 0),
+			interleave_mask_even!(u128, 1),
+			interleave_mask_even!(u128, 2),
+			interleave_mask_even!(u128, 3),
+			interleave_mask_even!(u128, 4),
+			interleave_mask_even!(u128, 5),
+			interleave_mask_even!(u128, 6),
+		];
+		interleave_with_mask(self, other, log_block_len, MASKS)
+	}
 }
