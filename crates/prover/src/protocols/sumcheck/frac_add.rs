@@ -2,7 +2,9 @@ use std::array;
 
 use super::error::Error;
 use crate::protocols::sumcheck::{
-	common::SumcheckProver, gruen32::Gruen32, round_evals::RoundEvals2,
+	common::{MleCheckProver, SumcheckProver},
+	gruen32::Gruen32,
+	round_evals::RoundEvals2,
 };
 use binius_field::{Field, PackedField};
 use binius_math::{
@@ -52,6 +54,16 @@ impl<F: Field, P: PackedField<Scalar = F>> FracAddProver<P> {
 			last_coeffs_or_evals,
 			gruen32,
 		})
+	}
+}
+
+impl<F, P> MleCheckProver<F> for FracAddProver<P>
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	fn eval_point(&self) -> &[F] {
+		self.gruen32.eval_point()
 	}
 }
 
@@ -252,18 +264,15 @@ mod tests {
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::ProverTranscript;
-	use binius_verifier::{
-		config::StdChallenger,
-		protocols::sumcheck::batch_verify,
-	};
+	use binius_verifier::{config::StdChallenger, protocols::sumcheck::batch_verify};
 	use itertools::{Itertools, izip};
 	use rand::{SeedableRng, prelude::StdRng};
 
 	use super::*;
-	use crate::protocols::sumcheck::batch::batch_prove;
+	use crate::protocols::sumcheck::{MleToSumCheckDecorator, batch::batch_prove};
 
 	fn test_frac_add_sumcheck_prove_verify<F, P>(
-		prover: FracAddProver<P>,
+		prover: MleToSumCheckDecorator<F, FracAddProver<P>>,
 		eval_claims: [F; 2],
 		eval_point: &[F],
 		num_a: FieldBuffer<P>,
@@ -291,7 +300,7 @@ mod tests {
 		// Convert to verifier transcript and run verification
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let sumcheck_output =
-			batch_verify(n_vars, 2, &eval_claims, &mut verifier_transcript).unwrap();
+			batch_verify(n_vars, 3, &eval_claims, &mut verifier_transcript).unwrap();
 
 		// The prover binds variables from high to low, but evaluate expects them from low to high
 		let mut reduced_eval_point = sumcheck_output.challenges.clone();
@@ -359,14 +368,10 @@ mod tests {
 		let num_b = random_field_buffer::<P>(&mut rng, n_vars);
 		let den_b = random_field_buffer::<P>(&mut rng, n_vars);
 
-		let numerator_values = izip!(
-			num_a.as_ref(),
-			den_a.as_ref(),
-			num_b.as_ref(),
-			den_b.as_ref()
-		)
-		.map(|(&num_a, &den_a, &num_b, &den_b)| num_a * den_b + num_b * den_a)
-		.collect_vec();
+		let numerator_values =
+			izip!(num_a.as_ref(), den_a.as_ref(), num_b.as_ref(), den_b.as_ref())
+				.map(|(&num_a, &den_a, &num_b, &den_b)| num_a * den_b + num_b * den_a)
+				.collect_vec();
 
 		let denominator_values = izip!(den_a.as_ref(), den_b.as_ref())
 			.map(|(&den_a, &den_b)| den_a * den_b)
@@ -376,22 +381,20 @@ mod tests {
 		let denominator_buffer = FieldBuffer::new(n_vars, denominator_values).unwrap();
 
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
+		let rev_eval_point = eval_point.iter().rev().copied().collect_vec();
 		let eval_claims = [
 			evaluate(&numerator_buffer, &eval_point).unwrap(),
 			evaluate(&denominator_buffer, &eval_point).unwrap(),
 		];
 
-		let prover = FracAddProver::new(
-			[
-				num_a.clone(),
-				den_a.clone(),
-				num_b.clone(),
-				den_b.clone(),
-			],
+		let frac_prover = FracAddProver::new(
+			[num_a.clone(), den_a.clone(), num_b.clone(), den_b.clone()],
 			&eval_point,
 			eval_claims,
 		)
 		.unwrap();
+
+		let prover = MleToSumCheckDecorator::new(frac_prover);
 
 		test_frac_add_sumcheck_prove_verify(
 			prover,
