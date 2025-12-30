@@ -30,7 +30,6 @@ use crate::{
 	underlier::{
 		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
 		get_block_values, get_spread_bytes, impl_divisible_bitmask, mapget, spread_fallback,
-		unpack_hi_128b_fallback, unpack_lo_128b_fallback,
 	},
 };
 

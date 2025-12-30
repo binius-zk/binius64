@@ -2,9 +2,12 @@
 
 use cfg_if::cfg_if;
 
-use super::{m128::M128, packed_macros::*};
+use super::m128::M128;
 use crate::{
-	arch::portable::{packed::PackedPrimitiveType, packed_macros::*},
+	arch::portable::{
+		packed::PackedPrimitiveType,
+		packed_macros::{portable_macros::*, *},
+	},
 	arithmetic_traits::{impl_invert_with, impl_mul_alpha_with, impl_mul_with, impl_square_with},
 };
 

@@ -17,6 +17,8 @@ pub struct ReuseMultiplyStrategy;
 
 /// Use operations with GFNI instructions
 pub struct GfniStrategy;
+/// Use SIMD operations for packed arithmetic
+pub struct SimdStrategy;
 /// Specialized versions of the above to resolve conflicting implementations
 pub struct GfniSpecializedStrategy256b;
 pub struct GfniSpecializedStrategy512b;

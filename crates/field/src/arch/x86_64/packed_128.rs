@@ -1,7 +1,13 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use super::{m128::M128, packed_macros::*};
-use crate::arch::portable::{packed::PackedPrimitiveType, packed_macros::*};
+use super::m128::M128;
+use crate::arch::{
+	BitwiseAndStrategy,
+	portable::{
+		packed::PackedPrimitiveType,
+		packed_macros::{portable_macros::*, *},
+	},
+};
 
 define_packed_binary_fields!(
 	underlier: M128,

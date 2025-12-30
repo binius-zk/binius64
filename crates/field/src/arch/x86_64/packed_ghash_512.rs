@@ -6,17 +6,16 @@
 //! available on modern x86_64 processors with AVX-512 support. The implementation follows
 //! the algorithm described in the GHASH specification with polynomial x^128 + x^7 + x^2 + x + 1.
 
-use std::ops::Mul;
-
 use cfg_if::cfg_if;
 
 use super::{super::portable::packed::PackedPrimitiveType, m512::M512};
 use crate::{
 	BinaryField128bGhash,
-	arch::portable::packed_macros::{
-		impl_broadcast, impl_serialize_deserialize_for_packed_binary_field,
+	arch::portable::packed_macros::{portable_macros::*, *},
+	arithmetic_traits::{
+		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
+		impl_square_with,
 	},
-	arithmetic_traits::InvertOrZero,
 	packed::PackedField,
 	underlier::UnderlierWithBitOps,
 };
@@ -40,21 +39,44 @@ impl crate::arch::shared::ghash::ClMulUnderlier for M512 {
 	}
 }
 
-pub type PackedBinaryGhash4x128b = PackedPrimitiveType<M512, BinaryField128bGhash>;
+/// Strategy for x86_64 AVX-512 GHASH field arithmetic operations.
+pub struct Ghash512Strategy;
 
-// Define broadcast
-impl_broadcast!(M512, BinaryField128bGhash);
+// Define PackedBinaryGhash4x128b using the macro
+cfg_if! {
+	if #[cfg(target_feature = "gfni")] {
+		define_packed_binary_field!(
+			PackedBinaryGhash4x128b,
+			BinaryField128bGhash,
+			M512,
+			(Ghash512Strategy),
+			(Ghash512Strategy),
+			(Ghash512Strategy),
+			(None),
+			(None)
+		);
+		use crate::arch::x86_64::gfni::gfni_arithmetics::impl_transformation_with_gfni_nxn;
+		impl_transformation_with_gfni_nxn!(PackedBinaryGhash4x128b, 16);
+	} else {
+		define_packed_binary_field!(
+			PackedBinaryGhash4x128b,
+			BinaryField128bGhash,
+			M512,
+			(Ghash512Strategy),
+			(Ghash512Strategy),
+			(Ghash512Strategy),
+			(None),
+			(crate::arch::SimdStrategy)
+		);
+	}
+}
 
-// Define multiply
+// Implement TaggedMul for Ghash512Strategy
 cfg_if! {
 	if #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))] {
-		impl Mul for PackedBinaryGhash4x128b {
-			type Output = Self;
-
+		impl TaggedMul<Ghash512Strategy> for PackedBinaryGhash4x128b {
 			#[inline]
-			fn mul(self, rhs: Self) -> Self::Output {
-				crate::tracing::trace_multiplication!(PackedBinaryGhash4x128b);
-
+			fn mul(self, rhs: Self) -> Self {
 				Self::from_underlier(crate::arch::shared::ghash::mul_clmul(
 					self.to_underlier(),
 					rhs.to_underlier(),
@@ -62,13 +84,9 @@ cfg_if! {
 			}
 		}
 	} else {
-		impl Mul for PackedBinaryGhash4x128b {
-			type Output = Self;
-
+		impl TaggedMul<Ghash512Strategy> for PackedBinaryGhash4x128b {
 			#[inline]
-			fn mul(self, rhs: Self) -> Self::Output {
-				crate::tracing::trace_multiplication!(PackedBinaryGhash4x128b);
-
+			fn mul(self, rhs: Self) -> Self {
 				// Fallback: perform scalar multiplication on each 128-bit element
 				let mut result_underlier = self.to_underlier();
 				unsafe {
@@ -83,19 +101,19 @@ cfg_if! {
 
 					// Use the portable scalar multiplication for each element
 					use super::super::portable::packed_ghash_128::PackedBinaryGhash1x128b as PortablePackedBinaryGhash1x128b;
-					let result_0 = Mul::mul(
+					let result_0 = std::ops::Mul::mul(
 						PortablePackedBinaryGhash1x128b::from(self_0),
 						PortablePackedBinaryGhash1x128b::from(rhs_0),
 					);
-					let result_1 = Mul::mul(
+					let result_1 = std::ops::Mul::mul(
 						PortablePackedBinaryGhash1x128b::from(self_1),
 						PortablePackedBinaryGhash1x128b::from(rhs_1),
 					);
-					let result_2 = Mul::mul(
+					let result_2 = std::ops::Mul::mul(
 						PortablePackedBinaryGhash1x128b::from(self_2),
 						PortablePackedBinaryGhash1x128b::from(rhs_2),
 					);
-					let result_3 = Mul::mul(
+					let result_3 = std::ops::Mul::mul(
 						PortablePackedBinaryGhash1x128b::from(self_3),
 						PortablePackedBinaryGhash1x128b::from(rhs_3),
 					);
@@ -112,10 +130,10 @@ cfg_if! {
 	}
 }
 
-// Define square
+// Implement TaggedSquare for Ghash512Strategy
 cfg_if! {
 	if #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))] {
-		impl crate::arithmetic_traits::Square for PackedBinaryGhash4x128b {
+		impl TaggedSquare<Ghash512Strategy> for PackedBinaryGhash4x128b {
 			#[inline]
 			fn square(self) -> Self {
 				Self::from_underlier(crate::arch::shared::ghash::square_clmul(
@@ -124,14 +142,14 @@ cfg_if! {
 			}
 		}
 	} else {
-		// Potentially we could  use an optimized square implementation here with a scaled underlier.
-		// But this case (an architecture with AVX512 but without VPCLMULQDQ) is pretty rare, doesn't worth spending time on it.
-		crate::arithmetic_traits::impl_square_with!(PackedBinaryGhash4x128b @ crate::arch::ReuseMultiplyStrategy);
+		// Potentially we could use an optimized square implementation here with a scaled underlier.
+		// But this case (an architecture with AVX512 but without VPCLMULQDQ) is pretty rare.
+		impl_square_with!(PackedBinaryGhash4x128b @ crate::arch::ReuseMultiplyStrategy);
 	}
 }
 
-// Define invert
-impl InvertOrZero for PackedBinaryGhash4x128b {
+// Implement TaggedInvertOrZero for Ghash512Strategy (always uses element-wise fallback)
+impl TaggedInvertOrZero<Ghash512Strategy> for PackedBinaryGhash4x128b {
 	fn invert_or_zero(self) -> Self {
 		// Fallback: perform scalar invert on each 128-bit element
 		let mut result_underlier = self.to_underlier();
@@ -161,19 +179,3 @@ impl InvertOrZero for PackedBinaryGhash4x128b {
 		Self::from_underlier(result_underlier)
 	}
 }
-
-// Define linear transformations
-cfg_if! {
-	if #[cfg(target_feature = "gfni")] {
-		use crate::arch::x86_64::gfni::gfni_arithmetics::impl_transformation_with_gfni_nxn;
-		impl_transformation_with_gfni_nxn!(PackedBinaryGhash4x128b, 16);
-	} else {
-		crate::arithmetic_traits::impl_transformation_with_strategy!(
-			PackedBinaryGhash4x128b,
-			crate::arch::SimdStrategy
-		);
-	}
-}
-
-// Define (de)serialize
-impl_serialize_deserialize_for_packed_binary_field!(PackedBinaryGhash4x128b);

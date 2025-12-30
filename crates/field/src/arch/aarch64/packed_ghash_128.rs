@@ -7,18 +7,18 @@
 //! instructions available on ARMv8 processors with NEON support.
 
 use core::arch::aarch64::*;
-use std::ops::Mul;
 
 use super::{super::portable::packed::PackedPrimitiveType, m128::M128};
 use crate::{
 	BinaryField128bGhash,
 	arch::{
-		portable::packed_macros::{
-			impl_broadcast, impl_serialize_deserialize_for_packed_binary_field,
-		},
+		portable::packed_macros::{portable_macros::*, *},
 		shared::ghash::ClMulUnderlier,
 	},
-	arithmetic_traits::{InvertOrZero, Square},
+	arithmetic_traits::{
+		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
+		impl_square_with,
+	},
 	packed::PackedField,
 };
 
@@ -50,18 +50,25 @@ impl ClMulUnderlier for M128 {
 	}
 }
 
-pub type PackedBinaryGhash1x128b = PackedPrimitiveType<M128, BinaryField128bGhash>;
+/// Strategy for aarch64 GHASH field arithmetic operations.
+pub struct GhashStrategy;
 
-impl_broadcast!(M128, BinaryField128bGhash);
+// Define PackedBinaryGhash1x128b using the macro
+define_packed_binary_field!(
+	PackedBinaryGhash1x128b,
+	BinaryField128bGhash,
+	M128,
+	(GhashStrategy),
+	(GhashStrategy),
+	(GhashStrategy),
+	(None),
+	(None)
+);
 
-// Define multiply
-impl Mul for PackedBinaryGhash1x128b {
-	type Output = Self;
-
+// Implement TaggedMul for GhashStrategy
+impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
 	#[inline]
-	fn mul(self, rhs: Self) -> Self::Output {
-		crate::tracing::trace_multiplication!(PackedBinaryGhash1x128b);
-
+	fn mul(self, rhs: Self) -> Self {
 		Self::from_underlier(crate::arch::shared::ghash::mul_clmul(
 			self.to_underlier(),
 			rhs.to_underlier(),
@@ -69,16 +76,16 @@ impl Mul for PackedBinaryGhash1x128b {
 	}
 }
 
-// Define square
-impl Square for PackedBinaryGhash1x128b {
+// Implement TaggedSquare for GhashStrategy
+impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
 	#[inline]
 	fn square(self) -> Self {
 		Self::from_underlier(crate::arch::shared::ghash::square_clmul(self.to_underlier()))
 	}
 }
 
-// Define invert
-impl InvertOrZero for PackedBinaryGhash1x128b {
+// Implement TaggedInvertOrZero for GhashStrategy (uses portable fallback)
+impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
 	fn invert_or_zero(self) -> Self {
 		let portable = super::super::portable::packed_ghash_128::PackedBinaryGhash1x128b::from(
 			u128::from(self.to_underlier()),
@@ -87,6 +94,3 @@ impl InvertOrZero for PackedBinaryGhash1x128b {
 		Self::from_underlier(PackedField::invert_or_zero(portable).to_underlier().into())
 	}
 }
-
-// Define (de)serialize
-impl_serialize_deserialize_for_packed_binary_field!(PackedBinaryGhash1x128b);
