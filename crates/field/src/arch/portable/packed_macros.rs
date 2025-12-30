@@ -3,7 +3,7 @@
 macro_rules! impl_broadcast {
 	($name:ty, $scalar_type:path) => {
 		impl $crate::arithmetic_traits::Broadcast<$scalar_type>
-			for PackedPrimitiveType<$name, $scalar_type>
+			for $crate::arch::PackedPrimitiveType<$name, $scalar_type>
 		{
 			#[inline]
 			fn broadcast(scalar: $scalar_type) -> Self {
@@ -57,7 +57,7 @@ macro_rules! define_packed_binary_field {
 		($($transform:tt)*)
 	) => {
 		// Define packed field types
-		pub type $name = PackedPrimitiveType<$underlier, $scalar>;
+		pub type $name = $crate::arch::PackedPrimitiveType<$underlier, $scalar>;
 
 		// Define serialization and deserialization
 		impl_serialize_deserialize_for_packed_binary_field!($name);

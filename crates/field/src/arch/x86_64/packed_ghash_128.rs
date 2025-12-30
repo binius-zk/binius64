@@ -8,7 +8,7 @@
 
 use cfg_if::cfg_if;
 
-use super::{super::portable::packed::PackedPrimitiveType, m128::M128};
+use super::m128::M128;
 use crate::{
 	BinaryField128bGhash,
 	arch::portable::packed_macros::{portable_macros::*, *},

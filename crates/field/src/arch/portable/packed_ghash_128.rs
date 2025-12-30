@@ -4,7 +4,6 @@
 
 use super::{
 	nibble_invert_128b::nibble_invert_128b,
-	packed::PackedPrimitiveType,
 	packed_macros::{impl_broadcast, portable_macros::*, *},
 	univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64},
 };
@@ -13,6 +12,7 @@ use crate::{
 		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
 		impl_square_with,
 	},
+	ghash::BinaryField128bGhash,
 	packed::PackedField,
 	underlier::WithUnderlier,
 };
@@ -99,7 +99,7 @@ fn reduce_64<U: Underlier128bLanes>(
 // Define PackedBinaryGhash1x128b using the macro
 define_packed_binary_field!(
 	PackedBinaryGhash1x128b,
-	crate::BinaryField128bGhash,
+	BinaryField128bGhash,
 	u128,
 	(GhashStrategy),
 	(GhashStrategy),

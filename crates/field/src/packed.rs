@@ -18,8 +18,7 @@ use bytemuck::Zeroable;
 
 use super::{
 	Error, PackedExtension, Random,
-	arithmetic_traits::{Broadcast, MulAlpha, Square},
-	binary_field_arithmetic::TowerFieldArithmetic,
+	arithmetic_traits::{Broadcast, Square},
 };
 use crate::{BinaryField, Field, arithmetic_traits::InvertOrZero};
 
@@ -500,13 +499,6 @@ impl<F: Field> Broadcast<F> for F {
 	#[inline]
 	fn broadcast(scalar: F) -> Self {
 		scalar
-	}
-}
-
-impl<T: TowerFieldArithmetic> MulAlpha for T {
-	#[inline]
-	fn mul_alpha(self) -> Self {
-		<Self as TowerFieldArithmetic>::multiply_alpha(self)
 	}
 }
 

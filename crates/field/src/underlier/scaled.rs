@@ -17,9 +17,7 @@ use rand::{
 };
 
 use super::{Divisible, NumCast, UnderlierType, UnderlierWithBitOps, mapget};
-use crate::{
-	BinaryField, Random, arch::PackedPrimitiveType, as_packed_field::PackScalar,
-};
+use crate::{BinaryField, Random, arch::PackedPrimitiveType, as_packed_field::PackScalar};
 
 /// A type that represents a pair of elements of the same underlier type.
 /// We use it as an underlier for the `ScaledPackedField` type.

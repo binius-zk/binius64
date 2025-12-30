@@ -1,8 +1,22 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use super::packed_scaled::packed_scaled_field;
-use crate::arch::packed_ghash_256::PackedBinaryGhash2x128b;
+use super::{
+	packed_512::M512,
+	packed_macros::{portable_macros::*, *},
+};
+use crate::arch::strategies::ScaledStrategy;
 
-// 512 bit value that just contains four 128-bit integers.
-// Is used for portable implementation of 512-bit packed fields.
-packed_scaled_field!(PackedBinaryGhash4x128b = [PackedBinaryGhash2x128b; 2]);
+define_packed_binary_fields!(
+	underlier: M512,
+	packed_fields: [
+		packed_field {
+			name: PackedBinaryGhash4x128b,
+			scalar: BinaryField128bGhash,
+			mul:       (ScaledStrategy),
+			square:    (ScaledStrategy),
+			invert:    (ScaledStrategy),
+			mul_alpha: (None),
+			transform: (None),
+		},
+	]
+);

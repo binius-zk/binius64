@@ -22,12 +22,13 @@ cfg_if! {
 
 cfg_if! {
 	if #[cfg(target_feature = "avx2")] {
+		pub use m256::M256;
 		pub(super) mod m256;
 		pub mod packed_256;
 		pub mod packed_aes_256;
 		pub mod packed_ghash_256;
 	} else {
-		pub use super::portable::packed_256;
+		pub use super::portable::packed_256::{self, M256};
 		pub use super::portable::packed_aes_256;
 		pub use super::portable::packed_ghash_256;
 	}

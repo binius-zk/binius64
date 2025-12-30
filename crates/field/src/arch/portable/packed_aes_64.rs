@@ -2,7 +2,7 @@
 
 use cfg_if::cfg_if;
 
-use super::{packed::PackedPrimitiveType, packed_macros::impl_broadcast};
+use super::packed_macros::impl_broadcast;
 use crate::{
 	arch::{
 		PairwiseTableStrategy,

@@ -1,6 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use super::{packed::PackedPrimitiveType, packed_macros::impl_broadcast};
+use super::packed_macros::impl_broadcast;
 use crate::{
 	arch::{
 		PairwiseTableStrategy,

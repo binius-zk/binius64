@@ -1,6 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use super::packed::PackedPrimitiveType;
 use crate::arch::{
 	BitwiseAndStrategy,
 	portable::packed_macros::{portable_macros::*, *},
