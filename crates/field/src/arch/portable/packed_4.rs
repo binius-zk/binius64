@@ -2,7 +2,10 @@
 
 use super::packed::PackedPrimitiveType;
 use crate::{
-	arch::portable::packed_macros::{portable_macros::*, *},
+	arch::{
+		BitwiseAndStrategy,
+		portable::packed_macros::{portable_macros::*, *},
+	},
 	underlier::U4,
 };
 

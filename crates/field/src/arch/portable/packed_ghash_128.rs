@@ -2,21 +2,23 @@
 
 //! Portable implementation of packed GHASH field operations.
 
-use std::ops::Mul;
-
 use super::{
 	nibble_invert_128b::nibble_invert_128b,
 	packed::PackedPrimitiveType,
-	packed_macros::impl_broadcast,
+	packed_macros::{impl_broadcast, portable_macros::*, *},
 	univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64},
 };
 use crate::{
-	BinaryField128bGhash,
-	arch::portable::packed_macros::impl_serialize_deserialize_for_packed_binary_field,
-	arithmetic_traits::{InvertOrZero, Square},
+	arithmetic_traits::{
+		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
+		impl_square_with,
+	},
 	packed::PackedField,
 	underlier::WithUnderlier,
 };
+
+/// Strategy for GHASH field arithmetic operations.
+pub struct GhashStrategy;
 
 /// Multiply two GHASH field elements using software implementation.
 ///
@@ -94,24 +96,36 @@ fn reduce_64<U: Underlier128bLanes>(
 	U::join_u64s(v1, v0)
 }
 
-pub type PackedBinaryGhash1x128b = PackedPrimitiveType<u128, BinaryField128bGhash>;
+// Define PackedBinaryGhash1x128b using the macro
+define_packed_binary_field!(
+	PackedBinaryGhash1x128b,
+	crate::BinaryField128bGhash,
+	u128,
+	(GhashStrategy),
+	(GhashStrategy),
+	(GhashStrategy),
+	(None),
+	(None)
+);
 
-// Define broadcast
-impl_broadcast!(u128, BinaryField128bGhash);
-
-// Define multiply
-impl Mul for PackedBinaryGhash1x128b {
-	type Output = Self;
-
+// Implement TaggedMul for GhashStrategy
+impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
 	#[inline]
-	fn mul(self, rhs: Self) -> Self::Output {
-		crate::tracing::trace_multiplication!(PackedBinaryGhash1x128b);
-
+	fn mul(self, rhs: Self) -> Self {
 		ghash_mul(self.0, rhs.0).into()
 	}
 }
 
-impl InvertOrZero for PackedBinaryGhash1x128b {
+// Implement TaggedSquare for GhashStrategy
+impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
+	#[inline]
+	fn square(self) -> Self {
+		ghash_square(self.0).into()
+	}
+}
+
+// Implement TaggedInvertOrZero for GhashStrategy
+impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
 	fn invert_or_zero(self) -> Self {
 		// Use the generic nibble-based inversion algorithm
 		let result = nibble_invert_128b(
@@ -122,17 +136,6 @@ impl InvertOrZero for PackedBinaryGhash1x128b {
 		Self::set_single(result)
 	}
 }
-
-// Implement squaring using the default strategy
-impl Square for PackedBinaryGhash1x128b {
-	#[inline]
-	fn square(self) -> Self {
-		ghash_square(self.0).into()
-	}
-}
-
-// Define (de)serialize
-impl_serialize_deserialize_for_packed_binary_field!(PackedBinaryGhash1x128b);
 
 /// Table where `value[i][k][j] = BinaryField128bGhash(j << 4 * k) ^ (2^(2^(i+1)))`
 /// Generated using the `generate_ghash_nibble_pow_2_n_table` test.
@@ -3544,7 +3547,10 @@ mod tests {
 		super::nibble_invert_128b::{generate_nibble_pow_2_n_table, print_nibble_table},
 		*,
 	};
-	use crate::{arch::portable::nibble_invert_128b::pow_2_2_n, underlier::WithUnderlier};
+	use crate::{
+		BinaryField128bGhash, arch::portable::nibble_invert_128b::pow_2_2_n,
+		underlier::WithUnderlier,
+	};
 
 	proptest! {
 		#[test]

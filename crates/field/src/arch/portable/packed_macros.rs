@@ -127,8 +127,9 @@ pub(crate) mod portable_macros {
 				}
 			}
 		};
-		($impl_macro:ident $name:ident, ($strategy:ident)) => {
-			$impl_macro!($name @ $crate::arch::$strategy);
+		// Path to strategy in caller's scope
+		($impl_macro:ident $name:ident, ($strategy:path)) => {
+			$impl_macro!($name @ $strategy);
 		};
 	}
 
