@@ -18,11 +18,10 @@ use rand::{
 };
 
 use crate::{
-	Field, PackedField,
+	PackedField,
 	arithmetic_traits::MulAlpha,
-	as_packed_field::PackScalar,
 	linear_transformation::Transformation,
-	underlier::{ScaledUnderlier, UnderlierType, WithUnderlier},
+	underlier::{ScaledUnderlier, WithUnderlier},
 };
 
 /// Packed field that just stores smaller packed field N times and performs all operations
@@ -505,6 +504,7 @@ where
 	type Underlier = ScaledUnderlier<PT::Underlier, N>;
 }
 
+/*
 impl<U, F, const N: usize> PackScalar<F> for ScaledUnderlier<U, N>
 where
 	U: PackScalar<F> + UnderlierType + Pod,
@@ -513,6 +513,7 @@ where
 {
 	type Packed = ScaledPackedField<U::Packed, N>;
 }
+*/
 
 unsafe impl<PT, U, const N: usize> TransparentWrapper<ScaledUnderlier<U, N>>
 	for ScaledPackedField<PT, N>

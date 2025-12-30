@@ -6,7 +6,7 @@ use std::{
 };
 
 use binius_utils::{
-	DeserializeBytes, SerializeBytes, SerializationError,
+	DeserializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
 	checked_arithmetics::checked_log_2,
 };
@@ -17,7 +17,9 @@ use rand::{
 };
 
 use super::{Divisible, NumCast, UnderlierType, UnderlierWithBitOps, mapget};
-use crate::Random;
+use crate::{
+	BinaryField, Random, arch::PackedPrimitiveType, as_packed_field::PackScalar,
+};
 
 /// A type that represents a pair of elements of the same underlier type.
 /// We use it as an underlier for the `ScaledPackedField` type.
@@ -277,6 +279,18 @@ impl<U: DeserializeBytes, const N: usize> DeserializeBytes for ScaledUnderlier<U
 	fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError> {
 		<[U; N]>::deserialize(read_buf).map(Self)
 	}
+}
+
+impl<UU: UnderlierType, F: BinaryField, const N: usize> PackScalar<F> for ScaledUnderlier<UU, N>
+where
+	ScaledUnderlier<UU, N>: UnderlierWithBitOps + Divisible<F::Underlier>,
+	PackedPrimitiveType<Self, F>: crate::arithmetic_traits::Broadcast<F>
+		+ crate::arithmetic_traits::Square
+		+ crate::arithmetic_traits::InvertOrZero
+		+ std::ops::Mul<Output = PackedPrimitiveType<Self, F>>,
+	//	PackedPrimitiveType<Self, F>: PackedField<Scalar=F>,
+{
+	type Packed = PackedPrimitiveType<ScaledUnderlier<UU, N>, F>;
 }
 
 #[cfg(test)]

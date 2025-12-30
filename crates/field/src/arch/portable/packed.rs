@@ -274,9 +274,8 @@ unsafe impl<U: UnderlierType + Pod, Scalar: BinaryField> Pod for PackedPrimitive
 impl<U, Scalar> PackedField for PackedPrimitiveType<U, Scalar>
 where
 	Self: Broadcast<Scalar> + Square + InvertOrZero + Mul<Output = Self>,
-	U: Divisible<Scalar::Underlier> + From<Scalar::Underlier> + Send + Sync + 'static,
-	Scalar: BinaryField + WithUnderlier<Underlier: UnderlierWithBitOps>,
-	Scalar::Underlier: NumCast<U>,
+	U: UnderlierWithBitOps + Divisible<Scalar::Underlier>,
+	Scalar: BinaryField,
 {
 	type Scalar = Scalar;
 

@@ -1,24 +1,25 @@
 // Copyright 2023-2025 Irreducible Inc.
 
-use super::packed_scaled::packed_scaled_field;
-use crate::{PackedBinaryField128x1b, PackedField, BinaryField1b};
-
-use super::packed::PackedPrimitiveType;
+use super::{packed::PackedPrimitiveType, packed_scaled::packed_scaled_field};
 use crate::{
-	arch::portable::packed_macros::{portable_macros::*, *},
+	BinaryField1b, PackedBinaryField128x1b, PackedField,
+	arch::{
+		M128,
+		portable::packed_macros::{portable_macros::*, *},
+		strategies::ScaledStrategy,
+	},
 	underlier::ScaledUnderlier,
 };
 
-packed_scaled_field!(PackedBinaryField256x1b = [PackedBinaryField128x1b; 2]);
+packed_scaled_field!(PPackedBinaryField256x1b = [PackedBinaryField128x1b; 2]);
 
-pub type M256 = ScaledUnderlier<u128, 2>;
+pub type M256 = ScaledUnderlier<M128, 2>;
 
-/*
 define_packed_binary_fields!(
 	underlier: M256,
 	packed_fields: [
 		packed_field {
-			name: PPackedBinaryField256x1b,
+			name: PackedBinaryField256x1b,
 			scalar: BinaryField1b,
 			mul:       (ScaledStrategy),
 			square:    (ScaledStrategy),
@@ -29,7 +30,6 @@ define_packed_binary_fields!(
 	]
 );
 
-fn blah(x: PPackedBinaryField256x1b) -> BinaryField1b {
-	<PPackedBinaryField256x1b as PackedField>::get(&x, 0)
+fn blah(x: PackedBinaryField256x1b) -> BinaryField1b {
+	<PackedBinaryField256x1b as PackedField>::get(&x, 0)
 }
-*/
