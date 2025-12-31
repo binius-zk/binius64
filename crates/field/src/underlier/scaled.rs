@@ -19,8 +19,8 @@ use rand::{
 use super::{Divisible, NumCast, UnderlierType, UnderlierWithBitOps, mapget};
 use crate::{BinaryField, Random, arch::PackedPrimitiveType, as_packed_field::PackScalar};
 
-/// A type that represents a pair of elements of the same underlier type.
-/// We use it as an underlier for the `ScaledPackedField` type.
+/// A type that represents N elements of the same underlier type.
+/// Used as an underlier for 256-bit and 512-bit packed fields in the portable implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct ScaledUnderlier<U, const N: usize>(pub [U; N]);
