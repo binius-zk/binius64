@@ -10,9 +10,13 @@ cfg_if! {
 		pub mod packed_128;
 		pub mod packed_aes_128;
 		pub mod packed_ghash_128;
+
+		pub use m128::M128;
 	} else {
 		pub use super::portable::packed_128;
 		pub use super::portable::packed_aes_128;
 		pub use super::portable::packed_ghash_128;
+
+		pub use super::portable::packed_128::M128;
 	}
 }

@@ -18,8 +18,8 @@ cfg_if! {
 		mod portable;
 
 		mod aarch64;
-		pub use aarch64::{packed_128, packed_aes_128, packed_ghash_128, m128::M128};
-		pub use portable::{packed_256, packed_512, packed_aes_256, packed_aes_512, packed_ghash_256, packed_ghash_512};
+		pub use aarch64::{packed_128, packed_aes_128, packed_ghash_128, M128};
+		pub use portable::{packed_256::{self, M256}, packed_512, packed_aes_256, packed_aes_512, packed_ghash_256, packed_ghash_512};
 	} else if #[cfg(target_arch = "wasm32")] {
 		#[allow(dead_code)]
 		mod portable;

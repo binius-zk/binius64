@@ -3,10 +3,7 @@
 use super::m128::M128;
 use crate::arch::{
 	BitwiseAndStrategy,
-	portable::{
-		packed::PackedPrimitiveType,
-		packed_macros::{portable_macros::*, *},
-	},
+	portable::packed_macros::{portable_macros::*, *},
 };
 
 define_packed_binary_fields!(
