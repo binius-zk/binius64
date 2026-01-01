@@ -17,7 +17,7 @@ use rand::{
 };
 
 use super::{Divisible, NumCast, UnderlierType, UnderlierWithBitOps, mapget};
-use crate::{BinaryField, Random, arch::PackedPrimitiveType, as_packed_field::PackScalar};
+use crate::Random;
 
 /// A type that represents N elements of the same underlier type.
 /// Used as an underlier for 256-bit and 512-bit packed fields in the portable implementation.
@@ -277,18 +277,6 @@ impl<U: DeserializeBytes, const N: usize> DeserializeBytes for ScaledUnderlier<U
 	fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError> {
 		<[U; N]>::deserialize(read_buf).map(Self)
 	}
-}
-
-impl<UU: UnderlierType, F: BinaryField, const N: usize> PackScalar<F> for ScaledUnderlier<UU, N>
-where
-	ScaledUnderlier<UU, N>: UnderlierWithBitOps + Divisible<F::Underlier>,
-	PackedPrimitiveType<Self, F>: crate::arithmetic_traits::Broadcast<F>
-		+ crate::arithmetic_traits::Square
-		+ crate::arithmetic_traits::InvertOrZero
-		+ std::ops::Mul<Output = PackedPrimitiveType<Self, F>>,
-	//	PackedPrimitiveType<Self, F>: PackedField<Scalar=F>,
-{
-	type Packed = PackedPrimitiveType<ScaledUnderlier<UU, N>, F>;
 }
 
 #[cfg(test)]

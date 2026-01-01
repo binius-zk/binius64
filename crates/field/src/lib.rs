@@ -12,7 +12,6 @@
 pub mod aes_field;
 pub mod arch;
 pub mod arithmetic_traits;
-pub mod as_packed_field;
 pub mod binary_field;
 mod binary_field_arithmetic;
 pub mod error;

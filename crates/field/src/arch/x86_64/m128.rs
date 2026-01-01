@@ -20,10 +20,10 @@ use seq_macro::seq;
 
 use crate::{
 	BinaryField,
-	arch::portable::packed::{PackedPrimitiveType, impl_pack_scalar},
+	arch::portable::packed::PackedPrimitiveType,
 	underlier::{
 		Divisible, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, UnderlierWithBitOps,
-		WithUnderlier, impl_divisible_bitmask, mapget, spread_fallback,
+		impl_divisible_bitmask, mapget, spread_fallback,
 	},
 };
 
@@ -135,7 +135,6 @@ impl DeserializeBytes for M128 {
 }
 
 impl_divisible_bitmask!(M128, 1, 2, 4);
-impl_pack_scalar!(M128);
 
 impl<U: NumCast<u128>> NumCast<M128> for U {
 	#[inline(always)]

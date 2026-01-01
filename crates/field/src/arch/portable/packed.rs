@@ -23,7 +23,7 @@ use rand::{
 use crate::{
 	BinaryField, Divisible, PackedField,
 	arithmetic_traits::{Broadcast, InvertOrZero, MulAlpha, Square},
-	underlier::{NumCast, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier},
+	underlier::{NumCast, UnderlierType, UnderlierWithBitOps, WithUnderlier},
 };
 
 #[derive(PartialEq, Eq, Clone, Copy, Default, bytemuck::TransparentWrapper)]
@@ -446,27 +446,3 @@ where
 
 	PT1::from_underlier(PT1::Underlier::num_cast_from(bigger_result.to_underlier()))
 }
-
-macro_rules! impl_pack_scalar {
-	($underlier:ty) => {
-		impl<F> $crate::as_packed_field::PackScalar<F> for $underlier
-		where
-			F: BinaryField,
-			PackedPrimitiveType<$underlier, F>:
-				$crate::packed::PackedField<Scalar = F> + WithUnderlier<Underlier = $underlier>,
-		{
-			type Packed = PackedPrimitiveType<$underlier, F>;
-		}
-	};
-}
-
-pub(crate) use impl_pack_scalar;
-
-impl_pack_scalar!(U1);
-impl_pack_scalar!(U2);
-impl_pack_scalar!(U4);
-impl_pack_scalar!(u8);
-impl_pack_scalar!(u16);
-impl_pack_scalar!(u32);
-impl_pack_scalar!(u64);
-impl_pack_scalar!(u128);

@@ -1,7 +1,8 @@
 // Copyright 2023-2025 Irreducible Inc.
 
 use crate::{
-	ExtensionField, Field, PackedField, as_packed_field::PackScalar, underlier::WithUnderlier,
+	BinaryField, ExtensionField, Field, PackedField, arch::PackedPrimitiveType,
+	underlier::WithUnderlier,
 };
 
 /// Trait represents a relationship between a packed struct of field elements and a packed struct
@@ -97,10 +98,11 @@ pub trait PackedExtension<FS: Field>: PackedField<Scalar: ExtensionField<FS>> {
 
 impl<PT, FS> PackedExtension<FS> for PT
 where
-	FS: Field,
-	PT: PackedField<Scalar: ExtensionField<FS>> + WithUnderlier<Underlier: PackScalar<FS>>,
+	FS: BinaryField,
+	PT: PackedField<Scalar: ExtensionField<FS>> + WithUnderlier,
+	PackedPrimitiveType<PT::Underlier, FS>: PackedField<Scalar = FS>,
 {
-	type PackedSubfield = <PT::Underlier as PackScalar<FS>>::Packed;
+	type PackedSubfield = PackedPrimitiveType<PT::Underlier, FS>;
 
 	fn cast_bases(packed: &[Self]) -> &[Self::PackedSubfield] {
 		Self::PackedSubfield::from_underliers_ref(Self::to_underliers_ref(packed))
