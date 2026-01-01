@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # Copyright 2025 Irreducible Inc.
+# Copyright 2026 The Binius Developers
 """Check and fix copyright headers in Rust files."""
 
 import argparse
@@ -11,8 +12,8 @@ from datetime import datetime
 from pathlib import Path
 
 YEAR = datetime.now().year
-COMPANY = "Irreducible Inc."
-VALID_PATTERN = re.compile(rf"^// Copyright (\d{{4}}-)?{YEAR} {re.escape(COMPANY)}$")
+COPYRIGHT_HOLDER = "The Binius Developers"
+VALID_PATTERN = re.compile(rf"^// Copyright (\d{{4}}-)?{YEAR} {re.escape(COPYRIGHT_HOLDER)}$")
 
 
 def get_rust_files(dirname):
@@ -46,15 +47,15 @@ def fix_file(filepath, old_header=None):
             lines = f.readlines()
 
         # Determine new header
-        header = f"// Copyright {YEAR} {COMPANY}\n"
-        if old_header and "Irreducible" in old_header:
+        header = f"// Copyright {YEAR} {COPYRIGHT_HOLDER}\n"
+        if old_header and COPYRIGHT_HOLDER in old_header:
             # Preserve year range if exists
             if match := re.search(r"(\d{4})", old_header):
                 if (year := match.group(1)) != str(YEAR):
-                    header = f"// Copyright {year}-{YEAR} {COMPANY}\n"
+                    header = f"// Copyright {year}-{YEAR} {COPYRIGHT_HOLDER}\n"
 
         # Update or insert header
-        if lines and lines[0].startswith("// Copyright") and "Irreducible" in lines[0]:
+        if lines and lines[0].startswith("// Copyright") and COPYRIGHT_HOLDER in lines[0]:
             lines[0] = header
         else:
             lines.insert(0, header)
@@ -102,20 +103,20 @@ def main():
             categories["missing"][header] = file_list
         elif VALID_PATTERN.match(header):
             categories["correct"][header] = file_list
-        elif "Irreducible" in header:
+        elif COPYRIGHT_HOLDER in header:
             categories["wrong"][header] = file_list
         else:
             categories["other"][header] = file_list
 
     # Print results
-    print(f"Expected: // Copyright {YEAR} {COMPANY}")
-    print(f"      or: // Copyright YYYY-{YEAR} {COMPANY}")
+    print(f"Expected: // Copyright {YEAR} {COPYRIGHT_HOLDER}")
+    print(f"      or: // Copyright YYYY-{YEAR} {COPYRIGHT_HOLDER}")
     print("=" * 70)
 
     sections = [
         ("✅ CORRECT COPYRIGHT", categories["correct"], False),
-        ("🔸 OTHER LICENSE (not Irreducible)", categories["other"], False),
-        ("⚠️  WRONG COPYRIGHT FORMAT (has Irreducible)", categories["wrong"], True),
+        (f"🔸 OTHER LICENSE (not {COPYRIGHT_HOLDER})", categories["other"], False),
+        (f"⚠️  WRONG COPYRIGHT FORMAT (has {COPYRIGHT_HOLDER})", categories["wrong"], True),
         ("❌ NO COPYRIGHT", categories["missing"], True),
     ]
 
