@@ -491,14 +491,19 @@ macro_rules! impl_divisible_bitmask {
 
 				#[inline]
 				fn broadcast(val: $crate::underlier::SmallU<$bits>) -> Self {
-					let mut result = val.val();
-					// Self-replicate to fill the byte
-					let mut current_bits = $bits;
-					while current_bits < 8 {
-						result |= result << current_bits;
-						current_bits *= 2;
+					if $bits == 1 {
+						// For 1-bit values: 0 -> 0x00, 1 -> 0xFF
+						val.val().wrapping_neg()
+					} else {
+						let mut result = val.val();
+						// Self-replicate to fill the byte
+						let mut current_bits = $bits;
+						while current_bits < 8 {
+							result |= result << current_bits;
+							current_bits *= 2;
+						}
+						result
 					}
-					result
 				}
 
 				#[inline]

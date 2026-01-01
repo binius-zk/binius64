@@ -638,10 +638,6 @@ impl UnderlierWithBitOps for M128 {
 	const ONE: Self = Self::from_u128(1);
 	const ONES: Self = Self::from_u128(u128::MAX);
 
-	fn fill_with_bit(val: u8) -> Self {
-		Self(unsafe { vdupq_n_u64(u64::fill_with_bit(val)) })
-	}
-
 	#[inline]
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		const MASKS: [M128; 3] = [

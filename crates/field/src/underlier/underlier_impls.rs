@@ -28,12 +28,6 @@ impl UnderlierWithBitOps for u8 {
 	const ONE: Self = 1;
 	const ONES: Self = Self::MAX;
 
-	#[inline(always)]
-	fn fill_with_bit(val: u8) -> Self {
-		debug_assert!(val == 0 || val == 1);
-		(val as Self).wrapping_neg()
-	}
-
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		const MASKS: &[u8] = &[
 			interleave_mask_even!(u8, 0),
@@ -48,12 +42,6 @@ impl UnderlierWithBitOps for u16 {
 	const ZERO: Self = 0;
 	const ONE: Self = 1;
 	const ONES: Self = Self::MAX;
-
-	#[inline(always)]
-	fn fill_with_bit(val: u8) -> Self {
-		debug_assert!(val == 0 || val == 1);
-		(val as Self).wrapping_neg()
-	}
 
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		const MASKS: &[u16] = &[
@@ -70,12 +58,6 @@ impl UnderlierWithBitOps for u32 {
 	const ZERO: Self = 0;
 	const ONE: Self = 1;
 	const ONES: Self = Self::MAX;
-
-	#[inline(always)]
-	fn fill_with_bit(val: u8) -> Self {
-		debug_assert!(val == 0 || val == 1);
-		(val as Self).wrapping_neg()
-	}
 
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		const MASKS: &[u32] = &[
@@ -94,12 +76,6 @@ impl UnderlierWithBitOps for u64 {
 	const ONE: Self = 1;
 	const ONES: Self = Self::MAX;
 
-	#[inline(always)]
-	fn fill_with_bit(val: u8) -> Self {
-		debug_assert!(val == 0 || val == 1);
-		(val as Self).wrapping_neg()
-	}
-
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		const MASKS: &[u64] = &[
 			interleave_mask_even!(u64, 0),
@@ -117,12 +93,6 @@ impl UnderlierWithBitOps for u128 {
 	const ZERO: Self = 0;
 	const ONE: Self = 1;
 	const ONES: Self = Self::MAX;
-
-	#[inline(always)]
-	fn fill_with_bit(val: u8) -> Self {
-		debug_assert!(val == 0 || val == 1);
-		(val as Self).wrapping_neg()
-	}
 
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		const MASKS: &[u128] = &[
