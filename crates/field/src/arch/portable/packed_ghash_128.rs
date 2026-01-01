@@ -4,7 +4,7 @@
 
 use super::{
 	nibble_invert_128b::nibble_invert_128b,
-	packed_macros::{impl_broadcast, portable_macros::*, *},
+	packed_macros::{portable_macros::*, *},
 	univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64},
 };
 use crate::{

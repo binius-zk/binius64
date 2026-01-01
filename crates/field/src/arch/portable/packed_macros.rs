@@ -1,20 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-macro_rules! impl_broadcast {
-	($name:ty, $scalar_type:path) => {
-		impl $crate::arithmetic_traits::Broadcast<$scalar_type>
-			for $crate::arch::PackedPrimitiveType<$name, $scalar_type>
-		{
-			#[inline]
-			fn broadcast(scalar: $scalar_type) -> Self {
-				use $crate::underlier::UnderlierWithBitOps;
-
-				<$name>::broadcast_subvalue(scalar.0).into()
-			}
-		}
-	};
-}
-
 macro_rules! define_packed_binary_fields {
     (
         underlier: $underlier:ident,
@@ -62,9 +47,6 @@ macro_rules! define_packed_binary_field {
 		// Define serialization and deserialization
 		impl_serialize_deserialize_for_packed_binary_field!($name);
 
-		// Define broadcast
-		impl_broadcast!($underlier, $scalar);
-
 		// Define multiplication
 		impl_strategy!(impl_mul_with       $name, ($($mul)*));
 
@@ -108,7 +90,6 @@ macro_rules! impl_serialize_deserialize_for_packed_binary_field {
 
 pub(crate) use define_packed_binary_field;
 pub(crate) use define_packed_binary_fields;
-pub(crate) use impl_broadcast;
 pub(crate) use impl_serialize_deserialize_for_packed_binary_field;
 
 pub(crate) use crate::arithmetic_traits::{

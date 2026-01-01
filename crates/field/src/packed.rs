@@ -16,10 +16,7 @@ use binius_utils::{
 };
 use bytemuck::Zeroable;
 
-use super::{
-	Error, PackedExtension, Random,
-	arithmetic_traits::{Broadcast, Square},
-};
+use super::{Error, PackedExtension, Random, arithmetic_traits::Square};
 use crate::{BinaryField, Field, arithmetic_traits::InvertOrZero};
 
 /// A packed field represents a vector of underlying field elements.
@@ -492,13 +489,6 @@ impl<P: PackedField> RandomAccessSequenceMut<P::Scalar> for PackedSliceMut<'_, P
 	#[inline(always)]
 	unsafe fn set_unchecked(&mut self, index: usize, value: P::Scalar) {
 		unsafe { set_packed_slice_unchecked(self.slice, index, value) }
-	}
-}
-
-impl<F: Field> Broadcast<F> for F {
-	#[inline]
-	fn broadcast(scalar: F) -> Self {
-		scalar
 	}
 }
 

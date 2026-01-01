@@ -22,7 +22,7 @@ use rand::{
 
 use crate::{
 	BinaryField, Divisible, PackedField,
-	arithmetic_traits::{Broadcast, InvertOrZero, MulAlpha, Square},
+	arithmetic_traits::{InvertOrZero, MulAlpha, Square},
 	underlier::{NumCast, UnderlierType, UnderlierWithBitOps, WithUnderlier},
 };
 
@@ -57,6 +57,15 @@ impl<U: UnderlierType, Scalar: BinaryField> PackedPrimitiveType<U, Scalar> {
 	#[inline]
 	pub const fn to_underlier(self) -> U {
 		self.0
+	}
+}
+
+impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField>
+	PackedPrimitiveType<U, Scalar>
+{
+	#[inline]
+	pub fn broadcast(scalar: Scalar) -> Self {
+		U::broadcast_subvalue(scalar.to_underlier()).into()
 	}
 }
 
@@ -186,63 +195,61 @@ where
 	}
 }
 
-impl<U: UnderlierType, Scalar: BinaryField> Add<Scalar> for PackedPrimitiveType<U, Scalar>
-where
-	Self: Broadcast<Scalar> + Add<Output = Self>,
+impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> Add<Scalar>
+	for PackedPrimitiveType<U, Scalar>
 {
 	type Output = Self;
 
 	fn add(self, rhs: Scalar) -> Self::Output {
-		self + <Self as Broadcast<Scalar>>::broadcast(rhs)
+		self + Self::broadcast(rhs)
 	}
 }
 
-impl<U: UnderlierType, Scalar: BinaryField> Sub<Scalar> for PackedPrimitiveType<U, Scalar>
-where
-	Self: Broadcast<Scalar> + Sub<Output = Self>,
+impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> Sub<Scalar>
+	for PackedPrimitiveType<U, Scalar>
 {
 	type Output = Self;
 
 	fn sub(self, rhs: Scalar) -> Self::Output {
-		self - <Self as Broadcast<Scalar>>::broadcast(rhs)
+		self - Self::broadcast(rhs)
 	}
 }
 
-impl<U: UnderlierType, Scalar: BinaryField> Mul<Scalar> for PackedPrimitiveType<U, Scalar>
+impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> Mul<Scalar>
+	for PackedPrimitiveType<U, Scalar>
 where
-	Self: Broadcast<Scalar> + Mul<Output = Self>,
+	Self: Mul<Output = Self>,
 {
 	type Output = Self;
 
 	fn mul(self, rhs: Scalar) -> Self::Output {
-		self * <Self as Broadcast<Scalar>>::broadcast(rhs)
+		self * Self::broadcast(rhs)
 	}
 }
 
-impl<U: UnderlierType, Scalar: BinaryField> AddAssign<Scalar> for PackedPrimitiveType<U, Scalar>
-where
-	Self: Broadcast<Scalar> + AddAssign<Self>,
+impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> AddAssign<Scalar>
+	for PackedPrimitiveType<U, Scalar>
 {
 	fn add_assign(&mut self, rhs: Scalar) {
-		*self += <Self as Broadcast<Scalar>>::broadcast(rhs);
+		*self += Self::broadcast(rhs);
 	}
 }
 
-impl<U: UnderlierType, Scalar: BinaryField> SubAssign<Scalar> for PackedPrimitiveType<U, Scalar>
-where
-	Self: Broadcast<Scalar> + SubAssign<Self>,
+impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> SubAssign<Scalar>
+	for PackedPrimitiveType<U, Scalar>
 {
 	fn sub_assign(&mut self, rhs: Scalar) {
-		*self -= <Self as Broadcast<Scalar>>::broadcast(rhs);
+		*self -= Self::broadcast(rhs);
 	}
 }
 
-impl<U: UnderlierType, Scalar: BinaryField> MulAssign<Scalar> for PackedPrimitiveType<U, Scalar>
+impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> MulAssign<Scalar>
+	for PackedPrimitiveType<U, Scalar>
 where
-	Self: Broadcast<Scalar> + MulAssign<Self>,
+	Self: MulAssign<Self>,
 {
 	fn mul_assign(&mut self, rhs: Scalar) {
-		*self *= <Self as Broadcast<Scalar>>::broadcast(rhs);
+		*self *= Self::broadcast(rhs);
 	}
 }
 
@@ -255,12 +262,13 @@ where
 	}
 }
 
-impl<U: UnderlierType, Scalar: BinaryField> Product for PackedPrimitiveType<U, Scalar>
+impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> Product
+	for PackedPrimitiveType<U, Scalar>
 where
-	Self: Broadcast<Scalar> + Mul<Output = Self>,
+	Self: Mul<Output = Self>,
 {
 	fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
-		iter.fold(<Self as Broadcast<Scalar>>::broadcast(Scalar::ONE), |result, next| result * next)
+		iter.fold(Self::broadcast(Scalar::ONE), |result, next| result * next)
 	}
 }
 
@@ -273,7 +281,7 @@ unsafe impl<U: UnderlierType + Pod, Scalar: BinaryField> Pod for PackedPrimitive
 
 impl<U, Scalar> PackedField for PackedPrimitiveType<U, Scalar>
 where
-	Self: Broadcast<Scalar> + Square + InvertOrZero + Mul<Output = Self>,
+	Self: Square + InvertOrZero + Mul<Output = Self>,
 	U: UnderlierWithBitOps + Divisible<Scalar::Underlier>,
 	Scalar: BinaryField,
 {
@@ -351,7 +359,7 @@ where
 
 	#[inline]
 	fn broadcast(scalar: Self::Scalar) -> Self {
-		<Self as Broadcast<Self::Scalar>>::broadcast(scalar)
+		Self::broadcast(scalar)
 	}
 
 	#[inline]

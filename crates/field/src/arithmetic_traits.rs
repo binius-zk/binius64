@@ -18,12 +18,6 @@ pub trait MulAlpha {
 	fn mul_alpha(self) -> Self;
 }
 
-/// Value that can be filled with `Scalar`
-pub trait Broadcast<Scalar> {
-	/// Set `scalar`` value to all the positions
-	fn broadcast(scalar: Scalar) -> Self;
-}
-
 /// Multiplication that is parameterized with some some strategy.
 pub trait TaggedMul<Strategy> {
 	fn mul(self, rhs: Self) -> Self;
