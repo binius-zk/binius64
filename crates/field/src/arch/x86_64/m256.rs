@@ -20,9 +20,9 @@ use rand::{
 
 use crate::{
 	BinaryField,
-	arch::portable::packed::{PackedPrimitiveType, impl_pack_scalar},
+	arch::portable::packed::PackedPrimitiveType,
 	underlier::{
-		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
+		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps,
 		get_block_values, get_spread_bytes, impl_divisible_bitmask, mapget, spread_fallback,
 	},
 };
@@ -137,7 +137,6 @@ impl DeserializeBytes for M256 {
 }
 
 impl_divisible_bitmask!(M256, 1, 2, 4);
-impl_pack_scalar!(M256);
 
 impl<U: NumCast<u128>> NumCast<M256> for U {
 	#[inline(always)]

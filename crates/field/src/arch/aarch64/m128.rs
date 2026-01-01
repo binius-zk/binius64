@@ -18,13 +18,12 @@ use rand::{
 use seq_macro::seq;
 
 use super::super::portable::{
-	packed::{PackedPrimitiveType, impl_pack_scalar},
-	packed_arithmetic::interleave_mask_even,
+	packed::PackedPrimitiveType, packed_arithmetic::interleave_mask_even,
 };
 use crate::{
 	BinaryField,
 	underlier::{
-		NumCast, SmallU, UnderlierType, UnderlierWithBitOps, WithUnderlier,
+		NumCast, SmallU, UnderlierType, UnderlierWithBitOps,
 		divisible::{Divisible, mapget},
 		impl_divisible_bitmask,
 	},
@@ -217,7 +216,6 @@ impl DeserializeBytes for M128 {
 }
 
 impl_divisible_bitmask!(M128, 1, 2, 4);
-impl_pack_scalar!(M128);
 
 // Manual Divisible implementations using NEON intrinsics
 

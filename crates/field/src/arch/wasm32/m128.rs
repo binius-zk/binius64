@@ -16,10 +16,7 @@ use rand::{Rng, RngCore};
 
 use crate::{
 	BinaryField, Random,
-	arch::portable::{
-		packed::{PackedPrimitiveType, impl_pack_scalar},
-		packed_arithmetic::interleave_mask_even,
-	},
+	arch::portable::{packed::PackedPrimitiveType, packed_arithmetic::interleave_mask_even},
 	underlier::{
 		NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
 		impl_divisible_bitmask, impl_divisible_memcast,
@@ -172,7 +169,6 @@ impl DeserializeBytes for M128 {
 
 impl_divisible_memcast!(M128, u128, u64, u32, u16, u8);
 impl_divisible_bitmask!(M128, 1, 2, 4);
-impl_pack_scalar!(M128);
 
 impl BitAnd for M128 {
 	type Output = Self;

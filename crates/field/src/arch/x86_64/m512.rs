@@ -21,14 +21,14 @@ use seq_macro::seq;
 use crate::{
 	BinaryField,
 	arch::{
-		portable::packed::{PackedPrimitiveType, impl_pack_scalar},
+		portable::packed::PackedPrimitiveType,
 		x86_64::{
 			m128::{M128, bitshift_128b},
 			m256::M256,
 		},
 	},
 	underlier::{
-		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
+		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps,
 		get_block_values, get_spread_bytes, impl_divisible_bitmask, mapget, spread_fallback,
 	},
 };
@@ -153,7 +153,6 @@ impl DeserializeBytes for M512 {
 }
 
 impl_divisible_bitmask!(M512, 1, 2, 4);
-impl_pack_scalar!(M512);
 
 impl Default for M512 {
 	#[inline(always)]
