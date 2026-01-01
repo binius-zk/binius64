@@ -145,10 +145,6 @@ impl UnderlierWithBitOps for U1 {
 	const ONE: Self = Self(1);
 	const ONES: Self = Self(1);
 
-	fn fill_with_bit(val: u8) -> Self {
-		Self(u8::fill_with_bit(val)) & Self::ONES
-	}
-
 	fn interleave(self, _other: Self, _log_block_len: usize) -> (Self, Self) {
 		panic!("interleave not supported for U1")
 	}
@@ -158,10 +154,6 @@ impl UnderlierWithBitOps for U2 {
 	const ZERO: Self = Self(0);
 	const ONE: Self = Self(1);
 	const ONES: Self = Self(0b11);
-
-	fn fill_with_bit(val: u8) -> Self {
-		Self(u8::fill_with_bit(val)) & Self::ONES
-	}
 
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		const MASKS: &[U2] = &[U2::new(interleave_mask_even!(u8, 0))];
@@ -173,10 +165,6 @@ impl UnderlierWithBitOps for U4 {
 	const ZERO: Self = Self(0);
 	const ONE: Self = Self(1);
 	const ONES: Self = Self(0b1111);
-
-	fn fill_with_bit(val: u8) -> Self {
-		Self(u8::fill_with_bit(val)) & Self::ONES
-	}
 
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		const MASKS: &[U4] = &[

@@ -382,11 +382,6 @@ impl UnderlierWithBitOps for M512 {
 	const ONES: Self = { Self(m512_from_u128s!(u128::MAX, u128::MAX, u128::MAX, u128::MAX,)) };
 
 	#[inline(always)]
-	fn fill_with_bit(val: u8) -> Self {
-		Self(unsafe { _mm512_set1_epi8(val.wrapping_neg() as i8) })
-	}
-
-	#[inline(always)]
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		let (a, b) = unsafe { interleave_bits(self.0, other.0, log_block_len) };
 		(Self(a), Self(b))

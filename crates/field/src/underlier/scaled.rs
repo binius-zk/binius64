@@ -158,10 +158,7 @@ impl<U: Not<Output = U>, const N: usize> Not for ScaledUnderlier<U, N> {
 	}
 }
 
-impl<U: UnderlierWithBitOps, const N: usize> UnderlierWithBitOps for ScaledUnderlier<U, N>
-where
-	Self: UnderlierType,
-{
+impl<U: UnderlierWithBitOps + Pod, const N: usize> UnderlierWithBitOps for ScaledUnderlier<U, N> {
 	const ZERO: Self = Self([U::ZERO; N]);
 	const ONE: Self = {
 		let mut arr = [U::ZERO; N];
@@ -169,11 +166,6 @@ where
 		Self(arr)
 	};
 	const ONES: Self = Self([U::ONES; N]);
-
-	#[inline]
-	fn fill_with_bit(val: u8) -> Self {
-		Self(array::from_fn(|_| U::fill_with_bit(val)))
-	}
 
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
 		if log_block_len < U::LOG_BITS {

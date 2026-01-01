@@ -327,11 +327,6 @@ impl UnderlierWithBitOps for M256 {
 	const ONE: Self = { Self(m256_from_u128s!(1, 0,)) };
 	const ONES: Self = { Self(m256_from_u128s!(u128::MAX, u128::MAX,)) };
 
-	#[inline]
-	fn fill_with_bit(val: u8) -> Self {
-		Self(unsafe { _mm256_set1_epi8(val.wrapping_neg() as i8) })
-	}
-
 	#[inline(always)]
 	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
 	where

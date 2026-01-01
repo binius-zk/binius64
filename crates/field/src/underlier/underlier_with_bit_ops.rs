@@ -22,6 +22,7 @@ pub trait UnderlierWithBitOps:
 	+ Shr<usize, Output = Self>
 	+ Shl<usize, Output = Self>
 	+ Not<Output = Self>
+	+ Divisible<U1>
 {
 	const ZERO: Self;
 	const ONE: Self;
@@ -29,7 +30,9 @@ pub trait UnderlierWithBitOps:
 
 	/// Fill value with the given bit
 	/// `val` must be 0 or 1.
-	fn fill_with_bit(val: u8) -> Self;
+	fn fill_with_bit(val: u8) -> Self {
+		Self::broadcast_subvalue(U1::new(val))
+	}
 
 	/// Interleave with the given bit size
 	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self);
@@ -51,7 +54,7 @@ pub trait UnderlierWithBitOps:
 		T: UnderlierType,
 		Self: Divisible<T>,
 	{
-		Self::from_iter((0..Self::N).map(f))
+		Self::from_iter((0..<Self as Divisible<T>>::N).map(f))
 	}
 
 	/// Broadcast subvalue to fill `Self`.
@@ -113,7 +116,7 @@ pub trait UnderlierWithBitOps:
 		T: UnderlierWithBitOps,
 		Self: Divisible<T>,
 	{
-		unsafe { spread_fallback(self, log_block_len, block_idx) }
+		unsafe { spread_fallback::<Self, T>(self, log_block_len, block_idx) }
 	}
 }
 
@@ -147,7 +150,7 @@ where
 	let log_repeat = U::LOG_BITS - T::LOG_BITS - log_block_len;
 	for i in 0..1 << log_block_len {
 		unsafe {
-			result.set_subvalue(i << log_repeat, value.get_subvalue(block_offset + i));
+			result.set_subvalue(i << log_repeat, value.get_subvalue::<T>(block_offset + i));
 		}
 	}
 
