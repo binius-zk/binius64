@@ -12,28 +12,34 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 
-use crate::protocols::{
-	prodcheck::MultilinearEvalClaim,
-	sumcheck::{self, BatchSumcheckOutput},
-};
+use crate::protocols::sumcheck::{self, BatchSumcheckOutput};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FracAddEvalClaim<F: Field> {
+	/// The evaluation of the numerator and denominator multilinears.
+	pub num_eval: F,
+	pub den_eval: F,
+	/// The evaluation point.
+	pub point: Vec<F>,
+}
 
 pub fn verify<F: Field, Challenger_: Challenger>(
 	k: usize,
-	claim: (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>),
+	claim: FracAddEvalClaim<F>,
 	transcript: &mut VerifierTranscript<Challenger_>,
-) -> Result<(MultilinearEvalClaim<F>, MultilinearEvalClaim<F>), Error> {
+) -> Result<FracAddEvalClaim<F>, Error> {
 	if k == 0 {
 		return Ok(claim);
 	}
 
-	let (num_claim, den_claim) = claim;
-	assert_eq!(
-		num_claim.point, den_claim.point,
-		"fractional claims must share the evaluation point"
-	);
+	let FracAddEvalClaim {
+		num_eval,
+		den_eval,
+		point,
+	} = claim;
 
-	let n_vars = num_claim.point.len();
-	let sums = [num_claim.eval, den_claim.eval];
+	let n_vars = point.len();
+	let sums = [num_eval, den_eval];
 
 	// Reduce numerator and denominator sum claims to evaluations at a challenge point.
 	let BatchSumcheckOutput {
@@ -43,19 +49,21 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 	} = sumcheck::batch_verify(n_vars, 3, &sums, transcript)?;
 
 	// Read evaluations of numerator/denominator halves at the reduced point.
-	let [num_0, den_0, num_1, den_1] = transcript.message().read()?;
+	let [num_0, num_1, den_0, den_1] = transcript.message().read()?;
 
 	// Sumcheck binds variables high-to-low; reverse to low-to-high for point evaluation.
 	challenges.reverse();
 	let reduced_eval_point = challenges;
 
-	let eq_eval = eq_ind(&num_claim.point, &reduced_eval_point);
+	let eq_eval = eq_ind(&point, &reduced_eval_point);
 	let numerator_eval = (num_0 * den_1 + num_1 * den_0) * eq_eval;
 	let denominator_eval = (den_0 * den_1) * eq_eval;
 	let batched_eval = numerator_eval + denominator_eval * batch_coeff;
 
 	if batched_eval != eval {
-		return Err(VerificationError::IncorrectRoundEvaluation { round: k }.into());
+		return Err(
+			VerificationError::IncorrectLayerFractionSumEvaluation { round: k }.into(),
+		);
 	}
 
 	// Reduce evaluations of the two halves to a single evaluation at the next point.
@@ -68,16 +76,11 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 
 	verify(
 		k - 1,
-		(
-			MultilinearEvalClaim {
-				eval: next_num,
-				point: next_point.clone(),
-			},
-			MultilinearEvalClaim {
-				eval: next_den,
-				point: next_point,
-			},
-		),
+		FracAddEvalClaim {
+			num_eval: next_num,
+			den_eval: next_den,
+			point: next_point,
+		},
 		transcript,
 	)
 }
@@ -114,6 +117,8 @@ impl From<TranscriptError> for Error {
 pub enum VerificationError {
 	#[error("sumcheck: {0}")]
 	Sumcheck(#[from] sumcheck::VerificationError),
+	#[error("incorrect layer fraction sum evaluation: {round}")]
+	IncorrectLayerFractionSumEvaluation { round: usize },
 	#[error("incorrect round evaluation: {round}")]
 	IncorrectRoundEvaluation { round: usize },
 	#[error("transcript is empty")]

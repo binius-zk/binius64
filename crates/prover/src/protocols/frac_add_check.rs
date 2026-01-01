@@ -24,6 +24,13 @@ pub struct FracAddCheckProver<P: PackedField> {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+	#[error(
+		"mismatched numerator/denominator lengths: numerator log_len {num_log_len}, denominator log_len {den_log_len}"
+	)]
+	MismatchedWitnessLengths {
+		num_log_len: usize,
+		den_log_len: usize,
+	},
 	#[error("sumcheck error: {0}")]
 	Sumcheck(#[from] SumcheckError),
 }
@@ -45,9 +52,17 @@ where
 	///
 	/// # Preconditions
 	/// * `witness.0.log_len() >= k`
-	pub fn new(k: usize, witness: FractionalBuffer<P>) -> (Self, FractionalBuffer<P>) {
+	pub fn new(
+		k: usize,
+		witness: FractionalBuffer<P>,
+	) -> Result<(Self, FractionalBuffer<P>), Error> {
 		let (witness_num, witness_den) = witness;
-		assert_eq!(witness_num.log_len(), witness_den.log_len());
+		if witness_num.log_len() != witness_den.log_len() {
+			return Err(Error::MismatchedWitnessLengths {
+				num_log_len: witness_num.log_len(),
+				den_log_len: witness_den.log_len(),
+			});
+		}
 		assert!(witness_num.log_len() >= k);
 
 		let mut layers = Vec::with_capacity(k + 1);
@@ -82,7 +97,7 @@ where
 		}
 
 		let sums = layers.pop().expect("layers has k+1 elements");
-		(Self { layers }, sums)
+		Ok((Self { layers }, sums))
 	}
 
 	/// Returns the number of remaining layers to prove.
@@ -105,35 +120,7 @@ where
 			"fractional claims must share the evaluation point"
 		);
 
-		let (num, den) = self.layers.pop().expect("layers is non-empty");
-
-		let (num_0, num_1) = num
-			.split_half_ref()
-			.expect("layer has at least one variable");
-		let (den_0, den_1) = den
-			.split_half_ref()
-			.expect("layer has at least one variable");
-
-		let num_0 = FieldBuffer::new(
-			num_0.log_len(),
-			num_0.as_ref().to_vec().into_boxed_slice(),
-		)
-		.expect("half of previous layer length");
-		let den_0 = FieldBuffer::new(
-			den_0.log_len(),
-			den_0.as_ref().to_vec().into_boxed_slice(),
-		)
-		.expect("half of previous layer length");
-		let num_1 = FieldBuffer::new(
-			num_1.log_len(),
-			num_1.as_ref().to_vec().into_boxed_slice(),
-		)
-		.expect("half of previous layer length");
-		let den_1 = FieldBuffer::new(
-			den_1.log_len(),
-			den_1.as_ref().to_vec().into_boxed_slice(),
-		)
-		.expect("half of previous layer length");
+		let layer = self.layers.pop().expect("layers is non-empty");
 
 		let remaining = if self.layers.is_empty() {
 			None
@@ -141,11 +128,7 @@ where
 			Some(self)
 		};
 
-		let prover = FracAddProver::new(
-			[num_0, den_0, num_1, den_1],
-			&num_claim.point,
-			[num_claim.eval, den_claim.eval],
-		)?;
+		let prover = FracAddProver::new(layer, &num_claim.point, [num_claim.eval, den_claim.eval])?;
 
 		Ok((MleToSumCheckDecorator::new(prover), remaining))
 	}
@@ -179,11 +162,9 @@ where
 			let output = batch_prove_and_write_evals(vec![sumcheck_prover], transcript)?;
 
 			let mut multilinear_evals = output.multilinear_evals;
-			let evals = multilinear_evals
-				.pop()
-				.expect("batch contains one prover");
+			let evals = multilinear_evals.pop().expect("batch contains one prover");
 
-			let [num_0, den_0, num_1, den_1] = evals
+			let [num_0, num_1, den_0, den_1] = evals
 				.try_into()
 				.expect("prover evaluates four multilinears");
 
@@ -233,7 +214,7 @@ mod tests {
 
 		// 2. Create prover (computes fractional-add layers)
 		let (prover, sums) =
-			FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone()));
+			FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone())).unwrap();
 
 		// 3. Generate random n-dimensional challenge point
 		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
@@ -241,34 +222,44 @@ mod tests {
 		// 4. Evaluate sums at challenge point to create claims
 		let sum_num_eval = evaluate(&sums.0, &eval_point).unwrap();
 		let sum_den_eval = evaluate(&sums.1, &eval_point).unwrap();
-		let claim = (
+		let prover_claim = (
 			MultilinearEvalClaim {
 				eval: sum_num_eval,
 				point: eval_point.clone(),
 			},
 			MultilinearEvalClaim {
 				eval: sum_den_eval,
-				point: eval_point,
+				point: eval_point.clone(),
 			},
 		);
+		let verifier_claim = frac_add_check::FracAddEvalClaim {
+			num_eval: sum_num_eval,
+			den_eval: sum_den_eval,
+			point: eval_point,
+		};
 
 		// 5. Run prover
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prover_output = prover.prove(claim.clone(), &mut prover_transcript).unwrap();
+		let prover_output = prover
+			.prove(prover_claim.clone(), &mut prover_transcript)
+			.unwrap();
 
 		// 6. Run verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let verifier_output =
-			frac_add_check::verify(k, claim, &mut verifier_transcript).unwrap();
+			frac_add_check::verify(k, verifier_claim, &mut verifier_transcript).unwrap();
 
 		// 7. Check outputs match
-		assert_eq!(prover_output, verifier_output);
+		assert_eq!(prover_output.0.point, prover_output.1.point);
+		assert_eq!(prover_output.0.point, verifier_output.point);
+		assert_eq!(prover_output.0.eval, verifier_output.num_eval);
+		assert_eq!(prover_output.1.eval, verifier_output.den_eval);
 
 		// 8. Verify multilinear evaluation of original witness
-		let expected_num = evaluate(&witness_num, &verifier_output.0.point).unwrap();
-		let expected_den = evaluate(&witness_den, &verifier_output.1.point).unwrap();
-		assert_eq!(verifier_output.0.eval, expected_num);
-		assert_eq!(verifier_output.1.eval, expected_den);
+		let expected_num = evaluate(&witness_num, &verifier_output.point).unwrap();
+		let expected_den = evaluate(&witness_den, &verifier_output.point).unwrap();
+		assert_eq!(verifier_output.num_eval, expected_num);
+		assert_eq!(verifier_output.den_eval, expected_den);
 	}
 
 	#[test]
@@ -290,7 +281,7 @@ mod tests {
 
 		// Create prover (computes fractional-add layers)
 		let (_prover, sums) =
-			FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone()));
+			FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone())).unwrap();
 
 		// For each index i in the sums layer, verify it equals the fractional sum of witness values
 		// at indices i + z * 2^n for z in 0..2^k (strided access, not contiguous)

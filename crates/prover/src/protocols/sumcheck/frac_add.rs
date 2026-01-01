@@ -1,5 +1,3 @@
-use std::array;
-
 use super::error::Error;
 use crate::protocols::sumcheck::{
 	common::{MleCheckProver, SumcheckProver},
@@ -8,11 +6,11 @@ use crate::protocols::sumcheck::{
 };
 use binius_field::{Field, PackedField};
 use binius_math::{
-	FieldBuffer, field_buffer::FieldSliceData, multilinear::fold::fold_highest_var_inplace,
+	AsSlicesMut, FieldBuffer, FieldSliceMut, multilinear::fold::fold_highest_var_inplace,
 };
 use binius_utils::rayon::prelude::*;
 use binius_verifier::protocols::sumcheck::RoundCoeffs;
-use itertools::{Intersperse, izip};
+use itertools::izip;
 
 pub type FractionalBuffer<P> = (FieldBuffer<P>, FieldBuffer<P>);
 #[derive(Debug, Clone)]
@@ -23,7 +21,7 @@ enum RoundCoeffsOrEvals<F: Field> {
 
 // Prover for the fractional additional claims required in LogUp*. We keep numerators and denominators in pairs.
 pub struct FracAddProver<P: PackedField> {
-	fraction_pairs: [FieldBuffer<P>; 4],
+	fraction_pairs: [FieldBuffer<P>; 2],
 	last_coeffs_or_evals: RoundCoeffsOrEvals<P::Scalar>,
 	gruen32: Gruen32<P>,
 }
@@ -32,16 +30,14 @@ impl<F: Field, P: PackedField<Scalar = F>> FracAddProver<P> {
 	/// Constructs a prover, given the multilinear polynomial evaluations (in pairs) and
 	/// evaluation claims on the shared evaluation point.
 	pub fn new(
-		fraction_pairs: [FieldBuffer<P>; 4],
+		fraction: (FieldBuffer<P>, FieldBuffer<P>),
 		eval_point: &[F],
 		eval_claims: [F; 2],
 	) -> Result<Self, Error> {
 		let n_vars = eval_point.len();
 
-		if fraction_pairs
-			.iter()
-			.any(|multilinear| multilinear.log_len() != n_vars)
-		{
+		let (num, den) = fraction;
+		if num.log_len() != n_vars + 1 || den.log_len() != n_vars + 1 {
 			return Err(Error::MultilinearSizeMismatch);
 		}
 
@@ -49,6 +45,7 @@ impl<F: Field, P: PackedField<Scalar = F>> FracAddProver<P> {
 
 		let gruen32 = Gruen32::new(eval_point);
 
+		let fraction_pairs = [num, den];
 		Ok(Self {
 			fraction_pairs,
 			last_coeffs_or_evals,
@@ -87,23 +84,36 @@ where
 		};
 
 		assert!(self.n_vars() > 0);
+		let n_vars = self.n_vars();
+		let [num, den] = &mut self.fraction_pairs;
 
+		let mut num_split = num.split_half_mut()?;
+		let mut den_split = den.split_half_mut()?;
+		let [mut num_a, mut num_b] = num_split.as_slices_mut();
+		let [mut den_a, mut den_b] = den_split.as_slices_mut();
+
+		num_a.truncate(n_vars);
+		num_b.truncate(n_vars);
+		den_a.truncate(n_vars);
+		den_b.truncate(n_vars);
+		let slices = [num_a, num_b, den_a, den_b];
+		
 		// Perform chunked summation: for every row, evaluate all compositions and add up
 		// results to an array of round evals accumulators. Alternative would be to sum each
 		// composition on its own pass, but that would require reading the entirety of eq field
 		// buffer on each pass, which will evict the latter from the cache. By doing chunked
 		// compute, we reasonably hope that eq chunk always stays in L1 cache.
 		const MAX_CHUNK_VARS: usize = 8;
-		let chunk_vars = std::cmp::max(MAX_CHUNK_VARS, P::LOG_WIDTH).min(self.n_vars() - 1);
+		let chunk_vars = std::cmp::max(MAX_CHUNK_VARS, P::LOG_WIDTH).min(n_vars - 1);
 
-		let packed_prime_evals: [RoundEvals2<P>; 2] = (0..1 << (self.n_vars() - 1 - chunk_vars))
+		let packed_prime_evals: [RoundEvals2<P>; 2] = (0..1 << (n_vars - 1 - chunk_vars))
 			.into_par_iter()
 			.try_fold(
 				|| [RoundEvals2::default(); 2],
 				|mut packed_prime_evals: [RoundEvals2<P>; 2], chunk_index| -> Result<_, Error> {
 					accumulate_chunk(
 						&self.gruen32,
-						&self.fraction_pairs,
+						&slices,
 						chunk_vars,
 						&mut packed_prime_evals,
 						chunk_index,
@@ -120,7 +130,7 @@ where
 		let alpha = self.gruen32.next_coordinate();
 		let round_coeffs = izip!(sums, packed_prime_evals)
 			.map(|(&sum, packed_evals)| {
-				let round_evals = packed_evals.sum_scalars(self.n_vars());
+				let round_evals = packed_evals.sum_scalars(n_vars);
 				round_evals.interpolate_eq(sum, alpha)
 			})
 			.collect::<Vec<_>>();
@@ -143,9 +153,23 @@ where
 			prime_coeffs[1].evaluate(challenge),
 		];
 
-		self.fraction_pairs
-			.iter_mut()
-			.try_for_each(|multilinear| fold_highest_var_inplace(multilinear, challenge))?;
+		let n_vars = self.n_vars();
+		let [num, den] = &mut self.fraction_pairs;
+
+		let mut num_split = num.split_half_mut()?;
+		let mut den_split = den.split_half_mut()?;
+		let [mut num_a, mut num_b] = num_split.as_slices_mut();
+		let [mut den_a, mut den_b] = den_split.as_slices_mut();
+
+		num_a.truncate(n_vars);
+		num_b.truncate(n_vars);
+		den_a.truncate(n_vars);
+		den_b.truncate(n_vars);
+
+		fold_highest_var_inplace(&mut num_a, challenge)?;
+		fold_highest_var_inplace(&mut num_b, challenge)?;
+		fold_highest_var_inplace(&mut den_a, challenge)?;
+		fold_highest_var_inplace(&mut den_b, challenge)?;
 
 		self.gruen32.fold(challenge)?;
 		self.last_coeffs_or_evals = RoundCoeffsOrEvals::Evals(evals);
@@ -165,7 +189,10 @@ where
 		let multilinear_evals = self
 			.fraction_pairs
 			.into_iter()
-			.map(|multilinear| multilinear.get_checked(0).expect("multilinear.len() == 1"))
+			.flat_map(|multilinear| {
+				let (lo, hi) = multilinear.split_half_ref().expect("Should have 2 values");
+				[lo.get(0), hi.get(0)]
+			})
 			.collect();
 
 		Ok(multilinear_evals)
@@ -174,7 +201,7 @@ where
 
 fn accumulate_chunk<P: PackedField>(
 	gruen32: &Gruen32<P>,
-	fraction_pairs: &[FieldBuffer<P>; 4],
+	fraction_pairs: &[FieldSliceMut<P>; 4],
 	chunk_vars: usize,
 	packed_prime_evals: &mut [RoundEvals2<P>; 2],
 	chunk_index: usize,
@@ -183,27 +210,27 @@ fn accumulate_chunk<P: PackedField>(
 
 	let splits = fraction_pairs
 		.iter()
-		.map(|buf| buf.split_half_ref())
+		.map(|slice| slice.split_half_ref())
 		.collect::<Result<Vec<_>, _>>()?;
 
-	// Ordering: [num_a, den_a, num_b, den_b] × {low, high} chunks.
 	let chunks = splits
 		.iter()
-		.map(|(lo, hi)| {
+		.flat_map(|(lo, hi)| {
 			[
 				lo.chunk(chunk_vars, chunk_index),
 				hi.chunk(chunk_vars, chunk_index),
 			]
 		})
-		.flatten()
 		.collect::<Result<Vec<_>, _>>()?;
+	// Ordering: [num_a, den_a, num_b, den_b] × {low, high} chunks.
+
 	let [
 		evals_num_a_0_chunk,
 		evals_num_a_1_chunk,
-		evals_den_a_0_chunk,
-		evals_den_a_1_chunk,
 		evals_num_b_0_chunk,
 		evals_num_b_1_chunk,
+		evals_den_a_0_chunk,
+		evals_den_a_1_chunk,
 		evals_den_b_0_chunk,
 		evals_den_b_1_chunk,
 	]: [FieldBuffer<P, _>; 8] = chunks
@@ -278,16 +305,15 @@ mod tests {
 		prover: MleToSumCheckDecorator<F, FracAddProver<P>>,
 		eval_claims: [F; 2],
 		eval_point: &[F],
-		num_a: FieldBuffer<P>,
-		den_a: FieldBuffer<P>,
-		num_b: FieldBuffer<P>,
-		den_b: FieldBuffer<P>,
+		num: FieldBuffer<P>,
+		den: FieldBuffer<P>,
 	) where
 		F: Field,
 		P: PackedField<Scalar = F>,
 	{
 		let n_vars = prover.n_vars();
-
+		let (num_a, num_b) = num.split_half_ref().unwrap();
+		let (den_a, den_b) = den.split_half_ref().unwrap();
 		// Run the proving protocol
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let output = batch_prove(vec![prover], &mut prover_transcript).unwrap();
@@ -300,9 +326,9 @@ mod tests {
 			.message()
 			.write_scalar_slice(&prover_evals);
 
-	// Convert to verifier transcript and run verification
-	let mut verifier_transcript = prover_transcript.into_verifier();
-	let sumcheck_output =
+		// Convert to verifier transcript and run verification
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let sumcheck_output =
 		// Degree 3 because quadratic prime polynomials are multiplied by a linear eq term.
 		batch_verify(n_vars, 3, &eval_claims, &mut verifier_transcript).unwrap();
 
@@ -313,8 +339,8 @@ mod tests {
 		// Read the multilinear evaluations from the transcript
 		let multilinear_evals: Vec<F> = verifier_transcript.message().read_vec(4).unwrap();
 
-	// Evaluate the equality indicator
-	let eq_ind_eval = eq_ind(eval_point, &reduced_eval_point);
+		// Evaluate the equality indicator
+		let eq_ind_eval = eq_ind(eval_point, &reduced_eval_point);
 
 		// Check that the original multilinears evaluate to the claimed values at the challenge
 		// point
@@ -327,24 +353,26 @@ mod tests {
 			eval_num_a, multilinear_evals[0],
 			"Numerator A should evaluate to the first claimed evaluation"
 		);
+
 		assert_eq!(
-			eval_den_a, multilinear_evals[1],
-			"Denominator A should evaluate to the second claimed evaluation"
+			eval_num_b, multilinear_evals[1],
+			"Numerator B should evaluate to the second claimed evaluation"
 		);
 		assert_eq!(
-			eval_num_b, multilinear_evals[2],
-			"Numerator B should evaluate to the third claimed evaluation"
+			eval_den_a, multilinear_evals[2],
+			"Denominator A should evaluate to the third claimed evaluation"
 		);
+
 		assert_eq!(
 			eval_den_b, multilinear_evals[3],
 			"Denominator B should evaluate to the fourth claimed evaluation"
 		);
 
-	// Check that the batched evaluation matches the sumcheck output
-	// Sumcheck wraps the prime polynomial with an eq factor, so include eq_ind_eval here.
-	let numerator_eval = (eval_num_a * eval_den_b + eval_num_b * eval_den_a) * eq_ind_eval;
-	let denominator_eval = (eval_den_a * eval_den_b) * eq_ind_eval;
-	let batched_eval = numerator_eval + denominator_eval * sumcheck_output.batch_coeff;
+		// Check that the batched evaluation matches the sumcheck output
+		// Sumcheck wraps the prime polynomial with an eq factor, so include eq_ind_eval here.
+		let numerator_eval = (eval_num_a * eval_den_b + eval_num_b * eval_den_a) * eq_ind_eval;
+		let denominator_eval = (eval_den_a * eval_den_b) * eq_ind_eval;
+		let batched_eval = numerator_eval + denominator_eval * sumcheck_output.batch_coeff;
 
 		assert_eq!(
 			batched_eval, sumcheck_output.eval,
@@ -368,10 +396,10 @@ mod tests {
 		let n_vars = 8;
 		let mut rng = StdRng::seed_from_u64(0);
 
-		let num_a = random_field_buffer::<P>(&mut rng, n_vars);
-		let den_a = random_field_buffer::<P>(&mut rng, n_vars);
-		let num_b = random_field_buffer::<P>(&mut rng, n_vars);
-		let den_b = random_field_buffer::<P>(&mut rng, n_vars);
+		let num = random_field_buffer::<P>(&mut rng, n_vars + 1);
+		let den = random_field_buffer::<P>(&mut rng, n_vars + 1);
+		let (num_a, num_b) = num.split_half_ref().unwrap();
+		let (den_a, den_b) = den.split_half_ref().unwrap();
 
 		let numerator_values =
 			izip!(num_a.as_ref(), den_a.as_ref(), num_b.as_ref(), den_b.as_ref())
@@ -385,31 +413,19 @@ mod tests {
 		let numerator_buffer = FieldBuffer::new(n_vars, numerator_values).unwrap();
 		let denominator_buffer = FieldBuffer::new(n_vars, denominator_values).unwrap();
 
-	let eval_point = random_scalars::<F>(&mut rng, n_vars);
-	// Claims are at the original eval_point; verifier handles challenge ordering separately.
-	let eval_claims = [
-		evaluate(&numerator_buffer, &eval_point).unwrap(),
-		evaluate(&denominator_buffer, &eval_point).unwrap(),
-	];
+		let eval_point = random_scalars::<F>(&mut rng, n_vars);
+		// Claims are at the original eval_point; verifier handles challenge ordering separately.
+		let eval_claims = [
+			evaluate(&numerator_buffer, &eval_point).unwrap(),
+			evaluate(&denominator_buffer, &eval_point).unwrap(),
+		];
 
-	let frac_prover = FracAddProver::new(
-		[num_a.clone(), den_a.clone(), num_b.clone(), den_b.clone()],
-		&eval_point,
-		eval_claims,
-	)
-	.unwrap();
+		let frac_prover =
+			FracAddProver::new((num.clone(), den.clone()), &eval_point, eval_claims).unwrap();
 
-	// Wrap the MLE-check prover so it emits sumcheck-compatible round polynomials.
-	let prover = MleToSumCheckDecorator::new(frac_prover);
+		// Wrap the MLE-check prover so it emits sumcheck-compatible round polynomials.
+		let prover = MleToSumCheckDecorator::new(frac_prover);
 
-		test_frac_add_sumcheck_prove_verify(
-			prover,
-			eval_claims,
-			&eval_point,
-			num_a,
-			den_a,
-			num_b,
-			den_b,
-		);
+		test_frac_add_sumcheck_prove_verify(prover, eval_claims, &eval_point, num, den);
 	}
 }
