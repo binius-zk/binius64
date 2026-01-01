@@ -17,7 +17,7 @@ use binius_prover::{
 	merkle_tree::prover::BinaryMerkleTreeProver,
 	protocols::sumcheck::{prove_single_mlecheck, quadratic_mle::QuadraticMleCheckProver},
 };
-use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex};
+use binius_spartan_frontend::constraint_system::{BlindingInfo, MulConstraint, WitnessIndex};
 use binius_spartan_verifier::Verifier;
 use binius_transcript::{
 	ProverTranscript,
@@ -26,6 +26,7 @@ use binius_transcript::{
 use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::prelude::*};
 use digest::{Digest, FixedOutputReset, Output, core_api::BlockSizeUser};
 pub use error::*;
+use rand::CryptoRng;
 
 use crate::wiring::WiringTranspose;
 
@@ -65,6 +66,7 @@ where
 		verifier: Verifier<F, MerkleHash, ParallelMerkleCompress::Compression>,
 		compression: ParallelMerkleCompress,
 	) -> Result<Self, Error> {
+		let cs = verifier.constraint_system();
 		let subspace = verifier.fri_params().rs_code().subspace();
 		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
@@ -73,7 +75,6 @@ where
 		let merkle_prover = BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression);
 
 		// Compute wiring transpose from constraint system
-		let cs = verifier.constraint_system();
 		let wiring_transpose = WiringTranspose::transpose(cs.size(), cs.mul_constraints());
 
 		Ok(Prover {
@@ -88,6 +89,7 @@ where
 	pub fn prove<Challenger_: Challenger>(
 		&self,
 		witness: &[F],
+		mut rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		let _prove_guard =
@@ -111,9 +113,16 @@ where
 		let public = &witness[..1 << cs.log_public()];
 		transcript.observe().write_slice(public);
 
-		// Pack witness into field elements
-		// TODO: Populate witness directly into a FieldBuffer
-		let witness_packed = pack_witness::<_, P>(cs.log_size() as usize, witness);
+		// Pack witness into field elements and add blinding
+		let blinding_info = cs.blinding_info();
+		let witness_packed = pack_and_blind_witness::<_, P>(
+			cs.log_size() as usize,
+			witness,
+			blinding_info,
+			cs.n_public() as usize,
+			cs.n_private() as usize,
+			&mut rng,
+		);
 
 		// Commit the witness
 		let CommitOutput {
@@ -201,9 +210,13 @@ where
 	}
 }
 
-fn pack_witness<F: Field, P: PackedField<Scalar = F>>(
+fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
 	log_witness_elems: usize,
 	witness: &[F],
+	blinding_info: &BlindingInfo,
+	n_public: usize,
+	n_private: usize,
+	mut rng: impl CryptoRng,
 ) -> FieldBuffer<P> {
 	// Precondition: witness length must match expected size
 	let expected_size = 1 << log_witness_elems;
@@ -234,6 +247,28 @@ fn pack_witness<F: Field, P: PackedField<Scalar = F>>(
 		packed_witness.set_len(len);
 	};
 
-	FieldBuffer::new(log_witness_elems, packed_witness.into_boxed_slice())
-		.expect("FieldBuffer::new should succeed with correct log_witness_elems")
+	let mut witness_packed = FieldBuffer::new(log_witness_elems, packed_witness.into_boxed_slice())
+		.expect("FieldBuffer::new should succeed with correct log_witness_elems");
+
+	// Add blinding values
+	let base = n_public + n_private;
+
+	// Set random values for non-constraint dummy wires
+	for i in 0..blinding_info.n_dummy_wires {
+		witness_packed.set(base + i, F::random(&mut rng));
+	}
+
+	// Set random values for dummy constraint wires (A * B = C)
+	let constraint_wire_base = base + blinding_info.n_dummy_wires;
+	for i in 0..blinding_info.n_dummy_constraints {
+		let a = F::random(&mut rng);
+		let b = F::random(&mut rng);
+		let c = a * b;
+
+		witness_packed.set(constraint_wire_base + 3 * i, a);
+		witness_packed.set(constraint_wire_base + 3 * i + 1, b);
+		witness_packed.set(constraint_wire_base + 3 * i + 2, c);
+	}
+
+	witness_packed
 }

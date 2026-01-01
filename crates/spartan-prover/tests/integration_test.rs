@@ -33,6 +33,20 @@ fn test_power7_circuit_prover_verifier() {
 	power7_circuit(&mut constraint_builder, x_wire, y_wire);
 	let (cs, layout) = compile(constraint_builder);
 
+	// Setup prover and verifier
+	let log_inv_rate = 1;
+	let compression = StdCompression::default();
+	let verifier = Verifier::<_, StdDigest, _>::setup(cs, log_inv_rate, compression.clone())
+		.expect("verifier setup failed");
+	let prover = Prover::<OptimalPackedB128, _, StdDigest>::setup(
+		verifier.clone(),
+		ParallelCompressionAdaptor::new(compression),
+	)
+	.expect("prover setup failed");
+
+	let cs = verifier.constraint_system();
+	let layout = layout.with_blinding(cs.blinding_info().clone());
+
 	// Choose test values: x = random, y = x^7
 	let mut rng = StdRng::seed_from_u64(0);
 	let x_val = B128::random(&mut rng);
@@ -51,21 +65,10 @@ fn test_power7_circuit_prover_verifier() {
 	// Extract public inputs (constants + inout, padded to 2^log_public)
 	let public = &witness[..1 << cs.log_public()];
 
-	// Setup prover and verifier
-	let log_inv_rate = 1;
-	let compression = StdCompression::default();
-	let verifier = Verifier::<_, StdDigest, _>::setup(cs, log_inv_rate, compression.clone())
-		.expect("verifier setup failed");
-	let prover = Prover::<OptimalPackedB128, _, StdDigest>::setup(
-		verifier.clone(),
-		ParallelCompressionAdaptor::new(compression),
-	)
-	.expect("prover setup failed");
-
 	// Generate proof
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	prover
-		.prove(&witness, &mut prover_transcript)
+		.prove(&witness, &mut rng, &mut prover_transcript)
 		.expect("prove failed");
 
 	// Verify proof

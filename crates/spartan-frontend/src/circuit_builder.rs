@@ -135,18 +135,6 @@ impl ConstraintSystemIR {
 			}
 		}
 
-		// Pad mul_constraints to the next power of two with dummy constraints
-		// The prover requires power-of-two sized constraint lists for multilinear extensions
-		let current_len = self.mul_constraints.len();
-		self.mul_constraints.resize(
-			current_len.next_power_of_two(),
-			MulConstraint {
-				a: one_operand.clone(),
-				b: one_operand.clone(),
-				c: one_operand.clone(),
-			},
-		);
-
 		// Create private_alive array from wire status (invert pruned logic)
 		let private_alive: Vec<bool> = self
 			.private_wires_status
@@ -178,13 +166,18 @@ impl ConstraintSystemIR {
 			})
 			.collect();
 
+		// Map one_wire to WitnessIndex
+		let one_wire_index = layout
+			.get(&one_wire)
+			.expect("one_wire constant should exist in layout");
+
 		let cs = ConstraintSystem::new(
 			constants,
 			layout.n_inout() as u32,
 			layout.n_private() as u32,
 			layout.log_public(),
-			layout.log_size(),
 			mul_constraints,
+			one_wire_index,
 		);
 
 		(cs, layout)

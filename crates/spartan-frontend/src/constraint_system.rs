@@ -126,43 +126,36 @@ pub struct WitnessIndex(pub u32);
 /// Contains multiplication constraints of the form `A * B = C` where A, B, C are operands
 /// (XOR combinations of witness values). Constraints directly reference [`WitnessIndex`]
 /// positions in the witness array.
+///
+/// This struct does not guarantee power-of-two constraint counts or witness size. Use
+/// [`ConstraintSystemPadded`] for a version with blinding and power-of-two padding.
 #[derive(Debug, Clone)]
 pub struct ConstraintSystem<F: Field = B128> {
 	constants: Vec<F>,
 	n_inout: u32,
 	n_private: u32,
 	log_public: u32,
-	log_size: u32,
 	mul_constraints: Vec<MulConstraint<WitnessIndex>>,
+	one_wire: WitnessIndex,
 }
 
 impl<F: Field> ConstraintSystem<F> {
 	/// Create a new constraint system.
-	///
-	/// # Preconditions
-	///
-	/// * `mul_constraints.len()` must be a power of two. This is required by the prover's
-	///   multilinear extension protocol, which operates over power-of-two sized domains.
 	pub fn new(
 		constants: Vec<F>,
 		n_inout: u32,
 		n_private: u32,
 		log_public: u32,
-		log_size: u32,
 		mul_constraints: Vec<MulConstraint<WitnessIndex>>,
+		one_wire: WitnessIndex,
 	) -> Self {
-		assert!(
-			mul_constraints.len().is_power_of_two(),
-			"mul_constraints length must be a power of two, got {}",
-			mul_constraints.len()
-		);
 		Self {
 			constants,
 			n_inout,
 			n_private,
 			log_public,
-			log_size,
 			mul_constraints,
+			one_wire,
 		}
 	}
 
@@ -182,12 +175,135 @@ impl<F: Field> ConstraintSystem<F> {
 		self.log_public
 	}
 
+	pub fn n_public(&self) -> u32 {
+		1 << self.log_public
+	}
+
+	pub fn mul_constraints(&self) -> &[MulConstraint<WitnessIndex>] {
+		&self.mul_constraints
+	}
+
+	pub fn one_wire(&self) -> WitnessIndex {
+		self.one_wire
+	}
+
+	/// Validate that a witness satisfies all multiplication constraints.
+	pub fn validate(&self, witness: &[B128]) {
+		let operand_val = |operand: &Operand<WitnessIndex>| {
+			operand
+				.wires()
+				.iter()
+				.map(|idx| witness[idx.0 as usize])
+				.sum::<B128>()
+		};
+
+		for MulConstraint { a, b, c } in &self.mul_constraints {
+			assert_eq!(operand_val(a) * operand_val(b), operand_val(c));
+		}
+	}
+}
+
+/// A constraint system with blinding and power-of-two padding.
+///
+/// Wraps a [`ConstraintSystem`], adds dummy constraints for blinding, and pads the total
+/// number of constraints to a power of two (required by the prover's multilinear extension
+/// protocol).
+#[derive(Debug, Clone)]
+pub struct ConstraintSystemPadded<F: Field = B128> {
+	inner: ConstraintSystem<F>,
+	log_size: u32,
+	blinding_info: BlindingInfo,
+	mul_constraints: Vec<MulConstraint<WitnessIndex>>,
+}
+
+impl<F: Field> ConstraintSystemPadded<F> {
+	/// Create a new padded constraint system with blinding.
+	///
+	/// This:
+	/// 1. Adds dummy multiplication constraints for blinding (3 wires each: A * B = C)
+	/// 2. Pads the total constraint count to a power of two with `one * one = one` constraints
+	/// 3. Calculates the log_size based on witness requirements
+	pub fn new(cs: ConstraintSystem<F>, blinding_info: BlindingInfo) -> Self {
+		let mut mul_constraints = cs.mul_constraints.clone();
+
+		// Calculate witness size and log_size
+		let n_public = cs.n_public() as usize;
+		let n_private = cs.n_private as usize;
+		let total_witness_size = n_public
+			+ n_private
+			+ blinding_info.n_dummy_wires
+			+ 3 * blinding_info.n_dummy_constraints;
+		let log_size = log2_ceil_usize(total_witness_size) as u32;
+
+		// Add dummy constraints for blinding
+		// Each dummy constraint uses 3 consecutive wires starting after n_dummy_wires
+		let dummy_constraint_wire_base = n_public + n_private + blinding_info.n_dummy_wires;
+		for i in 0..blinding_info.n_dummy_constraints {
+			let a = WitnessIndex((dummy_constraint_wire_base + 3 * i) as u32);
+			let b = WitnessIndex((dummy_constraint_wire_base + 3 * i + 1) as u32);
+			let c = WitnessIndex((dummy_constraint_wire_base + 3 * i + 2) as u32);
+
+			mul_constraints.push(MulConstraint {
+				a: Operand::from(a),
+				b: Operand::from(b),
+				c: Operand::from(c),
+			});
+		}
+
+		// Pad to next power of two with `one * one = one` constraints
+		let one_operand = Operand::from(cs.one_wire);
+		let current_len = mul_constraints.len();
+		mul_constraints.resize(
+			current_len.next_power_of_two(),
+			MulConstraint {
+				a: one_operand.clone(),
+				b: one_operand.clone(),
+				c: one_operand.clone(),
+			},
+		);
+
+		Self {
+			inner: cs,
+			log_size,
+			blinding_info,
+			mul_constraints,
+		}
+	}
+
+	pub fn constants(&self) -> &[F] {
+		self.inner.constants()
+	}
+
+	pub fn n_inout(&self) -> u32 {
+		self.inner.n_inout()
+	}
+
+	pub fn n_private(&self) -> u32 {
+		self.inner.n_private()
+	}
+
+	pub fn log_public(&self) -> u32 {
+		self.inner.log_public()
+	}
+
+	pub fn n_public(&self) -> u32 {
+		self.inner.n_public()
+	}
+
+	pub fn one_wire(&self) -> WitnessIndex {
+		self.inner.one_wire()
+	}
+
 	pub fn log_size(&self) -> u32 {
 		self.log_size
 	}
 
 	pub fn size(&self) -> usize {
 		1 << self.log_size as usize
+	}
+
+	pub fn blinding_info(&self) -> &BlindingInfo {
+		&self.blinding_info
 	}
 
 	pub fn mul_constraints(&self) -> &[MulConstraint<WitnessIndex>] {
@@ -249,6 +365,18 @@ impl WitnessLayout {
 		}
 	}
 
+	pub fn with_blinding(self, info: BlindingInfo) -> Self {
+		let log_public = self.log_public;
+		let n_private = self.n_private as usize;
+
+		let private_offset = 1 << log_public as usize;
+		let total_size =
+			private_offset + n_private + info.n_dummy_wires + 3 * info.n_dummy_constraints;
+		let log_size = log2_ceil_usize(total_size) as u32;
+
+		Self { log_size, ..self }
+	}
+
 	pub fn size(&self) -> usize {
 		1 << self.log_size as usize
 	}
@@ -298,6 +426,14 @@ impl WitnessLayout {
 				.map(|&id| WitnessIndex(id)),
 		}
 	}
+}
+
+#[derive(Debug, Clone)]
+pub struct BlindingInfo {
+	/// The number of random dummy wires that must be added.
+	pub n_dummy_wires: usize,
+	/// The number of random dummy multiplication constraints that must be added.
+	pub n_dummy_constraints: usize,
 }
 
 #[cfg(test)]

@@ -7,7 +7,9 @@ use binius_math::{
 	multilinear::eq::{eq_ind, eq_ind_partial_eval, eq_one_var},
 	univariate::evaluate_univariate,
 };
-use binius_spartan_frontend::constraint_system::{ConstraintSystem, MulConstraint, WitnessIndex};
+use binius_spartan_frontend::constraint_system::{
+	ConstraintSystemPadded, MulConstraint, WitnessIndex,
+};
 use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
@@ -69,7 +71,7 @@ where
 }
 
 pub fn check_eval<F: Field>(
-	constraint_system: &ConstraintSystem,
+	constraint_system: &ConstraintSystemPadded,
 	r_public: &[F],
 	r_x: &[F],
 	output: &Output<F>,

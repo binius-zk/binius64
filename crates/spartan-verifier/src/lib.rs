@@ -10,7 +10,9 @@ use binius_math::{
 	multilinear::evaluate::evaluate,
 	ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly},
 };
-use binius_spartan_frontend::constraint_system::ConstraintSystem;
+use binius_spartan_frontend::constraint_system::{
+	BlindingInfo, ConstraintSystem, ConstraintSystemPadded,
+};
 use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
@@ -32,7 +34,7 @@ pub const SECURITY_BITS: usize = 96;
 /// constraint system. Then [`Self::verify`] is called one or more times with individual instances.
 #[derive(Debug, Clone)]
 pub struct Verifier<F: Field, MerkleHash, MerkleCompress> {
-	constraint_system: ConstraintSystem,
+	constraint_system: ConstraintSystemPadded,
 	fri_params: FRIParams<F>,
 	merkle_scheme: BinaryMerkleTreeScheme<F, MerkleHash, MerkleCompress>,
 }
@@ -52,8 +54,17 @@ where
 		log_inv_rate: usize,
 		compression: MerkleCompress,
 	) -> Result<Self, Error> {
-		let log_witness_len = constraint_system.log_size() as usize;
-		let log_code_len = log_witness_len + log_inv_rate;
+		// Modify the constraint system for zero-knowledge.
+		let n_fri_queries = fri::calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
+		let blinding_info = BlindingInfo {
+			n_dummy_wires: n_fri_queries,
+			// TODO: Document why these are necessary
+			n_dummy_constraints: 2,
+		};
+		let constraint_system = ConstraintSystemPadded::new(constraint_system, blinding_info);
+
+		let log_msg_len = constraint_system.log_size() as usize;
+		let log_code_len = log_msg_len + log_inv_rate;
 		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
 		let fri_arity =
 			ConstantArityStrategy::with_optimal_arity::<F, _>(&merkle_scheme, log_code_len).arity;
@@ -65,7 +76,7 @@ where
 		let fri_params = FRIParams::with_strategy(
 			&ntt,
 			&merkle_scheme,
-			log_witness_len,
+			log_msg_len,
 			None,
 			log_inv_rate,
 			n_test_queries,
@@ -79,7 +90,7 @@ where
 		})
 	}
 
-	pub fn constraint_system(&self) -> &ConstraintSystem {
+	pub fn constraint_system(&self) -> &ConstraintSystemPadded {
 		&self.constraint_system
 	}
 

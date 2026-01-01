@@ -329,7 +329,8 @@ mod tests {
 		merkle_tree::prover::BinaryMerkleTreeProver,
 	};
 	use binius_spartan_frontend::constraint_system::{
-		ConstraintSystem, MulConstraint, Operand, WitnessIndex,
+		BlindingInfo, ConstraintSystem, ConstraintSystemPadded, MulConstraint, Operand,
+		WitnessIndex,
 	};
 	use binius_spartan_verifier::{
 		config::StdChallenger,
@@ -570,16 +571,23 @@ mod tests {
 		)
 		.expect("verify should succeed");
 
-		// Check eval consistency using ConstraintSystem
+		// Check eval consistency using ConstraintSystemPadded
 		let constraint_system = ConstraintSystem::new(
-			vec![],                  // constants
-			0,                       // n_inout
-			0,                       // n_private
-			log_public as u32,       // log_public
-			log_witness_size as u32, // log_size
-			constraints,             // mul_constraints
+			vec![],            // constants
+			0,                 // n_inout
+			0,                 // n_private
+			log_public as u32, // log_public
+			constraints,       // mul_constraints
+			WitnessIndex(0),   // one_wire (dummy for test)
 		);
-		verifier_wiring::check_eval(&constraint_system, &r_public, &r_x, &verifier_output)
+		let constraint_system_padded = ConstraintSystemPadded::new(
+			constraint_system,
+			BlindingInfo {
+				n_dummy_wires: 0,
+				n_dummy_constraints: 0,
+			},
+		);
+		verifier_wiring::check_eval(&constraint_system_padded, &r_public, &r_x, &verifier_output)
 			.expect("check_eval should succeed");
 	}
 }
