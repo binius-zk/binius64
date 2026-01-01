@@ -1,4 +1,4 @@
-// Copyright 2025 The Binius Developers
+// Copyright 2025-2026 The Binius Developers
 
 use std::array;
 

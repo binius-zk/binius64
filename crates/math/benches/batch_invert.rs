@@ -1,4 +1,4 @@
-// Copyright 2025 The Binius Developers
+// Copyright 2025-2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{BinaryField128bGhash as Ghash, Random, arch::OptimalPackedB128};

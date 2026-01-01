@@ -1,4 +1,4 @@
-// Copyright 2025 The Binius Developers
+// Copyright 2025-2026 The Binius Developers
 
 //! Reduction from the products over the sumcubes of a multilinear to a multilinear evaluation.
 //!

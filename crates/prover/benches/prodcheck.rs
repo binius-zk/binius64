@@ -1,4 +1,4 @@
-// Copyright 2025 The Binius Developers
+// Copyright 2025-2026 The Binius Developers
 
 use binius_field::arch::OptimalPackedB128;
 use binius_math::{multilinear::evaluate::evaluate, test_utils::random_field_buffer};

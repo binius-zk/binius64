@@ -233,6 +233,24 @@ This approach provides:
 - Never use `unwrap()` in library code - use `expect()` with explanation or propagate errors
 - Use `Result` types for fallible operations
 
+### Copyright Notices
+The developer team is "The Binius Developers" and copyright for new additions and modifications should be assigned accordingly.
+
+- **New files**: Add `// Copyright <YYYY> The Binius Developers` as the first line (where `<YYYY>` is the current year)
+- **Substantial modifications**: If modifying a file substantially and the copyright comments do not already include "The Binius Developers", add a new copyright line for "The Binius Developers" (keep existing copyright notices)
+- **Validation**: Run `python tools/check_copyright_notice.py` to check copyright headers; use `--fix` to automatically fix issues
+
+Example header for a new file:
+```rust
+// Copyright 2026 The Binius Developers
+```
+
+Example header for a substantially modified file with prior copyright:
+```rust
+// Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
+```
+
 ### Code Style
 - Extensive clippy lints are enforced
 - Use `cargo fmt` for formatting
