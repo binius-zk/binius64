@@ -10,6 +10,7 @@ pub mod iter;
 pub mod mem;
 #[cfg(feature = "platform-diagnostics")]
 pub mod platform_diagnostics;
+pub mod rand;
 pub mod random_access_sequence;
 pub mod rayon;
 pub mod serialization;

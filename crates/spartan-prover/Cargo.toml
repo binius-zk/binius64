@@ -18,6 +18,7 @@ binius-utils = { path = "../utils" }
 binius-prover = { path = "../prover" }
 binius-verifier = { path = "../verifier" }
 digest.workspace = true
+itertools.workspace = true
 rand.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

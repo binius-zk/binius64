@@ -1,16 +1,14 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use std::{fmt::Debug, iter::repeat_with, mem::MaybeUninit};
+use std::{fmt::Debug, mem::MaybeUninit};
 
 use binius_field::Field;
 use binius_utils::{
-	checked_arithmetics::log2_strict_usize,
-	mem::slice_assume_init_mut,
-	rayon::{prelude::*, slice::ParallelSlice},
+	checked_arithmetics::log2_strict_usize, mem::slice_assume_init_mut, rand::par_rand, rayon::{prelude::*, slice::ParallelSlice}
 };
 use binius_verifier::merkle_tree::Error;
 use digest::{FixedOutputReset, Output, crypto_common::BlockSizeUser};
-use rand::{CryptoRng, Rng};
+use rand::{CryptoRng, Rng, rngs::StdRng};
 
 use crate::hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression};
 
@@ -78,9 +76,7 @@ where
 	let log_len = log2_strict_usize(iterated_chunks.len()); // precondition
 
 	// Generate salts if needed
-	let salts = repeat_with(|| F::random(&mut rng))
-		.take(salt_len << log_len)
-		.collect::<Vec<_>>();
+	let salts = par_rand::<StdRng, _, _>(salt_len << log_len, &mut rng, F::random).collect::<Vec<_>>();
 
 	let total_length = (1 << (log_len + 1)) - 1;
 	let mut inner_nodes = Vec::with_capacity(total_length);

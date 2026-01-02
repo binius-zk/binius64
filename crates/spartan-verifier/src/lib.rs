@@ -63,7 +63,8 @@ where
 		};
 		let constraint_system = ConstraintSystemPadded::new(constraint_system, blinding_info);
 
-		let log_msg_len = constraint_system.log_size() as usize;
+		// The message contains the witness and a random mask of equal size to the witness.
+		let log_msg_len = (constraint_system.log_size() + 1) as usize;
 		let log_code_len = log_msg_len + log_inv_rate;
 		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
 		let fri_arity =

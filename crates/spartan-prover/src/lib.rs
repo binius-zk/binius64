@@ -4,7 +4,7 @@ mod error;
 pub mod pcs;
 mod wiring;
 
-use std::marker::PhantomData;
+use std::{iter::{repeat_n, repeat_with}, marker::PhantomData};
 
 use binius_field::{BinaryField, Field, PackedExtension, PackedField};
 use binius_math::{
@@ -23,10 +23,16 @@ use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_utils::{
+	SerializeBytes,
+	checked_arithmetics::checked_log_2,
+	rand::par_rand,
+	rayon::{self, prelude::*},
+};
 use digest::{Digest, FixedOutputReset, Output, core_api::BlockSizeUser};
 pub use error::*;
-use rand::CryptoRng;
+use itertools::chain;
+use rand::{CryptoRng, rngs::StdRng};
 
 use crate::wiring::WiringTranspose;
 
@@ -218,37 +224,33 @@ fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
 	n_private: usize,
 	mut rng: impl CryptoRng,
 ) -> FieldBuffer<P> {
-	// Precondition: witness length must match expected size
-	let expected_size = 1 << log_witness_elems;
-	assert_eq!(
-		witness.len(),
-		expected_size,
-		"witness length {} does not match expected size {}",
-		witness.len(),
-		expected_size
-	);
+	let packed_witness = if log_witness_elems < P::LOG_WIDTH {
+		let elems_iter = witness.iter().copied();
+		let zeros_iter = repeat_n(F::ZERO, (1 << log_witness_elems) - witness.len());
+		let mask_iter = repeat_with(|| F::random(&mut rng)).take(1 << log_witness_elems);
 
-	let len = 1 << log_witness_elems.saturating_sub(P::LOG_WIDTH);
-	let mut packed_witness = Vec::<P>::with_capacity(len);
+		let elems = P::from_scalars(chain!(elems_iter, zeros_iter, mask_iter));
+		vec![elems]
+	} else {
+		let packed_len = 1 << (log_witness_elems - P::LOG_WIDTH);
 
-	packed_witness
-		.spare_capacity_mut()
-		.into_par_iter()
-		.enumerate()
-		.for_each(|(i, dst)| {
-			let offset = i << P::LOG_WIDTH;
-			let value = P::from_fn(|j| witness[offset + j]);
+		let elems_iter = witness
+			.par_chunks(P::WIDTH)
+			.map(|chunk| P::from_scalars(chunk.iter().copied()));
+		let zeros_iter = rayon::iter::repeat_n(P::zero(), packed_len - elems_iter.len());
 
-			dst.write(value);
-		});
+		// Append a random mask to the end of the witness buffer, of equal length to the witness.
+		let mask_iter = par_rand::<StdRng, _, _>(packed_len, &mut rng, P::random);
 
-	// SAFETY: We just initialized all elements
-	unsafe {
-		packed_witness.set_len(len);
+		elems_iter
+			.chain(zeros_iter)
+			.chain(mask_iter)
+			.collect::<Vec<_>>()
 	};
 
-	let mut witness_packed = FieldBuffer::new(log_witness_elems, packed_witness.into_boxed_slice())
-		.expect("FieldBuffer::new should succeed with correct log_witness_elems");
+	let mut witness_packed =
+		FieldBuffer::new(log_witness_elems + 1, packed_witness.into_boxed_slice())
+			.expect("FieldBuffer::new should succeed with correct log_witness_elems");
 
 	// Add blinding values
 	let base = n_public + n_private;
