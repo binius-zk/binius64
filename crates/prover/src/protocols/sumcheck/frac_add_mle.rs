@@ -291,8 +291,7 @@ fn split_and_truncate<'a, P: PackedField>(
 	den_a.truncate(n_vars);
 	den_b.truncate(n_vars);
 	// Fixed ordering expected by accumulate_chunk: num(0), num(1), den(0), den(1).
-	let slices = [num_a, num_b, den_a, den_b];
-	slices
+	[num_a, num_b, den_a, den_b]
 }
 
 #[cfg(test)]
