@@ -4,7 +4,10 @@ mod error;
 pub mod pcs;
 mod wiring;
 
-use std::{iter::{repeat_n, repeat_with}, marker::PhantomData};
+use std::{
+	iter::{repeat_n, repeat_with},
+	marker::PhantomData,
+};
 
 use binius_field::{BinaryField, Field, PackedExtension, PackedField};
 use binius_math::{

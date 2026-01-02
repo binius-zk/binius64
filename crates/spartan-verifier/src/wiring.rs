@@ -61,6 +61,10 @@ where
 
 	r_y.reverse();
 
+	// The challenges include the batch_challenge as the last element after reversal.
+	// For the wiring check, we only need the sumcheck challenges (first n elements).
+	r_y.pop();
+
 	Ok(Output {
 		lambda,
 		batch_coeff,

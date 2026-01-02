@@ -8,7 +8,7 @@ use binius_math::{
 	univariate::evaluate_univariate,
 };
 use binius_prover::{
-	fri::FRIFoldProver, merkle_tree::MerkleTreeProver, protocols::basefold::BaseFoldProver,
+	fri::FRIFoldProver, merkle_tree::MerkleTreeProver, protocols::basefold,
 };
 use binius_spartan_frontend::constraint_system::{MulConstraint, Operand, WitnessIndex};
 use binius_transcript::{
@@ -212,7 +212,7 @@ where
 
 	// Run sumcheck on bivariate product
 	let batched_sum = evaluate_univariate(mulcheck_evals, lambda) + batch_coeff * public_eval;
-	BaseFoldProver::new(witness, l_poly, batched_sum, fri_prover).prove(transcript)?;
+	basefold::prove_zk(witness, l_poly, batched_sum, fri_prover, transcript)?.prove(transcript)?;
 
 	Ok(())
 }

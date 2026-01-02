@@ -19,10 +19,13 @@ use binius_transcript::{
 };
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
 use binius_verifier::{
-	fri::{self, ConstantArityStrategy, FRIParams, calculate_n_test_queries},
+	fri::{self, FRIParams, MinProofSizeStrategy, calculate_n_test_queries},
 	hash::PseudoCompressionFunction,
 	merkle_tree::BinaryMerkleTreeScheme,
-	protocols::{mlecheck, sumcheck, sumcheck::SumcheckOutput},
+	protocols::{
+		mlecheck,
+		sumcheck::{self, SumcheckOutput},
+	},
 };
 use digest::{Digest, Output, core_api::BlockSizeUser};
 
@@ -64,11 +67,12 @@ where
 		let constraint_system = ConstraintSystemPadded::new(constraint_system, blinding_info);
 
 		// The message contains the witness and a random mask of equal size to the witness.
-		let log_msg_len = (constraint_system.log_size() + 1) as usize;
-		let log_code_len = log_msg_len + log_inv_rate;
+		// For ZK mode, the batch size is 1 (witness and mask are the two interleaved elements).
+		let log_witness_size = constraint_system.log_size() as usize;
+		let log_batch_size = 1;
+		let log_dim = log_witness_size; // RS code dimension equals witness size
+		let log_code_len = log_dim + log_inv_rate;
 		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
-		let fri_arity =
-			ConstantArityStrategy::with_optimal_arity::<F, _>(&merkle_scheme, log_code_len).arity;
 
 		let subspace = BinarySubspace::with_dim(log_code_len)?;
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
@@ -77,11 +81,11 @@ where
 		let fri_params = FRIParams::with_strategy(
 			&ntt,
 			&merkle_scheme,
-			log_msg_len,
-			None,
+			log_dim + log_batch_size,
+			Some(log_batch_size),
 			log_inv_rate,
 			n_test_queries,
-			&ConstantArityStrategy::new(fri_arity),
+			&MinProofSizeStrategy,
 		)?;
 
 		Ok(Self {
@@ -191,6 +195,8 @@ pub enum Error {
 	Sumcheck(#[from] sumcheck::Error),
 	#[error("Math error: {0}")]
 	Math(#[from] binius_math::Error),
+	#[error("Reed-Solomon error: {0}")]
+	ReedSolomon(#[source] binius_math::reed_solomon::Error),
 	#[error("wiring error: {0}")]
 	Wiring(#[from] wiring::Error),
 	#[error("Transcript error: {0}")]

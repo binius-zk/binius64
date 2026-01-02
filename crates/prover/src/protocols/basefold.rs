@@ -1,7 +1,10 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{BinaryField, PackedField};
-use binius_math::{FieldBuffer, ntt::AdditiveNTT};
+use binius_math::{
+	FieldBuffer, inner_product::inner_product_par, line::extrapolate_line_packed,
+	multilinear::fold::fold_highest_var_inplace, ntt::AdditiveNTT,
+};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
@@ -66,7 +69,7 @@ where
 		fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
 	) -> Self {
 		assert_eq!(multilinear.log_len(), transparent_multilinear.log_len());
-		assert_eq!(multilinear.log_len(), fri_folder.n_rounds());
+		assert_eq!(multilinear.log_len(), fri_folder.n_rounds() - fri_folder.curr_round());
 
 		let sumcheck_prover =
 			BivariateProductSumcheckProver::new([multilinear, transparent_multilinear], claim)
@@ -154,6 +157,69 @@ where
 	}
 }
 
+/// Performs ZK batching setup and returns a BaseFoldProver for the remaining protocol.
+///
+/// This handles the zero-knowledge case where the witness is blinded with a random mask.
+/// It performs the initial unbatch round and returns a prover configured for the remaining
+/// n rounds of sumcheck + FRI.
+///
+/// ## Arguments
+///
+/// * `multilinear` - batched (witness || mask) polynomial with log_len = n+1
+/// * `transparent_multilinear` - l_poly with log_len = n
+/// * `claim` - the original sumcheck claim (before ZK batching)
+/// * `fri_folder` - FRI fold prover with n_rounds = n+1
+/// * `transcript` - prover transcript
+///
+/// ## Returns
+///
+/// A `BaseFoldProver` configured for the remaining n rounds. Caller should call
+/// `.prove(transcript)`.
+pub fn prove_zk<'a, F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
+	mut multilinear: FieldBuffer<P>,
+	transparent_multilinear: FieldBuffer<P>,
+	sum_claim: F,
+	mut fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
+	transcript: &mut ProverTranscript<Challenger_>,
+) -> Result<BaseFoldProver<'a, F, P, NTT, MerkleProver>, Error>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	NTT: AdditiveNTT<Field = F> + Sync,
+	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
+	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
+	Challenger_: Challenger,
+{
+	let _scope = tracing::debug_span!("Basefold ZK setup").entered();
+
+	assert_eq!(multilinear.log_len(), transparent_multilinear.log_len() + 1);
+	assert_eq!(multilinear.log_len(), fri_folder.n_rounds());
+
+	// Compute blinding_eval = sum_x[mask * l_poly]
+	// The verifier will compute sum = (1-r)*claim + r*blinding_eval using linear interpolation.
+	let (_witness, mask) = multilinear
+		.split_half_ref()
+		.expect("multilinear has log_len >= 1");
+	let mask_claim = inner_product_par(&mask, &transparent_multilinear);
+
+	// Write blinding_eval to transcript
+	transcript.message().write(&mask_claim);
+
+	// Sample batch challenge (before FRI fold round, matching verifier order)
+	let batch_challenge: F = transcript.sample();
+
+	// Receive batch challenge to advance to round 1 (no commitment at batch round)
+	fri_folder.receive_challenge(batch_challenge);
+
+	// Fold multilinear at its last variable.
+	fold_highest_var_inplace(&mut multilinear, batch_challenge)
+		.expect("multilinear has log_len >= 1");
+
+	// Compute the batched sum using linear interpolation.
+	let batched_sum = extrapolate_line_packed(sum_claim, mask_claim, batch_challenge);
+	Ok(BaseFoldProver::new(multilinear, transparent_multilinear, batched_sum, fri_folder))
+}
+
 #[cfg(test)]
 mod test {
 	use anyhow::{Result, bail};
@@ -177,7 +243,7 @@ mod test {
 	};
 	use rand::{SeedableRng, rngs::StdRng};
 
-	use super::BaseFoldProver;
+	use super::{BaseFoldProver, prove_zk};
 	use crate::{
 		fri::{self, CommitOutput, FRIFoldProver},
 		hash::parallel_compression::ParallelCompressionAdaptor,
@@ -282,6 +348,119 @@ mod test {
 		P: PackedField<Scalar = F>,
 	{
 		*claim += P::Scalar::ONE
+	}
+
+	fn run_basefold_zk_prove_and_verify<F, P>(
+		witness: FieldBuffer<P>,
+		mask: FieldBuffer<P>,
+		evaluation_point: Vec<F>,
+		evaluation_claim: F,
+	) -> Result<()>
+	where
+		F: BinaryField,
+		P: PackedField<Scalar = F> + PackedExtension<F>,
+	{
+		let n_vars = witness.log_len();
+		assert_eq!(mask.log_len(), n_vars);
+
+		// Create batched multilinear (witness || mask)
+		let mut batched = FieldBuffer::<P>::zeros(n_vars + 1);
+		for i in 0..witness.len() {
+			batched.set(i, witness.get(i));
+			batched.set(i + witness.len(), mask.get(i));
+		}
+
+		let eval_point_eq = eq_ind_partial_eval::<P>(&evaluation_point);
+
+		let merkle_prover = BinaryMerkleTreeProver::<F, StdDigest, _>::new(
+			ParallelCompressionAdaptor::new(StdCompression::default()),
+		);
+
+		// Setup NTT with subspace dimension = batched.log_len + LOG_INV_RATE
+		let subspace = BinarySubspace::with_dim(n_vars + 1 + LOG_INV_RATE).unwrap();
+		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+		let ntt = NeighborsLastSingleThread::new(domain_context);
+
+		// Create FRI params with log_batch_size = 1
+		let fri_params = FRIParams::with_strategy(
+			&ntt,
+			merkle_prover.scheme(),
+			batched.log_len(),
+			Some(1),
+			LOG_INV_RATE,
+			32,
+			&ConstantArityStrategy::new(2),
+		)?;
+
+		// Commit batched multilinear
+		let CommitOutput {
+			commitment: codeword_commitment,
+			committed: codeword_committed,
+			codeword,
+		} = fri::commit_interleaved(&fri_params, &ntt, &merkle_prover, batched.to_ref())?;
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		prover_transcript.message().write(&codeword_commitment);
+
+		let fri_folder = FRIFoldProver::new(
+			&fri_params,
+			&ntt,
+			&merkle_prover,
+			codeword.as_ref(),
+			&codeword_committed,
+		)?;
+
+		// Run prove_zk then continue with basefold prover
+		let prover =
+			prove_zk(batched, eval_point_eq, evaluation_claim, fri_folder, &mut prover_transcript)?;
+		prover.prove(&mut prover_transcript)?;
+
+		// Verify
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let retrieved_commitment = verifier_transcript.message().read()?;
+
+		let basefold::ReducedOutput {
+			final_fri_value,
+			final_sumcheck_value,
+			challenges,
+		} = basefold::verify_zk(
+			&fri_params,
+			merkle_prover.scheme(),
+			retrieved_commitment,
+			evaluation_claim,
+			&mut verifier_transcript,
+		)?;
+
+		// Check consistency - skip batch challenge (challenges[0])
+		let sumcheck_challenges = challenges[1..].to_vec();
+		if !basefold::sumcheck_fri_consistency(
+			final_fri_value,
+			final_sumcheck_value,
+			&evaluation_point,
+			sumcheck_challenges,
+		) {
+			bail!("Sumcheck and FRI are inconsistent");
+		}
+
+		Ok(())
+	}
+
+	#[test]
+	fn test_basefold_zk_valid_proof() {
+		type P = PackedBinaryGhash1x128b;
+
+		let n_vars = 8;
+		let mut rng = StdRng::seed_from_u64(0);
+
+		let witness = random_field_buffer::<P>(&mut rng, n_vars);
+		let mask = random_field_buffer::<P>(&mut rng, n_vars);
+		let evaluation_point = random_scalars(&mut rng, n_vars);
+
+		let eval_point_eq = eq_ind_partial_eval::<P>(&evaluation_point);
+		let evaluation_claim = inner_product_buffers(&witness, &eval_point_eq);
+
+		run_basefold_zk_prove_and_verify::<_, P>(witness, mask, evaluation_point, evaluation_claim)
+			.unwrap();
 	}
 
 	#[test]
