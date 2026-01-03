@@ -333,11 +333,13 @@ mod test {
 	{
 		let mut rng = StdRng::from_seed([0; 32]);
 
-		let multilinear = random_field_buffer::<P>(&mut rng, n_vars);
+		// Multilinear contains the witness and the mask.
+		let multilinear = random_field_buffer::<P>(&mut rng, n_vars + 1);
 		let evaluation_point = random_scalars::<F>(&mut rng, n_vars);
 
+		let (witness, _mask) = multilinear.split_half_ref().unwrap();
 		let eval_point_eq = eq_ind_partial_eval(&evaluation_point);
-		let evaluation_claim = inner_product_buffers(&multilinear, &eval_point_eq);
+		let evaluation_claim = inner_product_buffers(&witness, &eval_point_eq);
 
 		(multilinear, evaluation_point, evaluation_claim)
 	}

@@ -7,9 +7,7 @@ use binius_math::{
 	FieldBuffer, FieldSlice, multilinear, multilinear::eq::eq_ind_partial_eval, ntt::AdditiveNTT,
 	univariate::evaluate_univariate,
 };
-use binius_prover::{
-	fri::FRIFoldProver, merkle_tree::MerkleTreeProver, protocols::basefold,
-};
+use binius_prover::{fri::FRIFoldProver, merkle_tree::MerkleTreeProver, protocols::basefold};
 use binius_spartan_frontend::constraint_system::{MulConstraint, Operand, WitnessIndex};
 use binius_transcript::{
 	ProverTranscript,
@@ -338,7 +336,7 @@ mod tests {
 	};
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::{
-		fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
+		fri::{ConstantArityStrategy, FRIParams},
 		hash::{StdCompression, StdDigest},
 	};
 	use rand::{Rng, SeedableRng, rngs::StdRng};
@@ -347,7 +345,6 @@ mod tests {
 	use super::*;
 
 	const LOG_INV_RATE: usize = 1;
-	const SECURITY_BITS: usize = 32;
 
 	/// Generate random MulConstraints for testing.
 	/// Each operand has 0-4 random wires.
@@ -476,7 +473,8 @@ mod tests {
 		let constraints = generate_random_constraints(&mut rng, n_constraints, witness_size);
 
 		// Create random witness using random_field_buffer
-		let witness_packed = random_field_buffer::<Packed128b>(&mut rng, log_witness_size);
+		let witness_mask_packed = random_field_buffer::<Packed128b>(&mut rng, log_witness_size + 1);
+		let (witness_packed, _mask_packed) = witness_mask_packed.split_half_ref().unwrap();
 
 		// Compute mulcheck witness
 		let mulcheck_witness = build_mulcheck_witness(&constraints, witness_packed.to_ref());
@@ -514,14 +512,13 @@ mod tests {
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
-		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 		let fri_params = FRIParams::with_strategy(
 			&ntt,
 			merkle_prover.scheme(),
-			log_witness_size,
-			None,
+			witness_mask_packed.log_len(),
+			Some(1),
 			LOG_INV_RATE,
-			n_test_queries,
+			32,
 			&ConstantArityStrategy::new(2),
 		)
 		.expect("FRI params creation should succeed");
@@ -531,7 +528,7 @@ mod tests {
 			commitment: codeword_commitment,
 			committed: codeword_committed,
 			codeword,
-		} = fri::commit_interleaved(&fri_params, &ntt, &merkle_prover, witness_packed.to_ref())
+		} = fri::commit_interleaved(&fri_params, &ntt, &merkle_prover, witness_mask_packed.to_ref())
 			.expect("commit should succeed");
 
 		// Create FRI fold prover
@@ -548,7 +545,7 @@ mod tests {
 			fri_prover,
 			&r_public,
 			&r_x,
-			witness_packed,
+			witness_mask_packed,
 			&mulcheck_evals,
 			&mut prover_transcript,
 		)
