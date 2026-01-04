@@ -2,7 +2,7 @@
 
 use std::iter;
 
-use binius_field::BinaryField;
+use binius_field::{BinaryField, Field};
 use binius_math::{ntt::AdditiveNTT, reed_solomon::ReedSolomonCode};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use getset::{CopyGetters, Getters};
@@ -51,6 +51,75 @@ where
 			log_terminal_dim,
 			n_test_queries,
 		})
+	}
+
+	/// Create parameters that minimize proof size.
+	///
+	/// This uses dynamic programming to find the optimal sequence of fold arities that minimizes
+	/// the total proof size, accounting for both leaf data and Merkle proof overhead.
+	///
+	/// ## Arguments
+	///
+	/// * `ntt` - the additive NTT used for Reed-Solomon encoding.
+	/// * `merkle_scheme` - the Merkle tree scheme used for commitments.
+	/// * `log_msg_len` - the binary logarithm of the length of the message to commit.
+	/// * `log_batch_size` - if `Some`, fixes the batch size; if `None`, the batch size is chosen
+	///   optimally along with the fold arities.
+	/// * `log_inv_rate` - the binary logarithm of the inverse Reed–Solomon code rate.
+	/// * `n_test_queries` - the number of test queries for the FRI protocol.
+	///
+	/// ## Preconditions
+	///
+	/// * If `log_batch_size` is `Some(b)`, then `b <= log_msg_len`.
+	/// * `ntt.log_domain_size() >= log_msg_len - log_batch_size.unwrap_or(0) + log_inv_rate`.
+	///
+	/// TODO: This should accept an optional argument for `security_bits`. When it is provided, the
+	/// parameters should guarantee that the codeword length is not so large as to violate the
+	/// required soundness error probability. In other words, this means bounding the maximum
+	/// codeword length based on the field size and security bits.
+	pub fn with_min_proof_size<NTT, MerkleScheme>(
+		ntt: &NTT,
+		merkle_scheme: &MerkleScheme,
+		log_msg_len: usize,
+		log_batch_size: Option<usize>,
+		log_inv_rate: usize,
+		n_test_queries: usize,
+	) -> Result<Self, Error>
+	where
+		NTT: AdditiveNTT<Field = F>,
+		MerkleScheme: MerkleTreeScheme<F>,
+	{
+		let (log_batch_size, fold_arities) = match log_batch_size {
+			Some(log_batch_size) => {
+				assert!(log_batch_size <= log_msg_len); // precondition
+				let fold_arities = find_fold_arities_for_min_proof_size(
+					merkle_scheme,
+					log_msg_len - log_batch_size,
+					log_inv_rate,
+					n_test_queries,
+				);
+				(log_batch_size, fold_arities)
+			}
+			None => {
+				let mut fold_arities = find_fold_arities_for_min_proof_size(
+					merkle_scheme,
+					log_msg_len,
+					log_inv_rate,
+					n_test_queries,
+				);
+				let log_batch_size = if !fold_arities.is_empty() {
+					fold_arities.remove(0)
+				} else {
+					// Edge case: fold to log_dim = 0 code.
+					log_msg_len
+				};
+				(log_batch_size, fold_arities)
+			}
+		};
+
+		let log_dim = log_msg_len - log_batch_size;
+		let rs_code = ReedSolomonCode::with_ntt_subspace(ntt, log_dim, log_inv_rate)?;
+		Self::new(rs_code, log_batch_size, fold_arities, n_test_queries)
 	}
 
 	/// Choose commit parameters based on protocol parameters, using a constant fold arity.
@@ -218,9 +287,127 @@ pub fn estimate_optimal_arity(
 		.unwrap_or(1)
 }
 
+fn find_fold_arities_for_min_proof_size<F, MerkleScheme>(
+	merkle_scheme: &MerkleScheme,
+	log_msg_len: usize,
+	log_inv_rate: usize,
+	n_test_queries: usize,
+) -> Vec<usize>
+where
+	F: Field,
+	MerkleScheme: MerkleTreeScheme<F>,
+{
+	// This algorithm uses a dynamic programming approach to determine the sequence of arities that
+	// minimizes proof size. For each i in [0, log_msg_len], we determine the minimum proof size
+	// attainable when for a batched codeword with message size 2^i. This is determined by
+	// minimizing over the first reduction arity, using the values already determined for the
+	// smaller values of i.
+
+	// This vec maps log_msg_len values to the minimum proof size attainable for a batched FRI
+	// protocol committing a message with that length.
+	let mut min_sizes = Vec::<Entry>::with_capacity(log_msg_len);
+
+	#[derive(Debug)]
+	struct Entry {
+		// The minimum proof size attainable for the indexed value of i.
+		proof_size: usize,
+		// The first reduction arity to achieve the minimum proof size. If the value is none, then
+		// the best reduction sequence is to skip all folding and send the full codeword.
+		arity: Option<usize>,
+	}
+
+	// The byte-size of an element.
+	let value_size = {
+		let mut buf = Vec::new();
+		F::default()
+			.serialize(&mut buf)
+			.expect("default element can be serialized to a resizable buffer");
+		buf.len()
+	};
+
+	for i in 0..=log_msg_len {
+		// Length of the batched codeword.
+		let log_code_len = i + log_inv_rate;
+
+		let mut last_entry = None;
+		for arity in 1..=i {
+			// The additional proof bytes for the reduction by arity.
+			let reduction_proof_size = {
+				// Each queried coset contains 2^arity values.
+				let leaf_size = value_size << arity;
+				// One coset per test query.
+				let leaves_size = leaf_size * n_test_queries;
+
+				// Size of the Merkle multi-proof.
+				let optimal_layer =
+					merkle_scheme.optimal_verify_layer(n_test_queries, log_code_len);
+				let merkle_size = merkle_scheme
+					.proof_size(1 << log_code_len, n_test_queries, optimal_layer)
+					.expect("layer computed with optimal_layer must be valid");
+				leaves_size + merkle_size
+			};
+
+			let reduced_proof_size = min_sizes[i - arity].proof_size;
+			let proof_size = reduction_proof_size + reduced_proof_size;
+			let replace = last_entry
+				.as_ref()
+				.is_none_or(|last_entry: &Entry| proof_size <= last_entry.proof_size);
+			if replace {
+				last_entry = Some(Entry {
+					proof_size,
+					arity: Some(arity),
+				});
+			} else {
+				// The proof size function is concave with respect to arity. Break as soon is it
+				// ascends.
+				break;
+			}
+		}
+
+		// Determine the proof size if this is the terminal codeword. In that case, the proof simply
+		// consists of the 2^(i + log_inv_rate) leaf values.
+		let terminal_proof_size = value_size << log_code_len;
+		let terminal_entry = Entry {
+			proof_size: terminal_proof_size,
+			arity: None,
+		};
+
+		let optimal_entry = if let Some(last_entry) = last_entry
+			&& last_entry.proof_size < terminal_entry.proof_size
+		{
+			last_entry
+		} else {
+			terminal_entry
+		};
+
+		min_sizes.push(optimal_entry);
+	}
+
+	let mut fold_arities = Vec::with_capacity(log_msg_len);
+
+	let mut i = log_msg_len;
+	let mut entry = &min_sizes[i];
+	while let Some(arity) = entry.arity {
+		fold_arities.push(arity);
+		i -= arity;
+		entry = &min_sizes[i];
+	}
+	fold_arities
+}
+
 #[cfg(test)]
 mod tests {
+	use binius_math::ntt::{NeighborsLastReference, domain_context::GaoMateerOnTheFly};
+
 	use super::*;
+	use crate::{config::B128, hash::StdCompression, merkle_tree::BinaryMerkleTreeScheme};
+
+	type StdDigest = sha2::Sha256;
+	type TestMerkleScheme = BinaryMerkleTreeScheme<B128, StdDigest, StdCompression>;
+
+	fn test_merkle_scheme() -> TestMerkleScheme {
+		BinaryMerkleTreeScheme::new(StdCompression::default())
+	}
 
 	#[test]
 	fn test_calculate_n_test_queries() {
@@ -243,6 +430,137 @@ mod tests {
 		for log_block_length in 22..28 {
 			let digest_size = 1024;
 			assert_eq!(estimate_optimal_arity(log_block_length, digest_size, field_size), 6);
+		}
+	}
+
+	#[test]
+	fn test_find_fold_arities_for_min_proof_size() {
+		let merkle_scheme = test_merkle_scheme();
+		let log_inv_rate = 2;
+		let n_test_queries = 128;
+
+		// log_msg_len = 0: no folding needed, terminal codeword is optimal
+		let arities = find_fold_arities_for_min_proof_size::<B128, _>(
+			&merkle_scheme,
+			0,
+			log_inv_rate,
+			n_test_queries,
+		);
+		assert_eq!(arities, vec![]);
+
+		// log_msg_len = 3: no folding needed, terminal codeword is optimal
+		let arities = find_fold_arities_for_min_proof_size::<B128, _>(
+			&merkle_scheme,
+			3,
+			log_inv_rate,
+			n_test_queries,
+		);
+		assert_eq!(arities, vec![]);
+
+		// log_msg_len = 24
+		let arities = find_fold_arities_for_min_proof_size::<B128, _>(
+			&merkle_scheme,
+			24,
+			log_inv_rate,
+			n_test_queries,
+		);
+		assert_eq!(arities, vec![4, 4, 4, 4]);
+	}
+
+	#[test]
+	fn test_with_min_proof_size() {
+		let merkle_scheme = test_merkle_scheme();
+		let log_inv_rate = 2;
+		let n_test_queries = 128;
+
+		let ntt = NeighborsLastReference {
+			domain_context: GaoMateerOnTheFly::<B128>::generate(24 + log_inv_rate),
+		};
+
+		// log_msg_len = 0
+		{
+			let fri_params = FRIParams::with_min_proof_size(
+				&ntt,
+				&merkle_scheme,
+				0,
+				None,
+				log_inv_rate,
+				n_test_queries,
+			)
+			.unwrap();
+			assert_eq!(fri_params.fold_arities(), &[]);
+			assert_eq!(fri_params.log_batch_size(), 0);
+		}
+
+		// log_msg_len = 3
+		{
+			let fri_params = FRIParams::with_min_proof_size(
+				&ntt,
+				&merkle_scheme,
+				3,
+				None,
+				log_inv_rate,
+				n_test_queries,
+			)
+			.unwrap();
+			assert_eq!(fri_params.fold_arities(), &[]);
+			assert_eq!(fri_params.log_batch_size(), 3);
+		}
+
+		// log_msg_len = 24
+		{
+			let fri_params = FRIParams::with_min_proof_size(
+				&ntt,
+				&merkle_scheme,
+				24,
+				None,
+				log_inv_rate,
+				n_test_queries,
+			)
+			.unwrap();
+			assert_eq!(fri_params.fold_arities(), &[4, 4, 4]);
+			assert_eq!(fri_params.log_batch_size(), 4);
+		}
+	}
+
+	#[test]
+	fn test_with_min_proof_size_fixed_batch_size() {
+		let merkle_scheme = test_merkle_scheme();
+		let log_inv_rate = 2;
+		let n_test_queries = 128;
+
+		let ntt = NeighborsLastReference {
+			domain_context: GaoMateerOnTheFly::<B128>::generate(24 + log_inv_rate),
+		};
+
+		// log_msg_len = 3
+		{
+			let fri_params = FRIParams::with_min_proof_size(
+				&ntt,
+				&merkle_scheme,
+				3,
+				Some(1),
+				log_inv_rate,
+				n_test_queries,
+			)
+			.unwrap();
+			assert_eq!(fri_params.fold_arities(), &[]);
+			assert_eq!(fri_params.log_batch_size(), 1);
+		}
+
+		// log_msg_len = 24
+		{
+			let fri_params = FRIParams::with_min_proof_size(
+				&ntt,
+				&merkle_scheme,
+				24,
+				Some(1),
+				log_inv_rate,
+				n_test_queries,
+			)
+			.unwrap();
+			assert_eq!(fri_params.fold_arities(), &[4, 4, 4, 3]);
+			assert_eq!(fri_params.log_batch_size(), 1);
 		}
 	}
 }

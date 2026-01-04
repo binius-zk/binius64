@@ -81,7 +81,7 @@ where
 			return Err(Error::IncorrectLayerDepth);
 		}
 
-		Ok(((log_len - layer_depth - 1) * n_queries + (1 << layer_depth))
+		Ok(((log_len - layer_depth) * n_queries + (1 << layer_depth))
 			* <H as Digest>::output_size())
 	}
 
