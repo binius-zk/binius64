@@ -25,7 +25,7 @@ use crate::{
 	config::{
 		B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
 	},
-	fri::{FRIParams, estimate_optimal_arity},
+	fri::{ConstantArityStrategy, FRIParams},
 	hash::PseudoCompressionFunction,
 	merkle_tree::BinaryMerkleTreeScheme,
 	pcs,
@@ -78,11 +78,10 @@ where
 		let log_witness_elems = log_witness_words - LOG_WORDS_PER_ELEM;
 
 		let log_code_len = log_witness_elems + log_inv_rate;
-		let fri_arity = estimate_optimal_arity(
-			log_code_len,
-			size_of::<Output<MerkleHash>>(),
-			size_of::<B128>(),
-		);
+		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
+		let fri_arity =
+			ConstantArityStrategy::with_optimal_arity::<B128, _>(&merkle_scheme, log_code_len)
+				.arity;
 
 		let subspace = BinarySubspace::with_dim(log_code_len)?;
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
@@ -94,8 +93,6 @@ where
 			log_inv_rate,
 			fri_arity,
 		)?;
-
-		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
 
 		Ok(Self {
 			constraint_system,

@@ -53,10 +53,7 @@ where
 		})
 	}
 
-	/// Create parameters that minimize proof size.
-	///
-	/// This uses dynamic programming to find the optimal sequence of fold arities that minimizes
-	/// the total proof size, accounting for both leaf data and Merkle proof overhead.
+	/// Create parameters using the given arity selection strategy.
 	///
 	/// ## Arguments
 	///
@@ -67,6 +64,7 @@ where
 	///   optimally along with the fold arities.
 	/// * `log_inv_rate` - the binary logarithm of the inverse Reed–Solomon code rate.
 	/// * `n_test_queries` - the number of test queries for the FRI protocol.
+	/// * `strategy` - the strategy for selecting fold arities.
 	///
 	/// ## Preconditions
 	///
@@ -77,22 +75,24 @@ where
 	/// parameters should guarantee that the codeword length is not so large as to violate the
 	/// required soundness error probability. In other words, this means bounding the maximum
 	/// codeword length based on the field size and security bits.
-	pub fn with_min_proof_size<NTT, MerkleScheme>(
+	pub fn with_strategy<NTT, MerkleScheme, Strategy>(
 		ntt: &NTT,
 		merkle_scheme: &MerkleScheme,
 		log_msg_len: usize,
 		log_batch_size: Option<usize>,
 		log_inv_rate: usize,
 		n_test_queries: usize,
+		strategy: &Strategy,
 	) -> Result<Self, Error>
 	where
 		NTT: AdditiveNTT<Field = F>,
 		MerkleScheme: MerkleTreeScheme<F>,
+		Strategy: AritySelectionStrategy,
 	{
 		let (log_batch_size, fold_arities) = match log_batch_size {
 			Some(log_batch_size) => {
 				assert!(log_batch_size <= log_msg_len); // precondition
-				let fold_arities = find_fold_arities_for_min_proof_size(
+				let fold_arities = strategy.choose_arities::<F, _>(
 					merkle_scheme,
 					log_msg_len - log_batch_size,
 					log_inv_rate,
@@ -101,7 +101,7 @@ where
 				(log_batch_size, fold_arities)
 			}
 			None => {
-				let mut fold_arities = find_fold_arities_for_min_proof_size(
+				let mut fold_arities = strategy.choose_arities::<F, _>(
 					merkle_scheme,
 					log_msg_len,
 					log_inv_rate,
@@ -120,6 +120,35 @@ where
 		let log_dim = log_msg_len - log_batch_size;
 		let rs_code = ReedSolomonCode::with_ntt_subspace(ntt, log_dim, log_inv_rate)?;
 		Self::new(rs_code, log_batch_size, fold_arities, n_test_queries)
+	}
+
+	/// Create parameters that minimize proof size.
+	///
+	/// This uses dynamic programming to find the optimal sequence of fold arities that minimizes
+	/// the total proof size, accounting for both leaf data and Merkle proof overhead.
+	///
+	/// See [`Self::with_strategy`] for argument documentation.
+	pub fn with_min_proof_size<NTT, MerkleScheme>(
+		ntt: &NTT,
+		merkle_scheme: &MerkleScheme,
+		log_msg_len: usize,
+		log_batch_size: Option<usize>,
+		log_inv_rate: usize,
+		n_test_queries: usize,
+	) -> Result<Self, Error>
+	where
+		NTT: AdditiveNTT<Field = F>,
+		MerkleScheme: MerkleTreeScheme<F>,
+	{
+		Self::with_strategy(
+			ntt,
+			merkle_scheme,
+			log_msg_len,
+			log_batch_size,
+			log_inv_rate,
+			n_test_queries,
+			&MinProofSizeStrategy,
+		)
 	}
 
 	/// Choose commit parameters based on protocol parameters, using a constant fold arity.
@@ -254,145 +283,221 @@ pub fn calculate_n_test_queries(security_bits: usize, log_inv_rate: usize) -> us
 	(security_bits as f64 / -per_query_err.log2()).ceil() as usize
 }
 
-/// Heuristic for estimating the optimal FRI folding arity that minimizes proof size.
-///
-/// `log_block_length` is the binary logarithm of the  block length of the Reed–Solomon code.
-pub fn estimate_optimal_arity(
-	log_block_length: usize,
-	digest_size: usize,
-	field_size: usize,
-) -> usize {
-	(1..=log_block_length)
-		.map(|arity| {
-			(
-				// for given arity, return a tuple (arity, estimate of query_proof_size).
-				// this estimate is basd on the following approximation of a single
-				// query_proof_size, where $\vartheta$ is the arity: $\big((n-\vartheta) +
-				// (n-2\vartheta) + \ldots\big)\text{digest_size} +
-				// \frac{n-\vartheta}{\vartheta}2^{\vartheta}\text{field_size}.$
-				arity,
-				((log_block_length) / 2 * digest_size + (1 << arity) * field_size)
-					* (log_block_length - arity)
-					/ arity,
-			)
-		})
-		// now scan and terminate the iterator when query_proof_size increases.
-		.scan(None, |old: &mut Option<(usize, usize)>, new| {
-			let should_continue = !matches!(*old, Some(ref old) if new.1 > old.1);
-			*old = Some(new);
-			should_continue.then_some(new)
-		})
-		.last()
-		.map(|(arity, _)| arity)
-		.unwrap_or(1)
+/// Strategy for selecting fold arities in the FRI protocol.
+pub trait AritySelectionStrategy {
+	fn choose_arities<F, MerkleScheme>(
+		&self,
+		merkle_scheme: &MerkleScheme,
+		log_msg_len: usize,
+		log_inv_rate: usize,
+		n_test_queries: usize,
+	) -> Vec<usize>
+	where
+		F: Field,
+		MerkleScheme: MerkleTreeScheme<F>;
 }
 
-fn find_fold_arities_for_min_proof_size<F, MerkleScheme>(
-	merkle_scheme: &MerkleScheme,
-	log_msg_len: usize,
-	log_inv_rate: usize,
-	n_test_queries: usize,
-) -> Vec<usize>
-where
-	F: Field,
-	MerkleScheme: MerkleTreeScheme<F>,
-{
-	// This algorithm uses a dynamic programming approach to determine the sequence of arities that
-	// minimizes proof size. For each i in [0, log_msg_len], we determine the minimum proof size
-	// attainable when for a batched codeword with message size 2^i. This is determined by
-	// minimizing over the first reduction arity, using the values already determined for the
-	// smaller values of i.
+/// Strategy that minimizes proof size using dynamic programming.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MinProofSizeStrategy;
 
-	// This vec maps log_msg_len values to the minimum proof size attainable for a batched FRI
-	// protocol committing a message with that length.
-	let mut min_sizes = Vec::<Entry>::with_capacity(log_msg_len);
+impl AritySelectionStrategy for MinProofSizeStrategy {
+	fn choose_arities<F, MerkleScheme>(
+		&self,
+		merkle_scheme: &MerkleScheme,
+		log_msg_len: usize,
+		log_inv_rate: usize,
+		n_test_queries: usize,
+	) -> Vec<usize>
+	where
+		F: Field,
+		MerkleScheme: MerkleTreeScheme<F>,
+	{
+		// This algorithm uses a dynamic programming approach to determine the sequence of arities
+		// that minimizes proof size. For each i in [0, log_msg_len], we determine the minimum
+		// proof size attainable when for a batched codeword with message size 2^i. This is
+		// determined by minimizing over the first reduction arity, using the values already
+		// determined for the smaller values of i.
 
-	#[derive(Debug)]
-	struct Entry {
-		// The minimum proof size attainable for the indexed value of i.
-		proof_size: usize,
-		// The first reduction arity to achieve the minimum proof size. If the value is none, then
-		// the best reduction sequence is to skip all folding and send the full codeword.
-		arity: Option<usize>,
-	}
+		// This vec maps log_msg_len values to the minimum proof size attainable for a batched FRI
+		// protocol committing a message with that length.
+		let mut min_sizes = Vec::<Entry>::with_capacity(log_msg_len);
 
-	// The byte-size of an element.
-	let value_size = {
-		let mut buf = Vec::new();
-		F::default()
-			.serialize(&mut buf)
-			.expect("default element can be serialized to a resizable buffer");
-		buf.len()
-	};
+		#[derive(Debug)]
+		struct Entry {
+			// The minimum proof size attainable for the indexed value of i.
+			proof_size: usize,
+			// The first reduction arity to achieve the minimum proof size. If the value is none,
+			// then the best reduction sequence is to skip all folding and send the full codeword.
+			arity: Option<usize>,
+		}
 
-	for i in 0..=log_msg_len {
-		// Length of the batched codeword.
-		let log_code_len = i + log_inv_rate;
+		// The byte-size of an element.
+		let value_size = {
+			let mut buf = Vec::new();
+			F::default()
+				.serialize(&mut buf)
+				.expect("default element can be serialized to a resizable buffer");
+			buf.len()
+		};
 
-		let mut last_entry = None;
-		for arity in 1..=i {
-			// The additional proof bytes for the reduction by arity.
-			let reduction_proof_size = {
-				// Each queried coset contains 2^arity values.
-				let leaf_size = value_size << arity;
-				// One coset per test query.
-				let leaves_size = leaf_size * n_test_queries;
+		for i in 0..=log_msg_len {
+			// Length of the batched codeword.
+			let log_code_len = i + log_inv_rate;
 
-				// Size of the Merkle multi-proof.
-				let optimal_layer =
-					merkle_scheme.optimal_verify_layer(n_test_queries, log_code_len);
-				let merkle_size = merkle_scheme
-					.proof_size(1 << log_code_len, n_test_queries, optimal_layer)
-					.expect("layer computed with optimal_layer must be valid");
-				leaves_size + merkle_size
+			let mut last_entry = None;
+			for arity in 1..=i {
+				// The additional proof bytes for the reduction by arity.
+				let reduction_proof_size = {
+					// Each queried coset contains 2^arity values.
+					let leaf_size = value_size << arity;
+					// One coset per test query.
+					let leaves_size = leaf_size * n_test_queries;
+
+					// Size of the Merkle multi-proof.
+					let optimal_layer =
+						merkle_scheme.optimal_verify_layer(n_test_queries, log_code_len);
+					let merkle_size = merkle_scheme
+						.proof_size(1 << log_code_len, n_test_queries, optimal_layer)
+						.expect("layer computed with optimal_layer must be valid");
+					leaves_size + merkle_size
+				};
+
+				let reduced_proof_size = min_sizes[i - arity].proof_size;
+				let proof_size = reduction_proof_size + reduced_proof_size;
+				let replace = last_entry
+					.as_ref()
+					.is_none_or(|last_entry: &Entry| proof_size <= last_entry.proof_size);
+				if replace {
+					last_entry = Some(Entry {
+						proof_size,
+						arity: Some(arity),
+					});
+				} else {
+					// The proof size function is concave with respect to arity. Break as soon is
+					// it ascends.
+					break;
+				}
+			}
+
+			// Determine the proof size if this is the terminal codeword. In that case, the proof
+			// simply consists of the 2^(i + log_inv_rate) leaf values.
+			let terminal_proof_size = value_size << log_code_len;
+			let terminal_entry = Entry {
+				proof_size: terminal_proof_size,
+				arity: None,
 			};
 
-			let reduced_proof_size = min_sizes[i - arity].proof_size;
-			let proof_size = reduction_proof_size + reduced_proof_size;
-			let replace = last_entry
-				.as_ref()
-				.is_none_or(|last_entry: &Entry| proof_size <= last_entry.proof_size);
-			if replace {
-				last_entry = Some(Entry {
-					proof_size,
-					arity: Some(arity),
-				});
+			let optimal_entry = if let Some(last_entry) = last_entry
+				&& last_entry.proof_size < terminal_entry.proof_size
+			{
+				last_entry
 			} else {
-				// The proof size function is concave with respect to arity. Break as soon is it
-				// ascends.
+				terminal_entry
+			};
+
+			min_sizes.push(optimal_entry);
+		}
+
+		let mut fold_arities = Vec::with_capacity(log_msg_len);
+
+		let mut i = log_msg_len;
+		let mut entry = &min_sizes[i];
+		while let Some(arity) = entry.arity {
+			fold_arities.push(arity);
+			i -= arity;
+			entry = &min_sizes[i];
+		}
+		fold_arities
+	}
+}
+
+/// Strategy that uses a constant fold arity.
+#[derive(Debug, Clone, Copy)]
+pub struct ConstantArityStrategy {
+	/// The fold arity to use for each reduction step.
+	pub arity: usize,
+}
+
+impl ConstantArityStrategy {
+	/// Creates a new strategy with the given arity.
+	pub fn new(arity: usize) -> Self {
+		Self { arity }
+	}
+
+	/// Creates a strategy with an estimated optimal arity.
+	///
+	/// Uses a heuristic to estimate the optimal FRI folding arity that minimizes proof size.
+	///
+	/// ## Arguments
+	///
+	/// * `_merkle_scheme` - the Merkle tree scheme (used to infer digest size)
+	/// * `approx_log_code_len` - approximate log2 of the codeword length
+	pub fn with_optimal_arity<F, MerkleScheme>(
+		_merkle_scheme: &MerkleScheme,
+		approx_log_code_len: usize,
+	) -> Self
+	where
+		F: Field,
+		MerkleScheme: MerkleTreeScheme<F>,
+	{
+		let digest_size = std::mem::size_of::<MerkleScheme::Digest>() * 8;
+		let field_size = std::mem::size_of::<F>() * 8;
+
+		// Estimate optimal arity using a heuristic based on the approximation of a single
+		// query_proof_size, where θ is the arity:
+		// ((n-θ) + (n-2θ) + ...) * digest_size + ((n-θ)/θ) * 2^θ * field_size
+		let arity = (1..=approx_log_code_len)
+			.map(|arity| {
+				(
+					arity,
+					((approx_log_code_len) / 2 * digest_size + (1 << arity) * field_size)
+						* (approx_log_code_len - arity)
+						/ arity,
+				)
+			})
+			// Scan and terminate when query_proof_size increases.
+			.scan(None, |old: &mut Option<(usize, usize)>, new| {
+				let should_continue = !matches!(*old, Some(ref old) if new.1 > old.1);
+				*old = Some(new);
+				should_continue.then_some(new)
+			})
+			.last()
+			.map(|(arity, _)| arity)
+			.unwrap_or(1);
+
+		Self { arity }
+	}
+}
+
+impl AritySelectionStrategy for ConstantArityStrategy {
+	fn choose_arities<F, MerkleScheme>(
+		&self,
+		merkle_scheme: &MerkleScheme,
+		log_msg_len: usize,
+		log_inv_rate: usize,
+		n_test_queries: usize,
+	) -> Vec<usize>
+	where
+		F: Field,
+		MerkleScheme: MerkleTreeScheme<F>,
+	{
+		let log_code_len = log_msg_len + log_inv_rate;
+		let cap_height = merkle_scheme.optimal_verify_layer(n_test_queries, log_code_len);
+		let log_terminal_len = cap_height.max(log_inv_rate);
+
+		let mut fold_arities = Vec::new();
+		let mut i = log_code_len;
+		while i > log_terminal_len {
+			if let Some(next_i) = i.checked_sub(self.arity) {
+				fold_arities.push(self.arity);
+				i = next_i;
+			} else {
 				break;
 			}
 		}
-
-		// Determine the proof size if this is the terminal codeword. In that case, the proof simply
-		// consists of the 2^(i + log_inv_rate) leaf values.
-		let terminal_proof_size = value_size << log_code_len;
-		let terminal_entry = Entry {
-			proof_size: terminal_proof_size,
-			arity: None,
-		};
-
-		let optimal_entry = if let Some(last_entry) = last_entry
-			&& last_entry.proof_size < terminal_entry.proof_size
-		{
-			last_entry
-		} else {
-			terminal_entry
-		};
-
-		min_sizes.push(optimal_entry);
+		fold_arities
 	}
-
-	let mut fold_arities = Vec::with_capacity(log_msg_len);
-
-	let mut i = log_msg_len;
-	let mut entry = &min_sizes[i];
-	while let Some(arity) = entry.arity {
-		fold_arities.push(arity);
-		i -= arity;
-		entry = &min_sizes[i];
-	}
-	fold_arities
 }
 
 #[cfg(test)]
@@ -420,50 +525,25 @@ mod tests {
 	}
 
 	#[test]
-	fn test_estimate_optimal_arity() {
-		let field_size = 128;
-		for log_block_length in 22..35 {
-			let digest_size = 256;
-			assert_eq!(estimate_optimal_arity(log_block_length, digest_size, field_size), 4);
-		}
-
-		for log_block_length in 22..28 {
-			let digest_size = 1024;
-			assert_eq!(estimate_optimal_arity(log_block_length, digest_size, field_size), 6);
-		}
-	}
-
-	#[test]
-	fn test_find_fold_arities_for_min_proof_size() {
+	fn test_min_proof_size_strategy() {
 		let merkle_scheme = test_merkle_scheme();
 		let log_inv_rate = 2;
 		let n_test_queries = 128;
+		let strategy = MinProofSizeStrategy;
 
 		// log_msg_len = 0: no folding needed, terminal codeword is optimal
-		let arities = find_fold_arities_for_min_proof_size::<B128, _>(
-			&merkle_scheme,
-			0,
-			log_inv_rate,
-			n_test_queries,
-		);
+		let arities =
+			strategy.choose_arities::<B128, _>(&merkle_scheme, 0, log_inv_rate, n_test_queries);
 		assert_eq!(arities, vec![]);
 
 		// log_msg_len = 3: no folding needed, terminal codeword is optimal
-		let arities = find_fold_arities_for_min_proof_size::<B128, _>(
-			&merkle_scheme,
-			3,
-			log_inv_rate,
-			n_test_queries,
-		);
+		let arities =
+			strategy.choose_arities::<B128, _>(&merkle_scheme, 3, log_inv_rate, n_test_queries);
 		assert_eq!(arities, vec![]);
 
 		// log_msg_len = 24
-		let arities = find_fold_arities_for_min_proof_size::<B128, _>(
-			&merkle_scheme,
-			24,
-			log_inv_rate,
-			n_test_queries,
-		);
+		let arities =
+			strategy.choose_arities::<B128, _>(&merkle_scheme, 24, log_inv_rate, n_test_queries);
 		assert_eq!(arities, vec![4, 4, 4, 4]);
 	}
 
