@@ -253,8 +253,7 @@ Example header for a substantially modified file with prior copyright:
 
 ### Code Style
 - Extensive clippy lints are enforced
-- Use `cargo fmt` for formatting
-- Pre-commit hooks run rustfmt automatically
+- Use `cargo +nightly fmt` for formatting (see .pre-commit-config.yaml for the exact nightly version checked by CI)
 - See CONTRIBUTING.md for detailed style guidelines including functional programming preferences
 
 ### Commenting Guidelines

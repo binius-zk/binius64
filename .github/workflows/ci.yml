@@ -39,7 +39,7 @@ jobs:
         with:
           components: rustfmt
       - name: Install nightly toolchain for rustfmt
-        run: rustup toolchain install nightly-2025-08-11 --component rustfmt
+        run: rustup toolchain install nightly-2026-01-01 --component rustfmt
       - name: Check rustfmt
         uses: pre-commit/action@v3.0.1
         with:

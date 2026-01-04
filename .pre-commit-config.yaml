@@ -11,7 +11,7 @@ repos:
             name: Run `rustfmt`
             language: rust
             types: [rust]
-            entry: cargo +nightly-2025-08-11 fmt --check
+            entry: cargo +nightly-2026-01-01 fmt --check
             pass_filenames: false
             stages: [pre-commit]
           - id: clippy
