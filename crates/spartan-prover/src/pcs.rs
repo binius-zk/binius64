@@ -148,7 +148,7 @@ mod tests {
 	};
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::{
-		fri::FRIParams,
+		fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
 		hash::{StdCompression, StdDigest},
 	};
 	use rand::{SeedableRng, rngs::StdRng};
@@ -174,12 +174,15 @@ mod tests {
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
-		let fri_params = FRIParams::choose_with_constant_fold_arity(
+		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
+		let fri_params = FRIParams::with_strategy(
 			&ntt,
+			merkle_prover.scheme(),
 			multilinear.log_len(),
-			SECURITY_BITS,
+			None,
 			LOG_INV_RATE,
-			2,
+			n_test_queries,
+			&ConstantArityStrategy::new(2),
 		)?;
 
 		let pcs_prover = PCSProver::new(&ntt, &merkle_prover, &fri_params);

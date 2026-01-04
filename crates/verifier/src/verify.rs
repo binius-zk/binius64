@@ -25,7 +25,7 @@ use crate::{
 	config::{
 		B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
 	},
-	fri::{ConstantArityStrategy, FRIParams},
+	fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
 	hash::PseudoCompressionFunction,
 	merkle_tree::BinaryMerkleTreeScheme,
 	pcs,
@@ -86,12 +86,15 @@ where
 		let subspace = BinarySubspace::with_dim(log_code_len)?;
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
-		let fri_params = FRIParams::choose_with_constant_fold_arity(
+		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
+		let fri_params = FRIParams::with_strategy(
 			&ntt,
+			&merkle_scheme,
 			log_witness_elems,
-			SECURITY_BITS,
+			None,
 			log_inv_rate,
-			fri_arity,
+			n_test_queries,
+			&ConstantArityStrategy::new(fri_arity),
 		)?;
 
 		Ok(Self {

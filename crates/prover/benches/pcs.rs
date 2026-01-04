@@ -14,7 +14,7 @@ use binius_prover::{
 use binius_transcript::{ProverTranscript, VerifierTranscript};
 use binius_verifier::{
 	config::{B1, B128, StdChallenger},
-	fri::FRIParams,
+	fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
 	hash::{StdCompression, StdDigest},
 	pcs,
 };
@@ -46,12 +46,15 @@ fn bench_pcs(c: &mut Criterion) {
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
-		let fri_params = FRIParams::choose_with_constant_fold_arity(
+		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
+		let fri_params = FRIParams::with_strategy(
 			&ntt,
+			merkle_prover.scheme(),
 			log_len,
-			SECURITY_BITS,
+			None,
 			LOG_INV_RATE,
-			ARITY,
+			n_test_queries,
+			&ConstantArityStrategy::new(ARITY),
 		)
 		.expect("Failed to create FRI params");
 

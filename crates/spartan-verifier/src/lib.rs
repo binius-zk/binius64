@@ -17,7 +17,7 @@ use binius_transcript::{
 };
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
 use binius_verifier::{
-	fri::{self, FRIParams, estimate_optimal_arity},
+	fri::{self, ConstantArityStrategy, FRIParams, calculate_n_test_queries},
 	hash::PseudoCompressionFunction,
 	merkle_tree::BinaryMerkleTreeScheme,
 	protocols::{mlecheck, sumcheck, sumcheck::SumcheckOutput},
@@ -54,21 +54,23 @@ where
 	) -> Result<Self, Error> {
 		let log_witness_len = constraint_system.log_size() as usize;
 		let log_code_len = log_witness_len + log_inv_rate;
+		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
 		let fri_arity =
-			estimate_optimal_arity(log_code_len, size_of::<Output<MerkleHash>>(), size_of::<F>());
+			ConstantArityStrategy::with_optimal_arity::<F, _>(&merkle_scheme, log_code_len).arity;
 
 		let subspace = BinarySubspace::with_dim(log_code_len)?;
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
-		let fri_params = FRIParams::choose_with_constant_fold_arity(
+		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
+		let fri_params = FRIParams::with_strategy(
 			&ntt,
+			&merkle_scheme,
 			log_witness_len,
-			SECURITY_BITS,
+			None,
 			log_inv_rate,
-			fri_arity,
+			n_test_queries,
+			&ConstantArityStrategy::new(fri_arity),
 		)?;
-
-		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
 
 		Ok(Self {
 			constraint_system,

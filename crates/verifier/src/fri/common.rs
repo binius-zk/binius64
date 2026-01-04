@@ -4,7 +4,6 @@ use std::iter;
 
 use binius_field::{BinaryField, Field};
 use binius_math::{ntt::AdditiveNTT, reed_solomon::ReedSolomonCode};
-use binius_utils::checked_arithmetics::log2_ceil_usize;
 use getset::{CopyGetters, Getters};
 
 use super::error::Error;
@@ -119,96 +118,6 @@ where
 
 		let log_dim = log_msg_len - log_batch_size;
 		let rs_code = ReedSolomonCode::with_ntt_subspace(ntt, log_dim, log_inv_rate)?;
-		Self::new(rs_code, log_batch_size, fold_arities, n_test_queries)
-	}
-
-	/// Create parameters that minimize proof size.
-	///
-	/// This uses dynamic programming to find the optimal sequence of fold arities that minimizes
-	/// the total proof size, accounting for both leaf data and Merkle proof overhead.
-	///
-	/// See [`Self::with_strategy`] for argument documentation.
-	pub fn with_min_proof_size<NTT, MerkleScheme>(
-		ntt: &NTT,
-		merkle_scheme: &MerkleScheme,
-		log_msg_len: usize,
-		log_batch_size: Option<usize>,
-		log_inv_rate: usize,
-		n_test_queries: usize,
-	) -> Result<Self, Error>
-	where
-		NTT: AdditiveNTT<Field = F>,
-		MerkleScheme: MerkleTreeScheme<F>,
-	{
-		Self::with_strategy(
-			ntt,
-			merkle_scheme,
-			log_msg_len,
-			log_batch_size,
-			log_inv_rate,
-			n_test_queries,
-			&MinProofSizeStrategy,
-		)
-	}
-
-	/// Choose commit parameters based on protocol parameters, using a constant fold arity.
-	///
-	/// ## Arguments
-	///
-	/// * `log_msg_len` - the binary logarithm of the length of the message to commit.
-	/// * `security_bits` - the target security level in bits.
-	/// * `log_inv_rate` - the binary logarithm of the inverse Reed–Solomon code rate.
-	/// * `arity` - the folding arity.
-	pub fn choose_with_constant_fold_arity(
-		ntt: &impl AdditiveNTT<Field = F>,
-		log_msg_len: usize,
-		security_bits: usize,
-		log_inv_rate: usize,
-		arity: usize,
-	) -> Result<Self, Error> {
-		assert!(arity > 0);
-
-		let log_batch_size = log_msg_len.min(arity);
-		let log_dim = log_msg_len - log_batch_size;
-		let rs_code = ReedSolomonCode::with_ntt_subspace(ntt, log_dim, log_inv_rate)?;
-		let n_test_queries = calculate_n_test_queries(security_bits, log_inv_rate);
-
-		// TODO: Use BinaryMerkleTreeScheme to estimate instead of log2_ceil_usize
-		let cap_height = log2_ceil_usize(n_test_queries);
-		let log_terminal_len = cap_height.clamp(log_inv_rate, rs_code.log_len());
-
-		let quotient = (rs_code.log_len() - log_terminal_len) / arity;
-		let remainder = (rs_code.log_len() - log_terminal_len) % arity;
-		let mut fold_arities = vec![arity; quotient];
-		if remainder != 0 {
-			fold_arities.push(remainder);
-		}
-
-		// here is the down-to-earth explanation of what we're doing: we want the terminal
-		// codeword's log-length to be at least as large as the Merkle cap height. note that
-		// `total_vars + log_inv_rate - sum(fold_arities)` is exactly the log-length of the
-		// terminal codeword; we want this number to be ≥ cap height. so fold_arities will repeat
-		// `arity` the maximal number of times possible, while maintaining that `total_vars +
-		// log_inv_rate - sum(fold_arities) ≥ cap_height` stays true. this arity-selection
-		// strategy can be characterized as: "terminate as late as you can, while maintaining that
-		// no Merkle cap is strictly smaller than `cap_height`." this strategy does attain that
-		// property: the Merkle path height of the last non-terminal codeword will equal the
-		// log-length of the terminal codeword, which is ≥ cap height by fiat. moreover, if we
-		// terminated later than we are above, then this would stop being true. imagine what would
-		// happen if we took the above terminal codeword and continued folding. in that case, we
-		// would Merklize this word, again with the coset-bundling trick; the post-bundling path
-		// height would thus be `total_vars + log_inv_rate - sum(fold_arities) - arity`. but we
-		// already agreed (by the maximality of the number of times we subtracted `arity`) that
-		// the above number will be < cap_height. in other words, its Merkle cap will be
-		// short. equivalently: this is the latest termination for which the `min` in
-		// `optimal_verify_layer` will never trigger; i.e., we will have log2_ceil_usize(n_queries)
-		// ≤ tree_depth there. it can be shown that this strategy beats any strategy which
-		// terminates later than it does (in other words, by doing this, we are NOT terminating
-		// TOO early!). this doesn't mean that we should't terminate EVEN earlier (maybe we
-		// should). but this approach is conservative and simple; and it's easy to show that you
-		// won't lose by doing this.
-
-		// see https://github.com/IrreducibleOSS/binius/pull/300 for proof of this fact
 		Self::new(rs_code, log_batch_size, fold_arities, n_test_queries)
 	}
 
@@ -548,7 +457,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_with_min_proof_size() {
+	fn test_with_strategy_min_proof_size() {
 		let merkle_scheme = test_merkle_scheme();
 		let log_inv_rate = 2;
 		let n_test_queries = 128;
@@ -559,13 +468,14 @@ mod tests {
 
 		// log_msg_len = 0
 		{
-			let fri_params = FRIParams::with_min_proof_size(
+			let fri_params = FRIParams::with_strategy(
 				&ntt,
 				&merkle_scheme,
 				0,
 				None,
 				log_inv_rate,
 				n_test_queries,
+				&MinProofSizeStrategy,
 			)
 			.unwrap();
 			assert_eq!(fri_params.fold_arities(), &[]);
@@ -574,13 +484,14 @@ mod tests {
 
 		// log_msg_len = 3
 		{
-			let fri_params = FRIParams::with_min_proof_size(
+			let fri_params = FRIParams::with_strategy(
 				&ntt,
 				&merkle_scheme,
 				3,
 				None,
 				log_inv_rate,
 				n_test_queries,
+				&MinProofSizeStrategy,
 			)
 			.unwrap();
 			assert_eq!(fri_params.fold_arities(), &[]);
@@ -589,13 +500,14 @@ mod tests {
 
 		// log_msg_len = 24
 		{
-			let fri_params = FRIParams::with_min_proof_size(
+			let fri_params = FRIParams::with_strategy(
 				&ntt,
 				&merkle_scheme,
 				24,
 				None,
 				log_inv_rate,
 				n_test_queries,
+				&MinProofSizeStrategy,
 			)
 			.unwrap();
 			assert_eq!(fri_params.fold_arities(), &[4, 4, 4]);
@@ -604,7 +516,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_with_min_proof_size_fixed_batch_size() {
+	fn test_with_strategy_fixed_batch_size() {
 		let merkle_scheme = test_merkle_scheme();
 		let log_inv_rate = 2;
 		let n_test_queries = 128;
@@ -615,13 +527,14 @@ mod tests {
 
 		// log_msg_len = 3
 		{
-			let fri_params = FRIParams::with_min_proof_size(
+			let fri_params = FRIParams::with_strategy(
 				&ntt,
 				&merkle_scheme,
 				3,
 				Some(1),
 				log_inv_rate,
 				n_test_queries,
+				&MinProofSizeStrategy,
 			)
 			.unwrap();
 			assert_eq!(fri_params.fold_arities(), &[]);
@@ -630,13 +543,14 @@ mod tests {
 
 		// log_msg_len = 24
 		{
-			let fri_params = FRIParams::with_min_proof_size(
+			let fri_params = FRIParams::with_strategy(
 				&ntt,
 				&merkle_scheme,
 				24,
 				Some(1),
 				log_inv_rate,
 				n_test_queries,
+				&MinProofSizeStrategy,
 			)
 			.unwrap();
 			assert_eq!(fri_params.fold_arities(), &[4, 4, 4, 3]);
