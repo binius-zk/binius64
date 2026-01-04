@@ -78,6 +78,10 @@ harness = false
 name = "prodcheck"
 harness = false
 
+[[bench]]
+name = "fracaddcheck"
+harness = false
+
 [features]
 default = ["rayon"]
 rayon = ["binius-utils/rayon"]

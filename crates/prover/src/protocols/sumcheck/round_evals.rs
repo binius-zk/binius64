@@ -55,7 +55,7 @@ impl<P: PackedField> Mul<P::Scalar> for RoundEvals1<P> {
 // is defined as limit of P(X)/X^n as X approaches infinity, which equals the leading coefficient.
 // This is the Karatsuba trick. Take note that it may require removing lower-degree terms from the
 // composition polynomial.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct RoundEvals2<P: PackedField> {
 	pub y_1: P,
 	pub y_inf: P,
