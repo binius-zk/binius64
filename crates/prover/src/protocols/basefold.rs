@@ -333,15 +333,13 @@ mod test {
 	{
 		let mut rng = StdRng::from_seed([0; 32]);
 
-		// Multilinear contains the witness and the mask.
-		let multilinear = random_field_buffer::<P>(&mut rng, n_vars + 1);
+		let witness = random_field_buffer::<P>(&mut rng, n_vars);
 		let evaluation_point = random_scalars::<F>(&mut rng, n_vars);
 
-		let (witness, _mask) = multilinear.split_half_ref().unwrap();
 		let eval_point_eq = eq_ind_partial_eval(&evaluation_point);
 		let evaluation_claim = inner_product_buffers(&witness, &eval_point_eq);
 
-		(multilinear, evaluation_point, evaluation_claim)
+		(witness, evaluation_point, evaluation_claim)
 	}
 
 	fn dubiously_modify_claim<F, P>(claim: &mut F)
@@ -353,8 +351,7 @@ mod test {
 	}
 
 	fn run_basefold_zk_prove_and_verify<F, P>(
-		witness: FieldBuffer<P>,
-		mask: FieldBuffer<P>,
+		witness_plus_mask: FieldBuffer<P>,
 		evaluation_point: Vec<F>,
 		evaluation_claim: F,
 	) -> Result<()>
@@ -362,15 +359,8 @@ mod test {
 		F: BinaryField,
 		P: PackedField<Scalar = F> + PackedExtension<F>,
 	{
-		let n_vars = witness.log_len();
-		assert_eq!(mask.log_len(), n_vars);
-
-		// Create batched multilinear (witness || mask)
-		let mut batched = FieldBuffer::<P>::zeros(n_vars + 1);
-		for i in 0..witness.len() {
-			batched.set(i, witness.get(i));
-			batched.set(i + witness.len(), mask.get(i));
-		}
+		let n_vars = evaluation_point.len();
+		assert_eq!(witness_plus_mask.log_len(), n_vars + 1);
 
 		let eval_point_eq = eq_ind_partial_eval::<P>(&evaluation_point);
 
@@ -378,8 +368,8 @@ mod test {
 			ParallelCompressionAdaptor::new(StdCompression::default()),
 		);
 
-		// Setup NTT with subspace dimension = batched.log_len + LOG_INV_RATE
-		let subspace = BinarySubspace::with_dim(n_vars + 1 + LOG_INV_RATE).unwrap();
+		// Setup NTT with subspace dimension = witness.log_len + LOG_INV_RATE
+		let subspace = BinarySubspace::with_dim(n_vars + LOG_INV_RATE).unwrap();
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
@@ -387,7 +377,7 @@ mod test {
 		let fri_params = FRIParams::with_strategy(
 			&ntt,
 			merkle_prover.scheme(),
-			batched.log_len(),
+			witness_plus_mask.log_len(),
 			Some(1),
 			LOG_INV_RATE,
 			32,
@@ -399,22 +389,22 @@ mod test {
 			commitment: codeword_commitment,
 			committed: codeword_committed,
 			codeword,
-		} = fri::commit_interleaved(&fri_params, &ntt, &merkle_prover, batched.to_ref())?;
+		} = fri::commit_interleaved(&fri_params, &ntt, &merkle_prover, witness_plus_mask.to_ref())?;
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover_transcript.message().write(&codeword_commitment);
 
-		let fri_folder = FRIFoldProver::new(
-			&fri_params,
-			&ntt,
-			&merkle_prover,
-			codeword,
-			&codeword_committed,
-		)?;
+		let fri_folder =
+			FRIFoldProver::new(&fri_params, &ntt, &merkle_prover, codeword, &codeword_committed)?;
 
 		// Run prove_zk then continue with basefold prover
-		let prover =
-			prove_zk(batched, eval_point_eq, evaluation_claim, fri_folder, &mut prover_transcript);
+		let prover = prove_zk(
+			witness_plus_mask,
+			eval_point_eq,
+			evaluation_claim,
+			fri_folder,
+			&mut prover_transcript,
+		);
 		prover.prove(&mut prover_transcript)?;
 
 		// Verify
@@ -454,15 +444,19 @@ mod test {
 		let n_vars = 8;
 		let mut rng = StdRng::seed_from_u64(0);
 
-		let witness = random_field_buffer::<P>(&mut rng, n_vars);
-		let mask = random_field_buffer::<P>(&mut rng, n_vars);
+		let witness_plus_mask = random_field_buffer::<P>(&mut rng, n_vars + 1);
 		let evaluation_point = random_scalars(&mut rng, n_vars);
 
+		let (witness, _mask) = witness_plus_mask.split_half_ref().unwrap();
 		let eval_point_eq = eq_ind_partial_eval::<P>(&evaluation_point);
 		let evaluation_claim = inner_product_buffers(&witness, &eval_point_eq);
 
-		run_basefold_zk_prove_and_verify::<_, P>(witness, mask, evaluation_point, evaluation_claim)
-			.unwrap();
+		run_basefold_zk_prove_and_verify::<_, P>(
+			witness_plus_mask,
+			evaluation_point,
+			evaluation_claim,
+		)
+		.unwrap();
 	}
 
 	#[test]
