@@ -534,14 +534,9 @@ mod tests {
 			.expect("commit should succeed");
 
 		// Create FRI fold prover
-		let fri_prover = FRIFoldProver::new(
-			&fri_params,
-			&ntt,
-			&merkle_prover,
-			codeword.as_ref(),
-			&codeword_committed,
-		)
-		.expect("FRI fold prover creation should succeed");
+		let fri_prover =
+			FRIFoldProver::new(&fri_params, &ntt, &merkle_prover, codeword, &codeword_committed)
+				.expect("FRI fold prover creation should succeed");
 
 		// Prover side
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());

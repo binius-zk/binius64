@@ -63,8 +63,7 @@ fn test_commit_prove_verify_success<F, P>(
 
 	// Run the prover to generate the proximity proof
 	let mut round_prover =
-		FRIFoldProver::new(&params, &ntt, &merkle_prover, codeword.as_ref(), &codeword_committed)
-			.unwrap();
+		FRIFoldProver::new(&params, &ntt, &merkle_prover, codeword, &codeword_committed).unwrap();
 
 	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
 	prover_challenger.message().write(&codeword_commitment);

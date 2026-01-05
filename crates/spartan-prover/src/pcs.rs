@@ -89,7 +89,7 @@ where
 	/// * `transcript` - the prover's transcript
 	pub fn prove<P, Challenger_>(
 		&self,
-		committed_codeword: &'a [P],
+		committed_codeword: FieldBuffer<P>,
 		committed: &'a MerkleProver::Committed,
 		multilinear: FieldBuffer<P>,
 		evaluation_point: &[F],
@@ -198,7 +198,7 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover_transcript.message().write(&codeword_commitment);
 		pcs_prover.prove(
-			codeword.as_ref(),
+			codeword,
 			&codeword_committed,
 			multilinear,
 			&evaluation_point,

@@ -87,23 +87,33 @@ fn bench_pcs(c: &mut Criterion) {
 		transcript.message().write_scalar(eval);
 
 		group.bench_function(format!("prove/log_len={log_len}"), |b| {
-			b.iter(|| {
-				let mut transcript = transcript.clone();
-				pcs_prover
-					.prove(
-						codeword.as_ref(),
-						&codeword_committed,
+			b.iter_batched(
+				|| {
+					(
+						transcript.clone(),
+						codeword.clone(),
 						packed_multilin.clone(),
 						eval_point.clone(),
-						&mut transcript,
 					)
-					.unwrap()
-			});
+				},
+				|(mut transcript, codeword, packed_multilin, eval_point)| {
+					pcs_prover
+						.prove(
+							codeword,
+							&codeword_committed,
+							packed_multilin,
+							eval_point,
+							&mut transcript,
+						)
+						.unwrap()
+				},
+				criterion::BatchSize::SmallInput,
+			);
 		});
 
 		pcs_prover
 			.prove(
-				codeword.as_ref(),
+				codeword.clone(),
 				&codeword_committed,
 				packed_multilin.clone(),
 				eval_point.clone(),

@@ -226,13 +226,8 @@ mod test {
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover_transcript.message().write(&codeword_commitment);
 
-		let fri_folder = FRIFoldProver::new(
-			&fri_params,
-			&ntt,
-			&merkle_prover,
-			codeword.as_ref(),
-			&codeword_committed,
-		)?;
+		let fri_folder =
+			FRIFoldProver::new(&fri_params, &ntt, &merkle_prover, codeword, &codeword_committed)?;
 
 		let prover = BaseFoldProver::new(multilinear, eval_point_eq, evaluation_claim, fri_folder);
 		prover.prove(&mut prover_transcript)?;

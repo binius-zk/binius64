@@ -274,7 +274,7 @@ where
 		)
 		.entered();
 		pcs_prover.prove(
-			trace_codeword.as_ref(),
+			trace_codeword,
 			&trace_committed,
 			witness_packed,
 			eval_point,

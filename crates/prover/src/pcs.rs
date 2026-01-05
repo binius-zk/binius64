@@ -106,7 +106,7 @@ where
 	/// * `transcript` - the transcript of the prover's proof
 	pub fn prove<P, Challenger_>(
 		&self,
-		committed_codeword: &'a [P],
+		committed_codeword: FieldBuffer<P>,
 		committed: &'a MerkleProver::Committed,
 		packed_multilin: FieldBuffer<P>,
 		evaluation_point: Vec<B128>,
@@ -261,7 +261,7 @@ mod test {
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover_transcript.message().write(&codeword_commitment);
 		ring_switch_pcs_prover.prove(
-			codeword.as_ref(),
+			codeword,
 			&codeword_committed,
 			packed_mle,
 			evaluation_point.clone(),

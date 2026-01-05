@@ -2,7 +2,8 @@
 
 use std::iter;
 
-use binius_field::{BinaryField, PackedField, packed::iter_packed_slice_with_offset};
+use binius_field::{BinaryField, PackedField};
+use binius_math::{FieldBuffer, FieldSlice};
 use binius_transcript::TranscriptWriter;
 use binius_verifier::{
 	fri::{FRIParams, vcs_optimal_layers_depths_iter},
@@ -24,9 +25,9 @@ where
 	VCS: MerkleTreeScheme<F>,
 {
 	pub(super) params: &'a FRIParams<F>,
-	pub(super) codeword: &'a [P],
+	pub(super) codeword: FieldBuffer<P>,
 	pub(super) codeword_committed: &'a MerkleProver::Committed,
-	pub(super) round_committed: Vec<(Vec<F>, MerkleProver::Committed)>,
+	pub(super) round_committed: Vec<(FieldBuffer<F>, MerkleProver::Committed)>,
 	pub(super) merkle_prover: &'a MerkleProver,
 }
 
@@ -64,7 +65,7 @@ where
 
 		prove_coset_opening(
 			self.merkle_prover,
-			self.codeword,
+			self.codeword.to_ref(),
 			self.codeword_committed,
 			index,
 			self.params.log_batch_size(),
@@ -78,7 +79,7 @@ where
 			index >>= arity;
 			prove_coset_opening(
 				self.merkle_prover,
-				codeword,
+				codeword.to_ref(),
 				committed,
 				index,
 				arity,
@@ -111,7 +112,7 @@ where
 
 fn prove_coset_opening<F, P, MTProver, B>(
 	merkle_prover: &MTProver,
-	codeword: &[P],
+	codeword: FieldSlice<P>,
 	committed: &MTProver::Committed,
 	coset_index: usize,
 	log_coset_size: usize,
@@ -124,9 +125,12 @@ where
 	MTProver: MerkleTreeProver<F>,
 	B: BufMut,
 {
-	let values = iter_packed_slice_with_offset(codeword, coset_index << log_coset_size)
-		.take(1 << log_coset_size);
-	advice.write_scalar_iter(values);
+	assert!(coset_index < (1 << (codeword.log_len() - log_coset_size))); // precondition
+
+	let values = codeword
+		.chunk(log_coset_size, coset_index)
+		.expect("precondition: coset_index < 2^(codeword.log_len() - log_coset_size)");
+	advice.write_scalar_iter(values.iter_scalars());
 
 	merkle_prover.prove_opening(committed, optimal_layer_depth, coset_index, advice)?;
 

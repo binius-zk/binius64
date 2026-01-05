@@ -143,7 +143,7 @@ where
 			self.verifier.fri_params(),
 			&self.ntt,
 			&self.merkle_prover,
-			codeword.as_ref(),
+			codeword,
 			&codeword_committed,
 		)?;
 		wiring::prove(

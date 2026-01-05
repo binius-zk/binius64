@@ -1,17 +1,17 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use binius_field::{BinaryField, Field, PackedField, packed::len_packed_slice};
-use binius_math::{multilinear::eq::eq_ind_partial_eval, ntt::AdditiveNTT};
+use binius_field::{BinaryField, Field, PackedField};
+use binius_math::{
+	FieldBuffer, FieldSlice, inner_product::inner_product_buffers,
+	multilinear::eq::eq_ind_partial_eval, ntt::AdditiveNTT,
+};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSampleBits, Challenger},
 };
 use binius_utils::{SerializeBytes, checked_arithmetics::log2_strict_usize, rayon::prelude::*};
 use binius_verifier::{
-	fri::{
-		FRIParams,
-		fold::{fold_chunk, fold_interleaved_chunk},
-	},
+	fri::{FRIParams, fold::fold_chunk},
 	merkle_tree::MerkleTreeScheme,
 };
 use tracing::instrument;
@@ -20,7 +20,7 @@ use super::{error::Error, query::FRIQueryProver};
 use crate::merkle_tree::MerkleTreeProver;
 
 /// The type of the termination round codeword in the FRI protocol.
-pub type TerminateCodeword<F> = Vec<F>;
+pub type TerminateCodeword<F> = FieldBuffer<F>;
 
 pub enum FoldRoundOutput<VCSCommitment> {
 	NoCommitment,
@@ -37,9 +37,9 @@ where
 	params: &'a FRIParams<F>,
 	ntt: &'a NTT,
 	merkle_prover: &'a MerkleProver,
-	codeword: &'a [P],
+	codeword: FieldBuffer<P>,
 	codeword_committed: &'a MerkleProver::Committed,
-	round_committed: Vec<(Vec<F>, MerkleProver::Committed)>,
+	round_committed: Vec<(FieldBuffer<F>, MerkleProver::Committed)>,
 	curr_round: usize,
 	next_commit_round: Option<usize>,
 	unprocessed_challenges: Vec<F>,
@@ -58,10 +58,10 @@ where
 		params: &'a FRIParams<F>,
 		ntt: &'a NTT,
 		merkle_prover: &'a MerkleProver,
-		committed_codeword: &'a [P],
+		committed_codeword: FieldBuffer<P>,
 		committed: &'a MerkleProver::Committed,
 	) -> Result<Self, Error> {
-		if len_packed_slice(committed_codeword) < 1 << params.log_len() {
+		if committed_codeword.len() < 1 << params.log_len() {
 			return Err(Error::InvalidArgs(
 				"Reed-Solomon code length must match interleaved codeword length".to_string(),
 			));
@@ -95,7 +95,7 @@ where
 	pub fn current_codeword_len(&self) -> usize {
 		match self.round_committed.last() {
 			Some((codeword, _)) => codeword.len(),
-			None => len_packed_slice(self.codeword),
+			None => self.codeword.len(),
 		}
 	}
 
@@ -132,18 +132,13 @@ where
 			Some((prev_codeword, _)) => {
 				// Fold a full codeword committed in the previous FRI round into a codeword with
 				// reduced dimension and rate.
-				fold_codeword(
-					self.ntt,
-					prev_codeword,
-					&self.unprocessed_challenges,
-					log2_strict_usize(prev_codeword.len()),
-				)
+				fold_codeword(self.ntt, prev_codeword.to_ref(), &self.unprocessed_challenges)
 			}
 			None => {
 				// Fold the interleaved codeword that was originally committed into a single
 				// codeword with the same block length.
 				fold_interleaved(
-					self.codeword,
+					self.codeword.to_ref(),
 					&self.unprocessed_challenges,
 					self.params.rs_code().log_len(),
 					self.params.log_batch_size(),
@@ -162,7 +157,9 @@ where
 		let log_coset_size = next_arity.unwrap_or_else(|| self.params.n_final_challenges());
 		let coset_size = 1 << log_coset_size;
 		let merkle_tree_span = tracing::debug_span!("Merkle Tree").entered();
-		let (commitment, committed) = self.merkle_prover.commit(&folded_codeword, coset_size)?;
+		let (commitment, committed) = self
+			.merkle_prover
+			.commit(folded_codeword.as_ref(), coset_size)?;
 		drop(merkle_tree_span);
 
 		self.next_commit_round = self.next_commit_round.take().and_then(|next_commit_round| {
@@ -195,7 +192,10 @@ where
 			.round_committed
 			.last()
 			.map(|(codeword, _)| codeword.clone())
-			.unwrap_or_else(|| PackedField::iter_slice(self.codeword).collect());
+			.unwrap_or_else(|| {
+				let scalars: Vec<F> = self.codeword.iter_scalars().collect();
+				FieldBuffer::from_values(&scalars).expect("codeword has power-of-two length")
+			});
 
 		self.unprocessed_challenges.clear();
 
@@ -227,7 +227,7 @@ where
 	{
 		let (terminate_codeword, query_prover) = self.finalize()?;
 		let mut advice = transcript.decommitment();
-		advice.write_scalar_slice(&terminate_codeword);
+		advice.write_scalar_slice(terminate_codeword.as_ref());
 
 		let layers = query_prover.vcs_optimal_layers()?;
 		for layer in layers {
@@ -258,27 +258,29 @@ where
 /// [DP24]: <https://eprint.iacr.org/2024/504>
 #[instrument(skip_all, level = "debug")]
 fn fold_interleaved<F, P>(
-	codeword: &[P],
+	codeword: FieldSlice<P>,
 	challenges: &[F],
 	log_len: usize,
 	log_batch_size: usize,
-) -> Vec<F>
+) -> FieldBuffer<F>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
-	assert_eq!(codeword.len(), 1 << (log_len + log_batch_size).saturating_sub(P::LOG_WIDTH));
+	assert_eq!(codeword.log_len(), log_len + log_batch_size);
 	assert_eq!(challenges.len(), log_batch_size);
 
 	let tensor = eq_ind_partial_eval(challenges);
 
 	// For each chunk of size `2^chunk_size` in the interleaved codeword, fold it with the folding
 	// challenges.
-	let chunk_size = 1 << (challenges.len() - P::LOG_WIDTH);
-	codeword
-		.par_chunks(chunk_size)
-		.map(|chunk| fold_interleaved_chunk(log_batch_size, chunk, tensor.as_ref()))
-		.collect()
+	let values = codeword
+		.chunks_par(log_batch_size)
+		.expect("log_batch_size <= codeword.log_len()")
+		.map(|chunk| inner_product_buffers(&chunk, &tensor))
+		.collect::<Vec<_>>();
+	FieldBuffer::new(log_len, values.into_boxed_slice())
+		.expect("codeword.log_len() == log_len + log_batch_size")
 }
 
 /// FRI-fold the codeword using the given challenges.
@@ -294,27 +296,32 @@ where
 ///
 /// [DP24]: <https://eprint.iacr.org/2024/504>
 #[instrument(skip_all, level = "debug")]
-fn fold_codeword<F, NTT>(ntt: &NTT, codeword: &[F], challenges: &[F], log_len: usize) -> Vec<F>
+fn fold_codeword<F, NTT>(ntt: &NTT, codeword: FieldSlice<F>, challenges: &[F]) -> FieldBuffer<F>
 where
 	F: BinaryField,
 	NTT: AdditiveNTT<Field = F> + Sync,
 {
-	assert_eq!(codeword.len(), 1 << log_len);
+	let log_len = codeword.log_len();
 	assert!(challenges.len() <= log_len);
+
+	let folded_log_len = log_len - challenges.len();
 
 	// For each coset of size `2^chunk_size` in the codeword, fold it with the folding challenges.
 	let chunk_size = 1 << challenges.len();
-	codeword
-		.par_chunks(chunk_size)
+	let values: Vec<F> = codeword
+		.chunks_par(challenges.len())
+		.expect("precondition: challenges.len() <= log_len")
 		.enumerate()
 		.map_init(
 			|| vec![F::default(); chunk_size],
 			|scratch_buffer, (i, chunk)| {
-				scratch_buffer.copy_from_slice(chunk);
+				scratch_buffer.copy_from_slice(chunk.as_ref());
 				fold_chunk(ntt, log_len, i, scratch_buffer, challenges)
 			},
 		)
-		.collect()
+		.collect();
+	FieldBuffer::new(folded_log_len, values.into_boxed_slice())
+		.expect("codeword.len() == 1 << log_len")
 }
 
 #[cfg(test)]
@@ -358,12 +365,12 @@ mod tests {
 		ntt.forward_transform(codeword.to_mut(), 0, 0);
 
 		// Fold the encoded message using FRI folding.
-		let folded_codeword = fold_codeword(&ntt, codeword.as_ref(), &challenges, log_dim + arity);
+		let folded_codeword = fold_codeword(&ntt, codeword.to_ref(), &challenges);
 
 		// Encode the folded message.
 		ntt.forward_transform(folded_msg.to_mut(), 0, 0);
 
 		// Check that folding and encoding commute.
-		assert_eq!(folded_codeword, folded_msg.as_ref());
+		assert_eq!(folded_codeword, folded_msg);
 	}
 }
