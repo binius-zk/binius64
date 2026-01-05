@@ -210,7 +210,7 @@ where
 
 	// Run sumcheck on bivariate product
 	let batched_sum = evaluate_univariate(mulcheck_evals, lambda) + batch_coeff * public_eval;
-	basefold::prove_zk(witness, l_poly, batched_sum, fri_prover, transcript)?.prove(transcript)?;
+	basefold::prove_zk(witness, l_poly, batched_sum, fri_prover, transcript).prove(transcript)?;
 
 	Ok(())
 }

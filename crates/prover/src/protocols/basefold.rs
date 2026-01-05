@@ -181,7 +181,7 @@ pub fn prove_zk<'a, F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
 	sum_claim: F,
 	mut fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
 	transcript: &mut ProverTranscript<Challenger_>,
-) -> Result<BaseFoldProver<'a, F, P, NTT, MerkleProver>, Error>
+) -> BaseFoldProver<'a, F, P, NTT, MerkleProver>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -217,7 +217,7 @@ where
 
 	// Compute the batched sum using linear interpolation.
 	let batched_sum = extrapolate_line_packed(sum_claim, mask_claim, batch_challenge);
-	Ok(BaseFoldProver::new(multilinear, transparent_multilinear, batched_sum, fri_folder))
+	BaseFoldProver::new(multilinear, transparent_multilinear, batched_sum, fri_folder)
 }
 
 #[cfg(test)]
@@ -408,13 +408,13 @@ mod test {
 			&fri_params,
 			&ntt,
 			&merkle_prover,
-			codeword.as_ref(),
+			codeword,
 			&codeword_committed,
 		)?;
 
 		// Run prove_zk then continue with basefold prover
 		let prover =
-			prove_zk(batched, eval_point_eq, evaluation_claim, fri_folder, &mut prover_transcript)?;
+			prove_zk(batched, eval_point_eq, evaluation_claim, fri_folder, &mut prover_transcript);
 		prover.prove(&mut prover_transcript)?;
 
 		// Verify
