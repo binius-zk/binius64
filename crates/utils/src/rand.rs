@@ -2,8 +2,9 @@
 
 //! Parallel random number generation utilities.
 
-use crate::rayon::prelude::*;
 use rand::{Rng, SeedableRng};
+
+use crate::rayon::prelude::*;
 
 /// Generates random values in parallel using a deterministic per-index seeding scheme.
 ///
