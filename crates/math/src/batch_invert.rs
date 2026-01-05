@@ -142,39 +142,46 @@ fn min_scratchpad_size(mut n: usize) -> usize {
 
 impl<P: PackedField> BatchInversion<P> {
 	fn batch_invert_nonzero(&mut self, elements: &mut [P]) {
-		self.batch_invert_nonzero_with_scratchpad(elements, &mut self.scratchpad.clone());
+		batch_invert_nonzero_with_scratchpad(
+			elements,
+			&mut self.scratchpad,
+			self.scalar_inverter.as_deref_mut(),
+		);
 	}
+}
 
-	fn batch_invert_nonzero_with_scratchpad(&mut self, elements: &mut [P], scratchpad: &mut [P]) {
-		debug_assert!(!elements.is_empty());
+fn batch_invert_nonzero_with_scratchpad<P: PackedField>(
+	elements: &mut [P],
+	scratchpad: &mut [P],
+	scalar_inverter: Option<&mut BatchInversion<P::Scalar>>,
+) {
+	debug_assert!(!elements.is_empty());
 
-		if elements.len() == 1 {
-			let packed = &mut elements[0];
-			if P::WIDTH == 1 {
-				// Direct scalar inversion
-				let scalar = packed.get(0);
-				let inv = scalar
-					.invert()
-					.expect("precondition: elements contains no zeros");
-				packed.set(0, inv);
-			} else {
-				// Unpack, batch invert scalars, repack
-				let mut scalars = packed.into_iter().collect::<Vec<_>>();
-				self.scalar_inverter
-					.as_mut()
-					.expect("scalar_inverter must be Some when WIDTH > 1")
-					.invert_nonzero(&mut scalars);
-				*packed = P::from_scalars(scalars);
-			}
-			return;
+	if elements.len() == 1 {
+		let packed = &mut elements[0];
+		if P::WIDTH == 1 {
+			// Direct scalar inversion
+			let scalar = packed.get(0);
+			let inv = scalar
+				.invert()
+				.expect("precondition: elements contains no zeros");
+			packed.set(0, inv);
+		} else {
+			// Unpack, batch invert scalars, repack
+			let mut scalars = packed.into_iter().collect::<Vec<_>>();
+			scalar_inverter
+				.expect("scalar_inverter must be Some when WIDTH > 1")
+				.invert_nonzero(&mut scalars);
+			*packed = P::from_scalars(scalars);
 		}
-
-		let next_layer_len = elements.len().div_ceil(2);
-		let (next_layer, remaining) = scratchpad.split_at_mut(next_layer_len);
-		product_layer(elements, next_layer);
-		self.batch_invert_nonzero_with_scratchpad(next_layer, remaining);
-		unproduct_layer(next_layer, elements);
+		return;
 	}
+
+	let next_layer_len = elements.len().div_ceil(2);
+	let (next_layer, remaining) = scratchpad.split_at_mut(next_layer_len);
+	product_layer(elements, next_layer);
+	batch_invert_nonzero_with_scratchpad(next_layer, remaining, scalar_inverter);
+	unproduct_layer(next_layer, elements);
 }
 
 /// Computes element-wise products of top and bottom halves.
