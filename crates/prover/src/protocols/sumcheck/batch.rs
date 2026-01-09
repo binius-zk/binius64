@@ -5,7 +5,7 @@ use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_verifier::protocols::sumcheck::common::RoundCoeffs;
+use binius_verifier::protocols::{mlecheck, sumcheck::common::RoundCoeffs};
 
 use crate::protocols::sumcheck::{
 	common::{MleCheckProver, SumcheckProver},
@@ -181,7 +181,7 @@ where
 			.into_iter()
 			.rfold(RoundCoeffs::default(), |acc, coeffs| acc * batch_coeff + &coeffs);
 
-		let round_proof = batched_round_coeffs.truncate();
+		let round_proof = mlecheck::RoundProof::truncate(batched_round_coeffs);
 
 		transcript
 			.message()
@@ -338,11 +338,7 @@ mod tests {
 		assert_eq!(eval_a_1, output.multilinear_evals[1][0]);
 		assert_eq!(eval_b_1, output.multilinear_evals[1][1]);
 
-		let eq_ind_eval = eq_ind(&eval_point, &reduced_eval_point);
-		let composed_evals = vec![
-			eval_a_0 * eval_b_0 * eq_ind_eval,
-			eval_a_1 * eval_b_1 * eq_ind_eval,
-		];
+		let composed_evals = vec![eval_a_0 * eval_b_0, eval_a_1 * eval_b_1];
 		let expected_batched_eval =
 			evaluate_univariate(&composed_evals, sumcheck_output.batch_coeff);
 
