@@ -53,8 +53,8 @@ fn bench_fracaddcheck_prove(c: &mut Criterion) {
 			// Pre-compute the claim (final sums layer evaluation at empty point).
 			let (_prover, sums) =
 				FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone())).unwrap();
-			let sum_num_eval = evaluate(&sums.0, &[]).unwrap();
-			let sum_den_eval = evaluate(&sums.1, &[]).unwrap();
+			let sum_num_eval = evaluate(&sums.0, &[]);
+			let sum_den_eval = evaluate(&sums.1, &[]);
 			let claim = (
 				MultilinearEvalClaim {
 					eval: sum_num_eval,

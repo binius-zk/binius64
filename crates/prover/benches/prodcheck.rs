@@ -48,7 +48,7 @@ fn bench_prodcheck_prove(c: &mut Criterion) {
 
 			// Pre-compute the claim (products layer evaluation at empty point)
 			let (_prover, products) = ProdcheckProver::new(k, witness.clone());
-			let products_eval = evaluate(&products, &[]).unwrap();
+			let products_eval = evaluate(&products, &[]);
 			let claim = MultilinearEvalClaim {
 				eval: products_eval,
 				point: vec![],

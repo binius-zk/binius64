@@ -53,11 +53,10 @@ fn bench(c: &mut Criterion) {
 			.collect(),
 	};
 
-	let prover_message_domain = BinarySubspace::with_dim(SKIPPED_VARS + 1).unwrap();
+	let prover_message_domain = BinarySubspace::with_dim(SKIPPED_VARS + 1);
 
 	let univariate_domain = prover_message_domain
 		.reduce_dim(prover_message_domain.dim() - 1)
-		.expect("prover message domain should have dim at least 1")
 		.isomorphic();
 
 	let ntt_lookup = ntt_lookup_from_prover_message_domain::<PackedAESBinaryField16x8b>(
