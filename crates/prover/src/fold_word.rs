@@ -62,7 +62,6 @@ where
 		.collect::<Vec<_>>();
 
 	FieldBuffer::new(log_n, values.into_boxed_slice())
-		.expect("log_n is calculated from words.len() and values is constructed from words")
 }
 
 #[cfg(test)]
@@ -101,7 +100,6 @@ mod tests {
 			.collect();
 
 		FieldBuffer::new(log_n, values)
-			.expect("log_n is calculated from words.len() and values is constructed from words")
 	}
 
 	#[test]

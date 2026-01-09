@@ -259,9 +259,7 @@ fn test_shift_prove_and_verify() {
 		let r_zhat_prime_bitand = F::random(&mut rng);
 		let r_zhat_prime_intmul = F::random(&mut rng);
 
-		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS)
-			.unwrap()
-			.isomorphic();
+		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 
 		let bitand_evals = compute_bitand_images(&cs.and_constraints, &value_vec).map(|image| {
 			evaluate_image(

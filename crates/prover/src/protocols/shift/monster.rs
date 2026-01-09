@@ -33,11 +33,11 @@ use super::{
 #[instrument(skip_all, name = "build_h_parts")]
 pub fn build_h_parts<F, P: PackedField<Scalar = F>>(
 	r_zhat_prime: F,
-) -> Result<[FieldBuffer<P>; SHIFT_VARIANT_COUNT], Error>
+) -> [FieldBuffer<P>; SHIFT_VARIANT_COUNT]
 where
 	F: BinaryField + From<AESTowerField8b>,
 {
-	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS)?.isomorphic();
+	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 	let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
 	let l_tilde = l_tilde.as_ref();
 
@@ -49,7 +49,6 @@ where
 			fill(s, chunk);
 		}
 		FieldBuffer::from_values(&data.into_flattened())
-			.expect("data length is 2 * WORD_SIZE_BITS; WORD_SIZE_BITS is a power of 2")
 	}
 
 	let sll = build_part(|s, sll_s| {
@@ -100,7 +99,7 @@ where
 		}
 	});
 
-	Ok([sll, srl, sra, rotr, sll32, srl32, sra32, rotr32])
+	[sll, srl, sra, rotr, sll32, srl32, sra32, rotr32]
 }
 
 /// Constructs the "monster multilinear" that combines all shift operations into a single
@@ -146,7 +145,7 @@ where
 	F: BinaryField + From<AESTowerField8b>,
 {
 	// Compute h evaluations
-	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS)?.isomorphic();
+	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 	let [bitand_h_ops, intmul_h_ops] = [
 		bitand_operator_data.r_zhat_prime,
 		intmul_operator_data.r_zhat_prime,
@@ -215,7 +214,7 @@ where
 
 	let log_len = strict_log_2(key_collection.key_ranges.len())
 		.expect("same length as constraint system's `key_ranges`");
-	Ok(FieldBuffer::new(log_len, monster_multilinear).expect("checked log_len"))
+	Ok(FieldBuffer::new(log_len, monster_multilinear))
 }
 
 #[cfg(test)]
@@ -245,14 +244,12 @@ mod tests {
 			let r_s: Vec<F> = (0..6).map(|_| F::random(&mut rng)).collect();
 
 			// Method 1: Succinct evaluation using `evaluate_h_op`
-			let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS)
-				.unwrap()
-				.isomorphic();
+			let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
 			let succinct_evaluations = evaluate_h_op(l_tilde.to_ref(), &r_j, &r_s);
 
 			// Method 2: Direct evaluation via multilinear part
-			let h_parts = build_h_parts(r_zhat_prime).unwrap();
+			let h_parts = build_h_parts(r_zhat_prime);
 			let evaluation_point: Vec<F> = [r_j.clone(), r_s.clone()].concat();
 			let tensor = eq_ind_partial_eval::<P>(&evaluation_point);
 			let direct_evaluations = h_parts.map(|buf| inner_product_buffers(&buf, &tensor));

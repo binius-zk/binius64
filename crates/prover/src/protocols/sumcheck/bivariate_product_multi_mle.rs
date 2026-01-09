@@ -87,21 +87,21 @@ where
 
 		let packed_prime_evals = (0..1 << (self.n_vars() - 1 - chunk_vars))
 			.into_par_iter()
-			.try_fold(
+			.fold(
 				|| vec![RoundEvals2::default(); sums.len()],
-				|mut packed_prime_evals: Vec<RoundEvals2<P>>, chunk_index| -> Result<_, Error> {
-					let eq_chunk = self.gruen32.eq_expansion().chunk(chunk_vars, chunk_index)?;
+				|mut packed_prime_evals: Vec<RoundEvals2<P>>, chunk_index| {
+					let eq_chunk = self.gruen32.eq_expansion().chunk(chunk_vars, chunk_index);
 
 					for (round_evals, (evals_a, evals_b)) in
 						izip!(&mut packed_prime_evals, self.multilinears.iter().tuples())
 					{
-						let (evals_a_0, evals_a_1) = evals_a.split_half_ref()?;
-						let (evals_b_0, evals_b_1) = evals_b.split_half_ref()?;
+						let (evals_a_0, evals_a_1) = evals_a.split_half_ref();
+						let (evals_b_0, evals_b_1) = evals_b.split_half_ref();
 
-						let evals_a_0_chunk = evals_a_0.chunk(chunk_vars, chunk_index)?;
-						let evals_b_0_chunk = evals_b_0.chunk(chunk_vars, chunk_index)?;
-						let evals_a_1_chunk = evals_a_1.chunk(chunk_vars, chunk_index)?;
-						let evals_b_1_chunk = evals_b_1.chunk(chunk_vars, chunk_index)?;
+						let evals_a_0_chunk = evals_a_0.chunk(chunk_vars, chunk_index);
+						let evals_b_0_chunk = evals_b_0.chunk(chunk_vars, chunk_index);
+						let evals_a_1_chunk = evals_a_1.chunk(chunk_vars, chunk_index);
+						let evals_b_1_chunk = evals_b_1.chunk(chunk_vars, chunk_index);
 
 						for (&eq_i, &evals_a_0_i, &evals_b_0_i, &evals_a_1_i, &evals_b_1_i) in izip!(
 							eq_chunk.as_ref(),
@@ -118,13 +118,13 @@ where
 						}
 					}
 
-					Ok(packed_prime_evals)
+					packed_prime_evals
 				},
 			)
-			.try_reduce(
+			.reduce(
 				|| vec![RoundEvals2::default(); sums.len()],
-				|lhs, rhs| Ok(izip!(lhs, rhs).map(|(l, r)| l + &r).collect()),
-			)?;
+				|lhs, rhs| izip!(lhs, rhs).map(|(l, r)| l + &r).collect(),
+			);
 
 		let alpha = self.gruen32.next_coordinate();
 		let round_coeffs = izip!(sums, packed_prime_evals)
@@ -152,9 +152,9 @@ where
 
 		self.multilinears
 			.par_iter_mut()
-			.try_for_each(|multilinear| fold_highest_var_inplace(multilinear, challenge))?;
+			.for_each(|multilinear| fold_highest_var_inplace(multilinear, challenge));
 
-		self.gruen32.fold(challenge)?;
+		self.gruen32.fold(challenge);
 		self.last_coeffs_or_sums = RoundCoeffsOrSums::Sums(sums);
 		Ok(())
 	}
@@ -172,7 +172,7 @@ where
 		let multilinear_evals = self
 			.multilinears
 			.into_iter()
-			.map(|multilinear| multilinear.get_checked(0).expect("multilinear.len() == 1"))
+			.map(|multilinear| multilinear.get(0))
 			.collect();
 
 		Ok(multilinear_evals)
@@ -224,11 +224,11 @@ mod tests {
 		let product = itertools::zip_eq(multilinear_a.as_ref(), multilinear_b.as_ref())
 			.map(|(&l, &r)| l * r)
 			.collect_vec();
-		let product_buffer = FieldBuffer::new(n_vars, product).unwrap();
+		let product_buffer = FieldBuffer::new(n_vars, product);
 
 		// Claim eval point
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
-		let eval_claim = evaluate_inplace(product_buffer, &eval_point).unwrap();
+		let eval_claim = evaluate_inplace(product_buffer, &eval_point);
 
 		let multilinears = [multilinear_a, multilinear_b];
 
@@ -294,8 +294,8 @@ mod tests {
 				let product = itertools::zip_eq(l.as_ref(), r.as_ref())
 					.map(|(&l, &r)| l * r)
 					.collect_vec();
-				let product_buffer = FieldBuffer::new(n_vars, product).unwrap();
-				evaluate_inplace(product_buffer, &eval_point).unwrap()
+				let product_buffer = FieldBuffer::new(n_vars, product);
+				evaluate_inplace(product_buffer, &eval_point)
 			})
 			.collect_vec();
 
@@ -319,7 +319,7 @@ mod tests {
 				let lerps = folded_multilinears
 					.iter()
 					.map(|multilinear| {
-						let (evals_0, evals_1) = multilinear.split_half_ref().unwrap();
+						let (evals_0, evals_1) = multilinear.split_half_ref();
 						izip!(evals_0.as_ref(), evals_1.as_ref())
 							.map(|(&eval_0, &eval_1)| eval_0 + (eval_1 - eval_0) * sample_broadcast)
 							.collect_vec()
@@ -348,7 +348,7 @@ mod tests {
 			prover.fold(challenge).unwrap();
 
 			for folded in &mut folded_multilinears {
-				fold_highest_var_inplace(folded, challenge).unwrap();
+				fold_highest_var_inplace(folded, challenge);
 			}
 		}
 

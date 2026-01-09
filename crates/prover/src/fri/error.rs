@@ -1,6 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use binius_math::reed_solomon;
 use binius_verifier::{fri, merkle_tree};
 
 #[derive(Debug, thiserror::Error)]
@@ -13,6 +12,4 @@ pub enum Error {
 	FRI(#[from] fri::Error),
 	#[error("Merkle tree error: {0}")]
 	MerkleError(#[from] merkle_tree::Error),
-	#[error("Reed-Solomon encoding error: {0}")]
-	CodeError(#[from] reed_solomon::Error),
 }

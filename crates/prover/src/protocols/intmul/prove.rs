@@ -113,7 +113,7 @@ where
 
 		let initial_eval_point = self.transcript.sample_vec(n_vars);
 
-		let exp_eval = evaluate(&c_root, &initial_eval_point)?;
+		let exp_eval = evaluate(&c_root, &initial_eval_point);
 
 		let mut writer = self.transcript.message();
 		writer.write_scalar(exp_eval);
@@ -226,7 +226,6 @@ where
 		let x_tensor = eq_ind_partial_eval(x_point);
 		let b_leaves_evals = b_leaves
 			.chunks_par(n_vars)
-			.expect("b_leaves.log_len() == n_vars + log_bits")
 			.map(|b_leaf| inner_product_buffers(&b_leaf, &x_tensor))
 			.collect::<Vec<_>>();
 

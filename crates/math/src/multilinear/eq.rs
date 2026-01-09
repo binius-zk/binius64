@@ -8,7 +8,7 @@ use binius_field::{
 };
 use binius_utils::rayon::prelude::*;
 
-use crate::{Error, FieldBuffer};
+use crate::FieldBuffer;
 
 /// Tensor of values with the eq indicator evaluated at extra_query_coordinates.
 ///
@@ -19,7 +19,9 @@ use crate::{Error, FieldBuffer};
 /// Let $v$ be a vector corresponding to the first $2^n$ scalar values of `values`.
 /// Let $r = (r_0, \ldots, r_{k-1})$ be the vector of `extra_query_coordinates`.
 ///
-/// # Precondition:
+/// ## Preconditions
+///
+/// * `values` must have enough capacity: `values.log_cap() >= values.log_len() + extra_query_coordinates.len()`
 /// * `values` must be zero-extended to the new log length before calling this function. This
 ///   condition is necessary to get the best performance.
 ///
@@ -39,21 +41,19 @@ use crate::{Error, FieldBuffer};
 fn tensor_prod_eq_ind<P: PackedField, Data: DerefMut<Target = [P]>>(
 	values: &mut FieldBuffer<P, Data>,
 	extra_query_coordinates: &[P::Scalar],
-) -> Result<(), Error> {
+) {
 	let new_log_len = values.log_len() + extra_query_coordinates.len();
 
-	if values.log_cap() < new_log_len {
-		return Err(Error::IncorrectArgumentLength {
-			arg: "values.log_cap()".to_string(),
-			expected: new_log_len,
-		});
-	}
+	assert!(
+		values.log_cap() >= new_log_len,
+		"precondition: values capacity must be sufficient for expansion"
+	);
 
 	for &r_i in extra_query_coordinates {
 		let packed_r_i = P::broadcast(r_i);
 
-		values.resize(values.log_len() + 1)?;
-		let mut split = values.split_half_mut().expect("doubled by zero_extend()");
+		values.resize(values.log_len() + 1);
+		let mut split = values.split_half_mut();
 		let (mut lo, mut hi) = split.halves();
 
 		(lo.as_mut(), hi.as_mut())
@@ -64,8 +64,6 @@ fn tensor_prod_eq_ind<P: PackedField, Data: DerefMut<Target = [P]>>(
 				*hi_i = prod;
 			});
 	}
-
-	Ok(())
 }
 
 /// Left tensor of values with the eq indicator evaluated at extra_query_coordinates.
@@ -78,29 +76,29 @@ fn tensor_prod_eq_ind<P: PackedField, Data: DerefMut<Target = [P]>>(
 /// # Implementation
 /// This operation is inplace, singlethreaded, and not very optimized. Main intent is to
 /// use it on small tensors out of the hot paths.
+///
+/// ## Preconditions
+///
+/// * `values` must have enough capacity: `values.log_cap() >= values.log_len() + extra_query_coordinates.len()`
 pub fn tensor_prod_eq_ind_prepend<P: PackedField, Data: DerefMut<Target = [P]>>(
 	values: &mut FieldBuffer<P, Data>,
 	extra_query_coordinates: &[P::Scalar],
-) -> Result<(), Error> {
+) {
 	let new_log_len = values.log_len() + extra_query_coordinates.len();
 
-	if values.log_cap() < new_log_len {
-		return Err(Error::IncorrectArgumentLength {
-			arg: "values.log_cap()".to_string(),
-			expected: new_log_len,
-		});
-	}
+	assert!(
+		values.log_cap() >= new_log_len,
+		"precondition: values capacity must be sufficient for expansion"
+	);
 
 	for &r_i in extra_query_coordinates.iter().rev() {
-		values.zero_extend(values.log_len() + 1)?;
+		values.zero_extend(values.log_len() + 1);
 		for i in (0..values.len() / 2).rev() {
 			let eval = get_packed_slice(values.as_ref(), i);
 			set_packed_slice(values.as_mut(), 2 * i, eval * (P::Scalar::ONE - r_i));
 			set_packed_slice(values.as_mut(), 2 * i + 1, eval * r_i);
 		}
 	}
-
-	Ok(())
 }
 
 /// Computes the partial evaluation of the equality indicator polynomial.
@@ -122,9 +120,9 @@ pub fn eq_ind_partial_eval<P: PackedField>(point: &[P::Scalar]) -> FieldBuffer<P
 	// The buffer needs to have the correct size: 2^max(point.len(), P::LOG_WIDTH) elements
 	// but since tensor_prod_eq_ind starts with log_n_values=0, we need the final size
 	let log_size = point.len();
-	let mut buffer = FieldBuffer::zeros_truncated(0, log_size).expect("log_size >= 0");
+	let mut buffer = FieldBuffer::zeros_truncated(0, log_size);
 	buffer.set(0, P::Scalar::ONE);
-	tensor_prod_eq_ind(&mut buffer, point).expect("buffer is allocated with the correct length");
+	tensor_prod_eq_ind(&mut buffer, point);
 	buffer
 }
 
@@ -134,20 +132,22 @@ pub fn eq_ind_partial_eval<P: PackedField>(point: &[P::Scalar]) -> FieldBuffer<P
 /// $\widetilde{eq}(X_0, ..., X_{n-1}, r_0, ..., r_{n-1})$ where $n' \le n$ by repeatedly summing
 /// field buffer "halves" inplace. The equality indicator expansion occupies a prefix of
 /// the field buffer; scalars after the truncated length are zeroed out.
+///
+/// ## Preconditions
+///
+/// * `truncated_log_len` must be at most `values.log_len()`
 pub fn eq_ind_truncate_low_inplace<P: PackedField, Data: DerefMut<Target = [P]>>(
 	values: &mut FieldBuffer<P, Data>,
 	truncated_log_len: usize,
-) -> Result<(), Error> {
-	if truncated_log_len > values.log_len() {
-		return Err(Error::ArgumentRangeError {
-			arg: "truncated_log_len".to_string(),
-			range: 0..values.log_len() + 1,
-		});
-	}
+) {
+	assert!(
+		truncated_log_len <= values.log_len(),
+		"precondition: truncated_log_len must be at most values.log_len()"
+	);
 
 	for log_len in (truncated_log_len..values.log_len()).rev() {
 		{
-			let mut split = values.split_half_mut()?;
+			let mut split = values.split_half_mut();
 			let (mut lo, hi) = split.halves();
 			(lo.as_mut(), hi.as_ref())
 				.into_par_iter()
@@ -158,8 +158,6 @@ pub fn eq_ind_truncate_low_inplace<P: PackedField, Data: DerefMut<Target = [P]>>
 
 		values.truncate(log_len);
 	}
-
-	Ok(())
 }
 
 /// Evaluates the 2-variate multilinear which indicates the equality condition over the hypercube.
@@ -219,9 +217,9 @@ mod tests {
 		let v1 = F::from(2);
 		let query = vec![v0, v1];
 		// log_len = 0, query.len() = 2, so total log_cap = 2
-		let mut result = FieldBuffer::zeros_truncated(0, query.len()).unwrap();
-		result.set_checked(0, F::ONE).unwrap();
-		tensor_prod_eq_ind(&mut result, &query).unwrap();
+		let mut result = FieldBuffer::zeros_truncated(0, query.len());
+		result.set(0, F::ONE);
+		tensor_prod_eq_ind(&mut result, &query);
 		let result_vec: Vec<F> = P::iter_slice(result.as_ref()).collect();
 		assert_eq!(
 			result_vec,
@@ -241,18 +239,18 @@ mod tests {
 		let exps = 4;
 		let max_n_vars = exps * (exps + 1) / 2;
 		let mut coords = Vec::with_capacity(max_n_vars);
-		let mut eq_expansion = FieldBuffer::zeros_truncated(0, max_n_vars).unwrap();
-		eq_expansion.set_checked(0, F::ONE).unwrap();
+		let mut eq_expansion = FieldBuffer::zeros_truncated(0, max_n_vars);
+		eq_expansion.set(0, F::ONE);
 
 		for extra_count in 1..=exps {
 			let extra = random_scalars(&mut rng, extra_count);
 
-			tensor_prod_eq_ind::<P, _>(&mut eq_expansion, &extra).unwrap();
+			tensor_prod_eq_ind::<P, _>(&mut eq_expansion, &extra);
 			coords.extend(&extra);
 
 			assert_eq!(eq_expansion.log_len(), coords.len());
 			for i in 0..eq_expansion.len() {
-				let v = eq_expansion.get_checked(i).unwrap();
+				let v = eq_expansion.get(i);
 				let hypercube_point = index_to_hypercube_point(coords.len(), i);
 				assert_eq!(v, eq_ind(&hypercube_point, &coords));
 			}
@@ -266,7 +264,7 @@ mod tests {
 		assert_eq!(result.log_len(), 0);
 		assert_eq!(result.len(), 1);
 		let result_mut = result;
-		assert_eq!(result_mut.get_checked(0).unwrap(), F::ONE);
+		assert_eq!(result_mut.get(0), F::ONE);
 	}
 
 	#[test]
@@ -277,8 +275,8 @@ mod tests {
 		assert_eq!(result.log_len(), 1);
 		assert_eq!(result.len(), 2);
 		let result_mut = result;
-		assert_eq!(result_mut.get_checked(0).unwrap(), F::ONE - r0);
-		assert_eq!(result_mut.get_checked(1).unwrap(), r0);
+		assert_eq!(result_mut.get(0), F::ONE - r0);
+		assert_eq!(result_mut.get(1), r0);
 	}
 
 	#[test]
@@ -336,7 +334,7 @@ mod tests {
 
 		// Query the value at that index
 		let result_mut = result;
-		let partial_eval_value = result_mut.get_checked(index).unwrap();
+		let partial_eval_value = result_mut.get(index);
 
 		let index_bits = index_to_hypercube_point(n_vars, index);
 		let eq_ind_value = eq_ind(&point, &index_bits);
@@ -357,12 +355,12 @@ mod tests {
 
 		for reduction in (0..=reds).rev() {
 			let truncated_log_n_values = log_n_values - reduction;
-			eq_ind_truncate_low_inplace(&mut eq_ind, truncated_log_n_values).unwrap();
+			eq_ind_truncate_low_inplace(&mut eq_ind, truncated_log_n_values);
 
 			let eq_ind_ref = eq_ind_partial_eval::<P>(&point[..truncated_log_n_values]);
 			assert_eq!(eq_ind_ref.len(), eq_ind.len());
 			for i in 0..eq_ind.len() {
-				assert_eq!(eq_ind.get_checked(i).unwrap(), eq_ind_ref.get_checked(i).unwrap());
+				assert_eq!(eq_ind.get(i), eq_ind_ref.get(i));
 			}
 
 			log_n_values = truncated_log_n_values;
@@ -382,11 +380,11 @@ mod tests {
 
 		let append = eq_ind_partial_eval(&point);
 
-		let mut prepend = FieldBuffer::<P>::zeros_truncated(0, n_vars).unwrap();
+		let mut prepend = FieldBuffer::<P>::zeros_truncated(0, n_vars);
 		let (prefix, suffix) = point.split_at(n_vars - base_vars);
-		prepend.set_checked(0, F::ONE).unwrap();
-		tensor_prod_eq_ind(&mut prepend, suffix).unwrap();
-		tensor_prod_eq_ind_prepend(&mut prepend, prefix).unwrap();
+		prepend.set(0, F::ONE);
+		tensor_prod_eq_ind(&mut prepend, suffix);
+		tensor_prod_eq_ind_prepend(&mut prepend, prefix);
 
 		assert_eq!(append, prepend);
 	}

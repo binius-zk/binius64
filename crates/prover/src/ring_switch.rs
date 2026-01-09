@@ -344,7 +344,7 @@ mod test {
 				row_batching_expanded_query.as_ref(),
 			);
 
-			assert_eq!(rs_eq.get_checked(hypercube_point).unwrap(), evaluated_at_pt);
+			assert_eq!(rs_eq.get(hypercube_point), evaluated_at_pt);
 		}
 	}
 
@@ -414,10 +414,9 @@ mod test {
 				.iter()
 				.map(|&bits_packed| P::cast_ext(bits_packed))
 				.collect(),
-		)
-		.unwrap();
+		);
 		let folded_method2 = fold_elems_inplace(bit_matrix_packed.clone(), &prefix_tensor);
-		let method2_result = evaluate_inplace(folded_method2, suffix).unwrap();
+		let method2_result = evaluate_inplace(folded_method2, suffix);
 
 		// Compare all three results
 		assert_eq!(reference_result, method2_result, "Method 2 does not match reference");

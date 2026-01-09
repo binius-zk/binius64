@@ -46,9 +46,7 @@ impl<F: Field, P: PackedField<Scalar = F>> InOutCheckProver<P> {
 			[eval_point, &vec![F::ZERO; witness.log_len() - log_public]].concat();
 
 		let gruen32 = Gruen32::new(eval_point);
-		let public = witness
-			.chunk(log_public, 0)
-			.expect("precondition: log_public <= witness.log_len()");
+		let public = witness.chunk(log_public, 0);
 		let public_eval = Self::evaluate_multilinear_with_gruen32(&gruen32, public);
 
 		Self {
@@ -75,8 +73,7 @@ impl<F: Field, P: PackedField<Scalar = F>> InOutCheckProver<P> {
 		// Get the first 2^n_vars values in the upper half of the witness.
 		let truncated_witness = self
 			.witness
-			.chunk(n_vars, 1 << (self.witness.log_len() - n_vars - 1))
-			.expect("pre-condition: witness.log_len() > inout.log_len()");
+			.chunk(n_vars, 1 << (self.witness.log_len() - n_vars - 1));
 
 		Self::evaluate_multilinear_with_gruen32(&self.gruen32, truncated_witness)
 	}
@@ -93,10 +90,7 @@ impl<F: Field, P: PackedField<Scalar = F>> InOutCheckProver<P> {
 	///   have the same number of variables
 	fn compute_round_eval_later_rounds(&self) -> F {
 		let eq_expansion = self.gruen32.eq_expansion();
-		let (_, witness_1) = self
-			.witness
-			.split_half_ref()
-			.expect("pre-condition: witness.log_len() > 0");
+		let (_, witness_1) = self.witness.split_half_ref();
 
 		inner_product_buffers(&witness_1, eq_expansion)
 	}
@@ -114,9 +108,7 @@ impl<F: Field, P: PackedField<Scalar = F>> InOutCheckProver<P> {
 		// and upper halves of the witness and inout vector separately, then extrapolating with the
 		// last coordinate of the evaluation point.
 		let eq_expansion = gruen32.eq_expansion();
-		let (multilin_0, multilin_1) = multilin
-			.split_half_ref()
-			.expect("early return above if multilin.log_len() == 0");
+		let (multilin_0, multilin_1) = multilin.split_half_ref();
 
 		let lo = inner_product_buffers(&multilin_0, eq_expansion);
 		let hi = inner_product_buffers(&multilin_1, eq_expansion);
@@ -187,11 +179,11 @@ where
 		let eval = coeffs.evaluate(challenge);
 
 		// Always fold the witness
-		fold_highest_var_inplace(&mut self.witness, challenge)?;
+		fold_highest_var_inplace(&mut self.witness, challenge);
 
 		// Fold gruen32 in the last m rounds
 		if n_vars <= self.log_public {
-			self.gruen32.fold(challenge)?;
+			self.gruen32.fold(challenge);
 		}
 
 		self.last_coeffs_or_eval = RoundCoeffsOrEval::Eval(eval);
@@ -209,7 +201,7 @@ where
 		}
 
 		// Return only the witness evaluation
-		let witness_eval = self.witness.get_checked(0).expect("witness.len() == 1");
+		let witness_eval = self.witness.get(0);
 		Ok(vec![witness_eval])
 	}
 }
@@ -266,12 +258,11 @@ mod tests {
 		for (i, val) in inout.as_ref().iter().flat_map(|p| p.iter()).enumerate() {
 			witness_vec[i] = val;
 		}
-		let witness = FieldBuffer::<P>::from_values(&witness_vec).unwrap();
+		let witness = FieldBuffer::<P>::from_values(&witness_vec);
 
 		let eval_point = random_scalars::<F>(&mut rng, n_public_vars);
-		let public =
-			FieldSlice::from_slice(n_public_vars, &witness_vec[..1 << n_public_vars]).unwrap();
-		let public_eval = evaluate(&public, &eval_point).unwrap();
+		let public = FieldSlice::from_slice(n_public_vars, &witness_vec[..1 << n_public_vars]);
+		let public_eval = evaluate(&public, &eval_point);
 
 		// Create the prover
 		let prover = InOutCheckProver::new(witness.clone(), &eval_point);
@@ -295,7 +286,7 @@ mod tests {
 			.unwrap();
 
 		// Check that the original multilinears evaluate to the claimed values at the challenge.
-		let expected_witness_eval = evaluate(&witness, &reduced_eval_point).unwrap();
+		let expected_witness_eval = evaluate(&witness, &reduced_eval_point);
 		assert_eq!(eval, expected_witness_eval);
 
 		// Also verify the challenges match what the prover saw

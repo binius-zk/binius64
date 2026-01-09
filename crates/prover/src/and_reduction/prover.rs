@@ -160,9 +160,7 @@ where
 		round_message_domain: BinarySubspace<FChallenge>,
 		challenge: FChallenge,
 	) -> impl MleCheckProver<FChallenge> {
-		let univariate_domain = round_message_domain
-			.reduce_dim(round_message_domain.dim() - 1)
-			.expect("message domain should have dim>=1");
+		let univariate_domain = round_message_domain.reduce_dim(round_message_domain.dim() - 1);
 		let lookup = FoldLookup::<_, SKIPPED_VARS>::new(&univariate_domain, challenge);
 
 		let proving_polys = [
@@ -328,7 +326,7 @@ mod test {
 
 		// Agreed-upon proof parameter
 		let prover_message_domain =
-			BinarySubspace::<AESTowerField8b>::with_dim(SKIPPED_VARS + 1).unwrap();
+			BinarySubspace::<AESTowerField8b>::with_dim(SKIPPED_VARS + 1);
 		let verifier_message_domain = prover_message_domain.isomorphic();
 
 		// Prover is instantiated
@@ -380,9 +378,7 @@ mod test {
 			eval_point,
 		} = verify_output;
 
-		let verifier_univariate_domain = verifier_message_domain
-			.reduce_dim(SKIPPED_VARS)
-			.expect("reducing by 2 to a positive basis size");
+		let verifier_univariate_domain = verifier_message_domain.reduce_dim(SKIPPED_VARS);
 
 		let one_bit_mlvs = [first_mlv, second_mlv, third_mlv];
 
@@ -390,8 +386,7 @@ mod test {
 			FoldLookup::new(&verifier_univariate_domain, z_challenge);
 		for (i, eval) in [a_eval, b_eval, c_eval].iter().enumerate() {
 			assert_eq!(
-				evaluate(&one_bit_mlvs[i].fold(&verifier_transparent_fold_lookup), &eval_point)
-					.unwrap(),
+				evaluate(&one_bit_mlvs[i].fold(&verifier_transparent_fold_lookup), &eval_point),
 				*eval
 			);
 		}

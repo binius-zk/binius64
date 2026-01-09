@@ -147,11 +147,7 @@ where
 		// Split each multilinear in half
 		let (splits_0, splits_1) = multilinears
 			.iter()
-			.map(|multilinear| {
-				multilinear
-					.split_half_ref()
-					.expect("n_vars_remaining > 0 => multilinear.log_len() > 0")
-			})
+			.map(|multilinear| multilinear.split_half_ref())
 			.unzip::<_, _, Vec<_>, Vec<_>>();
 
 		// Compute F(1) and F(∞) where F = ∑_{v ∈ B} C(M_1(v || X), ..., M_N(v || X)) eq(v, z).
@@ -203,10 +199,10 @@ where
 		let eval = coeffs.evaluate(challenge);
 
 		for multilinear in &mut self.multilinears_mut() {
-			fold_highest_var_inplace(multilinear, challenge)?;
+			fold_highest_var_inplace(multilinear, challenge);
 		}
 
-		self.gruen32.fold(challenge)?;
+		self.gruen32.fold(challenge);
 		self.last_coeffs_or_eval = RoundCoeffsOrEval::Eval(eval);
 		Ok(())
 	}
@@ -224,7 +220,7 @@ where
 		let multilinear_evals = self
 			.multilinears_mut()
 			.into_iter()
-			.map(|multilinear| multilinear.get_checked(0).expect("multilinear.len() == 1"))
+			.map(|multilinear| multilinear.get(0))
 			.collect();
 
 		Ok(multilinear_evals)
@@ -317,7 +313,7 @@ mod tests {
 		// Check that the original multilinears evaluate to the claimed values at the challenge
 		// point
 		for (multilinear, claimed_eval) in iter::zip(&multilinears, multilinear_evals) {
-			let actual_eval = evaluate(multilinear, &reduced_eval_point).unwrap();
+			let actual_eval = evaluate(multilinear, &reduced_eval_point);
 			assert_eq!(actual_eval, claimed_eval);
 		}
 
@@ -348,10 +344,10 @@ mod tests {
 				composition(vals)
 			})
 			.collect_vec();
-		let composite_vals = FieldBuffer::new(n_vars, composite_vals).unwrap();
+		let composite_vals = FieldBuffer::new(n_vars, composite_vals);
 
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
-		let eval_claim = evaluate(&composite_vals, &eval_point).unwrap();
+		let eval_claim = evaluate(&composite_vals, &eval_point);
 
 		// Create the prover
 		let mlecheck_prover = QuadraticMleCheckProver::new(

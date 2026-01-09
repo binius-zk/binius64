@@ -99,11 +99,8 @@ fn evaluate_public_at_inout<F: Field, P: PackedField<Scalar = F>>(
 	r_j_witness: &FieldBuffer<P>,
 	inout_eval_point: &[F],
 ) -> F {
-	let public_chunk = r_j_witness
-		.chunk(inout_eval_point.len(), 0)
-		.expect("inout_eval_point.len() <= r_j_witness.log_len()");
+	let public_chunk = r_j_witness.chunk(inout_eval_point.len(), 0);
 	evaluate(&public_chunk, inout_eval_point)
-		.expect("public_chunk.log_len() == inout_eval_point.len()")
 }
 
 /// Computes the batched polynomial m = monster + χ eq(inout_eval_point || 0),
@@ -127,9 +124,7 @@ fn compute_monster_with_inout<F: Field, P: PackedField<Scalar = F>>(
 	let mut combined_monster = monster_multilinear;
 
 	{
-		let mut public_chunk = combined_monster
-			.chunk_mut(inout_eval_point.len(), 0)
-			.expect("inout_eval_point.len() <= combined_monster.log_len()");
+		let mut public_chunk = combined_monster.chunk_mut(inout_eval_point.len(), 0);
 		let mut public_chunk = public_chunk.get();
 
 		let eq_inout = eq_ind_partial_eval::<P>(inout_eval_point);

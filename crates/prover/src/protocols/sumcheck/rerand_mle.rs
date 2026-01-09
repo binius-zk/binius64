@@ -103,16 +103,15 @@ where
 
 		let packed_prime_evals = (0..chunk_count)
 			.into_par_iter()
-			.try_fold(
+			.fold(
 				// A chunk-sized scratchpad is needed for switchover.
 				|| (vec![RoundEvals1::default(); sums.len()], FieldBuffer::<P>::zeros(chunk_vars)),
 				|(mut packed_prime_evals, mut binary_chunk): (
 					Vec<RoundEvals1<P>>,
 					FieldBuffer<P>,
 				),
-				 chunk_index|
-				 -> Result<_, Error> {
-					let eq_chunk = self.gruen32.eq_expansion().chunk(chunk_vars, chunk_index)?;
+				 chunk_index| {
+					let eq_chunk = self.gruen32.eq_expansion().chunk(chunk_vars, chunk_index);
 
 					for (bit_offset, round_evals) in packed_prime_evals.iter_mut().enumerate() {
 						// Degree-1 composition - evaluate at 1 only
@@ -121,21 +120,21 @@ where
 							bit_offset,
 							chunk_vars,
 							chunk_index | chunk_count,
-						)?;
+						);
 						for (&eq_i, &evals_1_i) in izip!(eq_chunk.as_ref(), evals_1_chunk.as_ref())
 						{
 							round_evals.y_1 += eq_i * evals_1_i;
 						}
 					}
 
-					Ok((packed_prime_evals, binary_chunk))
+					(packed_prime_evals, binary_chunk)
 				},
 			)
-			.map(|evals_with_scratchpad| evals_with_scratchpad.map(|(evals, _)| evals))
-			.try_reduce(
+			.map(|(evals, _)| evals)
+			.reduce(
 				|| vec![RoundEvals1::default(); sums.len()],
-				|lhs, rhs| Ok(izip!(lhs, rhs).map(|(l, r)| l + &r).collect()),
-			)?;
+				|lhs, rhs| izip!(lhs, rhs).map(|(l, r)| l + &r).collect(),
+			);
 
 		let alpha = self.gruen32.next_coordinate();
 		let round_coeffs = izip!(sums, packed_prime_evals)
@@ -161,8 +160,8 @@ where
 			.map(|coeffs| coeffs.evaluate(challenge))
 			.collect::<Vec<F>>();
 
-		self.switchover.fold(challenge)?;
-		self.gruen32.fold(challenge)?;
+		self.switchover.fold(challenge);
+		self.gruen32.fold(challenge);
 
 		self.last_coeffs_or_sums = RoundCoeffsOrSums::Sums(sums);
 		Ok(())
@@ -180,11 +179,11 @@ where
 
 		let multilinear_evals = self
 			.switchover
-			.finalize()?
+			.finalize()
 			.into_iter()
 			.map(|multilinear| {
 				debug_assert_eq!(multilinear.log_len(), 0);
-				multilinear.get_checked(0).expect("multilinear.len()==1")
+				multilinear.get(0)
 			})
 			.collect();
 
@@ -243,7 +242,7 @@ mod tests {
 		// into large field elements and doing a product with a constant multilinear of ones.
 
 		let ones_scalars = repeat_with(|| F::ONE).take(1 << n_vars).collect_vec();
-		let ones = FieldBuffer::<P>::from_values(&ones_scalars).unwrap();
+		let ones = FieldBuffer::<P>::from_values(&ones_scalars);
 
 		let selectors_with_claims = (0..selector_count)
 			.map(|bit_offset| {
@@ -252,9 +251,9 @@ mod tests {
 				let selector_scalars = (0..bit_selector.len())
 					.map(|i| if bit_selector.get(i) { F::ONE } else { F::ZERO })
 					.collect_vec();
-				let selector = FieldBuffer::<P>::from_values(&selector_scalars).unwrap();
+				let selector = FieldBuffer::<P>::from_values(&selector_scalars);
 
-				let eval_claim = evaluate(&selector, &eval_point).unwrap();
+				let eval_claim = evaluate(&selector, &eval_point);
 				(selector, eval_claim)
 			})
 			.collect_vec();

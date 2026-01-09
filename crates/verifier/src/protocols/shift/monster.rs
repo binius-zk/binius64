@@ -63,9 +63,7 @@ pub fn evaluate_h_op<F: Field>(
 
 	// TODO: This is really gross, need to clean it up after other shift reduction modifications.
 	let r_j_rest_tensor = eq_ind_partial_eval::<F>(&r_j[5..]);
-	let l_tilde_chunks = l_tilde
-		.chunks(5)
-		.expect("l_tilde.log_len() == 6; F::LOG_WIDTH == 0");
+	let l_tilde_chunks = l_tilde.chunks(5);
 
 	let sll32 = inner_product(
 		l_tilde_chunks
@@ -157,9 +155,8 @@ pub fn evaluate_monster_multilinear_for_operation<F: BinaryField, const ARITY: u
 
 	let eval = inner_product(
 		evals.map(|mut evals_op| {
-			let evals_op = FieldBuffer::new(LOG_WORD_SIZE_BITS, &mut evals_op[..])
-				.expect("evals_op is an array with length 2^LOG_WORD_SIZE_BITS");
-			evaluate_inplace(evals_op, r_s).expect("precondition: r_s length is LOG_WORD_SIZE_BITS")
+			let evals_op = FieldBuffer::new(LOG_WORD_SIZE_BITS, &mut evals_op[..]);
+			evaluate_inplace(evals_op, r_s)
 		}),
 		h_op_evals,
 	);
@@ -218,10 +215,7 @@ fn evaluate_matrices<F: BinaryField>(
 						ShiftVariant::Sra32 => 6,
 						ShiftVariant::Rotr32 => 7,
 					};
-					evals[shift_id][*amount] += constraint_eval
-						* r_y_tensor
-							.get_checked(value_index.0 as usize)
-							.expect("constraint system value indices are in range");
+					evals[shift_id][*amount] += constraint_eval * r_y_tensor.get(value_index.0 as usize);
 				}
 			}
 
@@ -270,7 +264,7 @@ mod tests {
 		// - rotr == 1 iff (i + s) % 64 == j
 		let mut rng = StdRng::seed_from_u64(0);
 		let subspace =
-			BinarySubspace::<BinaryField128bGhash>::with_dim(LOG_WORD_SIZE_BITS).unwrap();
+			BinarySubspace::<BinaryField128bGhash>::with_dim(LOG_WORD_SIZE_BITS);
 
 		// Run a reasonable number of random trials
 		for _trial in 0..1024 {
@@ -330,7 +324,7 @@ mod tests {
 		// Generate random evaluation points
 		let challenge = BinaryField128bGhash::random(&mut rng);
 		let subspace =
-			BinarySubspace::<BinaryField128bGhash>::with_dim(LOG_WORD_SIZE_BITS).unwrap();
+			BinarySubspace::<BinaryField128bGhash>::with_dim(LOG_WORD_SIZE_BITS);
 		let l_tilde = lagrange_evals(&subspace, challenge);
 		let r_j = random_scalars::<BinaryField128bGhash>(&mut rng, LOG_WORD_SIZE_BITS);
 		let r_s = random_scalars::<BinaryField128bGhash>(&mut rng, LOG_WORD_SIZE_BITS);

@@ -8,8 +8,6 @@ pub enum Error {
 	Fri(#[from] binius_prover::fri::Error),
 	#[error("transcript error: {0}")]
 	Transcript(#[from] binius_transcript::Error),
-	#[error("math error: {0}")]
-	Math(#[from] binius_math::Error),
 	#[error("prover error: {0}")]
 	Prover(#[from] binius_prover::Error),
 	#[error("sumcheck error: {0}")]

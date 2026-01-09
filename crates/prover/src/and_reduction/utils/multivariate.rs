@@ -52,7 +52,6 @@ impl OneBitOblongMultilinear {
 			})
 			.collect();
 		FieldBuffer::new(new_n_vars, multilin_vals)
-			.expect("packed_evals has 2^new_n_vars items by struct invariant")
 	}
 }
 
@@ -117,7 +116,6 @@ mod test {
 			})
 			.collect();
 		FieldBuffer::new(new_n_vars, result_vals)
-			.expect("packed_evals has 2^new_n_vars items by struct invariant")
 	}
 
 	fn random_one_bit_multivariate(
@@ -140,7 +138,7 @@ mod test {
 
 		let challenge = B128::random(&mut rng);
 
-		let univariate_domain = BinarySubspace::with_dim(SKIPPED_VARS).unwrap();
+		let univariate_domain = BinarySubspace::with_dim(SKIPPED_VARS);
 
 		let lookup = FoldLookup::<_, SKIPPED_VARS>::new(&univariate_domain, challenge);
 

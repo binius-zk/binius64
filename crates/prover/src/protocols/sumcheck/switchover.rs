@@ -17,7 +17,6 @@ use binius_utils::{
 	rayon::prelude::*,
 };
 
-use super::error::Error;
 
 /// A helper struct to maintain switchover-related invariants related to a set of 1-bit
 /// multilinears represented by a slice of bitmasks.
@@ -59,9 +58,8 @@ where
 
 		let n_vars = checked_log_2(bitmasks.len());
 		let switchover = switchover.min(n_vars).max(1);
-		let mut tensor =
-			FieldBuffer::zeros_truncated(0, switchover).expect("log_cap() can't be negative");
-		tensor.set_checked(0, F::ONE).expect("len() >= 1");
+		let mut tensor = FieldBuffer::zeros_truncated(0, switchover);
+		tensor.set(0, F::ONE);
 
 		Self {
 			n_multilinears,
@@ -87,7 +85,7 @@ where
 		bit_offset: usize,
 		chunk_vars: usize,
 		chunk_index: usize,
-	) -> Result<FieldSlice<'scratchpad, P>, Error>
+	) -> FieldSlice<'scratchpad, P>
 	where
 		'switchover: 'scratchpad,
 	{
@@ -95,7 +93,7 @@ where
 		assert_eq!(scratchpad.len(), 1 << chunk_vars);
 
 		if let Some(folded) = &self.folded {
-			Ok(folded[bit_offset].chunk(chunk_vars, chunk_index)?)
+			folded[bit_offset].chunk(chunk_vars, chunk_index)
 		} else {
 			get_binary_chunk(
 				scratchpad,
@@ -103,41 +101,39 @@ where
 				&BitSelector::new(bit_offset, self.bitmasks),
 				chunk_vars,
 				chunk_index,
-			)?;
-			Ok(scratchpad.to_ref())
+			);
+			scratchpad.to_ref()
 		}
 	}
 
-	pub fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	pub fn fold(&mut self, challenge: F) {
 		if let Some(folded) = &mut self.folded {
 			// Post-switchover: fold high as usual
 			folded
 				.par_iter_mut()
-				.try_for_each(|multilinear| fold_highest_var_inplace(multilinear, challenge))?;
+				.for_each(|multilinear| fold_highest_var_inplace(multilinear, challenge));
 		} else {
 			// Pre-switchover: update the folding tensor
 			assert!(self.tensor.log_len() < self.switchover);
-			tensor_prod_eq_ind_prepend(&mut self.tensor, &[challenge])?;
+			tensor_prod_eq_ind_prepend(&mut self.tensor, &[challenge]);
 
 			if self.tensor.log_len() == self.switchover {
-				self.perform()?;
+				self.perform();
 			}
 		}
-
-		Ok(())
 	}
 
 	// Perform the switchover process. This operation is idempotent.
-	fn perform(&mut self) -> Result<(), Error> {
+	fn perform(&mut self) {
 		if self.folded.is_some() {
-			return Ok(());
+			return;
 		}
 
 		let folded_n_vars = self.n_vars_transparent() - self.tensor.log_len();
 
 		let all_folded = (0..self.n_multilinears)
 			.into_par_iter()
-			.map(|bit_offset| -> Result<_, Error> {
+			.map(|bit_offset| {
 				let mut folded = FieldBuffer::<P>::zeros(folded_n_vars);
 				get_binary_chunk(
 					&mut folded,
@@ -145,19 +141,18 @@ where
 					&BitSelector::new(bit_offset, self.bitmasks),
 					folded_n_vars,
 					0,
-				)?;
+				);
 
-				Ok(folded)
+				folded
 			})
-			.collect::<Result<Vec<_>, _>>()?;
+			.collect::<Vec<_>>();
 
 		self.folded = Some(all_folded);
-		Ok(())
 	}
 
-	pub fn finalize(mut self) -> Result<Vec<FieldBuffer<P>>, Error> {
-		self.perform()?;
-		Ok(self.folded.expect("explicit call to perform()"))
+	pub fn finalize(mut self) -> Vec<FieldBuffer<P>> {
+		self.perform();
+		self.folded.expect("explicit call to perform()")
 	}
 }
 
@@ -173,8 +168,7 @@ fn get_binary_chunk<P, DataOut, DataIn>(
 	binary_sequence: &(impl RandomAccessSequence<bool> + Sync),
 	chunk_vars: usize,
 	chunk_index: usize,
-) -> Result<(), Error>
-where
+) where
 	P: PackedField,
 	DataOut: DerefMut<Target = [P]>,
 	DataIn: Deref<Target = [P]> + Sync,
@@ -193,5 +187,5 @@ where
 		chunk_vars,
 		chunk_index,
 	);
-	Ok(binary_fold_high(dest, tensor, matrix_vert_slice)?)
+	binary_fold_high(dest, tensor, matrix_vert_slice);
 }

@@ -219,7 +219,7 @@ fn novel_basis<DC: DomainContext>(domain_context: &DC) -> Vec<Polynomial<DC::Fie
 
 	// collect subspace polynomials $W_i$ (this is *not* yet $\hat{W}_i$)
 	let mut w_hat: Vec<_> = (0..log_d)
-		.map(|i| domain.reduce_dim(i).unwrap())
+		.map(|i| domain.reduce_dim(i))
 		.map(subspace_polynomial)
 		.collect();
 	// and normalize them to get $\hat{W}_i$
@@ -281,7 +281,7 @@ fn test_eval() {
 	test_equivalence(&ntt);
 
 	// Generic domain context with the usual subspace
-	let subspace = BinarySubspace::with_dim(LOG_D).unwrap();
+	let subspace = BinarySubspace::with_dim(LOG_D);
 	let domain_context = domain_context::GenericPreExpanded::<F>::generate_from_subspace(&subspace);
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 	test_equivalence(&ntt);

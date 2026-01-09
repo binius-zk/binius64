@@ -57,16 +57,13 @@ where
 
 		for _ in 0..k {
 			let prev_layer = layers.last().expect("layers is non-empty");
-			let (half_0, half_1) = prev_layer
-				.split_half_ref()
-				.expect("layer has at least one variable");
+			let (half_0, half_1) = prev_layer.split_half_ref();
 
 			let next_layer_evals = (half_0.as_ref(), half_1.as_ref())
 				.into_par_iter()
 				.map(|(v0, v1)| *v0 * *v1)
 				.collect();
-			let next_layer = FieldBuffer::new(prev_layer.log_len() - 1, next_layer_evals)
-				.expect("half of previous layer length");
+			let next_layer = FieldBuffer::new(prev_layer.log_len() - 1, next_layer_evals);
 
 			layers.push(next_layer);
 		}
@@ -90,7 +87,7 @@ where
 		claim: MultilinearEvalClaim<F>,
 	) -> Result<(impl MleCheckProver<F>, Option<Self>), Error> {
 		let layer = self.layers.pop().expect("layers is non-empty");
-		let split = layer.split_half().expect("layer has at least one variable");
+		let split = layer.split_half();
 
 		let remaining = if self.layers.is_empty() {
 			None
@@ -183,7 +180,7 @@ mod tests {
 		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
 
 		// 4. Evaluate products layer at challenge point to create claim
-		let products_eval = evaluate(&products, &eval_point).unwrap();
+		let products_eval = evaluate(&products, &eval_point);
 		let claim = MultilinearEvalClaim {
 			eval: products_eval,
 			point: eval_point,
@@ -201,7 +198,7 @@ mod tests {
 		assert_eq!(prover_output, verifier_output);
 
 		// 8. Verify multilinear evaluation of original witness
-		let expected_eval = evaluate(&witness, &verifier_output.point).unwrap();
+		let expected_eval = evaluate(&witness, &verifier_output.point);
 		assert_eq!(verifier_output.eval, expected_eval);
 	}
 
@@ -231,9 +228,9 @@ mod tests {
 		for i in 0..(1 << n) {
 			let mut expected_product = P::Scalar::ONE;
 			for z in 0..num_terms {
-				expected_product *= witness.get_checked(i + z * stride).unwrap();
+				expected_product *= witness.get(i + z * stride);
 			}
-			let actual = products.get_checked(i).unwrap();
+			let actual = products.get(i);
 			assert_eq!(actual, expected_product, "Product mismatch at index {i}");
 		}
 	}

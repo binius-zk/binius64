@@ -306,7 +306,7 @@ mod test {
 		};
 
 		input_ntt.inverse_transform(
-			FieldSliceMut::from_slice(coeffs.len().ilog2() as usize, coeffs.as_mut()).unwrap(),
+			FieldSliceMut::from_slice(coeffs.len().ilog2() as usize, coeffs.as_mut()),
 			0,
 			0,
 		);
@@ -325,7 +325,7 @@ mod test {
 		};
 
 		output_ntt.forward_transform(
-			FieldSliceMut::from_slice(coeffs.len().ilog2() as usize, coeffs.as_mut()).unwrap(),
+			FieldSliceMut::from_slice(coeffs.len().ilog2() as usize, coeffs.as_mut()),
 			0,
 			0,
 		);

@@ -13,7 +13,6 @@
 pub mod batch_invert;
 pub mod binary_subspace;
 pub mod bit_reverse;
-mod error;
 pub mod field_buffer;
 pub mod fold;
 pub mod inner_product;
@@ -29,7 +28,6 @@ pub mod test_utils;
 pub mod univariate;
 
 pub use binary_subspace::BinarySubspace;
-pub use error::Error;
 pub use field_buffer::{AsSlicesMut, FieldBuffer, FieldSlice, FieldSliceMut};
 pub use matrix::Matrix;
 pub use reed_solomon::ReedSolomonCode;

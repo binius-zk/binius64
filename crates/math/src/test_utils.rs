@@ -44,7 +44,6 @@ pub fn random_field_buffer<P: PackedField>(mut rng: impl RngCore, log_n: usize) 
 			.take(1 << log_n.saturating_sub(P::LOG_WIDTH))
 			.collect(),
 	)
-	.expect("correct number of packed elements are generated")
 }
 
 /// Converts an index to a hypercube point representation.

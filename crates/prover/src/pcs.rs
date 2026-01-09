@@ -231,7 +231,7 @@ mod test {
 			ParallelCompressionAdaptor::new(StdCompression::default()),
 		);
 
-		let committed_rs_code = ReedSolomonCode::<B128>::new(packed_mle.log_len(), LOG_INV_RATE)?;
+		let committed_rs_code = ReedSolomonCode::<B128>::new(packed_mle.log_len(), LOG_INV_RATE);
 
 		let fri_log_batch_size = 0;
 
@@ -246,7 +246,7 @@ mod test {
 			FRIParams::new(committed_rs_code, fri_log_batch_size, fri_arities, NUM_TEST_QUERIES)?;
 
 		// Commit packed mle codeword
-		let subspace = BinarySubspace::with_dim(fri_params.rs_code().log_len())?;
+		let subspace = BinarySubspace::with_dim(fri_params.rs_code().log_len());
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
@@ -299,7 +299,7 @@ mod test {
 		);
 
 		let packed_mle =
-			FieldBuffer::from_values(&packed_mle_values).expect("failed to create field buffer");
+			FieldBuffer::from_values(&packed_mle_values);
 
 		let evaluation_point = random_scalars::<B128>(&mut rng, n_vars * B128::WIDTH);
 
@@ -332,7 +332,7 @@ mod test {
 
 		let packed_mle_values = random_scalars::<B128>(&mut rng, 1 << big_field_n_vars);
 		let packed_mle =
-			FieldBuffer::from_values(&packed_mle_values).expect("failed to create field buffer");
+			FieldBuffer::from_values(&packed_mle_values);
 
 		let evaluation_point = random_scalars::<B128>(&mut rng, n_vars);
 
@@ -364,7 +364,7 @@ mod test {
 		// scalars for unpacked large field mle
 		let big_field_mle_scalars =
 			random_scalars::<B128>(&mut rng, total_big_field_scalars_in_packed_mle);
-		let packed_mle_buffer = FieldBuffer::from_values(&big_field_mle_scalars).unwrap();
+		let packed_mle_buffer = FieldBuffer::from_values(&big_field_mle_scalars);
 
 		// Evaluate the small field mle at a point in the large field.
 		let lifted_small_field_mle: Vec<B128> = lift_small_to_large_field(
@@ -411,7 +411,7 @@ mod test {
 		let big_field_mle_scalars =
 			random_scalars::<B128>(&mut rng, total_big_field_scalars_in_packed_mle);
 		let packed_mle_buffer: FieldBuffer<P> =
-			FieldBuffer::from_values(&big_field_mle_scalars).unwrap();
+			FieldBuffer::from_values(&big_field_mle_scalars);
 
 		// Evaluate the small field mle at a point in the large field.
 		let lifted_small_field_mle: Vec<B128> = lift_small_to_large_field(
@@ -453,12 +453,12 @@ mod test {
 		let log_dimension = 5;
 		let n_scalars = 1 << log_dimension;
 		let scalars = random_scalars::<B128>(&mut rng, n_scalars);
-		let packed_buffer: FieldBuffer<P> = FieldBuffer::from_values(&scalars).unwrap();
+		let packed_buffer: FieldBuffer<P> = FieldBuffer::from_values(&scalars);
 
 		let merkle_prover = BinaryMerkleTreeProver::<B128, StdDigest, _>::new(
 			ParallelCompressionAdaptor::new(StdCompression::default()),
 		);
-		let committed_rs_code = ReedSolomonCode::<B128>::new(log_dimension, LOG_INV_RATE).unwrap();
+		let committed_rs_code = ReedSolomonCode::<B128>::new(log_dimension, LOG_INV_RATE);
 
 		let fri_log_batch_size = 0;
 		let fri_arities = vec![1; log_dimension - 1];
@@ -466,7 +466,7 @@ mod test {
 			FRIParams::new(committed_rs_code, fri_log_batch_size, fri_arities, NUM_TEST_QUERIES)
 				.unwrap();
 
-		let subspace = BinarySubspace::with_dim(fri_params.rs_code().log_len()).unwrap();
+		let subspace = BinarySubspace::with_dim(fri_params.rs_code().log_len());
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
@@ -492,7 +492,7 @@ mod test {
 		// scalars for unpacked large field mle
 		let big_field_mle_scalars =
 			random_scalars::<B128>(&mut rng, total_big_field_scalars_in_packed_mle);
-		let packed_mle_buffer = FieldBuffer::from_values(&big_field_mle_scalars).unwrap();
+		let packed_mle_buffer = FieldBuffer::from_values(&big_field_mle_scalars);
 
 		let evaluation_point = random_scalars::<B128>(&mut rng, small_field_n_vars);
 

@@ -83,7 +83,7 @@ impl<F: BinaryField> DomainContext for GenericOnTheFly<F> {
 
 	fn subspace(&self, i: usize) -> BinarySubspace<F> {
 		if i == 0 {
-			return BinarySubspace::with_dim(0).unwrap();
+			return BinarySubspace::with_dim(0);
 		}
 		BinarySubspace::new_unchecked(self.evals[self.log_domain_size() - i].clone())
 	}
@@ -141,7 +141,7 @@ impl<F: BinaryField> DomainContext for GenericPreExpanded<F> {
 
 	fn subspace(&self, i: usize) -> BinarySubspace<F> {
 		if i == 0 {
-			return BinarySubspace::with_dim(0).unwrap();
+			return BinarySubspace::with_dim(0);
 		}
 		BinarySubspace::new_unchecked(self.evals[self.log_domain_size() - i].clone())
 	}
@@ -364,7 +364,7 @@ mod tests {
 	fn test_generic() {
 		const LOG_SIZE: usize = 5;
 
-		let subspace = BinarySubspace::with_dim(LOG_SIZE).unwrap();
+		let subspace = BinarySubspace::with_dim(LOG_SIZE);
 
 		let dc_otf = GenericOnTheFly::<B128>::generate_from_subspace(&subspace);
 		let dc_pre = GenericPreExpanded::<B128>::generate_from_subspace(&subspace);
@@ -391,7 +391,7 @@ mod tests {
 
 		let dc_gm_otf = GaoMateerOnTheFly::<B128>::generate(LOG_SIZE);
 		let dc_gm_pre = GaoMateerPreExpanded::<B128>::generate(LOG_SIZE);
-		let subspace = BinarySubspace::with_dim(LOG_SIZE).unwrap();
+		let subspace = BinarySubspace::with_dim(LOG_SIZE);
 		let dc_generic_otf = GenericOnTheFly::<B128>::generate_from_subspace(&subspace);
 		let dc_generic_pre = GenericPreExpanded::<B128>::generate_from_subspace(&subspace);
 

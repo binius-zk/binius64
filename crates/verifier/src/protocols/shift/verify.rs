@@ -345,10 +345,8 @@ pub fn evaluate_public_mle<F: BinaryField>(public: &[Word], z_coords: &[F], y_co
 			inner_product_subfield(word_bits, z_tensor.as_ref().iter().copied())
 		})
 		.collect::<Box<[_]>>();
-	let z_folded_words = FieldBuffer::new(y_coords.len(), z_folded_words)
-		.expect("precondition: public.len() == 1 << y_coords.len()");
+	let z_folded_words = FieldBuffer::new(y_coords.len(), z_folded_words);
 
 	// Then, fold the partial evaluation with the y coordinates
 	evaluate_inplace(z_folded_words, y_coords)
-		.expect("z_folded_words constructed with log_len = y_coords.len()")
 }

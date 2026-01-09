@@ -83,7 +83,7 @@ where
 			ConstantArityStrategy::with_optimal_arity::<B128, _>(&merkle_scheme, log_code_len)
 				.arity;
 
-		let subspace = BinarySubspace::with_dim(log_code_len)?;
+		let subspace = BinarySubspace::with_dim(log_code_len);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
@@ -157,12 +157,8 @@ where
 		transcript.observe().write_slice(public);
 
 		let subfield_subspace = BinarySubspace::<B8>::default().isomorphic();
-		let extended_subspace = subfield_subspace
-			.reduce_dim(LOG_WORD_SIZE_BITS + 1)
-			.expect("extended_subspace has dimension 8; LOG_WORD_SIZE_BITS + 1 < 8");
-		let domain_subspace = extended_subspace
-			.reduce_dim(LOG_WORD_SIZE_BITS)
-			.expect("extended_subspace has dimension 8; LOG_WORD_SIZE_BITS < 8");
+		let extended_subspace = subfield_subspace.reduce_dim(LOG_WORD_SIZE_BITS + 1);
+		let domain_subspace = extended_subspace.reduce_dim(LOG_WORD_SIZE_BITS);
 
 		// Receive the trace commitment.
 		let trace_commitment = transcript.message().read::<Output<MerkleHash>>()?;

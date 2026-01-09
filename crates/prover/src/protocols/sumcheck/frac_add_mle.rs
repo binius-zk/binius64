@@ -98,8 +98,8 @@ where
 		let n_vars = self.n_vars();
 		let [num, den] = &mut self.fraction_pairs;
 
-		let mut num_split = num.split_half_mut()?;
-		let mut den_split = den.split_half_mut()?;
+		let mut num_split = num.split_half_mut();
+		let mut den_split = den.split_half_mut();
 
 		// Fixed ordering expected by accumulate_chunk: num(0), num(1), den(0), den(1).
 		let slices = split_and_truncate(&mut num_split, &mut den_split, n_vars);
@@ -112,23 +112,23 @@ where
 
 		let packed_prime_evals: [RoundEvals2<P>; 2] = (0..1 << (n_vars - 1 - chunk_vars))
 			.into_par_iter()
-			.try_fold(
+			.fold(
 				|| [RoundEvals2::default(); 2],
-				|mut packed_prime_evals: [RoundEvals2<P>; 2], chunk_index| -> Result<_, Error> {
+				|mut packed_prime_evals: [RoundEvals2<P>; 2], chunk_index| {
 					accumulate_chunk(
 						&self.gruen32,
 						&slices,
 						chunk_vars,
 						&mut packed_prime_evals,
 						chunk_index,
-					)?;
-					Ok(packed_prime_evals)
+					);
+					packed_prime_evals
 				},
 			)
-			.try_reduce(
+			.reduce(
 				|| [RoundEvals2::default(); 2],
-				|lhs, rhs| Ok([lhs[0] + &rhs[0], lhs[1] + &rhs[1]]),
-			)?;
+				|lhs, rhs| [lhs[0] + &rhs[0], lhs[1] + &rhs[1]],
+			);
 
 		// These are MLE-check "prime" round polynomials; sumcheck wrappers apply the eq factor.
 		let alpha = self.gruen32.next_coordinate();
@@ -161,15 +161,15 @@ where
 		let n_vars = self.n_vars();
 		let [num, den] = &mut self.fraction_pairs;
 
-		let mut num_split = num.split_half_mut()?;
-		let mut den_split = den.split_half_mut()?;
+		let mut num_split = num.split_half_mut();
+		let mut den_split = den.split_half_mut();
 		let mut multilinears = split_and_truncate(&mut num_split, &mut den_split, n_vars);
 
 		for multilinear in &mut multilinears {
-			fold_highest_var_inplace(multilinear, challenge)?
+			fold_highest_var_inplace(multilinear, challenge);
 		}
 
-		self.gruen32.fold(challenge)?;
+		self.gruen32.fold(challenge);
 		// After folding, we keep only the new evaluations for the next round.
 		self.last_coeffs_or_evals = RoundCoeffsOrEvals::Evals(evals);
 		Ok(())
@@ -189,7 +189,7 @@ where
 			.fraction_pairs
 			.into_iter()
 			.flat_map(|multilinear| {
-				let (lo, hi) = multilinear.split_half_ref().expect("Should have 2 values");
+				let (lo, hi) = multilinear.split_half_ref();
 				[lo.get(0), hi.get(0)]
 			})
 			.collect();
@@ -204,15 +204,15 @@ fn accumulate_chunk<P: PackedField>(
 	chunk_vars: usize,
 	packed_prime_evals: &mut [RoundEvals2<P>; 2],
 	chunk_index: usize,
-) -> Result<(), Error> {
-	let eq_chunk = gruen32.eq_expansion().chunk(chunk_vars, chunk_index)?;
+) {
+	let eq_chunk = gruen32.eq_expansion().chunk(chunk_vars, chunk_index);
 
-	let splits = fraction_pairs
+	let splits: Vec<_> = fraction_pairs
 		.iter()
 		.map(|slice| slice.split_half_ref())
-		.collect::<Result<Vec<_>, _>>()?;
+		.collect();
 
-	let chunks = splits
+	let chunks: Vec<_> = splits
 		.iter()
 		.flat_map(|(lo, hi)| {
 			[
@@ -220,7 +220,7 @@ fn accumulate_chunk<P: PackedField>(
 				hi.chunk(chunk_vars, chunk_index),
 			]
 		})
-		.collect::<Result<Vec<_>, _>>()?;
+		.collect();
 	// Ordering: [num_a, den_a, num_b, den_b] × {low, high} chunks.
 
 	let [
@@ -280,8 +280,6 @@ fn accumulate_chunk<P: PackedField>(
 		packed_prime_evals[1].y_1 += eq_i * den_1_i;
 		packed_prime_evals[1].y_inf += eq_i * den_inf_i;
 	}
-
-	Ok(())
 }
 
 fn split_and_truncate<'a, P: PackedField>(
@@ -327,8 +325,8 @@ mod tests {
 		P: PackedField<Scalar = F>,
 	{
 		let n_vars = prover.n_vars();
-		let (num_a, num_b) = num.split_half_ref().unwrap();
-		let (den_a, den_b) = den.split_half_ref().unwrap();
+		let (num_a, num_b) = num.split_half_ref();
+		let (den_a, den_b) = den.split_half_ref();
 		// Run the proving protocol
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let output = batch_prove(vec![prover], &mut prover_transcript).unwrap();
@@ -359,10 +357,10 @@ mod tests {
 
 		// Check that the original multilinears evaluate to the claimed values at the challenge
 		// point
-		let eval_num_a = evaluate(&num_a, &reduced_eval_point).unwrap();
-		let eval_den_a = evaluate(&den_a, &reduced_eval_point).unwrap();
-		let eval_num_b = evaluate(&num_b, &reduced_eval_point).unwrap();
-		let eval_den_b = evaluate(&den_b, &reduced_eval_point).unwrap();
+		let eval_num_a = evaluate(&num_a, &reduced_eval_point);
+		let eval_den_a = evaluate(&den_a, &reduced_eval_point);
+		let eval_num_b = evaluate(&num_b, &reduced_eval_point);
+		let eval_den_b = evaluate(&den_b, &reduced_eval_point);
 
 		assert_eq!(
 			eval_num_a, multilinear_evals[0],
@@ -413,8 +411,8 @@ mod tests {
 
 		let num = random_field_buffer::<P>(&mut rng, n_vars + 1);
 		let den = random_field_buffer::<P>(&mut rng, n_vars + 1);
-		let (num_a, num_b) = num.split_half_ref().unwrap();
-		let (den_a, den_b) = den.split_half_ref().unwrap();
+		let (num_a, num_b) = num.split_half_ref();
+		let (den_a, den_b) = den.split_half_ref();
 
 		let numerator_values =
 			izip!(num_a.as_ref(), den_a.as_ref(), num_b.as_ref(), den_b.as_ref())
@@ -425,14 +423,14 @@ mod tests {
 			.map(|(&den_a, &den_b)| den_a * den_b)
 			.collect_vec();
 
-		let numerator_buffer = FieldBuffer::new(n_vars, numerator_values).unwrap();
-		let denominator_buffer = FieldBuffer::new(n_vars, denominator_values).unwrap();
+		let numerator_buffer = FieldBuffer::new(n_vars, numerator_values);
+		let denominator_buffer = FieldBuffer::new(n_vars, denominator_values);
 
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 		// Claims are at the original eval_point; verifier handles challenge ordering separately.
 		let eval_claims = [
-			evaluate(&numerator_buffer, &eval_point).unwrap(),
-			evaluate(&denominator_buffer, &eval_point).unwrap(),
+			evaluate(&numerator_buffer, &eval_point),
+			evaluate(&denominator_buffer, &eval_point),
 		];
 
 		let frac_prover =

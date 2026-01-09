@@ -94,10 +94,8 @@ fn verify_phase_1<F: Field, C: Challenger>(
 
 	// Verify: output_claim.eval = multilinear_eval(b_leaves_evals, z_suffix)
 	// The leaf evals form a multilinear over log_bits variables; evaluate at z_suffix
-	let b_leaves_buffer = FieldBuffer::new(log_bits, b_leaves_evals.as_slice())
-		.expect("b_leaves_evals read with length 1 << log_bits");
-	let expected_eval = multilinear::evaluate::evaluate(&b_leaves_buffer, z_suffix)
-		.expect("z_suffix length is log_bits");
+	let b_leaves_buffer = FieldBuffer::new(log_bits, b_leaves_evals.as_slice());
+	let expected_eval = multilinear::evaluate::evaluate(&b_leaves_buffer, z_suffix);
 
 	if expected_eval != output_claim.eval {
 		return Err(Error::LeafEvalMismatch);

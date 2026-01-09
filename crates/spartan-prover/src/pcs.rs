@@ -170,7 +170,7 @@ mod tests {
 			ParallelCompressionAdaptor::new(StdCompression::default()),
 		);
 
-		let subspace = BinarySubspace::with_dim(multilinear.log_len() + LOG_INV_RATE)?;
+		let subspace = BinarySubspace::with_dim(multilinear.log_len() + LOG_INV_RATE);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
@@ -231,8 +231,7 @@ mod tests {
 		// Create random multilinear
 		let len = 1 << n_vars.saturating_sub(P::LOG_WIDTH);
 		let data: Vec<P> = (0..len).map(|_| P::random(&mut rng)).collect();
-		let multilinear = FieldBuffer::new(n_vars, data.into_boxed_slice())
-			.expect("Failed to create FieldBuffer");
+		let multilinear = FieldBuffer::new(n_vars, data.into_boxed_slice());
 
 		// Create random evaluation point
 		let evaluation_point: Vec<B128> = (0..n_vars)

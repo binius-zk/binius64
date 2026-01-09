@@ -75,13 +75,8 @@ where
 			let prev_layer = layers.last().expect("layers is non-empty");
 
 			let (num, den) = prev_layer;
-			let (num_0, num_1) = num
-				.split_half_ref()
-				.expect("layer has at least one variable");
-
-			let (den_0, den_1) = den
-				.split_half_ref()
-				.expect("layer has at least one variable");
+			let (num_0, num_1) = num.split_half_ref();
+			let (den_0, den_1) = den.split_half_ref();
 
 			let (next_layer_num, next_layer_den) =
 				(num_0.as_ref(), den_0.as_ref(), num_1.as_ref(), den_1.as_ref())
@@ -90,10 +85,8 @@ where
 					.collect::<(Vec<_>, Vec<_>)>();
 
 			let next_layer = (
-				FieldBuffer::new(num.log_len() - 1, next_layer_num.into_boxed_slice())
-					.expect("Should be half of previous layer"),
-				FieldBuffer::new(den.log_len() - 1, next_layer_den.into_boxed_slice())
-					.expect("Should be half of previous layer"),
+				FieldBuffer::new(num.log_len() - 1, next_layer_num.into_boxed_slice()),
+				FieldBuffer::new(den.log_len() - 1, next_layer_den.into_boxed_slice()),
 			);
 
 			layers.push(next_layer);
@@ -224,8 +217,8 @@ mod tests {
 		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
 
 		// 4. Evaluate sums at challenge point to create claims
-		let sum_num_eval = evaluate(&sums.0, &eval_point).unwrap();
-		let sum_den_eval = evaluate(&sums.1, &eval_point).unwrap();
+		let sum_num_eval = evaluate(&sums.0, &eval_point);
+		let sum_den_eval = evaluate(&sums.1, &eval_point);
 		let prover_claim = (
 			MultilinearEvalClaim {
 				eval: sum_num_eval,
@@ -260,8 +253,8 @@ mod tests {
 		assert_eq!(prover_output.1.eval, verifier_output.den_eval);
 
 		// 8. Verify multilinear evaluation of original witness
-		let expected_num = evaluate(&witness_num, &verifier_output.point).unwrap();
-		let expected_den = evaluate(&witness_den, &verifier_output.point).unwrap();
+		let expected_num = evaluate(&witness_num, &verifier_output.point);
+		let expected_den = evaluate(&witness_den, &verifier_output.point);
 		assert_eq!(verifier_output.num_eval, expected_num);
 		assert_eq!(verifier_output.den_eval, expected_den);
 	}
@@ -292,17 +285,17 @@ mod tests {
 		let stride = 1 << n;
 		let num_terms = 1 << k;
 		for i in 0..(1 << n) {
-			let mut expected_num = witness_num.get_checked(i).unwrap();
-			let mut expected_den = witness_den.get_checked(i).unwrap();
+			let mut expected_num = witness_num.get(i);
+			let mut expected_den = witness_den.get(i);
 			for z in 1..num_terms {
 				let idx = i + z * stride;
-				let num_z = witness_num.get_checked(idx).unwrap();
-				let den_z = witness_den.get_checked(idx).unwrap();
+				let num_z = witness_num.get(idx);
+				let den_z = witness_den.get(idx);
 				expected_num = expected_num * den_z + num_z * expected_den;
 				expected_den *= den_z;
 			}
-			let actual_num = sums.0.get_checked(i).unwrap();
-			let actual_den = sums.1.get_checked(i).unwrap();
+			let actual_num = sums.0.get(i);
+			let actual_den = sums.1.get(i);
 			assert_eq!(actual_num, expected_num, "Numerator mismatch at index {i}");
 			assert_eq!(actual_den, expected_den, "Denominator mismatch at index {i}");
 		}

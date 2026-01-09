@@ -118,7 +118,7 @@ where
 
 		let packed_prime_evals = (0..chunk_count)
 			.into_par_iter()
-			.try_fold(
+			.fold(
 				|| {
 					(
 						vec![RoundEvals2::default(); sums.len()],
@@ -126,34 +126,31 @@ where
 						FieldBuffer::<P>::zeros(chunk_vars),
 					)
 				},
-				|(mut packed_prime_evals, mut binary_chunk_0, mut binary_chunk_1),
-				 chunk_index|
-				 -> Result<_, Error> {
-					let (selected_0, selected_1) = self.selected.split_half_ref()?;
+				|(mut packed_prime_evals, mut binary_chunk_0, mut binary_chunk_1), chunk_index| {
+					let (selected_0, selected_1) = self.selected.split_half_ref();
 
-					let selected_0_chunk = selected_0.chunk(chunk_vars, chunk_index)?;
-					let selected_1_chunk = selected_1.chunk(chunk_vars, chunk_index)?;
+					let selected_0_chunk = selected_0.chunk(chunk_vars, chunk_index);
+					let selected_1_chunk = selected_1.chunk(chunk_vars, chunk_index);
 
 					for (bit_offset, (round_evals, gruen32)) in
 						izip!(&mut packed_prime_evals, &self.gruen32s).enumerate()
 					{
 						let eq_chunk = gruen32.chunk_eq_expansion();
-						let eq_suffix_eval =
-							gruen32.suffix_eq_expansion().get_checked(chunk_index)?;
+						let eq_suffix_eval = gruen32.suffix_eq_expansion().get(chunk_index);
 
 						let selector_0_chunk = self.switchover.get_chunk(
 							&mut binary_chunk_0,
 							bit_offset,
 							chunk_vars,
 							chunk_index,
-						)?;
+						);
 
 						let selector_1_chunk = self.switchover.get_chunk(
 							&mut binary_chunk_1,
 							bit_offset,
 							chunk_vars,
 							chunk_index | chunk_count,
-						)?;
+						);
 
 						let mut chunk_round_evals = RoundEvals2::default();
 						for (&eq_i, &selected_0_i, &selected_1_i, &selector_0_i, &selector_1_i) in izip!(
@@ -179,14 +176,14 @@ where
 						*round_evals += &(chunk_round_evals * eq_suffix_eval);
 					}
 
-					Ok((packed_prime_evals, binary_chunk_0, binary_chunk_1))
+					(packed_prime_evals, binary_chunk_0, binary_chunk_1)
 				},
 			)
-			.map(|evals_with_scratchpad| evals_with_scratchpad.map(|(evals, _, _)| evals))
-			.try_reduce(
+			.map(|(evals, _, _)| evals)
+			.reduce(
 				|| vec![RoundEvals2::<P>::default(); sums.len()],
-				|lhs, rhs| Ok(izip!(lhs, rhs).map(|(l, r)| l + &r).collect()),
-			)?;
+				|lhs, rhs| izip!(lhs, rhs).map(|(l, r)| l + &r).collect(),
+			);
 
 		// This prover has multiple evaluation points and cannot implement MleCheckProver.
 		let (prime_coeffs, round_coeffs) = izip!(&self.gruen32s, sums, packed_prime_evals)
@@ -213,10 +210,10 @@ where
 
 		self.gruen32s
 			.par_iter_mut()
-			.try_for_each(|gruen32| gruen32.fold(challenge))?;
+			.for_each(|gruen32| gruen32.fold(challenge));
 
-		self.switchover.fold(challenge)?;
-		fold_highest_var_inplace(&mut self.selected, challenge)?;
+		self.switchover.fold(challenge);
+		fold_highest_var_inplace(&mut self.selected, challenge);
 
 		self.last_coeffs_or_sums = RoundCoeffsOrSums::Sums(sums);
 		Ok(())
@@ -234,18 +231,14 @@ where
 
 		let mut multilinear_evals = Vec::with_capacity(self.gruen32s.len() + 1);
 
-		for selector in self.switchover.finalize()? {
+		for selector in self.switchover.finalize() {
 			debug_assert_eq!(selector.log_len(), 0);
-			let eval = selector.get_checked(0).expect("selector.len() == 1");
+			let eval = selector.get(0);
 			multilinear_evals.push(eval);
 		}
 
 		debug_assert_eq!(self.selected.log_len(), 0);
-		multilinear_evals.push(
-			self.selected
-				.get_checked(0)
-				.expect("multilinear.len() == 1"),
-		);
+		multilinear_evals.push(self.selected.get(0));
 
 		Ok(multilinear_evals)
 	}
@@ -291,10 +284,10 @@ mod tests {
 		// Compare the round polynomials of the SelectorMlecheckProver and sum of round
 		// polynomials of two bivariate provers evaluating selector * selected and (1-selector) * 1
 		let selected_scalars = random_scalars::<F>(&mut rng, 1 << n_vars);
-		let selected = FieldBuffer::<P>::from_values(&selected_scalars).unwrap();
+		let selected = FieldBuffer::<P>::from_values(&selected_scalars);
 
 		let ones_scalars = repeat_with(|| F::ONE).take(1 << n_vars).collect_vec();
-		let ones = FieldBuffer::<P>::from_values(&ones_scalars).unwrap();
+		let ones = FieldBuffer::<P>::from_values(&ones_scalars);
 
 		let bivariate_provers_and_claims = (0..selector_count)
 			.map(|i| {
@@ -302,13 +295,13 @@ mod tests {
 					.iter()
 					.map(|b| if (b >> i) & 1 == 1 { F::ONE } else { F::ZERO })
 					.collect_vec();
-				let direct_selector = FieldBuffer::<P>::from_values(&selector_scalars).unwrap();
+				let direct_selector = FieldBuffer::<P>::from_values(&selector_scalars);
 
 				let zeroed_selected_scalars = izip!(&selected_scalars, &selector_scalars)
 					.map(|(&selected, &selector)| selected * selector)
 					.collect_vec();
 				let zeroed_selected =
-					FieldBuffer::<P>::from_values(&zeroed_selected_scalars).unwrap();
+					FieldBuffer::<P>::from_values(&zeroed_selected_scalars);
 
 				for scalar in &mut selector_scalars {
 					*scalar += F::ONE;
@@ -316,7 +309,7 @@ mod tests {
 
 				let inverted_selector_scalars = selector_scalars;
 				let inverted_selector =
-					FieldBuffer::<P>::from_values(&inverted_selector_scalars).unwrap();
+					FieldBuffer::<P>::from_values(&inverted_selector_scalars);
 
 				let masked_selected_scalars =
 					izip!(&zeroed_selected_scalars, &inverted_selector_scalars)
@@ -325,12 +318,12 @@ mod tests {
 						})
 						.collect_vec();
 				let masked_selected =
-					FieldBuffer::<P>::from_values(&masked_selected_scalars).unwrap();
+					FieldBuffer::<P>::from_values(&masked_selected_scalars);
 
 				let point = random_scalars::<F>(&mut rng, n_vars);
-				let value = multilinear_evaluate(&masked_selected, &point).unwrap();
+				let value = multilinear_evaluate(&masked_selected, &point);
 
-				let direct_eval_claim = multilinear_evaluate(&zeroed_selected, &point).unwrap();
+				let direct_eval_claim = multilinear_evaluate(&zeroed_selected, &point);
 				let direct_mle_prover = BivariateProductMultiMlecheckProver::new(
 					[[direct_selector, selected.clone()]].to_vec(),
 					&point,
@@ -339,7 +332,7 @@ mod tests {
 				.unwrap();
 				let direct_prover = MleToSumCheckDecorator::new(direct_mle_prover);
 
-				let inverted_eval_claim = multilinear_evaluate(&inverted_selector, &point).unwrap();
+				let inverted_eval_claim = multilinear_evaluate(&inverted_selector, &point);
 				let inverted_mle_prover = BivariateProductMultiMlecheckProver::new(
 					[[inverted_selector, ones.clone()]].to_vec(),
 					&point,

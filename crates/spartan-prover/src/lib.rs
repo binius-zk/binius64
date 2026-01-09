@@ -252,8 +252,7 @@ fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
 	};
 
 	let mut witness_packed =
-		FieldBuffer::new(log_witness_elems + 1, packed_witness.into_boxed_slice())
-			.expect("FieldBuffer::new should succeed with correct log_witness_elems");
+		FieldBuffer::new(log_witness_elems + 1, packed_witness.into_boxed_slice());
 
 	// Add blinding values
 	let base = n_public + n_private;

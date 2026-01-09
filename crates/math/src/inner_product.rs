@@ -107,15 +107,15 @@ mod tests {
 		let packed_a = P::random(&mut rng);
 		let packed_b = P::random(&mut rng);
 
-		let buffer_a = FieldBuffer::new(0, vec![packed_a]).unwrap();
-		let buffer_b = FieldBuffer::new(0, vec![packed_b]).unwrap();
+		let buffer_a = FieldBuffer::new(0, vec![packed_a]);
+		let buffer_b = FieldBuffer::new(0, vec![packed_b]);
 
 		// Compute inner product using both functions
 		let result_par = inner_product_par(&buffer_a, &buffer_b);
 		let result_packed = inner_product_buffers(&buffer_a, &buffer_b);
 
 		// Compute expected result manually - only first element should be used
-		let expected = buffer_a.get_checked(0).unwrap() * buffer_b.get_checked(0).unwrap();
+		let expected = buffer_a.get(0) * buffer_b.get(0);
 
 		assert_eq!(result_par, expected, "inner_product_par failed for log_len=0");
 		assert_eq!(result_packed, expected, "inner_product_packed failed for log_len=0");

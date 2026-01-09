@@ -6,7 +6,7 @@ use binius_field::{Field, PackedField};
 use binius_utils::rayon::prelude::*;
 
 use crate::{
-	Error, FieldBuffer,
+	FieldBuffer,
 	inner_product::inner_product_buffers,
 	multilinear::{eq::eq_ind_partial_eval, fold::fold_highest_var_inplace},
 };
@@ -26,18 +26,21 @@ use crate::{
 ///
 /// # Returns
 /// The evaluation of the multilinear polynomial at the given point
-pub fn evaluate<F, P, Data>(evals: &FieldBuffer<P, Data>, point: &[F]) -> Result<F, Error>
+///
+/// ## Preconditions
+///
+/// * `point.len()` must equal `evals.log_len()`
+pub fn evaluate<F, P, Data>(evals: &FieldBuffer<P, Data>, point: &[F]) -> F
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
 	Data: Deref<Target = [P]>,
 {
-	if point.len() != evals.log_len() {
-		return Err(Error::IncorrectArgumentLength {
-			arg: "point".to_string(),
-			expected: evals.log_len(),
-		});
-	}
+	assert_eq!(
+		point.len(),
+		evals.log_len(),
+		"precondition: point length must equal evals log length"
+	);
 
 	// Split coordinates: first half gets at least P::LOG_WIDTH coordinates
 	let first_half_len = (point.len() / 2).max(P::LOG_WIDTH).min(point.len());
@@ -48,7 +51,7 @@ where
 
 	// If there is no second half, just return the inner product with the whole evals.
 	if remaining_coords.is_empty() {
-		return Ok(inner_product_buffers(evals, &eq_tensor));
+		return inner_product_buffers(evals, &eq_tensor);
 	}
 
 	// Calculate chunk size based on first half length
@@ -56,12 +59,12 @@ where
 
 	// Collect inner products of chunks into scalar values
 	let scalars = evals
-		.chunks_par(log_chunk_size)?
+		.chunks_par(log_chunk_size)
 		.map(|chunk| inner_product_buffers(&chunk, &eq_tensor))
 		.collect::<Vec<_>>();
 
 	// Create temporary buffer from collected scalar values
-	let temp_buffer = FieldBuffer::<P>::from_values(&scalars)?;
+	let temp_buffer = FieldBuffer::<P>::from_values(&scalars);
 
 	// Evaluate remaining coordinates using evaluate_inplace
 	evaluate_inplace(temp_buffer, remaining_coords)
@@ -80,29 +83,29 @@ where
 ///
 /// # Returns
 /// The evaluation of the multilinear polynomial at the given point
-pub fn evaluate_inplace<F, P, Data>(
-	mut evals: FieldBuffer<P, Data>,
-	coords: &[F],
-) -> Result<F, Error>
+///
+/// ## Preconditions
+///
+/// * `coords.len()` must equal `evals.log_len()`
+pub fn evaluate_inplace<F, P, Data>(mut evals: FieldBuffer<P, Data>, coords: &[F]) -> F
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
 	Data: DerefMut<Target = [P]>,
 {
-	if coords.len() != evals.log_len() {
-		return Err(Error::IncorrectArgumentLength {
-			arg: "coords".to_string(),
-			expected: evals.log_len(),
-		});
-	}
+	assert_eq!(
+		coords.len(),
+		evals.log_len(),
+		"precondition: coords length must equal evals log length"
+	);
 
 	// Perform folding for each coordinate in reverse order
 	for &coord in coords.iter().rev() {
-		fold_highest_var_inplace(&mut evals, coord)?;
+		fold_highest_var_inplace(&mut evals, coord);
 	}
 
 	assert_eq!(evals.len(), 1);
-	Ok(evals.get(0))
+	evals.get(0)
 }
 
 #[cfg(test)]
@@ -123,26 +126,17 @@ mod tests {
 	#[test]
 	fn test_evaluate_consistency() {
 		/// Simple reference function for multilinear polynomial evaluation.
-		fn evaluate_with_inner_product<F, P, Data>(
-			evals: &FieldBuffer<P, Data>,
-			point: &[F],
-		) -> Result<F, Error>
+		fn evaluate_with_inner_product<F, P, Data>(evals: &FieldBuffer<P, Data>, point: &[F]) -> F
 		where
 			F: Field,
 			P: PackedField<Scalar = F>,
 			Data: Deref<Target = [P]>,
 		{
-			if point.len() != evals.log_len() {
-				return Err(Error::IncorrectArgumentLength {
-					arg: "coords".to_string(),
-					expected: evals.log_len(),
-				});
-			}
+			assert_eq!(point.len(), evals.log_len());
 
 			// Compute the equality indicator tensor expansion
 			let eq_tensor = eq_ind_partial_eval::<P>(point);
-			let result = inner_product_par(evals, &eq_tensor);
-			Ok(result)
+			inner_product_par(evals, &eq_tensor)
 		}
 
 		let mut rng = StdRng::seed_from_u64(0);
@@ -153,9 +147,9 @@ mod tests {
 			let point = random_scalars::<F>(&mut rng, log_n);
 
 			// Evaluate using all three methods
-			let result_inner_product = evaluate_with_inner_product(&buffer, &point).unwrap();
-			let result_inplace = evaluate_inplace(buffer.clone(), &point).unwrap();
-			let result_sqrt_memory = evaluate(&buffer, &point).unwrap();
+			let result_inner_product = evaluate_with_inner_product(&buffer, &point);
+			let result_inplace = evaluate_inplace(buffer.clone(), &point);
+			let result_sqrt_memory = evaluate(&buffer, &point);
 
 			// All results should be equal
 			assert_eq!(result_inner_product, result_inplace);
@@ -177,10 +171,10 @@ mod tests {
 			let point = index_to_hypercube_point::<F>(log_n, index);
 
 			// Evaluate at the hypercube point
-			let eval_result = evaluate(&buffer, &point).unwrap();
+			let eval_result = evaluate(&buffer, &point);
 
 			// Get the value directly from the buffer
-			let direct_value = buffer.get_checked(index).unwrap();
+			let direct_value = buffer.get(index);
 
 			// They should be equal
 			assert_eq!(eval_result, direct_value);
@@ -206,7 +200,7 @@ mod tests {
 				.iter()
 				.map(|&coord_val| {
 					point[coord_idx] = coord_val;
-					evaluate(&buffer, &point).unwrap()
+					evaluate(&buffer, &point)
 				})
 				.collect();
 

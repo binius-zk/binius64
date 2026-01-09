@@ -74,7 +74,7 @@ where
 		let log_code_len = log_dim + log_inv_rate;
 		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
 
-		let subspace = BinarySubspace::with_dim(log_code_len)?;
+		let subspace = BinarySubspace::with_dim(log_code_len);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
@@ -135,9 +135,8 @@ where
 		// point.
 		let r_public = transcript.sample_vec(cs.log_public() as usize);
 
-		let public = FieldSlice::from_slice(cs.log_public() as usize, public)
-			.expect("public.len() checked above");
-		let public_eval = evaluate(&public, &r_public).expect("public.log_len() == r_y_head.len()");
+		let public = FieldSlice::from_slice(cs.log_public() as usize, public);
+		let public_eval = evaluate(&public, &r_public);
 
 		// Verify the wiring check, public input check, and witness commitment opening with a
 		// combined BaseFold reduction.
@@ -193,10 +192,6 @@ pub enum Error {
 	PCS(#[from] pcs::Error),
 	#[error("Sumcheck error: {0}")]
 	Sumcheck(#[from] sumcheck::Error),
-	#[error("Math error: {0}")]
-	Math(#[from] binius_math::Error),
-	#[error("Reed-Solomon error: {0}")]
-	ReedSolomon(#[source] binius_math::reed_solomon::Error),
 	#[error("wiring error: {0}")]
 	Wiring(#[from] wiring::Error),
 	#[error("Transcript error: {0}")]

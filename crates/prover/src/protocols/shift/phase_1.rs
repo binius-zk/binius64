@@ -54,7 +54,7 @@ where
 	let g_parts = build_g_parts::<_, P>(words, key_collection, bitand_data, intmul_data)?;
 
 	// BitAnd and IntMul share the same `r_zhat_prime`.
-	let h_parts = build_h_parts(bitand_data.r_zhat_prime)?;
+	let h_parts = build_h_parts(bitand_data.r_zhat_prime);
 
 	run_phase_1_sumcheck(g_parts, h_parts, transcript)
 }
@@ -292,7 +292,7 @@ fn build_multilinear_parts<P: PackedField>(
 	let parts = multilinears
 		.chunks(1 << (LOG_LEN - P::LOG_WIDTH))
 		.map(|chunk| FieldBuffer::new(LOG_LEN, chunk.to_vec().into_boxed_slice()))
-		.collect::<Result<Vec<_>, _>>()?
+		.collect::<Vec<_>>()
 		.try_into()
 		.expect("chunk has SHIFT_VARIANT_COUNT parts of size 1 << LOG_LEN");
 
