@@ -14,7 +14,7 @@ use bytemuck::Zeroable;
 
 use super::{
 	UnderlierWithBitOps, WithUnderlier, binary_field_arithmetic::TowerFieldArithmetic,
-	error::Error, extension::ExtensionField,
+	extension::ExtensionField,
 };
 use crate::{Field, underlier::U1};
 
@@ -45,18 +45,20 @@ pub trait TowerField: BinaryField {
 
 	/// Returns the i'th basis element of this field as an extension over the tower subfield with
 	/// level $\iota$.
-	fn basis(iota: usize, i: usize) -> Result<Self, Error> {
-		if iota > Self::TOWER_LEVEL {
-			return Err(Error::ExtensionDegreeTooHigh);
-		}
+	///
+	/// # Preconditions
+	///
+	/// * `iota` must be at most `TOWER_LEVEL`.
+	/// * `i` must be less than `2^(TOWER_LEVEL - iota)`.
+	fn basis(iota: usize, i: usize) -> Self {
+		assert!(
+			iota <= Self::TOWER_LEVEL,
+			"iota {iota} exceeds tower level {}",
+			Self::TOWER_LEVEL
+		);
 		let n_basis_elts = 1 << (Self::TOWER_LEVEL - iota);
-		if i >= n_basis_elts {
-			return Err(Error::IndexOutOfRange {
-				index: i,
-				max: n_basis_elts,
-			});
-		}
-		<Self as ExtensionField<BinaryField1b>>::basis_checked(i << iota)
+		assert!(i < n_basis_elts, "index {i} out of range for {n_basis_elts} basis elements");
+		<Self as ExtensionField<BinaryField1b>>::basis(i << iota)
 	}
 
 	/// Multiplies a field element by the canonical primitive element of the extension $T_{\iota +
@@ -66,11 +68,16 @@ pub trait TowerField: BinaryField {
 	/// basis $\{1, \beta^{(\iota)}_1\}$. This operation multiplies the element by
 	/// $\beta^{(\iota)}_1$.
 	///
-	/// ## Throws
+	/// # Preconditions
 	///
-	/// * `Error::ExtensionDegreeTooHigh` if `iota >= Self::TOWER_LEVEL`
-	fn mul_primitive(self, iota: usize) -> Result<Self, Error> {
-		Ok(self * <Self as ExtensionField<BinaryField1b>>::basis_checked(1 << iota)?)
+	/// * `iota` must be less than `TOWER_LEVEL`.
+	fn mul_primitive(self, iota: usize) -> Self {
+		assert!(
+			iota < Self::TOWER_LEVEL,
+			"iota {iota} must be less than tower level {}",
+			Self::TOWER_LEVEL
+		);
+		self * <Self as ExtensionField<BinaryField1b>>::basis(1 << iota)
 	}
 }
 
@@ -415,20 +422,23 @@ macro_rules! impl_field_extension {
 			const LOG_DEGREE: usize = $log_degree;
 
 			#[inline]
-			fn basis_checked(i: usize) -> Result<Self, Error> {
+			fn basis(i: usize) -> Self {
 				use $crate::underlier::UnderlierWithBitOps;
 
-				if i >= 1 << $log_degree {
-					return Err(Error::ExtensionDegreeMismatch);
-				}
-				Ok(Self::new(<$typ>::ONE << (i * $subfield_name::N_BITS)))
+				assert!(
+					i < 1 << $log_degree,
+					"index {} out of range for degree {}",
+					i,
+					1 << $log_degree
+				);
+				Self::new(<$typ>::ONE << (i * $subfield_name::N_BITS))
 			}
 
 			#[inline]
 			fn from_bases_sparse(
 				base_elems: impl IntoIterator<Item = $subfield_name>,
 				log_stride: usize,
-			) -> Result<Self, Error> {
+			) -> Self {
 				use $crate::underlier::UnderlierWithBitOps;
 
 				debug_assert!($name::N_BITS.is_power_of_two());
@@ -437,14 +447,15 @@ macro_rules! impl_field_extension {
 				let mut shift = 0;
 
 				for elem in base_elems.into_iter() {
-					if shift >= $name::N_BITS {
-						return Err(Error::ExtensionDegreeMismatch);
-					}
+					assert!(
+						shift < $name::N_BITS,
+						"too many base elements for extension degree"
+					);
 					value |= <$typ>::from(elem.val()) << shift;
 					shift += shift_step;
 				}
 
-				Ok(Self::new(value))
+				Self::new(value)
 			}
 
 			#[inline]
@@ -472,9 +483,8 @@ macro_rules! impl_field_extension {
 			}
 
 			#[inline]
-			fn square_transpose(values: &mut [Self]) -> Result<(), Error> {
+			fn square_transpose(values: &mut [Self]) {
 				crate::transpose::square_transforms_extension_field::<$subfield_name, Self>(values)
-					.map_err(|_| Error::ExtensionDegreeMismatch)
 			}
 		}
 	};

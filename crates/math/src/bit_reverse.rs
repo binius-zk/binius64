@@ -61,7 +61,7 @@ pub fn bit_reverse_packed<P: PackedField>(mut buffer: FieldSliceMut<P>) {
 						tmp[j] = *data.add(reverse_bits(j, bits) | i);
 					}
 				}
-				square_transpose(P::LOG_WIDTH, tmp).expect("pre-conditions satisfied");
+				square_transpose(P::LOG_WIDTH, tmp);
 				unsafe {
 					let data = data_ptr as *mut P;
 					for j in 0..P::WIDTH {

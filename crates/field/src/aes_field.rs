@@ -14,7 +14,7 @@ use binius_utils::{
 use bytemuck::{Pod, Zeroable};
 
 use super::{
-	Error, PackedExtension, PackedSubfield,
+	PackedExtension, PackedSubfield,
 	arithmetic_traits::InvertOrZero,
 	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
 	binary_field_arithmetic::TowerFieldArithmetic,
@@ -50,11 +50,11 @@ impl TowerField for AESTowerField8b {
 		}
 	}
 
-	fn mul_primitive(self, iota: usize) -> Result<Self, Error> {
+	fn mul_primitive(self, iota: usize) -> Self {
 		match iota {
-			0..=1 => Ok(self * ISOMORPHIC_ALPHAS[iota]),
-			2 => Ok(self.multiply_alpha()),
-			_ => Err(Error::ExtensionDegreeMismatch),
+			0..=1 => self * ISOMORPHIC_ALPHAS[iota],
+			2 => self.multiply_alpha(),
+			_ => panic!("iota {iota} must be less than tower level 3"),
 		}
 	}
 }
@@ -185,28 +185,28 @@ mod tests {
 		assert!(is_binary_field_valid_generator::<AESTowerField8b>());
 	}
 
-	fn test_mul_primitive<F: TowerField + WithUnderlier<Underlier: From<u8>>>(val: F, iota: usize) {
+	fn test_mul_primitive_valid<F: TowerField + WithUnderlier<Underlier: From<u8>>>(
+		val: F,
+		iota: usize,
+	) {
 		let result = val.mul_primitive(iota);
-		let expected = match iota {
-			0..=2 => {
-				Ok(val
-					* F::from_underlier(F::Underlier::from(ISOMORPHIC_ALPHAS[iota].to_underlier())))
-			}
-			_ => <F as ExtensionField<BinaryField1b>>::basis_checked(1 << iota).map(|b| val * b),
-		};
-		assert_eq!(result.is_ok(), expected.is_ok());
-		if result.is_ok() {
-			assert_eq!(result.unwrap(), expected.unwrap());
-		} else {
-			assert!(matches!(result.unwrap_err(), Error::ExtensionDegreeMismatch));
-		}
+		let expected =
+			val * F::from_underlier(F::Underlier::from(ISOMORPHIC_ALPHAS[iota].to_underlier()));
+		assert_eq!(result, expected);
 	}
 
 	proptest! {
 		#[test]
-		fn test_mul_primitive_8b(val in 0u8.., iota in 3usize..8) {
-			test_mul_primitive::<AESTowerField8b>(val.into(), iota)
+		fn test_mul_primitive_8b(val in 0u8.., iota in 0usize..3) {
+			test_mul_primitive_valid::<AESTowerField8b>(val.into(), iota)
 		}
+	}
+
+	#[test]
+	#[should_panic(expected = "must be less than tower level")]
+	fn test_mul_primitive_out_of_range() {
+		let val = AESTowerField8b::from(1u8);
+		val.mul_primitive(3);
 	}
 
 	#[test]

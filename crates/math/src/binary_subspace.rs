@@ -79,9 +79,10 @@ impl<F: BinaryField> BinarySubspace<F> {
 	///
 	/// * `Error::DomainSizeTooLarge` if `dim` is greater than this subspace's dimension.
 	pub fn with_dim(dim: usize) -> Result<Self, Error> {
-		let basis = (0..dim)
-			.map(|i| F::basis_checked(i).map_err(|_| Error::DomainSizeTooLarge))
-			.collect::<Result<_, _>>()?;
+		if dim > F::DEGREE {
+			return Err(Error::DomainSizeTooLarge);
+		}
+		let basis = (0..dim).map(|i| F::basis(i)).collect();
 		Ok(Self { basis })
 	}
 
