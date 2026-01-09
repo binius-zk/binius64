@@ -156,6 +156,49 @@ differences are
 * Prover code can use complex data structures like hash maps; verifier code prefer direct-mapped indexes.
 * Prover code can use more experimental dependencies; verifier code should be conservative with dependencies.
 
+## Error Handling
+
+The codebase uses different error-handling strategies depending on the abstraction level and trust boundary.
+
+### Precondition Contracts
+
+Most internal code should use **assertions and documented precondition contracts** rather than returning `Result` types.
+This simplifies internal APIs and makes code easier to reason about. Functions should document their preconditions and
+use `assert!`, `debug_assert!`, or `expect()` to enforce them.
+
+```rust
+/// Evaluates the polynomial at the given point.
+///
+/// # Preconditions
+/// - `point.len()` must equal the number of variables in the polynomial
+fn evaluate(&self, point: &[F]) -> F {
+    assert_eq!(point.len(), self.n_vars());
+    // ...
+}
+```
+
+### When to Return Errors
+
+Errors should be returned when **unchecked external input could cause a panic**. The key distinction is:
+
+- **Verifier**: The high-level input is the proof. The verifier cannot trust the proof, so it must return
+  `VerificationError` for invalid proofs rather than panicking. This is the boundary where untrusted data enters.
+
+- **Prover**: The high-level input is the witness. The prover **may assume the witness is satisfying**. If the witness
+  is invalid, the prover code may panic. This is acceptable because the caller is responsible for providing a valid
+  witness.
+
+### Trust Boundaries
+
+Error types should only be used at high-level interfaces:
+
+- `binius_prover::Prover` - returns errors only for system-level failures (not invalid witnesses)
+- `binius_verifier::Verifier` - returns `VerificationError` for invalid proofs
+- Similar interfaces in spartan modules
+
+Below these interfaces, code should use precondition contracts. This keeps internal APIs simple and pushes validation
+to the boundaries where untrusted data enters the system.
+
 ## Dependencies
 
 We use plenty of useful crates from the Rust ecosystem. When including a crate as a dependency, be sure to assess:

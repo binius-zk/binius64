@@ -35,12 +35,12 @@ impl<DC: DomainContext> AdditiveNTT for NeighborsLastReference<DC> {
 				for idx0 in block_start..(block_start + block_size_half) {
 					let idx1 = block_size_half | idx0;
 					// perform butterfly
-					let mut u = data.get_checked(idx0).unwrap();
-					let mut v = data.get_checked(idx1).unwrap();
+					let mut u = data.get(idx0);
+					let mut v = data.get(idx1);
 					u += v * twiddle;
 					v += u;
-					data.set_checked(idx0, u).unwrap();
-					data.set_checked(idx1, v).unwrap();
+					data.set(idx0, u);
+					data.set(idx1, v);
 				}
 			}
 		}
@@ -64,12 +64,12 @@ impl<DC: DomainContext> AdditiveNTT for NeighborsLastReference<DC> {
 				for idx0 in block_start..(block_start + block_size_half) {
 					let idx1 = block_size_half | idx0;
 					// perform butterfly
-					let mut u = data.get_checked(idx0).unwrap();
-					let mut v = data.get_checked(idx1).unwrap();
+					let mut u = data.get(idx0);
+					let mut v = data.get(idx1);
 					v += u;
 					u += v * twiddle;
-					data.set_checked(idx0, u).unwrap();
-					data.set_checked(idx1, v).unwrap();
+					data.set(idx0, u);
+					data.set(idx1, v);
 				}
 			}
 		}

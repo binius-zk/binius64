@@ -1,7 +1,5 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_math::Error as MathError;
-
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
 	/// Error indicating invalid arguments were passed to a sumcheck function.
@@ -23,6 +21,4 @@ pub enum Error {
 	ExpectedFold,
 	#[error("expected finish() call")]
 	ExpectedFinish,
-	#[error("math error: {0}")]
-	MathError(#[from] MathError),
 }

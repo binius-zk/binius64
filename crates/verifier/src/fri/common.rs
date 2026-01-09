@@ -117,7 +117,7 @@ where
 		};
 
 		let log_dim = log_msg_len - log_batch_size;
-		let rs_code = ReedSolomonCode::with_ntt_subspace(ntt, log_dim, log_inv_rate)?;
+		let rs_code = ReedSolomonCode::with_ntt_subspace(ntt, log_dim, log_inv_rate);
 		Self::new(rs_code, log_batch_size, fold_arities, n_test_queries)
 	}
 

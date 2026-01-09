@@ -38,14 +38,14 @@ fn test_commit_prove_verify_success<F, P>(
 	let parallel_compression = ParallelCompressionAdaptor::new(StdCompression::default());
 	let merkle_prover = BinaryMerkleTreeProver::<_, StdDigest, _>::new(parallel_compression);
 
-	let committed_rs_code = ReedSolomonCode::<F>::new(log_dimension, log_inv_rate).unwrap();
+	let committed_rs_code = ReedSolomonCode::<F>::new(log_dimension, log_inv_rate);
 
 	let n_test_queries = 3;
 	let params =
 		FRIParams::new(committed_rs_code, log_batch_size, arities.to_vec(), n_test_queries)
 			.unwrap();
 
-	let subspace = BinarySubspace::with_dim(params.rs_code().log_len()).unwrap();
+	let subspace = BinarySubspace::with_dim(params.rs_code().log_len());
 	let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 
@@ -149,7 +149,7 @@ fn test_commit_prove_verify_success<F, P>(
 	// note that the prover is claiming that the final_message is [c]
 	let mut eval_point = verifier_challenges.clone();
 	eval_point.reverse();
-	let computed_eval = evaluate(&msg, &eval_point).unwrap();
+	let computed_eval = evaluate(&msg, &eval_point);
 
 	let final_fri_value = verifier.verify(&mut cloned_verifier_challenger).unwrap();
 	assert_eq!(computed_eval, final_fri_value);

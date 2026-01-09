@@ -231,7 +231,7 @@ where
 			} = intmul_output;
 
 			let r_zhat_prime = bitand_claim.r_zhat_prime;
-			let subspace = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS)?.isomorphic();
+			let subspace = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
 			let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
 			OperatorData {
@@ -325,7 +325,7 @@ fn pack_witness<P: PackedField<Scalar = B128>>(
 	};
 
 	let padded_witness_elems =
-		FieldBuffer::new(log_witness_elems, padded_witness_elems.into_boxed_slice())?;
+		FieldBuffer::new(log_witness_elems, padded_witness_elems.into_boxed_slice());
 	Ok(padded_witness_elems)
 }
 
@@ -333,8 +333,7 @@ fn prove_bitand_reduction<F: BinaryField + From<B8>, Challenger_: Challenger>(
 	witness: AndCheckWitness,
 	transcript: &mut ProverTranscript<Challenger_>,
 ) -> Result<AndCheckOutput<F>, Error> {
-	let prover_message_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1)
-		.expect("B8::DEGREE is at least LOG_WORD_SIZE_BITS + 1");
+	let prover_message_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1);
 	let AndCheckWitness {
 		mut a,
 		mut b,

@@ -5,17 +5,6 @@ use binius_utils::checked_arithmetics::log2_strict_usize;
 use super::packed::PackedField;
 use crate::{ExtensionField, Field, PackedExtension};
 
-/// Error thrown when a transpose operation fails.
-#[derive(Clone, thiserror::Error, Debug)]
-pub enum Error {
-	#[error("the \"{param}\" argument's size is invalid: {msg}")]
-	InvalidBufferSize { param: &'static str, msg: String },
-	#[error("dimension n of square blocks must divide packing width")]
-	SquareBlockDimensionMustDivideWidth,
-	#[error("destination buffer must be castable to a packed extension field buffer")]
-	UnalignedDestination,
-}
-
 /// Transpose square blocks of elements within packed field elements in place.
 ///
 /// The input elements are interpreted as a rectangular matrix with height `n = 2^n` in row-major
@@ -27,25 +16,22 @@ pub enum Error {
 /// * `log_n`: The base-2 logarithm of the dimension of the n x n square matrix. Must be less than
 ///   or equal to the base-2 logarithm of the packing width.
 /// * `elems`: The packed field elements, length is a power-of-two multiple of `1 << log_n`.
-pub fn square_transpose<P: PackedField>(log_n: usize, elems: &mut [P]) -> Result<(), Error> {
-	if P::LOG_WIDTH < log_n {
-		return Err(Error::SquareBlockDimensionMustDivideWidth);
-	}
+///
+/// # Preconditions
+///
+/// * `log_n` must be at most `P::LOG_WIDTH`.
+/// * `elems.len()` must be a power of two and at least `2^log_n`.
+pub fn square_transpose<P: PackedField>(log_n: usize, elems: &mut [P]) {
+	assert!(P::LOG_WIDTH >= log_n, "dimension n of square blocks must divide packing width");
 
 	let size = elems.len();
-	if !size.is_power_of_two() {
-		return Err(Error::InvalidBufferSize {
-			param: "elems",
-			msg: "power of two size required".to_string(),
-		});
-	}
+	assert!(size.is_power_of_two(), "elems length must be a power of two, got {size}");
 	let log_size = log2_strict_usize(size);
-	if log_size < log_n {
-		return Err(Error::InvalidBufferSize {
-			param: "elems",
-			msg: "must have length at least 2^log_n".to_string(),
-		});
-	}
+	assert!(
+		log_size >= log_n,
+		"elems must have length at least 2^log_n = {}, got {size}",
+		1 << log_n
+	);
 
 	let log_w = log_size - log_n;
 
@@ -65,13 +51,11 @@ pub fn square_transpose<P: PackedField>(log_n: usize, elems: &mut [P]) -> Result
 			}
 		}
 	}
-
-	Ok(())
 }
 
 pub fn square_transforms_extension_field<F: Field, FE: ExtensionField<F> + PackedExtension<F>>(
 	values: &mut [FE],
-) -> Result<(), Error> {
+) {
 	square_transpose(FE::LOG_DEGREE, FE::cast_bases_mut(values))
 }
 
@@ -92,7 +76,7 @@ mod tests {
 			PackedBinaryField128x1b::from(0xffffffffffffffffffffffffffffffffu128),
 			PackedBinaryField128x1b::from(0xffffffffffffffffffffffffffffffffu128),
 		];
-		square_transpose(3, &mut elems).unwrap();
+		square_transpose(3, &mut elems);
 
 		let expected = [
 			PackedBinaryField128x1b::from(0xf0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0u128),
@@ -119,7 +103,7 @@ mod tests {
 			PackedBinaryField128x1b::from(0xffffffffffffffffffffffffffffffffu128),
 			PackedBinaryField128x1b::from(0xffffffffffffffffffffffffffffffffu128),
 		];
-		square_transpose(1, &mut elems).unwrap();
+		square_transpose(1, &mut elems);
 
 		let expected = [
 			PackedBinaryField128x1b::from(0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaau128),

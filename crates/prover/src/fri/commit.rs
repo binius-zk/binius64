@@ -54,7 +54,7 @@ where
 	.entered();
 
 	let encoded = tracing::debug_span!("Reed-Solomon Encode")
-		.in_scope(|| rs_code.encode_batch(ntt, message.to_ref(), log_batch_size))?;
+		.in_scope(|| rs_code.encode_batch(ntt, message.to_ref(), log_batch_size));
 
 	let merkle_tree_span = tracing::debug_span!("Merkle Tree").entered();
 	let (commitment, vcs_committed) = if log_batch_size > P::LOG_WIDTH {
@@ -123,8 +123,8 @@ mod tests {
 		// Compare results for small and large chunk sizes to ensure that they're identical
 		let data = random_scalars::<B128>(&mut rng, 64);
 
-		let data_packed_2 = FieldBuffer::<PackedBinaryGhash2x128b, _>::from_values(&data).unwrap();
-		let data_packed_4 = FieldBuffer::<PackedBinaryGhash4x128b, _>::from_values(&data).unwrap();
+		let data_packed_2 = FieldBuffer::<PackedBinaryGhash2x128b, _>::from_values(&data);
+		let data_packed_4 = FieldBuffer::<PackedBinaryGhash4x128b, _>::from_values(&data);
 
 		let packing_smaller_than_chunk = to_par_scalar_big_chunks(data_packed_2.as_ref(), 2);
 		let packing_bigger_than_chunk = to_par_scalar_small_chunks(data_packed_4.as_ref(), 2);

@@ -11,8 +11,7 @@ use binius_utils::rayon::prelude::*;
 use getset::{CopyGetters, Getters};
 
 use super::{
-	FieldBuffer, FieldSlice, FieldSliceMut, binary_subspace::BinarySubspace,
-	error::Error as MathError, ntt::AdditiveNTT,
+	FieldBuffer, FieldSlice, FieldSliceMut, binary_subspace::BinarySubspace, ntt::AdditiveNTT,
 };
 use crate::{
 	bit_reverse::{bit_reverse_indices, bit_reverse_packed},
@@ -38,8 +37,8 @@ pub struct ReedSolomonCode<F> {
 }
 
 impl<F: BinaryField> ReedSolomonCode<F> {
-	pub fn new(log_dimension: usize, log_inv_rate: usize) -> Result<Self, Error> {
-		let subspace = BinarySubspace::with_dim(log_dimension + log_inv_rate)?;
+	pub fn new(log_dimension: usize, log_inv_rate: usize) -> Self {
+		let subspace = BinarySubspace::with_dim(log_dimension + log_inv_rate);
 		Self::with_subspace(subspace, log_dimension, log_inv_rate)
 	}
 
@@ -47,7 +46,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		ntt: &impl AdditiveNTT<Field = F>,
 		log_dimension: usize,
 		log_inv_rate: usize,
-	) -> Result<Self, Error> {
+	) -> Self {
 		Self::with_domain_context_subspace(ntt.domain_context(), log_dimension, log_inv_rate)
 	}
 
@@ -55,11 +54,12 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		domain_context: &impl DomainContext<Field = F>,
 		log_dimension: usize,
 		log_inv_rate: usize,
-	) -> Result<Self, Error> {
+	) -> Self {
 		let subspace_dim = log_dimension + log_inv_rate;
-		if subspace_dim > domain_context.log_domain_size() {
-			return Err(Error::SubspaceDimensionMismatch);
-		}
+		assert!(
+			subspace_dim <= domain_context.log_domain_size(),
+			"precondition: subspace dimension must not exceed domain context log size"
+		);
 		let subspace = domain_context.subspace(subspace_dim);
 		Self::with_subspace(subspace, log_dimension, log_inv_rate)
 	}
@@ -68,15 +68,17 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 		subspace: BinarySubspace<F>,
 		log_dimension: usize,
 		log_inv_rate: usize,
-	) -> Result<Self, Error> {
-		if subspace.dim() != log_dimension + log_inv_rate {
-			return Err(Error::SubspaceDimensionMismatch);
-		}
-		Ok(Self {
+	) -> Self {
+		assert_eq!(
+			subspace.dim(),
+			log_dimension + log_inv_rate,
+			"precondition: subspace dimension must equal log_dimension + log_inv_rate"
+		);
+		Self {
 			subspace,
 			log_dimension,
 			log_inv_rate,
-		})
+		}
 	}
 
 	/// The dimension.
@@ -115,31 +117,32 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 	///
 	/// ## Preconditions
 	///
-	/// * `data.log_len()` equal `log_dim() + log_batch_size`.
+	/// * `data.log_len()` must equal `log_dim() + log_batch_size`.
+	/// * The NTT subspace must match the code's subspace.
 	///
 	/// ## Postconditions
 	///
-	/// * On success, all elements in the output buffer are initialized with the encoded codeword.
-	///
-	/// ## Throws
-	///
-	/// * [`Error::EncoderSubspaceMismatch`] if the NTT subspace doesn't match the code's subspace.
-	/// * [`Error::Math`] if the output buffer has incorrect dimensions.
+	/// * All elements in the output buffer are initialized with the encoded codeword.
 	pub fn encode_batch<P, NTT>(
 		&self,
 		ntt: &NTT,
 		data: FieldSlice<P>,
 		log_batch_size: usize,
-	) -> Result<FieldBuffer<P>, Error>
+	) -> FieldBuffer<P>
 	where
 		P: PackedField<Scalar = F>,
 		NTT: AdditiveNTT<Field = F> + Sync,
 	{
-		if ntt.subspace(self.log_len()) != self.subspace {
-			return Err(Error::EncoderSubspaceMismatch);
-		}
-
-		assert_eq!(data.log_len(), self.log_dim() + log_batch_size); // precondition
+		assert_eq!(
+			ntt.subspace(self.log_len()),
+			self.subspace,
+			"precondition: NTT subspace must match code subspace"
+		);
+		assert_eq!(
+			data.log_len(),
+			self.log_dim() + log_batch_size,
+			"precondition: data.log_len() must equal log_dim() + log_batch_size"
+		);
 
 		let _scope = tracing::trace_span!(
 			"Reed-Solomon encode",
@@ -162,10 +165,10 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 			output_data.extend_from_slice(data.as_ref());
 
 			// Bit-reverse permute the message.
-			bit_reverse_packed(
-				FieldSliceMut::from_slice(data.log_len(), output_data.as_mut_slice())
-					.expect("output_data.len() == data.as_ref.len()"),
-			);
+			bit_reverse_packed(FieldSliceMut::from_slice(
+				data.log_len(),
+				output_data.as_mut_slice(),
+			));
 
 			let log_msg_len_packed = data.log_len() - P::LOG_WIDTH;
 			output_data
@@ -193,22 +196,11 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 
 			output_data
 		};
-		let mut output = FieldBuffer::new(log_output_len, output_data.into_boxed_slice())
-			.expect("preconditions satisfied");
+		let mut output = FieldBuffer::new(log_output_len, output_data.into_boxed_slice());
 
 		ntt.forward_transform(output.to_mut(), self.log_inv_rate, log_batch_size);
-		Ok(output)
+		output
 	}
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-	#[error("the evaluation domain of the code does not match the subspace of the NTT encoder")]
-	EncoderSubspaceMismatch,
-	#[error("the dimension of the evaluation domain of the code does not match the parameters")]
-	SubspaceDimensionMismatch,
-	#[error("math error: {0}")]
-	Math(#[from] MathError),
 }
 
 #[cfg(test)]
@@ -235,8 +227,7 @@ mod tests {
 	{
 		let mut rng = StdRng::seed_from_u64(0);
 
-		let rs_code = ReedSolomonCode::<P::Scalar>::new(log_dim, log_inv_rate)
-			.expect("Failed to create Reed-Solomon code");
+		let rs_code = ReedSolomonCode::<P::Scalar>::new(log_dim, log_inv_rate);
 
 		// Create NTT with matching subspace
 		let subspace = rs_code.subspace().clone();
@@ -249,9 +240,7 @@ mod tests {
 		let message = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
 
 		// Test the new encode_batch interface
-		let encoded_buffer = rs_code
-			.encode_batch(&ntt, message.to_ref(), log_batch_size)
-			.expect("encode_batch failed");
+		let encoded_buffer = rs_code.encode_batch(&ntt, message.to_ref(), log_batch_size);
 
 		// Method 2: Reference implementation - apply NTT with zero-padded coefficients to the
 		// bit-reversal permuted message.

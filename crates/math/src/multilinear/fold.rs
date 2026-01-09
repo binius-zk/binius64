@@ -5,19 +5,23 @@ use std::ops::{Deref, DerefMut};
 use binius_field::{Field, PackedField};
 use binius_utils::{random_access_sequence::RandomAccessSequence, rayon::prelude::*};
 
-use crate::{Error, FieldBuffer};
+use crate::FieldBuffer;
 
 /// Computes the partial evaluation of a multilinear on its highest variable, inplace.
 ///
 /// Each scalar of the result requires one multiplication to compute. Multilinear evaluations
 /// occupy a prefix of the field buffer; scalars after the truncated length are zeroed out.
+///
+/// ## Preconditions
+///
+/// * `values.log_len() >= 1` (buffer must have at least 2 elements)
 pub fn fold_highest_var_inplace<P: PackedField, Data: DerefMut<Target = [P]>>(
 	values: &mut FieldBuffer<P, Data>,
 	scalar: P::Scalar,
-) -> Result<(), Error> {
+) {
 	let broadcast_scalar = P::broadcast(scalar);
 	{
-		let mut split = values.split_half_mut()?;
+		let mut split = values.split_half_mut();
 		let (mut lo, mut hi) = split.halves();
 		(lo.as_mut(), hi.as_mut())
 			.into_par_iter()
@@ -27,7 +31,6 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: DerefMut<Target = [P]>>(
 	}
 
 	values.truncate(values.log_len() - 1);
-	Ok(())
 }
 
 /// Computes the fold high of a binary multilinear with a fold tensor.
@@ -39,30 +42,29 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: DerefMut<Target = [P]>>(
 ///
 /// This method is single threaded.
 ///
-/// # Throws
+/// ## Preconditions
 ///
-/// * `PowerOfTwoLengthRequired` if the bool sequence is not of power of two length.
-/// * `FoldLengthMismatch` if the tensor, result and binary multilinear lengths do not add up.
+/// * `bits.len()` must be a power of two
+/// * `bits.len()` must equal `values.len() * tensor.len()`
 pub fn binary_fold_high<P, DataOut, DataIn>(
 	values: &mut FieldBuffer<P, DataOut>,
 	tensor: &FieldBuffer<P, DataIn>,
 	bits: impl RandomAccessSequence<bool> + Sync,
-) -> Result<(), Error>
-where
+) where
 	P: PackedField,
 	DataOut: DerefMut<Target = [P]>,
 	DataIn: Deref<Target = [P]> + Sync,
 {
-	if !bits.len().is_power_of_two() {
-		return Err(Error::PowerOfTwoLengthRequired);
-	}
+	assert!(bits.len().is_power_of_two(), "precondition: bits length must be a power of two");
 
 	let values_log_len = values.log_len();
 	let width = P::WIDTH.min(values.len());
 
-	if 1 << (values_log_len + tensor.log_len()) != bits.len() {
-		return Err(Error::FoldLengthMismatch);
-	}
+	assert_eq!(
+		1 << (values_log_len + tensor.log_len()),
+		bits.len(),
+		"precondition: bits length must equal values length times tensor length"
+	);
 
 	values
 		.as_mut()
@@ -85,8 +87,6 @@ where
 				acc
 			}));
 		});
-
-	Ok(())
 }
 
 #[cfg(test)]
@@ -113,13 +113,13 @@ mod tests {
 		let point = random_scalars::<F>(&mut rng, n_vars);
 		let mut multilinear = random_field_buffer::<P>(&mut rng, n_vars);
 
-		let eval = evaluate(&multilinear, &point).unwrap();
+		let eval = evaluate(&multilinear, &point);
 
 		for &scalar in point.iter().rev() {
-			fold_highest_var_inplace(&mut multilinear, scalar).unwrap();
+			fold_highest_var_inplace(&mut multilinear, scalar);
 		}
 
-		assert_eq!(multilinear.get_checked(0).unwrap(), eval);
+		assert_eq!(multilinear.get(0), eval);
 	}
 
 	fn test_binary_fold_high_conforms_to_regular_fold_high_helper(
@@ -141,13 +141,13 @@ mod tests {
 			.map(|&b| if b { F::ONE } else { F::ZERO })
 			.collect::<Vec<F>>();
 
-		let mut bits_buffer = FieldBuffer::<P>::from_values(&bits_scalars).unwrap();
+		let mut bits_buffer = FieldBuffer::<P>::from_values(&bits_scalars);
 
 		let mut binary_fold_result = FieldBuffer::<P>::zeros(n_vars - tensor_n_vars);
-		binary_fold_high(&mut binary_fold_result, &tensor, bits.as_slice()).unwrap();
+		binary_fold_high(&mut binary_fold_result, &tensor, bits.as_slice());
 
 		for &scalar in point.iter().rev() {
-			fold_highest_var_inplace(&mut bits_buffer, scalar).unwrap();
+			fold_highest_var_inplace(&mut bits_buffer, scalar);
 		}
 
 		assert_eq!(bits_buffer, binary_fold_result);

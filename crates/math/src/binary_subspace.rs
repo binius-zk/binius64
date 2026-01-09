@@ -4,8 +4,6 @@ use std::ops::Deref;
 
 use binius_field::{BinaryField, BinaryField1b};
 
-use super::error::Error;
-
 /// An $F_2$-linear subspace of a binary field.
 ///
 /// The subspace is defined by a basis of elements from a binary field. The basis elements are
@@ -44,21 +42,12 @@ impl<F: BinaryField, Data: Deref<Target = [F]>> BinarySubspace<F, Data> {
 	}
 
 	pub fn get(&self, index: usize) -> F {
+		assert!(index < 1 << self.dim(), "precondition: index must be less than 2^dim");
 		self.basis
 			.iter()
 			.enumerate()
 			.map(|(i, &basis_i)| basis_i * BinaryField1b::from((index >> i) & 1 == 1))
 			.sum()
-	}
-
-	pub fn get_checked(&self, index: usize) -> Result<F, Error> {
-		if index >= 1 << self.basis.len() {
-			return Err(Error::ArgumentRangeError {
-				arg: "index".to_string(),
-				range: 0..1 << self.basis.len(),
-			});
-		}
-		Ok(self.get(index))
 	}
 
 	/// Returns an iterator over all elements of the subspace in order.
@@ -75,30 +64,27 @@ impl<F: BinaryField> BinarySubspace<F> {
 	/// This creates a new sub-subspace using a prefix of the default $\mathbb{F}_2$ basis elements
 	/// of the field.
 	///
-	/// ## Throws
+	/// ## Preconditions
 	///
-	/// * `Error::DomainSizeTooLarge` if `dim` is greater than this subspace's dimension.
-	pub fn with_dim(dim: usize) -> Result<Self, Error> {
-		let basis = (0..dim)
-			.map(|i| F::basis_checked(i).map_err(|_| Error::DomainSizeTooLarge))
-			.collect::<Result<_, _>>()?;
-		Ok(Self { basis })
+	/// * `dim` must be at most `F::DEGREE`
+	pub fn with_dim(dim: usize) -> Self {
+		assert!(dim <= F::DEGREE, "precondition: dim must be at most F::DEGREE");
+		let basis = (0..dim).map(|i| F::basis(i)).collect();
+		Self { basis }
 	}
 
 	/// Creates a new subspace of this binary subspace with reduced dimension.
 	///
 	/// This creates a new sub-subspace using a prefix of the ordered basis elements.
 	///
-	/// ## Throws
+	/// ## Preconditions
 	///
-	/// * `Error::DomainSizeTooLarge` if `dim` is greater than this subspace's dimension.
-	pub fn reduce_dim(&self, dim: usize) -> Result<Self, Error> {
-		if dim > self.dim() {
-			return Err(Error::DomainSizeTooLarge);
-		}
-		Ok(Self {
+	/// * `dim` must be at most this subspace's dimension
+	pub fn reduce_dim(&self, dim: usize) -> Self {
+		assert!(dim <= self.dim(), "precondition: dim must be at most this subspace's dimension");
+		Self {
 			basis: self.basis[..dim].to_vec(),
-		})
+		}
 	}
 }
 
@@ -185,7 +171,6 @@ impl<F: BinaryField> Default for BinarySubspace<F> {
 
 #[cfg(test)]
 mod tests {
-	use assert_matches::assert_matches;
 	use binius_field::{AESTowerField8b as B8, BinaryField128bGhash as B128, Field};
 
 	use super::*;
@@ -199,9 +184,10 @@ mod tests {
 	}
 
 	#[test]
+	#[should_panic(expected = "precondition")]
 	fn test_binary_subspace_range_error() {
 		let subspace = BinarySubspace::<B8>::default();
-		assert_matches!(subspace.get_checked(256), Err(Error::ArgumentRangeError { .. }));
+		let _ = subspace.get(256);
 	}
 
 	#[test]
@@ -233,7 +219,7 @@ mod tests {
 
 	#[test]
 	fn test_with_dim_valid() {
-		let subspace = BinarySubspace::<B8>::with_dim(3).unwrap();
+		let subspace = BinarySubspace::<B8>::with_dim(3);
 		assert_eq!(subspace.dim(), 3);
 		assert_eq!(subspace.basis().len(), 3);
 
@@ -247,15 +233,15 @@ mod tests {
 	}
 
 	#[test]
+	#[should_panic(expected = "precondition")]
 	fn test_with_dim_invalid() {
-		let result = BinarySubspace::<B8>::with_dim(10);
-		assert_matches!(result, Err(Error::DomainSizeTooLarge));
+		let _ = BinarySubspace::<B8>::with_dim(10);
 	}
 
 	#[test]
 	fn test_reduce_dim_valid() {
-		let subspace = BinarySubspace::<B8>::with_dim(6).unwrap();
-		let reduced = subspace.reduce_dim(4).unwrap();
+		let subspace = BinarySubspace::<B8>::with_dim(6);
+		let reduced = subspace.reduce_dim(4);
 		assert_eq!(reduced.dim(), 4);
 		assert_eq!(reduced.basis().len(), 4);
 
@@ -277,15 +263,15 @@ mod tests {
 	}
 
 	#[test]
+	#[should_panic(expected = "precondition")]
 	fn test_reduce_dim_invalid() {
-		let subspace = BinarySubspace::<B8>::with_dim(4).unwrap();
-		let result = subspace.reduce_dim(6);
-		assert_matches!(result, Err(Error::DomainSizeTooLarge));
+		let subspace = BinarySubspace::<B8>::with_dim(4);
+		let _ = subspace.reduce_dim(6);
 	}
 
 	#[test]
 	fn test_isomorphic_conversion() {
-		let subspace = BinarySubspace::<B8>::with_dim(3).unwrap();
+		let subspace = BinarySubspace::<B8>::with_dim(3);
 		let iso_subspace: BinarySubspace<B128> = subspace.isomorphic();
 		assert_eq!(iso_subspace.dim(), 3);
 		assert_eq!(iso_subspace.basis().len(), 3);
@@ -301,22 +287,8 @@ mod tests {
 	}
 
 	#[test]
-	fn test_get_checked_valid() {
-		let subspace = BinarySubspace::<B8>::default();
-		for i in 0..256 {
-			assert!(subspace.get_checked(i).is_ok());
-		}
-	}
-
-	#[test]
-	fn test_get_checked_invalid() {
-		let subspace = BinarySubspace::<B8>::default();
-		assert_matches!(subspace.get_checked(256), Err(Error::ArgumentRangeError { .. }));
-	}
-
-	#[test]
 	fn test_iterate_subspace() {
-		let subspace = BinarySubspace::<B8>::with_dim(3).unwrap();
+		let subspace = BinarySubspace::<B8>::with_dim(3);
 		let elements: Vec<_> = subspace.iter().collect();
 		assert_eq!(elements.len(), 8);
 
@@ -329,7 +301,7 @@ mod tests {
 
 	#[test]
 	fn test_iterator_matches_get() {
-		let subspace = BinarySubspace::<B8>::with_dim(5).unwrap();
+		let subspace = BinarySubspace::<B8>::with_dim(5);
 
 		// Test that iterator produces same elements as get()
 		for (i, elem) in subspace.iter().enumerate() {
@@ -340,7 +312,7 @@ mod tests {
 	#[test]
 	#[allow(clippy::iter_nth_zero)]
 	fn test_iterator_nth() {
-		let subspace = BinarySubspace::<B8>::with_dim(4).unwrap();
+		let subspace = BinarySubspace::<B8>::with_dim(4);
 
 		// Test nth with various positions
 		let mut iter = subspace.iter();
@@ -357,7 +329,7 @@ mod tests {
 
 	#[test]
 	fn test_iterator_nth_skips_efficiently() {
-		let subspace = BinarySubspace::<B8>::with_dim(6).unwrap();
+		let subspace = BinarySubspace::<B8>::with_dim(6);
 
 		// Test that we can jump directly to any position
 		let mut iter = subspace.iter();
@@ -371,7 +343,7 @@ mod tests {
 
 	#[test]
 	fn test_iterator_size_hint() {
-		let subspace = BinarySubspace::<B8>::with_dim(3).unwrap();
+		let subspace = BinarySubspace::<B8>::with_dim(3);
 		let mut iter = subspace.iter();
 
 		assert_eq!(iter.size_hint(), (8, Some(8)));
@@ -383,7 +355,7 @@ mod tests {
 
 	#[test]
 	fn test_iterator_exact_size() {
-		let subspace = BinarySubspace::<B8>::with_dim(4).unwrap();
+		let subspace = BinarySubspace::<B8>::with_dim(4);
 		let mut iter = subspace.iter();
 
 		assert_eq!(iter.len(), 16);
@@ -395,7 +367,7 @@ mod tests {
 
 	#[test]
 	fn test_iterator_empty_subspace() {
-		let subspace = BinarySubspace::<B8>::with_dim(0).unwrap();
+		let subspace = BinarySubspace::<B8>::with_dim(0);
 		let mut iter = subspace.iter();
 
 		// Subspace of dimension 0 has only one element: zero
@@ -417,7 +389,7 @@ mod tests {
 
 	#[test]
 	fn test_iterator_partial_then_nth() {
-		let subspace = BinarySubspace::<B8>::with_dim(5).unwrap();
+		let subspace = BinarySubspace::<B8>::with_dim(5);
 		let mut iter = subspace.iter();
 
 		// Iterate a few elements
@@ -432,7 +404,7 @@ mod tests {
 
 	#[test]
 	fn test_iterator_clone() {
-		let subspace = BinarySubspace::<B8>::with_dim(3).unwrap();
+		let subspace = BinarySubspace::<B8>::with_dim(3);
 		let mut iter1 = subspace.iter();
 
 		iter1.next();

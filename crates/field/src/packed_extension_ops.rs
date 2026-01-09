@@ -4,19 +4,16 @@ use binius_utils::rayon::prelude::{
 	IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
 };
 
-use crate::{Error, ExtensionField, Field, PackedExtension, PackedField};
+use crate::{ExtensionField, Field, PackedExtension, PackedField};
 
-pub fn ext_base_mul<PE: PackedExtension<F>, F: Field>(
-	lhs: &mut [PE],
-	rhs: &[PE::PackedSubfield],
-) -> Result<(), Error> {
+pub fn ext_base_mul<PE: PackedExtension<F>, F: Field>(lhs: &mut [PE], rhs: &[PE::PackedSubfield]) {
 	ext_base_op(lhs, rhs, |_, lhs, broadcasted_rhs| PE::cast_ext(lhs.cast_base() * broadcasted_rhs))
 }
 
 pub fn ext_base_mul_par<PE: PackedExtension<F>, F: Field>(
 	lhs: &mut [PE],
 	rhs: &[PE::PackedSubfield],
-) -> Result<(), Error> {
+) {
 	ext_base_op_par(lhs, rhs, |_, lhs, broadcasted_rhs| {
 		PE::cast_ext(lhs.cast_base() * broadcasted_rhs)
 	})
@@ -53,19 +50,22 @@ pub unsafe fn get_packed_subfields_at_pe_idx<PE: PackedExtension<F>, F: Field>(
 /// broadcasted_rhs: a broadcasted version of PE::WIDTH subfield scalars
 /// with each one occurring PE::PackedSubfield::WIDTH/PE::WIDTH times in  a row
 /// such that the bits of the broadcasted scalars align with the lhs scalars
-pub fn ext_base_op<PE, F, Func>(
-	lhs: &mut [PE],
-	rhs: &[PE::PackedSubfield],
-	op: Func,
-) -> Result<(), Error>
+///
+/// # Preconditions
+///
+/// * `lhs.len()` must equal `rhs.len() * PE::Scalar::DEGREE`.
+pub fn ext_base_op<PE, F, Func>(lhs: &mut [PE], rhs: &[PE::PackedSubfield], op: Func)
 where
 	PE: PackedExtension<F>,
 	F: Field,
 	Func: Fn(usize, PE, PE::PackedSubfield) -> PE,
 {
-	if lhs.len() != rhs.len() * PE::Scalar::DEGREE {
-		return Err(Error::MismatchedLengths);
-	}
+	assert!(
+		lhs.len() == rhs.len() * PE::Scalar::DEGREE,
+		"lhs.len() ({}) must equal rhs.len() * PE::Scalar::DEGREE ({})",
+		lhs.len(),
+		rhs.len() * PE::Scalar::DEGREE
+	);
 
 	lhs.iter_mut().enumerate().for_each(|(i, lhs_elem)| {
 		// SAFETY: Width of PackedSubfield is always >= the width of the field implementing
@@ -74,24 +74,26 @@ where
 
 		*lhs_elem = op(i, *lhs_elem, broadcasted_rhs);
 	});
-	Ok(())
 }
 
 /// A multithreaded version of the function directly above, use for long arrays
 /// on the prover side
-pub fn ext_base_op_par<PE, F, Func>(
-	lhs: &mut [PE],
-	rhs: &[PE::PackedSubfield],
-	op: Func,
-) -> Result<(), Error>
+///
+/// # Preconditions
+///
+/// * `lhs.len()` must equal `rhs.len() * PE::Scalar::DEGREE`.
+pub fn ext_base_op_par<PE, F, Func>(lhs: &mut [PE], rhs: &[PE::PackedSubfield], op: Func)
 where
 	PE: PackedExtension<F>,
 	F: Field,
 	Func: Fn(usize, PE, PE::PackedSubfield) -> PE + std::marker::Sync,
 {
-	if lhs.len() != rhs.len() * PE::Scalar::DEGREE {
-		return Err(Error::MismatchedLengths);
-	}
+	assert!(
+		lhs.len() == rhs.len() * PE::Scalar::DEGREE,
+		"lhs.len() ({}) must equal rhs.len() * PE::Scalar::DEGREE ({})",
+		lhs.len(),
+		rhs.len() * PE::Scalar::DEGREE
+	);
 
 	lhs.par_iter_mut().enumerate().for_each(|(i, lhs_elem)| {
 		// SAFETY: Width of PackedSubfield is always >= the width of the field implementing
@@ -100,6 +102,4 @@ where
 
 		*lhs_elem = op(i, *lhs_elem, broadcasted_rhs);
 	});
-
-	Ok(())
 }

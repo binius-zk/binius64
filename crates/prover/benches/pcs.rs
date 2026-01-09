@@ -40,8 +40,7 @@ fn bench_pcs(c: &mut Criterion) {
 		let compression = ParallelCompressionAdaptor::new(StdCompression::default());
 		let merkle_prover = BinaryMerkleTreeProver::<B128, StdDigest, _>::new(compression);
 
-		let subspace =
-			BinarySubspace::<B128>::with_dim(log_len).expect("Failed to create subspace");
+		let subspace = BinarySubspace::<B128>::with_dim(log_len);
 		let domain_context = GenericPreExpanded::generate_from_subspace(&subspace);
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
@@ -83,7 +82,7 @@ fn bench_pcs(c: &mut Criterion) {
 		let (prefix, suffix) = eval_point.split_at(<B128 as ExtensionField<B1>>::LOG_DEGREE);
 		let prefix_tensor = eq_ind_partial_eval(prefix);
 		let partial = ring_switch::fold_b128_elems_inplace(packed_multilin.clone(), &prefix_tensor);
-		let eval = evaluate_inplace(partial, suffix).unwrap();
+		let eval = evaluate_inplace(partial, suffix);
 		transcript.message().write_scalar(eval);
 
 		group.bench_function(format!("prove/log_len={log_len}"), |b| {

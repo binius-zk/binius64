@@ -57,12 +57,11 @@ where
 		&transcript
 			.message()
 			.read_scalar_slice::<F>(1 << packing_degree)?,
-	)
-	.unwrap();
+	);
 
 	// check valid partial eval
 	let (eval_point_low, _) = eval_point.split_at(packing_degree);
-	let computed_claim = evaluate::<F, F, _>(&s_hat_v, eval_point_low).unwrap();
+	let computed_claim = evaluate::<F, F, _>(&s_hat_v, eval_point_low);
 	if evaluation_claim != computed_claim {
 		return Err(VerificationError::EvaluationClaimMismatch.into());
 	}
@@ -72,14 +71,11 @@ where
 		&<TensorAlgebra<B1, F>>::new(s_hat_v.as_ref().to_vec())
 			.transpose()
 			.elems,
-	)
-	.expect("tensor algebra has 2^packing_degree elements");
+	);
 
 	let batching_scalars = transcript.sample_vec(packing_degree);
 
-	let verifier_computed_sumcheck_claim = evaluate::<F, F, _>(&s_hat_u, &batching_scalars).expect(
-		"s_hat_u has 2^packing_degree elements; batching_scalars has packing_degree elements",
-	);
+	let verifier_computed_sumcheck_claim = evaluate::<F, F, _>(&s_hat_u, &batching_scalars);
 
 	let basefold::ReducedOutput {
 		final_fri_value,

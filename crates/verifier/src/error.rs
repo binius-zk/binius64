@@ -19,8 +19,6 @@ pub enum Error {
 	IntMul(#[from] intmul::Error),
 	#[error("sumcheck error: {0}")]
 	Sumcheck(#[from] sumcheck::Error),
-	#[error("Math error: {0}")]
-	Math(#[from] binius_math::Error),
 	#[error("incorrect public inputs length: expected {expected}, got {actual}")]
 	IncorrectPublicInputLength { expected: usize, actual: usize },
 	#[error("constraint system error: {0}")]

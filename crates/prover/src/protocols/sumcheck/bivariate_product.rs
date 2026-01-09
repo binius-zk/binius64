@@ -55,8 +55,8 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 		let n_vars_remaining = self.n_vars();
 		assert!(n_vars_remaining > 0);
 
-		let (evals_a_0, evals_a_1) = self.multilinears[0].split_half_ref()?;
-		let (evals_b_0, evals_b_1) = self.multilinears[1].split_half_ref()?;
+		let (evals_a_0, evals_a_1) = self.multilinears[0].split_half_ref();
+		let (evals_b_0, evals_b_1) = self.multilinears[1].split_half_ref();
 
 		// Compute F(1) and F(∞) where F = ∑_{v ∈ B} A(v || X) B(v || X)
 		let round_evals =
@@ -90,7 +90,7 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 		};
 
 		for multilin in &mut self.multilinears {
-			fold_highest_var_inplace(multilin, challenge)?;
+			fold_highest_var_inplace(multilin, challenge);
 		}
 
 		let round_sum = last_coeffs.evaluate(challenge);
@@ -110,13 +110,7 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 		let multilinear_evals = self
 			.multilinears
 			.into_iter()
-			.map(|multilinear| {
-				multilinear.get_checked(0).expect(
-					"multilinear.log_len() == n_vars; \
-				 	n_vars == 0; \
-				 	multilinear.len() == 1",
-				)
-			})
+			.map(|multilinear| multilinear.get(0))
 			.collect();
 		Ok(multilinear_evals)
 	}
@@ -198,8 +192,8 @@ mod tests {
 		// to high
 		let mut eval_point = sumcheck_output.challenges.clone();
 		eval_point.reverse();
-		let eval_a = evaluate(&multilinear_a, &eval_point).unwrap();
-		let eval_b = evaluate(&multilinear_b, &eval_point).unwrap();
+		let eval_a = evaluate(&multilinear_a, &eval_point);
+		let eval_b = evaluate(&multilinear_b, &eval_point);
 
 		assert_eq!(
 			eval_a, multilinear_evals[0],

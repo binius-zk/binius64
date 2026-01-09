@@ -102,9 +102,7 @@ fn compute_l_poly<F: Field, P: PackedField<Scalar = F>>(
 	let mut l_poly = wiring_poly;
 
 	{
-		let mut l_poly_public_chunk = l_poly
-			.chunk_mut(r_public.len(), 0)
-			.expect("precondition: r_public.len() <= witnesses.log_len(); 0 < 2^r_public.len()");
+		let mut l_poly_public_chunk = l_poly.chunk_mut(r_public.len(), 0);
 		let mut l_poly_public_chunk = l_poly_public_chunk.get();
 
 		let eq_public = eq_ind_partial_eval::<P>(r_public);
@@ -163,7 +161,6 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 		.collect::<Vec<_>>();
 
 	FieldBuffer::new(log_witness_size, result.into_boxed_slice())
-		.expect("FieldBuffer::new should succeed with correct log_witness_size")
 }
 
 /// Proves the wiring check protocol.
@@ -202,11 +199,8 @@ where
 	let wiring_poly = fold_constraints(wiring_transpose, lambda, r_x);
 	let l_poly = compute_l_poly(wiring_poly, r_public, batch_coeff);
 
-	let public = witness
-		.chunk(r_public.len(), 0)
-		.expect("precondition: r_public.len() <= witnesses.log_len(); 0 < 2^r_public.len()");
-	let public_eval = multilinear::evaluate::evaluate(&public, r_public)
-		.expect("public.log_len() == r_public.len()");
+	let public = witness.chunk(r_public.len(), 0);
+	let public_eval = multilinear::evaluate::evaluate(&public, r_public);
 
 	// Run sumcheck on bivariate product
 	let batched_sum = evaluate_univariate(mulcheck_evals, lambda) + batch_coeff * public_eval;
@@ -301,12 +295,9 @@ pub fn build_mulcheck_witness<F: Field, P: PackedField<Scalar = F>>(
 	}
 
 	MulCheckWitness {
-		a: FieldBuffer::new(log_n_constraints, a.into_boxed_slice())
-			.expect("FieldBuffer::new should succeed with correct log_n_constraints"),
-		b: FieldBuffer::new(log_n_constraints, b.into_boxed_slice())
-			.expect("FieldBuffer::new should succeed with correct log_n_constraints"),
-		c: FieldBuffer::new(log_n_constraints, c.into_boxed_slice())
-			.expect("FieldBuffer::new should succeed with correct log_n_constraints"),
+		a: FieldBuffer::new(log_n_constraints, a.into_boxed_slice()),
+		b: FieldBuffer::new(log_n_constraints, b.into_boxed_slice()),
+		c: FieldBuffer::new(log_n_constraints, c.into_boxed_slice()),
 	}
 }
 
@@ -450,7 +441,7 @@ mod tests {
 		// Method 2: Use fold_constraints then evaluate at r_y
 		let transposed = WiringTranspose::transpose(witness_size, &constraints);
 		let folded = fold_constraints::<_, Packed128b>(&transposed, lambda, &r_x);
-		let actual = evaluate(&folded, &r_y).expect("evaluation should succeed");
+		let actual = evaluate(&folded, &r_y);
 
 		assert_eq!(
 			actual, expected,
@@ -474,7 +465,7 @@ mod tests {
 
 		// Create random witness using random_field_buffer
 		let witness_mask_packed = random_field_buffer::<Packed128b>(&mut rng, log_witness_size + 1);
-		let (witness_packed, _mask_packed) = witness_mask_packed.split_half_ref().unwrap();
+		let (witness_packed, _mask_packed) = witness_mask_packed.split_half_ref();
 
 		// Compute mulcheck witness
 		let mulcheck_witness = build_mulcheck_witness(&constraints, witness_packed.to_ref());
@@ -497,7 +488,7 @@ mod tests {
 			&vec![B128::ZERO; log_witness_size - log_public],
 		]
 		.concat();
-		let public_eval = evaluate(&witness_packed, &r_public_padded).unwrap();
+		let public_eval = evaluate(&witness_packed, &r_public_padded);
 
 		// Create transposed wiring
 		let wiring_transpose = WiringTranspose::transpose(witness_size, &constraints);
@@ -507,8 +498,7 @@ mod tests {
 			ParallelCompressionAdaptor::new(StdCompression::default()),
 		);
 
-		let subspace = BinarySubspace::with_dim(log_witness_size + LOG_INV_RATE)
-			.expect("subspace creation should succeed");
+		let subspace = BinarySubspace::with_dim(log_witness_size + LOG_INV_RATE);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 

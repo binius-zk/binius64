@@ -127,9 +127,7 @@ where
 {
 	assert!(coset_index < (1 << (codeword.log_len() - log_coset_size))); // precondition
 
-	let values = codeword
-		.chunk(log_coset_size, coset_index)
-		.expect("precondition: coset_index < 2^(codeword.log_len() - log_coset_size)");
+	let values = codeword.chunk(log_coset_size, coset_index);
 	advice.write_scalar_iter(values.iter_scalars());
 
 	merkle_prover.prove_opening(committed, optimal_layer_depth, coset_index, advice)?;

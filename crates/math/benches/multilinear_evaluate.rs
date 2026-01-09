@@ -34,14 +34,14 @@ fn bench_multilinear_evaluate(c: &mut Criterion) {
 
 	// Benchmark evaluate function (sqrt memory)
 	group.bench_function(BenchmarkId::new("evaluate", format!("n_vars={n_vars}")), |b| {
-		b.iter(|| evaluate(&buffer, &point).unwrap());
+		b.iter(|| evaluate(&buffer, &point));
 	});
 
 	// Benchmark evaluate_inplace function
 	group.bench_function(BenchmarkId::new("evaluate_inplace", format!("n_vars={n_vars}")), |b| {
 		b.iter_batched(
 			|| buffer.clone(),
-			|buffer| evaluate_inplace(buffer, &point).unwrap(),
+			|buffer| evaluate_inplace(buffer, &point),
 			BatchSize::SmallInput,
 		);
 	});

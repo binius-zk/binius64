@@ -194,7 +194,7 @@ where
 			.map(|(codeword, _)| codeword.clone())
 			.unwrap_or_else(|| {
 				let scalars: Vec<F> = self.codeword.iter_scalars().collect();
-				FieldBuffer::from_values(&scalars).expect("codeword has power-of-two length")
+				FieldBuffer::from_values(&scalars)
 			});
 
 		self.unprocessed_challenges.clear();
@@ -276,11 +276,9 @@ where
 	// challenges.
 	let values = codeword
 		.chunks_par(log_batch_size)
-		.expect("log_batch_size <= codeword.log_len()")
 		.map(|chunk| inner_product_buffers(&chunk, &tensor))
 		.collect::<Vec<_>>();
 	FieldBuffer::new(log_len, values.into_boxed_slice())
-		.expect("codeword.log_len() == log_len + log_batch_size")
 }
 
 /// FRI-fold the codeword using the given challenges.
@@ -310,7 +308,6 @@ where
 	let chunk_size = 1 << challenges.len();
 	let values: Vec<F> = codeword
 		.chunks_par(challenges.len())
-		.expect("precondition: challenges.len() <= log_len")
 		.enumerate()
 		.map_init(
 			|| vec![F::default(); chunk_size],
@@ -321,7 +318,6 @@ where
 		)
 		.collect();
 	FieldBuffer::new(folded_log_len, values.into_boxed_slice())
-		.expect("codeword.len() == 1 << log_len")
 }
 
 #[cfg(test)]
@@ -346,7 +342,7 @@ mod tests {
 	}
 
 	fn test_help_fri_compatible_ntt_domains(log_dim: usize, arity: usize) {
-		let subspace = BinarySubspace::with_dim(32).unwrap();
+		let subspace = BinarySubspace::with_dim(32);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastReference { domain_context };
 
@@ -357,7 +353,7 @@ mod tests {
 		let query = eq_ind_partial_eval::<B128>(&challenges);
 
 		// Fold the message using regular folding.
-		let mut folded_msg = fold_cols(&msg, &query).unwrap();
+		let mut folded_msg = fold_cols(&msg, &query);
 		assert_eq!(folded_msg.log_len(), log_dim);
 
 		// Encode the message over the large domain.

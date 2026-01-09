@@ -99,10 +99,21 @@ pub(crate) use crate::arithmetic_traits::{
 pub(crate) mod portable_macros {
 	macro_rules! impl_strategy {
 		($impl_macro:ident $name:ident, (None)) => {};
-		($impl_macro:ident $name:ident, (if $cond:ident $gfni_x86_strategy:tt else $fallback:tt)) => {
+		// gfni condition: strategy types are in $crate::arch
+		($impl_macro:ident $name:ident, (if gfni $strategy:tt else $fallback:tt)) => {
 			cfg_if! {
 				if #[cfg(all(target_arch = "x86_64", target_feature = "sse2", target_feature = "gfni"))] {
-					$impl_macro!($name => $crate::$gfni_x86_strategy);
+					$impl_macro!($name @ $crate::arch::$strategy);
+				} else {
+					$impl_macro!($name @ $crate::arch::$fallback);
+				}
+			}
+		};
+		// gfni_x86 condition: bigger types are re-exported at $crate root
+		($impl_macro:ident $name:ident, (if gfni_x86 $bigger:tt else $fallback:tt)) => {
+			cfg_if! {
+				if #[cfg(all(target_arch = "x86_64", target_feature = "sse2", target_feature = "gfni"))] {
+					$impl_macro!($name => $crate::$bigger);
 				} else {
 					$impl_macro!($name @ $crate::arch::$fallback);
 				}

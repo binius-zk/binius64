@@ -1,7 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use binius_math::reed_solomon;
-
 use crate::merkle_tree;
 
 #[derive(Debug, thiserror::Error)]
@@ -14,8 +12,6 @@ pub enum Error {
 	ParameterError,
 	#[error("Merkle tree error: {0}")]
 	MerkleError(merkle_tree::Error),
-	#[error("Reed-Solomon encoding error: {0}")]
-	CodeError(#[from] reed_solomon::Error),
 	#[error("Reed-Solomon encoding error: {0}")]
 	Verification(#[from] VerificationError),
 	#[error("transcript error: {0}")]

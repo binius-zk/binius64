@@ -14,6 +14,4 @@ pub enum Error {
 	Sumcheck(#[from] SumcheckError),
 	#[error("prodcheck error: {0}")]
 	Prodcheck(#[from] ProdcheckError),
-	#[error("math error: {0}")]
-	Math(#[from] binius_math::Error),
 }

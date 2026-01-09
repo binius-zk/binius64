@@ -24,7 +24,6 @@ use rand::{
 use super::{
 	arithmetic_traits::InvertOrZero,
 	binary_field::{BinaryField, BinaryField1b, TowerField},
-	error::Error,
 	extension::ExtensionField,
 	underlier::WithUnderlier,
 };
@@ -398,26 +397,22 @@ impl ExtensionField<BinaryField1b> for BinaryField128bGhash {
 	const LOG_DEGREE: usize = 7;
 
 	#[inline]
-	fn basis_checked(i: usize) -> Result<Self, Error> {
-		if i >= 128 {
-			return Err(Error::ExtensionDegreeMismatch);
-		}
-		Ok(Self::new(1 << i))
+	fn basis(i: usize) -> Self {
+		assert!(i < 128, "index {i} out of range for degree 128");
+		Self::new(1 << i)
 	}
 
 	#[inline]
 	fn from_bases_sparse(
 		base_elems: impl IntoIterator<Item = BinaryField1b>,
 		log_stride: usize,
-	) -> Result<Self, Error> {
-		if log_stride != 7 {
-			return Err(Error::ExtensionDegreeMismatch);
-		}
+	) -> Self {
+		assert!(log_stride == 7, "log_stride must be 7 for BinaryField128bGhash");
 		let value = base_elems
 			.into_iter()
 			.enumerate()
 			.fold(0, |value, (i, elem)| value | (u128::from(elem.0) << i));
-		Ok(Self::new(value))
+		Self::new(value)
 	}
 
 	#[inline]
@@ -436,9 +431,8 @@ impl ExtensionField<BinaryField1b> for BinaryField128bGhash {
 	}
 
 	#[inline]
-	fn square_transpose(values: &mut [Self]) -> Result<(), Error> {
+	fn square_transpose(values: &mut [Self]) {
 		square_transforms_extension_field::<BinaryField1b, Self>(values)
-			.map_err(|_| Error::ExtensionDegreeMismatch)
 	}
 }
 
@@ -467,7 +461,7 @@ impl TowerField for BinaryField128bGhash {
 		}
 	}
 
-	fn mul_primitive(self, _iota: usize) -> Result<Self, Error> {
+	fn mul_primitive(self, _iota: usize) -> Self {
 		// This method could be implemented by multiplying by isomorphic alpha value
 		// But it's not being used as for now
 		unimplemented!()

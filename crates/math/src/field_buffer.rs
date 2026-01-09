@@ -15,8 +15,6 @@ use binius_utils::{
 };
 use bytemuck::zeroed_vec;
 
-use crate::Error;
-
 /// Trait for types that can provide multiple mutable field slices.
 pub trait AsSlicesMut<P: PackedField, const N: usize> {
 	fn as_slices_mut(&mut self) -> [FieldSliceMut<'_, P>; N];
@@ -63,13 +61,12 @@ impl<P: PackedField, Data: Deref<Target = [P]>> PartialEq for FieldBuffer<P, Dat
 impl<P: PackedField> FieldBuffer<P> {
 	/// Create a new FieldBuffer from a vector of values.
 	///
-	/// # Throws
+	/// # Preconditions
 	///
-	/// * `PowerOfTwoLengthRequired` if the number of values is not a power of two.
-	pub fn from_values(values: &[P::Scalar]) -> Result<Self, Error> {
-		let Some(log_len) = strict_log_2(values.len()) else {
-			return Err(Error::PowerOfTwoLengthRequired);
-		};
+	/// * `values.len()` must be a power of two.
+	pub fn from_values(values: &[P::Scalar]) -> Self {
+		let log_len =
+			strict_log_2(values.len()).expect("precondition: values.len() must be a power of two");
 
 		Self::from_values_truncated(values, log_len)
 	}
@@ -78,22 +75,18 @@ impl<P: PackedField> FieldBuffer<P> {
 	///
 	/// Capacity `log_cap` is bumped to at least `P::LOG_WIDTH`.
 	///
-	/// # Throws
+	/// # Preconditions
 	///
-	/// * `PowerOfTwoLengthRequired` if the number of values is not a power of two.
-	/// * `IncorrectArgumentLength` if the number of values exceeds `1 << log_cap`.
-	pub fn from_values_truncated(values: &[P::Scalar], log_cap: usize) -> Result<Self, Error> {
-		if !values.len().is_power_of_two() {
-			return Err(Error::PowerOfTwoLengthRequired);
-		}
+	/// * `values.len()` must be a power of two.
+	/// * `values.len()` must not exceed `1 << log_cap`.
+	pub fn from_values_truncated(values: &[P::Scalar], log_cap: usize) -> Self {
+		assert!(
+			values.len().is_power_of_two(),
+			"precondition: values.len() must be a power of two"
+		);
 
 		let log_len = values.len().ilog2() as usize;
-		if log_len > log_cap {
-			return Err(Error::IncorrectArgumentLength {
-				arg: "values".to_string(),
-				expected: 1 << log_cap,
-			});
-		}
+		assert!(log_len <= log_cap, "precondition: values.len() must not exceed 1 << log_cap");
 
 		let packed_cap = 1 << log_cap.saturating_sub(P::LOG_WIDTH);
 		let mut packed_values = Vec::with_capacity(packed_cap);
@@ -104,30 +97,29 @@ impl<P: PackedField> FieldBuffer<P> {
 		);
 		packed_values.resize(packed_cap, P::zero());
 
-		Ok(Self {
+		Self {
 			log_len,
 			values: packed_values.into_boxed_slice(),
-		})
+		}
 	}
 
 	/// Create a new [`FieldBuffer`] of zeros with the given log_len.
 	pub fn zeros(log_len: usize) -> Self {
-		Self::zeros_truncated(log_len, log_len).expect("log_len == log_cap")
+		Self::zeros_truncated(log_len, log_len)
 	}
 
 	/// Create a new [`FieldBuffer`] of zeros with the given log_len and capacity log_cap.
 	///
 	/// Capacity `log_cap` is bumped to at least `P::LOG_WIDTH`.
-	pub fn zeros_truncated(log_len: usize, log_cap: usize) -> Result<Self, Error> {
-		if log_len > log_cap {
-			return Err(Error::IncorrectArgumentLength {
-				arg: "log_len".to_string(),
-				expected: log_cap,
-			});
-		}
+	///
+	/// # Preconditions
+	///
+	/// * `log_len` must not exceed `log_cap`.
+	pub fn zeros_truncated(log_len: usize, log_cap: usize) -> Self {
+		assert!(log_len <= log_cap, "precondition: log_len must not exceed log_cap");
 		let packed_len = 1 << log_cap.saturating_sub(P::LOG_WIDTH);
 		let values = zeroed_vec(packed_len).into_boxed_slice();
-		Ok(Self { log_len, values })
+		Self { log_len, values }
 	}
 }
 
@@ -135,41 +127,36 @@ impl<P: PackedField> FieldBuffer<P> {
 impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// Create a new FieldBuffer from a slice of packed values.
 	///
-	/// # Throws
+	/// # Preconditions
 	///
-	/// * `IncorrectArgumentLength` if the number of field elements does not fit the `values.len()`
-	///   exactly.
-	pub fn new(log_len: usize, values: Data) -> Result<Self, Error> {
+	/// * `values.len()` must equal the expected packed length for `log_len`.
+	pub fn new(log_len: usize, values: Data) -> Self {
 		let expected_packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
-		if values.len() != expected_packed_len {
-			return Err(Error::IncorrectArgumentLength {
-				arg: "values".to_string(),
-				expected: expected_packed_len,
-			});
-		}
+		assert!(
+			values.len() == expected_packed_len,
+			"precondition: values.len() must equal expected packed length"
+		);
 		Self::new_truncated(log_len, values)
 	}
 
 	/// Create a new FieldBuffer from a slice of packed values.
 	///
-	/// # Throws
+	/// # Preconditions
 	///
-	/// * `IncorrectArgumentLength` if the number of field elements does not fit into the `values`.
-	/// * `PowerOfTwoLengthRequired` if the `values.len()` is not a power of two.
-	pub fn new_truncated(log_len: usize, values: Data) -> Result<Self, Error> {
+	/// * `values.len()` must be at least the minimum packed length for `log_len`.
+	/// * `values.len()` must be a power of two.
+	pub fn new_truncated(log_len: usize, values: Data) -> Self {
 		let min_packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
-		if values.len() < min_packed_len {
-			return Err(Error::IncorrectArgumentLength {
-				arg: "values".to_string(),
-				expected: min_packed_len,
-			});
-		}
+		assert!(
+			values.len() >= min_packed_len,
+			"precondition: values.len() must be at least {min_packed_len}"
+		);
+		assert!(
+			values.len().is_power_of_two(),
+			"precondition: values.len() must be a power of two"
+		);
 
-		if !values.len().is_power_of_two() {
-			return Err(Error::PowerOfTwoLengthRequired);
-		}
-
-		Ok(Self { log_len, values })
+		Self { log_len, values }
 	}
 
 	/// Returns log2 the number of field elements that the underlying collection may take.
@@ -195,7 +182,6 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// Borrows the buffer as a [`FieldSlice`].
 	pub fn to_ref(&self) -> FieldSlice<'_, P> {
 		FieldSlice::from_slice(self.log_len, self.as_ref())
-			.expect("log_len matches values.len() by struct invariant")
 	}
 
 	/// Get a field element at the given index.
@@ -204,27 +190,15 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * the index is in the range `0..self.len()`
 	pub fn get(&self, index: usize) -> P::Scalar {
-		self.get_checked(index)
-			.expect("precondition: index is in range")
-	}
-
-	/// Get a field element at the given index.
-	///
-	/// # Throws
-	///
-	/// * `Error::ArgumentRangeError` if the index is out of bounds.
-	pub fn get_checked(&self, index: usize) -> Result<P::Scalar, Error> {
-		if index >= self.len() {
-			return Err(Error::ArgumentRangeError {
-				arg: "index".to_string(),
-				range: 0..self.len(),
-			});
-		}
+		assert!(
+			index < self.len(),
+			"precondition: index {index} must be less than len {}",
+			self.len()
+		);
 
 		// Safety: bound check on index performed above. The buffer length is at least
 		// `self.len() >> P::LOG_WIDTH` by struct invariant.
-		let val = unsafe { get_packed_slice_unchecked(&self.values, index) };
-		Ok(val)
+		unsafe { get_packed_slice_unchecked(&self.values, index) }
 	}
 
 	/// Returns an iterator over the scalar elements in the buffer.
@@ -237,25 +211,22 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// Chunk start offset divides chunk size; the result is essentially
 	/// `chunks(log_chunk_size).nth(chunk_index)` but unlike `chunks` it does
 	/// support sizes smaller than packing width.
-	pub fn chunk(
-		&self,
-		log_chunk_size: usize,
-		chunk_index: usize,
-	) -> Result<FieldSlice<'_, P>, Error> {
-		if log_chunk_size > self.log_len {
-			return Err(Error::ArgumentRangeError {
-				arg: "log_chunk_size".to_string(),
-				range: 0..self.log_len + 1,
-			});
-		}
+	///
+	/// # Preconditions
+	///
+	/// * `log_chunk_size` must be at most `log_len`.
+	/// * `chunk_index` must be less than the chunk count.
+	pub fn chunk(&self, log_chunk_size: usize, chunk_index: usize) -> FieldSlice<'_, P> {
+		assert!(
+			log_chunk_size <= self.log_len,
+			"precondition: log_chunk_size must be at most log_len"
+		);
 
 		let chunk_count = 1 << (self.log_len - log_chunk_size);
-		if chunk_index >= chunk_count {
-			return Err(Error::ArgumentRangeError {
-				arg: "chunk_index".to_string(),
-				range: 0..chunk_count,
-			});
-		}
+		assert!(
+			chunk_index < chunk_count,
+			"precondition: chunk_index must be less than chunk_count"
+		);
 
 		let values = if log_chunk_size >= P::LOG_WIDTH {
 			let packed_log_chunk_size = log_chunk_size - P::LOG_WIDTH;
@@ -272,60 +243,49 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 			FieldSliceData::Single(chunk)
 		};
 
-		Ok(FieldBuffer {
+		FieldBuffer {
 			log_len: log_chunk_size,
 			values,
-		})
+		}
 	}
 
 	/// Split the buffer into chunks of size `2^log_chunk_size`.
 	///
-	/// # Errors
+	/// # Preconditions
 	///
-	/// * [`Error::ArgumentRangeError`] if `log_chunk_size < P::LOG_WIDTH` or `log_chunk_size >
-	///   log_len`.
-	pub fn chunks(
-		&self,
-		log_chunk_size: usize,
-	) -> Result<impl Iterator<Item = FieldSlice<'_, P>> + Clone, Error> {
-		if log_chunk_size < P::LOG_WIDTH || log_chunk_size > self.log_len {
-			return Err(Error::ArgumentRangeError {
-				arg: "log_chunk_size".to_string(),
-				range: P::LOG_WIDTH..self.log_len + 1,
-			});
-		}
+	/// * `log_chunk_size` must be at least `P::LOG_WIDTH` and at most `log_len`.
+	pub fn chunks(&self, log_chunk_size: usize) -> impl Iterator<Item = FieldSlice<'_, P>> + Clone {
+		assert!(
+			log_chunk_size >= P::LOG_WIDTH && log_chunk_size <= self.log_len,
+			"precondition: log_chunk_size must be in range [P::LOG_WIDTH, log_len]"
+		);
 
 		let chunk_count = 1 << (self.log_len - log_chunk_size);
 		let packed_chunk_size = 1 << (log_chunk_size - P::LOG_WIDTH);
-		let chunks = self
-			.values
+		self.values
 			.chunks(packed_chunk_size)
 			.take(chunk_count)
 			.map(move |chunk| FieldBuffer {
 				log_len: log_chunk_size,
 				values: FieldSliceData::Slice(chunk),
-			});
-
-		Ok(chunks)
+			})
 	}
 
 	/// Creates an iterator over chunks of size `2^log_chunk_size` in parallel.
 	///
-	/// # Throws
+	/// # Preconditions
 	///
-	/// * [`Error::ArgumentRangeError`] if `log_chunk_size > log_len`.
+	/// * `log_chunk_size` must be at most `log_len`.
 	pub fn chunks_par(
 		&self,
 		log_chunk_size: usize,
-	) -> Result<impl IndexedParallelIterator<Item = FieldSlice<'_, P>>, Error> {
-		if log_chunk_size > self.log_len {
-			return Err(Error::ArgumentRangeError {
-				arg: "log_chunk_size".to_string(),
-				range: 0..self.log_len + 1,
-			});
-		}
+	) -> impl IndexedParallelIterator<Item = FieldSlice<'_, P>> {
+		assert!(
+			log_chunk_size <= self.log_len,
+			"precondition: log_chunk_size must be at most log_len"
+		);
 
-		let iter = if log_chunk_size >= P::LOG_WIDTH {
+		if log_chunk_size >= P::LOG_WIDTH {
 			// Each chunk spans one or more packed elements
 			let packed_chunk_size = 1 << (log_chunk_size - P::LOG_WIDTH);
 			Either::Left(
@@ -353,23 +313,19 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 					values: FieldSliceData::Single(chunk),
 				}
 			}))
-		};
-
-		Ok(iter)
+		}
 	}
 
 	/// Splits the buffer in half and returns a pair of borrowed slices.
 	///
-	/// # Throws
+	/// # Preconditions
 	///
-	/// * [`Error::CannotSplit`] if `self.log_len() == 0`
-	pub fn split_half_ref(&self) -> Result<(FieldSlice<'_, P>, FieldSlice<'_, P>), Error> {
-		if self.log_len == 0 {
-			return Err(Error::CannotSplit);
-		}
+	/// * `self.log_len()` must be greater than 0.
+	pub fn split_half_ref(&self) -> (FieldSlice<'_, P>, FieldSlice<'_, P>) {
+		assert!(self.log_len > 0, "precondition: cannot split a buffer of length 1");
 
 		let new_log_len = self.log_len - 1;
-		let (first, second) = if new_log_len < P::LOG_WIDTH {
+		if new_log_len < P::LOG_WIDTH {
 			// The result will be two Single variants
 			// We have exactly one packed element that needs to be split
 			let packed = self.values[0];
@@ -403,9 +359,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 			};
 
 			(first, second)
-		};
-
-		Ok((first, second))
+		}
 	}
 }
 
@@ -413,7 +367,6 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// Borrows the buffer mutably as a [`FieldSliceMut`].
 	pub fn to_mut(&mut self) -> FieldSliceMut<'_, P> {
 		FieldSliceMut::from_slice(self.log_len, self.as_mut())
-			.expect("log_len matches values.len() by struct invariant")
 	}
 
 	/// Set a field element at the given index.
@@ -422,27 +375,15 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * the index is in the range `0..self.len()`
 	pub fn set(&mut self, index: usize, value: P::Scalar) {
-		self.set_checked(index, value)
-			.expect("precondition: index is in range");
-	}
-
-	/// Set a field element at the given index.
-	///
-	/// # Throws
-	///
-	/// * `Error::ArgumentRangeError` if the index is out of bounds.
-	pub fn set_checked(&mut self, index: usize, value: P::Scalar) -> Result<(), Error> {
-		if index >= self.len() {
-			return Err(Error::ArgumentRangeError {
-				arg: "index".to_string(),
-				range: 0..self.len(),
-			});
-		}
+		assert!(
+			index < self.len(),
+			"precondition: index {index} must be less than len {}",
+			self.len()
+		);
 
 		// Safety: bound check on index performed above. The buffer length is at least
 		// `self.len() >> P::LOG_WIDTH` by struct invariant.
 		unsafe { set_packed_slice_unchecked(&mut self.values, index, value) };
-		Ok(())
 	}
 
 	/// Truncates a field buffer to a shorter length.
@@ -456,19 +397,15 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// If `new_log_len` is not greater than current `log_len()`, this has no effect.
 	///
-	/// # Throws
-	/// * `Error::IncorrectArgumentLength` if the zero extended size exceeds underlying capacity.
-	pub fn zero_extend(&mut self, new_log_len: usize) -> Result<(), Error> {
+	/// # Preconditions
+	///
+	/// * `new_log_len` must not exceed the buffer's capacity.
+	pub fn zero_extend(&mut self, new_log_len: usize) {
 		if new_log_len <= self.log_len {
-			return Ok(());
+			return;
 		}
 
-		if new_log_len > self.log_cap() {
-			return Err(Error::IncorrectArgumentLength {
-				arg: "new_log_len".to_string(),
-				expected: self.log_cap(),
-			});
-		}
+		assert!(new_log_len <= self.log_cap(), "precondition: new_log_len must not exceed log_cap");
 
 		if self.log_len < P::LOG_WIDTH {
 			let first_elem = self.values.first_mut().expect("values.len() >= 1");
@@ -482,57 +419,44 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 		self.values[packed_start..packed_end].fill(P::zero());
 
 		self.log_len = new_log_len;
-		Ok(())
 	}
 
 	/// Sets the new log length. If the new log length is bigger than the current log length,
 	/// the new values (in case when `self.log_len < new_log_len`) will be filled with
 	/// the values from the existing buffer.
 	///
-	/// # Throws
+	/// # Preconditions
 	///
-	/// * `Error::IncorrectArgumentLength` if the new log length exceeds the buffer's capacity.
-	pub fn resize(&mut self, new_log_len: usize) -> Result<(), Error> {
-		if new_log_len > self.log_cap() {
-			return Err(Error::IncorrectArgumentLength {
-				arg: "new_log_len".to_string(),
-				expected: self.log_cap(),
-			});
-		}
+	/// * `new_log_len` must not exceed the buffer's capacity.
+	pub fn resize(&mut self, new_log_len: usize) {
+		assert!(new_log_len <= self.log_cap(), "precondition: new_log_len must not exceed log_cap");
 
 		self.log_len = new_log_len;
-		Ok(())
 	}
 
 	/// Split the buffer into mutable chunks of size `2^log_chunk_size`.
 	///
-	/// # Throws
+	/// # Preconditions
 	///
-	/// * [`Error::ArgumentRangeError`] if `log_chunk_size < P::LOG_WIDTH` or `log_chunk_size >
-	///   log_len`.
+	/// * `log_chunk_size` must be at least `P::LOG_WIDTH` and at most `log_len`.
 	pub fn chunks_mut(
 		&mut self,
 		log_chunk_size: usize,
-	) -> Result<impl Iterator<Item = FieldSliceMut<'_, P>>, Error> {
-		if log_chunk_size < P::LOG_WIDTH || log_chunk_size > self.log_len {
-			return Err(Error::ArgumentRangeError {
-				arg: "log_chunk_size".to_string(),
-				range: P::LOG_WIDTH..self.log_len + 1,
-			});
-		}
+	) -> impl Iterator<Item = FieldSliceMut<'_, P>> {
+		assert!(
+			log_chunk_size >= P::LOG_WIDTH && log_chunk_size <= self.log_len,
+			"precondition: log_chunk_size must be in range [P::LOG_WIDTH, log_len]"
+		);
 
 		let chunk_count = 1 << (self.log_len - log_chunk_size);
 		let packed_chunk_size = 1 << log_chunk_size.saturating_sub(P::LOG_WIDTH);
-		let chunks = self
-			.values
+		self.values
 			.chunks_mut(packed_chunk_size)
 			.take(chunk_count)
 			.map(move |chunk| FieldBuffer {
 				log_len: log_chunk_size,
 				values: chunk,
-			});
-
-		Ok(chunks)
+			})
 	}
 
 	/// Get a mutable aligned chunk of size `2^log_chunk_size`.
@@ -541,29 +465,25 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// For small chunks (log_chunk_size < P::LOG_WIDTH), this returns a wrapper that
 	/// implements deferred writes - modifications are written back when the wrapper is dropped.
 	///
-	/// # Throws
+	/// # Preconditions
 	///
-	/// * [`Error::ArgumentRangeError`] if `log_chunk_size > log_len` or `chunk_index` is out of
-	///   range.
+	/// * `log_chunk_size` must be at most `log_len`.
+	/// * `chunk_index` must be less than the chunk count.
 	pub fn chunk_mut(
 		&mut self,
 		log_chunk_size: usize,
 		chunk_index: usize,
-	) -> Result<FieldBufferChunkMut<'_, P>, Error> {
-		if log_chunk_size > self.log_len {
-			return Err(Error::ArgumentRangeError {
-				arg: "log_chunk_size".to_string(),
-				range: 0..self.log_len + 1,
-			});
-		}
+	) -> FieldBufferChunkMut<'_, P> {
+		assert!(
+			log_chunk_size <= self.log_len,
+			"precondition: log_chunk_size must be at most log_len"
+		);
 
 		let chunk_count = 1 << (self.log_len - log_chunk_size);
-		if chunk_index >= chunk_count {
-			return Err(Error::ArgumentRangeError {
-				arg: "chunk_index".to_string(),
-				range: 0..chunk_count,
-			});
-		}
+		assert!(
+			chunk_index < chunk_count,
+			"precondition: chunk_index must be less than chunk_count"
+		);
 
 		let inner = if log_chunk_size >= P::LOG_WIDTH {
 			// Large chunk: return a mutable slice directly
@@ -593,7 +513,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 			}
 		};
 
-		Ok(FieldBufferChunkMut(inner))
+		FieldBufferChunkMut(inner)
 	}
 
 	/// Consumes the buffer and splits it in half, returning a [`FieldBufferSplitMut`].
@@ -603,13 +523,11 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// to be split, the returned struct will create temporary copies and write the results back
 	/// to the original buffer when dropped.
 	///
-	/// # Throws
+	/// # Preconditions
 	///
-	/// * [`Error::CannotSplit`] if `self.log_len() == 0`
-	pub fn split_half(self) -> Result<FieldBufferSplitMut<P, Data>, Error> {
-		if self.log_len == 0 {
-			return Err(Error::CannotSplit);
-		}
+	/// * `self.log_len()` must be greater than 0.
+	pub fn split_half(self) -> FieldBufferSplitMut<P, Data> {
+		assert!(self.log_len > 0, "precondition: cannot split a buffer of length 1");
 
 		let new_log_len = self.log_len - 1;
 		let singles = if new_log_len < P::LOG_WIDTH {
@@ -621,21 +539,21 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 			None
 		};
 
-		Ok(FieldBufferSplitMut {
+		FieldBufferSplitMut {
 			log_len: new_log_len,
 			singles,
 			data: self.values,
-		})
+		}
 	}
 
 	/// Splits the buffer in half and returns a [`FieldBufferSplitMut`] for accessing the halves.
 	///
 	/// This is a convenience method equivalent to `self.to_mut().split_half()`.
 	///
-	/// # Throws
+	/// # Preconditions
 	///
-	/// * [`Error::CannotSplit`] if `self.log_len() == 0`
-	pub fn split_half_mut(&mut self) -> Result<FieldBufferSplitMut<P, &'_ mut [P]>, Error> {
+	/// * `self.log_len()` must be greater than 0.
+	pub fn split_half_mut(&mut self) -> FieldBufferSplitMut<P, &'_ mut [P]> {
 		self.to_mut().split_half()
 	}
 }
@@ -685,11 +603,10 @@ pub type FieldSliceMut<'a, P> = FieldBuffer<P, &'a mut [P]>;
 impl<'a, P: PackedField> FieldSlice<'a, P> {
 	/// Create a new FieldSlice from a slice of packed values.
 	///
-	/// # Throws
+	/// # Preconditions
 	///
-	/// * `IncorrectArgumentLength` if the number of field elements does not fit the `slice.len()`
-	///   exactly.
-	pub fn from_slice(log_len: usize, slice: &'a [P]) -> Result<Self, Error> {
+	/// * `slice.len()` must equal the expected packed length for `log_len`.
+	pub fn from_slice(log_len: usize, slice: &'a [P]) -> Self {
 		FieldBuffer::new(log_len, FieldSliceData::Slice(slice))
 	}
 }
@@ -705,11 +622,10 @@ impl<'a, P: PackedField, Data: Deref<Target = [P]>> From<&'a FieldBuffer<P, Data
 impl<'a, P: PackedField> FieldSliceMut<'a, P> {
 	/// Create a new FieldSliceMut from a mutable slice of packed values.
 	///
-	/// # Throws
+	/// # Preconditions
 	///
-	/// * `IncorrectArgumentLength` if the number of field elements does not fit the `slice.len()`
-	///   exactly.
-	pub fn from_slice(log_len: usize, slice: &'a mut [P]) -> Result<Self, Error> {
+	/// * `slice.len()` must equal the expected packed length for `log_len`.
+	pub fn from_slice(log_len: usize, slice: &'a mut [P]) -> Self {
 		FieldBuffer::new(log_len, slice)
 	}
 }
@@ -872,7 +788,7 @@ mod tests {
 
 		// Check all elements are zero
 		for i in 0..64 {
-			assert_eq!(buffer.get_checked(i).unwrap(), F::ZERO);
+			assert_eq!(buffer.get(i), F::ZERO);
 		}
 
 		// Test with log_len < LOG_WIDTH
@@ -882,7 +798,7 @@ mod tests {
 
 		// Check all elements are zero
 		for i in 0..2 {
-			assert_eq!(buffer.get_checked(i).unwrap(), F::ZERO);
+			assert_eq!(buffer.get(i), F::ZERO);
 		}
 	}
 
@@ -892,14 +808,14 @@ mod tests {
 		// width
 		// P::LOG_WIDTH = 2, so P::WIDTH = 4
 		let values = vec![F::new(1), F::new(2)]; // 2 elements < 4
-		let buffer = FieldBuffer::<P>::from_values(&values).unwrap();
+		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		assert_eq!(buffer.log_len(), 1); // log2(2) = 1
 		assert_eq!(buffer.len(), 2);
 
 		// Verify the values
-		assert_eq!(buffer.get_checked(0).unwrap(), F::new(1));
-		assert_eq!(buffer.get_checked(1).unwrap(), F::new(2));
+		assert_eq!(buffer.get(0), F::new(1));
+		assert_eq!(buffer.get(1), F::new(2));
 	}
 
 	#[test]
@@ -908,30 +824,29 @@ mod tests {
 		// width
 		// P::LOG_WIDTH = 2, so P::WIDTH = 4
 		let values: Vec<F> = (0..16).map(F::new).collect(); // 16 elements > 4
-		let buffer = FieldBuffer::<P>::from_values(&values).unwrap();
+		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		assert_eq!(buffer.log_len(), 4); // log2(16) = 4
 		assert_eq!(buffer.len(), 16);
 
 		// Verify all values
 		for i in 0..16 {
-			assert_eq!(buffer.get_checked(i).unwrap(), F::new(i as u128));
+			assert_eq!(buffer.get(i), F::new(i as u128));
 		}
 	}
 
 	#[test]
+	#[should_panic(expected = "power of two")]
 	fn test_from_values_non_power_of_two() {
-		// Fail to make a buffer using `from_values()`, where the number of scalars is not a power
-		// of two
 		let values: Vec<F> = (0..7).map(F::new).collect(); // 7 is not a power of two
-		let result = FieldBuffer::<P>::from_values(&values);
+		let _ = FieldBuffer::<P>::from_values(&values);
+	}
 
-		assert!(matches!(result, Err(Error::PowerOfTwoLengthRequired)));
-
-		// Also test with 0 elements
+	#[test]
+	#[should_panic(expected = "power of two")]
+	fn test_from_values_empty() {
 		let values: Vec<F> = vec![];
-		let result = FieldBuffer::<P>::from_values(&values);
-		assert!(matches!(result, Err(Error::PowerOfTwoLengthRequired)));
+		let _ = FieldBuffer::<P>::from_values(&values);
 	}
 
 	#[test]
@@ -941,16 +856,16 @@ mod tests {
 		// P::LOG_WIDTH = 2, so P::WIDTH = 4
 		// For log_len = 1 (2 elements), we need 1 packed value
 		let mut packed_values = vec![P::default()];
-		let mut buffer = FieldBuffer::new(1, packed_values.as_mut_slice()).unwrap();
+		let mut buffer = FieldBuffer::new(1, packed_values.as_mut_slice());
 
 		assert_eq!(buffer.log_len(), 1);
 		assert_eq!(buffer.len(), 2);
 
 		// Set and verify values
-		buffer.set_checked(0, F::new(10)).unwrap();
-		buffer.set_checked(1, F::new(20)).unwrap();
-		assert_eq!(buffer.get_checked(0).unwrap(), F::new(10));
-		assert_eq!(buffer.get_checked(1).unwrap(), F::new(20));
+		buffer.set(0, F::new(10));
+		buffer.set(1, F::new(20));
+		assert_eq!(buffer.get(0), F::new(10));
+		assert_eq!(buffer.get(1), F::new(20));
 	}
 
 	#[test]
@@ -960,35 +875,25 @@ mod tests {
 		// P::LOG_WIDTH = 2, so P::WIDTH = 4
 		// For log_len = 4 (16 elements), we need 4 packed values
 		let mut packed_values = vec![P::default(); 4];
-		let mut buffer = FieldBuffer::new(4, packed_values.as_mut_slice()).unwrap();
+		let mut buffer = FieldBuffer::new(4, packed_values.as_mut_slice());
 
 		assert_eq!(buffer.log_len(), 4);
 		assert_eq!(buffer.len(), 16);
 
 		// Set and verify values
 		for i in 0..16 {
-			buffer.set_checked(i, F::new(i as u128 * 10)).unwrap();
+			buffer.set(i, F::new(i as u128 * 10));
 		}
 		for i in 0..16 {
-			assert_eq!(buffer.get_checked(i).unwrap(), F::new(i as u128 * 10));
+			assert_eq!(buffer.get(i), F::new(i as u128 * 10));
 		}
 	}
 
 	#[test]
-	fn test_new_non_power_of_two() {
-		// Fail to make a buffer using `new()`, where the number of scalars is not a power of two
-		// For log_len = 4 (16 elements), we need 4 packed values
-		// Provide wrong number of packed values
-		let packed_values = vec![P::default(); 3]; // Wrong: should be 4
-		let result = FieldBuffer::new(4, packed_values.as_slice());
-
-		assert!(matches!(result, Err(Error::IncorrectArgumentLength { .. })));
-
-		// Another test with too many packed values
-		let packed_values = vec![P::default(); 5]; // Wrong: should be 4
-		let result = FieldBuffer::new(4, packed_values.as_slice());
-
-		assert!(matches!(result, Err(Error::IncorrectArgumentLength { .. })));
+	#[should_panic(expected = "precondition")]
+	fn test_new_wrong_packed_length() {
+		let packed_values = vec![P::default(); 3]; // Wrong: should be 4 for log_len=4
+		let _ = FieldBuffer::new(4, packed_values.as_slice());
 	}
 
 	#[test]
@@ -997,46 +902,63 @@ mod tests {
 
 		// Set some values
 		for i in 0..8 {
-			buffer.set_checked(i, F::new(i as u128)).unwrap();
+			buffer.set(i, F::new(i as u128));
 		}
 
 		// Get them back
 		for i in 0..8 {
-			assert_eq!(buffer.get_checked(i).unwrap(), F::new(i as u128));
+			assert_eq!(buffer.get(i), F::new(i as u128));
 		}
+	}
 
-		// Test out of bounds
-		assert!(buffer.get_checked(8).is_err());
-		assert!(buffer.set_checked(8, F::new(0)).is_err());
+	#[test]
+	#[should_panic(expected = "precondition")]
+	fn test_get_out_of_bounds() {
+		let buffer = FieldBuffer::<P>::zeros(3); // 8 elements
+		let _ = buffer.get(8);
+	}
+
+	#[test]
+	#[should_panic(expected = "precondition")]
+	fn test_set_out_of_bounds() {
+		let mut buffer = FieldBuffer::<P>::zeros(3); // 8 elements
+		buffer.set(8, F::new(0));
 	}
 
 	#[test]
 	fn test_chunk() {
 		let log_len = 8;
 		let values: Vec<F> = (0..1 << log_len).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values).unwrap();
-
-		// Test invalid chunk size (too large)
-		assert!(buffer.chunk(log_len + 1, 0).is_err());
+		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		for log_chunk_size in 0..=log_len {
 			let chunk_count = 1 << (log_len - log_chunk_size);
 
-			// Test invalid chunk index
-			assert!(buffer.chunk(log_chunk_size, chunk_count).is_err());
-
 			for chunk_index in 0..chunk_count {
-				let chunk = buffer.chunk(log_chunk_size, chunk_index).unwrap();
+				let chunk = buffer.chunk(log_chunk_size, chunk_index);
 				for i in 0..1 << log_chunk_size {
-					assert_eq!(
-						chunk.get_checked(i).unwrap(),
-						buffer
-							.get_checked(chunk_index << log_chunk_size | i)
-							.unwrap()
-					);
+					assert_eq!(chunk.get(i), buffer.get(chunk_index << log_chunk_size | i));
 				}
 			}
 		}
+	}
+
+	#[test]
+	#[should_panic(expected = "precondition")]
+	fn test_chunk_invalid_size() {
+		let log_len = 8;
+		let values: Vec<F> = (0..1 << log_len).map(F::new).collect();
+		let buffer = FieldBuffer::<P>::from_values(&values);
+		let _ = buffer.chunk(log_len + 1, 0);
+	}
+
+	#[test]
+	#[should_panic(expected = "precondition")]
+	fn test_chunk_invalid_index() {
+		let log_len = 8;
+		let values: Vec<F> = (0..1 << log_len).map(F::new).collect();
+		let buffer = FieldBuffer::<P>::from_values(&values);
+		let _ = buffer.chunk(4, 1 << (log_len - 4)); // out of range
 	}
 
 	#[test]
@@ -1046,26 +968,20 @@ mod tests {
 
 		// Initialize with test data
 		for i in 0..1 << log_len {
-			buffer.set_checked(i, F::new(i as u128)).unwrap();
+			buffer.set(i, F::new(i as u128));
 		}
-
-		// Test invalid chunk size (too large)
-		assert!(buffer.chunk_mut(log_len + 1, 0).is_err());
 
 		// Test mutations for different chunk sizes
 		for log_chunk_size in 0..=log_len {
 			let chunk_count = 1 << (log_len - log_chunk_size);
 
-			// Test invalid chunk index
-			assert!(buffer.chunk_mut(log_chunk_size, chunk_count).is_err());
-
 			// Modify each chunk by multiplying by 10
 			for chunk_index in 0..chunk_count {
-				let mut chunk_wrapper = buffer.chunk_mut(log_chunk_size, chunk_index).unwrap();
+				let mut chunk_wrapper = buffer.chunk_mut(log_chunk_size, chunk_index);
 				let mut chunk = chunk_wrapper.get();
 				for i in 0..1 << log_chunk_size {
-					let old_val = chunk.get_checked(i).unwrap();
-					chunk.set_checked(i, F::new(old_val.val() * 10)).unwrap();
+					let old_val = chunk.get(i);
+					chunk.set(i, F::new(old_val.val() * 10));
 				}
 				// chunk_wrapper drops here and writes back changes
 			}
@@ -1076,7 +992,7 @@ mod tests {
 					let index = chunk_index << log_chunk_size | i;
 					let expected = F::new((index as u128) * 10);
 					assert_eq!(
-						buffer.get_checked(index).unwrap(),
+						buffer.get(index),
 						expected,
 						"Failed at log_chunk_size={}, chunk_index={}, i={}",
 						log_chunk_size,
@@ -1088,44 +1004,44 @@ mod tests {
 
 			// Reset buffer for next iteration
 			for i in 0..1 << log_len {
-				buffer.set_checked(i, F::new(i as u128)).unwrap();
+				buffer.set(i, F::new(i as u128));
 			}
 		}
 
 		// Test large chunks (log_chunk_size >= P::LOG_WIDTH)
 		let mut buffer = FieldBuffer::<P>::zeros(6);
 		for i in 0..64 {
-			buffer.set_checked(i, F::new(i as u128)).unwrap();
+			buffer.set(i, F::new(i as u128));
 		}
 
 		// Modify first chunk of size 16 (log_chunk_size = 4 >= P::LOG_WIDTH = 2)
 		{
-			let mut chunk_wrapper = buffer.chunk_mut(4, 0).unwrap();
+			let mut chunk_wrapper = buffer.chunk_mut(4, 0);
 			let mut chunk = chunk_wrapper.get();
 			for i in 0..16 {
-				chunk.set_checked(i, F::new(100 + i as u128)).unwrap();
+				chunk.set(i, F::new(100 + i as u128));
 			}
 		}
 
 		// Verify large chunk modifications
 		for i in 0..16 {
-			assert_eq!(buffer.get_checked(i).unwrap(), F::new(100 + i as u128));
+			assert_eq!(buffer.get(i), F::new(100 + i as u128));
 		}
 		for i in 16..64 {
-			assert_eq!(buffer.get_checked(i).unwrap(), F::new(i as u128));
+			assert_eq!(buffer.get(i), F::new(i as u128));
 		}
 
 		// Test small chunks (log_chunk_size < P::LOG_WIDTH)
 		let mut buffer = FieldBuffer::<P>::zeros(3);
 		for i in 0..8 {
-			buffer.set_checked(i, F::new(i as u128)).unwrap();
+			buffer.set(i, F::new(i as u128));
 		}
 
 		// Modify third chunk of size 1 (log_chunk_size = 0 < P::LOG_WIDTH = 2)
 		{
-			let mut chunk_wrapper = buffer.chunk_mut(0, 3).unwrap();
+			let mut chunk_wrapper = buffer.chunk_mut(0, 3);
 			let mut chunk = chunk_wrapper.get();
-			chunk.set_checked(0, F::new(42)).unwrap();
+			chunk.set(0, F::new(42));
 		}
 
 		// Verify small chunk modifications
@@ -1135,77 +1051,91 @@ mod tests {
 			} else {
 				F::new(i as u128)
 			};
-			assert_eq!(buffer.get_checked(i).unwrap(), expected);
+			assert_eq!(buffer.get(i), expected);
 		}
 	}
 
 	#[test]
 	fn test_chunks() {
 		let values: Vec<F> = (0..16).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values).unwrap();
+		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		// Split into 4 chunks of size 4
-		let chunks: Vec<_> = buffer.chunks(2).unwrap().collect();
+		let chunks: Vec<_> = buffer.chunks(2).collect();
 		assert_eq!(chunks.len(), 4);
 
 		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
 			assert_eq!(chunk.len(), 4);
 			for i in 0..4 {
 				let expected = F::new((chunk_idx * 4 + i) as u128);
-				assert_eq!(chunk.get_checked(i).unwrap(), expected);
+				assert_eq!(chunk.get(i), expected);
 			}
 		}
+	}
 
-		// Test invalid chunk size (too large)
-		assert!(buffer.chunks(5).is_err());
+	#[test]
+	#[should_panic(expected = "precondition")]
+	fn test_chunks_invalid_size_too_large() {
+		let values: Vec<F> = (0..16).map(F::new).collect();
+		let buffer = FieldBuffer::<P>::from_values(&values);
+		let _ = buffer.chunks(5).collect::<Vec<_>>();
+	}
 
-		// Test invalid chunk size (too small - below P::LOG_WIDTH)
-		// P::LOG_WIDTH = 2, so chunks(0) and chunks(1) should fail
-		assert!(buffer.chunks(0).is_err());
-		assert!(buffer.chunks(1).is_err());
+	#[test]
+	#[should_panic(expected = "precondition")]
+	fn test_chunks_invalid_size_too_small() {
+		let values: Vec<F> = (0..16).map(F::new).collect();
+		let buffer = FieldBuffer::<P>::from_values(&values);
+		// P::LOG_WIDTH = 2, so chunks(0) should fail
+		let _ = buffer.chunks(0).collect::<Vec<_>>();
 	}
 
 	#[test]
 	fn test_chunks_par() {
 		let values: Vec<F> = (0..16).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values).unwrap();
+		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		// Split into 4 chunks of size 4
-		let chunks: Vec<_> = buffer.chunks_par(2).unwrap().collect();
+		let chunks: Vec<_> = buffer.chunks_par(2).collect();
 		assert_eq!(chunks.len(), 4);
 
 		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
 			assert_eq!(chunk.len(), 4);
 			for i in 0..4 {
 				let expected = F::new((chunk_idx * 4 + i) as u128);
-				assert_eq!(chunk.get_checked(i).unwrap(), expected);
+				assert_eq!(chunk.get(i), expected);
 			}
 		}
-
-		// Test invalid chunk size (too large)
-		assert!(buffer.chunks_par(5).is_err());
 
 		// Test small chunk sizes (below P::LOG_WIDTH)
 		// P::LOG_WIDTH = 2, so chunks_par(0) and chunks_par(1) should work
 		// Split into 8 chunks of size 2 (log_chunk_size = 1)
-		let chunks: Vec<_> = buffer.chunks_par(1).unwrap().collect();
+		let chunks: Vec<_> = buffer.chunks_par(1).collect();
 		assert_eq!(chunks.len(), 8);
 		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
 			assert_eq!(chunk.len(), 2);
 			for i in 0..2 {
 				let expected = F::new((chunk_idx * 2 + i) as u128);
-				assert_eq!(chunk.get_checked(i).unwrap(), expected);
+				assert_eq!(chunk.get(i), expected);
 			}
 		}
 
 		// Split into 16 chunks of size 1 (log_chunk_size = 0)
-		let chunks: Vec<_> = buffer.chunks_par(0).unwrap().collect();
+		let chunks: Vec<_> = buffer.chunks_par(0).collect();
 		assert_eq!(chunks.len(), 16);
 		for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
 			assert_eq!(chunk.len(), 1);
 			let expected = F::new(chunk_idx as u128);
-			assert_eq!(chunk.get_checked(0).unwrap(), expected);
+			assert_eq!(chunk.get(0), expected);
 		}
+	}
+
+	#[test]
+	#[should_panic(expected = "precondition")]
+	fn test_chunks_par_invalid_size() {
+		let values: Vec<F> = (0..16).map(F::new).collect();
+		let buffer = FieldBuffer::<P>::from_values(&values);
+		let _ = buffer.chunks_par(5).collect::<Vec<_>>();
 	}
 
 	#[test]
@@ -1213,14 +1143,12 @@ mod tests {
 		let mut buffer = FieldBuffer::<P>::zeros(4); // 16 elements
 
 		// Modify via chunks
-		let mut chunks: Vec<_> = buffer.chunks_mut(2).unwrap().collect();
+		let mut chunks: Vec<_> = buffer.chunks_mut(2).collect();
 		assert_eq!(chunks.len(), 4);
 
 		for (chunk_idx, chunk) in chunks.iter_mut().enumerate() {
 			for i in 0..chunk.len() {
-				chunk
-					.set_checked(i, F::new((chunk_idx * 10 + i) as u128))
-					.unwrap();
+				chunk.set(i, F::new((chunk_idx * 10 + i) as u128));
 			}
 		}
 
@@ -1228,18 +1156,21 @@ mod tests {
 		for chunk_idx in 0..4 {
 			for i in 0..4 {
 				let expected = F::new((chunk_idx * 10 + i) as u128);
-				assert_eq!(buffer.get_checked(chunk_idx * 4 + i).unwrap(), expected);
+				assert_eq!(buffer.get(chunk_idx * 4 + i), expected);
 			}
 		}
+	}
 
-		// Test invalid chunk size (too small - below P::LOG_WIDTH)
-		assert!(buffer.chunks_mut(0).is_err());
-		assert!(buffer.chunks_mut(1).is_err());
+	#[test]
+	#[should_panic(expected = "precondition")]
+	fn test_chunks_mut_invalid_size() {
+		let mut buffer = FieldBuffer::<P>::zeros(4); // 16 elements
+		let _ = buffer.chunks_mut(0).collect::<Vec<_>>();
 	}
 
 	#[test]
 	fn test_to_ref_to_mut() {
-		let mut buffer = FieldBuffer::<P>::zeros_truncated(3, 5).unwrap();
+		let mut buffer = FieldBuffer::<P>::zeros_truncated(3, 5);
 
 		// Test to_ref
 		let slice_ref = buffer.to_ref();
@@ -1249,9 +1180,9 @@ mod tests {
 
 		// Test to_mut
 		let mut slice_mut = buffer.to_mut();
-		slice_mut.set_checked(0, F::new(123)).unwrap();
+		slice_mut.set(0, F::new(123));
 		assert_eq!(slice_mut.as_mut().len(), 1 << slice_mut.log_len().saturating_sub(P::LOG_WIDTH));
-		assert_eq!(buffer.get_checked(0).unwrap(), F::new(123));
+		assert_eq!(buffer.get(0), F::new(123));
 	}
 
 	#[test]
@@ -1259,25 +1190,25 @@ mod tests {
 		// Test with buffer size > P::WIDTH (multiple packed elements)
 		let values: Vec<F> = (0..16).map(F::new).collect();
 		// Leave spare capacity for 32 elements
-		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 5).unwrap();
+		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 5);
 
-		let (first, second) = buffer.split_half_ref().unwrap();
+		let (first, second) = buffer.split_half_ref();
 		assert_eq!(first.len(), 8);
 		assert_eq!(second.len(), 8);
 
 		// Verify values
 		for i in 0..8 {
-			assert_eq!(first.get_checked(i).unwrap(), F::new(i as u128));
-			assert_eq!(second.get_checked(i).unwrap(), F::new((i + 8) as u128));
+			assert_eq!(first.get(i), F::new(i as u128));
+			assert_eq!(second.get(i), F::new((i + 8) as u128));
 		}
 
 		// Test with buffer size = P::WIDTH (single packed element)
 		// P::LOG_WIDTH = 2, so P::WIDTH = 4
 		// Note that underlying collection has two packed fields.
 		let values: Vec<F> = (0..4).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 3).unwrap();
+		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 3);
 
-		let (first, second) = buffer.split_half_ref().unwrap();
+		let (first, second) = buffer.split_half_ref();
 		assert_eq!(first.len(), 2);
 		assert_eq!(second.len(), 2);
 
@@ -1292,16 +1223,16 @@ mod tests {
 		}
 
 		// Verify values
-		assert_eq!(first.get_checked(0).unwrap(), F::new(0));
-		assert_eq!(first.get_checked(1).unwrap(), F::new(1));
-		assert_eq!(second.get_checked(0).unwrap(), F::new(2));
-		assert_eq!(second.get_checked(1).unwrap(), F::new(3));
+		assert_eq!(first.get(0), F::new(0));
+		assert_eq!(first.get(1), F::new(1));
+		assert_eq!(second.get(0), F::new(2));
+		assert_eq!(second.get(1), F::new(3));
 
 		// Test with buffer size = 2 (less than P::WIDTH)
 		let values: Vec<F> = vec![F::new(10), F::new(20)];
-		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 3).unwrap();
+		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 3);
 
-		let (first, second) = buffer.split_half_ref().unwrap();
+		let (first, second) = buffer.split_half_ref();
 		assert_eq!(first.len(), 1);
 		assert_eq!(second.len(), 1);
 
@@ -1315,29 +1246,30 @@ mod tests {
 			_ => panic!("Expected Single variant for second half"),
 		}
 
-		assert_eq!(first.get_checked(0).unwrap(), F::new(10));
-		assert_eq!(second.get_checked(0).unwrap(), F::new(20));
+		assert_eq!(first.get(0), F::new(10));
+		assert_eq!(second.get(0), F::new(20));
+	}
 
-		// Test error case: buffer of size 1
+	#[test]
+	#[should_panic(expected = "precondition")]
+	fn test_split_half_ref_size_one() {
 		let values = vec![F::new(42)];
-		let buffer = FieldBuffer::<P>::from_values(&values).unwrap();
-
-		let result = buffer.split_half_ref();
-		assert!(matches!(result, Err(Error::CannotSplit)));
+		let buffer = FieldBuffer::<P>::from_values(&values);
+		let _ = buffer.split_half_ref();
 	}
 
 	#[test]
 	fn test_zero_extend() {
 		let log_len = 10;
 		let nonzero_scalars = (0..1 << log_len).map(|i| F::new(i + 1)).collect::<Vec<_>>();
-		let mut buffer = FieldBuffer::<P>::from_values(&nonzero_scalars).unwrap();
+		let mut buffer = FieldBuffer::<P>::from_values(&nonzero_scalars);
 		buffer.truncate(0);
 
 		for i in 0..log_len {
-			buffer.zero_extend(i + 1).unwrap();
+			buffer.zero_extend(i + 1);
 
 			for j in 1 << i..1 << (i + 1) {
-				assert!(buffer.get_checked(j).unwrap().is_zero());
+				assert!(buffer.get(j).is_zero());
 			}
 		}
 	}
@@ -1348,23 +1280,26 @@ mod tests {
 
 		// Fill with test data
 		for i in 0..16 {
-			buffer.set_checked(i, F::new(i as u128)).unwrap();
+			buffer.set(i, F::new(i as u128));
 		}
 
-		buffer.resize(3).unwrap();
+		buffer.resize(3);
 		assert_eq!(buffer.log_len(), 3);
-		assert_eq!(buffer.get_checked(7).unwrap(), F::new(7));
+		assert_eq!(buffer.get(7), F::new(7));
 
-		buffer.resize(4).unwrap();
+		buffer.resize(4);
 		assert_eq!(buffer.log_len(), 4);
-		assert_eq!(buffer.get_checked(15).unwrap(), F::new(15));
+		assert_eq!(buffer.get(15), F::new(15));
 
-		assert!(
-			matches!(buffer.resize(5), Err(Error::IncorrectArgumentLength { arg, expected }) if arg == "new_log_len" && expected == 4)
-		);
-
-		buffer.resize(2).unwrap();
+		buffer.resize(2);
 		assert_eq!(buffer.log_len(), 2);
+	}
+
+	#[test]
+	#[should_panic(expected = "precondition")]
+	fn test_resize_exceeds_capacity() {
+		let mut buffer = FieldBuffer::<P>::zeros(4); // 16 elements
+		buffer.resize(5);
 	}
 
 	#[test]
@@ -1372,7 +1307,7 @@ mod tests {
 		// Test with buffer size below packing width
 		// P::LOG_WIDTH = 2, so P::WIDTH = 4
 		let values = vec![F::new(10), F::new(20)]; // 2 elements < 4
-		let buffer = FieldBuffer::<P>::from_values(&values).unwrap();
+		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		let collected: Vec<F> = buffer.iter_scalars().collect();
 		assert_eq!(collected, values);
@@ -1384,14 +1319,14 @@ mod tests {
 
 		// Test with buffer size equal to packing width
 		let values = vec![F::new(1), F::new(2), F::new(3), F::new(4)]; // 4 elements = P::WIDTH
-		let buffer = FieldBuffer::<P>::from_values(&values).unwrap();
+		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		let collected: Vec<F> = buffer.iter_scalars().collect();
 		assert_eq!(collected, values);
 
 		// Test with buffer size above packing width
 		let values: Vec<F> = (0..16).map(F::new).collect(); // 16 elements > 4
-		let buffer = FieldBuffer::<P>::from_values(&values).unwrap();
+		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		let collected: Vec<F> = buffer.iter_scalars().collect();
 		assert_eq!(collected, values);
@@ -1403,21 +1338,21 @@ mod tests {
 
 		// Test with single element buffer
 		let values = vec![F::new(42)];
-		let buffer = FieldBuffer::<P>::from_values(&values).unwrap();
+		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		let collected: Vec<F> = buffer.iter_scalars().collect();
 		assert_eq!(collected, values);
 
 		// Test with large buffer
 		let values: Vec<F> = (0..256).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values).unwrap();
+		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		let collected: Vec<F> = buffer.iter_scalars().collect();
 		assert_eq!(collected, values);
 
 		// Test that iterator is cloneable and can be used multiple times
 		let values: Vec<F> = (0..8).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values(&values).unwrap();
+		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		let iter1 = buffer.iter_scalars();
 		let iter2 = iter1.clone();
@@ -1429,7 +1364,7 @@ mod tests {
 
 		// Test with buffer that has extra capacity
 		let values: Vec<F> = (0..8).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 5).unwrap(); // 8 elements, capacity for 32
+		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 5); // 8 elements, capacity for 32
 
 		let collected: Vec<F> = buffer.iter_scalars().collect();
 		assert_eq!(collected, values);
@@ -1443,11 +1378,11 @@ mod tests {
 
 		// Fill with test data
 		for i in 0..16 {
-			buffer.set_checked(i, F::new(i as u128)).unwrap();
+			buffer.set(i, F::new(i as u128));
 		}
 
 		{
-			let mut split = buffer.split_half_mut().unwrap();
+			let mut split = buffer.split_half_mut();
 			let (mut first, mut second) = split.halves();
 
 			assert_eq!(first.len(), 8);
@@ -1455,16 +1390,16 @@ mod tests {
 
 			// Modify through the split halves
 			for i in 0..8 {
-				first.set_checked(i, F::new((i * 10) as u128)).unwrap();
-				second.set_checked(i, F::new((i * 20) as u128)).unwrap();
+				first.set(i, F::new((i * 10) as u128));
+				second.set(i, F::new((i * 20) as u128));
 			}
 			// split drops here and writes back the changes
 		}
 
 		// Verify changes were made to original buffer
 		for i in 0..8 {
-			assert_eq!(buffer.get_checked(i).unwrap(), F::new((i * 10) as u128));
-			assert_eq!(buffer.get_checked(i + 8).unwrap(), F::new((i * 20) as u128));
+			assert_eq!(buffer.get(i), F::new((i * 10) as u128));
+			assert_eq!(buffer.get(i + 8), F::new((i * 20) as u128));
 		}
 
 		// Test with buffer size = P::WIDTH (single packed element)
@@ -1473,57 +1408,58 @@ mod tests {
 
 		// Fill with test data
 		for i in 0..4 {
-			buffer.set_checked(i, F::new(i as u128)).unwrap();
+			buffer.set(i, F::new(i as u128));
 		}
 
 		{
-			let mut split = buffer.split_half_mut().unwrap();
+			let mut split = buffer.split_half_mut();
 			let (mut first, mut second) = split.halves();
 
 			assert_eq!(first.len(), 2);
 			assert_eq!(second.len(), 2);
 
 			// Modify values
-			first.set_checked(0, F::new(100)).unwrap();
-			first.set_checked(1, F::new(101)).unwrap();
-			second.set_checked(0, F::new(200)).unwrap();
-			second.set_checked(1, F::new(201)).unwrap();
+			first.set(0, F::new(100));
+			first.set(1, F::new(101));
+			second.set(0, F::new(200));
+			second.set(1, F::new(201));
 			// split drops here and writes back the changes using interleave
 		}
 
 		// Verify changes were written back
-		assert_eq!(buffer.get_checked(0).unwrap(), F::new(100));
-		assert_eq!(buffer.get_checked(1).unwrap(), F::new(101));
-		assert_eq!(buffer.get_checked(2).unwrap(), F::new(200));
-		assert_eq!(buffer.get_checked(3).unwrap(), F::new(201));
+		assert_eq!(buffer.get(0), F::new(100));
+		assert_eq!(buffer.get(1), F::new(101));
+		assert_eq!(buffer.get(2), F::new(200));
+		assert_eq!(buffer.get(3), F::new(201));
 
 		// Test with buffer size = 2
 		let mut buffer = FieldBuffer::<P>::zeros(1); // 2 elements
 
-		buffer.set_checked(0, F::new(10)).unwrap();
-		buffer.set_checked(1, F::new(20)).unwrap();
+		buffer.set(0, F::new(10));
+		buffer.set(1, F::new(20));
 
 		{
-			let mut split = buffer.split_half_mut().unwrap();
+			let mut split = buffer.split_half_mut();
 			let (mut first, mut second) = split.halves();
 
 			assert_eq!(first.len(), 1);
 			assert_eq!(second.len(), 1);
 
 			// Modify values
-			first.set_checked(0, F::new(30)).unwrap();
-			second.set_checked(0, F::new(40)).unwrap();
+			first.set(0, F::new(30));
+			second.set(0, F::new(40));
 			// split drops here and writes back the changes using interleave
 		}
 
 		// Verify changes
-		assert_eq!(buffer.get_checked(0).unwrap(), F::new(30));
-		assert_eq!(buffer.get_checked(1).unwrap(), F::new(40));
+		assert_eq!(buffer.get(0), F::new(30));
+		assert_eq!(buffer.get(1), F::new(40));
+	}
 
-		// Test error case: buffer of size 1
+	#[test]
+	#[should_panic(expected = "precondition")]
+	fn test_split_half_mut_size_one() {
 		let mut buffer = FieldBuffer::<P>::zeros(0); // 1 element
-
-		let result = buffer.split_half_mut();
-		assert!(matches!(result, Err(Error::CannotSplit)));
+		let _ = buffer.split_half_mut();
 	}
 }

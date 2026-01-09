@@ -190,7 +190,7 @@ fn test_forward_transform_is_identity(#[case] ntt_factory: impl NTTFactory<B128>
 		F: BinaryField,
 		P: PackedField<Scalar = F>,
 	{
-		let subspace = BinarySubspace::<F>::with_dim(1).unwrap();
+		let subspace = BinarySubspace::<F>::with_dim(1);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 
 		let ntt = ntt_factory.create(domain_context);
@@ -214,7 +214,7 @@ where
 	let dc_1 = GaoMateerPreExpanded::<P::Scalar>::generate(10);
 	test_equivalence_ntts::<P>(&dc_1);
 
-	let subspace = BinarySubspace::with_dim(10).unwrap();
+	let subspace = BinarySubspace::with_dim(10);
 	let dc_2 = GenericPreExpanded::<P::Scalar>::generate_from_subspace(&subspace);
 	test_equivalence_ntts::<P>(&dc_2);
 }
@@ -235,7 +235,7 @@ where
 	let data_orig = random_field_buffer::<P>(&mut rng, log_d);
 	let mut data = data_orig.clone();
 
-	let subspace = BinarySubspace::<P::Scalar>::with_dim(10).unwrap();
+	let subspace = BinarySubspace::<P::Scalar>::with_dim(10);
 	let domain_context = GenericPreExpanded::generate_from_subspace(&subspace);
 	let ntt = NeighborsLastReference { domain_context };
 	for skip_early in [0, 2, 5] {

@@ -197,9 +197,7 @@ where
 
 	// Compute blinding_eval = sum_x[mask * l_poly]
 	// The verifier will compute sum = (1-r)*claim + r*blinding_eval using linear interpolation.
-	let (_witness, mask) = multilinear
-		.split_half_ref()
-		.expect("multilinear has log_len >= 1");
+	let (_witness, mask) = multilinear.split_half_ref();
 	let mask_claim = inner_product_par(&mask, &transparent_multilinear);
 
 	// Write blinding_eval to transcript
@@ -212,8 +210,7 @@ where
 	fri_folder.receive_challenge(batch_challenge);
 
 	// Fold multilinear at its last variable.
-	fold_highest_var_inplace(&mut multilinear, batch_challenge)
-		.expect("multilinear has log_len >= 1");
+	fold_highest_var_inplace(&mut multilinear, batch_challenge);
 
 	// Compute the batched sum using linear interpolation.
 	let batched_sum = extrapolate_line_packed(sum_claim, mask_claim, batch_challenge);
@@ -268,7 +265,7 @@ mod test {
 			ParallelCompressionAdaptor::new(StdCompression::default()),
 		);
 
-		let subspace = BinarySubspace::with_dim(multilinear.log_len() + LOG_INV_RATE).unwrap();
+		let subspace = BinarySubspace::with_dim(multilinear.log_len() + LOG_INV_RATE);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
@@ -369,7 +366,7 @@ mod test {
 		);
 
 		// Setup NTT with subspace dimension = witness.log_len + LOG_INV_RATE
-		let subspace = BinarySubspace::with_dim(n_vars + LOG_INV_RATE).unwrap();
+		let subspace = BinarySubspace::with_dim(n_vars + LOG_INV_RATE);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
@@ -447,7 +444,7 @@ mod test {
 		let witness_plus_mask = random_field_buffer::<P>(&mut rng, n_vars + 1);
 		let evaluation_point = random_scalars(&mut rng, n_vars);
 
-		let (witness, _mask) = witness_plus_mask.split_half_ref().unwrap();
+		let (witness, _mask) = witness_plus_mask.split_half_ref();
 		let eval_point_eq = eq_ind_partial_eval::<P>(&evaluation_point);
 		let evaluation_claim = inner_product_buffers(&witness, &eval_point_eq);
 

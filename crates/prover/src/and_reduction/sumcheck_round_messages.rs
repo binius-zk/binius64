@@ -210,7 +210,7 @@ mod test {
 
 		// Agreed-upon proof parameter
 
-		let prover_message_domain = BinarySubspace::with_dim(SKIPPED_VARS + 1).unwrap();
+		let prover_message_domain = BinarySubspace::with_dim(SKIPPED_VARS + 1);
 		let ntt_lookup = ntt_lookup_from_prover_message_domain::<PackedAESBinaryField16x8b>(
 			prover_message_domain.clone(),
 		);
@@ -240,9 +240,8 @@ mod test {
 		// Verifier checks the accuracy of the message by challenging the prover and folding
 		// polynomials transparently
 
-		let verifier_input_domain: BinarySubspace<B128> = verifier_message_domain
-			.reduce_dim(verifier_message_domain.dim() - 1)
-			.unwrap();
+		let verifier_input_domain: BinarySubspace<B128> =
+			verifier_message_domain.reduce_dim(verifier_message_domain.dim() - 1);
 
 		let first_sumcheck_challenge = B128::random(&mut rng);
 		let expected_next_round_sum =

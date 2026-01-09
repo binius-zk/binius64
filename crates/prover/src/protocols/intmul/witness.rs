@@ -202,7 +202,7 @@ where
 	// SAFETY: All elements initialized in the parallel loop above
 	unsafe { out_vec.set_len(total) };
 
-	FieldBuffer::new(n_vars + log_bits, out_vec.into_boxed_slice()).expect("correct length")
+	FieldBuffer::new(n_vars + log_bits, out_vec.into_boxed_slice())
 }
 
 /// A helper structure which handles full GKR binary tree for the bivariate product.
@@ -290,8 +290,7 @@ where
 				})
 				.collect::<Box<[_]>>();
 
-			widest_layer
-				.push(FieldBuffer::new(n_vars, values).expect("values length matches n_vars"));
+			widest_layer.push(FieldBuffer::new(n_vars, values));
 		}
 
 		let tree = build_remaining_tree_layers(log_bits, widest_layer);
@@ -360,7 +359,7 @@ pub fn buffer_bivariate_product<P: PackedField, Data: Deref<Target = [P]>>(
 		.into_par_iter()
 		.map(|(&a, &b)| a * b)
 		.collect::<Box<[P]>>();
-	FieldBuffer::new(a.log_len(), product).expect("a.len() == b.len() === (a*b).len()")
+	FieldBuffer::new(a.log_len(), product)
 }
 
 /// Constructs a field buffer with values selected from `elements` based on the bit values
@@ -401,7 +400,7 @@ where
 		})
 		.collect::<Box<[_]>>();
 
-	FieldBuffer::new(n_vars, values).expect("values length matches n_vars")
+	FieldBuffer::new(n_vars, values)
 }
 
 #[cfg(test)]

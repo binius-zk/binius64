@@ -4,8 +4,6 @@ use crate::protocols::{prodcheck::Error as ProdcheckError, sumcheck::Error as Su
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-	#[error("math error: {0}")]
-	Math(#[from] binius_math::Error),
 	#[error("transcript error")]
 	Transcript(#[from] binius_transcript::Error),
 	#[error("sumcheck verify error")]

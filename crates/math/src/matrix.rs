@@ -10,8 +10,6 @@ use bytemuck::zeroed_slice_box;
 use getset::CopyGetters;
 use rand::RngCore;
 
-use super::error::Error;
-
 /// A matrix over a field.
 #[derive(Debug, Clone, PartialEq, Eq, CopyGetters)]
 pub struct Matrix<F: Field> {
@@ -25,18 +23,13 @@ pub struct Matrix<F: Field> {
 }
 
 impl<F: Field> Matrix<F> {
-	pub fn new(m: usize, n: usize, elements: &[F]) -> Result<Self, Error> {
-		if elements.len() != m * n {
-			return Err(Error::IncorrectArgumentLength {
-				arg: "elements".into(),
-				expected: m * n,
-			});
-		}
-		Ok(Self {
+	pub fn new(m: usize, n: usize, elements: &[F]) -> Self {
+		assert_eq!(elements.len(), m * n, "precondition: elements length must equal m * n");
+		Self {
 			m,
 			n,
 			elements: elements.into(),
-		})
+		}
 	}
 
 	pub fn zeros(m: usize, n: usize) -> Self {
@@ -107,20 +100,14 @@ impl<F: Field> Matrix<F> {
 
 	/// Invert a square matrix
 	///
-	/// ## Throws
-	///
-	/// * [`Error::MatrixNotSquare`]
-	/// * [`Error::MatrixIsSingular`]
-	///
 	/// ## Preconditions
 	///
-	/// * `out` - must have the same dimensions as `self`
-	pub fn inverse_into(&self, out: &mut Self) -> Result<(), Error> {
+	/// * Matrix must be square (m == n)
+	/// * Matrix must be non-singular (invertible)
+	/// * `out` must have the same dimensions as `self`
+	pub fn inverse_into(&self, out: &mut Self) {
 		assert_eq!(self.dim(), out.dim());
-
-		if self.m != self.n {
-			return Err(Error::MatrixNotSquare);
-		}
+		assert_eq!(self.m, self.n, "precondition: matrix must be square");
 
 		let n = self.n;
 
@@ -133,7 +120,7 @@ impl<F: Field> Matrix<F> {
 			// Find the pivot row
 			let pivot = (i..n)
 				.find(|&pivot| tmp[(pivot, i)] != F::ZERO)
-				.ok_or(Error::MatrixIsSingular)?;
+				.expect("precondition: matrix must be non-singular");
 			if pivot != i {
 				tmp.swap_rows(i, pivot, &mut row_buffer);
 				out.swap_rows(i, pivot, &mut row_buffer);
@@ -155,8 +142,6 @@ impl<F: Field> Matrix<F> {
 		}
 
 		debug_assert_eq!(tmp, Self::identity(n));
-
-		Ok(())
 	}
 
 	fn row_ref(&self, i: usize) -> &[F] {
@@ -313,8 +298,8 @@ mod tests {
 			let mut a_inv = Matrix::<F>::zeros(n, n);
 			let mut a_inv_inv = Matrix::<F>::zeros(n, n);
 
-			a.inverse_into(&mut a_inv).unwrap();
-			a_inv.inverse_into(&mut a_inv_inv).unwrap();
+			a.inverse_into(&mut a_inv);
+			a_inv.inverse_into(&mut a_inv_inv);
 			assert_eq!(a_inv_inv, a);
 		}
 
@@ -325,7 +310,7 @@ mod tests {
 			let mut a_inv = Matrix::<F>::zeros(n, n);
 			let mut prod = Matrix::<F>::zeros(n, n);
 
-			a.inverse_into(&mut a_inv).unwrap();
+			a.inverse_into(&mut a_inv);
 
 			Matrix::mul_into(&a, &a_inv, &mut prod);
 			assert_eq!(prod, Matrix::<F>::identity(n));

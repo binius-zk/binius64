@@ -75,7 +75,6 @@ pub fn lagrange_evals<F: BinaryField>(subspace: &BinarySubspace<F>, z: F) -> Fie
 	}
 
 	FieldBuffer::new(subspace.dim(), result.into_boxed_slice())
-		.expect("result.len() == 2^subspace.dim()")
 }
 
 /// A domain that univariate polynomials may be evaluated on.
@@ -223,7 +222,7 @@ mod tests {
 		// Test mathematical properties across different domain sizes
 		for log_domain_size in [3, 4, 5, 6] {
 			// Create subspace for this test
-			let subspace = BinarySubspace::<F>::with_dim(log_domain_size).unwrap();
+			let subspace = BinarySubspace::<F>::with_dim(log_domain_size);
 			let domain: Vec<F> = subspace.iter().collect();
 
 			// Test 1: Partition of Unity - Lagrange polynomials sum to 1
@@ -252,7 +251,7 @@ mod tests {
 
 		// Test 3: Polynomial Interpolation Accuracy
 		let log_domain_size = 6;
-		let subspace = BinarySubspace::<F>::with_dim(log_domain_size).unwrap();
+		let subspace = BinarySubspace::<F>::with_dim(log_domain_size);
 		let domain: Vec<F> = subspace.iter().collect();
 		let coeffs = random_scalars(&mut rng, 10);
 

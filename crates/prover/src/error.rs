@@ -19,6 +19,4 @@ pub enum Error {
 	IntMul(#[from] intmul::Error),
 	#[error("shift reduction error: {0}")]
 	ShiftReduction(#[from] shift::Error),
-	#[error("math error: {0}")]
-	Math(#[from] binius_math::Error),
 }

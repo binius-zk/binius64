@@ -137,8 +137,7 @@ impl<F: Field, FE: ExtensionField<F>> TensorAlgebra<F, FE> {
 	///
 	/// A transpose flips the vertical and horizontal subring elements.
 	pub fn transpose(mut self) -> Self {
-		FE::square_transpose(&mut self.elems)
-			.expect("transpose dimensions are square by struct invariant");
+		FE::square_transpose(&mut self.elems);
 		self
 	}
 

@@ -37,8 +37,7 @@ where
 
 	let ntt_input_domain = prover_message_domain
 		.clone()
-		.reduce_dim(prover_message_domain.dim() - 1)
-		.expect("dim is always reduced to a non-negative integer");
+		.reduce_dim(prover_message_domain.dim() - 1);
 
 	let ntt_output_domain = ntt_input_domain
 		.iter()

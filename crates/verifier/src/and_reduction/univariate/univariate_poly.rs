@@ -164,7 +164,7 @@ mod test {
 
 		let monomial_basis_isomorphic = RoundCoeffs(monomial_basis_coeffs_isomorphic);
 
-		let domain = BinarySubspace::<AESTowerField8b>::with_dim(SKIPPED_VARS).unwrap();
+		let domain = BinarySubspace::<AESTowerField8b>::with_dim(SKIPPED_VARS);
 		let v = domain
 			.iter()
 			.map(|x| monomial_basis_poly.evaluate(x))

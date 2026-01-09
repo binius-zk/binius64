@@ -16,7 +16,7 @@ use binius_utils::{
 };
 use bytemuck::Zeroable;
 
-use super::{Error, PackedExtension, Random, arithmetic_traits::Square};
+use super::{PackedExtension, Random, arithmetic_traits::Square};
 use crate::{BinaryField, Field, arithmetic_traits::InvertOrZero};
 
 /// A packed field represents a vector of underlying field elements.
@@ -73,37 +73,27 @@ pub trait PackedField:
 	unsafe fn set_unchecked(&mut self, i: usize, scalar: Self::Scalar);
 
 	/// Get the scalar at a given index.
-	#[inline]
-	fn get_checked(&self, i: usize) -> Result<Self::Scalar, Error> {
-		(i < Self::WIDTH)
-			.then_some(unsafe { self.get_unchecked(i) })
-			.ok_or(Error::IndexOutOfRange {
-				index: i,
-				max: Self::WIDTH,
-			})
-	}
-
-	/// Set the scalar at a given index.
-	#[inline]
-	fn set_checked(&mut self, i: usize, scalar: Self::Scalar) -> Result<(), Error> {
-		(i < Self::WIDTH)
-			.then(|| unsafe { self.set_unchecked(i, scalar) })
-			.ok_or(Error::IndexOutOfRange {
-				index: i,
-				max: Self::WIDTH,
-			})
-	}
-
-	/// Get the scalar at a given index.
+	///
+	/// # Preconditions
+	///
+	/// * `i` must be less than `WIDTH`.
 	#[inline]
 	fn get(&self, i: usize) -> Self::Scalar {
-		self.get_checked(i).expect("index must be less than width")
+		assert!(i < Self::WIDTH, "index {i} out of range for width {}", Self::WIDTH);
+		// Safety: assertion above guarantees i < WIDTH
+		unsafe { self.get_unchecked(i) }
 	}
 
 	/// Set the scalar at a given index.
+	///
+	/// # Preconditions
+	///
+	/// * `i` must be less than `WIDTH`.
 	#[inline]
 	fn set(&mut self, i: usize, scalar: Self::Scalar) {
-		self.set_checked(i, scalar).expect("index must be less than width")
+		assert!(i < Self::WIDTH, "index {i} out of range for width {}", Self::WIDTH);
+		// Safety: assertion above guarantees i < WIDTH
+		unsafe { self.set_unchecked(i, scalar) }
 	}
 
 	#[inline]
@@ -326,22 +316,6 @@ pub unsafe fn get_packed_slice_unchecked<P: PackedField>(packed: &[P], i: usize)
 	}
 }
 
-#[inline]
-pub fn get_packed_slice_checked<P: PackedField>(
-	packed: &[P],
-	i: usize,
-) -> Result<P::Scalar, Error> {
-	if i >> P::LOG_WIDTH < packed.len() {
-		// Safety: `i` is guaranteed to be less than `len_packed_slice(packed)`
-		Ok(unsafe { get_packed_slice_unchecked(packed, i) })
-	} else {
-		Err(Error::IndexOutOfRange {
-			index: i,
-			max: len_packed_slice(packed),
-		})
-	}
-}
-
 /// Sets the scalar at the given index without bounds checking.
 /// # Safety
 /// The caller must ensure that `i` is less than `P::WIDTH * packed.len()`.
@@ -368,24 +342,6 @@ pub fn set_packed_slice<P: PackedField>(packed: &mut [P], i: usize, scalar: P::S
 	assert!(i >> P::LOG_WIDTH < packed.len(), "index out of bounds");
 
 	unsafe { set_packed_slice_unchecked(packed, i, scalar) }
-}
-
-#[inline]
-pub fn set_packed_slice_checked<P: PackedField>(
-	packed: &mut [P],
-	i: usize,
-	scalar: P::Scalar,
-) -> Result<(), Error> {
-	if i >> P::LOG_WIDTH < packed.len() {
-		// Safety: `i` is guaranteed to be less than `len_packed_slice(packed)`
-		unsafe { set_packed_slice_unchecked(packed, i, scalar) };
-		Ok(())
-	} else {
-		Err(Error::IndexOutOfRange {
-			index: i,
-			max: len_packed_slice(packed),
-		})
-	}
 }
 
 #[inline(always)]

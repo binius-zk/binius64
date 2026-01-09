@@ -9,10 +9,7 @@ use binius_math::{
 };
 use binius_verifier::protocols::sumcheck::RoundCoeffs;
 
-use super::{
-	Error,
-	round_evals::{RoundEvals2, round_coeffs_by_eq},
-};
+use super::round_evals::{RoundEvals2, round_coeffs_by_eq};
 
 // A helper struct that implements an Mlecheck degree lowering logic using tricks from [Gruen24]
 // section 3.2 (hence the name). See a docstring to `bivariate_product_mle::new` for more in-depth
@@ -103,7 +100,7 @@ impl<F: Field, P: PackedField<Scalar = F>> Gruen32<P> {
 		(prime_coeffs, round_coeffs)
 	}
 
-	pub fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	pub fn fold(&mut self, challenge: F) {
 		assert!(self.n_vars_remaining > 0);
 
 		// Eq indicator folding is just an xor. Remember that we are one variable less than other
@@ -115,10 +112,10 @@ impl<F: Field, P: PackedField<Scalar = F>> Gruen32<P> {
 		// High-to-low evaluation order means we need to fold suffix first.
 		if self.suffix_eq_expansion.log_len() > 0 {
 			let new_log_len = self.suffix_eq_expansion.log_len() - 1;
-			eq_ind_truncate_low_inplace(&mut self.suffix_eq_expansion, new_log_len)?;
+			eq_ind_truncate_low_inplace(&mut self.suffix_eq_expansion, new_log_len);
 		} else if self.chunk_eq_expansion.log_len() > 0 {
 			let new_log_len = self.chunk_eq_expansion.log_len() - 1;
-			eq_ind_truncate_low_inplace(&mut self.chunk_eq_expansion, new_log_len)?;
+			eq_ind_truncate_low_inplace(&mut self.chunk_eq_expansion, new_log_len);
 		}
 
 		// Update the prefix product (1)
@@ -126,6 +123,5 @@ impl<F: Field, P: PackedField<Scalar = F>> Gruen32<P> {
 		self.eq_prefix_eval *= eq_one_var(challenge, alpha);
 
 		self.n_vars_remaining -= 1;
-		Ok(())
 	}
 }
