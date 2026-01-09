@@ -56,6 +56,42 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 	Ok(SumcheckOutput { eval, challenges })
 }
 
+/// Variation of the MLE-check protocol that provides the hiding property.
+///
+/// This protocol is based on the zero-knowledge sumcheck technique from [Libra], with a modification.
+/// When the field has characteristic 2, the Libra ZK-sumcheck protocol is not hiding. Instead, the mask polynomial $g$ is batched
+/// together with the multivariate polynomial whose MLE is being evaluted, whereas Libra would batch the mask polynomial together with the
+/// MLE itself.
+///
+/// [Libra]: <https://dl.acm.org/doi/10.1007/978-3-030-26954-8_24>
+pub fn verify_zk<F: Field, Challenger_: Challenger>(
+	point: &[F],
+	degree: usize,
+	eval: F,
+	transcript: &mut VerifierTranscript<Challenger_>,
+) -> Result<SumcheckOutput<F>, sumcheck::Error> {
+	// Read the evaluation of the MLE of the mask polynomial (g).
+	let mask_eval: F = transcript.message().read()?;
+
+	// Randomly mix the evaluation claim with the mask evaluation claim.
+	let batch_challenge: F = transcript.sample();
+	let batch_eval = eval + batch_challenge * mask_eval;
+
+	let SumcheckOutput {
+		eval: batch_eval_out,
+		challenges,
+	} = verify(point, degree, batch_eval, transcript)?;
+
+	// Read the evaluation of the mask polynomial (g) at the sumcheck challenge point.
+	let mask_eval_out: F = transcript.message().read()?;
+
+	let eval_out = batch_eval_out - batch_challenge * mask_eval_out;
+	Ok(SumcheckOutput {
+		eval: eval_out,
+		challenges,
+	})
+}
+
 /// An MLE-check round proof is a univariate polynomial in monomial basis with the coefficient of
 /// the lowest-degree term truncated off.
 ///
