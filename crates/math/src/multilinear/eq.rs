@@ -21,7 +21,8 @@ use crate::FieldBuffer;
 ///
 /// ## Preconditions
 ///
-/// * `values` must have enough capacity: `values.log_cap() >= values.log_len() + extra_query_coordinates.len()`
+/// * `values` must have enough capacity: `values.log_cap() >= values.log_len() +
+///   extra_query_coordinates.len()`
 /// * `values` must be zero-extended to the new log length before calling this function. This
 ///   condition is necessary to get the best performance.
 ///
@@ -79,7 +80,8 @@ fn tensor_prod_eq_ind<P: PackedField, Data: DerefMut<Target = [P]>>(
 ///
 /// ## Preconditions
 ///
-/// * `values` must have enough capacity: `values.log_cap() >= values.log_len() + extra_query_coordinates.len()`
+/// * `values` must have enough capacity: `values.log_cap() >= values.log_len() +
+///   extra_query_coordinates.len()`
 pub fn tensor_prod_eq_ind_prepend<P: PackedField, Data: DerefMut<Target = [P]>>(
 	values: &mut FieldBuffer<P, Data>,
 	extra_query_coordinates: &[P::Scalar],

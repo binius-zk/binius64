@@ -24,11 +24,7 @@ pub struct Matrix<F: Field> {
 
 impl<F: Field> Matrix<F> {
 	pub fn new(m: usize, n: usize, elements: &[F]) -> Self {
-		assert_eq!(
-			elements.len(),
-			m * n,
-			"precondition: elements length must equal m * n"
-		);
+		assert_eq!(elements.len(), m * n, "precondition: elements length must equal m * n");
 		Self {
 			m,
 			n,

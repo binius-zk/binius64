@@ -300,16 +300,14 @@ mod tests {
 				let zeroed_selected_scalars = izip!(&selected_scalars, &selector_scalars)
 					.map(|(&selected, &selector)| selected * selector)
 					.collect_vec();
-				let zeroed_selected =
-					FieldBuffer::<P>::from_values(&zeroed_selected_scalars);
+				let zeroed_selected = FieldBuffer::<P>::from_values(&zeroed_selected_scalars);
 
 				for scalar in &mut selector_scalars {
 					*scalar += F::ONE;
 				}
 
 				let inverted_selector_scalars = selector_scalars;
-				let inverted_selector =
-					FieldBuffer::<P>::from_values(&inverted_selector_scalars);
+				let inverted_selector = FieldBuffer::<P>::from_values(&inverted_selector_scalars);
 
 				let masked_selected_scalars =
 					izip!(&zeroed_selected_scalars, &inverted_selector_scalars)
@@ -317,8 +315,7 @@ mod tests {
 							zeroed_selected + inverted_selector
 						})
 						.collect_vec();
-				let masked_selected =
-					FieldBuffer::<P>::from_values(&masked_selected_scalars);
+				let masked_selected = FieldBuffer::<P>::from_values(&masked_selected_scalars);
 
 				let point = random_scalars::<F>(&mut rng, n_vars);
 				let value = multilinear_evaluate(&masked_selected, &point);

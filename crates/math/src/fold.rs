@@ -50,9 +50,10 @@ where
 	DataVec: Deref<Target = [F]>,
 {
 	let log_m = vec.log_len();
-	let log_n = mat.log_len().checked_sub(vec.log_len()).expect(
-		"precondition: mat.log_len() must be at least vec.log_len()",
-	);
+	let log_n = mat
+		.log_len()
+		.checked_sub(vec.log_len())
+		.expect("precondition: mat.log_len() must be at least vec.log_len()");
 
 	let ret_vals = mat
 		.chunks(log_m)
@@ -101,9 +102,10 @@ where
 	DataVec: Deref<Target = [F]>,
 {
 	let log_n = vec.log_len();
-	let log_m = mat.log_len().checked_sub(vec.log_len()).expect(
-		"precondition: mat.log_len() must be at least vec.log_len()",
-	);
+	let log_m = mat
+		.log_len()
+		.checked_sub(vec.log_len())
+		.expect("precondition: mat.log_len() must be at least vec.log_len()");
 
 	let mat_vals = mat.as_ref();
 	let ret_vals = (0..1 << log_m)

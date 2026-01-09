@@ -42,10 +42,7 @@ impl<F: BinaryField, Data: Deref<Target = [F]>> BinarySubspace<F, Data> {
 	}
 
 	pub fn get(&self, index: usize) -> F {
-		assert!(
-			index < 1 << self.dim(),
-			"precondition: index must be less than 2^dim"
-		);
+		assert!(index < 1 << self.dim(), "precondition: index must be less than 2^dim");
 		self.basis
 			.iter()
 			.enumerate()
@@ -84,10 +81,7 @@ impl<F: BinaryField> BinarySubspace<F> {
 	///
 	/// * `dim` must be at most this subspace's dimension
 	pub fn reduce_dim(&self, dim: usize) -> Self {
-		assert!(
-			dim <= self.dim(),
-			"precondition: dim must be at most this subspace's dimension"
-		);
+		assert!(dim <= self.dim(), "precondition: dim must be at most this subspace's dimension");
 		Self {
 			basis: self.basis[..dim].to_vec(),
 		}

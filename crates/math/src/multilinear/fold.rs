@@ -55,10 +55,7 @@ pub fn binary_fold_high<P, DataOut, DataIn>(
 	DataOut: DerefMut<Target = [P]>,
 	DataIn: Deref<Target = [P]> + Sync,
 {
-	assert!(
-		bits.len().is_power_of_two(),
-		"precondition: bits length must be a power of two"
-	);
+	assert!(bits.len().is_power_of_two(), "precondition: bits length must be a power of two");
 
 	let values_log_len = values.log_len();
 	let width = P::WIDTH.min(values.len());

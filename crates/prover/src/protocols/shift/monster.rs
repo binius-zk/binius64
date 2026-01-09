@@ -244,7 +244,8 @@ mod tests {
 			let r_s: Vec<F> = (0..6).map(|_| F::random(&mut rng)).collect();
 
 			// Method 1: Succinct evaluation using `evaluate_h_op`
-			let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+			let subspace =
+				BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
 			let succinct_evaluations = evaluate_h_op(l_tilde.to_ref(), &r_j, &r_s);
 

@@ -22,16 +22,10 @@ use crate::{ExtensionField, Field, PackedExtension};
 /// * `log_n` must be at most `P::LOG_WIDTH`.
 /// * `elems.len()` must be a power of two and at least `2^log_n`.
 pub fn square_transpose<P: PackedField>(log_n: usize, elems: &mut [P]) {
-	assert!(
-		P::LOG_WIDTH >= log_n,
-		"dimension n of square blocks must divide packing width"
-	);
+	assert!(P::LOG_WIDTH >= log_n, "dimension n of square blocks must divide packing width");
 
 	let size = elems.len();
-	assert!(
-		size.is_power_of_two(),
-		"elems length must be a power of two, got {size}"
-	);
+	assert!(size.is_power_of_two(), "elems length must be a power of two, got {size}");
 	let log_size = log2_strict_usize(size);
 	assert!(
 		log_size >= log_n,

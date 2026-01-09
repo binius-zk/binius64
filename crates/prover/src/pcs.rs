@@ -298,8 +298,7 @@ mod test {
 			&large_field_mle_to_small_field_mle::<B1, B128>(&packed_mle_values),
 		);
 
-		let packed_mle =
-			FieldBuffer::from_values(&packed_mle_values);
+		let packed_mle = FieldBuffer::from_values(&packed_mle_values);
 
 		let evaluation_point = random_scalars::<B128>(&mut rng, n_vars * B128::WIDTH);
 
@@ -331,8 +330,7 @@ mod test {
 		let big_field_n_vars = n_vars - log_scalar_bit_width;
 
 		let packed_mle_values = random_scalars::<B128>(&mut rng, 1 << big_field_n_vars);
-		let packed_mle =
-			FieldBuffer::from_values(&packed_mle_values);
+		let packed_mle = FieldBuffer::from_values(&packed_mle_values);
 
 		let evaluation_point = random_scalars::<B128>(&mut rng, n_vars);
 
@@ -410,8 +408,7 @@ mod test {
 		// scalars for unpacked large field mle
 		let big_field_mle_scalars =
 			random_scalars::<B128>(&mut rng, total_big_field_scalars_in_packed_mle);
-		let packed_mle_buffer: FieldBuffer<P> =
-			FieldBuffer::from_values(&big_field_mle_scalars);
+		let packed_mle_buffer: FieldBuffer<P> = FieldBuffer::from_values(&big_field_mle_scalars);
 
 		// Evaluate the small field mle at a point in the large field.
 		let lifted_small_field_mle: Vec<B128> = lift_small_to_large_field(

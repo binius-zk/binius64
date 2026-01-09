@@ -65,9 +65,7 @@ impl TowerField for BinaryField1b {
 
 	#[inline]
 	fn mul_primitive(self, iota: usize) -> Self {
-		panic!(
-			"mul_primitive called on BinaryField1b with iota={iota}, but tower level is 0"
-		);
+		panic!("mul_primitive called on BinaryField1b with iota={iota}, but tower level is 0");
 	}
 }
 

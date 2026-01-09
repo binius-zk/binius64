@@ -51,11 +51,7 @@ pub trait TowerField: BinaryField {
 	/// * `iota` must be at most `TOWER_LEVEL`.
 	/// * `i` must be less than `2^(TOWER_LEVEL - iota)`.
 	fn basis(iota: usize, i: usize) -> Self {
-		assert!(
-			iota <= Self::TOWER_LEVEL,
-			"iota {iota} exceeds tower level {}",
-			Self::TOWER_LEVEL
-		);
+		assert!(iota <= Self::TOWER_LEVEL, "iota {iota} exceeds tower level {}", Self::TOWER_LEVEL);
 		let n_basis_elts = 1 << (Self::TOWER_LEVEL - iota);
 		assert!(i < n_basis_elts, "index {i} out of range for {n_basis_elts} basis elements");
 		<Self as ExtensionField<BinaryField1b>>::basis(i << iota)
@@ -447,10 +443,7 @@ macro_rules! impl_field_extension {
 				let mut shift = 0;
 
 				for elem in base_elems.into_iter() {
-					assert!(
-						shift < $name::N_BITS,
-						"too many base elements for extension degree"
-					);
+					assert!(shift < $name::N_BITS, "too many base elements for extension degree");
 					value |= <$typ>::from(elem.val()) << shift;
 					shift += shift_step;
 				}

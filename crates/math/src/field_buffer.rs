@@ -65,8 +65,8 @@ impl<P: PackedField> FieldBuffer<P> {
 	///
 	/// * `values.len()` must be a power of two.
 	pub fn from_values(values: &[P::Scalar]) -> Self {
-		let log_len = strict_log_2(values.len())
-			.expect("precondition: values.len() must be a power of two");
+		let log_len =
+			strict_log_2(values.len()).expect("precondition: values.len() must be a power of two");
 
 		Self::from_values_truncated(values, log_len)
 	}
@@ -86,10 +86,7 @@ impl<P: PackedField> FieldBuffer<P> {
 		);
 
 		let log_len = values.len().ilog2() as usize;
-		assert!(
-			log_len <= log_cap,
-			"precondition: values.len() must not exceed 1 << log_cap"
-		);
+		assert!(log_len <= log_cap, "precondition: values.len() must not exceed 1 << log_cap");
 
 		let packed_cap = 1 << log_cap.saturating_sub(P::LOG_WIDTH);
 		let mut packed_values = Vec::with_capacity(packed_cap);
@@ -119,10 +116,7 @@ impl<P: PackedField> FieldBuffer<P> {
 	///
 	/// * `log_len` must not exceed `log_cap`.
 	pub fn zeros_truncated(log_len: usize, log_cap: usize) -> Self {
-		assert!(
-			log_len <= log_cap,
-			"precondition: log_len must not exceed log_cap"
-		);
+		assert!(log_len <= log_cap, "precondition: log_len must not exceed log_cap");
 		let packed_len = 1 << log_cap.saturating_sub(P::LOG_WIDTH);
 		let values = zeroed_vec(packed_len).into_boxed_slice();
 		Self { log_len, values }
@@ -260,10 +254,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// # Preconditions
 	///
 	/// * `log_chunk_size` must be at least `P::LOG_WIDTH` and at most `log_len`.
-	pub fn chunks(
-		&self,
-		log_chunk_size: usize,
-	) -> impl Iterator<Item = FieldSlice<'_, P>> + Clone {
+	pub fn chunks(&self, log_chunk_size: usize) -> impl Iterator<Item = FieldSlice<'_, P>> + Clone {
 		assert!(
 			log_chunk_size >= P::LOG_WIDTH && log_chunk_size <= self.log_len,
 			"precondition: log_chunk_size must be in range [P::LOG_WIDTH, log_len]"
@@ -331,10 +322,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `self.log_len()` must be greater than 0.
 	pub fn split_half_ref(&self) -> (FieldSlice<'_, P>, FieldSlice<'_, P>) {
-		assert!(
-			self.log_len > 0,
-			"precondition: cannot split a buffer of length 1"
-		);
+		assert!(self.log_len > 0, "precondition: cannot split a buffer of length 1");
 
 		let new_log_len = self.log_len - 1;
 		if new_log_len < P::LOG_WIDTH {
@@ -417,10 +405,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 			return;
 		}
 
-		assert!(
-			new_log_len <= self.log_cap(),
-			"precondition: new_log_len must not exceed log_cap"
-		);
+		assert!(new_log_len <= self.log_cap(), "precondition: new_log_len must not exceed log_cap");
 
 		if self.log_len < P::LOG_WIDTH {
 			let first_elem = self.values.first_mut().expect("values.len() >= 1");
@@ -444,10 +429,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `new_log_len` must not exceed the buffer's capacity.
 	pub fn resize(&mut self, new_log_len: usize) {
-		assert!(
-			new_log_len <= self.log_cap(),
-			"precondition: new_log_len must not exceed log_cap"
-		);
+		assert!(new_log_len <= self.log_cap(), "precondition: new_log_len must not exceed log_cap");
 
 		self.log_len = new_log_len;
 	}
@@ -545,10 +527,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `self.log_len()` must be greater than 0.
 	pub fn split_half(self) -> FieldBufferSplitMut<P, Data> {
-		assert!(
-			self.log_len > 0,
-			"precondition: cannot split a buffer of length 1"
-		);
+		assert!(self.log_len > 0, "precondition: cannot split a buffer of length 1");
 
 		let new_log_len = self.log_len - 1;
 		let singles = if new_log_len < P::LOG_WIDTH {

@@ -6,10 +6,7 @@ use binius_utils::rayon::prelude::{
 
 use crate::{ExtensionField, Field, PackedExtension, PackedField};
 
-pub fn ext_base_mul<PE: PackedExtension<F>, F: Field>(
-	lhs: &mut [PE],
-	rhs: &[PE::PackedSubfield],
-) {
+pub fn ext_base_mul<PE: PackedExtension<F>, F: Field>(lhs: &mut [PE], rhs: &[PE::PackedSubfield]) {
 	ext_base_op(lhs, rhs, |_, lhs, broadcasted_rhs| PE::cast_ext(lhs.cast_base() * broadcasted_rhs))
 }
 

@@ -325,8 +325,7 @@ mod test {
 		};
 
 		// Agreed-upon proof parameter
-		let prover_message_domain =
-			BinarySubspace::<AESTowerField8b>::with_dim(SKIPPED_VARS + 1);
+		let prover_message_domain = BinarySubspace::<AESTowerField8b>::with_dim(SKIPPED_VARS + 1);
 		let verifier_message_domain = prover_message_domain.isomorphic();
 
 		// Prover is instantiated

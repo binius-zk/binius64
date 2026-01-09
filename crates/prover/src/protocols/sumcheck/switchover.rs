@@ -17,7 +17,6 @@ use binius_utils::{
 	rayon::prelude::*,
 };
 
-
 /// A helper struct to maintain switchover-related invariants related to a set of 1-bit
 /// multilinears represented by a slice of bitmasks.
 ///

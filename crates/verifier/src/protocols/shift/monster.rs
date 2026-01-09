@@ -215,7 +215,8 @@ fn evaluate_matrices<F: BinaryField>(
 						ShiftVariant::Sra32 => 6,
 						ShiftVariant::Rotr32 => 7,
 					};
-					evals[shift_id][*amount] += constraint_eval * r_y_tensor.get(value_index.0 as usize);
+					evals[shift_id][*amount] +=
+						constraint_eval * r_y_tensor.get(value_index.0 as usize);
 				}
 			}
 
@@ -263,8 +264,7 @@ mod tests {
 		// - sra == 1 iff i + s == j || i + s >= 64 && j == 63
 		// - rotr == 1 iff (i + s) % 64 == j
 		let mut rng = StdRng::seed_from_u64(0);
-		let subspace =
-			BinarySubspace::<BinaryField128bGhash>::with_dim(LOG_WORD_SIZE_BITS);
+		let subspace = BinarySubspace::<BinaryField128bGhash>::with_dim(LOG_WORD_SIZE_BITS);
 
 		// Run a reasonable number of random trials
 		for _trial in 0..1024 {
@@ -323,8 +323,7 @@ mod tests {
 
 		// Generate random evaluation points
 		let challenge = BinaryField128bGhash::random(&mut rng);
-		let subspace =
-			BinarySubspace::<BinaryField128bGhash>::with_dim(LOG_WORD_SIZE_BITS);
+		let subspace = BinarySubspace::<BinaryField128bGhash>::with_dim(LOG_WORD_SIZE_BITS);
 		let l_tilde = lagrange_evals(&subspace, challenge);
 		let r_j = random_scalars::<BinaryField128bGhash>(&mut rng, LOG_WORD_SIZE_BITS);
 		let r_s = random_scalars::<BinaryField128bGhash>(&mut rng, LOG_WORD_SIZE_BITS);
