@@ -7,7 +7,10 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 
-use crate::protocols::sumcheck::{self, Error, SumcheckOutput};
+use crate::protocols::{
+	mlecheck,
+	sumcheck::{self, Error, SumcheckOutput},
+};
 
 /// The reduced output of a sumcheck verification.
 ///
@@ -44,6 +47,30 @@ pub fn batch_verify<F: Field, Challenger_: Challenger>(
 	let sum = evaluate_univariate(sums, batch_coeff);
 
 	let SumcheckOutput { eval, challenges } = sumcheck::verify(n_vars, degree, sum, transcript)?;
+
+	Ok(BatchSumcheckOutput {
+		batch_coeff,
+		challenges,
+		eval,
+	})
+}
+
+/// Verify a batched sumcheck protocol interaction.
+///
+/// The batched sumcheck verifier reduces a set of claims about the sums of multivariate polynomials
+/// over the boolean hypercube to their evaluation at a (shared) challenge point. This is achieved
+/// by constructing an `n_vars + 1`-variate polynomial whose coefficients in the "new variable" are
+/// the individual sum claims and evaluating it at a random point.
+pub fn batch_verify_mle<F: Field, Challenger_: Challenger>(
+	point: &[F],
+	degree: usize,
+	evals: &[F],
+	transcript: &mut VerifierTranscript<Challenger_>,
+) -> Result<BatchSumcheckOutput<F>, Error> {
+	let batch_coeff = transcript.sample();
+	let eval = evaluate_univariate(evals, batch_coeff);
+
+	let SumcheckOutput { eval, challenges } = mlecheck::verify(point, degree, eval, transcript)?;
 
 	Ok(BatchSumcheckOutput {
 		batch_coeff,
