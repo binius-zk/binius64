@@ -185,7 +185,8 @@ where
 							let hi_i = splits_1_chunk[i].as_ref()[idx];
 
 							// Compose once with the high half and once with the lo+hi combination.
-							// The lo+hi branch corresponds to evaluation at infinity for multilinears.
+							// The lo+hi branch corresponds to evaluation at infinity for
+							// multilinears.
 							evals_1[i] = hi_i;
 							evals_inf[i] = lo_i + hi_i;
 						}
@@ -195,7 +196,8 @@ where
 						inf_comp(evals_inf, &mut y_inf_scratch);
 
 						for i in 0..M {
-							// Weight by eq indicator to keep the sumcheck claim aligned to eval_point.
+							// Weight by eq indicator to keep the sumcheck claim aligned to
+							// eval_point.
 							y_1[i] += y_1_scratch[i] * eq_i;
 							y_inf[i] += y_inf_scratch[i] * eq_i;
 						}
