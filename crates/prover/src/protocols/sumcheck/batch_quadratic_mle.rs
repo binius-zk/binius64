@@ -123,7 +123,7 @@ where
 		let (splits_0, splits_1) = multilinears
 			.iter()
 			.map(FieldBuffer::split_half_ref)
-			.collect::<Result<(Vec<_>, Vec<_>), _>>()?;
+			.collect::<(Vec<_>, Vec<_>)>();
 
 		// Perform chunked summation: for every row, evaluate all compositions and add up
 		// results to an array of round evals accumulators. Alternative would be to sum each
@@ -139,17 +139,17 @@ where
 			.try_fold(
 				|| [[P::default(); M]; 2],
 				|mut packed_prime_evals, chunk_index| -> Result<_, Error> {
-					let eq_chunk = eq_expansion.chunk(chunk_vars, chunk_index)?;
+					let eq_chunk = eq_expansion.chunk(chunk_vars, chunk_index);
 
 					let [mut y_1_scratch, mut y_inf_scratch] = [[P::default(); M]; 2];
 					let splits_0_chunk = splits_0
 						.iter()
 						.map(|slice| slice.chunk(chunk_vars, chunk_index))
-						.collect::<Result<Vec<_>, _>>()?;
+						.collect::<Vec<_>>();
 					let splits_1_chunk = splits_1
 						.iter()
 						.map(|slice| slice.chunk(chunk_vars, chunk_index))
-						.collect::<Result<Vec<_>, _>>()?;
+						.collect::<Vec<_>>();
 
 					let [y_1, y_inf] = &mut packed_prime_evals;
 					for (idx, &eq_i) in eq_chunk.as_ref().iter().enumerate() {
@@ -237,11 +237,11 @@ where
 
 		// Fold all multilinears on the highest variable using the same challenge.
 		for multilinear in &mut self.multilinears_mut() {
-			fold_highest_var_inplace(multilinear, challenge)?;
+			fold_highest_var_inplace(multilinear, challenge);
 		}
 
 		// Keep the equality polynomial in sync with the folding.
-		self.gruen32.fold(challenge)?;
+		self.gruen32.fold(challenge);
 		// State transition: fold produces evals for the next execute.
 		self.last_coeffs_or_eval = RoundCoeffsOrEvals::Evals(evals);
 		Ok(())
@@ -262,7 +262,7 @@ where
 		let multilinear_evals = self
 			.multilinears_mut()
 			.into_iter()
-			.map(|multilinear| multilinear.get_checked(0).expect("multilinear.len() == 1"))
+			.map(|multilinear| multilinear.get(0))
 			.collect();
 
 		Ok(multilinear_evals)
@@ -359,8 +359,8 @@ mod tests {
 					}
 				})
 				.collect_vec();
-			let composite_buffer = FieldBuffer::new(n_vars, composite_vals).unwrap();
-			evaluate_inplace(composite_buffer, eval_point).unwrap()
+			let composite_buffer = FieldBuffer::new(n_vars, composite_vals);
+			evaluate_inplace(composite_buffer, eval_point)
 		})
 	}
 
@@ -469,7 +469,7 @@ mod tests {
 				let lerps = folded_multilinears
 					.iter()
 					.map(|multilinear| {
-						let (evals_0, evals_1) = multilinear.split_half_ref().unwrap();
+						let (evals_0, evals_1) = multilinear.split_half_ref();
 						izip!(evals_0.as_ref(), evals_1.as_ref())
 							.map(|(&eval_0, &eval_1)| eval_0 + (eval_1 - eval_0) * sample_broadcast)
 							.collect_vec()
@@ -500,7 +500,7 @@ mod tests {
 			let challenge = F::random(&mut rng);
 			prover.fold(challenge).unwrap();
 			for folded in &mut folded_multilinears {
-				fold_highest_var_inplace(folded, challenge).unwrap();
+				fold_highest_var_inplace(folded, challenge);
 			}
 		}
 

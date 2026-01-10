@@ -262,8 +262,8 @@ mod tests {
 			.zip(multilinear_b.as_ref())
 			.map(|(&l, &r)| l * r)
 			.collect::<Vec<_>>();
-		let product_buffer = FieldBuffer::new(n_vars, product.into_boxed_slice()).unwrap();
-		evaluate(&product_buffer, eval_point).unwrap()
+		let product_buffer = FieldBuffer::new(n_vars, product.into_boxed_slice());
+		evaluate(&product_buffer, eval_point)
 	}
 
 	#[test]
@@ -328,10 +328,10 @@ mod tests {
 			"Multilinear evaluations should round-trip through the transcript"
 		);
 
-		let eval_a_0 = evaluate(&multilinear_a_0, &reduced_eval_point).unwrap();
-		let eval_b_0 = evaluate(&multilinear_b_0, &reduced_eval_point).unwrap();
-		let eval_a_1 = evaluate(&multilinear_a_1, &reduced_eval_point).unwrap();
-		let eval_b_1 = evaluate(&multilinear_b_1, &reduced_eval_point).unwrap();
+		let eval_a_0 = evaluate(&multilinear_a_0, &reduced_eval_point);
+		let eval_b_0 = evaluate(&multilinear_b_0, &reduced_eval_point);
+		let eval_a_1 = evaluate(&multilinear_a_1, &reduced_eval_point);
+		let eval_b_1 = evaluate(&multilinear_b_1, &reduced_eval_point);
 
 		assert_eq!(eval_a_0, output.multilinear_evals[0][0]);
 		assert_eq!(eval_b_0, output.multilinear_evals[0][1]);
