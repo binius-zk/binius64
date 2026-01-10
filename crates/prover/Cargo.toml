@@ -47,6 +47,10 @@ name = "sumcheck"
 harness = false
 
 [[bench]]
+name = "batch_quadratic_mle"
+harness = false
+
+[[bench]]
 name = "and_reduction"
 harness = false
 

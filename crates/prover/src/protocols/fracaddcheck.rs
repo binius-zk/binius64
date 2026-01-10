@@ -10,10 +10,10 @@ use binius_utils::rayon::iter::{IntoParallelIterator, ParallelIterator};
 use binius_verifier::protocols::prodcheck::MultilinearEvalClaim;
 
 use crate::protocols::sumcheck::{
-	Error as SumcheckError, MleToSumCheckDecorator,
-	batch::batch_prove_and_write_evals,
-	common::SumcheckProver,
-	frac_add_mle::{FracAddMleCheckProver, FractionalBuffer},
+	Error as SumcheckError,
+	batch::batch_prove_mle_and_write_evals,
+	common::MleCheckProver,
+	frac_add_mle::{self, FractionalBuffer},
 };
 
 /// Prover for the fractional addition protocol.
@@ -55,17 +55,9 @@ where
 	///
 	/// # Preconditions
 	/// * `witness.0.log_len() >= k`
-	pub fn new(
-		k: usize,
-		witness: FractionalBuffer<P>,
-	) -> Result<(Self, FractionalBuffer<P>), Error> {
+	pub fn new(k: usize, witness: FractionalBuffer<P>) -> (Self, FractionalBuffer<P>) {
 		let (witness_num, witness_den) = witness;
-		if witness_num.log_len() != witness_den.log_len() {
-			return Err(Error::MismatchedWitnessLengths {
-				num_log_len: witness_num.log_len(),
-				den_log_len: witness_den.log_len(),
-			});
-		}
+		assert!(witness_num.log_len() == witness_den.log_len());
 		assert!(witness_num.log_len() >= k);
 
 		let mut layers = Vec::with_capacity(k + 1);
@@ -93,7 +85,7 @@ where
 		}
 
 		let sums = layers.pop().expect("layers has k+1 elements");
-		Ok((Self { layers }, sums))
+		(Self { layers }, sums)
 	}
 
 	/// Returns the number of remaining layers to prove.
@@ -109,7 +101,7 @@ where
 	pub fn layer_prover(
 		mut self,
 		claim: (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>),
-	) -> Result<(impl SumcheckProver<F>, Option<Self>), Error> {
+	) -> Result<(impl MleCheckProver<F>, Option<Self>), Error> {
 		let (num_claim, den_claim) = claim;
 		assert_eq!(
 			num_claim.point, den_claim.point,
@@ -124,10 +116,20 @@ where
 			Some(self)
 		};
 
-		let prover =
-			FracAddMleCheckProver::new(layer, &num_claim.point, [num_claim.eval, den_claim.eval])?;
+		let (num, den) = layer;
+		let (num_0, num_1) = num.split_half_ref();
+		let (den_0, den_1) = den.split_half_ref();
+		let num_0 = FieldBuffer::new(num_0.log_len(), num_0.as_ref().into());
+		let num_1 = FieldBuffer::new(num_1.log_len(), num_1.as_ref().into());
+		let den_0 = FieldBuffer::new(den_0.log_len(), den_0.as_ref().into());
+		let den_1 = FieldBuffer::new(den_1.log_len(), den_1.as_ref().into());
+		let prover = frac_add_mle::new(
+			[num_0, num_1, den_0, den_1],
+			num_claim.point.clone(),
+			[num_claim.eval, den_claim.eval],
+		)?;
 
-		Ok((MleToSumCheckDecorator::new(prover), remaining))
+		Ok((prover, remaining))
 	}
 
 	/// Runs the fractional addition check protocol and returns the final evaluation claims.
@@ -156,7 +158,7 @@ where
 			let (sumcheck_prover, remaining) = prover.layer_prover(claim)?;
 			prover_opt = remaining;
 
-			let output = batch_prove_and_write_evals(vec![sumcheck_prover], transcript)?;
+			let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], transcript)?;
 
 			let mut multilinear_evals = output.multilinear_evals;
 			let evals = multilinear_evals.pop().expect("batch contains one prover");
@@ -210,13 +212,12 @@ mod tests {
 		let witness_den = random_field_buffer::<P>(&mut rng, n + k);
 
 		// 2. Create prover (computes fractional-add layers)
-		let (prover, sums) =
-			FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone())).unwrap();
+		let (prover, sums) = FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone()));
 
 		// 3. Generate random n-dimensional challenge point
 		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
 
-		// 4. Evaluate sums at challenge point to create claims
+		// 4. Evaluate sums at challenge point to createzz claims
 		let sum_num_eval = evaluate(&sums.0, &eval_point);
 		let sum_den_eval = evaluate(&sums.1, &eval_point);
 		let prover_claim = (
@@ -278,7 +279,7 @@ mod tests {
 
 		// Create prover (computes fractional-add layers)
 		let (_prover, sums) =
-			FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone())).unwrap();
+			FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone()));
 
 		// For each index i in the sums layer, verify it equals the fractional sum of witness values
 		// at indices i + z * 2^n for z in 0..2^k (strided access, not contiguous)

@@ -1,6 +1,7 @@
 // Copyright 2023-2025 Irreducible Inc.
 
 pub mod batch;
+pub mod batch_quadratic_mle;
 pub mod bivariate_product;
 pub mod bivariate_product_mle;
 pub mod bivariate_product_multi_mle;

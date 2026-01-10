@@ -26,7 +26,7 @@ fn bench_fracaddcheck_new(c: &mut Criterion) {
 			b.iter_batched(
 				|| (witness_num.clone(), witness_den.clone()),
 				|(witness_num, witness_den)| {
-					FracAddCheckProver::<P>::new(k, (witness_num, witness_den)).unwrap()
+					FracAddCheckProver::<P>::new(k, (witness_num, witness_den))
 				},
 				BatchSize::SmallInput,
 			);
@@ -52,7 +52,7 @@ fn bench_fracaddcheck_prove(c: &mut Criterion) {
 
 			// Pre-compute the claim (final sums layer evaluation at empty point).
 			let (_prover, sums) =
-				FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone())).unwrap();
+				FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone()));
 			let sum_num_eval = evaluate(&sums.0, &[]);
 			let sum_den_eval = evaluate(&sums.1, &[]);
 			let claim = (
@@ -71,8 +71,7 @@ fn bench_fracaddcheck_prove(c: &mut Criterion) {
 			b.iter_batched(
 				|| {
 					let (prover, _sums) =
-						FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone()))
-							.unwrap();
+						FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone()));
 					(prover, claim.clone())
 				},
 				|(prover, claim)| prover.prove(claim, &mut transcript).unwrap(),

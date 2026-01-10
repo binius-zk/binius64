@@ -6,7 +6,7 @@
 //! (a0 / b0) + (a1 / b1) = (a0 * b1 + a1 * b0) / (b0 * b1).
 
 use binius_field::Field;
-use binius_math::{line::extrapolate_line_packed, multilinear::eq::eq_ind};
+use binius_math::line::extrapolate_line_packed;
 use binius_transcript::{
 	Error as TranscriptError, VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
@@ -38,15 +38,14 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 		point,
 	} = claim;
 
-	let n_vars = point.len();
-	let sums = [num_eval, den_eval];
+	let evals = [num_eval, den_eval];
 
 	// Reduce numerator and denominator sum claims to evaluations at a challenge point.
 	let BatchSumcheckOutput {
 		batch_coeff,
 		eval,
 		mut challenges,
-	} = sumcheck::batch_verify(n_vars, 3, &sums, transcript)?;
+	} = sumcheck::batch_verify_mle(&point, 2, &evals, transcript)?;
 
 	// Read evaluations of numerator/denominator halves at the reduced point.
 	let [num_0, num_1, den_0, den_1] = transcript.message().read()?;
@@ -55,9 +54,8 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 	challenges.reverse();
 	let reduced_eval_point = challenges;
 
-	let eq_eval = eq_ind(&point, &reduced_eval_point);
-	let numerator_eval = (num_0 * den_1 + num_1 * den_0) * eq_eval;
-	let denominator_eval = (den_0 * den_1) * eq_eval;
+	let numerator_eval = num_0 * den_1 + num_1 * den_0;
+	let denominator_eval = den_0 * den_1;
 	let batched_eval = numerator_eval + denominator_eval * batch_coeff;
 
 	if batched_eval != eval {

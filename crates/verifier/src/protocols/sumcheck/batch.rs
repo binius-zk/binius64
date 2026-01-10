@@ -7,7 +7,10 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 
-use crate::protocols::sumcheck::{self, Error, SumcheckOutput};
+use crate::protocols::{
+	mlecheck,
+	sumcheck::{self, Error, SumcheckOutput},
+};
 
 /// The reduced output of a sumcheck verification.
 ///
@@ -40,10 +43,37 @@ pub fn batch_verify<F: Field, Challenger_: Challenger>(
 	sums: &[F],
 	transcript: &mut VerifierTranscript<Challenger_>,
 ) -> Result<BatchSumcheckOutput<F>, Error> {
+	// Random linear-combination coefficient that binds all sum claims together.
 	let batch_coeff = transcript.sample();
+	// Combine the individual sum claims into a single scalar for sumcheck verification.
 	let sum = evaluate_univariate(sums, batch_coeff);
 
 	let SumcheckOutput { eval, challenges } = sumcheck::verify(n_vars, degree, sum, transcript)?;
+
+	Ok(BatchSumcheckOutput {
+		batch_coeff,
+		challenges,
+		eval,
+	})
+}
+
+/// Verify a batched sumcheck protocol interaction for MLE-checks.
+///
+/// This is the MLE-check analog of [`batch_verify`]: it batches evaluation claims from multiple
+/// MLE-check instances that share a common evaluation point, using a single batching coefficient
+/// and shared verifier challenges to reduce all claims to one scalar verification.
+pub fn batch_verify_mle<F: Field, Challenger_: Challenger>(
+	point: &[F],
+	degree: usize,
+	evals: &[F],
+	transcript: &mut VerifierTranscript<Challenger_>,
+) -> Result<BatchSumcheckOutput<F>, Error> {
+	// Random linear-combination coefficient that binds all eval claims together.
+	let batch_coeff = transcript.sample();
+	// Combine the individual eval claims into a single scalar for MLE-check verification.
+	let eval = evaluate_univariate(evals, batch_coeff);
+
+	let SumcheckOutput { eval, challenges } = mlecheck::verify(point, degree, eval, transcript)?;
 
 	Ok(BatchSumcheckOutput {
 		batch_coeff,
