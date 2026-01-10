@@ -13,7 +13,7 @@ use crate::protocols::sumcheck::{
 	Error as SumcheckError, MleToSumCheckDecorator,
 	batch::batch_prove_and_write_evals,
 	common::SumcheckProver,
-	frac_add_mle::{FracAddMleCheckProver, FractionalBuffer},
+	frac_add_mle::{self, FractionalBuffer},
 };
 
 /// Prover for the fractional addition protocol.
@@ -127,20 +127,17 @@ where
 		let (num, den) = layer;
 		let (num_0, num_1) = num.split_half_ref().unwrap();
 		let (den_0, den_1) = den.split_half_ref().unwrap();
-		let num_0 =
-			FieldBuffer::new(num_0.log_len(), num_0.as_ref().to_vec().into_boxed_slice()).unwrap();
-		let num_1 =
-			FieldBuffer::new(num_1.log_len(), num_1.as_ref().to_vec().into_boxed_slice()).unwrap();
-		let den_0 =
-			FieldBuffer::new(den_0.log_len(), den_0.as_ref().to_vec().into_boxed_slice()).unwrap();
+		let num_0 = FieldBuffer::new(num_0.log_len(), num_0.as_ref().into()).unwrap();
+		let num_1 = FieldBuffer::new(num_1.log_len(), num_1.as_ref().into()).unwrap();
+		let den_0 = FieldBuffer::new(den_0.log_len(), den_0.as_ref().into()).unwrap();
 		let den_1 =
-			FieldBuffer::new(den_1.log_len(), den_1.as_ref().to_vec().into_boxed_slice()).unwrap();
+			FieldBuffer::new(den_1.log_len(), den_1.as_ref().into()).unwrap();
 
 		drop(num);
 		drop(den);
-		let prover = FracAddMleCheckProver::new(
+		let prover = frac_add_mle::new(
 			[num_0, num_1, den_0, den_1],
-			&num_claim.point,
+			num_claim.point.clone(),
 			[num_claim.eval, den_claim.eval],
 		)?;
 
