@@ -17,7 +17,12 @@ use crate::protocols::sumcheck::{
 	round_evals::RoundEvals2,
 };
 
-// Batch quadratic mle check prover for M compositions/claims of N multilinears.
+/// Batch MLE-check prover for M quadratic compositions over N multilinears.
+///
+/// This prover runs a single sumcheck instance that amortizes the work of M independent
+/// quadratic MLE checks by evaluating all compositions in one pass per round. It uses the
+/// same Gruen32-style degree-2 interpolation trick as the single-claim prover but keeps
+/// a vector of claims/round polynomials and folds all multilinears in lockstep.
 pub struct BatchQuadraticMleCheckProver<
 	P: PackedField,
 	Composition,
@@ -25,10 +30,15 @@ pub struct BatchQuadraticMleCheckProver<
 	const N: usize,
 	const M: usize,
 > {
+	// Packed evaluations of the input multilinears; mutated in-place during folding.
 	multilinears: Box<dyn AsSlicesMut<P, N> + Send>,
+	// Full quadratic composition evaluated on the "x = 1" branch for each multilinear.
 	composition: Composition,
+	// Composition restricted to highest-degree terms for the "x = ∞" evaluation (Karatsuba).
 	infinity_composition: InfinityComposition,
+	// State machine storage: last round's evals (execute input) or current coeffs (fold input).
 	last_coeffs_or_eval: RoundCoeffsOrEvals<P::Scalar, M>,
+	// Tracks the eq-indicator expansion and evaluation-point folding across rounds.
 	gruen32: Gruen32<P>,
 }
 
@@ -50,12 +60,15 @@ where
 		let n_vars = eval_point.len();
 		assert!(N > 0 && M > 0);
 		for multilinear in &multilinears.as_slices_mut() {
+			// All multilinears must agree on the number of variables for consistent folding.
 			if multilinear.log_len() != n_vars {
 				return Err(Error::MultilinearSizeMismatch);
 			}
 		}
 
+		// The first execute round consumes the claimed composite evaluations at eval_point.
 		let last_coeffs_or_eval = RoundCoeffsOrEvals::Evals(eval_claims);
+		// Gruen32 owns the eq-indicator expansion tied to eval_point and drives per-round folding.
 		let gruen32 = Gruen32::new(&eval_point);
 
 		Ok(Self {
@@ -68,6 +81,9 @@ where
 	}
 
 	/// Gets mutable slices of the multilinears, truncated to the current number of variables.
+	///
+	/// Truncation keeps the in-place folds consistent with the remaining variables tracked by
+	/// Gruen32 and avoids touching irrelevant higher-dimensional data.
 	fn multilinears_mut(&mut self) -> [FieldSliceMut<'_, P>; N] {
 		let n_vars = self.gruen32.n_vars_remaining();
 		let mut slices = self.multilinears.as_slices_mut();
@@ -105,7 +121,8 @@ where
 		let n_vars_remaining = self.gruen32.n_vars_remaining();
 		assert!(n_vars_remaining > 0);
 
-		// eq_expansion is already folded for the current variable, so it has one fewer var.
+		// eq_expansion corresponds to the equality indicator over the remaining variables,
+		// already folded on the current variable, so it has one fewer dimension.
 		let eq_expansion = self.gruen32.eq_expansion();
 		assert_eq!(eq_expansion.log_len(), n_vars_remaining - 1);
 
@@ -119,7 +136,8 @@ where
 		for slice in &mut multilinears {
 			slice.truncate(n_vars_remaining);
 		}
-		// Split each multilinear into low/high halves for the top variable; each i indexes one row.
+		// Split each multilinear into low/high halves for the top variable:
+		// the low half corresponds to x=0, the high half to x=1.
 		let (splits_0, splits_1) = multilinears
 			.iter()
 			.map(FieldBuffer::split_half_ref)
@@ -131,9 +149,12 @@ where
 		// buffer on each pass, which will evict the latter from the cache. By doing chunked
 		// compute, we reasonably hope that eq chunk always stays in L1 cache.
 		const MAX_CHUNK_VARS: usize = 8;
+		// Choose a chunk width that fits cache while still honoring packed width.
 		let chunk_vars = max(MAX_CHUNK_VARS, P::LOG_WIDTH).min(n_vars_remaining - 1);
 		let chunk_count = 1 << (n_vars_remaining - 1 - chunk_vars);
 
+		// Parallel-reduce across eq chunks to amortize composition evaluation.
+		// Each worker accumulates packed y_1 / y_inf values for all M claims.
 		let packed_prime_evals = (0..chunk_count)
 			.into_par_iter()
 			.try_fold(
@@ -141,6 +162,7 @@ where
 				|mut packed_prime_evals, chunk_index| -> Result<_, Error> {
 					let eq_chunk = eq_expansion.chunk(chunk_vars, chunk_index);
 
+					// Scratch buffers are reused per row to avoid allocations in the hot loop.
 					let [mut y_1_scratch, mut y_inf_scratch] = [[P::default(); M]; 2];
 					let splits_0_chunk = splits_0
 						.iter()
@@ -151,6 +173,7 @@ where
 						.map(|slice| slice.chunk(chunk_vars, chunk_index))
 						.collect::<Vec<_>>();
 
+					// Accumulate packed evals for this chunk; first index is y_1/y_inf.
 					let [y_1, y_inf] = &mut packed_prime_evals;
 					for (idx, &eq_i) in eq_chunk.as_ref().iter().enumerate() {
 						// Gather the idx-th evaluations of every multilinear at both halves.
@@ -161,6 +184,8 @@ where
 							let lo_i = splits_0_chunk[i].as_ref()[idx];
 							let hi_i = splits_1_chunk[i].as_ref()[idx];
 
+							// Compose once with the high half and once with the lo+hi combination.
+							// The lo+hi branch corresponds to evaluation at infinity for multilinears.
 							evals_1[i] = hi_i;
 							evals_inf[i] = lo_i + hi_i;
 						}
@@ -170,6 +195,7 @@ where
 						inf_comp(evals_inf, &mut y_inf_scratch);
 
 						for i in 0..M {
+							// Weight by eq indicator to keep the sumcheck claim aligned to eval_point.
 							y_1[i] += y_1_scratch[i] * eq_i;
 							y_inf[i] += y_inf_scratch[i] * eq_i;
 						}
@@ -191,6 +217,7 @@ where
 			)?;
 
 		// Sample the next coordinate and interpolate each round polynomial.
+		// The coordinate ties this round's sum to the original evaluation point.
 		let alpha = self.gruen32.next_coordinate();
 		let round_coeffs = izip!(
 			last_eval.iter().copied(),
@@ -199,6 +226,7 @@ where
 		)
 		.map(|(sum, y_1, y_inf)| {
 			// Sum packed values into scalars, then interpolate using the expected sum.
+			// sum_scalars collapses packed lanes down to scalar totals for this round.
 			let round_evals = RoundEvals2 { y_1, y_inf }.sum_scalars(n_vars_remaining);
 			round_evals.interpolate_eq(sum, alpha)
 		})
@@ -228,7 +256,7 @@ where
 			thus, n_vars should be > 0"
 		);
 
-		// Evaluate each round polynomial at the verifier's challenge.
+		// Evaluate each round polynomial at the verifier's challenge to form the next sum claim.
 		let evals = prime_coeffs
 			.iter()
 			.map(|coeffs| coeffs.evaluate(challenge))
@@ -236,11 +264,12 @@ where
 			.expect("Will have size M");
 
 		// Fold all multilinears on the highest variable using the same challenge.
+		// This matches the verifier's restriction of the random point.
 		for multilinear in &mut self.multilinears_mut() {
 			fold_highest_var_inplace(multilinear, challenge);
 		}
 
-		// Keep the equality polynomial in sync with the folding.
+		// Keep the equality polynomial in sync with the folding of multilinears.
 		self.gruen32.fold(challenge);
 		// State transition: fold produces evals for the next execute.
 		self.last_coeffs_or_eval = RoundCoeffsOrEvals::Evals(evals);
@@ -259,6 +288,7 @@ where
 		}
 
 		// With no variables remaining, each multilinear has length 1 and can be read directly.
+		// These are the evaluations at the verifier's random point.
 		let multilinear_evals = self
 			.multilinears_mut()
 			.into_iter()

@@ -63,6 +63,7 @@ where
 		return Err(Error::ProverRoundCountMismatch);
 	}
 
+	// Random linear-combination coefficient for batching multiple sum claims.
 	let batch_coeff = transcript.sample();
 
 	let mut challenges = Vec::with_capacity(n_vars);
@@ -70,15 +71,19 @@ where
 		let mut all_round_coeffs = Vec::new();
 
 		for prover in &mut provers {
+			// Each prover emits its round polynomial; we batch across provers.
 			all_round_coeffs.extend(prover.execute()?);
 		}
 
+		// Horner-fold round polynomials into a single batched polynomial.
 		let batched_round_coeffs = all_round_coeffs
 			.into_iter()
 			.rfold(RoundCoeffs::default(), |acc, coeffs| acc * batch_coeff + &coeffs);
 
+		// Truncate to the verifier-visible coefficients for this round.
 		let round_proof = batched_round_coeffs.truncate();
 
+		// Commit to the round polynomial, then sample the next challenge.
 		transcript
 			.message()
 			.write_scalar_slice(round_proof.coeffs());
@@ -86,12 +91,14 @@ where
 		let challenge = transcript.sample();
 		challenges.push(challenge);
 
+		// Fold all provers on the shared challenge to advance the state machine.
 		for prover in &mut provers {
 			prover.fold(challenge)?;
 		}
 	}
 
-	// TODO: this differs from prove_single, which doesn't reverse
+	// TODO: this differs from prove_single, which doesn't reverse.
+	// Reverse to match high-to-low folding order for evaluation points.
 	challenges.reverse();
 
 	let multilinear_evals = provers
@@ -133,11 +140,17 @@ where
 
 	let mut writer = transcript.message();
 	for evals in &output.multilinear_evals {
+		// Preserve per-prover ordering when emitting evaluation claims.
 		writer.write_scalar_slice(evals);
 	}
 	Ok(output)
 }
 
+/// Prove a batched sumcheck for MLE-check provers sharing a common evaluation point.
+///
+/// This is the MLE-check analog of [`batch_prove`]: all provers are [`MleCheckProver`]s and must
+/// agree on the same evaluation point, so the batched protocol can fold every prover with the
+/// same per-round challenge and reduce all evaluation claims via a single batching coefficient.
 pub fn batch_prove_mle<F, MleCheckProver_, Challenger_>(
 	mut provers: Vec<MleCheckProver_>,
 	transcript: &mut ProverTranscript<Challenger_>,
@@ -165,8 +178,10 @@ where
 		.iter()
 		.any(|prover| prover.eval_point() != eval_point)
 	{
+		// All MLE-check provers must share the same evaluation point to batch safely.
 		return Err(Error::EvalPointLengthMismatch);
 	}
+	// Random linear-combination coefficient for batching multiple eval claims.
 	let batch_coeff = transcript.sample();
 
 	let mut challenges = Vec::with_capacity(n_vars);
@@ -174,15 +189,19 @@ where
 		let mut all_round_coeffs = Vec::new();
 
 		for prover in &mut provers {
+			// Each prover emits its round polynomial; we batch across provers.
 			all_round_coeffs.extend(prover.execute()?);
 		}
 
+		// Horner-fold round polynomials into a single batched polynomial.
 		let batched_round_coeffs = all_round_coeffs
 			.into_iter()
 			.rfold(RoundCoeffs::default(), |acc, coeffs| acc * batch_coeff + &coeffs);
 
+		// MLE-check uses a distinct round proof type.
 		let round_proof = mlecheck::RoundProof::truncate(batched_round_coeffs);
 
+		// Commit to the round polynomial, then sample the next challenge.
 		transcript
 			.message()
 			.write_scalar_slice(round_proof.coeffs());
@@ -190,12 +209,14 @@ where
 		let challenge = transcript.sample();
 		challenges.push(challenge);
 
+		// Fold all provers on the shared challenge to advance the state machine.
 		for prover in &mut provers {
 			prover.fold(challenge)?;
 		}
 	}
 
-	// TODO: this differs from prove_single, which doesn't reverse
+	// TODO: this differs from prove_single, which doesn't reverse.
+	// Reverse to match high-to-low folding order for evaluation points.
 	challenges.reverse();
 
 	let multilinear_evals = provers
@@ -222,6 +243,7 @@ where
 
 	let mut writer = transcript.message();
 	for evals in &output.multilinear_evals {
+		// Preserve per-prover ordering when emitting evaluation claims.
 		writer.write_scalar_slice(evals);
 	}
 	Ok(output)
