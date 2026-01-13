@@ -174,8 +174,6 @@ impl<D: Digest + BlockSizeUser + Send + Sync + Clone> ParallelDigest for D {
 
 #[cfg(test)]
 mod tests {
-	use std::iter::repeat_with;
-
 	use binius_utils::rayon::iter::IntoParallelRefIterator;
 	use digest::{
 		FixedOutput, HashMarker, OutputSizeUser, Reset, Update,
@@ -290,15 +288,11 @@ mod tests {
 		data: Vec<Vec<u8>>,
 	) {
 		let parallel_digest = D::new();
-		let mut parallel_results = repeat_with(MaybeUninit::<Output<D::Digest>>::uninit)
-			.take(data.len())
-			.collect::<Vec<_>>();
+		let mut parallel_results = Box::new_uninit_slice(data.len());
 		parallel_digest.digest(data.par_iter(), &mut parallel_results);
 
 		let single_digest_as_parallel = <D::Digest as ParallelDigest>::new();
-		let mut single_results = repeat_with(MaybeUninit::<Output<D::Digest>>::uninit)
-			.take(data.len())
-			.collect::<Vec<_>>();
+		let mut single_results = Box::new_uninit_slice(data.len());
 		single_digest_as_parallel.digest(data.par_iter(), &mut single_results);
 
 		let serial_results = data.iter().map(<D::Digest as Digest>::digest);
