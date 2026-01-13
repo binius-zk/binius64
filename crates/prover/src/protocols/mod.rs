@@ -1,6 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
 mod inout_check;
+pub mod logup;
 pub mod intmul;
 pub mod shift;
 
