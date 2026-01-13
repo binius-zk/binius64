@@ -34,7 +34,7 @@ use binius_frontend::{CircuitBuilder, Wire};
 ///
 /// # Example
 /// Input:  `0x0123456789ABCDEF` (bytes: 01 23 45 67 | 89 AB CD EF)
-/// Output: `0x6745230189ABCDEF` (bytes: 67 45 23 01 | EF CD AB 89)
+/// Output: `0x67452301EFCDAB89` (bytes: 67 45 23 01 | EF CD AB 89)
 pub fn swap_bytes_32(builder: &CircuitBuilder, input: Wire) -> Wire {
 	// Create constant masks for each pass
 	let mask_00ff = builder.add_constant_64(0x00FF00FF00FF00FF);
