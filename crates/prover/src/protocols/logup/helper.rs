@@ -14,7 +14,7 @@ where
 	F: Field,
 {
 	assert_eq!(indices.len(), eq_kernel.len());
-	let mut pushforward = vec![F::ZERO; eq_kernel.len()];
+	let mut pushforward = vec![F::ZERO; table_len];
 	for (&idx, eq_i) in zip(indices.iter(), eq_kernel.iter_scalars()) {
 		assert!(idx < table_len);
 		pushforward[idx] += eq_i
