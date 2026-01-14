@@ -19,11 +19,12 @@ use crate::protocols::{
 /// This struct enscapsulates logic required by the prover for the LogUp* indexed lookup arguement.
 /// It operates in the batch mode by default. Supports N_LOOKUPS into N_TABLES.
 pub struct LogUp<P: PackedField, const N_TABLES: usize, const N_LOOKUPS: usize> {
-	indexes: [FieldBuffer<P>; N_LOOKUPS],
+	fingerprinted_indexes: [FieldBuffer<P>; N_LOOKUPS],
 	table_ids: [usize; N_LOOKUPS],
 	push_forwards: [FieldBuffer<P>; N_LOOKUPS],
 	tables: [FieldBuffer<P>; N_TABLES],
 	eval_point: Vec<P::Scalar>,
+	eq_kernel: FieldBuffer<P>,
 	lookup_evals: [P::Scalar; N_LOOKUPS],
 	fingerprint_scalar: P::Scalar,
 }
@@ -59,21 +60,27 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		let indexes = generate_index_fingerprints(indexes, fingerprint_scalar, max_log_len);
 
 		LogUp {
-			indexes,
+			fingerprinted_indexes: indexes,
 			table_ids,
 			push_forwards,
 			tables,
 			eval_point: eval_point.to_vec(),
+			eq_kernel,
 			fingerprint_scalar,
 			lookup_evals,
 		}
 	}
 
 	/// Proves the outer instance, which reduces the evaluation claim on the lookup values, to that on the pushforward.
-	pub fn prove_pushforward<Challenger_: Challenger, const N_MLES: usize>(
+	pub fn prove_pushforward<
+		Challenger_: Challenger,
+		// N_MLES is the total number of MLEs involved, this is precisely N_LOOKUPS + N_TABLES.
+		const N_MLES: usize,
+	>(
 		&self,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<PushforwardEvalClaims<F>, SumcheckError> {
+		// TODO: Remove implicit assumption of equal table size.
 		assert_eq!(N_TABLES + N_LOOKUPS, N_MLES);
 		let prover = make_pushforward_sumcheck_prover::<P, F, N_TABLES, N_LOOKUPS, N_MLES>(
 			&self.table_ids,
@@ -97,7 +104,12 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	}
 
 	/// Proves the inner instance which is reminiscient of logup gkr, using a binary tree of fractional additions.
-	pub fn prove_log_sum() {}
+	pub fn prove_log_sum<Challenger_: Challenger>(
+		&self,
+		transcript: &mut ProverTranscript<Challenger_>,
+	) {
+		todo!()
+	}
 }
 
 fn build_pushforwards<P: PackedField, const N_TABLES: usize, const N_LOOKUPS: usize>(
