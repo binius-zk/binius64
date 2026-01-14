@@ -13,6 +13,7 @@ use crate::protocols::logup::helper::{generate_index_fingerprints, generate_push
 /// It operates in the batch mode by default. Supports N_LOOKUPS into N_TABLES.
 pub struct LogUp<P: PackedField, const N_TABLES: usize, const N_LOOKUPS: usize> {
 	indexes: [FieldBuffer<P>; N_LOOKUPS],
+	table_ids: [usize; N_LOOKUPS],
 	lookup_values: [FieldBuffer<P>; N_LOOKUPS],
 	push_forwards: [FieldBuffer<P>; N_LOOKUPS],
 	tables: [FieldBuffer<P>; N_TABLES],
@@ -45,20 +46,20 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 
 		LogUp {
 			indexes,
+			table_ids,
 			lookup_values,
 			push_forwards,
 			tables,
 			eval_point: eval_point.to_vec(),
 			fingerprint_scalar,
 		}
-		
 	}
-	
+
 	/// Proves the outer instance, which reduces the evaluation claim on the lookup values, to that on the pushforward.
-	pub fn prove_outer(){}
+	pub fn prove_pushforward() {}
 
 	/// Proves the inner instance which is reminiscient of logup gkr, using a binary tree of fractional additions.
-	pub fn prove_inner(){}
+	pub fn prove_log_sum() {}
 }
 
 fn build_pushforwards<P: PackedField, const N_TABLES: usize, const N_LOOKUPS: usize>(
