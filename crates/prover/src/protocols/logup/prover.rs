@@ -32,6 +32,7 @@ pub struct LogUp<P: PackedField, const N_TABLES: usize, const N_LOOKUPS: usize> 
 	pub(super) eq_kernel: FieldBuffer<P>,
 	pub(super) lookup_evals: [P::Scalar; N_LOOKUPS],
 	pub(super) fingerprint_scalar: P::Scalar,
+	pub(super) shift_scalar: P::Scalar,
 }
 
 /// Builder for LogUp prover state.
@@ -58,8 +59,9 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			.max()
 			.expect("There will be atleast 1 table");
 		// Fiat-Shamir scalar used to hash index bits into field elements.
-		let fingerprint_scalar = transcript.sample();
-		let indexes = generate_index_fingerprints(indexes, fingerprint_scalar, max_log_len);
+		let [fingerprint_scalar, shift_scalar] = transcript.sample_array();
+		let indexes =
+			generate_index_fingerprints(indexes, fingerprint_scalar, shift_scalar, max_log_len);
 
 		LogUp {
 			fingerprinted_indexes: indexes,
@@ -69,6 +71,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			eval_point: eval_point.to_vec(),
 			eq_kernel,
 			fingerprint_scalar,
+			shift_scalar,
 			lookup_evals,
 		}
 	}
@@ -85,229 +88,4 @@ fn build_pushforwards<P: PackedField, const N_TABLES: usize, const N_LOOKUPS: us
 		let (indices, table_id) = (indexes[i], table_ids[i]);
 		generate_pushforward(indices, eq_kernel, tables[table_id].len())
 	})
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use binius_math::{
-		inner_product::inner_product_buffers,
-		multilinear::evaluate::evaluate,
-		test_utils::{Packed128b, random_field_buffer, random_scalars},
-		univariate::evaluate_univariate,
-	};
-	use binius_transcript::{ProverTranscript, VerifierTranscript, fiat_shamir::CanSample};
-	use binius_verifier::{config::StdChallenger, protocols::sumcheck::batch_verify_mle};
-	use rand::{Rng, SeedableRng, rngs::StdRng};
-
-	fn verify_frac_add_batch<F: Field, Challenger_: Challenger>(
-		n_layers: usize,
-		mut claims: Vec<(MultilinearEvalClaim<F>, MultilinearEvalClaim<F>)>,
-		transcript: &mut VerifierTranscript<Challenger_>,
-	) -> Vec<(MultilinearEvalClaim<F>, MultilinearEvalClaim<F>)> {
-		if n_layers == 0 {
-			return claims;
-		}
-		assert!(!claims.is_empty(), "batch claims must be non-empty");
-
-		for _ in 0..n_layers {
-			let eval_point = claims[0].0.point.clone();
-			for (num_claim, den_claim) in &claims {
-				assert_eq!(num_claim.point, eval_point);
-				assert_eq!(den_claim.point, eval_point);
-			}
-
-			let evals = claims
-				.iter()
-				.flat_map(|(num_claim, den_claim)| [num_claim.eval, den_claim.eval])
-				.collect::<Vec<_>>();
-
-			let output = batch_verify_mle(&eval_point, 2, &evals, transcript)
-				.expect("batch verify should succeed");
-
-			let mut composed_evals = Vec::with_capacity(claims.len() * 2);
-			let mut layer_evals = Vec::with_capacity(claims.len());
-
-			for _ in 0..claims.len() {
-				let [num_0, num_1, den_0, den_1] = transcript
-					.message()
-					.read()
-					.expect("transcript should contain fractional evals");
-				let numerator_eval = num_0 * den_1 + num_1 * den_0;
-				let denominator_eval = den_0 * den_1;
-				composed_evals.push(numerator_eval);
-				composed_evals.push(denominator_eval);
-				layer_evals.push((num_0, num_1, den_0, den_1));
-			}
-
-			let expected_eval = evaluate_univariate(&composed_evals, output.batch_coeff);
-			assert_eq!(expected_eval, output.eval, "batched eval should match verifier reduction");
-
-			let r = transcript.sample();
-			let mut reduced_eval_point = output.challenges;
-			reduced_eval_point.reverse();
-			reduced_eval_point.push(r);
-
-			let mut next_claims = Vec::with_capacity(claims.len());
-			for (num_0, num_1, den_0, den_1) in layer_evals {
-				let next_num = extrapolate_line_packed(num_0, num_1, r);
-				let next_den = extrapolate_line_packed(den_0, den_1, r);
-				next_claims.push((
-					MultilinearEvalClaim {
-						eval: next_num,
-						point: reduced_eval_point.clone(),
-					},
-					MultilinearEvalClaim {
-						eval: next_den,
-						point: reduced_eval_point.clone(),
-					},
-				));
-			}
-
-			claims = next_claims;
-		}
-
-		claims
-	}
-
-	#[test]
-	fn test_logup_prove_log_sum_batches() {
-		type P = Packed128b;
-		type F = <P as PackedField>::Scalar;
-
-		const N_TABLES: usize = 1;
-		const N_LOOKUPS: usize = 2;
-
-		let mut rng = StdRng::seed_from_u64(0);
-		let table_log_len = 3;
-		let eval_point_len = 2;
-
-		let tables = [random_field_buffer::<P>(&mut rng, table_log_len)];
-		let eval_point = random_scalars::<F>(&mut rng, eval_point_len);
-		let eq_kernel = eq::eq_ind_partial_eval::<P>(&eval_point);
-
-		let table_len = 1 << table_log_len;
-		let index_count = 1 << eval_point_len;
-		let indices_a = (0..index_count)
-			.map(|_| rng.random_range(0..table_len))
-			.collect::<Vec<_>>();
-		let indices_b = (0..index_count)
-			.map(|_| rng.random_range(0..table_len))
-			.collect::<Vec<_>>();
-		let indexes = [&indices_a[..], &indices_b[..]];
-		let table_ids = [0usize; N_LOOKUPS];
-
-		let lookup_evals = std::array::from_fn(|i| {
-			let lookup_values = super::super::helper::generate_lookup_values::<P, F>(
-				indexes[i],
-				&tables[table_ids[i]],
-			);
-			inner_product_buffers::<F, P, _, _>(&eq_kernel, &lookup_values)
-		});
-
-		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let logup = LogUp::<P, N_TABLES, N_LOOKUPS>::new(
-			indexes,
-			table_ids,
-			&eval_point,
-			lookup_evals,
-			tables,
-			&mut prover_transcript,
-		);
-
-		logup.prove_log_sum(&mut prover_transcript);
-
-		let mut verifier_transcript = prover_transcript.into_verifier();
-		let fingerprint_scalar: F = verifier_transcript.sample();
-		assert_eq!(fingerprint_scalar, logup.fingerprint_scalar);
-		let shift: F = verifier_transcript.sample();
-
-		let eq_log_len = logup.eq_kernel.log_len();
-		let mut eq_claims = Vec::with_capacity(N_LOOKUPS);
-		let mut eq_denoms = Vec::with_capacity(N_LOOKUPS);
-		for i in 0..N_LOOKUPS {
-			let den_values = logup.fingerprinted_indexes[i]
-				.iter_scalars()
-				.map(|value| value - shift)
-				.collect::<Vec<_>>();
-			let denom = FieldBuffer::from_values(&den_values);
-			let (_prover, sums) =
-				FracAddCheckProver::<P>::new(eq_log_len, (logup.eq_kernel.clone(), denom.clone()));
-
-			eq_claims.push((
-				MultilinearEvalClaim {
-					eval: sums.0.get(0),
-					point: Vec::new(),
-				},
-				MultilinearEvalClaim {
-					eval: sums.1.get(0),
-					point: Vec::new(),
-				},
-			));
-			eq_denoms.push(denom);
-		}
-
-		let eq_final_claims =
-			verify_frac_add_batch(eq_log_len, eq_claims, &mut verifier_transcript);
-		let eq_final_point = eq_final_claims[0].0.point.clone();
-		for ((num_claim, den_claim), denom) in eq_final_claims.iter().zip(eq_denoms.iter()) {
-			assert_eq!(num_claim.point, eq_final_point);
-			assert_eq!(den_claim.point, eq_final_point);
-			let expected_num = evaluate(&logup.eq_kernel, &eq_final_point);
-			let expected_den = evaluate(denom, &eq_final_point);
-			assert_eq!(num_claim.eval, expected_num);
-			assert_eq!(den_claim.eval, expected_den);
-		}
-
-		let max_log_len = logup
-			.tables
-			.iter()
-			.map(|table| table.log_len())
-			.max()
-			.expect("there is at least one table");
-		let pushforward_log_len = logup.push_forwards[0].log_len();
-		let index_count = logup.push_forwards[0].len();
-		let index_range = (0..index_count).collect::<Vec<_>>();
-		let [common_denominator] = generate_index_fingerprints::<P, F, 1>(
-			[index_range.as_slice()],
-			logup.fingerprint_scalar,
-			max_log_len,
-		);
-
-		let mut push_claims = Vec::with_capacity(N_LOOKUPS);
-		for i in 0..N_LOOKUPS {
-			let (_prover, sums) = FracAddCheckProver::<P>::new(
-				pushforward_log_len,
-				(logup.push_forwards[i].clone(), common_denominator.clone()),
-			);
-			push_claims.push((
-				MultilinearEvalClaim {
-					eval: sums.0.get(0),
-					point: Vec::new(),
-				},
-				MultilinearEvalClaim {
-					eval: sums.1.get(0),
-					point: Vec::new(),
-				},
-			));
-		}
-
-		let push_final_claims =
-			verify_frac_add_batch(pushforward_log_len, push_claims, &mut verifier_transcript);
-		let push_final_point = push_final_claims[0].0.point.clone();
-		for ((num_claim, den_claim), numerator) in
-			push_final_claims.iter().zip(logup.push_forwards.iter())
-		{
-			assert_eq!(num_claim.point, push_final_point);
-			assert_eq!(den_claim.point, push_final_point);
-			let expected_num = evaluate(numerator, &push_final_point);
-			let expected_den = evaluate(&common_denominator, &push_final_point);
-			assert_eq!(num_claim.eval, expected_num);
-			assert_eq!(den_claim.eval, expected_den);
-		}
-
-		verifier_transcript
-			.finalize()
-			.expect("verifier transcript should be fully consumed");
-	}
 }

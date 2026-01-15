@@ -66,6 +66,7 @@ where
 pub fn generate_index_fingerprints<P: PackedField<Scalar = F>, F: Field, const N_LOOKUPS: usize>(
 	indices: [&[usize]; N_LOOKUPS],
 	fingerprint_scalar: F,
+	shift_scalar: F,
 	max_table_log_len: usize,
 ) -> [FieldBuffer<P>; N_LOOKUPS] {
 	// Indices are usize, so only the lowest usize::BITS can ever contribute.
@@ -103,7 +104,7 @@ pub fn generate_index_fingerprints<P: PackedField<Scalar = F>, F: Field, const N
 			.iter()
 			.map(|&index| {
 				// Sum per-byte contributions of the index's set bits.
-				let mut acc = F::ZERO;
+				let mut acc = shift_scalar;
 				let mut remaining = index;
 				for table in chunk_tables.iter() {
 					let byte = remaining & CHUNK_MASK;

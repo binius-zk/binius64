@@ -8,10 +8,39 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 use binius_verifier::protocols::fracaddcheck::FracAddEvalClaim;
+use itertools::Itertools;
 
 impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUPS: usize>
 	LogUp<P, N_TABLES, N_LOOKUPS>
 {
+	fn tree_sums_to_claims(
+		sums: Vec<(FieldBuffer<P>, FieldBuffer<P>)>,
+	) -> Vec<FracAddEvalClaim<F>> {
+		sums.into_iter()
+			.map(|(num, den)| FracAddEvalClaim {
+				num_eval: num.get(0),
+				den_eval: den.get(0),
+				point: Vec::new(),
+			})
+			.collect()
+	}
+
+	fn common_denominator(
+		log_len: usize,
+		index_count: usize,
+		fingerprint_scalar: F,
+		shift_scalar: F,
+	) -> FieldBuffer<P> {
+		let index_range = (0..index_count).collect::<Vec<_>>();
+		let [common_denominator] = generate_index_fingerprints::<P, F, 1>(
+			[index_range.as_slice()],
+			fingerprint_scalar,
+			shift_scalar,
+			log_len,
+		);
+		common_denominator
+	}
+
 	/// Proves the log-sum instance using batched fractional-addition trees.
 	///
 	/// Two batches are produced:
@@ -21,85 +50,52 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	pub fn prove_log_sum<Challenger_: Challenger>(
 		&self,
 		transcript: &mut ProverTranscript<Challenger_>,
-	) {
-		let shift: F = transcript.sample();
-
+	) -> Result<(Vec<FracAddEvalClaim<F>>, Vec<FracAddEvalClaim<F>>), _> {
 		let eq_log_len = self.eq_kernel.log_len();
-		let mut eq_witnesses = Vec::with_capacity(N_LOOKUPS);
-		let base_point = Vec::new();
 
-		for i in 0..N_LOOKUPS {
-			assert_eq!(
-				self.fingerprinted_indexes[i].log_len(),
-				eq_log_len,
-				"fingerprinted index length must match eq kernel length"
-			);
+		assert!(eq_log_len == self.fingerprinted_indexes[0].log_len());
 
-			let den_values = self.fingerprinted_indexes[i]
-				.iter_scalars()
-				.map(|value| value - shift)
-				.collect::<Vec<_>>();
-			let denom = FieldBuffer::from_values(&den_values);
+		assert!(
+			self.fingerprinted_indexes
+				.iter()
+				.map(FieldBuffer::log_len)
+				.all_equal()
+		);
 
-			eq_witnesses.push((self.eq_kernel.clone(), denom));
-		}
+		let eq_witnesses = self
+			.fingerprinted_indexes
+			.iter()
+			.map(|idx| (self.eq_kernel.clone(), idx.clone()))
+			.collect::<Vec<_>>();
 
 		let (eq_prover, eq_sums) = BatchFracAddCheckProver::<P>::new(eq_log_len, eq_witnesses);
-
-		let eq_claims = eq_sums
-			.into_iter()
-			.map(|(num, den)| FracAddEvalClaim {
-				num_eval: num.get(0),
-				den_eval: den.get(0),
-				point: base_point.clone(),
-			})
-			.collect();
-		eq_prover
+		let eq_claims = Self::tree_sums_to_claims(eq_sums);
+		let eq_output = eq_prover
 			.prove(eq_claims, transcript)
 			.expect("batched fractional-add prover should succeed");
 
-		let max_log_len = self
-			.tables
-			.iter()
-			.map(|table| table.log_len())
-			.max()
-			.expect("there is at least one table");
-		let pushforward_log_len = self.push_forwards[0].log_len();
-		for pushforward in &self.push_forwards[1..] {
-			assert_eq!(
-				pushforward.log_len(),
-				pushforward_log_len,
-				"pushforward lengths must match across the batch"
-			);
-		}
-
-		let index_count = self.push_forwards[0].len();
-		let index_range = (0..index_count).collect::<Vec<_>>();
-		let [common_denominator] = generate_index_fingerprints::<P, F, 1>(
-			[index_range.as_slice()],
+		let common_denominator = Self::common_denominator(
+			eq_log_len,
+			self.push_forwards[0].len(),
 			self.fingerprint_scalar,
-			max_log_len,
+			self.shift_scalar,
 		);
 
-		let mut push_witnesses = Vec::with_capacity(N_LOOKUPS);
-
-		for i in 0..N_LOOKUPS {
-			push_witnesses.push((self.push_forwards[i].clone(), common_denominator.clone()));
-		}
+		let push_witnesses = self
+			.push_forwards
+			.iter()
+			.cloned()
+			.map(|push_forward| (push_forward, common_denominator.clone()))
+			.collect();
 
 		let (push_prover, push_sums) =
-			BatchFracAddCheckProver::<P>::new(pushforward_log_len, push_witnesses);
+			BatchFracAddCheckProver::<P>::new(eq_log_len, push_witnesses);
+		let push_claims = Self::tree_sums_to_claims(push_sums);
 
-		let push_claims = push_sums
-			.into_iter()
-			.map(|(num, den)| FracAddEvalClaim {
-				num_eval: num.get(0),
-				den_eval: den.get(0),
-				point: base_point.clone(),
-			})
-			.collect();
-		push_prover
+		let push_output = push_prover
 			.prove(push_claims, transcript)
 			.expect("batched fractional-add prover should succeed");
+
+		Ok((eq_output, push_output))
 	}
 }

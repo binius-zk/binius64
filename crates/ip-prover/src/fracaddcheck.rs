@@ -2,9 +2,14 @@
 
 use std::iter::zip;
 
+use crate::sumcheck::{
+	Error as SumcheckError,
+	batch::batch_prove_mle_and_write_evals,
+	common::MleCheckProver,
+	frac_add_mle::{self, FractionalBuffer},
+};
 use binius_field::{Field, PackedField};
 use binius_ip::fracaddcheck::FracAddEvalClaim;
-use binius_ip::prodcheck::MultilinearEvalClaim;
 use binius_math::{FieldBuffer, line::extrapolate_line_packed};
 use binius_transcript::{
 	ProverTranscript,
@@ -12,13 +17,6 @@ use binius_transcript::{
 };
 use binius_utils::rayon::iter::{IntoParallelIterator, ParallelIterator};
 use itertools::Itertools;
-
-use crate::sumcheck::{
-	Error as SumcheckError,
-	batch::batch_prove_mle_and_write_evals,
-	common::MleCheckProver,
-	frac_add_mle::{self, FractionalBuffer},
-};
 
 /// Prover for the fractional addition protocol.
 ///
@@ -224,14 +222,10 @@ where
 
 	/// Creates a batched prover from multiple witnesses, returning final layer sums for each.
 	pub fn new(k: usize, witnesses: Vec<FractionalBuffer<P>>) -> (Self, Vec<FractionalBuffer<P>>) {
-		let mut provers = Vec::with_capacity(witnesses.len());
-		let mut sums = Vec::with_capacity(witnesses.len());
-
-		for witness in witnesses {
-			let (prover, sum) = FracAddCheckProver::new(k, witness);
-			provers.push(prover);
-			sums.push(sum);
-		}
+		let (provers, sums) = witnesses
+			.into_iter()
+			.map(|witness| FracAddCheckProver::new(k, witness))
+			.collect();
 
 		(Self { provers }, sums)
 	}
