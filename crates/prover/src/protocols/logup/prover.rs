@@ -1,22 +1,58 @@
 use binius_field::{Field, PackedField};
-use binius_math::{FieldBuffer, line::extrapolate_line_packed, multilinear::eq};
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
-use binius_verifier::protocols::prodcheck::MultilinearEvalClaim;
-use itertools::Itertools;
-use std::{array, iter::chain};
+use binius_math::FieldBuffer;
+use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
+use binius_verifier::protocols::logup::LogUpLookupClaims;
+use std::array;
 
-use crate::protocols::fracaddcheck::FracAddCheckProver;
-use crate::protocols::sumcheck::{
-	Error as SumcheckError, batch::BatchSumcheckOutput,
-	batch_quadratic::BatchQuadraticSumcheckProver,
-};
 use crate::protocols::{
-	logup::helper::{generate_index_fingerprints, generate_pushforward},
-	sumcheck::batch::{batch_prove_and_write_evals, batch_prove_mle_and_write_evals},
+	fracaddcheck,
+	logup::{LogUp, helper::generate_pushforward},
+	sumcheck::Error as SumcheckError,
 };
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+	#[error("sumcheck error: {0}")]
+	Sumcheck(#[from] SumcheckError),
+	#[error("fractional-addition check error: {0}")]
+	FracAddCheck(#[from] fracaddcheck::Error),
+}
+
+impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUPS: usize>
+	LogUp<P, N_TABLES, N_LOOKUPS>
+{
+	/// Runs the full LogUp proving flow and returns per-lookup claims.
+	pub fn prove_lookup<Challenger_: Challenger, const N_MLES: usize>(
+		&self,
+		transcript: &mut ProverTranscript<Challenger_>,
+	) -> Result<Vec<LogUpLookupClaims<F>>, Error> {
+		assert!(N_MLES == N_TABLES + N_LOOKUPS);
+
+		let pushforward_claims = self.prove_pushforward::<Challenger_, N_MLES>(transcript)?;
+		let (eq_claims, push_claims) = self.prove_log_sum(transcript)?;
+
+		assert_eq!(pushforward_claims.pushforward_evals.len(), N_LOOKUPS);
+		assert_eq!(eq_claims.len(), N_LOOKUPS);
+		assert_eq!(push_claims.len(), N_LOOKUPS);
+
+		let mut claims = Vec::with_capacity(N_LOOKUPS);
+		for (lookup_idx, (eq_frac_claim, push_frac_claim)) in
+			eq_claims.into_iter().zip(push_claims).enumerate()
+		{
+			let table_id = self.table_ids[lookup_idx];
+			let table_eval = pushforward_claims.table_evals[table_id];
+			claims.push(LogUpLookupClaims {
+				table_id,
+				pushforward_eval: pushforward_claims.pushforward_evals[lookup_idx],
+				table_eval,
+				eq_frac_claim,
+				push_frac_claim,
+			});
+		}
+
+		Ok(claims)
+	}
+}
 
 /// Builds pushforward tables for each lookup batch.
 pub fn build_pushforwards<P: PackedField, const N_TABLES: usize, const N_LOOKUPS: usize>(

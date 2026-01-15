@@ -46,10 +46,15 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	/// 1. `eq_kernel / (fingerprinted_index - shift)` for each lookup.
 	/// 2. `push_forward / common_denominator`, where the denominator is the
 	///    fingerprint of indices `0..len(push_forward)`.
+	///
+	/// Returns the top-layer fractional-sum claims for verifier consumption.
 	pub fn prove_log_sum<Challenger_: Challenger>(
 		&self,
 		transcript: &mut ProverTranscript<Challenger_>,
-	) -> Result<(Vec<FracAddEvalClaim<F>>, Vec<FracAddEvalClaim<F>>), _> {
+	) -> Result<
+		(Vec<FracAddEvalClaim<F>>, Vec<FracAddEvalClaim<F>>),
+		crate::protocols::fracaddcheck::Error,
+	> {
 		let eq_log_len = self.eq_kernel.log_len();
 
 		assert!(eq_log_len == self.fingerprinted_indexes[0].log_len());
@@ -69,9 +74,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 
 		let (eq_prover, eq_sums) = BatchFracAddCheckProver::<P>::new(eq_log_len, eq_witnesses);
 		let eq_claims = Self::tree_sums_to_claims(eq_sums);
-		let eq_output = eq_prover
-			.prove(eq_claims, transcript)
-			.expect("batched fractional-add prover should succeed");
+		eq_prover.prove(eq_claims.clone(), transcript)?;
 
 		let common_denominator = Self::common_denominator(
 			eq_log_len,
@@ -91,10 +94,8 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			BatchFracAddCheckProver::<P>::new(eq_log_len, push_witnesses);
 		let push_claims = Self::tree_sums_to_claims(push_sums);
 
-		let push_output = push_prover
-			.prove(push_claims, transcript)
-			.expect("batched fractional-add prover should succeed");
+		push_prover.prove(push_claims.clone(), transcript)?;
 
-		Ok((eq_output, push_output))
+		Ok((eq_claims, push_claims))
 	}
 }
