@@ -3,7 +3,10 @@ use std::iter::{self, zip};
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, FieldSlice};
 
-// Generates a pushforward given the eq kernel for the evaluation point of the lookup value multilinear and the slice of indices.
+/// Builds a pushforward table by accumulating `eq_kernel` values at lookup indices.
+///
+/// The output has length `table_len` and is zero everywhere except at indices
+/// referenced by `indices`, where the corresponding `eq_kernel` values are added.
 pub fn generate_pushforward<P, F>(
 	indices: &[usize],
 	eq_kernel: &FieldBuffer<P>,
@@ -23,6 +26,7 @@ where
 	FieldBuffer::from_values(&pushforward)
 }
 
+/// Collects lookup values from a table at the specified indices.
 pub fn generate_lookup_values<P, F>(indices: &[usize], table: &FieldBuffer<P>) -> FieldBuffer<P>
 where
 	P: PackedField<Scalar = F>,
@@ -115,6 +119,10 @@ pub fn generate_index_fingerprints<P: PackedField<Scalar = F>, F: Field, const N
 		FieldBuffer::from_values(&values)
 	})
 }
+
+/// Holds bit-level MLEs for a lookup index representation.
+///
+/// Each entry corresponds to a multilinear polynomial for one bit position.
 pub struct Index<'a, P: PackedField, const N_BITS: usize> {
 	pub bit_wise_mles: [FieldSlice<'a, P>; N_BITS],
 }

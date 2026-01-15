@@ -6,7 +6,7 @@
 //! (a0 / b0) + (a1 / b1) = (a0 * b1 + a1 * b0) / (b0 * b1).
 
 use binius_field::Field;
-use binius_math::line::extrapolate_line_packed;
+use binius_math::{line::extrapolate_line_packed, univariate::evaluate_univariate};
 use binius_transcript::{
 	Error as TranscriptError, VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
@@ -81,6 +81,75 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 	)
 }
 
+pub fn verify_batch<F: Field, Challenger_: Challenger>(
+	k: usize,
+	claims: Vec<FracAddEvalClaim<F>>,
+	transcript: &mut VerifierTranscript<Challenger_>,
+) -> Result<Vec<FracAddEvalClaim<F>>, Error> {
+	if k == 0 || claims.is_empty() {
+		return Ok(claims);
+	}
+
+	let mut claims = claims;
+
+	for round in (1..=k).rev() {
+		let eval_point = claims[0].point.clone();
+		if !claims.iter().all(|claim| claim.point == eval_point) {
+			return Err(VerificationError::BatchPointMismatch.into());
+		}
+
+		let evals = claims
+			.iter()
+			.flat_map(|claim| [claim.num_eval, claim.den_eval])
+			.collect::<Vec<_>>();
+
+		let BatchSumcheckOutput {
+			batch_coeff,
+			eval,
+			mut challenges,
+		} = sumcheck::batch_verify_mle(&eval_point, 2, &evals, transcript)?;
+
+		let mut layer_evals = Vec::with_capacity(claims.len());
+		let mut composed_evals = Vec::with_capacity(claims.len() * 2);
+
+		for _ in 0..claims.len() {
+			let [num_0, num_1, den_0, den_1] = transcript.message().read()?;
+			let numerator_eval = num_0 * den_1 + num_1 * den_0;
+			let denominator_eval = den_0 * den_1;
+			composed_evals.push(numerator_eval);
+			composed_evals.push(denominator_eval);
+			layer_evals.push((num_0, num_1, den_0, den_1));
+		}
+
+		let expected_eval = evaluate_univariate(&composed_evals, batch_coeff);
+		if expected_eval != eval {
+			return Err(VerificationError::IncorrectLayerFractionSumEvaluation { round }.into());
+		}
+
+		// Sumcheck binds variables high-to-low; reverse to low-to-high for point evaluation.
+		challenges.reverse();
+		let mut reduced_eval_point = challenges;
+
+		let r = transcript.sample();
+		reduced_eval_point.push(r);
+
+		let mut next_claims = Vec::with_capacity(claims.len());
+		for (num_0, num_1, den_0, den_1) in layer_evals {
+			let next_num = extrapolate_line_packed(num_0, num_1, r);
+			let next_den = extrapolate_line_packed(den_0, den_1, r);
+			next_claims.push(FracAddEvalClaim {
+				num_eval: next_num,
+				den_eval: next_den,
+				point: reduced_eval_point.clone(),
+			});
+		}
+
+		claims = next_claims;
+	}
+
+	Ok(claims)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
 	#[error("sumcheck error: {0}")]
@@ -117,6 +186,8 @@ pub enum VerificationError {
 	IncorrectLayerFractionSumEvaluation { round: usize },
 	#[error("incorrect round evaluation: {round}")]
 	IncorrectRoundEvaluation { round: usize },
+	#[error("batch claims must share the evaluation point")]
+	BatchPointMismatch,
 	#[error("transcript is empty")]
 	TranscriptIsEmpty,
 }
