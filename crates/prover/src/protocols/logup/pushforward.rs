@@ -8,11 +8,11 @@ use binius_verifier::protocols::prodcheck::MultilinearEvalClaim;
 use itertools::Itertools;
 use std::{array, iter::chain};
 
+use crate::protocols::logup::LogUp;
 use crate::protocols::sumcheck::{
 	Error as SumcheckError, batch::BatchSumcheckOutput,
 	batch_quadratic::BatchQuadraticSumcheckProver,
 };
-use crate::protocols::{fracaddcheck::FracAddCheckProver, logup::prover::LogUp};
 use crate::protocols::{
 	logup::helper::{generate_index_fingerprints, generate_pushforward},
 	sumcheck::batch::{batch_prove_and_write_evals, batch_prove_mle_and_write_evals},
@@ -40,6 +40,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	) -> Result<PushforwardEvalClaims<F>, SumcheckError> {
 		// TODO: Remove implicit assumption of equal table size.
 		assert_eq!(N_TABLES + N_LOOKUPS, N_MLES);
+		// Build a single quadratic sumcheck that ties each lookup batch to its table.
 		let prover = make_pushforward_sumcheck_prover::<P, F, N_TABLES, N_LOOKUPS, N_MLES>(
 			&self.table_ids,
 			&self.tables,
@@ -53,6 +54,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		} = batch_prove_and_write_evals(vec![prover], transcript)?;
 
 		let (pushforward_evals, table_evals) = multilinear_evals[0].split_at(N_LOOKUPS);
+		// The batch MLE order is [pushforwards..., tables...], so split accordingly.
 
 		Ok(PushforwardEvalClaims {
 			challenges,
@@ -92,11 +94,13 @@ fn make_pushforward_sumcheck_prover<
 
 	let pushforward_composition = |mle_evals: [P; N_MLES], comp_evals: &mut [P; N_LOOKUPS]| {
 		// Enforce pushforward[i] * table[table_id[i]] at each lookup slot.
+		// The table index depends on the lookup batch, not on the MLE position.
 		let (pushforwards, tables) = mle_evals.split_at(N_LOOKUPS);
 		for i in 0..N_LOOKUPS {
 			comp_evals[i] = pushforwards[i] * tables[table_ids[i]]
 		}
 	};
+	// The composition is purely quadratic, so the infinity composition matches the regular one.
 	BatchQuadraticSumcheckProver::new(
 		mles,
 		pushforward_composition,

@@ -42,26 +42,23 @@ where
 
 /// Computes per-index fingerprints for multiple lookup index arrays.
 ///
-/// Each index is mapped to a field element by summing `fingerprint_scalar^bit`
-/// over all set bits in the index. This is effectively a linear hash of the
-/// binary representation of the index with base `fingerprint_scalar`.
+/// Each index is mapped to:
+/// `shift_scalar + sum_{bit set in index} fingerprint_scalar^bit`
+/// over bit positions `0..effective_log_len`, where
+/// `effective_log_len = min(max_table_log_len, usize::BITS)`.
 ///
-/// Inputs:
-/// - `indices`: `N_LOOKUPS` slices of indices to fingerprint.
-/// - `fingerprint_scalar`: base used for per-bit powers.
-/// - `max_table_log_len`: maximum number of bits to consider (usually a table
-///   log-length); the effective length is clamped to `usize::BITS`.
+/// This yields a linear hash of the binary representation of the index with
+/// base `fingerprint_scalar`, plus an additive offset `shift_scalar`.
 ///
 /// Algorithm:
-/// - Precompute the powers `fingerprint_scalar^bit` for each bit position.
-/// - Build per-byte lookup tables (256 entries) that sum the contributions of
-///   the bits in a byte.
+/// - Precompute per-bit powers of `fingerprint_scalar`.
+/// - Group powers into byte-sized chunks and build 256-entry lookup tables.
 /// - For each index, scan bytes from least significant to most significant and
-///   accumulate the precomputed contributions, stopping once the remaining
-///   bits are zero.
+///   accumulate the table contributions (plus the shift), stopping once the
+///   remaining bits are zero.
 ///
 /// Notes:
-/// - The fingerprint only depends on the lowest `effective_log_len` bits.
+/// - Only the lowest `effective_log_len` bits contribute to the fingerprint.
 /// - The per-byte tables avoid per-bit branching in the hot loop.
 pub fn generate_index_fingerprints<P: PackedField<Scalar = F>, F: Field, const N_LOOKUPS: usize>(
 	indices: [&[usize]; N_LOOKUPS],
@@ -69,56 +66,57 @@ pub fn generate_index_fingerprints<P: PackedField<Scalar = F>, F: Field, const N
 	shift_scalar: F,
 	max_table_log_len: usize,
 ) -> [FieldBuffer<P>; N_LOOKUPS] {
-	// Indices are usize, so only the lowest usize::BITS can ever contribute.
+	// Indices are usize, so only the lowest usize::BITS can contribute.
 	let effective_log_len = max_table_log_len.min(usize::BITS as usize);
-	// Precompute fingerprint_scalar^bit for each possible bit position.
-	let powers = iter::successors(Some(F::ONE), |&prev| Some(prev * fingerprint_scalar))
+	let bit_powers = iter::successors(Some(F::ONE), |&prev| Some(prev * fingerprint_scalar))
 		.take(effective_log_len)
 		.collect::<Vec<_>>();
-
-	const CHUNK_BITS: usize = 8;
-	const CHUNK_SIZE: usize = 1 << CHUNK_BITS;
-	const CHUNK_MASK: usize = CHUNK_SIZE - 1;
-
-	// Build per-byte lookup tables so each index is reduced a byte at a time.
-	let chunk_tables = powers
-		.chunks(CHUNK_BITS)
-		.map(|chunk| {
-			let mut bit_powers = [F::ZERO; CHUNK_BITS];
-			for (bit, &power) in chunk.iter().enumerate() {
-				bit_powers[bit] = power;
-			}
-
-			// table[value] = sum of bit_powers for all set bits in value.
-			let mut table = vec![F::ZERO; CHUNK_SIZE];
-			for value in 1usize..CHUNK_SIZE {
-				let bit = value.trailing_zeros() as usize;
-				table[value] = table[value & (value - 1)] + bit_powers[bit];
-			}
-			table
-		})
-		.collect::<Vec<_>>();
+	let byte_tables = build_byte_tables(&bit_powers);
 
 	std::array::from_fn(|lookup_idx| {
 		let values = indices[lookup_idx]
 			.iter()
-			.map(|&index| {
-				// Sum per-byte contributions of the index's set bits.
-				let mut acc = shift_scalar;
-				let mut remaining = index;
-				for table in chunk_tables.iter() {
-					let byte = remaining & CHUNK_MASK;
-					acc += table[byte];
-					remaining >>= CHUNK_BITS;
-					if remaining == 0 {
-						break;
-					}
-				}
-				acc
-			})
+			.map(|&index| fingerprint_index(index, shift_scalar, &byte_tables))
 			.collect::<Vec<_>>();
 		FieldBuffer::from_values(&values)
 	})
+}
+
+const BYTE_BITS: usize = 8;
+const BYTE_SIZE: usize = 1 << BYTE_BITS;
+const BYTE_MASK: usize = BYTE_SIZE - 1;
+
+fn build_byte_tables<F: Field>(bit_powers: &[F]) -> Vec<[F; BYTE_SIZE]> {
+	bit_powers
+		.chunks(BYTE_BITS)
+		.map(|chunk| {
+			let mut chunk_powers = [F::ZERO; BYTE_BITS];
+			for (bit, &power) in chunk.iter().enumerate() {
+				chunk_powers[bit] = power;
+			}
+
+			let mut table = [F::ZERO; BYTE_SIZE];
+			for value in 1usize..BYTE_SIZE {
+				let bit = value.trailing_zeros() as usize;
+				table[value] = table[value & (value - 1)] + chunk_powers[bit];
+			}
+			table
+		})
+		.collect()
+}
+
+fn fingerprint_index<F: Field>(index: usize, shift_scalar: F, byte_tables: &[[F; BYTE_SIZE]]) -> F {
+	let mut acc = shift_scalar;
+	let mut remaining = index;
+	for table in byte_tables.iter() {
+		let byte = remaining & BYTE_MASK;
+		acc += table[byte];
+		remaining >>= BYTE_BITS;
+		if remaining == 0 {
+			break;
+		}
+	}
+	acc
 }
 
 /// Holds bit-level MLEs for a lookup index representation.

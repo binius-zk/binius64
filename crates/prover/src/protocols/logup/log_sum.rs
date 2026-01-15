@@ -1,6 +1,5 @@
-use crate::protocols::fracaddcheck::BatchFracAddCheckProver;
 use crate::protocols::logup::helper::generate_index_fingerprints;
-use crate::protocols::logup::prover::LogUp;
+use crate::protocols::{fracaddcheck::BatchFracAddCheckProver, logup::LogUp};
 use binius_field::{Field, PackedField};
 use binius_math::FieldBuffer;
 use binius_transcript::{
