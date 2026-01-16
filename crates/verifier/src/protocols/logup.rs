@@ -14,12 +14,18 @@ use crate::protocols::{
 	sumcheck::{self, BatchSumcheckOutput},
 };
 
+/// Per-lookup claims emitted by the prover and consumed by the verifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogUpLookupClaims<F: Field> {
+	/// Lookup table identifier used to pick the corresponding table evaluation.
 	pub table_id: usize,
+	/// Evaluation of the pushforward multilinear at the verifier's challenge point.
 	pub pushforward_eval: F,
+	/// Evaluation of the table multilinear at the verifier's challenge point.
 	pub table_eval: F,
+	/// Fractional-addition claim for the eq-kernel numerator/denominator tree.
 	pub eq_frac_claim: FracAddEvalClaim<F>,
+	/// Fractional-addition claim for the pushforward numerator/denominator tree.
 	pub push_frac_claim: FracAddEvalClaim<F>,
 }
 
@@ -35,6 +41,7 @@ pub fn verify_lookup<F: Field, Challenger_: Challenger>(
 	lookup_claims: &[LogUpLookupClaims<F>],
 	transcript: &mut VerifierTranscript<Challenger_>,
 ) -> Result<(), Error> {
+	// Match the prover's Fiat-Shamir sampling performed during `LogUp::new`.
 	let [_fingerprint_scalar, _shift_scalar]: [F; 2] = transcript.sample_array();
 
 	if lookup_claims.len() != lookup_evals.len() {
@@ -83,6 +90,7 @@ pub fn verify_lookup<F: Field, Challenger_: Challenger>(
 		}
 	}
 
+	// Recompute the batched quadratic composition at the verifier's point.
 	let expected_terms = lookup_claims
 		.iter()
 		.enumerate()
@@ -93,6 +101,7 @@ pub fn verify_lookup<F: Field, Challenger_: Challenger>(
 		return Err(VerificationError::PushforwardCompositionMismatch.into());
 	}
 
+	// Each lookup must satisfy the log-sum equality of fraction claims.
 	for (index, claim) in lookup_claims.iter().enumerate() {
 		let eq = &claim.eq_frac_claim;
 		let push = &claim.push_frac_claim;
@@ -101,6 +110,7 @@ pub fn verify_lookup<F: Field, Challenger_: Challenger>(
 		}
 	}
 
+	// Drive batched fractional-addition checks for the two reduction trees.
 	let eq_claims = lookup_claims
 		.iter()
 		.map(|claim| claim.eq_frac_claim.clone())
@@ -116,6 +126,7 @@ pub fn verify_lookup<F: Field, Challenger_: Challenger>(
 	Ok(())
 }
 
+/// Reads a fixed-length scalar slice from the transcript.
 fn read_scalar_slice<F: Field, C: Challenger>(
 	transcript: &mut VerifierTranscript<C>,
 	len: usize,
@@ -123,6 +134,7 @@ fn read_scalar_slice<F: Field, C: Challenger>(
 	Ok(transcript.message().read_scalar_slice::<F>(len)?)
 }
 
+/// Errors returned by the LogUp verifier.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
 	#[error("sumcheck error: {0}")]
@@ -135,6 +147,7 @@ pub enum Error {
 	Verification(#[from] VerificationError),
 }
 
+/// Verification-specific failures for LogUp.
 #[derive(Debug, thiserror::Error)]
 pub enum VerificationError {
 	#[error("lookup eval count mismatch: claims {claims}, evals {evals}")]

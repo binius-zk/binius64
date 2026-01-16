@@ -6,6 +6,8 @@ pub mod helper;
 pub mod log_sum;
 pub mod prover;
 pub mod pushforward;
+#[cfg(test)]
+mod tests;
 
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, line::extrapolate_line_packed, multilinear::eq};

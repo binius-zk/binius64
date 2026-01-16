@@ -12,6 +12,7 @@ use itertools::Itertools;
 impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUPS: usize>
 	LogUp<P, N_TABLES, N_LOOKUPS>
 {
+	/// Converts the top layer of each frac-add tree into evaluation claims.
 	fn tree_sums_to_claims(
 		sums: Vec<(FieldBuffer<P>, FieldBuffer<P>)>,
 	) -> Vec<FracAddEvalClaim<F>> {
@@ -30,6 +31,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		fingerprint_scalar: F,
 		shift_scalar: F,
 	) -> FieldBuffer<P> {
+		// Build a fingerprinted table for indices 0..index_count-1.
 		let index_range = (0..index_count).collect::<Vec<_>>();
 		let [common_denominator] = generate_index_fingerprints::<P, F, 1>(
 			[index_range.as_slice()],

@@ -10,6 +10,7 @@ use crate::protocols::{
 	sumcheck::Error as SumcheckError,
 };
 
+/// Errors that can arise while proving the LogUp lookup batch.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
 	#[error("sumcheck error: {0}")]
@@ -22,13 +23,20 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	LogUp<P, N_TABLES, N_LOOKUPS>
 {
 	/// Runs the full LogUp proving flow and returns per-lookup claims.
+	///
+	/// The output is ordered to match the lookup ordering in the `LogUp` instance.
+	///
+	/// # Preconditions
+	/// * `N_MLES == N_TABLES + N_LOOKUPS`.
 	pub fn prove_lookup<Challenger_: Challenger, const N_MLES: usize>(
 		&self,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<Vec<LogUpLookupClaims<F>>, Error> {
 		assert!(N_MLES == N_TABLES + N_LOOKUPS);
 
+		// Reduce lookup evaluations to pushforward/table evaluations.
 		let pushforward_claims = self.prove_pushforward::<Challenger_, N_MLES>(transcript)?;
+		// Prove log-sum consistency for eq-kernel and pushforward trees.
 		let (eq_claims, push_claims) = self.prove_log_sum(transcript)?;
 
 		assert_eq!(pushforward_claims.pushforward_evals.len(), N_LOOKUPS);
@@ -55,6 +63,8 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 }
 
 /// Builds pushforward tables for each lookup batch.
+///
+/// Each output table accumulates `eq_kernel` values at the indices referenced by the lookup.
 pub fn build_pushforwards<P: PackedField, const N_TABLES: usize, const N_LOOKUPS: usize>(
 	indexes: &[&[usize]; N_LOOKUPS],
 	table_ids: &[usize; N_LOOKUPS],
