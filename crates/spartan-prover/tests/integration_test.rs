@@ -31,12 +31,12 @@ fn test_power7_circuit_prover_verifier() {
 	let x_wire = constraint_builder.alloc_inout();
 	let y_wire = constraint_builder.alloc_inout();
 	power7_circuit(&mut constraint_builder, x_wire, y_wire);
-	let (cs, layout) = compile(constraint_builder);
+	let (compiled_cs, layout) = compile(constraint_builder);
 
 	// Setup prover and verifier
 	let log_inv_rate = 1;
 	let compression = StdCompression::default();
-	let verifier = Verifier::<_, StdDigest, _>::setup(cs, log_inv_rate, compression.clone())
+	let verifier = Verifier::<_, StdDigest, _>::setup(compiled_cs, log_inv_rate, compression.clone())
 		.expect("verifier setup failed");
 	let prover = Prover::<OptimalPackedB128, _, StdDigest>::setup(
 		verifier.clone(),
