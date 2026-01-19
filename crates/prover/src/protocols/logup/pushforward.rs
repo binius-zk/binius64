@@ -1,24 +1,15 @@
-use std::{array, iter::chain};
+use std::iter::chain;
 
 use binius_field::{Field, PackedField};
-use binius_math::{FieldBuffer, line::extrapolate_line_packed, multilinear::eq};
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
-use binius_verifier::protocols::prodcheck::MultilinearEvalClaim;
+use binius_math::FieldBuffer;
+use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use itertools::Itertools;
 
 use crate::protocols::{
-	logup::{
-		LogUp,
-		helper::{generate_index_fingerprints, generate_pushforward},
-	},
+	logup::LogUp,
 	sumcheck::{
 		Error as SumcheckError,
-		batch::{
-			BatchSumcheckOutput, batch_prove_and_write_evals, batch_prove_mle_and_write_evals,
-		},
+		batch::{BatchSumcheckOutput, batch_prove_and_write_evals},
 		batch_quadratic::BatchQuadraticSumcheckProver,
 	},
 };
@@ -26,8 +17,11 @@ use crate::protocols::{
 /// Output of the pushforward sumcheck, grouped by lookup and table claims.
 #[derive(Debug, Clone)]
 pub struct PushforwardEvalClaims<F: Field> {
+	/// Sumcheck challenge point (low-to-high order).
 	pub challenges: Vec<F>,
+	/// Pushforward evaluations at the sumcheck point.
 	pub pushforward_evals: Vec<F>,
+	/// Table evaluations at the sumcheck point.
 	pub table_evals: Vec<F>,
 }
 

@@ -168,6 +168,7 @@ fn bench_logup_verify(c: &mut Criterion) {
 				logup_verifier::verify_lookup(
 					eq_log_len,
 					table_log_len,
+					&case.eval_point,
 					&case.lookup_evals,
 					&claims,
 					&mut transcript,

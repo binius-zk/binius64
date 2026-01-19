@@ -1,7 +1,9 @@
 //! LogUp prover helpers and sub-protocols.
 //!
-//! This module groups the logic for constructing pushforwards, running the
-//! log-sum reduction, and batching fractional-addition checks.
+//! This module groups the logic for:
+//! - building pushforward tables from indexed lookups,
+//! - running the log-sum reduction via fractional-addition trees,
+//! - and emitting the evaluation claims consumed by the verifier.
 pub mod helper;
 pub mod log_sum;
 pub mod prover;
@@ -9,40 +11,38 @@ pub mod pushforward;
 #[cfg(test)]
 mod tests;
 
-use std::{array, iter::chain};
-
 use binius_field::{Field, PackedField};
-use binius_math::{FieldBuffer, line::extrapolate_line_packed, multilinear::eq};
+use binius_math::{FieldBuffer, multilinear::eq};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_verifier::protocols::prodcheck::MultilinearEvalClaim;
-use itertools::Itertools;
 
-use crate::protocols::{
-	fracaddcheck::FracAddCheckProver,
-	logup::{helper::generate_index_fingerprints, prover::build_pushforwards},
-	sumcheck::{
-		Error as SumcheckError, batch::BatchSumcheckOutput,
-		batch_quadratic::BatchQuadraticSumcheckProver,
-	},
-};
+use crate::protocols::logup::{helper::generate_index_fingerprints, prover::build_pushforwards};
 /// Prover state for the LogUp indexed lookup argument.
 ///
 /// The instance aggregates multiple lookup batches that may target different
 /// tables. Each lookup batch is represented by its index fingerprints,
 /// pushforward, and claimed lookup evaluation.
 pub struct LogUp<P: PackedField, const N_TABLES: usize, const N_LOOKUPS: usize> {
+	/// Fingerprinted indices for each lookup batch.
 	fingerprinted_indexes: [FieldBuffer<P>; N_LOOKUPS],
+	/// Table selector for each lookup batch.
 	table_ids: [usize; N_LOOKUPS],
+	/// Pushforward tables built from the fingerprinted indices.
 	push_forwards: [FieldBuffer<P>; N_LOOKUPS],
+	/// Lookup tables used by the batch.
 	tables: [FieldBuffer<P>; N_TABLES],
-	eval_point: Vec<P::Scalar>,
+	/// Verifier evaluation point for lookup MLEs.
+	pub eval_point: Vec<P::Scalar>,
+	/// Equality-indicator expansion at `eval_point`.
 	eq_kernel: FieldBuffer<P>,
+	/// Claimed lookup values at `eval_point`.
 	lookup_evals: [P::Scalar; N_LOOKUPS],
-	fingerprint_scalar: P::Scalar,
-	shift_scalar: P::Scalar,
+	/// Fiat-Shamir scalar used for fingerprint hashing.
+	pub fingerprint_scalar: P::Scalar,
+	/// Fiat-Shamir shift applied in fingerprint hashing.
+	pub shift_scalar: P::Scalar,
 }
 
 /// Builder for LogUp prover state.
@@ -52,6 +52,10 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	LogUp<P, N_TABLES, N_LOOKUPS>
 {
 	/// Creates a LogUp instance for batched indexed lookup claims.
+	///
+	/// This samples the fingerprint/shift scalars, constructs the eq-kernel at the
+	/// verifier point, and builds both pushforwards and fingerprinted indices so
+	/// that the proving sub-protocols can run without re-deriving shared state.
 	pub fn new<Challenger_: Challenger>(
 		indexes: [&[usize]; N_LOOKUPS],
 		table_ids: [usize; N_LOOKUPS],

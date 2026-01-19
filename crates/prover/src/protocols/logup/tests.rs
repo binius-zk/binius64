@@ -68,12 +68,45 @@ fn test_logup_prove_verify() {
 		.unwrap();
 
 	let mut verifier_transcript = prover_transcript.into_verifier();
-	logup_verifier::verify_lookup(
+	let eval_claims = logup_verifier::verify_lookup(
 		eq_log_len,
 		table_log_len,
+		&eval_point,
 		&lookup_evals_for_verify,
 		&claims,
 		&mut verifier_transcript,
 	)
 	.unwrap();
+
+	for (claim, index) in eval_claims
+		.index_claims
+		.iter()
+		.zip(logup.fingerprinted_indexes.iter())
+	{
+		assert_eq!(claim.eval, evaluate(index, &claim.point));
+	}
+
+	for (claim, pushforward) in eval_claims
+		.pushforward_sumcheck_claims
+		.iter()
+		.zip(logup.push_forwards.iter())
+	{
+		assert_eq!(claim.eval, evaluate(pushforward, &claim.point));
+	}
+
+	for (claim, table) in eval_claims
+		.table_sumcheck_claims
+		.iter()
+		.zip(logup.tables.iter())
+	{
+		assert_eq!(claim.eval, evaluate(table, &claim.point));
+	}
+
+	for (claim, pushforward) in eval_claims
+		.pushforward_frac_claims
+		.iter()
+		.zip(logup.push_forwards.iter())
+	{
+		assert_eq!(claim.eval, evaluate(pushforward, &claim.point));
+	}
 }

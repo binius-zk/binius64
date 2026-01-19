@@ -21,9 +21,9 @@ use binius_utils::rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 /// Prover for the fractional addition protocol.
 ///
-/// Each layer is a double of the numerator and denominator values of fractional terms. Each layer
-/// represents the addition of siblings with respect to the fractional addition rule:
-/// $$\frac{a_0}{b_0} + \frac{a_1}{b_1} = \frac{a_0b_1 + a_1b_0}{b_0b_1}$
+/// Each layer stores paired numerator/denominator evaluations for all leaves at that depth.
+/// Moving to the next layer combines siblings using:
+/// $$\frac{a_0}{b_0} + \frac{a_1}{b_1} = \frac{a_0b_1 + a_1b_0}{b_0b_1}.$$
 #[derive(Debug)]
 pub struct FracAddCheckProver<P: PackedField> {
 	layers: Vec<(FieldBuffer<P>, FieldBuffer<P>)>,
@@ -32,7 +32,9 @@ pub struct FracAddCheckProver<P: PackedField> {
 /// Batched prover for multiple fractional-addition trees sharing the same depth.
 pub struct BatchFracAddCheckProver<P: PackedField, const N: usize> {
 	provers: [FracAddCheckProver<P>; N],
+	/// Optional sharing mode for the final layer.
 	last_layer_sharing: Option<LastLayerSharing>,
+	/// Shared last-layer witness, when available.
 	shared_last_layer: Option<SharedLastLayer<P, N>>,
 }
 
@@ -45,11 +47,15 @@ pub enum LastLayerSharing {
 #[derive(Debug)]
 pub enum SharedLastLayer<P: PackedField, const N: usize> {
 	CommonNumerator {
+		/// Shared numerator buffer.
 		num: FieldBuffer<P>,
+		/// Per-instance denominators.
 		den: [FieldBuffer<P>; N],
 	},
 	CommonDenominator {
+		/// Shared denominator buffer.
 		den: FieldBuffer<P>,
+		/// Per-instance numerators.
 		num: [FieldBuffer<P>; N],
 	},
 }
@@ -83,6 +89,8 @@ where
 	/// Returns `(prover, sums)` where `sums` is the final layer containing the
 	/// fractional additions over all `k` variables.
 	///
+	/// This builds `k` reduction layers by repeatedly combining sibling fractions.
+	///
 	/// # Arguments
 	/// * `k` - The number of variables over which the reduction is taken. Each reduction step
 	///   reduces one variable by computing fractional additions of sibling terms.
@@ -105,6 +113,7 @@ where
 			let (num_0, num_1) = num.split_half_ref();
 			let (den_0, den_1) = den.split_half_ref();
 
+			// Combine sibling fractions in parallel for the next layer.
 			let (next_layer_num, next_layer_den) =
 				(num_0.as_ref(), den_0.as_ref(), num_1.as_ref(), den_1.as_ref())
 					.into_par_iter()
@@ -138,16 +147,6 @@ where
 		(layer, remaining)
 	}
 
-	fn take_first_layer(mut self) -> ((FieldBuffer<P>, FieldBuffer<P>), Option<Self>) {
-		let layer = self.layers.remove(0);
-		let remaining = if self.layers.is_empty() {
-			None
-		} else {
-			Some(self)
-		};
-		(layer, remaining)
-	}
-
 	/// Pops the last layer and returns a sumcheck prover for it.
 	///
 	/// Returns `(layer_prover, remaining)` where:
@@ -171,6 +170,7 @@ where
 		let num_1 = FieldBuffer::new(num_1.log_len(), num_1.as_ref().into());
 		let den_0 = FieldBuffer::new(den_0.log_len(), den_0.as_ref().into());
 		let den_1 = FieldBuffer::new(den_1.log_len(), den_1.as_ref().into());
+		// Build a single-layer MLE-check prover for this fractional-addition step.
 		let prover =
 			frac_add_mle::new([num_0, num_1, den_0, den_1], point.clone(), [num_eval, den_eval])
 				.expect(
@@ -248,6 +248,7 @@ where
 	) -> Result<[FracAddEvalClaim<F>; N], Error> {
 		let mut iter = multilinear_evals.into_iter();
 		let claims = array::from_fn(|_| {
+			// Each prover emits [num_0, num_1, den_0, den_1] at the current round.
 			let evals = iter.next().expect("batch contains N provers");
 			let [num_0, num_1, den_0, den_1] = evals
 				.try_into()
@@ -280,6 +281,7 @@ where
 			let num_1 = evals[offset + 1];
 			let den_0 = evals[offset + 2];
 			let den_1 = evals[offset + 3];
+			// Interpolate halves with the shared challenge for the next claim.
 			let next_num = extrapolate_line_packed(num_0, num_1, r);
 			let next_den = extrapolate_line_packed(den_0, den_1, r);
 			FracAddEvalClaim {
@@ -319,6 +321,8 @@ where
 		k: usize,
 		sharing: SharedLastLayer<P, N>,
 	) -> (Self, [FractionalBuffer<P>; N]) {
+		// Pre-compute one reduction step using the shared witness so the remaining
+		// provers all have depth k-1.
 		let pruned_witnesses: [(FieldBuffer<P>, FieldBuffer<P>); N] = match &sharing {
 			SharedLastLayer::CommonNumerator { num, den } => {
 				let (num_0, num_1) = num.split_half_ref();
@@ -402,6 +406,7 @@ where
 			.map(|(num, _)| num.log_len().saturating_sub(1))
 			.unwrap_or(0);
 
+		// All batched claims must target the same layer dimension.
 		assert!(claims.iter().all(|x| x.point.len() == expected_len));
 		let mut remaining: [Option<FracAddCheckProver<P>>; N] = array::from_fn(|_| None);
 
@@ -438,6 +443,19 @@ where
 		(sumcheck_provers, next_provers)
 	}
 
+	/// Builds a shared last-layer prover for a batched fractional-addition check.
+	///
+	/// This validates that all claims have the expected point length, extracts the evaluation
+	/// point and per-claim numerator/denominator evaluations, and then constructs a
+	/// `SharedFracAddInput` in one of two ways:
+	/// - If `self.shared_last_layer` is present, it verifies that the requested `sharing` mode
+	///   matches the shared layer variant and splits the shared buffer plus per-claim buffers
+	///   into halves.
+	/// - Otherwise, it pops the final layer from each prover, ensures there are no remaining
+	///   layers, and then builds the shared input from those per-claim buffers, again splitting
+	///   into halves.
+	///
+	/// The resulting input is used to initialize a `SharedFracAddLastLayerProver`.
 	fn shared_last_layer_prover(
 		self,
 		claims: [FracAddEvalClaim<F>; N],
@@ -457,6 +475,7 @@ where
 					.map(|(num, _)| num.log_len().saturating_sub(1))
 					.unwrap_or(0)
 			});
+		// Claims must align with the last-layer dimension of the witness buffers.
 		assert!(claims.iter().all(|x| x.point.len() == expected_len));
 
 		let eval_point = claims[0].point.clone();
@@ -512,6 +531,7 @@ where
 					.into_iter()
 					.map(|prover| {
 						let (layer, remaining) = prover.pop_layer();
+						// All provers must be at their final layer for shared reduction.
 						remaining
 							.is_none()
 							.then_some(layer)
@@ -560,6 +580,11 @@ where
 	}
 
 	/// Runs the fractional addition check protocol over a batch of claims.
+	///
+	/// Iteratively proves each layer using batched sumcheck, updating the evaluation point
+	/// and claims at each step via transcript challenges. When the final layer is reached,
+	/// it may switch to a shared last-layer prover (if configured) to combine work across
+	/// the batch; otherwise it returns the current claims.
 	pub fn prove<Challenger_>(
 		self,
 		claims: [FracAddEvalClaim<F>; N],
@@ -577,6 +602,7 @@ where
 		while let Some(prover) = prover_opt {
 			let n_layers = prover.provers[0].n_layers();
 			if n_layers == 0 {
+				// All per-prover layers consumed; only a shared last-layer remains (if configured).
 				if let Some(sharing) = prover.last_layer_sharing {
 					if prover.shared_last_layer.is_some() {
 						let shared_prover = prover.shared_last_layer_prover(claims, sharing)?;
@@ -597,28 +623,6 @@ where
 					}
 				}
 				return Ok(claims);
-			}
-
-			if n_layers == 1 {
-				if let Some(sharing) = prover.last_layer_sharing {
-					if prover.shared_last_layer.is_none() {
-						let shared_prover = prover.shared_last_layer_prover(claims, sharing)?;
-						let output =
-							batch_prove_mle_and_write_evals(vec![shared_prover], transcript)?;
-
-						let r = transcript.sample();
-						let mut next_point = output.challenges;
-						next_point.push(r);
-
-						let next_claims = Self::convert_shared_evals_to_claims(
-							output.multilinear_evals,
-							next_point,
-							r,
-						)?;
-
-						return Ok(next_claims);
-					}
-				}
 			}
 
 			let (sumcheck_provers, remaining) = prover.layer_provers(claims);
@@ -656,6 +660,7 @@ fn split_all<P: PackedField, I, const N: usize>(
 where
 	I: IntoIterator<Item = FieldBuffer<P>>,
 {
+	// Split every buffer into halves and collect left/right halves into fixed arrays.
 	let (left, right): (Vec<_>, Vec<_>) = buffers.into_iter().map(split_half).unzip();
 	(left.try_into().expect(left_msg), right.try_into().expect(right_msg))
 }

@@ -23,16 +23,16 @@ pub enum Error {
 impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUPS: usize>
 	LogUp<P, N_TABLES, N_LOOKUPS>
 {
-	/// Runs the full LogUp proving flow and returns per-lookup claims.
-	///
-	/// The output is ordered to match the lookup ordering in the `LogUp` instance.
-	///
-	/// # Preconditions
-	/// * `N_MLES == N_TABLES + N_LOOKUPS`.
-	pub fn prove_lookup<Challenger_: Challenger, const N_MLES: usize>(
-		&self,
-		transcript: &mut ProverTranscript<Challenger_>,
-	) -> Result<Vec<LogUpLookupClaims<F>>, Error> {
+/// Runs the full LogUp proving flow and returns per-lookup claims.
+///
+/// The output is ordered to match the lookup ordering in the `LogUp` instance.
+///
+/// # Preconditions
+/// * `N_MLES == N_TABLES + N_LOOKUPS`.
+pub fn prove_lookup<Challenger_: Challenger, const N_MLES: usize>(
+	&self,
+	transcript: &mut ProverTranscript<Challenger_>,
+) -> Result<Vec<LogUpLookupClaims<F>>, Error> {
 		assert!(N_MLES == N_TABLES + N_LOOKUPS);
 
 		// Reduce lookup evaluations to pushforward/table evaluations.
@@ -45,6 +45,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		assert_eq!(push_claims.len(), N_LOOKUPS);
 
 		let mut claims = Vec::with_capacity(N_LOOKUPS);
+		// Pair each lookup batch with its table id and fractional claims.
 		for (lookup_idx, (eq_frac_claim, push_frac_claim)) in
 			eq_claims.into_iter().zip(push_claims).enumerate()
 		{

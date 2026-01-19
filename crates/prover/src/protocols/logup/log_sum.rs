@@ -2,15 +2,12 @@ use std::array;
 
 use binius_field::{Field, PackedField};
 use binius_math::FieldBuffer;
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
+use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_verifier::protocols::fracaddcheck::FracAddEvalClaim;
 use itertools::Itertools;
 
 use crate::protocols::{
-	fracaddcheck::{BatchFracAddCheckProver, LastLayerSharing, SharedLastLayer},
+	fracaddcheck::{BatchFracAddCheckProver, SharedLastLayer},
 	logup::{LogUp, helper::generate_index_fingerprints},
 };
 
@@ -18,6 +15,9 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	LogUp<P, N_TABLES, N_LOOKUPS>
 {
 	/// Converts the top layer of each frac-add tree into evaluation claims.
+	///
+	/// The top layer is a single scalar per numerator/denominator, so the
+	/// evaluation point is empty and the claim values are taken directly.
 	fn tree_sums_to_claims<const N: usize>(
 		sums: [(FieldBuffer<P>, FieldBuffer<P>); N],
 	) -> [FracAddEvalClaim<F>; N] {
@@ -38,6 +38,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		shift_scalar: F,
 	) -> FieldBuffer<P> {
 		// Build a fingerprinted table for indices 0..index_count-1.
+		// This is the shared denominator for all pushforward fractions.
 		let index_range = (0..index_count).collect::<Vec<_>>();
 		let [common_denominator] = generate_index_fingerprints::<P, F, 1>(
 			[index_range.as_slice()],
@@ -78,6 +79,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			den: self.fingerprinted_indexes.clone(),
 			num: self.eq_kernel.clone(),
 		};
+		// eq-kernel numerator is shared; denominators are per-lookup fingerprints.
 		let (eq_prover, eq_sums) =
 			BatchFracAddCheckProver::<P, N_LOOKUPS>::new_with_last_layer_sharing(
 				eq_log_len, eq_witness,
@@ -96,6 +98,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			den: common_denominator,
 			num: self.push_forwards.clone(),
 		};
+		// Pushforward denominators are shared; numerators are per-lookup pushforwards.
 
 		let (push_prover, push_sums) =
 			BatchFracAddCheckProver::<P, N_LOOKUPS>::new_with_last_layer_sharing(

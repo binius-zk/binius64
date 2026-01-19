@@ -32,6 +32,7 @@ where
 	P: PackedField<Scalar = F>,
 	F: Field,
 {
+	// This mirrors how the lookup MLE is formed in the lookup argument.
 	let mut lookup_values = vec![F::ZERO; indices.len()];
 	for (&idx, lookup) in zip(indices.iter(), lookup_values.iter_mut()) {
 		*lookup = table.get(idx);
