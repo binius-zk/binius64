@@ -1,3 +1,4 @@
+// Copyright 2025-2026 The Binius Developers
 use std::array;
 
 use binius_field::{Field, PackedField};

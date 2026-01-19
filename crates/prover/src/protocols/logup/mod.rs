@@ -1,3 +1,5 @@
+// Copyright 2025-2026 The Binius Developers
+
 //! LogUp prover helpers and sub-protocols.
 //!
 //! This module groups the logic for:
