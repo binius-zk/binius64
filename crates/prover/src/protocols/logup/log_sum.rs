@@ -10,7 +10,7 @@ use binius_verifier::protocols::fracaddcheck::FracAddEvalClaim;
 use itertools::Itertools;
 
 use crate::protocols::{
-	fracaddcheck::{BatchFracAddCheckProver, LastLayerSharing},
+	fracaddcheck::{BatchFracAddCheckProver, LastLayerSharing, SharedLastLayer},
 	logup::{LogUp, helper::generate_index_fingerprints},
 };
 
@@ -74,14 +74,14 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 				.all_equal()
 		);
 
-		let eq_witnesses =
-			array::from_fn(|i| (self.eq_kernel.clone(), self.fingerprinted_indexes[i].clone()));
-
-		let (eq_prover, eq_sums) = BatchFracAddCheckProver::<P, N_LOOKUPS>::new_with_last_layer_sharing(
-			eq_log_len,
-			eq_witnesses,
-			LastLayerSharing::CommonNumerator,
-		);
+		let eq_witness = SharedLastLayer::CommonNumerator {
+			den: self.fingerprinted_indexes.clone(),
+			num: self.eq_kernel.clone(),
+		};
+		let (eq_prover, eq_sums) =
+			BatchFracAddCheckProver::<P, N_LOOKUPS>::new_with_last_layer_sharing(
+				eq_log_len, eq_witness,
+			);
 		let eq_claims = Self::tree_sums_to_claims(eq_sums);
 		eq_prover.prove(eq_claims.clone(), transcript)?;
 
@@ -92,14 +92,16 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			self.shift_scalar,
 		);
 
-		let push_witnesses =
-			array::from_fn(|i| (self.push_forwards[i].clone(), common_denominator.clone()));
+		let push_witnesses = SharedLastLayer::CommonDenominator {
+			den: common_denominator,
+			num: self.push_forwards.clone(),
+		};
 
-		let (push_prover, push_sums) = BatchFracAddCheckProver::<P, N_LOOKUPS>::new_with_last_layer_sharing(
-			eq_log_len,
-			push_witnesses,
-			LastLayerSharing::CommonDenominator,
-		);
+		let (push_prover, push_sums) =
+			BatchFracAddCheckProver::<P, N_LOOKUPS>::new_with_last_layer_sharing(
+				eq_log_len,
+				push_witnesses,
+			);
 		let push_claims = Self::tree_sums_to_claims(push_sums);
 		push_prover.prove(push_claims.clone(), transcript)?;
 

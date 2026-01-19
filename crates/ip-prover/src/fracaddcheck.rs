@@ -1,6 +1,7 @@
 // Copyright 2025-2026 The Binius Developers
 
-use std::array;
+use itertools::Itertools;
+use std::{array, iter::zip};
 
 use crate::sumcheck::{
 	Error as SumcheckError,
@@ -42,7 +43,7 @@ pub enum LastLayerSharing {
 }
 
 #[derive(Debug)]
-enum SharedLastLayer<P: PackedField, const N: usize> {
+pub enum SharedLastLayer<P: PackedField, const N: usize> {
 	CommonNumerator {
 		num: FieldBuffer<P>,
 		den: [FieldBuffer<P>; N],
@@ -155,7 +156,7 @@ where
 	pub fn layer_prover(
 		self,
 		claim: FracAddEvalClaim<F>,
-	) -> Result<(impl MleCheckProver<F>, Option<Self>), Error> {
+	) -> (impl MleCheckProver<F>, Option<Self>) {
 		let FracAddEvalClaim {
 			num_eval,
 			den_eval,
@@ -171,9 +172,12 @@ where
 		let den_0 = FieldBuffer::new(den_0.log_len(), den_0.as_ref().into());
 		let den_1 = FieldBuffer::new(den_1.log_len(), den_1.as_ref().into());
 		let prover =
-			frac_add_mle::new([num_0, num_1, den_0, den_1], point.clone(), [num_eval, den_eval])?;
+			frac_add_mle::new([num_0, num_1, den_0, den_1], point.clone(), [num_eval, den_eval])
+				.expect(
+					"The splits will go through as long as the layers are constructed correctly.",
+				);
 
-		Ok((prover, remaining))
+		(prover, remaining)
 	}
 
 	/// Runs the fractional addition check protocol and returns the final evaluation claims.
@@ -199,7 +203,7 @@ where
 		let mut claim = claim;
 
 		while let Some(prover) = prover_opt {
-			let (sumcheck_prover, remaining) = prover.layer_prover(claim)?;
+			let (sumcheck_prover, remaining) = prover.layer_prover(claim);
 			prover_opt = remaining;
 
 			let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], transcript)?;
@@ -236,26 +240,6 @@ where
 	P: PackedField<Scalar = F>,
 {
 	pub const BATCH_SIZE: usize = N;
-
-	fn validate_claim_points(
-		claims: &[FracAddEvalClaim<F>; N],
-		expected_len: usize,
-	) -> Result<(), Error> {
-		if N == 0 {
-			return Ok(());
-		}
-		let point = &claims[0].point;
-		if point.len() != expected_len {
-			return Err(Error::BatchPointLengthMismatch {
-				expected: expected_len,
-				actual: point.len(),
-			});
-		}
-		if !claims.iter().all(|claim| claim.point == *point) {
-			return Err(Error::BatchPointMismatch);
-		}
-		Ok(())
-	}
 
 	fn convert_evals_to_claims(
 		multilinear_evals: Vec<Vec<F>>,
@@ -310,13 +294,10 @@ where
 
 	/// Creates a batched prover from multiple witnesses, returning final layer sums for each.
 	pub fn new(k: usize, witnesses: [FractionalBuffer<P>; N]) -> (Self, [FractionalBuffer<P>; N]) {
-		let mut provers = Vec::with_capacity(N);
-		let mut sums = Vec::with_capacity(N);
-		for witness in witnesses {
-			let (prover, sum) = FracAddCheckProver::new(k, witness);
-			provers.push(prover);
-			sums.push(sum);
-		}
+		let (provers, sums) = witnesses
+			.into_iter()
+			.map(|witness| FracAddCheckProver::new(k, witness))
+			.collect::<(Vec<_>, Vec<_>)>();
 
 		let provers = provers
 			.try_into()
@@ -336,80 +317,63 @@ where
 	/// Creates a batched prover with last-layer sharing, returning final layer sums for each.
 	pub fn new_with_last_layer_sharing(
 		k: usize,
-		witnesses: [FractionalBuffer<P>; N],
-		sharing: LastLayerSharing,
+		sharing: SharedLastLayer<P, N>,
 	) -> (Self, [FractionalBuffer<P>; N]) {
-		let (prover, sums) = Self::new(k, witnesses);
-		(prover.with_last_layer_sharing(sharing), sums)
-	}
+		let pruned_witnesses: [(FieldBuffer<P>, FieldBuffer<P>); N] = match &sharing {
+			SharedLastLayer::CommonNumerator { num, den } => {
+				let (num_0, num_1) = num.split_half_ref();
 
-	pub fn with_last_layer_sharing(mut self, sharing: LastLayerSharing) -> Self {
-		self.last_layer_sharing = Some(sharing);
-		if N == 0 || self.shared_last_layer.is_some() {
-			return self;
-		}
-		if self.provers[0].n_layers() == 0 {
-			return self;
-		}
-
-		let mut remaining: [Option<FracAddCheckProver<P>>; N] = array::from_fn(|_| None);
-		match sharing {
-			LastLayerSharing::CommonNumerator => {
-				let mut shared_num = None;
-				let mut den_layers = Vec::with_capacity(N);
-				for (idx, prover) in self.provers.into_iter().enumerate() {
-					let (layer, next) = prover.take_first_layer();
-					let (num, den) = layer;
-					if idx == 0 {
-						shared_num = Some(num);
-					}
-					den_layers.push(den);
-					remaining[idx] = next;
-				}
-
-				let shared_num = shared_num.expect("batch size > 0");
-				let den = den_layers
-					.try_into()
-					.expect("den length matches batch size");
-				self.shared_last_layer = Some(SharedLastLayer::CommonNumerator {
-					num: shared_num,
-					den,
-				});
+				den.iter()
+					.map(|den_i| {
+						let (den_0, den_1) = den_i.split_half_ref();
+						let (next_layer_num, next_layer_den) =
+							(num_0.as_ref(), den_0.as_ref(), num_1.as_ref(), den_1.as_ref())
+								.into_par_iter()
+								.map(|(&a_0, &b_0, &a_1, &b_1)| (a_0 * b_1 + a_1 * b_0, b_0 * b_1))
+								.collect::<(Vec<_>, Vec<_>)>();
+						(
+							FieldBuffer::new(num.log_len() - 1, next_layer_num.into_boxed_slice()),
+							FieldBuffer::new(
+								den_i.log_len() - 1,
+								next_layer_den.into_boxed_slice(),
+							),
+						)
+					})
+					.collect_array()
+					.expect("den is of length N.")
 			}
-			LastLayerSharing::CommonDenominator => {
-				let mut shared_den = None;
-				let mut num_layers = Vec::with_capacity(N);
-				for (idx, prover) in self.provers.into_iter().enumerate() {
-					let (layer, next) = prover.take_first_layer();
-					let (num, den) = layer;
-					if idx == 0 {
-						shared_den = Some(den);
-					}
-					num_layers.push(num);
-					remaining[idx] = next;
-				}
+			SharedLastLayer::CommonDenominator { den, num } => {
+				let (den_0, den_1) = den.split_half_ref();
 
-				let shared_den = shared_den.expect("batch size > 0");
-				let num = num_layers
-					.try_into()
-					.expect("num length matches batch size");
-				self.shared_last_layer = Some(SharedLastLayer::CommonDenominator {
-					den: shared_den,
-					num,
-				});
+				num.iter()
+					.map(|num_i| {
+						let (num_0, num_1) = num_i.split_half_ref();
+						let (next_layer_num, next_layer_den) =
+							(num_0.as_ref(), den_0.as_ref(), num_1.as_ref(), den_1.as_ref())
+								.into_par_iter()
+								.map(|(&a_0, &b_0, &a_1, &b_1)| (a_0 * b_1 + a_1 * b_0, b_0 * b_1))
+								.collect::<(Vec<_>, Vec<_>)>();
+						(
+							FieldBuffer::new(
+								num_i.log_len() - 1,
+								next_layer_num.into_boxed_slice(),
+							),
+							FieldBuffer::new(den.log_len() - 1, next_layer_den.into_boxed_slice()),
+						)
+					})
+					.collect_array()
+					.expect("num is of length N.")
 			}
-		}
-
-		let any_some = remaining.iter().any(|opt| opt.is_some());
-		let any_none = remaining.iter().any(|opt| opt.is_none());
-		assert!(!(any_some && any_none), "batch layer count mismatch");
-
-		self.provers = if any_some {
-			remaining.map(|opt| opt.expect("remaining prover present"))
-		} else {
-			array::from_fn(|_| FracAddCheckProver { layers: Vec::new() })
 		};
-		self
+
+		let (mut prover, sums) = Self::new(k.saturating_sub(1), pruned_witnesses);
+		prover.last_layer_sharing = match &sharing {
+			SharedLastLayer::CommonNumerator { .. } => Some(LastLayerSharing::CommonNumerator),
+			SharedLastLayer::CommonDenominator { .. } => Some(LastLayerSharing::CommonDenominator),
+		};
+		prover.shared_last_layer = Some(sharing);
+
+		(prover, sums)
 	}
 
 	/// Pops the last layer from each prover and returns sumcheck provers for the batch.
@@ -420,18 +384,16 @@ where
 	pub fn layer_provers(
 		self,
 		claims: [FracAddEvalClaim<F>; N],
-	) -> Result<(Vec<impl MleCheckProver<F>>, Option<BatchFracAddCheckProver<P, N>>), Error> {
+	) -> (Vec<impl MleCheckProver<F>>, Option<BatchFracAddCheckProver<P, N>>) {
 		if N == 0 {
-			return Ok((Vec::new(), None));
+			return (Vec::new(), None);
 		};
 		let n_layers = self.provers[0].n_layers();
-		if self
-			.provers
-			.iter()
-			.any(|prover| prover.n_layers() != n_layers)
-		{
-			return Err(Error::BatchLayerCountMismatch);
-		}
+		assert!(
+			self.provers
+				.iter()
+				.any(|prover| prover.n_layers() == n_layers)
+		);
 
 		let expected_len = self
 			.provers
@@ -439,39 +401,41 @@ where
 			.and_then(|prover| prover.layers.last())
 			.map(|(num, _)| num.log_len().saturating_sub(1))
 			.unwrap_or(0);
-		Self::validate_claim_points(&claims, expected_len)?;
 
+		assert!(claims.iter().all(|x| x.point.len() == expected_len));
 		let mut remaining: [Option<FracAddCheckProver<P>>; N] = array::from_fn(|_| None);
-		let mut sumcheck_provers = Vec::with_capacity(N);
-		for (idx, (prover, claim)) in self.provers.into_iter().zip(claims).enumerate() {
-			let (sumcheck_prover, next) = prover.layer_prover(claim)?;
-			sumcheck_provers.push(sumcheck_prover);
-			remaining[idx] = next;
-		}
 
-		let any_some = remaining.iter().any(|opt| opt.is_some());
-		let any_none = remaining.iter().any(|opt| opt.is_none());
-		if any_some && any_none {
-			return Err(Error::BatchLayerCountMismatch);
-		}
+		let sumcheck_provers = zip(self.provers.into_iter(), claims)
+			.enumerate()
+			.map(|(idx, (prover, claim))| {
+				let (sumcheck_prover, next) = prover.layer_prover(claim);
+				remaining[idx] = next;
+				sumcheck_prover
+			})
+			.collect();
 
-		let next_provers = if any_some {
-			Some(BatchFracAddCheckProver {
+		assert!(
+			remaining.iter().map(|opt| opt.is_some()).all_equal(),
+			"batch layer count mismatch"
+		);
+
+		let next_provers = match remaining[0] {
+			Some(_) => Some(BatchFracAddCheckProver {
 				provers: remaining.map(|opt| opt.expect("remaining prover present")),
 				last_layer_sharing: self.last_layer_sharing,
 				shared_last_layer: self.shared_last_layer,
-			})
-		} else if self.shared_last_layer.is_some() {
-			Some(BatchFracAddCheckProver {
-				provers: array::from_fn(|_| FracAddCheckProver { layers: Vec::new() }),
-				last_layer_sharing: self.last_layer_sharing,
-				shared_last_layer: self.shared_last_layer,
-			})
-		} else {
-			None
+			}),
+			None => match self.shared_last_layer {
+				Some(_) => Some(BatchFracAddCheckProver {
+					provers: array::from_fn(|_| FracAddCheckProver { layers: Vec::new() }),
+					last_layer_sharing: self.last_layer_sharing,
+					shared_last_layer: self.shared_last_layer,
+				}),
+				None => None,
+			},
 		};
 
-		Ok((sumcheck_provers, next_provers))
+		(sumcheck_provers, next_provers)
 	}
 
 	fn shared_last_layer_prover(
@@ -479,172 +443,120 @@ where
 		claims: [FracAddEvalClaim<F>; N],
 		sharing: LastLayerSharing,
 	) -> Result<SharedFracAddLastLayerProver<P, N>, Error> {
-		let expected_len = match &self.shared_last_layer {
-			Some(SharedLastLayer::CommonNumerator { num, .. }) => num.log_len().saturating_sub(1),
-			Some(SharedLastLayer::CommonDenominator { den, .. }) => den.log_len().saturating_sub(1),
-			None => self
-				.provers
-				.get(0)
-				.and_then(|prover| prover.layers.last())
-				.map(|(num, _)| num.log_len().saturating_sub(1))
-				.unwrap_or(0),
-		};
-		Self::validate_claim_points(&claims, expected_len)?;
+		let expected_len = self
+			.shared_last_layer
+			.as_ref()
+			.map(|shared| match shared {
+				SharedLastLayer::CommonNumerator { num, .. } => num.log_len().saturating_sub(1),
+				SharedLastLayer::CommonDenominator { den, .. } => den.log_len().saturating_sub(1),
+			})
+			.unwrap_or_else(|| {
+				self.provers
+					.get(0)
+					.and_then(|prover| prover.layers.last())
+					.map(|(num, _)| num.log_len().saturating_sub(1))
+					.unwrap_or(0)
+			});
+		assert!(claims.iter().all(|x| x.point.len() == expected_len));
 
 		let eval_point = claims[0].point.clone();
 		let num_evals = array::from_fn(|i| claims[i].num_eval);
 		let den_evals = array::from_fn(|i| claims[i].den_eval);
 
-		if let Some(shared_last_layer) = self.shared_last_layer {
-			match (shared_last_layer, sharing) {
+		let BatchFracAddCheckProver {
+			provers,
+			shared_last_layer,
+			..
+		} = self;
+
+		let input = match shared_last_layer {
+			Some(shared_last_layer) => match (shared_last_layer, sharing) {
 				(
 					SharedLastLayer::CommonNumerator { num, den },
 					LastLayerSharing::CommonNumerator,
 				) => {
-					let (num_0_half, num_1_half) = num.split_half_ref();
-					let num_0 = FieldBuffer::new(num_0_half.log_len(), num_0_half.as_ref().into());
-					let num_1 = FieldBuffer::new(num_1_half.log_len(), num_1_half.as_ref().into());
-
-					let mut den_0 = Vec::with_capacity(N);
-					let mut den_1 = Vec::with_capacity(N);
-					for den in den.into_iter() {
-						let (den_0_half, den_1_half) = den.split_half_ref();
-						den_0.push(FieldBuffer::new(
-							den_0_half.log_len(),
-							den_0_half.as_ref().into(),
-						));
-						den_1.push(FieldBuffer::new(
-							den_1_half.log_len(),
-							den_1_half.as_ref().into(),
-						));
-					}
-					let den_0 = den_0.try_into().expect("den_0 length matches batch size");
-					let den_1 = den_1.try_into().expect("den_1 length matches batch size");
-
-					let input = SharedFracAddInput::CommonNumerator {
+					let (num_0, num_1) = split_half(num);
+					let (den_0, den_1) = split_all(
+						den,
+						"den_0 length matches batch size",
+						"den_1 length matches batch size",
+					);
+					Ok(SharedFracAddInput::CommonNumerator {
 						num_0,
 						num_1,
 						den_0,
 						den_1,
-					};
-
-					return Ok(SharedFracAddLastLayerProver::new(
-						input, eval_point, num_evals, den_evals,
-					)?);
+					})
 				}
 				(
 					SharedLastLayer::CommonDenominator { den, num },
 					LastLayerSharing::CommonDenominator,
 				) => {
-					let (den_0_half, den_1_half) = den.split_half_ref();
-					let den_0 = FieldBuffer::new(den_0_half.log_len(), den_0_half.as_ref().into());
-					let den_1 = FieldBuffer::new(den_1_half.log_len(), den_1_half.as_ref().into());
-
-					let mut num_0 = Vec::with_capacity(N);
-					let mut num_1 = Vec::with_capacity(N);
-					for num in num.into_iter() {
-						let (num_0_half, num_1_half) = num.split_half_ref();
-						num_0.push(FieldBuffer::new(
-							num_0_half.log_len(),
-							num_0_half.as_ref().into(),
-						));
-						num_1.push(FieldBuffer::new(
-							num_1_half.log_len(),
-							num_1_half.as_ref().into(),
-						));
-					}
-					let num_0 = num_0.try_into().expect("num_0 length matches batch size");
-					let num_1 = num_1.try_into().expect("num_1 length matches batch size");
-
-					let input = SharedFracAddInput::CommonDenominator {
+					let (den_0, den_1) = split_half(den);
+					let (num_0, num_1) = split_all(
+						num,
+						"num_0 length matches batch size",
+						"num_1 length matches batch size",
+					);
+					Ok(SharedFracAddInput::CommonDenominator {
 						den_0,
 						den_1,
 						num_0,
 						num_1,
-					};
-
-					return Ok(SharedFracAddLastLayerProver::new(
-						input, eval_point, num_evals, den_evals,
-					)?);
+					})
 				}
-				(_, _) => return Err(Error::BatchLayerCountMismatch),
-			}
-		}
+				_ => Err(Error::BatchLayerCountMismatch),
+			},
+			None => {
+				let layers = provers
+					.into_iter()
+					.map(|prover| {
+						let (layer, remaining) = prover.pop_layer();
+						remaining
+							.is_none()
+							.then_some(layer)
+							.ok_or(Error::BatchLayerCountMismatch)
+					})
+					.collect::<Result<Vec<_>, _>>()?;
 
-		match sharing {
-			LastLayerSharing::CommonNumerator => {
-				let mut shared_num = None;
-				let mut den_0 = Vec::with_capacity(N);
-				let mut den_1 = Vec::with_capacity(N);
+				let (nums, dens): (Vec<_>, Vec<_>) = layers.into_iter().unzip();
 
-				for (idx, prover) in self.provers.into_iter().enumerate() {
-					let (layer, remaining) = prover.pop_layer();
-					if remaining.is_some() {
-						return Err(Error::BatchLayerCountMismatch);
+				match sharing {
+					LastLayerSharing::CommonNumerator => {
+						let shared_num = nums.into_iter().next().expect("batch size > 0");
+						let (num_0, num_1) = split_half(shared_num);
+						let (den_0, den_1) = split_all(
+							dens,
+							"den_0 length matches batch size",
+							"den_1 length matches batch size",
+						);
+						Ok(SharedFracAddInput::CommonNumerator {
+							num_0,
+							num_1,
+							den_0,
+							den_1,
+						})
 					}
-					let (num, den) = layer;
-					if idx == 0 {
-						shared_num = Some(num);
+					LastLayerSharing::CommonDenominator => {
+						let shared_den = dens.into_iter().next().expect("batch size > 0");
+						let (den_0, den_1) = split_half(shared_den);
+						let (num_0, num_1) = split_all(
+							nums,
+							"num_0 length matches batch size",
+							"num_1 length matches batch size",
+						);
+						Ok(SharedFracAddInput::CommonDenominator {
+							den_0,
+							den_1,
+							num_0,
+							num_1,
+						})
 					}
-
-					let (den_0_half, den_1_half) = den.split_half_ref();
-					den_0.push(FieldBuffer::new(den_0_half.log_len(), den_0_half.as_ref().into()));
-					den_1.push(FieldBuffer::new(den_1_half.log_len(), den_1_half.as_ref().into()));
 				}
-
-				let shared_num = shared_num.expect("batch size > 0");
-				let (num_0_half, num_1_half) = shared_num.split_half_ref();
-				let num_0 = FieldBuffer::new(num_0_half.log_len(), num_0_half.as_ref().into());
-				let num_1 = FieldBuffer::new(num_1_half.log_len(), num_1_half.as_ref().into());
-				let den_0 = den_0.try_into().expect("den_0 length matches batch size");
-				let den_1 = den_1.try_into().expect("den_1 length matches batch size");
-
-				let input = SharedFracAddInput::CommonNumerator {
-					num_0,
-					num_1,
-					den_0,
-					den_1,
-				};
-
-				Ok(SharedFracAddLastLayerProver::new(input, eval_point, num_evals, den_evals)?)
 			}
-			LastLayerSharing::CommonDenominator => {
-				let mut shared_den = None;
-				let mut num_0 = Vec::with_capacity(N);
-				let mut num_1 = Vec::with_capacity(N);
+		}?;
 
-				for (idx, prover) in self.provers.into_iter().enumerate() {
-					let (layer, remaining) = prover.pop_layer();
-					if remaining.is_some() {
-						return Err(Error::BatchLayerCountMismatch);
-					}
-					let (num, den) = layer;
-					if idx == 0 {
-						shared_den = Some(den);
-					}
-
-					let (num_0_half, num_1_half) = num.split_half_ref();
-					num_0.push(FieldBuffer::new(num_0_half.log_len(), num_0_half.as_ref().into()));
-					num_1.push(FieldBuffer::new(num_1_half.log_len(), num_1_half.as_ref().into()));
-				}
-
-				let shared_den = shared_den.expect("batch size > 0");
-				let (den_0_half, den_1_half) = shared_den.split_half_ref();
-				let den_0 = FieldBuffer::new(den_0_half.log_len(), den_0_half.as_ref().into());
-				let den_1 = FieldBuffer::new(den_1_half.log_len(), den_1_half.as_ref().into());
-				let num_0 = num_0.try_into().expect("num_0 length matches batch size");
-				let num_1 = num_1.try_into().expect("num_1 length matches batch size");
-
-				let input = SharedFracAddInput::CommonDenominator {
-					den_0,
-					den_1,
-					num_0,
-					num_1,
-				};
-
-				Ok(SharedFracAddLastLayerProver::new(input, eval_point, num_evals, den_evals)?)
-			}
-		}
+		Ok(SharedFracAddLastLayerProver::new(input, eval_point, num_evals, den_evals)?)
 	}
 
 	/// Runs the fractional addition check protocol over a batch of claims.
@@ -709,7 +621,7 @@ where
 				}
 			}
 
-			let (sumcheck_provers, remaining) = prover.layer_provers(claims)?;
+			let (sumcheck_provers, remaining) = prover.layer_provers(claims);
 			prover_opt = remaining;
 
 			let output = batch_prove_mle_and_write_evals(sumcheck_provers, transcript)?;
@@ -728,6 +640,25 @@ where
 	}
 }
 
+fn split_half<P: PackedField>(buffer: FieldBuffer<P>) -> (FieldBuffer<P>, FieldBuffer<P>) {
+	let (half_0, half_1) = buffer.split_half_ref();
+	(
+		FieldBuffer::new(half_0.log_len(), half_0.as_ref().into()),
+		FieldBuffer::new(half_1.log_len(), half_1.as_ref().into()),
+	)
+}
+
+fn split_all<P: PackedField, I, const N: usize>(
+	buffers: I,
+	left_msg: &'static str,
+	right_msg: &'static str,
+) -> ([FieldBuffer<P>; N], [FieldBuffer<P>; N])
+where
+	I: IntoIterator<Item = FieldBuffer<P>>,
+{
+	let (left, right): (Vec<_>, Vec<_>) = buffers.into_iter().map(split_half).unzip();
+	(left.try_into().expect(left_msg), right.try_into().expect(right_msg))
+}
 #[cfg(test)]
 mod tests {
 	use std::array;
@@ -850,11 +781,7 @@ mod tests {
 		});
 		let witnesses_clone = witnesses.clone();
 
-		let (batch_prover, sums) = BatchFracAddCheckProver::<P, N>::new_with_last_layer_sharing(
-			k,
-			witnesses,
-			LastLayerSharing::CommonNumerator,
-		);
+		let (batch_prover, sums) = BatchFracAddCheckProver::<P, N>::new(k, witnesses);
 		let eval_point = random_scalars::<F>(&mut rng, n);
 		let claims: [fracaddcheck::FracAddEvalClaim<F>; N] = array::from_fn(|i| {
 			let (num, den) = &sums[i];
@@ -937,64 +864,15 @@ mod tests {
 		let k = 1;
 
 		let shared_num = random_field_buffer::<P>(&mut rng, n + k);
-		let witnesses: [FractionalBuffer<P>; N] = array::from_fn(|_| {
-			let den = random_field_buffer::<P>(&mut rng, n + k);
-			(shared_num.clone(), den)
-		});
-		let witnesses_clone = witnesses.clone();
-
-		let (batch_prover, sums) = BatchFracAddCheckProver::<P, N>::new(k, witnesses);
-		let eval_point = random_scalars::<F>(&mut rng, n);
-		let claims: [fracaddcheck::FracAddEvalClaim<F>; N] = array::from_fn(|i| {
-			let (num, den) = &sums[i];
-			fracaddcheck::FracAddEvalClaim {
-				num_eval: evaluate(num, &eval_point),
-				den_eval: evaluate(den, &eval_point),
-				point: eval_point.clone(),
-			}
-		});
-
-		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prover_output = batch_prover
-			.prove(claims.clone(), &mut prover_transcript)
-			.unwrap();
-
-		let mut verifier_transcript = prover_transcript.into_verifier();
-		let verifier_output =
-			fracaddcheck::verify_batch(k, Vec::from(claims.clone()), &mut verifier_transcript)
-				.unwrap();
-
-		assert_eq!(prover_output.into_iter().collect::<Vec<_>>(), verifier_output);
-
-		for (output, (num, den)) in verifier_output.iter().zip(witnesses_clone.iter()) {
-			let expected_num = evaluate(num, &output.point);
-			let expected_den = evaluate(den, &output.point);
-			assert_eq!(output.num_eval, expected_num);
-			assert_eq!(output.den_eval, expected_den);
-		}
-	}
-
-	#[test]
-	fn test_frac_add_check_shared_last_layer_common_denominator() {
-		type P = Packed128b;
-		type F = <P as PackedField>::Scalar;
-		const N: usize = 3;
-
-		let mut rng = StdRng::seed_from_u64(0);
-		let n = 2;
-		let k = 1;
-
-		let shared_den = random_field_buffer::<P>(&mut rng, n + k);
-		let witnesses: [FractionalBuffer<P>; N] = array::from_fn(|_| {
-			let num = random_field_buffer::<P>(&mut rng, n + k);
-			(num, shared_den.clone())
-		});
-		let witnesses_clone = witnesses.clone();
+		let dens: [FieldBuffer<P>; N] =
+			array::from_fn(|_| random_field_buffer::<P>(&mut rng, n + k));
 
 		let (batch_prover, sums) = BatchFracAddCheckProver::<P, N>::new_with_last_layer_sharing(
 			k,
-			witnesses,
-			LastLayerSharing::CommonDenominator,
+			SharedLastLayer::CommonNumerator {
+				num: shared_num.clone(),
+				den: dens.clone(),
+			},
 		);
 		let eval_point = random_scalars::<F>(&mut rng, n);
 		let claims: [fracaddcheck::FracAddEvalClaim<F>; N] = array::from_fn(|i| {
@@ -1018,9 +896,61 @@ mod tests {
 
 		assert_eq!(prover_output.into_iter().collect::<Vec<_>>(), verifier_output);
 
-		for (output, (num, den)) in verifier_output.iter().zip(witnesses_clone.iter()) {
-			let expected_num = evaluate(num, &output.point);
-			let expected_den = evaluate(den, &output.point);
+		for (output, den) in verifier_output.iter().zip(dens) {
+			let expected_num = evaluate(&shared_num, &output.point);
+			let expected_den = evaluate(&den, &output.point);
+			assert_eq!(output.num_eval, expected_num);
+			assert_eq!(output.den_eval, expected_den);
+		}
+	}
+
+	#[test]
+	fn test_frac_add_check_shared_last_layer_common_denominator() {
+		type P = Packed128b;
+		type F = <P as PackedField>::Scalar;
+		const N: usize = 3;
+
+		let mut rng = StdRng::seed_from_u64(0);
+		let n = 2;
+		let k = 1;
+
+		let shared_den = random_field_buffer::<P>(&mut rng, n + k);
+		let nums: [FieldBuffer<P>; N] =
+			array::from_fn(|_| random_field_buffer::<P>(&mut rng, n + k));
+
+		let (batch_prover, sums) = BatchFracAddCheckProver::<P, N>::new_with_last_layer_sharing(
+			k,
+			SharedLastLayer::CommonDenominator {
+				den: shared_den.clone(),
+				num: nums.clone(),
+			},
+		);
+		let eval_point = random_scalars::<F>(&mut rng, n);
+		let claims: [fracaddcheck::FracAddEvalClaim<F>; N] = array::from_fn(|i| {
+			let (num, den) = &sums[i];
+			fracaddcheck::FracAddEvalClaim {
+				num_eval: evaluate(num, &eval_point),
+				den_eval: evaluate(den, &eval_point),
+				point: eval_point.clone(),
+			}
+		});
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let prover_output = batch_prover
+			.prove(claims.clone(), &mut prover_transcript)
+			.unwrap();
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let verifier_output =
+			fracaddcheck::verify_batch(k, Vec::from(claims.clone()), &mut verifier_transcript)
+				.unwrap();
+
+		assert_eq!(prover_output.into_iter().collect::<Vec<_>>(), verifier_output);
+
+		for (output, num) in verifier_output.iter().zip(nums) {
+			let expected_den = evaluate(&shared_den, &output.point);
+			let expected_num = evaluate(&num, &output.point);
+
 			assert_eq!(output.num_eval, expected_num);
 			assert_eq!(output.den_eval, expected_den);
 		}
