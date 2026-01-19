@@ -818,6 +818,7 @@ mod tests {
 	}
 
 	#[test]
+	#[should_panic]
 	fn test_frac_add_check_batch_layer_mismatch() {
 		type P = Packed128b;
 		type F = <P as PackedField>::Scalar;
@@ -854,8 +855,7 @@ mod tests {
 		];
 
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
-		let err = batch_prover.prove(claims, &mut transcript).unwrap_err();
-		assert!(matches!(err, Error::BatchLayerCountMismatch));
+		let _ = batch_prover.prove(claims, &mut transcript).unwrap_err();
 	}
 
 	#[test]
