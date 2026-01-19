@@ -1,3 +1,5 @@
+use std::{array, iter::chain};
+
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, line::extrapolate_line_packed, multilinear::eq};
 use binius_transcript::{
@@ -6,16 +8,19 @@ use binius_transcript::{
 };
 use binius_verifier::protocols::prodcheck::MultilinearEvalClaim;
 use itertools::Itertools;
-use std::{array, iter::chain};
 
-use crate::protocols::logup::LogUp;
-use crate::protocols::sumcheck::{
-	Error as SumcheckError, batch::BatchSumcheckOutput,
-	batch_quadratic::BatchQuadraticSumcheckProver,
-};
 use crate::protocols::{
-	logup::helper::{generate_index_fingerprints, generate_pushforward},
-	sumcheck::batch::{batch_prove_and_write_evals, batch_prove_mle_and_write_evals},
+	logup::{
+		LogUp,
+		helper::{generate_index_fingerprints, generate_pushforward},
+	},
+	sumcheck::{
+		Error as SumcheckError,
+		batch::{
+			BatchSumcheckOutput, batch_prove_and_write_evals, batch_prove_mle_and_write_evals,
+		},
+		batch_quadratic::BatchQuadraticSumcheckProver,
+	},
 };
 
 /// Output of the pushforward sumcheck, grouped by lookup and table claims.

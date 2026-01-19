@@ -29,9 +29,11 @@ pub struct BatchQuadraticSumcheckProver<
 	multilinears: Box<dyn AsSlicesMut<P, N> + Send>,
 	// Full quadratic composition evaluated on the "x = 1" branch for each multilinear.
 	composition: Composition,
-	// Composition restricted to highest-degree terms for the "x = infinity" evaluation (Karatsuba).
+	// Composition restricted to highest-degree terms for the "x = infinity" evaluation
+	// (Karatsuba).
 	infinity_composition: InfinityComposition,
-	// State machine storage: last round's sum claims (execute input) or current coeffs (fold input).
+	// State machine storage: last round's sum claims (execute input) or current coeffs (fold
+	// input).
 	last_coeffs_or_sum: RoundCoeffsOrSums<P::Scalar, M>,
 	// Tracks the number of variables remaining in the sumcheck.
 	n_vars_remaining: usize,

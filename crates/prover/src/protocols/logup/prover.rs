@@ -1,8 +1,9 @@
+use std::array;
+
 use binius_field::{Field, PackedField};
 use binius_math::FieldBuffer;
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_verifier::protocols::logup::LogUpLookupClaims;
-use std::array;
 
 use crate::protocols::{
 	fracaddcheck,

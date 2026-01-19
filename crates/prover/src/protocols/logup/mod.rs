@@ -9,6 +9,8 @@ pub mod pushforward;
 #[cfg(test)]
 mod tests;
 
+use std::{array, iter::chain};
+
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, line::extrapolate_line_packed, multilinear::eq};
 use binius_transcript::{
@@ -17,13 +19,10 @@ use binius_transcript::{
 };
 use binius_verifier::protocols::prodcheck::MultilinearEvalClaim;
 use itertools::Itertools;
-use std::{array, iter::chain};
 
 use crate::protocols::{
-	fracaddcheck::FracAddCheckProver, logup::helper::generate_index_fingerprints,
-};
-use crate::protocols::{
-	logup::prover::build_pushforwards,
+	fracaddcheck::FracAddCheckProver,
+	logup::{helper::generate_index_fingerprints, prover::build_pushforwards},
 	sumcheck::{
 		Error as SumcheckError, batch::BatchSumcheckOutput,
 		batch_quadratic::BatchQuadraticSumcheckProver,

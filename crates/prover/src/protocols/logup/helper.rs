@@ -53,9 +53,8 @@ where
 /// Algorithm:
 /// - Precompute per-bit powers of `fingerprint_scalar`.
 /// - Group powers into byte-sized chunks and build 256-entry lookup tables.
-/// - For each index, scan bytes from least significant to most significant and
-///   accumulate the table contributions (plus the shift), stopping once the
-///   remaining bits are zero.
+/// - For each index, scan bytes from least significant to most significant and accumulate the table
+///   contributions (plus the shift), stopping once the remaining bits are zero.
 ///
 /// Notes:
 /// - Only the lowest `effective_log_len` bits contribute to the fingerprint.

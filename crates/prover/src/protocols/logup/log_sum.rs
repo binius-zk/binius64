@@ -1,5 +1,5 @@
-use crate::protocols::logup::helper::generate_index_fingerprints;
-use crate::protocols::{fracaddcheck::BatchFracAddCheckProver, logup::LogUp};
+use std::array;
+
 use binius_field::{Field, PackedField};
 use binius_math::FieldBuffer;
 use binius_transcript::{
@@ -9,20 +9,26 @@ use binius_transcript::{
 use binius_verifier::protocols::fracaddcheck::FracAddEvalClaim;
 use itertools::Itertools;
 
+use crate::protocols::{
+	fracaddcheck::{BatchFracAddCheckProver, LastLayerSharing},
+	logup::{LogUp, helper::generate_index_fingerprints},
+};
+
 impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUPS: usize>
 	LogUp<P, N_TABLES, N_LOOKUPS>
 {
 	/// Converts the top layer of each frac-add tree into evaluation claims.
-	fn tree_sums_to_claims(
-		sums: Vec<(FieldBuffer<P>, FieldBuffer<P>)>,
-	) -> Vec<FracAddEvalClaim<F>> {
-		sums.into_iter()
-			.map(|(num, den)| FracAddEvalClaim {
+	fn tree_sums_to_claims<const N: usize>(
+		sums: [(FieldBuffer<P>, FieldBuffer<P>); N],
+	) -> [FracAddEvalClaim<F>; N] {
+		array::from_fn(|i| {
+			let (num, den) = &sums[i];
+			FracAddEvalClaim {
 				num_eval: num.get(0),
 				den_eval: den.get(0),
 				point: Vec::new(),
-			})
-			.collect()
+			}
+		})
 	}
 
 	fn common_denominator(
@@ -46,8 +52,8 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	///
 	/// Two batches are produced:
 	/// 1. `eq_kernel / (fingerprinted_index - shift)` for each lookup.
-	/// 2. `push_forward / common_denominator`, where the denominator is the
-	///    fingerprint of indices `0..len(push_forward)`.
+	/// 2. `push_forward / common_denominator`, where the denominator is the fingerprint of indices
+	///    `0..len(push_forward)`.
 	///
 	/// Returns the top-layer fractional-sum claims for verifier consumption.
 	pub fn prove_log_sum<Challenger_: Challenger>(
@@ -68,13 +74,14 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 				.all_equal()
 		);
 
-		let eq_witnesses = self
-			.fingerprinted_indexes
-			.iter()
-			.map(|idx| (self.eq_kernel.clone(), idx.clone()))
-			.collect::<Vec<_>>();
+		let eq_witnesses =
+			array::from_fn(|i| (self.eq_kernel.clone(), self.fingerprinted_indexes[i].clone()));
 
-		let (eq_prover, eq_sums) = BatchFracAddCheckProver::<P>::new(eq_log_len, eq_witnesses);
+		let (eq_prover, eq_sums) = BatchFracAddCheckProver::<P, N_LOOKUPS>::new_with_last_layer_sharing(
+			eq_log_len,
+			eq_witnesses,
+			LastLayerSharing::CommonNumerator,
+		);
 		let eq_claims = Self::tree_sums_to_claims(eq_sums);
 		eq_prover.prove(eq_claims.clone(), transcript)?;
 
@@ -85,19 +92,17 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			self.shift_scalar,
 		);
 
-		let push_witnesses = self
-			.push_forwards
-			.iter()
-			.cloned()
-			.map(|push_forward| (push_forward, common_denominator.clone()))
-			.collect();
+		let push_witnesses =
+			array::from_fn(|i| (self.push_forwards[i].clone(), common_denominator.clone()));
 
-		let (push_prover, push_sums) =
-			BatchFracAddCheckProver::<P>::new(eq_log_len, push_witnesses);
+		let (push_prover, push_sums) = BatchFracAddCheckProver::<P, N_LOOKUPS>::new_with_last_layer_sharing(
+			eq_log_len,
+			push_witnesses,
+			LastLayerSharing::CommonDenominator,
+		);
 		let push_claims = Self::tree_sums_to_claims(push_sums);
-
 		push_prover.prove(push_claims.clone(), transcript)?;
 
-		Ok((eq_claims, push_claims))
+		Ok((Vec::from(eq_claims), Vec::from(push_claims)))
 	}
 }
