@@ -449,8 +449,8 @@ where
 	/// point and per-claim numerator/denominator evaluations, and then constructs a
 	/// `SharedFracAddInput` in one of two ways:
 	/// - If `self.shared_last_layer` is present, it verifies that the requested `sharing` mode
-	///   matches the shared layer variant and splits the shared buffer plus per-claim buffers
-	///   into halves.
+	///   matches the shared layer variant and splits the shared buffer plus per-claim buffers into
+	///   halves.
 	/// - Otherwise, it pops the final layer from each prover, ensures there are no remaining
 	///   layers, and then builds the shared input from those per-claim buffers, again splitting
 	///   into halves.
