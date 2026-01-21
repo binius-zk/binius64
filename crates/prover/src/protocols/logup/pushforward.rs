@@ -64,6 +64,9 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	}
 }
 
+type PushforwardProver<const N_LOOKUPS: usize, const N_MLES: usize, P, Composition> =
+	BatchQuadraticSumcheckProver<P, Composition, Composition, N_MLES, N_LOOKUPS>;
+
 /// Constructs the sumcheck prover for the pushforward relation.
 fn make_pushforward_sumcheck_prover<
 	P: PackedField<Scalar = F>,
@@ -77,13 +80,7 @@ fn make_pushforward_sumcheck_prover<
 	push_forwards: &[FieldBuffer<P>; N_LOOKUPS],
 	lookup_evals: [F; N_LOOKUPS],
 ) -> Result<
-	BatchQuadraticSumcheckProver<
-		P,
-		impl Fn([P; N_MLES], &mut [P; N_LOOKUPS]),
-		impl Fn([P; N_MLES], &mut [P; N_LOOKUPS]),
-		N_MLES,
-		N_LOOKUPS,
-	>,
+	PushforwardProver<N_LOOKUPS, N_MLES, P, impl Fn([P; N_MLES], &mut [P; N_LOOKUPS])>,
 	SumcheckError,
 > {
 	assert!(N_TABLES + N_LOOKUPS == N_MLES);

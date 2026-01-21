@@ -32,16 +32,8 @@ pub struct FracAddCheckProver<P: PackedField> {
 /// Batched prover for multiple fractional-addition trees sharing the same depth.
 pub struct BatchFracAddCheckProver<P: PackedField, const N: usize> {
 	provers: [FracAddCheckProver<P>; N],
-	/// Optional sharing mode for the final layer.
-	last_layer_sharing: Option<LastLayerSharing>,
 	/// Shared last-layer witness, when available.
 	shared_last_layer: Option<SharedLastLayer<P, N>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LastLayerSharing {
-	CommonNumerator,
-	CommonDenominator,
 }
 
 #[derive(Debug)]
@@ -309,7 +301,6 @@ where
 		(
 			Self {
 				provers,
-				last_layer_sharing: None,
 				shared_last_layer: None,
 			},
 			sums,
@@ -371,10 +362,6 @@ where
 		};
 
 		let (mut prover, sums) = Self::new(k.saturating_sub(1), pruned_witnesses);
-		prover.last_layer_sharing = match &sharing {
-			SharedLastLayer::CommonNumerator { .. } => Some(LastLayerSharing::CommonNumerator),
-			SharedLastLayer::CommonDenominator { .. } => Some(LastLayerSharing::CommonDenominator),
-		};
 		prover.shared_last_layer = Some(sharing);
 
 		(prover, sums)
@@ -401,7 +388,7 @@ where
 
 		let expected_len = self
 			.provers
-			.get(0)
+			.first()
 			.and_then(|prover| prover.layers.last())
 			.map(|(num, _)| num.log_len().saturating_sub(1))
 			.unwrap_or(0);
@@ -410,7 +397,7 @@ where
 		assert!(claims.iter().all(|x| x.point.len() == expected_len));
 		let mut remaining: [Option<FracAddCheckProver<P>>; N] = array::from_fn(|_| None);
 
-		let sumcheck_provers = zip(self.provers.into_iter(), claims)
+		let sumcheck_provers = zip(self.provers, claims)
 			.enumerate()
 			.map(|(idx, (prover, claim))| {
 				let (sumcheck_prover, next) = prover.layer_prover(claim);
@@ -427,13 +414,11 @@ where
 		let next_provers = match remaining[0] {
 			Some(_) => Some(BatchFracAddCheckProver {
 				provers: remaining.map(|opt| opt.expect("remaining prover present")),
-				last_layer_sharing: self.last_layer_sharing,
 				shared_last_layer: self.shared_last_layer,
 			}),
 			None => match self.shared_last_layer {
 				Some(_) => Some(BatchFracAddCheckProver {
 					provers: array::from_fn(|_| FracAddCheckProver { layers: Vec::new() }),
-					last_layer_sharing: self.last_layer_sharing,
 					shared_last_layer: self.shared_last_layer,
 				}),
 				None => None,
@@ -441,142 +426,6 @@ where
 		};
 
 		(sumcheck_provers, next_provers)
-	}
-
-	/// Builds a shared last-layer prover for a batched fractional-addition check.
-	///
-	/// This validates that all claims have the expected point length, extracts the evaluation
-	/// point and per-claim numerator/denominator evaluations, and then constructs a
-	/// `SharedFracAddInput` in one of two ways:
-	/// - If `self.shared_last_layer` is present, it verifies that the requested `sharing` mode
-	///   matches the shared layer variant and splits the shared buffer plus per-claim buffers into
-	///   halves.
-	/// - Otherwise, it pops the final layer from each prover, ensures there are no remaining
-	///   layers, and then builds the shared input from those per-claim buffers, again splitting
-	///   into halves.
-	///
-	/// The resulting input is used to initialize a `SharedFracAddLastLayerProver`.
-	fn shared_last_layer_prover(
-		self,
-		claims: [FracAddEvalClaim<F>; N],
-		sharing: LastLayerSharing,
-	) -> Result<SharedFracAddLastLayerProver<P, N>, Error> {
-		let expected_len = self
-			.shared_last_layer
-			.as_ref()
-			.map(|shared| match shared {
-				SharedLastLayer::CommonNumerator { num, .. } => num.log_len().saturating_sub(1),
-				SharedLastLayer::CommonDenominator { den, .. } => den.log_len().saturating_sub(1),
-			})
-			.unwrap_or_else(|| {
-				self.provers
-					.get(0)
-					.and_then(|prover| prover.layers.last())
-					.map(|(num, _)| num.log_len().saturating_sub(1))
-					.unwrap_or(0)
-			});
-		// Claims must align with the last-layer dimension of the witness buffers.
-		assert!(claims.iter().all(|x| x.point.len() == expected_len));
-
-		let eval_point = claims[0].point.clone();
-		let num_evals = array::from_fn(|i| claims[i].num_eval);
-		let den_evals = array::from_fn(|i| claims[i].den_eval);
-
-		let BatchFracAddCheckProver {
-			provers,
-			shared_last_layer,
-			..
-		} = self;
-
-		let input = match shared_last_layer {
-			Some(shared_last_layer) => match (shared_last_layer, sharing) {
-				(
-					SharedLastLayer::CommonNumerator { num, den },
-					LastLayerSharing::CommonNumerator,
-				) => {
-					let (num_0, num_1) = split_half(num);
-					let (den_0, den_1) = split_all(
-						den,
-						"den_0 length matches batch size",
-						"den_1 length matches batch size",
-					);
-					Ok(SharedFracAddInput::CommonNumerator {
-						num_0,
-						num_1,
-						den_0,
-						den_1,
-					})
-				}
-				(
-					SharedLastLayer::CommonDenominator { den, num },
-					LastLayerSharing::CommonDenominator,
-				) => {
-					let (den_0, den_1) = split_half(den);
-					let (num_0, num_1) = split_all(
-						num,
-						"num_0 length matches batch size",
-						"num_1 length matches batch size",
-					);
-					Ok(SharedFracAddInput::CommonDenominator {
-						den_0,
-						den_1,
-						num_0,
-						num_1,
-					})
-				}
-				_ => Err(Error::BatchLayerCountMismatch),
-			},
-			None => {
-				let layers = provers
-					.into_iter()
-					.map(|prover| {
-						let (layer, remaining) = prover.pop_layer();
-						// All provers must be at their final layer for shared reduction.
-						remaining
-							.is_none()
-							.then_some(layer)
-							.ok_or(Error::BatchLayerCountMismatch)
-					})
-					.collect::<Result<Vec<_>, _>>()?;
-
-				let (nums, dens): (Vec<_>, Vec<_>) = layers.into_iter().unzip();
-
-				match sharing {
-					LastLayerSharing::CommonNumerator => {
-						let shared_num = nums.into_iter().next().expect("batch size > 0");
-						let (num_0, num_1) = split_half(shared_num);
-						let (den_0, den_1) = split_all(
-							dens,
-							"den_0 length matches batch size",
-							"den_1 length matches batch size",
-						);
-						Ok(SharedFracAddInput::CommonNumerator {
-							num_0,
-							num_1,
-							den_0,
-							den_1,
-						})
-					}
-					LastLayerSharing::CommonDenominator => {
-						let shared_den = dens.into_iter().next().expect("batch size > 0");
-						let (den_0, den_1) = split_half(shared_den);
-						let (num_0, num_1) = split_all(
-							nums,
-							"num_0 length matches batch size",
-							"num_1 length matches batch size",
-						);
-						Ok(SharedFracAddInput::CommonDenominator {
-							den_0,
-							den_1,
-							num_0,
-							num_1,
-						})
-					}
-				}
-			}
-		}?;
-
-		Ok(SharedFracAddLastLayerProver::new(input, eval_point, num_evals, den_evals)?)
 	}
 
 	/// Runs the fractional addition check protocol over a batch of claims.
@@ -603,24 +452,56 @@ where
 			let n_layers = prover.provers[0].n_layers();
 			if n_layers == 0 {
 				// All per-prover layers consumed; only a shared last-layer remains (if configured).
-				if let Some(sharing) = prover.last_layer_sharing {
-					if prover.shared_last_layer.is_some() {
-						let shared_prover = prover.shared_last_layer_prover(claims, sharing)?;
-						let output =
-							batch_prove_mle_and_write_evals(vec![shared_prover], transcript)?;
+				if let Some(shared_last_layer) = prover.shared_last_layer {
+					let eval_point = claims[0].point.clone();
+					let num_evals: [F; N] = array::from_fn(|i| claims[i].num_eval);
+					let den_evals: [F; N] = array::from_fn(|i| claims[i].den_eval);
 
-						let r = transcript.sample();
-						let mut next_point = output.challenges;
-						next_point.push(r);
+					let input = match shared_last_layer {
+						SharedLastLayer::CommonNumerator { num, den } => {
+							let (num_0, num_1) = split_half(num);
+							let (den_0, den_1) = split_all(
+								den,
+								"den_0 length matches batch size",
+								"den_1 length matches batch size",
+							);
+							SharedFracAddInput::CommonNumerator {
+								num_0,
+								num_1,
+								den_0,
+								den_1,
+							}
+						}
+						SharedLastLayer::CommonDenominator { den, num } => {
+							let (den_0, den_1) = split_half(den);
+							let (num_0, num_1) = split_all(
+								num,
+								"num_0 length matches batch size",
+								"num_1 length matches batch size",
+							);
+							SharedFracAddInput::CommonDenominator {
+								den_0,
+								den_1,
+								num_0,
+								num_1,
+							}
+						}
+					};
+					let shared_prover =
+						SharedFracAddLastLayerProver::new(input, eval_point, num_evals, den_evals)?;
+					let output = batch_prove_mle_and_write_evals(vec![shared_prover], transcript)?;
 
-						let next_claims = Self::convert_shared_evals_to_claims(
-							output.multilinear_evals,
-							next_point,
-							r,
-						)?;
+					let r = transcript.sample();
+					let mut next_point = output.challenges;
+					next_point.push(r);
 
-						return Ok(next_claims);
-					}
+					let next_claims = Self::convert_shared_evals_to_claims(
+						output.multilinear_evals,
+						next_point,
+						r,
+					)?;
+
+					claims = next_claims;
 				}
 				return Ok(claims);
 			}
@@ -836,7 +717,6 @@ mod tests {
 
 		let batch_prover = BatchFracAddCheckProver::<P, 2> {
 			provers: [prover_a, prover_b],
-			last_layer_sharing: None,
 			shared_last_layer: None,
 		};
 

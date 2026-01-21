@@ -8,9 +8,10 @@ use binius_verifier::protocols::fracaddcheck::FracAddEvalClaim;
 use itertools::Itertools;
 
 use crate::protocols::{
-	fracaddcheck::{BatchFracAddCheckProver, SharedLastLayer},
+	fracaddcheck::{BatchFracAddCheckProver, Error, SharedLastLayer},
 	logup::{LogUp, helper::generate_index_fingerprints},
 };
+type BatchLogSumClaims<F, const N: usize> = [FracAddEvalClaim<F>; N];
 
 impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUPS: usize>
 	LogUp<P, N_TABLES, N_LOOKUPS>
@@ -61,10 +62,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	pub fn prove_log_sum<Challenger_: Challenger>(
 		&self,
 		transcript: &mut ProverTranscript<Challenger_>,
-	) -> Result<
-		(Vec<FracAddEvalClaim<F>>, Vec<FracAddEvalClaim<F>>),
-		crate::protocols::fracaddcheck::Error,
-	> {
+	) -> Result<(BatchLogSumClaims<F, N_LOOKUPS>, BatchLogSumClaims<F, N_LOOKUPS>), Error> {
 		let eq_log_len = self.eq_kernel.log_len();
 
 		assert!(eq_log_len == self.fingerprinted_indexes[0].log_len());
@@ -109,6 +107,6 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		let push_claims = Self::tree_sums_to_claims(push_sums);
 		push_prover.prove(push_claims.clone(), transcript)?;
 
-		Ok((Vec::from(eq_claims), Vec::from(push_claims)))
+		Ok((eq_claims, push_claims))
 	}
 }

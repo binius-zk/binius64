@@ -92,7 +92,7 @@ pub fn verify_batch<F: Field, Challenger_: Challenger>(
 
 	let mut claims = claims;
 
-	for round in (1..=k).rev() {
+	for round in (0..k).rev() {
 		let eval_point = claims[0].point.clone();
 		if !claims.iter().all(|claim| claim.point == eval_point) {
 			return Err(VerificationError::BatchPointMismatch.into());
