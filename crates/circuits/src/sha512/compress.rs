@@ -229,7 +229,7 @@ fn round(builder: &CircuitBuilder, round: usize, state: State, w: &[Wire; 80]) -
 	State([a, b, c, d, e, f, g, h])
 }
 
-/// Ch(x, y, z) = (x AND y) XOR (NOT y AND z)
+/// Ch(x, y, z) = (x AND y) XOR (NOT x AND z)
 ///             = z XOR (x AND (y XOR z))
 fn ch(builder: &CircuitBuilder, x: Wire, y: Wire, z: Wire) -> Wire {
 	builder.bxor(z, builder.band(x, builder.bxor(y, z)))
