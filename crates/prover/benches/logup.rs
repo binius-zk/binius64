@@ -133,6 +133,84 @@ fn bench_logup_prove(c: &mut Criterion) {
 	group.finish();
 }
 
+fn bench_logup_prove_pushforward(c: &mut Criterion) {
+	let mut group = c.benchmark_group("logup/prove_pushforward");
+
+	for log_len in [12usize, 16, 20] {
+		let lookup_len = 1usize << log_len;
+		group.throughput(Throughput::Elements((lookup_len * N_LOOKUPS) as u64));
+
+		let case = build_case(log_len);
+
+		group.bench_function(format!("log_len={log_len}"), |b| {
+			let indexes_ref: [&[usize]; N_LOOKUPS] = array::from_fn(|i| case.indexes[i].as_slice());
+
+			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			let logup = LogUp::<P, N_TABLES, N_LOOKUPS>::new(
+				indexes_ref,
+				case.table_ids,
+				&case.eval_point,
+				case.lookup_evals,
+				case.tables.clone(),
+				&mut transcript,
+			);
+			let base_transcript = transcript.clone();
+
+			b.iter_batched(
+				|| base_transcript.clone(),
+				|mut transcript| {
+					logup
+						.prove_pushforward::<StdChallenger, N_MLES>(&mut transcript)
+						.unwrap();
+				},
+				BatchSize::SmallInput,
+			);
+		});
+	}
+
+	group.finish();
+}
+
+fn bench_logup_prove_log_sum(c: &mut Criterion) {
+	let mut group = c.benchmark_group("logup/prove_log_sum");
+
+	for log_len in [12usize, 16, 20] {
+		let lookup_len = 1usize << log_len;
+		group.throughput(Throughput::Elements((lookup_len * N_LOOKUPS) as u64));
+
+		let case = build_case(log_len);
+
+		group.bench_function(format!("log_len={log_len}"), |b| {
+			let indexes_ref: [&[usize]; N_LOOKUPS] = array::from_fn(|i| case.indexes[i].as_slice());
+
+			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			let logup = LogUp::<P, N_TABLES, N_LOOKUPS>::new(
+				indexes_ref,
+				case.table_ids,
+				&case.eval_point,
+				case.lookup_evals,
+				case.tables.clone(),
+				&mut transcript,
+			);
+
+			let mut base_transcript = transcript.clone();
+			logup
+				.prove_pushforward::<StdChallenger, N_MLES>(&mut base_transcript)
+				.unwrap();
+
+			b.iter_batched(
+				|| base_transcript.clone(),
+				|mut transcript| {
+					logup.prove_log_sum(&mut transcript).unwrap();
+				},
+				BatchSize::SmallInput,
+			);
+		});
+	}
+
+	group.finish();
+}
+
 fn bench_logup_verify(c: &mut Criterion) {
 	let mut group = c.benchmark_group("logup/verify");
 
@@ -181,5 +259,12 @@ fn bench_logup_verify(c: &mut Criterion) {
 	group.finish();
 }
 
-criterion_group!(logup, bench_logup_new, bench_logup_prove, bench_logup_verify);
+criterion_group!(
+	logup,
+	bench_logup_new,
+	bench_logup_prove,
+	bench_logup_prove_pushforward,
+	bench_logup_prove_log_sum,
+	bench_logup_verify
+);
 criterion_main!(logup);
