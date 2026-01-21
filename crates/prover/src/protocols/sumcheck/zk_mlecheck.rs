@@ -94,7 +94,7 @@ impl<F: Field, P: PackedField<Scalar = F>> Mask<P> {
 		(self.degree + 1).next_power_of_two().ilog2() as usize
 	}
 
-	/// Gets the coefficient g_i[j] (coefficient of X^j in g_i).
+	/// Gets the coefficient $g_{i,j}$ (coefficient of $X^j$ in $g_i$).
 	pub fn get_coeff(&self, var_index: usize, coeff_index: usize) -> F {
 		debug_assert!(var_index < self.n_vars);
 		debug_assert!(coeff_index <= self.degree);

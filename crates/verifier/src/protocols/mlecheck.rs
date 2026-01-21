@@ -61,7 +61,7 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 /// This protocol is based on the zero-knowledge sumcheck technique from [Libra], with a
 /// modification. When the field has characteristic 2, the Libra ZK-sumcheck protocol is not hiding.
 /// Instead, the mask polynomial $g$ is batched together with the multivariate polynomial whose MLE
-/// is being evaluted, whereas Libra would batch the mask polynomial together with the MLE itself.
+/// is being evaluated, whereas Libra would batch the mask polynomial together with the MLE itself.
 ///
 /// [Libra]: <https://dl.acm.org/doi/10.1007/978-3-030-26954-8_24>
 pub fn verify_zk<F: Field, Challenger_: Challenger>(
