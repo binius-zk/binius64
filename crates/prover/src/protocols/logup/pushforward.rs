@@ -40,11 +40,27 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	) -> Result<PushforwardEvalClaims<F>, SumcheckError> {
 		// TODO: Remove implicit assumption of equal table size.
 		assert_eq!(N_TABLES + N_LOOKUPS, N_MLES);
+
+		let mles: [FieldBuffer<P>; N_MLES] =
+			chain(self.push_forwards.iter().cloned(), self.tables.iter().cloned())
+				.collect_array()
+				.expect("N_TABLES + N_LOOKUPS == N_MLES");
+
+		let pushforward_composition = |mle_evals: [P; N_MLES], comp_evals: &mut [P; N_LOOKUPS]| {
+			// Enforce pushforward[i] * table[table_id[i]] at each lookup slot.
+			// The table index depends on the lookup batch, not on the MLE position.
+			let (pushforwards, tables) = mle_evals.split_at(N_LOOKUPS);
+			for i in 0..N_LOOKUPS {
+				comp_evals[i] = pushforwards[i] * tables[self.table_ids[i]]
+			}
+		};
+		// The composition is purely quadratic, so the infinity composition matches the regular one.
+
 		// Build a single quadratic sumcheck that ties each lookup batch to its table.
-		let prover = make_pushforward_sumcheck_prover::<P, F, N_TABLES, N_LOOKUPS, N_MLES>(
-			&self.table_ids,
-			&self.tables,
-			&self.push_forwards,
+		let prover = BatchQuadraticSumcheckProver::new(
+			mles,
+			pushforward_composition,
+			pushforward_composition,
 			self.lookup_evals,
 		)?;
 
@@ -62,46 +78,4 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			table_evals: table_evals.to_vec(),
 		})
 	}
-}
-
-type PushforwardProver<const N_LOOKUPS: usize, const N_MLES: usize, P, Composition> =
-	BatchQuadraticSumcheckProver<P, Composition, Composition, N_MLES, N_LOOKUPS>;
-
-/// Constructs the sumcheck prover for the pushforward relation.
-fn make_pushforward_sumcheck_prover<
-	P: PackedField<Scalar = F>,
-	F: Field,
-	const N_TABLES: usize,
-	const N_LOOKUPS: usize,
-	const N_MLES: usize,
->(
-	table_ids: &[usize; N_LOOKUPS],
-	tables: &[FieldBuffer<P>; N_TABLES],
-	push_forwards: &[FieldBuffer<P>; N_LOOKUPS],
-	lookup_evals: [F; N_LOOKUPS],
-) -> Result<
-	PushforwardProver<N_LOOKUPS, N_MLES, P, impl Fn([P; N_MLES], &mut [P; N_LOOKUPS])>,
-	SumcheckError,
-> {
-	assert!(N_TABLES + N_LOOKUPS == N_MLES);
-	let mles: [FieldBuffer<P>; N_MLES] =
-		chain(push_forwards.iter().cloned(), tables.iter().cloned())
-			.collect_array()
-			.expect("N_TABLES + N_LOOKUPS == N_MLES");
-
-	let pushforward_composition = |mle_evals: [P; N_MLES], comp_evals: &mut [P; N_LOOKUPS]| {
-		// Enforce pushforward[i] * table[table_id[i]] at each lookup slot.
-		// The table index depends on the lookup batch, not on the MLE position.
-		let (pushforwards, tables) = mle_evals.split_at(N_LOOKUPS);
-		for i in 0..N_LOOKUPS {
-			comp_evals[i] = pushforwards[i] * tables[table_ids[i]]
-		}
-	};
-	// The composition is purely quadratic, so the infinity composition matches the regular one.
-	BatchQuadraticSumcheckProver::new(
-		mles,
-		pushforward_composition,
-		pushforward_composition,
-		lookup_evals,
-	)
 }
