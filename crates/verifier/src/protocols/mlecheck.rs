@@ -7,6 +7,17 @@ use binius_transcript::{
 
 use crate::protocols::sumcheck::{self, RoundCoeffs, SumcheckOutput};
 
+/// Output of the zero-knowledge MLE-check verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifyZKOutput<F: Field> {
+	/// The reduced evaluation of the main polynomial at the challenge point.
+	pub eval: F,
+	/// The evaluation of the mask polynomial at the challenge point.
+	pub mask_eval: F,
+	/// The sequence of challenge values from each round.
+	pub challenges: Vec<F>,
+}
+
 /// An MLE-check protocol is an interactive protocol similar to sumcheck, but with modifications
 /// introduced in [Gruen24], Section 3.
 ///
@@ -69,7 +80,7 @@ pub fn verify_zk<F: Field, Challenger_: Challenger>(
 	degree: usize,
 	eval: F,
 	transcript: &mut VerifierTranscript<Challenger_>,
-) -> Result<SumcheckOutput<F>, sumcheck::Error> {
+) -> Result<VerifyZKOutput<F>, sumcheck::Error> {
 	// Read the evaluation of the MLE of the mask polynomial (g).
 	let mask_eval: F = transcript.message().read()?;
 
@@ -86,8 +97,9 @@ pub fn verify_zk<F: Field, Challenger_: Challenger>(
 	let mask_eval_out: F = transcript.message().read()?;
 
 	let eval_out = batch_eval_out - batch_challenge * mask_eval_out;
-	Ok(SumcheckOutput {
+	Ok(VerifyZKOutput {
 		eval: eval_out,
+		mask_eval: mask_eval_out,
 		challenges,
 	})
 }

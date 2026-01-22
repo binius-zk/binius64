@@ -543,7 +543,11 @@ mod tests {
 
 		// Convert to verifier transcript and run ZK verification
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let sumcheck_output = mlecheck::verify_zk::<B128, _>(
+		let mlecheck::VerifyZKOutput {
+			eval,
+			mask_eval,
+			challenges,
+		} = mlecheck::verify_zk::<B128, _>(
 			&eval_point,
 			main_degree.max(mask_degree), // batched polynomial degree
 			main_eval_claim,
@@ -555,14 +559,18 @@ mod tests {
 		let main_eval_out: B128 = verifier_transcript.message().read().unwrap();
 
 		// Verify the reduced evaluation matches
-		assert_eq!(main_eval_out, sumcheck_output.eval);
+		assert_eq!(main_eval_out, eval);
 
 		// Compute the challenge point (reverse for high-to-low order)
-		let mut challenge_point = sumcheck_output.challenges.clone();
+		let mut challenge_point = challenges;
 		challenge_point.reverse();
 
 		// Check that the final main evaluation matches direct computation
 		let expected_main_eval = evaluate_mask_polynomial(&main_mask, &challenge_point);
 		assert_eq!(output.multilinear_evals[0], expected_main_eval);
+
+		// Check that the mask evaluation matches the zk_mask evaluation at the challenge point
+		let expected_mask_eval = evaluate_mask_polynomial(&zk_mask, &challenge_point);
+		assert_eq!(mask_eval, expected_mask_eval);
 	}
 }

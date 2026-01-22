@@ -22,14 +22,26 @@ use binius_verifier::{
 	fri::{self, FRIParams, MinProofSizeStrategy, calculate_n_test_queries},
 	hash::PseudoCompressionFunction,
 	merkle_tree::BinaryMerkleTreeScheme,
-	protocols::{
-		mlecheck,
-		sumcheck::{self, SumcheckOutput},
-	},
+	protocols::{mlecheck, sumcheck},
 };
 use digest::{Digest, Output, core_api::BlockSizeUser};
 
 pub const SECURITY_BITS: usize = 96;
+
+/// Output of the multiplication constraint check verification.
+#[derive(Debug, Clone)]
+pub struct MulcheckOutput<F: Field> {
+	/// Evaluation of operand A at the challenge point.
+	pub a_eval: F,
+	/// Evaluation of operand B at the challenge point.
+	pub b_eval: F,
+	/// Evaluation of operand C at the challenge point.
+	pub c_eval: F,
+	/// Evaluation of the mask polynomial at the challenge point.
+	pub mask_eval: F,
+	/// The challenge point from the sumcheck reduction.
+	pub r_x: Vec<F>,
+}
 
 /// Struct for verifying instances of a particular constraint system.
 ///
@@ -129,7 +141,13 @@ where
 		let trace_commitment = transcript.message().read::<Output<MerkleHash>>()?;
 
 		// Verify the multiplication constraints.
-		let (mulcheck_evals, r_x) = self.verify_mulcheck(transcript)?;
+		let MulcheckOutput {
+			a_eval,
+			b_eval,
+			c_eval,
+			mask_eval: _, // TODO: verify this in the opening protocol
+			r_x,
+		} = self.verify_mulcheck(transcript)?;
 
 		// Sample the public input check challenge and evaluate the public input at the challenge
 		// point.
@@ -144,7 +162,7 @@ where
 			&self.fri_params,
 			&self.merkle_scheme,
 			trace_commitment,
-			&mulcheck_evals,
+			&[a_eval, b_eval, c_eval],
 			public_eval,
 			transcript,
 		)?;
@@ -156,15 +174,16 @@ where
 	fn verify_mulcheck<Challenger_: Challenger>(
 		&self,
 		transcript: &mut VerifierTranscript<Challenger_>,
-	) -> Result<([F; 3], Vec<F>), Error> {
+	) -> Result<MulcheckOutput<F>, Error> {
 		let log_mul_constraints = checked_log_2(self.constraint_system.mul_constraints().len());
 
 		// Sample random evaluation point
 		let r_mulcheck = transcript.sample_vec(log_mul_constraints);
 
 		// Verify the zerocheck for the multiplication constraints.
-		let SumcheckOutput {
+		let mlecheck::VerifyZKOutput {
 			eval,
+			mask_eval,
 			challenges: mut r_x,
 		} = mlecheck::verify_zk(&r_mulcheck, 2, F::ZERO, transcript)?;
 
@@ -178,7 +197,13 @@ where
 			return Err(Error::IncorrectMulCheckEvaluation);
 		}
 
-		Ok(([a_eval, b_eval, c_eval], r_x))
+		Ok(MulcheckOutput {
+			a_eval,
+			b_eval,
+			c_eval,
+			mask_eval,
+			r_x,
+		})
 	}
 }
 
