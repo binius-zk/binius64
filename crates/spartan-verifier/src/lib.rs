@@ -166,7 +166,7 @@ where
 		let SumcheckOutput {
 			eval,
 			challenges: mut r_x,
-		} = mlecheck::verify(&r_mulcheck, 2, F::ZERO, transcript)?;
+		} = mlecheck::verify_zk(&r_mulcheck, 2, F::ZERO, transcript)?;
 
 		// Reverse because sumcheck binds high-to-low variable indices.
 		r_x.reverse();
@@ -178,9 +178,7 @@ where
 			return Err(Error::IncorrectMulCheckEvaluation);
 		}
 
-		let mulcheck_evals = [a_eval, b_eval, c_eval];
-
-		Ok((mulcheck_evals, r_x))
+		Ok(([a_eval, b_eval, c_eval], r_x))
 	}
 }
 

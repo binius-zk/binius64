@@ -18,7 +18,7 @@ use binius_prover::{
 	fri::{self, CommitOutput, FRIFoldProver},
 	hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression},
 	merkle_tree::prover::BinaryMerkleTreeProver,
-	protocols::sumcheck::{prove_single_mlecheck, quadratic_mle::QuadraticMleCheckProver},
+	protocols::sumcheck::{quadratic_mle::QuadraticMleCheckProver, zk_mlecheck},
 };
 use binius_spartan_frontend::constraint_system::{BlindingInfo, MulConstraint, WitnessIndex};
 use binius_spartan_verifier::Verifier;
@@ -122,6 +122,9 @@ where
 		let public = &witness[..1 << cs.log_public()];
 		transcript.observe().write_slice(public);
 
+		// Create mask polynomial for ZK mulcheck
+		let mulcheck_mask = zk_mlecheck::Mask::<P>::random(log_mul_constraints, 2, &mut rng);
+
 		// Pack witness into field elements and add blinding
 		let blinding_info = cs.blinding_info();
 		let witness_packed = pack_and_blind_witness::<_, P>(
@@ -150,7 +153,7 @@ where
 		let (mulcheck_evals, r_x) = self.prove_mulcheck(
 			cs.mul_constraints(),
 			witness_packed.to_ref(),
-			log_mul_constraints,
+			&mulcheck_mask,
 			transcript,
 		)?;
 
@@ -181,13 +184,13 @@ where
 		&self,
 		mul_constraints: &[MulConstraint<WitnessIndex>],
 		witness: FieldSlice<P>,
-		log_mul_constraints: usize,
+		mask: &zk_mlecheck::Mask<P>,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<([F; 3], Vec<F>), Error> {
 		let mulcheck_witness = wiring::build_mulcheck_witness(mul_constraints, witness);
 
 		// Sample random evaluation point for mulcheck
-		let r_mulcheck = transcript.sample_vec(log_mul_constraints);
+		let r_mulcheck = transcript.sample_vec(mask.n_vars());
 
 		// Create the QuadraticMleCheckProver for the mul gate: a * b - c
 		let mlecheck_prover = QuadraticMleCheckProver::new(
@@ -198,8 +201,8 @@ where
 			F::ZERO, // eval_claim: zerocheck
 		)?;
 
-		// Run the MLE-check protocol
-		let mlecheck_output = prove_single_mlecheck(mlecheck_prover, transcript)?;
+		// Run the ZK MLE-check protocol
+		let mlecheck_output = zk_mlecheck::prove(mlecheck_prover, mask, transcript)?;
 
 		// Extract the reduced evaluation point and multilinear evaluations
 		let mut r_x = mlecheck_output.challenges;
