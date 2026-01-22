@@ -18,7 +18,7 @@ use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_verifier::protocols::{mlecheck, sumcheck::RoundCoeffs};
+use binius_verifier::protocols::{mlecheck, mlecheck::log_mask_buffer_size, sumcheck::RoundCoeffs};
 use rand::CryptoRng;
 
 use super::{
@@ -63,13 +63,7 @@ impl<F: Field, P: PackedField<Scalar = F>> Mask<P> {
 	///   is chosen such that `2^(m_n + m_d) >= n * d + 1 + n_extra_dof`.
 	/// * `rng` - Cryptographic random number generator.
 	pub fn random(n_vars: usize, degree: usize, n_extra_dof: usize, mut rng: impl CryptoRng) -> Self {
-		let min_buffer_size = n_vars * degree + 1 + n_extra_dof;
-		let m_d = (degree + 1).next_power_of_two().ilog2() as usize;
-		// m_n must be large enough to hold n_vars rows AND satisfy the DOF constraint
-		let m_n_for_vars = n_vars.next_power_of_two().ilog2() as usize;
-		let m_n_for_size = (min_buffer_size.next_power_of_two().ilog2() as usize).saturating_sub(m_d);
-		let m_n = m_n_for_vars.max(m_n_for_size);
-		let log_len = m_n + m_d;
+		let log_len = log_mask_buffer_size(n_vars, degree, n_extra_dof);
 
 		// Fill entire buffer with random values
 		let buffer = FieldBuffer::<P>::new(

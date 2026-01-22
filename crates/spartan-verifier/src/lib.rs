@@ -22,7 +22,7 @@ use binius_verifier::{
 	fri::{self, FRIParams, MinProofSizeStrategy, calculate_n_test_queries},
 	hash::PseudoCompressionFunction,
 	merkle_tree::BinaryMerkleTreeScheme,
-	protocols::{mlecheck, sumcheck},
+	protocols::{mlecheck, mlecheck::log_mask_buffer_size, sumcheck},
 };
 use digest::{Digest, Output, core_api::BlockSizeUser};
 
@@ -51,6 +51,7 @@ pub struct MulcheckOutput<F: Field> {
 pub struct Verifier<F: Field, MerkleHash, MerkleCompress> {
 	constraint_system: ConstraintSystemPadded,
 	fri_params: FRIParams<F>,
+	mulcheck_mask_fri_params: FRIParams<F>,
 	merkle_scheme: BinaryMerkleTreeScheme<F, MerkleHash, MerkleCompress>,
 }
 
@@ -86,10 +87,20 @@ where
 		let log_code_len = log_dim + log_inv_rate;
 		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
 
-		let subspace = BinarySubspace::with_dim(log_code_len);
+		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
+
+		// Calculate log mask buffer size using the shared function.
+		let log_mul_constraints = checked_log_2(constraint_system.mul_constraints().len());
+		let mask_degree = 2; // quadratic composition
+		let log_mask_dim = log_mask_buffer_size(log_mul_constraints, mask_degree, n_test_queries);
+		let log_mask_code_len = log_mask_dim + log_inv_rate;
+
+		// Create a single NTT with the max domain size for both witness and mask.
+		let max_log_code_len = log_code_len.max(log_mask_code_len);
+		let subspace = BinarySubspace::with_dim(max_log_code_len);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
-		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
+
 		let fri_params = FRIParams::with_strategy(
 			&ntt,
 			&merkle_scheme,
@@ -100,9 +111,20 @@ where
 			&MinProofSizeStrategy,
 		)?;
 
+		let mulcheck_mask_fri_params = FRIParams::with_strategy(
+			&ntt,
+			&merkle_scheme,
+			log_mask_dim,
+			Some(log_batch_size),
+			log_inv_rate,
+			n_test_queries,
+			&MinProofSizeStrategy,
+		)?;
+
 		Ok(Self {
 			constraint_system,
 			fri_params,
+			mulcheck_mask_fri_params,
 			merkle_scheme,
 		})
 	}
@@ -113,6 +135,10 @@ where
 
 	pub fn fri_params(&self) -> &FRIParams<F> {
 		&self.fri_params
+	}
+
+	pub fn mulcheck_mask_fri_params(&self) -> &FRIParams<F> {
+		&self.mulcheck_mask_fri_params
 	}
 
 	pub fn verify<Challenger_: Challenger>(
@@ -139,6 +165,9 @@ where
 
 		// Receive the trace commitment.
 		let trace_commitment = transcript.message().read::<Output<MerkleHash>>()?;
+
+		// Receive the mask commitment.
+		let _mask_commitment = transcript.message().read::<Output<MerkleHash>>()?;
 
 		// Verify the multiplication constraints.
 		let MulcheckOutput {

@@ -53,6 +53,7 @@ where
 	verifier:
 		Verifier<P::Scalar, ParallelMerkleHasher::Digest, ParallelMerkleCompress::Compression>,
 	ntt: NeighborsLastMultiThread<GenericPreExpanded<P::Scalar>>,
+	mulcheck_mask_ntt: NeighborsLastMultiThread<GenericPreExpanded<P::Scalar>>,
 	merkle_prover: BinaryMerkleTreeProver<P::Scalar, ParallelMerkleHasher, ParallelMerkleCompress>,
 	wiring_transpose: WiringTranspose,
 	_p_marker: PhantomData<P>,
@@ -76,10 +77,15 @@ where
 		compression: ParallelMerkleCompress,
 	) -> Result<Self, Error> {
 		let cs = verifier.constraint_system();
+		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
+
 		let subspace = verifier.fri_params().rs_code().subspace();
 		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
-		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
+
+		let mask_subspace = verifier.mulcheck_mask_fri_params().rs_code().subspace();
+		let mask_domain_context = GenericPreExpanded::generate_from_subspace(mask_subspace);
+		let mulcheck_mask_ntt = NeighborsLastMultiThread::new(mask_domain_context, log_num_shares);
 
 		let merkle_prover = BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression);
 
@@ -89,6 +95,7 @@ where
 		Ok(Prover {
 			verifier,
 			ntt,
+			mulcheck_mask_ntt,
 			merkle_prover,
 			wiring_transpose,
 			_p_marker: PhantomData,
@@ -123,7 +130,12 @@ where
 		transcript.observe().write_slice(public);
 
 		// Create mask polynomial for ZK mulcheck
-		let mulcheck_mask = zk_mlecheck::Mask::<P>::random(log_mul_constraints, 2, 0, &mut rng);
+		let mulcheck_mask = zk_mlecheck::Mask::<P>::random(
+			log_mul_constraints,
+			2,
+			self.verifier.fri_params().n_test_queries(),
+			&mut rng,
+		);
 
 		// Pack witness into field elements and add blinding
 		let blinding_info = cs.blinding_info();
@@ -148,6 +160,19 @@ where
 			witness_packed.to_ref(),
 		)?;
 		transcript.message().write(&trace_commitment);
+
+		// Commit the mask buffer
+		let CommitOutput {
+			commitment: mask_commitment,
+			committed: _mask_codeword_committed,
+			codeword: _mask_codeword,
+		} = fri::commit_interleaved(
+			self.verifier.mulcheck_mask_fri_params(),
+			&self.mulcheck_mask_ntt,
+			&self.merkle_prover,
+			mulcheck_mask.as_ref().to_ref(),
+		)?;
+		transcript.message().write(&mask_commitment);
 
 		// Prove the multiplication constraints
 		let (mulcheck_evals, r_x) = self.prove_mulcheck(
