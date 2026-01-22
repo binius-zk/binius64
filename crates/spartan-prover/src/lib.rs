@@ -123,7 +123,7 @@ where
 		transcript.observe().write_slice(public);
 
 		// Create mask polynomial for ZK mulcheck
-		let mulcheck_mask = zk_mlecheck::Mask::<P>::random(log_mul_constraints, 2, &mut rng);
+		let mulcheck_mask = zk_mlecheck::Mask::<P>::random(log_mul_constraints, 2, 0, &mut rng);
 
 		// Pack witness into field elements and add blinding
 		let blinding_info = cs.blinding_info();

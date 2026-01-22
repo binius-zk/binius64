@@ -51,26 +51,33 @@ pub struct Mask<P: PackedField> {
 impl<F: Field, P: PackedField<Scalar = F>> Mask<P> {
 	/// Creates a new random mask polynomial.
 	///
+	/// The ZK MLE-check protocol imposes `n * d + 1` linear constraints on the mask polynomial
+	/// coefficients. The `n_extra_dof` parameter specifies additional degrees of freedom beyond
+	/// these constraints to support additional linear constraints (e.g., for FRI openings).
+	///
 	/// # Arguments
 	///
 	/// * `n_vars` - Number of variables (n). Must be > 0.
 	/// * `degree` - Degree of each univariate polynomial (d). Must be > 0.
+	/// * `n_extra_dof` - Number of additional degrees of freedom. The buffer size `2^(m_n + m_d)`
+	///   is chosen such that `2^(m_n + m_d) >= n * d + 1 + n_extra_dof`.
 	/// * `rng` - Cryptographic random number generator.
-	pub fn random(n_vars: usize, degree: usize, mut rng: impl CryptoRng) -> Self {
-		let m_n = n_vars.next_power_of_two().ilog2() as usize;
+	pub fn random(n_vars: usize, degree: usize, n_extra_dof: usize, mut rng: impl CryptoRng) -> Self {
+		let min_buffer_size = n_vars * degree + 1 + n_extra_dof;
 		let m_d = (degree + 1).next_power_of_two().ilog2() as usize;
+		// m_n must be large enough to hold n_vars rows AND satisfy the DOF constraint
+		let m_n_for_vars = n_vars.next_power_of_two().ilog2() as usize;
+		let m_n_for_size = (min_buffer_size.next_power_of_two().ilog2() as usize).saturating_sub(m_d);
+		let m_n = m_n_for_vars.max(m_n_for_size);
 		let log_len = m_n + m_d;
 
-		// Create buffer filled with zeros
-		let mut buffer = FieldBuffer::<P>::zeros(log_len);
-
-		// Fill the n × (d+1) submatrix with random values
-		let row_stride = 1 << m_d;
-		for i in 0..n_vars {
-			for j in 0..(degree + 1) {
-				buffer.set(i * row_stride + j, F::random(&mut rng));
-			}
-		}
+		// Fill entire buffer with random values
+		let buffer = FieldBuffer::<P>::new(
+			log_len,
+			iter::repeat_with(|| P::random(&mut rng))
+				.take(1 << log_len.saturating_sub(P::LOG_WIDTH))
+				.collect(),
+		);
 
 		Self {
 			n_vars,
@@ -419,7 +426,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		// Generate random mask
-		let mask = Mask::<B128>::random(n_vars, degree, &mut rng);
+		let mask = Mask::<B128>::random(n_vars, degree, 0, &mut rng);
 
 		// Generate random evaluation point
 		let eval_point: Vec<B128> = random_scalars(&mut rng, n_vars);
@@ -485,7 +492,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		// Single variable mask
-		let mask = Mask::<B128>::random(1, 2, &mut rng);
+		let mask = Mask::<B128>::random(1, 2, 0, &mut rng);
 		let eval_point: Vec<B128> = random_scalars(&mut rng, 1);
 		let eval_claim = mask.evaluate_mle(&eval_point);
 
@@ -518,10 +525,10 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		// Generate random main mask (using Mask as a simple MleCheckProver for testing)
-		let main_mask = Mask::<B128>::random(n_vars, main_degree, &mut rng);
+		let main_mask = Mask::<B128>::random(n_vars, main_degree, 0, &mut rng);
 
 		// Generate random ZK mask
-		let zk_mask = Mask::<B128>::random(n_vars, mask_degree, &mut rng);
+		let zk_mask = Mask::<B128>::random(n_vars, mask_degree, 0, &mut rng);
 
 		// Generate random evaluation point
 		let eval_point: Vec<B128> = random_scalars(&mut rng, n_vars);
