@@ -139,9 +139,9 @@ impl<P: PackedField, Data: Deref<Target = [P]>> AsRef<FieldBuffer<P, Data>> for 
 /// where each $g_i$ is a univariate polynomial of configurable degree.
 ///
 /// This structure allows efficient round polynomial computation in O(degree) time per round.
-pub struct MleCheckMaskProver<'a, F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> {
-	/// Reference to the mask polynomial
-	mask: &'a Mask<P, Data>,
+pub struct MleCheckMaskProver<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> {
+	/// The mask polynomial (owned)
+	mask: Mask<P, Data>,
 	/// The evaluation point z (in high-to-low variable order)
 	eval_point: Vec<F>,
 	/// Number of variables remaining to process
@@ -160,21 +160,21 @@ enum RoundCoeffsOrClaim<F: Field> {
 	Claim(F),
 }
 
-impl<'a, F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>
-	MleCheckMaskProver<'a, F, P, Data>
+impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>
+	MleCheckMaskProver<F, P, Data>
 {
 	/// Creates a new prover for the Libra mask polynomial.
 	///
 	/// # Arguments
 	///
-	/// * `mask` - Reference to the mask polynomial.
+	/// * `mask` - The mask polynomial (takes ownership).
 	/// * `eval_point` - The evaluation point z for the MLE-check claim, in high-to-low order.
 	/// * `eval_claim` - The claimed value of the MLE of g at the evaluation point.
 	///
 	/// # Panics
 	///
 	/// Panics if `mask.n_vars() != eval_point.len()`.
-	pub fn new(mask: &'a Mask<P, Data>, eval_point: Vec<F>, eval_claim: F) -> Self {
+	pub fn new(mask: Mask<P, Data>, eval_point: Vec<F>, eval_claim: F) -> Self {
 		assert_eq!(mask.n_vars(), eval_point.len(), "mask n_vars must match eval_point length");
 
 		let n_vars = eval_point.len();
@@ -206,8 +206,8 @@ impl<'a, F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>
 	}
 }
 
-impl<'a, F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckProver<F>
-	for MleCheckMaskProver<'a, F, P, Data>
+impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckProver<F>
+	for MleCheckMaskProver<F, P, Data>
 {
 	fn n_vars(&self) -> usize {
 		self.n_vars_remaining
@@ -284,8 +284,8 @@ impl<'a, F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> Sumche
 	}
 }
 
-impl<'a, F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> MleCheckProver<F>
-	for MleCheckMaskProver<'a, F, P, Data>
+impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> MleCheckProver<F>
+	for MleCheckMaskProver<F, P, Data>
 {
 	fn eval_point(&self) -> &[F] {
 		// Return remaining coordinates (high-to-low means we return the first n_vars_remaining
@@ -322,9 +322,14 @@ impl<'a, F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> MleChe
 /// # Panics
 ///
 /// Panics if `main_prover.n_claims() != 1`.
-pub fn prove<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>, Challenger_: Challenger>(
+pub fn prove<
+	F: Field,
+	P: PackedField<Scalar = F>,
+	Data: Deref<Target = [P]>,
+	Challenger_: Challenger,
+>(
 	mut main_prover: impl MleCheckProver<F>,
-	mask: &Mask<P, Data>,
+	mask: Mask<P, Data>,
 	transcript: &mut ProverTranscript<Challenger_>,
 ) -> Result<ProveSingleOutput<F>, Error> {
 	assert_eq!(
@@ -417,19 +422,19 @@ mod tests {
 		let n_vars = 6;
 		let mut rng = StdRng::seed_from_u64(0);
 
-		// Generate random mask
+		// Generate random mask buffer
 		let (m_n, m_d) = mask_buffer_dimensions(n_vars, degree, 0);
 		let buffer = random_field_buffer::<B128>(&mut rng, m_n + m_d);
-		let mask = Mask::new(n_vars, degree, buffer);
 
 		// Generate random evaluation point
 		let eval_point: Vec<B128> = random_scalars(&mut rng, n_vars);
 
 		// Compute the MLE of the mask polynomial at eval_point
+		let mask = Mask::new(n_vars, degree, buffer.to_ref());
 		let eval_claim = mask.evaluate_mle(&eval_point);
 
-		// Create the prover
-		let prover = MleCheckMaskProver::new(&mask, eval_point.clone(), eval_claim);
+		// Create the prover (takes ownership of a borrowed mask view)
+		let prover = MleCheckMaskProver::new(mask, eval_point.clone(), eval_claim);
 
 		// Run the proving protocol
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
@@ -462,6 +467,7 @@ mod tests {
 		challenge_point.reverse();
 
 		// Check that the final evaluation matches direct computation
+		let mask = Mask::new(n_vars, degree, buffer.to_ref());
 		let expected_eval = evaluate_mask_polynomial(&mask, &challenge_point);
 		assert_eq!(output.multilinear_evals[0], expected_eval);
 	}
@@ -485,14 +491,15 @@ mod tests {
 	fn test_single_variable() {
 		let mut rng = StdRng::seed_from_u64(0);
 
-		// Single variable mask
+		// Single variable mask buffer
 		let (m_n, m_d) = mask_buffer_dimensions(1, 2, 0);
 		let buffer = random_field_buffer::<B128>(&mut rng, m_n + m_d);
-		let mask = Mask::new(1, 2, buffer);
+
 		let eval_point: Vec<B128> = random_scalars(&mut rng, 1);
+		let mask = Mask::new(1, 2, buffer.to_ref());
 		let eval_claim = mask.evaluate_mle(&eval_point);
 
-		let prover = MleCheckMaskProver::new(&mask, eval_point.clone(), eval_claim);
+		let prover = MleCheckMaskProver::new(mask, eval_point.clone(), eval_claim);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let output = prove_single_mlecheck(prover, &mut prover_transcript).unwrap();
@@ -509,6 +516,7 @@ mod tests {
 		let mut challenge_point = sumcheck_output.challenges.clone();
 		challenge_point.reverse();
 
+		let mask = Mask::new(1, 2, buffer.to_ref());
 		let expected_eval = evaluate_mask_polynomial(&mask, &challenge_point);
 		assert_eq!(output.multilinear_evals[0], expected_eval);
 	}
@@ -520,28 +528,28 @@ mod tests {
 		let mask_degree = 2;
 		let mut rng = StdRng::seed_from_u64(0);
 
-		// Generate random main mask (using Mask as a simple MleCheckProver for testing)
+		// Generate random main mask buffer (using Mask as a simple MleCheckProver for testing)
 		let (m_n, m_d) = mask_buffer_dimensions(n_vars, main_degree, 0);
 		let main_buffer = random_field_buffer::<B128>(&mut rng, m_n + m_d);
-		let main_mask = Mask::new(n_vars, main_degree, main_buffer);
 
-		// Generate random ZK mask
+		// Generate random ZK mask buffer
 		let (zk_m_n, zk_m_d) = mask_buffer_dimensions(n_vars, mask_degree, 0);
 		let zk_buffer = random_field_buffer::<B128>(&mut rng, zk_m_n + zk_m_d);
-		let zk_mask = Mask::new(n_vars, mask_degree, zk_buffer);
 
 		// Generate random evaluation point
 		let eval_point: Vec<B128> = random_scalars(&mut rng, n_vars);
 
 		// Compute the MLE of the main polynomial at eval_point
+		let main_mask = Mask::new(n_vars, main_degree, main_buffer.to_ref());
 		let main_eval_claim = main_mask.evaluate_mle(&eval_point);
 
 		// Create the main prover (using MleCheckMaskProver as a simple MleCheckProver)
-		let main_prover = MleCheckMaskProver::new(&main_mask, eval_point.clone(), main_eval_claim);
+		let main_prover = MleCheckMaskProver::new(main_mask, eval_point.clone(), main_eval_claim);
 
 		// Run the ZK proving protocol
+		let zk_mask = Mask::new(n_vars, mask_degree, zk_buffer.to_ref());
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = prove(main_prover, &zk_mask, &mut prover_transcript).unwrap();
+		let output = prove(main_prover, zk_mask, &mut prover_transcript).unwrap();
 
 		// Write the main polynomial evaluation to the transcript
 		prover_transcript
@@ -573,10 +581,12 @@ mod tests {
 		challenge_point.reverse();
 
 		// Check that the final main evaluation matches direct computation
+		let main_mask = Mask::new(n_vars, main_degree, main_buffer.to_ref());
 		let expected_main_eval = evaluate_mask_polynomial(&main_mask, &challenge_point);
 		assert_eq!(output.multilinear_evals[0], expected_main_eval);
 
 		// Check that the mask evaluation matches the zk_mask evaluation at the challenge point
+		let zk_mask = Mask::new(n_vars, mask_degree, zk_buffer.to_ref());
 		let expected_mask_eval = evaluate_mask_polynomial(&zk_mask, &challenge_point);
 		assert_eq!(mask_eval, expected_mask_eval);
 	}

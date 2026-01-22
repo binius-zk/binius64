@@ -188,7 +188,7 @@ where
 		let (mulcheck_evals, r_x) = self.prove_mulcheck(
 			cs.mul_constraints(),
 			witness_packed.to_ref(),
-			&mulcheck_mask,
+			mulcheck_mask,
 			transcript,
 		)?;
 
@@ -219,7 +219,7 @@ where
 		&self,
 		mul_constraints: &[MulConstraint<WitnessIndex>],
 		witness: FieldSlice<P>,
-		mask: &zk_mlecheck::Mask<P, Data>,
+		mask: zk_mlecheck::Mask<P, Data>,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<([F; 3], Vec<F>), Error> {
 		let mulcheck_witness = wiring::build_mulcheck_witness(mul_constraints, witness);
