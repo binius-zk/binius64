@@ -1,6 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use binius_verifier::{fri, merkle_tree};
+use binius_iop::{fri, merkle_tree};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

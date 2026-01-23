@@ -3,12 +3,12 @@
 use std::iter;
 
 use binius_field::{BinaryField, PackedField};
-use binius_math::{FieldBuffer, FieldSlice};
-use binius_transcript::TranscriptWriter;
-use binius_verifier::{
+use binius_iop::{
 	fri::{FRIParams, vcs_optimal_layers_depths_iter},
 	merkle_tree::MerkleTreeScheme,
 };
+use binius_math::{FieldBuffer, FieldSlice};
+use binius_transcript::TranscriptWriter;
 use bytes::BufMut;
 use itertools::izip;
 use tracing::instrument;

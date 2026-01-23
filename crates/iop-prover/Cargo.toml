@@ -1,5 +1,5 @@
 [package]
-name = "binius-verifier"
+name = "binius-iop-prover"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -8,25 +8,26 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-binius-core = { path = "../core" }
 binius-field = { path = "../field" }
 binius-hash = { path = "../hash", default-features = false }
 binius-iop = { path = "../iop", default-features = false }
 binius-math = { path = "../math" }
 binius-transcript = { path = "../transcript" }
 binius-utils = { path = "../utils" }
-bytemuck.workspace = true
 bytes.workspace = true
+derive_more.workspace = true
 digest.workspace = true
 getset.workspace = true
 itertools.workspace = true
+rand.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
 binius-math = { path = "../math", features = ["test-utils"] }
-rand.workspace = true
-itertools.workspace = true
+proptest.workspace = true
+rand = { workspace = true, features = ["thread_rng"] }
 sha2.workspace = true
 
 [features]

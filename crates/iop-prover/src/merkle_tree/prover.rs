@@ -3,18 +3,16 @@
 use std::sync::Mutex;
 
 use binius_field::Field;
+use binius_hash::{ParallelDigest, ParallelPseudoCompression};
+use binius_iop::merkle_tree::{BinaryMerkleTreeScheme, Commitment, Error, MerkleTreeScheme};
 use binius_transcript::{BufMut, TranscriptWriter};
 use binius_utils::rayon::iter::IndexedParallelIterator;
-use binius_verifier::merkle_tree::{BinaryMerkleTreeScheme, Commitment, Error, MerkleTreeScheme};
 use digest::{FixedOutputReset, Output, core_api::BlockSizeUser};
 use getset::Getters;
 use rand::{CryptoRng, SeedableRng, rngs::StdRng};
 
 use super::MerkleTreeProver;
-use crate::{
-	hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression},
-	merkle_tree::binary_merkle_tree::{self, BinaryMerkleTree},
-};
+use crate::merkle_tree::binary_merkle_tree::{self, BinaryMerkleTree};
 
 #[derive(Debug, Getters)]
 pub struct BinaryMerkleTreeProver<T, H: ParallelDigest, C>

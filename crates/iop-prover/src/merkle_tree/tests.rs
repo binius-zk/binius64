@@ -1,20 +1,18 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use core::slice;
 
+use binius_field::BinaryField128bGhash as B128;
+use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
+use binius_iop::merkle_tree::MerkleTreeScheme;
 use binius_math::test_utils::random_scalars;
-use binius_transcript::{ProverTranscript, VerifierTranscript};
-use binius_verifier::{
-	config::{B128, StdChallenger},
-	hash::{StdCompression, StdDigest},
-	merkle_tree::MerkleTreeScheme,
-};
+use binius_transcript::{ProverTranscript, VerifierTranscript, fiat_shamir::HasherChallenger};
 use rand::prelude::*;
 
-use crate::{
-	hash::parallel_compression::ParallelCompressionAdaptor,
-	merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver},
-};
+use crate::merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver};
+
+type StdChallenger = HasherChallenger<StdDigest>;
 
 #[test]
 fn test_binary_merkle_vcs_commit_prove_open_correctly() {

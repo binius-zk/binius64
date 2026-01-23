@@ -4,13 +4,13 @@ use std::{fmt::Debug, mem::MaybeUninit};
 
 use binius_field::Field;
 use binius_hash::{ParallelDigest, ParallelPseudoCompression};
+use binius_iop::merkle_tree::Error;
 use binius_utils::{
 	checked_arithmetics::log2_strict_usize,
 	mem::slice_assume_init_mut,
 	rand::par_rand,
 	rayon::{prelude::*, slice::ParallelSlice},
 };
-use binius_verifier::merkle_tree::Error;
 use digest::{FixedOutputReset, Output, crypto_common::BlockSizeUser};
 use rand::{CryptoRng, Rng, rngs::StdRng};
 

@@ -411,10 +411,12 @@ impl AritySelectionStrategy for ConstantArityStrategy {
 
 #[cfg(test)]
 mod tests {
+	use binius_field::BinaryField128bGhash as B128;
+	use binius_hash::StdCompression;
 	use binius_math::ntt::{NeighborsLastReference, domain_context::GaoMateerOnTheFly};
 
 	use super::*;
-	use crate::{config::B128, hash::StdCompression, merkle_tree::BinaryMerkleTreeScheme};
+	use crate::merkle_tree::BinaryMerkleTreeScheme;
 
 	type StdDigest = sha2::Sha256;
 	type TestMerkleScheme = BinaryMerkleTreeScheme<B128, StdDigest, StdCompression>;

@@ -1,8 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 
+use binius_iop::merkle_tree::{Commitment, Error, MerkleTreeScheme};
 use binius_transcript::{BufMut, TranscriptWriter};
 use binius_utils::rayon::prelude::*;
-use binius_verifier::merkle_tree::{Commitment, Error, MerkleTreeScheme};
 
 pub mod binary_merkle_tree;
 pub mod prover;

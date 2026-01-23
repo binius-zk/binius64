@@ -1,6 +1,10 @@
 // Copyright 2024-2025 Irreducible Inc.
 
 use binius_field::{BinaryField, Field, PackedField};
+use binius_iop::{
+	fri::{FRIParams, fold::fold_chunk},
+	merkle_tree::MerkleTreeScheme,
+};
 use binius_math::{
 	FieldBuffer, FieldSlice, inner_product::inner_product_buffers,
 	multilinear::eq::eq_ind_partial_eval, ntt::AdditiveNTT,
@@ -10,10 +14,6 @@ use binius_transcript::{
 	fiat_shamir::{CanSampleBits, Challenger},
 };
 use binius_utils::{SerializeBytes, checked_arithmetics::log2_strict_usize, rayon::prelude::*};
-use binius_verifier::{
-	fri::{FRIParams, fold::fold_chunk},
-	merkle_tree::MerkleTreeScheme,
-};
 use tracing::instrument;
 
 use super::{error::Error, query::FRIQueryProver};
@@ -322,13 +322,13 @@ where
 
 #[cfg(test)]
 mod tests {
+	use binius_field::BinaryField128bGhash as B128;
 	use binius_math::{
 		BinarySubspace,
 		fold::fold_cols,
 		ntt::{NeighborsLastReference, domain_context::GenericOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
-	use binius_verifier::config::B128;
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
