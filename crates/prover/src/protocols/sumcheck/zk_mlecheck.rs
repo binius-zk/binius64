@@ -21,9 +21,20 @@ use binius_transcript::{
 use binius_verifier::protocols::{mlecheck, sumcheck::RoundCoeffs};
 
 use super::{
-	Error, ProveSingleOutput,
+	Error,
 	common::{MleCheckProver, SumcheckProver},
 };
+
+/// Output of the ZK MLE-check proving protocol.
+#[derive(Debug, Clone)]
+pub struct ProveZKOutput<F: Field> {
+	/// Evaluations of the main multilinear polynomials at the challenge point.
+	pub multilinear_evals: Vec<F>,
+	/// Evaluation of the mask polynomial at the challenge point.
+	pub mask_eval: F,
+	/// Verifier challenges for each round of the sumcheck protocol.
+	pub challenges: Vec<F>,
+}
 
 /// Generates hypercube evaluations of the libra_eval polynomial.
 ///
@@ -364,7 +375,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> MleCheckPr
 ///
 /// # Returns
 ///
-/// Returns [`ProveSingleOutput`] containing the main polynomial's multilinear evaluations
+/// Returns [`ProveZKOutput`] containing the main polynomial's multilinear evaluations
 /// and the round challenges.
 ///
 /// # Panics
@@ -379,7 +390,7 @@ pub fn prove<
 	mut main_prover: impl MleCheckProver<F>,
 	mask: Mask<P, Data>,
 	transcript: &mut ProverTranscript<Challenger_>,
-) -> Result<ProveSingleOutput<F>, Error> {
+) -> Result<ProveZKOutput<F>, Error> {
 	assert_eq!(
 		main_prover.n_claims(),
 		1,
@@ -434,8 +445,9 @@ pub fn prove<
 	// Write final mask evaluation
 	transcript.message().write(&mask_eval_out);
 
-	Ok(ProveSingleOutput {
+	Ok(ProveZKOutput {
 		multilinear_evals: main_evals,
+		mask_eval: mask_eval_out,
 		challenges,
 	})
 }

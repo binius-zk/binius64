@@ -22,7 +22,7 @@ use binius_verifier::{
 	fri::{self, FRIParams, MinProofSizeStrategy, calculate_n_test_queries},
 	hash::PseudoCompressionFunction,
 	merkle_tree::BinaryMerkleTreeScheme,
-	protocols::{mlecheck, mlecheck::mask_buffer_dimensions, sumcheck},
+	protocols::{basefold, mlecheck, mlecheck::mask_buffer_dimensions, sumcheck},
 };
 use digest::{Digest, Output, core_api::BlockSizeUser};
 
@@ -178,14 +178,14 @@ where
 		let trace_commitment = transcript.message().read::<Output<MerkleHash>>()?;
 
 		// Receive the mask commitment.
-		let _mask_commitment = transcript.message().read::<Output<MerkleHash>>()?;
+		let mask_commitment = transcript.message().read::<Output<MerkleHash>>()?;
 
 		// Verify the multiplication constraints.
 		let MulcheckOutput {
 			a_eval,
 			b_eval,
 			c_eval,
-			mask_eval: _, // TODO: verify this in the opening protocol
+			mask_eval,
 			r_x,
 		} = self.verify_mulcheck(transcript)?;
 
@@ -207,6 +207,9 @@ where
 			transcript,
 		)?;
 		wiring::check_eval(&self.constraint_system, &r_public, &r_x, &wiring_output)?;
+
+		// Verify the mask opening: mask_eval = <masks_buffer, libra_eval_r>
+		self.verify_mask_opening(mask_commitment, mask_eval, &r_x, transcript)?;
 
 		Ok(())
 	}
@@ -245,6 +248,53 @@ where
 			r_x,
 		})
 	}
+
+	/// Verifies the mask opening proof: mask_eval = <masks_buffer, libra_eval_r>.
+	///
+	/// Uses ZK BaseFold to verify that the claimed mask evaluation is consistent with
+	/// the committed mask polynomial.
+	fn verify_mask_opening<Challenger_: Challenger>(
+		&self,
+		mask_commitment: Output<MerkleHash>,
+		mask_eval: F,
+		r_x: &[F],
+		transcript: &mut VerifierTranscript<Challenger_>,
+	) -> Result<(), Error> {
+		let (_m_n, m_d) = self.mask_dims;
+		let n_vars = r_x.len();
+		let mask_degree = 2; // quadratic composition
+
+		// Verify the BaseFold proof
+		let basefold::ReducedOutput {
+			final_fri_value,
+			final_sumcheck_value,
+			challenges,
+		} = basefold::verify_zk(
+			&self.mulcheck_mask_fri_params,
+			&self.merkle_scheme,
+			mask_commitment,
+			mask_eval,
+			transcript,
+		)?;
+
+		// Skip batch challenge (first element) to get the query point
+		// The remaining challenges form the query point (high-to-low order from sumcheck)
+		let query_point: Vec<F> = challenges[1..].iter().rev().copied().collect();
+
+		// Split into query_k (low-order bits) and query_j (high-order bits)
+		let (query_k, query_j) = query_point.split_at(m_d);
+
+		// Compute the expected libra_eval at the query point
+		let expected_libra_eval =
+			mlecheck::libra_eval::<F, F>(r_x, query_j, query_k, n_vars, mask_degree);
+
+		// Verify consistency: final_fri_value * expected_libra_eval == final_sumcheck_value
+		if final_fri_value * expected_libra_eval != final_sumcheck_value {
+			return Err(Error::IncorrectMaskOpening);
+		}
+
+		Ok(())
+	}
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -255,6 +305,8 @@ pub enum Error {
 	PCS(#[from] pcs::Error),
 	#[error("Sumcheck error: {0}")]
 	Sumcheck(#[from] sumcheck::Error),
+	#[error("BaseFold error: {0}")]
+	BaseFold(#[from] basefold::Error),
 	#[error("wiring error: {0}")]
 	Wiring(#[from] wiring::Error),
 	#[error("Transcript error: {0}")]
@@ -263,4 +315,6 @@ pub enum Error {
 	IncorrectPublicInputLength { expected: usize, actual: usize },
 	#[error("incorrect reduction output of the multiplication check")]
 	IncorrectMulCheckEvaluation,
+	#[error("mask opening verification failed")]
+	IncorrectMaskOpening,
 }

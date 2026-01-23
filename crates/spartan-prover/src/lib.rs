@@ -17,8 +17,11 @@ use binius_math::{
 use binius_prover::{
 	fri::{self, CommitOutput, FRIFoldProver},
 	hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression},
-	merkle_tree::prover::BinaryMerkleTreeProver,
-	protocols::sumcheck::{quadratic_mle::QuadraticMleCheckProver, zk_mlecheck},
+	merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver},
+	protocols::{
+		basefold,
+		sumcheck::{quadratic_mle::QuadraticMleCheckProver, zk_mlecheck},
+	},
 };
 use binius_spartan_frontend::constraint_system::{BlindingInfo, MulConstraint, WitnessIndex};
 use binius_spartan_verifier::Verifier;
@@ -174,8 +177,8 @@ where
 		// Commit the masks buffer (includes both mask and masks_mask)
 		let CommitOutput {
 			commitment: mask_commitment,
-			committed: _mask_codeword_committed,
-			codeword: _mask_codeword,
+			committed: mask_codeword_committed,
+			codeword: mask_codeword,
 		} = fri::commit_interleaved(
 			self.verifier.mulcheck_mask_fri_params(),
 			&self.mulcheck_mask_ntt,
@@ -185,7 +188,7 @@ where
 		transcript.message().write(&mask_commitment);
 
 		// Prove the multiplication constraints
-		let (mulcheck_evals, r_x) = self.prove_mulcheck(
+		let (mulcheck_evals, mask_eval, r_x) = self.prove_mulcheck(
 			cs.mul_constraints(),
 			witness_packed.to_ref(),
 			mulcheck_mask,
@@ -212,6 +215,23 @@ where
 			transcript,
 		)?;
 
+		// Prove the mask opening: mask_eval = <masks_buffer, libra_eval_r>
+		let mask_fri_prover = FRIFoldProver::new(
+			self.verifier.mulcheck_mask_fri_params(),
+			&self.mulcheck_mask_ntt,
+			&self.merkle_prover,
+			mask_codeword,
+			&mask_codeword_committed,
+		)?;
+		prove_mask_opening(
+			masks_buffer,
+			mask_eval,
+			&r_x,
+			self.verifier.mask_dims(),
+			mask_fri_prover,
+			transcript,
+		)?;
+
 		Ok(())
 	}
 
@@ -221,7 +241,7 @@ where
 		witness: FieldSlice<P>,
 		mask: zk_mlecheck::Mask<P, Data>,
 		transcript: &mut ProverTranscript<Challenger_>,
-	) -> Result<([F; 3], Vec<F>), Error> {
+	) -> Result<([F; 3], F, Vec<F>), Error> {
 		let mulcheck_witness = wiring::build_mulcheck_witness(mul_constraints, witness);
 
 		// Sample random evaluation point for mulcheck
@@ -252,9 +272,45 @@ where
 		transcript.message().write(&[a_eval, b_eval, c_eval]);
 
 		let mulcheck_evals = [a_eval, b_eval, c_eval];
+		let mask_eval = mlecheck_output.mask_eval;
 
-		Ok((mulcheck_evals, r_x))
+		Ok((mulcheck_evals, mask_eval, r_x))
 	}
+}
+
+/// Proves that mask_eval = <masks_buffer, libra_eval_r> using ZK BaseFold.
+///
+/// This verification ensures the mask polynomial evaluation at the sumcheck challenge point
+/// is consistent with the committed mask polynomial.
+fn prove_mask_opening<'a, F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
+	masks_buffer: FieldBuffer<P>,
+	mask_eval: F,
+	r_x: &[F],
+	mask_dims: (usize, usize),
+	fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
+	transcript: &mut ProverTranscript<Challenger_>,
+) -> Result<(), Error>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	NTT: binius_math::ntt::AdditiveNTT<Field = F> + Sync,
+	MerkleScheme: binius_verifier::merkle_tree::MerkleTreeScheme<F, Digest: SerializeBytes>,
+	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
+	Challenger_: Challenger,
+{
+	let (m_n, m_d) = mask_dims;
+	let n_vars = r_x.len();
+	let mask_degree = 2; // quadratic composition
+
+	// Generate the libra_eval tensor: libra_eval_r(j, k) = r_x[j]^k
+	let libra_eval_tensor = zk_mlecheck::expand_libra_eval::<P>(r_x, n_vars, mask_degree, m_n, m_d);
+
+	// Run ZK BaseFold to prove mask_eval = <masks_buffer, libra_eval_tensor>
+	let prover =
+		basefold::prove_zk(masks_buffer, libra_eval_tensor, mask_eval, fri_folder, transcript);
+	prover.prove(transcript)?;
+
+	Ok(())
 }
 
 fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
