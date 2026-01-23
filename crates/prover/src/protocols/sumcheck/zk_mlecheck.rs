@@ -10,7 +10,7 @@
 
 use std::{iter, ops::Deref};
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, util::powers};
 use binius_math::{
 	field_buffer::FieldBuffer, line::extrapolate_line_packed, univariate::evaluate_univariate,
 };
@@ -24,6 +24,54 @@ use super::{
 	Error, ProveSingleOutput,
 	common::{MleCheckProver, SumcheckProver},
 };
+
+/// Generates hypercube evaluations of the libra_eval polynomial.
+///
+/// For a mask polynomial with `n_vars` variables and `degree`, generates a `FieldBuffer`
+/// of size `2^(m_n + m_d)` containing:
+///
+/// ```text
+/// libra_eval_r(j, k) = r[j]^k  if j < n_vars and k ≤ degree
+///                    = 0       otherwise
+/// ```
+///
+/// where `j` and `k` are derived from the hypercube index: `idx = j * 2^m_d + k`.
+///
+/// # Arguments
+///
+/// * `challenge_point` - The challenge point `r` from sumcheck (length `n_vars`)
+/// * `n_vars` - Number of variables in the mask polynomial
+/// * `degree` - Degree of each univariate in the mask polynomial
+/// * `m_n` - Log of number of rows (must satisfy `2^m_n >= n_vars`)
+/// * `m_d` - Log of row size (must satisfy `2^m_d >= degree + 1`)
+///
+/// # Panics
+///
+/// Panics (in debug mode) if `n_vars > 2^m_n` or `degree + 1 > 2^m_d`.
+pub fn expand_libra_eval<P: PackedField>(
+	challenge_point: &[P::Scalar],
+	n_vars: usize,
+	degree: usize,
+	m_n: usize,
+	m_d: usize,
+) -> FieldBuffer<P> {
+	debug_assert!(challenge_point.len() == n_vars);
+	debug_assert!(n_vars <= 1 << m_n);
+	debug_assert!(degree < 1 << m_d);
+
+	let log_size = m_n + m_d;
+	let mut buffer = FieldBuffer::<P>::zeros(log_size);
+	let row_stride = 1 << m_d;
+
+	for (j, &r_j) in challenge_point.iter().enumerate() {
+		let base_idx = j * row_stride;
+		for (k, power) in powers(r_j).take(degree + 1).enumerate() {
+			buffer.set(base_idx + k, power);
+		}
+	}
+
+	buffer
+}
 
 /// Libra mask polynomial for ZK MLE-check protocols.
 ///
@@ -589,5 +637,118 @@ mod tests {
 		let zk_mask = Mask::new(n_vars, mask_degree, zk_buffer.to_ref());
 		let expected_mask_eval = evaluate_mask_polynomial(&zk_mask, &challenge_point);
 		assert_eq!(mask_eval, expected_mask_eval);
+	}
+
+	#[test]
+	fn test_libra_eval_inner_product_equals_mask_eval() {
+		use binius_math::inner_product::inner_product_buffers;
+
+		let mut rng = StdRng::seed_from_u64(0);
+		let n_vars = 6;
+		let degree = 2;
+
+		// Create random mask buffer
+		let (m_n, m_d) = mask_buffer_dimensions(n_vars, degree, 0);
+		let mask_buffer = random_field_buffer::<B128>(&mut rng, m_n + m_d);
+
+		// Create random challenge point
+		let challenge_point: Vec<B128> = random_scalars(&mut rng, n_vars);
+
+		// Compute g(r) using Mask::evaluate (direct computation)
+		let mask = Mask::new(n_vars, degree, mask_buffer.to_ref());
+		let direct_eval: B128 = (0..n_vars)
+			.map(|i| mask.evaluate_univariate(i, challenge_point[i]))
+			.sum();
+
+		// Compute <g', libra_eval_r> using inner product
+		let libra_eval_tensor =
+			expand_libra_eval::<B128>(&challenge_point, n_vars, degree, m_n, m_d);
+		let inner_product_eval = inner_product_buffers(&mask_buffer, &libra_eval_tensor);
+
+		assert_eq!(
+			direct_eval, inner_product_eval,
+			"Inner product <g', libra_eval_r> should equal g(r)"
+		);
+	}
+
+	#[test]
+	fn test_libra_eval_sumcheck() {
+		use binius_math::{inner_product::inner_product_par, multilinear::evaluate::evaluate};
+		use binius_verifier::protocols::{mlecheck::libra_eval, sumcheck::verify};
+
+		use crate::protocols::sumcheck::{
+			bivariate_product::BivariateProductSumcheckProver, prove_single,
+		};
+
+		let mut rng = StdRng::seed_from_u64(0);
+		let n_vars = 6;
+		let degree = 2;
+
+		// Create random mask buffer (g')
+		let (m_n, m_d) = mask_buffer_dimensions(n_vars, degree, 0);
+		let log_size = m_n + m_d;
+		let mask_buffer = random_field_buffer::<B128>(&mut rng, log_size);
+
+		// Create random challenge point r
+		let challenge_point: Vec<B128> = random_scalars(&mut rng, n_vars);
+
+		// Generate libra_eval tensor
+		let libra_eval_tensor =
+			expand_libra_eval::<B128>(&challenge_point, n_vars, degree, m_n, m_d);
+
+		// Compute the claimed sum: <g', libra_eval_r> = g(r)
+		let claimed_sum = inner_product_par(&mask_buffer, &libra_eval_tensor);
+
+		// Create the bivariate product sumcheck prover
+		let prover = BivariateProductSumcheckProver::new(
+			[mask_buffer.clone(), libra_eval_tensor.clone()],
+			claimed_sum,
+		)
+		.unwrap();
+
+		// Run the proving protocol
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let output = prove_single(prover, &mut prover_transcript).unwrap();
+
+		// Write the multilinear evaluations to the transcript
+		prover_transcript
+			.message()
+			.write_slice(&output.multilinear_evals);
+
+		// Verify with sumcheck verifier
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let sumcheck_output = verify::<B128, _>(
+			log_size,
+			2, // degree 2 for bivariate product
+			claimed_sum,
+			&mut verifier_transcript,
+		)
+		.unwrap();
+
+		// Read the multilinear evaluations
+		let multilinear_evals: Vec<B128> = verifier_transcript.message().read_vec(2).unwrap();
+		let [g_prime_eval, libra_eval_out] = [multilinear_evals[0], multilinear_evals[1]];
+
+		// Check that the product equals the reduced evaluation
+		assert_eq!(g_prime_eval * libra_eval_out, sumcheck_output.eval);
+
+		// Verify libra_eval_out using libra_eval
+		// The sumcheck binds variables high-to-low, so we need to reverse to get low-to-high order
+		// In the buffer layout, the low-order bits encode k (first m_d variables) and
+		// high-order bits encode j (next m_n variables)
+		let mut query_point = sumcheck_output.challenges;
+		query_point.reverse();
+		let (query_k, query_j) = query_point.split_at(m_d);
+
+		let expected_libra_eval_out =
+			libra_eval::<B128, B128>(&challenge_point, query_j, query_k, n_vars, degree);
+		assert_eq!(
+			libra_eval_out, expected_libra_eval_out,
+			"libra_eval should match the sumcheck-reduced evaluation"
+		);
+
+		// Also verify g' evaluation directly
+		let expected_g_prime_eval = evaluate(&mask_buffer, &query_point);
+		assert_eq!(g_prime_eval, expected_g_prime_eval);
 	}
 }
