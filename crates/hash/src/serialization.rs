@@ -86,7 +86,7 @@ where
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::hash::StdDigest;
+	use crate::StdDigest;
 
 	#[test]
 	fn test_hash_buffer_updates() {

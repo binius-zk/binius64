@@ -1,17 +1,20 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{array, mem::MaybeUninit};
 
 use binius_field::{BinaryField128bGhash as Ghash, Field};
 use binius_utils::SerializeBytes;
-use binius_verifier::hash::vision_4::{
-	M,
-	digest::{PADDING_BLOCK, RATE_AS_U8, VisionHasherDigest, fill_padding},
-};
 use digest::Output;
 use itertools::izip;
 
-use super::parallel_digest::MultiDigest;
+use crate::{
+	parallel_digest::MultiDigest,
+	vision_4::{
+		M,
+		digest::{PADDING_BLOCK, RATE_AS_U8, VisionHasherDigest, fill_padding},
+	},
+};
 
 /// A Vision hasher suited for parallelization.
 ///
@@ -22,7 +25,7 @@ use super::parallel_digest::MultiDigest;
 /// We slightly modify Montogery's trick to use a binary tree structure,
 /// maximizing independence of multiplications for better instruction pipelining.
 #[derive(Clone)]
-struct VisionHasherMultiDigest<const N: usize> {
+pub struct VisionHasherMultiDigest<const N: usize> {
 	states: [[Ghash; M]; N],
 	buffers: [[u8; RATE_AS_U8]; N],
 	filled_bytes: usize,

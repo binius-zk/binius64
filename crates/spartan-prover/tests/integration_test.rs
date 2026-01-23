@@ -1,7 +1,8 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_field::{BinaryField128bGhash as B128, Random, arch::OptimalPackedB128};
-use binius_prover::hash::parallel_compression::ParallelCompressionAdaptor;
+use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, ConstraintBuilder, WitnessGenerator},
 	circuits::powers,
@@ -10,7 +11,6 @@ use binius_spartan_frontend::{
 use binius_spartan_prover::Prover;
 use binius_spartan_verifier::{Verifier, config::StdChallenger};
 use binius_transcript::ProverTranscript;
-use binius_verifier::hash::{StdCompression, StdDigest};
 use rand::{SeedableRng, rngs::StdRng};
 
 // Build a power7 circuit: assert that x^7 = y

@@ -1,21 +1,22 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{array, mem::MaybeUninit};
 
 use binius_field::{BinaryField128bGhash as Ghash, Random};
-use binius_prover::hash::{
-	parallel_digest::{MultiDigest, ParallelDigest, ParallelMultidigestImpl},
+use binius_hash::{
+	MultiDigest, ParallelDigest, ParallelMultidigestImpl,
 	vision_4::{
-		digest::VisionHasherMultiDigest as VisionHasherMultiDigest_4,
-		permutation::batch_permutation as batch_permutation_4,
+		digest::VisionHasherDigest,
+		parallel_digest::VisionHasherMultiDigest as VisionHasherMultiDigest_4,
+		parallel_permutation::batch_permutation as batch_permutation_4,
 	},
 	vision_6::{
-		digest::VisionHasherMultiDigest as VisionHasherMultiDigest_6,
-		permutation::batch_permutation as batch_permutation_6,
+		parallel_digest::VisionHasherMultiDigest as VisionHasherMultiDigest_6,
+		parallel_permutation::batch_permutation as batch_permutation_6,
 	},
 };
 use binius_utils::rayon::prelude::*;
-use binius_verifier::hash::vision_4::digest::VisionHasherDigest;
 use criterion::{
 	BenchmarkGroup, Criterion, Throughput, criterion_group, criterion_main, measurement::WallTime,
 };

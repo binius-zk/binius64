@@ -1,13 +1,12 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_field::BinaryField128bGhash as Ghash;
 use binius_utils::{DeserializeBytes, SerializeBytes};
 use digest::Output;
 
-use super::{constants::M, permutation::permutation};
-use crate::hash::{
-	CompressionFunction, PseudoCompressionFunction, vision_4::digest::VisionHasherDigest,
-};
+use super::{constants::M, digest::VisionHasherDigest, permutation::permutation};
+use crate::{CompressionFunction, PseudoCompressionFunction};
 
 /// Vision pseudo-compression function for 2-to-1 compression.
 ///

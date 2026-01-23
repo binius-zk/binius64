@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{array, mem::MaybeUninit};
 
@@ -9,9 +10,10 @@ use binius_utils::{
 		slice::ParallelSliceMut,
 	},
 };
-use binius_verifier::hash::HashBuffer;
 use bytes::BytesMut;
 use digest::{Digest, Output, core_api::BlockSizeUser};
+
+use crate::HashBuffer;
 
 /// An object that efficiently computes `N` instances of a cryptographic hash function
 /// in parallel.

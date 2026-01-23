@@ -1,9 +1,11 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{array, fmt::Debug, mem::MaybeUninit};
 
 use binius_utils::rayon::prelude::*;
-use binius_verifier::hash::PseudoCompressionFunction;
+
+use crate::PseudoCompressionFunction;
 
 /// A trait for parallel application of N-to-1 compression functions.
 ///

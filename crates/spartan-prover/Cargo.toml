@@ -25,6 +25,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+binius-hash = { path = "../hash" }
 binius-math = { path = "../math", features = ["test-utils"] }
 rand = { workspace = true, features = ["thread_rng"] }
 smallvec.workspace = true

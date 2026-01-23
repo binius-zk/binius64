@@ -1,18 +1,20 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{array, mem::MaybeUninit};
 
 use binius_field::{BinaryField128bGhash as Ghash, Field};
 use binius_utils::{DeserializeBytes, SerializeBytes};
-use binius_verifier::hash::vision_6::{
-	M,
-	digest::{PADDING_BLOCK, RATE_AS_U8, RATE_AS_U128, VisionHasherDigest, fill_padding},
-};
 use digest::Output;
 
-use super::{super::parallel_digest::MultiDigest, permutation::batch_permutation};
+use super::{
+	constants::M,
+	digest::{PADDING_BLOCK, RATE_AS_U8, RATE_AS_U128, VisionHasherDigest, fill_padding},
+	parallel_permutation::batch_permutation,
+};
+use crate::parallel_digest::MultiDigest;
 
-/// A Vision hasher with state size M=6 suited for parallelization.
+/// A Vision hasher with state size M=4 suited for parallelization.
 ///
 /// Without using packed fields, there is only one advantage of an explicit parallelized
 /// Vision hasher over invoking the Vision hasher multiple times in parallel:

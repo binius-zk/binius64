@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{array, fmt::Debug, mem::MaybeUninit};
 
@@ -10,14 +11,13 @@ use binius_utils::{
 		slice::{ParallelSlice, ParallelSliceMut},
 	},
 };
-use binius_verifier::hash::vision_4::{
-	compression::VisionCompression, constants::M, digest::VisionHasherDigest,
-};
 use digest::Output;
 
 use super::{
-	super::parallel_compression::ParallelPseudoCompression, permutation::batch_permutation,
+	compression::VisionCompression, constants::M, digest::VisionHasherDigest,
+	parallel_permutation::batch_permutation,
 };
+use crate::parallel_compression::ParallelPseudoCompression;
 
 // The number of parallel compressions N must be a power of 2.
 // The amortization of batch inversion grows with the batch size
@@ -151,10 +151,10 @@ impl VisionParallelCompression {
 mod tests {
 	use std::array;
 
-	use binius_verifier::hash::PseudoCompressionFunction;
 	use digest::Digest;
 
 	use super::*;
+	use crate::PseudoCompressionFunction;
 
 	#[test]
 	fn test_parallel_vs_sequential_simple() {

@@ -1,4 +1,6 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
+
 pub mod circuits;
 pub mod cli;
 pub mod snapshot;
@@ -6,21 +8,18 @@ pub mod snapshot;
 use anyhow::Result;
 use binius_core::constraint_system::{ConstraintSystem, ValueVec};
 use binius_frontend::{CircuitBuilder, WitnessFiller};
-use binius_prover::{
-	KeyCollection, OptimalPackedB128, Prover,
-	hash::{
-		ParallelDigest,
-		parallel_compression::{ParallelCompressionAdaptor, ParallelPseudoCompression},
-		vision_4::compression::VisionParallelCompression,
+use binius_hash::{
+	ParallelCompressionAdaptor, ParallelDigest, ParallelPseudoCompression,
+	PseudoCompressionFunction, StdCompression, StdDigest,
+	vision_4::{
+		compression::VisionCompression, digest::VisionHasherDigest,
+		parallel_compression::VisionParallelCompression,
 	},
 };
+use binius_prover::{KeyCollection, OptimalPackedB128, Prover};
 use binius_verifier::{
 	Verifier,
 	config::StdChallenger,
-	hash::{
-		PseudoCompressionFunction, StdCompression, StdDigest,
-		vision_4::{compression::VisionCompression, digest::VisionHasherDigest},
-	},
 	transcript::{ProverTranscript, VerifierTranscript},
 };
 use clap::ValueEnum;

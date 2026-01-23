@@ -2,10 +2,9 @@
 //! Specifies standard trait implementations and parameters.
 
 use binius_field::{AESTowerField8b, BinaryField, BinaryField1b, BinaryField128bGhash};
+use binius_hash::StdDigest;
 use binius_transcript::fiat_shamir::{Challenger, HasherChallenger};
 use binius_utils::checked_arithmetics::{checked_int_div, checked_log_2};
-
-use super::hash::StdDigest;
 
 // Exports the binary fields that this system uses
 pub type B1 = BinaryField1b;
@@ -16,7 +15,7 @@ pub trait ChallengerWithName: Challenger {
 	const NAME: &'static str;
 }
 
-impl ChallengerWithName for HasherChallenger<sha2::Sha256> {
+impl ChallengerWithName for HasherChallenger<StdDigest> {
 	const NAME: &'static str = "HasherChallenger<Sha256>";
 }
 

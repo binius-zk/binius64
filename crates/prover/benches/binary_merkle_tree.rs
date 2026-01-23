@@ -1,20 +1,17 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::iter::repeat_with;
 
 use binius_field::Random;
-use binius_prover::{
-	hash::{
-		parallel_compression::ParallelCompressionAdaptor, parallel_digest::ParallelMultidigestImpl,
-		vision_4::compression::VisionParallelCompression as VisionParallelCompression_4,
-		vision_6::digest::VisionHasherMultiDigest as VisionHasherMultiDigest_6,
-	},
-	merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver},
+use binius_hash::{
+	ParallelCompressionAdaptor, ParallelDigest, ParallelMultidigestImpl, PseudoCompressionFunction,
+	StdCompression, StdDigest,
+	vision_4::parallel_compression::VisionParallelCompression as VisionParallelCompression_4,
+	vision_6::parallel_digest::VisionHasherMultiDigest as VisionHasherMultiDigest_6,
 };
-use binius_verifier::{
-	config::B128,
-	hash::{StdCompression, StdDigest},
-};
+use binius_prover::merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver};
+use binius_verifier::config::B128;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use digest::{FixedOutputReset, Output, core_api::BlockSizeUser};
 
@@ -25,8 +22,8 @@ type F = B128;
 
 fn bench_binary_merkle_tree<H, C>(c: &mut Criterion, compression: C, hash_name: &str)
 where
-	H: binius_prover::hash::ParallelDigest<Digest: BlockSizeUser + FixedOutputReset>,
-	C: binius_verifier::hash::PseudoCompressionFunction<Output<H::Digest>, 2> + Sync,
+	H: ParallelDigest<Digest: BlockSizeUser + FixedOutputReset>,
+	C: PseudoCompressionFunction<Output<H::Digest>, 2> + Sync,
 {
 	let parallel_compression = ParallelCompressionAdaptor::new(compression);
 	let merkle_prover = BinaryMerkleTreeProver::<_, H, _>::new(parallel_compression);

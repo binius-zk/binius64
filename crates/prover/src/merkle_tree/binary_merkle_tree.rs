@@ -3,6 +3,7 @@
 use std::{fmt::Debug, mem::MaybeUninit};
 
 use binius_field::Field;
+use binius_hash::{ParallelDigest, ParallelPseudoCompression};
 use binius_utils::{
 	checked_arithmetics::log2_strict_usize,
 	mem::slice_assume_init_mut,
@@ -12,8 +13,6 @@ use binius_utils::{
 use binius_verifier::merkle_tree::Error;
 use digest::{FixedOutputReset, Output, crypto_common::BlockSizeUser};
 use rand::{CryptoRng, Rng, rngs::StdRng};
-
-use crate::hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression};
 
 /// A binary Merkle tree that commits batches of vectors.
 ///

@@ -2,6 +2,7 @@
 
 use std::{array, fmt::Debug, marker::PhantomData};
 
+use binius_hash::{PseudoCompressionFunction, hash_serialize};
 use binius_transcript::{Buf, TranscriptReader};
 use binius_utils::{
 	DeserializeBytes, SerializeBytes,
@@ -14,7 +15,6 @@ use super::{
 	error::{Error, VerificationError},
 	merkle_tree_vcs::MerkleTreeScheme,
 };
-use crate::hash::{PseudoCompressionFunction, hash_serialize};
 
 #[derive(Debug, Clone, Getters, CopyGetters)]
 pub struct BinaryMerkleTreeScheme<T, H, C> {

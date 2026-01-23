@@ -13,6 +13,7 @@ base64.workspace = true
 binius-circuits = { path = "../circuits" }
 binius-core = { path = "../core" }
 binius-frontend = { path = "../frontend" }
+binius-hash = { path = "../hash", default-features = false }
 binius-prover = { path = "../prover", default-features = false }
 binius-transcript = { path = "../transcript" }
 binius-utils = { path = "../utils", features = ["platform-diagnostics"] }
@@ -69,7 +70,7 @@ harness = false
 [features]
 default = ["rayon"]
 perfetto = ["tracing-profile/perfetto"]
-rayon = ["binius-prover/rayon", "binius-verifier/rayon"]
+rayon = ["binius-hash/rayon", "binius-prover/rayon", "binius-verifier/rayon"]
 
 # Tutorial examples
 [[example]]

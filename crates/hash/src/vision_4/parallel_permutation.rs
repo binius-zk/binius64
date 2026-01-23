@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! Parallel Vision-4 hash permutation using flattened state arrays.
 //!
@@ -9,12 +10,13 @@
 //! # Layout
 //! States: `[s0[0], s0[1], s0[2], s0[3], s1[0], s1[1], ...]` where `N` = number of states, `M = 4`.
 //!
-//! # Round Structure  
+//! # Round Structure
 //! Each round: inversion → transform → MDS → constants → inversion → transform → MDS → constants
 
 use binius_field::{BinaryField128bGhash as Ghash, arithmetic_traits::Square};
 use binius_math::batch_invert::BatchInversion;
-use binius_verifier::hash::vision_4::{
+
+use super::{
 	constants::{B_FWD_COEFFS, M, NUM_ROUNDS, ROUND_CONSTANTS},
 	permutation::{constants_add, linearized_b_inv_transform_scalar, mds_mul},
 };
@@ -104,10 +106,10 @@ mod tests {
 	use std::array;
 
 	use binius_field::Random;
-	use binius_verifier::hash::vision_4::permutation::permutation;
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
+	use crate::vision_4::permutation::permutation;
 
 	macro_rules! test_parallel_permutation {
 		($name:ident, $n:expr) => {
