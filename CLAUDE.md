@@ -54,31 +54,6 @@ Check for GFNI instruction support (Intel processors):
 rustc --print cfg -C target-cpu=native | grep gfni
 ```
 
-### MCP LSP Server Integration
-To enable rust-analyzer integration with Claude Code via MCP:
-
-1. Install the MCP Language Server:
-```bash
-# Install from https://github.com/isaacphi/mcp-language-server
-```
-
-2. Configure Claude Code to use rust-analyzer:
-```bash
-claude mcp add-json rust-analyzer '{
-  "command": "mcp-language-server",
-  "args": [
-    "--workspace",
-    "/path/to/monbijou",
-    "--lsp",
-    "rust-analyzer"
-  ]
-}'
-```
-
-Replace `/path/to/monbijou` with your local repository path.
-
-This enables Claude Code to communicate with rust-analyzer for enhanced Rust code intelligence.
-
 ## Architecture Overview
 
 Monbijou is a zero-knowledge proof system that proves an input vector satisfies a constraint system without revealing private inputs.
