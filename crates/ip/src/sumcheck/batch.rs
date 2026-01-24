@@ -7,7 +7,7 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 
-use crate::protocols::{
+use crate::{
 	mlecheck,
 	sumcheck::{self, Error, SumcheckOutput},
 };

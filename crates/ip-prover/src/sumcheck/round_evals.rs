@@ -3,7 +3,7 @@
 use std::ops::{Add, AddAssign, Mul};
 
 use binius_field::{Field, PackedField};
-use binius_verifier::protocols::sumcheck::RoundCoeffs;
+use binius_ip::sumcheck::RoundCoeffs;
 
 // Sumcheck round evaluations for degree-1 polynomials, on point 1 alone.
 #[derive(Clone, Debug, Default)]

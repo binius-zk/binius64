@@ -1,15 +1,15 @@
 // Copyright 2025-2026 The Binius Developers
 
 use binius_field::{Field, PackedField};
+use binius_ip::prodcheck::MultilinearEvalClaim;
 use binius_math::{FieldBuffer, line::extrapolate_line_packed};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
 use binius_utils::rayon::prelude::*;
-use binius_verifier::protocols::prodcheck::MultilinearEvalClaim;
 
-use crate::protocols::sumcheck::{
+use crate::sumcheck::{
 	Error as SumcheckError, ProveSingleOutput, bivariate_product_mle, common::MleCheckProver,
 	prove_single_mlecheck,
 };
@@ -157,12 +157,14 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_field::PackedField;
+	use binius_ip::prodcheck;
 	use binius_math::{
 		multilinear::evaluate::evaluate,
 		test_utils::{Packed128b, random_field_buffer, random_scalars},
 	};
-	use binius_transcript::ProverTranscript;
-	use binius_verifier::{config::StdChallenger, protocols::prodcheck};
+	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+
+	type StdChallenger = HasherChallenger<sha2::Sha256>;
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;

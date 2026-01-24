@@ -1,13 +1,13 @@
 // Copyright 2024-2025 Irreducible Inc.
 
 use binius_field::Field;
+use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_verifier::protocols::{mlecheck, sumcheck::common::RoundCoeffs};
 
-use crate::protocols::sumcheck::{
+use crate::sumcheck::{
 	common::{MleCheckProver, SumcheckProver},
 	error::Error,
 };
@@ -255,18 +255,20 @@ mod tests {
 		Field, PackedField,
 		arch::{OptimalB128, OptimalPackedB128},
 	};
+	use binius_ip::sumcheck::batch_verify_mle;
 	use binius_math::{
 		FieldBuffer,
 		multilinear::evaluate::evaluate,
 		test_utils::{random_field_buffer, random_scalars},
 		univariate::evaluate_univariate,
 	};
-	use binius_transcript::ProverTranscript;
-	use binius_verifier::{config::StdChallenger, protocols::sumcheck::batch_verify_mle};
+	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+
+	type StdChallenger = HasherChallenger<sha2::Sha256>;
 	use rand::{SeedableRng, prelude::StdRng};
 
 	use super::{Error, batch_prove_mle};
-	use crate::protocols::sumcheck::bivariate_product_mle;
+	use crate::sumcheck::bivariate_product_mle;
 
 	fn product_eval_claim<F, P>(
 		multilinear_a: &FieldBuffer<P>,

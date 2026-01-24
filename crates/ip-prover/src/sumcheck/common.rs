@@ -1,7 +1,7 @@
 // Copyright 2023-2025 Irreducible Inc.
 
 use binius_field::Field;
-use binius_verifier::protocols::sumcheck::RoundCoeffs;
+use binius_ip::sumcheck::RoundCoeffs;
 use either::Either;
 
 use super::error::Error;
@@ -91,7 +91,7 @@ where
 
 /// A prover for the MLE-check variant of the sumcheck protocol.
 ///
-/// See [`binius_verifier::protocols::mlecheck::verify`] for context on the protocol.
+/// See [`binius_ip::mlecheck::verify`] for context on the protocol.
 ///
 /// This trait inherits from [`SumcheckProver`] since it shares the same type-level interface
 /// and protocol execution pattern. However, `MleCheckProver` instances provide different

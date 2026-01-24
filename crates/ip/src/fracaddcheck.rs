@@ -12,7 +12,7 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 
-use crate::protocols::sumcheck::{self, BatchSumcheckOutput};
+use crate::sumcheck::{self, BatchSumcheckOutput};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FracAddEvalClaim<F: Field> {

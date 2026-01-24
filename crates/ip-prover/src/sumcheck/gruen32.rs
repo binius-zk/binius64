@@ -3,11 +3,11 @@
 use std::cmp::min;
 
 use binius_field::{Field, PackedField};
+use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{
 	field_buffer::FieldBuffer,
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_truncate_low_inplace, eq_one_var},
 };
-use binius_verifier::protocols::sumcheck::RoundCoeffs;
 
 use super::round_evals::{RoundEvals2, round_coeffs_by_eq};
 

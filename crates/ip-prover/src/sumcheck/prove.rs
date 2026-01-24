@@ -6,14 +6,14 @@
 //! polynomial is correct through an interactive proof protocol.
 
 use binius_field::Field;
+use binius_ip::mlecheck;
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_verifier::protocols::mlecheck;
 
 use super::{common::SumcheckProver, error::Error};
-use crate::protocols::sumcheck::common::MleCheckProver;
+use crate::sumcheck::common::MleCheckProver;
 
 /// Executes the sumcheck proving protocol for a single multivariate polynomial.
 ///

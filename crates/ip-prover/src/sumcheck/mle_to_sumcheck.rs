@@ -1,9 +1,9 @@
 // Copyright 2025 Irreducible Inc.
 use binius_field::Field;
+use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::multilinear::eq::eq_one_var;
-use binius_verifier::protocols::sumcheck::RoundCoeffs;
 
-use crate::protocols::sumcheck::{
+use crate::sumcheck::{
 	Error,
 	common::{MleCheckProver, SumcheckProver},
 	round_evals::round_coeffs_by_eq,

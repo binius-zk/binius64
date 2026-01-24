@@ -3,13 +3,13 @@
 use std::cmp::max;
 
 use binius_field::{Field, PackedField};
+use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
-use binius_verifier::protocols::sumcheck::RoundCoeffs;
 use itertools::{Itertools, izip};
 
 use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::RoundEvals2};
-use crate::protocols::sumcheck::common::MleCheckProver;
+use crate::sumcheck::common::MleCheckProver;
 
 /// Multiple claim version of `BivariateProductMlecheckProver` that can prove mlechecks
 /// that share the evaluation point. This allows deduplicating folding and evaluation work.
@@ -206,7 +206,7 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::protocols::sumcheck::{MleToSumCheckDecorator, bivariate_product_mle};
+	use crate::sumcheck::{MleToSumCheckDecorator, bivariate_product_mle};
 
 	#[test]
 	fn test_bivariate_multi_mlecheck_conforms_to_single_bivariate_mlecheck() {

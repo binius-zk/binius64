@@ -1,12 +1,12 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{Field, PackedField};
+use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{AsSlicesMut, FieldSliceMut, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
-use binius_verifier::protocols::sumcheck::RoundCoeffs;
 
 use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::RoundEvals2};
-use crate::protocols::sumcheck::common::MleCheckProver;
+use crate::sumcheck::common::MleCheckProver;
 
 /// MLE-check prover for polynomials defined as quadratic compositions of N multilinear polynomials.
 ///
@@ -251,18 +251,20 @@ mod tests {
 	use std::{array, iter};
 
 	use binius_field::arch::OptimalPackedB128;
+	use binius_ip::mlecheck;
 	use binius_math::{
 		FieldBuffer,
 		multilinear::evaluate::evaluate,
 		test_utils::{random_field_buffer, random_scalars},
 	};
-	use binius_transcript::ProverTranscript;
-	use binius_verifier::{config::StdChallenger, protocols::mlecheck};
+	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+
+	type StdChallenger = HasherChallenger<sha2::Sha256>;
 	use itertools::{self, Itertools};
 	use rand::{SeedableRng, prelude::StdRng};
 
 	use super::*;
-	use crate::protocols::sumcheck::prove_single_mlecheck;
+	use crate::sumcheck::prove_single_mlecheck;
 
 	fn test_mlecheck_prove_verify<F, P, Composition, InfinityComposition, const N: usize>(
 		prover: QuadraticMleCheckProver<P, Composition, InfinityComposition, N>,

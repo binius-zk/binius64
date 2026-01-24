@@ -1,11 +1,11 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{Field, PackedField};
+use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
-use binius_verifier::protocols::sumcheck::RoundCoeffs;
 
-use crate::protocols::sumcheck::{common::SumcheckProver, error::Error, round_evals::RoundEvals2};
+use crate::sumcheck::{common::SumcheckProver, error::Error, round_evals::RoundEvals2};
 
 /// A [`SumcheckProver`] implementation for a composite defined as the product of two multilinears.
 ///
@@ -125,16 +125,18 @@ enum RoundCoeffsOrSum<F: Field> {
 #[cfg(test)]
 mod tests {
 	use binius_field::arch::{OptimalB128, OptimalPackedB128};
+	use binius_ip::sumcheck::verify;
 	use binius_math::{
 		inner_product::inner_product_par, multilinear::evaluate::evaluate,
 		test_utils::random_field_buffer,
 	};
-	use binius_transcript::ProverTranscript;
-	use binius_verifier::{config::StdChallenger, protocols::sumcheck::verify};
+	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+
+	type StdChallenger = HasherChallenger<sha2::Sha256>;
 	use rand::{SeedableRng, prelude::StdRng};
 
 	use super::*;
-	use crate::protocols::sumcheck::prove::prove_single;
+	use crate::sumcheck::prove::prove_single;
 
 	#[test]
 	fn test_bivariate_product_sumcheck() {

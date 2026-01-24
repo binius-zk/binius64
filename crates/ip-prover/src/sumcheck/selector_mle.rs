@@ -3,9 +3,9 @@
 #![allow(dead_code)]
 
 use binius_field::{Field, PackedField};
+use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::{bitwise::Bitwise, rayon::prelude::*};
-use binius_verifier::protocols::sumcheck::RoundCoeffs;
 use itertools::izip;
 
 use super::{
@@ -262,7 +262,7 @@ mod tests {
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::protocols::sumcheck::{
+	use crate::sumcheck::{
 		MleToSumCheckDecorator, bivariate_product_multi_mle::BivariateProductMultiMlecheckProver,
 	};
 

@@ -7,7 +7,7 @@ use binius_transcript::{
 };
 
 use super::error::Error;
-use crate::protocols::sumcheck::{RoundCoeffs, RoundProof};
+use crate::sumcheck::{RoundCoeffs, RoundProof};
 
 /// The reduced output of a sumcheck verification.
 ///

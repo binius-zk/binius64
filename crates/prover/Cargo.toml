@@ -12,6 +12,7 @@ binius-core = { path = "../core" }
 binius-field = { path = "../field" }
 binius-hash = { path = "../hash", default-features = false }
 binius-iop-prover = { path = "../iop-prover", default-features = false }
+binius-ip-prover = { path = "../ip-prover", default-features = false }
 binius-math = { path = "../math" }
 binius-transcript = { path = "../transcript" }
 binius-verifier = { path = "../verifier", default-features = false }
@@ -90,4 +91,4 @@ harness = false
 
 [features]
 default = ["rayon"]
-rayon = ["binius-utils/rayon", "binius-hash/rayon", "binius-iop-prover/rayon"]
+rayon = ["binius-utils/rayon", "binius-hash/rayon", "binius-iop-prover/rayon", "binius-ip-prover/rayon"]

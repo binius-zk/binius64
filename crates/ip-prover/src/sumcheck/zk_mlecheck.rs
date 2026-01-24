@@ -11,6 +11,7 @@
 use std::{iter, ops::Deref};
 
 use binius_field::{Field, PackedField, util::powers};
+use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
 use binius_math::{
 	field_buffer::FieldBuffer, line::extrapolate_line_packed, univariate::evaluate_univariate,
 };
@@ -18,7 +19,6 @@ use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_verifier::protocols::{mlecheck, sumcheck::RoundCoeffs};
 
 use super::{
 	Error,
@@ -455,16 +455,15 @@ pub fn prove<
 #[cfg(test)]
 mod tests {
 	use binius_field::arch::OptimalB128;
+	use binius_ip::mlecheck::{self, mask_buffer_dimensions};
 	use binius_math::test_utils::{random_field_buffer, random_scalars};
-	use binius_transcript::ProverTranscript;
-	use binius_verifier::{
-		config::StdChallenger,
-		protocols::mlecheck::{self, mask_buffer_dimensions},
-	};
+	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+
+	type StdChallenger = HasherChallenger<sha2::Sha256>;
 	use rand::{SeedableRng, prelude::StdRng};
 
 	use super::*;
-	use crate::protocols::sumcheck::prove_single_mlecheck;
+	use crate::sumcheck::prove_single_mlecheck;
 
 	type B128 = OptimalB128;
 
@@ -685,12 +684,10 @@ mod tests {
 
 	#[test]
 	fn test_libra_eval_sumcheck() {
+		use binius_ip::{mlecheck::libra_eval, sumcheck::verify};
 		use binius_math::{inner_product::inner_product_par, multilinear::evaluate::evaluate};
-		use binius_verifier::protocols::{mlecheck::libra_eval, sumcheck::verify};
 
-		use crate::protocols::sumcheck::{
-			bivariate_product::BivariateProductSumcheckProver, prove_single,
-		};
+		use crate::sumcheck::{bivariate_product::BivariateProductSumcheckProver, prove_single};
 
 		let mut rng = StdRng::seed_from_u64(0);
 		let n_vars = 6;

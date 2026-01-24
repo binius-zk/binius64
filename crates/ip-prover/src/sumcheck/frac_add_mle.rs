@@ -4,9 +4,7 @@ use binius_field::{Field, PackedField};
 use binius_math::FieldBuffer;
 
 use super::error::Error;
-use crate::protocols::sumcheck::{
-	batch_quadratic_mle::BatchQuadraticMleCheckProver, common::MleCheckProver,
-};
+use crate::sumcheck::{batch_quadratic_mle::BatchQuadraticMleCheckProver, common::MleCheckProver};
 
 pub type FractionalBuffer<P> = (FieldBuffer<P>, FieldBuffer<P>);
 // Prover for the fractional additional claims required in LogUp*. We keep numerators and
@@ -41,20 +39,20 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_field::arch::{OptimalB128, OptimalPackedB128};
+	use binius_ip::sumcheck::batch_verify;
 	use binius_math::{
 		FieldBuffer,
 		multilinear::{eq::eq_ind, evaluate::evaluate},
 		test_utils::{random_field_buffer, random_scalars},
 	};
-	use binius_transcript::ProverTranscript;
-	use binius_verifier::{config::StdChallenger, protocols::sumcheck::batch_verify};
+	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+
+	type StdChallenger = HasherChallenger<sha2::Sha256>;
 	use itertools::{Itertools, izip};
 	use rand::{SeedableRng, prelude::StdRng};
 
 	use super::*;
-	use crate::protocols::sumcheck::{
-		MleToSumCheckDecorator, batch::batch_prove, common::SumcheckProver,
-	};
+	use crate::sumcheck::{MleToSumCheckDecorator, batch::batch_prove, common::SumcheckProver};
 
 	fn test_frac_add_sumcheck_prove_verify<F, P>(
 		prover: impl SumcheckProver<F>,

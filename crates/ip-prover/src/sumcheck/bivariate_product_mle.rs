@@ -4,7 +4,7 @@ use binius_field::{Field, PackedField};
 use binius_math::AsSlicesMut;
 
 use super::{error::Error, quadratic_mle::QuadraticMleCheckProver};
-use crate::protocols::sumcheck::common::MleCheckProver;
+use crate::sumcheck::common::MleCheckProver;
 
 /// Creates an [`MleCheckProver`] that reduces an evaluation claim on a multilinear extension
 /// of the product of two multilinears to evaluation claims on said multilinears.
@@ -70,23 +70,20 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_field::arch::{OptimalB128, OptimalPackedB128};
+	use binius_ip::{mlecheck, sumcheck::verify};
 	use binius_math::{
 		FieldBuffer,
 		multilinear::{eq::eq_ind, evaluate::evaluate},
 		test_utils::{random_field_buffer, random_scalars},
 	};
-	use binius_transcript::ProverTranscript;
-	use binius_verifier::{
-		config::StdChallenger,
-		protocols::{mlecheck, sumcheck::verify},
-	};
+	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+
+	type StdChallenger = HasherChallenger<sha2::Sha256>;
 	use itertools::{self, Itertools};
 	use rand::{SeedableRng, prelude::StdRng};
 
 	use super::*;
-	use crate::protocols::sumcheck::{
-		MleToSumCheckDecorator, prove::prove_single, prove_single_mlecheck,
-	};
+	use crate::sumcheck::{MleToSumCheckDecorator, prove::prove_single, prove_single_mlecheck};
 
 	fn test_mlecheck_prove_verify<F, P>(
 		prover: impl MleCheckProver<F>,

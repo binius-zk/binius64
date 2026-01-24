@@ -3,14 +3,14 @@
 use std::cmp::max;
 
 use binius_field::{Field, PackedField};
+use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{
 	AsSlicesMut, FieldBuffer, FieldSliceMut, multilinear::fold::fold_highest_var_inplace,
 };
 use binius_utils::rayon::prelude::*;
-use binius_verifier::protocols::sumcheck::RoundCoeffs;
 use itertools::{Itertools, izip};
 
-use crate::protocols::sumcheck::{
+use crate::sumcheck::{
 	Error,
 	common::{MleCheckProver, SumcheckProver},
 	gruen32::Gruen32,
@@ -336,9 +336,7 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::protocols::sumcheck::{
-		MleToSumCheckDecorator, quadratic_mle::QuadraticMleCheckProver,
-	};
+	use crate::sumcheck::{MleToSumCheckDecorator, quadratic_mle::QuadraticMleCheckProver};
 
 	const N: usize = 3;
 	const M: usize = 2;

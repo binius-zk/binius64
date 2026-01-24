@@ -8,7 +8,7 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 
-use crate::protocols::sumcheck::{self, RoundCoeffs, SumcheckOutput};
+use crate::sumcheck::{self, RoundCoeffs, SumcheckOutput};
 
 /// Returns `(m_n, m_d)` dimensions for a mask polynomial buffer.
 ///
@@ -242,12 +242,11 @@ pub fn libra_eval<F: Field, P: PackedField<Scalar = F>>(
 
 #[cfg(test)]
 mod tests {
-	use binius_field::Random;
+	use binius_field::{Random, arch::OptimalB128 as B128};
 	use binius_math::{line::extrapolate_line_packed, test_utils::random_scalars};
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::config::B128;
 
 	fn test_recover_with_degree<F: Field>(mut rng: impl Rng, alpha: F, degree: usize) {
 		let coeffs = RoundCoeffs(random_scalars(&mut rng, degree + 1));
