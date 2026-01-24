@@ -3,3 +3,4 @@
 pub mod fracaddcheck;
 pub mod prodcheck;
 pub mod sumcheck;
+pub mod channel;
