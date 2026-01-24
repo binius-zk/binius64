@@ -18,12 +18,10 @@
 
 use binius_field::Field;
 use binius_math::line::extrapolate_line_packed;
-use binius_transcript::{
-	Error as TranscriptError, VerifierTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
+use binius_transcript::Error as TranscriptError;
 
 use crate::{
+	channel::IPVerifierChannel,
 	mlecheck,
 	sumcheck::{self, SumcheckOutput},
 };
@@ -36,10 +34,10 @@ pub struct MultilinearEvalClaim<F: Field> {
 	pub point: Vec<F>,
 }
 
-pub fn verify<F: Field, Challenger_: Challenger>(
+pub fn verify<F: Field>(
 	k: usize,
 	claim: MultilinearEvalClaim<F>,
-	transcript: &mut VerifierTranscript<Challenger_>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<MultilinearEvalClaim<F>, Error> {
 	if k == 0 {
 		return Ok(claim);
@@ -48,10 +46,10 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 	let MultilinearEvalClaim { eval, point } = claim;
 
 	// Reduce p_i evaluation to two evaluations of p_{i+1}.
-	let SumcheckOutput { eval, challenges } = mlecheck::verify(&point, 2, eval, transcript)?;
+	let SumcheckOutput { eval, challenges } = mlecheck::verify(&point, 2, eval, channel)?;
 
 	// Read evaluations of p_{i+1)(0, \ldots) and p_{i+1}(1, \ldots).
-	let [eval_0, eval_1] = transcript.message().read()?;
+	let [eval_0, eval_1] = channel.recv_array()?;
 
 	if eval_0 * eval_1 != eval {
 		return Err(VerificationError::IncorrectRoundEvaluation { round: k }.into());
@@ -59,7 +57,7 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 
 	// Reduce evaluations of p_{i+1}(0, \ldots) and p_{i+1}(1, \ldots) to single eval at
 	// p_{i+1}(r, \ldots).
-	let r = transcript.sample();
+	let r = channel.sample();
 
 	let next_eval = extrapolate_line_packed(eval_0, eval_1, r);
 
@@ -73,7 +71,7 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 			eval: next_eval,
 			point: next_point,
 		},
-		transcript,
+		channel,
 	)
 }
 
@@ -101,6 +99,14 @@ impl From<TranscriptError> for Error {
 		match err {
 			TranscriptError::NotEnoughBytes => VerificationError::TranscriptIsEmpty.into(),
 			_ => Error::Transcript(err),
+		}
+	}
+}
+
+impl From<crate::channel::Error> for Error {
+	fn from(err: crate::channel::Error) -> Self {
+		match err {
+			crate::channel::Error::ProofEmpty => VerificationError::TranscriptIsEmpty.into(),
 		}
 	}
 }

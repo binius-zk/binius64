@@ -1,13 +1,12 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::Field;
-use binius_transcript::{
-	VerifierTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
 
 use super::error::Error;
-use crate::sumcheck::{RoundCoeffs, RoundProof};
+use crate::{
+	channel::IPVerifierChannel,
+	sumcheck::{RoundCoeffs, RoundProof},
+};
 
 /// The reduced output of a sumcheck verification.
 ///
@@ -31,22 +30,22 @@ pub struct SumcheckOutput<F: Field> {
 /// * `n_vars` - The number of variables in the multivariate polynomial
 /// * `degree` - The degree of the univariate polynomial in each round
 /// * `sum` - The claimed sum of the multivariate polynomial over the boolean hypercube
-/// * `transcript` - The transcript containing the prover's messages and randomness for challenges
+/// * `channel` - The channel for receiving prover messages and sampling challenges
 ///
 /// ## Returns
 ///
 /// Returns a `Result` containing the `SumcheckOutput` with the reduced evaluation and challenge
 /// point, or an error if verification fails.
-pub fn verify<F: Field, Challenger_: Challenger>(
+pub fn verify<F: Field>(
 	n_vars: usize,
 	degree: usize,
 	mut sum: F,
-	transcript: &mut VerifierTranscript<Challenger_>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<SumcheckOutput<F>, Error> {
 	let mut challenges = Vec::with_capacity(n_vars);
 	for _round in 0..n_vars {
-		let round_proof = RoundProof(RoundCoeffs(transcript.message().read_vec(degree)?));
-		let challenge = transcript.sample();
+		let round_proof = RoundProof(RoundCoeffs(channel.recv_many(degree)?));
+		let challenge = channel.sample();
 
 		let round_coeffs = round_proof.recover(sum);
 		sum = round_coeffs.evaluate(challenge);

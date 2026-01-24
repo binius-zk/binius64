@@ -171,7 +171,7 @@ mod tests {
 
 		// Convert to verifier transcript and run verification
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let sumcheck_output = verify::<F, _>(
+		let sumcheck_output = verify(
 			n_vars,
 			2, // degree 2 for bivariate product
 			expected_sum,

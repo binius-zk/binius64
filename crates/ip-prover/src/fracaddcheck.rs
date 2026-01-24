@@ -3,17 +3,16 @@
 use binius_field::{Field, PackedField};
 use binius_ip::prodcheck::MultilinearEvalClaim;
 use binius_math::{FieldBuffer, line::extrapolate_line_packed};
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
 use binius_utils::rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::sumcheck::{
-	Error as SumcheckError,
-	batch::batch_prove_mle_and_write_evals,
-	common::MleCheckProver,
-	frac_add_mle::{self, FractionalBuffer},
+use crate::{
+	channel::IPProverChannel,
+	sumcheck::{
+		Error as SumcheckError,
+		batch::batch_prove_mle_and_write_evals,
+		common::MleCheckProver,
+		frac_add_mle::{self, FractionalBuffer},
+	},
 };
 
 /// Prover for the fractional addition protocol.
@@ -139,18 +138,15 @@ where
 	///
 	/// # Arguments
 	/// * `claim` - The initial multilinear evaluation claims (numerator, denominator)
-	/// * `transcript` - The prover transcript
+	/// * `channel` - The channel for sending prover messages and sampling challenges
 	///
 	/// # Preconditions
 	/// * `claim.0.point.len() == witness.log_len() - k` (where k is the number of reduction layers)
-	pub fn prove<Challenger_>(
+	pub fn prove(
 		self,
 		claim: (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>),
-		transcript: &mut ProverTranscript<Challenger_>,
-	) -> Result<(MultilinearEvalClaim<F>, MultilinearEvalClaim<F>), Error>
-	where
-		Challenger_: Challenger,
-	{
+		channel: &mut impl IPProverChannel<F>,
+	) -> Result<(MultilinearEvalClaim<F>, MultilinearEvalClaim<F>), Error> {
 		let mut prover_opt = Some(self);
 		let mut claim = claim;
 
@@ -158,7 +154,7 @@ where
 			let (sumcheck_prover, remaining) = prover.layer_prover(claim)?;
 			prover_opt = remaining;
 
-			let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], transcript)?;
+			let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], channel)?;
 
 			let mut multilinear_evals = output.multilinear_evals;
 			let evals = multilinear_evals.pop().expect("batch contains one prover");
@@ -167,7 +163,7 @@ where
 				.try_into()
 				.expect("prover evaluates four multilinears");
 
-			let r = transcript.sample();
+			let r = channel.sample();
 
 			let next_num = extrapolate_line_packed(num_0, num_1, r);
 			let next_den = extrapolate_line_packed(den_0, den_1, r);

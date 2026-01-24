@@ -2,14 +2,13 @@
 
 use binius_field::Field;
 use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
 
-use crate::sumcheck::{
-	common::{MleCheckProver, SumcheckProver},
-	error::Error,
+use crate::{
+	channel::IPProverChannel,
+	sumcheck::{
+		common::{MleCheckProver, SumcheckProver},
+		error::Error,
+	},
 };
 
 /// Prover view of the execution result of a batched sumcheck.
@@ -39,16 +38,15 @@ pub struct BatchSumcheckOutput<F: Field> {
 /// the round polynomials.
 ///
 /// This function performs the sumcheck protocol and returns the challenges and evaluation claims,
-/// but does not write the evaluation claims to the transcript. Use [`batch_prove_and_write_evals`]
-/// if you need to write the evaluations to the transcript.
-pub fn batch_prove<F, Prover, Challenger_>(
+/// but does not write the evaluation claims to the channel. Use [`batch_prove_and_write_evals`]
+/// if you need to write the evaluations to the channel.
+pub fn batch_prove<F, Prover>(
 	mut provers: Vec<Prover>,
-	transcript: &mut ProverTranscript<Challenger_>,
+	channel: &mut impl IPProverChannel<F>,
 ) -> Result<BatchSumcheckOutput<F>, Error>
 where
 	F: Field,
 	Prover: SumcheckProver<F>,
-	Challenger_: Challenger,
 {
 	let Some(first_prover) = provers.first() else {
 		return Ok(BatchSumcheckOutput {
@@ -64,7 +62,7 @@ where
 	}
 
 	// Random linear-combination coefficient for batching multiple sum claims.
-	let batch_coeff = transcript.sample();
+	let batch_coeff = channel.sample();
 
 	let mut challenges = Vec::with_capacity(n_vars);
 	for _ in 0..n_vars {
@@ -84,11 +82,9 @@ where
 		let round_proof = batched_round_coeffs.truncate();
 
 		// Commit to the round polynomial, then sample the next challenge.
-		transcript
-			.message()
-			.write_scalar_slice(round_proof.coeffs());
+		channel.send_many(round_proof.coeffs());
 
-		let challenge = transcript.sample();
+		let challenge = channel.sample();
 		challenges.push(challenge);
 
 		// Fold all provers on the shared challenge to advance the state machine.
@@ -112,36 +108,34 @@ where
 	})
 }
 
-/// Prove a batched sumcheck protocol and write evaluation claims to the transcript.
+/// Prove a batched sumcheck protocol and write evaluation claims to the channel.
 ///
-/// This function combines [`batch_prove`] with writing the evaluation claims to the transcript.
+/// This function combines [`batch_prove`] with writing the evaluation claims to the channel.
 /// It performs the batched sumcheck protocol execution and then writes all the multilinear
-/// evaluation values to the transcript in order.
+/// evaluation values to the channel in order.
 ///
 /// # Arguments
 ///
 /// * `provers` - Vector of sumcheck provers, each handling one claim in the batch
-/// * `transcript` - The prover's transcript for the Fiat-Shamir protocol
+/// * `channel` - The channel for sending prover messages and sampling challenges
 ///
 /// # Returns
 ///
 /// Returns [`BatchSumcheckOutput`] containing the challenges and evaluation claims that were
-/// written to the transcript.
-pub fn batch_prove_and_write_evals<F, Prover, Challenger_>(
+/// written to the channel.
+pub fn batch_prove_and_write_evals<F, Prover>(
 	provers: Vec<Prover>,
-	transcript: &mut ProverTranscript<Challenger_>,
+	channel: &mut impl IPProverChannel<F>,
 ) -> Result<BatchSumcheckOutput<F>, Error>
 where
 	F: Field,
 	Prover: SumcheckProver<F>,
-	Challenger_: Challenger,
 {
-	let output = batch_prove(provers, transcript)?;
+	let output = batch_prove(provers, channel)?;
 
-	let mut writer = transcript.message();
 	for evals in &output.multilinear_evals {
 		// Preserve per-prover ordering when emitting evaluation claims.
-		writer.write_scalar_slice(evals);
+		channel.send_many(evals);
 	}
 	Ok(output)
 }
@@ -151,14 +145,13 @@ where
 /// This is the MLE-check analog of [`batch_prove`]: all provers are [`MleCheckProver`]s and must
 /// agree on the same evaluation point, so the batched protocol can fold every prover with the
 /// same per-round challenge and reduce all evaluation claims via a single batching coefficient.
-pub fn batch_prove_mle<F, MleCheckProver_, Challenger_>(
+pub fn batch_prove_mle<F, MleCheckProver_>(
 	mut provers: Vec<MleCheckProver_>,
-	transcript: &mut ProverTranscript<Challenger_>,
+	channel: &mut impl IPProverChannel<F>,
 ) -> Result<BatchSumcheckOutput<F>, Error>
 where
 	F: Field,
 	MleCheckProver_: MleCheckProver<F>,
-	Challenger_: Challenger,
 {
 	let Some(first_prover) = provers.first() else {
 		return Ok(BatchSumcheckOutput {
@@ -182,7 +175,7 @@ where
 		return Err(Error::EvalPointLengthMismatch);
 	}
 	// Random linear-combination coefficient for batching multiple eval claims.
-	let batch_coeff = transcript.sample();
+	let batch_coeff = channel.sample();
 
 	let mut challenges = Vec::with_capacity(n_vars);
 	for _ in 0..n_vars {
@@ -202,11 +195,9 @@ where
 		let round_proof = mlecheck::RoundProof::truncate(batched_round_coeffs);
 
 		// Commit to the round polynomial, then sample the next challenge.
-		transcript
-			.message()
-			.write_scalar_slice(round_proof.coeffs());
+		channel.send_many(round_proof.coeffs());
 
-		let challenge = transcript.sample();
+		let challenge = channel.sample();
 		challenges.push(challenge);
 
 		// Fold all provers on the shared challenge to advance the state machine.
@@ -230,21 +221,19 @@ where
 	})
 }
 
-pub fn batch_prove_mle_and_write_evals<F, MleCheckProver_, Challenger_>(
+pub fn batch_prove_mle_and_write_evals<F, MleCheckProver_>(
 	provers: Vec<MleCheckProver_>,
-	transcript: &mut ProverTranscript<Challenger_>,
+	channel: &mut impl IPProverChannel<F>,
 ) -> Result<BatchSumcheckOutput<F>, Error>
 where
 	F: Field,
 	MleCheckProver_: MleCheckProver<F>,
-	Challenger_: Challenger,
 {
-	let output = batch_prove_mle(provers, transcript)?;
+	let output = batch_prove_mle(provers, channel)?;
 
-	let mut writer = transcript.message();
 	for evals in &output.multilinear_evals {
 		// Preserve per-prover ordering when emitting evaluation claims.
-		writer.write_scalar_slice(evals);
+		channel.send_many(evals);
 	}
 	Ok(output)
 }

@@ -15,15 +15,12 @@ use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
 use binius_math::{
 	field_buffer::FieldBuffer, line::extrapolate_line_packed, univariate::evaluate_univariate,
 };
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
 
 use super::{
 	Error,
 	common::{MleCheckProver, SumcheckProver},
 };
+use crate::channel::IPProverChannel;
 
 /// Output of the ZK MLE-check proving protocol.
 #[derive(Debug, Clone)]
@@ -371,7 +368,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> MleCheckPr
 /// * `main_prover` - The MLE-check prover for the main polynomial. Must have exactly one claim
 ///   (i.e., `n_claims() == 1`).
 /// * `mask` - The mask polynomial.
-/// * `transcript` - The Fiat-Shamir transcript
+/// * `channel` - The channel for sending prover messages and sampling challenges
 ///
 /// # Returns
 ///
@@ -381,15 +378,10 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> MleCheckPr
 /// # Panics
 ///
 /// Panics if `main_prover.n_claims() != 1`.
-pub fn prove<
-	F: Field,
-	P: PackedField<Scalar = F>,
-	Data: Deref<Target = [P]>,
-	Challenger_: Challenger,
->(
+pub fn prove<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>(
 	mut main_prover: impl MleCheckProver<F>,
 	mask: Mask<P, Data>,
-	transcript: &mut ProverTranscript<Challenger_>,
+	channel: &mut impl IPProverChannel<F>,
 ) -> Result<ProveZKOutput<F>, Error> {
 	assert_eq!(
 		main_prover.n_claims(),
@@ -403,10 +395,10 @@ pub fn prove<
 
 	// Compute and write mask_eval (MLE of mask polynomial at the evaluation point)
 	let mask_eval = mask.evaluate_mle(&eval_point);
-	transcript.message().write(&mask_eval);
+	channel.send_one(mask_eval);
 
 	// Sample batch challenge and construct mask prover
-	let batch_challenge: F = transcript.sample();
+	let batch_challenge: F = channel.sample();
 	let batched_mask_eval = batch_challenge * mask_eval;
 	let mut mask_prover = MleCheckMaskProver::new(mask, eval_point, batched_mask_eval);
 
@@ -425,13 +417,11 @@ pub fn prove<
 		// Batch the round coefficients: batched = main + batch_challenge * mask
 		let batched_round_coeffs = main_round_coeffs + &(mask_round_coeffs * batch_challenge);
 
-		// Write truncated coefficients to transcript
-		transcript
-			.message()
-			.write_slice(mlecheck::RoundProof::truncate(batched_round_coeffs).coeffs());
+		// Write truncated coefficients to channel
+		channel.send_many(mlecheck::RoundProof::truncate(batched_round_coeffs).coeffs());
 
 		// Sample challenge and fold both provers
-		let challenge = transcript.sample();
+		let challenge = channel.sample();
 		challenges.push(challenge);
 		main_prover.fold(challenge)?;
 		mask_prover.fold(challenge)?;
@@ -443,7 +433,7 @@ pub fn prove<
 	let mask_eval_out = mask_evals[0];
 
 	// Write final mask evaluation
-	transcript.message().write(&mask_eval_out);
+	channel.send_one(mask_eval_out);
 
 	Ok(ProveZKOutput {
 		multilinear_evals: main_evals,
@@ -506,7 +496,7 @@ mod tests {
 
 		// Convert to verifier transcript and run verification
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let sumcheck_output = mlecheck::verify::<B128, _>(
+		let sumcheck_output = mlecheck::verify(
 			&eval_point,
 			degree, // round polynomial degree equals the univariate g_i degree
 			eval_claim,
@@ -569,8 +559,7 @@ mod tests {
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let sumcheck_output =
-			mlecheck::verify::<B128, _>(&eval_point, 2, eval_claim, &mut verifier_transcript)
-				.unwrap();
+			mlecheck::verify(&eval_point, 2, eval_claim, &mut verifier_transcript).unwrap();
 
 		let mut challenge_point = sumcheck_output.challenges.clone();
 		challenge_point.reverse();
@@ -621,7 +610,7 @@ mod tests {
 			eval,
 			mask_eval,
 			challenges,
-		} = mlecheck::verify_zk::<B128, _>(
+		} = mlecheck::verify_zk(
 			&eval_point,
 			main_degree.max(mask_degree), // batched polynomial degree
 			main_eval_claim,
@@ -726,7 +715,7 @@ mod tests {
 
 		// Verify with sumcheck verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let sumcheck_output = verify::<B128, _>(
+		let sumcheck_output = verify(
 			log_size,
 			2, // degree 2 for bivariate product
 			claimed_sum,

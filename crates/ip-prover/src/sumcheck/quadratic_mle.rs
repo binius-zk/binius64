@@ -289,7 +289,7 @@ mod tests {
 
 		// Convert to verifier transcript and run verification
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let sumcheck_output = mlecheck::verify::<F, _>(
+		let sumcheck_output = mlecheck::verify(
 			eval_point,
 			2, // degree 2 for composite polynomials
 			eval_claim,
