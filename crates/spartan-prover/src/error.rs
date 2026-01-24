@@ -6,6 +6,8 @@ pub enum Error {
 	ArgumentError { arg: String, msg: String },
 	#[error("FRI error: {0}")]
 	Fri(#[from] binius_prover::fri::Error),
+	#[error("basefold error: {0}")]
+	Basefold(#[from] binius_prover::protocols::basefold::Error),
 	#[error("transcript error: {0}")]
 	Transcript(#[from] binius_transcript::Error),
 	#[error("prover error: {0}")]

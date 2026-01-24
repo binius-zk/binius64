@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! Verifier for the BaseFold sumcheck-PIOP to IP compiler.
 //!
@@ -20,9 +21,10 @@
 //! [BCS16]: <https://eprint.iacr.org/2016/116>
 
 use binius_field::{BinaryField, Field};
+use binius_ip::sumcheck::{RoundCoeffs, RoundProof};
 use binius_math::{line::extrapolate_line_packed, multilinear::eq::eq_ind};
 use binius_transcript::{
-	VerifierTranscript,
+	self as transcript, VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
 use binius_utils::DeserializeBytes;
@@ -30,8 +32,6 @@ use binius_utils::DeserializeBytes;
 use crate::{
 	fri::{self, FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier},
 	merkle_tree::MerkleTreeScheme,
-	protocols::sumcheck::{RoundCoeffs, RoundProof},
-	transcript,
 };
 
 /// Verifies a BaseFold protocol interaction.

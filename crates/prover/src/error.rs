@@ -2,7 +2,7 @@
 
 use crate::{
 	fri,
-	protocols::{intmul, shift, sumcheck},
+	protocols::{basefold, intmul, shift, sumcheck},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -13,6 +13,8 @@ pub enum Error {
 	Sumcheck(#[from] sumcheck::Error),
 	#[error("FRI error: {0}")]
 	Fri(#[from] fri::Error),
+	#[error("basefold error: {0}")]
+	Basefold(#[from] basefold::Error),
 	#[error("transcript error: {0}")]
 	Transcript(#[from] binius_transcript::Error),
 	#[error("integer multiplication error: {0}")]

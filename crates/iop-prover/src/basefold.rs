@@ -1,6 +1,12 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_field::{BinaryField, PackedField};
+use binius_iop::merkle_tree::MerkleTreeScheme;
+use binius_ip::sumcheck::RoundCoeffs;
+use binius_ip_prover::sumcheck::{
+	bivariate_product::BivariateProductSumcheckProver, common::SumcheckProver,
+};
 use binius_math::{
 	FieldBuffer, inner_product::inner_product_par, line::extrapolate_line_packed,
 	multilinear::fold::fold_highest_var_inplace, ntt::AdditiveNTT,
@@ -10,21 +16,24 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 use binius_utils::SerializeBytes;
-use binius_verifier::{merkle_tree::MerkleTreeScheme, protocols::sumcheck::RoundCoeffs};
 
 use crate::{
-	Error,
-	fri::{FRIFoldProver, FoldRoundOutput},
+	fri::{self, FRIFoldProver, FoldRoundOutput},
 	merkle_tree::MerkleTreeProver,
-	protocols::sumcheck::{
-		bivariate_product::BivariateProductSumcheckProver, common::SumcheckProver,
-	},
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+	#[error("FRI error: {0}")]
+	Fri(#[from] fri::Error),
+	#[error("sumcheck error: {0}")]
+	Sumcheck(#[from] binius_ip_prover::sumcheck::Error),
+}
 
 /// Prover for the BaseFold protocol.
 ///
 /// The [BaseFold] protocol is a sumcheck-PIOP to IP compiler, used in the [DP24] polynomial
-/// commitment scheme. The verifier module [`binius_verifier::protocols::basefold`] provides a
+/// commitment scheme. The verifier module [`binius_iop::basefold`] provides a
 /// description of the protocol.
 ///
 /// This struct exposes a round-by-round interface for one instance of the interactive protocol.
@@ -224,6 +233,8 @@ mod test {
 		BinaryField, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
 		PackedExtension, PackedField,
 	};
+	use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
+	use binius_iop::{basefold as verifier_basefold, fri::ConstantArityStrategy};
 	use binius_math::{
 		BinarySubspace, FieldBuffer,
 		inner_product::inner_product_buffers,
@@ -231,24 +242,23 @@ mod test {
 		ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
-	use binius_transcript::ProverTranscript;
-	use binius_verifier::{
-		config::StdChallenger,
-		fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
-		hash::{StdCompression, StdDigest},
-		protocols::basefold,
-	};
+	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::{BaseFoldProver, prove_zk};
 	use crate::{
 		fri::{self, CommitOutput, FRIFoldProver},
-		hash::parallel_compression::ParallelCompressionAdaptor,
 		merkle_tree::prover::BinaryMerkleTreeProver,
 	};
 
+	type StdChallenger = HasherChallenger<StdDigest>;
+
 	pub const LOG_INV_RATE: usize = 1;
 	pub const SECURITY_BITS: usize = 32;
+
+	fn calculate_n_test_queries(security_bits: usize, log_inv_rate: usize) -> usize {
+		security_bits.div_ceil(log_inv_rate)
+	}
 
 	fn run_basefold_prove_and_verify<F, P>(
 		multilinear: FieldBuffer<P>,
@@ -270,7 +280,7 @@ mod test {
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
-		let fri_params = FRIParams::with_strategy(
+		let fri_params = binius_iop::fri::FRIParams::with_strategy(
 			&ntt,
 			merkle_prover.scheme(),
 			multilinear.log_len(),
@@ -299,11 +309,11 @@ mod test {
 
 		let retrieved_codeword_commitment = verifier_transcript.message().read()?;
 
-		let basefold::ReducedOutput {
+		let verifier_basefold::ReducedOutput {
 			final_fri_value,
 			final_sumcheck_value,
 			challenges,
-		} = basefold::verify(
+		} = verifier_basefold::verify(
 			&fri_params,
 			merkle_prover.scheme(),
 			retrieved_codeword_commitment,
@@ -311,7 +321,7 @@ mod test {
 			&mut verifier_transcript,
 		)?;
 
-		if !basefold::sumcheck_fri_consistency(
+		if !verifier_basefold::sumcheck_fri_consistency(
 			final_fri_value,
 			final_sumcheck_value,
 			&evaluation_point,
@@ -371,7 +381,7 @@ mod test {
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
 		// Create FRI params with log_batch_size = 1
-		let fri_params = FRIParams::with_strategy(
+		let fri_params = binius_iop::fri::FRIParams::with_strategy(
 			&ntt,
 			merkle_prover.scheme(),
 			witness_plus_mask.log_len(),
@@ -408,11 +418,11 @@ mod test {
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let retrieved_commitment = verifier_transcript.message().read()?;
 
-		let basefold::ReducedOutput {
+		let verifier_basefold::ReducedOutput {
 			final_fri_value,
 			final_sumcheck_value,
 			challenges,
-		} = basefold::verify_zk(
+		} = verifier_basefold::verify_zk(
 			&fri_params,
 			merkle_prover.scheme(),
 			retrieved_commitment,
@@ -422,7 +432,7 @@ mod test {
 
 		// Check consistency - skip batch challenge (challenges[0])
 		let sumcheck_challenges = challenges[1..].to_vec();
-		if !basefold::sumcheck_fri_consistency(
+		if !verifier_basefold::sumcheck_fri_consistency(
 			final_fri_value,
 			final_sumcheck_value,
 			&evaluation_point,
