@@ -20,19 +20,13 @@ use binius_field::Field;
 use binius_math::line::extrapolate_line_packed;
 use binius_transcript::Error as TranscriptError;
 
+// Re-export MultilinearEvalClaim from crate root for backward compatibility
+pub use crate::MultilinearEvalClaim;
 use crate::{
 	channel::IPVerifierChannel,
 	mlecheck,
 	sumcheck::{self, SumcheckOutput},
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MultilinearEvalClaim<F: Field> {
-	/// The evaluation of the multilinear.
-	pub eval: F,
-	/// The evaluation point.
-	pub point: Vec<F>,
-}
 
 pub fn verify<F: Field>(
 	k: usize,
