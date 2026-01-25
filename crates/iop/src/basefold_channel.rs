@@ -6,8 +6,7 @@
 //! FRI commitment and BaseFold opening protocols.
 
 use binius_field::BinaryField;
-use binius_ip::{MultilinearEvalClaim, channel::IPVerifierChannel};
-use binius_math::ntt::AdditiveNTT;
+use binius_ip::{MultilinearRationalEvalClaim, channel::IPVerifierChannel};
 use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
@@ -17,7 +16,7 @@ use binius_utils::DeserializeBytes;
 use crate::{
 	basefold,
 	channel::{Error, IOPVerifierChannel, OracleSpec},
-	fri::{AritySelectionStrategy, FRIParams},
+	fri::FRIParams,
 	merkle_tree::MerkleTreeScheme,
 };
 
@@ -34,86 +33,55 @@ pub struct BaseFoldOracle {
 ///
 /// # Type Parameters
 ///
+/// - `'a`: Lifetime for borrowed references
 /// - `F`: The binary field type
-/// - `NTT`: The additive NTT for Reed-Solomon encoding
 /// - `MerkleScheme_`: The Merkle tree scheme for commitments
 /// - `Challenger_`: The Fiat-Shamir challenger
-pub struct BaseFoldVerifierChannel<F, NTT, MerkleScheme_, Challenger_>
+pub struct BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
 where
 	F: BinaryField,
-	NTT: AdditiveNTT<Field = F>,
 	MerkleScheme_: MerkleTreeScheme<F>,
 	Challenger_: Challenger,
 {
-	/// Verifier transcript for Fiat-Shamir.
-	transcript: VerifierTranscript<Challenger_>,
-	/// NTT (owned). Currently only used during construction for FRIParams computation.
-	#[allow(dead_code)]
-	ntt: NTT,
-	/// Merkle tree scheme (owned).
-	merkle_scheme: MerkleScheme_,
-	/// Oracle specifications.
-	oracle_specs: Vec<OracleSpec>,
-	/// Precomputed FRI params per oracle.
-	fri_params: Vec<FRIParams<F>>,
+	/// Verifier transcript for Fiat-Shamir (borrowed).
+	transcript: &'a mut VerifierTranscript<Challenger_>,
+	/// Merkle tree scheme (borrowed).
+	merkle_scheme: &'a MerkleScheme_,
+	/// Oracle specifications (borrowed).
+	oracle_specs: &'a [OracleSpec],
+	/// Precomputed FRI params per oracle (borrowed).
+	fri_params: &'a [FRIParams<F>],
 	/// Received oracle commitments.
 	oracle_commitments: Vec<MerkleScheme_::Digest>,
 	/// Next oracle index.
 	next_oracle_index: usize,
 }
 
-impl<F, NTT, MerkleScheme_, Challenger_> BaseFoldVerifierChannel<F, NTT, MerkleScheme_, Challenger_>
+impl<'a, F, MerkleScheme_, Challenger_> BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
 where
 	F: BinaryField,
-	NTT: AdditiveNTT<Field = F>,
 	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 	Challenger_: Challenger,
 {
-	/// Creates a new BaseFold verifier channel.
+	/// Creates a new BaseFold verifier channel from precomputed FRI parameters.
+	///
+	/// This constructor is useful when FRI parameters have already been computed
+	/// (e.g., by a [`crate::basefold_compiler::BaseFoldVerifierCompiler`]).
 	///
 	/// # Arguments
 	///
-	/// * `transcript` - The verifier transcript for Fiat-Shamir
-	/// * `ntt` - The additive NTT for Reed-Solomon encoding (owned)
-	/// * `merkle_scheme` - The Merkle tree scheme (owned)
-	/// * `oracle_specs` - Specifications for each oracle to be committed
-	/// * `log_inv_rate` - Log2 of the inverse Reed-Solomon code rate
-	/// * `n_test_queries` - Number of FRI test queries for soundness
-	/// * `arity_strategy` - Strategy for selecting FRI fold arities
-	pub fn new(
-		transcript: VerifierTranscript<Challenger_>,
-		ntt: NTT,
-		merkle_scheme: MerkleScheme_,
-		oracle_specs: Vec<OracleSpec>,
-		log_inv_rate: usize,
-		n_test_queries: usize,
-		arity_strategy: &impl AritySelectionStrategy,
+	/// * `transcript` - The verifier transcript for Fiat-Shamir (borrowed)
+	/// * `merkle_scheme` - The Merkle tree scheme (borrowed)
+	/// * `oracle_specs` - Specifications for each oracle to be committed (borrowed)
+	/// * `fri_params` - Precomputed FRI parameters for each oracle (borrowed)
+	pub fn from_precomputed(
+		transcript: &'a mut VerifierTranscript<Challenger_>,
+		merkle_scheme: &'a MerkleScheme_,
+		oracle_specs: &'a [OracleSpec],
+		fri_params: &'a [FRIParams<F>],
 	) -> Self {
-		let fri_params = oracle_specs
-			.iter()
-			.map(|spec| {
-				let log_msg_len = if spec.is_zk {
-					spec.log_msg_len + 1
-				} else {
-					spec.log_msg_len
-				};
-				let log_batch_size = if spec.is_zk { Some(1) } else { None };
-				FRIParams::with_strategy(
-					&ntt,
-					&merkle_scheme,
-					log_msg_len,
-					log_batch_size,
-					log_inv_rate,
-					n_test_queries,
-					arity_strategy,
-				)
-				.expect("FRI params should be valid for given oracle spec")
-			})
-			.collect();
-
 		Self {
 			transcript,
-			ntt,
 			merkle_scheme,
 			oracle_specs,
 			fri_params,
@@ -124,20 +92,14 @@ where
 
 	/// Returns a reference to the underlying transcript.
 	pub fn transcript(&self) -> &VerifierTranscript<Challenger_> {
-		&self.transcript
-	}
-
-	/// Consumes the channel and returns the underlying transcript.
-	pub fn into_transcript(self) -> VerifierTranscript<Challenger_> {
 		self.transcript
 	}
 }
 
-impl<F, NTT, MerkleScheme_, Challenger_> IPVerifierChannel<F>
-	for BaseFoldVerifierChannel<F, NTT, MerkleScheme_, Challenger_>
+impl<F, MerkleScheme_, Challenger_> IPVerifierChannel<F>
+	for BaseFoldVerifierChannel<'_, F, MerkleScheme_, Challenger_>
 where
 	F: BinaryField,
-	NTT: AdditiveNTT<Field = F>,
 	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 	Challenger_: Challenger,
 {
@@ -167,11 +129,10 @@ where
 	}
 }
 
-impl<F, NTT, MerkleScheme_, Challenger_> IOPVerifierChannel<F>
-	for BaseFoldVerifierChannel<F, NTT, MerkleScheme_, Challenger_>
+impl<F, MerkleScheme_, Challenger_> IOPVerifierChannel<F>
+	for BaseFoldVerifierChannel<'_, F, MerkleScheme_, Challenger_>
 where
 	F: BinaryField,
-	NTT: AdditiveNTT<Field = F>,
 	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 	Challenger_: Challenger,
 {
@@ -203,9 +164,9 @@ where
 	}
 
 	fn finish(
-		mut self,
+		self,
 		oracle_relations: &[(Self::Oracle, F)],
-	) -> Result<Vec<MultilinearEvalClaim<F>>, Error> {
+	) -> Result<Vec<MultilinearRationalEvalClaim<F>>, Error> {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
 			"finish called but {} oracle specs remaining",
@@ -227,34 +188,38 @@ where
 			let fri_params = &self.fri_params[index];
 			let commitment = self.oracle_commitments[index].clone();
 
-			// Run BaseFold verification
-			let reduced_output = if spec.is_zk {
+			// Run BaseFold verification with destructuring to capture all output values
+			let basefold::ReducedOutput {
+				final_fri_value,
+				final_sumcheck_value,
+				challenges,
+			} = if spec.is_zk {
 				basefold::verify_zk(
 					fri_params,
-					&self.merkle_scheme,
+					self.merkle_scheme,
 					commitment,
 					*eval_claim,
-					&mut self.transcript,
+					self.transcript,
 				)?
 			} else {
 				basefold::verify(
 					fri_params,
-					&self.merkle_scheme,
+					self.merkle_scheme,
 					commitment,
 					*eval_claim,
-					&mut self.transcript,
+					self.transcript,
 				)?
 			};
 
-			// The transparent polynomial evaluation point is derived from the sumcheck challenges
-			let mut eval_point = reduced_output.challenges;
+			// Reverse challenges to get evaluation point in correct order (low-to-high)
+			let mut eval_point = challenges;
 			eval_point.reverse();
 
-			// Create the multilinear evaluation claim for the transparent polynomial
-			// The caller is responsible for verifying FRI-sumcheck consistency using
-			// sumcheck_fri_consistency()
-			claims.push(MultilinearEvalClaim {
-				eval: reduced_output.final_fri_value,
+			// Create the BaseFold evaluation claim with both numerator and denominator
+			// Caller must verify: eval_numerator == eval_denominator * transparent_poly_eval(point)
+			claims.push(MultilinearRationalEvalClaim {
+				eval_numerator: final_sumcheck_value,
+				eval_denominator: final_fri_value,
 				point: eval_point,
 			});
 		}

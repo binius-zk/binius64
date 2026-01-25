@@ -51,6 +51,16 @@ pub trait IPVerifierChannel<F> {
 	/// In a Fiat-Shamir transcript, this derives the challenge deterministically from
 	/// the current transcript state.
 	fn sample(&mut self) -> F;
+
+	/// Samples `n` random challenges.
+	fn sample_many(&mut self, n: usize) -> Vec<F> {
+		repeat_with(|| self.sample()).take(n).collect()
+	}
+
+	/// Samples a fixed-size array of random challenges.
+	fn sample_array<const N: usize>(&mut self) -> [F; N] {
+		std::array::from_fn(|_| self.sample())
+	}
 }
 
 impl<F, Challenger_> IPVerifierChannel<F> for VerifierTranscript<Challenger_>

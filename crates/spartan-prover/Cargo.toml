@@ -9,6 +9,9 @@ workspace = true
 
 [dependencies]
 binius-field = { path = "../field" }
+binius-iop = { path = "../iop" }
+binius-iop-prover = { path = "../iop-prover" }
+binius-ip-prover = { path = "../ip-prover" }
 binius-math = { path = "../math" }
 binius-transcript = { path = "../transcript" }
 binius-spartan-frontend = { path = "../spartan-frontend" }

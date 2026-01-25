@@ -32,7 +32,7 @@ use binius_math::{FieldBuffer, FieldSlice};
 /// The caller must call `send_oracle()` exactly `remaining_oracle_specs().len()` times before
 /// calling `finish()`. Each oracle buffer must match the corresponding specification.
 pub trait IOPProverChannel<P: PackedField>: IPProverChannel<P::Scalar> {
-	type Oracle;
+	type Oracle: Clone;
 
 	/// Returns the specifications for the remaining oracles to be committed.
 	///

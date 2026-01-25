@@ -4,31 +4,23 @@ mod error;
 pub mod pcs;
 mod wiring;
 
-use std::{
-	iter::{repeat_n, repeat_with},
-	marker::PhantomData,
-};
+use std::iter::{repeat_n, repeat_with};
 
 use binius_field::{BinaryField, Field, PackedExtension, PackedField};
+use binius_iop_prover::{basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	FieldBuffer, FieldSlice,
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
 };
 use binius_prover::{
-	fri::{self, CommitOutput, FRIFoldProver},
 	hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression},
-	merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver},
-	protocols::{
-		basefold,
-		sumcheck::{quadratic_mle::QuadraticMleCheckProver, zk_mlecheck},
-	},
+	merkle_tree::prover::BinaryMerkleTreeProver,
+	protocols::sumcheck::{quadratic_mle::QuadraticMleCheckProver, zk_mlecheck},
 };
 use binius_spartan_frontend::constraint_system::{BlindingInfo, MulConstraint, WitnessIndex};
 use binius_spartan_verifier::Verifier;
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
+use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{
 	SerializeBytes,
 	checked_arithmetics::checked_log_2,
@@ -42,24 +34,31 @@ use rand::{CryptoRng, rngs::StdRng};
 
 use crate::wiring::WiringTranspose;
 
+type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
+type ProverMerkleProver<F, ParallelMerkleHasher, ParallelMerkleCompress> =
+	BinaryMerkleTreeProver<F, ParallelMerkleHasher, ParallelMerkleCompress>;
+
 /// Struct for proving instances of a particular constraint system.
 ///
 /// The [`Self::setup`] constructor pre-processes reusable structures for proving instances of the
 /// given constraint system. Then [`Self::prove`] is called one or more times with individual
 /// instances.
 #[derive(Debug)]
-pub struct Prover<P, ParallelMerkleCompress, ParallelMerkleHasher: ParallelDigest>
+pub struct Prover<P, ParallelMerkleCompress, ParallelMerkleHasher>
 where
-	P: PackedField,
+	P: PackedField<Scalar: BinaryField>,
+	ParallelMerkleHasher: ParallelDigest<Digest: Digest + BlockSizeUser + FixedOutputReset>,
 	ParallelMerkleCompress: ParallelPseudoCompression<Output<ParallelMerkleHasher::Digest>, 2>,
 {
 	verifier:
 		Verifier<P::Scalar, ParallelMerkleHasher::Digest, ParallelMerkleCompress::Compression>,
-	ntt: NeighborsLastMultiThread<GenericPreExpanded<P::Scalar>>,
-	mulcheck_mask_ntt: NeighborsLastMultiThread<GenericPreExpanded<P::Scalar>>,
-	merkle_prover: BinaryMerkleTreeProver<P::Scalar, ParallelMerkleHasher, ParallelMerkleCompress>,
+	#[allow(clippy::type_complexity)]
+	basefold_compiler: BaseFoldProverCompiler<
+		P,
+		ProverNTT<P::Scalar>,
+		ProverMerkleProver<P::Scalar, ParallelMerkleHasher, ParallelMerkleCompress>,
+	>,
 	wiring_transpose: WiringTranspose,
-	_p_marker: PhantomData<P>,
 }
 
 impl<F, P, MerkleHash, ParallelMerkleCompress, ParallelMerkleHasher>
@@ -82,35 +81,78 @@ where
 		let cs = verifier.constraint_system();
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 
-		let subspace = verifier.fri_params().rs_code().subspace();
+		// Get the largest subspace from the verifier compiler for NTT creation
+		let subspace = verifier.iop_compiler().max_subspace();
 		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
-		let mask_subspace = verifier.mulcheck_mask_fri_params().rs_code().subspace();
-		let mask_domain_context = GenericPreExpanded::generate_from_subspace(mask_subspace);
-		let mulcheck_mask_ntt = NeighborsLastMultiThread::new(mask_domain_context, log_num_shares);
-
 		let merkle_prover = BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression);
+
+		// Create the BaseFold compiler from verifier compiler (reuses oracle_specs and fri_params)
+		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
+			verifier.iop_compiler(),
+			ntt,
+			merkle_prover,
+		);
 
 		// Compute wiring transpose from constraint system
 		let wiring_transpose = WiringTranspose::transpose(cs.size(), cs.mul_constraints());
 
 		Ok(Prover {
 			verifier,
-			ntt,
-			mulcheck_mask_ntt,
-			merkle_prover,
+			basefold_compiler,
 			wiring_transpose,
-			_p_marker: PhantomData,
 		})
 	}
 
+	/// Generates a proof for a witness against the constraint system.
+	///
+	/// # Arguments
+	///
+	/// * `witness` - The witness values for the constraint system
+	/// * `rng` - Random number generator for blinding
+	/// * `transcript` - The prover transcript for Fiat-Shamir
+	///
+	/// # Preconditions
+	///
+	/// * The witness length must match the constraint system size
 	pub fn prove<Challenger_: Challenger>(
 		&self,
 		witness: &[F],
-		mut rng: impl CryptoRng,
+		rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		let cs = self.verifier.constraint_system();
+
+		// Prover observes the public input (includes it in Fiat-Shamir).
+		let public = &witness[..1 << cs.log_public()];
+		transcript.observe().write_slice(public);
+
+		// Create channel and delegate to prove_iop
+		let channel = self.basefold_compiler.create_channel(transcript);
+		self.prove_iop(witness, rng, channel)
+	}
+
+	/// Proves using an IOP channel interface.
+	///
+	/// This is an alternative interface for advanced users who want to provide their own
+	/// channel implementation. Most users should use [`Self::prove`] instead.
+	///
+	/// # Arguments
+	///
+	/// * `witness` - The witness values for the constraint system
+	/// * `rng` - Random number generator for blinding
+	/// * `channel` - The IOP prover channel (public input must be observed on transcript before
+	///   creating the channel)
+	pub fn prove_iop<Channel>(
+		&self,
+		witness: &[F],
+		mut rng: impl CryptoRng,
+		mut channel: Channel,
+	) -> Result<(), Error>
+	where
+		Channel: IOPProverChannel<P>,
+	{
 		let _prove_guard =
 			tracing::info_span!("Prove", operation = "prove", perfetto_category = "operation")
 				.entered();
@@ -127,10 +169,6 @@ where
 		}
 
 		let log_mul_constraints = checked_log_2(cs.mul_constraints().len());
-
-		// Prover observes the public input (includes it in Fiat-Shamir).
-		let public = &witness[..1 << cs.log_public()];
-		transcript.observe().write_slice(public);
 
 		// Create combined buffer for mask and masks_mask (2x size for BaseFold batching)
 		let (m_n, m_d) = self.verifier.mask_dims();
@@ -161,91 +199,55 @@ where
 			&mut rng,
 		);
 
-		// Commit the witness
-		let CommitOutput {
-			commitment: trace_commitment,
-			committed: codeword_committed,
-			codeword,
-		} = fri::commit_interleaved(
-			self.verifier.fri_params(),
-			&self.ntt,
-			&self.merkle_prover,
-			witness_packed.to_ref(),
-		)?;
-		transcript.message().write(&trace_commitment);
-
-		// Commit the masks buffer (includes both mask and masks_mask)
-		let CommitOutput {
-			commitment: mask_commitment,
-			committed: mask_codeword_committed,
-			codeword: mask_codeword,
-		} = fri::commit_interleaved(
-			self.verifier.mulcheck_mask_fri_params(),
-			&self.mulcheck_mask_ntt,
-			&self.merkle_prover,
-			masks_buffer.to_ref(),
-		)?;
-		transcript.message().write(&mask_commitment);
+		// Send the witness and masks oracles to the channel
+		let trace_oracle = channel.send_oracle(witness_packed.to_ref());
+		let mask_oracle = channel.send_oracle(masks_buffer.to_ref());
 
 		// Prove the multiplication constraints
 		let (mulcheck_evals, mask_eval, r_x) = self.prove_mulcheck(
 			cs.mul_constraints(),
 			witness_packed.to_ref(),
 			mulcheck_mask,
-			transcript,
+			&mut channel,
 		)?;
 
-		// Run wiring check protocol
-		let r_public = transcript.sample_vec(cs.log_public() as usize);
+		// Compute wiring claim components
+		let r_public = channel.sample_many(cs.log_public() as usize);
 
-		let fri_prover = FRIFoldProver::new(
-			self.verifier.fri_params(),
-			&self.ntt,
-			&self.merkle_prover,
-			codeword,
-			&codeword_committed,
-		)?;
-		wiring::prove(
+		let wiring_relation = wiring::compute_wiring_relation(
 			&self.wiring_transpose,
-			fri_prover,
+			&witness_packed.to_ref(),
 			&r_public,
 			&r_x,
-			witness_packed.clone(),
 			&mulcheck_evals,
-			transcript,
-		)?;
+			&mut channel,
+		);
 
-		// Prove the mask opening: mask_eval = <masks_buffer, libra_eval_r>
-		let mask_fri_prover = FRIFoldProver::new(
-			self.verifier.mulcheck_mask_fri_params(),
-			&self.mulcheck_mask_ntt,
-			&self.merkle_prover,
-			mask_codeword,
-			&mask_codeword_committed,
-		)?;
-		prove_mask_opening(
-			masks_buffer,
-			mask_eval,
-			&r_x,
-			self.verifier.mask_dims(),
-			mask_fri_prover,
-			transcript,
-		)?;
+		// Compute the mask folding polynomial (libra_eval tensor)
+		let n_vars = r_x.len();
+		let libra_eval_tensor =
+			zk_mlecheck::expand_libra_eval::<P>(&r_x, n_vars, mask_degree, m_n, m_d);
+
+		// Finish the protocol with both oracle relations
+		channel.finish(&[
+			(trace_oracle, wiring_relation.l_poly, wiring_relation.batched_sum),
+			(mask_oracle, libra_eval_tensor, mask_eval),
+		]);
 
 		Ok(())
 	}
 
-	fn prove_mulcheck<Data: std::ops::Deref<Target = [P]>, Challenger_: Challenger>(
+	fn prove_mulcheck<Data: std::ops::Deref<Target = [P]>>(
 		&self,
 		mul_constraints: &[MulConstraint<WitnessIndex>],
 		witness: FieldSlice<P>,
 		mask: zk_mlecheck::Mask<P, Data>,
-		transcript: &mut ProverTranscript<Challenger_>,
+		channel: &mut impl IPProverChannel<F>,
 	) -> Result<([F; 3], F, Vec<F>), Error> {
 		let mulcheck_witness = wiring::build_mulcheck_witness(mul_constraints, witness);
 
 		// Sample random evaluation point for mulcheck
-		let r_mulcheck = transcript.sample_vec(mask.n_vars());
+		let r_mulcheck = channel.sample_many(mask.n_vars());
 
 		// Create the QuadraticMleCheckProver for the mul gate: a * b - c
 		let mlecheck_prover = QuadraticMleCheckProver::new(
@@ -257,7 +259,7 @@ where
 		)?;
 
 		// Run the ZK MLE-check protocol
-		let mlecheck_output = zk_mlecheck::prove(mlecheck_prover, mask, transcript)?;
+		let mlecheck_output = zk_mlecheck::prove(mlecheck_prover, mask, channel)?;
 
 		// Extract the reduced evaluation point and multilinear evaluations
 		let mut r_x = mlecheck_output.challenges;
@@ -268,49 +270,14 @@ where
 			.try_into()
 			.expect("mlecheck returns 3 evaluations");
 
-		// Write the multilinear evaluations to transcript
-		transcript.message().write(&[a_eval, b_eval, c_eval]);
+		// Write the multilinear evaluations to channel
+		channel.send_many(&[a_eval, b_eval, c_eval]);
 
 		let mulcheck_evals = [a_eval, b_eval, c_eval];
 		let mask_eval = mlecheck_output.mask_eval;
 
 		Ok((mulcheck_evals, mask_eval, r_x))
 	}
-}
-
-/// Proves that mask_eval = <masks_buffer, libra_eval_r> using ZK BaseFold.
-///
-/// This verification ensures the mask polynomial evaluation at the sumcheck challenge point
-/// is consistent with the committed mask polynomial.
-fn prove_mask_opening<'a, F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
-	masks_buffer: FieldBuffer<P>,
-	mask_eval: F,
-	r_x: &[F],
-	mask_dims: (usize, usize),
-	fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
-	transcript: &mut ProverTranscript<Challenger_>,
-) -> Result<(), Error>
-where
-	F: BinaryField,
-	P: PackedField<Scalar = F>,
-	NTT: binius_math::ntt::AdditiveNTT<Field = F> + Sync,
-	MerkleScheme: binius_verifier::merkle_tree::MerkleTreeScheme<F, Digest: SerializeBytes>,
-	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
-	Challenger_: Challenger,
-{
-	let (m_n, m_d) = mask_dims;
-	let n_vars = r_x.len();
-	let mask_degree = 2; // quadratic composition
-
-	// Generate the libra_eval tensor: libra_eval_r(j, k) = r_x[j]^k
-	let libra_eval_tensor = zk_mlecheck::expand_libra_eval::<P>(r_x, n_vars, mask_degree, m_n, m_d);
-
-	// Run ZK BaseFold to prove mask_eval = <masks_buffer, libra_eval_tensor>
-	let prover =
-		basefold::prove_zk(masks_buffer, libra_eval_tensor, mask_eval, fri_folder, transcript);
-	prover.prove(transcript)?;
-
-	Ok(())
 }
 
 fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(

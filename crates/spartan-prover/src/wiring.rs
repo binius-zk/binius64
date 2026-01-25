@@ -2,21 +2,14 @@
 
 use std::iter;
 
-use binius_field::{BinaryField, Field, PackedField};
+use binius_field::{Field, PackedField};
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	FieldBuffer, FieldSlice, multilinear, multilinear::eq::eq_ind_partial_eval, ntt::AdditiveNTT,
+	FieldBuffer, FieldSlice, multilinear, multilinear::eq::eq_ind_partial_eval,
 	univariate::evaluate_univariate,
 };
-use binius_prover::{fri::FRIFoldProver, merkle_tree::MerkleTreeProver, protocols::basefold};
 use binius_spartan_frontend::constraint_system::{MulConstraint, Operand, WitnessIndex};
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
-use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::prelude::*};
-use binius_verifier::merkle_tree::MerkleTreeScheme;
-
-use crate::Error;
+use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
 
 /// Transpose of the wiring sparse matrix.
 #[derive(Debug)]
@@ -163,50 +156,48 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 	FieldBuffer::new(log_witness_size, result.into_boxed_slice())
 }
 
-/// Proves the wiring check protocol.
+/// Result of computing the wiring relation for IOP proving.
 ///
-/// This function implements the prover side of the wiring check reduction protocol.
-/// It batches the mulcheck evaluations, runs a sumcheck over the bivariate product
-/// of the witness and folded wiring polynomial, and returns the evaluation point
-/// and witness evaluation.
-pub fn prove<F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
+/// Contains the folding polynomial (l_poly) and the claimed batched sum
+/// that will be passed to the IOP channel's finish method.
+pub struct WiringRelation<P: PackedField> {
+	/// The folding polynomial: wiring poly + batch_coeff * eq(r_public, ·)
+	pub l_poly: FieldBuffer<P>,
+	/// The claimed batched sum: λ-batched mulcheck evals + batch_coeff * public_eval
+	pub batched_sum: P::Scalar,
+}
+
+/// Computes the wiring relation for IOP proving.
+///
+/// Samples batching challenges from the channel, computes the folding polynomial,
+/// and returns the relation data needed for the IOP channel's finish method.
+pub fn compute_wiring_relation<F: Field, P: PackedField<Scalar = F>>(
 	wiring_transpose: &WiringTranspose,
-	fri_prover: FRIFoldProver<F, P, NTT, MerkleProver>,
+	witness: &FieldSlice<P>,
 	r_public: &[F],
 	r_x: &[F],
-	witness: FieldBuffer<P>,
 	mulcheck_evals: &[F],
-	transcript: &mut ProverTranscript<Challenger_>,
-) -> Result<(), Error>
-where
-	F: BinaryField,
-	P: PackedField<Scalar = F>,
-	NTT: AdditiveNTT<Field = F> + Sync,
-	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
-	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
-	Challenger_: Challenger,
-{
-	assert!(r_public.len() <= witness.log_len()); // precondition
-	assert_eq!(fri_prover.n_rounds(), witness.log_len()); // precondition
+	channel: &mut impl IPProverChannel<F>,
+) -> WiringRelation<P> {
+	// Sample batching challenges
+	let lambda = channel.sample();
+	let batch_coeff = channel.sample();
 
-	// Sample batching challenge
-	let lambda = transcript.sample();
-
-	// Coefficient for batching the public input check with the wiring check.
-	let batch_coeff = transcript.sample();
-
-	// Fold constraints with batching and compute the batched polynomial
+	// Fold constraints with batching and compute the folded polynomial
 	let wiring_poly = fold_constraints(wiring_transpose, lambda, r_x);
 	let l_poly = compute_l_poly(wiring_poly, r_public, batch_coeff);
 
+	// Compute the public input evaluation
 	let public = witness.chunk(r_public.len(), 0);
 	let public_eval = multilinear::evaluate::evaluate(&public, r_public);
 
-	// Run sumcheck on bivariate product
+	// Compute the batched sum
 	let batched_sum = evaluate_univariate(mulcheck_evals, lambda) + batch_coeff * public_eval;
-	basefold::prove_zk(witness, l_poly, batched_sum, fri_prover, transcript).prove(transcript)?;
 
-	Ok(())
+	WiringRelation {
+		l_poly,
+		batched_sum,
+	}
 }
 
 /// Witness data for multiplication constraint checking.
@@ -305,37 +296,16 @@ pub fn build_mulcheck_witness<F: Field, P: PackedField<Scalar = F>>(
 mod tests {
 	use binius_field::{BinaryField128bGhash as B128, Field, Random};
 	use binius_math::{
-		BinarySubspace,
-		inner_product::inner_product_buffers,
 		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
-		ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly},
-		test_utils::{Packed128b, random_field_buffer, random_scalars},
+		test_utils::{Packed128b, random_scalars},
 		univariate::evaluate_univariate,
 	};
-	use binius_prover::{
-		fri::{self, CommitOutput, FRIFoldProver},
-		hash::parallel_compression::ParallelCompressionAdaptor,
-		merkle_tree::prover::BinaryMerkleTreeProver,
-	};
-	use binius_spartan_frontend::constraint_system::{
-		BlindingInfo, ConstraintSystem, ConstraintSystemPadded, MulConstraint, Operand,
-		WitnessIndex,
-	};
-	use binius_spartan_verifier::{
-		config::StdChallenger,
-		wiring::{self as verifier_wiring, evaluate_wiring_mle},
-	};
-	use binius_transcript::ProverTranscript;
-	use binius_verifier::{
-		fri::{ConstantArityStrategy, FRIParams},
-		hash::{StdCompression, StdDigest},
-	};
+	use binius_spartan_frontend::constraint_system::{MulConstraint, Operand, WitnessIndex};
+	use binius_spartan_verifier::wiring::evaluate_wiring_mle;
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 	use smallvec::SmallVec;
 
 	use super::*;
-
-	const LOG_INV_RATE: usize = 1;
 
 	/// Generate random MulConstraints for testing.
 	/// Each operand has 0-4 random wires.
@@ -447,134 +417,5 @@ mod tests {
 			actual, expected,
 			"fold_constraints + evaluate does not match evaluate_wiring_mle"
 		);
-	}
-
-	#[test]
-	fn test_wiring_prove_verify() {
-		let mut rng = StdRng::seed_from_u64(0);
-
-		let log_n_constraints = 4;
-		let log_public = 3;
-		let log_witness_size = 5;
-
-		let n_constraints = 1 << log_n_constraints;
-		let witness_size = 1 << log_witness_size;
-
-		// Generate random constraints
-		let constraints = generate_random_constraints(&mut rng, n_constraints, witness_size);
-
-		// Create random witness using random_field_buffer
-		let witness_mask_packed = random_field_buffer::<Packed128b>(&mut rng, log_witness_size + 1);
-		let (witness_packed, _mask_packed) = witness_mask_packed.split_half_ref();
-
-		// Compute mulcheck witness
-		let mulcheck_witness = build_mulcheck_witness(&constraints, witness_packed.to_ref());
-
-		// Sample r_x
-		let r_x = random_scalars::<B128>(&mut rng, log_n_constraints);
-
-		// Compute mulcheck evaluations
-		let r_x_tensor = eq_ind_partial_eval::<Packed128b>(&r_x);
-		let mulcheck_evals = [
-			inner_product_buffers(&mulcheck_witness.a, &r_x_tensor),
-			inner_product_buffers(&mulcheck_witness.b, &r_x_tensor),
-			inner_product_buffers(&mulcheck_witness.c, &r_x_tensor),
-		];
-
-		// Sample r_public and evaluate the public inputs.
-		let r_public = random_scalars::<B128>(&mut rng, log_public);
-		let r_public_padded = [
-			r_public.as_slice(),
-			&vec![B128::ZERO; log_witness_size - log_public],
-		]
-		.concat();
-		let public_eval = evaluate(&witness_packed, &r_public_padded);
-
-		// Create transposed wiring
-		let wiring_transpose = WiringTranspose::transpose(witness_size, &constraints);
-
-		// Setup FRI
-		let merkle_prover = BinaryMerkleTreeProver::<B128, StdDigest, _>::new(
-			ParallelCompressionAdaptor::new(StdCompression::default()),
-		);
-
-		let subspace = BinarySubspace::with_dim(log_witness_size + LOG_INV_RATE);
-		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
-		let ntt = NeighborsLastSingleThread::new(domain_context);
-
-		let fri_params = FRIParams::with_strategy(
-			&ntt,
-			merkle_prover.scheme(),
-			witness_mask_packed.log_len(),
-			Some(1),
-			LOG_INV_RATE,
-			32,
-			&ConstantArityStrategy::new(2),
-		)
-		.expect("FRI params creation should succeed");
-
-		// Commit witness
-		let CommitOutput {
-			commitment: codeword_commitment,
-			committed: codeword_committed,
-			codeword,
-		} = fri::commit_interleaved(&fri_params, &ntt, &merkle_prover, witness_mask_packed.to_ref())
-			.expect("commit should succeed");
-
-		// Create FRI fold prover
-		let fri_prover =
-			FRIFoldProver::new(&fri_params, &ntt, &merkle_prover, codeword, &codeword_committed)
-				.expect("FRI fold prover creation should succeed");
-
-		// Prover side
-		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover_transcript.message().write(&codeword_commitment);
-
-		prove(
-			&wiring_transpose,
-			fri_prover,
-			&r_public,
-			&r_x,
-			witness_mask_packed,
-			&mulcheck_evals,
-			&mut prover_transcript,
-		)
-		.expect("prove should succeed");
-
-		// Verifier side
-		let mut verifier_transcript = prover_transcript.into_verifier();
-		let retrieved_codeword_commitment = verifier_transcript
-			.message()
-			.read()
-			.expect("read should succeed");
-
-		let verifier_output = verifier_wiring::verify(
-			&fri_params,
-			merkle_prover.scheme(),
-			retrieved_codeword_commitment,
-			&mulcheck_evals,
-			public_eval,
-			&mut verifier_transcript,
-		)
-		.expect("verify should succeed");
-
-		// Check eval consistency using ConstraintSystemPadded
-		let constraint_system = ConstraintSystem::new(
-			vec![],            // constants
-			0,                 // n_inout
-			0,                 // n_private
-			log_public as u32, // log_public
-			constraints,       // mul_constraints
-			WitnessIndex(0),   // one_wire (dummy for test)
-		);
-		let constraint_system_padded = ConstraintSystemPadded::new(
-			constraint_system,
-			BlindingInfo {
-				n_dummy_wires: 0,
-				n_dummy_constraints: 0,
-			},
-		);
-		verifier_wiring::check_eval(&constraint_system_padded, &r_public, &r_x, &verifier_output)
-			.expect("check_eval should succeed");
 	}
 }

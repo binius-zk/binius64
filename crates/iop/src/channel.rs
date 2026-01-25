@@ -15,7 +15,7 @@
 //! communication and commitment mechanisms.
 
 use binius_field::Field;
-use binius_ip::{MultilinearEvalClaim, channel::IPVerifierChannel};
+use binius_ip::{MultilinearRationalEvalClaim, channel::IPVerifierChannel};
 
 use crate::basefold;
 
@@ -50,7 +50,7 @@ pub struct OracleSpec {
 /// The caller must call `recv_oracle()` exactly `remaining_oracle_specs().len()` times before
 /// calling `finish()`. The oracles must be received in order and match their specifications.
 pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F> {
-	type Oracle;
+	type Oracle: Clone;
 
 	/// Returns the specifications for the remaining oracles to be received.
 	///
@@ -69,8 +69,13 @@ pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	/// Each oracle relation is a pair of (oracle, claimed_eval) where claimed_eval is the
 	/// claimed evaluation of the oracle's polynomial multiplied by a transparent polynomial.
 	///
-	/// Returns a vector of [`MultilinearEvalClaim`]s, one per oracle relation, representing
-	/// the evaluation claims on the transparent multilinear polynomials at the derived points.
+	/// Returns a vector of [`MultilinearRationalEvalClaim`]s, one per oracle relation. Each claim
+	/// contains:
+	/// - `eval_numerator`: the final sumcheck value
+	/// - `eval_denominator`: the FRI evaluation of the committed polynomial
+	/// - `point`: the evaluation point derived from sumcheck challenges
+	///
+	/// The caller must verify: `eval_numerator == eval_denominator * transparent_poly_eval(point)`
 	///
 	/// # Preconditions
 	///
@@ -80,5 +85,5 @@ pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	fn finish(
 		self,
 		oracle_relations: &[(Self::Oracle, F)],
-	) -> Result<Vec<MultilinearEvalClaim<F>>, Error>;
+	) -> Result<Vec<MultilinearRationalEvalClaim<F>>, Error>;
 }

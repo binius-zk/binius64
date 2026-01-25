@@ -17,6 +17,7 @@ use binius_utils::SerializeBytes;
 
 use crate::{
 	basefold::{self, BaseFoldProver},
+	basefold_compiler::BaseFoldProverCompiler,
 	channel::IOPProverChannel,
 	fri::{self, CommitOutput, FRIFoldProver},
 	merkle_tree::MerkleTreeProver,
@@ -58,11 +59,11 @@ where
 	MerkleProver_: MerkleTreeProver<F>,
 	Challenger_: Challenger,
 {
-	/// Prover transcript for Fiat-Shamir.
-	transcript: ProverTranscript<Challenger_>,
-	/// NTT for RS encoding (owned).
-	ntt: NTT,
-	/// Merkle tree prover.
+	/// Prover transcript for Fiat-Shamir (borrowed).
+	transcript: &'a mut ProverTranscript<Challenger_>,
+	/// NTT for RS encoding (borrowed).
+	ntt: &'a NTT,
+	/// Merkle tree prover (borrowed).
 	merkle_prover: &'a MerkleProver_,
 	/// Oracle specifications.
 	oracle_specs: Vec<OracleSpec>,
@@ -88,9 +89,9 @@ where
 	///
 	/// # Arguments
 	///
-	/// * `transcript` - The prover transcript for Fiat-Shamir
-	/// * `ntt` - The additive NTT for Reed-Solomon encoding (owned)
-	/// * `merkle_prover` - The Merkle tree prover
+	/// * `transcript` - The prover transcript for Fiat-Shamir (borrowed mutably)
+	/// * `ntt` - The additive NTT for Reed-Solomon encoding (borrowed)
+	/// * `merkle_prover` - The Merkle tree prover (borrowed)
 	/// * `oracle_specs` - Specifications for each oracle to be committed
 	/// * `log_inv_rate` - Log2 of the inverse Reed-Solomon code rate
 	/// * `n_test_queries` - Number of FRI test queries for soundness
@@ -99,8 +100,8 @@ where
 	///
 	/// * The NTT domain must be large enough for all oracles
 	pub fn new(
-		transcript: ProverTranscript<Challenger_>,
-		ntt: NTT,
+		transcript: &'a mut ProverTranscript<Challenger_>,
+		ntt: &'a NTT,
 		merkle_prover: &'a MerkleProver_,
 		oracle_specs: Vec<OracleSpec>,
 		log_inv_rate: usize,
@@ -118,7 +119,7 @@ where
 				};
 				let log_batch_size = if spec.is_zk { Some(1) } else { None };
 				FRIParams::with_strategy(
-					&ntt,
+					ntt,
 					merkle_prover.scheme(),
 					log_msg_len,
 					log_batch_size,
@@ -143,12 +144,30 @@ where
 
 	/// Returns a reference to the underlying transcript.
 	pub fn transcript(&self) -> &ProverTranscript<Challenger_> {
-		&self.transcript
+		self.transcript
 	}
 
-	/// Consumes the channel and returns the underlying transcript.
-	pub fn into_transcript(self) -> ProverTranscript<Challenger_> {
-		self.transcript
+	/// Creates a new BaseFold prover channel from a compiler with precomputed FRI parameters.
+	///
+	/// This constructor borrows the NTT and other parameters from the compiler.
+	///
+	/// # Arguments
+	///
+	/// * `compiler` - The BaseFold prover compiler with precomputed parameters
+	/// * `transcript` - The prover transcript for Fiat-Shamir (borrowed mutably)
+	pub fn from_compiler(
+		compiler: &'a BaseFoldProverCompiler<P, NTT, MerkleProver_>,
+		transcript: &'a mut ProverTranscript<Challenger_>,
+	) -> Self {
+		Self {
+			transcript,
+			ntt: compiler.ntt(),
+			merkle_prover: compiler.merkle_prover(),
+			oracle_specs: compiler.oracle_specs().to_vec(),
+			fri_params: compiler.fri_params().to_vec(),
+			committed_oracles: Vec::new(),
+			next_oracle_index: 0,
+		}
 	}
 }
 
@@ -221,7 +240,7 @@ where
 			commitment,
 			committed,
 			codeword,
-		} = fri::commit_interleaved(fri_params, &self.ntt, self.merkle_prover, buffer)
+		} = fri::commit_interleaved(fri_params, self.ntt, self.merkle_prover, buffer)
 			.expect("FRI commit should succeed with valid params");
 
 		// Send commitment via transcript
@@ -239,7 +258,7 @@ where
 		BaseFoldOracle { index }
 	}
 
-	fn finish(mut self, oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)]) {
+	fn finish(self, oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)]) {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
 			"finish called but {} oracle specs remaining",
@@ -262,7 +281,7 @@ where
 			// Create FRI folder from committed codeword
 			let fri_folder = FRIFoldProver::new(
 				fri_params,
-				&self.ntt,
+				self.ntt,
 				self.merkle_prover,
 				committed_data.codeword.clone(),
 				&committed_data.committed,
@@ -277,10 +296,10 @@ where
 					transparent_poly.clone(),
 					*eval_claim,
 					fri_folder,
-					&mut self.transcript,
+					self.transcript,
 				);
 				prover
-					.prove(&mut self.transcript)
+					.prove(self.transcript)
 					.expect("BaseFold ZK proof should succeed");
 			} else {
 				// Non-ZK variant
@@ -291,7 +310,7 @@ where
 					fri_folder,
 				);
 				prover
-					.prove(&mut self.transcript)
+					.prove(self.transcript)
 					.expect("BaseFold proof should succeed");
 			}
 		}
@@ -302,9 +321,7 @@ where
 mod tests {
 	use binius_field::{BinaryField, BinaryField128bGhash, PackedBinaryGhash1x128b, PackedField};
 	use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
-	use binius_iop::{
-		basefold_channel::BaseFoldVerifierChannel, channel::OracleSpec, fri::MinProofSizeStrategy,
-	};
+	use binius_iop::{channel::OracleSpec, fri::MinProofSizeStrategy};
 	use binius_math::{
 		BinarySubspace, FieldBuffer,
 		inner_product::inner_product_buffers,
@@ -408,10 +425,10 @@ mod tests {
 		];
 
 		// === PROVER SIDE ===
-		let prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover_channel = BaseFoldProverChannel::<_, P, _, _, _>::new(
-			prover_transcript,
-			ntt,
+			&mut prover_transcript,
+			&ntt,
 			&merkle_prover,
 			oracle_specs.clone(),
 			LOG_INV_RATE,
@@ -437,6 +454,8 @@ mod tests {
 
 	#[test]
 	fn test_basefold_channel_verifier_two_oracles_mixed_zk() {
+		use binius_iop::basefold_compiler::BaseFoldVerifierCompiler;
+
 		type F = BinaryField128bGhash;
 
 		// Two oracles with different sizes and mixed ZK settings
@@ -470,17 +489,17 @@ mod tests {
 
 		// Create an empty verifier transcript (would normally have proof data)
 		let prover_transcript = ProverTranscript::<StdChallenger>::new(StdChallenger::default());
-		let verifier_transcript = prover_transcript.into_verifier();
+		let mut verifier_transcript = prover_transcript.into_verifier();
 
-		// Create verifier channel - this tests construction with mixed specs
-		let _verifier_channel = BaseFoldVerifierChannel::new(
-			verifier_transcript,
-			ntt,
+		// Create verifier channel via compiler - this tests construction with mixed specs
+		let compiler = BaseFoldVerifierCompiler::new(
+			&ntt,
 			merkle_scheme,
 			oracle_specs,
 			LOG_INV_RATE,
 			n_test_queries,
 			&MinProofSizeStrategy,
 		);
+		let _verifier_channel = compiler.create_channel(&mut verifier_transcript);
 	}
 }
