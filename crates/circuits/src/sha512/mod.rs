@@ -551,7 +551,7 @@ pub fn sha512_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 
 			let compress = Compress::new(
 				&builder.subcircuit(format!("sha512_fixed_compress[{}]", block_idx)),
-				state.clone(),
+				state,
 				block_message,
 			);
 
