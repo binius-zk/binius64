@@ -15,7 +15,7 @@ use crate::protocols::{
 	sumcheck::{self, BatchSumcheckOutput},
 };
 
-/// Per-lookup claims emitted by the prover and consumed by the verifier.
+/// Per-lookup claims emitted by the prover and serialized into the transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogUpLookupClaims<F: Field> {
 	/// Lookup table identifier used to pick the corresponding table evaluation.
@@ -52,27 +52,18 @@ pub struct LogUpEvalClaims<F: Field> {
 /// `eq_log_len` is the log-length of the lookup indices (eq-kernel), and `table_log_len`
 /// is the log-length of the tables/pushforwards. `eval_point` is the point used to
 /// instantiate the eq-kernel. `lookup_evals` must be aligned with the lookup ordering
-/// of `lookup_claims`.
+/// encoded in the transcript.
 pub fn verify_lookup<F: Field, Challenger_: Challenger>(
 	eq_log_len: usize,
 	table_log_len: usize,
 	eval_point: &[F],
 	lookup_evals: &[F],
-	lookup_claims: &[LogUpLookupClaims<F>],
 	transcript: &mut VerifierTranscript<Challenger_>,
 ) -> Result<LogUpEvalClaims<F>, Error> {
 	// Match the prover's Fiat-Shamir sampling performed during `LogUp::new`.
 	let [fingerprint_scalar, shift_scalar]: [F; 2] = transcript.sample_array();
 
-	if lookup_claims.len() != lookup_evals.len() {
-		return Err(VerificationError::LookupEvalCountMismatch {
-			claims: lookup_claims.len(),
-			evals: lookup_evals.len(),
-		}
-		.into());
-	}
-
-	if lookup_claims.is_empty() {
+	if lookup_evals.is_empty() {
 		return Ok(LogUpEvalClaims {
 			index_claims: Vec::new(),
 			pushforward_sumcheck_claims: Vec::new(),
@@ -88,14 +79,16 @@ pub fn verify_lookup<F: Field, Challenger_: Challenger>(
 		.into());
 	}
 
-	let n_lookups = lookup_claims.len();
-	let n_tables = lookup_claims
-		.iter()
-		.map(|claim| claim.table_id)
-		.max()
-		.map(|max_id| max_id + 1)
-		.unwrap_or(0);
+	let n_lookups = lookup_evals.len();
+	let table_ids: Vec<usize> = transcript.message().read_vec(n_lookups)?;
+	let max_table_id = table_ids.iter().copied().max().unwrap_or(0);
+	let n_tables = max_table_id
+		.checked_add(1)
+		.ok_or(VerificationError::TableIdOutOfRange {
+			table_id: max_table_id,
+		})?;
 
+	// TODO: Add comment linking to paper logic.
 	let BatchSumcheckOutput {
 		batch_coeff,
 		eval,
@@ -107,28 +100,11 @@ pub fn verify_lookup<F: Field, Challenger_: Challenger>(
 	let pushforward_evals = read_scalar_slice(transcript, n_lookups)?;
 	let table_evals = read_scalar_slice(transcript, n_tables)?;
 
-	for (index, claim) in lookup_claims.iter().enumerate() {
-		if claim.pushforward_eval != pushforward_evals[index] {
-			return Err(VerificationError::PushforwardEvalMismatch { index }.into());
-		}
-
-		if claim.table_id >= n_tables {
-			return Err(VerificationError::TableIdOutOfRange {
-				table_id: claim.table_id,
-			}
-			.into());
-		}
-
-		if claim.table_eval != table_evals[claim.table_id] {
-			return Err(VerificationError::TableEvalMismatch { index }.into());
-		}
-	}
-
 	// Recompute the batched quadratic composition at the verifier's point.
-	let expected_terms = lookup_claims
+	let expected_terms = table_ids
 		.iter()
 		.enumerate()
-		.map(|(index, claim)| pushforward_evals[index] * table_evals[claim.table_id])
+		.map(|(index, &table_id)| pushforward_evals[index] * table_evals[table_id])
 		.collect::<Vec<_>>();
 	let expected_eval = evaluate_univariate(&expected_terms, batch_coeff);
 	if expected_eval != eval {
@@ -136,9 +112,10 @@ pub fn verify_lookup<F: Field, Challenger_: Challenger>(
 	}
 
 	// Each lookup must satisfy the log-sum equality of fraction claims.
-	for (index, claim) in lookup_claims.iter().enumerate() {
-		let eq = &claim.eq_frac_claim;
-		let push = &claim.push_frac_claim;
+	let eq_claims = read_frac_claims(transcript, n_lookups)?;
+	let push_claims = read_frac_claims(transcript, n_lookups)?;
+
+	for (index, (eq, push)) in eq_claims.iter().zip(push_claims.iter()).enumerate() {
 		if eq.num_eval * push.den_eval != push.num_eval * eq.den_eval {
 			return Err(VerificationError::LogSumClaimMismatch { index }.into());
 		}
@@ -146,15 +123,6 @@ pub fn verify_lookup<F: Field, Challenger_: Challenger>(
 
 	// Drive batched fractional-addition checks for the two reduction trees.
 	// These return the reduced evaluation claims for the final layer.
-	let eq_claims = lookup_claims
-		.iter()
-		.map(|claim| claim.eq_frac_claim.clone())
-		.collect::<Vec<_>>();
-	let push_claims = lookup_claims
-		.iter()
-		.map(|claim| claim.push_frac_claim.clone())
-		.collect::<Vec<_>>();
-
 	let eq_claims = fracaddcheck::verify_batch(eq_log_len, eq_claims, transcript)?;
 	let push_claims = fracaddcheck::verify_batch(eq_log_len, push_claims, transcript)?;
 
@@ -244,6 +212,13 @@ fn read_scalar_slice<F: Field, C: Challenger>(
 	len: usize,
 ) -> Result<Vec<F>, Error> {
 	Ok(transcript.message().read_scalar_slice::<F>(len)?)
+}
+
+fn read_frac_claims<F: Field, C: Challenger>(
+	transcript: &mut VerifierTranscript<C>,
+	len: usize,
+) -> Result<Vec<FracAddEvalClaim<F>>, Error> {
+	Ok(transcript.message().read_vec(len)?)
 }
 
 /// Errors returned by the LogUp verifier.

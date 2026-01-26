@@ -84,7 +84,6 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 				eq_log_len, eq_witness,
 			);
 		let eq_claims = Self::tree_sums_to_claims(eq_sums);
-		eq_prover.prove(eq_claims.clone(), transcript)?;
 
 		let common_denominator = Self::common_denominator(
 			eq_log_len,
@@ -105,6 +104,14 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 				push_witnesses,
 			);
 		let push_claims = Self::tree_sums_to_claims(push_sums);
+
+		{
+			let mut message = transcript.message();
+			message.write_slice(&eq_claims);
+			message.write_slice(&push_claims);
+		}
+
+		eq_prover.prove(eq_claims.clone(), transcript)?;
 		push_prover.prove(push_claims.clone(), transcript)?;
 
 		Ok((eq_claims, push_claims))

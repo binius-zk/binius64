@@ -64,7 +64,7 @@ fn test_logup_prove_verify() {
 		tables,
 		&mut prover_transcript,
 	);
-	let claims = logup
+	logup
 		.prove_lookup::<StdChallenger, N_MLES>(&mut prover_transcript)
 		.unwrap();
 
@@ -74,7 +74,6 @@ fn test_logup_prove_verify() {
 		table_log_len,
 		&eval_point,
 		&lookup_evals_for_verify,
-		&claims,
 		&mut verifier_transcript,
 	)
 	.unwrap();

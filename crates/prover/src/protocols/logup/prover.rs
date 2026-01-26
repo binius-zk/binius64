@@ -36,6 +36,11 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	) -> Result<Vec<LogUpLookupClaims<F>>, Error> {
 		assert!(N_MLES == N_TABLES + N_LOOKUPS);
 
+		{
+			let mut message = transcript.message();
+			message.write_slice(&self.table_ids);
+		}
+
 		// Reduce lookup evaluations to pushforward/table evaluations.
 		let pushforward_claims = self.prove_pushforward::<Challenger_, N_MLES>(transcript)?;
 		// Prove log-sum consistency for eq-kernel and pushforward trees.

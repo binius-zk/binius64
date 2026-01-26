@@ -234,7 +234,7 @@ fn bench_logup_verify(c: &mut Criterion) {
 				case.tables.clone(),
 				&mut prover_transcript,
 			);
-			let claims = logup
+			logup
 				.prove_lookup::<StdChallenger, N_MLES>(&mut prover_transcript)
 				.unwrap();
 
@@ -248,7 +248,6 @@ fn bench_logup_verify(c: &mut Criterion) {
 					table_log_len,
 					&case.eval_point,
 					&case.lookup_evals,
-					&claims,
 					&mut transcript,
 				)
 				.unwrap();
