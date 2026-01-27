@@ -97,4 +97,7 @@ needless_range_loop = "allow"
 
 [workspace.metadata.typos]
 default.extend-words = { "typ" = "typ", "Toom" = "Toom", "inouts" = "inouts", "ceck" = "ceck" }
-default.extend-ignore-re = ["(?Rm)^.*(#|//)\\s*spellchecker:disable-line$"]
+default.extend-ignore-re = [
+    "(?Rm)^.*(#|//)\\s*spellchecker:disable-line$",
+    "ands\\.mdx"
+]

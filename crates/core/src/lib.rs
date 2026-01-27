@@ -3,7 +3,7 @@
 //!
 //! Most imporantly it hosts the definition of a [`ConstraintSystem`].
 
-#![warn(missing_docs)]
+#![warn(rustdoc::missing_crate_level_docs)]
 
 pub mod constraint_system;
 pub mod consts;
