@@ -2,7 +2,7 @@
 
 //! Verifier for the LogUp indexed lookup protocol.
 
-use std::iter::zip;
+use std::iter::{successors, zip};
 
 use binius_field::Field;
 use binius_math::{multilinear::eq::eq_ind, univariate::evaluate_univariate};
@@ -212,6 +212,7 @@ fn verify_pushforward<F: Field, C: Challenger>(
 	})
 }
 
+/// Verifies the logarithmic sum claims as part of Logup*. Assumes lookups are of the same length and tables are of the same length and returns the  
 type LogSumClaims<F> = Vec<FracAddEvalClaim<F>>;
 fn verify_log_sum<F: Field, C: Challenger>(
 	eq_log_len: usize,
@@ -240,13 +241,7 @@ fn verify_log_sum<F: Field, C: Challenger>(
 	let push_claims = fracaddcheck::verify_batch(eq_log_len, push_claims, transcript)?;
 
 	if let Some(first_claim) = eq_claims.first() {
-		if first_claim.point.len() != eval_point.len() {
-			return Err(LogSumError::EqKernelPointLengthMismatch {
-				expected: eval_point.len(),
-				actual: first_claim.point.len(),
-			}
-			.into());
-		}
+		assert!(first_claim.point.len() == eval_point.len());
 
 		// The eq-kernel numerator must equal eq_ind(eval_point, reduced_point).
 		let expected_num_eval = eq_ind(eval_point, &first_claim.point);
@@ -261,13 +256,7 @@ fn verify_log_sum<F: Field, C: Challenger>(
 			})?;
 	}
 	if let Some(first_claim) = push_claims.first() {
-		if first_claim.point.len() != eval_point.len() {
-			return Err(LogSumError::PushforwardPointLengthMismatch {
-				expected: eval_point.len(),
-				actual: first_claim.point.len(),
-			}
-			.into());
-		}
+		assert!(first_claim.point.len() == eval_point.len());
 
 		let expected_den_eval =
 			common_denominator_eval(&first_claim.point, fingerprint_scalar, shift_scalar);
@@ -287,12 +276,8 @@ fn verify_log_sum<F: Field, C: Challenger>(
 }
 
 fn common_denominator_eval<F: Field>(point: &[F], fingerprint_scalar: F, shift_scalar: F) -> F {
-	let (acc, _) = point
-		.iter()
-		.fold((shift_scalar, F::ONE), |(acc, power), &coord| {
-			(acc + power * coord, power * fingerprint_scalar)
-		});
-	acc
+	let enum_eval = evaluate_univariate(point, fingerprint_scalar);
+	shift_scalar + enum_eval
 }
 
 fn read_frac_claims<F: Field, C: Challenger>(
