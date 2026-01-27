@@ -1,5 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
+#![warn(rustdoc::missing_crate_level_docs)]
+
 //! Objects used to read and write proof strings.
 //!
 //! A Binius proof consists of the transcript of the simulated interaction between the prover and

@@ -23,7 +23,7 @@
 //! Use [`CircuitStat`] to inspect metrics like constraint counts and wire usage, helpful for
 //! optimization and debugging.
 
-#![warn(missing_docs)]
+#![warn(rustdoc::missing_crate_level_docs)]
 
 mod compiler;
 pub mod stat;

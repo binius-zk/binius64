@@ -1,5 +1,7 @@
 // Copyright 2023-2025 Irreducible Inc.
 
+#![warn(rustdoc::missing_crate_level_docs)]
+
 //! Binary tower field implementations for use in Binius.
 //!
 //! This library implements binary tower field arithmetic. The canonical binary field tower
