@@ -212,6 +212,7 @@ fn verify_pushforward<F: Field, C: Challenger>(
 	})
 }
 
+type LogSumClaims<F> = Vec<FracAddEvalClaim<F>>;
 fn verify_log_sum<F: Field, C: Challenger>(
 	eq_log_len: usize,
 	eval_point: &[F],
@@ -219,7 +220,7 @@ fn verify_log_sum<F: Field, C: Challenger>(
 	shift_scalar: F,
 	n_lookups: usize,
 	transcript: &mut VerifierTranscript<C>,
-) -> Result<(Vec<FracAddEvalClaim<F>>, Vec<FracAddEvalClaim<F>>), Error> {
+) -> Result<(LogSumClaims<F>, LogSumClaims<F>), Error> {
 	// Each lookup must satisfy the log-sum equality of fraction claims.
 	let eq_claims = read_frac_claims(transcript, n_lookups)?;
 	let push_claims = read_frac_claims(transcript, n_lookups)?;
