@@ -11,8 +11,6 @@ use binius_transcript::{
 	Error as TranscriptError, VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_utils::{DeserializeBytes, SerializationError, SerializeBytes};
-use bytes::{Buf, BufMut};
 
 use crate::sumcheck::{self, BatchSumcheckOutput};
 
@@ -23,31 +21,6 @@ pub struct FracAddEvalClaim<F: Field> {
 	pub den_eval: F,
 	/// The evaluation point.
 	pub point: Vec<F>,
-}
-
-impl<F: Field> SerializeBytes for FracAddEvalClaim<F> {
-	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
-		SerializeBytes::serialize(&self.num_eval, &mut write_buf)?;
-		SerializeBytes::serialize(&self.den_eval, &mut write_buf)?;
-		SerializeBytes::serialize(&self.point, &mut write_buf)?;
-		Ok(())
-	}
-}
-
-impl<F: Field> DeserializeBytes for FracAddEvalClaim<F> {
-	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError>
-	where
-		Self: Sized,
-	{
-		let num_eval = DeserializeBytes::deserialize(&mut read_buf)?;
-		let den_eval = DeserializeBytes::deserialize(&mut read_buf)?;
-		let point = DeserializeBytes::deserialize(&mut read_buf)?;
-		Ok(Self {
-			num_eval,
-			den_eval,
-			point,
-		})
-	}
 }
 
 pub fn verify<F: Field, Challenger_: Challenger>(

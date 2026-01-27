@@ -1,15 +1,7 @@
 // Copyright 2025-2026 The Binius Developers
 
-use itertools::Itertools;
 use std::{array, iter::zip};
 
-use crate::sumcheck::{
-	Error as SumcheckError,
-	batch::batch_prove_mle_and_write_evals,
-	common::MleCheckProver,
-	frac_add_last_layer_mle::{SharedFracAddInput, SharedFracAddLastLayerProver},
-	frac_add_mle::{self, FractionalBuffer},
-};
 use binius_field::{Field, PackedField};
 use binius_ip::fracaddcheck::FracAddEvalClaim;
 use binius_math::{FieldBuffer, line::extrapolate_line_packed};
@@ -18,6 +10,15 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 use binius_utils::rayon::iter::{IntoParallelIterator, ParallelIterator};
+use itertools::Itertools;
+
+use crate::sumcheck::{
+	Error as SumcheckError,
+	batch::batch_prove_mle_and_write_evals,
+	common::MleCheckProver,
+	frac_add_last_layer_mle::{SharedFracAddInput, SharedFracAddLastLayerProver},
+	frac_add_mle::{self, FractionalBuffer},
+};
 
 /// Prover for the fractional addition protocol.
 ///

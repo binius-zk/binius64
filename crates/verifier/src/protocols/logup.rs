@@ -2,7 +2,7 @@
 
 //! Verifier for the LogUp indexed lookup protocol.
 
-use std::iter::{successors, zip};
+use std::iter::zip;
 
 use binius_field::Field;
 use binius_math::{multilinear::eq::eq_ind, univariate::evaluate_univariate};
@@ -10,12 +10,105 @@ use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
+use binius_utils::{DeserializeBytes, SerializeBytes};
+use bytes::{Buf, BufMut};
 
 use crate::protocols::{
 	fracaddcheck::{self, FracAddEvalClaim},
 	prodcheck::MultilinearEvalClaim,
 	sumcheck::{self, BatchSumcheckOutput},
 };
+
+/// Combined log-sum claim for a single lookup, containing evaluations from both the
+/// eq-kernel and pushforward fractional-addition trees.
+///
+/// This struct packages the numerator and denominator evaluations for both trees
+/// into a single serializable unit. The evaluation points are always empty for
+/// top-layer claims, as these are scalar values at the root of each tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogSumClaim<F: Field> {
+	/// Numerator evaluation of the eq-kernel fractional-addition tree.
+	pub eq_num_eval: F,
+	/// Denominator evaluation of the eq-kernel fractional-addition tree.
+	pub eq_den_eval: F,
+	/// Numerator evaluation of the pushforward fractional-addition tree.
+	pub push_num_eval: F,
+	/// Denominator evaluation of the pushforward fractional-addition tree.
+	pub push_den_eval: F,
+}
+
+impl<F: Field> LogSumClaim<F> {
+	/// Creates a `LogSumClaim` from two `FracAddEvalClaim` objects with empty evaluation points.
+	///
+	/// # Panics
+	///
+	/// Panics if either claim has a non-empty evaluation point.
+	pub fn from_frac_claims(
+		eq_claim: &FracAddEvalClaim<F>,
+		push_claim: &FracAddEvalClaim<F>,
+	) -> Self {
+		assert!(eq_claim.point.is_empty(), "eq_claim must have empty evaluation point");
+		assert!(push_claim.point.is_empty(), "push_claim must have empty evaluation point");
+
+		Self {
+			eq_num_eval: eq_claim.num_eval,
+			eq_den_eval: eq_claim.den_eval,
+			push_num_eval: push_claim.num_eval,
+			push_den_eval: push_claim.den_eval,
+		}
+	}
+
+	/// Converts this `LogSumClaim` into a pair of `FracAddEvalClaim` objects with empty evaluation
+	/// points.
+	///
+	/// Returns `(eq_claim, push_claim)` where:
+	/// - `eq_claim` contains `eq_num_eval` and `eq_den_eval`
+	/// - `push_claim` contains `push_num_eval` and `push_den_eval`
+	pub fn into_frac_claims(self) -> (FracAddEvalClaim<F>, FracAddEvalClaim<F>) {
+		let eq_claim = FracAddEvalClaim {
+			num_eval: self.eq_num_eval,
+			den_eval: self.eq_den_eval,
+			point: Vec::new(),
+		};
+		let push_claim = FracAddEvalClaim {
+			num_eval: self.push_num_eval,
+			den_eval: self.push_den_eval,
+			point: Vec::new(),
+		};
+		(eq_claim, push_claim)
+	}
+}
+
+impl<F: Field> SerializeBytes for LogSumClaim<F> {
+	fn serialize(
+		&self,
+		mut write_buf: impl BufMut,
+	) -> Result<(), binius_utils::SerializationError> {
+		SerializeBytes::serialize(&self.eq_num_eval, &mut write_buf)?;
+		SerializeBytes::serialize(&self.eq_den_eval, &mut write_buf)?;
+		SerializeBytes::serialize(&self.push_num_eval, &mut write_buf)?;
+		SerializeBytes::serialize(&self.push_den_eval, write_buf)?;
+		Ok(())
+	}
+}
+
+impl<F: Field> DeserializeBytes for LogSumClaim<F> {
+	fn deserialize(mut read_buf: impl Buf) -> Result<Self, binius_utils::SerializationError>
+	where
+		Self: Sized,
+	{
+		let eq_num_eval = DeserializeBytes::deserialize(&mut read_buf)?;
+		let eq_den_eval = DeserializeBytes::deserialize(&mut read_buf)?;
+		let push_num_eval = DeserializeBytes::deserialize(&mut read_buf)?;
+		let push_den_eval = DeserializeBytes::deserialize(read_buf)?;
+		Ok(Self {
+			eq_num_eval,
+			eq_den_eval,
+			push_num_eval,
+			push_den_eval,
+		})
+	}
+}
 
 /// Per-lookup claims emitted by the prover and serialized into the transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,8 +305,9 @@ fn verify_pushforward<F: Field, C: Challenger>(
 	})
 }
 
-/// Verifies the logarithmic sum claims as part of Logup*. Assumes lookups are of the same length and tables are of the same length and returns the  
-type LogSumClaims<F> = Vec<FracAddEvalClaim<F>>;
+/// Verifies the logarithmic sum claims as part of Logup*. Assumes lookups are of the same length
+/// and tables are of the same length and returns the
+type LogSumOutput<F> = Vec<FracAddEvalClaim<F>>;
 fn verify_log_sum<F: Field, C: Challenger>(
 	eq_log_len: usize,
 	eval_point: &[F],
@@ -221,10 +315,15 @@ fn verify_log_sum<F: Field, C: Challenger>(
 	shift_scalar: F,
 	n_lookups: usize,
 	transcript: &mut VerifierTranscript<C>,
-) -> Result<(LogSumClaims<F>, LogSumClaims<F>), Error> {
-	// Each lookup must satisfy the log-sum equality of fraction claims.
-	let eq_claims = read_frac_claims(transcript, n_lookups)?;
-	let push_claims = read_frac_claims(transcript, n_lookups)?;
+) -> Result<(LogSumOutput<F>, LogSumOutput<F>), Error> {
+	// Read combined log-sum claims from the transcript and convert to frac-add claims.
+	let log_sum_claims: Vec<LogSumClaim<F>> = transcript.message().read_vec(n_lookups)?;
+
+	// Convert LogSumClaims into pairs of FracAddEvalClaims.
+	let (eq_claims, push_claims): (Vec<_>, Vec<_>) = log_sum_claims
+		.into_iter()
+		.map(LogSumClaim::into_frac_claims)
+		.unzip();
 
 	zip(eq_claims.iter(), push_claims.iter())
 		.enumerate()
@@ -278,13 +377,6 @@ fn verify_log_sum<F: Field, C: Challenger>(
 fn common_denominator_eval<F: Field>(point: &[F], fingerprint_scalar: F, shift_scalar: F) -> F {
 	let enum_eval = evaluate_univariate(point, fingerprint_scalar);
 	shift_scalar + enum_eval
-}
-
-fn read_frac_claims<F: Field, C: Challenger>(
-	transcript: &mut VerifierTranscript<C>,
-	len: usize,
-) -> Result<Vec<FracAddEvalClaim<F>>, Error> {
-	Ok(transcript.message().read_vec(len)?)
 }
 
 /// Errors returned by the LogUp verifier.

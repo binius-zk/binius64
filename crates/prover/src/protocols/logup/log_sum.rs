@@ -4,7 +4,7 @@ use std::array;
 use binius_field::{Field, PackedField};
 use binius_math::FieldBuffer;
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
-use binius_verifier::protocols::fracaddcheck::FracAddEvalClaim;
+use binius_verifier::protocols::{fracaddcheck::FracAddEvalClaim, logup::LogSumClaim};
 use itertools::Itertools;
 
 use crate::protocols::{
@@ -105,10 +105,16 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			);
 		let push_claims = Self::tree_sums_to_claims(push_sums);
 
+		// Combine eq_claims and push_claims into LogSumClaim objects and write to transcript.
+		let log_sum_claims: Vec<LogSumClaim<F>> = eq_claims
+			.iter()
+			.zip(push_claims.iter())
+			.map(|(eq, push)| LogSumClaim::from_frac_claims(eq, push))
+			.collect();
+
 		{
 			let mut message = transcript.message();
-			message.write_slice(&eq_claims);
-			message.write_slice(&push_claims);
+			message.write_slice(&log_sum_claims);
 		}
 
 		eq_prover.prove(eq_claims.clone(), transcript)?;
