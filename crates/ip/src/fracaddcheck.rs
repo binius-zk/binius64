@@ -11,7 +11,7 @@ use binius_transcript::{
 	Error as TranscriptError, VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_utils::{DeserializeBytes, SerializeBytes, SerializationError};
+use binius_utils::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
 
 use crate::sumcheck::{self, BatchSumcheckOutput};

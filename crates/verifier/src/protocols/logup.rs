@@ -144,17 +144,25 @@ fn read_scalar_slice<F: Field, C: Challenger>(
 	Ok(transcript.message().read_scalar_slice::<F>(len)?)
 }
 
-/// Verifies the LogUp* ([Lev25] section 2 & 3) pullback/lookup values to pushforward" reduction for a batch of lookups.
+/// Verifies the LogUp* ([Lev25] section 2 & 3) pullback/lookup values to pushforward" reduction for
+/// a batch of lookups.
 ///
-/// The key identity is the reduction of the evaluation of the "pullback" (which is simply the lookup values) multilinear referred $I^*T(r)$ with a table-sized inner product $\langle T, I_*eq_r \rangle$, avoiding a commitment to the pullback. Thus we understand a batch of lookup claims is a collection of pushforwards, tables and evaluation claims on the corresponding pullbacks. We read a vector of table_ids as advice from the prover in order to decide which table the pushforward corresponds to, as many may share the same table.
+/// The key identity is the reduction of the evaluation of the "pullback" (which is simply the
+/// lookup values) multilinear referred $I^*T(r)$ with a table-sized inner product $\langle T,
+/// I_*eq_r \rangle$, avoiding a commitment to the pullback. Thus we understand a batch of lookup
+/// claims is a collection of pushforwards, tables and evaluation claims on the corresponding
+/// pullbacks. We read a vector of table_ids as advice from the prover in order to decide which
+/// table the pushforward corresponds to, as many may share the same table.
 ///
 /// This routine:
 /// 1. Reads the per-lookup `table_id[i]` from the transcript.
-/// 2. Verifies a batched degree-2 sumcheck over the `table_log_len`-variate boolean hypercube for the claimed sums
-///    `lookup_evals` (with batching coefficient `beta`).
+/// 2. Verifies a batched degree-2 sumcheck over the `table_log_len`-variate boolean hypercube for
+///    the claimed sums `lookup_evals` (with batching coefficient `beta`).
 /// 3. Reads pushforward and table evaluations at the sumcheck point r'.
-/// 4. Computes `e[i] = pushforward[i] * table_evals[table_id[i]]`, and essentially checks that the final batch sumcheck eval is equal to a random linear combination of these claims.
-/// 5. Returns `r'` along with the evaluation values for downstream [`MultilinearEvalClaim`] openings.
+/// 4. Computes `e[i] = pushforward[i] * table_evals[table_id[i]]`, and essentially checks that the
+///    final batch sumcheck eval is equal to a random linear combination of these claims.
+/// 5. Returns `r'` along with the evaluation values for downstream [`MultilinearEvalClaim`]
+///    openings.
 ///
 /// [Lev25]: <https://eprint.iacr.org/2025/946>
 fn verify_pushforward<F: Field, C: Challenger>(
@@ -179,11 +187,13 @@ fn verify_pushforward<F: Field, C: Challenger>(
 	challenges.reverse();
 	let sumcheck_point = challenges;
 
-	// The first n_lookups many final multilinear evals corresponds to the pushforwards, and the next n_tables many correspond to the tables.
+	// The first n_lookups many final multilinear evals corresponds to the pushforwards, and the
+	// next n_tables many correspond to the tables.
 	let pushforward_evals = read_scalar_slice(transcript, n_lookups)?;
 	let table_evals = read_scalar_slice(transcript, n_tables)?;
 
-	// Recompute the batched quadratic composition at the verifier's point by multiplying the pushforward eval with the table eval of the table it looked up into.
+	// Recompute the batched quadratic composition at the verifier's point by multiplying the
+	// pushforward eval with the table eval of the table it looked up into.
 	let expected_terms = table_ids
 		.iter()
 		.zip(pushforward_evals.iter())
