@@ -2,6 +2,7 @@
 
 mod inout_check;
 pub mod intmul;
+pub mod logup;
 pub mod shift;
 
 // Re-export from binius-ip-prover for backward compatibility

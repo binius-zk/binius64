@@ -89,6 +89,10 @@ harness = false
 name = "fracaddcheck"
 harness = false
 
+[[bench]]
+name = "logup"
+harness = false
+
 [features]
 default = ["rayon"]
 rayon = ["binius-utils/rayon", "binius-hash/rayon", "binius-iop-prover/rayon", "binius-ip-prover/rayon"]
