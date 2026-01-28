@@ -31,3 +31,4 @@ pub mod basefold_compiler;
 pub mod channel;
 pub mod fri;
 pub mod merkle_tree;
+pub mod naive_channel;
