@@ -1,5 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 
+#![warn(rustdoc::missing_crate_level_docs)]
+
 //! Utility modules used in Binius.
 
 pub mod array_2d;

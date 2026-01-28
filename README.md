@@ -65,16 +65,27 @@ Multithreading is enabled by default using [Rayon](https://github.com/rayon-rs/r
 
 Binius64 consists of several specialized crates in the `crates/` directory.
 
-- **binius-circuits**: Standard library of circuit gadgets
-- **binius-core**: Modules shared by the frontend and verifier
-- **binius-examples**: Examples and tutorials for learning and performance measurement
-- **binius-field**: Binary field arithmetic with platform-specific optimizations
-- **binius-frontend**: Circuit construction and compilation framework
-- **binius-math**: Mathematical algorithms
-- **binius-prover**: Zero-knowledge proof generation
-- **binius-transcript**: Fiat-Shamir transcript handling
-- **binius-utils**: Common utilities
-- **binius-verifier**: Proof verification
+| Crate | Purpose |
+|-------|---------|
+| **binius-core** | Constraint system data structures shared by prover and verifier |
+| **binius-field** | Binary field arithmetic with architecture-specific optimizations |
+| **binius-math** | Mathematical primitives (multilinear polynomials, FFT, Reed-Solomon) |
+| **binius-hash** | Hash functions (SHA-256, Vision) and compression functions |
+| **binius-transcript** | Fiat-Shamir transcript handling for non-interactive proofs |
+| **binius-frontend** | Circuit construction API (CircuitBuilder, wires, witness filling) |
+| **binius-circuits** | Standard library of circuit gadgets (SHA256, ECDSA, base64, etc.) |
+| **binius-spartan-frontend** | Constraint system builder for Spartan-based proofs |
+| **binius-ip** | Interactive polynomial protocol data structures (sumcheck, prodcheck) |
+| **binius-ip-prover** | IP prover implementations |
+| **binius-iop** | Interactive oracle protocol structures (BaseFold, FRI, Merkle trees) |
+| **binius-iop-prover** | IOP prover implementations |
+| **binius-prover** | High-level proof generation API |
+| **binius-verifier** | High-level proof verification API |
+| **binius-spartan-prover** | Spartan protocol prover |
+| **binius-spartan-verifier** | Spartan protocol verifier |
+| **binius-utils** | Common utilities (serialization, bitwise operations, arrays) |
+| **binius-examples** | Example circuits with CLI framework |
+| **binius-arith-bench** | Arithmetic microbenchmarks |
 
 ## Authors & Supporters
 

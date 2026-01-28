@@ -1,4 +1,23 @@
 // Copyright 2025 Irreducible Inc.
+
+//! Standard library of circuit gadgets for Binius64.
+//!
+//! This crate provides pre-built circuit gadgets for common cryptographic and computational
+//! operations, including hash functions (SHA256, SHA512, Blake2, Keccak), elliptic curve
+//! operations (ECDSA, secp256k1), and utility gadgets.
+//!
+//! # When to use this crate
+//!
+//! Use this crate when building circuits with [`binius_frontend`] and you need implementations
+//! of common cryptographic primitives. These gadgets are optimized for Binius64's constraint
+//! system.
+//!
+//! # Related crates
+//!
+//! - [`binius_frontend`] - Circuit construction API that these gadgets build on
+
+#![warn(rustdoc::missing_crate_level_docs)]
+
 pub mod base64;
 pub mod bignum;
 pub mod bitcoin;

@@ -34,11 +34,11 @@ section is quite prescriptive. To copy verbatim:
 >
 > ```
 > [short sentence explaining what it is]
-> 
+>
 > [more detailed explanation]
-> 
+>
 > [at least one code example that users can copy/paste to try it]
-> 
+>
 > [even more advanced explanations if necessary]
 > ```
 
@@ -51,6 +51,29 @@ Documentation and commit messages should be written in the present tense. For ex
 ❌ Fixed the bug in the gizmo
 ✅ Fix the bug in the gizmo
 ```
+
+#### Module-level documentation
+
+Every crate must have module-level documentation in `lib.rs` using `//!` comments. This documentation should include:
+
+1. **One sentence summary**: What this crate does
+2. **When to use**: In what situations should someone reach for this crate
+3. **Key types**: Brief list of the main types/traits with one-line descriptions
+4. **Usage example**: A minimal working example (where practical)
+5. **Related crates**: How this crate relates to others in the workspace
+
+All crates should enable `#![warn(missing_crate_level_docs)]` to ensure crate-level documentation exists.
+
+Example crates with good module documentation: `binius-field`, `binius-frontend`, `binius-spartan-frontend`.
+
+#### When to add examples
+
+Include code examples for:
+- Public functions that are part of the main API
+- Types that users will construct directly
+- Non-obvious behavior or edge cases
+
+Examples in documentation are tested by `cargo test --doc`, so they also serve as regression tests.
 
 ### Naming philosophy & conventions
 

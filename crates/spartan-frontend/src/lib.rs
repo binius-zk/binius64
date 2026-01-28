@@ -1,5 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
+#![warn(rustdoc::missing_crate_level_docs)]
+
 //! Frontend for building constraint systems for the Binius proof system.
 //!
 //! This crate provides tools for constructing and optimizing constraint systems that can be proven

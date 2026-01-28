@@ -1,4 +1,30 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
+
+//! Spartan-based proof generation for Binius64 constraint systems.
+//!
+//! This crate provides the [`Prover`] struct for generating zero-knowledge proofs
+//! using the Spartan protocol adapted for Binius64's constraint system. It is the
+//! prover-side counterpart to `binius_spartan_verifier`.
+//!
+//! # When to use this crate
+//!
+//! Use this crate when you have a constraint system built with `binius_spartan_frontend`
+//! and need to generate a Spartan-based proof. This is an alternative to the main
+//! `binius_prover` crate.
+//!
+//! # Key types
+//!
+//! - [`Prover`] - Main proving interface; call [`Prover::setup`] with a verifier, then
+//!   [`Prover::prove`] with witness data
+//!
+//! # Related crates
+//!
+//! - `binius_spartan_verifier` - Verification counterpart
+//! - `binius_spartan_frontend` - Constraint system builder for Spartan
+//! - `binius_prover` - Alternative proving backend
+
+#![warn(rustdoc::missing_crate_level_docs)]
 
 mod error;
 pub mod pcs;
