@@ -61,31 +61,9 @@ prove [ 128.58ms | 100.00% ] { operation = prove, perfetto_category = operation,
 
 Multithreading is enabled by default using [Rayon](https://github.com/rayon-rs/rayon). This is controlled by the `rayon` Cargo feature. To run an example with multithreading disabled, use `--no-default-features`.
 
-## Repo Structure
+## Architecture
 
-Binius64 consists of several specialized crates in the `crates/` directory.
-
-| Crate | Purpose |
-|-------|---------|
-| **binius-core** | Constraint system data structures shared by prover and verifier |
-| **binius-field** | Binary field arithmetic with architecture-specific optimizations |
-| **binius-math** | Mathematical primitives (multilinear polynomials, FFT, Reed-Solomon) |
-| **binius-hash** | Hash functions (SHA-256, Vision) and compression functions |
-| **binius-transcript** | Fiat-Shamir transcript handling for non-interactive proofs |
-| **binius-frontend** | Circuit construction API (CircuitBuilder, wires, witness filling) |
-| **binius-circuits** | Standard library of circuit gadgets (SHA256, ECDSA, base64, etc.) |
-| **binius-spartan-frontend** | Constraint system builder for Spartan-based proofs |
-| **binius-ip** | Interactive polynomial protocol data structures (sumcheck, prodcheck) |
-| **binius-ip-prover** | IP prover implementations |
-| **binius-iop** | Interactive oracle protocol structures (BaseFold, FRI, Merkle trees) |
-| **binius-iop-prover** | IOP prover implementations |
-| **binius-prover** | High-level proof generation API |
-| **binius-verifier** | High-level proof verification API |
-| **binius-spartan-prover** | Spartan protocol prover |
-| **binius-spartan-verifier** | Spartan protocol verifier |
-| **binius-utils** | Common utilities (serialization, bitwise operations, arrays) |
-| **binius-examples** | Example circuits with CLI framework |
-| **binius-arith-bench** | Arithmetic microbenchmarks |
+For repository structure and architectural details, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Authors & Supporters
 
