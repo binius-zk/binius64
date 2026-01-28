@@ -418,4 +418,160 @@ mod tests {
 			"fold_constraints + evaluate does not match evaluate_wiring_mle"
 		);
 	}
+
+	#[test]
+	fn test_wiring_prove_verify() {
+		use binius_hash::StdDigest;
+		use binius_iop::{
+			channel::{IOPVerifierChannel, OracleSpec},
+			naive_channel::NaiveVerifierChannel,
+		};
+		use binius_iop_prover::{channel::IOPProverChannel, naive_channel::NaiveProverChannel};
+		use binius_math::{inner_product::inner_product_buffers, test_utils::random_field_buffer};
+		use binius_spartan_frontend::constraint_system::{
+			BlindingInfo, ConstraintSystem, ConstraintSystemPadded,
+		};
+		use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+
+		type StdChallenger = HasherChallenger<StdDigest>;
+
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Parameters
+		let log_n_constraints = 4;
+		let log_public = 3;
+		let log_witness_size = 5;
+
+		let n_constraints = 1 << log_n_constraints;
+		let witness_size = 1 << log_witness_size;
+
+		// Generate random constraints
+		let constraints = generate_random_constraints(&mut rng, n_constraints, witness_size);
+
+		// Create random witness
+		let witness = random_field_buffer::<Packed128b>(&mut rng, log_witness_size);
+
+		// Compute mulcheck witness
+		let mulcheck_witness = build_mulcheck_witness(&constraints, witness.to_ref());
+
+		// Sample r_x (sumcheck evaluation point for constraint axis)
+		let r_x = random_scalars::<B128>(&mut rng, log_n_constraints);
+
+		// Compute mulcheck evaluations at r_x
+		let r_x_tensor = eq_ind_partial_eval::<Packed128b>(&r_x);
+		let mulcheck_evals = [
+			inner_product_buffers(&mulcheck_witness.a, &r_x_tensor),
+			inner_product_buffers(&mulcheck_witness.b, &r_x_tensor),
+			inner_product_buffers(&mulcheck_witness.c, &r_x_tensor),
+		];
+
+		// Sample r_public
+		let r_public = random_scalars::<B128>(&mut rng, log_public);
+
+		// Compute public input evaluation
+		let public = witness.chunk(log_public, 0);
+		let public_eval = evaluate(&public, &r_public);
+
+		// Create transposed wiring
+		let wiring_transpose = WiringTranspose::transpose(witness_size, &constraints);
+
+		// Create constraint system for verifier (compute_claim doesn't actually use it,
+		// but we need a valid reference for the type signature)
+		let constraint_system = ConstraintSystem::new(
+			vec![],              // constants
+			0,                   // n_inout
+			0,                   // n_private
+			log_public as u32,   // log_public
+			constraints.clone(), // mul_constraints
+			WitnessIndex(0),     // one_wire (dummy for test)
+		);
+		let constraint_system_padded = ConstraintSystemPadded::new(
+			constraint_system,
+			BlindingInfo {
+				n_dummy_wires: 0,
+				n_dummy_constraints: 0,
+			},
+		);
+
+		// Oracle spec for the witness (non-ZK for simplicity)
+		let oracle_specs = vec![OracleSpec {
+			log_msg_len: log_witness_size,
+			is_zk: false,
+		}];
+
+		// === PROVER SIDE ===
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let mut prover_channel = NaiveProverChannel::<B128, Packed128b, _>::new(
+			&mut prover_transcript,
+			oracle_specs.clone(),
+		);
+
+		// Send witness oracle
+		let witness_oracle = prover_channel.send_oracle(witness.to_ref());
+
+		// Compute wiring relation (this samples lambda and batch_coeff from the channel)
+		let wiring_relation = compute_wiring_relation(
+			&wiring_transpose,
+			&witness.to_ref(),
+			&r_public,
+			&r_x,
+			&mulcheck_evals,
+			&mut prover_channel,
+		);
+
+		// Finish the IOP with the oracle relation
+		IOPProverChannel::finish(
+			prover_channel,
+			&[(witness_oracle, wiring_relation.l_poly.clone(), wiring_relation.batched_sum)],
+		);
+
+		// === VERIFIER SIDE ===
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let mut verifier_channel =
+			NaiveVerifierChannel::<B128, _>::new(&mut verifier_transcript, &oracle_specs);
+
+		// Receive witness oracle
+		let witness_oracle = verifier_channel
+			.recv_oracle()
+			.expect("recv_oracle should succeed");
+
+		// Compute wiring claim (samples the same lambda and batch_coeff as prover)
+		let wiring_claim = binius_spartan_verifier::wiring::compute_claim(
+			&constraint_system_padded,
+			&r_public,
+			&mulcheck_evals,
+			public_eval,
+			&mut verifier_channel,
+		);
+
+		// Verify that prover and verifier computed the same batched_sum
+		assert_eq!(
+			wiring_relation.batched_sum, wiring_claim.batched_sum,
+			"Prover and verifier batched_sum mismatch"
+		);
+
+		// Finish verification to get the evaluation claim.
+		// The naive channel verifies the inner product directly inside finish().
+		// It reads the transparent polynomial (l_poly) from the transcript,
+		// verifies eval_claim == inner_product(witness, l_poly),
+		// then returns a trivial claim with eval_denominator = 1.
+		let claims = verifier_channel
+			.finish(&[(witness_oracle, wiring_claim.batched_sum)])
+			.expect("finish should succeed (inner product verified)");
+
+		assert_eq!(claims.len(), 1, "Expected exactly one claim");
+		let claim = &claims[0];
+
+		// The naive channel returns a trivial claim:
+		// - eval_numerator = l_poly_eval(point)
+		// - eval_denominator = 1
+		// So the standard check (eval_numerator == eval_denominator * l_poly_eval(point))
+		// becomes: l_poly_eval(point) == 1 * l_poly_eval(point), which trivially passes.
+		let l_poly_eval = evaluate(&wiring_relation.l_poly, &claim.point);
+		assert_eq!(
+			claim.eval_numerator, l_poly_eval,
+			"Claim numerator should be l_poly evaluation at point"
+		);
+		assert_eq!(claim.eval_denominator, B128::ONE, "Claim denominator should be 1");
+	}
 }
