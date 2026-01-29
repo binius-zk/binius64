@@ -11,21 +11,17 @@ use binius_utils::{
 	bytes::{Buf, BufMut},
 	serialization::{assert_enough_data_for, assert_enough_space_for},
 };
-use bytemuck::{Pod, Zeroable, must_cast};
+use bytemuck::{Pod, Zeroable};
 use rand::{
 	Rng,
 	distr::{Distribution, StandardUniform},
 };
-use seq_macro::seq;
 
 use crate::{
 	BinaryField,
 	arch::{
 		portable::packed::PackedPrimitiveType,
-		x86_64::{
-			m128::{M128, bitshift_128b},
-			m256::M256,
-		},
+		x86_64::{m128::M128, m256::M256},
 	},
 	underlier::{
 		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps,
@@ -561,18 +557,6 @@ impl UnderlierWithBitOps for M512 {
 			},
 			_ => unsafe { spread_fallback(self, log_block_len, block_idx) },
 		}
-	}
-
-	#[inline(always)]
-	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self) {
-		let (a, b) = unsafe { interleave_bits(self.0, other.0, log_block_len) };
-		(Self(a), Self(b))
-	}
-
-	#[inline(always)]
-	fn transpose(self, other: Self, log_bit_len: usize) -> (Self, Self) {
-		let (a, b) = unsafe { transpose_bits(self.0, other.0, log_bit_len) };
-		(Self(a), Self(b))
 	}
 }
 

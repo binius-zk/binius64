@@ -8,7 +8,7 @@
 
 use cfg_if::cfg_if;
 
-use super::{super::portable::packed::PackedPrimitiveType, m512::M512};
+use super::m512::M512;
 use crate::{
 	BinaryField128bGhash,
 	arch::portable::packed_macros::{portable_macros::*, *},
@@ -43,33 +43,16 @@ impl crate::arch::shared::ghash::ClMulUnderlier for M512 {
 pub struct Ghash512Strategy;
 
 // Define PackedBinaryGhash4x128b using the macro
-cfg_if! {
-	if #[cfg(target_feature = "gfni")] {
-		define_packed_binary_field!(
-			PackedBinaryGhash4x128b,
-			BinaryField128bGhash,
-			M512,
-			(Ghash512Strategy),
-			(Ghash512Strategy),
-			(Ghash512Strategy),
-			(None),
-			(None)
-		);
-		use crate::arch::x86_64::gfni::gfni_arithmetics::impl_transformation_with_gfni_nxn;
-		impl_transformation_with_gfni_nxn!(PackedBinaryGhash4x128b, 16);
-	} else {
-		define_packed_binary_field!(
-			PackedBinaryGhash4x128b,
-			BinaryField128bGhash,
-			M512,
-			(Ghash512Strategy),
-			(Ghash512Strategy),
-			(Ghash512Strategy),
-			(None),
-			(crate::arch::SimdStrategy)
-		);
-	}
-}
+define_packed_binary_field!(
+	PackedBinaryGhash4x128b,
+	BinaryField128bGhash,
+	M512,
+	(Ghash512Strategy),
+	(Ghash512Strategy),
+	(Ghash512Strategy),
+	(None),
+	(None)
+);
 
 // Implement TaggedMul for Ghash512Strategy
 cfg_if! {
