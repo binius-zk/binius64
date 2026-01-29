@@ -9,9 +9,7 @@
 use binius_field::Field;
 use binius_ip::{MultilinearRationalEvalClaim, channel::IPVerifierChannel};
 use binius_math::{
-	FieldBuffer,
-	inner_product::inner_product_buffers,
-	multilinear::evaluate::{evaluate, evaluate_inplace},
+	FieldBuffer, inner_product::inner_product_buffers, multilinear::evaluate::evaluate_inplace,
 };
 use binius_transcript::{
 	VerifierTranscript,
