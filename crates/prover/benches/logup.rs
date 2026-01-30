@@ -121,9 +121,7 @@ fn bench_logup_prove(c: &mut Criterion) {
 			b.iter_batched(
 				|| base_transcript.clone(),
 				|mut transcript| {
-					logup
-						.prove_lookup::<StdChallenger, N_MLES>(&mut transcript)
-						.unwrap();
+					logup.prove_lookup::<N_MLES>(&mut transcript).unwrap();
 				},
 				BatchSize::SmallInput,
 			);
@@ -159,9 +157,7 @@ fn bench_logup_prove_pushforward(c: &mut Criterion) {
 			b.iter_batched(
 				|| base_transcript.clone(),
 				|mut transcript| {
-					logup
-						.prove_pushforward::<StdChallenger, N_MLES>(&mut transcript)
-						.unwrap();
+					logup.prove_pushforward::<N_MLES>(&mut transcript).unwrap();
 				},
 				BatchSize::SmallInput,
 			);
@@ -195,7 +191,7 @@ fn bench_logup_prove_log_sum(c: &mut Criterion) {
 
 			let mut base_transcript = transcript.clone();
 			logup
-				.prove_pushforward::<StdChallenger, N_MLES>(&mut base_transcript)
+				.prove_pushforward::<N_MLES>(&mut base_transcript)
 				.unwrap();
 
 			b.iter_batched(
@@ -235,7 +231,7 @@ fn bench_logup_verify(c: &mut Criterion) {
 				&mut prover_transcript,
 			);
 			logup
-				.prove_lookup::<StdChallenger, N_MLES>(&mut prover_transcript)
+				.prove_lookup::<N_MLES>(&mut prover_transcript)
 				.unwrap();
 
 			let proof = prover_transcript.finalize();
@@ -248,6 +244,7 @@ fn bench_logup_verify(c: &mut Criterion) {
 					table_log_len,
 					&case.eval_point,
 					&case.lookup_evals,
+					&case.table_ids,
 					&mut transcript,
 				)
 				.unwrap();

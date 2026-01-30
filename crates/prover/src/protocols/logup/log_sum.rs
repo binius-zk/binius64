@@ -1,10 +1,10 @@
 // Copyright 2025-2026 The Binius Developers
-use std::array;
+use std::{array, iter::zip};
 
 use binius_field::{Field, PackedField};
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::FieldBuffer;
-use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
-use binius_verifier::protocols::{fracaddcheck::FracAddEvalClaim, logup::LogSumClaim};
+use binius_verifier::protocols::fracaddcheck::FracAddEvalClaim;
 use itertools::Itertools;
 
 use crate::protocols::{
@@ -59,9 +59,9 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	///    `0..len(push_forward)`.
 	///
 	/// Returns the top-layer fractional-sum claims for verifier consumption.
-	pub fn prove_log_sum<Challenger_: Challenger>(
+	pub fn prove_log_sum(
 		&self,
-		transcript: &mut ProverTranscript<Challenger_>,
+		channel: &mut impl IPProverChannel<F>,
 	) -> Result<(BatchLogSumClaims<F, N_LOOKUPS>, BatchLogSumClaims<F, N_LOOKUPS>), Error> {
 		let eq_log_len = self.eq_kernel.log_len();
 
@@ -106,19 +106,12 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		let push_claims = Self::tree_sums_to_claims(push_sums);
 
 		// Combine eq_claims and push_claims into LogSumClaim objects and write to transcript.
-		let log_sum_claims: Vec<LogSumClaim<F>> = eq_claims
-			.iter()
-			.zip(push_claims.iter())
-			.map(|(eq, push)| LogSumClaim::from_frac_claims(eq, push))
-			.collect();
+		zip(eq_claims.iter(), push_claims.iter()).for_each(|(eq, push)| {
+			channel.send_many(&[eq.num_eval, eq.den_eval, push.num_eval, push.den_eval])
+		});
 
-		{
-			let mut message = transcript.message();
-			message.write_slice(&log_sum_claims);
-		}
-
-		eq_prover.prove(eq_claims.clone(), transcript)?;
-		push_prover.prove(push_claims.clone(), transcript)?;
+		eq_prover.prove(eq_claims.clone(), channel)?;
+		push_prover.prove(push_claims.clone(), channel)?;
 
 		Ok((eq_claims, push_claims))
 	}

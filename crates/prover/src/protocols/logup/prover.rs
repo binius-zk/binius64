@@ -2,8 +2,8 @@
 use std::array;
 
 use binius_field::{Field, PackedField};
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::FieldBuffer;
-use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_verifier::protocols::logup::LogUpLookupClaims;
 
 use crate::protocols::{
@@ -30,21 +30,15 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	///
 	/// # Preconditions
 	/// * `N_MLES == N_TABLES + N_LOOKUPS`.
-	pub fn prove_lookup<Challenger_: Challenger, const N_MLES: usize>(
+	pub fn prove_lookup<const N_MLES: usize>(
 		&self,
-		transcript: &mut ProverTranscript<Challenger_>,
+		channel: &mut impl IPProverChannel<F>,
 	) -> Result<Vec<LogUpLookupClaims<F>>, Error> {
 		assert!(N_MLES == N_TABLES + N_LOOKUPS);
-
-		{
-			let mut message = transcript.message();
-			message.write_slice(&self.table_ids);
-		}
-
 		// Reduce lookup evaluations to pushforward/table evaluations.
-		let pushforward_claims = self.prove_pushforward::<Challenger_, N_MLES>(transcript)?;
+		let pushforward_claims = self.prove_pushforward::<N_MLES>(channel)?;
 		// Prove log-sum consistency for eq-kernel and pushforward trees.
-		let (eq_claims, push_claims) = self.prove_log_sum(transcript)?;
+		let (eq_claims, push_claims) = self.prove_log_sum(channel)?;
 
 		assert_eq!(pushforward_claims.pushforward_evals.len(), N_LOOKUPS);
 		assert_eq!(eq_claims.len(), N_LOOKUPS);

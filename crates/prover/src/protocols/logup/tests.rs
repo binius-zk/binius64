@@ -65,7 +65,7 @@ fn test_logup_prove_verify() {
 		&mut prover_transcript,
 	);
 	logup
-		.prove_lookup::<StdChallenger, N_MLES>(&mut prover_transcript)
+		.prove_lookup::<N_MLES>(&mut prover_transcript)
 		.unwrap();
 
 	let mut verifier_transcript = prover_transcript.into_verifier();
@@ -74,6 +74,7 @@ fn test_logup_prove_verify() {
 		table_log_len,
 		&eval_point,
 		&lookup_evals_for_verify,
+		&table_ids,
 		&mut verifier_transcript,
 	)
 	.unwrap();

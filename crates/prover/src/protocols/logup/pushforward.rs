@@ -2,8 +2,8 @@
 use std::iter::chain;
 
 use binius_field::{Field, PackedField};
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::FieldBuffer;
-use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use itertools::Itertools;
 
 use crate::protocols::{
@@ -31,12 +31,11 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 {
 	/// Proves the outer instance, reducing lookup value claims to pushforward claims.
 	pub fn prove_pushforward<
-		Challenger_: Challenger,
 		// N_MLES is the total number of MLEs involved, this is precisely N_LOOKUPS + N_TABLES.
 		const N_MLES: usize,
 	>(
 		&self,
-		transcript: &mut ProverTranscript<Challenger_>,
+		channel: &mut impl IPProverChannel<F>,
 	) -> Result<PushforwardEvalClaims<F>, SumcheckError> {
 		// TODO: Remove implicit assumption of equal table size.
 		assert_eq!(N_TABLES + N_LOOKUPS, N_MLES);
@@ -67,7 +66,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		let BatchSumcheckOutput {
 			challenges,
 			multilinear_evals,
-		} = batch_prove_and_write_evals(vec![prover], transcript)?;
+		} = batch_prove_and_write_evals(vec![prover], channel)?;
 
 		let (pushforward_evals, table_evals) = multilinear_evals[0].split_at(N_LOOKUPS);
 		// The batch MLE order is [pushforwards..., tables...], so split accordingly.
