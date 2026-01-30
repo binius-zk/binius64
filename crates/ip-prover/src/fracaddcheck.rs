@@ -5,19 +5,18 @@ use std::{array, iter::zip};
 use binius_field::{Field, PackedField};
 use binius_ip::fracaddcheck::FracAddEvalClaim;
 use binius_math::{FieldBuffer, line::extrapolate_line_packed};
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
 use binius_utils::rayon::iter::{IntoParallelIterator, ParallelIterator};
 use itertools::Itertools;
 
-use crate::sumcheck::{
-	Error as SumcheckError,
-	batch::batch_prove_mle_and_write_evals,
-	common::MleCheckProver,
-	frac_add_last_layer_mle::{SharedFracAddInput, SharedFracAddLastLayerProver},
-	frac_add_mle::{self, FractionalBuffer},
+use crate::{
+	channel::IPProverChannel,
+	sumcheck::{
+		Error as SumcheckError,
+		batch::batch_prove_mle_and_write_evals,
+		common::MleCheckProver,
+		frac_add_last_layer_mle::{SharedFracAddInput, SharedFracAddLastLayerProver},
+		frac_add_mle::{self, FractionalBuffer},
+	},
 };
 
 /// Prover for the fractional addition protocol.
@@ -180,18 +179,15 @@ where
 	///
 	/// # Arguments
 	/// * `claim` - The initial numerator/denominator evaluation claim.
-	/// * `transcript` - The prover transcript
+	/// * `channel` - The channel for sending prover messages and sampling challenges
 	///
 	/// # Preconditions
-	/// * `claim.point.len() == witness.log_len() - k` (where k is the number of reduction layers)
-	pub fn prove<Challenger_>(
+	/// * `claim.0.point.len() == witness.log_len() - k` (where k is the number of reduction layers)
+	pub fn prove(
 		self,
 		claim: FracAddEvalClaim<F>,
-		transcript: &mut ProverTranscript<Challenger_>,
-	) -> Result<FracAddEvalClaim<F>, Error>
-	where
-		Challenger_: Challenger,
-	{
+		channel: &mut impl IPProverChannel<F>,
+	) -> Result<FracAddEvalClaim<F>, Error> {
 		let mut prover_opt = Some(self);
 		let mut claim = claim;
 
@@ -199,7 +195,7 @@ where
 			let (sumcheck_prover, remaining) = prover.layer_prover(claim);
 			prover_opt = remaining;
 
-			let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], transcript)?;
+			let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], channel)?;
 
 			let mut multilinear_evals = output.multilinear_evals;
 			let evals = multilinear_evals.pop().expect("batch contains one prover");
@@ -208,7 +204,7 @@ where
 				.try_into()
 				.expect("prover evaluates four multilinears");
 
-			let r = transcript.sample();
+			let r = channel.sample();
 
 			let next_num = extrapolate_line_packed(num_0, num_1, r);
 			let next_den = extrapolate_line_packed(den_0, den_1, r);
@@ -435,14 +431,11 @@ where
 	/// and claims at each step via transcript challenges. When the final layer is reached,
 	/// it may switch to a shared last-layer prover (if configured) to combine work across
 	/// the batch; otherwise it returns the current claims.
-	pub fn prove<Challenger_>(
+	pub fn prove(
 		self,
 		claims: [FracAddEvalClaim<F>; N],
-		transcript: &mut ProverTranscript<Challenger_>,
-	) -> Result<[FracAddEvalClaim<F>; N], Error>
-	where
-		Challenger_: Challenger,
-	{
+		transcript: &mut impl IPProverChannel<F>,
+	) -> Result<[FracAddEvalClaim<F>; N], Error> {
 		if N == 0 {
 			return Ok(claims);
 		}
@@ -588,6 +581,7 @@ mod tests {
 
 		// 5. Run prover
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+
 		let prover_output = prover
 			.prove(prover_claim.clone(), &mut prover_transcript)
 			.unwrap();

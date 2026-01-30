@@ -2,12 +2,9 @@
 
 use binius_field::Field;
 use binius_math::univariate::evaluate_univariate;
-use binius_transcript::{
-	VerifierTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
 
 use crate::{
+	channel::IPVerifierChannel,
 	mlecheck,
 	sumcheck::{self, Error, SumcheckOutput},
 };
@@ -37,18 +34,18 @@ pub struct BatchSumcheckOutput<F: Field> {
 /// over the boolean hypercube to their evaluation at a (shared) challenge point. This is achieved
 /// by constructing an `n_vars + 1`-variate polynomial whose coefficients in the "new variable" are
 /// the individual sum claims and evaluating it at a random point.
-pub fn batch_verify<F: Field, Challenger_: Challenger>(
+pub fn batch_verify<F: Field>(
 	n_vars: usize,
 	degree: usize,
 	sums: &[F],
-	transcript: &mut VerifierTranscript<Challenger_>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<BatchSumcheckOutput<F>, Error> {
 	// Random linear-combination coefficient that binds all sum claims together.
-	let batch_coeff = transcript.sample();
+	let batch_coeff = channel.sample();
 	// Combine the individual sum claims into a single scalar for sumcheck verification.
 	let sum = evaluate_univariate(sums, batch_coeff);
 
-	let SumcheckOutput { eval, challenges } = sumcheck::verify(n_vars, degree, sum, transcript)?;
+	let SumcheckOutput { eval, challenges } = sumcheck::verify(n_vars, degree, sum, channel)?;
 
 	Ok(BatchSumcheckOutput {
 		batch_coeff,
@@ -62,18 +59,18 @@ pub fn batch_verify<F: Field, Challenger_: Challenger>(
 /// This is the MLE-check analog of [`batch_verify`]: it batches evaluation claims from multiple
 /// MLE-check instances that share a common evaluation point, using a single batching coefficient
 /// and shared verifier challenges to reduce all claims to one scalar verification.
-pub fn batch_verify_mle<F: Field, Challenger_: Challenger>(
+pub fn batch_verify_mle<F: Field>(
 	point: &[F],
 	degree: usize,
 	evals: &[F],
-	transcript: &mut VerifierTranscript<Challenger_>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<BatchSumcheckOutput<F>, Error> {
 	// Random linear-combination coefficient that binds all eval claims together.
-	let batch_coeff = transcript.sample();
+	let batch_coeff = channel.sample();
 	// Combine the individual eval claims into a single scalar for MLE-check verification.
 	let eval = evaluate_univariate(evals, batch_coeff);
 
-	let SumcheckOutput { eval, challenges } = mlecheck::verify(point, degree, eval, transcript)?;
+	let SumcheckOutput { eval, challenges } = mlecheck::verify(point, degree, eval, channel)?;
 
 	Ok(BatchSumcheckOutput {
 		batch_coeff,

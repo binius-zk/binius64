@@ -5,13 +5,7 @@ use core::arch::x86_64::*;
 use gfni_arithmetics::GfniType;
 
 use super::*;
-use crate::{
-	BinaryField, PackedField,
-	arch::{GfniSpecializedStrategy512b, x86_64::m512::M512},
-	arithmetic_traits::TaggedPackedTransformationFactory,
-	linear_transformation::{FieldLinearTransformation, Transformation},
-	underlier::WithUnderlier,
-};
+use crate::arch::x86_64::m512::M512;
 
 impl GfniType for M512 {
 	#[inline(always)]

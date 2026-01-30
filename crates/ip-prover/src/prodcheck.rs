@@ -3,15 +3,14 @@
 use binius_field::{Field, PackedField};
 use binius_ip::prodcheck::MultilinearEvalClaim;
 use binius_math::{FieldBuffer, line::extrapolate_line_packed};
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
 use binius_utils::rayon::prelude::*;
 
-use crate::sumcheck::{
-	Error as SumcheckError, ProveSingleOutput, bivariate_product_mle, common::MleCheckProver,
-	prove_single_mlecheck,
+use crate::{
+	channel::IPProverChannel,
+	sumcheck::{
+		Error as SumcheckError, ProveSingleOutput, bivariate_product_mle, common::MleCheckProver,
+		prove_single_mlecheck,
+	},
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -107,18 +106,15 @@ where
 	///
 	/// # Arguments
 	/// * `claim` - The initial multilinear evaluation claim
-	/// * `transcript` - The prover transcript
+	/// * `channel` - The channel for sending prover messages and sampling challenges
 	///
 	/// # Preconditions
 	/// * `claim.point.len() == witness.log_len() - k` (where k is the number of reduction layers)
-	pub fn prove<Challenger_>(
+	pub fn prove(
 		self,
 		claim: MultilinearEvalClaim<F>,
-		transcript: &mut ProverTranscript<Challenger_>,
-	) -> Result<MultilinearEvalClaim<F>, Error>
-	where
-		Challenger_: Challenger,
-	{
+		channel: &mut impl IPProverChannel<F>,
+	) -> Result<MultilinearEvalClaim<F>, Error> {
 		let mut prover_opt = Some(self);
 		let mut claim = claim;
 
@@ -129,15 +125,15 @@ where
 			let ProveSingleOutput {
 				multilinear_evals,
 				challenges,
-			} = prove_single_mlecheck(mle_prover, transcript)?;
+			} = prove_single_mlecheck(mle_prover, channel)?;
 
 			let [eval_0, eval_1] = multilinear_evals
 				.try_into()
 				.expect("prover has two multilinears");
 
-			transcript.message().write(&[eval_0, eval_1]);
+			channel.send_many(&[eval_0, eval_1]);
 
-			let r = transcript.sample();
+			let r = channel.sample();
 			let next_eval = extrapolate_line_packed(eval_0, eval_1, r);
 
 			let mut next_point = challenges;

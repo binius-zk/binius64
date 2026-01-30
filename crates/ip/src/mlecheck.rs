@@ -3,12 +3,11 @@
 
 use binius_field::{Field, PackedField, util::powers};
 use binius_math::multilinear::eq::eq_ind_partial_eval;
-use binius_transcript::{
-	VerifierTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
 
-use crate::sumcheck::{self, RoundCoeffs, SumcheckOutput};
+use crate::{
+	channel::IPVerifierChannel,
+	sumcheck::{self, RoundCoeffs, SumcheckOutput},
+};
 
 /// Returns `(m_n, m_d)` dimensions for a mask polynomial buffer.
 ///
@@ -70,27 +69,27 @@ pub struct VerifyZKOutput<F: Field> {
 ///
 /// ## Arguments
 ///
-/// * `n_vars` - The number of variables in the multivariate polynomial
+/// * `point` - The evaluation point for the multilinear extension
 /// * `degree` - The degree of the univariate polynomial in each round
 /// * `eval` - The claimed multilinear-extension evaluation of the multivariate polynomial
-/// * `transcript` - The transcript containing the prover's messages and randomness for challenges
+/// * `channel` - The channel for receiving prover messages and sampling challenges
 ///
 /// ## Returns
 ///
 /// Returns a `Result` containing the `SumcheckOutput` with the reduced evaluation and challenge
 /// point, or an error if verification fails.
-pub fn verify<F: Field, Challenger_: Challenger>(
+pub fn verify<F: Field>(
 	point: &[F],
 	degree: usize,
 	mut eval: F,
-	transcript: &mut VerifierTranscript<Challenger_>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<SumcheckOutput<F>, sumcheck::Error> {
 	let n_vars = point.len();
 
 	let mut challenges = Vec::with_capacity(n_vars);
 	for &z_i in point.iter().rev() {
-		let round_proof = RoundProof(RoundCoeffs(transcript.message().read_vec(degree)?));
-		let challenge = transcript.sample();
+		let round_proof = RoundProof(RoundCoeffs(channel.recv_many(degree)?));
+		let challenge = channel.sample();
 
 		let round_coeffs = round_proof.recover(eval, z_i);
 		eval = round_coeffs.evaluate(challenge);
@@ -108,26 +107,26 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 /// is being evaluated, whereas Libra would batch the mask polynomial together with the MLE itself.
 ///
 /// [Libra]: <https://dl.acm.org/doi/10.1007/978-3-030-26954-8_24>
-pub fn verify_zk<F: Field, Challenger_: Challenger>(
+pub fn verify_zk<F: Field>(
 	point: &[F],
 	degree: usize,
 	eval: F,
-	transcript: &mut VerifierTranscript<Challenger_>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<VerifyZKOutput<F>, sumcheck::Error> {
 	// Read the evaluation of the MLE of the mask polynomial (g).
-	let mask_eval: F = transcript.message().read()?;
+	let mask_eval: F = channel.recv_one()?;
 
 	// Randomly mix the evaluation claim with the mask evaluation claim.
-	let batch_challenge: F = transcript.sample();
+	let batch_challenge: F = channel.sample();
 	let batch_eval = eval + batch_challenge * mask_eval;
 
 	let SumcheckOutput {
 		eval: batch_eval_out,
 		challenges,
-	} = verify(point, degree, batch_eval, transcript)?;
+	} = verify(point, degree, batch_eval, channel)?;
 
 	// Read the evaluation of the mask polynomial (g) at the sumcheck challenge point.
-	let mask_eval_out: F = transcript.message().read()?;
+	let mask_eval_out: F = channel.recv_one()?;
 
 	let eval_out = batch_eval_out - batch_challenge * mask_eval_out;
 	Ok(VerifyZKOutput {

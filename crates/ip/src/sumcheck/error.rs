@@ -2,6 +2,8 @@
 
 use binius_transcript::Error as TranscriptError;
 
+use crate::channel;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
 	#[error("transcript error: {0}")]
@@ -21,6 +23,14 @@ impl From<TranscriptError> for Error {
 		match err {
 			TranscriptError::NotEnoughBytes => VerificationError::TranscriptIsEmpty.into(),
 			_ => Error::Transcript(err),
+		}
+	}
+}
+
+impl From<channel::Error> for Error {
+	fn from(err: channel::Error) -> Self {
+		match err {
+			channel::Error::ProofEmpty => VerificationError::TranscriptIsEmpty.into(),
 		}
 	}
 }

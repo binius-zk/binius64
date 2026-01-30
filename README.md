@@ -61,20 +61,9 @@ prove [ 128.58ms | 100.00% ] { operation = prove, perfetto_category = operation,
 
 Multithreading is enabled by default using [Rayon](https://github.com/rayon-rs/rayon). This is controlled by the `rayon` Cargo feature. To run an example with multithreading disabled, use `--no-default-features`.
 
-## Repo Structure
+## Architecture
 
-Binius64 consists of several specialized crates in the `crates/` directory.
-
-- **binius-circuits**: Standard library of circuit gadgets
-- **binius-core**: Modules shared by the frontend and verifier
-- **binius-examples**: Examples and tutorials for learning and performance measurement
-- **binius-field**: Binary field arithmetic with platform-specific optimizations
-- **binius-frontend**: Circuit construction and compilation framework
-- **binius-math**: Mathematical algorithms
-- **binius-prover**: Zero-knowledge proof generation
-- **binius-transcript**: Fiat-Shamir transcript handling
-- **binius-utils**: Common utilities
-- **binius-verifier**: Proof verification
+For repository structure and architectural details, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Authors & Supporters
 

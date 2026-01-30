@@ -7,12 +7,12 @@
 
 use binius_field::Field;
 use binius_math::{line::extrapolate_line_packed, univariate::evaluate_univariate};
-use binius_transcript::{
-	Error as TranscriptError, VerifierTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
+use binius_transcript::Error as TranscriptError;
 
-use crate::sumcheck::{self, BatchSumcheckOutput};
+use crate::{
+	channel::IPVerifierChannel,
+	sumcheck::{self, BatchSumcheckOutput},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FracAddEvalClaim<F: Field> {
@@ -23,10 +23,10 @@ pub struct FracAddEvalClaim<F: Field> {
 	pub point: Vec<F>,
 }
 
-pub fn verify<F: Field, Challenger_: Challenger>(
+pub fn verify<F: Field>(
 	k: usize,
 	claim: FracAddEvalClaim<F>,
-	transcript: &mut VerifierTranscript<Challenger_>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<FracAddEvalClaim<F>, Error> {
 	if k == 0 {
 		return Ok(claim);
@@ -45,10 +45,10 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 		batch_coeff,
 		eval,
 		mut challenges,
-	} = sumcheck::batch_verify_mle(&point, 2, &evals, transcript)?;
+	} = sumcheck::batch_verify_mle(&point, 2, &evals, channel)?;
 
 	// Read evaluations of numerator/denominator halves at the reduced point.
-	let [num_0, num_1, den_0, den_1] = transcript.message().read()?;
+	let [num_0, num_1, den_0, den_1] = channel.recv_array()?;
 
 	// Sumcheck binds variables high-to-low; reverse to low-to-high for point evaluation.
 	challenges.reverse();
@@ -63,7 +63,7 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 	}
 
 	// Reduce evaluations of the two halves to a single evaluation at the next point.
-	let r = transcript.sample();
+	let r = channel.sample();
 	let next_num = extrapolate_line_packed(num_0, num_1, r);
 	let next_den = extrapolate_line_packed(den_0, den_1, r);
 
@@ -77,7 +77,7 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 			den_eval: next_den,
 			point: next_point,
 		},
-		transcript,
+		channel,
 	)
 }
 
@@ -103,10 +103,10 @@ pub fn verify<F: Field, Challenger_: Challenger>(
 /// - `denominator = den_0 * den_1`
 ///
 /// Then samples challenge `r` and extrapolates to next layer claims.
-pub fn verify_batch<F: Field, Challenger_: Challenger>(
+pub fn verify_batch<F: Field>(
 	k: usize,
 	claims: Vec<FracAddEvalClaim<F>>,
-	transcript: &mut VerifierTranscript<Challenger_>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<Vec<FracAddEvalClaim<F>>, Error> {
 	if k == 0 || claims.is_empty() {
 		return Ok(claims);
@@ -133,14 +133,14 @@ pub fn verify_batch<F: Field, Challenger_: Challenger>(
 			batch_coeff,
 			eval,
 			mut challenges,
-		} = sumcheck::batch_verify_mle(&eval_point, 2, &evals, transcript)?;
+		} = sumcheck::batch_verify_mle(&eval_point, 2, &evals, channel)?;
 
 		// Read and validate each instance's layer evaluations
 		let mut layer_evals = Vec::with_capacity(claims.len());
 		let mut composed_evals = Vec::with_capacity(claims.len() * 2);
 
 		for _ in 0..claims.len() {
-			let [num_0, num_1, den_0, den_1] = transcript.message().read()?;
+			let [num_0, num_1, den_0, den_1] = channel.recv_array()?;
 			// Validate layer composition: (a0/b0) + (a1/b1) = (a0*b1 + a1*b0) / (b0*b1)
 			let numerator_eval = num_0 * den_1 + num_1 * den_0;
 			let denominator_eval = den_0 * den_1;
@@ -160,7 +160,7 @@ pub fn verify_batch<F: Field, Challenger_: Challenger>(
 		let mut reduced_eval_point = challenges;
 
 		// Sample shared challenge and extrapolate to next layer
-		let r = transcript.sample();
+		let r = channel.sample();
 		reduced_eval_point.push(r);
 
 		// Build claims for the next layer by extrapolating each instance
@@ -205,6 +205,14 @@ impl From<TranscriptError> for Error {
 		match err {
 			TranscriptError::NotEnoughBytes => VerificationError::TranscriptIsEmpty.into(),
 			_ => Error::Transcript(err),
+		}
+	}
+}
+
+impl From<crate::channel::Error> for Error {
+	fn from(err: crate::channel::Error) -> Self {
+		match err {
+			crate::channel::Error::ProofEmpty => VerificationError::TranscriptIsEmpty.into(),
 		}
 	}
 }

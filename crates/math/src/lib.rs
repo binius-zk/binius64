@@ -1,5 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 
+#![warn(rustdoc::missing_crate_level_docs)]
+
 //! Mathematical primitives used in Binius, built atop the `binius-field` crate.
 //!
 //! This crate provides a variety of mathematical primitives used in Binius, including:

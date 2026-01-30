@@ -1,5 +1,7 @@
 // Copyright 2026 The Binius Developers
 
+#![warn(rustdoc::missing_crate_level_docs)]
+
 //! Cryptographic hash functions and compression functions for Binius.
 //!
 //! This crate provides hash function implementations used throughout the Binius proof system,

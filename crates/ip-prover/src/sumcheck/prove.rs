@@ -7,13 +7,9 @@
 
 use binius_field::Field;
 use binius_ip::mlecheck;
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
 
 use super::{common::SumcheckProver, error::Error};
-use crate::sumcheck::common::MleCheckProver;
+use crate::{channel::IPProverChannel, sumcheck::common::MleCheckProver};
 
 /// Executes the sumcheck proving protocol for a single multivariate polynomial.
 ///
@@ -25,8 +21,7 @@ use crate::sumcheck::common::MleCheckProver;
 ///
 /// * `prover` - An implementation of [`SumcheckProver`] that computes the polynomial evaluations
 ///   for each round. The prover must evaluate exactly one composition polynomial per round.
-/// * `transcript` - The Fiat-Shamir transcript used to generate non-interactive challenges and
-///   record prover messages.
+/// * `channel` - The channel for sending prover messages and sampling challenges.
 ///
 /// # Returns
 ///
@@ -44,14 +39,14 @@ use crate::sumcheck::common::MleCheckProver;
 ///
 /// For each of the `n_vars` rounds:
 /// 1. The prover computes univariate polynomial coefficients via `execute()`
-/// 2. These coefficients are written to the transcript
-/// 3. A challenge is sampled from the transcript
+/// 2. These coefficients are written to the channel
+/// 3. A challenge is sampled from the channel
 /// 4. The prover folds the polynomial with this challenge via `fold()`
 ///
 /// After all rounds, `finish()` is called to obtain the final multilinear evaluations.
-pub fn prove_single<F: Field, Challenger_: Challenger>(
+pub fn prove_single<F: Field>(
 	mut prover: impl SumcheckProver<F>,
-	transcript: &mut ProverTranscript<Challenger_>,
+	channel: &mut impl IPProverChannel<F>,
 ) -> Result<ProveSingleOutput<F>, Error> {
 	let n_vars = prover.n_vars();
 	let mut challenges = Vec::with_capacity(n_vars);
@@ -67,11 +62,9 @@ pub fn prove_single<F: Field, Challenger_: Challenger>(
 		}
 		let round_coeffs = round_coeffs_vec.pop().expect("round_coeffs_vec.len() == 1");
 
-		transcript
-			.message()
-			.write_slice(round_coeffs.truncate().coeffs());
+		channel.send_many(round_coeffs.truncate().coeffs());
 
-		let challenge = transcript.sample();
+		let challenge = channel.sample();
 		challenges.push(challenge);
 		prover.fold(challenge)?;
 	}
@@ -86,9 +79,9 @@ pub fn prove_single<F: Field, Challenger_: Challenger>(
 /// Executes the MLE-check proving protocol for a single multivariate polynomial.
 ///
 /// Analogous to [`prove_single`] for the MLE-check protocol instead of sumcheck.
-pub fn prove_single_mlecheck<F: Field, Challenger_: Challenger>(
+pub fn prove_single_mlecheck<F: Field>(
 	mut prover: impl MleCheckProver<F>,
-	transcript: &mut ProverTranscript<Challenger_>,
+	channel: &mut impl IPProverChannel<F>,
 ) -> Result<ProveSingleOutput<F>, Error> {
 	let n_vars = prover.n_vars();
 	let mut challenges = Vec::with_capacity(n_vars);
@@ -104,11 +97,9 @@ pub fn prove_single_mlecheck<F: Field, Challenger_: Challenger>(
 		}
 		let round_coeffs = round_coeffs_vec.pop().expect("round_coeffs_vec.len() == 1");
 
-		transcript
-			.message()
-			.write_slice(mlecheck::RoundProof::truncate(round_coeffs).coeffs());
+		channel.send_many(mlecheck::RoundProof::truncate(round_coeffs).coeffs());
 
-		let challenge = transcript.sample();
+		let challenge = channel.sample();
 		challenges.push(challenge);
 		prover.fold(challenge)?;
 	}
