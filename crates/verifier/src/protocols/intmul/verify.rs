@@ -1,14 +1,11 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{BinaryField, Field};
+use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
 	FieldBuffer,
 	multilinear::{self, eq::eq_ind},
 	univariate::evaluate_univariate,
-};
-use binius_transcript::{
-	VerifierTranscript,
-	fiat_shamir::{CanSample, Challenger},
 };
 use itertools::{Itertools, izip};
 
@@ -24,22 +21,15 @@ use crate::protocols::{
 	sumcheck::{BatchSumcheckOutput, batch_verify},
 };
 
-fn read_scalar_slice<F: Field, C: Challenger>(
-	transcript: &mut VerifierTranscript<C>,
-	len: usize,
-) -> Result<Vec<F>, Error> {
-	Ok(transcript.message().read_scalar_slice::<F>(len)?)
-}
-
 struct BivariateProductMleLayerOutput<F: Field> {
 	challenges: Vec<F>,
 	multilinear_evals: Vec<F>,
 }
 
-fn verify_multi_bivariate_product_mle_layer<F: Field, C: Challenger>(
+fn verify_multi_bivariate_product_mle_layer<F: Field>(
 	eval_point: &[F],
 	evals: &[F],
-	transcript: &mut VerifierTranscript<C>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<BivariateProductMleLayerOutput<F>, Error> {
 	let n_vars = eval_point.len();
 
@@ -47,11 +37,11 @@ fn verify_multi_bivariate_product_mle_layer<F: Field, C: Challenger>(
 		batch_coeff,
 		mut challenges,
 		eval,
-	} = batch_verify(n_vars, 3, evals, transcript)?;
+	} = batch_verify(n_vars, 3, evals, channel)?;
 
 	challenges.reverse();
 
-	let multilinear_evals = read_scalar_slice(transcript, 2 * evals.len())?;
+	let multilinear_evals = channel.recv_many(2 * evals.len())?;
 
 	let eq_ind_eval = eq_ind(eval_point, &challenges);
 	let expected_unbatched_terms = multilinear_evals
@@ -71,11 +61,11 @@ fn verify_multi_bivariate_product_mle_layer<F: Field, C: Challenger>(
 	})
 }
 
-fn verify_phase_1<F: Field, C: Challenger>(
+fn verify_phase_1<F: Field>(
 	log_bits: usize,
 	initial_eval_point: &[F],
 	initial_b_eval: F,
-	transcript: &mut VerifierTranscript<C>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<Phase1Output<F>, Error> {
 	let n_vars = initial_eval_point.len();
 
@@ -84,13 +74,13 @@ fn verify_phase_1<F: Field, C: Challenger>(
 		eval: initial_b_eval,
 		point: initial_eval_point.to_vec(),
 	};
-	let output_claim = prodcheck::verify(log_bits, claim, transcript)?;
+	let output_claim = prodcheck::verify(log_bits, claim, channel)?;
 
 	// Split output point: first n are x-point, last k are z-challenges
 	let (eval_point, z_suffix) = output_claim.point.split_at(n_vars);
 
-	// Read 2^k leaf evaluations from transcript
-	let b_leaves_evals: Vec<F> = read_scalar_slice(transcript, 1 << log_bits)?;
+	// Read 2^k leaf evaluations from channel
+	let b_leaves_evals: Vec<F> = channel.recv_many(1 << log_bits)?;
 
 	// Verify: output_claim.eval = multilinear_eval(b_leaves_evals, z_suffix)
 	// The leaf evals form a multilinear over log_bits variables; evaluate at z_suffix
@@ -111,14 +101,14 @@ fn verify_phase_1<F: Field, C: Challenger>(
 
 // PHASE THREE: selector sumcheck
 
-fn verify_phase_3<F: Field, C: Challenger>(
+fn verify_phase_3<F: Field>(
 	log_bits: usize,
 	// selector sumcheck stuff
 	phase_2_output: Phase2Output<F>,
 	// c sumcheck stuff
 	c_eval_point: &[F],
 	c_eval: F,
-	transcript: &mut VerifierTranscript<C>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<Phase3Output<F>, Error> {
 	let n_vars = c_eval_point.len();
 
@@ -140,11 +130,11 @@ fn verify_phase_3<F: Field, C: Challenger>(
 		batch_coeff,
 		mut challenges,
 		eval,
-	} = batch_verify(n_vars, 3, &evals, transcript)?;
+	} = batch_verify(n_vars, 3, &evals, channel)?;
 	challenges.reverse();
 
-	let selector_prover_evals = read_scalar_slice::<F, _>(transcript, (1 << log_bits) + 1)?;
-	let c_root_prover_evals = read_scalar_slice::<F, _>(transcript, 2)?;
+	let selector_prover_evals: Vec<F> = channel.recv_many((1 << log_bits) + 1)?;
+	let c_root_prover_evals: Vec<F> = channel.recv_many(2)?;
 
 	let output =
 		make_phase_3_output(log_bits, &challenges, &selector_prover_evals, &c_root_prover_evals);
@@ -178,13 +168,13 @@ fn verify_phase_3<F: Field, C: Challenger>(
 
 // PHASE 4: all but last layer of a_layers and c_layers
 
-fn verify_phase_4<F: Field, C: Challenger>(
+fn verify_phase_4<F: Field>(
 	log_bits: usize,
 	eval_point: &[F],
 	a_root_eval: F,
 	c_lo_root_eval: F,
 	c_hi_root_eval: F,
-	transcript: &mut VerifierTranscript<C>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<Phase4Output<F>, Error> {
 	assert!(log_bits >= 1);
 
@@ -197,7 +187,7 @@ fn verify_phase_4<F: Field, C: Challenger>(
 		let BivariateProductMleLayerOutput {
 			challenges,
 			multilinear_evals,
-		} = verify_multi_bivariate_product_mle_layer(&eval_point, &evals, transcript)?;
+		} = verify_multi_bivariate_product_mle_layer(&eval_point, &evals, channel)?;
 
 		eval_point = challenges;
 		evals = multilinear_evals;
@@ -219,7 +209,7 @@ fn verify_phase_4<F: Field, C: Challenger>(
 // PHASE 5: final layer
 
 #[allow(clippy::too_many_arguments)]
-fn verify_phase_5<F: Field, C: Challenger>(
+fn verify_phase_5<F: Field>(
 	log_bits: usize,
 	// a and c stuff
 	a_c_eval_point: &[F],
@@ -229,7 +219,7 @@ fn verify_phase_5<F: Field, C: Challenger>(
 	// b stuff
 	b_eval_point: &[F],
 	b_exponent_evals: &[F],
-	transcript: &mut VerifierTranscript<C>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<Phase5Output<F>, Error> {
 	assert!(log_bits >= 1);
 	assert_eq!(2 * a_evals.len(), 1 << log_bits);
@@ -240,7 +230,7 @@ fn verify_phase_5<F: Field, C: Challenger>(
 	assert_eq!(b_eval_point.len(), n_vars);
 
 	// This is the eval of `a_0 * b_0` and `c_lo_0`.
-	let overflow_zerocheck_eval = transcript.message().read_scalar::<F>()?;
+	let overflow_zerocheck_eval = channel.recv_one()?;
 
 	let evals = [
 		a_evals,
@@ -258,16 +248,16 @@ fn verify_phase_5<F: Field, C: Challenger>(
 		batch_coeff,
 		mut challenges,
 		eval,
-	} = batch_verify(n_vars, 3, &evals, transcript)?;
+	} = batch_verify(n_vars, 3, &evals, channel)?;
 	challenges.reverse();
 
-	// Read the evals of all multilinears in the bivariate prouct sumcheck: 64 for `a`, 128 for `c`,
+	// Read the evals of all multilinears in the bivariate product sumcheck: 64 for `a`, 128 for `c`,
 	// 2 for `a_0` and `b_0`
-	let mut bivariate_evals = read_scalar_slice(transcript, 64 + 128 + 2)?;
+	let mut bivariate_evals: Vec<F> = channel.recv_many(64 + 128 + 2)?;
 	// Read the single eval of the `c_lo_0` rerand sumcheck
-	let c_lo_0_eval = transcript.message().read_scalar::<F>()?;
+	let c_lo_0_eval = channel.recv_one()?;
 	// Read the 64 evals of the `b` rerand sumcheck
-	let b_exponent_evals = read_scalar_slice(transcript, 64)?;
+	let b_exponent_evals: Vec<F> = channel.recv_many(64)?;
 
 	// Compose the expected evaluation of the batched composition via
 	// the prover's claimed multilinear evals extracted above.
@@ -343,23 +333,22 @@ fn verify_phase_5<F: Field, C: Challenger>(
 ///    2^128 - 1`, which satisfies `a*b ≡ c (mod 2^128-1)` since `0 ≡ 2^128-1 (mod 2^128-1)`, but we
 ///    need `a*b = c (mod 2^128)`. The check catches this because if `c = 2^128-1` then `c_lo_0 = 1`
 ///    (odd), but `a_0 * b_0 = 0` when `a=0` or `b=0`.
-pub fn verify<F: BinaryField, C: Challenger>(
+pub fn verify<F: BinaryField>(
 	log_bits: usize,
 	n_vars: usize,
-	transcript: &mut VerifierTranscript<C>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<IntMulOutput<F>, Error> {
 	assert!(log_bits >= 1);
-	let initial_eval_point: Vec<F> = transcript.sample_vec(n_vars);
+	let initial_eval_point: Vec<F> = channel.sample_many(n_vars);
 
 	// Read the evaluation of the multilinear extension of the powers of the generator.
-	let mut reader = transcript.message();
-	let exp_eval: F = reader.read_scalar::<F>()?;
+	let exp_eval: F = channel.recv_one()?;
 
 	// Phase 1
 	let Phase1Output {
 		eval_point: phase_1_eval_point,
 		b_leaves_evals,
-	} = verify_phase_1(log_bits, &initial_eval_point, exp_eval, transcript)?;
+	} = verify_phase_1(log_bits, &initial_eval_point, exp_eval, channel)?;
 
 	assert_eq!(phase_1_eval_point.len(), n_vars);
 	assert_eq!(b_leaves_evals.len(), 1 << log_bits);
@@ -374,7 +363,7 @@ pub fn verify<F: BinaryField, C: Challenger>(
 		selector_eval,
 		c_lo_root_eval,
 		c_hi_root_eval,
-	} = verify_phase_3(log_bits, phase2_output, &initial_eval_point, exp_eval, transcript)?;
+	} = verify_phase_3(log_bits, phase2_output, &initial_eval_point, exp_eval, channel)?;
 
 	// Phase 4
 	let Phase4Output {
@@ -388,7 +377,7 @@ pub fn verify<F: BinaryField, C: Challenger>(
 		selector_eval,
 		c_lo_root_eval,
 		c_hi_root_eval,
-		transcript,
+		channel,
 	)?;
 
 	// Phase 5
@@ -407,7 +396,7 @@ pub fn verify<F: BinaryField, C: Challenger>(
 		&c_hi_evals,
 		&phase_3_eval_point,
 		&b_exponent_evals,
-		transcript,
+		channel,
 	)?;
 
 	let [a_exponent_evals, c_lo_exponent_evals, c_hi_exponent_evals] =

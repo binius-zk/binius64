@@ -113,7 +113,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 				let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
-				prove::<F, P, StdChallenger>(
+				prove::<F, P, _>(
 					inout_n_vars,
 					&key_collection,
 					value_vec.combined_witness(),
@@ -139,7 +139,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
-		prove::<F, P, StdChallenger>(
+		prove::<F, P, _>(
 			inout_n_vars,
 			&key_collection,
 			value_vec.combined_witness(),

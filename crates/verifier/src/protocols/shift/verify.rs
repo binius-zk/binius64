@@ -5,6 +5,7 @@ use binius_core::{
 	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint},
 };
 use binius_field::{BinaryField, Field};
+use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
 	BinarySubspace, FieldBuffer,
 	inner_product::inner_product_subfield,
@@ -13,10 +14,6 @@ use binius_math::{
 		evaluate::evaluate_inplace,
 	},
 	univariate::evaluate_univariate,
-};
-use binius_transcript::{
-	VerifierTranscript,
-	fiat_shamir::{CanSample, Challenger},
 };
 use binius_utils::checked_arithmetics::strict_log_2;
 use getset::CopyGetters;
@@ -158,22 +155,22 @@ impl<F: Field> VerifyOutput<F> {
 /// - Returns `Error::VerificationFailure` if monster multilinear evaluations don't match expected
 ///   values
 /// - Propagates sumcheck verification errors
-pub fn verify<F: BinaryField, C: Challenger>(
+pub fn verify<F: BinaryField>(
 	constraint_system: &ConstraintSystem,
 	public: &[Word],
 	bitand_data: &OperatorData<F, BITAND_ARITY>,
 	intmul_data: &OperatorData<F, INTMUL_ARITY>,
-	transcript: &mut VerifierTranscript<C>,
+	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<VerifyOutput<F>, Error> {
-	let bitand_lambda = transcript.sample();
-	let intmul_lambda = transcript.sample();
+	let bitand_lambda = channel.sample();
+	let intmul_lambda = channel.sample();
 
 	let eval = bitand_data.batched_eval(bitand_lambda) + intmul_data.batched_eval(intmul_lambda);
 
 	let SumcheckOutput {
 		eval: gamma,
 		challenges: mut r_jr_s,
-	} = verify_sumcheck(LOG_WORD_SIZE_BITS * 2, 2, eval, transcript)?;
+	} = verify_sumcheck(LOG_WORD_SIZE_BITS * 2, 2, eval, channel)?;
 
 	r_jr_s.reverse();
 	// Split challenges as `r_j,r_s` where `r_j` is the first `LOG_WORD_SIZE_BITS`
@@ -187,22 +184,22 @@ pub fn verify<F: BinaryField, C: Challenger>(
 	let inout_n_vars = strict_log_2(constraint_system.value_vec_layout.offset_witness)
 		.expect("constraints preprocessed");
 
-	let inout_eval_point = transcript.sample_vec(inout_n_vars);
+	let inout_eval_point = channel.sample_many(inout_n_vars);
 	let public_eval = evaluate_public_mle(public, &r_j, &inout_eval_point);
 
 	// Batch the `gamma` as the eval claim for the shift prover
 	// together with the public values eval claim for the public prover.
-	let batch_coeff = transcript.sample();
+	let batch_coeff = channel.sample();
 	let sum = gamma + batch_coeff * public_eval;
 
 	let SumcheckOutput {
 		eval,
 		challenges: mut r_y,
-	} = verify_sumcheck(log_word_count, 2, sum, transcript)?;
+	} = verify_sumcheck(log_word_count, 2, sum, channel)?;
 
 	r_y.reverse();
 
-	let witness_eval = transcript.message().read::<F>()?;
+	let witness_eval = channel.recv_one()?;
 
 	Ok(VerifyOutput {
 		bitand_lambda,

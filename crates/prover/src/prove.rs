@@ -52,8 +52,10 @@ use crate::{
 /// given constraint system. Then [`Self::prove`] is called one or more times with individual
 /// instances.
 #[derive(Debug)]
-pub struct Prover<P, ParallelMerkleCompress, ParallelMerkleHasher: ParallelDigest>
+pub struct Prover<P, ParallelMerkleCompress, ParallelMerkleHasher>
 where
+	ParallelMerkleHasher: ParallelDigest,
+	ParallelMerkleHasher::Digest: Digest + BlockSizeUser,
 	ParallelMerkleCompress: ParallelPseudoCompression<Output<ParallelMerkleHasher::Digest>, 2>,
 {
 	key_collection: KeyCollection,
@@ -370,7 +372,7 @@ fn prove_bitand_reduction<F: BinaryField + From<B8>, Challenger_: Challenger>(
 		prover_message_domain.isomorphic(),
 	);
 
-	Ok(prover.prove_with_transcript(transcript)?)
+	Ok(prover.prove_with_channel(transcript)?)
 }
 
 fn prove_intmul_reduction<F: BinaryField, P: PackedField<Scalar = F>, Challenger_: Challenger>(

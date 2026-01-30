@@ -2,6 +2,7 @@
 
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, BinaryField};
+use binius_iop::{basefold_compiler::BaseFoldVerifierCompiler, channel::OracleSpec};
 use binius_math::{
 	BinarySubspace,
 	inner_product::inner_product,
@@ -21,7 +22,7 @@ use itertools::{Itertools, chain};
 
 use super::error::Error;
 use crate::{
-	and_reduction::verifier::{AndCheckOutput, verify_with_transcript},
+	and_reduction::verifier::{AndCheckOutput, verify_with_channel},
 	config::{
 		B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
 	},
@@ -42,10 +43,14 @@ pub const SECURITY_BITS: usize = 96;
 /// The [`Self::setup`] constructor determines public parameters for proving instances of the given
 /// constraint system. Then [`Self::verify`] is called one or more times with individual instances.
 #[derive(Debug, Clone)]
-pub struct Verifier<MerkleHash, MerkleCompress> {
+pub struct Verifier<MerkleHash, MerkleCompress>
+where
+	MerkleHash: Digest + BlockSizeUser,
+	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
+{
 	constraint_system: ConstraintSystem,
-	fri_params: FRIParams<B128>,
-	merkle_scheme: BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>,
+	iop_compiler:
+		BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>,
 	log_public_words: usize,
 }
 
@@ -87,20 +92,25 @@ where
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
-		let fri_params = FRIParams::with_strategy(
+
+		// Create oracle spec for the single witness oracle (not ZK)
+		let oracle_specs = vec![OracleSpec {
+			log_msg_len: log_witness_elems,
+			is_zk: false,
+		}];
+
+		let iop_compiler = BaseFoldVerifierCompiler::new(
 			&ntt,
-			&merkle_scheme,
-			log_witness_elems,
-			None,
+			merkle_scheme,
+			oracle_specs,
 			log_inv_rate,
 			n_test_queries,
 			&ConstantArityStrategy::new(fri_arity),
-		)?;
+		);
 
 		Ok(Self {
 			constraint_system,
-			fri_params,
-			merkle_scheme,
+			iop_compiler,
 			log_public_words,
 		})
 	}
@@ -112,8 +122,9 @@ where
 
 	/// Returns log2 of the number of field elements in the packed trace.
 	pub fn log_witness_elems(&self) -> usize {
-		let rs_code = self.fri_params.rs_code();
-		rs_code.log_dim() + self.fri_params.log_batch_size()
+		let fri_params = self.fri_params();
+		let rs_code = fri_params.rs_code();
+		rs_code.log_dim() + fri_params.log_batch_size()
 	}
 
 	/// Returns the constraint system.
@@ -123,17 +134,26 @@ where
 
 	/// Returns the chosen FRI parameters.
 	pub fn fri_params(&self) -> &FRIParams<B128> {
-		&self.fri_params
+		// There is exactly one oracle spec (the witness)
+		&self.iop_compiler.fri_params()[0]
 	}
 
 	/// Returns the [`crate::merkle_tree::MerkleTreeScheme`] instance used.
 	pub fn merkle_scheme(&self) -> &BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress> {
-		&self.merkle_scheme
+		self.iop_compiler.merkle_scheme()
 	}
 
 	/// Returns log2 of the number of public constants and input/output words.
 	pub fn log_public_words(&self) -> usize {
 		self.log_public_words
+	}
+
+	/// Returns the IOP compiler for creating verifier channels.
+	pub fn iop_compiler(
+		&self,
+	) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>
+	{
+		&self.iop_compiler
 	}
 
 	pub fn verify<Challenger_: Challenger>(
@@ -271,8 +291,8 @@ where
 			shift_output.witness_eval(),
 			&eval_point,
 			trace_commitment,
-			&self.fri_params,
-			&self.merkle_scheme,
+			self.fri_params(),
+			self.merkle_scheme(),
 		)?;
 
 		drop(pcs_guard);
@@ -300,5 +320,5 @@ fn verify_bitand_reduction<F: BinaryField + From<B8>, Challenger_: Challenger>(
 	let zerocheck_challenges =
 		chain!(small_field_zerocheck_challenges, big_field_zerocheck_challenges)
 			.collect::<Vec<_>>();
-	verify_with_transcript(&zerocheck_challenges, transcript, eval_domain)
+	verify_with_channel(&zerocheck_challenges, transcript, eval_domain)
 }

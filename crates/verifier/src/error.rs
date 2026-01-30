@@ -1,6 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_core::ConstraintSystemError;
+use binius_ip::channel::Error as ChannelError;
 
 use crate::{
 	fri, pcs,
@@ -11,6 +12,8 @@ use crate::{
 pub enum Error {
 	#[error("transcript error: {0}")]
 	Transcript(#[from] binius_transcript::Error),
+	#[error("channel error: {0}")]
+	Channel(#[from] ChannelError),
 	#[error("FRI error: {0}")]
 	FRI(#[from] fri::Error),
 	#[error("NTT error: {0}")]

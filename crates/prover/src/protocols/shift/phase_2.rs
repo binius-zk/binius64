@@ -4,13 +4,10 @@ use std::iter;
 
 use binius_core::word::Word;
 use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	FieldBuffer,
 	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
-};
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
 };
 use binius_verifier::{config::LOG_WORD_SIZE_BITS, protocols::sumcheck::SumcheckOutput};
 use tracing::instrument;
@@ -52,17 +49,18 @@ use crate::{
 /// Returns `SumcheckOutput` containing the combined challenges `[r_j, r_y]` and witness evaluation,
 /// or an error if the protocol fails.
 #[instrument(skip_all, name = "prove_phase_2")]
-pub fn prove_phase_2<F, P: PackedField<Scalar = F>, C: Challenger>(
+pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel>(
 	inout_n_vars: usize,
 	key_collection: &KeyCollection,
 	words: &[Word],
 	bitand_data: &PreparedOperatorData<F>,
 	intmul_data: &PreparedOperatorData<F>,
 	phase_1_output: SumcheckOutput<F>,
-	transcript: &mut ProverTranscript<C>,
+	channel: &mut Channel,
 ) -> Result<SumcheckOutput<F>, Error>
 where
 	F: BinaryField + From<AESTowerField8b>,
+	Channel: IPProverChannel<F>,
 {
 	let SumcheckOutput {
 		challenges: mut r_jr_s,
@@ -80,7 +78,7 @@ where
 	let monster_multilinear =
 		build_monster_multilinear(key_collection, bitand_data, intmul_data, &r_j, &r_s)?;
 
-	run_sumcheck(inout_n_vars, r_j_witness, monster_multilinear, r_j, gamma, transcript)
+	run_sumcheck(inout_n_vars, r_j_witness, monster_multilinear, r_j, gamma, channel)
 }
 
 /// Evaluates the r_j_witness multilinear at the inout evaluation point.
@@ -161,23 +159,23 @@ fn compute_monster_with_inout<F: Field, P: PackedField<Scalar = F>>(
 /// # Returns
 /// Returns `SumcheckOutput` with concatenated challenges `[r_j, r_y]` and witness evaluation.
 #[instrument(skip_all, name = "run_sumcheck")]
-fn run_sumcheck<F: Field, P: PackedField<Scalar = F>, C: Challenger>(
+fn run_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>>(
 	inout_n_vars: usize,
 	r_j_witness: FieldBuffer<P>,
 	monster_multilinear: FieldBuffer<P>,
 	r_j: Vec<F>,
 	gamma: F,
-	transcript: &mut ProverTranscript<C>,
+	channel: &mut Channel,
 ) -> Result<SumcheckOutput<F>, Error> {
 	#[cfg(debug_assertions)]
 	let cloned_r_j_witness_for_debugging = r_j_witness.clone();
 
 	// Sample inout evaluation point and compute public evaluation
-	let inout_eval_point = transcript.sample_vec(inout_n_vars);
+	let inout_eval_point = channel.sample_many(inout_n_vars);
 	let public_eval = evaluate_public_at_inout(&r_j_witness, &inout_eval_point);
 
 	// Sample batching coefficient
-	let batch_coeff = transcript.sample();
+	let batch_coeff = channel.sample();
 
 	// Compute the batched polynomial m = monster + χ eq(inout_eval_point || 0)
 	let combined_monster =
@@ -190,7 +188,7 @@ fn run_sumcheck<F: Field, P: PackedField<Scalar = F>, C: Challenger>(
 	let ProveSingleOutput {
 		multilinear_evals,
 		challenges: mut r_y,
-	} = prove_single(prover, transcript)?;
+	} = prove_single(prover, channel)?;
 
 	// Reverse the challenges to get the evaluation point.
 	r_y.reverse();
@@ -200,7 +198,7 @@ fn run_sumcheck<F: Field, P: PackedField<Scalar = F>, C: Challenger>(
 		.try_into()
 		.expect("prover has 2 multilinear polynomials");
 
-	transcript.message().write_scalar(witness_eval);
+	channel.send_one(witness_eval);
 
 	#[cfg(debug_assertions)]
 	{

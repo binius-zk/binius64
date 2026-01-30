@@ -6,11 +6,8 @@ use binius_core::word::Word;
 use binius_field::{
 	AESTowerField8b, BinaryField, Field, PackedField, UnderlierWithBitOps, WithUnderlier,
 };
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, inner_product::inner_product_buffers};
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
 use binius_utils::rayon::prelude::*;
 use binius_verifier::{
 	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS, WORD_SIZE_BYTES},
@@ -40,23 +37,24 @@ const LOG_LEN: usize = LOG_WORD_SIZE_BITS + LOG_WORD_SIZE_BITS;
 /// Proves the first phase of the shift reduction.
 /// Computes the g and h multilinears and performs the sumcheck.
 #[instrument(skip_all, name = "prover_phase_1")]
-pub fn prove_phase_1<F, P, C: Challenger>(
+pub fn prove_phase_1<F, P, Channel>(
 	key_collection: &KeyCollection,
 	words: &[Word],
 	bitand_data: &PreparedOperatorData<F>,
 	intmul_data: &PreparedOperatorData<F>,
-	transcript: &mut ProverTranscript<C>,
+	channel: &mut Channel,
 ) -> Result<SumcheckOutput<F>, Error>
 where
 	F: BinaryField + From<AESTowerField8b> + WithUnderlier<Underlier: UnderlierWithBitOps>,
 	P: PackedField<Scalar = F> + WithUnderlier<Underlier: UnderlierWithBitOps>,
+	Channel: IPProverChannel<F>,
 {
 	let g_parts = build_g_parts::<_, P>(words, key_collection, bitand_data, intmul_data)?;
 
 	// BitAnd and IntMul share the same `r_zhat_prime`.
 	let h_parts = build_h_parts(bitand_data.r_zhat_prime);
 
-	run_phase_1_sumcheck(g_parts, h_parts, transcript)
+	run_phase_1_sumcheck(g_parts, h_parts, channel)
 }
 
 /// Runs the phase 1 sumcheck protocol for shift constraint verification.
@@ -85,10 +83,10 @@ where
 ///
 /// `SumcheckOutput` containing the challenge vector and final evaluation `gamma`
 #[instrument(skip_all, name = "run_sumcheck")]
-fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, C: Challenger>(
+fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>>(
 	g_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
 	h_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
-	transcript: &mut ProverTranscript<C>,
+	channel: &mut Channel,
 ) -> Result<SumcheckOutput<F>, Error> {
 	// Build `BivariateProductSumcheckProver` provers.
 	let mut provers = iter::zip(g_parts, h_parts)
@@ -113,11 +111,9 @@ fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, C: Challenger>(
 
 		let round_proof = summed_round_coeffs.truncate();
 
-		transcript
-			.message()
-			.write_scalar_slice(round_proof.coeffs());
+		channel.send_many(round_proof.coeffs());
 
-		let challenge = transcript.sample();
+		let challenge = channel.sample();
 		challenges.push(challenge);
 
 		for prover in &mut provers {
