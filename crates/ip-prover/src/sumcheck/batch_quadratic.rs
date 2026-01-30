@@ -354,7 +354,7 @@ mod tests {
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let sumcheck_output =
-			batch_verify::<F, _>(n_vars, 2, &sum_claims, &mut verifier_transcript).unwrap();
+			batch_verify(n_vars, 2, &sum_claims, &mut verifier_transcript).unwrap();
 
 		let mut eval_point = sumcheck_output.challenges.clone();
 		eval_point.reverse();
