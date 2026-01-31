@@ -5,12 +5,9 @@ use binius_field::{
 	AESTowerField8b, BinaryField, Field, PackedField, UnderlierWithBitOps, WithUnderlier,
 	util::powers,
 };
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	FieldBuffer, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
-};
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
 };
 use binius_verifier::protocols::sumcheck::SumcheckOutput;
 
@@ -101,21 +98,22 @@ impl<F: Field> PreparedOperatorData<F> {
 ///
 /// # Requirements
 /// - `words` must have power-of-2 length for efficient multilinear operations
-pub fn prove<F, P, C: Challenger>(
+pub fn prove<F, P, Channel>(
 	log_public_words: usize,
 	key_collection: &KeyCollection,
 	words: &[Word],
 	bitand_data: OperatorData<F>,
 	intmul_data: OperatorData<F>,
-	transcript: &mut ProverTranscript<C>,
+	channel: &mut Channel,
 ) -> Result<SumcheckOutput<F>, Error>
 where
 	F: BinaryField + From<AESTowerField8b> + WithUnderlier<Underlier: UnderlierWithBitOps>,
 	P: PackedField<Scalar = F> + WithUnderlier<Underlier: UnderlierWithBitOps>,
+	Channel: IPProverChannel<F>,
 {
 	// Sample lambdas, one for each operator.
-	let bitand_lambda = transcript.sample();
-	let intmul_lambda = transcript.sample();
+	let bitand_lambda = channel.sample();
+	let intmul_lambda = channel.sample();
 
 	// Create prepared operator data with sampled lambdas
 	let expand_scope = tracing::debug_span!("Expand tensor queries").entered();
@@ -126,26 +124,26 @@ where
 	// Prove the first phase, receiving a `SumcheckOutput`
 	// with challenges made of `r_j` and `r_s`,
 	// and eval equal to `gamma` (see paper).
-	let phase_1_output = prove_phase_1::<_, P, C>(
+	let phase_1_output = prove_phase_1::<_, P, _>(
 		key_collection,
 		words,
 		&prepared_bitand_data,
 		&prepared_intmul_data,
-		transcript,
+		channel,
 	)?;
 
 	// Prove the second phase, receiving a `SumcheckOutput`
 	// with challenges `r_y` and eval the evaluation of
 	// the witness at oblong point had by univariate
 	// variable `r_j` and multilinear variable `r_y`.
-	let SumcheckOutput { challenges, eval } = prove_phase_2::<_, P, C>(
+	let SumcheckOutput { challenges, eval } = prove_phase_2::<_, P, _>(
 		log_public_words,
 		key_collection,
 		words,
 		&prepared_bitand_data,
 		&prepared_intmul_data,
 		phase_1_output,
-		transcript,
+		channel,
 	)?;
 
 	// Return evaluation claim on the witness.

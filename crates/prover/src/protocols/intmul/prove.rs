@@ -3,14 +3,11 @@
 use std::marker::PhantomData;
 
 use binius_field::{BinaryField, PackedField};
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	field_buffer::FieldBuffer,
 	inner_product::inner_product_buffers,
 	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
-};
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
 };
 use binius_utils::{
 	bitwise::{BitSelector, Bitwise},
@@ -43,36 +40,36 @@ use crate::protocols::{
 	},
 };
 
-/// A helper structure that encapsulates switchover settings and the prover transcript for
+/// A helper structure that encapsulates switchover settings and the prover channel for
 /// the integer multiplication protocol.
-pub struct IntMulProver<'a, P, B, S, C: Challenger> {
+pub struct IntMulProver<'a, P, B, S, Channel> {
 	_p_marker: PhantomData<P>,
 	_b_marker: PhantomData<B>,
 	_s_marker: PhantomData<S>,
 
 	switchover: usize,
-	transcript: &'a mut ProverTranscript<C>,
+	channel: &'a mut Channel,
 }
 
-impl<'a, P, B, S, C: Challenger> IntMulProver<'a, P, B, S, C> {
-	pub fn new(switchover: usize, transcript: &'a mut ProverTranscript<C>) -> Self {
+impl<'a, P, B, S, Channel> IntMulProver<'a, P, B, S, Channel> {
+	pub fn new(switchover: usize, channel: &'a mut Channel) -> Self {
 		Self {
 			_p_marker: PhantomData,
 			_b_marker: PhantomData,
 			_s_marker: PhantomData,
 			switchover,
-			transcript,
+			channel,
 		}
 	}
 }
 
-impl<'a, F, P, B, S, C> IntMulProver<'a, P, B, S, C>
+impl<'a, F, P, B, S, Channel> IntMulProver<'a, P, B, S, Channel>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	B: Bitwise,
 	S: AsRef<[B]> + Sync,
-	C: Challenger,
+	Channel: IPProverChannel<F>,
 {
 	/// Prove an integer multiplication statement.
 	///
@@ -111,12 +108,11 @@ where
 		let (n_vars, log_bits) = (c_root.log_len(), a.log_bits());
 		assert!(log_bits >= 1);
 
-		let initial_eval_point = self.transcript.sample_vec(n_vars);
+		let initial_eval_point = self.channel.sample_many(n_vars);
 
 		let exp_eval = evaluate(&c_root, &initial_eval_point);
 
-		let mut writer = self.transcript.message();
-		writer.write_scalar(exp_eval);
+		self.channel.send_one(exp_eval);
 
 		// Phase 1: Prodcheck reduction on b_leaves
 		let Phase1Output {
@@ -217,7 +213,7 @@ where
 		};
 
 		// Run prodcheck - reduces to claim on concatenated b_leaves
-		let output_claim = b_prover.prove(claim, self.transcript)?;
+		let output_claim = b_prover.prove(claim, self.channel)?;
 
 		// Split output point: first n are x-point, last k are z-challenges
 		let (x_point, _z_suffix) = output_claim.point.split_at(n_vars);
@@ -229,8 +225,8 @@ where
 			.map(|b_leaf| inner_product_buffers(&b_leaf, &x_tensor))
 			.collect::<Vec<_>>();
 
-		// Write leaf evaluations to transcript
-		self.transcript.message().write_slice(&b_leaves_evals);
+		// Write leaf evaluations to channel
+		self.channel.send_many(&b_leaves_evals);
 
 		Ok(Phase1Output {
 			eval_point: x_point.to_vec(),
@@ -277,7 +273,7 @@ where
 		let BatchSumcheckOutput {
 			challenges,
 			mut multilinear_evals,
-		} = batch_prove_and_write_evals(provers, self.transcript)?;
+		} = batch_prove_and_write_evals(provers, self.channel)?;
 
 		assert_eq!(multilinear_evals.len(), 2);
 		let c_root_prover_evals = multilinear_evals
@@ -324,7 +320,7 @@ where
 			let BatchSumcheckOutput {
 				challenges,
 				mut multilinear_evals,
-			} = batch_prove_and_write_evals(vec![prover], self.transcript)?;
+			} = batch_prove_and_write_evals(vec![prover], self.channel)?;
 
 			assert_eq!(multilinear_evals.len(), 1);
 			eval_point = challenges;
@@ -410,9 +406,9 @@ where
 				})
 		};
 
-		// Write `c_lo_0_eval` to the transcript so the verifier has the claimed
+		// Write `c_lo_0_eval` to the channel so the verifier has the claimed
 		// eval for both the `a_0 * b_0` bivariate product and `c_lo_0` rerand sumcheck.
-		self.transcript.message().write_scalar(c_lo_0_eval);
+		self.channel.send_one(c_lo_0_eval);
 
 		// Make the `BivariateProductMultiMlecheckProver` prover.
 		// The prover proves an MLE eval claim on each pair of adjacent multilinears
@@ -462,7 +458,7 @@ where
 				Either::Right(c_lo_0_sumcheck_prover),
 				Either::Right(b_sumcheck_prover),
 			],
-			self.transcript,
+			self.channel,
 		)?;
 
 		// Pull out the evals of all three provers.

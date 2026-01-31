@@ -30,7 +30,6 @@
 pub mod and_reduction;
 mod error;
 pub mod fold_word;
-pub mod pcs;
 pub mod protocols;
 mod prove;
 pub mod ring_switch;
