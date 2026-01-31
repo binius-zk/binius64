@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_field::{Field, PackedField, util::powers};
+use binius_field::{Field, PackedField, field::FieldOps, util::powers};
 use binius_math::multilinear::eq::eq_ind_partial_eval;
 
 use crate::{
@@ -41,7 +41,7 @@ pub fn mask_buffer_dimensions(n_vars: usize, degree: usize, n_extra_dof: usize) 
 
 /// Output of the zero-knowledge MLE-check verification.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerifyZKOutput<F: Field> {
+pub struct VerifyZKOutput<F> {
 	/// The reduced evaluation of the main polynomial at the challenge point.
 	pub eval: F,
 	/// The evaluation of the mask polynomial at the challenge point.
@@ -78,21 +78,25 @@ pub struct VerifyZKOutput<F: Field> {
 ///
 /// Returns a `Result` containing the `SumcheckOutput` with the reduced evaluation and challenge
 /// point, or an error if verification fails.
-pub fn verify<F: Field>(
-	point: &[F],
+pub fn verify<F, C>(
+	point: &[C::Elem],
 	degree: usize,
-	mut eval: F,
-	channel: &mut impl IPVerifierChannel<F, Elem = F>,
-) -> Result<SumcheckOutput<F>, sumcheck::Error> {
+	mut eval: C::Elem,
+	channel: &mut C,
+) -> Result<SumcheckOutput<C::Elem>, sumcheck::Error>
+where
+	F: Field,
+	C: IPVerifierChannel<F>,
+{
 	let n_vars = point.len();
 
 	let mut challenges = Vec::with_capacity(n_vars);
-	for &z_i in point.iter().rev() {
+	for z_i in point.iter().rev() {
 		let round_proof = RoundProof(RoundCoeffs(channel.recv_many(degree)?));
 		let challenge = channel.sample();
 
-		let round_coeffs = round_proof.recover(eval, z_i);
-		eval = round_coeffs.evaluate(challenge);
+		let round_coeffs = round_proof.recover(eval, z_i.clone());
+		eval = round_coeffs.evaluate(challenge.clone());
 		challenges.push(challenge);
 	}
 
@@ -107,18 +111,22 @@ pub fn verify<F: Field>(
 /// is being evaluated, whereas Libra would batch the mask polynomial together with the MLE itself.
 ///
 /// [Libra]: <https://dl.acm.org/doi/10.1007/978-3-030-26954-8_24>
-pub fn verify_zk<F: Field>(
-	point: &[F],
+pub fn verify_zk<F, C>(
+	point: &[C::Elem],
 	degree: usize,
-	eval: F,
-	channel: &mut impl IPVerifierChannel<F, Elem = F>,
-) -> Result<VerifyZKOutput<F>, sumcheck::Error> {
+	eval: C::Elem,
+	channel: &mut C,
+) -> Result<VerifyZKOutput<C::Elem>, sumcheck::Error>
+where
+	F: Field,
+	C: IPVerifierChannel<F>,
+{
 	// Read the evaluation of the MLE of the mask polynomial (g).
-	let mask_eval: F = channel.recv_one()?;
+	let mask_eval = channel.recv_one()?;
 
 	// Randomly mix the evaluation claim with the mask evaluation claim.
-	let batch_challenge: F = channel.sample();
-	let batch_eval = eval + batch_challenge * mask_eval;
+	let batch_challenge = channel.sample();
+	let batch_eval = eval + batch_challenge.clone() * mask_eval.clone();
 
 	let SumcheckOutput {
 		eval: batch_eval_out,
@@ -126,9 +134,9 @@ pub fn verify_zk<F: Field>(
 	} = verify(point, degree, batch_eval, channel)?;
 
 	// Read the evaluation of the mask polynomial (g) at the sumcheck challenge point.
-	let mask_eval_out: F = channel.recv_one()?;
+	let mask_eval_out = channel.recv_one()?;
 
-	let eval_out = batch_eval_out - batch_challenge * mask_eval_out;
+	let eval_out = batch_eval_out - batch_challenge * mask_eval_out.clone();
 	Ok(VerifyZKOutput {
 		eval: eval_out,
 		mask_eval: mask_eval_out,
@@ -152,9 +160,9 @@ pub fn verify_zk<F: Field>(
 /// $(1 - \alpha) R(0) + \alpha R(1) = s$. This difference changes the recovery procedure and which
 /// polynomial coefficient is most convenient to truncate.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct RoundProof<F: Field>(pub RoundCoeffs<F>);
+pub struct RoundProof<F>(pub RoundCoeffs<F>);
 
-impl<F: Field> RoundProof<F> {
+impl<F> RoundProof<F> {
 	/// Truncates the polynomial coefficients to a round proof.
 	///
 	/// Removes the first coefficient. See the struct documentation for more info.
@@ -186,9 +194,12 @@ impl<F: Field> RoundProof<F> {
 	///     $R(1) = \sum_{j=0}^d a_j$
 	/// There is a unique $a_0$ that allows $R$ to satisfy the above identity. Specifically,
 	/// $a_0 = s - \alpha \sum_{j=1}^d a_j$.
-	pub fn recover(self, eval: F, alpha: F) -> RoundCoeffs<F> {
+	pub fn recover(self, eval: F, alpha: F) -> RoundCoeffs<F>
+	where
+		F: FieldOps,
+	{
 		let Self(RoundCoeffs(mut coeffs)) = self;
-		let first_coeff = eval - alpha * coeffs.iter().sum::<F>();
+		let first_coeff = eval - alpha * coeffs.iter().cloned().sum::<F>();
 		coeffs.insert(0, first_coeff);
 		RoundCoeffs(coeffs)
 	}

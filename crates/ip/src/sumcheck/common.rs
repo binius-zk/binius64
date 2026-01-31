@@ -2,22 +2,24 @@
 
 use std::ops::{Add, AddAssign, Index, Mul, MulAssign};
 
-use binius_field::Field;
+use binius_field::{Field, field::FieldOps};
 use binius_math::univariate::evaluate_univariate;
 
 /// A univariate polynomial in monomial basis.
 ///
 /// The coefficient at position `i` in the inner vector corresponds to the term $X^i$.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct RoundCoeffs<F: Field>(pub Vec<F>);
+pub struct RoundCoeffs<F>(pub Vec<F>);
 
-impl<F: Field> RoundCoeffs<F> {
+impl<F> RoundCoeffs<F> {
 	/// Truncate one coefficient from the polynomial to a more compact round proof.
 	pub fn truncate(mut self) -> RoundProof<F> {
 		self.0.pop();
 		RoundProof(self)
 	}
+}
 
+impl<F: FieldOps> RoundCoeffs<F> {
 	/// Evaluate the polynomial at a point.
 	pub fn evaluate(&self, x: F) -> F {
 		evaluate_univariate(&self.0, x)
@@ -62,7 +64,7 @@ impl<F: Field> MulAssign<F> for RoundCoeffs<F> {
 	}
 }
 
-impl<F: Field> Index<usize> for RoundCoeffs<F> {
+impl<F> Index<usize> for RoundCoeffs<F> {
 	type Output = F;
 
 	fn index(&self, index: usize) -> &F {
@@ -77,9 +79,16 @@ impl<F: Field> Index<usize> for RoundCoeffs<F> {
 /// high-degree term coefficient can be easily recovered. Truncating the coefficient off saves a
 /// small amount of proof data.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct RoundProof<F: Field>(pub RoundCoeffs<F>);
+pub struct RoundProof<F>(pub RoundCoeffs<F>);
 
-impl<F: Field> RoundProof<F> {
+impl<F> RoundProof<F> {
+	/// The truncated polynomial coefficients.
+	pub fn coeffs(&self) -> &[F] {
+		&self.0.0
+	}
+}
+
+impl<F: FieldOps> RoundProof<F> {
 	/// Recovers all univariate polynomial coefficients from the compressed round proof.
 	///
 	/// The prover has sent coefficients for the purported ith round polynomial
@@ -100,16 +109,14 @@ impl<F: Field> RoundProof<F> {
 	/// Not sending the whole round polynomial is an optimization.
 	/// In the unoptimized version of the protocol, the verifier will halt and reject
 	/// if given a round polynomial that does not satisfy the above identity.
-	pub fn recover(self, sum: F) -> RoundCoeffs<F> {
+	pub fn recover(self, sum: F) -> RoundCoeffs<F>
+	where
+		F: FieldOps,
+	{
 		let Self(RoundCoeffs(mut coeffs)) = self;
-		let first_coeff = coeffs.first().copied().unwrap_or(F::ZERO);
-		let last_coeff = sum - first_coeff - coeffs.iter().sum::<F>();
+		let first_coeff = coeffs.first().cloned().unwrap_or_else(F::zero);
+		let last_coeff = sum - first_coeff - coeffs.iter().cloned().sum::<F>();
 		coeffs.push(last_coeff);
 		RoundCoeffs(coeffs)
-	}
-
-	/// The truncated polynomial coefficients.
-	pub fn coeffs(&self) -> &[F] {
-		&self.0.0
 	}
 }

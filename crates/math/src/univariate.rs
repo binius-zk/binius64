@@ -1,6 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use binius_field::{BinaryField, Field};
+use binius_field::{BinaryField, Field, field::FieldOps};
 use itertools::izip;
 
 use super::{BinarySubspace, FieldBuffer};
@@ -10,15 +10,15 @@ use super::{BinarySubspace, FieldBuffer};
 /// # Arguments
 /// * `coeffs` - Slice of coefficients ordered from low-degree terms to high-degree terms
 /// * `x` - Point at which to evaluate the polynomial
-pub fn evaluate_univariate<F: Field>(coeffs: &[F], x: F) -> F {
-	let Some((&highest_degree, rest)) = coeffs.split_last() else {
-		return F::ZERO;
+pub fn evaluate_univariate<F: FieldOps>(coeffs: &[F], x: F) -> F {
+	let Some((highest_degree, rest)) = coeffs.split_last() else {
+		return F::zero();
 	};
 
 	// Evaluate using Horner's method
 	rest.iter()
 		.rev()
-		.fold(highest_degree, |acc, &coeff| acc * x + coeff)
+		.fold(highest_degree.clone(), |acc, coeff| acc * &x + coeff)
 }
 
 /// Optimized Lagrange evaluation for power-of-2 domains in binary fields.

@@ -36,7 +36,7 @@ use binius_transcript::{
 /// the transcript state, making the protocol non-interactive.
 pub trait IPVerifierChannel<F> {
 	/// The element type returned by receive and sample methods.
-	type Elem: FieldOps<F>;
+	type Elem: FieldOps;
 
 	/// Receives a single field element from the prover.
 	fn recv_one(&mut self) -> Result<Self::Elem, Error>;

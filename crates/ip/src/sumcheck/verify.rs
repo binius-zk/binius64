@@ -13,7 +13,7 @@ use crate::{
 /// The [`verify`] function reduces a claim about the sum of a multivariate polynomial over the
 /// boolean hypercube to its evaluation at a challenge point.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SumcheckOutput<F: Field> {
+pub struct SumcheckOutput<F> {
 	/// The evaluation of the sumcheck multivariate at the challenge point.
 	pub eval: F,
 	/// The sequence of sumcheck challenges defining the evaluation point.
@@ -36,19 +36,23 @@ pub struct SumcheckOutput<F: Field> {
 ///
 /// Returns a `Result` containing the `SumcheckOutput` with the reduced evaluation and challenge
 /// point, or an error if verification fails.
-pub fn verify<F: Field>(
+pub fn verify<F, C>(
 	n_vars: usize,
 	degree: usize,
-	mut sum: F,
-	channel: &mut impl IPVerifierChannel<F, Elem = F>,
-) -> Result<SumcheckOutput<F>, Error> {
+	mut sum: C::Elem,
+	channel: &mut C,
+) -> Result<SumcheckOutput<C::Elem>, Error>
+where
+	F: Field,
+	C: IPVerifierChannel<F>,
+{
 	let mut challenges = Vec::with_capacity(n_vars);
 	for _round in 0..n_vars {
 		let round_proof = RoundProof(RoundCoeffs(channel.recv_many(degree)?));
 		let challenge = channel.sample();
 
 		let round_coeffs = round_proof.recover(sum);
-		sum = round_coeffs.evaluate(challenge);
+		sum = round_coeffs.evaluate(challenge.clone());
 		challenges.push(challenge);
 	}
 

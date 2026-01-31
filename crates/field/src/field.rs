@@ -126,7 +126,8 @@ pub trait Field:
 /// - [`zero()`](Self::zero) - Returns the additive identity (all elements are zero)
 /// - [`one()`](Self::one) - Returns the multiplicative identity (all elements are one)
 pub trait FieldOps:
-	Neg<Output = Self>
+	Clone
+	+ Neg<Output = Self>
 	+ Add<Output = Self>
 	+ Sub<Output = Self>
 	+ Mul<Output = Self>
