@@ -1,6 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_core::ConstraintSystemError;
+use binius_iop::channel::Error as IOPChannelError;
 use binius_ip::channel::Error as ChannelError;
 
 use crate::{
@@ -14,10 +15,14 @@ pub enum Error {
 	Transcript(#[from] binius_transcript::Error),
 	#[error("channel error: {0}")]
 	Channel(#[from] ChannelError),
+	#[error("IOP channel error: {0}")]
+	IOPChannel(#[from] IOPChannelError),
 	#[error("FRI error: {0}")]
 	FRI(#[from] fri::Error),
 	#[error("NTT error: {0}")]
 	PCS(#[from] pcs::Error),
+	#[error("PCS verification error: {0}")]
+	PcsVerification(#[from] pcs::VerificationError),
 	#[error("IntMul error: {0}")]
 	IntMul(#[from] intmul::Error),
 	#[error("sumcheck error: {0}")]

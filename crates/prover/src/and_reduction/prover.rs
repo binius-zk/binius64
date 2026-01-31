@@ -332,9 +332,7 @@ mod test {
 			prover_message_domain.clone(),
 		);
 
-		let prove_output = prover
-			.prove_with_channel(&mut prover_challenger)
-			.unwrap();
+		let prove_output = prover.prove_with_channel(&mut prover_challenger).unwrap();
 
 		// Verifier is instantiated
 		let mut verifier_challenger = prover_challenger.into_verifier();

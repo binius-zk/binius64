@@ -251,8 +251,8 @@ fn verify_phase_5<F: Field>(
 	} = batch_verify(n_vars, 3, &evals, channel)?;
 	challenges.reverse();
 
-	// Read the evals of all multilinears in the bivariate product sumcheck: 64 for `a`, 128 for `c`,
-	// 2 for `a_0` and `b_0`
+	// Read the evals of all multilinears in the bivariate product sumcheck: 64 for `a`, 128 for
+	// `c`, 2 for `a_0` and `b_0`
 	let mut bivariate_evals: Vec<F> = channel.recv_many(64 + 128 + 2)?;
 	// Read the single eval of the `c_lo_0` rerand sumcheck
 	let c_lo_0_eval = channel.recv_one()?;

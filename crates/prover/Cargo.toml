@@ -74,10 +74,6 @@ name = "ring_switch"
 harness = false
 
 [[bench]]
-name = "pcs"
-harness = false
-
-[[bench]]
 name = "vision"
 harness = false
 
