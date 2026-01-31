@@ -367,7 +367,7 @@ unsafe impl<U: UnderlierType + Zeroable, Scalar: BinaryField> Zeroable
 
 unsafe impl<U: UnderlierType + Pod, Scalar: BinaryField> Pod for PackedPrimitiveType<U, Scalar> {}
 
-impl<U, Scalar> FieldOps<Scalar> for PackedPrimitiveType<U, Scalar>
+impl<U, Scalar> FieldOps for PackedPrimitiveType<U, Scalar>
 where
 	Self: Square + InvertOrZero + Mul<Output = Self>,
 	U: UnderlierWithBitOps + Divisible<Scalar::Underlier>,

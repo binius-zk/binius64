@@ -252,7 +252,7 @@ macro_rules! binary_field {
 			}
 		}
 
-		impl $crate::field::FieldOps<$name> for $name {
+		impl $crate::field::FieldOps for $name {
 			#[inline]
 			fn zero() -> Self {
 				Self::ZERO

@@ -28,7 +28,7 @@ pub trait Field:
 	+ Display
 	+ Hash
 	+ 'static
-	+ FieldOps<Self>
+	+ FieldOps
 	+ Random
 	+ Zeroable
 	+ SerializeBytes
@@ -121,16 +121,11 @@ pub trait Field:
 /// inversion are defined element-wise. For a packed field with width N, multiplying
 /// two values performs N independent field multiplications in parallel.
 ///
-/// # Type Parameter
-///
-/// The type parameter `F` represents the scalar field type. For a `Field` implementation,
-/// `F` is `Self`. For a `PackedField` implementation, `F` is the scalar type being packed.
-///
 /// # Required Methods
 ///
 /// - [`zero()`](Self::zero) - Returns the additive identity (all elements are zero)
 /// - [`one()`](Self::one) - Returns the multiplicative identity (all elements are one)
-pub trait FieldOps<F>:
+pub trait FieldOps:
 	Neg<Output = Self>
 	+ Add<Output = Self>
 	+ Sub<Output = Self>
@@ -148,8 +143,6 @@ pub trait FieldOps<F>:
 	+ for<'a> AddAssign<&'a Self>
 	+ for<'a> SubAssign<&'a Self>
 	+ for<'a> MulAssign<&'a Self>
-	+ Mul<F, Output = Self>
-	+ MulAssign<F>
 	+ Square
 	+ InvertOrZero
 {

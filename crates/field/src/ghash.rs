@@ -240,7 +240,7 @@ impl Square for BinaryField128bGhash {
 	}
 }
 
-impl FieldOps<BinaryField128bGhash> for BinaryField128bGhash {
+impl FieldOps for BinaryField128bGhash {
 	#[inline]
 	fn zero() -> Self {
 		Self::ZERO

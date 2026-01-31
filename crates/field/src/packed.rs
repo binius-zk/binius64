@@ -7,7 +7,7 @@
 use std::{
 	fmt::Debug,
 	iter,
-	ops::{Add, AddAssign, Sub, SubAssign},
+	ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign},
 };
 
 use binius_utils::{
@@ -31,11 +31,13 @@ pub trait PackedField:
 	+ Copy
 	+ Eq
 	+ Sized
-	+ FieldOps<Self::Scalar>
+	+ FieldOps
 	+ Add<Self::Scalar, Output = Self>
 	+ Sub<Self::Scalar, Output = Self>
+	+ Mul<Self::Scalar, Output = Self>
 	+ AddAssign<Self::Scalar>
 	+ SubAssign<Self::Scalar>
+	+ MulAssign<Self::Scalar>
 	+ Send
 	+ Sync
 	+ Zeroable
