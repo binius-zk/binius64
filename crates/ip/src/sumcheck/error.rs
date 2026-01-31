@@ -16,6 +16,8 @@ pub enum Error {
 pub enum VerificationError {
 	#[error("transcript is empty")]
 	TranscriptIsEmpty,
+	#[error("invalid assertion: value is not zero")]
+	InvalidAssert,
 }
 
 impl From<TranscriptError> for Error {
@@ -31,6 +33,7 @@ impl From<channel::Error> for Error {
 	fn from(err: channel::Error) -> Self {
 		match err {
 			channel::Error::ProofEmpty => VerificationError::TranscriptIsEmpty.into(),
+			channel::Error::InvalidAssert => VerificationError::InvalidAssert.into(),
 		}
 	}
 }

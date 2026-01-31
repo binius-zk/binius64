@@ -82,7 +82,7 @@ pub fn verify<F: Field>(
 	point: &[F],
 	degree: usize,
 	mut eval: F,
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 ) -> Result<SumcheckOutput<F>, sumcheck::Error> {
 	let n_vars = point.len();
 
@@ -111,7 +111,7 @@ pub fn verify_zk<F: Field>(
 	point: &[F],
 	degree: usize,
 	eval: F,
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 ) -> Result<VerifyZKOutput<F>, sumcheck::Error> {
 	// Read the evaluation of the MLE of the mask polynomial (g).
 	let mask_eval: F = channel.recv_one()?;

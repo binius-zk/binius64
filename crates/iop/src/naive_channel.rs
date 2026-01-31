@@ -85,6 +85,8 @@ where
 	F: Field,
 	Challenger_: Challenger,
 {
+	type Elem = F;
+
 	fn recv_one(&mut self) -> Result<F, binius_ip::channel::Error> {
 		self.transcript
 			.message()
@@ -108,6 +110,14 @@ where
 
 	fn sample(&mut self) -> F {
 		CanSample::sample(&mut self.transcript)
+	}
+
+	fn assert_zero(&mut self, val: F) -> Result<(), binius_ip::channel::Error> {
+		if val == F::ZERO {
+			Ok(())
+		} else {
+			Err(binius_ip::channel::Error::InvalidAssert)
+		}
 	}
 }
 

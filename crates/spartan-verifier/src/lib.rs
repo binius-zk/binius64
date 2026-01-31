@@ -295,7 +295,7 @@ where
 
 	fn verify_mulcheck(
 		&self,
-		channel: &mut impl IPVerifierChannel<F>,
+		channel: &mut impl IPVerifierChannel<F, Elem = F>,
 	) -> Result<MulcheckOutput<F>, Error> {
 		let log_mul_constraints = checked_log_2(self.constraint_system.mul_constraints().len());
 

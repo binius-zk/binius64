@@ -47,7 +47,7 @@ pub fn verify<F, Channel>(
 ) -> Result<RingSwitchVerifyOutput<F>, VerificationError>
 where
 	F: BinaryField + PackedField<Scalar = F>,
-	Channel: IPVerifierChannel<F>,
+	Channel: IPVerifierChannel<F, Elem = F>,
 {
 	let log_packing = <F as ExtensionField<B1>>::LOG_DEGREE;
 	let (eval_point_low, _eval_point_high) = eval_point.split_at(log_packing);

@@ -160,7 +160,7 @@ pub fn verify<F: BinaryField>(
 	public: &[Word],
 	bitand_data: &OperatorData<F, BITAND_ARITY>,
 	intmul_data: &OperatorData<F, INTMUL_ARITY>,
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 ) -> Result<VerifyOutput<F>, Error> {
 	let bitand_lambda = channel.sample();
 	let intmul_lambda = channel.sample();

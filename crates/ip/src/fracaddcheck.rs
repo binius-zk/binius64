@@ -26,7 +26,7 @@ pub struct FracAddEvalClaim<F: Field> {
 pub fn verify<F: Field>(
 	k: usize,
 	claim: FracAddEvalClaim<F>,
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 ) -> Result<FracAddEvalClaim<F>, Error> {
 	if k == 0 {
 		return Ok(claim);
@@ -113,6 +113,7 @@ impl From<crate::channel::Error> for Error {
 	fn from(err: crate::channel::Error) -> Self {
 		match err {
 			crate::channel::Error::ProofEmpty => VerificationError::TranscriptIsEmpty.into(),
+			crate::channel::Error::InvalidAssert => VerificationError::InvalidAssert.into(),
 		}
 	}
 }
@@ -127,4 +128,6 @@ pub enum VerificationError {
 	IncorrectRoundEvaluation { round: usize },
 	#[error("transcript is empty")]
 	TranscriptIsEmpty,
+	#[error("invalid assertion: value is not zero")]
+	InvalidAssert,
 }

@@ -33,7 +33,7 @@ pub fn compute_claim<F: Field>(
 	_r_public: &[F],
 	eval_claims: &[F],
 	public_eval: F,
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 ) -> WiringClaim<F> {
 	// \lambda is the batching challenge for the constraint operands
 	let lambda = channel.sample();

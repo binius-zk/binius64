@@ -40,7 +40,7 @@ pub fn verify<F: Field>(
 	n_vars: usize,
 	degree: usize,
 	mut sum: F,
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 ) -> Result<SumcheckOutput<F>, Error> {
 	let mut challenges = Vec::with_capacity(n_vars);
 	for _round in 0..n_vars {

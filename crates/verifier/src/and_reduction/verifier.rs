@@ -92,7 +92,7 @@ pub struct AndCheckOutput<F> {
 ///   evaluation point
 pub fn verify_with_channel<F: BinaryField>(
 	all_zerocheck_challenges: &[F],
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 	round_message_univariate_domain: &BinarySubspace<F>,
 ) -> Result<AndCheckOutput<F>, Error> {
 	let univariate_message_coeffs_ext_domain: Vec<F> =

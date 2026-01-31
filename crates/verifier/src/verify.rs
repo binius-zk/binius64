@@ -331,7 +331,7 @@ fn verify_bitand_reduction<F, Channel>(
 ) -> Result<AndCheckOutput<F>, Error>
 where
 	F: BinaryField + From<B8>,
-	Channel: IPVerifierChannel<F>,
+	Channel: IPVerifierChannel<F, Elem = F>,
 {
 	// The structure of the AND reduction requires that it verifies at least 2^3 word-level
 	// constraints, you can zero-pad if necessary to reach this minimum

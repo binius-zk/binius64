@@ -38,7 +38,7 @@ pub fn batch_verify<F: Field>(
 	n_vars: usize,
 	degree: usize,
 	sums: &[F],
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 ) -> Result<BatchSumcheckOutput<F>, Error> {
 	// Random linear-combination coefficient that binds all sum claims together.
 	let batch_coeff = channel.sample();
@@ -63,7 +63,7 @@ pub fn batch_verify_mle<F: Field>(
 	point: &[F],
 	degree: usize,
 	evals: &[F],
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 ) -> Result<BatchSumcheckOutput<F>, Error> {
 	// Random linear-combination coefficient that binds all eval claims together.
 	let batch_coeff = channel.sample();

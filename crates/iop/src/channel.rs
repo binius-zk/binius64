@@ -49,7 +49,7 @@ pub struct OracleSpec {
 ///
 /// The caller must call `recv_oracle()` exactly `remaining_oracle_specs().len()` times before
 /// calling `finish()`. The oracles must be received in order and match their specifications.
-pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F> {
+pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F, Elem = F> {
 	type Oracle: Clone;
 
 	/// Returns the specifications for the remaining oracles to be received.

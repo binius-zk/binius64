@@ -29,7 +29,7 @@ struct BivariateProductMleLayerOutput<F: Field> {
 fn verify_multi_bivariate_product_mle_layer<F: Field>(
 	eval_point: &[F],
 	evals: &[F],
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 ) -> Result<BivariateProductMleLayerOutput<F>, Error> {
 	let n_vars = eval_point.len();
 
@@ -65,7 +65,7 @@ fn verify_phase_1<F: Field>(
 	log_bits: usize,
 	initial_eval_point: &[F],
 	initial_b_eval: F,
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 ) -> Result<Phase1Output<F>, Error> {
 	let n_vars = initial_eval_point.len();
 
@@ -108,7 +108,7 @@ fn verify_phase_3<F: Field>(
 	// c sumcheck stuff
 	c_eval_point: &[F],
 	c_eval: F,
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 ) -> Result<Phase3Output<F>, Error> {
 	let n_vars = c_eval_point.len();
 
@@ -174,7 +174,7 @@ fn verify_phase_4<F: Field>(
 	a_root_eval: F,
 	c_lo_root_eval: F,
 	c_hi_root_eval: F,
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 ) -> Result<Phase4Output<F>, Error> {
 	assert!(log_bits >= 1);
 
@@ -219,7 +219,7 @@ fn verify_phase_5<F: Field>(
 	// b stuff
 	b_eval_point: &[F],
 	b_exponent_evals: &[F],
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 ) -> Result<Phase5Output<F>, Error> {
 	assert!(log_bits >= 1);
 	assert_eq!(2 * a_evals.len(), 1 << log_bits);
@@ -336,7 +336,7 @@ fn verify_phase_5<F: Field>(
 pub fn verify<F: BinaryField>(
 	log_bits: usize,
 	n_vars: usize,
-	channel: &mut impl IPVerifierChannel<F>,
+	channel: &mut impl IPVerifierChannel<F, Elem = F>,
 ) -> Result<IntMulOutput<F>, Error> {
 	assert!(log_bits >= 1);
 	let initial_eval_point: Vec<F> = channel.sample_many(n_vars);
