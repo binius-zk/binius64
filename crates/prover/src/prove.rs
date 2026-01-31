@@ -1,5 +1,4 @@
 // Copyright 2025 Irreducible Inc.
-use std::marker::PhantomData;
 
 use binius_core::{
 	constraint_system::{AndConstraint, MulConstraint, ValueVec},
@@ -10,6 +9,7 @@ use binius_field::{
 	AESTowerField8b as B8, BinaryField, PackedAESBinaryField16x8b, PackedExtension, PackedField,
 	UnderlierWithBitOps, WithUnderlier,
 };
+use binius_iop_prover::basefold_compiler::BaseFoldProverCompiler;
 use binius_math::{
 	BinarySubspace, FieldBuffer,
 	inner_product::inner_product,
@@ -46,6 +46,13 @@ use crate::{
 	},
 };
 
+/// Type alias for the prover NTT parameterized by field.
+type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
+
+/// Type alias for the prover Merkle tree prover parameterized by field.
+type ProverMerkleProver<F, ParallelMerkleHasher, ParallelMerkleCompress> =
+	BinaryMerkleTreeProver<F, ParallelMerkleHasher, ParallelMerkleCompress>;
+
 /// Struct for proving instances of a particular constraint system.
 ///
 /// The [`Self::setup`] constructor pre-processes reusable structures for proving instances of the
@@ -54,15 +61,19 @@ use crate::{
 #[derive(Debug)]
 pub struct Prover<P, ParallelMerkleCompress, ParallelMerkleHasher>
 where
+	P: PackedField<Scalar = B128>,
 	ParallelMerkleHasher: ParallelDigest,
-	ParallelMerkleHasher::Digest: Digest + BlockSizeUser,
+	ParallelMerkleHasher::Digest: Digest + BlockSizeUser + FixedOutputReset,
 	ParallelMerkleCompress: ParallelPseudoCompression<Output<ParallelMerkleHasher::Digest>, 2>,
 {
 	key_collection: KeyCollection,
 	verifier: Verifier<ParallelMerkleHasher::Digest, ParallelMerkleCompress::Compression>,
-	ntt: NeighborsLastMultiThread<GenericPreExpanded<B128>>,
-	merkle_prover: BinaryMerkleTreeProver<B128, ParallelMerkleHasher, ParallelMerkleCompress>,
-	_p_marker: PhantomData<P>,
+	#[allow(clippy::type_complexity)]
+	basefold_compiler: BaseFoldProverCompiler<
+		P,
+		ProverNTT<B128>,
+		ProverMerkleProver<B128, ParallelMerkleHasher, ParallelMerkleCompress>,
+	>,
 }
 
 impl<P, MerkleHash, ParallelMerkleCompress, ParallelMerkleHasher>
@@ -97,7 +108,8 @@ where
 		compression: ParallelMerkleCompress,
 		key_collection: KeyCollection,
 	) -> Result<Self, Error> {
-		let subspace = verifier.fri_params().rs_code().subspace();
+		// Get max subspace from verifier's IOP compiler (reuses FRI params)
+		let subspace = verifier.iop_compiler().max_subspace();
 		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
 		// FIXME TODO For mobile phones, the number of shares should potentially be more than the
 		// number of threads, because the threads/cores have different performance (but in the NTT
@@ -107,12 +119,17 @@ where
 
 		let merkle_prover = BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression);
 
+		// Create prover compiler from verifier compiler (reuses FRI params and oracle specs)
+		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
+			verifier.iop_compiler(),
+			ntt,
+			merkle_prover,
+		);
+
 		Ok(Prover {
 			key_collection,
 			verifier,
-			ntt,
-			merkle_prover,
-			_p_marker: PhantomData,
+			basefold_compiler,
 		})
 	}
 
@@ -172,8 +189,11 @@ where
 		)
 		.entered();
 
-		let pcs_prover =
-			OneBitPCSProver::new(&self.ntt, &self.merkle_prover, verifier.fri_params());
+		let pcs_prover = OneBitPCSProver::new(
+			self.basefold_compiler.ntt(),
+			self.basefold_compiler.merkle_prover(),
+			verifier.fri_params(),
+		);
 		let CommitOutput {
 			commitment: trace_commitment,
 			committed: trace_committed,
