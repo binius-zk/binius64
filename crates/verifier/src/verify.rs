@@ -35,7 +35,7 @@ use crate::{
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
 		shift::{self, OperatorData},
 	},
-	ring_switch::verifier as ring_switch,
+	ring_switch,
 };
 
 pub const SECURITY_BITS: usize = 96;

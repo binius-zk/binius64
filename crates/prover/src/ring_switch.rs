@@ -388,7 +388,7 @@ mod test {
 		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate_inplace},
 		test_utils::{index_to_hypercube_point, random_field_buffer, random_scalars},
 	};
-	use binius_verifier::{config::B1, ring_switch::verifier::eval_rs_eq};
+	use binius_verifier::{config::B1, ring_switch::eval_rs_eq};
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
