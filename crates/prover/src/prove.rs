@@ -1,5 +1,4 @@
 // Copyright 2025 Irreducible Inc.
-use std::marker::PhantomData;
 
 use binius_core::{
 	constraint_system::{AndConstraint, MulConstraint, ValueVec},
@@ -10,16 +9,17 @@ use binius_field::{
 	AESTowerField8b as B8, BinaryField, PackedAESBinaryField16x8b, PackedExtension, PackedField,
 	UnderlierWithBitOps, WithUnderlier,
 };
+use binius_iop_prover::{
+	basefold_channel::BaseFoldProverChannel, basefold_compiler::BaseFoldProverCompiler,
+	channel::IOPProverChannel,
+};
 use binius_math::{
 	BinarySubspace, FieldBuffer,
 	inner_product::inner_product,
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
 	univariate::lagrange_evals,
 };
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
+use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::prelude::*};
 use binius_verifier::{
 	Verifier,
@@ -34,17 +34,23 @@ use digest::{Digest, FixedOutputReset, Output, core_api::BlockSizeUser};
 use super::error::Error;
 use crate::{
 	and_reduction::{prover::OblongZerocheckProver, utils::multivariate::OneBitOblongMultilinear},
-	fri::CommitOutput,
 	hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression},
 	merkle_tree::prover::BinaryMerkleTreeProver,
-	pcs::OneBitPCSProver,
 	protocols::{
 		intmul::{prove::IntMulProver, witness::Witness as IntMulWitness},
 		shift::{
 			KeyCollection, OperatorData, build_key_collection, prove as prove_shift_reduction,
 		},
 	},
+	ring_switch,
 };
+
+/// Type alias for the prover NTT parameterized by field.
+type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
+
+/// Type alias for the prover Merkle tree prover parameterized by field.
+type ProverMerkleProver<F, ParallelMerkleHasher, ParallelMerkleCompress> =
+	BinaryMerkleTreeProver<F, ParallelMerkleHasher, ParallelMerkleCompress>;
 
 /// Struct for proving instances of a particular constraint system.
 ///
@@ -52,15 +58,21 @@ use crate::{
 /// given constraint system. Then [`Self::prove`] is called one or more times with individual
 /// instances.
 #[derive(Debug)]
-pub struct Prover<P, ParallelMerkleCompress, ParallelMerkleHasher: ParallelDigest>
+pub struct Prover<P, ParallelMerkleCompress, ParallelMerkleHasher>
 where
+	P: PackedField<Scalar = B128>,
+	ParallelMerkleHasher: ParallelDigest,
+	ParallelMerkleHasher::Digest: Digest + BlockSizeUser + FixedOutputReset,
 	ParallelMerkleCompress: ParallelPseudoCompression<Output<ParallelMerkleHasher::Digest>, 2>,
 {
 	key_collection: KeyCollection,
 	verifier: Verifier<ParallelMerkleHasher::Digest, ParallelMerkleCompress::Compression>,
-	ntt: NeighborsLastMultiThread<GenericPreExpanded<B128>>,
-	merkle_prover: BinaryMerkleTreeProver<B128, ParallelMerkleHasher, ParallelMerkleCompress>,
-	_p_marker: PhantomData<P>,
+	#[allow(clippy::type_complexity)]
+	basefold_compiler: BaseFoldProverCompiler<
+		P,
+		ProverNTT<B128>,
+		ProverMerkleProver<B128, ParallelMerkleHasher, ParallelMerkleCompress>,
+	>,
 }
 
 impl<P, MerkleHash, ParallelMerkleCompress, ParallelMerkleHasher>
@@ -95,7 +107,8 @@ where
 		compression: ParallelMerkleCompress,
 		key_collection: KeyCollection,
 	) -> Result<Self, Error> {
-		let subspace = verifier.fri_params().rs_code().subspace();
+		// Get max subspace from verifier's IOP compiler (reuses FRI params)
+		let subspace = verifier.iop_compiler().max_subspace();
 		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
 		// FIXME TODO For mobile phones, the number of shares should potentially be more than the
 		// number of threads, because the threads/cores have different performance (but in the NTT
@@ -105,12 +118,17 @@ where
 
 		let merkle_prover = BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression);
 
+		// Create prover compiler from verifier compiler (reuses FRI params and oracle specs)
+		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
+			verifier.iop_compiler(),
+			ntt,
+			merkle_prover,
+		);
+
 		Ok(Prover {
 			key_collection,
 			verifier,
-			ntt,
-			merkle_prover,
-			_p_marker: PhantomData,
+			basefold_compiler,
 		})
 	}
 
@@ -127,7 +145,6 @@ where
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		let verifier = &self.verifier;
-		let cs = self.verifier.constraint_system();
 
 		// Check that the public input length is correct
 		let public = witness.public().to_vec();
@@ -144,6 +161,18 @@ where
 
 		// Prover observes the public input (includes it in Fiat-Shamir).
 		transcript.observe().write_slice(&public);
+
+		// Create channel and delegate to prove_iop
+		let channel = BaseFoldProverChannel::from_compiler(&self.basefold_compiler, transcript);
+		self.prove_iop(witness, channel)
+	}
+
+	fn prove_iop<Channel>(&self, witness: ValueVec, mut channel: Channel) -> Result<(), Error>
+	where
+		Channel: IOPProverChannel<P>,
+	{
+		let verifier = &self.verifier;
+		let cs = self.verifier.constraint_system();
 
 		let _prove_guard = tracing::info_span!(
 			"Prove",
@@ -170,14 +199,8 @@ where
 		)
 		.entered();
 
-		let pcs_prover =
-			OneBitPCSProver::new(&self.ntt, &self.merkle_prover, verifier.fri_params());
-		let CommitOutput {
-			commitment: trace_commitment,
-			committed: trace_committed,
-			codeword: trace_codeword,
-		} = pcs_prover.commit(witness_packed.to_ref())?;
-		transcript.message().write(&trace_commitment);
+		// Commit witness via channel
+		let trace_oracle = channel.send_oracle(witness_packed.to_ref());
 
 		drop(witness_commit_guard);
 
@@ -190,7 +213,7 @@ where
 		)
 		.entered();
 		let mul_witness = build_intmul_witness(&cs.mul_constraints, &witness);
-		let intmul_output = prove_intmul_reduction::<_, P, _>(mul_witness, transcript)?;
+		let intmul_output = prove_intmul_reduction::<_, P, _>(mul_witness, &mut channel)?;
 		drop(intmul_guard);
 
 		// [phase] BitAnd Reduction - AND constraint reduction
@@ -209,7 +232,7 @@ where
 				c_eval,
 				z_challenge,
 				eval_point,
-			} = prove_bitand_reduction::<B128, _>(bitand_witness, transcript)?;
+			} = prove_bitand_reduction::<B128, _>(bitand_witness, &mut channel)?;
 			OperatorData {
 				evals: vec![a_eval, b_eval, c_eval],
 				r_zhat_prime: z_challenge,
@@ -262,24 +285,27 @@ where
 			witness.combined_witness(),
 			bitand_claim,
 			intmul_claim,
-			transcript,
+			&mut channel,
 		)?;
 		drop(shift_guard);
 
-		// [phase] PCS Opening - polynomial commitment opening
+		// [phase] Ring-Switching + PCS Opening
 		let pcs_guard = tracing::info_span!(
 			"[phase] PCS Opening",
 			phase = "pcs_opening",
 			perfetto_category = "phase"
 		)
 		.entered();
-		pcs_prover.prove(
-			trace_codeword,
-			&trace_committed,
-			witness_packed,
-			eval_point,
-			transcript,
-		)?;
+
+		// Ring-switching reduction
+		let ring_switch::RingSwitchOutput {
+			rs_eq_ind,
+			sumcheck_claim,
+		} = ring_switch::prove(&witness_packed, &eval_point, &mut channel);
+
+		// Finish via channel (runs BaseFold internally)
+		channel.finish(&[(trace_oracle, rs_eq_ind, sumcheck_claim)]);
+
 		drop(pcs_guard);
 
 		Ok(())
@@ -329,10 +355,14 @@ fn pack_witness<P: PackedField<Scalar = B128>>(
 	Ok(padded_witness_elems)
 }
 
-fn prove_bitand_reduction<F: BinaryField + From<B8>, Challenger_: Challenger>(
+fn prove_bitand_reduction<F, Channel>(
 	witness: AndCheckWitness,
-	transcript: &mut ProverTranscript<Challenger_>,
-) -> Result<AndCheckOutput<F>, Error> {
+	channel: &mut Channel,
+) -> Result<AndCheckOutput<F>, Error>
+where
+	F: BinaryField + From<B8>,
+	Channel: binius_ip_prover::channel::IPProverChannel<F>,
+{
 	let prover_message_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1);
 	let AndCheckWitness {
 		mut a,
@@ -346,7 +376,7 @@ fn prove_bitand_reduction<F: BinaryField + From<B8>, Challenger_: Challenger>(
 	// constraints, you can zero-pad if necessary to reach this minimum
 	assert!(log_constraint_count >= checked_log_2(binius_core::consts::MIN_AND_CONSTRAINTS));
 
-	let big_field_zerocheck_challenges = transcript.sample_vec(log_constraint_count - 3);
+	let big_field_zerocheck_challenges = channel.sample_many(log_constraint_count - 3);
 
 	a.resize(1 << log_constraint_count, Word(0));
 	b.resize(1 << log_constraint_count, Word(0));
@@ -370,16 +400,21 @@ fn prove_bitand_reduction<F: BinaryField + From<B8>, Challenger_: Challenger>(
 		prover_message_domain.isomorphic(),
 	);
 
-	Ok(prover.prove_with_transcript(transcript)?)
+	Ok(prover.prove_with_channel(channel)?)
 }
 
-fn prove_intmul_reduction<F: BinaryField, P: PackedField<Scalar = F>, Challenger_: Challenger>(
+fn prove_intmul_reduction<F, P, Channel>(
 	witness: MulCheckWitness,
-	transcript: &mut ProverTranscript<Challenger_>,
-) -> Result<IntMulOutput<F>, Error> {
+	channel: &mut Channel,
+) -> Result<IntMulOutput<F>, Error>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	Channel: binius_ip_prover::channel::IPProverChannel<F>,
+{
 	let MulCheckWitness { a, b, lo, hi } = witness;
 
-	let mut mulcheck_prover = IntMulProver::new(0, transcript);
+	let mut mulcheck_prover = IntMulProver::new(0, channel);
 
 	// Words must be converted to u64 because
 	// `Bitwise` requires `From<u8>` and `Shr<usize>`

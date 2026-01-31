@@ -1,17 +1,19 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
-use binius_field::{AESTowerField8b as B8, BinaryField};
+use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField};
+use binius_iop::{
+	basefold_compiler::BaseFoldVerifierCompiler,
+	channel::{IOPVerifierChannel, OracleSpec},
+};
+use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
 	BinarySubspace,
 	inner_product::inner_product,
 	ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly},
 	univariate::lagrange_evals,
 };
-use binius_transcript::{
-	VerifierTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
+use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{
 	DeserializeBytes,
 	checked_arithmetics::{checked_log_2, log2_ceil_usize},
@@ -21,18 +23,19 @@ use itertools::{Itertools, chain};
 
 use super::error::Error;
 use crate::{
-	and_reduction::verifier::{AndCheckOutput, verify_with_transcript},
+	and_reduction::verifier::{AndCheckOutput, verify_with_channel},
 	config::{
-		B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
+		B1, B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
 	},
 	fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
 	hash::PseudoCompressionFunction,
 	merkle_tree::BinaryMerkleTreeScheme,
-	pcs,
+	pcs::VerificationError,
 	protocols::{
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
 		shift::{self, OperatorData},
 	},
+	ring_switch,
 };
 
 pub const SECURITY_BITS: usize = 96;
@@ -42,10 +45,14 @@ pub const SECURITY_BITS: usize = 96;
 /// The [`Self::setup`] constructor determines public parameters for proving instances of the given
 /// constraint system. Then [`Self::verify`] is called one or more times with individual instances.
 #[derive(Debug, Clone)]
-pub struct Verifier<MerkleHash, MerkleCompress> {
+pub struct Verifier<MerkleHash, MerkleCompress>
+where
+	MerkleHash: Digest + BlockSizeUser,
+	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
+{
 	constraint_system: ConstraintSystem,
-	fri_params: FRIParams<B128>,
-	merkle_scheme: BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>,
+	iop_compiler:
+		BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>,
 	log_public_words: usize,
 }
 
@@ -87,20 +94,25 @@ where
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
-		let fri_params = FRIParams::with_strategy(
+
+		// Create oracle spec for the single witness oracle (not ZK)
+		let oracle_specs = vec![OracleSpec {
+			log_msg_len: log_witness_elems,
+			is_zk: false,
+		}];
+
+		let iop_compiler = BaseFoldVerifierCompiler::new(
 			&ntt,
-			&merkle_scheme,
-			log_witness_elems,
-			None,
+			merkle_scheme,
+			oracle_specs,
 			log_inv_rate,
 			n_test_queries,
 			&ConstantArityStrategy::new(fri_arity),
-		)?;
+		);
 
 		Ok(Self {
 			constraint_system,
-			fri_params,
-			merkle_scheme,
+			iop_compiler,
 			log_public_words,
 		})
 	}
@@ -112,8 +124,9 @@ where
 
 	/// Returns log2 of the number of field elements in the packed trace.
 	pub fn log_witness_elems(&self) -> usize {
-		let rs_code = self.fri_params.rs_code();
-		rs_code.log_dim() + self.fri_params.log_batch_size()
+		let fri_params = self.fri_params();
+		let rs_code = fri_params.rs_code();
+		rs_code.log_dim() + fri_params.log_batch_size()
 	}
 
 	/// Returns the constraint system.
@@ -123,12 +136,13 @@ where
 
 	/// Returns the chosen FRI parameters.
 	pub fn fri_params(&self) -> &FRIParams<B128> {
-		&self.fri_params
+		// There is exactly one oracle spec (the witness)
+		&self.iop_compiler.fri_params()[0]
 	}
 
 	/// Returns the [`crate::merkle_tree::MerkleTreeScheme`] instance used.
 	pub fn merkle_scheme(&self) -> &BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress> {
-		&self.merkle_scheme
+		self.iop_compiler.merkle_scheme()
 	}
 
 	/// Returns log2 of the number of public constants and input/output words.
@@ -136,15 +150,19 @@ where
 		self.log_public_words
 	}
 
+	/// Returns the IOP compiler for creating verifier channels.
+	pub fn iop_compiler(
+		&self,
+	) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>
+	{
+		&self.iop_compiler
+	}
+
 	pub fn verify<Challenger_: Challenger>(
 		&self,
 		public: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		let _verify_guard =
-			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
-				.entered();
-
 		// Check that the public input length is correct
 		if public.len() != 1 << self.log_public_words() {
 			return Err(Error::IncorrectPublicInputLength {
@@ -156,12 +174,27 @@ where
 		// Verifier observes the public input (includes it in Fiat-Shamir).
 		transcript.observe().write_slice(public);
 
+		// Create channel and delegate to verify_iop
+		let channel = self.iop_compiler.create_channel(transcript);
+		self.verify_iop(public, channel)
+	}
+
+	fn verify_iop<Channel>(&self, public: &[Word], mut channel: Channel) -> Result<(), Error>
+	where
+		Channel: IOPVerifierChannel<B128>,
+	{
+		let _verify_guard =
+			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
+				.entered();
+
 		let subfield_subspace = BinarySubspace::<B8>::default().isomorphic();
 		let extended_subspace = subfield_subspace.reduce_dim(LOG_WORD_SIZE_BITS + 1);
 		let domain_subspace = extended_subspace.reduce_dim(LOG_WORD_SIZE_BITS);
 
-		// Receive the trace commitment.
-		let trace_commitment = transcript.message().read::<Output<MerkleHash>>()?;
+		// Receive the trace oracle commitment via channel.
+		let trace_oracle = channel
+			.recv_oracle()
+			.map_err(|_| VerificationError::EmptyProof)?;
 
 		// [phase] Verify IntMul Reduction - multiplication constraint verification
 		let intmul_guard = tracing::info_span!(
@@ -173,7 +206,7 @@ where
 		.entered();
 		let log_n_constraints = checked_log_2(self.constraint_system.n_mul_constraints());
 		let intmul_output =
-			verify_intmul_reduction(LOG_WORD_SIZE_BITS, log_n_constraints, transcript)?;
+			verify_intmul_reduction::<B128>(LOG_WORD_SIZE_BITS, log_n_constraints, &mut channel)?;
 		drop(intmul_guard);
 
 		// [phase] Verify BitAnd Reduction - AND constraint verification
@@ -193,7 +226,7 @@ where
 				z_challenge,
 				eval_point,
 			}: AndCheckOutput<B128> =
-				verify_bitand_reduction(log_n_constraints, &extended_subspace, transcript)?;
+				verify_bitand_reduction(log_n_constraints, &extended_subspace, &mut channel)?;
 			OperatorData::new(z_challenge, eval_point, [a_eval, b_eval, c_eval])
 		};
 		drop(bitand_guard);
@@ -237,7 +270,7 @@ where
 			public,
 			&bitand_claim,
 			&intmul_claim,
-			transcript,
+			&mut channel,
 		)?;
 		drop(constraint_guard);
 
@@ -257,7 +290,7 @@ where
 		)?;
 		drop(public_guard);
 
-		// [phase] Verify PCS Opening - polynomial commitment verification
+		// [phase] Ring-Switching + Verify PCS Opening
 		let pcs_guard = tracing::info_span!(
 			"[phase] Verify PCS Opening",
 			phase = "verify_pcs_opening",
@@ -265,15 +298,25 @@ where
 		)
 		.entered();
 
+		// Ring-switching verification
 		let eval_point = [shift_output.r_j(), shift_output.r_y()].concat();
-		pcs::verify(
-			transcript,
-			shift_output.witness_eval(),
-			&eval_point,
-			trace_commitment,
-			&self.fri_params,
-			&self.merkle_scheme,
-		)?;
+		let ring_switch::RingSwitchVerifyOutput {
+			eq_r_double_prime,
+			sumcheck_claim,
+		} = ring_switch::verify(shift_output.witness_eval(), &eval_point, &mut channel)?;
+
+		// Finish via channel (runs BaseFold internally)
+		let claims = channel.finish(&[(trace_oracle, sumcheck_claim)])?;
+
+		// Verify final ring-switching consistency
+		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
+		let (_, eval_point_high) = eval_point.split_at(log_packing);
+		let claim = &claims[0];
+		let rs_eq_at_challenges =
+			ring_switch::eval_rs_eq(eval_point_high, &claim.point, eq_r_double_prime.as_ref());
+		if claim.eval_numerator != claim.eval_denominator * rs_eq_at_challenges {
+			return Err(VerificationError::EvaluationInconsistency.into());
+		}
 
 		drop(pcs_guard);
 
@@ -281,16 +324,20 @@ where
 	}
 }
 
-fn verify_bitand_reduction<F: BinaryField + From<B8>, Challenger_: Challenger>(
+fn verify_bitand_reduction<F, Channel>(
 	log_constraint_count: usize,
 	eval_domain: &BinarySubspace<F>,
-	transcript: &mut VerifierTranscript<Challenger_>,
-) -> Result<AndCheckOutput<F>, Error> {
+	channel: &mut Channel,
+) -> Result<AndCheckOutput<F>, Error>
+where
+	F: BinaryField + From<B8>,
+	Channel: IPVerifierChannel<F>,
+{
 	// The structure of the AND reduction requires that it verifies at least 2^3 word-level
 	// constraints, you can zero-pad if necessary to reach this minimum
 	assert!(log_constraint_count >= checked_log_2(binius_core::consts::MIN_AND_CONSTRAINTS));
 
-	let big_field_zerocheck_challenges = transcript.sample_vec(log_constraint_count - 3);
+	let big_field_zerocheck_challenges = channel.sample_many(log_constraint_count - 3);
 
 	let small_field_zerocheck_challenges = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES
 		.into_iter()
@@ -300,5 +347,5 @@ fn verify_bitand_reduction<F: BinaryField + From<B8>, Challenger_: Challenger>(
 	let zerocheck_challenges =
 		chain!(small_field_zerocheck_challenges, big_field_zerocheck_challenges)
 			.collect::<Vec<_>>();
-	verify_with_transcript(&zerocheck_challenges, transcript, eval_domain)
+	verify_with_channel(&zerocheck_challenges, channel, eval_domain)
 }

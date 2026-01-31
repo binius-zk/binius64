@@ -1,10 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 use binius_field::{BinaryField, Field, PackedBinaryField128x1b, PackedExtension, PackedField};
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
 use binius_verifier::{
 	and_reduction::{
 		AndCheckOutput,
@@ -199,17 +196,17 @@ where
 		.expect("multilinears should have consistent dimensions")
 	}
 
-	/// Executes the complete AND reduction protocol with a Fiat-Shamir transcript.
+	/// Executes the complete AND reduction protocol with an IP prover channel.
 	///
 	/// This method orchestrates the entire AND reduction protocol:
-	/// 1. Sends the univariate polynomial evaluations to the transcript
+	/// 1. Sends the univariate polynomial evaluations to the channel
 	/// 2. Receives the univariate challenge via Fiat-Shamir
 	/// 3. Folds the oblong multilinears at the challenge point
 	/// 4. Runs the multilinear sumcheck protocol
 	///
 	/// # Arguments
 	///
-	/// * `transcript` - The prover's transcript for non-interactive proof generation
+	/// * `channel` - The prover's channel for non-interactive proof generation
 	///
 	/// # Returns
 	///
@@ -223,24 +220,19 @@ where
 	///
 	/// # Protocol Flow
 	///
-	/// 1. **Phase 1**: Write univariate polynomial evaluations to transcript
+	/// 1. **Phase 1**: Write univariate polynomial evaluations to channel
 	/// 2. **Challenge**: Sample univariate challenge z via Fiat-Shamir
 	/// 3. **Transition**: Fold oblong multilinears at Z = z
 	/// 4. **Phase 2**: Execute sumcheck protocol on folded multilinears
-	pub fn prove_with_transcript<TranscriptChallenger>(
+	pub fn prove_with_channel(
 		self,
-		transcript: &mut ProverTranscript<TranscriptChallenger>,
-	) -> Result<AndCheckOutput<FChallenge>, Error>
-	where
-		TranscriptChallenger: Challenger,
-	{
-		let univariate_message_coeffs = self.execute().iter();
+		channel: &mut impl IPProverChannel<FChallenge>,
+	) -> Result<AndCheckOutput<FChallenge>, Error> {
+		let univariate_message_coeffs = self.execute();
 
-		for coeff in univariate_message_coeffs {
-			transcript.message().write_scalar(*coeff);
-		}
+		channel.send_many(univariate_message_coeffs);
 
-		let univariate_sumcheck_challenge = transcript.sample();
+		let univariate_sumcheck_challenge = channel.sample();
 		let univariate_round_message_domain = self.univariate_round_message_domain.clone();
 		let sumcheck_prover = tracing::debug_span!("Fold univariate round").in_scope(|| {
 			self.fold_and_send_reduced_prover(
@@ -253,12 +245,12 @@ where
 			multilinear_evals: mle_claims,
 			challenges: mut eval_point,
 		} = tracing::debug_span!("MLE-check remaining rounds")
-			.in_scope(|| prove_single_mlecheck(sumcheck_prover, transcript))?;
+			.in_scope(|| prove_single_mlecheck(sumcheck_prover, channel))?;
 
 		eval_point.reverse();
 
 		assert_eq!(mle_claims.len(), 3);
-		transcript.message().write_slice(&mle_claims);
+		channel.send_many(&mle_claims);
 
 		Ok(AndCheckOutput {
 			a_eval: mle_claims[0],
@@ -281,7 +273,7 @@ mod test {
 	use binius_verifier::{
 		and_reduction::{
 			utils::constants::SKIPPED_VARS,
-			verifier::{AndCheckOutput, verify_with_transcript},
+			verifier::{AndCheckOutput, verify_with_channel},
 		},
 		config::{B128, StdChallenger},
 	};
@@ -340,9 +332,7 @@ mod test {
 			prover_message_domain.clone(),
 		);
 
-		let prove_output = prover
-			.prove_with_transcript(&mut prover_challenger)
-			.unwrap();
+		let prove_output = prover.prove_with_channel(&mut prover_challenger).unwrap();
 
 		// Verifier is instantiated
 		let mut verifier_challenger = prover_challenger.into_verifier();
@@ -360,7 +350,7 @@ mod test {
 			all_zerocheck_challenges.push(*big_field_challenge);
 		}
 
-		let verify_output = verify_with_transcript(
+		let verify_output = verify_with_channel(
 			&all_zerocheck_challenges,
 			&mut verifier_challenger,
 			&verifier_message_domain,

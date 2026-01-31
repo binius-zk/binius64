@@ -1,11 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::BinaryField;
+use binius_ip::channel::IPVerifierChannel;
 use binius_math::BinarySubspace;
-use binius_transcript::{
-	VerifierTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
 
 use crate::{
 	Error,
@@ -93,18 +90,13 @@ pub struct AndCheckOutput<F> {
 ///   oblong evaluation point
 /// - `a_eval`, `b_eval`, `c_eval`: The claimed evaluations of the A, B, and C at the oblong
 ///   evaluation point
-pub fn verify_with_transcript<F, TranscriptChallenger>(
+pub fn verify_with_channel<F: BinaryField>(
 	all_zerocheck_challenges: &[F],
-	transcript: &mut VerifierTranscript<TranscriptChallenger>,
+	channel: &mut impl IPVerifierChannel<F>,
 	round_message_univariate_domain: &BinarySubspace<F>,
-) -> Result<AndCheckOutput<F>, Error>
-where
-	F: BinaryField,
-	TranscriptChallenger: Challenger,
-{
-	let univariate_message_coeffs_ext_domain: Vec<F> = transcript
-		.message()
-		.read_scalar_slice(ROWS_PER_HYPERCUBE_VERTEX)?;
+) -> Result<AndCheckOutput<F>, Error> {
+	let univariate_message_coeffs_ext_domain: Vec<F> =
+		channel.recv_many(ROWS_PER_HYPERCUBE_VERTEX)?;
 
 	let mut univariate_message_coeffs = vec![F::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];
 
@@ -115,19 +107,16 @@ where
 		univariate_message_coeffs,
 		round_message_univariate_domain.clone(),
 	);
-	let univariate_sumcheck_challenge: F = transcript.sample();
+	let univariate_sumcheck_challenge: F = channel.sample();
 
 	let sumcheck_claim = univariate_message.evaluate_at_challenge(univariate_sumcheck_challenge);
 
 	let SumcheckOutput {
 		eval,
 		challenges: mut eval_point,
-	} = verify(all_zerocheck_challenges, 2, sumcheck_claim, transcript)?;
+	} = verify(all_zerocheck_challenges, 2, sumcheck_claim, channel)?;
 
-	let mut reader = transcript.message();
-	let a_eval = reader.read()?;
-	let b_eval = reader.read()?;
-	let c_eval = reader.read()?;
+	let [a_eval, b_eval, c_eval] = channel.recv_array()?;
 
 	if eval != a_eval * b_eval - c_eval {
 		return Err(VerificationError::AndReductionMLECheckFailed.into());

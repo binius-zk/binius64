@@ -9,8 +9,10 @@ use binius_field::{
 		LinearTransformationFactory, OutputWrappingTransformationFactory, Transformation,
 	},
 };
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	FieldBuffer, multilinear::eq::eq_ind_partial_eval, span::expand_subset_sums_array,
+	FieldBuffer, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
+	span::expand_subset_sums_array, tensor_algebra::TensorAlgebra,
 };
 use binius_utils::{
 	checked_arithmetics::{checked_int_div, checked_log_2},
@@ -302,6 +304,78 @@ fn square_transpose_const_size<P: PackedField, const LOG_N: usize, const S: usiz
 	}
 }
 
+/// Output of ring-switching prover.
+pub struct RingSwitchOutput<P: PackedField> {
+	/// The ring-switching equality indicator MLE (transparent poly for BaseFold).
+	pub rs_eq_ind: FieldBuffer<P>,
+	/// The sumcheck claim.
+	pub sumcheck_claim: P::Scalar,
+}
+
+/// Prove the ring-switching reduction.
+///
+/// Takes the packed witness and evaluation point from shift reduction, and:
+/// 1. Computes partial evaluations s_hat_v
+/// 2. Sends s_hat_v to verifier via channel
+/// 3. Samples row-batching challenges
+/// 4. Computes the ring-switching equality indicator and sumcheck claim
+///
+/// Returns the transparent polynomial and sumcheck claim for BaseFold.
+///
+/// ## Arguments
+///
+/// * `packed_witness` - the packed witness buffer (B1 polynomial packed into P elements)
+/// * `eval_point` - the evaluation point from shift reduction
+/// * `channel` - the prover channel for sending/sampling
+///
+/// ## Preconditions
+///
+/// * `packed_witness.log_len() + log_packing == eval_point.len()` where log_packing is the base-2
+///   log of the extension degree of B128 over B1 (= 7)
+pub fn prove<P, Channel>(
+	packed_witness: &FieldBuffer<P>,
+	eval_point: &[B128],
+	channel: &mut Channel,
+) -> RingSwitchOutput<P>
+where
+	P: PackedField<Scalar = B128>,
+	Channel: IPProverChannel<B128>,
+{
+	let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
+	assert_eq!(packed_witness.log_len() + log_packing, eval_point.len());
+
+	// Expand evaluation suffix with eq_ind
+	let eval_point_suffix = &eval_point[log_packing..];
+	let suffix_tensor = tracing::debug_span!("Expand evaluation suffix query")
+		.in_scope(|| eq_ind_partial_eval::<P>(eval_point_suffix));
+
+	// Ring-switching partial evaluations (Method of Four Russians)
+	let s_hat_v = tracing::debug_span!("Compute ring-switching partial evaluations")
+		.in_scope(|| fold_1b_rows_for_b128(packed_witness, &suffix_tensor));
+	channel.send_many(s_hat_v.as_ref());
+
+	// Basis transpose
+	let s_hat_u = TensorAlgebra::<B1, B128>::new(s_hat_v.as_ref().to_vec())
+		.transpose()
+		.elems;
+
+	// Sample row-batching challenges
+	let r_double_prime = channel.sample_many(log_packing);
+	let eq_r_double_prime = eq_ind_partial_eval::<B128>(&r_double_prime);
+
+	// Compute sumcheck claim
+	let sumcheck_claim = inner_product(s_hat_u, eq_r_double_prime.as_ref().iter().copied());
+
+	// Compute ring-switching equality indicator (transparent poly)
+	let rs_eq_ind = tracing::debug_span!("Compute ring-switching equality indicator")
+		.in_scope(|| fold_b128_elems_inplace(suffix_tensor, &eq_r_double_prime));
+
+	RingSwitchOutput {
+		rs_eq_ind,
+		sumcheck_claim,
+	}
+}
+
 #[cfg(test)]
 mod test {
 	use binius_field::{
@@ -314,7 +388,7 @@ mod test {
 		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate_inplace},
 		test_utils::{index_to_hypercube_point, random_field_buffer, random_scalars},
 	};
-	use binius_verifier::{config::B1, ring_switch::verifier::eval_rs_eq};
+	use binius_verifier::{config::B1, ring_switch::eval_rs_eq};
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;

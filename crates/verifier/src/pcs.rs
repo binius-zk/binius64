@@ -23,7 +23,7 @@ use binius_utils::DeserializeBytes;
 
 use crate::{
 	config::B1, fri::FRIParams, merkle_tree::MerkleTreeScheme, protocols::basefold,
-	ring_switch::verifier::eval_rs_eq,
+	ring_switch::eval_rs_eq,
 };
 
 /// Verifies a PCS opening of a committed polynomial at a given point.

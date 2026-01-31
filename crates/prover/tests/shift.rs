@@ -298,7 +298,7 @@ fn test_shift_prove_and_verify() {
 
 		let inout_n_vars = strict_log_2(cs.value_vec_layout.offset_witness).unwrap();
 
-		let prover_output = prove::<F, P, StdChallenger>(
+		let prover_output = prove::<F, P, _>(
 			inout_n_vars,
 			&key_collection,
 			value_vec.combined_witness(),
