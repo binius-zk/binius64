@@ -20,7 +20,6 @@ use crate::{
 		},
 	},
 	arithmetic_traits::{InvertOrZero, Square, impl_transformation_with_strategy},
-	packed::PackedField,
 };
 
 pub type PackedBinaryGhash1x128b = PackedPrimitiveType<M128, BinaryField128bGhash>;
@@ -80,7 +79,7 @@ impl InvertOrZero for PackedBinaryGhash1x128b {
 			u128::from(self.to_underlier()),
 		);
 
-		Self::from_underlier(PackedField::invert_or_zero(portable).to_underlier().into())
+		Self::from_underlier(InvertOrZero::invert_or_zero(portable).to_underlier().into())
 	}
 }
 

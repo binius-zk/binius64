@@ -524,6 +524,7 @@ mod tests {
 	use crate::{
 		PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
 		Random,
+		arithmetic_traits::{InvertOrZero, Square},
 		test_utils::check_transpose_all_heights,
 		underlier::{U2, U4},
 	};
@@ -659,9 +660,9 @@ mod tests {
 
 	define_multiply_tests!(Mul::mul, PackedField);
 
-	define_square_tests!(PackedField::square, PackedField);
+	define_square_tests!(Square::square, PackedField);
 
-	define_invert_tests!(PackedField::invert_or_zero, PackedField);
+	define_invert_tests!(InvertOrZero::invert_or_zero, PackedField);
 
 	proptest! {
 		#[test]

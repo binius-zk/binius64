@@ -117,6 +117,7 @@ mod tests {
 		arch::{
 			packed_ghash_256::PackedBinaryGhash2x128b, packed_ghash_512::PackedBinaryGhash4x128b,
 		},
+		arithmetic_traits::{InvertOrZero, Square},
 		underlier::WithUnderlier,
 	};
 
@@ -147,7 +148,7 @@ mod tests {
 
 	define_multiply_tests!(Mul::mul, PackedField);
 
-	define_square_tests!(PackedField::square, PackedField);
+	define_square_tests!(Square::square, PackedField);
 
-	define_invert_tests!(PackedField::invert_or_zero, PackedField);
+	define_invert_tests!(InvertOrZero::invert_or_zero, PackedField);
 }

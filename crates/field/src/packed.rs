@@ -6,8 +6,8 @@
 
 use std::{
 	fmt::Debug,
-	iter::{self, Product, Sum},
-	ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign},
+	iter,
+	ops::{Add, AddAssign, Sub, SubAssign},
 };
 
 use binius_utils::{
@@ -17,7 +17,7 @@ use binius_utils::{
 use bytemuck::Zeroable;
 
 use super::{PackedExtension, Random, arithmetic_traits::Square};
-use crate::{BinaryField, Field, arithmetic_traits::InvertOrZero};
+use crate::{BinaryField, Field, field::FieldOps};
 
 /// A packed field represents a vector of underlying field elements.
 ///
@@ -31,21 +31,11 @@ pub trait PackedField:
 	+ Copy
 	+ Eq
 	+ Sized
-	+ Add<Output = Self>
-	+ Sub<Output = Self>
-	+ Mul<Output = Self>
-	+ AddAssign
-	+ SubAssign
-	+ MulAssign
+	+ FieldOps<Self::Scalar>
 	+ Add<Self::Scalar, Output = Self>
 	+ Sub<Self::Scalar, Output = Self>
-	+ Mul<Self::Scalar, Output = Self>
 	+ AddAssign<Self::Scalar>
 	+ SubAssign<Self::Scalar>
-	+ MulAssign<Self::Scalar>
-	// TODO: Get rid of Sum and Product. It's confusing with nested impls of Packed.
-	+ Sum
-	+ Product
 	+ Send
 	+ Sync
 	+ Zeroable
@@ -97,32 +87,22 @@ pub trait PackedField:
 	}
 
 	#[inline]
-	fn into_iter(self) -> impl Iterator<Item=Self::Scalar> + Send + Clone {
+	fn into_iter(self) -> impl Iterator<Item = Self::Scalar> + Send + Clone {
 		(0..Self::WIDTH).map_skippable(move |i|
 			// Safety: `i` is always less than `WIDTH`
 			unsafe { self.get_unchecked(i) })
 	}
 
 	#[inline]
-	fn iter(&self) -> impl Iterator<Item=Self::Scalar> + Send + Clone + '_ {
+	fn iter(&self) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
 		(0..Self::WIDTH).map_skippable(move |i|
 			// Safety: `i` is always less than `WIDTH`
 			unsafe { self.get_unchecked(i) })
 	}
 
 	#[inline]
-	fn iter_slice(slice: &[Self]) -> impl Iterator<Item=Self::Scalar> + Send + Clone + '_ {
+	fn iter_slice(slice: &[Self]) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
 		slice.iter().flat_map(Self::iter)
-	}
-
-	#[inline]
-	fn zero() -> Self {
-		Self::broadcast(Self::Scalar::ZERO)
-	}
-
-	#[inline]
-	fn one() -> Self {
-		Self::broadcast(Self::Scalar::ONE)
 	}
 
 	/// Initialize zero position with `scalar`, set other elements to zero.
@@ -140,18 +120,16 @@ pub trait PackedField:
 	fn from_fn(f: impl FnMut(usize) -> Self::Scalar) -> Self;
 
 	/// Creates a packed field from a fallible function applied to each index.
-	fn try_from_fn<E>(
-            mut f: impl FnMut(usize) -> Result<Self::Scalar, E>,
-        ) -> Result<Self, E> {
-            let mut result = Self::default();
-            for i in 0..Self::WIDTH {
-                let scalar = f(i)?;
-                unsafe {
-                    result.set_unchecked(i, scalar);
-                };
-            }
-            Ok(result)
-        }
+	fn try_from_fn<E>(mut f: impl FnMut(usize) -> Result<Self::Scalar, E>) -> Result<Self, E> {
+		let mut result = Self::default();
+		for i in 0..Self::WIDTH {
+			let scalar = f(i)?;
+			unsafe {
+				result.set_unchecked(i, scalar);
+			};
+		}
+		Ok(result)
+	}
 
 	/// Construct a packed field element from a sequence of scalars.
 	///
@@ -159,7 +137,7 @@ pub trait PackedField:
 	/// elements are set to zero. If greater than the packing width, the excess elements are
 	/// ignored.
 	#[inline]
-	fn from_scalars(values: impl IntoIterator<Item=Self::Scalar>) -> Self {
+	fn from_scalars(values: impl IntoIterator<Item = Self::Scalar>) -> Self {
 		let mut result = Self::default();
 		for (i, val) in values.into_iter().take(Self::WIDTH).enumerate() {
 			result.set(i, val);
@@ -167,23 +145,17 @@ pub trait PackedField:
 		result
 	}
 
-	/// Returns the value multiplied by itself
-	fn square(self) -> Self;
-
 	/// Returns the value to the power `exp`.
 	fn pow(self, exp: u64) -> Self {
 		let mut res = Self::one();
 		for i in (0..64).rev() {
-			res = res.square();
+			res = Square::square(res);
 			if ((exp >> i) & 1) == 1 {
 				res.mul_assign(self)
 			}
 		}
 		res
 	}
-
-	/// Returns the packed inverse values or zeroes at indices where `self` is zero.
-	fn invert_or_zero(self) -> Self;
 
 	/// Interleaves blocks of this packed vector with another packed vector.
 	///
@@ -253,22 +225,24 @@ pub trait PackedField:
 		assert!(block_idx < 1 << (Self::LOG_WIDTH - log_block_len));
 
 		// Safety: is guaranteed by the preconditions.
-		unsafe {
-			self.spread_unchecked(log_block_len, block_idx)
-		}
+		unsafe { self.spread_unchecked(log_block_len, block_idx) }
 	}
 
 	/// Unsafe version of [`Self::spread`].
 	///
 	/// # Safety
-	/// The caller must ensure that `log_block_len` is less than or equal to `LOG_WIDTH` and `block_idx` is less than `2^(Self::LOG_WIDTH - log_block_len)`.
+	/// The caller must ensure that `log_block_len` is less than or equal to `LOG_WIDTH` and
+	/// `block_idx` is less than `2^(Self::LOG_WIDTH - log_block_len)`.
 	#[inline]
 	unsafe fn spread_unchecked(self, log_block_len: usize, block_idx: usize) -> Self {
 		let block_len = 1 << log_block_len;
 		let repeat = 1 << (Self::LOG_WIDTH - log_block_len);
 
 		Self::from_scalars(
-			self.iter().skip(block_idx * block_len).take(block_len).flat_map(|elem| iter::repeat_n(elem, repeat))
+			self.iter()
+				.skip(block_idx * block_len)
+				.take(block_len)
+				.flat_map(|elem| iter::repeat_n(elem, repeat)),
 		)
 	}
 }
@@ -489,26 +463,6 @@ impl<F: Field> PackedField for F {
 	#[inline]
 	fn broadcast(scalar: Self::Scalar) -> Self {
 		scalar
-	}
-
-	#[inline]
-	fn zero() -> Self {
-		Self::ZERO
-	}
-
-	#[inline]
-	fn one() -> Self {
-		Self::ONE
-	}
-
-	#[inline]
-	fn square(self) -> Self {
-		<Self as Square>::square(self)
-	}
-
-	#[inline]
-	fn invert_or_zero(self) -> Self {
-		<Self as InvertOrZero>::invert_or_zero(self)
 	}
 
 	#[inline]

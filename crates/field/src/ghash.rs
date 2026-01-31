@@ -34,6 +34,7 @@ use crate::{
 	binary_field_arithmetic::{
 		invert_or_zero_using_packed, multiple_using_packed, square_using_packed,
 	},
+	field::FieldOps,
 	transpose::square_transforms_extension_field,
 	underlier::{Divisible, NumCast, U1, UnderlierWithBitOps},
 };
@@ -239,6 +240,18 @@ impl Square for BinaryField128bGhash {
 	}
 }
 
+impl FieldOps<BinaryField128bGhash> for BinaryField128bGhash {
+	#[inline]
+	fn zero() -> Self {
+		Self::ZERO
+	}
+
+	#[inline]
+	fn one() -> Self {
+		Self::ONE
+	}
+}
+
 impl Field for BinaryField128bGhash {
 	const ZERO: Self = Self(0);
 	const ONE: Self = Self(1);
@@ -246,7 +259,7 @@ impl Field for BinaryField128bGhash {
 	const MULTIPLICATIVE_GENERATOR: Self = Self(0x494ef99794d5244f9152df59d87a9186);
 
 	fn double(&self) -> Self {
-		Self(0)
+		Self::ZERO
 	}
 }
 
