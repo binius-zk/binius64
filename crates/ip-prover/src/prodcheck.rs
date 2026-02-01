@@ -20,6 +20,39 @@ pub enum Error {
 }
 
 /// Prover for the product check protocol.
+
+/// Runs the batched product check protocol for multiple independent prodcheck provers.
+///
+/// This combines n provers using multilinear interpolation over `ceil(log2(n))` selector
+/// variables. The combined claim is the multilinear extrapolation of the individual
+/// claimed products (padded with zeros to the next power of 2) evaluated at the
+/// challenge point.
+///
+/// # Arguments
+/// * `provers` - Vec of n prodcheck provers. All must have the same `n_layers()`.
+/// * `claimed_products` - Vec of n claimed product values, one per prover.
+/// * `challenge` - Evaluation point for selector variables. Length must equal
+///   `ceil(log2(n))`.
+/// * `channel` - The channel for sending prover messages and sampling challenges.
+///
+/// # Preconditions
+/// * `provers` must be non-empty.
+/// * All provers must have the same `n_layers()` value (call it m).
+/// * `challenge.len() == ceil(log2(provers.len()))`.
+/// * `claimed_products.len() == provers.len()`.
+///
+/// # Returns
+/// The final multilinear evaluation claim after m prodcheck layers.
+pub fn batch_prove<F: Field, P: PackedField<Scalar = F>>(
+	_provers: Vec<ProdcheckProver<P>>,
+	_claimed_products: Vec<F>,
+	_challenge: Vec<F>,
+	_channel: &mut impl IPProverChannel<F>,
+) -> Result<MultilinearEvalClaim<F>, Error> {
+	todo!()
+}
+
+/// Witness-based prover for the product check protocol.
 ///
 /// This prover reduces the claim that a multilinear polynomial evaluates to a product over a
 /// Boolean hypercube to a single multilinear evaluation claim.
@@ -155,10 +188,12 @@ mod tests {
 	use binius_field::PackedField;
 	use binius_ip::prodcheck;
 	use binius_math::{
-		multilinear::evaluate::evaluate,
+		inner_product::inner_product,
+		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
 		test_utils::{Packed128b, random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+	use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
 	use rand::{SeedableRng, rngs::StdRng};
@@ -236,5 +271,129 @@ mod tests {
 	#[test]
 	fn test_prodcheck_layer_computation() {
 		test_prodcheck_layer_computation_helper::<Packed128b>(4, 3);
+	}
+
+	// ==================== batch_prove tests ====================
+
+	/// Helper function for testing batch_prove with ProdcheckProvers.
+	///
+	/// Uses k=0 product variables, so each witness has exactly m variables and the
+	/// "products" are just the witnesses themselves evaluated at the content point.
+	///
+	/// # Arguments
+	/// * `m` - Number of variables in each witness
+	/// * `n_provers` - Number of provers to batch
+	fn test_batch_prove_verify_helper<P: PackedField>(m: usize, n_provers: usize) {
+		let mut rng = StdRng::seed_from_u64(42);
+
+		// k = 0 product variables
+		let k = 0;
+
+		// Compute log_n_provers = ceil(log2(n_provers))
+		let log_n_provers = log2_ceil_usize(n_provers);
+
+		// Create random witnesses, each with log_len = m (since k=0)
+		let witnesses: Vec<FieldBuffer<P>> = (0..n_provers)
+			.map(|_| random_field_buffer::<P>(&mut rng, m))
+			.collect();
+
+		// Create ProdcheckProver for each, collecting products
+		// With k=0, products == witness evaluated at the empty point, which is just the sum
+		let provers_and_products: Vec<(ProdcheckProver<P>, FieldBuffer<P>)> = witnesses
+			.iter()
+			.map(|witness| ProdcheckProver::new(k, witness.clone()))
+			.collect();
+
+		let (provers, individual_products): (Vec<_>, Vec<_>) =
+			provers_and_products.into_iter().unzip();
+
+		// Generate random challenge point (length = log_n_provers)
+		let challenge = random_scalars::<P::Scalar>(&mut rng, log_n_provers);
+
+		// Generate random content point (length = m)
+		let content_point = random_scalars::<P::Scalar>(&mut rng, m);
+
+		// Compute claimed products by evaluating each prover's products at content_point
+		let claimed_products: Vec<P::Scalar> = individual_products
+			.iter()
+			.map(|products| evaluate(products, &content_point))
+			.collect();
+
+		// Compute combined claim using eq_ind_partial_eval and inner_product (no padding/resize):
+		// claim.eval = sum_i eq(i, challenge) * claimed_products[i]
+		// (This is equivalent to evaluating the padded MLE, since padding is with 0s)
+		let eq_weights = eq_ind_partial_eval::<P>(&challenge);
+		let combined_eval = inner_product(
+			claimed_products.iter().copied(),
+			(0..n_provers).map(|i| eq_weights.get(i)),
+		);
+
+		// The claim point is [challenge..., content_point...]
+		let mut claim_point = challenge.clone();
+		claim_point.extend(content_point.iter().cloned());
+
+		let claim = MultilinearEvalClaim {
+			eval: combined_eval,
+			point: claim_point,
+		};
+
+		// Run batch_prove
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let prover_output = batch_prove(
+			provers,
+			claimed_products,
+			challenge.clone(),
+			&mut prover_transcript,
+		)
+		.unwrap();
+
+		// Run verifier with k=0 layers
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let verifier_output = prodcheck::verify(k, claim, &mut verifier_transcript).unwrap();
+
+		// Check prover and verifier outputs match
+		assert_eq!(prover_output, verifier_output);
+
+		// Verify final evaluation against multilinear extrapolation of input witnesses
+		// The verifier output point has (log_n_provers + m) coordinates (since k=0)
+		let final_point = &verifier_output.point;
+		assert_eq!(final_point.len(), log_n_provers + m);
+
+		// Extract selector and content challenges from final point
+		let selector_challenges = &final_point[..log_n_provers];
+		let content_challenges = &final_point[log_n_provers..];
+
+		// Compute expected eval as multilinear extrapolation of input witnesses:
+		// batch_witness(s, x) = sum_i eq(i, s) * witness_i(x) for i < n_provers
+		//                     + 0 for i >= n_provers (padding with 0s)
+		let selector_weights = eq_ind_partial_eval::<P>(selector_challenges);
+
+		let expected_eval: P::Scalar = inner_product(
+			(0..n_provers).map(|i| evaluate(&witnesses[i], content_challenges)),
+			(0..n_provers).map(|i| selector_weights.get(i)),
+		);
+
+		assert_eq!(
+			verifier_output.eval, expected_eval,
+			"Final evaluation should match batch witness interpolation"
+		);
+	}
+
+	#[test]
+	fn test_batch_prove_power_of_two_provers() {
+		// 4 provers (power of 2), m=5 variables
+		test_batch_prove_verify_helper::<Packed128b>(5, 4);
+	}
+
+	#[test]
+	fn test_batch_prove_non_power_of_two_provers() {
+		// 3 provers (non-power of 2, requires padding), m=5 variables
+		test_batch_prove_verify_helper::<Packed128b>(5, 3);
+	}
+
+	#[test]
+	fn test_batch_prove_single_prover() {
+		// 1 prover (edge case), m=7 variables
+		test_batch_prove_verify_helper::<Packed128b>(7, 1);
 	}
 }
