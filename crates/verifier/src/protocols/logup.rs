@@ -6,7 +6,13 @@ use std::iter::zip;
 
 use binius_field::Field;
 use binius_ip::channel::{self, IPVerifierChannel};
-use binius_math::{multilinear::eq::eq_ind, univariate::evaluate_univariate};
+use binius_math::{
+	inner_product::inner_product,
+	multilinear::eq::{eq_ind, eq_ind_partial_eval},
+	univariate::evaluate_univariate,
+};
+use binius_utils::checked_arithmetics::log2_ceil_usize;
+use itertools::Itertools;
 
 use crate::protocols::{
 	fracaddcheck::{self, FracAddEvalClaim},
@@ -59,7 +65,7 @@ struct PushforwardVerificationOutput<F: Field> {
 /// is the log-length of the tables/pushforwards. `eval_point` is the point used to
 /// instantiate the eq-kernel. `lookup_evals` must be aligned with the lookup ordering
 /// encoded in the transcript.
-pub fn verify_lookup<F: Field>(
+pub fn verify_lookup<F: Field, const N_TABLES: usize>(
 	eq_log_len: usize,
 	table_log_len: usize,
 	eval_point: &[F],
@@ -70,6 +76,9 @@ pub fn verify_lookup<F: Field>(
 	assert_eq!(eval_point.len(), eq_log_len, "eval_point length must match eq_log_len");
 	// Match the prover's Fiat-Shamir sampling performed during `LogUp::new`.
 	let [fingerprint_scalar, shift_scalar]: [F; 2] = channel.sample_array();
+
+	let (batched_evals, extended_eval_point): ([F; N_TABLES], Vec<F>) =
+		batch_lookup_evals(&lookup_evals, eval_point, &table_ids, channel);
 
 	assert!(table_ids.len() == lookup_evals.len());
 
@@ -85,13 +94,12 @@ pub fn verify_lookup<F: Field>(
 		sumcheck_point,
 		pushforward_evals,
 		table_evals,
-	} = verify_pushforward(table_log_len, lookup_evals, table_ids, channel)?;
-	let (eq_claims, push_claims) = verify_log_sum(
+	} = verify_pushforward::<_, N_TABLES>(table_log_len, &batched_evals, channel)?;
+	let (eq_claims, push_claims) = verify_log_sum::<_, N_TABLES>(
 		eq_log_len,
-		eval_point,
+		&extended_eval_point,
 		fingerprint_scalar,
 		shift_scalar,
-		lookup_evals.len(),
 		channel,
 	)?;
 
@@ -165,21 +173,11 @@ fn read_scalar_slice<F: Field>(
 ///    openings.
 ///
 /// [Lev25]: <https://eprint.iacr.org/2025/946>
-fn verify_pushforward<F: Field>(
+fn verify_pushforward<F: Field, const N_TABLES: usize>(
 	table_log_len: usize,
 	lookup_evals: &[F],
-	table_ids: &[usize],
 	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<PushforwardVerificationOutput<F>, Error> {
-	let n_lookups = lookup_evals.len();
-
-	let max_table_id = table_ids.iter().copied().max().unwrap_or(0);
-	let n_tables = max_table_id
-		.checked_add(1)
-		.ok_or(PushforwardError::TableIdOutOfRange {
-			table_id: max_table_id,
-		})?;
-
 	let BatchSumcheckOutput {
 		batch_coeff,
 		eval,
@@ -190,15 +188,13 @@ fn verify_pushforward<F: Field>(
 
 	// The first n_lookups many final multilinear evals corresponds to the pushforwards, and the
 	// next n_tables many correspond to the tables.
-	let pushforward_evals = read_scalar_slice(channel, n_lookups)?;
-	let table_evals = read_scalar_slice(channel, n_tables)?;
+	let pushforward_evals = read_scalar_slice(channel, N_TABLES)?;
+	let table_evals = read_scalar_slice(channel, N_TABLES)?;
 
 	// Recompute the batched quadratic composition at the verifier's point by multiplying the
 	// pushforward eval with the table eval of the table it looked up into.
-	let expected_terms = table_ids
-		.iter()
-		.zip(pushforward_evals.iter())
-		.map(|(&table_id, &push_eval)| push_eval * table_evals[table_id])
+	let expected_terms = zip(pushforward_evals.iter(), table_evals.iter())
+		.map(|(&push_eval, &table_eval)| push_eval * table_eval)
 		.collect::<Vec<_>>();
 	let expected_eval = evaluate_univariate(&expected_terms, batch_coeff);
 	if expected_eval != eval {
@@ -215,16 +211,15 @@ fn verify_pushforward<F: Field>(
 /// Verifies the logarithmic sum claims as part of Logup*. Assumes lookups are of the same length
 /// and tables are of the same length and returns the
 type LogSumOutput<F> = Vec<FracAddEvalClaim<F>>;
-fn verify_log_sum<F: Field>(
+fn verify_log_sum<F: Field, const N_TABLES: usize>(
 	eq_log_len: usize,
 	eval_point: &[F],
 	fingerprint_scalar: F,
 	shift_scalar: F,
-	n_lookups: usize,
 	transcript: &mut impl IPVerifierChannel<F>,
 ) -> Result<(LogSumOutput<F>, LogSumOutput<F>), Error> {
 	// Read combined log-sum claims from the transcript and convert to frac-add claims.
-	let (eq_claims, push_claims): (Vec<_>, Vec<_>) = (0..n_lookups)
+	let (eq_claims, push_claims): (Vec<_>, Vec<_>) = (0..N_TABLES)
 		.map(|_| match transcript.recv_array() {
 			Ok([eq_num_eval, eq_den_eval, push_num_eval, push_den_eval]) => Ok((
 				FracAddEvalClaim {
@@ -295,6 +290,42 @@ fn verify_log_sum<F: Field>(
 fn common_denominator_eval<F: Field>(point: &[F], fingerprint_scalar: F, shift_scalar: F) -> F {
 	let enum_eval = evaluate_univariate(point, fingerprint_scalar);
 	shift_scalar + enum_eval
+}
+
+pub fn batch_lookup_evals<F: Field, const N_TABLES: usize>(
+	lookup_evals: &[F],
+	eval_point: &[F],
+	table_ids: &[usize],
+	channel: &mut impl IPVerifierChannel<F>,
+) -> ([F; N_TABLES], Vec<F>) {
+	let grouped_evals = zip(lookup_evals.into_iter().copied(), table_ids.into_iter().copied())
+		.into_group_map_by(|&(_, id)| id);
+
+	// We assume each table has an equal number of lookups. This mainly serves to simplify the structure of the various sumchecks in the protocol. A possible future todo would be to remove this assumption.
+	assert!(
+		grouped_evals.iter().map(|(_, vals)| vals.len()).all_equal(),
+		"There must be an equal number of lookups into each table"
+	);
+
+	let batch_log_len = log2_ceil_usize(grouped_evals[&0].len().next_power_of_two());
+
+	let batching_prefix = channel.sample_many(batch_log_len);
+
+	let batch_weights = eq_ind_partial_eval::<F>(&batching_prefix);
+
+	let mut batched_evals = [F::ZERO; N_TABLES];
+
+	// Iterate over the lookup evals per table and batch them using the batch_weights,
+	for (table_id, vals) in grouped_evals {
+		let (evals, _): (Vec<_>, Vec<_>) = vals.into_iter().unzip();
+		batched_evals[table_id] = zip(evals, batch_weights.iter_scalars())
+			.map(|(eval, weight)| eval * weight)
+			.sum();
+	}
+
+	let extended_eval_point = [batching_prefix, eval_point.to_vec()].concat();
+
+	(batched_evals, extended_eval_point)
 }
 
 /// Errors returned by the LogUp verifier.

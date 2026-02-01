@@ -10,6 +10,7 @@ use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	FieldBuffer, FieldSlice, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
 };
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 use itertools::{Itertools, concat};
 
 /// Builds a pushforward table by accumulating `eq_kernel` values at lookup indices.
@@ -25,7 +26,7 @@ where
 	P: PackedField<Scalar = F>,
 	F: Field,
 {
-	assert_eq!(indices.len(), eq_kernel.len());
+	assert_eq!(indices.len().next_power_of_two(), eq_kernel.len());
 	let mut pushforward = vec![F::ZERO; table_len];
 	for (&idx, eq_i) in zip(indices.iter(), eq_kernel.iter_scalars()) {
 		assert!(idx < table_len);
@@ -158,8 +159,9 @@ pub fn batch_lookup_evals<F: Field, const N_TABLES: usize>(
 		"There must be an equal number of lookups into each table"
 	);
 
-	let batch_log_len = grouped_evals[&0].len().next_power_of_two();
+	let batch_log_len = log2_ceil_usize(grouped_evals[&0].len().next_power_of_two());
 
+	println!("{batch_log_len}");
 	let batching_prefix = channel.sample_many(batch_log_len);
 
 	let batch_weights = eq_ind_partial_eval::<F>(&batching_prefix);
@@ -169,7 +171,9 @@ pub fn batch_lookup_evals<F: Field, const N_TABLES: usize>(
 	// Iterate over the lookup evals per table and batch them using the batch_weights,
 	for (table_id, vals) in grouped_evals {
 		let (evals, _): (Vec<_>, Vec<_>) = vals.into_iter().unzip();
-		batched_evals[table_id] = inner_product(evals, batch_weights.iter_scalars());
+		batched_evals[table_id] = zip(evals, batch_weights.iter_scalars())
+			.map(|(eval, weight)| eval * weight)
+			.sum();
 	}
 
 	let extended_eval_point = [batching_prefix, eval_point.to_vec()].concat();

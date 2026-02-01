@@ -239,7 +239,7 @@ fn bench_logup_verify(c: &mut Criterion) {
 
 			b.iter(|| {
 				let mut transcript = verifier_transcript.clone();
-				logup_verifier::verify_lookup(
+				logup_verifier::verify_lookup::<_, N_TABLES>(
 					eq_log_len,
 					table_log_len,
 					&case.eval_point,

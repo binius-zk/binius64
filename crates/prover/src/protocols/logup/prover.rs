@@ -34,17 +34,17 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		&self,
 		channel: &mut impl IPProverChannel<F>,
 	) -> Result<Vec<LogUpLookupClaims<F>>, Error> {
-		assert!(N_MLES == N_TABLES + N_LOOKUPS);
+		assert!(N_MLES == 2 * N_TABLES);
 		// Reduce lookup evaluations to pushforward/table evaluations.
 		let pushforward_claims = self.prove_pushforward::<N_MLES>(channel)?;
 		// Prove log-sum consistency for eq-kernel and pushforward trees.
 		let (eq_claims, push_claims) = self.prove_log_sum(channel)?;
 
-		assert_eq!(pushforward_claims.pushforward_evals.len(), N_LOOKUPS);
-		assert_eq!(eq_claims.len(), N_LOOKUPS);
-		assert_eq!(push_claims.len(), N_LOOKUPS);
+		assert_eq!(pushforward_claims.pushforward_evals.len(), N_TABLES);
+		assert_eq!(eq_claims.len(), N_TABLES);
+		assert_eq!(push_claims.len(), N_TABLES);
 
-		let mut claims = Vec::with_capacity(N_LOOKUPS);
+		let mut claims = Vec::with_capacity(N_TABLES);
 		// Pair each lookup batch with its table id and fractional claims.
 		for (lookup_idx, (eq_frac_claim, push_frac_claim)) in
 			eq_claims.into_iter().zip(push_claims).enumerate()

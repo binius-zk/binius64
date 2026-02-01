@@ -69,7 +69,7 @@ fn test_logup_prove_verify() {
 		.unwrap();
 
 	let mut verifier_transcript = prover_transcript.into_verifier();
-	let eval_claims = logup_verifier::verify_lookup(
+	let eval_claims = logup_verifier::verify_lookup::<_, N_TABLES>(
 		eq_log_len,
 		table_log_len,
 		&eval_point,
