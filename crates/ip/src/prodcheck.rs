@@ -17,7 +17,7 @@
 //! ; X) \text{eq}(z ; Z) p_{i+1}(z, 0, x) p_{i+1}(z, 1, x) $$
 
 use binius_field::Field;
-use binius_math::line::extrapolate_line_packed;
+use binius_math::line::extrapolate_line;
 use binius_transcript::Error as TranscriptError;
 
 // Re-export MultilinearEvalClaim from crate root for backward compatibility
@@ -28,11 +28,15 @@ use crate::{
 	sumcheck::{self, SumcheckOutput},
 };
 
-pub fn verify<F: Field>(
+pub fn verify<F, C>(
 	k: usize,
-	claim: MultilinearEvalClaim<F>,
-	channel: &mut impl IPVerifierChannel<F, Elem = F>,
-) -> Result<MultilinearEvalClaim<F>, Error> {
+	claim: MultilinearEvalClaim<C::Elem>,
+	channel: &mut C,
+) -> Result<MultilinearEvalClaim<C::Elem>, Error>
+where
+	F: Field,
+	C: IPVerifierChannel<F>,
+{
 	if k == 0 {
 		return Ok(claim);
 	}
@@ -45,15 +49,13 @@ pub fn verify<F: Field>(
 	// Read evaluations of p_{i+1)(0, \ldots) and p_{i+1}(1, \ldots).
 	let [eval_0, eval_1] = channel.recv_array()?;
 
-	if eval_0 * eval_1 != eval {
-		return Err(VerificationError::IncorrectRoundEvaluation { round: k }.into());
-	}
+	channel.assert_zero(eval_0.clone() * eval_1.clone() - eval)?;
 
 	// Reduce evaluations of p_{i+1}(0, \ldots) and p_{i+1}(1, \ldots) to single eval at
 	// p_{i+1}(r, \ldots).
 	let r = channel.sample();
 
-	let next_eval = extrapolate_line_packed(eval_0, eval_1, r);
+	let next_eval = extrapolate_line(eval_0, eval_1, r.clone());
 
 	let mut next_point = challenges;
 	next_point.reverse();

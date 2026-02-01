@@ -27,8 +27,6 @@
 
 #![warn(rustdoc::missing_crate_level_docs)]
 
-use binius_field::Field;
-
 pub mod channel;
 pub mod fracaddcheck;
 pub mod mlecheck;
@@ -37,7 +35,7 @@ pub mod sumcheck;
 
 /// A claim that a multilinear polynomial evaluates to a specific value at a point.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MultilinearEvalClaim<F: Field> {
+pub struct MultilinearEvalClaim<F> {
 	/// The evaluation of the multilinear.
 	pub eval: F,
 	/// The evaluation point.
@@ -54,7 +52,7 @@ pub struct MultilinearEvalClaim<F: Field> {
 /// The caller must compute `transparent_poly_eval(point)` based on the protocol context
 /// and verify the equation holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MultilinearRationalEvalClaim<F: Field> {
+pub struct MultilinearRationalEvalClaim<F> {
 	/// The numerator of the rational claim.
 	pub eval_numerator: F,
 	/// The denominator: evaluation of the committed polynomial at `point`.

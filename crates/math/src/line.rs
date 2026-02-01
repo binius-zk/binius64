@@ -1,6 +1,20 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use binius_field::PackedField;
+use binius_field::{PackedField, field::FieldOps};
+
+/// Extrapolates a line through two points.
+///
+/// Given two points (0, x0) and (1, x1), this function evaluates the line through these
+/// points at parameter z using the formula: x0 + (x1 - x0) * z
+///
+/// # Properties
+/// - When z = 0, returns x0
+/// - When z = 1, returns x1
+/// - The function is linear in z
+#[inline]
+pub fn extrapolate_line<F: FieldOps>(x0: F, x1: F, z: F) -> F {
+	x0.clone() + (x1 - x0) * z
+}
 
 /// Extrapolates lines through a pair of packed fields at a packed vector of points.
 ///

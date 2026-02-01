@@ -6,7 +6,7 @@
 //! (a0 / b0) + (a1 / b1) = (a0 * b1 + a1 * b0) / (b0 * b1).
 
 use binius_field::Field;
-use binius_math::line::extrapolate_line_packed;
+use binius_math::line::extrapolate_line;
 use binius_transcript::Error as TranscriptError;
 
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FracAddEvalClaim<F: Field> {
+pub struct FracAddEvalClaim<F> {
 	/// The evaluation of the numerator and denominator multilinears.
 	pub num_eval: F,
 	pub den_eval: F,
@@ -23,11 +23,15 @@ pub struct FracAddEvalClaim<F: Field> {
 	pub point: Vec<F>,
 }
 
-pub fn verify<F: Field>(
+pub fn verify<F, C>(
 	k: usize,
-	claim: FracAddEvalClaim<F>,
-	channel: &mut impl IPVerifierChannel<F, Elem = F>,
-) -> Result<FracAddEvalClaim<F>, Error> {
+	claim: FracAddEvalClaim<C::Elem>,
+	channel: &mut C,
+) -> Result<FracAddEvalClaim<C::Elem>, Error>
+where
+	F: Field,
+	C: IPVerifierChannel<F>,
+{
 	if k == 0 {
 		return Ok(claim);
 	}
@@ -54,18 +58,16 @@ pub fn verify<F: Field>(
 	challenges.reverse();
 	let reduced_eval_point = challenges;
 
-	let numerator_eval = num_0 * den_1 + num_1 * den_0;
-	let denominator_eval = den_0 * den_1;
+	let numerator_eval = num_0.clone() * den_1.clone() + num_1.clone() * den_0.clone();
+	let denominator_eval = den_0.clone() * den_1.clone();
 	let batched_eval = numerator_eval + denominator_eval * batch_coeff;
 
-	if batched_eval != eval {
-		return Err(VerificationError::IncorrectLayerFractionSumEvaluation { round: k }.into());
-	}
+	channel.assert_zero(batched_eval - eval)?;
 
 	// Reduce evaluations of the two halves to a single evaluation at the next point.
 	let r = channel.sample();
-	let next_num = extrapolate_line_packed(num_0, num_1, r);
-	let next_den = extrapolate_line_packed(den_0, den_1, r);
+	let next_num = extrapolate_line(num_0, num_1, r.clone());
+	let next_den = extrapolate_line(den_0, den_1, r.clone());
 
 	let mut next_point = reduced_eval_point;
 	next_point.push(r);
