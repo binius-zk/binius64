@@ -20,7 +20,13 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 
-use crate::protocols::logup::{helper::generate_index_fingerprints, prover::build_pushforwards};
+use crate::protocols::logup::{
+	helper::{
+		batch_lookup_evals, concatenate_indices, generate_index_fingerprints,
+		generate_index_fingerprints_new,
+	},
+	prover::{build_pushforwards, build_pushforwards_from_concat_indexes},
+};
 /// Prover state for the LogUp indexed lookup argument.
 ///
 /// The instance aggregates multiple lookup batches that may target different
@@ -28,19 +34,20 @@ use crate::protocols::logup::{helper::generate_index_fingerprints, prover::build
 /// pushforward, and claimed lookup evaluation.
 pub struct LogUp<P: PackedField, const N_TABLES: usize, const N_LOOKUPS: usize> {
 	/// Fingerprinted indices for each lookup batch.
-	fingerprinted_indexes: [FieldBuffer<P>; N_LOOKUPS],
+	fingerprinted_indexes: [FieldBuffer<P>; N_TABLES],
 	/// Table selector for each lookup batch.
 	table_ids: [usize; N_LOOKUPS],
 	/// Pushforward tables built from the fingerprinted indices.
-	push_forwards: [FieldBuffer<P>; N_LOOKUPS],
+	push_forwards: [FieldBuffer<P>; N_TABLES],
 	/// Lookup tables used by the batch.
 	tables: [FieldBuffer<P>; N_TABLES],
 	/// Verifier evaluation point for lookup MLEs.
-	pub eval_point: Vec<P::Scalar>,
 	/// Equality-indicator expansion at `eval_point`.
 	eq_kernel: FieldBuffer<P>,
 	/// Claimed lookup values at `eval_point`.
-	lookup_evals: [P::Scalar; N_LOOKUPS],
+	batched_evals: [P::Scalar; N_TABLES],
+
+	extended_eval_point: Vec<P::Scalar>,
 	/// Fiat-Shamir scalar used for fingerprint hashing.
 	pub fingerprint_scalar: P::Scalar,
 	/// Fiat-Shamir shift applied in fingerprint hashing.
@@ -67,8 +74,15 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Self {
 		assert!(N_TABLES > 0 && N_LOOKUPS > 0);
-		let eq_kernel = eq::eq_ind_partial_eval::<P>(eval_point);
-		let push_forwards = build_pushforwards(&indexes, &table_ids, &eq_kernel, &tables);
+
+		let (batched_evals, extended_eval_point) =
+			batch_lookup_evals(&lookup_evals, eval_point, &table_ids, transcript);
+
+		let eq_kernel = eq::eq_ind_partial_eval::<P>(&extended_eval_point);
+		let concat_indices: [Vec<usize>; N_TABLES] = concatenate_indices(indexes, &table_ids);
+
+		let push_forwards =
+			build_pushforwards_from_concat_indexes(&concat_indices, &tables, &eq_kernel);
 		let max_log_len = tables
 			.iter()
 			.map(|table| table.log_len())
@@ -76,19 +90,24 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			.expect("There will be atleast 1 table");
 		// Fiat-Shamir scalar used to hash index bits into field elements.
 		let [fingerprint_scalar, shift_scalar] = transcript.sample_array();
-		let indexes =
-			generate_index_fingerprints(indexes, fingerprint_scalar, shift_scalar, max_log_len);
+		let fingerprinted_indexes = generate_index_fingerprints_new(
+			indexes,
+			&table_ids,
+			fingerprint_scalar,
+			shift_scalar,
+			max_log_len,
+		);
 
 		LogUp {
-			fingerprinted_indexes: indexes,
+			fingerprinted_indexes,
 			table_ids,
 			push_forwards,
 			tables,
-			eval_point: eval_point.to_vec(),
 			eq_kernel,
 			fingerprint_scalar,
 			shift_scalar,
-			lookup_evals,
+			batched_evals,
+			extended_eval_point,
 		}
 	}
 }

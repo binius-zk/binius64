@@ -42,8 +42,9 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		// Build a fingerprinted table for indices 0..index_count-1.
 		// This is the shared denominator for all pushforward fractions.
 		let index_range = (0..index_count).collect::<Vec<_>>();
-		let [common_denominator] = generate_index_fingerprints::<P, F, 1>(
+		let [common_denominator] = generate_index_fingerprints::<P, F, 1, 1>(
 			[index_range.as_slice()],
+			&[0],
 			fingerprint_scalar,
 			shift_scalar,
 			log_len,
@@ -62,7 +63,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	pub fn prove_log_sum(
 		&self,
 		channel: &mut impl IPProverChannel<F>,
-	) -> Result<(BatchLogSumClaims<F, N_LOOKUPS>, BatchLogSumClaims<F, N_LOOKUPS>), Error> {
+	) -> Result<(BatchLogSumClaims<F, N_TABLES>, BatchLogSumClaims<F, N_TABLES>), Error> {
 		let eq_log_len = self.eq_kernel.log_len();
 
 		assert!(eq_log_len == self.fingerprinted_indexes[0].log_len());
@@ -80,7 +81,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		};
 		// eq-kernel numerator is shared; denominators are per-lookup fingerprints.
 		let (eq_prover, eq_sums) =
-			BatchFracAddCheckProver::<P, N_LOOKUPS>::new_with_last_layer_sharing(
+			BatchFracAddCheckProver::<P, N_TABLES>::new_with_last_layer_sharing(
 				eq_log_len, eq_witness,
 			);
 		let eq_claims = Self::tree_sums_to_claims(eq_sums);
@@ -99,7 +100,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		// Pushforward denominators are shared; numerators are per-lookup pushforwards.
 
 		let (push_prover, push_sums) =
-			BatchFracAddCheckProver::<P, N_LOOKUPS>::new_with_last_layer_sharing(
+			BatchFracAddCheckProver::<P, N_TABLES>::new_with_last_layer_sharing(
 				eq_log_len,
 				push_witnesses,
 			);

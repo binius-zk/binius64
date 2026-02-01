@@ -38,19 +38,18 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		channel: &mut impl IPProverChannel<F>,
 	) -> Result<PushforwardEvalClaims<F>, SumcheckError> {
 		// TODO: Remove implicit assumption of equal table size.
-		assert_eq!(N_TABLES + N_LOOKUPS, N_MLES);
+		assert_eq!(2 * N_TABLES, N_MLES);
 
 		let mles: [FieldBuffer<P>; N_MLES] =
 			chain(self.push_forwards.iter().cloned(), self.tables.iter().cloned())
 				.collect_array()
 				.expect("N_TABLES + N_LOOKUPS == N_MLES");
 
-		let pushforward_composition = |mle_evals: [P; N_MLES], comp_evals: &mut [P; N_LOOKUPS]| {
-			// Enforce pushforward[i] * table[table_id[i]] at each lookup slot.
-			// The table index depends on the lookup batch, not on the MLE position.
-			let (pushforwards, tables) = mle_evals.split_at(N_LOOKUPS);
-			for i in 0..N_LOOKUPS {
-				comp_evals[i] = pushforwards[i] * tables[self.table_ids[i]]
+		let pushforward_composition = |mle_evals: [P; N_MLES], comp_evals: &mut [P; N_TABLES]| {
+			// Enforce pushforward[i] * table[i] at each lookup slot.
+			let (pushforwards, tables) = mle_evals.split_at(N_TABLES);
+			for i in 0..N_TABLES {
+				comp_evals[i] = pushforwards[i] * tables[i]
 			}
 		};
 		// The composition is purely quadratic, so the infinity composition matches the regular one.
@@ -60,7 +59,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			mles,
 			pushforward_composition,
 			pushforward_composition,
-			self.lookup_evals,
+			self.batched_evals,
 		)?;
 
 		let BatchSumcheckOutput {
@@ -68,7 +67,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			multilinear_evals,
 		} = batch_prove_and_write_evals(vec![prover], channel)?;
 
-		let (pushforward_evals, table_evals) = multilinear_evals[0].split_at(N_LOOKUPS);
+		let (pushforward_evals, table_evals) = multilinear_evals[0].split_at(N_TABLES);
 		// The batch MLE order is [pushforwards..., tables...], so split accordingly.
 
 		Ok(PushforwardEvalClaims {

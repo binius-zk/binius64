@@ -78,3 +78,14 @@ pub fn build_pushforwards<P: PackedField, const N_TABLES: usize, const N_LOOKUPS
 		generate_pushforward(indices, eq_kernel, tables[table_id].len())
 	})
 }
+
+/// Builds pushforward tables for each lookup batch.
+///
+/// Each output table accumulates `eq_kernel` values at the indices referenced by the lookup.
+pub fn build_pushforwards_from_concat_indexes<P: PackedField, const N_TABLES: usize>(
+	concat_indexes: &[Vec<usize>; N_TABLES],
+	tables: &[FieldBuffer<P>; N_TABLES],
+	eq_kernel: &FieldBuffer<P>,
+) -> [FieldBuffer<P>; N_TABLES] {
+	array::from_fn(|i| generate_pushforward(&concat_indexes[i], eq_kernel, tables[i].len()))
+}

@@ -1,8 +1,16 @@
 // Copyright 2025-2026 The Binius Developers
-use std::iter::{self, zip};
+use std::{
+	array,
+	iter::{self, zip},
+};
 
 use binius_field::{Field, PackedField};
-use binius_math::{FieldBuffer, FieldSlice};
+use binius_iop_prover::channel;
+use binius_ip_prover::channel::IPProverChannel;
+use binius_math::{
+	FieldBuffer, FieldSlice, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
+};
+use itertools::{Itertools, concat};
 
 /// Builds a pushforward table by accumulating `eq_kernel` values at lookup indices.
 ///
@@ -61,8 +69,14 @@ where
 /// Notes:
 /// - Only the lowest `effective_log_len` bits contribute to the fingerprint.
 /// - The per-byte tables avoid per-bit branching in the hot loop.
-pub fn generate_index_fingerprints<P: PackedField<Scalar = F>, F: Field, const N_LOOKUPS: usize>(
+pub fn generate_index_fingerprints<
+	P: PackedField<Scalar = F>,
+	F: Field,
+	const N_LOOKUPS: usize,
+	const N_TABLES: usize,
+>(
 	indices: [&[usize]; N_LOOKUPS],
+	table_ids: &[usize],
 	fingerprint_scalar: F,
 	shift_scalar: F,
 	max_table_log_len: usize,
@@ -81,6 +95,86 @@ pub fn generate_index_fingerprints<P: PackedField<Scalar = F>, F: Field, const N
 			.collect::<Vec<_>>();
 		FieldBuffer::from_values(&values)
 	})
+}
+
+///Concatenates index arrays by table id and fingerprints them. Padding to next power of 2.
+pub fn generate_index_fingerprints_new<
+	P: PackedField<Scalar = F>,
+	F: Field,
+	const N_LOOKUPS: usize,
+	const N_TABLES: usize,
+>(
+	indices: [&[usize]; N_LOOKUPS],
+	table_ids: &[usize],
+	fingerprint_scalar: F,
+	shift_scalar: F,
+	max_table_log_len: usize,
+) -> [FieldBuffer<P>; N_TABLES] {
+	// Indices are usize, so only the lowest usize::BITS can contribute.
+	let effective_log_len = max_table_log_len.min(usize::BITS as usize);
+	let concatenated_indices: [Vec<usize>; N_TABLES] = concatenate_indices(indices, table_ids);
+	let bit_powers = iter::successors(Some(F::ONE), |&prev| Some(prev * fingerprint_scalar))
+		.take(effective_log_len)
+		.collect::<Vec<_>>();
+	let byte_tables = build_byte_tables(&bit_powers);
+
+	std::array::from_fn(|table_id| {
+		let mut values = concatenated_indices[table_id]
+			.iter()
+			.map(|&index| fingerprint_index(index, shift_scalar, &byte_tables))
+			.collect::<Vec<_>>();
+		values.resize_with(values.len().next_power_of_two(), || F::ZERO);
+		FieldBuffer::from_values(&values)
+	})
+}
+
+/// Concatenates indices by table id. Assumes equal number of lookups per table.
+pub fn concatenate_indices<const N_LOOKUPS: usize, const N_TABLES: usize>(
+	indices: [&[usize]; N_LOOKUPS],
+	table_ids: &[usize],
+) -> [Vec<usize>; N_TABLES] {
+	array::from_fn(|i| {
+		table_ids
+			.iter()
+			.copied()
+			.filter(|&j| i == j)
+			.flat_map(|j| indices[j].to_vec())
+			.collect()
+	})
+}
+
+pub fn batch_lookup_evals<F: Field, const N_TABLES: usize>(
+	lookup_evals: &[F],
+	eval_point: &[F],
+	table_ids: &[usize],
+	channel: &mut impl IPProverChannel<F>,
+) -> ([F; N_TABLES], Vec<F>) {
+	let grouped_evals = zip(lookup_evals.into_iter().copied(), table_ids.into_iter().copied())
+		.into_group_map_by(|&(_, id)| id);
+
+	// We assume each table has an equal number of lookups. This mainly serves to simplify the structure of the various sumchecks in the protocol. A possible future todo would be to remove this assumption.
+	assert!(
+		grouped_evals.iter().map(|(_, vals)| vals.len()).all_equal(),
+		"There must be an equal number of lookups into each table"
+	);
+
+	let batch_log_len = grouped_evals[&0].len().next_power_of_two();
+
+	let batching_prefix = channel.sample_many(batch_log_len);
+
+	let batch_weights = eq_ind_partial_eval::<F>(&batching_prefix);
+
+	let mut batched_evals = [F::ZERO; N_TABLES];
+
+	// Iterate over the lookup evals per table and batch them using the batch_weights,
+	for (table_id, vals) in grouped_evals {
+		let (evals, _): (Vec<_>, Vec<_>) = vals.into_iter().unzip();
+		batched_evals[table_id] = inner_product(evals, batch_weights.iter_scalars());
+	}
+
+	let extended_eval_point = [batching_prefix, eval_point.to_vec()].concat();
+
+	(batched_evals, extended_eval_point)
 }
 
 const BYTE_BITS: usize = 8;
