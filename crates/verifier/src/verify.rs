@@ -205,8 +205,11 @@ where
 		)
 		.entered();
 		let log_n_constraints = checked_log_2(self.constraint_system.n_mul_constraints());
-		let intmul_output =
-			verify_intmul_reduction::<B128, _>(LOG_WORD_SIZE_BITS, log_n_constraints, &mut channel)?;
+		let intmul_output = verify_intmul_reduction::<B128, _>(
+			LOG_WORD_SIZE_BITS,
+			log_n_constraints,
+			&mut channel,
+		)?;
 		drop(intmul_guard);
 
 		// [phase] Verify BitAnd Reduction - AND constraint verification

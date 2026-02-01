@@ -293,10 +293,7 @@ where
 		Ok(())
 	}
 
-	fn verify_mulcheck<C>(
-		&self,
-		channel: &mut C,
-	) -> Result<MulcheckOutput<C::Elem>, Error>
+	fn verify_mulcheck<C>(&self, channel: &mut C) -> Result<MulcheckOutput<C::Elem>, Error>
 	where
 		C: IPVerifierChannel<F>,
 	{

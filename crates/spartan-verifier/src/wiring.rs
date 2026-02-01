@@ -47,7 +47,8 @@ where
 
 	// Batch together the witness public input consistency claim with the
 	// constraint operand evaluation claims.
-	let batched_sum = evaluate_univariate(eval_claims, lambda.clone()) + batch_coeff.clone() * public_eval;
+	let batched_sum =
+		evaluate_univariate(eval_claims, lambda.clone()) + batch_coeff.clone() * public_eval;
 
 	WiringClaim {
 		lambda,

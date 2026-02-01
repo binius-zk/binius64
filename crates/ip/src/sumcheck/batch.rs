@@ -49,7 +49,8 @@ where
 	// Combine the individual sum claims into a single scalar for sumcheck verification.
 	let sum = evaluate_univariate(sums, batch_coeff.clone());
 
-	let SumcheckOutput { eval, challenges } = sumcheck::verify::<F, C>(n_vars, degree, sum, channel)?;
+	let SumcheckOutput { eval, challenges } =
+		sumcheck::verify::<F, C>(n_vars, degree, sum, channel)?;
 
 	Ok(BatchSumcheckOutput {
 		batch_coeff,
@@ -78,7 +79,8 @@ where
 	// Combine the individual eval claims into a single scalar for MLE-check verification.
 	let eval = evaluate_univariate(evals, batch_coeff.clone());
 
-	let SumcheckOutput { eval, challenges } = mlecheck::verify::<F, C>(point, degree, eval, channel)?;
+	let SumcheckOutput { eval, challenges } =
+		mlecheck::verify::<F, C>(point, degree, eval, channel)?;
 
 	Ok(BatchSumcheckOutput {
 		batch_coeff,
