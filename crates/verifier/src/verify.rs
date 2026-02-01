@@ -181,7 +181,7 @@ where
 
 	fn verify_iop<Channel>(&self, public: &[Word], mut channel: Channel) -> Result<(), Error>
 	where
-		Channel: IOPVerifierChannel<B128>,
+		Channel: IOPVerifierChannel<B128, Elem = B128>,
 	{
 		let _verify_guard =
 			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
@@ -206,7 +206,7 @@ where
 		.entered();
 		let log_n_constraints = checked_log_2(self.constraint_system.n_mul_constraints());
 		let intmul_output =
-			verify_intmul_reduction::<B128>(LOG_WORD_SIZE_BITS, log_n_constraints, &mut channel)?;
+			verify_intmul_reduction::<B128, _>(LOG_WORD_SIZE_BITS, log_n_constraints, &mut channel)?;
 		drop(intmul_guard);
 
 		// [phase] Verify BitAnd Reduction - AND constraint verification
@@ -324,14 +324,14 @@ where
 	}
 }
 
-fn verify_bitand_reduction<F, Channel>(
+fn verify_bitand_reduction<F, C>(
 	log_constraint_count: usize,
 	eval_domain: &BinarySubspace<F>,
-	channel: &mut Channel,
+	channel: &mut C,
 ) -> Result<AndCheckOutput<F>, Error>
 where
 	F: BinaryField + From<B8>,
-	Channel: IPVerifierChannel<F, Elem = F>,
+	C: IPVerifierChannel<F, Elem = F>,
 {
 	// The structure of the AND reduction requires that it verifies at least 2^3 word-level
 	// constraints, you can zero-pad if necessary to reach this minimum

@@ -15,7 +15,7 @@ use binius_verifier::protocols::{basefold, sumcheck};
 
 /// Claim components from the wiring check computation via IOP channel.
 #[derive(Debug, Clone)]
-pub struct WiringClaim<F: Field> {
+pub struct WiringClaim<F> {
 	/// Batching challenge for constraint operands.
 	pub lambda: F,
 	/// Coefficient for batching public input check with wiring check.
@@ -28,13 +28,17 @@ pub struct WiringClaim<F: Field> {
 ///
 /// Samples the batching challenges and computes the batched claim from the
 /// evaluation claims and public input evaluation.
-pub fn compute_claim<F: Field>(
+pub fn compute_claim<F, C>(
 	_constraint_system: &ConstraintSystemPadded,
-	_r_public: &[F],
-	eval_claims: &[F],
-	public_eval: F,
-	channel: &mut impl IPVerifierChannel<F, Elem = F>,
-) -> WiringClaim<F> {
+	_r_public: &[C::Elem],
+	eval_claims: &[C::Elem],
+	public_eval: C::Elem,
+	channel: &mut C,
+) -> WiringClaim<C::Elem>
+where
+	F: Field,
+	C: IPVerifierChannel<F>,
+{
 	// \lambda is the batching challenge for the constraint operands
 	let lambda = channel.sample();
 
@@ -43,7 +47,7 @@ pub fn compute_claim<F: Field>(
 
 	// Batch together the witness public input consistency claim with the
 	// constraint operand evaluation claims.
-	let batched_sum = evaluate_univariate(eval_claims, lambda) + batch_coeff * public_eval;
+	let batched_sum = evaluate_univariate(eval_claims, lambda.clone()) + batch_coeff.clone() * public_eval;
 
 	WiringClaim {
 		lambda,

@@ -155,13 +155,17 @@ impl<F: Field> VerifyOutput<F> {
 /// - Returns `Error::VerificationFailure` if monster multilinear evaluations don't match expected
 ///   values
 /// - Propagates sumcheck verification errors
-pub fn verify<F: BinaryField>(
+pub fn verify<F, C>(
 	constraint_system: &ConstraintSystem,
 	public: &[Word],
 	bitand_data: &OperatorData<F, BITAND_ARITY>,
 	intmul_data: &OperatorData<F, INTMUL_ARITY>,
-	channel: &mut impl IPVerifierChannel<F, Elem = F>,
-) -> Result<VerifyOutput<F>, Error> {
+	channel: &mut C,
+) -> Result<VerifyOutput<F>, Error>
+where
+	F: BinaryField,
+	C: IPVerifierChannel<F, Elem = F>,
+{
 	let bitand_lambda = channel.sample();
 	let intmul_lambda = channel.sample();
 

@@ -175,8 +175,8 @@ where
 
 	fn finish(
 		self,
-		oracle_relations: &[(Self::Oracle, F)],
-	) -> Result<Vec<MultilinearRationalEvalClaim<F>>, Error> {
+		oracle_relations: &[(Self::Oracle, Self::Elem)],
+	) -> Result<Vec<MultilinearRationalEvalClaim<Self::Elem>>, Error> {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
 			"finish called but {} oracle specs remaining",

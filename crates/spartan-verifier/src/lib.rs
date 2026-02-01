@@ -31,7 +31,7 @@ pub mod config;
 pub mod pcs;
 pub mod wiring;
 
-use binius_field::{BinaryField, Field};
+use binius_field::{BinaryField, field::FieldOps};
 use binius_iop::{
 	basefold_compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleSpec},
@@ -59,7 +59,7 @@ pub const SECURITY_BITS: usize = 96;
 
 /// Output of the multiplication constraint check verification.
 #[derive(Debug, Clone)]
-pub struct MulcheckOutput<F: Field> {
+pub struct MulcheckOutput<F> {
 	/// Evaluation of operand A at the challenge point.
 	pub a_eval: F,
 	/// Evaluation of operand B at the challenge point.
@@ -224,7 +224,7 @@ where
 	/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
 	pub fn verify_iop<Channel>(&self, public: &[F], mut channel: Channel) -> Result<(), Error>
 	where
-		Channel: IOPVerifierChannel<F>,
+		Channel: IOPVerifierChannel<F, Elem = F>,
 	{
 		let _verify_guard =
 			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
@@ -293,10 +293,13 @@ where
 		Ok(())
 	}
 
-	fn verify_mulcheck(
+	fn verify_mulcheck<C>(
 		&self,
-		channel: &mut impl IPVerifierChannel<F, Elem = F>,
-	) -> Result<MulcheckOutput<F>, Error> {
+		channel: &mut C,
+	) -> Result<MulcheckOutput<C::Elem>, Error>
+	where
+		C: IPVerifierChannel<F>,
+	{
 		let log_mul_constraints = checked_log_2(self.constraint_system.mul_constraints().len());
 
 		// Sample random evaluation point
@@ -307,7 +310,7 @@ where
 			eval,
 			mask_eval,
 			challenges: mut r_x,
-		} = mlecheck::verify_zk(&r_mulcheck, 2, F::ZERO, channel)?;
+		} = mlecheck::verify_zk(&r_mulcheck, 2, C::Elem::zero(), channel)?;
 
 		// Reverse because sumcheck binds high-to-low variable indices.
 		r_x.reverse();
@@ -315,9 +318,7 @@ where
 		// Read the claimed evaluations
 		let [a_eval, b_eval, c_eval] = channel.recv_array()?;
 
-		if a_eval * b_eval - c_eval != eval {
-			return Err(Error::IncorrectMulCheckEvaluation);
-		}
+		channel.assert_zero(a_eval.clone() * b_eval.clone() - c_eval.clone() - eval)?;
 
 		Ok(MulcheckOutput {
 			a_eval,

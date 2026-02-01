@@ -40,14 +40,14 @@ pub struct RingSwitchVerifyOutput<F: BinaryField + PackedField<Scalar = F>> {
 ///
 /// * `eval_point.len()` must equal `log_witness_elems + log_packing` where log_packing is the
 ///   base-2 log of the extension degree of F over B1
-pub fn verify<F, Channel>(
+pub fn verify<F, C>(
 	evaluation_claim: F,
 	eval_point: &[F],
-	channel: &mut Channel,
+	channel: &mut C,
 ) -> Result<RingSwitchVerifyOutput<F>, VerificationError>
 where
 	F: BinaryField + PackedField<Scalar = F>,
-	Channel: IPVerifierChannel<F, Elem = F>,
+	C: IPVerifierChannel<F, Elem = F>,
 {
 	let log_packing = <F as ExtensionField<B1>>::LOG_DEGREE;
 	let (eval_point_low, _eval_point_high) = eval_point.split_at(log_packing);
@@ -60,9 +60,9 @@ where
 
 	// Verify partial eval matches expected claim
 	let computed_claim = evaluate::<F, F, _>(&s_hat_v_buf, eval_point_low);
-	if evaluation_claim != computed_claim {
-		return Err(VerificationError::EvaluationClaimMismatch);
-	}
+	channel
+		.assert_zero(evaluation_claim - computed_claim)
+		.map_err(|_| VerificationError::EvaluationClaimMismatch)?;
 
 	// Basis transpose
 	let s_hat_u = FieldBuffer::from_values(&TensorAlgebra::<B1, F>::new(s_hat_v).transpose().elems);

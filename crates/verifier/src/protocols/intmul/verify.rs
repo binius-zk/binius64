@@ -21,16 +21,20 @@ use crate::protocols::{
 	sumcheck::{BatchSumcheckOutput, batch_verify},
 };
 
-struct BivariateProductMleLayerOutput<F: Field> {
+struct BivariateProductMleLayerOutput<F> {
 	challenges: Vec<F>,
 	multilinear_evals: Vec<F>,
 }
 
-fn verify_multi_bivariate_product_mle_layer<F: Field>(
+fn verify_multi_bivariate_product_mle_layer<F, C>(
 	eval_point: &[F],
 	evals: &[F],
-	channel: &mut impl IPVerifierChannel<F, Elem = F>,
-) -> Result<BivariateProductMleLayerOutput<F>, Error> {
+	channel: &mut C,
+) -> Result<BivariateProductMleLayerOutput<F>, Error>
+where
+	F: Field,
+	C: IPVerifierChannel<F, Elem = F>,
+{
 	let n_vars = eval_point.len();
 
 	let BatchSumcheckOutput {
@@ -51,9 +55,9 @@ fn verify_multi_bivariate_product_mle_layer<F: Field>(
 		.collect::<Vec<_>>();
 
 	let expected_eval = evaluate_univariate(&expected_unbatched_terms, batch_coeff);
-	if expected_eval != eval {
-		return Err(Error::CompositionClaimMismatch);
-	}
+	channel
+		.assert_zero(expected_eval - eval)
+		.map_err(|_| Error::CompositionClaimMismatch)?;
 
 	Ok(BivariateProductMleLayerOutput {
 		challenges,
@@ -61,12 +65,16 @@ fn verify_multi_bivariate_product_mle_layer<F: Field>(
 	})
 }
 
-fn verify_phase_1<F: Field>(
+fn verify_phase_1<F, C>(
 	log_bits: usize,
 	initial_eval_point: &[F],
 	initial_b_eval: F,
-	channel: &mut impl IPVerifierChannel<F, Elem = F>,
-) -> Result<Phase1Output<F>, Error> {
+	channel: &mut C,
+) -> Result<Phase1Output<F>, Error>
+where
+	F: Field,
+	C: IPVerifierChannel<F, Elem = F>,
+{
 	let n_vars = initial_eval_point.len();
 
 	// Run prodcheck verification
@@ -87,9 +95,9 @@ fn verify_phase_1<F: Field>(
 	let b_leaves_buffer = FieldBuffer::new(log_bits, b_leaves_evals.as_slice());
 	let expected_eval = multilinear::evaluate::evaluate(&b_leaves_buffer, z_suffix);
 
-	if expected_eval != output_claim.eval {
-		return Err(Error::LeafEvalMismatch);
-	}
+	channel
+		.assert_zero(expected_eval - output_claim.eval)
+		.map_err(|_| Error::LeafEvalMismatch)?;
 
 	Ok(Phase1Output {
 		eval_point: eval_point.to_vec(),
@@ -101,15 +109,19 @@ fn verify_phase_1<F: Field>(
 
 // PHASE THREE: selector sumcheck
 
-fn verify_phase_3<F: Field>(
+fn verify_phase_3<F, C>(
 	log_bits: usize,
 	// selector sumcheck stuff
 	phase_2_output: Phase2Output<F>,
 	// c sumcheck stuff
 	c_eval_point: &[F],
 	c_eval: F,
-	channel: &mut impl IPVerifierChannel<F, Elem = F>,
-) -> Result<Phase3Output<F>, Error> {
+	channel: &mut C,
+) -> Result<Phase3Output<F>, Error>
+where
+	F: Field,
+	C: IPVerifierChannel<F, Elem = F>,
+{
 	let n_vars = c_eval_point.len();
 
 	let Phase2Output { twisted_claims } = phase_2_output;
@@ -159,23 +171,27 @@ fn verify_phase_3<F: Field>(
 
 	let expected_batched_eval = evaluate_univariate(&expected_unbatched_terms, batch_coeff);
 
-	if expected_batched_eval != eval {
-		return Err(Error::CompositionClaimMismatch);
-	}
+	channel
+		.assert_zero(expected_batched_eval - eval)
+		.map_err(|_| Error::CompositionClaimMismatch)?;
 
 	Ok(output)
 }
 
 // PHASE 4: all but last layer of a_layers and c_layers
 
-fn verify_phase_4<F: Field>(
+fn verify_phase_4<F, C>(
 	log_bits: usize,
 	eval_point: &[F],
 	a_root_eval: F,
 	c_lo_root_eval: F,
 	c_hi_root_eval: F,
-	channel: &mut impl IPVerifierChannel<F, Elem = F>,
-) -> Result<Phase4Output<F>, Error> {
+	channel: &mut C,
+) -> Result<Phase4Output<F>, Error>
+where
+	F: Field,
+	C: IPVerifierChannel<F, Elem = F>,
+{
 	assert!(log_bits >= 1);
 
 	let mut eval_point = eval_point.to_vec();
@@ -209,7 +225,7 @@ fn verify_phase_4<F: Field>(
 // PHASE 5: final layer
 
 #[allow(clippy::too_many_arguments)]
-fn verify_phase_5<F: Field>(
+fn verify_phase_5<F, C>(
 	log_bits: usize,
 	// a and c stuff
 	a_c_eval_point: &[F],
@@ -219,8 +235,12 @@ fn verify_phase_5<F: Field>(
 	// b stuff
 	b_eval_point: &[F],
 	b_exponent_evals: &[F],
-	channel: &mut impl IPVerifierChannel<F, Elem = F>,
-) -> Result<Phase5Output<F>, Error> {
+	channel: &mut C,
+) -> Result<Phase5Output<F>, Error>
+where
+	F: Field,
+	C: IPVerifierChannel<F, Elem = F>,
+{
 	assert!(log_bits >= 1);
 	assert_eq!(2 * a_evals.len(), 1 << log_bits);
 	assert_eq!(2 * c_lo_evals.len(), 1 << log_bits);
@@ -294,9 +314,9 @@ fn verify_phase_5<F: Field>(
 	let expected_batched_eval = evaluate_univariate(&expected_unbatched_evals, batch_coeff);
 
 	// Compare expected evaluation against given evaluation `eval`.
-	if expected_batched_eval != eval {
-		return Err(Error::CompositionClaimMismatch);
-	}
+	channel
+		.assert_zero(expected_batched_eval - eval)
+		.map_err(|_| Error::CompositionClaimMismatch)?;
 
 	// Evals `b_0_eval`, `a_0_eval`, and `c_lo_0_eval` will be verified following phase 5.
 	let b_0_eval = bivariate_evals
@@ -333,11 +353,15 @@ fn verify_phase_5<F: Field>(
 ///    2^128 - 1`, which satisfies `a*b ≡ c (mod 2^128-1)` since `0 ≡ 2^128-1 (mod 2^128-1)`, but we
 ///    need `a*b = c (mod 2^128)`. The check catches this because if `c = 2^128-1` then `c_lo_0 = 1`
 ///    (odd), but `a_0 * b_0 = 0` when `a=0` or `b=0`.
-pub fn verify<F: BinaryField>(
+pub fn verify<F, C>(
 	log_bits: usize,
 	n_vars: usize,
-	channel: &mut impl IPVerifierChannel<F, Elem = F>,
-) -> Result<IntMulOutput<F>, Error> {
+	channel: &mut C,
+) -> Result<IntMulOutput<F>, Error>
+where
+	F: BinaryField,
+	C: IPVerifierChannel<F, Elem = F>,
+{
 	assert!(log_bits >= 1);
 	let initial_eval_point: Vec<F> = channel.sample_many(n_vars);
 

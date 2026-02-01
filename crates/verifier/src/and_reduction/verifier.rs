@@ -90,11 +90,15 @@ pub struct AndCheckOutput<F> {
 ///   oblong evaluation point
 /// - `a_eval`, `b_eval`, `c_eval`: The claimed evaluations of the A, B, and C at the oblong
 ///   evaluation point
-pub fn verify_with_channel<F: BinaryField>(
+pub fn verify_with_channel<F, C>(
 	all_zerocheck_challenges: &[F],
-	channel: &mut impl IPVerifierChannel<F, Elem = F>,
+	channel: &mut C,
 	round_message_univariate_domain: &BinarySubspace<F>,
-) -> Result<AndCheckOutput<F>, Error> {
+) -> Result<AndCheckOutput<F>, Error>
+where
+	F: BinaryField,
+	C: IPVerifierChannel<F, Elem = F>,
+{
 	let univariate_message_coeffs_ext_domain: Vec<F> =
 		channel.recv_many(ROWS_PER_HYPERCUBE_VERTEX)?;
 
@@ -118,9 +122,9 @@ pub fn verify_with_channel<F: BinaryField>(
 
 	let [a_eval, b_eval, c_eval] = channel.recv_array()?;
 
-	if eval != a_eval * b_eval - c_eval {
-		return Err(VerificationError::AndReductionMLECheckFailed.into());
-	}
+	channel
+		.assert_zero(eval - a_eval * b_eval + c_eval)
+		.map_err(|_| VerificationError::AndReductionMLECheckFailed)?;
 
 	eval_point.reverse();
 
