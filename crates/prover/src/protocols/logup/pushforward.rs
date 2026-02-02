@@ -1,9 +1,15 @@
 // Copyright 2025-2026 The Binius Developers
 use std::iter::chain;
 
-use binius_field::{Field, PackedField};
+use binius_field::{BinaryField, Field, PackedField};
+use binius_iop_prover::{
+	fri::{self, CommitOutput, Error, commit_interleaved},
+	merkle_tree::MerkleTreeProver,
+};
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::FieldBuffer;
+use binius_math::{FieldBuffer, ntt::AdditiveNTT};
+use binius_utils::checked_arithmetics::log2_ceil_usize;
+use binius_verifier::{fri::FRIParams, merkle_tree::MerkleTreeScheme};
 use itertools::Itertools;
 
 use crate::protocols::{
@@ -75,5 +81,33 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			pushforward_evals: pushforward_evals.to_vec(),
 			table_evals: table_evals.to_vec(),
 		})
+	}
+
+	pub fn commit_pushforward<NTT, VCS, MerkleProver>(
+		&self,
+		params: &FRIParams<F>,
+		ntt: &NTT,
+		merkle_prover: &MerkleProver,
+	) -> Result<CommitOutput<P, VCS::Digest, MerkleProver::Committed>, Error>
+	where
+		F: BinaryField,
+		NTT: AdditiveNTT<Field = F> + Sync,
+		MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
+		VCS: MerkleTreeScheme<F>,
+	{
+		// We assume that all pushforwards are of the same length.
+		let pushforward_log_len = self.push_forwards[0].log_len();
+		let batch_next_pow_2 = 1 << (log2_ceil_usize(N_TABLES) + pushforward_log_len);
+		let mut batch_pushforward: Vec<F> = self
+			.push_forwards
+			.iter()
+			.flat_map(|push_forward| push_forward.iter_scalars())
+			.collect();
+
+		batch_pushforward.resize_with(batch_next_pow_2, || F::ZERO);
+
+		let batch_pushforward = FieldBuffer::from_values(&batch_pushforward);
+
+		commit_interleaved(params, ntt, merkle_prover, batch_pushforward.to_ref())
 	}
 }
