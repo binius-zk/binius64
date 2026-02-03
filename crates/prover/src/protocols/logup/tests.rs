@@ -4,12 +4,12 @@ use std::array;
 use binius_field::PackedField;
 use binius_math::{
 	FieldBuffer,
-	multilinear::evaluate::evaluate,
+	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
 	test_utils::{Packed128b, random_field_buffer, random_scalars},
 };
 use binius_transcript::ProverTranscript;
 use binius_verifier::{config::StdChallenger, protocols::logup as logup_verifier};
-use rand::{SeedableRng, rngs::StdRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use super::LogUp;
 

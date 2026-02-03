@@ -1,10 +1,13 @@
 // Copyright 2025-2026 The Binius Developers
-use std::array;
+use std::{array, iter::zip};
 
 use binius_field::{Field, PackedField};
-use binius_ip_prover::channel::IPProverChannel;
+use binius_ip_prover::{
+	channel::IPProverChannel,
+	sumcheck::{ProveSingleOutput, prove_single},
+};
 use binius_math::FieldBuffer;
-use binius_verifier::protocols::logup::LogUpLookupClaims;
+use binius_verifier::protocols::{fracaddcheck::FracAddEvalClaim, logup::LogUpLookupClaims};
 
 use crate::protocols::{
 	fracaddcheck,
@@ -40,9 +43,13 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		// Prove log-sum consistency for eq-kernel and pushforward trees.
 		let (eq_claims, push_claims) = self.prove_log_sum(channel)?;
 
-		assert_eq!(pushforward_claims.pushforward_evals.len(), N_TABLES);
-		assert_eq!(eq_claims.len(), N_TABLES);
-		assert_eq!(push_claims.len(), N_TABLES);
+		// Reduce pushforward and log-sum evaluations via bivariate product sumcheck.
+		reduce_pushforward_logsum::<P, F, N_TABLES>(
+			&pushforward_claims,
+			&push_claims,
+			&self.push_forwards,
+			channel,
+		)?;
 
 		let mut claims = Vec::with_capacity(N_TABLES);
 		// Pair each lookup batch with its table id and fractional claims.
@@ -88,4 +95,86 @@ pub fn build_pushforwards_from_concat_indexes<P: PackedField, const N_TABLES: us
 	eq_kernel: &FieldBuffer<P>,
 ) -> [FieldBuffer<P>; N_TABLES] {
 	array::from_fn(|i| generate_pushforward(&concat_indexes[i], eq_kernel, tables[i].len()))
+}
+
+use crate::protocols::logup::pushforward::PushforwardEvalClaims;
+use binius_ip_prover::sumcheck::bivariate_product::BivariateProductSumcheckProver;
+use binius_math::multilinear::eq::eq_ind_partial_eval;
+use binius_utils::checked_arithmetics::log2_ceil_usize;
+
+/// Reduces pushforward evaluation claims throughout the protocol to a single point.
+///
+///
+/// # Arguments
+/// * `pushforward_claims` - Evaluation claims from the pushforward sumcheck
+/// * `push_claims` - Fractional addition claims from the log-sum protocol
+/// * `push_forwards` - The pushforward MLE data
+/// * `channel` - Prover channel for sampling and communication
+///
+/// # Returns
+/// Returns `Ok(())` if the reduction succeeds, or a `SumcheckError` on failure.
+pub fn reduce_pushforward_logsum<P, F, const N_TABLES: usize>(
+	pushforward_claims: &PushforwardEvalClaims<F>,
+	push_claims: &[FracAddEvalClaim<F>],
+	push_forwards: &[FieldBuffer<P>],
+	channel: &mut impl IPProverChannel<F>,
+) -> Result<ProveSingleOutput<F>, SumcheckError>
+where
+	P: PackedField<Scalar = F>,
+	F: Field,
+{
+	let pushforward_eval_point = &pushforward_claims.challenges;
+	let log_sum_eval_point = &push_claims[0].point;
+
+	// Calculate the number of variables to extend evaluation points.
+	let batch_vars = log2_ceil_usize(N_TABLES);
+	let batch_prefix = channel.sample_many(batch_vars);
+
+	let batch_weights = eq_ind_partial_eval::<P>(&batch_prefix);
+
+	let pushforward_batch_eval: F =
+		zip(batch_weights.iter_scalars(), pushforward_claims.pushforward_evals.iter())
+			.map(|(weight, eval)| weight * eval)
+			.sum();
+
+	// The push claims have the pushforward evaluation claim in their numerator evaluation.
+	let log_sum_batch_eval: F = zip(batch_weights.iter_scalars(), push_claims.iter())
+		.map(|(weight, &FracAddEvalClaim { num_eval, .. })| weight * num_eval)
+		.sum();
+
+	let reduction_scalar = channel.sample();
+
+	let extended_pushforward_eval_point =
+		[pushforward_eval_point.clone(), batch_prefix.clone()].concat();
+
+	let extended_log_sum_eval_point = [log_sum_eval_point.clone(), batch_prefix.clone()].concat();
+
+	let batch_next_pow_2 = 1 << (batch_vars + pushforward_eval_point.len());
+	let mut batch_pushforward: Vec<F> = push_forwards
+		.iter()
+		.flat_map(|push_forward| push_forward.iter_scalars())
+		.collect();
+
+	batch_pushforward.resize_with(batch_next_pow_2, || F::ZERO);
+
+	let batch_pushforward = FieldBuffer::from_values(&batch_pushforward);
+
+	let pf_eq_ind = eq_ind_partial_eval::<P>(&extended_pushforward_eval_point);
+	let ls_eq_ind = eq_ind_partial_eval::<P>(&extended_log_sum_eval_point);
+	let lin_comb = FieldBuffer::<P>::from_values(
+		&zip(pf_eq_ind.iter_scalars(), ls_eq_ind.iter_scalars())
+			.map(|(pf, ls)| pf + ls * reduction_scalar)
+			.collect::<Vec<_>>(),
+	);
+
+	let reduction_prover = BivariateProductSumcheckProver::new(
+		[batch_pushforward.clone(), lin_comb],
+		pushforward_batch_eval + log_sum_batch_eval * reduction_scalar,
+	)?;
+
+	let output = prove_single(reduction_prover, channel)?;
+
+	channel.send_many(&output.multilinear_evals);
+
+	Ok(output)
 }

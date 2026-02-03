@@ -77,7 +77,6 @@ pub fn generate_index_fingerprints<
 	const N_TABLES: usize,
 >(
 	indices: [&[usize]; N_LOOKUPS],
-	table_ids: &[usize],
 	fingerprint_scalar: F,
 	shift_scalar: F,
 	max_table_log_len: usize,
@@ -161,7 +160,6 @@ pub fn batch_lookup_evals<F: Field, const N_TABLES: usize>(
 
 	let batch_log_len = log2_ceil_usize(grouped_evals[&0].len().next_power_of_two());
 
-	println!("{batch_log_len}");
 	let batching_prefix = channel.sample_many(batch_log_len);
 
 	let batch_weights = eq_ind_partial_eval::<F>(&batching_prefix);

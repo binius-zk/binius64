@@ -44,7 +44,6 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		let index_range = (0..index_count).collect::<Vec<_>>();
 		let [common_denominator] = generate_index_fingerprints::<P, F, 1, 1>(
 			[index_range.as_slice()],
-			&[0],
 			fingerprint_scalar,
 			shift_scalar,
 			log_len,
@@ -111,8 +110,8 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			channel.send_many(&[eq.num_eval, eq.den_eval, push.num_eval, push.den_eval])
 		});
 
-		eq_prover.prove(eq_claims.clone(), channel)?;
-		push_prover.prove(push_claims.clone(), channel)?;
+		let eq_claims = eq_prover.prove(eq_claims.clone(), channel)?;
+		let push_claims = push_prover.prove(push_claims.clone(), channel)?;
 
 		Ok((eq_claims, push_claims))
 	}

@@ -5,7 +5,10 @@
 use std::iter::zip;
 
 use binius_field::Field;
-use binius_ip::channel::{self, IPVerifierChannel};
+use binius_ip::{
+	channel::{self, IPVerifierChannel},
+	sumcheck::SumcheckOutput,
+};
 use binius_math::{
 	inner_product::inner_product,
 	multilinear::eq::{eq_ind, eq_ind_partial_eval},
@@ -102,6 +105,50 @@ pub fn verify_lookup<F: Field, const N_TABLES: usize>(
 		shift_scalar,
 		channel,
 	)?;
+
+	let pushforward_eval_point = sumcheck_point.clone();
+	let log_sum_eval_point = &push_claims[0].point;
+
+	// Calculate the number of variables to extend evaluation points.
+	let batch_vars = log2_ceil_usize(N_TABLES);
+	let batch_prefix = channel.sample_many(batch_vars);
+
+	let batch_weights = eq_ind_partial_eval::<F>(&batch_prefix);
+
+	let pushforward_batch_eval: F = zip(batch_weights.iter_scalars(), pushforward_evals.iter())
+		.map(|(weight, eval)| weight * eval)
+		.sum();
+
+	// The push claims have the pushforward evaluation claim in their numerator evaluation.
+	let log_sum_batch_eval: F = zip(batch_weights.iter_scalars(), push_claims.iter())
+		.map(|(weight, &FracAddEvalClaim { num_eval, .. })| weight * num_eval)
+		.sum();
+
+	let reduction_scalar = channel.sample();
+
+	let extended_pushforward_eval_point =
+		[pushforward_eval_point.clone(), batch_prefix.clone()].concat();
+	let extended_log_sum_eval_point = [log_sum_eval_point.clone(), batch_prefix.clone()].concat();
+
+	let SumcheckOutput {
+		eval,
+		mut challenges,
+	} = sumcheck::verify(
+		extended_pushforward_eval_point.len(),
+		2,
+		pushforward_batch_eval + log_sum_batch_eval * reduction_scalar,
+		channel,
+	)?;
+
+	let [pf_claim, reduction_buffer] = channel.recv_array()?;
+
+	assert_eq!(pf_claim * reduction_buffer, eval);
+
+	challenges.reverse();
+	let reduction_buffer_eval = eq_ind(&extended_pushforward_eval_point, &challenges)
+		+ eq_ind(&extended_log_sum_eval_point, &challenges) * reduction_scalar;
+
+	assert_eq!(reduction_buffer, reduction_buffer_eval);
 
 	let pushforward_sumcheck_claims = pushforward_evals
 		.into_iter()
