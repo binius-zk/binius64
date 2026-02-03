@@ -5,6 +5,7 @@
 use std::iter::zip;
 
 use binius_field::Field;
+use binius_iop::channel::IOPVerifierChannel;
 use binius_ip::{
 	channel::{self, IPVerifierChannel},
 	sumcheck::SumcheckOutput,
@@ -44,15 +45,14 @@ pub struct LogUpLookupClaims<F: Field> {
 /// verifier checks the LogUp sub-protocols. They can be passed into other
 /// verifiers that own the commitments for the corresponding multilinears.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LogUpEvalClaims<F: Field> {
+pub struct LogUpEvalClaims<F: Field, Oracle: Clone> {
 	/// Fingerprinted index evaluations from the eq-kernel frac-add reductions.
 	pub index_claims: Vec<MultilinearEvalClaim<F>>,
-	/// Pushforward evaluations at the pushforward sumcheck point.
-	pub pushforward_sumcheck_claims: Vec<MultilinearEvalClaim<F>>,
 	/// Table evaluations at the pushforward sumcheck point.
 	pub table_sumcheck_claims: Vec<MultilinearEvalClaim<F>>,
-	/// Pushforward evaluations from the pushforward frac-add reductions.
-	pub pushforward_frac_claims: Vec<MultilinearEvalClaim<F>>,
+
+	pub pushforward_oracle: Oracle,
+	pub pushforward_eval_claim: MultilinearEvalClaim<F>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,31 +68,27 @@ struct PushforwardVerificationOutput<F: Field> {
 /// is the log-length of the tables/pushforwards. `eval_point` is the point used to
 /// instantiate the eq-kernel. `lookup_evals` must be aligned with the lookup ordering
 /// encoded in the transcript.
-pub fn verify_lookup<F: Field, const N_TABLES: usize>(
+pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: usize>(
 	eq_log_len: usize,
 	table_log_len: usize,
 	eval_point: &[F],
 	lookup_evals: &[F],
 	table_ids: &[usize],
-	channel: &mut impl IPVerifierChannel<F>,
-) -> Result<LogUpEvalClaims<F>, Error> {
+	channel: &mut Channel,
+) -> Result<LogUpEvalClaims<F, Channel::Oracle>, Error> {
 	assert_eq!(eval_point.len(), eq_log_len, "eval_point length must match eq_log_len");
 	// Match the prover's Fiat-Shamir sampling performed during `LogUp::new`.
+
+	//We need to observe the pushforward commitment before proceeding for soundness.
+	let pushforward_oracle = channel.recv_oracle().unwrap();
 	let [fingerprint_scalar, shift_scalar]: [F; 2] = channel.sample_array();
 
 	let (batched_evals, extended_eval_point): ([F; N_TABLES], Vec<F>) =
 		batch_lookup_evals(&lookup_evals, eval_point, &table_ids, channel);
 
 	assert!(table_ids.len() == lookup_evals.len());
+	assert!(!lookup_evals.is_empty());
 
-	if lookup_evals.is_empty() {
-		return Ok(LogUpEvalClaims {
-			index_claims: Vec::new(),
-			pushforward_sumcheck_claims: Vec::new(),
-			table_sumcheck_claims: Vec::new(),
-			pushforward_frac_claims: Vec::new(),
-		});
-	}
 	let PushforwardVerificationOutput {
 		sumcheck_point,
 		pushforward_evals,
@@ -142,6 +138,7 @@ pub fn verify_lookup<F: Field, const N_TABLES: usize>(
 
 	let [pf_claim, reduction_buffer] = channel.recv_array()?;
 
+	//TODO: Make an error type for these checks.
 	assert_eq!(pf_claim * reduction_buffer, eval);
 
 	challenges.reverse();
@@ -150,13 +147,6 @@ pub fn verify_lookup<F: Field, const N_TABLES: usize>(
 
 	assert_eq!(reduction_buffer, reduction_buffer_eval);
 
-	let pushforward_sumcheck_claims = pushforward_evals
-		.into_iter()
-		.map(|eval| MultilinearEvalClaim {
-			eval,
-			point: sumcheck_point.clone(),
-		})
-		.collect();
 	let table_sumcheck_claims = table_evals
 		.into_iter()
 		.map(|eval| MultilinearEvalClaim {
@@ -172,20 +162,17 @@ pub fn verify_lookup<F: Field, const N_TABLES: usize>(
 			point: claim.point,
 		})
 		.collect();
-	let pushforward_frac_claims = push_claims
-		.into_iter()
-		.map(|claim| MultilinearEvalClaim {
-			// Numerator tracks the pushforward MLE.
-			eval: claim.num_eval,
-			point: claim.point,
-		})
-		.collect();
+
+	let pushforward_eval_claim = MultilinearEvalClaim {
+		eval: pf_claim,
+		point: challenges,
+	};
 
 	Ok(LogUpEvalClaims {
 		index_claims,
-		pushforward_sumcheck_claims,
 		table_sumcheck_claims,
-		pushforward_frac_claims,
+		pushforward_oracle,
+		pushforward_eval_claim,
 	})
 }
 

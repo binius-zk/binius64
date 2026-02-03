@@ -2,6 +2,7 @@
 use std::{array, iter::zip};
 
 use binius_field::{Field, PackedField};
+use binius_iop_prover::channel::IOPProverChannel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::FieldBuffer;
 use binius_verifier::protocols::fracaddcheck::FracAddEvalClaim;
@@ -13,8 +14,13 @@ use crate::protocols::{
 };
 type BatchLogSumClaims<F, const N: usize> = [FracAddEvalClaim<F>; N];
 
-impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUPS: usize>
-	LogUp<P, N_TABLES, N_LOOKUPS>
+impl<
+	P: PackedField<Scalar = F>,
+	Channel: IOPProverChannel<P>,
+	F: Field,
+	const N_TABLES: usize,
+	const N_LOOKUPS: usize,
+> LogUp<P, Channel, N_TABLES, N_LOOKUPS>
 {
 	/// Converts the top layer of each frac-add tree into evaluation claims.
 	///
@@ -61,7 +67,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	/// Returns the top-layer fractional-sum claims for verifier consumption.
 	pub fn prove_log_sum(
 		&self,
-		channel: &mut impl IPProverChannel<F>,
+		channel: &mut Channel,
 	) -> Result<(BatchLogSumClaims<F, N_TABLES>, BatchLogSumClaims<F, N_TABLES>), Error> {
 		let eq_log_len = self.eq_kernel.log_len();
 

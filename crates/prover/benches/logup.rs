@@ -3,6 +3,9 @@
 use std::array;
 
 use binius_field::{PackedField, arch::OptimalPackedB128};
+use binius_iop::channel::OracleSpec;
+use binius_iop::naive_channel::NaiveVerifierChannel;
+use binius_iop_prover::naive_channel::NaiveProverChannel;
 use binius_math::{
 	FieldBuffer,
 	multilinear::evaluate::evaluate,
@@ -10,6 +13,7 @@ use binius_math::{
 };
 use binius_prover::protocols::logup::{LogUp, helper::generate_lookup_values};
 use binius_transcript::{ProverTranscript, VerifierTranscript};
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{config::StdChallenger, protocols::logup as logup_verifier};
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use rand::{Rng, SeedableRng, rngs::StdRng};
@@ -19,7 +23,7 @@ type F = <P as PackedField>::Scalar;
 
 const N_TABLES: usize = 2;
 const N_LOOKUPS: usize = 6;
-const N_MLES: usize = N_TABLES + N_LOOKUPS;
+const N_MLES: usize = 2 * N_TABLES;
 
 struct LogUpBenchCase {
 	indexes: [Vec<usize>; N_LOOKUPS],
@@ -27,6 +31,13 @@ struct LogUpBenchCase {
 	eval_point: Vec<F>,
 	lookup_evals: [F; N_LOOKUPS],
 	tables: [FieldBuffer<P>; N_TABLES],
+}
+
+fn logup_oracle_specs(table_log_len: usize) -> Vec<OracleSpec> {
+	vec![OracleSpec {
+		log_msg_len: table_log_len + log2_ceil_usize(N_TABLES),
+		is_zk: false,
+	}]
 }
 
 fn build_case(log_len: usize) -> LogUpBenchCase {
@@ -70,6 +81,7 @@ fn bench_logup_new(c: &mut Criterion) {
 		group.throughput(Throughput::Elements((lookup_len * N_LOOKUPS) as u64));
 
 		let case = build_case(log_len);
+		let oracle_specs = logup_oracle_specs(log_len);
 
 		group.bench_function(format!("log_len={log_len}"), |b| {
 			let indexes_ref: [&[usize]; N_LOOKUPS] = array::from_fn(|i| case.indexes[i].as_slice());
@@ -78,13 +90,15 @@ fn bench_logup_new(c: &mut Criterion) {
 				|| case.tables.clone(),
 				|tables| {
 					let mut transcript = ProverTranscript::new(StdChallenger::default());
-					LogUp::<P, N_TABLES, N_LOOKUPS>::new(
+					let mut channel =
+						NaiveProverChannel::<F, P, _>::new(&mut transcript, oracle_specs.clone());
+					LogUp::<P, _, N_TABLES, N_LOOKUPS>::new(
 						indexes_ref,
 						case.table_ids,
 						&case.eval_point,
 						case.lookup_evals,
 						tables,
-						&mut transcript,
+						&mut channel,
 					);
 				},
 				BatchSize::SmallInput,
@@ -103,25 +117,28 @@ fn bench_logup_prove(c: &mut Criterion) {
 		group.throughput(Throughput::Elements((lookup_len * N_LOOKUPS) as u64));
 
 		let case = build_case(log_len);
+		let oracle_specs = logup_oracle_specs(log_len);
 
 		group.bench_function(format!("log_len={log_len}"), |b| {
 			let indexes_ref: [&[usize]; N_LOOKUPS] = array::from_fn(|i| case.indexes[i].as_slice());
 
-			let mut transcript = ProverTranscript::new(StdChallenger::default());
-			let logup = LogUp::<P, N_TABLES, N_LOOKUPS>::new(
-				indexes_ref,
-				case.table_ids,
-				&case.eval_point,
-				case.lookup_evals,
-				case.tables.clone(),
-				&mut transcript,
-			);
-			let base_transcript = transcript.clone();
-
 			b.iter_batched(
-				|| base_transcript.clone(),
-				|mut transcript| {
-					logup.prove_lookup::<N_MLES>(&mut transcript).unwrap();
+				|| case.tables.clone(),
+				|tables| {
+					let mut transcript = ProverTranscript::new(StdChallenger::default());
+					let mut channel = NaiveProverChannel::<F, P, _>::new(
+						&mut transcript,
+						oracle_specs.clone(),
+					);
+					let logup = LogUp::<P, _, N_TABLES, N_LOOKUPS>::new(
+						indexes_ref,
+						case.table_ids,
+						&case.eval_point,
+						case.lookup_evals,
+						tables,
+						&mut channel,
+					);
+					logup.prove_lookup::<N_MLES>(&mut channel).unwrap();
 				},
 				BatchSize::SmallInput,
 			);
@@ -139,25 +156,28 @@ fn bench_logup_prove_pushforward(c: &mut Criterion) {
 		group.throughput(Throughput::Elements((lookup_len * N_LOOKUPS) as u64));
 
 		let case = build_case(log_len);
+		let oracle_specs = logup_oracle_specs(log_len);
 
 		group.bench_function(format!("log_len={log_len}"), |b| {
 			let indexes_ref: [&[usize]; N_LOOKUPS] = array::from_fn(|i| case.indexes[i].as_slice());
 
-			let mut transcript = ProverTranscript::new(StdChallenger::default());
-			let logup = LogUp::<P, N_TABLES, N_LOOKUPS>::new(
-				indexes_ref,
-				case.table_ids,
-				&case.eval_point,
-				case.lookup_evals,
-				case.tables.clone(),
-				&mut transcript,
-			);
-			let base_transcript = transcript.clone();
-
 			b.iter_batched(
-				|| base_transcript.clone(),
-				|mut transcript| {
-					logup.prove_pushforward::<N_MLES>(&mut transcript).unwrap();
+				|| case.tables.clone(),
+				|tables| {
+					let mut transcript = ProverTranscript::new(StdChallenger::default());
+					let mut channel = NaiveProverChannel::<F, P, _>::new(
+						&mut transcript,
+						oracle_specs.clone(),
+					);
+					let logup = LogUp::<P, _, N_TABLES, N_LOOKUPS>::new(
+						indexes_ref,
+						case.table_ids,
+						&case.eval_point,
+						case.lookup_evals,
+						tables,
+						&mut channel,
+					);
+					logup.prove_pushforward::<N_MLES>(&mut channel).unwrap();
 				},
 				BatchSize::SmallInput,
 			);
@@ -175,29 +195,31 @@ fn bench_logup_prove_log_sum(c: &mut Criterion) {
 		group.throughput(Throughput::Elements((lookup_len * N_LOOKUPS) as u64));
 
 		let case = build_case(log_len);
+		let oracle_specs = logup_oracle_specs(log_len);
 
 		group.bench_function(format!("log_len={log_len}"), |b| {
 			let indexes_ref: [&[usize]; N_LOOKUPS] = array::from_fn(|i| case.indexes[i].as_slice());
 
-			let mut transcript = ProverTranscript::new(StdChallenger::default());
-			let logup = LogUp::<P, N_TABLES, N_LOOKUPS>::new(
-				indexes_ref,
-				case.table_ids,
-				&case.eval_point,
-				case.lookup_evals,
-				case.tables.clone(),
-				&mut transcript,
-			);
-
-			let mut base_transcript = transcript.clone();
-			logup
-				.prove_pushforward::<N_MLES>(&mut base_transcript)
-				.unwrap();
-
 			b.iter_batched(
-				|| base_transcript.clone(),
-				|mut transcript| {
-					logup.prove_log_sum(&mut transcript).unwrap();
+				|| case.tables.clone(),
+				|tables| {
+					let mut transcript = ProverTranscript::new(StdChallenger::default());
+					let mut channel = NaiveProverChannel::<F, P, _>::new(
+						&mut transcript,
+						oracle_specs.clone(),
+					);
+					let logup = LogUp::<P, _, N_TABLES, N_LOOKUPS>::new(
+						indexes_ref,
+						case.table_ids,
+						&case.eval_point,
+						case.lookup_evals,
+						tables,
+						&mut channel,
+					);
+					logup
+						.prove_pushforward::<N_MLES>(&mut channel)
+						.unwrap();
+					logup.prove_log_sum(&mut channel).unwrap();
 				},
 				BatchSize::SmallInput,
 			);
@@ -217,35 +239,41 @@ fn bench_logup_verify(c: &mut Criterion) {
 		group.throughput(Throughput::Elements((lookup_len * N_LOOKUPS) as u64));
 
 		let case = build_case(log_len);
+		let oracle_specs = logup_oracle_specs(log_len);
 
 		group.bench_function(format!("log_len={log_len}"), |b| {
 			let indexes_ref: [&[usize]; N_LOOKUPS] = array::from_fn(|i| case.indexes[i].as_slice());
 
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-			let logup = LogUp::<P, N_TABLES, N_LOOKUPS>::new(
+			let mut prover_channel =
+				NaiveProverChannel::<F, P, _>::new(&mut prover_transcript, oracle_specs.clone());
+			let logup = LogUp::<P, _, N_TABLES, N_LOOKUPS>::new(
 				indexes_ref,
 				case.table_ids,
 				&case.eval_point,
 				case.lookup_evals,
 				case.tables.clone(),
-				&mut prover_transcript,
+				&mut prover_channel,
 			);
 			logup
-				.prove_lookup::<N_MLES>(&mut prover_transcript)
+				.prove_lookup::<N_MLES>(&mut prover_channel)
 				.unwrap();
 
+			drop(prover_channel);
 			let proof = prover_transcript.finalize();
 			let verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
 
 			b.iter(|| {
 				let mut transcript = verifier_transcript.clone();
-				logup_verifier::verify_lookup::<_, N_TABLES>(
+				let mut verifier_channel =
+					NaiveVerifierChannel::<F, _>::new(&mut transcript, &oracle_specs);
+				logup_verifier::verify_lookup::<F, _, N_TABLES>(
 					eq_log_len,
 					table_log_len,
 					&case.eval_point,
 					&case.lookup_evals,
 					&case.table_ids,
-					&mut transcript,
+					&mut verifier_channel,
 				)
 				.unwrap();
 			});

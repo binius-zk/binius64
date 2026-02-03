@@ -3,6 +3,7 @@ use std::iter::chain;
 
 use binius_field::{BinaryField, Field, PackedField};
 use binius_iop_prover::{
+	channel::IOPProverChannel,
 	fri::{self, CommitOutput, Error, commit_interleaved},
 	merkle_tree::MerkleTreeProver,
 };
@@ -32,8 +33,13 @@ pub struct PushforwardEvalClaims<F: Field> {
 	pub table_evals: Vec<F>,
 }
 
-impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUPS: usize>
-	LogUp<P, N_TABLES, N_LOOKUPS>
+impl<
+	P: PackedField<Scalar = F>,
+	Channel: IOPProverChannel<P>,
+	F: Field,
+	const N_TABLES: usize,
+	const N_LOOKUPS: usize,
+> LogUp<P, Channel, N_TABLES, N_LOOKUPS>
 {
 	/// Proves the outer instance, reducing lookup value claims to pushforward claims.
 	pub fn prove_pushforward<
@@ -81,33 +87,5 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			pushforward_evals: pushforward_evals.to_vec(),
 			table_evals: table_evals.to_vec(),
 		})
-	}
-
-	pub fn commit_pushforward<NTT, VCS, MerkleProver>(
-		&self,
-		params: &FRIParams<F>,
-		ntt: &NTT,
-		merkle_prover: &MerkleProver,
-	) -> Result<CommitOutput<P, VCS::Digest, MerkleProver::Committed>, Error>
-	where
-		F: BinaryField,
-		NTT: AdditiveNTT<Field = F> + Sync,
-		MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
-		VCS: MerkleTreeScheme<F>,
-	{
-		// We assume that all pushforwards are of the same length.
-		let pushforward_log_len = self.push_forwards[0].log_len();
-		let batch_next_pow_2 = 1 << (log2_ceil_usize(N_TABLES) + pushforward_log_len);
-		let mut batch_pushforward: Vec<F> = self
-			.push_forwards
-			.iter()
-			.flat_map(|push_forward| push_forward.iter_scalars())
-			.collect();
-
-		batch_pushforward.resize_with(batch_next_pow_2, || F::ZERO);
-
-		let batch_pushforward = FieldBuffer::from_values(&batch_pushforward);
-
-		commit_interleaved(params, ntt, merkle_prover, batch_pushforward.to_ref())
 	}
 }

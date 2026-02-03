@@ -14,6 +14,7 @@ pub mod pushforward;
 mod tests;
 
 use binius_field::{Field, PackedField};
+use binius_iop_prover::channel::IOPProverChannel;
 use binius_math::{FieldBuffer, multilinear::eq};
 use binius_transcript::{
 	ProverTranscript,
@@ -22,7 +23,7 @@ use binius_transcript::{
 
 use crate::protocols::logup::{
 	helper::{
-		batch_lookup_evals, concatenate_indices, generate_index_fingerprints,
+		batch_lookup_evals, batch_pushforwards, concatenate_indices, generate_index_fingerprints,
 		generate_index_fingerprints_new,
 	},
 	prover::{build_pushforwards, build_pushforwards_from_concat_indexes},
@@ -32,7 +33,12 @@ use crate::protocols::logup::{
 /// The instance aggregates multiple lookup batches that may target different
 /// tables. Each lookup batch is represented by its index fingerprints,
 /// pushforward, and claimed lookup evaluation.
-pub struct LogUp<P: PackedField, const N_TABLES: usize, const N_LOOKUPS: usize> {
+pub struct LogUp<
+	P: PackedField,
+	Channel: IOPProverChannel<P>,
+	const N_TABLES: usize,
+	const N_LOOKUPS: usize,
+> {
 	/// Fingerprinted indices for each lookup batch.
 	fingerprinted_indexes: [FieldBuffer<P>; N_TABLES],
 	/// Table selector for each lookup batch.
@@ -47,7 +53,7 @@ pub struct LogUp<P: PackedField, const N_TABLES: usize, const N_LOOKUPS: usize> 
 	/// Claimed lookup values at `eval_point`.
 	batched_evals: [P::Scalar; N_TABLES],
 
-	extended_eval_point: Vec<P::Scalar>,
+	batch_pushforward_oracle: Channel::Oracle,
 	/// Fiat-Shamir scalar used for fingerprint hashing.
 	pub fingerprint_scalar: P::Scalar,
 	/// Fiat-Shamir shift applied in fingerprint hashing.
@@ -57,21 +63,26 @@ pub struct LogUp<P: PackedField, const N_TABLES: usize, const N_LOOKUPS: usize> 
 /// Builder for LogUp prover state.
 ///
 /// We assume the bits for each index have been committed as separate MLEs.
-impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUPS: usize>
-	LogUp<P, N_TABLES, N_LOOKUPS>
+impl<
+	P: PackedField<Scalar = F>,
+	Channel: IOPProverChannel<P>,
+	F: Field,
+	const N_TABLES: usize,
+	const N_LOOKUPS: usize,
+> LogUp<P, Channel, N_TABLES, N_LOOKUPS>
 {
 	/// Creates a LogUp instance for batched indexed lookup claims.
 	///
 	/// This samples the fingerprint/shift scalars, constructs the eq-kernel at the
 	/// verifier point, and builds both pushforwards and fingerprinted indices so
 	/// that the proving sub-protocols can run without re-deriving shared state.
-	pub fn new<Challenger_: Challenger>(
+	pub fn new(
 		indexes: [&[usize]; N_LOOKUPS],
 		table_ids: [usize; N_LOOKUPS],
 		eval_point: &[P::Scalar],
 		lookup_evals: [F; N_LOOKUPS],
 		tables: [FieldBuffer<P>; N_TABLES],
-		transcript: &mut ProverTranscript<Challenger_>,
+		transcript: &mut Channel,
 	) -> Self {
 		assert!(N_TABLES > 0 && N_LOOKUPS > 0);
 
@@ -83,6 +94,11 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 
 		let push_forwards =
 			build_pushforwards_from_concat_indexes(&concat_indices, &tables, &eq_kernel);
+
+		let batch_pushforward = batch_pushforwards(&push_forwards);
+
+		let batch_pushforward_oracle = transcript.send_oracle(batch_pushforward.to_ref());
+
 		let max_log_len = tables
 			.iter()
 			.map(|table| table.log_len())
@@ -107,7 +123,7 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 			fingerprint_scalar,
 			shift_scalar,
 			batched_evals,
-			extended_eval_point,
+			batch_pushforward_oracle,
 		}
 	}
 }

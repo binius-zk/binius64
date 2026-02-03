@@ -36,6 +36,26 @@ where
 	FieldBuffer::from_values(&pushforward)
 }
 
+pub fn batch_pushforwards<P, F, const N_TABLES: usize>(
+	push_forwards: &[FieldBuffer<P>; N_TABLES],
+) -> FieldBuffer<P>
+where
+	P: PackedField<Scalar = F>,
+	F: Field,
+{
+	// We assume that all pushforwards are of the same length.
+	let pushforward_log_len = push_forwards[0].log_len();
+	let batch_next_pow_2 = 1 << (log2_ceil_usize(N_TABLES) + pushforward_log_len);
+	let mut batch_pushforward: Vec<F> = push_forwards
+		.iter()
+		.flat_map(|push_forward| push_forward.iter_scalars())
+		.collect();
+
+	batch_pushforward.resize_with(batch_next_pow_2, || F::ZERO);
+
+	FieldBuffer::from_values(&batch_pushforward)
+}
+
 /// Collects lookup values from a table at the specified indices.
 pub fn generate_lookup_values<P, F>(indices: &[usize], table: &FieldBuffer<P>) -> FieldBuffer<P>
 where

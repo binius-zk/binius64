@@ -2,16 +2,20 @@
 use std::array;
 
 use binius_field::PackedField;
+use binius_iop::channel::OracleSpec;
+use binius_iop::naive_channel::NaiveVerifierChannel;
+use binius_iop_prover::naive_channel::NaiveProverChannel;
 use binius_math::{
 	FieldBuffer,
-	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
+	multilinear::evaluate::evaluate,
 	test_utils::{Packed128b, random_field_buffer, random_scalars},
 };
 use binius_transcript::ProverTranscript;
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{config::StdChallenger, protocols::logup as logup_verifier};
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{SeedableRng, rngs::StdRng};
 
-use super::LogUp;
+use super::{LogUp, helper::batch_pushforwards};
 
 #[test]
 fn test_logup_prove_verify() {
@@ -20,7 +24,7 @@ fn test_logup_prove_verify() {
 
 	const N_TABLES: usize = 2;
 	const N_LOOKUPS: usize = 2;
-	const N_MLES: usize = N_TABLES + N_LOOKUPS;
+	const N_MLES: usize = 2 * N_TABLES;
 
 	let mut rng = StdRng::seed_from_u64(0);
 	let eq_log_len = 3;
@@ -55,59 +59,59 @@ fn test_logup_prove_verify() {
 	});
 	let lookup_evals_for_verify = lookup_evals;
 
+	let batch_log_len = table_log_len + log2_ceil_usize(N_TABLES);
+	let oracle_specs = vec![OracleSpec {
+		log_msg_len: batch_log_len,
+		is_zk: false,
+	}];
+
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-	let logup = LogUp::<P, N_TABLES, N_LOOKUPS>::new(
+	let mut prover_channel =
+		NaiveProverChannel::<F, P, _>::new(&mut prover_transcript, oracle_specs.clone());
+
+	let logup = LogUp::<P, _, N_TABLES, N_LOOKUPS>::new(
 		[indices_0.as_slice(), indices_1.as_slice()],
 		table_ids,
 		&eval_point,
 		lookup_evals,
 		tables,
-		&mut prover_transcript,
+		&mut prover_channel,
 	);
-	logup
-		.prove_lookup::<N_MLES>(&mut prover_transcript)
-		.unwrap();
+	logup.prove_lookup::<N_MLES>(&mut prover_channel).unwrap();
 
-	let mut verifier_transcript = prover_transcript.into_verifier();
-	let eval_claims = logup_verifier::verify_lookup::<_, N_TABLES>(
+	let fingerprinted_indexes = logup.fingerprinted_indexes.clone();
+	let tables = logup.tables.clone();
+	let push_forwards = logup.push_forwards.clone();
+	drop(logup);
+	drop(prover_channel);
+	let mut verifier_transcript = prover_transcript.clone().into_verifier();
+	let mut verifier_channel =
+		NaiveVerifierChannel::<F, _>::new(&mut verifier_transcript, &oracle_specs);
+	let eval_claims = logup_verifier::verify_lookup::<F, _, N_TABLES>(
 		eq_log_len,
 		table_log_len,
 		&eval_point,
 		&lookup_evals_for_verify,
 		&table_ids,
-		&mut verifier_transcript,
+		&mut verifier_channel,
 	)
 	.unwrap();
 
 	for (claim, index) in eval_claims
 		.index_claims
 		.iter()
-		.zip(logup.fingerprinted_indexes.iter())
+		.zip(fingerprinted_indexes.iter())
 	{
 		assert_eq!(claim.eval, evaluate(index, &claim.point));
 	}
 
-	for (claim, pushforward) in eval_claims
-		.pushforward_sumcheck_claims
-		.iter()
-		.zip(logup.push_forwards.iter())
-	{
-		assert_eq!(claim.eval, evaluate(pushforward, &claim.point));
-	}
-
-	for (claim, table) in eval_claims
-		.table_sumcheck_claims
-		.iter()
-		.zip(logup.tables.iter())
-	{
+	for (claim, table) in eval_claims.table_sumcheck_claims.iter().zip(tables.iter()) {
 		assert_eq!(claim.eval, evaluate(table, &claim.point));
 	}
 
-	for (claim, pushforward) in eval_claims
-		.pushforward_frac_claims
-		.iter()
-		.zip(logup.push_forwards.iter())
-	{
-		assert_eq!(claim.eval, evaluate(pushforward, &claim.point));
-	}
+	let batched_pushforward = batch_pushforwards::<P, F, N_TABLES>(&push_forwards);
+	assert_eq!(
+		eval_claims.pushforward_eval_claim.eval,
+		evaluate(&batched_pushforward, &eval_claims.pushforward_eval_claim.point)
+	);
 }

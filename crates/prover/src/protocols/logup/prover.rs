@@ -2,12 +2,18 @@
 use std::{array, iter::zip};
 
 use binius_field::{Field, PackedField};
+use binius_iop_prover::channel::IOPProverChannel;
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{ProveSingleOutput, prove_single},
 };
 use binius_math::FieldBuffer;
-use binius_verifier::protocols::{fracaddcheck::FracAddEvalClaim, logup::LogUpLookupClaims};
+use binius_verifier::protocols::{
+	fracaddcheck::FracAddEvalClaim,
+	logup::{LogUpEvalClaims, LogUpLookupClaims},
+	prodcheck::MultilinearEvalClaim,
+};
+use rand::seq::index;
 
 use crate::protocols::{
 	fracaddcheck,
@@ -24,8 +30,13 @@ pub enum Error {
 	FracAddCheck(#[from] fracaddcheck::Error),
 }
 
-impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUPS: usize>
-	LogUp<P, N_TABLES, N_LOOKUPS>
+impl<
+	P: PackedField<Scalar = F>,
+	Channel: IOPProverChannel<P>,
+	F: Field,
+	const N_TABLES: usize,
+	const N_LOOKUPS: usize,
+> LogUp<P, Channel, N_TABLES, N_LOOKUPS>
 {
 	/// Runs the full LogUp proving flow and returns per-lookup claims.
 	///
@@ -35,8 +46,8 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 	/// * `N_MLES == N_TABLES + N_LOOKUPS`.
 	pub fn prove_lookup<const N_MLES: usize>(
 		&self,
-		channel: &mut impl IPProverChannel<F>,
-	) -> Result<Vec<LogUpLookupClaims<F>>, Error> {
+		channel: &mut Channel,
+	) -> Result<LogUpEvalClaims<F, Channel::Oracle>, Error> {
 		assert!(N_MLES == 2 * N_TABLES);
 		// Reduce lookup evaluations to pushforward/table evaluations.
 		let pushforward_claims = self.prove_pushforward::<N_MLES>(channel)?;
@@ -44,30 +55,55 @@ impl<P: PackedField<Scalar = F>, F: Field, const N_TABLES: usize, const N_LOOKUP
 		let (eq_claims, push_claims) = self.prove_log_sum(channel)?;
 
 		// Reduce pushforward and log-sum evaluations via bivariate product sumcheck.
-		reduce_pushforward_logsum::<P, F, N_TABLES>(
+		let ProveSingleOutput {
+			multilinear_evals: reduction_sumcheck_evals,
+			challenges: reduction_sumcheck_point,
+		} = reduce_pushforward_logsum::<P, F, N_TABLES>(
 			&pushforward_claims,
 			&push_claims,
 			&self.push_forwards,
 			channel,
 		)?;
 
-		let mut claims = Vec::with_capacity(N_TABLES);
-		// Pair each lookup batch with its table id and fractional claims.
-		for (lookup_idx, (eq_frac_claim, push_frac_claim)) in
-			eq_claims.into_iter().zip(push_claims).enumerate()
-		{
-			let table_id = self.table_ids[lookup_idx];
-			let table_eval = pushforward_claims.table_evals[table_id];
-			claims.push(LogUpLookupClaims {
-				table_id,
-				pushforward_eval: pushforward_claims.pushforward_evals[lookup_idx],
-				table_eval,
-				eq_frac_claim,
-				push_frac_claim,
-			});
-		}
+		let PushforwardEvalClaims {
+			challenges,
+			table_evals,
+			..
+		} = pushforward_claims;
 
-		Ok(claims)
+		let table_sumcheck_claims = table_evals
+			.iter()
+			.map(|&eval| MultilinearEvalClaim {
+				eval,
+				point: challenges.clone(),
+			})
+			.collect::<Vec<_>>();
+
+		let index_claims = eq_claims
+			.iter()
+			.map(
+				|&FracAddEvalClaim {
+				     den_eval: shifted_index_eval,
+				     ref point,
+				     ..
+				 }| MultilinearEvalClaim {
+					eval: shifted_index_eval - self.shift_scalar,
+					point: point.clone(),
+				},
+			)
+			.collect::<Vec<_>>();
+
+		let pushforward_eval_claim = MultilinearEvalClaim {
+			eval: reduction_sumcheck_evals[0],
+			point: reduction_sumcheck_point,
+		};
+
+		Ok(LogUpEvalClaims {
+			index_claims: index_claims,
+			table_sumcheck_claims: table_sumcheck_claims,
+			pushforward_oracle: self.batch_pushforward_oracle.clone(),
+			pushforward_eval_claim: pushforward_eval_claim,
+		})
 	}
 }
 

@@ -32,6 +32,7 @@ rand.workspace = true
 anyhow.workspace = true
 binius-circuits = { path = "../circuits" }
 binius-frontend = { path = "../frontend" }
+binius-iop = { path = "../iop" }
 binius-math = { path = "../math", features = ["test-utils"] }
 criterion.workspace = true
 proptest.workspace = true
