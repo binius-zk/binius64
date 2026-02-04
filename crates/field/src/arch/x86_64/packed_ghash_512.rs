@@ -13,10 +13,9 @@ use crate::{
 	BinaryField128bGhash,
 	arch::portable::packed_macros::{portable_macros::*, *},
 	arithmetic_traits::{
-		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
+		InvertOrZero, TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
 		impl_square_with,
 	},
-	packed::PackedField,
 	underlier::UnderlierWithBitOps,
 };
 
@@ -145,13 +144,13 @@ impl TaggedInvertOrZero<Ghash512Strategy> for PackedBinaryGhash4x128b {
 			// Use the portable scalar invert for each element
 			use super::super::portable::packed_ghash_128::PackedBinaryGhash1x128b as PortablePackedBinaryGhash1x128b;
 			let result_0 =
-				PackedField::invert_or_zero(PortablePackedBinaryGhash1x128b::from(self_0));
+				InvertOrZero::invert_or_zero(PortablePackedBinaryGhash1x128b::from(self_0));
 			let result_1 =
-				PackedField::invert_or_zero(PortablePackedBinaryGhash1x128b::from(self_1));
+				InvertOrZero::invert_or_zero(PortablePackedBinaryGhash1x128b::from(self_1));
 			let result_2 =
-				PackedField::invert_or_zero(PortablePackedBinaryGhash1x128b::from(self_2));
+				InvertOrZero::invert_or_zero(PortablePackedBinaryGhash1x128b::from(self_2));
 			let result_3 =
-				PackedField::invert_or_zero(PortablePackedBinaryGhash1x128b::from(self_3));
+				InvertOrZero::invert_or_zero(PortablePackedBinaryGhash1x128b::from(self_3));
 
 			result_underlier.set_subvalue(0, result_0.to_underlier());
 			result_underlier.set_subvalue(1, result_1.to_underlier());

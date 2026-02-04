@@ -16,10 +16,9 @@ use crate::{
 		shared::ghash::ClMulUnderlier,
 	},
 	arithmetic_traits::{
-		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
+		InvertOrZero, TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
 		impl_square_with,
 	},
-	packed::PackedField,
 };
 
 impl ClMulUnderlier for M128 {
@@ -91,6 +90,6 @@ impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
 			u128::from(self.to_underlier()),
 		);
 
-		Self::from_underlier(PackedField::invert_or_zero(portable).to_underlier().into())
+		Self::from_underlier(InvertOrZero::invert_or_zero(portable).to_underlier().into())
 	}
 }

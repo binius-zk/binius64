@@ -28,25 +28,7 @@ pub trait Field:
 	+ Display
 	+ Hash
 	+ 'static
-	+ Neg<Output = Self>
-	+ Add<Output = Self>
-	+ Sub<Output = Self>
-	+ Mul<Output = Self>
-	+ Sum
-	+ Product
-	+ for<'a> Add<&'a Self, Output = Self>
-	+ for<'a> Sub<&'a Self, Output = Self>
-	+ for<'a> Mul<&'a Self, Output = Self>
-	+ for<'a> Sum<&'a Self>
-	+ for<'a> Product<&'a Self>
-	+ AddAssign
-	+ SubAssign
-	+ MulAssign
-	+ for<'a> AddAssign<&'a Self>
-	+ for<'a> SubAssign<&'a Self>
-	+ for<'a> MulAssign<&'a Self>
-	+ Square
-	+ InvertOrZero
+	+ FieldOps<Self>
 	+ Random
 	+ Zeroable
 	+ SerializeBytes
@@ -125,4 +107,55 @@ pub trait Field:
 
 		res
 	}
+}
+
+/// Operations for types that represent vectors of field elements.
+///
+/// This trait abstracts over:
+/// - [`Field`] types (single field elements, which are trivially vectors of length 1)
+/// - [`PackedField`](crate::PackedField) types (SIMD-accelerated vectors of field elements)
+/// - Symbolic field types (for constraint system representations)
+///
+/// Mathematically, instances of this trait represent vectors of field elements where
+/// arithmetic operations like addition, subtraction, multiplication, squaring, and
+/// inversion are defined element-wise. For a packed field with width N, multiplying
+/// two values performs N independent field multiplications in parallel.
+///
+/// # Type Parameter
+///
+/// The type parameter `F` represents the scalar field type. For a `Field` implementation,
+/// `F` is `Self`. For a `PackedField` implementation, `F` is the scalar type being packed.
+///
+/// # Required Methods
+///
+/// - [`zero()`](Self::zero) - Returns the additive identity (all elements are zero)
+/// - [`one()`](Self::one) - Returns the multiplicative identity (all elements are one)
+pub trait FieldOps<F>:
+	Neg<Output = Self>
+	+ Add<Output = Self>
+	+ Sub<Output = Self>
+	+ Mul<Output = Self>
+	+ Sum
+	+ Product
+	+ for<'a> Add<&'a Self, Output = Self>
+	+ for<'a> Sub<&'a Self, Output = Self>
+	+ for<'a> Mul<&'a Self, Output = Self>
+	+ for<'a> Sum<&'a Self>
+	+ for<'a> Product<&'a Self>
+	+ AddAssign
+	+ SubAssign
+	+ MulAssign
+	+ for<'a> AddAssign<&'a Self>
+	+ for<'a> SubAssign<&'a Self>
+	+ for<'a> MulAssign<&'a Self>
+	+ Mul<F, Output = Self>
+	+ MulAssign<F>
+	+ Square
+	+ InvertOrZero
+{
+	/// Returns the zero element (additive identity).
+	fn zero() -> Self;
+
+	/// Returns the one element (multiplicative identity).
+	fn one() -> Self;
 }

@@ -35,7 +35,10 @@
 
 use std::vec;
 
-use binius_field::{BinaryField, BinaryField1b, Field, PackedBinaryField8x1b, PackedField};
+use binius_field::{
+	BinaryField, BinaryField1b, Field, PackedBinaryField8x1b, PackedField,
+	arithmetic_traits::InvertOrZero,
+};
 use binius_math::BinarySubspace;
 use binius_verifier::and_reduction::{
 	univariate::univariate_lagrange::{
@@ -218,8 +221,9 @@ mod test {
 	use std::iter::repeat_with;
 
 	use binius_field::{
-		AESTowerField8b, Field, PackedAESBinaryField16x8b, PackedBinaryField8x1b, PackedField,
-		Random,
+		AESTowerField8b, Field, PackedAESBinaryField16x8b, PackedBinaryField8x1b, Random,
+		arithmetic_traits::InvertOrZero,
+		field::FieldOps,
 		packed::{get_packed_slice, set_packed_slice},
 	};
 	use binius_math::{

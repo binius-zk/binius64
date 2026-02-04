@@ -226,11 +226,14 @@ mod tests {
 	use proptest::prelude::*;
 
 	use super::test_utils::{define_invert_tests, define_multiply_tests, define_square_tests};
-	use crate::PackedField;
+	use crate::{
+		PackedField,
+		arithmetic_traits::{InvertOrZero, Square},
+	};
 
 	define_multiply_tests!(Mul::mul, PackedField);
 
-	define_square_tests!(PackedField::square, PackedField);
+	define_square_tests!(Square::square, PackedField);
 
-	define_invert_tests!(PackedField::invert_or_zero, PackedField);
+	define_invert_tests!(InvertOrZero::invert_or_zero, PackedField);
 }

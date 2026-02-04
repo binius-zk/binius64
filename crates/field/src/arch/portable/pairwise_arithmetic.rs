@@ -29,7 +29,7 @@ where
 	fn square(self) -> Self {
 		if PT::WIDTH == 1 {
 			// fallback to be able to benchmark this strategy
-			PackedField::square(self)
+			Square::square(self)
 		} else {
 			Self::from_fn(|i| Square::square(self.get(i)))
 		}
@@ -44,7 +44,7 @@ where
 	fn invert_or_zero(self) -> Self {
 		if PT::WIDTH == 1 {
 			// fallback to be able to benchmark this strategy
-			PackedField::invert_or_zero(self)
+			InvertOrZero::invert_or_zero(self)
 		} else {
 			Self::from_fn(|i| InvertOrZero::invert_or_zero(self.get(i)))
 		}

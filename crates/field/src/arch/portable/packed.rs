@@ -10,7 +10,7 @@ use std::{
 	fmt::Debug,
 	iter::{Product, Sum},
 	marker::PhantomData,
-	ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign},
+	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
 use binius_utils::{checked_arithmetics::checked_int_div, iter::IterExtensions};
@@ -23,6 +23,7 @@ use rand::{
 use crate::{
 	BinaryField, Divisible, PackedField,
 	arithmetic_traits::{InvertOrZero, MulAlpha, Square},
+	field::FieldOps,
 	underlier::{NumCast, UnderlierType, UnderlierWithBitOps, WithUnderlier},
 };
 
@@ -148,12 +149,31 @@ impl<U: UnderlierType, Scalar: BinaryField> From<U> for PackedPrimitiveType<U, S
 	}
 }
 
+impl<U: UnderlierWithBitOps, Scalar: BinaryField> Neg for PackedPrimitiveType<U, Scalar> {
+	type Output = Self;
+
+	#[inline]
+	fn neg(self) -> Self::Output {
+		self
+	}
+}
+
 impl<U: UnderlierWithBitOps, Scalar: BinaryField> Add for PackedPrimitiveType<U, Scalar> {
 	type Output = Self;
 
 	#[inline]
 	#[allow(clippy::suspicious_arithmetic_impl)]
 	fn add(self, rhs: Self) -> Self::Output {
+		(self.0 ^ rhs.0).into()
+	}
+}
+
+impl<U: UnderlierWithBitOps, Scalar: BinaryField> Add<&Self> for PackedPrimitiveType<U, Scalar> {
+	type Output = Self;
+
+	#[inline]
+	#[allow(clippy::suspicious_arithmetic_impl)]
+	fn add(self, rhs: &Self) -> Self::Output {
 		(self.0 ^ rhs.0).into()
 	}
 }
@@ -168,11 +188,30 @@ impl<U: UnderlierWithBitOps, Scalar: BinaryField> Sub for PackedPrimitiveType<U,
 	}
 }
 
+impl<U: UnderlierWithBitOps, Scalar: BinaryField> Sub<&Self> for PackedPrimitiveType<U, Scalar> {
+	type Output = Self;
+
+	#[inline]
+	#[allow(clippy::suspicious_arithmetic_impl)]
+	fn sub(self, rhs: &Self) -> Self::Output {
+		(self.0 ^ rhs.0).into()
+	}
+}
+
 impl<U: UnderlierType, Scalar: BinaryField> AddAssign for PackedPrimitiveType<U, Scalar>
 where
 	Self: Add<Output = Self>,
 {
 	fn add_assign(&mut self, rhs: Self) {
+		*self = *self + rhs;
+	}
+}
+
+impl<U: UnderlierType, Scalar: BinaryField> AddAssign<&Self> for PackedPrimitiveType<U, Scalar>
+where
+	Self: for<'a> Add<&'a Self, Output = Self>,
+{
+	fn add_assign(&mut self, rhs: &Self) {
 		*self = *self + rhs;
 	}
 }
@@ -186,11 +225,29 @@ where
 	}
 }
 
+impl<U: UnderlierType, Scalar: BinaryField> SubAssign<&Self> for PackedPrimitiveType<U, Scalar>
+where
+	Self: for<'a> Sub<&'a Self, Output = Self>,
+{
+	fn sub_assign(&mut self, rhs: &Self) {
+		*self = *self - rhs;
+	}
+}
+
 impl<U: UnderlierType, Scalar: BinaryField> MulAssign for PackedPrimitiveType<U, Scalar>
 where
 	Self: Mul<Output = Self>,
 {
 	fn mul_assign(&mut self, rhs: Self) {
+		*self = *self * rhs;
+	}
+}
+
+impl<U: UnderlierType, Scalar: BinaryField> MulAssign<&Self> for PackedPrimitiveType<U, Scalar>
+where
+	Self: for<'a> Mul<&'a Self, Output = Self>,
+{
+	fn mul_assign(&mut self, rhs: &Self) {
 		*self = *self * rhs;
 	}
 }
@@ -262,6 +319,15 @@ where
 	}
 }
 
+impl<'a, U: UnderlierType, Scalar: BinaryField> Sum<&'a Self> for PackedPrimitiveType<U, Scalar>
+where
+	Self: Add<Output = Self>,
+{
+	fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
+		iter.fold(Self::from(U::default()), |result, next| result + *next)
+	}
+}
+
 impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> Product
 	for PackedPrimitiveType<U, Scalar>
 where
@@ -272,12 +338,51 @@ where
 	}
 }
 
+impl<'a, U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField>
+	Product<&'a Self> for PackedPrimitiveType<U, Scalar>
+where
+	Self: Mul<Output = Self>,
+{
+	fn product<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
+		iter.fold(Self::broadcast(Scalar::ONE), |result, next| result * *next)
+	}
+}
+
+impl<U: UnderlierType, Scalar: BinaryField> Mul<&Self> for PackedPrimitiveType<U, Scalar>
+where
+	Self: Mul<Output = Self>,
+{
+	type Output = Self;
+
+	#[inline]
+	fn mul(self, rhs: &Self) -> Self::Output {
+		self * *rhs
+	}
+}
+
 unsafe impl<U: UnderlierType + Zeroable, Scalar: BinaryField> Zeroable
 	for PackedPrimitiveType<U, Scalar>
 {
 }
 
 unsafe impl<U: UnderlierType + Pod, Scalar: BinaryField> Pod for PackedPrimitiveType<U, Scalar> {}
+
+impl<U, Scalar> FieldOps<Scalar> for PackedPrimitiveType<U, Scalar>
+where
+	Self: Square + InvertOrZero + Mul<Output = Self>,
+	U: UnderlierWithBitOps + Divisible<Scalar::Underlier>,
+	Scalar: BinaryField,
+{
+	#[inline]
+	fn zero() -> Self {
+		Self::from_underlier(U::ZERO)
+	}
+
+	#[inline]
+	fn one() -> Self {
+		Self::broadcast(Scalar::ONE)
+	}
+}
 
 impl<U, Scalar> PackedField for PackedPrimitiveType<U, Scalar>
 where
@@ -299,11 +404,6 @@ where
 		unsafe {
 			self.0.set_subvalue(i, scalar.to_underlier());
 		}
-	}
-
-	#[inline]
-	fn zero() -> Self {
-		Self::from_underlier(U::ZERO)
 	}
 
 	#[inline]
@@ -365,16 +465,6 @@ where
 	#[inline]
 	fn from_fn(mut f: impl FnMut(usize) -> Self::Scalar) -> Self {
 		U::from_fn(move |i| f(i).to_underlier()).into()
-	}
-
-	#[inline]
-	fn square(self) -> Self {
-		<Self as Square>::square(self)
-	}
-
-	#[inline]
-	fn invert_or_zero(self) -> Self {
-		<Self as InvertOrZero>::invert_or_zero(self)
 	}
 }
 
