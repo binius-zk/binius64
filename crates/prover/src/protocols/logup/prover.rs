@@ -32,7 +32,7 @@ impl<P: PackedField<Scalar = F>, Channel: IOPProverChannel<P>, F: Field, const N
 {
 	/// Runs the full LogUp proving flow and returns per-lookup claims.
 	///
-	/// `docs/logup.md` describes one lookup claim as:
+	/// Logup* describes one lookup claim as:
 	/// 1. replace pullback evaluation `I^*T(r)` with `<T, I_*eq_r>`,
 	/// 2. prove the pushforward `I_*eq_r` is consistent using the log-sum identity.
 	///

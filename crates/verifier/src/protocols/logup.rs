@@ -80,9 +80,9 @@ struct PushforwardVerificationOutput<F: Field> {
 /// 1. Reconstruct batching context from the transcript (`recv_oracle`, `sample_array`,
 ///    `batch_lookup_evals`), yielding one batched lookup claim per table and the extended eq-kernel
 ///    point `[batch_prefix || r]`.
-/// 2. [`verify_pushforward`] checks the batched `<table_t, pushforward_t>` identities (one per
+/// 2. Checks the batched `<table_t, pushforward_t>` identities (one per
 ///    table), i.e. the batched analogue of `I^*T(r) = <T, I_*eq_r>`.
-/// 3. [`verify_log_sum`] checks that each pushforward is consistent with the concatenated
+/// 3. Checks that each pushforward is consistent with the concatenated
 ///    fingerprinted indices and the batched eq-kernel.
 /// 4. The verifier samples fresh table-axis batching randomness and a reduction scalar, then
 ///    verifies the final bivariate reduction sumcheck that folds pushforward evaluations coming

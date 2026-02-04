@@ -2,7 +2,7 @@
 
 //! LogUp prover helpers and sub-protocols.
 //!
-//! `docs/logup.md` explains the single-lookup claim. For one lookup instance
+//! LogUp* explains the single-lookup claim. For one lookup instance
 //! with index map `I`, table `T`, and claim `e = I^*T(r)`, the prover:
 //! 1. sets `Y = I_*eq_r`,
 //! 2. proves `e = <T, Y>`,
