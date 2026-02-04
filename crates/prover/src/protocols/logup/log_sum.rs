@@ -3,7 +3,6 @@ use std::{array, iter::zip};
 
 use binius_field::{Field, PackedField};
 use binius_iop_prover::channel::IOPProverChannel;
-use binius_ip_prover::channel::IPProverChannel;
 use binius_math::FieldBuffer;
 use binius_verifier::protocols::fracaddcheck::FracAddEvalClaim;
 use itertools::Itertools;
@@ -59,38 +58,39 @@ impl<P: PackedField<Scalar = F>, Channel: IOPProverChannel<P>, F: Field, const N
 		);
 
 		// Batch 1 witness: same eq-kernel numerator for all tables, table-specific denominators.
-		let eq_witness = SharedLastLayer::CommonNumerator {
+		let index_witness = SharedLastLayer::CommonNumerator {
 			den: self.fingerprinted_indexes.clone(),
 			num: self.eq_kernel.clone(),
 		};
 
 		// Batch 2 denominator fingerprints the canonical index sequence 0..2^eq_log_len.
 		let common_denominator = generate_enumeration_fingerprint(
-			eq_log_len,
+			self.push_forwards[0].log_len(),
 			self.fingerprint_scalar,
 			self.shift_scalar,
 		);
 
 		// Batch 2 witness: shared denominator, table-specific pushforward numerators.
-		let push_witnesses = SharedLastLayer::CommonDenominator {
+		let pushforward_witnesses = SharedLastLayer::CommonDenominator {
 			den: common_denominator,
 			num: self.push_forwards.clone(),
 		};
 
 		// eq-kernel numerator is shared; denominators are per-table fingerprints of indexes.
-		let (eq_prover, eq_sums) =
-			BatchFracAddCheckProver::<P, N_TABLES>::new_with_last_layer_sharing(
-				eq_log_len, eq_witness,
-			);
-		// Pushforward denominators are shared; numerators are per-table pushforwards.
-		let (push_prover, push_sums) =
+		let (index_prover, index_sums) =
 			BatchFracAddCheckProver::<P, N_TABLES>::new_with_last_layer_sharing(
 				eq_log_len,
-				push_witnesses,
+				index_witness,
+			);
+		// Pushforward denominators are shared; numerators are per-table pushforwards.
+		let (pushforward_prover, pushforward_sums) =
+			BatchFracAddCheckProver::<P, N_TABLES>::new_with_last_layer_sharing(
+				self.push_forwards[0].log_len(),
+				pushforward_witnesses,
 			);
 
-		let index_log_sum_claims = Self::tree_sums_to_claims(eq_sums);
-		let pushforward_log_sum_claims = Self::tree_sums_to_claims(push_sums);
+		let index_log_sum_claims = Self::tree_sums_to_claims(index_sums);
+		let pushforward_log_sum_claims = Self::tree_sums_to_claims(pushforward_sums);
 
 		// Transcript order is part of the protocol: (eq_num, eq_den, push_num, push_den) per table.
 		zip(index_log_sum_claims.iter(), pushforward_log_sum_claims.iter()).for_each(
@@ -105,9 +105,9 @@ impl<P: PackedField<Scalar = F>, Channel: IOPProverChannel<P>, F: Field, const N
 		);
 
 		// Prove each batch against the just-emitted top-layer claims.
-		let index_log_sum_claims = eq_prover.prove(index_log_sum_claims.clone(), channel)?;
+		let index_log_sum_claims = index_prover.prove(index_log_sum_claims.clone(), channel)?;
 		let pushforward_log_sum_claims =
-			push_prover.prove(pushforward_log_sum_claims.clone(), channel)?;
+			pushforward_prover.prove(pushforward_log_sum_claims.clone(), channel)?;
 
 		Ok((index_log_sum_claims, pushforward_log_sum_claims))
 	}

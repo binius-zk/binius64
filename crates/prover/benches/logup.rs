@@ -21,7 +21,8 @@ type P = OptimalPackedB128;
 type F = <P as PackedField>::Scalar;
 
 const N_TABLES: usize = 2;
-const N_LOOKUPS: usize = 6;
+const N_LOOKUPS_PER_TABLE: usize = 3;
+const N_LOOKUPS: usize = N_TABLES * N_LOOKUPS_PER_TABLE;
 const N_MLES: usize = 2 * N_TABLES;
 
 struct LogUpBenchCase {

@@ -22,7 +22,8 @@ fn test_logup_prove_verify() {
 	type F = <P as PackedField>::Scalar;
 
 	const N_TABLES: usize = 2;
-	const N_LOOKUPS: usize = 2;
+	const N_LOOKUPS_PER_TABLE: usize = 1;
+	const N_LOOKUPS: usize = N_TABLES * N_LOOKUPS_PER_TABLE;
 	const N_MLES: usize = 2 * N_TABLES;
 
 	let mut rng = StdRng::seed_from_u64(0);
@@ -31,32 +32,33 @@ fn test_logup_prove_verify() {
 	let table_len = 1 << table_log_len;
 	let lookup_len = 1 << eq_log_len;
 
-	let tables = [
-		random_field_buffer::<P>(&mut rng, table_log_len),
-		random_field_buffer::<P>(&mut rng, table_log_len),
-	];
-
-	let indices_0 = (0..lookup_len)
-		.map(|i| (i * 3) % table_len)
-		.collect::<Vec<_>>();
-	let indices_1 = (0..lookup_len)
-		.map(|i| (table_len - 1 - i) % table_len)
-		.collect::<Vec<_>>();
-	let indexes = [indices_0.as_slice(), indices_1.as_slice()];
-	let table_ids = [0usize, 1usize];
+	let tables: [FieldBuffer<P>; N_TABLES] =
+		array::from_fn(|_| random_field_buffer::<P>(&mut rng, table_log_len));
+	let table_ids: [usize; N_LOOKUPS] = array::from_fn(|i| i % N_TABLES);
+	let indexes: [Vec<usize>; N_LOOKUPS] = array::from_fn(|lookup_idx| {
+		if table_ids[lookup_idx] == 0 {
+			(0..lookup_len)
+				.map(|i| (i * 3 + lookup_idx) % table_len)
+				.collect::<Vec<_>>()
+		} else {
+			(0..lookup_len)
+				.map(|i| (table_len - 1 - i + lookup_idx) % table_len)
+				.collect::<Vec<_>>()
+		}
+	});
+	let indexes_ref: [&[usize]; N_LOOKUPS] = array::from_fn(|i| indexes[i].as_slice());
 
 	let eval_point = random_scalars::<F>(&mut rng, eq_log_len);
 
-	let lookup_evals: [binius_field::BinaryField128bGhash; N_LOOKUPS] =
-		array::from_fn(|lookup_idx| {
-			let table = &tables[table_ids[lookup_idx]];
-			let values = indexes[lookup_idx]
-				.iter()
-				.map(|&idx| table.get(idx))
-				.collect::<Vec<_>>();
-			let lookup_values = FieldBuffer::<P>::from_values(&values);
-			evaluate(&lookup_values, &eval_point)
-		});
+	let lookup_evals: [F; N_LOOKUPS] = array::from_fn(|lookup_idx| {
+		let table = &tables[table_ids[lookup_idx]];
+		let values = indexes_ref[lookup_idx]
+			.iter()
+			.map(|&idx| table.get(idx))
+			.collect::<Vec<_>>();
+		let lookup_values = FieldBuffer::<P>::from_values(&values);
+		evaluate(&lookup_values, &eval_point)
+	});
 	let lookup_evals_for_verify = lookup_evals;
 
 	let batch_log_len = table_log_len + log2_ceil_usize(N_TABLES);
@@ -70,7 +72,7 @@ fn test_logup_prove_verify() {
 		NaiveProverChannel::<F, P, _>::new(&mut prover_transcript, oracle_specs.clone());
 
 	let logup = LogUp::<P, _, N_TABLES>::new(
-		&[indices_0.as_slice(), indices_1.as_slice()],
+		&indexes_ref,
 		&table_ids,
 		&eval_point,
 		&lookup_evals,

@@ -7,14 +7,12 @@ use std::{
 
 use binius_field::{Field, PackedField};
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{
-	FieldBuffer, FieldSlice, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
-};
+use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::{
 	checked_arithmetics::log2_ceil_usize,
 	rayon::iter::{IntoParallelIterator, ParallelIterator},
 };
-use itertools::{Itertools, concat};
+use itertools::Itertools;
 
 /// Builds a pushforward table by accumulating `eq_kernel` values at lookup indices.
 ///

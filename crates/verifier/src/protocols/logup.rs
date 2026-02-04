@@ -7,8 +7,7 @@
 //! (1) `I^*T(r) = <T, Y>` and (2) `Y` is a correct pushforward via log-sum.
 //!
 //! This file verifies the batched form used by the prover:
-//! - many lookup instances are folded into one claim per table with random
-//!   lookup-slot weights;
+//! - many lookup instances are folded into one claim per table with random lookup-slot weights;
 //! - each table gets one concatenated pushforward instance;
 //! - sub-protocol outputs are further folded across the table axis.
 //!
@@ -78,20 +77,18 @@ struct PushforwardVerificationOutput<F: Field> {
 ///
 /// Relative to the single-claim story from  Logup*, this verifies the
 /// fully batched pipeline emitted by the prover:
-/// 1. Reconstruct batching context from the transcript (`recv_oracle`,
-///    `sample_array`, `batch_lookup_evals`), yielding one batched lookup claim
-///    per table and the extended eq-kernel point `[batch_prefix || r]`.
-/// 2. [`verify_pushforward`] checks the batched `<table_t, pushforward_t>`
-///    identities (one per table), i.e. the batched analogue of
-///    `I^*T(r) = <T, I_*eq_r>`.
-/// 3. [`verify_log_sum`] checks that each pushforward is consistent with the
-///    concatenated fingerprinted indices and the batched eq-kernel.
-/// 4. The verifier samples fresh table-axis batching randomness and a reduction
-///    scalar, then verifies the final bivariate reduction sumcheck that folds
-///    pushforward evaluations coming from steps (2) and (3) into one opening.
-/// 5. Returns reduced claims for external opening checks:
-///    table evaluations, fingerprinted index evaluations, and one pushforward
-///    evaluation claim bound to `pushforward_oracle`.
+/// 1. Reconstruct batching context from the transcript (`recv_oracle`, `sample_array`,
+///    `batch_lookup_evals`), yielding one batched lookup claim per table and the extended eq-kernel
+///    point `[batch_prefix || r]`.
+/// 2. [`verify_pushforward`] checks the batched `<table_t, pushforward_t>` identities (one per
+///    table), i.e. the batched analogue of `I^*T(r) = <T, I_*eq_r>`.
+/// 3. [`verify_log_sum`] checks that each pushforward is consistent with the concatenated
+///    fingerprinted indices and the batched eq-kernel.
+/// 4. The verifier samples fresh table-axis batching randomness and a reduction scalar, then
+///    verifies the final bivariate reduction sumcheck that folds pushforward evaluations coming
+///    from steps (2) and (3) into one opening.
+/// 5. Returns reduced claims for external opening checks: table evaluations, fingerprinted index
+///    evaluations, and one pushforward evaluation claim bound to `pushforward_oracle`.
 ///
 /// `eq_log_len` is the lookup-domain log size, `table_log_len` is the
 /// table/pushforward log size, and `lookup_evals`/`table_ids` must match the
@@ -132,7 +129,7 @@ pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: u
 	} = verify_pushforward::<_, N_TABLES>(table_log_len, &batched_evals, channel)?;
 
 	// Check the two log-sum trees and recover reduced eq/push claims.
-	let (eq_claims, push_claims) = verify_log_sum::<_, N_TABLES>(
+	let (index_log_sum_claims, pushforward_log_sum_claims) = verify_log_sum::<_, N_TABLES>(
 		eq_log_len,
 		&extended_eval_point,
 		fingerprint_scalar,
@@ -144,7 +141,7 @@ pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: u
 	let (pf_claim, challenges) = verify_reduction::<_, N_TABLES>(
 		&sumcheck_point,
 		&pushforward_evals,
-		&push_claims,
+		&pushforward_log_sum_claims,
 		channel,
 	)?;
 
@@ -156,14 +153,14 @@ pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: u
 			point: sumcheck_point.clone(),
 		})
 		.collect();
-	let index_claims = eq_claims
+	let index_claims = index_log_sum_claims
 		.into_iter()
 		.map(|claim| MultilinearEvalClaim {
 			// Denominator tracks the fingerprinted index MLE.
 			eval: claim.den_eval,
-				point: claim.point,
-			})
-			.collect();
+			point: claim.point,
+		})
+		.collect();
 
 	// Final reduced opening for the pushforward multilinear.
 	let pushforward_eval_claim = MultilinearEvalClaim {
@@ -186,10 +183,10 @@ pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: u
 fn verify_reduction<F: Field, const N_TABLES: usize>(
 	sumcheck_point: &[F],
 	pushforward_evals: &[F],
-	push_claims: &[FracAddEvalClaim<F>],
+	pushforward_log_sum_claims: &[FracAddEvalClaim<F>],
 	channel: &mut impl IPVerifierChannel<F>,
 ) -> Result<(F, Vec<F>), Error> {
-	let log_sum_eval_point = push_claims
+	let log_sum_eval_point = pushforward_log_sum_claims
 		.first()
 		.map(|claim| &claim.point)
 		.ok_or(ReductionError::MissingPushClaim)?;
@@ -205,9 +202,10 @@ fn verify_reduction<F: Field, const N_TABLES: usize>(
 		.sum();
 
 	// The push claims have the pushforward evaluation claim in their numerator evaluation.
-	let log_sum_batch_eval: F = zip(batch_weights.iter_scalars(), push_claims.iter())
-		.map(|(weight, &FracAddEvalClaim { num_eval, .. })| weight * num_eval)
-		.sum();
+	let log_sum_batch_eval: F =
+		zip(batch_weights.iter_scalars(), pushforward_log_sum_claims.iter())
+			.map(|(weight, &FracAddEvalClaim { num_eval, .. })| weight * num_eval)
+			.sum();
 
 	let reduction_scalar = channel.sample();
 
@@ -258,8 +256,8 @@ fn read_scalar_slice<F: Field>(
 /// The verifier:
 /// 1. verifies a degree-2 batch sumcheck over `table_log_len` variables;
 /// 2. receives final-point evaluations for all `pushforward_t` and `table_t`;
-/// 3. recomputes the expected batched composition
-///    `pushforward_t(r') * table_t(r')` and checks it matches the sumcheck eval;
+/// 3. recomputes the expected batched composition `pushforward_t(r') * table_t(r')` and checks it
+///    matches the sumcheck eval;
 /// 4. returns `r'` plus those evaluations for later cross-protocol reduction.
 ///
 /// [Lev25]: <https://eprint.iacr.org/2025/946>
@@ -307,8 +305,8 @@ fn verify_pushforward<F: Field, const N_TABLES: usize>(
 /// This function checks their initial consistency relation, runs batched
 /// `fracaddcheck` reductions, then enforces the semantic endpoint checks:
 /// - all eq numerators equal `eq_ind(eval_point, reduced_point)`,
-/// - all pushforward denominators equal the shared enumeration fingerprint
-///   evaluated at the same reduced point.
+/// - all pushforward denominators equal the shared enumeration fingerprint evaluated at the same
+///   reduced point.
 type LogSumOutput<F> = Vec<FracAddEvalClaim<F>>;
 fn verify_log_sum<F: Field, const N_TABLES: usize>(
 	eq_log_len: usize,
@@ -318,7 +316,7 @@ fn verify_log_sum<F: Field, const N_TABLES: usize>(
 	transcript: &mut impl IPVerifierChannel<F>,
 ) -> Result<(LogSumOutput<F>, LogSumOutput<F>), Error> {
 	// Read combined log-sum claims from the transcript and convert to frac-add claims.
-	let (eq_claims, push_claims): (Vec<_>, Vec<_>) = (0..N_TABLES)
+	let (index_claims, pushforward_claims): (Vec<_>, Vec<_>) = (0..N_TABLES)
 		.map(|_| match transcript.recv_array() {
 			Ok([eq_num_eval, eq_den_eval, push_num_eval, push_den_eval]) => Ok((
 				FracAddEvalClaim {
@@ -337,10 +335,12 @@ fn verify_log_sum<F: Field, const N_TABLES: usize>(
 		.collect::<Result<(Vec<_>, Vec<_>), _>>()?;
 	// Convert LogSumClaims into pairs of FracAddEvalClaims.
 
-	zip(eq_claims.iter(), push_claims.iter())
+	zip(index_claims.iter(), pushforward_claims.iter())
 		.enumerate()
-		.try_for_each(|(index, (eq, push))| {
-			if eq.num_eval * push.den_eval != push.num_eval * eq.den_eval {
+		.try_for_each(|(index, (index_claim, pushforward_claim))| {
+			if index_claim.num_eval * pushforward_claim.den_eval
+				!= pushforward_claim.num_eval * index_claim.den_eval
+			{
 				return Err(LogSumError::LogSumClaimMismatch { index });
 			}
 			Ok(())
@@ -348,15 +348,16 @@ fn verify_log_sum<F: Field, const N_TABLES: usize>(
 
 	// Drive batched fractional-addition checks for the two reduction trees.
 	// These return the reduced evaluation claims for the final layer.
-	let eq_claims = fracaddcheck::verify_batch(eq_log_len, eq_claims, transcript)?;
-	let push_claims = fracaddcheck::verify_batch(eq_log_len, push_claims, transcript)?;
+	let index_claims = fracaddcheck::verify_batch(eq_log_len, index_claims, transcript)?;
+	let pushforward_claims =
+		fracaddcheck::verify_batch(eq_log_len, pushforward_claims, transcript)?;
 
-	if let Some(first_claim) = eq_claims.first() {
+	if let Some(first_claim) = index_claims.first() {
 		assert!(first_claim.point.len() == eval_point.len());
 
 		// The eq-kernel numerator must equal eq_ind(eval_point, reduced_point).
 		let expected_num_eval = eq_ind(eval_point, &first_claim.point);
-		eq_claims
+		index_claims
 			.iter()
 			.enumerate()
 			.try_for_each(|(index, claim)| {
@@ -366,13 +367,13 @@ fn verify_log_sum<F: Field, const N_TABLES: usize>(
 				Ok(())
 			})?;
 	}
-	if let Some(first_claim) = push_claims.first() {
+	if let Some(first_claim) = pushforward_claims.first() {
 		assert!(first_claim.point.len() == eval_point.len());
 
 		let expected_den_eval =
 			common_denominator_eval(&first_claim.point, fingerprint_scalar, shift_scalar);
 
-		push_claims
+		pushforward_claims
 			.iter()
 			.enumerate()
 			.try_for_each(|(index, claim)| {
@@ -383,7 +384,7 @@ fn verify_log_sum<F: Field, const N_TABLES: usize>(
 			})?;
 	}
 
-	Ok((eq_claims, push_claims))
+	Ok((index_claims, pushforward_claims))
 }
 
 fn common_denominator_eval<F: Field>(point: &[F], fingerprint_scalar: F, shift_scalar: F) -> F {

@@ -1,16 +1,10 @@
 // Copyright 2025-2026 The Binius Developers
 use std::iter::chain;
 
-use binius_field::{BinaryField, Field, PackedField};
-use binius_iop_prover::{
-	channel::IOPProverChannel,
-	fri::{self, CommitOutput, Error, commit_interleaved},
-	merkle_tree::MerkleTreeProver,
-};
+use binius_field::{Field, PackedField};
+use binius_iop_prover::channel::IOPProverChannel;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{FieldBuffer, ntt::AdditiveNTT};
-use binius_utils::checked_arithmetics::log2_ceil_usize;
-use binius_verifier::{fri::FRIParams, merkle_tree::MerkleTreeScheme};
+use binius_math::FieldBuffer;
 use itertools::Itertools;
 
 use crate::protocols::{

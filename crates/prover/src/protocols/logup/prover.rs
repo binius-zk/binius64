@@ -9,11 +9,8 @@ use binius_ip_prover::{
 };
 use binius_math::FieldBuffer;
 use binius_verifier::protocols::{
-	fracaddcheck::FracAddEvalClaim,
-	logup::{LogUpEvalClaims, LogUpLookupClaims},
-	prodcheck::MultilinearEvalClaim,
+	fracaddcheck::FracAddEvalClaim, logup::LogUpEvalClaims, prodcheck::MultilinearEvalClaim,
 };
-use rand::seq::index;
 
 use crate::protocols::{
 	fracaddcheck,
@@ -41,24 +38,22 @@ impl<P: PackedField<Scalar = F>, Channel: IOPProverChannel<P>, F: Field, const N
 	///
 	/// This method executes the same idea for a batched instance built in
 	/// [`LogUp::new`](super::LogUp::new):
-	/// - each table already has one concatenated pushforward and one batched
-	///   lookup claim (random linear combination over lookup slots);
-	/// - we prove all table claims in parallel, then fold resulting evaluation
-	///   claims to keep the number of openings small.
+	/// - each table already has one concatenated pushforward and one batched lookup claim (random
+	///   linear combination over lookup slots);
+	/// - we prove all table claims in parallel, then fold resulting evaluation claims to keep the
+	///   number of openings small.
 	///
 	/// Concretely, the phases are:
-	/// 1. [`Self::prove_pushforward`] proves per-table identities
-	///    `batched_eval[t] = <table_t, pushforward_t>` using a batch quadratic
-	///    sumcheck. This is the batched version of the single-claim
-	///    `<T, I_*eq_r>` step.
-	/// 2. [`Self::prove_log_sum`] proves, for each table, that its pushforward
-	///    really is the pushforward of the batched eq-kernel under the
-	///    concatenated index map (fractional-addition/log-sum check).
-	/// 3. [`reduce_pushforward_logsum`] takes pushforward evaluations coming from
-	///    two sub-protocols at two points, applies random table-axis weights, and
-	///    proves one combined claim via a bivariate product sumcheck.
-	///    This is where "batching lookup instances" appears as a concrete
-	///    reduction in transcript size.
+	/// 1. [`Self::prove_pushforward`] proves per-table identities `batched_eval[t] = <table_t,
+	///    pushforward_t>` using a batch quadratic sumcheck. This is the batched version of the
+	///    single-claim `<T, I_*eq_r>` step.
+	/// 2. [`Self::prove_log_sum`] proves, for each table, that its pushforward really is the
+	///    pushforward of the batched eq-kernel under the concatenated index map
+	///    (fractional-addition/log-sum check).
+	/// 3. [`reduce_pushforward_logsum`] takes pushforward evaluations coming from two sub-protocols
+	///    at two points, applies random table-axis weights, and proves one combined claim via a
+	///    bivariate product sumcheck. This is where "batching lookup instances" appears as a
+	///    concrete reduction in transcript size.
 	/// 4. Assemble verifier-facing claims:
 	///    - table evaluations from step (1),
 	///    - fingerprinted index evaluations from step (2),
@@ -215,6 +210,7 @@ where
 	let extended_log_sum_eval_point = [log_sum_eval_point.clone(), batch_prefix.clone()].concat();
 
 	let batch_next_pow_2 = 1 << (batch_vars + pushforward_eval_point.len());
+	
 	let mut batch_pushforward: Vec<F> = push_forwards
 		.iter()
 		.flat_map(|push_forward| push_forward.iter_scalars())
