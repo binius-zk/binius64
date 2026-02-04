@@ -210,7 +210,7 @@ where
 	let extended_log_sum_eval_point = [log_sum_eval_point.clone(), batch_prefix.clone()].concat();
 
 	let batch_next_pow_2 = 1 << (batch_vars + pushforward_eval_point.len());
-	
+
 	let mut batch_pushforward: Vec<F> = push_forwards
 		.iter()
 		.flat_map(|push_forward| push_forward.iter_scalars())

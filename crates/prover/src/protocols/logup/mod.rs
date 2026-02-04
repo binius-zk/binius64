@@ -11,12 +11,12 @@
 //! This module implements the batched analogue of that flow.
 //! Instead of proving each lookup instance independently, we fold many
 //! instances into one claim per table:
-//! - `batch_lookup_evals` samples a batching prefix and forms per-table random
-//!   linear combinations of lookup evaluations;
-//! - `concatenate_indices` rewrites many `I_{t,k}` maps (lookup `k` into table
-//!   `t`) into one concatenated map `I_t`;
-//! - `build_pushforwards_from_concat_indexes` constructs one pushforward per
-//!   table, i.e. `Y_t = (I_t)_*eq_[batch_prefix || r]`.
+//! - `batch_lookup_evals` samples a batching prefix and forms per-table random linear combinations
+//!   of lookup evaluations;
+//! - `concatenate_indices` rewrites many `I_{t,k}` maps (lookup `k` into table `t`) into one
+//!   concatenated map `I_t`;
+//! - `build_pushforwards_from_concat_indexes` constructs one pushforward per table, i.e. `Y_t =
+//!   (I_t)_*eq_[batch_prefix || r]`.
 //!
 //! The protocol is therefore "single-lookup LogUp*" applied to each table's
 //! concatenated instance, plus random linear batching over lookup slots. The
@@ -80,12 +80,12 @@ impl<P: PackedField<Scalar = F>, Channel: IOPProverChannel<P>, F: Field, const N
 	/// performs the batching rewrite:
 	/// - sample lookup-slot batching randomness and fold many lookup values into
 	///   `batched_evals[table_id]` via `batch_lookup_evals`;
-	/// - extend the verifier point from `r` to `[batch_prefix || r]`, then build
-	///   `eq_kernel = eq_[batch_prefix || r]`;
-	/// - concatenate indices per table and build one pushforward per table, so
-	///   each table now has a single `Y_t = (I_t)_*eq_[batch_prefix || r]`;
-	/// - commit one packed oracle containing all pushforwards, and sample the
-	///   fingerprint/shift scalars used by the log-sum checks.
+	/// - extend the verifier point from `r` to `[batch_prefix || r]`, then build `eq_kernel =
+	///   eq_[batch_prefix || r]`;
+	/// - concatenate indices per table and build one pushforward per table, so each table now has a
+	///   single `Y_t = (I_t)_*eq_[batch_prefix || r]`;
+	/// - commit one packed oracle containing all pushforwards, and sample the fingerprint/shift
+	///   scalars used by the log-sum checks.
 	///
 	/// The resulting state is exactly what the proving phases consume:
 	/// batched `<pushforward, table>` reductions and batched log-sum reductions.
