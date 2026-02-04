@@ -106,7 +106,7 @@ pub fn concatenate_and_fingerprint_indexes<
 ) -> [FieldBuffer<P>; N_TABLES] {
 	// Indices are usize, so only the lowest usize::BITS can contribute.
 	let effective_log_len = max_table_log_len.min(usize::BITS as usize);
-	let concatenated_indices: [Vec<usize>; N_TABLES] = concatenate_indices(&indices, table_ids);
+	let concatenated_indices: [Vec<usize>; N_TABLES] = concatenate_indices(indices, table_ids);
 	let bit_powers = iter::successors(Some(F::ONE), |&prev| Some(prev * fingerprint_scalar))
 		.take(effective_log_len)
 		.collect::<Vec<_>>();
@@ -143,11 +143,11 @@ pub fn batch_lookup_evals<F: Field, const N_TABLES: usize>(
 	table_ids: &[usize],
 	channel: &mut impl IPProverChannel<F>,
 ) -> ([F; N_TABLES], Vec<F>) {
-	let grouped_evals = zip(lookup_evals.into_iter().copied(), table_ids.into_iter().copied())
+	let grouped_evals = zip(lookup_evals.iter().copied(), table_ids.iter().copied())
 		.into_group_map_by(|&(_, id)| id);
 
 	assert!(
-		grouped_evals.iter().map(|(_, vals)| vals.len()).all_equal(),
+		grouped_evals.values().map(|vals| vals.len()).all_equal(),
 		"There must be an equal number of lookups into each table"
 	);
 	// We assume each table has an equal number of lookups. This mainly serves to simplify the

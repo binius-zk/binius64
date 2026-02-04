@@ -99,19 +99,19 @@ impl<P: PackedField<Scalar = F>, Channel: IOPProverChannel<P>, F: Field, const N
 	) -> Self {
 		assert!(indexes.len() == table_ids.len() && indexes.len() == indexes.len());
 
-		let grouped_evals = zip(lookup_evals.into_iter().copied(), table_ids.into_iter().copied())
+		let grouped_evals = zip(lookup_evals.iter().copied(), table_ids.iter().copied())
 			.into_group_map_by(|&(_, id)| id);
 
 		assert!(
-			grouped_evals.iter().map(|(_, vals)| vals.len()).all_equal(),
+			grouped_evals.values().map(|vals| vals.len()).all_equal(),
 			"There must be an equal number of lookups into each table"
 		);
 
 		let (batched_evals, extended_eval_point) =
-			batch_lookup_evals(&lookup_evals, eval_point, &table_ids, transcript);
+			batch_lookup_evals(lookup_evals, eval_point, table_ids, transcript);
 
 		let eq_kernel = eq::eq_ind_partial_eval::<P>(&extended_eval_point);
-		let concat_indices: [Vec<usize>; N_TABLES] = concatenate_indices(indexes, &table_ids);
+		let concat_indices: [Vec<usize>; N_TABLES] = concatenate_indices(indexes, table_ids);
 
 		let push_forwards =
 			build_pushforwards_from_concat_indexes(&concat_indices, &tables, &eq_kernel);
@@ -128,8 +128,8 @@ impl<P: PackedField<Scalar = F>, Channel: IOPProverChannel<P>, F: Field, const N
 		// Fiat-Shamir scalar used to hash index bits into field elements.
 		let [fingerprint_scalar, shift_scalar] = transcript.sample_array();
 		let fingerprinted_indexes = concatenate_and_fingerprint_indexes(
-			&indexes,
-			&table_ids,
+			indexes,
+			table_ids,
 			fingerprint_scalar,
 			shift_scalar,
 			max_log_len,

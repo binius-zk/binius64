@@ -106,11 +106,11 @@ pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: u
 	assert!(!lookup_evals.is_empty());
 	assert_eq!(eval_point.len(), eq_log_len, "eval_point length must match eq_log_len");
 	// Match the prover's Fiat-Shamir sampling performed during `LogUp::new`.
-	let grouped_evals = zip(lookup_evals.into_iter().copied(), table_ids.into_iter().copied())
+	let grouped_evals = zip(lookup_evals.iter().copied(), table_ids.iter().copied())
 		.into_group_map_by(|&(_, id)| id);
 
 	assert!(
-		grouped_evals.iter().map(|(_, vals)| vals.len()).all_equal(),
+		grouped_evals.values().map(|vals| vals.len()).all_equal(),
 		"There must be an equal number of lookups into each table"
 	);
 	// Observe the pushforward oracle before sampling, then draw log-sum batching scalars.
@@ -119,7 +119,7 @@ pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: u
 
 	// Fold per-lookup evaluations into one claim per table and extend the eq-kernel point.
 	let (batched_evals, extended_eval_point): ([F; N_TABLES], Vec<F>) =
-		batch_lookup_evals(&lookup_evals, eval_point, &table_ids, channel);
+		batch_lookup_evals(lookup_evals, eval_point, table_ids, channel);
 
 	// Check <table_t, pushforward_t> identities for each table in batched form.
 	let PushforwardVerificationOutput {
@@ -177,8 +177,10 @@ pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: u
 }
 
 /// Verifies the final reduction sumcheck that combines:
+///
 /// - pushforward evaluations from `verify_pushforward`, and
 /// - pushforward numerators from `verify_log_sum`,
+///
 /// into one reduced pushforward opening claim.
 fn verify_reduction<F: Field, const N_TABLES: usize>(
 	sumcheck_point: &[F],
@@ -398,14 +400,14 @@ pub fn batch_lookup_evals<F: Field, const N_TABLES: usize>(
 	table_ids: &[usize],
 	channel: &mut impl IPVerifierChannel<F>,
 ) -> ([F; N_TABLES], Vec<F>) {
-	let grouped_evals = zip(lookup_evals.into_iter().copied(), table_ids.into_iter().copied())
+	let grouped_evals = zip(lookup_evals.iter().copied(), table_ids.iter().copied())
 		.into_group_map_by(|&(_, id)| id);
 
 	// We assume each table has an equal number of lookups. This mainly serves to simplify the
 	// structure of the various sumchecks in the protocol. A possible future todo would be to remove
 	// this assumption.
 	assert!(
-		grouped_evals.iter().map(|(_, vals)| vals.len()).all_equal(),
+		grouped_evals.values().map(|vals| vals.len()).all_equal(),
 		"There must be an equal number of lookups into each table"
 	);
 

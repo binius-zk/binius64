@@ -58,7 +58,8 @@ impl<P: PackedField<Scalar = F>, Channel: IOPProverChannel<P>, F: Field, const N
 	///    - table evaluations from step (1),
 	///    - fingerprinted index evaluations from step (2),
 	///    - one reduced pushforward opening claim from step (3),
-	///    plus the pushforward oracle committed in `LogUp::new`.
+	///    
+	/// plus the pushforward oracle committed in `LogUp::new`.
 	///
 	/// The output vectors preserve the table ordering encoded in the `LogUp`
 	/// instance.
@@ -120,10 +121,10 @@ impl<P: PackedField<Scalar = F>, Channel: IOPProverChannel<P>, F: Field, const N
 		};
 
 		Ok(LogUpEvalClaims {
-			index_claims: index_claims,
-			table_sumcheck_claims: table_sumcheck_claims,
+			index_claims,
+			table_sumcheck_claims,
 			pushforward_oracle: self.batch_pushforward_oracle.clone(),
-			pushforward_eval_claim: pushforward_eval_claim,
+			pushforward_eval_claim,
 		})
 	}
 }
