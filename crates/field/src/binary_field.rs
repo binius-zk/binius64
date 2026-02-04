@@ -252,6 +252,18 @@ macro_rules! binary_field {
 			}
 		}
 
+		impl $crate::field::FieldOps<$name> for $name {
+			#[inline]
+			fn zero() -> Self {
+				Self::ZERO
+			}
+
+			#[inline]
+			fn one() -> Self {
+				Self::ONE
+			}
+		}
+
 		impl Field for $name {
 			const ZERO: Self = $name::new(<$typ as $crate::underlier::UnderlierWithBitOps>::ZERO);
 			const ONE: Self = $name::new(<$typ as $crate::underlier::UnderlierWithBitOps>::ONE);

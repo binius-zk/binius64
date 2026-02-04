@@ -250,7 +250,7 @@ enum RoundCoeffsOrEval<F: Field> {
 mod tests {
 	use std::{array, iter};
 
-	use binius_field::arch::OptimalPackedB128;
+	use binius_field::{arch::OptimalPackedB128, field::FieldOps};
 	use binius_ip::mlecheck;
 	use binius_math::{
 		FieldBuffer,
@@ -376,7 +376,7 @@ mod tests {
 	fn test_linear_mlecheck() {
 		test_quadratic_mlecheck_prove_verify::<_, OptimalPackedB128, 2>(
 			|[a, b]| a + b,
-			|[_a, _b]| PackedField::zero(), // coefficient on the quadratic term is 0
+			|[_a, _b]| OptimalPackedB128::zero(), // coefficient on the quadratic term is 0
 		);
 	}
 

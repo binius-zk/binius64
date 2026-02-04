@@ -2,7 +2,7 @@
 
 use std::{iter, iter::successors};
 
-use binius_field::{BinaryField128bGhash as B128, Field, PackedField};
+use binius_field::{BinaryField128bGhash as B128, Field, arithmetic_traits::InvertOrZero};
 
 use crate::circuit_builder::CircuitBuilder;
 

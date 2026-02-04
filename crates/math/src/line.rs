@@ -30,7 +30,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{Field, PackedField, Random};
+	use binius_field::{Field, Random, field::FieldOps};
 	use rand::prelude::*;
 
 	use super::*;
