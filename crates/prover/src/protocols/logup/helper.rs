@@ -2,15 +2,18 @@
 use std::{
 	array,
 	iter::{self, zip},
+	ops::Deref,
 };
 
 use binius_field::{Field, PackedField};
-use binius_iop_prover::channel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	FieldBuffer, FieldSlice, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
 };
-use binius_utils::checked_arithmetics::log2_ceil_usize;
+use binius_utils::{
+	checked_arithmetics::log2_ceil_usize,
+	rayon::iter::{IntoParallelIterator, ParallelIterator},
+};
 use itertools::{Itertools, concat};
 
 /// Builds a pushforward table by accumulating `eq_kernel` values at lookup indices.
@@ -71,60 +74,33 @@ where
 	FieldBuffer::from_values(&lookup_values)
 }
 
-/// Computes per-index fingerprints for multiple lookup index arrays.
-///
-/// Each index is mapped to:
-/// `shift_scalar + sum_{bit set in index} fingerprint_scalar^bit`
-/// over bit positions `0..effective_log_len`, where
-/// `effective_log_len = min(max_table_log_len, usize::BITS)`.
-///
-/// This yields a linear hash of the binary representation of the index with
-/// base `fingerprint_scalar`, plus an additive offset `shift_scalar`.
-///
-/// Algorithm:
-/// - Precompute per-bit powers of `fingerprint_scalar`.
-/// - Group powers into byte-sized chunks and build 256-entry lookup tables.
-/// - For each index, scan bytes from least significant to most significant and accumulate the table
-///   contributions (plus the shift), stopping once the remaining bits are zero.
-///
-/// Notes:
-/// - Only the lowest `effective_log_len` bits contribute to the fingerprint.
-/// - The per-byte tables avoid per-bit branching in the hot loop.
-pub fn generate_index_fingerprints<
-	P: PackedField<Scalar = F>,
-	F: Field,
-	const N_LOOKUPS: usize,
-	const N_TABLES: usize,
->(
-	indices: [&[usize]; N_LOOKUPS],
+/// Computes the shifted Reed Solomon fingerprint of the enumeration MLE, which is the MLE whose
+/// dense representation is simply the natural lexicographic ordering of field elements in the
+pub fn generate_enumeration_fingerprint<P: PackedField<Scalar = F>, F: Field>(
+	log_len: usize,
 	fingerprint_scalar: F,
 	shift_scalar: F,
-	max_table_log_len: usize,
-) -> [FieldBuffer<P>; N_LOOKUPS] {
+) -> FieldBuffer<P> {
 	// Indices are usize, so only the lowest usize::BITS can contribute.
-	let effective_log_len = max_table_log_len.min(usize::BITS as usize);
 	let bit_powers = iter::successors(Some(F::ONE), |&prev| Some(prev * fingerprint_scalar))
-		.take(effective_log_len)
+		.take(log_len)
 		.collect::<Vec<_>>();
 	let byte_tables = build_byte_tables(&bit_powers);
-
-	std::array::from_fn(|lookup_idx| {
-		let values = indices[lookup_idx]
-			.iter()
-			.map(|&index| fingerprint_index(index, shift_scalar, &byte_tables))
-			.collect::<Vec<_>>();
-		FieldBuffer::from_values(&values)
-	})
+	let enum_fingerprint = (0..1 << log_len)
+		.into_par_iter()
+		.map(|index| fingerprint_index(index, shift_scalar, &byte_tables))
+		.collect::<Vec<_>>();
+	FieldBuffer::from_values(&enum_fingerprint)
 }
 
 ///Concatenates index arrays by table id and fingerprints them. Padding to next power of 2.
-pub fn generate_index_fingerprints_new<
+pub fn concatenate_and_fingerprint_indexes<
 	P: PackedField<Scalar = F>,
 	F: Field,
-	const N_LOOKUPS: usize,
+	Index: Deref<Target = [usize]>,
 	const N_TABLES: usize,
 >(
-	indices: [&[usize]; N_LOOKUPS],
+	indices: &[Index],
 	table_ids: &[usize],
 	fingerprint_scalar: F,
 	shift_scalar: F,
@@ -132,7 +108,7 @@ pub fn generate_index_fingerprints_new<
 ) -> [FieldBuffer<P>; N_TABLES] {
 	// Indices are usize, so only the lowest usize::BITS can contribute.
 	let effective_log_len = max_table_log_len.min(usize::BITS as usize);
-	let concatenated_indices: [Vec<usize>; N_TABLES] = concatenate_indices(indices, table_ids);
+	let concatenated_indices: [Vec<usize>; N_TABLES] = concatenate_indices(&indices, table_ids);
 	let bit_powers = iter::successors(Some(F::ONE), |&prev| Some(prev * fingerprint_scalar))
 		.take(effective_log_len)
 		.collect::<Vec<_>>();
@@ -149,8 +125,8 @@ pub fn generate_index_fingerprints_new<
 }
 
 /// Concatenates indices by table id. Assumes equal number of lookups per table.
-pub fn concatenate_indices<const N_LOOKUPS: usize, const N_TABLES: usize>(
-	indices: [&[usize]; N_LOOKUPS],
+pub fn concatenate_indices<Index: Deref<Target = [usize]>, const N_TABLES: usize>(
+	indices: &[Index],
 	table_ids: &[usize],
 ) -> [Vec<usize>; N_TABLES] {
 	array::from_fn(|i| {
@@ -172,16 +148,16 @@ pub fn batch_lookup_evals<F: Field, const N_TABLES: usize>(
 	let grouped_evals = zip(lookup_evals.into_iter().copied(), table_ids.into_iter().copied())
 		.into_group_map_by(|&(_, id)| id);
 
-	// We assume each table has an equal number of lookups. This mainly serves to simplify the structure of the various sumchecks in the protocol. A possible future todo would be to remove this assumption.
 	assert!(
 		grouped_evals.iter().map(|(_, vals)| vals.len()).all_equal(),
 		"There must be an equal number of lookups into each table"
 	);
+	// We assume each table has an equal number of lookups. This mainly serves to simplify the
+	// structure of the various sumchecks in the protocol. A possible future todo would be to remove
+	// this assumption.
 
 	let batch_log_len = log2_ceil_usize(grouped_evals[&0].len().next_power_of_two());
-
 	let batching_prefix = channel.sample_many(batch_log_len);
-
 	let batch_weights = eq_ind_partial_eval::<F>(&batching_prefix);
 
 	let mut batched_evals = [F::ZERO; N_TABLES];
@@ -234,11 +210,4 @@ fn fingerprint_index<F: Field>(index: usize, shift_scalar: F, byte_tables: &[[F;
 		}
 	}
 	acc
-}
-
-/// Holds bit-level MLEs for a lookup index representation.
-///
-/// Each entry corresponds to a multilinear polynomial for one bit position.
-pub struct Index<'a, P: PackedField, const N_BITS: usize> {
-	pub bit_wise_mles: [FieldSlice<'a, P>; N_BITS],
 }

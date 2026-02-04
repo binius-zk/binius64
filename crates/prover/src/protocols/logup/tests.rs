@@ -2,8 +2,7 @@
 use std::array;
 
 use binius_field::PackedField;
-use binius_iop::channel::OracleSpec;
-use binius_iop::naive_channel::NaiveVerifierChannel;
+use binius_iop::{channel::OracleSpec, naive_channel::NaiveVerifierChannel};
 use binius_iop_prover::naive_channel::NaiveProverChannel;
 use binius_math::{
 	FieldBuffer,
@@ -48,15 +47,16 @@ fn test_logup_prove_verify() {
 
 	let eval_point = random_scalars::<F>(&mut rng, eq_log_len);
 
-	let lookup_evals = array::from_fn(|lookup_idx| {
-		let table = &tables[table_ids[lookup_idx]];
-		let values = indexes[lookup_idx]
-			.iter()
-			.map(|&idx| table.get(idx))
-			.collect::<Vec<_>>();
-		let lookup_values = FieldBuffer::<P>::from_values(&values);
-		evaluate(&lookup_values, &eval_point)
-	});
+	let lookup_evals: [binius_field::BinaryField128bGhash; N_LOOKUPS] =
+		array::from_fn(|lookup_idx| {
+			let table = &tables[table_ids[lookup_idx]];
+			let values = indexes[lookup_idx]
+				.iter()
+				.map(|&idx| table.get(idx))
+				.collect::<Vec<_>>();
+			let lookup_values = FieldBuffer::<P>::from_values(&values);
+			evaluate(&lookup_values, &eval_point)
+		});
 	let lookup_evals_for_verify = lookup_evals;
 
 	let batch_log_len = table_log_len + log2_ceil_usize(N_TABLES);
@@ -69,11 +69,11 @@ fn test_logup_prove_verify() {
 	let mut prover_channel =
 		NaiveProverChannel::<F, P, _>::new(&mut prover_transcript, oracle_specs.clone());
 
-	let logup = LogUp::<P, _, N_TABLES, N_LOOKUPS>::new(
-		[indices_0.as_slice(), indices_1.as_slice()],
-		table_ids,
+	let logup = LogUp::<P, _, N_TABLES>::new(
+		&[indices_0.as_slice(), indices_1.as_slice()],
+		&table_ids,
 		&eval_point,
-		lookup_evals,
+		&lookup_evals,
 		tables,
 		&mut prover_channel,
 	);

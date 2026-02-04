@@ -1,6 +1,19 @@
 // Copyright 2025-2026 The Binius Developers
 
-//! Verifier for the LogUp indexed lookup protocol.
+//! Verifier for the batched LogUp* indexed lookup protocol.
+//!
+//! `docs/logup.md` describes the single-claim reduction:
+//! `I^*T(r)` is checked by introducing `Y = I_*eq_r`, then proving
+//! (1) `I^*T(r) = <T, Y>` and (2) `Y` is a correct pushforward via log-sum.
+//!
+//! This file verifies the batched form used by the prover:
+//! - many lookup instances are folded into one claim per table with random
+//!   lookup-slot weights;
+//! - each table gets one concatenated pushforward instance;
+//! - sub-protocol outputs are further folded across the table axis.
+//!
+//! The verifier mirrors that structure and returns only the reduced
+//! multilinear opening claims that must be checked against external commitments.
 
 use std::iter::zip;
 
@@ -64,10 +77,26 @@ struct PushforwardVerificationOutput<F: Field> {
 
 /// Verify the LogUp lookup batch and return evaluation claims for external checks.
 ///
-/// `eq_log_len` is the log-length of the lookup indices (eq-kernel), and `table_log_len`
-/// is the log-length of the tables/pushforwards. `eval_point` is the point used to
-/// instantiate the eq-kernel. `lookup_evals` must be aligned with the lookup ordering
-/// encoded in the transcript.
+/// Relative to the single-claim story from  Logup*, this verifies the
+/// fully batched pipeline emitted by the prover:
+/// 1. Reconstruct batching context from the transcript (`recv_oracle`,
+///    `sample_array`, `batch_lookup_evals`), yielding one batched lookup claim
+///    per table and the extended eq-kernel point `[batch_prefix || r]`.
+/// 2. [`verify_pushforward`] checks the batched `<table_t, pushforward_t>`
+///    identities (one per table), i.e. the batched analogue of
+///    `I^*T(r) = <T, I_*eq_r>`.
+/// 3. [`verify_log_sum`] checks that each pushforward is consistent with the
+///    concatenated fingerprinted indices and the batched eq-kernel.
+/// 4. The verifier samples fresh table-axis batching randomness and a reduction
+///    scalar, then verifies the final bivariate reduction sumcheck that folds
+///    pushforward evaluations coming from steps (2) and (3) into one opening.
+/// 5. Returns reduced claims for external opening checks:
+///    table evaluations, fingerprinted index evaluations, and one pushforward
+///    evaluation claim bound to `pushforward_oracle`.
+///
+/// `eq_log_len` is the lookup-domain log size, `table_log_len` is the
+/// table/pushforward log size, and `lookup_evals`/`table_ids` must match the
+/// lookup ordering used by the prover.
 pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: usize>(
 	eq_log_len: usize,
 	table_log_len: usize,
@@ -76,18 +105,23 @@ pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: u
 	table_ids: &[usize],
 	channel: &mut Channel,
 ) -> Result<LogUpEvalClaims<F, Channel::Oracle>, Error> {
+	assert!(table_ids.len() == lookup_evals.len());
+	assert!(!lookup_evals.is_empty());
 	assert_eq!(eval_point.len(), eq_log_len, "eval_point length must match eq_log_len");
 	// Match the prover's Fiat-Shamir sampling performed during `LogUp::new`.
+	let grouped_evals = zip(lookup_evals.into_iter().copied(), table_ids.into_iter().copied())
+		.into_group_map_by(|&(_, id)| id);
 
+	assert!(
+		grouped_evals.iter().map(|(_, vals)| vals.len()).all_equal(),
+		"There must be an equal number of lookups into each table"
+	);
 	//We need to observe the pushforward commitment before proceeding for soundness.
 	let pushforward_oracle = channel.recv_oracle().unwrap();
 	let [fingerprint_scalar, shift_scalar]: [F; 2] = channel.sample_array();
 
 	let (batched_evals, extended_eval_point): ([F; N_TABLES], Vec<F>) =
 		batch_lookup_evals(&lookup_evals, eval_point, &table_ids, channel);
-
-	assert!(table_ids.len() == lookup_evals.len());
-	assert!(!lookup_evals.is_empty());
 
 	let PushforwardVerificationOutput {
 		sumcheck_point,
@@ -102,50 +136,13 @@ pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: u
 		channel,
 	)?;
 
-	let pushforward_eval_point = sumcheck_point.clone();
-	let log_sum_eval_point = &push_claims[0].point;
-
-	// Calculate the number of variables to extend evaluation points.
-	let batch_vars = log2_ceil_usize(N_TABLES);
-	let batch_prefix = channel.sample_many(batch_vars);
-
-	let batch_weights = eq_ind_partial_eval::<F>(&batch_prefix);
-
-	let pushforward_batch_eval: F = zip(batch_weights.iter_scalars(), pushforward_evals.iter())
-		.map(|(weight, eval)| weight * eval)
-		.sum();
-
-	// The push claims have the pushforward evaluation claim in their numerator evaluation.
-	let log_sum_batch_eval: F = zip(batch_weights.iter_scalars(), push_claims.iter())
-		.map(|(weight, &FracAddEvalClaim { num_eval, .. })| weight * num_eval)
-		.sum();
-
-	let reduction_scalar = channel.sample();
-
-	let extended_pushforward_eval_point =
-		[pushforward_eval_point.clone(), batch_prefix.clone()].concat();
-	let extended_log_sum_eval_point = [log_sum_eval_point.clone(), batch_prefix.clone()].concat();
-
-	let SumcheckOutput {
-		eval,
-		mut challenges,
-	} = sumcheck::verify(
-		extended_pushforward_eval_point.len(),
-		2,
-		pushforward_batch_eval + log_sum_batch_eval * reduction_scalar,
+	// Fold the pushforward and log-sum outputs into one reduced opening claim.
+	let (pf_claim, challenges) = verify_reduction::<_, N_TABLES>(
+		&sumcheck_point,
+		&pushforward_evals,
+		&push_claims,
 		channel,
 	)?;
-
-	let [pf_claim, reduction_buffer] = channel.recv_array()?;
-
-	//TODO: Make an error type for these checks.
-	assert_eq!(pf_claim * reduction_buffer, eval);
-
-	challenges.reverse();
-	let reduction_buffer_eval = eq_ind(&extended_pushforward_eval_point, &challenges)
-		+ eq_ind(&extended_log_sum_eval_point, &challenges) * reduction_scalar;
-
-	assert_eq!(reduction_buffer, reduction_buffer_eval);
 
 	let table_sumcheck_claims = table_evals
 		.into_iter()
@@ -176,6 +173,68 @@ pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: u
 	})
 }
 
+/// Verifies the final reduction sumcheck that combines:
+/// - pushforward evaluations from `verify_pushforward`, and
+/// - pushforward numerators from `verify_log_sum`,
+/// into one reduced pushforward opening claim.
+fn verify_reduction<F: Field, const N_TABLES: usize>(
+	sumcheck_point: &[F],
+	pushforward_evals: &[F],
+	push_claims: &[FracAddEvalClaim<F>],
+	channel: &mut impl IPVerifierChannel<F>,
+) -> Result<(F, Vec<F>), Error> {
+	let log_sum_eval_point = push_claims
+		.first()
+		.map(|claim| &claim.point)
+		.ok_or(ReductionError::MissingPushClaim)?;
+
+	// Calculate the number of variables to extend evaluation points.
+	let batch_vars = log2_ceil_usize(N_TABLES);
+	let batch_prefix = channel.sample_many(batch_vars);
+
+	let batch_weights = eq_ind_partial_eval::<F>(&batch_prefix);
+
+	let pushforward_batch_eval: F = zip(batch_weights.iter_scalars(), pushforward_evals.iter())
+		.map(|(weight, eval)| weight * eval)
+		.sum();
+
+	// The push claims have the pushforward evaluation claim in their numerator evaluation.
+	let log_sum_batch_eval: F = zip(batch_weights.iter_scalars(), push_claims.iter())
+		.map(|(weight, &FracAddEvalClaim { num_eval, .. })| weight * num_eval)
+		.sum();
+
+	let reduction_scalar = channel.sample();
+
+	let extended_pushforward_eval_point = [sumcheck_point.to_vec(), batch_prefix.clone()].concat();
+	let extended_log_sum_eval_point = [log_sum_eval_point.clone(), batch_prefix.clone()].concat();
+
+	let SumcheckOutput {
+		eval,
+		mut challenges,
+	} = sumcheck::verify(
+		extended_pushforward_eval_point.len(),
+		2,
+		pushforward_batch_eval + log_sum_batch_eval * reduction_scalar,
+		channel,
+	)?;
+
+	let [pf_claim, reduction_buffer] = channel.recv_array()?;
+
+	if pf_claim * reduction_buffer != eval {
+		return Err(ReductionError::OpeningMismatch.into());
+	}
+
+	challenges.reverse();
+	let reduction_buffer_eval = eq_ind(&extended_pushforward_eval_point, &challenges)
+		+ eq_ind(&extended_log_sum_eval_point, &challenges) * reduction_scalar;
+
+	if reduction_buffer != reduction_buffer_eval {
+		return Err(ReductionError::BufferMismatch.into());
+	}
+
+	Ok((pf_claim, challenges))
+}
+
 /// Reads a fixed-length scalar slice from the transcript.
 fn read_scalar_slice<F: Field>(
 	transcript: &mut impl IPVerifierChannel<F>,
@@ -186,25 +245,16 @@ fn read_scalar_slice<F: Field>(
 		.expect("Received values should be of expected length or there should be a panic."))
 }
 
-/// Verifies the LogUp* ([Lev25] section 2 & 3) pullback/lookup values to pushforward" reduction for
-/// a batch of lookups.
+/// Verifies the batched pushforward/table reduction for one claim per table.
 ///
-/// The key identity is the reduction of the evaluation of the "pullback" (which is simply the
-/// lookup values) multilinear referred $I^*T(r)$ with a table-sized inner product $\langle T,
-/// I_*eq_r \rangle$, avoiding a commitment to the pullback. Thus we understand a batch of lookup
-/// claims is a collection of pushforwards, tables and evaluation claims on the corresponding
-/// pullbacks. We read a vector of table_ids as advice from the prover in order to decide which
-/// table the pushforward corresponds to, as many may share the same table.
-///
-/// This routine:
-/// 1. Reads the per-lookup `table_id[i]` from the transcript.
-/// 2. Verifies a batched degree-2 sumcheck over the `table_log_len`-variate boolean hypercube for
-///    the claimed sums `lookup_evals` (with batching coefficient `beta`).
-/// 3. Reads pushforward and table evaluations at the sumcheck point r'.
-/// 4. Computes `e[i] = pushforward[i] * table_evals[table_id[i]]`, and essentially checks that the
-///    final batch sumcheck eval is equal to a random linear combination of these claims.
-/// 5. Returns `r'` along with the evaluation values for downstream [`MultilinearEvalClaim`]
-///    openings.
+/// The checked identity is the batched form of `I^*T(r) = <T, I_*eq_r>`:
+/// each `lookup_evals[t]` is claimed to equal `<table_t, pushforward_t>`.
+/// The verifier:
+/// 1. verifies a degree-2 batch sumcheck over `table_log_len` variables;
+/// 2. receives final-point evaluations for all `pushforward_t` and `table_t`;
+/// 3. recomputes the expected batched composition
+///    `pushforward_t(r') * table_t(r')` and checks it matches the sumcheck eval;
+/// 4. returns `r'` plus those evaluations for later cross-protocol reduction.
 ///
 /// [Lev25]: <https://eprint.iacr.org/2025/946>
 fn verify_pushforward<F: Field, const N_TABLES: usize>(
@@ -220,13 +270,13 @@ fn verify_pushforward<F: Field, const N_TABLES: usize>(
 	challenges.reverse();
 	let sumcheck_point = challenges;
 
-	// The first n_lookups many final multilinear evals corresponds to the pushforwards, and the
-	// next n_tables many correspond to the tables.
+	// Final multilinear evaluations are emitted in prover order:
+	// [pushforward_0..pushforward_{N_TABLES-1}, table_0..table_{N_TABLES-1}].
 	let pushforward_evals = read_scalar_slice(channel, N_TABLES)?;
 	let table_evals = read_scalar_slice(channel, N_TABLES)?;
 
-	// Recompute the batched quadratic composition at the verifier's point by multiplying the
-	// pushforward eval with the table eval of the table it looked up into.
+	// Recompute the batched quadratic composition at the verifier's point:
+	// one product per table claim.
 	let expected_terms = zip(pushforward_evals.iter(), table_evals.iter())
 		.map(|(&push_eval, &table_eval)| push_eval * table_eval)
 		.collect::<Vec<_>>();
@@ -242,8 +292,17 @@ fn verify_pushforward<F: Field, const N_TABLES: usize>(
 	})
 }
 
-/// Verifies the logarithmic sum claims as part of Logup*. Assumes lookups are of the same length
-/// and tables are of the same length and returns the
+/// Verifies the two batched log-sum trees used by LogUp*.
+///
+/// For each table, transcript inputs carry top-layer fraction claims for:
+/// - eq-kernel numerator / fingerprinted-index denominator,
+/// - pushforward numerator / common-enumeration denominator.
+///
+/// This function checks their initial consistency relation, runs batched
+/// `fracaddcheck` reductions, then enforces the semantic endpoint checks:
+/// - all eq numerators equal `eq_ind(eval_point, reduced_point)`,
+/// - all pushforward denominators equal the shared enumeration fingerprint
+///   evaluated at the same reduced point.
 type LogSumOutput<F> = Vec<FracAddEvalClaim<F>>;
 fn verify_log_sum<F: Field, const N_TABLES: usize>(
 	eq_log_len: usize,
@@ -335,7 +394,9 @@ pub fn batch_lookup_evals<F: Field, const N_TABLES: usize>(
 	let grouped_evals = zip(lookup_evals.into_iter().copied(), table_ids.into_iter().copied())
 		.into_group_map_by(|&(_, id)| id);
 
-	// We assume each table has an equal number of lookups. This mainly serves to simplify the structure of the various sumchecks in the protocol. A possible future todo would be to remove this assumption.
+	// We assume each table has an equal number of lookups. This mainly serves to simplify the
+	// structure of the various sumchecks in the protocol. A possible future todo would be to remove
+	// this assumption.
 	assert!(
 		grouped_evals.iter().map(|(_, vals)| vals.len()).all_equal(),
 		"There must be an equal number of lookups into each table"
@@ -375,6 +436,8 @@ pub enum Error {
 	Pushforward(#[from] PushforwardError),
 	#[error("log-sum protocol error: {0}")]
 	LogSum(#[from] LogSumError),
+	#[error("reduction protocol error: {0}")]
+	Reduction(#[from] ReductionError),
 }
 
 /// Pushforward-specific failures for LogUp.
@@ -399,4 +462,15 @@ pub enum LogSumError {
 	PushforwardPointLengthMismatch { expected: usize, actual: usize },
 	#[error("common denominator mismatch at lookup {index}")]
 	CommonDenominatorMismatch { index: usize },
+}
+
+/// Final reduction-specific failures for LogUp.
+#[derive(Debug, thiserror::Error)]
+pub enum ReductionError {
+	#[error("missing push claim for final reduction")]
+	MissingPushClaim,
+	#[error("reduction opening claim mismatch")]
+	OpeningMismatch,
+	#[error("reduction buffer evaluation mismatch")]
+	BufferMismatch,
 }

@@ -30,20 +30,46 @@ pub enum Error {
 	FracAddCheck(#[from] fracaddcheck::Error),
 }
 
-impl<
-	P: PackedField<Scalar = F>,
-	Channel: IOPProverChannel<P>,
-	F: Field,
-	const N_TABLES: usize,
-	const N_LOOKUPS: usize,
-> LogUp<P, Channel, N_TABLES, N_LOOKUPS>
+impl<P: PackedField<Scalar = F>, Channel: IOPProverChannel<P>, F: Field, const N_TABLES: usize>
+	LogUp<P, Channel, N_TABLES>
 {
 	/// Runs the full LogUp proving flow and returns per-lookup claims.
 	///
-	/// The output is ordered to match the lookup ordering in the `LogUp` instance.
+	/// `docs/logup.md` describes one lookup claim as:
+	/// 1. replace pullback evaluation `I^*T(r)` with `<T, I_*eq_r>`,
+	/// 2. prove the pushforward `I_*eq_r` is consistent using the log-sum identity.
+	///
+	/// This method executes the same idea for a batched instance built in
+	/// [`LogUp::new`](super::LogUp::new):
+	/// - each table already has one concatenated pushforward and one batched
+	///   lookup claim (random linear combination over lookup slots);
+	/// - we prove all table claims in parallel, then fold resulting evaluation
+	///   claims to keep the number of openings small.
+	///
+	/// Concretely, the phases are:
+	/// 1. [`Self::prove_pushforward`] proves per-table identities
+	///    `batched_eval[t] = <table_t, pushforward_t>` using a batch quadratic
+	///    sumcheck. This is the batched version of the single-claim
+	///    `<T, I_*eq_r>` step.
+	/// 2. [`Self::prove_log_sum`] proves, for each table, that its pushforward
+	///    really is the pushforward of the batched eq-kernel under the
+	///    concatenated index map (fractional-addition/log-sum check).
+	/// 3. [`reduce_pushforward_logsum`] takes pushforward evaluations coming from
+	///    two sub-protocols at two points, applies random table-axis weights, and
+	///    proves one combined claim via a bivariate product sumcheck.
+	///    This is where "batching lookup instances" appears as a concrete
+	///    reduction in transcript size.
+	/// 4. Assemble verifier-facing claims:
+	///    - table evaluations from step (1),
+	///    - fingerprinted index evaluations from step (2),
+	///    - one reduced pushforward opening claim from step (3),
+	///    plus the pushforward oracle committed in `LogUp::new`.
+	///
+	/// The output vectors preserve the table ordering encoded in the `LogUp`
+	/// instance.
 	///
 	/// # Preconditions
-	/// * `N_MLES == N_TABLES + N_LOOKUPS`.
+	/// * `N_MLES == 2 * N_TABLES`.
 	pub fn prove_lookup<const N_MLES: usize>(
 		&self,
 		channel: &mut Channel,
@@ -52,7 +78,7 @@ impl<
 		// Reduce lookup evaluations to pushforward/table evaluations.
 		let pushforward_claims = self.prove_pushforward::<N_MLES>(channel)?;
 		// Prove log-sum consistency for eq-kernel and pushforward trees.
-		let (eq_claims, push_claims) = self.prove_log_sum(channel)?;
+		let (index_log_sum_claims, pushforward_log_sum_claims) = self.prove_log_sum(channel)?;
 
 		// Reduce pushforward and log-sum evaluations via bivariate product sumcheck.
 		let ProveSingleOutput {
@@ -60,7 +86,7 @@ impl<
 			challenges: reduction_sumcheck_point,
 		} = reduce_pushforward_logsum::<P, F, N_TABLES>(
 			&pushforward_claims,
-			&push_claims,
+			&pushforward_log_sum_claims,
 			&self.push_forwards,
 			channel,
 		)?;
@@ -79,7 +105,7 @@ impl<
 			})
 			.collect::<Vec<_>>();
 
-		let index_claims = eq_claims
+		let index_claims = index_log_sum_claims
 			.iter()
 			.map(
 				|&FracAddEvalClaim {
@@ -133,17 +159,19 @@ pub fn build_pushforwards_from_concat_indexes<P: PackedField, const N_TABLES: us
 	array::from_fn(|i| generate_pushforward(&concat_indexes[i], eq_kernel, tables[i].len()))
 }
 
-use crate::protocols::logup::pushforward::PushforwardEvalClaims;
 use binius_ip_prover::sumcheck::bivariate_product::BivariateProductSumcheckProver;
 use binius_math::multilinear::eq::eq_ind_partial_eval;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
+
+use crate::protocols::logup::pushforward::PushforwardEvalClaims;
 
 /// Reduces pushforward evaluation claims throughout the protocol to a single point.
 ///
 ///
 /// # Arguments
 /// * `pushforward_claims` - Evaluation claims from the pushforward sumcheck
-/// * `push_claims` - Fractional addition claims from the log-sum protocol
+/// * `pushforward_log_sum_claims` - Fractional-addition claims for pushforward numerators in the
+///   log-sum protocol
 /// * `push_forwards` - The pushforward MLE data
 /// * `channel` - Prover channel for sampling and communication
 ///
@@ -151,7 +179,7 @@ use binius_utils::checked_arithmetics::log2_ceil_usize;
 /// Returns `Ok(())` if the reduction succeeds, or a `SumcheckError` on failure.
 pub fn reduce_pushforward_logsum<P, F, const N_TABLES: usize>(
 	pushforward_claims: &PushforwardEvalClaims<F>,
-	push_claims: &[FracAddEvalClaim<F>],
+	pushforward_log_sum_claims: &[FracAddEvalClaim<F>],
 	push_forwards: &[FieldBuffer<P>],
 	channel: &mut impl IPProverChannel<F>,
 ) -> Result<ProveSingleOutput<F>, SumcheckError>
@@ -160,7 +188,7 @@ where
 	F: Field,
 {
 	let pushforward_eval_point = &pushforward_claims.challenges;
-	let log_sum_eval_point = &push_claims[0].point;
+	let log_sum_eval_point = &pushforward_log_sum_claims[0].point;
 
 	// Calculate the number of variables to extend evaluation points.
 	let batch_vars = log2_ceil_usize(N_TABLES);
@@ -173,10 +201,11 @@ where
 			.map(|(weight, eval)| weight * eval)
 			.sum();
 
-	// The push claims have the pushforward evaluation claim in their numerator evaluation.
-	let log_sum_batch_eval: F = zip(batch_weights.iter_scalars(), push_claims.iter())
-		.map(|(weight, &FracAddEvalClaim { num_eval, .. })| weight * num_eval)
-		.sum();
+	// Pushforward log-sum claims carry pushforward evaluations in their numerators.
+	let log_sum_batch_eval: F =
+		zip(batch_weights.iter_scalars(), pushforward_log_sum_claims.iter())
+			.map(|(weight, &FracAddEvalClaim { num_eval, .. })| weight * num_eval)
+			.sum();
 
 	let reduction_scalar = channel.sample();
 

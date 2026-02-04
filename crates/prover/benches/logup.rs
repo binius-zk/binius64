@@ -3,8 +3,7 @@
 use std::array;
 
 use binius_field::{PackedField, arch::OptimalPackedB128};
-use binius_iop::channel::OracleSpec;
-use binius_iop::naive_channel::NaiveVerifierChannel;
+use binius_iop::{channel::OracleSpec, naive_channel::NaiveVerifierChannel};
 use binius_iop_prover::naive_channel::NaiveProverChannel;
 use binius_math::{
 	FieldBuffer,
@@ -92,11 +91,11 @@ fn bench_logup_new(c: &mut Criterion) {
 					let mut transcript = ProverTranscript::new(StdChallenger::default());
 					let mut channel =
 						NaiveProverChannel::<F, P, _>::new(&mut transcript, oracle_specs.clone());
-					LogUp::<P, _, N_TABLES, N_LOOKUPS>::new(
-						indexes_ref,
-						case.table_ids,
+					LogUp::<P, _, N_TABLES>::new(
+						&indexes_ref,
+						&case.table_ids,
 						&case.eval_point,
-						case.lookup_evals,
+						&case.lookup_evals,
 						tables,
 						&mut channel,
 					);
@@ -126,15 +125,13 @@ fn bench_logup_prove(c: &mut Criterion) {
 				|| case.tables.clone(),
 				|tables| {
 					let mut transcript = ProverTranscript::new(StdChallenger::default());
-					let mut channel = NaiveProverChannel::<F, P, _>::new(
-						&mut transcript,
-						oracle_specs.clone(),
-					);
-					let logup = LogUp::<P, _, N_TABLES, N_LOOKUPS>::new(
-						indexes_ref,
-						case.table_ids,
+					let mut channel =
+						NaiveProverChannel::<F, P, _>::new(&mut transcript, oracle_specs.clone());
+					let logup = LogUp::<P, _, N_TABLES>::new(
+						&indexes_ref,
+						&case.table_ids,
 						&case.eval_point,
-						case.lookup_evals,
+						&case.lookup_evals,
 						tables,
 						&mut channel,
 					);
@@ -165,15 +162,13 @@ fn bench_logup_prove_pushforward(c: &mut Criterion) {
 				|| case.tables.clone(),
 				|tables| {
 					let mut transcript = ProverTranscript::new(StdChallenger::default());
-					let mut channel = NaiveProverChannel::<F, P, _>::new(
-						&mut transcript,
-						oracle_specs.clone(),
-					);
-					let logup = LogUp::<P, _, N_TABLES, N_LOOKUPS>::new(
-						indexes_ref,
-						case.table_ids,
+					let mut channel =
+						NaiveProverChannel::<F, P, _>::new(&mut transcript, oracle_specs.clone());
+					let logup = LogUp::<P, _, N_TABLES>::new(
+						&indexes_ref,
+						&case.table_ids,
 						&case.eval_point,
-						case.lookup_evals,
+						&case.lookup_evals,
 						tables,
 						&mut channel,
 					);
@@ -204,21 +199,17 @@ fn bench_logup_prove_log_sum(c: &mut Criterion) {
 				|| case.tables.clone(),
 				|tables| {
 					let mut transcript = ProverTranscript::new(StdChallenger::default());
-					let mut channel = NaiveProverChannel::<F, P, _>::new(
-						&mut transcript,
-						oracle_specs.clone(),
-					);
-					let logup = LogUp::<P, _, N_TABLES, N_LOOKUPS>::new(
-						indexes_ref,
-						case.table_ids,
+					let mut channel =
+						NaiveProverChannel::<F, P, _>::new(&mut transcript, oracle_specs.clone());
+					let logup = LogUp::<P, _, N_TABLES>::new(
+						&indexes_ref,
+						&case.table_ids,
 						&case.eval_point,
-						case.lookup_evals,
+						&case.lookup_evals,
 						tables,
 						&mut channel,
 					);
-					logup
-						.prove_pushforward::<N_MLES>(&mut channel)
-						.unwrap();
+					logup.prove_pushforward::<N_MLES>(&mut channel).unwrap();
 					logup.prove_log_sum(&mut channel).unwrap();
 				},
 				BatchSize::SmallInput,
@@ -247,17 +238,15 @@ fn bench_logup_verify(c: &mut Criterion) {
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 			let mut prover_channel =
 				NaiveProverChannel::<F, P, _>::new(&mut prover_transcript, oracle_specs.clone());
-			let logup = LogUp::<P, _, N_TABLES, N_LOOKUPS>::new(
-				indexes_ref,
-				case.table_ids,
+			let logup = LogUp::<P, _, N_TABLES>::new(
+				&indexes_ref,
+				&case.table_ids,
 				&case.eval_point,
-				case.lookup_evals,
+				&case.lookup_evals,
 				case.tables.clone(),
 				&mut prover_channel,
 			);
-			logup
-				.prove_lookup::<N_MLES>(&mut prover_channel)
-				.unwrap();
+			logup.prove_lookup::<N_MLES>(&mut prover_channel).unwrap();
 
 			drop(prover_channel);
 			let proof = prover_transcript.finalize();

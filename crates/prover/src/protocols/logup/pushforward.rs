@@ -33,17 +33,12 @@ pub struct PushforwardEvalClaims<F: Field> {
 	pub table_evals: Vec<F>,
 }
 
-impl<
-	P: PackedField<Scalar = F>,
-	Channel: IOPProverChannel<P>,
-	F: Field,
-	const N_TABLES: usize,
-	const N_LOOKUPS: usize,
-> LogUp<P, Channel, N_TABLES, N_LOOKUPS>
+impl<P: PackedField<Scalar = F>, Channel: IOPProverChannel<P>, F: Field, const N_TABLES: usize>
+	LogUp<P, Channel, N_TABLES>
 {
 	/// Proves the outer instance, reducing lookup value claims to pushforward claims.
 	pub fn prove_pushforward<
-		// N_MLES is the total number of MLEs involved, this is precisely N_LOOKUPS + N_TABLES.
+		// N_MLES is the total number of MLEs involved: pushforwards + tables.
 		const N_MLES: usize,
 	>(
 		&self,
@@ -55,7 +50,7 @@ impl<
 		let mles: [FieldBuffer<P>; N_MLES] =
 			chain(self.push_forwards.iter().cloned(), self.tables.iter().cloned())
 				.collect_array()
-				.expect("N_TABLES + N_LOOKUPS == N_MLES");
+				.expect("2 * N_TABLES == N_MLES");
 
 		let pushforward_composition = |mle_evals: [P; N_MLES], comp_evals: &mut [P; N_TABLES]| {
 			// Enforce pushforward[i] * table[i] at each lookup slot.

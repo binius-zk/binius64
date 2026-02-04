@@ -10,17 +10,12 @@ use itertools::Itertools;
 
 use crate::protocols::{
 	fracaddcheck::{BatchFracAddCheckProver, Error, SharedLastLayer},
-	logup::{LogUp, helper::generate_index_fingerprints},
+	logup::{LogUp, helper::generate_enumeration_fingerprint},
 };
 type BatchLogSumClaims<F, const N: usize> = [FracAddEvalClaim<F>; N];
 
-impl<
-	P: PackedField<Scalar = F>,
-	Channel: IOPProverChannel<P>,
-	F: Field,
-	const N_TABLES: usize,
-	const N_LOOKUPS: usize,
-> LogUp<P, Channel, N_TABLES, N_LOOKUPS>
+impl<P: PackedField<Scalar = F>, Channel: IOPProverChannel<P>, F: Field, const N_TABLES: usize>
+	LogUp<P, Channel, N_TABLES>
 {
 	/// Converts the top layer of each frac-add tree into evaluation claims.
 	///
@@ -39,24 +34,6 @@ impl<
 		})
 	}
 
-	fn common_denominator(
-		log_len: usize,
-		index_count: usize,
-		fingerprint_scalar: F,
-		shift_scalar: F,
-	) -> FieldBuffer<P> {
-		// Build a fingerprinted table for indices 0..index_count-1.
-		// This is the shared denominator for all pushforward fractions.
-		let index_range = (0..index_count).collect::<Vec<_>>();
-		let [common_denominator] = generate_index_fingerprints::<P, F, 1, 1>(
-			[index_range.as_slice()],
-			fingerprint_scalar,
-			shift_scalar,
-			log_len,
-		);
-		common_denominator
-	}
-
 	/// Proves the log-sum instance using batched fractional-addition trees.
 	///
 	/// Two batches are produced:
@@ -71,6 +48,7 @@ impl<
 	) -> Result<(BatchLogSumClaims<F, N_TABLES>, BatchLogSumClaims<F, N_TABLES>), Error> {
 		let eq_log_len = self.eq_kernel.log_len();
 
+		// Every per-table fingerprint vector must be aligned with the eq-kernel domain.
 		assert!(eq_log_len == self.fingerprinted_indexes[0].log_len());
 
 		assert!(
@@ -80,45 +58,57 @@ impl<
 				.all_equal()
 		);
 
+		// Batch 1 witness: same eq-kernel numerator for all tables, table-specific denominators.
 		let eq_witness = SharedLastLayer::CommonNumerator {
 			den: self.fingerprinted_indexes.clone(),
 			num: self.eq_kernel.clone(),
 		};
-		// eq-kernel numerator is shared; denominators are per-lookup fingerprints.
-		let (eq_prover, eq_sums) =
-			BatchFracAddCheckProver::<P, N_TABLES>::new_with_last_layer_sharing(
-				eq_log_len, eq_witness,
-			);
-		let eq_claims = Self::tree_sums_to_claims(eq_sums);
 
-		let common_denominator = Self::common_denominator(
+		// Batch 2 denominator fingerprints the canonical index sequence 0..2^eq_log_len.
+		let common_denominator = generate_enumeration_fingerprint(
 			eq_log_len,
-			self.push_forwards[0].len(),
 			self.fingerprint_scalar,
 			self.shift_scalar,
 		);
 
+		// Batch 2 witness: shared denominator, table-specific pushforward numerators.
 		let push_witnesses = SharedLastLayer::CommonDenominator {
 			den: common_denominator,
 			num: self.push_forwards.clone(),
 		};
-		// Pushforward denominators are shared; numerators are per-lookup pushforwards.
 
+		// eq-kernel numerator is shared; denominators are per-table fingerprints of indexes.
+		let (eq_prover, eq_sums) =
+			BatchFracAddCheckProver::<P, N_TABLES>::new_with_last_layer_sharing(
+				eq_log_len, eq_witness,
+			);
+		// Pushforward denominators are shared; numerators are per-table pushforwards.
 		let (push_prover, push_sums) =
 			BatchFracAddCheckProver::<P, N_TABLES>::new_with_last_layer_sharing(
 				eq_log_len,
 				push_witnesses,
 			);
-		let push_claims = Self::tree_sums_to_claims(push_sums);
 
-		// Combine eq_claims and push_claims into LogSumClaim objects and write to transcript.
-		zip(eq_claims.iter(), push_claims.iter()).for_each(|(eq, push)| {
-			channel.send_many(&[eq.num_eval, eq.den_eval, push.num_eval, push.den_eval])
-		});
+		let index_log_sum_claims = Self::tree_sums_to_claims(eq_sums);
+		let pushforward_log_sum_claims = Self::tree_sums_to_claims(push_sums);
 
-		let eq_claims = eq_prover.prove(eq_claims.clone(), channel)?;
-		let push_claims = push_prover.prove(push_claims.clone(), channel)?;
+		// Transcript order is part of the protocol: (eq_num, eq_den, push_num, push_den) per table.
+		zip(index_log_sum_claims.iter(), pushforward_log_sum_claims.iter()).for_each(
+			|(index_claim, pushforward_claim)| {
+				channel.send_many(&[
+					index_claim.num_eval,
+					index_claim.den_eval,
+					pushforward_claim.num_eval,
+					pushforward_claim.den_eval,
+				])
+			},
+		);
 
-		Ok((eq_claims, push_claims))
+		// Prove each batch against the just-emitted top-layer claims.
+		let index_log_sum_claims = eq_prover.prove(index_log_sum_claims.clone(), channel)?;
+		let pushforward_log_sum_claims =
+			push_prover.prove(pushforward_log_sum_claims.clone(), channel)?;
+
+		Ok((index_log_sum_claims, pushforward_log_sum_claims))
 	}
 }
