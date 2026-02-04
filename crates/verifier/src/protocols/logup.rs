@@ -2,7 +2,7 @@
 
 //! Verifier for the batched LogUp* indexed lookup protocol.
 //!
-//! `docs/logup.md` describes the single-claim reduction:
+//! Logup* describes the single-claim reduction:
 //! `I^*T(r)` is checked by introducing `Y = I_*eq_r`, then proving
 //! (1) `I^*T(r) = <T, Y>` and (2) `Y` is a correct pushforward via log-sum.
 //!
@@ -24,7 +24,6 @@ use binius_ip::{
 	sumcheck::SumcheckOutput,
 };
 use binius_math::{
-	inner_product::inner_product,
 	multilinear::eq::{eq_ind, eq_ind_partial_eval},
 	univariate::evaluate_univariate,
 };
@@ -105,6 +104,7 @@ pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: u
 	table_ids: &[usize],
 	channel: &mut Channel,
 ) -> Result<LogUpEvalClaims<F, Channel::Oracle>, Error> {
+	// Basic shape checks for transcript-consistent inputs.
 	assert!(table_ids.len() == lookup_evals.len());
 	assert!(!lookup_evals.is_empty());
 	assert_eq!(eval_point.len(), eq_log_len, "eval_point length must match eq_log_len");
@@ -116,18 +116,22 @@ pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: u
 		grouped_evals.iter().map(|(_, vals)| vals.len()).all_equal(),
 		"There must be an equal number of lookups into each table"
 	);
-	//We need to observe the pushforward commitment before proceeding for soundness.
+	// Observe the pushforward oracle before sampling, then draw log-sum batching scalars.
 	let pushforward_oracle = channel.recv_oracle().unwrap();
 	let [fingerprint_scalar, shift_scalar]: [F; 2] = channel.sample_array();
 
+	// Fold per-lookup evaluations into one claim per table and extend the eq-kernel point.
 	let (batched_evals, extended_eval_point): ([F; N_TABLES], Vec<F>) =
 		batch_lookup_evals(&lookup_evals, eval_point, &table_ids, channel);
 
+	// Check <table_t, pushforward_t> identities for each table in batched form.
 	let PushforwardVerificationOutput {
 		sumcheck_point,
 		pushforward_evals,
 		table_evals,
 	} = verify_pushforward::<_, N_TABLES>(table_log_len, &batched_evals, channel)?;
+
+	// Check the two log-sum trees and recover reduced eq/push claims.
 	let (eq_claims, push_claims) = verify_log_sum::<_, N_TABLES>(
 		eq_log_len,
 		&extended_eval_point,
@@ -144,6 +148,7 @@ pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: u
 		channel,
 	)?;
 
+	// Package reduced table openings at the pushforward sumcheck point.
 	let table_sumcheck_claims = table_evals
 		.into_iter()
 		.map(|eval| MultilinearEvalClaim {
@@ -156,10 +161,11 @@ pub fn verify_lookup<F: Field, Channel: IOPVerifierChannel<F>, const N_TABLES: u
 		.map(|claim| MultilinearEvalClaim {
 			// Denominator tracks the fingerprinted index MLE.
 			eval: claim.den_eval,
-			point: claim.point,
-		})
-		.collect();
+				point: claim.point,
+			})
+			.collect();
 
+	// Final reduced opening for the pushforward multilinear.
 	let pushforward_eval_claim = MultilinearEvalClaim {
 		eval: pf_claim,
 		point: challenges,
