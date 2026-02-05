@@ -1,9 +1,12 @@
 // Copyright 2025-2026 The Binius Developers
 
+use std::{array, iter::zip};
+
 use binius_field::{Field, PackedField};
-use binius_ip::prodcheck::MultilinearEvalClaim;
+use binius_ip::fracaddcheck::FracAddEvalClaim;
 use binius_math::{FieldBuffer, line::extrapolate_line_packed};
 use binius_utils::rayon::iter::{IntoParallelIterator, ParallelIterator};
+use itertools::Itertools;
 
 use crate::{
 	channel::IPProverChannel,
@@ -11,17 +14,42 @@ use crate::{
 		Error as SumcheckError,
 		batch::batch_prove_mle_and_write_evals,
 		common::MleCheckProver,
+		frac_add_last_layer_mle::{SharedFracAddInput, SharedFracAddLastLayerProver},
 		frac_add_mle::{self, FractionalBuffer},
 	},
 };
 
 /// Prover for the fractional addition protocol.
 ///
-/// Each layer is a double of the numerator and denominator values of fractional terms. Each layer
-/// represents the addition of siblings with respect to the fractional addition rule:
-/// $$\frac{a_0}{b_0} + \frac{a_1}{b_1} = \frac{a_0b_1 + a_1b_0}{b_0b_1}$
+/// Each layer stores paired numerator/denominator evaluations for all leaves at that depth.
+/// Moving to the next layer combines siblings using:
+/// $$\frac{a_0}{b_0} + \frac{a_1}{b_1} = \frac{a_0b_1 + a_1b_0}{b_0b_1}.$$
+#[derive(Debug)]
 pub struct FracAddCheckProver<P: PackedField> {
 	layers: Vec<(FieldBuffer<P>, FieldBuffer<P>)>,
+}
+
+/// Batched prover for multiple fractional-addition trees sharing the same depth.
+pub struct BatchFracAddCheckProver<P: PackedField, const N: usize> {
+	provers: [FracAddCheckProver<P>; N],
+	/// Shared last-layer witness, when available.
+	shared_last_layer: Option<SharedLastLayer<P, N>>,
+}
+
+#[derive(Debug)]
+pub enum SharedLastLayer<P: PackedField, const N: usize> {
+	CommonNumerator {
+		/// Shared numerator buffer.
+		num: FieldBuffer<P>,
+		/// Per-instance denominators.
+		den: [FieldBuffer<P>; N],
+	},
+	CommonDenominator {
+		/// Shared denominator buffer.
+		den: FieldBuffer<P>,
+		/// Per-instance numerators.
+		num: [FieldBuffer<P>; N],
+	},
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -33,6 +61,12 @@ pub enum Error {
 		num_log_len: usize,
 		den_log_len: usize,
 	},
+	#[error("batch claims must share the evaluation point")]
+	BatchPointMismatch,
+	#[error("batch claim point length mismatch: expected {expected}, got {actual}")]
+	BatchPointLengthMismatch { expected: usize, actual: usize },
+	#[error("batch layer count mismatch")]
+	BatchLayerCountMismatch,
 	#[error("sumcheck error: {0}")]
 	Sumcheck(#[from] SumcheckError),
 }
@@ -46,6 +80,8 @@ where
 	///
 	/// Returns `(prover, sums)` where `sums` is the final layer containing the
 	/// fractional additions over all `k` variables.
+	///
+	/// This builds `k` reduction layers by repeatedly combining sibling fractions.
 	///
 	/// # Arguments
 	/// * `k` - The number of variables over which the reduction is taken. Each reduction step
@@ -69,6 +105,7 @@ where
 			let (num_0, num_1) = num.split_half_ref();
 			let (den_0, den_1) = den.split_half_ref();
 
+			// Combine sibling fractions in parallel for the next layer.
 			let (next_layer_num, next_layer_den) =
 				(num_0.as_ref(), den_0.as_ref(), num_1.as_ref(), den_1.as_ref())
 					.into_par_iter()
@@ -92,29 +129,32 @@ where
 		self.layers.len()
 	}
 
+	fn pop_layer(mut self) -> ((FieldBuffer<P>, FieldBuffer<P>), Option<Self>) {
+		let layer = self.layers.pop().expect("layers is non-empty");
+		let remaining = if self.layers.is_empty() {
+			None
+		} else {
+			Some(self)
+		};
+		(layer, remaining)
+	}
+
 	/// Pops the last layer and returns a sumcheck prover for it.
 	///
 	/// Returns `(layer_prover, remaining)` where:
 	/// - `layer_prover` is a sumcheck prover for the popped layer
 	/// - `remaining` is `Some(self)` if there are more layers, `None` otherwise
 	pub fn layer_prover(
-		mut self,
-		claim: (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>),
-	) -> Result<(impl MleCheckProver<F>, Option<Self>), Error> {
-		let (num_claim, den_claim) = claim;
-		assert_eq!(
-			num_claim.point, den_claim.point,
-			"fractional claims must share the evaluation point"
-		);
+		self,
+		claim: FracAddEvalClaim<F>,
+	) -> (impl MleCheckProver<F>, Option<Self>) {
+		let FracAddEvalClaim {
+			num_eval,
+			den_eval,
+			point,
+		} = claim;
 
-		let layer = self.layers.pop().expect("layers is non-empty");
-
-		let remaining = if self.layers.is_empty() {
-			None
-		} else {
-			Some(self)
-		};
-
+		let (layer, remaining) = self.pop_layer();
 		let (num, den) = layer;
 		let (num_0, num_1) = num.split_half_ref();
 		let (den_0, den_1) = den.split_half_ref();
@@ -122,13 +162,14 @@ where
 		let num_1 = FieldBuffer::new(num_1.log_len(), num_1.as_ref().into());
 		let den_0 = FieldBuffer::new(den_0.log_len(), den_0.as_ref().into());
 		let den_1 = FieldBuffer::new(den_1.log_len(), den_1.as_ref().into());
-		let prover = frac_add_mle::new(
-			[num_0, num_1, den_0, den_1],
-			num_claim.point.clone(),
-			[num_claim.eval, den_claim.eval],
-		)?;
+		// Build a single-layer MLE-check prover for this fractional-addition step.
+		let prover =
+			frac_add_mle::new([num_0, num_1, den_0, den_1], point.clone(), [num_eval, den_eval])
+				.expect(
+					"The splits will go through as long as the layers are constructed correctly.",
+				);
 
-		Ok((prover, remaining))
+		(prover, remaining)
 	}
 
 	/// Runs the fractional addition check protocol and returns the final evaluation claims.
@@ -137,21 +178,21 @@ where
 	/// the largest.
 	///
 	/// # Arguments
-	/// * `claim` - The initial multilinear evaluation claims (numerator, denominator)
+	/// * `claim` - The initial numerator/denominator evaluation claim.
 	/// * `channel` - The channel for sending prover messages and sampling challenges
 	///
 	/// # Preconditions
 	/// * `claim.0.point.len() == witness.log_len() - k` (where k is the number of reduction layers)
 	pub fn prove(
 		self,
-		claim: (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>),
+		claim: FracAddEvalClaim<F>,
 		channel: &mut impl IPProverChannel<F>,
-	) -> Result<(MultilinearEvalClaim<F>, MultilinearEvalClaim<F>), Error> {
+	) -> Result<FracAddEvalClaim<F>, Error> {
 		let mut prover_opt = Some(self);
 		let mut claim = claim;
 
 		while let Some(prover) = prover_opt {
-			let (sumcheck_prover, remaining) = prover.layer_prover(claim)?;
+			let (sumcheck_prover, remaining) = prover.layer_prover(claim);
 			prover_opt = remaining;
 
 			let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], channel)?;
@@ -171,24 +212,337 @@ where
 			let mut next_point = output.challenges;
 			next_point.push(r);
 
-			let num_claim = MultilinearEvalClaim {
-				eval: next_num,
-				point: next_point.clone(),
-			};
-			let den_claim = MultilinearEvalClaim {
-				eval: next_den,
+			claim = FracAddEvalClaim {
+				num_eval: next_num,
+				den_eval: next_den,
 				point: next_point,
 			};
-
-			claim = (num_claim, den_claim);
 		}
 
 		Ok(claim)
 	}
 }
 
+impl<F, P, const N: usize> BatchFracAddCheckProver<P, N>
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	pub const BATCH_SIZE: usize = N;
+
+	fn convert_evals_to_claims(
+		multilinear_evals: Vec<Vec<F>>,
+		next_point: Vec<F>,
+		r: F,
+	) -> Result<[FracAddEvalClaim<F>; N], Error> {
+		let mut iter = multilinear_evals.into_iter();
+		let claims = array::from_fn(|_| {
+			// Each prover emits [num_0, num_1, den_0, den_1] at the current round.
+			let evals = iter.next().expect("batch contains N provers");
+			let [num_0, num_1, den_0, den_1] = evals
+				.try_into()
+				.expect("prover evaluates four multilinears");
+			let next_num = extrapolate_line_packed(num_0, num_1, r);
+			let next_den = extrapolate_line_packed(den_0, den_1, r);
+			FracAddEvalClaim {
+				num_eval: next_num,
+				den_eval: next_den,
+				point: next_point.clone(),
+			}
+		});
+		debug_assert!(iter.next().is_none());
+		Ok(claims)
+	}
+
+	fn convert_shared_evals_to_claims(
+		multilinear_evals: Vec<Vec<F>>,
+		next_point: Vec<F>,
+		r: F,
+	) -> Result<[FracAddEvalClaim<F>; N], Error> {
+		let mut iter = multilinear_evals.into_iter();
+		let evals = iter.next().expect("batch contains one prover");
+		debug_assert!(iter.next().is_none());
+		assert_eq!(evals.len(), 4 * N, "shared prover emits 4*N evals");
+
+		let claims = array::from_fn(|i| {
+			let offset = 4 * i;
+			let num_0 = evals[offset];
+			let num_1 = evals[offset + 1];
+			let den_0 = evals[offset + 2];
+			let den_1 = evals[offset + 3];
+			// Interpolate halves with the shared challenge for the next claim.
+			let next_num = extrapolate_line_packed(num_0, num_1, r);
+			let next_den = extrapolate_line_packed(den_0, den_1, r);
+			FracAddEvalClaim {
+				num_eval: next_num,
+				den_eval: next_den,
+				point: next_point.clone(),
+			}
+		});
+
+		Ok(claims)
+	}
+
+	/// Creates a batched prover from multiple witnesses, returning final layer sums for each.
+	pub fn new(k: usize, witnesses: [FractionalBuffer<P>; N]) -> (Self, [FractionalBuffer<P>; N]) {
+		let (provers, sums) = witnesses
+			.into_iter()
+			.map(|witness| FracAddCheckProver::new(k, witness))
+			.collect::<(Vec<_>, Vec<_>)>();
+
+		let provers = provers
+			.try_into()
+			.expect("witness count matches batch size");
+		let sums = sums.try_into().expect("witness count matches batch size");
+
+		(
+			Self {
+				provers,
+				shared_last_layer: None,
+			},
+			sums,
+		)
+	}
+
+	/// Creates a batched prover with last-layer sharing, returning final layer sums for each.
+	pub fn new_with_last_layer_sharing(
+		k: usize,
+		sharing: SharedLastLayer<P, N>,
+	) -> (Self, [FractionalBuffer<P>; N]) {
+		// Pre-compute one reduction step using the shared witness so the remaining
+		// provers all have depth k-1.
+		let pruned_witnesses: [(FieldBuffer<P>, FieldBuffer<P>); N] = match &sharing {
+			SharedLastLayer::CommonNumerator { num, den } => {
+				let (num_0, num_1) = num.split_half_ref();
+
+				den.iter()
+					.map(|den_i| {
+						let (den_0, den_1) = den_i.split_half_ref();
+						let (next_layer_num, next_layer_den) =
+							(num_0.as_ref(), den_0.as_ref(), num_1.as_ref(), den_1.as_ref())
+								.into_par_iter()
+								.map(|(&a_0, &b_0, &a_1, &b_1)| (a_0 * b_1 + a_1 * b_0, b_0 * b_1))
+								.collect::<(Vec<_>, Vec<_>)>();
+						(
+							FieldBuffer::new(num.log_len() - 1, next_layer_num.into_boxed_slice()),
+							FieldBuffer::new(
+								den_i.log_len() - 1,
+								next_layer_den.into_boxed_slice(),
+							),
+						)
+					})
+					.collect_array()
+					.expect("den is of length N.")
+			}
+			SharedLastLayer::CommonDenominator { den, num } => {
+				let (den_0, den_1) = den.split_half_ref();
+
+				num.iter()
+					.map(|num_i| {
+						let (num_0, num_1) = num_i.split_half_ref();
+						let (next_layer_num, next_layer_den) =
+							(num_0.as_ref(), den_0.as_ref(), num_1.as_ref(), den_1.as_ref())
+								.into_par_iter()
+								.map(|(&a_0, &b_0, &a_1, &b_1)| (a_0 * b_1 + a_1 * b_0, b_0 * b_1))
+								.collect::<(Vec<_>, Vec<_>)>();
+						(
+							FieldBuffer::new(
+								num_i.log_len() - 1,
+								next_layer_num.into_boxed_slice(),
+							),
+							FieldBuffer::new(den.log_len() - 1, next_layer_den.into_boxed_slice()),
+						)
+					})
+					.collect_array()
+					.expect("num is of length N.")
+			}
+		};
+
+		let (mut prover, sums) = Self::new(k.saturating_sub(1), pruned_witnesses);
+		prover.shared_last_layer = Some(sharing);
+
+		(prover, sums)
+	}
+
+	/// Pops the last layer from each prover and returns sumcheck provers for the batch.
+	///
+	/// Returns `(layer_provers, remaining)` where:
+	/// - `layer_provers` are the sumcheck provers for the popped layer
+	/// - `remaining` is `Some(provers)` if there are more layers, `None` otherwise
+	pub fn layer_provers(
+		self,
+		claims: [FracAddEvalClaim<F>; N],
+	) -> (Vec<impl MleCheckProver<F>>, Option<BatchFracAddCheckProver<P, N>>) {
+		if N == 0 {
+			return (Vec::new(), None);
+		};
+		let n_layers = self.provers[0].n_layers();
+		assert!(
+			self.provers
+				.iter()
+				.any(|prover| prover.n_layers() == n_layers)
+		);
+
+		let expected_len = self
+			.provers
+			.first()
+			.and_then(|prover| prover.layers.last())
+			.map(|(num, _)| num.log_len().saturating_sub(1))
+			.unwrap_or(0);
+
+		// All batched claims must target the same layer dimension.
+		assert!(claims.iter().all(|x| x.point.len() == expected_len));
+		let mut remaining: [Option<FracAddCheckProver<P>>; N] = array::from_fn(|_| None);
+
+		let sumcheck_provers = zip(self.provers, claims)
+			.enumerate()
+			.map(|(idx, (prover, claim))| {
+				let (sumcheck_prover, next) = prover.layer_prover(claim);
+				remaining[idx] = next;
+				sumcheck_prover
+			})
+			.collect();
+
+		assert!(
+			remaining.iter().map(|opt| opt.is_some()).all_equal(),
+			"batch layer count mismatch"
+		);
+
+		let next_provers = match remaining[0] {
+			Some(_) => Some(BatchFracAddCheckProver {
+				provers: remaining.map(|opt| opt.expect("remaining prover present")),
+				shared_last_layer: self.shared_last_layer,
+			}),
+			None => match self.shared_last_layer {
+				Some(_) => Some(BatchFracAddCheckProver {
+					provers: array::from_fn(|_| FracAddCheckProver { layers: Vec::new() }),
+					shared_last_layer: self.shared_last_layer,
+				}),
+				None => None,
+			},
+		};
+
+		(sumcheck_provers, next_provers)
+	}
+
+	/// Runs the fractional addition check protocol over a batch of claims.
+	///
+	/// Iteratively proves each layer using batched sumcheck, updating the evaluation point
+	/// and claims at each step via transcript challenges. When the final layer is reached,
+	/// it may switch to a shared last-layer prover (if configured) to combine work across
+	/// the batch; otherwise it returns the current claims.
+	pub fn prove(
+		self,
+		claims: [FracAddEvalClaim<F>; N],
+		transcript: &mut impl IPProverChannel<F>,
+	) -> Result<[FracAddEvalClaim<F>; N], Error> {
+		if N == 0 {
+			return Ok(claims);
+		}
+		let mut prover_opt = Some(self);
+		let mut claims = claims;
+
+		while let Some(prover) = prover_opt {
+			let n_layers = prover.provers[0].n_layers();
+			if n_layers == 0 {
+				// All per-prover layers consumed; only a shared last-layer remains (if configured).
+				if let Some(shared_last_layer) = prover.shared_last_layer {
+					let eval_point = claims[0].point.clone();
+					let num_evals: [F; N] = array::from_fn(|i| claims[i].num_eval);
+					let den_evals: [F; N] = array::from_fn(|i| claims[i].den_eval);
+
+					let input = match shared_last_layer {
+						SharedLastLayer::CommonNumerator { num, den } => {
+							let (num_0, num_1) = split_half(num);
+							let (den_0, den_1) = split_all(
+								den,
+								"den_0 length matches batch size",
+								"den_1 length matches batch size",
+							);
+							SharedFracAddInput::CommonNumerator {
+								num_0,
+								num_1,
+								den_0,
+								den_1,
+							}
+						}
+						SharedLastLayer::CommonDenominator { den, num } => {
+							let (den_0, den_1) = split_half(den);
+							let (num_0, num_1) = split_all(
+								num,
+								"num_0 length matches batch size",
+								"num_1 length matches batch size",
+							);
+							SharedFracAddInput::CommonDenominator {
+								den_0,
+								den_1,
+								num_0,
+								num_1,
+							}
+						}
+					};
+					let shared_prover =
+						SharedFracAddLastLayerProver::new(input, eval_point, num_evals, den_evals)?;
+					let output = batch_prove_mle_and_write_evals(vec![shared_prover], transcript)?;
+
+					let r = transcript.sample();
+					let mut next_point = output.challenges;
+					next_point.push(r);
+
+					let next_claims = Self::convert_shared_evals_to_claims(
+						output.multilinear_evals,
+						next_point,
+						r,
+					)?;
+
+					claims = next_claims;
+				}
+				return Ok(claims);
+			}
+
+			let (sumcheck_provers, remaining) = prover.layer_provers(claims);
+			prover_opt = remaining;
+
+			let output = batch_prove_mle_and_write_evals(sumcheck_provers, transcript)?;
+
+			let r = transcript.sample();
+			let mut next_point = output.challenges;
+			next_point.push(r);
+
+			let next_claims =
+				Self::convert_evals_to_claims(output.multilinear_evals, next_point, r)?;
+
+			claims = next_claims;
+		}
+
+		Ok(claims)
+	}
+}
+
+fn split_half<P: PackedField>(buffer: FieldBuffer<P>) -> (FieldBuffer<P>, FieldBuffer<P>) {
+	let (half_0, half_1) = buffer.split_half_ref();
+	(
+		FieldBuffer::new(half_0.log_len(), half_0.as_ref().into()),
+		FieldBuffer::new(half_1.log_len(), half_1.as_ref().into()),
+	)
+}
+
+fn split_all<P: PackedField, I, const N: usize>(
+	buffers: I,
+	left_msg: &'static str,
+	right_msg: &'static str,
+) -> ([FieldBuffer<P>; N], [FieldBuffer<P>; N])
+where
+	I: IntoIterator<Item = FieldBuffer<P>>,
+{
+	// Split every buffer into halves and collect left/right halves into fixed arrays.
+	let (left, right): (Vec<_>, Vec<_>) = buffers.into_iter().map(split_half).unzip();
+	(left.try_into().expect(left_msg), right.try_into().expect(right_msg))
+}
 #[cfg(test)]
 mod tests {
+	use std::array;
+
 	use binius_field::PackedField;
 	use binius_ip::fracaddcheck;
 	use binius_math::{
@@ -215,27 +569,19 @@ mod tests {
 		// 3. Generate random n-dimensional challenge point
 		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
 
-		// 4. Evaluate sums at challenge point to createzz claims
+		// 4. Evaluate sums at challenge point to create claims
 		let sum_num_eval = evaluate(&sums.0, &eval_point);
 		let sum_den_eval = evaluate(&sums.1, &eval_point);
-		let prover_claim = (
-			MultilinearEvalClaim {
-				eval: sum_num_eval,
-				point: eval_point.clone(),
-			},
-			MultilinearEvalClaim {
-				eval: sum_den_eval,
-				point: eval_point.clone(),
-			},
-		);
-		let verifier_claim = fracaddcheck::FracAddEvalClaim {
+		let prover_claim = fracaddcheck::FracAddEvalClaim {
 			num_eval: sum_num_eval,
 			den_eval: sum_den_eval,
 			point: eval_point,
 		};
+		let verifier_claim = prover_claim.clone();
 
 		// 5. Run prover
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+
 		let prover_output = prover
 			.prove(prover_claim.clone(), &mut prover_transcript)
 			.unwrap();
@@ -246,10 +592,9 @@ mod tests {
 			fracaddcheck::verify(k, verifier_claim, &mut verifier_transcript).unwrap();
 
 		// 7. Check outputs match
-		assert_eq!(prover_output.0.point, prover_output.1.point);
-		assert_eq!(prover_output.0.point, verifier_output.point);
-		assert_eq!(prover_output.0.eval, verifier_output.num_eval);
-		assert_eq!(prover_output.1.eval, verifier_output.den_eval);
+		assert_eq!(prover_output.point, verifier_output.point);
+		assert_eq!(prover_output.num_eval, verifier_output.num_eval);
+		assert_eq!(prover_output.den_eval, verifier_output.den_eval);
 
 		// 8. Verify multilinear evaluation of original witness
 		let expected_num = evaluate(&witness_num, &verifier_output.point);
@@ -297,6 +642,197 @@ mod tests {
 			let actual_den = sums.1.get(i);
 			assert_eq!(actual_num, expected_num, "Numerator mismatch at index {i}");
 			assert_eq!(actual_den, expected_den, "Denominator mismatch at index {i}");
+		}
+	}
+
+	#[test]
+	fn test_frac_add_check_batch_prove_verify() {
+		type P = Packed128b;
+		type F = <P as PackedField>::Scalar;
+		const N: usize = 3;
+
+		let mut rng = StdRng::seed_from_u64(0);
+		let n = 2;
+		let k = 3;
+
+		let witnesses: [FractionalBuffer<P>; N] = array::from_fn(|_| {
+			let num = random_field_buffer::<P>(&mut rng, n + k);
+			let den = random_field_buffer::<P>(&mut rng, n + k);
+			(num, den)
+		});
+		let witnesses_clone = witnesses.clone();
+
+		let (batch_prover, sums) = BatchFracAddCheckProver::<P, N>::new(k, witnesses);
+		let eval_point = random_scalars::<F>(&mut rng, n);
+		let claims: [fracaddcheck::FracAddEvalClaim<F>; N] = array::from_fn(|i| {
+			let (num, den) = &sums[i];
+			fracaddcheck::FracAddEvalClaim {
+				num_eval: evaluate(num, &eval_point),
+				den_eval: evaluate(den, &eval_point),
+				point: eval_point.clone(),
+			}
+		});
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let prover_output = batch_prover
+			.prove(claims.clone(), &mut prover_transcript)
+			.unwrap();
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let verifier_output =
+			fracaddcheck::verify_batch(k, Vec::from(claims.clone()), &mut verifier_transcript)
+				.unwrap();
+
+		assert_eq!(prover_output.into_iter().collect::<Vec<_>>(), verifier_output);
+
+		for (output, (num, den)) in verifier_output.iter().zip(witnesses_clone.iter()) {
+			let expected_num = evaluate(num, &output.point);
+			let expected_den = evaluate(den, &output.point);
+			assert_eq!(output.num_eval, expected_num);
+			assert_eq!(output.den_eval, expected_den);
+		}
+	}
+
+	#[test]
+	#[should_panic]
+	fn test_frac_add_check_batch_layer_mismatch() {
+		type P = Packed128b;
+		type F = <P as PackedField>::Scalar;
+		let mut rng = StdRng::seed_from_u64(0);
+		let n = 1;
+
+		let (prover_a, sums_a) = FracAddCheckProver::new(
+			1,
+			(random_field_buffer::<P>(&mut rng, n + 1), random_field_buffer::<P>(&mut rng, n + 1)),
+		);
+		let (prover_b, sums_b) = FracAddCheckProver::new(
+			2,
+			(random_field_buffer::<P>(&mut rng, n + 2), random_field_buffer::<P>(&mut rng, n + 2)),
+		);
+
+		let batch_prover = BatchFracAddCheckProver::<P, 2> {
+			provers: [prover_a, prover_b],
+			shared_last_layer: None,
+		};
+
+		let eval_point = random_scalars::<F>(&mut rng, n);
+		let claims = [
+			fracaddcheck::FracAddEvalClaim {
+				num_eval: evaluate(&sums_a.0, &eval_point),
+				den_eval: evaluate(&sums_a.1, &eval_point),
+				point: eval_point.clone(),
+			},
+			fracaddcheck::FracAddEvalClaim {
+				num_eval: evaluate(&sums_b.0, &eval_point),
+				den_eval: evaluate(&sums_b.1, &eval_point),
+				point: eval_point,
+			},
+		];
+
+		let mut transcript = ProverTranscript::new(StdChallenger::default());
+		let _ = batch_prover.prove(claims, &mut transcript).unwrap_err();
+	}
+
+	#[test]
+	fn test_frac_add_check_shared_last_layer_common_numerator() {
+		type P = Packed128b;
+		type F = <P as PackedField>::Scalar;
+		const N: usize = 2;
+
+		let mut rng = StdRng::seed_from_u64(0);
+		let n = 2;
+		let k = 1;
+
+		let shared_num = random_field_buffer::<P>(&mut rng, n + k);
+		let dens: [FieldBuffer<P>; N] =
+			array::from_fn(|_| random_field_buffer::<P>(&mut rng, n + k));
+
+		let (batch_prover, sums) = BatchFracAddCheckProver::<P, N>::new_with_last_layer_sharing(
+			k,
+			SharedLastLayer::CommonNumerator {
+				num: shared_num.clone(),
+				den: dens.clone(),
+			},
+		);
+		let eval_point = random_scalars::<F>(&mut rng, n);
+		let claims: [fracaddcheck::FracAddEvalClaim<F>; N] = array::from_fn(|i| {
+			let (num, den) = &sums[i];
+			fracaddcheck::FracAddEvalClaim {
+				num_eval: evaluate(num, &eval_point),
+				den_eval: evaluate(den, &eval_point),
+				point: eval_point.clone(),
+			}
+		});
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let prover_output = batch_prover
+			.prove(claims.clone(), &mut prover_transcript)
+			.unwrap();
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let verifier_output =
+			fracaddcheck::verify_batch(k, Vec::from(claims.clone()), &mut verifier_transcript)
+				.unwrap();
+
+		assert_eq!(prover_output.into_iter().collect::<Vec<_>>(), verifier_output);
+
+		for (output, den) in verifier_output.iter().zip(dens) {
+			let expected_num = evaluate(&shared_num, &output.point);
+			let expected_den = evaluate(&den, &output.point);
+			assert_eq!(output.num_eval, expected_num);
+			assert_eq!(output.den_eval, expected_den);
+		}
+	}
+
+	#[test]
+	fn test_frac_add_check_shared_last_layer_common_denominator() {
+		type P = Packed128b;
+		type F = <P as PackedField>::Scalar;
+		const N: usize = 3;
+
+		let mut rng = StdRng::seed_from_u64(0);
+		let n = 2;
+		let k = 1;
+
+		let shared_den = random_field_buffer::<P>(&mut rng, n + k);
+		let nums: [FieldBuffer<P>; N] =
+			array::from_fn(|_| random_field_buffer::<P>(&mut rng, n + k));
+
+		let (batch_prover, sums) = BatchFracAddCheckProver::<P, N>::new_with_last_layer_sharing(
+			k,
+			SharedLastLayer::CommonDenominator {
+				den: shared_den.clone(),
+				num: nums.clone(),
+			},
+		);
+		let eval_point = random_scalars::<F>(&mut rng, n);
+		let claims: [fracaddcheck::FracAddEvalClaim<F>; N] = array::from_fn(|i| {
+			let (num, den) = &sums[i];
+			fracaddcheck::FracAddEvalClaim {
+				num_eval: evaluate(num, &eval_point),
+				den_eval: evaluate(den, &eval_point),
+				point: eval_point.clone(),
+			}
+		});
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let prover_output = batch_prover
+			.prove(claims.clone(), &mut prover_transcript)
+			.unwrap();
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let verifier_output =
+			fracaddcheck::verify_batch(k, Vec::from(claims.clone()), &mut verifier_transcript)
+				.unwrap();
+
+		assert_eq!(prover_output.into_iter().collect::<Vec<_>>(), verifier_output);
+
+		for (output, num) in verifier_output.iter().zip(nums) {
+			let expected_den = evaluate(&shared_den, &output.point);
+			let expected_num = evaluate(&num, &output.point);
+
+			assert_eq!(output.num_eval, expected_num);
+			assert_eq!(output.den_eval, expected_den);
 		}
 	}
 

@@ -6,7 +6,7 @@
 //! (a0 / b0) + (a1 / b1) = (a0 * b1 + a1 * b0) / (b0 * b1).
 
 use binius_field::Field;
-use binius_math::line::extrapolate_line_packed;
+use binius_math::{line::extrapolate_line_packed, univariate::evaluate_univariate};
 use binius_transcript::Error as TranscriptError;
 
 use crate::{
@@ -81,6 +81,106 @@ pub fn verify<F: Field>(
 	)
 }
 
+/// Verifies a batch of fractional-addition trees sharing the same reduction depth.
+///
+/// Reduces `B` independent fractional-addition claims in one transcript, using shared
+/// per-layer challenges and batched MLE-check sumcheck to amortize verification cost.
+///
+/// # Arguments
+///
+/// * `k` - Number of reduction layers.
+/// * `claims` - Claims for each instance. All must share the same evaluation point.
+/// * `transcript` - Fiat-Shamir transcript for messages and challenges.
+///
+/// # Returns
+///
+/// Final claims after `k` reductions, or an error if verification fails.
+///
+/// # Layer reduction
+///
+/// For each layer, validates across all trees:
+/// - `numerator = num_0 * den_1 + num_1 * den_0`
+/// - `denominator = den_0 * den_1`
+///
+/// Then samples challenge `r` and extrapolates to next layer claims.
+pub fn verify_batch<F: Field>(
+	k: usize,
+	claims: Vec<FracAddEvalClaim<F>>,
+	channel: &mut impl IPVerifierChannel<F>,
+) -> Result<Vec<FracAddEvalClaim<F>>, Error> {
+	if k == 0 || claims.is_empty() {
+		return Ok(claims);
+	}
+
+	let mut claims = claims;
+
+	// Process each layer from k-1 down to 0
+	for round in (0..k).rev() {
+		// All claims must share the same evaluation point at this layer
+		let eval_point = claims[0].point.clone();
+		if !claims.iter().all(|claim| claim.point == eval_point) {
+			return Err(VerificationError::BatchPointMismatch.into());
+		}
+
+		// Collect all numerator and denominator evaluations for batched sumcheck
+		let evals = claims
+			.iter()
+			.flat_map(|claim| [claim.num_eval, claim.den_eval])
+			.collect::<Vec<_>>();
+
+		// Verify batched MLE claims with degree 2 (for fractional addition)
+		let BatchSumcheckOutput {
+			batch_coeff,
+			eval,
+			mut challenges,
+		} = sumcheck::batch_verify_mle(&eval_point, 2, &evals, channel)?;
+
+		// Read and validate each instance's layer evaluations
+		let mut layer_evals = Vec::with_capacity(claims.len());
+		let mut composed_evals = Vec::with_capacity(claims.len() * 2);
+
+		for _ in 0..claims.len() {
+			let [num_0, num_1, den_0, den_1] = channel.recv_array()?;
+			// Validate layer composition: (a0/b0) + (a1/b1) = (a0*b1 + a1*b0) / (b0*b1)
+			let numerator_eval = num_0 * den_1 + num_1 * den_0;
+			let denominator_eval = den_0 * den_1;
+			composed_evals.push(numerator_eval);
+			composed_evals.push(denominator_eval);
+			layer_evals.push((num_0, num_1, den_0, den_1));
+		}
+
+		// Verify batched evaluation matches sumcheck output
+		let expected_eval = evaluate_univariate(&composed_evals, batch_coeff);
+		if expected_eval != eval {
+			return Err(VerificationError::IncorrectLayerFractionSumEvaluation { round }.into());
+		}
+
+		// Sumcheck binds variables high-to-low; reverse to low-to-high for point evaluation.
+		challenges.reverse();
+		let mut reduced_eval_point = challenges;
+
+		// Sample shared challenge and extrapolate to next layer
+		let r = channel.sample();
+		reduced_eval_point.push(r);
+
+		// Build claims for the next layer by extrapolating each instance
+		let mut next_claims = Vec::with_capacity(claims.len());
+		for (num_0, num_1, den_0, den_1) in layer_evals {
+			let next_num = extrapolate_line_packed(num_0, num_1, r);
+			let next_den = extrapolate_line_packed(den_0, den_1, r);
+			next_claims.push(FracAddEvalClaim {
+				num_eval: next_num,
+				den_eval: next_den,
+				point: reduced_eval_point.clone(),
+			});
+		}
+
+		claims = next_claims;
+	}
+
+	Ok(claims)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
 	#[error("sumcheck error: {0}")]
@@ -125,6 +225,8 @@ pub enum VerificationError {
 	IncorrectLayerFractionSumEvaluation { round: usize },
 	#[error("incorrect round evaluation: {round}")]
 	IncorrectRoundEvaluation { round: usize },
+	#[error("batch claims must share the evaluation point")]
+	BatchPointMismatch,
 	#[error("transcript is empty")]
 	TranscriptIsEmpty,
 }

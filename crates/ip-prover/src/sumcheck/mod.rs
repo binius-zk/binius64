@@ -1,6 +1,7 @@
 // Copyright 2023-2025 Irreducible Inc.
 
 pub mod batch;
+pub mod batch_quadratic;
 pub mod batch_quadratic_mle;
 pub mod bivariate_product;
 pub mod bivariate_product_mle;
@@ -18,5 +19,6 @@ mod switchover;
 pub use error::*;
 pub use mle_to_sumcheck::*;
 pub use prove::*;
+pub mod frac_add_last_layer_mle;
 pub mod frac_add_mle;
 pub mod zk_mlecheck;
