@@ -74,7 +74,7 @@ impl<const N: usize> SmallU<N> {
 	pub fn checked_sub(self, rhs: Self) -> Option<Self> {
 		let a = self.val();
 		let b = rhs.val();
-		(b > a).then_some(Self(b - a))
+		(a >= b).then_some(Self(a - b))
 	}
 }
 
