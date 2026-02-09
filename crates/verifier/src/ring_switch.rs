@@ -10,7 +10,13 @@ use binius_math::{
 	tensor_algebra::TensorAlgebra,
 };
 
-use crate::{config::B1, pcs::VerificationError};
+use crate::config::B1;
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+	#[error("channel: {0}")]
+	Channel(#[from] binius_ip::channel::Error),
+}
 
 /// Output of ring-switching verification.
 pub struct RingSwitchVerifyOutput<F: BinaryField + PackedField<Scalar = F>> {
@@ -44,7 +50,7 @@ pub fn verify<F, C>(
 	evaluation_claim: F,
 	eval_point: &[F],
 	channel: &mut C,
-) -> Result<RingSwitchVerifyOutput<F>, VerificationError>
+) -> Result<RingSwitchVerifyOutput<F>, Error>
 where
 	F: BinaryField + PackedField<Scalar = F>,
 	C: IPVerifierChannel<F, Elem = F>,

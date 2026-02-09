@@ -21,7 +21,7 @@ use binius_utils::{
 use digest::{Digest, Output, core_api::BlockSizeUser};
 use itertools::{Itertools, chain};
 
-use super::error::Error;
+use super::error::{Error, VerificationError};
 use crate::{
 	and_reduction::verifier::{AndCheckOutput, verify_with_channel},
 	config::{
@@ -30,7 +30,6 @@ use crate::{
 	fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
 	hash::PseudoCompressionFunction,
 	merkle_tree::BinaryMerkleTreeScheme,
-	pcs::VerificationError,
 	protocols::{
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
 		shift::{self, OperatorData},

@@ -5,8 +5,9 @@ use binius_iop::channel::Error as IOPChannelError;
 use binius_ip::channel::Error as ChannelError;
 
 use crate::{
-	fri, pcs,
+	fri,
 	protocols::{intmul, shift, sumcheck},
+	ring_switch,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -19,10 +20,8 @@ pub enum Error {
 	IOPChannel(#[from] IOPChannelError),
 	#[error("FRI error: {0}")]
 	FRI(#[from] fri::Error),
-	#[error("NTT error: {0}")]
-	PCS(#[from] pcs::Error),
-	#[error("PCS verification error: {0}")]
-	PcsVerification(#[from] pcs::VerificationError),
+	#[error("ring switch error: {0}")]
+	RingSwitch(#[from] ring_switch::Error),
 	#[error("IntMul error: {0}")]
 	IntMul(#[from] intmul::Error),
 	#[error("sumcheck error: {0}")]
@@ -41,4 +40,6 @@ pub enum Error {
 pub enum VerificationError {
 	#[error("public input check failed")]
 	PublicInputCheckFailed,
+	#[error("final evaluation check of sumcheck and FRI reductions failed")]
+	EvaluationInconsistency,
 }
