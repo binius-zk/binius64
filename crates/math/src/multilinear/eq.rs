@@ -4,6 +4,7 @@ use std::{iter, ops::DerefMut};
 
 use binius_field::{
 	Field, PackedField,
+	field::FieldOps,
 	packed::{get_packed_slice, set_packed_slice},
 };
 use binius_utils::rayon::prelude::*;
@@ -176,13 +177,9 @@ pub fn eq_ind_truncate_low_inplace<P: PackedField, Data: DerefMut<Target = [P]>>
 /// \widetilde{eq}(X, Y) = X + Y + 1
 /// $$
 #[inline(always)]
-pub fn eq_one_var<F: Field>(x: F, y: F) -> F {
-	if F::CHARACTERISTIC == 2 {
-		// Optimize away the multiplication for binary fields
-		x + y + F::ONE
-	} else {
-		x * y + (F::ONE - x) * (F::ONE - y)
-	}
+pub fn eq_one_var<F: FieldOps>(x: F, y: F) -> F {
+	let one = F::one();
+	x.clone() * y.clone() + (one.clone() - x) * (one.clone() - y)
 }
 
 /// Evaluates the equality indicator multilinear at a pair of coordinates.
@@ -198,9 +195,37 @@ pub fn eq_one_var<F: Field>(x: F, y: F) -> F {
 /// See [DP23], Section 2.1 for more information about the equality indicator polynomial.
 ///
 /// [DP23]: <https://eprint.iacr.org/2023/1784>
-pub fn eq_ind<F: Field>(x: &[F], y: &[F]) -> F {
+pub fn eq_ind<F: FieldOps>(x: &[F], y: &[F]) -> F {
 	assert_eq!(x.len(), y.len(), "pre-condition: x and y must be the same length");
-	iter::zip(x, y).map(|(&x, &y)| eq_one_var(x, y)).product()
+	iter::zip(x, y)
+		.map(|(x, y)| eq_one_var(x.clone(), y.clone()))
+		.product()
+}
+
+/// Computes the partial evaluation of the equality indicator polynomial, returning scalars.
+///
+/// This is a scalar-only variant of [`eq_ind_partial_eval`] that returns a `Vec<F>` instead of
+/// a [`FieldBuffer`]. It computes the tensor product
+///
+/// $$
+/// (1 - r_0, r_0) \otimes ... \otimes (1 - r_{n-1}, r_{n-1}).
+/// $$
+pub fn eq_ind_partial_eval_scalars<F: FieldOps>(point: &[F]) -> Vec<F> {
+	let mut result = Vec::with_capacity(1 << point.len());
+	result.push(F::one());
+
+	for r_i in point {
+		// Double the buffer size. For each existing value in 0..size,
+		// the lo half gets val * (1 - r_i) and the hi half gets val * r_i.
+		// Process in reverse so that writes to hi don't overwrite values we need.
+		let len = result.len();
+		for j in 0..len {
+			let prod = result[j].clone() * r_i.clone();
+			result[j] -= prod.clone();
+			result.push(prod);
+		}
+	}
+	result
 }
 
 #[cfg(test)]
@@ -369,6 +394,21 @@ mod tests {
 		}
 
 		assert_eq!(log_n_values, 0);
+	}
+
+	#[test]
+	fn test_eq_ind_partial_eval_scalars_consistency() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		for log_n in [0, 1, 2, 5, 8] {
+			let point = random_scalars::<F>(&mut rng, log_n);
+
+			let packed_result = eq_ind_partial_eval::<P>(&point);
+			let scalar_result = eq_ind_partial_eval_scalars(&point);
+
+			let packed_scalars: Vec<F> = packed_result.iter_scalars().collect();
+			assert_eq!(packed_scalars, scalar_result, "mismatch at log_n={log_n}");
+		}
 	}
 
 	#[test]

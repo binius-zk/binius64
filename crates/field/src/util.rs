@@ -2,17 +2,17 @@
 
 use std::iter;
 
-use crate::Field;
+use crate::field::FieldOps;
 
 /// Iterate the powers of a given value, beginning with 1 (the 0'th power).
-pub fn powers<F: Field>(val: F) -> impl Iterator<Item = F> {
-	iter::successors(Some(F::ONE), move |&power| Some(power * val))
+pub fn powers<F: FieldOps>(val: F) -> impl Iterator<Item = F> {
+	iter::successors(Some(F::one()), move |power| Some(power.clone() * val.clone()))
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::BinaryField128bGhash;
+	use crate::{BinaryField128bGhash, Field};
 
 	#[test]
 	fn test_powers_against_pow() {

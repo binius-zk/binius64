@@ -739,7 +739,7 @@ mod tests {
 		let (query_k, query_j) = query_point.split_at(m_d);
 
 		let expected_libra_eval_out =
-			libra_eval::<B128, B128>(&challenge_point, query_j, query_k, n_vars, degree);
+			libra_eval::<B128>(&challenge_point, query_j, query_k, n_vars, degree);
 		assert_eq!(
 			libra_eval_out, expected_libra_eval_out,
 			"libra_eval should match the sumcheck-reduced evaluation"

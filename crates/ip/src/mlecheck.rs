@@ -1,8 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_field::{Field, PackedField, field::FieldOps, util::powers};
-use binius_math::multilinear::eq::eq_ind_partial_eval;
+use binius_field::{Field, field::FieldOps, util::powers};
+use binius_math::multilinear::eq::eq_ind_partial_eval_scalars;
 
 use crate::{
 	channel::IPVerifierChannel,
@@ -227,24 +227,24 @@ impl<F> RoundProof<F> {
 /// * `query_k` - Query point for the power index (length `m_d`)
 /// * `n_vars` - Number of variables in the mask polynomial
 /// * `degree` - Degree of each univariate in the mask polynomial
-pub fn libra_eval<F: Field, P: PackedField<Scalar = F>>(
+pub fn libra_eval<F: FieldOps>(
 	challenge_point: &[F],
 	query_j: &[F],
 	query_k: &[F],
 	n_vars: usize,
 	degree: usize,
 ) -> F {
-	let eq_j = eq_ind_partial_eval::<P>(query_j);
-	let eq_k = eq_ind_partial_eval::<P>(query_k);
+	let eq_j = eq_ind_partial_eval_scalars(query_j);
+	let eq_k = eq_ind_partial_eval_scalars(query_k);
 
-	eq_j.iter_scalars()
+	eq_j.iter()
 		.take(n_vars)
 		.zip(challenge_point)
-		.map(|(eq_j_val, &r_j)| {
-			eq_k.iter_scalars()
+		.map(|(eq_j_val, r_j)| {
+			eq_k.iter()
 				.take(degree + 1)
-				.zip(powers(r_j))
-				.map(|(eq_k_val, r_j_power)| eq_j_val * eq_k_val * r_j_power)
+				.zip(powers(r_j.clone()))
+				.map(|(eq_k_val, r_j_power)| eq_j_val.clone() * eq_k_val.clone() * r_j_power)
 				.sum::<F>()
 		})
 		.sum()
