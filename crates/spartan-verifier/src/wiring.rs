@@ -3,7 +3,7 @@
 use std::iter;
 
 use binius_field::Field;
-use binius_ip::{MultilinearRationalEvalClaim, channel::IPVerifierChannel};
+use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
 	multilinear::eq::{eq_ind, eq_ind_partial_eval, eq_one_var},
 	univariate::evaluate_univariate,
@@ -57,39 +57,37 @@ where
 	}
 }
 
-/// Checks the wiring evaluation claim from a multilinear rational evaluation claim.
+/// Returns a closure that evaluates the wiring transparent polynomial at a given point.
 ///
-/// This works with the `MultilinearRationalEvalClaim` type returned by the IOP channel's
-/// `finish` method.
-pub fn check_eval_claim<F: Field>(
-	constraint_system: &ConstraintSystemPadded,
+/// The returned closure computes the expected evaluation of the wiring MLE batched with the
+/// public input equality check, given a challenge point from the BaseFold opening.
+pub fn eval_transparent<'a, F: Field>(
+	constraint_system: &'a ConstraintSystemPadded,
 	r_public: &[F],
 	r_x: &[F],
-	claim: &MultilinearRationalEvalClaim<F>,
 	lambda: F,
 	batch_coeff: F,
-) -> Result<(), Error> {
-	// claim.point is in low-to-high order with batch_challenge at the end.
-	// Remove the batch_challenge to get r_y.
-	let r_y: Vec<F> = claim.point[..claim.point.len() - 1].to_vec();
+) -> binius_iop::channel::TransparentEvalFn<'a, F> {
+	let r_public = r_public.to_vec();
+	let r_x = r_x.to_vec();
 
-	assert!(r_public.len() <= r_y.len());
+	Box::new(move |point: &[F]| {
+		// point is in low-to-high order with batch_challenge at the end.
+		// Remove the batch_challenge to get r_y.
+		let r_y = &point[..point.len() - 1];
 
-	let wiring_eval = evaluate_wiring_mle(constraint_system.mul_constraints(), lambda, r_x, &r_y);
+		let wiring_eval =
+			evaluate_wiring_mle(constraint_system.mul_constraints(), lambda, &r_x, r_y);
 
-	// Evaluate eq(r_public || ZERO, r_y)
-	let (r_y_head, r_y_tail) = r_y.split_at(r_public.len());
-	let eq_head = eq_ind(r_public, r_y_head);
-	let eq_public = r_y_tail
-		.iter()
-		.fold(eq_head, |eval, &r_y_i| eval * eq_one_var(r_y_i, F::ZERO));
+		// Evaluate eq(r_public || ZERO, r_y)
+		let (r_y_head, r_y_tail) = r_y.split_at(r_public.len());
+		let eq_head = eq_ind(&r_public, r_y_head);
+		let eq_public = r_y_tail
+			.iter()
+			.fold(eq_head, |eval, &r_y_i| eval * eq_one_var(r_y_i, F::ZERO));
 
-	let expected = wiring_eval + batch_coeff * eq_public;
-	if claim.eval_numerator != expected * claim.eval_denominator {
-		return Err(Error::SumcheckComposition);
-	}
-
-	Ok(())
+		wiring_eval + batch_coeff * eq_public
+	})
 }
 
 pub fn evaluate_wiring_mle<F: Field>(
@@ -126,6 +124,4 @@ pub enum Error {
 	BaseFold(#[from] basefold::Error),
 	#[error("sumcheck error: {0}")]
 	Sumcheck(#[from] sumcheck::Error),
-	#[error("sumcheck composition check failed")]
-	SumcheckComposition,
 }

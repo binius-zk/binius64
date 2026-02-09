@@ -7,16 +7,14 @@
 //! This is intended for unit testing of protocols without the overhead of BaseFold/FRI.
 
 use binius_field::Field;
-use binius_ip::{MultilinearRationalEvalClaim, channel::IPVerifierChannel};
-use binius_math::{
-	FieldBuffer, inner_product::inner_product_buffers, multilinear::evaluate::evaluate_inplace,
-};
+use binius_ip::channel::IPVerifierChannel;
+use binius_math::{FieldBuffer, inner_product::inner_product_buffers};
 use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
 
-use crate::channel::{Error, IOPVerifierChannel, OracleSpec};
+use crate::channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 
 /// Oracle handle returned by [`NaiveVerifierChannel::recv_oracle`].
 #[derive(Debug, Clone, Copy)]
@@ -165,18 +163,16 @@ where
 
 	fn finish(
 		mut self,
-		oracle_relations: &[(Self::Oracle, F)],
-	) -> Result<Vec<MultilinearRationalEvalClaim<F>>, Error> {
+		oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, F>],
+	) -> Result<(), Error> {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
 			"finish called but {} oracle specs remaining",
 			self.remaining_oracle_specs().len()
 		);
 
-		let mut claims = Vec::with_capacity(oracle_relations.len());
-
-		for (oracle, eval_claim) in oracle_relations {
-			let index = oracle.index;
+		for relation in oracle_relations {
+			let index = relation.oracle.index;
 			assert!(index < self.stored_polynomials.len(), "oracle index {index} out of bounds");
 
 			// Extract spec data before mutable borrow of transcript
@@ -202,26 +198,26 @@ where
 			let actual_inner_product: F = inner_product_buffers(&witness_poly, &transparent_poly);
 
 			assert_eq!(
-				actual_inner_product, *eval_claim,
+				actual_inner_product, relation.claim,
 				"NaiveVerifierChannel: inner product verification failed"
 			);
 
 			// Sample evaluation point challenges (same as prover sampled)
 			let point: Vec<F> = CanSample::sample_vec(&mut self.transcript, log_msg_len);
 
-			// Compute transparent polynomial evaluation at the sampled point
-			let transparent_eval = evaluate_inplace(transparent_poly, &point);
+			// Evaluate the transparent closure at the challenge point
+			let transparent_eval = (relation.transparent)(&point);
 
-			// Return a claim that trivially passes:
-			// eval_numerator == eval_denominator * transparent_poly_eval(point)
-			// transparent_eval == 1 * transparent_eval
-			claims.push(MultilinearRationalEvalClaim {
-				eval_numerator: transparent_eval,
-				eval_denominator: F::ONE,
-				point,
-			});
+			// Verify the transparent evaluation matches using assert_zero
+			self.assert_zero(
+				transparent_eval
+					- binius_math::multilinear::evaluate::evaluate_inplace(
+						transparent_poly,
+						&point,
+					),
+			)?;
 		}
 
-		Ok(claims)
+		Ok(())
 	}
 }

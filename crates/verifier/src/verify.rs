@@ -4,7 +4,7 @@ use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField};
 use binius_iop::{
 	basefold_compiler::BaseFoldVerifierCompiler,
-	channel::{IOPVerifierChannel, OracleSpec},
+	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 };
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
@@ -21,7 +21,7 @@ use binius_utils::{
 use digest::{Digest, Output, core_api::BlockSizeUser};
 use itertools::{Itertools, chain};
 
-use super::error::{Error, VerificationError};
+use super::error::Error;
 use crate::{
 	and_reduction::verifier::{AndCheckOutput, verify_with_channel},
 	config::{
@@ -305,18 +305,19 @@ where
 			sumcheck_claim,
 		} = ring_switch::verify(shift_output.witness_eval(), &eval_point, &mut channel)?;
 
-		// Finish via channel (runs BaseFold internally)
-		let claims = channel.finish(&[(trace_oracle, sumcheck_claim)])?;
-
-		// Verify final ring-switching consistency
+		// Build the transparent closure for the ring-switching equality indicator
 		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
-		let (_, eval_point_high) = eval_point.split_at(log_packing);
-		let claim = &claims[0];
-		let rs_eq_at_challenges =
-			ring_switch::eval_rs_eq(eval_point_high, &claim.point, eq_r_double_prime.as_ref());
-		if claim.eval_numerator != claim.eval_denominator * rs_eq_at_challenges {
-			return Err(VerificationError::EvaluationInconsistency.into());
-		}
+		let eval_point_high = eval_point[log_packing..].to_vec();
+		let transparent = Box::new(move |point: &[B128]| {
+			ring_switch::eval_rs_eq(&eval_point_high, point, eq_r_double_prime.as_ref())
+		});
+
+		// Finish via channel (runs BaseFold internally and verifies the product check)
+		channel.finish(&[OracleLinearRelation {
+			oracle: trace_oracle,
+			transparent,
+			claim: sumcheck_claim,
+		}])?;
 
 		drop(pcs_guard);
 

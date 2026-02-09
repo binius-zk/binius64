@@ -15,7 +15,7 @@
 //! communication and commitment mechanisms.
 
 use binius_field::Field;
-use binius_ip::{MultilinearRationalEvalClaim, channel::IPVerifierChannel};
+use binius_ip::channel::IPVerifierChannel;
 
 use crate::basefold;
 
@@ -26,6 +26,8 @@ pub enum Error {
 	ProofEmpty,
 	#[error("BaseFold verification failed: {0}")]
 	BaseFold(#[from] basefold::Error),
+	#[error("IP channel error: {0}")]
+	IPChannel(#[from] binius_ip::channel::Error),
 }
 
 /// Specification for an oracle to be committed in the IOP.
@@ -35,6 +37,27 @@ pub struct OracleSpec {
 	pub log_msg_len: usize,
 	/// Whether this oracle uses zero-knowledge blinding.
 	pub is_zk: bool,
+}
+
+/// A boxed closure that evaluates a transparent MLE at a given point.
+pub type TransparentEvalFn<'a, Elem> = Box<dyn Fn(&[Elem]) -> Elem + 'a>;
+
+/// An oracle linear relation specifying an inner product claim between a committed oracle
+/// polynomial and a transparent polynomial.
+///
+/// The claim asserts that `<oracle_poly, transparent_poly> = claim`, where `transparent_poly` is
+/// the multilinear extension defined by the `transparent` closure evaluated at the challenge point
+/// sampled during the protocol.
+pub struct OracleLinearRelation<'a, Oracle, Elem> {
+	/// The oracle handle for the committed polynomial.
+	pub oracle: Oracle,
+	/// A closure that evaluates the transparent MLE at a given point.
+	///
+	/// The closure receives the challenge point (sampled during `finish`) and returns the
+	/// evaluation of the transparent polynomial's MLE at that point.
+	pub transparent: TransparentEvalFn<'a, Elem>,
+	/// The claimed inner product of the oracle polynomial and the transparent polynomial.
+	pub claim: Elem,
 }
 
 /// Channel for IOP verifiers that extends the IP verifier channel with oracle operations.
@@ -64,18 +87,14 @@ pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	/// `remaining_oracle_specs()` must be non-empty.
 	fn recv_oracle(&mut self) -> Result<Self::Oracle, Error>;
 
-	/// Finishes the protocol by opening all oracle relations.
+	/// Finishes the protocol by opening all oracle relations and verifying them.
 	///
-	/// Each oracle relation is a pair of (oracle, claimed_eval) where claimed_eval is the
-	/// claimed evaluation of the oracle's polynomial multiplied by a transparent polynomial.
-	///
-	/// Returns a vector of [`MultilinearRationalEvalClaim`]s, one per oracle relation. Each claim
-	/// contains:
-	/// - `eval_numerator`: the final sumcheck value
-	/// - `eval_denominator`: the FRI evaluation of the committed polynomial
-	/// - `point`: the evaluation point derived from sumcheck challenges
-	///
-	/// The caller must verify: `eval_numerator == eval_denominator * transparent_poly_eval(point)`
+	/// For each oracle relation, this method:
+	/// 1. Runs the opening protocol (e.g., BaseFold) to obtain the oracle evaluation and challenge
+	///    point
+	/// 2. Evaluates the transparent polynomial at the challenge point
+	/// 3. Verifies that `eval_numerator == eval_denominator * transparent_eval` using `assert_zero`
+	///    on the underlying channel
 	///
 	/// # Preconditions
 	///
@@ -84,6 +103,6 @@ pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	///   `recv_oracle()`.
 	fn finish(
 		self,
-		oracle_relations: &[(Self::Oracle, Self::Elem)],
-	) -> Result<Vec<MultilinearRationalEvalClaim<Self::Elem>>, Error>;
+		oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, Self::Elem>],
+	) -> Result<(), Error>;
 }
