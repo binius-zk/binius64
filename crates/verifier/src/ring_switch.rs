@@ -53,16 +53,12 @@ where
 	let (eval_point_low, _eval_point_high) = eval_point.split_at(log_packing);
 
 	// Receive s_hat_v
-	let s_hat_v = channel
-		.recv_many(1 << log_packing)
-		.map_err(|_| VerificationError::EmptyProof)?;
+	let s_hat_v = channel.recv_many(1 << log_packing)?;
 	let s_hat_v_buf = FieldBuffer::from_values(&s_hat_v);
 
 	// Verify partial eval matches expected claim
 	let computed_claim = evaluate::<F, F, _>(&s_hat_v_buf, eval_point_low);
-	channel
-		.assert_zero(evaluation_claim - computed_claim)
-		.map_err(|_| VerificationError::EvaluationClaimMismatch)?;
+	channel.assert_zero(evaluation_claim - computed_claim)?;
 
 	// Basis transpose
 	let s_hat_u = FieldBuffer::from_values(&TensorAlgebra::<B1, F>::new(s_hat_v).transpose().elems);

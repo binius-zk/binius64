@@ -55,9 +55,7 @@ where
 		.collect::<Vec<_>>();
 
 	let expected_eval = evaluate_univariate(&expected_unbatched_terms, batch_coeff);
-	channel
-		.assert_zero(expected_eval - eval)
-		.map_err(|_| Error::CompositionClaimMismatch)?;
+	channel.assert_zero(expected_eval - eval)?;
 
 	Ok(BivariateProductMleLayerOutput {
 		challenges,
@@ -95,9 +93,7 @@ where
 	let b_leaves_buffer = FieldBuffer::new(log_bits, b_leaves_evals.as_slice());
 	let expected_eval = multilinear::evaluate::evaluate(&b_leaves_buffer, z_suffix);
 
-	channel
-		.assert_zero(expected_eval - output_claim.eval)
-		.map_err(|_| Error::LeafEvalMismatch)?;
+	channel.assert_zero(expected_eval - output_claim.eval)?;
 
 	Ok(Phase1Output {
 		eval_point: eval_point.to_vec(),
@@ -171,9 +167,7 @@ where
 
 	let expected_batched_eval = evaluate_univariate(&expected_unbatched_terms, batch_coeff);
 
-	channel
-		.assert_zero(expected_batched_eval - eval)
-		.map_err(|_| Error::CompositionClaimMismatch)?;
+	channel.assert_zero(expected_batched_eval - eval)?;
 
 	Ok(output)
 }
@@ -314,9 +308,7 @@ where
 	let expected_batched_eval = evaluate_univariate(&expected_unbatched_evals, batch_coeff);
 
 	// Compare expected evaluation against given evaluation `eval`.
-	channel
-		.assert_zero(expected_batched_eval - eval)
-		.map_err(|_| Error::CompositionClaimMismatch)?;
+	channel.assert_zero(expected_batched_eval - eval)?;
 
 	// Evals `b_0_eval`, `a_0_eval`, and `c_lo_0_eval` will be verified following phase 5.
 	let b_0_eval = bivariate_evals

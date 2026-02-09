@@ -10,6 +10,7 @@
 //! [DP24]: <https://eprint.iacr.org/2024/504>
 
 use binius_field::{BinaryField, ExtensionField, Field, PackedField};
+use binius_ip::channel;
 use binius_math::{
 	field_buffer::FieldBuffer,
 	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
@@ -115,6 +116,8 @@ pub enum Error {
 	Basefold(#[source] basefold::Error),
 	#[error("verification error: {0}")]
 	Verification(#[from] VerificationError),
+	#[error("channel: {0}")]
+	Channel(#[from] channel::Error),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -127,6 +130,8 @@ pub enum VerificationError {
 	Basefold(#[from] basefold::VerificationError),
 	#[error("proof tape is empty")]
 	EmptyProof,
+	#[error("channel: {0}")]
+	Channel(#[from] channel::Error),
 }
 
 impl From<TranscriptError> for Error {

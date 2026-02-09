@@ -41,6 +41,4 @@ pub enum Error {
 pub enum VerificationError {
 	#[error("public input check failed")]
 	PublicInputCheckFailed,
-	#[error("AND-reduction MLE check failed, polynomial evals don't match sumcheck claim")]
-	AndReductionMLECheckFailed,
 }

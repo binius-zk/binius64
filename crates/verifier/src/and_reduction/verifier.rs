@@ -10,7 +10,6 @@ use crate::{
 		univariate::univariate_poly::{GenericPo2UnivariatePoly, UnivariatePolyIsomorphic},
 		utils::constants::ROWS_PER_HYPERCUBE_VERTEX,
 	},
-	error::VerificationError,
 	protocols::{mlecheck::verify, sumcheck::SumcheckOutput},
 };
 
@@ -122,9 +121,7 @@ where
 
 	let [a_eval, b_eval, c_eval] = channel.recv_array()?;
 
-	channel
-		.assert_zero(eval - a_eval * b_eval + c_eval)
-		.map_err(|_| VerificationError::AndReductionMLECheckFailed)?;
+	channel.assert_zero(a_eval * b_eval - c_eval - eval)?;
 
 	eval_point.reverse();
 

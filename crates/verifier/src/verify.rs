@@ -192,9 +192,7 @@ where
 		let domain_subspace = extended_subspace.reduce_dim(LOG_WORD_SIZE_BITS);
 
 		// Receive the trace oracle commitment via channel.
-		let trace_oracle = channel
-			.recv_oracle()
-			.map_err(|_| VerificationError::EmptyProof)?;
+		let trace_oracle = channel.recv_oracle()?;
 
 		// [phase] Verify IntMul Reduction - multiplication constraint verification
 		let intmul_guard = tracing::info_span!(

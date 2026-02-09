@@ -14,8 +14,4 @@ pub enum Error {
 	SumcheckVerify(#[from] SumcheckError),
 	#[error("prodcheck verify error")]
 	ProdcheckVerify(#[from] ProdcheckError),
-	#[error("composition claim mismatch")]
-	CompositionClaimMismatch,
-	#[error("leaf evaluation mismatch")]
-	LeafEvalMismatch,
 }
