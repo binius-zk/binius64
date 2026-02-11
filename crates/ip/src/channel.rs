@@ -65,6 +65,16 @@ pub trait IPVerifierChannel<F> {
 		std::array::from_fn(|_| self.sample())
 	}
 
+	/// Observes a single field element, feeding it into the Fiat-Shamir state.
+	///
+	/// Returns the element converted to `Self::Elem`.
+	fn observe_one(&mut self, val: F) -> Self::Elem;
+
+	/// Observes multiple field elements, feeding them into the Fiat-Shamir state.
+	///
+	/// Returns the elements converted to `Vec<Self::Elem>`.
+	fn observe_many(&mut self, vals: &[F]) -> Vec<Self::Elem>;
+
 	/// Asserts that a value is zero.
 	///
 	/// Returns [`Error::InvalidAssert`] if the value is not zero.
@@ -94,6 +104,16 @@ where
 
 	fn sample(&mut self) -> F {
 		CanSample::sample(self)
+	}
+
+	fn observe_one(&mut self, val: F) -> F {
+		self.observe().write_scalar(val);
+		val
+	}
+
+	fn observe_many(&mut self, vals: &[F]) -> Vec<F> {
+		self.observe().write_scalar_slice(vals);
+		vals.to_vec()
 	}
 
 	fn assert_zero(&mut self, val: F) -> Result<(), Error> {

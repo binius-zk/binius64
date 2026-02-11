@@ -110,6 +110,16 @@ where
 		CanSample::sample(&mut self.transcript)
 	}
 
+	fn observe_one(&mut self, val: F) -> F {
+		self.transcript.observe().write_scalar(val);
+		val
+	}
+
+	fn observe_many(&mut self, vals: &[F]) -> Vec<F> {
+		self.transcript.observe().write_scalar_slice(vals);
+		vals.to_vec()
+	}
+
 	fn assert_zero(&mut self, val: F) -> Result<(), binius_ip::channel::Error> {
 		if val == F::ZERO {
 			Ok(())

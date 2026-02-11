@@ -40,6 +40,16 @@ pub trait IPProverChannel<F: Field> {
 		}
 	}
 
+	/// Observes a single field element, feeding it into the Fiat-Shamir state.
+	fn observe_one(&mut self, val: F);
+
+	/// Observes multiple field elements, feeding them into the Fiat-Shamir state.
+	fn observe_many(&mut self, vals: &[F]) {
+		for &val in vals {
+			self.observe_one(val);
+		}
+	}
+
 	/// Samples a random challenge.
 	///
 	/// In a Fiat-Shamir transcript, this derives the challenge deterministically from
@@ -68,6 +78,14 @@ where
 
 	fn send_many(&mut self, elems: &[F]) {
 		self.message().write_scalar_slice(elems);
+	}
+
+	fn observe_one(&mut self, val: F) {
+		self.observe().write_scalar(val);
+	}
+
+	fn observe_many(&mut self, vals: &[F]) {
+		self.observe().write_scalar_slice(vals);
 	}
 
 	fn sample(&mut self) -> F {

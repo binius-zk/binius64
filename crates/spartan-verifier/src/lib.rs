@@ -200,9 +200,6 @@ where
 		public: &[F],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		// Verifier observes the public input (includes it in Fiat-Shamir).
-		transcript.observe().write_slice(public);
-
 		// Create channel and delegate to verify_iop
 		let channel = self.basefold_compiler.create_channel(transcript);
 		self.verify_iop(public, channel)
@@ -216,8 +213,7 @@ where
 	/// # Arguments
 	///
 	/// * `public` - The public inputs to the constraint system
-	/// * `channel` - The IOP verifier channel (public input must be observed on transcript before
-	///   creating the channel)
+	/// * `channel` - The IOP verifier channel
 	///
 	/// # Returns
 	///
@@ -225,7 +221,6 @@ where
 	pub fn verify_iop<Channel>(&self, public: &[F], mut channel: Channel) -> Result<(), Error>
 	where
 		Channel: IOPVerifierChannel<F>,
-		Channel::Elem: From<F>,
 	{
 		let _verify_guard =
 			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
@@ -240,6 +235,9 @@ where
 				actual: public.len(),
 			});
 		}
+
+		// Observe the public input (includes it in Fiat-Shamir).
+		let public_elems = channel.observe_many(public);
 
 		// Receive the trace oracle commitment.
 		let trace_oracle = channel.recv_oracle()?;
@@ -260,8 +258,6 @@ where
 		// point.
 		let r_public = channel.sample_many(cs.log_public() as usize);
 
-		let public_elems: Vec<Channel::Elem> =
-			public.iter().copied().map(Into::into).collect();
 		let public_eval = evaluate_inplace_scalars(public_elems, &r_public);
 
 		// Compute wiring claim components

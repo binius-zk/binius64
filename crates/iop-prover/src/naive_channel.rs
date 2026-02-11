@@ -104,6 +104,14 @@ where
 		self.transcript.message().write_scalar_slice(elems);
 	}
 
+	fn observe_one(&mut self, val: F) {
+		self.transcript.observe().write_scalar(val);
+	}
+
+	fn observe_many(&mut self, vals: &[F]) {
+		self.transcript.observe().write_scalar_slice(vals);
+	}
+
 	fn sample(&mut self) -> F {
 		CanSample::sample(&mut self.transcript)
 	}
