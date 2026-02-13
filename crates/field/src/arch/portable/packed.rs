@@ -373,6 +373,8 @@ where
 	U: UnderlierWithBitOps + Divisible<Scalar::Underlier>,
 	Scalar: BinaryField,
 {
+	type Scalar = Scalar;
+
 	#[inline]
 	fn zero() -> Self {
 		Self::from_underlier(U::ZERO)
@@ -390,8 +392,6 @@ where
 	U: UnderlierWithBitOps + Divisible<Scalar::Underlier>,
 	Scalar: BinaryField,
 {
-	type Scalar = Scalar;
-
 	const LOG_WIDTH: usize = (U::BITS / Scalar::N_BITS).ilog2() as usize;
 
 	#[inline]

@@ -253,6 +253,8 @@ macro_rules! binary_field {
 		}
 
 		impl $crate::field::FieldOps for $name {
+			type Scalar = $name;
+
 			#[inline]
 			fn zero() -> Self {
 				Self::ZERO

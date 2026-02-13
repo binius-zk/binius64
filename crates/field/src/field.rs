@@ -28,7 +28,7 @@ pub trait Field:
 	+ Display
 	+ Hash
 	+ 'static
-	+ FieldOps
+	+ FieldOps<Scalar = Self>
 	+ Random
 	+ Zeroable
 	+ SerializeBytes
@@ -147,6 +147,8 @@ pub trait FieldOps:
 	+ Square
 	+ InvertOrZero
 {
+	type Scalar: Field;
+
 	/// Returns the zero element (additive identity).
 	fn zero() -> Self;
 

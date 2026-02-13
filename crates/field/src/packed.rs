@@ -44,8 +44,6 @@ pub trait PackedField:
 	+ Random
 	+ 'static
 {
-	type Scalar: Field;
-
 	/// Base-2 logarithm of the number of field elements packed into one packed element.
 	const LOG_WIDTH: usize;
 
@@ -425,8 +423,6 @@ impl<P: PackedField> RandomAccessSequenceMut<P::Scalar> for PackedSliceMut<'_, P
 }
 
 impl<F: Field> PackedField for F {
-	type Scalar = F;
-
 	const LOG_WIDTH: usize = 0;
 
 	#[inline]

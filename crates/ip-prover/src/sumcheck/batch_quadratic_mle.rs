@@ -324,7 +324,7 @@ enum RoundCoeffsOrEvals<F: Field, const M: usize> {
 mod tests {
 	use std::array;
 
-	use binius_field::Random;
+	use binius_field::{FieldOps, Random};
 	use binius_math::{
 		FieldBuffer,
 		multilinear::{
@@ -397,7 +397,7 @@ mod tests {
 	#[test]
 	fn test_batch_quadratic_mlecheck_conforms_to_single_quadratic_mlecheck() {
 		type P = Packed128b;
-		type F = <P as PackedField>::Scalar;
+		type F = <P as FieldOps>::Scalar;
 
 		let n_vars = 8;
 		let mut rng = StdRng::seed_from_u64(0);

@@ -39,10 +39,10 @@ where
 
 impl<FChallenge, PNTTDomain> OblongZerocheckProver<FChallenge, PNTTDomain>
 where
-	FChallenge: Field + From<<PNTTDomain as PackedField>::Scalar> + BinaryField,
+	FChallenge: Field + From<PNTTDomain::Scalar> + BinaryField,
 	PNTTDomain: PackedField + PackedExtension<B1, PackedSubfield = PackedBinaryField128x1b>,
-	u8: From<<PNTTDomain as PackedField>::Scalar>,
-	<PNTTDomain as PackedField>::Scalar: From<u8> + BinaryField,
+	u8: From<PNTTDomain::Scalar>,
+	PNTTDomain::Scalar: From<u8> + BinaryField,
 {
 	/// Creates a new oblong zerocheck prover for AND constraint reduction.
 	///

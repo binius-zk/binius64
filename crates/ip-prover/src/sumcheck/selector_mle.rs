@@ -253,7 +253,7 @@ enum RoundCoeffsOrSums<F: Field> {
 mod tests {
 	use std::iter::repeat_with;
 
-	use binius_field::Random;
+	use binius_field::{FieldOps, Random};
 	use binius_math::{
 		multilinear::evaluate::evaluate as multilinear_evaluate,
 		test_utils::{Packed128b, random_scalars},
@@ -267,7 +267,7 @@ mod tests {
 	};
 
 	type P = Packed128b;
-	type F = <P as PackedField>::Scalar;
+	type F = <P as FieldOps>::Scalar;
 
 	#[test]
 	fn test_bivariate_mlecheck_conformance() {

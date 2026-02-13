@@ -1,8 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{
-	BinaryField, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
-	PackedField,
+	BinaryField, FieldOps, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b,
+	PackedBinaryGhash4x128b, PackedField,
 };
 use binius_math::{
 	ntt::{
@@ -128,7 +128,7 @@ macro_rules! bench_ntt_matrix {
 		// Single level of repetition over fields
 		$(
 			{
-				type F = <$field_type as PackedField>::Scalar;
+				type F = <$field_type as FieldOps>::Scalar;
 				let mut group = $c.benchmark_group($field_name);
 
 				for log_d in $log_d_array {

@@ -2,7 +2,7 @@
 
 use std::array;
 
-use binius_field::{Field, PackedField, arch::OptimalPackedB128};
+use binius_field::{Field, FieldOps, PackedField, arch::OptimalPackedB128};
 use binius_math::{
 	FieldBuffer,
 	multilinear::evaluate::evaluate_inplace,
@@ -20,7 +20,7 @@ use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_mai
 use rand::{SeedableRng, rngs::StdRng};
 
 type P = OptimalPackedB128;
-type F = <P as PackedField>::Scalar;
+type F = <P as FieldOps>::Scalar;
 
 const N: usize = 3;
 const M: usize = 2;

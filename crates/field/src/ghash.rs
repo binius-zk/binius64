@@ -241,6 +241,8 @@ impl Square for BinaryField128bGhash {
 }
 
 impl FieldOps for BinaryField128bGhash {
+	type Scalar = Self;
+
 	#[inline]
 	fn zero() -> Self {
 		Self::ZERO
