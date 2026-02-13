@@ -1,5 +1,9 @@
 # Contributing to Binius64
 
+## Copyright
+
+All source files should include a copyright header. New files should start with `// Copyright YYYY The Binius Developers`, where YYYY is the current year. When modifying an existing file, add the copyright line if one referencing "The Binius Developers" is not already present.
+
 ## Style Guide & Conventions
 
 Many code formatting and style rules are enforced using

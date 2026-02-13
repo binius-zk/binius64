@@ -31,21 +31,16 @@ For optimal performance: `export RUSTFLAGS="-C target-cpu=native"`
 | **Circuit** | High-level representation of computation built with `CircuitBuilder` |
 | **Constraint system** | Low-level AND/MUL constraints compiled from a circuit |
 
-## Development Conventions
-
-
-### Copyright
-New files: `// Copyright 2026 The Binius Developers`
-Modifying existing files: Add copyright line if "The Binius Developers" not present
-
-### Code Style
-- Use `cargo +nightly fmt` (see .pre-commit-config.yaml for version)
-- See CONTRIBUTING.md for detailed style guidelines
-
 ## Documentation
 
-### Crate Overview
-See the "Repo Structure" section in [README.md](README.md) for a list of crates and their purposes.
+### Development Guidelines
+[CONTRIBUTING.md](CONTRIBUTING.md) covers code style, naming conventions, copyright headers, error handling, and other development conventions.
+
+### README
+The [README.md](README.md) is the project's entry point, covering what Binius64 is, dependencies, build instructions, and links to external documentation.
+
+### Architecture
+[ARCHITECTURE.md](ARCHITECTURE.md) provides a high-level overview of the codebase: the list of crates, their purposes, and how they relate to each other.
 
 ### Protocol Specification
 The canonical protocol documentation is in a separate binius.xyz repository. If the developer has cloned it as a sibling directory, you can read files directly:
