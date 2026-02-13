@@ -34,9 +34,9 @@ pub mod wiring;
 use binius_field::{BinaryField, field::FieldOps};
 use binius_iop::{
 	basefold_compiler::BaseFoldVerifierCompiler,
-	channel::{IOPVerifierChannel, OracleSpec},
+	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 };
-use binius_ip::{MultilinearRationalEvalClaim, channel::IPVerifierChannel};
+use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
 	BinarySubspace, FieldSlice,
 	multilinear::evaluate::evaluate,
@@ -271,24 +271,31 @@ where
 			&mut channel,
 		);
 
-		// Finish the protocol with both oracle relations
-		let claims = channel.finish(&[
-			(trace_oracle, wiring_claim.batched_sum),
-			(mask_oracle, mask_eval),
-		])?;
-
-		// Verify the wiring claim
-		wiring::check_eval_claim(
+		// Build the transparent closure for the wiring oracle relation
+		let trace_transparent = wiring::eval_transparent(
 			&self.constraint_system,
 			&r_public,
 			&r_x,
-			&claims[0],
 			wiring_claim.lambda,
 			wiring_claim.batch_coeff,
-		)?;
+		);
 
-		// Verify the mask opening claim
-		self.check_mask_claim(&claims[1], &r_x)?;
+		// Build the transparent closure for the mask oracle relation
+		let mask_transparent = self.mask_transparent(&r_x);
+
+		// Finish the protocol with both oracle relations (checks are done inside finish)
+		channel.finish(&[
+			OracleLinearRelation {
+				oracle: trace_oracle,
+				transparent: trace_transparent,
+				claim: wiring_claim.batched_sum,
+			},
+			OracleLinearRelation {
+				oracle: mask_oracle,
+				transparent: mask_transparent,
+				claim: mask_eval,
+			},
+		])?;
 
 		Ok(())
 	}
@@ -326,33 +333,23 @@ where
 		})
 	}
 
-	/// Verifies the mask opening claim from the IOP channel.
-	fn check_mask_claim(
-		&self,
-		claim: &MultilinearRationalEvalClaim<F>,
-		r_x: &[F],
-	) -> Result<(), Error> {
+	/// Returns a closure that evaluates the mask transparent polynomial at a given point.
+	fn mask_transparent(&self, r_x: &[F]) -> binius_iop::channel::TransparentEvalFn<'_, F> {
 		let (_m_n, m_d) = self.mask_dims;
 		let n_vars = r_x.len();
 		let mask_degree = 2; // quadratic composition
+		let r_x = r_x.to_vec();
 
-		// claim.point is in low-to-high order with batch_challenge at the end.
-		// Extract the query point by excluding the batch challenge.
-		let query_point: Vec<F> = claim.point[..claim.point.len() - 1].to_vec();
+		Box::new(move |point: &[F]| {
+			// point is in low-to-high order with batch_challenge at the end.
+			// Extract the query point by excluding the batch challenge.
+			let query_point = &point[..point.len() - 1];
 
-		// Split into query_k (low-order bits) and query_j (high-order bits)
-		let (query_k, query_j) = query_point.split_at(m_d);
+			// Split into query_k (low-order bits) and query_j (high-order bits)
+			let (query_k, query_j) = query_point.split_at(m_d);
 
-		// Compute the expected libra_eval at the query point
-		let expected_libra_eval =
-			mlecheck::libra_eval::<F, F>(r_x, query_j, query_k, n_vars, mask_degree);
-
-		// Verify: eval_numerator == eval_denominator * expected_libra_eval
-		if claim.eval_numerator != claim.eval_denominator * expected_libra_eval {
-			return Err(Error::IncorrectMaskOpening);
-		}
-
-		Ok(())
+			mlecheck::libra_eval::<F, F>(&r_x, query_j, query_k, n_vars, mask_degree)
+		})
 	}
 }
 
@@ -378,6 +375,4 @@ pub enum Error {
 	IncorrectPublicInputLength { expected: usize, actual: usize },
 	#[error("incorrect reduction output of the multiplication check")]
 	IncorrectMulCheckEvaluation,
-	#[error("mask opening verification failed")]
-	IncorrectMaskOpening,
 }

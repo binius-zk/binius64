@@ -6,7 +6,7 @@
 //! FRI commitment and BaseFold opening protocols.
 
 use binius_field::BinaryField;
-use binius_ip::{MultilinearRationalEvalClaim, channel::IPVerifierChannel};
+use binius_ip::channel::IPVerifierChannel;
 use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
@@ -15,7 +15,7 @@ use binius_utils::DeserializeBytes;
 
 use crate::{
 	basefold,
-	channel::{Error, IOPVerifierChannel, OracleSpec},
+	channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	fri::FRIParams,
 	merkle_tree::MerkleTreeScheme,
 };
@@ -174,20 +174,18 @@ where
 	}
 
 	fn finish(
-		self,
-		oracle_relations: &[(Self::Oracle, Self::Elem)],
-	) -> Result<Vec<MultilinearRationalEvalClaim<Self::Elem>>, Error> {
+		mut self,
+		oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, Self::Elem>],
+	) -> Result<(), Error> {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
 			"finish called but {} oracle specs remaining",
 			self.remaining_oracle_specs().len()
 		);
 
-		let mut claims = Vec::with_capacity(oracle_relations.len());
-
 		// Process each oracle relation with its own BaseFold verification
-		for (oracle, eval_claim) in oracle_relations {
-			let index = oracle.index;
+		for relation in oracle_relations {
+			let index = relation.oracle.index;
 			assert!(
 				index < self.oracle_commitments.len(),
 				"oracle index {index} out of bounds, expected < {}",
@@ -208,7 +206,7 @@ where
 					fri_params,
 					self.merkle_scheme,
 					commitment,
-					*eval_claim,
+					relation.claim,
 					self.transcript,
 				)?
 			} else {
@@ -216,7 +214,7 @@ where
 					fri_params,
 					self.merkle_scheme,
 					commitment,
-					*eval_claim,
+					relation.claim,
 					self.transcript,
 				)?
 			};
@@ -225,15 +223,13 @@ where
 			let mut eval_point = challenges;
 			eval_point.reverse();
 
-			// Create the BaseFold evaluation claim with both numerator and denominator
-			// Caller must verify: eval_numerator == eval_denominator * transparent_poly_eval(point)
-			claims.push(MultilinearRationalEvalClaim {
-				eval_numerator: final_sumcheck_value,
-				eval_denominator: final_fri_value,
-				point: eval_point,
-			});
+			// Evaluate the transparent polynomial at the challenge point
+			let transparent_eval = (relation.transparent)(&eval_point);
+
+			// Verify: eval_numerator == eval_denominator * transparent_eval
+			self.assert_zero(final_sumcheck_value - final_fri_value * transparent_eval)?;
 		}
 
-		Ok(claims)
+		Ok(())
 	}
 }

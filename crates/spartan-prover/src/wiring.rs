@@ -423,7 +423,7 @@ mod tests {
 	fn test_wiring_prove_verify() {
 		use binius_hash::StdDigest;
 		use binius_iop::{
-			channel::{IOPVerifierChannel, OracleSpec},
+			channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 			naive_channel::NaiveVerifierChannel,
 		};
 		use binius_iop_prover::{channel::IOPProverChannel, naive_channel::NaiveProverChannel};
@@ -550,28 +550,19 @@ mod tests {
 			"Prover and verifier batched_sum mismatch"
 		);
 
-		// Finish verification to get the evaluation claim.
-		// The naive channel verifies the inner product directly inside finish().
-		// It reads the transparent polynomial (l_poly) from the transcript,
-		// verifies eval_claim == inner_product(witness, l_poly),
-		// then returns a trivial claim with eval_denominator = 1.
-		let claims = verifier_channel
-			.finish(&[(witness_oracle, wiring_claim.batched_sum)])
+		// Build the transparent closure using the prover's l_poly for evaluation.
+		let l_poly = wiring_relation.l_poly;
+		let transparent = Box::new(move |point: &[_]| evaluate(&l_poly, point));
+
+		// Finish verification. The naive channel verifies the inner product directly inside
+		// finish(), reads the transparent polynomial from the transcript, and checks that
+		// the transparent closure evaluation matches.
+		verifier_channel
+			.finish(&[OracleLinearRelation {
+				oracle: witness_oracle,
+				transparent,
+				claim: wiring_claim.batched_sum,
+			}])
 			.expect("finish should succeed (inner product verified)");
-
-		assert_eq!(claims.len(), 1, "Expected exactly one claim");
-		let claim = &claims[0];
-
-		// The naive channel returns a trivial claim:
-		// - eval_numerator = l_poly_eval(point)
-		// - eval_denominator = 1
-		// So the standard check (eval_numerator == eval_denominator * l_poly_eval(point))
-		// becomes: l_poly_eval(point) == 1 * l_poly_eval(point), which trivially passes.
-		let l_poly_eval = evaluate(&wiring_relation.l_poly, &claim.point);
-		assert_eq!(
-			claim.eval_numerator, l_poly_eval,
-			"Claim numerator should be l_poly evaluation at point"
-		);
-		assert_eq!(claim.eval_denominator, B128::ONE, "Claim denominator should be 1");
 	}
 }
