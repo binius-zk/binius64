@@ -1,6 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_field::BinaryField;
+use std::iter::{self};
+
+use binius_field::{BinaryField, field::FieldOps};
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{BinarySubspace, univariate::extrapolate_over_subspace};
 
@@ -87,28 +89,30 @@ pub struct AndCheckOutput<F> {
 /// - `a_eval`, `b_eval`, `c_eval`: The claimed evaluations of the A, B, and C at the oblong
 ///   evaluation point
 pub fn verify_with_channel<F, C>(
-	all_zerocheck_challenges: &[F],
+	all_zerocheck_challenges: &[C::Elem],
 	channel: &mut C,
 	round_message_univariate_domain: &BinarySubspace<F>,
-) -> Result<AndCheckOutput<F>, Error>
+) -> Result<AndCheckOutput<C::Elem>, Error>
 where
 	F: BinaryField,
-	C: IPVerifierChannel<F, Elem = F>,
+	C: IPVerifierChannel<F>,
+	// This bound is necessary to make Barycentric evaluation constants symbolic
+	C::Elem: From<F>,
 {
-	let univariate_message_coeffs_ext_domain: Vec<F> =
-		channel.recv_many(ROWS_PER_HYPERCUBE_VERTEX)?;
+	let univariate_message_coeffs_ext_domain = channel.recv_many(ROWS_PER_HYPERCUBE_VERTEX)?;
 
-	let mut univariate_message_coeffs = vec![F::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];
+	let univariate_message_coeffs = iter::chain(
+		iter::repeat_n(C::Elem::zero(), ROWS_PER_HYPERCUBE_VERTEX),
+		univariate_message_coeffs_ext_domain,
+	)
+	.collect::<Vec<_>>();
 
-	univariate_message_coeffs[ROWS_PER_HYPERCUBE_VERTEX..]
-		.copy_from_slice(&univariate_message_coeffs_ext_domain);
-
-	let univariate_sumcheck_challenge: F = channel.sample();
+	let univariate_sumcheck_challenge = channel.sample();
 
 	let sumcheck_claim = extrapolate_over_subspace(
 		round_message_univariate_domain,
 		&univariate_message_coeffs,
-		univariate_sumcheck_challenge,
+		univariate_sumcheck_challenge.clone(),
 	);
 
 	let SumcheckOutput {
@@ -118,7 +122,7 @@ where
 
 	let [a_eval, b_eval, c_eval] = channel.recv_array()?;
 
-	channel.assert_zero(a_eval * b_eval - c_eval - eval)?;
+	channel.assert_zero(a_eval.clone() * &b_eval - &c_eval - &eval)?;
 
 	eval_point.reverse();
 

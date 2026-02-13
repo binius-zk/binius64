@@ -321,10 +321,12 @@ fn verify_bitand_reduction<F, C>(
 	log_constraint_count: usize,
 	eval_domain: &BinarySubspace<F>,
 	channel: &mut C,
-) -> Result<AndCheckOutput<F>, Error>
+) -> Result<AndCheckOutput<C::Elem>, Error>
 where
 	F: BinaryField + From<B8>,
-	C: IPVerifierChannel<F, Elem = F>,
+	C: IPVerifierChannel<F>,
+	// Used to make deterministic basis challenges symbolic
+	C::Elem: From<F>,
 {
 	// The structure of the AND reduction requires that it verifies at least 2^3 word-level
 	// constraints, you can zero-pad if necessary to reach this minimum
@@ -334,7 +336,7 @@ where
 
 	let small_field_zerocheck_challenges = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES
 		.into_iter()
-		.map(F::from)
+		.map(|b8_val| C::Elem::from(F::from(b8_val)))
 		.collect_vec();
 
 	let zerocheck_challenges =

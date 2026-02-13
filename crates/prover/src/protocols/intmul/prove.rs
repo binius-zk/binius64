@@ -122,7 +122,7 @@ where
 
 		// Phase 2
 		let Phase2Output { twisted_claims } =
-			frobenius_twist(log_bits, &phase1_eval_point, &b_leaves_evals);
+			frobenius_twist(log_bits, F::DEGREE, &phase1_eval_point, &b_leaves_evals);
 
 		// Splitting
 		let (a_exponents, a_root, mut a_layers) = a.split();
@@ -283,7 +283,7 @@ where
 			.pop()
 			.expect("multilinear_evals.len() == 2");
 
-		Ok(make_phase_3_output(log_bits, &challenges, &selector_prover_evals, &c_root_prover_evals))
+		Ok(make_phase_3_output(log_bits, &challenges, &selector_prover_evals, c_root_prover_evals))
 	}
 
 	fn phase4(

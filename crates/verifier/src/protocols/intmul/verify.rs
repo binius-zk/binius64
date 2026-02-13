@@ -1,10 +1,9 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_field::{BinaryField, Field};
+use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
-	FieldBuffer,
-	multilinear::{self, eq::eq_ind},
+	multilinear::{eq::eq_ind, evaluate::evaluate_inplace_scalars},
 	univariate::evaluate_univariate,
 };
 use itertools::{Itertools, izip};
@@ -27,13 +26,13 @@ struct BivariateProductMleLayerOutput<F> {
 }
 
 fn verify_multi_bivariate_product_mle_layer<F, C>(
-	eval_point: &[F],
-	evals: &[F],
+	eval_point: &[C::Elem],
+	evals: &[C::Elem],
 	channel: &mut C,
-) -> Result<BivariateProductMleLayerOutput<F>, Error>
+) -> Result<BivariateProductMleLayerOutput<C::Elem>, Error>
 where
 	F: Field,
-	C: IPVerifierChannel<F, Elem = F>,
+	C: IPVerifierChannel<F>,
 {
 	let n_vars = eval_point.len();
 
@@ -51,7 +50,7 @@ where
 	let expected_unbatched_terms = multilinear_evals
 		.iter()
 		.tuples()
-		.map(|(&left, &right)| eq_ind_eval * left * right)
+		.map(|(left, right)| eq_ind_eval.clone() * left * right)
 		.collect::<Vec<_>>();
 
 	let expected_eval = evaluate_univariate(&expected_unbatched_terms, batch_coeff);
@@ -65,13 +64,13 @@ where
 
 fn verify_phase_1<F, C>(
 	log_bits: usize,
-	initial_eval_point: &[F],
-	initial_b_eval: F,
+	initial_eval_point: &[C::Elem],
+	initial_b_eval: C::Elem,
 	channel: &mut C,
-) -> Result<Phase1Output<F>, Error>
+) -> Result<Phase1Output<C::Elem>, Error>
 where
 	F: Field,
-	C: IPVerifierChannel<F, Elem = F>,
+	C: IPVerifierChannel<F>,
 {
 	let n_vars = initial_eval_point.len();
 
@@ -86,12 +85,11 @@ where
 	let (eval_point, z_suffix) = output_claim.point.split_at(n_vars);
 
 	// Read 2^k leaf evaluations from channel
-	let b_leaves_evals: Vec<F> = channel.recv_many(1 << log_bits)?;
+	let b_leaves_evals = channel.recv_many(1 << log_bits)?;
 
 	// Verify: output_claim.eval = multilinear_eval(b_leaves_evals, z_suffix)
 	// The leaf evals form a multilinear over log_bits variables; evaluate at z_suffix
-	let b_leaves_buffer = FieldBuffer::new(log_bits, b_leaves_evals.as_slice());
-	let expected_eval = multilinear::evaluate::evaluate(&b_leaves_buffer, z_suffix);
+	let expected_eval = evaluate_inplace_scalars(b_leaves_evals.clone(), z_suffix);
 
 	channel.assert_zero(expected_eval - output_claim.eval)?;
 
@@ -108,15 +106,15 @@ where
 fn verify_phase_3<F, C>(
 	log_bits: usize,
 	// selector sumcheck stuff
-	phase_2_output: Phase2Output<F>,
+	phase_2_output: Phase2Output<C::Elem>,
 	// c sumcheck stuff
-	c_eval_point: &[F],
-	c_eval: F,
+	c_eval_point: &[C::Elem],
+	c_eval: C::Elem,
 	channel: &mut C,
-) -> Result<Phase3Output<F>, Error>
+) -> Result<Phase3Output<C::Elem>, Error>
 where
 	F: Field,
-	C: IPVerifierChannel<F, Elem = F>,
+	C: IPVerifierChannel<F>,
 {
 	let n_vars = c_eval_point.len();
 
@@ -141,11 +139,11 @@ where
 	} = batch_verify(n_vars, 3, &evals, channel)?;
 	challenges.reverse();
 
-	let selector_prover_evals: Vec<F> = channel.recv_many((1 << log_bits) + 1)?;
-	let c_root_prover_evals: Vec<F> = channel.recv_many(2)?;
+	let selector_prover_evals = channel.recv_many((1 << log_bits) + 1)?;
+	let c_root_prover_evals = channel.recv_many(2)?;
 
 	let output =
-		make_phase_3_output(log_bits, &challenges, &selector_prover_evals, &c_root_prover_evals);
+		make_phase_3_output(log_bits, &challenges, &selector_prover_evals, c_root_prover_evals);
 	let Phase3Output {
 		eval_point,
 		b_exponent_evals,
@@ -158,7 +156,9 @@ where
 
 	for (twisted_eval_point, b_exponent_eval) in izip!(twisted_eval_points, b_exponent_evals) {
 		let twisted_eq_eval = eq_ind(&twisted_eval_point, eval_point);
-		let expected = twisted_eq_eval * (*b_exponent_eval * (*selector_eval - F::ONE) + F::ONE);
+		let one = C::Elem::one();
+		let expected =
+			twisted_eq_eval * (b_exponent_eval.clone() * (selector_eval.clone() - one.clone()) + one);
 		expected_unbatched_terms.push(expected);
 	}
 
@@ -176,15 +176,15 @@ where
 
 fn verify_phase_4<F, C>(
 	log_bits: usize,
-	eval_point: &[F],
-	a_root_eval: F,
-	c_lo_root_eval: F,
-	c_hi_root_eval: F,
+	eval_point: &[C::Elem],
+	a_root_eval: C::Elem,
+	c_lo_root_eval: C::Elem,
+	c_hi_root_eval: C::Elem,
 	channel: &mut C,
-) -> Result<Phase4Output<F>, Error>
+) -> Result<Phase4Output<C::Elem>, Error>
 where
 	F: Field,
-	C: IPVerifierChannel<F, Elem = F>,
+	C: IPVerifierChannel<F>,
 {
 	assert!(log_bits >= 1);
 
@@ -370,7 +370,7 @@ where
 	assert_eq!(b_leaves_evals.len(), 1 << log_bits);
 
 	// Phase 2
-	let phase2_output = frobenius_twist(log_bits, &phase_1_eval_point, &b_leaves_evals);
+	let phase2_output = frobenius_twist(log_bits, F::DEGREE, &phase_1_eval_point, &b_leaves_evals);
 
 	// Phase 3
 	let Phase3Output {
