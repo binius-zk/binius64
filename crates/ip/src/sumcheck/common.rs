@@ -64,6 +64,12 @@ impl<F: Field> MulAssign<F> for RoundCoeffs<F> {
 	}
 }
 
+impl<F: Field> std::iter::Sum for RoundCoeffs<F> {
+	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+		iter.fold(Self::default(), |acc, x| acc + &x)
+	}
+}
+
 impl<F> Index<usize> for RoundCoeffs<F> {
 	type Output = F;
 
