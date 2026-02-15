@@ -34,7 +34,6 @@ use crate::{
 	binary_field_arithmetic::{
 		invert_or_zero_using_packed, multiple_using_packed, square_using_packed,
 	},
-	field::FieldOps,
 	transpose::square_transforms_extension_field,
 	underlier::{Divisible, NumCast, U1, UnderlierWithBitOps},
 };
@@ -237,20 +236,6 @@ impl Square for BinaryField128bGhash {
 	#[inline]
 	fn square(self) -> Self {
 		square_using_packed::<PackedBinaryGhash1x128b>(self)
-	}
-}
-
-impl FieldOps for BinaryField128bGhash {
-	type Scalar = Self;
-
-	#[inline]
-	fn zero() -> Self {
-		Self::ZERO
-	}
-
-	#[inline]
-	fn one() -> Self {
-		Self::ONE
 	}
 }
 

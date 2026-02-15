@@ -60,7 +60,7 @@ mod test {
 	use std::{iter, iter::repeat_with};
 
 	use binius_core::word::Word;
-	use binius_field::{BinaryField, Random};
+	use binius_field::{BinaryField, FieldOps, Random};
 	use binius_math::{BinarySubspace, FieldBuffer};
 	use binius_verifier::{
 		and_reduction::{

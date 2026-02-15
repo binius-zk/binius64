@@ -28,7 +28,25 @@ pub trait Field:
 	+ Display
 	+ Hash
 	+ 'static
-	+ FieldOps<Scalar = Self>
+	+ Neg<Output = Self>
+	+ Add<Output = Self>
+	+ Sub<Output = Self>
+	+ Mul<Output = Self>
+	+ for<'a> Add<&'a Self, Output = Self>
+	+ for<'a> Sub<&'a Self, Output = Self>
+	+ for<'a> Mul<&'a Self, Output = Self>
+	+ Sum
+	+ Product
+	+ for<'a> Sum<&'a Self>
+	+ for<'a> Product<&'a Self>
+	+ AddAssign
+	+ SubAssign
+	+ MulAssign
+	+ for<'a> AddAssign<&'a Self>
+	+ for<'a> SubAssign<&'a Self>
+	+ for<'a> MulAssign<&'a Self>
+	+ Square
+	+ InvertOrZero
 	+ Random
 	+ Zeroable
 	+ SerializeBytes
@@ -154,4 +172,16 @@ pub trait FieldOps:
 
 	/// Returns the one element (multiplicative identity).
 	fn one() -> Self;
+}
+
+impl<F: Field> FieldOps for F {
+	type Scalar = F;
+
+	fn zero() -> Self {
+		Self::ZERO
+	}
+
+	fn one() -> Self {
+		Self::ONE
+	}
 }

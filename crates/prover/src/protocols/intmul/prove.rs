@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use binius_field::{BinaryField, PackedField};
+use binius_field::{BinaryField, FieldOps, PackedField};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	field_buffer::FieldBuffer,
