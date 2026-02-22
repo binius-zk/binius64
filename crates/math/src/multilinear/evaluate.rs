@@ -127,11 +127,7 @@ pub fn evaluate_inplace_scalars<F: FieldOps>(
 	mut evals: impl DerefMut<Target = [F]>,
 	point: &[F],
 ) -> F {
-	assert_eq!(
-		evals.len(),
-		1 << point.len(),
-		"precondition: evals length must be 2^point.len()"
-	);
+	assert_eq!(evals.len(), 1 << point.len(), "precondition: evals length must be 2^point.len()");
 
 	for (log_half_len, point_i) in point.iter().enumerate().rev() {
 		let half_len = 1 << log_half_len;
@@ -229,10 +225,7 @@ mod tests {
 			let scalar_evals = buffer.iter_scalars().collect::<Vec<_>>();
 			let result_scalar = evaluate_inplace_scalars(scalar_evals, &point);
 
-			assert_eq!(
-				result_inplace, result_scalar,
-				"mismatch at log_n={log_n}"
-			);
+			assert_eq!(result_inplace, result_scalar, "mismatch at log_n={log_n}");
 		}
 	}
 

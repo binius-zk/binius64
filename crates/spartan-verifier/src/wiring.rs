@@ -82,9 +82,9 @@ pub fn eval_transparent<'a, F: FieldOps + 'a>(
 		// Evaluate eq(r_public || ZERO, r_y)
 		let (r_y_head, r_y_tail) = r_y.split_at(r_public.len());
 		let eq_head = eq_ind(&r_public, r_y_head);
-		let eq_public = r_y_tail.iter().fold(eq_head, |eval, r_y_i| {
-			eval * eq_one_var(r_y_i.clone(), F::zero())
-		});
+		let eq_public = r_y_tail
+			.iter()
+			.fold(eq_head, |eval, r_y_i| eval * eq_one_var(r_y_i.clone(), F::zero()));
 
 		wiring_eval + batch_coeff.clone() * eq_public
 	})
@@ -100,9 +100,7 @@ pub fn evaluate_wiring_mle<F: FieldOps>(
 
 	let r_x_tensor = eq_ind_partial_eval_scalars(r_x);
 	let r_y_tensor = eq_ind_partial_eval_scalars(r_y);
-	for (r_x_tensor_i, MulConstraint { a, b, c }) in
-		iter::zip(&r_x_tensor, mul_constraints)
-	{
+	for (r_x_tensor_i, MulConstraint { a, b, c }) in iter::zip(&r_x_tensor, mul_constraints) {
 		for (dst, operand) in iter::zip(&mut acc, [a, b, c]) {
 			let r_y_tensor_sum = operand
 				.wires()
