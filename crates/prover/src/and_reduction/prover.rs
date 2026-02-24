@@ -1,11 +1,12 @@
 // Copyright 2025 Irreducible Inc.
 use binius_field::{BinaryField, Field, PackedBinaryField128x1b, PackedExtension, PackedField};
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
+use binius_math::{
+	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::extrapolate_over_subspace,
+};
 use binius_verifier::{
 	and_reduction::{
 		AndCheckOutput,
-		univariate::univariate_poly::{GenericPo2UnivariatePoly, UnivariatePolyIsomorphic},
 		utils::constants::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
 	},
 	config::B1,
@@ -183,15 +184,16 @@ where
 		first_round_message_coeffs[ROWS_PER_HYPERCUBE_VERTEX..2 * ROWS_PER_HYPERCUBE_VERTEX]
 			.copy_from_slice(&self.univariate_round_message);
 
-		let first_round_message =
-			GenericPo2UnivariatePoly::new(first_round_message_coeffs, round_message_domain);
-
 		QuadraticMleCheckProver::new(
 			proving_polys,
 			|[a, b, c]| a * b - c,
 			|[a, b, _]| a * b,
 			verifier_field_zerocheck_challenges,
-			first_round_message.evaluate_at_challenge(challenge),
+			extrapolate_over_subspace(
+				&round_message_domain,
+				&first_round_message_coeffs,
+				challenge,
+			),
 		)
 		.expect("multilinears should have consistent dimensions")
 	}

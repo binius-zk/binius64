@@ -1,7 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 use binius_field::{BinaryField, Field};
-use binius_math::BinarySubspace;
-use binius_verifier::and_reduction::univariate::univariate_lagrange::lexicographic_lagrange_basis_vectors;
+use binius_math::{BinarySubspace, univariate::lagrange_evals_scalars};
 
 /// A lookup table for efficiently evaluating univariate polynomials at a point.
 ///
@@ -47,8 +46,7 @@ where
 
 		let mut lookup_table = vec![[F::ZERO; 256]; outer_size].into_boxed_slice();
 
-		let lagrange_coeffs: Vec<_> =
-			lexicographic_lagrange_basis_vectors::<F, F>(challenge, univariate_domain);
+		let lagrange_coeffs = lagrange_evals_scalars(univariate_domain, challenge);
 
 		for (chunk_idx, this_byte_lookup) in lookup_table.iter_mut().enumerate() {
 			let _span = tracing::debug_span!("chunk_idx: {}", chunk_idx).entered();

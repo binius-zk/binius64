@@ -2,14 +2,11 @@
 
 use binius_field::BinaryField;
 use binius_ip::channel::IPVerifierChannel;
-use binius_math::BinarySubspace;
+use binius_math::{BinarySubspace, univariate::extrapolate_over_subspace};
 
 use crate::{
 	Error,
-	and_reduction::{
-		univariate::univariate_poly::{GenericPo2UnivariatePoly, UnivariatePolyIsomorphic},
-		utils::constants::ROWS_PER_HYPERCUBE_VERTEX,
-	},
+	and_reduction::utils::constants::ROWS_PER_HYPERCUBE_VERTEX,
 	protocols::{mlecheck::verify, sumcheck::SumcheckOutput},
 };
 
@@ -106,13 +103,13 @@ where
 	univariate_message_coeffs[ROWS_PER_HYPERCUBE_VERTEX..]
 		.copy_from_slice(&univariate_message_coeffs_ext_domain);
 
-	let univariate_message = GenericPo2UnivariatePoly::new(
-		univariate_message_coeffs,
-		round_message_univariate_domain.clone(),
-	);
 	let univariate_sumcheck_challenge: F = channel.sample();
 
-	let sumcheck_claim = univariate_message.evaluate_at_challenge(univariate_sumcheck_challenge);
+	let sumcheck_claim = extrapolate_over_subspace(
+		round_message_univariate_domain,
+		&univariate_message_coeffs,
+		univariate_sumcheck_challenge,
+	);
 
 	let SumcheckOutput {
 		eval,

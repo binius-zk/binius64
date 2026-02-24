@@ -141,12 +141,12 @@ mod test {
 
 	use binius_core::word::Word;
 	use binius_field::{AESTowerField8b, Field, PackedAESBinaryField16x8b, Random};
-	use binius_math::{BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval};
+	use binius_math::{
+		BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval,
+		univariate::extrapolate_over_subspace,
+	};
 	use binius_verifier::{
-		and_reduction::{
-			univariate::univariate_poly::{GenericPo2UnivariatePoly, UnivariatePolyIsomorphic},
-			utils::constants::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
-		},
+		and_reduction::utils::constants::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
 		config::{B128, LOG_WORD_SIZE_BITS},
 	};
 	use itertools::izip;
@@ -232,11 +232,6 @@ mod test {
 		first_round_message_coeffs[ROWS_PER_HYPERCUBE_VERTEX..2 * ROWS_PER_HYPERCUBE_VERTEX]
 			.copy_from_slice(&first_round_message_on_ext_domain);
 
-		let first_round_message = GenericPo2UnivariatePoly::new(
-			first_round_message_coeffs,
-			verifier_message_domain.clone(),
-		);
-
 		// Verifier checks the accuracy of the message by challenging the prover and folding
 		// polynomials transparently
 
@@ -244,8 +239,11 @@ mod test {
 			verifier_message_domain.reduce_dim(verifier_message_domain.dim() - 1);
 
 		let first_sumcheck_challenge = B128::random(&mut rng);
-		let expected_next_round_sum =
-			first_round_message.evaluate_at_challenge(first_sumcheck_challenge);
+		let expected_next_round_sum = extrapolate_over_subspace(
+			&verifier_message_domain,
+			&first_round_message_coeffs,
+			first_sumcheck_challenge,
+		);
 
 		let lookup =
 			FoldLookup::<_, SKIPPED_VARS>::new(&verifier_input_domain, first_sumcheck_challenge);

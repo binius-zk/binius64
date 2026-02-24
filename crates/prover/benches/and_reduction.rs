@@ -3,7 +3,9 @@ use std::{iter, iter::repeat_with};
 
 use binius_core::word::Word;
 use binius_field::{AESTowerField8b, Field, PackedAESBinaryField16x8b, Random};
-use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
+use binius_math::{
+	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::extrapolate_over_subspace,
+};
 use binius_prover::{
 	and_reduction::{
 		fold_lookup::FoldLookup, prover_setup::ntt_lookup_from_prover_message_domain,
@@ -13,10 +15,7 @@ use binius_prover::{
 	protocols::sumcheck::{common::SumcheckProver, quadratic_mle::QuadraticMleCheckProver},
 };
 use binius_verifier::{
-	and_reduction::{
-		univariate::univariate_poly::{GenericPo2UnivariatePoly, UnivariatePolyIsomorphic},
-		utils::constants::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
-	},
+	and_reduction::utils::constants::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
 	config::B128,
 };
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
@@ -139,13 +138,11 @@ fn bench(c: &mut Criterion) {
 			univariate_message_coeffs[ROWS_PER_HYPERCUBE_VERTEX..2 * ROWS_PER_HYPERCUBE_VERTEX]
 				.copy_from_slice(&urm);
 
-			let univariate_message = GenericPo2UnivariatePoly::new(
-				univariate_message_coeffs,
-				prover_message_domain.clone().isomorphic(),
+			let next_round_claim = extrapolate_over_subspace(
+				&prover_message_domain.clone().isomorphic::<B128>(),
+				&univariate_message_coeffs,
+				first_sumcheck_challenge,
 			);
-
-			let next_round_claim =
-				univariate_message.evaluate_at_challenge(first_sumcheck_challenge);
 
 			let upcasted_small_field_challenges: Vec<_> = small_field_zerocheck_challenges
 				.into_iter()

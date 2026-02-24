@@ -61,12 +61,9 @@ mod test {
 
 	use binius_core::word::Word;
 	use binius_field::{BinaryField, FieldOps, Random};
-	use binius_math::{BinarySubspace, FieldBuffer};
+	use binius_math::{BinarySubspace, FieldBuffer, univariate::lagrange_evals_scalars};
 	use binius_verifier::{
-		and_reduction::{
-			univariate::univariate_lagrange::lexicographic_lagrange_basis_vectors,
-			utils::constants::SKIPPED_VARS,
-		},
+		and_reduction::utils::constants::SKIPPED_VARS,
 		config::{B128, LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
 	};
 	use rand::{Rng, SeedableRng, rngs::StdRng};
@@ -102,8 +99,7 @@ mod test {
 	) -> FieldBuffer<F> {
 		let new_n_vars = one_bit_oblong.log_num_rows - LOG_WORD_SIZE_BITS;
 
-		let lagrange_basis_vectors =
-			lexicographic_lagrange_basis_vectors::<F, F>(challenge, univariate_domain);
+		let lagrange_basis_vectors = lagrange_evals_scalars(univariate_domain, challenge);
 
 		let result_vals = one_bit_oblong
 			.packed_evals

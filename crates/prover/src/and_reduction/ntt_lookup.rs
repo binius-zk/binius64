@@ -35,17 +35,9 @@
 
 use std::vec;
 
-use binius_field::{
-	BinaryField, BinaryField1b, Field, PackedBinaryField8x1b, PackedField,
-	arithmetic_traits::InvertOrZero,
-};
-use binius_math::BinarySubspace;
-use binius_verifier::and_reduction::{
-	univariate::univariate_lagrange::{
-		lexicographic_lagrange_denominator, lexicographic_lagrange_numerators,
-	},
-	utils::constants::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
-};
+use binius_field::{BinaryField, BinaryField1b, Field, PackedBinaryField8x1b, PackedField};
+use binius_math::{BinarySubspace, univariate::lagrange_evals_scalars};
+use binius_verifier::and_reduction::utils::constants::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS};
 
 /// A precomputed lookup table for fast NTT operations on 64-bit binary field elements.
 ///
@@ -101,20 +93,14 @@ where
 
 		let mut lookup = Box::new([[[PNTTDomain::zero(); 8]; 256]; 4]);
 
-		let mut eval_point_basis_point_to_numerator =
+		let mut eval_point_lagrange_evals =
 			vec![
 				vec![PNTTDomain::Scalar::ZERO; ROWS_PER_HYPERCUBE_VERTEX];
 				ntt_output_domain.len()
 			];
-		let denominator: PNTTDomain::Scalar = lexicographic_lagrange_denominator(ntt_input_domain);
-
-		let inverse_denominator = denominator.invert_or_zero();
 		for (eval_point_idx, eval_point) in ntt_output_domain.iter().enumerate() {
-			eval_point_basis_point_to_numerator[eval_point_idx] =
-				lexicographic_lagrange_numerators::<PNTTDomain::Scalar, PNTTDomain::Scalar>(
-					*eval_point,
-					ntt_input_domain,
-				);
+			eval_point_lagrange_evals[eval_point_idx] =
+				lagrange_evals_scalars(ntt_input_domain, *eval_point);
 		}
 
 		for eight_bit_chunk_idx in 0..ROWS_PER_HYPERCUBE_VERTEX / 8 {
@@ -137,9 +123,8 @@ where
 				for eval_point_idx in 0..ROWS_PER_HYPERCUBE_VERTEX {
 					let mut result = PNTTDomain::Scalar::ZERO;
 					for basis_point_idx in 0..1 << ntt_input_domain.dim() {
-						result += (eval_point_basis_point_to_numerator[eval_point_idx]
-							[basis_point_idx] * lagrange_basis_coeffs[basis_point_idx])
-							* inverse_denominator;
+						result += eval_point_lagrange_evals[eval_point_idx][basis_point_idx]
+							* lagrange_basis_coeffs[basis_point_idx];
 					}
 
 					let packed_idx = eval_point_idx / PNTTDomain::WIDTH; // 0, 1, 2, or 3
