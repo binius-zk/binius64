@@ -45,36 +45,50 @@ pub fn evaluate_univariate<F: FieldOps>(coeffs: &[F], x: F) -> F {
 /// # Returns
 /// A vector of Lagrange polynomial evaluations, one for each domain element
 pub fn lagrange_evals<F: BinaryField>(subspace: &BinarySubspace<F>, z: F) -> FieldBuffer<F> {
-	let domain: Vec<F> = subspace.iter().collect();
+	let result = lagrange_evals_scalars(subspace, z);
+	FieldBuffer::new(subspace.dim(), result.into_boxed_slice())
+}
+
+/// Scalar variant of [`lagrange_evals`] that returns a `Vec<E>` instead of a `FieldBuffer`.
+///
+/// Computes Lagrange polynomial evaluations for a binary subspace domain, converting domain
+/// points from `F` to `E` and performing all arithmetic in `E`.
+///
+/// # Parameters
+/// - `subspace`: The binary subspace defining the evaluation domain (over `F`)
+/// - `z`: The evaluation point (in `E`)
+///
+/// # Returns
+/// A vector of Lagrange polynomial evaluations, one for each domain element
+pub fn lagrange_evals_scalars<F: BinaryField, E: FieldOps + From<F>>(
+	subspace: &BinarySubspace<F>,
+	z: E,
+) -> Vec<E> {
+	let domain: Vec<E> = subspace.iter().map(E::from).collect();
 	let n = domain.len();
 
 	// Compute single barycentric weight for the additive subgroup
-	// All points have the same weight due to subgroup structure
 	let w = domain[1..]
 		.iter()
-		.fold(F::ONE, |acc, &d| acc * d)
-		.invert()
-		.unwrap_or(F::ONE);
+		.fold(E::one(), |acc, d| acc * d)
+		.invert_or_zero();
 
 	// Compute prefix products: prefix[i] = ∏_{j=0}^{i-1} (z - domain[j])
-	let mut prefixes = vec![F::ONE; n];
+	let mut prefixes = vec![E::one(); n];
 	for i in 1..n {
-		prefixes[i] = prefixes[i - 1] * (z - domain[i - 1]);
+		prefixes[i] = prefixes[i - 1].clone() * (z.clone() - domain[i - 1].clone());
 	}
 
 	// Compute suffix products: suffix[i] = ∏_{j=i+1}^{n-1} (z - domain[j])
-	let mut suffixes = vec![F::ONE; n];
+	let mut suffixes = vec![E::one(); n];
 	for i in (0..n - 1).rev() {
-		suffixes[i] = suffixes[i + 1] * (z - domain[i + 1]);
+		suffixes[i] = suffixes[i + 1].clone() * (z.clone() - domain[i + 1].clone());
 	}
 
 	// Combine prefix, suffix, and weight: L_i(z) = prefix[i] * suffix[i] * w
-	let mut result = vec![F::ZERO; n];
-	for i in 0..n {
-		result[i] = prefixes[i] * suffixes[i] * w;
-	}
-
-	FieldBuffer::new(subspace.dim(), result.into_boxed_slice())
+	izip!(prefixes, suffixes)
+		.map(|(p, s)| p * s * w.clone())
+		.collect()
 }
 
 /// A domain that univariate polynomials may be evaluated on.
