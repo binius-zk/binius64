@@ -21,7 +21,7 @@ use rand::{
 };
 
 use crate::{
-	BinaryField, Divisible, PackedField,
+	BinaryField, Divisible, ExtensionField, Field, PackedField,
 	arithmetic_traits::{InvertOrZero, MulAlpha, Square},
 	field::FieldOps,
 	underlier::{NumCast, UnderlierType, UnderlierWithBitOps, WithUnderlier},
@@ -383,6 +383,30 @@ where
 	#[inline]
 	fn one() -> Self {
 		Self::broadcast(Scalar::ONE)
+	}
+
+	fn square_transpose<FSub: Field>(elems: &mut [Self])
+	where
+		Scalar: ExtensionField<FSub>,
+	{
+		let log_degree = <Scalar as ExtensionField<FSub>>::LOG_DEGREE;
+		let degree = <Scalar as ExtensionField<FSub>>::DEGREE;
+		assert_eq!(elems.len(), degree);
+
+		let log_sub_bits = Scalar::N_BITS.ilog2() as usize - log_degree;
+
+		// See Hacker's Delight, Section 7-3.
+		for i in 0..log_degree {
+			for j in 0..1 << (log_degree - i - 1) {
+				for k in 0..1 << i {
+					let idx0 = (j << (i + 1)) | k;
+					let idx1 = idx0 | (1 << i);
+					let (u0, u1) = elems[idx0].0.interleave(elems[idx1].0, i + log_sub_bits);
+					elems[idx0] = u0.into();
+					elems[idx1] = u1.into();
+				}
+			}
+		}
 	}
 }
 

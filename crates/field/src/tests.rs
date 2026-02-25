@@ -5,11 +5,12 @@ use std::iter;
 use proptest::prelude::*;
 
 use crate::{
-	AESTowerField8b, BinaryField1b, BinaryField128bGhash, Field, PackedAESBinaryField4x8b,
-	PackedAESBinaryField8x8b, PackedAESBinaryField16x8b, PackedAESBinaryField32x8b,
-	PackedAESBinaryField64x8b, PackedBinaryField64x1b, PackedBinaryField128x1b,
-	PackedBinaryField256x1b, PackedBinaryField512x1b, PackedBinaryGhash1x128b,
-	PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
+	AESTowerField8b, BinaryField1b, BinaryField128bGhash, ExtensionField, Field,
+	PackedAESBinaryField4x8b, PackedAESBinaryField8x8b, PackedAESBinaryField16x8b,
+	PackedAESBinaryField32x8b, PackedAESBinaryField64x8b, PackedBinaryField64x1b,
+	PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b,
+	PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
+	field::FieldOps,
 	underlier::{SmallU, WithUnderlier},
 };
 
@@ -114,4 +115,80 @@ generate_spread_tests_small! {
 	spread_equals_basic_spread_256x1, PackedBinaryField256x1b, BinaryField1b, SmallU<1>, 256;
 	spread_equals_basic_spread_128x1, PackedBinaryField128x1b, BinaryField1b, SmallU<1>, 128;
 	spread_equals_basic_spread_64x1, PackedBinaryField64x1b, BinaryField1b, SmallU<1>, 64;
+}
+
+fn check_field_ops_square_transpose<FSub, F>()
+where
+	FSub: Field,
+	F: ExtensionField<FSub> + FieldOps<Scalar = F>,
+{
+	let degree = <F as ExtensionField<FSub>>::DEGREE;
+
+	let elems: Vec<F> = (0..degree).map(|i| F::basis(i)).collect();
+
+	let mut elems_transposed = elems.clone();
+	<F as FieldOps>::square_transpose::<FSub>(&mut elems_transposed);
+
+	for i in 0..degree {
+		for j in 0..degree {
+			assert_eq!(
+				elems_transposed[i].get_base(j),
+				elems[j].get_base(i),
+				"mismatch at ({i}, {j})"
+			);
+		}
+	}
+}
+
+fn check_packed_field_ops_square_transpose<FSub, P>()
+where
+	FSub: Field,
+	P: FieldOps<Scalar: ExtensionField<FSub>> + PackedField,
+{
+	let degree = <P::Scalar as ExtensionField<FSub>>::DEGREE;
+
+	let elems: Vec<P> = (0..degree)
+		.map(|i| {
+			P::from_fn(|_k| {
+				<P::Scalar as ExtensionField<FSub>>::from_bases(
+					(0..degree).map(|j| if j == i { FSub::ONE } else { FSub::ZERO }),
+				)
+			})
+		})
+		.collect();
+
+	let mut elems_transposed = elems.clone();
+	<P as FieldOps>::square_transpose::<FSub>(&mut elems_transposed);
+
+	for i in 0..degree {
+		for k in 0..P::WIDTH {
+			for j in 0..degree {
+				assert_eq!(
+					elems_transposed[i].get(k).get_base(j),
+					elems[j].get(k).get_base(i),
+					"mismatch at slice_idx={i}, lane={k}, base={j}"
+				);
+			}
+		}
+	}
+}
+
+#[test]
+fn test_scalar_field_ops_square_transpose_aes8b_over_1b() {
+	check_field_ops_square_transpose::<BinaryField1b, AESTowerField8b>();
+}
+
+#[test]
+fn test_scalar_field_ops_square_transpose_1b_over_1b() {
+	check_field_ops_square_transpose::<BinaryField1b, BinaryField1b>();
+}
+
+#[test]
+fn test_packed_field_ops_square_transpose_packed_aes4x8b_over_1b() {
+	check_packed_field_ops_square_transpose::<BinaryField1b, PackedAESBinaryField4x8b>();
+}
+
+#[test]
+fn test_packed_field_ops_square_transpose_packed128x1b_over_1b() {
+	check_packed_field_ops_square_transpose::<BinaryField1b, PackedBinaryField128x1b>();
 }

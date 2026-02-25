@@ -10,6 +10,7 @@ use std::{
 use binius_utils::{DeserializeBytes, SerializeBytes};
 use bytemuck::Zeroable;
 
+use super::extension::ExtensionField;
 use crate::{
 	Random,
 	arithmetic_traits::{InvertOrZero, Square},
@@ -172,6 +173,20 @@ pub trait FieldOps:
 
 	/// Returns the one element (multiplicative identity).
 	fn one() -> Self;
+
+	/// Transpose the subfield elements in a slice of field elements.
+	///
+	/// ## Arguments
+	///
+	/// * `elems` - a slice of $n$ elements, where $n$ is the degee of the extension of
+	///   `Self::Scalar` over `FSub`. They are overwritten with the result elements.
+	///
+	/// ## Preconditions
+	///
+	/// * `elems.len()` must equal `<Self::Scalar as ExtensionField<FSub>>::DEGREE`
+	fn square_transpose<FSub: Field>(elems: &mut [Self])
+	where
+		Self::Scalar: ExtensionField<FSub>;
 }
 
 impl<F: Field> FieldOps for F {
@@ -183,5 +198,12 @@ impl<F: Field> FieldOps for F {
 
 	fn one() -> Self {
 		Self::ONE
+	}
+
+	fn square_transpose<FSub: Field>(elems: &mut [Self])
+	where
+		F: ExtensionField<FSub>,
+	{
+		<F as ExtensionField<FSub>>::square_transpose(elems)
 	}
 }
