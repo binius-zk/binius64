@@ -6,6 +6,7 @@ use super::{
 	m128::M128,
 	simd_arithmetic::{
 		packed_aes_16x8b_invert_or_zero, packed_aes_16x8b_mul_alpha, packed_aes_16x8b_multiply,
+		packed_aes_16x8b_square,
 	},
 };
 use crate::{
@@ -27,10 +28,9 @@ impl Mul for PackedAESBinaryField16x8b {
 	}
 }
 
-// TODO: Optimize this
 impl Square for PackedAESBinaryField16x8b {
 	fn square(self) -> Self {
-		self * self
+		self.mutate_underlier(packed_aes_16x8b_square)
 	}
 }
 
@@ -43,5 +43,43 @@ impl InvertOrZero for PackedAESBinaryField16x8b {
 impl MulAlpha for PackedAESBinaryField16x8b {
 	fn mul_alpha(self) -> Self {
 		self.mutate_underlier(packed_aes_16x8b_mul_alpha)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::packed::PackedField;
+
+	use proptest::prelude::*;
+
+	proptest! {
+		#[test]
+		fn test_square_equals_self_mul_self(a_val in any::<u128>()) {
+			let a = PackedAESBinaryField16x8b::from_underlier(a_val.into());
+
+			let squared = Square::square(a);
+
+			for i in 0..PackedAESBinaryField16x8b::WIDTH {
+				assert_eq!(squared.get(i), a.get(i) * a.get(i));
+			}
+		}
+
+		#[test]
+		fn test_mul_alpha_matches_multiply(a_val in any::<u128>()) {
+			let a = PackedAESBinaryField16x8b::from_underlier(a_val.into());
+
+			let result = MulAlpha::mul_alpha(a);
+
+			let alpha = PackedAESBinaryField16x8b::from_underlier(
+				M128::from_le_bytes([0xD3; 16]),
+			);
+
+			let expected = a * alpha;
+
+			for i in 0..PackedAESBinaryField16x8b::WIDTH {
+				assert_eq!(result.get(i), expected.get(i));
+			}
+		}
 	}
 }
