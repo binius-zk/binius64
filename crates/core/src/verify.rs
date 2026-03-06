@@ -22,6 +22,7 @@ pub fn eval_shifted_word(word: Word, shift_variant: ShiftVariant, amount: usize)
 		ShiftVariant::Srl32 => word.srl32(amount as u32),
 		ShiftVariant::Sra32 => word.sra32(amount as u32),
 		ShiftVariant::Rotr32 => word.rotr32(amount as u32),
+		ShiftVariant::Sext => word.sext(amount as u32),
 	}
 }
 

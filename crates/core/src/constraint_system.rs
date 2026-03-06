@@ -83,6 +83,12 @@ pub enum ShiftVariant {
 	/// word. Bits shifted off the right end wrap around to the left within each 32-bit half.
 	/// Only uses the lower 5 bits of the shift amount (0-31).
 	Rotr32,
+	/// Sign extension from a given bit position.
+	///
+	/// Replicates the bit at position `amount` into all higher bit positions.
+	/// Output bits `0..=amount` are identity, bits `amount+1..=63` are copies of bit `amount`.
+	/// The amount must be less than 64.
+	Sext,
 }
 
 impl SerializeBytes for ShiftVariant {
@@ -96,6 +102,7 @@ impl SerializeBytes for ShiftVariant {
 			ShiftVariant::Srl32 => 5u8,
 			ShiftVariant::Sra32 => 6u8,
 			ShiftVariant::Rotr32 => 7u8,
+			ShiftVariant::Sext => 8u8,
 		};
 		index.serialize(write_buf)
 	}
@@ -116,6 +123,7 @@ impl DeserializeBytes for ShiftVariant {
 			5 => Ok(ShiftVariant::Srl32),
 			6 => Ok(ShiftVariant::Sra32),
 			7 => Ok(ShiftVariant::Rotr32),
+			8 => Ok(ShiftVariant::Sext),
 			_ => Err(SerializationError::UnknownEnumVariant {
 				name: "ShiftVariant",
 				index,
@@ -272,6 +280,22 @@ impl ShiftedValueIndex {
 		Self {
 			value_index,
 			shift_variant: ShiftVariant::Rotr32,
+			amount,
+		}
+	}
+
+	/// Sign-extend from the given bit position.
+	///
+	/// Replicates the bit at position `amount` into all higher bit positions.
+	/// Output bits `0..=amount` are identity, bits `amount+1..=63` are copies of bit `amount`.
+	///
+	/// # Panics
+	/// Panics if the bit position is greater than or equal to 64.
+	pub fn sext(value_index: ValueIndex, amount: usize) -> Self {
+		assert!(amount < 64, "sext bit position n={amount} out of range");
+		Self {
+			value_index,
+			shift_variant: ShiftVariant::Sext,
 			amount,
 		}
 	}

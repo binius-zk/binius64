@@ -13,7 +13,7 @@ literal =  { hex_lit | dec_lit }
 wire_id = @{ "$" ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // Shift operations
-shift_op     =  { "sll" | "slr" | "sar" | "ror" }
+shift_op     =  { "sll" | "slr" | "sar" | "sext" | "ror" }
 shift_amount = @{ ASCII_DIGIT+ }
 
 // Terms in XOR expressions

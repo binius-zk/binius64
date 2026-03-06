@@ -95,7 +95,28 @@ pub fn evaluate_h_op<F: Field>(
 		r_j_rest_tensor.iter_scalars(),
 	);
 
-	[sll, srl, sra, rotr, sll32, srl32, sra32, rotr32]
+	// sext: sign extension from bit position a.
+	// sext_ind(i, j, a) = 1 iff j == min(i, a).
+	// For boolean i: sext_partial[i] = eq_j[i] * suffix_eq_s[i] + prefix_eq_js[i]
+	// where suffix_eq_s[i] = sum_{a >= i} eq_s[a], prefix_eq_js[i] = sum_{a < i} eq_s[a]*eq_j[a]
+	let eq_j_tensor = eq_ind_partial_eval::<F>(r_j);
+	let eq_s_tensor = eq_ind_partial_eval::<F>(r_s);
+	let eq_j_ref = eq_j_tensor.as_ref();
+	let eq_s_ref = eq_s_tensor.as_ref();
+
+	let mut suffix_eq_s = vec![F::ZERO; WORD_SIZE_BITS + 1];
+	for i in (0..WORD_SIZE_BITS).rev() {
+		suffix_eq_s[i] = suffix_eq_s[i + 1] + eq_s_ref[i];
+	}
+	let mut prefix_eq_js = F::ZERO;
+	let mut sext = F::ZERO;
+	for i in 0..WORD_SIZE_BITS {
+		let l_i = l_tilde.as_ref()[i];
+		sext += l_i * (eq_j_ref[i] * suffix_eq_s[i] + prefix_eq_js);
+		prefix_eq_js += eq_s_ref[i] * eq_j_ref[i];
+	}
+
+	[sll, srl, sra, rotr, sll32, srl32, sra32, rotr32, sext]
 }
 
 /// Evaluates the monster multilinear polynomial for a constraint operation.
@@ -214,6 +235,7 @@ fn evaluate_matrices<F: BinaryField>(
 						ShiftVariant::Srl32 => 5,
 						ShiftVariant::Sra32 => 6,
 						ShiftVariant::Rotr32 => 7,
+						ShiftVariant::Sext => 8,
 					};
 					evals[shift_id][*amount] +=
 						constraint_eval * r_y_tensor.get(value_index.0 as usize);
@@ -278,13 +300,14 @@ mod tests {
 			let r_j = index_to_hypercube_point::<BinaryField128bGhash>(LOG_WORD_SIZE_BITS, j);
 			let r_s = index_to_hypercube_point::<BinaryField128bGhash>(LOG_WORD_SIZE_BITS, s);
 
-			let [sll, srl, sra, rotr, sll32, srl32, sra32, rotr32] =
+			let [sll, srl, sra, rotr, sll32, srl32, sra32, rotr32, sext] =
 				evaluate_h_op(l_tilde.to_ref(), &r_j, &r_s);
 
 			let expected_sll = j + s == i;
 			let expected_srl = i + s == j;
 			let expected_sra = (i + s).min(63) == j;
 			let expected_rotr = (i + s) % 64 == j;
+			let expected_sext = j == i.min(s);
 
 			let i_hi = i / 32;
 			let i_lo = i % 32;
@@ -313,6 +336,7 @@ mod tests {
 			assert_eq!(srl32, to_field(expected_srl32), "srl32 failed for i={i}, j={j}, s={s}");
 			assert_eq!(sra32, to_field(expected_sra32), "sra32 failed for i={i}, j={j}, s={s}");
 			assert_eq!(rotr32, to_field(expected_rotr32), "rotr32 failed for i={i}, j={j}, s={s}");
+			assert_eq!(sext, to_field(expected_sext), "sext failed for i={i}, j={j}, s={s}");
 		}
 	}
 

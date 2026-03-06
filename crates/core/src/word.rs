@@ -245,6 +245,16 @@ impl Word {
 		Word(lo_rotated | hi_rotated)
 	}
 
+	/// Sign-extend from a given bit position.
+	///
+	/// Replicates the bit at position `a` into all higher bit positions.
+	/// Bits `0..=a` are unchanged, bits `a+1..=63` become copies of bit `a`.
+	pub fn sext(self, a: u32) -> Word {
+		let Word(value) = self;
+		let shift = 63 - a;
+		Word(((value << shift) as i64 >> shift) as u64)
+	}
+
 	/// Unsigned integer multiplication.
 	///
 	/// Multiplies two 64-bit unsigned integers and returns the 128-bit result split into high and
@@ -886,6 +896,29 @@ mod tests {
 
 			// Round trip
 			assert_eq!(Word::from_u64(word.as_u64()), word);
+		}
+
+		#[test]
+		fn prop_sext(val in any::<u64>(), a in 0u32..64) {
+			let w = Word(val);
+			let result = w.sext(a);
+
+			// Reference: shl then sar
+			let shift = 63 - a;
+			let expected = ((val << shift) as i64 >> shift) as u64;
+			assert_eq!(result.0, expected);
+
+			// Bits 0..=a should be unchanged
+			let low_mask = if a == 63 { u64::MAX } else { (1u64 << (a + 1)) - 1 };
+			assert_eq!(result.0 & low_mask, val & low_mask);
+
+			// Bits a+1..=63 should all be copies of bit a
+			if a < 63 {
+				let sign_bit = (val >> a) & 1;
+				let high_mask = !low_mask;
+				let expected_high = if sign_bit == 1 { high_mask } else { 0 };
+				assert_eq!(result.0 & high_mask, expected_high);
+			}
 		}
 
 		#[test]

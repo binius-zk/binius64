@@ -415,6 +415,7 @@ mod tests {
 			Shift::Srl(5),
 			Shift::Sar(5),
 			Shift::Rotr(13),
+			Shift::Sext(31),
 		];
 
 		for (i, s1) in shifts.iter().enumerate() {
@@ -431,6 +432,11 @@ mod tests {
 						.dst(w(2))
 						.build(),
 					Shift::Rotr(n) => cb.linear().rhs(rotr(w(0), *n)).dst(w(2)).build(),
+					Shift::Sext(n) => cb
+						.linear()
+						.rhs(crate::compiler::constraint_builder::sext(w(0), *n))
+						.dst(w(2))
+						.build(),
 				}
 				// z = shift2(y)
 				match s2 {
@@ -443,6 +449,11 @@ mod tests {
 						.dst(w(4))
 						.build(),
 					Shift::Rotr(n) => cb.linear().rhs(rotr(w(2), *n)).dst(w(4)).build(),
+					Shift::Sext(n) => cb
+						.linear()
+						.rhs(crate::compiler::constraint_builder::sext(w(2), *n))
+						.dst(w(4))
+						.build(),
 				}
 				cb.and().a(w(4)).b(w(5)).c(w(6)).build();
 

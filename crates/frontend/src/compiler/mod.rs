@@ -725,6 +725,26 @@ impl CircuitBuilder {
 		z
 	}
 
+	/// Sign-extend from a given bit position.
+	///
+	/// Replicates bit `n` of `a` into all higher bit positions.
+	/// Bits `0..=n` are unchanged, bits `n+1..=63` become copies of bit `n`.
+	///
+	/// # Panics
+	///
+	/// Panics if `n >= 64`.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn sext_op(&self, a: Wire, n: u32) -> Wire {
+		assert!(n < 64, "sext bit position n={n} out of range");
+		let z = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate_imm(self.current_path, Opcode::Sext, [a], [z], n);
+		z
+	}
+
 	/// Equality assertion.
 	///
 	/// Asserts that two 64-bit wires are equal.
@@ -997,6 +1017,19 @@ impl CircuitBuilder {
 	pub fn icmp_ne(&self, x: Wire, y: Wire) -> Wire {
 		let eq = self.icmp_eq(x, y);
 		self.bnot(eq)
+	}
+
+	/// Signed less-than comparison.
+	///
+	/// Sign-extend a 32-bit value to 64 bits.
+	///
+	/// Replicates bit 31 of `x` into all upper 32 bits.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint (single linear def, fusible).
+	pub fn sext_32_to_64(&self, x: Wire) -> Wire {
+		self.sext_op(x, 31)
 	}
 
 	/// Byte extraction.
