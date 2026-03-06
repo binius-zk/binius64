@@ -1,3 +1,4 @@
+// Copyright 2025-2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 //! Bytecode builder for generating evaluation instructions
 
@@ -174,9 +175,25 @@ impl BytecodeBuilder {
 		self.emit_u8(rotate);
 	}
 
-	pub fn emit_shr32(&mut self, dst: u32, src: u32, shift: u8) {
+	pub fn emit_srl32(&mut self, dst: u32, src: u32, shift: u8) {
 		self.n_eval_insn += 1;
 		self.emit_u8(0x42);
+		self.emit_reg(dst);
+		self.emit_reg(src);
+		self.emit_u8(shift);
+	}
+
+	pub fn emit_sll32(&mut self, dst: u32, src: u32, shift: u8) {
+		self.n_eval_insn += 1;
+		self.emit_u8(0x44);
+		self.emit_reg(dst);
+		self.emit_reg(src);
+		self.emit_u8(shift);
+	}
+
+	pub fn emit_sra32(&mut self, dst: u32, src: u32, shift: u8) {
+		self.n_eval_insn += 1;
+		self.emit_u8(0x45);
 		self.emit_reg(dst);
 		self.emit_reg(src);
 		self.emit_u8(shift);

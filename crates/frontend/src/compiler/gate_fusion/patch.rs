@@ -248,7 +248,7 @@ mod tests {
 	use super::*;
 	use crate::compiler::{
 		Wire,
-		constraint_builder::{rotr, sll, srl, xor2, xor3},
+		constraint_builder::{rotr, rotr32, sll, sll32, sra32, srl, srl32, xor2, xor3},
 		gate_fusion::Stat,
 	};
 
@@ -412,9 +412,13 @@ mod tests {
 		let shifts = [
 			Shift::None,
 			Shift::Sll(5),
+			Shift::Sll32(5),
 			Shift::Srl(5),
+			Shift::Srl32(5),
 			Shift::Sar(5),
+			Shift::Sra32(5),
 			Shift::Rotr(13),
+			Shift::Rotr32(13),
 		];
 
 		for (i, s1) in shifts.iter().enumerate() {
@@ -424,25 +428,33 @@ mod tests {
 				match s1 {
 					Shift::None => cb.linear().rhs(xor2(w(0), w(1))).dst(w(2)).build(),
 					Shift::Sll(n) => cb.linear().rhs(sll(w(0), *n)).dst(w(2)).build(),
+					Shift::Sll32(n) => cb.linear().rhs(sll32(w(0), *n)).dst(w(2)).build(),
 					Shift::Srl(n) => cb.linear().rhs(srl(w(0), *n)).dst(w(2)).build(),
+					Shift::Srl32(n) => cb.linear().rhs(srl32(w(0), *n)).dst(w(2)).build(),
 					Shift::Sar(n) => cb
 						.linear()
 						.rhs(crate::compiler::constraint_builder::sar(w(0), *n))
 						.dst(w(2))
 						.build(),
+					Shift::Sra32(n) => cb.linear().rhs(sra32(w(0), *n)).dst(w(2)).build(),
 					Shift::Rotr(n) => cb.linear().rhs(rotr(w(0), *n)).dst(w(2)).build(),
+					Shift::Rotr32(n) => cb.linear().rhs(rotr32(w(0), *n)).dst(w(2)).build(),
 				}
 				// z = shift2(y)
 				match s2 {
 					Shift::None => cb.linear().rhs(xor2(w(2), w(3))).dst(w(4)).build(),
 					Shift::Sll(n) => cb.linear().rhs(sll(w(2), *n)).dst(w(4)).build(),
+					Shift::Sll32(n) => cb.linear().rhs(sll32(w(2), *n)).dst(w(4)).build(),
 					Shift::Srl(n) => cb.linear().rhs(srl(w(2), *n)).dst(w(4)).build(),
+					Shift::Srl32(n) => cb.linear().rhs(srl32(w(2), *n)).dst(w(4)).build(),
 					Shift::Sar(n) => cb
 						.linear()
 						.rhs(crate::compiler::constraint_builder::sar(w(2), *n))
 						.dst(w(4))
 						.build(),
+					Shift::Sra32(n) => cb.linear().rhs(sra32(w(2), *n)).dst(w(4)).build(),
 					Shift::Rotr(n) => cb.linear().rhs(rotr(w(2), *n)).dst(w(4)).build(),
+					Shift::Rotr32(n) => cb.linear().rhs(rotr32(w(2), *n)).dst(w(4)).build(),
 				}
 				cb.and().a(w(4)).b(w(5)).c(w(6)).build();
 
