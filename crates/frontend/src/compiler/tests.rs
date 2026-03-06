@@ -629,4 +629,41 @@ proptest! {
 		let cs = circuit.constraint_system();
 		verify_constraints(cs, &w.value_vec).unwrap();
 	}
+
+	#[test]
+	fn prop_sext_32_to_64(a in any::<u64>()) {
+		let builder = CircuitBuilder::new();
+		let a_wire = builder.add_constant_64(a);
+		let result_wire = builder.sext_32_to_64(a_wire);
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		circuit.populate_wire_witness(&mut w).unwrap();
+
+		let expected = (a as i32) as i64 as u64;
+		assert_eq!(w[result_wire], Word(expected));
+
+		let cs = circuit.constraint_system();
+		verify_constraints(cs, &w.value_vec).unwrap();
+	}
+
+	#[test]
+	fn prop_sext_op_various_widths(a in any::<u64>()) {
+		for bit_pos in [7u32, 15, 31] {
+			let builder = CircuitBuilder::new();
+			let a_wire = builder.add_constant_64(a);
+			let result_wire = builder.sext_op(a_wire, bit_pos);
+
+			let circuit = builder.build();
+			let mut w = circuit.new_witness_filler();
+			circuit.populate_wire_witness(&mut w).unwrap();
+
+			let expected = Word(a).sext(bit_pos);
+			assert_eq!(w[result_wire], expected);
+
+			let cs = circuit.constraint_system();
+			verify_constraints(cs, &w.value_vec).unwrap();
+		}
+	}
+
 }

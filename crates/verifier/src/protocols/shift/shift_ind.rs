@@ -116,7 +116,10 @@ pub fn partial_eval_sigmas_transpose<F: Field>(r_j: &[F], r_s: &[F]) -> FieldBuf
 mod tests {
 	use binius_field::BinaryField128bGhash;
 	use binius_math::{
-		multilinear::shift::{rotr_ind, sll_ind, sra_ind, srl_ind},
+		multilinear::{
+			eq::eq_ind_partial_eval_scalars,
+			shift::{rotr_ind, sext_ind, sll_ind, sra_ind, srl_ind},
+		},
 		test_utils::{index_to_hypercube_point, random_scalars},
 	};
 	use rand::{SeedableRng, rngs::StdRng};
@@ -298,5 +301,43 @@ mod tests {
 		let s = random_scalars::<BinaryField128bGhash>(&mut rng, n);
 
 		test_partial_eval_helper(rotr_ind_partial_eval, rotr_ind, &j, &s);
+	}
+
+	/// Computes the partial evaluation of the sign extension indicator multilinear extension.
+	///
+	/// Given fixed values for `j` and `a`, returns a [`FieldBuffer`] containing the
+	/// evaluations for all `i` values on the hypercube.
+	/// sext_partial[i] = eq_j[i] * suffix_eq_a[i] + prefix_eq_ja[i]
+	fn sext_ind_partial_eval<F: Field>(j: &[F], a: &[F]) -> FieldBuffer<F> {
+		assert_eq!(j.len(), a.len(), "j and a must have the same length");
+
+		let n = j.len();
+		let size = 1usize << n;
+		let eq_j = eq_ind_partial_eval_scalars(j);
+		let eq_a = eq_ind_partial_eval_scalars(a);
+
+		let mut suffix_eq_a = vec![F::ZERO; size + 1];
+		for i in (0..size).rev() {
+			suffix_eq_a[i] = suffix_eq_a[i + 1] + eq_a[i];
+		}
+
+		let mut result = FieldBuffer::zeros(n);
+		let mut prefix_eq_ja = F::ZERO;
+		for i in 0..size {
+			result[i] = eq_j[i] * suffix_eq_a[i] + prefix_eq_ja;
+			prefix_eq_ja += eq_a[i] * eq_j[i];
+		}
+		result
+	}
+
+	#[test]
+	fn test_sext_ind_partial_eval() {
+		let mut rng = StdRng::seed_from_u64(0);
+		let n = 6;
+
+		let j = random_scalars::<BinaryField128bGhash>(&mut rng, n);
+		let a = random_scalars::<BinaryField128bGhash>(&mut rng, n);
+
+		test_partial_eval_helper(sext_ind_partial_eval, sext_ind, &j, &a);
 	}
 }

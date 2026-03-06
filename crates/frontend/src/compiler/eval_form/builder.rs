@@ -93,6 +93,14 @@ impl BytecodeBuilder {
 		self.emit_u8(shift);
 	}
 
+	pub fn emit_sext(&mut self, dst: u32, src: u32, bit_pos: u8) {
+		self.n_eval_insn += 1;
+		self.emit_u8(0x13);
+		self.emit_reg(dst);
+		self.emit_reg(src);
+		self.emit_u8(bit_pos);
+	}
+
 	// Arithmetic with carry
 	pub fn emit_iadd_cout(&mut self, dst_sum: u32, dst_cout: u32, src1: u32, src2: u32) {
 		self.n_eval_insn += 1;

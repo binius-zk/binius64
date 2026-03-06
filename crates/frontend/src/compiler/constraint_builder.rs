@@ -197,6 +197,7 @@ pub enum Shift {
 	Srl(u32),
 	Sar(u32),
 	Rotr(u32),
+	Sext(u32),
 }
 
 impl Shift {
@@ -238,7 +239,8 @@ impl Shift {
 				let combined = (a + b) % 64;
 				Some(Shift::Rotr(combined))
 			}
-			_ => None, // Different shift types are not composable
+			(Shift::Sext(a), Shift::Sext(b)) => Some(Shift::Sext(a.min(b))),
+			_ => None,
 		}
 	}
 }
@@ -279,6 +281,7 @@ impl ShiftedWire {
 					ShiftedValueIndex::rotr(idx, n as usize)
 				}
 			}
+			Shift::Sext(n) => ShiftedValueIndex::sext(idx, n as usize),
 		}
 	}
 }
@@ -432,6 +435,7 @@ pub enum ShiftOp {
 	Srl(u32),
 	Sar(u32),
 	Rotr(u32),
+	Sext(u32),
 }
 
 impl WireExpr {
@@ -461,6 +465,7 @@ impl WireExprTerm {
 					ShiftOp::Srl(n) => Shift::Srl(n),
 					ShiftOp::Sar(n) => Shift::Sar(n),
 					ShiftOp::Rotr(n) => Shift::Rotr(n),
+					ShiftOp::Sext(n) => Shift::Sext(n),
 				},
 			},
 		}
@@ -486,6 +491,10 @@ pub fn sar(w: Wire, n: u32) -> WireExprTerm {
 
 pub fn rotr(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Rotr(n))
+}
+
+pub fn sext(w: Wire, n: u32) -> WireExprTerm {
+	WireExprTerm::Shifted(w, ShiftOp::Sext(n))
 }
 
 // XOR helpers for common cases

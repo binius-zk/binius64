@@ -37,6 +37,7 @@ pub mod rotr32;
 pub mod sar;
 pub mod secp256k1_endosplit_hint;
 pub mod select;
+pub mod sext;
 pub mod shl;
 pub mod shr;
 pub mod shr32;
@@ -70,6 +71,7 @@ pub fn constrain(gate: Gate, graph: &GateGraph, builder: &mut ConstraintBuilder)
 		Opcode::Shr => shr::constrain(gate, data, builder),
 		Opcode::Shl => shl::constrain(gate, data, builder),
 		Opcode::Sar => sar::constrain(gate, data, builder),
+		Opcode::Sext => sext::constrain(gate, data, builder),
 		// Hints do not introduce constraints
 		Opcode::BigUintDivideHint => (),
 		Opcode::BigUintModPowHint => (),
@@ -131,6 +133,7 @@ pub fn emit_gate_bytecode(
 		Opcode::Shr => shr::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::Shl => shl::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::Sar => sar::emit_eval_bytecode(gate, data, builder, wire_to_reg),
+		Opcode::Sext => sext::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 
 		// Hint-based gates
 		Opcode::ModInverseHint => {
