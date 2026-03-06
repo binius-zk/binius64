@@ -1,3 +1,4 @@
+// Copyright 2025-2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 //! Bytecode interpreter for circuit evaluation
 
@@ -141,8 +142,10 @@ impl<'a> Interpreter<'a> {
 				// 32-bit operations
 				0x40 => self.exec_iadd_cout32(ctx),
 				0x41 => self.exec_rotr32(ctx),
-				0x42 => self.exec_shr32(ctx),
+				0x42 => self.exec_srl32(ctx),
 				0x43 => self.exec_rotr(ctx),
+				0x44 => self.exec_sll32(ctx),
+				0x45 => self.exec_sra32(ctx),
 
 				// Masks
 				0x50 => self.exec_mask_low(ctx),
@@ -326,15 +329,31 @@ impl<'a> Interpreter<'a> {
 		let dst = self.read_reg();
 		let src = self.read_reg();
 		let rotate = self.read_u8() as u32;
-		let val = self.load(ctx, src).rotr_32(rotate);
+		let val = self.load(ctx, src).rotr32(rotate);
 		self.store(ctx, dst, val);
 	}
 
-	fn exec_shr32(&mut self, ctx: &mut ExecutionContext<'_>) {
+	fn exec_srl32(&mut self, ctx: &mut ExecutionContext<'_>) {
 		let dst = self.read_reg();
 		let src = self.read_reg();
 		let shift = self.read_u8() as u32;
-		let val = self.load(ctx, src).shr_32(shift);
+		let val = self.load(ctx, src).srl32(shift);
+		self.store(ctx, dst, val);
+	}
+
+	fn exec_sll32(&mut self, ctx: &mut ExecutionContext<'_>) {
+		let dst = self.read_reg();
+		let src = self.read_reg();
+		let shift = self.read_u8() as u32;
+		let val = self.load(ctx, src).sll32(shift);
+		self.store(ctx, dst, val);
+	}
+
+	fn exec_sra32(&mut self, ctx: &mut ExecutionContext<'_>) {
+		let dst = self.read_reg();
+		let src = self.read_reg();
+		let shift = self.read_u8() as u32;
+		let val = self.load(ctx, src).sra32(shift);
 		self.store(ctx, dst, val);
 	}
 

@@ -117,7 +117,7 @@ fn ripemd160_compress(
 		// Rotate variables for left line
 		al = el;
 		el = dl;
-		dl = builder.rotl_32(cl, 10);
+		dl = builder.rotl32(cl, 10);
 		cl = bl;
 		bl = new_bl;
 
@@ -147,7 +147,7 @@ fn ripemd160_compress(
 		// Rotate variables for right line
 		ar = er;
 		er = dr;
-		dr = builder.rotl_32(cr, 10);
+		dr = builder.rotl32(cr, 10);
 		cr = br;
 		br = new_br;
 	}
@@ -208,7 +208,7 @@ fn round(
 	let t = builder.iadd_32(t2, builder.add_constant_64(k as u64));
 
 	// T = (T << s) | (T >> (32 - s)) (rotate left by s)
-	let t_rot = builder.rotl_32(t, s);
+	let t_rot = builder.rotl32(t, s);
 
 	// T = T + E (this becomes the new B value)
 	builder.iadd_32(t_rot, e)
