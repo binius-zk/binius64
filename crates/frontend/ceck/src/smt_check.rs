@@ -62,10 +62,30 @@ impl<'ctx> SmtChecker<'ctx> {
 			ShiftVariant::Slr => val.bvlshr(&ast::BV::from_u64(self.ctx, sv.amount as u64, 64)),
 			ShiftVariant::Sar => val.bvashr(&ast::BV::from_u64(self.ctx, sv.amount as u64, 64)),
 			ShiftVariant::Rotr => val.bvrotr(&ast::BV::from_u64(self.ctx, sv.amount as u64, 64)),
-			ShiftVariant::Sll32
-			| ShiftVariant::Srl32
-			| ShiftVariant::Sra32
-			| ShiftVariant::Rotr32 => unimplemented!("32-bit shifts not supported"),
+			ShiftVariant::Sll32 => {
+				let shift = ast::BV::from_u64(self.ctx, sv.amount as u64, 32);
+				let hi = val.extract(63, 32);
+				let lo = val.extract(31, 0);
+				hi.bvshl(&shift).concat(&lo.bvshl(&shift))
+			}
+			ShiftVariant::Srl32 => {
+				let shift = ast::BV::from_u64(self.ctx, sv.amount as u64, 32);
+				let hi = val.extract(63, 32);
+				let lo = val.extract(31, 0);
+				hi.bvlshr(&shift).concat(&lo.bvlshr(&shift))
+			}
+			ShiftVariant::Sra32 => {
+				let shift = ast::BV::from_u64(self.ctx, sv.amount as u64, 32);
+				let hi = val.extract(63, 32);
+				let lo = val.extract(31, 0);
+				hi.bvashr(&shift).concat(&lo.bvashr(&shift))
+			}
+			ShiftVariant::Rotr32 => {
+				let rotate = ast::BV::from_u64(self.ctx, sv.amount as u64, 32);
+				let hi = val.extract(63, 32);
+				let lo = val.extract(31, 0);
+				hi.bvrotr(&rotate).concat(&lo.bvrotr(&rotate))
+			}
 		}
 	}
 

@@ -445,6 +445,45 @@ fn test_shift_operations_with_linear_constraints() {
 }
 
 #[test]
+fn test_32bit_half_shift_operations() {
+	let builder = CircuitBuilder::new();
+
+	let a = builder.add_inout();
+	let sll32_result = builder.sll32(a, 4);
+	let srl32_result = builder.srl32(a, 4);
+	let sra32_result = builder.sra32(a, 4);
+	let rotr32_result = builder.rotr32(a, 4);
+
+	let circuit = builder.build();
+
+	let input = 0x12345678_89abcdef_u64;
+	let mut w = circuit.new_witness_filler();
+	w[a] = Word(input);
+
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	let expected_sll32 = Word(input).sll32(4);
+	let expected_srl32 = Word(input).srl32(4);
+	let expected_sra32 = Word(input).sra32(4);
+	let expected_rotr32 = Word(input).rotr32(4);
+
+	assert_eq!(w[sll32_result], expected_sll32);
+	assert_eq!(w[srl32_result], expected_srl32);
+	assert_eq!(w[sra32_result], expected_sra32);
+	assert_eq!(w[rotr32_result], expected_rotr32);
+
+	// These are lane-local operations, so they should differ from the plain 64-bit shifts
+	// for inputs where bits would otherwise cross the 32-bit boundary.
+	assert_ne!(w[sll32_result], Word(input << 4));
+	assert_ne!(w[srl32_result], Word(input >> 4));
+	assert_ne!(w[sra32_result], Word(((input as i64) >> 4) as u64));
+	assert_ne!(w[rotr32_result], Word(input.rotate_right(4)));
+
+	let cs = circuit.constraint_system();
+	verify_constraints(cs, &w.value_vec).unwrap();
+}
+
+#[test]
 fn test_rotr_operation_expansion() {
 	// Test that rotr operation correctly expands to (srl XOR sll)
 	// This tests the expansion logic in constraint_builder.rs

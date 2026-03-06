@@ -327,9 +327,13 @@ impl LeGraph {
 			match t.shift {
 				Shift::None => format!("{:?}", t.wire),
 				Shift::Sll(amount) => format!("{:?} << {:?}", t.wire, amount),
+				Shift::Sll32(amount) => format!("{:?} <<32 {:?}", t.wire, amount),
 				Shift::Srl(amount) => format!("{:?} >> {:?}", t.wire, amount),
+				Shift::Srl32(amount) => format!("{:?} >>32 {:?}", t.wire, amount),
 				Shift::Sar(amount) => format!("{:?} sar {:?}", t.wire, amount),
+				Shift::Sra32(amount) => format!("{:?} sar32 {:?}", t.wire, amount),
 				Shift::Rotr(amount) => format!("{:?} rotr {:?}", t.wire, amount),
+				Shift::Rotr32(amount) => format!("{:?} rotr32 {:?}", t.wire, amount),
 			}
 		}
 	}

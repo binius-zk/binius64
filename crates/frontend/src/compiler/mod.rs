@@ -1,3 +1,4 @@
+// Copyright 2025-2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use std::{
 	array,
@@ -549,12 +550,12 @@ impl CircuitBuilder {
 		(diff, bout)
 	}
 
-	/// 32-bit rotate left.
+	/// 32-bit half-wise rotate left.
 	///
-	/// Rotates the lower 32 bits left by n positions. Bits shifted out on the left
-	/// wrap around to the right. The upper 32 bits are zeroed.
+	/// Rotates the upper and lower 32-bit halves left independently by `n`.
+	/// Bits do not cross the 32-bit lane boundary.
 	///
-	/// Returns `(x & 0xFFFFFFFF) rotated left by n`
+	/// Returns `x ROTL32 n`
 	///
 	/// # Panics
 	///
@@ -563,7 +564,7 @@ impl CircuitBuilder {
 	/// # Cost
 	///
 	/// 1 AND constraint (0 if n = 0).
-	pub fn rotl_32(&self, x: Wire, n: u32) -> Wire {
+	pub fn rotl32(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 32, "rotate amount n={n} out of range");
 		if n == 0 {
 			return x;
@@ -574,12 +575,12 @@ impl CircuitBuilder {
 		z
 	}
 
-	/// 32-bit rotate right.
+	/// 32-bit half-wise rotate right.
 	///
-	/// Rotates the lower 32 bits right by n positions. Bits shifted out on the right
-	/// wrap around to the left. The upper 32 bits are zeroed.
+	/// Rotates the upper and lower 32-bit halves right independently by `n`.
+	/// Bits do not cross the 32-bit lane boundary.
 	///
-	/// Returns `(x & 0xFFFFFFFF) rotated right by n`
+	/// Returns `x ROTR32 n`
 	///
 	/// # Panics
 	///
@@ -588,7 +589,7 @@ impl CircuitBuilder {
 	/// # Cost
 	///
 	/// 1 AND constraint (0 if n = 0).
-	pub fn rotr_32(&self, x: Wire, n: u32) -> Wire {
+	pub fn rotr32(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 32, "rotate amount n={n} out of range");
 		if n == 0 {
 			return x;
@@ -651,12 +652,12 @@ impl CircuitBuilder {
 		z
 	}
 
-	/// 32-bit logical right shift.
+	/// 32-bit half-wise logical right shift.
 	///
-	/// Shifts the lower 32 bits right by n positions, filling with zeros from the left.
-	/// The upper 32 bits are zeroed.
+	/// Shifts the upper and lower 32-bit halves right independently by `n`.
+	/// Bits do not cross the 32-bit lane boundary.
 	///
-	/// Returns `(x & 0xFFFFFFFF) >> n`
+	/// Returns `x SRL32 n`
 	///
 	/// # Panics
 	///
@@ -665,12 +666,35 @@ impl CircuitBuilder {
 	/// # Cost
 	///
 	/// 1 AND constraint.
-	pub fn shr_32(&self, x: Wire, n: u32) -> Wire {
+	pub fn srl32(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 32, "shift amount n={n} out of range");
 
 		let z = self.add_internal();
 		let mut graph = self.graph_mut();
-		graph.emit_gate_imm(self.current_path, Opcode::Shr32, [x], [z], n);
+		graph.emit_gate_imm(self.current_path, Opcode::Srl32, [x], [z], n);
+		z
+	}
+
+	/// 32-bit half-wise logical left shift.
+	///
+	/// Shifts the upper and lower 32-bit halves left independently by `n`.
+	/// Bits do not cross the 32-bit lane boundary.
+	///
+	/// Returns `x SLL32 n`.
+	///
+	/// # Panics
+	///
+	/// Panics if `n ≥ 32`.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn sll32(&self, x: Wire, n: u32) -> Wire {
+		assert!(n < 32, "shift amount n={n} out of range for 32-bit half shift");
+
+		let z = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate_imm(self.current_path, Opcode::Sll32, [x], [z], n);
 		z
 	}
 
@@ -722,6 +746,28 @@ impl CircuitBuilder {
 		let z = self.add_internal();
 		let mut graph = self.graph_mut();
 		graph.emit_gate_imm(self.current_path, Opcode::Sar, [a], [z], n);
+		z
+	}
+
+	/// 32-bit half-wise arithmetic right shift.
+	///
+	/// Shifts the upper and lower 32-bit halves right independently by `n`,
+	/// sign-extending each half from its own bit 31.
+	///
+	/// Returns `x SRA32 n`.
+	///
+	/// # Panics
+	///
+	/// Panics if `n ≥ 32`.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint.
+	pub fn sra32(&self, a: Wire, n: u32) -> Wire {
+		assert!(n < 32, "shift amount n={n} out of range for 32-bit half shift");
+		let z = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate_imm(self.current_path, Opcode::Sra32, [a], [z], n);
 		z
 	}
 

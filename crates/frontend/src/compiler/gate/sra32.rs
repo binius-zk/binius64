@@ -1,23 +1,23 @@
-// Copyright 2025-2026 The Binius Developers
-// Copyright 2025 Irreducible Inc.
-//! 32-bit half-wise rotate right.
+// Copyright 2026 The Binius Developers
+//! 32-bit half-wise arithmetic right shift.
 //!
-//! Returns `z = x ROTR32 n`.
+//! Returns `z = x SRA32 n`.
 //!
 //! # Algorithm
 //!
-//! Performs independent rotate-right operations on the upper and lower 32-bit
-//! halves of the input word. Bits do not cross the 32-bit lane boundary.
+//! Performs independent arithmetic right shifts on the upper and lower 32-bit
+//! halves of the input word. Each half is sign-extended from its own bit 31.
+//! This exposes the core `ShiftVariant::Sra32` primitive in the frontend.
 //!
 //! # Constraints
 //!
 //! The gate generates 1 AND constraint:
-//! - `(x ROTR32 n) ∧ all-1 = z`
+//! - `(x SRA32 n) ∧ all-1 = z`
 
 use binius_core::word::Word;
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, rotr32},
+	constraint_builder::{ConstraintBuilder, sra32},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
@@ -44,7 +44,7 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	let [z] = outputs else { unreachable!() };
 	let [n] = imm else { unreachable!() };
 
-	builder.linear().rhs(rotr32(*x, *n)).dst(*z).build();
+	builder.linear().rhs(sra32(*x, *n)).dst(*z).build();
 }
 
 pub fn emit_eval_bytecode(
@@ -62,5 +62,5 @@ pub fn emit_eval_bytecode(
 	let [x] = inputs else { unreachable!() };
 	let [z] = outputs else { unreachable!() };
 	let [n] = imm else { unreachable!() };
-	builder.emit_rotr32(wire_to_reg(*z), wire_to_reg(*x), *n as u8);
+	builder.emit_sra32(wire_to_reg(*z), wire_to_reg(*x), *n as u8);
 }
