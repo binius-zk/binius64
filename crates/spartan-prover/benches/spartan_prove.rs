@@ -31,7 +31,7 @@ fn bench_spartan_prove(c: &mut Criterion) {
 	let mut group = c.benchmark_group("spartan_prove");
 	group.sample_size(10);
 
-	for n_muls in [1024, 4096, 16384] {
+	for n_muls in [1 << 14, 1 << 16, 1 << 18] {
 		group.bench_function(format!("{n_muls}_muls"), |b| {
 			let mut constraint_builder = ConstraintBuilder::new();
 			let x_wire = constraint_builder.alloc_inout();
