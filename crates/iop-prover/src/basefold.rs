@@ -8,7 +8,10 @@ use binius_ip_prover::sumcheck::{
 	bivariate_product::BivariateProductSumcheckProver, common::SumcheckProver,
 };
 use binius_math::{
-	FieldBuffer, inner_product::inner_product_par, line::extrapolate_line_packed, ntt::AdditiveNTT,
+	FieldBuffer,
+	inner_product::{inner_product_par, inner_product_wide_par},
+	line::extrapolate_line_packed,
+	ntt::AdditiveNTT,
 };
 use binius_transcript::{
 	ProverTranscript,
@@ -210,7 +213,7 @@ where
 
 	// Compute blinding_eval = sum_x[mask * l_poly]
 	// The verifier will compute sum = (1-r)*claim + r*blinding_eval using linear interpolation.
-	let mask_claim = inner_product_par(&mask, &transparent_multilinear);
+	let mask_claim = inner_product_wide_par(&mask, &transparent_multilinear);
 
 	// Write blinding_eval to transcript
 	transcript.message().write(&mask_claim);

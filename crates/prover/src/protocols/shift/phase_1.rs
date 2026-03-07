@@ -8,7 +8,7 @@ use binius_field::{
 	WithUnderlier,
 };
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{FieldBuffer, inner_product::inner_product_buffers};
+use binius_math::{FieldBuffer, inner_product::inner_product_wide_buffers};
 use binius_utils::rayon::prelude::*;
 use binius_verifier::{
 	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS, WORD_SIZE_BYTES},
@@ -92,7 +92,7 @@ fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F> + WideningMul, Chan
 	// Build `BivariateProductSumcheckProver` provers.
 	let mut provers = iter::zip(g_parts, h_parts)
 		.map(|(g_part, h_part)| {
-			let sum = inner_product_buffers(&g_part, &h_part);
+			let sum = inner_product_wide_buffers(&g_part, &h_part);
 			BivariateProductSumcheckProver::new([g_part, h_part], sum)
 		})
 		.collect::<Result<Vec<_>, _>>()?;
