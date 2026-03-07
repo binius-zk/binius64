@@ -152,7 +152,7 @@ cfg_if! {
 
 			#[inline]
 			fn reduce_wide(wide: Self::Wide) -> Self {
-				Self::from_underlier(wide.reduce())
+				Self::from_underlier(wide.reduce_wide())
 			}
 		}
 	} else {

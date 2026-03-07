@@ -103,7 +103,7 @@ impl crate::arithmetic_traits::WideningMul for PackedBinaryGhash1x128b {
 
 	#[inline]
 	fn reduce_wide(wide: Self::Wide) -> Self {
-		Self::from_underlier(wide.reduce())
+		Self::from_underlier(wide.reduce_wide())
 	}
 }
 

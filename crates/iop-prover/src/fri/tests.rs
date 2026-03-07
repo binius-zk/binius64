@@ -4,7 +4,7 @@
 use std::vec;
 
 use binius_field::{
-	BinaryField, BinaryField128bGhash as B128, PackedBinaryGhash1x128b, PackedField,
+	BinaryField, BinaryField128bGhash as B128, PackedBinaryGhash1x128b, PackedField, WideningMul,
 };
 use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
 use binius_iop::fri::{self, FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier};
@@ -33,7 +33,7 @@ fn test_commit_prove_verify_success<F, P>(
 	arities: &[usize],
 ) where
 	F: BinaryField,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 {
 	let mut rng = StdRng::seed_from_u64(0);
 

@@ -101,7 +101,7 @@ fn gf2_128_shift_reduce<U: ClMulUnderlier>(t: U) -> U {
 
 /// An unreduced product of two GF(2^128) elements, stored in Karatsuba form
 /// as three 128-bit limbs (lo, hi, mid). Accumulate via XOR (which is free in
-/// GF(2)), then call [`reduce`](WideGhashProduct::reduce) once at the end.
+/// GF(2)), then call [`reduce_wide`](WideGhashProduct::reduce_wide) once at the end.
 #[derive(Clone, Copy, Default)]
 pub struct WideGhashProduct<U: ClMulUnderlier> {
 	lo: U,
@@ -122,7 +122,7 @@ impl<U: ClMulUnderlier> WideGhashProduct<U> {
 	/// Reduce the accumulated wide product to a single GF(2^128) element.
 	/// Costs 2 CLMULs (the reduction steps).
 	#[inline]
-	pub fn reduce(self) -> U {
+	pub fn reduce_wide(self) -> U {
 		let cross = self.mid ^ self.lo ^ self.hi;
 		let t1 = gf2_128_reduce(cross, self.hi);
 		gf2_128_reduce(self.lo, t1)

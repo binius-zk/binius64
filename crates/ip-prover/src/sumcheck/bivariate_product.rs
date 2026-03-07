@@ -77,7 +77,7 @@ impl<F: Field, P: PackedField<Scalar = F> + WideningMul> SumcheckProver<F>
 				.reduce(WideRoundEvals2::default, |lhs, rhs| lhs + rhs);
 
 		let round_coeffs = wide_round_evals
-			.reduce::<P>()
+			.reduce_wide::<P>()
 			.sum_scalars(n_vars_remaining)
 			.interpolate(*last_sum);
 		self.last_coeffs_or_sum = RoundCoeffsOrSum::Coeffs(round_coeffs.clone());

@@ -136,7 +136,7 @@ where
 		let alpha = self.gruen32.next_coordinate();
 		let round_coeffs = izip!(sums, packed_prime_evals)
 			.map(|(&sum, wide_evals)| {
-				let round_evals = wide_evals.reduce::<P>().sum_scalars(self.n_vars());
+				let round_evals = wide_evals.reduce_wide::<P>().sum_scalars(self.n_vars());
 				round_evals.interpolate_eq(sum, alpha)
 			})
 			.collect::<Vec<_>>();

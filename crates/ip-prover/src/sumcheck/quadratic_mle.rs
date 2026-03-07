@@ -172,7 +172,7 @@ where
 				}
 			})
 			.reduce(WideRoundEvals2::default, |lhs, rhs| lhs + rhs)
-			.reduce::<P>()
+			.reduce_wide::<P>()
 			.sum_scalars(n_vars_remaining - 1);
 
 		let alpha = self.gruen32.next_coordinate();

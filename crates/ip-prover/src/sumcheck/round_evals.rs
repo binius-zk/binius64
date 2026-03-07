@@ -134,7 +134,7 @@ impl<W: Default> Default for WideRoundEvals2<W> {
 }
 
 impl<W> WideRoundEvals2<W> {
-	pub fn reduce<P: WideningMul<Wide = W>>(self) -> RoundEvals2<P> {
+	pub fn reduce_wide<P: WideningMul<Wide = W>>(self) -> RoundEvals2<P> {
 		RoundEvals2 {
 			y_1: P::reduce_wide(self.y_1),
 			y_inf: P::reduce_wide(self.y_inf),

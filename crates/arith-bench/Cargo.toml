@@ -10,6 +10,7 @@ seq-macro.workspace = true
 
 [dev-dependencies]
 binius-field = { path = "../field" }
+binius-math = { path = "../math" }
 criterion.workspace = true
 proptest.workspace = true
 rand = { workspace = true, features = ["thread_rng"] }
