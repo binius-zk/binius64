@@ -2,7 +2,7 @@
 
 use std::cmp::max;
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, WideningMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{
 	AsSlicesMut, FieldBuffer, FieldSliceMut, multilinear::fold::fold_highest_var_inplace,
@@ -98,7 +98,7 @@ impl<F, P, Composition, InfinityComposition, const N: usize, const M: usize> Sum
 	for BatchQuadraticMleCheckProver<P, Composition, InfinityComposition, N, M>
 where
 	F: Field,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 	Composition: Fn([P; N], &mut [P; M]) + Sync,
 	InfinityComposition: Fn([P; N], &mut [P; M]) + Sync,
 {
@@ -154,15 +154,15 @@ where
 		let chunk_count = 1 << (n_vars_remaining - 1 - chunk_vars);
 
 		// Parallel-reduce across eq chunks to amortize composition evaluation.
-		// Each worker accumulates packed y_1 / y_inf values for all M claims.
+		// Each worker accumulates wide (unreduced) y_1 / y_inf values for all M claims.
+		let wide_default: P::Wide = Default::default();
 		let packed_prime_evals = (0..chunk_count)
 			.into_par_iter()
 			.try_fold(
-				|| [[P::default(); M]; 2],
+				|| [[wide_default; M]; 2],
 				|mut packed_prime_evals, chunk_index| -> Result<_, Error> {
 					let eq_chunk = eq_expansion.chunk(chunk_vars, chunk_index);
 
-					// Scratch buffers are reused per row to avoid allocations in the hot loop.
 					let [mut y_1_scratch, mut y_inf_scratch] = [[P::default(); M]; 2];
 					let splits_0_chunk = splits_0
 						.iter()
@@ -173,10 +173,8 @@ where
 						.map(|slice| slice.chunk(chunk_vars, chunk_index))
 						.collect::<Vec<_>>();
 
-					// Accumulate packed evals for this chunk; first index is y_1/y_inf.
 					let [y_1, y_inf] = &mut packed_prime_evals;
 					for (idx, &eq_i) in eq_chunk.as_ref().iter().enumerate() {
-						// Gather the idx-th evaluations of every multilinear at both halves.
 						let mut evals_1 = [P::default(); N];
 						let mut evals_inf = [P::default(); N];
 
@@ -184,22 +182,16 @@ where
 							let lo_i = splits_0_chunk[i].as_ref()[idx];
 							let hi_i = splits_1_chunk[i].as_ref()[idx];
 
-							// Compose once with the high half and once with the lo+hi combination.
-							// The lo+hi branch corresponds to evaluation at infinity for
-							// multilinears.
 							evals_1[i] = hi_i;
 							evals_inf[i] = lo_i + hi_i;
 						}
 
-						// Apply the compositions for this equality term.
 						comp(evals_1, &mut y_1_scratch);
 						inf_comp(evals_inf, &mut y_inf_scratch);
 
 						for i in 0..M {
-							// Weight by eq indicator to keep the sumcheck claim aligned to
-							// eval_point.
-							y_1[i] += y_1_scratch[i] * eq_i;
-							y_inf[i] += y_inf_scratch[i] * eq_i;
+							y_1[i] += P::widening_mul(y_1_scratch[i], eq_i);
+							y_inf[i] += P::widening_mul(y_inf_scratch[i], eq_i);
 						}
 					}
 
@@ -207,9 +199,9 @@ where
 				},
 			)
 			.try_reduce(
-				|| [[P::default(); M]; 2],
+				|| [[wide_default; M]; 2],
 				|lhs, rhs| {
-					let mut out = [[P::default(); M]; 2];
+					let mut out = [[wide_default; M]; 2];
 					for claim_idx in 0..M {
 						out[0][claim_idx] = lhs[0][claim_idx] + rhs[0][claim_idx];
 						out[1][claim_idx] = lhs[1][claim_idx] + rhs[1][claim_idx];
@@ -218,18 +210,18 @@ where
 				},
 			)?;
 
-		// Sample the next coordinate and interpolate each round polynomial.
-		// The coordinate ties this round's sum to the original evaluation point.
 		let alpha = self.gruen32.next_coordinate();
 		let round_coeffs = izip!(
 			last_eval.iter().copied(),
 			packed_prime_evals[0].iter().copied(),
 			packed_prime_evals[1].iter().copied()
 		)
-		.map(|(sum, y_1, y_inf)| {
-			// Sum packed values into scalars, then interpolate using the expected sum.
-			// sum_scalars collapses packed lanes down to scalar totals for this round.
-			let round_evals = RoundEvals2 { y_1, y_inf }.sum_scalars(n_vars_remaining);
+		.map(|(sum, y_1_wide, y_inf_wide)| {
+			let round_evals = RoundEvals2 {
+				y_1: P::reduce_wide(y_1_wide),
+				y_inf: P::reduce_wide(y_inf_wide),
+			}
+			.sum_scalars(n_vars_remaining);
 			round_evals.interpolate_eq(sum, alpha)
 		})
 		.collect::<Vec<_>>();
@@ -305,7 +297,7 @@ impl<F, P, Composition, InfinityComposition, const N: usize, const M: usize> Mle
 	for BatchQuadraticMleCheckProver<P, Composition, InfinityComposition, N, M>
 where
 	F: Field,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 	Composition: Fn([P; N], &mut [P; M]) + Sync,
 	InfinityComposition: Fn([P; N], &mut [P; M]) + Sync,
 {
@@ -464,7 +456,7 @@ mod tests {
 	fn test_batch_quadratic_mlecheck_consistency_helper<F, P>(n_vars: usize)
 	where
 		F: Field,
-		P: PackedField<Scalar = F>,
+		P: PackedField<Scalar = F> + WideningMul,
 	{
 		let degree = 3;
 		let mut rng = StdRng::seed_from_u64(0);

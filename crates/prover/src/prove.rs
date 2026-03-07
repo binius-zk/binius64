@@ -101,7 +101,8 @@ impl IOPProver {
 		P: PackedField<Scalar = B128>
 			+ PackedExtension<B128>
 			+ PackedExtension<B1>
-			+ WithUnderlier<Underlier: UnderlierWithBitOps>,
+			+ WithUnderlier<Underlier: UnderlierWithBitOps>
+			+ binius_field::WideningMul,
 		Channel: IOPProverChannel<P>,
 	{
 		let cs = &self.constraint_system;
@@ -444,7 +445,7 @@ fn prove_bitand_reduction<F, Channel>(
 	channel: &mut Channel,
 ) -> Result<AndCheckOutput<F>, Error>
 where
-	F: BinaryField + From<B8>,
+	F: BinaryField + From<B8> + binius_field::WideningMul<Scalar = F>,
 	Channel: binius_ip_prover::channel::IPProverChannel<F>,
 {
 	let prover_message_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1);
@@ -493,7 +494,7 @@ fn prove_intmul_reduction<F, P, Channel>(
 ) -> Result<IntMulOutput<F>, Error>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + binius_field::WideningMul,
 	Channel: binius_ip_prover::channel::IPProverChannel<F>,
 {
 	let MulCheckWitness { a, b, lo, hi } = witness;

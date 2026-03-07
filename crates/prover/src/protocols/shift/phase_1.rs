@@ -4,7 +4,8 @@ use std::{iter, ops::Range};
 
 use binius_core::word::Word;
 use binius_field::{
-	AESTowerField8b, BinaryField, Field, PackedField, UnderlierWithBitOps, WithUnderlier,
+	AESTowerField8b, BinaryField, Field, PackedField, UnderlierWithBitOps, WideningMul,
+	WithUnderlier,
 };
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, inner_product::inner_product_buffers};
@@ -46,7 +47,7 @@ pub fn prove_phase_1<F, P, Channel>(
 ) -> Result<SumcheckOutput<F>, Error>
 where
 	F: BinaryField + From<AESTowerField8b> + WithUnderlier<Underlier: UnderlierWithBitOps>,
-	P: PackedField<Scalar = F> + WithUnderlier<Underlier: UnderlierWithBitOps>,
+	P: PackedField<Scalar = F> + WithUnderlier<Underlier: UnderlierWithBitOps> + WideningMul,
 	Channel: IPProverChannel<F>,
 {
 	let g_parts = build_g_parts::<_, P>(words, key_collection, bitand_data, intmul_data)?;
@@ -83,7 +84,7 @@ where
 ///
 /// `SumcheckOutput` containing the challenge vector and final evaluation `gamma`
 #[instrument(skip_all, name = "run_sumcheck")]
-fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>>(
+fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F> + WideningMul, Channel: IPProverChannel<F>>(
 	g_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
 	h_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
 	channel: &mut Channel,

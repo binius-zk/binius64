@@ -1,6 +1,6 @@
 // Copyright 2025-2026 The Binius Developers
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, WideningMul};
 use binius_math::FieldBuffer;
 
 use super::error::Error;
@@ -17,7 +17,7 @@ pub fn new<F, P>(
 ) -> Result<impl MleCheckProver<F>, Error>
 where
 	F: Field,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 {
 	BatchQuadraticMleCheckProver::new(
 		fraction,

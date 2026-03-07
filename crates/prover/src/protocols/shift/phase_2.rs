@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_core::word::Word;
-use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
+use binius_field::{AESTowerField8b, BinaryField, Field, PackedField, WideningMul};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
 use binius_verifier::{config::LOG_WORD_SIZE_BITS, protocols::sumcheck::SumcheckOutput};
@@ -44,7 +44,7 @@ use crate::{
 /// Returns `SumcheckOutput` containing the combined challenges `[r_j, r_y]` and witness evaluation,
 /// or an error if the protocol fails.
 #[instrument(skip_all, name = "prove_phase_2")]
-pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel>(
+pub fn prove_phase_2<F, P: PackedField<Scalar = F> + WideningMul, Channel>(
 	key_collection: &KeyCollection,
 	words: &[Word],
 	bitand_data: &PreparedOperatorData<F>,
@@ -90,7 +90,7 @@ where
 /// # Returns
 /// Returns `SumcheckOutput` with concatenated challenges `[r_j, r_y]` and witness evaluation.
 #[instrument(skip_all, name = "run_sumcheck")]
-fn run_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>>(
+fn run_sumcheck<F: Field, P: PackedField<Scalar = F> + WideningMul, Channel: IPProverChannel<F>>(
 	r_j_witness: FieldBuffer<P>,
 	monster_multilinear: FieldBuffer<P>,
 	r_j: Vec<F>,

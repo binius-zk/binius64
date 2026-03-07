@@ -1,11 +1,13 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, WideningMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{AsSlicesMut, FieldSliceMut, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 
-use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::RoundEvals2};
+use super::{
+	common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::WideRoundEvals2,
+};
 use crate::sumcheck::common::MleCheckProver;
 
 /// MLE-check prover for polynomials defined as quadratic compositions of N multilinear polynomials.
@@ -110,7 +112,7 @@ impl<F, P, Composition, InfinityComposition, const N: usize> SumcheckProver<F>
 	for QuadraticMleCheckProver<P, Composition, InfinityComposition, N>
 where
 	F: Field,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 	Composition: Fn([P; N]) -> P + Sync,
 	InfinityComposition: Fn([P; N]) -> P + Sync,
 {
@@ -151,13 +153,12 @@ where
 			.unzip::<_, _, Vec<_>, Vec<_>>();
 
 		// Compute F(1) and F(∞) where F = ∑_{v ∈ B} C(M_1(v || X), ..., M_N(v || X)) eq(v, z).
-		// We need to iterate over all positions in parallel
+		// Uses widening (unreduced) multiplication for the `* eq_i` step.
 		let round_evals = eq_expansion
 			.as_ref()
 			.into_par_iter()
 			.enumerate()
 			.map(|(i, &eq_i)| {
-				// Collect evaluations at 1 and ∞ for each multilinear
 				let mut evals_1 = [P::default(); N];
 				let mut evals_inf = [P::default(); N];
 				for j in 0..N {
@@ -165,15 +166,13 @@ where
 					evals_inf[j] = splits_0[j].as_ref()[i] + splits_1[j].as_ref()[i];
 				}
 
-				// Evaluate composition at X=1
-				let y_1 = composition(evals_1) * eq_i;
-
-				// Evaluate composition at X=∞ (where M(∞) = M(0) + M(1))
-				let y_inf = infinity_composition(evals_inf) * eq_i;
-
-				RoundEvals2 { y_1, y_inf }
+				WideRoundEvals2 {
+					y_1: P::widening_mul(composition(evals_1), eq_i),
+					y_inf: P::widening_mul(infinity_composition(evals_inf), eq_i),
+				}
 			})
-			.reduce(RoundEvals2::default, |lhs, rhs| lhs + &rhs)
+			.reduce(WideRoundEvals2::default, |lhs, rhs| lhs + rhs)
+			.reduce::<P>()
 			.sum_scalars(n_vars_remaining - 1);
 
 		let alpha = self.gruen32.next_coordinate();
@@ -231,7 +230,7 @@ impl<F, P, Composition, InfinityComposition, const N: usize> MleCheckProver<F>
 	for QuadraticMleCheckProver<P, Composition, InfinityComposition, N>
 where
 	F: Field,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 	Composition: Fn([P; N]) -> P + Sync,
 	InfinityComposition: Fn([P; N]) -> P + Sync,
 {
@@ -274,7 +273,7 @@ mod tests {
 		multilinears: Vec<FieldBuffer<P>>,
 	) where
 		F: Field,
-		P: PackedField<Scalar = F>,
+		P: PackedField<Scalar = F> + WideningMul,
 		Composition: Fn([P; N]) -> P + Sync,
 		InfinityComposition: Fn([P; N]) -> P + Sync,
 	{
@@ -331,7 +330,7 @@ mod tests {
 		infinity_composition: impl Fn([P; N]) -> P + Clone + Sync,
 	) where
 		F: Field,
-		P: PackedField<Scalar = F>,
+		P: PackedField<Scalar = F> + WideningMul,
 	{
 		let n_vars = 8;
 		let mut rng = StdRng::seed_from_u64(0);

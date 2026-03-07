@@ -36,7 +36,7 @@ use std::{
 	ops::Deref,
 };
 
-use binius_field::{BinaryField, Field, PackedExtension, PackedField};
+use binius_field::{BinaryField, Field, PackedExtension, PackedField, WideningMul};
 use binius_hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression};
 use binius_iop_prover::{
 	basefold_compiler::BaseFoldZKProverCompiler, channel::IOPProverChannel,
@@ -300,7 +300,7 @@ impl<F, P, MerkleHash, ParallelMerkleCompress, ParallelMerkleHasher>
 	Prover<P, ParallelMerkleCompress, ParallelMerkleHasher>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F> + PackedExtension<F> + WideningMul,
 	MerkleHash: Digest + BlockSizeUser + FixedOutputReset,
 	ParallelMerkleHasher: ParallelDigest<Digest = MerkleHash>,
 	ParallelMerkleCompress: ParallelPseudoCompression<Output<MerkleHash>, 2>,

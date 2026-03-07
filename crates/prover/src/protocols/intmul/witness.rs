@@ -56,7 +56,7 @@ pub struct Witness<P: PackedField, B: Bitwise, S: AsRef<[B]> + Sync> {
 impl<F, P, B, S> Witness<P, B, S>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + binius_field::WideningMul,
 	B: Bitwise,
 	S: AsRef<[B]> + Sync,
 {

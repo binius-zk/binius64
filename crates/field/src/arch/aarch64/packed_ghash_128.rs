@@ -47,6 +47,13 @@ impl ClMulUnderlier for M128 {
 			vextq_u8::<8>(zero, a_bytes).into()
 		}
 	}
+
+	#[inline]
+	fn xor_halves(a: Self) -> Self {
+		let a_bytes: uint8x16_t = a.into();
+		let swapped: Self = unsafe { vextq_u8::<8>(a_bytes, a_bytes) }.into();
+		a ^ swapped
+	}
 }
 
 /// Strategy for aarch64 GHASH field arithmetic operations.
@@ -79,6 +86,24 @@ impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
 	#[inline]
 	fn square(self) -> Self {
 		Self::from_underlier(crate::arch::shared::ghash::square_clmul(self.to_underlier()))
+	}
+}
+
+// Implement WideningMul
+impl crate::arithmetic_traits::WideningMul for PackedBinaryGhash1x128b {
+	type Wide = crate::arch::shared::ghash::WideGhashProduct<M128>;
+
+	#[inline]
+	fn widening_mul(a: Self, b: Self) -> Self::Wide {
+		crate::arch::shared::ghash::WideGhashProduct::widening_mul(
+			a.to_underlier(),
+			b.to_underlier(),
+		)
+	}
+
+	#[inline]
+	fn reduce_wide(wide: Self::Wide) -> Self {
+		Self::from_underlier(wide.reduce())
 	}
 }
 

@@ -36,6 +36,13 @@ impl crate::arch::shared::ghash::ClMulUnderlier for M512 {
 		}
 		.into()
 	}
+
+	#[inline]
+	fn xor_halves(a: Self) -> Self {
+		let swapped =
+			unsafe { std::arch::x86_64::_mm512_shuffle_epi32::<0x4E>(a.into()) }.into();
+		a ^ swapped
+	}
 }
 
 /// Strategy for x86_64 AVX-512 GHASH field arithmetic operations.
@@ -126,6 +133,30 @@ cfg_if! {
 		// Potentially we could use an optimized square implementation here with a scaled underlier.
 		// But this case (an architecture with AVX512 but without VPCLMULQDQ) is pretty rare.
 		impl_square_with!(PackedBinaryGhash4x128b @ crate::arch::ReuseMultiplyStrategy);
+	}
+}
+
+// Implement WideningMul
+cfg_if! {
+	if #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))] {
+		impl crate::arithmetic_traits::WideningMul for PackedBinaryGhash4x128b {
+			type Wide = crate::arch::shared::ghash::WideGhashProduct<M512>;
+
+			#[inline]
+			fn widening_mul(a: Self, b: Self) -> Self::Wide {
+				crate::arch::shared::ghash::WideGhashProduct::widening_mul(
+					a.to_underlier(),
+					b.to_underlier(),
+				)
+			}
+
+			#[inline]
+			fn reduce_wide(wide: Self::Wide) -> Self {
+				Self::from_underlier(wide.reduce())
+			}
+		}
+	} else {
+		crate::arithmetic_traits::impl_trivial_widening_mul!(PackedBinaryGhash4x128b);
 	}
 }
 

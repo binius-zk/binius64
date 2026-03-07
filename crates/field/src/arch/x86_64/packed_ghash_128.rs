@@ -29,6 +29,13 @@ impl crate::arch::shared::ghash::ClMulUnderlier for M128 {
 	fn move_64_to_hi(a: Self) -> Self {
 		unsafe { std::arch::x86_64::_mm_slli_si128::<8>(a.into()) }.into()
 	}
+
+	#[inline]
+	fn xor_halves(a: Self) -> Self {
+		let swapped =
+			unsafe { std::arch::x86_64::_mm_shuffle_epi32::<0x4E>(a.into()) }.into();
+		a ^ swapped
+	}
 }
 
 /// Strategy for x86_64 GHASH field arithmetic operations.
@@ -94,6 +101,30 @@ cfg_if! {
 				Self::from_underlier(crate::arithmetic_traits::Square::square(portable_val).to_underlier().into())
 			}
 		}
+	}
+}
+
+// Implement WideningMul
+cfg_if! {
+	if #[cfg(target_feature = "pclmulqdq")] {
+		impl crate::arithmetic_traits::WideningMul for PackedBinaryGhash1x128b {
+			type Wide = crate::arch::shared::ghash::WideGhashProduct<M128>;
+
+			#[inline]
+			fn widening_mul(a: Self, b: Self) -> Self::Wide {
+				crate::arch::shared::ghash::WideGhashProduct::widening_mul(
+					a.to_underlier(),
+					b.to_underlier(),
+				)
+			}
+
+			#[inline]
+			fn reduce_wide(wide: Self::Wide) -> Self {
+				Self::from_underlier(wide.reduce())
+			}
+		}
+	} else {
+		crate::arithmetic_traits::impl_trivial_widening_mul!(PackedBinaryGhash1x128b);
 	}
 }
 

@@ -677,6 +677,55 @@ fn bench_ghash_sq(c: &mut Criterion) {
 	group.finish();
 }
 
+/// Benchmark widening (deferred-reduction) GF(2^128) multiplication vs full multiplication.
+///
+/// Measures the inner-product pattern `sum_i a_i * b_i` using both full multiply per term
+/// (6N CLMULs) and widening-then-reduce (3N + 2 CLMULs).
+fn bench_ghash_widening(c: &mut Criterion) {
+	use binius_field::{PackedField, Random, WideningMul, arch::OptimalPackedB128};
+
+	fn bench_at_n<P: PackedField + WideningMul>(
+		group: &mut BenchmarkGroup<'_, criterion::measurement::WallTime>,
+		label: &str,
+		n: usize,
+	) {
+		let mut rng = rand::rng();
+		let a_vals: Vec<P> = (0..n).map(|_| P::random(&mut rng)).collect();
+		let b_vals: Vec<P> = (0..n).map(|_| P::random(&mut rng)).collect();
+
+		group.throughput(Throughput::Elements((n * P::WIDTH) as u64));
+
+		group.bench_function(format!("full_mul/{label}/n={n}"), |b| {
+			b.iter(|| {
+				let mut acc = P::default();
+				for i in 0..n {
+					acc += black_box(a_vals[i]) * black_box(b_vals[i]);
+				}
+				black_box(acc)
+			})
+		});
+
+		group.bench_function(format!("widening_mul/{label}/n={n}"), |b| {
+			b.iter(|| {
+				let mut acc = <P as WideningMul>::Wide::default();
+				for i in 0..n {
+					acc += P::widening_mul(black_box(a_vals[i]), black_box(b_vals[i]));
+				}
+				black_box(P::reduce_wide(acc))
+			})
+		});
+	}
+
+	let mut group = c.benchmark_group("ghash_widening");
+
+	let label = format!("OptimalPacked_{}x128b", OptimalPackedB128::WIDTH);
+	for &n in &[16, 256, 4096] {
+		bench_at_n::<OptimalPackedB128>(&mut group, &label, n);
+	}
+
+	group.finish();
+}
+
 criterion_group!(
 	benches,
 	bench_rijndael,
@@ -685,5 +734,6 @@ criterion_group!(
 	bench_ghash_sq,
 	bench_monbijou,
 	bench_monbijou_128b,
+	bench_ghash_widening,
 );
 criterion_main!(benches);

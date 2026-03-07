@@ -1,11 +1,11 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, WideningMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 
-use crate::sumcheck::{common::SumcheckProver, error::Error, round_evals::RoundEvals2};
+use crate::sumcheck::{common::SumcheckProver, error::Error, round_evals::WideRoundEvals2};
 
 /// A [`SumcheckProver`] implementation for a composite defined as the product of two multilinears.
 ///
@@ -35,7 +35,9 @@ impl<F: Field, P: PackedField<Scalar = F>> BivariateProductSumcheckProver<P> {
 	}
 }
 
-impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProductSumcheckProver<P> {
+impl<F: Field, P: PackedField<Scalar = F> + WideningMul> SumcheckProver<F>
+	for BivariateProductSumcheckProver<P>
+{
 	fn n_vars(&self) -> usize {
 		self.multilinears[0].log_len()
 	}
@@ -59,25 +61,23 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 		let (evals_b_0, evals_b_1) = self.multilinears[1].split_half_ref();
 
 		// Compute F(1) and F(∞) where F = ∑_{v ∈ B} A(v || X) B(v || X)
-		let round_evals =
+		// Uses widening (unreduced) multiplication to defer reduction to the end.
+		let wide_round_evals: WideRoundEvals2<P::Wide> =
 			(evals_a_0.as_ref(), evals_a_1.as_ref(), evals_b_0.as_ref(), evals_b_1.as_ref())
 				.into_par_iter()
 				.map(|(&evals_a_0_i, &evals_a_1_i, &evals_b_0_i, &evals_b_1_i)| {
-					// Evaluate M(∞) = M(0) + M(1)
 					let evals_a_inf_i = evals_a_0_i + evals_a_1_i;
 					let evals_b_inf_i = evals_b_0_i + evals_b_1_i;
 
-					let prod_1_i = evals_a_1_i * evals_b_1_i;
-					let prod_inf_i = evals_a_inf_i * evals_b_inf_i;
-
-					RoundEvals2 {
-						y_1: prod_1_i,
-						y_inf: prod_inf_i,
+					WideRoundEvals2 {
+						y_1: P::widening_mul(evals_a_1_i, evals_b_1_i),
+						y_inf: P::widening_mul(evals_a_inf_i, evals_b_inf_i),
 					}
 				})
-				.reduce(RoundEvals2::default, |lhs, rhs| lhs + &rhs);
+				.reduce(WideRoundEvals2::default, |lhs, rhs| lhs + rhs);
 
-		let round_coeffs = round_evals
+		let round_coeffs = wide_round_evals
+			.reduce::<P>()
 			.sum_scalars(n_vars_remaining)
 			.interpolate(*last_sum);
 		self.last_coeffs_or_sum = RoundCoeffsOrSum::Coeffs(round_coeffs.clone());

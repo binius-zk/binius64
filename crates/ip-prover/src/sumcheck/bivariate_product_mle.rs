@@ -1,6 +1,6 @@
 // Copyright 2023-2025 Irreducible Inc.
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, WideningMul};
 use binius_math::AsSlicesMut;
 
 use super::{error::Error, quadratic_mle::QuadraticMleCheckProver};
@@ -56,7 +56,7 @@ pub fn new<F, P>(
 ) -> Result<impl MleCheckProver<F>, Error>
 where
 	F: Field,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 {
 	QuadraticMleCheckProver::new(
 		multilinears,

@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_field::{BinaryField, PackedField};
+use binius_field::{BinaryField, PackedField, WideningMul};
 use binius_iop::merkle_tree::MerkleTreeScheme;
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_ip_prover::sumcheck::{
@@ -42,7 +42,7 @@ pub enum Error {
 pub struct BaseFoldProver<'a, F, P, NTT, MerkleProver>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MerkleProver: MerkleTreeProver<F>,
 {
@@ -53,7 +53,7 @@ where
 impl<'a, F, P, NTT, MerkleScheme, MerkleProver> BaseFoldProver<'a, F, P, NTT, MerkleProver>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
@@ -193,7 +193,7 @@ pub fn prove_zk<'a, F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
 ) -> BaseFoldProver<'a, F, P, NTT, MerkleProver>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
@@ -240,7 +240,7 @@ mod test {
 	use anyhow::{Result, bail};
 	use binius_field::{
 		BinaryField, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
-		PackedExtension, PackedField,
+		PackedExtension, PackedField, WideningMul,
 	};
 	use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
 	use binius_iop::{basefold as verifier_basefold, fri::ConstantArityStrategy};
@@ -276,7 +276,7 @@ mod test {
 	) -> Result<()>
 	where
 		F: BinaryField,
-		P: PackedField<Scalar = F> + PackedExtension<F>,
+		P: PackedField<Scalar = F> + PackedExtension<F> + WideningMul,
 	{
 		let eval_point_eq = eq_ind_partial_eval::<P>(&evaluation_point);
 
@@ -374,7 +374,7 @@ mod test {
 	) -> Result<()>
 	where
 		F: BinaryField,
-		P: PackedField<Scalar = F> + PackedExtension<F>,
+		P: PackedField<Scalar = F> + PackedExtension<F> + WideningMul,
 	{
 		let n_vars = evaluation_point.len();
 		assert_eq!(witness.log_len(), n_vars);

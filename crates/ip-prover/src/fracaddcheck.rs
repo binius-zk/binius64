@@ -1,6 +1,6 @@
 // Copyright 2025-2026 The Binius Developers
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, WideningMul};
 use binius_ip::prodcheck::MultilinearEvalClaim;
 use binius_math::{FieldBuffer, line::extrapolate_line_packed};
 use binius_utils::rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -40,7 +40,7 @@ pub enum Error {
 impl<F, P> FracAddCheckProver<P>
 where
 	F: Field,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 {
 	/// Creates a new [`FracAddCheckProver`].
 	///
@@ -202,7 +202,7 @@ mod tests {
 
 	use super::*;
 
-	fn test_frac_add_check_prove_verify_helper<P: PackedField>(n: usize, k: usize) {
+	fn test_frac_add_check_prove_verify_helper<P: PackedField + WideningMul>(n: usize, k: usize) {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		// 1. Create random witness with log_len = n + k
@@ -268,7 +268,7 @@ mod tests {
 		test_frac_add_check_prove_verify_helper::<Packed128b>(0, 4);
 	}
 
-	fn test_frac_add_check_layer_computation_helper<P: PackedField>(n: usize, k: usize) {
+	fn test_frac_add_check_layer_computation_helper<P: PackedField + WideningMul>(n: usize, k: usize) {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		// Create random witness with log_len = n + k
