@@ -142,24 +142,31 @@ fn run_square_benchmark<T, R>(
 	});
 }
 
-/// Benchmark GF(2^8) multiplication using GFNI instructions
+/// Benchmark GF(2^8) multiplication
 #[allow(unused_variables, unused_mut)]
 fn bench_rijndael(c: &mut Criterion) {
-	use binius_arith_bench::rijndael::mul_gfni;
-
 	let mut group = c.benchmark_group("rijndael");
 	let mut rng = rand::rng();
 
-	// Benchmark __m128i
+	// Benchmark GFNI __m128i
 	#[cfg(all(target_feature = "gfni", target_feature = "sse2"))]
 	{
-		run_mul_benchmark(&mut group, "mul_gfni::<__m128i>", mul_gfni::<__m128i>, &mut rng, 8);
+		use binius_arith_bench::rijndael::gfni::mul;
+		run_mul_benchmark(&mut group, "gfni::mul::<__m128i>", mul::<__m128i>, &mut rng, 8);
 	}
 
-	// Benchmark __m256i
+	// Benchmark GFNI __m256i
 	#[cfg(all(target_feature = "gfni", target_feature = "avx"))]
 	{
-		run_mul_benchmark(&mut group, "mul_gfni::<__m256i>", mul_gfni::<__m256i>, &mut rng, 8);
+		use binius_arith_bench::rijndael::gfni::mul;
+		run_mul_benchmark(&mut group, "gfni::mul::<__m256i>", mul::<__m256i>, &mut rng, 8);
+	}
+
+	// Benchmark vmull uint64x2_t
+	#[cfg(target_arch = "aarch64")]
+	{
+		use binius_arith_bench::rijndael::vmull::mul;
+		run_mul_benchmark(&mut group, "vmull::mul", mul, &mut rng, 8);
 	}
 
 	group.finish();

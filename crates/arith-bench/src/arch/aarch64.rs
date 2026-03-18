@@ -231,6 +231,7 @@ mod tests {
 			mul_clmul as monbijou_mul,
 		},
 		polyval::{MONTGOMERY_ONE, mul_clmul as polyval_mul},
+		rijndael::vmull::mul as rijndael_mul,
 		test_utils::{
 			arb_get_set_op,
 			multiplication_tests::{
@@ -402,6 +403,40 @@ mod tests {
 			c in arb_uint64x2_t()
 		) {
 			test_mul_distributive(a, b, c, monbijou_128b_mul, "Monbijou 128b");
+		}
+
+		// GF(2^8) Rijndael multiplication property tests for uint64x2_t
+		#[test]
+		fn test_uint64x2_t_rijndael_mul_commutative_proptest(
+			a in arb_uint64x2_t(),
+			b in arb_uint64x2_t()
+		) {
+			test_mul_commutative(a, b, rijndael_mul, "Rijndael");
+		}
+
+		#[test]
+		fn test_uint64x2_t_rijndael_mul_associative_proptest(
+			a in arb_uint64x2_t(),
+			b in arb_uint64x2_t(),
+			c in arb_uint64x2_t()
+		) {
+			test_mul_associative(a, b, c, rijndael_mul, "Rijndael");
+		}
+
+		#[test]
+		fn test_uint64x2_t_rijndael_mul_identity_proptest(
+			a in arb_uint64x2_t()
+		) {
+			test_mul_identity(a, 0x01u8, rijndael_mul, "Rijndael");
+		}
+
+		#[test]
+		fn test_uint64x2_t_rijndael_mul_distributive_proptest(
+			a in arb_uint64x2_t(),
+			b in arb_uint64x2_t(),
+			c in arb_uint64x2_t()
+		) {
+			test_mul_distributive(a, b, c, rijndael_mul, "Rijndael");
 		}
 	}
 
