@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::arch::aarch64::*;
 
@@ -7,6 +8,49 @@ use super::m128::M128;
 #[inline]
 pub fn packed_aes_16x8b_invert_or_zero(x: M128) -> M128 {
 	lookup_16x8b(AES_INVERT_OR_ZERO_LOOKUP_TABLE, x)
+}
+
+#[inline]
+pub fn packed_aes_16x8b_square(x: M128) -> M128 {
+	// Freshman's dream: in GF(2^n), (a0 + a1*x + ... + a7*x^7)^2
+	// = a0 + a1*x^2 + a2*x^4 + ... + a7*x^14
+	// This is just bit-spreading (interleave with zeros), then reducing mod the AES polynomial.
+	//
+	// Split each byte into low nibble (bits 3..0) and high nibble (bits 7..4):
+	// - Low nibble spread gives degree < 8, no reduction needed
+	// - High nibble maps to x^8..x^14 terms, reduced via a 16-entry table
+	unsafe {
+		let x: uint8x16_t = x.into();
+
+		// Nibble-to-spread table: maps 4-bit nibble abcd -> 0a0b0c0d (8-bit spread)
+		let spread_tbl = vld1q_u8(
+			[
+				0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15, 0x40, 0x41, 0x44, 0x45, 0x50, 0x51,
+				0x54, 0x55,
+			]
+			.as_ptr(),
+		);
+
+		// Reduction table: maps high nibble (a7,a6,a5,a4) to the reduction of
+		// a4*x^8 + a5*x^10 + a6*x^12 + a7*x^14 mod (x^8 + x^4 + x^3 + x + 1)
+		let reduce_tbl = vld1q_u8(
+			[
+				0x00, 0x1B, 0x6C, 0x77, 0xAB, 0xB0, 0xC7, 0xDC, 0x9A, 0x81, 0xF6, 0xED, 0x31, 0x2A,
+				0x5D, 0x46,
+			]
+			.as_ptr(),
+		);
+
+		let lo = vandq_u8(x, vdupq_n_u8(0x0F));
+
+		let hi = vshrq_n_u8(x, 4);
+
+		let spread_lo = vqtbl1q_u8(spread_tbl, lo);
+
+		let reduced_hi = vqtbl1q_u8(reduce_tbl, hi);
+
+		veorq_u8(spread_lo, reduced_hi).into()
+	}
 }
 
 #[inline]
