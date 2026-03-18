@@ -19,19 +19,23 @@ const DEFAULT_ORACLE_SIZE: usize = 32;
 /// An [`IOPVerifierChannel`] that tracks proof size without doing verification.
 ///
 /// All `recv_*` methods return dummy zero values and accumulate the expected byte count
-/// in `proof_size`. Sampling and observation methods are no-ops.
-pub struct SizeTrackingChannel {
+/// into the `&mut usize` provided at construction. Sampling and observation methods are
+/// no-ops.
+///
+/// After [`IOPVerifierChannel::finish`] consumes the channel, the caller can read the
+/// accumulated proof size directly from the `usize` it passed in.
+pub struct SizeTrackingChannel<'a> {
 	element_size: usize,
 	oracle_size: usize,
 	oracle_specs: Vec<OracleSpec>,
 	next_oracle_index: usize,
-	proof_size: usize,
+	proof_size: &'a mut usize,
 }
 
-impl SizeTrackingChannel {
+impl<'a> SizeTrackingChannel<'a> {
 	/// Creates a new size-tracking channel with default element (16) and oracle (32) sizes.
-	pub fn new(oracle_specs: Vec<OracleSpec>) -> Self {
-		Self::with_sizes(oracle_specs, DEFAULT_ELEMENT_SIZE, DEFAULT_ORACLE_SIZE)
+	pub fn new(oracle_specs: Vec<OracleSpec>, proof_size: &'a mut usize) -> Self {
+		Self::with_sizes(oracle_specs, DEFAULT_ELEMENT_SIZE, DEFAULT_ORACLE_SIZE, proof_size)
 	}
 
 	/// Creates a new size-tracking channel with custom element and oracle sizes.
@@ -39,37 +43,33 @@ impl SizeTrackingChannel {
 		oracle_specs: Vec<OracleSpec>,
 		element_size: usize,
 		oracle_size: usize,
+		proof_size: &'a mut usize,
 	) -> Self {
 		Self {
 			element_size,
 			oracle_size,
 			oracle_specs,
 			next_oracle_index: 0,
-			proof_size: 0,
+			proof_size,
 		}
-	}
-
-	/// Returns the accumulated proof size in bytes.
-	pub fn proof_size(&self) -> usize {
-		self.proof_size
 	}
 }
 
-impl<F: Field> IPVerifierChannel<F> for SizeTrackingChannel {
+impl<F: Field> IPVerifierChannel<F> for SizeTrackingChannel<'_> {
 	type Elem = F;
 
 	fn recv_one(&mut self) -> Result<F, binius_ip::channel::Error> {
-		self.proof_size += self.element_size;
+		*self.proof_size += self.element_size;
 		Ok(F::ZERO)
 	}
 
 	fn recv_many(&mut self, n: usize) -> Result<Vec<F>, binius_ip::channel::Error> {
-		self.proof_size += n * self.element_size;
+		*self.proof_size += n * self.element_size;
 		Ok(vec![F::ZERO; n])
 	}
 
 	fn recv_array<const N: usize>(&mut self) -> Result<[F; N], binius_ip::channel::Error> {
-		self.proof_size += N * self.element_size;
+		*self.proof_size += N * self.element_size;
 		Ok([F::ZERO; N])
 	}
 
@@ -90,7 +90,7 @@ impl<F: Field> IPVerifierChannel<F> for SizeTrackingChannel {
 	}
 }
 
-impl<F: Field> IOPVerifierChannel<F> for SizeTrackingChannel {
+impl<F: Field> IOPVerifierChannel<F> for SizeTrackingChannel<'_> {
 	type Oracle = ();
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
@@ -98,7 +98,7 @@ impl<F: Field> IOPVerifierChannel<F> for SizeTrackingChannel {
 	}
 
 	fn recv_oracle(&mut self) -> Result<Self::Oracle, Error> {
-		self.proof_size += self.oracle_size;
+		*self.proof_size += self.oracle_size;
 		self.next_oracle_index += 1;
 		Ok(())
 	}
