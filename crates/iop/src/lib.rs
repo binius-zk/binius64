@@ -32,3 +32,4 @@ pub mod channel;
 pub mod fri;
 pub mod merkle_tree;
 pub mod naive_channel;
+pub mod size_tracking_channel;

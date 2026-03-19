@@ -15,6 +15,7 @@ use crate::{
 	channel::OracleSpec,
 	fri::{AritySelectionStrategy, FRIParams},
 	merkle_tree::MerkleTreeScheme,
+	size_tracking_channel::SizeTrackingChannel,
 };
 
 /// A compiler that creates BaseFold verifier channels with precomputed parameters.
@@ -117,6 +118,18 @@ where
 			.max_by_key(|p| p.rs_code().log_len())
 			.map(|p| p.rs_code().subspace())
 			.expect("fri_params is non-empty")
+	}
+
+	/// Creates a [`SizeTrackingChannel`] from this compiler's oracle specs.
+	///
+	/// This is useful for estimating proof sizes without running the full protocol.
+	/// The accumulated proof size is written to `proof_size`, which can be read
+	/// after the channel is consumed by `finish`.
+	pub fn create_size_tracking_channel<'a>(
+		&self,
+		proof_size: &'a mut usize,
+	) -> SizeTrackingChannel<'a> {
+		SizeTrackingChannel::new(self.oracle_specs.clone(), proof_size)
 	}
 
 	/// Creates a verifier channel from this compiler and a transcript.
