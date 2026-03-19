@@ -28,7 +28,6 @@
 #![warn(rustdoc::missing_crate_level_docs)]
 
 pub mod config;
-pub mod pcs;
 pub mod wiring;
 
 use binius_field::{BinaryField, field::FieldOps};
@@ -358,8 +357,6 @@ where
 pub enum Error {
 	#[error("FRI error: {0}")]
 	FRI(#[from] fri::Error),
-	#[error("PCS error: {0}")]
-	PCS(#[from] pcs::Error),
 	#[error("Sumcheck error: {0}")]
 	Sumcheck(#[from] sumcheck::Error),
 	#[error("BaseFold error: {0}")]

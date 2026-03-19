@@ -27,7 +27,6 @@
 #![warn(rustdoc::missing_crate_level_docs)]
 
 mod error;
-pub mod pcs;
 mod wiring;
 
 use std::iter::{repeat_n, repeat_with};
