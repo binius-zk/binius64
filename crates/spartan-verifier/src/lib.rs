@@ -28,7 +28,6 @@
 #![warn(rustdoc::missing_crate_level_docs)]
 
 pub mod config;
-pub mod pcs;
 pub mod wiring;
 
 use binius_field::{BinaryField, field::FieldOps};
@@ -201,8 +200,8 @@ where
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		// Create channel and delegate to verify_iop
-		let channel = self.basefold_compiler.create_channel(transcript);
-		self.verify_iop(public, channel)
+		let mut channel = self.basefold_compiler.create_channel(transcript);
+		self.verify_iop(public, &mut channel)
 	}
 
 	/// Verifies a proof using an IOP channel.
@@ -218,7 +217,7 @@ where
 	/// # Returns
 	///
 	/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
-	pub fn verify_iop<Channel>(&self, public: &[F], mut channel: Channel) -> Result<(), Error>
+	pub fn verify_iop<Channel>(&self, public: &[F], channel: &mut Channel) -> Result<(), Error>
 	where
 		Channel: IOPVerifierChannel<F>,
 	{
@@ -252,7 +251,7 @@ where
 			c_eval,
 			mask_eval,
 			r_x,
-		} = self.verify_mulcheck(&mut channel)?;
+		} = self.verify_mulcheck(channel)?;
 
 		// Sample the public input check challenge and evaluate the public input at the challenge
 		// point.
@@ -266,7 +265,7 @@ where
 			&r_public,
 			&[a_eval, b_eval, c_eval],
 			public_eval,
-			&mut channel,
+			channel,
 		);
 
 		// Build the transparent closure for the wiring oracle relation
@@ -281,8 +280,8 @@ where
 		// Build the transparent closure for the mask oracle relation
 		let mask_transparent = self.mask_transparent(&r_x);
 
-		// Finish the protocol with both oracle relations (checks are done inside finish)
-		channel.finish(&[
+		// Verify both oracle relations (checks are done inside verify_oracle_relations)
+		channel.verify_oracle_relations(&[
 			OracleLinearRelation {
 				oracle: trace_oracle,
 				transparent: trace_transparent,
@@ -358,8 +357,6 @@ where
 pub enum Error {
 	#[error("FRI error: {0}")]
 	FRI(#[from] fri::Error),
-	#[error("PCS error: {0}")]
-	PCS(#[from] pcs::Error),
 	#[error("Sumcheck error: {0}")]
 	Sumcheck(#[from] sumcheck::Error),
 	#[error("BaseFold error: {0}")]

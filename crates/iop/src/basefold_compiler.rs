@@ -123,13 +123,10 @@ where
 	/// Creates a [`SizeTrackingChannel`] from this compiler's oracle specs.
 	///
 	/// This is useful for estimating proof sizes without running the full protocol.
-	/// The accumulated proof size is written to `proof_size`, which can be read
-	/// after the channel is consumed by `finish`.
-	pub fn create_size_tracking_channel<'a>(
-		&self,
-		proof_size: &'a mut usize,
-	) -> SizeTrackingChannel<'a> {
-		SizeTrackingChannel::new(self.oracle_specs.clone(), proof_size)
+	/// After verification, call [`SizeTrackingChannel::proof_size()`] to read the
+	/// accumulated byte count.
+	pub fn create_size_tracking_channel(&self) -> SizeTrackingChannel<'_, F, MerkleScheme_> {
+		SizeTrackingChannel::new(self.oracle_specs.clone(), &self.fri_params, &self.merkle_scheme)
 	}
 
 	/// Creates a verifier channel from this compiler and a transcript.

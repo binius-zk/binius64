@@ -266,10 +266,13 @@ where
 		BaseFoldOracle { index }
 	}
 
-	fn finish(self, oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)]) {
+	fn prove_oracle_relations(
+		&mut self,
+		oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)],
+	) {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
-			"finish called but {} oracle specs remaining",
+			"prove_oracle_relations called but {} oracle specs remaining",
 			self.remaining_oracle_specs().len()
 		);
 
@@ -451,13 +454,10 @@ mod tests {
 		assert_eq!(oracle_2.index, 1);
 
 		// Finish the proof with both oracle relations
-		IOPProverChannel::finish(
-			prover_channel,
-			&[
-				(oracle_1, transparent_poly_1, eval_claim_1),
-				(oracle_2, transparent_poly_2, eval_claim_2),
-			],
-		);
+		prover_channel.prove_oracle_relations(&[
+			(oracle_1, transparent_poly_1, eval_claim_1),
+			(oracle_2, transparent_poly_2, eval_claim_2),
+		]);
 	}
 
 	#[test]

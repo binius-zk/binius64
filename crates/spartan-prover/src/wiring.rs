@@ -159,7 +159,7 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 /// Result of computing the wiring relation for IOP proving.
 ///
 /// Contains the folding polynomial (l_poly) and the claimed batched sum
-/// that will be passed to the IOP channel's finish method.
+/// that will be passed to the IOP channel's `prove_oracle_relations` method.
 pub struct WiringRelation<P: PackedField> {
 	/// The folding polynomial: wiring poly + batch_coeff * eq(r_public, ·)
 	pub l_poly: FieldBuffer<P>,
@@ -170,7 +170,7 @@ pub struct WiringRelation<P: PackedField> {
 /// Computes the wiring relation for IOP proving.
 ///
 /// Samples batching challenges from the channel, computes the folding polynomial,
-/// and returns the relation data needed for the IOP channel's finish method.
+/// and returns the relation data needed for the IOP channel's `prove_oracle_relations` method.
 pub fn compute_wiring_relation<F: Field, P: PackedField<Scalar = F>>(
 	wiring_transpose: &WiringTranspose,
 	witness: &FieldSlice<P>,
@@ -520,10 +520,11 @@ mod tests {
 		);
 
 		// Finish the IOP with the oracle relation
-		IOPProverChannel::finish(
-			prover_channel,
-			&[(witness_oracle, wiring_relation.l_poly.clone(), wiring_relation.batched_sum)],
-		);
+		prover_channel.prove_oracle_relations(&[(
+			witness_oracle,
+			wiring_relation.l_poly.clone(),
+			wiring_relation.batched_sum,
+		)]);
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -555,14 +556,14 @@ mod tests {
 		let transparent = Box::new(move |point: &[_]| evaluate(&l_poly, point));
 
 		// Finish verification. The naive channel verifies the inner product directly inside
-		// finish(), reads the transparent polynomial from the transcript, and checks that
-		// the transparent closure evaluation matches.
+		// verify_oracle_relations(), reads the transparent polynomial from the transcript,
+		// and checks that the transparent closure evaluation matches.
 		verifier_channel
-			.finish(&[OracleLinearRelation {
+			.verify_oracle_relations(&[OracleLinearRelation {
 				oracle: witness_oracle,
 				transparent,
 				claim: wiring_claim.batched_sum,
 			}])
-			.expect("finish should succeed (inner product verified)");
+			.expect("verify_oracle_relations should succeed (inner product verified)");
 	}
 }

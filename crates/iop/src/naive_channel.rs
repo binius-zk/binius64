@@ -171,13 +171,13 @@ where
 		Ok(NaiveOracle { index })
 	}
 
-	fn finish(
-		mut self,
+	fn verify_oracle_relations(
+		&mut self,
 		oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, F>],
 	) -> Result<(), Error> {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
-			"finish called but {} oracle specs remaining",
+			"verify_oracle_relations called but {} oracle specs remaining",
 			self.remaining_oracle_specs().len()
 		);
 
@@ -189,7 +189,8 @@ where
 			let log_msg_len = self.oracle_specs[index].log_msg_len;
 			let is_zk = self.oracle_specs[index].is_zk;
 
-			// Read the transparent polynomial from the transcript (prover wrote it in finish)
+			// Read the transparent polynomial from the transcript (prover wrote it in
+			// prove_oracle_relations)
 			let transparent_len = 1 << log_msg_len;
 			let transparent_values = self
 				.transcript
