@@ -66,6 +66,10 @@ impl<'ctx> SmtChecker<'ctx> {
 			| ShiftVariant::Srl32
 			| ShiftVariant::Sra32
 			| ShiftVariant::Rotr32 => unimplemented!("32-bit shifts not supported"),
+			ShiftVariant::Sext => {
+				let a = sv.amount as u32;
+				val.extract(a, 0).sign_ext(63 - a)
+			}
 		}
 	}
 

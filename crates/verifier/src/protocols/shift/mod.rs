@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
-pub const SHIFT_VARIANT_COUNT: usize = 8;
+pub const SHIFT_VARIANT_COUNT: usize = 9;
 pub const BITAND_ARITY: usize = 3;
 pub const INTMUL_ARITY: usize = 4;
 

@@ -330,6 +330,7 @@ impl LeGraph {
 				Shift::Srl(amount) => format!("{:?} >> {:?}", t.wire, amount),
 				Shift::Sar(amount) => format!("{:?} sar {:?}", t.wire, amount),
 				Shift::Rotr(amount) => format!("{:?} rotr {:?}", t.wire, amount),
+				Shift::Sext(amount) => format!("{:?} sext {:?}", t.wire, amount),
 			}
 		}
 	}

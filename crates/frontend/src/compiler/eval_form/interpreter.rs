@@ -130,6 +130,7 @@ impl<'a> Interpreter<'a> {
 				0x10 => self.exec_sll(ctx),
 				0x11 => self.exec_slr(ctx),
 				0x12 => self.exec_sar(ctx),
+				0x13 => self.exec_sext(ctx),
 
 				// Arithmetic
 				0x20 => self.exec_iadd_cout(ctx),
@@ -247,6 +248,14 @@ impl<'a> Interpreter<'a> {
 		let src = self.read_reg();
 		let shift = self.read_u8() as u32;
 		let val = self.load(ctx, src).sar(shift);
+		self.store(ctx, dst, val);
+	}
+
+	fn exec_sext(&mut self, ctx: &mut ExecutionContext<'_>) {
+		let dst = self.read_reg();
+		let src = self.read_reg();
+		let bit_pos = self.read_u8() as u32;
+		let val = self.load(ctx, src).sext(bit_pos);
 		self.store(ctx, dst, val);
 	}
 

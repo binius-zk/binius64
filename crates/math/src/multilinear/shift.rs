@@ -107,6 +107,44 @@ pub fn rotr_ind<F: Field>(i: &[F], j: &[F], s: &[F]) -> F {
 	sigma + sigma_prime
 }
 
+/// Computes the multilinear extension of the sign extension indicator at a point.
+///
+/// The shift indicator for sign extension (sext) evaluates to 1 when output bit `i` equals
+/// input bit `min(i, a)`, where `a` is the sign bit position. Specifically:
+/// - `sext_ind(i, j, a) = 1` if and only if `j == min(i, a)`
+/// - `sext_ind(i, j, a) = 0` otherwise
+///
+/// For bits at positions `0..=a`, the output is identity (output = input).
+/// For bits at positions `a+1..=63`, the output replicates input bit `a` (sign extension).
+///
+/// # Arguments
+/// * `i` - Slice of field elements representing the output bit position (length k)
+/// * `j` - Slice of field elements representing the input bit position (length k)
+/// * `a` - Slice of field elements representing the sign bit position (length k)
+///
+/// # Panics
+/// Panics if the slices don't all have the same length.
+pub fn sext_ind<F: Field>(i: &[F], j: &[F], a: &[F]) -> F {
+	assert_eq!(i.len(), j.len(), "i and j must have the same length");
+	assert_eq!(i.len(), a.len(), "i and a must have the same length");
+
+	let k = i.len();
+	let n = 1usize << k;
+
+	let eq_i = crate::multilinear::eq::eq_ind_partial_eval_scalars(i);
+	let eq_j = crate::multilinear::eq::eq_ind_partial_eval_scalars(j);
+	let eq_a = crate::multilinear::eq::eq_ind_partial_eval_scalars(a);
+
+	let mut result = F::ZERO;
+	for i_b in 0..n {
+		for a_b in 0..n {
+			let j_b = i_b.min(a_b);
+			result += eq_i[i_b] * eq_a[a_b] * eq_j[j_b];
+		}
+	}
+	result
+}
+
 /// Evaluate the shift indicator helper polynomials, $\sigma, \sigma'$.
 ///
 /// See section 4.6 of the writeup.
@@ -254,11 +292,27 @@ mod tests {
 		}
 	}
 
+	// Test sext_ind on hypercube points
+	proptest! {
+		#[test]
+		fn test_sext_ind_hypercube(
+			i_idx in 0usize..64,
+			j_idx in 0usize..64,
+			a_idx in 0usize..64,
+		) {
+			test_hypercube_evaluation(
+				sext_ind::<B128>,
+				i_idx, j_idx, a_idx,
+				j_idx == i_idx.min(a_idx)
+			);
+		}
+	}
+
 	// Test multilinearity of all shift indicators
 	#[test]
 	fn test_shift_indicators_multilinearity() {
-		// Test only implemented functions for now
-		let shift_inds: [ShiftIndicatorFn<B128>; _] = [sll_ind, srl_ind, sra_ind, rotr_ind];
+		let shift_inds: [ShiftIndicatorFn<B128>; _] =
+			[sll_ind, srl_ind, sra_ind, rotr_ind, sext_ind];
 		for shift_fn in shift_inds {
 			test_multilinearity(
 				|v| {

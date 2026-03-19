@@ -230,6 +230,7 @@ fn parse_shifted_term(pair: pest::iterators::Pair<Rule>) -> Result<Term> {
 		"slr" => ShiftOp::Slr,
 		"sar" => ShiftOp::Sar,
 		"ror" => ShiftOp::Ror,
+		"sext" => ShiftOp::Sext,
 		_ => return Err(anyhow!("Unknown shift op: {}", shift_op.as_str())),
 	};
 

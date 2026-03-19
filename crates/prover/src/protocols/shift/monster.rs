@@ -99,7 +99,12 @@ where
 		}
 	});
 
-	[sll, srl, sra, rotr, sll32, srl32, sra32, rotr32]
+	let sext = build_part(|a, sext_a| {
+		sext_a[..a].copy_from_slice(&l_tilde[..a]);
+		sext_a[a] = l_tilde[a..].iter().sum();
+	});
+
+	[sll, srl, sra, rotr, sll32, srl32, sra32, rotr32, sext]
 }
 
 /// Constructs the "monster multilinear" that combines all shift operations into a single

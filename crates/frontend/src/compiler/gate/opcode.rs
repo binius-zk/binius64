@@ -29,6 +29,7 @@ pub enum Opcode {
 	Sar,
 	Rotr,
 	Rotr32,
+	Sext,
 
 	// Comparisons
 	IcmpUlt,
@@ -114,6 +115,7 @@ impl Opcode {
 			Opcode::Shr32 => gate::shr32::shape(),
 			Opcode::Rotr => gate::rotr::shape(),
 			Opcode::Rotr32 => gate::rotr32::shape(),
+			Opcode::Sext => gate::sext::shape(),
 
 			// Comparisons
 			Opcode::IcmpUlt => gate::icmp_ult::shape(),
