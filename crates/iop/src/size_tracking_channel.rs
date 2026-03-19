@@ -103,8 +103,8 @@ impl<F: Field> IOPVerifierChannel<F> for SizeTrackingChannel<'_> {
 		Ok(())
 	}
 
-	fn finish(
-		self,
+	fn verify_oracle_relations(
+		&mut self,
 		_oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, Self::Elem>],
 	) -> Result<(), Error> {
 		Ok(())

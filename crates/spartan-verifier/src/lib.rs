@@ -281,8 +281,8 @@ where
 		// Build the transparent closure for the mask oracle relation
 		let mask_transparent = self.mask_transparent(&r_x);
 
-		// Finish the protocol with both oracle relations (checks are done inside finish)
-		channel.finish(&[
+		// Verify both oracle relations (checks are done inside verify_oracle_relations)
+		channel.verify_oracle_relations(&[
 			OracleLinearRelation {
 				oracle: trace_oracle,
 				transparent: trace_transparent,

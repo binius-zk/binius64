@@ -313,7 +313,7 @@ where
 		});
 
 		// Finish via channel (runs BaseFold internally and verifies the product check)
-		channel.finish(&[OracleLinearRelation {
+		channel.verify_oracle_relations(&[OracleLinearRelation {
 			oracle: trace_oracle,
 			transparent,
 			claim: sumcheck_claim,

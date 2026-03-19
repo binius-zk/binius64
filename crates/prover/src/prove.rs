@@ -304,7 +304,7 @@ where
 		} = ring_switch::prove(&witness_packed, &eval_point, &mut channel);
 
 		// Finish via channel (runs BaseFold internally)
-		channel.finish(&[(trace_oracle, rs_eq_ind, sumcheck_claim)]);
+		channel.prove_oracle_relations(&[(trace_oracle, rs_eq_ind, sumcheck_claim)]);
 
 		drop(pcs_guard);
 
