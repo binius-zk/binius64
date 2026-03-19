@@ -39,18 +39,14 @@ fn test_power7_ip_proof_size() {
 
 	let cs = verifier.constraint_system();
 
-	// Create size tracking channel; proof_size is written by the channel and readable after
-	// finish() consumes it.
-	let mut proof_size = 0;
-	let channel = verifier
-		.iop_compiler()
-		.create_size_tracking_channel(&mut proof_size);
-
-	// Run verify_iop with dummy public inputs (SizeTrackingChannel ignores values)
+	// Create size tracking channel and run verify_iop with dummy public inputs
+	// (SizeTrackingChannel ignores values).
+	let mut channel = verifier.iop_compiler().create_size_tracking_channel();
 	let public = vec![B128::default(); 1 << cs.log_public()];
 	verifier
-		.verify_iop(&public, channel)
+		.verify_iop(&public, &mut channel)
 		.expect("verify_iop with size tracking channel should succeed");
+	let proof_size = channel.proof_size();
 	println!("IP-layer proof size: {proof_size} bytes");
 
 	// Hardcoded expected value to detect proof size regressions.

@@ -201,8 +201,8 @@ where
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		// Create channel and delegate to verify_iop
-		let channel = self.basefold_compiler.create_channel(transcript);
-		self.verify_iop(public, channel)
+		let mut channel = self.basefold_compiler.create_channel(transcript);
+		self.verify_iop(public, &mut channel)
 	}
 
 	/// Verifies a proof using an IOP channel.
@@ -218,7 +218,7 @@ where
 	/// # Returns
 	///
 	/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
-	pub fn verify_iop<Channel>(&self, public: &[F], mut channel: Channel) -> Result<(), Error>
+	pub fn verify_iop<Channel>(&self, public: &[F], channel: &mut Channel) -> Result<(), Error>
 	where
 		Channel: IOPVerifierChannel<F>,
 	{
@@ -252,7 +252,7 @@ where
 			c_eval,
 			mask_eval,
 			r_x,
-		} = self.verify_mulcheck(&mut channel)?;
+		} = self.verify_mulcheck(channel)?;
 
 		// Sample the public input check challenge and evaluate the public input at the challenge
 		// point.
@@ -266,7 +266,7 @@ where
 			&r_public,
 			&[a_eval, b_eval, c_eval],
 			public_eval,
-			&mut channel,
+			channel,
 		);
 
 		// Build the transparent closure for the wiring oracle relation
