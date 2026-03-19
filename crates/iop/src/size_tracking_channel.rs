@@ -5,10 +5,14 @@
 //!
 //! This is useful for estimating proof sizes without running the full protocol.
 
-use binius_field::Field;
+use binius_field::BinaryField;
 use binius_ip::channel::IPVerifierChannel;
 
-use crate::channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec};
+use crate::{
+	channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec},
+	fri::{self, FRIParams},
+	merkle_tree::MerkleTreeScheme,
+};
 
 /// Default size in bytes for a single field element.
 const DEFAULT_ELEMENT_SIZE: usize = 16;
@@ -23,23 +27,39 @@ const DEFAULT_ORACLE_SIZE: usize = 32;
 ///
 /// After verification completes, call [`proof_size()`](Self::proof_size) to read the
 /// accumulated proof size.
-pub struct SizeTrackingChannel {
+pub struct SizeTrackingChannel<'a, F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> {
 	element_size: usize,
 	oracle_size: usize,
 	oracle_specs: Vec<OracleSpec>,
+	fri_params: &'a [FRIParams<F>],
+	merkle_scheme: &'a MerkleScheme_,
 	next_oracle_index: usize,
 	proof_size: usize,
 }
 
-impl SizeTrackingChannel {
+impl<'a, F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>>
+	SizeTrackingChannel<'a, F, MerkleScheme_>
+{
 	/// Creates a new size-tracking channel with default element (16) and oracle (32) sizes.
-	pub fn new(oracle_specs: Vec<OracleSpec>) -> Self {
-		Self::with_sizes(oracle_specs, DEFAULT_ELEMENT_SIZE, DEFAULT_ORACLE_SIZE)
+	pub fn new(
+		oracle_specs: Vec<OracleSpec>,
+		fri_params: &'a [FRIParams<F>],
+		merkle_scheme: &'a MerkleScheme_,
+	) -> Self {
+		Self::with_sizes(
+			oracle_specs,
+			fri_params,
+			merkle_scheme,
+			DEFAULT_ELEMENT_SIZE,
+			DEFAULT_ORACLE_SIZE,
+		)
 	}
 
 	/// Creates a new size-tracking channel with custom element and oracle sizes.
 	pub fn with_sizes(
 		oracle_specs: Vec<OracleSpec>,
+		fri_params: &'a [FRIParams<F>],
+		merkle_scheme: &'a MerkleScheme_,
 		element_size: usize,
 		oracle_size: usize,
 	) -> Self {
@@ -47,6 +67,8 @@ impl SizeTrackingChannel {
 			element_size,
 			oracle_size,
 			oracle_specs,
+			fri_params,
+			merkle_scheme,
 			next_oracle_index: 0,
 			proof_size: 0,
 		}
@@ -58,7 +80,9 @@ impl SizeTrackingChannel {
 	}
 }
 
-impl<F: Field> IPVerifierChannel<F> for SizeTrackingChannel {
+impl<F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IPVerifierChannel<F>
+	for SizeTrackingChannel<'_, F, MerkleScheme_>
+{
 	type Elem = F;
 
 	fn recv_one(&mut self) -> Result<F, binius_ip::channel::Error> {
@@ -93,7 +117,9 @@ impl<F: Field> IPVerifierChannel<F> for SizeTrackingChannel {
 	}
 }
 
-impl<F: Field> IOPVerifierChannel<F> for SizeTrackingChannel {
+impl<F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IOPVerifierChannel<F>
+	for SizeTrackingChannel<'_, F, MerkleScheme_>
+{
 	type Oracle = ();
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
@@ -110,6 +136,16 @@ impl<F: Field> IOPVerifierChannel<F> for SizeTrackingChannel {
 		&mut self,
 		_oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, Self::Elem>],
 	) -> Result<(), Error> {
+		// Add FRI proof sizes for all oracles. This accounts for the dominant component of
+		// BaseFold proofs (FRI decommitments) but is missing smaller elements (e.g. sumcheck
+		// coefficients within BaseFold, blinding elements for ZK), so it's a slight
+		// underestimate.
+		let fri_total: usize = self
+			.fri_params
+			.iter()
+			.map(|params| fri::proof_size(params, self.merkle_scheme))
+			.sum();
+		self.proof_size += fri_total;
 		Ok(())
 	}
 }
