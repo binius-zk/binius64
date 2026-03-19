@@ -508,7 +508,7 @@ mod tests {
 		all(target_feature = "gfni", target_feature = "sse2"),
 		all(target_feature = "gfni", target_feature = "avx")
 	))]
-	use crate::rijndael::mul_gfni;
+	use crate::rijndael::gfni::mul;
 	#[cfg(target_feature = "avx2")]
 	use crate::test_utils::GetSetOp;
 	#[cfg(all(
@@ -648,7 +648,7 @@ mod tests {
 		fn test_m128i_gf2p8mul_identity_proptest(
 			a in arb_m128i()
 		) {
-			test_mul_identity(a, 0x01u8, mul_gfni, "GF(2^8)");
+			test_mul_identity(a, 0x01u8, mul, "GF(2^8)");
 		}
 
 		// GF(2^8) multiplication property tests for __m256i
@@ -686,7 +686,7 @@ mod tests {
 		fn test_m256i_gf2p8mul_identity_proptest(
 			a in arb_m256i()
 		) {
-			test_mul_identity(a, 0x01u8, mul_gfni, "GF(2^8)");
+			test_mul_identity(a, 0x01u8, mul, "GF(2^8)");
 		}
 
 		// Polynomial Montgomery multiplication property tests for __m128i
