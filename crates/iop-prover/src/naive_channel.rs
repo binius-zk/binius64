@@ -173,7 +173,10 @@ where
 		NaiveOracle { index }
 	}
 
-	fn prove_oracle_relations(&mut self, oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)]) {
+	fn prove_oracle_relations(
+		&mut self,
+		oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)],
+	) {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
 			"prove_oracle_relations called but {} oracle specs remaining",

@@ -189,7 +189,8 @@ where
 			let log_msg_len = self.oracle_specs[index].log_msg_len;
 			let is_zk = self.oracle_specs[index].is_zk;
 
-			// Read the transparent polynomial from the transcript (prover wrote it in prove_oracle_relations)
+			// Read the transparent polynomial from the transcript (prover wrote it in
+			// prove_oracle_relations)
 			let transparent_len = 1 << log_msg_len;
 			let transparent_values = self
 				.transcript

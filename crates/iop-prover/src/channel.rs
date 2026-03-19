@@ -30,7 +30,8 @@ use binius_math::{FieldBuffer, FieldSlice};
 /// # Contract
 ///
 /// The caller must call `send_oracle()` exactly `remaining_oracle_specs().len()` times before
-/// calling `prove_oracle_relations()`. Each oracle buffer must match the corresponding specification.
+/// calling `prove_oracle_relations()`. Each oracle buffer must match the corresponding
+/// specification.
 pub trait IOPProverChannel<P: PackedField>: IPProverChannel<P::Scalar> {
 	type Oracle: Clone;
 
@@ -54,5 +55,8 @@ pub trait IOPProverChannel<P: PackedField>: IPProverChannel<P::Scalar> {
 	/// * `remaining_oracle_specs()` must be empty (all oracles committed).
 	/// * All oracle handles in `oracle_relations` must be valid handles returned by
 	///   `send_oracle()`.
-	fn prove_oracle_relations(&mut self, oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)]);
+	fn prove_oracle_relations(
+		&mut self,
+		oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)],
+	);
 }

@@ -126,11 +126,7 @@ where
 	/// After verification, call [`SizeTrackingChannel::proof_size()`] to read the
 	/// accumulated byte count.
 	pub fn create_size_tracking_channel(&self) -> SizeTrackingChannel<'_, F, MerkleScheme_> {
-		SizeTrackingChannel::new(
-			self.oracle_specs.clone(),
-			&self.fri_params,
-			&self.merkle_scheme,
-		)
+		SizeTrackingChannel::new(self.oracle_specs.clone(), &self.fri_params, &self.merkle_scheme)
 	}
 
 	/// Creates a verifier channel from this compiler and a transcript.

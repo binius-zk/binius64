@@ -53,8 +53,8 @@ pub struct OracleLinearRelation<'a, Oracle, Elem> {
 	pub oracle: Oracle,
 	/// A closure that evaluates the transparent MLE at a given point.
 	///
-	/// The closure receives the challenge point (sampled during `verify_oracle_relations`) and returns the
-	/// evaluation of the transparent polynomial's MLE at that point.
+	/// The closure receives the challenge point (sampled during `verify_oracle_relations`) and
+	/// returns the evaluation of the transparent polynomial's MLE at that point.
 	pub transparent: TransparentEvalFn<'a, Elem>,
 	/// The claimed inner product of the oracle polynomial and the transparent polynomial.
 	pub claim: Elem,
@@ -71,7 +71,8 @@ pub struct OracleLinearRelation<'a, Oracle, Elem> {
 /// # Contract
 ///
 /// The caller must call `recv_oracle()` exactly `remaining_oracle_specs().len()` times before
-/// calling `verify_oracle_relations()`. The oracles must be received in order and match their specifications.
+/// calling `verify_oracle_relations()`. The oracles must be received in order and match their
+/// specifications.
 pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	type Oracle: Clone;
 

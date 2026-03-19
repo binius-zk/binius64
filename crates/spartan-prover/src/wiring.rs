@@ -520,9 +520,11 @@ mod tests {
 		);
 
 		// Finish the IOP with the oracle relation
-		prover_channel.prove_oracle_relations(
-			&[(witness_oracle, wiring_relation.l_poly.clone(), wiring_relation.batched_sum)],
-		);
+		prover_channel.prove_oracle_relations(&[(
+			witness_oracle,
+			wiring_relation.l_poly.clone(),
+			wiring_relation.batched_sum,
+		)]);
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();

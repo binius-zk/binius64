@@ -202,11 +202,8 @@ where
 		)
 		.entered();
 		let log_n_constraints = checked_log_2(self.constraint_system.n_mul_constraints());
-		let intmul_output = verify_intmul_reduction::<B128, _>(
-			LOG_WORD_SIZE_BITS,
-			log_n_constraints,
-			channel,
-		)?;
+		let intmul_output =
+			verify_intmul_reduction::<B128, _>(LOG_WORD_SIZE_BITS, log_n_constraints, channel)?;
 		drop(intmul_guard);
 
 		// [phase] Verify BitAnd Reduction - AND constraint verification
@@ -265,13 +262,8 @@ where
 			perfetto_category = "phase"
 		)
 		.entered();
-		let shift_output = shift::verify(
-			self.constraint_system(),
-			public,
-			&bitand_claim,
-			&intmul_claim,
-			channel,
-		)?;
+		let shift_output =
+			shift::verify(self.constraint_system(), public, &bitand_claim, &intmul_claim, channel)?;
 		drop(constraint_guard);
 
 		// [phase] Verify Public Input - public input verification
