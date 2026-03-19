@@ -35,14 +35,14 @@ pub mod mod_inverse_hint;
 pub mod rotr;
 pub mod rotr32;
 pub mod sar;
-pub mod sll32;
-pub mod srl32;
-pub mod sra32;
 pub mod secp256k1_endosplit_hint;
 pub mod select;
 pub mod shl;
 pub mod shr;
+pub mod sll32;
 pub mod smul;
+pub mod sra32;
+pub mod srl32;
 
 pub fn constrain(gate: Gate, graph: &GateGraph, builder: &mut ConstraintBuilder) {
 	let data = &graph.gates[gate];
