@@ -65,7 +65,7 @@ fn test_commit_prove_verify_success<F, P>(
 
 	// Run the prover to generate the proximity proof
 	let mut round_prover =
-		FRIFoldProver::new(&params, &ntt, &merkle_prover, codeword, &codeword_committed).unwrap();
+		FRIFoldProver::new(&params, &ntt, &merkle_prover, &merkle_prover, codeword, &codeword_committed).unwrap();
 
 	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
 	prover_challenger.message().write(&codeword_commitment);
@@ -118,6 +118,7 @@ fn test_commit_prove_verify_success<F, P>(
 
 	let verifier = FRIQueryVerifier::new(
 		&params,
+		merkle_prover.scheme(),
 		merkle_prover.scheme(),
 		&codeword_commitment,
 		&round_commitments,
@@ -274,7 +275,7 @@ where
 	} = commit_interleaved(&params, &ntt, &merkle_prover, msg.to_ref()).unwrap();
 
 	let mut round_prover =
-		FRIFoldProver::new(&params, &ntt, &merkle_prover, codeword, &codeword_committed).unwrap();
+		FRIFoldProver::new(&params, &ntt, &merkle_prover, &merkle_prover, codeword, &codeword_committed).unwrap();
 
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	prover_transcript.message().write(&codeword_commitment);
@@ -318,4 +319,215 @@ fn test_proof_size_interleaved() {
 fn test_proof_size_no_folding() {
 	let (proof_bytes, params, scheme) = generate_fri_proof::<B128, Packed128b>(4, 2, 2, &[]);
 	assert_eq!(proof_bytes.len(), fri::proof_size(&params, &scheme));
+}
+
+#[test]
+fn test_commit_prove_verify_hiding_codeword() {
+	let log_dimension = 8;
+	let log_inv_rate = 2;
+	let arities = [3, 2, 1];
+	let log_batch_size = 0;
+
+	let mut rng = StdRng::seed_from_u64(0);
+
+	let parallel_compression = ParallelCompressionAdaptor::new(StdCompression::default());
+	// Hiding prover for codeword commitment
+	let hiding_prover = BinaryMerkleTreeProver::<B128, StdDigest, _>::hiding(
+		parallel_compression.clone(),
+		StdRng::seed_from_u64(42),
+		1,
+	);
+	// Non-hiding prover for round commitments (the optimization: round codewords are derived
+	// from public Fiat-Shamir challenges, so they don't need hiding)
+	let round_prover = BinaryMerkleTreeProver::<_, StdDigest, _>::new(parallel_compression);
+
+	let committed_rs_code = ReedSolomonCode::<B128>::new(log_dimension, log_inv_rate);
+	let n_test_queries = 3;
+	let params =
+		FRIParams::new(committed_rs_code, log_batch_size, arities.to_vec(), n_test_queries)
+			.unwrap();
+
+	let subspace = BinarySubspace::with_dim(params.rs_code().log_len());
+	let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+	let ntt = NeighborsLastSingleThread::new(domain_context);
+
+	let msg = random_field_buffer::<PackedBinaryGhash1x128b>(&mut rng, params.log_msg_len());
+
+	// Commit with hiding prover
+	let CommitOutput {
+		commitment: mut codeword_commitment,
+		committed: codeword_committed,
+		codeword,
+	} = commit_interleaved(&params, &ntt, &hiding_prover, msg.to_ref()).unwrap();
+
+	// Fold with hiding codeword prover + non-hiding round prover
+	let mut round_prover_state =
+		FRIFoldProver::new(&params, &ntt, &hiding_prover, &round_prover, codeword, &codeword_committed)
+			.unwrap();
+
+	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
+	prover_challenger.message().write(&codeword_commitment);
+
+	let fold_round_output = round_prover_state.execute_fold_round().unwrap();
+	if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
+		prover_challenger.message().write(&round_commitment);
+	}
+
+	for _i in 0..params.n_fold_rounds() {
+		let challenge = prover_challenger.sample();
+		round_prover_state.receive_challenge(challenge);
+
+		let fold_round_output = round_prover_state.execute_fold_round().unwrap();
+		if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
+			prover_challenger.message().write(&round_commitment);
+		}
+	}
+
+	round_prover_state
+		.finish_proof(&mut prover_challenger)
+		.unwrap();
+
+	// Verify with hiding scheme for codeword, non-hiding for rounds
+	let mut verifier_challenger = prover_challenger.into_verifier();
+	codeword_commitment = verifier_challenger.message().read().unwrap();
+	let mut verifier_challenges = Vec::with_capacity(params.n_fold_rounds());
+
+	let mut fri_fold_verifier = FRIFoldVerifier::new(&params);
+	fri_fold_verifier
+		.process_round(&mut verifier_challenger.message())
+		.unwrap();
+
+	for _ in 0..params.n_fold_rounds() {
+		verifier_challenges.push(verifier_challenger.sample());
+		fri_fold_verifier
+			.process_round(&mut verifier_challenger.message())
+			.unwrap();
+	}
+
+	let round_commitments = fri_fold_verifier.finalize().unwrap();
+
+	let verifier = FRIQueryVerifier::new(
+		&params,
+		hiding_prover.scheme(),
+		round_prover.scheme(),
+		&codeword_commitment,
+		&round_commitments,
+		&verifier_challenges,
+	)
+	.unwrap();
+
+	let final_fri_value = verifier.verify(&mut verifier_challenger).unwrap();
+
+	// Verify correctness
+	let mut eval_point = verifier_challenges;
+	eval_point.reverse();
+	let computed_eval = evaluate(&msg, &eval_point);
+	assert_eq!(computed_eval, final_fri_value);
+}
+
+/// Generates a FRI proof with configurable hiding for codeword and round Merkle trees.
+/// Returns the proof byte length.
+fn generate_fri_proof_with_hiding(
+	log_dimension: usize,
+	log_inv_rate: usize,
+	log_batch_size: usize,
+	arities: &[usize],
+	codeword_salt_len: usize,
+	round_salt_len: usize,
+) -> usize {
+	let mut rng = StdRng::seed_from_u64(0);
+
+	let parallel_compression = ParallelCompressionAdaptor::new(StdCompression::default());
+	let codeword_prover = if codeword_salt_len > 0 {
+		BinaryMerkleTreeProver::<B128, StdDigest, _>::hiding(
+			parallel_compression.clone(),
+			StdRng::seed_from_u64(42),
+			codeword_salt_len,
+		)
+	} else {
+		BinaryMerkleTreeProver::<_, StdDigest, _>::new(parallel_compression.clone())
+	};
+	let round_prover = if round_salt_len > 0 {
+		BinaryMerkleTreeProver::<B128, StdDigest, _>::hiding(
+			parallel_compression,
+			StdRng::seed_from_u64(99),
+			round_salt_len,
+		)
+	} else {
+		BinaryMerkleTreeProver::<_, StdDigest, _>::new(parallel_compression)
+	};
+
+	let committed_rs_code = ReedSolomonCode::<B128>::new(log_dimension, log_inv_rate);
+	let n_test_queries = 3;
+	let params =
+		FRIParams::new(committed_rs_code, log_batch_size, arities.to_vec(), n_test_queries)
+			.unwrap();
+
+	let subspace = BinarySubspace::with_dim(params.rs_code().log_len());
+	let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+	let ntt = NeighborsLastSingleThread::new(domain_context);
+
+	let msg =
+		random_field_buffer::<PackedBinaryGhash1x128b>(&mut rng, params.log_msg_len());
+
+	let CommitOutput {
+		commitment: codeword_commitment,
+		committed: codeword_committed,
+		codeword,
+	} = commit_interleaved(&params, &ntt, &codeword_prover, msg.to_ref()).unwrap();
+
+	let mut folder = FRIFoldProver::new(
+		&params, &ntt, &codeword_prover, &round_prover, codeword, &codeword_committed,
+	)
+	.unwrap();
+
+	let mut transcript = ProverTranscript::new(StdChallenger::default());
+	transcript.message().write(&codeword_commitment);
+
+	let fold_round_output = folder.execute_fold_round().unwrap();
+	if let FoldRoundOutput::Commitment(c) = fold_round_output {
+		transcript.message().write(&c);
+	}
+
+	for _ in 0..params.n_fold_rounds() {
+		let challenge = transcript.sample();
+		folder.receive_challenge(challenge);
+		let fold_round_output = folder.execute_fold_round().unwrap();
+		if let FoldRoundOutput::Commitment(c) = fold_round_output {
+			transcript.message().write(&c);
+		}
+	}
+
+	folder.finish_proof(&mut transcript).unwrap();
+	transcript.finalize().len()
+}
+
+#[test]
+fn test_proof_size_hiding_comparison() {
+	let log_dimension = 8;
+	let log_inv_rate = 2;
+	let arities = &[3, 2, 1];
+
+	let non_hiding = generate_fri_proof_with_hiding(
+		log_dimension, log_inv_rate, 0, arities, 0, 0,
+	);
+	let hiding_codeword_only = generate_fri_proof_with_hiding(
+		log_dimension, log_inv_rate, 0, arities, 1, 0,
+	);
+	let hiding_everywhere = generate_fri_proof_with_hiding(
+		log_dimension, log_inv_rate, 0, arities, 1, 1,
+	);
+
+	println!("FRI proof size (log_dim={log_dimension}, log_inv_rate={log_inv_rate}, arities={arities:?}):");
+	println!("  Non-hiding:           {non_hiding:>6} bytes");
+	println!("  Hiding codeword only: {hiding_codeword_only:>6} bytes  (+{} vs non-hiding)", hiding_codeword_only - non_hiding);
+	println!("  Hiding everywhere:    {hiding_everywhere:>6} bytes  (+{} vs non-hiding)", hiding_everywhere - non_hiding);
+	println!("  Savings from optimization: {} bytes ({:.1}% of hiding overhead eliminated)",
+		hiding_everywhere - hiding_codeword_only,
+		100.0 * (hiding_everywhere - hiding_codeword_only) as f64
+			/ (hiding_everywhere - non_hiding) as f64,
+	);
+
+	assert!(hiding_codeword_only < hiding_everywhere);
+	assert!(hiding_codeword_only > non_hiding);
 }

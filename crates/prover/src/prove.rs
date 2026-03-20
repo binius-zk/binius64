@@ -84,7 +84,7 @@ where
 		+ WithUnderlier<Underlier: UnderlierWithBitOps>,
 	MerkleHash: Digest + BlockSizeUser + FixedOutputReset,
 	ParallelMerkleHasher: ParallelDigest<Digest = MerkleHash>,
-	ParallelMerkleCompress: ParallelPseudoCompression<Output<MerkleHash>, 2>,
+	ParallelMerkleCompress: ParallelPseudoCompression<Output<MerkleHash>, 2> + Clone,
 	Output<MerkleHash>: SerializeBytes,
 {
 	/// Constructs a prover corresponding to a constraint system verifier.
@@ -116,6 +116,8 @@ where
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
+		let round_merkle_prover =
+			BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression.clone());
 		let merkle_prover = BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression);
 
 		// Create prover compiler from verifier compiler (reuses FRI params and oracle specs)
@@ -123,6 +125,7 @@ where
 			verifier.iop_compiler(),
 			ntt,
 			merkle_prover,
+			round_merkle_prover,
 		);
 
 		Ok(Prover {

@@ -67,4 +67,14 @@ pub trait MerkleTreeProver<T> {
 		index: usize,
 		proof: &mut TranscriptWriter<B>,
 	) -> Result<(), Error>;
+
+	/// Write the proof data needed for `MerkleTreeScheme::verify_vector`.
+	///
+	/// For hiding (salted) trees, this writes the salt for each leaf. For non-hiding trees
+	/// this is a no-op.
+	fn prove_vector<B: BufMut>(
+		&self,
+		committed: &Self::Committed,
+		proof: &mut TranscriptWriter<B>,
+	) -> Result<(), Error>;
 }

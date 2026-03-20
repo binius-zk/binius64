@@ -51,9 +51,10 @@ use crate::{
 ///
 /// The [`ReducedOutput`] holding the final FRI value, the final sumcheck value, and the challenges
 /// used in the sumcheck rounds.
-pub fn verify<F, MTScheme, Challenger_>(
+pub fn verify<F, MTScheme, RoundMTScheme, Challenger_>(
 	fri_params: &FRIParams<F>,
 	merkle_scheme: &MTScheme,
+	round_merkle_scheme: &RoundMTScheme,
 	codeword_commitment: MTScheme::Digest,
 	evaluation_claim: F,
 	transcript: &mut VerifierTranscript<Challenger_>,
@@ -62,6 +63,7 @@ where
 	F: BinaryField,
 	Challenger_: Challenger,
 	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
+	RoundMTScheme: MerkleTreeScheme<F, Digest = MTScheme::Digest>,
 {
 	// The multivariate polynomial evaluated is a degree-2 multilinear composite.
 	const DEGREE: usize = 2;
@@ -88,6 +90,7 @@ where
 	let fri_verifier = FRIQueryVerifier::new(
 		fri_params,
 		merkle_scheme,
+		round_merkle_scheme,
 		&codeword_commitment,
 		&round_commitments,
 		&challenges,
@@ -102,9 +105,10 @@ where
 	})
 }
 
-pub fn verify_zk<F, MTScheme, Challenger_>(
+pub fn verify_zk<F, MTScheme, RoundMTScheme, Challenger_>(
 	fri_params: &FRIParams<F>,
 	merkle_scheme: &MTScheme,
+	round_merkle_scheme: &RoundMTScheme,
 	codeword_commitment: MTScheme::Digest,
 	sum_claim: F,
 	transcript: &mut VerifierTranscript<Challenger_>,
@@ -113,6 +117,7 @@ where
 	F: BinaryField,
 	Challenger_: Challenger,
 	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
+	RoundMTScheme: MerkleTreeScheme<F, Digest = MTScheme::Digest>,
 {
 	// The multivariate polynomial evaluated is a degree-2 multilinear composite.
 	const DEGREE: usize = 2;
@@ -149,10 +154,10 @@ where
 	fri_fold_verifier.process_round(&mut transcript.message())?;
 	let round_commitments = fri_fold_verifier.finalize()?;
 
-	// TODO: Make all commitments after the first non-hiding
 	let fri_verifier = FRIQueryVerifier::new(
 		fri_params,
 		merkle_scheme,
+		round_merkle_scheme,
 		&codeword_commitment,
 		&round_commitments,
 		&challenges,

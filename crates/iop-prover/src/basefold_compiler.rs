@@ -30,39 +30,46 @@ use crate::{basefold_channel::BaseFoldProverChannel, merkle_tree::MerkleTreeProv
 /// - `NTT`: The additive NTT for Reed-Solomon encoding
 /// - `MerkleProver_`: The Merkle tree prover for commitments
 #[derive(Debug)]
-pub struct BaseFoldProverCompiler<P, NTT, MerkleProver_>
+pub struct BaseFoldProverCompiler<P, NTT, MerkleProver_, RoundMerkleProver_ = MerkleProver_>
 where
 	P: PackedField<Scalar: BinaryField>,
 	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
 	MerkleProver_: MerkleTreeProver<P::Scalar>,
+	RoundMerkleProver_: MerkleTreeProver<P::Scalar>,
 {
 	ntt: NTT,
 	merkle_prover: MerkleProver_,
+	round_merkle_prover: RoundMerkleProver_,
 	oracle_specs: Vec<OracleSpec>,
 	fri_params: Vec<FRIParams<P::Scalar>>,
 	_p_marker: PhantomData<P>,
 }
 
-impl<F, P, NTT, MerkleScheme, MerkleProver_> BaseFoldProverCompiler<P, NTT, MerkleProver_>
+impl<F, P, NTT, MerkleScheme, MerkleProver_, RoundMerkleScheme, RoundMerkleProver_>
+	BaseFoldProverCompiler<P, NTT, MerkleProver_, RoundMerkleProver_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MerkleProver_: MerkleTreeProver<F, Scheme = MerkleScheme>,
+	RoundMerkleScheme: MerkleTreeScheme<F, Digest = MerkleScheme::Digest>,
+	RoundMerkleProver_: MerkleTreeProver<F, Scheme = RoundMerkleScheme>,
 {
 	/// Creates a new compiler with precomputed FRI parameters.
 	///
 	/// # Arguments
 	///
 	/// * `ntt` - The additive NTT for Reed-Solomon encoding (owned)
-	/// * `merkle_prover` - The Merkle tree prover (owned)
+	/// * `merkle_prover` - The Merkle tree prover for initial commitments (owned)
+	/// * `round_merkle_prover` - The Merkle tree prover for FRI round commitments (owned)
 	/// * `oracle_specs` - Specifications for each oracle to be committed
 	/// * `log_inv_rate` - Log2 of the inverse Reed-Solomon code rate
 	/// * `n_test_queries` - Number of FRI test queries for soundness
 	pub fn new(
 		ntt: NTT,
 		merkle_prover: MerkleProver_,
+		round_merkle_prover: RoundMerkleProver_,
 		oracle_specs: Vec<OracleSpec>,
 		log_inv_rate: usize,
 		n_test_queries: usize,
@@ -80,7 +87,7 @@ where
 				let log_batch_size = if spec.is_zk { Some(1) } else { None };
 				FRIParams::with_strategy(
 					&ntt,
-					merkle_prover.scheme(),
+					round_merkle_prover.scheme(),
 					log_msg_len,
 					log_batch_size,
 					log_inv_rate,
@@ -94,6 +101,7 @@ where
 		Self {
 			ntt,
 			merkle_prover,
+			round_merkle_prover,
 			oracle_specs,
 			fri_params,
 			_p_marker: PhantomData,
@@ -109,15 +117,18 @@ where
 	///
 	/// * `verifier_compiler` - The verifier compiler to copy parameters from
 	/// * `ntt` - The additive NTT for Reed-Solomon encoding (owned)
-	/// * `merkle_prover` - The Merkle tree prover (owned)
+	/// * `merkle_prover` - The Merkle tree prover for initial commitments (owned)
+	/// * `round_merkle_prover` - The Merkle tree prover for FRI round commitments (owned)
 	pub fn from_verifier_compiler(
 		verifier_compiler: &BaseFoldVerifierCompiler<F, MerkleScheme>,
 		ntt: NTT,
 		merkle_prover: MerkleProver_,
+		round_merkle_prover: RoundMerkleProver_,
 	) -> Self {
 		Self {
 			ntt,
 			merkle_prover,
+			round_merkle_prover,
 			oracle_specs: verifier_compiler.oracle_specs().to_vec(),
 			fri_params: verifier_compiler.fri_params().to_vec(),
 			_p_marker: PhantomData,
@@ -132,6 +143,11 @@ where
 	/// Returns a reference to the Merkle prover.
 	pub fn merkle_prover(&self) -> &MerkleProver_ {
 		&self.merkle_prover
+	}
+
+	/// Returns a reference to the round Merkle prover.
+	pub fn round_merkle_prover(&self) -> &RoundMerkleProver_ {
+		&self.round_merkle_prover
 	}
 
 	/// Returns a reference to the oracle specifications.
@@ -151,7 +167,7 @@ where
 	pub fn create_channel<'a, Challenger_: Challenger>(
 		&'a self,
 		transcript: &'a mut ProverTranscript<Challenger_>,
-	) -> BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_> {
+	) -> BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_, RoundMerkleProver_> {
 		BaseFoldProverChannel::from_compiler(self, transcript)
 	}
 }

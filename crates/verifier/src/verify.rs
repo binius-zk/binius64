@@ -84,6 +84,7 @@ where
 		let log_witness_elems = log_witness_words - LOG_WORDS_PER_ELEM;
 
 		let log_code_len = log_witness_elems + log_inv_rate;
+		let round_merkle_scheme = BinaryMerkleTreeScheme::new(compression.clone());
 		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
 		let fri_arity =
 			ConstantArityStrategy::with_optimal_arity::<B128, _>(&merkle_scheme, log_code_len)
@@ -103,6 +104,7 @@ where
 		let iop_compiler = BaseFoldVerifierCompiler::new(
 			&ntt,
 			merkle_scheme,
+			round_merkle_scheme,
 			oracle_specs,
 			log_inv_rate,
 			n_test_queries,

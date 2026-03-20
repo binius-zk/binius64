@@ -1,7 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use std::iter;
-
 use binius_field::BinaryField;
 use binius_math::{
 	FieldBuffer,
@@ -29,13 +27,18 @@ use crate::{
 ///
 /// The verifier is instantiated after the folding rounds and is used to test consistency of the
 /// round messages and the original purported codeword.
+///
+/// Supports separate Merkle tree schemes for the initial codeword commitment (which may be
+/// hiding/salted) and for FRI round commitments (which are non-hiding).
 #[derive(Debug)]
-pub struct FRIQueryVerifier<'a, F, VCS>
+pub struct FRIQueryVerifier<'a, F, VCS, RoundVCS = VCS>
 where
 	F: BinaryField,
 	VCS: MerkleTreeScheme<F>,
+	RoundVCS: MerkleTreeScheme<F>,
 {
 	vcs: &'a VCS,
+	round_vcs: &'a RoundVCS,
 	params: &'a FRIParams<F>,
 	/// Received commitment to the codeword.
 	codeword_commitment: &'a VCS::Digest,
@@ -47,15 +50,17 @@ where
 	fold_challenges: &'a [F],
 }
 
-impl<'a, F, VCS> FRIQueryVerifier<'a, F, VCS>
+impl<'a, F, VCS, RoundVCS> FRIQueryVerifier<'a, F, VCS, RoundVCS>
 where
 	F: BinaryField,
 	VCS: MerkleTreeScheme<F, Digest: DeserializeBytes>,
+	RoundVCS: MerkleTreeScheme<F, Digest = VCS::Digest>,
 {
 	#[allow(clippy::too_many_arguments)]
 	pub fn new(
 		params: &'a FRIParams<F>,
 		vcs: &'a VCS,
+		round_vcs: &'a RoundVCS,
 		codeword_commitment: &'a VCS::Digest,
 		round_commitments: &'a [VCS::Digest],
 		challenges: &'a [F],
@@ -82,6 +87,7 @@ where
 		Ok(Self {
 			params,
 			vcs,
+			round_vcs,
 			codeword_commitment,
 			round_commitments,
 			interleave_tensor,
@@ -118,12 +124,18 @@ where
 		let layers = vcs_optimal_layers_depths_iter(self.params, self.vcs)
 			.map(|layer_depth| advice.read_vec(1 << layer_depth))
 			.collect::<Result<Vec<_>, _>>()?;
-		for (commitment, layer_depth, layer) in izip!(
-			iter::once(self.codeword_commitment).chain(self.round_commitments),
-			vcs_optimal_layers_depths_iter(self.params, self.vcs),
-			&layers
-		) {
-			self.vcs.verify_layer(commitment, layer_depth, layer)?;
+
+		// First layer (codeword): verify with the hiding scheme
+		let mut layer_depths_iter = vcs_optimal_layers_depths_iter(self.params, self.vcs);
+		let first_depth = layer_depths_iter.next().expect("at least one commitment");
+		self.vcs
+			.verify_layer(self.codeword_commitment, first_depth, &layers[0])?;
+
+		// Round layers: verify with the non-hiding scheme
+		for (commitment, layer_depth, layer) in
+			izip!(self.round_commitments, layer_depths_iter, &layers[1..])
+		{
+			self.round_vcs.verify_layer(commitment, layer_depth, layer)?;
 		}
 
 		// Verify the random openings against the decommitted layers.
@@ -156,7 +168,7 @@ where
 			.last()
 			.expect("round_commitments is non-empty as an invariant");
 
-		self.vcs.verify_vector(
+		self.round_vcs.verify_vector(
 			terminal_commitment,
 			terminate_codeword,
 			1 << n_final_challenges,
@@ -249,7 +261,7 @@ where
 			log_n_cosets -= arity;
 
 			let mut values = verify_coset_opening(
-				self.vcs,
+				self.round_vcs,
 				coset_index,
 				arity,
 				optimal_layer_depth,

@@ -28,36 +28,51 @@ pub enum FoldRoundOutput<VCSCommitment> {
 }
 
 /// A stateful prover for the FRI fold phase.
-pub struct FRIFoldProver<'a, F, P, NTT, MerkleProver>
+///
+/// Supports separate Merkle tree provers for the initial codeword commitment (which may be hiding)
+/// and for FRI round commitments (which can be non-hiding, since round codewords are derived from
+/// public Fiat-Shamir challenges).
+pub struct FRIFoldProver<'a, F, P, NTT, MerkleProver, RoundMerkleProver = MerkleProver>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	MerkleProver: MerkleTreeProver<F>,
+	RoundMerkleProver: MerkleTreeProver<F>,
 {
 	params: &'a FRIParams<F>,
 	ntt: &'a NTT,
 	merkle_prover: &'a MerkleProver,
+	round_merkle_prover: &'a RoundMerkleProver,
 	codeword: FieldBuffer<P>,
 	codeword_committed: &'a MerkleProver::Committed,
-	round_committed: Vec<(FieldBuffer<F>, MerkleProver::Committed)>,
+	round_committed: Vec<(FieldBuffer<F>, RoundMerkleProver::Committed)>,
 	curr_round: usize,
 	next_commit_round: Option<usize>,
 	unprocessed_challenges: Vec<F>,
 }
 
-impl<'a, F, P, NTT, MerkleScheme, MerkleProver> FRIFoldProver<'a, F, P, NTT, MerkleProver>
+impl<'a, F, P, NTT, MerkleScheme, MerkleProver, RoundMerkleScheme, RoundMerkleProver>
+	FRIFoldProver<'a, F, P, NTT, MerkleProver, RoundMerkleProver>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
+	RoundMerkleScheme: MerkleTreeScheme<F, Digest = MerkleScheme::Digest>,
+	RoundMerkleProver: MerkleTreeProver<F, Scheme = RoundMerkleScheme>,
 {
 	/// Constructs a new folder.
+	///
+	/// ## Arguments
+	///
+	/// * `merkle_prover` - Merkle tree prover for the initial codeword (may be hiding/salted)
+	/// * `round_merkle_prover` - Merkle tree prover for FRI round commitments (typically non-hiding)
 	pub fn new(
 		params: &'a FRIParams<F>,
 		ntt: &'a NTT,
 		merkle_prover: &'a MerkleProver,
+		round_merkle_prover: &'a RoundMerkleProver,
 		committed_codeword: FieldBuffer<P>,
 		committed: &'a MerkleProver::Committed,
 	) -> Result<Self, Error> {
@@ -72,6 +87,7 @@ where
 			params,
 			ntt,
 			merkle_prover,
+			round_merkle_prover,
 			codeword: committed_codeword,
 			codeword_committed: committed,
 			round_committed: Vec::with_capacity(params.n_oracles()),
@@ -114,7 +130,9 @@ where
 	/// As a memory efficient optimization, this method may not actually do the folding, but instead
 	/// accumulate the folding challenge for processing at a later time. This saves us from storing
 	/// intermediate folded codewords.
-	pub fn execute_fold_round(&mut self) -> Result<FoldRoundOutput<MerkleScheme::Digest>, Error> {
+	pub fn execute_fold_round(
+		&mut self,
+	) -> Result<FoldRoundOutput<RoundMerkleScheme::Digest>, Error> {
 		if !self.is_commitment_round() {
 			return Ok(FoldRoundOutput::NoCommitment);
 		}
@@ -158,7 +176,7 @@ where
 		let coset_size = 1 << log_coset_size;
 		let merkle_tree_span = tracing::debug_span!("Merkle Tree").entered();
 		let (commitment, committed) = self
-			.merkle_prover
+			.round_merkle_prover
 			.commit(folded_codeword.as_ref(), coset_size)?;
 		drop(merkle_tree_span);
 
@@ -182,8 +200,13 @@ where
 	#[allow(clippy::type_complexity)]
 	pub fn finalize(
 		mut self,
-	) -> Result<(TerminateCodeword<F>, FRIQueryProver<'a, F, P, MerkleProver, MerkleScheme>), Error>
-	{
+	) -> Result<
+		(
+			TerminateCodeword<F>,
+			FRIQueryProver<'a, F, P, MerkleProver, MerkleScheme, RoundMerkleProver, RoundMerkleScheme>,
+		),
+		Error,
+	> {
 		if self.curr_round != self.n_rounds() {
 			return Err(Error::EarlyProverFinish);
 		}
@@ -205,6 +228,7 @@ where
 			codeword_committed,
 			round_committed,
 			merkle_prover,
+			round_merkle_prover,
 			..
 		} = self;
 
@@ -214,6 +238,7 @@ where
 			codeword_committed,
 			round_committed,
 			merkle_prover,
+			round_merkle_prover,
 		};
 		Ok((terminate_codeword, query_prover))
 	}
@@ -228,6 +253,9 @@ where
 		let (terminate_codeword, query_prover) = self.finalize()?;
 		let mut advice = transcript.decommitment();
 		advice.write_scalar_slice(terminate_codeword.as_ref());
+
+		// Write the salts for verify_vector on the terminal codeword commitment.
+		query_prover.prove_terminate_vector(&mut advice)?;
 
 		let layers = query_prover.vcs_optimal_layers()?;
 		for layer in layers {
