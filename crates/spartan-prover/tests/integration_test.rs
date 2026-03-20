@@ -71,8 +71,12 @@ fn test_power7_circuit_prover_verifier() {
 		.prove(&witness, &mut rng, &mut prover_transcript)
 		.expect("prove failed");
 
+	let proof_bytes = prover_transcript.finalize();
+	println!("Proof size: {} bytes", proof_bytes.len());
+
 	// Verify proof
-	let mut verifier_transcript = prover_transcript.into_verifier();
+	let mut verifier_transcript =
+		binius_transcript::VerifierTranscript::new(StdChallenger::default(), proof_bytes);
 	verifier
 		.verify(public, &mut verifier_transcript)
 		.expect("verify failed");

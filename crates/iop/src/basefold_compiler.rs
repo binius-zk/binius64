@@ -28,27 +28,32 @@ use crate::{
 /// - `F`: The binary field type
 /// - `MerkleScheme_`: The Merkle tree scheme for commitments
 #[derive(Debug, Clone)]
-pub struct BaseFoldVerifierCompiler<F, MerkleScheme_>
+pub struct BaseFoldVerifierCompiler<F, MerkleScheme_, RoundMerkleScheme_ = MerkleScheme_>
 where
 	F: BinaryField,
 	MerkleScheme_: MerkleTreeScheme<F>,
+	RoundMerkleScheme_: MerkleTreeScheme<F>,
 {
 	merkle_scheme: MerkleScheme_,
+	round_merkle_scheme: RoundMerkleScheme_,
 	oracle_specs: Vec<OracleSpec>,
 	fri_params: Vec<FRIParams<F>>,
 }
 
-impl<F, MerkleScheme_> BaseFoldVerifierCompiler<F, MerkleScheme_>
+impl<F, MerkleScheme_, RoundMerkleScheme_>
+	BaseFoldVerifierCompiler<F, MerkleScheme_, RoundMerkleScheme_>
 where
 	F: BinaryField,
 	MerkleScheme_: MerkleTreeScheme<F>,
+	RoundMerkleScheme_: MerkleTreeScheme<F, Digest = MerkleScheme_::Digest>,
 {
 	/// Creates a new compiler with precomputed FRI parameters.
 	///
 	/// # Arguments
 	///
 	/// * `ntt` - The additive NTT for Reed-Solomon encoding (borrowed, only used for FRI params)
-	/// * `merkle_scheme` - The Merkle tree scheme (owned)
+	/// * `merkle_scheme` - The Merkle tree scheme for initial commitments (owned)
+	/// * `round_merkle_scheme` - The Merkle tree scheme for FRI round commitments (owned)
 	/// * `oracle_specs` - Specifications for each oracle to be committed
 	/// * `log_inv_rate` - Log2 of the inverse Reed-Solomon code rate
 	/// * `n_test_queries` - Number of FRI test queries for soundness
@@ -56,6 +61,7 @@ where
 	pub fn new<NTT, Strategy>(
 		ntt: &NTT,
 		merkle_scheme: MerkleScheme_,
+		round_merkle_scheme: RoundMerkleScheme_,
 		oracle_specs: Vec<OracleSpec>,
 		log_inv_rate: usize,
 		n_test_queries: usize,
@@ -76,7 +82,7 @@ where
 				let log_batch_size = if spec.is_zk { Some(1) } else { None };
 				FRIParams::with_strategy(
 					ntt,
-					&merkle_scheme,
+					&round_merkle_scheme,
 					log_msg_len,
 					log_batch_size,
 					log_inv_rate,
@@ -89,6 +95,7 @@ where
 
 		Self {
 			merkle_scheme,
+			round_merkle_scheme,
 			oracle_specs,
 			fri_params,
 		}
@@ -107,6 +114,11 @@ where
 	/// Returns a reference to the Merkle scheme.
 	pub fn merkle_scheme(&self) -> &MerkleScheme_ {
 		&self.merkle_scheme
+	}
+
+	/// Returns a reference to the round Merkle scheme.
+	pub fn round_merkle_scheme(&self) -> &RoundMerkleScheme_ {
+		&self.round_merkle_scheme
 	}
 
 	/// Returns the Reed-Solomon code subspace with the largest dimension.
@@ -136,7 +148,7 @@ where
 	pub fn create_channel<'a, Challenger_>(
 		&'a self,
 		transcript: &'a mut VerifierTranscript<Challenger_>,
-	) -> BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
+	) -> BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_, RoundMerkleScheme_>
 	where
 		MerkleScheme_::Digest: DeserializeBytes,
 		Challenger_: Challenger,
@@ -144,6 +156,7 @@ where
 		BaseFoldVerifierChannel::from_precomputed(
 			transcript,
 			&self.merkle_scheme,
+			&self.round_merkle_scheme,
 			&self.oracle_specs,
 			&self.fri_params,
 		)

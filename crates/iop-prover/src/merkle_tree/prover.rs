@@ -79,11 +79,23 @@ where
 		index: usize,
 		proof: &mut TranscriptWriter<B>,
 	) -> Result<(), Error> {
-		let salt = committed.get_salt(index >> layer_depth);
+		let salt = committed.get_salt(index);
 		proof.write_slice(salt);
 
 		let branch = committed.branch(index, layer_depth)?;
 		proof.write_slice(&branch);
+		Ok(())
+	}
+
+	fn prove_vector<B: BufMut>(
+		&self,
+		committed: &Self::Committed,
+		proof: &mut TranscriptWriter<B>,
+	) -> Result<(), Error> {
+		for i in 0..(1 << committed.log_len) {
+			let salt = committed.get_salt(i);
+			proof.write_slice(salt);
+		}
 		Ok(())
 	}
 

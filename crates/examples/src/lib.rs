@@ -91,7 +91,7 @@ where
 	D: Digest + BlockSizeUser + FixedOutputReset,
 	C: PseudoCompressionFunction<Output<D>, 2>,
 	ParD: ParallelDigest<Digest = D>,
-	ParC: ParallelPseudoCompression<Output<D>, 2, Compression = C>,
+	ParC: ParallelPseudoCompression<Output<D>, 2, Compression = C> + Clone,
 {
 	let challenger = StdChallenger::default();
 

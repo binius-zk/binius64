@@ -1,7 +1,5 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::iter;
-
 use binius_field::{BinaryField, PackedField};
 use binius_iop::{
 	fri::{FRIParams, vcs_optimal_layers_depths_iter},
@@ -16,31 +14,62 @@ use tracing::instrument;
 use crate::{fri::Error, merkle_tree::MerkleTreeProver};
 
 /// A prover for the FRI query phase.
+///
+/// Uses separate Merkle tree provers for the initial codeword (which may be hiding/salted)
+/// and for FRI round commitments (which are non-hiding).
 #[derive(Debug)]
-pub struct FRIQueryProver<'a, F, P, MerkleProver, VCS>
-where
+pub struct FRIQueryProver<
+	'a,
+	F,
+	P,
+	MerkleProver,
+	VCS,
+	RoundMerkleProver = MerkleProver,
+	RoundVCS = VCS,
+> where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
 	VCS: MerkleTreeScheme<F>,
+	RoundMerkleProver: MerkleTreeProver<F, Scheme = RoundVCS>,
+	RoundVCS: MerkleTreeScheme<F>,
 {
 	pub(super) params: &'a FRIParams<F>,
 	pub(super) codeword: FieldBuffer<P>,
 	pub(super) codeword_committed: &'a MerkleProver::Committed,
-	pub(super) round_committed: Vec<(FieldBuffer<F>, MerkleProver::Committed)>,
+	pub(super) round_committed: Vec<(FieldBuffer<F>, RoundMerkleProver::Committed)>,
 	pub(super) merkle_prover: &'a MerkleProver,
+	pub(super) round_merkle_prover: &'a RoundMerkleProver,
 }
 
-impl<F, P, MerkleProver, VCS> FRIQueryProver<'_, F, P, MerkleProver, VCS>
+impl<F, P, MerkleProver, VCS, RoundMerkleProver, RoundVCS>
+	FRIQueryProver<'_, F, P, MerkleProver, VCS, RoundMerkleProver, RoundVCS>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
 	VCS: MerkleTreeScheme<F>,
+	RoundMerkleProver: MerkleTreeProver<F, Scheme = RoundVCS>,
+	RoundVCS: MerkleTreeScheme<F>,
 {
 	/// Number of oracles sent during the fold rounds.
 	pub fn n_oracles(&self) -> usize {
 		self.params.n_oracles()
+	}
+
+	/// Writes the proof data for `verify_vector` on the terminal codeword commitment.
+	///
+	/// For hiding trees, this writes the salt for each leaf of the terminal Merkle tree.
+	pub fn prove_terminate_vector<B: BufMut>(
+		&self,
+		proof: &mut TranscriptWriter<B>,
+	) -> Result<(), Error> {
+		let (_, committed) = self
+			.round_committed
+			.last()
+			.expect("round_committed is non-empty");
+		self.round_merkle_prover.prove_vector(committed, proof)?;
+		Ok(())
 	}
 
 	/// Proves a FRI challenge query.
@@ -78,7 +107,7 @@ where
 		{
 			index >>= arity;
 			prove_coset_opening(
-				self.merkle_prover,
+				self.round_merkle_prover,
 				codeword.to_ref(),
 				committed,
 				index,
@@ -91,22 +120,33 @@ where
 		Ok(())
 	}
 
-	pub fn vcs_optimal_layers(&self) -> Result<Vec<Vec<VCS::Digest>>, Error> {
+	pub fn vcs_optimal_layers(&self) -> Result<Vec<Vec<VCS::Digest>>, Error>
+	where
+		VCS::Digest: From<RoundVCS::Digest>,
+	{
+		let mut layers = Vec::new();
+
+		// First layer: codeword commitment (uses the hiding prover)
+		let mut layer_depths_iter =
+			vcs_optimal_layers_depths_iter(self.params, self.merkle_prover.scheme());
+		let first_depth = layer_depths_iter.next().expect("at least one commitment");
+		let first_layer = self.merkle_prover.layer(self.codeword_committed, first_depth)?;
+		layers.push(first_layer.to_vec());
+
+		// Round layers (excluding terminal): use the round prover
 		let round_committed_excluding_terminal =
 			&self.round_committed[..self.round_committed.len() - 1];
-		let committed_iter = iter::once(self.codeword_committed).chain(
-			round_committed_excluding_terminal
-				.iter()
-				.map(|(_, committed)| committed),
-		);
+		for ((_, committed), optimal_layer_depth) in round_committed_excluding_terminal
+			.iter()
+			.zip(layer_depths_iter)
+		{
+			let layer = self
+				.round_merkle_prover
+				.layer(committed, optimal_layer_depth)?;
+			layers.push(layer.iter().cloned().map(Into::into).collect());
+		}
 
-		committed_iter
-			.zip(vcs_optimal_layers_depths_iter(self.params, self.merkle_prover.scheme()))
-			.map(|(committed, optimal_layer_depth)| {
-				let layer = self.merkle_prover.layer(committed, optimal_layer_depth)?;
-				Ok(layer.to_vec())
-			})
-			.collect::<Result<Vec<_>, _>>()
+		Ok(layers)
 	}
 }
 

@@ -51,20 +51,23 @@ struct CommittedOracleData<P: PackedField, Committed> {
 /// - `NTT`: The additive NTT for Reed-Solomon encoding
 /// - `MerkleProver_`: The Merkle tree prover for commitments
 /// - `Challenger_`: The Fiat-Shamir challenger
-pub struct BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
+pub struct BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_, RoundMerkleProver_ = MerkleProver_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MerkleProver_: MerkleTreeProver<F>,
+	RoundMerkleProver_: MerkleTreeProver<F>,
 	Challenger_: Challenger,
 {
 	/// Prover transcript for Fiat-Shamir (borrowed).
 	transcript: &'a mut ProverTranscript<Challenger_>,
 	/// NTT for RS encoding (borrowed).
 	ntt: &'a NTT,
-	/// Merkle tree prover (borrowed).
+	/// Merkle tree prover for initial codeword commitment (borrowed).
 	merkle_prover: &'a MerkleProver_,
+	/// Merkle tree prover for FRI round commitments (borrowed).
+	round_merkle_prover: &'a RoundMerkleProver_,
 	/// Oracle specifications.
 	oracle_specs: Vec<OracleSpec>,
 	/// Precomputed FRI params per oracle.
@@ -86,6 +89,8 @@ where
 	Challenger_: Challenger,
 {
 	/// Creates a new BaseFold prover channel.
+	///
+	/// Uses the same Merkle prover for both initial commitments and FRI round commitments.
 	///
 	/// # Arguments
 	///
@@ -135,6 +140,7 @@ where
 			transcript,
 			ntt,
 			merkle_prover,
+			round_merkle_prover: merkle_prover,
 			oracle_specs,
 			fri_params,
 			committed_oracles: Vec::new(),
@@ -146,23 +152,37 @@ where
 	pub fn transcript(&self) -> &ProverTranscript<Challenger_> {
 		self.transcript
 	}
+}
 
+impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, RoundMerkleScheme, RoundMerkleProver_, Challenger_>
+	BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_, RoundMerkleProver_>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	NTT: AdditiveNTT<Field = F> + Sync,
+	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
+	MerkleProver_: MerkleTreeProver<F, Scheme = MerkleScheme>,
+	RoundMerkleScheme: MerkleTreeScheme<F, Digest = MerkleScheme::Digest>,
+	RoundMerkleProver_: MerkleTreeProver<F, Scheme = RoundMerkleScheme>,
+	Challenger_: Challenger,
+{
 	/// Creates a new BaseFold prover channel from a compiler with precomputed FRI parameters.
 	///
-	/// This constructor borrows the NTT and other parameters from the compiler.
+	/// This constructor borrows the NTT and Merkle provers from the compiler.
 	///
 	/// # Arguments
 	///
 	/// * `compiler` - The BaseFold prover compiler with precomputed parameters
 	/// * `transcript` - The prover transcript for Fiat-Shamir (borrowed mutably)
 	pub fn from_compiler(
-		compiler: &'a BaseFoldProverCompiler<P, NTT, MerkleProver_>,
+		compiler: &'a BaseFoldProverCompiler<P, NTT, MerkleProver_, RoundMerkleProver_>,
 		transcript: &'a mut ProverTranscript<Challenger_>,
 	) -> Self {
 		Self {
 			transcript,
 			ntt: compiler.ntt(),
 			merkle_prover: compiler.merkle_prover(),
+			round_merkle_prover: compiler.round_merkle_prover(),
 			oracle_specs: compiler.oracle_specs().to_vec(),
 			fri_params: compiler.fri_params().to_vec(),
 			committed_oracles: Vec::new(),
@@ -171,14 +191,17 @@ where
 	}
 }
 
-impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, Challenger_> IPProverChannel<F>
-	for BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
+impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, RoundMerkleScheme, RoundMerkleProver_, Challenger_>
+	IPProverChannel<F>
+	for BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_, RoundMerkleProver_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MerkleProver_: MerkleTreeProver<F, Scheme = MerkleScheme>,
+	RoundMerkleScheme: MerkleTreeScheme<F, Digest = MerkleScheme::Digest>,
+	RoundMerkleProver_: MerkleTreeProver<F, Scheme = RoundMerkleScheme>,
 	Challenger_: Challenger,
 {
 	fn send_one(&mut self, elem: F) {
@@ -202,14 +225,17 @@ where
 	}
 }
 
-impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, Challenger_> IOPProverChannel<P>
-	for BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
+impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, RoundMerkleScheme, RoundMerkleProver_, Challenger_>
+	IOPProverChannel<P>
+	for BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_, RoundMerkleProver_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MerkleProver_: MerkleTreeProver<F, Scheme = MerkleScheme>,
+	RoundMerkleScheme: MerkleTreeScheme<F, Digest = MerkleScheme::Digest>,
+	RoundMerkleProver_: MerkleTreeProver<F, Scheme = RoundMerkleScheme>,
 	Challenger_: Challenger,
 {
 	type Oracle = BaseFoldOracle;
@@ -294,6 +320,7 @@ where
 				fri_params,
 				self.ntt,
 				self.merkle_prover,
+				self.round_merkle_prover,
 				committed_data.codeword.clone(),
 				&committed_data.committed,
 			)
@@ -500,9 +527,11 @@ mod tests {
 		let mut verifier_transcript = prover_transcript.into_verifier();
 
 		// Create verifier channel via compiler - this tests construction with mixed specs
+		let round_merkle_scheme = merkle_scheme.clone();
 		let compiler = BaseFoldVerifierCompiler::new(
 			&ntt,
 			merkle_scheme,
+			round_merkle_scheme,
 			oracle_specs,
 			LOG_INV_RATE,
 			n_test_queries,

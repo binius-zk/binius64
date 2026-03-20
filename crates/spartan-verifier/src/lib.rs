@@ -120,7 +120,9 @@ where
 		let log_batch_size = 1;
 		let log_dim = log_witness_size; // RS code dimension equals witness size
 		let log_code_len = log_dim + log_inv_rate;
-		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
+		let round_merkle_scheme = BinaryMerkleTreeScheme::new(compression.clone());
+		// Codeword Merkle tree is hiding (salted) for zero-knowledge.
+		let merkle_scheme = BinaryMerkleTreeScheme::hiding(compression, 1);
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
 
@@ -155,6 +157,7 @@ where
 		let basefold_compiler = BaseFoldVerifierCompiler::new(
 			&ntt,
 			merkle_scheme,
+			round_merkle_scheme,
 			oracle_specs,
 			log_inv_rate,
 			n_test_queries,

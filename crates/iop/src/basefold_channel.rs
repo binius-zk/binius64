@@ -37,16 +37,19 @@ pub struct BaseFoldOracle {
 /// - `F`: The binary field type
 /// - `MerkleScheme_`: The Merkle tree scheme for commitments
 /// - `Challenger_`: The Fiat-Shamir challenger
-pub struct BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
+pub struct BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_, RoundMerkleScheme_ = MerkleScheme_>
 where
 	F: BinaryField,
 	MerkleScheme_: MerkleTreeScheme<F>,
+	RoundMerkleScheme_: MerkleTreeScheme<F>,
 	Challenger_: Challenger,
 {
 	/// Verifier transcript for Fiat-Shamir (borrowed).
 	transcript: &'a mut VerifierTranscript<Challenger_>,
-	/// Merkle tree scheme (borrowed).
+	/// Merkle tree scheme for initial codeword commitment (may be hiding/salted).
 	merkle_scheme: &'a MerkleScheme_,
+	/// Merkle tree scheme for FRI round commitments (non-hiding).
+	round_merkle_scheme: &'a RoundMerkleScheme_,
 	/// Oracle specifications (borrowed).
 	oracle_specs: &'a [OracleSpec],
 	/// Precomputed FRI params per oracle (borrowed).
@@ -57,10 +60,12 @@ where
 	next_oracle_index: usize,
 }
 
-impl<'a, F, MerkleScheme_, Challenger_> BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
+impl<'a, F, MerkleScheme_, Challenger_, RoundMerkleScheme_>
+	BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_, RoundMerkleScheme_>
 where
 	F: BinaryField,
 	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
+	RoundMerkleScheme_: MerkleTreeScheme<F, Digest = MerkleScheme_::Digest>,
 	Challenger_: Challenger,
 {
 	/// Creates a new BaseFold verifier channel from precomputed FRI parameters.
@@ -72,17 +77,20 @@ where
 	///
 	/// * `transcript` - The verifier transcript for Fiat-Shamir (borrowed)
 	/// * `merkle_scheme` - The Merkle tree scheme (borrowed)
+	/// * `round_merkle_scheme` - The Merkle tree scheme for FRI round commitments (borrowed)
 	/// * `oracle_specs` - Specifications for each oracle to be committed (borrowed)
 	/// * `fri_params` - Precomputed FRI parameters for each oracle (borrowed)
 	pub fn from_precomputed(
 		transcript: &'a mut VerifierTranscript<Challenger_>,
 		merkle_scheme: &'a MerkleScheme_,
+		round_merkle_scheme: &'a RoundMerkleScheme_,
 		oracle_specs: &'a [OracleSpec],
 		fri_params: &'a [FRIParams<F>],
 	) -> Self {
 		Self {
 			transcript,
 			merkle_scheme,
+			round_merkle_scheme,
 			oracle_specs,
 			fri_params,
 			oracle_commitments: Vec::new(),
@@ -96,11 +104,12 @@ where
 	}
 }
 
-impl<F, MerkleScheme_, Challenger_> IPVerifierChannel<F>
-	for BaseFoldVerifierChannel<'_, F, MerkleScheme_, Challenger_>
+impl<F, MerkleScheme_, Challenger_, RoundMerkleScheme_> IPVerifierChannel<F>
+	for BaseFoldVerifierChannel<'_, F, MerkleScheme_, Challenger_, RoundMerkleScheme_>
 where
 	F: BinaryField,
 	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
+	RoundMerkleScheme_: MerkleTreeScheme<F, Digest = MerkleScheme_::Digest>,
 	Challenger_: Challenger,
 {
 	type Elem = F;
@@ -149,11 +158,12 @@ where
 	}
 }
 
-impl<F, MerkleScheme_, Challenger_> IOPVerifierChannel<F>
-	for BaseFoldVerifierChannel<'_, F, MerkleScheme_, Challenger_>
+impl<F, MerkleScheme_, Challenger_, RoundMerkleScheme_> IOPVerifierChannel<F>
+	for BaseFoldVerifierChannel<'_, F, MerkleScheme_, Challenger_, RoundMerkleScheme_>
 where
 	F: BinaryField,
 	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
+	RoundMerkleScheme_: MerkleTreeScheme<F, Digest = MerkleScheme_::Digest>,
 	Challenger_: Challenger,
 {
 	type Oracle = BaseFoldOracle;
@@ -215,6 +225,7 @@ where
 				basefold::verify_zk(
 					fri_params,
 					self.merkle_scheme,
+					self.round_merkle_scheme,
 					commitment,
 					relation.claim,
 					self.transcript,
@@ -223,6 +234,7 @@ where
 				basefold::verify(
 					fri_params,
 					self.merkle_scheme,
+					self.round_merkle_scheme,
 					commitment,
 					relation.claim,
 					self.transcript,

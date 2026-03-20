@@ -55,7 +55,7 @@ use binius_utils::{
 use digest::{Digest, FixedOutputReset, Output, core_api::BlockSizeUser};
 pub use error::*;
 use itertools::chain;
-use rand::{CryptoRng, rngs::StdRng};
+use rand::{CryptoRng, SeedableRng, rngs::StdRng};
 
 use crate::wiring::WiringTranspose;
 
@@ -93,7 +93,7 @@ where
 	P: PackedField<Scalar = F> + PackedExtension<F>,
 	MerkleHash: Digest + BlockSizeUser + FixedOutputReset,
 	ParallelMerkleHasher: ParallelDigest<Digest = MerkleHash>,
-	ParallelMerkleCompress: ParallelPseudoCompression<Output<MerkleHash>, 2>,
+	ParallelMerkleCompress: ParallelPseudoCompression<Output<MerkleHash>, 2> + Clone,
 	Output<MerkleHash>: SerializeBytes,
 {
 	/// Constructs a prover corresponding to a constraint system verifier.
@@ -103,6 +103,17 @@ where
 		verifier: Verifier<F, MerkleHash, ParallelMerkleCompress::Compression>,
 		compression: ParallelMerkleCompress,
 	) -> Result<Self, Error> {
+		let mut seed = [0u8; 32];
+		getrandom::fill(&mut seed).expect("OS RNG available");
+		Self::setup_with_rng(verifier, compression, StdRng::from_seed(seed))
+	}
+
+	/// Like [`Self::setup`] but with an explicit RNG for the hiding Merkle tree salt.
+	pub fn setup_with_rng(
+		verifier: Verifier<F, MerkleHash, ParallelMerkleCompress::Compression>,
+		compression: ParallelMerkleCompress,
+		salt_rng: impl CryptoRng,
+	) -> Result<Self, Error> {
 		let cs = verifier.constraint_system();
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 
@@ -111,13 +122,18 @@ where
 		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
-		let merkle_prover = BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression);
+		let round_merkle_prover =
+			BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression.clone());
+		// Codeword Merkle tree is hiding (salted) for zero-knowledge.
+		let merkle_prover =
+			BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::hiding(compression, salt_rng, 1);
 
 		// Create the BaseFold compiler from verifier compiler (reuses oracle_specs and fri_params)
 		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
 			verifier.iop_compiler(),
 			ntt,
 			merkle_prover,
+			round_merkle_prover,
 		);
 
 		// Compute wiring transpose from constraint system

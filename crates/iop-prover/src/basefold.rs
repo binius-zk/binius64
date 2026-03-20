@@ -40,24 +40,28 @@ pub enum Error {
 ///
 /// [BaseFold]: <https://link.springer.com/chapter/10.1007/978-3-031-68403-6_5>
 /// [DP24]: <https://eprint.iacr.org/2024/504>
-pub struct BaseFoldProver<'a, F, P, NTT, MerkleProver>
+pub struct BaseFoldProver<'a, F, P, NTT, MerkleProver, RoundMerkleProver = MerkleProver>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MerkleProver: MerkleTreeProver<F>,
+	RoundMerkleProver: MerkleTreeProver<F>,
 {
 	sumcheck_prover: BivariateProductSumcheckProver<P>,
-	fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
+	fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver, RoundMerkleProver>,
 }
 
-impl<'a, F, P, NTT, MerkleScheme, MerkleProver> BaseFoldProver<'a, F, P, NTT, MerkleProver>
+impl<'a, F, P, NTT, MerkleScheme, MerkleProver, RoundMerkleScheme, RoundMerkleProver>
+	BaseFoldProver<'a, F, P, NTT, MerkleProver, RoundMerkleProver>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
+	RoundMerkleScheme: MerkleTreeScheme<F, Digest = MerkleScheme::Digest>,
+	RoundMerkleProver: MerkleTreeProver<F, Scheme = RoundMerkleScheme>,
 {
 	/// Constructs a new prover.
 	///
@@ -75,7 +79,7 @@ where
 		multilinear: FieldBuffer<P>,
 		transparent_multilinear: FieldBuffer<P>,
 		claim: F,
-		fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
+		fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver, RoundMerkleProver>,
 	) -> Self {
 		assert_eq!(multilinear.log_len(), transparent_multilinear.log_len());
 		assert_eq!(multilinear.log_len(), fri_folder.n_rounds() - fri_folder.curr_round());
@@ -184,19 +188,21 @@ where
 ///
 /// A `BaseFoldProver` configured for the remaining n rounds. Caller should call
 /// `.prove(transcript)`.
-pub fn prove_zk<'a, F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
+pub fn prove_zk<'a, F, P, NTT, MerkleScheme, MerkleProver, RoundMerkleScheme, RoundMerkleProver, Challenger_>(
 	mut multilinear: FieldBuffer<P>,
 	transparent_multilinear: FieldBuffer<P>,
 	sum_claim: F,
-	mut fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
+	mut fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver, RoundMerkleProver>,
 	transcript: &mut ProverTranscript<Challenger_>,
-) -> BaseFoldProver<'a, F, P, NTT, MerkleProver>
+) -> BaseFoldProver<'a, F, P, NTT, MerkleProver, RoundMerkleProver>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
+	RoundMerkleScheme: MerkleTreeScheme<F, Digest = MerkleScheme::Digest>,
+	RoundMerkleProver: MerkleTreeProver<F, Scheme = RoundMerkleScheme>,
 	Challenger_: Challenger,
 {
 	let _scope = tracing::debug_span!("Basefold ZK setup").entered();
@@ -300,7 +306,7 @@ mod test {
 		prover_transcript.message().write(&codeword_commitment);
 
 		let fri_folder =
-			FRIFoldProver::new(&fri_params, &ntt, &merkle_prover, codeword, &codeword_committed)?;
+			FRIFoldProver::new(&fri_params, &ntt, &merkle_prover, &merkle_prover, codeword, &codeword_committed)?;
 
 		let prover = BaseFoldProver::new(multilinear, eval_point_eq, evaluation_claim, fri_folder);
 		prover.prove(&mut prover_transcript)?;
@@ -315,6 +321,7 @@ mod test {
 			challenges,
 		} = verifier_basefold::verify(
 			&fri_params,
+			merkle_prover.scheme(),
 			merkle_prover.scheme(),
 			retrieved_codeword_commitment,
 			evaluation_claim,
@@ -402,7 +409,7 @@ mod test {
 		prover_transcript.message().write(&codeword_commitment);
 
 		let fri_folder =
-			FRIFoldProver::new(&fri_params, &ntt, &merkle_prover, codeword, &codeword_committed)?;
+			FRIFoldProver::new(&fri_params, &ntt, &merkle_prover, &merkle_prover, codeword, &codeword_committed)?;
 
 		// Run prove_zk then continue with basefold prover
 		let prover = prove_zk(
@@ -424,6 +431,7 @@ mod test {
 			challenges,
 		} = verifier_basefold::verify_zk(
 			&fri_params,
+			merkle_prover.scheme(),
 			merkle_prover.scheme(),
 			retrieved_commitment,
 			evaluation_claim,
