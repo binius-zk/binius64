@@ -121,8 +121,10 @@ where
 		} = self.phase1(&initial_eval_point, b_prodcheck, &b_leaves, exp_eval)?;
 
 		// Phase 2
-		let Phase2Output { twisted_claims } =
-			frobenius_twist(log_bits, F::DEGREE, &phase1_eval_point, &b_leaves_evals);
+		let Phase2Output {
+			twisted_eval_points,
+			twisted_evals,
+		} = frobenius_twist(log_bits, &phase1_eval_point, &b_leaves_evals);
 
 		// Splitting
 		let (a_exponents, a_root, mut a_layers) = a.split();
@@ -142,7 +144,8 @@ where
 			c_hi_root_eval,
 		} = self.phase3(
 			log_bits,
-			&twisted_claims,
+			&twisted_eval_points,
+			&twisted_evals,
 			a_root,
 			b_exponents.as_ref(),
 			[c_lo_root, c_hi_root],
@@ -238,7 +241,8 @@ where
 	fn phase3(
 		&mut self,
 		log_bits: usize,
-		twisted_claims: &[(Vec<F>, F)],
+		twisted_eval_points: &[Vec<F>],
+		twisted_evals: &[F],
 		selector: FieldBuffer<P>,
 		b_exponents: &[B],
 		c_lo_hi_roots: [FieldBuffer<P>; 2],
@@ -247,15 +251,14 @@ where
 	) -> Result<Phase3Output<F>, Error> {
 		let n_vars = selector.log_len();
 		assert!(
-			twisted_claims
+			twisted_eval_points
 				.iter()
-				.all(|(point, _)| point.len() == n_vars)
+				.all(|point| point.len() == n_vars)
 		);
 		assert_eq!(b_exponents.len(), 1 << n_vars);
 
-		let selector_claims = twisted_claims
-			.iter()
-			.map(|&(ref point, value)| Claim {
+		let selector_claims = izip!(twisted_eval_points, twisted_evals)
+			.map(|(point, &value)| Claim {
 				point: point.clone(),
 				value,
 			})
