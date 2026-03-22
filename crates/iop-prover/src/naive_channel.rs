@@ -25,12 +25,8 @@ pub struct NaiveOracle {
 
 /// Stored data for a committed oracle.
 struct StoredOracleData<P: PackedField> {
-	/// The original polynomial buffer.
-	/// For ZK oracles, this is `witness || mask` (size 2^(n_vars+1)).
-	/// For non-ZK oracles, this is just the polynomial (size 2^n_vars).
+	/// The polynomial buffer (size 2^n_vars).
 	buffer: FieldBuffer<P>,
-	/// Whether this oracle uses ZK blinding.
-	is_zk: bool,
 }
 
 /// A naive prover channel that writes full polynomial data to the transcript.
@@ -137,20 +133,12 @@ where
 
 		let index = self.next_oracle_index;
 
-		// Extract spec data before any mutable borrows
-		let spec_log_msg_len = self.oracle_specs[index].log_msg_len;
-		let spec_is_zk = self.oracle_specs[index].is_zk;
-
 		// Validate buffer length matches spec
-		let expected_log_len = if spec_is_zk {
-			spec_log_msg_len + 1
-		} else {
-			spec_log_msg_len
-		};
+		let spec_log_msg_len = self.oracle_specs[index].log_msg_len;
 		assert_eq!(
 			buffer.log_len(),
-			expected_log_len,
-			"oracle buffer log_len mismatch: expected {expected_log_len}, got {}",
+			spec_log_msg_len,
+			"oracle buffer log_len mismatch: expected {spec_log_msg_len}, got {}",
 			buffer.log_len()
 		);
 
@@ -165,7 +153,6 @@ where
 			FieldBuffer::new(buffer.log_len(), buffer.as_ref().to_vec().into_boxed_slice());
 		self.stored_oracles.push(StoredOracleData {
 			buffer: stored_buffer,
-			is_zk: spec_is_zk,
 		});
 
 		self.next_oracle_index += 1;
@@ -190,7 +177,6 @@ where
 			assert!(index < self.stored_oracles.len(), "oracle index {index} out of bounds");
 
 			let log_msg_len = self.oracle_specs[index].log_msg_len;
-			let is_zk = self.stored_oracles[index].is_zk;
 
 			// Write the transparent polynomial to the transcript
 			self.transcript
@@ -202,11 +188,7 @@ where
 
 			// Debug assertion: prover should provide consistent eval claims
 			let stored = &self.stored_oracles[index];
-			let witness_poly = if is_zk {
-				stored.buffer.split_half_ref().0
-			} else {
-				stored.buffer.to_ref()
-			};
+			let witness_poly = stored.buffer.to_ref();
 			let actual_eval: F = inner_product_buffers(&witness_poly, transparent_poly);
 			debug_assert_eq!(
 				actual_eval, *eval_claim,

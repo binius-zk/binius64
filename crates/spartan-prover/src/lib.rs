@@ -302,9 +302,6 @@ where
 }
 
 /// Packs the witness into a [`FieldBuffer`] and adds blinding values for dummy wires.
-///
-/// The FRI mask is handled by the ZK channel, so this function only packs the witness
-/// and sets blinding values for dummy wires and dummy constraints.
 fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
 	log_witness_elems: usize,
 	witness: &[F],

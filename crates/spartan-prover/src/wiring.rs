@@ -493,10 +493,8 @@ mod tests {
 			},
 		);
 
-		// Oracle spec for the witness (non-ZK for simplicity)
 		let oracle_specs = vec![OracleSpec {
 			log_msg_len: log_witness_size,
-			is_zk: false,
 		}];
 
 		// === PROVER SIDE ===

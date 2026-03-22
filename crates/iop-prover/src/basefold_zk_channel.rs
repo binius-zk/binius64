@@ -333,7 +333,7 @@ mod tests {
 
 		let oracle_specs = vec![OracleSpec {
 			log_msg_len: n_vars,
-			is_zk: true,
+
 		}];
 
 		// === PROVER SIDE ===
@@ -404,11 +404,11 @@ mod tests {
 		let oracle_specs = vec![
 			OracleSpec {
 				log_msg_len: n_vars_1,
-				is_zk: true,
+	
 			},
 			OracleSpec {
 				log_msg_len: n_vars_2,
-				is_zk: true,
+	
 			},
 		];
 

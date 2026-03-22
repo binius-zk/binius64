@@ -149,13 +149,7 @@ where
 		let index = self.next_oracle_index;
 		let spec = &self.oracle_specs[index];
 
-		// For ZK oracles, the prover sends witness || mask (2^(n+1) elements).
-		// For non-ZK oracles, the prover sends the full polynomial (2^n elements).
-		let buffer_len = if spec.is_zk {
-			1 << (spec.log_msg_len + 1)
-		} else {
-			1 << spec.log_msg_len
-		};
+		let buffer_len = 1 << spec.log_msg_len;
 
 		// Read all polynomial coefficients from the transcript
 		let values = self
@@ -187,7 +181,6 @@ where
 
 			// Extract spec data before mutable borrow of transcript
 			let log_msg_len = self.oracle_specs[index].log_msg_len;
-			let is_zk = self.oracle_specs[index].is_zk;
 
 			// Read the transparent polynomial from the transcript (prover wrote it in
 			// prove_oracle_relations)
@@ -201,11 +194,7 @@ where
 
 			// Verify the inner product claim directly
 			let stored_poly = &self.stored_polynomials[index];
-			let witness_poly = if is_zk {
-				stored_poly.split_half_ref().0
-			} else {
-				stored_poly.to_ref()
-			};
+			let witness_poly = stored_poly.to_ref();
 			let actual_inner_product: F = inner_product_buffers(&witness_poly, &transparent_poly);
 
 			assert_eq!(

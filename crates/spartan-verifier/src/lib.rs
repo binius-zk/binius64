@@ -136,11 +136,11 @@ where
 		let oracle_specs = vec![
 			OracleSpec {
 				log_msg_len: log_witness_size,
-				is_zk: true,
+
 			},
 			OracleSpec {
 				log_msg_len: log_mask_dim,
-				is_zk: true,
+
 			},
 		];
 
@@ -334,7 +334,6 @@ where
 		let r_x = r_x.to_vec();
 
 		Box::new(move |point: &[E]| {
-			// The ZK channel strips the batch challenge before passing the eval point.
 			// Split into query_k (low-order bits) and query_j (high-order bits).
 			let (query_k, query_j) = point.split_at(m_d);
 

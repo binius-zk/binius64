@@ -97,7 +97,6 @@ where
 		// Create oracle spec for the single witness oracle (not ZK)
 		let oracle_specs = vec![OracleSpec {
 			log_msg_len: log_witness_elems,
-			is_zk: false,
 		}];
 
 		let iop_compiler = BaseFoldVerifierCompiler::new(

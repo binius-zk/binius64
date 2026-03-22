@@ -78,17 +78,11 @@ where
 		let fri_params = oracle_specs
 			.iter()
 			.map(|spec| {
-				let log_msg_len = if spec.is_zk {
-					spec.log_msg_len + 1
-				} else {
-					spec.log_msg_len
-				};
-				let log_batch_size = if spec.is_zk { Some(1) } else { None };
 				FRIParams::with_strategy(
 					&ntt,
 					merkle_prover.scheme(),
-					log_msg_len,
-					log_batch_size,
+					spec.log_msg_len,
+					None,
 					log_inv_rate,
 					n_test_queries,
 					&MinProofSizeStrategy,

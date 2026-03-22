@@ -202,32 +202,21 @@ where
 				self.oracle_commitments.len()
 			);
 
-			let spec = &self.oracle_specs[index];
 			let fri_params = &self.fri_params[index];
 			let commitment = self.oracle_commitments[index].clone();
 
-			// Run BaseFold verification with destructuring to capture all output values
+			// Run BaseFold verification (non-ZK variant).
 			let basefold::ReducedOutput {
 				final_fri_value,
 				final_sumcheck_value,
 				challenges,
-			} = if spec.is_zk {
-				basefold::verify_zk(
-					fri_params,
-					self.merkle_scheme,
-					commitment,
-					relation.claim,
-					self.transcript,
-				)?
-			} else {
-				basefold::verify(
-					fri_params,
-					self.merkle_scheme,
-					commitment,
-					relation.claim,
-					self.transcript,
-				)?
-			};
+			} = basefold::verify(
+				fri_params,
+				self.merkle_scheme,
+				commitment,
+				relation.claim,
+				self.transcript,
+			)?;
 
 			// Reverse challenges to get evaluation point in correct order (low-to-high)
 			let mut eval_point = challenges;

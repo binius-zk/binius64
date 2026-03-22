@@ -16,7 +16,7 @@ use binius_transcript::{
 use binius_utils::SerializeBytes;
 
 use crate::{
-	basefold::{self, BaseFoldProver},
+	basefold::BaseFoldProver,
 	basefold_compiler::BaseFoldProverCompiler,
 	channel::IOPProverChannel,
 	fri::{self, CommitOutput, FRIFoldProver},
@@ -112,17 +112,11 @@ where
 		let fri_params = oracle_specs
 			.iter()
 			.map(|spec| {
-				let log_msg_len = if spec.is_zk {
-					spec.log_msg_len + 1
-				} else {
-					spec.log_msg_len
-				};
-				let log_batch_size = if spec.is_zk { Some(1) } else { None };
 				FRIParams::with_strategy(
 					ntt,
 					merkle_prover.scheme(),
-					log_msg_len,
-					log_batch_size,
+					spec.log_msg_len,
+					None,
 					log_inv_rate,
 					n_test_queries,
 					&MinProofSizeStrategy,
@@ -227,15 +221,11 @@ where
 		let fri_params = &self.fri_params[index];
 
 		// Validate buffer length matches spec
-		let expected_log_len = if spec.is_zk {
-			spec.log_msg_len + 1
-		} else {
-			spec.log_msg_len
-		};
 		assert_eq!(
 			buffer.log_len(),
-			expected_log_len,
-			"oracle buffer log_len mismatch: expected {expected_log_len}, got {}",
+			spec.log_msg_len,
+			"oracle buffer log_len mismatch: expected {}, got {}",
+			spec.log_msg_len,
 			buffer.log_len()
 		);
 
@@ -285,7 +275,6 @@ where
 				self.committed_oracles.len()
 			);
 
-			let spec = &self.oracle_specs[index];
 			let fri_params = &self.fri_params[index];
 			let committed_data = &self.committed_oracles[index];
 
@@ -299,31 +288,16 @@ where
 			)
 			.expect("FRI folder creation should succeed");
 
-			// Run BaseFold proof
-			if spec.is_zk {
-				// ZK variant: first round handles batching, then regular BaseFold
-				let prover = basefold::prove_zk(
-					committed_data.message.clone(),
-					transparent_poly.clone(),
-					*eval_claim,
-					fri_folder,
-					self.transcript,
-				);
-				prover
-					.prove(self.transcript)
-					.expect("BaseFold ZK proof should succeed");
-			} else {
-				// Non-ZK variant
-				let prover = BaseFoldProver::new(
-					committed_data.message.clone(),
-					transparent_poly.clone(),
-					*eval_claim,
-					fri_folder,
-				);
-				prover
-					.prove(self.transcript)
-					.expect("BaseFold proof should succeed");
-			}
+			// Run BaseFold proof (non-ZK variant).
+			let prover = BaseFoldProver::new(
+				committed_data.message.clone(),
+				transparent_poly.clone(),
+				*eval_claim,
+				fri_folder,
+			);
+			prover
+				.prove(self.transcript)
+				.expect("BaseFold proof should succeed");
 		}
 	}
 }
@@ -369,50 +343,37 @@ mod tests {
 	fn generate_oracle_data<F, P, R: Rng>(
 		rng: &mut R,
 		n_vars: usize,
-		is_zk: bool,
 	) -> (FieldBuffer<P>, FieldBuffer<P>, F)
 	where
 		F: BinaryField,
 		P: PackedField<Scalar = F>,
 	{
-		let buffer_log_len = if is_zk { n_vars + 1 } else { n_vars };
-		let buffer = random_field_buffer::<P>(&mut *rng, buffer_log_len);
+		let buffer = random_field_buffer::<P>(&mut *rng, n_vars);
 
-		// Transparent polynomial always has n_vars variables
 		let evaluation_point = random_scalars::<F>(&mut *rng, n_vars);
 		let transparent_poly = eq_ind_partial_eval::<P>(&evaluation_point);
 
-		// For ZK, eval claim is computed on just the witness (first half), not the mask
-		let evaluation_claim = if is_zk {
-			let (witness, _mask) = buffer.split_half_ref();
-			inner_product_buffers(&witness, &transparent_poly)
-		} else {
-			inner_product_buffers(&buffer, &transparent_poly)
-		};
+		let evaluation_claim = inner_product_buffers(&buffer, &transparent_poly);
 
 		(buffer, transparent_poly, evaluation_claim)
 	}
 
 	#[test]
-	fn test_basefold_channel_two_oracles_mixed_zk() {
+	fn test_basefold_channel_two_oracles() {
 		type F = BinaryField128bGhash;
 		type P = PackedBinaryGhash1x128b;
 
 		let mut rng = StdRng::seed_from_u64(0);
 
-		// Two oracles with different sizes and mixed ZK settings
-		let n_vars_1 = 6; // Smaller, non-ZK
-		let n_vars_2 = 8; // Larger, ZK
+		let n_vars_1 = 6;
+		let n_vars_2 = 8;
 
-		// Generate oracle data - returns (buffer, transparent_poly, eval_claim)
 		let (buffer_1, transparent_poly_1, eval_claim_1) =
-			generate_oracle_data::<F, P, _>(&mut rng, n_vars_1, false);
+			generate_oracle_data::<F, P, _>(&mut rng, n_vars_1);
 		let (buffer_2, transparent_poly_2, eval_claim_2) =
-			generate_oracle_data::<F, P, _>(&mut rng, n_vars_2, true);
+			generate_oracle_data::<F, P, _>(&mut rng, n_vars_2);
 
-		// Create infrastructure - NTT must be large enough for the largest oracle
-		// For ZK oracle, buffer size is n_vars + 1, and codeword size is buffer + log_inv_rate
-		let max_codeword_log_len = (n_vars_2 + 1) + LOG_INV_RATE;
+		let max_codeword_log_len = n_vars_2 + LOG_INV_RATE;
 		let merkle_prover = BinaryMerkleTreeProver::<F, StdDigest, _>::new(
 			ParallelCompressionAdaptor::new(StdCompression::default()),
 		);
@@ -423,19 +384,15 @@ mod tests {
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
-		// Set up oracle specs - different sizes and mixed ZK
 		let oracle_specs = vec![
 			OracleSpec {
 				log_msg_len: n_vars_1,
-				is_zk: false,
 			},
 			OracleSpec {
 				log_msg_len: n_vars_2,
-				is_zk: true,
 			},
 		];
 
-		// === PROVER SIDE ===
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover_channel = BaseFoldProverChannel::<_, P, _, _, _>::new(
 			&mut prover_transcript,
@@ -446,14 +403,12 @@ mod tests {
 			n_test_queries,
 		);
 
-		// Send both oracles
 		let oracle_1 = prover_channel.send_oracle(buffer_1.to_ref());
 		assert_eq!(oracle_1.index, 0);
 
 		let oracle_2 = prover_channel.send_oracle(buffer_2.to_ref());
 		assert_eq!(oracle_2.index, 1);
 
-		// Finish the proof with both oracle relations
 		prover_channel.prove_oracle_relations(&[
 			(oracle_1, transparent_poly_1, eval_claim_1),
 			(oracle_2, transparent_poly_2, eval_claim_2),
@@ -461,45 +416,38 @@ mod tests {
 	}
 
 	#[test]
-	fn test_basefold_channel_verifier_two_oracles_mixed_zk() {
+	fn test_basefold_channel_verifier_two_oracles() {
 		use binius_iop::basefold_compiler::BaseFoldVerifierCompiler;
 
 		type F = BinaryField128bGhash;
 
-		// Two oracles with different sizes and mixed ZK settings
-		let n_vars_1 = 6; // Smaller, non-ZK
-		let n_vars_2 = 8; // Larger, ZK
+		let n_vars_1 = 6;
+		let n_vars_2 = 8;
 
-		// Create infrastructure
 		let merkle_prover = BinaryMerkleTreeProver::<F, StdDigest, _>::new(
 			ParallelCompressionAdaptor::new(StdCompression::default()),
 		);
 		let merkle_scheme = merkle_prover.scheme().clone();
 
-		let max_codeword_log_len = (n_vars_2 + 1) + LOG_INV_RATE;
+		let max_codeword_log_len = n_vars_2 + LOG_INV_RATE;
 		let subspace = BinarySubspace::with_dim(max_codeword_log_len);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
-		// Set up oracle specs - different sizes and mixed ZK
 		let oracle_specs = vec![
 			OracleSpec {
 				log_msg_len: n_vars_1,
-				is_zk: false,
 			},
 			OracleSpec {
 				log_msg_len: n_vars_2,
-				is_zk: true,
 			},
 		];
 
-		// Create an empty verifier transcript (would normally have proof data)
 		let prover_transcript = ProverTranscript::<StdChallenger>::new(StdChallenger::default());
 		let mut verifier_transcript = prover_transcript.into_verifier();
 
-		// Create verifier channel via compiler - this tests construction with mixed specs
 		let compiler = BaseFoldVerifierCompiler::new(
 			&ntt,
 			merkle_scheme,

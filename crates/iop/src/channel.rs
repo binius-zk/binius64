@@ -35,8 +35,6 @@ pub enum Error {
 pub struct OracleSpec {
 	/// Log2 of the message length (number of field elements).
 	pub log_msg_len: usize,
-	/// Whether this oracle uses zero-knowledge blinding.
-	pub is_zk: bool,
 }
 
 /// A boxed closure that evaluates a transparent MLE at a given point.
