@@ -71,11 +71,7 @@ pub fn eval_transparent<'a, F: FieldOps + 'a>(
 	let r_public = r_public.to_vec();
 	let r_x = r_x.to_vec();
 
-	Box::new(move |point: &[F]| {
-		// point is in low-to-high order with batch_challenge at the end.
-		// Remove the batch_challenge to get r_y.
-		let r_y = &point[..point.len() - 1];
-
+	Box::new(move |r_y: &[F]| {
 		let wiring_eval =
 			evaluate_wiring_mle(constraint_system.mul_constraints(), lambda.clone(), &r_x, r_y);
 

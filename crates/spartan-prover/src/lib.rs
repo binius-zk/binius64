@@ -32,7 +32,7 @@ mod wiring;
 use std::iter::{repeat_n, repeat_with};
 
 use binius_field::{BinaryField, Field, PackedExtension, PackedField};
-use binius_iop_prover::{basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
+use binius_iop_prover::{basefold_compiler::BaseFoldZKProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	FieldBuffer, FieldSlice,
@@ -49,13 +49,12 @@ use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{
 	SerializeBytes,
 	checked_arithmetics::checked_log_2,
-	rand::par_rand,
 	rayon::{self, prelude::*},
 };
 use digest::{Digest, FixedOutputReset, Output, core_api::BlockSizeUser};
 pub use error::*;
 use itertools::chain;
-use rand::{CryptoRng, rngs::StdRng};
+use rand::CryptoRng;
 
 use crate::wiring::WiringTranspose;
 
@@ -78,7 +77,7 @@ where
 	verifier:
 		Verifier<P::Scalar, ParallelMerkleHasher::Digest, ParallelMerkleCompress::Compression>,
 	#[allow(clippy::type_complexity)]
-	basefold_compiler: BaseFoldProverCompiler<
+	basefold_compiler: BaseFoldZKProverCompiler<
 		P,
 		ProverNTT<P::Scalar>,
 		ProverMerkleProver<P::Scalar, ParallelMerkleHasher, ParallelMerkleCompress>,
@@ -113,8 +112,8 @@ where
 
 		let merkle_prover = BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression);
 
-		// Create the BaseFold compiler from verifier compiler (reuses oracle_specs and fri_params)
-		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
+		// Create the BaseFold ZK compiler from verifier compiler (reuses oracle_specs and fri_params)
+		let basefold_compiler = BaseFoldZKProverCompiler::from_verifier_compiler(
 			verifier.iop_compiler(),
 			ntt,
 			merkle_prover,
@@ -144,7 +143,7 @@ where
 	pub fn prove<Challenger_: Challenger>(
 		&self,
 		witness: &[F],
-		rng: impl CryptoRng,
+		mut rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		let cs = self.verifier.constraint_system();
@@ -153,8 +152,8 @@ where
 		let public = &witness[..1 << cs.log_public()];
 		transcript.observe().write_slice(public);
 
-		// Create channel and delegate to prove_iop
-		let channel = self.basefold_compiler.create_channel(transcript);
+		// Create ZK channel (owns the RNG for mask generation) and delegate to prove_iop
+		let channel = self.basefold_compiler.create_channel(transcript, &mut rng);
 		self.prove_iop(witness, rng, channel)
 	}
 
@@ -195,10 +194,10 @@ where
 
 		let log_mul_constraints = checked_log_2(cs.mul_constraints().len());
 
-		// Create combined buffer for mask and masks_mask (2x size for BaseFold batching)
+		// Create mask buffer for the ZK mulcheck mask polynomial.
 		let (m_n, m_d) = self.verifier.mask_dims();
 		let mask_degree = 2; // quadratic composition
-		let log_masks_buffer_size = m_n + m_d + 1; // +1 for masks_mask
+		let log_masks_buffer_size = m_n + m_d;
 
 		let masks_buffer = FieldBuffer::<P>::new(
 			log_masks_buffer_size,
@@ -207,11 +206,8 @@ where
 				.collect(),
 		);
 
-		// Split: first half is the MLE-check mask, second half is the masks_mask
-		let (mask_slice, _masks_mask_slice) = masks_buffer.split_half_ref();
-
-		// Create Mask from the first half (borrowed slice)
-		let mulcheck_mask = zk_mlecheck::Mask::new(log_mul_constraints, mask_degree, mask_slice);
+		let mulcheck_mask =
+			zk_mlecheck::Mask::new(log_mul_constraints, mask_degree, masks_buffer.to_ref());
 
 		// Pack witness into field elements and add blinding
 		let blinding_info = cs.blinding_info();
@@ -305,6 +301,10 @@ where
 	}
 }
 
+/// Packs the witness into a [`FieldBuffer`] and adds blinding values for dummy wires.
+///
+/// The FRI mask is handled by the ZK channel, so this function only packs the witness
+/// and sets blinding values for dummy wires and dummy constraints.
 fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
 	log_witness_elems: usize,
 	witness: &[F],
@@ -316,9 +316,8 @@ fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
 	let packed_witness = if log_witness_elems < P::LOG_WIDTH {
 		let elems_iter = witness.iter().copied();
 		let zeros_iter = repeat_n(F::ZERO, (1 << log_witness_elems) - witness.len());
-		let mask_iter = repeat_with(|| F::random(&mut rng)).take(1 << log_witness_elems);
 
-		let elems = P::from_scalars(chain!(elems_iter, zeros_iter, mask_iter));
+		let elems = P::from_scalars(chain!(elems_iter, zeros_iter));
 		vec![elems]
 	} else {
 		let packed_len = 1 << (log_witness_elems - P::LOG_WIDTH);
@@ -328,17 +327,11 @@ fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
 			.map(|chunk| P::from_scalars(chunk.iter().copied()));
 		let zeros_iter = rayon::iter::repeat_n(P::zero(), packed_len - elems_iter.len());
 
-		// Append a random mask to the end of the witness buffer, of equal length to the witness.
-		let mask_iter = par_rand::<StdRng, _, _>(packed_len, &mut rng, P::random);
-
-		elems_iter
-			.chain(zeros_iter)
-			.chain(mask_iter)
-			.collect::<Vec<_>>()
+		elems_iter.chain(zeros_iter).collect::<Vec<_>>()
 	};
 
 	let mut witness_packed =
-		FieldBuffer::new(log_witness_elems + 1, packed_witness.into_boxed_slice());
+		FieldBuffer::new(log_witness_elems, packed_witness.into_boxed_slice());
 
 	// Add blinding values
 	let base = n_public + n_private;

@@ -32,7 +32,7 @@ pub mod wiring;
 
 use binius_field::{BinaryField, field::FieldOps};
 use binius_iop::{
-	basefold_compiler::BaseFoldVerifierCompiler,
+	basefold_compiler::BaseFoldZKVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 };
 use binius_ip::channel::IPVerifierChannel;
@@ -85,9 +85,9 @@ where
 	constraint_system: ConstraintSystemPadded,
 	/// Mask buffer dimensions (m_n, m_d) for the ZK mulcheck mask polynomial.
 	mask_dims: (usize, usize),
-	/// BaseFold compiler for creating verifier channels.
+	/// BaseFold ZK compiler for creating verifier channels.
 	basefold_compiler:
-		BaseFoldVerifierCompiler<F, BinaryMerkleTreeScheme<F, MerkleHash, MerkleCompress>>,
+		BaseFoldZKVerifierCompiler<F, BinaryMerkleTreeScheme<F, MerkleHash, MerkleCompress>>,
 }
 
 impl<F, MerkleHash, MerkleCompress> Verifier<F, MerkleHash, MerkleCompress>
@@ -114,12 +114,7 @@ where
 		};
 		let constraint_system = ConstraintSystemPadded::new(constraint_system, blinding_info);
 
-		// The message contains the witness and a random mask of equal size to the witness.
-		// For ZK mode, the batch size is 1 (witness and mask are the two interleaved elements).
 		let log_witness_size = constraint_system.log_size() as usize;
-		let log_batch_size = 1;
-		let log_dim = log_witness_size; // RS code dimension equals witness size
-		let log_code_len = log_dim + log_inv_rate;
 		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
@@ -129,20 +124,18 @@ where
 		let mask_degree = 2; // quadratic composition
 		let mask_dims = mask_buffer_dimensions(log_mul_constraints, mask_degree, n_test_queries);
 		let (m_n, m_d) = mask_dims;
-		// log_batch_size accounts for the masks_mask (BaseFold mask for the mask commitment)
 		let log_mask_dim = m_n + m_d;
-		let log_mask_code_len = log_mask_dim + log_batch_size + log_inv_rate;
 
 		// Create a single NTT with the max domain size for both witness and mask.
-		let max_log_code_len = log_code_len.max(log_mask_code_len);
+		let max_log_code_len = log_witness_size.max(log_mask_dim) + log_inv_rate;
 		let subspace = BinarySubspace::with_dim(max_log_code_len);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
-		// Create oracle specs for the IOP channel
+		// Create oracle specs for the IOP channel.
 		let oracle_specs = vec![
 			OracleSpec {
-				log_msg_len: log_dim,
+				log_msg_len: log_witness_size,
 				is_zk: true,
 			},
 			OracleSpec {
@@ -151,8 +144,8 @@ where
 			},
 		];
 
-		// Create the BaseFold compiler for IOP verification
-		let basefold_compiler = BaseFoldVerifierCompiler::new(
+		// Create the BaseFold ZK compiler for IOP verification
+		let basefold_compiler = BaseFoldZKVerifierCompiler::new(
 			&ntt,
 			merkle_scheme,
 			oracle_specs,
@@ -172,10 +165,10 @@ where
 		&self.constraint_system
 	}
 
-	/// Returns a reference to the BaseFold verifier compiler.
+	/// Returns a reference to the BaseFold ZK verifier compiler.
 	pub fn iop_compiler(
 		&self,
-	) -> &BaseFoldVerifierCompiler<F, BinaryMerkleTreeScheme<F, MerkleHash, MerkleCompress>> {
+	) -> &BaseFoldZKVerifierCompiler<F, BinaryMerkleTreeScheme<F, MerkleHash, MerkleCompress>> {
 		&self.basefold_compiler
 	}
 
@@ -341,12 +334,9 @@ where
 		let r_x = r_x.to_vec();
 
 		Box::new(move |point: &[E]| {
-			// point is in low-to-high order with batch_challenge at the end.
-			// Extract the query point by excluding the batch challenge.
-			let query_point = &point[..point.len() - 1];
-
-			// Split into query_k (low-order bits) and query_j (high-order bits)
-			let (query_k, query_j) = query_point.split_at(m_d);
+			// The ZK channel strips the batch challenge before passing the eval point.
+			// Split into query_k (low-order bits) and query_j (high-order bits).
+			let (query_k, query_j) = point.split_at(m_d);
 
 			mlecheck::libra_eval(&r_x, query_j, query_k, n_vars, mask_degree)
 		})
