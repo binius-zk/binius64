@@ -334,12 +334,12 @@ where
 ///
 /// The IntMul protocol is a reduction that checks a relation on four virtual multilinear
 /// polynomials: $\widetilde{a}, \widetilde{b}, \widetilde{c}_{\textsf{lo}},
-/// \widetilde{c}_{\textsf{hi}}$. These multilinear polynomials are over $\mathbb{F}_2$ and have $k
-/// + n$ variables. We write $a, b, c_{\textsf{lo}}, c_{\textsf{hi}} \in \mathbb{F}_2^{n \times k}$
-/// for their boolean hypercube evaluations. Let $\textsf{int}(M) \in \mathbb{N}^n$ map one of the
-/// four matrices, $M$, to a vector of their interpretations as a $k$-bit unsigned integer. That is,
-/// it embeds the $\mathbb{F}_2$ elements into $\mathbb{N}$ and multiplies by $(2^0, 2^1, \ldots,
-/// 2^{k-1})$.
+/// \widetilde{c}_{\textsf{hi}}$. These multilinear polynomials are over $\mathbb{F}_2$ and have
+/// $k + n$ variables. We write $a, b, c_{\textsf{lo}}, c_{\textsf{hi}} \in \mathbb{F}_2^{n \times
+/// k}$ for their boolean hypercube evaluations. Let $\textsf{int}(M) \in \mathbb{N}^n$ map one of
+/// the four matrices, $M$, to a vector of their interpretations as a $k$-bit unsigned integer. That
+/// is, it embeds the $\mathbb{F}_2$ elements into $\mathbb{N}$ and multiplies by $(2^0, 2^1,
+/// \ldots, 2^{k-1})$.
 ///
 /// ## Protocol
 ///
