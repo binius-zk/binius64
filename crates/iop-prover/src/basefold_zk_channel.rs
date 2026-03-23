@@ -275,8 +275,7 @@ mod tests {
 
 	use super::IOPProverChannel;
 	use crate::{
-		basefold_compiler::BaseFoldZKProverCompiler,
-		merkle_tree::prover::BinaryMerkleTreeProver,
+		basefold_compiler::BaseFoldZKProverCompiler, merkle_tree::prover::BinaryMerkleTreeProver,
 	};
 
 	type StdChallenger = HasherChallenger<StdDigest>;
@@ -288,7 +287,9 @@ mod tests {
 		security_bits.div_ceil(log_inv_rate)
 	}
 
-	fn make_ntt(log_len: usize) -> NeighborsLastSingleThread<GenericOnTheFly<BinaryField128bGhash>> {
+	fn make_ntt(
+		log_len: usize,
+	) -> NeighborsLastSingleThread<GenericOnTheFly<BinaryField128bGhash>> {
 		let subspace = BinarySubspace::with_dim(log_len);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		NeighborsLastSingleThread::new(domain_context)
@@ -333,7 +334,6 @@ mod tests {
 
 		let oracle_specs = vec![OracleSpec {
 			log_msg_len: n_vars,
-
 		}];
 
 		// === PROVER SIDE ===
@@ -347,8 +347,7 @@ mod tests {
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_rng = StdRng::seed_from_u64(1);
-		let mut prover_channel =
-			prover_compiler.create_channel(&mut prover_transcript, prover_rng);
+		let mut prover_channel = prover_compiler.create_channel(&mut prover_transcript, prover_rng);
 
 		let oracle = prover_channel.send_oracle(buffer.to_ref());
 		assert_eq!(oracle.index, 0);
@@ -404,11 +403,9 @@ mod tests {
 		let oracle_specs = vec![
 			OracleSpec {
 				log_msg_len: n_vars_1,
-	
 			},
 			OracleSpec {
 				log_msg_len: n_vars_2,
-	
 			},
 		];
 
@@ -423,8 +420,7 @@ mod tests {
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_rng = StdRng::seed_from_u64(1);
-		let mut prover_channel =
-			prover_compiler.create_channel(&mut prover_transcript, prover_rng);
+		let mut prover_channel = prover_compiler.create_channel(&mut prover_transcript, prover_rng);
 
 		let oracle_1 = prover_channel.send_oracle(buffer_1.to_ref());
 		let oracle_2 = prover_channel.send_oracle(buffer_2.to_ref());

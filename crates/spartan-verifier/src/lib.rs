@@ -136,11 +136,9 @@ where
 		let oracle_specs = vec![
 			OracleSpec {
 				log_msg_len: log_witness_size,
-
 			},
 			OracleSpec {
 				log_msg_len: log_mask_dim,
-
 			},
 		];
 

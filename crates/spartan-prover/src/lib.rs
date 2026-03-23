@@ -112,7 +112,8 @@ where
 
 		let merkle_prover = BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression);
 
-		// Create the BaseFold ZK compiler from verifier compiler (reuses oracle_specs and fri_params)
+		// Create the BaseFold ZK compiler from verifier compiler (reuses oracle_specs and
+		// fri_params)
 		let basefold_compiler = BaseFoldZKProverCompiler::from_verifier_compiler(
 			verifier.iop_compiler(),
 			ntt,
@@ -327,8 +328,7 @@ fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
 		elems_iter.chain(zeros_iter).collect::<Vec<_>>()
 	};
 
-	let mut witness_packed =
-		FieldBuffer::new(log_witness_elems, packed_witness.into_boxed_slice());
+	let mut witness_packed = FieldBuffer::new(log_witness_elems, packed_witness.into_boxed_slice());
 
 	// Add blinding values
 	let base = n_public + n_private;

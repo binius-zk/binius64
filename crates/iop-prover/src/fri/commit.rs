@@ -93,8 +93,8 @@ pub struct CommitMaskedOutput<P: PackedField, VCSCommitment, VCSCommitted> {
 ///
 /// ## Arguments
 ///
-/// * `params` - FRI parameters. Must have `log_batch_size() == 1` and
-///   `rs_code().log_dim() == message.log_len()`.
+/// * `params` - FRI parameters. Must have `log_batch_size() == 1` and `rs_code().log_dim() ==
+///   message.log_len()`.
 /// * `ntt` - the additive NTT for Reed-Solomon encoding
 /// * `merkle_prover` - the Merkle tree prover for commitments
 /// * `message` - the raw message to commit (not doubled)
@@ -118,11 +118,7 @@ where
 	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
 	VCS: MerkleTreeScheme<F>,
 {
-	assert_eq!(
-		params.log_batch_size(),
-		1,
-		"commit_masked requires log_batch_size == 1"
-	);
+	assert_eq!(params.log_batch_size(), 1, "commit_masked requires log_batch_size == 1");
 	assert_eq!(
 		params.rs_code().log_dim(),
 		message.log_len(),
