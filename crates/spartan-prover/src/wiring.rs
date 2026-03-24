@@ -159,7 +159,7 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 /// Result of computing the wiring relation for IOP proving.
 ///
 /// Contains the folding polynomial (l_poly) and the claimed batched sum
-/// that will be passed to the IOP channel's `prove_oracle_relations` method.
+/// that will be passed to the IOP channel's `finish` method.
 pub struct WiringRelation<P: PackedField> {
 	/// The folding polynomial: wiring poly + batch_coeff * eq(r_public, ·)
 	pub l_poly: FieldBuffer<P>,
@@ -170,7 +170,7 @@ pub struct WiringRelation<P: PackedField> {
 /// Computes the wiring relation for IOP proving.
 ///
 /// Samples batching challenges from the channel, computes the folding polynomial,
-/// and returns the relation data needed for the IOP channel's `prove_oracle_relations` method.
+/// and returns the relation data needed for the IOP channel's `finish` method.
 pub fn compute_wiring_relation<F: Field, P: PackedField<Scalar = F>>(
 	wiring_transpose: &WiringTranspose,
 	witness: &FieldSlice<P>,
@@ -518,7 +518,7 @@ mod tests {
 		);
 
 		// Finish the IOP with the oracle relation
-		prover_channel.prove_oracle_relations(&[(
+		prover_channel.finish(&[(
 			witness_oracle,
 			wiring_relation.l_poly.clone(),
 			wiring_relation.batched_sum,

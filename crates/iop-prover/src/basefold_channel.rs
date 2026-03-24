@@ -207,6 +207,7 @@ where
 	Challenger_: Challenger,
 {
 	type Oracle = BaseFoldOracle;
+	type Finish = ();
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		&self.oracle_specs[self.next_oracle_index..]
@@ -256,13 +257,13 @@ where
 		BaseFoldOracle { index }
 	}
 
-	fn prove_oracle_relations(
-		&mut self,
+	fn finish(
+		self,
 		oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)],
 	) {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
-			"prove_oracle_relations called but {} oracle specs remaining",
+			"finish called but {} oracle specs remaining",
 			self.remaining_oracle_specs().len()
 		);
 
@@ -409,7 +410,7 @@ mod tests {
 		let oracle_2 = prover_channel.send_oracle(buffer_2.to_ref());
 		assert_eq!(oracle_2.index, 1);
 
-		prover_channel.prove_oracle_relations(&[
+		prover_channel.finish(&[
 			(oracle_1, transparent_poly_1, eval_claim_1),
 			(oracle_2, transparent_poly_2, eval_claim_2),
 		]);

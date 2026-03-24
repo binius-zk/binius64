@@ -49,7 +49,7 @@ struct CommittedOracleData<P: PackedField, Committed> {
 /// buffer (not doubled). The channel handles:
 /// - Generating a random mask of equal length
 /// - Interleaving witness and mask for FRI commitment
-/// - Running ZK BaseFold proofs in `prove_oracle_relations`
+/// - Running ZK BaseFold proofs in `finish`
 ///
 /// # Type Parameters
 ///
@@ -154,6 +154,7 @@ where
 	Challenger_: Challenger,
 {
 	type Oracle = BaseFoldZKOracle;
+	type Finish = ();
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		&self.oracle_specs[self.next_oracle_index..]
@@ -209,13 +210,13 @@ where
 		BaseFoldZKOracle { index }
 	}
 
-	fn prove_oracle_relations(
-		&mut self,
+	fn finish(
+		self,
 		oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)],
 	) {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
-			"prove_oracle_relations called but {} oracle specs remaining",
+			"finish called but {} oracle specs remaining",
 			self.remaining_oracle_specs().len()
 		);
 
@@ -352,7 +353,7 @@ mod tests {
 		let oracle = prover_channel.send_oracle(buffer.to_ref());
 		assert_eq!(oracle.index, 0);
 
-		prover_channel.prove_oracle_relations(&[(oracle, transparent_poly.clone(), eval_claim)]);
+		prover_channel.finish(&[(oracle, transparent_poly.clone(), eval_claim)]);
 
 		// === VERIFIER SIDE ===
 		let ntt = make_ntt(max_codeword_log_len);
@@ -425,7 +426,7 @@ mod tests {
 		let oracle_1 = prover_channel.send_oracle(buffer_1.to_ref());
 		let oracle_2 = prover_channel.send_oracle(buffer_2.to_ref());
 
-		prover_channel.prove_oracle_relations(&[
+		prover_channel.finish(&[
 			(oracle_1, transparent_poly_1.clone(), eval_claim_1),
 			(oracle_2, transparent_poly_2.clone(), eval_claim_2),
 		]);
