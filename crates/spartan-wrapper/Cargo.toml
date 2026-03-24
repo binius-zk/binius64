@@ -1,0 +1,13 @@
+[package]
+name = "binius-spartan-wrapper"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+binius-field = { path = "../field" }
+binius-ip = { path = "../ip" }
+binius-spartan-frontend = { path = "../spartan-frontend" }
+
+[lints]
+workspace = true
