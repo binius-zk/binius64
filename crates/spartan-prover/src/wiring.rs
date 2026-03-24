@@ -554,14 +554,14 @@ mod tests {
 		let transparent = Box::new(move |point: &[_]| evaluate(&l_poly, point));
 
 		// Finish verification. The naive channel verifies the inner product directly inside
-		// verify_oracle_relations(), reads the transparent polynomial from the transcript,
-		// and checks that the transparent closure evaluation matches.
+		// finish(), reads the transparent polynomial from the transcript, and checks that
+		// the transparent closure evaluation matches.
 		verifier_channel
-			.verify_oracle_relations(&[OracleLinearRelation {
+			.finish(&[OracleLinearRelation {
 				oracle: witness_oracle,
 				transparent,
 				claim: wiring_claim.batched_sum,
 			}])
-			.expect("verify_oracle_relations should succeed (inner product verified)");
+			.expect("finish should succeed (inner product verified)");
 	}
 }

@@ -191,8 +191,8 @@ where
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		// Create channel and delegate to verify_iop
-		let mut channel = self.basefold_compiler.create_channel(transcript);
-		self.verify_iop(public, &mut channel)
+		let channel = self.basefold_compiler.create_channel(transcript);
+		self.verify_iop(public, channel)
 	}
 
 	/// Verifies a proof using an IOP channel.
@@ -208,7 +208,7 @@ where
 	/// # Returns
 	///
 	/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
-	pub fn verify_iop<Channel>(&self, public: &[F], channel: &mut Channel) -> Result<(), Error>
+	pub fn verify_iop<Channel>(&self, public: &[F], mut channel: Channel) -> Result<Channel::Finish, Error>
 	where
 		Channel: IOPVerifierChannel<F>,
 	{
@@ -242,7 +242,7 @@ where
 			c_eval,
 			mask_eval,
 			r_x,
-		} = self.verify_mulcheck(channel)?;
+		} = self.verify_mulcheck(&mut channel)?;
 
 		// Sample the public input check challenge and evaluate the public input at the challenge
 		// point.
@@ -256,7 +256,7 @@ where
 			&r_public,
 			&[a_eval, b_eval, c_eval],
 			public_eval,
-			channel,
+			&mut channel,
 		);
 
 		// Build the transparent closure for the wiring oracle relation
@@ -271,8 +271,8 @@ where
 		// Build the transparent closure for the mask oracle relation
 		let mask_transparent = self.mask_transparent(&r_x);
 
-		// Verify both oracle relations (checks are done inside verify_oracle_relations)
-		channel.verify_oracle_relations(&[
+		// Finish the protocol with both oracle relations
+		let finish = channel.finish(&[
 			OracleLinearRelation {
 				oracle: trace_oracle,
 				transparent: trace_transparent,
@@ -285,7 +285,7 @@ where
 			},
 		])?;
 
-		Ok(())
+		Ok(finish)
 	}
 
 	fn verify_mulcheck<C>(&self, channel: &mut C) -> Result<MulcheckOutput<C::Elem>, Error>

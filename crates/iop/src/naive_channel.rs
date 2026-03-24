@@ -135,6 +135,7 @@ where
 	Challenger_: Challenger,
 {
 	type Oracle = NaiveOracle;
+	type Finish = ();
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		&self.oracle_specs[self.next_oracle_index..]
@@ -165,13 +166,13 @@ where
 		Ok(NaiveOracle { index })
 	}
 
-	fn verify_oracle_relations(
-		&mut self,
+	fn finish(
+		mut self,
 		oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, F>],
 	) -> Result<(), Error> {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
-			"verify_oracle_relations called but {} oracle specs remaining",
+			"finish called but {} oracle specs remaining",
 			self.remaining_oracle_specs().len()
 		);
 
@@ -182,8 +183,7 @@ where
 			// Extract spec data before mutable borrow of transcript
 			let log_msg_len = self.oracle_specs[index].log_msg_len;
 
-			// Read the transparent polynomial from the transcript (prover wrote it in
-			// prove_oracle_relations)
+			// Read the transparent polynomial from the transcript (prover wrote it in finish)
 			let transparent_len = 1 << log_msg_len;
 			let transparent_values = self
 				.transcript

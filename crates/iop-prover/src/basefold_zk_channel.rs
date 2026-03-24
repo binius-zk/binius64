@@ -372,7 +372,7 @@ mod tests {
 		let v_oracle = verifier_channel.recv_oracle().unwrap();
 
 		verifier_channel
-			.verify_oracle_relations(&[OracleLinearRelation {
+			.finish(&[OracleLinearRelation {
 				oracle: v_oracle,
 				transparent: Box::new(move |point: &[F]| {
 					let eq = eq_ind_partial_eval::<P>(point);
@@ -452,7 +452,7 @@ mod tests {
 		let tp2 = transparent_poly_2.clone();
 
 		verifier_channel
-			.verify_oracle_relations(&[
+			.finish(&[
 				OracleLinearRelation {
 					oracle: v_oracle_1,
 					transparent: Box::new(move |point: &[F]| {

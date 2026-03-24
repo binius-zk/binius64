@@ -121,6 +121,7 @@ impl<F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IOPVerifierChannel<F>
 	for SizeTrackingChannel<'_, F, MerkleScheme_>
 {
 	type Oracle = ();
+	type Finish = usize;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		&self.oracle_specs[self.next_oracle_index..]
@@ -132,10 +133,10 @@ impl<F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IOPVerifierChannel<F>
 		Ok(())
 	}
 
-	fn verify_oracle_relations(
-		&mut self,
+	fn finish(
+		mut self,
 		_oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, Self::Elem>],
-	) -> Result<(), Error> {
+	) -> Result<usize, Error> {
 		// Add FRI proof sizes for all oracles. This accounts for the dominant component of
 		// BaseFold proofs (FRI decommitments) but is missing smaller elements (e.g. sumcheck
 		// coefficients within BaseFold, blinding elements for ZK), so it's a slight
@@ -146,6 +147,6 @@ impl<F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IOPVerifierChannel<F>
 			.map(|params| fri::proof_size(params, self.merkle_scheme))
 			.sum();
 		self.proof_size += fri_total;
-		Ok(())
+		Ok(self.proof_size)
 	}
 }
