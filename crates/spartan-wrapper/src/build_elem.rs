@@ -8,7 +8,11 @@ use std::{
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
-use binius_field::{BinaryField128bGhash as B128, Field};
+use binius_field::{
+	BinaryField128bGhash as B128, ExtensionField, Field,
+	arithmetic_traits::{InvertOrZero, Square},
+	field::FieldOps,
+};
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, ConstraintBuilder},
 	constraint_system::ConstraintWire,
@@ -258,5 +262,56 @@ impl<'a> Product for BuildElem<'a> {
 impl<'a, 'b> Product<&'b BuildElem<'a>> for BuildElem<'a> {
 	fn product<I: Iterator<Item = &'b BuildElem<'a>>>(iter: I) -> Self {
 		iter.cloned().product()
+	}
+}
+
+impl Square for BuildElem<'_> {
+	fn square(self) -> Self {
+		match &self {
+			BuildElem::Constant(c) => BuildElem::Constant(c.square()),
+			_ => self.clone() * self,
+		}
+	}
+}
+
+impl<'a> InvertOrZero for BuildElem<'a> {
+	fn invert_or_zero(self) -> Self {
+		match &self {
+			BuildElem::Constant(c) => BuildElem::Constant(c.invert_or_zero()),
+			BuildElem::Wire(w) => {
+				let builder_ref = w.builder;
+				let mut builder = builder_ref.borrow_mut();
+				let wire = w.wire;
+
+				// Allocate the inverse wire via hint.
+				let [inv_wire] = builder.hint([wire], |[x]| [x.invert_or_zero()]);
+
+				// Constrain wire * inverse = one.
+				let product = builder.mul(wire, inv_wire);
+				let one = builder.constant(B128::ONE);
+				builder.assert_eq(product, one);
+
+				BuildElem::make_wire(builder_ref, inv_wire)
+			}
+		}
+	}
+}
+
+impl<'a> FieldOps for BuildElem<'a> {
+	type Scalar = B128;
+
+	fn zero() -> Self {
+		BuildElem::Constant(B128::ZERO)
+	}
+
+	fn one() -> Self {
+		BuildElem::Constant(B128::ONE)
+	}
+
+	fn square_transpose<FSub: Field>(_elems: &mut [Self])
+	where
+		Self::Scalar: ExtensionField<FSub>,
+	{
+		unimplemented!("square_transpose is not used in symbolic verifier context")
 	}
 }
