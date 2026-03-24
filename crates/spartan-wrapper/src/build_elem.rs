@@ -72,9 +72,9 @@ impl<'a> BuildElem<'a> {
 	}
 
 	/// Convert this element to a ConstraintWire, allocating a constant wire if necessary.
-	pub(crate) fn to_wire(&self, builder: &mut ConstraintBuilder) -> ConstraintWire {
+	pub(crate) fn to_wire(self, builder: &mut ConstraintBuilder) -> ConstraintWire {
 		match self {
-			BuildElem::Constant(val) => builder.constant(*val),
+			BuildElem::Constant(val) => builder.constant(val),
 			BuildElem::Wire(w) => w.wire,
 		}
 	}
@@ -97,13 +97,13 @@ impl<'a> Add for BuildElem<'a> {
 	type Output = Self;
 
 	fn add(self, rhs: Self) -> Self {
-		match (&self, &rhs) {
-			(BuildElem::Constant(a), BuildElem::Constant(b)) => BuildElem::Constant(*a + *b),
+		match (self, rhs) {
+			(BuildElem::Constant(a), BuildElem::Constant(b)) => BuildElem::Constant(a + b),
 			_ => {
-				if matches!(&self, BuildElem::Constant(c) if *c == B128::ZERO) {
+				if matches!(self, BuildElem::Constant(c) if c == B128::ZERO) {
 					return rhs;
 				}
-				if matches!(&rhs, BuildElem::Constant(c) if *c == B128::ZERO) {
+				if matches!(rhs, BuildElem::Constant(c) if c == B128::ZERO) {
 					return self;
 				}
 				let builder_ref = BuildElem::resolve_builder(&self, &rhs);
@@ -145,19 +145,19 @@ impl<'a> Mul for BuildElem<'a> {
 	type Output = Self;
 
 	fn mul(self, rhs: Self) -> Self {
-		match (&self, &rhs) {
-			(BuildElem::Constant(a), BuildElem::Constant(b)) => BuildElem::Constant(*a * *b),
+		match (self, rhs) {
+			(BuildElem::Constant(a), BuildElem::Constant(b)) => BuildElem::Constant(a * b),
 			_ => {
-				if matches!(&self, BuildElem::Constant(c) if *c == B128::ZERO) {
+				if matches!(self, BuildElem::Constant(c) if c == B128::ZERO) {
 					return BuildElem::Constant(B128::ZERO);
 				}
-				if matches!(&rhs, BuildElem::Constant(c) if *c == B128::ZERO) {
+				if matches!(rhs, BuildElem::Constant(c) if c == B128::ZERO) {
 					return BuildElem::Constant(B128::ZERO);
 				}
-				if matches!(&self, BuildElem::Constant(c) if *c == B128::ONE) {
+				if matches!(self, BuildElem::Constant(c) if c == B128::ONE) {
 					return rhs;
 				}
-				if matches!(&rhs, BuildElem::Constant(c) if *c == B128::ONE) {
+				if matches!(rhs, BuildElem::Constant(c) if c == B128::ONE) {
 					return self;
 				}
 				let builder_ref = BuildElem::resolve_builder(&self, &rhs);
@@ -171,13 +171,13 @@ impl<'a> Mul for BuildElem<'a> {
 	}
 }
 
-// By-reference variants: clone and delegate.
+// By-reference variants: copy and delegate.
 
 impl<'a> Add<&BuildElem<'a>> for BuildElem<'a> {
 	type Output = Self;
 
 	fn add(self, rhs: &BuildElem<'a>) -> Self {
-		self + rhs.clone()
+		self + *rhs
 	}
 }
 
@@ -185,7 +185,7 @@ impl<'a> Sub<&BuildElem<'a>> for BuildElem<'a> {
 	type Output = Self;
 
 	fn sub(self, rhs: &BuildElem<'a>) -> Self {
-		self - rhs.clone()
+		self - *rhs
 	}
 }
 
@@ -193,7 +193,7 @@ impl<'a> Mul<&BuildElem<'a>> for BuildElem<'a> {
 	type Output = Self;
 
 	fn mul(self, rhs: &BuildElem<'a>) -> Self {
-		self * rhs.clone()
+		self * *rhs
 	}
 }
 
@@ -201,37 +201,37 @@ impl<'a> Mul<&BuildElem<'a>> for BuildElem<'a> {
 
 impl<'a> AddAssign for BuildElem<'a> {
 	fn add_assign(&mut self, rhs: Self) {
-		*self = self.clone() + rhs;
+		*self = *self + rhs;
 	}
 }
 
 impl<'a> SubAssign for BuildElem<'a> {
 	fn sub_assign(&mut self, rhs: Self) {
-		*self = self.clone() - rhs;
+		*self = *self - rhs;
 	}
 }
 
 impl<'a> MulAssign for BuildElem<'a> {
 	fn mul_assign(&mut self, rhs: Self) {
-		*self = self.clone() * rhs;
+		*self = *self * rhs;
 	}
 }
 
 impl<'a> AddAssign<&BuildElem<'a>> for BuildElem<'a> {
 	fn add_assign(&mut self, rhs: &BuildElem<'a>) {
-		*self = self.clone() + rhs.clone();
+		*self = *self + *rhs;
 	}
 }
 
 impl<'a> SubAssign<&BuildElem<'a>> for BuildElem<'a> {
 	fn sub_assign(&mut self, rhs: &BuildElem<'a>) {
-		*self = self.clone() - rhs.clone();
+		*self = *self - *rhs;
 	}
 }
 
 impl<'a> MulAssign<&BuildElem<'a>> for BuildElem<'a> {
 	fn mul_assign(&mut self, rhs: &BuildElem<'a>) {
-		*self = self.clone() * rhs.clone();
+		*self = *self * *rhs;
 	}
 }
 
@@ -245,7 +245,7 @@ impl<'a> Sum for BuildElem<'a> {
 
 impl<'a, 'b> Sum<&'b BuildElem<'a>> for BuildElem<'a> {
 	fn sum<I: Iterator<Item = &'b BuildElem<'a>>>(iter: I) -> Self {
-		iter.cloned().sum()
+		iter.copied().sum()
 	}
 }
 
@@ -257,22 +257,22 @@ impl<'a> Product for BuildElem<'a> {
 
 impl<'a, 'b> Product<&'b BuildElem<'a>> for BuildElem<'a> {
 	fn product<I: Iterator<Item = &'b BuildElem<'a>>>(iter: I) -> Self {
-		iter.cloned().product()
+		iter.copied().product()
 	}
 }
 
 impl Square for BuildElem<'_> {
 	fn square(self) -> Self {
-		match &self {
+		match self {
 			BuildElem::Constant(c) => BuildElem::Constant(c.square()),
-			_ => self.clone() * self,
+			_ => self * self,
 		}
 	}
 }
 
 impl<'a> InvertOrZero for BuildElem<'a> {
 	fn invert_or_zero(self) -> Self {
-		match &self {
+		match self {
 			BuildElem::Constant(c) => BuildElem::Constant(c.invert_or_zero()),
 			BuildElem::Wire(w) => {
 				let builder_ref = w.builder;

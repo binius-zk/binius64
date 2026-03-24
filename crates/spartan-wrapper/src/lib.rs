@@ -31,15 +31,15 @@ mod tests {
 		let b = BuildElem::Constant(B128::new(5));
 
 		// Addition in char 2: 3 + 5 = 3 ^ 5 = 6
-		let sum = a.clone() + b.clone();
+		let sum = a + b;
 		assert!(matches!(sum, BuildElem::Constant(c) if c == B128::new(3) + B128::new(5)));
 
 		// Multiplication
-		let product = a.clone() * b.clone();
+		let product = a * b;
 		assert!(matches!(product, BuildElem::Constant(c) if c == B128::new(3) * B128::new(5)));
 
 		// Subtraction equals addition in char 2
-		let diff = a.clone() - b.clone();
+		let diff = a - b;
 		assert!(matches!(diff, BuildElem::Constant(c) if c == B128::new(3) + B128::new(5)));
 	}
 
@@ -50,15 +50,15 @@ mod tests {
 		let elem = BuildElem::Wire(BuildWire::new(&builder, wire));
 
 		// Adding zero returns the wire unchanged.
-		let result = elem.clone() + BuildElem::Constant(B128::ZERO);
+		let result = elem + BuildElem::Constant(B128::ZERO);
 		assert!(matches!(result, BuildElem::Wire(_)));
 
 		// Multiplying by one returns the wire unchanged.
-		let result = elem.clone() * BuildElem::Constant(B128::ONE);
+		let result = elem * BuildElem::Constant(B128::ONE);
 		assert!(matches!(result, BuildElem::Wire(_)));
 
 		// Multiplying by zero returns constant zero.
-		let result = elem.clone() * BuildElem::Constant(B128::ZERO);
+		let result = elem * BuildElem::Constant(B128::ZERO);
 		assert!(matches!(result, BuildElem::Constant(c) if c == B128::ZERO));
 	}
 
