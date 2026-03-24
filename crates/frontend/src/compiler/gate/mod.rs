@@ -39,8 +39,10 @@ pub mod secp256k1_endosplit_hint;
 pub mod select;
 pub mod shl;
 pub mod shr;
-pub mod shr32;
+pub mod sll32;
 pub mod smul;
+pub mod sra32;
+pub mod srl32;
 
 pub fn constrain(gate: Gate, graph: &GateGraph, builder: &mut ConstraintBuilder) {
 	let data = &graph.gates[gate];
@@ -54,8 +56,10 @@ pub fn constrain(gate: Gate, graph: &GateGraph, builder: &mut ConstraintBuilder)
 		Opcode::IaddCinCout => iadd_cin_cout::constrain(gate, data, builder),
 		Opcode::Iadd32 => iadd32::constrain(gate, data, builder),
 		Opcode::IsubBinBout => isub_bin_bout::constrain(gate, data, builder),
-		Opcode::Shr32 => shr32::constrain(gate, data, builder),
+		Opcode::Sll32 => sll32::constrain(gate, data, builder),
+		Opcode::Srl32 => srl32::constrain(gate, data, builder),
 		Opcode::Rotr32 => rotr32::constrain(gate, data, builder),
+		Opcode::Sra32 => sra32::constrain(gate, data, builder),
 		Opcode::Rotr => rotr::constrain(gate, data, builder),
 		Opcode::AssertEq => assert_eq::constrain(gate, data, builder),
 		Opcode::AssertZero => assert_zero::constrain(gate, data, builder),
@@ -97,8 +101,10 @@ pub fn emit_gate_bytecode(
 		Opcode::IaddCinCout => iadd_cin_cout::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::Iadd32 => iadd32::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::IsubBinBout => isub_bin_bout::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Shr32 => shr32::emit_eval_bytecode(gate, data, builder, wire_to_reg),
+		Opcode::Sll32 => sll32::emit_eval_bytecode(gate, data, builder, wire_to_reg),
+		Opcode::Srl32 => srl32::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::Rotr32 => rotr32::emit_eval_bytecode(gate, data, builder, wire_to_reg),
+		Opcode::Sra32 => sra32::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::Rotr => rotr::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::AssertEq => {
 			let assertion_path = graph.assertion_names[gate];

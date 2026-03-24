@@ -88,14 +88,14 @@ pub fn g_function(
 	a = builder.iadd_32(a, b);
 	a = builder.iadd_32(a, x);
 	d = builder.bxor(d, a); // XOR is free
-	d = builder.rotr_32(d, 16);
+	d = builder.rotr32(d, 16);
 
 	// ---- Stage 2: First diagonal mixing
 	// c := c + d
 	// b := (b ⊕ c) >>> 12
 	c = builder.iadd_32(c, d);
 	b = builder.bxor(b, c); // XOR is free
-	b = builder.rotr_32(b, 12);
+	b = builder.rotr32(b, 12);
 
 	// ---- Stage 3: Second message word mixing
 	// a := a + b + y
@@ -103,14 +103,14 @@ pub fn g_function(
 	a = builder.iadd_32(a, b);
 	a = builder.iadd_32(a, y);
 	d = builder.bxor(d, a); // XOR is free
-	d = builder.rotr_32(d, 8);
+	d = builder.rotr32(d, 8);
 
 	// ---- Stage 4: Second diagonal mixing
 	// c := c + d
 	// b := (b ⊕ c) >>> 7
 	c = builder.iadd_32(c, d);
 	b = builder.bxor(b, c); // XOR is free
-	b = builder.rotr_32(b, 7);
+	b = builder.rotr32(b, 7);
 
 	(a, b, c, d)
 }

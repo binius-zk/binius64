@@ -177,36 +177,36 @@ fn maj(builder: &CircuitBuilder, x: Wire, y: Wire, z: Wire) -> Wire {
 
 /// Σ0(a)       = XOR( XOR( ROTR(x,  2), ROTR(x, 13) ), ROTR(x, 22) )
 fn big_sigma_0(b: &CircuitBuilder, x: Wire) -> Wire {
-	let r1 = b.rotr_32(x, 2);
-	let r2 = b.rotr_32(x, 13);
-	let r3 = b.rotr_32(x, 22);
+	let r1 = b.rotr32(x, 2);
+	let r2 = b.rotr32(x, 13);
+	let r3 = b.rotr32(x, 22);
 	let x1 = b.bxor(r1, r2);
 	b.bxor(x1, r3)
 }
 
 /// Σ1(e)       = XOR( XOR( ROTR(x,  6), ROTR(x, 11) ), ROTR(x, 25) )
 fn big_sigma_1(b: &CircuitBuilder, x: Wire) -> Wire {
-	let r1 = b.rotr_32(x, 6);
-	let r2 = b.rotr_32(x, 11);
-	let r3 = b.rotr_32(x, 25);
+	let r1 = b.rotr32(x, 6);
+	let r2 = b.rotr32(x, 11);
+	let r3 = b.rotr32(x, 25);
 	let x1 = b.bxor(r1, r2);
 	b.bxor(x1, r3)
 }
 
 /// σ0(x)       = XOR( XOR( ROTR(x,  7), ROTR(x, 18) ), SHR(x,  3) )
 fn small_sigma_0(b: &CircuitBuilder, x: Wire) -> Wire {
-	let r1 = b.rotr_32(x, 7);
-	let r2 = b.rotr_32(x, 18);
-	let s1 = b.shr_32(x, 3);
+	let r1 = b.rotr32(x, 7);
+	let r2 = b.rotr32(x, 18);
+	let s1 = b.srl32(x, 3);
 	let x1 = b.bxor(r1, r2);
 	b.bxor(x1, s1)
 }
 
 /// σ1(x)       = XOR( XOR( ROTR(x, 17), ROTR(x, 19) ), SHR(x, 10) )
 fn small_sigma_1(b: &CircuitBuilder, x: Wire) -> Wire {
-	let r1 = b.rotr_32(x, 17);
-	let r2 = b.rotr_32(x, 19);
-	let s1 = b.shr_32(x, 10);
+	let r1 = b.rotr32(x, 17);
+	let r2 = b.rotr32(x, 19);
+	let s1 = b.srl32(x, 10);
 	let x1 = b.bxor(r1, r2);
 	b.bxor(x1, s1)
 }

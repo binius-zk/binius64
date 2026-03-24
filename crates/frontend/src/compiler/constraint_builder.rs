@@ -194,9 +194,13 @@ pub struct ShiftedWire {
 pub enum Shift {
 	None,
 	Sll(u32),
+	Sll32(u32),
 	Srl(u32),
+	Srl32(u32),
 	Sar(u32),
+	Sra32(u32),
 	Rotr(u32),
+	Rotr32(u32),
 }
 
 impl Shift {
@@ -215,11 +219,29 @@ impl Shift {
 					None
 				}
 			}
+			(Shift::Sll32(a), Shift::Sll32(b)) => {
+				// 32-bit half-wise left shift composition
+				let combined = a + b;
+				if combined < 32 {
+					Some(Shift::Sll32(combined))
+				} else {
+					None
+				}
+			}
 			(Shift::Srl(a), Shift::Srl(b)) => {
 				// Logical right shift composition: shr(shr(x, a), b) = shr(x, a + b)
 				let combined = a + b;
 				if combined < 64 {
 					Some(Shift::Srl(combined))
+				} else {
+					None
+				}
+			}
+			(Shift::Srl32(a), Shift::Srl32(b)) => {
+				// 32-bit half-wise logical right shift composition
+				let combined = a + b;
+				if combined < 32 {
+					Some(Shift::Srl32(combined))
 				} else {
 					None
 				}
@@ -233,10 +255,24 @@ impl Shift {
 					None
 				}
 			}
+			(Shift::Sra32(a), Shift::Sra32(b)) => {
+				// 32-bit half-wise arithmetic right shift composition
+				let combined = a + b;
+				if combined < 32 {
+					Some(Shift::Sra32(combined))
+				} else {
+					None
+				}
+			}
 			(Shift::Rotr(a), Shift::Rotr(b)) => {
 				// Rotate right composition: rotr(rotr(x, a), b) = rotr(x, (a + b) % 64)
 				let combined = (a + b) % 64;
 				Some(Shift::Rotr(combined))
+			}
+			(Shift::Rotr32(a), Shift::Rotr32(b)) => {
+				// 32-bit half-wise rotate right composition
+				let combined = (a + b) % 32;
+				Some(Shift::Rotr32(combined))
 			}
 			_ => None, // Different shift types are not composable
 		}
@@ -258,11 +294,25 @@ impl ShiftedWire {
 					ShiftedValueIndex::sll(idx, n as usize)
 				}
 			}
+			Shift::Sll32(n) => {
+				if n == 0 {
+					ShiftedValueIndex::plain(idx)
+				} else {
+					ShiftedValueIndex::sll32(idx, n as usize)
+				}
+			}
 			Shift::Srl(n) => {
 				if n == 0 {
 					ShiftedValueIndex::plain(idx)
 				} else {
 					ShiftedValueIndex::srl(idx, n as usize)
+				}
+			}
+			Shift::Srl32(n) => {
+				if n == 0 {
+					ShiftedValueIndex::plain(idx)
+				} else {
+					ShiftedValueIndex::srl32(idx, n as usize)
 				}
 			}
 			Shift::Sar(n) => {
@@ -272,11 +322,25 @@ impl ShiftedWire {
 					ShiftedValueIndex::sar(idx, n as usize)
 				}
 			}
+			Shift::Sra32(n) => {
+				if n == 0 {
+					ShiftedValueIndex::plain(idx)
+				} else {
+					ShiftedValueIndex::sra32(idx, n as usize)
+				}
+			}
 			Shift::Rotr(n) => {
 				if n == 0 {
 					ShiftedValueIndex::plain(idx)
 				} else {
 					ShiftedValueIndex::rotr(idx, n as usize)
+				}
+			}
+			Shift::Rotr32(n) => {
+				if n == 0 {
+					ShiftedValueIndex::plain(idx)
+				} else {
+					ShiftedValueIndex::rotr32(idx, n as usize)
 				}
 			}
 		}
@@ -429,9 +493,13 @@ pub enum WireExprTerm {
 #[derive(Copy, Clone)]
 pub enum ShiftOp {
 	Sll(u32),
+	Sll32(u32),
 	Srl(u32),
+	Srl32(u32),
 	Sar(u32),
+	Sra32(u32),
 	Rotr(u32),
+	Rotr32(u32),
 }
 
 impl WireExpr {
@@ -458,9 +526,13 @@ impl WireExprTerm {
 				wire: w,
 				shift: match op {
 					ShiftOp::Sll(n) => Shift::Sll(n),
+					ShiftOp::Sll32(n) => Shift::Sll32(n),
 					ShiftOp::Srl(n) => Shift::Srl(n),
+					ShiftOp::Srl32(n) => Shift::Srl32(n),
 					ShiftOp::Sar(n) => Shift::Sar(n),
+					ShiftOp::Sra32(n) => Shift::Sra32(n),
 					ShiftOp::Rotr(n) => Shift::Rotr(n),
+					ShiftOp::Rotr32(n) => Shift::Rotr32(n),
 				},
 			},
 		}
@@ -476,16 +548,32 @@ pub fn sll(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Sll(n))
 }
 
+pub fn sll32(w: Wire, n: u32) -> WireExprTerm {
+	WireExprTerm::Shifted(w, ShiftOp::Sll32(n))
+}
+
 pub fn srl(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Srl(n))
+}
+
+pub fn srl32(w: Wire, n: u32) -> WireExprTerm {
+	WireExprTerm::Shifted(w, ShiftOp::Srl32(n))
 }
 
 pub fn sar(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Sar(n))
 }
 
+pub fn sra32(w: Wire, n: u32) -> WireExprTerm {
+	WireExprTerm::Shifted(w, ShiftOp::Sra32(n))
+}
+
 pub fn rotr(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Rotr(n))
+}
+
+pub fn rotr32(w: Wire, n: u32) -> WireExprTerm {
+	WireExprTerm::Shifted(w, ShiftOp::Rotr32(n))
 }
 
 // XOR helpers for common cases
