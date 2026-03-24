@@ -30,10 +30,6 @@ impl<'a> BuildWire<'a> {
 		Self { builder, wire }
 	}
 
-	pub(crate) fn builder(&self) -> &'a RefCell<ConstraintBuilder> {
-		self.builder
-	}
-
 	pub(crate) fn wire(&self) -> ConstraintWire {
 		self.wire
 	}
@@ -189,7 +185,7 @@ impl<'a> Sub<&BuildElem<'a>> for BuildElem<'a> {
 	type Output = Self;
 
 	fn sub(self, rhs: &BuildElem<'a>) -> Self {
-		self + rhs.clone()
+		self - rhs.clone()
 	}
 }
 
@@ -211,7 +207,7 @@ impl<'a> AddAssign for BuildElem<'a> {
 
 impl<'a> SubAssign for BuildElem<'a> {
 	fn sub_assign(&mut self, rhs: Self) {
-		*self = self.clone() + rhs;
+		*self = self.clone() - rhs;
 	}
 }
 
@@ -229,7 +225,7 @@ impl<'a> AddAssign<&BuildElem<'a>> for BuildElem<'a> {
 
 impl<'a> SubAssign<&BuildElem<'a>> for BuildElem<'a> {
 	fn sub_assign(&mut self, rhs: &BuildElem<'a>) {
-		*self = self.clone() + rhs.clone();
+		*self = self.clone() - rhs.clone();
 	}
 }
 
