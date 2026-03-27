@@ -326,6 +326,11 @@ impl<Challenger_: Challenger> ProverTranscript<Challenger_> {
 	}
 }
 
+/// Writes data to a transcript buffer, tracking proof size via tracing events.
+///
+/// Transcript buffers are always growable (`BytesMut` or equivalent), so serialization
+/// writes are infallible in practice. The write methods use `expect` rather than returning
+/// `Result` because the underlying buffers dynamically resize and cannot run out of space.
 pub struct TranscriptWriter<'a, B: BufMut> {
 	buffer: &'a mut B,
 	options: Options,
@@ -336,18 +341,32 @@ impl<B: BufMut> TranscriptWriter<'_, B> {
 		self.buffer
 	}
 
+	/// Serializes and writes a value to the transcript buffer.
+	///
+	/// # Panics
+	///
+	/// Panics if serialization fails. Transcript buffers are growable, so this cannot fail
+	/// due to insufficient space.
 	pub fn write<T: SerializeBytes>(&mut self, value: &T) {
 		self.proof_size_event_wrapper(move |buffer| {
-			value.serialize(buffer).expect("TODO: propagate error");
+			value
+				.serialize(buffer)
+				.expect("serialization to a growable transcript buffer is infallible");
 		});
 	}
 
+	/// Serializes and writes a slice of values to the transcript buffer.
+	///
+	/// # Panics
+	///
+	/// Panics if serialization fails. Transcript buffers are growable, so this cannot fail
+	/// due to insufficient space.
 	pub fn write_slice<T: SerializeBytes>(&mut self, values: &[T]) {
 		self.proof_size_event_wrapper(move |buffer| {
 			for value in values {
 				value
 					.serialize(&mut *buffer)
-					.expect("TODO: propagate error");
+					.expect("serialization to a growable transcript buffer is infallible");
 			}
 		});
 	}
@@ -362,10 +381,17 @@ impl<B: BufMut> TranscriptWriter<'_, B> {
 		self.write_scalar_slice(slice::from_ref(&f));
 	}
 
+	/// Serializes and writes an iterator of field elements to the transcript buffer.
+	///
+	/// # Panics
+	///
+	/// Panics if serialization fails. Transcript buffers are growable, so this cannot fail
+	/// due to insufficient space.
 	pub fn write_scalar_iter<F: Field>(&mut self, it: impl IntoIterator<Item = F>) {
 		self.proof_size_event_wrapper(move |buffer| {
 			for elem in it {
-				SerializeBytes::serialize(&elem, &mut *buffer).expect("TODO: propagate error");
+				SerializeBytes::serialize(&elem, &mut *buffer)
+					.expect("serialization to a growable transcript buffer is infallible");
 			}
 		});
 	}
