@@ -55,8 +55,6 @@ pub trait IOPProverChannel<P: PackedField>: IPProverChannel<P::Scalar> {
 	/// * `remaining_oracle_specs()` must be empty (all oracles committed).
 	/// * All oracle handles in `oracle_relations` must be valid handles returned by
 	///   `send_oracle()`.
-	fn finish(
-		self,
-		oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)],
-	) -> Self::Finish;
+	fn finish(self, oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)])
+	-> Self::Finish;
 }

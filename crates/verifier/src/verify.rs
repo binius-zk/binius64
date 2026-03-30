@@ -177,7 +177,11 @@ where
 		self.verify_iop(public, channel)
 	}
 
-	fn verify_iop<Channel>(&self, public: &[Word], mut channel: Channel) -> Result<Channel::Finish, Error>
+	fn verify_iop<Channel>(
+		&self,
+		public: &[Word],
+		mut channel: Channel,
+	) -> Result<Channel::Finish, Error>
 	where
 		Channel: IOPVerifierChannel<B128, Elem = B128>,
 	{
@@ -201,8 +205,11 @@ where
 		)
 		.entered();
 		let log_n_constraints = checked_log_2(self.constraint_system.n_mul_constraints());
-		let intmul_output =
-			verify_intmul_reduction::<B128, _>(LOG_WORD_SIZE_BITS, log_n_constraints, &mut channel)?;
+		let intmul_output = verify_intmul_reduction::<B128, _>(
+			LOG_WORD_SIZE_BITS,
+			log_n_constraints,
+			&mut channel,
+		)?;
 		drop(intmul_guard);
 
 		// [phase] Verify BitAnd Reduction - AND constraint verification
@@ -261,8 +268,13 @@ where
 			perfetto_category = "phase"
 		)
 		.entered();
-		let shift_output =
-			shift::verify(self.constraint_system(), public, &bitand_claim, &intmul_claim, &mut channel)?;
+		let shift_output = shift::verify(
+			self.constraint_system(),
+			public,
+			&bitand_claim,
+			&intmul_claim,
+			&mut channel,
+		)?;
 		drop(constraint_guard);
 
 		// [phase] Verify Public Input - public input verification

@@ -161,10 +161,7 @@ where
 		NaiveOracle { index }
 	}
 
-	fn finish(
-		mut self,
-		oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)],
-	) {
+	fn finish(mut self, oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)]) {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
 			"finish called but {} oracle specs remaining",

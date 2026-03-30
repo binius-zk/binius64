@@ -208,7 +208,11 @@ where
 	/// # Returns
 	///
 	/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
-	pub fn verify_iop<Channel>(&self, public: &[F], mut channel: Channel) -> Result<Channel::Finish, Error>
+	pub fn verify_iop<Channel>(
+		&self,
+		public: &[F],
+		mut channel: Channel,
+	) -> Result<Channel::Finish, Error>
 	where
 		Channel: IOPVerifierChannel<F>,
 	{
