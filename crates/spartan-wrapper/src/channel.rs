@@ -2,7 +2,7 @@
 
 //! Builder channel that symbolically executes a verifier to build constraint systems.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, rc::Rc};
 
 use binius_field::{BinaryField128bGhash as B128, Field};
 use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
@@ -16,28 +16,29 @@ use crate::build_elem::{BuildElem, BuildWire};
 /// Instead of performing actual verification, this channel records all operations as constraints
 /// in a [`ConstraintBuilder`]. The typical usage pattern is:
 ///
-/// 1. Create a `RefCell<ConstraintBuilder>`
-/// 2. Create an `IronSpartanBuilderChannel` referencing it
-/// 3. Run the verifier on the channel
-/// 4. Drop the channel and extract the built constraint system from the builder
-pub struct IronSpartanBuilderChannel<'a> {
-	builder: &'a RefCell<ConstraintBuilder>,
+/// 1. Create an `IronSpartanBuilderChannel` from a `ConstraintBuilder`
+/// 2. Run the verifier on the channel (e.g., `verify_iop`)
+/// 3. The channel's `finish()` method returns the `ConstraintBuilder` with all recorded constraints
+pub struct IronSpartanBuilderChannel {
+	builder: Rc<RefCell<ConstraintBuilder>>,
 }
 
-impl<'a> IronSpartanBuilderChannel<'a> {
-	/// Creates a new builder channel referencing the given constraint builder.
-	pub fn new(builder: &'a RefCell<ConstraintBuilder>) -> Self {
-		Self { builder }
+impl IronSpartanBuilderChannel {
+	/// Creates a new builder channel that takes ownership of the given constraint builder.
+	pub fn new(builder: ConstraintBuilder) -> Self {
+		Self {
+			builder: Rc::new(RefCell::new(builder)),
+		}
 	}
 
-	fn alloc_inout_elem(&self) -> BuildElem<'a> {
+	fn alloc_inout_elem(&self) -> BuildElem {
 		let wire = self.builder.borrow_mut().alloc_inout();
-		BuildElem::Wire(BuildWire::new(self.builder, wire))
+		BuildElem::Wire(BuildWire::new(&self.builder, wire))
 	}
 }
 
-impl<'a> IPVerifierChannel<B128> for IronSpartanBuilderChannel<'a> {
-	type Elem = BuildElem<'a>;
+impl IPVerifierChannel<B128> for IronSpartanBuilderChannel {
+	type Elem = BuildElem;
 
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
 		Ok(self.alloc_inout_elem())
@@ -77,9 +78,9 @@ impl<'a> IPVerifierChannel<B128> for IronSpartanBuilderChannel<'a> {
 	}
 }
 
-impl<'a> IOPVerifierChannel<B128> for IronSpartanBuilderChannel<'a> {
+impl IOPVerifierChannel<B128> for IronSpartanBuilderChannel {
 	type Oracle = ();
-	type Finish = ();
+	type Finish = ConstraintBuilder;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		&[]
@@ -93,6 +94,8 @@ impl<'a> IOPVerifierChannel<B128> for IronSpartanBuilderChannel<'a> {
 		self,
 		_oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, Self::Elem>],
 	) -> Result<Self::Finish, binius_iop::channel::Error> {
-		Ok(())
+		Ok(Rc::try_unwrap(self.builder)
+			.expect("BuildElem values should only hold Weak references")
+			.into_inner())
 	}
 }

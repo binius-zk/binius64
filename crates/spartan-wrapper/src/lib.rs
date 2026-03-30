@@ -17,7 +17,7 @@ pub use channel::IronSpartanBuilderChannel;
 
 #[cfg(test)]
 mod tests {
-	use std::cell::RefCell;
+	use std::rc::Rc;
 
 	use binius_field::{BinaryField128bGhash as B128, Field, arithmetic_traits::InvertOrZero};
 	use binius_ip::channel::IPVerifierChannel;
@@ -25,17 +25,23 @@ mod tests {
 
 	use super::*;
 
+	/// Helper to create a BuildWire from a ConstraintBuilder Rc for tests.
+	fn alloc_inout_wire(rc: &Rc<std::cell::RefCell<ConstraintBuilder>>) -> BuildElem {
+		let wire = rc.borrow_mut().alloc_inout();
+		BuildElem::Wire(BuildWire::new(rc, wire))
+	}
+
 	#[test]
 	fn test_constant_arithmetic() {
 		let a = BuildElem::Constant(B128::new(3));
 		let b = BuildElem::Constant(B128::new(5));
 
 		// Addition in char 2: 3 + 5 = 3 ^ 5 = 6
-		let sum = a + b;
+		let sum = a.clone() + b.clone();
 		assert!(matches!(sum, BuildElem::Constant(c) if c == B128::new(3) + B128::new(5)));
 
 		// Multiplication
-		let product = a * b;
+		let product = a.clone() * b.clone();
 		assert!(matches!(product, BuildElem::Constant(c) if c == B128::new(3) * B128::new(5)));
 
 		// Subtraction equals addition in char 2
@@ -45,16 +51,15 @@ mod tests {
 
 	#[test]
 	fn test_constant_identity_shortcuts() {
-		let builder = RefCell::new(ConstraintBuilder::new());
-		let wire = builder.borrow_mut().alloc_inout();
-		let elem = BuildElem::Wire(BuildWire::new(&builder, wire));
+		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::new()));
+		let elem = alloc_inout_wire(&rc);
 
 		// Adding zero returns the wire unchanged.
-		let result = elem + BuildElem::Constant(B128::ZERO);
+		let result = elem.clone() + BuildElem::Constant(B128::ZERO);
 		assert!(matches!(result, BuildElem::Wire(_)));
 
 		// Multiplying by one returns the wire unchanged.
-		let result = elem * BuildElem::Constant(B128::ONE);
+		let result = elem.clone() * BuildElem::Constant(B128::ONE);
 		assert!(matches!(result, BuildElem::Wire(_)));
 
 		// Multiplying by zero returns constant zero.
@@ -64,41 +69,36 @@ mod tests {
 
 	#[test]
 	fn test_wire_addition_creates_constraint() {
-		let builder = RefCell::new(ConstraintBuilder::new());
-		let w1 = builder.borrow_mut().alloc_inout();
-		let w2 = builder.borrow_mut().alloc_inout();
-		let a = BuildElem::Wire(BuildWire::new(&builder, w1));
-		let b = BuildElem::Wire(BuildWire::new(&builder, w2));
+		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::new()));
+		let a = alloc_inout_wire(&rc);
+		let b = alloc_inout_wire(&rc);
 
 		let _sum = a + b;
 		// The addition should produce constraints. After finalization, the zero constraint
 		// from addition becomes a mul constraint (multiplied by one).
-		let (cs, _layout) = builder.into_inner().build().finalize();
+		let (cs, _layout) = Rc::try_unwrap(rc).unwrap().into_inner().build().finalize();
 		assert!(!cs.mul_constraints().is_empty());
 	}
 
 	#[test]
 	fn test_wire_multiplication_creates_constraint() {
-		let builder = RefCell::new(ConstraintBuilder::new());
-		let w1 = builder.borrow_mut().alloc_inout();
-		let w2 = builder.borrow_mut().alloc_inout();
-		let a = BuildElem::Wire(BuildWire::new(&builder, w1));
-		let b = BuildElem::Wire(BuildWire::new(&builder, w2));
+		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::new()));
+		let a = alloc_inout_wire(&rc);
+		let b = alloc_inout_wire(&rc);
 
 		let _product = a * b;
-		let (cs, _layout) = builder.into_inner().build().finalize();
+		let (cs, _layout) = Rc::try_unwrap(rc).unwrap().into_inner().build().finalize();
 		// At least 1 mul constraint from a*b.
 		assert!(!cs.mul_constraints().is_empty());
 	}
 
 	#[test]
 	fn test_invert_or_zero_creates_constraints() {
-		let builder = RefCell::new(ConstraintBuilder::new());
-		let w = builder.borrow_mut().alloc_inout();
-		let elem = BuildElem::Wire(BuildWire::new(&builder, w));
+		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::new()));
+		let elem = alloc_inout_wire(&rc);
 
 		let _inv = elem.invert_or_zero();
-		let (cs, _layout) = builder.into_inner().build().finalize();
+		let (cs, _layout) = Rc::try_unwrap(rc).unwrap().into_inner().build().finalize();
 		// InvertOrZero creates: a mul constraint (wire * inv) and a zero constraint
 		// (product ^ one), both of which become mul constraints after finalization.
 		assert!(cs.mul_constraints().len() >= 2);
@@ -106,8 +106,7 @@ mod tests {
 
 	#[test]
 	fn test_channel_recv_and_sample() {
-		let builder = RefCell::new(ConstraintBuilder::new());
-		let mut channel = IronSpartanBuilderChannel::new(&builder);
+		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
 
 		let a = channel.recv_one().unwrap();
 		let b = channel.sample();
@@ -123,8 +122,7 @@ mod tests {
 
 	#[test]
 	fn test_channel_assert_zero() {
-		let builder = RefCell::new(ConstraintBuilder::new());
-		let mut channel = IronSpartanBuilderChannel::new(&builder);
+		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
 
 		// Assert zero on a constant zero should succeed.
 		assert!(channel.assert_zero(BuildElem::Constant(B128::ZERO)).is_ok());
@@ -173,18 +171,16 @@ mod tests {
 		let public_size = 1 << cs.log_public();
 
 		// Create the builder channel and run verify_iop symbolically.
-		let builder = RefCell::new(ConstraintBuilder::new());
-		let channel = IronSpartanBuilderChannel::new(&builder);
+		let channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
 
 		// Use zero-filled public inputs of the correct length.
 		let public = vec![B128::ZERO; public_size];
-		verifier
+		let builder = verifier
 			.verify_iop(&public, channel)
 			.expect("symbolic verify_iop failed");
 
 		// Extract the constraint system built by the symbolic execution.
-		let ir = builder.into_inner().build();
-		let (wrapper_cs, _layout) = ir.finalize();
+		let (wrapper_cs, _layout) = builder.build().finalize();
 
 		// The symbolic execution should have produced a nontrivial constraint system.
 		assert!(wrapper_cs.n_inout() > 0);
@@ -195,23 +191,21 @@ mod tests {
 	fn test_channel_integration_simple_circuit() {
 		// Build a simple circuit: recv two values, multiply them, assert_zero on the
 		// difference with a third received value (ie. a * b == c).
-		let builder = RefCell::new(ConstraintBuilder::new());
-		{
-			let mut channel = IronSpartanBuilderChannel::new(&builder);
-			let a = channel.recv_one().unwrap();
-			let b = channel.recv_one().unwrap();
-			let c = channel.recv_one().unwrap();
-			let product = a * b;
-			// In char 2, product - c == product + c.
-			let diff = product + c;
-			channel.assert_zero(diff).unwrap();
-		}
+		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
+		let a = channel.recv_one().unwrap();
+		let b = channel.recv_one().unwrap();
+		let c = channel.recv_one().unwrap();
+		let product = a * b;
+		// In char 2, product - c == product + c.
+		let diff = product + c;
+		channel.assert_zero(diff).unwrap();
 
-		// Extract and compile the constraint system.
-		let ir = builder.into_inner().build();
-		let (cs, _layout) = ir.finalize();
+		// Finish and extract the constraint system.
+		use binius_iop::channel::IOPVerifierChannel;
+		let builder = channel.finish(&[]).unwrap();
+		let (cs, _layout) = builder.build().finalize();
 
-		// Should have 3 inout wires (a, b, c) + private wires from mul and add.
+		// Should have inout wires from recv + private wires from mul and add.
 		assert!(cs.n_inout() >= 3);
 		// Should have at least 1 mul constraint from a*b and 1 from the finalized zero
 		// constraint.
