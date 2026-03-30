@@ -138,6 +138,60 @@ mod tests {
 	}
 
 	#[test]
+	fn test_verify_iop_builds_constraint_system() {
+		use binius_hash::StdCompression;
+		use binius_spartan_frontend::{
+			circuit_builder::CircuitBuilder, circuits::powers, compiler::compile,
+		};
+		use binius_spartan_verifier::Verifier;
+
+		// Build a power7 circuit: assert that x^7 = y.
+		fn power7_circuit<Builder: CircuitBuilder>(
+			builder: &mut Builder,
+			x_wire: Builder::Wire,
+			y_wire: Builder::Wire,
+		) {
+			let powers_vec = powers(builder, x_wire, 7);
+			let x7 = powers_vec[6];
+			builder.assert_eq(x7, y_wire);
+		}
+
+		let mut constraint_builder = ConstraintBuilder::new();
+		let x_wire = constraint_builder.alloc_inout();
+		let y_wire = constraint_builder.alloc_inout();
+		power7_circuit(&mut constraint_builder, x_wire, y_wire);
+		let (cs, _layout) = compile(constraint_builder);
+
+		// Set up a real Verifier with the compiled constraint system.
+		let log_inv_rate = 1;
+		let compression = StdCompression::default();
+		let verifier =
+			Verifier::<_, binius_hash::StdDigest, _>::setup(cs, log_inv_rate, compression)
+				.expect("verifier setup failed");
+
+		let cs = verifier.constraint_system();
+		let public_size = 1 << cs.log_public();
+
+		// Create the builder channel and run verify_iop symbolically.
+		let builder = RefCell::new(ConstraintBuilder::new());
+		let channel = IronSpartanBuilderChannel::new(&builder);
+
+		// Use zero-filled public inputs of the correct length.
+		let public = vec![B128::ZERO; public_size];
+		verifier
+			.verify_iop(&public, channel)
+			.expect("symbolic verify_iop failed");
+
+		// Extract the constraint system built by the symbolic execution.
+		let ir = builder.into_inner().build();
+		let (wrapper_cs, _layout) = ir.finalize();
+
+		// The symbolic execution should have produced a nontrivial constraint system.
+		assert!(wrapper_cs.n_inout() > 0);
+		assert!(!wrapper_cs.mul_constraints().is_empty());
+	}
+
+	#[test]
 	fn test_channel_integration_simple_circuit() {
 		// Build a simple circuit: recv two values, multiply them, assert_zero on the
 		// difference with a third received value (ie. a * b == c).
