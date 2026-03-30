@@ -5,6 +5,7 @@
 use std::cell::RefCell;
 
 use binius_field::{BinaryField128bGhash as B128, Field};
+use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::circuit_builder::ConstraintBuilder;
 
@@ -73,5 +74,25 @@ impl<'a> IPVerifierChannel<B128> for IronSpartanBuilderChannel<'a> {
 				Ok(())
 			}
 		}
+	}
+}
+
+impl<'a> IOPVerifierChannel<B128> for IronSpartanBuilderChannel<'a> {
+	type Oracle = ();
+	type Finish = ();
+
+	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
+		&[]
+	}
+
+	fn recv_oracle(&mut self) -> Result<Self::Oracle, binius_iop::channel::Error> {
+		Ok(())
+	}
+
+	fn finish(
+		self,
+		_oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, Self::Elem>],
+	) -> Result<Self::Finish, binius_iop::channel::Error> {
+		Ok(())
 	}
 }
