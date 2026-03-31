@@ -57,6 +57,6 @@ pub trait IOPProverChannel<P: PackedField>: IPProverChannel<P::Scalar> {
 	///   `send_oracle()`.
 	fn prove_oracle_relations(
 		&mut self,
-		oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)],
+		oracle_relations: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<P>, P::Scalar)>,
 	);
 }

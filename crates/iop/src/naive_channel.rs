@@ -165,9 +165,9 @@ where
 		Ok(NaiveOracle { index })
 	}
 
-	fn verify_oracle_relations(
+	fn verify_oracle_relations<'a>(
 		&mut self,
-		oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, F>],
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, F>>,
 	) -> Result<(), Error> {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),

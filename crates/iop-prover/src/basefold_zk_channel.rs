@@ -211,7 +211,7 @@ where
 
 	fn prove_oracle_relations(
 		&mut self,
-		oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)],
+		oracle_relations: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<P>, P::Scalar)>,
 	) {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
@@ -242,8 +242,8 @@ where
 			// Always use ZK variant.
 			let prover = basefold::prove_zk(
 				committed_data.combined.clone(),
-				transparent_poly.clone(),
-				*eval_claim,
+				transparent_poly,
+				eval_claim,
 				fri_folder,
 				self.transcript,
 			);
@@ -352,7 +352,7 @@ mod tests {
 		let oracle = prover_channel.send_oracle(buffer.to_ref());
 		assert_eq!(oracle.index, 0);
 
-		prover_channel.prove_oracle_relations(&[(oracle, transparent_poly.clone(), eval_claim)]);
+		prover_channel.prove_oracle_relations([(oracle, transparent_poly.clone(), eval_claim)]);
 
 		// === VERIFIER SIDE ===
 		let ntt = make_ntt(max_codeword_log_len);
@@ -372,7 +372,7 @@ mod tests {
 		let v_oracle = verifier_channel.recv_oracle().unwrap();
 
 		verifier_channel
-			.verify_oracle_relations(&[OracleLinearRelation {
+			.verify_oracle_relations([OracleLinearRelation {
 				oracle: v_oracle,
 				transparent: Box::new(move |point: &[F]| {
 					let eq = eq_ind_partial_eval::<P>(point);
@@ -425,7 +425,7 @@ mod tests {
 		let oracle_1 = prover_channel.send_oracle(buffer_1.to_ref());
 		let oracle_2 = prover_channel.send_oracle(buffer_2.to_ref());
 
-		prover_channel.prove_oracle_relations(&[
+		prover_channel.prove_oracle_relations([
 			(oracle_1, transparent_poly_1.clone(), eval_claim_1),
 			(oracle_2, transparent_poly_2.clone(), eval_claim_2),
 		]);
@@ -452,7 +452,7 @@ mod tests {
 		let tp2 = transparent_poly_2.clone();
 
 		verifier_channel
-			.verify_oracle_relations(&[
+			.verify_oracle_relations([
 				OracleLinearRelation {
 					oracle: v_oracle_1,
 					transparent: Box::new(move |point: &[F]| {

@@ -276,7 +276,7 @@ where
 		let mask_transparent = self.mask_transparent(&r_x);
 
 		// Verify both oracle relations (checks are done inside verify_oracle_relations)
-		channel.verify_oracle_relations(&[
+		channel.verify_oracle_relations([
 			OracleLinearRelation {
 				oracle: trace_oracle,
 				transparent: trace_transparent,

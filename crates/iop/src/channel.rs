@@ -100,8 +100,8 @@ pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	/// * `remaining_oracle_specs()` must be empty (all oracles received).
 	/// * All oracle handles in `oracle_relations` must be valid handles returned by
 	///   `recv_oracle()`.
-	fn verify_oracle_relations(
+	fn verify_oracle_relations<'a>(
 		&mut self,
-		oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, Self::Elem>],
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error>;
 }

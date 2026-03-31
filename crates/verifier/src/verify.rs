@@ -316,7 +316,7 @@ where
 		});
 
 		// Verify oracle relations (runs BaseFold internally and verifies the product check)
-		channel.verify_oracle_relations(&[OracleLinearRelation {
+		channel.verify_oracle_relations([OracleLinearRelation {
 			oracle: trace_oracle,
 			transparent,
 			claim: sumcheck_claim,

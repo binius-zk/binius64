@@ -162,7 +162,7 @@ where
 
 	fn prove_oracle_relations(
 		&mut self,
-		oracle_relations: &[(Self::Oracle, FieldBuffer<P>, P::Scalar)],
+		oracle_relations: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<P>, P::Scalar)>,
 	) {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
@@ -189,9 +189,9 @@ where
 			// Debug assertion: prover should provide consistent eval claims
 			let stored = &self.stored_oracles[index];
 			let witness_poly = stored.buffer.to_ref();
-			let actual_eval: F = inner_product_buffers(&witness_poly, transparent_poly);
+			let actual_eval: F = inner_product_buffers(&witness_poly, &transparent_poly);
 			debug_assert_eq!(
-				actual_eval, *eval_claim,
+				actual_eval, eval_claim,
 				"NaiveProverChannel: eval_claim mismatch for oracle {index}"
 			);
 		}

@@ -518,7 +518,7 @@ mod tests {
 		);
 
 		// Finish the IOP with the oracle relation
-		prover_channel.prove_oracle_relations(&[(
+		prover_channel.prove_oracle_relations([(
 			witness_oracle,
 			wiring_relation.l_poly.clone(),
 			wiring_relation.batched_sum,
@@ -557,7 +557,7 @@ mod tests {
 		// verify_oracle_relations(), reads the transparent polynomial from the transcript,
 		// and checks that the transparent closure evaluation matches.
 		verifier_channel
-			.verify_oracle_relations(&[OracleLinearRelation {
+			.verify_oracle_relations([OracleLinearRelation {
 				oracle: witness_oracle,
 				transparent,
 				claim: wiring_claim.batched_sum,

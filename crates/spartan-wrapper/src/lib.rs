@@ -204,7 +204,6 @@ mod tests {
 		channel.assert_zero(diff).unwrap();
 
 		// Finish and extract the constraint system.
-		channel.verify_oracle_relations(&[]).unwrap();
 		let builder = channel.finish();
 		let (cs, _layout) = builder.build().finalize();
 
