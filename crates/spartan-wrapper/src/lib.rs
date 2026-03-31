@@ -20,7 +20,6 @@ mod tests {
 	use std::rc::Rc;
 
 	use binius_field::{BinaryField128bGhash as B128, Field, arithmetic_traits::InvertOrZero};
-	use binius_iop::channel::IOPVerifierChannel;
 	use binius_ip::channel::IPVerifierChannel;
 	use binius_spartan_frontend::circuit_builder::ConstraintBuilder;
 

@@ -89,9 +89,9 @@ impl IOPVerifierChannel<B128> for IronSpartanBuilderChannel {
 		Ok(())
 	}
 
-	fn verify_oracle_relations<'a>(
+	fn verify_oracle_relations(
 		&mut self,
-		_oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
+		_oracle_relations: impl IntoIterator<Item = OracleLinearRelation<Self::Oracle, Self::Elem>>,
 	) -> Result<(), binius_iop::channel::Error> {
 		Ok(())
 	}

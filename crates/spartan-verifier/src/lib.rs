@@ -215,6 +215,7 @@ where
 	) -> Result<(), Error>
 	where
 		Channel: IOPVerifierChannel<F>,
+		Channel::Elem: 'static,
 	{
 		let _verify_guard =
 			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
@@ -326,10 +327,10 @@ where
 	}
 
 	/// Returns a closure that evaluates the mask transparent polynomial at a given point.
-	fn mask_transparent<'a, E: FieldOps + 'a>(
+	fn mask_transparent<E: FieldOps + 'static>(
 		&self,
 		r_x: &[E],
-	) -> binius_iop::channel::TransparentEvalFn<'a, E> {
+	) -> binius_iop::channel::TransparentEvalFn<E> {
 		let (_m_n, m_d) = self.mask_dims;
 		let n_vars = r_x.len();
 		let mask_degree = 2; // quadratic composition

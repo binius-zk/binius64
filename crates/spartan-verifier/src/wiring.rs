@@ -61,19 +61,20 @@ where
 ///
 /// The returned closure computes the expected evaluation of the wiring MLE batched with the
 /// public input equality check, given a challenge point from the BaseFold opening.
-pub fn eval_transparent<'a, F: FieldOps + 'a>(
-	constraint_system: &'a ConstraintSystemPadded,
+pub fn eval_transparent<F: FieldOps + 'static>(
+	constraint_system: &ConstraintSystemPadded,
 	r_public: &[F],
 	r_x: &[F],
 	lambda: F,
 	batch_coeff: F,
-) -> binius_iop::channel::TransparentEvalFn<'a, F> {
+) -> binius_iop::channel::TransparentEvalFn<F> {
 	let r_public = r_public.to_vec();
 	let r_x = r_x.to_vec();
+	let mul_constraints = constraint_system.mul_constraints().to_vec();
 
 	Box::new(move |r_y: &[F]| {
 		let wiring_eval =
-			evaluate_wiring_mle(constraint_system.mul_constraints(), lambda.clone(), &r_x, r_y);
+			evaluate_wiring_mle(&mul_constraints, lambda.clone(), &r_x, r_y);
 
 		// Evaluate eq(r_public || ZERO, r_y)
 		let (r_y_head, r_y_tail) = r_y.split_at(r_public.len());
