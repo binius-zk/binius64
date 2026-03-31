@@ -73,8 +73,7 @@ pub fn eval_transparent<F: FieldOps + 'static>(
 	let mul_constraints = constraint_system.mul_constraints().to_vec();
 
 	Box::new(move |r_y: &[F]| {
-		let wiring_eval =
-			evaluate_wiring_mle(&mul_constraints, lambda.clone(), &r_x, r_y);
+		let wiring_eval = evaluate_wiring_mle(&mul_constraints, lambda.clone(), &r_x, r_y);
 
 		// Evaluate eq(r_public || ZERO, r_y)
 		let (r_y_head, r_y_tail) = r_y.split_at(r_public.len());
