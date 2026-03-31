@@ -69,7 +69,13 @@ impl BuildElem {
 	/// Panics if both are constants (no builder to resolve).
 	fn resolve_builder(a: &BuildElem, b: &BuildElem) -> Rc<RefCell<ConstraintBuilder>> {
 		match (a.builder_rc(), b.builder_rc()) {
-			(Some(_ba), Some(bb)) => bb,
+			(Some(a), Some(b)) => {
+				assert!(
+					Rc::ptr_eq(&a, &b),
+					"BuildElem wires reference different ConstraintBuilders"
+				);
+				b
+			}
 			(Some(b), None) | (None, Some(b)) => b,
 			(None, None) => panic!("cannot resolve builder: both operands are constants"),
 		}
