@@ -80,7 +80,6 @@ impl IPVerifierChannel<B128> for IronSpartanBuilderChannel {
 
 impl IOPVerifierChannel<B128> for IronSpartanBuilderChannel {
 	type Oracle = ();
-	type Finish = ConstraintBuilder;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		&[]
@@ -90,12 +89,22 @@ impl IOPVerifierChannel<B128> for IronSpartanBuilderChannel {
 		Ok(())
 	}
 
-	fn finish(
-		self,
+	fn verify_oracle_relations(
+		&mut self,
 		_oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, Self::Elem>],
-	) -> Result<Self::Finish, binius_iop::channel::Error> {
-		Ok(Rc::try_unwrap(self.builder)
+	) -> Result<(), binius_iop::channel::Error> {
+		Ok(())
+	}
+}
+
+impl IronSpartanBuilderChannel {
+	/// Consumes the channel and returns the underlying [`ConstraintBuilder`].
+	///
+	/// This must be called after all `BuildElem` values derived from this channel have been
+	/// dropped, as it requires sole ownership of the builder via `Rc::try_unwrap`.
+	pub fn finish(self) -> ConstraintBuilder {
+		Rc::try_unwrap(self.builder)
 			.expect("BuildElem values should only hold Weak references")
-			.into_inner())
+			.into_inner()
 	}
 }

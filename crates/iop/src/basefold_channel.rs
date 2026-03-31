@@ -157,7 +157,6 @@ where
 	Challenger_: Challenger,
 {
 	type Oracle = BaseFoldOracle;
-	type Finish = ();
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		&self.oracle_specs[self.next_oracle_index..]
@@ -184,13 +183,13 @@ where
 		Ok(BaseFoldOracle { index })
 	}
 
-	fn finish(
-		mut self,
+	fn verify_oracle_relations(
+		&mut self,
 		oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, Self::Elem>],
 	) -> Result<(), Error> {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
-			"finish called but {} oracle specs remaining",
+			"verify_oracle_relations called but {} oracle specs remaining",
 			self.remaining_oracle_specs().len()
 		);
 

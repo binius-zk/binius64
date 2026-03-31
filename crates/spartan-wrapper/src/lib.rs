@@ -20,6 +20,7 @@ mod tests {
 	use std::rc::Rc;
 
 	use binius_field::{BinaryField128bGhash as B128, Field, arithmetic_traits::InvertOrZero};
+	use binius_iop::channel::IOPVerifierChannel;
 	use binius_ip::channel::IPVerifierChannel;
 	use binius_spartan_frontend::circuit_builder::ConstraintBuilder;
 
@@ -171,13 +172,15 @@ mod tests {
 		let public_size = 1 << cs.log_public();
 
 		// Create the builder channel and run verify_iop symbolically.
-		let channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
+		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
 
 		// Use zero-filled public inputs of the correct length.
 		let public = vec![B128::ZERO; public_size];
-		let builder = verifier
-			.verify_iop(&public, channel)
+		verifier
+			.verify_iop(&public, &mut channel)
 			.expect("symbolic verify_iop failed");
+
+		let builder = channel.finish();
 
 		// Extract the constraint system built by the symbolic execution.
 		let (wrapper_cs, _layout) = builder.build().finalize();
@@ -201,8 +204,8 @@ mod tests {
 		channel.assert_zero(diff).unwrap();
 
 		// Finish and extract the constraint system.
-		use binius_iop::channel::IOPVerifierChannel;
-		let builder = channel.finish(&[]).unwrap();
+		channel.verify_oracle_relations(&[]).unwrap();
+		let builder = channel.finish();
 		let (cs, _layout) = builder.build().finalize();
 
 		// Should have inout wires from recv + private wires from mul and add.

@@ -250,8 +250,8 @@ where
 		let libra_eval_tensor =
 			zk_mlecheck::expand_libra_eval::<P>(&r_x, n_vars, mask_degree, m_n, m_d);
 
-		// Finish the protocol with both oracle relations
-		channel.finish(&[
+		// Prove both oracle relations
+		channel.prove_oracle_relations(&[
 			(trace_oracle, wiring_relation.l_poly, wiring_relation.batched_sum),
 			(mask_oracle, libra_eval_tensor, mask_eval),
 		]);

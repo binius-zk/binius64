@@ -42,11 +42,12 @@ fn test_ip_proof_size() {
 
 	// Create size tracking channel and run verify_iop with dummy public inputs
 	// (SizeTrackingChannel ignores values).
-	let channel = verifier.iop_compiler().create_size_tracking_channel();
+	let mut channel = verifier.iop_compiler().create_size_tracking_channel();
 	let public = vec![B128::default(); 1 << cs.log_public()];
-	let proof_size = verifier
-		.verify_iop(&public, channel)
+	verifier
+		.verify_iop(&public, &mut channel)
 		.expect("verify_iop with size tracking channel should succeed");
+	let proof_size = channel.proof_size();
 
 	// Hardcoded expected value to detect proof size regressions.
 	// This measures IP-layer bytes (sumcheck rounds, oracle commitments, evaluations) plus
