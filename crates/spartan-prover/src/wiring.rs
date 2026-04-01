@@ -428,9 +428,8 @@ mod tests {
 		};
 		use binius_iop_prover::{channel::IOPProverChannel, naive_channel::NaiveProverChannel};
 		use binius_math::{inner_product::inner_product_buffers, test_utils::random_field_buffer};
-		use binius_spartan_frontend::constraint_system::{
-			BlindingInfo, ConstraintSystem, ConstraintSystemPadded,
-		};
+		use binius_spartan_frontend::constraint_system::ConstraintSystem;
+		use binius_spartan_verifier::constraint_system::{BlindingInfo, ConstraintSystemPadded};
 		use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 
 		type StdChallenger = HasherChallenger<StdDigest>;

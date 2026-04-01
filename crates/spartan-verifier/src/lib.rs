@@ -28,6 +28,7 @@
 #![warn(rustdoc::missing_crate_level_docs)]
 
 pub mod config;
+pub mod constraint_system;
 pub mod wiring;
 
 use binius_field::{BinaryField, field::FieldOps};
@@ -41,16 +42,16 @@ use binius_math::{
 	multilinear::evaluate::evaluate_inplace_scalars,
 	ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly},
 };
-use binius_spartan_frontend::constraint_system::{
-	BlindingInfo, ConstraintSystem, ConstraintSystemPadded,
-};
+use binius_spartan_frontend::constraint_system::ConstraintSystem;
+
+use crate::constraint_system::{BlindingInfo, ConstraintSystemPadded};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
 use binius_verifier::{
-	fri::{self, MinProofSizeStrategy, calculate_n_test_queries},
+	fri::{self, MinProofSizeStrategy},
 	hash::PseudoCompressionFunction,
 	merkle_tree::BinaryMerkleTreeScheme,
-	protocols::{basefold, mlecheck, mlecheck::mask_buffer_dimensions, sumcheck},
+	protocols::{basefold, mlecheck, sumcheck},
 };
 use digest::{Digest, Output, core_api::BlockSizeUser};
 
@@ -83,8 +84,6 @@ where
 	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
 {
 	constraint_system: ConstraintSystemPadded,
-	/// Mask buffer dimensions (m_n, m_d) for the ZK mulcheck mask polynomial.
-	mask_dims: (usize, usize),
 	/// BaseFold ZK compiler for creating verifier channels.
 	basefold_compiler:
 		BaseFoldZKVerifierCompiler<F, BinaryMerkleTreeScheme<F, MerkleHash, MerkleCompress>>,
@@ -106,9 +105,9 @@ where
 		compression: MerkleCompress,
 	) -> Result<Self, Error> {
 		// Modify the constraint system for zero-knowledge.
-		let n_fri_queries = fri::calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
+		let n_test_queries = fri::calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
 		let blinding_info = BlindingInfo {
-			n_dummy_wires: n_fri_queries,
+			n_dummy_wires: n_test_queries,
 			// TODO: Document why these are necessary
 			n_dummy_constraints: 2,
 		};
@@ -117,13 +116,7 @@ where
 		let log_witness_size = constraint_system.log_size() as usize;
 		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
 
-		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
-
-		// Calculate mask buffer dimensions using the shared function.
-		let log_mul_constraints = checked_log_2(constraint_system.mul_constraints().len());
-		let mask_degree = 2; // quadratic composition
-		let mask_dims = mask_buffer_dimensions(log_mul_constraints, mask_degree, n_test_queries);
-		let (m_n, m_d) = mask_dims;
+		let (m_n, m_d) = constraint_system.mask_dims();
 		let log_mask_dim = m_n + m_d;
 
 		// Create a single NTT with the max domain size for both witness and mask.
@@ -154,7 +147,6 @@ where
 
 		Ok(Self {
 			constraint_system,
-			mask_dims,
 			basefold_compiler,
 		})
 	}
@@ -168,11 +160,6 @@ where
 		&self,
 	) -> &BaseFoldZKVerifierCompiler<F, BinaryMerkleTreeScheme<F, MerkleHash, MerkleCompress>> {
 		&self.basefold_compiler
-	}
-
-	/// Returns the mask buffer dimensions (m_n, m_d) for the ZK mulcheck mask polynomial.
-	pub fn mask_dims(&self) -> (usize, usize) {
-		self.mask_dims
 	}
 
 	/// Verifies a proof against the constraint system.
@@ -327,7 +314,7 @@ where
 		&self,
 		r_x: &[E],
 	) -> binius_iop::channel::TransparentEvalFn<E> {
-		let (_m_n, m_d) = self.mask_dims;
+		let (_m_n, m_d) = self.constraint_system.mask_dims();
 		let n_vars = r_x.len();
 		let mask_degree = 2; // quadratic composition
 		let r_x = r_x.to_vec();

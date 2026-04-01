@@ -8,9 +8,9 @@ use binius_math::{
 	multilinear::eq::{eq_ind, eq_ind_partial_eval_scalars, eq_one_var},
 	univariate::evaluate_univariate,
 };
-use binius_spartan_frontend::constraint_system::{
-	ConstraintSystemPadded, MulConstraint, WitnessIndex,
-};
+use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex};
+
+use crate::constraint_system::ConstraintSystemPadded;
 use binius_verifier::protocols::{basefold, sumcheck};
 
 /// Claim components from the wiring check computation via IOP channel.

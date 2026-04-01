@@ -203,128 +203,12 @@ impl<F: Field> ConstraintSystem<F> {
 	}
 }
 
-/// A constraint system with blinding and power-of-two padding.
-///
-/// Wraps a [`ConstraintSystem`], adds dummy constraints for blinding, and pads the total
-/// number of constraints to a power of two (required by the prover's multilinear extension
-/// protocol).
 #[derive(Debug, Clone)]
-pub struct ConstraintSystemPadded<F: Field = B128> {
-	inner: ConstraintSystem<F>,
-	log_size: u32,
-	blinding_info: BlindingInfo,
-	mul_constraints: Vec<MulConstraint<WitnessIndex>>,
-}
-
-impl<F: Field> ConstraintSystemPadded<F> {
-	/// Create a new padded constraint system with blinding.
-	///
-	/// This:
-	/// 1. Adds dummy multiplication constraints for blinding (3 wires each: A * B = C)
-	/// 2. Pads the total constraint count to a power of two with `one * one = one` constraints
-	/// 3. Calculates the log_size based on witness requirements
-	pub fn new(cs: ConstraintSystem<F>, blinding_info: BlindingInfo) -> Self {
-		let mut mul_constraints = cs.mul_constraints.clone();
-
-		// Calculate witness size and log_size
-		let n_public = cs.n_public() as usize;
-		let n_private = cs.n_private as usize;
-		let total_witness_size = n_public
-			+ n_private
-			+ blinding_info.n_dummy_wires
-			+ 3 * blinding_info.n_dummy_constraints;
-		let log_size = log2_ceil_usize(total_witness_size) as u32;
-
-		// Add dummy constraints for blinding
-		// Each dummy constraint uses 3 consecutive wires starting after n_dummy_wires
-		let dummy_constraint_wire_base = n_public + n_private + blinding_info.n_dummy_wires;
-		for i in 0..blinding_info.n_dummy_constraints {
-			let a = WitnessIndex((dummy_constraint_wire_base + 3 * i) as u32);
-			let b = WitnessIndex((dummy_constraint_wire_base + 3 * i + 1) as u32);
-			let c = WitnessIndex((dummy_constraint_wire_base + 3 * i + 2) as u32);
-
-			mul_constraints.push(MulConstraint {
-				a: Operand::from(a),
-				b: Operand::from(b),
-				c: Operand::from(c),
-			});
-		}
-
-		// Pad to next power of two with `one * one = one` constraints
-		let one_operand = Operand::from(cs.one_wire);
-		let current_len = mul_constraints.len();
-		mul_constraints.resize(
-			current_len.next_power_of_two(),
-			MulConstraint {
-				a: one_operand.clone(),
-				b: one_operand.clone(),
-				c: one_operand.clone(),
-			},
-		);
-
-		Self {
-			inner: cs,
-			log_size,
-			blinding_info,
-			mul_constraints,
-		}
-	}
-
-	pub fn constants(&self) -> &[F] {
-		self.inner.constants()
-	}
-
-	pub fn n_inout(&self) -> u32 {
-		self.inner.n_inout()
-	}
-
-	pub fn n_private(&self) -> u32 {
-		self.inner.n_private()
-	}
-
-	pub fn log_public(&self) -> u32 {
-		self.inner.log_public()
-	}
-
-	pub fn n_public(&self) -> u32 {
-		self.inner.n_public()
-	}
-
-	pub fn one_wire(&self) -> WitnessIndex {
-		self.inner.one_wire()
-	}
-
-	pub fn log_size(&self) -> u32 {
-		self.log_size
-	}
-
-	pub fn size(&self) -> usize {
-		1 << self.log_size as usize
-	}
-
-	pub fn blinding_info(&self) -> &BlindingInfo {
-		&self.blinding_info
-	}
-
-	pub fn mul_constraints(&self) -> &[MulConstraint<WitnessIndex>] {
-		&self.mul_constraints
-	}
-
-	pub fn validate(&self, witness: &[B128]) {
-		assert_eq!(witness.len(), self.size());
-
-		let operand_val = |operand: &Operand<WitnessIndex>| {
-			operand
-				.wires()
-				.iter()
-				.map(|idx| witness[idx.0 as usize])
-				.sum::<B128>()
-		};
-
-		for MulConstraint { a, b, c } in &self.mul_constraints {
-			assert_eq!(operand_val(a) * operand_val(b), operand_val(c));
-		}
-	}
+pub struct BlindingInfo {
+	/// The number of random dummy wires that must be added.
+	pub n_dummy_wires: usize,
+	/// The number of random dummy multiplication constraints that must be added.
+	pub n_dummy_constraints: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -428,13 +312,6 @@ impl WitnessLayout {
 	}
 }
 
-#[derive(Debug, Clone)]
-pub struct BlindingInfo {
-	/// The number of random dummy wires that must be added.
-	pub n_dummy_wires: usize,
-	/// The number of random dummy multiplication constraints that must be added.
-	pub n_dummy_constraints: usize,
-}
 
 #[cfg(test)]
 mod tests {

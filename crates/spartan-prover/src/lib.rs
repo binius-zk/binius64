@@ -43,8 +43,9 @@ use binius_prover::{
 	merkle_tree::prover::BinaryMerkleTreeProver,
 	protocols::sumcheck::{quadratic_mle::QuadraticMleCheckProver, zk_mlecheck},
 };
-use binius_spartan_frontend::constraint_system::{BlindingInfo, MulConstraint, WitnessIndex};
+use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex};
 use binius_spartan_verifier::Verifier;
+use binius_spartan_verifier::constraint_system::BlindingInfo;
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{
 	SerializeBytes,
@@ -196,7 +197,7 @@ where
 		let log_mul_constraints = checked_log_2(cs.mul_constraints().len());
 
 		// Create mask buffer for the ZK mulcheck mask polynomial.
-		let (m_n, m_d) = self.verifier.mask_dims();
+		let (m_n, m_d) = cs.mask_dims();
 		let mask_degree = 2; // quadratic composition
 		let log_masks_buffer_size = m_n + m_d;
 
