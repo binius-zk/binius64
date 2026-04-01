@@ -5,6 +5,7 @@
 
 mod arch;
 pub mod ghash;
+pub mod ghash_sq;
 pub mod monbijou;
 pub mod polyval;
 pub mod rijndael;
