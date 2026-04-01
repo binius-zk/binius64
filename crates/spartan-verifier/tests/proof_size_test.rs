@@ -7,7 +7,7 @@ use binius_spartan_frontend::{
 	compiler::compile,
 };
 use binius_spartan_verifier::{
-	Verifier, verify_iop,
+	Verifier,
 	config::{StdCompression, StdDigest},
 };
 
@@ -40,12 +40,14 @@ fn test_ip_proof_size() {
 
 	let cs = verifier.constraint_system();
 
-	// Create size tracking channel and run verify_iop with dummy public inputs
+	// Create size tracking channel and run verify with dummy public inputs
 	// (SizeTrackingChannel ignores values).
 	let mut channel = verifier.iop_compiler().create_size_tracking_channel();
 	let public = vec![B128::default(); 1 << cs.log_public()];
-	verify_iop(cs, &public, &mut channel)
-		.expect("verify_iop with size tracking channel should succeed");
+	verifier
+		.iop_verifier()
+		.verify(&public, &mut channel)
+		.expect("verify with size tracking channel should succeed");
 	let proof_size = channel.proof_size();
 
 	// Hardcoded expected value to detect proof size regressions.

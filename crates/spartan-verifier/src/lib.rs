@@ -17,6 +17,7 @@
 //!
 //! - [`Verifier`] - Main verification interface; call [`Verifier::setup`] with a constraint system,
 //!   then [`Verifier::verify`] with a proof and public inputs
+//! - [`IOPVerifier`] - Core IOP verification logic, independent of the compilation strategy
 //! - [`Error`] - Error type returned when proof verification fails
 //!
 //! # Related crates
@@ -72,6 +73,16 @@ pub struct MulcheckOutput<F> {
 	pub r_x: Vec<F>,
 }
 
+/// IOP verifier for a particular constraint system.
+///
+/// This struct encapsulates the constraint system, providing the core verification logic
+/// independent of the specific IOP compilation strategy. Most users should use [`Verifier`]
+/// instead, which wraps this with a BaseFold compiler.
+#[derive(Debug, Clone)]
+pub struct IOPVerifier {
+	constraint_system: ConstraintSystemPadded,
+}
+
 /// Struct for verifying instances of a particular constraint system.
 ///
 /// The [`Self::setup`] constructor determines public parameters for proving instances of the given
@@ -83,10 +94,134 @@ where
 	MerkleHash: Digest + BlockSizeUser,
 	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
 {
-	constraint_system: ConstraintSystemPadded,
+	iop_verifier: IOPVerifier,
 	/// BaseFold ZK compiler for creating verifier channels.
 	basefold_compiler:
 		BaseFoldZKVerifierCompiler<F, BinaryMerkleTreeScheme<F, MerkleHash, MerkleCompress>>,
+}
+
+impl IOPVerifier {
+	/// Constructs an IOP verifier for a constraint system.
+	pub fn new(constraint_system: ConstraintSystemPadded) -> Self {
+		Self { constraint_system }
+	}
+
+	pub fn constraint_system(&self) -> &ConstraintSystemPadded {
+		&self.constraint_system
+	}
+
+	/// Returns the oracle specs for the IOP channel.
+	///
+	/// These describe the oracles (witness and mask) that the prover commits to.
+	pub fn oracle_specs(&self) -> Vec<OracleSpec> {
+		let cs = &self.constraint_system;
+		let log_witness_size = cs.log_size() as usize;
+		let (m_n, m_d) = cs.mask_dims();
+		let log_mask_dim = m_n + m_d;
+
+		vec![
+			OracleSpec {
+				log_msg_len: log_witness_size,
+			},
+			OracleSpec {
+				log_msg_len: log_mask_dim,
+			},
+		]
+	}
+
+	/// Verifies a proof using an IOP channel.
+	///
+	/// This is the core verification logic, independent of the specific IOP compilation strategy.
+	/// For most users, [`Verifier::verify`] is the simpler interface.
+	///
+	/// # Arguments
+	///
+	/// * `public` - The public inputs to the constraint system
+	/// * `channel` - The IOP verifier channel
+	///
+	/// # Returns
+	///
+	/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
+	pub fn verify<F, Channel>(
+		&self,
+		public: &[F],
+		channel: &mut Channel,
+	) -> Result<(), Error>
+	where
+		F: BinaryField,
+		Channel: IOPVerifierChannel<F>,
+		Channel::Elem: 'static,
+	{
+		let _verify_guard =
+			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
+				.entered();
+
+		let cs = &self.constraint_system;
+
+		// Check that the public input length is correct
+		if public.len() != 1 << cs.log_public() {
+			return Err(Error::IncorrectPublicInputLength {
+				expected: 1 << cs.log_public(),
+				actual: public.len(),
+			});
+		}
+
+		// Observe the public input (includes it in Fiat-Shamir).
+		let public_elems = channel.observe_many(public);
+
+		// Receive the trace oracle commitment.
+		let trace_oracle = channel.recv_oracle()?;
+
+		// Receive the mask oracle commitment.
+		let mask_oracle = channel.recv_oracle()?;
+
+		// Verify the multiplication constraints.
+		let MulcheckOutput {
+			a_eval,
+			b_eval,
+			c_eval,
+			mask_eval,
+			r_x,
+		} = verify_mulcheck(cs, channel)?;
+
+		// Sample the public input check challenge and evaluate the public input at the challenge
+		// point.
+		let r_public = channel.sample_many(cs.log_public() as usize);
+
+		let public_eval = evaluate_inplace_scalars(public_elems, &r_public);
+
+		// Compute wiring claim components
+		let wiring_claim =
+			wiring::compute_claim(cs, &r_public, &[a_eval, b_eval, c_eval], public_eval, channel);
+
+		// Build the transparent closure for the wiring oracle relation
+		let trace_transparent = wiring::eval_transparent(
+			cs,
+			&r_public,
+			&r_x,
+			wiring_claim.lambda,
+			wiring_claim.batch_coeff,
+		);
+
+		// Build the transparent closure for the mask oracle relation
+		let mask_transparent = mask_transparent(cs, &r_x);
+
+		// Verify both oracle relations (checks are done inside verify_oracle_relations)
+		channel.verify_oracle_relations([
+			OracleLinearRelation {
+				oracle: trace_oracle,
+				transparent: trace_transparent,
+				claim: wiring_claim.batched_sum,
+			},
+			OracleLinearRelation {
+				oracle: mask_oracle,
+				transparent: mask_transparent,
+				claim: mask_eval,
+			},
+		])?;
+
+		Ok(())
+	}
 }
 
 impl<F, MerkleHash, MerkleCompress> Verifier<F, MerkleHash, MerkleCompress>
@@ -113,27 +248,21 @@ where
 		};
 		let constraint_system = ConstraintSystemPadded::new(constraint_system, blinding_info);
 
-		let log_witness_size = constraint_system.log_size() as usize;
-		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
+		let iop_verifier = IOPVerifier::new(constraint_system);
+		let oracle_specs = iop_verifier.oracle_specs();
 
-		let (m_n, m_d) = constraint_system.mask_dims();
+		let cs = iop_verifier.constraint_system();
+		let log_witness_size = cs.log_size() as usize;
+		let (m_n, m_d) = cs.mask_dims();
 		let log_mask_dim = m_n + m_d;
+
+		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
 
 		// Create a single NTT with the max domain size for both witness and mask.
 		let max_log_code_len = log_witness_size.max(log_mask_dim) + log_inv_rate;
 		let subspace = BinarySubspace::with_dim(max_log_code_len);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
-
-		// Create oracle specs for the IOP channel.
-		let oracle_specs = vec![
-			OracleSpec {
-				log_msg_len: log_witness_size,
-			},
-			OracleSpec {
-				log_msg_len: log_mask_dim,
-			},
-		];
 
 		// Create the BaseFold ZK compiler for IOP verification
 		let basefold_compiler = BaseFoldZKVerifierCompiler::new(
@@ -146,13 +275,18 @@ where
 		);
 
 		Ok(Self {
-			constraint_system,
+			iop_verifier,
 			basefold_compiler,
 		})
 	}
 
+	/// Returns a reference to the IOP verifier.
+	pub fn iop_verifier(&self) -> &IOPVerifier {
+		&self.iop_verifier
+	}
+
 	pub fn constraint_system(&self) -> &ConstraintSystemPadded {
-		&self.constraint_system
+		self.iop_verifier.constraint_system()
 	}
 
 	/// Returns a reference to the BaseFold ZK verifier compiler.
@@ -177,97 +311,10 @@ where
 		public: &[F],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		// Create channel and delegate to verify_iop
+		// Create channel and delegate to IOPVerifier::verify
 		let mut channel = self.basefold_compiler.create_channel(transcript);
-		verify_iop(&self.constraint_system, public, &mut channel)
+		self.iop_verifier.verify(public, &mut channel)
 	}
-}
-
-/// Verifies a proof using an IOP channel.
-///
-/// This is the core verification logic, independent of the specific IOP compilation strategy.
-/// For most users, [`Verifier::verify`] is the simpler interface.
-///
-/// # Arguments
-///
-/// * `cs` - The padded constraint system
-/// * `public` - The public inputs to the constraint system
-/// * `channel` - The IOP verifier channel
-///
-/// # Returns
-///
-/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
-pub fn verify_iop<F, Channel>(
-	cs: &ConstraintSystemPadded,
-	public: &[F],
-	channel: &mut Channel,
-) -> Result<(), Error>
-where
-	F: BinaryField,
-	Channel: IOPVerifierChannel<F>,
-	Channel::Elem: 'static,
-{
-	let _verify_guard =
-		tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
-			.entered();
-
-	// Check that the public input length is correct
-	if public.len() != 1 << cs.log_public() {
-		return Err(Error::IncorrectPublicInputLength {
-			expected: 1 << cs.log_public(),
-			actual: public.len(),
-		});
-	}
-
-	// Observe the public input (includes it in Fiat-Shamir).
-	let public_elems = channel.observe_many(public);
-
-	// Receive the trace oracle commitment.
-	let trace_oracle = channel.recv_oracle()?;
-
-	// Receive the mask oracle commitment.
-	let mask_oracle = channel.recv_oracle()?;
-
-	// Verify the multiplication constraints.
-	let MulcheckOutput {
-		a_eval,
-		b_eval,
-		c_eval,
-		mask_eval,
-		r_x,
-	} = verify_mulcheck(cs, channel)?;
-
-	// Sample the public input check challenge and evaluate the public input at the challenge
-	// point.
-	let r_public = channel.sample_many(cs.log_public() as usize);
-
-	let public_eval = evaluate_inplace_scalars(public_elems, &r_public);
-
-	// Compute wiring claim components
-	let wiring_claim = wiring::compute_claim(cs, &r_public, &[a_eval, b_eval, c_eval], public_eval, channel);
-
-	// Build the transparent closure for the wiring oracle relation
-	let trace_transparent =
-		wiring::eval_transparent(cs, &r_public, &r_x, wiring_claim.lambda, wiring_claim.batch_coeff);
-
-	// Build the transparent closure for the mask oracle relation
-	let mask_transparent = mask_transparent(cs, &r_x);
-
-	// Verify both oracle relations (checks are done inside verify_oracle_relations)
-	channel.verify_oracle_relations([
-		OracleLinearRelation {
-			oracle: trace_oracle,
-			transparent: trace_transparent,
-			claim: wiring_claim.batched_sum,
-		},
-		OracleLinearRelation {
-			oracle: mask_oracle,
-			transparent: mask_transparent,
-			claim: mask_eval,
-		},
-	])?;
-
-	Ok(())
 }
 
 fn verify_mulcheck<F, C>(

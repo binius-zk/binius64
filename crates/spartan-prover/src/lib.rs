@@ -303,8 +303,8 @@ where
 		transcript.observe().write_slice(public);
 
 		// Create ZK channel (owns the RNG for mask generation) and delegate to IOP prover
-		let mut channel = self.basefold_compiler.create_channel(transcript, &mut rng);
-		self.iop_prover.prove::<F, P, _>(witness, rng, &mut channel)
+		let channel = self.basefold_compiler.create_channel(transcript, &mut rng);
+		self.iop_prover.prove::<F, P, _>(witness, rng, channel)
 	}
 }
 

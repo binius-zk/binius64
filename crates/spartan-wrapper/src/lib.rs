@@ -137,11 +137,13 @@ mod tests {
 
 	#[test]
 	fn test_verify_iop_builds_constraint_system() {
-		use binius_hash::StdCompression;
 		use binius_spartan_frontend::{
 			circuit_builder::CircuitBuilder, circuits::powers, compiler::compile,
 		};
-		use binius_spartan_verifier::{Verifier, verify_iop};
+		use binius_spartan_verifier::{
+			IOPVerifier,
+			constraint_system::{BlindingInfo, ConstraintSystemPadded},
+		};
 
 		// Build a power7 circuit: assert that x^7 = y.
 		fn power7_circuit<Builder: CircuitBuilder>(
@@ -160,23 +162,24 @@ mod tests {
 		power7_circuit(&mut constraint_builder, x_wire, y_wire);
 		let (cs, _layout) = compile(constraint_builder);
 
-		// Set up a real Verifier with the compiled constraint system.
-		let log_inv_rate = 1;
-		let compression = StdCompression::default();
-		let verifier =
-			Verifier::<B128, binius_hash::StdDigest, _>::setup(cs, log_inv_rate, compression)
-				.expect("verifier setup failed");
-
-		let cs = verifier.constraint_system();
+		// Build IOPVerifier directly from the constraint system.
+		let blinding_info = BlindingInfo {
+			n_dummy_wires: 10,
+			n_dummy_constraints: 2,
+		};
+		let cs = ConstraintSystemPadded::new(cs, blinding_info);
+		let iop_verifier = IOPVerifier::new(cs);
+		let cs = iop_verifier.constraint_system();
 		let public_size = 1 << cs.log_public();
 
-		// Create the builder channel and run verify_iop symbolically.
+		// Create the builder channel and run IOPVerifier::verify symbolically.
 		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
 
 		// Use zero-filled public inputs of the correct length.
 		let public = vec![B128::ZERO; public_size];
-		verify_iop(cs, &public, &mut channel)
-			.expect("symbolic verify_iop failed");
+		iop_verifier
+			.verify(&public, &mut channel)
+			.expect("symbolic verify failed");
 
 		let builder = channel.finish();
 
