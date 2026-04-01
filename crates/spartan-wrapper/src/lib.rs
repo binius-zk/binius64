@@ -141,7 +141,7 @@ mod tests {
 		use binius_spartan_frontend::{
 			circuit_builder::CircuitBuilder, circuits::powers, compiler::compile,
 		};
-		use binius_spartan_verifier::Verifier;
+		use binius_spartan_verifier::{Verifier, verify_iop};
 
 		// Build a power7 circuit: assert that x^7 = y.
 		fn power7_circuit<Builder: CircuitBuilder>(
@@ -164,7 +164,7 @@ mod tests {
 		let log_inv_rate = 1;
 		let compression = StdCompression::default();
 		let verifier =
-			Verifier::<_, binius_hash::StdDigest, _>::setup(cs, log_inv_rate, compression)
+			Verifier::<B128, binius_hash::StdDigest, _>::setup(cs, log_inv_rate, compression)
 				.expect("verifier setup failed");
 
 		let cs = verifier.constraint_system();
@@ -175,8 +175,7 @@ mod tests {
 
 		// Use zero-filled public inputs of the correct length.
 		let public = vec![B128::ZERO; public_size];
-		verifier
-			.verify_iop(&public, &mut channel)
+		verify_iop(cs, &public, &mut channel)
 			.expect("symbolic verify_iop failed");
 
 		let builder = channel.finish();

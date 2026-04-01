@@ -179,153 +179,150 @@ where
 	) -> Result<(), Error> {
 		// Create channel and delegate to verify_iop
 		let mut channel = self.basefold_compiler.create_channel(transcript);
-		self.verify_iop(public, &mut channel)
+		verify_iop(&self.constraint_system, public, &mut channel)
+	}
+}
+
+/// Verifies a proof using an IOP channel.
+///
+/// This is the core verification logic, independent of the specific IOP compilation strategy.
+/// For most users, [`Verifier::verify`] is the simpler interface.
+///
+/// # Arguments
+///
+/// * `cs` - The padded constraint system
+/// * `public` - The public inputs to the constraint system
+/// * `channel` - The IOP verifier channel
+///
+/// # Returns
+///
+/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
+pub fn verify_iop<F, Channel>(
+	cs: &ConstraintSystemPadded,
+	public: &[F],
+	channel: &mut Channel,
+) -> Result<(), Error>
+where
+	F: BinaryField,
+	Channel: IOPVerifierChannel<F>,
+	Channel::Elem: 'static,
+{
+	let _verify_guard =
+		tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
+			.entered();
+
+	// Check that the public input length is correct
+	if public.len() != 1 << cs.log_public() {
+		return Err(Error::IncorrectPublicInputLength {
+			expected: 1 << cs.log_public(),
+			actual: public.len(),
+		});
 	}
 
-	/// Verifies a proof using an IOP channel.
-	///
-	/// This is an alternative interface for advanced users who want to provide their own
-	/// channel implementation. Most users should use [`Self::verify`] instead.
-	///
-	/// # Arguments
-	///
-	/// * `public` - The public inputs to the constraint system
-	/// * `channel` - The IOP verifier channel
-	///
-	/// # Returns
-	///
-	/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
-	pub fn verify_iop<Channel>(&self, public: &[F], channel: &mut Channel) -> Result<(), Error>
-	where
-		Channel: IOPVerifierChannel<F>,
-		Channel::Elem: 'static,
-	{
-		let _verify_guard =
-			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
-				.entered();
+	// Observe the public input (includes it in Fiat-Shamir).
+	let public_elems = channel.observe_many(public);
 
-		let cs = self.constraint_system();
+	// Receive the trace oracle commitment.
+	let trace_oracle = channel.recv_oracle()?;
 
-		// Check that the public input length is correct
-		if public.len() != 1 << cs.log_public() {
-			return Err(Error::IncorrectPublicInputLength {
-				expected: 1 << self.constraint_system.log_public(),
-				actual: public.len(),
-			});
-		}
+	// Receive the mask oracle commitment.
+	let mask_oracle = channel.recv_oracle()?;
 
-		// Observe the public input (includes it in Fiat-Shamir).
-		let public_elems = channel.observe_many(public);
+	// Verify the multiplication constraints.
+	let MulcheckOutput {
+		a_eval,
+		b_eval,
+		c_eval,
+		mask_eval,
+		r_x,
+	} = verify_mulcheck(cs, channel)?;
 
-		// Receive the trace oracle commitment.
-		let trace_oracle = channel.recv_oracle()?;
+	// Sample the public input check challenge and evaluate the public input at the challenge
+	// point.
+	let r_public = channel.sample_many(cs.log_public() as usize);
 
-		// Receive the mask oracle commitment.
-		let mask_oracle = channel.recv_oracle()?;
+	let public_eval = evaluate_inplace_scalars(public_elems, &r_public);
 
-		// Verify the multiplication constraints.
-		let MulcheckOutput {
-			a_eval,
-			b_eval,
-			c_eval,
-			mask_eval,
-			r_x,
-		} = self.verify_mulcheck(channel)?;
+	// Compute wiring claim components
+	let wiring_claim = wiring::compute_claim(cs, &r_public, &[a_eval, b_eval, c_eval], public_eval, channel);
 
-		// Sample the public input check challenge and evaluate the public input at the challenge
-		// point.
-		let r_public = channel.sample_many(cs.log_public() as usize);
+	// Build the transparent closure for the wiring oracle relation
+	let trace_transparent =
+		wiring::eval_transparent(cs, &r_public, &r_x, wiring_claim.lambda, wiring_claim.batch_coeff);
 
-		let public_eval = evaluate_inplace_scalars(public_elems, &r_public);
+	// Build the transparent closure for the mask oracle relation
+	let mask_transparent = mask_transparent(cs, &r_x);
 
-		// Compute wiring claim components
-		let wiring_claim = wiring::compute_claim(
-			&self.constraint_system,
-			&r_public,
-			&[a_eval, b_eval, c_eval],
-			public_eval,
-			channel,
-		);
+	// Verify both oracle relations (checks are done inside verify_oracle_relations)
+	channel.verify_oracle_relations([
+		OracleLinearRelation {
+			oracle: trace_oracle,
+			transparent: trace_transparent,
+			claim: wiring_claim.batched_sum,
+		},
+		OracleLinearRelation {
+			oracle: mask_oracle,
+			transparent: mask_transparent,
+			claim: mask_eval,
+		},
+	])?;
 
-		// Build the transparent closure for the wiring oracle relation
-		let trace_transparent = wiring::eval_transparent(
-			&self.constraint_system,
-			&r_public,
-			&r_x,
-			wiring_claim.lambda,
-			wiring_claim.batch_coeff,
-		);
+	Ok(())
+}
 
-		// Build the transparent closure for the mask oracle relation
-		let mask_transparent = self.mask_transparent(&r_x);
+fn verify_mulcheck<F, C>(
+	cs: &ConstraintSystemPadded,
+	channel: &mut C,
+) -> Result<MulcheckOutput<C::Elem>, Error>
+where
+	F: BinaryField,
+	C: IPVerifierChannel<F>,
+{
+	let log_mul_constraints = checked_log_2(cs.mul_constraints().len());
 
-		// Verify both oracle relations (checks are done inside verify_oracle_relations)
-		channel.verify_oracle_relations([
-			OracleLinearRelation {
-				oracle: trace_oracle,
-				transparent: trace_transparent,
-				claim: wiring_claim.batched_sum,
-			},
-			OracleLinearRelation {
-				oracle: mask_oracle,
-				transparent: mask_transparent,
-				claim: mask_eval,
-			},
-		])?;
+	// Sample random evaluation point
+	let r_mulcheck = channel.sample_many(log_mul_constraints);
 
-		Ok(())
-	}
+	// Verify the zerocheck for the multiplication constraints.
+	let mlecheck::VerifyZKOutput {
+		eval,
+		mask_eval,
+		challenges: mut r_x,
+	} = mlecheck::verify_zk(&r_mulcheck, 2, C::Elem::zero(), channel)?;
 
-	fn verify_mulcheck<C>(&self, channel: &mut C) -> Result<MulcheckOutput<C::Elem>, Error>
-	where
-		C: IPVerifierChannel<F>,
-	{
-		let log_mul_constraints = checked_log_2(self.constraint_system.mul_constraints().len());
+	// Reverse because sumcheck binds high-to-low variable indices.
+	r_x.reverse();
 
-		// Sample random evaluation point
-		let r_mulcheck = channel.sample_many(log_mul_constraints);
+	// Read the claimed evaluations
+	let [a_eval, b_eval, c_eval] = channel.recv_array()?;
 
-		// Verify the zerocheck for the multiplication constraints.
-		let mlecheck::VerifyZKOutput {
-			eval,
-			mask_eval,
-			challenges: mut r_x,
-		} = mlecheck::verify_zk(&r_mulcheck, 2, C::Elem::zero(), channel)?;
+	channel.assert_zero(a_eval.clone() * b_eval.clone() - c_eval.clone() - eval)?;
 
-		// Reverse because sumcheck binds high-to-low variable indices.
-		r_x.reverse();
+	Ok(MulcheckOutput {
+		a_eval,
+		b_eval,
+		c_eval,
+		mask_eval,
+		r_x,
+	})
+}
 
-		// Read the claimed evaluations
-		let [a_eval, b_eval, c_eval] = channel.recv_array()?;
+/// Returns a closure that evaluates the mask transparent polynomial at a given point.
+fn mask_transparent<E: FieldOps + 'static>(
+	cs: &ConstraintSystemPadded,
+	r_x: &[E],
+) -> binius_iop::channel::TransparentEvalFn<E> {
+	let (_m_n, m_d) = cs.mask_dims();
+	let n_vars = r_x.len();
+	let mask_degree = 2; // quadratic composition
+	let r_x = r_x.to_vec();
 
-		channel.assert_zero(a_eval.clone() * b_eval.clone() - c_eval.clone() - eval)?;
+	Box::new(move |point: &[E]| {
+		// Split into query_k (low-order bits) and query_j (high-order bits).
+		let (query_k, query_j) = point.split_at(m_d);
 
-		Ok(MulcheckOutput {
-			a_eval,
-			b_eval,
-			c_eval,
-			mask_eval,
-			r_x,
-		})
-	}
-
-	/// Returns a closure that evaluates the mask transparent polynomial at a given point.
-	fn mask_transparent<E: FieldOps + 'static>(
-		&self,
-		r_x: &[E],
-	) -> binius_iop::channel::TransparentEvalFn<E> {
-		let (_m_n, m_d) = self.constraint_system.mask_dims();
-		let n_vars = r_x.len();
-		let mask_degree = 2; // quadratic composition
-		let r_x = r_x.to_vec();
-
-		Box::new(move |point: &[E]| {
-			// Split into query_k (low-order bits) and query_j (high-order bits).
-			let (query_k, query_j) = point.split_at(m_d);
-
-			mlecheck::libra_eval(&r_x, query_j, query_k, n_vars, mask_degree)
-		})
-	}
+		mlecheck::libra_eval(&r_x, query_j, query_k, n_vars, mask_degree)
+	})
 }
 
 #[derive(Debug, thiserror::Error)]
