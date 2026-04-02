@@ -586,7 +586,7 @@ fn bench_ghash_sq(c: &mut Criterion) {
 		);
 	}
 
-	// Benchmark __m256i
+	// Benchmark __m256i sliced
 	#[cfg(all(
 		target_feature = "vpclmulqdq",
 		target_feature = "avx2",
@@ -597,6 +597,53 @@ fn bench_ghash_sq(c: &mut Criterion) {
 			&mut group,
 			"x86_64::mul_sliced::<__m256i>",
 			ghash_sq::x86_64::mul_sliced::<__m256i>,
+			&mut rng,
+			256,
+		);
+	}
+
+	// Benchmark __m256i packed (single GHASH² element per register)
+	#[cfg(all(
+		target_feature = "vpclmulqdq",
+		target_feature = "avx2",
+		target_feature = "sse2"
+	))]
+	{
+		run_mul_benchmark(
+			&mut group,
+			"x86_64::mul_m256i",
+			ghash_sq::x86_64::mul_m256i,
+			&mut rng,
+			256,
+		);
+	}
+
+	#[cfg(all(
+		target_feature = "pclmulqdq",
+		target_feature = "avx2",
+		target_feature = "sse2"
+	))]
+	{
+		run_mul_benchmark(
+			&mut group,
+			"x86_64::mul_m256i_as_m128i",
+			ghash_sq::x86_64::mul_m256i_as_m128i,
+			&mut rng,
+			256,
+		);
+	}
+
+	#[cfg(all(
+		target_feature = "pclmulqdq",
+		target_feature = "vpclmulqdq",
+		target_feature = "avx2",
+		target_feature = "sse2"
+	))]
+	{
+		run_mul_benchmark(
+			&mut group,
+			"x86_64::mul_m256i_hybrid",
+			ghash_sq::x86_64::mul_m256i_hybrid,
 			&mut rng,
 			256,
 		);
