@@ -239,7 +239,7 @@ mod test {
 		BinarySubspace, FieldBuffer,
 		inner_product::inner_product_buffers,
 		multilinear::eq::eq_ind_partial_eval,
-		ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly},
+		ntt::{AdditiveNTT, NeighborsLastSingleThread, domain_context::GenericOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -281,7 +281,7 @@ mod test {
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 		let fri_params = binius_iop::fri::FRIParams::with_strategy(
-			&ntt,
+			ntt.domain_context(),
 			merkle_prover.scheme(),
 			multilinear.log_len(),
 			None,
@@ -382,7 +382,7 @@ mod test {
 
 		// Create FRI params with log_batch_size = 1
 		let fri_params = binius_iop::fri::FRIParams::with_strategy(
-			&ntt,
+			ntt.domain_context(),
 			merkle_prover.scheme(),
 			witness_plus_mask.log_len(),
 			Some(1),

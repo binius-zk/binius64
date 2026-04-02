@@ -288,10 +288,9 @@ mod tests {
 	}
 
 	fn make_ntt(
-		log_len: usize,
+		subspace: &BinarySubspace<BinaryField128bGhash>,
 	) -> NeighborsLastSingleThread<GenericOnTheFly<BinaryField128bGhash>> {
-		let subspace = BinarySubspace::with_dim(log_len);
-		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+		let domain_context = GenericOnTheFly::generate_from_subspace(subspace);
 		NeighborsLastSingleThread::new(domain_context)
 	}
 
@@ -329,20 +328,27 @@ mod tests {
 		let (buffer, transparent_poly, eval_claim) =
 			generate_zk_oracle_data::<F, P, _>(&mut rng, n_vars);
 
-		let max_codeword_log_len = (n_vars + 1) + LOG_INV_RATE;
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
 		let oracle_specs = vec![OracleSpec {
 			log_msg_len: n_vars,
 		}];
 
-		// === PROVER SIDE ===
-		let prover_compiler = BaseFoldZKProverCompiler::<P, _, _>::new(
-			make_ntt(max_codeword_log_len),
-			make_merkle_prover(),
-			oracle_specs.clone(),
+		let merkle_prover = make_merkle_prover();
+		let verifier_compiler = BaseFoldZKVerifierCompiler::new(
+			merkle_prover.scheme().clone(),
+			oracle_specs,
 			LOG_INV_RATE,
 			n_test_queries,
+			&MinProofSizeStrategy,
+		);
+
+		// === PROVER SIDE ===
+		let ntt = make_ntt(verifier_compiler.max_subspace());
+		let prover_compiler = BaseFoldZKProverCompiler::<P, _, _>::from_verifier_compiler(
+			&verifier_compiler,
+			ntt,
+			merkle_prover,
 		);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
@@ -355,17 +361,6 @@ mod tests {
 		prover_channel.prove_oracle_relations([(oracle, transparent_poly.clone(), eval_claim)]);
 
 		// === VERIFIER SIDE ===
-		let ntt = make_ntt(max_codeword_log_len);
-		let merkle_prover = make_merkle_prover();
-		let verifier_compiler = BaseFoldZKVerifierCompiler::new(
-			&ntt,
-			merkle_prover.scheme().clone(),
-			oracle_specs,
-			LOG_INV_RATE,
-			n_test_queries,
-			&MinProofSizeStrategy,
-		);
-
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
 
@@ -397,7 +392,6 @@ mod tests {
 		let (buffer_2, transparent_poly_2, eval_claim_2) =
 			generate_zk_oracle_data::<F, P, _>(&mut rng, n_vars_2);
 
-		let max_codeword_log_len = (n_vars_2 + 1) + LOG_INV_RATE;
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
 		let oracle_specs = vec![
@@ -409,13 +403,21 @@ mod tests {
 			},
 		];
 
-		// === PROVER SIDE ===
-		let prover_compiler = BaseFoldZKProverCompiler::<P, _, _>::new(
-			make_ntt(max_codeword_log_len),
-			make_merkle_prover(),
-			oracle_specs.clone(),
+		let merkle_prover = make_merkle_prover();
+		let verifier_compiler = BaseFoldZKVerifierCompiler::new(
+			merkle_prover.scheme().clone(),
+			oracle_specs,
 			LOG_INV_RATE,
 			n_test_queries,
+			&MinProofSizeStrategy,
+		);
+
+		// === PROVER SIDE ===
+		let ntt = make_ntt(verifier_compiler.max_subspace());
+		let prover_compiler = BaseFoldZKProverCompiler::<P, _, _>::from_verifier_compiler(
+			&verifier_compiler,
+			ntt,
+			merkle_prover,
 		);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
@@ -431,17 +433,6 @@ mod tests {
 		]);
 
 		// === VERIFIER SIDE ===
-		let ntt = make_ntt(max_codeword_log_len);
-		let merkle_prover = make_merkle_prover();
-		let verifier_compiler = BaseFoldZKVerifierCompiler::new(
-			&ntt,
-			merkle_prover.scheme().clone(),
-			oracle_specs,
-			LOG_INV_RATE,
-			n_test_queries,
-			&MinProofSizeStrategy,
-		);
-
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
 

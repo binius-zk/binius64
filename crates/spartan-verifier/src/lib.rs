@@ -38,11 +38,7 @@ use binius_iop::{
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 };
 use binius_ip::channel::IPVerifierChannel;
-use binius_math::{
-	BinarySubspace,
-	multilinear::evaluate::evaluate_inplace_scalars,
-	ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly},
-};
+use binius_math::multilinear::evaluate::evaluate_inplace_scalars;
 use binius_spartan_frontend::constraint_system::ConstraintSystem;
 
 use crate::constraint_system::{BlindingInfo, ConstraintSystemPadded};
@@ -251,22 +247,10 @@ where
 		let iop_verifier = IOPVerifier::new(constraint_system);
 		let oracle_specs = iop_verifier.oracle_specs();
 
-		let cs = iop_verifier.constraint_system();
-		let log_witness_size = cs.log_size() as usize;
-		let (m_n, m_d) = cs.mask_dims();
-		let log_mask_dim = m_n + m_d;
-
 		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
-
-		// Create a single NTT with the max domain size for both witness and mask.
-		let max_log_code_len = log_witness_size.max(log_mask_dim) + log_inv_rate;
-		let subspace = BinarySubspace::with_dim(max_log_code_len);
-		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
-		let ntt = NeighborsLastSingleThread::new(domain_context);
 
 		// Create the BaseFold ZK compiler for IOP verification
 		let basefold_compiler = BaseFoldZKVerifierCompiler::new(
-			&ntt,
 			merkle_scheme,
 			oracle_specs,
 			log_inv_rate,

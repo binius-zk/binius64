@@ -113,7 +113,7 @@ where
 			.iter()
 			.map(|spec| {
 				FRIParams::with_strategy(
-					ntt,
+					ntt.domain_context(),
 					merkle_prover.scheme(),
 					spec.log_msg_len,
 					None,
@@ -429,11 +429,6 @@ mod tests {
 		);
 		let merkle_scheme = merkle_prover.scheme().clone();
 
-		let max_codeword_log_len = n_vars_2 + LOG_INV_RATE;
-		let subspace = BinarySubspace::with_dim(max_codeword_log_len);
-		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
-		let ntt = NeighborsLastSingleThread::new(domain_context);
-
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
 		let oracle_specs = vec![
@@ -449,7 +444,6 @@ mod tests {
 		let mut verifier_transcript = prover_transcript.into_verifier();
 
 		let compiler = BaseFoldVerifierCompiler::new(
-			&ntt,
 			merkle_scheme,
 			oracle_specs,
 			LOG_INV_RATE,

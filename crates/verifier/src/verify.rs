@@ -7,12 +7,7 @@ use binius_iop::{
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 };
 use binius_ip::channel::IPVerifierChannel;
-use binius_math::{
-	BinarySubspace,
-	inner_product::inner_product,
-	ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly},
-	univariate::lagrange_evals,
-};
+use binius_math::{BinarySubspace, inner_product::inner_product, univariate::lagrange_evals};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{
 	DeserializeBytes,
@@ -89,9 +84,6 @@ where
 			ConstantArityStrategy::with_optimal_arity::<B128, _>(&merkle_scheme, log_code_len)
 				.arity;
 
-		let subspace = BinarySubspace::with_dim(log_code_len);
-		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
-		let ntt = NeighborsLastSingleThread::new(domain_context);
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
 
 		// Create oracle spec for the single witness oracle (not ZK)
@@ -100,7 +92,6 @@ where
 		}];
 
 		let iop_compiler = BaseFoldVerifierCompiler::new(
-			&ntt,
 			merkle_scheme,
 			oracle_specs,
 			log_inv_rate,

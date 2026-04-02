@@ -79,7 +79,7 @@ where
 			.iter()
 			.map(|spec| {
 				FRIParams::with_strategy(
-					&ntt,
+					ntt.domain_context(),
 					merkle_prover.scheme(),
 					spec.log_msg_len,
 					None,
@@ -201,7 +201,7 @@ where
 				let log_msg_len = spec.log_msg_len + 1;
 				let log_batch_size = Some(1);
 				FRIParams::with_strategy(
-					&ntt,
+					ntt.domain_context(),
 					merkle_prover.scheme(),
 					log_msg_len,
 					log_batch_size,

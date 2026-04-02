@@ -6,7 +6,10 @@
 //! precompute FRI parameters and can create verifier channel instances.
 
 use binius_field::BinaryField;
-use binius_math::{BinarySubspace, ntt::AdditiveNTT};
+use binius_math::{
+	BinarySubspace,
+	ntt::domain_context::GenericOnTheFly,
+};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::DeserializeBytes;
 
@@ -48,14 +51,12 @@ where
 	///
 	/// # Arguments
 	///
-	/// * `ntt` - The additive NTT for Reed-Solomon encoding (borrowed, only used for FRI params)
 	/// * `merkle_scheme` - The Merkle tree scheme (owned)
 	/// * `oracle_specs` - Specifications for each oracle to be committed
 	/// * `log_inv_rate` - Log2 of the inverse Reed-Solomon code rate
 	/// * `n_test_queries` - Number of FRI test queries for soundness
 	/// * `arity_strategy` - Strategy for selecting FRI fold arities
-	pub fn new<NTT, Strategy>(
-		ntt: &NTT,
+	pub fn new<Strategy>(
 		merkle_scheme: MerkleScheme_,
 		oracle_specs: Vec<OracleSpec>,
 		log_inv_rate: usize,
@@ -63,14 +64,21 @@ where
 		arity_strategy: &Strategy,
 	) -> Self
 	where
-		NTT: AdditiveNTT<Field = F>,
 		Strategy: AritySelectionStrategy,
 	{
+		let max_log_code_len = oracle_specs
+			.iter()
+			.map(|spec| spec.log_msg_len)
+			.max()
+			.unwrap_or(0) + log_inv_rate;
+		let subspace = BinarySubspace::with_dim(max_log_code_len);
+		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+
 		let fri_params = oracle_specs
 			.iter()
 			.map(|spec| {
 				FRIParams::with_strategy(
-					ntt,
+					&domain_context,
 					&merkle_scheme,
 					spec.log_msg_len,
 					None,
@@ -170,8 +178,7 @@ where
 	///
 	/// All oracle specs are treated as ZK: FRI parameters use `log_msg_len + 1` and
 	/// `log_batch_size = 1`.
-	pub fn new<NTT, Strategy>(
-		ntt: &NTT,
+	pub fn new<Strategy>(
 		merkle_scheme: MerkleScheme_,
 		oracle_specs: Vec<OracleSpec>,
 		log_inv_rate: usize,
@@ -179,16 +186,24 @@ where
 		arity_strategy: &Strategy,
 	) -> Self
 	where
-		NTT: AdditiveNTT<Field = F>,
 		Strategy: AritySelectionStrategy,
 	{
+		// ZK adds 1 to each message length; compute max code length across all oracles.
+		let max_log_code_len = oracle_specs
+			.iter()
+			.map(|spec| spec.log_msg_len + 1)
+			.max()
+			.unwrap_or(0) + log_inv_rate;
+		let subspace = BinarySubspace::with_dim(max_log_code_len);
+		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+
 		let fri_params = oracle_specs
 			.iter()
 			.map(|spec| {
 				let log_msg_len = spec.log_msg_len + 1;
 				let log_batch_size = Some(1);
 				FRIParams::with_strategy(
-					ntt,
+					&domain_context,
 					&merkle_scheme,
 					log_msg_len,
 					log_batch_size,

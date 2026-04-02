@@ -227,7 +227,7 @@ mod tests {
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
 		let params = FRIParams::with_strategy(
-			&ntt,
+			ntt.domain_context(),
 			merkle_prover.scheme(),
 			log_dim + log_batch_size,
 			Some(log_batch_size),
