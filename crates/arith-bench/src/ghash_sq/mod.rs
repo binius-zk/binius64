@@ -7,6 +7,7 @@
 //!
 //! The extension is defined by the irreducible polynomial Y^2 + Y + X^{-1} over the GHASH field.
 
+pub mod aarch64;
 pub mod sliced;
 pub mod soft64;
 pub mod x86_64;
