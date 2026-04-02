@@ -358,7 +358,13 @@ fn bench_ghash(c: &mut Criterion) {
 	}
 
 	// Benchmark mul_inv_x operations
-	run_unary_op_benchmark(&mut group, "soft64::mul_inv_x", ghash::soft64::mul_inv_x, &mut rng, 128);
+	run_unary_op_benchmark(
+		&mut group,
+		"soft64::mul_inv_x",
+		ghash::soft64::mul_inv_x,
+		&mut rng,
+		128,
+	);
 
 	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
 	{

@@ -99,8 +99,13 @@ pub mod multiplication_tests {
 	}
 
 	/// Test that a specialized multiply-by-constant function matches general multiplication.
-	pub fn test_mul_by_constant<T, F, G, U>(a: T, constant: U, mul_fn: F, specialized_fn: G, field_name: &str)
-	where
+	pub fn test_mul_by_constant<T, F, G, U>(
+		a: T,
+		constant: U,
+		mul_fn: F,
+		specialized_fn: G,
+		field_name: &str,
+	) where
 		T: Underlier + PackedUnderlier<U>,
 		U: Underlier,
 		F: Fn(T, T) -> T,
