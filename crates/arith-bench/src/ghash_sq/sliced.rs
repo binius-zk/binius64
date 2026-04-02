@@ -18,6 +18,7 @@ use crate::Underlier;
 /// field defined by Y² + Y + X⁻¹.
 ///
 /// Uses Karatsuba multiplication with three base-field multiplications and one multiply-by-X⁻¹.
+#[inline]
 pub fn mul_sliced<U: Underlier>(
 	x: [U; 2],
 	y: [U; 2],
