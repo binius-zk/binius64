@@ -176,6 +176,12 @@ pub trait OpsClmul {
 	/// For 256-bit values, this shifts four 64-bit integers independently.
 	fn slli_epi64<const IMM8: i32>(a: Self) -> Self;
 
+	/// Shifts each packed 64-bit integer right by IMM8 bits while shifting in zeros.
+	///
+	/// For 128-bit values, this shifts two 64-bit integers independently.
+	/// For 256-bit values, this shifts four 64-bit integers independently.
+	fn srli_epi64<const IMM8: i32>(a: Self) -> Self;
+
 	/// Creates a SIMD mask from the sign bit (bit 63) of each 64-bit lane.
 	///
 	/// Returns a SIMD value where each 64-bit element contains either all 1s (0xFFFFFFFFFFFFFFFF)

@@ -196,6 +196,11 @@ impl crate::underlier::OpsClmul for __m128i {
 	}
 
 	#[inline]
+	fn srli_epi64<const IMM8: i32>(a: Self) -> Self {
+		unsafe { _mm_srli_epi64::<IMM8>(a) }
+	}
+
+	#[inline]
 	fn movepi64_mask(a: Self) -> Self {
 		unsafe {
 			// Shuffle to move the high dword of each qword to positions 0 and 1
@@ -454,6 +459,11 @@ impl crate::underlier::OpsClmul for __m256i {
 	#[inline]
 	fn slli_epi64<const IMM8: i32>(a: Self) -> Self {
 		unsafe { _mm256_slli_epi64::<IMM8>(a) }
+	}
+
+	#[inline]
+	fn srli_epi64<const IMM8: i32>(a: Self) -> Self {
+		unsafe { _mm256_srli_epi64::<IMM8>(a) }
 	}
 
 	#[inline]

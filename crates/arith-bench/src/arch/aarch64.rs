@@ -205,6 +205,11 @@ impl crate::underlier::OpsClmul for uint64x2_t {
 	}
 
 	#[inline]
+	fn srli_epi64<const IMM8: i32>(a: Self) -> Self {
+		unsafe { vshrq_n_u64::<IMM8>(a) }
+	}
+
+	#[inline]
 	fn movepi64_mask(a: Self) -> Self {
 		unsafe {
 			let a = std::mem::transmute::<uint64x2_t, uint32x4_t>(a);
