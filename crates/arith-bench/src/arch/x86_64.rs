@@ -492,7 +492,7 @@ mod tests {
 			target_feature = "sse2"
 		)
 	))]
-	use crate::ghash::{ONE, mul_clmul as ghash_mul};
+	use crate::ghash::{INV_X, ONE, clmul::mul_inv_x as ghash_mul_inv_x, mul_clmul as ghash_mul};
 	#[cfg(any(
 		all(target_feature = "pclmulqdq", target_feature = "sse2"),
 		all(
@@ -535,7 +535,8 @@ mod tests {
 		)
 	))]
 	use crate::test_utils::multiplication_tests::{
-		test_mul_associative, test_mul_commutative, test_mul_distributive, test_mul_identity,
+		test_mul_associative, test_mul_by_constant, test_mul_commutative, test_mul_distributive,
+		test_mul_identity,
 	};
 	use crate::test_utils::{arb_get_set_op, test_packed_underlier_get_set_behaves_like_vec};
 
@@ -814,6 +815,14 @@ mod tests {
 			test_mul_distributive(a, b, c, ghash_mul, "GHASH");
 		}
 
+		#[test]
+		#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
+		fn test_m128i_ghash_mul_inv_x_proptest(
+			a in arb_m128i()
+		) {
+			test_mul_by_constant(a, INV_X, ghash_mul, ghash_mul_inv_x, "GHASH");
+		}
+
 		// GHASH multiplication property tests for __m256i
 		#[test]
 		#[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx2", target_feature = "sse2"))]
@@ -850,6 +859,14 @@ mod tests {
 			c in arb_m256i()
 		) {
 			test_mul_distributive(a, b, c, ghash_mul, "GHASH");
+		}
+
+		#[test]
+		#[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx2", target_feature = "sse2"))]
+		fn test_m256i_ghash_mul_inv_x_proptest(
+			a in arb_m256i()
+		) {
+			test_mul_by_constant(a, INV_X, ghash_mul, ghash_mul_inv_x, "GHASH");
 		}
 
 		// Monbijou multiplication property tests for __m128i
