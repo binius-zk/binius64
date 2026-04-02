@@ -8,7 +8,7 @@ use std::arch::aarch64::uint64x2_t;
 use std::arch::x86_64::{__m128i, __m256i};
 use std::{array, hint::black_box};
 
-use binius_arith_bench::{Underlier, ghash, polyval};
+use binius_arith_bench::{Underlier, ghash, ghash_sq, polyval};
 use criterion::{BenchmarkGroup, Criterion, Throughput, criterion_group, criterion_main};
 use proptest::num::u128;
 use rand::{
@@ -558,11 +558,75 @@ fn bench_monbijou_128b(c: &mut Criterion) {
 	group.finish();
 }
 
+/// Benchmark GHASH² (degree-2 extension of GHASH) sliced multiplication
+#[allow(unused_variables, unused_mut)]
+fn bench_ghash_sq(c: &mut Criterion) {
+	let mut rng = rand::rng();
+
+	let mut group = c.benchmark_group("ghash_sq");
+
+	// Benchmark soft64
+	run_mul_benchmark(
+		&mut group,
+		"soft64::mul_sliced",
+		ghash_sq::soft64::mul_sliced,
+		&mut rng,
+		256,
+	);
+
+	// Benchmark __m128i
+	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
+	{
+		run_mul_benchmark(
+			&mut group,
+			"x86_64::mul_sliced::<__m128i>",
+			ghash_sq::x86_64::mul_sliced::<__m128i>,
+			&mut rng,
+			256,
+		);
+	}
+
+	// Benchmark __m256i
+	#[cfg(all(
+		target_feature = "vpclmulqdq",
+		target_feature = "avx2",
+		target_feature = "sse2"
+	))]
+	{
+		run_mul_benchmark(
+			&mut group,
+			"x86_64::mul_sliced::<__m256i>",
+			ghash_sq::x86_64::mul_sliced::<__m256i>,
+			&mut rng,
+			256,
+		);
+	}
+
+	// Benchmark uint64x2_t (AARCH64 NEON)
+	#[cfg(all(
+		target_arch = "aarch64",
+		target_feature = "neon",
+		target_feature = "aes"
+	))]
+	{
+		run_mul_benchmark(
+			&mut group,
+			"aarch64::mul_sliced::uint64x2_t",
+			ghash_sq::aarch64::mul_sliced::<uint64x2_t>,
+			&mut rng,
+			256,
+		);
+	}
+
+	group.finish();
+}
+
 criterion_group!(
 	benches,
 	bench_rijndael,
 	bench_polyval,
 	bench_ghash,
+	bench_ghash_sq,
 	bench_monbijou,
 	bench_monbijou_128b,
 );
