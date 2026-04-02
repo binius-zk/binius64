@@ -8,3 +8,4 @@
 //! The extension is defined by the irreducible polynomial Y^2 + Y + X^{-1} over the GHASH field.
 
 pub mod sliced;
+pub mod soft64;
