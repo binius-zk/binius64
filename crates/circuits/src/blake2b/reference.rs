@@ -9,7 +9,7 @@ use super::constants::{BLOCK_BYTES, IV, MAX_OUTPUT_BYTES, R1, R2, R3, R4, ROUNDS
 /// Rotate right for 64-bit words
 #[inline(always)]
 fn rotr64(x: u64, n: u32) -> u64 {
-	(x >> n) | (x << (64 - n))
+	x.rotate_right(n)
 }
 
 /// G mixing function - the core primitive of BLAKE2b

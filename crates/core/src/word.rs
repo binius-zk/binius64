@@ -648,11 +648,7 @@ mod tests {
 
 			// Rotation is modulo 64
 			let rotate_mod = rotate % 64;
-			let expected = if rotate_mod == 0 {
-				val
-			} else {
-				(val >> rotate_mod) | (val << (64 - rotate_mod))
-			};
+			let expected = val.rotate_right(rotate_mod);
 			assert_eq!(result.0, expected);
 
 			// Rotation by 0 or 64 is identity
