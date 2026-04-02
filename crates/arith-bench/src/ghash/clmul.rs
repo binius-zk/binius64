@@ -22,6 +22,34 @@
 
 use crate::{PackedUnderlier, Underlier, underlier::OpsClmul};
 
+/// Multiply a packed GHASH field element by X^{-1} using SIMD operations.
+///
+/// This is equivalent to `mul(x, broadcast(INV_X))` but optimized: per 128-bit lane, right-shift
+/// by 1 and conditionally XOR with X^{-1} if the LSB was set.
+#[inline]
+pub fn mul_inv_x<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: U) -> U {
+	let inv_x = <U as PackedUnderlier<u128>>::broadcast(super::INV_X);
+
+	// Put bit 0 of each 64-bit lane into bit 63.
+	let lsb_at_top = U::slli_epi64::<63>(x);
+
+	// Right-shift each 64-bit lane by 1.
+	let shifted = U::srli_epi64::<1>(x);
+
+	// Carry bit 0 of the high qword into bit 63 of the low qword within each 128-bit lane.
+	// unpackhi gives us [hi_a, hi_b] from two inputs; with zero as second arg, this moves
+	// the high qword to the low position and zeros the high.
+	let carry = U::unpackhi_epi64(lsb_at_top, U::zero());
+	let shifted = U::xor(shifted, carry);
+
+	// Build a mask from the original LSB of each 128-bit element (bit 0 of the low qword).
+	// Duplicate the low qword's lsb_at_top into both lanes, then broadcast via movepi64_mask.
+	let lsb_mask = U::movepi64_mask(U::unpacklo_epi64(lsb_at_top, lsb_at_top));
+
+	// Conditionally XOR with INV_X.
+	U::xor(shifted, U::and(inv_x, lsb_mask))
+}
+
 /// Multiply two GHASH field elements using CLMUL instructions.
 #[inline]
 pub fn mul<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: U, y: U) -> U {

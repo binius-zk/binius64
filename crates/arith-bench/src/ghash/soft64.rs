@@ -82,12 +82,23 @@ pub fn mul(x: u128, y: u128) -> u128 {
 	U64x2(v0, v1).into()
 }
 
+/// Multiply a GHASH field element by X^{-1}.
+///
+/// This is equivalent to `mul(x, INV_X)` but optimized: right-shift by 1 and conditionally XOR
+/// with X^{-1} if the LSB was set.
+pub fn mul_inv_x(x: u128) -> u128 {
+	let lsb = x & 1;
+	let shifted = x >> 1;
+	// If lsb is 1, XOR with INV_X; the mask is all-ones when lsb=1, all-zeros when lsb=0.
+	shifted ^ (super::INV_X & (lsb.wrapping_neg()))
+}
+
 #[cfg(test)]
 mod tests {
 	use proptest::prelude::*;
 
 	use super::*;
-	use crate::ghash::ONE;
+	use crate::ghash::{INV_X, ONE};
 
 	proptest! {
 		#[test]
@@ -138,6 +149,15 @@ mod tests {
 			// Test that a * ONE = a
 			let result = mul(a, ONE);
 			prop_assert_eq!(result, a, "The provided identity is not the multiplicative identity in GHASH soft64");
+		}
+
+		#[test]
+		fn test_ghash_soft64_mul_inv_x(
+			a in any::<u128>()
+		) {
+			let expected = mul(a, INV_X);
+			let result = mul_inv_x(a);
+			prop_assert_eq!(result, expected, "mul_inv_x does not match mul by INV_X");
 		}
 	}
 }

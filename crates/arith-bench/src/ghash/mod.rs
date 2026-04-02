@@ -10,6 +10,11 @@ pub mod soft64;
 /// In GHASH, the standard representation of 1 is simply 0x01
 pub const ONE: u128 = 0x01;
 
+/// The multiplicative inverse of X in GHASH.
+///
+/// X^{-1} = X^127 + X^6 + X + 1 modulo X^128 + X^7 + X^2 + X + 1.
+pub const INV_X: u128 = 0x80000000000000000000000000000043;
+
 // Re-export mul_clmul for backward compatibility
 #[allow(unused_imports)]
 pub use clmul::{mul as mul_clmul, square as square_clmul};
