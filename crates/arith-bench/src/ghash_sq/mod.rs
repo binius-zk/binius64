@@ -9,3 +9,4 @@
 
 pub mod sliced;
 pub mod soft64;
+pub mod x86_64;
