@@ -230,7 +230,10 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		ghash::{INV_X, ONE, clmul::mul_inv_x as ghash_mul_inv_x, mul_clmul as ghash_mul},
+		ghash::{
+			INV_X, ONE, clmul::mul_inv_x as ghash_mul_inv_x, mul_clmul as ghash_mul,
+			square_clmul as ghash_square,
+		},
 		monbijou::{
 			MONBIJOU_128B_ONE, MONBIJOU_ONE, mul_128b_clmul as monbijou_128b_mul,
 			mul_clmul as monbijou_mul,
@@ -241,7 +244,7 @@ mod tests {
 			arb_get_set_op,
 			multiplication_tests::{
 				test_mul_associative, test_mul_by_constant, test_mul_commutative,
-				test_mul_distributive, test_mul_identity,
+				test_mul_distributive, test_mul_identity, test_square_equals_mul,
 			},
 			test_packed_underlier_get_set_behaves_like_vec,
 		},
@@ -347,6 +350,13 @@ mod tests {
 			a in arb_uint64x2_t()
 		) {
 			test_mul_by_constant(a, INV_X, ghash_mul, ghash_mul_inv_x, "GHASH");
+		}
+
+		#[test]
+		fn test_uint64x2_t_ghash_square_proptest(
+			a in arb_uint64x2_t()
+		) {
+			test_square_equals_mul(a, ghash_mul, ghash_square, "GHASH");
 		}
 
 		// Monbijou multiplication property tests for uint64x2_t

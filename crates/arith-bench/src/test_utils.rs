@@ -134,4 +134,19 @@ pub mod multiplication_tests {
 			"The provided identity is not the multiplicative identity in {field_name}"
 		);
 	}
+
+	/// Test that squaring matches self-multiplication: square(a) = a * a
+	pub fn test_square_equals_mul<T, F, G>(a: T, mul_fn: F, square_fn: G, field_name: &str)
+	where
+		T: Underlier,
+		F: Fn(T, T) -> T,
+		G: Fn(T) -> T,
+	{
+		let expected = mul_fn(a, a);
+		let result = square_fn(a);
+		assert!(
+			T::is_equal(result, expected),
+			"{field_name} square does not match self-multiplication"
+		);
+	}
 }

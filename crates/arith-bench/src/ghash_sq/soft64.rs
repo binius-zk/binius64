@@ -16,11 +16,17 @@ mod tests {
 	use super::*;
 	use crate::{
 		Underlier,
+		ghash,
 		ghash::ONE,
 		test_utils::multiplication_tests::{
 			test_mul_associative, test_mul_commutative, test_mul_distributive,
+			test_square_equals_mul,
 		},
 	};
+
+	fn square_sliced(x: [u128; 2]) -> [u128; 2] {
+		super::super::sliced::square_sliced(x, |a| ghash::soft64::mul(a, a), ghash::soft64::mul_inv_x)
+	}
 
 	/// The multiplicative identity in GHASH²: 1 + 0*Y.
 	const IDENTITY: [u128; 2] = [ONE, 0];
@@ -61,6 +67,13 @@ mod tests {
 				<[u128; 2]>::is_equal(result, a),
 				"The provided identity is not the multiplicative identity in GHASH²"
 			);
+		}
+
+		#[test]
+		fn test_ghash_sq_soft64_square_equals_mul(
+			a in any::<[u128; 2]>(),
+		) {
+			test_square_equals_mul(a, mul_sliced, square_sliced, "GHASH²");
 		}
 	}
 }

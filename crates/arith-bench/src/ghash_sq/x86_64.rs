@@ -122,6 +122,15 @@ mod tests {
 	use proptest::prelude::*;
 
 	use super::*;
+	use crate::test_utils::multiplication_tests::test_square_equals_mul;
+
+	fn arb_m128i() -> impl Strategy<Value = __m128i> {
+		any::<u128>().prop_map(|val| unsafe { std::mem::transmute::<u128, __m128i>(val) })
+	}
+
+	fn arb_m128i_pair() -> impl Strategy<Value = [__m128i; 2]> {
+		(arb_m128i(), arb_m128i()).prop_map(|(a, b)| [a, b])
+	}
 
 	fn arb_m256i() -> impl Strategy<Value = __m256i> {
 		(any::<u128>(), any::<u128>()).prop_map(|(low, high)| unsafe {
@@ -156,6 +165,13 @@ mod tests {
 				Underlier::is_equal(result, expected),
 				"mul_m256i_hybrid does not match mul_m256i_as_m128i"
 			);
+		}
+
+		#[test]
+		fn test_square_m128i_matches_mul(
+			x in arb_m128i_pair(),
+		) {
+			test_square_equals_mul(x, mul_m128i, square_m128i, "GHASH²");
 		}
 	}
 }
