@@ -127,8 +127,7 @@ pub struct WitnessIndex(pub u32);
 /// (XOR combinations of witness values). Constraints directly reference [`WitnessIndex`]
 /// positions in the witness array.
 ///
-/// This struct does not guarantee power-of-two constraint counts or witness size. Use
-/// [`ConstraintSystemPadded`] for a version with blinding and power-of-two padding.
+/// This struct does not guarantee power-of-two constraint counts or witness size.
 #[derive(Debug, Clone)]
 pub struct ConstraintSystem<F: Field = B128> {
 	constants: Vec<F>,
@@ -311,7 +310,6 @@ impl WitnessLayout {
 		}
 	}
 }
-
 
 #[cfg(test)]
 mod tests {

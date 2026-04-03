@@ -40,8 +40,6 @@ use binius_iop::{
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::multilinear::evaluate::evaluate_inplace_scalars;
 use binius_spartan_frontend::constraint_system::ConstraintSystem;
-
-use crate::constraint_system::{BlindingInfo, ConstraintSystemPadded};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
 use binius_verifier::{
@@ -51,6 +49,8 @@ use binius_verifier::{
 	protocols::{basefold, mlecheck, sumcheck},
 };
 use digest::{Digest, Output, core_api::BlockSizeUser};
+
+use crate::constraint_system::{BlindingInfo, ConstraintSystemPadded};
 
 pub const SECURITY_BITS: usize = 96;
 
@@ -138,11 +138,7 @@ impl IOPVerifier {
 	/// # Returns
 	///
 	/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
-	pub fn verify<F, Channel>(
-		&self,
-		public: &[F],
-		channel: &mut Channel,
-	) -> Result<(), Error>
+	pub fn verify<F, Channel>(&self, public: &[F], channel: &mut Channel) -> Result<(), Error>
 	where
 		F: BinaryField,
 		Channel: IOPVerifierChannel<F>,

@@ -9,9 +9,9 @@ use binius_math::{
 	univariate::evaluate_univariate,
 };
 use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex};
+use binius_verifier::protocols::{basefold, sumcheck};
 
 use crate::constraint_system::ConstraintSystemPadded;
-use binius_verifier::protocols::{basefold, sumcheck};
 
 /// Claim components from the wiring check computation via IOP channel.
 #[derive(Debug, Clone)]

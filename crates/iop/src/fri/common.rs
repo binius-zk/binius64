@@ -68,7 +68,8 @@ where
 	/// ## Preconditions
 	///
 	/// * If `log_batch_size` is `Some(b)`, then `b <= log_msg_len`.
-	/// * `domain_context.log_domain_size() >= log_msg_len - log_batch_size.unwrap_or(0) + log_inv_rate`.
+	/// * `domain_context.log_domain_size() >= log_msg_len - log_batch_size.unwrap_or(0) +
+	///   log_inv_rate`.
 	pub fn with_strategy<DC, MerkleScheme, Strategy>(
 		domain_context: &DC,
 		merkle_scheme: &MerkleScheme,
@@ -432,7 +433,9 @@ impl AritySelectionStrategy for ConstantArityStrategy {
 mod tests {
 	use binius_field::BinaryField128bGhash as B128;
 	use binius_hash::StdCompression;
-	use binius_math::ntt::{AdditiveNTT, NeighborsLastReference, domain_context::GaoMateerOnTheFly};
+	use binius_math::ntt::{
+		AdditiveNTT, NeighborsLastReference, domain_context::GaoMateerOnTheFly,
+	};
 
 	use super::*;
 	use crate::merkle_tree::BinaryMerkleTreeScheme;

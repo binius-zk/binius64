@@ -6,10 +6,7 @@
 //! precompute FRI parameters and can create verifier channel instances.
 
 use binius_field::BinaryField;
-use binius_math::{
-	BinarySubspace,
-	ntt::domain_context::GenericOnTheFly,
-};
+use binius_math::{BinarySubspace, ntt::domain_context::GenericOnTheFly};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::DeserializeBytes;
 
@@ -70,7 +67,8 @@ where
 			.iter()
 			.map(|spec| spec.log_msg_len)
 			.max()
-			.unwrap_or(0) + log_inv_rate;
+			.unwrap_or(0)
+			+ log_inv_rate;
 		let subspace = BinarySubspace::with_dim(max_log_code_len);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 
@@ -193,7 +191,8 @@ where
 			.iter()
 			.map(|spec| spec.log_msg_len + 1)
 			.max()
-			.unwrap_or(0) + log_inv_rate;
+			.unwrap_or(0)
+			+ log_inv_rate;
 		let subspace = BinarySubspace::with_dim(max_log_code_len);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 
