@@ -230,6 +230,7 @@ fn bench_ghash(c: &mut Criterion) {
 
 	// Benchmark u128
 	run_mul_benchmark(&mut group, "soft64::mul", ghash::soft64::mul, &mut rng, 128);
+	run_unary_op_benchmark(&mut group, "soft64::square", ghash::soft64::square, &mut rng, 128);
 
 	// Benchmark __m128i
 	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
@@ -570,6 +571,14 @@ fn bench_ghash_sq(c: &mut Criterion) {
 		&mut group,
 		"soft64::mul_sliced",
 		ghash_sq::soft64::mul_sliced,
+		&mut rng,
+		256,
+	);
+
+	run_unary_op_benchmark(
+		&mut group,
+		"soft64::square_sliced",
+		ghash_sq::soft64::square_sliced,
 		&mut rng,
 		256,
 	);

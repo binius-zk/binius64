@@ -27,7 +27,7 @@
 //! Modified by Irreducible Inc. (2024-2025): Ported from C to Rust with
 //! adaptations for the Binius field arithmetic framework.
 
-use crate::arch::portable64::{U64x2, bmul64, rev64};
+use crate::arch::portable64::{U64x2, bmul64, bsqr64, rev64};
 
 /// Multiply two GHASH field elements using software implementation.
 ///
@@ -71,6 +71,36 @@ pub fn mul(x: u128, y: u128) -> u128 {
 	let mut v1 = z0h ^ z2;
 	let mut v2 = z1 ^ z2h;
 	let v3 = z1h;
+
+	// Reduce modulo X^128 + X^7 + X^2 + X + 1.
+	v1 ^= v3 ^ (v3 << 1) ^ (v3 << 2) ^ (v3 << 7);
+	v2 ^= (v3 >> 63) ^ (v3 >> 62) ^ (v3 >> 57);
+	v0 ^= v2 ^ (v2 << 1) ^ (v2 << 2) ^ (v2 << 7);
+	v1 ^= (v2 >> 63) ^ (v2 >> 62) ^ (v2 >> 57);
+
+	// Convert back to u128
+	U64x2(v0, v1).into()
+}
+
+/// Square a GHASH field element using software implementation.
+///
+/// Exploits the fact that squaring a GF(2) polynomial is a linear operation (all cross terms
+/// vanish): the square of `a₀ + a₁X + a₂X² + ...` is `a₀ + a₁X² + a₂X⁴ + ...`, i.e.
+/// bit-interleaving with zeros via [`bsqr64`]. This avoids the carry-less multiplications
+/// needed by general [`mul`], replacing them with cheaper bit-shuffle operations.
+pub fn square(x: u128) -> u128 {
+	// Convert to U64x2 representation
+	let U64x2(x0, x1) = U64x2::from(x);
+
+	let x0l = x0 & 0x00000000FFFFFFFF;
+	let x0h = x0 >> 32;
+	let x1l = x1 & 0x00000000FFFFFFFF;
+	let x1h = x1 >> 32;
+
+	let mut v0 = bsqr64(x0l);
+	let mut v1 = bsqr64(x0h);
+	let mut v2 = bsqr64(x1l);
+	let v3 = bsqr64(x1h);
 
 	// Reduce modulo X^128 + X^7 + X^2 + X + 1.
 	v1 ^= v3 ^ (v3 << 1) ^ (v3 << 2) ^ (v3 << 7);
@@ -158,6 +188,15 @@ mod tests {
 			let expected = mul(a, INV_X);
 			let result = mul_inv_x(a);
 			prop_assert_eq!(result, expected, "mul_inv_x does not match mul by INV_X");
+		}
+
+		#[test]
+		fn test_ghash_soft64_square(
+			a in any::<u128>()
+		) {
+			let expected = mul(a, a);
+			let result = square(a);
+			prop_assert_eq!(result, expected, "soft64::square does not match mul(a, a)");
 		}
 	}
 }

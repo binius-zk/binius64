@@ -1,5 +1,5 @@
 // Copyright 2026 The Binius Developers
-//! GHASH² sliced multiplication using the soft64 GHASH implementation.
+//! GHASH² sliced multiplication and squaring using the soft64 GHASH implementation.
 
 use crate::ghash;
 
@@ -9,6 +9,12 @@ pub fn mul_sliced(x: [u128; 2], y: [u128; 2]) -> [u128; 2] {
 	super::sliced::mul_sliced(x, y, ghash::soft64::mul, ghash::soft64::mul_inv_x)
 }
 
+/// Square packed GHASH² elements in sliced representation using soft64 arithmetic.
+#[inline]
+pub fn square_sliced(x: [u128; 2]) -> [u128; 2] {
+	super::sliced::square_sliced(x, ghash::soft64::square, ghash::soft64::mul_inv_x)
+}
+
 #[cfg(test)]
 mod tests {
 	use proptest::prelude::*;
@@ -16,17 +22,12 @@ mod tests {
 	use super::*;
 	use crate::{
 		Underlier,
-		ghash,
 		ghash::ONE,
 		test_utils::multiplication_tests::{
 			test_mul_associative, test_mul_commutative, test_mul_distributive,
 			test_square_equals_mul,
 		},
 	};
-
-	fn square_sliced(x: [u128; 2]) -> [u128; 2] {
-		super::super::sliced::square_sliced(x, |a| ghash::soft64::mul(a, a), ghash::soft64::mul_inv_x)
-	}
 
 	/// The multiplicative identity in GHASH²: 1 + 0*Y.
 	const IDENTITY: [u128; 2] = [ONE, 0];
