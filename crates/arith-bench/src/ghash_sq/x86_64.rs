@@ -1,5 +1,5 @@
 // Copyright 2026 The Binius Developers
-//! GHASH² sliced multiplication using x86_64 CLMUL instructions.
+//! GHASH² sliced multiplication and squaring using x86_64 CLMUL instructions.
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unused_imports)]
@@ -13,6 +13,12 @@ pub fn mul_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: [U; 2], y:
 	super::sliced::mul_sliced(x, y, ghash::clmul::mul, ghash::clmul::mul_inv_x)
 }
 
+/// Square packed GHASH² elements in sliced representation using CLMUL arithmetic.
+#[inline]
+pub fn square_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: [U; 2]) -> [U; 2] {
+	super::sliced::square_sliced(x, ghash::clmul::square, ghash::clmul::mul_inv_x)
+}
+
 /// Multiply a GHASH² element stored as a pair of 128-bit registers.
 #[cfg(all(
 	target_arch = "x86_64",
@@ -22,6 +28,17 @@ pub fn mul_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: [U; 2], y:
 #[inline]
 pub fn mul_m128i(x: [__m128i; 2], y: [__m128i; 2]) -> [__m128i; 2] {
 	mul_sliced(x, y)
+}
+
+/// Square a GHASH² element stored as a pair of 128-bit registers.
+#[cfg(all(
+	target_arch = "x86_64",
+	target_feature = "pclmulqdq",
+	target_feature = "sse2"
+))]
+#[inline]
+pub fn square_m128i(x: [__m128i; 2]) -> [__m128i; 2] {
+	square_sliced(x)
 }
 
 /// Multiply packed GHASH² elements in 256-bit registers.
