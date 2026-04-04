@@ -86,7 +86,7 @@ pub fn mul(x: u128, y: u128) -> u128 {
 ///
 /// Exploits the fact that squaring a GF(2) polynomial is a linear operation (all cross terms
 /// vanish): the square of `a₀ + a₁X + a₂X² + ...` is `a₀ + a₁X² + a₂X⁴ + ...`, i.e.
-/// bit-interleaving with zeros via [`bsqr64`]. This avoids the carry-less multiplications
+/// bit-interleaving with zeros. This avoids the carry-less multiplications
 /// needed by general [`mul`], replacing them with cheaper bit-shuffle operations.
 pub fn square(x: u128) -> u128 {
 	// Convert to U64x2 representation

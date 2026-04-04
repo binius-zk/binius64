@@ -82,7 +82,7 @@ pub fn rev64(mut x: u64) -> u64 {
 }
 
 /// Squares a GF(2) polynomial, represented bitwise in a `u64`.
-/// 
+///
 /// The parameter `x` must have its top 32 bits clear (the polynomial has degree <32).
 pub fn bsqr64(mut x: u64) -> u64 {
 	// Algorithm adapted from https://graphics.stanford.edu/~seander/bithacks.html#InterleaveBMN
