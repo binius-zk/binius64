@@ -128,75 +128,60 @@ mod tests {
 	use proptest::prelude::*;
 
 	use super::*;
-	use crate::ghash::{INV_X, ONE};
+	use crate::{
+		ghash::{INV_X, ONE},
+		test_utils::multiplication_tests::{
+			test_mul_associative, test_mul_commutative, test_mul_distributive,
+			test_square_equals_mul,
+		},
+	};
 
 	proptest! {
 		#[test]
 		fn test_ghash_soft64_mul_commutative(
 			a in any::<u128>(),
-			b in any::<u128>()
+			b in any::<u128>(),
 		) {
-			// Test that a * b = b * a
-			let ab = mul(a, b);
-			let ba = mul(b, a); // // spellchecker:disable-line
-			prop_assert_eq!(ab, ba, "GHASH soft64 multiplication is not commutative"); // spellchecker:disable-line
+			test_mul_commutative(a, b, mul, "GHASH");
 		}
 
 		#[test]
 		fn test_ghash_soft64_mul_associative(
 			a in any::<u128>(),
 			b in any::<u128>(),
-			c in any::<u128>()
+			c in any::<u128>(),
 		) {
-			// Test that (a * b) * c = a * (b * c)
-			let ab_c = mul(mul(a, b), c);
-			let a_bc = mul(a, mul(b, c));
-			prop_assert_eq!(ab_c, a_bc, "GHASH soft64 multiplication is not associative");
+			test_mul_associative(a, b, c, mul, "GHASH");
 		}
 
 		#[test]
 		fn test_ghash_soft64_mul_distributive(
 			a in any::<u128>(),
 			b in any::<u128>(),
-			c in any::<u128>()
+			c in any::<u128>(),
 		) {
-			// Test that a * (b + c) = (a * b) + (a * c) where + is XOR
-			let b_plus_c = b ^ c;
-			let a_times_b_plus_c = mul(a, b_plus_c);
-
-			let ab = mul(a, b);
-			let ac = mul(a, c);
-			let ab_plus_ac = ab ^ ac;
-
-			prop_assert_eq!(a_times_b_plus_c, ab_plus_ac,
-				"GHASH soft64 multiplication does not satisfy the distributive law");
+			test_mul_distributive(a, b, c, mul, "GHASH");
 		}
 
 		#[test]
 		fn test_ghash_soft64_mul_identity(
-			a in any::<u128>()
+			a in any::<u128>(),
 		) {
-			// Test that a * ONE = a
-			let result = mul(a, ONE);
-			prop_assert_eq!(result, a, "The provided identity is not the multiplicative identity in GHASH soft64");
+			prop_assert_eq!(mul(a, ONE), a, "ONE is not the multiplicative identity in GHASH");
 		}
 
 		#[test]
 		fn test_ghash_soft64_mul_inv_x(
-			a in any::<u128>()
+			a in any::<u128>(),
 		) {
-			let expected = mul(a, INV_X);
-			let result = mul_inv_x(a);
-			prop_assert_eq!(result, expected, "mul_inv_x does not match mul by INV_X");
+			prop_assert_eq!(mul_inv_x(a), mul(a, INV_X), "mul_inv_x does not match mul by INV_X");
 		}
 
 		#[test]
 		fn test_ghash_soft64_square(
-			a in any::<u128>()
+			a in any::<u128>(),
 		) {
-			let expected = mul(a, a);
-			let result = square(a);
-			prop_assert_eq!(result, expected, "soft64::square does not match mul(a, a)");
+			test_square_equals_mul(a, mul, square, "GHASH");
 		}
 	}
 }
