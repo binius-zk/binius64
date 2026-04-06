@@ -11,8 +11,10 @@
 
 pub mod circuit_elem;
 mod channel;
+mod zk_wrapped_channel;
 
 pub use channel::{IronSpartanBuilderChannel, ReplayChannel};
+pub use zk_wrapped_channel::ZKWrappedVerifierChannel;
 
 #[cfg(test)]
 mod tests {
