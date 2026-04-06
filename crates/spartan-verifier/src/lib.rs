@@ -138,7 +138,11 @@ impl IOPVerifier {
 	/// # Returns
 	///
 	/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
-	pub fn verify<F, Channel>(&self, public: &[F], channel: &mut Channel) -> Result<(), Error>
+	pub fn verify<F, Channel>(
+		&self,
+		public: Vec<Channel::Elem>,
+		channel: &mut Channel,
+	) -> Result<(), Error>
 	where
 		F: BinaryField,
 		Channel: IOPVerifierChannel<F>,
@@ -157,9 +161,6 @@ impl IOPVerifier {
 				actual: public.len(),
 			});
 		}
-
-		// Observe the public input (includes it in Fiat-Shamir).
-		let public_elems = channel.observe_many(public);
 
 		// Receive the trace oracle commitment.
 		let trace_oracle = channel.recv_oracle()?;
@@ -180,7 +181,7 @@ impl IOPVerifier {
 		// point.
 		let r_public = channel.sample_many(cs.log_public() as usize);
 
-		let public_eval = evaluate_inplace_scalars(public_elems, &r_public);
+		let public_eval = evaluate_inplace_scalars(public, &r_public);
 
 		// Compute wiring claim components
 		let wiring_claim =
@@ -291,9 +292,12 @@ where
 		public: &[F],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		// Verifier observes the public input (includes it in Fiat-Shamir).
+		transcript.observe().write_slice(public);
+
 		// Create channel and delegate to IOPVerifier::verify
 		let mut channel = self.basefold_compiler.create_channel(transcript);
-		self.iop_verifier.verify(public, &mut channel)
+		self.iop_verifier.verify(public.to_vec(), &mut channel)
 	}
 }
 
