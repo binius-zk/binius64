@@ -25,7 +25,7 @@ mod tests {
 	use binius_spartan_frontend::circuit_builder::ConstraintBuilder;
 
 	use super::*;
-	use crate::circuit_elem::{CircuitElem, CircuitWire};
+	use crate::wrapper::circuit_elem::{CircuitElem, CircuitWire};
 
 	type BuildElem = CircuitElem<ConstraintBuilder<B128>>;
 	type BuildWire = CircuitWire<ConstraintBuilder<B128>>;
@@ -145,7 +145,8 @@ mod tests {
 		use binius_spartan_frontend::{
 			circuit_builder::CircuitBuilder, circuits::powers, compiler::compile,
 		};
-		use binius_spartan_verifier::{
+
+		use crate::{
 			IOPVerifier,
 			constraint_system::{BlindingInfo, ConstraintSystemPadded},
 		};

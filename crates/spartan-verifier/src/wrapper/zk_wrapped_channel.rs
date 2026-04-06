@@ -15,9 +15,10 @@ use binius_iop::{
 	merkle_tree::MerkleTreeScheme,
 };
 use binius_ip::channel::IPVerifierChannel;
-use binius_spartan_verifier::IOPVerifier;
 use binius_transcript::fiat_shamir::Challenger;
 use binius_utils::DeserializeBytes;
+
+use crate::{Error, IOPVerifier};
 
 /// A verifier channel that wraps a [`BaseFoldZKVerifierChannel`] and an [`IOPVerifier`].
 ///
@@ -82,7 +83,7 @@ where
 	/// the required public size, and runs [`IOPVerifier::verify`] against the inner channel.
 	///
 	/// Returns the full public input vector on success.
-	pub fn finish(mut self) -> Result<Vec<B128>, binius_spartan_verifier::Error> {
+	pub fn finish(mut self) -> Result<Vec<B128>, Error> {
 		let outer_cs = self.outer_verifier.constraint_system();
 		let public_size = 1 << outer_cs.log_public();
 

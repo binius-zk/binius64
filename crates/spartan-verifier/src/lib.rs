@@ -31,6 +31,7 @@
 pub mod config;
 pub mod constraint_system;
 pub mod wiring;
+pub mod wrapper;
 
 use binius_field::{BinaryField, BinaryField128bGhash as B128, field::FieldOps};
 use binius_iop::{

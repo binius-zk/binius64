@@ -9,7 +9,7 @@
 //! a [`ReplayChannel`] to fill the outer witness, then runs the outer IOP prover.
 //!
 //! [`BaseFoldZKProverChannel`]: binius_iop_prover::basefold_zk_channel::BaseFoldZKProverChannel
-//! [`ReplayChannel`]: binius_spartan_wrapper::ReplayChannel
+//! [`ReplayChannel`]: binius_spartan_verifier::wrapper::ReplayChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
 
 use binius_field::{BinaryField128bGhash as B128, PackedExtension, PackedField};
@@ -23,12 +23,12 @@ use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT};
 use binius_spartan_frontend::constraint_system::WitnessLayout;
-use binius_spartan_prover::IOPProver;
-use binius_spartan_verifier::IOPVerifier;
-use binius_spartan_wrapper::ReplayChannel;
+use binius_spartan_verifier::{IOPVerifier, wrapper::ReplayChannel};
 use binius_transcript::fiat_shamir::Challenger;
 use binius_utils::SerializeBytes;
 use rand::CryptoRng;
+
+use crate::IOPProver;
 
 /// A prover channel that wraps a [`BaseFoldZKProverChannel`] and an outer Spartan IOP prover.
 ///
@@ -108,8 +108,8 @@ where
 	/// 1. Replays the recorded interaction through a [`ReplayChannel`] to fill the outer witness
 	/// 2. Validates and generates the outer IOP proof
 	///
-	/// [`ReplayChannel`]: binius_spartan_wrapper::ReplayChannel
-	pub fn finish(self, rng: impl CryptoRng) -> Result<(), binius_spartan_prover::Error> {
+	/// [`ReplayChannel`]: binius_spartan_verifier::wrapper::ReplayChannel
+	pub fn finish(self, rng: impl CryptoRng) -> Result<(), crate::Error> {
 		let Self {
 			inner_channel,
 			outer_prover,

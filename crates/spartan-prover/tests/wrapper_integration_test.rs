@@ -17,12 +17,13 @@ use binius_spartan_frontend::{
 	compiler::compile,
 	constraint_system::BlindingInfo,
 };
-use binius_spartan_prover::IOPProver;
+use binius_spartan_prover::{IOPProver, wrapper::ZKWrappedProverChannel};
 use binius_spartan_verifier::{
-	IOPVerifier, SECURITY_BITS, config::StdChallenger, constraint_system::ConstraintSystemPadded,
+	IOPVerifier, SECURITY_BITS,
+	config::StdChallenger,
+	constraint_system::ConstraintSystemPadded,
+	wrapper::{IronSpartanBuilderChannel, ZKWrappedVerifierChannel},
 };
-use binius_spartan_wrapper::{IronSpartanBuilderChannel, ZKWrappedVerifierChannel};
-use binius_spartan_wrapper_prover::ZKWrappedProverChannel;
 use binius_transcript::ProverTranscript;
 use binius_verifier::fri::{self, MinProofSizeStrategy};
 use rand::{SeedableRng, rngs::StdRng};

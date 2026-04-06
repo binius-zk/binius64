@@ -29,6 +29,7 @@
 
 mod error;
 mod wiring;
+pub mod wrapper;
 
 use std::{
 	iter::{repeat_n, repeat_with},

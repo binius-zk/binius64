@@ -12,7 +12,7 @@ use binius_spartan_frontend::{
 	constraint_system::{ConstraintWire, WitnessLayout},
 };
 
-use crate::circuit_elem::{CircuitElem, CircuitWire};
+use super::circuit_elem::{CircuitElem, CircuitWire};
 
 /// A channel that symbolically executes a verifier, building up an IronSpartan constraint system.
 ///

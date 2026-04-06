@@ -8,9 +8,9 @@
 //! interaction through a [`ReplayChannel`] to fill the outer witness, then runs the outer IOP
 //! prover.
 //!
-//! [`ZKWrappedVerifierChannel`]: binius_spartan_wrapper::ZKWrappedVerifierChannel
+//! [`ZKWrappedVerifierChannel`]: binius_spartan_verifier::wrapper::ZKWrappedVerifierChannel
 //! [`BaseFoldZKProverChannel`]: binius_iop_prover::basefold_zk_channel::BaseFoldZKProverChannel
-//! [`ReplayChannel`]: binius_spartan_wrapper::ReplayChannel
+//! [`ReplayChannel`]: binius_spartan_verifier::wrapper::ReplayChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
 
 mod zk_wrapped_prover_channel;
