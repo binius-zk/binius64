@@ -1,5 +1,5 @@
 // Copyright 2026 The Binius Developers
-//! GHASH² sliced multiplication using x86_64 CLMUL instructions.
+//! GHASH² sliced multiplication and squaring using x86_64 CLMUL instructions.
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unused_imports)]
@@ -13,6 +13,12 @@ pub fn mul_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: [U; 2], y:
 	super::sliced::mul_sliced(x, y, ghash::clmul::mul, ghash::clmul::mul_inv_x)
 }
 
+/// Square packed GHASH² elements in sliced representation using CLMUL arithmetic.
+#[inline]
+pub fn square_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: [U; 2]) -> [U; 2] {
+	super::sliced::square_sliced(x, ghash::clmul::square, ghash::clmul::mul_inv_x)
+}
+
 /// Multiply a GHASH² element stored as a pair of 128-bit registers.
 #[cfg(all(
 	target_arch = "x86_64",
@@ -22,6 +28,17 @@ pub fn mul_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: [U; 2], y:
 #[inline]
 pub fn mul_m128i(x: [__m128i; 2], y: [__m128i; 2]) -> [__m128i; 2] {
 	mul_sliced(x, y)
+}
+
+/// Square a GHASH² element stored as a pair of 128-bit registers.
+#[cfg(all(
+	target_arch = "x86_64",
+	target_feature = "pclmulqdq",
+	target_feature = "sse2"
+))]
+#[inline]
+pub fn square_m128i(x: [__m128i; 2]) -> [__m128i; 2] {
+	square_sliced(x)
 }
 
 /// Multiply packed GHASH² elements in 256-bit registers.
@@ -105,6 +122,15 @@ mod tests {
 	use proptest::prelude::*;
 
 	use super::*;
+	use crate::test_utils::multiplication_tests::test_square_equals_mul;
+
+	fn arb_m128i() -> impl Strategy<Value = __m128i> {
+		any::<u128>().prop_map(|val| unsafe { std::mem::transmute::<u128, __m128i>(val) })
+	}
+
+	fn arb_m128i_pair() -> impl Strategy<Value = [__m128i; 2]> {
+		(arb_m128i(), arb_m128i()).prop_map(|(a, b)| [a, b])
+	}
 
 	fn arb_m256i() -> impl Strategy<Value = __m256i> {
 		(any::<u128>(), any::<u128>()).prop_map(|(low, high)| unsafe {
@@ -139,6 +165,13 @@ mod tests {
 				Underlier::is_equal(result, expected),
 				"mul_m256i_hybrid does not match mul_m256i_as_m128i"
 			);
+		}
+
+		#[test]
+		fn test_square_m128i_matches_mul(
+			x in arb_m128i_pair(),
+		) {
+			test_square_equals_mul(x, mul_m128i, square_m128i, "GHASH²");
 		}
 	}
 }

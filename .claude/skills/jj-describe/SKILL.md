@@ -1,7 +1,6 @@
 ---
 name: jj-describe
 description: Describe the current commit in jujutsu (jj)
-disable-model-invocation: true
 allowed-tools: Bash(jj *)
 ---
 
