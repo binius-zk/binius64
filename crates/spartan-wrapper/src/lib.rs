@@ -12,7 +12,7 @@
 pub mod circuit_elem;
 mod channel;
 
-pub use channel::IronSpartanBuilderChannel;
+pub use channel::{IronSpartanBuilderChannel, ReplayChannel};
 
 #[cfg(test)]
 mod tests {

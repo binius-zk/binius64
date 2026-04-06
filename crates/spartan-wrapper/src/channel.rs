@@ -7,7 +7,10 @@ use std::{cell::RefCell, rc::Rc};
 use binius_field::{BinaryField128bGhash as B128, Field};
 use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 use binius_ip::channel::IPVerifierChannel;
-use binius_spartan_frontend::circuit_builder::ConstraintBuilder;
+use binius_spartan_frontend::{
+	circuit_builder::{CircuitBuilder, ConstraintBuilder, WitnessGenerator},
+	constraint_system::{ConstraintWire, WitnessLayout},
+};
 
 use crate::circuit_elem::{CircuitElem, CircuitWire};
 
@@ -110,5 +113,124 @@ impl IronSpartanBuilderChannel {
 		Rc::try_unwrap(self.builder)
 			.expect("BuildElem values should only hold Weak references")
 			.into_inner()
+	}
+}
+
+type WitnessElem<'a> = CircuitElem<WitnessGenerator<'a, B128>>;
+type WitnessWire<'a> = CircuitWire<WitnessGenerator<'a, B128>>;
+
+/// A channel that replays recorded interaction values through a [`WitnessGenerator`], filling
+/// both inout and private wires in the outer witness.
+///
+/// This mirrors [`IronSpartanBuilderChannel`] but uses concrete evaluation instead of symbolic
+/// constraint building. Each operation consumes the next value and writes it to the corresponding
+/// inout wire in the [`WitnessGenerator`]. When the verifier's arithmetic runs on the returned
+/// [`CircuitElem`] values, the [`WitnessGenerator`] fills private wires.
+pub struct ReplayChannel<'a> {
+	witness_gen: Rc<RefCell<WitnessGenerator<'a, B128>>>,
+	events: std::vec::IntoIter<B128>,
+	next_inout_id: u32,
+}
+
+impl<'a> ReplayChannel<'a> {
+	/// Creates a new replay channel.
+	pub fn new(layout: &'a WitnessLayout<B128>, events: Vec<B128>) -> Self {
+		Self {
+			witness_gen: Rc::new(RefCell::new(WitnessGenerator::new(layout))),
+			events: events.into_iter(),
+			next_inout_id: 0,
+		}
+	}
+
+	fn next_inout_elem(&mut self, value: B128) -> WitnessElem<'a> {
+		let wire = ConstraintWire::inout(self.next_inout_id);
+		self.next_inout_id += 1;
+		let witness_wire = self.witness_gen.borrow_mut().write_inout(wire, value);
+		WitnessElem::Wire(WitnessWire::new(&self.witness_gen, witness_wire))
+	}
+
+	fn next_event(&mut self) -> B128 {
+		self.events
+			.next()
+			.unwrap_or_else(|| panic!("replay exhausted: no more events"))
+	}
+
+	/// Consumes the channel and builds the outer witness.
+	pub fn finish(
+		self,
+	) -> Result<Vec<B128>, binius_spartan_frontend::circuit_builder::WitnessError> {
+		Rc::try_unwrap(self.witness_gen)
+			.expect("CircuitElem values should only hold Weak references")
+			.into_inner()
+			.build()
+	}
+}
+
+impl<'a> IPVerifierChannel<B128> for ReplayChannel<'a> {
+	type Elem = WitnessElem<'a>;
+
+	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
+		let val = self.next_event();
+		Ok(self.next_inout_elem(val))
+	}
+
+	fn recv_many(&mut self, n: usize) -> Result<Vec<Self::Elem>, binius_ip::channel::Error> {
+		(0..n).map(|_| self.recv_one()).collect()
+	}
+
+	fn recv_array<const N: usize>(
+		&mut self,
+	) -> Result<[Self::Elem; N], binius_ip::channel::Error> {
+		let mut result = [(); N].map(|_| WitnessElem::Constant(B128::ZERO));
+		for elem in &mut result {
+			*elem = self.recv_one()?;
+		}
+		Ok(result)
+	}
+
+	fn sample(&mut self) -> Self::Elem {
+		let val = self.next_event();
+		self.next_inout_elem(val)
+	}
+
+	fn observe_one(&mut self, _val: B128) -> Self::Elem {
+		let val = self.next_event();
+		self.next_inout_elem(val)
+	}
+
+	fn observe_many(&mut self, vals: &[B128]) -> Vec<Self::Elem> {
+		vals.iter().map(|&val| self.observe_one(val)).collect()
+	}
+
+	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
+		match val {
+			WitnessElem::Constant(c) if c == B128::ZERO => Ok(()),
+			WitnessElem::Constant(_) => Err(binius_ip::channel::Error::InvalidAssert),
+			WitnessElem::Wire(w) => {
+				self.witness_gen.borrow_mut().assert_zero(w.wire());
+				Ok(())
+			}
+		}
+	}
+}
+
+impl<'a> IOPVerifierChannel<B128> for ReplayChannel<'a> {
+	type Oracle = ();
+
+	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
+		&[]
+	}
+
+	fn recv_oracle(&mut self) -> Result<Self::Oracle, binius_iop::channel::Error> {
+		Ok(())
+	}
+
+	fn verify_oracle_relations<'b>(
+		&mut self,
+		_oracle_relations: impl IntoIterator<
+			Item = OracleLinearRelation<'b, Self::Oracle, Self::Elem>,
+		>,
+	) -> Result<(), binius_iop::channel::Error> {
+		Ok(())
 	}
 }
