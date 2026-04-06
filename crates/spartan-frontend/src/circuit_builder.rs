@@ -17,6 +17,7 @@ use crate::constraint_system::{
 /// The same function can build constraints symbolically or evaluate them with concrete values.
 pub trait CircuitBuilder {
 	type Wire: Copy;
+	type Field: Field;
 
 	fn assert_zero(&mut self, wire: Self::Wire);
 
@@ -25,7 +26,7 @@ pub trait CircuitBuilder {
 		self.assert_zero(diff);
 	}
 
-	fn constant(&mut self, val: B128) -> Self::Wire;
+	fn constant(&mut self, val: Self::Field) -> Self::Wire;
 
 	fn add(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire;
 
@@ -36,7 +37,7 @@ pub trait CircuitBuilder {
 
 	fn mul(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire;
 
-	fn hint<H: Fn([B128; IN]) -> [B128; OUT], const IN: usize, const OUT: usize>(
+	fn hint<H: Fn([Self::Field; IN]) -> [Self::Field; OUT], const IN: usize, const OUT: usize>(
 		&mut self,
 		inputs: [Self::Wire; IN],
 		f: H,
@@ -218,8 +219,9 @@ impl<F: Field> ConstraintBuilder<F> {
 	}
 }
 
-impl CircuitBuilder for ConstraintBuilder {
+impl<F: Field> CircuitBuilder for ConstraintBuilder<F> {
 	type Wire = ConstraintWire;
+	type Field = F;
 
 	fn assert_zero(&mut self, wire: Self::Wire) {
 		self.ir.zero_constraints.push(wire.into())
@@ -231,7 +233,7 @@ impl CircuitBuilder for ConstraintBuilder {
 			.push(Operand::new(smallvec![lhs, rhs]));
 	}
 
-	fn constant(&mut self, val: B128) -> Self::Wire {
+	fn constant(&mut self, val: F) -> Self::Wire {
 		let id = self
 			.ir
 			.constants
@@ -263,7 +265,7 @@ impl CircuitBuilder for ConstraintBuilder {
 		out
 	}
 
-	fn hint<H: Fn([B128; IN]) -> [B128; OUT], const IN: usize, const OUT: usize>(
+	fn hint<H: Fn([F; IN]) -> [F; OUT], const IN: usize, const OUT: usize>(
 		&mut self,
 		_inputs: [Self::Wire; IN],
 		_f: H,
@@ -282,11 +284,11 @@ pub struct WitnessError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WitnessWire(B128);
+pub struct WitnessWire<F: Field = B128>(F);
 
-impl WitnessWire {
+impl<F: Field> WitnessWire<F> {
 	#[inline]
-	pub fn val(self) -> B128 {
+	pub fn val(self) -> F {
 		self.0
 	}
 }
@@ -297,15 +299,15 @@ impl WitnessWire {
 /// `add` and `mul` compute actual field values and populate the witness array. Captures
 /// the first constraint violation as an error for debugging.
 #[derive(Debug)]
-pub struct WitnessGenerator<'a> {
+pub struct WitnessGenerator<'a, F: Field = B128> {
 	alloc: WireAllocator,
-	witness: Vec<B128>,
-	layout: &'a WitnessLayout,
+	witness: Vec<F>,
+	layout: &'a WitnessLayout<F>,
 	first_error: Option<Backtrace>,
 }
 
-impl<'a> WitnessGenerator<'a> {
-	pub fn new(layout: &'a WitnessLayout) -> Self {
+impl<'a, F: Field> WitnessGenerator<'a, F> {
+	pub fn new(layout: &'a WitnessLayout<F>) -> Self {
 		let witness_size = layout.size();
 
 		let mut witness = zeroed_vec(witness_size);
@@ -319,24 +321,24 @@ impl<'a> WitnessGenerator<'a> {
 		}
 	}
 
-	fn alloc_value(&mut self, value: B128) -> WitnessWire {
+	fn alloc_value(&mut self, value: F) -> WitnessWire<F> {
 		let wire = self.alloc.alloc();
 		self.write_value(wire, value)
 	}
 
-	fn write_value(&mut self, wire: ConstraintWire, value: B128) -> WitnessWire {
+	fn write_value(&mut self, wire: ConstraintWire, value: F) -> WitnessWire<F> {
 		if let Some(index) = self.layout.get(&wire) {
 			self.witness[index.0 as usize] = value;
 		}
 		WitnessWire(value)
 	}
 
-	pub fn write_inout(&mut self, wire: ConstraintWire, value: B128) -> WitnessWire {
+	pub fn write_inout(&mut self, wire: ConstraintWire, value: F) -> WitnessWire<F> {
 		assert_eq!(wire.kind, WireKind::InOut);
 		self.write_value(wire, value)
 	}
 
-	pub fn build(self) -> Result<Vec<B128>, WitnessError> {
+	pub fn build(self) -> Result<Vec<F>, WitnessError> {
 		if let Some(backtrace) = self.first_error {
 			Err(WitnessError { backtrace })
 		} else {
@@ -355,11 +357,12 @@ impl<'a> WitnessGenerator<'a> {
 	}
 }
 
-impl<'a> CircuitBuilder for WitnessGenerator<'a> {
-	type Wire = WitnessWire;
+impl<'a, F: Field> CircuitBuilder for WitnessGenerator<'a, F> {
+	type Wire = WitnessWire<F>;
+	type Field = F;
 
 	fn assert_zero(&mut self, wire: Self::Wire) {
-		if wire.val() != B128::ZERO {
+		if wire.val() != F::ZERO {
 			self.record_error();
 		}
 	}
@@ -370,7 +373,7 @@ impl<'a> CircuitBuilder for WitnessGenerator<'a> {
 		}
 	}
 
-	fn constant(&mut self, val: B128) -> Self::Wire {
+	fn constant(&mut self, val: F) -> Self::Wire {
 		WitnessWire(val)
 	}
 
@@ -382,7 +385,7 @@ impl<'a> CircuitBuilder for WitnessGenerator<'a> {
 		self.alloc_value(lhs.val() * rhs.val())
 	}
 
-	fn hint<H: Fn([B128; IN]) -> [B128; OUT], const IN: usize, const OUT: usize>(
+	fn hint<H: Fn([F; IN]) -> [F; OUT], const IN: usize, const OUT: usize>(
 		&mut self,
 		inputs: [Self::Wire; IN],
 		f: H,
