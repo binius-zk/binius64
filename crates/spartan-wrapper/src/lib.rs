@@ -9,10 +9,9 @@
 //! [`IPVerifierChannel`]: binius_ip::channel::IPVerifierChannel
 //! [`ConstraintBuilder`]: binius_spartan_frontend::circuit_builder::ConstraintBuilder
 
-mod build_elem;
+pub mod circuit_elem;
 mod channel;
 
-pub use build_elem::{BuildElem, BuildWire};
 pub use channel::IronSpartanBuilderChannel;
 
 #[cfg(test)]
@@ -24,6 +23,10 @@ mod tests {
 	use binius_spartan_frontend::circuit_builder::ConstraintBuilder;
 
 	use super::*;
+	use crate::circuit_elem::{CircuitElem, CircuitWire};
+
+	type BuildElem = CircuitElem<ConstraintBuilder<B128>>;
+	type BuildWire = CircuitWire<ConstraintBuilder<B128>>;
 
 	/// Helper to create a BuildWire from a ConstraintBuilder Rc for tests.
 	fn alloc_inout_wire(rc: &Rc<std::cell::RefCell<ConstraintBuilder<B128>>>) -> BuildElem {

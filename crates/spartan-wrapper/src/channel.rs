@@ -9,7 +9,10 @@ use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::circuit_builder::ConstraintBuilder;
 
-use crate::build_elem::{BuildElem, BuildWire};
+use crate::circuit_elem::{CircuitElem, CircuitWire};
+
+type BuildElem = CircuitElem<ConstraintBuilder<B128>>;
+type BuildWire = CircuitWire<ConstraintBuilder<B128>>;
 
 /// A channel that symbolically executes a verifier, building up an IronSpartan constraint system.
 ///
