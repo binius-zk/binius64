@@ -187,13 +187,13 @@ impl<F: Field> ConstraintSystem<F> {
 	}
 
 	/// Validate that a witness satisfies all multiplication constraints.
-	pub fn validate(&self, witness: &[B128]) {
+	pub fn validate(&self, witness: &[F]) {
 		let operand_val = |operand: &Operand<WitnessIndex>| {
 			operand
 				.wires()
 				.iter()
 				.map(|idx| witness[idx.0 as usize])
-				.sum::<B128>()
+				.sum::<F>()
 		};
 
 		for MulConstraint { a, b, c } in &self.mul_constraints {
@@ -211,8 +211,8 @@ pub struct BlindingInfo {
 }
 
 #[derive(Debug, Clone)]
-pub struct WitnessLayout {
-	pub(crate) constants: Vec<B128>,
+pub struct WitnessLayout<F: Field = B128> {
+	pub(crate) constants: Vec<F>,
 	n_inout: u32,
 	n_private: u32,
 	log_public: u32,
@@ -220,8 +220,8 @@ pub struct WitnessLayout {
 	private_index_map: HashMap<u32, u32>,
 }
 
-impl WitnessLayout {
-	pub fn sparse(constants: Vec<B128>, n_inout: u32, private_alive: &[bool]) -> Self {
+impl<F: Field> WitnessLayout<F> {
+	pub fn sparse(constants: Vec<F>, n_inout: u32, private_alive: &[bool]) -> Self {
 		let n_constants = constants.len() as u32;
 		let n_public = n_constants + n_inout;
 		let log_public = log2_ceil_usize(n_public as usize) as u32;

@@ -86,11 +86,11 @@ pub enum WireStatus {
 /// It tracks wire allocators, constants, and constraints, along with metadata about which
 /// private wires are still alive (not eliminated by optimization).
 #[derive(Debug)]
-pub struct ConstraintSystemIR {
+pub struct ConstraintSystemIR<F: Field = B128> {
 	pub(crate) constant_alloc: WireAllocator,
 	pub(crate) public_alloc: WireAllocator,
 	pub(crate) private_alloc: WireAllocator,
-	pub(crate) constants: HashMap<B128, u32>,
+	pub(crate) constants: HashMap<F, u32>,
 	pub(crate) zero_constraints: Vec<Operand<ConstraintWire>>,
 	pub(crate) mul_constraints: Vec<MulConstraint<ConstraintWire>>,
 	/// Tracks the status of private wires (Unknown, Pinned, or Pruned).
@@ -98,18 +98,18 @@ pub struct ConstraintSystemIR {
 	pub(crate) private_wires_status: Vec<WireStatus>,
 }
 
-impl ConstraintSystemIR {
+impl<F: Field> ConstraintSystemIR<F> {
 	/// Finalize the IR into a ConstraintSystem and WitnessLayout by converting remaining
 	/// zero constraints to MulConstraints, computing the final witness layout, and mapping all
 	/// ConstraintWires to WitnessIndices.
 	///
 	/// Internally looks up or allocates a constant wire with value 1, used to convert
 	/// zero constraints of the form `A = 0` into MulConstraints `A * 1 = 0`.
-	pub fn finalize(mut self) -> (ConstraintSystem, WitnessLayout) {
+	pub fn finalize(mut self) -> (ConstraintSystem<F>, WitnessLayout<F>) {
 		// Look up or allocate a constant wire for ONE
 		let one_id = self
 			.constants
-			.entry(B128::ONE)
+			.entry(F::ONE)
 			.or_insert_with(|| self.constant_alloc.alloc().id);
 		let one_wire = ConstraintWire {
 			kind: WireKind::Constant,
@@ -189,11 +189,11 @@ impl ConstraintSystemIR {
 /// Implements [`CircuitBuilder`] with [`ConstraintWire`] as the wire type. Operations like
 /// `add` and `mul` allocate new wires and record constraints without evaluating values.
 #[derive(Debug)]
-pub struct ConstraintBuilder {
-	ir: ConstraintSystemIR,
+pub struct ConstraintBuilder<F: Field = B128> {
+	ir: ConstraintSystemIR<F>,
 }
 
-impl ConstraintBuilder {
+impl<F: Field> ConstraintBuilder<F> {
 	#[allow(clippy::new_without_default)]
 	pub fn new() -> Self {
 		ConstraintBuilder {
@@ -213,7 +213,7 @@ impl ConstraintBuilder {
 		self.ir.public_alloc.alloc()
 	}
 
-	pub fn build(self) -> ConstraintSystemIR {
+	pub fn build(self) -> ConstraintSystemIR<F> {
 		self.ir
 	}
 }
