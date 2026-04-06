@@ -25,12 +25,12 @@ use binius_spartan_frontend::{
 /// via `Rc::try_unwrap`, even while `BuildElem` values are still alive.
 #[derive(Clone)]
 pub struct BuildWire {
-	builder: Weak<RefCell<ConstraintBuilder>>,
+	builder: Weak<RefCell<ConstraintBuilder<B128>>>,
 	wire: ConstraintWire,
 }
 
 impl BuildWire {
-	pub(crate) fn new(builder: &Rc<RefCell<ConstraintBuilder>>, wire: ConstraintWire) -> Self {
+	pub(crate) fn new(builder: &Rc<RefCell<ConstraintBuilder<B128>>>, wire: ConstraintWire) -> Self {
 		Self {
 			builder: Rc::downgrade(builder),
 			wire,
@@ -41,7 +41,7 @@ impl BuildWire {
 		self.wire
 	}
 
-	fn upgrade(&self) -> Rc<RefCell<ConstraintBuilder>> {
+	fn upgrade(&self) -> Rc<RefCell<ConstraintBuilder<B128>>> {
 		self.builder
 			.upgrade()
 			.expect("channel has been consumed by finish()")
@@ -57,7 +57,7 @@ pub enum BuildElem {
 
 impl BuildElem {
 	/// Returns the builder Rc if this is a Wire variant.
-	fn builder_rc(&self) -> Option<Rc<RefCell<ConstraintBuilder>>> {
+	fn builder_rc(&self) -> Option<Rc<RefCell<ConstraintBuilder<B128>>>> {
 		match self {
 			BuildElem::Constant(_) => None,
 			BuildElem::Wire(w) => Some(w.upgrade()),
@@ -67,7 +67,7 @@ impl BuildElem {
 	/// Given two BuildElems, return the builder that at least one of them references.
 	///
 	/// Panics if both are constants (no builder to resolve).
-	fn resolve_builder(a: &BuildElem, b: &BuildElem) -> Rc<RefCell<ConstraintBuilder>> {
+	fn resolve_builder(a: &BuildElem, b: &BuildElem) -> Rc<RefCell<ConstraintBuilder<B128>>> {
 		match (a.builder_rc(), b.builder_rc()) {
 			(Some(a), Some(b)) => {
 				assert!(
@@ -82,14 +82,14 @@ impl BuildElem {
 	}
 
 	/// Convert this element to a ConstraintWire, allocating a constant wire if necessary.
-	fn to_wire(&self, builder: &mut ConstraintBuilder) -> ConstraintWire {
+	fn to_wire(&self, builder: &mut ConstraintBuilder<B128>) -> ConstraintWire {
 		match self {
 			BuildElem::Constant(val) => builder.constant(*val),
 			BuildElem::Wire(w) => w.wire,
 		}
 	}
 
-	fn make_wire(rc: &Rc<RefCell<ConstraintBuilder>>, wire: ConstraintWire) -> Self {
+	fn make_wire(rc: &Rc<RefCell<ConstraintBuilder<B128>>>, wire: ConstraintWire) -> Self {
 		BuildElem::Wire(BuildWire {
 			builder: Rc::downgrade(rc),
 			wire,

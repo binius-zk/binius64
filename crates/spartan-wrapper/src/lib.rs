@@ -26,7 +26,7 @@ mod tests {
 	use super::*;
 
 	/// Helper to create a BuildWire from a ConstraintBuilder Rc for tests.
-	fn alloc_inout_wire(rc: &Rc<std::cell::RefCell<ConstraintBuilder>>) -> BuildElem {
+	fn alloc_inout_wire(rc: &Rc<std::cell::RefCell<ConstraintBuilder<B128>>>) -> BuildElem {
 		let wire = rc.borrow_mut().alloc_inout();
 		BuildElem::Wire(BuildWire::new(rc, wire))
 	}

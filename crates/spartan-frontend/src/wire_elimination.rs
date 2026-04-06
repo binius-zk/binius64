@@ -2,7 +2,7 @@
 
 use std::mem;
 
-use binius_field::{BinaryField128bGhash as B128, Field};
+use binius_field::Field;
 
 use super::{
 	circuit_builder::{ConstraintSystemIR, WireStatus},
@@ -54,7 +54,7 @@ impl Default for CostModel {
 ///
 /// Maintains invariant: `private_wire_uses[i]` is empty if status is not Unknown.
 /// For Unknown wires, use sites must exactly match constraints referencing that wire.
-pub struct WireEliminationPass<F: Field = B128> {
+pub struct WireEliminationPass<F: Field> {
 	cost_model: CostModel,
 	ir: ConstraintSystemIR<F>,
 	/// Vector of use sites for each private wire. Empty if wire status is not Unknown.

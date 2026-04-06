@@ -14,18 +14,18 @@ use crate::build_elem::{BuildElem, BuildWire};
 /// A channel that symbolically executes a verifier, building up an IronSpartan constraint system.
 ///
 /// Instead of performing actual verification, this channel records all operations as constraints
-/// in a [`ConstraintBuilder`]. The typical usage pattern is:
+/// in a [`ConstraintBuilder<B128>`]. The typical usage pattern is:
 ///
-/// 1. Create an `IronSpartanBuilderChannel` from a `ConstraintBuilder`
+/// 1. Create an `IronSpartanBuilderChannel` from a `ConstraintBuilder<B128>`
 /// 2. Run the verifier on the channel (e.g., `verify_iop`)
-/// 3. The channel's `finish()` method returns the `ConstraintBuilder` with all recorded constraints
+/// 3. The channel's `finish()` method returns the `ConstraintBuilder<B128>` with all recorded constraints
 pub struct IronSpartanBuilderChannel {
-	builder: Rc<RefCell<ConstraintBuilder>>,
+	builder: Rc<RefCell<ConstraintBuilder<B128>>>,
 }
 
 impl IronSpartanBuilderChannel {
 	/// Creates a new builder channel that takes ownership of the given constraint builder.
-	pub fn new(builder: ConstraintBuilder) -> Self {
+	pub fn new(builder: ConstraintBuilder<B128>) -> Self {
 		Self {
 			builder: Rc::new(RefCell::new(builder)),
 		}
@@ -98,11 +98,11 @@ impl IOPVerifierChannel<B128> for IronSpartanBuilderChannel {
 }
 
 impl IronSpartanBuilderChannel {
-	/// Consumes the channel and returns the underlying [`ConstraintBuilder`].
+	/// Consumes the channel and returns the underlying [`ConstraintBuilder<B128>`].
 	///
 	/// This must be called after all `BuildElem` values derived from this channel have been
 	/// dropped, as it requires sole ownership of the builder via `Rc::try_unwrap`.
-	pub fn finish(self) -> ConstraintBuilder {
+	pub fn finish(self) -> ConstraintBuilder<B128> {
 		Rc::try_unwrap(self.builder)
 			.expect("BuildElem values should only hold Weak references")
 			.into_inner()

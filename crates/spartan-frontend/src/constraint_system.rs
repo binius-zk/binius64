@@ -2,7 +2,7 @@
 
 use std::{cmp::Ordering, collections::HashMap, mem};
 
-use binius_field::{BinaryField128bGhash as B128, Field};
+use binius_field::Field;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use smallvec::{SmallVec, smallvec};
 
@@ -129,7 +129,7 @@ pub struct WitnessIndex(pub u32);
 ///
 /// This struct does not guarantee power-of-two constraint counts or witness size.
 #[derive(Debug, Clone)]
-pub struct ConstraintSystem<F: Field = B128> {
+pub struct ConstraintSystem<F: Field> {
 	constants: Vec<F>,
 	n_inout: u32,
 	n_private: u32,
@@ -211,7 +211,7 @@ pub struct BlindingInfo {
 }
 
 #[derive(Debug, Clone)]
-pub struct WitnessLayout<F: Field = B128> {
+pub struct WitnessLayout<F: Field> {
 	pub(crate) constants: Vec<F>,
 	n_inout: u32,
 	n_private: u32,

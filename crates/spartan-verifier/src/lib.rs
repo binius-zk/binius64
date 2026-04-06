@@ -32,7 +32,7 @@ pub mod config;
 pub mod constraint_system;
 pub mod wiring;
 
-use binius_field::{BinaryField, field::FieldOps};
+use binius_field::{BinaryField, BinaryField128bGhash as B128, field::FieldOps};
 use binius_iop::{
 	basefold_compiler::BaseFoldZKVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
@@ -227,7 +227,7 @@ where
 	///
 	/// See [`Verifier`] struct documentation for details.
 	pub fn setup(
-		constraint_system: ConstraintSystem,
+		constraint_system: ConstraintSystem<B128>,
 		log_inv_rate: usize,
 		compression: MerkleCompress,
 	) -> Result<Self, Error> {

@@ -2,7 +2,7 @@
 
 use std::{array, backtrace::Backtrace, collections::HashMap, mem};
 
-use binius_field::{BinaryField128bGhash as B128, Field};
+use binius_field::Field;
 use bytemuck::zeroed_vec;
 use smallvec::{SmallVec, smallvec};
 
@@ -87,7 +87,7 @@ pub enum WireStatus {
 /// It tracks wire allocators, constants, and constraints, along with metadata about which
 /// private wires are still alive (not eliminated by optimization).
 #[derive(Debug)]
-pub struct ConstraintSystemIR<F: Field = B128> {
+pub struct ConstraintSystemIR<F: Field> {
 	pub(crate) constant_alloc: WireAllocator,
 	pub(crate) public_alloc: WireAllocator,
 	pub(crate) private_alloc: WireAllocator,
@@ -190,7 +190,7 @@ impl<F: Field> ConstraintSystemIR<F> {
 /// Implements [`CircuitBuilder`] with [`ConstraintWire`] as the wire type. Operations like
 /// `add` and `mul` allocate new wires and record constraints without evaluating values.
 #[derive(Debug)]
-pub struct ConstraintBuilder<F: Field = B128> {
+pub struct ConstraintBuilder<F: Field> {
 	ir: ConstraintSystemIR<F>,
 }
 
@@ -284,7 +284,7 @@ pub struct WitnessError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WitnessWire<F: Field = B128>(F);
+pub struct WitnessWire<F: Field>(F);
 
 impl<F: Field> WitnessWire<F> {
 	#[inline]
@@ -299,7 +299,7 @@ impl<F: Field> WitnessWire<F> {
 /// `add` and `mul` compute actual field values and populate the witness array. Captures
 /// the first constraint violation as an error for debugging.
 #[derive(Debug)]
-pub struct WitnessGenerator<'a, F: Field = B128> {
+pub struct WitnessGenerator<'a, F: Field> {
 	alloc: WireAllocator,
 	witness: Vec<F>,
 	layout: &'a WitnessLayout<F>,
@@ -398,7 +398,7 @@ impl<'a, F: Field> CircuitBuilder for WitnessGenerator<'a, F> {
 mod tests {
 	use std::iter::successors;
 
-	use binius_field::{Field, PackedField};
+	use binius_field::{BinaryField128bGhash as B128, Field, PackedField};
 
 	use super::*;
 
