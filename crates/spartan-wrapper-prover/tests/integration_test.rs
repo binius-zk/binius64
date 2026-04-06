@@ -9,6 +9,7 @@ use binius_iop_prover::{
 	basefold_compiler::BaseFoldZKProverCompiler, merkle_tree::prover::BinaryMerkleTreeProver,
 };
 use binius_ip::channel::IPVerifierChannel;
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly};
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, ConstraintBuilder, WitnessGenerator},
@@ -130,18 +131,25 @@ fn test_zk_wrapped_prove_verify() {
 	prover_transcript.observe().write_slice(public);
 
 	let basefold_channel = zk_basefold_prover.create_channel(&mut prover_transcript, &mut rng);
-	let wrapped_prover_channel = ZKWrappedProverChannel::new(
+	let mut wrapped_prover_channel = ZKWrappedProverChannel::new(
 		basefold_channel,
 		&outer_iop_prover,
 		&inner_iop_verifier,
 		&outer_layout,
 	);
 
-	// Run inner proof + outer proof. Public input is observed on the wrapped channel first,
-	// then the inner proof runs, then the outer proof replays and proves.
+	// Observe public input through the wrapped channel.
+	(&mut wrapped_prover_channel).observe_many(public);
+
+	// Run the inner proof through the wrapped channel.
+	inner_iop_prover
+		.prove::<B128, OptimalPackedB128, _>(&inner_witness, &mut rng, &mut wrapped_prover_channel)
+		.expect("inner prove failed");
+
+	// Finish runs the outer proof.
 	wrapped_prover_channel
-		.prove_all(&inner_iop_prover, &inner_witness, public, rng)
-		.expect("wrapped prove failed");
+		.finish(rng)
+		.expect("outer prove failed");
 
 	// === Step 8: Verify with ZKWrappedVerifierChannel ===
 	let mut verifier_transcript = prover_transcript.into_verifier();

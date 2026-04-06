@@ -5,12 +5,12 @@
 //!
 //! [`ZKWrappedProverChannel`] wraps a [`BaseFoldZKProverChannel`] and records all channel values.
 //! On `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFoldZK channel and records
-//! each value. [`prove_all`] replays the recorded interaction through a [`ReplayChannel`] to fill
-//! the outer witness, then runs the outer IOP prover.
+//! each value. After the inner proof is run, [`finish`] replays the recorded interaction through
+//! a [`ReplayChannel`] to fill the outer witness, then runs the outer IOP prover.
 //!
 //! [`BaseFoldZKProverChannel`]: binius_iop_prover::basefold_zk_channel::BaseFoldZKProverChannel
 //! [`ReplayChannel`]: binius_spartan_wrapper::ReplayChannel
-//! [`prove_all`]: ZKWrappedProverChannel::prove_all
+//! [`finish`]: ZKWrappedProverChannel::finish
 
 use binius_field::{BinaryField128bGhash as B128, PackedExtension, PackedField};
 use binius_iop::{channel::OracleSpec, merkle_tree::MerkleTreeScheme};
@@ -34,7 +34,7 @@ use rand::CryptoRng;
 ///
 /// This channel records all channel values. On
 /// `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFoldZK channel and records each
-/// value. After [`prove_oracle_relations`](IOPProverChannel::prove_oracle_relations), call
+/// value. After the inner proof is run through this channel, call
 /// [`finish`](Self::finish) to replay the interaction through a [`ReplayChannel`], fill the outer
 /// witness, and generate the outer proof.
 pub struct ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_>
@@ -101,27 +101,15 @@ where
 		}
 	}
 
-	/// Runs the inner proof, then replays the interaction to fill the outer witness, and runs
-	/// the outer Spartan IOP proof.
+	/// Consumes the channel and runs the outer proof.
 	///
-	/// This method:
-	/// 1. Runs the inner IOP proof (which records interaction events via IPProverChannel)
-	/// 2. Replays the recorded interaction through a WitnessGenerator to fill the outer witness
-	/// 3. Generates the outer IOP proof
-	pub fn prove_all(
-		mut self,
-		inner_prover: &IOPProver,
-		inner_witness: &[B128],
-		inner_public: &[B128],
-		mut rng: impl CryptoRng,
-	) -> Result<(), binius_spartan_prover::Error> {
-		// Observe inner public input through the wrapped channel (records to interaction log).
-		self.inner_channel.observe_many(inner_public);
-		self.interaction.extend_from_slice(inner_public);
-
-		// Run the inner IOP proof, recording channel operations to the interaction log.
-		inner_prover.prove::<B128, P, _>(inner_witness, &mut rng, &mut self)?;
-
+	/// This should be called after the inner proof has been run through this channel
+	/// (via [`IOPProver::prove`]). It:
+	/// 1. Replays the recorded interaction through a [`ReplayChannel`] to fill the outer witness
+	/// 2. Validates and generates the outer IOP proof
+	///
+	/// [`ReplayChannel`]: binius_spartan_wrapper::ReplayChannel
+	pub fn finish(self, rng: impl CryptoRng) -> Result<(), binius_spartan_prover::Error> {
 		let Self {
 			inner_channel,
 			outer_prover,
@@ -157,8 +145,8 @@ where
 	}
 }
 
-impl<'b, P, NTT, MTScheme, MTProver, Challenger_> IPProverChannel<B128>
-	for &'b mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_>
+impl<P, NTT, MTScheme, MTProver, Challenger_> IPProverChannel<B128>
+	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_>
 where
 	P: PackedField<Scalar = B128> + PackedExtension<B128>,
 	NTT: AdditiveNTT<Field = B128> + Sync,
@@ -193,8 +181,8 @@ where
 	}
 }
 
-impl<'b, P, NTT, MTScheme, MTProver, Challenger_> IOPProverChannel<P>
-	for &'b mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_>
+impl<P, NTT, MTScheme, MTProver, Challenger_> IOPProverChannel<P>
+	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_>
 where
 	P: PackedField<Scalar = B128> + PackedExtension<B128>,
 	NTT: AdditiveNTT<Field = B128> + Sync,
