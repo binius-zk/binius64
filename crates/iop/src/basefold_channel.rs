@@ -183,9 +183,9 @@ where
 		Ok(BaseFoldOracle { index })
 	}
 
-	fn verify_oracle_relations(
+	fn verify_oracle_relations<'a>(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<Self::Oracle, Self::Elem>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error> {
 		assert!(
 			self.remaining_oracle_specs().is_empty(),
