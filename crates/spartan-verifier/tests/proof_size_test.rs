@@ -1,6 +1,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_field::BinaryField128bGhash as B128;
+use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, ConstraintBuilder},
 	circuits::powers,
@@ -44,9 +45,10 @@ fn test_ip_proof_size() {
 	// (SizeTrackingChannel ignores values).
 	let mut channel = verifier.iop_compiler().create_size_tracking_channel();
 	let public = vec![B128::default(); 1 << cs.log_public()];
+	let public_elems = channel.observe_many(&public);
 	verifier
 		.iop_verifier()
-		.verify(&public, &mut channel)
+		.verify(public_elems, &mut channel)
 		.expect("verify with size tracking channel should succeed");
 	let proof_size = channel.proof_size();
 
