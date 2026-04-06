@@ -19,6 +19,16 @@ pub struct ConstraintWire {
 	pub(crate) id: u32,
 }
 
+impl ConstraintWire {
+	/// Creates a constraint wire referencing an inout wire by ID.
+	pub fn inout(id: u32) -> Self {
+		Self {
+			kind: WireKind::InOut,
+			id,
+		}
+	}
+}
+
 #[derive(Debug, Clone)]
 pub struct Operand<W>(SmallVec<[W; 4]>);
 
