@@ -19,7 +19,7 @@ use std::{
 };
 
 use binius_field::{
-	BinaryField128bGhash as B128, ExtensionField, Field,
+	ExtensionField, Field,
 	arithmetic_traits::{InvertOrZero, Square},
 	field::FieldOps,
 };
@@ -71,7 +71,7 @@ impl<B: CircuitBuilder> CircuitWire<B> {
 /// [`ConstraintBuilder`]: binius_spartan_frontend::circuit_builder::ConstraintBuilder
 /// [`WitnessGenerator`]: binius_spartan_frontend::circuit_builder::WitnessGenerator
 pub enum CircuitElem<B: CircuitBuilder> {
-	Constant(B128),
+	Constant(B::Field),
 	Wire(CircuitWire<B>),
 }
 
@@ -84,7 +84,7 @@ impl<B: CircuitBuilder> Clone for CircuitElem<B> {
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> CircuitElem<B> {
+impl<B: CircuitBuilder> CircuitElem<B> {
 	/// Returns the builder Rc if this is a Wire variant.
 	fn builder_rc(&self) -> Option<Rc<RefCell<B>>> {
 		match self {
@@ -122,7 +122,7 @@ impl<B: CircuitBuilder<Field = B128>> CircuitElem<B> {
 }
 
 // In characteristic 2, negation is identity.
-impl<B: CircuitBuilder<Field = B128>> Neg for CircuitElem<B> {
+impl<B: CircuitBuilder> Neg for CircuitElem<B> {
 	type Output = Self;
 
 	fn neg(self) -> Self {
@@ -130,17 +130,17 @@ impl<B: CircuitBuilder<Field = B128>> Neg for CircuitElem<B> {
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> Add for CircuitElem<B> {
+impl<B: CircuitBuilder> Add for CircuitElem<B> {
 	type Output = Self;
 
 	fn add(self, rhs: Self) -> Self {
 		match (&self, &rhs) {
 			(CircuitElem::Constant(a), CircuitElem::Constant(b)) => CircuitElem::Constant(*a + *b),
 			_ => {
-				if matches!(&self, CircuitElem::Constant(c) if *c == B128::ZERO) {
+				if matches!(&self, CircuitElem::Constant(c) if *c == B::Field::ZERO) {
 					return rhs;
 				}
-				if matches!(&rhs, CircuitElem::Constant(c) if *c == B128::ZERO) {
+				if matches!(&rhs, CircuitElem::Constant(c) if *c == B::Field::ZERO) {
 					return self;
 				}
 				let rc = Self::resolve_builder(&self, &rhs);
@@ -154,17 +154,17 @@ impl<B: CircuitBuilder<Field = B128>> Add for CircuitElem<B> {
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> Sub for CircuitElem<B> {
+impl<B: CircuitBuilder> Sub for CircuitElem<B> {
 	type Output = Self;
 
 	fn sub(self, rhs: Self) -> Self {
 		match (&self, &rhs) {
 			(CircuitElem::Constant(a), CircuitElem::Constant(b)) => CircuitElem::Constant(*a + *b),
 			_ => {
-				if matches!(&self, CircuitElem::Constant(c) if *c == B128::ZERO) {
+				if matches!(&self, CircuitElem::Constant(c) if *c == B::Field::ZERO) {
 					return rhs;
 				}
-				if matches!(&rhs, CircuitElem::Constant(c) if *c == B128::ZERO) {
+				if matches!(&rhs, CircuitElem::Constant(c) if *c == B::Field::ZERO) {
 					return self;
 				}
 				let rc = Self::resolve_builder(&self, &rhs);
@@ -178,23 +178,23 @@ impl<B: CircuitBuilder<Field = B128>> Sub for CircuitElem<B> {
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> Mul for CircuitElem<B> {
+impl<B: CircuitBuilder> Mul for CircuitElem<B> {
 	type Output = Self;
 
 	fn mul(self, rhs: Self) -> Self {
 		match (&self, &rhs) {
 			(CircuitElem::Constant(a), CircuitElem::Constant(b)) => CircuitElem::Constant(*a * *b),
 			_ => {
-				if matches!(&self, CircuitElem::Constant(c) if *c == B128::ZERO) {
-					return CircuitElem::Constant(B128::ZERO);
+				if matches!(&self, CircuitElem::Constant(c) if *c == B::Field::ZERO) {
+					return CircuitElem::Constant(B::Field::ZERO);
 				}
-				if matches!(&rhs, CircuitElem::Constant(c) if *c == B128::ZERO) {
-					return CircuitElem::Constant(B128::ZERO);
+				if matches!(&rhs, CircuitElem::Constant(c) if *c == B::Field::ZERO) {
+					return CircuitElem::Constant(B::Field::ZERO);
 				}
-				if matches!(&self, CircuitElem::Constant(c) if *c == B128::ONE) {
+				if matches!(&self, CircuitElem::Constant(c) if *c == B::Field::ONE) {
 					return rhs;
 				}
-				if matches!(&rhs, CircuitElem::Constant(c) if *c == B128::ONE) {
+				if matches!(&rhs, CircuitElem::Constant(c) if *c == B::Field::ONE) {
 					return self;
 				}
 				let rc = Self::resolve_builder(&self, &rhs);
@@ -210,7 +210,7 @@ impl<B: CircuitBuilder<Field = B128>> Mul for CircuitElem<B> {
 
 // By-reference variants: clone and delegate.
 
-impl<B: CircuitBuilder<Field = B128>> Add<&Self> for CircuitElem<B> {
+impl<B: CircuitBuilder> Add<&Self> for CircuitElem<B> {
 	type Output = Self;
 
 	fn add(self, rhs: &Self) -> Self {
@@ -218,7 +218,7 @@ impl<B: CircuitBuilder<Field = B128>> Add<&Self> for CircuitElem<B> {
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> Sub<&Self> for CircuitElem<B> {
+impl<B: CircuitBuilder> Sub<&Self> for CircuitElem<B> {
 	type Output = Self;
 
 	fn sub(self, rhs: &Self) -> Self {
@@ -226,7 +226,7 @@ impl<B: CircuitBuilder<Field = B128>> Sub<&Self> for CircuitElem<B> {
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> Mul<&Self> for CircuitElem<B> {
+impl<B: CircuitBuilder> Mul<&Self> for CircuitElem<B> {
 	type Output = Self;
 
 	fn mul(self, rhs: &Self) -> Self {
@@ -236,75 +236,75 @@ impl<B: CircuitBuilder<Field = B128>> Mul<&Self> for CircuitElem<B> {
 
 // Assign variants — use mem::replace to avoid requiring B: Clone.
 
-impl<B: CircuitBuilder<Field = B128>> AddAssign for CircuitElem<B> {
+impl<B: CircuitBuilder> AddAssign for CircuitElem<B> {
 	fn add_assign(&mut self, rhs: Self) {
-		let lhs = mem::replace(self, CircuitElem::Constant(B128::ZERO));
+		let lhs = mem::replace(self, CircuitElem::Constant(B::Field::ZERO));
 		*self = lhs + rhs;
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> SubAssign for CircuitElem<B> {
+impl<B: CircuitBuilder> SubAssign for CircuitElem<B> {
 	fn sub_assign(&mut self, rhs: Self) {
-		let lhs = mem::replace(self, CircuitElem::Constant(B128::ZERO));
+		let lhs = mem::replace(self, CircuitElem::Constant(B::Field::ZERO));
 		*self = lhs - rhs;
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> MulAssign for CircuitElem<B> {
+impl<B: CircuitBuilder> MulAssign for CircuitElem<B> {
 	fn mul_assign(&mut self, rhs: Self) {
-		let lhs = mem::replace(self, CircuitElem::Constant(B128::ZERO));
+		let lhs = mem::replace(self, CircuitElem::Constant(B::Field::ZERO));
 		*self = lhs * rhs;
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> AddAssign<&Self> for CircuitElem<B> {
+impl<B: CircuitBuilder> AddAssign<&Self> for CircuitElem<B> {
 	fn add_assign(&mut self, rhs: &Self) {
-		let lhs = mem::replace(self, CircuitElem::Constant(B128::ZERO));
+		let lhs = mem::replace(self, CircuitElem::Constant(B::Field::ZERO));
 		*self = lhs + rhs.clone();
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> SubAssign<&Self> for CircuitElem<B> {
+impl<B: CircuitBuilder> SubAssign<&Self> for CircuitElem<B> {
 	fn sub_assign(&mut self, rhs: &Self) {
-		let lhs = mem::replace(self, CircuitElem::Constant(B128::ZERO));
+		let lhs = mem::replace(self, CircuitElem::Constant(B::Field::ZERO));
 		*self = lhs - rhs.clone();
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> MulAssign<&Self> for CircuitElem<B> {
+impl<B: CircuitBuilder> MulAssign<&Self> for CircuitElem<B> {
 	fn mul_assign(&mut self, rhs: &Self) {
-		let lhs = mem::replace(self, CircuitElem::Constant(B128::ZERO));
+		let lhs = mem::replace(self, CircuitElem::Constant(B::Field::ZERO));
 		*self = lhs * rhs.clone();
 	}
 }
 
 // Sum and Product
 
-impl<B: CircuitBuilder<Field = B128>> Sum for CircuitElem<B> {
+impl<B: CircuitBuilder> Sum for CircuitElem<B> {
 	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-		iter.fold(CircuitElem::Constant(B128::ZERO), |acc, x| acc + x)
+		iter.fold(CircuitElem::Constant(B::Field::ZERO), |acc, x| acc + x)
 	}
 }
 
-impl<'a, B: CircuitBuilder<Field = B128>> Sum<&'a CircuitElem<B>> for CircuitElem<B> {
+impl<'a, B: CircuitBuilder> Sum<&'a CircuitElem<B>> for CircuitElem<B> {
 	fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
-		iter.fold(CircuitElem::Constant(B128::ZERO), |acc, x| acc + x)
+		iter.fold(CircuitElem::Constant(B::Field::ZERO), |acc, x| acc + x)
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> Product for CircuitElem<B> {
+impl<B: CircuitBuilder> Product for CircuitElem<B> {
 	fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
-		iter.fold(CircuitElem::Constant(B128::ONE), |acc, x| acc * x)
+		iter.fold(CircuitElem::Constant(B::Field::ONE), |acc, x| acc * x)
 	}
 }
 
-impl<'a, B: CircuitBuilder<Field = B128>> Product<&'a CircuitElem<B>> for CircuitElem<B> {
+impl<'a, B: CircuitBuilder> Product<&'a CircuitElem<B>> for CircuitElem<B> {
 	fn product<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
-		iter.fold(CircuitElem::Constant(B128::ONE), |acc, x| acc * x)
+		iter.fold(CircuitElem::Constant(B::Field::ONE), |acc, x| acc * x)
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> Square for CircuitElem<B> {
+impl<B: CircuitBuilder> Square for CircuitElem<B> {
 	fn square(self) -> Self {
 		match &self {
 			CircuitElem::Constant(c) => CircuitElem::Constant(c.square()),
@@ -316,7 +316,7 @@ impl<B: CircuitBuilder<Field = B128>> Square for CircuitElem<B> {
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> InvertOrZero for CircuitElem<B> {
+impl<B: CircuitBuilder> InvertOrZero for CircuitElem<B> {
 	fn invert_or_zero(self) -> Self {
 		match &self {
 			CircuitElem::Constant(c) => CircuitElem::Constant(c.invert_or_zero()),
@@ -330,7 +330,7 @@ impl<B: CircuitBuilder<Field = B128>> InvertOrZero for CircuitElem<B> {
 
 				// Constrain wire * inverse = one.
 				let product = builder.mul(wire, inv_wire);
-				let one = builder.constant(B128::ONE);
+				let one = builder.constant(B::Field::ONE);
 				builder.assert_eq(product, one);
 
 				Self::make_wire(&rc, inv_wire)
@@ -339,15 +339,15 @@ impl<B: CircuitBuilder<Field = B128>> InvertOrZero for CircuitElem<B> {
 	}
 }
 
-impl<B: CircuitBuilder<Field = B128>> FieldOps for CircuitElem<B> {
-	type Scalar = B128;
+impl<B: CircuitBuilder> FieldOps for CircuitElem<B> {
+	type Scalar = B::Field;
 
 	fn zero() -> Self {
-		CircuitElem::Constant(B128::ZERO)
+		CircuitElem::Constant(B::Field::ZERO)
 	}
 
 	fn one() -> Self {
-		CircuitElem::Constant(B128::ONE)
+		CircuitElem::Constant(B::Field::ONE)
 	}
 
 	fn square_transpose<FSub: Field>(_elems: &mut [Self])
