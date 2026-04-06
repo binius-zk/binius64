@@ -84,6 +84,12 @@ where
 	pub fn transcript(&self) -> &ProverTranscript<Challenger_> {
 		self.transcript
 	}
+
+	/// Consumes the channel, asserting all oracle specs have been consumed.
+	pub fn finish(self) {
+		let n_remaining = self.oracle_specs.len() - self.next_oracle_index;
+		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
+	}
 }
 
 impl<F, P, Challenger_> IPProverChannel<F> for NaiveProverChannel<'_, F, P, Challenger_>
@@ -164,12 +170,6 @@ where
 		&mut self,
 		oracle_relations: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<P>, P::Scalar)>,
 	) {
-		assert!(
-			self.remaining_oracle_specs().is_empty(),
-			"prove_oracle_relations called but {} oracle specs remaining",
-			self.remaining_oracle_specs().len()
-		);
-
 		// For the naive channel, we write the transparent polynomial to the transcript
 		// so the verifier can read it and verify the inner product directly.
 		for (oracle, transparent_poly, eval_claim) in oracle_relations {

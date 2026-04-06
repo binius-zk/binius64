@@ -9,10 +9,12 @@ binius-field = { path = "../field" }
 binius-iop = { path = "../iop" }
 binius-ip = { path = "../ip" }
 binius-spartan-frontend = { path = "../spartan-frontend" }
+binius-spartan-verifier = { path = "../spartan-verifier" }
+binius-transcript = { path = "../transcript" }
+binius-utils = { path = "../utils" }
 
 [dev-dependencies]
 binius-hash = { path = "../hash" }
-binius-spartan-verifier = { path = "../spartan-verifier" }
 bytemuck.workspace = true
 
 [lints]

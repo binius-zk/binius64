@@ -61,13 +61,13 @@ where
 ///
 /// The returned closure computes the expected evaluation of the wiring MLE batched with the
 /// public input equality check, given a challenge point from the BaseFold opening.
-pub fn eval_transparent<F: FieldOps + 'static>(
+pub fn eval_transparent<'a, F: FieldOps + 'a>(
 	constraint_system: &ConstraintSystemPadded,
 	r_public: &[F],
 	r_x: &[F],
 	lambda: F,
 	batch_coeff: F,
-) -> binius_iop::channel::TransparentEvalFn<F> {
+) -> binius_iop::channel::TransparentEvalFn<'a, F> {
 	let r_public = r_public.to_vec();
 	let r_x = r_x.to_vec();
 	let mul_constraints = constraint_system.mul_constraints().to_vec();

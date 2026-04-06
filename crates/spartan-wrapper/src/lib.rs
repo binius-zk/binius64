@@ -9,11 +9,12 @@
 //! [`IPVerifierChannel`]: binius_ip::channel::IPVerifierChannel
 //! [`ConstraintBuilder`]: binius_spartan_frontend::circuit_builder::ConstraintBuilder
 
-mod build_elem;
 mod channel;
+pub mod circuit_elem;
+mod zk_wrapped_channel;
 
-pub use build_elem::{BuildElem, BuildWire};
-pub use channel::IronSpartanBuilderChannel;
+pub use channel::{IronSpartanBuilderChannel, ReplayChannel};
+pub use zk_wrapped_channel::ZKWrappedVerifierChannel;
 
 #[cfg(test)]
 mod tests {
@@ -24,6 +25,10 @@ mod tests {
 	use binius_spartan_frontend::circuit_builder::ConstraintBuilder;
 
 	use super::*;
+	use crate::circuit_elem::{CircuitElem, CircuitWire};
+
+	type BuildElem = CircuitElem<ConstraintBuilder<B128>>;
+	type BuildWire = CircuitWire<ConstraintBuilder<B128>>;
 
 	/// Helper to create a BuildWire from a ConstraintBuilder Rc for tests.
 	fn alloc_inout_wire(rc: &Rc<std::cell::RefCell<ConstraintBuilder<B128>>>) -> BuildElem {
@@ -51,7 +56,7 @@ mod tests {
 
 	#[test]
 	fn test_constant_identity_shortcuts() {
-		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::new()));
+		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::<B128>::new()));
 		let elem = alloc_inout_wire(&rc);
 
 		// Adding zero returns the wire unchanged.
@@ -69,7 +74,7 @@ mod tests {
 
 	#[test]
 	fn test_wire_addition_creates_constraint() {
-		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::new()));
+		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::<B128>::new()));
 		let a = alloc_inout_wire(&rc);
 		let b = alloc_inout_wire(&rc);
 
@@ -82,7 +87,7 @@ mod tests {
 
 	#[test]
 	fn test_wire_multiplication_creates_constraint() {
-		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::new()));
+		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::<B128>::new()));
 		let a = alloc_inout_wire(&rc);
 		let b = alloc_inout_wire(&rc);
 
@@ -94,7 +99,7 @@ mod tests {
 
 	#[test]
 	fn test_invert_or_zero_creates_constraints() {
-		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::new()));
+		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::<B128>::new()));
 		let elem = alloc_inout_wire(&rc);
 
 		let _inv = elem.invert_or_zero();
@@ -106,7 +111,7 @@ mod tests {
 
 	#[test]
 	fn test_channel_recv_and_sample() {
-		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
+		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::<B128>::new());
 
 		let a = channel.recv_one().unwrap();
 		let b = channel.sample();
@@ -122,7 +127,7 @@ mod tests {
 
 	#[test]
 	fn test_channel_assert_zero() {
-		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
+		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::<B128>::new());
 
 		// Assert zero on a constant zero should succeed.
 		assert!(channel.assert_zero(BuildElem::Constant(B128::ZERO)).is_ok());
@@ -156,7 +161,7 @@ mod tests {
 			builder.assert_eq(x7, y_wire);
 		}
 
-		let mut constraint_builder = ConstraintBuilder::new();
+		let mut constraint_builder = ConstraintBuilder::<B128>::new();
 		let x_wire = constraint_builder.alloc_inout();
 		let y_wire = constraint_builder.alloc_inout();
 		power7_circuit(&mut constraint_builder, x_wire, y_wire);
@@ -173,7 +178,7 @@ mod tests {
 		let public_size = 1 << cs.log_public();
 
 		// Create the builder channel and run IOPVerifier::verify symbolically.
-		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
+		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::<B128>::new());
 
 		// Use zero-filled public inputs of the correct length.
 		let public = vec![B128::ZERO; public_size];
@@ -196,7 +201,7 @@ mod tests {
 	fn test_channel_integration_simple_circuit() {
 		// Build a simple circuit: recv two values, multiply them, assert_zero on the
 		// difference with a third received value (ie. a * b == c).
-		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
+		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::<B128>::new());
 		let a = channel.recv_one().unwrap();
 		let b = channel.recv_one().unwrap();
 		let c = channel.recv_one().unwrap();

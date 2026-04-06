@@ -94,6 +94,12 @@ where
 	pub fn transcript(&self) -> &VerifierTranscript<Challenger_> {
 		self.transcript
 	}
+
+	/// Consumes the channel, asserting all oracle specs have been consumed.
+	pub fn finish(self) {
+		let n_remaining = self.oracle_specs.len() - self.next_oracle_index;
+		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
+	}
 }
 
 impl<F, MerkleScheme_, Challenger_> IPVerifierChannel<F>
@@ -183,16 +189,10 @@ where
 		Ok(BaseFoldOracle { index })
 	}
 
-	fn verify_oracle_relations(
+	fn verify_oracle_relations<'a>(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<Self::Oracle, Self::Elem>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error> {
-		assert!(
-			self.remaining_oracle_specs().is_empty(),
-			"verify_oracle_relations called but {} oracle specs remaining",
-			self.remaining_oracle_specs().len()
-		);
-
 		// Process each oracle relation with its own BaseFold verification
 		for relation in oracle_relations {
 			let index = relation.oracle.index;

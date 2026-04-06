@@ -19,6 +19,18 @@ pub struct ConstraintWire {
 	pub(crate) id: u32,
 }
 
+impl ConstraintWire {
+	/// Creates a constraint wire referencing an inout wire by ID.
+	///
+	/// TODO: This is not ideal, and instead we should use some sort of allocator.
+	pub fn inout(id: u32) -> Self {
+		Self {
+			kind: WireKind::InOut,
+			id,
+		}
+	}
+}
+
 #[derive(Debug, Clone)]
 pub struct Operand<W>(SmallVec<[W; 4]>);
 

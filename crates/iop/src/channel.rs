@@ -38,7 +38,7 @@ pub struct OracleSpec {
 }
 
 /// A boxed closure that evaluates a transparent MLE at a given point.
-pub type TransparentEvalFn<Elem> = Box<dyn Fn(&[Elem]) -> Elem>;
+pub type TransparentEvalFn<'a, Elem> = Box<dyn Fn(&[Elem]) -> Elem + 'a>;
 
 /// An oracle linear relation specifying an inner product claim between a committed oracle
 /// polynomial and a transparent polynomial.
@@ -46,14 +46,14 @@ pub type TransparentEvalFn<Elem> = Box<dyn Fn(&[Elem]) -> Elem>;
 /// The claim asserts that `<oracle_poly, transparent_poly> = claim`, where `transparent_poly` is
 /// the multilinear extension defined by the `transparent` closure evaluated at the challenge point
 /// sampled during the protocol.
-pub struct OracleLinearRelation<Oracle, Elem> {
+pub struct OracleLinearRelation<'a, Oracle, Elem> {
 	/// The oracle handle for the committed polynomial.
 	pub oracle: Oracle,
 	/// A closure that evaluates the transparent MLE at a given point.
 	///
 	/// The closure receives the challenge point (sampled during `verify_oracle_relations`) and
 	/// returns the evaluation of the transparent polynomial's MLE at that point.
-	pub transparent: TransparentEvalFn<Elem>,
+	pub transparent: TransparentEvalFn<'a, Elem>,
 	/// The claimed inner product of the oracle polynomial and the transparent polynomial.
 	pub claim: Elem,
 }
@@ -100,8 +100,8 @@ pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	/// * `remaining_oracle_specs()` must be empty (all oracles received).
 	/// * All oracle handles in `oracle_relations` must be valid handles returned by
 	///   `recv_oracle()`.
-	fn verify_oracle_relations(
+	fn verify_oracle_relations<'a>(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<Self::Oracle, Self::Elem>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error>;
 }

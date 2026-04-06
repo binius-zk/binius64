@@ -141,6 +141,12 @@ where
 		self.transcript
 	}
 
+	/// Consumes the channel, asserting all oracle specs have been consumed.
+	pub fn finish(self) {
+		let n_remaining = self.oracle_specs.len() - self.next_oracle_index;
+		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
+	}
+
 	/// Creates a new BaseFold prover channel from a compiler with precomputed FRI parameters.
 	///
 	/// This constructor borrows the NTT and other parameters from the compiler.
@@ -260,12 +266,6 @@ where
 		&mut self,
 		oracle_relations: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<P>, P::Scalar)>,
 	) {
-		assert!(
-			self.remaining_oracle_specs().is_empty(),
-			"prove_oracle_relations called but {} oracle specs remaining",
-			self.remaining_oracle_specs().len()
-		);
-
 		// Process each oracle relation with its own BaseFold proof
 		for (oracle, transparent_poly, eval_claim) in oracle_relations {
 			let index = oracle.index;
