@@ -36,10 +36,10 @@ pub trait CircuitBuilder {
 
 	fn mul(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire;
 
-	fn hint<F: Fn([B128; IN]) -> [B128; OUT], const IN: usize, const OUT: usize>(
+	fn hint<H: Fn([B128; IN]) -> [B128; OUT], const IN: usize, const OUT: usize>(
 		&mut self,
 		inputs: [Self::Wire; IN],
-		f: F,
+		f: H,
 	) -> [Self::Wire; OUT];
 }
 
@@ -263,10 +263,10 @@ impl CircuitBuilder for ConstraintBuilder {
 		out
 	}
 
-	fn hint<F: Fn([B128; IN]) -> [B128; OUT], const IN: usize, const OUT: usize>(
+	fn hint<H: Fn([B128; IN]) -> [B128; OUT], const IN: usize, const OUT: usize>(
 		&mut self,
 		_inputs: [Self::Wire; IN],
-		_f: F,
+		_f: H,
 	) -> [Self::Wire; OUT] {
 		array::from_fn(|_| {
 			let wire = self.ir.private_alloc.alloc();
@@ -382,10 +382,10 @@ impl<'a> CircuitBuilder for WitnessGenerator<'a> {
 		self.alloc_value(lhs.val() * rhs.val())
 	}
 
-	fn hint<F: Fn([B128; IN]) -> [B128; OUT], const IN: usize, const OUT: usize>(
+	fn hint<H: Fn([B128; IN]) -> [B128; OUT], const IN: usize, const OUT: usize>(
 		&mut self,
 		inputs: [Self::Wire; IN],
-		f: F,
+		f: H,
 	) -> [Self::Wire; OUT] {
 		f(inputs.map(WitnessWire::val)).map(|value| self.alloc_value(value))
 	}
