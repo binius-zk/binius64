@@ -30,7 +30,10 @@ pub struct BuildWire {
 }
 
 impl BuildWire {
-	pub(crate) fn new(builder: &Rc<RefCell<ConstraintBuilder<B128>>>, wire: ConstraintWire) -> Self {
+	pub(crate) fn new(
+		builder: &Rc<RefCell<ConstraintBuilder<B128>>>,
+		wire: ConstraintWire,
+	) -> Self {
 		Self {
 			builder: Rc::downgrade(builder),
 			wire,

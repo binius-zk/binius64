@@ -18,7 +18,8 @@ use crate::build_elem::{BuildElem, BuildWire};
 ///
 /// 1. Create an `IronSpartanBuilderChannel` from a `ConstraintBuilder<B128>`
 /// 2. Run the verifier on the channel (e.g., `verify_iop`)
-/// 3. The channel's `finish()` method returns the `ConstraintBuilder<B128>` with all recorded constraints
+/// 3. The channel's `finish()` method returns the `ConstraintBuilder<B128>` with all recorded
+///    constraints
 pub struct IronSpartanBuilderChannel {
 	builder: Rc<RefCell<ConstraintBuilder<B128>>>,
 }
