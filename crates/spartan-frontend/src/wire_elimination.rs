@@ -2,6 +2,8 @@
 
 use std::mem;
 
+use binius_field::{BinaryField128bGhash as B128, Field};
+
 use super::{
 	circuit_builder::{ConstraintSystemIR, WireStatus},
 	constraint_system::{MulConstraint, WireKind},
@@ -52,21 +54,24 @@ impl Default for CostModel {
 ///
 /// Maintains invariant: `private_wire_uses[i]` is empty if status is not Unknown.
 /// For Unknown wires, use sites must exactly match constraints referencing that wire.
-pub struct WireEliminationPass {
+pub struct WireEliminationPass<F: Field = B128> {
 	cost_model: CostModel,
-	ir: ConstraintSystemIR,
+	ir: ConstraintSystemIR<F>,
 	/// Vector of use sites for each private wire. Empty if wire status is not Unknown.
 	private_wire_uses: Vec<Vec<UseSite>>,
 }
 
-pub fn run_wire_elimination(cost_model: CostModel, ir: ConstraintSystemIR) -> ConstraintSystemIR {
+pub fn run_wire_elimination<F: Field>(
+	cost_model: CostModel,
+	ir: ConstraintSystemIR<F>,
+) -> ConstraintSystemIR<F> {
 	let mut pass = WireEliminationPass::new(cost_model, ir);
 	pass.run();
 	pass.finish()
 }
 
-impl WireEliminationPass {
-	pub fn new(cost_model: CostModel, ir: ConstraintSystemIR) -> Self {
+impl<F: Field> WireEliminationPass<F> {
+	pub fn new(cost_model: CostModel, ir: ConstraintSystemIR<F>) -> Self {
 		let mut private_wire_uses = vec![Vec::new(); ir.private_wires_status.len()];
 
 		// Populate use sites for all private wires with Unknown status
@@ -206,7 +211,7 @@ impl WireEliminationPass {
 		}
 	}
 
-	fn finish(self) -> ConstraintSystemIR {
+	fn finish(self) -> ConstraintSystemIR<F> {
 		// Status is already maintained in self.ir.private_wires_status
 		self.ir
 	}
