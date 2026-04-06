@@ -21,7 +21,7 @@ pub struct ConstraintWire {
 
 impl ConstraintWire {
 	/// Creates a constraint wire referencing an inout wire by ID.
-	/// 
+	///
 	/// TODO: This is not ideal, and instead we should use some sort of allocator.
 	pub fn inout(id: u32) -> Self {
 		Self {

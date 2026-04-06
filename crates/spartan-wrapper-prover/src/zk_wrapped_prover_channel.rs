@@ -76,7 +76,8 @@ where
 		inner_verifier: &'a IOPVerifier,
 		outer_layout: &'a WitnessLayout<B128>,
 	) -> Self {
-		let outer_oracle_specs = IOPVerifier::new(outer_prover.constraint_system().clone()).oracle_specs();
+		let outer_oracle_specs =
+			IOPVerifier::new(outer_prover.constraint_system().clone()).oracle_specs();
 		let all_specs = inner_channel.remaining_oracle_specs();
 		let n_outer = outer_oracle_specs.len();
 		assert!(

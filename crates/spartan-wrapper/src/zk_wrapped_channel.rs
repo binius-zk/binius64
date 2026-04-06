@@ -171,9 +171,7 @@ where
 
 	fn verify_oracle_relations<'b>(
 		&mut self,
-		oracle_relations: impl IntoIterator<
-			Item = OracleLinearRelation<'b, Self::Oracle, Self::Elem>,
-		>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'b, Self::Oracle, Self::Elem>>,
 	) -> Result<(), binius_iop::channel::Error> {
 		self.inner_channel.verify_oracle_relations(oracle_relations)
 	}

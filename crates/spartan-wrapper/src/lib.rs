@@ -9,8 +9,8 @@
 //! [`IPVerifierChannel`]: binius_ip::channel::IPVerifierChannel
 //! [`ConstraintBuilder`]: binius_spartan_frontend::circuit_builder::ConstraintBuilder
 
-pub mod circuit_elem;
 mod channel;
+pub mod circuit_elem;
 mod zk_wrapped_channel;
 
 pub use channel::{IronSpartanBuilderChannel, ReplayChannel};

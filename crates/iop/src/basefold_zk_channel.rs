@@ -86,10 +86,7 @@ where
 	/// Consumes the channel, asserting all oracle specs have been consumed.
 	pub fn finish(self) {
 		let n_remaining = self.oracle_specs.len() - self.next_oracle_index;
-		assert!(
-			n_remaining == 0,
-			"finish called but {n_remaining} oracle specs remaining",
-		);
+		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
 	}
 }
 

@@ -97,10 +97,7 @@ impl<B: CircuitBuilder<Field = B128>> CircuitElem<B> {
 	fn resolve_builder(a: &Self, b: &Self) -> Rc<RefCell<B>> {
 		match (a.builder_rc(), b.builder_rc()) {
 			(Some(a), Some(b)) => {
-				assert!(
-					Rc::ptr_eq(&a, &b),
-					"CircuitElem wires reference different builders"
-				);
+				assert!(Rc::ptr_eq(&a, &b), "CircuitElem wires reference different builders");
 				b
 			}
 			(Some(b), None) | (None, Some(b)) => b,
@@ -138,9 +135,7 @@ impl<B: CircuitBuilder<Field = B128>> Add for CircuitElem<B> {
 
 	fn add(self, rhs: Self) -> Self {
 		match (&self, &rhs) {
-			(CircuitElem::Constant(a), CircuitElem::Constant(b)) => {
-				CircuitElem::Constant(*a + *b)
-			}
+			(CircuitElem::Constant(a), CircuitElem::Constant(b)) => CircuitElem::Constant(*a + *b),
 			_ => {
 				if matches!(&self, CircuitElem::Constant(c) if *c == B128::ZERO) {
 					return rhs;
@@ -164,9 +159,7 @@ impl<B: CircuitBuilder<Field = B128>> Sub for CircuitElem<B> {
 
 	fn sub(self, rhs: Self) -> Self {
 		match (&self, &rhs) {
-			(CircuitElem::Constant(a), CircuitElem::Constant(b)) => {
-				CircuitElem::Constant(*a + *b)
-			}
+			(CircuitElem::Constant(a), CircuitElem::Constant(b)) => CircuitElem::Constant(*a + *b),
 			_ => {
 				if matches!(&self, CircuitElem::Constant(c) if *c == B128::ZERO) {
 					return rhs;
@@ -190,9 +183,7 @@ impl<B: CircuitBuilder<Field = B128>> Mul for CircuitElem<B> {
 
 	fn mul(self, rhs: Self) -> Self {
 		match (&self, &rhs) {
-			(CircuitElem::Constant(a), CircuitElem::Constant(b)) => {
-				CircuitElem::Constant(*a * *b)
-			}
+			(CircuitElem::Constant(a), CircuitElem::Constant(b)) => CircuitElem::Constant(*a * *b),
 			_ => {
 				if matches!(&self, CircuitElem::Constant(c) if *c == B128::ZERO) {
 					return CircuitElem::Constant(B128::ZERO);

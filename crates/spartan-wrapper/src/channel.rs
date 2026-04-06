@@ -178,9 +178,7 @@ impl<'a> IPVerifierChannel<B128> for ReplayChannel<'a> {
 		(0..n).map(|_| self.recv_one()).collect()
 	}
 
-	fn recv_array<const N: usize>(
-		&mut self,
-	) -> Result<[Self::Elem; N], binius_ip::channel::Error> {
+	fn recv_array<const N: usize>(&mut self) -> Result<[Self::Elem; N], binius_ip::channel::Error> {
 		let mut result = [(); N].map(|_| WitnessElem::Constant(B128::ZERO));
 		for elem in &mut result {
 			*elem = self.recv_one()?;
@@ -227,9 +225,7 @@ impl<'a> IOPVerifierChannel<B128> for ReplayChannel<'a> {
 
 	fn verify_oracle_relations<'b>(
 		&mut self,
-		_oracle_relations: impl IntoIterator<
-			Item = OracleLinearRelation<'b, Self::Oracle, Self::Elem>,
-		>,
+		_oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'b, Self::Oracle, Self::Elem>>,
 	) -> Result<(), binius_iop::channel::Error> {
 		Ok(())
 	}
