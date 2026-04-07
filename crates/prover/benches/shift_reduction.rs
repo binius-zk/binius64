@@ -91,8 +91,6 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		let intmul_evals = [F::random(&mut rng); 4];
 		let key_collection = build_key_collection(&cs);
 
-		let inout_n_vars = strict_log_2(cs.value_vec_layout.offset_witness).unwrap();
-
 		let mut group = c.benchmark_group(format!(
 			"shift_reduction_log2_{log_message_len_bytes}_bytes_{message_len_bytes}"
 		));
@@ -114,7 +112,6 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 				let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
 				prove::<F, P, _>(
-					inout_n_vars,
 					&key_collection,
 					value_vec.combined_witness(),
 					prover_bitand_data,
@@ -140,7 +137,6 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
 		prove::<F, P, _>(
-			inout_n_vars,
 			&key_collection,
 			value_vec.combined_witness(),
 			prover_bitand_data,
@@ -166,14 +162,8 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 					intmul_evals,
 				);
 
-				verify(
-					&cs,
-					value_vec.public(),
-					&verifier_bitand_data,
-					&verifier_intmul_data,
-					&mut verifier_transcript,
-				)
-				.unwrap();
+				verify(&cs, &verifier_bitand_data, &verifier_intmul_data, &mut verifier_transcript)
+					.unwrap();
 			})
 		});
 	}

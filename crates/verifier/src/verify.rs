@@ -168,7 +168,7 @@ where
 		self.verify_iop(public, &mut channel)
 	}
 
-	fn verify_iop<Channel>(&self, public: &[Word], channel: &mut Channel) -> Result<(), Error>
+	fn verify_iop<Channel>(&self, _public: &[Word], channel: &mut Channel) -> Result<(), Error>
 	where
 		Channel: IOPVerifierChannel<B128, Elem = B128>,
 	{
@@ -253,7 +253,7 @@ where
 		)
 		.entered();
 		let shift_output =
-			shift::verify(self.constraint_system(), public, &bitand_claim, &intmul_claim, channel)?;
+			shift::verify(self.constraint_system(), &bitand_claim, &intmul_claim, channel)?;
 		drop(constraint_guard);
 
 		// [phase] Verify Public Input - public input verification

@@ -280,7 +280,6 @@ where
 			challenges: eval_point,
 			eval: _,
 		} = prove_shift_reduction::<_, P, _>(
-			verifier.log_public_words(),
 			&self.key_collection,
 			witness.combined_witness(),
 			bitand_claim,
