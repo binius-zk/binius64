@@ -3,7 +3,7 @@
 use std::marker::PhantomData;
 
 use binius_field::{BinaryField, FieldOps, PackedField};
-use binius_ip_prover::channel::IPProverChannel;
+use binius_ip_prover::{channel::IPProverChannel, sumcheck::batch::batch_prove};
 use binius_math::{
 	field_buffer::FieldBuffer,
 	inner_product::inner_product_buffers,
@@ -16,13 +16,13 @@ use binius_utils::{
 };
 use binius_verifier::protocols::{
 	intmul::common::{
-		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, Phase5Output,
-		frobenius_twist, normalize_a_c_exponent_evals,
+		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, frobenius_twist,
+		normalize_a_c_exponent_evals,
 	},
 	prodcheck::MultilinearEvalClaim,
 };
 use either::Either;
-use itertools::{Itertools, izip};
+use itertools::{Itertools, chain, izip};
 
 use super::{
 	error::Error,
@@ -168,14 +168,7 @@ where
 		)?;
 
 		// Phase 5
-		let Phase5Output {
-			eval_point: phase5_eval_point,
-			scaled_a_c_exponent_evals,
-			b_exponent_evals,
-			a_0_eval: _,
-			b_0_eval: _,
-			c_lo_0_eval: _,
-		} = self.phase5(
+		self.phase5(
 			log_bits,
 			&phase4_eval_point,
 			(&a_evals, a_last_layer),
@@ -186,18 +179,7 @@ where
 			&b_exponent_evals,
 			a_exponents.as_ref(),
 			c_lo_exponents.as_ref(),
-		)?;
-
-		let [a_exponent_evals, c_lo_exponent_evals, c_hi_exponent_evals] =
-			normalize_a_c_exponent_evals(log_bits, scaled_a_c_exponent_evals);
-
-		Ok(IntMulOutput {
-			eval_point: phase5_eval_point,
-			a_evals: a_exponent_evals,
-			b_evals: b_exponent_evals,
-			c_lo_evals: c_lo_exponent_evals,
-			c_hi_evals: c_hi_exponent_evals,
-		})
+		)
 	}
 
 	fn phase1(
@@ -284,9 +266,13 @@ where
 
 		assert_eq!(selector_prover_evals.len(), 1 + (1 << log_bits));
 
-		let selector_eval = selector_prover_evals.pop().expect("selector_prover_evals.len() > 0");
+		let selector_eval = selector_prover_evals
+			.pop()
+			.expect("selector_prover_evals.len() > 0");
 		let b_exponent_evals = selector_prover_evals;
-		let [c_lo_root_eval, c_hi_root_eval] = c_root_prover_evals.try_into().expect("c_root_prover with two multilinears returns two evals");
+		let [c_lo_root_eval, c_hi_root_eval] = c_root_prover_evals
+			.try_into()
+			.expect("c_root_prover with two multilinears returns two evals");
 
 		Ok(Phase3Output {
 			eval_point: challenges,
@@ -367,7 +353,7 @@ where
 		// Needed for the zerocheck on `a_0 * b_0 = c_lo_0`.
 		a_exponents: &[B],
 		c_lo_exponents: &[B],
-	) -> Result<Phase5Output<F>, Error> {
+	) -> Result<IntMulOutput<F>, Error> {
 		assert!(log_bits >= 1);
 		assert_eq!(1 << log_bits, a_layer.len());
 		assert_eq!(2 * a_evals.len(), a_layer.len());
@@ -424,11 +410,7 @@ where
 		// Make the `BivariateProductMultiMlecheckProver` prover.
 		// The prover proves an MLE eval claim on each pair of adjacent multilinears
 		// in the `multilinears` iterator below.
-		let multilinears = a_layer
-			.into_iter()
-			.chain(c_lo_layer)
-			.chain(c_hi_layer)
-			.chain([a_0, b_0]);
+		let multilinears = chain!(a_layer, c_lo_layer, c_hi_layer, [a_0, b_0]);
 		let evals = [a_evals, c_lo_evals, c_hi_evals, &[c_lo_0_eval]].concat();
 
 		let bivariate_mle_prover = BivariateProductMultiMlecheckProver::new(
@@ -462,8 +444,8 @@ where
 		// Batch prove all three provers.
 		let BatchSumcheckOutput {
 			challenges,
-			mut multilinear_evals,
-		} = batch_prove_and_write_evals(
+			multilinear_evals,
+		} = batch_prove(
 			vec![
 				Either::Left(bivariate_sumcheck_prover),
 				Either::Right(c_lo_0_sumcheck_prover),
@@ -473,36 +455,50 @@ where
 		)?;
 
 		// Pull out the evals of all three provers.
-		assert_eq!(multilinear_evals.len(), 3);
-		let b_prover_evals = multilinear_evals
-			.pop()
-			.expect("multilinear_evals.len() == 3");
-		let c_lo_0_prover_evals = multilinear_evals
-			.pop()
-			.expect("multilinear_evals.len() == 2");
-		let mut a_c_prover_evals = multilinear_evals
-			.pop()
-			.expect("multilinear_evals.len() == 1");
+		let [mut bivariate_evals, c_lo_0_evals, b_evals] = multilinear_evals
+			.try_into()
+			.expect("batch_prove with 3 provers returns 3 multilinear_evals vecs");
 
-		assert_eq!(a_c_prover_evals.len(), (3 << log_bits) + 2);
-		assert_eq!(c_lo_0_prover_evals.len(), 1);
-		assert_eq!(b_prover_evals.len(), 1 << log_bits);
+		assert_eq!(bivariate_evals.len(), (3 << log_bits) + 2);
+		assert_eq!(c_lo_0_evals.len(), 1);
+		assert_eq!(b_evals.len(), 1 << log_bits);
 
-		let b_0_eval = a_c_prover_evals
+		let b_0_eval = bivariate_evals
 			.pop()
 			.expect("a_c_prover_evals.len() == (3 << log_bits) + 2");
-		let a_0_eval = a_c_prover_evals
+		let a_0_eval = bivariate_evals
 			.pop()
 			.expect("a_c_prover_evals.len() == (3 << log_bits) + 2");
-		let c_lo_0_eval = c_lo_0_prover_evals[0];
+		let selected_c_hi_evals = bivariate_evals.split_off(2 << log_bits);
+		let selected_c_lo_evals = bivariate_evals.split_off(1 << log_bits);
+		let selected_a_evals = bivariate_evals;
 
-		Ok(Phase5Output {
+		self.channel.send_many(&selected_a_evals);
+		self.channel.send_many(&selected_c_lo_evals);
+		self.channel.send_many(&selected_c_hi_evals);
+		self.channel.send_many(&b_evals);
+
+		let [a_evals, c_lo_evals, c_hi_evals] = normalize_a_c_exponent_evals(
+			log_bits,
+			selected_a_evals,
+			selected_c_lo_evals,
+			selected_c_hi_evals,
+		);
+
+		let [c_lo_0_eval] = c_lo_0_evals
+			.try_into()
+			.expect("c_lo_prover_evals.len() == 1");
+
+		debug_assert_eq!(a_0_eval, a_evals[0]);
+		debug_assert_eq!(b_0_eval, b_evals[0]);
+		debug_assert_eq!(c_lo_0_eval, c_lo_evals[0]);
+
+		Ok(IntMulOutput {
 			eval_point: challenges,
-			scaled_a_c_exponent_evals: a_c_prover_evals,
-			b_exponent_evals: b_prover_evals,
-			a_0_eval,
-			b_0_eval,
-			c_lo_0_eval,
+			a_evals,
+			b_evals,
+			c_lo_evals,
+			c_hi_evals,
 		})
 	}
 }

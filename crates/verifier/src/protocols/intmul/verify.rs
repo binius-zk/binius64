@@ -8,12 +8,12 @@ use binius_math::{
 	multilinear::{eq::eq_ind, evaluate::evaluate_inplace_scalars},
 	univariate::evaluate_univariate,
 };
-use itertools::Itertools;
+use itertools::{Itertools, chain};
 
 use super::{
 	common::{
-		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, Phase5Output,
-		frobenius_twist, normalize_a_c_exponent_evals,
+		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, frobenius_twist,
+		normalize_a_c_exponent_evals,
 	},
 	error::Error,
 };
@@ -238,21 +238,22 @@ where
 fn verify_phase_5<F, C>(
 	log_bits: usize,
 	a_c_eval_point: &[C::Elem],
-	a_evals: &[C::Elem],
-	c_lo_evals: &[C::Elem],
-	c_hi_evals: &[C::Elem],
+	a_prod_evals: &[C::Elem],
+	c_lo_prod_evals: &[C::Elem],
+	c_hi_prod_evals: &[C::Elem],
 	b_eval_point: &[C::Elem],
-	b_exponent_evals: &[C::Elem],
+	b_evals_pre: &[C::Elem],
 	channel: &mut C,
-) -> Result<Phase5Output<C::Elem>, Error>
+) -> Result<IntMulOutput<C::Elem>, Error>
 where
 	F: Field,
 	C: IPVerifierChannel<F>,
+	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
 	assert!(log_bits >= 1);
-	assert_eq!(2 * a_evals.len(), 1 << log_bits);
-	assert_eq!(2 * c_lo_evals.len(), 1 << log_bits);
-	assert_eq!(2 * c_hi_evals.len(), 1 << log_bits);
+	assert_eq!(2 * a_prod_evals.len(), 1 << log_bits);
+	assert_eq!(2 * c_lo_prod_evals.len(), 1 << log_bits);
+	assert_eq!(2 * c_hi_prod_evals.len(), 1 << log_bits);
 
 	let n_vars = a_c_eval_point.len();
 	assert_eq!(b_eval_point.len(), n_vars);
@@ -264,12 +265,12 @@ where
 	// bivariate product layer, then a_0*b_0 and c_lo_0 for the parity zerocheck, then b
 	// exponent evals (2^k) for the rerandomization sumcheck.
 	let evals = [
-		a_evals,
-		c_lo_evals,
-		c_hi_evals,
+		a_prod_evals,
+		c_lo_prod_evals,
+		c_hi_prod_evals,
 		slice::from_ref(&overflow_zerocheck_eval),
 		slice::from_ref(&overflow_zerocheck_eval),
-		b_exponent_evals,
+		b_evals_pre,
 	]
 	.concat();
 
@@ -280,13 +281,11 @@ where
 	} = batch_verify(n_vars, 3, &evals, channel)?;
 	challenges.reverse();
 
-	// Read the evals of all multilinears in the bivariate product sumcheck: 2^k for `a`, 2^(k+1)
-	// for `c`, 2 for `a_0` and `b_0`.
-	let mut bivariate_evals = channel.recv_many((3 << log_bits) + 2)?;
-	// Read the single eval of the `c_lo_0` rerand sumcheck.
-	let c_lo_0_eval = channel.recv_one()?;
-	// Read the 2^k evals of the `b` rerand sumcheck.
-	let b_exponent_evals = channel.recv_many(1 << log_bits)?;
+	// Read the evals of all multilinears.
+	let a_selected_evals = channel.recv_many(1 << log_bits)?;
+	let c_lo_selected_evals = channel.recv_many(1 << log_bits)?;
+	let c_hi_selected_evals = channel.recv_many(1 << log_bits)?;
+	let b_evals = channel.recv_many(1 << log_bits)?;
 
 	// Compose the expected evaluation of the batched composition via
 	// the prover's claimed multilinear evals extracted above.
@@ -295,28 +294,39 @@ where
 	// The last of these pairs implies the MLE of `a_0 * b_0` at `a_c_eq_eval` equals
 	// `overflow_zerocheck_eval`.
 	let a_c_eq_eval = eq_ind(a_c_eval_point, &challenges);
-	let expected_bivariate_unbatched_evals = bivariate_evals
-		.iter()
-		.tuples()
-		.map(|(left, right)| a_c_eq_eval.clone() * left * right)
-		.collect::<Vec<_>>();
+	let expected_bivariate_unbatched_evals =
+		chain!(&a_selected_evals, &c_lo_selected_evals, &c_hi_selected_evals)
+			.tuples()
+			.map(|(left, right)| a_c_eq_eval.clone() * left * right)
+			.collect::<Vec<_>>();
+
+	let [a_evals, c_lo_evals, c_hi_evals] = normalize_a_c_exponent_evals(
+		log_bits,
+		a_selected_evals,
+		c_lo_selected_evals,
+		c_hi_selected_evals,
+	);
 
 	// Likewise, the verifier can be sure that the MLE of `c_lo_0` at `a_c_eq_eval`
 	// equals `overflow_zerocheck_eval`. Combined with the MLE of `a_0 * b_0` at `a_c_eq_eval`
 	// being `overflow_zerocheck_eval`, the verifier can conclude the
 	// MLE of `a_0 * b_0 - c_lo_0` at `a_c_eq_eval` equals zero. By the Schwartz-Zippel lemma,
 	// the verifier concludes `a_0_i * b_0_i - c_lo_0_i = 0` for all rows `i`.
-	let expected_c_lo_0_rerand_unbatched_eval = a_c_eq_eval.clone() * &c_lo_0_eval;
+	let expected_c_lo_0_rerand_unbatched_eval = a_c_eq_eval.clone() * &c_lo_evals[0];
+	let expected_a_0_b_0_prod_eval = a_c_eq_eval.clone() * &a_evals[0] * &b_evals[0];
 
 	let b_eq_eval = eq_ind(b_eval_point, &challenges);
-	let expected_b_rerand_unbatched_evals = b_exponent_evals
+	let expected_b_rerand_unbatched_evals = b_evals
 		.iter()
 		.map(|b_exponent_eval| b_eq_eval.clone() * b_exponent_eval)
 		.collect::<Vec<_>>();
 
 	let expected_unbatched_evals = [
 		expected_bivariate_unbatched_evals,
-		vec![expected_c_lo_0_rerand_unbatched_eval],
+		vec![
+			expected_a_0_b_0_prod_eval,
+			expected_c_lo_0_rerand_unbatched_eval,
+		],
 		expected_b_rerand_unbatched_evals,
 	]
 	.concat();
@@ -325,21 +335,12 @@ where
 	// Compare expected evaluation against given evaluation `eval`.
 	channel.assert_zero(expected_batched_eval - eval)?;
 
-	// Evals `b_0_eval`, `a_0_eval`, and `c_lo_0_eval` will be verified following phase 5.
-	let b_0_eval = bivariate_evals
-		.pop()
-		.expect("non-empty scaled a_c exponent evals");
-	let a_0_eval = bivariate_evals
-		.pop()
-		.expect("non-empty scaled a_c exponent evals");
-
-	Ok(Phase5Output {
+	Ok(IntMulOutput {
 		eval_point: challenges,
-		scaled_a_c_exponent_evals: bivariate_evals,
-		b_exponent_evals,
-		a_0_eval,
-		b_0_eval,
-		c_lo_0_eval,
+		a_evals,
+		b_evals,
+		c_lo_evals,
+		c_hi_evals,
 	})
 }
 
@@ -432,8 +433,7 @@ pub fn verify<F, C>(
 where
 	F: BinaryField,
 	C: IPVerifierChannel<F>,
-	<C::Elem as FieldOps>::Scalar: BinaryField,
-	C::Elem: From<<C::Elem as FieldOps>::Scalar>,
+	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
 	assert!(log_bits >= 1);
 	assert!((1 << (log_bits + 1)) <= F::N_BITS);
@@ -461,9 +461,16 @@ where
 	// Phase 3
 	let Phase3Output {
 		eval_point: phase_3_eval_point,
+		// TODO: rename b_exponent_evals to b_evals
 		b_exponent_evals,
+		// TODO: rename selector_eval to gpow_a_eval. Document the field as $A(r)$, where $r$ is
+		// eval_point
 		selector_eval,
+		// TODO: rename c_lo_root_eval to gpow_c_lo_eval. Document the field as
+		// $C_{\textsf{lo}}(r)$.
 		c_lo_root_eval,
+		// TODO: rename c_hi_root_eval to gpow_c_hi_eval. Document the field as
+		// $C_{\textsf{hi}}(r)$.
 		c_hi_root_eval,
 	} = verify_phase_3(
 		log_bits,
@@ -490,14 +497,7 @@ where
 	)?;
 
 	// Phase 5
-	let Phase5Output {
-		eval_point: phase_5_eval_point,
-		scaled_a_c_exponent_evals,
-		b_exponent_evals,
-		a_0_eval: _,
-		b_0_eval: _,
-		c_lo_0_eval: _,
-	} = verify_phase_5(
+	verify_phase_5(
 		log_bits,
 		&phase_4_eval_point,
 		&a_evals,
@@ -506,16 +506,5 @@ where
 		&phase_3_eval_point,
 		&b_exponent_evals,
 		channel,
-	)?;
-
-	let [a_exponent_evals, c_lo_exponent_evals, c_hi_exponent_evals] =
-		normalize_a_c_exponent_evals(log_bits, scaled_a_c_exponent_evals);
-
-	Ok(IntMulOutput {
-		eval_point: phase_5_eval_point,
-		a_evals: a_exponent_evals,
-		b_evals: b_exponent_evals,
-		c_lo_evals: c_lo_exponent_evals,
-		c_hi_evals: c_hi_exponent_evals,
-	})
+	)
 }
