@@ -6,16 +6,17 @@ use binius_core::{
 	word::Word,
 };
 use binius_field::{
-	AESTowerField8b as B8, BinaryField, PackedAESBinaryField16x8b, PackedExtension, PackedField,
-	UnderlierWithBitOps, WithUnderlier,
+	AESTowerField8b as B8, BinaryField, ExtensionField, PackedAESBinaryField16x8b, PackedExtension,
+	PackedField, UnderlierWithBitOps, WithUnderlier,
 };
 use binius_iop_prover::{
 	basefold_channel::BaseFoldProverChannel, basefold_compiler::BaseFoldProverCompiler,
 	channel::IOPProverChannel,
 };
 use binius_math::{
-	BinarySubspace, FieldBuffer,
+	BinarySubspace, FieldBuffer, FieldSlice,
 	inner_product::inner_product,
+	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
 	univariate::lagrange_evals,
 };
@@ -292,13 +293,51 @@ where
 			sumcheck_claim,
 		} = ring_switch::prove(&witness_packed, &eval_point, &mut channel);
 
+		// Public input check batched with ring-switch
+		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
+
+		let log_public_elems = verifier.log_public_words() - LOG_WORDS_PER_ELEM;
+		let pubcheck_point = &eval_point[log_packing..][..log_public_elems];
+		let pubcheck_claim = {
+			let public_elems_buf = FieldSlice::from_slice(log_public_elems, &public_elems);
+			evaluate(&public_elems_buf, pubcheck_point)
+		};
+
+		let batch_coeff: B128 = channel.sample();
+		let batched_claim = sumcheck_claim + batch_coeff * pubcheck_claim;
+
+		// Batch the pubcheck transparent with the ring-switch transparent
+		let batched_transparent =
+			compute_batched_transparent(rs_eq_ind, pubcheck_point, batch_coeff);
+
 		// Prove oracle relations via channel (runs BaseFold internally)
-		channel.prove_oracle_relations([(trace_oracle, rs_eq_ind, sumcheck_claim)]);
+		channel.prove_oracle_relations([(trace_oracle, batched_transparent, batched_claim)]);
 
 		drop(pcs_guard);
 
 		Ok(())
 	}
+}
+
+/// Batches the pubcheck transparent polynomial with the ring-switch equality indicator.
+///
+/// Computes `rs_eq_ind + batch_coeff * eq(pubcheck_point || 0, ·)`, adding the scaled
+/// pubcheck equality indicator to the first `2^log_public_elems` entries of `rs_eq_ind`.
+fn compute_batched_transparent<P: PackedField<Scalar = B128>>(
+	mut rs_eq_ind: FieldBuffer<P>,
+	pubcheck_point: &[B128],
+	batch_coeff: B128,
+) -> FieldBuffer<P> {
+	let log_public_elems = pubcheck_point.len();
+	let pubcheck_eq = eq_ind_partial_eval::<P>(pubcheck_point);
+	let mut chunk = rs_eq_ind.chunk_mut(log_public_elems, 0);
+	let mut chunk_data = chunk.get();
+	let batch = P::broadcast(batch_coeff);
+	for (dst, src) in std::iter::zip(chunk_data.as_mut(), pubcheck_eq.as_ref()) {
+		*dst += *src * batch;
+	}
+	drop(chunk);
+	rs_eq_ind
 }
 
 fn pack_witness<P: PackedField<Scalar = B128>>(
