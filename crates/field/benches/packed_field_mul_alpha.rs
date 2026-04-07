@@ -20,16 +20,11 @@ fn mul_alpha_main<T: MulAlpha>(val: T) -> T {
 cfg_if! {
 	if #[cfg(feature = "benchmark_alternative_strategies")] {
 		use binius_field::{
-			arch::{PackedStrategy, PairwiseRecursiveStrategy, PairwiseStrategy,
-				PairwiseTableStrategy, },
+			arch::{PackedStrategy, PairwiseStrategy, PairwiseTableStrategy},
 			arithmetic_traits::TaggedMulAlpha
 		};
 
 		fn mul_alpha_pairwise<T: TaggedMulAlpha<PairwiseStrategy>>(val: T) -> T {
-			val.mul_alpha()
-		}
-
-		fn mul_alpha_pairwise_recursive<T: TaggedMulAlpha<PairwiseRecursiveStrategy>>(val: T) -> T {
 			val.mul_alpha()
 		}
 
@@ -47,7 +42,6 @@ cfg_if! {
 			strategies @ (
 				(main, MulAlpha, mul_alpha_main),
 				(pairwise, TaggedMulAlpha::<PairwiseStrategy>, mul_alpha_pairwise),
-				(pairwise_recursive, TaggedMulAlpha::<PairwiseRecursiveStrategy>, mul_alpha_pairwise_recursive),
 				(pairwise_table, TaggedMulAlpha::<PairwiseTableStrategy>, mul_alpha_pairwise_table),
 				(packed, TaggedMulAlpha::<PackedStrategy>, mul_alpha_packed),
 			)

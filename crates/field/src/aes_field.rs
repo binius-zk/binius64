@@ -50,13 +50,6 @@ impl TowerField for AESTowerField8b {
 		}
 	}
 
-	fn mul_primitive(self, iota: usize) -> Self {
-		match iota {
-			0..=1 => self * ISOMORPHIC_ALPHAS[iota],
-			2 => self.multiply_alpha(),
-			_ => panic!("iota {iota} must be less than tower level 3"),
-		}
-	}
 }
 
 /// A 3- step transformation :
@@ -82,13 +75,6 @@ where
 	}
 }
 
-/// Values isomorphic to 0x02, 0x04 and 0x10 in BinaryField8b
-const ISOMORPHIC_ALPHAS: [AESTowerField8b; 3] = [
-	AESTowerField8b(0xBC),
-	AESTowerField8b(0xB0),
-	AESTowerField8b(0xD3),
-];
-
 impl SerializeBytes for AESTowerField8b {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
 		self.0.serialize(write_buf)
@@ -112,7 +98,7 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		Random, binary_field::tests::is_binary_field_valid_generator, underlier::WithUnderlier,
+		Random, binary_field::tests::is_binary_field_valid_generator,
 	};
 
 	fn check_square(f: impl Field) {
@@ -183,30 +169,6 @@ mod tests {
 	#[test]
 	fn test_multiplicative_generators() {
 		assert!(is_binary_field_valid_generator::<AESTowerField8b>());
-	}
-
-	fn test_mul_primitive_valid<F: TowerField + WithUnderlier<Underlier: From<u8>>>(
-		val: F,
-		iota: usize,
-	) {
-		let result = val.mul_primitive(iota);
-		let expected =
-			val * F::from_underlier(F::Underlier::from(ISOMORPHIC_ALPHAS[iota].to_underlier()));
-		assert_eq!(result, expected);
-	}
-
-	proptest! {
-		#[test]
-		fn test_mul_primitive_8b(val in 0u8.., iota in 0usize..3) {
-			test_mul_primitive_valid::<AESTowerField8b>(val.into(), iota)
-		}
-	}
-
-	#[test]
-	#[should_panic(expected = "must be less than tower level")]
-	fn test_mul_primitive_out_of_range() {
-		let val = AESTowerField8b::from(1u8);
-		val.mul_primitive(3);
 	}
 
 	#[test]

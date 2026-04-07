@@ -461,11 +461,6 @@ impl TowerField for BinaryField128bGhash {
 		}
 	}
 
-	fn mul_primitive(self, _iota: usize) -> Self {
-		// This method could be implemented by multiplying by isomorphic alpha value
-		// But it's not being used as for now
-		unimplemented!()
-	}
 }
 
 impl From<AESTowerField8b> for BinaryField128bGhash {

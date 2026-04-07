@@ -83,36 +83,7 @@ pub trait Field:
 
 	/// Exponentiates `self` by `exp`, where `exp` is a little-endian order integer
 	/// exponent.
-	///
-	/// # Guarantees
-	///
-	/// This operation is constant time with respect to `self`, for all exponents with the
-	/// same number of digits (`exp.as_ref().len()`). It is variable time with respect to
-	/// the number of digits in the exponent.
 	fn pow<S: AsRef<[u64]>>(&self, exp: S) -> Self {
-		let mut res = Self::ONE;
-		for e in exp.as_ref().iter().rev() {
-			for i in (0..64).rev() {
-				res = res.square();
-				let mut tmp = res;
-				tmp *= self;
-				if ((*e >> i) & 1) != 0 {
-					res = tmp;
-				}
-			}
-		}
-		res
-	}
-
-	/// Exponentiates `self` by `exp`, where `exp` is a little-endian order integer
-	/// exponent.
-	///
-	/// # Guarantees
-	///
-	/// **This operation is variable time with respect to `self`, for all exponent.** If
-	/// the exponent is fixed, this operation is effectively constant time. However, for
-	/// stronger constant-time guarantees, [`Field::pow`] should be used.
-	fn pow_vartime<S: AsRef<[u64]>>(&self, exp: S) -> Self {
 		let mut res = Self::ONE;
 		for e in exp.as_ref().iter().rev() {
 			for i in (0..64).rev() {
