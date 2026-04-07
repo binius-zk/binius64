@@ -13,8 +13,6 @@ use binius_math::{
 	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate_inplace},
 	univariate::lagrange_evals,
 };
-use binius_utils::rayon::prelude::*;
-
 use super::{
 	SHIFT_VARIANT_COUNT,
 	error::Error,
@@ -179,10 +177,6 @@ pub fn evaluate_monster_multilinear_for_operation<F: BinaryField, const ARITY: u
 /// * `r_x_prime_tensor` - Multilinear challenge tensor for constraint variables
 /// * `r_y_tensor` - Challenge tensor for word index variables
 ///
-/// Note: This function uses multithreading (par_iter), which is an exception to the general
-/// rule that the verifier should be single-threaded. The sparse matrix evaluation takes time
-/// linear in the size of the constraint system, so we use parallelization here to make the
-/// verifier performant on large constraint systems.
 fn evaluate_matrices<F: BinaryField>(
 	operands: &[Vec<&Operand>],
 	operand_coeffs: &[F],
@@ -191,9 +185,7 @@ fn evaluate_matrices<F: BinaryField>(
 ) -> [[F; WORD_SIZE_BITS]; SHIFT_VARIANT_COUNT] {
 	assert_eq!(operands.len(), operand_coeffs.len());
 
-	// Use parallelization for performance (see docstring for rationale).
-	(operand_coeffs, operands)
-		.into_par_iter()
+	iter::zip(operand_coeffs, operands)
 		.map(|(&coeff, constraint_operands)| {
 			let mut evals = [[F::ZERO; WORD_SIZE_BITS]; SHIFT_VARIANT_COUNT];
 			for (&operand_terms, &constraint_eval) in
@@ -229,17 +221,14 @@ fn evaluate_matrices<F: BinaryField>(
 
 			evals
 		})
-		.reduce(
-			|| [[F::ZERO; WORD_SIZE_BITS]; SHIFT_VARIANT_COUNT],
-			|mut a, b| {
-				for (a_op, b_op) in iter::zip(&mut a, b) {
-					for (a_op_s, b_op_s) in iter::zip(&mut *a_op, b_op) {
-						*a_op_s += b_op_s;
-					}
+		.fold([[F::ZERO; WORD_SIZE_BITS]; SHIFT_VARIANT_COUNT], |mut a, b| {
+			for (a_op, b_op) in iter::zip(&mut a, b) {
+				for (a_op_s, b_op_s) in iter::zip(&mut *a_op, b_op) {
+					*a_op_s += b_op_s;
 				}
-				a
-			},
-		)
+			}
+			a
+		})
 }
 
 #[cfg(test)]
