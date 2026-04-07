@@ -29,7 +29,7 @@ pub struct WiringClaim<F> {
 /// Samples the batching challenges and computes the batched claim from the
 /// evaluation claims and public input evaluation.
 pub fn compute_claim<F, C>(
-	_constraint_system: &ConstraintSystemPadded,
+	_constraint_system: &ConstraintSystemPadded<F>,
 	_r_public: &[C::Elem],
 	eval_claims: &[C::Elem],
 	public_eval: C::Elem,
@@ -61,8 +61,8 @@ where
 ///
 /// The returned closure computes the expected evaluation of the wiring MLE batched with the
 /// public input equality check, given a challenge point from the BaseFold opening.
-pub fn eval_transparent<'a, F: FieldOps + 'a>(
-	constraint_system: &ConstraintSystemPadded,
+pub fn eval_transparent<'a, G: Field, F: FieldOps + 'a>(
+	constraint_system: &ConstraintSystemPadded<G>,
 	r_public: &[F],
 	r_x: &[F],
 	lambda: F,

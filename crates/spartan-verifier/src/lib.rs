@@ -33,7 +33,7 @@ pub mod constraint_system;
 pub mod wiring;
 pub mod wrapper;
 
-use binius_field::{BinaryField, BinaryField128bGhash as B128, field::FieldOps};
+use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_iop::{
 	basefold_compiler::BaseFoldZKVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
@@ -76,8 +76,8 @@ pub struct MulcheckOutput<F> {
 /// independent of the specific IOP compilation strategy. Most users should use [`Verifier`]
 /// instead, which wraps this with a BaseFold compiler.
 #[derive(Debug, Clone)]
-pub struct IOPVerifier {
-	constraint_system: ConstraintSystemPadded,
+pub struct IOPVerifier<F: Field> {
+	constraint_system: ConstraintSystemPadded<F>,
 }
 
 /// Struct for verifying instances of a particular constraint system.
@@ -91,19 +91,19 @@ where
 	MerkleHash: Digest + BlockSizeUser,
 	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
 {
-	iop_verifier: IOPVerifier,
+	iop_verifier: IOPVerifier<F>,
 	/// BaseFold ZK compiler for creating verifier channels.
 	basefold_compiler:
 		BaseFoldZKVerifierCompiler<F, BinaryMerkleTreeScheme<F, MerkleHash, MerkleCompress>>,
 }
 
-impl IOPVerifier {
+impl<F: Field> IOPVerifier<F> {
 	/// Constructs an IOP verifier for a constraint system.
-	pub fn new(constraint_system: ConstraintSystemPadded) -> Self {
+	pub fn new(constraint_system: ConstraintSystemPadded<F>) -> Self {
 		Self { constraint_system }
 	}
 
-	pub fn constraint_system(&self) -> &ConstraintSystemPadded {
+	pub fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
 		&self.constraint_system
 	}
 
@@ -139,7 +139,7 @@ impl IOPVerifier {
 	/// # Returns
 	///
 	/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
-	pub fn verify<F, Channel>(
+	pub fn verify<Channel>(
 		&self,
 		public: Vec<Channel::Elem>,
 		channel: &mut Channel,
@@ -228,7 +228,7 @@ where
 	///
 	/// See [`Verifier`] struct documentation for details.
 	pub fn setup(
-		constraint_system: ConstraintSystem<B128>,
+		constraint_system: ConstraintSystem<F>,
 		log_inv_rate: usize,
 		compression: MerkleCompress,
 	) -> Result<Self, Error> {
@@ -262,11 +262,11 @@ where
 	}
 
 	/// Returns a reference to the IOP verifier.
-	pub fn iop_verifier(&self) -> &IOPVerifier {
+	pub fn iop_verifier(&self) -> &IOPVerifier<F> {
 		&self.iop_verifier
 	}
 
-	pub fn constraint_system(&self) -> &ConstraintSystemPadded {
+	pub fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
 		self.iop_verifier.constraint_system()
 	}
 
@@ -302,7 +302,7 @@ where
 }
 
 fn verify_mulcheck<F, C>(
-	cs: &ConstraintSystemPadded,
+	cs: &ConstraintSystemPadded<F>,
 	channel: &mut C,
 ) -> Result<MulcheckOutput<C::Elem>, Error>
 where
@@ -339,8 +339,8 @@ where
 }
 
 /// Returns a closure that evaluates the mask transparent polynomial at a given point.
-fn mask_transparent<'a, E: FieldOps + 'a>(
-	cs: &ConstraintSystemPadded,
+fn mask_transparent<'a, F: Field, E: FieldOps + 'a>(
+	cs: &ConstraintSystemPadded<F>,
 	r_x: &[E],
 ) -> binius_iop::channel::TransparentEvalFn<'a, E> {
 	let (_m_n, m_d) = cs.mask_dims();

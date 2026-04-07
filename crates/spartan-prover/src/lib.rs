@@ -76,8 +76,8 @@ type ProverMerkleProver<F, ParallelMerkleHasher, ParallelMerkleCompress> =
 /// providing the core proving logic independent of the specific IOP compilation strategy.
 /// Most users should use [`Prover`] instead, which wraps this with a BaseFold compiler.
 #[derive(Debug)]
-pub struct IOPProver {
-	constraint_system: ConstraintSystemPadded,
+pub struct IOPProver<F: Field> {
+	constraint_system: ConstraintSystemPadded<F>,
 	wiring_transpose: WiringTranspose,
 }
 
@@ -92,7 +92,7 @@ where
 	ParallelMerkleHasher: ParallelDigest<Digest: Digest + BlockSizeUser + FixedOutputReset>,
 	ParallelMerkleCompress: ParallelPseudoCompression<Output<ParallelMerkleHasher::Digest>, 2>,
 {
-	iop_prover: IOPProver,
+	iop_prover: IOPProver<P::Scalar>,
 	#[allow(clippy::type_complexity)]
 	basefold_compiler: BaseFoldZKProverCompiler<
 		P,
@@ -101,9 +101,9 @@ where
 	>,
 }
 
-impl IOPProver {
+impl<F: Field> IOPProver<F> {
 	/// Constructs an IOP prover for a constraint system.
-	pub fn new(constraint_system: ConstraintSystemPadded) -> Self {
+	pub fn new(constraint_system: ConstraintSystemPadded<F>) -> Self {
 		let wiring_transpose = WiringTranspose::transpose(
 			constraint_system.size(),
 			constraint_system.mul_constraints(),
@@ -114,7 +114,7 @@ impl IOPProver {
 		}
 	}
 
-	pub fn constraint_system(&self) -> &ConstraintSystemPadded {
+	pub fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
 		&self.constraint_system
 	}
 
@@ -129,7 +129,7 @@ impl IOPProver {
 	/// * `rng` - Random number generator for blinding
 	/// * `channel` - The IOP prover channel (public input must be observed on transcript before
 	///   creating the channel)
-	pub fn prove<F, P, Channel>(
+	pub fn prove<P, Channel>(
 		&self,
 		witness: &[F],
 		mut rng: impl CryptoRng,
@@ -265,7 +265,7 @@ where
 	}
 
 	/// Returns a reference to the IOP prover.
-	pub fn iop_prover(&self) -> &IOPProver {
+	pub fn iop_prover(&self) -> &IOPProver<P::Scalar> {
 		&self.iop_prover
 	}
 
@@ -305,7 +305,7 @@ where
 
 		// Create ZK channel (owns the RNG for mask generation) and delegate to IOP prover
 		let channel = self.basefold_compiler.create_channel(transcript, &mut rng);
-		self.iop_prover.prove::<F, P, _>(witness, rng, channel)
+		self.iop_prover.prove::<P, _>(witness, rng, channel)
 	}
 }
 

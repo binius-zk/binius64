@@ -144,7 +144,7 @@ fn test_zk_wrapped_prove_verify() {
 
 	// Run the inner proof through the wrapped channel.
 	inner_iop_prover
-		.prove::<B128, OptimalPackedB128, _>(&inner_witness, &mut rng, &mut wrapped_prover_channel)
+		.prove::<OptimalPackedB128, _>(&inner_witness, &mut rng, &mut wrapped_prover_channel)
 		.expect("inner prove failed");
 
 	// Finish runs the outer proof.

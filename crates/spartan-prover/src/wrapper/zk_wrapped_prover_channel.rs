@@ -12,7 +12,7 @@
 //! [`ReplayChannel`]: binius_spartan_verifier::wrapper::ReplayChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
 
-use binius_field::{BinaryField128bGhash as B128, PackedExtension, PackedField};
+use binius_field::{BinaryField, PackedExtension, PackedField};
 use binius_iop::{channel::OracleSpec, merkle_tree::MerkleTreeScheme};
 use binius_iop_prover::{
 	basefold_zk_channel::{BaseFoldZKOracle, BaseFoldZKProverChannel},
@@ -39,26 +39,27 @@ use crate::IOPProver;
 /// witness, and generate the outer proof.
 pub struct ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_>
 where
-	P: PackedField<Scalar = B128>,
-	NTT: AdditiveNTT<Field = B128> + Sync,
-	MTProver: MerkleTreeProver<B128>,
+	P: PackedField<Scalar: BinaryField>,
+	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
+	MTProver: MerkleTreeProver<P::Scalar>,
 	Challenger_: Challenger,
 {
-	inner_channel: BaseFoldZKProverChannel<'a, B128, P, NTT, MTProver, Challenger_>,
-	outer_prover: &'a IOPProver,
-	inner_verifier: &'a IOPVerifier,
-	outer_layout: &'a WitnessLayout<B128>,
-	interaction: Vec<B128>,
+	inner_channel: BaseFoldZKProverChannel<'a, P::Scalar, P, NTT, MTProver, Challenger_>,
+	outer_prover: &'a IOPProver<P::Scalar>,
+	inner_verifier: &'a IOPVerifier<P::Scalar>,
+	outer_layout: &'a WitnessLayout<P::Scalar>,
+	interaction: Vec<P::Scalar>,
 	n_outer_oracles: usize,
 }
 
-impl<'a, P, NTT, MTScheme, MTProver, Challenger_>
+impl<'a, F, P, NTT, MTScheme, MTProver, Challenger_>
 	ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_>
 where
-	P: PackedField<Scalar = B128> + PackedExtension<B128>,
-	NTT: AdditiveNTT<Field = B128> + Sync,
-	MTScheme: MerkleTreeScheme<B128, Digest: SerializeBytes>,
-	MTProver: MerkleTreeProver<B128, Scheme = MTScheme>,
+	F: BinaryField,
+	P: PackedField<Scalar = F> + PackedExtension<F>,
+	NTT: AdditiveNTT<Field = F> + Sync,
+	MTScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
+	MTProver: MerkleTreeProver<F, Scheme = MTScheme>,
 	Challenger_: Challenger,
 {
 	/// Creates a new ZK-wrapped prover channel.
@@ -71,10 +72,10 @@ where
 	/// * `inner_verifier` - The IOP verifier for the inner constraint system (used for replay)
 	/// * `outer_layout` - The witness layout for the outer constraint system
 	pub fn new(
-		inner_channel: BaseFoldZKProverChannel<'a, B128, P, NTT, MTProver, Challenger_>,
-		outer_prover: &'a IOPProver,
-		inner_verifier: &'a IOPVerifier,
-		outer_layout: &'a WitnessLayout<B128>,
+		inner_channel: BaseFoldZKProverChannel<'a, F, P, NTT, MTProver, Challenger_>,
+		outer_prover: &'a IOPProver<F>,
+		inner_verifier: &'a IOPVerifier<F>,
+		outer_layout: &'a WitnessLayout<F>,
 	) -> Self {
 		let outer_oracle_specs =
 			IOPVerifier::new(outer_prover.constraint_system().clone()).oracle_specs();
@@ -122,7 +123,7 @@ where
 		// Extract inner public values from the initial events.
 		let inner_cs = inner_verifier.constraint_system();
 		let inner_public_size = 1 << inner_cs.log_public();
-		let public: Vec<B128> = interaction[..inner_public_size].to_vec();
+		let public: Vec<F> = interaction[..inner_public_size].to_vec();
 
 		// Replay the inner verification through the outer witness generator.
 		// First observe the public input (mirrors the prover-side observe_many).
@@ -140,54 +141,56 @@ where
 		// Validate and generate the outer proof.
 		let outer_cs = outer_prover.constraint_system();
 		outer_cs.validate(&witness);
-		outer_prover.prove::<B128, P, _>(&witness, rng, inner_channel)?;
+		outer_prover.prove::<P, _>(&witness, rng, inner_channel)?;
 		Ok(())
 	}
 }
 
-impl<P, NTT, MTScheme, MTProver, Challenger_> IPProverChannel<B128>
+impl<F, P, NTT, MTScheme, MTProver, Challenger_> IPProverChannel<F>
 	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_>
 where
-	P: PackedField<Scalar = B128> + PackedExtension<B128>,
-	NTT: AdditiveNTT<Field = B128> + Sync,
-	MTScheme: MerkleTreeScheme<B128, Digest: SerializeBytes>,
-	MTProver: MerkleTreeProver<B128, Scheme = MTScheme>,
+	F: BinaryField,
+	P: PackedField<Scalar = F> + PackedExtension<F>,
+	NTT: AdditiveNTT<Field = F> + Sync,
+	MTScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
+	MTProver: MerkleTreeProver<F, Scheme = MTScheme>,
 	Challenger_: Challenger,
 {
-	fn send_one(&mut self, elem: B128) {
+	fn send_one(&mut self, elem: F) {
 		self.inner_channel.send_one(elem);
 		self.interaction.push(elem);
 	}
 
-	fn send_many(&mut self, elems: &[B128]) {
+	fn send_many(&mut self, elems: &[F]) {
 		self.inner_channel.send_many(elems);
 		self.interaction.extend_from_slice(elems);
 	}
 
-	fn observe_one(&mut self, val: B128) {
+	fn observe_one(&mut self, val: F) {
 		self.inner_channel.observe_one(val);
 		self.interaction.push(val);
 	}
 
-	fn observe_many(&mut self, vals: &[B128]) {
+	fn observe_many(&mut self, vals: &[F]) {
 		self.inner_channel.observe_many(vals);
 		self.interaction.extend_from_slice(vals);
 	}
 
-	fn sample(&mut self) -> B128 {
+	fn sample(&mut self) -> F {
 		let val = self.inner_channel.sample();
 		self.interaction.push(val);
 		val
 	}
 }
 
-impl<P, NTT, MTScheme, MTProver, Challenger_> IOPProverChannel<P>
+impl<F, P, NTT, MTScheme, MTProver, Challenger_> IOPProverChannel<P>
 	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_>
 where
-	P: PackedField<Scalar = B128> + PackedExtension<B128>,
-	NTT: AdditiveNTT<Field = B128> + Sync,
-	MTScheme: MerkleTreeScheme<B128, Digest: SerializeBytes>,
-	MTProver: MerkleTreeProver<B128, Scheme = MTScheme>,
+	F: BinaryField,
+	P: PackedField<Scalar = F> + PackedExtension<F>,
+	NTT: AdditiveNTT<Field = F> + Sync,
+	MTScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
+	MTProver: MerkleTreeProver<F, Scheme = MTScheme>,
 	Challenger_: Challenger,
 {
 	type Oracle = BaseFoldZKOracle;
