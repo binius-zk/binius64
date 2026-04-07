@@ -49,7 +49,6 @@ impl TowerField for AESTowerField8b {
 			_ => 3,
 		}
 	}
-
 }
 
 /// A 3- step transformation :
@@ -97,9 +96,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::{
-		Random, binary_field::tests::is_binary_field_valid_generator,
-	};
+	use crate::{Random, binary_field::tests::is_binary_field_valid_generator};
 
 	fn check_square(f: impl Field) {
 		assert_eq!(f.square(), f * f);

@@ -6,8 +6,7 @@ use std::ops::Mul;
 use super::{
 	m128::M128,
 	simd_arithmetic::{
-		packed_aes_16x8b_invert_or_zero, packed_aes_16x8b_multiply,
-		packed_aes_16x8b_square,
+		packed_aes_16x8b_invert_or_zero, packed_aes_16x8b_multiply, packed_aes_16x8b_square,
 	},
 };
 use crate::{

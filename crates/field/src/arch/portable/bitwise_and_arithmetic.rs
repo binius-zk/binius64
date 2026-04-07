@@ -34,4 +34,3 @@ impl<U: UnderlierWithBitOps> TaggedInvertOrZero<BitwiseAndStrategy>
 		self
 	}
 }
-

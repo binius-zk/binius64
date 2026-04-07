@@ -12,4 +12,3 @@ where
 		self * self
 	}
 }
-

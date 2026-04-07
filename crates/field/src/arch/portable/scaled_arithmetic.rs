@@ -8,9 +8,7 @@ use super::packed::PackedPrimitiveType;
 use crate::{
 	BinaryField,
 	arch::ScaledStrategy,
-	arithmetic_traits::{
-		InvertOrZero, Square, TaggedInvertOrZero, TaggedMul, TaggedSquare,
-	},
+	arithmetic_traits::{InvertOrZero, Square, TaggedInvertOrZero, TaggedMul, TaggedSquare},
 	underlier::{ScaledUnderlier, UnderlierType},
 };
 

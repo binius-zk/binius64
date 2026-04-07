@@ -551,4 +551,3 @@ where
 
 	PT1::from_underlier(PT1::Underlier::num_cast_from(bigger_result.to_underlier()))
 }
-

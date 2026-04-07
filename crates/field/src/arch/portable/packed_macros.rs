@@ -86,9 +86,7 @@ pub(crate) use define_packed_binary_field;
 pub(crate) use define_packed_binary_fields;
 pub(crate) use impl_serialize_deserialize_for_packed_binary_field;
 
-pub(crate) use crate::arithmetic_traits::{
-	impl_invert_with, impl_mul_with, impl_square_with,
-};
+pub(crate) use crate::arithmetic_traits::{impl_invert_with, impl_mul_with, impl_square_with};
 
 pub(crate) mod portable_macros {
 	macro_rules! impl_strategy {

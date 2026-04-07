@@ -2,9 +2,7 @@
 
 use crate::{
 	arch::PairwiseStrategy,
-	arithmetic_traits::{
-		InvertOrZero, Square, TaggedInvertOrZero, TaggedMul, TaggedSquare,
-	},
+	arithmetic_traits::{InvertOrZero, Square, TaggedInvertOrZero, TaggedMul, TaggedSquare},
 	linear_transformation::Transformation,
 	packed::PackedField,
 };

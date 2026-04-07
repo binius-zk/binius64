@@ -51,7 +51,6 @@ impl TowerField for BinaryField1b {
 	fn min_tower_level(self) -> usize {
 		0
 	}
-
 }
 
 impl InvertOrZero for BinaryField1b {
@@ -89,4 +88,3 @@ pub(super) fn square_using_packed<P: PackedField>(value: P::Scalar) -> P::Scalar
 pub(super) fn invert_or_zero_using_packed<P: PackedField>(value: P::Scalar) -> P::Scalar {
 	P::set_single(value).invert_or_zero().get(0)
 }
-

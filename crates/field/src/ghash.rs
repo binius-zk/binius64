@@ -460,7 +460,6 @@ impl TowerField for BinaryField128bGhash {
 			_ => 7,
 		}
 	}
-
 }
 
 impl From<AESTowerField8b> for BinaryField128bGhash {

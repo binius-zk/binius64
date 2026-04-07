@@ -56,7 +56,6 @@ pub trait TowerField: BinaryField {
 		assert!(i < n_basis_elts, "index {i} out of range for {n_basis_elts} basis elements");
 		<Self as ExtensionField<BinaryField1b>>::basis(i << iota)
 	}
-
 }
 
 /// Returns the i'th basis element of `FExt` as a field extension of `FSub`.
