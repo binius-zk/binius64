@@ -8,7 +8,7 @@
 //!
 //! [`finish()`]: ZKWrappedVerifierChannel::finish
 
-use binius_field::{BinaryField128bGhash as B128, Field};
+use binius_field::BinaryField;
 use binius_iop::{
 	basefold_zk_channel::{BaseFoldZKOracle, BaseFoldZKVerifierChannel},
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
@@ -25,20 +25,22 @@ use crate::{Error, IOPVerifier};
 /// All values received, sampled, and observed through this channel are recorded as public inputs
 /// to the outer constraint system. When [`finish()`](Self::finish) is called, the outer verifier
 /// is run against the inner channel to verify the proof.
-pub struct ZKWrappedVerifierChannel<'a, MTScheme, Challenger_>
+pub struct ZKWrappedVerifierChannel<'a, F, MTScheme, Challenger_>
 where
-	MTScheme: MerkleTreeScheme<B128>,
+	F: BinaryField,
+	MTScheme: MerkleTreeScheme<F>,
 	Challenger_: Challenger,
 {
-	inner_channel: BaseFoldZKVerifierChannel<'a, B128, MTScheme, Challenger_>,
-	outer_verifier: &'a IOPVerifier,
-	public_values: Vec<B128>,
+	inner_channel: BaseFoldZKVerifierChannel<'a, F, MTScheme, Challenger_>,
+	outer_verifier: &'a IOPVerifier<F>,
+	public_values: Vec<F>,
 	n_outer_oracles: usize,
 }
 
-impl<'a, MTScheme, Challenger_> ZKWrappedVerifierChannel<'a, MTScheme, Challenger_>
+impl<'a, F, MTScheme, Challenger_> ZKWrappedVerifierChannel<'a, F, MTScheme, Challenger_>
 where
-	MTScheme: MerkleTreeScheme<B128, Digest: DeserializeBytes>,
+	F: BinaryField,
+	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 	Challenger_: Challenger,
 {
 	/// Creates a new ZK-wrapped verifier channel.
@@ -49,8 +51,8 @@ where
 	///
 	/// Panics if the outer oracle specs are not a suffix of the channel's oracle specs.
 	pub fn new(
-		inner_channel: BaseFoldZKVerifierChannel<'a, B128, MTScheme, Challenger_>,
-		outer_verifier: &'a IOPVerifier,
+		inner_channel: BaseFoldZKVerifierChannel<'a, F, MTScheme, Challenger_>,
+		outer_verifier: &'a IOPVerifier<F>,
 	) -> Self {
 		let outer_oracle_specs = outer_verifier.oracle_specs();
 		let channel_oracle_specs = inner_channel.remaining_oracle_specs();
@@ -83,13 +85,13 @@ where
 	/// the required public size, and runs [`IOPVerifier::verify`] against the inner channel.
 	///
 	/// Returns the full public input vector on success.
-	pub fn finish(mut self) -> Result<Vec<B128>, Error> {
+	pub fn finish(mut self) -> Result<Vec<F>, Error> {
 		let outer_cs = self.outer_verifier.constraint_system();
 		let public_size = 1 << outer_cs.log_public();
 
 		let mut public = outer_cs.constants().to_vec();
 		public.append(&mut self.public_values);
-		public.resize(public_size, B128::ZERO);
+		public.resize(public_size, F::ZERO);
 
 		// IOPVerifier::verify takes Vec<Channel::Elem>, not &[F].
 		self.outer_verifier
@@ -98,60 +100,62 @@ where
 	}
 }
 
-impl<MTScheme, Challenger_> IPVerifierChannel<B128>
-	for ZKWrappedVerifierChannel<'_, MTScheme, Challenger_>
+impl<F, MTScheme, Challenger_> IPVerifierChannel<F>
+	for ZKWrappedVerifierChannel<'_, F, MTScheme, Challenger_>
 where
-	MTScheme: MerkleTreeScheme<B128, Digest: DeserializeBytes>,
+	F: BinaryField,
+	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 	Challenger_: Challenger,
 {
-	type Elem = B128;
+	type Elem = F;
 
-	fn recv_one(&mut self) -> Result<B128, binius_ip::channel::Error> {
+	fn recv_one(&mut self) -> Result<F, binius_ip::channel::Error> {
 		let val = self.inner_channel.recv_one()?;
 		self.public_values.push(val);
 		Ok(val)
 	}
 
-	fn recv_many(&mut self, n: usize) -> Result<Vec<B128>, binius_ip::channel::Error> {
+	fn recv_many(&mut self, n: usize) -> Result<Vec<F>, binius_ip::channel::Error> {
 		let vals = self.inner_channel.recv_many(n)?;
 		self.public_values.extend_from_slice(&vals);
 		Ok(vals)
 	}
 
-	fn recv_array<const N: usize>(&mut self) -> Result<[B128; N], binius_ip::channel::Error> {
+	fn recv_array<const N: usize>(&mut self) -> Result<[F; N], binius_ip::channel::Error> {
 		let vals = self.inner_channel.recv_array::<N>()?;
 		self.public_values.extend_from_slice(&vals);
 		Ok(vals)
 	}
 
-	fn sample(&mut self) -> B128 {
+	fn sample(&mut self) -> F {
 		let val = self.inner_channel.sample();
 		self.public_values.push(val);
 		val
 	}
 
-	fn observe_one(&mut self, val: B128) -> B128 {
+	fn observe_one(&mut self, val: F) -> F {
 		let elem = self.inner_channel.observe_one(val);
 		self.public_values.push(elem);
 		elem
 	}
 
-	fn observe_many(&mut self, vals: &[B128]) -> Vec<B128> {
+	fn observe_many(&mut self, vals: &[F]) -> Vec<F> {
 		let elems = self.inner_channel.observe_many(vals);
 		self.public_values.extend_from_slice(&elems);
 		elems
 	}
 
-	fn assert_zero(&mut self, _val: B128) -> Result<(), binius_ip::channel::Error> {
+	fn assert_zero(&mut self, _val: F) -> Result<(), binius_ip::channel::Error> {
 		// No-op: inner assertions are checked by the outer verifier.
 		Ok(())
 	}
 }
 
-impl<MTScheme, Challenger_> IOPVerifierChannel<B128>
-	for ZKWrappedVerifierChannel<'_, MTScheme, Challenger_>
+impl<F, MTScheme, Challenger_> IOPVerifierChannel<F>
+	for ZKWrappedVerifierChannel<'_, F, MTScheme, Challenger_>
 where
-	MTScheme: MerkleTreeScheme<B128, Digest: DeserializeBytes>,
+	F: BinaryField,
+	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 	Challenger_: Challenger,
 {
 	type Oracle = BaseFoldZKOracle;

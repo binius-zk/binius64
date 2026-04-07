@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_field::{BinaryField128bGhash as B128, Field};
+use binius_field::Field;
 pub use binius_spartan_frontend::constraint_system::BlindingInfo;
 use binius_spartan_frontend::constraint_system::{
 	ConstraintSystem, MulConstraint, Operand, WitnessIndex,
@@ -15,7 +15,7 @@ use binius_verifier::protocols::mlecheck::mask_buffer_dimensions;
 /// number of constraints to a power of two (required by the prover's multilinear extension
 /// protocol).
 #[derive(Debug, Clone)]
-pub struct ConstraintSystemPadded<F: Field = B128> {
+pub struct ConstraintSystemPadded<F: Field> {
 	inner: ConstraintSystem<F>,
 	log_size: u32,
 	blinding_info: BlindingInfo,
@@ -131,7 +131,7 @@ impl<F: Field> ConstraintSystemPadded<F> {
 		self.mask_dims
 	}
 
-	pub fn validate(&self, witness: &[B128]) {
+	pub fn validate(&self, witness: &[F]) {
 		assert_eq!(witness.len(), self.size());
 
 		let operand_val = |operand: &Operand<WitnessIndex>| {
@@ -139,7 +139,7 @@ impl<F: Field> ConstraintSystemPadded<F> {
 				.wires()
 				.iter()
 				.map(|idx| witness[idx.0 as usize])
-				.sum::<B128>()
+				.sum::<F>()
 		};
 
 		for MulConstraint { a, b, c } in &self.mul_constraints {
