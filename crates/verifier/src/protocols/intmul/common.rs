@@ -40,35 +40,6 @@ pub struct Phase3Output<F> {
 	pub c_hi_root_eval: F,
 }
 
-/// Construct the [`Phase3Output`] from the prover's claimed evaluations.
-///
-/// Splits the selector prover evals into individual $\widetilde{b}$ exponent evaluations and
-/// the selector evaluation, and extracts the two $\widetilde{c}$ root evaluations.
-pub fn make_phase_3_output<F: FieldOps>(
-	log_bits: usize,
-	eval_point: &[F],
-	selector_prover_evals: &[F],
-	c_root_prover_evals: Vec<F>,
-) -> Phase3Output<F> {
-	assert_eq!(selector_prover_evals.len(), 1 + (1 << log_bits));
-	let (selector_eval, b_exponent_evals) = selector_prover_evals
-		.split_last()
-		.expect("non-empty selector sumcheck output");
-
-	let Ok([c_lo_root_eval, c_hi_root_eval]) = TryInto::<[F; 2]>::try_into(c_root_prover_evals)
-	else {
-		unreachable!("expect two multilinears in the c_root prover in phase 3")
-	};
-
-	Phase3Output {
-		eval_point: eval_point.to_vec(),
-		b_exponent_evals: b_exponent_evals.to_vec(),
-		selector_eval: selector_eval.clone(),
-		c_lo_root_eval,
-		c_hi_root_eval,
-	}
-}
-
 /// Output of Phase 4: all but last GKR layer for $\widetilde{a}$, $\widetilde{c}_{\textsf{lo}}$,
 /// $\widetilde{c}_{\textsf{hi}}$.
 ///

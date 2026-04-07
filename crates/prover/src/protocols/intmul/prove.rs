@@ -17,7 +17,7 @@ use binius_utils::{
 use binius_verifier::protocols::{
 	intmul::common::{
 		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, Phase5Output,
-		frobenius_twist, make_phase_3_output, normalize_a_c_exponent_evals,
+		frobenius_twist, normalize_a_c_exponent_evals,
 	},
 	prodcheck::MultilinearEvalClaim,
 };
@@ -275,18 +275,26 @@ where
 		let provers = vec![Either::Left(selector_prover), Either::Right(c_root_prover)];
 		let BatchSumcheckOutput {
 			challenges,
-			mut multilinear_evals,
+			multilinear_evals,
 		} = batch_prove_and_write_evals(provers, self.channel)?;
 
-		assert_eq!(multilinear_evals.len(), 2);
-		let c_root_prover_evals = multilinear_evals
-			.pop()
-			.expect("multilinear_evals.len() == 2");
-		let selector_prover_evals = multilinear_evals
-			.pop()
-			.expect("multilinear_evals.len() == 2");
+		let [mut selector_prover_evals, c_root_prover_evals] = multilinear_evals
+			.try_into()
+			.expect("batch_prove with two provers returns length-2 multilinear_evals");
 
-		Ok(make_phase_3_output(log_bits, &challenges, &selector_prover_evals, c_root_prover_evals))
+		assert_eq!(selector_prover_evals.len(), 1 + (1 << log_bits));
+
+		let selector_eval = selector_prover_evals.pop().expect("selector_prover_evals.len() > 0");
+		let b_exponent_evals = selector_prover_evals;
+		let [c_lo_root_eval, c_hi_root_eval] = c_root_prover_evals.try_into().expect("c_root_prover with two multilinears returns two evals");
+
+		Ok(Phase3Output {
+			eval_point: challenges,
+			b_exponent_evals,
+			selector_eval,
+			c_lo_root_eval,
+			c_hi_root_eval,
+		})
 	}
 
 	fn phase4(

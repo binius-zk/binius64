@@ -1,20 +1,19 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::iter;
+use std::{iter, slice};
 
 use binius_field::{BinaryField, Field, field::FieldOps};
-
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
 	multilinear::{eq::eq_ind, evaluate::evaluate_inplace_scalars},
 	univariate::evaluate_univariate,
 };
-use itertools::{Itertools, izip};
+use itertools::Itertools;
 
 use super::{
 	common::{
 		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, Phase5Output,
-		frobenius_twist, make_phase_3_output, normalize_a_c_exponent_evals,
+		frobenius_twist, normalize_a_c_exponent_evals,
 	},
 	error::Error,
 };
@@ -131,6 +130,13 @@ where
 
 	let evals = iter::chain(twisted_evals, [c_eval]).collect::<Vec<_>>();
 
+	// Polynomial is a univariate random combination of 2^k + 1 quartic terms:
+	//
+	// First 2^k:
+	// - (b(i, X) * (A(X) - 1) + 1) * eq(φ⁻ⁱ(x) ; X)
+	//
+	// Last one:
+	// - LO(X) * HI(X) * eq(c_eval_point ; X)
 	let BatchSumcheckOutput {
 		batch_coeff,
 		mut challenges,
@@ -138,37 +144,43 @@ where
 	} = batch_verify(n_vars, 3, &evals, channel)?;
 	challenges.reverse();
 
-	let selector_prover_evals = channel.recv_many((1 << log_bits) + 1)?;
-	let c_root_prover_evals = channel.recv_many(2)?;
+	// b(i, r) for i in 0..2^k
+	let b_exponent_evals = channel.recv_many(1 << log_bits)?;
 
-	let output =
-		make_phase_3_output(log_bits, &challenges, &selector_prover_evals, c_root_prover_evals);
-	let Phase3Output {
+	// A(r)
+	let selector_eval = channel.recv_one()?;
+
+	// C_lo(r), C_hi(r)
+	let [c_lo_root_eval, c_hi_root_eval] = channel.recv_array::<2>()?;
+
+	let eval_point = challenges;
+
+	let expected_selected_terms = iter::zip(twisted_eval_points, &b_exponent_evals).map(
+		|(twisted_eval_point, b_exponent_eval)| {
+			let one = C::Elem::one();
+			(b_exponent_eval.clone() * (selector_eval.clone() - one.clone()) + one)
+				* eq_ind(&twisted_eval_point, &eval_point)
+		},
+	);
+
+	// - c_lo(r) * c_hi(r) * eq(c_eval_point ; r)
+	let expected_c_prod_eval =
+		c_lo_root_eval.clone() * c_hi_root_eval.clone() * eq_ind(c_eval_point, &eval_point);
+
+	let expected_terms = expected_selected_terms
+		.chain([expected_c_prod_eval])
+		.collect::<Vec<_>>();
+	let expected_batched_eval = evaluate_univariate(&expected_terms, batch_coeff);
+
+	channel.assert_zero(expected_batched_eval - eval)?;
+
+	Ok(Phase3Output {
 		eval_point,
 		b_exponent_evals,
 		selector_eval,
 		c_lo_root_eval,
 		c_hi_root_eval,
-	} = &output;
-
-	let mut expected_unbatched_terms = Vec::with_capacity((1 << log_bits) + 1);
-
-	for (twisted_eval_point, b_exponent_eval) in izip!(twisted_eval_points, b_exponent_evals) {
-		let twisted_eq_eval = eq_ind(&twisted_eval_point, eval_point);
-		let one = C::Elem::one();
-		let expected = twisted_eq_eval
-			* (b_exponent_eval.clone() * (selector_eval.clone() - one.clone()) + one);
-		expected_unbatched_terms.push(expected);
-	}
-
-	let c_eq_eval = eq_ind(c_eval_point, eval_point);
-	expected_unbatched_terms.extend([c_eq_eval * c_lo_root_eval * c_hi_root_eval]);
-
-	let expected_batched_eval = evaluate_univariate(&expected_unbatched_terms, batch_coeff);
-
-	channel.assert_zero(expected_batched_eval - eval)?;
-
-	Ok(output)
+	})
 }
 
 /// Verify Phase 4: all but last layer of the GKR product trees for $\widetilde{a}$,
@@ -251,13 +263,12 @@ where
 	// Evals for the batched sumcheck: a (2^(k-1)), c_lo (2^(k-1)), c_hi (2^(k-1)) from the
 	// bivariate product layer, then a_0*b_0 and c_lo_0 for the parity zerocheck, then b
 	// exponent evals (2^k) for the rerandomization sumcheck.
-	let overflow_zerocheck_evals = [overflow_zerocheck_eval.clone(), overflow_zerocheck_eval];
 	let evals = [
 		a_evals,
 		c_lo_evals,
 		c_hi_evals,
-		&overflow_zerocheck_evals[..1],
-		&overflow_zerocheck_evals[1..],
+		slice::from_ref(&overflow_zerocheck_eval),
+		slice::from_ref(&overflow_zerocheck_eval),
 		b_exponent_evals,
 	]
 	.concat();
