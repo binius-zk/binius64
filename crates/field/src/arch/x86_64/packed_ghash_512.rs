@@ -49,7 +49,6 @@ define_packed_binary_field!(
 	(Ghash512Strategy),
 	(Ghash512Strategy),
 	(Ghash512Strategy),
-	(None),
 	(None)
 );
 

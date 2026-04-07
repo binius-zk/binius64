@@ -54,12 +54,6 @@ pub fn packed_aes_16x8b_square(x: M128) -> M128 {
 }
 
 #[inline]
-pub fn packed_aes_16x8b_mul_alpha(x: M128) -> M128 {
-	// 0xD3 corresponds to 0x10 after isomorphism from BinaryField8b to AESField
-	packed_aes_16x8b_multiply(x, M128::from_le_bytes([0xD3; 16]))
-}
-
-#[inline]
 pub fn packed_aes_16x8b_multiply(a: M128, b: M128) -> M128 {
 	//! Performs a multiplication in GF(2^8) on the packed bytes.
 	//! See <https://doc.rust-lang.org/beta/core/arch/x86_64/fn._mm_gf2p8mul_epi8.html>

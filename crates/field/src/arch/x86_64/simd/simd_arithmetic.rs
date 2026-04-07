@@ -5,7 +5,6 @@ use std::{any::TypeId, arch::x86_64::*};
 use crate::{
 	BinaryField, TowerField,
 	aes_field::AESTowerField8b,
-	arch::portable::{packed::PackedPrimitiveType, reuse_multiply_arithmetic::Alpha},
 	underlier::{UnderlierType, UnderlierWithBitOps},
 };
 
@@ -117,11 +116,3 @@ pub trait TowerSimdType: Sized + Copy + UnderlierWithBitOps {
 	}
 }
 
-impl<U: UnderlierType + TowerSimdType, Scalar: TowerField> Alpha
-	for PackedPrimitiveType<U, Scalar>
-{
-	#[inline(always)]
-	fn alpha() -> Self {
-		U::alpha::<Scalar>().into()
-	}
-}

@@ -12,12 +12,6 @@ pub trait InvertOrZero {
 	fn invert_or_zero(self) -> Self;
 }
 
-/// Value that can be multiplied by alpha
-pub trait MulAlpha {
-	/// Multiply self by alpha
-	fn mul_alpha(self) -> Self;
-}
-
 /// Multiplication that is parameterized with some some strategy.
 pub trait TaggedMul<Strategy> {
 	fn mul(self, rhs: Self) -> Self;
@@ -102,28 +96,3 @@ macro_rules! impl_invert_with {
 
 pub(crate) use impl_invert_with;
 
-/// Multiply by alpha operation that is parameterized with some some strategy.
-pub trait TaggedMulAlpha<Strategy> {
-	fn mul_alpha(self) -> Self;
-}
-
-macro_rules! impl_mul_alpha_with {
-	($name:ident @ $strategy:ty) => {
-		impl $crate::arithmetic_traits::MulAlpha for $name {
-			#[inline]
-			fn mul_alpha(self) -> Self {
-				$crate::arithmetic_traits::TaggedMulAlpha::<$strategy>::mul_alpha(self)
-			}
-		}
-	};
-	($name:ty => $bigger:ty) => {
-		impl $crate::arithmetic_traits::MulAlpha for $name {
-			#[inline]
-			fn mul_alpha(self) -> Self {
-				$crate::arch::portable::packed::mul_alpha_as_bigger_type::<_, $bigger>(self)
-			}
-		}
-	};
-}
-
-pub(crate) use impl_mul_alpha_with;

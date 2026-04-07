@@ -60,10 +60,6 @@ name = "packed_field_multiply"
 harness = false
 
 [[bench]]
-name = "packed_field_mul_alpha"
-harness = false
-
-[[bench]]
 name = "packed_field_slice_iter"
 harness = false
 

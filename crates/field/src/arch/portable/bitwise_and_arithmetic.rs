@@ -4,7 +4,7 @@ use super::packed::PackedPrimitiveType;
 use crate::{
 	BinaryField1b,
 	arch::BitwiseAndStrategy,
-	arithmetic_traits::{TaggedInvertOrZero, TaggedMul, TaggedMulAlpha, TaggedSquare},
+	arithmetic_traits::{TaggedInvertOrZero, TaggedMul, TaggedSquare},
 	underlier::UnderlierWithBitOps,
 };
 
@@ -35,11 +35,3 @@ impl<U: UnderlierWithBitOps> TaggedInvertOrZero<BitwiseAndStrategy>
 	}
 }
 
-impl<U: UnderlierWithBitOps> TaggedMulAlpha<BitwiseAndStrategy>
-	for PackedPrimitiveType<U, BinaryField1b>
-{
-	#[inline]
-	fn mul_alpha(self) -> Self {
-		self
-	}
-}
