@@ -152,6 +152,15 @@ where
 		public: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		// Create channel and delegate to verify_iop
+		let mut channel = self.iop_compiler.create_channel(transcript);
+		self.verify_iop(public, &mut channel)
+	}
+
+	fn verify_iop<Channel>(&self, public: &[Word], channel: &mut Channel) -> Result<(), Error>
+	where
+		Channel: IOPVerifierChannel<B128, Elem = B128>,
+	{
 		// Check that the public input length is correct
 		if public.len() != 1 << self.log_public_words() {
 			return Err(Error::IncorrectPublicInputLength {
@@ -160,18 +169,11 @@ where
 			});
 		}
 
+		let public_elems = encode_public(public);
+
 		// Verifier observes the public input (includes it in Fiat-Shamir).
-		transcript.observe().write_slice(public);
+		let _public_elems = channel.observe_many(&public_elems);
 
-		// Create channel and delegate to verify_iop
-		let mut channel = self.iop_compiler.create_channel(transcript);
-		self.verify_iop(public, &mut channel)
-	}
-
-	fn verify_iop<Channel>(&self, _public: &[Word], channel: &mut Channel) -> Result<(), Error>
-	where
-		Channel: IOPVerifierChannel<B128, Elem = B128>,
-	{
 		let _verify_guard =
 			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
 				.entered();
@@ -333,4 +335,17 @@ where
 		chain!(small_field_zerocheck_challenges, big_field_zerocheck_challenges)
 			.collect::<Vec<_>>();
 	verify_with_channel(&zerocheck_challenges, channel, eval_domain)
+}
+
+/// Encode public input words as B128 elements, for compliance with the IOP interface.
+fn encode_public(public: &[Word]) -> Vec<B128> {
+	let (word_pairs, remaining) = public.as_chunks::<2>();
+	assert!(
+		remaining.is_empty(),
+		"ValueVecLayout ensures the public section has a multiple of two number of words"
+	);
+	word_pairs
+		.iter()
+		.map(|[w0, w1]| B128::new(((w1.as_u64() as u128) << 64) | w0.as_u64() as u128))
+		.collect()
 }

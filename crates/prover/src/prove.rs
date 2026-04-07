@@ -144,24 +144,6 @@ where
 		witness: ValueVec,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		let verifier = &self.verifier;
-
-		// Check that the public input length is correct
-		let public = witness.public().to_vec();
-		if public.len() != 1 << self.verifier.log_public_words() {
-			return Err(Error::ArgumentError {
-				arg: "witness".to_string(),
-				msg: format!(
-					"witness layout has {} words, expected {}",
-					public.len(),
-					1 << verifier.log_public_words()
-				),
-			});
-		}
-
-		// Prover observes the public input (includes it in Fiat-Shamir).
-		transcript.observe().write_slice(&public);
-
 		// Create channel and delegate to prove_iop
 		let channel = BaseFoldProverChannel::from_compiler(&self.basefold_compiler, transcript);
 		self.prove_iop(witness, channel)
@@ -190,6 +172,14 @@ where
 				.entered();
 		let witness_packed = pack_witness::<P>(verifier.log_witness_elems(), &witness)?;
 		drop(setup_guard);
+
+		// Observe the public input as B128 elements (includes it in Fiat-Shamir).
+		let n_public_elems = 1 << (verifier.log_public_words() - LOG_WORDS_PER_ELEM);
+		let public_elems = witness_packed
+			.iter_scalars()
+			.take(n_public_elems)
+			.collect::<Vec<_>>();
+		channel.observe_many(&public_elems);
 
 		// [phase] Witness Commit - witness generation and commitment
 		let witness_commit_guard = tracing::info_span!(
