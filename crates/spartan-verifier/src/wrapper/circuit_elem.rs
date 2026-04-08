@@ -25,6 +25,8 @@ use binius_field::{
 };
 use binius_spartan_frontend::circuit_builder::CircuitBuilder;
 
+use super::gadgets;
+
 /// An opaque wire in a circuit builder, carrying a weak reference to the builder.
 ///
 /// The weak reference allows the channel to reclaim sole ownership of the builder in `finish()`
@@ -350,10 +352,51 @@ impl<B: CircuitBuilder> FieldOps for CircuitElem<B> {
 		CircuitElem::Constant(B::Field::ONE)
 	}
 
-	fn square_transpose<FSub: Field>(_elems: &mut [Self])
+	fn square_transpose<FSub: Field>(elems: &mut [Self])
 	where
 		Self::Scalar: ExtensionField<FSub>,
 	{
-		unimplemented!("square_transpose is not used in symbolic verifier context")
+		let degree = <B::Field as ExtensionField<FSub>>::DEGREE;
+		assert_eq!(elems.len(), degree);
+
+		if degree == 1 {
+			return;
+		}
+
+		// Fast path: transpose concretely when all elements are constants.
+		if elems.iter().all(|e| matches!(e, CircuitElem::Constant(_))) {
+			let mut vals = elems
+				.iter()
+				.map(|e| match e {
+					CircuitElem::Constant(c) => *c,
+					CircuitElem::Wire(_) => unreachable!(),
+				})
+				.collect::<Vec<_>>();
+			<B::Field as ExtensionField<FSub>>::square_transpose(&mut vals);
+			for (e, v) in elems.iter_mut().zip(vals) {
+				*e = CircuitElem::Constant(v);
+			}
+			return;
+		}
+
+		// At least one element is a wire. Delegate to the gadget.
+		let rc = elems
+			.iter()
+			.find_map(|e| e.builder_rc())
+			.expect("at least one wire exists (not all-constants)");
+		let mut builder = rc.borrow_mut();
+
+		let input_wires = elems
+			.iter()
+			.map(|e| e.to_wire(&mut *builder))
+			.collect::<Vec<_>>();
+
+		let outputs = gadgets::square_transpose::<_, FSub>(&mut *builder, &input_wires);
+
+		drop(builder);
+
+		for (e, out_wire) in elems.iter_mut().zip(outputs) {
+			*e = Self::make_wire(&rc, out_wire);
+		}
 	}
 }

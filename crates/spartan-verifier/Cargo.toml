@@ -23,3 +23,4 @@ tracing.workspace = true
 
 [dev-dependencies]
 binius-spartan-frontend = { path = "../spartan-frontend" }
+rand.workspace = true

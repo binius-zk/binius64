@@ -11,6 +11,7 @@
 
 mod channel;
 pub mod circuit_elem;
+pub mod gadgets;
 mod zk_wrapped_channel;
 
 pub use channel::{IronSpartanBuilderChannel, ReplayChannel};
@@ -20,9 +21,13 @@ pub use zk_wrapped_channel::ZKWrappedVerifierChannel;
 mod tests {
 	use std::rc::Rc;
 
-	use binius_field::{BinaryField128bGhash as B128, Field, arithmetic_traits::InvertOrZero};
+	use binius_field::{
+		BinaryField1b as B1, BinaryField128bGhash as B128, ExtensionField, Field, Random,
+		arithmetic_traits::InvertOrZero, field::FieldOps,
+	};
 	use binius_ip::channel::IPVerifierChannel;
-	use binius_spartan_frontend::circuit_builder::ConstraintBuilder;
+	use binius_spartan_frontend::circuit_builder::{ConstraintBuilder, WitnessGenerator};
+	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
 	use crate::wrapper::circuit_elem::{CircuitElem, CircuitWire};
@@ -196,6 +201,97 @@ mod tests {
 		// The symbolic execution should have produced a nontrivial constraint system.
 		assert!(wrapper_cs.n_inout() > 0);
 		assert!(!wrapper_cs.mul_constraints().is_empty());
+	}
+
+	#[test]
+	fn test_square_transpose_constants() {
+		type FSub = B1;
+		let degree = <B128 as ExtensionField<FSub>>::DEGREE;
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Generate random elements and transpose them both natively and via CircuitElem.
+		let values = (0..degree)
+			.map(|_| B128::random(&mut rng))
+			.collect::<Vec<_>>();
+
+		let mut expected = values.clone();
+		<B128 as ExtensionField<FSub>>::square_transpose(&mut expected);
+
+		let mut elems = values
+			.iter()
+			.map(|&v| BuildElem::Constant(v))
+			.collect::<Vec<_>>();
+		<BuildElem as FieldOps>::square_transpose::<FSub>(&mut elems);
+
+		for (i, (elem, &exp)) in elems.iter().zip(&expected).enumerate() {
+			match elem {
+				CircuitElem::Constant(c) => assert_eq!(*c, exp, "mismatch at index {i}"),
+				CircuitElem::Wire(_) => panic!("expected constant after all-constants transpose"),
+			}
+		}
+	}
+
+	#[test]
+	fn test_square_transpose_wires() {
+		// Test that square_transpose on wire elements builds a valid constraint system,
+		// and that a WitnessGenerator with correct values satisfies all constraints.
+		type FSub = B1;
+		let degree = <B128 as ExtensionField<FSub>>::DEGREE;
+
+		// Phase 1: Build the constraint system symbolically.
+		let mut constraint_builder = ConstraintBuilder::<B128>::new();
+		let inout_wires: Vec<_> = (0..degree)
+			.map(|_| constraint_builder.alloc_inout())
+			.collect();
+
+		// Build CircuitElem wires via a shared Rc.
+		let rc = Rc::new(std::cell::RefCell::new(constraint_builder));
+		let mut elems: Vec<BuildElem> = inout_wires
+			.iter()
+			.map(|&w| BuildElem::Wire(BuildWire::new(&rc, w)))
+			.collect();
+
+		<BuildElem as FieldOps>::square_transpose::<FSub>(&mut elems);
+
+		// The transposed outputs are wires; drop them so we can extract the builder.
+		drop(elems);
+		let constraint_builder = Rc::try_unwrap(rc).unwrap().into_inner();
+		let (cs, layout) = constraint_builder.build().finalize();
+
+		// The constraint system should have multiplication constraints from
+		// Frobenius checks, reconstruction, and transposed output.
+		assert!(!cs.mul_constraints().is_empty());
+
+		// Phase 2: Generate a witness with concrete values and verify all constraints.
+		let test_values: Vec<B128> = (0..degree)
+			.map(<B128 as ExtensionField<FSub>>::basis)
+			.collect();
+
+		let mut witness_gen = WitnessGenerator::new(&layout);
+		let witness_wires: Vec<_> = inout_wires
+			.iter()
+			.zip(&test_values)
+			.map(|(&w, &val)| witness_gen.write_inout(w, val))
+			.collect();
+
+		type WitnessElem<'a> = CircuitElem<WitnessGenerator<'a, B128>>;
+		let witness_rc = Rc::new(std::cell::RefCell::new(witness_gen));
+		let mut witness_elems: Vec<WitnessElem> = witness_wires
+			.iter()
+			.map(|&w| {
+				WitnessElem::Wire(crate::wrapper::circuit_elem::CircuitWire::new(&witness_rc, w))
+			})
+			.collect();
+
+		<WitnessElem as FieldOps>::square_transpose::<FSub>(&mut witness_elems);
+
+		drop(witness_elems);
+		let witness_gen = Rc::try_unwrap(witness_rc).unwrap().into_inner();
+		let witness = witness_gen
+			.build()
+			.expect("witness generation should succeed (all constraints satisfied)");
+
+		cs.validate(&witness);
 	}
 
 	#[test]
