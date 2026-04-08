@@ -30,16 +30,18 @@ pub struct Phase2Output<F> {
 
 /// Output of Phase 3: batched Frobenius selector sumcheck and LO * HI product sumcheck.
 ///
-/// Contains the new evaluation point, $\widetilde{b}$ exponent evaluations, the selector
-/// evaluation on $\widetilde{P}$, and root evaluations of $\widetilde{\textsf{LO}}$ and
-/// $\widetilde{\textsf{HI}}$.
+/// Contains the new evaluation point $r$, $\widetilde{b}$ evaluations, $A(r)$,
+/// $C_{\textsf{lo}}(r)$, and $C_{\textsf{hi}}(r)$.
 #[derive(Debug, Clone)]
 pub struct Phase3Output<F> {
 	pub eval_point: Vec<F>,
-	pub b_exponent_evals: Vec<F>,
-	pub selector_eval: F,
-	pub c_lo_root_eval: F,
-	pub c_hi_root_eval: F,
+	pub b_evals: Vec<F>,
+	/// $A(r)$, where $r$ is `eval_point`.
+	pub gpow_a_eval: F,
+	/// $C_{\textsf{lo}}(r)$.
+	pub gpow_c_lo_eval: F,
+	/// $C_{\textsf{hi}}(r)$.
+	pub gpow_c_hi_eval: F,
 }
 
 /// Output of Phase 4: all but last GKR layer for $\widetilde{a}$, $\widetilde{c}_{\textsf{lo}}$,

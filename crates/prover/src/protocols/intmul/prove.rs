@@ -138,10 +138,10 @@ where
 		// Phase 3
 		let Phase3Output {
 			eval_point: phase3_eval_point,
-			b_exponent_evals,
-			selector_eval,
-			c_lo_root_eval,
-			c_hi_root_eval,
+			b_evals,
+			gpow_a_eval,
+			gpow_c_lo_eval,
+			gpow_c_hi_eval,
 		} = self.phase3(
 			log_bits,
 			&twisted_eval_points,
@@ -162,9 +162,9 @@ where
 		} = self.phase4(
 			log_bits,
 			&phase3_eval_point,
-			(selector_eval, a_layers.into_iter()),
-			(c_lo_root_eval, c_lo_layers.into_iter()),
-			(c_hi_root_eval, c_hi_layers.into_iter()),
+			(gpow_a_eval, a_layers.into_iter()),
+			(gpow_c_lo_eval, c_lo_layers.into_iter()),
+			(gpow_c_hi_eval, c_hi_layers.into_iter()),
 		)?;
 
 		// Phase 5
@@ -176,7 +176,7 @@ where
 			(&c_hi_evals, c_hi_last_layer),
 			b_exponents.as_ref(),
 			&phase3_eval_point,
-			&b_exponent_evals,
+			&b_evals,
 			a_exponents.as_ref(),
 			c_lo_exponents.as_ref(),
 		)
@@ -266,20 +266,20 @@ where
 
 		assert_eq!(selector_prover_evals.len(), 1 + (1 << log_bits));
 
-		let selector_eval = selector_prover_evals
+		let gpow_a_eval = selector_prover_evals
 			.pop()
 			.expect("selector_prover_evals.len() > 0");
-		let b_exponent_evals = selector_prover_evals;
-		let [c_lo_root_eval, c_hi_root_eval] = c_root_prover_evals
+		let b_evals = selector_prover_evals;
+		let [gpow_c_lo_eval, gpow_c_hi_eval] = c_root_prover_evals
 			.try_into()
 			.expect("c_root_prover with two multilinears returns two evals");
 
 		Ok(Phase3Output {
 			eval_point: challenges,
-			b_exponent_evals,
-			selector_eval,
-			c_lo_root_eval,
-			c_hi_root_eval,
+			b_evals,
+			gpow_a_eval,
+			gpow_c_lo_eval,
+			gpow_c_hi_eval,
 		})
 	}
 
@@ -288,15 +288,15 @@ where
 		log_bits: usize,
 		eval_point: &[F],
 		(a_root_eval, a_layers): (F, impl ExactSizeIterator<Item = Vec<FieldBuffer<P>>>),
-		(c_lo_root_eval, c_lo_layers): (F, impl ExactSizeIterator<Item = Vec<FieldBuffer<P>>>),
-		(c_hi_root_eval, c_hi_layers): (F, impl ExactSizeIterator<Item = Vec<FieldBuffer<P>>>),
+		(gpow_c_lo_eval, c_lo_layers): (F, impl ExactSizeIterator<Item = Vec<FieldBuffer<P>>>),
+		(gpow_c_hi_eval, c_hi_layers): (F, impl ExactSizeIterator<Item = Vec<FieldBuffer<P>>>),
 	) -> Result<Phase4Output<F>, Error> {
 		assert_eq!(a_layers.len(), log_bits - 1);
 		assert_eq!(c_lo_layers.len(), log_bits - 1);
 		assert_eq!(c_hi_layers.len(), log_bits - 1);
 
 		let mut eval_point = eval_point.to_vec();
-		let mut evals = vec![a_root_eval, c_lo_root_eval, c_hi_root_eval];
+		let mut evals = vec![a_root_eval, gpow_c_lo_eval, gpow_c_hi_eval];
 
 		for (depth, (a_l, c_lo_l, c_hi_l)) in izip!(a_layers, c_lo_layers, c_hi_layers).enumerate()
 		{
@@ -349,7 +349,7 @@ where
 		(c_hi_evals, c_hi_layer): (&[F], Vec<FieldBuffer<P>>),
 		b_exponents: &[B],
 		b_eval_point: &[F],
-		b_exponent_evals: &[F],
+		b_evals_pre: &[F],
 		// Needed for the zerocheck on `a_0 * b_0 = c_lo_0`.
 		a_exponents: &[B],
 		c_lo_exponents: &[B],
@@ -431,11 +431,11 @@ where
 
 		// Make the `RerandMlecheckProver` for `b_exponents`.
 		assert_eq!(b_exponents.len(), 1 << b_eval_point.len());
-		assert_eq!(b_exponent_evals.len(), 1 << log_bits);
+		assert_eq!(b_evals_pre.len(), 1 << log_bits);
 
 		let b_rerand_prover = RerandMlecheckProver::<P, _>::new(
 			b_eval_point,
-			b_exponent_evals,
+			b_evals_pre,
 			b_exponents,
 			self.switchover,
 		)?;

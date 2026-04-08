@@ -145,27 +145,27 @@ where
 	challenges.reverse();
 
 	// b(i, r) for i in 0..2^k
-	let b_exponent_evals = channel.recv_many(1 << log_bits)?;
+	let b_evals = channel.recv_many(1 << log_bits)?;
 
 	// A(r)
-	let selector_eval = channel.recv_one()?;
+	let gpow_a_eval = channel.recv_one()?;
 
 	// C_lo(r), C_hi(r)
-	let [c_lo_root_eval, c_hi_root_eval] = channel.recv_array::<2>()?;
+	let [gpow_c_lo_eval, gpow_c_hi_eval] = channel.recv_array::<2>()?;
 
 	let eval_point = challenges;
 
-	let expected_selected_terms = iter::zip(twisted_eval_points, &b_exponent_evals).map(
-		|(twisted_eval_point, b_exponent_eval)| {
+	let expected_selected_terms = iter::zip(twisted_eval_points, &b_evals).map(
+		|(twisted_eval_point, b_eval)| {
 			let one = C::Elem::one();
-			(b_exponent_eval.clone() * (selector_eval.clone() - one.clone()) + one)
+			(b_eval.clone() * (gpow_a_eval.clone() - one.clone()) + one)
 				* eq_ind(&twisted_eval_point, &eval_point)
 		},
 	);
 
 	// - c_lo(r) * c_hi(r) * eq(c_eval_point ; r)
 	let expected_c_prod_eval =
-		c_lo_root_eval.clone() * c_hi_root_eval.clone() * eq_ind(c_eval_point, &eval_point);
+		gpow_c_lo_eval.clone() * gpow_c_hi_eval.clone() * eq_ind(c_eval_point, &eval_point);
 
 	let expected_terms = expected_selected_terms
 		.chain([expected_c_prod_eval])
@@ -176,10 +176,10 @@ where
 
 	Ok(Phase3Output {
 		eval_point,
-		b_exponent_evals,
-		selector_eval,
-		c_lo_root_eval,
-		c_hi_root_eval,
+		b_evals,
+		gpow_a_eval,
+		gpow_c_lo_eval,
+		gpow_c_hi_eval,
 	})
 }
 
@@ -192,8 +192,8 @@ fn verify_phase_4<F, C>(
 	log_bits: usize,
 	eval_point: &[C::Elem],
 	a_root_eval: C::Elem,
-	c_lo_root_eval: C::Elem,
-	c_hi_root_eval: C::Elem,
+	gpow_c_lo_eval: C::Elem,
+	gpow_c_hi_eval: C::Elem,
 	channel: &mut C,
 ) -> Result<Phase4Output<C::Elem>, Error>
 where
@@ -203,7 +203,7 @@ where
 	assert!(log_bits >= 1);
 
 	let mut eval_point = eval_point.to_vec();
-	let mut evals = vec![a_root_eval, c_lo_root_eval, c_hi_root_eval];
+	let mut evals = vec![a_root_eval, gpow_c_lo_eval, gpow_c_hi_eval];
 
 	for depth in 0..log_bits - 1 {
 		assert_eq!(evals.len(), 3 << depth);
@@ -318,7 +318,7 @@ where
 	let b_eq_eval = eq_ind(b_eval_point, &challenges);
 	let expected_b_rerand_unbatched_evals = b_evals
 		.iter()
-		.map(|b_exponent_eval| b_eq_eval.clone() * b_exponent_eval)
+		.map(|b_eval| b_eq_eval.clone() * b_eval)
 		.collect::<Vec<_>>();
 
 	let expected_unbatched_evals = [
@@ -461,17 +461,10 @@ where
 	// Phase 3
 	let Phase3Output {
 		eval_point: phase_3_eval_point,
-		// TODO: rename b_exponent_evals to b_evals
-		b_exponent_evals,
-		// TODO: rename selector_eval to gpow_a_eval. Document the field as $A(r)$, where $r$ is
-		// eval_point
-		selector_eval,
-		// TODO: rename c_lo_root_eval to gpow_c_lo_eval. Document the field as
-		// $C_{\textsf{lo}}(r)$.
-		c_lo_root_eval,
-		// TODO: rename c_hi_root_eval to gpow_c_hi_eval. Document the field as
-		// $C_{\textsf{hi}}(r)$.
-		c_hi_root_eval,
+		b_evals,
+		gpow_a_eval,
+		gpow_c_lo_eval,
+		gpow_c_hi_eval,
 	} = verify_phase_3(
 		log_bits,
 		twisted_eval_points,
@@ -490,9 +483,9 @@ where
 	} = verify_phase_4(
 		log_bits,
 		&phase_3_eval_point,
-		selector_eval,
-		c_lo_root_eval,
-		c_hi_root_eval,
+		gpow_a_eval,
+		gpow_c_lo_eval,
+		gpow_c_hi_eval,
 		channel,
 	)?;
 
@@ -504,7 +497,7 @@ where
 		&c_lo_evals,
 		&c_hi_evals,
 		&phase_3_eval_point,
-		&b_exponent_evals,
+		&b_evals,
 		channel,
 	)
 }
