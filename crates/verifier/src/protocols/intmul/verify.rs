@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::iter;
+use std::{iter, slice};
 
 use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_ip::channel::IPVerifierChannel;
@@ -8,12 +8,12 @@ use binius_math::{
 	multilinear::{eq::eq_ind, evaluate::evaluate_inplace_scalars},
 	univariate::evaluate_univariate,
 };
-use itertools::{Itertools, izip};
+use itertools::{Itertools, chain};
 
 use super::{
 	common::{
-		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, Phase5Output,
-		frobenius_twist, make_phase_3_output, normalize_a_c_exponent_evals,
+		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, frobenius_twist,
+		normalize_a_c_exponent_evals,
 	},
 	error::Error,
 };
@@ -130,6 +130,13 @@ where
 
 	let evals = iter::chain(twisted_evals, [c_eval]).collect::<Vec<_>>();
 
+	// Polynomial is a univariate random combination of 2^k + 1 quartic terms:
+	//
+	// First 2^k:
+	// - (b(i, X) * (A(X) - 1) + 1) * eq(φ⁻ⁱ(x) ; X)
+	//
+	// Last one:
+	// - LO(X) * HI(X) * eq(c_eval_point ; X)
 	let BatchSumcheckOutput {
 		batch_coeff,
 		mut challenges,
@@ -137,37 +144,42 @@ where
 	} = batch_verify(n_vars, 3, &evals, channel)?;
 	challenges.reverse();
 
-	let selector_prover_evals = channel.recv_many((1 << log_bits) + 1)?;
-	let c_root_prover_evals = channel.recv_many(2)?;
+	// b(i, r) for i in 0..2^k
+	let b_evals = channel.recv_many(1 << log_bits)?;
 
-	let output =
-		make_phase_3_output(log_bits, &challenges, &selector_prover_evals, c_root_prover_evals);
-	let Phase3Output {
-		eval_point,
-		b_exponent_evals,
-		selector_eval,
-		c_lo_root_eval,
-		c_hi_root_eval,
-	} = &output;
+	// A(r)
+	let gpow_a_eval = channel.recv_one()?;
 
-	let mut expected_unbatched_terms = Vec::with_capacity((1 << log_bits) + 1);
+	// C_lo(r), C_hi(r)
+	let [gpow_c_lo_eval, gpow_c_hi_eval] = channel.recv_array::<2>()?;
 
-	for (twisted_eval_point, b_exponent_eval) in izip!(twisted_eval_points, b_exponent_evals) {
-		let twisted_eq_eval = eq_ind(&twisted_eval_point, eval_point);
-		let one = C::Elem::one();
-		let expected = twisted_eq_eval
-			* (b_exponent_eval.clone() * (selector_eval.clone() - one.clone()) + one);
-		expected_unbatched_terms.push(expected);
-	}
+	let eval_point = challenges;
 
-	let c_eq_eval = eq_ind(c_eval_point, eval_point);
-	expected_unbatched_terms.extend([c_eq_eval * c_lo_root_eval * c_hi_root_eval]);
+	let expected_selected_terms =
+		iter::zip(twisted_eval_points, &b_evals).map(|(twisted_eval_point, b_eval)| {
+			let one = C::Elem::one();
+			(b_eval.clone() * (gpow_a_eval.clone() - one.clone()) + one)
+				* eq_ind(&twisted_eval_point, &eval_point)
+		});
 
-	let expected_batched_eval = evaluate_univariate(&expected_unbatched_terms, batch_coeff);
+	// - c_lo(r) * c_hi(r) * eq(c_eval_point ; r)
+	let expected_c_prod_eval =
+		gpow_c_lo_eval.clone() * gpow_c_hi_eval.clone() * eq_ind(c_eval_point, &eval_point);
+
+	let expected_terms = expected_selected_terms
+		.chain([expected_c_prod_eval])
+		.collect::<Vec<_>>();
+	let expected_batched_eval = evaluate_univariate(&expected_terms, batch_coeff);
 
 	channel.assert_zero(expected_batched_eval - eval)?;
 
-	Ok(output)
+	Ok(Phase3Output {
+		eval_point,
+		b_evals,
+		gpow_a_eval,
+		gpow_c_lo_eval,
+		gpow_c_hi_eval,
+	})
 }
 
 /// Verify Phase 4: all but last layer of the GKR product trees for $\widetilde{a}$,
@@ -179,8 +191,8 @@ fn verify_phase_4<F, C>(
 	log_bits: usize,
 	eval_point: &[C::Elem],
 	a_root_eval: C::Elem,
-	c_lo_root_eval: C::Elem,
-	c_hi_root_eval: C::Elem,
+	gpow_c_lo_eval: C::Elem,
+	gpow_c_hi_eval: C::Elem,
 	channel: &mut C,
 ) -> Result<Phase4Output<C::Elem>, Error>
 where
@@ -190,7 +202,7 @@ where
 	assert!(log_bits >= 1);
 
 	let mut eval_point = eval_point.to_vec();
-	let mut evals = vec![a_root_eval, c_lo_root_eval, c_hi_root_eval];
+	let mut evals = vec![a_root_eval, gpow_c_lo_eval, gpow_c_hi_eval];
 
 	for depth in 0..log_bits - 1 {
 		assert_eq!(evals.len(), 3 << depth);
@@ -224,39 +236,36 @@ where
 #[allow(clippy::too_many_arguments)]
 fn verify_phase_5<F, C>(
 	log_bits: usize,
-	a_c_eval_point: &[F],
-	a_evals: &[F],
-	c_lo_evals: &[F],
-	c_hi_evals: &[F],
-	b_eval_point: &[F],
-	b_exponent_evals: &[F],
+	a_c_eval_point: &[C::Elem],
+	a_prod_evals: &[C::Elem],
+	c_lo_prod_evals: &[C::Elem],
+	c_hi_prod_evals: &[C::Elem],
+	b_eval_point: &[C::Elem],
+	b_evals_pre: &[C::Elem],
 	channel: &mut C,
-) -> Result<Phase5Output<F>, Error>
+) -> Result<IntMulOutput<C::Elem>, Error>
 where
 	F: Field,
-	C: IPVerifierChannel<F, Elem = F>,
+	C: IPVerifierChannel<F>,
+	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
 	assert!(log_bits >= 1);
-	assert_eq!(2 * a_evals.len(), 1 << log_bits);
-	assert_eq!(2 * c_lo_evals.len(), 1 << log_bits);
-	assert_eq!(2 * c_hi_evals.len(), 1 << log_bits);
+	assert_eq!(2 * a_prod_evals.len(), 1 << log_bits);
+	assert_eq!(2 * c_lo_prod_evals.len(), 1 << log_bits);
+	assert_eq!(2 * c_hi_prod_evals.len(), 1 << log_bits);
 
 	let n_vars = a_c_eval_point.len();
 	assert_eq!(b_eval_point.len(), n_vars);
-
-	// This is the eval of `a_0 * b_0` and `c_lo_0`.
-	let overflow_zerocheck_eval = channel.recv_one()?;
 
 	// Evals for the batched sumcheck: a (2^(k-1)), c_lo (2^(k-1)), c_hi (2^(k-1)) from the
 	// bivariate product layer, then a_0*b_0 and c_lo_0 for the parity zerocheck, then b
 	// exponent evals (2^k) for the rerandomization sumcheck.
 	let evals = [
-		a_evals,
-		c_lo_evals,
-		c_hi_evals,
-		&[overflow_zerocheck_eval],
-		&[overflow_zerocheck_eval],
-		b_exponent_evals,
+		a_prod_evals,
+		c_lo_prod_evals,
+		c_hi_prod_evals,
+		&[C::Elem::zero()], // overflow parity zerocheck
+		b_evals_pre,
 	]
 	.concat();
 
@@ -267,44 +276,55 @@ where
 	} = batch_verify(n_vars, 3, &evals, channel)?;
 	challenges.reverse();
 
-	// Read the evals of all multilinears in the bivariate product sumcheck: 2^k for `a`, 2^(k+1)
-	// for `c`, 2 for `a_0` and `b_0`.
-	let mut bivariate_evals: Vec<F> = channel.recv_many((3 << log_bits) + 2)?;
-	// Read the single eval of the `c_lo_0` rerand sumcheck.
-	let c_lo_0_eval = channel.recv_one()?;
-	// Read the 2^k evals of the `b` rerand sumcheck.
-	let b_exponent_evals: Vec<F> = channel.recv_many(1 << log_bits)?;
+	// Read the evals of all multilinears.
+	let a_selected_evals = channel.recv_many(1 << log_bits)?;
+	let c_lo_selected_evals = channel.recv_many(1 << log_bits)?;
+	let c_hi_selected_evals = channel.recv_many(1 << log_bits)?;
+	let b_evals = channel.recv_many(1 << log_bits)?;
 
 	// Compose the expected evaluation of the batched composition via
 	// the prover's claimed multilinear evals extracted above.
 	// For every pair (p,q) of multilinears, the verifier can be sure that
 	// the MLE of p*q at `a_c_eq_eval` equals the corresponding eval in `evals`.
-	// The last of these pairs implies the MLE of `a_0 * b_0` at `a_c_eq_eval` equals
-	// `overflow_zerocheck_eval`.
 	let a_c_eq_eval = eq_ind(a_c_eval_point, &challenges);
-	let expected_bivariate_unbatched_evals = bivariate_evals
-		.iter()
-		.tuples()
-		.map(|(left, right)| a_c_eq_eval * left * right)
-		.collect::<Vec<F>>();
+	let expected_bivariate_unbatched_evals =
+		chain!(&a_selected_evals, &c_lo_selected_evals, &c_hi_selected_evals)
+			.tuples()
+			.map(|(left, right)| a_c_eq_eval.clone() * left * right)
+			.collect::<Vec<_>>();
 
-	// Likewise, the verifier can be sure that the MLE of `c_lo_0` at `a_c_eq_eval`
-	// equals `overflow_zerocheck_eval`. Combined with the MLE of `a_0 * b_0` at `a_c_eq_eval`
-	// being `overflow_zerocheck_eval`, the verifier can conclude the
-	// MLE of `a_0 * b_0 - c_lo_0` at `a_c_eq_eval` equals zero. By the Schwartz-Zippel lemma,
-	// the verifier concludes `a_0_i * b_0_i - c_lo_0_i = 0` for all rows `i`.
-	let expected_c_lo_0_rerand_unbatched_eval = a_c_eq_eval * c_lo_0_eval;
+	let [a_evals, c_lo_evals, c_hi_evals] = normalize_a_c_exponent_evals(
+		log_bits,
+		a_selected_evals,
+		c_lo_selected_evals,
+		c_hi_selected_evals,
+	);
+
+	// We must check that `a_0 * b_0 = c_lo_0` across all rows, where these represent the least
+	// significant bits of `a_exponents`, `b_exponents`, and `c_lo_exponents` respectively.
+	// This check is performed in GF(2) (interpreting bits as field elements 0 and 1).
+	//
+	// Purpose: This prevents an attack when `a*b = 0` (due to `a=0` or `b=0`). A malicious
+	// prover could set `c = 2^128 - 1`, which satisfies `a*b ≡ c (mod 2^128-1)` since
+	// `0 ≡ 2^128-1 (mod 2^128-1)`. However, we need `a*b = c (mod 2^128)` where `0 ≠ 2^128-1`.
+	// This check catches the attack: if `c = 2^128-1` then `c_lo_0 = 1` (since 2^128-1 is odd),
+	// but `a_0 * b_0 = 0` when `a=0` or `b=0`, so the check `a_0 * b_0 = c_lo_0` fails.
+	//
+	// Implementation: We must perform a zerocheck on `a_0 * b_0 - c_lo_0 = 0`. We can reuse
+	// `a_c_eval_point` as our zerocheck challenge.
+	let expected_overflow_eval =
+		a_c_eq_eval.clone() * (a_evals[0].clone() * &b_evals[0] - &c_lo_evals[0]);
 
 	let b_eq_eval = eq_ind(b_eval_point, &challenges);
-	let expected_b_rerand_unbatched_evals = b_exponent_evals
+	let expected_b_rerand_unbatched_evals = b_evals
 		.iter()
-		.map(|&b_exponent_eval| b_eq_eval * b_exponent_eval)
-		.collect::<Vec<F>>();
+		.map(|b_eval| b_eq_eval.clone() * b_eval)
+		.collect::<Vec<_>>();
 
 	let expected_unbatched_evals = [
-		expected_bivariate_unbatched_evals,
-		vec![expected_c_lo_0_rerand_unbatched_eval],
-		expected_b_rerand_unbatched_evals,
+		&expected_bivariate_unbatched_evals,
+		slice::from_ref(&expected_overflow_eval),
+		&expected_b_rerand_unbatched_evals,
 	]
 	.concat();
 	let expected_batched_eval = evaluate_univariate(&expected_unbatched_evals, batch_coeff);
@@ -312,21 +332,12 @@ where
 	// Compare expected evaluation against given evaluation `eval`.
 	channel.assert_zero(expected_batched_eval - eval)?;
 
-	// Evals `b_0_eval`, `a_0_eval`, and `c_lo_0_eval` will be verified following phase 5.
-	let b_0_eval = bivariate_evals
-		.pop()
-		.expect("non-empty scaled a_c exponent evals");
-	let a_0_eval = bivariate_evals
-		.pop()
-		.expect("non-empty scaled a_c exponent evals");
-
-	Ok(Phase5Output {
+	Ok(IntMulOutput {
 		eval_point: challenges,
-		scaled_a_c_exponent_evals: bivariate_evals,
-		b_exponent_evals,
-		a_0_eval,
-		b_0_eval,
-		c_lo_0_eval,
+		a_evals,
+		b_evals,
+		c_lo_evals,
+		c_hi_evals,
 	})
 }
 
@@ -415,24 +426,25 @@ pub fn verify<F, C>(
 	log_bits: usize,
 	n_vars: usize,
 	channel: &mut C,
-) -> Result<IntMulOutput<F>, Error>
+) -> Result<IntMulOutput<C::Elem>, Error>
 where
 	F: BinaryField,
-	C: IPVerifierChannel<F, Elem = F>,
+	C: IPVerifierChannel<F>,
+	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
 	assert!(log_bits >= 1);
 	assert!((1 << (log_bits + 1)) <= F::N_BITS);
 
-	let initial_eval_point: Vec<F> = channel.sample_many(n_vars);
+	let initial_eval_point = channel.sample_many(n_vars);
 
 	// Read the evaluation of the multilinear extension of the powers of the generator.
-	let exp_eval: F = channel.recv_one()?;
+	let exp_eval = channel.recv_one()?;
 
 	// Phase 1
 	let Phase1Output {
 		eval_point: phase_1_eval_point,
 		b_leaves_evals,
-	} = verify_phase_1(log_bits, &initial_eval_point, exp_eval, channel)?;
+	} = verify_phase_1(log_bits, &initial_eval_point, exp_eval.clone(), channel)?;
 
 	assert_eq!(phase_1_eval_point.len(), n_vars);
 	assert_eq!(b_leaves_evals.len(), 1 << log_bits);
@@ -446,10 +458,10 @@ where
 	// Phase 3
 	let Phase3Output {
 		eval_point: phase_3_eval_point,
-		b_exponent_evals,
-		selector_eval,
-		c_lo_root_eval,
-		c_hi_root_eval,
+		b_evals,
+		gpow_a_eval,
+		gpow_c_lo_eval,
+		gpow_c_hi_eval,
 	} = verify_phase_3(
 		log_bits,
 		twisted_eval_points,
@@ -468,43 +480,21 @@ where
 	} = verify_phase_4(
 		log_bits,
 		&phase_3_eval_point,
-		selector_eval,
-		c_lo_root_eval,
-		c_hi_root_eval,
+		gpow_a_eval,
+		gpow_c_lo_eval,
+		gpow_c_hi_eval,
 		channel,
 	)?;
 
 	// Phase 5
-	let Phase5Output {
-		eval_point: phase_5_eval_point,
-		scaled_a_c_exponent_evals,
-		b_exponent_evals,
-		a_0_eval,
-		b_0_eval,
-		c_lo_0_eval,
-	} = verify_phase_5(
+	verify_phase_5(
 		log_bits,
 		&phase_4_eval_point,
 		&a_evals,
 		&c_lo_evals,
 		&c_hi_evals,
 		&phase_3_eval_point,
-		&b_exponent_evals,
+		&b_evals,
 		channel,
-	)?;
-
-	let [a_exponent_evals, c_lo_exponent_evals, c_hi_exponent_evals] =
-		normalize_a_c_exponent_evals(log_bits, scaled_a_c_exponent_evals);
-
-	assert_eq!(a_exponent_evals[0], a_0_eval);
-	assert_eq!(b_exponent_evals[0], b_0_eval);
-	assert_eq!(c_lo_exponent_evals[0], c_lo_0_eval);
-
-	Ok(IntMulOutput {
-		eval_point: phase_5_eval_point,
-		a_evals: a_exponent_evals,
-		b_evals: b_exponent_evals,
-		c_lo_evals: c_lo_exponent_evals,
-		c_hi_evals: c_hi_exponent_evals,
-	})
+	)
 }

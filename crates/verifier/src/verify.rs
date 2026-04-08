@@ -292,7 +292,7 @@ where
 		let ring_switch::RingSwitchVerifyOutput {
 			eq_r_double_prime,
 			sumcheck_claim,
-		} = ring_switch::verify(shift_output.witness_eval(), &eval_point, channel)?;
+		} = ring_switch::verify(*shift_output.witness_eval(), &eval_point, channel)?;
 
 		// Public input check batched with ring-switch
 		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;

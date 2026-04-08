@@ -1,11 +1,11 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_core::constraint_system::{AndConstraint, ConstraintSystem, MulConstraint};
-use binius_field::{BinaryField, Field};
+use binius_field::{BinaryField, field::FieldOps};
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{BinarySubspace, univariate::evaluate_univariate};
 use binius_utils::checked_arithmetics::strict_log_2;
-use getset::CopyGetters;
+use getset::Getters;
 use itertools::Itertools;
 
 use super::{BITAND_ARITY, INTMUL_ARITY, error::Error, evaluate_monster_multilinear_for_operation};
@@ -33,7 +33,7 @@ pub struct OperatorData<F, const ARITY: usize> {
 	pub evals: [F; ARITY],
 }
 
-impl<F: Field, const ARITY: usize> OperatorData<F, ARITY> {
+impl<F: FieldOps, const ARITY: usize> OperatorData<F, ARITY> {
 	// Constructs a new operator data instance encoding
 	// evaluation claim with univariate challenge `r_zhat_prime`
 	// multilinear challenge `r_x_prime`, and evaluations `evals`
@@ -50,7 +50,8 @@ impl<F: Field, const ARITY: usize> OperatorData<F, ARITY> {
 	// evaluation claim can be added to other batched evaluation claims
 	// without further random scaling.
 	fn batched_eval(&self, lambda: F) -> F {
-		lambda * evaluate_univariate(&self.evals, lambda)
+		let lambda_clone = lambda.clone();
+		lambda_clone * evaluate_univariate(&self.evals, lambda)
 	}
 }
 
@@ -59,8 +60,8 @@ impl<F: Field, const ARITY: usize> OperatorData<F, ARITY> {
 /// Contains all the challenge points, evaluation claims, and random coefficients
 /// produced during the shift reduction protocol. These values are used for subsequent
 /// verification steps including PCS verification.
-#[derive(Debug, CopyGetters)]
-pub struct VerifyOutput<F: Field> {
+#[derive(Debug, Getters)]
+pub struct VerifyOutput<F> {
 	/// Random coefficient for batching AND constraint evaluations.
 	bitand_lambda: F,
 	/// Random coefficient for batching MUL constraint evaluations.
@@ -74,11 +75,11 @@ pub struct VerifyOutput<F: Field> {
 	/// Final evaluation claim from the second sumcheck.
 	eval: F,
 	/// The claimed witness evaluation at the challenge point.
-	#[getset(get_copy = "pub")]
+	#[getset(get = "pub")]
 	pub witness_eval: F,
 }
 
-impl<F: Field> VerifyOutput<F> {
+impl<F> VerifyOutput<F> {
 	/// Returns the challenge point for bit index variables.
 	///
 	/// This corresponds to the first `LOG_WORD_SIZE_BITS` variables
@@ -133,18 +134,19 @@ impl<F: Field> VerifyOutput<F> {
 /// - Propagates sumcheck verification errors
 pub fn verify<F, C>(
 	constraint_system: &ConstraintSystem,
-	bitand_data: &OperatorData<F, BITAND_ARITY>,
-	intmul_data: &OperatorData<F, INTMUL_ARITY>,
+	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
+	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
 	channel: &mut C,
-) -> Result<VerifyOutput<F>, Error>
+) -> Result<VerifyOutput<C::Elem>, Error>
 where
 	F: BinaryField,
-	C: IPVerifierChannel<F, Elem = F>,
+	C: IPVerifierChannel<F>,
 {
 	let bitand_lambda = channel.sample();
 	let intmul_lambda = channel.sample();
 
-	let eval = bitand_data.batched_eval(bitand_lambda) + intmul_data.batched_eval(intmul_lambda);
+	let eval = bitand_data.batched_eval(bitand_lambda.clone())
+		+ intmul_data.batched_eval(intmul_lambda.clone());
 
 	let SumcheckOutput {
 		eval: gamma,
