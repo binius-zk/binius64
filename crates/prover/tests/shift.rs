@@ -316,11 +316,18 @@ fn test_shift_prove_and_verify() {
 		let verifier_output =
 			verify(&cs, &verifier_bitand_data, &verifier_intmul_data, &mut verifier_transcript)
 				.unwrap();
-		verifier_transcript.finalize().unwrap();
 
 		// Check consistency with verifier output
-		check_eval(&cs, &verifier_bitand_data, &verifier_intmul_data, &subspace, &verifier_output)
-			.unwrap();
+		check_eval(
+			&cs,
+			&verifier_bitand_data,
+			&verifier_intmul_data,
+			&subspace,
+			&verifier_output,
+			&mut verifier_transcript,
+		)
+		.unwrap();
+		verifier_transcript.finalize().unwrap();
 
 		// Check the claimed eval matches the computed eval
 		let expected_eval = evaluate_witness(

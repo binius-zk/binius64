@@ -273,6 +273,7 @@ where
 			&intmul_claim,
 			&domain_subspace,
 			&shift_output,
+			channel,
 		)?;
 		drop(public_guard);
 

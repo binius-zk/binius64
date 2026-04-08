@@ -203,13 +203,19 @@ where
 ///
 /// - `Error::VerificationFailure` if the evaluation equation doesn't hold
 /// - Propagates errors from monster multilinear evaluation
-pub fn check_eval<F: BinaryField>(
+pub fn check_eval<F, C>(
 	constraint_system: &ConstraintSystem,
-	bitand_data: &OperatorData<F, BITAND_ARITY>,
-	intmul_data: &OperatorData<F, INTMUL_ARITY>,
+	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
+	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
 	subspace: &BinarySubspace<F>,
-	output: &VerifyOutput<F>,
-) -> Result<(), Error> {
+	output: &VerifyOutput<C::Elem>,
+	channel: &mut C,
+) -> Result<(), Error>
+where
+	F: BinaryField,
+	C: IPVerifierChannel<F>,
+	C::Elem: FieldOps<Scalar = F> + From<F>,
+{
 	let VerifyOutput {
 		bitand_lambda,
 		intmul_lambda,
@@ -231,7 +237,7 @@ pub fn check_eval<F: BinaryField>(
 			&[a, b, c],
 			bitand_data,
 			subspace,
-			*bitand_lambda,
+			bitand_lambda.clone(),
 			r_j,
 			r_s,
 			r_y,
@@ -247,7 +253,7 @@ pub fn check_eval<F: BinaryField>(
 			&[a, b, lo, hi],
 			intmul_data,
 			subspace,
-			*intmul_lambda,
+			intmul_lambda.clone(),
 			r_j,
 			r_s,
 			r_y,
@@ -260,10 +266,8 @@ pub fn check_eval<F: BinaryField>(
 	// The protocol could compute this witness value instead of reading it from the prover. This
 	// would require inverting a random element, however, making the protocol incomplete with
 	// negligible probability. As a matter of taste, we read the witness value from the prover.
-	let expected_eval = *witness_eval * monster_eval;
-	if *eval != expected_eval {
-		return Err(Error::VerificationFailure);
-	}
+	let expected_eval = witness_eval.clone() * monster_eval;
+	channel.assert_zero(expected_eval - eval)?;
 
 	Ok(())
 }
