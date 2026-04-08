@@ -16,7 +16,11 @@ use crate::{
 	arithmetic_traits::{InvertOrZero, Square},
 };
 
-/// This trait is based on `ff::Field` with some unused functionality removed.
+/// An element of a finite field.
+///
+/// A finite field (also called a Galois field) has order `p^k` where `p` is the
+/// [`CHARACTERISTIC`](Self::CHARACTERISTIC) and `k` is the
+/// [`ORDER_EXPONENT`](Self::ORDER_EXPONENT).
 pub trait Field:
 	Sized
 	+ Eq
@@ -59,8 +63,12 @@ pub trait Field:
 	/// The one element of the field, the multiplicative identity.
 	const ONE: Self;
 
-	/// The characteristic of the field.
+	/// The characteristic `p` of the field. The field order is `p^k` where `k` is
+	/// [`ORDER_EXPONENT`](Self::ORDER_EXPONENT).
 	const CHARACTERISTIC: usize;
+
+	/// The exponent `k` such that the field order equals `CHARACTERISTIC^k`.
+	const ORDER_EXPONENT: usize;
 
 	/// Fixed generator of the multiplicative group.
 	const MULTIPLICATIVE_GENERATOR: Self;

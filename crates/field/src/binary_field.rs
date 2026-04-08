@@ -22,7 +22,7 @@ use crate::{Field, underlier::U1};
 pub trait BinaryField:
 	ExtensionField<BinaryField1b> + WithUnderlier<Underlier: UnderlierWithBitOps>
 {
-	const N_BITS: usize = Self::DEGREE;
+	const N_BITS: usize = Self::ORDER_EXPONENT;
 }
 
 /// A binary field *isomorphic* to a binary tower field.
@@ -228,6 +228,7 @@ macro_rules! binary_field {
 			const ZERO: Self = $name::new(<$typ as $crate::underlier::UnderlierWithBitOps>::ZERO);
 			const ONE: Self = $name::new(<$typ as $crate::underlier::UnderlierWithBitOps>::ONE);
 			const CHARACTERISTIC: usize = 2;
+			const ORDER_EXPONENT: usize = <$typ as $crate::underlier::UnderlierType>::BITS;
 			const MULTIPLICATIVE_GENERATOR: $name = $name($gen);
 
 			fn double(&self) -> Self {

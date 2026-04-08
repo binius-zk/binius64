@@ -243,6 +243,7 @@ impl Field for BinaryField128bGhash {
 	const ZERO: Self = Self(0);
 	const ONE: Self = Self(1);
 	const CHARACTERISTIC: usize = 2;
+	const ORDER_EXPONENT: usize = 128;
 	const MULTIPLICATIVE_GENERATOR: Self = Self(0x494ef99794d5244f9152df59d87a9186);
 
 	fn double(&self) -> Self {
