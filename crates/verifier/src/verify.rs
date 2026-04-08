@@ -1,17 +1,17 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
-use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, Field};
+use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps};
 use binius_iop::{
 	basefold_compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 };
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
-	BinarySubspace, FieldSlice,
-	inner_product::inner_product,
-	multilinear::{eq::eq_ind, evaluate::evaluate},
-	univariate::lagrange_evals,
+	BinarySubspace,
+	inner_product::inner_product_scalars,
+	multilinear::{eq::eq_ind, evaluate::evaluate_inplace_scalars},
+	univariate::lagrange_evals_scalars,
 };
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{
@@ -174,10 +174,8 @@ where
 			});
 		}
 
-		let public_elems = encode_public(public);
-
 		// Verifier observes the public input (includes it in Fiat-Shamir).
-		channel.observe_many(&public_elems);
+		let public_elems = channel.observe_many(&encode_public(public));
 
 		let _verify_guard =
 			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
@@ -219,8 +217,7 @@ where
 				c_eval,
 				z_challenge,
 				eval_point,
-			}: AndCheckOutput<B128> =
-				verify_bitand_reduction(log_n_constraints, &extended_subspace, channel)?;
+			} = verify_bitand_reduction(log_n_constraints, &extended_subspace, channel)?;
 			OperatorData::new(z_challenge, eval_point, [a_eval, b_eval, c_eval])
 		};
 		drop(bitand_guard);
@@ -238,8 +235,8 @@ where
 			} = intmul_output;
 
 			let r_zhat_prime = bitand_claim.r_zhat_prime;
-			let l_tilde = lagrange_evals(&domain_subspace, r_zhat_prime);
-			let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
+			let l_tilde = lagrange_evals_scalars(&domain_subspace, r_zhat_prime);
+			let make_final_claim = |evals| inner_product_scalars(evals, l_tilde.iter().cloned());
 			OperatorData::new(
 				r_zhat_prime,
 				eval_point,
@@ -300,16 +297,13 @@ where
 
 		let log_public_elems = self.log_public_words() - LOG_WORDS_PER_ELEM;
 		let pubcheck_point = eval_point_high[..log_public_elems].to_vec();
-		let pubcheck_claim = {
-			let public_elems_buf = FieldSlice::from_slice(log_public_elems, &public_elems);
-			evaluate(&public_elems_buf, &pubcheck_point)
-		};
+		let pubcheck_claim = evaluate_inplace_scalars(public_elems, &pubcheck_point);
 
-		let batch_coeff: B128 = channel.sample();
+		let batch_coeff = channel.sample();
 		let batched_claim = sumcheck_claim + batch_coeff * pubcheck_claim;
 
 		// Build the transparent closure combining ring-switch and public input check
-		let transparent = Box::new(move |point: &[B128]| {
+		let transparent = Box::new(move |point: &[Channel::Elem]| {
 			let rs_eq_eval =
 				ring_switch::eval_rs_eq(&eval_point_high, point, eq_r_double_prime.as_ref());
 			let pubcheck_eq_eval = eval_pubcheck_eq(&pubcheck_point, point);
@@ -362,12 +356,13 @@ where
 /// Computes `eq(pubcheck_point || 0, query)`, which selects the first `2^k` entries of the
 /// committed polynomial (the public inputs). In characteristic 2:
 /// `eq(a || 0, x) = eq(a, x[..k]) * prod_{i >= k} (1 - x_i)`
-fn eval_pubcheck_eq(pubcheck_point: &[B128], query: &[B128]) -> B128 {
+fn eval_pubcheck_eq<F: FieldOps>(pubcheck_point: &[F], query: &[F]) -> F {
+	let one = F::one();
 	let (query_prefix, query_suffix) = query.split_at(pubcheck_point.len());
 	let prefix_eq = eq_ind(pubcheck_point, query_prefix);
 	let suffix_prod = query_suffix
 		.iter()
-		.fold(B128::ONE, |acc, &x| acc * (B128::ONE - x));
+		.fold(one.clone(), |acc, x| acc * (one.clone() - x));
 	prefix_eq * suffix_prod
 }
 
