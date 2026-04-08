@@ -22,7 +22,7 @@ use rand::{
 
 use crate::{
 	BinaryField, Divisible, ExtensionField, Field, PackedField,
-	arithmetic_traits::{InvertOrZero, MulAlpha, Square},
+	arithmetic_traits::{InvertOrZero, Square},
 	field::FieldOps,
 	underlier::{NumCast, UnderlierType, UnderlierWithBitOps, WithUnderlier},
 };
@@ -548,23 +548,6 @@ where
 	let bigger_val = PT2::from_underlier(val.to_underlier().into());
 
 	let bigger_result = bigger_val.invert_or_zero();
-
-	PT1::from_underlier(PT1::Underlier::num_cast_from(bigger_result.to_underlier()))
-}
-
-/// Multiply by alpha `PT1` values by upcasting to wider `PT2` type with the same scalar.
-/// This is useful for the cases when SIMD multiply by alpha is faster.
-#[allow(dead_code)]
-pub fn mul_alpha_as_bigger_type<PT1, PT2>(val: PT1) -> PT1
-where
-	PT1: PackedField + WithUnderlier,
-	PT2: PackedField<Scalar = PT1::Scalar> + WithUnderlier + MulAlpha,
-	PT2::Underlier: From<PT1::Underlier>,
-	PT1::Underlier: NumCast<PT2::Underlier>,
-{
-	let bigger_val = PT2::from_underlier(val.to_underlier().into());
-
-	let bigger_result = bigger_val.mul_alpha();
 
 	PT1::from_underlier(PT1::Underlier::num_cast_from(bigger_result.to_underlier()))
 }

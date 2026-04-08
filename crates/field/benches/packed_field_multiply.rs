@@ -24,8 +24,7 @@ fn mul_main<T: SelfMul>(lhs: T, rhs: T) -> T {
 cfg_if! {
 	if #[cfg(feature = "benchmark_alternative_strategies")] {
 		use binius_field::{
-			arch::{PackedStrategy, PairwiseRecursiveStrategy, PairwiseStrategy,
-				PairwiseTableStrategy, },
+			arch::{PackedStrategy, PairwiseStrategy, PairwiseTableStrategy},
 			arithmetic_traits::TaggedMul
 		};
 
@@ -35,10 +34,6 @@ cfg_if! {
 
 		fn mul_pairwise_table<T: TaggedMul<PairwiseTableStrategy>>(lhs: T, rhs: T) -> T {
 			TaggedMul::<PairwiseTableStrategy>::mul(lhs, rhs)
-		}
-
-		fn mul_pairwise_recursive<T: TaggedMul<PairwiseRecursiveStrategy>>(lhs: T, rhs: T) -> T {
-			TaggedMul::<PairwiseRecursiveStrategy>::mul(lhs, rhs)
 		}
 
 		fn mul_packed<T: TaggedMul<PackedStrategy>>(lhs: T, rhs: T) -> T {
@@ -51,7 +46,6 @@ cfg_if! {
 			strategies @ (
 				(main, SelfMul, mul_main),
 				(pairwise, TaggedMul::<PairwiseStrategy>, mul_pairwise),
-				(pairwise_recursive, TaggedMul::<PairwiseRecursiveStrategy>, mul_pairwise_recursive),
 				(pairwise_table, TaggedMul::<PairwiseTableStrategy>, mul_pairwise_table),
 				(packed, TaggedMul::<PackedStrategy>, mul_packed),
 			)

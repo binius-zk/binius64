@@ -20,16 +20,11 @@ fn invert_main<T: PackedField>(val: T) -> T {
 cfg_if! {
 	if #[cfg(feature = "benchmark_alternative_strategies")] {
 		use binius_field::{
-			arch::{PackedStrategy, PairwiseRecursiveStrategy, PairwiseStrategy,
-				PairwiseTableStrategy, },
+			arch::{PackedStrategy, PairwiseStrategy, PairwiseTableStrategy},
 			arithmetic_traits::TaggedInvertOrZero,
 		};
 
 		fn invert_pairwise<T: TaggedInvertOrZero<PairwiseStrategy>>(val: T) -> T {
-			val.invert_or_zero()
-		}
-
-		fn invert_pairwise_recursive<T: TaggedInvertOrZero<PairwiseRecursiveStrategy>>(val: T) -> T {
 			val.invert_or_zero()
 		}
 
@@ -47,7 +42,6 @@ cfg_if! {
 			strategies @ (
 				(main, PackedField, invert_main),
 				(pairwise, TaggedInvertOrZero::<PairwiseStrategy>, invert_pairwise),
-				(pairwise_recursive, TaggedInvertOrZero::<PairwiseRecursiveStrategy>, invert_pairwise_recursive),
 				(pairwise_table, TaggedInvertOrZero::<PairwiseTableStrategy>, invert_pairwise_table),
 				(packed, TaggedInvertOrZero::<PackedStrategy>, invert_packed),
 			)
