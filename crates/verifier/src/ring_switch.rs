@@ -2,7 +2,7 @@
 
 use std::iter;
 
-use binius_field::{BinaryField, ExtensionField, PackedField};
+use binius_field::{BinaryField, ExtensionField, Field, FieldOps, PackedField};
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
 	FieldBuffer,
@@ -19,9 +19,9 @@ pub enum Error {
 }
 
 /// Output of ring-switching verification.
-pub struct RingSwitchVerifyOutput<F: BinaryField + PackedField<Scalar = F>> {
+pub struct RingSwitchVerifyOutput<F: FieldOps> {
 	/// The row-batching challenges (expanded via eq_ind).
-	pub eq_r_double_prime: FieldBuffer<F>,
+	pub eq_r_double_prime: Vec<F>,
 	/// The verified sumcheck claim for BaseFold.
 	pub sumcheck_claim: F,
 }
@@ -47,13 +47,14 @@ pub struct RingSwitchVerifyOutput<F: BinaryField + PackedField<Scalar = F>> {
 /// * `eval_point.len()` must equal `log_witness_elems + log_packing` where log_packing is the
 ///   base-2 log of the extension degree of F over B1
 pub fn verify<F, C>(
-	evaluation_claim: F,
-	eval_point: &[F],
+	evaluation_claim: C::Elem,
+	eval_point: &[C::Elem],
 	channel: &mut C,
-) -> Result<RingSwitchVerifyOutput<F>, Error>
+) -> Result<RingSwitchVerifyOutput<C::Elem>, Error>
 where
 	F: BinaryField + PackedField<Scalar = F>,
-	C: IPVerifierChannel<F, Elem = F>,
+	C: IPVerifierChannel<F>,
+	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
 	let log_packing = <F as ExtensionField<B1>>::LOG_DEGREE;
 	let (eval_point_low, _eval_point_high) = eval_point.split_at(log_packing);
@@ -104,7 +105,7 @@ where
 /// [DP24]: <https://eprint.iacr.org/2024/504>
 pub fn eval_rs_eq<F>(z_vals: &[F], query: &[F], expanded_row_batch_query: &[F]) -> F
 where
-	F: BinaryField,
+	F: FieldOps,
 {
 	assert_eq!(z_vals.len(), query.len()); // pre-condition
 	assert_eq!(expanded_row_batch_query.len(), F::DEGREE); // pre-condition
