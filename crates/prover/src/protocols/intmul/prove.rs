@@ -3,17 +3,16 @@
 use std::marker::PhantomData;
 
 use binius_field::{BinaryField, FieldOps, PackedField};
-use binius_ip_prover::{channel::IPProverChannel, sumcheck::batch::batch_prove};
+use binius_ip_prover::{
+	channel::IPProverChannel,
+	sumcheck::{batch::batch_prove, quadratic_mle::QuadraticMleCheckProver},
+};
 use binius_math::{
 	field_buffer::FieldBuffer,
 	inner_product::inner_product_buffers,
 	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
 };
-use binius_utils::{
-	bitwise::{BitSelector, Bitwise},
-	random_access_sequence::RandomAccessSequence,
-	rayon::prelude::*,
-};
+use binius_utils::{bitwise::Bitwise, rayon::prelude::*};
 use binius_verifier::protocols::{
 	intmul::common::{
 		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, frobenius_twist,
@@ -362,56 +361,11 @@ where
 		assert_eq!(b_eval_point.len(), a_layer.first().expect("log_bits >= 1").log_len());
 		assert_eq!(a_c_eval_point.len(), b_eval_point.len());
 
-		// We must check that `a_0 * b_0 = c_lo_0` across all rows, where these represent the least
-		// significant bits of `a_exponents`, `b_exponents`, and `c_lo_exponents` respectively.
-		// This check is performed in GF(2) (interpreting bits as field elements 0 and 1).
-		//
-		// Purpose: This prevents an attack when `a*b = 0` (due to `a=0` or `b=0`). A malicious
-		// prover could set `c = 2^128 - 1`, which satisfies `a*b ≡ c (mod 2^128-1)` since
-		// `0 ≡ 2^128-1 (mod 2^128-1)`. However, we need `a*b = c (mod 2^128)` where `0 ≠ 2^128-1`.
-		// This check catches the attack: if `c = 2^128-1` then `c_lo_0 = 1` (since 2^128-1 is odd),
-		// but `a_0 * b_0 = 0` when `a=0` or `b=0`, so the check `a_0 * b_0 = c_lo_0` fails.
-		//
-		// Implementation: We must perform a zerocheck on `a_0 * b_0 = c_lo_0`. We can reuse
-		// `a_c_eval_point` as our zerocheck challenge. We don't have a sumcheck prover generic
-		// over the composition. Therefore we'll use a bivariate product mle prover on `a_0*b_0`
-		// and the `RerandMlecheckProver` on `c_lo_0`. To do so we must feed each prover an eval
-		// claim, and we compute the corresponding eval by evaluating `c_lo_0` at
-		// `a_c_eval_point`.
-
-		// Embed `a_0` and `b_0` bits into field buffers for `BivariateProductMultiMlecheckProver`.
-		let binary_elements = [F::zero(), F::one()];
-		let a_0: FieldBuffer<P> = two_valued_field_buffer(0, &a_exponents, binary_elements);
-		let b_0: FieldBuffer<P> = two_valued_field_buffer(0, &b_exponents, binary_elements);
-
-		// Compute the evaluation of `c_lo_0` at `a_c_eval_point`.
-		let c_lo_0_eval = {
-			let c_lo_bits = BitSelector::new(0, c_lo_exponents);
-			let p_width = P::WIDTH.min(c_lo_bits.len());
-			eq_ind_partial_eval::<P>(a_c_eval_point)
-				.as_ref()
-				.iter()
-				.enumerate()
-				.fold(F::zero(), |acc, (i, packed)| {
-					(0..p_width).fold(acc, |inner_acc, j| unsafe {
-						if c_lo_bits.get_unchecked(i << P::LOG_WIDTH | j) {
-							inner_acc + packed.get_unchecked(j)
-						} else {
-							inner_acc
-						}
-					})
-				})
-		};
-
-		// Write `c_lo_0_eval` to the channel so the verifier has the claimed
-		// eval for both the `a_0 * b_0` bivariate product and `c_lo_0` rerand sumcheck.
-		self.channel.send_one(c_lo_0_eval);
-
 		// Make the `BivariateProductMultiMlecheckProver` prover.
 		// The prover proves an MLE eval claim on each pair of adjacent multilinears
 		// in the `multilinears` iterator below.
-		let multilinears = chain!(a_layer, c_lo_layer, c_hi_layer, [a_0, b_0]);
-		let evals = [a_evals, c_lo_evals, c_hi_evals, &[c_lo_0_eval]].concat();
+		let multilinears = chain!(a_layer, c_lo_layer, c_hi_layer);
+		let evals = [a_evals, c_lo_evals, c_hi_evals].concat();
 
 		let bivariate_mle_prover = BivariateProductMultiMlecheckProver::new(
 			make_pairs(multilinears),
@@ -420,14 +374,23 @@ where
 		)?;
 		let bivariate_sumcheck_prover = MleToSumCheckDecorator::new(bivariate_mle_prover);
 
-		// Make the `RerandMlecheckProver` prover for `c_lo_0`.
-		let c_lo_0_rerand_prover = RerandMlecheckProver::<P, _>::new(
-			a_c_eval_point,
-			&[c_lo_0_eval],
-			c_lo_exponents,
-			self.switchover,
-		)?;
-		let c_lo_0_sumcheck_prover = MleToSumCheckDecorator::new(c_lo_0_rerand_prover);
+		// Embed `a_0` and `b_0` bits into field buffers for `BivariateProductMultiMlecheckProver`.
+		let binary_elements = [F::zero(), F::one()];
+
+		// TODO: Use a special 1-bit-optimized MLE-check with switchover to save memory.
+		let a_0: FieldBuffer<P> = two_valued_field_buffer(0, &a_exponents, binary_elements);
+		let b_0: FieldBuffer<P> = two_valued_field_buffer(0, &b_exponents, binary_elements);
+		let c_lo_0: FieldBuffer<P> = two_valued_field_buffer(0, &c_lo_exponents, binary_elements);
+
+		// Make the sumcheck prover for the overflow parity check.
+		let overflow_prover =
+			MleToSumCheckDecorator::new(QuadraticMleCheckProver::<P, _, _, 3>::new(
+				[a_0, b_0, c_lo_0],
+				|[a, b, c]| a * b - c,
+				|[a, b, _c]| a * b,
+				a_c_eval_point.to_vec(),
+				F::ZERO,
+			)?);
 
 		// Make the `RerandMlecheckProver` for `b_exponents`.
 		assert_eq!(b_exponents.len(), 1 << b_eval_point.len());
@@ -448,27 +411,21 @@ where
 		} = batch_prove(
 			vec![
 				Either::Left(bivariate_sumcheck_prover),
-				Either::Right(c_lo_0_sumcheck_prover),
-				Either::Right(b_sumcheck_prover),
+				Either::Right(Either::Left(overflow_prover)),
+				Either::Right(Either::Right(b_sumcheck_prover)),
 			],
 			self.channel,
 		)?;
 
 		// Pull out the evals of all three provers.
-		let [mut bivariate_evals, c_lo_0_evals, b_evals] = multilinear_evals
+		let [mut bivariate_evals, lsb_evals, b_evals] = multilinear_evals
 			.try_into()
 			.expect("batch_prove with 3 provers returns 3 multilinear_evals vecs");
 
-		assert_eq!(bivariate_evals.len(), (3 << log_bits) + 2);
-		assert_eq!(c_lo_0_evals.len(), 1);
+		assert_eq!(bivariate_evals.len(), 3 << log_bits);
+		assert_eq!(lsb_evals.len(), 3);
 		assert_eq!(b_evals.len(), 1 << log_bits);
 
-		let b_0_eval = bivariate_evals
-			.pop()
-			.expect("a_c_prover_evals.len() == (3 << log_bits) + 2");
-		let a_0_eval = bivariate_evals
-			.pop()
-			.expect("a_c_prover_evals.len() == (3 << log_bits) + 2");
 		let selected_c_hi_evals = bivariate_evals.split_off(2 << log_bits);
 		let selected_c_lo_evals = bivariate_evals.split_off(1 << log_bits);
 		let selected_a_evals = bivariate_evals;
@@ -485,9 +442,8 @@ where
 			selected_c_hi_evals,
 		);
 
-		let [c_lo_0_eval] = c_lo_0_evals
-			.try_into()
-			.expect("c_lo_prover_evals.len() == 1");
+		let [a_0_eval, b_0_eval, c_lo_0_eval] =
+			lsb_evals.try_into().expect("c_lo_prover_evals.len() == 3");
 
 		debug_assert_eq!(a_0_eval, a_evals[0]);
 		debug_assert_eq!(b_0_eval, b_evals[0]);

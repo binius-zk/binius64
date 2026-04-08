@@ -155,13 +155,12 @@ where
 
 	let eval_point = challenges;
 
-	let expected_selected_terms = iter::zip(twisted_eval_points, &b_evals).map(
-		|(twisted_eval_point, b_eval)| {
+	let expected_selected_terms =
+		iter::zip(twisted_eval_points, &b_evals).map(|(twisted_eval_point, b_eval)| {
 			let one = C::Elem::one();
 			(b_eval.clone() * (gpow_a_eval.clone() - one.clone()) + one)
 				* eq_ind(&twisted_eval_point, &eval_point)
-		},
-	);
+		});
 
 	// - c_lo(r) * c_hi(r) * eq(c_eval_point ; r)
 	let expected_c_prod_eval =
@@ -258,9 +257,6 @@ where
 	let n_vars = a_c_eval_point.len();
 	assert_eq!(b_eval_point.len(), n_vars);
 
-	// This is the eval of `a_0 * b_0` and `c_lo_0`.
-	let overflow_zerocheck_eval = channel.recv_one()?;
-
 	// Evals for the batched sumcheck: a (2^(k-1)), c_lo (2^(k-1)), c_hi (2^(k-1)) from the
 	// bivariate product layer, then a_0*b_0 and c_lo_0 for the parity zerocheck, then b
 	// exponent evals (2^k) for the rerandomization sumcheck.
@@ -268,8 +264,7 @@ where
 		a_prod_evals,
 		c_lo_prod_evals,
 		c_hi_prod_evals,
-		slice::from_ref(&overflow_zerocheck_eval),
-		slice::from_ref(&overflow_zerocheck_eval),
+		&[C::Elem::zero()], // overflow parity zerocheck
 		b_evals_pre,
 	]
 	.concat();
@@ -291,8 +286,6 @@ where
 	// the prover's claimed multilinear evals extracted above.
 	// For every pair (p,q) of multilinears, the verifier can be sure that
 	// the MLE of p*q at `a_c_eq_eval` equals the corresponding eval in `evals`.
-	// The last of these pairs implies the MLE of `a_0 * b_0` at `a_c_eq_eval` equals
-	// `overflow_zerocheck_eval`.
 	let a_c_eq_eval = eq_ind(a_c_eval_point, &challenges);
 	let expected_bivariate_unbatched_evals =
 		chain!(&a_selected_evals, &c_lo_selected_evals, &c_hi_selected_evals)
@@ -307,13 +300,20 @@ where
 		c_hi_selected_evals,
 	);
 
-	// Likewise, the verifier can be sure that the MLE of `c_lo_0` at `a_c_eq_eval`
-	// equals `overflow_zerocheck_eval`. Combined with the MLE of `a_0 * b_0` at `a_c_eq_eval`
-	// being `overflow_zerocheck_eval`, the verifier can conclude the
-	// MLE of `a_0 * b_0 - c_lo_0` at `a_c_eq_eval` equals zero. By the Schwartz-Zippel lemma,
-	// the verifier concludes `a_0_i * b_0_i - c_lo_0_i = 0` for all rows `i`.
-	let expected_c_lo_0_rerand_unbatched_eval = a_c_eq_eval.clone() * &c_lo_evals[0];
-	let expected_a_0_b_0_prod_eval = a_c_eq_eval.clone() * &a_evals[0] * &b_evals[0];
+	// We must check that `a_0 * b_0 = c_lo_0` across all rows, where these represent the least
+	// significant bits of `a_exponents`, `b_exponents`, and `c_lo_exponents` respectively.
+	// This check is performed in GF(2) (interpreting bits as field elements 0 and 1).
+	//
+	// Purpose: This prevents an attack when `a*b = 0` (due to `a=0` or `b=0`). A malicious
+	// prover could set `c = 2^128 - 1`, which satisfies `a*b ≡ c (mod 2^128-1)` since
+	// `0 ≡ 2^128-1 (mod 2^128-1)`. However, we need `a*b = c (mod 2^128)` where `0 ≠ 2^128-1`.
+	// This check catches the attack: if `c = 2^128-1` then `c_lo_0 = 1` (since 2^128-1 is odd),
+	// but `a_0 * b_0 = 0` when `a=0` or `b=0`, so the check `a_0 * b_0 = c_lo_0` fails.
+	//
+	// Implementation: We must perform a zerocheck on `a_0 * b_0 - c_lo_0 = 0`. We can reuse
+	// `a_c_eval_point` as our zerocheck challenge.
+	let expected_overflow_eval =
+		a_c_eq_eval.clone() * (a_evals[0].clone() * &b_evals[0] - &c_lo_evals[0]);
 
 	let b_eq_eval = eq_ind(b_eval_point, &challenges);
 	let expected_b_rerand_unbatched_evals = b_evals
@@ -322,12 +322,9 @@ where
 		.collect::<Vec<_>>();
 
 	let expected_unbatched_evals = [
-		expected_bivariate_unbatched_evals,
-		vec![
-			expected_a_0_b_0_prod_eval,
-			expected_c_lo_0_rerand_unbatched_eval,
-		],
-		expected_b_rerand_unbatched_evals,
+		&expected_bivariate_unbatched_evals,
+		slice::from_ref(&expected_overflow_eval),
+		&expected_b_rerand_unbatched_evals,
 	]
 	.concat();
 	let expected_batched_eval = evaluate_univariate(&expected_unbatched_evals, batch_coeff);

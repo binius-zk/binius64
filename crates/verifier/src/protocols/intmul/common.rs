@@ -136,24 +136,25 @@ where
 }
 
 /// Recovers the multilinear evaluations of the $a, c_{\textsf{lo}}, c_{\textsf{hi}}$ polynomials.
-/// 
-/// The product checks for the exponentiations reduce to multilinear evaluations of affine translations of 
-/// the $a, c_{\textsf{lo}}, c_{\textsf{hi}}$ polynomials. Specifically, the sumcheck reduces to
-/// evaluations of
-/// 
+///
+/// The product checks for the exponentiations reduce to multilinear evaluations of affine
+/// translations of the $a, c_{\textsf{lo}}, c_{\textsf{hi}}$ polynomials. Specifically, the
+/// sumcheck reduces to evaluations of
+///
 /// * $\textsf{select}(a(i, r), g^{2^i})$,
 /// * $\textsf{select}(c_{\textsf{lo}}(i, r), g^{2^i})$,
 /// * $\textsf{select}(c_{\textsf{hi}}(i, r), g^{2^(i + k)}$,
-/// 
+///
 /// for all $i$ in $\{0, \ldots, 2^k - 1\}$, where
-/// 
+///
 /// $$
 /// \textsf{select}(S, V) = S * (V - 1) + 1.
 /// $$
-/// 
+///
 /// $g$ is a constant multiplicative generator of the field $F$.
-/// 
-/// Given, these evaluations, this function computes and returns $a(i, r), c_{\textsf{lo}}(i, r), c_{\textsf{hi}}(i, r)$.
+///
+/// Given, these evaluations, this function computes and returns $a(i, r), c_{\textsf{lo}}(i, r),
+/// c_{\textsf{hi}}(i, r)$.
 pub fn normalize_a_c_exponent_evals<F, E>(
 	k: usize,
 	selected_a_evals: Vec<E>,
