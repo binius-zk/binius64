@@ -9,16 +9,16 @@ workspace = true
 
 [dependencies]
 binius-field = { path = "../field" }
-binius-iop = { path = "../iop" }
-binius-iop-prover = { path = "../iop-prover" }
-binius-ip = { path = "../ip" }
-binius-ip-prover = { path = "../ip-prover" }
-binius-math = { path = "../math" }
-binius-transcript = { path = "../transcript" }
-binius-spartan-frontend = { path = "../spartan-frontend" }
-binius-spartan-verifier = { path = "../spartan-verifier" }
-binius-utils = { path = "../utils" }
 binius-hash = { path = "../hash", default-features = false }
+binius-iop = { path = "../iop", default-features = false }
+binius-iop-prover = { path = "../iop-prover", default-features = false }
+binius-ip = { path = "../ip", default-features = false }
+binius-ip-prover = { path = "../ip-prover", default-features = false }
+binius-math = { path = "../math", default-features = false }
+binius-transcript = { path = "../transcript", default-features = false }
+binius-spartan-frontend = { path = "../spartan-frontend", default-features = false }
+binius-spartan-verifier = { path = "../spartan-verifier", default-features = false }
+binius-utils = { path = "../utils", default-features = false }
 digest.workspace = true
 itertools.workspace = true
 rand.workspace = true
@@ -38,4 +38,4 @@ smallvec.workspace = true
 
 [features]
 default = ["rayon"]
-rayon = ["binius-utils/rayon"]
+rayon = ["binius-utils/rayon", "binius-hash/rayon", "binius-iop/rayon", "binius-iop-prover/rayon", "binius-ip-prover/rayon", "binius-math/rayon"]

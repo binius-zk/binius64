@@ -11,13 +11,13 @@ workspace = true
 binius-core = { path = "../core" }
 binius-field = { path = "../field" }
 binius-hash = { path = "../hash", default-features = false }
-binius-iop = { path = "../iop" }
+binius-iop = { path = "../iop", default-features = false }
 binius-iop-prover = { path = "../iop-prover", default-features = false }
 binius-ip-prover = { path = "../ip-prover", default-features = false }
 binius-math = { path = "../math" }
-binius-spartan-frontend = { path = "../spartan-frontend" }
+binius-spartan-frontend = { path = "../spartan-frontend", default-features = false }
 binius-spartan-prover = { path = "../spartan-prover", default-features = false }
-binius-spartan-verifier = { path = "../spartan-verifier" }
+binius-spartan-verifier = { path = "../spartan-verifier", default-features = false }
 binius-transcript = { path = "../transcript" }
 binius-verifier = { path = "../verifier", default-features = false }
 binius-utils = { path = "../utils" }
@@ -91,4 +91,4 @@ harness = false
 
 [features]
 default = ["rayon"]
-rayon = ["binius-utils/rayon", "binius-hash/rayon", "binius-iop-prover/rayon", "binius-ip-prover/rayon"]
+rayon = ["binius-utils/rayon", "binius-hash/rayon", "binius-iop/rayon", "binius-iop-prover/rayon", "binius-ip-prover/rayon", "binius-spartan-prover/rayon"]
