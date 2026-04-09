@@ -164,7 +164,8 @@ where
 
 	fn verify_iop<Channel>(&self, public: &[Word], channel: &mut Channel) -> Result<(), Error>
 	where
-		Channel: IOPVerifierChannel<B128, Elem = B128>,
+		Channel: IOPVerifierChannel<B128>,
+		Channel::Elem: FieldOps<Scalar=B128> + From<B128>,
 	{
 		// Check that the public input length is correct
 		if public.len() != 1 << self.log_public_words() {
@@ -234,8 +235,8 @@ where
 				eval_point,
 			} = intmul_output;
 
-			let r_zhat_prime = bitand_claim.r_zhat_prime;
-			let l_tilde = lagrange_evals_scalars(&domain_subspace, r_zhat_prime);
+			let r_zhat_prime = bitand_claim.r_zhat_prime.clone();
+			let l_tilde = lagrange_evals_scalars(&domain_subspace, r_zhat_prime.clone());
 			let make_final_claim = |evals| inner_product_scalars(evals, l_tilde.iter().cloned());
 			OperatorData::new(
 				r_zhat_prime,
@@ -290,7 +291,7 @@ where
 		let ring_switch::RingSwitchVerifyOutput {
 			eq_r_double_prime,
 			sumcheck_claim,
-		} = ring_switch::verify(*shift_output.witness_eval(), &eval_point, channel)?;
+		} = ring_switch::verify(shift_output.witness_eval().clone(), &eval_point, channel)?;
 
 		// Public input check batched with ring-switch
 		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
@@ -301,14 +302,14 @@ where
 		let pubcheck_claim = evaluate_inplace_scalars(public_elems, &pubcheck_point);
 
 		let batch_coeff = channel.sample();
-		let batched_claim = sumcheck_claim + batch_coeff * pubcheck_claim;
+		let batched_claim = sumcheck_claim + batch_coeff.clone() * pubcheck_claim;
 
 		// Build the transparent closure combining ring-switch and public input check
 		let transparent = Box::new(move |point: &[Channel::Elem]| {
 			let rs_eq_eval =
 				ring_switch::eval_rs_eq(&eval_point_high, point, eq_r_double_prime.as_ref());
 			let pubcheck_eq_eval = eval_pubcheck_eq(&pubcheck_point, point);
-			rs_eq_eval + batch_coeff * pubcheck_eq_eval
+			rs_eq_eval + batch_coeff.clone() * pubcheck_eq_eval
 		});
 
 		// Verify oracle relations (runs BaseFold internally and verifies the product check)
