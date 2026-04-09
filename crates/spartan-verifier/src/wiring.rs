@@ -9,7 +9,8 @@ use binius_math::{
 	univariate::evaluate_univariate,
 };
 use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex};
-use binius_verifier::protocols::{basefold, sumcheck};
+use binius_iop::basefold;
+use binius_ip::sumcheck;
 
 use crate::constraint_system::ConstraintSystemPadded;
 

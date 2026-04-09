@@ -25,7 +25,7 @@ use binius_spartan_verifier::{
 	wrapper::{IronSpartanBuilderChannel, ZKWrappedVerifierChannel},
 };
 use binius_transcript::ProverTranscript;
-use binius_verifier::fri::{self, MinProofSizeStrategy};
+use binius_iop::fri::{self, MinProofSizeStrategy};
 use rand::{SeedableRng, rngs::StdRng};
 
 /// Build a power7 circuit: assert that x^7 = y

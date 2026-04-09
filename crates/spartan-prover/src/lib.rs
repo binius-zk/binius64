@@ -43,11 +43,9 @@ use binius_math::{
 	FieldBuffer, FieldSlice,
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
 };
-use binius_prover::{
-	hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression},
-	merkle_tree::prover::BinaryMerkleTreeProver,
-	protocols::sumcheck::{quadratic_mle::QuadraticMleCheckProver, zk_mlecheck},
-};
+use binius_hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression};
+use binius_iop_prover::merkle_tree::prover::BinaryMerkleTreeProver;
+use binius_ip_prover::sumcheck::{quadratic_mle::QuadraticMleCheckProver, zk_mlecheck};
 use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex};
 use binius_spartan_verifier::{
 	Verifier,

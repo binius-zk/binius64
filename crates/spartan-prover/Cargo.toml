@@ -18,9 +18,7 @@ binius-transcript = { path = "../transcript" }
 binius-spartan-frontend = { path = "../spartan-frontend" }
 binius-spartan-verifier = { path = "../spartan-verifier" }
 binius-utils = { path = "../utils" }
-# Reuse infrastructure from binius-prover
-binius-prover = { path = "../prover" }
-binius-verifier = { path = "../verifier" }
+binius-hash = { path = "../hash", default-features = false }
 digest.workspace = true
 itertools.workspace = true
 rand.workspace = true
