@@ -7,13 +7,19 @@ use binius_core::{
 };
 use binius_field::arch::OptimalPackedB128;
 use binius_frontend::{CircuitBuilder, Wire};
-use binius_prover::{Prover, hash::parallel_compression::ParallelCompressionAdaptor};
+use binius_prover::{
+	Prover,
+	hash::parallel_compression::ParallelCompressionAdaptor,
+	zk_config::ZKProver,
+};
 use binius_transcript::ProverTranscript;
 use binius_verifier::{
 	Verifier,
 	config::StdChallenger,
 	hash::{StdCompression, StdDigest},
+	zk_config::ZKVerifier,
 };
+use rand::{SeedableRng, rngs::StdRng};
 
 fn prove_verify(cs: ConstraintSystem, witness: ValueVec) {
 	const LOG_INV_RATE: usize = 1;
@@ -39,8 +45,32 @@ fn prove_verify(cs: ConstraintSystem, witness: ValueVec) {
 	verifier_transcript.finalize().unwrap();
 }
 
-#[test]
-fn test_prove_verify_sha256_preimage() {
+fn prove_verify_zk(cs: ConstraintSystem, witness: ValueVec) {
+	const LOG_INV_RATE: usize = 1;
+
+	let zk_verifier =
+		ZKVerifier::<StdDigest, _>::setup(cs, LOG_INV_RATE, StdCompression::default()).unwrap();
+
+	let zk_prover = ZKProver::<OptimalPackedB128, _, StdDigest>::setup(
+		zk_verifier.clone(),
+		ParallelCompressionAdaptor::new(StdCompression::default()),
+	)
+	.unwrap();
+
+	let mut rng = StdRng::seed_from_u64(0);
+	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+	zk_prover
+		.prove(witness.clone(), &mut rng, &mut prover_transcript)
+		.unwrap();
+
+	let mut verifier_transcript = prover_transcript.into_verifier();
+	zk_verifier
+		.verify(witness.public(), &mut verifier_transcript)
+		.unwrap();
+	verifier_transcript.finalize().unwrap();
+}
+
+fn sha256_preimage_circuit() -> (ConstraintSystem, ValueVec) {
 	// Use the test-vector for SHA256 single block message: "abc".
 	let mut preimage: [u8; 64] = [0; 64];
 	preimage[0..3].copy_from_slice(b"abc");
@@ -76,5 +106,17 @@ fn test_prove_verify_sha256_preimage() {
 	}
 	circuit.populate_wire_witness(&mut w).unwrap();
 
-	prove_verify(circuit.constraint_system().clone(), w.into_value_vec())
+	(circuit.constraint_system().clone(), w.into_value_vec())
+}
+
+#[test]
+fn test_prove_verify_sha256_preimage() {
+	let (cs, witness) = sha256_preimage_circuit();
+	prove_verify(cs, witness);
+}
+
+#[test]
+fn test_zk_prove_verify_sha256_preimage() {
+	let (cs, witness) = sha256_preimage_circuit();
+	prove_verify_zk(cs, witness);
 }
