@@ -39,88 +39,27 @@ use crate::{
 
 pub const SECURITY_BITS: usize = 96;
 
-/// Struct for verifying instances of a particular constraint system.
+/// IOP verifier for a particular constraint system.
 ///
-/// The [`Self::setup`] constructor determines public parameters for proving instances of the given
-/// constraint system. Then [`Self::verify`] is called one or more times with individual instances.
+/// This struct encapsulates the constraint system, providing the core verification logic
+/// independent of the specific IOP compilation strategy. Most users should use [`Verifier`]
+/// instead, which wraps this with a BaseFold compiler.
 #[derive(Debug, Clone)]
-pub struct Verifier<MerkleHash, MerkleCompress>
-where
-	MerkleHash: Digest + BlockSizeUser,
-	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
-{
+pub struct IOPVerifier {
 	constraint_system: ConstraintSystem,
-	iop_compiler:
-		BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>,
 	log_public_words: usize,
 }
 
-impl<MerkleHash, MerkleCompress> Verifier<MerkleHash, MerkleCompress>
-where
-	MerkleHash: Digest + BlockSizeUser,
-	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
-	Output<MerkleHash>: DeserializeBytes,
-{
-	/// Constructs a verifier for a constraint system.
+impl IOPVerifier {
+	/// Constructs an IOP verifier for a constraint system.
 	///
-	/// See [`Verifier`] struct documentation for details.
-	pub fn setup(
-		mut constraint_system: ConstraintSystem,
-		log_inv_rate: usize,
-		compression: MerkleCompress,
-	) -> Result<Self, Error> {
-		constraint_system.validate_and_prepare()?;
-
-		// Use offset_witness which is guaranteed to be power of two and be at least one full
-		// element.
-		let n_public = constraint_system.value_vec_layout.offset_witness;
-		let log_public_words = log2_ceil_usize(n_public);
-		assert!(n_public.is_power_of_two());
-		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
-
-		// The number of field elements that constitute the packed witness.
-		let log_witness_words =
-			log2_ceil_usize(constraint_system.value_vec_len()).max(LOG_WORDS_PER_ELEM);
-		let log_witness_elems = log_witness_words - LOG_WORDS_PER_ELEM;
-
-		let log_code_len = log_witness_elems + log_inv_rate;
-		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
-		let fri_arity =
-			ConstantArityStrategy::with_optimal_arity::<B128, _>(&merkle_scheme, log_code_len)
-				.arity;
-
-		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
-
-		// Create oracle spec for the single witness oracle (not ZK)
-		let oracle_specs = vec![OracleSpec {
-			log_msg_len: log_witness_elems,
-		}];
-
-		let iop_compiler = BaseFoldVerifierCompiler::new(
-			merkle_scheme,
-			oracle_specs,
-			log_inv_rate,
-			n_test_queries,
-			&ConstantArityStrategy::new(fri_arity),
-		);
-
-		Ok(Self {
+	/// The constraint system must already be validated via
+	/// [`ConstraintSystem::validate_and_prepare`].
+	pub fn new(constraint_system: ConstraintSystem, log_public_words: usize) -> Self {
+		Self {
 			constraint_system,
-			iop_compiler,
 			log_public_words,
-		})
-	}
-
-	/// Returns log2 of the number of words in the witness.
-	pub fn log_witness_words(&self) -> usize {
-		self.log_witness_elems() + LOG_WORDS_PER_ELEM
-	}
-
-	/// Returns log2 of the number of field elements in the packed trace.
-	pub fn log_witness_elems(&self) -> usize {
-		let fri_params = self.fri_params();
-		let rs_code = fri_params.rs_code();
-		rs_code.log_dim() + fri_params.log_batch_size()
+		}
 	}
 
 	/// Returns the constraint system.
@@ -128,44 +67,40 @@ where
 		&self.constraint_system
 	}
 
-	/// Returns the chosen FRI parameters.
-	pub fn fri_params(&self) -> &FRIParams<B128> {
-		// There is exactly one oracle spec (the witness)
-		&self.iop_compiler.fri_params()[0]
-	}
-
-	/// Returns the [`crate::merkle_tree::MerkleTreeScheme`] instance used.
-	pub fn merkle_scheme(&self) -> &BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress> {
-		self.iop_compiler.merkle_scheme()
-	}
-
 	/// Returns log2 of the number of public constants and input/output words.
 	pub fn log_public_words(&self) -> usize {
 		self.log_public_words
 	}
 
-	/// Returns the IOP compiler for creating verifier channels.
-	pub fn iop_compiler(
-		&self,
-	) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>
-	{
-		&self.iop_compiler
+	/// Returns log2 of the number of field elements in the packed trace.
+	pub fn log_witness_elems(&self) -> usize {
+		let log_witness_words =
+			log2_ceil_usize(self.constraint_system.value_vec_len()).max(LOG_WORDS_PER_ELEM);
+		log_witness_words - LOG_WORDS_PER_ELEM
 	}
 
-	pub fn verify<Challenger_: Challenger>(
-		&self,
-		public: &[Word],
-		transcript: &mut VerifierTranscript<Challenger_>,
-	) -> Result<(), Error> {
-		// Create channel and delegate to verify_iop
-		let mut channel = self.iop_compiler.create_channel(transcript);
-		self.verify_iop(public, &mut channel)
+	/// Returns log2 of the number of words in the witness.
+	pub fn log_witness_words(&self) -> usize {
+		self.log_witness_elems() + LOG_WORDS_PER_ELEM
 	}
 
-	fn verify_iop<Channel>(&self, public: &[Word], channel: &mut Channel) -> Result<(), Error>
+	/// Returns the oracle specs for the IOP channel.
+	///
+	/// These describe the oracles (the witness) that the prover commits to.
+	pub fn oracle_specs(&self) -> Vec<OracleSpec> {
+		vec![OracleSpec {
+			log_msg_len: self.log_witness_elems(),
+		}]
+	}
+
+	/// Verifies a proof using an IOP channel.
+	///
+	/// This is the core verification logic, independent of the specific IOP compilation strategy.
+	/// For most users, [`Verifier::verify`] is the simpler interface.
+	pub fn verify<Channel>(&self, public: &[Word], channel: &mut Channel) -> Result<(), Error>
 	where
 		Channel: IOPVerifierChannel<B128>,
-		Channel::Elem: FieldOps<Scalar=B128> + From<B128>,
+		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 	{
 		// Check that the public input length is correct
 		if public.len() != 1 << self.log_public_words() {
@@ -322,6 +257,131 @@ where
 		drop(pcs_guard);
 
 		Ok(())
+	}
+}
+
+/// Struct for verifying instances of a particular constraint system.
+///
+/// The [`Self::setup`] constructor determines public parameters for proving instances of the given
+/// constraint system. Then [`Self::verify`] is called one or more times with individual instances.
+#[derive(Debug, Clone)]
+pub struct Verifier<MerkleHash, MerkleCompress>
+where
+	MerkleHash: Digest + BlockSizeUser,
+	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
+{
+	iop_verifier: IOPVerifier,
+	iop_compiler:
+		BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>,
+}
+
+impl<MerkleHash, MerkleCompress> Verifier<MerkleHash, MerkleCompress>
+where
+	MerkleHash: Digest + BlockSizeUser,
+	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
+	Output<MerkleHash>: DeserializeBytes,
+{
+	/// Constructs a verifier for a constraint system.
+	///
+	/// See [`Verifier`] struct documentation for details.
+	pub fn setup(
+		mut constraint_system: ConstraintSystem,
+		log_inv_rate: usize,
+		compression: MerkleCompress,
+	) -> Result<Self, Error> {
+		constraint_system.validate_and_prepare()?;
+
+		// Use offset_witness which is guaranteed to be power of two and be at least one full
+		// element.
+		let n_public = constraint_system.value_vec_layout.offset_witness;
+		let log_public_words = log2_ceil_usize(n_public);
+		assert!(n_public.is_power_of_two());
+		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
+
+		let iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
+
+		let log_witness_elems = iop_verifier.log_witness_elems();
+		let oracle_specs = iop_verifier.oracle_specs();
+
+		let log_code_len = log_witness_elems + log_inv_rate;
+		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
+		let fri_arity =
+			ConstantArityStrategy::with_optimal_arity::<B128, _>(&merkle_scheme, log_code_len)
+				.arity;
+
+		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
+
+		let iop_compiler = BaseFoldVerifierCompiler::new(
+			merkle_scheme,
+			oracle_specs,
+			log_inv_rate,
+			n_test_queries,
+			&ConstantArityStrategy::new(fri_arity),
+		);
+
+		Ok(Self {
+			iop_verifier,
+			iop_compiler,
+		})
+	}
+
+	/// Returns a reference to the IOP verifier.
+	pub fn iop_verifier(&self) -> &IOPVerifier {
+		&self.iop_verifier
+	}
+
+	/// Consumes the verifier and returns the inner IOP verifier.
+	pub fn into_iop_verifier(self) -> IOPVerifier {
+		self.iop_verifier
+	}
+
+	/// Returns log2 of the number of words in the witness.
+	pub fn log_witness_words(&self) -> usize {
+		self.iop_verifier.log_witness_words()
+	}
+
+	/// Returns log2 of the number of field elements in the packed trace.
+	pub fn log_witness_elems(&self) -> usize {
+		self.iop_verifier.log_witness_elems()
+	}
+
+	/// Returns the constraint system.
+	pub fn constraint_system(&self) -> &ConstraintSystem {
+		self.iop_verifier.constraint_system()
+	}
+
+	/// Returns the chosen FRI parameters.
+	pub fn fri_params(&self) -> &FRIParams<B128> {
+		// There is exactly one oracle spec (the witness)
+		&self.iop_compiler.fri_params()[0]
+	}
+
+	/// Returns the [`crate::merkle_tree::MerkleTreeScheme`] instance used.
+	pub fn merkle_scheme(&self) -> &BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress> {
+		self.iop_compiler.merkle_scheme()
+	}
+
+	/// Returns log2 of the number of public constants and input/output words.
+	pub fn log_public_words(&self) -> usize {
+		self.iop_verifier.log_public_words()
+	}
+
+	/// Returns the IOP compiler for creating verifier channels.
+	pub fn iop_compiler(
+		&self,
+	) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>
+	{
+		&self.iop_compiler
+	}
+
+	pub fn verify<Challenger_: Challenger>(
+		&self,
+		public: &[Word],
+		transcript: &mut VerifierTranscript<Challenger_>,
+	) -> Result<(), Error> {
+		// Create channel and delegate to IOPVerifier::verify
+		let mut channel = self.iop_compiler.create_channel(transcript);
+		self.iop_verifier.verify(public, &mut channel)
 	}
 }
 

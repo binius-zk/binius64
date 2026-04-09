@@ -16,6 +16,7 @@
 //!
 //! - [`Verifier`] - Main verification interface; call [`Verifier::setup`] with a constraint system,
 //!   then [`Verifier::verify`] with a proof and public inputs
+//! - [`IOPVerifier`] - Core IOP verification logic, independent of the compilation strategy
 //! - [`VerificationError`] - Error type returned when proof verification fails
 //!
 //! # Design philosophy
