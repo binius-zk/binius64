@@ -9,7 +9,7 @@ workspace = true
 
 [dependencies]
 binius-field = { path = "../field" }
-binius-hash = { path = "../hash", default-features = false }
+binius-hash = { path = "../hash" }
 binius-ip = { path = "../ip" }
 binius-math = { path = "../math" }
 binius-transcript = { path = "../transcript" }
@@ -25,7 +25,3 @@ tracing.workspace = true
 binius-math = { path = "../math", features = ["test-utils"] }
 rand.workspace = true
 sha2.workspace = true
-
-[features]
-default = ["rayon"]
-rayon = ["binius-utils/rayon", "binius-hash/rayon"]

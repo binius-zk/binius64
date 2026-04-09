@@ -9,8 +9,8 @@ workspace = true
 
 [dependencies]
 binius-field = { path = "../field" }
-binius-hash = { path = "../hash", default-features = false }
-binius-iop = { path = "../iop", default-features = false }
+binius-hash = { path = "../hash" }
+binius-iop = { path = "../iop" }
 binius-ip = { path = "../ip" }
 binius-ip-prover = { path = "../ip-prover", default-features = false }
 binius-math = { path = "../math" }
@@ -34,4 +34,4 @@ sha2.workspace = true
 
 [features]
 default = ["rayon"]
-rayon = ["binius-utils/rayon", "binius-hash/rayon", "binius-iop/rayon", "binius-ip-prover/rayon"]
+rayon = ["binius-utils/rayon"]

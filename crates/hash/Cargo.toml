@@ -26,5 +26,5 @@ tracing.workspace = true
 rand.workspace = true
 
 [features]
-default = ["rayon"]
+default = []
 rayon = ["binius-utils/rayon"]
