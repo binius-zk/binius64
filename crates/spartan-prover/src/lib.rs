@@ -108,6 +108,7 @@ impl<F: Field> IOPProver<F> {
 	pub fn new(constraint_system: ConstraintSystemPadded<F>) -> Self {
 		let wiring_transpose = WiringTranspose::transpose(
 			constraint_system.size(),
+			constraint_system.n_public() as usize,
 			constraint_system.mul_constraints(),
 		);
 		Self {
@@ -190,9 +191,11 @@ impl<F: Field> IOPProver<F> {
 		let mask_oracle = channel.send_oracle(masks_buffer.to_ref());
 
 		// Prove the multiplication constraints
+		let private_offset = cs.n_public() as usize;
 		let (mulcheck_evals, mask_eval, r_x) = prove_mulcheck::<F, P, _>(
 			cs.mul_constraints(),
 			witness_packed.to_ref(),
+			private_offset,
 			mulcheck_mask,
 			&mut channel,
 		)?;
@@ -314,6 +317,7 @@ where
 fn prove_mulcheck<F, P, Channel>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	witness: FieldSlice<P>,
+	private_offset: usize,
 	mask: zk_mlecheck::Mask<P, impl Deref<Target = [P]>>,
 	channel: &mut Channel,
 ) -> Result<([F; 3], F, Vec<F>), Error>
@@ -322,7 +326,8 @@ where
 	P: PackedField<Scalar = F> + PackedExtension<F>,
 	Channel: IPProverChannel<F>,
 {
-	let mulcheck_witness = wiring::build_mulcheck_witness(mul_constraints, witness);
+	let mulcheck_witness =
+		wiring::build_mulcheck_witness(mul_constraints, witness, private_offset);
 
 	// Sample random evaluation point for mulcheck
 	let r_mulcheck = channel.sample_many(mask.n_vars());

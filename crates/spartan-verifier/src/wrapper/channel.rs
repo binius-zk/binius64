@@ -146,7 +146,12 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 	}
 
 	/// Consumes the channel and builds the outer witness.
-	pub fn finish(self) -> Result<Vec<F>, binius_spartan_frontend::circuit_builder::WitnessError> {
+	pub fn finish(
+		self,
+	) -> Result<
+		binius_spartan_frontend::constraint_system::Witness<F>,
+		binius_spartan_frontend::circuit_builder::WitnessError,
+	> {
 		Rc::try_unwrap(self.witness_gen)
 			.expect("CircuitElem values should only hold Weak references")
 			.into_inner()

@@ -7,7 +7,8 @@ use bytemuck::zeroed_vec;
 use smallvec::{SmallVec, smallvec};
 
 use crate::constraint_system::{
-	ConstraintSystem, ConstraintWire, MulConstraint, Operand, WireKind, WitnessIndex, WitnessLayout,
+	ConstraintSystem, ConstraintWire, MulConstraint, Operand, Witness, WireKind, WitnessIndex,
+	WitnessLayout,
 };
 
 /// Common interface for circuit construction and witness generation.
@@ -170,7 +171,8 @@ impl<F: Field> ConstraintSystemIR<F> {
 		// Map one_wire to WitnessIndex
 		let one_wire_index = layout
 			.get(&one_wire)
-			.expect("one_wire constant should exist in layout");
+			.expect("one_wire constant should exist in layout")
+			.index;
 
 		let cs = ConstraintSystem::new(
 			constants,
@@ -328,7 +330,7 @@ impl<'a, F: Field> WitnessGenerator<'a, F> {
 
 	fn write_value(&mut self, wire: ConstraintWire, value: F) -> WitnessWire<F> {
 		if let Some(index) = self.layout.get(&wire) {
-			self.witness[index.0 as usize] = value;
+			self.witness[index.flat_index(self.layout.private_offset())] = value;
 		}
 		WitnessWire(value)
 	}
@@ -338,11 +340,11 @@ impl<'a, F: Field> WitnessGenerator<'a, F> {
 		self.write_value(wire, value)
 	}
 
-	pub fn build(self) -> Result<Vec<F>, WitnessError> {
+	pub fn build(self) -> Result<Witness<F>, WitnessError> {
 		if let Some(backtrace) = self.first_error {
 			Err(WitnessError { backtrace })
 		} else {
-			Ok(self.witness)
+			Ok(Witness::new(self.witness, self.layout.private_offset()))
 		}
 	}
 

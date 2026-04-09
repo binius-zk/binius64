@@ -71,9 +71,11 @@ pub fn eval_transparent<'a, G: Field, F: FieldOps + 'a>(
 	let r_public = r_public.to_vec();
 	let r_x = r_x.to_vec();
 	let mul_constraints = constraint_system.mul_constraints().to_vec();
+	let private_offset = constraint_system.n_public() as usize;
 
 	Box::new(move |r_y: &[F]| {
-		let wiring_eval = evaluate_wiring_mle(&mul_constraints, lambda.clone(), &r_x, r_y);
+		let wiring_eval =
+			evaluate_wiring_mle(&mul_constraints, lambda.clone(), &r_x, r_y, private_offset);
 
 		// Evaluate eq(r_public || ZERO, r_y)
 		let (r_y_head, r_y_tail) = r_y.split_at(r_public.len());
@@ -91,6 +93,7 @@ pub fn evaluate_wiring_mle<F: FieldOps>(
 	lambda: F,
 	r_x: &[F],
 	r_y: &[F],
+	private_offset: usize,
 ) -> F {
 	let mut acc = [F::zero(), F::zero(), F::zero()];
 
@@ -101,7 +104,7 @@ pub fn evaluate_wiring_mle<F: FieldOps>(
 			let r_y_tensor_sum = operand
 				.wires()
 				.iter()
-				.map(|j| r_y_tensor[j.0 as usize].clone())
+				.map(|j| r_y_tensor[j.flat_index(private_offset)].clone())
 				.sum::<F>();
 			*dst += r_x_tensor_i.clone() * r_y_tensor_sum;
 		}

@@ -26,14 +26,18 @@ pub struct Key {
 }
 
 impl WiringTranspose {
-	pub fn transpose(witness_size: usize, mul_constraints: &[MulConstraint<WitnessIndex>]) -> Self {
+	pub fn transpose(
+		witness_size: usize,
+		private_offset: usize,
+		mul_constraints: &[MulConstraint<WitnessIndex>],
+	) -> Self {
 		let mut operands_keys_by_wit_idx = vec![Vec::new(); witness_size];
 
 		let mut n_total_keys = 0;
 		for (i, MulConstraint { a, b, c }) in mul_constraints.iter().enumerate() {
 			for (operand_idx, operand) in [a, b, c].into_iter().enumerate() {
 				for &witness_idx in operand.wires() {
-					operands_keys_by_wit_idx[witness_idx.0 as usize].push(Key {
+					operands_keys_by_wit_idx[witness_idx.flat_index(private_offset)].push(Key {
 						operand_idx: operand_idx as u8,
 						constraint_idx: i as u32,
 					});
@@ -214,6 +218,7 @@ pub struct MulCheckWitness<P: PackedField> {
 fn eval_operand<P: PackedField>(
 	witness: &FieldSlice<P>,
 	operand: &Operand<WitnessIndex>,
+	private_offset: usize,
 ) -> P::Scalar
 where
 	P::Scalar: Field,
@@ -221,7 +226,7 @@ where
 	operand
 		.wires()
 		.iter()
-		.map(|idx| witness.get(idx.0 as usize))
+		.map(|idx| witness.get(idx.flat_index(private_offset)))
 		.sum()
 }
 
@@ -234,6 +239,7 @@ where
 pub fn build_mulcheck_witness<F: Field, P: PackedField<Scalar = F>>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	witness: FieldSlice<P>,
+	private_offset: usize,
 ) -> MulCheckWitness<P> {
 	fn get_a(c: &MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex> {
 		&c.a
@@ -269,7 +275,11 @@ pub fn build_mulcheck_witness<F: Field, P: PackedField<Scalar = F>>(
 				let val = P::from_fn(|j| {
 					let constraint_idx = offset + j;
 					if constraint_idx < n_constraints {
-						eval_operand(&witness, get_operand(&mul_constraints[constraint_idx]))
+						eval_operand(
+							&witness,
+							get_operand(&mul_constraints[constraint_idx]),
+							private_offset,
+						)
 					} else {
 						F::ZERO
 					}
@@ -313,21 +323,33 @@ mod tests {
 		rng: &mut StdRng,
 		n_constraints: usize,
 		witness_size: usize,
+		private_offset: usize,
 	) -> Vec<MulConstraint<WitnessIndex>> {
 		(0..n_constraints)
 			.map(|_| {
-				let a = generate_random_operand(rng, witness_size);
-				let b = generate_random_operand(rng, witness_size);
-				let c = generate_random_operand(rng, witness_size);
+				let a = generate_random_operand(rng, witness_size, private_offset);
+				let b = generate_random_operand(rng, witness_size, private_offset);
+				let c = generate_random_operand(rng, witness_size, private_offset);
 				MulConstraint { a, b, c }
 			})
 			.collect()
 	}
 
-	fn generate_random_operand(rng: &mut StdRng, witness_size: usize) -> Operand<WitnessIndex> {
+	fn generate_random_operand(
+		rng: &mut StdRng,
+		witness_size: usize,
+		private_offset: usize,
+	) -> Operand<WitnessIndex> {
 		let n_wires = rng.random_range(0..=4);
 		let wires: SmallVec<[WitnessIndex; 4]> = (0..n_wires)
-			.map(|_| WitnessIndex(rng.random_range(0..witness_size as u32)))
+			.map(|_| {
+				let flat = rng.random_range(0..witness_size);
+				if flat < private_offset {
+					WitnessIndex::public(flat as u32)
+				} else {
+					WitnessIndex::private((flat - private_offset) as u32)
+				}
+			})
 			.collect();
 		Operand::new(wires)
 	}
@@ -358,12 +380,15 @@ mod tests {
 
 		// Generate random constraints
 		let log_n_constraints = 4;
+		let log_public = 3;
 		let log_witness_size = 5;
 
 		let n_constraints = 1 << log_n_constraints;
 		let witness_size = 1 << log_witness_size;
+		let private_offset = 1 << log_public;
 
-		let constraints = generate_random_constraints(&mut rng, n_constraints, witness_size);
+		let constraints =
+			generate_random_constraints(&mut rng, n_constraints, witness_size, private_offset);
 
 		// Sample random evaluation points
 		let r_x = random_scalars::<B128>(&mut rng, log_n_constraints);
@@ -371,10 +396,11 @@ mod tests {
 		let lambda = B128::random(&mut rng);
 
 		// Compute expected result using the original representation
-		let expected = evaluate_wiring_mle(&constraints, lambda, &r_x, &r_y);
+		let expected =
+			evaluate_wiring_mle(&constraints, lambda, &r_x, &r_y, private_offset);
 
 		// Compute result using the transposed representation
-		let transposed = WiringTranspose::transpose(witness_size, &constraints);
+		let transposed = WiringTranspose::transpose(witness_size, private_offset, &constraints);
 		let r_x_tensor = eq_ind_partial_eval::<B128>(&r_x);
 		let r_y_tensor = eq_ind_partial_eval::<B128>(&r_y);
 		let actual = evaluate_wiring_mle_transposed(
@@ -392,13 +418,16 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		let log_n_constraints = 4;
+		let log_public = 3;
 		let log_witness_size = 5;
 
 		let n_constraints = 1 << log_n_constraints;
 		let witness_size = 1 << log_witness_size;
+		let private_offset = 1 << log_public;
 
 		// Generate random constraints
-		let constraints = generate_random_constraints(&mut rng, n_constraints, witness_size);
+		let constraints =
+			generate_random_constraints(&mut rng, n_constraints, witness_size, private_offset);
 
 		// Sample random evaluation points
 		let r_x = random_scalars::<B128>(&mut rng, log_n_constraints);
@@ -406,10 +435,11 @@ mod tests {
 		let lambda = B128::random(&mut rng);
 
 		// Method 1: Compute expected result using evaluate_wiring_mle
-		let expected = evaluate_wiring_mle(&constraints, lambda, &r_x, &r_y);
+		let expected =
+			evaluate_wiring_mle(&constraints, lambda, &r_x, &r_y, private_offset);
 
 		// Method 2: Use fold_constraints then evaluate at r_y
-		let transposed = WiringTranspose::transpose(witness_size, &constraints);
+		let transposed = WiringTranspose::transpose(witness_size, private_offset, &constraints);
 		let folded = fold_constraints::<_, Packed128b>(&transposed, lambda, &r_x);
 		let actual = evaluate(&folded, &r_y);
 
@@ -444,14 +474,18 @@ mod tests {
 		let n_constraints = 1 << log_n_constraints;
 		let witness_size = 1 << log_witness_size;
 
+		let private_offset = 1 << log_public;
+
 		// Generate random constraints
-		let constraints = generate_random_constraints(&mut rng, n_constraints, witness_size);
+		let constraints =
+			generate_random_constraints(&mut rng, n_constraints, witness_size, private_offset);
 
 		// Create random witness
 		let witness = random_field_buffer::<Packed128b>(&mut rng, log_witness_size);
 
 		// Compute mulcheck witness
-		let mulcheck_witness = build_mulcheck_witness(&constraints, witness.to_ref());
+		let mulcheck_witness =
+			build_mulcheck_witness(&constraints, witness.to_ref(), private_offset);
 
 		// Sample r_x (sumcheck evaluation point for constraint axis)
 		let r_x = random_scalars::<B128>(&mut rng, log_n_constraints);
@@ -472,7 +506,8 @@ mod tests {
 		let public_eval = evaluate(&public, &r_public);
 
 		// Create transposed wiring
-		let wiring_transpose = WiringTranspose::transpose(witness_size, &constraints);
+		let wiring_transpose =
+			WiringTranspose::transpose(witness_size, private_offset, &constraints);
 
 		// Create constraint system for verifier (compute_claim doesn't actually use it,
 		// but we need a valid reference for the type signature)
@@ -482,7 +517,7 @@ mod tests {
 			0,                   // n_private
 			log_public as u32,   // log_public
 			constraints.clone(), // mul_constraints
-			WitnessIndex(0),     // one_wire (dummy for test)
+			0,                   // one_wire_index (dummy for test)
 		);
 		let constraint_system_padded = ConstraintSystemPadded::new(
 			constraint_system,

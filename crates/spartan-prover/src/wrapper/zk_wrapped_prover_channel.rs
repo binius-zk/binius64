@@ -135,7 +135,7 @@ where
 		// Validate and generate the outer proof.
 		let outer_cs = outer_prover.constraint_system();
 		outer_cs.validate(&witness);
-		outer_prover.prove::<P, _>(&witness, rng, inner_channel)?;
+		outer_prover.prove::<P, _>(witness.as_slice(), rng, inner_channel)?;
 		Ok(())
 	}
 }

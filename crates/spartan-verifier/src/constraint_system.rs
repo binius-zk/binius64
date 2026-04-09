@@ -5,7 +5,7 @@ use binius_field::Field;
 use binius_ip::mlecheck::mask_buffer_dimensions;
 pub use binius_spartan_frontend::constraint_system::BlindingInfo;
 use binius_spartan_frontend::constraint_system::{
-	ConstraintSystem, MulConstraint, Operand, WitnessIndex,
+	ConstraintSystem, MulConstraint, Operand, Witness, WitnessIndex,
 };
 use binius_utils::checked_arithmetics::{checked_log_2, log2_ceil_usize};
 
@@ -45,12 +45,12 @@ impl<F: Field> ConstraintSystemPadded<F> {
 		let log_size = log2_ceil_usize(total_witness_size) as u32;
 
 		// Add dummy constraints for blinding
-		// Each dummy constraint uses 3 consecutive wires starting after n_dummy_wires
-		let dummy_constraint_wire_base = n_public + n_private + blinding_info.n_dummy_wires;
+		// Each dummy constraint uses 3 consecutive private wires starting after n_dummy_wires
+		let dummy_private_base = n_private + blinding_info.n_dummy_wires;
 		for i in 0..blinding_info.n_dummy_constraints {
-			let a = WitnessIndex((dummy_constraint_wire_base + 3 * i) as u32);
-			let b = WitnessIndex((dummy_constraint_wire_base + 3 * i + 1) as u32);
-			let c = WitnessIndex((dummy_constraint_wire_base + 3 * i + 2) as u32);
+			let a = WitnessIndex::private((dummy_private_base + 3 * i) as u32);
+			let b = WitnessIndex::private((dummy_private_base + 3 * i + 1) as u32);
+			let c = WitnessIndex::private((dummy_private_base + 3 * i + 2) as u32);
 
 			mul_constraints.push(MulConstraint {
 				a: Operand::from(a),
@@ -131,14 +131,14 @@ impl<F: Field> ConstraintSystemPadded<F> {
 		self.mask_dims
 	}
 
-	pub fn validate(&self, witness: &[F]) {
-		assert_eq!(witness.len(), self.size());
+	pub fn validate(&self, witness: &Witness<F>) {
+		assert_eq!(witness.as_slice().len(), self.size());
 
 		let operand_val = |operand: &Operand<WitnessIndex>| {
 			operand
 				.wires()
 				.iter()
-				.map(|idx| witness[idx.0 as usize])
+				.map(|&idx| witness[idx])
 				.sum::<F>()
 		};
 
