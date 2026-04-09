@@ -3,7 +3,9 @@
 use binius_field::{BinaryField128bGhash as B128, Field, Random, arch::OptimalPackedB128};
 use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
 use binius_iop::{
-	basefold_compiler::BaseFoldZKVerifierCompiler, merkle_tree::BinaryMerkleTreeScheme,
+	basefold_compiler::BaseFoldZKVerifierCompiler,
+	fri::{self, MinProofSizeStrategy},
+	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_iop_prover::{
 	basefold_compiler::BaseFoldZKProverCompiler, merkle_tree::prover::BinaryMerkleTreeProver,
@@ -22,10 +24,9 @@ use binius_spartan_verifier::{
 	IOPVerifier, SECURITY_BITS,
 	config::StdChallenger,
 	constraint_system::ConstraintSystemPadded,
-	wrapper::{IronSpartanBuilderChannel, ZKWrappedVerifierChannel},
+	wrapper::{IronSpartanBuilderChannel, ReplayChannel, ZKWrappedVerifierChannel},
 };
 use binius_transcript::ProverTranscript;
-use binius_iop::fri::{self, MinProofSizeStrategy};
 use rand::{SeedableRng, rngs::StdRng};
 
 /// Build a power7 circuit: assert that x^7 = y
@@ -132,12 +133,16 @@ fn test_zk_wrapped_prove_verify() {
 	prover_transcript.observe().write_slice(public);
 
 	let basefold_channel = zk_basefold_prover.create_channel(&mut prover_transcript, &mut rng);
-	let mut wrapped_prover_channel = ZKWrappedProverChannel::new(
-		basefold_channel,
-		&outer_iop_prover,
-		&inner_iop_verifier,
-		&outer_layout,
-	);
+	let mut wrapped_prover_channel =
+		ZKWrappedProverChannel::new(basefold_channel, &outer_iop_prover, &outer_layout, {
+			let inner_iop_verifier = &inner_iop_verifier;
+			|replay_channel: &mut ReplayChannel<'_, B128>| {
+				let inner_public_elems = replay_channel.observe_many(public);
+				inner_iop_verifier
+					.verify(inner_public_elems, replay_channel)
+					.expect("replay verification should not fail");
+			}
+		});
 
 	// Observe public input through the wrapped channel.
 	(&mut wrapped_prover_channel).observe_many(public);

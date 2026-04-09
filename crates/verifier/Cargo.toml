@@ -15,6 +15,8 @@ binius-hash = { path = "../hash", default-features = false }
 binius-iop = { path = "../iop", default-features = false }
 binius-math = { path = "../math" }
 binius-transcript = { path = "../transcript" }
+binius-spartan-frontend = { path = "../spartan-frontend" }
+binius-spartan-verifier = { path = "../spartan-verifier" }
 binius-utils = { path = "../utils" }
 bytemuck.workspace = true
 bytes.workspace = true

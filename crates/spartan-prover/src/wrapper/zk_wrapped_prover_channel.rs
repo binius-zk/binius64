@@ -1,15 +1,14 @@
 // Copyright 2026 The Binius Developers
 
-//! ZK-wrapped prover channel that runs an inner Spartan proof and then proves the outer
+//! ZK-wrapped prover channel that runs an inner proof and then proves the outer
 //! wrapper constraint system.
 //!
 //! [`ZKWrappedProverChannel`] wraps a [`BaseFoldZKProverChannel`] and records all channel values.
 //! On `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFoldZK channel and records
 //! each value. After the inner proof is run, [`finish`] replays the recorded interaction through
-//! a [`ReplayChannel`] to fill the outer witness, then runs the outer IOP prover.
+//! a caller-provided closure to fill the outer witness, then runs the outer IOP prover.
 //!
 //! [`BaseFoldZKProverChannel`]: binius_iop_prover::basefold_zk_channel::BaseFoldZKProverChannel
-//! [`ReplayChannel`]: binius_spartan_verifier::wrapper::ReplayChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
 
 use binius_field::{BinaryField, PackedExtension, PackedField};
@@ -19,7 +18,6 @@ use binius_iop_prover::{
 	channel::IOPProverChannel,
 	merkle_tree::MerkleTreeProver,
 };
-use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT};
 use binius_spartan_frontend::constraint_system::WitnessLayout;
@@ -35,9 +33,13 @@ use crate::IOPProver;
 /// This channel records all channel values. On
 /// `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFoldZK channel and records each
 /// value. After the inner proof is run through this channel, call
-/// [`finish`](Self::finish) to replay the interaction through a [`ReplayChannel`], fill the outer
-/// witness, and generate the outer proof.
-pub struct ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_>
+/// [`finish`](Self::finish) to replay the interaction, fill the outer witness, and generate the
+/// outer proof.
+///
+/// The `ReplayFn` closure is called during [`finish`](Self::finish) with a [`ReplayChannel`] to
+/// replay the inner verification and fill the outer witness. This allows the channel to be generic
+/// over different inner verification protocols.
+pub struct ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_, ReplayFn>
 where
 	P: PackedField<Scalar: BinaryField>,
 	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
@@ -46,14 +48,14 @@ where
 {
 	inner_channel: BaseFoldZKProverChannel<'a, P::Scalar, P, NTT, MTProver, Challenger_>,
 	outer_prover: &'a IOPProver<P::Scalar>,
-	inner_verifier: &'a IOPVerifier<P::Scalar>,
 	outer_layout: &'a WitnessLayout<P::Scalar>,
+	replay_fn: ReplayFn,
 	interaction: Vec<P::Scalar>,
 	n_outer_oracles: usize,
 }
 
-impl<'a, F, P, NTT, MTScheme, MTProver, Challenger_>
-	ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_>
+impl<'a, F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn>
+	ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_, ReplayFn>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F> + PackedExtension<F>,
@@ -69,13 +71,14 @@ where
 	/// * `inner_channel` - The BaseFold ZK channel with oracle specs for both inner and outer
 	///   proofs
 	/// * `outer_prover` - The IOP prover for the outer (wrapper) constraint system
-	/// * `inner_verifier` - The IOP verifier for the inner constraint system (used for replay)
 	/// * `outer_layout` - The witness layout for the outer constraint system
+	/// * `replay_fn` - Closure called during [`finish`](Self::finish) with a [`ReplayChannel`] to
+	///   replay the inner verification and fill the outer witness
 	pub fn new(
 		inner_channel: BaseFoldZKProverChannel<'a, F, P, NTT, MTProver, Challenger_>,
 		outer_prover: &'a IOPProver<F>,
-		inner_verifier: &'a IOPVerifier<F>,
 		outer_layout: &'a WitnessLayout<F>,
+		replay_fn: ReplayFn,
 	) -> Self {
 		let outer_oracle_specs =
 			IOPVerifier::new(outer_prover.constraint_system().clone()).oracle_specs();
@@ -95,8 +98,8 @@ where
 		Self {
 			inner_channel,
 			outer_prover,
-			inner_verifier,
 			outer_layout,
+			replay_fn,
 			interaction: Vec::new(),
 			n_outer_oracles: n_outer,
 		}
@@ -104,36 +107,27 @@ where
 
 	/// Consumes the channel and runs the outer proof.
 	///
-	/// This should be called after the inner proof has been run through this channel
-	/// (via [`IOPProver::prove`]). It:
-	/// 1. Replays the recorded interaction through a [`ReplayChannel`] to fill the outer witness
-	/// 2. Validates and generates the outer IOP proof
-	///
-	/// [`ReplayChannel`]: binius_spartan_verifier::wrapper::ReplayChannel
-	pub fn finish(self, rng: impl CryptoRng) -> Result<(), crate::Error> {
+	/// This should be called after the inner proof has been run through this channel.
+	/// It:
+	/// 1. Creates a [`ReplayChannel`] from the recorded interaction
+	/// 2. Calls the `replay_fn` closure to replay the inner verification and fill the outer witness
+	/// 3. Validates and generates the outer IOP proof
+	pub fn finish(self, rng: impl CryptoRng) -> Result<(), crate::Error>
+	where
+		ReplayFn: FnOnce(&mut ReplayChannel<'_, F>),
+	{
 		let Self {
 			inner_channel,
 			outer_prover,
-			inner_verifier,
 			outer_layout,
+			replay_fn,
 			interaction,
 			..
 		} = self;
 
-		// Extract inner public values from the initial events.
-		let inner_cs = inner_verifier.constraint_system();
-		let inner_public_size = 1 << inner_cs.log_public();
-		let public: Vec<F> = interaction[..inner_public_size].to_vec();
-
 		// Replay the inner verification through the outer witness generator.
-		// First observe the public input (mirrors the prover-side observe_many).
 		let mut replay_channel = ReplayChannel::new(outer_layout, interaction);
-		let inner_public_elems = replay_channel.observe_many(&public);
-
-		// Run the inner verification to fill private wires.
-		inner_verifier
-			.verify(inner_public_elems, &mut replay_channel)
-			.expect("replay verification should not fail");
+		replay_fn(&mut replay_channel);
 		let witness = replay_channel
 			.finish()
 			.expect("outer witness generation should not fail");
@@ -146,8 +140,8 @@ where
 	}
 }
 
-impl<F, P, NTT, MTScheme, MTProver, Challenger_> IPProverChannel<F>
-	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_>
+impl<F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn> IPProverChannel<F>
+	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_, ReplayFn>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F> + PackedExtension<F>,
@@ -183,8 +177,8 @@ where
 	}
 }
 
-impl<F, P, NTT, MTScheme, MTProver, Challenger_> IOPProverChannel<P>
-	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_>
+impl<F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn> IOPProverChannel<P>
+	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_, ReplayFn>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F> + PackedExtension<F>,

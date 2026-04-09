@@ -34,6 +34,7 @@ pub mod fold_word;
 pub mod protocols;
 mod prove;
 pub mod ring_switch;
+pub mod zk_config;
 
 pub use binius_field::arch::OptimalPackedB128;
 pub use binius_hash as hash;

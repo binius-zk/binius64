@@ -11,9 +11,13 @@ workspace = true
 binius-core = { path = "../core" }
 binius-field = { path = "../field" }
 binius-hash = { path = "../hash", default-features = false }
+binius-iop = { path = "../iop" }
 binius-iop-prover = { path = "../iop-prover", default-features = false }
 binius-ip-prover = { path = "../ip-prover", default-features = false }
 binius-math = { path = "../math" }
+binius-spartan-frontend = { path = "../spartan-frontend" }
+binius-spartan-prover = { path = "../spartan-prover", default-features = false }
+binius-spartan-verifier = { path = "../spartan-verifier" }
 binius-transcript = { path = "../transcript" }
 binius-verifier = { path = "../verifier", default-features = false }
 binius-utils = { path = "../utils" }

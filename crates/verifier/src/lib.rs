@@ -39,6 +39,7 @@ mod error;
 pub mod protocols;
 pub mod ring_switch;
 mod verify;
+pub mod zk_config;
 
 pub use binius_hash as hash;
 pub use binius_iop::{fri, merkle_tree};
