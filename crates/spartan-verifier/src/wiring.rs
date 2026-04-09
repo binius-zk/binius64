@@ -3,14 +3,13 @@
 use std::iter;
 
 use binius_field::{Field, field::FieldOps};
-use binius_ip::channel::IPVerifierChannel;
+use binius_iop::basefold;
+use binius_ip::{channel::IPVerifierChannel, sumcheck};
 use binius_math::{
 	multilinear::eq::{eq_ind, eq_ind_partial_eval_scalars, eq_one_var},
 	univariate::evaluate_univariate,
 };
 use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex};
-use binius_iop::basefold;
-use binius_ip::sumcheck;
 
 use crate::constraint_system::ConstraintSystemPadded;
 

@@ -8,9 +8,7 @@ use binius_core::{
 use binius_field::arch::OptimalPackedB128;
 use binius_frontend::{CircuitBuilder, Wire};
 use binius_prover::{
-	Prover,
-	hash::parallel_compression::ParallelCompressionAdaptor,
-	zk_config::ZKProver,
+	Prover, hash::parallel_compression::ParallelCompressionAdaptor, zk_config::ZKProver,
 };
 use binius_transcript::ProverTranscript;
 use binius_verifier::{

@@ -37,15 +37,19 @@ use std::{
 };
 
 use binius_field::{BinaryField, Field, PackedExtension, PackedField};
-use binius_iop_prover::{basefold_compiler::BaseFoldZKProverCompiler, channel::IOPProverChannel};
-use binius_ip_prover::channel::IPProverChannel;
+use binius_hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression};
+use binius_iop_prover::{
+	basefold_compiler::BaseFoldZKProverCompiler, channel::IOPProverChannel,
+	merkle_tree::prover::BinaryMerkleTreeProver,
+};
+use binius_ip_prover::{
+	channel::IPProverChannel,
+	sumcheck::{quadratic_mle::QuadraticMleCheckProver, zk_mlecheck},
+};
 use binius_math::{
 	FieldBuffer, FieldSlice,
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
 };
-use binius_hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression};
-use binius_iop_prover::merkle_tree::prover::BinaryMerkleTreeProver;
-use binius_ip_prover::sumcheck::{quadratic_mle::QuadraticMleCheckProver, zk_mlecheck};
 use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex};
 use binius_spartan_verifier::{
 	Verifier,

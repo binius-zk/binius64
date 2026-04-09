@@ -2,12 +2,12 @@
 // Copyright 2026 The Binius Developers
 
 use binius_field::Field;
+use binius_ip::mlecheck::mask_buffer_dimensions;
 pub use binius_spartan_frontend::constraint_system::BlindingInfo;
 use binius_spartan_frontend::constraint_system::{
 	ConstraintSystem, MulConstraint, Operand, WitnessIndex,
 };
 use binius_utils::checked_arithmetics::{checked_log_2, log2_ceil_usize};
-use binius_ip::mlecheck::mask_buffer_dimensions;
 
 /// A constraint system with blinding and power-of-two padding.
 ///
