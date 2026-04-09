@@ -17,6 +17,7 @@
 //!
 //! - [`Prover`] - Main proving interface; call [`Prover::setup`] with a verifier, then
 //!   [`Prover::prove`] with witness data
+//! - [`IOPProver`] - Core IOP proving logic, independent of the compilation strategy
 //! - [`KeyCollection`] - Precomputed keys for shift reduction (can be serialized for reuse)
 //!
 //! # Related crates

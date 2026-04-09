@@ -67,6 +67,11 @@ impl IOPVerifier {
 		&self.constraint_system
 	}
 
+	/// Consumes the IOP verifier and returns the inner constraint system.
+	pub fn into_constraint_system(self) -> ConstraintSystem {
+		self.constraint_system
+	}
+
 	/// Returns log2 of the number of public constants and input/output words.
 	pub fn log_public_words(&self) -> usize {
 		self.log_public_words
