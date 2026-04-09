@@ -5,7 +5,7 @@
 
 use std::{
 	any::TypeId,
-	fmt::{self, Debug, Display, Formatter},
+	fmt::{Debug, Display, Formatter},
 	iter::{Product, Sum},
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
@@ -13,57 +13,30 @@ use std::{
 use binius_utils::{
 	DeserializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
-	iter::IterExtensions,
 };
 use bytemuck::{Pod, Zeroable};
-use rand::{
-	Rng,
-	distr::{Distribution, StandardUniform},
-};
 
 use super::{
-	arithmetic_traits::InvertOrZero,
-	binary_field::{BinaryField, BinaryField1b, TowerField},
+	binary_field::{BinaryField, BinaryField1b, TowerField, binary_field, impl_field_extension},
 	extension::ExtensionField,
-	underlier::WithUnderlier,
 };
 use crate::{
 	AESTowerField8b, Field,
 	arch::packed_ghash_128::PackedBinaryGhash1x128b,
-	arithmetic_traits::Square,
+	arithmetic_traits::InvertOrZero,
 	binary_field_arithmetic::{
-		invert_or_zero_using_packed, multiple_using_packed, square_using_packed,
+		TowerFieldArithmetic, invert_or_zero_using_packed, multiple_using_packed,
+		square_using_packed,
 	},
-	transpose::square_transforms_extension_field,
-	underlier::{Divisible, NumCast, U1, UnderlierWithBitOps},
+	mul_by_binary_field_1b,
+	underlier::{U1, WithUnderlier},
 };
 
-#[derive(
-	Default,
-	Clone,
-	Copy,
-	PartialEq,
-	Eq,
-	PartialOrd,
-	Ord,
-	Hash,
-	Zeroable,
-	bytemuck::TransparentWrapper,
-)]
-#[repr(transparent)]
-pub struct BinaryField128bGhash(pub(crate) u128);
+binary_field!(pub BinaryField128bGhash(u128), 0x494ef99794d5244f9152df59d87a9186);
+
+unsafe impl Pod for BinaryField128bGhash {}
 
 impl BinaryField128bGhash {
-	#[inline]
-	pub const fn new(value: u128) -> Self {
-		Self(value)
-	}
-
-	#[inline]
-	pub const fn val(self) -> u128 {
-		self.0
-	}
-
 	#[inline]
 	pub fn mul_x(self) -> Self {
 		let val = self.to_underlier();
@@ -95,165 +68,24 @@ impl BinaryField128bGhash {
 	}
 }
 
-unsafe impl WithUnderlier for BinaryField128bGhash {
-	type Underlier = u128;
-}
-
-impl Neg for BinaryField128bGhash {
-	type Output = Self;
-
-	#[inline]
-	fn neg(self) -> Self::Output {
-		self
+impl TowerField for BinaryField128bGhash {
+	fn min_tower_level(self) -> usize {
+		match self {
+			Self::ZERO | Self::ONE => 0,
+			_ => 7,
+		}
 	}
 }
 
-impl Add<Self> for BinaryField128bGhash {
-	type Output = Self;
-
-	#[allow(clippy::suspicious_arithmetic_impl)]
-	fn add(self, rhs: Self) -> Self::Output {
-		Self(self.0 ^ rhs.0)
-	}
-}
-
-impl Add<&Self> for BinaryField128bGhash {
-	type Output = Self;
-
-	#[allow(clippy::suspicious_arithmetic_impl)]
-	fn add(self, rhs: &Self) -> Self::Output {
-		Self(self.0 ^ rhs.0)
-	}
-}
-
-impl Sub<Self> for BinaryField128bGhash {
-	type Output = Self;
-
-	#[allow(clippy::suspicious_arithmetic_impl)]
-	fn sub(self, rhs: Self) -> Self::Output {
-		Self(self.0 ^ rhs.0)
-	}
-}
-
-impl Sub<&Self> for BinaryField128bGhash {
-	type Output = Self;
-
-	#[allow(clippy::suspicious_arithmetic_impl)]
-	fn sub(self, rhs: &Self) -> Self::Output {
-		Self(self.0 ^ rhs.0)
-	}
-}
-
-impl Mul<Self> for BinaryField128bGhash {
-	type Output = Self;
-
-	#[inline]
-	fn mul(self, rhs: Self) -> Self::Output {
+// Cannot use `impl_arithmetic_using_packed!` because `PackedSubfield<Self, Self>` resolves
+// via `Underlier = u128`, but on SIMD targets `PackedBinaryGhash1x128b` uses `M128`.
+impl TowerFieldArithmetic for BinaryField128bGhash {
+	fn multiply(self, rhs: Self) -> Self {
 		multiple_using_packed::<PackedBinaryGhash1x128b>(self, rhs)
 	}
-}
 
-impl Mul<&Self> for BinaryField128bGhash {
-	type Output = Self;
-
-	#[inline]
-	fn mul(self, rhs: &Self) -> Self::Output {
-		self * *rhs
-	}
-}
-
-impl AddAssign<Self> for BinaryField128bGhash {
-	#[inline]
-	fn add_assign(&mut self, rhs: Self) {
-		*self = *self + rhs;
-	}
-}
-
-impl AddAssign<&Self> for BinaryField128bGhash {
-	#[inline]
-	fn add_assign(&mut self, rhs: &Self) {
-		*self = *self + rhs;
-	}
-}
-
-impl SubAssign<Self> for BinaryField128bGhash {
-	#[inline]
-	fn sub_assign(&mut self, rhs: Self) {
-		*self = *self - rhs;
-	}
-}
-
-impl SubAssign<&Self> for BinaryField128bGhash {
-	#[inline]
-	fn sub_assign(&mut self, rhs: &Self) {
-		*self = *self - rhs;
-	}
-}
-
-impl MulAssign<Self> for BinaryField128bGhash {
-	#[inline]
-	fn mul_assign(&mut self, rhs: Self) {
-		*self = *self * rhs;
-	}
-}
-
-impl MulAssign<&Self> for BinaryField128bGhash {
-	#[inline]
-	fn mul_assign(&mut self, rhs: &Self) {
-		*self = *self * rhs;
-	}
-}
-
-impl Sum<Self> for BinaryField128bGhash {
-	#[inline]
-	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-		iter.fold(Self::ZERO, |acc, x| acc + x)
-	}
-}
-
-impl<'a> Sum<&'a Self> for BinaryField128bGhash {
-	#[inline]
-	fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
-		iter.fold(Self::ZERO, |acc, x| acc + x)
-	}
-}
-
-impl Product<Self> for BinaryField128bGhash {
-	#[inline]
-	fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
-		iter.fold(Self::ONE, |acc, x| acc * x)
-	}
-}
-
-impl<'a> Product<&'a Self> for BinaryField128bGhash {
-	#[inline]
-	fn product<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
-		iter.fold(Self::ONE, |acc, x| acc * x)
-	}
-}
-
-impl Square for BinaryField128bGhash {
-	#[inline]
 	fn square(self) -> Self {
 		square_using_packed::<PackedBinaryGhash1x128b>(self)
-	}
-}
-
-impl Field for BinaryField128bGhash {
-	const ZERO: Self = Self(0);
-	const ONE: Self = Self(1);
-	const CHARACTERISTIC: usize = 2;
-	const ORDER_EXPONENT: usize = 128;
-	const MULTIPLICATIVE_GENERATOR: Self = Self(0x494ef99794d5244f9152df59d87a9186);
-
-	fn double(&self) -> Self {
-		Self::ZERO
-	}
-}
-
-impl Distribution<BinaryField128bGhash> for StandardUniform {
-	fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> BinaryField128bGhash {
-		BinaryField128bGhash(rng.random())
 	}
 }
 
@@ -264,178 +96,9 @@ impl InvertOrZero for BinaryField128bGhash {
 	}
 }
 
-impl From<u128> for BinaryField128bGhash {
-	#[inline]
-	fn from(value: u128) -> Self {
-		Self(value)
-	}
-}
+impl_field_extension!(BinaryField1b(U1) < @7 => BinaryField128bGhash(u128));
 
-impl From<BinaryField128bGhash> for u128 {
-	#[inline]
-	fn from(value: BinaryField128bGhash) -> Self {
-		value.0
-	}
-}
-
-impl Display for BinaryField128bGhash {
-	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-		write!(f, "0x{repr:0>32x}", repr = self.0)
-	}
-}
-
-impl Debug for BinaryField128bGhash {
-	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-		write!(f, "BinaryField128bGhash({self})")
-	}
-}
-
-unsafe impl Pod for BinaryField128bGhash {}
-
-impl TryInto<BinaryField1b> for BinaryField128bGhash {
-	type Error = ();
-
-	#[inline]
-	fn try_into(self) -> Result<BinaryField1b, Self::Error> {
-		if self == Self::ZERO {
-			Ok(BinaryField1b::ZERO)
-		} else if self == Self::ONE {
-			Ok(BinaryField1b::ONE)
-		} else {
-			Err(())
-		}
-	}
-}
-
-impl From<BinaryField1b> for BinaryField128bGhash {
-	#[inline]
-	fn from(value: BinaryField1b) -> Self {
-		debug_assert_eq!(Self::ZERO, Self(0));
-
-		Self(Self::ONE.0 & u128::fill_with_bit(value.val().val()))
-	}
-}
-
-impl Add<BinaryField1b> for BinaryField128bGhash {
-	type Output = Self;
-
-	#[inline]
-	fn add(self, rhs: BinaryField1b) -> Self::Output {
-		self + Self::from(rhs)
-	}
-}
-
-impl Sub<BinaryField1b> for BinaryField128bGhash {
-	type Output = Self;
-
-	#[inline]
-	fn sub(self, rhs: BinaryField1b) -> Self::Output {
-		self - Self::from(rhs)
-	}
-}
-
-impl Mul<BinaryField1b> for BinaryField128bGhash {
-	type Output = Self;
-
-	#[inline]
-	#[allow(clippy::suspicious_arithmetic_impl)]
-	fn mul(self, rhs: BinaryField1b) -> Self::Output {
-		crate::tracing::trace_multiplication!(BinaryField128bGhash, BinaryField1b);
-
-		Self(self.0 & u128::fill_with_bit(u8::from(rhs.0)))
-	}
-}
-
-impl AddAssign<BinaryField1b> for BinaryField128bGhash {
-	#[inline]
-	fn add_assign(&mut self, rhs: BinaryField1b) {
-		*self = *self + rhs;
-	}
-}
-
-impl SubAssign<BinaryField1b> for BinaryField128bGhash {
-	#[inline]
-	fn sub_assign(&mut self, rhs: BinaryField1b) {
-		*self = *self - rhs;
-	}
-}
-
-impl MulAssign<BinaryField1b> for BinaryField128bGhash {
-	#[inline]
-	fn mul_assign(&mut self, rhs: BinaryField1b) {
-		*self = *self * rhs;
-	}
-}
-
-impl Add<BinaryField128bGhash> for BinaryField1b {
-	type Output = BinaryField128bGhash;
-
-	#[inline]
-	fn add(self, rhs: BinaryField128bGhash) -> Self::Output {
-		rhs + self
-	}
-}
-
-impl Sub<BinaryField128bGhash> for BinaryField1b {
-	type Output = BinaryField128bGhash;
-
-	#[inline]
-	fn sub(self, rhs: BinaryField128bGhash) -> Self::Output {
-		rhs - self
-	}
-}
-
-impl Mul<BinaryField128bGhash> for BinaryField1b {
-	type Output = BinaryField128bGhash;
-
-	#[inline]
-	fn mul(self, rhs: BinaryField128bGhash) -> Self::Output {
-		rhs * self
-	}
-}
-
-impl ExtensionField<BinaryField1b> for BinaryField128bGhash {
-	const LOG_DEGREE: usize = 7;
-
-	#[inline]
-	fn basis(i: usize) -> Self {
-		assert!(i < 128, "index {i} out of range for degree 128");
-		Self::new(1 << i)
-	}
-
-	#[inline]
-	fn from_bases_sparse(
-		base_elems: impl IntoIterator<Item = BinaryField1b>,
-		log_stride: usize,
-	) -> Self {
-		assert!(log_stride == 7, "log_stride must be 7 for BinaryField128bGhash");
-		let value = base_elems
-			.into_iter()
-			.enumerate()
-			.fold(0, |value, (i, elem)| value | (u128::from(elem.0) << i));
-		Self::new(value)
-	}
-
-	#[inline]
-	fn iter_bases(&self) -> impl Iterator<Item = BinaryField1b> {
-		Divisible::<U1>::value_iter(self.0).map_skippable(BinaryField1b::from)
-	}
-
-	#[inline]
-	fn into_iter_bases(self) -> impl Iterator<Item = BinaryField1b> {
-		Divisible::<U1>::value_iter(self.0).map_skippable(BinaryField1b::from)
-	}
-
-	#[inline]
-	unsafe fn get_base_unchecked(&self, i: usize) -> BinaryField1b {
-		BinaryField1b(U1::num_cast_from(self.0 >> i))
-	}
-
-	#[inline]
-	fn square_transpose(values: &mut [Self]) {
-		square_transforms_extension_field::<BinaryField1b, Self>(values)
-	}
-}
+mul_by_binary_field_1b!(BinaryField128bGhash);
 
 impl SerializeBytes for BinaryField128bGhash {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
@@ -449,17 +112,6 @@ impl DeserializeBytes for BinaryField128bGhash {
 		Self: Sized,
 	{
 		Ok(Self(DeserializeBytes::deserialize(read_buf)?))
-	}
-}
-
-impl BinaryField for BinaryField128bGhash {}
-
-impl TowerField for BinaryField128bGhash {
-	fn min_tower_level(self) -> usize {
-		match self {
-			Self::ZERO | Self::ONE => 0,
-			_ => 7,
-		}
 	}
 }
 
