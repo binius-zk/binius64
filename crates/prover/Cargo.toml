@@ -10,12 +10,16 @@ workspace = true
 [dependencies]
 binius-core = { path = "../core" }
 binius-field = { path = "../field" }
-binius-hash = { path = "../hash", default-features = false }
+binius-hash = { path = "../hash" }
+binius-iop = { path = "../iop" }
 binius-iop-prover = { path = "../iop-prover", default-features = false }
 binius-ip-prover = { path = "../ip-prover", default-features = false }
 binius-math = { path = "../math" }
+binius-spartan-frontend = { path = "../spartan-frontend" }
+binius-spartan-prover = { path = "../spartan-prover", default-features = false }
+binius-spartan-verifier = { path = "../spartan-verifier" }
 binius-transcript = { path = "../transcript" }
-binius-verifier = { path = "../verifier", default-features = false }
+binius-verifier = { path = "../verifier" }
 binius-utils = { path = "../utils" }
 bytemuck.workspace = true
 bytes.workspace = true
@@ -87,4 +91,4 @@ harness = false
 
 [features]
 default = ["rayon"]
-rayon = ["binius-utils/rayon", "binius-hash/rayon", "binius-iop-prover/rayon", "binius-ip-prover/rayon"]
+rayon = ["binius-utils/rayon"]

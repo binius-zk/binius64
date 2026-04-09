@@ -17,6 +17,7 @@
 //!
 //! - [`Prover`] - Main proving interface; call [`Prover::setup`] with a verifier, then
 //!   [`Prover::prove`] with witness data
+//! - [`IOPProver`] - Core IOP proving logic, independent of the compilation strategy
 //! - [`KeyCollection`] - Precomputed keys for shift reduction (can be serialized for reuse)
 //!
 //! # Related crates
@@ -33,6 +34,7 @@ pub mod fold_word;
 pub mod protocols;
 mod prove;
 pub mod ring_switch;
+pub mod zk_config;
 
 pub use binius_field::arch::OptimalPackedB128;
 pub use binius_hash as hash;

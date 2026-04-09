@@ -34,21 +34,19 @@ pub mod wiring;
 pub mod wrapper;
 
 use binius_field::{BinaryField, Field, field::FieldOps};
+use binius_hash::PseudoCompressionFunction;
 use binius_iop::{
+	basefold,
 	basefold_compiler::BaseFoldZKVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
+	fri::{self, MinProofSizeStrategy},
+	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_ip::channel::IPVerifierChannel;
+use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck};
 use binius_math::multilinear::evaluate::evaluate_inplace_scalars;
 use binius_spartan_frontend::constraint_system::ConstraintSystem;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
-use binius_verifier::{
-	fri::{self, MinProofSizeStrategy},
-	hash::PseudoCompressionFunction,
-	merkle_tree::BinaryMerkleTreeScheme,
-	protocols::{basefold, mlecheck, sumcheck},
-};
 use digest::{Digest, Output, core_api::BlockSizeUser};
 
 use crate::constraint_system::{BlindingInfo, ConstraintSystemPadded};

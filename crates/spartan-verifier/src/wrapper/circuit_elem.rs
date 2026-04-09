@@ -400,3 +400,9 @@ impl<B: CircuitBuilder> FieldOps for CircuitElem<B> {
 		}
 	}
 }
+
+impl<F: Field, B: CircuitBuilder<Field = F>> From<F> for CircuitElem<B> {
+	fn from(val: F) -> Self {
+		CircuitElem::Constant(val)
+	}
+}
