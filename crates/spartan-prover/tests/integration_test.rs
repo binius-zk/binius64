@@ -63,18 +63,18 @@ fn test_power7_circuit_prover_verifier() {
 	cs.validate(&witness);
 
 	// Extract public inputs (constants + inout, padded to 2^log_public)
-	let public = witness.public();
+	let public = witness.public().to_vec();
 
 	// Generate proof
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	prover
-		.prove(witness.as_slice(), &mut rng, &mut prover_transcript)
+		.prove(witness, &mut rng, &mut prover_transcript)
 		.expect("prove failed");
 
 	// Verify proof
 	let mut verifier_transcript = prover_transcript.into_verifier();
 	verifier
-		.verify(public, &mut verifier_transcript)
+		.verify(&public, &mut verifier_transcript)
 		.expect("verify failed");
 	verifier_transcript.finalize().expect("finalize failed");
 }

@@ -50,7 +50,7 @@ use binius_math::{
 	FieldBuffer, FieldSlice,
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
 };
-use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex};
+use binius_spartan_frontend::constraint_system::{MulConstraint, Witness, WitnessIndex};
 use binius_spartan_verifier::{
 	Verifier,
 	constraint_system::{BlindingInfo, ConstraintSystemPadded},
@@ -134,7 +134,7 @@ impl<F: Field> IOPProver<F> {
 	///   creating the channel)
 	pub fn prove<P, Channel>(
 		&self,
-		witness: &[F],
+		witness: Witness<F>,
 		mut rng: impl CryptoRng,
 		mut channel: Channel,
 	) -> Result<(), Error>
@@ -148,6 +148,7 @@ impl<F: Field> IOPProver<F> {
 				.entered();
 
 		let cs = &self.constraint_system;
+		let witness = witness.as_slice();
 
 		// Check that the witness length matches the constraint system
 		let expected_size = cs.size();
@@ -298,14 +299,12 @@ where
 	/// * The witness length must match the constraint system size
 	pub fn prove<Challenger_: Challenger>(
 		&self,
-		witness: &[F],
+		witness: Witness<F>,
 		mut rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		let cs = self.iop_prover.constraint_system();
-
 		// Prover observes the public input (includes it in Fiat-Shamir).
-		let public = &witness[..1 << cs.log_public()];
+		let public = witness.public();
 		transcript.observe().write_slice(public);
 
 		// Create ZK channel (owns the RNG for mask generation) and delegate to IOP prover
