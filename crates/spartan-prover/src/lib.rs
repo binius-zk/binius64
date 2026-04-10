@@ -49,11 +49,13 @@ use binius_ip_prover::{
 use binius_math::{
 	FieldBuffer, FieldSlice,
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
+	univariate::evaluate_univariate,
 };
 use binius_spartan_frontend::constraint_system::{MulConstraint, Witness, WitnessIndex};
 use binius_spartan_verifier::{
 	Verifier,
 	constraint_system::{BlindingInfo, ConstraintSystemPadded},
+	wiring::evaluate_wiring_mle_public,
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{
@@ -66,7 +68,7 @@ pub use error::*;
 use itertools::chain;
 use rand::CryptoRng;
 
-use crate::wiring::WiringTranspose;
+use crate::wiring::{WiringTranspose, fold_constraints};
 
 type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
 type ProverMerkleProver<F, ParallelMerkleHasher, ParallelMerkleCompress> =
@@ -148,14 +150,17 @@ impl<F: Field> IOPProver<F> {
 				.entered();
 
 		let cs = &self.constraint_system;
-		let witness = witness.as_slice();
 
 		// Check that the witness length matches the constraint system
 		let expected_size = cs.size();
-		if witness.len() != expected_size {
+		if witness.as_slice().len() != expected_size {
 			return Err(Error::ArgumentError {
 				arg: "witness".to_string(),
-				msg: format!("witness has {} elements, expected {}", witness.len(), expected_size),
+				msg: format!(
+					"witness has {} elements, expected {}",
+					witness.as_slice().len(),
+					expected_size
+				),
 			});
 		}
 
@@ -180,7 +185,7 @@ impl<F: Field> IOPProver<F> {
 		let blinding_info = cs.blinding_info();
 		let witness_packed = pack_and_blind_witness::<_, P>(
 			cs.log_size() as usize,
-			witness,
+			witness.as_slice(),
 			blinding_info,
 			cs.n_public() as usize,
 			cs.n_private() as usize,
@@ -201,17 +206,25 @@ impl<F: Field> IOPProver<F> {
 			&mut channel,
 		)?;
 
-		// Compute wiring claim components
-		let r_public = channel.sample_many(cs.log_public() as usize);
+		// λ is the batching challenge for the constraint operands
+		let lambda = channel.sample();
 
-		let wiring_relation = wiring::compute_wiring_relation(
-			&self.wiring_transpose,
-			&witness_packed.to_ref(),
-			&r_public,
+		// Batch together the constraint operand evaluation claims.
+		let batched_sum = evaluate_univariate(&mulcheck_evals, lambda);
+
+		// Compute rₓ^⊤ (M_A + λ M_B + λ² M_C) x
+		let public_eval = evaluate_wiring_mle_public(
+			cs.mul_constraints(),
+			cs.log_public() as usize,
+			witness.public(),
+			lambda,
 			&r_x,
-			&mulcheck_evals,
-			&mut channel,
 		);
+
+		let trace_claim = batched_sum - public_eval;
+
+		// Fold constraints with batching and compute the folded polynomial
+		let wiring_poly = fold_constraints(&self.wiring_transpose, lambda, &r_x);
 
 		// Compute the mask folding polynomial (libra_eval tensor)
 		let n_vars = r_x.len();
@@ -220,7 +233,7 @@ impl<F: Field> IOPProver<F> {
 
 		// Prove both oracle relations
 		channel.prove_oracle_relations([
-			(trace_oracle, wiring_relation.l_poly, wiring_relation.batched_sum),
+			(trace_oracle, wiring_poly, trace_claim),
 			(mask_oracle, libra_eval_tensor, mask_eval),
 		]);
 
@@ -325,8 +338,7 @@ where
 	P: PackedField<Scalar = F> + PackedExtension<F>,
 	Channel: IPProverChannel<F>,
 {
-	let mulcheck_witness =
-		wiring::build_mulcheck_witness(mul_constraints, witness, private_offset);
+	let mulcheck_witness = wiring::build_mulcheck_witness(mul_constraints, witness, private_offset);
 
 	// Sample random evaluation point for mulcheck
 	let r_mulcheck = channel.sample_many(mask.n_vars());

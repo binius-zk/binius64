@@ -1,13 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::iter;
-
 use binius_field::{Field, PackedField};
-use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{
-	FieldBuffer, FieldSlice, multilinear, multilinear::eq::eq_ind_partial_eval,
-	univariate::evaluate_univariate,
-};
+use binius_math::{FieldBuffer, FieldSlice, multilinear::eq::eq_ind_partial_eval};
 use binius_spartan_frontend::constraint_system::{MulConstraint, Operand, WitnessIndex};
 use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
 
@@ -17,6 +11,7 @@ pub struct WiringTranspose {
 	flat_keys: Vec<Key>,
 	keys_start_by_witness_index: Vec<u32>,
 	log_witness_size: usize,
+	private_offset: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +56,7 @@ impl WiringTranspose {
 			flat_keys: operand_keys,
 			keys_start_by_witness_index: operand_key_start_by_word,
 			log_witness_size,
+			private_offset,
 		}
 	}
 
@@ -74,6 +70,11 @@ impl WiringTranspose {
 		1 << self.log_witness_size
 	}
 
+	/// Returns the minimum witness index of the private segment.
+	pub fn private_offset(&self) -> usize {
+		self.private_offset
+	}
+
 	/// Returns an iterator over keys for a specific witness index.
 	pub fn keys_for_witness(&self, witness_idx: usize) -> &[Key] {
 		let start = self.keys_start_by_witness_index[witness_idx] as usize;
@@ -84,33 +85,6 @@ impl WiringTranspose {
 			.unwrap_or(self.flat_keys.len());
 		&self.flat_keys[start..end]
 	}
-}
-
-/// Computes the batched polynomial ℓ = w + χ eq(r_pub || 0), where w is the wiring polynomial
-/// and χ is `batch_coeff`.
-///
-/// Since eq(r_pub || 0) takes the value 0 on all hypercube vertices except the first 2^r_pub.len(),
-/// only that first chunk needs to be updated.
-fn compute_l_poly<F: Field, P: PackedField<Scalar = F>>(
-	wiring_poly: FieldBuffer<P>,
-	r_public: &[F],
-	batch_coeff: F,
-) -> FieldBuffer<P> {
-	let mut l_poly = wiring_poly;
-
-	{
-		let mut l_poly_public_chunk = l_poly.chunk_mut(r_public.len(), 0);
-		let mut l_poly_public_chunk = l_poly_public_chunk.get();
-
-		let eq_public = eq_ind_partial_eval::<P>(r_public);
-
-		let batch_coeff_packed = P::broadcast(batch_coeff);
-		for (dst, src) in iter::zip(l_poly_public_chunk.as_mut(), eq_public.as_ref()) {
-			*dst += *src * batch_coeff_packed;
-		}
-	}
-
-	l_poly
 }
 
 /// Folds the wiring matrix along the constraint axis by partially evaluating at r_x.
@@ -130,6 +104,7 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 	let lambda_powers = [F::ONE, lambda, lambda.square()];
 
 	// Create packed field buffer for witness indices
+	let private_offset = transposed.private_offset();
 	let witness_size = transposed.witness_size();
 	let log_witness_size = transposed.log_witness_size();
 	let len = 1 << log_witness_size.saturating_sub(P::LOG_WIDTH);
@@ -142,7 +117,8 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 
 			P::from_fn(|scalar_idx| {
 				let witness_idx = base_witness_idx + scalar_idx;
-				if witness_idx >= witness_size {
+				// For now, only accumulate for the private segment.
+				if witness_idx < private_offset || witness_idx >= witness_size {
 					return F::ZERO;
 				}
 
@@ -158,50 +134,6 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 		.collect::<Vec<_>>();
 
 	FieldBuffer::new(log_witness_size, result.into_boxed_slice())
-}
-
-/// Result of computing the wiring relation for IOP proving.
-///
-/// Contains the folding polynomial (l_poly) and the claimed batched sum
-/// that will be passed to the IOP channel's `prove_oracle_relations` method.
-pub struct WiringRelation<P: PackedField> {
-	/// The folding polynomial: wiring poly + batch_coeff * eq(r_public, ·)
-	pub l_poly: FieldBuffer<P>,
-	/// The claimed batched sum: λ-batched mulcheck evals + batch_coeff * public_eval
-	pub batched_sum: P::Scalar,
-}
-
-/// Computes the wiring relation for IOP proving.
-///
-/// Samples batching challenges from the channel, computes the folding polynomial,
-/// and returns the relation data needed for the IOP channel's `prove_oracle_relations` method.
-pub fn compute_wiring_relation<F: Field, P: PackedField<Scalar = F>>(
-	wiring_transpose: &WiringTranspose,
-	witness: &FieldSlice<P>,
-	r_public: &[F],
-	r_x: &[F],
-	mulcheck_evals: &[F],
-	channel: &mut impl IPProverChannel<F>,
-) -> WiringRelation<P> {
-	// Sample batching challenges
-	let lambda = channel.sample();
-	let batch_coeff = channel.sample();
-
-	// Fold constraints with batching and compute the folded polynomial
-	let wiring_poly = fold_constraints(wiring_transpose, lambda, r_x);
-	let l_poly = compute_l_poly(wiring_poly, r_public, batch_coeff);
-
-	// Compute the public input evaluation
-	let public = witness.chunk(r_public.len(), 0);
-	let public_eval = multilinear::evaluate::evaluate(&public, r_public);
-
-	// Compute the batched sum
-	let batched_sum = evaluate_univariate(mulcheck_evals, lambda) + batch_coeff * public_eval;
-
-	WiringRelation {
-		l_poly,
-		batched_sum,
-	}
 }
 
 /// Witness data for multiplication constraint checking.
@@ -311,7 +243,7 @@ mod tests {
 		univariate::evaluate_univariate,
 	};
 	use binius_spartan_frontend::constraint_system::{MulConstraint, Operand, WitnessIndex};
-	use binius_spartan_verifier::wiring::evaluate_wiring_mle;
+	use binius_spartan_verifier::wiring::evaluate_private_wiring_mle;
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 	use smallvec::SmallVec;
 
@@ -354,8 +286,8 @@ mod tests {
 		Operand::new(wires)
 	}
 
-	/// Evaluate the wiring MLE using the transposed representation.
-	fn evaluate_wiring_mle_transposed<F: Field>(
+	/// Evaluate the private wiring MLE using the transposed representation.
+	fn evaluate_private_wiring_mle_transposed<F: Field>(
 		transposed: &WiringTranspose,
 		lambda: F,
 		r_x_tensor: &[F],
@@ -363,7 +295,7 @@ mod tests {
 	) -> F {
 		let mut acc = [F::ZERO; 3];
 
-		for witness_idx in 0..transposed.witness_size() {
+		for witness_idx in transposed.private_offset()..transposed.witness_size() {
 			let r_y_weight = r_y_tensor[witness_idx];
 			for key in transposed.keys_for_witness(witness_idx) {
 				let r_x_weight = r_x_tensor[key.constraint_idx as usize];
@@ -395,15 +327,15 @@ mod tests {
 		let r_y = random_scalars::<B128>(&mut rng, log_witness_size);
 		let lambda = B128::random(&mut rng);
 
-		// Compute expected result using the original representation
+		// Compute expected result using the verifier's reference implementation
 		let expected =
-			evaluate_wiring_mle(&constraints, lambda, &r_x, &r_y, private_offset);
+			evaluate_private_wiring_mle(&constraints, lambda, &r_x, &r_y, private_offset);
 
 		// Compute result using the transposed representation
 		let transposed = WiringTranspose::transpose(witness_size, private_offset, &constraints);
 		let r_x_tensor = eq_ind_partial_eval::<B128>(&r_x);
 		let r_y_tensor = eq_ind_partial_eval::<B128>(&r_y);
-		let actual = evaluate_wiring_mle_transposed(
+		let actual = evaluate_private_wiring_mle_transposed(
 			&transposed,
 			lambda,
 			r_x_tensor.as_ref(),
@@ -434,9 +366,9 @@ mod tests {
 		let r_y = random_scalars::<B128>(&mut rng, log_witness_size);
 		let lambda = B128::random(&mut rng);
 
-		// Method 1: Compute expected result using evaluate_wiring_mle
+		// Method 1: Compute expected result using evaluate_private_wiring_mle
 		let expected =
-			evaluate_wiring_mle(&constraints, lambda, &r_x, &r_y, private_offset);
+			evaluate_private_wiring_mle(&constraints, lambda, &r_x, &r_y, private_offset);
 
 		// Method 2: Use fold_constraints then evaluate at r_y
 		let transposed = WiringTranspose::transpose(witness_size, private_offset, &constraints);
@@ -445,7 +377,7 @@ mod tests {
 
 		assert_eq!(
 			actual, expected,
-			"fold_constraints + evaluate does not match evaluate_wiring_mle"
+			"fold_constraints + evaluate does not match evaluate_private_wiring_mle"
 		);
 	}
 
@@ -456,10 +388,11 @@ mod tests {
 			channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 			naive_channel::NaiveVerifierChannel,
 		};
+		use binius_ip::channel::IPVerifierChannel;
+		use binius_ip_prover::channel::IPProverChannel;
 		use binius_iop_prover::{channel::IOPProverChannel, naive_channel::NaiveProverChannel};
 		use binius_math::{inner_product::inner_product_buffers, test_utils::random_field_buffer};
-		use binius_spartan_frontend::constraint_system::ConstraintSystem;
-		use binius_spartan_verifier::constraint_system::{BlindingInfo, ConstraintSystemPadded};
+		use binius_spartan_verifier::wiring::evaluate_wiring_mle_public;
 		use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 
 		type StdChallenger = HasherChallenger<StdDigest>;
@@ -498,34 +431,9 @@ mod tests {
 			inner_product_buffers(&mulcheck_witness.c, &r_x_tensor),
 		];
 
-		// Sample r_public
-		let r_public = random_scalars::<B128>(&mut rng, log_public);
-
-		// Compute public input evaluation
-		let public = witness.chunk(log_public, 0);
-		let public_eval = evaluate(&public, &r_public);
-
 		// Create transposed wiring
 		let wiring_transpose =
 			WiringTranspose::transpose(witness_size, private_offset, &constraints);
-
-		// Create constraint system for verifier (compute_claim doesn't actually use it,
-		// but we need a valid reference for the type signature)
-		let constraint_system = ConstraintSystem::new(
-			vec![],              // constants
-			0,                   // n_inout
-			0,                   // n_private
-			log_public as u32,   // log_public
-			constraints.clone(), // mul_constraints
-			0,                   // one_wire_index (dummy for test)
-		);
-		let constraint_system_padded = ConstraintSystemPadded::new(
-			constraint_system,
-			BlindingInfo {
-				n_dummy_wires: 0,
-				n_dummy_constraints: 0,
-			},
-		);
 
 		let oracle_specs = vec![OracleSpec {
 			log_msg_len: log_witness_size,
@@ -541,21 +449,26 @@ mod tests {
 		// Send witness oracle
 		let witness_oracle = prover_channel.send_oracle(witness.to_ref());
 
-		// Compute wiring relation (this samples lambda and batch_coeff from the channel)
-		let wiring_relation = compute_wiring_relation(
-			&wiring_transpose,
-			&witness.to_ref(),
-			&r_public,
-			&r_x,
-			&mulcheck_evals,
-			&mut prover_channel,
-		);
+		// Sample lambda
+		let lambda: B128 = prover_channel.sample();
+
+		// Compute the batched sum and public contribution
+		let batched_sum = evaluate_univariate(&mulcheck_evals, lambda);
+		let public: Vec<B128> = (0..private_offset)
+			.map(|i| witness.to_ref().get(i))
+			.collect();
+		let public_eval =
+			evaluate_wiring_mle_public(&constraints, log_public, &public, lambda, &r_x);
+		let trace_claim = batched_sum - public_eval;
+
+		// Fold constraints to get the private wiring polynomial
+		let wiring_poly = fold_constraints::<_, Packed128b>(&wiring_transpose, lambda, &r_x);
 
 		// Finish the IOP with the oracle relation
 		prover_channel.prove_oracle_relations([(
 			witness_oracle,
-			wiring_relation.l_poly.clone(),
-			wiring_relation.batched_sum,
+			wiring_poly.clone(),
+			trace_claim,
 		)]);
 
 		// === VERIFIER SIDE ===
@@ -568,24 +481,28 @@ mod tests {
 			.recv_oracle()
 			.expect("recv_oracle should succeed");
 
-		// Compute wiring claim (samples the same lambda and batch_coeff as prover)
-		let wiring_claim = binius_spartan_verifier::wiring::compute_claim(
-			&constraint_system_padded,
-			&r_public,
-			&mulcheck_evals,
-			public_eval,
-			&mut verifier_channel,
-		);
+		// Sample the same lambda as prover
+		let verifier_lambda: B128 = verifier_channel.sample();
 
-		// Verify that prover and verifier computed the same batched_sum
+		// Compute the same claim on the verifier side
+		let verifier_batched_sum = evaluate_univariate(&mulcheck_evals, verifier_lambda);
+		let verifier_public_eval = evaluate_wiring_mle_public(
+			&constraints,
+			log_public,
+			&public,
+			verifier_lambda,
+			&r_x,
+		);
+		let verifier_trace_claim = verifier_batched_sum - verifier_public_eval;
+
+		// Verify that prover and verifier computed the same trace_claim
 		assert_eq!(
-			wiring_relation.batched_sum, wiring_claim.batched_sum,
-			"Prover and verifier batched_sum mismatch"
+			trace_claim, verifier_trace_claim,
+			"Prover and verifier trace_claim mismatch"
 		);
 
-		// Build the transparent closure using the prover's l_poly for evaluation.
-		let l_poly = wiring_relation.l_poly;
-		let transparent = Box::new(move |point: &[_]| evaluate(&l_poly, point));
+		// Build the transparent closure using the prover's wiring_poly for evaluation.
+		let transparent = Box::new(move |point: &[_]| evaluate(&wiring_poly, point));
 
 		// Finish verification. The naive channel verifies the inner product directly inside
 		// verify_oracle_relations(), reads the transparent polynomial from the transcript,
@@ -594,7 +511,7 @@ mod tests {
 			.verify_oracle_relations([OracleLinearRelation {
 				oracle: witness_oracle,
 				transparent,
-				claim: wiring_claim.batched_sum,
+				claim: verifier_trace_claim,
 			}])
 			.expect("verify_oracle_relations should succeed (inner product verified)");
 	}

@@ -43,13 +43,16 @@ use binius_iop::{
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck};
-use binius_math::multilinear::evaluate::evaluate_inplace_scalars;
+use binius_math::univariate::evaluate_univariate;
 use binius_spartan_frontend::constraint_system::ConstraintSystem;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
 use digest::{Digest, Output, core_api::BlockSizeUser};
 
-use crate::constraint_system::{BlindingInfo, ConstraintSystemPadded};
+use crate::{
+	constraint_system::{BlindingInfo, ConstraintSystemPadded},
+	wiring::evaluate_wiring_mle_public,
+};
 
 pub const SECURITY_BITS: usize = 96;
 
@@ -175,24 +178,25 @@ impl<F: Field> IOPVerifier<F> {
 			r_x,
 		} = verify_mulcheck(cs, channel)?;
 
-		// Sample the public input check challenge and evaluate the public input at the challenge
-		// point.
-		let r_public = channel.sample_many(cs.log_public() as usize);
+		// λ is the batching challenge for the constraint operands
+		let lambda = channel.sample();
 
-		let public_eval = evaluate_inplace_scalars(public, &r_public);
+		// Batch together the constraint operand evaluation claims.
+		let batched_sum = evaluate_univariate(&[a_eval, b_eval, c_eval], lambda.clone());
 
-		// Compute wiring claim components
-		let wiring_claim =
-			wiring::compute_claim(cs, &r_public, &[a_eval, b_eval, c_eval], public_eval, channel);
+		// Compute rₓ^⊤ (M_A + λ M_B + λ² M_C) x
+		let public_eval = evaluate_wiring_mle_public(
+			cs.mul_constraints(),
+			cs.log_public() as usize,
+			&public,
+			lambda.clone(),
+			&r_x,
+		);
+
+		let trace_claim = batched_sum - public_eval;
 
 		// Build the transparent closure for the wiring oracle relation
-		let trace_transparent = wiring::eval_transparent(
-			cs,
-			&r_public,
-			&r_x,
-			wiring_claim.lambda,
-			wiring_claim.batch_coeff,
-		);
+		let trace_transparent = wiring::eval_transparent(cs, &r_x, lambda);
 
 		// Build the transparent closure for the mask oracle relation
 		let mask_transparent = mask_transparent(cs, &r_x);
@@ -202,7 +206,7 @@ impl<F: Field> IOPVerifier<F> {
 			OracleLinearRelation {
 				oracle: trace_oracle,
 				transparent: trace_transparent,
-				claim: wiring_claim.batched_sum,
+				claim: trace_claim,
 			},
 			OracleLinearRelation {
 				oracle: mask_oracle,
@@ -362,9 +366,7 @@ pub enum Error {
 	Sumcheck(#[from] sumcheck::Error),
 	#[error("BaseFold error: {0}")]
 	BaseFold(#[from] basefold::Error),
-	#[error("wiring error: {0}")]
-	Wiring(#[from] wiring::Error),
-	#[error("Transcript error: {0}")]
+#[error("Transcript error: {0}")]
 	Transcript(#[from] binius_transcript::Error),
 	#[error("IOP channel error: {0}")]
 	IOPChannel(#[from] binius_iop::channel::Error),

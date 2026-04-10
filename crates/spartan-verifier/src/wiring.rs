@@ -3,59 +3,10 @@
 use std::iter;
 
 use binius_field::{Field, field::FieldOps};
-use binius_iop::basefold;
-use binius_ip::{channel::IPVerifierChannel, sumcheck};
-use binius_math::{
-	multilinear::eq::{eq_ind, eq_ind_partial_eval_scalars, eq_one_var},
-	univariate::evaluate_univariate,
-};
-use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex};
+use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, univariate::evaluate_univariate};
+use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex, WitnessSegment};
 
 use crate::constraint_system::ConstraintSystemPadded;
-
-/// Claim components from the wiring check computation via IOP channel.
-#[derive(Debug, Clone)]
-pub struct WiringClaim<F> {
-	/// Batching challenge for constraint operands.
-	pub lambda: F,
-	/// Coefficient for batching public input check with wiring check.
-	pub batch_coeff: F,
-	/// The batched sum of all claims.
-	pub batched_sum: F,
-}
-
-/// Computes the wiring claim using an IOP channel interface.
-///
-/// Samples the batching challenges and computes the batched claim from the
-/// evaluation claims and public input evaluation.
-pub fn compute_claim<F, C>(
-	_constraint_system: &ConstraintSystemPadded<F>,
-	_r_public: &[C::Elem],
-	eval_claims: &[C::Elem],
-	public_eval: C::Elem,
-	channel: &mut C,
-) -> WiringClaim<C::Elem>
-where
-	F: Field,
-	C: IPVerifierChannel<F>,
-{
-	// \lambda is the batching challenge for the constraint operands
-	let lambda = channel.sample();
-
-	// Coefficient for batching the public input check with the wiring check.
-	let batch_coeff = channel.sample();
-
-	// Batch together the witness public input consistency claim with the
-	// constraint operand evaluation claims.
-	let batched_sum =
-		evaluate_univariate(eval_claims, lambda.clone()) + batch_coeff.clone() * public_eval;
-
-	WiringClaim {
-		lambda,
-		batch_coeff,
-		batched_sum,
-	}
-}
 
 /// Returns a closure that evaluates the wiring transparent polynomial at a given point.
 ///
@@ -63,32 +14,19 @@ where
 /// public input equality check, given a challenge point from the BaseFold opening.
 pub fn eval_transparent<'a, G: Field, F: FieldOps + 'a>(
 	constraint_system: &ConstraintSystemPadded<G>,
-	r_public: &[F],
 	r_x: &[F],
 	lambda: F,
-	batch_coeff: F,
 ) -> binius_iop::channel::TransparentEvalFn<'a, F> {
-	let r_public = r_public.to_vec();
 	let r_x = r_x.to_vec();
 	let mul_constraints = constraint_system.mul_constraints().to_vec();
 	let private_offset = constraint_system.n_public() as usize;
 
 	Box::new(move |r_y: &[F]| {
-		let wiring_eval =
-			evaluate_wiring_mle(&mul_constraints, lambda.clone(), &r_x, r_y, private_offset);
-
-		// Evaluate eq(r_public || ZERO, r_y)
-		let (r_y_head, r_y_tail) = r_y.split_at(r_public.len());
-		let eq_head = eq_ind(&r_public, r_y_head);
-		let eq_public = r_y_tail
-			.iter()
-			.fold(eq_head, |eval, r_y_i| eval * eq_one_var(r_y_i.clone(), F::zero()));
-
-		wiring_eval + batch_coeff.clone() * eq_public
+		evaluate_private_wiring_mle(&mul_constraints, lambda.clone(), &r_x, r_y, private_offset)
 	})
 }
 
-pub fn evaluate_wiring_mle<F: FieldOps>(
+pub fn evaluate_private_wiring_mle<F: FieldOps>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	lambda: F,
 	r_x: &[F],
@@ -104,7 +42,13 @@ pub fn evaluate_wiring_mle<F: FieldOps>(
 			let r_y_tensor_sum = operand
 				.wires()
 				.iter()
-				.map(|j| r_y_tensor[j.flat_index(private_offset)].clone())
+				.flat_map(|index| {
+					if let WitnessSegment::Private = index.segment {
+						Some(r_y_tensor[index.flat_index(private_offset)].clone())
+					} else {
+						None
+					}
+				})
 				.sum::<F>();
 			*dst += r_x_tensor_i.clone() * r_y_tensor_sum;
 		}
@@ -113,12 +57,33 @@ pub fn evaluate_wiring_mle<F: FieldOps>(
 	evaluate_univariate(&acc, lambda)
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-	#[error("transcript error: {0}")]
-	Transcript(#[from] binius_transcript::Error),
-	#[error("BaseFold error: {0}")]
-	BaseFold(#[from] basefold::Error),
-	#[error("sumcheck error: {0}")]
-	Sumcheck(#[from] sumcheck::Error),
+pub fn evaluate_wiring_mle_public<F: FieldOps>(
+	mul_constraints: &[MulConstraint<WitnessIndex>],
+	log_public: usize,
+	public: &[F],
+	lambda: F,
+	r_x: &[F],
+) -> F {
+	assert_eq!(public.len(), 1 << log_public);
+
+	let mut acc = [F::zero(), F::zero(), F::zero()];
+	let r_x_tensor = eq_ind_partial_eval_scalars(r_x);
+	for (r_x_tensor_i, MulConstraint { a, b, c }) in iter::zip(&r_x_tensor, mul_constraints) {
+		for (dst, operand) in iter::zip(&mut acc, [a, b, c]) {
+			let public_sum = operand
+				.wires()
+				.iter()
+				.flat_map(|index| {
+					if let WitnessSegment::Public = index.segment {
+						Some(public[index.index as usize].clone())
+					} else {
+						None
+					}
+				})
+				.sum::<F>();
+			*dst += r_x_tensor_i.clone() * public_sum;
+		}
+	}
+
+	evaluate_univariate(&acc, lambda)
 }
