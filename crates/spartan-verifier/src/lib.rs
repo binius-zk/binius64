@@ -366,7 +366,7 @@ pub enum Error {
 	Sumcheck(#[from] sumcheck::Error),
 	#[error("BaseFold error: {0}")]
 	BaseFold(#[from] basefold::Error),
-#[error("Transcript error: {0}")]
+	#[error("Transcript error: {0}")]
 	Transcript(#[from] binius_transcript::Error),
 	#[error("IOP channel error: {0}")]
 	IOPChannel(#[from] binius_iop::channel::Error),

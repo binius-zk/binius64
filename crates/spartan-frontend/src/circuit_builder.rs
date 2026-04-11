@@ -7,7 +7,7 @@ use bytemuck::zeroed_vec;
 use smallvec::{SmallVec, smallvec};
 
 use crate::constraint_system::{
-	ConstraintSystem, ConstraintWire, MulConstraint, Operand, Witness, WireKind, WitnessIndex,
+	ConstraintSystem, ConstraintWire, MulConstraint, Operand, WireKind, Witness, WitnessIndex,
 	WitnessLayout, WitnessSegment,
 };
 

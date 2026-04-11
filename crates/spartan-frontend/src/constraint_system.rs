@@ -1,6 +1,11 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::{cmp::Ordering, collections::HashMap, mem, ops::{Index, IndexMut}};
+use std::{
+	cmp::Ordering,
+	collections::HashMap,
+	mem,
+	ops::{Index, IndexMut},
+};
 
 use binius_field::Field;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
@@ -159,7 +164,6 @@ impl WitnessIndex {
 			index,
 		}
 	}
-
 }
 
 pub struct Witness<F> {
@@ -272,11 +276,7 @@ impl<F: Field> ConstraintSystem<F> {
 	/// Validate that a witness satisfies all multiplication constraints.
 	pub fn validate(&self, witness: &Witness<F>) {
 		let operand_val = |operand: &Operand<WitnessIndex>| {
-			operand
-				.wires()
-				.iter()
-				.map(|&idx| witness[idx])
-				.sum::<F>()
+			operand.wires().iter().map(|&idx| witness[idx]).sum::<F>()
 		};
 
 		for MulConstraint { a, b, c } in &self.mul_constraints {

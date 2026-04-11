@@ -25,10 +25,7 @@ pub struct Key {
 }
 
 impl WiringTranspose {
-	pub fn transpose(
-		private_size: usize,
-		mul_constraints: &[MulConstraint<WitnessIndex>],
-	) -> Self {
+	pub fn transpose(private_size: usize, mul_constraints: &[MulConstraint<WitnessIndex>]) -> Self {
 		let mut keys_by_private_idx = vec![Vec::new(); private_size];
 
 		let mut n_total_keys = 0;
@@ -381,9 +378,9 @@ mod tests {
 			channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 			naive_channel::NaiveVerifierChannel,
 		};
+		use binius_iop_prover::{channel::IOPProverChannel, naive_channel::NaiveProverChannel};
 		use binius_ip::channel::IPVerifierChannel;
 		use binius_ip_prover::channel::IPProverChannel;
-		use binius_iop_prover::{channel::IOPProverChannel, naive_channel::NaiveProverChannel};
 		use binius_math::{inner_product::inner_product_buffers, test_utils::random_field_buffer};
 		use binius_spartan_verifier::wiring::evaluate_wiring_mle_public;
 		use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
@@ -410,8 +407,7 @@ mod tests {
 		let private_buf = random_field_buffer::<Packed128b>(&mut rng, log_private);
 
 		// Compute mulcheck witness
-		let mulcheck_witness =
-			build_mulcheck_witness(&constraints, &public, private_buf.to_ref());
+		let mulcheck_witness = build_mulcheck_witness(&constraints, &public, private_buf.to_ref());
 
 		// Sample r_x (sumcheck evaluation point for constraint axis)
 		let r_x = random_scalars::<B128>(&mut rng, log_n_constraints);
@@ -454,11 +450,7 @@ mod tests {
 		let wiring_poly = fold_constraints::<_, Packed128b>(&wiring_transpose, lambda, &r_x);
 
 		// Finish the IOP with the oracle relation
-		prover_channel.prove_oracle_relations([(
-			witness_oracle,
-			wiring_poly.clone(),
-			trace_claim,
-		)]);
+		prover_channel.prove_oracle_relations([(witness_oracle, wiring_poly.clone(), trace_claim)]);
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -475,20 +467,12 @@ mod tests {
 
 		// Compute the same claim on the verifier side
 		let verifier_batched_sum = evaluate_univariate(&mulcheck_evals, verifier_lambda);
-		let verifier_public_eval = evaluate_wiring_mle_public(
-			&constraints,
-			log_public,
-			&public,
-			verifier_lambda,
-			&r_x,
-		);
+		let verifier_public_eval =
+			evaluate_wiring_mle_public(&constraints, log_public, &public, verifier_lambda, &r_x);
 		let verifier_trace_claim = verifier_batched_sum - verifier_public_eval;
 
 		// Verify that prover and verifier computed the same trace_claim
-		assert_eq!(
-			trace_claim, verifier_trace_claim,
-			"Prover and verifier trace_claim mismatch"
-		);
+		assert_eq!(trace_claim, verifier_trace_claim, "Prover and verifier trace_claim mismatch");
 
 		// Build the transparent closure using the prover's wiring_poly for evaluation.
 		let transparent = Box::new(move |point: &[_]| evaluate(&wiring_poly, point));

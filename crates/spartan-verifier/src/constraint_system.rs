@@ -37,9 +37,8 @@ impl<F: Field> ConstraintSystemPadded<F> {
 
 		// Calculate padded private segment size
 		let n_circuit_private = cs.n_private() as usize;
-		let n_private = n_circuit_private
-			+ blinding_info.n_dummy_wires
-			+ 3 * blinding_info.n_dummy_constraints;
+		let n_private =
+			n_circuit_private + blinding_info.n_dummy_wires + 3 * blinding_info.n_dummy_constraints;
 		let log_private = log2_ceil_usize(n_private) as u32;
 
 		// Add dummy constraints for blinding
