@@ -8,12 +8,13 @@ use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex, Wi
 
 use crate::constraint_system::ConstraintSystemPadded;
 
-/// Returns a closure that evaluates the wiring transparent polynomial at a given point.
+/// Returns a closure that evaluates the wiring transparent polynomial for a specific segment.
 ///
-/// The returned closure computes the expected evaluation of the wiring MLE batched with the
-/// public input equality check, given a challenge point from the BaseFold opening.
+/// The returned closure computes the expected evaluation of the wiring MLE for the given
+/// segment, batched with lambda, given a challenge point from the BaseFold opening.
 pub fn eval_transparent<'a, G: Field, F: FieldOps + 'a>(
 	constraint_system: &ConstraintSystemPadded<G>,
+	segment: WitnessSegment,
 	r_x: &[F],
 	lambda: F,
 ) -> binius_iop::channel::TransparentEvalFn<'a, F> {
@@ -21,16 +22,17 @@ pub fn eval_transparent<'a, G: Field, F: FieldOps + 'a>(
 	let mul_constraints = constraint_system.mul_constraints().to_vec();
 
 	Box::new(move |r_y: &[F]| {
-		evaluate_private_wiring_mle(&mul_constraints, lambda.clone(), &r_x, r_y)
+		evaluate_segment_wiring_mle(&mul_constraints, segment, lambda.clone(), &r_x, r_y)
 	})
 }
 
-/// Evaluates the private wiring MLE at a point (r_x, r_y).
+/// Evaluates the wiring MLE for a specific segment at a point (r_x, r_y).
 ///
-/// The r_y dimension corresponds to the private witness segment only (log_private variables).
-/// Private wire indices are used directly as indices into r_y_tensor.
-pub fn evaluate_private_wiring_mle<F: FieldOps>(
+/// The r_y dimension corresponds to the given segment's oracle (log_segment variables).
+/// Wire indices within the segment are used directly as indices into r_y_tensor.
+pub fn evaluate_segment_wiring_mle<F: FieldOps>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
+	segment: WitnessSegment,
 	lambda: F,
 	r_x: &[F],
 	r_y: &[F],
@@ -45,7 +47,7 @@ pub fn evaluate_private_wiring_mle<F: FieldOps>(
 				.wires()
 				.iter()
 				.flat_map(|index| {
-					if let WitnessSegment::Private = index.segment {
+					if index.segment == segment {
 						Some(r_y_tensor[index.index as usize].clone())
 					} else {
 						None

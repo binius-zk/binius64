@@ -44,7 +44,7 @@ use binius_iop::{
 };
 use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck};
 use binius_math::univariate::evaluate_univariate;
-use binius_spartan_frontend::constraint_system::ConstraintSystem;
+use binius_spartan_frontend::constraint_system::{ConstraintSystem, WitnessSegment};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
 use digest::{Digest, Output, core_api::BlockSizeUser};
@@ -113,13 +113,15 @@ impl<F: Field> IOPVerifier<F> {
 	/// These describe the oracles (witness and mask) that the prover commits to.
 	pub fn oracle_specs(&self) -> Vec<OracleSpec> {
 		let cs = &self.constraint_system;
-		let log_witness_size = cs.log_private() as usize;
 		let (m_n, m_d) = cs.mask_dims();
 		let log_mask_dim = m_n + m_d;
 
 		vec![
 			OracleSpec {
-				log_msg_len: log_witness_size,
+				log_msg_len: cs.log_precommit() as usize,
+			},
+			OracleSpec {
+				log_msg_len: cs.log_private() as usize,
 			},
 			OracleSpec {
 				log_msg_len: log_mask_dim,
@@ -163,10 +165,9 @@ impl<F: Field> IOPVerifier<F> {
 			});
 		}
 
-		// Receive the trace oracle commitment.
-		let trace_oracle = channel.recv_oracle()?;
-
-		// Receive the mask oracle commitment.
+		// Receive the precommit, private, and mask oracle commitments.
+		let precommit_oracle = channel.recv_oracle()?;
+		let private_oracle = channel.recv_oracle()?;
 		let mask_oracle = channel.recv_oracle()?;
 
 		// Verify the multiplication constraints.
@@ -193,20 +194,29 @@ impl<F: Field> IOPVerifier<F> {
 			&r_x,
 		);
 
-		let trace_claim = batched_sum - public_eval;
+		// Prover sends the precommit segment's contribution to the operand evaluations.
+		let precommit_claim = channel.recv_one()?;
 
-		// Build the transparent closure for the wiring oracle relation
-		let trace_transparent = wiring::eval_transparent(cs, &r_x, lambda);
+		let private_claim = batched_sum - public_eval - precommit_claim.clone();
 
-		// Build the transparent closure for the mask oracle relation
+		// Build transparent closures for each oracle relation
+		let precommit_transparent =
+			wiring::eval_transparent(cs, WitnessSegment::Precommit, &r_x, lambda.clone());
+		let private_transparent =
+			wiring::eval_transparent(cs, WitnessSegment::Private, &r_x, lambda);
 		let mask_transparent = mask_transparent(cs, &r_x);
 
-		// Verify both oracle relations (checks are done inside verify_oracle_relations)
+		// Verify all oracle relations
 		channel.verify_oracle_relations([
 			OracleLinearRelation {
-				oracle: trace_oracle,
-				transparent: trace_transparent,
-				claim: trace_claim,
+				oracle: precommit_oracle,
+				transparent: precommit_transparent,
+				claim: precommit_claim,
+			},
+			OracleLinearRelation {
+				oracle: private_oracle,
+				transparent: private_transparent,
+				claim: private_claim,
 			},
 			OracleLinearRelation {
 				oracle: mask_oracle,

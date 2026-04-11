@@ -91,6 +91,10 @@ impl<F: Field> ConstraintSystemPadded<F> {
 		self.inner.n_inout()
 	}
 
+	pub fn n_precommit(&self) -> u32 {
+		self.inner.n_precommit()
+	}
+
 	pub fn n_private(&self) -> u32 {
 		self.inner.n_private()
 	}
@@ -105,6 +109,14 @@ impl<F: Field> ConstraintSystemPadded<F> {
 
 	pub fn one_wire(&self) -> WitnessIndex {
 		self.inner.one_wire()
+	}
+
+	pub fn log_precommit(&self) -> u32 {
+		log2_ceil_usize(self.inner.n_precommit() as usize) as u32
+	}
+
+	pub fn precommit_size(&self) -> usize {
+		1 << self.log_precommit() as usize
 	}
 
 	pub fn log_private(&self) -> u32 {

@@ -7,15 +7,15 @@ use binius_spartan_frontend::constraint_system::{
 };
 use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
 
-/// Transpose of the private wiring sparse matrix.
+/// Transpose of a wiring sparse matrix for a specific witness segment.
 ///
-/// Only indexes private witness wires. The private segment's size determines
+/// Indexes witness wires of a given segment. The segment's padded size determines
 /// the buffer dimensions.
 #[derive(Debug)]
 pub struct WiringTranspose {
 	flat_keys: Vec<Key>,
-	keys_start_by_private_index: Vec<u32>,
-	log_private_size: usize,
+	keys_start: Vec<u32>,
+	log_size: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -25,15 +25,20 @@ pub struct Key {
 }
 
 impl WiringTranspose {
-	pub fn transpose(private_size: usize, mul_constraints: &[MulConstraint<WitnessIndex>]) -> Self {
-		let mut keys_by_private_idx = vec![Vec::new(); private_size];
+	/// Build a transposed wiring matrix for a specific witness segment.
+	pub fn transpose(
+		segment: WitnessSegment,
+		segment_size: usize,
+		mul_constraints: &[MulConstraint<WitnessIndex>],
+	) -> Self {
+		let mut keys_by_idx = vec![Vec::new(); segment_size];
 
 		let mut n_total_keys = 0;
 		for (i, MulConstraint { a, b, c }) in mul_constraints.iter().enumerate() {
 			for (operand_idx, operand) in [a, b, c].into_iter().enumerate() {
 				for &witness_idx in operand.wires() {
-					if witness_idx.segment == WitnessSegment::Private {
-						keys_by_private_idx[witness_idx.index as usize].push(Key {
+					if witness_idx.segment == segment {
+						keys_by_idx[witness_idx.index as usize].push(Key {
 							operand_idx: operand_idx as u8,
 							constraint_idx: i as u32,
 						});
@@ -45,48 +50,46 @@ impl WiringTranspose {
 
 		// Flatten the sparse matrix representation.
 		let mut flat_keys = Vec::with_capacity(n_total_keys);
-		let mut keys_start = Vec::with_capacity(private_size);
-		for keys in keys_by_private_idx {
+		let mut keys_start = Vec::with_capacity(segment_size);
+		for keys in keys_by_idx {
 			let start = flat_keys.len() as u32;
 			flat_keys.extend(keys);
 			keys_start.push(start);
 		}
 
-		let log_private_size = checked_log_2(private_size);
+		let log_size = checked_log_2(segment_size);
 
 		Self {
 			flat_keys,
-			keys_start_by_private_index: keys_start,
-			log_private_size,
+			keys_start,
+			log_size,
 		}
 	}
 
-	/// Returns the log2 of the private segment size.
-	pub fn log_private_size(&self) -> usize {
-		self.log_private_size
+	pub fn log_size(&self) -> usize {
+		self.log_size
 	}
 
-	/// Returns the private segment size.
-	pub fn private_size(&self) -> usize {
-		1 << self.log_private_size
+	pub fn size(&self) -> usize {
+		1 << self.log_size
 	}
 
-	/// Returns the keys for a specific private witness index.
-	pub fn keys_for_private(&self, private_idx: usize) -> &[Key] {
-		let start = self.keys_start_by_private_index[private_idx] as usize;
+	/// Returns the keys for a specific witness index within the segment.
+	pub fn keys_for(&self, idx: usize) -> &[Key] {
+		let start = self.keys_start[idx] as usize;
 		let end = self
-			.keys_start_by_private_index
-			.get(private_idx + 1)
+			.keys_start
+			.get(idx + 1)
 			.map(|&x| x as usize)
 			.unwrap_or(self.flat_keys.len());
 		&self.flat_keys[start..end]
 	}
 }
 
-/// Folds the private wiring matrix along the constraint axis by partially evaluating at r_x.
+/// Folds the wiring matrix along the constraint axis by partially evaluating at r_x.
 ///
 /// Also batches the three operands (a, b, c) using powers of lambda.
-/// Returns a multilinear polynomial over private witness indices where each coefficient is the
+/// Returns a multilinear polynomial over witness indices where each coefficient is the
 /// weighted sum of constraint contributions.
 pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 	transposed: &WiringTranspose,
@@ -99,24 +102,24 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 	// Batching powers for the three operands
 	let lambda_powers = [F::ONE, lambda, lambda.square()];
 
-	let private_size = transposed.private_size();
-	let log_private_size = transposed.log_private_size();
-	let len = 1 << log_private_size.saturating_sub(P::LOG_WIDTH);
+	let segment_size = transposed.size();
+	let log_size = transposed.log_size();
+	let len = 1 << log_size.saturating_sub(P::LOG_WIDTH);
 
-	// Process in parallel over chunks of P::WIDTH private indices
+	// Process in parallel over chunks of P::WIDTH indices
 	let result = (0..len)
 		.into_par_iter()
 		.map(|packed_idx| {
 			let base_idx = packed_idx << P::LOG_WIDTH;
 
 			P::from_fn(|scalar_idx| {
-				let private_idx = base_idx + scalar_idx;
-				if private_idx >= private_size {
+				let idx = base_idx + scalar_idx;
+				if idx >= segment_size {
 					return F::ZERO;
 				}
 
 				let mut acc = F::ZERO;
-				for key in transposed.keys_for_private(private_idx) {
+				for key in transposed.keys_for(idx) {
 					let r_x_weight = r_x_tensor[key.constraint_idx as usize];
 					let lambda_weight = lambda_powers[key.operand_idx as usize];
 					acc += r_x_weight * lambda_weight;
@@ -126,7 +129,7 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 		})
 		.collect::<Vec<_>>();
 
-	FieldBuffer::new(log_private_size, result.into_boxed_slice())
+	FieldBuffer::new(log_size, result.into_boxed_slice())
 }
 
 /// Witness data for multiplication constraint checking.
@@ -142,6 +145,7 @@ pub struct MulCheckWitness<P: PackedField> {
 /// Evaluates an operand by XORing witness values at the specified indices.
 fn eval_operand<F: Field, P: PackedField<Scalar = F>>(
 	public: &[F],
+	precommit_packed: &FieldSlice<P>,
 	private_packed: &FieldSlice<P>,
 	operand: &Operand<WitnessIndex>,
 ) -> F {
@@ -150,7 +154,7 @@ fn eval_operand<F: Field, P: PackedField<Scalar = F>>(
 		.iter()
 		.map(|idx| match idx.segment {
 			WitnessSegment::Public => public[idx.index as usize],
-			WitnessSegment::Precommit => todo!("precommit segment in eval_operand"),
+			WitnessSegment::Precommit => precommit_packed.get(idx.index as usize),
 			WitnessSegment::Private => private_packed.get(idx.index as usize),
 		})
 		.sum()
@@ -165,6 +169,7 @@ fn eval_operand<F: Field, P: PackedField<Scalar = F>>(
 pub fn build_mulcheck_witness<F: Field, P: PackedField<Scalar = F>>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	public: &[F],
+	precommit_packed: FieldSlice<P>,
 	private_packed: FieldSlice<P>,
 ) -> MulCheckWitness<P> {
 	fn get_a(c: &MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex> {
@@ -203,6 +208,7 @@ pub fn build_mulcheck_witness<F: Field, P: PackedField<Scalar = F>>(
 					if constraint_idx < n_constraints {
 						eval_operand(
 							public,
+							&precommit_packed,
 							&private_packed,
 							get_operand(&mul_constraints[constraint_idx]),
 						)
@@ -237,7 +243,8 @@ mod tests {
 		univariate::evaluate_univariate,
 	};
 	use binius_spartan_frontend::constraint_system::{MulConstraint, Operand, WitnessIndex};
-	use binius_spartan_verifier::wiring::evaluate_private_wiring_mle;
+	use binius_spartan_frontend::constraint_system::WitnessSegment;
+	use binius_spartan_verifier::wiring::evaluate_segment_wiring_mle;
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 	use smallvec::SmallVec;
 
@@ -281,8 +288,8 @@ mod tests {
 		Operand::new(wires)
 	}
 
-	/// Evaluate the private wiring MLE using the transposed representation.
-	fn evaluate_private_wiring_mle_transposed<F: Field>(
+	/// Evaluate the wiring MLE using the transposed representation.
+	fn evaluate_wiring_mle_transposed<F: Field>(
 		transposed: &WiringTranspose,
 		lambda: F,
 		r_x_tensor: &[F],
@@ -290,9 +297,9 @@ mod tests {
 	) -> F {
 		let mut acc = [F::ZERO; 3];
 
-		for private_idx in 0..transposed.private_size() {
-			let r_y_weight = r_y_tensor[private_idx];
-			for key in transposed.keys_for_private(private_idx) {
+		for idx in 0..transposed.size() {
+			let r_y_weight = r_y_tensor[idx];
+			for key in transposed.keys_for(idx) {
 				let r_x_weight = r_x_tensor[key.constraint_idx as usize];
 				acc[key.operand_idx as usize] += r_x_weight * r_y_weight;
 			}
@@ -322,13 +329,20 @@ mod tests {
 		let lambda = B128::random(&mut rng);
 
 		// Compute expected result using the verifier's reference implementation
-		let expected = evaluate_private_wiring_mle(&constraints, lambda, &r_x, &r_y);
+		let expected = evaluate_segment_wiring_mle(
+			&constraints,
+			WitnessSegment::Private,
+			lambda,
+			&r_x,
+			&r_y,
+		);
 
 		// Compute result using the transposed representation
-		let transposed = WiringTranspose::transpose(private_size, &constraints);
+		let transposed =
+			WiringTranspose::transpose(WitnessSegment::Private, private_size, &constraints);
 		let r_x_tensor = eq_ind_partial_eval::<B128>(&r_x);
 		let r_y_tensor = eq_ind_partial_eval::<B128>(&r_y);
-		let actual = evaluate_private_wiring_mle_transposed(
+		let actual = evaluate_wiring_mle_transposed(
 			&transposed,
 			lambda,
 			r_x_tensor.as_ref(),
@@ -358,17 +372,24 @@ mod tests {
 		let r_y = random_scalars::<B128>(&mut rng, log_private);
 		let lambda = B128::random(&mut rng);
 
-		// Method 1: Compute expected result using evaluate_private_wiring_mle
-		let expected = evaluate_private_wiring_mle(&constraints, lambda, &r_x, &r_y);
+		// Method 1: Compute expected result using evaluate_segment_wiring_mle
+		let expected = evaluate_segment_wiring_mle(
+			&constraints,
+			WitnessSegment::Private,
+			lambda,
+			&r_x,
+			&r_y,
+		);
 
 		// Method 2: Use fold_constraints then evaluate at r_y
-		let transposed = WiringTranspose::transpose(private_size, &constraints);
+		let transposed =
+			WiringTranspose::transpose(WitnessSegment::Private, private_size, &constraints);
 		let folded = fold_constraints::<_, Packed128b>(&transposed, lambda, &r_x);
 		let actual = evaluate(&folded, &r_y);
 
 		assert_eq!(
 			actual, expected,
-			"fold_constraints + evaluate does not match evaluate_private_wiring_mle"
+			"fold_constraints + evaluate does not match evaluate_segment_wiring_mle"
 		);
 	}
 
@@ -403,12 +424,18 @@ mod tests {
 		let constraints =
 			generate_random_constraints(&mut rng, n_constraints, public_size, private_size);
 
-		// Create random public and private witness buffers
+		// Create random public, precommit, and private witness buffers
 		let public = random_scalars::<B128>(&mut rng, public_size);
+		let precommit_buf = random_field_buffer::<Packed128b>(&mut rng, 0); // empty precommit
 		let private_buf = random_field_buffer::<Packed128b>(&mut rng, log_private);
 
 		// Compute mulcheck witness
-		let mulcheck_witness = build_mulcheck_witness(&constraints, &public, private_buf.to_ref());
+		let mulcheck_witness = build_mulcheck_witness(
+			&constraints,
+			&public,
+			precommit_buf.to_ref(),
+			private_buf.to_ref(),
+		);
 
 		// Sample r_x (sumcheck evaluation point for constraint axis)
 		let r_x = random_scalars::<B128>(&mut rng, log_n_constraints);
@@ -422,7 +449,8 @@ mod tests {
 		];
 
 		// Create transposed wiring
-		let wiring_transpose = WiringTranspose::transpose(private_size, &constraints);
+		let wiring_transpose =
+			WiringTranspose::transpose(WitnessSegment::Private, private_size, &constraints);
 
 		let oracle_specs = vec![OracleSpec {
 			log_msg_len: log_private,
