@@ -47,9 +47,7 @@ use binius_ip_prover::{
 	sumcheck::{quadratic_mle::QuadraticMleCheckProver, zk_mlecheck},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice,
-	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
-	univariate::evaluate_univariate,
+	FieldBuffer, FieldSlice, multilinear::eq::eq_ind_partial_eval, ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded}, univariate::evaluate_univariate
 };
 use binius_spartan_frontend::constraint_system::{
 	MulConstraint, Witness, WitnessIndex, WitnessSegment,
@@ -252,19 +250,21 @@ impl<F: Field> IOPProver<F> {
 		// Batch together the constraint operand evaluation claims.
 		let batched_sum = evaluate_univariate(&mulcheck_evals, lambda);
 
+		// Compute eq indicator tensor for r_x (shared across all segment evaluations)
+		let r_x_tensor = eq_ind_partial_eval::<F>(&r_x);
+
 		// Compute rₓ^⊤ (M_A + λ M_B + λ² M_C) x
 		let public_eval = evaluate_wiring_mle_public(
 			cs.mul_constraints(),
-			cs.log_public() as usize,
 			witness.public(),
 			lambda,
-			&r_x,
+			r_x_tensor.as_ref(),
 		);
 
 		// Compute the precommit segment's contribution to the wiring check.
 		// The prover sends this as a scalar; the oracle relation then verifies it.
 		let precommit_wiring_poly =
-			fold_constraints(&self.precommit_wiring_transpose, lambda, &r_x);
+			fold_constraints(&self.precommit_wiring_transpose, lambda, r_x_tensor.as_ref());
 		let precommit_claim = binius_math::inner_product::inner_product_buffers(
 			&precommit_packed.to_ref(),
 			&precommit_wiring_poly,
@@ -275,7 +275,7 @@ impl<F: Field> IOPProver<F> {
 
 		// Fold private wiring constraints
 		let private_wiring_poly =
-			fold_constraints(&self.private_wiring_transpose, lambda, &r_x);
+			fold_constraints(&self.private_wiring_transpose, lambda, r_x_tensor.as_ref());
 
 		// Compute the mask folding polynomial (libra_eval tensor)
 		let n_vars = r_x.len();

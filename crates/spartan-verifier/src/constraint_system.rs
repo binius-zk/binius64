@@ -38,7 +38,7 @@ impl<F: Field> ConstraintSystemPadded<F> {
 		let blinding_size = blinding_info.n_dummy_wires + 3 * blinding_info.n_dummy_constraints;
 
 		/// Adds dummy blinding constraints for a segment and returns its padded log-size.
-		fn add_blinding_constraints<F: Field>(
+		fn add_blinding_constraints(
 			mul_constraints: &mut Vec<MulConstraint<WitnessIndex>>,
 			make_index: fn(u32) -> WitnessIndex,
 			n_circuit_wires: usize,
@@ -59,14 +59,14 @@ impl<F: Field> ConstraintSystemPadded<F> {
 			log2_ceil_usize(n_circuit_wires + blinding_size) as u32
 		}
 
-		let log_precommit = add_blinding_constraints::<F>(
+		let log_precommit = add_blinding_constraints(
 			&mut mul_constraints,
 			WitnessIndex::precommit,
 			cs.n_precommit() as usize,
 			&blinding_info,
 			blinding_size,
 		);
-		let log_private = add_blinding_constraints::<F>(
+		let log_private = add_blinding_constraints(
 			&mut mul_constraints,
 			WitnessIndex::private,
 			cs.n_private() as usize,

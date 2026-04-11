@@ -43,7 +43,7 @@ use binius_iop::{
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck};
-use binius_math::univariate::evaluate_univariate;
+use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, univariate::evaluate_univariate};
 use binius_spartan_frontend::constraint_system::{ConstraintSystem, WitnessSegment};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
@@ -186,13 +186,9 @@ impl<F: Field> IOPVerifier<F> {
 		let batched_sum = evaluate_univariate(&[a_eval, b_eval, c_eval], lambda.clone());
 
 		// Compute rₓ^⊤ (M_A + λ M_B + λ² M_C) x
-		let public_eval = evaluate_wiring_mle_public(
-			cs.mul_constraints(),
-			cs.log_public() as usize,
-			&public,
-			lambda.clone(),
-			&r_x,
-		);
+		let r_x_tensor = eq_ind_partial_eval_scalars(&r_x);
+		let public_eval =
+			evaluate_wiring_mle_public(cs.mul_constraints(), &public, lambda.clone(), &r_x_tensor);
 
 		// Prover sends the precommit segment's contribution to the operand evaluations.
 		let precommit_claim = channel.recv_one()?;
@@ -201,9 +197,9 @@ impl<F: Field> IOPVerifier<F> {
 
 		// Build transparent closures for each oracle relation
 		let precommit_transparent =
-			wiring::eval_transparent(cs, WitnessSegment::Precommit, &r_x, lambda.clone());
+			wiring::eval_transparent(cs, WitnessSegment::Precommit, &r_x_tensor, lambda.clone());
 		let private_transparent =
-			wiring::eval_transparent(cs, WitnessSegment::Private, &r_x, lambda);
+			wiring::eval_transparent(cs, WitnessSegment::Private, &r_x_tensor, lambda);
 		let mask_transparent = mask_transparent(cs, &r_x);
 
 		// Verify all oracle relations

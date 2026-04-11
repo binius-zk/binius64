@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{Field, PackedField};
-use binius_math::{FieldBuffer, FieldSlice, multilinear::eq::eq_ind_partial_eval};
+use binius_math::{FieldBuffer, FieldSlice};
 use binius_spartan_frontend::constraint_system::{
 	MulConstraint, Operand, WitnessIndex, WitnessSegment,
 };
@@ -91,14 +91,14 @@ impl WiringTranspose {
 /// Also batches the three operands (a, b, c) using powers of lambda.
 /// Returns a multilinear polynomial over witness indices where each coefficient is the
 /// weighted sum of constraint contributions.
+/// `r_x_tensor` is the eq-indicator partial evaluation at r_x, i.e.
+/// `eq_ind_partial_eval(r_x)`. Accepting it as a parameter avoids redundant
+/// computation when folding multiple segments with the same r_x.
 pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 	transposed: &WiringTranspose,
 	lambda: F,
-	r_x: &[F],
+	r_x_tensor: &[F],
 ) -> FieldBuffer<P> {
-	// Compute eq indicator tensor for constraint evaluation points
-	let r_x_tensor = eq_ind_partial_eval::<F>(r_x);
-
 	// Batching powers for the three operands
 	let lambda_powers = [F::ONE, lambda, lambda.square()];
 
@@ -328,20 +328,22 @@ mod tests {
 		let r_y = random_scalars::<B128>(&mut rng, log_private);
 		let lambda = B128::random(&mut rng);
 
+		// Compute the eq indicator tensors
+		let r_x_tensor = eq_ind_partial_eval::<B128>(&r_x);
+		let r_y_tensor = eq_ind_partial_eval::<B128>(&r_y);
+
 		// Compute expected result using the verifier's reference implementation
 		let expected = evaluate_segment_wiring_mle(
 			&constraints,
 			WitnessSegment::Private,
 			lambda,
-			&r_x,
+			r_x_tensor.as_ref(),
 			&r_y,
 		);
 
 		// Compute result using the transposed representation
 		let transposed =
 			WiringTranspose::transpose(WitnessSegment::Private, private_size, &constraints);
-		let r_x_tensor = eq_ind_partial_eval::<B128>(&r_x);
-		let r_y_tensor = eq_ind_partial_eval::<B128>(&r_y);
 		let actual = evaluate_wiring_mle_transposed(
 			&transposed,
 			lambda,
@@ -372,19 +374,21 @@ mod tests {
 		let r_y = random_scalars::<B128>(&mut rng, log_private);
 		let lambda = B128::random(&mut rng);
 
+		let r_x_tensor = eq_ind_partial_eval::<B128>(&r_x);
+
 		// Method 1: Compute expected result using evaluate_segment_wiring_mle
 		let expected = evaluate_segment_wiring_mle(
 			&constraints,
 			WitnessSegment::Private,
 			lambda,
-			&r_x,
+			r_x_tensor.as_ref(),
 			&r_y,
 		);
 
 		// Method 2: Use fold_constraints then evaluate at r_y
 		let transposed =
 			WiringTranspose::transpose(WitnessSegment::Private, private_size, &constraints);
-		let folded = fold_constraints::<_, Packed128b>(&transposed, lambda, &r_x);
+		let folded = fold_constraints::<_, Packed128b>(&transposed, lambda, r_x_tensor.as_ref());
 		let actual = evaluate(&folded, &r_y);
 
 		assert_eq!(
@@ -469,14 +473,18 @@ mod tests {
 		// Sample lambda
 		let lambda: B128 = prover_channel.sample();
 
+		// Compute r_x_tensor once
+		let r_x_tensor = eq_ind_partial_eval::<B128>(&r_x);
+
 		// Compute the batched sum and public contribution
 		let batched_sum = evaluate_univariate(&mulcheck_evals, lambda);
 		let public_eval =
-			evaluate_wiring_mle_public(&constraints, log_public, &public, lambda, &r_x);
+			evaluate_wiring_mle_public(&constraints, &public, lambda, r_x_tensor.as_ref());
 		let trace_claim = batched_sum - public_eval;
 
 		// Fold constraints to get the private wiring polynomial
-		let wiring_poly = fold_constraints::<_, Packed128b>(&wiring_transpose, lambda, &r_x);
+		let wiring_poly =
+			fold_constraints::<_, Packed128b>(&wiring_transpose, lambda, r_x_tensor.as_ref());
 
 		// Finish the IOP with the oracle relation
 		prover_channel.prove_oracle_relations([(witness_oracle, wiring_poly.clone(), trace_claim)]);
@@ -496,8 +504,13 @@ mod tests {
 
 		// Compute the same claim on the verifier side
 		let verifier_batched_sum = evaluate_univariate(&mulcheck_evals, verifier_lambda);
-		let verifier_public_eval =
-			evaluate_wiring_mle_public(&constraints, log_public, &public, verifier_lambda, &r_x);
+		let verifier_r_x_tensor = eq_ind_partial_eval::<B128>(&r_x);
+		let verifier_public_eval = evaluate_wiring_mle_public(
+			&constraints,
+			&public,
+			verifier_lambda,
+			verifier_r_x_tensor.as_ref(),
+		);
 		let verifier_trace_claim = verifier_batched_sum - verifier_public_eval;
 
 		// Verify that prover and verifier computed the same trace_claim
