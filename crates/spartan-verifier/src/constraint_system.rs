@@ -36,14 +36,15 @@ impl<F: Field> ConstraintSystemPadded<F> {
 		let mut mul_constraints = cs.mul_constraints().to_vec();
 
 		// Calculate padded private segment size
-		let n_private = cs.n_private() as usize
+		let n_circuit_private = cs.n_private() as usize;
+		let n_private = n_circuit_private
 			+ blinding_info.n_dummy_wires
 			+ 3 * blinding_info.n_dummy_constraints;
 		let log_private = log2_ceil_usize(n_private) as u32;
 
 		// Add dummy constraints for blinding
 		// Each dummy constraint uses 3 consecutive private wires starting after n_dummy_wires
-		let dummy_private_base = n_private + blinding_info.n_dummy_wires;
+		let dummy_private_base = n_circuit_private + blinding_info.n_dummy_wires;
 		for i in 0..blinding_info.n_dummy_constraints {
 			let a = WitnessIndex::private((dummy_private_base + 3 * i) as u32);
 			let b = WitnessIndex::private((dummy_private_base + 3 * i + 1) as u32);

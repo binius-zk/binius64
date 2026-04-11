@@ -160,12 +160,6 @@ impl WitnessIndex {
 		}
 	}
 
-	pub fn flat_index(self, private_offset: usize) -> usize {
-		match self.segment {
-			WitnessSegment::Public => self.index as usize,
-			WitnessSegment::Private => private_offset + self.index as usize,
-		}
-	}
 }
 
 pub struct Witness<F> {
