@@ -472,6 +472,28 @@ mod tests {
 	}
 
 	#[test]
+	fn test_fibonacci_with_precommit() {
+		let mut constraint_builder = ConstraintBuilder::new();
+		let x0 = constraint_builder.alloc_inout();
+		let x1 = constraint_builder.alloc_inout();
+		let xn = constraint_builder.alloc_precommit();
+		let out = fibonacci(&mut constraint_builder, x0, x1, 20);
+		constraint_builder.assert_eq(out, xn);
+		let ir = constraint_builder.build();
+		let (constraint_system, layout) = ir.finalize();
+
+		let mut witness_generator = WitnessGenerator::new(&layout);
+		let x0 = witness_generator.write_inout(x0, B128::ONE);
+		let x1 = witness_generator.write_inout(x1, B128::MULTIPLICATIVE_GENERATOR);
+		let xn = witness_generator.write_precommit(xn, B128::MULTIPLICATIVE_GENERATOR.pow(6765));
+		let out = fibonacci(&mut witness_generator, x0, x1, 20);
+		witness_generator.assert_eq(out, xn);
+		let witness = witness_generator.build().unwrap();
+
+		constraint_system.validate(&witness);
+	}
+
+	#[test]
 	fn test_assertion_failure_captured() {
 		let mut constraint_builder = ConstraintBuilder::new();
 		let x = constraint_builder.alloc_inout();
