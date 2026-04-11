@@ -1,6 +1,11 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::{cmp::Ordering, collections::HashMap, mem};
+use std::{
+	cmp::Ordering,
+	collections::HashMap,
+	mem,
+	ops::{Index, IndexMut},
+};
 
 use binius_field::Field;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
@@ -131,7 +136,74 @@ pub struct MulConstraint<W> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct WitnessIndex(pub u32);
+pub enum WitnessSegment {
+	/// The public segment contains constant and input/output witness values.
+	Public,
+	/// The private segment contains the remaining witness values, which are hidden from the
+	/// verifier.
+	Private,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WitnessIndex {
+	pub segment: WitnessSegment,
+	pub index: u32,
+}
+
+impl WitnessIndex {
+	pub fn public(index: u32) -> Self {
+		Self {
+			segment: WitnessSegment::Public,
+			index,
+		}
+	}
+
+	pub fn private(index: u32) -> Self {
+		Self {
+			segment: WitnessSegment::Private,
+			index,
+		}
+	}
+}
+
+pub struct Witness<F> {
+	public: Vec<F>,
+	private: Vec<F>,
+}
+
+impl<F> Witness<F> {
+	pub fn new(public: Vec<F>, private: Vec<F>) -> Self {
+		Self { public, private }
+	}
+
+	pub fn public(&self) -> &[F] {
+		&self.public
+	}
+
+	pub fn private(&self) -> &[F] {
+		&self.private
+	}
+}
+
+impl<F> Index<WitnessIndex> for Witness<F> {
+	type Output = F;
+
+	fn index(&self, index: WitnessIndex) -> &Self::Output {
+		match index.segment {
+			WitnessSegment::Public => &self.public[index.index as usize],
+			WitnessSegment::Private => &self.private[index.index as usize],
+		}
+	}
+}
+
+impl<F> IndexMut<WitnessIndex> for Witness<F> {
+	fn index_mut(&mut self, index: WitnessIndex) -> &mut Self::Output {
+		match index.segment {
+			WitnessSegment::Public => &mut self.public[index.index as usize],
+			WitnessSegment::Private => &mut self.private[index.index as usize],
+		}
+	}
+}
 
 /// A constraint system with multiplication constraints over witness indices.
 ///
@@ -147,7 +219,7 @@ pub struct ConstraintSystem<F: Field> {
 	n_private: u32,
 	log_public: u32,
 	mul_constraints: Vec<MulConstraint<WitnessIndex>>,
-	one_wire: WitnessIndex,
+	one_wire_index: u32,
 }
 
 impl<F: Field> ConstraintSystem<F> {
@@ -158,7 +230,7 @@ impl<F: Field> ConstraintSystem<F> {
 		n_private: u32,
 		log_public: u32,
 		mul_constraints: Vec<MulConstraint<WitnessIndex>>,
-		one_wire: WitnessIndex,
+		one_wire_index: u32,
 	) -> Self {
 		Self {
 			constants,
@@ -166,7 +238,7 @@ impl<F: Field> ConstraintSystem<F> {
 			n_private,
 			log_public,
 			mul_constraints,
-			one_wire,
+			one_wire_index,
 		}
 	}
 
@@ -195,17 +267,16 @@ impl<F: Field> ConstraintSystem<F> {
 	}
 
 	pub fn one_wire(&self) -> WitnessIndex {
-		self.one_wire
+		WitnessIndex {
+			segment: WitnessSegment::Public,
+			index: self.one_wire_index,
+		}
 	}
 
 	/// Validate that a witness satisfies all multiplication constraints.
-	pub fn validate(&self, witness: &[F]) {
+	pub fn validate(&self, witness: &Witness<F>) {
 		let operand_val = |operand: &Operand<WitnessIndex>| {
-			operand
-				.wires()
-				.iter()
-				.map(|idx| witness[idx.0 as usize])
-				.sum::<F>()
+			operand.wires().iter().map(|&idx| witness[idx]).sum::<F>()
 		};
 
 		for MulConstraint { a, b, c } in &self.mul_constraints {
@@ -228,7 +299,7 @@ pub struct WitnessLayout<F: Field> {
 	n_inout: u32,
 	n_private: u32,
 	log_public: u32,
-	log_size: u32,
+	log_private: u32,
 	private_index_map: HashMap<u32, u32>,
 }
 
@@ -238,42 +309,44 @@ impl<F: Field> WitnessLayout<F> {
 		let n_public = n_constants + n_inout;
 		let log_public = log2_ceil_usize(n_public as usize) as u32;
 
-		let private_offset = 1 << log_public;
 		let private_index_map = private_alive
 			.iter()
 			.enumerate()
 			.filter(|(_, alive)| **alive)
 			.enumerate()
-			.map(|(new_idx, (id, _))| (id as u32, private_offset + new_idx as u32))
+			.map(|(new_idx, (id, _))| (id as u32, new_idx as u32))
 			.collect::<HashMap<_, _>>();
 
 		let n_private = private_index_map.len() as u32;
-		let log_size = log2_ceil_usize((private_offset + n_private) as usize) as u32;
+		let log_private = log2_ceil_usize(n_private as usize) as u32;
 
 		Self {
 			constants,
 			n_inout,
 			n_private,
 			log_public,
-			log_size,
+			log_private,
 			private_index_map,
 		}
 	}
 
 	pub fn with_blinding(self, info: BlindingInfo) -> Self {
-		let log_public = self.log_public;
 		let n_private = self.n_private as usize;
+		let total_private = n_private + info.n_dummy_wires + 3 * info.n_dummy_constraints;
+		let log_private = log2_ceil_usize(total_private) as u32;
 
-		let private_offset = 1 << log_public as usize;
-		let total_size =
-			private_offset + n_private + info.n_dummy_wires + 3 * info.n_dummy_constraints;
-		let log_size = log2_ceil_usize(total_size) as u32;
-
-		Self { log_size, ..self }
+		Self {
+			log_private,
+			..self
+		}
 	}
 
-	pub fn size(&self) -> usize {
-		1 << self.log_size as usize
+	pub fn public_size(&self) -> usize {
+		1 << self.log_public as usize
+	}
+
+	pub fn private_size(&self) -> usize {
+		1 << self.log_private as usize
 	}
 
 	pub fn n_constants(&self) -> usize {
@@ -292,33 +365,29 @@ impl<F: Field> WitnessLayout<F> {
 		self.log_public
 	}
 
-	pub fn log_size(&self) -> u32 {
-		self.log_size
+	pub fn log_private(&self) -> u32 {
+		self.log_private
 	}
 
 	/// Returns the first index of the inout
 	pub fn inout_offset(&self) -> WitnessIndex {
-		WitnessIndex(self.constants.len() as u32)
-	}
-
-	pub fn private_offset(&self) -> WitnessIndex {
-		WitnessIndex(1 << self.log_public)
+		WitnessIndex::public(self.constants.len() as u32)
 	}
 
 	pub fn get(&self, wire: &ConstraintWire) -> Option<WitnessIndex> {
 		match wire.kind {
 			WireKind::Constant => {
 				assert!((wire.id as usize) < self.constants.len());
-				Some(WitnessIndex(wire.id))
+				Some(WitnessIndex::public(wire.id))
 			}
 			WireKind::InOut => {
 				assert!(wire.id < self.n_inout);
-				Some(WitnessIndex(self.inout_offset().0 + wire.id))
+				Some(WitnessIndex::public(self.constants.len() as u32 + wire.id))
 			}
 			WireKind::Private => self
 				.private_index_map
 				.get(&wire.id)
-				.map(|&id| WitnessIndex(id)),
+				.map(|&id| WitnessIndex::private(id)),
 		}
 	}
 }

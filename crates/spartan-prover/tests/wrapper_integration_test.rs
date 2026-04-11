@@ -124,19 +124,20 @@ fn test_zk_wrapped_prove_verify() {
 
 	inner_cs.validate(&inner_witness);
 
-	let public = &inner_witness[..inner_public_size];
+	let public = inner_witness.public().to_vec();
 
 	// === Step 7: Prove with ZKWrappedProverChannel ===
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 
 	// Observe inner public input on the transcript (Fiat-Shamir).
-	prover_transcript.observe().write_slice(public);
+	prover_transcript.observe().write_slice(&public);
 
 	let basefold_channel = zk_basefold_prover.create_channel(&mut prover_transcript, &mut rng);
 	let mut wrapped_prover_channel =
 		ZKWrappedProverChannel::new(basefold_channel, &outer_iop_prover, &outer_layout, {
 			let inner_iop_verifier = &inner_iop_verifier;
-			|replay_channel: &mut ReplayChannel<'_, B128>| {
+			let public = &public;
+			move |replay_channel: &mut ReplayChannel<'_, B128>| {
 				let inner_public_elems = replay_channel.observe_many(public);
 				inner_iop_verifier
 					.verify(inner_public_elems, replay_channel)
@@ -145,11 +146,11 @@ fn test_zk_wrapped_prove_verify() {
 		});
 
 	// Observe public input through the wrapped channel.
-	(&mut wrapped_prover_channel).observe_many(public);
+	(&mut wrapped_prover_channel).observe_many(&public);
 
 	// Run the inner proof through the wrapped channel.
 	inner_iop_prover
-		.prove::<OptimalPackedB128, _>(&inner_witness, &mut rng, &mut wrapped_prover_channel)
+		.prove::<OptimalPackedB128, _>(inner_witness, &mut rng, &mut wrapped_prover_channel)
 		.expect("inner prove failed");
 
 	// Finish runs the outer proof.
@@ -161,14 +162,14 @@ fn test_zk_wrapped_prove_verify() {
 	let mut verifier_transcript = prover_transcript.into_verifier();
 
 	// Verifier observes the public input on the transcript (Fiat-Shamir).
-	verifier_transcript.observe().write_slice(public);
+	verifier_transcript.observe().write_slice(&public);
 
 	let verifier_channel = zk_basefold_compiler.create_channel(&mut verifier_transcript);
 	let mut wrapped_verifier_channel =
 		ZKWrappedVerifierChannel::new(verifier_channel, &outer_iop_verifier);
 
 	// Observe public input through the wrapped channel.
-	let inner_public_elems = wrapped_verifier_channel.observe_many(public);
+	let inner_public_elems = wrapped_verifier_channel.observe_many(&public);
 
 	// Run the inner IOP verify through the wrapped channel.
 	inner_iop_verifier
