@@ -150,6 +150,7 @@ fn eval_operand<F: Field, P: PackedField<Scalar = F>>(
 		.iter()
 		.map(|idx| match idx.segment {
 			WitnessSegment::Public => public[idx.index as usize],
+			WitnessSegment::Precommit => todo!("precommit segment in eval_operand"),
 			WitnessSegment::Private => private_packed.get(idx.index as usize),
 		})
 		.sum()

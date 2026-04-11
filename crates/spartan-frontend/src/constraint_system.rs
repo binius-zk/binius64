@@ -15,6 +15,7 @@ use smallvec::{SmallVec, smallvec};
 pub enum WireKind {
 	Constant,
 	InOut,
+	Precommit,
 	Private,
 }
 
@@ -31,6 +32,14 @@ impl ConstraintWire {
 	pub fn inout(id: u32) -> Self {
 		Self {
 			kind: WireKind::InOut,
+			id,
+		}
+	}
+
+	/// Creates a constraint wire referencing a precommit wire by ID.
+	pub fn precommit(id: u32) -> Self {
+		Self {
+			kind: WireKind::Precommit,
 			id,
 		}
 	}
@@ -139,6 +148,9 @@ pub struct MulConstraint<W> {
 pub enum WitnessSegment {
 	/// The public segment contains constant and input/output witness values.
 	Public,
+	/// The precommit segment contains values committed in a separate oracle before the private
+	/// segment. These are zero-knowledge hidden but not prunable or rearrangeable.
+	Precommit,
 	/// The private segment contains the remaining witness values, which are hidden from the
 	/// verifier.
 	Private,
@@ -158,6 +170,13 @@ impl WitnessIndex {
 		}
 	}
 
+	pub fn precommit(index: u32) -> Self {
+		Self {
+			segment: WitnessSegment::Precommit,
+			index,
+		}
+	}
+
 	pub fn private(index: u32) -> Self {
 		Self {
 			segment: WitnessSegment::Private,
@@ -168,16 +187,25 @@ impl WitnessIndex {
 
 pub struct Witness<F> {
 	public: Vec<F>,
+	precommit: Vec<F>,
 	private: Vec<F>,
 }
 
 impl<F> Witness<F> {
-	pub fn new(public: Vec<F>, private: Vec<F>) -> Self {
-		Self { public, private }
+	pub fn new(public: Vec<F>, precommit: Vec<F>, private: Vec<F>) -> Self {
+		Self {
+			public,
+			precommit,
+			private,
+		}
 	}
 
 	pub fn public(&self) -> &[F] {
 		&self.public
+	}
+
+	pub fn precommit(&self) -> &[F] {
+		&self.precommit
 	}
 
 	pub fn private(&self) -> &[F] {
@@ -191,6 +219,7 @@ impl<F> Index<WitnessIndex> for Witness<F> {
 	fn index(&self, index: WitnessIndex) -> &Self::Output {
 		match index.segment {
 			WitnessSegment::Public => &self.public[index.index as usize],
+			WitnessSegment::Precommit => &self.precommit[index.index as usize],
 			WitnessSegment::Private => &self.private[index.index as usize],
 		}
 	}
@@ -200,6 +229,7 @@ impl<F> IndexMut<WitnessIndex> for Witness<F> {
 	fn index_mut(&mut self, index: WitnessIndex) -> &mut Self::Output {
 		match index.segment {
 			WitnessSegment::Public => &mut self.public[index.index as usize],
+			WitnessSegment::Precommit => &mut self.precommit[index.index as usize],
 			WitnessSegment::Private => &mut self.private[index.index as usize],
 		}
 	}
@@ -216,6 +246,7 @@ impl<F> IndexMut<WitnessIndex> for Witness<F> {
 pub struct ConstraintSystem<F: Field> {
 	constants: Vec<F>,
 	n_inout: u32,
+	n_precommit: u32,
 	n_private: u32,
 	log_public: u32,
 	mul_constraints: Vec<MulConstraint<WitnessIndex>>,
@@ -227,6 +258,7 @@ impl<F: Field> ConstraintSystem<F> {
 	pub fn new(
 		constants: Vec<F>,
 		n_inout: u32,
+		n_precommit: u32,
 		n_private: u32,
 		log_public: u32,
 		mul_constraints: Vec<MulConstraint<WitnessIndex>>,
@@ -235,6 +267,7 @@ impl<F: Field> ConstraintSystem<F> {
 		Self {
 			constants,
 			n_inout,
+			n_precommit,
 			n_private,
 			log_public,
 			mul_constraints,
@@ -248,6 +281,10 @@ impl<F: Field> ConstraintSystem<F> {
 
 	pub fn n_inout(&self) -> u32 {
 		self.n_inout
+	}
+
+	pub fn n_precommit(&self) -> u32 {
+		self.n_precommit
 	}
 
 	pub fn n_private(&self) -> u32 {
@@ -297,17 +334,25 @@ pub struct BlindingInfo {
 pub struct WitnessLayout<F: Field> {
 	pub(crate) constants: Vec<F>,
 	n_inout: u32,
+	n_precommit: u32,
 	n_private: u32,
 	log_public: u32,
+	log_precommit: u32,
 	log_private: u32,
 	private_index_map: HashMap<u32, u32>,
 }
 
 impl<F: Field> WitnessLayout<F> {
-	pub fn sparse(constants: Vec<F>, n_inout: u32, private_alive: &[bool]) -> Self {
+	pub fn sparse(
+		constants: Vec<F>,
+		n_inout: u32,
+		n_precommit: u32,
+		private_alive: &[bool],
+	) -> Self {
 		let n_constants = constants.len() as u32;
 		let n_public = n_constants + n_inout;
 		let log_public = log2_ceil_usize(n_public as usize) as u32;
+		let log_precommit = log2_ceil_usize(n_precommit as usize) as u32;
 
 		let private_index_map = private_alive
 			.iter()
@@ -323,8 +368,10 @@ impl<F: Field> WitnessLayout<F> {
 		Self {
 			constants,
 			n_inout,
+			n_precommit,
 			n_private,
 			log_public,
+			log_precommit,
 			log_private,
 			private_index_map,
 		}
@@ -345,6 +392,10 @@ impl<F: Field> WitnessLayout<F> {
 		1 << self.log_public as usize
 	}
 
+	pub fn precommit_size(&self) -> usize {
+		1 << self.log_precommit as usize
+	}
+
 	pub fn private_size(&self) -> usize {
 		1 << self.log_private as usize
 	}
@@ -357,12 +408,20 @@ impl<F: Field> WitnessLayout<F> {
 		self.n_inout as usize
 	}
 
+	pub fn n_precommit(&self) -> usize {
+		self.n_precommit as usize
+	}
+
 	pub fn n_private(&self) -> usize {
 		self.n_private as usize
 	}
 
 	pub fn log_public(&self) -> u32 {
 		self.log_public
+	}
+
+	pub fn log_precommit(&self) -> u32 {
+		self.log_precommit
 	}
 
 	pub fn log_private(&self) -> u32 {
@@ -383,6 +442,10 @@ impl<F: Field> WitnessLayout<F> {
 			WireKind::InOut => {
 				assert!(wire.id < self.n_inout);
 				Some(WitnessIndex::public(self.constants.len() as u32 + wire.id))
+			}
+			WireKind::Precommit => {
+				assert!(wire.id < self.n_precommit);
+				Some(WitnessIndex::precommit(wire.id))
 			}
 			WireKind::Private => self
 				.private_index_map
