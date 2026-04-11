@@ -113,7 +113,7 @@ impl<F: Field> IOPVerifier<F> {
 	/// These describe the oracles (witness and mask) that the prover commits to.
 	pub fn oracle_specs(&self) -> Vec<OracleSpec> {
 		let cs = &self.constraint_system;
-		let log_witness_size = cs.log_size() as usize;
+		let log_witness_size = cs.log_private() as usize;
 		let (m_n, m_d) = cs.mask_dims();
 		let log_mask_dim = m_n + m_d;
 

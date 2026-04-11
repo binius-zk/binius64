@@ -19,19 +19,21 @@ pub fn eval_transparent<'a, G: Field, F: FieldOps + 'a>(
 ) -> binius_iop::channel::TransparentEvalFn<'a, F> {
 	let r_x = r_x.to_vec();
 	let mul_constraints = constraint_system.mul_constraints().to_vec();
-	let private_offset = constraint_system.n_public() as usize;
 
 	Box::new(move |r_y: &[F]| {
-		evaluate_private_wiring_mle(&mul_constraints, lambda.clone(), &r_x, r_y, private_offset)
+		evaluate_private_wiring_mle(&mul_constraints, lambda.clone(), &r_x, r_y)
 	})
 }
 
+/// Evaluates the private wiring MLE at a point (r_x, r_y).
+///
+/// The r_y dimension corresponds to the private witness segment only (log_private variables).
+/// Private wire indices are used directly as indices into r_y_tensor.
 pub fn evaluate_private_wiring_mle<F: FieldOps>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	lambda: F,
 	r_x: &[F],
 	r_y: &[F],
-	private_offset: usize,
 ) -> F {
 	let mut acc = [F::zero(), F::zero(), F::zero()];
 
@@ -44,7 +46,7 @@ pub fn evaluate_private_wiring_mle<F: FieldOps>(
 				.iter()
 				.flat_map(|index| {
 					if let WitnessSegment::Private = index.segment {
-						Some(r_y_tensor[index.flat_index(private_offset)].clone())
+						Some(r_y_tensor[index.index as usize].clone())
 					} else {
 						None
 					}
