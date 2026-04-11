@@ -109,8 +109,7 @@ impl<F: Field> IOPProver<F> {
 	/// Constructs an IOP prover for a constraint system.
 	pub fn new(constraint_system: ConstraintSystemPadded<F>) -> Self {
 		let wiring_transpose = WiringTranspose::transpose(
-			constraint_system.size(),
-			constraint_system.n_public() as usize,
+			constraint_system.private_size(),
 			constraint_system.mul_constraints(),
 		);
 		Self {
@@ -151,15 +150,26 @@ impl<F: Field> IOPProver<F> {
 
 		let cs = &self.constraint_system;
 
-		// Check that the witness length matches the constraint system
-		let expected_size = cs.size();
-		if witness.as_slice().len() != expected_size {
+		// Check that the witness segments have the expected sizes
+		let expected_public_size = 1 << cs.log_public() as usize;
+		let expected_private_size = cs.private_size();
+		if witness.public().len() != expected_public_size {
 			return Err(Error::ArgumentError {
 				arg: "witness".to_string(),
 				msg: format!(
-					"witness has {} elements, expected {}",
-					witness.as_slice().len(),
-					expected_size
+					"public segment has {} elements, expected {}",
+					witness.public().len(),
+					expected_public_size
+				),
+			});
+		}
+		if witness.private().len() != expected_private_size {
+			return Err(Error::ArgumentError {
+				arg: "witness".to_string(),
+				msg: format!(
+					"private segment has {} elements, expected {}",
+					witness.private().len(),
+					expected_private_size
 				),
 			});
 		}
@@ -181,27 +191,25 @@ impl<F: Field> IOPProver<F> {
 		let mulcheck_mask =
 			zk_mlecheck::Mask::new(log_mul_constraints, mask_degree, masks_buffer.to_ref());
 
-		// Pack witness into field elements and add blinding
+		// Pack private witness into field elements and add blinding
 		let blinding_info = cs.blinding_info();
-		let witness_packed = pack_and_blind_witness::<_, P>(
-			cs.log_size() as usize,
-			witness.as_slice(),
-			blinding_info,
-			cs.n_public() as usize,
+		let private_packed = pack_and_blind_witness::<_, P>(
+			cs.log_private() as usize,
+			witness.private(),
 			cs.n_private() as usize,
+			blinding_info,
 			&mut rng,
 		);
 
-		// Send the witness and masks oracles to the channel
-		let trace_oracle = channel.send_oracle(witness_packed.to_ref());
+		// Send the private witness and masks oracles to the channel
+		let trace_oracle = channel.send_oracle(private_packed.to_ref());
 		let mask_oracle = channel.send_oracle(masks_buffer.to_ref());
 
 		// Prove the multiplication constraints
-		let private_offset = cs.n_public() as usize;
 		let (mulcheck_evals, mask_eval, r_x) = prove_mulcheck::<F, P, _>(
 			cs.mul_constraints(),
-			witness_packed.to_ref(),
-			private_offset,
+			witness.public(),
+			private_packed.to_ref(),
 			mulcheck_mask,
 			&mut channel,
 		)?;
@@ -328,8 +336,8 @@ where
 
 fn prove_mulcheck<F, P, Channel>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
-	witness: FieldSlice<P>,
-	private_offset: usize,
+	public: &[F],
+	private_packed: FieldSlice<P>,
 	mask: zk_mlecheck::Mask<P, impl Deref<Target = [P]>>,
 	channel: &mut Channel,
 ) -> Result<([F; 3], F, Vec<F>), Error>
@@ -338,7 +346,7 @@ where
 	P: PackedField<Scalar = F> + PackedExtension<F>,
 	Channel: IPProverChannel<F>,
 {
-	let mulcheck_witness = wiring::build_mulcheck_witness(mul_constraints, witness, private_offset);
+	let mulcheck_witness = wiring::build_mulcheck_witness(mul_constraints, public, private_packed);
 
 	// Sample random evaluation point for mulcheck
 	let r_mulcheck = channel.sample_many(mask.n_vars());
@@ -373,25 +381,24 @@ where
 	Ok((mulcheck_evals, mask_eval, r_x))
 }
 
-/// Packs the witness into a [`FieldBuffer`] and adds blinding values for dummy wires.
+/// Packs private witness values into a [`FieldBuffer`] and adds blinding values for dummy wires.
 fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
-	log_witness_elems: usize,
-	witness: &[F],
-	blinding_info: &BlindingInfo,
-	n_public: usize,
+	log_private: usize,
+	private: &[F],
 	n_private: usize,
+	blinding_info: &BlindingInfo,
 	mut rng: impl CryptoRng,
 ) -> FieldBuffer<P> {
-	let packed_witness = if log_witness_elems < P::LOG_WIDTH {
-		let elems_iter = witness.iter().copied();
-		let zeros_iter = repeat_n(F::ZERO, (1 << log_witness_elems) - witness.len());
+	let packed = if log_private < P::LOG_WIDTH {
+		let elems_iter = private.iter().copied();
+		let zeros_iter = repeat_n(F::ZERO, (1 << log_private) - private.len());
 
 		let elems = P::from_scalars(chain!(elems_iter, zeros_iter));
 		vec![elems]
 	} else {
-		let packed_len = 1 << (log_witness_elems - P::LOG_WIDTH);
+		let packed_len = 1 << (log_private - P::LOG_WIDTH);
 
-		let elems_iter = witness
+		let elems_iter = private
 			.par_chunks(P::WIDTH)
 			.map(|chunk| P::from_scalars(chunk.iter().copied()));
 		let zeros_iter = rayon::iter::repeat_n(P::zero(), packed_len - elems_iter.len());
@@ -399,27 +406,25 @@ fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
 		elems_iter.chain(zeros_iter).collect::<Vec<_>>()
 	};
 
-	let mut witness_packed = FieldBuffer::new(log_witness_elems, packed_witness.into_boxed_slice());
+	let mut buffer = FieldBuffer::new(log_private, packed.into_boxed_slice());
 
-	// Add blinding values
-	let base = n_public + n_private;
-
+	// Add blinding values after the actual private wires
 	// Set random values for non-constraint dummy wires
 	for i in 0..blinding_info.n_dummy_wires {
-		witness_packed.set(base + i, F::random(&mut rng));
+		buffer.set(n_private + i, F::random(&mut rng));
 	}
 
 	// Set random values for dummy constraint wires (A * B = C)
-	let constraint_wire_base = base + blinding_info.n_dummy_wires;
+	let constraint_wire_base = n_private + blinding_info.n_dummy_wires;
 	for i in 0..blinding_info.n_dummy_constraints {
 		let a = F::random(&mut rng);
 		let b = F::random(&mut rng);
 		let c = a * b;
 
-		witness_packed.set(constraint_wire_base + 3 * i, a);
-		witness_packed.set(constraint_wire_base + 3 * i + 1, b);
-		witness_packed.set(constraint_wire_base + 3 * i + 2, c);
+		buffer.set(constraint_wire_base + 3 * i, a);
+		buffer.set(constraint_wire_base + 3 * i + 1, b);
+		buffer.set(constraint_wire_base + 3 * i + 2, c);
 	}
 
-	witness_packed
+	buffer
 }
