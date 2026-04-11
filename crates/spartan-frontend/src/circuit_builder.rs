@@ -8,7 +8,7 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::constraint_system::{
 	ConstraintSystem, ConstraintWire, MulConstraint, Operand, Witness, WireKind, WitnessIndex,
-	WitnessLayout,
+	WitnessLayout, WitnessSegment,
 };
 
 /// Common interface for circuit construction and witness generation.
@@ -303,21 +303,23 @@ impl<F: Field> WitnessWire<F> {
 #[derive(Debug)]
 pub struct WitnessGenerator<'a, F: Field> {
 	alloc: WireAllocator,
-	witness: Vec<F>,
+	public: Vec<F>,
+	private: Vec<F>,
 	layout: &'a WitnessLayout<F>,
 	first_error: Option<Backtrace>,
 }
 
 impl<'a, F: Field> WitnessGenerator<'a, F> {
 	pub fn new(layout: &'a WitnessLayout<F>) -> Self {
-		let witness_size = layout.size();
+		let mut public = zeroed_vec(layout.public_size());
+		public[..layout.constants.len()].copy_from_slice(&layout.constants);
 
-		let mut witness = zeroed_vec(witness_size);
-		witness[..layout.constants.len()].copy_from_slice(&layout.constants);
+		let private = zeroed_vec(layout.private_size());
 
 		Self {
 			alloc: WireAllocator::new(WireKind::Private),
-			witness,
+			public,
+			private,
 			layout,
 			first_error: None,
 		}
@@ -330,7 +332,10 @@ impl<'a, F: Field> WitnessGenerator<'a, F> {
 
 	fn write_value(&mut self, wire: ConstraintWire, value: F) -> WitnessWire<F> {
 		if let Some(index) = self.layout.get(&wire) {
-			self.witness[index.flat_index(self.layout.private_offset())] = value;
+			match index.segment {
+				WitnessSegment::Public => self.public[index.index as usize] = value,
+				WitnessSegment::Private => self.private[index.index as usize] = value,
+			}
 		}
 		WitnessWire(value)
 	}
@@ -344,7 +349,7 @@ impl<'a, F: Field> WitnessGenerator<'a, F> {
 		if let Some(backtrace) = self.first_error {
 			Err(WitnessError { backtrace })
 		} else {
-			Ok(Witness::new(self.witness, self.layout.private_offset()))
+			Ok(Witness::new(self.public, self.private))
 		}
 	}
 
