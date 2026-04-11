@@ -17,6 +17,7 @@ use binius_utils::checked_arithmetics::{checked_log_2, log2_ceil_usize};
 #[derive(Debug, Clone)]
 pub struct ConstraintSystemPadded<F: Field> {
 	inner: ConstraintSystem<F>,
+	log_precommit: u32,
 	log_private: u32,
 	blinding_info: BlindingInfo,
 	mul_constraints: Vec<MulConstraint<WitnessIndex>>,
@@ -34,27 +35,44 @@ impl<F: Field> ConstraintSystemPadded<F> {
 	/// 4. Computes mask buffer dimensions for the ZK mulcheck mask polynomial
 	pub fn new(cs: ConstraintSystem<F>, blinding_info: BlindingInfo) -> Self {
 		let mut mul_constraints = cs.mul_constraints().to_vec();
+		let blinding_size = blinding_info.n_dummy_wires + 3 * blinding_info.n_dummy_constraints;
 
-		// Calculate padded private segment size
-		let n_circuit_private = cs.n_private() as usize;
-		let n_private =
-			n_circuit_private + blinding_info.n_dummy_wires + 3 * blinding_info.n_dummy_constraints;
-		let log_private = log2_ceil_usize(n_private) as u32;
-
-		// Add dummy constraints for blinding
-		// Each dummy constraint uses 3 consecutive private wires starting after n_dummy_wires
-		let dummy_private_base = n_circuit_private + blinding_info.n_dummy_wires;
-		for i in 0..blinding_info.n_dummy_constraints {
-			let a = WitnessIndex::private((dummy_private_base + 3 * i) as u32);
-			let b = WitnessIndex::private((dummy_private_base + 3 * i + 1) as u32);
-			let c = WitnessIndex::private((dummy_private_base + 3 * i + 2) as u32);
-
-			mul_constraints.push(MulConstraint {
-				a: Operand::from(a),
-				b: Operand::from(b),
-				c: Operand::from(c),
-			});
+		/// Adds dummy blinding constraints for a segment and returns its padded log-size.
+		fn add_blinding_constraints<F: Field>(
+			mul_constraints: &mut Vec<MulConstraint<WitnessIndex>>,
+			make_index: fn(u32) -> WitnessIndex,
+			n_circuit_wires: usize,
+			blinding_info: &BlindingInfo,
+			blinding_size: usize,
+		) -> u32 {
+			let dummy_base = n_circuit_wires + blinding_info.n_dummy_wires;
+			for i in 0..blinding_info.n_dummy_constraints {
+				let a = make_index((dummy_base + 3 * i) as u32);
+				let b = make_index((dummy_base + 3 * i + 1) as u32);
+				let c = make_index((dummy_base + 3 * i + 2) as u32);
+				mul_constraints.push(MulConstraint {
+					a: Operand::from(a),
+					b: Operand::from(b),
+					c: Operand::from(c),
+				});
+			}
+			log2_ceil_usize(n_circuit_wires + blinding_size) as u32
 		}
+
+		let log_precommit = add_blinding_constraints::<F>(
+			&mut mul_constraints,
+			WitnessIndex::precommit,
+			cs.n_precommit() as usize,
+			&blinding_info,
+			blinding_size,
+		);
+		let log_private = add_blinding_constraints::<F>(
+			&mut mul_constraints,
+			WitnessIndex::private,
+			cs.n_private() as usize,
+			&blinding_info,
+			blinding_size,
+		);
 
 		// Pad to next power of two with `one * one = one` constraints
 		let one_operand = Operand::from(cs.one_wire());
@@ -76,6 +94,7 @@ impl<F: Field> ConstraintSystemPadded<F> {
 
 		Self {
 			inner: cs,
+			log_precommit,
 			log_private,
 			blinding_info,
 			mul_constraints,
@@ -112,11 +131,11 @@ impl<F: Field> ConstraintSystemPadded<F> {
 	}
 
 	pub fn log_precommit(&self) -> u32 {
-		log2_ceil_usize(self.inner.n_precommit() as usize) as u32
+		self.log_precommit
 	}
 
 	pub fn precommit_size(&self) -> usize {
-		1 << self.log_precommit() as usize
+		1 << self.log_precommit as usize
 	}
 
 	pub fn log_private(&self) -> u32 {

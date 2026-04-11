@@ -378,11 +378,16 @@ impl<F: Field> WitnessLayout<F> {
 	}
 
 	pub fn with_blinding(self, info: BlindingInfo) -> Self {
-		let n_private = self.n_private as usize;
-		let total_private = n_private + info.n_dummy_wires + 3 * info.n_dummy_constraints;
+		let blinding_size = info.n_dummy_wires + 3 * info.n_dummy_constraints;
+
+		let total_precommit = self.n_precommit as usize + blinding_size;
+		let log_precommit = log2_ceil_usize(total_precommit) as u32;
+
+		let total_private = self.n_private as usize + blinding_size;
 		let log_private = log2_ceil_usize(total_private) as u32;
 
 		Self {
+			log_precommit,
 			log_private,
 			..self
 		}

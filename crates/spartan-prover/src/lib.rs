@@ -162,6 +162,7 @@ impl<F: Field> IOPProver<F> {
 
 		// Check that the witness segments have the expected sizes
 		let expected_public_size = 1 << cs.log_public() as usize;
+		let expected_precommit_size = cs.precommit_size();
 		let expected_private_size = cs.private_size();
 		if witness.public().len() != expected_public_size {
 			return Err(Error::ArgumentError {
@@ -170,6 +171,16 @@ impl<F: Field> IOPProver<F> {
 					"public segment has {} elements, expected {}",
 					witness.public().len(),
 					expected_public_size
+				),
+			});
+		}
+		if witness.precommit().len() != expected_precommit_size {
+			return Err(Error::ArgumentError {
+				arg: "witness".to_string(),
+				msg: format!(
+					"precommit segment has {} elements, expected {}",
+					witness.precommit().len(),
+					expected_precommit_size
 				),
 			});
 		}
@@ -211,10 +222,13 @@ impl<F: Field> IOPProver<F> {
 			&mut rng,
 		);
 
-		// Pack precommit witness into field elements
-		let precommit_packed = pack_witness::<_, P>(
+		// Pack precommit witness into field elements and add blinding
+		let precommit_packed = pack_and_blind_witness::<_, P>(
 			cs.log_precommit() as usize,
 			witness.precommit(),
+			cs.n_precommit() as usize,
+			blinding_info,
+			&mut rng,
 		);
 
 		// Send the precommit, private, and mask oracles to the channel
@@ -413,27 +427,7 @@ where
 	Ok((mulcheck_evals, mask_eval, r_x))
 }
 
-/// Packs witness values into a [`FieldBuffer`] without blinding.
-fn pack_witness<F: Field, P: PackedField<Scalar = F>>(
-	log_size: usize,
-	values: &[F],
-) -> FieldBuffer<P> {
-	let packed = if log_size < P::LOG_WIDTH {
-		let elems_iter = values.iter().copied();
-		let zeros_iter = repeat_n(F::ZERO, (1 << log_size) - values.len());
-		vec![P::from_scalars(chain!(elems_iter, zeros_iter))]
-	} else {
-		let packed_len = 1 << (log_size - P::LOG_WIDTH);
-		let elems_iter = values
-			.par_chunks(P::WIDTH)
-			.map(|chunk| P::from_scalars(chunk.iter().copied()));
-		let zeros_iter = rayon::iter::repeat_n(P::zero(), packed_len - elems_iter.len());
-		elems_iter.chain(zeros_iter).collect::<Vec<_>>()
-	};
-	FieldBuffer::new(log_size, packed.into_boxed_slice())
-}
-
-/// Packs private witness values into a [`FieldBuffer`] and adds blinding values for dummy wires.
+/// Packs witness values into a [`FieldBuffer`] and adds blinding values for dummy wires.
 fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
 	log_private: usize,
 	private: &[F],
