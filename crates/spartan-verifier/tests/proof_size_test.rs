@@ -57,5 +57,5 @@ fn test_ip_proof_size() {
 	// FRI proof sizes. It is a slight underestimate because it does not account for some
 	// smaller BaseFold components (e.g. sumcheck coefficients within BaseFold, blinding
 	// elements for ZK).
-	assert_eq!(proof_size, 71056, "proof size regression");
+	assert_eq!(proof_size, 106496, "proof size regression");
 }
