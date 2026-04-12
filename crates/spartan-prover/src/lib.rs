@@ -287,9 +287,9 @@ impl<F: Field> IOPProver<F> {
 
 		// Prove all oracle relations
 		channel.prove_oracle_relations([
-			(precommit_oracle, precommit_wiring_poly, precommit_claim),
-			(private_oracle, private_wiring_poly, private_claim),
-			(mask_oracle, libra_eval_tensor, mask_eval),
+			(precommit_oracle, precommit_packed, precommit_wiring_poly, precommit_claim),
+			(private_oracle, private_packed, private_wiring_poly, private_claim),
+			(mask_oracle, masks_buffer, libra_eval_tensor, mask_eval),
 		]);
 
 		Ok(())

@@ -205,7 +205,9 @@ where
 
 	fn prove_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<P>, P::Scalar)>,
+		oracle_relations: impl IntoIterator<
+			Item = (Self::Oracle, FieldBuffer<P>, FieldBuffer<P>, P::Scalar),
+		>,
 	) {
 		self.inner_channel.prove_oracle_relations(oracle_relations)
 	}

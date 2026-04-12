@@ -7,8 +7,6 @@
 //! this channel always applies zero-knowledge blinding to all oracles by generating masks
 //! internally.
 
-use std::iter;
-
 use binius_field::{BinaryField, PackedField};
 use binius_iop::{channel::OracleSpec, fri::FRIParams, merkle_tree::MerkleTreeScheme};
 use binius_ip_prover::channel::IPProverChannel;
@@ -36,8 +34,9 @@ pub struct BaseFoldZKOracle {
 
 /// Committed oracle data stored internally.
 struct CommittedOracleData<P: PackedField, Committed> {
-	/// The combined (witness || mask) buffer.
-	combined: FieldBuffer<P>,
+	/// The mask buffer generated during [`fri::commit_masked`]. Held by the channel because it is
+	/// the only party that knows it.
+	mask: FieldBuffer<P>,
 	/// RS-encoded codeword.
 	codeword: FieldBuffer<P>,
 	/// Merkle commitment data for query proofs.
@@ -199,27 +198,11 @@ where
 		)
 		.expect("FRI commit_masked should succeed with valid params");
 
-		// Build the combined (witness || mask) buffer for later use in prove_zk.
-		let log_len = buffer.log_len();
-		let combined_values = if log_len < P::LOG_WIDTH {
-			let combined_value =
-				P::from_scalars(iter::chain(buffer.iter_scalars(), mask.iter_scalars()));
-			vec![combined_value]
-		} else {
-			// TODO: The concatenation here is sequential and a performance issue. Ideally, commit
-			// should not allocate and copy the memory into a temp buffer.
-			// TODO: At the very least, make this a parallel copy
-			iter::chain(buffer.as_ref(), mask.as_ref())
-				.copied()
-				.collect::<Vec<_>>()
-		};
-		let combined = FieldBuffer::new(log_len + 1, combined_values.into_boxed_slice());
-
 		// Send commitment via transcript.
 		self.transcript.message().write(&commitment);
 
 		self.committed_oracles.push(CommittedOracleData {
-			combined,
+			mask,
 			codeword,
 			committed,
 		});
@@ -231,9 +214,11 @@ where
 
 	fn prove_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<P>, P::Scalar)>,
+		oracle_relations: impl IntoIterator<
+			Item = (Self::Oracle, FieldBuffer<P>, FieldBuffer<P>, P::Scalar),
+		>,
 	) {
-		for (oracle, transparent_poly, eval_claim) in oracle_relations {
+		for (oracle, message, transparent_poly, eval_claim) in oracle_relations {
 			let index = oracle.index;
 			assert!(
 				index < self.committed_oracles.len(),
@@ -243,6 +228,11 @@ where
 
 			let fri_params = &self.fri_params[index];
 			let committed_data = &self.committed_oracles[index];
+			assert_eq!(
+				message.log_len(),
+				self.oracle_specs[index].log_msg_len,
+				"oracle message log_len mismatch for oracle {index}"
+			);
 
 			let fri_folder = FRIFoldProver::new(
 				fri_params,
@@ -255,7 +245,8 @@ where
 
 			// Always use ZK variant.
 			let prover = basefold::prove_zk(
-				committed_data.combined.clone(),
+				message,
+				committed_data.mask.clone(),
 				transparent_poly,
 				eval_claim,
 				fri_folder,
@@ -372,7 +363,12 @@ mod tests {
 		let oracle = prover_channel.send_oracle(buffer.to_ref());
 		assert_eq!(oracle.index, 0);
 
-		prover_channel.prove_oracle_relations([(oracle, transparent_poly.clone(), eval_claim)]);
+		prover_channel.prove_oracle_relations([(
+			oracle,
+			buffer,
+			transparent_poly.clone(),
+			eval_claim,
+		)]);
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -442,8 +438,8 @@ mod tests {
 		let oracle_2 = prover_channel.send_oracle(buffer_2.to_ref());
 
 		prover_channel.prove_oracle_relations([
-			(oracle_1, transparent_poly_1.clone(), eval_claim_1),
-			(oracle_2, transparent_poly_2.clone(), eval_claim_2),
+			(oracle_1, buffer_1, transparent_poly_1.clone(), eval_claim_1),
+			(oracle_2, buffer_2, transparent_poly_2.clone(), eval_claim_2),
 		]);
 
 		// === VERIFIER SIDE ===

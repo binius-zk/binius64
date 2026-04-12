@@ -463,10 +463,8 @@ mod tests {
 
 		// === PROVER SIDE ===
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let mut prover_channel = NaiveProverChannel::<B128, Packed128b, _>::new(
-			&mut prover_transcript,
-			oracle_specs.clone(),
-		);
+		let mut prover_channel =
+			NaiveProverChannel::<B128, _>::new(&mut prover_transcript, oracle_specs.clone());
 
 		// Send private witness oracle
 		let witness_oracle = prover_channel.send_oracle(private_buf.to_ref());
@@ -488,7 +486,12 @@ mod tests {
 			fold_constraints::<_, Packed128b>(&wiring_transpose, lambda, r_x_tensor.as_ref());
 
 		// Finish the IOP with the oracle relation
-		prover_channel.prove_oracle_relations([(witness_oracle, wiring_poly.clone(), trace_claim)]);
+		prover_channel.prove_oracle_relations([(
+			witness_oracle,
+			private_buf,
+			wiring_poly.clone(),
+			trace_claim,
+		)]);
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
