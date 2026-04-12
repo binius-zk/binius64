@@ -1,6 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::iter;
+
 use binius_field::{BinaryField, PackedField};
 use binius_iop::{fri::FRIParams, merkle_tree::MerkleTreeScheme};
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT};
@@ -133,12 +135,18 @@ where
 		par_rand::<StdRng, _, _>(packed_len, &mut rng, P::random).collect(),
 	);
 
-	// TODO: The concatenation here is sequential and a performance issue. Ideally, commit should
-	// not allocate and copy the memory into a temp buffer.
-	let combined_packed_len = packed_len * 2;
-	let mut combined_values = Vec::with_capacity(combined_packed_len);
-	combined_values.extend_from_slice(message.as_ref());
-	combined_values.extend_from_slice(mask.as_ref());
+	let combined_values = if log_len < P::LOG_WIDTH {
+		let combined_value =
+			P::from_scalars(iter::chain(message.iter_scalars(), mask.iter_scalars()));
+		vec![combined_value]
+	} else {
+		// TODO: The concatenation here is sequential and a performance issue. Ideally, commit
+		// should not allocate and copy the memory into a temp buffer.
+		// TODO: At the very least, make this a parallel copy
+		iter::chain(message.as_ref(), mask.as_ref())
+			.copied()
+			.collect::<Vec<_>>()
+	};
 	let combined = FieldBuffer::new(log_len + 1, combined_values.into_boxed_slice());
 
 	let CommitOutput {

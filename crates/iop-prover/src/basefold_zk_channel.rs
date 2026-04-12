@@ -7,6 +7,8 @@
 //! this channel always applies zero-knowledge blinding to all oracles by generating masks
 //! internally.
 
+use std::iter;
+
 use binius_field::{BinaryField, PackedField};
 use binius_iop::{channel::OracleSpec, fri::FRIParams, merkle_tree::MerkleTreeScheme};
 use binius_ip_prover::channel::IPProverChannel;
@@ -182,23 +184,35 @@ where
 			buffer.log_len()
 		);
 
-		// Copy the message for later use in prove_zk (commit_masked consumes buffer).
-		let log_len = buffer.log_len();
-		let message_values: Box<[P]> = buffer.as_ref().into();
-
 		// Generate mask, interleave, and commit via commit_masked.
 		let CommitMaskedOutput {
 			commitment,
 			committed,
 			codeword,
 			mask,
-		} = fri::commit_masked(fri_params, self.ntt, self.merkle_prover, buffer, &mut self.rng)
-			.expect("FRI commit_masked should succeed with valid params");
+		} = fri::commit_masked(
+			fri_params,
+			self.ntt,
+			self.merkle_prover,
+			buffer.to_ref(),
+			&mut self.rng,
+		)
+		.expect("FRI commit_masked should succeed with valid params");
 
 		// Build the combined (witness || mask) buffer for later use in prove_zk.
-		let mut combined_values = Vec::with_capacity(message_values.len() * 2);
-		combined_values.extend_from_slice(&message_values);
-		combined_values.extend_from_slice(mask.as_ref());
+		let log_len = buffer.log_len();
+		let combined_values = if log_len < P::LOG_WIDTH {
+			let combined_value =
+				P::from_scalars(iter::chain(buffer.iter_scalars(), mask.iter_scalars()));
+			vec![combined_value]
+		} else {
+			// TODO: The concatenation here is sequential and a performance issue. Ideally, commit
+			// should not allocate and copy the memory into a temp buffer.
+			// TODO: At the very least, make this a parallel copy
+			iter::chain(buffer.as_ref(), mask.as_ref())
+				.copied()
+				.collect::<Vec<_>>()
+		};
 		let combined = FieldBuffer::new(log_len + 1, combined_values.into_boxed_slice());
 
 		// Send commitment via transcript.
