@@ -47,7 +47,10 @@ use binius_ip_prover::{
 	sumcheck::{quadratic_mle::QuadraticMleCheckProver, zk_mlecheck},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice, multilinear::eq::eq_ind_partial_eval, ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded}, univariate::evaluate_univariate
+	FieldBuffer, FieldSlice,
+	multilinear::eq::eq_ind_partial_eval,
+	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
+	univariate::evaluate_univariate,
 };
 use binius_spartan_frontend::constraint_system::{
 	MulConstraint, Witness, WitnessIndex, WitnessSegment,

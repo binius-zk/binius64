@@ -242,8 +242,9 @@ mod tests {
 		test_utils::{Packed128b, random_scalars},
 		univariate::evaluate_univariate,
 	};
-	use binius_spartan_frontend::constraint_system::{MulConstraint, Operand, WitnessIndex};
-	use binius_spartan_frontend::constraint_system::WitnessSegment;
+	use binius_spartan_frontend::constraint_system::{
+		MulConstraint, Operand, WitnessIndex, WitnessSegment,
+	};
 	use binius_spartan_verifier::wiring::evaluate_segment_wiring_mle;
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 	use smallvec::SmallVec;
