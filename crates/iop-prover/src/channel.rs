@@ -50,13 +50,20 @@ pub trait IOPProverChannel<P: PackedField>: IPProverChannel<P::Scalar> {
 
 	/// Generates opening proofs for all oracle linear relations.
 	///
+	/// Each item is `(oracle, message, transparent_poly, eval_claim)` where `message` is
+	/// the same buffer that was passed to `send_oracle()` for this oracle. Callers provide
+	/// the message here so the channel does not need to store it internally.
+	///
 	/// # Preconditions
 	///
 	/// * `remaining_oracle_specs()` must be empty (all oracles committed).
 	/// * All oracle handles in `oracle_relations` must be valid handles returned by
 	///   `send_oracle()`.
+	/// * Each `message` must match the buffer previously committed via `send_oracle()`.
 	fn prove_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<P>, P::Scalar)>,
+		oracle_relations: impl IntoIterator<
+			Item = (Self::Oracle, FieldBuffer<P>, FieldBuffer<P>, P::Scalar),
+		>,
 	);
 }

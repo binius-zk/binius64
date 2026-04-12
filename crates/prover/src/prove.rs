@@ -260,7 +260,12 @@ impl IOPProver {
 			compute_batched_transparent(rs_eq_ind, pubcheck_point, batch_coeff);
 
 		// Prove oracle relations via channel (runs BaseFold internally)
-		channel.prove_oracle_relations([(trace_oracle, batched_transparent, batched_claim)]);
+		channel.prove_oracle_relations([(
+			trace_oracle,
+			witness_packed,
+			batched_transparent,
+			batched_claim,
+		)]);
 
 		drop(pcs_guard);
 

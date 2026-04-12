@@ -31,8 +31,6 @@ pub struct BaseFoldOracle {
 
 /// Committed oracle data stored internally.
 struct CommittedOracleData<P: PackedField, Committed> {
-	/// The original message buffer.
-	message: FieldBuffer<P>,
 	/// RS-encoded codeword.
 	codeword: FieldBuffer<P>,
 	/// Merkle commitment data for query proofs.
@@ -235,10 +233,6 @@ where
 			buffer.log_len()
 		);
 
-		// Copy the message buffer before RS encoding (FieldSlice doesn't implement ToOwned)
-		let message_values: Vec<F> = buffer.iter_scalars().collect();
-		let message = FieldBuffer::from_values(&message_values);
-
 		// RS encode and commit
 		let CommitOutput {
 			commitment,
@@ -252,7 +246,6 @@ where
 
 		// Store committed oracle data
 		self.committed_oracles.push(CommittedOracleData {
-			message,
 			codeword,
 			committed,
 		});
@@ -264,10 +257,12 @@ where
 
 	fn prove_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = (Self::Oracle, FieldBuffer<P>, P::Scalar)>,
+		oracle_relations: impl IntoIterator<
+			Item = (Self::Oracle, FieldBuffer<P>, FieldBuffer<P>, P::Scalar),
+		>,
 	) {
 		// Process each oracle relation with its own BaseFold proof
-		for (oracle, transparent_poly, eval_claim) in oracle_relations {
+		for (oracle, message, transparent_poly, eval_claim) in oracle_relations {
 			let index = oracle.index;
 			assert!(
 				index < self.committed_oracles.len(),
@@ -277,6 +272,11 @@ where
 
 			let fri_params = &self.fri_params[index];
 			let committed_data = &self.committed_oracles[index];
+			assert_eq!(
+				message.log_len(),
+				self.oracle_specs[index].log_msg_len,
+				"oracle message log_len mismatch for oracle {index}"
+			);
 
 			// Create FRI folder from committed codeword
 			let fri_folder = FRIFoldProver::new(
@@ -289,12 +289,7 @@ where
 			.expect("FRI folder creation should succeed");
 
 			// Run BaseFold proof (non-ZK variant).
-			let prover = BaseFoldProver::new(
-				committed_data.message.clone(),
-				transparent_poly,
-				eval_claim,
-				fri_folder,
-			);
+			let prover = BaseFoldProver::new(message, transparent_poly, eval_claim, fri_folder);
 			prover
 				.prove(self.transcript)
 				.expect("BaseFold proof should succeed");
@@ -410,8 +405,8 @@ mod tests {
 		assert_eq!(oracle_2.index, 1);
 
 		prover_channel.prove_oracle_relations([
-			(oracle_1, transparent_poly_1, eval_claim_1),
-			(oracle_2, transparent_poly_2, eval_claim_2),
+			(oracle_1, buffer_1, transparent_poly_1, eval_claim_1),
+			(oracle_2, buffer_2, transparent_poly_2, eval_claim_2),
 		]);
 	}
 

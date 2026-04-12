@@ -8,14 +8,13 @@ use binius_ip_prover::sumcheck::{
 	bivariate_product::BivariateProductSumcheckProver, common::SumcheckProver,
 };
 use binius_math::{
-	FieldBuffer, inner_product::inner_product_par, line::extrapolate_line_packed,
-	multilinear::fold::fold_highest_var_inplace, ntt::AdditiveNTT,
+	FieldBuffer, inner_product::inner_product_par, line::extrapolate_line_packed, ntt::AdditiveNTT,
 };
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_utils::SerializeBytes;
+use binius_utils::{SerializeBytes, rayon::prelude::*};
 
 use crate::{
 	fri::{self, FRIFoldProver, FoldRoundOutput},
@@ -186,6 +185,7 @@ where
 /// `.prove(transcript)`.
 pub fn prove_zk<'a, F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
 	mut multilinear: FieldBuffer<P>,
+	mask: FieldBuffer<P>,
 	transparent_multilinear: FieldBuffer<P>,
 	sum_claim: F,
 	mut fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
@@ -201,12 +201,15 @@ where
 {
 	let _scope = tracing::debug_span!("Basefold ZK setup").entered();
 
-	assert_eq!(multilinear.log_len(), transparent_multilinear.log_len() + 1);
-	assert_eq!(multilinear.log_len(), fri_folder.n_rounds());
+	// The FRI folder operates on the codeword of the combined (witness || mask) polynomial,
+	// so `n_rounds == multilinear.log_len() + 1`.
+	let n_rounds = fri_folder.n_rounds();
+	assert_eq!(multilinear.log_len() + 1, n_rounds);
+	assert_eq!(mask.log_len(), multilinear.log_len());
+	assert_eq!(transparent_multilinear.log_len(), multilinear.log_len());
 
 	// Compute blinding_eval = sum_x[mask * l_poly]
 	// The verifier will compute sum = (1-r)*claim + r*blinding_eval using linear interpolation.
-	let (_witness, mask) = multilinear.split_half_ref();
 	let mask_claim = inner_product_par(&mask, &transparent_multilinear);
 
 	// Write blinding_eval to transcript
@@ -219,7 +222,13 @@ where
 	fri_folder.receive_challenge(batch_challenge);
 
 	// Fold multilinear at its last variable.
-	fold_highest_var_inplace(&mut multilinear, batch_challenge);
+	let batch_challenge_broadcast = P::broadcast(batch_challenge);
+	(multilinear.as_mut(), mask.as_ref())
+		.into_par_iter()
+		.for_each(|(multilinear_i, mask_i)| {
+			*multilinear_i =
+				extrapolate_line_packed(*multilinear_i, *mask_i, batch_challenge_broadcast);
+		});
 
 	// Compute the batched sum using linear interpolation.
 	let batched_sum = extrapolate_line_packed(sum_claim, mask_claim, batch_challenge);
@@ -358,7 +367,8 @@ mod test {
 	}
 
 	fn run_basefold_zk_prove_and_verify<F, P>(
-		witness_plus_mask: FieldBuffer<P>,
+		witness: FieldBuffer<P>,
+		mask: FieldBuffer<P>,
 		evaluation_point: Vec<F>,
 		evaluation_claim: F,
 	) -> Result<()>
@@ -367,7 +377,8 @@ mod test {
 		P: PackedField<Scalar = F> + PackedExtension<F>,
 	{
 		let n_vars = evaluation_point.len();
-		assert_eq!(witness_plus_mask.log_len(), n_vars + 1);
+		assert_eq!(witness.log_len(), n_vars);
+		assert_eq!(mask.log_len(), n_vars);
 
 		let eval_point_eq = eq_ind_partial_eval::<P>(&evaluation_point);
 
@@ -384,12 +395,21 @@ mod test {
 		let fri_params = binius_iop::fri::FRIParams::with_strategy(
 			ntt.domain_context(),
 			merkle_prover.scheme(),
-			witness_plus_mask.log_len(),
+			n_vars + 1,
 			Some(1),
 			LOG_INV_RATE,
 			32,
 			&ConstantArityStrategy::new(2),
 		)?;
+
+		// Build the combined (witness || mask) buffer for commitment.
+		let combined_values: Vec<P> = witness
+			.as_ref()
+			.iter()
+			.chain(mask.as_ref())
+			.copied()
+			.collect();
+		let witness_plus_mask = FieldBuffer::new(n_vars + 1, combined_values.into_boxed_slice());
 
 		// Commit batched multilinear
 		let CommitOutput {
@@ -406,7 +426,8 @@ mod test {
 
 		// Run prove_zk then continue with basefold prover
 		let prover = prove_zk(
-			witness_plus_mask,
+			witness,
+			mask,
 			eval_point_eq,
 			evaluation_claim,
 			fri_folder,
@@ -451,19 +472,15 @@ mod test {
 		let n_vars = 8;
 		let mut rng = StdRng::seed_from_u64(0);
 
-		let witness_plus_mask = random_field_buffer::<P>(&mut rng, n_vars + 1);
+		let witness = random_field_buffer::<P>(&mut rng, n_vars);
+		let mask = random_field_buffer::<P>(&mut rng, n_vars);
 		let evaluation_point = random_scalars(&mut rng, n_vars);
 
-		let (witness, _mask) = witness_plus_mask.split_half_ref();
 		let eval_point_eq = eq_ind_partial_eval::<P>(&evaluation_point);
 		let evaluation_claim = inner_product_buffers(&witness, &eval_point_eq);
 
-		run_basefold_zk_prove_and_verify::<_, P>(
-			witness_plus_mask,
-			evaluation_point,
-			evaluation_claim,
-		)
-		.unwrap();
+		run_basefold_zk_prove_and_verify::<_, P>(witness, mask, evaluation_point, evaluation_claim)
+			.unwrap();
 	}
 
 	#[test]
