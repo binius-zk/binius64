@@ -23,6 +23,7 @@ pub mod bignum;
 pub mod bitcoin;
 pub mod blake2b;
 pub mod blake2s;
+pub mod blake3;
 pub mod bytes;
 pub mod concat;
 pub mod ecdsa;
