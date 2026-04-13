@@ -22,6 +22,8 @@ impl Default for ModInverseHint {
 }
 
 impl Hint for ModInverseHint {
+	const NAME: &'static str = "binius.mod_inverse";
+
 	fn shape(&self, dimensions: &[usize]) -> (usize, usize) {
 		let [base_limbs, mod_limbs] = dimensions else {
 			panic!("ModInverse requires 2 dimensions");

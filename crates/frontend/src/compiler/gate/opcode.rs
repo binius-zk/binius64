@@ -156,7 +156,7 @@ impl Opcode {
 	}
 }
 
-fn hint_shape(hint: &dyn Hint, dimensions: &[usize]) -> OpcodeShape {
+fn hint_shape<T: Hint>(hint: &T, dimensions: &[usize]) -> OpcodeShape {
 	let (n_in, n_out) = hint.shape(dimensions);
 	OpcodeShape {
 		const_in: &[],

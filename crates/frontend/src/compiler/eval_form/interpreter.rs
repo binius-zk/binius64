@@ -479,7 +479,7 @@ impl<'a> Interpreter<'a> {
 
 	// Hint execution
 	fn exec_hint(&mut self, ctx: &mut ExecutionContext<'_>) {
-		let hint_id = self.read_u32() as usize;
+		let hint_id = self.read_u32();
 
 		// Read dimensions
 		let n_dimensions = self.read_u16() as usize;

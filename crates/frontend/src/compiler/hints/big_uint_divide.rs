@@ -21,6 +21,8 @@ impl Default for BigUintDivideHint {
 }
 
 impl Hint for BigUintDivideHint {
+	const NAME: &'static str = "binius.biguint_divide";
+
 	fn shape(&self, dimensions: &[usize]) -> (usize, usize) {
 		let [dividend_limbs, divisor_limbs] = dimensions else {
 			panic!("BigUintDivide requires 2 dimensions");

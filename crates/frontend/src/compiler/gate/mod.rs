@@ -9,6 +9,22 @@ use crate::compiler::{
 	},
 };
 
+fn emit_hint_bytecode<T: Hint>(
+	data: &GateData,
+	builder: &mut BytecodeBuilder,
+	wire_to_reg: impl Fn(Wire) -> u32,
+	hint_registry: &mut HintRegistry,
+	hint: T,
+) {
+	let hint_id = hint_registry.register(hint);
+	let GateParam {
+		inputs, outputs, ..
+	} = data.gate_param();
+	let input_regs: Vec<u32> = inputs.iter().map(|&wire| wire_to_reg(wire)).collect();
+	let output_regs: Vec<u32> = outputs.iter().map(|&wire| wire_to_reg(wire)).collect();
+	builder.emit_hint(hint_id, &data.dimensions, &input_regs, &output_regs);
+}
+
 pub mod opcode;
 
 pub use opcode::Opcode;
@@ -136,50 +152,21 @@ pub fn emit_gate_bytecode(
 		Opcode::Sar => sar::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 
 		// Hint-based gates
-		Opcode::ModInverseHint => emit_hint_bytecode(
-			data,
-			builder,
-			wire_to_reg,
-			hint_registry,
-			Box::new(ModInverseHint::new()),
-		),
-		Opcode::BigUintModPowHint => emit_hint_bytecode(
-			data,
-			builder,
-			wire_to_reg,
-			hint_registry,
-			Box::new(BigUintModPowHint::new()),
-		),
-		Opcode::BigUintDivideHint => emit_hint_bytecode(
-			data,
-			builder,
-			wire_to_reg,
-			hint_registry,
-			Box::new(BigUintDivideHint::new()),
-		),
+		Opcode::ModInverseHint => {
+			emit_hint_bytecode(data, builder, wire_to_reg, hint_registry, ModInverseHint::new())
+		}
+		Opcode::BigUintModPowHint => {
+			emit_hint_bytecode(data, builder, wire_to_reg, hint_registry, BigUintModPowHint::new())
+		}
+		Opcode::BigUintDivideHint => {
+			emit_hint_bytecode(data, builder, wire_to_reg, hint_registry, BigUintDivideHint::new())
+		}
 		Opcode::Secp256k1EndosplitHint => emit_hint_bytecode(
 			data,
 			builder,
 			wire_to_reg,
 			hint_registry,
-			Box::new(Secp256k1EndosplitHint::new()),
+			Secp256k1EndosplitHint::new(),
 		),
 	}
-}
-
-/// Register a hint and emit the generic hint bytecode instruction.
-fn emit_hint_bytecode(
-	data: &GateData,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-	hint_registry: &mut HintRegistry,
-	hint: Box<dyn Hint>,
-) {
-	let hint_id = hint_registry.register(hint);
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let input_regs: Vec<u32> = inputs.iter().map(|&wire| wire_to_reg(wire)).collect();
-	let output_regs: Vec<u32> = outputs.iter().map(|&wire| wire_to_reg(wire)).collect();
-	builder.emit_hint(hint_id, &data.dimensions, &input_regs, &output_regs);
 }
