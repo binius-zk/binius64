@@ -9,6 +9,7 @@ use std::collections::{HashSet, VecDeque};
 
 use super::{
 	eval_form::evaluate_gate_constants,
+	gate::Opcode,
 	gate_graph::{Gate, GateGraph, WireKind},
 };
 
@@ -98,6 +99,12 @@ fn try_evaluate_gate_with_constants(
 	gate: Gate,
 ) -> Option<Result<Vec<binius_core::word::Word>, String>> {
 	let gate_data = graph.gate_data(gate);
+	// Hint gates are opaque to const-prop: their shape lives in the HintRegistry (not
+	// accessible here), and their semantics are prover-side witness generation rather than
+	// deterministic field arithmetic worth folding.
+	if gate_data.opcode == Opcode::Hint {
+		return None;
+	}
 	let gate_param = gate_data.gate_param();
 
 	let mut input_constants = Vec::new();
@@ -221,64 +228,6 @@ mod tests {
 		match graph.wires[test_inputs[0]].kind {
 			WireKind::Constant(val) => assert_eq!(val, Word(8)),
 			_ => panic!("Expected test_gate's input to be constant 8"),
-		}
-	}
-
-	#[test]
-	fn test_constant_propagation_with_hint() {
-		let mut graph = GateGraph::new();
-		let root = graph.path_spec_tree.root();
-
-		// Test BigUintDivideHint with constants
-		// dividend = 100, divisor = 7
-		// quotient should be 14, remainder should be 2
-		let dividend = graph.add_constant(Word(100));
-		let divisor = graph.add_constant(Word(7));
-
-		// BigUintDivideHint has variable shape, so we need to specify dimensions
-		// For single-limb division: [dividend_limbs, divisor_limbs] = [1, 1]
-		let quotient = graph.add_witness();
-		let remainder = graph.add_witness();
-
-		let _hint_gate = graph.emit_gate_generic(
-			root,
-			Opcode::BigUintDivideHint,
-			vec![dividend, divisor],
-			vec![quotient, remainder],
-			&[1, 1], // [dividend_limbs, divisor_limbs] = [1, 1] for single word division
-			&[],
-		);
-
-		// Create gates that use the outputs to verify propagation
-		let test_q = graph.add_witness();
-		let test_r = graph.add_witness();
-		let test_q_gate =
-			graph.emit_gate(root, Opcode::Bxor, vec![quotient, quotient], vec![test_q]);
-		let test_r_gate =
-			graph.emit_gate(root, Opcode::Bxor, vec![remainder, remainder], vec![test_r]);
-
-		// Run constant propagation
-		let replaced = constant_propagation(&mut graph);
-		// We replace: quotient in test_q_gate (twice), remainder in test_r_gate (twice)
-		assert_eq!(replaced, 4);
-
-		// The original wires remain as witness wires
-		assert!(matches!(graph.wires[quotient].kind, WireKind::Witness));
-		assert!(matches!(graph.wires[remainder].kind, WireKind::Witness));
-
-		// Check that test gates now use constant wires
-		let test_q_data = &graph.gates[test_q_gate];
-		let test_q_inputs = test_q_data.gate_param().inputs;
-		match graph.wires[test_q_inputs[0]].kind {
-			WireKind::Constant(val) => assert_eq!(val, Word(14)), // 100 / 7 = 14
-			_ => panic!("Expected test_q_gate's input to be constant 14"),
-		}
-
-		let test_r_data = &graph.gates[test_r_gate];
-		let test_r_inputs = test_r_data.gate_param().inputs;
-		match graph.wires[test_r_inputs[0]].kind {
-			WireKind::Constant(val) => assert_eq!(val, Word(2)), // 100 % 7 = 2
-			_ => panic!("Expected test_r_gate's input to be constant 2"),
 		}
 	}
 

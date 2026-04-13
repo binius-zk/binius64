@@ -2,28 +2,9 @@
 use crate::compiler::{
 	constraint_builder::ConstraintBuilder,
 	eval_form::BytecodeBuilder,
-	gate_graph::{Gate, GateData, GateGraph, GateParam, Wire},
-	hints::{
-		BigUintDivideHint, BigUintModPowHint, Hint, HintRegistry, ModInverseHint,
-		Secp256k1EndosplitHint,
-	},
+	gate_graph::{Gate, GateData, GateGraph},
+	hints::HintRegistry,
 };
-
-fn emit_hint_bytecode<T: Hint>(
-	data: &GateData,
-	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(Wire) -> u32,
-	hint_registry: &mut HintRegistry,
-	hint: T,
-) {
-	let hint_id = hint_registry.register(hint);
-	let GateParam {
-		inputs, outputs, ..
-	} = data.gate_param();
-	let input_regs: Vec<u32> = inputs.iter().map(|&wire| wire_to_reg(wire)).collect();
-	let output_regs: Vec<u32> = outputs.iter().map(|&wire| wire_to_reg(wire)).collect();
-	builder.emit_hint(hint_id, &data.dimensions, &input_regs, &output_regs);
-}
 
 pub mod opcode;
 
@@ -88,10 +69,6 @@ pub fn constrain(gate: Gate, graph: &GateGraph, builder: &mut ConstraintBuilder)
 		Opcode::Shl => shl::constrain(gate, data, builder),
 		Opcode::Sar => sar::constrain(gate, data, builder),
 		// Hints do not introduce constraints
-		Opcode::BigUintDivideHint => (),
-		Opcode::BigUintModPowHint => (),
-		Opcode::ModInverseHint => (),
-		Opcode::Secp256k1EndosplitHint => (),
 		Opcode::Hint => (),
 	}
 }
@@ -152,23 +129,6 @@ pub fn emit_gate_bytecode(
 		Opcode::Shl => shl::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::Sar => sar::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 
-		// Hint-based gates
-		Opcode::ModInverseHint => {
-			emit_hint_bytecode(data, builder, wire_to_reg, hint_registry, ModInverseHint::new())
-		}
-		Opcode::BigUintModPowHint => {
-			emit_hint_bytecode(data, builder, wire_to_reg, hint_registry, BigUintModPowHint::new())
-		}
-		Opcode::BigUintDivideHint => {
-			emit_hint_bytecode(data, builder, wire_to_reg, hint_registry, BigUintDivideHint::new())
-		}
-		Opcode::Secp256k1EndosplitHint => emit_hint_bytecode(
-			data,
-			builder,
-			wire_to_reg,
-			hint_registry,
-			Secp256k1EndosplitHint::new(),
-		),
 		Opcode::Hint => {
 			// Generic hint: hint already lives in the registry from `CircuitBuilder::call_hint`,
 			// the gate carries the id in `imms[0]` and the user dimensions are `&data.dimensions`.

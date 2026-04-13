@@ -1,7 +1,6 @@
 // Copyright 2025-2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use std::{
-	array,
 	cell::{RefCell, RefMut},
 	rc::Rc,
 };
@@ -13,7 +12,10 @@ use crate::compiler::{
 	circuit::Circuit,
 	constraint_builder::ConstraintBuilder,
 	gate_graph::{GateGraph, WireKind},
-	hints::{Hint, HintRegistry},
+	hints::{
+		BigUintDivideHint, BigUintModPowHint, Hint, HintRegistry, ModInverseHint,
+		Secp256k1EndosplitHint,
+	},
 	pathspec::PathSpec,
 };
 
@@ -1145,25 +1147,11 @@ impl CircuitBuilder {
 		dividend: &[Wire],
 		divisor: &[Wire],
 	) -> (Vec<Wire>, Vec<Wire>) {
-		let quotient = (0..dividend.len())
-			.map(|_| self.add_internal())
-			.collect::<Vec<_>>();
-
-		let remainder = (0..divisor.len())
-			.map(|_| self.add_internal())
-			.collect::<Vec<_>>();
-
-		let mut graph = self.graph_mut();
-		graph.emit_gate_generic(
-			self.current_path,
-			Opcode::BigUintDivideHint,
-			dividend.iter().chain(divisor).copied(),
-			quotient.iter().chain(&remainder).copied(),
-			&[dividend.len(), divisor.len()],
-			&[],
-		);
-
-		(quotient, remainder)
+		let inputs: Vec<Wire> = dividend.iter().chain(divisor).copied().collect();
+		let mut out =
+			self.call_hint(BigUintDivideHint::new(), &[dividend.len(), divisor.len()], &inputs);
+		let remainder = out.split_off(dividend.len());
+		(out, remainder)
 	}
 
 	/// Modular exponentiation.
@@ -1172,21 +1160,8 @@ impl CircuitBuilder {
 	/// This is a hint - a deterministic computation that happens only on the prover side.
 	/// The result should be additionally constrained using bignum circuits.
 	pub fn biguint_mod_pow_hint(&self, base: &[Wire], exp: &[Wire], modulus: &[Wire]) -> Vec<Wire> {
-		let modpow = (0..modulus.len())
-			.map(|_| self.add_internal())
-			.collect::<Vec<_>>();
-
-		let mut graph = self.graph_mut();
-		graph.emit_gate_generic(
-			self.current_path,
-			Opcode::BigUintModPowHint,
-			base.iter().chain(exp).chain(modulus).copied(),
-			modpow.iter().copied(),
-			&[base.len(), exp.len(), modulus.len()],
-			&[],
-		);
-
-		modpow
+		let inputs: Vec<Wire> = base.iter().chain(exp).chain(modulus).copied().collect();
+		self.call_hint(BigUintModPowHint::new(), &[base.len(), exp.len(), modulus.len()], &inputs)
 	}
 
 	/// Modular inverse.
@@ -1199,25 +1174,10 @@ impl CircuitBuilder {
 	/// The result should be additionally constrained by using bignum circuits to check that
 	/// `base * inverse = 1 + quotient * modulus`.
 	pub fn mod_inverse_hint(&self, base: &[Wire], modulus: &[Wire]) -> (Vec<Wire>, Vec<Wire>) {
-		let quotient = (0..modulus.len())
-			.map(|_| self.add_internal())
-			.collect::<Vec<_>>();
-
-		let inverse = (0..modulus.len())
-			.map(|_| self.add_internal())
-			.collect::<Vec<_>>();
-
-		let mut graph = self.graph_mut();
-		graph.emit_gate_generic(
-			self.current_path,
-			Opcode::ModInverseHint,
-			base.iter().chain(modulus).copied(),
-			quotient.iter().chain(&inverse).copied(),
-			&[base.len(), modulus.len()],
-			&[],
-		);
-
-		(quotient, inverse)
+		let inputs: Vec<Wire> = base.iter().chain(modulus).copied().collect();
+		let mut out = self.call_hint(ModInverseHint::new(), &[base.len(), modulus.len()], &inputs);
+		let inverse = out.split_off(modulus.len());
+		(out, inverse)
 	}
 
 	/// Secp256k1 endomorphism split
@@ -1243,27 +1203,10 @@ impl CircuitBuilder {
 		k: &[Wire],
 	) -> (Wire, Wire, [Wire; 2], [Wire; 2]) {
 		assert_eq!(k.len(), 4);
-
-		let k1_neg = self.add_internal();
-		let k2_neg = self.add_internal();
-
-		let k1_abs = array::from_fn(|_| self.add_internal());
-		let k2_abs = array::from_fn(|_| self.add_internal());
-
-		let mut graph = self.graph_mut();
-		graph.emit_gate_generic(
-			self.current_path,
-			Opcode::Secp256k1EndosplitHint,
-			k.iter().copied(),
-			[k1_neg, k2_neg]
-				.iter()
-				.chain(&k1_abs)
-				.chain(&k2_abs)
-				.copied(),
-			&[],
-			&[],
-		);
-
-		(k1_neg, k2_neg, k1_abs, k2_abs)
+		let out = self.call_hint(Secp256k1EndosplitHint::new(), &[], k);
+		let [k1_neg, k2_neg, k1_abs0, k1_abs1, k2_abs0, k2_abs1] = out.as_slice() else {
+			panic!("Secp256k1EndosplitHint must return 6 wires");
+		};
+		(*k1_neg, *k2_neg, [*k1_abs0, *k1_abs1], [*k2_abs0, *k2_abs1])
 	}
 }

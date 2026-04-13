@@ -1,10 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 use binius_core::word::Word;
 
-use crate::compiler::{
-	gate,
-	hints::{BigUintDivideHint, BigUintModPowHint, Hint, ModInverseHint, Secp256k1EndosplitHint},
-};
+use crate::compiler::gate;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Opcode {
@@ -47,15 +44,10 @@ pub enum Opcode {
 	AssertTrue,
 	AssertEqCond,
 
-	// Hints
-	BigUintDivideHint,
-	BigUintModPowHint,
-	ModInverseHint,
-	Secp256k1EndosplitHint,
-
-	/// Generic hint dispatched by [`HintId`](crate::compiler::hints::HintId) stored in
-	/// `immediates[0]`. Dimensions encode `[n_in, n_out, ...user_dimensions]`; the user
-	/// dimensions (passed to [`Hint::shape`]/[`Hint::execute`]) are `dimensions[2..]`.
+	/// Generic hint gate. The hint's [`HintId`](crate::compiler::hints::HintId) is stored in
+	/// `immediates[0]` and the user dimensions (passed to
+	/// [`Hint::shape`](crate::compiler::hints::Hint::shape) /
+	/// [`Hint::execute`](crate::compiler::hints::Hint::execute)) are `&dimensions`.
 	Hint,
 }
 
@@ -141,12 +133,6 @@ impl Opcode {
 			Opcode::AssertEqCond => gate::assert_eq_cond::shape(),
 
 			// Hints (no constraints)
-			Opcode::BigUintDivideHint => hint_shape(&BigUintDivideHint::new(), dimensions),
-			Opcode::BigUintModPowHint => hint_shape(&BigUintModPowHint::new(), dimensions),
-			Opcode::ModInverseHint => hint_shape(&ModInverseHint::new(), dimensions),
-			Opcode::Secp256k1EndosplitHint => {
-				hint_shape(&Secp256k1EndosplitHint::new(), dimensions)
-			}
 			Opcode::Hint => {
 				panic!("Opcode::Hint shape requires the HintRegistry; use GateData::shape instead")
 			}
@@ -156,24 +142,9 @@ impl Opcode {
 	pub fn is_const_shape(&self) -> bool {
 		#[allow(clippy::match_like_matches_macro)]
 		match self {
-			Opcode::BigUintDivideHint => false,
-			Opcode::BigUintModPowHint => false,
-			Opcode::ModInverseHint => false,
 			Opcode::BxorMulti => false,
 			Opcode::Hint => false,
 			_ => true,
 		}
-	}
-}
-
-fn hint_shape<T: Hint>(hint: &T, dimensions: &[usize]) -> OpcodeShape {
-	let (n_in, n_out) = hint.shape(dimensions);
-	OpcodeShape {
-		const_in: &[],
-		n_in,
-		n_out,
-		n_aux: 0,
-		n_scratch: 0,
-		n_imm: 0,
 	}
 }
