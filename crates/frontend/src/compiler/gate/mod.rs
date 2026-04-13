@@ -2,9 +2,10 @@
 use crate::compiler::{
 	constraint_builder::ConstraintBuilder,
 	eval_form::BytecodeBuilder,
-	gate_graph::{Gate, GateData, GateGraph},
+	gate_graph::{Gate, GateData, GateGraph, GateParam, Wire},
 	hints::{
-		BigUintDivideHint, BigUintModPowHint, HintRegistry, ModInverseHint, Secp256k1EndosplitHint,
+		BigUintDivideHint, BigUintModPowHint, Hint, HintRegistry, ModInverseHint,
+		Secp256k1EndosplitHint,
 	},
 };
 
@@ -19,8 +20,6 @@ pub mod assert_non_zero;
 pub mod assert_true;
 pub mod assert_zero;
 pub mod band;
-pub mod biguint_divide_hint;
-pub mod biguint_mod_pow_hint;
 pub mod bor;
 pub mod bxor;
 pub mod bxor_multi;
@@ -31,11 +30,9 @@ pub mod icmp_eq;
 pub mod icmp_ult;
 pub mod imul;
 pub mod isub_bin_bout;
-pub mod mod_inverse_hint;
 pub mod rotr;
 pub mod rotr32;
 pub mod sar;
-pub mod secp256k1_endosplit_hint;
 pub mod select;
 pub mod shl;
 pub mod shr;
@@ -139,21 +136,50 @@ pub fn emit_gate_bytecode(
 		Opcode::Sar => sar::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 
 		// Hint-based gates
-		Opcode::ModInverseHint => {
-			let hint_id = hint_registry.register(Box::new(ModInverseHint::new()));
-			mod_inverse_hint::emit_eval_bytecode(gate, data, builder, wire_to_reg, hint_id)
-		}
-		Opcode::BigUintModPowHint => {
-			let hint_id = hint_registry.register(Box::new(BigUintModPowHint::new()));
-			biguint_mod_pow_hint::emit_eval_bytecode(gate, data, builder, wire_to_reg, hint_id)
-		}
-		Opcode::BigUintDivideHint => {
-			let hint_id = hint_registry.register(Box::new(BigUintDivideHint::new()));
-			biguint_divide_hint::emit_eval_bytecode(gate, data, builder, wire_to_reg, hint_id)
-		}
-		Opcode::Secp256k1EndosplitHint => {
-			let hint_id = hint_registry.register(Box::new(Secp256k1EndosplitHint::new()));
-			secp256k1_endosplit_hint::emit_eval_bytecode(gate, data, builder, wire_to_reg, hint_id)
-		}
+		Opcode::ModInverseHint => emit_hint_bytecode(
+			data,
+			builder,
+			wire_to_reg,
+			hint_registry,
+			Box::new(ModInverseHint::new()),
+		),
+		Opcode::BigUintModPowHint => emit_hint_bytecode(
+			data,
+			builder,
+			wire_to_reg,
+			hint_registry,
+			Box::new(BigUintModPowHint::new()),
+		),
+		Opcode::BigUintDivideHint => emit_hint_bytecode(
+			data,
+			builder,
+			wire_to_reg,
+			hint_registry,
+			Box::new(BigUintDivideHint::new()),
+		),
+		Opcode::Secp256k1EndosplitHint => emit_hint_bytecode(
+			data,
+			builder,
+			wire_to_reg,
+			hint_registry,
+			Box::new(Secp256k1EndosplitHint::new()),
+		),
 	}
+}
+
+/// Register a hint and emit the generic hint bytecode instruction.
+fn emit_hint_bytecode(
+	data: &GateData,
+	builder: &mut BytecodeBuilder,
+	wire_to_reg: impl Fn(Wire) -> u32,
+	hint_registry: &mut HintRegistry,
+	hint: Box<dyn Hint>,
+) {
+	let hint_id = hint_registry.register(hint);
+	let GateParam {
+		inputs, outputs, ..
+	} = data.gate_param();
+	let input_regs: Vec<u32> = inputs.iter().map(|&wire| wire_to_reg(wire)).collect();
+	let output_regs: Vec<u32> = outputs.iter().map(|&wire| wire_to_reg(wire)).collect();
+	builder.emit_hint(hint_id, &data.dimensions, &input_regs, &output_regs);
 }

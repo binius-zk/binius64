@@ -1,7 +1,10 @@
 // Copyright 2025 Irreducible Inc.
 use binius_core::word::Word;
 
-use crate::compiler::gate;
+use crate::compiler::{
+	gate,
+	hints::{BigUintDivideHint, BigUintModPowHint, Hint, ModInverseHint, Secp256k1EndosplitHint},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Opcode {
@@ -132,10 +135,12 @@ impl Opcode {
 			Opcode::AssertEqCond => gate::assert_eq_cond::shape(),
 
 			// Hints (no constraints)
-			Opcode::BigUintDivideHint => gate::biguint_divide_hint::shape(dimensions),
-			Opcode::BigUintModPowHint => gate::biguint_mod_pow_hint::shape(dimensions),
-			Opcode::ModInverseHint => gate::mod_inverse_hint::shape(dimensions),
-			Opcode::Secp256k1EndosplitHint => gate::secp256k1_endosplit_hint::shape(),
+			Opcode::BigUintDivideHint => hint_shape(&BigUintDivideHint::new(), dimensions),
+			Opcode::BigUintModPowHint => hint_shape(&BigUintModPowHint::new(), dimensions),
+			Opcode::ModInverseHint => hint_shape(&ModInverseHint::new(), dimensions),
+			Opcode::Secp256k1EndosplitHint => {
+				hint_shape(&Secp256k1EndosplitHint::new(), dimensions)
+			}
 		}
 	}
 
@@ -148,5 +153,17 @@ impl Opcode {
 			Opcode::BxorMulti => false,
 			_ => true,
 		}
+	}
+}
+
+fn hint_shape(hint: &dyn Hint, dimensions: &[usize]) -> OpcodeShape {
+	let (n_in, n_out) = hint.shape(dimensions);
+	OpcodeShape {
+		const_in: &[],
+		n_in,
+		n_out,
+		n_aux: 0,
+		n_scratch: 0,
+		n_imm: 0,
 	}
 }

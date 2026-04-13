@@ -26,7 +26,6 @@ pub trait Hint: Send + Sync {
 	fn execute(&self, dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]);
 
 	/// Get the shape of this hint (n_inputs, n_outputs)
-	#[allow(unused)]
 	fn shape(&self, dimensions: &[usize]) -> (usize, usize);
 }
 
