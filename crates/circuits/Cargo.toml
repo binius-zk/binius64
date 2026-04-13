@@ -22,6 +22,7 @@ anyhow.workspace = true
 bitcoin = { workspace = true }
 bitcoin_hashes = { workspace = true }
 blake2 = { workspace = true }
+blake3 = { workspace = true }
 hmac = { workspace = true }
 k256 = { workspace = true, features = ["arithmetic"] }
 rand = { workspace = true, features = ["thread_rng"] }
