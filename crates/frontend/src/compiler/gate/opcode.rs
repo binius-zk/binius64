@@ -52,6 +52,11 @@ pub enum Opcode {
 	BigUintModPowHint,
 	ModInverseHint,
 	Secp256k1EndosplitHint,
+
+	/// Generic hint dispatched by [`HintId`](crate::compiler::hints::HintId) stored in
+	/// `immediates[0]`. Dimensions encode `[n_in, n_out, ...user_dimensions]`; the user
+	/// dimensions (passed to [`Hint::shape`]/[`Hint::execute`]) are `dimensions[2..]`.
+	Hint,
 }
 
 /// The shape of an opcode is a description of it's inputs and outputs. It allows treating a gate as
@@ -98,6 +103,7 @@ impl Opcode {
 			// Bitwise operations
 			Opcode::Band => gate::band::shape(),
 			Opcode::Bxor => gate::bxor::shape(),
+			// TODO: Can we get rid of this gate? This is the only non-hint one with dimensions
 			Opcode::BxorMulti => gate::bxor_multi::shape(dimensions),
 			Opcode::Bor => gate::bor::shape(),
 			Opcode::Fax => gate::fax::shape(),
@@ -141,6 +147,9 @@ impl Opcode {
 			Opcode::Secp256k1EndosplitHint => {
 				hint_shape(&Secp256k1EndosplitHint::new(), dimensions)
 			}
+			Opcode::Hint => {
+				panic!("Opcode::Hint shape requires the HintRegistry; use GateData::shape instead")
+			}
 		}
 	}
 
@@ -151,6 +160,7 @@ impl Opcode {
 			Opcode::BigUintModPowHint => false,
 			Opcode::ModInverseHint => false,
 			Opcode::BxorMulti => false,
+			Opcode::Hint => false,
 			_ => true,
 		}
 	}

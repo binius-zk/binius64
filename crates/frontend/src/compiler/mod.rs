@@ -13,6 +13,7 @@ use crate::compiler::{
 	circuit::Circuit,
 	constraint_builder::ConstraintBuilder,
 	gate_graph::{GateGraph, WireKind},
+	hints::{Hint, HintRegistry},
 	pathspec::PathSpec,
 };
 
@@ -69,6 +70,7 @@ pub(crate) struct Shared {
 	pub(crate) graph: GateGraph,
 	pub(crate) opts: Options,
 	pub(crate) force_committed: EntitySet<Wire>,
+	pub(crate) hint_registry: HintRegistry,
 }
 
 /// Circuit builder for constructing zero-knowledge proof circuits.
@@ -181,6 +183,7 @@ impl CircuitBuilder {
 				graph,
 				opts,
 				force_committed: EntitySet::new(),
+				hint_registry: HintRegistry::new(),
 			}))),
 		}
 	}
@@ -202,7 +205,7 @@ impl CircuitBuilder {
 		};
 		let mut graph = shared.graph;
 
-		graph.validate();
+		graph.validate(&shared.hint_registry);
 
 		// Run constant propagation optimization
 		if shared.opts.enable_constant_propagation {
@@ -272,8 +275,8 @@ impl CircuitBuilder {
 			cs.validate().unwrap();
 		}
 
-		// Build evaluation form
-		let eval_form = eval_form::EvalForm::build(&graph, &wire_mapping);
+		// Build evaluation form (consumes the hint registry the user populated via call_hint).
+		let eval_form = eval_form::EvalForm::build(&graph, &wire_mapping, shared.hint_registry);
 
 		Circuit::new(graph, cs, wire_mapping, eval_form)
 	}
@@ -1083,6 +1086,51 @@ impl CircuitBuilder {
 		let mut graph = self.graph_mut();
 		graph.emit_gate(self.current_path, Opcode::Select, [cond, t, f], [out]);
 		out
+	}
+
+	/// Invoke a [`Hint`] and emit the corresponding gate.
+	///
+	/// Registers `hint` in the builder's hint registry (idempotent, keyed by `T::NAME`),
+	/// allocates output wires according to `hint.shape(dimensions)`, and emits a
+	/// generic [`Opcode::Hint`] gate. Returns the freshly allocated output wires.
+	///
+	/// `dimensions` is passed verbatim to [`Hint::shape`] and [`Hint::execute`]; it is the
+	/// hint's parameterization (e.g., limb counts for a bignum hint).
+	///
+	/// # Panics
+	///
+	/// Panics if `inputs.len()` does not match the hint's declared input arity.
+	pub fn call_hint<T: Hint>(&self, hint: T, dimensions: &[usize], inputs: &[Wire]) -> Vec<Wire> {
+		let (n_in, n_out) = hint.shape(dimensions);
+		assert_eq!(
+			inputs.len(),
+			n_in,
+			"call_hint: input arity mismatch for hint {} (expected {}, got {})",
+			T::NAME,
+			n_in,
+			inputs.len(),
+		);
+
+		let hint_id = self
+			.shared
+			.borrow_mut()
+			.as_mut()
+			.expect("CircuitBuilder used after build")
+			.hint_registry
+			.register(hint);
+
+		let outputs: Vec<Wire> = (0..n_out).map(|_| self.add_internal()).collect();
+
+		let mut graph = self.graph_mut();
+		graph.emit_hint_gate(
+			self.current_path,
+			hint_id,
+			dimensions,
+			inputs.iter().copied(),
+			outputs.iter().copied(),
+		);
+
+		outputs
 	}
 
 	/// BigUint division.

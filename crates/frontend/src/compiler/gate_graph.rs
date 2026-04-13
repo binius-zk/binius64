@@ -6,6 +6,7 @@ use cranelift_entity::{PrimaryMap, SecondaryMap, entity_impl};
 
 use crate::compiler::{
 	gate::opcode::{Opcode, OpcodeShape},
+	hints::{HintId, HintRegistry},
 	pathspec::{PathSpec, PathSpecTree},
 };
 
@@ -111,8 +112,12 @@ pub struct GateData {
 }
 
 impl GateData {
+	/// Slice this gate's wire vector into its semantic portions.
+	///
+	/// Panics for [`Opcode::Hint`] gates — those carry their shape in the [`HintRegistry`]
+	/// and are never dispatched through the per-gate-module `gate_param()` callers.
 	pub fn gate_param(&self) -> GateParam<'_> {
-		let shape = self.shape();
+		let shape = self.opcode.shape(&self.dimensions);
 		let start_const = 0;
 		let end_const = shape.const_in.len();
 		let start_input = end_const;
@@ -134,17 +139,33 @@ impl GateData {
 	}
 
 	/// The gate shape (takes dimensions into account).
-	pub fn shape(&self) -> OpcodeShape {
-		self.opcode.shape(&self.dimensions)
+	///
+	/// For [`Opcode::Hint`] the shape is looked up via `registry`; the hint id lives in
+	/// `immediates[0]` and the user dimensions are `&self.dimensions`.
+	pub fn shape(&self, registry: &HintRegistry) -> OpcodeShape {
+		match self.opcode {
+			Opcode::Hint => {
+				let hint_id = self.immediates[0];
+				let (n_in, n_out) = registry.shape(hint_id, &self.dimensions);
+				OpcodeShape {
+					const_in: &[],
+					n_in,
+					n_out,
+					n_aux: 0,
+					n_scratch: 0,
+					n_imm: 1,
+				}
+			}
+			_ => self.opcode.shape(&self.dimensions),
+		}
 	}
 
 	/// Ensures the gate has the right shape.
-	pub fn validate_shape(&self) {
-		let shape = self.shape();
-		let gate_param = self.gate_param();
-		assert_eq!(gate_param.inputs.len(), shape.n_in);
-		assert_eq!(gate_param.outputs.len(), shape.n_out);
-		assert_eq!(gate_param.aux.len(), shape.n_aux);
+	pub fn validate_shape(&self, registry: &HintRegistry) {
+		let shape = self.shape(registry);
+		let expected_wires =
+			shape.const_in.len() + shape.n_in + shape.n_out + shape.n_aux + shape.n_scratch;
+		assert_eq!(self.wires.len(), expected_wires);
 		assert_eq!(self.immediates.len(), shape.n_imm);
 	}
 }
@@ -189,10 +210,10 @@ impl GateGraph {
 	}
 
 	/// Runs a validation pass ensuring all the invariants hold.
-	pub fn validate(&self) {
+	pub fn validate(&self, hint_registry: &HintRegistry) {
 		// Every gate holds shape.
 		for gate in self.gates.values() {
-			gate.validate_shape();
+			gate.validate_shape(hint_registry);
 		}
 	}
 
@@ -272,6 +293,12 @@ impl GateGraph {
 		dimensions: &[usize],
 		immediates: &[u32],
 	) -> Gate {
+		// Hint gates go through `emit_hint_gate`, which knows the hint's shape from the
+		// `Hint` impl directly without needing the registry here.
+		assert!(
+			opcode != Opcode::Hint,
+			"emit_gate_generic does not handle Opcode::Hint; use emit_hint_gate"
+		);
 		let shape = opcode.shape(dimensions);
 		let mut wires: Vec<Wire> = Vec::with_capacity(
 			shape.const_in.len() + shape.n_in + shape.n_out + shape.n_aux + shape.n_scratch,
@@ -294,12 +321,41 @@ impl GateGraph {
 			dimensions: dimensions.to_vec(),
 			immediates: immediates.to_vec(),
 		};
-		data.validate_shape();
+		// Inline validate_shape: non-hint shape doesn't need a registry.
+		let expected_wires =
+			shape.const_in.len() + shape.n_in + shape.n_out + shape.n_aux + shape.n_scratch;
+		assert_eq!(data.wires.len(), expected_wires);
+		assert_eq!(data.immediates.len(), shape.n_imm);
 
 		let gate = self.gates.push(data);
 
 		self.gate_origin[gate] = gate_origin;
 
+		gate
+	}
+
+	/// Emit a generic [`Opcode::Hint`] gate. Caller has already validated input arity
+	/// against the hint's [`Hint::shape`](crate::compiler::hints::Hint::shape) and allocated
+	/// `n_out` output wires.
+	pub fn emit_hint_gate(
+		&mut self,
+		gate_origin: PathSpec,
+		hint_id: HintId,
+		dimensions: &[usize],
+		inputs: impl IntoIterator<Item = Wire>,
+		outputs: impl IntoIterator<Item = Wire>,
+	) -> Gate {
+		let mut wires: Vec<Wire> = Vec::new();
+		wires.extend(inputs);
+		wires.extend(outputs);
+		let data = GateData {
+			opcode: Opcode::Hint,
+			wires,
+			dimensions: dimensions.to_vec(),
+			immediates: vec![hint_id],
+		};
+		let gate = self.gates.push(data);
+		self.gate_origin[gate] = gate_origin;
 		gate
 	}
 

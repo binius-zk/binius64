@@ -92,6 +92,7 @@ pub fn constrain(gate: Gate, graph: &GateGraph, builder: &mut ConstraintBuilder)
 		Opcode::BigUintModPowHint => (),
 		Opcode::ModInverseHint => (),
 		Opcode::Secp256k1EndosplitHint => (),
+		Opcode::Hint => (),
 	}
 }
 
@@ -168,5 +169,18 @@ pub fn emit_gate_bytecode(
 			hint_registry,
 			Secp256k1EndosplitHint::new(),
 		),
+		Opcode::Hint => {
+			// Generic hint: hint already lives in the registry from `CircuitBuilder::call_hint`,
+			// the gate carries the id in `imms[0]` and the user dimensions are `&data.dimensions`.
+			// `gate_param()` would panic for hints, so slice the wires directly using the
+			// shape we read back from the registry.
+			let hint_id = data.immediates[0];
+			let (n_in, n_out) = hint_registry.shape(hint_id, &data.dimensions);
+			let inputs = &data.wires[..n_in];
+			let outputs = &data.wires[n_in..n_in + n_out];
+			let input_regs: Vec<u32> = inputs.iter().map(|&wire| wire_to_reg(wire)).collect();
+			let output_regs: Vec<u32> = outputs.iter().map(|&wire| wire_to_reg(wire)).collect();
+			builder.emit_hint(hint_id, &data.dimensions, &input_regs, &output_regs);
+		}
 	}
 }

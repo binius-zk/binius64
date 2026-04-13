@@ -90,7 +90,10 @@ pub fn evaluate_constant_gate(
 	graph: &GateGraph,
 	concrete_inputs: &[Word],
 ) -> Result<Vec<Word>, String> {
-	let shape = data.shape();
+	// Const-eval is only invoked on non-hint gates (constant inputs are not generally
+	// available for hint gates), so an empty registry suffices for shape lookups.
+	let mut hint_registry = HintRegistry::new();
+	let shape = data.shape(&hint_registry);
 	let gate_param = data.gate_param();
 
 	// Set up wire mapping and value vector
@@ -106,7 +109,6 @@ pub fn evaluate_constant_gate(
 
 	// Generate bytecode for this gate
 	let mut builder = BytecodeBuilder::new();
-	let mut hint_registry = HintRegistry::new();
 	gate::emit_gate_bytecode(gate, data, graph, &mut builder, wire_to_reg, &mut hint_registry);
 	let (bytecode, _) = builder.finalize();
 
