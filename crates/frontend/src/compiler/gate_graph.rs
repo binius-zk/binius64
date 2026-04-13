@@ -115,9 +115,19 @@ impl GateData {
 	/// Slice this gate's wire vector into its semantic portions.
 	///
 	/// Panics for [`Opcode::Hint`] gates — those carry their shape in the [`HintRegistry`]
-	/// and are never dispatched through the per-gate-module `gate_param()` callers.
+	/// and must use [`gate_param_with_registry`](Self::gate_param_with_registry) instead.
+	/// The ~25 per-gate-module callers never see `Opcode::Hint`, so they use this method.
 	pub fn gate_param(&self) -> GateParam<'_> {
-		let shape = self.opcode.shape(&self.dimensions);
+		self.gate_param_for_shape(self.opcode.shape(&self.dimensions))
+	}
+
+	/// Like [`gate_param`](Self::gate_param) but works for [`Opcode::Hint`] gates by looking
+	/// up the shape in the provided registry.
+	pub fn gate_param_with_registry(&self, registry: &HintRegistry) -> GateParam<'_> {
+		self.gate_param_for_shape(self.shape(registry))
+	}
+
+	fn gate_param_for_shape(&self, shape: OpcodeShape) -> GateParam<'_> {
 		let start_const = 0;
 		let end_const = shape.const_in.len();
 		let start_input = end_const;
@@ -360,9 +370,9 @@ impl GateGraph {
 	}
 
 	/// Updates use-def information for a newly added gate
-	fn update_use_def_for_gate(&mut self, gate: Gate) {
+	fn update_use_def_for_gate(&mut self, gate: Gate, hint_registry: &HintRegistry) {
 		let gate_data = &self.gates[gate];
-		let gate_param = gate_data.gate_param();
+		let gate_param = gate_data.gate_param_with_registry(hint_registry);
 
 		// Record this gate as defining its outputs
 		for &output_wire in gate_param.outputs {
@@ -385,15 +395,17 @@ impl GateGraph {
 		}
 	}
 
-	/// Rebuilds the use-def chains from scratch by analyzing all gates
-	pub fn rebuild_use_def_chains(&mut self) {
+	/// Rebuilds the use-def chains from scratch by analyzing all gates.
+	///
+	/// `hint_registry` must contain all [`Opcode::Hint`] gates' hints.
+	pub fn rebuild_use_def_chains(&mut self, hint_registry: &HintRegistry) {
 		// Clear existing use-def information
 		self.wire_def.clear();
 		self.wire_uses.clear();
 
 		// Rebuild from all gates
 		for gate in self.gates.keys() {
-			self.update_use_def_for_gate(gate);
+			self.update_use_def_for_gate(gate, hint_registry);
 		}
 	}
 
@@ -444,6 +456,7 @@ impl GateGraph {
 		&mut self,
 		old_wire: Wire,
 		value: Word,
+		hint_registry: &HintRegistry,
 	) -> (Wire, usize, Vec<Gate>) {
 		let const_wire = self.add_constant(value);
 
@@ -459,7 +472,7 @@ impl GateGraph {
 		for user_gate in &users {
 			// Count how many times this wire appears in this gate before replacing
 			let gate_data = self.gate_data(*user_gate);
-			let gate_param = gate_data.gate_param();
+			let gate_param = gate_data.gate_param_with_registry(hint_registry);
 			let replacements_in_gate = gate_param.inputs.iter().filter(|&&w| w == old_wire).count()
 				+ gate_param
 					.outputs
@@ -546,7 +559,7 @@ mod tests {
 		let gate2 = graph.emit_gate(root, Opcode::Band, vec![out1, in1], vec![out2]);
 
 		// Build use-def chains
-		graph.rebuild_use_def_chains();
+		graph.rebuild_use_def_chains(&HintRegistry::new());
 
 		// Check that gate1 defines out1
 		assert_eq!(get_wire_def(&graph, out1), Some(gate1));
@@ -593,7 +606,7 @@ mod tests {
 		let gate = graph.emit_gate(root, Opcode::Bxor, vec![const_wire, in_wire], vec![out]);
 
 		// Build use-def chains
-		graph.rebuild_use_def_chains();
+		graph.rebuild_use_def_chains(&HintRegistry::new());
 
 		// Constants are not defined by gates
 		assert_eq!(get_wire_def(&graph, const_wire), None);
@@ -624,7 +637,7 @@ mod tests {
 		assert!(graph.get_wire_uses(in1).is_empty());
 
 		// Rebuild
-		graph.rebuild_use_def_chains();
+		graph.rebuild_use_def_chains(&HintRegistry::new());
 
 		// Verify it's restored
 		assert!(get_wire_def(&graph, out).is_some());

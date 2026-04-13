@@ -76,25 +76,29 @@ pub fn evaluate_gate_constants(
 	graph: &GateGraph,
 	gate: Gate,
 	constants: &[Word],
+	hint_registry: &HintRegistry,
 ) -> Result<Vec<Word>, String> {
-	evaluate_constant_gate(gate, &graph.gates[gate], graph, constants)
+	evaluate_constant_gate(gate, &graph.gates[gate], graph, constants, hint_registry)
 }
 
 /// Evaluate a gate with constant inputs using the existing interpreter logic.
 ///
 /// This function reuses the `emit_eval_bytecode` logic from each gate module
 /// to ensure consistency between runtime evaluation and constant propagation.
+///
+/// `hint_registry` must contain any hint referenced by the gate. For [`Opcode::Hint`] gates
+/// this is the registry populated by
+/// [`CircuitBuilder::call_hint`](crate::compiler::CircuitBuilder::call_hint); for other
+/// gates an empty registry is fine.
 pub fn evaluate_constant_gate(
 	gate: Gate,
 	data: &GateData,
 	graph: &GateGraph,
 	concrete_inputs: &[Word],
+	hint_registry: &HintRegistry,
 ) -> Result<Vec<Word>, String> {
-	// Const-eval is only invoked on non-hint gates (constant inputs are not generally
-	// available for hint gates), so an empty registry suffices for shape lookups.
-	let mut hint_registry = HintRegistry::new();
-	let shape = data.shape(&hint_registry);
-	let gate_param = data.gate_param();
+	let shape = data.shape(hint_registry);
+	let gate_param = data.gate_param_with_registry(hint_registry);
 
 	// Set up wire mapping and value vector
 	let (wire_mapping, wire_count) = create_wire_mapping(&gate_param);
@@ -109,11 +113,11 @@ pub fn evaluate_constant_gate(
 
 	// Generate bytecode for this gate
 	let mut builder = BytecodeBuilder::new();
-	gate::emit_gate_bytecode(gate, data, graph, &mut builder, wire_to_reg, &mut hint_registry);
+	gate::emit_gate_bytecode(gate, data, graph, &mut builder, wire_to_reg, hint_registry);
 	let (bytecode, _) = builder.finalize();
 
 	// Run evaluation
-	let mut interpreter = Interpreter::new(&bytecode, &hint_registry);
+	let mut interpreter = Interpreter::new(&bytecode, hint_registry);
 	interpreter
 		.run_with_value_vec(&mut value_vec, None)
 		.map_err(|e| format!("Constant evaluation failed: {:?}", e))?;
@@ -157,7 +161,8 @@ mod tests {
 			&[Word::from_u64(0xFF00FF00), Word::from_u64(0x0F0F0F0F)],
 		);
 
-		let result = evaluate_gate_constants(&graph, gate, &constants).unwrap();
+		let result =
+			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
 		assert_eq!(result[0], Word::from_u64(0x0F000F00));
 	}
 
@@ -168,7 +173,8 @@ mod tests {
 			&[Word::from_u64(0xFF00FF00), Word::from_u64(0x0F0F0F0F)],
 		);
 
-		let result = evaluate_gate_constants(&graph, gate, &constants).unwrap();
+		let result =
+			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
 		assert_eq!(result[0], Word::from_u64(0xF00FF00F));
 	}
 
@@ -179,7 +185,8 @@ mod tests {
 			&[Word::from_u64(0xFF00FF00), Word::from_u64(0x0F0F0F0F)],
 		);
 
-		let result = evaluate_gate_constants(&graph, gate, &constants).unwrap();
+		let result =
+			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
 		assert_eq!(result[0], Word::from_u64(0xFF0FFF0F));
 	}
 
@@ -191,7 +198,8 @@ mod tests {
 			&[Word::from_u64(0x123456789ABCDEF0), Word::from_u64(0x10)],
 		);
 
-		let result = evaluate_gate_constants(&graph, gate, &constants).unwrap();
+		let result =
+			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
 		assert_eq!(result[1], Word::from_u64(0x23456789ABCDEF00)); // lo
 		assert_eq!(result[0], Word::from_u64(0x1)); // hi
 	}
@@ -208,7 +216,8 @@ mod tests {
 			],
 		);
 
-		let result = evaluate_gate_constants(&graph, gate, &constants).unwrap();
+		let result =
+			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
 		assert_eq!(result[0], Word::from_u64(0x1)); // sum: 0xFF...FF + 1 + 1 = 1 (with overflow)
 		// Carry out shows carries at all bit positions
 		assert_eq!(result[1], Word::from_u64(0xFFFFFFFFFFFFFFFF));
@@ -226,7 +235,8 @@ mod tests {
 			],
 		);
 
-		let result = evaluate_gate_constants(&graph, gate, &constants).unwrap();
+		let result =
+			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
 		assert_eq!(result[0], Word::from_u64(0xB)); // diff: 0x10 - 0x5 = 0xB
 		// Borrow out shows borrows at bit positions - for 0x10 - 0x5, borrows occur at bits 0-3
 		assert_eq!(result[1], Word::from_u64(0xF)); // borrow out at bits 0-3

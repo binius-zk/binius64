@@ -211,7 +211,7 @@ impl CircuitBuilder {
 
 		// Run constant propagation optimization
 		if shared.opts.enable_constant_propagation {
-			let replaced = const_prop::constant_propagation(&mut graph);
+			let replaced = const_prop::constant_propagation(&mut graph, &shared.hint_registry);
 			if replaced > 0 {
 				eprintln!("Constant propagation: replaced {} wires with constants", replaced);
 			}

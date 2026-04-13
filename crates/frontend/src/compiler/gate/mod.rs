@@ -80,7 +80,7 @@ pub fn emit_gate_bytecode(
 	graph: &GateGraph,
 	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(crate::compiler::gate_graph::Wire) -> u32 + Copy,
-	hint_registry: &mut HintRegistry,
+	hint_registry: &HintRegistry,
 ) {
 	match data.opcode {
 		Opcode::Band => band::emit_eval_bytecode(gate, data, builder, wire_to_reg),

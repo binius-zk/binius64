@@ -36,15 +36,13 @@ pub struct EvalForm {
 impl EvalForm {
 	/// Build the evaluation form from the gate graph.
 	///
-	/// `hint_registry` already holds any hints the caller registered via
-	/// [`CircuitBuilder::call_hint`](crate::compiler::CircuitBuilder::call_hint). The four
-	/// built-in hint opcodes register themselves below as their gates are encountered;
-	/// because [`HintRegistry::register`] is idempotent, this safely no-ops when the same
-	/// hint is already present.
+	/// `hint_registry` already holds every hint the caller registered via
+	/// [`CircuitBuilder::call_hint`](crate::compiler::CircuitBuilder::call_hint); bytecode
+	/// emission only reads from it to resolve `Opcode::Hint` gates.
 	pub(crate) fn build(
 		gate_graph: &GateGraph,
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
-		mut hint_registry: HintRegistry,
+		hint_registry: HintRegistry,
 	) -> Self {
 		let mut builder = BytecodeBuilder::new();
 
@@ -65,7 +63,7 @@ impl EvalForm {
 				gate_graph,
 				&mut builder,
 				wire_to_reg,
-				&mut hint_registry,
+				&hint_registry,
 			);
 		}
 
