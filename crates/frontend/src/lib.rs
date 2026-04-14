@@ -33,5 +33,6 @@ pub mod util;
 pub use compiler::{
 	CircuitBuilder, Wire,
 	circuit::{Circuit, WitnessFiller},
+	hints::{self, Hint},
 };
 pub use stat::CircuitStat;

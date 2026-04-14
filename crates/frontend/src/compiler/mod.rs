@@ -1094,7 +1094,7 @@ impl CircuitBuilder {
 	///
 	/// Registers `hint` in the builder's hint registry (idempotent, keyed by `T::NAME`),
 	/// allocates output wires according to `hint.shape(dimensions)`, and emits a
-	/// generic [`Opcode::Hint`] gate. Returns the freshly allocated output wires.
+	/// generic hint gate. Returns the freshly allocated output wires.
 	///
 	/// `dimensions` is passed verbatim to [`Hint::shape`] and [`Hint::execute`]; it is the
 	/// hint's parameterization (e.g., limb counts for a bignum hint).
