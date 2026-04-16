@@ -86,8 +86,8 @@ pub fn evaluate_gate_constants(
 /// This function reuses the `emit_eval_bytecode` logic from each gate module
 /// to ensure consistency between runtime evaluation and constant propagation.
 ///
-/// `hint_registry` must contain any hint referenced by the gate. For [`Opcode::Hint`](gate::opcode::Opcode::Hint) gates
-/// this is the registry populated by
+/// `hint_registry` must contain any hint referenced by the gate. For
+/// [`Opcode::Hint`](gate::opcode::Opcode::Hint) gates this is the registry populated by
 /// [`CircuitBuilder::call_hint`](crate::compiler::CircuitBuilder::call_hint); for other
 /// gates an empty registry is fine.
 pub fn evaluate_constant_gate(
