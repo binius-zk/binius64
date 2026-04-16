@@ -14,8 +14,6 @@
 //! The gate generates 1 AND constraint:
 //! - `(x ROTR32 n) ∧ all-1 = z`
 
-use binius_core::word::Word;
-
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, rotr32},
 	gate::opcode::OpcodeShape,
@@ -24,7 +22,7 @@ use crate::compiler::{
 
 pub fn shape() -> OpcodeShape {
 	OpcodeShape {
-		const_in: &[Word::ALL_ONE],
+		const_in: &[],
 		n_in: 1,
 		n_out: 1,
 		n_aux: 0,
