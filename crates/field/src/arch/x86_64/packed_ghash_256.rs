@@ -139,11 +139,11 @@ cfg_if! {
 cfg_if! {
 	if #[cfg(target_feature = "vpclmulqdq")] {
 		impl crate::arithmetic_traits::WideningMul for PackedBinaryGhash2x128b {
-			type Wide = crate::arch::shared::ghash::WideGhashProduct<M256>;
+			type Wide = crate::arch::shared::ghash::WideKaratsubaGhashProduct<M256>;
 
 			#[inline]
 			fn widening_mul(a: Self, b: Self) -> Self::Wide {
-				crate::arch::shared::ghash::WideGhashProduct::widening_mul(
+				crate::arch::shared::ghash::WideKaratsubaGhashProduct::widening_mul(
 					a.to_underlier(),
 					b.to_underlier(),
 				)

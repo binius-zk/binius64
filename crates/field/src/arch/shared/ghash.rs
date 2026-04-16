@@ -99,9 +99,12 @@ fn gf2_128_shift_reduce<U: ClMulUnderlier>(t: U) -> U {
 	result
 }
 
-/// An unreduced product of two GF(2^128) elements, stored in Karatsuba form
-/// as three 128-bit limbs (lo, hi, mid). Accumulate via XOR (which is free in
-/// GF(2)), then call [`reduce_wide`](WideGhashProduct::reduce_wide) once at the end.
+/// An unreduced product of two GF(2^128) elements, stored as three
+/// 128-bit limbs (lo, hi, mid) where `mid = cross_a XOR cross_b`.
+/// Accumulate via XOR (free in GF(2)), then call
+/// [`reduce_wide`](WideGhashProduct::reduce_wide) once at the end.
+///
+/// This schoolbook representation is preferred on our AArch64 sumcheck hot paths.
 #[derive(Clone, Copy, Default)]
 pub struct WideGhashProduct<U: ClMulUnderlier> {
 	lo: U,
@@ -110,6 +113,48 @@ pub struct WideGhashProduct<U: ClMulUnderlier> {
 }
 
 impl<U: ClMulUnderlier> WideGhashProduct<U> {
+	/// Widening multiply: 4 CLMULs (all independent), no reduction.
+	///
+	/// The Karatsuba `xor_halves` variant saves one CLMUL algebraically, but the extra data
+	/// shuffles consistently generate worse code on our AArch64 sumcheck hot paths.
+	#[inline]
+	pub fn widening_mul(x: U, y: U) -> Self {
+		let lo = U::clmulepi64::<0x00>(x, y);
+		let hi = U::clmulepi64::<0x11>(x, y);
+		let cross_a = U::clmulepi64::<0x01>(x, y);
+		let cross_b = U::clmulepi64::<0x10>(x, y);
+		Self {
+			lo,
+			hi,
+			mid: cross_a ^ cross_b,
+		}
+	}
+
+	/// Reduce the accumulated wide product to a single GF(2^128) element.
+	/// Costs 2 CLMULs (the reduction steps).
+	#[inline]
+	pub fn reduce_wide(self) -> U {
+		let t1 = gf2_128_reduce(self.mid, self.hi);
+		gf2_128_reduce(self.lo, t1)
+	}
+}
+
+/// An unreduced product of two GF(2^128) elements, stored in Karatsuba form
+/// as three 128-bit limbs (lo, hi, mid).
+///
+/// This variant keeps the classic "3 CLMULs + deferred reduction" shape and is a
+/// safer default for x86 CLMUL backends where we have not validated that the
+/// schoolbook-wide form is consistently better.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Default)]
+pub struct WideKaratsubaGhashProduct<U: ClMulUnderlier> {
+	lo: U,
+	hi: U,
+	mid: U,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl<U: ClMulUnderlier> WideKaratsubaGhashProduct<U> {
 	/// Karatsuba widening multiply: 3 CLMULs, no reduction.
 	#[inline]
 	pub fn widening_mul(x: U, y: U) -> Self {
@@ -151,6 +196,30 @@ impl<U: ClMulUnderlier> AddAssign for WideGhashProduct<U> {
 	}
 }
 
+#[cfg(target_arch = "x86_64")]
+impl<U: ClMulUnderlier> Add for WideKaratsubaGhashProduct<U> {
+	type Output = Self;
+
+	#[inline]
+	fn add(self, rhs: Self) -> Self {
+		Self {
+			lo: self.lo ^ rhs.lo,
+			hi: self.hi ^ rhs.hi,
+			mid: self.mid ^ rhs.mid,
+		}
+	}
+}
+
+#[cfg(target_arch = "x86_64")]
+impl<U: ClMulUnderlier> AddAssign for WideKaratsubaGhashProduct<U> {
+	#[inline]
+	fn add_assign(&mut self, rhs: Self) {
+		self.lo ^= rhs.lo;
+		self.hi ^= rhs.hi;
+		self.mid ^= rhs.mid;
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::{
@@ -158,8 +227,9 @@ mod tests {
 		arch::{OptimalPackedB128, packed_ghash_128::PackedBinaryGhash1x128b},
 	};
 
-	fn test_widening_mul_correctness<P: PackedField<Scalar = BinaryField128bGhash> + WideningMul>(
-	) {
+	fn test_widening_mul_correctness<
+		P: PackedField<Scalar = BinaryField128bGhash> + WideningMul,
+	>() {
 		use rand::{SeedableRng, rngs::StdRng};
 
 		let mut rng = StdRng::seed_from_u64(42);
@@ -171,15 +241,11 @@ mod tests {
 			let reduced = P::reduce_wide(wide);
 			let direct = a * b;
 
-			assert_eq!(
-				reduced, direct,
-				"reduce(widening_mul(a, b)) must equal a * b"
-			);
+			assert_eq!(reduced, direct, "reduce(widening_mul(a, b)) must equal a * b");
 		}
 	}
 
-	fn test_widening_mul_linearity<P: PackedField<Scalar = BinaryField128bGhash> + WideningMul>()
-	{
+	fn test_widening_mul_linearity<P: PackedField<Scalar = BinaryField128bGhash> + WideningMul>() {
 		use rand::{SeedableRng, rngs::StdRng};
 
 		let mut rng = StdRng::seed_from_u64(123);
@@ -194,10 +260,7 @@ mod tests {
 			let sum_reduced = P::reduce_wide(wide1 + wide2);
 			let direct_sum = a1 * b1 + a2 * b2;
 
-			assert_eq!(
-				sum_reduced, direct_sum,
-				"reduce(wide1 + wide2) must equal a1*b1 + a2*b2"
-			);
+			assert_eq!(sum_reduced, direct_sum, "reduce(wide1 + wide2) must equal a1*b1 + a2*b2");
 		}
 	}
 

@@ -32,8 +32,7 @@ impl crate::arch::shared::ghash::ClMulUnderlier for M128 {
 
 	#[inline]
 	fn xor_halves(a: Self) -> Self {
-		let swapped =
-			unsafe { std::arch::x86_64::_mm_shuffle_epi32::<0x4E>(a.into()) }.into();
+		let swapped = unsafe { std::arch::x86_64::_mm_shuffle_epi32::<0x4E>(a.into()) }.into();
 		a ^ swapped
 	}
 }
@@ -108,11 +107,11 @@ cfg_if! {
 cfg_if! {
 	if #[cfg(target_feature = "pclmulqdq")] {
 		impl crate::arithmetic_traits::WideningMul for PackedBinaryGhash1x128b {
-			type Wide = crate::arch::shared::ghash::WideGhashProduct<M128>;
+			type Wide = crate::arch::shared::ghash::WideKaratsubaGhashProduct<M128>;
 
 			#[inline]
 			fn widening_mul(a: Self, b: Self) -> Self::Wide {
-				crate::arch::shared::ghash::WideGhashProduct::widening_mul(
+				crate::arch::shared::ghash::WideKaratsubaGhashProduct::widening_mul(
 					a.to_underlier(),
 					b.to_underlier(),
 				)
