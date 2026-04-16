@@ -1,5 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
+use std::hint::black_box;
+
 use binius_field::{Field, FieldOps, PackedField, Random, arch::OptimalPackedB128};
 use binius_ip_prover::sumcheck::bivariate_product::{
 	compute_round_evals_wide_par, compute_round_evals_wide_seq,
@@ -15,8 +17,6 @@ use binius_prover::protocols::sumcheck::{
 use binius_transcript::ProverTranscript;
 use binius_utils::rayon::prelude::*;
 use binius_verifier::config::StdChallenger;
-use std::hint::black_box;
-
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use rand::{SeedableRng, prelude::StdRng};
 

@@ -116,8 +116,8 @@ impl<P: PackedField> Mul<P::Scalar> for RoundEvals2<P> {
 /// Widening (unreduced) accumulator for degree-2 sumcheck round evaluations.
 ///
 /// Stores `y_1` and `y_inf` as `P::Wide` values that can be summed via addition (XOR in GF(2))
-/// without intermediate reduction. After accumulation, call [`reduce`](Self::reduce) to convert
-/// back to a `RoundEvals2<P>`.
+/// without intermediate reduction. After accumulation, call [`reduce_wide`](Self::reduce_wide)
+/// to convert back to a `RoundEvals2<P>`.
 #[derive(Clone, Copy)]
 pub struct WideRoundEvals2<W> {
 	pub y_1: W,

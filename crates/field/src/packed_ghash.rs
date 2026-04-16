@@ -258,8 +258,9 @@ mod tests {
 
 	#[test]
 	fn test_widening_mul_single_accumulation() {
-		use crate::{Random, WideningMul, arch::packed_ghash_128::PackedBinaryGhash1x128b as P};
 		use rand::{SeedableRng, rngs::StdRng};
+
+		use crate::{Random, WideningMul, arch::packed_ghash_128::PackedBinaryGhash1x128b as P};
 
 		let mut rng = StdRng::seed_from_u64(77);
 		let a = P::random(&mut rng);

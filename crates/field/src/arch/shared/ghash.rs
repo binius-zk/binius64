@@ -1,5 +1,10 @@
 // Copyright 2025 Irreducible Inc.
 
+// Items in this module are conditionally used by architecture-specific GHASH backends. On
+// targets where none of those backends are compiled (e.g. wasm32 without simd128), the entire
+// module is unused, so allow dead code here rather than sprinkling attributes on every item.
+#![allow(dead_code)]
+
 use std::ops::{Add, AddAssign};
 
 use crate::{Divisible, underlier::UnderlierWithBitOps};
@@ -21,7 +26,6 @@ pub trait ClMulUnderlier: UnderlierWithBitOps + Divisible<u128> {
 }
 
 #[inline]
-#[allow(dead_code)]
 pub fn mul_clmul<U: ClMulUnderlier>(x: U, y: U) -> U {
 	// Based on the C++ reference implementation
 	// The algorithm performs polynomial multiplication followed by reduction
@@ -52,7 +56,6 @@ pub fn mul_clmul<U: ClMulUnderlier>(x: U, y: U) -> U {
 
 /// The version of the multiplication for optimized suqare operation.
 #[inline]
-#[allow(dead_code)]
 pub fn square_clmul<U: ClMulUnderlier>(x: U) -> U {
 	// t1 from the previous function is always zero for squaring
 	// t2 = x.hi * x.hi
@@ -104,7 +107,7 @@ fn gf2_128_shift_reduce<U: ClMulUnderlier>(t: U) -> U {
 /// and reduced once at the end via [`reduce_wide`](WideGhashProduct::reduce_wide).
 ///
 /// Uses the "schoolbook" form (4 independent CLMULs + 2 reduction CLMULs per reduce). Paired
-/// with AArch64 and portable backends; x86_64 uses [`WideKaratsubaGhashProduct`] instead. The
+/// with AArch64 and portable backends; x86_64 uses `WideKaratsubaGhashProduct` instead. The
 /// split exists because the Karatsuba form saves one CLMUL algebraically but the extra data
 /// shuffles it requires do not always pay off across CLMUL codegen variants.
 #[derive(Clone, Copy, Default)]
