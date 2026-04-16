@@ -53,15 +53,15 @@ jobs:
           - name: x86_64-portable
             runner: ubuntu-24.04
             rustflags: # portable
-            cache_targets: true
+            native: false
           - name: x86_64
             runner: ubuntu-24.04
             rustflags: "-Ctarget-cpu=native"
-            cache_targets: false
+            native: true
           - name: arm64
             runner: ubuntu-24.04-arm
             rustflags: "-Ctarget-cpu=native"
-            cache_targets: false
+            native: true
     name: rust-checks-${{ matrix.arch.name }}
     runs-on: ${{ matrix.arch.runner }}
     env:
@@ -74,9 +74,15 @@ jobs:
         with:
           components: clippy
           # `target-cpu=native` host artifacts are not portable across the
-          # heterogeneous GitHub runner pool, so only cache target outputs for
-          # the portable job.
-          cache-targets: ${{ matrix.arch.cache_targets }}
+          # heterogeneous GitHub runner pool, so native jobs use an explicit
+          # rust-cache step that restores only the cargo registry.
+          cache: ${{ !matrix.arch.native }}
+      - name: Setup Rust dependency cache
+        if: ${{ matrix.arch.native }}
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-targets: "false"
+          cache-on-failure: "true"
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
