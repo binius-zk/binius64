@@ -7,7 +7,7 @@
 //! this channel always applies zero-knowledge blinding to all oracles by generating masks
 //! internally.
 
-use binius_field::{BinaryField, PackedField};
+use binius_field::{BinaryField, PackedField, WideningMul};
 use binius_iop::{channel::OracleSpec, fri::FRIParams, merkle_tree::MerkleTreeScheme};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT};
@@ -154,7 +154,7 @@ impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, Challenger_> IOPProverChannel<P
 	for BaseFoldZKProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + binius_field::WideningMul,
+	P: PackedField<Scalar = F> + WideningMul,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MerkleProver_: MerkleTreeProver<F, Scheme = MerkleScheme>,

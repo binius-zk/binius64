@@ -7,9 +7,7 @@ use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{AsSlicesMut, FieldSliceMut, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 
-use super::{
-	common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::WideRoundEvals2,
-};
+use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::WideRoundEvals2};
 use crate::sumcheck::common::MleCheckProver;
 
 /// MLE-check prover for polynomials defined as quadratic compositions of N multilinear polynomials.

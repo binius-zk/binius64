@@ -42,7 +42,7 @@ where
 
 impl<FChallenge, PNTTDomain> OblongZerocheckProver<FChallenge, PNTTDomain>
 where
-	FChallenge: Field + From<PNTTDomain::Scalar> + BinaryField,
+	FChallenge: Field + From<PNTTDomain::Scalar> + BinaryField + WideningMul<Scalar = FChallenge>,
 	PNTTDomain: PackedField + PackedExtension<B1, PackedSubfield = PackedBinaryField128x1b>,
 	u8: From<PNTTDomain::Scalar>,
 	PNTTDomain::Scalar: From<u8> + BinaryField,
@@ -128,15 +128,7 @@ where
 	pub fn execute(&self) -> &[FChallenge; ROWS_PER_HYPERCUBE_VERTEX] {
 		&self.univariate_round_message
 	}
-}
 
-impl<FChallenge, PNTTDomain> OblongZerocheckProver<FChallenge, PNTTDomain>
-where
-	FChallenge: Field + From<PNTTDomain::Scalar> + BinaryField + WideningMul<Scalar = FChallenge>,
-	PNTTDomain: PackedField + PackedExtension<B1, PackedSubfield = PackedBinaryField128x1b>,
-	u8: From<PNTTDomain::Scalar>,
-	PNTTDomain::Scalar: From<u8> + BinaryField,
-{
 	/// Folds the oblong multilinears at the univariate challenge and creates the sumcheck prover.
 	///
 	/// This method performs the transition between Phase 1 (univariate polynomial) and Phase 2

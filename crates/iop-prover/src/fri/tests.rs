@@ -247,7 +247,7 @@ fn generate_fri_proof<F, P>(
 )
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + binius_field::WideningMul,
+	P: PackedField<Scalar = F> + WideningMul,
 {
 	let mut rng = StdRng::seed_from_u64(0);
 

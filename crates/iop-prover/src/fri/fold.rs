@@ -272,6 +272,8 @@ where
 
 	let tensor = eq_ind_partial_eval(challenges);
 
+	// For each chunk of size `2^log_batch_size` in the interleaved codeword, fold it with the
+	// folding challenges.
 	let values = codeword
 		.chunks_par(log_batch_size)
 		.map(|chunk| inner_product_wide_buffers(&chunk, &tensor))

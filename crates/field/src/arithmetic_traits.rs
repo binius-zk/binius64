@@ -13,9 +13,10 @@ pub trait Square {
 /// A packed field type that supports widening (unreduced) multiplication.
 ///
 /// The multiply phase produces a [`Wide`](Self::Wide) value that can be accumulated via addition
-/// (which is XOR in GF(2)) without overflow. A single [`reduce_wide`](Self::reduce_wide) call at
-/// the end converts back to the packed field representation. This is useful for inner-product-style
-/// computations where `3N + 2` CLMULs (Karatsuba widening) beats `6N` (full multiply per term).
+/// without overflow (XOR in characteristic 2). A single [`reduce_wide`](Self::reduce_wide) call at
+/// the end converts back to the packed field representation. For `GF(2^128)` inner products this
+/// lets us amortize the reduction across many products, which is a net win when reductions are
+/// comparable in cost to the widening multiply itself.
 pub trait WideningMul: PackedField {
 	type Wide: Copy + Default + Send + Sync + Add<Output = Self::Wide> + AddAssign;
 

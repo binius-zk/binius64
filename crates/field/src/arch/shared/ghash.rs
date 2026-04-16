@@ -99,12 +99,14 @@ fn gf2_128_shift_reduce<U: ClMulUnderlier>(t: U) -> U {
 	result
 }
 
-/// An unreduced product of two GF(2^128) elements, stored as three
-/// 128-bit limbs (lo, hi, mid) where `mid = cross_a XOR cross_b`.
-/// Accumulate via XOR (free in GF(2)), then call
-/// [`reduce_wide`](WideGhashProduct::reduce_wide) once at the end.
+/// An unreduced product of two `GF(2^128)` elements, stored as three 128-bit limbs
+/// `(lo, hi, mid)` where `mid = cross_a XOR cross_b`. Values of this type can be summed by XOR
+/// and reduced once at the end via [`reduce_wide`](WideGhashProduct::reduce_wide).
 ///
-/// This schoolbook representation is preferred on our AArch64 sumcheck hot paths.
+/// Uses the "schoolbook" form (4 independent CLMULs + 2 reduction CLMULs per reduce). Paired
+/// with AArch64 and portable backends; x86_64 uses [`WideKaratsubaGhashProduct`] instead. The
+/// split exists because the Karatsuba form saves one CLMUL algebraically but the extra data
+/// shuffles it requires do not always pay off across CLMUL codegen variants.
 #[derive(Clone, Copy, Default)]
 pub struct WideGhashProduct<U: ClMulUnderlier> {
 	lo: U,
@@ -113,10 +115,7 @@ pub struct WideGhashProduct<U: ClMulUnderlier> {
 }
 
 impl<U: ClMulUnderlier> WideGhashProduct<U> {
-	/// Widening multiply: 4 CLMULs (all independent), no reduction.
-	///
-	/// The Karatsuba `xor_halves` variant saves one CLMUL algebraically, but the extra data
-	/// shuffles consistently generate worse code on our AArch64 sumcheck hot paths.
+	/// Widening multiply with 4 independent CLMULs, no reduction.
 	#[inline]
 	pub fn widening_mul(x: U, y: U) -> Self {
 		let lo = U::clmulepi64::<0x00>(x, y);
@@ -139,12 +138,11 @@ impl<U: ClMulUnderlier> WideGhashProduct<U> {
 	}
 }
 
-/// An unreduced product of two GF(2^128) elements, stored in Karatsuba form
-/// as three 128-bit limbs (lo, hi, mid).
+/// An unreduced product of two `GF(2^128)` elements, stored in Karatsuba form as three 128-bit
+/// limbs `(lo, hi, mid)`. See [`WideGhashProduct`] for the non-Karatsuba sibling and the
+/// rationale for having both.
 ///
-/// This variant keeps the classic "3 CLMULs + deferred reduction" shape and is a
-/// safer default for x86 CLMUL backends where we have not validated that the
-/// schoolbook-wide form is consistently better.
+/// Uses 3 CLMULs (plus two `xor_halves` shuffles) for the multiply and 2 CLMULs for the reduce.
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Default)]
 pub struct WideKaratsubaGhashProduct<U: ClMulUnderlier> {
@@ -222,72 +220,14 @@ impl<U: ClMulUnderlier> AddAssign for WideKaratsubaGhashProduct<U> {
 
 #[cfg(test)]
 mod tests {
-	use crate::{
-		BinaryField128bGhash, PackedField, Random, WideningMul,
-		arch::{OptimalPackedB128, packed_ghash_128::PackedBinaryGhash1x128b},
-	};
+	use rand::{SeedableRng, rngs::StdRng};
 
-	fn test_widening_mul_correctness<
-		P: PackedField<Scalar = BinaryField128bGhash> + WideningMul,
-	>() {
-		use rand::{SeedableRng, rngs::StdRng};
+	use crate::{Random, WideningMul, arch::OptimalPackedB128};
 
-		let mut rng = StdRng::seed_from_u64(42);
-		for _ in 0..100 {
-			let a = P::random(&mut rng);
-			let b = P::random(&mut rng);
-
-			let wide = P::widening_mul(a, b);
-			let reduced = P::reduce_wide(wide);
-			let direct = a * b;
-
-			assert_eq!(reduced, direct, "reduce(widening_mul(a, b)) must equal a * b");
-		}
-	}
-
-	fn test_widening_mul_linearity<P: PackedField<Scalar = BinaryField128bGhash> + WideningMul>() {
-		use rand::{SeedableRng, rngs::StdRng};
-
-		let mut rng = StdRng::seed_from_u64(123);
-		for _ in 0..100 {
-			let a1 = P::random(&mut rng);
-			let b1 = P::random(&mut rng);
-			let a2 = P::random(&mut rng);
-			let b2 = P::random(&mut rng);
-
-			let wide1 = P::widening_mul(a1, b1);
-			let wide2 = P::widening_mul(a2, b2);
-			let sum_reduced = P::reduce_wide(wide1 + wide2);
-			let direct_sum = a1 * b1 + a2 * b2;
-
-			assert_eq!(sum_reduced, direct_sum, "reduce(wide1 + wide2) must equal a1*b1 + a2*b2");
-		}
-	}
-
-	#[test]
-	fn test_widening_mul_correctness_1x128() {
-		test_widening_mul_correctness::<PackedBinaryGhash1x128b>();
-	}
-
-	#[test]
-	fn test_widening_mul_linearity_1x128() {
-		test_widening_mul_linearity::<PackedBinaryGhash1x128b>();
-	}
-
-	#[test]
-	fn test_widening_mul_correctness_optimal() {
-		test_widening_mul_correctness::<OptimalPackedB128>();
-	}
-
-	#[test]
-	fn test_widening_mul_linearity_optimal() {
-		test_widening_mul_linearity::<OptimalPackedB128>();
-	}
-
+	/// Stress-test accumulation of many widening products. Correctness / linearity for each
+	/// individual packed width is covered by the proptest suite in `packed_ghash.rs`.
 	#[test]
 	fn test_widening_mul_accumulation() {
-		use rand::{SeedableRng, rngs::StdRng};
-
 		type P = OptimalPackedB128;
 
 		let mut rng = StdRng::seed_from_u64(999);
@@ -309,9 +249,6 @@ mod tests {
 			.map(|(&a, &b)| a * b)
 			.fold(P::default(), |acc, p| acc + p);
 
-		assert_eq!(
-			reduced, direct_sum,
-			"Accumulated widening inner product must equal direct inner product"
-		);
+		assert_eq!(reduced, direct_sum);
 	}
 }

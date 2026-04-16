@@ -157,9 +157,8 @@ fn bench_bivariate_round(c: &mut Criterion) {
 	for log_half in 0usize..=20 {
 		let mut rng = StdRng::seed_from_u64(0xb1);
 		let n_packed = 1usize << log_half;
-		let mk = |rng: &mut StdRng| -> Vec<P> {
-			(0..n_packed).map(|_| P::random(&mut *rng)).collect()
-		};
+		let mk =
+			|rng: &mut StdRng| -> Vec<P> { (0..n_packed).map(|_| P::random(&mut *rng)).collect() };
 		let a_0 = mk(&mut rng);
 		let a_1 = mk(&mut rng);
 		let b_0 = mk(&mut rng);

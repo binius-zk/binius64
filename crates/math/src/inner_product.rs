@@ -100,8 +100,9 @@ where
 
 /// Parallel inner product using widening (unreduced) multiplication with deferred reduction.
 ///
-/// Accumulates `widening_mul(a_i, b_i)` in wide form, then reduces once at the end.
-/// For GHASH fields, this costs `3N + 2` CLMULs instead of `6N`, yielding ~40% speedup on AVX-512.
+/// Accumulates `widening_mul(a_i, b_i)` in wide form, then reduces once at the end. For packed
+/// `GF(2^128)` fields this amortizes the reduction cost across all products, which is the main
+/// win of this routine over [`inner_product_par`].
 #[inline]
 pub fn inner_product_wide_par<F, P, DataA, DataB>(
 	a: &FieldBuffer<P, DataA>,

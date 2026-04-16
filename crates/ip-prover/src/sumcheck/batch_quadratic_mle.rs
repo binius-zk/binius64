@@ -163,6 +163,7 @@ where
 				|mut packed_prime_evals, chunk_index| -> Result<_, Error> {
 					let eq_chunk = eq_expansion.chunk(chunk_vars, chunk_index);
 
+					// Scratch buffers reused per row to avoid allocations in the hot loop.
 					let [mut y_1_scratch, mut y_inf_scratch] = [[P::default(); M]; 2];
 					let splits_0_chunk = splits_0
 						.iter()
@@ -182,6 +183,8 @@ where
 							let lo_i = splits_0_chunk[i].as_ref()[idx];
 							let hi_i = splits_1_chunk[i].as_ref()[idx];
 
+							// The `evals_inf = lo + hi` branch corresponds to evaluation at the
+							// point at infinity for multilinears.
 							evals_1[i] = hi_i;
 							evals_inf[i] = lo_i + hi_i;
 						}
@@ -189,6 +192,8 @@ where
 						comp(evals_1, &mut y_1_scratch);
 						inf_comp(evals_inf, &mut y_inf_scratch);
 
+						// Weight each composition output by the eq-indicator to keep the sumcheck
+						// claim aligned with `eval_point`.
 						for i in 0..M {
 							y_1[i] += P::widening_mul(y_1_scratch[i], eq_i);
 							y_inf[i] += P::widening_mul(y_inf_scratch[i], eq_i);

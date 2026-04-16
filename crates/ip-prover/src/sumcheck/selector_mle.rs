@@ -155,34 +155,34 @@ where
 							chunk_index | chunk_count,
 						);
 
-					// Accumulate `eq * composition` in a wide (unreduced) form and reduce once
-					// at the end of the chunk. The `composition` mul is still reduced, because
-					// its result feeds the subsequent widening mul with `eq_i`.
-					let mut chunk_wide = WideRoundEvals2::<P::Wide>::default();
-					for (&eq_i, &selected_0_i, &selected_1_i, &selector_0_i, &selector_1_i) in izip!(
-						eq_chunk.as_ref(),
-						selected_0_chunk.as_ref(),
-						selected_1_chunk.as_ref(),
-						selector_0_chunk.as_ref(),
-						selector_1_chunk.as_ref(),
-					) {
-						let selected_inf_i = selected_0_i + selected_1_i;
-						let selector_inf_i = selector_0_i + selector_1_i;
+						// Accumulate `eq * composition` in a wide (unreduced) form and reduce once
+						// at the end of the chunk. The `composition` mul is still reduced, because
+						// its result feeds the subsequent widening mul with `eq_i`.
+						let mut chunk_wide = WideRoundEvals2::<P::Wide>::default();
+						for (&eq_i, &selected_0_i, &selected_1_i, &selector_0_i, &selector_1_i) in izip!(
+							eq_chunk.as_ref(),
+							selected_0_chunk.as_ref(),
+							selected_1_chunk.as_ref(),
+							selector_0_chunk.as_ref(),
+							selector_1_chunk.as_ref(),
+						) {
+							let selected_inf_i = selected_0_i + selected_1_i;
+							let selector_inf_i = selector_0_i + selector_1_i;
 
-						// selected * selector + (1 - selector)
-						// @one: selector * (selected - 1) + 1
-						// @inf: selector * selected (note that lower degree terms are dropped)
-						let y_1_prod = selector_1_i * (selected_1_i - P::one()) + P::one();
-						let y_inf_prod = selector_inf_i * selected_inf_i;
-						chunk_wide.y_1 += P::widening_mul(eq_i, y_1_prod);
-						chunk_wide.y_inf += P::widening_mul(eq_i, y_inf_prod);
-					}
+							// selected * selector + (1 - selector)
+							// @one: selector * (selected - 1) + 1
+							// @inf: selector * selected (note that lower degree terms are dropped)
+							let y_1_prod = selector_1_i * (selected_1_i - P::one()) + P::one();
+							let y_inf_prod = selector_inf_i * selected_inf_i;
+							chunk_wide.y_1 += P::widening_mul(eq_i, y_1_prod);
+							chunk_wide.y_inf += P::widening_mul(eq_i, y_inf_prod);
+						}
 
-					let chunk_round_evals = chunk_wide.reduce_wide::<P>();
+						let chunk_round_evals = chunk_wide.reduce_wide::<P>();
 
-					// Apply the common factor from the outer product representation of the eq
-					// ind
-					*round_evals += &(chunk_round_evals * eq_suffix_eval);
+						// Apply the common factor from the outer product representation of the eq
+						// ind
+						*round_evals += &(chunk_round_evals * eq_suffix_eval);
 					}
 
 					(packed_prime_evals, binary_chunk_0, binary_chunk_1)

@@ -7,7 +7,7 @@ use binius_core::{
 };
 use binius_field::{
 	AESTowerField8b as B8, BinaryField, ExtensionField, PackedAESBinaryField16x8b, PackedExtension,
-	PackedField, UnderlierWithBitOps, WithUnderlier,
+	PackedField, UnderlierWithBitOps, WideningMul, WithUnderlier,
 };
 use binius_iop_prover::{
 	basefold_channel::BaseFoldProverChannel, basefold_compiler::BaseFoldProverCompiler,
@@ -102,7 +102,7 @@ impl IOPProver {
 			+ PackedExtension<B128>
 			+ PackedExtension<B1>
 			+ WithUnderlier<Underlier: UnderlierWithBitOps>
-			+ binius_field::WideningMul,
+			+ WideningMul,
 		Channel: IOPProverChannel<P>,
 	{
 		let cs = &self.constraint_system;
@@ -302,7 +302,7 @@ where
 		+ PackedExtension<B128>
 		+ PackedExtension<B1>
 		+ WithUnderlier<Underlier: UnderlierWithBitOps>
-		+ binius_field::WideningMul,
+		+ WideningMul,
 	MerkleHash: Digest + BlockSizeUser + FixedOutputReset,
 	ParallelMerkleHasher: ParallelDigest<Digest = MerkleHash>,
 	ParallelMerkleCompress: ParallelPseudoCompression<Output<MerkleHash>, 2>,
@@ -446,7 +446,7 @@ fn prove_bitand_reduction<F, Channel>(
 	channel: &mut Channel,
 ) -> Result<AndCheckOutput<F>, Error>
 where
-	F: BinaryField + From<B8> + binius_field::WideningMul<Scalar = F>,
+	F: BinaryField + From<B8> + WideningMul<Scalar = F>,
 	Channel: binius_ip_prover::channel::IPProverChannel<F>,
 {
 	let prover_message_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1);
@@ -495,7 +495,7 @@ fn prove_intmul_reduction<F, P, Channel>(
 ) -> Result<IntMulOutput<F>, Error>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + binius_field::WideningMul,
+	P: PackedField<Scalar = F> + WideningMul,
 	Channel: binius_ip_prover::channel::IPProverChannel<F>,
 {
 	let MulCheckWitness { a, b, lo, hi } = witness;
