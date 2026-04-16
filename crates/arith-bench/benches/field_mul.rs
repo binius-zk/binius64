@@ -728,8 +728,13 @@ fn bench_ghash_widening(c: &mut Criterion) {
 
 /// Benchmark the `inner_product_wide_par` function from binius-math against `inner_product_par`.
 fn bench_inner_product_wide(c: &mut Criterion) {
-	use binius_field::{BinaryField128bGhash, PackedField, Random, WideningMul, arch::OptimalPackedB128};
-	use binius_math::{FieldBuffer, inner_product::{inner_product_par, inner_product_wide_par}};
+	use binius_field::{
+		BinaryField128bGhash, PackedField, Random, WideningMul, arch::OptimalPackedB128,
+	};
+	use binius_math::{
+		FieldBuffer,
+		inner_product::{inner_product_par, inner_product_wide_par},
+	};
 
 	type P = OptimalPackedB128;
 	type F = BinaryField128bGhash;

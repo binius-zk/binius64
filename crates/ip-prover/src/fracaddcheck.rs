@@ -268,7 +268,10 @@ mod tests {
 		test_frac_add_check_prove_verify_helper::<Packed128b>(0, 4);
 	}
 
-	fn test_frac_add_check_layer_computation_helper<P: PackedField + WideningMul>(n: usize, k: usize) {
+	fn test_frac_add_check_layer_computation_helper<P: PackedField + WideningMul>(
+		n: usize,
+		k: usize,
+	) {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		// Create random witness with log_len = n + k

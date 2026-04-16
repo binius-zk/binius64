@@ -36,11 +36,11 @@ mod underlier;
 pub mod util;
 
 pub use aes_field::*;
+pub use arithmetic_traits::WideningMul;
 pub use binary_field::*;
 pub use extension::*;
 pub use field::{Field, FieldOps};
 pub use ghash::*;
-pub use arithmetic_traits::WideningMul;
 pub use packed::PackedField;
 pub use packed_aes_field::*;
 pub use packed_binary_field::*;

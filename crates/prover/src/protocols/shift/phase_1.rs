@@ -84,7 +84,11 @@ where
 ///
 /// `SumcheckOutput` containing the challenge vector and final evaluation `gamma`
 #[instrument(skip_all, name = "run_sumcheck")]
-fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F> + WideningMul, Channel: IPProverChannel<F>>(
+fn run_phase_1_sumcheck<
+	F: Field,
+	P: PackedField<Scalar = F> + WideningMul,
+	Channel: IPProverChannel<F>,
+>(
 	g_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
 	h_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
 	channel: &mut Channel,

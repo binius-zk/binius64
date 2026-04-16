@@ -442,7 +442,10 @@ mod tests {
 	/// # Arguments
 	/// * `n_layers` - Number of product reduction layers (= variables per witness)
 	/// * `n_provers` - Number of provers to batch
-	fn test_batch_prove_verify_helper<P: PackedField + WideningMul>(n_layers: usize, n_provers: usize) {
+	fn test_batch_prove_verify_helper<P: PackedField + WideningMul>(
+		n_layers: usize,
+		n_provers: usize,
+	) {
 		let mut rng = StdRng::seed_from_u64(42);
 
 		let log_n_provers = log2_ceil_usize(n_provers);

@@ -128,7 +128,6 @@ where
 	pub fn execute(&self) -> &[FChallenge; ROWS_PER_HYPERCUBE_VERTEX] {
 		&self.univariate_round_message
 	}
-
 }
 
 impl<FChallenge, PNTTDomain> OblongZerocheckProver<FChallenge, PNTTDomain>

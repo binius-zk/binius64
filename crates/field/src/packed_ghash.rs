@@ -241,8 +241,7 @@ mod tests {
 	#[test]
 	fn test_widening_mul_zero_inputs() {
 		use crate::{
-			WideningMul, field::FieldOps,
-			arch::packed_ghash_128::PackedBinaryGhash1x128b as P,
+			WideningMul, arch::packed_ghash_128::PackedBinaryGhash1x128b as P, field::FieldOps,
 		};
 
 		let zero = P::default();
@@ -259,10 +258,7 @@ mod tests {
 
 	#[test]
 	fn test_widening_mul_single_accumulation() {
-		use crate::{
-			Random, WideningMul,
-			arch::packed_ghash_128::PackedBinaryGhash1x128b as P,
-		};
+		use crate::{Random, WideningMul, arch::packed_ghash_128::PackedBinaryGhash1x128b as P};
 		use rand::{SeedableRng, rngs::StdRng};
 
 		let mut rng = StdRng::seed_from_u64(77);

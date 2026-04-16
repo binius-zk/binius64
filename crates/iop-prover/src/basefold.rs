@@ -8,9 +8,7 @@ use binius_ip_prover::sumcheck::{
 	bivariate_product::BivariateProductSumcheckProver, common::SumcheckProver,
 };
 use binius_math::{
-	FieldBuffer,
-	inner_product::inner_product_wide_par,
-	line::extrapolate_line_packed,
+	FieldBuffer, inner_product::inner_product_wide_par, line::extrapolate_line_packed,
 	ntt::AdditiveNTT,
 };
 use binius_transcript::{

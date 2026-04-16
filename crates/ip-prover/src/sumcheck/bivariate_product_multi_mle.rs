@@ -8,12 +8,7 @@ use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 use itertools::{Itertools, izip};
 
-use super::{
-	common::SumcheckProver,
-	error::Error,
-	gruen32::Gruen32,
-	round_evals::WideRoundEvals2,
-};
+use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::WideRoundEvals2};
 use crate::sumcheck::common::MleCheckProver;
 
 /// Multiple claim version of `BivariateProductMlecheckProver` that can prove mlechecks
@@ -118,8 +113,7 @@ where
 							let evals_a_inf_i = evals_a_0_i + evals_a_1_i;
 							let evals_b_inf_i = evals_b_0_i + evals_b_1_i;
 
-							round_evals.y_1 +=
-								P::widening_mul(eq_i * evals_a_1_i, evals_b_1_i);
+							round_evals.y_1 += P::widening_mul(eq_i * evals_a_1_i, evals_b_1_i);
 							round_evals.y_inf +=
 								P::widening_mul(eq_i * evals_a_inf_i, evals_b_inf_i);
 						}

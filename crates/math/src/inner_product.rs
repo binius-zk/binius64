@@ -120,10 +120,7 @@ where
 		.zip_eq(b.as_ref().par_iter())
 		.map(|(&a_i, &b_i)| P::widening_mul(a_i, b_i))
 		.reduce(P::Wide::default, |acc, w| acc + w);
-	P::reduce_wide(wide_sum)
-		.into_iter()
-		.take(n)
-		.sum()
+	P::reduce_wide(wide_sum).into_iter().take(n).sum()
 }
 
 /// Inner product of packed buffers using widening multiplication with deferred reduction.
@@ -163,10 +160,7 @@ where
 	let wide_sum = iter::zip(a, b)
 		.map(|(a_i, b_i)| P::widening_mul(a_i, b_i))
 		.fold(P::Wide::default(), |acc, w| acc + w);
-	P::reduce_wide(wide_sum)
-		.into_iter()
-		.take(1 << log_n)
-		.sum()
+	P::reduce_wide(wide_sum).into_iter().take(1 << log_n).sum()
 }
 
 #[cfg(test)]
