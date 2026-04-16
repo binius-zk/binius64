@@ -2,14 +2,17 @@
 
 #![allow(dead_code)]
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, WideningMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::{bitwise::Bitwise, rayon::prelude::*};
 use itertools::izip;
 
 use super::{
-	common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::RoundEvals2,
+	common::SumcheckProver,
+	error::Error,
+	gruen32::Gruen32,
+	round_evals::{RoundEvals2, WideRoundEvals2},
 	switchover::BinarySwitchover,
 };
 
@@ -79,7 +82,7 @@ impl<'b, F: Field, P: PackedField<Scalar = F>, B: Bitwise> SelectorMlecheckProve
 impl<'b, F, P, B> SumcheckProver<F> for SelectorMlecheckProver<'b, P, B>
 where
 	F: Field,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 	B: Bitwise,
 {
 	fn n_vars(&self) -> usize {
@@ -152,28 +155,34 @@ where
 							chunk_index | chunk_count,
 						);
 
-						let mut chunk_round_evals = RoundEvals2::default();
-						for (&eq_i, &selected_0_i, &selected_1_i, &selector_0_i, &selector_1_i) in izip!(
-							eq_chunk.as_ref(),
-							selected_0_chunk.as_ref(),
-							selected_1_chunk.as_ref(),
-							selector_0_chunk.as_ref(),
-							selector_1_chunk.as_ref(),
-						) {
-							let selected_inf_i = selected_0_i + selected_1_i;
-							let selector_inf_i = selector_0_i + selector_1_i;
+					// Accumulate `eq * composition` in a wide (unreduced) form and reduce once
+					// at the end of the chunk. The `composition` mul is still reduced, because
+					// its result feeds the subsequent widening mul with `eq_i`.
+					let mut chunk_wide = WideRoundEvals2::<P::Wide>::default();
+					for (&eq_i, &selected_0_i, &selected_1_i, &selector_0_i, &selector_1_i) in izip!(
+						eq_chunk.as_ref(),
+						selected_0_chunk.as_ref(),
+						selected_1_chunk.as_ref(),
+						selector_0_chunk.as_ref(),
+						selector_1_chunk.as_ref(),
+					) {
+						let selected_inf_i = selected_0_i + selected_1_i;
+						let selector_inf_i = selector_0_i + selector_1_i;
 
-							// selected * selector + (1 - selector)
-							// @one: selector * (selected - 1) + 1
-							// @inf: selector * selected (note that lower degree terms are dropped)
-							chunk_round_evals.y_1 +=
-								eq_i * (selector_1_i * (selected_1_i - P::one()) + P::one());
-							chunk_round_evals.y_inf += eq_i * selector_inf_i * selected_inf_i;
-						}
+						// selected * selector + (1 - selector)
+						// @one: selector * (selected - 1) + 1
+						// @inf: selector * selected (note that lower degree terms are dropped)
+						let y_1_prod = selector_1_i * (selected_1_i - P::one()) + P::one();
+						let y_inf_prod = selector_inf_i * selected_inf_i;
+						chunk_wide.y_1 += P::widening_mul(eq_i, y_1_prod);
+						chunk_wide.y_inf += P::widening_mul(eq_i, y_inf_prod);
+					}
 
-						// Apply the common factor from the outer product representation of the eq
-						// ind
-						*round_evals += &(chunk_round_evals * eq_suffix_eval);
+					let chunk_round_evals = chunk_wide.reduce_wide::<P>();
+
+					// Apply the common factor from the outer product representation of the eq
+					// ind
+					*round_evals += &(chunk_round_evals * eq_suffix_eval);
 					}
 
 					(packed_prime_evals, binary_chunk_0, binary_chunk_1)
