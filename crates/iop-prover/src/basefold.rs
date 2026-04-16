@@ -9,7 +9,7 @@ use binius_ip_prover::sumcheck::{
 };
 use binius_math::{
 	FieldBuffer,
-	inner_product::{inner_product_par, inner_product_wide_par},
+	inner_product::inner_product_wide_par,
 	line::extrapolate_line_packed,
 	ntt::AdditiveNTT,
 };

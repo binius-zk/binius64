@@ -301,7 +301,8 @@ where
 	P: PackedField<Scalar = B128>
 		+ PackedExtension<B128>
 		+ PackedExtension<B1>
-		+ WithUnderlier<Underlier: UnderlierWithBitOps>,
+		+ WithUnderlier<Underlier: UnderlierWithBitOps>
+		+ binius_field::WideningMul,
 	MerkleHash: Digest + BlockSizeUser + FixedOutputReset,
 	ParallelMerkleHasher: ParallelDigest<Digest = MerkleHash>,
 	ParallelMerkleCompress: ParallelPseudoCompression<Output<MerkleHash>, 2>,

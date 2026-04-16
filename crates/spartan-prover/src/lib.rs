@@ -152,7 +152,7 @@ impl<F: Field> IOPProver<F> {
 	) -> Result<(), Error>
 	where
 		F: BinaryField,
-		P: PackedField<Scalar = F> + PackedExtension<F>,
+		P: PackedField<Scalar = F> + PackedExtension<F> + WideningMul,
 		Channel: IOPProverChannel<P>,
 	{
 		let _prove_guard =
@@ -391,7 +391,7 @@ fn prove_mulcheck<F, P, Channel>(
 ) -> Result<([F; 3], F, Vec<F>), Error>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F> + PackedExtension<F> + WideningMul,
 	Channel: IPProverChannel<F>,
 {
 	let mulcheck_witness =

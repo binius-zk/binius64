@@ -154,7 +154,7 @@ impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, Challenger_> IOPProverChannel<P
 	for BaseFoldZKProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + binius_field::WideningMul,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MerkleProver_: MerkleTreeProver<F, Scheme = MerkleScheme>,
