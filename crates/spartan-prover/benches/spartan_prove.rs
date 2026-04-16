@@ -67,7 +67,7 @@ fn bench_spartan_prove(c: &mut Criterion) {
 				let mut rng = StdRng::seed_from_u64(42);
 				let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 				prover
-					.prove(&witness, &mut rng, &mut prover_transcript)
+					.prove(witness, &mut rng, &mut prover_transcript)
 					.expect("prove failed");
 			});
 		});
