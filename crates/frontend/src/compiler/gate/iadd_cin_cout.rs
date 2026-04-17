@@ -40,7 +40,7 @@ pub fn shape() -> OpcodeShape {
 		const_in: &[Word::ALL_ONE],
 		n_in: 3,
 		n_out: 2,
-		n_aux: 1,
+		n_aux: 0,
 		n_scratch: 0,
 		n_imm: 0,
 	}

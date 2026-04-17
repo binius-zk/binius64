@@ -89,14 +89,22 @@ impl Word {
 		Word(value)
 	}
 
-	/// Performs parallel 32-bit additions on the upper and lower halves.
+	/// Performs parallel 32-bit additions on the upper and lower halves with carry-in.
 	///
 	/// Each 32-bit half is added independently, like [`sll32`](Word::sll32) operates on
-	/// independent halves. Returns (sum, carry_out) where the ith carry_out bit is set to one
-	/// if there is a carry out at that bit position.
-	pub fn iadd_cout_32(self, rhs: Word) -> (Word, Word) {
+	/// independent halves. The carry-in for the lower half is taken from bit 31 of `cin`,
+	/// and the carry-in for the upper half is taken from bit 63 of `cin`.
+	///
+	/// Returns (sum, carry_out) where the ith carry_out bit is set to one if there is a
+	/// carry out at that bit position.
+	pub fn iadd32_cin_cout(self, rhs: Word, cin: Word) -> (Word, Word) {
 		let Word(lhs) = self;
 		let Word(rhs) = rhs;
+		let Word(cin) = cin;
+
+		// Extract carry-in bits from MSBs of each 32-bit half
+		let cin_lo = (cin >> 31) & 1;
+		let cin_hi = (cin >> 63) & 1;
 
 		// Extract 32-bit halves
 		let lo_l = lhs as u32;
@@ -104,13 +112,20 @@ impl Word {
 		let lo_r = rhs as u32;
 		let hi_r = (rhs >> 32) as u32;
 
-		// Add each half independently
-		let lo_sum = lo_l.wrapping_add(lo_r);
-		let hi_sum = hi_l.wrapping_add(hi_r);
-		let sum = (lo_sum as u64) | ((hi_sum as u64) << 32);
+		// Add each half independently with carry-in
+		let lo_sum = (lo_l as u64) + (lo_r as u64) + cin_lo;
+		let hi_sum = (hi_l as u64) + (hi_r as u64) + cin_hi;
+		let sum = (lo_sum as u32 as u64) | ((hi_sum as u32 as u64) << 32);
 
 		let cout = (lhs & rhs) | ((lhs ^ rhs) & !sum);
 		(Word(sum), Word(cout))
+	}
+
+	/// Performs parallel 32-bit additions on the upper and lower halves.
+	///
+	/// Equivalent to [`iadd32_cin_cout`](Word::iadd32_cin_cout) with zero carry-in.
+	pub fn iadd_cout_32(self, rhs: Word) -> (Word, Word) {
+		self.iadd32_cin_cout(rhs, Word::ZERO)
 	}
 
 	/// Performs 64-bit addition with carry input bit.
@@ -545,25 +560,32 @@ mod tests {
 		}
 
 		#[test]
-		fn prop_iadd_cout_32(a in any::<u64>(), b in any::<u64>()) {
+		fn prop_iadd32_cin_cout(
+			a in any::<u64>(), b in any::<u64>(),
+			cin_lo in proptest::bool::ANY, cin_hi in proptest::bool::ANY,
+		) {
+			// Build cin with carry bits at MSB of each 32-bit half
+			let cin_word = ((cin_lo as u64) << 31) | ((cin_hi as u64) << 63);
 			let wa = Word(a);
 			let wb = Word(b);
-			let (sum, cout) = wa.iadd_cout_32(wb);
+			let wcin = Word(cin_word);
+			let (sum, cout) = wa.iadd32_cin_cout(wb, wcin);
 
-			// Each 32-bit half is added independently
-			let lo_sum = (a as u32).wrapping_add(b as u32);
-			let hi_sum = ((a >> 32) as u32).wrapping_add((b >> 32) as u32);
-			let expected_sum = (lo_sum as u64) | ((hi_sum as u64) << 32);
+			// Each 32-bit half is added independently with its carry-in
+			let lo_sum = (a as u32 as u64) + (b as u32 as u64) + (cin_lo as u64);
+			let hi_sum = ((a >> 32) as u32 as u64) + ((b >> 32) as u32 as u64) + (cin_hi as u64);
+			let expected_sum = (lo_sum as u32 as u64) | ((hi_sum as u32 as u64) << 32);
 			assert_eq!(sum.0, expected_sum);
 
 			// Carry computation: cout = (a & b) | ((a ^ b) & !sum)
 			let expected_cout = (a & b) | ((a ^ b) & !expected_sum);
 			assert_eq!(cout.0, expected_cout);
 
-			// Identity: adding 0 produces no carries
-			let (sum0, cout0) = wa.iadd_cout_32(Word::ZERO);
-			assert_eq!(sum0.0, a);
-			assert_eq!(cout0, Word::ZERO);
+			// Zero cin should match iadd_cout_32
+			let (sum0, cout0) = wa.iadd_cout_32(wb);
+			let (sum1, cout1) = wa.iadd32_cin_cout(wb, Word::ZERO);
+			assert_eq!(sum0, sum1);
+			assert_eq!(cout0, cout1);
 		}
 
 		#[test]
