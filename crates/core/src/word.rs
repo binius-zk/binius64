@@ -89,16 +89,27 @@ impl Word {
 		Word(value)
 	}
 
-	/// Performs 32-bit addition.
+	/// Performs parallel 32-bit additions on the upper and lower halves.
 	///
-	/// Returns (sum, carry_out) where ith carry_out bit is set to one if there is a carry out at
-	/// that bit position.
+	/// Each 32-bit half is added independently, like [`sll32`](Word::sll32) operates on
+	/// independent halves. Returns (sum, carry_out) where the ith carry_out bit is set to one
+	/// if there is a carry out at that bit position.
 	pub fn iadd_cout_32(self, rhs: Word) -> (Word, Word) {
 		let Word(lhs) = self;
 		let Word(rhs) = rhs;
-		let full_sum = lhs.wrapping_add(rhs);
-		let sum = full_sum & 0x00000000_FFFFFFFF;
-		let cout = (lhs & rhs) | ((lhs ^ rhs) & !full_sum);
+
+		// Extract 32-bit halves
+		let lo_l = lhs as u32;
+		let hi_l = (lhs >> 32) as u32;
+		let lo_r = rhs as u32;
+		let hi_r = (rhs >> 32) as u32;
+
+		// Add each half independently
+		let lo_sum = lo_l.wrapping_add(lo_r);
+		let hi_sum = hi_l.wrapping_add(hi_r);
+		let sum = (lo_sum as u64) | ((hi_sum as u64) << 32);
+
+		let cout = (lhs & rhs) | ((lhs ^ rhs) & !sum);
 		(Word(sum), Word(cout))
 	}
 
@@ -152,13 +163,6 @@ impl Word {
 		let value = *value as i64;
 		let result = value >> n;
 		Word(result as u64)
-	}
-
-	/// Rotate Right by a given number of bits followed by masking with a 32-bit mask.
-	pub fn rotr_32(self, n: u32) -> Word {
-		let Word(value) = self;
-		let value_32 = (value as u32).rotate_right(n);
-		Word(value_32 as u64)
 	}
 
 	/// Rotate Right by a given number of bits.
@@ -541,21 +545,24 @@ mod tests {
 		}
 
 		#[test]
-		fn prop_iadd_cout_32(a in any::<u32>(), b in any::<u32>()) {
-			let wa = Word(a as u64);
-			let wb = Word(b as u64);
+		fn prop_iadd_cout_32(a in any::<u64>(), b in any::<u64>()) {
+			let wa = Word(a);
+			let wb = Word(b);
 			let (sum, cout) = wa.iadd_cout_32(wb);
 
-			// Sum should be masked to 32 bits
-			assert_eq!(sum.0, (a as u64 + b as u64) & 0xFFFFFFFF);
+			// Each 32-bit half is added independently
+			let lo_sum = (a as u32).wrapping_add(b as u32);
+			let hi_sum = ((a >> 32) as u32).wrapping_add((b >> 32) as u32);
+			let expected_sum = (lo_sum as u64) | ((hi_sum as u64) << 32);
+			assert_eq!(sum.0, expected_sum);
 
 			// Carry computation: cout = (a & b) | ((a ^ b) & !sum)
-			let expected_cout = (a as u64 & b as u64) | ((a as u64 ^ b as u64) & !sum.0);
+			let expected_cout = (a & b) | ((a ^ b) & !expected_sum);
 			assert_eq!(cout.0, expected_cout);
 
 			// Identity: adding 0 produces no carries
 			let (sum0, cout0) = wa.iadd_cout_32(Word::ZERO);
-			assert_eq!(sum0.0, a as u64);
+			assert_eq!(sum0.0, a);
 			assert_eq!(cout0, Word::ZERO);
 		}
 
@@ -620,27 +627,6 @@ mod tests {
 				assert_eq!(result.0, (val >> shift) & 0xFFFFFFFF);
 			}
 		}
-
-		#[test]
-		fn prop_rotr_32(val in any::<u32>(), rotate in 0u32..64) {
-			let w = Word(val as u64);
-			let result = w.rotr_32(rotate);
-
-			// Only lower 32 bits are rotated
-			let rotate_mod = rotate % 32;
-			let val32 = val as u64;
-			let expected = if rotate_mod == 0 {
-				val32
-			} else {
-				((val32 >> rotate_mod) | (val32 << (32 - rotate_mod))) & 0xFFFFFFFF
-			};
-			assert_eq!(result.0, expected);
-
-			// Rotation by 0 or 32 is identity
-			assert_eq!(w.rotr_32(0).0, val32);
-			assert_eq!(w.rotr_32(32).0, val32);
-		}
-
 		#[test]
 		fn prop_rotr(val in any::<u64>(), rotate in 0u32..128) {
 			let w = Word(val);

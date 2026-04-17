@@ -1,31 +1,28 @@
 // Copyright 2025 Irreducible Inc.
-//! 32-bit unsigned integer addition with carry propagation.
+//! Parallel 32-bit unsigned integer addition with carry propagation.
 //!
-//! Returns `z = (x + y) & MASK_32` and `cout` containing carry bits.
-//!
-//! # Algorithm
-//!
-//! Performs 32-bit addition by computing the full 64-bit result and masking:
-//! 1. Compute carry bits `cout` from `x + y` using carry propagation
-//! 2. Extract the lower 32 bits: `z = (x ⊕ y ⊕ (cout << 1)) ∧ MASK_32`
+//! Performs simultaneous independent 32-bit additions on the upper and lower 32-bit halves of
+//! the 64-bit word (like [`sll32`](super::sll32) operates on independent halves). Returns
+//! `z = x + y` (with carry not crossing the 32-bit boundary) and `cout` containing carry bits.
 //!
 //! # Constraints
 //!
-//! The gate generates 2 AND constraints:
-//! 1. Carry propagation: `(x ⊕ (cout << 1)) ∧ (y ⊕ (cout << 1)) = cout ⊕ (cout << 1)`
-//! 2. Result masking: `(x ⊕ y ⊕ (cout << 1)) ∧ MASK_32 = z`
-
-use binius_core::word::Word;
+//! The gate generates 1 AND constraint and 1 linear constraint:
+//! 1. Carry propagation: `(x ⊕ (cout <<₃₂ 1)) ∧ (y ⊕ (cout <<₃₂ 1)) = cout ⊕ (cout <<₃₂ 1)`
+//! 2. Result: `z = x ⊕ y ⊕ (cout <<₃₂ 1)`
+//!
+//! where `<<₃₂` denotes [`sll32`](super::sll32), a shift that operates independently on each
+//! 32-bit half.
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, sll, xor2, xor3},
+	constraint_builder::{ConstraintBuilder, sll32, xor2, xor3},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
 
 pub fn shape() -> OpcodeShape {
 	OpcodeShape {
-		const_in: &[Word::MASK_32],
+		const_in: &[],
 		n_in: 2,
 		n_out: 1,
 		n_aux: 1,
@@ -36,38 +33,31 @@ pub fn shape() -> OpcodeShape {
 
 pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) {
 	let GateParam {
-		constants,
 		inputs,
 		outputs,
 		aux,
 		..
 	} = data.gate_param();
-	let [mask32] = constants else { unreachable!() };
 	let [x, y] = inputs else { unreachable!() };
 	let [z] = outputs else { unreachable!() };
 	let [cout] = aux else { unreachable!() };
 
-	let cout_sll_1 = sll(*cout, 1);
+	let cin = sll32(*cout, 1);
 
 	// Constraint 1: Carry propagation
 	//
 	// (x ⊕ (cout << 1)) ∧ (y ⊕ (cout << 1)) = cout ⊕ (cout << 1)
 	builder
 		.and()
-		.a(xor2(*x, cout_sll_1))
-		.b(xor2(*y, cout_sll_1))
-		.c(xor2(*cout, cout_sll_1))
+		.a(xor2(*x, cin))
+		.b(xor2(*y, cin))
+		.c(xor2(*cout, cin))
 		.build();
 
-	// Constraint 2: Result masking
+	// Constraint 2: Result
 	//
-	// (x ⊕ y ⊕ (cout << 1)) ∧ MASK_32 = z
-	builder
-		.and()
-		.a(xor3(*x, *y, cout_sll_1))
-		.b(*mask32)
-		.c(*z)
-		.build();
+	// z = x ⊕ y ⊕ (cout <<₃₂ 1)
+	builder.linear().dst(*z).rhs(xor3(*x, *y, cin)).build();
 }
 
 pub fn emit_eval_bytecode(
