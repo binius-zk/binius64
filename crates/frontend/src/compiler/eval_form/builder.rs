@@ -175,6 +175,15 @@ impl BytecodeBuilder {
 		self.emit_reg(cin);
 	}
 
+	pub fn emit_iadd32_cout(&mut self, dst_sum: u32, dst_cout: u32, src1: u32, src2: u32) {
+		self.n_eval_insn += 1;
+		self.emit_u8(0x46);
+		self.emit_reg(dst_sum);
+		self.emit_reg(dst_cout);
+		self.emit_reg(src1);
+		self.emit_reg(src2);
+	}
+
 	pub fn emit_rotr32(&mut self, dst: u32, src: u32, rotate: u8) {
 		self.n_eval_insn += 1;
 		self.emit_u8(0x41);

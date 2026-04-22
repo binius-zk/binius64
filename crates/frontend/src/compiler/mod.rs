@@ -501,16 +501,17 @@ impl CircuitBuilder {
 
 	/// Parallel 32-bit integer addition.
 	///
-	/// Performs simultaneous independent 32-bit additions on the upper and lower halves.
-	/// Equivalent to [`iadd32_cin_cout`](Self::iadd32_cin_cout) with zero carry-in,
+	/// Performs simultaneous independent 32-bit additions on the upper and lower halves,
 	/// discarding the carry-out.
 	///
 	/// # Cost
 	///
 	/// 1 AND constraint, 1 linear constraint.
 	pub fn iadd_32(&self, a: Wire, b: Wire) -> Wire {
-		let cin = self.add_constant(Word::ZERO);
-		let (sum, _cout) = self.iadd32_cin_cout(a, b, cin);
+		let sum = self.add_internal();
+		let cout = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::Iadd32, [a, b], [sum, cout]);
 		sum
 	}
 
@@ -531,21 +532,22 @@ impl CircuitBuilder {
 		let sum = self.add_internal();
 		let cout = self.add_internal();
 		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::Iadd32, [a, b, cin], [sum, cout]);
+		graph.emit_gate(self.current_path, Opcode::Iadd32CinCout, [a, b, cin], [sum, cout]);
 		(sum, cout)
 	}
 
 	/// 64-bit integer addition returning the sum and carry-out.
-	///
-	/// Equivalent to [`iadd_cin_cout`](Self::iadd_cin_cout) with zero carry-in.
 	///
 	/// # Cost
 	///
 	/// - 1 AND constraint,
 	/// - 1 linear constraint.
 	pub fn iadd(&self, a: Wire, b: Wire) -> (Wire, Wire) {
-		let zero = self.add_constant(Word::ZERO);
-		self.iadd_cin_cout(a, b, zero)
+		let sum = self.add_internal();
+		let cout = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::Iadd, [a, b], [sum, cout]);
+		(sum, cout)
 	}
 
 	/// 64-bit integer addition with carry input and output.
