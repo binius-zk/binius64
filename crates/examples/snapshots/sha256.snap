@@ -9,8 +9,8 @@ Constraints
 │  [▓▓▓▓▓░░░░░] spare: 15,822
 ├─ MUL constraints: 0 used (0.0% of 2^0)
 │  [░░░░░░░░░░] spare: 1
-└─ Distinct value indices: 39,499
-   ├─ Distinct shifted value indices: 22,458
+└─ Distinct value indices: 39,500
+   ├─ Distinct shifted value indices: 22,459
    └─ Distinct unshifted value indices: 17,041
 
 Value Vector
