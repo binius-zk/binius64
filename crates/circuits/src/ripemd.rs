@@ -153,6 +153,8 @@ fn ripemd160_compress(
 	}
 
 	// Combine results: state[i] = state[i] + cl + dr (and appropriate permutation)
+	// Mask to 32 bits: intermediate round values may have non-zero upper halves
+	// (e.g. from bnot which produces a full 64-bit NOT), so clear them before output.
 	[
 		builder.iadd_32(builder.iadd_32(state[1], cl), dr),
 		builder.iadd_32(builder.iadd_32(state[2], dl), er),
@@ -160,6 +162,7 @@ fn ripemd160_compress(
 		builder.iadd_32(builder.iadd_32(state[4], al), br),
 		builder.iadd_32(builder.iadd_32(state[0], bl), cr),
 	]
+	.map(|w| builder.shr(builder.shl(w, 32), 32))
 }
 
 // Selection function f(x, y, z) = x XOR y XOR z

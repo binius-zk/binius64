@@ -499,18 +499,53 @@ impl CircuitBuilder {
 		z
 	}
 
-	/// 32-bit integer addition.
+	/// Parallel 32-bit integer addition.
 	///
-	/// Performs a 32-bit integer addition of two wires. The high bits of the result are discarded.
+	/// Performs simultaneous independent 32-bit additions on the upper and lower halves.
+	/// Equivalent to [`iadd32_cin_cout`](Self::iadd32_cin_cout) with zero carry-in,
+	/// discarding the carry-out.
 	///
 	/// # Cost
 	///
-	/// 2 AND constraints.
+	/// 1 AND constraint, 1 linear constraint.
 	pub fn iadd_32(&self, a: Wire, b: Wire) -> Wire {
-		let z = self.add_internal();
+		let cin = self.add_constant(Word::ZERO);
+		let (sum, _cout) = self.iadd32_cin_cout(a, b, cin);
+		sum
+	}
+
+	/// Parallel 32-bit integer addition with carry-in and carry-out.
+	///
+	/// Performs simultaneous independent 32-bit additions on the upper and lower halves
+	/// of the 64-bit word, with per-half carry-in and carry-out.
+	///
+	/// The carry-in for each half is taken from the MSB of that half in `cin`:
+	/// bit 31 for the lower half, bit 63 for the upper half. The carry-out
+	/// is a full carry word where bit 31 and bit 63 indicate the carry-out
+	/// of the lower and upper halves respectively.
+	///
+	/// # Cost
+	///
+	/// 1 AND constraint, 1 linear constraint.
+	pub fn iadd32_cin_cout(&self, a: Wire, b: Wire, cin: Wire) -> (Wire, Wire) {
+		let sum = self.add_internal();
+		let cout = self.add_internal();
 		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::Iadd32, [a, b], [z]);
-		z
+		graph.emit_gate(self.current_path, Opcode::Iadd32, [a, b, cin], [sum, cout]);
+		(sum, cout)
+	}
+
+	/// 64-bit integer addition returning the sum and carry-out.
+	///
+	/// Equivalent to [`iadd_cin_cout`](Self::iadd_cin_cout) with zero carry-in.
+	///
+	/// # Cost
+	///
+	/// - 1 AND constraint,
+	/// - 1 linear constraint.
+	pub fn iadd(&self, a: Wire, b: Wire) -> (Wire, Wire) {
+		let zero = self.add_constant(Word::ZERO);
+		self.iadd_cin_cout(a, b, zero)
 	}
 
 	/// 64-bit integer addition with carry input and output.

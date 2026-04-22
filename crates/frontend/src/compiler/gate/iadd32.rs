@@ -1,34 +1,40 @@
 // Copyright 2025 Irreducible Inc.
-//! 32-bit unsigned integer addition with carry propagation.
+//! Parallel 32-bit unsigned integer addition with carry-in and carry-out.
 //!
-//! Returns `z = (x + y) & MASK_32` and `cout` containing carry bits.
+//! Performs simultaneous independent 32-bit additions on the upper and lower 32-bit halves of
+//! the 64-bit word (like [`sll32`](super::sll32) operates on independent halves).
 //!
-//! # Algorithm
+//! # Wires
 //!
-//! Performs 32-bit addition by computing the full 64-bit result and masking:
-//! 1. Compute carry bits `cout` from `x + y` using carry propagation
-//! 2. Extract the lower 32 bits: `z = (x ⊕ y ⊕ (cout << 1)) ∧ MASK_32`
+//! - `x`, `y`: Input wires for the summands
+//! - `cin` (carry-in): Input wire for the previous carry word. The MSB of each 32-bit half is used
+//!   as the carry-in bit for that half (bit 31 for the lower half, bit 63 for the upper).
+//! - `z`: Output wire containing the resulting sum
+//! - `cout` (carry-out): Output wire containing a carry word where each bit position indicates
+//!   whether a carry occurred at that position during the addition. In particular, bit 31 and bit
+//!   63 indicate the carry-out of the lower and upper 32-bit halves respectively.
 //!
 //! # Constraints
 //!
-//! The gate generates 2 AND constraints:
-//! 1. Carry propagation: `(x ⊕ (cout << 1)) ∧ (y ⊕ (cout << 1)) = cout ⊕ (cout << 1)`
-//! 2. Result masking: `(x ⊕ y ⊕ (cout << 1)) ∧ MASK_32 = z`
-
-use binius_core::word::Word;
+//! The gate generates 1 AND constraint and 1 linear constraint:
+//! 1. Carry propagation: `(x ⊕ ci) ∧ (y ⊕ ci) = cout ⊕ ci` where `ci = (cout <<₃₂ 1) ⊕ (cin >>₃₂
+//!    31)`
+//! 2. Result: `z = x ⊕ y ⊕ ci`
+//!
+//! `<<₃₂` and `>>₃₂` denote shifts that operate independently on each 32-bit half.
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, sll, xor2, xor3},
+	constraint_builder::{ConstraintBuilder, sll32, srl32, xor3, xor4},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
 
 pub fn shape() -> OpcodeShape {
 	OpcodeShape {
-		const_in: &[Word::MASK_32],
-		n_in: 2,
-		n_out: 1,
-		n_aux: 1,
+		const_in: &[],
+		n_in: 3,
+		n_out: 2,
+		n_aux: 0,
 		n_scratch: 0,
 		n_imm: 0,
 	}
@@ -36,37 +42,32 @@ pub fn shape() -> OpcodeShape {
 
 pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) {
 	let GateParam {
-		constants,
-		inputs,
-		outputs,
-		aux,
-		..
+		inputs, outputs, ..
 	} = data.gate_param();
-	let [mask32] = constants else { unreachable!() };
-	let [x, y] = inputs else { unreachable!() };
-	let [z] = outputs else { unreachable!() };
-	let [cout] = aux else { unreachable!() };
+	let [x, y, cin] = inputs else { unreachable!() };
+	let [z, cout] = outputs else { unreachable!() };
 
-	let cout_sll_1 = sll(*cout, 1);
+	let cout_shifted = sll32(*cout, 1);
+	let cin_bit = srl32(*cin, 31);
 
 	// Constraint 1: Carry propagation
 	//
-	// (x ⊕ (cout << 1)) ∧ (y ⊕ (cout << 1)) = cout ⊕ (cout << 1)
+	// (x ⊕ ci) ∧ (y ⊕ ci) = cout ⊕ ci
+	// where ci = (cout <<₃₂ 1) ⊕ (cin >>₃₂ 31)
 	builder
 		.and()
-		.a(xor2(*x, cout_sll_1))
-		.b(xor2(*y, cout_sll_1))
-		.c(xor2(*cout, cout_sll_1))
+		.a(xor3(*x, cout_shifted, cin_bit))
+		.b(xor3(*y, cout_shifted, cin_bit))
+		.c(xor3(*cout, cout_shifted, cin_bit))
 		.build();
 
-	// Constraint 2: Result masking
+	// Constraint 2: Result
 	//
-	// (x ⊕ y ⊕ (cout << 1)) ∧ MASK_32 = z
+	// z = x ⊕ y ⊕ ci
 	builder
-		.and()
-		.a(xor3(*x, *y, cout_sll_1))
-		.b(*mask32)
-		.c(*z)
+		.linear()
+		.dst(*z)
+		.rhs(xor4(*x, *y, cout_shifted, cin_bit))
 		.build();
 }
 
@@ -77,18 +78,15 @@ pub fn emit_eval_bytecode(
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
 	let GateParam {
-		inputs,
-		outputs,
-		aux,
-		..
+		inputs, outputs, ..
 	} = data.gate_param();
-	let [a, b] = inputs else { unreachable!() };
-	let [sum] = outputs else { unreachable!() };
-	let [cout] = aux else { unreachable!() };
-	builder.emit_iadd_cout32(
+	let [a, b, cin] = inputs else { unreachable!() };
+	let [sum, cout] = outputs else { unreachable!() };
+	builder.emit_iadd32_cin_cout(
 		wire_to_reg(*sum),
 		wire_to_reg(*cout),
 		wire_to_reg(*a),
 		wire_to_reg(*b),
+		wire_to_reg(*cin),
 	);
 }

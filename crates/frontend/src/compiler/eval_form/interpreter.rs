@@ -140,7 +140,7 @@ impl<'a> Interpreter<'a> {
 				0x31 => self.exec_smul(ctx),
 
 				// 32-bit operations
-				0x40 => self.exec_iadd_cout32(ctx),
+				0x40 => self.exec_iadd32_cin_cout(ctx),
 				0x41 => self.exec_rotr32(ctx),
 				0x42 => self.exec_srl32(ctx),
 				0x43 => self.exec_rotr(ctx),
@@ -315,12 +315,15 @@ impl<'a> Interpreter<'a> {
 	}
 
 	// 32-bit operations
-	fn exec_iadd_cout32(&mut self, ctx: &mut ExecutionContext<'_>) {
+	fn exec_iadd32_cin_cout(&mut self, ctx: &mut ExecutionContext<'_>) {
 		let dst_sum = self.read_reg();
 		let dst_cout = self.read_reg();
 		let src1 = self.read_reg();
 		let src2 = self.read_reg();
-		let (sum, cout) = self.load(ctx, src1).iadd_cout_32(self.load(ctx, src2));
+		let cin = self.read_reg();
+		let (sum, cout) = self
+			.load(ctx, src1)
+			.iadd32_cin_cout(self.load(ctx, src2), self.load(ctx, cin));
 		self.store(ctx, dst_sum, sum);
 		self.store(ctx, dst_cout, cout);
 	}
