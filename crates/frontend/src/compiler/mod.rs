@@ -535,6 +535,19 @@ impl CircuitBuilder {
 		(sum, cout)
 	}
 
+	/// 64-bit integer addition returning the sum and carry-out.
+	///
+	/// Equivalent to [`iadd_cin_cout`](Self::iadd_cin_cout) with zero carry-in.
+	///
+	/// # Cost
+	///
+	/// - 1 AND constraint,
+	/// - 1 linear constraint.
+	pub fn iadd(&self, a: Wire, b: Wire) -> (Wire, Wire) {
+		let zero = self.add_constant(Word::ZERO);
+		self.iadd_cin_cout(a, b, zero)
+	}
+
 	/// 64-bit integer addition with carry input and output.
 	///
 	/// Performs full 64-bit unsigned addition of two wires plus a carry input.
