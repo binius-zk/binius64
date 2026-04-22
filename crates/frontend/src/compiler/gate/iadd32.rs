@@ -7,18 +7,18 @@
 //! # Wires
 //!
 //! - `x`, `y`: Input wires for the summands
-//! - `cin` (carry-in): Input wire for the previous carry word. The MSB of each 32-bit half
-//!   is used as the carry-in bit for that half (bit 31 for the lower half, bit 63 for the upper).
+//! - `cin` (carry-in): Input wire for the previous carry word. The MSB of each 32-bit half is used
+//!   as the carry-in bit for that half (bit 31 for the lower half, bit 63 for the upper).
 //! - `z`: Output wire containing the resulting sum
 //! - `cout` (carry-out): Output wire containing a carry word where each bit position indicates
-//!   whether a carry occurred at that position during the addition. In particular, bit 31 and
-//!   bit 63 indicate the carry-out of the lower and upper 32-bit halves respectively.
+//!   whether a carry occurred at that position during the addition. In particular, bit 31 and bit
+//!   63 indicate the carry-out of the lower and upper 32-bit halves respectively.
 //!
 //! # Constraints
 //!
 //! The gate generates 1 AND constraint and 1 linear constraint:
-//! 1. Carry propagation: `(x ⊕ ci) ∧ (y ⊕ ci) = cout ⊕ ci`
-//!    where `ci = (cout <<₃₂ 1) ⊕ (cin >>₃₂ 31)`
+//! 1. Carry propagation: `(x ⊕ ci) ∧ (y ⊕ ci) = cout ⊕ ci` where `ci = (cout <<₃₂ 1) ⊕ (cin >>₃₂
+//!    31)`
 //! 2. Result: `z = x ⊕ y ⊕ ci`
 //!
 //! `<<₃₂` and `>>₃₂` denote shifts that operate independently on each 32-bit half.

@@ -81,8 +81,7 @@ impl Slice {
 			// are ANY of the bytes in this present word actually part of the slice proper?
 
 			// Calculate which input word(s) we need
-			let (input_word_idx, _) =
-				b.iadd(word_offset, b.add_constant(Word(slice_idx as u64)));
+			let (input_word_idx, _) = b.iadd(word_offset, b.add_constant(Word(slice_idx as u64)));
 
 			let extracted_word = extract_word(&b, &input, input_word_idx, byte_offset);
 
