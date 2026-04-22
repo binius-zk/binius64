@@ -100,7 +100,8 @@ impl Concat {
 				//
 				// Calculate where this word should appear in the joined array.
 				// This is the current offset plus the word's position within the term.
-				let input_word_idx = b.iadd_32(word_offset, b.add_constant(Word(word_idx as u64)));
+				let (input_word_idx, _) =
+					b.iadd(word_offset, b.add_constant(Word(word_idx as u64)));
 				let byte_offset = b.band(offset, b.add_constant(Word(7)));
 
 				// 2c. Extract corresponding data from joined array
@@ -110,7 +111,7 @@ impl Concat {
 				let joined_data = extract_word(&b, &joined, input_word_idx, byte_offset);
 
 				let neg_start = b.add_constant(Word((-(word_byte_offset as i64)) as u64));
-				let bytes_remaining = b.iadd_32(term.len_bytes, neg_start);
+				let (bytes_remaining, _) = b.iadd(term.len_bytes, neg_start);
 
 				// The mask will handle clamping to 8 bytes internally
 				let mask = create_byte_mask(&b, bytes_remaining);
@@ -127,7 +128,7 @@ impl Concat {
 			//
 			// After processing all words of the current term, advance the offset
 			// by the term's actual length to position for the next term.
-			offset = b.iadd_32(offset, term.len_bytes);
+			(offset, _) = b.iadd(offset, term.len_bytes);
 		}
 
 		// 5. Final length verification
