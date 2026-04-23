@@ -460,13 +460,8 @@ mod tests {
 				super::super::CHUNK_END,
 			],
 		);
-		let exp0 = ref_compress(
-			&cv,
-			&block,
-			counter0,
-			64,
-			super::super::CHUNK_START | super::super::ROOT,
-		);
+		let exp0 =
+			ref_compress(&cv, &block, counter0, 64, super::super::CHUNK_START | super::super::ROOT);
 		let exp1 = ref_compress(&cv, &block, counter1, 64, super::super::CHUNK_END);
 		assert_eq!(actual[0], exp0);
 		assert_eq!(actual[1], exp1);

@@ -8,8 +8,8 @@
 //!
 //! The entry points are:
 //! - [`blake3_compress`] — single-block compression primitive.
-//! - [`blake3_fixed`] — single-chunk hash gadget for messages of compile-time-known
-//!   length up to 1024 bytes.
+//! - [`blake3_fixed`] — single-chunk hash gadget for messages of compile-time-known length up to
+//!   1024 bytes.
 
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
@@ -69,11 +69,10 @@ pub const CHUNK_BYTES: usize = 1024;
 /// # Arguments
 ///
 /// - `builder`: Circuit builder.
-/// - `message`: Input message as 32-bit little-endian words (4 bytes per wire). The
-///   high 32 bits of each wire must be zero. Length must equal
-///   `len_bytes.div_ceil(4)`.
-/// - `len_bytes`: The compile-time-known length of the message in bytes. Must be at
-///   most [`CHUNK_BYTES`] (1024).
+/// - `message`: Input message as 32-bit little-endian words (4 bytes per wire). The high 32 bits of
+///   each wire must be zero. Length must equal `len_bytes.div_ceil(4)`.
+/// - `len_bytes`: The compile-time-known length of the message in bytes. Must be at most
+///   [`CHUNK_BYTES`] (1024).
 ///
 /// # Returns
 ///

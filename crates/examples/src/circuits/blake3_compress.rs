@@ -98,9 +98,6 @@ impl ExampleCircuit for Blake3CompressExample {
 	}
 
 	fn param_summary(params: &Self::Params) -> Option<String> {
-		Some(format!(
-			"{}c",
-			params.num_compressions.unwrap_or(DEFAULT_NUM_COMPRESSIONS)
-		))
+		Some(format!("{}c", params.num_compressions.unwrap_or(DEFAULT_NUM_COMPRESSIONS)))
 	}
 }
