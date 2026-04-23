@@ -116,6 +116,7 @@ impl DeserializeBytes for BinaryField128bGhash {
 }
 
 impl From<AESTowerField8b> for BinaryField128bGhash {
+	#[inline]
 	fn from(value: AESTowerField8b) -> Self {
 		const LOOKUP_TABLE: [BinaryField128bGhash; 256] = [
 			BinaryField128bGhash(0x00000000000000000000000000000000),

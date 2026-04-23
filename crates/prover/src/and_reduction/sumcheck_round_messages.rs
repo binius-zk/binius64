@@ -1,9 +1,7 @@
 // Copyright 2025 Irreducible Inc.
-use std::array;
+use std::iter;
 
-use binius_field::{
-	BinaryField, Field, PackedBinaryField128x1b, PackedExtension, packed::get_packed_slice,
-};
+use binius_field::{BinaryField, Field, PackedBinaryField128x1b, PackedExtension};
 use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::rayon::prelude::*;
 use binius_verifier::{config::B1, protocols::bitand::ROWS_PER_HYPERCUBE_VERTEX};
@@ -91,10 +89,9 @@ where
 		first_col.packed_evals.par_chunks(chunk_size),
 		second_col.packed_evals.par_chunks(chunk_size),
 		third_col.packed_evals.par_chunks(chunk_size),
-		eq_ind_big_field_challenges.as_ref(),
 	)
 		.into_par_iter()
-		.map(|(a_chunk, b_chunk, c_chunk, &eq_weight)| {
+		.map(|(a_chunk, b_chunk, c_chunk)| {
 			let mut summed_ntt = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
 			let lookup = ntt_lookup.get_lookup();
 
@@ -105,32 +102,42 @@ where
 
 				// In this cycle, we compute the NTT for each column using the lookup table.
 				// We are not using the `NTTLookup::ntt` method directly for performance reasons.
-				for (summed_ntt, lookup) in izip!(&mut summed_ntt, lookup) {
+				for (summed_ntt_i, lookup_i) in izip!(&mut summed_ntt, lookup) {
 					let mut first_col_ntt = PNTTDomain::zero();
 					let mut second_col_ntt = PNTTDomain::zero();
 					let mut third_col_ntt = PNTTDomain::zero();
 
 					for byte_index in 0..8 {
-						first_col_ntt += lookup[col_1_bytes[byte_index] as usize][byte_index];
-						second_col_ntt += lookup[col_2_bytes[byte_index] as usize][byte_index];
-						third_col_ntt += lookup[col_3_bytes[byte_index] as usize][byte_index];
+						first_col_ntt += lookup_i[col_1_bytes[byte_index] as usize][byte_index];
+						second_col_ntt += lookup_i[col_2_bytes[byte_index] as usize][byte_index];
+						third_col_ntt += lookup_i[col_3_bytes[byte_index] as usize][byte_index];
 					}
 
-					*summed_ntt += (first_col_ntt * second_col_ntt - third_col_ntt) * weight;
+					*summed_ntt_i += (first_col_ntt * second_col_ntt - third_col_ntt) * weight;
 				}
 			}
 
-			array::from_fn::<_, ROWS_PER_HYPERCUBE_VERTEX, _>(|i| {
-				eq_weight * FChallenge::from(get_packed_slice(&summed_ntt, i))
-			})
+			summed_ntt
 		})
-		.reduce(
-			|| [FChallenge::ZERO; ROWS_PER_HYPERCUBE_VERTEX],
-			|mut acc, array_to_add| {
-				for (i, val) in array_to_add.into_iter().enumerate() {
-					acc[i] += val;
+		.zip(eq_ind_big_field_challenges.as_ref())
+		.fold_with(
+			[FChallenge::ZERO; ROWS_PER_HYPERCUBE_VERTEX],
+			|mut acc, (summed_ntt, &eq_weight)| {
+				for (acc_i, summed_ntt_i) in
+					iter::zip(&mut acc, PNTTDomain::iter_slice(&summed_ntt))
+				{
+					*acc_i += eq_weight * FChallenge::from(summed_ntt_i);
 				}
 				acc
+			},
+		)
+		.reduce(
+			|| [FChallenge::ZERO; ROWS_PER_HYPERCUBE_VERTEX],
+			|mut lhs, rhs| {
+				for (lhs_i, rhs_i) in iter::zip(&mut lhs, rhs) {
+					*lhs_i += rhs_i;
+				}
+				lhs
 			},
 		)
 }
