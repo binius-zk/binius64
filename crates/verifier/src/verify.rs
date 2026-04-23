@@ -30,7 +30,7 @@ use crate::{
 	hash::PseudoCompressionFunction,
 	merkle_tree::BinaryMerkleTreeScheme,
 	protocols::{
-		bitand::verifier::{AndCheckOutput, verify_with_channel},
+		bitand::{AndCheckOutput, verify_with_channel},
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
 		shift::{self, OperatorData},
 	},

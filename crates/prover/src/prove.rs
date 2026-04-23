@@ -27,7 +27,7 @@ use binius_verifier::{
 	config::{
 		B1, B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
 	},
-	protocols::{bitand::verifier::AndCheckOutput, intmul::IntMulOutput, sumcheck::SumcheckOutput},
+	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput, sumcheck::SumcheckOutput},
 };
 use digest::{Digest, FixedOutputReset, Output, core_api::BlockSizeUser};
 

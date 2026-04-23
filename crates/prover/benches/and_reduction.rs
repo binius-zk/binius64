@@ -16,7 +16,7 @@ use binius_prover::{
 };
 use binius_verifier::{
 	config::B128,
-	protocols::bitand::utils::constants::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
+	protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
 };
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use rand::{Rng, SeedableRng, rngs::StdRng};

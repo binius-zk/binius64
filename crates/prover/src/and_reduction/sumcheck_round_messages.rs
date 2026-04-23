@@ -6,9 +6,7 @@ use binius_field::{
 };
 use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::rayon::prelude::*;
-use binius_verifier::{
-	config::B1, protocols::bitand::utils::constants::ROWS_PER_HYPERCUBE_VERTEX,
-};
+use binius_verifier::{config::B1, protocols::bitand::ROWS_PER_HYPERCUBE_VERTEX};
 use bytemuck::must_cast_ref;
 use itertools::izip;
 
@@ -149,7 +147,7 @@ mod test {
 	};
 	use binius_verifier::{
 		config::{B128, LOG_WORD_SIZE_BITS},
-		protocols::bitand::utils::constants::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
+		protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
 	};
 	use itertools::izip;
 	use rand::{Rng, SeedableRng, rngs::StdRng};

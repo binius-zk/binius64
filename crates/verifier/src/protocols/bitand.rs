@@ -8,11 +8,14 @@ use binius_math::{BinarySubspace, univariate::extrapolate_over_subspace};
 
 use crate::{
 	Error,
-	protocols::{
-		bitand::utils::constants::ROWS_PER_HYPERCUBE_VERTEX, mlecheck::verify,
-		sumcheck::SumcheckOutput,
-	},
+	protocols::{mlecheck::verify, sumcheck::SumcheckOutput},
 };
+
+/// log2 size of the univariate domain
+pub const SKIPPED_VARS: usize = binius_core::consts::LOG_WORD_SIZE_BITS;
+
+/// Size of the univariate domain
+pub const ROWS_PER_HYPERCUBE_VERTEX: usize = binius_core::consts::WORD_SIZE_BITS;
 
 /// Output from the AND constraint reduction protocol verification.
 #[derive(Debug, PartialEq)]
