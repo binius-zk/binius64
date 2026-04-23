@@ -123,6 +123,9 @@ impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
 	}
 }
 
+// Implement WideningMul (trivial: no CLMUL, just regular multiply)
+crate::arithmetic_traits::impl_trivial_widening_mul!(PackedBinaryGhash1x128b);
+
 // Implement TaggedInvertOrZero for GhashStrategy
 impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
 	fn invert_or_zero(self) -> Self {

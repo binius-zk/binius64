@@ -1,11 +1,13 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_field::{Field, PackedField};
+use std::cmp::max;
+
+use binius_field::{Field, PackedField, WideningMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{AsSlicesMut, FieldSliceMut, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 
-use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::RoundEvals2};
+use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::WideRoundEvals2};
 use crate::sumcheck::common::MleCheckProver;
 
 /// MLE-check prover for polynomials defined as quadratic compositions of N multilinear polynomials.
@@ -110,7 +112,7 @@ impl<F, P, Composition, InfinityComposition, const N: usize> SumcheckProver<F>
 	for QuadraticMleCheckProver<P, Composition, InfinityComposition, N>
 where
 	F: Field,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 	Composition: Fn([P; N]) -> P + Sync,
 	InfinityComposition: Fn([P; N]) -> P + Sync,
 {
@@ -151,29 +153,44 @@ where
 			.unzip::<_, _, Vec<_>, Vec<_>>();
 
 		// Compute F(1) and F(∞) where F = ∑_{v ∈ B} C(M_1(v || X), ..., M_N(v || X)) eq(v, z).
-		// We need to iterate over all positions in parallel
-		let round_evals = eq_expansion
-			.as_ref()
+		// Keep worker-local wide accumulators over
+		// contiguous eq chunks, then a single reduction at the end. This avoids creating a
+		// temporary `WideRoundEvals2` for every hypercube point.
+		const MAX_CHUNK_VARS: usize = 8;
+		let chunk_vars = max(MAX_CHUNK_VARS, P::LOG_WIDTH).min(n_vars_remaining - 1);
+		let chunk_count = 1 << (n_vars_remaining - 1 - chunk_vars);
+
+		let round_evals = (0..chunk_count)
 			.into_par_iter()
-			.enumerate()
-			.map(|(i, &eq_i)| {
-				// Collect evaluations at 1 and ∞ for each multilinear
-				let mut evals_1 = [P::default(); N];
-				let mut evals_inf = [P::default(); N];
-				for j in 0..N {
-					evals_1[j] = splits_1[j].as_ref()[i];
-					evals_inf[j] = splits_0[j].as_ref()[i] + splits_1[j].as_ref()[i];
+			.fold(WideRoundEvals2::default, |mut chunk_evals, chunk_index| {
+				let eq_chunk = eq_expansion.chunk(chunk_vars, chunk_index);
+				let splits_0_chunk = splits_0
+					.iter()
+					.map(|slice| slice.chunk(chunk_vars, chunk_index))
+					.collect::<Vec<_>>();
+				let splits_1_chunk = splits_1
+					.iter()
+					.map(|slice| slice.chunk(chunk_vars, chunk_index))
+					.collect::<Vec<_>>();
+
+				for (idx, &eq_i) in eq_chunk.as_ref().iter().enumerate() {
+					let mut evals_1 = [P::default(); N];
+					let mut evals_inf = [P::default(); N];
+					for j in 0..N {
+						let lo_i = splits_0_chunk[j].as_ref()[idx];
+						let hi_i = splits_1_chunk[j].as_ref()[idx];
+						evals_1[j] = hi_i;
+						evals_inf[j] = lo_i + hi_i;
+					}
+
+					chunk_evals.y_1 += P::widening_mul(composition(evals_1), eq_i);
+					chunk_evals.y_inf += P::widening_mul(infinity_composition(evals_inf), eq_i);
 				}
 
-				// Evaluate composition at X=1
-				let y_1 = composition(evals_1) * eq_i;
-
-				// Evaluate composition at X=∞ (where M(∞) = M(0) + M(1))
-				let y_inf = infinity_composition(evals_inf) * eq_i;
-
-				RoundEvals2 { y_1, y_inf }
+				chunk_evals
 			})
-			.reduce(RoundEvals2::default, |lhs, rhs| lhs + &rhs)
+			.reduce(WideRoundEvals2::default, |lhs, rhs| lhs + rhs)
+			.reduce_wide::<P>()
 			.sum_scalars(n_vars_remaining - 1);
 
 		let alpha = self.gruen32.next_coordinate();
@@ -231,7 +248,7 @@ impl<F, P, Composition, InfinityComposition, const N: usize> MleCheckProver<F>
 	for QuadraticMleCheckProver<P, Composition, InfinityComposition, N>
 where
 	F: Field,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 	Composition: Fn([P; N]) -> P + Sync,
 	InfinityComposition: Fn([P; N]) -> P + Sync,
 {
@@ -274,7 +291,7 @@ mod tests {
 		multilinears: Vec<FieldBuffer<P>>,
 	) where
 		F: Field,
-		P: PackedField<Scalar = F>,
+		P: PackedField<Scalar = F> + WideningMul,
 		Composition: Fn([P; N]) -> P + Sync,
 		InfinityComposition: Fn([P; N]) -> P + Sync,
 	{
@@ -331,7 +348,7 @@ mod tests {
 		infinity_composition: impl Fn([P; N]) -> P + Clone + Sync,
 	) where
 		F: Field,
-		P: PackedField<Scalar = F>,
+		P: PackedField<Scalar = F> + WideningMul,
 	{
 		let n_vars = 8;
 		let mut rng = StdRng::seed_from_u64(0);

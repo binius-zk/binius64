@@ -1,5 +1,7 @@
 // Copyright 2025 Irreducible Inc.
-use binius_field::{BinaryField, Field, PackedBinaryField128x1b, PackedExtension, PackedField};
+use binius_field::{
+	BinaryField, Field, PackedBinaryField128x1b, PackedExtension, PackedField, WideningMul,
+};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::extrapolate_over_subspace,
@@ -40,7 +42,7 @@ where
 
 impl<FChallenge, PNTTDomain> OblongZerocheckProver<FChallenge, PNTTDomain>
 where
-	FChallenge: Field + From<PNTTDomain::Scalar> + BinaryField,
+	FChallenge: Field + From<PNTTDomain::Scalar> + BinaryField + WideningMul<Scalar = FChallenge>,
 	PNTTDomain: PackedField + PackedExtension<B1, PackedSubfield = PackedBinaryField128x1b>,
 	u8: From<PNTTDomain::Scalar>,
 	PNTTDomain::Scalar: From<u8> + BinaryField,

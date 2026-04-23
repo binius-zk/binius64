@@ -2,8 +2,8 @@
 
 use binius_core::word::Word;
 use binius_field::{
-	AESTowerField8b, BinaryField, Field, PackedField, UnderlierWithBitOps, WithUnderlier,
-	util::powers,
+	AESTowerField8b, BinaryField, Field, PackedField, UnderlierWithBitOps, WideningMul,
+	WithUnderlier, util::powers,
 };
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
@@ -106,7 +106,7 @@ pub fn prove<F, P, Channel>(
 ) -> Result<SumcheckOutput<F>, Error>
 where
 	F: BinaryField + From<AESTowerField8b> + WithUnderlier<Underlier: UnderlierWithBitOps>,
-	P: PackedField<Scalar = F> + WithUnderlier<Underlier: UnderlierWithBitOps>,
+	P: PackedField<Scalar = F> + WithUnderlier<Underlier: UnderlierWithBitOps> + WideningMul,
 	Channel: IPProverChannel<F>,
 {
 	// Sample lambdas, one for each operator.

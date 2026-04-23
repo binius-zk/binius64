@@ -11,7 +11,7 @@
 //! [`BaseFoldZKProverChannel`]: binius_iop_prover::basefold_zk_channel::BaseFoldZKProverChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
 
-use binius_field::{BinaryField, PackedExtension, PackedField};
+use binius_field::{BinaryField, PackedExtension, PackedField, WideningMul};
 use binius_iop::{channel::OracleSpec, merkle_tree::MerkleTreeScheme};
 use binius_iop_prover::{
 	basefold_zk_channel::{BaseFoldZKOracle, BaseFoldZKProverChannel},
@@ -41,7 +41,7 @@ use crate::IOPProver;
 /// over different inner verification protocols.
 pub struct ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_, ReplayFn>
 where
-	P: PackedField<Scalar: BinaryField>,
+	P: PackedField<Scalar: BinaryField> + WideningMul,
 	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
 	MTProver: MerkleTreeProver<P::Scalar>,
 	Challenger_: Challenger,
@@ -58,7 +58,7 @@ impl<'a, F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn>
 	ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_, ReplayFn>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F> + PackedExtension<F> + WideningMul,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MTScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MTProver: MerkleTreeProver<F, Scheme = MTScheme>,
@@ -144,7 +144,7 @@ impl<F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn> IPProverChannel<F>
 	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_, ReplayFn>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F> + PackedExtension<F> + WideningMul,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MTScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MTProver: MerkleTreeProver<F, Scheme = MTScheme>,
@@ -181,7 +181,7 @@ impl<F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn> IOPProverChannel<P>
 	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_, ReplayFn>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F> + PackedExtension<F> + WideningMul,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MTScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MTProver: MerkleTreeProver<F, Scheme = MTScheme>,

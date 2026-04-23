@@ -2,7 +2,7 @@
 
 use std::iter;
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, WideningMul};
 use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim};
 use binius_math::{
 	FieldBuffer, inner_product::inner_product, line::extrapolate_line_packed,
@@ -41,7 +41,7 @@ pub struct ProdcheckProver<P: PackedField> {
 impl<F, P> ProdcheckProver<P>
 where
 	F: Field,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 {
 	/// Creates a new [`ProdcheckProver`].
 	///
@@ -197,7 +197,7 @@ where
 /// $$
 /// \hat{f}(Y_0, \ldots, Y_{k-1}, X_0, \ldots, X_{m-1}) = \sum_{i \in B_k} \textsf{eq}(i; Y) f_i(X).
 /// $$
-pub fn batch_prove<F: Field, P: PackedField<Scalar = F>>(
+pub fn batch_prove<F: Field, P: PackedField<Scalar = F> + WideningMul>(
 	provers: Vec<ProdcheckProver<P>>,
 	claimed_products: Vec<F>,
 	eval_point: Vec<F>,
@@ -230,7 +230,7 @@ pub fn batch_prove<F: Field, P: PackedField<Scalar = F>>(
 }
 
 #[allow(clippy::type_complexity)]
-fn batch_prove_layer<F: Field, P: PackedField<Scalar = F>>(
+fn batch_prove_layer<F: Field, P: PackedField<Scalar = F> + WideningMul>(
 	provers: Vec<ProdcheckProver<P>>,
 	claimed_products: Vec<F>,
 	eval_point: Vec<F>,
@@ -360,7 +360,7 @@ mod tests {
 
 	use super::*;
 
-	fn test_prodcheck_prove_verify_helper<P: PackedField>(n: usize, k: usize) {
+	fn test_prodcheck_prove_verify_helper<P: PackedField + WideningMul>(n: usize, k: usize) {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		// 1. Create random witness with log_len = n + k
@@ -405,7 +405,7 @@ mod tests {
 		test_prodcheck_prove_verify_helper::<Packed128b>(0, 4);
 	}
 
-	fn test_prodcheck_layer_computation_helper<P: PackedField>(n: usize, k: usize) {
+	fn test_prodcheck_layer_computation_helper<P: PackedField + WideningMul>(n: usize, k: usize) {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		// Create random witness with log_len = n + k
@@ -442,7 +442,10 @@ mod tests {
 	/// # Arguments
 	/// * `n_layers` - Number of product reduction layers (= variables per witness)
 	/// * `n_provers` - Number of provers to batch
-	fn test_batch_prove_verify_helper<P: PackedField>(n_layers: usize, n_provers: usize) {
+	fn test_batch_prove_verify_helper<P: PackedField + WideningMul>(
+		n_layers: usize,
+		n_provers: usize,
+	) {
 		let mut rng = StdRng::seed_from_u64(42);
 
 		let log_n_provers = log2_ceil_usize(n_provers);

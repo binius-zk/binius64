@@ -2,7 +2,7 @@
 
 use std::cmp::max;
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, WideningMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::FieldBuffer;
 use binius_utils::{bitwise::Bitwise, rayon::prelude::*};
@@ -68,7 +68,7 @@ where
 impl<'b, F, P, B> SumcheckProver<F> for RerandMlecheckProver<'b, P, B>
 where
 	F: Field,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 	B: Bitwise,
 {
 	fn n_vars(&self) -> usize {
@@ -114,17 +114,21 @@ where
 					let eq_chunk = self.gruen32.eq_expansion().chunk(chunk_vars, chunk_index);
 
 					for (bit_offset, round_evals) in packed_prime_evals.iter_mut().enumerate() {
-						// Degree-1 composition - evaluate at 1 only
+						// Degree-1 composition - evaluate at 1 only.
+						// Accumulate in a wide (unreduced) form across the chunk and reduce
+						// once before folding into the running per-claim `RoundEvals1`.
 						let evals_1_chunk = self.switchover.get_chunk(
 							&mut binary_chunk,
 							bit_offset,
 							chunk_vars,
 							chunk_index | chunk_count,
 						);
+						let mut chunk_wide_y_1 = <P as WideningMul>::Wide::default();
 						for (&eq_i, &evals_1_i) in izip!(eq_chunk.as_ref(), evals_1_chunk.as_ref())
 						{
-							round_evals.y_1 += eq_i * evals_1_i;
+							chunk_wide_y_1 += P::widening_mul(eq_i, evals_1_i);
 						}
+						round_evals.y_1 += P::reduce_wide(chunk_wide_y_1);
 					}
 
 					(packed_prime_evals, binary_chunk)
@@ -194,7 +198,7 @@ where
 impl<'b, F, P, B> MleCheckProver<F> for RerandMlecheckProver<'b, P, B>
 where
 	F: Field,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 	B: Bitwise,
 {
 	fn eval_point(&self) -> &[F] {

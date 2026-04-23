@@ -1,10 +1,48 @@
 // Copyright 2024-2025 Irreducible Inc.
 
+use std::ops::{Add, AddAssign};
+
+use crate::PackedField;
+
 /// Value that can be multiplied by itself
 pub trait Square {
 	/// Returns the value multiplied by itself
 	fn square(self) -> Self;
 }
+
+/// A packed field type that supports widening (unreduced) multiplication.
+///
+/// The multiply phase produces a [`Wide`](Self::Wide) value that can be accumulated via addition
+/// without overflow (XOR in characteristic 2). A single [`reduce_wide`](Self::reduce_wide) call at
+/// the end converts back to the packed field representation. For `GF(2^128)` inner products this
+/// lets us amortize the reduction across many products, which is a net win when reductions are
+/// comparable in cost to the widening multiply itself.
+pub trait WideningMul: PackedField {
+	type Wide: Copy + Default + Send + Sync + Add<Output = Self::Wide> + AddAssign;
+
+	fn widening_mul(a: Self, b: Self) -> Self::Wide;
+	fn reduce_wide(wide: Self::Wide) -> Self;
+}
+
+macro_rules! impl_trivial_widening_mul {
+	($name:ty) => {
+		impl $crate::arithmetic_traits::WideningMul for $name {
+			type Wide = Self;
+
+			#[inline]
+			fn widening_mul(a: Self, b: Self) -> Self {
+				a * b
+			}
+
+			#[inline]
+			fn reduce_wide(wide: Self) -> Self {
+				wide
+			}
+		}
+	};
+}
+
+pub(crate) use impl_trivial_widening_mul;
 
 /// Value that can be inverted
 pub trait InvertOrZero {

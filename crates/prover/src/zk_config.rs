@@ -8,7 +8,8 @@
 
 use binius_core::{constraint_system::ValueVec, word::Word};
 use binius_field::{
-	BinaryField128bGhash as B128, PackedExtension, PackedField, UnderlierWithBitOps, WithUnderlier,
+	BinaryField128bGhash as B128, PackedExtension, PackedField, UnderlierWithBitOps, WideningMul,
+	WithUnderlier,
 };
 use binius_iop_prover::basefold_compiler::BaseFoldZKProverCompiler;
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded};
@@ -63,7 +64,8 @@ where
 	P: PackedField<Scalar = B128>
 		+ PackedExtension<B128>
 		+ PackedExtension<binius_verifier::config::B1>
-		+ WithUnderlier<Underlier: UnderlierWithBitOps>,
+		+ WithUnderlier<Underlier: UnderlierWithBitOps>
+		+ WideningMul,
 	MerkleHash: Digest + BlockSizeUser + FixedOutputReset,
 	ParallelMerkleHasher: ParallelDigest<Digest = MerkleHash>,
 	ParallelMerkleCompress: ParallelPseudoCompression<Output<MerkleHash>, 2>,

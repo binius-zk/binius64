@@ -677,6 +677,100 @@ fn bench_ghash_sq(c: &mut Criterion) {
 	group.finish();
 }
 
+/// Benchmark widening (deferred-reduction) GF(2^128) multiplication vs full multiplication.
+///
+/// Measures the inner-product pattern `sum_i a_i * b_i` using both full multiply per term
+/// (6N CLMULs) and widening-then-reduce (3N + 2 CLMULs).
+fn bench_ghash_widening(c: &mut Criterion) {
+	use binius_field::{PackedField, Random, WideningMul, arch::OptimalPackedB128};
+
+	fn bench_at_n<P: PackedField + WideningMul>(
+		group: &mut BenchmarkGroup<'_, criterion::measurement::WallTime>,
+		label: &str,
+		n: usize,
+	) {
+		let mut rng = rand::rng();
+		let a_vals: Vec<P> = (0..n).map(|_| P::random(&mut rng)).collect();
+		let b_vals: Vec<P> = (0..n).map(|_| P::random(&mut rng)).collect();
+
+		group.throughput(Throughput::Elements((n * P::WIDTH) as u64));
+
+		group.bench_function(format!("full_mul/{label}/n={n}"), |b| {
+			b.iter(|| {
+				let mut acc = P::default();
+				for i in 0..n {
+					acc += black_box(a_vals[i]) * black_box(b_vals[i]);
+				}
+				black_box(acc)
+			})
+		});
+
+		group.bench_function(format!("widening_mul/{label}/n={n}"), |b| {
+			b.iter(|| {
+				let mut acc = <P as WideningMul>::Wide::default();
+				for i in 0..n {
+					acc += P::widening_mul(black_box(a_vals[i]), black_box(b_vals[i]));
+				}
+				black_box(P::reduce_wide(acc))
+			})
+		});
+	}
+
+	let mut group = c.benchmark_group("ghash_widening");
+
+	let label = format!("OptimalPacked_{}x128b", OptimalPackedB128::WIDTH);
+	for &n in &[16, 256, 4096] {
+		bench_at_n::<OptimalPackedB128>(&mut group, &label, n);
+	}
+
+	group.finish();
+}
+
+/// Benchmark the `inner_product_wide_par` function from binius-math against `inner_product_par`.
+fn bench_inner_product_wide(c: &mut Criterion) {
+	use binius_field::{
+		BinaryField128bGhash, PackedField, Random, WideningMul, arch::OptimalPackedB128,
+	};
+	use binius_math::{
+		FieldBuffer,
+		inner_product::{inner_product_par, inner_product_wide_par},
+	};
+
+	type P = OptimalPackedB128;
+	type F = BinaryField128bGhash;
+
+	let mut group = c.benchmark_group("inner_product_wide");
+
+	for &log_n in &[10, 14, 18] {
+		let n = 1usize << log_n;
+		let mut rng = rand::rng();
+		let a_vals: Vec<P> = (0..n / P::WIDTH).map(|_| P::random(&mut rng)).collect();
+		let b_vals: Vec<P> = (0..n / P::WIDTH).map(|_| P::random(&mut rng)).collect();
+		let buffer_a = FieldBuffer::new(log_n, a_vals);
+		let buffer_b = FieldBuffer::new(log_n, b_vals);
+
+		let label = format!("{}x128b/n=2^{log_n}", P::WIDTH);
+
+		group.throughput(Throughput::Elements(n as u64));
+
+		group.bench_function(format!("standard/{label}"), |b| {
+			b.iter(|| {
+				let r: F = inner_product_par(black_box(&buffer_a), black_box(&buffer_b));
+				black_box(r)
+			})
+		});
+
+		group.bench_function(format!("widening/{label}"), |b| {
+			b.iter(|| {
+				let r: F = inner_product_wide_par(black_box(&buffer_a), black_box(&buffer_b));
+				black_box(r)
+			})
+		});
+	}
+
+	group.finish();
+}
+
 criterion_group!(
 	benches,
 	bench_rijndael,
@@ -685,5 +779,7 @@ criterion_group!(
 	bench_ghash_sq,
 	bench_monbijou,
 	bench_monbijou_128b,
+	bench_ghash_widening,
+	bench_inner_product_wide,
 );
 criterion_main!(benches);

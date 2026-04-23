@@ -1,5 +1,12 @@
 // Copyright 2025 Irreducible Inc.
 
+// Items in this module are conditionally used by architecture-specific GHASH backends. On
+// targets where none of those backends are compiled (e.g. wasm32 without simd128), the entire
+// module is unused, so allow dead code here rather than sprinkling attributes on every item.
+#![allow(dead_code)]
+
+use std::ops::{Add, AddAssign};
+
 use crate::{Divisible, underlier::UnderlierWithBitOps};
 
 /// Trait for underliers that support CLMUL operations which are needed for the
@@ -12,10 +19,13 @@ pub trait ClMulUnderlier: UnderlierWithBitOps + Divisible<u128> {
 	/// For each 128-bit lane, shifts the lower 64 bits to the upper 64 bits and zeroes the lower
 	/// 64-bit.
 	fn move_64_to_hi(a: Self) -> Self;
+
+	/// For each 128-bit lane, XORs the high and low 64-bit halves. The result is placed in
+	/// the low 64 bits of each lane; the high 64 bits are unspecified.
+	fn xor_halves(a: Self) -> Self;
 }
 
 #[inline]
-#[allow(dead_code)]
 pub fn mul_clmul<U: ClMulUnderlier>(x: U, y: U) -> U {
 	// Based on the C++ reference implementation
 	// The algorithm performs polynomial multiplication followed by reduction
@@ -46,7 +56,6 @@ pub fn mul_clmul<U: ClMulUnderlier>(x: U, y: U) -> U {
 
 /// The version of the multiplication for optimized suqare operation.
 #[inline]
-#[allow(dead_code)]
 pub fn square_clmul<U: ClMulUnderlier>(x: U) -> U {
 	// t1 from the previous function is always zero for squaring
 	// t2 = x.hi * x.hi
@@ -91,4 +100,158 @@ fn gf2_128_shift_reduce<U: ClMulUnderlier>(t: U) -> U {
 	result ^= U::clmulepi64::<0x01>(t, poly);
 
 	result
+}
+
+/// An unreduced product of two `GF(2^128)` elements, stored as three 128-bit limbs
+/// `(lo, hi, mid)` where `mid = cross_a XOR cross_b`. Values of this type can be summed by XOR
+/// and reduced once at the end via [`reduce_wide`](WideGhashProduct::reduce_wide).
+///
+/// Uses the "schoolbook" form (4 independent CLMULs + 2 reduction CLMULs per reduce). Paired
+/// with AArch64 and portable backends; x86_64 uses `WideKaratsubaGhashProduct` instead. The
+/// split exists because the Karatsuba form saves one CLMUL algebraically but the extra data
+/// shuffles it requires do not always pay off across CLMUL codegen variants.
+#[derive(Clone, Copy, Default)]
+pub struct WideGhashProduct<U: ClMulUnderlier> {
+	lo: U,
+	hi: U,
+	mid: U,
+}
+
+impl<U: ClMulUnderlier> WideGhashProduct<U> {
+	/// Widening multiply with 4 independent CLMULs, no reduction.
+	#[inline]
+	pub fn widening_mul(x: U, y: U) -> Self {
+		let lo = U::clmulepi64::<0x00>(x, y);
+		let hi = U::clmulepi64::<0x11>(x, y);
+		let cross_a = U::clmulepi64::<0x01>(x, y);
+		let cross_b = U::clmulepi64::<0x10>(x, y);
+		Self {
+			lo,
+			hi,
+			mid: cross_a ^ cross_b,
+		}
+	}
+
+	/// Reduce the accumulated wide product to a single GF(2^128) element.
+	/// Costs 2 CLMULs (the reduction steps).
+	#[inline]
+	pub fn reduce_wide(self) -> U {
+		let t1 = gf2_128_reduce(self.mid, self.hi);
+		gf2_128_reduce(self.lo, t1)
+	}
+}
+
+/// An unreduced product of two `GF(2^128)` elements, stored in Karatsuba form as three 128-bit
+/// limbs `(lo, hi, mid)`. See [`WideGhashProduct`] for the non-Karatsuba sibling and the
+/// rationale for having both.
+///
+/// Uses 3 CLMULs (plus two `xor_halves` shuffles) for the multiply and 2 CLMULs for the reduce.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Default)]
+pub struct WideKaratsubaGhashProduct<U: ClMulUnderlier> {
+	lo: U,
+	hi: U,
+	mid: U,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl<U: ClMulUnderlier> WideKaratsubaGhashProduct<U> {
+	/// Karatsuba widening multiply: 3 CLMULs, no reduction.
+	#[inline]
+	pub fn widening_mul(x: U, y: U) -> Self {
+		let lo = U::clmulepi64::<0x00>(x, y);
+		let hi = U::clmulepi64::<0x11>(x, y);
+		let mid = U::clmulepi64::<0x00>(U::xor_halves(x), U::xor_halves(y));
+		Self { lo, hi, mid }
+	}
+
+	/// Reduce the accumulated wide product to a single GF(2^128) element.
+	/// Costs 2 CLMULs (the reduction steps).
+	#[inline]
+	pub fn reduce_wide(self) -> U {
+		let cross = self.mid ^ self.lo ^ self.hi;
+		let t1 = gf2_128_reduce(cross, self.hi);
+		gf2_128_reduce(self.lo, t1)
+	}
+}
+
+impl<U: ClMulUnderlier> Add for WideGhashProduct<U> {
+	type Output = Self;
+
+	#[inline]
+	fn add(self, rhs: Self) -> Self {
+		Self {
+			lo: self.lo ^ rhs.lo,
+			hi: self.hi ^ rhs.hi,
+			mid: self.mid ^ rhs.mid,
+		}
+	}
+}
+
+impl<U: ClMulUnderlier> AddAssign for WideGhashProduct<U> {
+	#[inline]
+	fn add_assign(&mut self, rhs: Self) {
+		self.lo ^= rhs.lo;
+		self.hi ^= rhs.hi;
+		self.mid ^= rhs.mid;
+	}
+}
+
+#[cfg(target_arch = "x86_64")]
+impl<U: ClMulUnderlier> Add for WideKaratsubaGhashProduct<U> {
+	type Output = Self;
+
+	#[inline]
+	fn add(self, rhs: Self) -> Self {
+		Self {
+			lo: self.lo ^ rhs.lo,
+			hi: self.hi ^ rhs.hi,
+			mid: self.mid ^ rhs.mid,
+		}
+	}
+}
+
+#[cfg(target_arch = "x86_64")]
+impl<U: ClMulUnderlier> AddAssign for WideKaratsubaGhashProduct<U> {
+	#[inline]
+	fn add_assign(&mut self, rhs: Self) {
+		self.lo ^= rhs.lo;
+		self.hi ^= rhs.hi;
+		self.mid ^= rhs.mid;
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use rand::{SeedableRng, rngs::StdRng};
+
+	use crate::{Random, WideningMul, arch::OptimalPackedB128};
+
+	/// Stress-test accumulation of many widening products. Correctness / linearity for each
+	/// individual packed width is covered by the proptest suite in `packed_ghash.rs`.
+	#[test]
+	fn test_widening_mul_accumulation() {
+		type P = OptimalPackedB128;
+
+		let mut rng = StdRng::seed_from_u64(999);
+		let n = 64;
+
+		let a_vals: Vec<P> = (0..n).map(|_| P::random(&mut rng)).collect();
+		let b_vals: Vec<P> = (0..n).map(|_| P::random(&mut rng)).collect();
+
+		let wide_sum = a_vals
+			.iter()
+			.zip(b_vals.iter())
+			.map(|(&a, &b)| P::widening_mul(a, b))
+			.fold(<P as WideningMul>::Wide::default(), |acc, w| acc + w);
+		let reduced = P::reduce_wide(wide_sum);
+
+		let direct_sum: P = a_vals
+			.iter()
+			.zip(b_vals.iter())
+			.map(|(&a, &b)| a * b)
+			.fold(P::default(), |acc, p| acc + p);
+
+		assert_eq!(reduced, direct_sum);
+	}
 }

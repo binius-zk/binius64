@@ -83,5 +83,8 @@ impl InvertOrZero for PackedBinaryGhash1x128b {
 	}
 }
 
+// Implement WideningMul (trivial: no CLMUL, just regular multiply)
+crate::arithmetic_traits::impl_trivial_widening_mul!(PackedBinaryGhash1x128b);
+
 // Define linear transformations
 impl_transformation_with_strategy!(PackedBinaryGhash1x128b, PairwiseStrategy);

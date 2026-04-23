@@ -2,7 +2,7 @@
 
 use std::ops::{Add, AddAssign, Mul};
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, WideningMul};
 use binius_ip::sumcheck::RoundCoeffs;
 
 // Sumcheck round evaluations for degree-1 polynomials, on point 1 alone.
@@ -110,6 +110,53 @@ impl<P: PackedField> Mul<P::Scalar> for RoundEvals2<P> {
 		self.y_1 *= rhs;
 		self.y_inf *= rhs;
 		self
+	}
+}
+
+/// Widening (unreduced) accumulator for degree-2 sumcheck round evaluations.
+///
+/// Stores `y_1` and `y_inf` as `P::Wide` values that can be summed via addition (XOR in GF(2))
+/// without intermediate reduction. After accumulation, call [`reduce_wide`](Self::reduce_wide)
+/// to convert back to a `RoundEvals2<P>`.
+#[derive(Clone, Copy)]
+pub struct WideRoundEvals2<W> {
+	pub y_1: W,
+	pub y_inf: W,
+}
+
+impl<W: Default> Default for WideRoundEvals2<W> {
+	fn default() -> Self {
+		Self {
+			y_1: W::default(),
+			y_inf: W::default(),
+		}
+	}
+}
+
+impl<W> WideRoundEvals2<W> {
+	pub fn reduce_wide<P: WideningMul<Wide = W>>(self) -> RoundEvals2<P> {
+		RoundEvals2 {
+			y_1: P::reduce_wide(self.y_1),
+			y_inf: P::reduce_wide(self.y_inf),
+		}
+	}
+}
+
+impl<W: Add<Output = W>> Add for WideRoundEvals2<W> {
+	type Output = Self;
+
+	fn add(self, rhs: Self) -> Self {
+		Self {
+			y_1: self.y_1 + rhs.y_1,
+			y_inf: self.y_inf + rhs.y_inf,
+		}
+	}
+}
+
+impl<W: AddAssign> AddAssign for WideRoundEvals2<W> {
+	fn add_assign(&mut self, rhs: Self) {
+		self.y_1 += rhs.y_1;
+		self.y_inf += rhs.y_inf;
 	}
 }
 

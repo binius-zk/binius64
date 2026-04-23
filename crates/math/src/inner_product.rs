@@ -2,7 +2,7 @@
 
 use std::{iter, ops::Deref};
 
-use binius_field::{ExtensionField, Field, FieldOps, PackedField};
+use binius_field::{ExtensionField, Field, FieldOps, PackedField, WideningMul};
 use binius_utils::rayon::prelude::*;
 
 use crate::FieldBuffer;
@@ -98,12 +98,105 @@ where
 		.sum()
 }
 
+/// Parallel inner product using widening (unreduced) multiplication with deferred reduction.
+///
+/// Accumulates `widening_mul(a_i, b_i)` in wide form, then reduces once at the end. For packed
+/// `GF(2^128)` fields this amortizes the reduction cost across all products, which is the main
+/// win of this routine over [`inner_product_par`].
+#[inline]
+pub fn inner_product_wide_par<F, P, DataA, DataB>(
+	a: &FieldBuffer<P, DataA>,
+	b: &FieldBuffer<P, DataB>,
+) -> F
+where
+	F: Field,
+	P: PackedField<Scalar = F> + WideningMul,
+	DataA: Deref<Target = [P]>,
+	DataB: Deref<Target = [P]>,
+{
+	let n = a.len();
+	let wide_sum: P::Wide = a
+		.as_ref()
+		.par_iter()
+		.zip_eq(b.as_ref().par_iter())
+		.map(|(&a_i, &b_i)| P::widening_mul(a_i, b_i))
+		.reduce(P::Wide::default, |acc, w| acc + w);
+	P::reduce_wide(wide_sum).into_iter().take(n).sum()
+}
+
+/// Inner product of packed buffers using widening multiplication with deferred reduction.
+#[inline]
+pub fn inner_product_wide_buffers<F, P, DataA, DataB>(
+	a: &FieldBuffer<P, DataA>,
+	b: &FieldBuffer<P, DataB>,
+) -> F
+where
+	F: Field,
+	P: PackedField<Scalar = F> + WideningMul,
+	DataA: Deref<Target = [P]>,
+	DataB: Deref<Target = [P]>,
+{
+	let log_n = a.log_len();
+	inner_product_wide_packed(log_n, a.as_ref().iter().copied(), b.as_ref().iter().copied())
+}
+
+/// Compute the inner product of two scalar sequences using widening (deferred-reduction) multiply.
+///
+/// ## Preconditions
+///
+/// * `a` and `b` have length `1 << log_n.saturating_sub(P::LOG_WIDTH)`
+#[inline]
+pub fn inner_product_wide_packed<F, P>(
+	log_n: usize,
+	a: impl ExactSizeIterator<Item = P>,
+	b: impl ExactSizeIterator<Item = P>,
+) -> F
+where
+	F: Field,
+	P: PackedField<Scalar = F> + WideningMul,
+{
+	assert_eq!(a.len(), 1 << log_n.saturating_sub(P::LOG_WIDTH));
+	assert_eq!(b.len(), 1 << log_n.saturating_sub(P::LOG_WIDTH));
+
+	let wide_sum = iter::zip(a, b)
+		.map(|(a_i, b_i)| P::widening_mul(a_i, b_i))
+		.fold(P::Wide::default(), |acc, w| acc + w);
+	P::reduce_wide(wide_sum).into_iter().take(1 << log_n).sum()
+}
+
 #[cfg(test)]
 mod tests {
 	use binius_field::{PackedBinaryGhash4x128b, Random};
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
+
+	#[test]
+	fn test_inner_product_wide_matches_standard() {
+		use binius_field::BinaryField128bGhash;
+
+		type P = PackedBinaryGhash4x128b;
+		type F = BinaryField128bGhash;
+
+		let mut rng = StdRng::seed_from_u64(42);
+
+		for log_n in [4, 8, 12] {
+			let n = 1 << log_n;
+			let a_vals: Vec<P> = (0..n / P::WIDTH).map(|_| P::random(&mut rng)).collect();
+			let b_vals: Vec<P> = (0..n / P::WIDTH).map(|_| P::random(&mut rng)).collect();
+
+			let buffer_a = FieldBuffer::new(log_n, a_vals);
+			let buffer_b = FieldBuffer::new(log_n, b_vals);
+
+			let standard: F = inner_product_par(&buffer_a, &buffer_b);
+			let wide: F = inner_product_wide_par(&buffer_a, &buffer_b);
+			assert_eq!(standard, wide, "mismatch at log_n={log_n}");
+
+			let standard2: F = inner_product_buffers(&buffer_a, &buffer_b);
+			let wide2: F = inner_product_wide_buffers(&buffer_a, &buffer_b);
+			assert_eq!(standard2, wide2, "buffers mismatch at log_n={log_n}");
+		}
+	}
 
 	#[test]
 	fn test_inner_product_packing_width_greater_than_buffer_length() {

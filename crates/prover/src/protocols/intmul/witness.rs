@@ -2,7 +2,7 @@
 
 use std::{iter, marker::PhantomData, mem::MaybeUninit, ops::Deref};
 
-use binius_field::{BinaryField, Field, PackedField};
+use binius_field::{BinaryField, Field, PackedField, WideningMul};
 use binius_math::field_buffer::FieldBuffer;
 use binius_utils::{
 	bitwise::{BitSelector, Bitwise},
@@ -56,7 +56,7 @@ pub struct Witness<P: PackedField, B: Bitwise, S: AsRef<[B]> + Sync> {
 impl<F, P, B, S> Witness<P, B, S>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 	B: Bitwise,
 	S: AsRef<[B]> + Sync,
 {

@@ -1,11 +1,16 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, WideningMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
+use itertools::izip;
 
-use crate::sumcheck::{common::SumcheckProver, error::Error, round_evals::RoundEvals2};
+use crate::sumcheck::{
+	common::SumcheckProver,
+	error::Error,
+	round_evals::{RoundEvals2, WideRoundEvals2},
+};
 
 /// A [`SumcheckProver`] implementation for a composite defined as the product of two multilinears.
 ///
@@ -35,7 +40,25 @@ impl<F: Field, P: PackedField<Scalar = F>> BivariateProductSumcheckProver<P> {
 	}
 }
 
-impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProductSumcheckProver<P> {
+/// Log2 of the packed-half length at or above which `execute` dispatches the widening inner
+/// loop through Rayon. Below this threshold the sequential widening path runs instead: the
+/// deferred-reduction savings are preserved but the Rayon worker-pool dispatch cost (on the
+/// order of tens to hundreds of microseconds per call) is avoided.
+///
+/// The per-element work of a bivariate round is small (four packed multiplications into a
+/// wide accumulator). For small halves the parallel scheduler dominates; the crossover where
+/// it amortizes sits in the mid-teens of `log_half` and is platform-dependent. We pick a
+/// slightly-conservative threshold so platforms with cheaper Rayon dispatch lean into the
+/// parallel path; platforms where sequential would win a single small round pay at most a
+/// factor-of-a-few on that one round, not on the overall sumcheck.
+///
+/// To retune, run `bench_bivariate_round` in `crates/prover/benches/sumcheck.rs`, which sweeps
+/// `log_half` and times `wide_par` vs `wide_seq` in isolation.
+const PAR_THRESHOLD_LOG_HALF: usize = 17;
+
+impl<F: Field, P: PackedField<Scalar = F> + WideningMul> SumcheckProver<F>
+	for BivariateProductSumcheckProver<P>
+{
 	fn n_vars(&self) -> usize {
 		self.multilinears[0].log_len()
 	}
@@ -57,25 +80,23 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 
 		let (evals_a_0, evals_a_1) = self.multilinears[0].split_half_ref();
 		let (evals_b_0, evals_b_1) = self.multilinears[1].split_half_ref();
+		let evals_a_0 = evals_a_0.as_ref();
+		let evals_a_1 = evals_a_1.as_ref();
+		let evals_b_0 = evals_b_0.as_ref();
+		let evals_b_1 = evals_b_1.as_ref();
 
-		// Compute F(1) and F(∞) where F = ∑_{v ∈ B} A(v || X) B(v || X)
-		let round_evals =
-			(evals_a_0.as_ref(), evals_a_1.as_ref(), evals_b_0.as_ref(), evals_b_1.as_ref())
-				.into_par_iter()
-				.map(|(&evals_a_0_i, &evals_a_1_i, &evals_b_0_i, &evals_b_1_i)| {
-					// Evaluate M(∞) = M(0) + M(1)
-					let evals_a_inf_i = evals_a_0_i + evals_a_1_i;
-					let evals_b_inf_i = evals_b_0_i + evals_b_1_i;
-
-					let prod_1_i = evals_a_1_i * evals_b_1_i;
-					let prod_inf_i = evals_a_inf_i * evals_b_inf_i;
-
-					RoundEvals2 {
-						y_1: prod_1_i,
-						y_inf: prod_inf_i,
-					}
-				})
-				.reduce(RoundEvals2::default, |lhs, rhs| lhs + &rhs);
+		// For small halves the Rayon dispatch cost dominates the per-element work, so drop
+		// to a sequential loop. See `PAR_THRESHOLD_LOG_HALF` above.
+		let log_half = if evals_a_0.is_empty() {
+			0
+		} else {
+			evals_a_0.len().trailing_zeros() as usize
+		};
+		let round_evals = if log_half >= PAR_THRESHOLD_LOG_HALF {
+			compute_round_evals_wide_par::<F, P>(evals_a_0, evals_a_1, evals_b_0, evals_b_1)
+		} else {
+			compute_round_evals_wide_seq::<F, P>(evals_a_0, evals_a_1, evals_b_0, evals_b_1)
+		};
 
 		let round_coeffs = round_evals
 			.sum_scalars(n_vars_remaining)
@@ -122,6 +143,63 @@ enum RoundCoeffsOrSum<F: Field> {
 	Sum(F),
 }
 
+/// Parallel widening (deferred-reduction) round computation. Used above the
+/// `PAR_THRESHOLD_LOG_HALF` gate. Exported `#[doc(hidden)] pub` so that
+/// `crates/prover/benches/sumcheck.rs` can time it in isolation.
+#[doc(hidden)]
+pub fn compute_round_evals_wide_par<F, P>(
+	evals_a_0: &[P],
+	evals_a_1: &[P],
+	evals_b_0: &[P],
+	evals_b_1: &[P],
+) -> RoundEvals2<P>
+where
+	F: Field,
+	P: PackedField<Scalar = F> + WideningMul,
+{
+	let wide_round_evals: WideRoundEvals2<P::Wide> = (evals_a_0, evals_a_1, evals_b_0, evals_b_1)
+		.into_par_iter()
+		.map(|(&evals_a_0_i, &evals_a_1_i, &evals_b_0_i, &evals_b_1_i)| {
+			let evals_a_inf_i = evals_a_0_i + evals_a_1_i;
+			let evals_b_inf_i = evals_b_0_i + evals_b_1_i;
+
+			WideRoundEvals2 {
+				y_1: P::widening_mul(evals_a_1_i, evals_b_1_i),
+				y_inf: P::widening_mul(evals_a_inf_i, evals_b_inf_i),
+			}
+		})
+		.reduce(WideRoundEvals2::default, |lhs, rhs| lhs + rhs);
+
+	wide_round_evals.reduce_wide::<P>()
+}
+
+/// Sequential widening (deferred-reduction) round computation. Used below the
+/// `PAR_THRESHOLD_LOG_HALF` gate, where Rayon's dispatch cost dominates the per-element work.
+/// Exported `#[doc(hidden)] pub` so that `crates/prover/benches/sumcheck.rs` can time it in
+/// isolation.
+#[doc(hidden)]
+pub fn compute_round_evals_wide_seq<F, P>(
+	evals_a_0: &[P],
+	evals_a_1: &[P],
+	evals_b_0: &[P],
+	evals_b_1: &[P],
+) -> RoundEvals2<P>
+where
+	F: Field,
+	P: PackedField<Scalar = F> + WideningMul,
+{
+	let mut acc = WideRoundEvals2::<P::Wide>::default();
+	for (&evals_a_0_i, &evals_a_1_i, &evals_b_0_i, &evals_b_1_i) in
+		izip!(evals_a_0, evals_a_1, evals_b_0, evals_b_1)
+	{
+		let evals_a_inf_i = evals_a_0_i + evals_a_1_i;
+		let evals_b_inf_i = evals_b_0_i + evals_b_1_i;
+		acc.y_1 += P::widening_mul(evals_a_1_i, evals_b_1_i);
+		acc.y_inf += P::widening_mul(evals_a_inf_i, evals_b_inf_i);
+	}
+	acc.reduce_wide::<P>()
+}
+
 #[cfg(test)]
 mod tests {
 	use binius_field::arch::{OptimalB128, OptimalPackedB128};
@@ -133,7 +211,7 @@ mod tests {
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
-	use rand::{SeedableRng, prelude::StdRng};
+	use rand::{RngCore, SeedableRng, prelude::StdRng};
 
 	use super::*;
 	use crate::sumcheck::prove::prove_single;
@@ -211,5 +289,34 @@ mod tests {
 			output.challenges, sumcheck_output.challenges,
 			"Prover and verifier challenges should match"
 		);
+	}
+
+	#[test]
+	fn test_wide_par_and_seq_agree() {
+		type P = OptimalPackedB128;
+
+		let mut rng = StdRng::seed_from_u64(0xbeef);
+
+		for n_vars in [1, 2, 5, 8, 12] {
+			let buf = |seed: u64| {
+				let mut rng = StdRng::seed_from_u64(seed);
+				random_field_buffer::<P>(&mut rng, n_vars)
+			};
+			let mla = buf(rng.next_u64());
+			let mlb = buf(rng.next_u64());
+
+			let (a_0, a_1) = mla.split_half_ref();
+			let (b_0, b_1) = mlb.split_half_ref();
+			let a_0 = a_0.as_ref();
+			let a_1 = a_1.as_ref();
+			let b_0 = b_0.as_ref();
+			let b_1 = b_1.as_ref();
+
+			let w_par = compute_round_evals_wide_par::<OptimalB128, P>(a_0, a_1, b_0, b_1);
+			let w_seq = compute_round_evals_wide_seq::<OptimalB128, P>(a_0, a_1, b_0, b_1);
+
+			assert_eq!(w_par.y_1, w_seq.y_1);
+			assert_eq!(w_par.y_inf, w_seq.y_inf);
+		}
 	}
 }

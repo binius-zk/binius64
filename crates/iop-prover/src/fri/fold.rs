@@ -1,12 +1,12 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use binius_field::{BinaryField, Field, PackedField};
+use binius_field::{BinaryField, Field, PackedField, WideningMul};
 use binius_iop::{
 	fri::{FRIParams, fold::fold_chunk},
 	merkle_tree::MerkleTreeScheme,
 };
 use binius_math::{
-	FieldBuffer, FieldSlice, inner_product::inner_product_buffers,
+	FieldBuffer, FieldSlice, inner_product::inner_product_wide_buffers,
 	multilinear::eq::eq_ind_partial_eval, ntt::AdditiveNTT,
 };
 use binius_transcript::{
@@ -48,7 +48,7 @@ where
 impl<'a, F, P, NTT, MerkleScheme, MerkleProver> FRIFoldProver<'a, F, P, NTT, MerkleProver>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
@@ -265,18 +265,18 @@ fn fold_interleaved<F, P>(
 ) -> FieldBuffer<F>
 where
 	F: Field,
-	P: PackedField<Scalar = F>,
+	P: PackedField<Scalar = F> + WideningMul,
 {
 	assert_eq!(codeword.log_len(), log_len + log_batch_size);
 	assert_eq!(challenges.len(), log_batch_size);
 
 	let tensor = eq_ind_partial_eval(challenges);
 
-	// For each chunk of size `2^chunk_size` in the interleaved codeword, fold it with the folding
-	// challenges.
+	// For each chunk of size `2^log_batch_size` in the interleaved codeword, fold it with the
+	// folding challenges.
 	let values = codeword
 		.chunks_par(log_batch_size)
-		.map(|chunk| inner_product_buffers(&chunk, &tensor))
+		.map(|chunk| inner_product_wide_buffers(&chunk, &tensor))
 		.collect::<Vec<_>>();
 	FieldBuffer::new(log_len, values.into_boxed_slice())
 }

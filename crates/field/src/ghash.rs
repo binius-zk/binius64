@@ -96,6 +96,8 @@ impl InvertOrZero for BinaryField128bGhash {
 	}
 }
 
+crate::arithmetic_traits::impl_trivial_widening_mul!(BinaryField128bGhash);
+
 impl_field_extension!(BinaryField1b(U1) < @7 => BinaryField128bGhash(u128));
 
 mul_by_binary_field_1b!(BinaryField128bGhash);

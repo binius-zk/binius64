@@ -36,7 +36,7 @@ use std::{
 	ops::Deref,
 };
 
-use binius_field::{BinaryField, Field, PackedExtension, PackedField};
+use binius_field::{BinaryField, Field, PackedExtension, PackedField, WideningMul};
 use binius_hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression};
 use binius_iop_prover::{
 	basefold_compiler::BaseFoldZKProverCompiler, channel::IOPProverChannel,
@@ -152,7 +152,7 @@ impl<F: Field> IOPProver<F> {
 	) -> Result<(), Error>
 	where
 		F: BinaryField,
-		P: PackedField<Scalar = F> + PackedExtension<F>,
+		P: PackedField<Scalar = F> + PackedExtension<F> + WideningMul,
 		Channel: IOPProverChannel<P>,
 	{
 		let _prove_guard =
@@ -300,7 +300,7 @@ impl<F, P, MerkleHash, ParallelMerkleCompress, ParallelMerkleHasher>
 	Prover<P, ParallelMerkleCompress, ParallelMerkleHasher>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F> + PackedExtension<F> + WideningMul,
 	MerkleHash: Digest + BlockSizeUser + FixedOutputReset,
 	ParallelMerkleHasher: ParallelDigest<Digest = MerkleHash>,
 	ParallelMerkleCompress: ParallelPseudoCompression<Output<MerkleHash>, 2>,
@@ -391,7 +391,7 @@ fn prove_mulcheck<F, P, Channel>(
 ) -> Result<([F; 3], F, Vec<F>), Error>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F> + PackedExtension<F> + WideningMul,
 	Channel: IPProverChannel<F>,
 {
 	let mulcheck_witness =

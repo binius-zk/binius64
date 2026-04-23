@@ -33,8 +33,13 @@ binius-ip = { path = "../ip" }
 binius-math = { path = "../math", features = ["test-utils"] }
 binius-spartan-verifier = { path = "../spartan-verifier" }
 binius-verifier = { path = "../verifier" }
+criterion.workspace = true
 rand = { workspace = true, features = ["thread_rng"] }
 smallvec.workspace = true
+
+[[bench]]
+name = "spartan_prove"
+harness = false
 
 [features]
 default = ["rayon"]
