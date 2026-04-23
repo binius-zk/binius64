@@ -245,8 +245,7 @@ impl Skein512 {
 /// while maintaining the avalanche property essential for cryptographic security.
 fn mix(circuit: &CircuitBuilder, a: Wire, b: Wire, r: u32) -> (Wire, Wire) {
 	// a' = a + b (64-bit addition, ignoring carry)
-	let zero = circuit.add_constant_64(0);
-	let (a_out, _) = circuit.iadd_cin_cout(a, b, zero);
+	let (a_out, _) = circuit.iadd(a, b);
 
 	// b' = ROTL(b, r) ^ a'
 	let b_rotated = circuit.rotl(b, r);
@@ -327,17 +326,16 @@ fn threefish_subkey(circuit: &CircuitBuilder, s: usize, k: [Wire; 9], t: [Wire; 
 
 	// Add tweak components to specific positions
 	// sk[5] += t[s % 3] (64-bit addition, ignoring carry)
-	let zero = circuit.add_constant_64(0);
-	let (sum5, _) = circuit.iadd_cin_cout(subkey[5], t[s % 3], zero);
+	let (sum5, _) = circuit.iadd(subkey[5], t[s % 3]);
 	subkey[5] = sum5;
 
 	// sk[6] += t[(s + 1) % 3] (64-bit addition, ignoring carry)
-	let (sum6, _) = circuit.iadd_cin_cout(subkey[6], t[(s + 1) % 3], zero);
+	let (sum6, _) = circuit.iadd(subkey[6], t[(s + 1) % 3]);
 	subkey[6] = sum6;
 
 	// sk[7] += s (add round number as constant)
 	let round_constant = circuit.add_constant_64(s as u64);
-	let (sum7, _) = circuit.iadd_cin_cout(subkey[7], round_constant, zero);
+	let (sum7, _) = circuit.iadd(subkey[7], round_constant);
 	subkey[7] = sum7;
 
 	subkey
@@ -433,9 +431,8 @@ impl Threefish4RoundsWithInjection {
 	) -> Self {
 		// Inject subkey before the 4 rounds
 		let subkey = threefish_subkey(circuit, group_idx, k, t);
-		let zero = circuit.add_constant_64(0);
 		let mut v_out = std::array::from_fn(|i| {
-			let (sum, _) = circuit.iadd_cin_cout(v_in[i], subkey[i], zero);
+			let (sum, _) = circuit.iadd(v_in[i], subkey[i]);
 			sum
 		});
 
@@ -495,9 +492,8 @@ impl Threefish512Block {
 
 		// Final subkey injection (18th injection after the 72 rounds)
 		let subkey = threefish_subkey(circuit, 18, k, t);
-		let zero = circuit.add_constant_64(0);
 		let v_out = std::array::from_fn(|i| {
-			let (sum, _) = circuit.iadd_cin_cout(v[i], subkey[i], zero);
+			let (sum, _) = circuit.iadd(v[i], subkey[i]);
 			sum
 		});
 

@@ -187,7 +187,7 @@ fn demo_early_exit() -> Result<()> {
 
 		// Mask value based on found_zero flag
 		let to_add = builder.select(found_zero, zero, value);
-		let (new_sum, _) = builder.iadd_cin_cout(sum, to_add, zero);
+		let (new_sum, _) = builder.iadd(sum, to_add);
 		sum = new_sum;
 
 		// Sticky flag - once set, stays set
@@ -234,7 +234,7 @@ fn demo_variable_length() -> Result<()> {
 
 		let value = builder.select(in_bounds, data_wire, zero);
 
-		let (new_sum, _) = builder.iadd_cin_cout(sum, value, zero);
+		let (new_sum, _) = builder.iadd(sum, value);
 		sum = new_sum;
 	}
 

@@ -71,7 +71,7 @@ pub fn popcount(builder: &mut CircuitBuilder, input: Wire) -> Wire {
 	let n_masked_3333 = builder.band(n_step1, mask_3333);
 	let n_shr_2 = builder.shr(n_step1, 2);
 	let n_shr_2_masked = builder.band(n_shr_2, mask_3333);
-	let (n_step2, _carry) = builder.iadd_cin_cout(n_masked_3333, n_shr_2_masked, zero);
+	let (n_step2, _carry) = builder.iadd(n_masked_3333, n_shr_2_masked);
 
 	// Step 3: Sum adjacent 4-bit groups into 8-bit groups
 	// n = (n + (n >> 4)) & 0x0F0F0F0F0F0F0F0F
@@ -79,25 +79,25 @@ pub fn popcount(builder: &mut CircuitBuilder, input: Wire) -> Wire {
 	// After Step 2, max value per 4-bit group is 4 (0100 binary)
 	// Adding 0100 + 0100 = 1000 (8) still fits in 4 bits, no overflow!
 	let n_shr_4 = builder.shr(n_step2, 4);
-	let (n_sum3, _carry) = builder.iadd_cin_cout(n_step2, n_shr_4, zero);
+	let (n_sum3, _carry) = builder.iadd(n_step2, n_shr_4);
 	let n_step3 = builder.band(n_sum3, mask_0f0f);
 
 	// Step 4: Sum adjacent 8-bit groups into 16-bit groups
 	// n = (n + (n >> 8)) & 0x00FF00FF00FF00FF
 	let n_shr_8 = builder.shr(n_step3, 8);
-	let (n_sum4, _carry) = builder.iadd_cin_cout(n_step3, n_shr_8, zero);
+	let (n_sum4, _carry) = builder.iadd(n_step3, n_shr_8);
 	let n_step4 = builder.band(n_sum4, mask_00ff);
 
 	// Step 5: Sum adjacent 16-bit groups into 32-bit groups
 	// n = (n + (n >> 16)) & 0x0000FFFF0000FFFF
 	let n_shr_16 = builder.shr(n_step4, 16);
-	let (n_sum5, _carry) = builder.iadd_cin_cout(n_step4, n_shr_16, zero);
+	let (n_sum5, _carry) = builder.iadd(n_step4, n_shr_16);
 	let n_step5 = builder.band(n_sum5, mask_0000ffff);
 
 	// Step 6: Sum adjacent 32-bit groups to get final 64-bit result
 	// n = (n + (n >> 32)) & 0x00000000FFFFFFFF
 	let n_shr_32 = builder.shr(n_step5, 32);
-	let (n_sum6, _carry) = builder.iadd_cin_cout(n_step5, n_shr_32, zero);
+	let (n_sum6, _carry) = builder.iadd(n_step5, n_shr_32);
 
 	// The final result is in the lower bits and represents the popcount (0-64)
 	builder.band(n_sum6, mask_00000000ffffffff)

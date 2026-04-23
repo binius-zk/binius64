@@ -23,8 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// Verify: dividend = divisor × quotient + remainder
 	let (_hi, lo) = builder.imul(divisor[0], quotient[0]);
-	let zero_wire = builder.add_constant_64(0);
-	let sum = builder.iadd_cin_cout(lo, remainder[0], zero_wire).0;
+	let sum = builder.iadd(lo, remainder[0]).0;
 	builder.assert_eq("modulo_check", sum, dividend[0]);
 
 	// Also verify remainder < divisor (for completeness)

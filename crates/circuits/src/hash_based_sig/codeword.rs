@@ -93,7 +93,7 @@ pub fn codeword(
 
 	let mut codeword_sum = zero;
 	for &coord in coordinates.iter() {
-		let (sum, _carry) = builder.iadd_cin_cout(codeword_sum, coord, zero);
+		let (sum, _carry) = builder.iadd(codeword_sum, coord);
 		codeword_sum = sum;
 	}
 	builder.assert_eq("codeword_sum_check", codeword_sum, target);

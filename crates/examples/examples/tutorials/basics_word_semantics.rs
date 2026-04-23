@@ -25,8 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// Same 64-bit words, different operations
 	let xor_result = builder.bxor(a, b);
-	let zero = builder.add_constant_64(0);
-	let (int_sum, _) = builder.iadd_cin_cout(x, y, zero);
+	let (int_sum, _) = builder.iadd(x, y);
 	let cmp_result = builder.icmp_ult(p, q);
 	let bit_pattern = builder.band(v, mask);
 

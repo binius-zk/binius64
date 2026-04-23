@@ -177,7 +177,7 @@ impl Sha512 {
 		// so the high 64 bits are zero. We keep `bitlen` as the low 64-bit portion.
 
 		// end_block_index = floor((len + 16) / 128) using 64-bit add
-		let (sum, _carry) = builder.iadd_cin_cout(len_bytes, builder.add_constant_64(16), zero);
+		let (sum, _carry) = builder.iadd(len_bytes, builder.add_constant_64(16));
 		let end_block_index = builder.shr(sum, 7);
 		// ---- 2b. Final digest selection
 		//
