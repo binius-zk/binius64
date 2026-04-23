@@ -455,11 +455,11 @@ where
 
 	let log_constraint_count = checked_log_2(a.len());
 
-	// The structure of the AND reduction requires that it proves at least 2^3 word-level
-	// constraints, you can zero-pad if necessary to reach this minimum
-	assert!(log_constraint_count >= checked_log_2(binius_core::consts::MIN_AND_CONSTRAINTS));
+	let mut small_field_zerocheck_challenges = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.to_vec();
+	small_field_zerocheck_challenges.truncate(log_constraint_count);
 
-	let big_field_zerocheck_challenges = channel.sample_many(log_constraint_count - 3);
+	let big_field_zerocheck_challenges =
+		channel.sample_many(log_constraint_count - small_field_zerocheck_challenges.len());
 
 	a.resize(1 << log_constraint_count, Word(0));
 	b.resize(1 << log_constraint_count, Word(0));
@@ -478,8 +478,8 @@ where
 			log_num_rows: log_constraint_count + LOG_WORD_SIZE_BITS,
 			packed_evals: c,
 		},
-		big_field_zerocheck_challenges.to_vec(),
-		PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.to_vec(),
+		big_field_zerocheck_challenges,
+		small_field_zerocheck_challenges,
 		prover_message_domain.isomorphic(),
 	);
 

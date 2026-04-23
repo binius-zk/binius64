@@ -1,6 +1,7 @@
 // Copyright 2025 Irreducible Inc.
-use std::iter;
+use std::{iter};
 
+use binius_core::consts::LOG_WORD_SIZE_BITS;
 use binius_field::{BinaryField, Field, PackedBinaryField128x1b, PackedExtension};
 use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::rayon::prelude::*;
@@ -76,6 +77,13 @@ where
 	// supports 128b underliers, this is set to a constant. We would need to rethink for support of
 	// multiple underlier sizes
 	assert_eq!(PNTTDomain::WIDTH, 16);
+
+	let expected_log_words =
+		eq_ind_big_field_challenges.log_len() + small_field_zerocheck_challenges.len();
+	for col in [first_col, second_col, third_col] {
+		assert_eq!(col.log_num_rows, expected_log_words + LOG_WORD_SIZE_BITS);
+		assert_eq!(col.packed_evals.len(), 1 << expected_log_words);
+	}
 
 	let eq_ind_small: Vec<PNTTDomain> = eq_ind_partial_eval(small_field_zerocheck_challenges)
 		.as_ref()
@@ -208,14 +216,17 @@ mod test {
 		let log_num_rows = 10;
 		let mut rng = StdRng::from_seed([0; 32]);
 
-		let big_field_zerocheck_challenges =
-			vec![B128::random(&mut rng); (log_num_rows - SKIPPED_VARS - 3) + 1];
-
 		let small_field_zerocheck_challenges = [
 			AESTowerField8b::new(2),
 			AESTowerField8b::new(4),
 			AESTowerField8b::new(16),
 		];
+
+		let big_field_zerocheck_challenges =
+			vec![
+				B128::random(&mut rng);
+				log_num_rows - SKIPPED_VARS - small_field_zerocheck_challenges.len()
+			];
 
 		let mlv_1 = random_one_bit_multivariate(log_num_rows, &mut rng);
 		let mlv_2 = random_one_bit_multivariate(log_num_rows, &mut rng);
@@ -267,8 +278,9 @@ mod test {
 
 		let lagrange_evals =
 			lagrange_evals_scalars(&verifier_input_domain, first_sumcheck_challenge);
-		let transform = OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
-			.create(&lagrange_evals);
+		let transform =
+			OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+				.create(&lagrange_evals);
 
 		let folded_first_mle: FieldBuffer<B128> = mlv_1.fold(&transform);
 		let folded_second_mle: FieldBuffer<B128> = mlv_2.fold(&transform);
