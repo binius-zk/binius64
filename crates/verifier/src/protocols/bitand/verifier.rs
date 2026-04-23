@@ -8,8 +8,10 @@ use binius_math::{BinarySubspace, univariate::extrapolate_over_subspace};
 
 use crate::{
 	Error,
-	and_reduction::utils::constants::ROWS_PER_HYPERCUBE_VERTEX,
-	protocols::{mlecheck::verify, sumcheck::SumcheckOutput},
+	protocols::{
+		bitand::utils::constants::ROWS_PER_HYPERCUBE_VERTEX, mlecheck::verify,
+		sumcheck::SumcheckOutput,
+	},
 };
 
 /// Output from the AND constraint reduction protocol verification.

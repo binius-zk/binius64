@@ -63,8 +63,8 @@ mod test {
 	use binius_field::{BinaryField, FieldOps, Random};
 	use binius_math::{BinarySubspace, FieldBuffer, univariate::lagrange_evals_scalars};
 	use binius_verifier::{
-		and_reduction::utils::constants::SKIPPED_VARS,
 		config::{B128, LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
+		protocols::bitand::utils::constants::SKIPPED_VARS,
 	};
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
