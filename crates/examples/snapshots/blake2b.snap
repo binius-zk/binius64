@@ -9,8 +9,8 @@ Constraints
 │  [▓▓▓▓▓▓▓▓▓░] spare: 29
 ├─ MUL constraints: 0 used (0.0% of 2^0)
 │  [░░░░░░░░░░] spare: 1
-└─ Distinct value indices: 21,680
-   ├─ Distinct shifted value indices: 13,375
+└─ Distinct value indices: 21,679
+   ├─ Distinct shifted value indices: 13,374
    └─ Distinct unshifted value indices: 8,305
 
 Value Vector
@@ -24,5 +24,5 @@ Value Vector
 │  └─ Internal: 8,155
 ├─ Total Committed: 8,310 used (50.7% of 2^14)
 │  [▓▓▓▓▓░░░░░] spare: 8,074
-└─ Scratch (uncommitted): 11,901
+└─ Scratch (uncommitted): 7,293
 
