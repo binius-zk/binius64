@@ -102,18 +102,24 @@ where
 
 				// In this cycle, we compute the NTT for each column using the lookup table.
 				// We are not using the `NTTLookup::ntt` method directly for performance reasons.
-				for (summed_ntt_i, lookup_i) in izip!(&mut summed_ntt, lookup) {
-					let mut first_col_ntt = PNTTDomain::zero();
-					let mut second_col_ntt = PNTTDomain::zero();
-					let mut third_col_ntt = PNTTDomain::zero();
+				let mut first_col_ntt = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
+				let mut second_col_ntt = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
+				let mut third_col_ntt = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
 
-					for byte_index in 0..8 {
-						first_col_ntt += lookup_i[col_1_bytes[byte_index] as usize][byte_index];
-						second_col_ntt += lookup_i[col_2_bytes[byte_index] as usize][byte_index];
-						third_col_ntt += lookup_i[col_3_bytes[byte_index] as usize][byte_index];
+				for (byte_index, lookup_byte) in lookup.iter().enumerate() {
+					let row_1 = &lookup_byte[col_1_bytes[byte_index] as usize];
+					let row_2 = &lookup_byte[col_2_bytes[byte_index] as usize];
+					let row_3 = &lookup_byte[col_3_bytes[byte_index] as usize];
+					for j in 0..(ROWS_PER_HYPERCUBE_VERTEX / 16) {
+						first_col_ntt[j] += row_1[j];
+						second_col_ntt[j] += row_2[j];
+						third_col_ntt[j] += row_3[j];
 					}
+				}
 
-					*summed_ntt_i += (first_col_ntt * second_col_ntt - third_col_ntt) * weight;
+				for j in 0..(ROWS_PER_HYPERCUBE_VERTEX / 16) {
+					summed_ntt[j] +=
+						(first_col_ntt[j] * second_col_ntt[j] - third_col_ntt[j]) * weight;
 				}
 			}
 
