@@ -74,10 +74,5 @@ pub fn emit_eval_bytecode(
 	} = data.gate_param();
 	let [a, b] = inputs else { unreachable!() };
 	let [sum, cout] = outputs else { unreachable!() };
-	builder.emit_iadd_cout(
-		wire_to_reg(*sum),
-		wire_to_reg(*cout),
-		wire_to_reg(*a),
-		wire_to_reg(*b),
-	);
+	builder.emit_iadd_cout(wire_to_reg(*sum), wire_to_reg(*cout), wire_to_reg(*a), wire_to_reg(*b));
 }

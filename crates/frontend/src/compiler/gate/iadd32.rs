@@ -9,8 +9,8 @@
 //! - `x`, `y`: Input wires for the summands
 //! - `z`: Output wire containing the resulting sum
 //! - `cout` (carry-out): Output wire containing a carry word where each bit position indicates
-//!   whether a carry occurred at that position during the addition. In particular, bit 31 and
-//!   bit 63 indicate the carry-out of the lower and upper 32-bit halves respectively.
+//!   whether a carry occurred at that position during the addition. In particular, bit 31 and bit
+//!   63 indicate the carry-out of the lower and upper 32-bit halves respectively.
 //!
 //! # Constraints
 //!
