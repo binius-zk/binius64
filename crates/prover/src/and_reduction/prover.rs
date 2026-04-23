@@ -1,17 +1,25 @@
 // Copyright 2025 Irreducible Inc.
-use binius_field::{BinaryField, Field, PackedBinaryField128x1b, PackedExtension, PackedField};
+use binius_field::{
+	BinaryField, Field, PackedBinaryField128x1b, PackedExtension, PackedField,
+	linear_transformation::{
+		BytewiseLookupTransformationFactory, LinearTransformationFactory,
+		OutputWrappingTransformationFactory,
+	},
+};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::extrapolate_over_subspace,
+	BinarySubspace,
+	multilinear::eq::eq_ind_partial_eval,
+	univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
 };
 use binius_verifier::{
 	config::B1,
-	protocols::bitand::{AndCheckOutput, ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
+	protocols::bitand::{AndCheckOutput, ROWS_PER_HYPERCUBE_VERTEX},
 };
 
 use super::{
-	fold_lookup::FoldLookup, prover_setup::ntt_lookup_from_prover_message_domain,
-	sumcheck_round_messages, utils::multivariate::OneBitOblongMultilinear,
+	prover_setup::ntt_lookup_from_prover_message_domain, sumcheck_round_messages,
+	utils::multivariate::OneBitOblongMultilinear,
 };
 use crate::protocols::sumcheck::{
 	Error, ProveSingleOutput, common::MleCheckProver, prove_single_mlecheck,
@@ -156,13 +164,12 @@ where
 		challenge: FChallenge,
 	) -> impl MleCheckProver<FChallenge> {
 		let univariate_domain = round_message_domain.reduce_dim(round_message_domain.dim() - 1);
-		let lookup = FoldLookup::<_, SKIPPED_VARS>::new(&univariate_domain, challenge);
+		let lagrange_evals = lagrange_evals_scalars(&univariate_domain, challenge);
+		let transform = OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+			.create(&lagrange_evals);
 
-		let proving_polys = [
-			self.first_col.fold(&lookup),
-			self.second_col.fold(&lookup),
-			self.third_col.fold(&lookup),
-		];
+		let proving_polys = [&self.first_col, &self.second_col, &self.third_col]
+			.map(|col| col.fold::<_, FChallenge, _>(&transform));
 
 		let upcasted_small_field_challenges: Vec<_> = self
 			.small_field_zerocheck_challenges
@@ -266,8 +273,18 @@ mod test {
 	use std::{iter, iter::repeat_with};
 
 	use binius_core::word::Word;
-	use binius_field::{AESTowerField8b, PackedAESBinaryField16x8b};
-	use binius_math::{BinarySubspace, multilinear::evaluate::evaluate};
+	use binius_field::{
+		AESTowerField8b, PackedAESBinaryField16x8b,
+		linear_transformation::{
+			BytewiseLookupTransformationFactory, LinearTransformationFactory,
+			OutputWrappingTransformationFactory,
+		},
+	};
+	use binius_math::{
+		BinarySubspace, FieldBuffer,
+		multilinear::evaluate::evaluate,
+		univariate::lagrange_evals_scalars,
+	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::CanSample};
 	use binius_verifier::{
 		config::{B128, StdChallenger},
@@ -276,9 +293,7 @@ mod test {
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::OblongZerocheckProver;
-	use crate::and_reduction::{
-		fold_lookup::FoldLookup, utils::multivariate::OneBitOblongMultilinear,
-	};
+	use crate::and_reduction::utils::multivariate::OneBitOblongMultilinear;
 
 	fn random_one_bit_multivariate(
 		log_num_rows: usize,
@@ -367,13 +382,14 @@ mod test {
 
 		let one_bit_mlvs = [first_mlv, second_mlv, third_mlv];
 
-		let verifier_transparent_fold_lookup =
-			FoldLookup::new(&verifier_univariate_domain, z_challenge);
+		let verifier_lagrange_evals =
+			lagrange_evals_scalars(&verifier_univariate_domain, z_challenge);
+		let verifier_transparent_transform =
+			OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+				.create(&verifier_lagrange_evals);
 		for (i, eval) in [a_eval, b_eval, c_eval].iter().enumerate() {
-			assert_eq!(
-				evaluate(&one_bit_mlvs[i].fold(&verifier_transparent_fold_lookup), &eval_point),
-				*eval
-			);
+			let folded: FieldBuffer<B128> = one_bit_mlvs[i].fold(&verifier_transparent_transform);
+			assert_eq!(evaluate(&folded, &eval_point), *eval);
 		}
 	}
 }

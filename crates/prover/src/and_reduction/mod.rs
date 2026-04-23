@@ -1,5 +1,4 @@
 // Copyright 2025 Irreducible Inc.
-pub mod fold_lookup;
 mod ntt_lookup;
 pub mod prover;
 pub mod prover_setup;

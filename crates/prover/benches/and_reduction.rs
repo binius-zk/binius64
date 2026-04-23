@@ -2,13 +2,21 @@
 use std::{iter, iter::repeat_with};
 
 use binius_core::word::Word;
-use binius_field::{AESTowerField8b, Field, PackedAESBinaryField16x8b, Random};
+use binius_field::{
+	AESTowerField8b, Field, PackedAESBinaryField16x8b, Random,
+	linear_transformation::{
+		BytewiseLookupTransformationFactory, LinearTransformationFactory,
+		OutputWrappingTransformationFactory,
+	},
+};
 use binius_math::{
-	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::extrapolate_over_subspace,
+	BinarySubspace, FieldBuffer,
+	multilinear::eq::eq_ind_partial_eval,
+	univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
 };
 use binius_prover::{
 	and_reduction::{
-		fold_lookup::FoldLookup, prover_setup::ntt_lookup_from_prover_message_domain,
+		prover_setup::ntt_lookup_from_prover_message_domain,
 		sumcheck_round_messages::univariate_round_message_extension_domain,
 		utils::multivariate::OneBitOblongMultilinear,
 	},
@@ -54,7 +62,7 @@ fn bench(c: &mut Criterion) {
 
 	let prover_message_domain = BinarySubspace::with_dim(SKIPPED_VARS + 1);
 
-	let univariate_domain = prover_message_domain
+	let univariate_domain: BinarySubspace<B128> = prover_message_domain
 		.reduce_dim(prover_message_domain.dim() - 1)
 		.isomorphic();
 
@@ -103,15 +111,14 @@ fn bench(c: &mut Criterion) {
 				&small_field_zerocheck_challenges,
 			);
 
-			let fold_lookup =
-				FoldLookup::<_, SKIPPED_VARS>::new(&univariate_domain, B128::random(&mut rng));
+			let lagrange_evals = lagrange_evals_scalars(&univariate_domain, B128::random(&mut rng));
+			let transform = OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+				.create(&lagrange_evals);
 
-			(
-				urm,
-				first_mlv.fold(&fold_lookup),
-				second_mlv.fold(&fold_lookup),
-				third_mlv.fold(&fold_lookup),
-			)
+			let folded: [FieldBuffer<B128>; 3] = [&first_mlv, &second_mlv, &third_mlv]
+				.map(|mlv| mlv.fold(&transform));
+
+			(urm, folded)
 		});
 	});
 
@@ -130,8 +137,10 @@ fn bench(c: &mut Criterion) {
 
 			let first_sumcheck_challenge = B128::random(&mut rng);
 
-			let fold_lookup =
-				FoldLookup::<_, SKIPPED_VARS>::new(&univariate_domain, first_sumcheck_challenge);
+			let lagrange_evals =
+				lagrange_evals_scalars(&univariate_domain, first_sumcheck_challenge);
+			let transform = OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+				.create(&lagrange_evals);
 
 			let mut univariate_message_coeffs = vec![B128::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];
 
@@ -155,11 +164,8 @@ fn bench(c: &mut Criterion) {
 				.copied()
 				.collect();
 
-			let proving_polys = [
-				first_mlv.fold(&fold_lookup),
-				second_mlv.fold(&fold_lookup),
-				third_mlv.fold(&fold_lookup),
-			];
+			let proving_polys: [FieldBuffer<B128>; 3] = [&first_mlv, &second_mlv, &third_mlv]
+				.map(|mlv| mlv.fold(&transform));
 
 			let mut prover = QuadraticMleCheckProver::new(
 				proving_polys,

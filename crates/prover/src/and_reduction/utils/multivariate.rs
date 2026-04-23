@@ -1,11 +1,9 @@
 // Copyright 2025 Irreducible Inc.
 use binius_core::word::Word;
-use binius_field::Field;
+use binius_field::{Field, PackedField, linear_transformation::Transformation};
 use binius_math::FieldBuffer;
-use binius_utils::rayon::prelude::*;
-use binius_verifier::config::LOG_WORD_SIZE_BITS;
 
-use crate::and_reduction::fold_lookup::FoldLookup;
+use crate::fold_word::fold_words_with_transform;
 
 // ALL FOLDING IS LOW TO HIGH
 /// Represents a OblongMultilinear polynomial with binary (0/1) coefficients.
@@ -25,33 +23,19 @@ pub struct OneBitOblongMultilinear {
 
 impl OneBitOblongMultilinear {
 	/// Performs partial evaluation of the OblongMultilinear polynomial on its first variable using
-	/// a lookup table.
+	/// a prebuilt linear transformation.
 	///
-	/// This method is the optimized version of `fold_naive`, using a precomputed lookup table
-	/// for efficient evaluation. It evaluates the polynomial at the challenge point that was
-	/// used to construct the lookup table.
-	///
-	/// # Type Parameters
-	/// * `F` - The field type for the evaluation result
-	///
-	/// # Arguments
-	/// * `lookup` - The precomputed lookup table for the evaluation point
-	///
-	/// # Returns
-	/// A `FieldBuffer` containing the evaluations of the partially evaluated polynomial
-	/// over the remaining variables.
-	#[allow(clippy::modulo_one)]
-	pub fn fold<F: Field>(&self, lookup: &FoldLookup<F, LOG_WORD_SIZE_BITS>) -> FieldBuffer<F> {
-		let new_n_vars = self.log_num_rows - LOG_WORD_SIZE_BITS;
-		let multilin_vals = self
-			.packed_evals
-			.par_iter()
-			.map(|word| {
-				let word_bytes = word.as_u64().to_le_bytes();
-				lookup.fold_one_bit_univariate(word_bytes.into_iter())
-			})
-			.collect();
-		FieldBuffer::new(new_n_vars, multilin_vals)
+	/// The transform must be built from the Lagrange basis evaluations of the univariate domain
+	/// at the challenge point; see [`fold_words_with_transform`] for the underlying computation.
+	/// Building the transform once and reusing it across folds (e.g. for the A/B/C columns of the
+	/// AND reduction) amortizes the Method-of-Four-Russians precomputation.
+	pub fn fold<F, P, T>(&self, transform: &T) -> FieldBuffer<P>
+	where
+		F: Field,
+		P: PackedField<Scalar = F>,
+		T: Transformation<u64, F>,
+	{
+		fold_words_with_transform(transform, &self.packed_evals)
 	}
 }
 
@@ -60,7 +44,13 @@ mod test {
 	use std::{iter, iter::repeat_with};
 
 	use binius_core::word::Word;
-	use binius_field::{BinaryField, FieldOps, Random};
+	use binius_field::{
+		BinaryField, FieldOps, Random,
+		linear_transformation::{
+			BytewiseLookupTransformationFactory, LinearTransformationFactory,
+			OutputWrappingTransformationFactory,
+		},
+	};
 	use binius_math::{BinarySubspace, FieldBuffer, univariate::lagrange_evals_scalars};
 	use binius_verifier::{
 		config::{B128, LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
@@ -69,7 +59,6 @@ mod test {
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::OneBitOblongMultilinear;
-	use crate::and_reduction::fold_lookup::FoldLookup;
 
 	// Performs partial evaluation of the OblongMultilinear polynomial on its first variable using
 	/// a naive approach.
@@ -136,11 +125,13 @@ mod test {
 
 		let univariate_domain = BinarySubspace::with_dim(SKIPPED_VARS);
 
-		let lookup = FoldLookup::<_, SKIPPED_VARS>::new(&univariate_domain, challenge);
+		let lagrange_evals = lagrange_evals_scalars(&univariate_domain, challenge);
+		let transform = OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+			.create(&lagrange_evals);
 
 		let folded_naive = fold_naive(&mlv, &univariate_domain, challenge);
 
-		let folded_smart = mlv.fold(&lookup);
+		let folded_smart: FieldBuffer<B128> = mlv.fold(&transform);
 
 		for i in 0..1 << (log_num_rows - SKIPPED_VARS) {
 			assert_eq!(folded_naive.as_ref()[i], folded_smart.as_ref()[i]);

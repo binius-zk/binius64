@@ -153,10 +153,17 @@ mod test {
 	use std::iter::repeat_with;
 
 	use binius_core::word::Word;
-	use binius_field::{AESTowerField8b, Field, PackedAESBinaryField16x8b, Random};
+	use binius_field::{
+		AESTowerField8b, Field, PackedAESBinaryField16x8b, Random,
+		linear_transformation::{
+			BytewiseLookupTransformationFactory, LinearTransformationFactory,
+			OutputWrappingTransformationFactory,
+		},
+	};
 	use binius_math::{
-		BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval,
-		univariate::extrapolate_over_subspace,
+		BinarySubspace, FieldBuffer,
+		multilinear::eq::eq_ind_partial_eval,
+		univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
 	};
 	use binius_verifier::{
 		config::{B128, LOG_WORD_SIZE_BITS},
@@ -167,7 +174,7 @@ mod test {
 
 	use super::univariate_round_message_extension_domain;
 	use crate::and_reduction::{
-		fold_lookup::FoldLookup, prover_setup::ntt_lookup_from_prover_message_domain,
+		prover_setup::ntt_lookup_from_prover_message_domain,
 		utils::multivariate::OneBitOblongMultilinear,
 	};
 
@@ -258,12 +265,14 @@ mod test {
 			first_sumcheck_challenge,
 		);
 
-		let lookup =
-			FoldLookup::<_, SKIPPED_VARS>::new(&verifier_input_domain, first_sumcheck_challenge);
+		let lagrange_evals =
+			lagrange_evals_scalars(&verifier_input_domain, first_sumcheck_challenge);
+		let transform = OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+			.create(&lagrange_evals);
 
-		let folded_first_mle = mlv_1.fold(&lookup);
-		let folded_second_mle = mlv_2.fold(&lookup);
-		let folded_third_mle = mlv_3.fold(&lookup);
+		let folded_first_mle: FieldBuffer<B128> = mlv_1.fold(&transform);
+		let folded_second_mle: FieldBuffer<B128> = mlv_2.fold(&transform);
+		let folded_third_mle: FieldBuffer<B128> = mlv_3.fold(&transform);
 
 		let upcasted_small_field_challenges: Vec<_> = small_field_zerocheck_challenges
 			.into_iter()

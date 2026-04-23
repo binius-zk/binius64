@@ -47,13 +47,19 @@ where
 	P: PackedField<Scalar = F>,
 	TransformFactory: LinearTransformationFactory<u64, F>,
 {
-	assert!(words.len().is_power_of_two()); // precondition
+	fold_words_with_transform(&transform_factory.create(vec), words)
+}
 
-	let transform = transform_factory.create(vec);
+pub fn fold_words_with_transform<F, P, T>(transform: &T, words: &[Word]) -> FieldBuffer<P>
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+	T: Transformation<u64, F>,
+{
+	assert!(words.len().is_power_of_two()); // precondition
 
 	let log_n = log2_strict_usize(words.len());
 
-	// Collect the folded results using the WordTransform
 	let values = words
 		.par_chunks(P::WIDTH)
 		.map(|word_chunk| {
