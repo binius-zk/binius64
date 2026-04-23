@@ -16,7 +16,7 @@ use binius_frontend::{CircuitBuilder, Wire};
 
 pub mod compress;
 
-pub use compress::blake3_compress;
+pub use compress::{blake3_compress, blake3_compress_2x};
 
 /// BLAKE3 initial chaining value. Same as the SHA-256 IV.
 pub const IV: [u32; 8] = [
