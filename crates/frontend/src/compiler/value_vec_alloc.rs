@@ -97,11 +97,7 @@ impl Alloc {
 		cur_index = cur_index.max(MIN_WORDS_PER_SEGMENT as u32);
 		cur_index = cur_index.next_power_of_two();
 		let offset_witness = cur_index as usize;
-		for wire in self
-			.w_witness
-			.into_iter()
-			.chain(self.w_internal.into_iter())
-		{
+		for wire in self.w_witness.into_iter().chain(self.w_internal) {
 			wire_mapping[wire] = ValueIndex(cur_index);
 			cur_index += 1;
 		}

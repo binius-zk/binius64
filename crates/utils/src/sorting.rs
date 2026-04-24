@@ -37,9 +37,9 @@ pub fn stable_sort<T>(
 	let mut indexed_objs = objs.into_iter().enumerate().collect::<Vec<_>>();
 	// NOTE: Important to use stable sorting for prover-verifier consistency!
 	if descending {
-		indexed_objs.sort_by(|a, b| key(&b.1).cmp(&key(&a.1)));
+		indexed_objs.sort_by_key(|b| std::cmp::Reverse(key(&b.1)));
 	} else {
-		indexed_objs.sort_by(|a, b| key(&a.1).cmp(&key(&b.1)));
+		indexed_objs.sort_by_key(|a| key(&a.1));
 	}
 	indexed_objs.into_iter().unzip()
 }

@@ -119,7 +119,7 @@ impl<D: MultiDigest<N, Digest: Send> + Send + Sync, const N: usize> ParallelDige
 			buffers,
 			|buffers, (data, out_chunk)| {
 				let mut hasher = self.0.clone();
-				for (mut buf, chunk) in buffers.iter_mut().zip(data.into_iter()) {
+				for (mut buf, chunk) in buffers.iter_mut().zip(data) {
 					buf.clear();
 					for item in chunk {
 						item.serialize(&mut buf)
@@ -135,7 +135,7 @@ impl<D: MultiDigest<N, Digest: Send> + Send + Sync, const N: usize> ParallelDige
 				} else {
 					let mut result = array::from_fn::<_, N, _>(|_| MaybeUninit::uninit());
 					hasher.finalize_into(&mut result);
-					for (out, res) in out_chunk.iter_mut().zip(result.into_iter()) {
+					for (out, res) in out_chunk.iter_mut().zip(result) {
 						out.write(unsafe { res.assume_init() });
 					}
 				}
