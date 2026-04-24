@@ -151,11 +151,16 @@ impl<F: Field> IOPProver<F> {
 		Channel: IOPProverChannel<P>,
 	{
 		let cs = &self.constraint_system;
+		// Precommit segment has no dummy mul-constraint blinding (see ConstraintSystemPadded).
+		let precommit_blinding = BlindingInfo {
+			n_dummy_wires: cs.blinding_info().n_dummy_wires,
+			n_dummy_constraints: 0,
+		};
 		let precommit_packed = pack_and_blind_witness::<_, P>(
 			cs.log_precommit() as usize,
 			witness.precommit(),
 			cs.n_precommit() as usize,
-			cs.blinding_info(),
+			&precommit_blinding,
 			rng,
 		);
 		let precommit_oracle = channel.send_oracle(precommit_packed.to_ref());

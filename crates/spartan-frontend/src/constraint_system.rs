@@ -378,12 +378,16 @@ impl<F: Field> WitnessLayout<F> {
 	}
 
 	pub fn with_blinding(self, info: BlindingInfo) -> Self {
-		let blinding_size = info.n_dummy_wires + 3 * info.n_dummy_constraints;
+		// Precommit is a ZK-hidden oracle that only needs dummy wires; no dummy mul constraints
+		// are added to it. Private gets both. Keep this in sync with
+		// `ConstraintSystemPadded::new` in the verifier crate.
+		let precommit_blinding_size = info.n_dummy_wires;
+		let private_blinding_size = info.n_dummy_wires + 3 * info.n_dummy_constraints;
 
-		let total_precommit = self.n_precommit as usize + blinding_size;
+		let total_precommit = self.n_precommit as usize + precommit_blinding_size;
 		let log_precommit = log2_ceil_usize(total_precommit) as u32;
 
-		let total_private = self.n_private as usize + blinding_size;
+		let total_private = self.n_private as usize + private_blinding_size;
 		let log_private = log2_ceil_usize(total_private) as u32;
 
 		Self {

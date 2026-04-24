@@ -35,18 +35,17 @@ impl<F: Field> ConstraintSystemPadded<F> {
 	/// 4. Computes mask buffer dimensions for the ZK mulcheck mask polynomial
 	pub fn new(cs: ConstraintSystem<F>, blinding_info: BlindingInfo) -> Self {
 		let mut mul_constraints = cs.mul_constraints().to_vec();
-		let blinding_size = blinding_info.n_dummy_wires + 3 * blinding_info.n_dummy_constraints;
 
 		/// Adds dummy blinding constraints for a segment and returns its padded log-size.
 		fn add_blinding_constraints(
 			mul_constraints: &mut Vec<MulConstraint<WitnessIndex>>,
 			make_index: fn(u32) -> WitnessIndex,
 			n_circuit_wires: usize,
-			blinding_info: &BlindingInfo,
-			blinding_size: usize,
+			n_dummy_wires: usize,
+			n_dummy_constraints: usize,
 		) -> u32 {
-			let dummy_base = n_circuit_wires + blinding_info.n_dummy_wires;
-			for i in 0..blinding_info.n_dummy_constraints {
+			let dummy_base = n_circuit_wires + n_dummy_wires;
+			for i in 0..n_dummy_constraints {
 				let a = make_index((dummy_base + 3 * i) as u32);
 				let b = make_index((dummy_base + 3 * i + 1) as u32);
 				let c = make_index((dummy_base + 3 * i + 2) as u32);
@@ -56,6 +55,8 @@ impl<F: Field> ConstraintSystemPadded<F> {
 					c: Operand::from(c),
 				});
 			}
+
+			let blinding_size = n_dummy_wires + 3 * n_dummy_constraints;
 			log2_ceil_usize(n_circuit_wires + blinding_size) as u32
 		}
 
@@ -63,15 +64,16 @@ impl<F: Field> ConstraintSystemPadded<F> {
 			&mut mul_constraints,
 			WitnessIndex::precommit,
 			cs.n_precommit() as usize,
-			&blinding_info,
-			blinding_size,
+			blinding_info.n_dummy_wires,
+			// Precommit segment doesn't need dummy constraints, only the private segment does.
+			0,
 		);
 		let log_private = add_blinding_constraints(
 			&mut mul_constraints,
 			WitnessIndex::private,
 			cs.n_private() as usize,
-			&blinding_info,
-			blinding_size,
+			blinding_info.n_dummy_wires,
+			blinding_info.n_dummy_constraints,
 		);
 
 		// Pad to next power of two with `one * one = one` constraints
