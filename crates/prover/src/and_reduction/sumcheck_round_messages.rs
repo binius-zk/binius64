@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
-use std::{iter};
+use std::iter;
 
-use binius_core::consts::LOG_WORD_SIZE_BITS;
+use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedBinaryField128x1b, PackedExtension};
 use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::rayon::prelude::*;
@@ -9,7 +9,7 @@ use binius_verifier::{config::B1, protocols::bitand::ROWS_PER_HYPERCUBE_VERTEX};
 use bytemuck::must_cast_ref;
 use itertools::izip;
 
-use super::{ntt_lookup::NTTLookup, utils::multivariate::OneBitOblongMultilinear};
+use super::ntt_lookup::NTTLookup;
 
 /// Generates a univariate polynomial for the sumcheck protocol in AND constraint reduction.
 ///
@@ -59,9 +59,9 @@ use super::{ntt_lookup::NTTLookup, utils::multivariate::OneBitOblongMultilinear}
 /// * `FChallenge` - The challenge field type (must be a binary field)
 /// * `PNTTDomain` - The packed extension field type for NTT operations (width must be 16)
 pub fn univariate_round_message_extension_domain<FChallenge, PNTTDomain>(
-	first_col: &OneBitOblongMultilinear,
-	second_col: &OneBitOblongMultilinear,
-	third_col: &OneBitOblongMultilinear,
+	first_col: &[Word],
+	second_col: &[Word],
+	third_col: &[Word],
 	eq_ind_big_field_challenges: &FieldBuffer<FChallenge>,
 	ntt_lookup: &NTTLookup<PNTTDomain>,
 	small_field_zerocheck_challenges: &[PNTTDomain::Scalar],
@@ -81,8 +81,7 @@ where
 	let expected_log_words =
 		eq_ind_big_field_challenges.log_len() + small_field_zerocheck_challenges.len();
 	for col in [first_col, second_col, third_col] {
-		assert_eq!(col.log_num_rows, expected_log_words + LOG_WORD_SIZE_BITS);
-		assert_eq!(col.packed_evals.len(), 1 << expected_log_words);
+		assert_eq!(col.len(), 1 << expected_log_words);
 	}
 
 	let eq_ind_small: Vec<PNTTDomain> = eq_ind_partial_eval(small_field_zerocheck_challenges)
@@ -94,9 +93,9 @@ where
 	// Accumulate resulting polynomial evals by iterating over each hypercube vertex
 	let chunk_size = eq_ind_small.len();
 	(
-		first_col.packed_evals.par_chunks(chunk_size),
-		second_col.packed_evals.par_chunks(chunk_size),
-		third_col.packed_evals.par_chunks(chunk_size),
+		first_col.par_chunks(chunk_size),
+		second_col.par_chunks(chunk_size),
+		third_col.par_chunks(chunk_size),
 	)
 		.into_par_iter()
 		.map(|(a_chunk, b_chunk, c_chunk)| {
@@ -158,7 +157,7 @@ where
 
 #[cfg(test)]
 mod test {
-	use std::iter::repeat_with;
+	use std::{iter, iter::repeat_with};
 
 	use binius_core::word::Word;
 	use binius_field::{
@@ -174,28 +173,22 @@ mod test {
 		univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
 	};
 	use binius_verifier::{
-		config::{B128, LOG_WORD_SIZE_BITS},
+		config::B128,
 		protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
 	};
 	use itertools::izip;
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::univariate_round_message_extension_domain;
-	use crate::and_reduction::{
-		prover_setup::ntt_lookup_from_prover_message_domain,
-		utils::multivariate::OneBitOblongMultilinear,
+	use crate::{
+		and_reduction::prover_setup::ntt_lookup_from_prover_message_domain,
+		fold_word::fold_words_with_transform,
 	};
 
-	fn random_one_bit_multivariate(
-		log_num_rows: usize,
-		mut rng: impl Rng,
-	) -> OneBitOblongMultilinear {
-		OneBitOblongMultilinear {
-			log_num_rows,
-			packed_evals: repeat_with(|| Word(rng.random()))
-				.take(1 << (log_num_rows - LOG_WORD_SIZE_BITS))
-				.collect(),
-		}
+	fn random_words(log_num_words: usize, mut rng: impl Rng) -> Vec<Word> {
+		repeat_with(|| Word(rng.random()))
+			.take(1 << log_num_words)
+			.collect()
 	}
 
 	// Sends the sum claim from first multilinear round (second overall round)
@@ -228,14 +221,10 @@ mod test {
 				log_num_rows - SKIPPED_VARS - small_field_zerocheck_challenges.len()
 			];
 
-		let mlv_1 = random_one_bit_multivariate(log_num_rows, &mut rng);
-		let mlv_2 = random_one_bit_multivariate(log_num_rows, &mut rng);
-		let mlv_3 = OneBitOblongMultilinear {
-			log_num_rows,
-			packed_evals: (0..1 << (log_num_rows - LOG_WORD_SIZE_BITS))
-				.map(|i| mlv_1.packed_evals[i] & mlv_2.packed_evals[i])
-				.collect(),
-		};
+		let log_num_words = log_num_rows - SKIPPED_VARS;
+		let mlv_1 = random_words(log_num_words, &mut rng);
+		let mlv_2 = random_words(log_num_words, &mut rng);
+		let mlv_3: Vec<Word> = iter::zip(&mlv_1, &mlv_2).map(|(&a, &b)| a & b).collect();
 
 		let eq_ind_only_big = eq_ind_partial_eval(&big_field_zerocheck_challenges);
 
@@ -282,9 +271,9 @@ mod test {
 			OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
 				.create(&lagrange_evals);
 
-		let folded_first_mle: FieldBuffer<B128> = mlv_1.fold(&transform);
-		let folded_second_mle: FieldBuffer<B128> = mlv_2.fold(&transform);
-		let folded_third_mle: FieldBuffer<B128> = mlv_3.fold(&transform);
+		let folded_first_mle: FieldBuffer<B128> = fold_words_with_transform(&transform, &mlv_1);
+		let folded_second_mle: FieldBuffer<B128> = fold_words_with_transform(&transform, &mlv_2);
+		let folded_third_mle: FieldBuffer<B128> = fold_words_with_transform(&transform, &mlv_3);
 
 		let upcasted_small_field_challenges: Vec<_> = small_field_zerocheck_challenges
 			.into_iter()

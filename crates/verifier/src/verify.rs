@@ -19,7 +19,7 @@ use binius_utils::{
 	checked_arithmetics::{checked_log_2, log2_ceil_usize},
 };
 use digest::{Digest, Output, core_api::BlockSizeUser};
-use itertools::{chain};
+use itertools::chain;
 
 use super::error::Error;
 use crate::{

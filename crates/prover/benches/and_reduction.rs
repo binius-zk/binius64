@@ -18,8 +18,8 @@ use binius_prover::{
 	and_reduction::{
 		prover_setup::ntt_lookup_from_prover_message_domain,
 		sumcheck_round_messages::univariate_round_message_extension_domain,
-		utils::multivariate::OneBitOblongMultilinear,
 	},
+	fold_word::fold_words_with_transform,
 	protocols::sumcheck::{common::SumcheckProver, quadratic_mle::QuadraticMleCheckProver},
 };
 use binius_verifier::{
@@ -39,26 +39,17 @@ fn bench(c: &mut Criterion) {
 		AESTowerField8b::new(4),
 		AESTowerField8b::new(16),
 	];
-	let first_mlv = OneBitOblongMultilinear {
-		log_num_rows,
-		packed_evals: repeat_with(|| Word(rng.random()))
-			.take(1 << (log_num_rows - SKIPPED_VARS))
-			.collect(),
-	};
+	let first_mlv: Vec<Word> = repeat_with(|| Word(rng.random()))
+		.take(1 << (log_num_rows - SKIPPED_VARS))
+		.collect();
 
-	let second_mlv = OneBitOblongMultilinear {
-		log_num_rows,
-		packed_evals: repeat_with(|| Word(rng.random()))
-			.take(1 << (log_num_rows - SKIPPED_VARS))
-			.collect(),
-	};
+	let second_mlv: Vec<Word> = repeat_with(|| Word(rng.random()))
+		.take(1 << (log_num_rows - SKIPPED_VARS))
+		.collect();
 
-	let third_mlv = OneBitOblongMultilinear {
-		log_num_rows,
-		packed_evals: iter::zip(&first_mlv.packed_evals, &second_mlv.packed_evals)
-			.map(|(&a, &b)| a & b)
-			.collect(),
-	};
+	let third_mlv: Vec<Word> = iter::zip(&first_mlv, &second_mlv)
+		.map(|(&a, &b)| a & b)
+		.collect();
 
 	let prover_message_domain = BinarySubspace::with_dim(SKIPPED_VARS + 1);
 
@@ -112,11 +103,12 @@ fn bench(c: &mut Criterion) {
 			);
 
 			let lagrange_evals = lagrange_evals_scalars(&univariate_domain, B128::random(&mut rng));
-			let transform = OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
-				.create(&lagrange_evals);
+			let transform =
+				OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+					.create(&lagrange_evals);
 
 			let folded: [FieldBuffer<B128>; 3] = [&first_mlv, &second_mlv, &third_mlv]
-				.map(|mlv| mlv.fold(&transform));
+				.map(|mlv| fold_words_with_transform(&transform, mlv));
 
 			(urm, folded)
 		});
@@ -139,8 +131,9 @@ fn bench(c: &mut Criterion) {
 
 			let lagrange_evals =
 				lagrange_evals_scalars(&univariate_domain, first_sumcheck_challenge);
-			let transform = OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
-				.create(&lagrange_evals);
+			let transform =
+				OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+					.create(&lagrange_evals);
 
 			let mut univariate_message_coeffs = vec![B128::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];
 
@@ -165,7 +158,7 @@ fn bench(c: &mut Criterion) {
 				.collect();
 
 			let proving_polys: [FieldBuffer<B128>; 3] = [&first_mlv, &second_mlv, &third_mlv]
-				.map(|mlv| mlv.fold(&transform));
+				.map(|mlv| fold_words_with_transform(&transform, mlv));
 
 			let mut prover = QuadraticMleCheckProver::new(
 				proving_polys,

@@ -33,7 +33,7 @@ use digest::{Digest, FixedOutputReset, Output, core_api::BlockSizeUser};
 
 use super::error::Error;
 use crate::{
-	and_reduction::{prover::OblongZerocheckProver, utils::multivariate::OneBitOblongMultilinear},
+	and_reduction::prover::OblongZerocheckProver,
 	hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression},
 	merkle_tree::prover::BinaryMerkleTreeProver,
 	protocols::{
@@ -447,11 +447,7 @@ where
 	Channel: binius_ip_prover::channel::IPProverChannel<F>,
 {
 	let prover_message_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1);
-	let AndCheckWitness {
-		mut a,
-		mut b,
-		mut c,
-	} = witness;
+	let AndCheckWitness { a, b, c } = witness;
 
 	let log_constraint_count = checked_log_2(a.len());
 
@@ -461,23 +457,10 @@ where
 	let big_field_zerocheck_challenges =
 		channel.sample_many(log_constraint_count - small_field_zerocheck_challenges.len());
 
-	a.resize(1 << log_constraint_count, Word(0));
-	b.resize(1 << log_constraint_count, Word(0));
-	c.resize(1 << log_constraint_count, Word(0));
-
 	let prover = OblongZerocheckProver::<_, PackedAESBinaryField16x8b>::new(
-		OneBitOblongMultilinear {
-			log_num_rows: log_constraint_count + LOG_WORD_SIZE_BITS,
-			packed_evals: a,
-		},
-		OneBitOblongMultilinear {
-			log_num_rows: log_constraint_count + LOG_WORD_SIZE_BITS,
-			packed_evals: b,
-		},
-		OneBitOblongMultilinear {
-			log_num_rows: log_constraint_count + LOG_WORD_SIZE_BITS,
-			packed_evals: c,
-		},
+		a,
+		b,
+		c,
 		big_field_zerocheck_challenges,
 		small_field_zerocheck_challenges,
 		prover_message_domain.isomorphic(),
