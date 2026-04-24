@@ -133,6 +133,35 @@ impl<F: Field> IOPProver<F> {
 		&self.constraint_system
 	}
 
+	/// Packs and commits the precommit segment of a witness on the channel.
+	///
+	/// This must be called before [`Self::prove`], and the returned oracle handle and packed
+	/// buffer must be passed into `prove`. Callers that wrap the IOP (e.g. the ZK wrapper) can
+	/// invoke this separately so the precommit oracle handle is available before the rest of
+	/// the protocol runs.
+	pub fn commit_precommit<P, Channel>(
+		&self,
+		witness: &Witness<F>,
+		rng: &mut impl CryptoRng,
+		channel: &mut Channel,
+	) -> (Channel::Oracle, FieldBuffer<P>)
+	where
+		F: BinaryField,
+		P: PackedField<Scalar = F> + PackedExtension<F>,
+		Channel: IOPProverChannel<P>,
+	{
+		let cs = &self.constraint_system;
+		let precommit_packed = pack_and_blind_witness::<_, P>(
+			cs.log_precommit() as usize,
+			witness.precommit(),
+			cs.n_precommit() as usize,
+			cs.blinding_info(),
+			rng,
+		);
+		let precommit_oracle = channel.send_oracle(precommit_packed.to_ref());
+		(precommit_oracle, precommit_packed)
+	}
+
 	/// Proves using an IOP channel interface.
 	///
 	/// This is the core proving logic, independent of the specific IOP compilation strategy.
@@ -141,12 +170,17 @@ impl<F: Field> IOPProver<F> {
 	/// # Arguments
 	///
 	/// * `witness` - The witness values for the constraint system
+	/// * `precommit_oracle` - Oracle handle obtained from [`Self::commit_precommit`]
+	/// * `precommit_packed` - Packed precommit buffer obtained from [`Self::commit_precommit`]
 	/// * `rng` - Random number generator for blinding
 	/// * `channel` - The IOP prover channel (public input must be observed on transcript before
-	///   creating the channel)
+	///   creating the channel; the precommit oracle must already have been committed on it via
+	///   [`Self::commit_precommit`])
 	pub fn prove<P, Channel>(
 		&self,
 		witness: Witness<F>,
+		precommit_oracle: Channel::Oracle,
+		precommit_packed: FieldBuffer<P>,
 		mut rng: impl CryptoRng,
 		mut channel: Channel,
 	) -> Result<(), Error>
@@ -223,17 +257,8 @@ impl<F: Field> IOPProver<F> {
 			&mut rng,
 		);
 
-		// Pack precommit witness into field elements and add blinding
-		let precommit_packed = pack_and_blind_witness::<_, P>(
-			cs.log_precommit() as usize,
-			witness.precommit(),
-			cs.n_precommit() as usize,
-			blinding_info,
-			&mut rng,
-		);
-
-		// Send the precommit, private, and mask oracles to the channel
-		let precommit_oracle = channel.send_oracle(precommit_packed.to_ref());
+		// Send the private and mask oracles to the channel. The precommit oracle was committed
+		// by the caller via `commit_precommit` and passed in as `precommit_oracle`.
 		let private_oracle = channel.send_oracle(private_packed.to_ref());
 		let mask_oracle = channel.send_oracle(masks_buffer.to_ref());
 
@@ -375,9 +400,14 @@ where
 		let public = witness.public();
 		transcript.observe().write_slice(public);
 
-		// Create ZK channel (owns the RNG for mask generation) and delegate to IOP prover
-		let channel = self.basefold_compiler.create_channel(transcript, &mut rng);
-		self.iop_prover.prove::<P, _>(witness, rng, channel)
+		// Create ZK channel (owns the RNG for mask generation), commit the precommit oracle,
+		// and delegate to the IOP prover.
+		let mut channel = self.basefold_compiler.create_channel(transcript, &mut rng);
+		let (precommit_oracle, precommit_packed) =
+			self.iop_prover
+				.commit_precommit::<P, _>(&witness, &mut rng, &mut channel);
+		self.iop_prover
+			.prove::<P, _>(witness, precommit_oracle, precommit_packed, rng, channel)
 	}
 }
 

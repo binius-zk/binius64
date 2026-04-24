@@ -112,12 +112,12 @@ where
 	/// 1. Creates a [`ReplayChannel`] from the recorded interaction
 	/// 2. Calls the `replay_fn` closure to replay the inner verification and fill the outer witness
 	/// 3. Validates and generates the outer IOP proof
-	pub fn finish(self, rng: impl CryptoRng) -> Result<(), crate::Error>
+	pub fn finish(self, mut rng: impl CryptoRng) -> Result<(), crate::Error>
 	where
 		ReplayFn: FnOnce(&mut ReplayChannel<'_, F>),
 	{
 		let Self {
-			inner_channel,
+			mut inner_channel,
 			outer_prover,
 			outer_layout,
 			replay_fn,
@@ -135,7 +135,18 @@ where
 		// Validate and generate the outer proof.
 		let outer_cs = outer_prover.constraint_system();
 		outer_cs.validate(&witness);
-		outer_prover.prove::<P, _>(witness, rng, inner_channel)?;
+
+		// TODO(BINIUS-33 follow-up): Lift precommit oracle commitment up to
+		// ZKWrappedProverChannel::new so the handle is obtained at construction time.
+		let (precommit_oracle, precommit_packed) =
+			outer_prover.commit_precommit::<P, _>(&witness, &mut rng, &mut inner_channel);
+		outer_prover.prove::<P, _>(
+			witness,
+			precommit_oracle,
+			precommit_packed,
+			rng,
+			inner_channel,
+		)?;
 		Ok(())
 	}
 }

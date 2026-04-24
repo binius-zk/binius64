@@ -189,8 +189,9 @@ mod tests {
 		// Use zero-filled public inputs of the correct length.
 		let public = vec![B128::ZERO; public_size];
 		let public_elems = channel.observe_many(&public);
+		// IronSpartanBuilderChannel::Oracle = () and recv_oracle is a no-op, so pass () directly.
 		iop_verifier
-			.verify(public_elems, &mut channel)
+			.verify((), public_elems, &mut channel)
 			.expect("symbolic verify failed");
 
 		let builder = channel.finish();

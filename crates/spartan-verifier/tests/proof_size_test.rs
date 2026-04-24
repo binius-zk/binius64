@@ -1,6 +1,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_field::BinaryField128bGhash as B128;
+use binius_iop::channel::IOPVerifierChannel;
 use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, ConstraintBuilder},
@@ -46,9 +47,14 @@ fn test_ip_proof_size() {
 	let mut channel = verifier.iop_compiler().create_size_tracking_channel();
 	let public = vec![B128::default(); 1 << cs.log_public()];
 	let public_elems = channel.observe_many(&public);
+	// SizeTrackingChannel::Oracle = (), but we still bind to exercise the real call pattern.
+	#[allow(clippy::let_unit_value)]
+	let precommit_oracle = channel
+		.recv_oracle()
+		.expect("recv_oracle on size-tracking channel should succeed");
 	verifier
 		.iop_verifier()
-		.verify(public_elems, &mut channel)
+		.verify(precommit_oracle, public_elems, &mut channel)
 		.expect("verify with size tracking channel should succeed");
 	let proof_size = channel.proof_size();
 
