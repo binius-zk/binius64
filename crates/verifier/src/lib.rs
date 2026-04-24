@@ -33,7 +33,6 @@
 
 #![warn(rustdoc::missing_crate_level_docs)]
 
-pub mod and_reduction;
 pub mod config;
 mod error;
 pub mod protocols;

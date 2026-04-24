@@ -24,11 +24,10 @@ use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::prelude::*};
 use binius_verifier::{
 	IOPVerifier, Verifier,
-	and_reduction::verifier::AndCheckOutput,
 	config::{
 		B1, B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
 	},
-	protocols::{intmul::IntMulOutput, sumcheck::SumcheckOutput},
+	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput, sumcheck::SumcheckOutput},
 };
 use digest::{Digest, FixedOutputReset, Output, core_api::BlockSizeUser};
 

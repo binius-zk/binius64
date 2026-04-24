@@ -23,7 +23,6 @@ use itertools::{Itertools, chain};
 
 use super::error::Error;
 use crate::{
-	and_reduction::verifier::{AndCheckOutput, verify_with_channel},
 	config::{
 		B1, B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
 	},
@@ -31,6 +30,7 @@ use crate::{
 	hash::PseudoCompressionFunction,
 	merkle_tree::BinaryMerkleTreeScheme,
 	protocols::{
+		bitand::{AndCheckOutput, verify_with_channel},
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
 		shift::{self, OperatorData},
 	},

@@ -5,11 +5,8 @@ use binius_math::{
 	BinarySubspace, multilinear::eq::eq_ind_partial_eval, univariate::extrapolate_over_subspace,
 };
 use binius_verifier::{
-	and_reduction::{
-		AndCheckOutput,
-		utils::constants::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
-	},
 	config::B1,
+	protocols::bitand::{AndCheckOutput, ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
 };
 
 use super::{
@@ -23,7 +20,7 @@ use crate::protocols::sumcheck::{
 
 /// Prover for the AND constraint reduction protocol via oblong univariate zerocheck.
 ///
-/// See [`binius_verifier::and_reduction::verifier`] for the protocol specification.
+/// See [`binius_verifier::protocols::bitand`] for the protocol specification.
 pub struct OblongZerocheckProver<FChallenge, PNTTDomain>
 where
 	FChallenge: Field + From<PNTTDomain::Scalar> + BinaryField,
@@ -273,11 +270,8 @@ mod test {
 	use binius_math::{BinarySubspace, multilinear::evaluate::evaluate};
 	use binius_transcript::{ProverTranscript, fiat_shamir::CanSample};
 	use binius_verifier::{
-		and_reduction::{
-			utils::constants::SKIPPED_VARS,
-			verifier::{AndCheckOutput, verify_with_channel},
-		},
 		config::{B128, StdChallenger},
+		protocols::bitand::{AndCheckOutput, SKIPPED_VARS, verify_with_channel},
 	};
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 

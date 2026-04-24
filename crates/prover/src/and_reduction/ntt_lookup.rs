@@ -37,7 +37,7 @@ use std::vec;
 
 use binius_field::{BinaryField, BinaryField1b, Field, PackedBinaryField8x1b, PackedField};
 use binius_math::{BinarySubspace, univariate::lagrange_evals_scalars};
-use binius_verifier::and_reduction::utils::constants::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS};
+use binius_verifier::protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS};
 
 /// A precomputed lookup table for fast NTT operations on 64-bit binary field elements.
 ///
@@ -215,7 +215,7 @@ mod test {
 		BinarySubspace, FieldSliceMut,
 		ntt::{AdditiveNTT, NeighborsLastReference, domain_context::GenericOnTheFly},
 	};
-	use binius_verifier::{and_reduction::utils::constants::SKIPPED_VARS, config::B1};
+	use binius_verifier::{config::B1, protocols::bitand::SKIPPED_VARS};
 	use itertools::Itertools;
 	use rand::{SeedableRng, rngs::StdRng};
 

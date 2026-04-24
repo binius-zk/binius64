@@ -15,8 +15,8 @@ use binius_prover::{
 	protocols::sumcheck::{common::SumcheckProver, quadratic_mle::QuadraticMleCheckProver},
 };
 use binius_verifier::{
-	and_reduction::utils::constants::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
 	config::B128,
+	protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
 };
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use rand::{Rng, SeedableRng, rngs::StdRng};
