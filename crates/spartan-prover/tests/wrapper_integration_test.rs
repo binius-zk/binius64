@@ -4,13 +4,13 @@ use binius_field::{BinaryField128bGhash as B128, Field, Random, arch::OptimalPac
 use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
 use binius_iop::{
 	basefold_compiler::BaseFoldZKVerifierCompiler,
+	channel::IOPVerifierChannel,
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_iop_prover::{
 	basefold_compiler::BaseFoldZKProverCompiler, merkle_tree::prover::BinaryMerkleTreeProver,
 };
-use binius_iop::channel::IOPVerifierChannel;
 use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly};
@@ -188,11 +188,7 @@ fn test_zk_wrapped_prove_verify() {
 	// Run the inner IOP verify through the wrapped channel.
 	let inner_precommit_oracle = wrapped_verifier_channel.recv_oracle().unwrap();
 	inner_iop_verifier
-		.verify(
-			inner_precommit_oracle,
-			inner_public_elems,
-			&mut wrapped_verifier_channel,
-		)
+		.verify(inner_precommit_oracle, inner_public_elems, &mut wrapped_verifier_channel)
 		.expect("inner IOP verify failed");
 
 	// Finish verifies the outer proof.
