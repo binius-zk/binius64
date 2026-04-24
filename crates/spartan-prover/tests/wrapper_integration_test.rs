@@ -92,13 +92,20 @@ fn test_zk_wrapped_prove_verify() {
 
 	let compression = StdCompression::default();
 	let merkle_scheme = BinaryMerkleTreeScheme::<B128, StdDigest, _>::new(compression.clone());
+
+	// Transcript layout: outer precommit oracle first (committed at wrapper construction),
+	// then all inner oracles, then the remaining outer oracles (private, mask).
+	let outer_oracle_specs = outer_iop_verifier.oracle_specs();
+	let combined_oracle_specs = [
+		vec![outer_oracle_specs[0]],
+		inner_iop_verifier.oracle_specs(),
+		outer_oracle_specs[1..].to_vec(),
+	]
+	.concat();
+
 	let zk_basefold_compiler = BaseFoldZKVerifierCompiler::new(
 		merkle_scheme,
-		[
-			inner_iop_verifier.oracle_specs(),
-			outer_iop_verifier.oracle_specs(),
-		]
-		.concat(),
+		combined_oracle_specs,
 		log_inv_rate,
 		n_test_queries,
 		&MinProofSizeStrategy,
@@ -135,8 +142,12 @@ fn test_zk_wrapped_prove_verify() {
 	prover_transcript.observe().write_slice(&public);
 
 	let basefold_channel = zk_basefold_prover.create_channel(&mut prover_transcript, &mut rng);
-	let mut wrapped_prover_channel =
-		ZKWrappedProverChannel::new(basefold_channel, &outer_iop_prover, &outer_layout, {
+	let mut wrapped_prover_channel = ZKWrappedProverChannel::new(
+		basefold_channel,
+		&outer_iop_prover,
+		&outer_layout,
+		&mut rng,
+		{
 			let inner_iop_verifier = &inner_iop_verifier;
 			let public = &public;
 			move |replay_channel: &mut ReplayChannel<'_, B128>| {
@@ -146,7 +157,8 @@ fn test_zk_wrapped_prove_verify() {
 					.verify((), inner_public_elems, replay_channel)
 					.expect("replay verification should not fail");
 			}
-		});
+		},
+	);
 
 	// Observe public input through the wrapped channel.
 	(&mut wrapped_prover_channel).observe_many(&public);
@@ -180,7 +192,8 @@ fn test_zk_wrapped_prove_verify() {
 
 	let verifier_channel = zk_basefold_compiler.create_channel(&mut verifier_transcript);
 	let mut wrapped_verifier_channel =
-		ZKWrappedVerifierChannel::new(verifier_channel, &outer_iop_verifier);
+		ZKWrappedVerifierChannel::new(verifier_channel, &outer_iop_verifier)
+			.expect("ZKWrappedVerifierChannel::new should succeed");
 
 	// Observe public input through the wrapped channel.
 	let inner_public_elems = wrapped_verifier_channel.observe_many(&public);

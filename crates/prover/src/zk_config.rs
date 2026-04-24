@@ -151,6 +151,7 @@ where
 			basefold_channel,
 			&self.outer_iop_prover,
 			&self.outer_layout,
+			&mut rng,
 			{
 				let inner_iop_verifier = &self.inner_iop_verifier;
 				move |replay_channel: &mut ReplayChannel<'_, B128>| {
