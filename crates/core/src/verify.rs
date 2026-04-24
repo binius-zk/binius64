@@ -26,6 +26,7 @@ pub fn eval_shifted_word(word: Word, shift_variant: ShiftVariant, amount: usize)
 }
 
 /// Evaluates an operand (XOR of shifted values) using a ValueVec
+#[inline]
 pub fn eval_operand(witness: &ValueVec, operand: &[ShiftedValueIndex]) -> Word {
 	operand.iter().fold(Word::ZERO, |acc, sv| {
 		let word = witness[sv.value_index];
