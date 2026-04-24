@@ -10,6 +10,7 @@ use binius_iop::{
 use binius_iop_prover::{
 	basefold_compiler::BaseFoldZKProverCompiler, merkle_tree::prover::BinaryMerkleTreeProver,
 };
+use binius_iop::channel::IOPVerifierChannel;
 use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly};
@@ -68,8 +69,9 @@ fn test_zk_wrapped_prove_verify() {
 	let mut builder_channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
 	let dummy_public = vec![B128::ZERO; inner_public_size];
 	let dummy_public_elems = builder_channel.observe_many(&dummy_public);
+	// IronSpartanBuilderChannel::Oracle = () and recv_oracle is a no-op, so pass () directly.
 	inner_iop_verifier
-		.verify(dummy_public_elems, &mut builder_channel)
+		.verify((), dummy_public_elems, &mut builder_channel)
 		.expect("symbolic verify failed");
 	let outer_builder = builder_channel.finish();
 	let (outer_cs, outer_layout) = compile(outer_builder);
@@ -139,8 +141,9 @@ fn test_zk_wrapped_prove_verify() {
 			let public = &public;
 			move |replay_channel: &mut ReplayChannel<'_, B128>| {
 				let inner_public_elems = replay_channel.observe_many(public);
+				// ReplayChannel::Oracle = () and recv_oracle is a no-op, so pass ().
 				inner_iop_verifier
-					.verify(inner_public_elems, replay_channel)
+					.verify((), inner_public_elems, replay_channel)
 					.expect("replay verification should not fail");
 			}
 		});
@@ -172,8 +175,13 @@ fn test_zk_wrapped_prove_verify() {
 	let inner_public_elems = wrapped_verifier_channel.observe_many(&public);
 
 	// Run the inner IOP verify through the wrapped channel.
+	let inner_precommit_oracle = wrapped_verifier_channel.recv_oracle().unwrap();
 	inner_iop_verifier
-		.verify(inner_public_elems, &mut wrapped_verifier_channel)
+		.verify(
+			inner_precommit_oracle,
+			inner_public_elems,
+			&mut wrapped_verifier_channel,
+		)
 		.expect("inner IOP verify failed");
 
 	// Finish verifies the outer proof.

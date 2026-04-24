@@ -93,9 +93,13 @@ where
 		public.append(&mut self.public_values);
 		public.resize(public_size, F::ZERO);
 
+		// TODO(BINIUS-33 follow-up): Lift precommit oracle reception up to
+		// ZKWrappedVerifierChannel::new so the handle is captured at construction time.
+		let precommit_oracle = self.inner_channel.recv_oracle()?;
+
 		// IOPVerifier::verify takes Vec<Channel::Elem>, not &[F].
 		self.outer_verifier
-			.verify(public.clone(), &mut self.inner_channel)?;
+			.verify(precommit_oracle, public.clone(), &mut self.inner_channel)?;
 		Ok(public)
 	}
 }

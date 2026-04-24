@@ -136,6 +136,8 @@ impl<F: Field> IOPVerifier<F> {
 	///
 	/// # Arguments
 	///
+	/// * `precommit_oracle` - Handle to the precommit oracle, received from the channel by the
+	///   caller before invoking `verify`.
 	/// * `public` - The public inputs to the constraint system
 	/// * `channel` - The IOP verifier channel
 	///
@@ -144,6 +146,7 @@ impl<F: Field> IOPVerifier<F> {
 	/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
 	pub fn verify<Channel>(
 		&self,
+		precommit_oracle: Channel::Oracle,
 		public: Vec<Channel::Elem>,
 		channel: &mut Channel,
 	) -> Result<(), Error>
@@ -165,8 +168,7 @@ impl<F: Field> IOPVerifier<F> {
 			});
 		}
 
-		// Receive the precommit, private, and mask oracle commitments.
-		let precommit_oracle = channel.recv_oracle()?;
+		// Receive the private and mask oracle commitments.
 		let private_oracle = channel.recv_oracle()?;
 		let mask_oracle = channel.recv_oracle()?;
 
@@ -303,9 +305,11 @@ where
 		// Verifier observes the public input (includes it in Fiat-Shamir).
 		transcript.observe().write_slice(public);
 
-		// Create channel and delegate to IOPVerifier::verify
+		// Create channel, receive the precommit oracle, and delegate to IOPVerifier::verify.
 		let mut channel = self.basefold_compiler.create_channel(transcript);
-		self.iop_verifier.verify(public.to_vec(), &mut channel)
+		let precommit_oracle = channel.recv_oracle()?;
+		self.iop_verifier
+			.verify(precommit_oracle, public.to_vec(), &mut channel)
 	}
 }
 
