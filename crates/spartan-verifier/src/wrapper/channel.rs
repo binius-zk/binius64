@@ -101,8 +101,15 @@ impl<F: Field> IOPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 
 	fn verify_oracle_relations<'a>(
 		&mut self,
-		_oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
 	) -> Result<(), binius_iop::channel::Error> {
+		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
+		// checks in the circuit equality of this value with the expected expression over encrypted
+		// values.
+		for relation in oracle_relations {
+			let decrypted_claim = self.alloc_inout_elem();
+			self.assert_zero(relation.claim - decrypted_claim)?;
+		}
 		Ok(())
 	}
 }
@@ -211,8 +218,15 @@ impl<'a, F: Field> IOPVerifierChannel<F> for ReplayChannel<'a, F> {
 
 	fn verify_oracle_relations<'b>(
 		&mut self,
-		_oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'b, Self::Oracle, Self::Elem>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'b, Self::Oracle, Self::Elem>>,
 	) -> Result<(), binius_iop::channel::Error> {
+		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
+		// checks in the circuit equality of this value with the expected expression over encrypted
+		// values.
+		for relation in oracle_relations {
+			let decrypted_claim = self.next_inout_elem();
+			self.assert_zero(relation.claim - decrypted_claim)?;
+		}
 		Ok(())
 	}
 }

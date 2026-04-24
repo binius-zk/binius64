@@ -273,6 +273,16 @@ where
 			Item = (Self::Oracle, FieldBuffer<P>, FieldBuffer<P>, P::Scalar),
 		>,
 	) {
+		let oracle_relations = oracle_relations.into_iter().collect::<Vec<_>>();
+
+		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
+		// checks in the circuit equality of this value with the expected expression over encrypted
+		// values.
+		for (_, _, _, claim) in &oracle_relations {
+			self.inner_channel.send_one(*claim);
+			self.interaction.push(*claim);
+		}
+
 		self.inner_channel.prove_oracle_relations(oracle_relations)
 	}
 }

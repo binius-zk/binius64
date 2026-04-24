@@ -173,6 +173,16 @@ where
 		&mut self,
 		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'b, Self::Oracle, Self::Elem>>,
 	) -> Result<(), binius_iop::channel::Error> {
+		let oracle_relations = oracle_relations
+			.into_iter()
+			.map(|relation| {
+				let decrypted_claim = self.recv_one()?;
+				Ok(OracleLinearRelation {
+					claim: decrypted_claim,
+					..relation
+				})
+			})
+			.collect::<Result<Vec<_>, binius_iop::channel::Error>>()?;
 		self.inner_channel.verify_oracle_relations(oracle_relations)
 	}
 }
