@@ -34,7 +34,7 @@ use binius_transcript::{
 ///
 /// When used with a Fiat-Shamir transcript, the challenges are derived deterministically from
 /// the transcript state, making the protocol non-interactive.
-pub trait IPVerifierChannel<F> {
+pub trait IPVerifierChannel<F: Field> {
 	/// The element type returned by receive and sample methods.
 	type Elem: FieldOps;
 
@@ -47,7 +47,9 @@ pub trait IPVerifierChannel<F> {
 	}
 
 	/// Receives a fixed-size array of field elements from the prover.
-	fn recv_array<const N: usize>(&mut self) -> Result<[Self::Elem; N], Error>;
+	fn recv_array<const N: usize>(&mut self) -> Result<[Self::Elem; N], Error> {
+		array_util::try_from_fn(|_| self.recv_one())
+	}
 
 	/// Samples a random challenge.
 	///
@@ -73,7 +75,9 @@ pub trait IPVerifierChannel<F> {
 	/// Observes multiple field elements, feeding them into the Fiat-Shamir state.
 	///
 	/// Returns the elements converted to `Vec<Self::Elem>`.
-	fn observe_many(&mut self, vals: &[F]) -> Vec<Self::Elem>;
+	fn observe_many(&mut self, vals: &[F]) -> Vec<Self::Elem> {
+		vals.iter().map(|&val| self.observe_one(val)).collect()
+	}
 
 	/// Asserts that a value is zero.
 	///

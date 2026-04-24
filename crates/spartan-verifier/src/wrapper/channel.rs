@@ -2,14 +2,14 @@
 
 //! Channels that symbolically execute a verifier to build constraint systems or fill witnesses.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, vec::IntoIter as VecIntoIter};
 
 use binius_field::Field;
 use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::{
-	circuit_builder::{CircuitBuilder, ConstraintBuilder, WitnessGenerator},
-	constraint_system::{ConstraintWire, WitnessLayout},
+	circuit_builder::{CircuitBuilder, ConstraintBuilder, WitnessError, WitnessGenerator},
+	constraint_system::{ConstraintWire, Witness, WitnessLayout},
 };
 
 use super::circuit_elem::{CircuitElem, CircuitWire};
@@ -40,6 +40,11 @@ impl<F: Field> IronSpartanBuilderChannel<F> {
 		CircuitElem::Wire(CircuitWire::new(&self.builder, wire))
 	}
 
+	fn alloc_precommit_elem(&self) -> CircuitElem<ConstraintBuilder<F>> {
+		let wire = self.builder.borrow_mut().alloc_precommit();
+		CircuitElem::Wire(CircuitWire::new(&self.builder, wire))
+	}
+
 	/// Consumes the channel and returns the underlying [`ConstraintBuilder`].
 	///
 	/// This must be called after all `CircuitElem` values derived from this channel have been
@@ -55,15 +60,12 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 	type Elem = CircuitElem<ConstraintBuilder<F>>;
 
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
-		Ok(self.alloc_inout_elem())
-	}
-
-	fn recv_many(&mut self, n: usize) -> Result<Vec<Self::Elem>, binius_ip::channel::Error> {
-		Ok((0..n).map(|_| self.alloc_inout_elem()).collect())
-	}
-
-	fn recv_array<const N: usize>(&mut self) -> Result<[Self::Elem; N], binius_ip::channel::Error> {
-		Ok(std::array::from_fn(|_| self.alloc_inout_elem()))
+		// For each element that the inner prover sends, the wrapped prover allocates a one-time-pad
+		// encryption key in the precommit segment and encrypts the underlying value before sending.
+		// Here the verifier gets the encryption key from the precommit segment and decrypts.
+		let inout = self.alloc_inout_elem();
+		let key = self.alloc_precommit_elem();
+		Ok(inout - key)
 	}
 
 	fn sample(&mut self) -> Self::Elem {
@@ -72,10 +74,6 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 
 	fn observe_one(&mut self, _val: F) -> Self::Elem {
 		self.alloc_inout_elem()
-	}
-
-	fn observe_many(&mut self, vals: &[F]) -> Vec<Self::Elem> {
-		(0..vals.len()).map(|_| self.alloc_inout_elem()).collect()
 	}
 
 	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
@@ -118,40 +116,52 @@ impl<F: Field> IOPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 /// [`CircuitElem`] values, the [`WitnessGenerator`] fills private wires.
 pub struct ReplayChannel<'a, F: Field> {
 	witness_gen: Rc<RefCell<WitnessGenerator<'a, F>>>,
-	events: std::vec::IntoIter<F>,
+	keys: VecIntoIter<F>,
+	events: VecIntoIter<F>,
 	next_inout_id: u32,
+	next_precommit_id: u32,
 }
 
 impl<'a, F: Field> ReplayChannel<'a, F> {
 	/// Creates a new replay channel.
-	pub fn new(layout: &'a WitnessLayout<F>, events: Vec<F>) -> Self {
+	///
+	/// TODO: Document args. Keys are the symmetric OTP keys for the received values.
+	pub fn new(layout: &'a WitnessLayout<F>, keys: Vec<F>, events: Vec<F>) -> Self {
 		Self {
 			witness_gen: Rc::new(RefCell::new(WitnessGenerator::new(layout))),
+			keys: keys.into_iter(),
 			events: events.into_iter(),
 			next_inout_id: 0,
+			next_precommit_id: 0,
 		}
 	}
 
-	fn next_inout_elem(&mut self, value: F) -> CircuitElem<WitnessGenerator<'a, F>> {
+	fn next_inout_elem(&mut self) -> CircuitElem<WitnessGenerator<'a, F>> {
+		let value = self
+			.events
+			.next()
+			.unwrap_or_else(|| panic!("replay exhausted: no more events"));
+
 		let wire = ConstraintWire::inout(self.next_inout_id);
 		self.next_inout_id += 1;
 		let witness_wire = self.witness_gen.borrow_mut().write_inout(wire, value);
 		CircuitElem::Wire(CircuitWire::new(&self.witness_gen, witness_wire))
 	}
 
-	fn next_event(&mut self) -> F {
-		self.events
+	fn next_precommit_elem(&mut self) -> CircuitElem<WitnessGenerator<'a, F>> {
+		let value = self
+			.keys
 			.next()
-			.unwrap_or_else(|| panic!("replay exhausted: no more events"))
+			.expect("precommit segment is sized incorrectly");
+
+		let wire = ConstraintWire::precommit(self.next_precommit_id);
+		self.next_precommit_id += 1;
+		let witness_wire = self.witness_gen.borrow_mut().write_precommit(wire, value);
+		CircuitElem::Wire(CircuitWire::new(&self.witness_gen, witness_wire))
 	}
 
 	/// Consumes the channel and builds the outer witness.
-	pub fn finish(
-		self,
-	) -> Result<
-		binius_spartan_frontend::constraint_system::Witness<F>,
-		binius_spartan_frontend::circuit_builder::WitnessError,
-	> {
+	pub fn finish(self) -> Result<Witness<F>, WitnessError> {
 		Rc::try_unwrap(self.witness_gen)
 			.expect("CircuitElem values should only hold Weak references")
 			.into_inner()
@@ -163,34 +173,17 @@ impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
 	type Elem = CircuitElem<WitnessGenerator<'a, F>>;
 
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
-		let val = self.next_event();
-		Ok(self.next_inout_elem(val))
-	}
-
-	fn recv_many(&mut self, n: usize) -> Result<Vec<Self::Elem>, binius_ip::channel::Error> {
-		(0..n).map(|_| self.recv_one()).collect()
-	}
-
-	fn recv_array<const N: usize>(&mut self) -> Result<[Self::Elem; N], binius_ip::channel::Error> {
-		let mut result = [(); N].map(|_| CircuitElem::Constant(F::ZERO));
-		for elem in &mut result {
-			*elem = self.recv_one()?;
-		}
-		Ok(result)
+		let encrypted_elem = self.next_inout_elem();
+		let key = self.next_precommit_elem();
+		Ok(encrypted_elem + key)
 	}
 
 	fn sample(&mut self) -> Self::Elem {
-		let val = self.next_event();
-		self.next_inout_elem(val)
+		self.next_inout_elem()
 	}
 
 	fn observe_one(&mut self, _val: F) -> Self::Elem {
-		let val = self.next_event();
-		self.next_inout_elem(val)
-	}
-
-	fn observe_many(&mut self, vals: &[F]) -> Vec<Self::Elem> {
-		vals.iter().map(|&val| self.observe_one(val)).collect()
+		self.next_inout_elem()
 	}
 
 	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {

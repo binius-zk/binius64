@@ -28,7 +28,7 @@ use binius_transcript::fiat_shamir::Challenger;
 use binius_utils::SerializeBytes;
 use rand::CryptoRng;
 
-use crate::IOPProver;
+use crate::{Error, IOPProver, pack_and_blind_witness};
 
 /// A prover channel that wraps a [`BaseFoldZKProverChannel`] and an outer Spartan IOP prover.
 ///
@@ -52,6 +52,8 @@ where
 	outer_prover: &'a IOPProver<P::Scalar>,
 	outer_layout: &'a WitnessLayout<P::Scalar>,
 	replay_fn: ReplayFn,
+	keys: Vec<P::Scalar>,
+	next_key_idx: usize,
 	interaction: Vec<P::Scalar>,
 	/// Handle to the outer precommit oracle committed at construction time. The buffer
 	/// (`precommit_packed`) is purely random — it is the one-time-pad encryption key for the
@@ -120,14 +122,26 @@ where
 			"outer private/mask oracle specs must be the final suffix of channel specs",
 		);
 
-		// Commit a random buffer as the outer precommit oracle. This is the one-time-pad
-		// encryption key for the outer encrypted transcript (to be wired up in a follow-up).
-		let log_precommit = outer_prover.constraint_system().log_precommit() as usize;
-		let precommit_packed = FieldBuffer::<P>::new(
-			log_precommit,
-			repeat_with(|| P::random(&mut rng))
-				.take(1 << log_precommit.saturating_sub(P::LOG_WIDTH))
-				.collect(),
+		// Commit random OTP keys as the outer precommit oracle. Each key encrypts one
+		// element sent by the inner prover through this wrapped channel; the outer CS
+		// (built symbolically from the inner verifier) contains a matching precommit wire per
+		// key that the outer proof uses to decrypt.
+		let cs = outer_prover.constraint_system();
+		let keys = repeat_with(|| F::random(&mut rng))
+			.take(cs.n_precommit() as usize)
+			.collect::<Vec<F>>();
+		// The precommit segment has no dummy mul-constraint blinding (see
+		// ConstraintSystemPadded::new) — mirror that when packing.
+		let precommit_blinding = binius_spartan_frontend::constraint_system::BlindingInfo {
+			n_dummy_wires: cs.blinding_info().n_dummy_wires,
+			n_dummy_constraints: 0,
+		};
+		let precommit_packed = pack_and_blind_witness::<_, P>(
+			cs.log_precommit() as usize,
+			&keys,
+			cs.n_precommit() as usize,
+			&precommit_blinding,
+			&mut rng,
 		);
 		let precommit_oracle = inner_channel.send_oracle(precommit_packed.to_ref());
 
@@ -136,11 +150,19 @@ where
 			outer_prover,
 			outer_layout,
 			replay_fn,
+			keys,
+			next_key_idx: 0,
 			interaction: Vec::new(),
 			precommit_oracle,
 			precommit_packed,
 			n_outer_suffix_oracles: suffix_len,
 		}
+	}
+
+	fn next_key(&mut self) -> F {
+		let key = self.keys[self.next_key_idx];
+		self.next_key_idx += 1;
+		key
 	}
 
 	/// Consumes the channel and runs the outer proof.
@@ -150,7 +172,7 @@ where
 	/// 1. Creates a [`ReplayChannel`] from the recorded interaction
 	/// 2. Calls the `replay_fn` closure to replay the inner verification and fill the outer witness
 	/// 3. Validates and generates the outer IOP proof
-	pub fn finish(self, rng: impl CryptoRng) -> Result<(), crate::Error>
+	pub fn finish(self, rng: impl CryptoRng) -> Result<(), Error>
 	where
 		ReplayFn: FnOnce(&mut ReplayChannel<'_, F>),
 	{
@@ -159,6 +181,7 @@ where
 			outer_prover,
 			outer_layout,
 			replay_fn,
+			keys,
 			interaction,
 			precommit_oracle,
 			precommit_packed,
@@ -166,7 +189,7 @@ where
 		} = self;
 
 		// Replay the inner verification through the outer witness generator.
-		let mut replay_channel = ReplayChannel::new(outer_layout, interaction);
+		let mut replay_channel = ReplayChannel::new(outer_layout, keys, interaction);
 		replay_fn(&mut replay_channel);
 		let witness = replay_channel
 			.finish()
@@ -197,23 +220,18 @@ where
 	Challenger_: Challenger,
 {
 	fn send_one(&mut self, elem: F) {
-		self.inner_channel.send_one(elem);
-		self.interaction.push(elem);
-	}
-
-	fn send_many(&mut self, elems: &[F]) {
-		self.inner_channel.send_many(elems);
-		self.interaction.extend_from_slice(elems);
+		let key = self.next_key();
+		// Encrypt the element with the OTP key before sending. Record the encrypted value in
+		// `interaction` — that's what the outer witness's inout wires hold (and what the replay
+		// side adds the key back to in order to recover the plaintext for the inner verifier).
+		let encrypted = elem + key;
+		self.inner_channel.send_one(encrypted);
+		self.interaction.push(encrypted);
 	}
 
 	fn observe_one(&mut self, val: F) {
 		self.inner_channel.observe_one(val);
 		self.interaction.push(val);
-	}
-
-	fn observe_many(&mut self, vals: &[F]) {
-		self.inner_channel.observe_many(vals);
-		self.interaction.extend_from_slice(vals);
 	}
 
 	fn sample(&mut self) -> F {

@@ -98,9 +98,7 @@ where
 	///
 	/// Prepends the outer constraint system's constants to the recorded public values, pads to
 	/// the required public size, and runs [`IOPVerifier::verify`] against the inner channel.
-	///
-	/// Returns the full public input vector on success.
-	pub fn finish(mut self) -> Result<Vec<F>, Error> {
+	pub fn finish(mut self) -> Result<(), Error> {
 		let outer_cs = self.outer_verifier.constraint_system();
 		let public_size = 1 << outer_cs.log_public();
 
@@ -110,8 +108,8 @@ where
 
 		// IOPVerifier::verify takes Vec<Channel::Elem>, not &[F].
 		self.outer_verifier
-			.verify(self.precommit_oracle, public.clone(), &mut self.inner_channel)?;
-		Ok(public)
+			.verify(self.precommit_oracle, public, &mut self.inner_channel)?;
+		Ok(())
 	}
 }
 
@@ -130,18 +128,6 @@ where
 		Ok(val)
 	}
 
-	fn recv_many(&mut self, n: usize) -> Result<Vec<F>, binius_ip::channel::Error> {
-		let vals = self.inner_channel.recv_many(n)?;
-		self.public_values.extend_from_slice(&vals);
-		Ok(vals)
-	}
-
-	fn recv_array<const N: usize>(&mut self) -> Result<[F; N], binius_ip::channel::Error> {
-		let vals = self.inner_channel.recv_array::<N>()?;
-		self.public_values.extend_from_slice(&vals);
-		Ok(vals)
-	}
-
 	fn sample(&mut self) -> F {
 		let val = self.inner_channel.sample();
 		self.public_values.push(val);
@@ -152,12 +138,6 @@ where
 		let elem = self.inner_channel.observe_one(val);
 		self.public_values.push(elem);
 		elem
-	}
-
-	fn observe_many(&mut self, vals: &[F]) -> Vec<F> {
-		let elems = self.inner_channel.observe_many(vals);
-		self.public_values.extend_from_slice(&elems);
-		elems
 	}
 
 	fn assert_zero(&mut self, _val: F) -> Result<(), binius_ip::channel::Error> {
