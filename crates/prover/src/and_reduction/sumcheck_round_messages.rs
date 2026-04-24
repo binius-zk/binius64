@@ -1,16 +1,15 @@
 // Copyright 2025 Irreducible Inc.
-use std::array;
+use std::iter;
 
-use binius_field::{
-	BinaryField, Field, PackedBinaryField128x1b, PackedExtension, packed::get_packed_slice,
-};
+use binius_core::word::Word;
+use binius_field::{BinaryField, Field, PackedBinaryField128x1b, PackedExtension};
 use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::rayon::prelude::*;
 use binius_verifier::{config::B1, protocols::bitand::ROWS_PER_HYPERCUBE_VERTEX};
 use bytemuck::must_cast_ref;
 use itertools::izip;
 
-use super::{ntt_lookup::NTTLookup, utils::multivariate::OneBitOblongMultilinear};
+use super::ntt_lookup::NTTLookup;
 
 /// Generates a univariate polynomial for the sumcheck protocol in AND constraint reduction.
 ///
@@ -60,9 +59,9 @@ use super::{ntt_lookup::NTTLookup, utils::multivariate::OneBitOblongMultilinear}
 /// * `FChallenge` - The challenge field type (must be a binary field)
 /// * `PNTTDomain` - The packed extension field type for NTT operations (width must be 16)
 pub fn univariate_round_message_extension_domain<FChallenge, PNTTDomain>(
-	first_col: &OneBitOblongMultilinear,
-	second_col: &OneBitOblongMultilinear,
-	third_col: &OneBitOblongMultilinear,
+	first_col: &[Word],
+	second_col: &[Word],
+	third_col: &[Word],
 	eq_ind_big_field_challenges: &FieldBuffer<FChallenge>,
 	ntt_lookup: &NTTLookup<PNTTDomain>,
 	small_field_zerocheck_challenges: &[PNTTDomain::Scalar],
@@ -79,6 +78,12 @@ where
 	// multiple underlier sizes
 	assert_eq!(PNTTDomain::WIDTH, 16);
 
+	let expected_log_words =
+		eq_ind_big_field_challenges.log_len() + small_field_zerocheck_challenges.len();
+	for col in [first_col, second_col, third_col] {
+		assert_eq!(col.len(), 1 << expected_log_words);
+	}
+
 	let eq_ind_small: Vec<PNTTDomain> = eq_ind_partial_eval(small_field_zerocheck_challenges)
 		.as_ref()
 		.iter()
@@ -88,13 +93,12 @@ where
 	// Accumulate resulting polynomial evals by iterating over each hypercube vertex
 	let chunk_size = eq_ind_small.len();
 	(
-		first_col.packed_evals.par_chunks(chunk_size),
-		second_col.packed_evals.par_chunks(chunk_size),
-		third_col.packed_evals.par_chunks(chunk_size),
-		eq_ind_big_field_challenges.as_ref(),
+		first_col.par_chunks(chunk_size),
+		second_col.par_chunks(chunk_size),
+		third_col.par_chunks(chunk_size),
 	)
 		.into_par_iter()
-		.map(|(a_chunk, b_chunk, c_chunk, &eq_weight)| {
+		.map(|(a_chunk, b_chunk, c_chunk)| {
 			let mut summed_ntt = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
 			let lookup = ntt_lookup.get_lookup();
 
@@ -105,69 +109,86 @@ where
 
 				// In this cycle, we compute the NTT for each column using the lookup table.
 				// We are not using the `NTTLookup::ntt` method directly for performance reasons.
-				for (summed_ntt, lookup) in izip!(&mut summed_ntt, lookup) {
-					let mut first_col_ntt = PNTTDomain::zero();
-					let mut second_col_ntt = PNTTDomain::zero();
-					let mut third_col_ntt = PNTTDomain::zero();
+				let mut first_col_ntt = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
+				let mut second_col_ntt = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
+				let mut third_col_ntt = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
 
-					for byte_index in 0..8 {
-						first_col_ntt += lookup[col_1_bytes[byte_index] as usize][byte_index];
-						second_col_ntt += lookup[col_2_bytes[byte_index] as usize][byte_index];
-						third_col_ntt += lookup[col_3_bytes[byte_index] as usize][byte_index];
+				for (byte_index, lookup_byte) in lookup.iter().enumerate() {
+					let row_1 = &lookup_byte[col_1_bytes[byte_index] as usize];
+					let row_2 = &lookup_byte[col_2_bytes[byte_index] as usize];
+					let row_3 = &lookup_byte[col_3_bytes[byte_index] as usize];
+					for j in 0..(ROWS_PER_HYPERCUBE_VERTEX / 16) {
+						first_col_ntt[j] += row_1[j];
+						second_col_ntt[j] += row_2[j];
+						third_col_ntt[j] += row_3[j];
 					}
+				}
 
-					*summed_ntt += (first_col_ntt * second_col_ntt - third_col_ntt) * weight;
+				for j in 0..(ROWS_PER_HYPERCUBE_VERTEX / 16) {
+					summed_ntt[j] +=
+						(first_col_ntt[j] * second_col_ntt[j] - third_col_ntt[j]) * weight;
 				}
 			}
 
-			array::from_fn::<_, ROWS_PER_HYPERCUBE_VERTEX, _>(|i| {
-				eq_weight * FChallenge::from(get_packed_slice(&summed_ntt, i))
-			})
+			summed_ntt
 		})
-		.reduce(
-			|| [FChallenge::ZERO; ROWS_PER_HYPERCUBE_VERTEX],
-			|mut acc, array_to_add| {
-				for (i, val) in array_to_add.into_iter().enumerate() {
-					acc[i] += val;
+		.zip(eq_ind_big_field_challenges.as_ref())
+		.fold_with(
+			[FChallenge::ZERO; ROWS_PER_HYPERCUBE_VERTEX],
+			|mut acc, (summed_ntt, &eq_weight)| {
+				for (acc_i, summed_ntt_i) in
+					iter::zip(&mut acc, PNTTDomain::iter_slice(&summed_ntt))
+				{
+					*acc_i += eq_weight * FChallenge::from(summed_ntt_i);
 				}
 				acc
+			},
+		)
+		.reduce(
+			|| [FChallenge::ZERO; ROWS_PER_HYPERCUBE_VERTEX],
+			|mut lhs, rhs| {
+				for (lhs_i, rhs_i) in iter::zip(&mut lhs, rhs) {
+					*lhs_i += rhs_i;
+				}
+				lhs
 			},
 		)
 }
 
 #[cfg(test)]
 mod test {
-	use std::iter::repeat_with;
+	use std::{iter, iter::repeat_with};
 
 	use binius_core::word::Word;
-	use binius_field::{AESTowerField8b, Field, PackedAESBinaryField16x8b, Random};
+	use binius_field::{
+		AESTowerField8b, Field, PackedAESBinaryField16x8b, Random,
+		linear_transformation::{
+			BytewiseLookupTransformationFactory, LinearTransformationFactory,
+			OutputWrappingTransformationFactory,
+		},
+	};
 	use binius_math::{
-		BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval,
-		univariate::extrapolate_over_subspace,
+		BinarySubspace, FieldBuffer,
+		multilinear::eq::eq_ind_partial_eval,
+		univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
 	};
 	use binius_verifier::{
-		config::{B128, LOG_WORD_SIZE_BITS},
+		config::B128,
 		protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
 	};
 	use itertools::izip;
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::univariate_round_message_extension_domain;
-	use crate::and_reduction::{
-		fold_lookup::FoldLookup, prover_setup::ntt_lookup_from_prover_message_domain,
-		utils::multivariate::OneBitOblongMultilinear,
+	use crate::{
+		and_reduction::prover_setup::ntt_lookup_from_prover_message_domain,
+		fold_word::fold_words_with_transform,
 	};
 
-	fn random_one_bit_multivariate(
-		log_num_rows: usize,
-		mut rng: impl Rng,
-	) -> OneBitOblongMultilinear {
-		OneBitOblongMultilinear {
-			log_num_rows,
-			packed_evals: repeat_with(|| Word(rng.random()))
-				.take(1 << (log_num_rows - LOG_WORD_SIZE_BITS))
-				.collect(),
-		}
+	fn random_words(log_num_words: usize, mut rng: impl Rng) -> Vec<Word> {
+		repeat_with(|| Word(rng.random()))
+			.take(1 << log_num_words)
+			.collect()
 	}
 
 	// Sends the sum claim from first multilinear round (second overall round)
@@ -188,23 +209,22 @@ mod test {
 		let log_num_rows = 10;
 		let mut rng = StdRng::from_seed([0; 32]);
 
-		let big_field_zerocheck_challenges =
-			vec![B128::random(&mut rng); (log_num_rows - SKIPPED_VARS - 3) + 1];
-
 		let small_field_zerocheck_challenges = [
 			AESTowerField8b::new(2),
 			AESTowerField8b::new(4),
 			AESTowerField8b::new(16),
 		];
 
-		let mlv_1 = random_one_bit_multivariate(log_num_rows, &mut rng);
-		let mlv_2 = random_one_bit_multivariate(log_num_rows, &mut rng);
-		let mlv_3 = OneBitOblongMultilinear {
-			log_num_rows,
-			packed_evals: (0..1 << (log_num_rows - LOG_WORD_SIZE_BITS))
-				.map(|i| mlv_1.packed_evals[i] & mlv_2.packed_evals[i])
-				.collect(),
-		};
+		let big_field_zerocheck_challenges =
+			vec![
+				B128::random(&mut rng);
+				log_num_rows - SKIPPED_VARS - small_field_zerocheck_challenges.len()
+			];
+
+		let log_num_words = log_num_rows - SKIPPED_VARS;
+		let mlv_1 = random_words(log_num_words, &mut rng);
+		let mlv_2 = random_words(log_num_words, &mut rng);
+		let mlv_3: Vec<Word> = iter::zip(&mlv_1, &mlv_2).map(|(&a, &b)| a & b).collect();
 
 		let eq_ind_only_big = eq_ind_partial_eval(&big_field_zerocheck_challenges);
 
@@ -245,12 +265,15 @@ mod test {
 			first_sumcheck_challenge,
 		);
 
-		let lookup =
-			FoldLookup::<_, SKIPPED_VARS>::new(&verifier_input_domain, first_sumcheck_challenge);
+		let lagrange_evals =
+			lagrange_evals_scalars(&verifier_input_domain, first_sumcheck_challenge);
+		let transform =
+			OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+				.create(&lagrange_evals);
 
-		let folded_first_mle = mlv_1.fold(&lookup);
-		let folded_second_mle = mlv_2.fold(&lookup);
-		let folded_third_mle = mlv_3.fold(&lookup);
+		let folded_first_mle: FieldBuffer<B128> = fold_words_with_transform(&transform, &mlv_1);
+		let folded_second_mle: FieldBuffer<B128> = fold_words_with_transform(&transform, &mlv_2);
+		let folded_third_mle: FieldBuffer<B128> = fold_words_with_transform(&transform, &mlv_3);
 
 		let upcasted_small_field_challenges: Vec<_> = small_field_zerocheck_challenges
 			.into_iter()

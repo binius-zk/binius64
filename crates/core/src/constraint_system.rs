@@ -559,8 +559,7 @@ impl ConstraintSystem {
 		self.validate()?;
 
 		// Both AND and MUL constraint list have requirements wrt their sizes.
-		let and_target_size =
-			cmp::max(consts::MIN_AND_CONSTRAINTS, self.and_constraints.len()).next_power_of_two();
+		let and_target_size = self.and_constraints.len().max(1).next_power_of_two();
 		let mul_target_size =
 			cmp::max(consts::MIN_MUL_CONSTRAINTS, self.mul_constraints.len()).next_power_of_two();
 

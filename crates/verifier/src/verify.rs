@@ -19,7 +19,7 @@ use binius_utils::{
 	checked_arithmetics::{checked_log_2, log2_ceil_usize},
 };
 use digest::{Digest, Output, core_api::BlockSizeUser};
-use itertools::{Itertools, chain};
+use itertools::chain;
 
 use super::error::Error;
 use crate::{
@@ -401,16 +401,14 @@ where
 	// Used to make deterministic basis challenges symbolic
 	C::Elem: From<F>,
 {
-	// The structure of the AND reduction requires that it verifies at least 2^3 word-level
-	// constraints, you can zero-pad if necessary to reach this minimum
-	assert!(log_constraint_count >= checked_log_2(binius_core::consts::MIN_AND_CONSTRAINTS));
-
-	let big_field_zerocheck_challenges = channel.sample_many(log_constraint_count - 3);
-
 	let small_field_zerocheck_challenges = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES
 		.into_iter()
+		.take(log_constraint_count)
 		.map(|b8_val| C::Elem::from(F::from(b8_val)))
-		.collect_vec();
+		.collect::<Vec<_>>();
+
+	let big_field_zerocheck_challenges =
+		channel.sample_many(log_constraint_count - small_field_zerocheck_challenges.len());
 
 	let zerocheck_challenges =
 		chain!(small_field_zerocheck_challenges, big_field_zerocheck_challenges)
