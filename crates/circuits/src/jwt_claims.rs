@@ -2,7 +2,7 @@
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
 
-use crate::slice::Slice;
+use crate::slice;
 
 /// Represents a single JWT attribute to verify
 pub struct Attribute {
@@ -184,15 +184,12 @@ impl JwtClaims {
 			// Verify the length matches expected
 			b.assert_eq("attr_length", value_length, attr.len_bytes);
 
-			// Use Slice to verify the value content
-			let _slice = Slice::new(
-				&b,
-				len_bytes,
-				value_length,
-				json.clone(),
-				attr.value.clone(),
-				value_start,
-			);
+			// Extract the value from the JSON and assert it matches the caller-supplied value.
+			let extracted =
+				slice::slice(&b, len_bytes, value_length, &json, value_start, attr.value.len());
+			for (i, (&a, &e)) in extracted.iter().zip(&attr.value).enumerate() {
+				b.assert_eq(format!("attr_value[{i}]"), a, e);
+			}
 		}
 
 		JwtClaims {

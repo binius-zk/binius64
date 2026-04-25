@@ -125,7 +125,8 @@ pub fn create_concat_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 }
 
 pub fn create_slice_cs_with_witness() -> (ConstraintSystem, ValueVec) {
-	use binius_circuits::slice::Slice;
+	use binius_circuits::slice::slice;
+	use binius_frontend::util::pack_bytes_into_wires_le;
 
 	let builder = CircuitBuilder::new();
 
@@ -133,11 +134,14 @@ pub fn create_slice_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 	let len_input = builder.add_witness();
 	let len_slice = builder.add_witness();
 	let input: Vec<Wire> = (0..4).map(|_| builder.add_witness()).collect();
-	let slice: Vec<Wire> = (0..2).map(|_| builder.add_witness()).collect();
+	let expected: Vec<Wire> = (0..2).map(|_| builder.add_witness()).collect();
 	let offset = builder.add_witness();
 
-	// Create the Slice circuit
-	let slice_circuit = Slice::new(&builder, len_input, len_slice, input, slice, offset);
+	// Extract the slice and assert it matches `expected`.
+	let actual = slice(&builder, len_input, len_slice, &input, offset, expected.len());
+	for (i, (&a, &e)) in actual.iter().zip(&expected).enumerate() {
+		builder.assert_eq(format!("slice_eq[{i}]"), a, e);
+	}
 
 	let circuit = builder.build();
 	let mut witness_filler = circuit.new_witness_filler();
@@ -145,13 +149,13 @@ pub fn create_slice_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 	// Test slicing "Hello World!" from offset 6 with length 5 to get "World"
 	let input_data = b"Hello World!";
 	let slice_data = b"World";
-	let offset_val = 6;
+	let offset_val = 6u64;
 
-	slice_circuit.populate_len_input(&mut witness_filler, input_data.len());
-	slice_circuit.populate_len_slice(&mut witness_filler, slice_data.len());
-	slice_circuit.populate_input(&mut witness_filler, input_data);
-	slice_circuit.populate_slice(&mut witness_filler, slice_data);
-	slice_circuit.populate_offset(&mut witness_filler, offset_val);
+	witness_filler[len_input] = Word(input_data.len() as u64);
+	witness_filler[len_slice] = Word(slice_data.len() as u64);
+	pack_bytes_into_wires_le(&mut witness_filler, &input, input_data);
+	pack_bytes_into_wires_le(&mut witness_filler, &expected, slice_data);
+	witness_filler[offset] = Word(offset_val);
 
 	// Get the witness vector
 	circuit.populate_wire_witness(&mut witness_filler).unwrap();
