@@ -1,207 +1,133 @@
 // Copyright 2025 Irreducible Inc.
 use binius_core::word::Word;
-use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
+use binius_frontend::{CircuitBuilder, Wire};
 
-use crate::{
-	fixed_byte_vec::ByteVec,
-	slice::{create_byte_mask, extract_word},
-};
+use crate::{fixed_byte_vec::ByteVec, multiplexer::single_wire_multiplex, slice::create_byte_mask};
 
-/// Verifies that a joined string is the concatenation of a list of terms.
+/// Concatenates the given `terms` into a single [`ByteVec`].
 ///
-/// This circuit validates that `joined` contains exactly the concatenation
-/// of all provided terms in order.
-pub struct Concat {
-	/// The actual length of the concatenated result in bytes.
-	///
-	/// This wire will be constrained to equal the sum of all term lengths.
-	pub len_joined_bytes: Wire,
-	/// The concatenated data packed as 64-bit words.
-	///
-	/// Each wire contains 8 bytes in little-endian order.
-	/// The circuit will check / enforce whether the total length of the concatenated data
-	/// fits in `joined.len()` wires, i.e. `joined.len() << 3` bytes.
-	pub joined: Vec<Wire>,
-	/// The list of terms to be concatenated.
-	///
-	/// Terms are concatenated in order: terms\[0\] || terms\[1\] || ... || terms\[n-1\]
-	pub terms: Vec<ByteVec>,
-}
+/// Returns a `ByteVec` whose `data` holds the byte-level concatenation of each term's bytes
+/// (packed in little-endian 8-bytes-per-word) and whose `len_bytes` equals the sum of the
+/// terms' runtime lengths. Bytes past the runtime length, and any trailing words past
+/// `ceil(len_bytes / 8)`, are zero.
+///
+/// # Arguments
+/// * `b` - Circuit builder
+/// * `terms` - Slice of terms to concatenate, in order
+/// * `max_words` - Number of output wires; if `None`, defaults to the sum of `term.data.len()`
+///   across all terms (the smallest size that always fits the concatenation).
+///
+/// # Constraints
+/// * Each term's runtime length must fit in its capacity (`term.len_bytes <= term.data.len() * 8`).
+/// * The sum of term lengths must fit in `max_words * 8` bytes.
+pub fn concat(b: &CircuitBuilder, terms: &[ByteVec], max_words: Option<usize>) -> ByteVec {
+	let max_words = max_words.unwrap_or_else(|| terms.iter().map(|t| t.data.len()).sum());
+	let max_bytes = max_words << 3;
 
-impl Concat {
-	/// Creates a new concatenation verifier circuit.
-	///
-	/// # Arguments
-	/// * `b` - Circuit builder for constructing constraints
-	/// * `len_joined` - Wire containing the actual joined size in bytes
-	/// * `joined` - Joined array packed as 64-bit words (8 bytes per word)
-	/// * `terms` - Vector of terms that should concatenate to form `joined`
-	pub fn new(
-		b: &CircuitBuilder,
-		len_joined_bytes: Wire,
-		joined: Vec<Wire>,
-		terms: Vec<ByteVec>,
-	) -> Self {
-		// Input validation
-		//
-		// Ensure all inputs meet the word-alignment requirements necessary for
-		// efficient word-level processing.
+	let zero = b.add_constant(Word::ZERO);
 
-		// Algorithm overview
-		//
-		// Process terms sequentially, maintaining a running offset to track position
-		// in the joined array. For each term, verify its data appears at the correct
-		// location.
-		//
-		// The algorithm:
-		// 1. Start with offset = 0
-		// 2. For each term: a. Verify its data matches joined[offset : offset + term.len] b. Update
-		//    offset += term.len
-		// 3. Verify final offset equals total length
-		//
-		// Circuit constraints:
-		// - No dynamic array indexing (use multiplexers instead)
-		// - All operations must be on fixed-size data (hence word-level processing)
-		// - Conditional operations use masking (condition & value)
+	// For each term word we produce two contributions:
+	//   - a "low" word that lands at output[word_offset + word_idx]
+	//   - a "high" word that lands at output[word_offset + word_idx + 1] (only non-zero when
+	//     byte_offset != 0)
+	// We accumulate contributions into `output` by XOR; contributions at the same byte position
+	// from different term words can never overlap.
+	let mut output = vec![zero; max_words];
+	let mut offset = zero;
+	for (i, term) in terms.iter().enumerate() {
+		let b = b.subcircuit(format!("term[{i}]"));
 
-		let mut offset = b.add_constant(Word::ZERO);
-
-		// 1. Sequential term processing
-		//
-		// Process each term in order, verifying its data appears at the correct
-		// position in the joined array.
-		for (i, term) in terms.iter().enumerate() {
-			let b = b.subcircuit(format!("term[{i}]"));
-
-			let too_long =
-				b.icmp_ugt(term.len_bytes, b.add_constant(Word((term.data.len() << 3) as u64)));
-			b.assert_false("term_length_check", too_long);
-
-			// 2. Word-level verification for current term
-			//
-			// Process the term's data word by word (8 bytes at a time) for efficiency.
-			let word_offset = b.shr(offset, 3);
-			for (word_idx, &term_word) in term.data.iter().enumerate() {
-				let b = b.subcircuit(format!("word[{word_idx}]"));
-
-				// Calculate this word's byte position within the term
-				let word_byte_offset = word_idx << 3;
-				let word_byte_offset_wire = b.add_constant(Word(word_byte_offset as u64));
-
-				// 2a. Validity checks
-				//
-				// Determine if this word contains valid data based on the term's actual length.
-				// A word is:
-				// - Partially valid if it at least one "meaningful" byte of the term.
-				// - not partially valid if it lives entirely after the point where the term ends.
-				let word_partially_valid = b.icmp_ult(word_byte_offset_wire, term.len_bytes);
-
-				// 2b. Global position calculation
-				//
-				// Calculate where this word should appear in the joined array.
-				// This is the current offset plus the word's position within the term.
-				let (input_word_idx, _) =
-					b.iadd(word_offset, b.add_constant(Word(word_idx as u64)));
-				let byte_offset = b.band(offset, b.add_constant(Word(7)));
-
-				// 2c. Extract corresponding data from joined array
-				//
-				// Extract the word from the joined array at the calculated position.
-				// This handles both aligned (byte position % 8 == 0) and unaligned cases.
-				let joined_data = extract_word(&b, &joined, input_word_idx, byte_offset);
-
-				let neg_start = b.add_constant(Word((-(word_byte_offset as i64)) as u64));
-				let (bytes_remaining, _) = b.iadd(term.len_bytes, neg_start);
-
-				// The mask will handle clamping to 8 bytes internally
-				let mask = create_byte_mask(&b, bytes_remaining);
-
-				b.assert_eq_cond(
-					format!("term[{word_idx}]"),
-					b.band(joined_data, mask),
-					b.band(term_word, mask),
-					word_partially_valid,
-				);
-			}
-
-			// 4. Update offset for next term
-			//
-			// After processing all words of the current term, advance the offset
-			// by the term's actual length to position for the next term.
-			(offset, _) = b.iadd(offset, term.len_bytes);
-		}
-
-		// 5. Final length verification
-		//
-		// The sum of all term lengths must equal the total joined length.
-		b.assert_eq("concat_length", offset, len_joined_bytes);
+		// Verify the term's runtime length fits in its capacity.
 		let too_long =
-			b.icmp_ugt(len_joined_bytes, b.add_constant(Word((joined.len() << 3) as u64)));
-		b.assert_false("concat_length_lt_joined_len", too_long);
+			b.icmp_ugt(term.len_bytes, b.add_constant_64((term.data.len() << 3) as u64));
+		b.assert_false("term_length_check", too_long);
 
-		Concat {
-			len_joined_bytes,
-			joined,
-			terms,
-		}
-	}
+		let word_offset = b.shr(offset, 3); // offset / 8
+		let byte_offset = b.band(offset, b.add_constant(Word(7))); // offset % 8
 
-	/// Populate the len_joined wire with the actual joined size in bytes.
-	pub fn populate_len_joined_bytes(&self, w: &mut WitnessFiller, len_joined_bytes: usize) {
-		w[self.len_joined_bytes] = Word(len_joined_bytes as u64);
-	}
+		for (word_idx, &term_word) in term.data.iter().enumerate() {
+			let b = b.subcircuit(format!("word[{word_idx}]"));
+			let word_byte_offset = word_idx << 3;
 
-	/// Populate the joined array from a byte slice.
-	///
-	/// Packs the bytes into 64-bit words in little-endian order and ensures
-	/// any unused words are zeroed out.
-	///
-	/// # Panics
-	/// Panics if `joined_bytes.len()` > `max_joined_bytes()` (the maximum size possible)
-	pub fn populate_joined(&self, w: &mut WitnessFiller, joined_bytes: &[u8]) {
-		assert!(
-			joined_bytes.len() <= self.max_joined_bytes(),
-			"joined length {} exceeds maximum {}",
-			joined_bytes.len(),
-			self.max_joined_bytes()
-		);
+			// word_partially_valid = (word_byte_offset < term.len_bytes)
+			let word_partially_valid =
+				b.icmp_ult(b.add_constant(Word(word_byte_offset as u64)), term.len_bytes);
 
-		for (i, chunk) in joined_bytes.chunks(8).enumerate() {
-			let mut word = 0u64;
-			for (j, &byte) in chunk.iter().enumerate() {
-				word |= (byte as u64) << (j << 3);
+			// bytes_remaining = term.len_bytes - word_byte_offset (mask clamps to 8).
+			let neg_start = b.add_constant(Word((-(word_byte_offset as i64)) as u64));
+			let (bytes_remaining, _) = b.iadd(term.len_bytes, neg_start);
+			let mask = create_byte_mask(&b, bytes_remaining);
+
+			// Mask invalid bytes within the term word, and zero out completely if past term
+			// boundary (so this word contributes nothing).
+			let masked = b.band(term_word, mask);
+			let masked = b.select(word_partially_valid, masked, zero);
+
+			// Compute shifted versions for each possible byte_offset (0..7).
+			let shifted_low_candidates: Vec<Wire> =
+				(0..8u32).map(|i| b.shl(masked, i * 8)).collect();
+			let shifted_high_candidates: Vec<Wire> = (0..8u32)
+				.map(|i| if i == 0 { zero } else { b.shr(masked, (8 - i) * 8) })
+				.collect();
+			let shifted_low = single_wire_multiplex(&b, &shifted_low_candidates, byte_offset);
+			let shifted_high = single_wire_multiplex(&b, &shifted_high_candidates, byte_offset);
+
+			// dest_low = word_offset + word_idx is the output position receiving the low bytes.
+			// The high bytes (if any) land at dest_low + 1.
+			let (dest_low, _) =
+				b.iadd(word_offset, b.add_constant(Word(word_idx as u64)));
+
+			// Conditionally add contributions to each output position.
+			for (p, output_p) in output.iter_mut().enumerate() {
+				let p_wire = b.add_constant(Word(p as u64));
+				let is_low_dest = b.icmp_eq(p_wire, dest_low);
+				let low_contrib = b.select(is_low_dest, shifted_low, zero);
+				*output_p = b.bxor(*output_p, low_contrib);
+
+				if p > 0 {
+					let p_minus_1 = b.add_constant(Word((p - 1) as u64));
+					let is_high_dest = b.icmp_eq(p_minus_1, dest_low);
+					let high_contrib = b.select(is_high_dest, shifted_high, zero);
+					*output_p = b.bxor(*output_p, high_contrib);
+				}
 			}
-			w[self.joined[i]] = Word(word);
 		}
 
-		for i in joined_bytes.len().div_ceil(8)..self.joined.len() {
-			w[self.joined[i]] = Word::ZERO;
-		}
+		(offset, _) = b.iadd(offset, term.len_bytes);
 	}
 
-	pub fn max_joined_bytes(&self) -> usize {
-		self.joined.len() << 3
-	}
+	// `offset` now equals the total length. Verify it fits in max_words.
+	let total_len = offset;
+	let too_long = b.icmp_ugt(total_len, b.add_constant_64(max_bytes as u64));
+	b.assert_false("concat_length_check", too_long);
+
+	ByteVec::new(output, total_len)
 }
 
 #[cfg(test)]
 mod tests {
 	use anyhow::{Result, anyhow};
 	use binius_core::verify::verify_constraints;
+	use binius_frontend::util::pack_bytes_into_wires_le;
 	use rand::prelude::*;
 
 	use super::*;
 
 	// Test utilities
 
+	struct ConcatTestSetup {
+		builder: CircuitBuilder,
+		len_joined: Wire,
+		joined: Vec<Wire>,
+		terms: Vec<ByteVec>,
+	}
+
 	/// Helper to create a concat circuit with given parameters.
 	///
-	/// Creates a circuit with the specified maximum sizes for joined data and terms.
-	/// All wires are created as input/output wires for testing.
-	fn create_concat_circuit(
-		max_n_joined: usize,
-		term_max_lens: Vec<usize>,
-	) -> (CircuitBuilder, Concat) {
+	/// Allocates inout wires for the expected joined buffer and each term, builds the concat
+	/// gadget, and asserts the returned `ByteVec` equals the expected wires. Returns a
+	/// `ConcatTestSetup` so the test can populate the term and expected-joined values.
+	fn create_concat_circuit(max_n_joined: usize, term_max_lens: Vec<usize>) -> ConcatTestSetup {
 		let b = CircuitBuilder::new();
 
 		let len_joined = b.add_inout();
@@ -215,38 +141,48 @@ mod tests {
 			})
 			.collect();
 
-		let concat = Concat::new(&b, len_joined, joined, terms);
+		// Compute concat and assert its outputs equal the (caller-supplied) expected wires.
+		let computed = concat(&b, &terms, Some(max_n_joined));
+		b.assert_eq("concat_len", computed.len_bytes, len_joined);
+		for (i, (&a, &e)) in computed.data.iter().zip(&joined).enumerate() {
+			b.assert_eq(format!("concat_data[{i}]"), a, e);
+		}
 
-		(b, concat)
+		ConcatTestSetup {
+			builder: b,
+			len_joined,
+			joined,
+			terms,
+		}
 	}
 
 	/// Helper to test a concatenation scenario.
 	///
-	/// Sets up a circuit with the given parameters and verifies that the
-	/// concatenation of `term_data` equals `expected_joined`.
+	/// Sets up a circuit with the given parameters and verifies that the concatenation of
+	/// `term_data` equals `expected_joined`.
 	fn test_concat(
 		max_n_joined: usize,
 		term_max_lens: Vec<usize>,
 		expected_joined: &[u8],
 		term_data: &[&[u8]],
 	) -> Result<()> {
-		let (b, concat) = create_concat_circuit(max_n_joined, term_max_lens);
-		let circuit = b.build();
+		let setup = create_concat_circuit(max_n_joined, term_max_lens);
+		let circuit = setup.builder.build();
 		let mut filler = circuit.new_witness_filler();
 
-		// Set the expected joined length
-		concat.populate_len_joined_bytes(&mut filler, expected_joined.len());
-		concat.populate_joined(&mut filler, expected_joined);
+		// Set the expected joined length and bytes.
+		filler[setup.len_joined] = Word(expected_joined.len() as u64);
+		pack_bytes_into_wires_le(&mut filler, &setup.joined, expected_joined);
 
-		// Set up each term
+		// Set up each term.
 		for (i, data_bytes) in term_data.iter().enumerate() {
-			concat.terms[i].populate_len_bytes(&mut filler, data_bytes.len());
-			concat.terms[i].populate_data(&mut filler, data_bytes);
+			setup.terms[i].populate_len_bytes(&mut filler, data_bytes.len());
+			setup.terms[i].populate_data(&mut filler, data_bytes);
 		}
 
 		circuit.populate_wire_witness(&mut filler)?;
 
-		// Verify constraints
+		// Verify constraints.
 		let cs = circuit.constraint_system();
 		verify_constraints(cs, &filler.into_value_vec())
 			.map_err(|msg| anyhow!("verify_constraints: {}", msg))?;
@@ -323,18 +259,18 @@ mod tests {
 	fn test_length_mismatch() {
 		// Verify the circuit rejects incorrect length claims
 		// Test where claimed length doesn't match actual concatenation
-		let (b, concat) = create_concat_circuit(2, vec![1, 1]);
-		let circuit = b.build();
+		let setup = create_concat_circuit(2, vec![1, 1]);
+		let circuit = setup.builder.build();
 		let mut filler = circuit.new_witness_filler();
 
 		// Claim joined is 8 bytes but terms sum to 10
-		concat.populate_len_joined_bytes(&mut filler, 8);
-		concat.populate_joined(&mut filler, b"helloworld");
+		filler[setup.len_joined] = Word(8);
+		pack_bytes_into_wires_le(&mut filler, &setup.joined, b"helloworld");
 
-		concat.terms[0].populate_len_bytes(&mut filler, 5);
-		concat.terms[0].populate_data(&mut filler, b"hello");
-		concat.terms[1].populate_len_bytes(&mut filler, 5);
-		concat.terms[1].populate_data(&mut filler, b"world");
+		setup.terms[0].populate_len_bytes(&mut filler, 5);
+		setup.terms[0].populate_data(&mut filler, b"hello");
+		setup.terms[1].populate_len_bytes(&mut filler, 5);
+		setup.terms[1].populate_data(&mut filler, b"world");
 
 		let result = circuit.populate_wire_witness(&mut filler);
 		assert!(result.is_err());
@@ -350,17 +286,17 @@ mod tests {
 		assert_eq!(correct_data.len(), 16);
 		assert_eq!(wrong_data.len(), 16);
 
-		let (b, concat) = create_concat_circuit(2, vec![2]);
-		let circuit = b.build();
+		let setup = create_concat_circuit(2, vec![2]);
+		let circuit = setup.builder.build();
 		let mut filler = circuit.new_witness_filler();
 
 		// Populate with WRONG data in joined array
-		concat.populate_len_joined_bytes(&mut filler, 16);
-		concat.populate_joined(&mut filler, wrong_data);
+		filler[setup.len_joined] = Word(16);
+		pack_bytes_into_wires_le(&mut filler, &setup.joined, wrong_data);
 
 		// But claim it matches the CORRECT data in the term
-		concat.terms[0].populate_len_bytes(&mut filler, 16);
-		concat.terms[0].populate_data(&mut filler, correct_data);
+		setup.terms[0].populate_len_bytes(&mut filler, 16);
+		setup.terms[0].populate_data(&mut filler, correct_data);
 
 		// This should fail since the data doesn't match
 		let result = circuit.populate_wire_witness(&mut filler);
@@ -373,14 +309,14 @@ mod tests {
 		let correct_data = b"0123456789ABCDEF0123456789ABCDEF";
 		let wrong_data = b"0123456789ABCDEF0123456789ABCDXX"; // Last word wrong
 
-		let (b, concat) = create_concat_circuit(4, vec![4]);
-		let circuit = b.build();
+		let setup = create_concat_circuit(4, vec![4]);
+		let circuit = setup.builder.build();
 		let mut filler = circuit.new_witness_filler();
 
-		concat.populate_len_joined_bytes(&mut filler, 32);
-		concat.populate_joined(&mut filler, wrong_data);
-		concat.terms[0].populate_len_bytes(&mut filler, 32);
-		concat.terms[0].populate_data(&mut filler, correct_data);
+		filler[setup.len_joined] = Word(32);
+		pack_bytes_into_wires_le(&mut filler, &setup.joined, wrong_data);
+		setup.terms[0].populate_len_bytes(&mut filler, 32);
+		setup.terms[0].populate_data(&mut filler, correct_data);
 
 		let result = circuit.populate_wire_witness(&mut filler);
 
@@ -432,16 +368,16 @@ mod tests {
 		let max_n_joined = expected_joined_bytes.len().div_ceil(8);
 		let term_max_lens: Vec<usize> = term_specs.iter().map(|(_, max_len)| *max_len).collect();
 
-		let (b, concat) = create_concat_circuit(max_n_joined, term_max_lens);
-		let circuit = b.build();
+		let setup = create_concat_circuit(max_n_joined, term_max_lens);
+		let circuit = setup.builder.build();
 		let mut filler = circuit.new_witness_filler();
 
-		concat.populate_len_joined_bytes(&mut filler, expected_joined_bytes.len());
-		concat.populate_joined(&mut filler, &expected_joined_bytes);
+		filler[setup.len_joined] = Word(expected_joined_bytes.len() as u64);
+		pack_bytes_into_wires_le(&mut filler, &setup.joined, &expected_joined_bytes);
 
 		for (i, (data_bytes, _)) in term_specs.iter().enumerate() {
-			concat.terms[i].populate_len_bytes(&mut filler, data_bytes.len());
-			concat.terms[i].populate_data(&mut filler, data_bytes);
+			setup.terms[i].populate_len_bytes(&mut filler, data_bytes.len());
+			setup.terms[i].populate_data(&mut filler, data_bytes);
 		}
 
 		let result = circuit.populate_wire_witness(&mut filler);

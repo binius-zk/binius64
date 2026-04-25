@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 use binius_frontend::{CircuitBuilder, Wire};
 
-use crate::{concat::Concat, fixed_byte_vec::ByteVec, keccak::Keccak256};
+use crate::{concat::concat, fixed_byte_vec::ByteVec, keccak::Keccak256};
 
 /// Verify a tweaked Keccak-256 circuit with custom terms.
 ///
@@ -53,6 +53,10 @@ pub fn circuit_tweaked_keccak(
 	terms.push(tweak_term);
 	terms.extend(additional_terms);
 
-	let _message_structure_verifier = Concat::new(builder, len, message_le, terms);
+	let computed = concat(builder, &terms, Some(message_le.len()));
+	builder.assert_eq("tweaked_keccak_concat_len", computed.len_bytes, len);
+	for (i, (&a, &e)) in computed.data.iter().zip(&message_le).enumerate() {
+		builder.assert_eq(format!("tweaked_keccak_concat_data[{i}]"), a, e);
+	}
 	keccak
 }

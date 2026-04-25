@@ -67,7 +67,8 @@ pub fn create_sha256_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 }
 
 pub fn create_concat_cs_with_witness() -> (ConstraintSystem, ValueVec) {
-	use binius_circuits::{concat::Concat, fixed_byte_vec::ByteVec};
+	use binius_circuits::{concat::concat, fixed_byte_vec::ByteVec};
+	use binius_frontend::util::pack_bytes_into_wires_le;
 
 	let builder = CircuitBuilder::new();
 	let max_n_joined: usize = 32; // Maximum joined size
@@ -92,8 +93,12 @@ pub fn create_concat_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 		},
 	];
 
-	// Create the Concat circuit
-	let concat = Concat::new(&builder, len_joined, joined, terms);
+	// Compute the concat and assert it matches the expected joined wires.
+	let computed = concat(&builder, &terms, Some(joined.len()));
+	builder.assert_eq("concat_len", computed.len_bytes, len_joined);
+	for (i, (&a, &e)) in computed.data.iter().zip(&joined).enumerate() {
+		builder.assert_eq(format!("concat_data[{i}]"), a, e);
+	}
 
 	let circuit = builder.build();
 	let mut witness_filler = circuit.new_witness_filler();
@@ -105,18 +110,18 @@ pub fn create_concat_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 	let joined_data = b"Hello World!";
 
 	// Populate terms
-	concat.terms[0].populate_len_bytes(&mut witness_filler, term1_data.len());
-	concat.terms[0].populate_data(&mut witness_filler, term1_data);
+	terms[0].populate_len_bytes(&mut witness_filler, term1_data.len());
+	terms[0].populate_data(&mut witness_filler, term1_data);
 
-	concat.terms[1].populate_len_bytes(&mut witness_filler, term2_data.len());
-	concat.terms[1].populate_data(&mut witness_filler, term2_data);
+	terms[1].populate_len_bytes(&mut witness_filler, term2_data.len());
+	terms[1].populate_data(&mut witness_filler, term2_data);
 
-	concat.terms[2].populate_len_bytes(&mut witness_filler, term3_data.len());
-	concat.terms[2].populate_data(&mut witness_filler, term3_data);
+	terms[2].populate_len_bytes(&mut witness_filler, term3_data.len());
+	terms[2].populate_data(&mut witness_filler, term3_data);
 
-	// Populate joined result
-	concat.populate_len_joined_bytes(&mut witness_filler, joined_data.len());
-	concat.populate_joined(&mut witness_filler, joined_data);
+	// Populate expected joined result
+	witness_filler[len_joined] = Word(joined_data.len() as u64);
+	pack_bytes_into_wires_le(&mut witness_filler, &joined, joined_data);
 
 	// Get the witness vector
 	circuit.populate_wire_witness(&mut witness_filler).unwrap();

@@ -3,11 +3,12 @@ use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD};
 use binius_circuits::{
 	base64::Base64UrlSafe,
-	concat::Concat,
+	concat::concat,
 	fixed_byte_vec::ByteVec,
 	jwt_claims::{Attribute, JwtClaims},
 	rs256::Rs256Verify,
 	sha256::Sha256 as Sha256Circuit,
+	slice::create_byte_mask,
 };
 use binius_core::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
@@ -192,12 +193,11 @@ impl ZkLogin {
 		let zkaddr_joined_words = max_len_zkaddr_preimage;
 		let zkaddr_joined_le = zkaddr_preimage_le_wires[..zkaddr_joined_words].to_vec();
 
-		// Create the concatenation that outputs to the LE wires
-		let _zkaddr_preimage_concat = Concat::new(
-			&b.subcircuit("zkaddr_preimage_concat"),
-			zkaddr_preimage_len_bytes,
-			zkaddr_joined_le,
-			vec![
+		// Compute the concatenation and assert it equals the SHA-256 message LE wires.
+		let zkaddr_concat_b = b.subcircuit("zkaddr_preimage_concat");
+		let zkaddr_concat = concat(
+			&zkaddr_concat_b,
+			&[
 				ByteVec {
 					data: sub.data.clone(),
 					len_bytes: sub.len_bytes,
@@ -215,7 +215,10 @@ impl ZkLogin {
 					len_bytes: salt.len_bytes,
 				},
 			],
+			Some(zkaddr_joined_le.len()),
 		);
+		zkaddr_concat_b.assert_eq("len", zkaddr_concat.len_bytes, zkaddr_preimage_len_bytes);
+		assert_sha256_message_eq_concat(&zkaddr_concat_b, &zkaddr_concat, &zkaddr_joined_le);
 
 		// We need to check:
 		//
@@ -239,14 +242,13 @@ impl ZkLogin {
 		let nonce_preimage_le_wires = nonce_sha256.message_to_le_wires(b);
 		let nonce_joined_words = max_len_nonce_preimage;
 		let nonce_joined_le = nonce_preimage_le_wires[..nonce_joined_words].to_vec();
-		let _nonce_preimage_concat = Concat::new(
-			&b.subcircuit("nonce_preimage_concat"),
-			nonce_preimage_len_bytes,
-			nonce_joined_le,
-			vec![
+		let nonce_concat_b = b.subcircuit("nonce_preimage_concat");
+		let nonce_concat = concat(
+			&nonce_concat_b,
+			&[
 				ByteVec {
 					data: vk_u.to_vec(),
-					len_bytes: b.add_constant_64(32),
+					len_bytes: nonce_concat_b.add_constant_64(32),
 				},
 				ByteVec {
 					data: t_max.data.clone(),
@@ -257,7 +259,10 @@ impl ZkLogin {
 					len_bytes: nonce_r.len_bytes,
 				},
 			],
+			Some(nonce_joined_le.len()),
 		);
+		nonce_concat_b.assert_eq("len", nonce_concat.len_bytes, nonce_preimage_len_bytes);
+		assert_sha256_message_eq_concat(&nonce_concat_b, &nonce_concat, &nonce_joined_le);
 
 		let nonce_le = nonce_sha256.digest_to_le_wires(b);
 
@@ -304,24 +309,30 @@ impl ZkLogin {
 		let jwt_signing_payload_le_wires = jwt_signature_verify.sha256.message_to_le_wires(b);
 		let signing_joined_words = max_len_jwt_signing_payload;
 		let signing_joined_le = jwt_signing_payload_le_wires[..signing_joined_words].to_vec();
-		let _jwt_signing_payload_concat = Concat::new(
-			&b.subcircuit("jwt_signing_payload_concat"),
-			jwt_signing_payload_sha256_len,
-			signing_joined_le,
-			vec![
+		let signing_concat_b = b.subcircuit("jwt_signing_payload_concat");
+		let signing_concat = concat(
+			&signing_concat_b,
+			&[
 				ByteVec {
 					data: base64_jwt_header.data.clone(),
 					len_bytes: base64_jwt_header.len_bytes,
 				},
 				ByteVec {
-					data: vec![b.add_constant_zx_8(b'.')],
-					len_bytes: b.add_constant_64(1),
+					data: vec![signing_concat_b.add_constant_zx_8(b'.')],
+					len_bytes: signing_concat_b.add_constant_64(1),
 				},
 				ByteVec {
 					data: base64_jwt_payload.data.clone(),
 					len_bytes: base64_jwt_payload.len_bytes,
 				},
 			],
+			Some(signing_joined_le.len()),
+		);
+		signing_concat_b.assert_eq("len", signing_concat.len_bytes, jwt_signing_payload_sha256_len);
+		assert_sha256_message_eq_concat(
+			&signing_concat_b,
+			&signing_concat,
+			&signing_joined_le,
 		);
 
 		let jwt_claims_header = jwt_header_check(b, &jwt_header);
@@ -443,6 +454,37 @@ impl ZkLogin {
 		let mut padded = vec![0u8; 48];
 		padded[..base64_nonce.len()].copy_from_slice(&base64_nonce[..base64_nonce.len()]);
 		pack_bytes_into_wires_le(w, &self.base64_jwt_payload_nonce, &padded);
+	}
+}
+
+/// Asserts that `expected.data[i] == joined_le[i]` for the bytes within `expected.len_bytes`
+/// (ignoring trailing bytes past the length).
+///
+/// This is needed because the SHA-256 message wires past `len_bytes` carry padding bytes
+/// (`0x80` delimiter plus the bit-length field), which differ from the zero-padded trailing
+/// bytes of the [`concat`] gadget's output. We mask both sides to the valid byte range and
+/// only assert there.
+fn assert_sha256_message_eq_concat(
+	b: &CircuitBuilder,
+	concat_result: &ByteVec,
+	joined_le: &[Wire],
+) {
+	assert_eq!(concat_result.data.len(), joined_le.len());
+	for (i, (&a, &e)) in concat_result.data.iter().zip(joined_le).enumerate() {
+		let word_byte_offset = i << 3;
+		let is_valid_word = b.icmp_ult(
+			b.add_constant(Word(word_byte_offset as u64)),
+			concat_result.len_bytes,
+		);
+		let neg_start = b.add_constant(Word((-(word_byte_offset as i64)) as u64));
+		let (bytes_remaining, _) = b.iadd(concat_result.len_bytes, neg_start);
+		let mask = create_byte_mask(b, bytes_remaining);
+		b.assert_eq_cond(
+			format!("data[{i}]"),
+			b.band(a, mask),
+			b.band(e, mask),
+			is_valid_word,
+		);
 	}
 }
 
