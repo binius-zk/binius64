@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 use binius_core::word::Word;
-use binius_frontend::{CircuitBuilder, Wire};
+use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 
 const IV: [u64; 8] = [
 	0x6a09e667f3bcc908,
@@ -122,81 +122,71 @@ impl State {
 	}
 }
 
-/// SHA-512 compress function.
-pub struct Compress {
-	pub state_in: State,
-	pub state_out: State,
-	pub m: [Wire; 16],
-}
+/// SHA-512 compression function.
+///
+/// Builds a circuit that updates the chaining state with one 1024-bit message block. Returns the
+/// next chaining state.
+pub fn compress(builder: &CircuitBuilder, state_in: State, m: [Wire; 16]) -> State {
+	// ---- message-schedule ----
+	// W[0..15] = block_words
+	// for t = 16 .. 79:
+	//     s0   = σ0(W[t-15])
+	//     s1   = σ1(W[t-2])
+	//     (p, _)  = Add(W[t-16], s0)
+	//     (q, _)  = Add(p, W[t-7])
+	//     (W[t],_) = Add(q, s1)
+	let mut w = Vec::with_capacity(80);
 
-impl Compress {
-	pub fn new(builder: &CircuitBuilder, state_in: State, m: [Wire; 16]) -> Self {
-		// ---- message-schedule ----
-		// W[0..15] = block_words
-		// for t = 16 .. 79:
-		//     s0   = σ0(W[t-15])
-		//     s1   = σ1(W[t-2])
-		//     (p, _)  = Add(W[t-16], s0)
-		//     (q, _)  = Add(p, W[t-7])
-		//     (W[t],_) = Add(q, s1)
-		let mut w = Vec::with_capacity(80);
+	// W[0..15] = block_words
+	w.extend_from_slice(&m);
 
-		// W[0..15] = block_words
-		w.extend_from_slice(&m);
-
-		// W[16..79] computed from previous W values
-		for t in 16..80 {
-			let s0 = small_sigma_0(builder, w[t - 15]);
-			let s1 = small_sigma_1(builder, w[t - 2]);
-			let (p, _carry) = builder.iadd(w[t - 16], s0);
-			let (q, _carry) = builder.iadd(p, w[t - 7]);
-			let (w_t, _carry) = builder.iadd(q, s1);
-			w.push(w_t);
-		}
-
-		let w: &[Wire; 80] = (&*w).try_into().unwrap();
-		let mut state = state_in.clone();
-		for t in 0..80 {
-			state = round(builder, t, state, w);
-		}
-
-		// Add the compressed chunk to the current hash value
-		let (a_out, _carry) = builder.iadd(state_in.0[0], state.0[0]);
-		let (b_out, _carry) = builder.iadd(state_in.0[1], state.0[1]);
-		let (c_out, _carry) = builder.iadd(state_in.0[2], state.0[2]);
-		let (d_out, _carry) = builder.iadd(state_in.0[3], state.0[3]);
-		let (e_out, _carry) = builder.iadd(state_in.0[4], state.0[4]);
-		let (f_out, _carry) = builder.iadd(state_in.0[5], state.0[5]);
-		let (g_out, _carry) = builder.iadd(state_in.0[6], state.0[6]);
-		let (h_out, _carry) = builder.iadd(state_in.0[7], state.0[7]);
-
-		let state_out = State([a_out, b_out, c_out, d_out, e_out, f_out, g_out, h_out]);
-
-		Compress {
-			state_in,
-			state_out,
-			m,
-		}
+	// W[16..79] computed from previous W values
+	for t in 16..80 {
+		let s0 = small_sigma_0(builder, w[t - 15]);
+		let s1 = small_sigma_1(builder, w[t - 2]);
+		let (p, _carry) = builder.iadd(w[t - 16], s0);
+		let (q, _carry) = builder.iadd(p, w[t - 7]);
+		let (w_t, _carry) = builder.iadd(q, s1);
+		w.push(w_t);
 	}
 
-	pub fn populate_m(&self, w: &mut binius_frontend::WitnessFiller, m: [u8; 128]) {
-		debug_assert_eq!(self.m.len(), 16);
+	let w: &[Wire; 80] = (&*w).try_into().unwrap();
+	let mut state = state_in.clone();
+	for t in 0..80 {
+		state = round(builder, t, state, w);
+	}
 
-		for i in 0..16 {
-			let j = i * 8;
-			// Assemble a 64-bit big-endian word.
-			let limb = ((m[j] as u64) << 56)
-				| ((m[j + 1] as u64) << 48)
-				| ((m[j + 2] as u64) << 40)
-				| ((m[j + 3] as u64) << 32)
-				| ((m[j + 4] as u64) << 24)
-				| ((m[j + 5] as u64) << 16)
-				| ((m[j + 6] as u64) << 8)
-				| (m[j + 7] as u64);
+	// Add the compressed chunk to the current hash value
+	let (a_out, _carry) = builder.iadd(state_in.0[0], state.0[0]);
+	let (b_out, _carry) = builder.iadd(state_in.0[1], state.0[1]);
+	let (c_out, _carry) = builder.iadd(state_in.0[2], state.0[2]);
+	let (d_out, _carry) = builder.iadd(state_in.0[3], state.0[3]);
+	let (e_out, _carry) = builder.iadd(state_in.0[4], state.0[4]);
+	let (f_out, _carry) = builder.iadd(state_in.0[5], state.0[5]);
+	let (g_out, _carry) = builder.iadd(state_in.0[6], state.0[6]);
+	let (h_out, _carry) = builder.iadd(state_in.0[7], state.0[7]);
 
-			// Write it to the witness.  Word is a thin wrapper around u64.
-			w[self.m[i]] = Word(limb);
-		}
+	State([a_out, b_out, c_out, d_out, e_out, f_out, g_out, h_out])
+}
+
+/// Packs a 128-byte SHA-512 message block into the 16 message wires of [`compress`].
+///
+/// Each output wire receives the 64-bit big-endian word formed from the corresponding 8 input
+/// bytes.
+pub fn pack_message_block(w: &mut WitnessFiller<'_>, m_wires: &[Wire; 16], block: [u8; 128]) {
+	for i in 0..16 {
+		let j = i * 8;
+		// Assemble a 64-bit big-endian word.
+		let limb = ((block[j] as u64) << 56)
+			| ((block[j + 1] as u64) << 48)
+			| ((block[j + 2] as u64) << 40)
+			| ((block[j + 3] as u64) << 32)
+			| ((block[j + 4] as u64) << 24)
+			| ((block[j + 5] as u64) << 16)
+			| ((block[j + 6] as u64) << 8)
+			| (block[j + 7] as u64);
+
+		w[m_wires[i]] = Word(limb);
 	}
 }
 
@@ -280,7 +270,7 @@ mod tests {
 	use binius_core::{verify::verify_constraints, word::Word};
 	use binius_frontend::{CircuitBuilder, Wire};
 
-	use super::{Compress, State};
+	use super::{State, compress, pack_message_block};
 
 	/// A test circuit that proves a knowledge of preimage for a given state vector S in
 	///
@@ -305,9 +295,9 @@ mod tests {
 		let state = State::iv(&circuit);
 		let input: [Wire; 16] = std::array::from_fn(|_| circuit.add_witness());
 		let output: [Wire; 8] = std::array::from_fn(|_| circuit.add_inout());
-		let compress = Compress::new(&circuit, state, input);
+		let state_out = compress(&circuit, state, input);
 
-		for (i, (actual_x, expected_x)) in compress.state_out.0.iter().zip(output).enumerate() {
+		for (i, (actual_x, expected_x)) in state_out.0.iter().zip(output).enumerate() {
 			circuit.assert_eq(format!("preimage_eq[{i}]"), *actual_x, expected_x);
 		}
 
@@ -316,7 +306,7 @@ mod tests {
 		let mut w = circuit.new_witness_filler();
 
 		// Populate the input message for the compression function.
-		compress.populate_m(&mut w, preimage);
+		pack_message_block(&mut w, &input, preimage);
 
 		for (i, &output) in output.iter().enumerate() {
 			w[output] = Word(expected_state[i]);
@@ -333,7 +323,7 @@ mod tests {
 		const N: usize = 3;
 		let circuit = CircuitBuilder::new();
 
-		let mut compress_vec = Vec::with_capacity(N);
+		let mut m_wires: Vec<[Wire; 16]> = Vec::with_capacity(N);
 
 		// First, declare the initial state.
 		let mut state = State::iv(&circuit);
@@ -349,18 +339,16 @@ mod tests {
 			} else {
 				std::array::from_fn(|_| sha512_builder.add_witness())
 			};
-			let compress = Compress::new(&sha512_builder, state, m);
-			state = compress.state_out.clone();
-
-			compress_vec.push(compress);
+			state = compress(&sha512_builder, state, m);
+			m_wires.push(m);
 		}
 
 		let circuit = circuit.build();
 		let cs = circuit.constraint_system();
 		let mut w = circuit.new_witness_filler();
 
-		for compress in &compress_vec {
-			compress.populate_m(&mut w, [0; 128]);
+		for m in &m_wires {
+			pack_message_block(&mut w, m, [0; 128]);
 		}
 		circuit.populate_wire_witness(&mut w).unwrap();
 
@@ -373,7 +361,7 @@ mod tests {
 		const N: usize = 3;
 		let circuit = CircuitBuilder::new();
 
-		let mut compress_vec = Vec::with_capacity(N);
+		let mut m_wires: Vec<[Wire; 16]> = Vec::with_capacity(N);
 
 		for i in 0..N {
 			// Create a new subcircuit builder
@@ -382,17 +370,16 @@ mod tests {
 			// Each SHA-512 instance gets its own IV and input (all committed)
 			let state = State::iv(&sha512_builder);
 			let m: [Wire; 16] = std::array::from_fn(|_| sha512_builder.add_inout());
-			let compress = Compress::new(&sha512_builder, state, m);
-
-			compress_vec.push(compress);
+			let _state_out = compress(&sha512_builder, state, m);
+			m_wires.push(m);
 		}
 
 		let circuit = circuit.build();
 		let cs = circuit.constraint_system();
 		let mut w = circuit.new_witness_filler();
 
-		for compress in &compress_vec {
-			compress.populate_m(&mut w, [0; 128]);
+		for m in &m_wires {
+			pack_message_block(&mut w, m, [0; 128]);
 		}
 		circuit.populate_wire_witness(&mut w).unwrap();
 		verify_constraints(cs, &w.into_value_vec()).unwrap();
