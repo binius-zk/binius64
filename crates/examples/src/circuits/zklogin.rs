@@ -5,7 +5,7 @@ use binius_circuits::{
 	base64::Base64UrlSafe,
 	concat::concat,
 	fixed_byte_vec::ByteVec,
-	jwt_claims::{Attribute, JwtClaims},
+	jwt_claims::jwt_claims,
 	rs256::Rs256Verify,
 	sha256::Sha256 as Sha256Circuit,
 	slice::create_byte_mask,
@@ -83,10 +83,9 @@ pub struct ZkLogin {
 	pub zkaddr: [Wire; 4],
 	/// The SHA256 circuit for zkaddr verification
 	pub zkaddr_sha256: Sha256Circuit,
-	/// The subcircuit that verifies the JWT header.
-	pub jwt_claims_header: JwtClaims,
-	/// The subcircuit that verifies the JWT in the payload.
-	pub jwt_claims_payload: JwtClaims,
+	/// Inout-allocated `(alg, typ)` ByteVecs whose `len_bytes` wires are filled by
+	/// [`Self::populate_jwt_header_attributes`].
+	pub jwt_header_attrs: [ByteVec; 2],
 	/// The subcircuit that verifies the RS256 signature in the JWT.
 	pub jwt_signature_verify: Rs256Verify,
 	/// The JWT header
@@ -335,9 +334,8 @@ impl ZkLogin {
 			&signing_joined_le,
 		);
 
-		let jwt_claims_header = jwt_header_check(b, &jwt_header);
-		let jwt_claims_payload =
-			jwt_payload_check(b, &jwt_payload, &sub, &aud, &iss, &base64_jwt_payload_nonce);
+		let jwt_header_attrs = jwt_header_check(b, &jwt_header);
+		jwt_payload_check(b, &jwt_payload, &sub, &aud, &iss, &base64_jwt_payload_nonce);
 
 		Self {
 			sub,
@@ -346,8 +344,7 @@ impl ZkLogin {
 			salt,
 			zkaddr,
 			zkaddr_sha256,
-			jwt_claims_header,
-			jwt_claims_payload,
+			jwt_header_attrs,
 			jwt_signature_verify,
 			base64_jwt_header,
 			base64_jwt_payload,
@@ -423,8 +420,8 @@ impl ZkLogin {
 
 	pub fn populate_jwt_header_attributes(&self, w: &mut WitnessFiller) {
 		// Populate the expected lengths for "alg" and "typ" attributes
-		self.jwt_claims_header.attributes[0].populate_len_bytes(w, 5); // "RS256" is 5 bytes
-		self.jwt_claims_header.attributes[1].populate_len_bytes(w, 3); // "JWT" is 3 bytes
+		self.jwt_header_attrs[0].populate_len_bytes(w, 5); // "RS256" is 5 bytes
+		self.jwt_header_attrs[1].populate_len_bytes(w, 3); // "JWT" is 3 bytes
 	}
 
 	pub fn populate_nonce(&self, w: &mut WitnessFiller, nonce_hash: &[u8; 32]) {
@@ -490,24 +487,25 @@ fn assert_sha256_message_eq_concat(
 
 /// A check that verifies that JWT header has the expected constant values in the `alg` and `typ`
 /// fields.
-fn jwt_header_check(b: &CircuitBuilder, jwt_header: &ByteVec) -> JwtClaims {
-	JwtClaims::new(
-		&b.subcircuit("jwt_claims_header"),
+///
+/// Returns the `(alg, typ)` ByteVecs so callers can populate the runtime length wires.
+fn jwt_header_check(b: &CircuitBuilder, jwt_header: &ByteVec) -> [ByteVec; 2] {
+	let b = b.subcircuit("jwt_claims_header");
+	let alg = ByteVec {
+		len_bytes: b.add_inout(),
+		data: vec![b.add_constant_64(u64::from_le_bytes(*b"RS256\0\0\0"))],
+	};
+	let typ = ByteVec {
+		len_bytes: b.add_inout(),
+		data: vec![b.add_constant_64(u64::from_le_bytes(*b"JWT\0\0\0\0\0"))],
+	};
+	jwt_claims(
+		&b,
 		jwt_header.len_bytes,
-		jwt_header.data.clone(),
-		vec![
-			Attribute {
-				name: "alg",
-				len_bytes: b.add_inout(),
-				value: vec![b.add_constant_64(u64::from_le_bytes(*b"RS256\0\0\0"))],
-			},
-			Attribute {
-				name: "typ",
-				len_bytes: b.add_inout(),
-				value: vec![b.add_constant_64(u64::from_le_bytes(*b"JWT\0\0\0\0\0"))],
-			},
-		],
-	)
+		&jwt_header.data,
+		&[("alg", &alg), ("typ", &typ)],
+	);
+	[alg, typ]
 }
 
 /// A check that verifies that the payload has all the claimed values of `sub`, `aud`, `iss`
@@ -519,35 +517,24 @@ fn jwt_payload_check(
 	aud_byte_vec: &ByteVec,
 	iss_byte_vec: &ByteVec,
 	base64_nonce: &[Wire; 6],
-) -> JwtClaims {
-	JwtClaims::new(
-		&b.subcircuit("jwt_claims_payload"),
+) {
+	let b = b.subcircuit("jwt_claims_payload");
+	// Base64-encoded 32 bytes without padding = 43 chars.
+	let nonce_byte_vec = ByteVec {
+		len_bytes: b.add_constant_64(43),
+		data: base64_nonce.to_vec(),
+	};
+	jwt_claims(
+		&b,
 		jwt_payload.len_bytes,
-		jwt_payload.data.clone(),
-		vec![
-			Attribute {
-				name: "sub",
-				len_bytes: sub_byte_vec.len_bytes,
-				value: sub_byte_vec.data.clone(),
-			},
-			Attribute {
-				name: "aud",
-				len_bytes: aud_byte_vec.len_bytes,
-				value: aud_byte_vec.data.clone(),
-			},
-			Attribute {
-				name: "iss",
-				len_bytes: iss_byte_vec.len_bytes,
-				value: iss_byte_vec.data.clone(),
-			},
-			Attribute {
-				name: "nonce",
-				len_bytes: b.add_constant_64(43), /* Base64 encoded 32 bytes without padding = 43
-				                                   * chars */
-				value: base64_nonce.to_vec(),
-			},
+		&jwt_payload.data,
+		&[
+			("sub", sub_byte_vec),
+			("aud", aud_byte_vec),
+			("iss", iss_byte_vec),
+			("nonce", &nonce_byte_vec),
 		],
-	)
+	);
 }
 
 pub struct ZkLoginExample {
