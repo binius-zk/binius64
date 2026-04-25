@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_circuits::sha256::{Compress, State};
+use binius_circuits::sha256::{State, compress, pack_message_block};
 use binius_core::{
 	constraint_system::{ConstraintSystem, ValueVec},
 	word::Word,
@@ -85,11 +85,11 @@ fn sha256_preimage_circuit() -> (ConstraintSystem, ValueVec) {
 	let state = State::iv(&circuit);
 	let input: [Wire; 16] = std::array::from_fn(|_| circuit.add_witness());
 	let output: [Wire; 8] = std::array::from_fn(|_| circuit.add_inout());
-	let compress = Compress::new(&circuit, state, input);
+	let state_out = compress(&circuit, state, input);
 
 	// Mask to only low 32-bit.
 	let mask32 = circuit.add_constant(Word::MASK_32);
-	for (actual_x, expected_x) in compress.state_out.0.iter().zip(output) {
+	for (actual_x, expected_x) in state_out.0.iter().zip(output) {
 		circuit.assert_eq("eq", circuit.band(*actual_x, mask32), expected_x);
 	}
 
@@ -97,7 +97,7 @@ fn sha256_preimage_circuit() -> (ConstraintSystem, ValueVec) {
 	let mut w = circuit.new_witness_filler();
 
 	// Populate the input message for the compression function.
-	compress.populate_m(&mut w, preimage);
+	pack_message_block(&mut w, &input, preimage);
 
 	for (i, &output) in output.iter().enumerate() {
 		w[output] = Word(expected_state[i] as u64);
