@@ -5,7 +5,7 @@ pub mod permutation;
 
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
-use permutation::Permutation;
+use permutation::keccak_f1600;
 
 use crate::multiplexer::{multi_wire_multiplex, single_wire_multiplex};
 
@@ -74,7 +74,7 @@ impl Keccak256 {
 					b.bxor(state_in[i], padded_message[block_no * N_WORDS_PER_BLOCK + i]);
 			}
 
-			Permutation::keccak_f1600(b, &mut xored_state);
+			keccak_f1600(b, &mut xored_state);
 
 			states.push(xored_state);
 		}
