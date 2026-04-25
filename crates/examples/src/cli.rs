@@ -7,7 +7,10 @@ use binius_frontend::{CircuitBuilder, CircuitStat};
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
 use clap::{Arg, Args, Command, FromArgMatches, Subcommand};
 
-use crate::{CompressionType, ExampleCircuit, prove_verify, setup_sha256, setup_vision4};
+use crate::{
+	CompressionType, ExampleCircuit, prove_verify, prove_verify_zk, setup_sha256, setup_vision4,
+	setup_zk_sha256, setup_zk_vision4,
+};
 
 /// Serialize a value implementing `SerializeBytes` and write it to the given path.
 fn write_serialized<T: SerializeBytes>(value: &T, path: &str) -> Result<()> {
@@ -219,6 +222,12 @@ where
 					.help("Compression function to use")
 					.value_parser(clap::value_parser!(CompressionType))
 					.default_value("sha256"),
+			)
+			.arg(
+				Arg::new("zk")
+					.long("zk")
+					.help("Use the zero-knowledge proving config")
+					.action(clap::ArgAction::SetTrue),
 			);
 
 		// Augment with Params arguments at top level for default behavior
@@ -252,6 +261,12 @@ where
 					.help("Compression function to use")
 					.value_parser(clap::value_parser!(CompressionType))
 					.default_value("sha256"),
+			)
+			.arg(
+				Arg::new("zk")
+					.long("zk")
+					.help("Use the zero-knowledge proving config")
+					.action(clap::ArgAction::SetTrue),
 			);
 		cmd = E::Params::augment_args(cmd);
 		cmd = E::Instance::augment_args(cmd);
@@ -461,7 +476,11 @@ where
 			.get_one::<CompressionType>("compression")
 			.expect("has default value")
 			.clone();
+		let zk = matches.get_flag("zk");
 		tracing::info!("Parsed compression type: {compression:?}");
+		if zk {
+			tracing::info!("Using zero-knowledge proving config");
+		}
 
 		// Parse Params and Instance from matches
 		let params = E::Params::from_arg_matches(&matches)?;
@@ -492,16 +511,26 @@ where
 		let witness = filler.into_value_vec();
 		drop(witness_population);
 
-		match compression {
-			CompressionType::Sha256 => {
+		match (zk, compression) {
+			(false, CompressionType::Sha256) => {
 				tracing::info!("Using SHA256 compression for Merkle tree");
 				let (verifier, prover) = setup_sha256(cs, log_inv_rate as usize, None)?;
 				prove_verify(&verifier, &prover, witness)?;
 			}
-			CompressionType::Vision4 => {
+			(false, CompressionType::Vision4) => {
 				tracing::info!("Using Vision4 compression for Merkle tree");
 				let (verifier, prover) = setup_vision4(cs, log_inv_rate as usize, None)?;
 				prove_verify(&verifier, &prover, witness)?;
+			}
+			(true, CompressionType::Sha256) => {
+				tracing::info!("Using SHA256 compression for Merkle tree");
+				let (verifier, prover) = setup_zk_sha256(cs, log_inv_rate as usize)?;
+				prove_verify_zk(&verifier, &prover, witness)?;
+			}
+			(true, CompressionType::Vision4) => {
+				tracing::info!("Using Vision4 compression for Merkle tree");
+				let (verifier, prover) = setup_zk_vision4(cs, log_inv_rate as usize)?;
+				prove_verify_zk(&verifier, &prover, witness)?;
 			}
 		}
 
