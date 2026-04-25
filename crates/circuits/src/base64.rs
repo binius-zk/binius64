@@ -1,13 +1,11 @@
 // Copyright 2025 Irreducible Inc.
 use binius_core::word::Word;
-use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
+use binius_frontend::{CircuitBuilder, Wire};
 
 use crate::multiplexer::single_wire_multiplex;
 
-/// Base64 encoding (URL-safe, without trailing padding characters) encoding verification.
-///
-/// Verifies that encoded data is a valid base64 URL-safe encoding (without
-/// trailing padding characters) of decoded data.
+/// Asserts that `encoded` is a valid base64 URL-safe encoding (without trailing padding
+/// characters) of `decoded`.
 ///
 /// This encoding is defined in the JSON Web Signature (JWS) spec:
 /// <https://datatracker.ietf.org/doc/html/rfc7515#section-2> (Base64url Encoding)
@@ -21,104 +19,37 @@ use crate::multiplexer::single_wire_multiplex;
 /// # Circuit Behavior
 ///
 /// The circuit performs the following validations:
-/// - encoded is valid base64 URL-safe encoding of decoded
-/// - len_decoded is the actual length of data in decoded (in bytes)
-/// - len_decoded ≤ max_len_decoded (compile-time maximum)
+/// - `encoded` is valid base64 URL-safe encoding of `decoded`
+/// - `len_bytes` is the actual length of data in `decoded` (in bytes)
+/// - `len_bytes` ≤ `decoded.len() * 8` (compile-time maximum)
 ///
 /// # Input Packing
 ///
-/// - decoded: Pack 8 bytes per 64-bit word in little-endian format
-/// - encoded: Pack 8 base64 characters per 64-bit word in little-endian format
-/// - len_decoded: Single 64-bit word containing byte count
-pub struct Base64UrlSafe {
-	/// Decoded data array (packed 8 bytes per word).
-	pub decoded: Vec<Wire>,
-	/// Encoded base64 array (packed 8 chars per word).
-	pub encoded: Vec<Wire>,
-	/// Actual length of decoded data in bytes.
-	pub len_bytes: Wire,
-}
+/// - `decoded`: Pack 8 bytes per 64-bit word in little-endian format
+/// - `encoded`: Pack 8 base64 characters per 64-bit word in little-endian format
+/// - `len_bytes`: Single 64-bit word containing byte count
+///
+/// # Arguments
+///
+/// * `b` - Circuit builder for constructing constraints
+/// * `decoded` - raw byte array wires
+/// * `encoded` - base64 encoded array wires
+/// * `len_bytes` - wire containing the actual length of raw data in bytes
+///
+/// # Panics
+///
+/// * If `decoded.len()` is not a multiple of 3 — this guarantees word and base64-group alignment
+///   so no fractional groups appear at the end.
+pub fn base64_url_safe(b: &CircuitBuilder, decoded: &[Wire], encoded: &[Wire], len_bytes: Wire) {
+	// Verify length bounds
+	verify_length_bounds(b, len_bytes, decoded.len() << 3);
 
-impl Base64UrlSafe {
-	/// Creates a new Base64UrlSafe verifier.
-	///
-	/// # Arguments
-	///
-	/// * `builder` - Circuit builder for constructing constraints
-	/// * `decoded` - raw byte array wires
-	/// * `encoded` - Base64 encoded array wires
-	/// * `len_bytes` - Wire containing actual length of raw data in bytes
-	///
-	/// # Panics
-	///
-	/// * If `decoded.len()` is not a multiple of 3
-	///
-	/// # Implementation Notes
-	///
-	/// The requirement that `decoded.len()` be a multiple of 3 ensures:
-	/// - Word alignment: divisible by 8 for packing bytes into 64-bit words
-	/// - Base64 group alignment: divisible by 3 for processing complete groups
-	/// - Exact array sizing with no rounding needed
-	pub fn new(
-		builder: &CircuitBuilder,
-		decoded: Vec<Wire>,
-		encoded: Vec<Wire>,
-		len_bytes: Wire,
-	) -> Self {
-		// Verify length bounds
-		verify_length_bounds(builder, len_bytes, decoded.len() << 3);
+	// Process groups of 3 bytes -> 4 base64 chars
+	let groups = (decoded.len() << 3).div_ceil(3); // how many 3-byte chunks are there?
 
-		// Process groups of 3 bytes -> 4 base64 chars
-		let groups = (decoded.len() << 3).div_ceil(3); // how many 3-byte chunks are there?
-
-		for group_idx in 0..groups {
-			let b = builder.subcircuit(format!("group[{group_idx}]"));
-			verify_base64_group(&b, &decoded, &encoded, len_bytes, group_idx);
-		}
-
-		Self {
-			decoded,
-			encoded,
-			len_bytes,
-		}
-	}
-
-	/// Populates the length wire with the actual decoded data length.
-	///
-	/// # Arguments
-	///
-	/// * `w` - Witness filler to populate
-	/// * `length` - Actual length of decoded data in bytes
-	pub fn populate_len_bytes(&self, w: &mut WitnessFiller, len_bytes: usize) {
-		w[self.len_bytes] = Word(len_bytes as u64);
-	}
-
-	/// Populates the decoded data array from a byte slice.
-	///
-	/// # Arguments
-	///
-	/// * `w` - Witness filler to populate
-	/// * `data` - Decoded bytes
-	///
-	/// # Panics
-	///
-	/// Panics if `data.len()` exceeds the maximum size specified during construction.
-	pub fn populate_decoded(&self, w: &mut WitnessFiller, data: &[u8]) {
-		pack_bytes_into_wires_le(w, &self.decoded, data);
-	}
-
-	/// Populates the encoded base64 array from a byte slice.
-	///
-	/// # Arguments
-	///
-	/// * `w` - Witness filler to populate
-	/// * `data` - Base64-encoded bytes
-	///
-	/// # Panics
-	///
-	/// Panics if `data.len()` exceeds the maximum size specified during construction.
-	pub fn populate_encoded(&self, w: &mut WitnessFiller, data: &[u8]) {
-		pack_bytes_into_wires_le(w, &self.encoded, data);
+	for group_idx in 0..groups {
+		let b = b.subcircuit(format!("group[{group_idx}]"));
+		verify_base64_group(&b, decoded, encoded, len_bytes, group_idx);
 	}
 }
 
@@ -294,9 +225,9 @@ fn compute_expected_base64_char(
 #[cfg(test)]
 mod tests {
 	use binius_core::verify::verify_constraints;
-	use binius_frontend::CircuitBuilder;
+	use binius_frontend::{CircuitBuilder, util::pack_bytes_into_wires_le};
 
-	use super::{Base64UrlSafe, Wire};
+	use super::{Wire, Word, base64_url_safe};
 
 	/// Encodes bytes to base64 using URL-safe alphabet without trailing padding
 	/// '=" chars.
@@ -328,8 +259,14 @@ mod tests {
 		output
 	}
 
-	/// Helper to create base64 circuit with given max size.
-	fn create_base64_circuit(builder: &CircuitBuilder, max_len_decoded: usize) -> Base64UrlSafe {
+	struct Base64TestSetup {
+		decoded: Vec<Wire>,
+		encoded: Vec<Wire>,
+		len_bytes: Wire,
+	}
+
+	/// Helper to create base64 wires + constraints with given max size.
+	fn create_base64_circuit(builder: &CircuitBuilder, max_len_decoded: usize) -> Base64TestSetup {
 		// Create input wires
 		assert!(
 			max_len_decoded.is_multiple_of(3),
@@ -341,7 +278,13 @@ mod tests {
 
 		let len_bytes = builder.add_inout();
 
-		Base64UrlSafe::new(builder, decoded, encoded, len_bytes)
+		base64_url_safe(builder, &decoded, &encoded, len_bytes);
+
+		Base64TestSetup {
+			decoded,
+			encoded,
+			len_bytes,
+		}
 	}
 
 	/// Core helper that tests base64 encoding verification and returns a Result.
@@ -351,15 +294,15 @@ mod tests {
 		max_len_decoded: usize,
 	) -> Result<(), Box<dyn std::error::Error>> {
 		let builder = CircuitBuilder::new();
-		let circuit = create_base64_circuit(&builder, max_len_decoded);
+		let setup = create_base64_circuit(&builder, max_len_decoded);
 		let compiled = builder.build();
 
 		// Create witness
 		let mut witness = compiled.new_witness_filler();
 
-		circuit.populate_len_bytes(&mut witness, input_bytes.len());
-		circuit.populate_decoded(&mut witness, input_bytes);
-		circuit.populate_encoded(&mut witness, encoded);
+		witness[setup.len_bytes] = Word(input_bytes.len() as u64);
+		pack_bytes_into_wires_le(&mut witness, &setup.decoded, input_bytes);
+		pack_bytes_into_wires_le(&mut witness, &setup.encoded, encoded);
 
 		// Verify circuit
 		compiled.populate_wire_witness(&mut witness)?;

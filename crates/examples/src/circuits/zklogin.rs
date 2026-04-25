@@ -2,7 +2,7 @@
 use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD};
 use binius_circuits::{
-	base64::Base64UrlSafe,
+	base64::base64_url_safe,
 	concat::concat,
 	fixed_byte_vec::ByteVec,
 	jwt_claims::jwt_claims,
@@ -148,22 +148,22 @@ impl ZkLogin {
 		// 2. payload
 		// 3. signature
 
-		let _base64decode_check_header = Base64UrlSafe::new(
+		base64_url_safe(
 			&b.subcircuit("base64_check_header"),
-			jwt_header.data.clone(),
-			base64_jwt_header.data.clone(),
+			&jwt_header.data,
+			&base64_jwt_header.data,
 			jwt_header.len_bytes,
 		);
-		let _base64decode_check_payload = Base64UrlSafe::new(
+		base64_url_safe(
 			&b.subcircuit("base64_check_payload"),
-			jwt_payload.data.clone(),
-			base64_jwt_payload.data.clone(),
+			&jwt_payload.data,
+			&base64_jwt_payload.data,
 			jwt_payload.len_bytes,
 		);
-		let _base64decode_check_signature = Base64UrlSafe::new(
+		base64_url_safe(
 			&b.subcircuit("base64_check_signature"),
-			jwt_signature.data.clone(),
-			base64_jwt_signature.data.clone(),
+			&jwt_signature.data,
+			&base64_jwt_signature.data,
 			jwt_signature.len_bytes,
 		);
 
@@ -276,10 +276,10 @@ impl ZkLogin {
 		// The nonce is 32 bytes which encodes to 43 base64 characters.
 		// minimal wires those will fit into: 6 wires.
 		let base64_check_nonce_builder = b.subcircuit("base64_check_nonce");
-		let _base64decode_check_nonce = Base64UrlSafe::new(
+		base64_url_safe(
 			&base64_check_nonce_builder,
-			nonce_le_for_base64.clone(),
-			base64_jwt_payload_nonce.to_vec(),
+			&nonce_le_for_base64,
+			&base64_jwt_payload_nonce,
 			base64_check_nonce_builder.add_constant_64(32),
 		);
 
