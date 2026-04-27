@@ -35,11 +35,17 @@ impl<F: Field> IronSpartanBuilderChannel<F> {
 		}
 	}
 
-	fn alloc_inout_elem(&self, public: bool) -> CircuitElem<ConstraintBuilder<F>> {
+	/// Allocates a fresh inout wire, tagged public.
+	///
+	/// Inout wires from `recv_one` start out public-tagged here too, but the result of `recv_one`
+	/// is `inout - key` where `key` is precommit (public: false), so the AND-propagation in `Sub`
+	/// makes the recv'd value non-public — exactly as it should be. Treating every alloc_inout
+	/// as public-tagged simplifies the API and is sound under that propagation.
+	fn alloc_inout_elem(&self) -> CircuitElem<ConstraintBuilder<F>> {
 		let wire = self.builder.borrow_mut().alloc_inout();
 		CircuitElem::Wire {
 			wire: CircuitWire::new(&self.builder, wire),
-			public,
+			public: true,
 		}
 	}
 
@@ -69,17 +75,19 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 		// For each element that the inner prover sends, the wrapped prover allocates a one-time-pad
 		// encryption key in the precommit segment and encrypts the underlying value before sending.
 		// Here the verifier gets the encryption key from the precommit segment and decrypts.
-		let inout = self.alloc_inout_elem(false);
+		// `inout` is tagged public; subtracting the (non-public) `key` AND-propagates the result to
+		// non-public, which is the correct tag for a recv'd value.
+		let inout = self.alloc_inout_elem();
 		let key = self.alloc_precommit_elem();
 		Ok(inout - key)
 	}
 
 	fn sample(&mut self) -> Self::Elem {
-		self.alloc_inout_elem(true)
+		self.alloc_inout_elem()
 	}
 
 	fn observe_one(&mut self, _val: F) -> Self::Elem {
-		self.alloc_inout_elem(true)
+		self.alloc_inout_elem()
 	}
 
 	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
@@ -96,23 +104,16 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 	fn compute_public_value(
 		&mut self,
 		inputs: &[Self::Elem],
-		f: impl FnOnce(&[F]) -> F,
+		_f: impl FnOnce(&[F]) -> F,
 	) -> Self::Elem {
-		// Dummy field values for the closure: in builder mode the result is discarded, but the
-		// closure is still run so that any panics, type errors, or side effects surface symmetrically
-		// with the replay-channel side.
-		let values: Vec<F> = inputs
-			.iter()
-			.map(|e| match e {
-				CircuitElem::Constant(c) => *c,
-				CircuitElem::Wire { public, .. } => {
-					debug_assert!(*public, "compute_public_value: input is not public");
-					F::ZERO
-				}
-			})
-			.collect();
-		let _ = f(&values);
-		self.alloc_inout_elem(true)
+		// In builder mode there is nothing to compute — the closure result would be a function of
+		// dummy zeros. We skip running it entirely and only validate the input contract. The
+		// trait documents that the closure may or may not be invoked and must therefore be a
+		// pure function with no observable side effects.
+		for input in inputs {
+			debug_assert!(input.is_public(), "compute_public_value: input is not public");
+		}
+		self.alloc_inout_elem()
 	}
 }
 
@@ -135,7 +136,7 @@ impl<F: Field> IOPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 		// checks in the circuit equality of this value with the expected expression over encrypted
 		// values.
 		for relation in oracle_relations {
-			let decrypted_claim = self.alloc_inout_elem(false);
+			let decrypted_claim = self.alloc_inout_elem();
 			self.assert_zero(relation.claim - decrypted_claim)?;
 		}
 		Ok(())
@@ -171,7 +172,12 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 		}
 	}
 
-	fn next_inout_elem(&mut self, public: bool) -> CircuitElem<WitnessGenerator<'a, F>> {
+	/// Allocates the next inout slot, writes its value, and returns it tagged public.
+	///
+	/// See [`IronSpartanBuilderChannel::alloc_inout_elem`] for why every alloc_inout result is
+	/// tagged public regardless of whether the caller is `recv_one` (which subtracts a non-public
+	/// key) or `sample` / `observe_one` / `verify_oracle_relations`.
+	fn next_inout_elem(&mut self) -> CircuitElem<WitnessGenerator<'a, F>> {
 		let value = self
 			.events
 			.next()
@@ -182,7 +188,7 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 		let witness_wire = self.witness_gen.borrow_mut().write_inout(wire, value);
 		CircuitElem::Wire {
 			wire: CircuitWire::new(&self.witness_gen, witness_wire),
-			public,
+			public: true,
 		}
 	}
 
@@ -214,17 +220,17 @@ impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
 	type Elem = CircuitElem<WitnessGenerator<'a, F>>;
 
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
-		let encrypted_elem = self.next_inout_elem(false);
+		let encrypted_elem = self.next_inout_elem();
 		let key = self.next_precommit_elem();
 		Ok(encrypted_elem + key)
 	}
 
 	fn sample(&mut self) -> Self::Elem {
-		self.next_inout_elem(true)
+		self.next_inout_elem()
 	}
 
 	fn observe_one(&mut self, _val: F) -> Self::Elem {
-		self.next_inout_elem(true)
+		self.next_inout_elem()
 	}
 
 	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
@@ -283,7 +289,7 @@ impl<'a, F: Field> IOPVerifierChannel<F> for ReplayChannel<'a, F> {
 		// checks in the circuit equality of this value with the expected expression over encrypted
 		// values.
 		for relation in oracle_relations {
-			let decrypted_claim = self.next_inout_elem(false);
+			let decrypted_claim = self.next_inout_elem();
 			self.assert_zero(relation.claim - decrypted_claim)?;
 		}
 		Ok(())
