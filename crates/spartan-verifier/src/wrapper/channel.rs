@@ -92,6 +92,28 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 			}
 		}
 	}
+
+	fn compute_public_value(
+		&mut self,
+		inputs: &[Self::Elem],
+		f: impl FnOnce(&[F]) -> F,
+	) -> Self::Elem {
+		// Dummy field values for the closure: in builder mode the result is discarded, but the
+		// closure is still run so that any panics, type errors, or side effects surface symmetrically
+		// with the replay-channel side.
+		let values: Vec<F> = inputs
+			.iter()
+			.map(|e| match e {
+				CircuitElem::Constant(c) => *c,
+				CircuitElem::Wire { public, .. } => {
+					debug_assert!(*public, "compute_public_value: input is not public");
+					F::ZERO
+				}
+			})
+			.collect();
+		let _ = f(&values);
+		self.alloc_inout_elem(true)
+	}
 }
 
 impl<F: Field> IOPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
@@ -213,6 +235,31 @@ impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
 				self.witness_gen.borrow_mut().assert_zero(wire.wire());
 				Ok(())
 			}
+		}
+	}
+
+	fn compute_public_value(
+		&mut self,
+		inputs: &[Self::Elem],
+		f: impl FnOnce(&[F]) -> F,
+	) -> Self::Elem {
+		let values: Vec<F> = inputs
+			.iter()
+			.map(|e| match e {
+				CircuitElem::Constant(c) => *c,
+				CircuitElem::Wire { wire, public } => {
+					debug_assert!(*public, "compute_public_value: input is not public");
+					wire.wire().val()
+				}
+			})
+			.collect();
+		let result = f(&values);
+		let cwire = ConstraintWire::inout(self.next_inout_id);
+		self.next_inout_id += 1;
+		let witness_wire = self.witness_gen.borrow_mut().write_inout(cwire, result);
+		CircuitElem::Wire {
+			wire: CircuitWire::new(&self.witness_gen, witness_wire),
+			public: true,
 		}
 	}
 }

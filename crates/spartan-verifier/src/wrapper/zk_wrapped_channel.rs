@@ -144,6 +144,14 @@ where
 		// No-op: inner assertions are checked by the outer verifier.
 		Ok(())
 	}
+
+	fn compute_public_value(
+		&mut self,
+		inputs: &[F],
+		f: impl FnOnce(&[F]) -> F,
+	) -> F {
+		f(inputs)
+	}
 }
 
 impl<F, MTScheme, Challenger_> IOPVerifierChannel<F>
