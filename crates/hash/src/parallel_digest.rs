@@ -67,7 +67,7 @@ pub trait MultiDigest<const N: usize>: Clone {
 
 pub trait ParallelDigest: Send {
 	/// The corresponding non-parallelized hash function.
-	type Digest: Digest + Send;
+	type Digest: Digest;
 
 	/// Create new hasher instance with empty state.
 	fn new() -> Self;

@@ -158,13 +158,17 @@ where
 {
 	let challenger = StdChallenger::default();
 
-	let mut rng = rand::rng();
-	let mut prover_transcript = ProverTranscript::new(challenger.clone());
-	prover.prove(witness.clone(), &mut rng, &mut prover_transcript)?;
+	let proof = {
+		let _scope = tracing::info_span!("Prove").entered();
+		let mut prover_transcript = ProverTranscript::new(challenger.clone());
+		let mut rng = rand::rng();
+		prover.prove(witness.clone(), &mut rng, &mut prover_transcript)?;
+		prover_transcript.finalize()
+	};
 
-	let proof = prover_transcript.finalize();
 	tracing::info!("Proof size: {} KiB", proof.len() / 1024);
 
+	let _scope = tracing::info_span!("Verify").entered();
 	let mut verifier_transcript = VerifierTranscript::new(challenger, proof);
 	verifier.verify(witness.public(), &mut verifier_transcript)?;
 	verifier_transcript.finalize()?;

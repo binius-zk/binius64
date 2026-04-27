@@ -154,10 +154,6 @@ impl<F: Field> IOPVerifier<F> {
 		F: BinaryField,
 		Channel: IOPVerifierChannel<F>,
 	{
-		let _verify_guard =
-			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
-				.entered();
-
 		let cs = &self.constraint_system;
 
 		// Check that the public input length is correct
