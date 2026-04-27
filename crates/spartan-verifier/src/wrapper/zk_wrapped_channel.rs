@@ -150,7 +150,13 @@ where
 		inputs: &[F],
 		f: impl FnOnce(&[F]) -> F,
 	) -> F {
-		f(inputs)
+		// The wrapped verifier records every channel-derived value as an outer public input.
+		// `compute_public_value` materializes one inout wire on the wrapper-side constraint system,
+		// so the corresponding F value must be pushed to `public_values` exactly as if it had come
+		// from `sample` / `observe_one`.
+		let result = f(inputs);
+		self.public_values.push(result);
+		result
 	}
 }
 

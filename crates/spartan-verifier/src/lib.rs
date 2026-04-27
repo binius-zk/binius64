@@ -189,8 +189,29 @@ impl<F: Field> IOPVerifier<F> {
 
 		// Compute rₓ^⊤ (M_A + λ M_B + λ² M_C) x
 		let r_x_tensor = eq_ind_partial_eval_scalars(&r_x);
-		let public_eval =
-			evaluate_wiring_mle_public(cs.mul_constraints(), &public, lambda.clone(), &r_x_tensor);
+
+		// The public-segment contribution to the operand evaluations is purely a function of
+		// public-channel inputs (the public scalars, λ, and rₓ). Trade in those Elems for plain
+		// field values, run the MLE evaluation in plaintext, and materialize the result as a
+		// single inout wire instead of building the entire sub-circuit.
+		let public_eval = {
+			let public_len = public.len();
+			let mut inputs = public.clone();
+			inputs.push(lambda.clone());
+			inputs.extend(r_x_tensor.iter().cloned());
+			let mul_constraints = cs.mul_constraints();
+			channel.compute_public_value(&inputs, move |vals| {
+				let public_vals = &vals[..public_len];
+				let lambda_val = vals[public_len];
+				let r_x_tensor_vals = &vals[public_len + 1..];
+				evaluate_wiring_mle_public(
+					mul_constraints,
+					public_vals,
+					lambda_val,
+					r_x_tensor_vals,
+				)
+			})
+		};
 
 		// Prover sends the precommit segment's contribution to the operand evaluations.
 		let precommit_claim = channel.recv_one()?;
