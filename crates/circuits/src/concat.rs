@@ -38,8 +38,7 @@ pub fn concat(b: &CircuitBuilder, terms: &[ByteVec], max_words: Option<usize>) -
 		let b = b.subcircuit(format!("term[{i}]"));
 
 		// Verify the term's runtime length fits in its capacity.
-		let too_long =
-			b.icmp_ugt(term.len_bytes, b.add_constant_64((term.data.len() << 3) as u64));
+		let too_long = b.icmp_ugt(term.len_bytes, b.add_constant_64((term.data.len() << 3) as u64));
 		b.assert_false("term_length_check", too_long);
 
 		let word_offset = b.shr(offset, 3); // offset / 8
@@ -67,15 +66,20 @@ pub fn concat(b: &CircuitBuilder, terms: &[ByteVec], max_words: Option<usize>) -
 			let shifted_low_candidates: Vec<Wire> =
 				(0..8u32).map(|i| b.shl(masked, i * 8)).collect();
 			let shifted_high_candidates: Vec<Wire> = (0..8u32)
-				.map(|i| if i == 0 { zero } else { b.shr(masked, (8 - i) * 8) })
+				.map(|i| {
+					if i == 0 {
+						zero
+					} else {
+						b.shr(masked, (8 - i) * 8)
+					}
+				})
 				.collect();
 			let shifted_low = single_wire_multiplex(&b, &shifted_low_candidates, byte_offset);
 			let shifted_high = single_wire_multiplex(&b, &shifted_high_candidates, byte_offset);
 
 			// dest_low = word_offset + word_idx is the output position receiving the low bytes.
 			// The high bytes (if any) land at dest_low + 1.
-			let (dest_low, _) =
-				b.iadd(word_offset, b.add_constant(Word(word_idx as u64)));
+			let (dest_low, _) = b.iadd(word_offset, b.add_constant(Word(word_idx as u64)));
 
 			// Conditionally add contributions to each output position.
 			for (p, output_p) in output.iter_mut().enumerate() {

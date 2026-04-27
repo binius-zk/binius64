@@ -46,7 +46,7 @@ pub struct Sha512 {
 	/// This circuit will run enough hash blocks to process the entire message.
 	pub message: Vec<Wire>,
 
-	/// Per-block message wires fed into [`compress`], one `[Wire; 16]` array per 1024-bit block.
+	/// Per-block message wires fed into [`compress()`], one `[Wire; 16]` array per 1024-bit block.
 	///
 	/// The compression functions are chained together, with each taking the output state from the
 	/// previous compression as input. The first compression starts from the SHA-512 IV. The

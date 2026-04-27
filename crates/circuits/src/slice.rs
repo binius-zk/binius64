@@ -76,8 +76,7 @@ pub fn slice(
 				b.icmp_ult(b.add_constant(Word(word_start_bytes as u64)), len_slice);
 
 			// Calculate which input word(s) we need
-			let (input_word_idx, _) =
-				b.iadd(word_offset, b.add_constant(Word(slice_idx as u64)));
+			let (input_word_idx, _) = b.iadd(word_offset, b.add_constant(Word(slice_idx as u64)));
 
 			let extracted_word = extract_word(&b, input, input_word_idx, byte_offset);
 

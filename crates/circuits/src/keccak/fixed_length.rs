@@ -4,8 +4,7 @@ use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
 use super::{
-	N_WORDS_PER_BLOCK, N_WORDS_PER_DIGEST, N_WORDS_PER_STATE, RATE_BYTES,
-	permutation::keccak_f1600,
+	N_WORDS_PER_BLOCK, N_WORDS_PER_DIGEST, N_WORDS_PER_STATE, RATE_BYTES, permutation::keccak_f1600,
 };
 
 /// Computes the Keccak-256 hash of a fixed-length message.

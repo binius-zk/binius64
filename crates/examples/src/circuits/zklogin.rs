@@ -2,13 +2,8 @@
 use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD};
 use binius_circuits::{
-	base64::base64_url_safe,
-	concat::concat,
-	fixed_byte_vec::ByteVec,
-	jwt_claims::jwt_claims,
-	rs256::Rs256Verify,
-	sha256::Sha256 as Sha256Circuit,
-	slice::create_byte_mask,
+	base64::base64_url_safe, concat::concat, fixed_byte_vec::ByteVec, jwt_claims::jwt_claims,
+	rs256::Rs256Verify, sha256::Sha256 as Sha256Circuit, slice::create_byte_mask,
 };
 use binius_core::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
@@ -328,11 +323,7 @@ impl ZkLogin {
 			Some(signing_joined_le.len()),
 		);
 		signing_concat_b.assert_eq("len", signing_concat.len_bytes, jwt_signing_payload_sha256_len);
-		assert_sha256_message_eq_concat(
-			&signing_concat_b,
-			&signing_concat,
-			&signing_joined_le,
-		);
+		assert_sha256_message_eq_concat(&signing_concat_b, &signing_concat, &signing_joined_le);
 
 		let jwt_header_attrs = jwt_header_check(b, &jwt_header);
 		jwt_payload_check(b, &jwt_payload, &sub, &aud, &iss, &base64_jwt_payload_nonce);
@@ -459,7 +450,7 @@ impl ZkLogin {
 ///
 /// This is needed because the SHA-256 message wires past `len_bytes` carry padding bytes
 /// (`0x80` delimiter plus the bit-length field), which differ from the zero-padded trailing
-/// bytes of the [`concat`] gadget's output. We mask both sides to the valid byte range and
+/// bytes of the [`concat()`] gadget's output. We mask both sides to the valid byte range and
 /// only assert there.
 fn assert_sha256_message_eq_concat(
 	b: &CircuitBuilder,
@@ -469,19 +460,12 @@ fn assert_sha256_message_eq_concat(
 	assert_eq!(concat_result.data.len(), joined_le.len());
 	for (i, (&a, &e)) in concat_result.data.iter().zip(joined_le).enumerate() {
 		let word_byte_offset = i << 3;
-		let is_valid_word = b.icmp_ult(
-			b.add_constant(Word(word_byte_offset as u64)),
-			concat_result.len_bytes,
-		);
+		let is_valid_word =
+			b.icmp_ult(b.add_constant(Word(word_byte_offset as u64)), concat_result.len_bytes);
 		let neg_start = b.add_constant(Word((-(word_byte_offset as i64)) as u64));
 		let (bytes_remaining, _) = b.iadd(concat_result.len_bytes, neg_start);
 		let mask = create_byte_mask(b, bytes_remaining);
-		b.assert_eq_cond(
-			format!("data[{i}]"),
-			b.band(a, mask),
-			b.band(e, mask),
-			is_valid_word,
-		);
+		b.assert_eq_cond(format!("data[{i}]"), b.band(a, mask), b.band(e, mask), is_valid_word);
 	}
 }
 
@@ -499,12 +483,7 @@ fn jwt_header_check(b: &CircuitBuilder, jwt_header: &ByteVec) -> [ByteVec; 2] {
 		len_bytes: b.add_inout(),
 		data: vec![b.add_constant_64(u64::from_le_bytes(*b"JWT\0\0\0\0\0"))],
 	};
-	jwt_claims(
-		&b,
-		jwt_header.len_bytes,
-		&jwt_header.data,
-		&[("alg", &alg), ("typ", &typ)],
-	);
+	jwt_claims(&b, jwt_header.len_bytes, &jwt_header.data, &[("alg", &alg), ("typ", &typ)]);
 	[alg, typ]
 }
 

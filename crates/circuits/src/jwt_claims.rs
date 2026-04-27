@@ -25,8 +25,8 @@ use crate::{fixed_byte_vec::ByteVec, slice};
 /// * `b` - Circuit builder
 /// * `len_bytes` - Wire for actual JSON size in bytes
 /// * `json` - JSON input array packed as words (8 bytes per word)
-/// * `attributes` - Slice of `(name, value)` pairs to verify, where `value` is a `ByteVec`
-///   carrying the expected bytes and runtime length.
+/// * `attributes` - Slice of `(name, value)` pairs to verify, where `value` is a `ByteVec` carrying
+///   the expected bytes and runtime length.
 pub fn jwt_claims(
 	b: &CircuitBuilder,
 	len_bytes: Wire,
@@ -154,7 +154,8 @@ pub fn jwt_claims(
 		b.assert_eq("attr_length", value_length, value.len_bytes);
 
 		// Extract the value bytes from the JSON and assert they match the caller-supplied value.
-		let extracted = slice::slice(&b, len_bytes, value_length, json, value_start, value.data.len());
+		let extracted =
+			slice::slice(&b, len_bytes, value_length, json, value_start, value.data.len());
 		for (i, (&a, &e)) in extracted.iter().zip(&value.data).enumerate() {
 			b.assert_eq(format!("attr_value[{i}]"), a, e);
 		}
@@ -218,12 +219,7 @@ mod tests {
 		let iss = alloc_byte_vec(&b, 4);
 		let aud = alloc_byte_vec(&b, 2);
 
-		jwt_claims(
-			&b,
-			len_bytes,
-			&json,
-			&[("sub", &sub), ("iss", &iss), ("aud", &aud)],
-		);
+		jwt_claims(&b, len_bytes, &json, &[("sub", &sub), ("iss", &iss), ("aud", &aud)]);
 
 		let circuit = b.build();
 		let mut filler = circuit.new_witness_filler();

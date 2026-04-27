@@ -38,8 +38,8 @@ use crate::multiplexer::single_wire_multiplex;
 ///
 /// # Panics
 ///
-/// * If `decoded.len()` is not a multiple of 3 — this guarantees word and base64-group alignment
-///   so no fractional groups appear at the end.
+/// * If `decoded.len()` is not a multiple of 3 — this guarantees word and base64-group alignment so
+///   no fractional groups appear at the end.
 pub fn base64_url_safe(b: &CircuitBuilder, decoded: &[Wire], encoded: &[Wire], len_bytes: Wire) {
 	// Verify length bounds
 	verify_length_bounds(b, len_bytes, decoded.len() << 3);
