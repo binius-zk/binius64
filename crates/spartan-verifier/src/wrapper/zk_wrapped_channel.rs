@@ -145,11 +145,7 @@ where
 		Ok(())
 	}
 
-	fn compute_public_value(
-		&mut self,
-		inputs: &[F],
-		f: impl FnOnce(&[F]) -> F,
-	) -> F {
+	fn compute_public_value(&mut self, inputs: &[F], f: impl FnOnce(&[F]) -> F) -> F {
 		// The wrapped verifier records every channel-derived value as an outer public input.
 		// `compute_public_value` materializes one inout wire on the wrapper-side constraint system,
 		// so the corresponding F value must be pushed to `public_values` exactly as if it had come

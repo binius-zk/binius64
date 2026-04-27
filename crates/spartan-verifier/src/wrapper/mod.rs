@@ -205,6 +205,14 @@ mod tests {
 		// The symbolic execution should have produced a nontrivial constraint system.
 		assert!(wrapper_cs.n_inout() > 0);
 		assert!(!wrapper_cs.mul_constraints().is_empty());
+
+		// Diagnostic — visible with `cargo test -- --nocapture`. Useful when measuring the impact
+		// of optimizations like `compute_public_value`.
+		eprintln!(
+			"wrapper CS: n_inout={}, mul_constraints={}",
+			wrapper_cs.n_inout(),
+			wrapper_cs.mul_constraints().len(),
+		);
 	}
 
 	#[test]
@@ -230,7 +238,9 @@ mod tests {
 		for (i, (elem, &exp)) in elems.iter().zip(&expected).enumerate() {
 			match elem {
 				CircuitElem::Constant(c) => assert_eq!(*c, exp, "mismatch at index {i}"),
-				CircuitElem::Wire { .. } => panic!("expected constant after all-constants transpose"),
+				CircuitElem::Wire { .. } => {
+					panic!("expected constant after all-constants transpose")
+				}
 			}
 		}
 	}

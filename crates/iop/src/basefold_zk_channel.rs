@@ -142,11 +142,7 @@ where
 		}
 	}
 
-	fn compute_public_value(
-		&mut self,
-		inputs: &[F],
-		f: impl FnOnce(&[F]) -> F,
-	) -> F {
+	fn compute_public_value(&mut self, inputs: &[F], f: impl FnOnce(&[F]) -> F) -> F {
 		f(inputs)
 	}
 }
