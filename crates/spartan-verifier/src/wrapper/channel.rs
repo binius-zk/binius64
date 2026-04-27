@@ -35,14 +35,20 @@ impl<F: Field> IronSpartanBuilderChannel<F> {
 		}
 	}
 
-	fn alloc_inout_elem(&self) -> CircuitElem<ConstraintBuilder<F>> {
+	fn alloc_inout_elem(&self, public: bool) -> CircuitElem<ConstraintBuilder<F>> {
 		let wire = self.builder.borrow_mut().alloc_inout();
-		CircuitElem::Wire(CircuitWire::new(&self.builder, wire))
+		CircuitElem::Wire {
+			wire: CircuitWire::new(&self.builder, wire),
+			public,
+		}
 	}
 
 	fn alloc_precommit_elem(&self) -> CircuitElem<ConstraintBuilder<F>> {
 		let wire = self.builder.borrow_mut().alloc_precommit();
-		CircuitElem::Wire(CircuitWire::new(&self.builder, wire))
+		CircuitElem::Wire {
+			wire: CircuitWire::new(&self.builder, wire),
+			public: false,
+		}
 	}
 
 	/// Consumes the channel and returns the underlying [`ConstraintBuilder`].
@@ -63,25 +69,25 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 		// For each element that the inner prover sends, the wrapped prover allocates a one-time-pad
 		// encryption key in the precommit segment and encrypts the underlying value before sending.
 		// Here the verifier gets the encryption key from the precommit segment and decrypts.
-		let inout = self.alloc_inout_elem();
+		let inout = self.alloc_inout_elem(false);
 		let key = self.alloc_precommit_elem();
 		Ok(inout - key)
 	}
 
 	fn sample(&mut self) -> Self::Elem {
-		self.alloc_inout_elem()
+		self.alloc_inout_elem(true)
 	}
 
 	fn observe_one(&mut self, _val: F) -> Self::Elem {
-		self.alloc_inout_elem()
+		self.alloc_inout_elem(true)
 	}
 
 	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
 		match val {
 			CircuitElem::Constant(c) if c == F::ZERO => Ok(()),
 			CircuitElem::Constant(_) => Err(binius_ip::channel::Error::InvalidAssert),
-			CircuitElem::Wire(w) => {
-				self.builder.borrow_mut().assert_zero(w.wire());
+			CircuitElem::Wire { wire, .. } => {
+				self.builder.borrow_mut().assert_zero(wire.wire());
 				Ok(())
 			}
 		}
@@ -107,7 +113,7 @@ impl<F: Field> IOPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 		// checks in the circuit equality of this value with the expected expression over encrypted
 		// values.
 		for relation in oracle_relations {
-			let decrypted_claim = self.alloc_inout_elem();
+			let decrypted_claim = self.alloc_inout_elem(false);
 			self.assert_zero(relation.claim - decrypted_claim)?;
 		}
 		Ok(())
@@ -143,7 +149,7 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 		}
 	}
 
-	fn next_inout_elem(&mut self) -> CircuitElem<WitnessGenerator<'a, F>> {
+	fn next_inout_elem(&mut self, public: bool) -> CircuitElem<WitnessGenerator<'a, F>> {
 		let value = self
 			.events
 			.next()
@@ -152,7 +158,10 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 		let wire = ConstraintWire::inout(self.next_inout_id);
 		self.next_inout_id += 1;
 		let witness_wire = self.witness_gen.borrow_mut().write_inout(wire, value);
-		CircuitElem::Wire(CircuitWire::new(&self.witness_gen, witness_wire))
+		CircuitElem::Wire {
+			wire: CircuitWire::new(&self.witness_gen, witness_wire),
+			public,
+		}
 	}
 
 	fn next_precommit_elem(&mut self) -> CircuitElem<WitnessGenerator<'a, F>> {
@@ -164,7 +173,10 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 		let wire = ConstraintWire::precommit(self.next_precommit_id);
 		self.next_precommit_id += 1;
 		let witness_wire = self.witness_gen.borrow_mut().write_precommit(wire, value);
-		CircuitElem::Wire(CircuitWire::new(&self.witness_gen, witness_wire))
+		CircuitElem::Wire {
+			wire: CircuitWire::new(&self.witness_gen, witness_wire),
+			public: false,
+		}
 	}
 
 	/// Consumes the channel and builds the outer witness.
@@ -180,25 +192,25 @@ impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
 	type Elem = CircuitElem<WitnessGenerator<'a, F>>;
 
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
-		let encrypted_elem = self.next_inout_elem();
+		let encrypted_elem = self.next_inout_elem(false);
 		let key = self.next_precommit_elem();
 		Ok(encrypted_elem + key)
 	}
 
 	fn sample(&mut self) -> Self::Elem {
-		self.next_inout_elem()
+		self.next_inout_elem(true)
 	}
 
 	fn observe_one(&mut self, _val: F) -> Self::Elem {
-		self.next_inout_elem()
+		self.next_inout_elem(true)
 	}
 
 	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
 		match val {
 			CircuitElem::Constant(c) if c == F::ZERO => Ok(()),
 			CircuitElem::Constant(_) => Err(binius_ip::channel::Error::InvalidAssert),
-			CircuitElem::Wire(w) => {
-				self.witness_gen.borrow_mut().assert_zero(w.wire());
+			CircuitElem::Wire { wire, .. } => {
+				self.witness_gen.borrow_mut().assert_zero(wire.wire());
 				Ok(())
 			}
 		}
@@ -224,7 +236,7 @@ impl<'a, F: Field> IOPVerifierChannel<F> for ReplayChannel<'a, F> {
 		// checks in the circuit equality of this value with the expected expression over encrypted
 		// values.
 		for relation in oracle_relations {
-			let decrypted_claim = self.next_inout_elem();
+			let decrypted_claim = self.next_inout_elem(false);
 			self.assert_zero(relation.claim - decrypted_claim)?;
 		}
 		Ok(())
