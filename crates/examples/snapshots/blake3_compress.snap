@@ -1,0 +1,28 @@
+blake3_compress circuit
+--
+Gates & Instructions
+├─ Number of gates: 6,336
+└─ Number of evaluation instructions: 6,336
+
+Constraints
+├─ AND constraints: 4,728 used (57.7% of 2^13)
+│  [▓▓▓▓▓░░░░░] spare: 3,464
+├─ MUL constraints: 0 used (0.0% of 2^0)
+│  [░░░░░░░░░░] spare: 1
+└─ Distinct value indices: 12,525
+   ├─ Distinct shifted value indices: 7,640
+   └─ Distinct unshifted value indices: 4,885
+
+Value Vector
+├─ Public Section: 5 used (62.5% of 2^3)
+│  [▓▓▓▓▓▓░░░░] spare: 3
+│  ├─ Constants: 5
+│  └─ Inout: 0
+├─ Private Section: 4,904 used (59.9%)
+│  [▓▓▓▓▓░░░░░] spare: 3,280
+│  ├─ Witness: 168
+│  └─ Internal: 4,736
+├─ Total Committed: 4,909 used (59.9% of 2^13)
+│  [▓▓▓▓▓░░░░░] spare: 3,283
+└─ Scratch (uncommitted): 4,288
+
