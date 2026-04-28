@@ -33,6 +33,8 @@ pub mod constraint_system;
 pub mod wiring;
 pub mod wrapper;
 
+use std::slice;
+
 use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_hash::PseudoCompressionFunction;
 use binius_iop::{
@@ -196,9 +198,13 @@ impl<F: Field> IOPVerifier<F> {
 		// single inout wire instead of building the entire sub-circuit.
 		let public_eval = {
 			let public_len = public.len();
-			let mut inputs = public.clone();
-			inputs.push(lambda.clone());
-			inputs.extend(r_x_tensor.iter().cloned());
+			let inputs = [
+				public.as_slice(),
+				slice::from_ref(&lambda),
+				r_x_tensor.as_ref(),
+			]
+			.concat();
+
 			let mul_constraints = cs.mul_constraints();
 			channel.compute_public_value(&inputs, move |vals| {
 				let public_vals = &vals[..public_len];
