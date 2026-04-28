@@ -8,7 +8,7 @@ use binius_utils::{
 	DeserializeBytes, SerializeBytes,
 	checked_arithmetics::{log2_ceil_usize, log2_strict_usize},
 };
-use digest::{Digest, Output, core_api::BlockSizeUser};
+use digest::{Digest, Output, block_api::BlockSizeUser};
 use getset::{CopyGetters, Getters};
 
 use super::{

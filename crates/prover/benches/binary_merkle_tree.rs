@@ -13,7 +13,7 @@ use binius_hash::{
 use binius_prover::merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver};
 use binius_verifier::config::B128;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use digest::{FixedOutputReset, Output, core_api::BlockSizeUser};
+use digest::{FixedOutputReset, Output, block_api::BlockSizeUser};
 
 const LOG_ELEMS: usize = 17;
 const LOG_ELEMS_IN_LEAF: usize = 4;

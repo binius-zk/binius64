@@ -18,7 +18,7 @@ bytemuck.workspace = true
 bytes.workspace = true
 digest.workspace = true
 itertools.workspace = true
-sha2 = { workspace = true, features = ["compress"] }
+sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

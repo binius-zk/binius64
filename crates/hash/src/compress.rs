@@ -23,8 +23,8 @@ pub trait CompressionFunction<T, const N: usize>: PseudoCompressionFunction<T, N
 
 pub mod sha256 {
 	use bytemuck::{bytes_of_mut, must_cast};
-	use digest::{Digest, core_api::Block};
-	use sha2::{Sha256, compress256, digest::Output};
+	use digest::Digest;
+	use sha2::{Sha256, block_api::compress256, digest::Output};
 
 	use super::*;
 
@@ -46,9 +46,9 @@ pub mod sha256 {
 	impl PseudoCompressionFunction<Output<Sha256>, 2> for Sha256Compression {
 		fn compress(&self, input: [Output<Sha256>; 2]) -> Output<Sha256> {
 			let mut ret = self.initial_state;
-			let mut block = <Block<Sha256>>::default();
-			block.as_mut_slice()[..32].copy_from_slice(input[0].as_slice());
-			block.as_mut_slice()[32..].copy_from_slice(input[1].as_slice());
+			let mut block = [0u8; 64];
+			block[..32].copy_from_slice(input[0].as_slice());
+			block[32..].copy_from_slice(input[1].as_slice());
 			compress256(&mut ret, &[block]);
 			must_cast::<[u32; 8], [u8; 32]>(ret).into()
 		}

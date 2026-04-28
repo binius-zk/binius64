@@ -47,7 +47,7 @@ use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, univariate::eval
 use binius_spartan_frontend::constraint_system::{ConstraintSystem, WitnessSegment};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
-use digest::{Digest, Output, core_api::BlockSizeUser};
+use digest::{Digest, Output, block_api::BlockSizeUser};
 
 use crate::{
 	constraint_system::{BlindingInfo, ConstraintSystemPadded},

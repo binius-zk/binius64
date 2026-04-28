@@ -31,7 +31,7 @@ use binius_spartan_verifier::{
 };
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
-use digest::{Digest, Output, core_api::BlockSizeUser};
+use digest::{Digest, Output, block_api::BlockSizeUser};
 
 use crate::{
 	config::LOG_WORDS_PER_ELEM,

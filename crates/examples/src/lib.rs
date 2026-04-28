@@ -24,7 +24,7 @@ use binius_verifier::{
 };
 use clap::ValueEnum;
 pub use cli::Cli;
-use digest::{Digest, FixedOutputReset, Output, core_api::BlockSizeUser};
+use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum CompressionType {

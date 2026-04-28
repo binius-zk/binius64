@@ -11,7 +11,7 @@ use binius_utils::{
 	rand::par_rand,
 	rayon::{prelude::*, slice::ParallelSlice},
 };
-use digest::{FixedOutputReset, Output, crypto_common::BlockSizeUser};
+use digest::{FixedOutputReset, Output, block_api::BlockSizeUser};
 use rand::{CryptoRng, Rng, rngs::StdRng};
 
 /// A binary Merkle tree that commits batches of vectors.

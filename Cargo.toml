@@ -43,18 +43,18 @@ clap = { version = "4.5", features = ["derive"] }
 cranelift-entity = "0.121.1"
 criterion = { version = "0.7.0", default-features = false }
 derive_more = "0.99.17"
-digest = "0.10.7"
-# Pin to generic-array version before traits were marked deprecated. This is not
-# ideal, but necessary until the digest crate releases a new version with the
-# upgraded dependency.
-generic-array = "=0.14.7"
+digest = "0.11.2"
+either = "1.11.0"
 getrandom = "0.3.3"
 getset = "0.1.6"
 hex = "0.4"
 hex-literal = "1.0.0"
-either = "1.11.0"
+hmac = "0.13.0"
+hybrid-array = "0.4.7"
 itertools = "0.14.0"
-jwt-simple = { version = "0.12.12", default-features = false, features = ["pure-rust"] }
+jwt-simple = { version = "0.12.14", default-features = false, features = [
+    "pure-rust",
+] }
 k256 = "0.13.4"
 lazy_static = "1.5.0"
 num-bigint = "0.4.6"
@@ -76,9 +76,8 @@ rstest = "0.26.1"
 seq-macro = "0.3.5"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
-sha2 = "0.10.8"
-sha3 = "0.10.8"
-hmac = "0.12.1"
+sha2 = "0.11.0"
+sha3 = "0.11.0"
 insta = "1.43.1"
 petgraph = "0.8.2"
 rustc-hash = "2.1.1"
@@ -100,5 +99,5 @@ needless_range_loop = "allow"
 default.extend-words = { "typ" = "typ", "Toom" = "Toom", "inouts" = "inouts", "ceck" = "ceck" }
 default.extend-ignore-re = [
     "(?Rm)^.*(#|//)\\s*spellchecker:disable-line$",
-    "ands\\.mdx"
+    "ands\\.mdx",
 ]
