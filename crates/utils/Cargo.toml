@@ -13,7 +13,7 @@ array-util.workspace = true
 bytemuck = { workspace = true, features = ["extern_crate_alloc"] }
 bytes.workspace = true
 cfg-if.workspace = true
-generic-array.workspace = true
+hybrid-array.workspace = true
 itertools.workspace = true
 rand.workspace = true
 rayon = { optional = true, workspace = true}

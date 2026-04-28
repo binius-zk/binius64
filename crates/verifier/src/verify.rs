@@ -18,7 +18,7 @@ use binius_utils::{
 	DeserializeBytes,
 	checked_arithmetics::{checked_log_2, log2_ceil_usize},
 };
-use digest::{Digest, Output, core_api::BlockSizeUser};
+use digest::{Digest, Output, block_api::BlockSizeUser};
 use itertools::chain;
 
 use super::error::Error;

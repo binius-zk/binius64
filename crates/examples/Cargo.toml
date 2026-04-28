@@ -30,6 +30,9 @@ peakmem-alloc = "0.2.0"
 rand.workspace = true
 sha2.workspace = true
 sha3.workspace = true
+# Pin this dependency of jwt-simple because the latest version depends on an RC for ml-dsa and is
+# causing issues.
+superboring = "=0.1.8"
 tiny-keccak = "2.0.2"
 tracing-profile.workspace = true
 tracing.workspace = true

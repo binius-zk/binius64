@@ -7,7 +7,7 @@ use binius_utils::{SerializationError, SerializeBytes};
 use bytes::buf::UninitSlice;
 use digest::{
 	Digest, Output,
-	core_api::{Block, BlockSizeUser},
+	block_api::{Block, BlockSizeUser},
 };
 
 /// Adapter that wraps [`Digest`] references and exposes the [`BufMut`] interface.

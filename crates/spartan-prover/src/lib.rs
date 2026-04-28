@@ -66,7 +66,7 @@ use binius_utils::{
 	checked_arithmetics::checked_log_2,
 	rayon::{self, prelude::*},
 };
-use digest::{Digest, FixedOutputReset, Output, core_api::BlockSizeUser};
+use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
 pub use error::*;
 use itertools::chain;
 use rand::CryptoRng;

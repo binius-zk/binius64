@@ -11,7 +11,7 @@ use binius_utils::{
 	},
 };
 use bytes::BytesMut;
-use digest::{Digest, Output, core_api::BlockSizeUser};
+use digest::{Digest, Output, block_api::BlockSizeUser};
 
 use crate::HashBuffer;
 

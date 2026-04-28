@@ -20,7 +20,7 @@ use binius_spartan_verifier::{constraint_system::ConstraintSystemPadded, wrapper
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::SerializeBytes;
 use binius_verifier::{IOPVerifier, zk_config::ZKVerifier};
-use digest::{Digest, FixedOutputReset, Output, core_api::BlockSizeUser};
+use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
 use rand::CryptoRng;
 
 use crate::{

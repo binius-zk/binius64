@@ -3,8 +3,8 @@
 use binius_field::{BinaryField128bGhash as Ghash, Field};
 use binius_utils::{DeserializeBytes, SerializeBytes};
 use digest::{
-	FixedOutput, FixedOutputReset, HashMarker, OutputSizeUser, Reset, Update, consts::U32,
-	core_api::BlockSizeUser,
+	FixedOutput, FixedOutputReset, HashMarker, OutputSizeUser, Reset, Update,
+	block_api::BlockSizeUser, consts::U32,
 };
 
 use super::{constants::M, permutation::permutation};
