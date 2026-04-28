@@ -12,7 +12,7 @@ use binius_frontend::{
 };
 use clap::Args;
 use ethsign::SecretKey;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::prelude::*;
 use tiny_keccak::{Hasher, Keccak as KeccakHasher};
 
 use crate::ExampleCircuit;

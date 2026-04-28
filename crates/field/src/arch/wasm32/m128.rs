@@ -12,7 +12,7 @@ use binius_utils::{
 };
 use bytemuck::{Pod, Zeroable};
 use derive_more::{From, Into};
-use rand::{Rng, RngCore};
+use rand::prelude::*;
 
 use crate::{
 	BinaryField, Random,
@@ -250,7 +250,7 @@ impl Shr<usize> for M128 {
 }
 
 impl Random for M128 {
-	fn random(mut rng: impl RngCore) -> Self {
+	fn random(mut rng: impl Rng) -> Self {
 		let val: u128 = rng.random();
 		val.into()
 	}
@@ -378,7 +378,7 @@ impl<Scalar: BinaryField> From<PackedPrimitiveType<M128, Scalar>> for u128 {
 
 #[cfg(test)]
 mod tests {
-	use rand::{SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

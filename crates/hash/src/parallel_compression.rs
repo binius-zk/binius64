@@ -97,7 +97,7 @@ where
 mod tests {
 	use std::mem::MaybeUninit;
 
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

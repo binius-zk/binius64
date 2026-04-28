@@ -1,6 +1,9 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use rand::distr::{Distribution, StandardUniform};
+use rand::{
+	distr::{Distribution, StandardUniform},
+	prelude::*,
+};
 
 /// A value that can be randomly generated
 pub trait Random {

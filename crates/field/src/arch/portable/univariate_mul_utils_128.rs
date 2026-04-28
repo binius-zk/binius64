@@ -154,7 +154,7 @@ pub fn spread_bits_64(val: u64) -> u128 {
 }
 #[cfg(test)]
 mod tests {
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

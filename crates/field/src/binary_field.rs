@@ -238,7 +238,7 @@ macro_rules! binary_field {
 
 		impl ::rand::distr::Distribution<$name> for ::rand::distr::StandardUniform {
 			fn sample<R: ::rand::Rng + ?Sized>(&self, rng: &mut R) -> $name {
-				$name(rng.random())
+				$name(::rand::distr::StandardUniform.sample(rng))
 			}
 		}
 

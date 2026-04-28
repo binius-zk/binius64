@@ -5,7 +5,7 @@ use binius_transcript::ProverTranscript;
 use binius_utils::rayon::ThreadPoolBuilder;
 use binius_verifier::config::StdChallenger;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::prelude::*;
 
 type P = PackedBinaryGhash1x128b;
 

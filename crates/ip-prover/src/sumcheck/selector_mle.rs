@@ -259,7 +259,7 @@ mod tests {
 		test_utils::{Packed128b, random_scalars},
 	};
 	use itertools::Itertools;
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 	use crate::sumcheck::{

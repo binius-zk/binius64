@@ -440,7 +440,7 @@ mod tests {
 	use binius_core::verify::verify_constraints;
 	use hex_literal::hex;
 	use num_bigint::BigUint;
-	use rand::{SeedableRng, TryRngCore, rngs::StdRng};
+	use rand::{TryRng, prelude::*};
 	use rsa::{
 		BigUint as RsaBigUint, RsaPrivateKey, RsaPublicKey,
 		sha2::{Digest, Sha256},

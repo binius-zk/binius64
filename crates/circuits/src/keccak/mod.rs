@@ -298,7 +298,7 @@ impl Keccak256 {
 mod tests {
 	use binius_core::verify::verify_constraints;
 	use binius_frontend::{CircuitBuilder, Wire};
-	use rand::{RngCore, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 	use rstest::rstest;
 	use sha3::Digest;
 

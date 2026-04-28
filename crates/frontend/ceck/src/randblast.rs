@@ -5,7 +5,7 @@ use binius_core::{
 	verify::verify_constraints,
 	word::Word,
 };
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::prelude::*;
 
 pub struct RandBlast {
 	rng: StdRng,

@@ -8,7 +8,7 @@ use std::{
 use binius_field::{ExtensionField, Field};
 use bytemuck::zeroed_slice_box;
 use getset::CopyGetters;
-use rand::RngCore;
+use rand::prelude::*;
 
 /// A matrix over a field.
 #[derive(Debug, Clone, PartialEq, Eq, CopyGetters)]
@@ -60,7 +60,7 @@ impl<F: Field> Matrix<F> {
 		&self.elements
 	}
 
-	pub fn random(m: usize, n: usize, mut rng: impl RngCore) -> Self {
+	pub fn random(m: usize, n: usize, mut rng: impl Rng) -> Self {
 		Self {
 			m,
 			n,
@@ -245,7 +245,7 @@ impl<F: Field> SubAssign<&Self> for Matrix<F> {
 #[cfg(test)]
 mod tests {
 	use proptest::prelude::*;
-	use rand::{SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 	use crate::test_utils::B128;

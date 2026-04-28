@@ -64,7 +64,7 @@ paste = "1.0.15"
 pest = "2.8.1"
 pest_derive = "2.8.1"
 proptest = { version = "1.2.0", default-features = false, features = ["std"] }
-rand = { version = "0.9.1", default-features = false, features = [
+rand = { version = "0.10.1", default-features = false, features = [
     "std",
     "std_rng",
 ] }

@@ -235,7 +235,7 @@ impl<T: Copy, Inner: RandomAccessSequence<T>> RandomAccessSequence<T>
 mod tests {
 	use std::fmt::Debug;
 
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

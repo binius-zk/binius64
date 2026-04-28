@@ -7,7 +7,7 @@ use binius_frontend::{
 };
 use num_integer::Integer;
 use proptest::prelude::*;
-use rand::{SeedableRng, rngs::StdRng};
+use rand::prelude::*;
 
 use super::*;
 

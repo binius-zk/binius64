@@ -1,6 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 use std::arch::aarch64::*;
 
+use rand::prelude::*;
 use seq_macro::seq;
 
 use crate::underlier::{PackedUnderlier, Underlier};
@@ -31,9 +32,7 @@ impl Underlier for uint64x2_t {
 		}
 	}
 
-	fn random(mut rng: impl rand::RngCore) -> Self {
-		use rand::Rng;
-
+	fn random(mut rng: impl Rng) -> Self {
 		let value: u128 = rng.random();
 		unsafe { std::mem::transmute::<_, uint64x2_t>(value) }
 	}

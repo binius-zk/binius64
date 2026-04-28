@@ -178,7 +178,7 @@ impl Permutation {
 mod tests {
 	use binius_core::{verify::verify_constraints, word::Word};
 	use binius_frontend::CircuitBuilder;
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

@@ -246,7 +246,7 @@ mod tests {
 		MulConstraint, Operand, WitnessIndex, WitnessSegment,
 	};
 	use binius_spartan_verifier::wiring::evaluate_segment_wiring_mle;
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 	use smallvec::SmallVec;
 
 	use super::*;

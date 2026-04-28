@@ -3,7 +3,7 @@
 use binius_core::verify::verify_constraints;
 use binius_frontend::CircuitBuilder;
 use blake2::{Blake2s256, Digest};
-use rand::{RngCore, SeedableRng, rngs::StdRng};
+use rand::prelude::*;
 use rstest::rstest;
 
 use super::Blake2s;

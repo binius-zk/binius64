@@ -13,8 +13,8 @@ use binius_utils::{
 };
 use bytemuck::{Pod, Zeroable};
 use rand::{
-	Rng,
 	distr::{Distribution, StandardUniform},
+	prelude::*,
 };
 use seq_macro::seq;
 
@@ -998,7 +998,7 @@ impl Divisible<u8> for M128 {
 mod tests {
 	use binius_utils::bytes::BytesMut;
 	use proptest::{arbitrary::any, proptest};
-	use rand::{SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

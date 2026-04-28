@@ -184,7 +184,7 @@ mod tests {
 		consts::{U1, U32},
 	};
 	use itertools::izip;
-	use rand::{RngCore, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

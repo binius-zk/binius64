@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 use std::fmt::Debug;
 
-use rand::RngCore;
+use rand::prelude::*;
 
 /// A type that supports bitwise operations and has a known bit width.
 ///
@@ -40,7 +40,7 @@ pub trait Underlier: Sized + Clone + Copy + Debug {
 	fn is_equal(a: Self, b: Self) -> bool;
 
 	/// Generates a random value of this underlier type using the provided rng.
-	fn random(rng: impl RngCore) -> Self;
+	fn random(rng: impl Rng) -> Self;
 }
 
 impl<U: Underlier, const N: usize> Underlier for [U; N] {
@@ -74,7 +74,7 @@ impl<U: Underlier, const N: usize> Underlier for [U; N] {
 		a.iter().zip(b.iter()).all(|(x, y)| U::is_equal(*x, *y))
 	}
 
-	fn random(mut rng: impl RngCore) -> Self {
+	fn random(mut rng: impl Rng) -> Self {
 		std::array::from_fn(|_| U::random(&mut rng))
 	}
 }
@@ -215,9 +215,7 @@ macro_rules! impl_underlier_for_native_uint {
 			}
 
 			#[inline]
-			fn random(mut rng: impl RngCore) -> Self {
-				use rand::Rng;
-
+			fn random(mut rng: impl Rng) -> Self {
 				rng.random()
 			}
 		}

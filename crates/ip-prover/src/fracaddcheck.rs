@@ -198,7 +198,7 @@ mod tests {
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
-	use rand::{SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

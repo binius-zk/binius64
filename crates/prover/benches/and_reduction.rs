@@ -27,7 +27,7 @@ use binius_verifier::{
 	protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
 };
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::prelude::*;
 
 fn bench(c: &mut Criterion) {
 	let log_num_rows = 27;

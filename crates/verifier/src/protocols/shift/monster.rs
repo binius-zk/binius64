@@ -237,7 +237,7 @@ mod tests {
 		test_utils::{index_to_hypercube_point, random_scalars},
 		univariate::lagrange_evals_scalars,
 	};
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

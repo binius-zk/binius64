@@ -199,7 +199,7 @@ mod tests {
 
 	#[test]
 	fn test_parallel_compress_large_batch() {
-		use rand::{Rng, SeedableRng, rngs::StdRng};
+		use rand::prelude::*;
 
 		let parallel = VisionParallelCompression::default();
 		let mut rng = StdRng::seed_from_u64(0);

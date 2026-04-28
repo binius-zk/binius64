@@ -254,7 +254,7 @@ mod tests {
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
-	use rand::{SeedableRng, prelude::StdRng};
+	use rand::prelude::*;
 
 	use super::{Error, batch_prove_mle};
 	use crate::sumcheck::bivariate_product_mle;
