@@ -134,7 +134,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        example: [ethsign, zklogin, sha256, sha512, keccak, blake2s, hashsign]
+        example: [ethsign, zklogin, sha256, sha512, keccak, blake2s, blake3_compress, hashsign]
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
