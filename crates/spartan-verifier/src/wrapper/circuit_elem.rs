@@ -77,9 +77,9 @@ pub enum CircuitElem<B: CircuitBuilder> {
 	/// A wire with a tag indicating whether its value is purely a function of public-channel
 	/// inputs (sampled challenges, observed values, constants, and other public wires).
 	///
-	/// The tag is used by [`IPVerifierChannel::compute_public_value`] to validate that
-	/// trade-in inputs are public-derived. It is propagated conservatively through arithmetic
-	/// (AND of operand tags, with `Constant` treated as public).
+	/// The tag is used by [`binius_ip::channel::IPVerifierChannel::compute_public_value`] to
+	/// validate that trade-in inputs are public-derived. It is propagated conservatively through
+	/// arithmetic (AND of operand tags, with `Constant` treated as public).
 	Wire {
 		wire: CircuitWire<B>,
 		public: bool,
