@@ -95,7 +95,7 @@ mod tests {
 	use std::{array, iter::repeat_with};
 
 	use binius_core::{verify::verify_constraints, word::Word};
-	use hmac::{Hmac, Mac};
+	use hmac::{Hmac, KeyInit, Mac};
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 	use sha2::Sha512;
 

@@ -15,6 +15,8 @@ binius-hash = { path = "../hash", default-features = false }
 binius-iop = { path = "../iop", default-features = false }
 binius-math = { path = "../math" }
 binius-transcript = { path = "../transcript" }
+binius-spartan-frontend = { path = "../spartan-frontend", default-features = false }
+binius-spartan-verifier = { path = "../spartan-verifier", default-features = false }
 binius-utils = { path = "../utils" }
 bytemuck.workspace = true
 bytes.workspace = true
@@ -29,7 +31,3 @@ binius-math = { path = "../math", features = ["test-utils"] }
 rand.workspace = true
 itertools.workspace = true
 sha2.workspace = true
-
-[features]
-default = ["rayon"]
-rayon = ["binius-utils/rayon", "binius-hash/rayon", "binius-iop/rayon"]

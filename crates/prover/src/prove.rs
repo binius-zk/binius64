@@ -1,39 +1,39 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_core::{
-	constraint_system::{AndConstraint, MulConstraint, ValueVec},
+	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueVec},
 	verify::eval_operand,
 	word::Word,
 };
 use binius_field::{
-	AESTowerField8b as B8, BinaryField, PackedAESBinaryField16x8b, PackedExtension, PackedField,
-	UnderlierWithBitOps, WithUnderlier,
+	AESTowerField8b as B8, BinaryField, ExtensionField, PackedAESBinaryField16x8b, PackedExtension,
+	PackedField, UnderlierWithBitOps, WithUnderlier,
 };
 use binius_iop_prover::{
 	basefold_channel::BaseFoldProverChannel, basefold_compiler::BaseFoldProverCompiler,
 	channel::IOPProverChannel,
 };
 use binius_math::{
-	BinarySubspace, FieldBuffer,
+	BinarySubspace, FieldBuffer, FieldSlice,
 	inner_product::inner_product,
+	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
 	univariate::lagrange_evals,
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::prelude::*};
 use binius_verifier::{
-	Verifier,
-	and_reduction::verifier::AndCheckOutput,
+	IOPVerifier, Verifier,
 	config::{
 		B1, B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
 	},
-	protocols::{intmul::IntMulOutput, sumcheck::SumcheckOutput},
+	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput, sumcheck::SumcheckOutput},
 };
-use digest::{Digest, FixedOutputReset, Output, core_api::BlockSizeUser};
+use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
 
 use super::error::Error;
 use crate::{
-	and_reduction::{prover::OblongZerocheckProver, utils::multivariate::OneBitOblongMultilinear},
+	and_reduction::prover::OblongZerocheckProver,
 	hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression},
 	merkle_tree::prover::BinaryMerkleTreeProver,
 	protocols::{
@@ -52,84 +52,36 @@ type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
 type ProverMerkleProver<F, ParallelMerkleHasher, ParallelMerkleCompress> =
 	BinaryMerkleTreeProver<F, ParallelMerkleHasher, ParallelMerkleCompress>;
 
-/// Struct for proving instances of a particular constraint system.
+/// IOP prover for a particular constraint system.
 ///
-/// The [`Self::setup`] constructor pre-processes reusable structures for proving instances of the
-/// given constraint system. Then [`Self::prove`] is called one or more times with individual
-/// instances.
+/// This struct encapsulates the constraint system and pre-computed keys,
+/// providing the core proving logic independent of the specific IOP compilation strategy.
+/// Most users should use [`Prover`] instead, which wraps this with a BaseFold compiler.
 #[derive(Debug)]
-pub struct Prover<P, ParallelMerkleCompress, ParallelMerkleHasher>
-where
-	P: PackedField<Scalar = B128>,
-	ParallelMerkleHasher: ParallelDigest,
-	ParallelMerkleHasher::Digest: Digest + BlockSizeUser + FixedOutputReset,
-	ParallelMerkleCompress: ParallelPseudoCompression<Output<ParallelMerkleHasher::Digest>, 2>,
-{
+pub struct IOPProver {
+	constraint_system: ConstraintSystem,
+	log_public_words: usize,
+	log_witness_elems: usize,
 	key_collection: KeyCollection,
-	verifier: Verifier<ParallelMerkleHasher::Digest, ParallelMerkleCompress::Compression>,
-	#[allow(clippy::type_complexity)]
-	basefold_compiler: BaseFoldProverCompiler<
-		P,
-		ProverNTT<B128>,
-		ProverMerkleProver<B128, ParallelMerkleHasher, ParallelMerkleCompress>,
-	>,
 }
 
-impl<P, MerkleHash, ParallelMerkleCompress, ParallelMerkleHasher>
-	Prover<P, ParallelMerkleCompress, ParallelMerkleHasher>
-where
-	P: PackedField<Scalar = B128>
-		+ PackedExtension<B128>
-		+ PackedExtension<B1>
-		+ WithUnderlier<Underlier: UnderlierWithBitOps>,
-	MerkleHash: Digest + BlockSizeUser + FixedOutputReset,
-	ParallelMerkleHasher: ParallelDigest<Digest = MerkleHash>,
-	ParallelMerkleCompress: ParallelPseudoCompression<Output<MerkleHash>, 2>,
-	Output<MerkleHash>: SerializeBytes,
-{
-	/// Constructs a prover corresponding to a constraint system verifier.
-	///
-	/// See [`Prover`] struct documentation for details.
-	pub fn setup(
-		verifier: Verifier<MerkleHash, ParallelMerkleCompress::Compression>,
-		compression: ParallelMerkleCompress,
-	) -> Result<Self, Error> {
-		let key_collection = build_key_collection(verifier.constraint_system());
-		Self::setup_with_key_collection(verifier, compression, key_collection)
+impl IOPProver {
+	/// Constructs an IOP prover from an IOP verifier and pre-computed keys.
+	pub fn new(iop_verifier: IOPVerifier, key_collection: KeyCollection) -> Self {
+		let log_public_words = iop_verifier.log_public_words();
+		let log_witness_elems = iop_verifier.log_witness_elems();
+		let constraint_system = iop_verifier.into_constraint_system();
+		Self {
+			constraint_system,
+			log_public_words,
+			log_witness_elems,
+			key_collection,
+		}
 	}
 
-	/// Constructs a prover with a pre-built KeyCollection.
-	///
-	/// This allows loading a previously serialized KeyCollection to avoid
-	/// the expensive key building phase during setup.
-	pub fn setup_with_key_collection(
-		verifier: Verifier<MerkleHash, ParallelMerkleCompress::Compression>,
-		compression: ParallelMerkleCompress,
-		key_collection: KeyCollection,
-	) -> Result<Self, Error> {
-		// Get max subspace from verifier's IOP compiler (reuses FRI params)
-		let subspace = verifier.iop_compiler().max_subspace();
-		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
-		// FIXME TODO For mobile phones, the number of shares should potentially be more than the
-		// number of threads, because the threads/cores have different performance (but in the NTT
-		// each share has the same amount of work)
-		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
-		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
-
-		let merkle_prover = BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression);
-
-		// Create prover compiler from verifier compiler (reuses FRI params and oracle specs)
-		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
-			verifier.iop_compiler(),
-			ntt,
-			merkle_prover,
-		);
-
-		Ok(Prover {
-			key_collection,
-			verifier,
-			basefold_compiler,
-		})
+	/// Returns the constraint system.
+	pub fn constraint_system(&self) -> &ConstraintSystem {
+		&self.constraint_system
 	}
 
 	/// Returns a reference to the KeyCollection.
@@ -139,40 +91,19 @@ where
 		&self.key_collection
 	}
 
-	pub fn prove<Challenger_: Challenger>(
-		&self,
-		witness: ValueVec,
-		transcript: &mut ProverTranscript<Challenger_>,
-	) -> Result<(), Error> {
-		let verifier = &self.verifier;
-
-		// Check that the public input length is correct
-		let public = witness.public().to_vec();
-		if public.len() != 1 << self.verifier.log_public_words() {
-			return Err(Error::ArgumentError {
-				arg: "witness".to_string(),
-				msg: format!(
-					"witness layout has {} words, expected {}",
-					public.len(),
-					1 << verifier.log_public_words()
-				),
-			});
-		}
-
-		// Prover observes the public input (includes it in Fiat-Shamir).
-		transcript.observe().write_slice(&public);
-
-		// Create channel and delegate to prove_iop
-		let channel = BaseFoldProverChannel::from_compiler(&self.basefold_compiler, transcript);
-		self.prove_iop(witness, channel)
-	}
-
-	fn prove_iop<Channel>(&self, witness: ValueVec, mut channel: Channel) -> Result<(), Error>
+	/// Proves using an IOP channel interface.
+	///
+	/// This is the core proving logic, independent of the specific IOP compilation strategy.
+	/// For most users, [`Prover::prove`] is the simpler interface.
+	pub fn prove<P, Channel>(&self, witness: ValueVec, mut channel: Channel) -> Result<(), Error>
 	where
+		P: PackedField<Scalar = B128>
+			+ PackedExtension<B128>
+			+ PackedExtension<B1>
+			+ WithUnderlier<Underlier: UnderlierWithBitOps>,
 		Channel: IOPProverChannel<P>,
 	{
-		let verifier = &self.verifier;
-		let cs = self.verifier.constraint_system();
+		let cs = &self.constraint_system;
 
 		let _prove_guard = tracing::info_span!(
 			"Prove",
@@ -188,8 +119,16 @@ where
 		let setup_guard =
 			tracing::info_span!("[phase] Setup", phase = "setup", perfetto_category = "phase")
 				.entered();
-		let witness_packed = pack_witness::<P>(verifier.log_witness_elems(), &witness)?;
+		let witness_packed = pack_witness::<P>(self.log_witness_elems, &witness)?;
 		drop(setup_guard);
+
+		// Observe the public input as B128 elements (includes it in Fiat-Shamir).
+		let n_public_elems = 1 << (self.log_public_words - LOG_WORDS_PER_ELEM);
+		let public_elems = witness_packed
+			.iter_scalars()
+			.take(n_public_elems)
+			.collect::<Vec<_>>();
+		channel.observe_many(&public_elems);
 
 		// [phase] Witness Commit - witness generation and commitment
 		let witness_commit_guard = tracing::info_span!(
@@ -280,7 +219,6 @@ where
 			challenges: eval_point,
 			eval: _,
 		} = prove_shift_reduction::<_, P, _>(
-			verifier.log_public_words(),
 			&self.key_collection,
 			witness.combined_witness(),
 			bitand_claim,
@@ -303,13 +241,158 @@ where
 			sumcheck_claim,
 		} = ring_switch::prove(&witness_packed, &eval_point, &mut channel);
 
-		// Finish via channel (runs BaseFold internally)
-		channel.finish(&[(trace_oracle, rs_eq_ind, sumcheck_claim)]);
+		// Public input check batched with ring-switch
+		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
+
+		let log_public_elems = self.log_public_words - LOG_WORDS_PER_ELEM;
+		let pubcheck_point = &eval_point[log_packing..][..log_public_elems];
+		let pubcheck_claim = {
+			let public_elems_buf = FieldSlice::from_slice(log_public_elems, &public_elems);
+			evaluate(&public_elems_buf, pubcheck_point)
+		};
+
+		let batch_coeff: B128 = channel.sample();
+		let batched_claim = sumcheck_claim + batch_coeff * pubcheck_claim;
+
+		// Batch the pubcheck transparent with the ring-switch transparent
+		let batched_transparent =
+			compute_batched_transparent(rs_eq_ind, pubcheck_point, batch_coeff);
+
+		// Prove oracle relations via channel (runs BaseFold internally)
+		channel.prove_oracle_relations([(
+			trace_oracle,
+			witness_packed,
+			batched_transparent,
+			batched_claim,
+		)]);
 
 		drop(pcs_guard);
 
 		Ok(())
 	}
+}
+
+/// Struct for proving instances of a particular constraint system.
+///
+/// The [`Self::setup`] constructor pre-processes reusable structures for proving instances of the
+/// given constraint system. Then [`Self::prove`] is called one or more times with individual
+/// instances.
+pub struct Prover<P, ParallelMerkleCompress, ParallelMerkleHasher>
+where
+	P: PackedField<Scalar = B128>,
+	ParallelMerkleHasher: ParallelDigest,
+	ParallelMerkleHasher::Digest: Digest + BlockSizeUser + FixedOutputReset,
+	ParallelMerkleCompress: ParallelPseudoCompression<Output<ParallelMerkleHasher::Digest>, 2>,
+{
+	iop_prover: IOPProver,
+	#[allow(clippy::type_complexity)]
+	basefold_compiler: BaseFoldProverCompiler<
+		P,
+		ProverNTT<B128>,
+		ProverMerkleProver<B128, ParallelMerkleHasher, ParallelMerkleCompress>,
+	>,
+}
+
+impl<P, MerkleHash, ParallelMerkleCompress, ParallelMerkleHasher>
+	Prover<P, ParallelMerkleCompress, ParallelMerkleHasher>
+where
+	P: PackedField<Scalar = B128>
+		+ PackedExtension<B128>
+		+ PackedExtension<B1>
+		+ WithUnderlier<Underlier: UnderlierWithBitOps>,
+	MerkleHash: Digest + BlockSizeUser + FixedOutputReset,
+	ParallelMerkleHasher: ParallelDigest<Digest = MerkleHash>,
+	ParallelMerkleCompress: ParallelPseudoCompression<Output<MerkleHash>, 2>,
+	Output<MerkleHash>: SerializeBytes,
+{
+	/// Constructs a prover corresponding to a constraint system verifier.
+	///
+	/// See [`Prover`] struct documentation for details.
+	pub fn setup(
+		verifier: Verifier<MerkleHash, ParallelMerkleCompress::Compression>,
+		compression: ParallelMerkleCompress,
+	) -> Result<Self, Error> {
+		let key_collection = build_key_collection(verifier.constraint_system());
+		Self::setup_with_key_collection(verifier, compression, key_collection)
+	}
+
+	/// Constructs a prover with a pre-built KeyCollection.
+	///
+	/// This allows loading a previously serialized KeyCollection to avoid
+	/// the expensive key building phase during setup.
+	pub fn setup_with_key_collection(
+		verifier: Verifier<MerkleHash, ParallelMerkleCompress::Compression>,
+		compression: ParallelMerkleCompress,
+		key_collection: KeyCollection,
+	) -> Result<Self, Error> {
+		// Get max subspace from verifier's IOP compiler (reuses FRI params)
+		let subspace = verifier.iop_compiler().max_subspace();
+		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
+		// FIXME TODO For mobile phones, the number of shares should potentially be more than the
+		// number of threads, because the threads/cores have different performance (but in the NTT
+		// each share has the same amount of work)
+		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
+		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
+
+		let merkle_prover = BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression);
+
+		// Create prover compiler from verifier compiler (reuses FRI params and oracle specs)
+		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
+			verifier.iop_compiler(),
+			ntt,
+			merkle_prover,
+		);
+
+		let iop_prover = IOPProver::new(verifier.into_iop_verifier(), key_collection);
+
+		Ok(Prover {
+			iop_prover,
+			basefold_compiler,
+		})
+	}
+
+	/// Returns a reference to the IOP prover.
+	pub fn iop_prover(&self) -> &IOPProver {
+		&self.iop_prover
+	}
+
+	/// Returns a reference to the KeyCollection.
+	///
+	/// This can be used to serialize the KeyCollection for later use.
+	pub fn key_collection(&self) -> &KeyCollection {
+		self.iop_prover.key_collection()
+	}
+
+	pub fn prove<Challenger_: Challenger>(
+		&self,
+		witness: ValueVec,
+		transcript: &mut ProverTranscript<Challenger_>,
+	) -> Result<(), Error> {
+		// Create channel and delegate to IOPProver::prove
+		let channel = BaseFoldProverChannel::from_compiler(&self.basefold_compiler, transcript);
+		self.iop_prover.prove::<P, _>(witness, channel)
+	}
+}
+
+/// Batches the pubcheck transparent polynomial with the ring-switch equality indicator.
+///
+/// Computes `rs_eq_ind + batch_coeff * eq(pubcheck_point || 0, ·)`, adding the scaled
+/// pubcheck equality indicator to the first `2^log_public_elems` entries of `rs_eq_ind`.
+fn compute_batched_transparent<P: PackedField<Scalar = B128>>(
+	mut rs_eq_ind: FieldBuffer<P>,
+	pubcheck_point: &[B128],
+	batch_coeff: B128,
+) -> FieldBuffer<P> {
+	let log_public_elems = pubcheck_point.len();
+	let pubcheck_eq = eq_ind_partial_eval::<P>(pubcheck_point);
+	let mut chunk = rs_eq_ind.chunk_mut(log_public_elems, 0);
+	let mut chunk_data = chunk.get();
+	let batch = P::broadcast(batch_coeff);
+	for (dst, src) in std::iter::zip(chunk_data.as_mut(), pubcheck_eq.as_ref()) {
+		*dst += *src * batch;
+	}
+	drop(chunk);
+	rs_eq_ind
 }
 
 fn pack_witness<P: PackedField<Scalar = B128>>(
@@ -364,39 +447,22 @@ where
 	Channel: binius_ip_prover::channel::IPProverChannel<F>,
 {
 	let prover_message_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1);
-	let AndCheckWitness {
-		mut a,
-		mut b,
-		mut c,
-	} = witness;
+	let AndCheckWitness { a, b, c } = witness;
 
 	let log_constraint_count = checked_log_2(a.len());
 
-	// The structure of the AND reduction requires that it proves at least 2^3 word-level
-	// constraints, you can zero-pad if necessary to reach this minimum
-	assert!(log_constraint_count >= checked_log_2(binius_core::consts::MIN_AND_CONSTRAINTS));
+	let mut small_field_zerocheck_challenges = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.to_vec();
+	small_field_zerocheck_challenges.truncate(log_constraint_count);
 
-	let big_field_zerocheck_challenges = channel.sample_many(log_constraint_count - 3);
-
-	a.resize(1 << log_constraint_count, Word(0));
-	b.resize(1 << log_constraint_count, Word(0));
-	c.resize(1 << log_constraint_count, Word(0));
+	let big_field_zerocheck_challenges =
+		channel.sample_many(log_constraint_count - small_field_zerocheck_challenges.len());
 
 	let prover = OblongZerocheckProver::<_, PackedAESBinaryField16x8b>::new(
-		OneBitOblongMultilinear {
-			log_num_rows: log_constraint_count + LOG_WORD_SIZE_BITS,
-			packed_evals: a,
-		},
-		OneBitOblongMultilinear {
-			log_num_rows: log_constraint_count + LOG_WORD_SIZE_BITS,
-			packed_evals: b,
-		},
-		OneBitOblongMultilinear {
-			log_num_rows: log_constraint_count + LOG_WORD_SIZE_BITS,
-			packed_evals: c,
-		},
-		big_field_zerocheck_challenges.to_vec(),
-		PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.to_vec(),
+		a,
+		b,
+		c,
+		big_field_zerocheck_challenges,
+		small_field_zerocheck_challenges,
 		prover_message_domain.isomorphic(),
 	);
 

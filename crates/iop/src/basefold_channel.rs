@@ -94,6 +94,12 @@ where
 	pub fn transcript(&self) -> &VerifierTranscript<Challenger_> {
 		self.transcript
 	}
+
+	/// Consumes the channel, asserting all oracle specs have been consumed.
+	pub fn finish(self) {
+		let n_remaining = self.oracle_specs.len() - self.next_oracle_index;
+		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
+	}
 }
 
 impl<F, MerkleScheme_, Challenger_> IPVerifierChannel<F>
@@ -147,6 +153,10 @@ where
 			Err(binius_ip::channel::Error::InvalidAssert)
 		}
 	}
+
+	fn compute_public_value(&mut self, inputs: &[F], f: impl FnOnce(&[F]) -> F) -> F {
+		f(inputs)
+	}
 }
 
 impl<F, MerkleScheme_, Challenger_> IOPVerifierChannel<F>
@@ -183,16 +193,10 @@ where
 		Ok(BaseFoldOracle { index })
 	}
 
-	fn finish(
-		mut self,
-		oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, Self::Elem>],
+	fn verify_oracle_relations<'a>(
+		&mut self,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error> {
-		assert!(
-			self.remaining_oracle_specs().is_empty(),
-			"finish called but {} oracle specs remaining",
-			self.remaining_oracle_specs().len()
-		);
-
 		// Process each oracle relation with its own BaseFold verification
 		for relation in oracle_relations {
 			let index = relation.oracle.index;
@@ -202,32 +206,21 @@ where
 				self.oracle_commitments.len()
 			);
 
-			let spec = &self.oracle_specs[index];
 			let fri_params = &self.fri_params[index];
 			let commitment = self.oracle_commitments[index].clone();
 
-			// Run BaseFold verification with destructuring to capture all output values
+			// Run BaseFold verification (non-ZK variant).
 			let basefold::ReducedOutput {
 				final_fri_value,
 				final_sumcheck_value,
 				challenges,
-			} = if spec.is_zk {
-				basefold::verify_zk(
-					fri_params,
-					self.merkle_scheme,
-					commitment,
-					relation.claim,
-					self.transcript,
-				)?
-			} else {
-				basefold::verify(
-					fri_params,
-					self.merkle_scheme,
-					commitment,
-					relation.claim,
-					self.transcript,
-				)?
-			};
+			} = basefold::verify(
+				fri_params,
+				self.merkle_scheme,
+				commitment,
+				relation.claim,
+				self.transcript,
+			)?;
 
 			// Reverse challenges to get evaluation point in correct order (low-to-high)
 			let mut eval_point = challenges;

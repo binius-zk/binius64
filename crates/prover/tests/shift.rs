@@ -296,10 +296,7 @@ fn test_shift_prove_and_verify() {
 			r_x_prime: r_x_prime_intmul.clone(),
 		};
 
-		let inout_n_vars = strict_log_2(cs.value_vec_layout.offset_witness).unwrap();
-
 		let prover_output = prove::<F, P, _>(
-			inout_n_vars,
 			&key_collection,
 			value_vec.combined_witness(),
 			prover_bitand_data.clone(),
@@ -316,19 +313,21 @@ fn test_shift_prove_and_verify() {
 		let verifier_intmul_data =
 			VerifierOperatorData::new(r_zhat_prime_intmul, r_x_prime_intmul, intmul_evals);
 
-		let verifier_output = verify(
+		let verifier_output =
+			verify(&cs, &verifier_bitand_data, &verifier_intmul_data, &mut verifier_transcript)
+				.unwrap();
+
+		// Check consistency with verifier output
+		check_eval(
 			&cs,
-			value_vec.public(),
 			&verifier_bitand_data,
 			&verifier_intmul_data,
+			&subspace,
+			&verifier_output,
 			&mut verifier_transcript,
 		)
 		.unwrap();
 		verifier_transcript.finalize().unwrap();
-
-		// Check consistency with verifier output
-		check_eval(&cs, &verifier_bitand_data, &verifier_intmul_data, &subspace, &verifier_output)
-			.unwrap();
 
 		// Check the claimed eval matches the computed eval
 		let expected_eval = evaluate_witness(

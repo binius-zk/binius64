@@ -3,7 +3,7 @@
 use std::iter;
 
 use binius_field::{BinaryField, Field};
-use binius_math::{ntt::AdditiveNTT, reed_solomon::ReedSolomonCode};
+use binius_math::{ntt::DomainContext, reed_solomon::ReedSolomonCode};
 use getset::{CopyGetters, Getters};
 
 use super::error::Error;
@@ -56,7 +56,7 @@ where
 	///
 	/// ## Arguments
 	///
-	/// * `ntt` - the additive NTT used for Reed-Solomon encoding.
+	/// * `domain_context` - the domain context providing subspaces for the Reed-Solomon code.
 	/// * `merkle_scheme` - the Merkle tree scheme used for commitments.
 	/// * `log_msg_len` - the binary logarithm of the length of the message to commit.
 	/// * `log_batch_size` - if `Some`, fixes the batch size; if `None`, the batch size is chosen
@@ -68,14 +68,10 @@ where
 	/// ## Preconditions
 	///
 	/// * If `log_batch_size` is `Some(b)`, then `b <= log_msg_len`.
-	/// * `ntt.log_domain_size() >= log_msg_len - log_batch_size.unwrap_or(0) + log_inv_rate`.
-	///
-	/// TODO: This should accept an optional argument for `security_bits`. When it is provided, the
-	/// parameters should guarantee that the codeword length is not so large as to violate the
-	/// required soundness error probability. In other words, this means bounding the maximum
-	/// codeword length based on the field size and security bits.
-	pub fn with_strategy<NTT, MerkleScheme, Strategy>(
-		ntt: &NTT,
+	/// * `domain_context.log_domain_size() >= log_msg_len - log_batch_size.unwrap_or(0) +
+	///   log_inv_rate`.
+	pub fn with_strategy<DC, MerkleScheme, Strategy>(
+		domain_context: &DC,
 		merkle_scheme: &MerkleScheme,
 		log_msg_len: usize,
 		log_batch_size: Option<usize>,
@@ -84,40 +80,22 @@ where
 		strategy: &Strategy,
 	) -> Result<Self, Error>
 	where
-		NTT: AdditiveNTT<Field = F>,
+		DC: DomainContext<Field = F>,
 		MerkleScheme: MerkleTreeScheme<F>,
 		Strategy: AritySelectionStrategy,
 	{
-		let (log_batch_size, fold_arities) = match log_batch_size {
-			Some(log_batch_size) => {
-				assert!(log_batch_size <= log_msg_len); // precondition
-				let fold_arities = strategy.choose_arities::<F, _>(
-					merkle_scheme,
-					log_msg_len - log_batch_size,
-					log_inv_rate,
-					n_test_queries,
-				);
-				(log_batch_size, fold_arities)
-			}
-			None => {
-				let mut fold_arities = strategy.choose_arities::<F, _>(
-					merkle_scheme,
-					log_msg_len,
-					log_inv_rate,
-					n_test_queries,
-				);
-				let log_batch_size = if !fold_arities.is_empty() {
-					fold_arities.remove(0)
-				} else {
-					// Edge case: fold to log_dim = 0 code.
-					log_msg_len
-				};
-				(log_batch_size, fold_arities)
-			}
-		};
+		let (log_batch_size, fold_arities) = choose_batch_size_and_arities::<F, _, _>(
+			merkle_scheme,
+			log_msg_len,
+			log_batch_size,
+			log_inv_rate,
+			n_test_queries,
+			strategy,
+		);
 
 		let log_dim = log_msg_len - log_batch_size;
-		let rs_code = ReedSolomonCode::with_ntt_subspace(ntt, log_dim, log_inv_rate);
+		let rs_code =
+			ReedSolomonCode::with_domain_context_subspace(domain_context, log_dim, log_inv_rate);
 		Self::new(rs_code, log_batch_size, fold_arities, n_test_queries)
 	}
 
@@ -154,6 +132,48 @@ where
 	/// The binary logarithm of the length of the initial message.
 	pub fn log_msg_len(&self) -> usize {
 		self.rs_code.log_dim() + self.log_batch_size()
+	}
+}
+
+fn choose_batch_size_and_arities<F, MerkleScheme, Strategy>(
+	merkle_scheme: &MerkleScheme,
+	log_msg_len: usize,
+	log_batch_size: Option<usize>,
+	log_inv_rate: usize,
+	n_test_queries: usize,
+	strategy: &Strategy,
+) -> (usize, Vec<usize>)
+where
+	F: BinaryField,
+	MerkleScheme: MerkleTreeScheme<F>,
+	Strategy: AritySelectionStrategy,
+{
+	match log_batch_size {
+		Some(log_batch_size) => {
+			assert!(log_batch_size <= log_msg_len); // precondition
+			let fold_arities = strategy.choose_arities::<F, _>(
+				merkle_scheme,
+				log_msg_len - log_batch_size,
+				log_inv_rate,
+				n_test_queries,
+			);
+			(log_batch_size, fold_arities)
+		}
+		None => {
+			let mut fold_arities = strategy.choose_arities::<F, _>(
+				merkle_scheme,
+				log_msg_len,
+				log_inv_rate,
+				n_test_queries,
+			);
+			let log_batch_size = if !fold_arities.is_empty() {
+				fold_arities.remove(0)
+			} else {
+				// Edge case: fold to log_dim = 0 code.
+				log_msg_len
+			};
+			(log_batch_size, fold_arities)
+		}
 	}
 }
 
@@ -413,7 +433,9 @@ impl AritySelectionStrategy for ConstantArityStrategy {
 mod tests {
 	use binius_field::BinaryField128bGhash as B128;
 	use binius_hash::StdCompression;
-	use binius_math::ntt::{NeighborsLastReference, domain_context::GaoMateerOnTheFly};
+	use binius_math::ntt::{
+		AdditiveNTT, NeighborsLastReference, domain_context::GaoMateerOnTheFly,
+	};
 
 	use super::*;
 	use crate::merkle_tree::BinaryMerkleTreeScheme;
@@ -471,7 +493,7 @@ mod tests {
 		// log_msg_len = 0
 		{
 			let fri_params = FRIParams::with_strategy(
-				&ntt,
+				ntt.domain_context(),
 				&merkle_scheme,
 				0,
 				None,
@@ -487,7 +509,7 @@ mod tests {
 		// log_msg_len = 3
 		{
 			let fri_params = FRIParams::with_strategy(
-				&ntt,
+				ntt.domain_context(),
 				&merkle_scheme,
 				3,
 				None,
@@ -503,7 +525,7 @@ mod tests {
 		// log_msg_len = 24
 		{
 			let fri_params = FRIParams::with_strategy(
-				&ntt,
+				ntt.domain_context(),
 				&merkle_scheme,
 				24,
 				None,
@@ -530,7 +552,7 @@ mod tests {
 		// log_msg_len = 3
 		{
 			let fri_params = FRIParams::with_strategy(
-				&ntt,
+				ntt.domain_context(),
 				&merkle_scheme,
 				3,
 				Some(1),
@@ -546,7 +568,7 @@ mod tests {
 		// log_msg_len = 24
 		{
 			let fri_params = FRIParams::with_strategy(
-				&ntt,
+				ntt.domain_context(),
 				&merkle_scheme,
 				24,
 				Some(1),

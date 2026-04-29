@@ -117,7 +117,7 @@ fn ripemd160_compress(
 		// Rotate variables for left line
 		al = el;
 		el = dl;
-		dl = builder.rotl_32(cl, 10);
+		dl = builder.rotl32(cl, 10);
 		cl = bl;
 		bl = new_bl;
 
@@ -147,12 +147,14 @@ fn ripemd160_compress(
 		// Rotate variables for right line
 		ar = er;
 		er = dr;
-		dr = builder.rotl_32(cr, 10);
+		dr = builder.rotl32(cr, 10);
 		cr = br;
 		br = new_br;
 	}
 
 	// Combine results: state[i] = state[i] + cl + dr (and appropriate permutation)
+	// Mask to 32 bits: intermediate round values may have non-zero upper halves
+	// (e.g. from bnot which produces a full 64-bit NOT), so clear them before output.
 	[
 		builder.iadd_32(builder.iadd_32(state[1], cl), dr),
 		builder.iadd_32(builder.iadd_32(state[2], dl), er),
@@ -160,6 +162,7 @@ fn ripemd160_compress(
 		builder.iadd_32(builder.iadd_32(state[4], al), br),
 		builder.iadd_32(builder.iadd_32(state[0], bl), cr),
 	]
+	.map(|w| builder.shr(builder.shl(w, 32), 32))
 }
 
 // Selection function f(x, y, z) = x XOR y XOR z
@@ -208,7 +211,7 @@ fn round(
 	let t = builder.iadd_32(t2, builder.add_constant_64(k as u64));
 
 	// T = (T << s) | (T >> (32 - s)) (rotate left by s)
-	let t_rot = builder.rotl_32(t, s);
+	let t_rot = builder.rotl32(t, s);
 
 	// T = T + E (this becomes the new B value)
 	builder.iadd_32(t_rot, e)

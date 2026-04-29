@@ -2,10 +2,7 @@
 
 use std::ops::Mul;
 
-use crate::{
-	arch::ReuseMultiplyStrategy,
-	arithmetic_traits::{TaggedMulAlpha, TaggedSquare},
-};
+use crate::{arch::ReuseMultiplyStrategy, arithmetic_traits::TaggedSquare};
 
 impl<T> TaggedSquare<ReuseMultiplyStrategy> for T
 where
@@ -13,19 +10,5 @@ where
 {
 	fn square(self) -> Self {
 		self * self
-	}
-}
-
-pub trait Alpha {
-	fn alpha() -> Self;
-}
-
-impl<T> TaggedMulAlpha<ReuseMultiplyStrategy> for T
-where
-	T: Mul<Self, Output = Self> + Alpha,
-{
-	#[inline]
-	fn mul_alpha(self) -> Self {
-		self * Self::alpha()
 	}
 }

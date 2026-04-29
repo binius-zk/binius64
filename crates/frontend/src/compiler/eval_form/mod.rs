@@ -34,13 +34,17 @@ pub struct EvalForm {
 }
 
 impl EvalForm {
-	/// Build the evaluation form from the gate graph
+	/// Build the evaluation form from the gate graph.
+	///
+	/// `hint_registry` already holds every hint the caller registered via
+	/// [`CircuitBuilder::call_hint`](crate::compiler::CircuitBuilder::call_hint); bytecode
+	/// emission only reads from it to resolve `Opcode::Hint` gates.
 	pub(crate) fn build(
 		gate_graph: &GateGraph,
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
+		hint_registry: HintRegistry,
 	) -> Self {
 		let mut builder = BytecodeBuilder::new();
-		let mut hint_registry = HintRegistry::new();
 
 		// Combined wire to register mapping
 		let wire_to_reg = |wire: Wire| -> u32 {
@@ -59,7 +63,7 @@ impl EvalForm {
 				gate_graph,
 				&mut builder,
 				wire_to_reg,
-				&mut hint_registry,
+				&hint_registry,
 			);
 		}
 

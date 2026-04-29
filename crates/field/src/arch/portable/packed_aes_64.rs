@@ -3,11 +3,8 @@
 use cfg_if::cfg_if;
 
 use crate::{
-	arch::{
-		PairwiseTableStrategy,
-		portable::packed_macros::{portable_macros::*, *},
-	},
-	arithmetic_traits::{impl_invert_with, impl_mul_alpha_with, impl_mul_with, impl_square_with},
+	arch::portable::packed_macros::{portable_macros::*, *},
+	arithmetic_traits::{impl_invert_with, impl_mul_with, impl_square_with},
 };
 
 define_packed_binary_fields!(
@@ -19,7 +16,6 @@ define_packed_binary_fields!(
 			mul:       (if gfni_x86 PackedAESBinaryField16x8b else PairwiseTableStrategy),
 			square:    (if gfni_x86 PackedAESBinaryField16x8b else PairwiseTableStrategy),
 			invert:    (if gfni_x86 PackedAESBinaryField16x8b else PairwiseTableStrategy),
-			mul_alpha: (PairwiseTableStrategy),
 			transform: (PackedStrategy),
 		},
 	]

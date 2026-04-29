@@ -16,7 +16,11 @@ use crate::{
 	arithmetic_traits::{InvertOrZero, Square},
 };
 
-/// This trait is based on `ff::Field` with some unused functionality removed.
+/// An element of a finite field.
+///
+/// A finite field (also called a Galois field) has order `p^k` where `p` is the
+/// [`CHARACTERISTIC`](Self::CHARACTERISTIC) and `k` is the
+/// [`ORDER_EXPONENT`](Self::ORDER_EXPONENT).
 pub trait Field:
 	Sized
 	+ Eq
@@ -59,8 +63,12 @@ pub trait Field:
 	/// The one element of the field, the multiplicative identity.
 	const ONE: Self;
 
-	/// The characteristic of the field.
+	/// The characteristic `p` of the field. The field order is `p^k` where `k` is
+	/// [`ORDER_EXPONENT`](Self::ORDER_EXPONENT).
 	const CHARACTERISTIC: usize;
+
+	/// The exponent `k` such that the field order equals `CHARACTERISTIC^k`.
+	const ORDER_EXPONENT: usize;
 
 	/// Fixed generator of the multiplicative group.
 	const MULTIPLICATIVE_GENERATOR: Self;
@@ -83,36 +91,7 @@ pub trait Field:
 
 	/// Exponentiates `self` by `exp`, where `exp` is a little-endian order integer
 	/// exponent.
-	///
-	/// # Guarantees
-	///
-	/// This operation is constant time with respect to `self`, for all exponents with the
-	/// same number of digits (`exp.as_ref().len()`). It is variable time with respect to
-	/// the number of digits in the exponent.
 	fn pow<S: AsRef<[u64]>>(&self, exp: S) -> Self {
-		let mut res = Self::ONE;
-		for e in exp.as_ref().iter().rev() {
-			for i in (0..64).rev() {
-				res = res.square();
-				let mut tmp = res;
-				tmp *= self;
-				if ((*e >> i) & 1) != 0 {
-					res = tmp;
-				}
-			}
-		}
-		res
-	}
-
-	/// Exponentiates `self` by `exp`, where `exp` is a little-endian order integer
-	/// exponent.
-	///
-	/// # Guarantees
-	///
-	/// **This operation is variable time with respect to `self`, for all exponent.** If
-	/// the exponent is fixed, this operation is effectively constant time. However, for
-	/// stronger constant-time guarantees, [`Field::pow`] should be used.
-	fn pow_vartime<S: AsRef<[u64]>>(&self, exp: S) -> Self {
 		let mut res = Self::ONE;
 		for e in exp.as_ref().iter().rev() {
 			for i in (0..64).rev() {

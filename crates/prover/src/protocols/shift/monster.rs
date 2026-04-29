@@ -152,7 +152,7 @@ where
 	]
 	.map(|r_zhat_prime| {
 		let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
-		evaluate_h_op(l_tilde.to_ref(), r_j, r_s)
+		evaluate_h_op(l_tilde.as_ref(), r_j, r_s)
 	});
 
 	let r_s_tensor = eq_ind_partial_eval::<F>(r_s);
@@ -247,7 +247,7 @@ mod tests {
 			let subspace =
 				BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
-			let succinct_evaluations = evaluate_h_op(l_tilde.to_ref(), &r_j, &r_s);
+			let succinct_evaluations = evaluate_h_op(l_tilde.as_ref(), &r_j, &r_s);
 
 			// Method 2: Direct evaluation via multilinear part
 			let h_parts = build_h_parts(r_zhat_prime);

@@ -61,7 +61,7 @@ impl Slice {
 		b.assert_zero("len_input_32bit", b.shr(len_input, 32));
 
 		// Verify bounds: offset + len_slice <= len_input
-		let offset_plus_len_slice = b.iadd_32(offset, len_slice);
+		let (offset_plus_len_slice, _) = b.iadd(offset, len_slice);
 		let in_bounds = b.icmp_ule(offset_plus_len_slice, len_input);
 		b.assert_true("bounds_check", in_bounds);
 
@@ -81,7 +81,7 @@ impl Slice {
 			// are ANY of the bytes in this present word actually part of the slice proper?
 
 			// Calculate which input word(s) we need
-			let input_word_idx = b.iadd_32(word_offset, b.add_constant(Word(slice_idx as u64)));
+			let (input_word_idx, _) = b.iadd(word_offset, b.add_constant(Word(slice_idx as u64)));
 
 			let extracted_word = extract_word(&b, &input, input_word_idx, byte_offset);
 
@@ -89,7 +89,7 @@ impl Slice {
 			// Calculate valid bytes in this word: min(len_slice - word_start, 8)
 			// First calculate len_slice - word_start
 			let neg_start = b.add_constant(Word((-(word_start_bytes as i64)) as u64));
-			let bytes_remaining = b.iadd_32(len_slice, neg_start);
+			let (bytes_remaining, _) = b.iadd(len_slice, neg_start);
 
 			// The mask will handle clamping to 8 bytes internally
 			let mask = create_byte_mask(&b, bytes_remaining);
@@ -220,7 +220,7 @@ impl Slice {
 /// # Returns
 /// A wire containing the extracted 8-byte word
 pub fn extract_word(b: &CircuitBuilder, input: &[Wire], word_idx: Wire, byte_offset: Wire) -> Wire {
-	let next_word_idx = b.iadd_32(word_idx, b.add_constant(Word(1)));
+	let (next_word_idx, _) = b.iadd(word_idx, b.add_constant(Word(1)));
 	// Aligned case: directly select the word
 	let aligned_word = single_wire_multiplex(b, input, word_idx);
 	let next_word = single_wire_multiplex(b, input, next_word_idx);

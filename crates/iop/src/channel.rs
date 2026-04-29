@@ -35,8 +35,6 @@ pub enum Error {
 pub struct OracleSpec {
 	/// Log2 of the message length (number of field elements).
 	pub log_msg_len: usize,
-	/// Whether this oracle uses zero-knowledge blinding.
-	pub is_zk: bool,
 }
 
 /// A boxed closure that evaluates a transparent MLE at a given point.
@@ -53,8 +51,8 @@ pub struct OracleLinearRelation<'a, Oracle, Elem> {
 	pub oracle: Oracle,
 	/// A closure that evaluates the transparent MLE at a given point.
 	///
-	/// The closure receives the challenge point (sampled during `finish`) and returns the
-	/// evaluation of the transparent polynomial's MLE at that point.
+	/// The closure receives the challenge point (sampled during `verify_oracle_relations`) and
+	/// returns the evaluation of the transparent polynomial's MLE at that point.
 	pub transparent: TransparentEvalFn<'a, Elem>,
 	/// The claimed inner product of the oracle polynomial and the transparent polynomial.
 	pub claim: Elem,
@@ -71,7 +69,8 @@ pub struct OracleLinearRelation<'a, Oracle, Elem> {
 /// # Contract
 ///
 /// The caller must call `recv_oracle()` exactly `remaining_oracle_specs().len()` times before
-/// calling `finish()`. The oracles must be received in order and match their specifications.
+/// calling `verify_oracle_relations()`. The oracles must be received in order and match their
+/// specifications.
 pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	type Oracle: Clone;
 
@@ -87,7 +86,7 @@ pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	/// `remaining_oracle_specs()` must be non-empty.
 	fn recv_oracle(&mut self) -> Result<Self::Oracle, Error>;
 
-	/// Finishes the protocol by opening all oracle relations and verifying them.
+	/// Verifies all oracle linear relations by running opening protocols.
 	///
 	/// For each oracle relation, this method:
 	/// 1. Runs the opening protocol (e.g., BaseFold) to obtain the oracle evaluation and challenge
@@ -101,8 +100,8 @@ pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	/// * `remaining_oracle_specs()` must be empty (all oracles received).
 	/// * All oracle handles in `oracle_relations` must be valid handles returned by
 	///   `recv_oracle()`.
-	fn finish(
-		self,
-		oracle_relations: &[OracleLinearRelation<'_, Self::Oracle, Self::Elem>],
+	fn verify_oracle_relations<'a>(
+		&mut self,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error>;
 }

@@ -29,7 +29,7 @@ pub fn fp64_mul_prepare(
 	let (m_b, exp_eff_b) = fp64_sig53_and_exp(b, pb);
 
 	// exp_pre = exp_eff_a + exp_eff_b - bias
-	let exp_sum = iadd(b, exp_eff_a, exp_eff_b);
+	let exp_sum = b.iadd(exp_eff_a, exp_eff_b).0;
 	let exp_pre = isub(b, exp_sum, bias);
 
 	// sign = sign_a XOR sign_b
@@ -152,7 +152,7 @@ pub fn float64_mul(builder: &CircuitBuilder, a: Wire, b: Wire) -> Wire {
 	let (sig_round_base_uncut, norm_shift1_bit01) = fp64_mul_make_round_base(builder, m_a, m_b);
 
 	// Exponent bump for normalization: exp_round_base = exp_pre + (norm_shift1?1:0)
-	let exp_round_base = iadd(builder, exp_pre, norm_shift1_bit01);
+	let exp_round_base = builder.iadd(exp_pre, norm_shift1_bit01).0;
 
 	// Pre-round underflow to subnormal domain if needed (same as addition block)
 	let (sig_round_base, exp_for_round, exp_lt_1) =

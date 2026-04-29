@@ -27,7 +27,7 @@
 //! Modified by Irreducible Inc. (2024-2025): Ported from C to Rust with
 //! adaptations for the Binius field arithmetic framework.
 
-use crate::arch::portable64::{U64x2, bmul64, rev64};
+use crate::arch::portable64::{U64x2, bmul64, bsqr64, rev64};
 
 /// Multiply two GHASH field elements using software implementation.
 ///
@@ -82,62 +82,106 @@ pub fn mul(x: u128, y: u128) -> u128 {
 	U64x2(v0, v1).into()
 }
 
+/// Square a GHASH field element using software implementation.
+///
+/// Exploits the fact that squaring a GF(2) polynomial is a linear operation (all cross terms
+/// vanish): the square of `a₀ + a₁X + a₂X² + ...` is `a₀ + a₁X² + a₂X⁴ + ...`, i.e.
+/// bit-interleaving with zeros. This avoids the carry-less multiplications
+/// needed by general [`mul`], replacing them with cheaper bit-shuffle operations.
+pub fn square(x: u128) -> u128 {
+	// Convert to U64x2 representation
+	let U64x2(x0, x1) = U64x2::from(x);
+
+	let x0l = x0 & 0x00000000FFFFFFFF;
+	let x0h = x0 >> 32;
+	let x1l = x1 & 0x00000000FFFFFFFF;
+	let x1h = x1 >> 32;
+
+	let mut v0 = bsqr64(x0l);
+	let mut v1 = bsqr64(x0h);
+	let mut v2 = bsqr64(x1l);
+	let v3 = bsqr64(x1h);
+
+	// Reduce modulo X^128 + X^7 + X^2 + X + 1.
+	v1 ^= v3 ^ (v3 << 1) ^ (v3 << 2) ^ (v3 << 7);
+	v2 ^= (v3 >> 63) ^ (v3 >> 62) ^ (v3 >> 57);
+	v0 ^= v2 ^ (v2 << 1) ^ (v2 << 2) ^ (v2 << 7);
+	v1 ^= (v2 >> 63) ^ (v2 >> 62) ^ (v2 >> 57);
+
+	// Convert back to u128
+	U64x2(v0, v1).into()
+}
+
+/// Multiply a GHASH field element by X^{-1}.
+///
+/// This is equivalent to `mul(x, INV_X)` but optimized: right-shift by 1 and conditionally XOR
+/// with X^{-1} if the LSB was set.
+pub fn mul_inv_x(x: u128) -> u128 {
+	let lsb = x & 1;
+	let shifted = x >> 1;
+	// If lsb is 1, XOR with INV_X; the mask is all-ones when lsb=1, all-zeros when lsb=0.
+	shifted ^ (super::INV_X & (lsb.wrapping_neg()))
+}
+
 #[cfg(test)]
 mod tests {
 	use proptest::prelude::*;
 
 	use super::*;
-	use crate::ghash::ONE;
+	use crate::{
+		ghash::{INV_X, ONE},
+		test_utils::multiplication_tests::{
+			test_mul_associative, test_mul_commutative, test_mul_distributive,
+			test_square_equals_mul,
+		},
+	};
 
 	proptest! {
 		#[test]
 		fn test_ghash_soft64_mul_commutative(
 			a in any::<u128>(),
-			b in any::<u128>()
+			b in any::<u128>(),
 		) {
-			// Test that a * b = b * a
-			let ab = mul(a, b);
-			let ba = mul(b, a); // // spellchecker:disable-line
-			prop_assert_eq!(ab, ba, "GHASH soft64 multiplication is not commutative"); // spellchecker:disable-line
+			test_mul_commutative(a, b, mul, "GHASH");
 		}
 
 		#[test]
 		fn test_ghash_soft64_mul_associative(
 			a in any::<u128>(),
 			b in any::<u128>(),
-			c in any::<u128>()
+			c in any::<u128>(),
 		) {
-			// Test that (a * b) * c = a * (b * c)
-			let ab_c = mul(mul(a, b), c);
-			let a_bc = mul(a, mul(b, c));
-			prop_assert_eq!(ab_c, a_bc, "GHASH soft64 multiplication is not associative");
+			test_mul_associative(a, b, c, mul, "GHASH");
 		}
 
 		#[test]
 		fn test_ghash_soft64_mul_distributive(
 			a in any::<u128>(),
 			b in any::<u128>(),
-			c in any::<u128>()
+			c in any::<u128>(),
 		) {
-			// Test that a * (b + c) = (a * b) + (a * c) where + is XOR
-			let b_plus_c = b ^ c;
-			let a_times_b_plus_c = mul(a, b_plus_c);
-
-			let ab = mul(a, b);
-			let ac = mul(a, c);
-			let ab_plus_ac = ab ^ ac;
-
-			prop_assert_eq!(a_times_b_plus_c, ab_plus_ac,
-				"GHASH soft64 multiplication does not satisfy the distributive law");
+			test_mul_distributive(a, b, c, mul, "GHASH");
 		}
 
 		#[test]
 		fn test_ghash_soft64_mul_identity(
-			a in any::<u128>()
+			a in any::<u128>(),
 		) {
-			// Test that a * ONE = a
-			let result = mul(a, ONE);
-			prop_assert_eq!(result, a, "The provided identity is not the multiplicative identity in GHASH soft64");
+			prop_assert_eq!(mul(a, ONE), a, "ONE is not the multiplicative identity in GHASH");
+		}
+
+		#[test]
+		fn test_ghash_soft64_mul_inv_x(
+			a in any::<u128>(),
+		) {
+			prop_assert_eq!(mul_inv_x(a), mul(a, INV_X), "mul_inv_x does not match mul by INV_X");
+		}
+
+		#[test]
+		fn test_ghash_soft64_square(
+			a in any::<u128>(),
+		) {
+			test_square_equals_mul(a, mul, square, "GHASH");
 		}
 	}
 }

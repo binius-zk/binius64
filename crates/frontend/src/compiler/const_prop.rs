@@ -10,6 +10,7 @@ use std::collections::{HashSet, VecDeque};
 use super::{
 	eval_form::evaluate_gate_constants,
 	gate_graph::{Gate, GateGraph, WireKind},
+	hints::HintRegistry,
 };
 
 /// Performs constant propagation on the gate graph.
@@ -19,9 +20,9 @@ use super::{
 /// can be propagated.
 ///
 /// Returns the number of wires that were replaced with constants.
-pub fn constant_propagation(graph: &mut GateGraph) -> usize {
+pub fn constant_propagation(graph: &mut GateGraph, hint_registry: &HintRegistry) -> usize {
 	// First rebuild use-def chains to ensure they're up to date
-	graph.rebuild_use_def_chains();
+	graph.rebuild_use_def_chains(hint_registry);
 
 	// Initialize worklist with all gates that might be evaluable
 	let mut worklist: VecDeque<Gate> = VecDeque::new();
@@ -47,12 +48,12 @@ pub fn constant_propagation(graph: &mut GateGraph) -> usize {
 		in_worklist.remove(&gate);
 
 		// Try to evaluate this gate with constant inputs
-		if let Some(eval_result) = try_evaluate_gate_with_constants(graph, gate) {
+		if let Some(eval_result) = try_evaluate_gate_with_constants(graph, gate, hint_registry) {
 			match eval_result {
 				Ok(output_values) => {
 					let output_wires = {
 						let gate_data = graph.gate_data(gate);
-						let gate_param = gate_data.gate_param();
+						let gate_param = gate_data.gate_param_with_registry(hint_registry);
 						gate_param.outputs.to_vec()
 					};
 					for (i, &output_wire) in output_wires.iter().enumerate() {
@@ -65,8 +66,12 @@ pub fn constant_propagation(graph: &mut GateGraph) -> usize {
 						// affected.
 						//
 						// Perform sorting to ensure deterministic order.
-						let (_const_wire, num_updates, mut affected_gates) =
-							graph.replace_wire_with_constant(output_wire, output_values[i]);
+						let (_const_wire, num_updates, mut affected_gates) = graph
+							.replace_wire_with_constant(
+								output_wire,
+								output_values[i],
+								hint_registry,
+							);
 						affected_gates.sort();
 						if num_updates > 0 {
 							total_replaced += num_updates;
@@ -96,9 +101,10 @@ pub fn constant_propagation(graph: &mut GateGraph) -> usize {
 fn try_evaluate_gate_with_constants(
 	graph: &GateGraph,
 	gate: Gate,
+	hint_registry: &HintRegistry,
 ) -> Option<Result<Vec<binius_core::word::Word>, String>> {
 	let gate_data = graph.gate_data(gate);
-	let gate_param = gate_data.gate_param();
+	let gate_param = gate_data.gate_param_with_registry(hint_registry);
 
 	let mut input_constants = Vec::new();
 	for &input_wire in gate_param.inputs {
@@ -111,7 +117,7 @@ fn try_evaluate_gate_with_constants(
 	}
 
 	// Evaluate the gate with constant inputs
-	let result = evaluate_gate_constants(graph, gate, &input_constants);
+	let result = evaluate_gate_constants(graph, gate, &input_constants, hint_registry);
 	Some(result)
 }
 
@@ -149,7 +155,7 @@ mod tests {
 		assert!(!matches!(graph.wires[and_out].kind, WireKind::Constant(_)));
 
 		// Run constant propagation
-		let replaced = constant_propagation(&mut graph);
+		let replaced = constant_propagation(&mut graph, &HintRegistry::new());
 
 		// We replace: xor_out in and_gate, and_out in test_gate (twice, since both inputs)
 		assert_eq!(replaced, 3);
@@ -199,7 +205,7 @@ mod tests {
 		let test_gate = graph.emit_gate(root, Opcode::Bxor, vec![shl_out, shl_out], vec![test_out]);
 
 		// Run constant propagation
-		let replaced = constant_propagation(&mut graph);
+		let replaced = constant_propagation(&mut graph, &HintRegistry::new());
 		// We replace: shr_out in shl_gate, shl_out in test_gate (twice)
 		assert_eq!(replaced, 3);
 
@@ -226,30 +232,28 @@ mod tests {
 
 	#[test]
 	fn test_constant_propagation_with_hint() {
+		use crate::compiler::hints::BigUintDivideHint;
+
 		let mut graph = GateGraph::new();
 		let root = graph.path_spec_tree.root();
 
-		// Test BigUintDivideHint with constants
-		// dividend = 100, divisor = 7
-		// quotient should be 14, remainder should be 2
+		// dividend = 100, divisor = 7 => quotient = 14, remainder = 2 (single-limb)
 		let dividend = graph.add_constant(Word(100));
 		let divisor = graph.add_constant(Word(7));
-
-		// BigUintDivideHint has variable shape, so we need to specify dimensions
-		// For single-limb division: [dividend_limbs, divisor_limbs] = [1, 1]
 		let quotient = graph.add_witness();
 		let remainder = graph.add_witness();
 
-		let _hint_gate = graph.emit_gate_generic(
+		let mut hint_registry = HintRegistry::new();
+		let hint_id = hint_registry.register(BigUintDivideHint::new());
+		graph.emit_hint_gate(
 			root,
-			Opcode::BigUintDivideHint,
+			hint_id,
+			&[1, 1],
 			vec![dividend, divisor],
 			vec![quotient, remainder],
-			&[1, 1], // [dividend_limbs, divisor_limbs] = [1, 1] for single word division
-			&[],
 		);
 
-		// Create gates that use the outputs to verify propagation
+		// Create gates that use the outputs to verify propagation.
 		let test_q = graph.add_witness();
 		let test_r = graph.add_witness();
 		let test_q_gate =
@@ -257,25 +261,20 @@ mod tests {
 		let test_r_gate =
 			graph.emit_gate(root, Opcode::Bxor, vec![remainder, remainder], vec![test_r]);
 
-		// Run constant propagation
-		let replaced = constant_propagation(&mut graph);
-		// We replace: quotient in test_q_gate (twice), remainder in test_r_gate (twice)
+		let replaced = constant_propagation(&mut graph, &hint_registry);
+		// quotient used twice in test_q_gate, remainder used twice in test_r_gate.
 		assert_eq!(replaced, 4);
 
-		// The original wires remain as witness wires
+		// The original wires remain as witness wires.
 		assert!(matches!(graph.wires[quotient].kind, WireKind::Witness));
 		assert!(matches!(graph.wires[remainder].kind, WireKind::Witness));
 
-		// Check that test gates now use constant wires
-		let test_q_data = &graph.gates[test_q_gate];
-		let test_q_inputs = test_q_data.gate_param().inputs;
+		let test_q_inputs = graph.gates[test_q_gate].gate_param().inputs;
 		match graph.wires[test_q_inputs[0]].kind {
 			WireKind::Constant(val) => assert_eq!(val, Word(14)), // 100 / 7 = 14
 			_ => panic!("Expected test_q_gate's input to be constant 14"),
 		}
-
-		let test_r_data = &graph.gates[test_r_gate];
-		let test_r_inputs = test_r_data.gate_param().inputs;
+		let test_r_inputs = graph.gates[test_r_gate].gate_param().inputs;
 		match graph.wires[test_r_inputs[0]].kind {
 			WireKind::Constant(val) => assert_eq!(val, Word(2)), // 100 % 7 = 2
 			_ => panic!("Expected test_r_gate's input to be constant 2"),
@@ -295,6 +294,6 @@ mod tests {
 
 		// This should panic when the Assert0 gate fails during evaluation
 		// because the constant input (42) is not zero
-		constant_propagation(&mut graph);
+		constant_propagation(&mut graph, &HintRegistry::new());
 	}
 }

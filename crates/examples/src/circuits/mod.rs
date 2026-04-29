@@ -4,6 +4,7 @@ pub mod bitcoin_header_chain;
 pub mod bitcoin_p2pkh;
 pub mod blake2b;
 pub mod blake2s;
+pub mod blake3_compress;
 pub mod ethsign;
 pub mod hashsign;
 pub mod keccak;

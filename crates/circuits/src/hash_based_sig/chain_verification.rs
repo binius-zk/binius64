@@ -70,14 +70,13 @@ pub fn circuit_chain(
 	let mut current_hash = signature_hash;
 
 	let one = builder.add_constant(Word::ONE);
-	let zero = builder.add_constant(Word::ZERO);
 	let max_chain_len_wire = builder.add_constant_64(max_chain_len);
 
 	// Build the hash chain
 	for step in 0..max_chain_len {
 		let step_wire = builder.add_constant_64(step);
-		let (position, _) = builder.iadd_cin_cout(step_wire, starting_position, zero);
-		let (position_plus_one, _) = builder.iadd_cin_cout(position, one, zero);
+		let (position, _) = builder.iadd(step_wire, starting_position);
+		let (position_plus_one, _) = builder.iadd(position, one);
 
 		let next_hash = std::array::from_fn(|_| builder.add_witness());
 		let keccak = circuit_chain_hash(

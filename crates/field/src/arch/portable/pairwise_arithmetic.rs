@@ -2,9 +2,7 @@
 
 use crate::{
 	arch::PairwiseStrategy,
-	arithmetic_traits::{
-		InvertOrZero, MulAlpha, Square, TaggedInvertOrZero, TaggedMul, TaggedMulAlpha, TaggedSquare,
-	},
+	arithmetic_traits::{InvertOrZero, Square, TaggedInvertOrZero, TaggedMul, TaggedSquare},
 	linear_transformation::Transformation,
 	packed::PackedField,
 };
@@ -47,21 +45,6 @@ where
 			InvertOrZero::invert_or_zero(self)
 		} else {
 			Self::from_fn(|i| InvertOrZero::invert_or_zero(self.get(i)))
-		}
-	}
-}
-
-impl<PT: PackedField + MulAlpha> TaggedMulAlpha<PairwiseStrategy> for PT
-where
-	PT::Scalar: MulAlpha,
-{
-	#[inline]
-	fn mul_alpha(self) -> Self {
-		if PT::WIDTH == 1 {
-			// fallback to be able to benchmark this strategy
-			MulAlpha::mul_alpha(self)
-		} else {
-			Self::from_fn(|i| MulAlpha::mul_alpha(self.get(i)))
 		}
 	}
 }

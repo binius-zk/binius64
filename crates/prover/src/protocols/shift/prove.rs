@@ -85,7 +85,6 @@ impl<F: Field> PreparedOperatorData<F> {
 /// 3. **Phase 2**: Reduces to witness evaluation using monster multilinear polynomial
 ///
 /// # Parameters
-/// - `log_public_words`: log2 the number of public words
 /// - `key_collection`: Prover's key collection representing the constraint system
 /// - `words`: The witness words (must have power-of-2 length)
 /// - `bitand_data`: Operator data for bit multiplication (AND) constraints
@@ -99,7 +98,6 @@ impl<F: Field> PreparedOperatorData<F> {
 /// # Requirements
 /// - `words` must have power-of-2 length for efficient multilinear operations
 pub fn prove<F, P, Channel>(
-	log_public_words: usize,
 	key_collection: &KeyCollection,
 	words: &[Word],
 	bitand_data: OperatorData<F>,
@@ -137,7 +135,6 @@ where
 	// the witness at oblong point had by univariate
 	// variable `r_j` and multilinear variable `r_y`.
 	let SumcheckOutput { challenges, eval } = prove_phase_2::<_, P, _>(
-		log_public_words,
 		key_collection,
 		words,
 		&prepared_bitand_data,

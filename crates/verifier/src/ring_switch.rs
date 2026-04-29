@@ -2,11 +2,10 @@
 
 use std::iter;
 
-use binius_field::{BinaryField, ExtensionField, PackedField};
+use binius_field::{BinaryField, ExtensionField, FieldOps, PackedField};
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
-	FieldBuffer,
-	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
+	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate_inplace_scalars},
 	tensor_algebra::TensorAlgebra,
 };
 
@@ -19,9 +18,9 @@ pub enum Error {
 }
 
 /// Output of ring-switching verification.
-pub struct RingSwitchVerifyOutput<F: BinaryField + PackedField<Scalar = F>> {
+pub struct RingSwitchVerifyOutput<F: FieldOps> {
 	/// The row-batching challenges (expanded via eq_ind).
-	pub eq_r_double_prime: FieldBuffer<F>,
+	pub eq_r_double_prime: Vec<F>,
 	/// The verified sumcheck claim for BaseFold.
 	pub sumcheck_claim: F,
 }
@@ -47,34 +46,34 @@ pub struct RingSwitchVerifyOutput<F: BinaryField + PackedField<Scalar = F>> {
 /// * `eval_point.len()` must equal `log_witness_elems + log_packing` where log_packing is the
 ///   base-2 log of the extension degree of F over B1
 pub fn verify<F, C>(
-	evaluation_claim: F,
-	eval_point: &[F],
+	evaluation_claim: C::Elem,
+	eval_point: &[C::Elem],
 	channel: &mut C,
-) -> Result<RingSwitchVerifyOutput<F>, Error>
+) -> Result<RingSwitchVerifyOutput<C::Elem>, Error>
 where
 	F: BinaryField + PackedField<Scalar = F>,
-	C: IPVerifierChannel<F, Elem = F>,
+	C: IPVerifierChannel<F>,
+	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
 	let log_packing = <F as ExtensionField<B1>>::LOG_DEGREE;
 	let (eval_point_low, _eval_point_high) = eval_point.split_at(log_packing);
 
 	// Receive s_hat_v
 	let s_hat_v = channel.recv_many(1 << log_packing)?;
-	let s_hat_v_buf = FieldBuffer::from_values(&s_hat_v);
 
 	// Verify partial eval matches expected claim
-	let computed_claim = evaluate::<F, F, _>(&s_hat_v_buf, eval_point_low);
+	let computed_claim = evaluate_inplace_scalars(s_hat_v.clone(), eval_point_low);
 	channel.assert_zero(evaluation_claim - computed_claim)?;
 
 	// Basis transpose
-	let s_hat_u = FieldBuffer::from_values(&TensorAlgebra::<B1, F>::new(s_hat_v).transpose().elems);
+	let s_hat_u = TensorAlgebra::<B1, C::Elem>::new(s_hat_v).transpose();
 
 	// Sample r_double_prime
 	let r_double_prime = channel.sample_many(log_packing);
-	let eq_r_double_prime = eq_ind_partial_eval::<F>(&r_double_prime);
+	let eq_r_double_prime = eq_ind_partial_eval_scalars(&r_double_prime);
 
 	// Compute sumcheck claim
-	let sumcheck_claim = evaluate::<F, F, _>(&s_hat_u, &r_double_prime);
+	let sumcheck_claim = evaluate_inplace_scalars(s_hat_u.elems, &r_double_prime);
 
 	Ok(RingSwitchVerifyOutput {
 		eq_r_double_prime,
@@ -104,18 +103,18 @@ where
 /// [DP24]: <https://eprint.iacr.org/2024/504>
 pub fn eval_rs_eq<F>(z_vals: &[F], query: &[F], expanded_row_batch_query: &[F]) -> F
 where
-	F: BinaryField,
+	F: FieldOps<Scalar: BinaryField>,
 {
 	assert_eq!(z_vals.len(), query.len()); // pre-condition
-	assert_eq!(expanded_row_batch_query.len(), F::DEGREE); // pre-condition
+	assert_eq!(expanded_row_batch_query.len(), <F::Scalar as ExtensionField<B1>>::DEGREE,); // pre-condition
 
 	let tensor_eval = iter::zip(z_vals, query).fold(
-		<TensorAlgebra<B1, F>>::from_vertical(F::ONE),
-		|eval, (&vert_i, &hztl_i)| {
+		TensorAlgebra::<B1, F>::from_vertical(F::one()),
+		|eval, (vert_i, hztl_i)| {
 			// This formula is specific to characteristic 2 fields
 			// Here we know that $h v + (1 - h) (1 - v) = 1 + h + v$.
-			let vert_scaled = eval.clone().scale_vertical(vert_i);
-			let hztl_scaled = eval.clone().scale_horizontal(hztl_i);
+			let vert_scaled = eval.clone().scale_vertical(vert_i.clone());
+			let hztl_scaled = eval.clone().scale_horizontal(hztl_i.clone());
 
 			eval + &vert_scaled + &hztl_scaled
 		},

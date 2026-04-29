@@ -51,7 +51,6 @@ define_packed_binary_field!(
 	(Ghash256Strategy),
 	(Ghash256Strategy),
 	(Ghash256Strategy),
-	(None),
 	(None)
 );
 

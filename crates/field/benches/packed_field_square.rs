@@ -20,16 +20,11 @@ fn square_main<T: PackedField>(val: T) -> T {
 cfg_if! {
 	if #[cfg(feature = "benchmark_alternative_strategies")] {
 		use binius_field::{
-			arch::{PackedStrategy, PairwiseStrategy, PairwiseRecursiveStrategy,
-				PairwiseTableStrategy},
+			arch::{PackedStrategy, PairwiseStrategy, PairwiseTableStrategy},
 			arithmetic_traits::TaggedSquare
 		};
 
 		fn square_pairwise<T: TaggedSquare<PairwiseStrategy>>(val: T) -> T {
-			val.square()
-		}
-
-		fn square_pairwise_recursive<T: TaggedSquare<PairwiseRecursiveStrategy>>(val: T) -> T {
 			val.square()
 		}
 
@@ -47,7 +42,6 @@ cfg_if! {
 			strategies @ (
 				(main, PackedField, square_main),
 				(pairwise, TaggedSquare::<PairwiseStrategy>, square_pairwise),
-				(pairwise_recursive, TaggedSquare::<PairwiseRecursiveStrategy>, square_pairwise_recursive),
 				(pairwise_table, TaggedSquare::<PairwiseTableStrategy>, square_pairwise_table),
 				(packed, TaggedSquare::<PackedStrategy>, square_packed),
 			)

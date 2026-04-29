@@ -28,7 +28,9 @@
 pub mod basefold;
 pub mod basefold_channel;
 pub mod basefold_compiler;
+pub mod basefold_zk_channel;
 pub mod channel;
 pub mod fri;
 pub mod merkle_tree;
 pub mod naive_channel;
+pub mod size_tracking_channel;

@@ -171,6 +171,19 @@ let mut target_path =
 	);
 ```
 
+### Turbofish over type annotations
+
+Prefer turbofish (`::<...>`) to resolve type ambiguities rather than adding type annotations on local variables. This
+keeps the type information at the call site where it's needed.
+
+```rust
+// Good
+let vals = elems.iter().map(|e| e.value()).collect::<Vec<_>>();
+
+// Bad
+let vals: Vec<_> = elems.iter().map(|e| e.value()).collect();
+```
+
 ## Prover-verifier separation
 
 Verifier code is optimized for simplicity, security, and readability, whereas prover code is optimized for performance.

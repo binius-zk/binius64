@@ -41,15 +41,6 @@ pub fn msb_to_lsb01(b: &CircuitBuilder, b_msb: Wire) -> Wire {
 	b.shr(b_msb, 63)
 }
 
-/// Performs integer addition: `a + b`.
-///
-/// This is a wrapper around the circuit builder's integer addition that handles
-/// carry-in/carry-out automatically with zero carry-in.
-pub fn iadd(builder: &CircuitBuilder, a: Wire, b: Wire) -> Wire {
-	let (s, _c) = builder.iadd_cin_cout(a, b, zero(builder));
-	s
-}
-
 /// Performs integer subtraction: `a - b`.
 ///
 /// This is a wrapper around the circuit builder's integer subtraction that handles
@@ -227,7 +218,7 @@ pub fn clz64(b: &CircuitBuilder, x: Wire) -> Wire {
 		let t = b.shr(y, 32);
 		let z = b.icmp_eq(t, zero(b));
 		let add32 = b.add_constant_64(32);
-		n = iadd(b, n, b.select(z, add32, zero(b)));
+		n = b.iadd(n, b.select(z, add32, zero(b))).0;
 		y = b.select(z, b.shl(y, 32), y);
 	}
 	// step(16)
@@ -235,7 +226,7 @@ pub fn clz64(b: &CircuitBuilder, x: Wire) -> Wire {
 		let t = b.shr(y, 48);
 		let z = b.icmp_eq(t, zero(b));
 		let add16 = b.add_constant_64(16);
-		n = iadd(b, n, b.select(z, add16, zero(b)));
+		n = b.iadd(n, b.select(z, add16, zero(b))).0;
 		y = b.select(z, b.shl(y, 16), y);
 	}
 	// step(8)
@@ -243,7 +234,7 @@ pub fn clz64(b: &CircuitBuilder, x: Wire) -> Wire {
 		let t = b.shr(y, 56);
 		let z = b.icmp_eq(t, zero(b));
 		let add8 = b.add_constant_64(8);
-		n = iadd(b, n, b.select(z, add8, zero(b)));
+		n = b.iadd(n, b.select(z, add8, zero(b))).0;
 		y = b.select(z, b.shl(y, 8), y);
 	}
 	// step(4)
@@ -251,7 +242,7 @@ pub fn clz64(b: &CircuitBuilder, x: Wire) -> Wire {
 		let t = b.shr(y, 60);
 		let z = b.icmp_eq(t, zero(b));
 		let add4 = b.add_constant_64(4);
-		n = iadd(b, n, b.select(z, add4, zero(b)));
+		n = b.iadd(n, b.select(z, add4, zero(b))).0;
 		y = b.select(z, b.shl(y, 4), y);
 	}
 	// step(2)
@@ -259,14 +250,14 @@ pub fn clz64(b: &CircuitBuilder, x: Wire) -> Wire {
 		let t = b.shr(y, 62);
 		let z = b.icmp_eq(t, zero(b));
 		let add2 = b.add_constant_64(2);
-		n = iadd(b, n, b.select(z, add2, zero(b)));
+		n = b.iadd(n, b.select(z, add2, zero(b))).0;
 		y = b.select(z, b.shl(y, 2), y);
 	}
 	// step(1)
 	{
 		let t = b.shr(y, 63);
 		let z = b.icmp_eq(t, zero(b));
-		n = iadd(b, n, b.select(z, one(b), zero(b)));
+		n = b.iadd(n, b.select(z, one(b), zero(b))).0;
 	}
 	n
 }
@@ -428,12 +419,12 @@ pub fn fp64_round_rne(b: &CircuitBuilder, sig_base: Wire, exp_base: Wire) -> (Wi
 	let round_up01 = b.band(g, tie_or_gt); // 0/1
 
 	let mant_trunc = b.shr(sig_base, 11);
-	let mant_rounded = iadd(b, mant_trunc, round_up01);
+	let mant_rounded = b.iadd(mant_trunc, round_up01).0;
 
 	let overflow01 = bit_lsb(b, mant_rounded, 53); // 0/1
 	let overflow_msb = bit_msb01(b, mant_rounded, 53);
 	let mant_final_53 = b.select(overflow_msb, b.shr(mant_rounded, 1), mant_rounded);
-	let exp_after = iadd(b, exp_base, overflow01);
+	let exp_after = b.iadd(exp_base, overflow01).0;
 
 	(mant_final_53, exp_after, overflow_msb)
 }

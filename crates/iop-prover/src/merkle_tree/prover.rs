@@ -7,7 +7,7 @@ use binius_hash::{ParallelDigest, ParallelPseudoCompression};
 use binius_iop::merkle_tree::{BinaryMerkleTreeScheme, Commitment, Error, MerkleTreeScheme};
 use binius_transcript::{BufMut, TranscriptWriter};
 use binius_utils::rayon::iter::IndexedParallelIterator;
-use digest::{FixedOutputReset, Output, core_api::BlockSizeUser};
+use digest::{FixedOutputReset, Output, block_api::BlockSizeUser};
 use getset::Getters;
 use rand::{CryptoRng, SeedableRng, rngs::StdRng};
 

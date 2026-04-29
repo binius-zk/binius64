@@ -37,7 +37,7 @@ use std::vec;
 
 use binius_field::{BinaryField, BinaryField1b, Field, PackedBinaryField8x1b, PackedField};
 use binius_math::{BinarySubspace, univariate::lagrange_evals_scalars};
-use binius_verifier::and_reduction::utils::constants::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS};
+use binius_verifier::protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS};
 
 /// A precomputed lookup table for fast NTT operations on 64-bit binary field elements.
 ///
@@ -46,22 +46,23 @@ use binius_verifier::and_reduction::utils::constants::{ROWS_PER_HYPERCUBE_VERTEX
 ///
 /// ## Structure
 ///
-/// The internal data structure is a boxed 3-dimensional array `Box<[[[P; 8]; 256]; 4]>` where:
-/// - **First dimension**: Packed field element index (0-3)
+/// The internal data structure is a boxed 3-dimensional array `Box<[[[P; 4]; 256]; 8]>` where:
+/// - **First dimension**: Index of the 8-bit chunk within the 64-bit input (0-7)
 /// - **Second dimension**: The 8-bit value (0-255) representing coefficient combinations
-/// - **Third dimension**: Index of the 8-bit chunk within the 64-bit input (0-7)
+/// - **Third dimension**: Packed field element index (0-3)
 ///
 /// ## Memory Layout
 ///
-/// For each of the 4 packed field elements, 256 possible byte values, and 8 byte positions,
-/// we store the precomputed NTT evaluations in a contiguous boxed array structure.
+/// Packed field indices are placed on the innermost axis so that the 4 packed evaluations
+/// for a given (byte position, byte value) are contiguous in memory. This is the access
+/// pattern of the hot inner loop in `univariate_round_message_extension_domain`.
 ///
 /// ## Type Parameters
 ///
 /// - `P`: The packed field type used for storing precomputed values. Must implement `PackedField`
 ///   with a scalar type that is a binary field.
 #[derive(Clone)]
-pub struct NTTLookup<P>(Box<[[[P; 8]; 256]; 4]>);
+pub struct NTTLookup<P>(Box<[[[P; 4]; 256]; 8]>);
 
 impl<PNTTDomain> NTTLookup<PNTTDomain>
 where
@@ -91,7 +92,7 @@ where
 		assert_eq!(ntt_output_domain.len(), ROWS_PER_HYPERCUBE_VERTEX);
 		assert_eq!(ntt_input_domain.dim(), SKIPPED_VARS);
 
-		let mut lookup = Box::new([[[PNTTDomain::zero(); 8]; 256]; 4]);
+		let mut lookup = Box::new([[[PNTTDomain::zero(); 4]; 256]; 8]);
 
 		let mut eval_point_lagrange_evals =
 			vec![
@@ -129,23 +130,23 @@ where
 
 					let packed_idx = eval_point_idx / PNTTDomain::WIDTH; // 0, 1, 2, or 3
 					let scalar_idx = eval_point_idx % PNTTDomain::WIDTH; // 0-15
-					lookup[packed_idx][coefficient_as_bit_string as usize][eight_bit_chunk_idx]
+					lookup[eight_bit_chunk_idx][coefficient_as_bit_string as usize][packed_idx]
 						.set(scalar_idx, result);
 				}
 			}
 		}
 
 		// Build combined coefficient lookup table
-		for packed_idx in 0..4 {
+		for byte_idx in 0..8 {
 			for coefficient_as_bit_string in 0..1 << 8 {
-				let mut result = [PNTTDomain::zero(); 8];
+				let mut result = [PNTTDomain::zero(); 4];
 				for bit_in_string in 0..8 {
 					let this_one_hot = coefficient_as_bit_string & 1 << bit_in_string;
-					for byte_idx in 0..8 {
-						result[byte_idx] += lookup[packed_idx][this_one_hot][byte_idx];
+					for packed_idx in 0..4 {
+						result[packed_idx] += lookup[byte_idx][this_one_hot][packed_idx];
 					}
 				}
-				lookup[packed_idx][coefficient_as_bit_string] = result;
+				lookup[byte_idx][coefficient_as_bit_string] = result;
 			}
 		}
 		NTTLookup(lookup)
@@ -184,10 +185,10 @@ where
 
 		let byte_chunks: Vec<u8> = coeffs_in_byte_chunks.into_iter().collect();
 
-		for j in 0..ROWS_PER_HYPERCUBE_VERTEX / 16 {
-			for (eight_bit_chunk_idx, eight_bit_chunk) in byte_chunks.iter().enumerate() {
-				// New indexing: [packed_idx][byte_value][byte_pos]
-				result[j] += self.0[j][*eight_bit_chunk as usize][eight_bit_chunk_idx];
+		for (eight_bit_chunk_idx, eight_bit_chunk) in byte_chunks.iter().enumerate() {
+			let row = &self.0[eight_bit_chunk_idx][*eight_bit_chunk as usize];
+			for j in 0..ROWS_PER_HYPERCUBE_VERTEX / 16 {
+				result[j] += row[j];
 			}
 		}
 
@@ -196,7 +197,7 @@ where
 
 	/// Returns a reference to the NTT lookup table.
 	#[inline]
-	pub fn get_lookup(&self) -> &[[[PNTTDomain; 8]; 256]; 4] {
+	pub fn get_lookup(&self) -> &[[[PNTTDomain; 4]; 256]; 8] {
 		&self.0
 	}
 }
@@ -215,7 +216,7 @@ mod test {
 		BinarySubspace, FieldSliceMut,
 		ntt::{AdditiveNTT, NeighborsLastReference, domain_context::GenericOnTheFly},
 	};
-	use binius_verifier::{and_reduction::utils::constants::SKIPPED_VARS, config::B1};
+	use binius_verifier::{config::B1, protocols::bitand::SKIPPED_VARS};
 	use itertools::Itertools;
 	use rand::{SeedableRng, rngs::StdRng};
 

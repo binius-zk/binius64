@@ -21,6 +21,8 @@ impl Default for BigUintModPowHint {
 }
 
 impl Hint for BigUintModPowHint {
+	const NAME: &'static str = "binius.biguint_mod_pow";
+
 	fn shape(&self, dimensions: &[usize]) -> (usize, usize) {
 		let [n_base_limbs, n_exp_limbs, n_modulus_limbs] = dimensions else {
 			panic!("BigUintModPowHint requires 3 dimensions");

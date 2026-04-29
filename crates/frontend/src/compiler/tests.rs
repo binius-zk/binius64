@@ -217,6 +217,51 @@ fn test_mod_inverse_hint_non_coprime() {
 	assert_eq!(w[quotient[1]], Word::ZERO);
 }
 
+#[test]
+fn test_call_hint_user_registered() {
+	use crate::compiler::hints::Hint;
+
+	/// User-defined hint that XORs all of its inputs into a single output word.
+	struct XorAllHint;
+
+	impl Hint for XorAllHint {
+		const NAME: &'static str = "test::xor_all";
+
+		fn shape(&self, dimensions: &[usize]) -> (usize, usize) {
+			let [n_in] = dimensions else {
+				panic!("XorAllHint requires 1 dimension");
+			};
+			(*n_in, 1)
+		}
+
+		fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+			let acc = inputs.iter().fold(0u64, |a, w| a ^ w.0);
+			outputs[0] = Word(acc);
+		}
+	}
+
+	let builder = CircuitBuilder::new();
+	let inputs = [
+		builder.add_constant_64(0xdead_beef_0000_0000),
+		builder.add_constant_64(0x0000_0000_cafe_babe),
+		builder.add_constant_64(0xffff_ffff_ffff_ffff),
+	];
+
+	// Calling twice with the same hint type should reuse the same registry entry.
+	let out1 = builder.call_hint(XorAllHint, &[inputs.len()], &inputs);
+	let out2 = builder.call_hint(XorAllHint, &[inputs.len()], &inputs);
+	assert_eq!(out1.len(), 1);
+	assert_eq!(out2.len(), 1);
+
+	let circuit = builder.build();
+	let mut w = circuit.new_witness_filler();
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	let expected = Word(0xdead_beef_0000_0000 ^ 0x0000_0000_cafe_babe ^ 0xffff_ffff_ffff_ffff);
+	assert_eq!(w[out1[0]], expected);
+	assert_eq!(w[out2[0]], expected);
+}
+
 fn prop_check_icmp_ult(a: u64, b: u64, expected_result: Word) {
 	let builder = CircuitBuilder::new();
 	let a_wire = builder.add_constant_64(a);
@@ -440,6 +485,45 @@ fn test_shift_operations_with_linear_constraints() {
 	assert_eq!(w[combined], Word((0xff00ff00ff00ff00 << 8) ^ (0x0000abcd0000ef12 >> 16)));
 
 	// Verify constraints are satisfied
+	let cs = circuit.constraint_system();
+	verify_constraints(cs, &w.value_vec).unwrap();
+}
+
+#[test]
+fn test_32bit_half_shift_operations() {
+	let builder = CircuitBuilder::new();
+
+	let a = builder.add_inout();
+	let sll32_result = builder.sll32(a, 4);
+	let srl32_result = builder.srl32(a, 4);
+	let sra32_result = builder.sra32(a, 4);
+	let rotr32_result = builder.rotr32(a, 4);
+
+	let circuit = builder.build();
+
+	let input = 0x12345678_89abcdef_u64;
+	let mut w = circuit.new_witness_filler();
+	w[a] = Word(input);
+
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	let expected_sll32 = Word(input).sll32(4);
+	let expected_srl32 = Word(input).srl32(4);
+	let expected_sra32 = Word(input).sra32(4);
+	let expected_rotr32 = Word(input).rotr32(4);
+
+	assert_eq!(w[sll32_result], expected_sll32);
+	assert_eq!(w[srl32_result], expected_srl32);
+	assert_eq!(w[sra32_result], expected_sra32);
+	assert_eq!(w[rotr32_result], expected_rotr32);
+
+	// These are lane-local operations, so they should differ from the plain 64-bit shifts
+	// for inputs where bits would otherwise cross the 32-bit boundary.
+	assert_ne!(w[sll32_result], Word(input << 4));
+	assert_ne!(w[srl32_result], Word(input >> 4));
+	assert_ne!(w[sra32_result], Word(((input as i64) >> 4) as u64));
+	assert_ne!(w[rotr32_result], Word(input.rotate_right(4)));
+
 	let cs = circuit.constraint_system();
 	verify_constraints(cs, &w.value_vec).unwrap();
 }

@@ -7,7 +7,7 @@ use binius_field::{
 	BinaryField, BinaryField128bGhash as B128, PackedBinaryGhash1x128b, PackedField,
 };
 use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
-use binius_iop::fri::{FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier};
+use binius_iop::fri::{self, FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier};
 use binius_math::{
 	BinarySubspace, ReedSolomonCode,
 	multilinear::evaluate::evaluate,
@@ -231,4 +231,91 @@ fn test_commit_prove_verify_success_without_folding() {
 		log_batch_size,
 		&[],
 	);
+}
+
+/// Runs the FRI prover and returns the proof bytes along with the FRI params and Merkle scheme,
+/// so the caller can check the estimated proof size.
+fn generate_fri_proof<F, P>(
+	log_dimension: usize,
+	log_inv_rate: usize,
+	log_batch_size: usize,
+	arities: &[usize],
+) -> (
+	Vec<u8>,
+	FRIParams<F>,
+	binius_iop::merkle_tree::BinaryMerkleTreeScheme<F, StdDigest, StdCompression>,
+)
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+{
+	let mut rng = StdRng::seed_from_u64(0);
+
+	let parallel_compression = ParallelCompressionAdaptor::new(StdCompression::default());
+	let merkle_prover = BinaryMerkleTreeProver::<_, StdDigest, _>::new(parallel_compression);
+
+	let committed_rs_code = ReedSolomonCode::<F>::new(log_dimension, log_inv_rate);
+
+	let n_test_queries = 3;
+	let params =
+		FRIParams::new(committed_rs_code, log_batch_size, arities.to_vec(), n_test_queries)
+			.unwrap();
+
+	let subspace = BinarySubspace::with_dim(params.rs_code().log_len());
+	let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+	let ntt = NeighborsLastSingleThread::new(domain_context);
+
+	let msg = random_field_buffer::<P>(&mut rng, params.log_msg_len());
+
+	let CommitOutput {
+		commitment: codeword_commitment,
+		committed: codeword_committed,
+		codeword,
+	} = commit_interleaved(&params, &ntt, &merkle_prover, msg.to_ref()).unwrap();
+
+	let mut round_prover =
+		FRIFoldProver::new(&params, &ntt, &merkle_prover, codeword, &codeword_committed).unwrap();
+
+	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+	prover_transcript.message().write(&codeword_commitment);
+
+	let fold_round_output = round_prover.execute_fold_round().unwrap();
+	if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
+		prover_transcript.message().write(&round_commitment);
+	}
+
+	for _ in 0..params.n_fold_rounds() {
+		let challenge = prover_transcript.sample();
+		round_prover.receive_challenge(challenge);
+
+		let fold_round_output = round_prover.execute_fold_round().unwrap();
+		if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
+			prover_transcript.message().write(&round_commitment);
+		}
+	}
+
+	round_prover.finish_proof(&mut prover_transcript).unwrap();
+
+	let scheme = merkle_prover.scheme().clone();
+	let proof_bytes = prover_transcript.finalize();
+	(proof_bytes, params, scheme)
+}
+
+#[test]
+fn test_proof_size_higher_arity() {
+	let (proof_bytes, params, scheme) =
+		generate_fri_proof::<B128, PackedBinaryGhash1x128b>(8, 2, 0, &[3, 2, 1]);
+	assert_eq!(proof_bytes.len(), fri::proof_size(&params, &scheme));
+}
+
+#[test]
+fn test_proof_size_interleaved() {
+	let (proof_bytes, params, scheme) = generate_fri_proof::<B128, Packed128b>(6, 2, 2, &[3, 2, 1]);
+	assert_eq!(proof_bytes.len(), fri::proof_size(&params, &scheme));
+}
+
+#[test]
+fn test_proof_size_no_folding() {
+	let (proof_bytes, params, scheme) = generate_fri_proof::<B128, Packed128b>(4, 2, 2, &[]);
+	assert_eq!(proof_bytes.len(), fri::proof_size(&params, &scheme));
 }

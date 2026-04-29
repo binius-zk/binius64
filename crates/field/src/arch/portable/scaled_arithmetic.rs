@@ -8,9 +8,7 @@ use super::packed::PackedPrimitiveType;
 use crate::{
 	BinaryField,
 	arch::ScaledStrategy,
-	arithmetic_traits::{
-		InvertOrZero, MulAlpha, Square, TaggedInvertOrZero, TaggedMul, TaggedMulAlpha, TaggedSquare,
-	},
+	arithmetic_traits::{InvertOrZero, Square, TaggedInvertOrZero, TaggedMul, TaggedSquare},
 	underlier::{ScaledUnderlier, UnderlierType},
 };
 
@@ -26,18 +24,6 @@ where
 			PackedPrimitiveType::peel(
 				PackedPrimitiveType::wrap(lhs_i) * PackedPrimitiveType::wrap(rhs_i),
 			)
-		})))
-	}
-}
-
-impl<U: UnderlierType + Pod, Scalar: BinaryField, const N: usize> TaggedMulAlpha<ScaledStrategy>
-	for PackedPrimitiveType<ScaledUnderlier<U, N>, Scalar>
-where
-	PackedPrimitiveType<U, Scalar>: MulAlpha,
-{
-	fn mul_alpha(self) -> Self {
-		Self::wrap(ScaledUnderlier(self.0.0.map(|sub_underlier| {
-			PackedPrimitiveType::peel(PackedPrimitiveType::wrap(sub_underlier).mul_alpha())
 		})))
 	}
 }

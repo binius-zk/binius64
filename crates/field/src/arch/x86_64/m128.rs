@@ -246,8 +246,6 @@ macro_rules! bitshift_128b {
 	};
 }
 
-pub(crate) use bitshift_128b;
-
 impl Shr<usize> for M128 {
 	type Output = Self;
 

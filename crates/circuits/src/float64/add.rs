@@ -174,7 +174,7 @@ fn fp64_align_with_sticky(b: &CircuitBuilder, sig_b: Wire, d: Wire) -> Wire {
 /// - `(sum_norm, exp_add)` If carry occurs, result is shifted right by 1; new sticky = (old R) |
 ///   (old S).
 fn fp64_add_path(b: &CircuitBuilder, sig_a: Wire, s_b: Wire, exp_a: Wire) -> (Wire, Wire) {
-	let (sum_raw, carry_mask) = b.iadd_cin_cout(sig_a, s_b, zero(b));
+	let (sum_raw, carry_mask) = b.iadd(sig_a, s_b);
 
 	// Detect final carry-out (bit63 of carry mask) as 0/1 and as a select mask
 	let carry_bit01 = bit_lsb(b, carry_mask, 63); // 0/1
@@ -195,7 +195,7 @@ fn fp64_add_path(b: &CircuitBuilder, sig_a: Wire, s_b: Wire, exp_a: Wire) -> (Wi
 	let sum_norm = b.select(carry_sel_mask, b.bor(sum_shift1clr, new_s), sum_raw);
 
 	// Increment exponent by carry (0/1)
-	let exp_add = iadd(b, exp_a, carry_bit01);
+	let exp_add = b.iadd(exp_a, carry_bit01).0;
 	(sum_norm, exp_add)
 }
 
@@ -606,7 +606,7 @@ mod tests {
 		let builder = CircuitBuilder::new();
 		let a = builder.add_inout();
 		let b = builder.add_inout();
-		let result = iadd(&builder, a, b);
+		let (result, _) = builder.iadd(a, b);
 		let expected = builder.add_inout();
 		builder.assert_eq("iadd_result", result, expected);
 

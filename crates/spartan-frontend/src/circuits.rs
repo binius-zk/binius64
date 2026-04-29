@@ -2,7 +2,7 @@
 
 use std::{iter, iter::successors};
 
-use binius_field::{BinaryField128bGhash as B128, Field, arithmetic_traits::InvertOrZero};
+use binius_field::{Field, arithmetic_traits::InvertOrZero};
 
 use crate::circuit_builder::CircuitBuilder;
 
@@ -27,7 +27,7 @@ pub fn evaluate_univariate<Builder: CircuitBuilder>(
 	// Use Horner's method: p(z) = a0 + z(a1 + z(a2 + z(...)))
 	// Start from highest degree coefficient and work backwards
 	if coeffs.is_empty() {
-		return builder.constant(B128::ZERO);
+		return builder.constant(Builder::Field::ZERO);
 	}
 
 	coeffs[..coeffs.len() - 1]
@@ -79,7 +79,7 @@ pub fn invert<Builder: CircuitBuilder>(builder: &mut Builder, x: Builder::Wire) 
 		[x_val.invert_or_zero()]
 	});
 
-	let one = builder.constant(B128::ONE);
+	let one = builder.constant(Builder::Field::ONE);
 	let prod = builder.mul(x, inv);
 	builder.assert_eq(prod, one);
 
@@ -95,7 +95,7 @@ pub fn invert_or_zero<Builder: CircuitBuilder>(
 		[x_val.invert_or_zero()]
 	});
 
-	let one = builder.constant(B128::ONE);
+	let one = builder.constant(Builder::Field::ONE);
 	let prod = builder.mul(x, inv);
 	let prod_sub_one = builder.sub(prod, one);
 

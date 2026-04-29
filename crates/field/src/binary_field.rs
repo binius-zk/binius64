@@ -22,7 +22,7 @@ use crate::{Field, underlier::U1};
 pub trait BinaryField:
 	ExtensionField<BinaryField1b> + WithUnderlier<Underlier: UnderlierWithBitOps>
 {
-	const N_BITS: usize = Self::DEGREE;
+	const N_BITS: usize = Self::ORDER_EXPONENT;
 }
 
 /// A binary field *isomorphic* to a binary tower field.
@@ -56,25 +56,6 @@ pub trait TowerField: BinaryField {
 		assert!(i < n_basis_elts, "index {i} out of range for {n_basis_elts} basis elements");
 		<Self as ExtensionField<BinaryField1b>>::basis(i << iota)
 	}
-
-	/// Multiplies a field element by the canonical primitive element of the extension $T_{\iota +
-	/// 1} / T_{iota}$.
-	///
-	/// We represent the tower field $T_{\iota + 1}$ as a vector space over $T_{\iota}$ with the
-	/// basis $\{1, \beta^{(\iota)}_1\}$. This operation multiplies the element by
-	/// $\beta^{(\iota)}_1$.
-	///
-	/// # Preconditions
-	///
-	/// * `iota` must be less than `TOWER_LEVEL`.
-	fn mul_primitive(self, iota: usize) -> Self {
-		assert!(
-			iota < Self::TOWER_LEVEL,
-			"iota {iota} must be less than tower level {}",
-			Self::TOWER_LEVEL
-		);
-		self * <Self as ExtensionField<BinaryField1b>>::basis(1 << iota)
-	}
 }
 
 /// Returns the i'th basis element of `FExt` as a field extension of `FSub`.
@@ -91,15 +72,6 @@ where
 	FExt: ExtensionField<FSub>,
 {
 	<FExt as ExtensionField<FSub>>::basis(i)
-}
-
-pub(super) trait TowerExtensionField:
-	TowerField
-	+ ExtensionField<Self::DirectSubfield>
-	+ From<(Self::DirectSubfield, Self::DirectSubfield)>
-	+ Into<(Self::DirectSubfield, Self::DirectSubfield)>
-{
-	type DirectSubfield: TowerField;
 }
 
 /// Macro to generate an implementation of a BinaryField.
@@ -256,6 +228,7 @@ macro_rules! binary_field {
 			const ZERO: Self = $name::new(<$typ as $crate::underlier::UnderlierWithBitOps>::ZERO);
 			const ONE: Self = $name::new(<$typ as $crate::underlier::UnderlierWithBitOps>::ONE);
 			const CHARACTERISTIC: usize = 2;
+			const ORDER_EXPONENT: usize = <$typ as $crate::underlier::UnderlierType>::BITS;
 			const MULTIPLICATIVE_GENERATOR: $name = $name($gen);
 
 			fn double(&self) -> Self {

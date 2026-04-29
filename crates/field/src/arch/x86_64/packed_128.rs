@@ -15,7 +15,6 @@ define_packed_binary_fields!(
 			mul:       (BitwiseAndStrategy),
 			square:    (BitwiseAndStrategy),
 			invert:    (BitwiseAndStrategy),
-			mul_alpha: (BitwiseAndStrategy),
 			transform: (None),
 		},
 	]

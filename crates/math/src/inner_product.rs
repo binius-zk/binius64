@@ -2,7 +2,7 @@
 
 use std::{iter, ops::Deref};
 
-use binius_field::{ExtensionField, Field, PackedField};
+use binius_field::{ExtensionField, Field, FieldOps, PackedField};
 use binius_utils::rayon::prelude::*;
 
 use crate::FieldBuffer;
@@ -13,6 +13,14 @@ pub fn inner_product<F: Field>(
 	b: impl IntoIterator<Item = F>,
 ) -> F {
 	inner_product_subfield(a, b)
+}
+
+#[inline]
+pub fn inner_product_scalars<F: FieldOps>(
+	a: impl IntoIterator<Item = F>,
+	b: impl IntoIterator<Item = F>,
+) -> F {
+	itertools::zip_eq(a, b).map(|(a_i, b_i)| b_i * a_i).sum()
 }
 
 #[inline]

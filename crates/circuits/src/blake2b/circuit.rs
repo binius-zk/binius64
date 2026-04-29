@@ -276,11 +276,9 @@ pub fn g_mixing(
 	x: Wire,
 	y: Wire,
 ) {
-	let zero = builder.add_constant(Word::ZERO);
-
 	// a = a + b + x
-	let (temp1, _) = builder.iadd_cin_cout(v[a], v[b], zero);
-	let (v_a_new1, _) = builder.iadd_cin_cout(temp1, x, zero);
+	let (temp1, _) = builder.iadd(v[a], v[b]);
+	let (v_a_new1, _) = builder.iadd(temp1, x);
 	v[a] = v_a_new1;
 
 	// d = rotr64(d ^ a, 32)
@@ -288,7 +286,7 @@ pub fn g_mixing(
 	v[d] = builder.rotr(xor1, 32);
 
 	// c = c + d
-	let (v_c_new1, _) = builder.iadd_cin_cout(v[c], v[d], zero);
+	let (v_c_new1, _) = builder.iadd(v[c], v[d]);
 	v[c] = v_c_new1;
 
 	// b = rotr64(b ^ c, 24)
@@ -296,8 +294,8 @@ pub fn g_mixing(
 	v[b] = builder.rotr(xor2, 24);
 
 	// a = a + b + y
-	let (temp2, _) = builder.iadd_cin_cout(v[a], v[b], zero);
-	let (v_a_new2, _) = builder.iadd_cin_cout(temp2, y, zero);
+	let (temp2, _) = builder.iadd(v[a], v[b]);
+	let (v_a_new2, _) = builder.iadd(temp2, y);
 	v[a] = v_a_new2;
 
 	// d = rotr64(d ^ a, 16)
@@ -305,7 +303,7 @@ pub fn g_mixing(
 	v[d] = builder.rotr(xor3, 16);
 
 	// c = c + d
-	let (v_c_new2, _) = builder.iadd_cin_cout(v[c], v[d], zero);
+	let (v_c_new2, _) = builder.iadd(v[c], v[d]);
 	v[c] = v_c_new2;
 
 	// b = rotr64(b ^ c, 63)

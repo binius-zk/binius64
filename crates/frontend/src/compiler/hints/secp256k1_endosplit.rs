@@ -94,6 +94,8 @@ impl Default for Secp256k1EndosplitHint {
 }
 
 impl Hint for Secp256k1EndosplitHint {
+	const NAME: &'static str = "binius.secp256k1_endosplit";
+
 	fn shape(&self, dimensions: &[usize]) -> (usize, usize) {
 		assert!(dimensions.is_empty(), "Secp256k1EndosplitHint has constant shape");
 		(4, 6)

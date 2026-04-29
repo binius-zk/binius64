@@ -1,35 +1,28 @@
+// Copyright 2025-2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
-//! 32-bit rotate right.
+//! 32-bit half-wise rotate right.
 //!
-//! Returns `z = ((x >> n) | (x << (32-n))) & MASK_32`.
+//! Returns `z = x ROTR32 n`.
 //!
 //! # Algorithm
 //!
-//! Rotates a 32-bit value right by `n` positions:
-//! 1. Shift right by n: `t1 = x >> n` (bits n-31 move to positions 0-(31-n))
-//! 2. Shift left by 32-n: `t2 = x << (32-n)` (bits 0-(n-1) move to positions (32-n)-31)
-//! 3. Combine with XOR: Since the shifted ranges don't overlap, `t1 | t2 = t1 ^ t2`
-//! 4. Mask to 32 bits: `z = (t1 ^ t2) & MASK_32`
-//!
-//! The non-overlapping property is crucial: right-shifted bits occupy positions 0-(31-n),
-//! while left-shifted bits occupy positions (32-n)-31, with no overlap.
+//! Performs independent rotate-right operations on the upper and lower 32-bit
+//! halves of the input word. Bits do not cross the 32-bit lane boundary.
 //!
 //! # Constraints
 //!
 //! The gate generates 1 AND constraint:
-//! - `((x >> n) ⊕ (x << (32-n))) ∧ MASK_32 = z`
-
-use binius_core::word::Word;
+//! - `(x ROTR32 n) ∧ all-1 = z`
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, sll, srl, xor2},
+	constraint_builder::{ConstraintBuilder, rotr32},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
 
 pub fn shape() -> OpcodeShape {
 	OpcodeShape {
-		const_in: &[Word::MASK_32],
+		const_in: &[],
 		n_in: 1,
 		n_out: 1,
 		n_aux: 0,
@@ -40,25 +33,16 @@ pub fn shape() -> OpcodeShape {
 
 pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) {
 	let GateParam {
-		constants,
 		inputs,
 		outputs,
 		imm,
 		..
 	} = data.gate_param();
-	let [mask32] = constants else { unreachable!() };
 	let [x] = inputs else { unreachable!() };
 	let [z] = outputs else { unreachable!() };
 	let [n] = imm else { unreachable!() };
 
-	// Constraint: Rotate right
-	// ((x >> n) ⊕ (x << (32-n))) ∧ MASK_32 = z
-	builder
-		.and()
-		.a(xor2(srl(*x, *n), sll(*x, 32 - *n)))
-		.b(*mask32)
-		.c(*z)
-		.build();
+	builder.linear().rhs(rotr32(*x, *n)).dst(*z).build();
 }
 
 pub fn emit_eval_bytecode(

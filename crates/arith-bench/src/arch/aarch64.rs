@@ -205,6 +205,11 @@ impl crate::underlier::OpsClmul for uint64x2_t {
 	}
 
 	#[inline]
+	fn srli_epi64<const IMM8: i32>(a: Self) -> Self {
+		unsafe { vshrq_n_u64::<IMM8>(a) }
+	}
+
+	#[inline]
 	fn movepi64_mask(a: Self) -> Self {
 		unsafe {
 			let a = std::mem::transmute::<uint64x2_t, uint32x4_t>(a);
@@ -225,17 +230,21 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		ghash::{ONE, mul_clmul as ghash_mul},
+		ghash::{
+			INV_X, ONE, clmul::mul_inv_x as ghash_mul_inv_x, mul_clmul as ghash_mul,
+			square_clmul as ghash_square,
+		},
 		monbijou::{
 			MONBIJOU_128B_ONE, MONBIJOU_ONE, mul_128b_clmul as monbijou_128b_mul,
 			mul_clmul as monbijou_mul,
 		},
 		polyval::{MONTGOMERY_ONE, mul_clmul as polyval_mul},
+		rijndael::vmull::mul as rijndael_mul,
 		test_utils::{
 			arb_get_set_op,
 			multiplication_tests::{
-				test_mul_associative, test_mul_commutative, test_mul_distributive,
-				test_mul_identity,
+				test_mul_associative, test_mul_by_constant, test_mul_commutative,
+				test_mul_distributive, test_mul_identity, test_square_equals_mul,
 			},
 			test_packed_underlier_get_set_behaves_like_vec,
 		},
@@ -336,6 +345,20 @@ mod tests {
 			test_mul_distributive(a, b, c, ghash_mul, "GHASH");
 		}
 
+		#[test]
+		fn test_uint64x2_t_ghash_mul_inv_x_proptest(
+			a in arb_uint64x2_t()
+		) {
+			test_mul_by_constant(a, INV_X, ghash_mul, ghash_mul_inv_x, "GHASH");
+		}
+
+		#[test]
+		fn test_uint64x2_t_ghash_square_proptest(
+			a in arb_uint64x2_t()
+		) {
+			test_square_equals_mul(a, ghash_mul, ghash_square, "GHASH");
+		}
+
 		// Monbijou multiplication property tests for uint64x2_t
 		#[test]
 		fn test_uint64x2_t_monbijou_mul_commutative_proptest(
@@ -402,6 +425,40 @@ mod tests {
 			c in arb_uint64x2_t()
 		) {
 			test_mul_distributive(a, b, c, monbijou_128b_mul, "Monbijou 128b");
+		}
+
+		// GF(2^8) Rijndael multiplication property tests for uint64x2_t
+		#[test]
+		fn test_uint64x2_t_rijndael_mul_commutative_proptest(
+			a in arb_uint64x2_t(),
+			b in arb_uint64x2_t()
+		) {
+			test_mul_commutative(a, b, rijndael_mul, "Rijndael");
+		}
+
+		#[test]
+		fn test_uint64x2_t_rijndael_mul_associative_proptest(
+			a in arb_uint64x2_t(),
+			b in arb_uint64x2_t(),
+			c in arb_uint64x2_t()
+		) {
+			test_mul_associative(a, b, c, rijndael_mul, "Rijndael");
+		}
+
+		#[test]
+		fn test_uint64x2_t_rijndael_mul_identity_proptest(
+			a in arb_uint64x2_t()
+		) {
+			test_mul_identity(a, 0x01u8, rijndael_mul, "Rijndael");
+		}
+
+		#[test]
+		fn test_uint64x2_t_rijndael_mul_distributive_proptest(
+			a in arb_uint64x2_t(),
+			b in arb_uint64x2_t(),
+			c in arb_uint64x2_t()
+		) {
+			test_mul_distributive(a, b, c, rijndael_mul, "Rijndael");
 		}
 	}
 

@@ -11,7 +11,6 @@ macro_rules! define_packed_binary_fields {
                     mul: ($($mul:tt)*),
                     square: ($($square:tt)*),
                     invert: ($($invert:tt)*),
-                    mul_alpha: ($($mul_alpha:tt)*),
                     transform: ($($transform:tt)*),
                 }
             ),* $(,)?
@@ -25,7 +24,6 @@ macro_rules! define_packed_binary_fields {
                 ($($mul)*),
                 ($($square)*),
                 ($($invert)*),
-                ($($mul_alpha)*),
                 ($($transform)*)
             );
         )*
@@ -38,7 +36,6 @@ macro_rules! define_packed_binary_field {
 		($($mul:tt)*),
 		($($square:tt)*),
 		($($invert:tt)*),
-		($($mul_alpha:tt)*),
 		($($transform:tt)*)
 	) => {
 		// Define packed field types
@@ -55,9 +52,6 @@ macro_rules! define_packed_binary_field {
 
 		// Define invert
 		impl_strategy!(impl_invert_with    $name, ($($invert)*));
-
-		// Define multiply by alpha
-		impl_strategy!(impl_mul_alpha_with $name, ($($mul_alpha)*));
 
 		// Define linear transformations
 		//impl_transformation!($name, ($($transform)*));
@@ -92,9 +86,7 @@ pub(crate) use define_packed_binary_field;
 pub(crate) use define_packed_binary_fields;
 pub(crate) use impl_serialize_deserialize_for_packed_binary_field;
 
-pub(crate) use crate::arithmetic_traits::{
-	impl_invert_with, impl_mul_alpha_with, impl_mul_with, impl_square_with,
-};
+pub(crate) use crate::arithmetic_traits::{impl_invert_with, impl_mul_with, impl_square_with};
 
 pub(crate) mod portable_macros {
 	macro_rules! impl_strategy {

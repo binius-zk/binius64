@@ -1,19 +1,18 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::iter;
+use std::{array, iter};
 
 use binius_core::{
 	ShiftVariant,
 	constraint_system::{Operand, ShiftedValueIndex},
 };
-use binius_field::{BinaryField, Field, util::powers};
+use binius_field::{BinaryField, FieldOps, util::powers};
 use binius_math::{
-	BinarySubspace, FieldBuffer, FieldSlice,
-	inner_product::{inner_product, inner_product_buffers},
-	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate_inplace},
-	univariate::lagrange_evals,
+	BinarySubspace,
+	inner_product::inner_product_scalars,
+	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate_inplace_scalars},
+	univariate::lagrange_evals_scalars,
 };
-use binius_utils::rayon::prelude::*;
 
 use super::{
 	SHIFT_VARIANT_COUNT,
@@ -28,12 +27,8 @@ use crate::config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS};
 ///
 /// This is the verifier's version of the h-parts evaluation - instead of building
 /// full multilinear polynomials, it directly computes their evaluations.
-pub fn evaluate_h_op<F: Field>(
-	l_tilde: FieldSlice<F>,
-	r_j: &[F],
-	r_s: &[F],
-) -> [F; SHIFT_VARIANT_COUNT] {
-	assert_eq!(l_tilde.log_len(), LOG_WORD_SIZE_BITS);
+pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SHIFT_VARIANT_COUNT] {
+	assert_eq!(l_tilde.len(), WORD_SIZE_BITS);
 	assert_eq!(r_j.len(), LOG_WORD_SIZE_BITS);
 	assert_eq!(r_s.len(), LOG_WORD_SIZE_BITS);
 
@@ -41,58 +36,57 @@ pub fn evaluate_h_op<F: Field>(
 	let (sigma, sigma_prime) = partial_eval_sigmas(r_j, r_s);
 	let sigma_transpose = partial_eval_sigmas_transpose(r_j, r_s);
 	let phi = partial_eval_phi(r_s);
-	let j_product = r_j.iter().product::<F>();
+	let j_product: E = r_j.iter().cloned().product();
 
 	// Use helper functions to compute shift indicator helpers for 32-bit shifts
 	let (sigma32, sigma32_prime) = partial_eval_sigmas(&r_j[..5], &r_s[..5]);
 	let sigma32_transpose = partial_eval_sigmas_transpose(&r_j[..5], &r_s[..5]);
 	let phi32 = partial_eval_phi(&r_s[..5]);
-	let j_product32 = r_j[..5].iter().product::<F>();
+	let j_product32: E = r_j[..5].iter().cloned().product();
 
 	// Compute final results
-	let sll = inner_product_buffers(&l_tilde, &sigma_transpose);
-	let srl = inner_product_buffers(&l_tilde, &sigma);
+	let sll = inner_product_scalars(l_tilde.iter().cloned(), sigma_transpose);
+	let srl = inner_product_scalars(l_tilde.iter().cloned(), sigma.iter().cloned());
 	// sra == ∑ᵢ L̃(i) ⋅ (srlᵢ + ∏ₖ rⱼ[k] ⋅ φᵢ)
 	//     == ∑ᵢ L̃(i) ⋅ srlᵢ + ∏ₖ rⱼ[k] ⋅ [ ∑ᵢ L̃(i) ⋅ φᵢ ]
 	//     == srl + ∏ₖ rⱼ[k] ⋅ [ ∑ᵢ L̃(i) ⋅ φᵢ ]
-	let sra = srl + j_product * inner_product_buffers(&l_tilde, &phi);
-	let rotr = inner_product(
-		l_tilde.iter_scalars(),
-		iter::zip(sigma.as_ref(), sigma_prime.as_ref()).map(|(&s_i, &s_prime_i)| s_i + s_prime_i),
+	let sra = srl.clone() + j_product * inner_product_scalars(l_tilde.iter().cloned(), phi);
+	let rotr = inner_product_scalars(
+		l_tilde.iter().cloned(),
+		iter::zip(&sigma, &sigma_prime).map(|(s_i, s_prime_i)| s_i.clone() + s_prime_i),
 	);
 
-	// TODO: This is really gross, need to clean it up after other shift reduction modifications.
-	let r_j_rest_tensor = eq_ind_partial_eval::<F>(&r_j[5..]);
-	let l_tilde_chunks = l_tilde.chunks(5);
+	let r_j_rest_tensor = eq_ind_partial_eval_scalars(&r_j[5..]);
+	let chunk_size = 1 << 5; // 32
 
-	let sll32 = inner_product(
-		l_tilde_chunks
-			.clone()
-			.map(|l_tilde_i| inner_product_buffers(&l_tilde_i, &sigma32_transpose)),
-		r_j_rest_tensor.iter_scalars(),
+	let sll32 = inner_product_scalars(
+		l_tilde.chunks(chunk_size).map(|chunk| {
+			inner_product_scalars(chunk.iter().cloned(), sigma32_transpose.iter().cloned())
+		}),
+		r_j_rest_tensor.iter().cloned(),
 	);
-	let srl32 = inner_product(
-		l_tilde_chunks
-			.clone()
-			.map(|l_tilde_i| inner_product_buffers(&l_tilde_i, &sigma32)),
-		r_j_rest_tensor.iter_scalars(),
+	let srl32 = inner_product_scalars(
+		l_tilde
+			.chunks(chunk_size)
+			.map(|chunk| inner_product_scalars(chunk.iter().cloned(), sigma32.iter().cloned())),
+		r_j_rest_tensor.iter().cloned(),
 	);
-	let sra32 = srl32
-		+ inner_product(
-			l_tilde_chunks
-				.clone()
-				.map(|l_tilde_i| j_product32 * inner_product_buffers(&l_tilde_i, &phi32)),
-			r_j_rest_tensor.iter_scalars(),
+	let sra32 = srl32.clone()
+		+ inner_product_scalars(
+			l_tilde.chunks(chunk_size).map(|chunk| {
+				j_product32.clone()
+					* inner_product_scalars(chunk.iter().cloned(), phi32.iter().cloned())
+			}),
+			r_j_rest_tensor.iter().cloned(),
 		);
-	let rotr32 = inner_product(
-		l_tilde_chunks.clone().map(|l_tilde_i| {
-			inner_product(
-				l_tilde_i.iter_scalars(),
-				iter::zip(sigma32.as_ref(), sigma32_prime.as_ref())
-					.map(|(&s_i, &s_prime_i)| s_i + s_prime_i),
+	let rotr32 = inner_product_scalars(
+		l_tilde.chunks(chunk_size).map(|chunk| {
+			inner_product_scalars(
+				chunk.iter().cloned(),
+				iter::zip(&sigma32, &sigma32_prime).map(|(s_i, s_prime_i)| s_i.clone() + s_prime_i),
 			)
 		}),
-		r_j_rest_tensor.iter_scalars(),
+		r_j_rest_tensor,
 	);
 
 	[sll, srl, sra, rotr, sll32, srl32, sra32, rotr32]
@@ -133,31 +127,32 @@ pub fn evaluate_h_op<F: Field>(
 /// # Errors
 ///
 /// Returns an error if the binary subspace construction fails.
-pub fn evaluate_monster_multilinear_for_operation<F: BinaryField, const ARITY: usize>(
+pub fn evaluate_monster_multilinear_for_operation<F, E, const ARITY: usize>(
 	operand_vecs: &[Vec<&Operand>],
-	operator_data: &OperatorData<F, ARITY>,
+	operator_data: &OperatorData<E, ARITY>,
 	subspace: &BinarySubspace<F>,
-	lambda: F,
-	r_j: &[F],
-	r_s: &[F],
-	r_y: &[F],
-) -> Result<F, Error> {
+	lambda: E,
+	r_j: &[E],
+	r_s: &[E],
+	r_y: &[E],
+) -> Result<E, Error>
+where
+	F: BinaryField,
+	E: FieldOps<Scalar = F> + From<F>,
+{
 	assert_eq!(subspace.dim(), LOG_WORD_SIZE_BITS); // precondition
 
-	let r_x_prime_tensor = eq_ind_partial_eval::<F>(&operator_data.r_x_prime);
-	let r_y_tensor = eq_ind_partial_eval::<F>(r_y);
+	let r_x_prime_tensor = eq_ind_partial_eval_scalars(&operator_data.r_x_prime);
+	let r_y_tensor = eq_ind_partial_eval_scalars(r_y);
 
-	let l_tilde = lagrange_evals(subspace, operator_data.r_zhat_prime);
-	let h_op_evals = evaluate_h_op(l_tilde.to_ref(), r_j, r_s);
+	let l_tilde = lagrange_evals_scalars(subspace, operator_data.r_zhat_prime.clone());
+	let h_op_evals = evaluate_h_op(&l_tilde, r_j, r_s);
 
 	let lambda_powers = powers(lambda).skip(1).take(ARITY).collect::<Vec<_>>();
 	let evals = evaluate_matrices(operand_vecs, &lambda_powers, &r_x_prime_tensor, &r_y_tensor);
 
-	let eval = inner_product(
-		evals.map(|mut evals_op| {
-			let evals_op = FieldBuffer::new(LOG_WORD_SIZE_BITS, &mut evals_op[..]);
-			evaluate_inplace(evals_op, r_s)
-		}),
+	let eval = inner_product_scalars(
+		evals.map(|mut evals_op| evaluate_inplace_scalars(&mut evals_op[..], r_s)),
 		h_op_evals,
 	);
 
@@ -178,32 +173,27 @@ pub fn evaluate_monster_multilinear_for_operation<F: BinaryField, const ARITY: u
 /// * `operand_coeffs` - Coefficients (λ powers) for batching operand evaluations
 /// * `r_x_prime_tensor` - Multilinear challenge tensor for constraint variables
 /// * `r_y_tensor` - Challenge tensor for word index variables
-///
-/// Note: This function uses multithreading (par_iter), which is an exception to the general
-/// rule that the verifier should be single-threaded. The sparse matrix evaluation takes time
-/// linear in the size of the constraint system, so we use parallelization here to make the
-/// verifier performant on large constraint systems.
-fn evaluate_matrices<F: BinaryField>(
+fn evaluate_matrices<F: BinaryField, E: FieldOps<Scalar = F> + From<F>>(
 	operands: &[Vec<&Operand>],
-	operand_coeffs: &[F],
-	r_x_prime_tensor: &FieldBuffer<F>,
-	r_y_tensor: &FieldBuffer<F>,
-) -> [[F; WORD_SIZE_BITS]; SHIFT_VARIANT_COUNT] {
+	operand_coeffs: &[E],
+	r_x_prime_tensor: &[E],
+	r_y_tensor: &[E],
+) -> [[E; WORD_SIZE_BITS]; SHIFT_VARIANT_COUNT] {
 	assert_eq!(operands.len(), operand_coeffs.len());
 
-	// Use parallelization for performance (see docstring for rationale).
-	(operand_coeffs, operands)
-		.into_par_iter()
-		.map(|(&coeff, constraint_operands)| {
-			let mut evals = [[F::ZERO; WORD_SIZE_BITS]; SHIFT_VARIANT_COUNT];
-			for (&operand_terms, &constraint_eval) in
-				iter::zip(constraint_operands, r_x_prime_tensor.as_ref())
+	let zero_evals = array::from_fn(|_| array::from_fn::<E, WORD_SIZE_BITS, _>(|_| E::zero()));
+
+	iter::zip(operand_coeffs, operands)
+		.map(|(coeff, constraint_operands)| {
+			let mut evals: [[E; WORD_SIZE_BITS]; SHIFT_VARIANT_COUNT] =
+				array::from_fn(|_| array::from_fn::<E, WORD_SIZE_BITS, _>(|_| E::zero()));
+			for (operand_terms, constraint_eval) in iter::zip(constraint_operands, r_x_prime_tensor)
 			{
 				for ShiftedValueIndex {
 					value_index,
 					shift_variant,
 					amount,
-				} in operand_terms
+				} in *operand_terms
 				{
 					let shift_id = match shift_variant {
 						ShiftVariant::Sll => 0,
@@ -216,7 +206,7 @@ fn evaluate_matrices<F: BinaryField>(
 						ShiftVariant::Rotr32 => 7,
 					};
 					evals[shift_id][*amount] +=
-						constraint_eval * r_y_tensor.get(value_index.0 as usize);
+						constraint_eval.clone() * &r_y_tensor[value_index.0 as usize];
 				}
 			}
 
@@ -229,26 +219,23 @@ fn evaluate_matrices<F: BinaryField>(
 
 			evals
 		})
-		.reduce(
-			|| [[F::ZERO; WORD_SIZE_BITS]; SHIFT_VARIANT_COUNT],
-			|mut a, b| {
-				for (a_op, b_op) in iter::zip(&mut a, b) {
-					for (a_op_s, b_op_s) in iter::zip(&mut *a_op, b_op) {
-						*a_op_s += b_op_s;
-					}
+		.fold(zero_evals, |mut a, b| {
+			for (a_op, b_op) in iter::zip(&mut a, b) {
+				for (a_op_s, b_op_s) in iter::zip(&mut *a_op, b_op) {
+					*a_op_s += b_op_s;
 				}
-				a
-			},
-		)
+			}
+			a
+		})
 }
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{BinaryField128bGhash, Random};
+	use binius_field::{BinaryField128bGhash, Field, Random};
 	use binius_math::{
 		BinarySubspace,
 		test_utils::{index_to_hypercube_point, random_scalars},
-		univariate::lagrange_evals,
+		univariate::lagrange_evals_scalars,
 	};
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
@@ -273,13 +260,13 @@ mod tests {
 			let s = rng.random_range(0..64);
 
 			let challenge = subspace.get(i);
-			let l_tilde = lagrange_evals(&subspace, challenge);
+			let l_tilde = lagrange_evals_scalars(&subspace, challenge);
 
 			let r_j = index_to_hypercube_point::<BinaryField128bGhash>(LOG_WORD_SIZE_BITS, j);
 			let r_s = index_to_hypercube_point::<BinaryField128bGhash>(LOG_WORD_SIZE_BITS, s);
 
 			let [sll, srl, sra, rotr, sll32, srl32, sra32, rotr32] =
-				evaluate_h_op(l_tilde.to_ref(), &r_j, &r_s);
+				evaluate_h_op(&l_tilde, &r_j, &r_s);
 
 			let expected_sll = j + s == i;
 			let expected_srl = i + s == j;
@@ -324,7 +311,7 @@ mod tests {
 		// Generate random evaluation points
 		let challenge = BinaryField128bGhash::random(&mut rng);
 		let subspace = BinarySubspace::<BinaryField128bGhash>::with_dim(LOG_WORD_SIZE_BITS);
-		let l_tilde = lagrange_evals(&subspace, challenge);
+		let l_tilde = lagrange_evals_scalars(&subspace, challenge);
 		let r_j = random_scalars::<BinaryField128bGhash>(&mut rng, LOG_WORD_SIZE_BITS);
 		let r_s = random_scalars::<BinaryField128bGhash>(&mut rng, LOG_WORD_SIZE_BITS);
 
@@ -336,7 +323,7 @@ mod tests {
 			let mut r_j_at_1 = r_j.clone();
 			r_j_at_1[i] = BinaryField128bGhash::ONE;
 			let [result_0, result_1, result_y] = [&r_j_at_0, &r_j_at_1, &r_j]
-				.map(|r_j_variant| evaluate_h_op(l_tilde.to_ref(), r_j_variant, &r_s));
+				.map(|r_j_variant| evaluate_h_op(&l_tilde, r_j_variant, &r_s));
 			for variant in 0..SHIFT_VARIANT_COUNT {
 				let expected = result_0[variant] * (BinaryField128bGhash::ONE - r_j[i])
 					+ result_1[variant] * r_j[i];
@@ -349,7 +336,7 @@ mod tests {
 			let mut r_s_at_1 = r_s.clone();
 			r_s_at_1[i] = BinaryField128bGhash::ONE;
 			let [result_0, result_1, result_y] = [&r_s_at_0, &r_s_at_1, &r_s]
-				.map(|r_s_variant| evaluate_h_op(l_tilde.to_ref(), &r_j, r_s_variant));
+				.map(|r_s_variant| evaluate_h_op(&l_tilde, &r_j, r_s_variant));
 			for variant in 0..SHIFT_VARIANT_COUNT {
 				let expected = result_0[variant] * (BinaryField128bGhash::ONE - r_s[i])
 					+ result_1[variant] * r_s[i];

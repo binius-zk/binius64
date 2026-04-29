@@ -1,7 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 
 use bytes::{Buf, BufMut};
-use generic_array::{ArrayLength, GenericArray};
+use hybrid_array::{Array, ArraySize};
 use thiserror::Error;
 
 /// Serialize data according to Mode param
@@ -297,17 +297,17 @@ impl<T: DeserializeBytes, const N: usize> DeserializeBytes for [T; N] {
 	}
 }
 
-impl<N: ArrayLength<u8>> SerializeBytes for GenericArray<u8, N> {
+impl<U: ArraySize> SerializeBytes for Array<u8, U> {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
-		assert_enough_space_for(&write_buf, N::USIZE)?;
+		assert_enough_space_for(&write_buf, U::USIZE)?;
 		write_buf.put_slice(self);
 		Ok(())
 	}
 }
 
-impl<N: ArrayLength<u8>> DeserializeBytes for GenericArray<u8, N> {
+impl<U: ArraySize> DeserializeBytes for Array<u8, U> {
 	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
-		assert_enough_data_for(&read_buf, N::USIZE)?;
+		assert_enough_data_for(&read_buf, U::USIZE)?;
 		let mut ret = Self::default();
 		read_buf.copy_to_slice(&mut ret);
 		Ok(ret)
@@ -335,7 +335,7 @@ pub fn assert_enough_data_for(read_buf: &impl Buf, size: usize) -> Result<(), Se
 
 #[cfg(test)]
 mod tests {
-	use generic_array::typenum::U32;
+	use hybrid_array::sizes::U32;
 	use rand::{RngCore, SeedableRng, rngs::StdRng};
 
 	use super::*;
@@ -344,13 +344,13 @@ mod tests {
 	fn test_generic_array_serialize_deserialize() {
 		let mut rng = StdRng::seed_from_u64(0);
 
-		let mut data = GenericArray::<u8, U32>::default();
+		let mut data = Array::<u8, U32>::default();
 		rng.fill_bytes(&mut data);
 
 		let mut buf = Vec::new();
 		data.serialize(&mut buf).unwrap();
 
-		let data_deserialized = GenericArray::<u8, U32>::deserialize(&mut buf.as_slice()).unwrap();
+		let data_deserialized = Array::<u8, U32>::deserialize(&mut buf.as_slice()).unwrap();
 		assert_eq!(data_deserialized, data);
 	}
 }

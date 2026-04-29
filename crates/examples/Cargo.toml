@@ -13,11 +13,11 @@ base64.workspace = true
 binius-circuits = { path = "../circuits" }
 binius-core = { path = "../core" }
 binius-frontend = { path = "../frontend" }
-binius-hash = { path = "../hash", default-features = false }
+binius-hash = { path = "../hash" }
 binius-prover = { path = "../prover", default-features = false }
 binius-transcript = { path = "../transcript" }
 binius-utils = { path = "../utils", features = ["platform-diagnostics"] }
-binius-verifier = { path = "../verifier", default-features = false }
+binius-verifier = { path = "../verifier" }
 bitcoin_hashes.workspace = true
 bitcoin.workspace = true
 blake2.workspace = true
@@ -30,6 +30,9 @@ peakmem-alloc = "0.2.0"
 rand.workspace = true
 sha2.workspace = true
 sha3.workspace = true
+# Pin this dependency of jwt-simple because the latest version depends on an RC for ml-dsa and is
+# causing issues.
+superboring = "=0.1.8"
 tiny-keccak = "2.0.2"
 tracing-profile.workspace = true
 tracing.workspace = true
@@ -70,7 +73,7 @@ harness = false
 [features]
 default = ["rayon"]
 perfetto = ["tracing-profile/perfetto"]
-rayon = ["binius-hash/rayon", "binius-prover/rayon", "binius-verifier/rayon"]
+rayon = ["binius-hash/rayon", "binius-prover/rayon"]
 
 # Tutorial examples
 [[example]]

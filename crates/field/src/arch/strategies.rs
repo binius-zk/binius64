@@ -4,9 +4,6 @@
 /// (Uses arithmetic operations with underlier and subfield to simultaneously calculate the result
 /// for all packed values)
 pub struct PackedStrategy;
-/// Pairwise recursive strategy. Calculates the result by applying recursive algorithm for each
-/// packed value independently.
-pub struct PairwiseRecursiveStrategy;
 /// Pairwise strategy. Apply the result of the operation to each packed element independently.
 pub struct PairwiseStrategy;
 /// Get result of operation from the table for each sub-element

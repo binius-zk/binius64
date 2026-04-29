@@ -5,7 +5,7 @@ use std::{cmp::min, mem};
 use bytes::{Buf, BufMut, buf::UninitSlice};
 use digest::{
 	Digest, FixedOutputReset, Output,
-	core_api::{Block, BlockSizeUser},
+	block_api::{Block, BlockSizeUser},
 };
 
 use super::Challenger;

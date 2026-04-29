@@ -98,6 +98,28 @@ pub mod multiplication_tests {
 		);
 	}
 
+	/// Test that a specialized multiply-by-constant function matches general multiplication.
+	pub fn test_mul_by_constant<T, F, G, U>(
+		a: T,
+		constant: U,
+		mul_fn: F,
+		specialized_fn: G,
+		field_name: &str,
+	) where
+		T: Underlier + PackedUnderlier<U>,
+		U: Underlier,
+		F: Fn(T, T) -> T,
+		G: Fn(T) -> T,
+	{
+		let c = T::broadcast(constant);
+		let expected = mul_fn(a, c);
+		let result = specialized_fn(a);
+		assert!(
+			T::is_equal(result, expected),
+			"{field_name} specialized multiply-by-constant does not match general multiplication"
+		);
+	}
+
 	/// Test that the given identity is the multiplicative identity: a * 1 = a
 	pub fn test_mul_identity<T, F, U>(a: T, identity: U, mul_fn: F, field_name: &str)
 	where
@@ -110,6 +132,21 @@ pub mod multiplication_tests {
 		assert!(
 			T::is_equal(a_times_one, a),
 			"The provided identity is not the multiplicative identity in {field_name}"
+		);
+	}
+
+	/// Test that squaring matches self-multiplication: square(a) = a * a
+	pub fn test_square_equals_mul<T, F, G>(a: T, mul_fn: F, square_fn: G, field_name: &str)
+	where
+		T: Underlier,
+		F: Fn(T, T) -> T,
+		G: Fn(T) -> T,
+	{
+		let expected = mul_fn(a, a);
+		let result = square_fn(a);
+		assert!(
+			T::is_equal(result, expected),
+			"{field_name} square does not match self-multiplication"
 		);
 	}
 }

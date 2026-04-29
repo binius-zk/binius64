@@ -144,14 +144,13 @@ impl Compress {
 		// W[0..15] = block_words
 		w.extend_from_slice(&m);
 
-		let zero = builder.add_constant(Word::ZERO);
 		// W[16..79] computed from previous W values
 		for t in 16..80 {
 			let s0 = small_sigma_0(builder, w[t - 15]);
 			let s1 = small_sigma_1(builder, w[t - 2]);
-			let (p, _carry) = builder.iadd_cin_cout(w[t - 16], s0, zero);
-			let (q, _carry) = builder.iadd_cin_cout(p, w[t - 7], zero);
-			let (w_t, _carry) = builder.iadd_cin_cout(q, s1, zero);
+			let (p, _carry) = builder.iadd(w[t - 16], s0);
+			let (q, _carry) = builder.iadd(p, w[t - 7]);
+			let (w_t, _carry) = builder.iadd(q, s1);
 			w.push(w_t);
 		}
 
@@ -162,14 +161,14 @@ impl Compress {
 		}
 
 		// Add the compressed chunk to the current hash value
-		let (a_out, _carry) = builder.iadd_cin_cout(state_in.0[0], state.0[0], zero);
-		let (b_out, _carry) = builder.iadd_cin_cout(state_in.0[1], state.0[1], zero);
-		let (c_out, _carry) = builder.iadd_cin_cout(state_in.0[2], state.0[2], zero);
-		let (d_out, _carry) = builder.iadd_cin_cout(state_in.0[3], state.0[3], zero);
-		let (e_out, _carry) = builder.iadd_cin_cout(state_in.0[4], state.0[4], zero);
-		let (f_out, _carry) = builder.iadd_cin_cout(state_in.0[5], state.0[5], zero);
-		let (g_out, _carry) = builder.iadd_cin_cout(state_in.0[6], state.0[6], zero);
-		let (h_out, _carry) = builder.iadd_cin_cout(state_in.0[7], state.0[7], zero);
+		let (a_out, _carry) = builder.iadd(state_in.0[0], state.0[0]);
+		let (b_out, _carry) = builder.iadd(state_in.0[1], state.0[1]);
+		let (c_out, _carry) = builder.iadd(state_in.0[2], state.0[2]);
+		let (d_out, _carry) = builder.iadd(state_in.0[3], state.0[3]);
+		let (e_out, _carry) = builder.iadd(state_in.0[4], state.0[4]);
+		let (f_out, _carry) = builder.iadd(state_in.0[5], state.0[5]);
+		let (g_out, _carry) = builder.iadd(state_in.0[6], state.0[6]);
+		let (h_out, _carry) = builder.iadd(state_in.0[7], state.0[7]);
 
 		let state_out = State([a_out, b_out, c_out, d_out, e_out, f_out, g_out, h_out]);
 
@@ -206,25 +205,24 @@ fn round(builder: &CircuitBuilder, round: usize, state: State, w: &[Wire; 80]) -
 
 	let big_sigma_e = big_sigma_1(builder, e);
 	let ch_efg = ch(builder, e, f, g);
-	let zero = builder.add_constant(Word::ZERO);
-	let (t1a, _carry) = builder.iadd_cin_cout(h, big_sigma_e, zero);
-	let (t1b, _carry) = builder.iadd_cin_cout(t1a, ch_efg, zero);
+	let (t1a, _carry) = builder.iadd(h, big_sigma_e);
+	let (t1b, _carry) = builder.iadd(t1a, ch_efg);
 	let rc = builder.add_constant(Word(K[round]));
-	let (t1c, _carry) = builder.iadd_cin_cout(t1b, rc, zero);
-	let (t1, _carry) = builder.iadd_cin_cout(t1c, w[round], zero);
+	let (t1c, _carry) = builder.iadd(t1b, rc);
+	let (t1, _carry) = builder.iadd(t1c, w[round]);
 
 	let big_sigma_a = big_sigma_0(builder, a);
 	let maj_abc = maj(builder, a, b, c);
-	let (t2, _carry) = builder.iadd_cin_cout(big_sigma_a, maj_abc, zero);
+	let (t2, _carry) = builder.iadd(big_sigma_a, maj_abc);
 
 	let h = g;
 	let g = f;
 	let f = e;
-	let (e, _carry) = builder.iadd_cin_cout(d, t1, zero);
+	let (e, _carry) = builder.iadd(d, t1);
 	let d = c;
 	let c = b;
 	let b = a;
-	let (a, _carry) = builder.iadd_cin_cout(t1, t2, zero);
+	let (a, _carry) = builder.iadd(t1, t2);
 
 	State([a, b, c, d, e, f, g, h])
 }
