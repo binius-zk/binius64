@@ -124,7 +124,7 @@ where
 		}
 	}
 
-	fn combine<const IN: usize, const OUT: usize>(
+	pub fn combine<const IN: usize, const OUT: usize>(
 		elems: [&Self; IN],
 		f_op: impl Fn([F; IN]) -> [F; OUT],
 		builder_op: impl Fn(
@@ -178,7 +178,7 @@ where
 	/// `f_op` and `builder_op` must return a `Vec` of length `n_out`; checked via
 	/// `debug_assert_eq!` inside [`CircuitWire::combine_varlen`] (and here, for the
 	/// all-constants branch).
-	fn combine_varlen(
+	pub fn combine_varlen(
 		elems: &[&Self],
 		n_out: usize,
 		f_op: impl FnOnce(&[F]) -> Vec<F>,
