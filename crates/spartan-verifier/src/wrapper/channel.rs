@@ -2,7 +2,11 @@
 
 //! Channels that symbolically execute a verifier to build constraint systems or fill witnesses.
 
-use std::{cell::RefCell, rc::Rc, vec::IntoIter as VecIntoIter};
+use std::{
+	cell::RefCell,
+	rc::{Rc, Weak},
+	vec::IntoIter as VecIntoIter,
+};
 
 use binius_field::Field;
 use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
@@ -13,6 +17,7 @@ use binius_spartan_frontend::{
 };
 
 use super::circuit_elem::{CircuitElem, CircuitWire};
+use crate::wrapper::circuit_elem::{BuilderWire, WitnessGenWire};
 
 /// A channel that symbolically executes a verifier, building up an IronSpartan constraint system.
 ///
@@ -57,7 +62,7 @@ impl<F: Field> IronSpartanBuilderChannel<F> {
 }
 
 impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
-	type Elem = CircuitElem<ConstraintBuilder<F>>;
+	type Elem = CircuitElem<F, BuilderWire<F>>;
 
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
 		// For each element that the inner prover sends, the wrapped prover allocates a one-time-pad
@@ -78,10 +83,17 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 
 	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
 		match val {
-			CircuitElem::Constant(c) if c == F::ZERO => Ok(()),
-			CircuitElem::Constant(_) => Err(binius_ip::channel::Error::InvalidAssert),
-			CircuitElem::Wire(w) => {
-				self.builder.borrow_mut().assert_zero(w.wire());
+			CircuitElem::Constant(c)
+			| CircuitElem::Wire {
+				wire: BuilderWire::Constant(c),
+				..
+			} => (c == F::ZERO).ok_or(binius_ip::channel::Error::InvalidAssert),
+			CircuitElem::Wire {
+				builder,
+				wire: BuilderWire::Wire(wire),
+			} => {
+				assert!(Weak::ptr_eq(&Rc::downgrade(&self.builder), &builder));
+				self.builder.borrow_mut().assert_zero(wire);
 				Ok(())
 			}
 		}
@@ -143,7 +155,7 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 		}
 	}
 
-	fn next_inout_elem(&mut self) -> CircuitElem<WitnessGenerator<'a, F>> {
+	fn next_inout_elem(&mut self) -> CircuitElem<F, WitnessGenWire<'a, F>> {
 		let value = self
 			.events
 			.next()
@@ -152,7 +164,7 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 		let wire = ConstraintWire::inout(self.next_inout_id);
 		self.next_inout_id += 1;
 		let witness_wire = self.witness_gen.borrow_mut().write_inout(wire, value);
-		CircuitElem::Wire(CircuitWire::new(&self.witness_gen, witness_wire))
+		CircuitElem::Wire { builder: Rc::downgrade(&self.witness_gen), wire: WitnessGenWire::wire(witness_wire) }
 	}
 
 	fn next_precommit_elem(&mut self) -> CircuitElem<WitnessGenerator<'a, F>> {
@@ -164,7 +176,7 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 		let wire = ConstraintWire::precommit(self.next_precommit_id);
 		self.next_precommit_id += 1;
 		let witness_wire = self.witness_gen.borrow_mut().write_precommit(wire, value);
-		CircuitElem::Wire(CircuitWire::new(&self.witness_gen, witness_wire))
+		CircuitElem::Wire { builder: Rc::downgrade(&self.witness_gen), wire: WitnessGenWire::wire(witness_wire) }
 	}
 
 	/// Consumes the channel and builds the outer witness.
@@ -177,7 +189,7 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 }
 
 impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
-	type Elem = CircuitElem<WitnessGenerator<'a, F>>;
+	type Elem = CircuitElem<F, WitnessGenWire<'a, F>>;
 
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
 		let encrypted_elem = self.next_inout_elem();
@@ -195,10 +207,17 @@ impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
 
 	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
 		match val {
-			CircuitElem::Constant(c) if c == F::ZERO => Ok(()),
-			CircuitElem::Constant(_) => Err(binius_ip::channel::Error::InvalidAssert),
-			CircuitElem::Wire(w) => {
-				self.witness_gen.borrow_mut().assert_zero(w.wire());
+			CircuitElem::Constant(c)
+			| CircuitElem::Wire {
+				wire: WitnessGenWire::Constant(c),
+				..
+			} => (c == F::ZERO).ok_or(binius_ip::channel::Error::InvalidAssert),
+			CircuitElem::Wire {
+				builder,
+				wire: WitnessGenWire::Wire(wire),
+			} => {
+				assert!(Weak::ptr_eq(&Rc::downgrade(&self.witness_gen), &builder));
+				self.witness_gen.borrow_mut().assert_zero(wire);
 				Ok(())
 			}
 		}

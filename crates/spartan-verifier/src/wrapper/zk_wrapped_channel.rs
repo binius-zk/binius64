@@ -8,6 +8,11 @@
 //!
 //! [`finish()`]: ZKWrappedVerifierChannel::finish
 
+use std::{
+	cell::{Ref, RefCell},
+	rc::Rc,
+};
+
 use binius_field::BinaryField;
 use binius_iop::{
 	basefold_zk_channel::{BaseFoldZKOracle, BaseFoldZKVerifierChannel},
@@ -18,7 +23,10 @@ use binius_ip::channel::IPVerifierChannel;
 use binius_transcript::fiat_shamir::Challenger;
 use binius_utils::DeserializeBytes;
 
-use crate::{Error, IOPVerifier};
+use crate::{
+	Error, IOPVerifier,
+	wrapper::circuit_elem::{CircuitElem, NoopBuilder, WrappedWire},
+};
 
 /// A verifier channel that wraps a [`BaseFoldZKVerifierChannel`] and an [`IOPVerifier`].
 ///
@@ -35,6 +43,7 @@ where
 	outer_verifier: &'a IOPVerifier<F>,
 	precommit_oracle: BaseFoldZKOracle,
 	public_values: Vec<F>,
+	inout_builder: Rc<RefCell<NoopBuilder<F>>>,
 	/// Number of outer oracles still to be received on `inner_channel` after inner verification
 	/// completes (i.e. the outer verifier's non-precommit oracles — private and mask).
 	n_outer_suffix_oracles: usize,
@@ -90,6 +99,7 @@ where
 			outer_verifier,
 			precommit_oracle,
 			public_values: Vec::with_capacity(outer_public_size),
+			inout_builder: Rc::new(RefCell::new(NoopBuilder::default())),
 			n_outer_suffix_oracles: suffix_len,
 		})
 	}
@@ -120,27 +130,36 @@ where
 	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 	Challenger_: Challenger,
 {
-	type Elem = F;
+	type Elem = CircuitElem<F, WrappedWire<F>>;
 
-	fn recv_one(&mut self) -> Result<F, binius_ip::channel::Error> {
+	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
 		let val = self.inner_channel.recv_one()?;
 		self.public_values.push(val);
-		Ok(val)
+		Ok(CircuitElem::Wire {
+			builder: Rc::downgrade(&self.inout_builder),
+			wire: WrappedWire::Encrypted,
+		})
 	}
 
-	fn sample(&mut self) -> F {
+	fn sample(&mut self) -> Self::Elem {
 		let val = self.inner_channel.sample();
 		self.public_values.push(val);
-		val
+		CircuitElem::Wire {
+			builder: Rc::downgrade(&self.inout_builder),
+			wire: WrappedWire::Encrypted,
+		}
 	}
 
-	fn observe_one(&mut self, val: F) -> F {
+	fn observe_one(&mut self, val: F) -> Self::Elem {
 		let elem = self.inner_channel.observe_one(val);
 		self.public_values.push(elem);
-		elem
+		CircuitElem::Wire {
+			builder: Rc::downgrade(&self.inout_builder),
+			wire: WrappedWire::Encrypted,
+		}
 	}
 
-	fn assert_zero(&mut self, _val: F) -> Result<(), binius_ip::channel::Error> {
+	fn assert_zero(&mut self, _val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
 		// No-op: inner assertions are checked by the outer verifier.
 		Ok(())
 	}
@@ -175,13 +194,55 @@ where
 	) -> Result<(), binius_iop::channel::Error> {
 		let oracle_relations = oracle_relations
 			.into_iter()
-			.map(|relation| {
-				let decrypted_claim = self.recv_one()?;
-				Ok(OracleLinearRelation {
-					claim: decrypted_claim,
-					..relation
-				})
-			})
+			.map(
+				|OracleLinearRelation {
+				     oracle,
+				     transparent,
+				     claim: _,
+				 }| {
+					// For each oracle opening, the prover sends the decrypted evaluation. The outer
+					// verifier checks in the circuit equality of this value with the expected
+					// expression over encrypted values.
+					let decrypted_claim = self.inner_channel.recv_one()?;
+					self.public_values.push(decrypted_claim);
+
+					let builder = Rc::downgrade(&self.inout_builder);
+
+					// Create a transparent evaluation function for F values that internally uses
+					// the symbolic evaluation function provided.
+					let eval_fn = move |vals: &[F]| {
+						let wrapped_vals = vals
+							.iter()
+							.map(|val| CircuitElem::Wire {
+								builder: builder.clone(),
+								wire: WrappedWire::Decrypted(*val),
+							})
+							.collect::<Vec<_>>();
+
+						match transparent(&wrapped_vals) {
+							CircuitElem::Constant(val)
+							| CircuitElem::Wire {
+								wire: WrappedWire::Constant(val) | WrappedWire::Decrypted(val),
+								..
+							} => val,
+							CircuitElem::Wire {
+								wire: WrappedWire::Encrypted,
+								..
+							} => {
+								panic!(
+									"precondition: the transparent polynomial evaluation must
+									depend only on decrypted values (ie. sampled challenges)"
+								);
+							}
+						}
+					};
+					Ok(OracleLinearRelation {
+						oracle,
+						claim: decrypted_claim,
+						transparent: Box::new(eval_fn),
+					})
+				},
+			)
 			.collect::<Result<Vec<_>, binius_iop::channel::Error>>()?;
 		self.inner_channel.verify_oracle_relations(oracle_relations)
 	}
