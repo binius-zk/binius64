@@ -4,7 +4,7 @@
 //! [`WitnessGenerator`], filling both inout and private wires in the outer witness.
 
 use std::{
-	cell::RefCell,
+	cell::{Cell, RefCell},
 	marker::PhantomData,
 	rc::{Rc, Weak},
 	vec::IntoIter as VecIntoIter,
@@ -14,27 +14,47 @@ use binius_field::Field;
 use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::{
-	circuit_builder::{CircuitBuilder, WitnessError, WitnessGenerator, WitnessWire},
-	constraint_system::{ConstraintWire, Witness, WitnessLayout},
+	circuit_builder::{CircuitBuilder, WireAllocator, WitnessError, WitnessGenerator, WitnessWire},
+	constraint_system::{WireKind, Witness, WitnessLayout},
 };
 use binius_spartan_verifier::wrapper::circuit_elem::{CircuitElem, CircuitWire};
 
 /// [`CircuitWire`] backend over [`WitnessGenerator`] — used by [`ReplayChannel`] to evaluate
 /// arithmetic concretely while filling private witness wires.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum WitnessGenWire<'a, F: Field> {
 	Constant(F),
-	Wire(WitnessWire<F>, PhantomData<&'a ()>),
+	InOut(Rc<Cell<LazyInOut<F>>>),
+	Private(WitnessWire<F>, PhantomData<&'a ()>),
 }
 
 impl<'a, F: Field> WitnessGenWire<'a, F> {
-	pub fn wire(wire: WitnessWire<F>) -> Self {
-		Self::Wire(wire, PhantomData)
+	fn lazy_inout(value: F) -> Self {
+		Self::InOut(Rc::new(Cell::new(LazyInOut::Unmaterialized(value))))
+	}
+
+	pub fn private(wire: WitnessWire<F>) -> Self {
+		Self::Private(wire, PhantomData)
+	}
+
+	fn materialize(builder: &mut WitnessGeneratorWithAlloc<'a, F>, wire: &Self) -> WitnessWire<F> {
+		match wire {
+			Self::Constant(val) => builder.constant(*val),
+			Self::InOut(lazy_inout) => match lazy_inout.get() {
+				LazyInOut::Unmaterialized(value) => {
+					let witness_wire = builder.next_inout(value);
+					lazy_inout.set(LazyInOut::Materialized(witness_wire));
+					witness_wire
+				}
+				LazyInOut::Materialized(wire) => wire,
+			},
+			Self::Private(wire, _) => *wire,
+		}
 	}
 }
 
 impl<'a, F: Field> CircuitWire<F> for WitnessGenWire<'a, F> {
-	type Builder = WitnessGenerator<'a, F>;
+	type Builder = WitnessGeneratorWithAlloc<'a, F>;
 
 	fn combine<const IN: usize, const OUT: usize>(
 		builder: &mut Self::Builder,
@@ -42,22 +62,23 @@ impl<'a, F: Field> CircuitWire<F> for WitnessGenWire<'a, F> {
 		f_op: impl Fn([F; IN]) -> [F; OUT],
 		builder_op: impl Fn(&mut Self::Builder, [WitnessWire<F>; IN]) -> [WitnessWire<F>; OUT],
 	) -> [Self; OUT] {
-		let inner_constants = array_util::try_map(wires, |wire| {
-			if let Self::Constant(val) = wire {
-				Some(*val)
-			} else {
-				None
-			}
+		let inner_values = array_util::try_map(wires, |wire| match wire {
+			Self::Constant(val) => Some(*val),
+			Self::InOut(lazy_inout) => Some(lazy_inout.get().val()),
+			Self::Private(..) => None,
 		});
 
-		if let Some(inner_constants) = inner_constants {
-			f_op(inner_constants).map(Self::Constant)
+		if let Some(inner_values) = inner_values {
+			let ret_values = f_op(inner_values);
+			let all_constant = wires.iter().all(|wire| matches!(wire, Self::Constant(..)));
+			if all_constant {
+				ret_values.map(Self::Constant)
+			} else {
+				ret_values.map(Self::lazy_inout)
+			}
 		} else {
-			let inner_wires = wires.map(|wire| match wire {
-				Self::Constant(val) => builder.constant(*val),
-				Self::Wire(wire, _) => *wire,
-			});
-			builder_op(builder, inner_wires).map(|val| Self::Wire(val, PhantomData))
+			let inner_wires = wires.map(|wire| Self::materialize(builder, wire));
+			builder_op(builder, inner_wires).map(Self::private)
 		}
 	}
 
@@ -68,32 +89,32 @@ impl<'a, F: Field> CircuitWire<F> for WitnessGenWire<'a, F> {
 		f_op: impl FnOnce(&[F]) -> Vec<F>,
 		builder_op: impl FnOnce(&mut Self::Builder, &[WitnessWire<F>]) -> Vec<WitnessWire<F>>,
 	) -> Vec<Self> {
-		let inner_constants = wires
+		let inner_values = wires
 			.iter()
 			.map(|wire| match wire {
 				Self::Constant(val) => Some(*val),
-				Self::Wire(_, _) => None,
+				Self::InOut(lazy_inout) => Some(lazy_inout.get().val()),
+				Self::Private(..) => None,
 			})
 			.collect::<Option<Vec<_>>>();
 
-		if let Some(inner_constants) = inner_constants {
-			let result = f_op(&inner_constants);
+		if let Some(inner_values) = inner_values {
+			let result = f_op(&inner_values);
 			debug_assert_eq!(result.len(), n_out);
-			result.into_iter().map(Self::Constant).collect()
+			let all_constant = wires.iter().all(|wire| matches!(wire, Self::Constant(..)));
+			if all_constant {
+				result.into_iter().map(Self::Constant).collect()
+			} else {
+				result.into_iter().map(Self::lazy_inout).collect()
+			}
 		} else {
 			let inner_wires = wires
 				.iter()
-				.map(|wire| match wire {
-					Self::Constant(val) => builder.constant(*val),
-					Self::Wire(wire, _) => *wire,
-				})
+				.map(|wire| Self::materialize(builder, wire))
 				.collect::<Vec<_>>();
 			let result = builder_op(builder, &inner_wires);
 			debug_assert_eq!(result.len(), n_out);
-			result
-				.into_iter()
-				.map(|val| Self::Wire(val, PhantomData))
-				.collect()
+			result.into_iter().map(Self::private).collect()
 		}
 	}
 }
@@ -108,11 +129,9 @@ impl<'a, F: Field> CircuitWire<F> for WitnessGenWire<'a, F> {
 /// the verifier's arithmetic runs on the returned [`CircuitElem`] values, the [`WitnessGenerator`]
 /// fills private wires.
 pub struct ReplayChannel<'a, F: Field> {
-	witness_gen: Rc<RefCell<WitnessGenerator<'a, F>>>,
+	witness_gen: Rc<RefCell<WitnessGeneratorWithAlloc<'a, F>>>,
 	keys: VecIntoIter<F>,
 	events: VecIntoIter<F>,
-	next_inout_id: u32,
-	next_precommit_id: u32,
 }
 
 impl<'a, F: Field> ReplayChannel<'a, F> {
@@ -121,11 +140,9 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 	/// TODO: Document args. Keys are the symmetric OTP keys for the received values.
 	pub fn new(layout: &'a WitnessLayout<F>, keys: Vec<F>, events: Vec<F>) -> Self {
 		Self {
-			witness_gen: Rc::new(RefCell::new(WitnessGenerator::new(layout))),
+			witness_gen: Rc::new(RefCell::new(WitnessGeneratorWithAlloc::new(layout))),
 			keys: keys.into_iter(),
 			events: events.into_iter(),
-			next_inout_id: 0,
-			next_precommit_id: 0,
 		}
 	}
 
@@ -135,10 +152,7 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 			.next()
 			.unwrap_or_else(|| panic!("replay exhausted: no more events"));
 
-		let wire = ConstraintWire::inout(self.next_inout_id);
-		self.next_inout_id += 1;
-		let witness_wire = self.witness_gen.borrow_mut().write_inout(wire, value);
-		CircuitElem::wire(&self.witness_gen, WitnessGenWire::wire(witness_wire))
+		CircuitElem::wire(&self.witness_gen, WitnessGenWire::lazy_inout(value))
 	}
 
 	fn next_precommit_elem(&mut self) -> CircuitElem<F, WitnessGenWire<'a, F>> {
@@ -147,10 +161,8 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 			.next()
 			.expect("precommit segment is sized incorrectly");
 
-		let wire = ConstraintWire::precommit(self.next_precommit_id);
-		self.next_precommit_id += 1;
-		let witness_wire = self.witness_gen.borrow_mut().write_precommit(wire, value);
-		CircuitElem::wire(&self.witness_gen, WitnessGenWire::wire(witness_wire))
+		let witness_wire = self.witness_gen.borrow_mut().next_precommit(value);
+		CircuitElem::wire(&self.witness_gen, WitnessGenWire::private(witness_wire))
 	}
 
 	/// Consumes the channel and builds the outer witness.
@@ -193,8 +205,19 @@ impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
 				}
 			}
 			CircuitElem::Wire {
+				wire: WitnessGenWire::InOut(lazy_inout),
+				..
+			} => {
+				if lazy_inout.get().val() == F::ZERO {
+					Ok(())
+				} else {
+					Err(binius_ip::channel::Error::InvalidAssert)
+				}
+			}
+
+			CircuitElem::Wire {
 				builder,
-				wire: WitnessGenWire::Wire(wire, _),
+				wire: WitnessGenWire::Private(wire, _),
 			} => {
 				assert!(Weak::ptr_eq(&Rc::downgrade(&self.witness_gen), &builder));
 				self.witness_gen.borrow_mut().assert_zero(wire);
@@ -230,6 +253,94 @@ impl<'a, F: Field> IOPVerifierChannel<F> for ReplayChannel<'a, F> {
 	}
 }
 
+#[derive(Debug, Clone, Copy)]
+
+pub enum LazyInOut<F: Field> {
+	Unmaterialized(F),
+	Materialized(WitnessWire<F>),
+}
+
+impl<F: Field> LazyInOut<F> {
+	pub fn val(self) -> F {
+		match self {
+			Self::Unmaterialized(value) => value,
+			Self::Materialized(wire) => wire.val(),
+		}
+	}
+}
+
+/// A [`WitnessGenerator`] decorator that internalizes [`WireAllocator`]s for the InOut and
+/// Precommit segments. Exposes `next_inout(value)` and `next_precommit(value)` for callers that
+/// allocate-and-write in one step (e.g. [`ReplayChannel`] and the lazy InOut materialization in
+/// [`WitnessGenWire`]).
+///
+/// All [`CircuitBuilder`] methods delegate to the inner [`WitnessGenerator`].
+#[derive(Debug)]
+pub struct WitnessGeneratorWithAlloc<'a, F: Field> {
+	inner: WitnessGenerator<'a, F>,
+	inout_alloc: WireAllocator,
+	precommit_alloc: WireAllocator,
+}
+
+impl<'a, F: Field> WitnessGeneratorWithAlloc<'a, F> {
+	pub fn new(layout: &'a WitnessLayout<F>) -> Self {
+		Self {
+			inner: WitnessGenerator::new(layout),
+			inout_alloc: WireAllocator::new(WireKind::InOut),
+			precommit_alloc: WireAllocator::new(WireKind::Precommit),
+		}
+	}
+
+	/// Allocates the next InOut wire and writes `value` to it.
+	pub fn next_inout(&mut self, value: F) -> WitnessWire<F> {
+		let wire = self.inout_alloc.alloc();
+		self.inner.write_inout(wire, value)
+	}
+
+	/// Allocates the next Precommit wire and writes `value` to it.
+	pub fn next_precommit(&mut self, value: F) -> WitnessWire<F> {
+		let wire = self.precommit_alloc.alloc();
+		self.inner.write_precommit(wire, value)
+	}
+
+	pub fn build(self) -> Result<Witness<F>, WitnessError> {
+		self.inner.build()
+	}
+}
+
+impl<'a, F: Field> CircuitBuilder for WitnessGeneratorWithAlloc<'a, F> {
+	type Wire = WitnessWire<F>;
+	type Field = F;
+
+	fn assert_zero(&mut self, wire: Self::Wire) {
+		self.inner.assert_zero(wire)
+	}
+
+	fn assert_eq(&mut self, lhs: Self::Wire, rhs: Self::Wire) {
+		self.inner.assert_eq(lhs, rhs)
+	}
+
+	fn constant(&mut self, val: F) -> Self::Wire {
+		self.inner.constant(val)
+	}
+
+	fn add(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire {
+		self.inner.add(lhs, rhs)
+	}
+
+	fn mul(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire {
+		self.inner.mul(lhs, rhs)
+	}
+
+	fn hint<H: Fn([F; IN]) -> [F; OUT], const IN: usize, const OUT: usize>(
+		&mut self,
+		inputs: [Self::Wire; IN],
+		f: H,
+	) -> [Self::Wire; OUT] {
+		self.inner.hint(inputs, f)
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use std::{cell::RefCell, rc::Rc};
@@ -237,12 +348,12 @@ mod tests {
 	use binius_field::{
 		BinaryField1b as B1, BinaryField128bGhash as B128, ExtensionField, field::FieldOps,
 	};
-	use binius_spartan_frontend::circuit_builder::{ConstraintBuilder, WitnessGenerator};
+	use binius_spartan_frontend::circuit_builder::ConstraintBuilder;
 	use binius_spartan_verifier::wrapper::{
 		builder_channel::BuilderWire, circuit_elem::CircuitElem,
 	};
 
-	use super::WitnessGenWire;
+	use super::{WitnessGenWire, WitnessGeneratorWithAlloc};
 
 	type BuildElem = CircuitElem<B128, BuilderWire<B128>>;
 	type WitnessElem<'a> = CircuitElem<B128, WitnessGenWire<'a, B128>>;
@@ -283,17 +394,16 @@ mod tests {
 			.map(<B128 as ExtensionField<FSub>>::basis)
 			.collect();
 
-		let mut witness_gen = WitnessGenerator::new(&layout);
-		let witness_wires: Vec<_> = inout_wires
+		let mut witness_gen = WitnessGeneratorWithAlloc::new(&layout);
+		let witness_wires: Vec<_> = test_values
 			.iter()
-			.zip(&test_values)
-			.map(|(&w, &val)| witness_gen.write_inout(w, val))
+			.map(|&val| witness_gen.next_inout(val))
 			.collect();
 
 		let witness_rc = Rc::new(RefCell::new(witness_gen));
 		let mut witness_elems: Vec<WitnessElem> = witness_wires
 			.iter()
-			.map(|&w| WitnessElem::wire(&witness_rc, WitnessGenWire::wire(w)))
+			.map(|&w| WitnessElem::wire(&witness_rc, WitnessGenWire::private(w)))
 			.collect();
 
 		<WitnessElem as FieldOps>::square_transpose::<FSub>(&mut witness_elems);
