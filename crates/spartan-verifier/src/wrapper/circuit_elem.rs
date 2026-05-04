@@ -74,26 +74,14 @@ impl<B: CircuitBuilder> CircuitWire<B> {
 /// [`WitnessGenerator`]: binius_spartan_frontend::circuit_builder::WitnessGenerator
 pub enum CircuitElem<B: CircuitBuilder> {
 	Constant(B::Field),
-	/// A wire with a tag indicating whether its value is purely a function of public-channel
-	/// inputs (sampled challenges, observed values, constants, and other public wires).
-	///
-	/// The tag is used by [`binius_ip::channel::IPVerifierChannel::compute_public_value`] to
-	/// validate that trade-in inputs are public-derived. It is propagated conservatively through
-	/// arithmetic (AND of operand tags, with `Constant` treated as public).
-	Wire {
-		wire: CircuitWire<B>,
-		public: bool,
-	},
+	Wire(CircuitWire<B>),
 }
 
 impl<B: CircuitBuilder> Clone for CircuitElem<B> {
 	fn clone(&self) -> Self {
 		match self {
 			CircuitElem::Constant(c) => CircuitElem::Constant(*c),
-			CircuitElem::Wire { wire, public } => CircuitElem::Wire {
-				wire: wire.clone(),
-				public: *public,
-			},
+			CircuitElem::Wire(w) => CircuitElem::Wire(w.clone()),
 		}
 	}
 }
@@ -103,16 +91,7 @@ impl<B: CircuitBuilder> CircuitElem<B> {
 	fn builder_rc(&self) -> Option<Rc<RefCell<B>>> {
 		match self {
 			CircuitElem::Constant(_) => None,
-			CircuitElem::Wire { wire, .. } => Some(wire.upgrade()),
-		}
-	}
-
-	/// Returns whether this element is purely a function of public-channel inputs.
-	/// `Constant` is treated as public.
-	pub(crate) fn is_public(&self) -> bool {
-		match self {
-			CircuitElem::Constant(_) => true,
-			CircuitElem::Wire { public, .. } => *public,
+			CircuitElem::Wire(w) => Some(w.upgrade()),
 		}
 	}
 
@@ -132,18 +111,15 @@ impl<B: CircuitBuilder> CircuitElem<B> {
 	fn to_wire(&self, builder: &mut B) -> B::Wire {
 		match self {
 			CircuitElem::Constant(val) => builder.constant(*val),
-			CircuitElem::Wire { wire, .. } => wire.wire,
+			CircuitElem::Wire(w) => w.wire,
 		}
 	}
 
-	fn make_wire(rc: &Rc<RefCell<B>>, wire: B::Wire, public: bool) -> Self {
-		CircuitElem::Wire {
-			wire: CircuitWire {
-				builder: Rc::downgrade(rc),
-				wire,
-			},
-			public,
-		}
+	fn make_wire(rc: &Rc<RefCell<B>>, wire: B::Wire) -> Self {
+		CircuitElem::Wire(CircuitWire {
+			builder: Rc::downgrade(rc),
+			wire,
+		})
 	}
 }
 
@@ -169,13 +145,12 @@ impl<B: CircuitBuilder> Add for CircuitElem<B> {
 				if matches!(&rhs, CircuitElem::Constant(c) if *c == B::Field::ZERO) {
 					return self;
 				}
-				let public = self.is_public() && rhs.is_public();
 				let rc = Self::resolve_builder(&self, &rhs);
 				let mut builder = rc.borrow_mut();
 				let a_wire = self.to_wire(&mut builder);
 				let b_wire = rhs.to_wire(&mut builder);
 				let out = builder.add(a_wire, b_wire);
-				Self::make_wire(&rc, out, public)
+				Self::make_wire(&rc, out)
 			}
 		}
 	}
@@ -194,13 +169,12 @@ impl<B: CircuitBuilder> Sub for CircuitElem<B> {
 				if matches!(&rhs, CircuitElem::Constant(c) if *c == B::Field::ZERO) {
 					return self;
 				}
-				let public = self.is_public() && rhs.is_public();
 				let rc = Self::resolve_builder(&self, &rhs);
 				let mut builder = rc.borrow_mut();
 				let a_wire = self.to_wire(&mut builder);
 				let b_wire = rhs.to_wire(&mut builder);
 				let out = builder.sub(a_wire, b_wire);
-				Self::make_wire(&rc, out, public)
+				Self::make_wire(&rc, out)
 			}
 		}
 	}
@@ -225,13 +199,12 @@ impl<B: CircuitBuilder> Mul for CircuitElem<B> {
 				if matches!(&rhs, CircuitElem::Constant(c) if *c == B::Field::ONE) {
 					return self;
 				}
-				let public = self.is_public() && rhs.is_public();
 				let rc = Self::resolve_builder(&self, &rhs);
 				let mut builder = rc.borrow_mut();
 				let a_wire = self.to_wire(&mut builder);
 				let b_wire = rhs.to_wire(&mut builder);
 				let out = builder.mul(a_wire, b_wire);
-				Self::make_wire(&rc, out, public)
+				Self::make_wire(&rc, out)
 			}
 		}
 	}
@@ -349,7 +322,7 @@ impl<B: CircuitBuilder> InvertOrZero for CircuitElem<B> {
 	fn invert_or_zero(self) -> Self {
 		match &self {
 			CircuitElem::Constant(c) => CircuitElem::Constant(c.invert_or_zero()),
-			CircuitElem::Wire { wire: w, public } => {
+			CircuitElem::Wire(w) => {
 				let rc = w.upgrade();
 				let mut builder = rc.borrow_mut();
 				let wire = w.wire;
@@ -362,7 +335,7 @@ impl<B: CircuitBuilder> InvertOrZero for CircuitElem<B> {
 				let one = builder.constant(B::Field::ONE);
 				builder.assert_eq(product, one);
 
-				Self::make_wire(&rc, inv_wire, *public)
+				Self::make_wire(&rc, inv_wire)
 			}
 		}
 	}
@@ -396,7 +369,7 @@ impl<B: CircuitBuilder> FieldOps for CircuitElem<B> {
 				.iter()
 				.map(|e| match e {
 					CircuitElem::Constant(c) => *c,
-					CircuitElem::Wire { .. } => unreachable!(),
+					CircuitElem::Wire(_) => unreachable!(),
 				})
 				.collect::<Vec<_>>();
 			<B::Field as ExtensionField<FSub>>::square_transpose(&mut vals);
@@ -411,7 +384,6 @@ impl<B: CircuitBuilder> FieldOps for CircuitElem<B> {
 			.iter()
 			.find_map(|e| e.builder_rc())
 			.expect("at least one wire exists (not all-constants)");
-		let public = elems.iter().all(|e| e.is_public());
 		let mut builder = rc.borrow_mut();
 
 		let input_wires = elems
@@ -424,7 +396,7 @@ impl<B: CircuitBuilder> FieldOps for CircuitElem<B> {
 		drop(builder);
 
 		for (e, out_wire) in elems.iter_mut().zip(outputs) {
-			*e = Self::make_wire(&rc, out_wire, public);
+			*e = Self::make_wire(&rc, out_wire);
 		}
 	}
 }
