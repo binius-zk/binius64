@@ -37,12 +37,12 @@ impl<'a, F: Field> WitnessGenWire<'a, F> {
 impl<'a, F: Field> CircuitWire<F> for WitnessGenWire<'a, F> {
 	type Builder = WitnessGenerator<'a, F>;
 
-	fn combine<const NIn: usize, const NOut: usize>(
+	fn combine<const IN: usize, const OUT: usize>(
 		builder: &mut Self::Builder,
-		wires: [&Self; NIn],
-		f_op: impl Fn([F; NIn]) -> [F; NOut],
-		builder_op: impl Fn(&mut Self::Builder, [WitnessWire<F>; NIn]) -> [WitnessWire<F>; NOut],
-	) -> [Self; NOut] {
+		wires: [&Self; IN],
+		f_op: impl Fn([F; IN]) -> [F; OUT],
+		builder_op: impl Fn(&mut Self::Builder, [WitnessWire<F>; IN]) -> [WitnessWire<F>; OUT],
+	) -> [Self; OUT] {
 		let inner_constants = array_util::try_map(wires, |wire| {
 			if let Self::Constant(val) = wire {
 				Some(*val)

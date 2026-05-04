@@ -51,15 +51,15 @@ pub trait CircuitWire<F: Field>: Sized {
 		ret
 	}
 
-	fn combine<const NIn: usize, const NOut: usize>(
+	fn combine<const IN: usize, const OUT: usize>(
 		builder: &mut Self::Builder,
-		wires: [&Self; NIn],
-		f_op: impl Fn([F; NIn]) -> [F; NOut],
+		wires: [&Self; IN],
+		f_op: impl Fn([F; IN]) -> [F; OUT],
 		op: impl Fn(
 			&mut Self::Builder,
-			[<Self::Builder as CircuitBuilder>::Wire; NIn],
-		) -> [<Self::Builder as CircuitBuilder>::Wire; NOut],
-	) -> [Self; NOut];
+			[<Self::Builder as CircuitBuilder>::Wire; IN],
+		) -> [<Self::Builder as CircuitBuilder>::Wire; OUT],
+	) -> [Self; OUT];
 
 	/// Variable-arity version of [`Self::combine`].
 	///
@@ -123,14 +123,14 @@ where
 		}
 	}
 
-	fn combine<const NIn: usize, const NOut: usize>(
-		elems: [&Self; NIn],
-		f_op: impl Fn([F; NIn]) -> [F; NOut],
+	fn combine<const IN: usize, const OUT: usize>(
+		elems: [&Self; IN],
+		f_op: impl Fn([F; IN]) -> [F; OUT],
 		builder_op: impl Fn(
 			&mut W::Builder,
-			[<W::Builder as CircuitBuilder>::Wire; NIn],
-		) -> [<W::Builder as CircuitBuilder>::Wire; NOut],
-	) -> [Self; NOut] {
+			[<W::Builder as CircuitBuilder>::Wire; IN],
+		) -> [<W::Builder as CircuitBuilder>::Wire; OUT],
+	) -> [Self; OUT] {
 		let builder = elems.iter().find_map(|elem| match elem {
 			Self::Wire { builder, .. } => Some(builder),
 			_ => None,

@@ -49,12 +49,12 @@ pub enum WrappedWire<F> {
 impl<F: Field> CircuitWire<F> for WrappedWire<F> {
 	type Builder = NoopBuilder<F>;
 
-	fn combine<const NIn: usize, const NOut: usize>(
+	fn combine<const IN: usize, const OUT: usize>(
 		_builder: &mut Self::Builder,
-		wires: [&Self; NIn],
-		f_op: impl Fn([F; NIn]) -> [F; NOut],
-		_builder_op: impl Fn(&mut Self::Builder, [(); NIn]) -> [(); NOut],
-	) -> [Self; NOut] {
+		wires: [&Self; IN],
+		f_op: impl Fn([F; IN]) -> [F; OUT],
+		_builder_op: impl Fn(&mut Self::Builder, [(); IN]) -> [(); OUT],
+	) -> [Self; OUT] {
 		let inner_values = array_util::try_map(wires, |wire| match wire {
 			Self::Constant(val) | Self::Decrypted(val) => Some(*val),
 			Self::Encrypted => None,
@@ -73,7 +73,7 @@ impl<F: Field> CircuitWire<F> for WrappedWire<F> {
 			}
 		} else {
 			// If any inputs are encrypted, all outputs are encrypted.
-			[Self::Encrypted; NOut]
+			[Self::Encrypted; OUT]
 		}
 	}
 
