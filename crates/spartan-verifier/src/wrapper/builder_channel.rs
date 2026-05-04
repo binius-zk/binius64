@@ -4,7 +4,9 @@
 //! and records the computation as constraints on a [`ConstraintBuilder`].
 
 use std::{
-	cell::RefCell,
+	array,
+	cell::{Cell, RefCell},
+	iter::repeat_with,
 	rc::{Rc, Weak},
 };
 
@@ -20,10 +22,33 @@ use super::circuit_elem::{CircuitElem, CircuitWire};
 
 /// [`CircuitWire`] backend over [`ConstraintBuilder`] — used by [`IronSpartanBuilderChannel`] to
 /// record arithmetic as constraints in a constraint system.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum BuilderWire<F> {
 	Constant(F),
-	Wire(ConstraintWire),
+	InOut(Rc<Cell<Option<ConstraintWire>>>),
+	Private(ConstraintWire),
+}
+
+impl<F: Field> BuilderWire<F> {
+	fn lazy_inout() -> Self {
+		Self::InOut(Rc::new(Cell::new(None)))
+	}
+
+	fn materialize(builder: &mut ConstraintBuilder<F>, wire: &Self) -> ConstraintWire {
+		match wire {
+			Self::Constant(val) => builder.constant(*val),
+			Self::InOut(maybe_wire) => {
+				if let Some(wire) = maybe_wire.get() {
+					wire
+				} else {
+					let wire = builder.alloc_inout();
+					maybe_wire.set(Some(wire));
+					wire
+				}
+			}
+			Self::Private(wire) => *wire,
+		}
+	}
 }
 
 impl<F: Field> CircuitWire<F> for BuilderWire<F> {
@@ -35,22 +60,25 @@ impl<F: Field> CircuitWire<F> for BuilderWire<F> {
 		f_op: impl Fn([F; IN]) -> [F; OUT],
 		builder_op: impl Fn(&mut Self::Builder, [ConstraintWire; IN]) -> [ConstraintWire; OUT],
 	) -> [Self; OUT] {
-		let inner_constants = array_util::try_map(wires, |wire| {
-			if let Self::Constant(val) = wire {
-				Some(*val)
-			} else {
-				None
-			}
+		let inner_constants = array_util::try_map(wires, |wire| match wire {
+			Self::Constant(val) => Some(*val),
+			_ => None,
 		});
 
-		if let Some(inner_constants) = inner_constants {
-			f_op(inner_constants).map(Self::Constant)
+		if let Some(inner_values) = inner_constants {
+			f_op(inner_values).map(Self::Constant)
 		} else {
-			let inner_wires = wires.map(|wire| match wire {
-				Self::Constant(val) => builder.constant(*val),
-				Self::Wire(wire) => *wire,
-			});
-			builder_op(builder, inner_wires).map(Self::Wire)
+			let is_inout = wires
+				.iter()
+				.all(|wire| matches!(wire, Self::Constant(_) | Self::InOut(_)));
+			if is_inout {
+				array::from_fn(|_| Self::lazy_inout())
+			} else {
+				// If any of the inputs are private wires, then lazily materialize in inout wires
+				// and compute the result within the circuit.
+				let inner_wires = wires.map(|wire| Self::materialize(builder, wire));
+				builder_op(builder, inner_wires).map(Self::Private)
+			}
 		}
 	}
 
@@ -65,7 +93,7 @@ impl<F: Field> CircuitWire<F> for BuilderWire<F> {
 			.iter()
 			.map(|wire| match wire {
 				Self::Constant(val) => Some(*val),
-				Self::Wire(_) => None,
+				_ => None,
 			})
 			.collect::<Option<Vec<_>>>();
 
@@ -74,16 +102,22 @@ impl<F: Field> CircuitWire<F> for BuilderWire<F> {
 			debug_assert_eq!(result.len(), n_out);
 			result.into_iter().map(Self::Constant).collect()
 		} else {
-			let inner_wires = wires
+			let is_inout = wires
 				.iter()
-				.map(|wire| match wire {
-					Self::Constant(val) => builder.constant(*val),
-					Self::Wire(wire) => *wire,
-				})
-				.collect::<Vec<_>>();
-			let result = builder_op(builder, &inner_wires);
-			debug_assert_eq!(result.len(), n_out);
-			result.into_iter().map(Self::Wire).collect()
+				.all(|wire| matches!(wire, Self::Constant(_) | Self::InOut(_)));
+			if is_inout {
+				repeat_with(|| Self::lazy_inout()).take(n_out).collect()
+			} else {
+				// If any of the inputs are private wires, then lazily materialize in inout wires
+				// and compute the result within the circuit.
+				let inner_wires = wires
+					.iter()
+					.map(|wire| Self::materialize(builder, wire))
+					.collect::<Vec<_>>();
+				let result = builder_op(builder, &inner_wires);
+				debug_assert_eq!(result.len(), n_out);
+				result.into_iter().map(Self::Private).collect()
+			}
 		}
 	}
 }
@@ -110,13 +144,12 @@ impl<F: Field> IronSpartanBuilderChannel<F> {
 	}
 
 	fn alloc_inout_elem(&self) -> CircuitElem<F, BuilderWire<F>> {
-		let wire = self.builder.borrow_mut().alloc_inout();
-		CircuitElem::wire(&self.builder, BuilderWire::Wire(wire))
+		CircuitElem::wire(&self.builder, BuilderWire::lazy_inout())
 	}
 
 	fn alloc_precommit_elem(&self) -> CircuitElem<F, BuilderWire<F>> {
 		let wire = self.builder.borrow_mut().alloc_precommit();
-		CircuitElem::wire(&self.builder, BuilderWire::Wire(wire))
+		CircuitElem::wire(&self.builder, BuilderWire::Private(wire))
 	}
 
 	/// Consumes the channel and returns the underlying [`ConstraintBuilder`].
@@ -164,8 +197,16 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 				}
 			}
 			CircuitElem::Wire {
+				wire: BuilderWire::InOut(_),
+				..
+			} => {
+				// Nothing to do here. The value can be checked directly in
+				// ZKWrappedVerifierChannel.
+				Ok(())
+			}
+			CircuitElem::Wire {
 				builder,
-				wire: BuilderWire::Wire(wire),
+				wire: BuilderWire::Private(wire),
 			} => {
 				assert!(Weak::ptr_eq(&Rc::downgrade(&self.builder), &builder));
 				self.builder.borrow_mut().assert_zero(wire);

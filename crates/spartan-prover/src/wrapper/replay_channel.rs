@@ -17,7 +17,6 @@ use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, WitnessError, WitnessGenerator, WitnessWire},
 	constraint_system::{ConstraintWire, Witness, WitnessLayout},
 };
-
 use binius_spartan_verifier::wrapper::circuit_elem::{CircuitElem, CircuitWire};
 
 /// [`CircuitWire`] backend over [`WitnessGenerator`] — used by [`ReplayChannel`] to evaluate
@@ -102,7 +101,8 @@ impl<'a, F: Field> CircuitWire<F> for WitnessGenWire<'a, F> {
 /// A channel that replays recorded interaction values through a [`WitnessGenerator`], filling
 /// both inout and private wires in the outer witness.
 ///
-/// This mirrors [`IronSpartanBuilderChannel`](binius_spartan_verifier::wrapper::IronSpartanBuilderChannel)
+/// This mirrors
+/// [`IronSpartanBuilderChannel`](binius_spartan_verifier::wrapper::IronSpartanBuilderChannel)
 /// but uses concrete evaluation instead of symbolic constraint building. Each operation consumes
 /// the next value and writes it to the corresponding inout wire in the [`WitnessGenerator`]. When
 /// the verifier's arithmetic runs on the returned [`CircuitElem`] values, the [`WitnessGenerator`]
@@ -264,7 +264,7 @@ mod tests {
 		let rc = Rc::new(RefCell::new(constraint_builder));
 		let mut elems: Vec<BuildElem> = inout_wires
 			.iter()
-			.map(|&w| BuildElem::wire(&rc, BuilderWire::Wire(w)))
+			.map(|&w| BuildElem::wire(&rc, BuilderWire::Private(w)))
 			.collect();
 
 		<BuildElem as FieldOps>::square_transpose::<FSub>(&mut elems);

@@ -144,9 +144,10 @@ impl<F: Field> CircuitBuilder for NoopBuilder<F> {
 /// system's constants to the recorded public values, pads, and runs [`IOPVerifier::verify`]
 /// against the inner channel directly.
 ///
-/// `transparent` closures supplied via [`OracleLinearRelation`](binius_iop::channel::OracleLinearRelation)
-/// must depend only on `Constant` and `Decrypted` inputs (sampled challenges), never on
-/// `Encrypted` ones — `verify_oracle_relations` panics otherwise.
+/// `transparent` closures supplied via
+/// [`OracleLinearRelation`](binius_iop::channel::OracleLinearRelation) must depend only on
+/// `Constant` and `Decrypted` inputs (sampled challenges), never on `Encrypted` ones —
+/// `verify_oracle_relations` panics otherwise.
 pub struct ZKWrappedVerifierChannel<'a, F, MTScheme, Challenger_>
 where
 	F: BinaryField,
