@@ -15,8 +15,9 @@ use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpan
 use binius_spartan_frontend::{
 	circuit_builder::ConstraintBuilder, compiler::compile, constraint_system::WitnessLayout,
 };
+use binius_spartan_prover::wrapper::ReplayChannel;
 use binius_spartan_prover::wrapper::ZKWrappedProverChannel;
-use binius_spartan_verifier::{constraint_system::ConstraintSystemPadded, wrapper::ReplayChannel};
+use binius_spartan_verifier::constraint_system::ConstraintSystemPadded;
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::SerializeBytes;
 use binius_verifier::{IOPVerifier, zk_config::ZKVerifier};

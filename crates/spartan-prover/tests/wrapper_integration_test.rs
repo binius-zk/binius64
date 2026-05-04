@@ -20,12 +20,15 @@ use binius_spartan_frontend::{
 	compiler::compile,
 	constraint_system::BlindingInfo,
 };
-use binius_spartan_prover::{IOPProver, wrapper::ZKWrappedProverChannel};
+use binius_spartan_prover::{
+	IOPProver,
+	wrapper::{ReplayChannel, ZKWrappedProverChannel},
+};
 use binius_spartan_verifier::{
 	IOPVerifier, SECURITY_BITS,
 	config::StdChallenger,
 	constraint_system::ConstraintSystemPadded,
-	wrapper::{IronSpartanBuilderChannel, ReplayChannel, ZKWrappedVerifierChannel},
+	wrapper::{IronSpartanBuilderChannel, ZKWrappedVerifierChannel},
 };
 use binius_transcript::ProverTranscript;
 use rand::{SeedableRng, rngs::StdRng};

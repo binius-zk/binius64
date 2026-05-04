@@ -10,14 +10,13 @@
 //! - [`BuilderWire`](super::builder_channel::BuilderWire) over [`ConstraintBuilder`] — symbolic
 //!   constraint recording (used by
 //!   [`IronSpartanBuilderChannel`](super::builder_channel::IronSpartanBuilderChannel)).
-//! - [`WitnessGenWire`](super::replay_channel::WitnessGenWire) over [`WitnessGenerator`] —
-//!   concrete evaluation that fills a witness (used by
-//!   [`ReplayChannel`](super::replay_channel::ReplayChannel)).
 //! - [`WrappedWire`](super::zk_wrapped_channel::WrappedWire) over
 //!   [`NoopBuilder`](super::zk_wrapped_channel::NoopBuilder) — no constraint recording; values
 //!   are tracked as `Constant` / `Decrypted` / `Encrypted` to distinguish what the verifier does
 //!   and does not know concretely (used by
 //!   [`ZKWrappedVerifierChannel`](super::zk_wrapped_channel::ZKWrappedVerifierChannel)).
+//! - `WitnessGenWire` over [`WitnessGenerator`] — concrete evaluation that fills a witness
+//!   (used by `binius_spartan_prover::wrapper::ReplayChannel`).
 //!
 //! [`CircuitBuilder`]: binius_spartan_frontend::circuit_builder::CircuitBuilder
 //! [`ConstraintBuilder`]: binius_spartan_frontend::circuit_builder::ConstraintBuilder

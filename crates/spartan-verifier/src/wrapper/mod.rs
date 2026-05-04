@@ -12,11 +12,9 @@
 pub mod builder_channel;
 pub mod circuit_elem;
 pub mod gadgets;
-pub mod replay_channel;
 pub mod zk_wrapped_channel;
 
 pub use builder_channel::IronSpartanBuilderChannel;
-pub use replay_channel::ReplayChannel;
 pub use zk_wrapped_channel::ZKWrappedVerifierChannel;
 
 #[cfg(test)]
@@ -28,13 +26,11 @@ mod tests {
 		arithmetic_traits::InvertOrZero, field::FieldOps,
 	};
 	use binius_ip::channel::IPVerifierChannel;
-	use binius_spartan_frontend::circuit_builder::{ConstraintBuilder, WitnessGenerator};
+	use binius_spartan_frontend::circuit_builder::ConstraintBuilder;
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::wrapper::{
-		builder_channel::BuilderWire, circuit_elem::CircuitElem, replay_channel::WitnessGenWire,
-	};
+	use crate::wrapper::{builder_channel::BuilderWire, circuit_elem::CircuitElem};
 
 	type BuildElem = CircuitElem<B128, BuilderWire<B128>>;
 
@@ -235,67 +231,6 @@ mod tests {
 				}
 			}
 		}
-	}
-
-	#[test]
-	fn test_square_transpose_wires() {
-		// Test that square_transpose on wire elements builds a valid constraint system,
-		// and that a WitnessGenerator with correct values satisfies all constraints.
-		type FSub = B1;
-		let degree = <B128 as ExtensionField<FSub>>::DEGREE;
-
-		// Phase 1: Build the constraint system symbolically.
-		let mut constraint_builder = ConstraintBuilder::<B128>::new();
-		let inout_wires: Vec<_> = (0..degree)
-			.map(|_| constraint_builder.alloc_inout())
-			.collect();
-
-		// Build CircuitElem wires via a shared Rc.
-		let rc = Rc::new(std::cell::RefCell::new(constraint_builder));
-		let mut elems: Vec<BuildElem> = inout_wires
-			.iter()
-			.map(|&w| BuildElem::wire(&rc, BuilderWire::Wire(w)))
-			.collect();
-
-		<BuildElem as FieldOps>::square_transpose::<FSub>(&mut elems);
-
-		// The transposed outputs are wires; drop them so we can extract the builder.
-		drop(elems);
-		let constraint_builder = Rc::try_unwrap(rc).unwrap().into_inner();
-		let (cs, layout) = constraint_builder.build().finalize();
-
-		// The constraint system should have multiplication constraints from
-		// Frobenius checks, reconstruction, and transposed output.
-		assert!(!cs.mul_constraints().is_empty());
-
-		// Phase 2: Generate a witness with concrete values and verify all constraints.
-		let test_values: Vec<B128> = (0..degree)
-			.map(<B128 as ExtensionField<FSub>>::basis)
-			.collect();
-
-		let mut witness_gen = WitnessGenerator::new(&layout);
-		let witness_wires: Vec<_> = inout_wires
-			.iter()
-			.zip(&test_values)
-			.map(|(&w, &val)| witness_gen.write_inout(w, val))
-			.collect();
-
-		type WitnessElem<'a> = CircuitElem<B128, WitnessGenWire<'a, B128>>;
-		let witness_rc = Rc::new(std::cell::RefCell::new(witness_gen));
-		let mut witness_elems: Vec<WitnessElem> = witness_wires
-			.iter()
-			.map(|&w| WitnessElem::wire(&witness_rc, WitnessGenWire::wire(w)))
-			.collect();
-
-		<WitnessElem as FieldOps>::square_transpose::<FSub>(&mut witness_elems);
-
-		drop(witness_elems);
-		let witness_gen = Rc::try_unwrap(witness_rc).unwrap().into_inner();
-		let witness = witness_gen
-			.build()
-			.expect("witness generation should succeed (all constraints satisfied)");
-
-		cs.validate(&witness);
 	}
 
 	#[test]

@@ -18,7 +18,7 @@ use binius_spartan_frontend::{
 	constraint_system::{ConstraintWire, Witness, WitnessLayout},
 };
 
-use super::circuit_elem::{CircuitElem, CircuitWire};
+use binius_spartan_verifier::wrapper::circuit_elem::{CircuitElem, CircuitWire};
 
 /// [`CircuitWire`] backend over [`WitnessGenerator`] — used by [`ReplayChannel`] to evaluate
 /// arithmetic concretely while filling private witness wires.
@@ -100,7 +100,7 @@ impl<'a, F: Field> CircuitWire<F> for WitnessGenWire<'a, F> {
 /// A channel that replays recorded interaction values through a [`WitnessGenerator`], filling
 /// both inout and private wires in the outer witness.
 ///
-/// This mirrors [`IronSpartanBuilderChannel`](super::builder_channel::IronSpartanBuilderChannel)
+/// This mirrors [`IronSpartanBuilderChannel`](binius_spartan_verifier::wrapper::IronSpartanBuilderChannel)
 /// but uses concrete evaluation instead of symbolic constraint building. Each operation consumes
 /// the next value and writes it to the corresponding inout wire in the [`WitnessGenerator`]. When
 /// the verifier's arithmetic runs on the returned [`CircuitElem`] values, the [`WitnessGenerator`]
@@ -225,5 +225,83 @@ impl<'a, F: Field> IOPVerifierChannel<F> for ReplayChannel<'a, F> {
 			self.assert_zero(relation.claim - decrypted_claim)?;
 		}
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{cell::RefCell, rc::Rc};
+
+	use binius_field::{
+		BinaryField1b as B1, BinaryField128bGhash as B128, ExtensionField, field::FieldOps,
+	};
+	use binius_spartan_frontend::circuit_builder::{ConstraintBuilder, WitnessGenerator};
+	use binius_spartan_verifier::wrapper::{
+		builder_channel::BuilderWire, circuit_elem::CircuitElem,
+	};
+
+	use super::WitnessGenWire;
+
+	type BuildElem = CircuitElem<B128, BuilderWire<B128>>;
+	type WitnessElem<'a> = CircuitElem<B128, WitnessGenWire<'a, B128>>;
+
+	#[test]
+	fn test_square_transpose_wires() {
+		// Test that square_transpose on wire elements builds a valid constraint system,
+		// and that a WitnessGenerator with correct values satisfies all constraints.
+		type FSub = B1;
+		let degree = <B128 as ExtensionField<FSub>>::DEGREE;
+
+		// Phase 1: Build the constraint system symbolically.
+		let mut constraint_builder = ConstraintBuilder::<B128>::new();
+		let inout_wires: Vec<_> = (0..degree)
+			.map(|_| constraint_builder.alloc_inout())
+			.collect();
+
+		// Build CircuitElem wires via a shared Rc.
+		let rc = Rc::new(RefCell::new(constraint_builder));
+		let mut elems: Vec<BuildElem> = inout_wires
+			.iter()
+			.map(|&w| BuildElem::wire(&rc, BuilderWire::Wire(w)))
+			.collect();
+
+		<BuildElem as FieldOps>::square_transpose::<FSub>(&mut elems);
+
+		// The transposed outputs are wires; drop them so we can extract the builder.
+		drop(elems);
+		let constraint_builder = Rc::try_unwrap(rc).unwrap().into_inner();
+		let (cs, layout) = constraint_builder.build().finalize();
+
+		// The constraint system should have multiplication constraints from
+		// Frobenius checks, reconstruction, and transposed output.
+		assert!(!cs.mul_constraints().is_empty());
+
+		// Phase 2: Generate a witness with concrete values and verify all constraints.
+		let test_values: Vec<B128> = (0..degree)
+			.map(<B128 as ExtensionField<FSub>>::basis)
+			.collect();
+
+		let mut witness_gen = WitnessGenerator::new(&layout);
+		let witness_wires: Vec<_> = inout_wires
+			.iter()
+			.zip(&test_values)
+			.map(|(&w, &val)| witness_gen.write_inout(w, val))
+			.collect();
+
+		let witness_rc = Rc::new(RefCell::new(witness_gen));
+		let mut witness_elems: Vec<WitnessElem> = witness_wires
+			.iter()
+			.map(|&w| WitnessElem::wire(&witness_rc, WitnessGenWire::wire(w)))
+			.collect();
+
+		<WitnessElem as FieldOps>::square_transpose::<FSub>(&mut witness_elems);
+
+		drop(witness_elems);
+		let witness_gen = Rc::try_unwrap(witness_rc).unwrap().into_inner();
+		let witness = witness_gen
+			.build()
+			.expect("witness generation should succeed (all constraints satisfied)");
+
+		cs.validate(&witness);
 	}
 }
