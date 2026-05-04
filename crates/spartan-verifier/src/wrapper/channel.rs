@@ -16,8 +16,7 @@ use binius_spartan_frontend::{
 	constraint_system::{ConstraintWire, Witness, WitnessLayout},
 };
 
-use super::circuit_elem::{CircuitElem, CircuitWire};
-use crate::wrapper::circuit_elem::{BuilderWire, WitnessGenWire};
+use super::circuit_elem::{BuilderWire, CircuitElem, WitnessGenWire};
 
 /// A channel that symbolically executes a verifier, building up an IronSpartan constraint system.
 ///
@@ -40,14 +39,14 @@ impl<F: Field> IronSpartanBuilderChannel<F> {
 		}
 	}
 
-	fn alloc_inout_elem(&self) -> CircuitElem<ConstraintBuilder<F>> {
+	fn alloc_inout_elem(&self) -> CircuitElem<F, BuilderWire<F>> {
 		let wire = self.builder.borrow_mut().alloc_inout();
-		CircuitElem::Wire(CircuitWire::new(&self.builder, wire))
+		CircuitElem::wire(&self.builder, BuilderWire::Wire(wire))
 	}
 
-	fn alloc_precommit_elem(&self) -> CircuitElem<ConstraintBuilder<F>> {
+	fn alloc_precommit_elem(&self) -> CircuitElem<F, BuilderWire<F>> {
 		let wire = self.builder.borrow_mut().alloc_precommit();
-		CircuitElem::Wire(CircuitWire::new(&self.builder, wire))
+		CircuitElem::wire(&self.builder, BuilderWire::Wire(wire))
 	}
 
 	/// Consumes the channel and returns the underlying [`ConstraintBuilder`].
@@ -87,7 +86,13 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 			| CircuitElem::Wire {
 				wire: BuilderWire::Constant(c),
 				..
-			} => (c == F::ZERO).ok_or(binius_ip::channel::Error::InvalidAssert),
+			} => {
+				if c == F::ZERO {
+					Ok(())
+				} else {
+					Err(binius_ip::channel::Error::InvalidAssert)
+				}
+			}
 			CircuitElem::Wire {
 				builder,
 				wire: BuilderWire::Wire(wire),
@@ -164,10 +169,10 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 		let wire = ConstraintWire::inout(self.next_inout_id);
 		self.next_inout_id += 1;
 		let witness_wire = self.witness_gen.borrow_mut().write_inout(wire, value);
-		CircuitElem::Wire { builder: Rc::downgrade(&self.witness_gen), wire: WitnessGenWire::wire(witness_wire) }
+		CircuitElem::wire(&self.witness_gen, WitnessGenWire::wire(witness_wire))
 	}
 
-	fn next_precommit_elem(&mut self) -> CircuitElem<WitnessGenerator<'a, F>> {
+	fn next_precommit_elem(&mut self) -> CircuitElem<F, WitnessGenWire<'a, F>> {
 		let value = self
 			.keys
 			.next()
@@ -176,7 +181,7 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 		let wire = ConstraintWire::precommit(self.next_precommit_id);
 		self.next_precommit_id += 1;
 		let witness_wire = self.witness_gen.borrow_mut().write_precommit(wire, value);
-		CircuitElem::Wire { builder: Rc::downgrade(&self.witness_gen), wire: WitnessGenWire::wire(witness_wire) }
+		CircuitElem::wire(&self.witness_gen, WitnessGenWire::wire(witness_wire))
 	}
 
 	/// Consumes the channel and builds the outer witness.
@@ -211,10 +216,16 @@ impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
 			| CircuitElem::Wire {
 				wire: WitnessGenWire::Constant(c),
 				..
-			} => (c == F::ZERO).ok_or(binius_ip::channel::Error::InvalidAssert),
+			} => {
+				if c == F::ZERO {
+					Ok(())
+				} else {
+					Err(binius_ip::channel::Error::InvalidAssert)
+				}
+			}
 			CircuitElem::Wire {
 				builder,
-				wire: WitnessGenWire::Wire(wire),
+				wire: WitnessGenWire::Wire(wire, _),
 			} => {
 				assert!(Weak::ptr_eq(&Rc::downgrade(&self.witness_gen), &builder));
 				self.witness_gen.borrow_mut().assert_zero(wire);

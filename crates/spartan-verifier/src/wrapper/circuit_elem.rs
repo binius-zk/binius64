@@ -1,21 +1,33 @@
 // Copyright 2026 The Binius Developers
 
-//! Generic field element types for building constraint systems or generating witnesses.
+//! Generic field element types over a pluggable circuit-wire backend.
 //!
-//! [`CircuitElem<B>`] and [`CircuitWire<B>`] are parameterized over a [`CircuitBuilder`] backend,
-//! allowing the same arithmetic to drive symbolic constraint recording ([`ConstraintBuilder`]) or
-//! concrete witness evaluation ([`WitnessGenerator`]).
+//! [`CircuitElem<F, W>`] is a field element parameterized by a [`CircuitWire<F>`] impl. The
+//! [`CircuitWire`] trait hides backend-specific wire-combination logic behind a single `combine`
+//! operation, so the arithmetic trait impls on [`CircuitElem`] are written once and reused across
+//! three backends:
+//!
+//! - [`BuilderWire`] over [`ConstraintBuilder`] — symbolic constraint recording (used by
+//!   [`IronSpartanBuilderChannel`]).
+//! - [`WitnessGenWire`] over [`WitnessGenerator`] — concrete evaluation that fills a witness
+//!   (used by [`ReplayChannel`]).
+//! - [`WrappedWire`] over [`NoopBuilder`] — no constraint recording; values are tracked as
+//!   `Constant` / `Decrypted` / `Encrypted` to distinguish what the verifier does and does not
+//!   know concretely (used by [`ZKWrappedVerifierChannel`]).
 //!
 //! [`CircuitBuilder`]: binius_spartan_frontend::circuit_builder::CircuitBuilder
 //! [`ConstraintBuilder`]: binius_spartan_frontend::circuit_builder::ConstraintBuilder
 //! [`WitnessGenerator`]: binius_spartan_frontend::circuit_builder::WitnessGenerator
+//! [`IronSpartanBuilderChannel`]: super::channel::IronSpartanBuilderChannel
+//! [`ReplayChannel`]: super::channel::ReplayChannel
+//! [`ZKWrappedVerifierChannel`]: super::zk_wrapped_channel::ZKWrappedVerifierChannel
 
 use std::{
 	cell::RefCell,
 	iter::{Product, Sum},
 	marker::PhantomData,
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
-	rc::Weak,
+	rc::{Rc, Weak},
 };
 
 use binius_field::{
@@ -30,6 +42,11 @@ use binius_spartan_frontend::{
 
 use super::gadgets;
 
+/// Backend-specific logic for combining wires under arithmetic operations.
+///
+/// One method (`combine`, plus its variable-arity sibling `combine_varlen`) suffices for the
+/// arithmetic-trait impls on [`CircuitElem`]. Each impl decides whether to short-circuit constant
+/// inputs into a concrete value or to delegate to its underlying [`CircuitBuilder`].
 pub trait CircuitWire<F: Field>: Sized {
 	type Builder: CircuitBuilder<Field = F>;
 
@@ -47,9 +64,27 @@ pub trait CircuitWire<F: Field>: Sized {
 			[<Self::Builder as CircuitBuilder>::Wire; NIn],
 		) -> [<Self::Builder as CircuitBuilder>::Wire; NOut],
 	) -> [Self; NOut];
+
+	/// Variable-arity version of [`Self::combine`].
+	///
+	/// Used by operations whose input/output sizes are determined at runtime (e.g. delegating to
+	/// a `&[B::Wire]`-taking gadget like `square_transpose`).
+	fn combine_varlen(
+		builder: &mut Self::Builder,
+		wires: &[&Self],
+		f_op: impl FnOnce(&[F]) -> Vec<F>,
+		op: impl FnOnce(
+			&mut Self::Builder,
+			&[<Self::Builder as CircuitBuilder>::Wire],
+		) -> Vec<<Self::Builder as CircuitBuilder>::Wire>,
+	) -> Vec<Self>;
 }
 
-#[derive(Debug)]
+/// [`CircuitWire`] backend over [`ConstraintBuilder`] — used by [`IronSpartanBuilderChannel`] to
+/// record arithmetic as constraints in a constraint system.
+///
+/// [`IronSpartanBuilderChannel`]: super::channel::IronSpartanBuilderChannel
+#[derive(Debug, Clone, Copy)]
 pub enum BuilderWire<F> {
 	Constant(F),
 	Wire(ConstraintWire),
@@ -82,8 +117,57 @@ impl<F: Field> CircuitWire<F> for BuilderWire<F> {
 			builder_op(builder, inner_wires).map(Self::Wire)
 		}
 	}
+
+	fn combine_varlen(
+		builder: &mut Self::Builder,
+		wires: &[&Self],
+		f_op: impl FnOnce(&[F]) -> Vec<F>,
+		builder_op: impl FnOnce(&mut Self::Builder, &[ConstraintWire]) -> Vec<ConstraintWire>,
+	) -> Vec<Self> {
+		let inner_constants = wires
+			.iter()
+			.map(|wire| match wire {
+				Self::Constant(val) => Some(*val),
+				Self::Wire(_) => None,
+			})
+			.collect::<Option<Vec<_>>>();
+
+		if let Some(inner_constants) = inner_constants {
+			f_op(&inner_constants)
+				.into_iter()
+				.map(Self::Constant)
+				.collect()
+		} else {
+			let inner_wires = wires
+				.iter()
+				.map(|wire| match wire {
+					Self::Constant(val) => builder.constant(*val),
+					Self::Wire(wire) => *wire,
+				})
+				.collect::<Vec<_>>();
+			builder_op(builder, &inner_wires)
+				.into_iter()
+				.map(Self::Wire)
+				.collect()
+		}
+	}
 }
 
+/// [`CircuitWire`] backend used by [`ZKWrappedVerifierChannel`].
+///
+/// The wrapped channel records no constraints of its own — its [`Self::Builder`] is the no-op
+/// [`NoopBuilder`]. The variants instead distinguish what the verifier knows about each value:
+///
+/// - `Constant` — known at compile time.
+/// - `Decrypted` — known at runtime (a sampled challenge or a value derived only from sampled
+///   challenges and constants).
+/// - `Encrypted` — flows through the inner channel as ciphertext; the F value is not exposed to
+///   circuit logic.
+///
+/// `combine` propagates concretely known values when possible and produces `Encrypted` whenever
+/// any input is `Encrypted`.
+///
+/// [`ZKWrappedVerifierChannel`]: super::zk_wrapped_channel::ZKWrappedVerifierChannel
 #[derive(Debug, Clone, Copy)]
 pub enum WrappedWire<F> {
 	Constant(F),
@@ -121,8 +205,44 @@ impl<F: Field> CircuitWire<F> for WrappedWire<F> {
 			[Self::Encrypted; NOut]
 		}
 	}
+
+	fn combine_varlen(
+		builder: &mut Self::Builder,
+		wires: &[&Self],
+		f_op: impl FnOnce(&[F]) -> Vec<F>,
+		builder_op: impl FnOnce(&mut Self::Builder, &[()]) -> Vec<()>,
+	) -> Vec<Self> {
+		let inner_values = wires
+			.iter()
+			.map(|wire| match wire {
+				Self::Constant(val) | Self::Decrypted(val) => Some(*val),
+				Self::Encrypted => None,
+			})
+			.collect::<Option<Vec<_>>>();
+		if let Some(inner_values) = inner_values {
+			let ret_values = f_op(&inner_values);
+			let all_constant = wires.iter().all(|wire| matches!(wire, Self::Constant(_)));
+			if all_constant {
+				ret_values.into_iter().map(Self::Constant).collect()
+			} else {
+				ret_values.into_iter().map(Self::Decrypted).collect()
+			}
+		} else {
+			// Run the no-op builder_op to discover the output arity, then mark all as encrypted.
+			let inner_wires = vec![(); wires.len()];
+			builder_op(builder, &inner_wires)
+				.into_iter()
+				.map(|()| Self::Encrypted)
+				.collect()
+		}
+	}
 }
 
+/// Trivial [`CircuitBuilder`] with `Wire = ()`. Provides a target for the `Weak<RefCell<…>>`
+/// references stored in [`CircuitElem::Wire`] when the channel doesn't need to record real
+/// constraints (i.e. [`ZKWrappedVerifierChannel`]).
+///
+/// [`ZKWrappedVerifierChannel`]: super::zk_wrapped_channel::ZKWrappedVerifierChannel
 #[derive(Debug, Default)]
 pub struct NoopBuilder<F>(PhantomData<F>);
 
@@ -132,17 +252,11 @@ impl<F: Field> CircuitBuilder for NoopBuilder<F> {
 
 	fn assert_zero(&mut self, _wire: Self::Wire) {}
 
-	fn constant(&mut self, _val: Self::Field) -> Self::Wire {
-		()
-	}
+	fn constant(&mut self, _val: Self::Field) -> Self::Wire {}
 
-	fn add(&mut self, _lhs: Self::Wire, _rhs: Self::Wire) -> Self::Wire {
-		()
-	}
+	fn add(&mut self, _lhs: Self::Wire, _rhs: Self::Wire) -> Self::Wire {}
 
-	fn mul(&mut self, _lhs: Self::Wire, _rhs: Self::Wire) -> Self::Wire {
-		()
-	}
+	fn mul(&mut self, _lhs: Self::Wire, _rhs: Self::Wire) -> Self::Wire {}
 
 	fn hint<H: Fn([Self::Field; IN]) -> [Self::Field; OUT], const IN: usize, const OUT: usize>(
 		&mut self,
@@ -153,6 +267,10 @@ impl<F: Field> CircuitBuilder for NoopBuilder<F> {
 	}
 }
 
+/// [`CircuitWire`] backend over [`WitnessGenerator`] — used by [`ReplayChannel`] to evaluate
+/// arithmetic concretely while filling private witness wires.
+///
+/// [`ReplayChannel`]: super::channel::ReplayChannel
 #[derive(Debug, Clone, Copy)]
 pub enum WitnessGenWire<'a, F: Field> {
 	Constant(F),
@@ -192,17 +310,48 @@ impl<'a, F: Field> CircuitWire<F> for WitnessGenWire<'a, F> {
 			builder_op(builder, inner_wires).map(|val| Self::Wire(val, PhantomData))
 		}
 	}
+
+	fn combine_varlen(
+		builder: &mut Self::Builder,
+		wires: &[&Self],
+		f_op: impl FnOnce(&[F]) -> Vec<F>,
+		builder_op: impl FnOnce(&mut Self::Builder, &[WitnessWire<F>]) -> Vec<WitnessWire<F>>,
+	) -> Vec<Self> {
+		let inner_constants = wires
+			.iter()
+			.map(|wire| match wire {
+				Self::Constant(val) => Some(*val),
+				Self::Wire(_, _) => None,
+			})
+			.collect::<Option<Vec<_>>>();
+
+		if let Some(inner_constants) = inner_constants {
+			f_op(&inner_constants)
+				.into_iter()
+				.map(Self::Constant)
+				.collect()
+		} else {
+			let inner_wires = wires
+				.iter()
+				.map(|wire| match wire {
+					Self::Constant(val) => builder.constant(*val),
+					Self::Wire(wire, _) => *wire,
+				})
+				.collect::<Vec<_>>();
+			builder_op(builder, &inner_wires)
+				.into_iter()
+				.map(|val| Self::Wire(val, PhantomData))
+				.collect()
+		}
+	}
 }
 
-/// A field element that is either a known constant or a wire in a circuit builder.
+/// A field element that is either a known constant or a wire in a [`CircuitBuilder`].
 ///
-/// When the builder is a [`ConstraintBuilder`], arithmetic on wires records constraints
-/// symbolically. When the builder is a [`WitnessGenerator`], arithmetic computes concrete values
-/// and populates the witness.
-///
-/// [`ConstraintBuilder`]: binius_spartan_frontend::circuit_builder::ConstraintBuilder
-/// [`WitnessGenerator`]: binius_spartan_frontend::circuit_builder::WitnessGenerator
-#[derive(Debug, Clone)]
+/// The behaviour of arithmetic on `Wire` values is determined by the `W: CircuitWire<F>` impl —
+/// see the module docs for the available backends. The `Wire` variant holds a [`Weak`] reference
+/// to the shared builder; it must outlive any operation performed on the element.
+#[derive(Debug)]
 pub enum CircuitElem<F: Field, W: CircuitWire<F>> {
 	Constant(F),
 	Wire {
@@ -211,11 +360,33 @@ pub enum CircuitElem<F: Field, W: CircuitWire<F>> {
 	},
 }
 
+// Manual `Clone` impl that does not require `W::Builder: Clone` (the derived impl would, even
+// though `Weak<T>: Clone` for any `T`).
+impl<F: Field, W: CircuitWire<F> + Clone> Clone for CircuitElem<F, W> {
+	fn clone(&self) -> Self {
+		match self {
+			Self::Constant(c) => Self::Constant(*c),
+			Self::Wire { builder, wire } => Self::Wire {
+				builder: builder.clone(),
+				wire: wire.clone(),
+			},
+		}
+	}
+}
+
 impl<F, W> CircuitElem<F, W>
 where
 	F: Field,
 	W: CircuitWire<F>,
 {
+	/// Construct a [`Self::Wire`] anchored to a shared builder via a [`Weak`] reference.
+	pub fn wire(builder: &Rc<RefCell<W::Builder>>, wire: W) -> Self {
+		Self::Wire {
+			builder: Rc::downgrade(builder),
+			wire,
+		}
+	}
+
 	fn combine<const NIn: usize, const NOut: usize>(
 		elems: [&Self; NIn],
 		f_op: impl Fn([F; NIn]) -> [F; NOut],
@@ -262,6 +433,70 @@ where
 				*val
 			});
 			f_op(inner_constants).map(Self::Constant)
+		}
+	}
+
+	/// Variable-arity sibling of [`Self::combine`].
+	fn combine_varlen(
+		elems: &[&Self],
+		f_op: impl FnOnce(&[F]) -> Vec<F>,
+		builder_op: impl FnOnce(
+			&mut W::Builder,
+			&[<W::Builder as CircuitBuilder>::Wire],
+		) -> Vec<<W::Builder as CircuitBuilder>::Wire>,
+	) -> Vec<Self> {
+		let builder = elems.iter().find_map(|elem| match elem {
+			Self::Wire { builder, .. } => Some(builder),
+			_ => None,
+		});
+
+		if let Some(builder_ptr) = builder {
+			let Some(builder) = builder_ptr.upgrade() else {
+				panic!(
+					"combine_varlen cannot be called on a CircuitElem after the channel is closed"
+				);
+			};
+			let mut builder = builder.borrow_mut();
+			let inner_wires = elems
+				.iter()
+				.map(|elem| match elem {
+					Self::Constant(val) => OwnedOrRef::Owned(W::constant(&mut *builder, *val)),
+					Self::Wire {
+						builder: other_builder_ptr,
+						wire,
+					} => {
+						assert!(
+							Weak::ptr_eq(builder_ptr, other_builder_ptr),
+							"all combined CircuitElems must come from the same channel"
+						);
+						OwnedOrRef::Ref(wire)
+					}
+				})
+				.collect::<Vec<_>>();
+			let inner_wire_refs = inner_wires.iter().map(AsRef::as_ref).collect::<Vec<_>>();
+			W::combine_varlen(&mut *builder, &inner_wire_refs, f_op, builder_op)
+				.into_iter()
+				.map(|wire| Self::Wire {
+					builder: builder_ptr.clone(),
+					wire,
+				})
+				.collect()
+		} else {
+			let inner_constants = elems
+				.iter()
+				.map(|elem| {
+					let Self::Constant(val) = elem else {
+						unreachable!(
+							"no Wire variant exists in elems; all entries must be Constant"
+						);
+					};
+					*val
+				})
+				.collect::<Vec<_>>();
+			f_op(&inner_constants)
+				.into_iter()
+				.map(Self::Constant)
+				.collect()
 		}
 	}
 }
@@ -380,6 +615,13 @@ where
 	type Output = CircuitElem<F, W>;
 
 	fn mul(self, rhs: Self) -> Self::Output {
+		// Short-circuit `wire * 0 = 0` so the wrapper does not allocate a multiplication
+		// constraint that pins a wire to zero.
+		if matches!(self, CircuitElem::Constant(c) if *c == F::ZERO)
+			|| matches!(rhs, CircuitElem::Constant(c) if *c == F::ZERO)
+		{
+			return CircuitElem::Constant(F::ZERO);
+		}
 		let [ret] = CircuitElem::combine(
 			[self, rhs],
 			|[lhs, rhs]| [lhs * rhs],
@@ -435,122 +677,93 @@ impl<F: Field, W: CircuitWire<F>> Sum for CircuitElem<F, W> {
 	}
 }
 
-impl<'a, B: CircuitBuilder> Sum<&'a CircuitElem<B>> for CircuitElem<B> {
+impl<'a, F: Field, W: CircuitWire<F>> Sum<&'a Self> for CircuitElem<F, W> {
 	fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
-		iter.fold(CircuitElem::Constant(B::Field::ZERO), |acc, x| acc + x)
+		iter.fold(Self::Constant(F::ZERO), |acc, x| acc + x)
 	}
 }
 
-impl<B: CircuitBuilder> Product for CircuitElem<B> {
+impl<F: Field, W: CircuitWire<F>> Product for CircuitElem<F, W> {
 	fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
-		iter.fold(CircuitElem::Constant(B::Field::ONE), |acc, x| acc * x)
+		iter.fold(Self::Constant(F::ONE), |acc, x| acc * x)
 	}
 }
 
-impl<'a, B: CircuitBuilder> Product<&'a CircuitElem<B>> for CircuitElem<B> {
+impl<'a, F: Field, W: CircuitWire<F>> Product<&'a Self> for CircuitElem<F, W> {
 	fn product<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
-		iter.fold(CircuitElem::Constant(B::Field::ONE), |acc, x| acc * x)
+		iter.fold(Self::Constant(F::ONE), |acc, x| acc * x)
 	}
 }
 
-impl<B: CircuitBuilder> Square for CircuitElem<B> {
+impl<F: Field, W: CircuitWire<F>> Square for CircuitElem<F, W> {
 	fn square(self) -> Self {
-		match &self {
-			CircuitElem::Constant(c) => CircuitElem::Constant(c.square()),
-			_ => {
-				let copy = self.clone();
-				self * copy
-			}
-		}
+		let [ret] = Self::combine(
+			[&self],
+			|[x]| [x.square()],
+			|builder, [x]| [builder.mul(x, x)],
+		);
+		ret
 	}
 }
 
-impl<B: CircuitBuilder> InvertOrZero for CircuitElem<B> {
+impl<F: Field, W: CircuitWire<F>> InvertOrZero for CircuitElem<F, W> {
 	fn invert_or_zero(self) -> Self {
-		match &self {
-			CircuitElem::Constant(c) => CircuitElem::Constant(c.invert_or_zero()),
-			CircuitElem::Wire(w) => {
-				let rc = w.upgrade();
-				let mut builder = rc.borrow_mut();
-				let wire = w.wire;
-
-				// Allocate the inverse wire via hint.
-				let [inv_wire] = builder.hint([wire], |[x]| [x.invert_or_zero()]);
-
-				// Constrain wire * inverse = one.
-				let product = builder.mul(wire, inv_wire);
-				let one = builder.constant(B::Field::ONE);
+		let [ret] = Self::combine(
+			[&self],
+			|[x]| [x.invert_or_zero()],
+			|builder, [x]| {
+				let [inv] = builder.hint([x], |[v]| [v.invert_or_zero()]);
+				let one = builder.constant(F::ONE);
+				let product = builder.mul(x, inv);
 				builder.assert_eq(product, one);
-
-				Self::make_wire(&rc, inv_wire)
-			}
-		}
+				[inv]
+			},
+		);
+		ret
 	}
 }
 
-impl<B: CircuitBuilder> FieldOps for CircuitElem<B> {
-	type Scalar = B::Field;
+impl<F: Field, W: CircuitWire<F> + Clone> FieldOps for CircuitElem<F, W> {
+	type Scalar = F;
 
 	fn zero() -> Self {
-		CircuitElem::Constant(B::Field::ZERO)
+		Self::Constant(F::ZERO)
 	}
 
 	fn one() -> Self {
-		CircuitElem::Constant(B::Field::ONE)
+		Self::Constant(F::ONE)
 	}
 
 	fn square_transpose<FSub: Field>(elems: &mut [Self])
 	where
 		Self::Scalar: ExtensionField<FSub>,
 	{
-		let degree = <B::Field as ExtensionField<FSub>>::DEGREE;
+		let degree = <F as ExtensionField<FSub>>::DEGREE;
 		assert_eq!(elems.len(), degree);
 
 		if degree == 1 {
 			return;
 		}
 
-		// Fast path: transpose concretely when all elements are constants.
-		if elems.iter().all(|e| matches!(e, CircuitElem::Constant(_))) {
-			let mut vals = elems
-				.iter()
-				.map(|e| match e {
-					CircuitElem::Constant(c) => *c,
-					CircuitElem::Wire(_) => unreachable!(),
-				})
-				.collect::<Vec<_>>();
-			<B::Field as ExtensionField<FSub>>::square_transpose(&mut vals);
-			for (e, v) in elems.iter_mut().zip(vals) {
-				*e = CircuitElem::Constant(v);
-			}
-			return;
-		}
-
-		// At least one element is a wire. Delegate to the gadget.
-		let rc = elems
-			.iter()
-			.find_map(|e| e.builder_rc())
-			.expect("at least one wire exists (not all-constants)");
-		let mut builder = rc.borrow_mut();
-
-		let input_wires = elems
-			.iter()
-			.map(|e| e.to_wire(&mut *builder))
-			.collect::<Vec<_>>();
-
-		let outputs = gadgets::square_transpose::<_, FSub>(&mut *builder, &input_wires);
-
-		drop(builder);
-
-		for (e, out_wire) in elems.iter_mut().zip(outputs) {
-			*e = Self::make_wire(&rc, out_wire);
+		let inputs = elems.iter().collect::<Vec<_>>();
+		let outputs = Self::combine_varlen(
+			&inputs,
+			|vals| {
+				let mut out = vals.to_vec();
+				<F as ExtensionField<FSub>>::square_transpose(&mut out);
+				out
+			},
+			|builder, wires| gadgets::square_transpose::<_, FSub>(builder, wires),
+		);
+		for (e, out) in elems.iter_mut().zip(outputs) {
+			*e = out;
 		}
 	}
 }
 
-impl<F: Field, B: CircuitBuilder<Field = F>> From<F> for CircuitElem<B> {
+impl<F: Field, W: CircuitWire<F>> From<F> for CircuitElem<F, W> {
 	fn from(val: F) -> Self {
-		CircuitElem::Constant(val)
+		Self::Constant(val)
 	}
 }
 

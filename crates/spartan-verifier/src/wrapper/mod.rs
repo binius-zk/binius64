@@ -30,15 +30,14 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::wrapper::circuit_elem::{CircuitElem, CircuitWire};
+	use crate::wrapper::circuit_elem::{BuilderWire, CircuitElem, WitnessGenWire};
 
-	type BuildElem = CircuitElem<ConstraintBuilder<B128>>;
-	type BuildWire = CircuitWire<ConstraintBuilder<B128>>;
+	type BuildElem = CircuitElem<B128, BuilderWire<B128>>;
 
-	/// Helper to create a BuildWire from a ConstraintBuilder Rc for tests.
+	/// Helper to create a BuildElem wire from a ConstraintBuilder Rc for tests.
 	fn alloc_inout_wire(rc: &Rc<std::cell::RefCell<ConstraintBuilder<B128>>>) -> BuildElem {
 		let wire = rc.borrow_mut().alloc_inout();
-		BuildElem::Wire(BuildWire::new(rc, wire))
+		BuildElem::wire(rc, BuilderWire::Wire(wire))
 	}
 
 	#[test]
@@ -66,11 +65,11 @@ mod tests {
 
 		// Adding zero returns the wire unchanged.
 		let result = elem.clone() + BuildElem::Constant(B128::ZERO);
-		assert!(matches!(result, BuildElem::Wire(_)));
+		assert!(matches!(result, BuildElem::Wire { .. }));
 
 		// Multiplying by one returns the wire unchanged.
 		let result = elem.clone() * BuildElem::Constant(B128::ONE);
-		assert!(matches!(result, BuildElem::Wire(_)));
+		assert!(matches!(result, BuildElem::Wire { .. }));
 
 		// Multiplying by zero returns constant zero.
 		let result = elem * BuildElem::Constant(B128::ZERO);
@@ -123,10 +122,10 @@ mod tests {
 		let c = channel.recv_array::<3>().unwrap();
 
 		// All should be Wire variants.
-		assert!(matches!(a, BuildElem::Wire(_)));
-		assert!(matches!(b, BuildElem::Wire(_)));
+		assert!(matches!(a, BuildElem::Wire { .. }));
+		assert!(matches!(b, BuildElem::Wire { .. }));
 		for elem in &c {
-			assert!(matches!(elem, BuildElem::Wire(_)));
+			assert!(matches!(elem, BuildElem::Wire { .. }));
 		}
 	}
 
@@ -227,7 +226,9 @@ mod tests {
 		for (i, (elem, &exp)) in elems.iter().zip(&expected).enumerate() {
 			match elem {
 				CircuitElem::Constant(c) => assert_eq!(*c, exp, "mismatch at index {i}"),
-				CircuitElem::Wire(_) => panic!("expected constant after all-constants transpose"),
+				CircuitElem::Wire { .. } => {
+					panic!("expected constant after all-constants transpose")
+				}
 			}
 		}
 	}
@@ -249,7 +250,7 @@ mod tests {
 		let rc = Rc::new(std::cell::RefCell::new(constraint_builder));
 		let mut elems: Vec<BuildElem> = inout_wires
 			.iter()
-			.map(|&w| BuildElem::Wire(BuildWire::new(&rc, w)))
+			.map(|&w| BuildElem::wire(&rc, BuilderWire::Wire(w)))
 			.collect();
 
 		<BuildElem as FieldOps>::square_transpose::<FSub>(&mut elems);
@@ -275,13 +276,11 @@ mod tests {
 			.map(|(&w, &val)| witness_gen.write_inout(w, val))
 			.collect();
 
-		type WitnessElem<'a> = CircuitElem<WitnessGenerator<'a, B128>>;
+		type WitnessElem<'a> = CircuitElem<B128, WitnessGenWire<'a, B128>>;
 		let witness_rc = Rc::new(std::cell::RefCell::new(witness_gen));
 		let mut witness_elems: Vec<WitnessElem> = witness_wires
 			.iter()
-			.map(|&w| {
-				WitnessElem::Wire(crate::wrapper::circuit_elem::CircuitWire::new(&witness_rc, w))
-			})
+			.map(|&w| WitnessElem::wire(&witness_rc, WitnessGenWire::wire(w)))
 			.collect();
 
 		<WitnessElem as FieldOps>::square_transpose::<FSub>(&mut witness_elems);

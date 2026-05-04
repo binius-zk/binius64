@@ -8,10 +8,7 @@
 //!
 //! [`finish()`]: ZKWrappedVerifierChannel::finish
 
-use std::{
-	cell::{Ref, RefCell},
-	rc::Rc,
-};
+use std::{cell::RefCell, rc::Rc};
 
 use binius_field::BinaryField;
 use binius_iop::{
@@ -30,9 +27,17 @@ use crate::{
 
 /// A verifier channel that wraps a [`BaseFoldZKVerifierChannel`] and an [`IOPVerifier`].
 ///
-/// All values received, sampled, and observed through this channel are recorded as public inputs
-/// to the outer constraint system. When [`finish()`](Self::finish) is called, the outer verifier
-/// is run against the inner channel to verify the proof.
+/// `Self::Elem` is `CircuitElem<F, WrappedWire<F>>`. All concrete F values that the inner channel
+/// produces (received, sampled, observed) are recorded as outer public inputs; the
+/// [`CircuitElem`]s returned to the outer verifier carry only the [`WrappedWire`] tag — `Encrypted`
+/// for inner-channel values, `Decrypted` for transparent evaluations of sampled challenges, and
+/// `Constant` for compile-time constants. [`finish()`](Self::finish) prepends the outer constraint
+/// system's constants to the recorded public values, pads, and runs [`IOPVerifier::verify`]
+/// against the inner channel directly.
+///
+/// `transparent` closures supplied via [`OracleLinearRelation`](binius_iop::channel::OracleLinearRelation)
+/// must depend only on `Constant` and `Decrypted` inputs (sampled challenges), never on
+/// `Encrypted` ones — `verify_oracle_relations` panics otherwise.
 pub struct ZKWrappedVerifierChannel<'a, F, MTScheme, Challenger_>
 where
 	F: BinaryField,
@@ -43,6 +48,10 @@ where
 	outer_verifier: &'a IOPVerifier<F>,
 	precommit_oracle: BaseFoldZKOracle,
 	public_values: Vec<F>,
+	/// Phantom anchor for the `Weak<RefCell<NoopBuilder>>` references stored inside
+	/// [`CircuitElem::Wire`] values returned from this channel. The inner builder is never used
+	/// to record constraints — the wrapped channel doesn't build a circuit, it just records
+	/// public inputs.
 	inout_builder: Rc<RefCell<NoopBuilder<F>>>,
 	/// Number of outer oracles still to be received on `inner_channel` after inner verification
 	/// completes (i.e. the outer verifier's non-precommit oracles — private and mask).
@@ -135,28 +144,19 @@ where
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
 		let val = self.inner_channel.recv_one()?;
 		self.public_values.push(val);
-		Ok(CircuitElem::Wire {
-			builder: Rc::downgrade(&self.inout_builder),
-			wire: WrappedWire::Encrypted,
-		})
+		Ok(CircuitElem::wire(&self.inout_builder, WrappedWire::Encrypted))
 	}
 
 	fn sample(&mut self) -> Self::Elem {
 		let val = self.inner_channel.sample();
 		self.public_values.push(val);
-		CircuitElem::Wire {
-			builder: Rc::downgrade(&self.inout_builder),
-			wire: WrappedWire::Encrypted,
-		}
+		CircuitElem::wire(&self.inout_builder, WrappedWire::Encrypted)
 	}
 
 	fn observe_one(&mut self, val: F) -> Self::Elem {
 		let elem = self.inner_channel.observe_one(val);
 		self.public_values.push(elem);
-		CircuitElem::Wire {
-			builder: Rc::downgrade(&self.inout_builder),
-			wire: WrappedWire::Encrypted,
-		}
+		CircuitElem::wire(&self.inout_builder, WrappedWire::Encrypted)
 	}
 
 	fn assert_zero(&mut self, _val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
@@ -206,17 +206,14 @@ where
 					let decrypted_claim = self.inner_channel.recv_one()?;
 					self.public_values.push(decrypted_claim);
 
-					let builder = Rc::downgrade(&self.inout_builder);
+					let builder = self.inout_builder.clone();
 
 					// Create a transparent evaluation function for F values that internally uses
 					// the symbolic evaluation function provided.
 					let eval_fn = move |vals: &[F]| {
 						let wrapped_vals = vals
 							.iter()
-							.map(|val| CircuitElem::Wire {
-								builder: builder.clone(),
-								wire: WrappedWire::Decrypted(*val),
-							})
+							.map(|val| CircuitElem::wire(&builder, WrappedWire::Decrypted(*val)))
 							.collect::<Vec<_>>();
 
 						match transparent(&wrapped_vals) {
@@ -230,8 +227,7 @@ where
 								..
 							} => {
 								panic!(
-									"precondition: the transparent polynomial evaluation must
-									depend only on decrypted values (ie. sampled challenges)"
+									"precondition: the transparent polynomial evaluation must depend only on decrypted values (ie. sampled challenges)"
 								);
 							}
 						}
