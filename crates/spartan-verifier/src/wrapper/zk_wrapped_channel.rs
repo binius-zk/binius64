@@ -8,22 +8,133 @@
 //!
 //! [`finish()`]: ZKWrappedVerifierChannel::finish
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, marker::PhantomData, rc::Rc};
 
-use binius_field::BinaryField;
+use binius_field::{BinaryField, Field};
 use binius_iop::{
 	basefold_zk_channel::{BaseFoldZKOracle, BaseFoldZKVerifierChannel},
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	merkle_tree::MerkleTreeScheme,
 };
 use binius_ip::channel::IPVerifierChannel;
+use binius_spartan_frontend::circuit_builder::CircuitBuilder;
 use binius_transcript::fiat_shamir::Challenger;
 use binius_utils::DeserializeBytes;
 
 use crate::{
 	Error, IOPVerifier,
-	wrapper::circuit_elem::{CircuitElem, NoopBuilder, WrappedWire},
+	wrapper::circuit_elem::{CircuitElem, CircuitWire},
 };
+
+/// [`CircuitWire`] backend used by [`ZKWrappedVerifierChannel`].
+///
+/// The wrapped channel records no constraints of its own — its [`Self::Builder`] is the no-op
+/// [`NoopBuilder`]. The variants instead distinguish what the verifier knows about each value:
+///
+/// - `Constant` — known at compile time.
+/// - `Decrypted` — known at runtime (a sampled challenge or a value derived only from sampled
+///   challenges and constants).
+/// - `Encrypted` — flows through the inner channel as ciphertext; the F value is not exposed to
+///   circuit logic.
+///
+/// `combine` propagates concretely known values when possible and produces `Encrypted` whenever
+/// any input is `Encrypted`.
+#[derive(Debug, Clone, Copy)]
+pub enum WrappedWire<F> {
+	Constant(F),
+	Decrypted(F),
+	Encrypted,
+}
+
+impl<F: Field> CircuitWire<F> for WrappedWire<F> {
+	type Builder = NoopBuilder<F>;
+
+	fn combine<const NIn: usize, const NOut: usize>(
+		_builder: &mut Self::Builder,
+		wires: [&Self; NIn],
+		f_op: impl Fn([F; NIn]) -> [F; NOut],
+		_builder_op: impl Fn(&mut Self::Builder, [(); NIn]) -> [(); NOut],
+	) -> [Self; NOut] {
+		let inner_values = array_util::try_map(wires, |wire| match wire {
+			Self::Constant(val) | Self::Decrypted(val) => Some(*val),
+			Self::Encrypted => None,
+		});
+		if let Some(inner_values) = inner_values {
+			let ret_values = f_op(inner_values);
+
+			let all_constant = wires.iter().all(|wire| matches!(wire, Self::Constant(_)));
+			if all_constant {
+				// If all inputs are constant, then compute and propagate the constant value.
+				ret_values.map(Self::Constant)
+			} else {
+				// If all inputs are decrypted or constant, then compute and propagate the decrypted
+				// value.
+				ret_values.map(Self::Decrypted)
+			}
+		} else {
+			// If any inputs are encrypted, all outputs are encrypted.
+			[Self::Encrypted; NOut]
+		}
+	}
+
+	fn combine_varlen(
+		builder: &mut Self::Builder,
+		wires: &[&Self],
+		f_op: impl FnOnce(&[F]) -> Vec<F>,
+		builder_op: impl FnOnce(&mut Self::Builder, &[()]) -> Vec<()>,
+	) -> Vec<Self> {
+		let inner_values = wires
+			.iter()
+			.map(|wire| match wire {
+				Self::Constant(val) | Self::Decrypted(val) => Some(*val),
+				Self::Encrypted => None,
+			})
+			.collect::<Option<Vec<_>>>();
+		if let Some(inner_values) = inner_values {
+			let ret_values = f_op(&inner_values);
+			let all_constant = wires.iter().all(|wire| matches!(wire, Self::Constant(_)));
+			if all_constant {
+				ret_values.into_iter().map(Self::Constant).collect()
+			} else {
+				ret_values.into_iter().map(Self::Decrypted).collect()
+			}
+		} else {
+			// Run the no-op builder_op to discover the output arity, then mark all as encrypted.
+			let inner_wires = vec![(); wires.len()];
+			builder_op(builder, &inner_wires)
+				.into_iter()
+				.map(|()| Self::Encrypted)
+				.collect()
+		}
+	}
+}
+
+/// Trivial [`CircuitBuilder`] with `Wire = ()`. Provides a target for the `Weak<RefCell<…>>`
+/// references stored in [`CircuitElem::Wire`] when the channel doesn't need to record real
+/// constraints (i.e. [`ZKWrappedVerifierChannel`]).
+#[derive(Debug, Default)]
+pub struct NoopBuilder<F>(PhantomData<F>);
+
+impl<F: Field> CircuitBuilder for NoopBuilder<F> {
+	type Wire = ();
+	type Field = F;
+
+	fn assert_zero(&mut self, _wire: Self::Wire) {}
+
+	fn constant(&mut self, _val: Self::Field) -> Self::Wire {}
+
+	fn add(&mut self, _lhs: Self::Wire, _rhs: Self::Wire) -> Self::Wire {}
+
+	fn mul(&mut self, _lhs: Self::Wire, _rhs: Self::Wire) -> Self::Wire {}
+
+	fn hint<H: Fn([Self::Field; IN]) -> [Self::Field; OUT], const IN: usize, const OUT: usize>(
+		&mut self,
+		_inputs: [Self::Wire; IN],
+		_f: H,
+	) -> [Self::Wire; OUT] {
+		[(); OUT]
+	}
+}
 
 /// A verifier channel that wraps a [`BaseFoldZKVerifierChannel`] and an [`IOPVerifier`].
 ///

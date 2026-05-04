@@ -9,12 +9,14 @@
 //! [`IPVerifierChannel`]: binius_ip::channel::IPVerifierChannel
 //! [`ConstraintBuilder`]: binius_spartan_frontend::circuit_builder::ConstraintBuilder
 
-mod channel;
+pub mod builder_channel;
 pub mod circuit_elem;
 pub mod gadgets;
-mod zk_wrapped_channel;
+pub mod replay_channel;
+pub mod zk_wrapped_channel;
 
-pub use channel::{IronSpartanBuilderChannel, ReplayChannel};
+pub use builder_channel::IronSpartanBuilderChannel;
+pub use replay_channel::ReplayChannel;
 pub use zk_wrapped_channel::ZKWrappedVerifierChannel;
 
 #[cfg(test)]
@@ -30,7 +32,9 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::wrapper::circuit_elem::{BuilderWire, CircuitElem, WitnessGenWire};
+	use crate::wrapper::{
+		builder_channel::BuilderWire, circuit_elem::CircuitElem, replay_channel::WitnessGenWire,
+	};
 
 	type BuildElem = CircuitElem<B128, BuilderWire<B128>>;
 
