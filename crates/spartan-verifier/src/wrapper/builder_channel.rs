@@ -127,7 +127,7 @@ impl<F: Field> CircuitWire<F> for BuilderWire<F> {
 /// Instead of performing actual verification, this channel records all operations as constraints
 /// in a [`ConstraintBuilder`]. The typical usage pattern is:
 ///
-/// 1. Create an `IronSpartanBuilderChannel` from a [`ConstraintBuilder`]
+/// 1. Construct a fresh [`IronSpartanBuilderChannel`] via [`Self::new`]
 /// 2. Run the verifier on the channel (e.g., `verify_iop`)
 /// 3. The channel's `finish()` method returns the [`ConstraintBuilder`] with all recorded
 ///    constraints
@@ -135,11 +135,17 @@ pub struct IronSpartanBuilderChannel<F: Field> {
 	builder: Rc<RefCell<ConstraintBuilder<F>>>,
 }
 
+impl<F: Field> Default for IronSpartanBuilderChannel<F> {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl<F: Field> IronSpartanBuilderChannel<F> {
-	/// Creates a new builder channel that takes ownership of the given constraint builder.
-	pub fn new(builder: ConstraintBuilder<F>) -> Self {
+	/// Creates a new builder channel backed by a fresh [`ConstraintBuilder`].
+	pub fn new() -> Self {
 		Self {
-			builder: Rc::new(RefCell::new(builder)),
+			builder: Rc::new(RefCell::new(ConstraintBuilder::new())),
 		}
 	}
 

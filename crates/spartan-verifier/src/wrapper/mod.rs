@@ -115,7 +115,7 @@ mod tests {
 
 	#[test]
 	fn test_channel_recv_and_sample() {
-		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::<B128>::new());
+		let mut channel = IronSpartanBuilderChannel::<B128>::new();
 
 		let a = channel.recv_one().unwrap();
 		let b = channel.sample();
@@ -131,7 +131,7 @@ mod tests {
 
 	#[test]
 	fn test_channel_assert_zero() {
-		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::<B128>::new());
+		let mut channel = IronSpartanBuilderChannel::<B128>::new();
 
 		// Assert zero on a constant zero should succeed.
 		assert!(channel.assert_zero(BuildElem::Constant(B128::ZERO)).is_ok());
@@ -183,7 +183,7 @@ mod tests {
 		let public_size = 1 << cs.log_public();
 
 		// Create the builder channel and run IOPVerifier::verify symbolically.
-		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::<B128>::new());
+		let mut channel = IronSpartanBuilderChannel::<B128>::new();
 
 		// Use zero-filled public inputs of the correct length.
 		let public = vec![B128::ZERO; public_size];
@@ -237,7 +237,7 @@ mod tests {
 	fn test_channel_integration_simple_circuit() {
 		// Build a simple circuit: recv two values, multiply them, assert_zero on the
 		// difference with a third received value (ie. a * b == c).
-		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::<B128>::new());
+		let mut channel = IronSpartanBuilderChannel::<B128>::new();
 		let a = channel.recv_one().unwrap();
 		let b = channel.recv_one().unwrap();
 		let c = channel.recv_one().unwrap();

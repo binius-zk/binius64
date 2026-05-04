@@ -21,9 +21,7 @@ use binius_iop::{
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_spartan_frontend::{
-	circuit_builder::ConstraintBuilder, compiler::compile, constraint_system::BlindingInfo,
-};
+use binius_spartan_frontend::{compiler::compile, constraint_system::BlindingInfo};
 use binius_spartan_verifier::{
 	IOPVerifier as IronSpartanIOPVerifier,
 	constraint_system::ConstraintSystemPadded,
@@ -79,7 +77,7 @@ where
 		// Symbolically execute the inner verifier to build the outer constraint system.
 		let dummy_public_words =
 			vec![Word::from_u64(0); 1 << inner_iop_verifier.log_public_words()];
-		let mut builder_channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
+		let mut builder_channel = IronSpartanBuilderChannel::new();
 		inner_iop_verifier
 			.verify(&dummy_public_words, &mut builder_channel)
 			.expect("symbolic verify should not fail");

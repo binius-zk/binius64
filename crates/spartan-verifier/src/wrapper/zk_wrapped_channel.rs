@@ -46,8 +46,8 @@ use crate::{
 ///   [`Self::materialize`]). `is_materialized` is shared via [`Rc`] so all clones of one logical
 ///   wire push exactly once.
 /// - `Private` — F is unknown to the wrapper (analog of [`BuilderWire::Private`]; e.g. the
-///   precommit OTP key, never sent through the inner channel — it lives only in the outer
-///   prover's commitment, accessed by the outer verifier circuit).
+///   precommit OTP key, never sent through the inner channel — it lives only in the outer prover's
+///   commitment, accessed by the outer verifier circuit).
 #[derive(Debug, Clone)]
 pub enum WrappedWire<F: Field> {
 	Constant(F),
