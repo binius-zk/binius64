@@ -65,9 +65,15 @@ pub trait CircuitWire<F: Field>: Sized {
 	///
 	/// Used by operations whose input/output sizes are determined at runtime (e.g. delegating to
 	/// a `&[B::Wire]`-taking gadget like `square_transpose`).
+	///
+	/// # Contract
+	///
+	/// `f_op` and `op` MUST return a `Vec` of length `n_out` whenever they are called. The impl
+	/// checks this with `debug_assert_eq!`.
 	fn combine_varlen(
 		builder: &mut Self::Builder,
 		wires: &[&Self],
+		n_out: usize,
 		f_op: impl FnOnce(&[F]) -> Vec<F>,
 		op: impl FnOnce(
 			&mut Self::Builder,
@@ -167,8 +173,13 @@ where
 	}
 
 	/// Variable-arity sibling of [`Self::combine`].
+	///
+	/// `f_op` and `builder_op` must return a `Vec` of length `n_out`; checked via
+	/// `debug_assert_eq!` inside [`CircuitWire::combine_varlen`] (and here, for the
+	/// all-constants branch).
 	fn combine_varlen(
 		elems: &[&Self],
+		n_out: usize,
 		f_op: impl FnOnce(&[F]) -> Vec<F>,
 		builder_op: impl FnOnce(
 			&mut W::Builder,
@@ -204,7 +215,7 @@ where
 				})
 				.collect::<Vec<_>>();
 			let inner_wire_refs = inner_wires.iter().map(AsRef::as_ref).collect::<Vec<_>>();
-			W::combine_varlen(&mut *builder, &inner_wire_refs, f_op, builder_op)
+			W::combine_varlen(&mut *builder, &inner_wire_refs, n_out, f_op, builder_op)
 				.into_iter()
 				.map(|wire| Self::Wire {
 					builder: builder_ptr.clone(),
@@ -223,10 +234,9 @@ where
 					*val
 				})
 				.collect::<Vec<_>>();
-			f_op(&inner_constants)
-				.into_iter()
-				.map(Self::Constant)
-				.collect()
+			let result = f_op(&inner_constants);
+			debug_assert_eq!(result.len(), n_out);
+			result.into_iter().map(Self::Constant).collect()
 		}
 	}
 }
@@ -474,6 +484,7 @@ impl<F: Field, W: CircuitWire<F> + Clone> FieldOps for CircuitElem<F, W> {
 		let inputs = elems.iter().collect::<Vec<_>>();
 		let outputs = Self::combine_varlen(
 			&inputs,
+			degree,
 			|vals| {
 				let mut out = vals.to_vec();
 				<F as ExtensionField<FSub>>::square_transpose(&mut out);

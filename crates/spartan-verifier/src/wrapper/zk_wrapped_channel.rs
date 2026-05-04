@@ -78,10 +78,11 @@ impl<F: Field> CircuitWire<F> for WrappedWire<F> {
 	}
 
 	fn combine_varlen(
-		builder: &mut Self::Builder,
+		_builder: &mut Self::Builder,
 		wires: &[&Self],
+		n_out: usize,
 		f_op: impl FnOnce(&[F]) -> Vec<F>,
-		builder_op: impl FnOnce(&mut Self::Builder, &[()]) -> Vec<()>,
+		_builder_op: impl FnOnce(&mut Self::Builder, &[()]) -> Vec<()>,
 	) -> Vec<Self> {
 		let inner_values = wires
 			.iter()
@@ -92,6 +93,7 @@ impl<F: Field> CircuitWire<F> for WrappedWire<F> {
 			.collect::<Option<Vec<_>>>();
 		if let Some(inner_values) = inner_values {
 			let ret_values = f_op(&inner_values);
+			debug_assert_eq!(ret_values.len(), n_out);
 			let all_constant = wires.iter().all(|wire| matches!(wire, Self::Constant(_)));
 			if all_constant {
 				ret_values.into_iter().map(Self::Constant).collect()
@@ -99,12 +101,8 @@ impl<F: Field> CircuitWire<F> for WrappedWire<F> {
 				ret_values.into_iter().map(Self::Decrypted).collect()
 			}
 		} else {
-			// Run the no-op builder_op to discover the output arity, then mark all as encrypted.
-			let inner_wires = vec![(); wires.len()];
-			builder_op(builder, &inner_wires)
-				.into_iter()
-				.map(|()| Self::Encrypted)
-				.collect()
+			// builder_op is the no-op NoopBuilder; with n_out known we can skip it entirely.
+			vec![Self::Encrypted; n_out]
 		}
 	}
 }

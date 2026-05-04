@@ -65,6 +65,7 @@ impl<'a, F: Field> CircuitWire<F> for WitnessGenWire<'a, F> {
 	fn combine_varlen(
 		builder: &mut Self::Builder,
 		wires: &[&Self],
+		n_out: usize,
 		f_op: impl FnOnce(&[F]) -> Vec<F>,
 		builder_op: impl FnOnce(&mut Self::Builder, &[WitnessWire<F>]) -> Vec<WitnessWire<F>>,
 	) -> Vec<Self> {
@@ -77,10 +78,9 @@ impl<'a, F: Field> CircuitWire<F> for WitnessGenWire<'a, F> {
 			.collect::<Option<Vec<_>>>();
 
 		if let Some(inner_constants) = inner_constants {
-			f_op(&inner_constants)
-				.into_iter()
-				.map(Self::Constant)
-				.collect()
+			let result = f_op(&inner_constants);
+			debug_assert_eq!(result.len(), n_out);
+			result.into_iter().map(Self::Constant).collect()
 		} else {
 			let inner_wires = wires
 				.iter()
@@ -89,7 +89,9 @@ impl<'a, F: Field> CircuitWire<F> for WitnessGenWire<'a, F> {
 					Self::Wire(wire, _) => *wire,
 				})
 				.collect::<Vec<_>>();
-			builder_op(builder, &inner_wires)
+			let result = builder_op(builder, &inner_wires);
+			debug_assert_eq!(result.len(), n_out);
+			result
 				.into_iter()
 				.map(|val| Self::Wire(val, PhantomData))
 				.collect()
