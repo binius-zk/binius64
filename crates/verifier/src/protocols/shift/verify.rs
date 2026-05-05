@@ -3,7 +3,9 @@
 use binius_core::constraint_system::{AndConstraint, ConstraintSystem, MulConstraint};
 use binius_field::{BinaryField, field::FieldOps};
 use binius_ip::channel::IPVerifierChannel;
-use binius_math::{BinarySubspace, univariate::evaluate_univariate};
+use binius_math::{
+	BinarySubspace, multilinear::eq::eq_ind_partial_eval_scalars, univariate::evaluate_univariate,
+};
 use binius_utils::checked_arithmetics::strict_log_2;
 use getset::Getters;
 use itertools::Itertools;
@@ -227,6 +229,7 @@ where
 	} = output;
 
 	// Compute monster multilinear evaluation
+	let r_y_tensor = eq_ind_partial_eval_scalars(r_y);
 	let monster_eval_for_bitand = {
 		let (a, b, c) = constraint_system
 			.and_constraints
@@ -240,7 +243,7 @@ where
 			bitand_lambda.clone(),
 			r_j,
 			r_s,
-			r_y,
+			&r_y_tensor,
 		)
 	}?;
 	let monster_eval_for_intmul = {
@@ -256,7 +259,7 @@ where
 			intmul_lambda.clone(),
 			r_j,
 			r_s,
-			r_y,
+			&r_y_tensor,
 		)
 	}?;
 	let monster_eval = monster_eval_for_bitand + monster_eval_for_intmul;

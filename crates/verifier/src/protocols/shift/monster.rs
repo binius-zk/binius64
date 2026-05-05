@@ -117,7 +117,7 @@ pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SH
 /// * `lambda` - Random coefficient for batching operand evaluations
 /// * `r_j` - Challenge point for bit index variables (length `LOG_WORD_SIZE_BITS`)
 /// * `r_s` - Challenge point for shift variables (length `LOG_WORD_SIZE_BITS`)
-/// * `r_y` - Challenge point for word index variables
+/// * `r_y_tensor` - Equality indicator tensor expansion of the word index challenge `r_y`
 ///
 /// # Returns
 ///
@@ -134,7 +134,7 @@ pub fn evaluate_monster_multilinear_for_operation<F, E, const ARITY: usize>(
 	lambda: E,
 	r_j: &[E],
 	r_s: &[E],
-	r_y: &[E],
+	r_y_tensor: &[E],
 ) -> Result<E, Error>
 where
 	F: BinaryField,
@@ -143,13 +143,12 @@ where
 	assert_eq!(subspace.dim(), LOG_WORD_SIZE_BITS); // precondition
 
 	let r_x_prime_tensor = eq_ind_partial_eval_scalars(&operator_data.r_x_prime);
-	let r_y_tensor = eq_ind_partial_eval_scalars(r_y);
 
 	let l_tilde = lagrange_evals_scalars(subspace, operator_data.r_zhat_prime.clone());
 	let h_op_evals = evaluate_h_op(&l_tilde, r_j, r_s);
 
 	let lambda_powers = powers(lambda).skip(1).take(ARITY).collect::<Vec<_>>();
-	let evals = evaluate_matrices(operand_vecs, &lambda_powers, &r_x_prime_tensor, &r_y_tensor);
+	let evals = evaluate_matrices(operand_vecs, &lambda_powers, &r_x_prime_tensor, r_y_tensor);
 
 	let eval = inner_product_scalars(
 		evals.map(|mut evals_op| evaluate_inplace_scalars(&mut evals_op[..], r_s)),
