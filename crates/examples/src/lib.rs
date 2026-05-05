@@ -12,7 +12,7 @@ use binius_hash::{
 	binary_merkle_tree::HashSuite, sha256::Sha256HashSuite, vision::VisionHashSuite,
 };
 use binius_prover::{KeyCollection, OptimalPackedB128, Prover, zk_config::ZKProver};
-use binius_utils::SerializeBytes;
+use binius_utils::{DeserializeBytes, SerializeBytes};
 use binius_verifier::{
 	Verifier,
 	config::StdChallenger,
@@ -48,15 +48,22 @@ pub type VisionZKVerifier = ZKVerifier<VisionHashSuite>;
 /// Vision ZK prover (Vision-6 leaves + Vision-4 compression)
 pub type VisionZKProver = ZKProver<OptimalPackedB128, VisionHashSuite>;
 
-/// Setup the prover and verifier and use SHA256 for Merkle tree compression.
-/// Providing the `key_collection` skips expensive key collection building.
-pub fn setup_sha256(
+/// Set up a non-ZK prover and verifier for the given constraint system using `H` as the
+/// Merkle hash suite.
+///
+/// Providing `key_collection` skips the expensive key-collection building phase during prover
+/// setup.
+pub fn setup<H>(
 	cs: ConstraintSystem,
 	log_inv_rate: usize,
 	key_collection: Option<KeyCollection>,
-) -> Result<(StdVerifier, StdProver)> {
+) -> Result<(Verifier<H>, Prover<OptimalPackedB128, H>)>
+where
+	H: HashSuite + Clone,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
+{
 	let _setup_guard = tracing::info_span!("Setup", log_inv_rate).entered();
-	let verifier = Verifier::setup(cs, log_inv_rate)?;
+	let verifier = Verifier::<H>::setup(cs, log_inv_rate)?;
 	let prover = if let Some(key_collection) = key_collection {
 		Prover::setup_with_key_collection(verifier.clone(), key_collection)?
 	} else {
@@ -65,41 +72,18 @@ pub fn setup_sha256(
 	Ok((verifier, prover))
 }
 
-/// Setup the prover and verifier and use the ZK-friendly Vision suite for Merkle tree hashing.
-/// Providing the `key_collection` skips expensive key collection building.
-pub fn setup_vision(
+/// Set up a ZK prover and verifier for the given constraint system using `H` as the Merkle
+/// hash suite.
+pub fn setup_zk<H>(
 	cs: ConstraintSystem,
 	log_inv_rate: usize,
-	key_collection: Option<KeyCollection>,
-) -> Result<(VisionVerifier, VisionProver)> {
-	let _setup_guard = tracing::info_span!("Setup", log_inv_rate).entered();
-	let verifier = Verifier::setup(cs, log_inv_rate)?;
-	let prover = if let Some(key_collection) = key_collection {
-		Prover::setup_with_key_collection(verifier.clone(), key_collection)?
-	} else {
-		Prover::setup(verifier.clone())?
-	};
-	Ok((verifier, prover))
-}
-
-/// Setup the ZK prover and verifier using SHA256 for Merkle tree compression.
-pub fn setup_zk_sha256(
-	cs: ConstraintSystem,
-	log_inv_rate: usize,
-) -> Result<(StdZKVerifier, StdZKProver)> {
+) -> Result<(ZKVerifier<H>, ZKProver<OptimalPackedB128, H>)>
+where
+	H: HashSuite + Clone,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
+{
 	let _setup_guard = tracing::info_span!("ZK setup", log_inv_rate).entered();
-	let verifier = ZKVerifier::setup(cs, log_inv_rate)?;
-	let prover = ZKProver::setup(verifier.clone())?;
-	Ok((verifier, prover))
-}
-
-/// Setup the ZK prover and verifier using the ZK-friendly Vision suite for Merkle tree hashing.
-pub fn setup_zk_vision(
-	cs: ConstraintSystem,
-	log_inv_rate: usize,
-) -> Result<(VisionZKVerifier, VisionZKProver)> {
-	let _setup_guard = tracing::info_span!("ZK setup", log_inv_rate).entered();
-	let verifier = ZKVerifier::setup(cs, log_inv_rate)?;
+	let verifier = ZKVerifier::<H>::setup(cs, log_inv_rate)?;
 	let prover = ZKProver::setup(verifier.clone())?;
 	Ok((verifier, prover))
 }
@@ -111,7 +95,7 @@ pub fn prove_verify<H>(
 ) -> Result<()>
 where
 	H: HashSuite,
-	Output<H::LeafHash>: SerializeBytes + binius_utils::DeserializeBytes,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	let challenger = StdChallenger::default();
 
@@ -135,7 +119,7 @@ pub fn prove_verify_zk<H>(
 ) -> Result<()>
 where
 	H: HashSuite,
-	Output<H::LeafHash>: SerializeBytes + binius_utils::DeserializeBytes,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
 	let challenger = StdChallenger::default();
 

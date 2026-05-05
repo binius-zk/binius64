@@ -4,13 +4,11 @@ use std::{fs, path::Path};
 use anyhow::Result;
 use binius_core::constraint_system::{ConstraintSystem, ValueVec, ValuesData};
 use binius_frontend::{CircuitBuilder, CircuitStat};
+use binius_hash::{StdHashSuite, vision::VisionHashSuite};
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
 use clap::{Arg, Args, Command, FromArgMatches, Subcommand};
 
-use crate::{
-	CompressionType, ExampleCircuit, prove_verify, prove_verify_zk, setup_sha256, setup_vision,
-	setup_zk_sha256, setup_zk_vision,
-};
+use crate::{CompressionType, ExampleCircuit, prove_verify, prove_verify_zk, setup, setup_zk};
 
 /// Serialize a value implementing `SerializeBytes` and write it to the given path.
 fn write_serialized<T: SerializeBytes>(value: &T, path: &str) -> Result<()> {
@@ -514,22 +512,22 @@ where
 		match (zk, compression) {
 			(false, CompressionType::Sha256) => {
 				tracing::info!("Using SHA256 compression for Merkle tree");
-				let (verifier, prover) = setup_sha256(cs, log_inv_rate as usize, None)?;
+				let (verifier, prover) = setup::<StdHashSuite>(cs, log_inv_rate as usize, None)?;
 				prove_verify(&verifier, &prover, witness)?;
 			}
 			(false, CompressionType::Vision) => {
 				tracing::info!("Using Vision suite for Merkle tree");
-				let (verifier, prover) = setup_vision(cs, log_inv_rate as usize, None)?;
+				let (verifier, prover) = setup::<VisionHashSuite>(cs, log_inv_rate as usize, None)?;
 				prove_verify(&verifier, &prover, witness)?;
 			}
 			(true, CompressionType::Sha256) => {
 				tracing::info!("Using SHA256 compression for Merkle tree");
-				let (verifier, prover) = setup_zk_sha256(cs, log_inv_rate as usize)?;
+				let (verifier, prover) = setup_zk::<StdHashSuite>(cs, log_inv_rate as usize)?;
 				prove_verify_zk(&verifier, &prover, witness)?;
 			}
 			(true, CompressionType::Vision) => {
 				tracing::info!("Using Vision suite for Merkle tree");
-				let (verifier, prover) = setup_zk_vision(cs, log_inv_rate as usize)?;
+				let (verifier, prover) = setup_zk::<VisionHashSuite>(cs, log_inv_rate as usize)?;
 				prove_verify_zk(&verifier, &prover, witness)?;
 			}
 		}
@@ -722,13 +720,13 @@ where
 			CompressionType::Sha256 => {
 				tracing::info!("Using SHA256 compression for Merkle tree");
 				let (verifier, prover) =
-					setup_sha256(cs, log_inv_rate as usize, maybe_key_collection)?;
+					setup::<StdHashSuite>(cs, log_inv_rate as usize, maybe_key_collection)?;
 				prove_verify(&verifier, &prover, witness)?;
 			}
 			CompressionType::Vision => {
 				tracing::info!("Using Vision suite for Merkle tree");
 				let (verifier, prover) =
-					setup_vision(cs, log_inv_rate as usize, maybe_key_collection)?;
+					setup::<VisionHashSuite>(cs, log_inv_rate as usize, maybe_key_collection)?;
 				prove_verify(&verifier, &prover, witness)?;
 			}
 		};
