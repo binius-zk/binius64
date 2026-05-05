@@ -118,7 +118,7 @@ pub fn keccak256(
 mod tests {
 	use binius_core::verify::verify_constraints;
 	use binius_frontend::CircuitBuilder;
-	use rand::{RngCore, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 	use rstest::rstest;
 	use sha3::{Digest, Keccak256};
 

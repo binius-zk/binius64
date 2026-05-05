@@ -75,7 +75,7 @@ mod tests {
 	use binius_core::consts::WORD_SIZE_BITS;
 	use binius_math::test_utils::random_scalars;
 	use binius_verifier::config::B128;
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

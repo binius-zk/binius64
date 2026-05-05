@@ -12,10 +12,7 @@ use binius_utils::{
 	serialization::{assert_enough_data_for, assert_enough_space_for},
 };
 use bytemuck::{Pod, Zeroable};
-use rand::{
-	Rng,
-	distr::{Distribution, StandardUniform},
-};
+use rand::{distr::StandardUniform, prelude::*};
 
 use crate::{
 	BinaryField,

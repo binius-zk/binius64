@@ -548,13 +548,7 @@ struct JwtGenerationResult {
 }
 
 impl JwtGenerationResult {
-	fn generate(
-		sub: &str,
-		aud: &str,
-		iss: &str,
-		salt: &str,
-		rng: &mut impl RngCore,
-	) -> Result<Self> {
+	fn generate(sub: &str, aud: &str, iss: &str, salt: &str, rng: &mut impl Rng) -> Result<Self> {
 		// Generate VK_u (verifier public key)
 		let mut vk_u = [0u8; 32];
 		rng.fill_bytes(&mut vk_u);

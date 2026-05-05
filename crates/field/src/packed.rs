@@ -482,7 +482,7 @@ impl<PT> PackedBinaryField for PT where PT: PackedField<Scalar: BinaryField> {}
 #[cfg(test)]
 mod tests {
 	use itertools::Itertools;
-	use rand::{Rng, RngCore, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 	use crate::{
@@ -532,7 +532,7 @@ mod tests {
 		test.run::<PackedBinaryGhash4x128b>();
 	}
 
-	fn check_value_iteration<P: PackedField>(mut rng: impl RngCore) {
+	fn check_value_iteration<P: PackedField>(mut rng: impl Rng) {
 		let packed = P::random(&mut rng);
 		let mut iter = packed.iter();
 		for i in 0..P::WIDTH {
@@ -541,7 +541,7 @@ mod tests {
 		assert!(iter.next().is_none());
 	}
 
-	fn check_ref_iteration<P: PackedField>(mut rng: impl RngCore) {
+	fn check_ref_iteration<P: PackedField>(mut rng: impl Rng) {
 		let packed = P::random(&mut rng);
 		let mut iter = packed.into_iter();
 		for i in 0..P::WIDTH {
@@ -550,7 +550,7 @@ mod tests {
 		assert!(iter.next().is_none());
 	}
 
-	fn check_slice_iteration<P: PackedField>(mut rng: impl RngCore) {
+	fn check_slice_iteration<P: PackedField>(mut rng: impl Rng) {
 		for len in [0, 1, 5] {
 			let packed = std::iter::repeat_with(|| P::random(&mut rng))
 				.take(len)

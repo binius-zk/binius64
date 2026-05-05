@@ -356,7 +356,7 @@ mod tests {
 	use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
-	use rand::{SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

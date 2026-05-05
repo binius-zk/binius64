@@ -138,8 +138,7 @@ mod tests {
 	use binius_core::{verify::verify_constraints, word::Word};
 	use bitcoin::PublicKey;
 	use bitcoin_hashes::Hash;
-	use proptest::prelude::RngCore;
-	use rand::{SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 
@@ -168,7 +167,7 @@ mod tests {
 	}
 
 	/// Convenience to produce a random pair (privkey_be, compressed_pubkey)
-	pub fn gen_priv_pub_pair_from_rng(mut rng: impl RngCore) -> ([u8; 32], [u8; 33]) {
+	pub fn gen_priv_pub_pair_from_rng(mut rng: impl Rng) -> ([u8; 32], [u8; 33]) {
 		let mut sk_be = [0u8; 32];
 		rng.fill_bytes(&mut sk_be);
 		let pk_comp = compressed_pubkey_from_be_sk(sk_be);

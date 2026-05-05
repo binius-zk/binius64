@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 use binius_core::{verify::verify_constraints, word::Word};
 use proptest::prelude::*;
-use rand::{Rng, SeedableRng as _, rngs::StdRng};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 use super::*;
 use crate::util::num_biguint_from_u64_limbs;

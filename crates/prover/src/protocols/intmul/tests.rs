@@ -9,7 +9,7 @@ use binius_verifier::{
 	protocols::intmul::{common::IntMulOutput, verify},
 };
 use itertools::izip;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::prelude::*;
 
 use super::{prove::IntMulProver, witness::Witness};
 use crate::fold_word::fold_words;

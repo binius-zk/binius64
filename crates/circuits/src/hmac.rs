@@ -96,7 +96,7 @@ mod tests {
 
 	use binius_core::{verify::verify_constraints, word::Word};
 	use hmac::{Hmac, KeyInit, Mac};
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 	use sha2::Sha512;
 
 	use super::*;

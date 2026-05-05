@@ -1126,7 +1126,7 @@ impl<'a> std::ops::Deref for Proof<'a> {
 
 #[cfg(test)]
 mod serialization_tests {
-	use rand::{RngCore, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

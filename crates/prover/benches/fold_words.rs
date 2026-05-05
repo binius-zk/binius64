@@ -5,7 +5,7 @@ use binius_math::test_utils::random_scalars;
 use binius_prover::fold_word::fold_words;
 use binius_verifier::config::{B128, WORD_SIZE_BITS};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use rand::Rng;
+use rand::prelude::*;
 
 fn bench_fold_words(c: &mut Criterion) {
 	let mut group = c.benchmark_group("fold_words");

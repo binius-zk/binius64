@@ -250,7 +250,7 @@ mod tests {
 		assert!(n_zeros <= n, "n_zeros must be <= n");
 
 		// Sample indices for zeros without replacement
-		let zero_indices: Vec<usize> = (0..n).choose_multiple(rng, n_zeros);
+		let zero_indices: Vec<usize> = (0..n).sample(rng, n_zeros);
 
 		// Create state vector with zeros at sampled indices
 		let mut state = Vec::with_capacity(n);

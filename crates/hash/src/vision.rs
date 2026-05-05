@@ -148,7 +148,7 @@ mod tests {
 	use std::mem::MaybeUninit;
 
 	use digest::Digest;
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

@@ -218,7 +218,7 @@ mod tests {
 	};
 	use binius_utils::{bitwise::BitSelector, random_access_sequence::RandomAccessSequence};
 	use itertools::Itertools;
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 	use crate::sumcheck::bivariate_product_multi_mle::BivariateProductMultiMlecheckProver;

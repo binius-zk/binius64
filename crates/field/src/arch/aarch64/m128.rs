@@ -11,10 +11,7 @@ use binius_utils::{
 	serialization::{assert_enough_data_for, assert_enough_space_for},
 };
 use bytemuck::{Pod, Zeroable};
-use rand::{
-	Rng,
-	distr::{Distribution, StandardUniform},
-};
+use rand::{distr::StandardUniform, prelude::*};
 use seq_macro::seq;
 
 use super::super::portable::{
@@ -740,7 +737,6 @@ impl<U: NumCast<u128>> NumCast<M128> for U {
 #[cfg(test)]
 mod tests {
 	use binius_utils::bytes::BytesMut;
-	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::*;
 

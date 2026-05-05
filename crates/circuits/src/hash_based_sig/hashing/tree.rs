@@ -408,8 +408,7 @@ mod tests {
 			level in 0u32..=20,
 			index in 0u32..=1000,
 		) {
-			use rand::SeedableRng;
-			use rand::prelude::StdRng;
+			use rand::prelude::*;
 
 			let mut rng = StdRng::seed_from_u64(0);
 

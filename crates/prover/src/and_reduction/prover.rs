@@ -291,7 +291,7 @@ mod test {
 		config::{B128, StdChallenger},
 		protocols::bitand::{AndCheckOutput, SKIPPED_VARS, verify_with_channel},
 	};
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::OblongZerocheckProver;
 	use crate::fold_word::fold_words_with_transform;

@@ -122,7 +122,7 @@ pub fn circuit_xmss(
 mod tests {
 	use binius_core::{Word, verify::verify_constraints};
 	use binius_frontend::util::pack_bytes_into_wires_le;
-	use rand::{RngCore, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 	use rstest::rstest;
 
 	use super::*;

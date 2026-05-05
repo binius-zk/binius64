@@ -5,7 +5,7 @@ use binius_circuits::blake3::blake3_compress_2x;
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use clap::Args;
-use rand::{RngCore, SeedableRng, rngs::StdRng};
+use rand::prelude::*;
 
 use super::utils::DEFAULT_RANDOM_SEED;
 use crate::ExampleCircuit;

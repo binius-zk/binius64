@@ -61,7 +61,7 @@ pub fn emit_eval_bytecode(
 #[cfg(test)]
 mod tests {
 	use binius_core::word::Word;
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use crate::compiler::CircuitBuilder;
 

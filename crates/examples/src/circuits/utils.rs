@@ -2,7 +2,7 @@
 //! Utilities for hash circuit examples
 
 use anyhow::{Result, ensure};
-use rand::{RngCore, SeedableRng, rngs::StdRng};
+use rand::prelude::*;
 
 /// Default message size for hash circuit examples (1 KiB)
 ///
