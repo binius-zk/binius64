@@ -11,9 +11,10 @@
 //!   constraint recording (used by
 //!   [`IronSpartanBuilderChannel`](super::builder_channel::IronSpartanBuilderChannel)).
 //! - [`WrappedWire`](super::zk_wrapped_channel::WrappedWire) over
-//!   [`NoopBuilder`](super::zk_wrapped_channel::NoopBuilder) — no constraint recording; values are
-//!   tracked as `Constant` / `Decrypted` / `Encrypted` to distinguish what the verifier does and
-//!   does not know concretely (used by
+//!   [`InOutSegmentBuilder`](super::zk_wrapped_channel::InOutSegmentBuilder) — no constraint
+//!   recording; values are tracked as `Constant` / `InOut` / `Private` to distinguish what the
+//!   verifier does and does not know concretely, and lazily pushed to the outer public-input
+//!   segment (used by
 //!   [`ZKWrappedVerifierChannel`](super::zk_wrapped_channel::ZKWrappedVerifierChannel)).
 //! - `WitnessGenWire` over [`WitnessGenerator`] — concrete evaluation that fills a witness (used by
 //!   `binius_spartan_prover::wrapper::ReplayChannel`).

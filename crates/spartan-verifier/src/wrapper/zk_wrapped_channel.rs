@@ -38,15 +38,15 @@ use crate::{
 /// [`CircuitWire`] backend used by [`ZKWrappedVerifierChannel`].
 ///
 /// Mirrors the verifier-side [`BuilderWire`](super::builder_channel::BuilderWire) and the
-/// prover-side [`WitnessGenWire`](binius_spartan_prover::wrapper::replay_channel::WitnessGenWire):
+/// prover-side `WitnessGenWire` (in `binius_spartan_prover::wrapper::replay_channel`):
 ///
 /// - `Constant(F)` — known at compile time.
 /// - `InOut { value, is_materialized }` — F is known to the wrapper. Will be pushed to the outer
-///   constraint system's public-input segment if/when the wire is materialized (see
-///   [`Self::materialize`]). `is_materialized` is shared via [`Rc`] so all clones of one logical
+///   constraint system's public-input segment if/when the wire is materialized (via the private
+///   `materialize` helper). `is_materialized` is shared via [`Rc`] so all clones of one logical
 ///   wire push exactly once.
-/// - `Private` — F is unknown to the wrapper (analog of [`BuilderWire::Private`]; e.g. the
-///   precommit OTP key, never sent through the inner channel — it lives only in the outer prover's
+/// - `Private` — F is unknown to the wrapper (analog of `BuilderWire::Private`; e.g. the precommit
+///   OTP key, never sent through the inner channel — it lives only in the outer prover's
 ///   commitment, accessed by the outer verifier circuit).
 #[derive(Debug, Clone)]
 pub enum WrappedWire<F: Field> {
@@ -210,8 +210,7 @@ impl<F: Field> CircuitBuilder for InOutSegmentBuilder<F> {
 /// `sample` and `observe_one` return purely lazy InOuts that materialize only if the inner
 /// verifier later combines them with a Private.
 ///
-/// `transparent` closures supplied via
-/// [`OracleLinearRelation`](binius_iop::channel::OracleLinearRelation) must depend only on
+/// `transparent` closures supplied via [`OracleLinearRelation`] must depend only on
 /// `Constant` and `InOut` inputs (sampled challenges), never on `Private` ones —
 /// `verify_oracle_relations` panics otherwise.
 pub struct ZKWrappedVerifierChannel<'a, F, MTScheme, Challenger_>
