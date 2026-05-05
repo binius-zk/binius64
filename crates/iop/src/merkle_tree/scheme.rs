@@ -2,7 +2,7 @@
 
 use std::{array, fmt::Debug, marker::PhantomData};
 
-use binius_hash::{PseudoCompressionFunction, hash_serialize};
+use binius_hash::{PseudoCompressionFunction, binary_merkle_tree, hash_serialize};
 use binius_transcript::{Buf, TranscriptReader};
 use binius_utils::{
 	DeserializeBytes, SerializeBytes,
@@ -72,13 +72,13 @@ where
 
 	fn proof_size(&self, len: usize, n_queries: usize, layer_depth: usize) -> Result<usize, Error> {
 		if !len.is_power_of_two() {
-			return Err(Error::PowerOfTwoLengthRequired);
+			return Err(binary_merkle_tree::Error::PowerOfTwoLengthRequired.into());
 		}
 
 		let log_len = log2_strict_usize(len);
 
 		if layer_depth > log_len {
-			return Err(Error::IncorrectLayerDepth);
+			return Err(binary_merkle_tree::Error::IncorrectLayerDepth.into());
 		}
 
 		Ok(((log_len - layer_depth) * n_queries + (1 << layer_depth))
@@ -93,7 +93,7 @@ where
 		proof: &mut TranscriptReader<B>,
 	) -> Result<(), Error> {
 		if !data.len().is_multiple_of(batch_size) {
-			return Err(Error::IncorrectBatchSize);
+			return Err(binary_merkle_tree::Error::IncorrectBatchSize.into());
 		}
 
 		let digests = data
@@ -138,9 +138,10 @@ where
 		}
 
 		if index >= (1 << tree_depth) {
-			return Err(Error::IndexOutOfRange {
+			return Err(binary_merkle_tree::Error::IndexOutOfRange {
 				max: (1 << tree_depth) - 1,
-			});
+			}
+			.into());
 		}
 
 		let mut leaf_digest = self.compute_leaf_digest(values, proof)?;

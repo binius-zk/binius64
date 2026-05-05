@@ -4,7 +4,6 @@ use binius_iop::merkle_tree::{Commitment, Error, MerkleTreeScheme};
 use binius_transcript::{BufMut, TranscriptWriter};
 use binius_utils::rayon::prelude::*;
 
-pub mod binary_merkle_tree;
 pub mod prover;
 #[cfg(test)]
 mod tests;

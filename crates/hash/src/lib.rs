@@ -8,6 +8,7 @@
 //! including both standard hash functions (SHA-256) and specialized binary field hash functions
 //! (Vision).
 
+pub mod binary_merkle_tree;
 pub mod compress;
 pub mod parallel_compression;
 pub mod parallel_digest;

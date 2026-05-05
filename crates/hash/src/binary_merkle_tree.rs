@@ -1,10 +1,9 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{fmt::Debug, mem::MaybeUninit};
 
 use binius_field::Field;
-use binius_hash::{ParallelDigest, ParallelPseudoCompression};
-use binius_iop::merkle_tree::Error;
 use binius_utils::{
 	checked_arithmetics::log2_strict_usize,
 	mem::slice_assume_init_mut,
@@ -13,6 +12,20 @@ use binius_utils::{
 };
 use digest::{FixedOutputReset, Output, block_api::BlockSizeUser};
 use rand::{CryptoRng, Rng, rngs::StdRng};
+
+use crate::{ParallelDigest, ParallelPseudoCompression};
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+	#[error("Index exceeds Merkle tree base size: {max}")]
+	IndexOutOfRange { max: usize },
+	#[error("values length must be a multiple of the batch size")]
+	IncorrectBatchSize,
+	#[error("The argument length must be a power of two.")]
+	PowerOfTwoLengthRequired,
+	#[error("The layer does not exist in the Merkle tree")]
+	IncorrectLayerDepth,
+}
 
 /// A binary Merkle tree that commits batches of vectors.
 ///
