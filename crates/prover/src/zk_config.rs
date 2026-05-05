@@ -12,11 +12,9 @@ use binius_field::{
 };
 use binius_iop_prover::basefold_compiler::BaseFoldZKProverCompiler;
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded};
-use binius_spartan_frontend::{
-	circuit_builder::ConstraintBuilder, compiler::compile, constraint_system::WitnessLayout,
-};
-use binius_spartan_prover::wrapper::ZKWrappedProverChannel;
-use binius_spartan_verifier::{constraint_system::ConstraintSystemPadded, wrapper::ReplayChannel};
+use binius_spartan_frontend::{compiler::compile, constraint_system::WitnessLayout};
+use binius_spartan_prover::wrapper::{ReplayChannel, ZKWrappedProverChannel};
+use binius_spartan_verifier::constraint_system::ConstraintSystemPadded;
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::SerializeBytes;
 use binius_verifier::{IOPVerifier, zk_config::ZKVerifier};
@@ -82,9 +80,8 @@ where
 		// Re-derive the outer constraint system and layout via symbolic execution.
 		let dummy_public_words =
 			vec![Word::from_u64(0); 1 << inner_iop_verifier.log_public_words()];
-		let mut builder_channel = binius_spartan_verifier::wrapper::IronSpartanBuilderChannel::new(
-			ConstraintBuilder::new(),
-		);
+		let mut builder_channel =
+			binius_spartan_verifier::wrapper::IronSpartanBuilderChannel::new();
 		inner_iop_verifier
 			.verify(&dummy_public_words, &mut builder_channel)
 			.expect("symbolic verify should not fail");

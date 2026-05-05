@@ -23,12 +23,12 @@ use binius_iop_prover::{
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT};
 use binius_spartan_frontend::constraint_system::WitnessLayout;
-use binius_spartan_verifier::{IOPVerifier, wrapper::ReplayChannel};
+use binius_spartan_verifier::IOPVerifier;
 use binius_transcript::fiat_shamir::Challenger;
 use binius_utils::SerializeBytes;
 use rand::CryptoRng;
 
-use crate::{Error, IOPProver, pack_and_blind_witness};
+use crate::{Error, IOPProver, pack_and_blind_witness, wrapper::ReplayChannel};
 
 /// A prover channel that wraps a [`BaseFoldZKProverChannel`] and an outer Spartan IOP prover.
 ///

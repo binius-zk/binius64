@@ -20,12 +20,15 @@ use binius_spartan_frontend::{
 	compiler::compile,
 	constraint_system::BlindingInfo,
 };
-use binius_spartan_prover::{IOPProver, wrapper::ZKWrappedProverChannel};
+use binius_spartan_prover::{
+	IOPProver,
+	wrapper::{ReplayChannel, ZKWrappedProverChannel},
+};
 use binius_spartan_verifier::{
 	IOPVerifier, SECURITY_BITS,
 	config::StdChallenger,
 	constraint_system::ConstraintSystemPadded,
-	wrapper::{IronSpartanBuilderChannel, ReplayChannel, ZKWrappedVerifierChannel},
+	wrapper::{IronSpartanBuilderChannel, ZKWrappedVerifierChannel},
 };
 use binius_transcript::ProverTranscript;
 use rand::{SeedableRng, rngs::StdRng};
@@ -66,7 +69,7 @@ fn test_zk_wrapped_prove_verify() {
 	// === Step 3: Symbolically execute verify to build the outer constraint system ===
 	let inner_public_size = 1 << inner_cs.log_public();
 
-	let mut builder_channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
+	let mut builder_channel = IronSpartanBuilderChannel::new();
 	let dummy_public = vec![B128::ZERO; inner_public_size];
 	let dummy_public_elems = builder_channel.observe_many(&dummy_public);
 	// IronSpartanBuilderChannel::Oracle = () and recv_oracle is a no-op, so pass () directly.
