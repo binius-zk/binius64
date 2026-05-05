@@ -150,7 +150,7 @@ impl IOPVerifier {
 			n_constraints = self.constraint_system.n_and_constraints()
 		)
 		.entered();
-		let bitand_claim = {
+		let (r_zhat_prime, bitand_claim) = {
 			let log_n_constraints = checked_log_2(self.constraint_system.n_and_constraints());
 			let AndCheckOutput {
 				a_eval,
@@ -159,13 +159,14 @@ impl IOPVerifier {
 				z_challenge,
 				eval_point,
 			} = verify_bitand_reduction(log_n_constraints, &extended_subspace, channel)?;
-			OperatorData::new(z_challenge, eval_point, [a_eval, b_eval, c_eval])
+			(z_challenge, OperatorData::new(eval_point, [a_eval, b_eval, c_eval]))
 		};
 		drop(bitand_guard);
 
-		// Build `OperatorData` for IntMul using the same `r_zhat_prime`
-		// challenge as in BitAnd. Sharing this univariate challenge
-		// improves prover ShiftReduction perf.
+		// Build `OperatorData` for IntMul. The univariate challenge `r_zhat_prime` is
+		// shared with BitAnd (computed above) — sharing it improves prover
+		// ShiftReduction perf and lets the verifier compute `h_op_evals` once for both
+		// operations in `shift::check_eval`.
 		let intmul_claim = {
 			let IntMulOutput {
 				a_evals,
@@ -175,11 +176,9 @@ impl IOPVerifier {
 				eval_point,
 			} = intmul_output;
 
-			let r_zhat_prime = bitand_claim.r_zhat_prime.clone();
 			let l_tilde = lagrange_evals_scalars(&domain_subspace, r_zhat_prime.clone());
 			let make_final_claim = |evals| inner_product_scalars(evals, l_tilde.iter().cloned());
 			OperatorData::new(
-				r_zhat_prime,
 				eval_point,
 				[
 					make_final_claim(a_evals),
@@ -213,6 +212,7 @@ impl IOPVerifier {
 			&bitand_claim,
 			&intmul_claim,
 			&domain_subspace,
+			r_zhat_prime,
 			&shift_output,
 			channel,
 		)?;

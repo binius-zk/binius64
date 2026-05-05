@@ -8,10 +8,8 @@ use binius_core::{
 };
 use binius_field::{BinaryField, FieldOps, util::powers};
 use binius_math::{
-	BinarySubspace,
 	inner_product::inner_product_scalars,
 	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate_inplace_scalars},
-	univariate::lagrange_evals_scalars,
 };
 
 use super::{
@@ -112,47 +110,38 @@ pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SH
 /// # Arguments
 ///
 /// * `operand_vecs` - Vector of operand vectors, one per operand position in the constraint
-/// * `operator_data` - Contains the multilinear challenge `r_x'`, univariate challenge `r_zhat'`,
-///   and evaluation claims for each operand
+/// * `operator_data` - Contains the multilinear challenge `r_x'` and evaluation claims for each
+///   operand
 /// * `lambda` - Random coefficient for batching operand evaluations
-/// * `r_j` - Challenge point for bit index variables (length `LOG_WORD_SIZE_BITS`)
 /// * `r_s` - Challenge point for shift variables (length `LOG_WORD_SIZE_BITS`)
 /// * `r_y_tensor` - Equality indicator tensor expansion of the word index challenge `r_y`
+/// * `h_op_evals` - Precomputed shift selector evaluations from `evaluate_h_op`, shared across
+///   operations
 ///
 /// # Returns
 ///
 /// The evaluation of the monster multilinear at the given challenge points, or an error
 /// if the computation fails.
-///
-/// # Errors
-///
-/// Returns an error if the binary subspace construction fails.
 pub fn evaluate_monster_multilinear_for_operation<F, E, const ARITY: usize>(
 	operand_vecs: &[Vec<&Operand>],
 	operator_data: &OperatorData<E, ARITY>,
-	subspace: &BinarySubspace<F>,
 	lambda: E,
-	r_j: &[E],
 	r_s: &[E],
 	r_y_tensor: &[E],
+	h_op_evals: &[E; SHIFT_VARIANT_COUNT],
 ) -> Result<E, Error>
 where
 	F: BinaryField,
 	E: FieldOps<Scalar = F> + From<F>,
 {
-	assert_eq!(subspace.dim(), LOG_WORD_SIZE_BITS); // precondition
-
 	let r_x_prime_tensor = eq_ind_partial_eval_scalars(&operator_data.r_x_prime);
-
-	let l_tilde = lagrange_evals_scalars(subspace, operator_data.r_zhat_prime.clone());
-	let h_op_evals = evaluate_h_op(&l_tilde, r_j, r_s);
 
 	let lambda_powers = powers(lambda).skip(1).take(ARITY).collect::<Vec<_>>();
 	let evals = evaluate_matrices(operand_vecs, &lambda_powers, &r_x_prime_tensor, r_y_tensor);
 
 	let eval = inner_product_scalars(
 		evals.map(|mut evals_op| evaluate_inplace_scalars(&mut evals_op[..], r_s)),
-		h_op_evals,
+		h_op_evals.iter().cloned(),
 	);
 
 	Ok(eval)
