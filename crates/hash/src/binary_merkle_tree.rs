@@ -10,10 +10,32 @@ use binius_utils::{
 	rand::par_rand,
 	rayon::{prelude::*, slice::ParallelSlice},
 };
-use digest::{FixedOutputReset, Output, block_api::BlockSizeUser};
+use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
 use rand::{CryptoRng, Rng, rngs::StdRng};
 
-use crate::{ParallelDigest, ParallelPseudoCompression};
+use super::{
+	compress::PseudoCompressionFunction, parallel_compression::ParallelPseudoCompression,
+	parallel_digest::ParallelDigest,
+};
+
+/// A bundle of hash and compression types used to build and verify a binary Merkle tree.
+///
+/// Most callers want to vary the underlying hash family (SHA-256, Vision, etc.) as a single unit
+/// rather than independently picking a leaf hash, a compression function, and their parallel
+/// counterparts. `HashSuite` bundles the four related types so that user-facing prover and
+/// verifier APIs can take a single `H: HashSuite` parameter instead of two or three loose hash
+/// trait parameters.
+pub trait HashSuite {
+	/// Sequential hash used to compute leaf digests during verification.
+	type LeafHash: Digest + BlockSizeUser + FixedOutputReset + Send;
+	/// Sequential 2-to-1 compression used to fold inner Merkle nodes during verification.
+	type Compression: PseudoCompressionFunction<Output<Self::LeafHash>, 2> + Default;
+	/// Parallel counterpart of [`Self::LeafHash`] used during proving.
+	type ParLeafHash: ParallelDigest<Digest = Self::LeafHash> + Default;
+	/// Parallel counterpart of [`Self::Compression`] used during proving.
+	type ParCompression: ParallelPseudoCompression<Output<Self::LeafHash>, 2, Compression = Self::Compression>
+		+ Default;
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

@@ -7,7 +7,11 @@ use bytemuck::{bytes_of_mut, must_cast};
 use digest::Digest;
 use sha2::{Sha256, block_api::compress256, digest::Output};
 
-use crate::{CompressionFunction, PseudoCompressionFunction};
+use super::{
+	binary_merkle_tree::HashSuite,
+	compress::{CompressionFunction, PseudoCompressionFunction},
+	parallel_compression::ParallelCompressionAdaptor,
+};
 
 /// A two-to-one compression function for SHA-256 digests.
 #[derive(Debug, Clone)]
@@ -36,3 +40,14 @@ impl PseudoCompressionFunction<Output<Sha256>, 2> for Sha256Compression {
 }
 
 impl CompressionFunction<Output<Sha256>, 2> for Sha256Compression {}
+
+/// SHA-256 [`HashSuite`]: SHA-256 leaves and a SHA-256 compression function for inner nodes.
+#[derive(Debug, Clone, Default)]
+pub struct Sha256HashSuite;
+
+impl HashSuite for Sha256HashSuite {
+	type LeafHash = Sha256;
+	type Compression = Sha256Compression;
+	type ParLeafHash = Sha256;
+	type ParCompression = ParallelCompressionAdaptor<Sha256Compression>;
+}

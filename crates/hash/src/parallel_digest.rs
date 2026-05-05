@@ -96,6 +96,12 @@ pub trait ParallelDigest: Send {
 #[derive(Clone)]
 pub struct ParallelMultidigestImpl<D: MultiDigest<N>, const N: usize>(D);
 
+impl<D: MultiDigest<N> + Default, const N: usize> Default for ParallelMultidigestImpl<D, N> {
+	fn default() -> Self {
+		Self(D::default())
+	}
+}
+
 impl<D: MultiDigest<N, Digest: Send> + Send + Sync, const N: usize> ParallelDigest
 	for ParallelMultidigestImpl<D, N>
 {
