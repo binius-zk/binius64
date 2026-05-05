@@ -140,12 +140,11 @@ where
 			P::from_scalars(iter::chain(message.iter_scalars(), mask.iter_scalars()));
 		vec![combined_value]
 	} else {
-		// TODO: The concatenation here is sequential and a performance issue. Ideally, commit
-		// should not allocate and copy the memory into a temp buffer.
-		// TODO: At the very least, make this a parallel copy
-		iter::chain(message.as_ref(), mask.as_ref())
-			.copied()
-			.collect::<Vec<_>>()
+		// TODO: Ideally, commit should not allocate and copy the memory into a temp buffer.
+		let mut combined_values: Vec<P> = Vec::with_capacity(2 * packed_len);
+		combined_values.extend_from_slice(message.as_ref());
+		combined_values.extend_from_slice(mask.as_ref());
+		combined_values
 	};
 	let combined = FieldBuffer::new(log_len + 1, combined_values.into_boxed_slice());
 
