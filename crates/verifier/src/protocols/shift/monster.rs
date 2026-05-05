@@ -16,7 +16,6 @@ use super::{
 	SHIFT_VARIANT_COUNT,
 	error::Error,
 	shift_ind::{partial_eval_phi, partial_eval_sigmas, partial_eval_sigmas_transpose},
-	verify::OperatorData,
 };
 use crate::config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS};
 
@@ -102,7 +101,7 @@ pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SH
 /// $$
 ///
 /// where:
-/// - `m_idx` indexes the operand position (0 to ARITY-1)
+/// - `m_idx` indexes the operand position (0 to `operand_vecs.len() - 1`)
 /// - `op` ranges over the shift variants (logical/arithmetic shifts)
 /// - `h_op` is the shift selector polynomial
 /// - `M_m,op` is the multilinear extension of the operand values
@@ -110,8 +109,7 @@ pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SH
 /// # Arguments
 ///
 /// * `operand_vecs` - Vector of operand vectors, one per operand position in the constraint
-/// * `operator_data` - Contains the multilinear challenge `r_x'` and evaluation claims for each
-///   operand
+/// * `r_x_prime` - Multilinear challenge `r_x'` for the constraint variables
 /// * `lambda` - Random coefficient for batching operand evaluations
 /// * `r_s` - Challenge point for shift variables (length `LOG_WORD_SIZE_BITS`)
 /// * `r_y_tensor` - Equality indicator tensor expansion of the word index challenge `r_y`
@@ -122,9 +120,9 @@ pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SH
 ///
 /// The evaluation of the monster multilinear at the given challenge points, or an error
 /// if the computation fails.
-pub fn evaluate_monster_multilinear_for_operation<F, E, const ARITY: usize>(
+pub fn evaluate_monster_multilinear_for_operation<F, E>(
 	operand_vecs: &[Vec<&Operand>],
-	operator_data: &OperatorData<E, ARITY>,
+	r_x_prime: &[E],
 	lambda: E,
 	r_s: &[E],
 	r_y_tensor: &[E],
@@ -134,9 +132,12 @@ where
 	F: BinaryField,
 	E: FieldOps<Scalar = F> + From<F>,
 {
-	let r_x_prime_tensor = eq_ind_partial_eval_scalars(&operator_data.r_x_prime);
+	let r_x_prime_tensor = eq_ind_partial_eval_scalars(r_x_prime);
 
-	let lambda_powers = powers(lambda).skip(1).take(ARITY).collect::<Vec<_>>();
+	let lambda_powers = powers(lambda)
+		.skip(1)
+		.take(operand_vecs.len())
+		.collect::<Vec<_>>();
 	let evals = evaluate_matrices(operand_vecs, &lambda_powers, &r_x_prime_tensor, r_y_tensor);
 
 	let eval = inner_product_scalars(
