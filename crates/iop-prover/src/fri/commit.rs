@@ -201,7 +201,7 @@ mod tests {
 		BinaryField128bGhash as B128, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b,
 		PackedBinaryGhash4x128b,
 	};
-	use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
+	use binius_hash::StdHashSuite;
 	use binius_iop::fri::FRIParams;
 	use binius_math::{
 		BinarySubspace, FieldBuffer,
@@ -225,9 +225,7 @@ mod tests {
 		let log_batch_size = 1;
 		let n_test_queries = 3;
 
-		let merkle_prover = BinaryMerkleTreeProver::<F, StdDigest, _>::new(
-			ParallelCompressionAdaptor::new(StdCompression::default()),
-		);
+		let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
 
 		let subspace = BinarySubspace::with_dim(log_dim + log_inv_rate);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);

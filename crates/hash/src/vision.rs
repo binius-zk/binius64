@@ -9,12 +9,43 @@ use digest::Output;
 use itertools::izip;
 
 use crate::{
-	parallel_digest::MultiDigest,
+	binary_merkle_tree::HashSuite,
+	parallel_digest::{MultiDigest, ParallelMultidigestImpl},
 	vision_4::{
 		M,
+		compression::VisionCompression,
 		digest::{PADDING_BLOCK, RATE_AS_U8, VisionHasherDigest, fill_padding},
+		parallel_compression::VisionParallelCompression,
 	},
 };
+
+/// Parallel batch size for the Vision parallel hash and compression types.
+///
+/// 128 is the largest batch before the Montgomery-trick amortization in the parallel Vision
+/// permutation stops paying off; this matches the constant used in
+/// `vision_4::parallel_compression`.
+const VISION_PAR_N: usize = 128;
+
+/// Vision [`HashSuite`]: Vision-6 leaves paired with a Vision-4 2-to-1 compression.
+///
+/// Vision-6 has a wider internal state and absorbs leaf data faster, while Vision-4 produces a
+/// smaller (and faster) 2-to-1 compression for inner Merkle nodes. The two share a digest output
+/// type (32 bytes), so they can be composed directly.
+#[derive(Debug, Clone, Default)]
+pub struct VisionHashSuite;
+
+impl HashSuite for VisionHashSuite {
+	type LeafHash = crate::vision_6::digest::VisionHasherDigest;
+	type Compression = VisionCompression;
+	type ParLeafHash = ParallelMultidigestImpl<
+		crate::vision_6::parallel_digest::VisionHasherMultiDigest<
+			VISION_PAR_N,
+			{ VISION_PAR_N * crate::vision_6::M },
+		>,
+		VISION_PAR_N,
+	>;
+	type ParCompression = VisionParallelCompression;
+}
 
 /// A Vision hasher suited for parallelization.
 ///

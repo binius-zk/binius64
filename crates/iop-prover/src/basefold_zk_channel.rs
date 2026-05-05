@@ -262,7 +262,7 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_field::{BinaryField, BinaryField128bGhash, PackedBinaryGhash1x128b, PackedField};
-	use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
+	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
 		basefold_compiler::BaseFoldZKVerifierCompiler,
 		channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
@@ -299,12 +299,8 @@ mod tests {
 		NeighborsLastSingleThread::new(domain_context)
 	}
 
-	fn make_merkle_prover() -> BinaryMerkleTreeProver<
-		BinaryField128bGhash,
-		StdDigest,
-		ParallelCompressionAdaptor<StdCompression>,
-	> {
-		BinaryMerkleTreeProver::new(ParallelCompressionAdaptor::new(StdCompression::default()))
+	fn make_merkle_prover() -> BinaryMerkleTreeProver<BinaryField128bGhash, StdHashSuite> {
+		BinaryMerkleTreeProver::new()
 	}
 
 	fn generate_zk_oracle_data<F, P, R: Rng>(

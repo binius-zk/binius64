@@ -15,6 +15,7 @@
 
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::BinaryField128bGhash as B128;
+use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
 	basefold_compiler::BaseFoldZKVerifierCompiler,
 	channel::OracleSpec,
@@ -29,11 +30,10 @@ use binius_spartan_verifier::{
 };
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
-use digest::{Digest, Output, block_api::BlockSizeUser};
+use digest::Output;
 
 use crate::{
 	config::LOG_WORDS_PER_ELEM,
-	hash::PseudoCompressionFunction,
 	verify::{IOPVerifier, SECURITY_BITS},
 };
 
@@ -41,29 +41,22 @@ use crate::{
 ///
 /// Wraps the Binius64 IOP verifier with a Spartan-based ZK wrapper. Call [`Self::setup`] with
 /// a constraint system, then [`Self::verify`] with public inputs and a proof transcript.
-#[derive(Debug, Clone)]
-pub struct ZKVerifier<MerkleHash, MerkleCompress>
-where
-	MerkleHash: Digest + BlockSizeUser,
-	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
-{
+#[derive(Clone)]
+pub struct ZKVerifier<H: HashSuite> {
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_verifier: IronSpartanIOPVerifier<B128>,
-	basefold_compiler:
-		BaseFoldZKVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>,
+	basefold_compiler: BaseFoldZKVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>>,
 }
 
-impl<MerkleHash, MerkleCompress> ZKVerifier<MerkleHash, MerkleCompress>
+impl<H> ZKVerifier<H>
 where
-	MerkleHash: Digest + BlockSizeUser,
-	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
-	Output<MerkleHash>: DeserializeBytes,
+	H: HashSuite,
+	Output<H::LeafHash>: DeserializeBytes,
 {
 	/// Constructs a ZK verifier for a constraint system.
 	pub fn setup(
 		mut constraint_system: ConstraintSystem,
 		log_inv_rate: usize,
-		compression: MerkleCompress,
 	) -> Result<Self, Error> {
 		let _setup_guard = tracing::debug_span!("Setup ZK verifier").entered();
 
@@ -120,7 +113,7 @@ where
 		]
 		.concat();
 
-		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
+		let merkle_scheme = BinaryMerkleTreeScheme::<B128, H>::new();
 		let basefold_compiler = BaseFoldZKVerifierCompiler::new(
 			merkle_scheme,
 			oracle_specs,
@@ -149,8 +142,7 @@ where
 	/// Returns the BaseFold ZK verifier compiler.
 	pub fn basefold_compiler(
 		&self,
-	) -> &BaseFoldZKVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>
-	{
+	) -> &BaseFoldZKVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
 		&self.basefold_compiler
 	}
 

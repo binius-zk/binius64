@@ -300,7 +300,7 @@ where
 #[cfg(test)]
 mod tests {
 	use binius_field::{BinaryField, BinaryField128bGhash, PackedBinaryGhash1x128b, PackedField};
-	use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
+	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{channel::OracleSpec, fri::MinProofSizeStrategy};
 	use binius_math::{
 		BinarySubspace, FieldBuffer,
@@ -369,9 +369,7 @@ mod tests {
 			generate_oracle_data::<F, P, _>(&mut rng, n_vars_2);
 
 		let max_codeword_log_len = n_vars_2 + LOG_INV_RATE;
-		let merkle_prover = BinaryMerkleTreeProver::<F, StdDigest, _>::new(
-			ParallelCompressionAdaptor::new(StdCompression::default()),
-		);
+		let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
 
 		let subspace = BinarySubspace::with_dim(max_codeword_log_len);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
@@ -419,9 +417,7 @@ mod tests {
 		let n_vars_1 = 6;
 		let n_vars_2 = 8;
 
-		let merkle_prover = BinaryMerkleTreeProver::<F, StdDigest, _>::new(
-			ParallelCompressionAdaptor::new(StdCompression::default()),
-		);
+		let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
 		let merkle_scheme = merkle_prover.scheme().clone();
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);

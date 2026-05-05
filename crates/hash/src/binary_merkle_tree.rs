@@ -1,18 +1,53 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{fmt::Debug, mem::MaybeUninit};
 
 use binius_field::Field;
-use binius_hash::{ParallelDigest, ParallelPseudoCompression};
-use binius_iop::merkle_tree::Error;
 use binius_utils::{
 	checked_arithmetics::log2_strict_usize,
 	mem::slice_assume_init_mut,
 	rand::par_rand,
 	rayon::{prelude::*, slice::ParallelSlice},
 };
-use digest::{FixedOutputReset, Output, block_api::BlockSizeUser};
+use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
 use rand::{CryptoRng, Rng, rngs::StdRng};
+
+use super::{
+	compress::PseudoCompressionFunction, parallel_compression::ParallelPseudoCompression,
+	parallel_digest::ParallelDigest,
+};
+
+/// A bundle of hash and compression types used to build and verify a binary Merkle tree.
+///
+/// Most callers want to vary the underlying hash family (SHA-256, Vision, etc.) as a single unit
+/// rather than independently picking a leaf hash, a compression function, and their parallel
+/// counterparts. `HashSuite` bundles the four related types so that user-facing prover and
+/// verifier APIs can take a single `H: HashSuite` parameter instead of two or three loose hash
+/// trait parameters.
+pub trait HashSuite {
+	/// Sequential hash used to compute leaf digests during verification.
+	type LeafHash: Digest + BlockSizeUser + FixedOutputReset + Send;
+	/// Sequential 2-to-1 compression used to fold inner Merkle nodes during verification.
+	type Compression: PseudoCompressionFunction<Output<Self::LeafHash>, 2> + Default;
+	/// Parallel counterpart of [`Self::LeafHash`] used during proving.
+	type ParLeafHash: ParallelDigest<Digest = Self::LeafHash> + Default;
+	/// Parallel counterpart of [`Self::Compression`] used during proving.
+	type ParCompression: ParallelPseudoCompression<Output<Self::LeafHash>, 2, Compression = Self::Compression>
+		+ Default;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+	#[error("Index exceeds Merkle tree base size: {max}")]
+	IndexOutOfRange { max: usize },
+	#[error("values length must be a multiple of the batch size")]
+	IncorrectBatchSize,
+	#[error("The argument length must be a power of two.")]
+	PowerOfTwoLengthRequired,
+	#[error("The layer does not exist in the Merkle tree")]
+	IncorrectLayerDepth,
+}
 
 /// A binary Merkle tree that commits batches of vectors.
 ///
@@ -29,17 +64,15 @@ pub struct BinaryMerkleTree<D, F> {
 	pub salts: Vec<F>,
 }
 
-pub fn build<F, H, C, R>(
-	compression: &C,
+pub fn build<F, H, R>(
 	elements: &[F],
 	batch_size: usize,
 	salt_len: usize,
 	rng: R,
-) -> Result<BinaryMerkleTree<Output<H::Digest>, F>, Error>
+) -> Result<BinaryMerkleTree<Output<H::LeafHash>, F>, Error>
 where
 	F: Field,
-	H: ParallelDigest<Digest: BlockSizeUser + FixedOutputReset>,
-	C: ParallelPseudoCompression<Output<H::Digest>, 2>,
+	H: HashSuite,
 	R: Rng + CryptoRng,
 {
 	if !elements.len().is_multiple_of(batch_size) {
@@ -52,8 +85,7 @@ where
 		return Err(Error::PowerOfTwoLengthRequired);
 	}
 
-	build_from_iterator::<_, H, _, _, _>(
-		compression,
+	build_from_iterator::<_, H, _, _>(
 		elements
 			.par_chunks(batch_size)
 			.map(|chunk| chunk.iter().copied()),
@@ -62,16 +94,14 @@ where
 	)
 }
 
-pub fn build_from_iterator<F, H, C, R, ParIter>(
-	compression: &C,
+pub fn build_from_iterator<F, H, R, ParIter>(
 	iterated_chunks: ParIter,
 	salt_len: usize,
 	mut rng: R,
-) -> Result<BinaryMerkleTree<Output<H::Digest>, F>, Error>
+) -> Result<BinaryMerkleTree<Output<H::LeafHash>, F>, Error>
 where
 	F: Field,
-	H: ParallelDigest<Digest: BlockSizeUser + FixedOutputReset>,
-	C: ParallelPseudoCompression<Output<H::Digest>, 2>,
+	H: HashSuite,
 	R: Rng + CryptoRng,
 	ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
 {
@@ -95,11 +125,12 @@ where
 		// SAFETY: prev-layer was initialized by hash_leaves
 		slice_assume_init_mut(prev_layer)
 	};
+	let parallel_compression = H::ParCompression::default();
 	for i in 1..(log_len + 1) {
 		let (next_layer, next_remaining) = remaining.split_at_mut(1 << (log_len - i));
 		remaining = next_remaining;
 
-		compression.parallel_compress(prev_layer, next_layer);
+		parallel_compression.parallel_compress(prev_layer, next_layer);
 
 		prev_layer = unsafe {
 			// SAFETY: next_layer was just initialized by compress_layer
@@ -176,17 +207,17 @@ impl<D: Clone, F> BinaryMerkleTree<D, F> {
 #[tracing::instrument("hash_leaves", skip_all, level = "debug")]
 fn hash_leaves<F, H, ParIter>(
 	iterated_chunks: ParIter,
-	digests: &mut [MaybeUninit<Output<H::Digest>>],
+	digests: &mut [MaybeUninit<Output<H::LeafHash>>],
 	salts: &[F],
 ) where
 	F: Field,
-	H: ParallelDigest<Digest: BlockSizeUser + FixedOutputReset>,
+	H: HashSuite,
 	ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
 {
 	if salts.is_empty() {
 		// Need special-case handling when salts is empty, otherwise salt_len is 0 and par_chunks
 		// cannot handle chunk size of 0.
-		let hasher = H::new();
+		let hasher = H::ParLeafHash::default();
 		hasher.digest(iterated_chunks, digests);
 	} else {
 		assert!(salts.len().is_multiple_of(digests.len()));
@@ -198,7 +229,7 @@ fn hash_leaves<F, H, ParIter>(
 			.zip(salts.par_chunks(salt_len))
 			.map(|(chunk, salt)| chunk.into_iter().chain(salt.iter().copied()));
 
-		let hasher = H::new();
+		let hasher = H::ParLeafHash::default();
 		hasher.digest(salted_iter, digests);
 	}
 }

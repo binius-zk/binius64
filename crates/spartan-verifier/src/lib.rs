@@ -36,7 +36,7 @@ pub mod wrapper;
 use std::slice;
 
 use binius_field::{BinaryField, Field, field::FieldOps};
-use binius_hash::PseudoCompressionFunction;
+use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
 	basefold,
 	basefold_compiler::BaseFoldZKVerifierCompiler,
@@ -49,7 +49,7 @@ use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, univariate::eval
 use binius_spartan_frontend::constraint_system::{ConstraintSystem, WitnessSegment};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
-use digest::{Digest, Output, block_api::BlockSizeUser};
+use digest::Output;
 
 use crate::{
 	constraint_system::{BlindingInfo, ConstraintSystemPadded},
@@ -87,17 +87,15 @@ pub struct IOPVerifier<F: Field> {
 ///
 /// The [`Self::setup`] constructor determines public parameters for proving instances of the given
 /// constraint system. Then [`Self::verify`] is called one or more times with individual instances.
-#[derive(Debug, Clone)]
-pub struct Verifier<F, MerkleHash, MerkleCompress>
+#[derive(Clone)]
+pub struct Verifier<F, H>
 where
 	F: BinaryField,
-	MerkleHash: Digest + BlockSizeUser,
-	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
+	H: HashSuite,
 {
 	iop_verifier: IOPVerifier<F>,
 	/// BaseFold ZK compiler for creating verifier channels.
-	basefold_compiler:
-		BaseFoldZKVerifierCompiler<F, BinaryMerkleTreeScheme<F, MerkleHash, MerkleCompress>>,
+	basefold_compiler: BaseFoldZKVerifierCompiler<F, BinaryMerkleTreeScheme<F, H>>,
 }
 
 impl<F: Field> IOPVerifier<F> {
@@ -250,12 +248,11 @@ impl<F: Field> IOPVerifier<F> {
 	}
 }
 
-impl<F, MerkleHash, MerkleCompress> Verifier<F, MerkleHash, MerkleCompress>
+impl<F, H> Verifier<F, H>
 where
 	F: BinaryField,
-	MerkleHash: Digest + BlockSizeUser,
-	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
-	Output<MerkleHash>: DeserializeBytes,
+	H: HashSuite,
+	Output<H::LeafHash>: DeserializeBytes,
 {
 	/// Constructs a verifier for a constraint system.
 	///
@@ -263,7 +260,6 @@ where
 	pub fn setup(
 		constraint_system: ConstraintSystem<F>,
 		log_inv_rate: usize,
-		compression: MerkleCompress,
 	) -> Result<Self, Error> {
 		// Modify the constraint system for zero-knowledge.
 		let n_test_queries = fri::calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
@@ -277,7 +273,7 @@ where
 		let iop_verifier = IOPVerifier::new(constraint_system);
 		let oracle_specs = iop_verifier.oracle_specs();
 
-		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
+		let merkle_scheme = BinaryMerkleTreeScheme::<F, H>::new();
 
 		// Create the BaseFold ZK compiler for IOP verification
 		let basefold_compiler = BaseFoldZKVerifierCompiler::new(
@@ -304,9 +300,7 @@ where
 	}
 
 	/// Returns a reference to the BaseFold ZK verifier compiler.
-	pub fn iop_compiler(
-		&self,
-	) -> &BaseFoldZKVerifierCompiler<F, BinaryMerkleTreeScheme<F, MerkleHash, MerkleCompress>> {
+	pub fn iop_compiler(&self) -> &BaseFoldZKVerifierCompiler<F, BinaryMerkleTreeScheme<F, H>> {
 		&self.basefold_compiler
 	}
 
