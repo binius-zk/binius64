@@ -6,7 +6,7 @@ use std::vec;
 use binius_field::{
 	BinaryField, BinaryField128bGhash as B128, PackedBinaryGhash1x128b, PackedField,
 };
-use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
+use binius_hash::{StdDigest, StdHashSuite};
 use binius_iop::fri::{self, FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier};
 use binius_math::{
 	BinarySubspace, ReedSolomonCode,
@@ -37,8 +37,7 @@ fn test_commit_prove_verify_success<F, P>(
 {
 	let mut rng = StdRng::seed_from_u64(0);
 
-	let parallel_compression = ParallelCompressionAdaptor::new(StdCompression::default());
-	let merkle_prover = BinaryMerkleTreeProver::<_, StdDigest, _>::new(parallel_compression);
+	let merkle_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::new();
 
 	let committed_rs_code = ReedSolomonCode::<F>::new(log_dimension, log_inv_rate);
 
@@ -240,19 +239,14 @@ fn generate_fri_proof<F, P>(
 	log_inv_rate: usize,
 	log_batch_size: usize,
 	arities: &[usize],
-) -> (
-	Vec<u8>,
-	FRIParams<F>,
-	binius_iop::merkle_tree::BinaryMerkleTreeScheme<F, StdDigest, StdCompression>,
-)
+) -> (Vec<u8>, FRIParams<F>, binius_iop::merkle_tree::BinaryMerkleTreeScheme<F, StdHashSuite>)
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 {
 	let mut rng = StdRng::seed_from_u64(0);
 
-	let parallel_compression = ParallelCompressionAdaptor::new(StdCompression::default());
-	let merkle_prover = BinaryMerkleTreeProver::<_, StdDigest, _>::new(parallel_compression);
+	let merkle_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::new();
 
 	let committed_rs_code = ReedSolomonCode::<F>::new(log_dimension, log_inv_rate);
 

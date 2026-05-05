@@ -1,69 +1,78 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{array, fmt::Debug, marker::PhantomData};
 
-use binius_hash::{PseudoCompressionFunction, binary_merkle_tree, hash_serialize};
+use binius_hash::{
+	PseudoCompressionFunction,
+	binary_merkle_tree::{self, HashSuite},
+	hash_serialize,
+};
 use binius_transcript::{Buf, TranscriptReader};
 use binius_utils::{
 	DeserializeBytes, SerializeBytes,
 	checked_arithmetics::{log2_ceil_usize, log2_strict_usize},
 };
-use digest::{Digest, Output, block_api::BlockSizeUser};
-use getset::{CopyGetters, Getters};
+use digest::{Digest, Output};
+use getset::CopyGetters;
 
 use super::{
 	error::{Error, VerificationError},
 	merkle_tree_vcs::MerkleTreeScheme,
 };
 
-#[derive(Debug, Clone, Getters, CopyGetters)]
-pub struct BinaryMerkleTreeScheme<T, H, C> {
+#[derive(Clone, CopyGetters)]
+pub struct BinaryMerkleTreeScheme<T, H: HashSuite> {
 	#[getset(get = "pub")]
-	compression: C,
+	compression: H::Compression,
 	#[getset(get_copy = "pub")]
 	salt_len: usize,
-	// This makes it so that `BinaryMerkleTreeScheme` remains Send + Sync
+	// This makes it so that `BinaryMerkleTreeScheme` remains Send + Sync regardless of `T`.
 	// See https://doc.rust-lang.org/nomicon/phantom-data.html#table-of-phantomdata-patterns
-	_phantom: PhantomData<fn() -> (T, H)>,
+	_phantom: PhantomData<fn() -> T>,
 }
 
-impl<T, H, C> BinaryMerkleTreeScheme<T, H, C> {
-	pub fn new(compression: C) -> Self {
-		Self::hiding(compression, 0)
+impl<T, H: HashSuite> Default for BinaryMerkleTreeScheme<T, H> {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl<T, H: HashSuite> BinaryMerkleTreeScheme<T, H> {
+	pub fn new() -> Self {
+		Self::hiding(0)
 	}
 
-	pub fn hiding(compression: C, salt_len: usize) -> Self {
+	pub fn hiding(salt_len: usize) -> Self {
 		Self {
-			compression,
+			compression: H::Compression::default(),
 			salt_len,
 			_phantom: PhantomData,
 		}
 	}
 }
 
-impl<T, H, C> BinaryMerkleTreeScheme<T, H, C>
+impl<T, H> BinaryMerkleTreeScheme<T, H>
 where
 	T: SerializeBytes + DeserializeBytes,
-	H: Digest + BlockSizeUser,
-	C: PseudoCompressionFunction<Output<H>, 2>,
+	H: HashSuite,
 {
 	fn compute_leaf_digest<B: Buf>(
 		&self,
 		values: &[T],
 		proof: &mut TranscriptReader<B>,
-	) -> Result<Output<H>, Error> {
+	) -> Result<Output<H::LeafHash>, Error> {
 		let salt = proof.read_vec::<T>(self.salt_len)?;
-		hash_serialize::<T, H>(values.iter().chain(&salt)).map_err(Error::Serialization)
+		hash_serialize::<T, H::LeafHash>(values.iter().chain(&salt)).map_err(Error::Serialization)
 	}
 }
 
-impl<T, H, C> MerkleTreeScheme<T> for BinaryMerkleTreeScheme<T, H, C>
+impl<T, H> MerkleTreeScheme<T> for BinaryMerkleTreeScheme<T, H>
 where
 	T: SerializeBytes + DeserializeBytes,
-	H: Digest + BlockSizeUser,
-	C: PseudoCompressionFunction<Output<H>, 2>,
+	H: HashSuite,
 {
-	type Digest = Output<H>;
+	type Digest = Output<H::LeafHash>;
 
 	/// This layer allows minimizing the proof size.
 	fn optimal_verify_layer(&self, n_queries: usize, tree_depth: usize) -> usize {
@@ -82,7 +91,7 @@ where
 		}
 
 		Ok(((log_len - layer_depth) * n_queries + (1 << layer_depth))
-			* <H as Digest>::output_size())
+			* <H::LeafHash as Digest>::output_size())
 	}
 
 	fn verify_vector<B: Buf>(

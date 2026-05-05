@@ -64,17 +64,15 @@ pub struct BinaryMerkleTree<D, F> {
 	pub salts: Vec<F>,
 }
 
-pub fn build<F, H, C, R>(
-	compression: &C,
+pub fn build<F, H, R>(
 	elements: &[F],
 	batch_size: usize,
 	salt_len: usize,
 	rng: R,
-) -> Result<BinaryMerkleTree<Output<H::Digest>, F>, Error>
+) -> Result<BinaryMerkleTree<Output<H::LeafHash>, F>, Error>
 where
 	F: Field,
-	H: ParallelDigest<Digest: BlockSizeUser + FixedOutputReset>,
-	C: ParallelPseudoCompression<Output<H::Digest>, 2>,
+	H: HashSuite,
 	R: Rng + CryptoRng,
 {
 	if !elements.len().is_multiple_of(batch_size) {
@@ -87,8 +85,7 @@ where
 		return Err(Error::PowerOfTwoLengthRequired);
 	}
 
-	build_from_iterator::<_, H, _, _, _>(
-		compression,
+	build_from_iterator::<_, H, _, _>(
 		elements
 			.par_chunks(batch_size)
 			.map(|chunk| chunk.iter().copied()),
@@ -97,16 +94,14 @@ where
 	)
 }
 
-pub fn build_from_iterator<F, H, C, R, ParIter>(
-	compression: &C,
+pub fn build_from_iterator<F, H, R, ParIter>(
 	iterated_chunks: ParIter,
 	salt_len: usize,
 	mut rng: R,
-) -> Result<BinaryMerkleTree<Output<H::Digest>, F>, Error>
+) -> Result<BinaryMerkleTree<Output<H::LeafHash>, F>, Error>
 where
 	F: Field,
-	H: ParallelDigest<Digest: BlockSizeUser + FixedOutputReset>,
-	C: ParallelPseudoCompression<Output<H::Digest>, 2>,
+	H: HashSuite,
 	R: Rng + CryptoRng,
 	ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
 {
@@ -130,11 +125,12 @@ where
 		// SAFETY: prev-layer was initialized by hash_leaves
 		slice_assume_init_mut(prev_layer)
 	};
+	let parallel_compression = H::ParCompression::default();
 	for i in 1..(log_len + 1) {
 		let (next_layer, next_remaining) = remaining.split_at_mut(1 << (log_len - i));
 		remaining = next_remaining;
 
-		compression.parallel_compress(prev_layer, next_layer);
+		parallel_compression.parallel_compress(prev_layer, next_layer);
 
 		prev_layer = unsafe {
 			// SAFETY: next_layer was just initialized by compress_layer
@@ -211,17 +207,17 @@ impl<D: Clone, F> BinaryMerkleTree<D, F> {
 #[tracing::instrument("hash_leaves", skip_all, level = "debug")]
 fn hash_leaves<F, H, ParIter>(
 	iterated_chunks: ParIter,
-	digests: &mut [MaybeUninit<Output<H::Digest>>],
+	digests: &mut [MaybeUninit<Output<H::LeafHash>>],
 	salts: &[F],
 ) where
 	F: Field,
-	H: ParallelDigest<Digest: BlockSizeUser + FixedOutputReset>,
+	H: HashSuite,
 	ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
 {
 	if salts.is_empty() {
 		// Need special-case handling when salts is empty, otherwise salt_len is 0 and par_chunks
 		// cannot handle chunk size of 0.
-		let hasher = H::new();
+		let hasher = H::ParLeafHash::default();
 		hasher.digest(iterated_chunks, digests);
 	} else {
 		assert!(salts.len().is_multiple_of(digests.len()));
@@ -233,7 +229,7 @@ fn hash_leaves<F, H, ParIter>(
 			.zip(salts.par_chunks(salt_len))
 			.map(|(chunk, salt)| chunk.into_iter().chain(salt.iter().copied()));
 
-		let hasher = H::new();
+		let hasher = H::ParLeafHash::default();
 		hasher.digest(salted_iter, digests);
 	}
 }

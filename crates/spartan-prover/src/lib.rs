@@ -37,7 +37,7 @@ use std::{
 };
 
 use binius_field::{BinaryField, Field, PackedExtension, PackedField};
-use binius_hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression};
+use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{
 	basefold_compiler::BaseFoldZKProverCompiler, channel::IOPProverChannel,
 	merkle_tree::prover::BinaryMerkleTreeProver,
@@ -66,7 +66,7 @@ use binius_utils::{
 	checked_arithmetics::checked_log_2,
 	rayon::{self, prelude::*},
 };
-use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
+use digest::Output;
 pub use error::*;
 use itertools::chain;
 use rand::CryptoRng;
@@ -74,8 +74,7 @@ use rand::CryptoRng;
 use crate::wiring::{WiringTranspose, fold_constraints};
 
 type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
-type ProverMerkleProver<F, ParallelMerkleHasher, ParallelMerkleCompress> =
-	BinaryMerkleTreeProver<F, ParallelMerkleHasher, ParallelMerkleCompress>;
+type ProverMerkleProver<F, H> = BinaryMerkleTreeProver<F, H>;
 
 /// IOP prover for a particular constraint system.
 ///
@@ -94,19 +93,14 @@ pub struct IOPProver<F: Field> {
 /// The [`Self::setup`] constructor pre-processes reusable structures for proving instances of the
 /// given constraint system. Then [`Self::prove`] is called one or more times with individual
 /// instances.
-pub struct Prover<P, ParallelMerkleCompress, ParallelMerkleHasher>
+pub struct Prover<P, H>
 where
 	P: PackedField<Scalar: BinaryField>,
-	ParallelMerkleHasher: ParallelDigest<Digest: Digest + BlockSizeUser + FixedOutputReset>,
-	ParallelMerkleCompress: ParallelPseudoCompression<Output<ParallelMerkleHasher::Digest>, 2>,
+	H: HashSuite,
 {
 	iop_prover: IOPProver<P::Scalar>,
-	#[allow(clippy::type_complexity)]
-	basefold_compiler: BaseFoldZKProverCompiler<
-		P,
-		ProverNTT<P::Scalar>,
-		ProverMerkleProver<P::Scalar, ParallelMerkleHasher, ParallelMerkleCompress>,
-	>,
+	basefold_compiler:
+		BaseFoldZKProverCompiler<P, ProverNTT<P::Scalar>, ProverMerkleProver<P::Scalar, H>>,
 }
 
 impl<F: Field> IOPProver<F> {
@@ -326,23 +320,17 @@ impl<F: Field> IOPProver<F> {
 	}
 }
 
-impl<F, P, MerkleHash, ParallelMerkleCompress, ParallelMerkleHasher>
-	Prover<P, ParallelMerkleCompress, ParallelMerkleHasher>
+impl<F, P, H> Prover<P, H>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F> + PackedExtension<F>,
-	MerkleHash: Digest + BlockSizeUser + FixedOutputReset,
-	ParallelMerkleHasher: ParallelDigest<Digest = MerkleHash>,
-	ParallelMerkleCompress: ParallelPseudoCompression<Output<MerkleHash>, 2>,
-	Output<MerkleHash>: SerializeBytes,
+	H: HashSuite,
+	Output<H::LeafHash>: SerializeBytes,
 {
 	/// Constructs a prover corresponding to a constraint system verifier.
 	///
 	/// See [`Prover`] struct documentation for details.
-	pub fn setup(
-		verifier: Verifier<F, MerkleHash, ParallelMerkleCompress::Compression>,
-		compression: ParallelMerkleCompress,
-	) -> Result<Self, Error> {
+	pub fn setup(verifier: Verifier<F, H>) -> Result<Self, Error> {
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 
 		// Get the largest subspace from the verifier compiler for NTT creation
@@ -350,7 +338,7 @@ where
 		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
-		let merkle_prover = BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression);
+		let merkle_prover = BinaryMerkleTreeProver::<_, H>::new();
 
 		// Create the BaseFold ZK compiler from verifier compiler (reuses oracle_specs and
 		// fri_params)
@@ -376,11 +364,7 @@ where
 	/// Returns a reference to the BaseFold ZK prover compiler.
 	pub fn iop_compiler(
 		&self,
-	) -> &BaseFoldZKProverCompiler<
-		P,
-		ProverNTT<F>,
-		ProverMerkleProver<F, ParallelMerkleHasher, ParallelMerkleCompress>,
-	> {
+	) -> &BaseFoldZKProverCompiler<P, ProverNTT<F>, ProverMerkleProver<F, H>> {
 		&self.basefold_compiler
 	}
 

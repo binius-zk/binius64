@@ -1,66 +1,56 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::sync::Mutex;
 
 use binius_field::Field;
-use binius_hash::{
-	ParallelDigest, ParallelPseudoCompression,
-	binary_merkle_tree::{self, BinaryMerkleTree},
-};
+use binius_hash::binary_merkle_tree::{self, BinaryMerkleTree, HashSuite};
 use binius_iop::merkle_tree::{BinaryMerkleTreeScheme, Commitment, Error, MerkleTreeScheme};
 use binius_transcript::{BufMut, TranscriptWriter};
 use binius_utils::rayon::iter::IndexedParallelIterator;
-use digest::{FixedOutputReset, Output, block_api::BlockSizeUser};
+use digest::Output;
 use getset::Getters;
 use rand::{CryptoRng, SeedableRng, rngs::StdRng};
 
 use super::MerkleTreeProver;
 
-#[derive(Debug, Getters)]
-pub struct BinaryMerkleTreeProver<T, H: ParallelDigest, C>
-where
-	C: ParallelPseudoCompression<Output<H::Digest>, 2>,
-{
+#[derive(Getters)]
+pub struct BinaryMerkleTreeProver<T, H: HashSuite> {
 	#[getset(get = "pub")]
-	scheme: BinaryMerkleTreeScheme<T, H::Digest, C::Compression>,
-	parallel_compression: C,
+	scheme: BinaryMerkleTreeScheme<T, H>,
 	salt_rng: Mutex<StdRng>,
 }
 
-impl<T, C, H: ParallelDigest> BinaryMerkleTreeProver<T, H, C>
-where
-	C: ParallelPseudoCompression<Output<H::Digest>, 2>,
-	C::Compression: Clone,
-{
-	pub fn new(parallel_compression: C) -> Self {
+impl<T, H: HashSuite> BinaryMerkleTreeProver<T, H> {
+	pub fn new() -> Self {
 		Self {
-			scheme: BinaryMerkleTreeScheme::new(parallel_compression.compression().clone()),
-			parallel_compression,
+			scheme: BinaryMerkleTreeScheme::new(),
 			// We can construct a dummy Rng with a deterministic seed because it will be unused.
 			salt_rng: Mutex::new(StdRng::seed_from_u64(0)),
 		}
 	}
 
-	pub fn hiding(parallel_compression: C, mut rng: impl CryptoRng, salt_len: usize) -> Self {
+	pub fn hiding(mut rng: impl CryptoRng, salt_len: usize) -> Self {
 		Self {
-			scheme: BinaryMerkleTreeScheme::hiding(
-				parallel_compression.compression().clone(),
-				salt_len,
-			),
-			parallel_compression,
+			scheme: BinaryMerkleTreeScheme::hiding(salt_len),
 			salt_rng: Mutex::new(StdRng::from_rng(&mut rng)),
 		}
 	}
 }
 
-impl<F, H, C> MerkleTreeProver<F> for BinaryMerkleTreeProver<F, H, C>
+impl<T, H: HashSuite> Default for BinaryMerkleTreeProver<T, H> {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl<F, H> MerkleTreeProver<F> for BinaryMerkleTreeProver<F, H>
 where
 	F: Field,
-	H: ParallelDigest<Digest: BlockSizeUser + FixedOutputReset>,
-	C: ParallelPseudoCompression<Output<H::Digest>, 2>,
+	H: HashSuite,
 {
-	type Scheme = BinaryMerkleTreeScheme<F, H::Digest, C::Compression>;
-	type Committed = BinaryMerkleTree<Output<H::Digest>, F>;
+	type Scheme = BinaryMerkleTreeScheme<F, H>;
+	type Committed = BinaryMerkleTree<Output<H::LeafHash>, F>;
 
 	fn scheme(&self) -> &Self::Scheme {
 		&self.scheme
@@ -70,7 +60,7 @@ where
 		&self,
 		committed: &'a Self::Committed,
 		depth: usize,
-	) -> Result<&'a [Output<H::Digest>], Error> {
+	) -> Result<&'a [Output<H::LeafHash>], Error> {
 		Ok(committed.layer(depth)?)
 	}
 
@@ -102,8 +92,7 @@ where
 			let mut root_rng = self.salt_rng.lock().unwrap();
 			StdRng::from_rng(&mut *root_rng)
 		};
-		let tree = binary_merkle_tree::build_from_iterator::<F, H, _, _, _>(
-			&self.parallel_compression,
+		let tree = binary_merkle_tree::build_from_iterator::<F, H, _, _>(
 			leaves,
 			self.scheme.salt_len(),
 			salt_rng,

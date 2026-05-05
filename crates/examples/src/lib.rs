@@ -9,14 +9,10 @@ use anyhow::Result;
 use binius_core::constraint_system::{ConstraintSystem, ValueVec};
 use binius_frontend::{CircuitBuilder, WitnessFiller};
 use binius_hash::{
-	ParallelCompressionAdaptor, ParallelDigest, ParallelPseudoCompression,
-	PseudoCompressionFunction, StdCompression, StdDigest,
-	vision_4::{
-		compression::VisionCompression, digest::VisionHasherDigest,
-		parallel_compression::VisionParallelCompression,
-	},
+	binary_merkle_tree::HashSuite, sha256::Sha256HashSuite, vision::VisionHashSuite,
 };
 use binius_prover::{KeyCollection, OptimalPackedB128, Prover, zk_config::ZKProver};
+use binius_utils::SerializeBytes;
 use binius_verifier::{
 	Verifier,
 	config::StdChallenger,
@@ -25,35 +21,32 @@ use binius_verifier::{
 };
 use clap::ValueEnum;
 pub use cli::Cli;
-use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
+use digest::Output;
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum CompressionType {
 	/// SHA-256 compression function
 	Sha256,
-	/// Vision 4-element compression function
-	Vision4,
+	/// Vision compression function (Vision-6 leaves, Vision-4 inner-node compression)
+	Vision,
 }
 
 /// Standard verifier using SHA256 compression
-pub type StdVerifier = Verifier<StdDigest, StdCompression>;
+pub type StdVerifier = Verifier<Sha256HashSuite>;
 /// Standard prover using SHA256 compression
-pub type StdProver =
-	Prover<OptimalPackedB128, ParallelCompressionAdaptor<StdCompression>, StdDigest>;
-/// Vision4 verifier
-pub type VisionVerifier = Verifier<VisionHasherDigest, VisionCompression>;
-/// Vision4 prover
-pub type VisionProver = Prover<OptimalPackedB128, VisionParallelCompression, VisionHasherDigest>;
+pub type StdProver = Prover<OptimalPackedB128, Sha256HashSuite>;
+/// Vision verifier (Vision-6 leaves + Vision-4 compression)
+pub type VisionVerifier = Verifier<VisionHashSuite>;
+/// Vision prover (Vision-6 leaves + Vision-4 compression)
+pub type VisionProver = Prover<OptimalPackedB128, VisionHashSuite>;
 /// Standard ZK verifier using SHA256 compression
-pub type StdZKVerifier = ZKVerifier<StdDigest, StdCompression>;
+pub type StdZKVerifier = ZKVerifier<Sha256HashSuite>;
 /// Standard ZK prover using SHA256 compression
-pub type StdZKProver =
-	ZKProver<OptimalPackedB128, ParallelCompressionAdaptor<StdCompression>, StdDigest>;
-/// Vision4 ZK verifier
-pub type VisionZKVerifier = ZKVerifier<VisionHasherDigest, VisionCompression>;
-/// Vision4 ZK prover
-pub type VisionZKProver =
-	ZKProver<OptimalPackedB128, VisionParallelCompression, VisionHasherDigest>;
+pub type StdZKProver = ZKProver<OptimalPackedB128, Sha256HashSuite>;
+/// Vision ZK verifier (Vision-6 leaves + Vision-4 compression)
+pub type VisionZKVerifier = ZKVerifier<VisionHashSuite>;
+/// Vision ZK prover (Vision-6 leaves + Vision-4 compression)
+pub type VisionZKProver = ZKProver<OptimalPackedB128, VisionHashSuite>;
 
 /// Setup the prover and verifier and use SHA256 for Merkle tree compression.
 /// Providing the `key_collection` skips expensive key collection building.
@@ -63,32 +56,28 @@ pub fn setup_sha256(
 	key_collection: Option<KeyCollection>,
 ) -> Result<(StdVerifier, StdProver)> {
 	let _setup_guard = tracing::info_span!("Setup", log_inv_rate).entered();
-	let parallel_compression = ParallelCompressionAdaptor::new(StdCompression::default());
-	let compression = parallel_compression.compression().clone();
-	let verifier = Verifier::setup(cs, log_inv_rate, compression)?;
+	let verifier = Verifier::setup(cs, log_inv_rate)?;
 	let prover = if let Some(key_collection) = key_collection {
-		Prover::setup_with_key_collection(verifier.clone(), parallel_compression, key_collection)?
+		Prover::setup_with_key_collection(verifier.clone(), key_collection)?
 	} else {
-		Prover::setup(verifier.clone(), parallel_compression)?
+		Prover::setup(verifier.clone())?
 	};
 	Ok((verifier, prover))
 }
 
-/// Setup the prover and verifier and use ZK-friendly hash Vision4 for Merkle tree compression.
+/// Setup the prover and verifier and use the ZK-friendly Vision suite for Merkle tree hashing.
 /// Providing the `key_collection` skips expensive key collection building.
-pub fn setup_vision4(
+pub fn setup_vision(
 	cs: ConstraintSystem,
 	log_inv_rate: usize,
 	key_collection: Option<KeyCollection>,
 ) -> Result<(VisionVerifier, VisionProver)> {
 	let _setup_guard = tracing::info_span!("Setup", log_inv_rate).entered();
-	let parallel_compression = VisionParallelCompression::default();
-	let compression = parallel_compression.compression().clone();
-	let verifier = Verifier::setup(cs, log_inv_rate, compression)?;
+	let verifier = Verifier::setup(cs, log_inv_rate)?;
 	let prover = if let Some(key_collection) = key_collection {
-		Prover::setup_with_key_collection(verifier.clone(), parallel_compression, key_collection)?
+		Prover::setup_with_key_collection(verifier.clone(), key_collection)?
 	} else {
-		Prover::setup(verifier.clone(), parallel_compression)?
+		Prover::setup(verifier.clone())?
 	};
 	Ok((verifier, prover))
 }
@@ -99,36 +88,30 @@ pub fn setup_zk_sha256(
 	log_inv_rate: usize,
 ) -> Result<(StdZKVerifier, StdZKProver)> {
 	let _setup_guard = tracing::info_span!("ZK setup", log_inv_rate).entered();
-	let parallel_compression = ParallelCompressionAdaptor::new(StdCompression::default());
-	let compression = parallel_compression.compression().clone();
-	let verifier = ZKVerifier::setup(cs, log_inv_rate, compression)?;
-	let prover = ZKProver::setup(verifier.clone(), parallel_compression)?;
+	let verifier = ZKVerifier::setup(cs, log_inv_rate)?;
+	let prover = ZKProver::setup(verifier.clone())?;
 	Ok((verifier, prover))
 }
 
-/// Setup the ZK prover and verifier using ZK-friendly hash Vision4 for Merkle tree compression.
-pub fn setup_zk_vision4(
+/// Setup the ZK prover and verifier using the ZK-friendly Vision suite for Merkle tree hashing.
+pub fn setup_zk_vision(
 	cs: ConstraintSystem,
 	log_inv_rate: usize,
 ) -> Result<(VisionZKVerifier, VisionZKProver)> {
 	let _setup_guard = tracing::info_span!("ZK setup", log_inv_rate).entered();
-	let parallel_compression = VisionParallelCompression::default();
-	let compression = parallel_compression.compression().clone();
-	let verifier = ZKVerifier::setup(cs, log_inv_rate, compression)?;
-	let prover = ZKProver::setup(verifier.clone(), parallel_compression)?;
+	let verifier = ZKVerifier::setup(cs, log_inv_rate)?;
+	let prover = ZKProver::setup(verifier.clone())?;
 	Ok((verifier, prover))
 }
 
-pub fn prove_verify<D, C, ParD, ParC>(
-	verifier: &Verifier<D, C>,
-	prover: &Prover<OptimalPackedB128, ParC, ParD>,
+pub fn prove_verify<H>(
+	verifier: &Verifier<H>,
+	prover: &Prover<OptimalPackedB128, H>,
 	witness: ValueVec,
 ) -> Result<()>
 where
-	D: Digest + BlockSizeUser + FixedOutputReset,
-	C: PseudoCompressionFunction<Output<D>, 2>,
-	ParD: ParallelDigest<Digest = D>,
-	ParC: ParallelPseudoCompression<Output<D>, 2, Compression = C>,
+	H: HashSuite,
+	Output<H::LeafHash>: SerializeBytes + binius_utils::DeserializeBytes,
 {
 	let challenger = StdChallenger::default();
 
@@ -145,16 +128,14 @@ where
 	Ok(())
 }
 
-pub fn prove_verify_zk<D, C, ParD, ParC>(
-	verifier: &ZKVerifier<D, C>,
-	prover: &ZKProver<OptimalPackedB128, ParC, ParD>,
+pub fn prove_verify_zk<H>(
+	verifier: &ZKVerifier<H>,
+	prover: &ZKProver<OptimalPackedB128, H>,
 	witness: ValueVec,
 ) -> Result<()>
 where
-	D: Digest + BlockSizeUser + FixedOutputReset,
-	C: PseudoCompressionFunction<Output<D>, 2>,
-	ParD: ParallelDigest<Digest = D>,
-	ParC: ParallelPseudoCompression<Output<D>, 2, Compression = C>,
+	H: HashSuite,
+	Output<H::LeafHash>: SerializeBytes + binius_utils::DeserializeBytes,
 {
 	let challenger = StdChallenger::default();
 

@@ -8,8 +8,8 @@ use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
 use clap::{Arg, Args, Command, FromArgMatches, Subcommand};
 
 use crate::{
-	CompressionType, ExampleCircuit, prove_verify, prove_verify_zk, setup_sha256, setup_vision4,
-	setup_zk_sha256, setup_zk_vision4,
+	CompressionType, ExampleCircuit, prove_verify, prove_verify_zk, setup_sha256, setup_vision,
+	setup_zk_sha256, setup_zk_vision,
 };
 
 /// Serialize a value implementing `SerializeBytes` and write it to the given path.
@@ -517,9 +517,9 @@ where
 				let (verifier, prover) = setup_sha256(cs, log_inv_rate as usize, None)?;
 				prove_verify(&verifier, &prover, witness)?;
 			}
-			(false, CompressionType::Vision4) => {
-				tracing::info!("Using Vision4 compression for Merkle tree");
-				let (verifier, prover) = setup_vision4(cs, log_inv_rate as usize, None)?;
+			(false, CompressionType::Vision) => {
+				tracing::info!("Using Vision suite for Merkle tree");
+				let (verifier, prover) = setup_vision(cs, log_inv_rate as usize, None)?;
 				prove_verify(&verifier, &prover, witness)?;
 			}
 			(true, CompressionType::Sha256) => {
@@ -527,9 +527,9 @@ where
 				let (verifier, prover) = setup_zk_sha256(cs, log_inv_rate as usize)?;
 				prove_verify_zk(&verifier, &prover, witness)?;
 			}
-			(true, CompressionType::Vision4) => {
-				tracing::info!("Using Vision4 compression for Merkle tree");
-				let (verifier, prover) = setup_zk_vision4(cs, log_inv_rate as usize)?;
+			(true, CompressionType::Vision) => {
+				tracing::info!("Using Vision suite for Merkle tree");
+				let (verifier, prover) = setup_zk_vision(cs, log_inv_rate as usize)?;
 				prove_verify_zk(&verifier, &prover, witness)?;
 			}
 		}
@@ -725,10 +725,10 @@ where
 					setup_sha256(cs, log_inv_rate as usize, maybe_key_collection)?;
 				prove_verify(&verifier, &prover, witness)?;
 			}
-			CompressionType::Vision4 => {
-				tracing::info!("Using Vision4 compression for Merkle tree");
+			CompressionType::Vision => {
+				tracing::info!("Using Vision suite for Merkle tree");
 				let (verifier, prover) =
-					setup_vision4(cs, log_inv_rate as usize, maybe_key_collection)?;
+					setup_vision(cs, log_inv_rate as usize, maybe_key_collection)?;
 				prove_verify(&verifier, &prover, witness)?;
 			}
 		};
