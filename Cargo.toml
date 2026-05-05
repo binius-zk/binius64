@@ -45,7 +45,7 @@ criterion = { version = "0.7.0", default-features = false }
 derive_more = "0.99.17"
 digest = "0.11.2"
 either = "1.11.0"
-getrandom = "0.3.3"
+getrandom = "0.4.0"
 getset = "0.1.6"
 hex = "0.4"
 hex-literal = "1.0.0"
