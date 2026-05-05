@@ -255,9 +255,9 @@ fn test_shift_prove_and_verify() {
 				.collect::<Vec<_>>()
 		};
 
-		// Sample univaraite eval point
-		let r_zhat_prime_bitand = F::random(&mut rng);
-		let r_zhat_prime_intmul = F::random(&mut rng);
+		// Sample univariate eval point — the bitand and intmul operators share
+		// `r_zhat_prime` so the verifier can compute `h_op_evals` once for both.
+		let r_zhat_prime = F::random(&mut rng);
 
 		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 
@@ -265,7 +265,7 @@ fn test_shift_prove_and_verify() {
 			evaluate_image(
 				&subspace,
 				&image,
-				r_zhat_prime_bitand,
+				r_zhat_prime,
 				eq_ind_partial_eval(&r_x_prime_bitand).as_ref(),
 			)
 		});
@@ -274,7 +274,7 @@ fn test_shift_prove_and_verify() {
 			evaluate_image(
 				&subspace,
 				&image,
-				r_zhat_prime_intmul,
+				r_zhat_prime,
 				eq_ind_partial_eval(&r_x_prime_intmul).as_ref(),
 			)
 		});
@@ -287,12 +287,12 @@ fn test_shift_prove_and_verify() {
 
 		let prover_bitand_data = OperatorData {
 			evals: bitand_evals.to_vec(),
-			r_zhat_prime: r_zhat_prime_bitand,
+			r_zhat_prime,
 			r_x_prime: r_x_prime_bitand.clone(),
 		};
 		let prover_intmul_data = OperatorData {
 			evals: intmul_evals.to_vec(),
-			r_zhat_prime: r_zhat_prime_intmul,
+			r_zhat_prime,
 			r_x_prime: r_x_prime_intmul.clone(),
 		};
 
@@ -308,10 +308,8 @@ fn test_shift_prove_and_verify() {
 		// Create verifier transcript and call the verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();
 
-		let verifier_bitand_data =
-			VerifierOperatorData::new(r_zhat_prime_bitand, r_x_prime_bitand, bitand_evals);
-		let verifier_intmul_data =
-			VerifierOperatorData::new(r_zhat_prime_intmul, r_x_prime_intmul, intmul_evals);
+		let verifier_bitand_data = VerifierOperatorData::new(r_x_prime_bitand, bitand_evals);
+		let verifier_intmul_data = VerifierOperatorData::new(r_x_prime_intmul, intmul_evals);
 
 		let verifier_output =
 			verify(&cs, &verifier_bitand_data, &verifier_intmul_data, &mut verifier_transcript)
@@ -323,6 +321,7 @@ fn test_shift_prove_and_verify() {
 			&verifier_bitand_data,
 			&verifier_intmul_data,
 			&subspace,
+			r_zhat_prime,
 			&verifier_output,
 			&mut verifier_transcript,
 		)
