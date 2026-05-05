@@ -115,10 +115,6 @@ impl<F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IPVerifierChannel<F>
 	fn assert_zero(&mut self, _val: F) -> Result<(), binius_ip::channel::Error> {
 		Ok(())
 	}
-
-	fn compute_public_value(&mut self, inputs: &[F], f: impl FnOnce(&[F]) -> F) -> F {
-		f(inputs)
-	}
 }
 
 impl<F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IOPVerifierChannel<F>

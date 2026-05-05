@@ -38,10 +38,7 @@ mod tests {
 	/// Helper to create a BuildWire from a ConstraintBuilder Rc for tests.
 	fn alloc_inout_wire(rc: &Rc<std::cell::RefCell<ConstraintBuilder<B128>>>) -> BuildElem {
 		let wire = rc.borrow_mut().alloc_inout();
-		BuildElem::Wire {
-			wire: BuildWire::new(rc, wire),
-			public: false,
-		}
+		BuildElem::Wire(BuildWire::new(rc, wire))
 	}
 
 	#[test]
@@ -69,11 +66,11 @@ mod tests {
 
 		// Adding zero returns the wire unchanged.
 		let result = elem.clone() + BuildElem::Constant(B128::ZERO);
-		assert!(matches!(result, BuildElem::Wire { .. }));
+		assert!(matches!(result, BuildElem::Wire(_)));
 
 		// Multiplying by one returns the wire unchanged.
 		let result = elem.clone() * BuildElem::Constant(B128::ONE);
-		assert!(matches!(result, BuildElem::Wire { .. }));
+		assert!(matches!(result, BuildElem::Wire(_)));
 
 		// Multiplying by zero returns constant zero.
 		let result = elem * BuildElem::Constant(B128::ZERO);
@@ -126,10 +123,10 @@ mod tests {
 		let c = channel.recv_array::<3>().unwrap();
 
 		// All should be Wire variants.
-		assert!(matches!(a, BuildElem::Wire { .. }));
-		assert!(matches!(b, BuildElem::Wire { .. }));
+		assert!(matches!(a, BuildElem::Wire(_)));
+		assert!(matches!(b, BuildElem::Wire(_)));
 		for elem in &c {
-			assert!(matches!(elem, BuildElem::Wire { .. }));
+			assert!(matches!(elem, BuildElem::Wire(_)));
 		}
 	}
 
@@ -205,14 +202,6 @@ mod tests {
 		// The symbolic execution should have produced a nontrivial constraint system.
 		assert!(wrapper_cs.n_inout() > 0);
 		assert!(!wrapper_cs.mul_constraints().is_empty());
-
-		// Diagnostic — visible with `cargo test -- --nocapture`. Useful when measuring the impact
-		// of optimizations like `compute_public_value`.
-		eprintln!(
-			"wrapper CS: n_inout={}, mul_constraints={}",
-			wrapper_cs.n_inout(),
-			wrapper_cs.mul_constraints().len(),
-		);
 	}
 
 	#[test]
@@ -238,9 +227,7 @@ mod tests {
 		for (i, (elem, &exp)) in elems.iter().zip(&expected).enumerate() {
 			match elem {
 				CircuitElem::Constant(c) => assert_eq!(*c, exp, "mismatch at index {i}"),
-				CircuitElem::Wire { .. } => {
-					panic!("expected constant after all-constants transpose")
-				}
+				CircuitElem::Wire(_) => panic!("expected constant after all-constants transpose"),
 			}
 		}
 	}
@@ -262,10 +249,7 @@ mod tests {
 		let rc = Rc::new(std::cell::RefCell::new(constraint_builder));
 		let mut elems: Vec<BuildElem> = inout_wires
 			.iter()
-			.map(|&w| BuildElem::Wire {
-				wire: BuildWire::new(&rc, w),
-				public: false,
-			})
+			.map(|&w| BuildElem::Wire(BuildWire::new(&rc, w)))
 			.collect();
 
 		<BuildElem as FieldOps>::square_transpose::<FSub>(&mut elems);
@@ -295,9 +279,8 @@ mod tests {
 		let witness_rc = Rc::new(std::cell::RefCell::new(witness_gen));
 		let mut witness_elems: Vec<WitnessElem> = witness_wires
 			.iter()
-			.map(|&w| WitnessElem::Wire {
-				wire: crate::wrapper::circuit_elem::CircuitWire::new(&witness_rc, w),
-				public: false,
+			.map(|&w| {
+				WitnessElem::Wire(crate::wrapper::circuit_elem::CircuitWire::new(&witness_rc, w))
 			})
 			.collect();
 
