@@ -27,7 +27,7 @@ ethsign = "0.9.0"
 hex.workspace = true
 jwt-simple.workspace = true
 peakmem-alloc = "0.2.0"
-rand.workspace = true
+rand = { workspace = true, features = ["thread_rng"] }
 sha2.workspace = true
 sha3.workspace = true
 # Pin this dependency of jwt-simple because the latest version depends on an RC for ml-dsa and is

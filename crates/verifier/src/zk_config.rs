@@ -65,6 +65,8 @@ where
 		log_inv_rate: usize,
 		compression: MerkleCompress,
 	) -> Result<Self, Error> {
+		let _setup_guard = tracing::debug_span!("Setup ZK verifier").entered();
+
 		constraint_system.validate_and_prepare()?;
 
 		let n_public = constraint_system.value_vec_layout.offset_witness;
@@ -77,12 +79,27 @@ where
 		// Symbolically execute the inner verifier to build the outer constraint system.
 		let dummy_public_words =
 			vec![Word::from_u64(0); 1 << inner_iop_verifier.log_public_words()];
-		let mut builder_channel = IronSpartanBuilderChannel::new();
-		inner_iop_verifier
-			.verify(&dummy_public_words, &mut builder_channel)
-			.expect("symbolic verify should not fail");
-		let outer_builder = builder_channel.finish();
-		let (outer_cs, _outer_layout) = compile(outer_builder);
+
+		let outer_builder = {
+			let _ = tracing::debug_span!("Build ZK wrapper circuit").entered();
+			let mut builder_channel = IronSpartanBuilderChannel::new();
+			inner_iop_verifier
+				.verify(&dummy_public_words, &mut builder_channel)
+				.expect("symbolic verify should not fail");
+			builder_channel.finish()
+		};
+		let (outer_cs, _) = {
+			let _ = tracing::debug_span!("Compile ZK wrapper circuit").entered();
+			compile(outer_builder)
+		};
+
+		tracing::debug!(
+			n_public = outer_cs.n_public(),
+			n_precommit = outer_cs.n_precommit(),
+			n_private = outer_cs.n_private(),
+			n_mul_constraints = outer_cs.mul_constraints().len(),
+			"ZK wrapper circuit stats"
+		);
 
 		// Pad the outer constraint system for zero-knowledge.
 		let n_test_queries = fri::calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
@@ -158,11 +175,32 @@ where
 		let mut wrapped_channel = ZKWrappedVerifierChannel::new(channel, &self.outer_iop_verifier)?;
 
 		// Run the inner IOP verification through the wrapped channel.
-		self.inner_iop_verifier
-			.verify(public, &mut wrapped_channel)?;
+		{
+			let inner_cs = self.inner_iop_verifier.constraint_system();
+			let _scope = tracing::debug_span!(
+				"Binius64",
+				n_witness_words = inner_cs.value_vec_layout.committed_total_len,
+				n_bitand = inner_cs.and_constraints.len(),
+				n_intmul = inner_cs.mul_constraints.len(),
+			)
+			.entered();
+
+			self.inner_iop_verifier
+				.verify(public, &mut wrapped_channel)?;
+		};
 
 		// Finish runs the outer spartan verification.
-		wrapped_channel.finish()?;
+		{
+			let outer_cs = self.outer_iop_verifier.constraint_system();
+			let _scope = tracing::debug_span!(
+				"ZK Wrapper",
+				n_witness = outer_cs.n_private(),
+				n_constraints = outer_cs.mul_constraints().len(),
+			)
+			.entered();
+
+			wrapped_channel.finish()?;
+		}
 
 		Ok(())
 	}

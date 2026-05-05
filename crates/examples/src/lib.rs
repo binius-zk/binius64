@@ -16,11 +16,12 @@ use binius_hash::{
 		parallel_compression::VisionParallelCompression,
 	},
 };
-use binius_prover::{KeyCollection, OptimalPackedB128, Prover};
+use binius_prover::{KeyCollection, OptimalPackedB128, Prover, zk_config::ZKProver};
 use binius_verifier::{
 	Verifier,
 	config::StdChallenger,
 	transcript::{ProverTranscript, VerifierTranscript},
+	zk_config::ZKVerifier,
 };
 use clap::ValueEnum;
 pub use cli::Cli;
@@ -41,8 +42,18 @@ pub type StdProver =
 	Prover<OptimalPackedB128, ParallelCompressionAdaptor<StdCompression>, StdDigest>;
 /// Vision4 verifier
 pub type VisionVerifier = Verifier<VisionHasherDigest, VisionCompression>;
-/// Vision4 prover  
+/// Vision4 prover
 pub type VisionProver = Prover<OptimalPackedB128, VisionParallelCompression, VisionHasherDigest>;
+/// Standard ZK verifier using SHA256 compression
+pub type StdZKVerifier = ZKVerifier<StdDigest, StdCompression>;
+/// Standard ZK prover using SHA256 compression
+pub type StdZKProver =
+	ZKProver<OptimalPackedB128, ParallelCompressionAdaptor<StdCompression>, StdDigest>;
+/// Vision4 ZK verifier
+pub type VisionZKVerifier = ZKVerifier<VisionHasherDigest, VisionCompression>;
+/// Vision4 ZK prover
+pub type VisionZKProver =
+	ZKProver<OptimalPackedB128, VisionParallelCompression, VisionHasherDigest>;
 
 /// Setup the prover and verifier and use SHA256 for Merkle tree compression.
 /// Providing the `key_collection` skips expensive key collection building.
@@ -82,6 +93,32 @@ pub fn setup_vision4(
 	Ok((verifier, prover))
 }
 
+/// Setup the ZK prover and verifier using SHA256 for Merkle tree compression.
+pub fn setup_zk_sha256(
+	cs: ConstraintSystem,
+	log_inv_rate: usize,
+) -> Result<(StdZKVerifier, StdZKProver)> {
+	let _setup_guard = tracing::info_span!("ZK setup", log_inv_rate).entered();
+	let parallel_compression = ParallelCompressionAdaptor::new(StdCompression::default());
+	let compression = parallel_compression.compression().clone();
+	let verifier = ZKVerifier::setup(cs, log_inv_rate, compression)?;
+	let prover = ZKProver::setup(verifier.clone(), parallel_compression)?;
+	Ok((verifier, prover))
+}
+
+/// Setup the ZK prover and verifier using ZK-friendly hash Vision4 for Merkle tree compression.
+pub fn setup_zk_vision4(
+	cs: ConstraintSystem,
+	log_inv_rate: usize,
+) -> Result<(VisionZKVerifier, VisionZKProver)> {
+	let _setup_guard = tracing::info_span!("ZK setup", log_inv_rate).entered();
+	let parallel_compression = VisionParallelCompression::default();
+	let compression = parallel_compression.compression().clone();
+	let verifier = ZKVerifier::setup(cs, log_inv_rate, compression)?;
+	let prover = ZKProver::setup(verifier.clone(), parallel_compression)?;
+	Ok((verifier, prover))
+}
+
 pub fn prove_verify<D, C, ParD, ParC>(
 	verifier: &Verifier<D, C>,
 	prover: &Prover<OptimalPackedB128, ParC, ParD>,
@@ -101,6 +138,37 @@ where
 	let proof = prover_transcript.finalize();
 	tracing::info!("Proof size: {} KiB", proof.len() / 1024);
 
+	let mut verifier_transcript = VerifierTranscript::new(challenger, proof);
+	verifier.verify(witness.public(), &mut verifier_transcript)?;
+	verifier_transcript.finalize()?;
+
+	Ok(())
+}
+
+pub fn prove_verify_zk<D, C, ParD, ParC>(
+	verifier: &ZKVerifier<D, C>,
+	prover: &ZKProver<OptimalPackedB128, ParC, ParD>,
+	witness: ValueVec,
+) -> Result<()>
+where
+	D: Digest + BlockSizeUser + FixedOutputReset,
+	C: PseudoCompressionFunction<Output<D>, 2>,
+	ParD: ParallelDigest<Digest = D>,
+	ParC: ParallelPseudoCompression<Output<D>, 2, Compression = C>,
+{
+	let challenger = StdChallenger::default();
+
+	let proof = {
+		let _scope = tracing::info_span!("Prove").entered();
+		let mut prover_transcript = ProverTranscript::new(challenger.clone());
+		let mut rng = rand::rng();
+		prover.prove(witness.clone(), &mut rng, &mut prover_transcript)?;
+		prover_transcript.finalize()
+	};
+
+	tracing::info!("Proof size: {} KiB", proof.len() / 1024);
+
+	let _scope = tracing::info_span!("Verify").entered();
 	let mut verifier_transcript = VerifierTranscript::new(challenger, proof);
 	verifier.verify(witness.public(), &mut verifier_transcript)?;
 	verifier_transcript.finalize()?;

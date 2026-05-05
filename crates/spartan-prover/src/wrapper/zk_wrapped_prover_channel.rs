@@ -22,7 +22,7 @@ use binius_iop_prover::{
 };
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT};
-use binius_spartan_frontend::constraint_system::WitnessLayout;
+use binius_spartan_frontend::constraint_system::{BlindingInfo, WitnessLayout};
 use binius_spartan_verifier::IOPVerifier;
 use binius_transcript::fiat_shamir::Challenger;
 use binius_utils::SerializeBytes;
@@ -99,7 +99,7 @@ where
 		mut inner_channel: BaseFoldZKProverChannel<'a, F, P, NTT, MTProver, Challenger_>,
 		outer_prover: &'a IOPProver<F>,
 		outer_layout: &'a WitnessLayout<F>,
-		mut rng: impl CryptoRng,
+		rng: impl CryptoRng,
 		replay_fn: ReplayFn,
 	) -> Self {
 		let outer_oracle_specs =
@@ -122,28 +122,10 @@ where
 			"outer private/mask oracle specs must be the final suffix of channel specs",
 		);
 
-		// Commit random OTP keys as the outer precommit oracle. Each key encrypts one
-		// element sent by the inner prover through this wrapped channel; the outer CS
-		// (built symbolically from the inner verifier) contains a matching precommit wire per
-		// key that the outer proof uses to decrypt.
-		let cs = outer_prover.constraint_system();
-		let keys = repeat_with(|| F::random(&mut rng))
-			.take(cs.n_precommit() as usize)
-			.collect::<Vec<F>>();
-		// The precommit segment has no dummy mul-constraint blinding (see
-		// ConstraintSystemPadded::new) — mirror that when packing.
-		let precommit_blinding = binius_spartan_frontend::constraint_system::BlindingInfo {
-			n_dummy_wires: cs.blinding_info().n_dummy_wires,
-			n_dummy_constraints: 0,
+		let (keys, precommit_oracle, precommit_packed) = {
+			let _scope = tracing::debug_span!("Commit Transcript Mask").entered();
+			Self::commit_transcript_mask(&mut inner_channel, outer_prover, rng)
 		};
-		let precommit_packed = pack_and_blind_witness::<_, P>(
-			cs.log_precommit() as usize,
-			&keys,
-			cs.n_precommit() as usize,
-			&precommit_blinding,
-			&mut rng,
-		);
-		let precommit_oracle = inner_channel.send_oracle(precommit_packed.to_ref());
 
 		Self {
 			inner_channel,
@@ -157,6 +139,36 @@ where
 			precommit_packed,
 			n_outer_suffix_oracles: suffix_len,
 		}
+	}
+
+	/// Commits random OTP keys as the outer precommit oracle. Each key encrypts one element sent by
+	/// the inner prover through this wrapped channel; the outer CS (built symbolically from the
+	/// inner verifier) contains a matching precommit wire per key that the outer proof uses to
+	/// decrypt.
+	fn commit_transcript_mask(
+		inner_channel: &mut BaseFoldZKProverChannel<'a, F, P, NTT, MTProver, Challenger_>,
+		outer_prover: &IOPProver<F>,
+		mut rng: impl CryptoRng,
+	) -> (Vec<F>, BaseFoldZKOracle, FieldBuffer<P>) {
+		let cs = outer_prover.constraint_system();
+		let keys = repeat_with(|| F::random(&mut rng))
+			.take(cs.n_precommit() as usize)
+			.collect::<Vec<F>>();
+		// The precommit segment has no dummy mul-constraint blinding (see
+		// ConstraintSystemPadded::new) — mirror that when packing.
+		let precommit_blinding = BlindingInfo {
+			n_dummy_wires: cs.blinding_info().n_dummy_wires,
+			n_dummy_constraints: 0,
+		};
+		let precommit_packed = pack_and_blind_witness::<_, P>(
+			cs.log_precommit() as usize,
+			&keys,
+			cs.n_precommit() as usize,
+			&precommit_blinding,
+			&mut rng,
+		);
+		let precommit_oracle = inner_channel.send_oracle(precommit_packed.to_ref());
+		(keys, precommit_oracle, precommit_packed)
 	}
 
 	fn next_key(&mut self) -> F {
@@ -176,6 +188,8 @@ where
 	where
 		ReplayFn: FnOnce(&mut ReplayChannel<'_, F>),
 	{
+		let _ = tracing::debug_span!("Proving ZK wrapper proof").entered();
+
 		let Self {
 			inner_channel,
 			outer_prover,
@@ -189,11 +203,14 @@ where
 		} = self;
 
 		// Replay the inner verification through the outer witness generator.
-		let mut replay_channel = ReplayChannel::new(outer_layout, keys, interaction);
-		replay_fn(&mut replay_channel);
-		let witness = replay_channel
-			.finish()
-			.expect("outer witness generation should not fail");
+		let witness = {
+			let _ = tracing::debug_span!("Generating ZK wrapper witness").entered();
+			let mut replay_channel = ReplayChannel::new(outer_layout, keys, interaction);
+			replay_fn(&mut replay_channel);
+			replay_channel
+				.finish()
+				.expect("outer witness generation should not fail")
+		};
 
 		// Validate and generate the outer proof.
 		let outer_cs = outer_prover.constraint_system();

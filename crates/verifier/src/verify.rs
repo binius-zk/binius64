@@ -384,6 +384,16 @@ where
 		public: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		let cs = self.iop_verifier.constraint_system();
+
+		let _verify_scope = tracing::info_span!(
+			"Verify",
+			n_witness_words = cs.value_vec_layout.committed_total_len,
+			n_bitand = cs.and_constraints.len(),
+			n_intmul = cs.mul_constraints.len(),
+		)
+		.entered();
+
 		// Create channel and delegate to IOPVerifier::verify
 		let mut channel = self.iop_compiler.create_channel(transcript);
 		self.iop_verifier.verify(public, &mut channel)

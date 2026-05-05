@@ -105,20 +105,8 @@ impl IOPProver {
 	{
 		let cs = &self.constraint_system;
 
-		let _prove_guard = tracing::info_span!(
-			"Prove",
-			operation = "prove",
-			perfetto_category = "operation",
-			n_witness_words = cs.value_vec_layout.committed_total_len,
-			n_bitand = cs.and_constraints.len(),
-			n_intmul = cs.mul_constraints.len(),
-		)
-		.entered();
-
 		// [phase] Setup - initialization and constraint system setup
-		let setup_guard =
-			tracing::info_span!("[phase] Setup", phase = "setup", perfetto_category = "phase")
-				.entered();
+		let setup_guard = tracing::debug_span!("Prepare Witness").entered();
 		let witness_packed = pack_witness::<P>(self.log_witness_elems, &witness)?;
 		drop(setup_guard);
 
@@ -131,12 +119,7 @@ impl IOPProver {
 		channel.observe_many(&public_elems);
 
 		// [phase] Witness Commit - witness generation and commitment
-		let witness_commit_guard = tracing::info_span!(
-			"[phase] Witness Commit",
-			phase = "witness_commit",
-			perfetto_category = "phase"
-		)
-		.entered();
+		let witness_commit_guard = tracing::info_span!("Commit Witness").entered();
 
 		// Commit witness via channel
 		let trace_oracle = channel.send_oracle(witness_packed.to_ref());
@@ -368,6 +351,16 @@ where
 		witness: ValueVec,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		let cs = self.iop_prover.constraint_system();
+
+		let _prove_guard = tracing::info_span!(
+			"Prove",
+			n_witness_words = cs.value_vec_layout.committed_total_len,
+			n_bitand = cs.and_constraints.len(),
+			n_intmul = cs.mul_constraints.len(),
+		)
+		.entered();
+
 		// Create channel and delegate to IOPProver::prove
 		let channel = BaseFoldProverChannel::from_compiler(&self.basefold_compiler, transcript);
 		self.iop_prover.prove::<P, _>(witness, channel)
