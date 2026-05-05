@@ -153,6 +153,10 @@ where
 			Err(binius_ip::channel::Error::InvalidAssert)
 		}
 	}
+
+	fn compute_public_value(&mut self, inputs: &[F], f: impl FnOnce(&[F]) -> F) -> F {
+		f(inputs)
+	}
 }
 
 impl<F, MerkleScheme_, Challenger_> IOPVerifierChannel<F>

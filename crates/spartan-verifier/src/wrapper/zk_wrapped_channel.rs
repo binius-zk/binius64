@@ -373,6 +373,27 @@ where
 			}
 		}
 	}
+
+	fn compute_public_value(
+		&mut self,
+		inputs: &[Self::Elem],
+		f: impl FnOnce(&[F]) -> F,
+	) -> Self::Elem {
+		let input_refs = inputs.iter().collect::<Vec<_>>();
+		let outs = CircuitElem::combine_varlen(
+			&input_refs,
+			1,
+			move |inputs| vec![f(inputs)],
+			|_, _| {
+				// Self::Elem::combine_varlen will only call the builder_op closure if any inputs
+				// are non-public.
+				panic!("compute_public_value: input is not public")
+			},
+		);
+		outs.into_iter()
+			.next()
+			.expect("combine_varlen returns Vec with len = n_out; n_out = 1")
+	}
 }
 
 impl<F, MTScheme, Challenger_> IOPVerifierChannel<F>
