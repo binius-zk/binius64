@@ -6,7 +6,7 @@ use binius_core::{
 	word::Word,
 };
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
-pub use compress::{Compress, State};
+pub use compress::{State, compress, pack_message_block};
 
 use crate::{
 	bytes::swap_bytes,
@@ -46,15 +46,13 @@ pub struct Sha512 {
 	/// This circuit will run enough hash blocks to process the entire message.
 	pub message: Vec<Wire>,
 
-	/// Compression gadgets for each 1024-bit block.
+	/// Per-block message wires fed into [`compress()`], one `[Wire; 16]` array per 1024-bit block.
 	///
-	/// Each compression gadget processes one 1024-bit (128-byte) block of the padded message.
-	/// The gadgets are chained together, with each taking the output state from the previous
-	/// compression as input. The first compression starts from the SHA-512 initialization vector.
-	///
-	/// The number of compression gadgets is `ceil((max_len_bytes + 17) / 128)`, accounting for
-	/// the minimum 17 bytes of padding (1 byte for 0x80 delimiter + 16 bytes for length).
-	compress: Vec<Compress>,
+	/// The compression functions are chained together, with each taking the output state from the
+	/// previous compression as input. The first compression starts from the SHA-512 IV. The
+	/// number of blocks is `ceil((max_len_bytes + 17) / 128)`, accounting for the minimum 17
+	/// bytes of padding (1 byte for 0x80 delimiter + 16 bytes for length).
+	compress_m_wires: Vec<[Wire; 16]>,
 }
 
 impl Sha512 {
@@ -139,19 +137,20 @@ impl Sha512 {
 
 		let padded_message: Vec<Wire> = (0..n_words).map(|_| builder.add_witness()).collect();
 
-		let mut compress = Vec::with_capacity(n_blocks);
+		let mut compress_m_wires: Vec<[Wire; 16]> = Vec::with_capacity(n_blocks);
 		let mut states = Vec::with_capacity(n_blocks + 1);
 		states.push(State::iv(builder));
 		for block_no in 0..n_blocks {
-			let c = Compress::new(
+			let m: [Wire; 16] = padded_message[block_no << 4..(block_no + 1) << 4]
+				.try_into()
+				.unwrap();
+			let state_out = compress(
 				&builder.subcircuit(format!("compress[{block_no}]")),
 				states[block_no].clone(),
-				padded_message[block_no << 4..(block_no + 1) << 4]
-					.try_into()
-					.unwrap(),
+				m,
 			);
-			states.push(c.state_out.clone());
-			compress.push(c);
+			states.push(state_out);
+			compress_m_wires.push(m);
 		}
 
 		// ---- 2a. SHA-512 padding position calculation
@@ -324,7 +323,7 @@ impl Sha512 {
 			len_bytes,
 			digest,
 			message,
-			compress,
+			compress_m_wires,
 		}
 	}
 
@@ -394,7 +393,7 @@ impl Sha512 {
 			self.max_len_bytes()
 		);
 
-		let n_blocks = self.compress.len();
+		let n_blocks = self.compress_m_wires.len();
 		let mut padded_message_bytes = vec![0u8; n_blocks * 128];
 
 		// Apply SHA-512 padding
@@ -437,11 +436,11 @@ impl Sha512 {
 			w[*wire] = Word(word);
 		}
 
-		for (i, compress) in self.compress.iter().enumerate() {
+		for (i, m_wires) in self.compress_m_wires.iter().enumerate() {
 			let block_start = i * 128;
 			let mut block_arr = [0u8; 128];
 			block_arr.copy_from_slice(&padded_message_bytes[block_start..block_start + 128]);
-			compress.populate_m(w, block_arr);
+			pack_message_block(w, m_wires, block_arr);
 		}
 	}
 }
@@ -548,14 +547,11 @@ pub fn sha512_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 			let block_message: [Wire; 16] = block
 				.try_into()
 				.expect("padded_message.len() must be divisible by 16");
-
-			let compress = Compress::new(
+			compress(
 				&builder.subcircuit(format!("sha512_fixed_compress[{}]", block_idx)),
 				state.clone(),
 				block_message,
-			);
-
-			compress.state_out
+			)
 		},
 	);
 
