@@ -15,15 +15,14 @@
 
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::BinaryField128bGhash as B128;
+use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
 	basefold_compiler::BaseFoldZKVerifierCompiler,
 	channel::OracleSpec,
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_spartan_frontend::{
-	circuit_builder::ConstraintBuilder, compiler::compile, constraint_system::BlindingInfo,
-};
+use binius_spartan_frontend::{compiler::compile, constraint_system::BlindingInfo};
 use binius_spartan_verifier::{
 	IOPVerifier as IronSpartanIOPVerifier,
 	constraint_system::ConstraintSystemPadded,
@@ -31,11 +30,10 @@ use binius_spartan_verifier::{
 };
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
-use digest::{Digest, Output, block_api::BlockSizeUser};
+use digest::Output;
 
 use crate::{
 	config::LOG_WORDS_PER_ELEM,
-	hash::PseudoCompressionFunction,
 	verify::{IOPVerifier, SECURITY_BITS},
 };
 
@@ -43,30 +41,25 @@ use crate::{
 ///
 /// Wraps the Binius64 IOP verifier with a Spartan-based ZK wrapper. Call [`Self::setup`] with
 /// a constraint system, then [`Self::verify`] with public inputs and a proof transcript.
-#[derive(Debug, Clone)]
-pub struct ZKVerifier<MerkleHash, MerkleCompress>
-where
-	MerkleHash: Digest + BlockSizeUser,
-	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
-{
+#[derive(Clone)]
+pub struct ZKVerifier<H: HashSuite> {
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_verifier: IronSpartanIOPVerifier<B128>,
-	basefold_compiler:
-		BaseFoldZKVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>,
+	basefold_compiler: BaseFoldZKVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>>,
 }
 
-impl<MerkleHash, MerkleCompress> ZKVerifier<MerkleHash, MerkleCompress>
+impl<H> ZKVerifier<H>
 where
-	MerkleHash: Digest + BlockSizeUser,
-	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
-	Output<MerkleHash>: DeserializeBytes,
+	H: HashSuite,
+	Output<H::LeafHash>: DeserializeBytes,
 {
 	/// Constructs a ZK verifier for a constraint system.
 	pub fn setup(
 		mut constraint_system: ConstraintSystem,
 		log_inv_rate: usize,
-		compression: MerkleCompress,
 	) -> Result<Self, Error> {
+		let _setup_guard = tracing::debug_span!("Setup ZK verifier").entered();
+
 		constraint_system.validate_and_prepare()?;
 
 		let n_public = constraint_system.value_vec_layout.offset_witness;
@@ -79,12 +72,27 @@ where
 		// Symbolically execute the inner verifier to build the outer constraint system.
 		let dummy_public_words =
 			vec![Word::from_u64(0); 1 << inner_iop_verifier.log_public_words()];
-		let mut builder_channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
-		inner_iop_verifier
-			.verify(&dummy_public_words, &mut builder_channel)
-			.expect("symbolic verify should not fail");
-		let outer_builder = builder_channel.finish();
-		let (outer_cs, _outer_layout) = compile(outer_builder);
+
+		let outer_builder = {
+			let _ = tracing::debug_span!("Build ZK wrapper circuit").entered();
+			let mut builder_channel = IronSpartanBuilderChannel::new();
+			inner_iop_verifier
+				.verify(&dummy_public_words, &mut builder_channel)
+				.expect("symbolic verify should not fail");
+			builder_channel.finish()
+		};
+		let (outer_cs, _) = {
+			let _ = tracing::debug_span!("Compile ZK wrapper circuit").entered();
+			compile(outer_builder)
+		};
+
+		tracing::debug!(
+			n_public = outer_cs.n_public(),
+			n_precommit = outer_cs.n_precommit(),
+			n_private = outer_cs.n_private(),
+			n_mul_constraints = outer_cs.mul_constraints().len(),
+			"ZK wrapper circuit stats"
+		);
 
 		// Pad the outer constraint system for zero-knowledge.
 		let n_test_queries = fri::calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
@@ -105,7 +113,7 @@ where
 		]
 		.concat();
 
-		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
+		let merkle_scheme = BinaryMerkleTreeScheme::<B128, H>::new();
 		let basefold_compiler = BaseFoldZKVerifierCompiler::new(
 			merkle_scheme,
 			oracle_specs,
@@ -134,8 +142,7 @@ where
 	/// Returns the BaseFold ZK verifier compiler.
 	pub fn basefold_compiler(
 		&self,
-	) -> &BaseFoldZKVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>
-	{
+	) -> &BaseFoldZKVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
 		&self.basefold_compiler
 	}
 
@@ -160,11 +167,32 @@ where
 		let mut wrapped_channel = ZKWrappedVerifierChannel::new(channel, &self.outer_iop_verifier)?;
 
 		// Run the inner IOP verification through the wrapped channel.
-		self.inner_iop_verifier
-			.verify(public, &mut wrapped_channel)?;
+		{
+			let inner_cs = self.inner_iop_verifier.constraint_system();
+			let _scope = tracing::debug_span!(
+				"Binius64",
+				n_witness_words = inner_cs.value_vec_layout.committed_total_len,
+				n_bitand = inner_cs.and_constraints.len(),
+				n_intmul = inner_cs.mul_constraints.len(),
+			)
+			.entered();
+
+			self.inner_iop_verifier
+				.verify(public, &mut wrapped_channel)?;
+		};
 
 		// Finish runs the outer spartan verification.
-		wrapped_channel.finish()?;
+		{
+			let outer_cs = self.outer_iop_verifier.constraint_system();
+			let _scope = tracing::debug_span!(
+				"ZK Wrapper",
+				n_witness = outer_cs.n_private(),
+				n_constraints = outer_cs.mul_constraints().len(),
+			)
+			.entered();
+
+			wrapped_channel.finish()?;
+		}
 
 		Ok(())
 	}

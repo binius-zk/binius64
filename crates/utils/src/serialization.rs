@@ -336,7 +336,7 @@ pub fn assert_enough_data_for(read_buf: &impl Buf, size: usize) -> Result<(), Se
 #[cfg(test)]
 mod tests {
 	use hybrid_array::sizes::U32;
-	use rand::{RngCore, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

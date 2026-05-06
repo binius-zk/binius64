@@ -1,7 +1,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_field::{BinaryField128bGhash as B128, Field, Random, arch::OptimalPackedB128};
-use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
+use binius_hash::StdHashSuite;
 use binius_iop::{
 	basefold_compiler::BaseFoldZKVerifierCompiler,
 	channel::IOPVerifierChannel,
@@ -20,12 +20,15 @@ use binius_spartan_frontend::{
 	compiler::compile,
 	constraint_system::BlindingInfo,
 };
-use binius_spartan_prover::{IOPProver, wrapper::ZKWrappedProverChannel};
+use binius_spartan_prover::{
+	IOPProver,
+	wrapper::{ReplayChannel, ZKWrappedProverChannel},
+};
 use binius_spartan_verifier::{
 	IOPVerifier, SECURITY_BITS,
 	config::StdChallenger,
 	constraint_system::ConstraintSystemPadded,
-	wrapper::{IronSpartanBuilderChannel, ReplayChannel, ZKWrappedVerifierChannel},
+	wrapper::{IronSpartanBuilderChannel, ZKWrappedVerifierChannel},
 };
 use binius_transcript::ProverTranscript;
 use rand::{SeedableRng, rngs::StdRng};
@@ -66,7 +69,7 @@ fn test_zk_wrapped_prove_verify() {
 	// === Step 3: Symbolically execute verify to build the outer constraint system ===
 	let inner_public_size = 1 << inner_cs.log_public();
 
-	let mut builder_channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
+	let mut builder_channel = IronSpartanBuilderChannel::new();
 	let dummy_public = vec![B128::ZERO; inner_public_size];
 	let dummy_public_elems = builder_channel.observe_many(&dummy_public);
 	// IronSpartanBuilderChannel::Oracle = () and recv_oracle is a no-op, so pass () directly.
@@ -90,8 +93,7 @@ fn test_zk_wrapped_prove_verify() {
 	let outer_iop_verifier = IOPVerifier::new(outer_cs.clone());
 	let outer_iop_prover = IOPProver::new(outer_cs);
 
-	let compression = StdCompression::default();
-	let merkle_scheme = BinaryMerkleTreeScheme::<B128, StdDigest, _>::new(compression.clone());
+	let merkle_scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
 
 	// Transcript layout: outer precommit oracle first (committed at wrapper construction),
 	// then all inner oracles, then the remaining outer oracles (private, mask).
@@ -114,9 +116,7 @@ fn test_zk_wrapped_prove_verify() {
 	let subspace = zk_basefold_compiler.max_subspace();
 	let domain_context = GenericOnTheFly::generate_from_subspace(subspace);
 	let ntt = NeighborsLastSingleThread::new(domain_context);
-	let merkle_prover = BinaryMerkleTreeProver::<_, StdDigest, _>::new(
-		ParallelCompressionAdaptor::new(compression.clone()),
-	);
+	let merkle_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::new();
 	let zk_basefold_prover: BaseFoldZKProverCompiler<OptimalPackedB128, _, _> =
 		BaseFoldZKProverCompiler::from_verifier_compiler(&zk_basefold_compiler, ntt, merkle_prover);
 

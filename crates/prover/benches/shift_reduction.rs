@@ -83,9 +83,8 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 				.collect::<Vec<_>>()
 		};
 
-		// Sample univaraite eval point
-		let r_zhat_prime_bitand = F::random(&mut rng);
-		let r_zhat_prime_intmul = F::random(&mut rng);
+		// Sample univariate eval point — shared across bitand and intmul operators.
+		let r_zhat_prime = F::random(&mut rng);
 
 		let bitand_evals = [F::random(&mut rng); 3];
 		let intmul_evals = [F::random(&mut rng); 4];
@@ -100,12 +99,12 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			b.iter(|| {
 				let prover_bitand_data = OperatorData {
 					evals: bitand_evals.to_vec(),
-					r_zhat_prime: r_zhat_prime_bitand,
+					r_zhat_prime,
 					r_x_prime: r_x_prime_bitand.clone(),
 				};
 				let prover_intmul_data = OperatorData {
 					evals: intmul_evals.to_vec(),
-					r_zhat_prime: r_zhat_prime_intmul,
+					r_zhat_prime,
 					r_x_prime: r_x_prime_intmul.clone(),
 				};
 
@@ -125,12 +124,12 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		// Pre-run the prover to get the transcript for verifier benchmarking
 		let prover_bitand_data = OperatorData {
 			evals: bitand_evals.to_vec(),
-			r_zhat_prime: r_zhat_prime_bitand,
+			r_zhat_prime,
 			r_x_prime: r_x_prime_bitand.clone(),
 		};
 		let prover_intmul_data = OperatorData {
 			evals: intmul_evals.to_vec(),
-			r_zhat_prime: r_zhat_prime_intmul,
+			r_zhat_prime,
 			r_x_prime: r_x_prime_intmul.clone(),
 		};
 
@@ -151,16 +150,10 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			b.iter(|| {
 				let mut verifier_transcript = setup_verifier_transcript.clone();
 
-				let verifier_bitand_data = VerifierOperatorData::new(
-					r_zhat_prime_bitand,
-					r_x_prime_bitand.clone(),
-					bitand_evals,
-				);
-				let verifier_intmul_data = VerifierOperatorData::new(
-					r_zhat_prime_intmul,
-					r_x_prime_intmul.clone(),
-					intmul_evals,
-				);
+				let verifier_bitand_data =
+					VerifierOperatorData::new(r_x_prime_bitand.clone(), bitand_evals);
+				let verifier_intmul_data =
+					VerifierOperatorData::new(r_x_prime_intmul.clone(), intmul_evals);
 
 				verify(&cs, &verifier_bitand_data, &verifier_intmul_data, &mut verifier_transcript)
 					.unwrap();

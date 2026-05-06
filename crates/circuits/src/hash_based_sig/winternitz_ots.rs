@@ -441,7 +441,7 @@ pub fn grind_nonce(
 	param: &[u8],
 	message: &[u8],
 ) -> Option<GrindResult> {
-	use rand::RngCore;
+	use rand::prelude::*;
 
 	use super::{codeword::extract_coordinates, hashing::hash_message};
 
@@ -473,7 +473,7 @@ pub fn grind_nonce(
 mod tests {
 	use binius_core::verify::verify_constraints;
 	use binius_frontend::util::pack_bytes_into_wires_le;
-	use rand::{RngCore, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 	use sha3::{Digest, Keccak256};
 
 	use super::*;

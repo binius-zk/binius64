@@ -261,7 +261,7 @@ mod tests {
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
 	use itertools::{self, Itertools};
-	use rand::{SeedableRng, prelude::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 	use crate::sumcheck::prove_single_mlecheck;

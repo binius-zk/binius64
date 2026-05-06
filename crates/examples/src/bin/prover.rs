@@ -3,7 +3,8 @@ use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
 use binius_core::constraint_system::{ConstraintSystem, Proof, ValueVec, ValuesData};
-use binius_examples::setup_sha256;
+use binius_examples::setup;
+use binius_hash::StdHashSuite;
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
 use binius_verifier::{
 	config::{ChallengerWithName, StdChallenger},
@@ -72,7 +73,7 @@ fn main() -> Result<()> {
 		.context("Failed to reconstruct ValueVec from provided values")?;
 
 	// Setup prover (verifier is not used here)
-	let (_verifier, prover) = setup_sha256(cs, args.log_inv_rate as usize, None)?;
+	let (_verifier, prover) = setup::<StdHashSuite>(cs, args.log_inv_rate as usize, None)?;
 
 	// Prove
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());

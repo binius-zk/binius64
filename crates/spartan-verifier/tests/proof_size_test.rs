@@ -1,6 +1,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_field::BinaryField128bGhash as B128;
+use binius_hash::StdHashSuite;
 use binius_iop::channel::IOPVerifierChannel;
 use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::{
@@ -8,10 +9,7 @@ use binius_spartan_frontend::{
 	circuits::powers,
 	compiler::compile,
 };
-use binius_spartan_verifier::{
-	Verifier,
-	config::{StdCompression, StdDigest},
-};
+use binius_spartan_verifier::Verifier;
 
 // Build a power circuit: assert that x^n = y
 fn power_circuit<Builder: CircuitBuilder>(
@@ -36,9 +34,8 @@ fn test_ip_proof_size() {
 
 	// Setup verifier
 	let log_inv_rate = 3;
-	let compression = StdCompression::default();
-	let verifier = Verifier::<_, StdDigest, _>::setup(cs, log_inv_rate, compression)
-		.expect("verifier setup failed");
+	let verifier =
+		Verifier::<_, StdHashSuite>::setup(cs, log_inv_rate).expect("verifier setup failed");
 
 	let cs = verifier.constraint_system();
 

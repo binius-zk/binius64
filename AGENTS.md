@@ -11,6 +11,7 @@ cargo test                     # Run tests
 cargo test -p <crate>          # Test specific crate
 cargo fmt                      # Format code
 cargo clippy --all --all-features --tests --benches --examples -- -D warnings
+cargo doc --no-deps --document-private-items   # Build rustdoc
 typos                          # Check for typos
 pre-commit run --all-files     # Run all checks
 ```

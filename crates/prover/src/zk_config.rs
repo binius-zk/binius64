@@ -10,81 +10,67 @@ use binius_core::{constraint_system::ValueVec, word::Word};
 use binius_field::{
 	BinaryField128bGhash as B128, PackedExtension, PackedField, UnderlierWithBitOps, WithUnderlier,
 };
+use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::basefold_compiler::BaseFoldZKProverCompiler;
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded};
-use binius_spartan_frontend::{
-	circuit_builder::ConstraintBuilder, compiler::compile, constraint_system::WitnessLayout,
+use binius_spartan_frontend::{compiler::compile, constraint_system::WitnessLayout};
+use binius_spartan_prover::wrapper::{ReplayChannel, ZKWrappedProverChannel};
+use binius_spartan_verifier::{
+	constraint_system::ConstraintSystemPadded, wrapper::IronSpartanBuilderChannel,
 };
-use binius_spartan_prover::wrapper::ZKWrappedProverChannel;
-use binius_spartan_verifier::{constraint_system::ConstraintSystemPadded, wrapper::ReplayChannel};
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::SerializeBytes;
 use binius_verifier::{IOPVerifier, zk_config::ZKVerifier};
-use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
+use digest::Output;
 use rand::CryptoRng;
 
 use crate::{
-	IOPProver,
-	hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression},
-	merkle_tree::prover::BinaryMerkleTreeProver,
-	protocols::shift::build_key_collection,
+	IOPProver, merkle_tree::prover::BinaryMerkleTreeProver, protocols::shift::build_key_collection,
 };
 
 type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
-type ProverMerkleProver<F, ParallelMerkleHasher, ParallelMerkleCompress> =
-	BinaryMerkleTreeProver<F, ParallelMerkleHasher, ParallelMerkleCompress>;
+type ProverMerkleProver<F, H> = BinaryMerkleTreeProver<F, H>;
 
 /// Zero-knowledge prover for Binius64 constraint systems.
 ///
 /// Wraps the Binius64 IOP prover with a Spartan-based ZK wrapper. Call [`Self::setup`] with
 /// a [`ZKVerifier`], then [`Self::prove`] with witness data and a proof transcript.
-pub struct ZKProver<P, ParallelMerkleCompress, ParallelMerkleHasher>
+pub struct ZKProver<P, H>
 where
 	P: PackedField<Scalar = B128>,
-	ParallelMerkleHasher: ParallelDigest,
-	ParallelMerkleHasher::Digest: Digest + BlockSizeUser + FixedOutputReset,
-	ParallelMerkleCompress: ParallelPseudoCompression<Output<ParallelMerkleHasher::Digest>, 2>,
+	H: HashSuite,
 {
 	inner_iop_prover: IOPProver,
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_prover: binius_spartan_prover::IOPProver<B128>,
 	outer_layout: WitnessLayout<B128>,
-	#[allow(clippy::type_complexity)]
-	basefold_compiler: BaseFoldZKProverCompiler<
-		P,
-		ProverNTT<B128>,
-		ProverMerkleProver<B128, ParallelMerkleHasher, ParallelMerkleCompress>,
-	>,
+	basefold_compiler: BaseFoldZKProverCompiler<P, ProverNTT<B128>, ProverMerkleProver<B128, H>>,
 }
 
-impl<P, MerkleHash, ParallelMerkleCompress, ParallelMerkleHasher>
-	ZKProver<P, ParallelMerkleCompress, ParallelMerkleHasher>
+impl<P, H> ZKProver<P, H>
 where
 	P: PackedField<Scalar = B128>
 		+ PackedExtension<B128>
 		+ PackedExtension<binius_verifier::config::B1>
 		+ WithUnderlier<Underlier: UnderlierWithBitOps>,
-	MerkleHash: Digest + BlockSizeUser + FixedOutputReset,
-	ParallelMerkleHasher: ParallelDigest<Digest = MerkleHash>,
-	ParallelMerkleCompress: ParallelPseudoCompression<Output<MerkleHash>, 2>,
-	Output<MerkleHash>: SerializeBytes,
+	H: HashSuite,
+	Output<H::LeafHash>: SerializeBytes,
 {
 	/// Constructs a ZK prover from a [`ZKVerifier`].
-	pub fn setup(
-		zk_verifier: ZKVerifier<MerkleHash, ParallelMerkleCompress::Compression>,
-		compression: ParallelMerkleCompress,
-	) -> Result<Self, Error> {
+	pub fn setup(zk_verifier: ZKVerifier<H>) -> Result<Self, Error> {
 		// Build the inner IOPProver.
 		let inner_iop_verifier = zk_verifier.inner_iop_verifier().clone();
 		let key_collection = build_key_collection(inner_iop_verifier.constraint_system());
 		let inner_iop_prover = IOPProver::new(inner_iop_verifier.clone(), key_collection);
 
 		// Re-derive the outer constraint system and layout via symbolic execution.
+		//
+		// TODO: This duplicates code in ZKVerifier::setup. Prover needs to call it separately
+		// because the Verifier doesn't (and shouldn't) store the layout. However, the code can be
+		// refactored out for DRYness.
 		let dummy_public_words =
 			vec![Word::from_u64(0); 1 << inner_iop_verifier.log_public_words()];
-		let mut builder_channel = binius_spartan_verifier::wrapper::IronSpartanBuilderChannel::new(
-			ConstraintBuilder::new(),
-		);
+		let mut builder_channel = IronSpartanBuilderChannel::new();
 		inner_iop_verifier
 			.verify(&dummy_public_words, &mut builder_channel)
 			.expect("symbolic verify should not fail");
@@ -109,7 +95,7 @@ where
 		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
-		let merkle_prover = BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression);
+		let merkle_prover = BinaryMerkleTreeProver::<_, H>::new();
 		let basefold_compiler = BaseFoldZKProverCompiler::from_verifier_compiler(
 			zk_verifier.basefold_compiler(),
 			ntt,
@@ -163,11 +149,32 @@ where
 		);
 
 		// Run the inner IOP proof through the wrapped channel.
-		self.inner_iop_prover
-			.prove::<P, _>(witness, &mut wrapped_channel)?;
+		{
+			let inner_cs = self.inner_iop_prover.constraint_system();
+			let _scope = tracing::debug_span!(
+				"Binius64",
+				n_witness_words = inner_cs.value_vec_layout.committed_total_len,
+				n_bitand = inner_cs.and_constraints.len(),
+				n_intmul = inner_cs.mul_constraints.len(),
+			)
+			.entered();
+
+			self.inner_iop_prover
+				.prove::<P, _>(witness, &mut wrapped_channel)?;
+		}
 
 		// Finish runs the outer spartan proof.
-		wrapped_channel.finish(rng)?;
+		{
+			let outer_cs = self.outer_iop_prover.constraint_system();
+			let _scope = tracing::debug_span!(
+				"ZK Wrapper",
+				n_witness = outer_cs.n_private(),
+				n_constraints = outer_cs.mul_constraints().len(),
+			)
+			.entered();
+
+			wrapped_channel.finish(rng)?;
+		}
 
 		Ok(())
 	}

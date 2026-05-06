@@ -11,7 +11,7 @@ use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use bitcoin::{Network, PrivateKey, secp256k1::Secp256k1};
 use bitcoin_hashes::Hash;
 use clap::Args;
-use rand::{RngCore, SeedableRng, rngs::StdRng};
+use rand::prelude::*;
 
 use crate::ExampleCircuit;
 

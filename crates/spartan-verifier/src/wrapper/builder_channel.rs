@@ -1,0 +1,270 @@
+// Copyright 2026 The Binius Developers
+
+//! [`IronSpartanBuilderChannel`]: an [`IPVerifierChannel`] that symbolically executes a verifier
+//! and records the computation as constraints on a [`ConstraintBuilder`].
+
+use std::{
+	array,
+	cell::{Cell, RefCell},
+	iter::repeat_with,
+	rc::{Rc, Weak},
+};
+
+use binius_field::Field;
+use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
+use binius_ip::channel::IPVerifierChannel;
+use binius_spartan_frontend::{
+	circuit_builder::{CircuitBuilder, ConstraintBuilder},
+	constraint_system::ConstraintWire,
+};
+
+use super::circuit_elem::{CircuitElem, CircuitWire};
+
+/// [`CircuitWire`] backend over [`ConstraintBuilder`] — used by [`IronSpartanBuilderChannel`] to
+/// record arithmetic as constraints in a constraint system.
+#[derive(Debug, Clone)]
+pub enum BuilderWire<F> {
+	Constant(F),
+	InOut(Rc<Cell<Option<ConstraintWire>>>),
+	Private(ConstraintWire),
+}
+
+impl<F: Field> BuilderWire<F> {
+	fn lazy_inout() -> Self {
+		Self::InOut(Rc::new(Cell::new(None)))
+	}
+
+	fn materialize(builder: &mut ConstraintBuilder<F>, wire: &Self) -> ConstraintWire {
+		match wire {
+			Self::Constant(val) => builder.constant(*val),
+			Self::InOut(maybe_wire) => {
+				if let Some(wire) = maybe_wire.get() {
+					wire
+				} else {
+					let wire = builder.alloc_inout();
+					maybe_wire.set(Some(wire));
+					wire
+				}
+			}
+			Self::Private(wire) => *wire,
+		}
+	}
+}
+
+impl<F: Field> CircuitWire<F> for BuilderWire<F> {
+	type Builder = ConstraintBuilder<F>;
+
+	fn combine<const IN: usize, const OUT: usize>(
+		builder: &mut Self::Builder,
+		wires: [&Self; IN],
+		f_op: impl Fn([F; IN]) -> [F; OUT],
+		builder_op: impl Fn(&mut Self::Builder, [ConstraintWire; IN]) -> [ConstraintWire; OUT],
+	) -> [Self; OUT] {
+		let inner_constants = array_util::try_map(wires, |wire| match wire {
+			Self::Constant(val) => Some(*val),
+			_ => None,
+		});
+
+		if let Some(inner_values) = inner_constants {
+			f_op(inner_values).map(Self::Constant)
+		} else {
+			let is_inout = wires
+				.iter()
+				.all(|wire| matches!(wire, Self::Constant(_) | Self::InOut(_)));
+			if is_inout {
+				array::from_fn(|_| Self::lazy_inout())
+			} else {
+				// If any of the inputs are private wires, then lazily materialize in inout wires
+				// and compute the result within the circuit.
+				let inner_wires = wires.map(|wire| Self::materialize(builder, wire));
+				builder_op(builder, inner_wires).map(Self::Private)
+			}
+		}
+	}
+
+	fn combine_varlen(
+		builder: &mut Self::Builder,
+		wires: &[&Self],
+		n_out: usize,
+		f_op: impl FnOnce(&[F]) -> Vec<F>,
+		builder_op: impl FnOnce(&mut Self::Builder, &[ConstraintWire]) -> Vec<ConstraintWire>,
+	) -> Vec<Self> {
+		let inner_constants = wires
+			.iter()
+			.map(|wire| match wire {
+				Self::Constant(val) => Some(*val),
+				_ => None,
+			})
+			.collect::<Option<Vec<_>>>();
+
+		if let Some(inner_constants) = inner_constants {
+			let result = f_op(&inner_constants);
+			debug_assert_eq!(result.len(), n_out);
+			result.into_iter().map(Self::Constant).collect()
+		} else {
+			let is_inout = wires
+				.iter()
+				.all(|wire| matches!(wire, Self::Constant(_) | Self::InOut(_)));
+			if is_inout {
+				repeat_with(|| Self::lazy_inout()).take(n_out).collect()
+			} else {
+				// If any of the inputs are private wires, then lazily materialize in inout wires
+				// and compute the result within the circuit.
+				let inner_wires = wires
+					.iter()
+					.map(|wire| Self::materialize(builder, wire))
+					.collect::<Vec<_>>();
+				let result = builder_op(builder, &inner_wires);
+				debug_assert_eq!(result.len(), n_out);
+				result.into_iter().map(Self::Private).collect()
+			}
+		}
+	}
+}
+
+/// A channel that symbolically executes a verifier, building up an IronSpartan constraint system.
+///
+/// Instead of performing actual verification, this channel records all operations as constraints
+/// in a [`ConstraintBuilder`]. The typical usage pattern is:
+///
+/// 1. Construct a fresh [`IronSpartanBuilderChannel`] via [`Self::new`]
+/// 2. Run the verifier on the channel (e.g., `verify_iop`)
+/// 3. The channel's `finish()` method returns the [`ConstraintBuilder`] with all recorded
+///    constraints
+pub struct IronSpartanBuilderChannel<F: Field> {
+	builder: Rc<RefCell<ConstraintBuilder<F>>>,
+}
+
+impl<F: Field> Default for IronSpartanBuilderChannel<F> {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl<F: Field> IronSpartanBuilderChannel<F> {
+	/// Creates a new builder channel backed by a fresh [`ConstraintBuilder`].
+	pub fn new() -> Self {
+		Self {
+			builder: Rc::new(RefCell::new(ConstraintBuilder::new())),
+		}
+	}
+
+	fn alloc_inout_elem(&self) -> CircuitElem<F, BuilderWire<F>> {
+		CircuitElem::wire(&self.builder, BuilderWire::lazy_inout())
+	}
+
+	fn alloc_precommit_elem(&self) -> CircuitElem<F, BuilderWire<F>> {
+		let wire = self.builder.borrow_mut().alloc_precommit();
+		CircuitElem::wire(&self.builder, BuilderWire::Private(wire))
+	}
+
+	/// Consumes the channel and returns the underlying [`ConstraintBuilder`].
+	///
+	/// This must be called after all `CircuitElem` values derived from this channel have been
+	/// dropped, as it requires sole ownership of the builder via `Rc::try_unwrap`.
+	pub fn finish(self) -> ConstraintBuilder<F> {
+		Rc::try_unwrap(self.builder)
+			.expect("CircuitElem values should only hold Weak references")
+			.into_inner()
+	}
+}
+
+impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
+	type Elem = CircuitElem<F, BuilderWire<F>>;
+
+	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
+		// For each element that the inner prover sends, the wrapped prover allocates a one-time-pad
+		// encryption key in the precommit segment and encrypts the underlying value before sending.
+		// Here the verifier gets the encryption key from the precommit segment and decrypts.
+		let inout = self.alloc_inout_elem();
+		let key = self.alloc_precommit_elem();
+		Ok(inout - key)
+	}
+
+	fn sample(&mut self) -> Self::Elem {
+		self.alloc_inout_elem()
+	}
+
+	fn observe_one(&mut self, _val: F) -> Self::Elem {
+		self.alloc_inout_elem()
+	}
+
+	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
+		match val {
+			CircuitElem::Constant(c)
+			| CircuitElem::Wire {
+				wire: BuilderWire::Constant(c),
+				..
+			} => {
+				if c == F::ZERO {
+					Ok(())
+				} else {
+					Err(binius_ip::channel::Error::InvalidAssert)
+				}
+			}
+			CircuitElem::Wire {
+				wire: BuilderWire::InOut(_),
+				..
+			} => {
+				// Nothing to do here. The value can be checked directly in
+				// ZKWrappedVerifierChannel.
+				Ok(())
+			}
+			CircuitElem::Wire {
+				builder,
+				wire: BuilderWire::Private(wire),
+			} => {
+				assert!(Weak::ptr_eq(&Rc::downgrade(&self.builder), &builder));
+				self.builder.borrow_mut().assert_zero(wire);
+				Ok(())
+			}
+		}
+	}
+
+	fn compute_public_value(
+		&mut self,
+		inputs: &[Self::Elem],
+		f: impl FnOnce(&[F]) -> F,
+	) -> Self::Elem {
+		let input_refs = inputs.iter().collect::<Vec<_>>();
+		let outs = CircuitElem::combine_varlen(
+			&input_refs,
+			1,
+			move |inputs| vec![f(inputs)],
+			|_, _| {
+				// Self::Elem::combine_varlen will only call the builder_op closure if any inputs
+				// are non-public.
+				panic!("compute_public_value: input is not public")
+			},
+		);
+		outs.into_iter()
+			.next()
+			.expect("combine_varlen returns Vec with len = n_out; n_out = 1")
+	}
+}
+
+impl<F: Field> IOPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
+	type Oracle = ();
+
+	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
+		&[]
+	}
+
+	fn recv_oracle(&mut self) -> Result<Self::Oracle, binius_iop::channel::Error> {
+		Ok(())
+	}
+
+	fn verify_oracle_relations<'a>(
+		&mut self,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
+	) -> Result<(), binius_iop::channel::Error> {
+		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
+		// checks in the circuit equality of this value with the expected expression over encrypted
+		// values.
+		for relation in oracle_relations {
+			let decrypted_claim = self.alloc_inout_elem();
+			self.assert_zero(relation.claim - decrypted_claim)?;
+		}
+		Ok(())
+	}
+}

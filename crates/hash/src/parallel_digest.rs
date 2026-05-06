@@ -67,7 +67,7 @@ pub trait MultiDigest<const N: usize>: Clone {
 
 pub trait ParallelDigest: Send {
 	/// The corresponding non-parallelized hash function.
-	type Digest: Digest + Send;
+	type Digest: Digest;
 
 	/// Create new hasher instance with empty state.
 	fn new() -> Self;
@@ -95,6 +95,12 @@ pub trait ParallelDigest: Send {
 /// A wrapper that implements the `ParallelDigest` trait for a `MultiDigest` implementation.
 #[derive(Clone)]
 pub struct ParallelMultidigestImpl<D: MultiDigest<N>, const N: usize>(D);
+
+impl<D: MultiDigest<N> + Default, const N: usize> Default for ParallelMultidigestImpl<D, N> {
+	fn default() -> Self {
+		Self(D::default())
+	}
+}
 
 impl<D: MultiDigest<N, Digest: Send> + Send + Sync, const N: usize> ParallelDigest
 	for ParallelMultidigestImpl<D, N>
@@ -184,7 +190,7 @@ mod tests {
 		consts::{U1, U32},
 	};
 	use itertools::izip;
-	use rand::{RngCore, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

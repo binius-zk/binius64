@@ -9,7 +9,7 @@
 mod blake2b_tests {
 	use binius_core::verify::verify_constraints;
 	use binius_frontend::CircuitBuilder;
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use crate::blake2b::{
 		BLOCK_BYTES,

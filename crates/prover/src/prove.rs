@@ -9,6 +9,7 @@ use binius_field::{
 	AESTowerField8b as B8, BinaryField, ExtensionField, PackedAESBinaryField16x8b, PackedExtension,
 	PackedField, UnderlierWithBitOps, WithUnderlier,
 };
+use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{
 	basefold_channel::BaseFoldProverChannel, basefold_compiler::BaseFoldProverCompiler,
 	channel::IOPProverChannel,
@@ -29,12 +30,11 @@ use binius_verifier::{
 	},
 	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput, sumcheck::SumcheckOutput},
 };
-use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
+use digest::Output;
 
 use super::error::Error;
 use crate::{
 	and_reduction::prover::OblongZerocheckProver,
-	hash::{ParallelDigest, parallel_compression::ParallelPseudoCompression},
 	merkle_tree::prover::BinaryMerkleTreeProver,
 	protocols::{
 		intmul::{prove::IntMulProver, witness::Witness as IntMulWitness},
@@ -49,8 +49,7 @@ use crate::{
 type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
 
 /// Type alias for the prover Merkle tree prover parameterized by field.
-type ProverMerkleProver<F, ParallelMerkleHasher, ParallelMerkleCompress> =
-	BinaryMerkleTreeProver<F, ParallelMerkleHasher, ParallelMerkleCompress>;
+type ProverMerkleProver<F, H> = BinaryMerkleTreeProver<F, H>;
 
 /// IOP prover for a particular constraint system.
 ///
@@ -105,20 +104,8 @@ impl IOPProver {
 	{
 		let cs = &self.constraint_system;
 
-		let _prove_guard = tracing::info_span!(
-			"Prove",
-			operation = "prove",
-			perfetto_category = "operation",
-			n_witness_words = cs.value_vec_layout.committed_total_len,
-			n_bitand = cs.and_constraints.len(),
-			n_intmul = cs.mul_constraints.len(),
-		)
-		.entered();
-
 		// [phase] Setup - initialization and constraint system setup
-		let setup_guard =
-			tracing::info_span!("[phase] Setup", phase = "setup", perfetto_category = "phase")
-				.entered();
+		let setup_guard = tracing::debug_span!("Prepare Witness").entered();
 		let witness_packed = pack_witness::<P>(self.log_witness_elems, &witness)?;
 		drop(setup_guard);
 
@@ -131,12 +118,7 @@ impl IOPProver {
 		channel.observe_many(&public_elems);
 
 		// [phase] Witness Commit - witness generation and commitment
-		let witness_commit_guard = tracing::info_span!(
-			"[phase] Witness Commit",
-			phase = "witness_commit",
-			perfetto_category = "phase"
-		)
-		.entered();
+		let witness_commit_guard = tracing::info_span!("Commit Witness").entered();
 
 		// Commit witness via channel
 		let trace_oracle = channel.send_oracle(witness_packed.to_ref());
@@ -277,43 +259,30 @@ impl IOPProver {
 /// The [`Self::setup`] constructor pre-processes reusable structures for proving instances of the
 /// given constraint system. Then [`Self::prove`] is called one or more times with individual
 /// instances.
-pub struct Prover<P, ParallelMerkleCompress, ParallelMerkleHasher>
+pub struct Prover<P, H>
 where
 	P: PackedField<Scalar = B128>,
-	ParallelMerkleHasher: ParallelDigest,
-	ParallelMerkleHasher::Digest: Digest + BlockSizeUser + FixedOutputReset,
-	ParallelMerkleCompress: ParallelPseudoCompression<Output<ParallelMerkleHasher::Digest>, 2>,
+	H: HashSuite,
 {
 	iop_prover: IOPProver,
-	#[allow(clippy::type_complexity)]
-	basefold_compiler: BaseFoldProverCompiler<
-		P,
-		ProverNTT<B128>,
-		ProverMerkleProver<B128, ParallelMerkleHasher, ParallelMerkleCompress>,
-	>,
+	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>, ProverMerkleProver<B128, H>>,
 }
 
-impl<P, MerkleHash, ParallelMerkleCompress, ParallelMerkleHasher>
-	Prover<P, ParallelMerkleCompress, ParallelMerkleHasher>
+impl<P, H> Prover<P, H>
 where
 	P: PackedField<Scalar = B128>
 		+ PackedExtension<B128>
 		+ PackedExtension<B1>
 		+ WithUnderlier<Underlier: UnderlierWithBitOps>,
-	MerkleHash: Digest + BlockSizeUser + FixedOutputReset,
-	ParallelMerkleHasher: ParallelDigest<Digest = MerkleHash>,
-	ParallelMerkleCompress: ParallelPseudoCompression<Output<MerkleHash>, 2>,
-	Output<MerkleHash>: SerializeBytes,
+	H: HashSuite,
+	Output<H::LeafHash>: SerializeBytes,
 {
 	/// Constructs a prover corresponding to a constraint system verifier.
 	///
 	/// See [`Prover`] struct documentation for details.
-	pub fn setup(
-		verifier: Verifier<MerkleHash, ParallelMerkleCompress::Compression>,
-		compression: ParallelMerkleCompress,
-	) -> Result<Self, Error> {
+	pub fn setup(verifier: Verifier<H>) -> Result<Self, Error> {
 		let key_collection = build_key_collection(verifier.constraint_system());
-		Self::setup_with_key_collection(verifier, compression, key_collection)
+		Self::setup_with_key_collection(verifier, key_collection)
 	}
 
 	/// Constructs a prover with a pre-built KeyCollection.
@@ -321,8 +290,7 @@ where
 	/// This allows loading a previously serialized KeyCollection to avoid
 	/// the expensive key building phase during setup.
 	pub fn setup_with_key_collection(
-		verifier: Verifier<MerkleHash, ParallelMerkleCompress::Compression>,
-		compression: ParallelMerkleCompress,
+		verifier: Verifier<H>,
 		key_collection: KeyCollection,
 	) -> Result<Self, Error> {
 		// Get max subspace from verifier's IOP compiler (reuses FRI params)
@@ -334,7 +302,7 @@ where
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
-		let merkle_prover = BinaryMerkleTreeProver::<_, ParallelMerkleHasher, _>::new(compression);
+		let merkle_prover = BinaryMerkleTreeProver::<_, H>::new();
 
 		// Create prover compiler from verifier compiler (reuses FRI params and oracle specs)
 		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
@@ -368,6 +336,16 @@ where
 		witness: ValueVec,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		let cs = self.iop_prover.constraint_system();
+
+		let _prove_guard = tracing::info_span!(
+			"Prove",
+			n_witness_words = cs.value_vec_layout.committed_total_len,
+			n_bitand = cs.and_constraints.len(),
+			n_intmul = cs.mul_constraints.len(),
+		)
+		.entered();
+
 		// Create channel and delegate to IOPProver::prove
 		let channel = BaseFoldProverChannel::from_compiler(&self.basefold_compiler, transcript);
 		self.iop_prover.prove::<P, _>(witness, channel)

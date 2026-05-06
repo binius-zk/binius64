@@ -242,7 +242,7 @@ mod test {
 		BinaryField, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
 		PackedExtension, PackedField,
 	};
-	use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
+	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{basefold as verifier_basefold, fri::ConstantArityStrategy};
 	use binius_math::{
 		BinarySubspace, FieldBuffer,
@@ -280,9 +280,7 @@ mod test {
 	{
 		let eval_point_eq = eq_ind_partial_eval::<P>(&evaluation_point);
 
-		let merkle_prover = BinaryMerkleTreeProver::<F, StdDigest, _>::new(
-			ParallelCompressionAdaptor::new(StdCompression::default()),
-		);
+		let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
 
 		let subspace = BinarySubspace::with_dim(multilinear.log_len() + LOG_INV_RATE);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
@@ -382,9 +380,7 @@ mod test {
 
 		let eval_point_eq = eq_ind_partial_eval::<P>(&evaluation_point);
 
-		let merkle_prover = BinaryMerkleTreeProver::<F, StdDigest, _>::new(
-			ParallelCompressionAdaptor::new(StdCompression::default()),
-		);
+		let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
 
 		// Setup NTT with subspace dimension = witness.log_len + LOG_INV_RATE
 		let subspace = BinarySubspace::with_dim(n_vars + LOG_INV_RATE);

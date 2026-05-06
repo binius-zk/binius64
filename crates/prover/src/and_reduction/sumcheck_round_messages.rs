@@ -177,7 +177,7 @@ mod test {
 		protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS},
 	};
 	use itertools::izip;
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::univariate_round_message_extension_domain;
 	use crate::{

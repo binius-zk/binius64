@@ -50,7 +50,7 @@ pub trait ParallelPseudoCompression<T, const N: usize> {
 ///
 /// This adapter provides a straightforward way to use existing compression functions
 /// in parallel contexts by applying them sequentially to each N-element chunk.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ParallelCompressionAdaptor<C> {
 	compression: C,
 }
@@ -97,7 +97,7 @@ where
 mod tests {
 	use std::mem::MaybeUninit;
 
-	use rand::{Rng, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

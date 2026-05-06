@@ -66,10 +66,26 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
+      # GitHub-hosted x86_64 runners include both Intel (with AVX-512/GFNI) and
+      # AMD (without) SKUs. With `-Ctarget-cpu=native`, build artifacts cached
+      # on one SKU produce illegal instructions when restored on another.
+      # Hash the CPU feature set into the cache key so heterogeneous runners do
+      # not share artifacts. Skipped for portable builds (CPU-agnostic output).
+      - name: Compute CPU feature cache key
+        if: matrix.arch.rustflags != ''
+        id: cpu
+        run: |
+          if [ -r /proc/cpuinfo ]; then
+            HASH=$(grep -m1 -E '^(flags|Features)[[:space:]]*:' /proc/cpuinfo | sha256sum | cut -c1-16)
+          else
+            HASH=portable
+          fi
+          echo "key=cpu-${HASH}" >> "$GITHUB_OUTPUT"
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy
+          cache-key: ${{ steps.cpu.outputs.key }}
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:

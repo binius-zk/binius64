@@ -2,6 +2,7 @@
 
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps};
+use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
 	basefold_compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
@@ -18,7 +19,7 @@ use binius_utils::{
 	DeserializeBytes,
 	checked_arithmetics::{checked_log_2, log2_ceil_usize},
 };
-use digest::{Digest, Output, block_api::BlockSizeUser};
+use digest::Output;
 use itertools::chain;
 
 use super::error::Error;
@@ -27,7 +28,6 @@ use crate::{
 		B1, B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
 	},
 	fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
-	hash::PseudoCompressionFunction,
 	merkle_tree::BinaryMerkleTreeScheme,
 	protocols::{
 		bitand::{AndCheckOutput, verify_with_channel},
@@ -150,7 +150,7 @@ impl IOPVerifier {
 			n_constraints = self.constraint_system.n_and_constraints()
 		)
 		.entered();
-		let bitand_claim = {
+		let (r_zhat_prime, bitand_claim) = {
 			let log_n_constraints = checked_log_2(self.constraint_system.n_and_constraints());
 			let AndCheckOutput {
 				a_eval,
@@ -159,13 +159,14 @@ impl IOPVerifier {
 				z_challenge,
 				eval_point,
 			} = verify_bitand_reduction(log_n_constraints, &extended_subspace, channel)?;
-			OperatorData::new(z_challenge, eval_point, [a_eval, b_eval, c_eval])
+			(z_challenge, OperatorData::new(eval_point, [a_eval, b_eval, c_eval]))
 		};
 		drop(bitand_guard);
 
-		// Build `OperatorData` for IntMul using the same `r_zhat_prime`
-		// challenge as in BitAnd. Sharing this univariate challenge
-		// improves prover ShiftReduction perf.
+		// Build `OperatorData` for IntMul. The univariate challenge `r_zhat_prime` is
+		// shared with BitAnd (computed above) — sharing it improves prover
+		// ShiftReduction perf and lets the verifier compute `h_op_evals` once for both
+		// operations in `shift::check_eval`.
 		let intmul_claim = {
 			let IntMulOutput {
 				a_evals,
@@ -175,11 +176,9 @@ impl IOPVerifier {
 				eval_point,
 			} = intmul_output;
 
-			let r_zhat_prime = bitand_claim.r_zhat_prime.clone();
 			let l_tilde = lagrange_evals_scalars(&domain_subspace, r_zhat_prime.clone());
 			let make_final_claim = |evals| inner_product_scalars(evals, l_tilde.iter().cloned());
 			OperatorData::new(
-				r_zhat_prime,
 				eval_point,
 				[
 					make_final_claim(a_evals),
@@ -213,6 +212,7 @@ impl IOPVerifier {
 			&bitand_claim,
 			&intmul_claim,
 			&domain_subspace,
+			r_zhat_prime,
 			&shift_output,
 			channel,
 		)?;
@@ -269,22 +269,16 @@ impl IOPVerifier {
 ///
 /// The [`Self::setup`] constructor determines public parameters for proving instances of the given
 /// constraint system. Then [`Self::verify`] is called one or more times with individual instances.
-#[derive(Debug, Clone)]
-pub struct Verifier<MerkleHash, MerkleCompress>
-where
-	MerkleHash: Digest + BlockSizeUser,
-	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
-{
+#[derive(Clone)]
+pub struct Verifier<H: HashSuite> {
 	iop_verifier: IOPVerifier,
-	iop_compiler:
-		BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>,
+	iop_compiler: BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>>,
 }
 
-impl<MerkleHash, MerkleCompress> Verifier<MerkleHash, MerkleCompress>
+impl<H> Verifier<H>
 where
-	MerkleHash: Digest + BlockSizeUser,
-	MerkleCompress: PseudoCompressionFunction<Output<MerkleHash>, 2>,
-	Output<MerkleHash>: DeserializeBytes,
+	H: HashSuite,
+	Output<H::LeafHash>: DeserializeBytes,
 {
 	/// Constructs a verifier for a constraint system.
 	///
@@ -292,7 +286,6 @@ where
 	pub fn setup(
 		mut constraint_system: ConstraintSystem,
 		log_inv_rate: usize,
-		compression: MerkleCompress,
 	) -> Result<Self, Error> {
 		constraint_system.validate_and_prepare()?;
 
@@ -309,7 +302,7 @@ where
 		let oracle_specs = iop_verifier.oracle_specs();
 
 		let log_code_len = log_witness_elems + log_inv_rate;
-		let merkle_scheme = BinaryMerkleTreeScheme::new(compression);
+		let merkle_scheme = BinaryMerkleTreeScheme::<B128, H>::new();
 		let fri_arity =
 			ConstantArityStrategy::with_optimal_arity::<B128, _>(&merkle_scheme, log_code_len)
 				.arity;
@@ -362,7 +355,7 @@ where
 	}
 
 	/// Returns the [`crate::merkle_tree::MerkleTreeScheme`] instance used.
-	pub fn merkle_scheme(&self) -> &BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress> {
+	pub fn merkle_scheme(&self) -> &BinaryMerkleTreeScheme<B128, H> {
 		self.iop_compiler.merkle_scheme()
 	}
 
@@ -372,10 +365,7 @@ where
 	}
 
 	/// Returns the IOP compiler for creating verifier channels.
-	pub fn iop_compiler(
-		&self,
-	) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, MerkleHash, MerkleCompress>>
-	{
+	pub fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
 		&self.iop_compiler
 	}
 
@@ -384,6 +374,16 @@ where
 		public: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		let cs = self.iop_verifier.constraint_system();
+
+		let _verify_scope = tracing::info_span!(
+			"Verify",
+			n_witness_words = cs.value_vec_layout.committed_total_len,
+			n_bitand = cs.and_constraints.len(),
+			n_intmul = cs.mul_constraints.len(),
+		)
+		.entered();
+
 		// Create channel and delegate to IOPVerifier::verify
 		let mut channel = self.iop_compiler.create_channel(transcript);
 		self.iop_verifier.verify(public, &mut channel)

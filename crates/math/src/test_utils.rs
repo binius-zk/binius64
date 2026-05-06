@@ -3,7 +3,7 @@
 use std::iter::repeat_with;
 
 use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash4x128b, PackedField};
-use rand::RngCore;
+use rand::prelude::*;
 
 use crate::FieldBuffer;
 
@@ -23,7 +23,7 @@ pub type Packed128b = PackedBinaryGhash4x128b;
 /// # Returns
 ///
 /// Vector containing n random field elements
-pub fn random_scalars<F: Field>(mut rng: impl RngCore, n: usize) -> Vec<F> {
+pub fn random_scalars<F: Field>(mut rng: impl Rng, n: usize) -> Vec<F> {
 	repeat_with(|| F::random(&mut rng)).take(n).collect()
 }
 
@@ -37,7 +37,7 @@ pub fn random_scalars<F: Field>(mut rng: impl RngCore, n: usize) -> Vec<F> {
 /// # Returns
 ///
 /// Vector containing `2^log_n` random field elements
-pub fn random_field_buffer<P: PackedField>(mut rng: impl RngCore, log_n: usize) -> FieldBuffer<P> {
+pub fn random_field_buffer<P: PackedField>(mut rng: impl Rng, log_n: usize) -> FieldBuffer<P> {
 	FieldBuffer::<P>::new(
 		log_n,
 		repeat_with(|| P::random(&mut rng))
@@ -90,7 +90,7 @@ pub fn index_to_hypercube_point<F: Field>(n_vars: usize, index: usize) -> Vec<F>
 mod tests {
 	use binius_field::BinaryField128bGhash as B128;
 	use proptest::prelude::*;
-	use rand::{SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

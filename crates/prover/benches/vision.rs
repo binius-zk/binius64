@@ -21,7 +21,7 @@ use criterion::{
 	BenchmarkGroup, Criterion, Throughput, criterion_group, criterion_main, measurement::WallTime,
 };
 use digest::Digest;
-use rand::{RngCore, rngs::ThreadRng};
+use rand::prelude::*;
 
 fn bench_parallel_permutation_for_size<const N: usize, const MN: usize>(
 	group: &mut BenchmarkGroup<WallTime>,

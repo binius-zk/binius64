@@ -8,10 +8,12 @@
 //! including both standard hash functions (SHA-256) and specialized binary field hash functions
 //! (Vision).
 
+pub mod binary_merkle_tree;
 pub mod compress;
 pub mod parallel_compression;
 pub mod parallel_digest;
 mod serialization;
+pub mod sha256;
 pub mod vision;
 pub mod vision_4;
 pub mod vision_6;
@@ -23,4 +25,5 @@ pub use serialization::*;
 
 /// The standard digest is SHA-256.
 pub type StdDigest = sha2::Sha256;
-pub type StdCompression = compress::sha256::Sha256Compression;
+pub type StdCompression = sha256::Sha256Compression;
+pub type StdHashSuite = sha256::Sha256HashSuite;

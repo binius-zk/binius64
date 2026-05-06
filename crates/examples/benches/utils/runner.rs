@@ -3,8 +3,9 @@
 
 use std::error::Error;
 
-use binius_examples::{ExampleCircuit, setup_sha256};
+use binius_examples::{ExampleCircuit, setup};
 use binius_frontend::CircuitBuilder;
+use binius_hash::StdHashSuite;
 use binius_utils::platform_diagnostics::PlatformDiagnostics;
 use binius_verifier::{
 	config::StdChallenger,
@@ -79,7 +80,7 @@ pub fn run_cs_benchmark<B: ExampleBenchmark>(
 	let example = B::build_example_circuit(params.clone(), &mut builder).unwrap();
 	let circuit = builder.build();
 	let cs = circuit.constraint_system().clone();
-	let (verifier, prover) = setup_sha256(cs, benchmark.log_inv_rate(), None).unwrap();
+	let (verifier, prover) = setup::<StdHashSuite>(cs, benchmark.log_inv_rate(), None).unwrap();
 
 	// Track memory for witness generation
 	peak_alloc.reset_peak_memory();

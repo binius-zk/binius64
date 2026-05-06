@@ -9,12 +9,12 @@
 //! [`IPVerifierChannel`]: binius_ip::channel::IPVerifierChannel
 //! [`ConstraintBuilder`]: binius_spartan_frontend::circuit_builder::ConstraintBuilder
 
-mod channel;
+pub mod builder_channel;
 pub mod circuit_elem;
 pub mod gadgets;
-mod zk_wrapped_channel;
+pub mod zk_wrapped_channel;
 
-pub use channel::{IronSpartanBuilderChannel, ReplayChannel};
+pub use builder_channel::IronSpartanBuilderChannel;
 pub use zk_wrapped_channel::ZKWrappedVerifierChannel;
 
 #[cfg(test)]
@@ -26,19 +26,18 @@ mod tests {
 		arithmetic_traits::InvertOrZero, field::FieldOps,
 	};
 	use binius_ip::channel::IPVerifierChannel;
-	use binius_spartan_frontend::circuit_builder::{ConstraintBuilder, WitnessGenerator};
+	use binius_spartan_frontend::circuit_builder::ConstraintBuilder;
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::wrapper::circuit_elem::{CircuitElem, CircuitWire};
+	use crate::wrapper::{builder_channel::BuilderWire, circuit_elem::CircuitElem};
 
-	type BuildElem = CircuitElem<ConstraintBuilder<B128>>;
-	type BuildWire = CircuitWire<ConstraintBuilder<B128>>;
+	type BuildElem = CircuitElem<B128, BuilderWire<B128>>;
 
-	/// Helper to create a BuildWire from a ConstraintBuilder Rc for tests.
+	/// Helper to create a BuildElem wire from a ConstraintBuilder Rc for tests.
 	fn alloc_inout_wire(rc: &Rc<std::cell::RefCell<ConstraintBuilder<B128>>>) -> BuildElem {
 		let wire = rc.borrow_mut().alloc_inout();
-		BuildElem::Wire(BuildWire::new(rc, wire))
+		BuildElem::wire(rc, BuilderWire::Private(wire))
 	}
 
 	#[test]
@@ -66,11 +65,11 @@ mod tests {
 
 		// Adding zero returns the wire unchanged.
 		let result = elem.clone() + BuildElem::Constant(B128::ZERO);
-		assert!(matches!(result, BuildElem::Wire(_)));
+		assert!(matches!(result, BuildElem::Wire { .. }));
 
 		// Multiplying by one returns the wire unchanged.
 		let result = elem.clone() * BuildElem::Constant(B128::ONE);
-		assert!(matches!(result, BuildElem::Wire(_)));
+		assert!(matches!(result, BuildElem::Wire { .. }));
 
 		// Multiplying by zero returns constant zero.
 		let result = elem * BuildElem::Constant(B128::ZERO);
@@ -116,23 +115,23 @@ mod tests {
 
 	#[test]
 	fn test_channel_recv_and_sample() {
-		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::<B128>::new());
+		let mut channel = IronSpartanBuilderChannel::<B128>::new();
 
 		let a = channel.recv_one().unwrap();
 		let b = channel.sample();
 		let c = channel.recv_array::<3>().unwrap();
 
 		// All should be Wire variants.
-		assert!(matches!(a, BuildElem::Wire(_)));
-		assert!(matches!(b, BuildElem::Wire(_)));
+		assert!(matches!(a, BuildElem::Wire { .. }));
+		assert!(matches!(b, BuildElem::Wire { .. }));
 		for elem in &c {
-			assert!(matches!(elem, BuildElem::Wire(_)));
+			assert!(matches!(elem, BuildElem::Wire { .. }));
 		}
 	}
 
 	#[test]
 	fn test_channel_assert_zero() {
-		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::<B128>::new());
+		let mut channel = IronSpartanBuilderChannel::<B128>::new();
 
 		// Assert zero on a constant zero should succeed.
 		assert!(channel.assert_zero(BuildElem::Constant(B128::ZERO)).is_ok());
@@ -184,7 +183,7 @@ mod tests {
 		let public_size = 1 << cs.log_public();
 
 		// Create the builder channel and run IOPVerifier::verify symbolically.
-		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::<B128>::new());
+		let mut channel = IronSpartanBuilderChannel::<B128>::new();
 
 		// Use zero-filled public inputs of the correct length.
 		let public = vec![B128::ZERO; public_size];
@@ -227,79 +226,18 @@ mod tests {
 		for (i, (elem, &exp)) in elems.iter().zip(&expected).enumerate() {
 			match elem {
 				CircuitElem::Constant(c) => assert_eq!(*c, exp, "mismatch at index {i}"),
-				CircuitElem::Wire(_) => panic!("expected constant after all-constants transpose"),
+				CircuitElem::Wire { .. } => {
+					panic!("expected constant after all-constants transpose")
+				}
 			}
 		}
-	}
-
-	#[test]
-	fn test_square_transpose_wires() {
-		// Test that square_transpose on wire elements builds a valid constraint system,
-		// and that a WitnessGenerator with correct values satisfies all constraints.
-		type FSub = B1;
-		let degree = <B128 as ExtensionField<FSub>>::DEGREE;
-
-		// Phase 1: Build the constraint system symbolically.
-		let mut constraint_builder = ConstraintBuilder::<B128>::new();
-		let inout_wires: Vec<_> = (0..degree)
-			.map(|_| constraint_builder.alloc_inout())
-			.collect();
-
-		// Build CircuitElem wires via a shared Rc.
-		let rc = Rc::new(std::cell::RefCell::new(constraint_builder));
-		let mut elems: Vec<BuildElem> = inout_wires
-			.iter()
-			.map(|&w| BuildElem::Wire(BuildWire::new(&rc, w)))
-			.collect();
-
-		<BuildElem as FieldOps>::square_transpose::<FSub>(&mut elems);
-
-		// The transposed outputs are wires; drop them so we can extract the builder.
-		drop(elems);
-		let constraint_builder = Rc::try_unwrap(rc).unwrap().into_inner();
-		let (cs, layout) = constraint_builder.build().finalize();
-
-		// The constraint system should have multiplication constraints from
-		// Frobenius checks, reconstruction, and transposed output.
-		assert!(!cs.mul_constraints().is_empty());
-
-		// Phase 2: Generate a witness with concrete values and verify all constraints.
-		let test_values: Vec<B128> = (0..degree)
-			.map(<B128 as ExtensionField<FSub>>::basis)
-			.collect();
-
-		let mut witness_gen = WitnessGenerator::new(&layout);
-		let witness_wires: Vec<_> = inout_wires
-			.iter()
-			.zip(&test_values)
-			.map(|(&w, &val)| witness_gen.write_inout(w, val))
-			.collect();
-
-		type WitnessElem<'a> = CircuitElem<WitnessGenerator<'a, B128>>;
-		let witness_rc = Rc::new(std::cell::RefCell::new(witness_gen));
-		let mut witness_elems: Vec<WitnessElem> = witness_wires
-			.iter()
-			.map(|&w| {
-				WitnessElem::Wire(crate::wrapper::circuit_elem::CircuitWire::new(&witness_rc, w))
-			})
-			.collect();
-
-		<WitnessElem as FieldOps>::square_transpose::<FSub>(&mut witness_elems);
-
-		drop(witness_elems);
-		let witness_gen = Rc::try_unwrap(witness_rc).unwrap().into_inner();
-		let witness = witness_gen
-			.build()
-			.expect("witness generation should succeed (all constraints satisfied)");
-
-		cs.validate(&witness);
 	}
 
 	#[test]
 	fn test_channel_integration_simple_circuit() {
 		// Build a simple circuit: recv two values, multiply them, assert_zero on the
 		// difference with a third received value (ie. a * b == c).
-		let mut channel = IronSpartanBuilderChannel::new(ConstraintBuilder::<B128>::new());
+		let mut channel = IronSpartanBuilderChannel::<B128>::new();
 		let a = channel.recv_one().unwrap();
 		let b = channel.recv_one().unwrap();
 		let c = channel.recv_one().unwrap();

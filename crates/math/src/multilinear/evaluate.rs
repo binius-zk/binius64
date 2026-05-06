@@ -141,7 +141,7 @@ pub fn evaluate_inplace_scalars<F: FieldOps>(
 
 #[cfg(test)]
 mod tests {
-	use rand::{RngCore, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 	use crate::{

@@ -1,6 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 use std::arch::x86_64::*;
 
+use rand::prelude::*;
 use seq_macro::seq;
 
 use crate::underlier::{PackedUnderlier, Underlier};
@@ -32,7 +33,7 @@ impl Underlier for __m128i {
 		}
 	}
 
-	fn random(mut rng: impl rand::RngCore) -> Self {
+	fn random(mut rng: impl Rng) -> Self {
 		let mut bytes = [0u8; 16];
 		rng.fill_bytes(&mut bytes);
 		unsafe { _mm_loadu_si128(bytes.as_ptr() as *const __m128i) }
@@ -239,7 +240,7 @@ impl Underlier for __m256i {
 		}
 	}
 
-	fn random(mut rng: impl rand::RngCore) -> Self {
+	fn random(mut rng: impl Rng) -> Self {
 		let mut bytes = [0u8; 32];
 		rng.fill_bytes(&mut bytes);
 		unsafe { _mm256_loadu_si256(bytes.as_ptr() as *const __m256i) }

@@ -485,6 +485,8 @@ impl ConstraintSystem {
 	/// - constraints do not reference values in the padding area.
 	/// - shifts amounts are valid.
 	pub fn validate(&self) -> Result<(), ConstraintSystemError> {
+		tracing::debug_span!("Validating constraint system");
+
 		// Validate the value vector layout
 		self.value_vec_layout.validate()?;
 
@@ -1126,7 +1128,7 @@ impl<'a> std::ops::Deref for Proof<'a> {
 
 #[cfg(test)]
 mod serialization_tests {
-	use rand::{RngCore, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use super::*;
 

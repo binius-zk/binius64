@@ -2,7 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_field::{BinaryField128bGhash as B128, Random, arch::OptimalPackedB128};
-use binius_hash::{ParallelCompressionAdaptor, StdCompression, StdDigest};
+use binius_hash::StdHashSuite;
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, ConstraintBuilder, WitnessGenerator},
 	circuits::powers,
@@ -35,14 +35,10 @@ fn test_power7_circuit_prover_verifier() {
 
 	// Setup prover and verifier
 	let log_inv_rate = 1;
-	let compression = StdCompression::default();
-	let verifier = Verifier::<_, StdDigest, _>::setup(cs, log_inv_rate, compression.clone())
-		.expect("verifier setup failed");
-	let prover = Prover::<OptimalPackedB128, _, StdDigest>::setup(
-		verifier.clone(),
-		ParallelCompressionAdaptor::new(compression),
-	)
-	.expect("prover setup failed");
+	let verifier =
+		Verifier::<_, StdHashSuite>::setup(cs, log_inv_rate).expect("verifier setup failed");
+	let prover = Prover::<OptimalPackedB128, StdHashSuite>::setup(verifier.clone())
+		.expect("prover setup failed");
 
 	let cs = verifier.constraint_system();
 	let layout = layout.with_blinding(cs.blinding_info().clone());

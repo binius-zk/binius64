@@ -6,7 +6,7 @@
 
 use binius_core::Word;
 use binius_frontend::{WitnessFiller, util::pack_bytes_into_wires_le};
-use rand::{RngCore, rngs::StdRng};
+use rand::prelude::*;
 use sha3::{Digest, Keccak256};
 
 use super::{

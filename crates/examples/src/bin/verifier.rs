@@ -8,7 +8,6 @@ use binius_utils::serialization::DeserializeBytes;
 use binius_verifier::{
 	Verifier,
 	config::{ChallengerWithName, StdChallenger},
-	hash::StdCompression,
 	transcript::VerifierTranscript,
 };
 use clap::Parser;
@@ -73,8 +72,7 @@ fn main() -> Result<()> {
 
 	// Set up the verifier
 	let verifier: StdVerifier =
-		Verifier::setup(cs, args.log_inv_rate as usize, StdCompression::default())
-			.context("Failed to setup verifier")?;
+		Verifier::setup(cs, args.log_inv_rate as usize).context("Failed to setup verifier")?;
 
 	// Create a verifier transcript from the serialized proof data
 	let (data, _) = proof.into_owned();

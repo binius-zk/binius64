@@ -1120,7 +1120,7 @@ mod tests {
 
 	#[test]
 	fn test_sha512_fixed_various_sizes() {
-		use rand::{Rng, SeedableRng, rngs::StdRng};
+		use rand::prelude::*;
 
 		// Test various message sizes to ensure padding works correctly
 		let sizes = vec![

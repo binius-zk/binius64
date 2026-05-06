@@ -7,29 +7,18 @@ use binius_core::{
 };
 use binius_field::arch::OptimalPackedB128;
 use binius_frontend::{CircuitBuilder, Wire};
-use binius_prover::{
-	Prover, hash::parallel_compression::ParallelCompressionAdaptor, zk_config::ZKProver,
-};
+use binius_hash::StdHashSuite;
+use binius_prover::{Prover, zk_config::ZKProver};
 use binius_transcript::ProverTranscript;
-use binius_verifier::{
-	Verifier,
-	config::StdChallenger,
-	hash::{StdCompression, StdDigest},
-	zk_config::ZKVerifier,
-};
+use binius_verifier::{Verifier, config::StdChallenger, zk_config::ZKVerifier};
 use rand::{SeedableRng, rngs::StdRng};
 
 fn prove_verify(cs: ConstraintSystem, witness: ValueVec) {
 	const LOG_INV_RATE: usize = 1;
 
-	let verifier =
-		Verifier::<StdDigest, _>::setup(cs, LOG_INV_RATE, StdCompression::default()).unwrap();
+	let verifier = Verifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
 
-	let prover = Prover::<OptimalPackedB128, _, StdDigest>::setup(
-		verifier.clone(),
-		ParallelCompressionAdaptor::new(StdCompression::default()),
-	)
-	.unwrap();
+	let prover = Prover::<OptimalPackedB128, StdHashSuite>::setup(verifier.clone()).unwrap();
 
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	prover
@@ -46,14 +35,10 @@ fn prove_verify(cs: ConstraintSystem, witness: ValueVec) {
 fn prove_verify_zk(cs: ConstraintSystem, witness: ValueVec) {
 	const LOG_INV_RATE: usize = 1;
 
-	let zk_verifier =
-		ZKVerifier::<StdDigest, _>::setup(cs, LOG_INV_RATE, StdCompression::default()).unwrap();
+	let zk_verifier = ZKVerifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
 
-	let zk_prover = ZKProver::<OptimalPackedB128, _, StdDigest>::setup(
-		zk_verifier.clone(),
-		ParallelCompressionAdaptor::new(StdCompression::default()),
-	)
-	.unwrap();
+	let zk_prover =
+		ZKProver::<OptimalPackedB128, StdHashSuite>::setup(zk_verifier.clone()).unwrap();
 
 	let mut rng = StdRng::seed_from_u64(0);
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());

@@ -396,8 +396,7 @@ mod tests {
 			nonce_len in 1usize..=50,
 			message_len in 1usize..=200,
 		) {
-			use rand::SeedableRng;
-			use rand::prelude::StdRng;
+			use rand::prelude::*;
 
 			let mut rng = StdRng::seed_from_u64(0);
 

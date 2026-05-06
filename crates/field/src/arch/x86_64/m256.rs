@@ -13,10 +13,7 @@ use binius_utils::{
 };
 use bytemuck::{Pod, Zeroable};
 use cfg_if::cfg_if;
-use rand::{
-	Rng,
-	distr::{Distribution, StandardUniform},
-};
+use rand::{distr::StandardUniform, prelude::*};
 
 use crate::{
 	BinaryField,

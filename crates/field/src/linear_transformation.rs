@@ -2,7 +2,7 @@
 
 use std::{iter, marker::PhantomData, ops::BitXor};
 
-use rand::RngCore;
+use rand::prelude::*;
 
 use crate::{
 	BinaryField, BinaryField1b, ExtensionField, UnderlierWithBitOps, WithUnderlier,
@@ -65,7 +65,7 @@ impl<IF: BinaryField, OF: BinaryField, Data: AsRef<[OF]> + Sync> Transformation<
 }
 
 impl<OF: BinaryField> FieldLinearTransformation<OF, Vec<OF>> {
-	pub fn random(mut rng: impl RngCore) -> Self {
+	pub fn random(mut rng: impl Rng) -> Self {
 		Self {
 			bases: (0..OF::DEGREE).map(|_| OF::random(&mut rng)).collect(),
 			_pd: PhantomData,

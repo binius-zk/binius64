@@ -15,8 +15,8 @@ use binius_utils::{
 use bytemuck::{NoUninit, Zeroable};
 use derive_more::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign};
 use rand::{
-	Rng,
 	distr::{Distribution, StandardUniform},
+	prelude::*,
 };
 
 use super::{UnderlierType, underlier_with_bit_ops::UnderlierWithBitOps};

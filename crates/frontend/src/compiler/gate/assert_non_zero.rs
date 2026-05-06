@@ -108,7 +108,7 @@ pub fn emit_eval_bytecode(
 #[cfg(test)]
 mod tests {
 	use binius_core::{verify::verify_constraints, word::Word};
-	use rand::{RngCore, SeedableRng, rngs::StdRng};
+	use rand::prelude::*;
 
 	use crate::compiler::CircuitBuilder;
 

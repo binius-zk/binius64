@@ -10,7 +10,7 @@ use binius_circuits::hash_based_sig::{
 use binius_core::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
 use clap::Args;
-use rand::{RngCore, SeedableRng, rngs::StdRng};
+use rand::prelude::*;
 
 use crate::ExampleCircuit;
 

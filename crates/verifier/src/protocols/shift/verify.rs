@@ -1,14 +1,23 @@
 // Copyright 2025 Irreducible Inc.
 
+use std::iter;
+
 use binius_core::constraint_system::{AndConstraint, ConstraintSystem, MulConstraint};
 use binius_field::{BinaryField, field::FieldOps};
 use binius_ip::channel::IPVerifierChannel;
-use binius_math::{BinarySubspace, univariate::evaluate_univariate};
+use binius_math::{
+	BinarySubspace,
+	multilinear::eq::eq_ind_partial_eval_scalars,
+	univariate::{evaluate_univariate, lagrange_evals_scalars},
+};
 use binius_utils::checked_arithmetics::strict_log_2;
 use getset::Getters;
 use itertools::Itertools;
 
-use super::{BITAND_ARITY, INTMUL_ARITY, error::Error, evaluate_monster_multilinear_for_operation};
+use super::{
+	BITAND_ARITY, INTMUL_ARITY, error::Error, evaluate_h_op,
+	evaluate_monster_multilinear_for_operation,
+};
 use crate::{
 	config::LOG_WORD_SIZE_BITS,
 	protocols::sumcheck::{SumcheckOutput, verify as verify_sumcheck},
@@ -23,27 +32,19 @@ use crate::{
 /// # Fields
 ///
 /// - `r_x_prime`: multilinear challenge point from the protocol
-/// - `r_zhat_prime`: univariate challenge point
-/// - `lambda`: random linear combination coefficient for operand weighting
 /// - `evals`: array of evaluation claims, one per operand position
 #[derive(Debug, Clone)]
 pub struct OperatorData<F, const ARITY: usize> {
 	pub r_x_prime: Vec<F>,
-	pub r_zhat_prime: F,
 	pub evals: [F; ARITY],
 }
 
 impl<F: FieldOps, const ARITY: usize> OperatorData<F, ARITY> {
 	// Constructs a new operator data instance encoding
-	// evaluation claim with univariate challenge `r_zhat_prime`
-	// multilinear challenge `r_x_prime`, and evaluations `evals`
-	// with one eval for each operand of the operation.
-	pub fn new(r_zhat_prime: F, r_x_prime: Vec<F>, evals: [F; ARITY]) -> Self {
-		Self {
-			r_x_prime,
-			r_zhat_prime,
-			evals,
-		}
+	// evaluation claim with multilinear challenge `r_x_prime` and evaluations `evals`
+	// (one eval for each operand of the operation).
+	pub fn new(r_x_prime: Vec<F>, evals: [F; ARITY]) -> Self {
+		Self { r_x_prime, evals }
 	}
 
 	// Batching is scaled by random lambda and therefore this batched
@@ -208,6 +209,7 @@ pub fn check_eval<F, C>(
 	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
 	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
 	subspace: &BinarySubspace<F>,
+	r_zhat_prime: C::Elem,
 	output: &VerifyOutput<C::Elem>,
 	channel: &mut C,
 ) -> Result<(), Error>
@@ -226,40 +228,84 @@ where
 		witness_eval,
 	} = output;
 
-	// Compute monster multilinear evaluation
-	let monster_eval_for_bitand = {
-		let (a, b, c) = constraint_system
-			.and_constraints
-			.iter()
-			.map(|AndConstraint { a, b, c }| (a, b, c))
-			.multiunzip();
-		evaluate_monster_multilinear_for_operation(
-			&[a, b, c],
-			bitand_data,
-			subspace,
-			bitand_lambda.clone(),
-			r_j,
-			r_s,
-			r_y,
-		)
-	}?;
-	let monster_eval_for_intmul = {
-		let (a, b, lo, hi) = constraint_system
-			.mul_constraints
-			.iter()
-			.map(|MulConstraint { a, b, hi, lo }| (a, b, lo, hi))
-			.multiunzip();
-		evaluate_monster_multilinear_for_operation(
-			&[a, b, lo, hi],
-			intmul_data,
-			subspace,
-			intmul_lambda.clone(),
-			r_j,
-			r_s,
-			r_y,
-		)
-	}?;
-	let monster_eval = monster_eval_for_bitand + monster_eval_for_intmul;
+	// `monster_eval` is a function of purely public-channel-derived elements
+	// (`r_zhat_prime`, `bitand_lambda`, `intmul_lambda`, the operator data's `r_x_prime`
+	// vectors, `r_j`, `r_s`, `r_y`) plus the constant `subspace` and `constraint_system`.
+	// Trade those Elems for plain field values, run the MLE evaluation in plaintext, and
+	// materialize the result as a single inout wire instead of building the entire
+	// sub-circuit in wrapper channels.
+	let monster_eval = {
+		let bitand_r_x_prime_len = bitand_data.r_x_prime.len();
+		let intmul_r_x_prime_len = intmul_data.r_x_prime.len();
+		let r_j_len = r_j.len();
+		let r_s_len = r_s.len();
+		let r_y_len = r_y.len();
+
+		let inputs: Vec<C::Elem> = iter::once(r_zhat_prime.clone())
+			.chain(iter::once(bitand_lambda.clone()))
+			.chain(iter::once(intmul_lambda.clone()))
+			.chain(bitand_data.r_x_prime.iter().cloned())
+			.chain(intmul_data.r_x_prime.iter().cloned())
+			.chain(r_j.iter().cloned())
+			.chain(r_s.iter().cloned())
+			.chain(r_y.iter().cloned())
+			.collect();
+
+		channel.compute_public_value(&inputs, move |vals| {
+			let r_zhat_prime_v = vals[0];
+			let bitand_lambda_v = vals[1];
+			let intmul_lambda_v = vals[2];
+			let mut off = 3;
+			let bitand_r_x_prime_v = &vals[off..off + bitand_r_x_prime_len];
+			off += bitand_r_x_prime_len;
+			let intmul_r_x_prime_v = &vals[off..off + intmul_r_x_prime_len];
+			off += intmul_r_x_prime_len;
+			let r_j_v = &vals[off..off + r_j_len];
+			off += r_j_len;
+			let r_s_v = &vals[off..off + r_s_len];
+			off += r_s_len;
+			let r_y_v = &vals[off..off + r_y_len];
+
+			let r_y_tensor = eq_ind_partial_eval_scalars(r_y_v);
+			let l_tilde = lagrange_evals_scalars(subspace, r_zhat_prime_v);
+			let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
+
+			let bitand_part = {
+				let (a, b, c) = constraint_system
+					.and_constraints
+					.iter()
+					.map(|AndConstraint { a, b, c }| (a, b, c))
+					.multiunzip();
+				evaluate_monster_multilinear_for_operation::<F, F>(
+					&[a, b, c],
+					bitand_r_x_prime_v,
+					bitand_lambda_v,
+					r_s_v,
+					&r_y_tensor,
+					&h_op_evals,
+				)
+				.expect("evaluate_monster_multilinear_for_operation has no fallible path")
+			};
+			let intmul_part = {
+				let (a, b, lo, hi) = constraint_system
+					.mul_constraints
+					.iter()
+					.map(|MulConstraint { a, b, hi, lo }| (a, b, lo, hi))
+					.multiunzip();
+				evaluate_monster_multilinear_for_operation::<F, F>(
+					&[a, b, lo, hi],
+					intmul_r_x_prime_v,
+					intmul_lambda_v,
+					r_s_v,
+					&r_y_tensor,
+					&h_op_evals,
+				)
+				.expect("evaluate_monster_multilinear_for_operation has no fallible path")
+			};
+
+			bitand_part + intmul_part
+		})
+	};
 
 	// Check if the prover-provided witness value is satisfying.
 	//
