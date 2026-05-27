@@ -2,68 +2,144 @@
 //! Variable-amount shift gadgets.
 //!
 //! `CircuitBuilder` only exposes shifts by a compile-time-constant amount. This module provides
-//! [`var_sll`], [`var_srl`], and [`var_sra`] — barrel-shifter gadgets that shift by a runtime
-//! [`Wire`] amount.
+//! barrel-shifter gadgets that shift by a runtime [`Wire`] amount:
+//!
+//! - [`var_sll`], [`var_srl`], [`var_sra`] — shift by the low 6 bits of `shift` (full bit range for
+//!   a 64-bit word).
+//! - [`var_sll_blocks`], [`var_srl_blocks`], [`var_sra_blocks`] — most general: the actual
+//!   bit-shift is `shift * 2^block_bits`, with `shift` treated as a `shift_bits`-bit unsigned
+//!   integer. Useful when the caller knows the shift is a multiple of a fixed power of two, or when
+//!   only a narrow range of shifts is possible.
+//! - [`var_sll_bytes`], [`var_srl_bytes`], [`var_sra_bytes`] — byte-granularity shifts (shift in
+//!   `0..8` bytes).
 //!
 //! ## Precondition
 //!
-//! The shift amount `shift` is treated as a `shift_bits`-bit unsigned integer; bits above
+//! For `*_blocks`, the shift amount is treated as a `shift_bits`-bit unsigned integer; bits above
 //! position `shift_bits - 1` are ignored. Callers must ensure `shift < 2^shift_bits`; this is
-//! not checked by the gadget.
+//! not checked by the gadget. The other variants impose the same precondition with `shift_bits`
+//! fixed (6 for the base variants, 3 for the byte variants).
 //!
 //! ## Cost
 //!
-//! Each gadget emits `3 * shift_bits` AND constraints.
+//! `*_blocks`: `3 * shift_bits` AND constraints. Base variants: 18. Byte variants: 9.
 
 use binius_frontend::{CircuitBuilder, Wire};
 
 /// Variable-amount logical left shift.
 ///
-/// Returns `x << shift`, where the low `shift_bits` bits of `shift` are the shift amount.
-///
-/// # Panics
-///
-/// Panics if `shift_bits > 6`.
-pub fn var_sll(b: &CircuitBuilder, x: Wire, shift: Wire, shift_bits: usize) -> Wire {
-	var_shift(b, x, shift, shift_bits, CircuitBuilder::shl)
+/// Returns `x << shift`, reading the low 6 bits of `shift` as the shift amount.
+pub fn var_sll(b: &CircuitBuilder, x: Wire, shift: Wire) -> Wire {
+	var_sll_blocks(b, x, shift, 6, 0)
 }
 
 /// Variable-amount logical right shift.
 ///
-/// Returns `x >> shift`, where the low `shift_bits` bits of `shift` are the shift amount.
-///
-/// # Panics
-///
-/// Panics if `shift_bits > 6`.
-pub fn var_srl(b: &CircuitBuilder, x: Wire, shift: Wire, shift_bits: usize) -> Wire {
-	var_shift(b, x, shift, shift_bits, CircuitBuilder::shr)
+/// Returns `x >> shift`, reading the low 6 bits of `shift` as the shift amount.
+pub fn var_srl(b: &CircuitBuilder, x: Wire, shift: Wire) -> Wire {
+	var_srl_blocks(b, x, shift, 6, 0)
 }
 
 /// Variable-amount arithmetic right shift.
 ///
-/// Returns `x SAR shift` (sign-extending), where the low `shift_bits` bits of `shift` are the
-/// shift amount.
+/// Returns `x SAR shift` (sign-extending), reading the low 6 bits of `shift` as the shift amount.
+pub fn var_sra(b: &CircuitBuilder, x: Wire, shift: Wire) -> Wire {
+	var_sra_blocks(b, x, shift, 6, 0)
+}
+
+/// Variable-amount logical left shift by blocks of `2^block_bits` bits.
+///
+/// Returns `x << (shift * 2^block_bits)`, where the low `shift_bits` bits of `shift` are the
+/// block count.
 ///
 /// # Panics
 ///
-/// Panics if `shift_bits > 6`.
-pub fn var_sra(b: &CircuitBuilder, x: Wire, shift: Wire, shift_bits: usize) -> Wire {
-	var_shift(b, x, shift, shift_bits, CircuitBuilder::sar)
-}
-
-fn var_shift(
+/// Panics if `shift_bits + block_bits > 6`.
+pub fn var_sll_blocks(
 	b: &CircuitBuilder,
 	x: Wire,
 	shift: Wire,
 	shift_bits: usize,
+	block_bits: usize,
+) -> Wire {
+	var_shift_blocks(b, x, shift, shift_bits, block_bits, CircuitBuilder::shl)
+}
+
+/// Variable-amount logical right shift by blocks of `2^block_bits` bits.
+///
+/// Returns `x >> (shift * 2^block_bits)`, where the low `shift_bits` bits of `shift` are the
+/// block count.
+///
+/// # Panics
+///
+/// Panics if `shift_bits + block_bits > 6`.
+pub fn var_srl_blocks(
+	b: &CircuitBuilder,
+	x: Wire,
+	shift: Wire,
+	shift_bits: usize,
+	block_bits: usize,
+) -> Wire {
+	var_shift_blocks(b, x, shift, shift_bits, block_bits, CircuitBuilder::shr)
+}
+
+/// Variable-amount arithmetic right shift by blocks of `2^block_bits` bits.
+///
+/// Returns `x SAR (shift * 2^block_bits)` (sign-extending), where the low `shift_bits` bits of
+/// `shift` are the block count.
+///
+/// # Panics
+///
+/// Panics if `shift_bits + block_bits > 6`.
+pub fn var_sra_blocks(
+	b: &CircuitBuilder,
+	x: Wire,
+	shift: Wire,
+	shift_bits: usize,
+	block_bits: usize,
+) -> Wire {
+	var_shift_blocks(b, x, shift, shift_bits, block_bits, CircuitBuilder::sar)
+}
+
+/// Variable-amount logical left shift by whole bytes.
+///
+/// Returns `x << (shift * 8)`. The low 3 bits of `shift` are the byte count (range `0..8`).
+pub fn var_sll_bytes(b: &CircuitBuilder, x: Wire, shift: Wire) -> Wire {
+	var_sll_blocks(b, x, shift, 3, 3)
+}
+
+/// Variable-amount logical right shift by whole bytes.
+///
+/// Returns `x >> (shift * 8)`. The low 3 bits of `shift` are the byte count (range `0..8`).
+pub fn var_srl_bytes(b: &CircuitBuilder, x: Wire, shift: Wire) -> Wire {
+	var_srl_blocks(b, x, shift, 3, 3)
+}
+
+/// Variable-amount arithmetic right shift by whole bytes.
+///
+/// Returns `x SAR (shift * 8)` (sign-extending). The low 3 bits of `shift` are the byte count
+/// (range `0..8`).
+pub fn var_sra_bytes(b: &CircuitBuilder, x: Wire, shift: Wire) -> Wire {
+	var_sra_blocks(b, x, shift, 3, 3)
+}
+
+fn var_shift_blocks(
+	b: &CircuitBuilder,
+	x: Wire,
+	shift: Wire,
+	shift_bits: usize,
+	block_bits: usize,
 	step: impl Fn(&CircuitBuilder, Wire, u32) -> Wire,
 ) -> Wire {
-	assert!(shift_bits <= 6, "shift_bits={shift_bits} > 6 (max for 64-bit word)");
+	assert!(
+		shift_bits + block_bits <= 6,
+		"shift_bits={shift_bits} + block_bits={block_bits} > 6 (max for 64-bit word)"
+	);
 	let mut result = x;
 	for i in 0..shift_bits {
 		// Move bit i of `shift` into the MSB position so `select` reads it as the condition.
 		let cond = b.shl(shift, 63 - i as u32);
-		let shifted = step(b, result, 1u32 << i);
+		let shifted = step(b, result, 1u32 << (i + block_bits));
 		result = b.select(cond, shifted, result);
 	}
 	result
@@ -77,21 +153,61 @@ mod tests {
 
 	use super::*;
 
-	type Gadget = fn(&CircuitBuilder, Wire, Wire, usize) -> Wire;
+	type Gadget = fn(&CircuitBuilder, Wire, Wire) -> Wire;
+	type BlocksGadget = fn(&CircuitBuilder, Wire, Wire, usize, usize) -> Wire;
 
-	fn build_circuit(gadget: Gadget, shift_bits: usize) -> (Circuit, Wire, Wire, Wire) {
+	fn build_circuit(gadget: Gadget) -> (Circuit, Wire, Wire, Wire) {
 		let builder = CircuitBuilder::new();
 		let x = builder.add_witness();
 		let shift = builder.add_witness();
 		let output = builder.add_witness();
-		let computed = gadget(&builder, x, shift, shift_bits);
+		let computed = gadget(&builder, x, shift);
 		builder.assert_eq("var_shift_result", computed, output);
 		let circuit = builder.build();
 		(circuit, x, shift, output)
 	}
 
-	fn check_ok(gadget: Gadget, shift_bits: usize, x_val: u64, shift_val: u64, expected: u64) {
-		let (circuit, x, shift, output) = build_circuit(gadget, shift_bits);
+	fn build_blocks_circuit(
+		gadget: BlocksGadget,
+		shift_bits: usize,
+		block_bits: usize,
+	) -> (Circuit, Wire, Wire, Wire) {
+		let builder = CircuitBuilder::new();
+		let x = builder.add_witness();
+		let shift = builder.add_witness();
+		let output = builder.add_witness();
+		let computed = gadget(&builder, x, shift, shift_bits, block_bits);
+		builder.assert_eq("var_shift_result", computed, output);
+		let circuit = builder.build();
+		(circuit, x, shift, output)
+	}
+
+	fn check_ok(gadget: Gadget, x_val: u64, shift_val: u64, expected: u64) {
+		let (circuit, x, shift, output) = build_circuit(gadget);
+		fill_and_check(&circuit, x, shift, output, x_val, shift_val, expected);
+	}
+
+	fn check_ok_blocks(
+		gadget: BlocksGadget,
+		shift_bits: usize,
+		block_bits: usize,
+		x_val: u64,
+		shift_val: u64,
+		expected: u64,
+	) {
+		let (circuit, x, shift, output) = build_blocks_circuit(gadget, shift_bits, block_bits);
+		fill_and_check(&circuit, x, shift, output, x_val, shift_val, expected);
+	}
+
+	fn fill_and_check(
+		circuit: &Circuit,
+		x: Wire,
+		shift: Wire,
+		output: Wire,
+		x_val: u64,
+		shift_val: u64,
+		expected: u64,
+	) {
 		let mut w = circuit.new_witness_filler();
 		w[x] = Word(x_val);
 		w[shift] = Word(shift_val);
@@ -127,39 +243,45 @@ mod tests {
 
 	#[test]
 	fn var_sll_fixtures() {
-		for shift_bits in [0, 1, 3, 6] {
-			let max_shift = if shift_bits == 0 {
-				1
-			} else {
-				1u64 << shift_bits
-			};
-			for &x_val in X_FIXTURES {
-				for shift_val in 0..max_shift {
-					check_ok(var_sll, shift_bits, x_val, shift_val, ref_sll(x_val, shift_val));
-				}
+		for &x_val in X_FIXTURES {
+			for shift_val in 0u64..64 {
+				check_ok(var_sll, x_val, shift_val, ref_sll(x_val, shift_val));
 			}
 		}
 	}
 
 	#[test]
 	fn var_srl_fixtures() {
-		for shift_bits in [0, 1, 3, 6] {
-			let max_shift = if shift_bits == 0 {
-				1
-			} else {
-				1u64 << shift_bits
-			};
-			for &x_val in X_FIXTURES {
-				for shift_val in 0..max_shift {
-					check_ok(var_srl, shift_bits, x_val, shift_val, ref_srl(x_val, shift_val));
-				}
+		for &x_val in X_FIXTURES {
+			for shift_val in 0u64..64 {
+				check_ok(var_srl, x_val, shift_val, ref_srl(x_val, shift_val));
 			}
 		}
 	}
 
 	#[test]
 	fn var_sra_fixtures() {
-		for shift_bits in [0, 1, 3, 6] {
+		for &x_val in X_FIXTURES {
+			for shift_val in 0u64..64 {
+				check_ok(var_sra, x_val, shift_val, ref_sra(x_val, shift_val));
+			}
+		}
+	}
+
+	const BLOCK_CONFIGS: &[(usize, usize)] = &[
+		(0, 0),
+		(0, 6),
+		(3, 0),
+		(3, 3),
+		(6, 0),
+		(1, 5),
+		(2, 4),
+		(4, 2),
+	];
+
+	#[test]
+	fn var_sll_blocks_fixtures() {
+		for &(shift_bits, block_bits) in BLOCK_CONFIGS {
 			let max_shift = if shift_bits == 0 {
 				1
 			} else {
@@ -167,8 +289,91 @@ mod tests {
 			};
 			for &x_val in X_FIXTURES {
 				for shift_val in 0..max_shift {
-					check_ok(var_sra, shift_bits, x_val, shift_val, ref_sra(x_val, shift_val));
+					let effective = shift_val << block_bits;
+					check_ok_blocks(
+						var_sll_blocks,
+						shift_bits,
+						block_bits,
+						x_val,
+						shift_val,
+						ref_sll(x_val, effective),
+					);
 				}
+			}
+		}
+	}
+
+	#[test]
+	fn var_srl_blocks_fixtures() {
+		for &(shift_bits, block_bits) in BLOCK_CONFIGS {
+			let max_shift = if shift_bits == 0 {
+				1
+			} else {
+				1u64 << shift_bits
+			};
+			for &x_val in X_FIXTURES {
+				for shift_val in 0..max_shift {
+					let effective = shift_val << block_bits;
+					check_ok_blocks(
+						var_srl_blocks,
+						shift_bits,
+						block_bits,
+						x_val,
+						shift_val,
+						ref_srl(x_val, effective),
+					);
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn var_sra_blocks_fixtures() {
+		for &(shift_bits, block_bits) in BLOCK_CONFIGS {
+			let max_shift = if shift_bits == 0 {
+				1
+			} else {
+				1u64 << shift_bits
+			};
+			for &x_val in X_FIXTURES {
+				for shift_val in 0..max_shift {
+					let effective = shift_val << block_bits;
+					check_ok_blocks(
+						var_sra_blocks,
+						shift_bits,
+						block_bits,
+						x_val,
+						shift_val,
+						ref_sra(x_val, effective),
+					);
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn var_sll_bytes_fixtures() {
+		for &x_val in X_FIXTURES {
+			for shift_val in 0u64..8 {
+				check_ok(var_sll_bytes, x_val, shift_val, ref_sll(x_val, shift_val * 8));
+			}
+		}
+	}
+
+	#[test]
+	fn var_srl_bytes_fixtures() {
+		for &x_val in X_FIXTURES {
+			for shift_val in 0u64..8 {
+				check_ok(var_srl_bytes, x_val, shift_val, ref_srl(x_val, shift_val * 8));
+			}
+		}
+	}
+
+	#[test]
+	fn var_sra_bytes_fixtures() {
+		for &x_val in X_FIXTURES {
+			for shift_val in 0u64..8 {
+				check_ok(var_sra_bytes, x_val, shift_val, ref_sra(x_val, shift_val * 8));
 			}
 		}
 	}
@@ -178,31 +383,38 @@ mod tests {
 
 		#[test]
 		fn var_sll_random(x_val in any::<u64>(), shift_val in 0u64..64) {
-			check_ok(var_sll, 6, x_val, shift_val, ref_sll(x_val, shift_val));
+			check_ok(var_sll, x_val, shift_val, ref_sll(x_val, shift_val));
 		}
 
 		#[test]
 		fn var_srl_random(x_val in any::<u64>(), shift_val in 0u64..64) {
-			check_ok(var_srl, 6, x_val, shift_val, ref_srl(x_val, shift_val));
+			check_ok(var_srl, x_val, shift_val, ref_srl(x_val, shift_val));
 		}
 
 		#[test]
 		fn var_sra_random(x_val in any::<u64>(), shift_val in 0u64..64) {
-			check_ok(var_sra, 6, x_val, shift_val, ref_sra(x_val, shift_val));
+			check_ok(var_sra, x_val, shift_val, ref_sra(x_val, shift_val));
+		}
+
+		#[test]
+		fn var_sll_bytes_random(x_val in any::<u64>(), shift_val in 0u64..8) {
+			check_ok(var_sll_bytes, x_val, shift_val, ref_sll(x_val, shift_val * 8));
+		}
+
+		#[test]
+		fn var_srl_bytes_random(x_val in any::<u64>(), shift_val in 0u64..8) {
+			check_ok(var_srl_bytes, x_val, shift_val, ref_srl(x_val, shift_val * 8));
+		}
+
+		#[test]
+		fn var_sra_bytes_random(x_val in any::<u64>(), shift_val in 0u64..8) {
+			check_ok(var_sra_bytes, x_val, shift_val, ref_sra(x_val, shift_val * 8));
 		}
 	}
 
 	#[test]
-	fn var_sll_zero_shift_bits_is_identity() {
-		// shift_bits = 0: the gadget should pass x through unchanged regardless of `shift`.
-		check_ok(var_sll, 0, 0xDEAD_BEEF_CAFE_F00D, 0, 0xDEAD_BEEF_CAFE_F00D);
-		check_ok(var_srl, 0, 0xDEAD_BEEF_CAFE_F00D, 0, 0xDEAD_BEEF_CAFE_F00D);
-		check_ok(var_sra, 0, 0xDEAD_BEEF_CAFE_F00D, 0, 0xDEAD_BEEF_CAFE_F00D);
-	}
-
-	#[test]
 	fn rejects_incorrect_output() {
-		let (circuit, x, shift, output) = build_circuit(var_sll, 6);
+		let (circuit, x, shift, output) = build_circuit(var_sll);
 		let mut w = circuit.new_witness_filler();
 		w[x] = Word(0x1);
 		w[shift] = Word(4);
@@ -211,11 +423,11 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "shift_bits=7")]
-	fn rejects_excessive_shift_bits() {
+	#[should_panic(expected = "shift_bits=4 + block_bits=3")]
+	fn rejects_excessive_total_bits() {
 		let builder = CircuitBuilder::new();
 		let x = builder.add_witness();
 		let shift = builder.add_witness();
-		let _ = var_sll(&builder, x, shift, 7);
+		let _ = var_sll_blocks(&builder, x, shift, 4, 3);
 	}
 }
