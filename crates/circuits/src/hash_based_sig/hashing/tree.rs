@@ -45,7 +45,6 @@ pub fn circuit_tree_hash(
 	index: Wire,
 	digest: [Wire; 4],
 ) -> Keccak256 {
-	let message_len = domain_param_len + TREE_MESSAGE_OVERHEAD;
 	assert_eq!(domain_param_wires.len(), domain_param_len.div_ceil(8));
 
 	let mut additional_terms = Vec::new();
@@ -84,7 +83,6 @@ pub fn circuit_tree_hash(
 		domain_param_len,
 		TREE_TWEAK,
 		additional_terms,
-		message_len,
 		digest,
 	)
 }

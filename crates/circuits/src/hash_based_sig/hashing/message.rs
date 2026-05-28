@@ -39,8 +39,6 @@ pub fn circuit_message_hash(
 	message_len: usize,
 	digest: [Wire; 4],
 ) -> Keccak256 {
-	let total_message_len = domain_param_len + 1 + nonce_len + message_len; // +1 for tweak byte
-
 	let mut additional_terms = Vec::new();
 
 	let nonce_term = ByteVec {
@@ -61,7 +59,6 @@ pub fn circuit_message_hash(
 		domain_param_len,
 		MESSAGE_TWEAK,
 		additional_terms,
-		total_message_len,
 		digest,
 	)
 }

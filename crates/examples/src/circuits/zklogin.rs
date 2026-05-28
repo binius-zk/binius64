@@ -3,11 +3,12 @@ use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD};
 use binius_circuits::{
 	base64::Base64UrlSafe,
-	concat::Concat,
+	concat::concat,
 	fixed_byte_vec::ByteVec,
 	jwt_claims::{Attribute, JwtClaims},
 	rs256::Rs256Verify,
 	sha256::Sha256 as Sha256Circuit,
+	slice::assert_slice_eq,
 };
 use binius_core::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
@@ -176,45 +177,28 @@ impl ZkLogin {
 			+ config.max_len_jwt_iss
 			+ config.max_len_salt;
 
-		// Create SHA256 verification for zkaddr first
-		let zkaddr_preimage_len_bytes = b.add_witness();
+		let zkaddr_preimage = concat(
+			&b.subcircuit("zkaddr_preimage_concat"),
+			&[sub.clone(), aud.clone(), iss.clone(), salt.clone()],
+		);
+
 		let zkaddr_sha256_message: Vec<Wire> = (0..max_len_zkaddr_preimage)
 			.map(|_| b.add_witness())
 			.collect();
 		let zkaddr_sha256 = Sha256Circuit::new(
 			&b.subcircuit("zkaddr_sha256"),
-			zkaddr_preimage_len_bytes,
+			zkaddr_preimage.len_bytes,
 			zkaddr,
 			zkaddr_sha256_message,
 		);
 
 		let zkaddr_preimage_le_wires = zkaddr_sha256.message_to_le_wires(b);
-		let zkaddr_joined_words = max_len_zkaddr_preimage;
-		let zkaddr_joined_le = zkaddr_preimage_le_wires[..zkaddr_joined_words].to_vec();
-
-		// Create the concatenation that outputs to the LE wires
-		let _zkaddr_preimage_concat = Concat::new(
-			&b.subcircuit("zkaddr_preimage_concat"),
-			zkaddr_preimage_len_bytes,
-			zkaddr_joined_le,
-			vec![
-				ByteVec {
-					data: sub.data.clone(),
-					len_bytes: sub.len_bytes,
-				},
-				ByteVec {
-					data: aud.data.clone(),
-					len_bytes: aud.len_bytes,
-				},
-				ByteVec {
-					data: iss.data.clone(),
-					len_bytes: iss.len_bytes,
-				},
-				ByteVec {
-					data: salt.data.clone(),
-					len_bytes: salt.len_bytes,
-				},
-			],
+		assert_slice_eq(
+			b,
+			"zkaddr_preimage_eq",
+			zkaddr_preimage.len_bytes,
+			&zkaddr_preimage_le_wires,
+			&zkaddr_preimage.data,
 		);
 
 		// We need to check:
@@ -224,39 +208,32 @@ impl ZkLogin {
 		// assert nonce = base64_decode(base64_jwt_payload_nonce)
 		let max_len_nonce_preimage = 4 + config.max_len_t_max + config.max_len_nonce_r;
 
-		// Create SHA256 verification for nonce first
-		let nonce_preimage_len_bytes = b.add_witness();
+		let nonce_preimage = concat(
+			&b.subcircuit("nonce_preimage_concat"),
+			&[
+				ByteVec::new(vk_u.to_vec(), b.add_constant_64(32)),
+				t_max.clone(),
+				nonce_r.clone(),
+			],
+		);
+
 		let nonce_sha256_message: Vec<Wire> = (0..max_len_nonce_preimage)
 			.map(|_| b.add_witness())
 			.collect();
 		let nonce_sha256 = Sha256Circuit::new(
 			&b.subcircuit("nonce_sha256"),
-			nonce_preimage_len_bytes,
+			nonce_preimage.len_bytes,
 			nonce,
 			nonce_sha256_message,
 		);
 
 		let nonce_preimage_le_wires = nonce_sha256.message_to_le_wires(b);
-		let nonce_joined_words = max_len_nonce_preimage;
-		let nonce_joined_le = nonce_preimage_le_wires[..nonce_joined_words].to_vec();
-		let _nonce_preimage_concat = Concat::new(
-			&b.subcircuit("nonce_preimage_concat"),
-			nonce_preimage_len_bytes,
-			nonce_joined_le,
-			vec![
-				ByteVec {
-					data: vk_u.to_vec(),
-					len_bytes: b.add_constant_64(32),
-				},
-				ByteVec {
-					data: t_max.data.clone(),
-					len_bytes: t_max.len_bytes,
-				},
-				ByteVec {
-					data: nonce_r.data.clone(),
-					len_bytes: nonce_r.len_bytes,
-				},
-			],
+		assert_slice_eq(
+			b,
+			"nonce_preimage_eq",
+			nonce_preimage.len_bytes,
+			&nonce_preimage_le_wires,
+			&nonce_preimage.data,
 		);
 
 		let nonce_le = nonce_sha256.digest_to_le_wires(b);
@@ -286,42 +263,32 @@ impl ZkLogin {
 		let max_len_jwt_signing_payload =
 			config.max_len_base64_jwt_header() + 1 + config.max_len_base64_jwt_payload();
 
-		// Create witness wires for the JWT signing payload in SHA256 format
-		let jwt_signing_payload_sha256_len = b.add_witness();
-		let n_words_jwt_signing_payload_sha256 = max_len_jwt_signing_payload;
-		let jwt_signing_payload_sha256_message: Vec<Wire> = (0..n_words_jwt_signing_payload_sha256)
+		let signing_payload = concat(
+			&b.subcircuit("jwt_signing_payload_concat"),
+			&[
+				base64_jwt_header.clone(),
+				ByteVec::new(vec![b.add_constant_zx_8(b'.')], b.add_constant_64(1)),
+				base64_jwt_payload.clone(),
+			],
+		);
+
+		let jwt_signing_payload_sha256_message: Vec<Wire> = (0..max_len_jwt_signing_payload)
 			.map(|_| b.add_witness())
 			.collect();
 
-		let jwt_signing_payload = ByteVec::new(
-			jwt_signing_payload_sha256_message.clone(),
-			jwt_signing_payload_sha256_len,
-		);
+		let jwt_signing_payload =
+			ByteVec::new(jwt_signing_payload_sha256_message.clone(), signing_payload.len_bytes);
 
 		let jwt_signature_verify =
 			Rs256Verify::new(b, jwt_signing_payload, jwt_signature.clone(), rsa_modulus);
 
 		let jwt_signing_payload_le_wires = jwt_signature_verify.sha256.message_to_le_wires(b);
-		let signing_joined_words = max_len_jwt_signing_payload;
-		let signing_joined_le = jwt_signing_payload_le_wires[..signing_joined_words].to_vec();
-		let _jwt_signing_payload_concat = Concat::new(
-			&b.subcircuit("jwt_signing_payload_concat"),
-			jwt_signing_payload_sha256_len,
-			signing_joined_le,
-			vec![
-				ByteVec {
-					data: base64_jwt_header.data.clone(),
-					len_bytes: base64_jwt_header.len_bytes,
-				},
-				ByteVec {
-					data: vec![b.add_constant_zx_8(b'.')],
-					len_bytes: b.add_constant_64(1),
-				},
-				ByteVec {
-					data: base64_jwt_payload.data.clone(),
-					len_bytes: base64_jwt_payload.len_bytes,
-				},
-			],
+		assert_slice_eq(
+			b,
+			"jwt_signing_payload_eq",
+			signing_payload.len_bytes,
+			&jwt_signing_payload_le_wires,
+			&signing_payload.data,
 		);
 
 		let jwt_claims_header = jwt_header_check(b, &jwt_header);

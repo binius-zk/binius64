@@ -41,7 +41,6 @@ pub fn circuit_chain_hash(
 	position: Wire,
 	digest: [Wire; 4],
 ) -> Keccak256 {
-	let message_len = domain_param_len + FIXED_MESSAGE_OVERHEAD;
 	assert_eq!(domain_param_wires.len(), domain_param_len.div_ceil(8));
 
 	// Build additional terms for hash, chain_index, and position
@@ -71,7 +70,6 @@ pub fn circuit_chain_hash(
 		domain_param_len,
 		CHAIN_TWEAK,
 		additional_terms,
-		message_len,
 		digest,
 	)
 }

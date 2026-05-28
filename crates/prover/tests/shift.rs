@@ -67,58 +67,29 @@ pub fn create_sha256_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 }
 
 pub fn create_concat_cs_with_witness() -> (ConstraintSystem, ValueVec) {
-	use binius_circuits::{concat::Concat, fixed_byte_vec::ByteVec};
+	use binius_circuits::{concat::concat, fixed_byte_vec::ByteVec};
 
 	let builder = CircuitBuilder::new();
-	let max_n_joined: usize = 32; // Maximum joined size
-
-	// Create wires for concat circuit
-	let len_joined = builder.add_inout();
-	let joined: Vec<Wire> = (0..max_n_joined / 8).map(|_| builder.add_inout()).collect();
 
 	// Create terms: "Hello" + " " + "World!"
-	let terms = vec![
-		ByteVec {
+	let terms: Vec<ByteVec> = (0..3)
+		.map(|_| ByteVec {
 			len_bytes: builder.add_witness(),
-			data: (0..1).map(|_| builder.add_witness()).collect(),
-		},
-		ByteVec {
-			len_bytes: builder.add_witness(),
-			data: (0..1).map(|_| builder.add_witness()).collect(),
-		},
-		ByteVec {
-			len_bytes: builder.add_witness(),
-			data: (0..1).map(|_| builder.add_witness()).collect(),
-		},
-	];
+			data: vec![builder.add_witness()],
+		})
+		.collect();
 
-	// Create the Concat circuit
-	let concat = Concat::new(&builder, len_joined, joined, terms);
+	let _joined = concat(&builder, &terms);
 
 	let circuit = builder.build();
 	let mut witness_filler = circuit.new_witness_filler();
 
-	// Test data
-	let term1_data = b"Hello";
-	let term2_data = b" ";
-	let term3_data = b"World!";
-	let joined_data = b"Hello World!";
+	let term_data: [&[u8]; 3] = [b"Hello", b" ", b"World!"];
+	for (term, data) in terms.iter().zip(term_data.iter()) {
+		term.populate_len_bytes(&mut witness_filler, data.len());
+		term.populate_data(&mut witness_filler, data);
+	}
 
-	// Populate terms
-	concat.terms[0].populate_len_bytes(&mut witness_filler, term1_data.len());
-	concat.terms[0].populate_data(&mut witness_filler, term1_data);
-
-	concat.terms[1].populate_len_bytes(&mut witness_filler, term2_data.len());
-	concat.terms[1].populate_data(&mut witness_filler, term2_data);
-
-	concat.terms[2].populate_len_bytes(&mut witness_filler, term3_data.len());
-	concat.terms[2].populate_data(&mut witness_filler, term3_data);
-
-	// Populate joined result
-	concat.populate_len_joined_bytes(&mut witness_filler, joined_data.len());
-	concat.populate_joined(&mut witness_filler, joined_data);
-
-	// Get the witness vector
 	circuit.populate_wire_witness(&mut witness_filler).unwrap();
 
 	(circuit.constraint_system().clone(), witness_filler.into_value_vec())

@@ -31,8 +31,6 @@ pub fn circuit_public_key_hash(
 	pk_hashes: &[[Wire; 4]],
 	digest: [Wire; 4],
 ) -> Keccak256 {
-	let num_hashes = pk_hashes.len();
-	let message_len = domain_param_len + 1 + (num_hashes * 32); // +1 for tweak byte
 	assert_eq!(domain_param_wires.len(), domain_param_len.div_ceil(8));
 
 	// Build additional terms for all public key hashes
@@ -53,7 +51,6 @@ pub fn circuit_public_key_hash(
 		domain_param_len,
 		PUBLIC_KEY_TWEAK,
 		additional_terms,
-		message_len,
 		digest,
 	)
 }
