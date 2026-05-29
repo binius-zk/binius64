@@ -11,7 +11,6 @@ use crate::ExampleCircuit;
 /// Keccak-256 hash circuit example
 pub struct KeccakExample {
 	keccak_hash: Keccak256,
-	max_len_bytes: usize,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -50,26 +49,21 @@ impl ExampleCircuit for KeccakExample {
 
 		Ok(Self {
 			keccak_hash: keccak,
-			max_len_bytes,
 		})
 	}
 
 	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
 		// Step 1: Get raw message bytes
-		let raw_message =
-			utils::generate_message_bytes(instance.message_string, instance.message_len);
+		let message = utils::generate_message_bytes(instance.message_string, instance.message_len);
 
-		// Step 2: Zero-pad to maximum length
-		let padded_message = utils::zero_pad_message(raw_message, self.max_len_bytes)?;
-
-		// Step 3: Compute digest using reference implementation
+		// Step 2: Compute digest using reference implementation
 		let mut hasher = sha3::Keccak256::new();
-		hasher.update(&padded_message);
+		hasher.update(&message);
 		let digest: [u8; 32] = hasher.finalize().into();
 
-		// Step 4: Populate witness values
-		self.keccak_hash.populate_len_bytes(w, padded_message.len());
-		self.keccak_hash.populate_message(w, &padded_message);
+		// Step 3: Populate witness values
+		self.keccak_hash.populate_len_bytes(w, message.len());
+		self.keccak_hash.populate_message(w, &message);
 		self.keccak_hash.populate_digest(w, digest);
 
 		Ok(())

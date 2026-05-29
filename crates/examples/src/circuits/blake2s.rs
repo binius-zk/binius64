@@ -50,19 +50,15 @@ impl ExampleCircuit for Blake2sExample {
 
 	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
 		// Step 1: Get raw message bytes
-		let raw_message =
-			utils::generate_message_bytes(instance.message_string, instance.message_len);
+		let message = utils::generate_message_bytes(instance.message_string, instance.message_len);
 
-		// Step 2: Zero-pad to maximum length
-		let padded_message = utils::zero_pad_message(raw_message, self.blake2s_gadget.length)?;
-
-		// Step 3: Compute digest using reference implementation
+		// Step 2: Compute digest using reference implementation
 		let mut hasher = Blake2s256::new();
-		hasher.update(&padded_message);
+		hasher.update(&message);
 		let digest: [u8; 32] = hasher.finalize().into();
 
-		// Step 4: Populate witness values (Blake2s doesn't use len_bytes)
-		self.blake2s_gadget.populate_message(w, &padded_message);
+		// Step 3: Populate witness values (Blake2s doesn't use len_bytes)
+		self.blake2s_gadget.populate_message(w, &message);
 		self.blake2s_gadget.populate_digest(w, &digest);
 
 		Ok(())

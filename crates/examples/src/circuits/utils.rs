@@ -78,27 +78,3 @@ pub fn generate_message_bytes(
 		message_bytes
 	}
 }
-
-/// Zero-pad message to maximum length.
-///
-/// Ensures the message doesn't exceed max_len and pads with zeros to reach max_len.
-///
-/// # Arguments
-/// * `message_bytes` - The original message bytes
-/// * `max_len` - The target length after padding
-///
-/// # Returns
-/// * `Ok(Vec<u8>)` - The padded message
-/// * `Err` - If the message exceeds max_len
-pub fn zero_pad_message(message_bytes: Vec<u8>, max_len: usize) -> Result<Vec<u8>> {
-	ensure!(
-		message_bytes.len() <= max_len,
-		"Message length ({}) exceeds maximum ({})",
-		message_bytes.len(),
-		max_len
-	);
-
-	let mut padded = message_bytes;
-	padded.resize(max_len, 0);
-	Ok(padded)
-}
