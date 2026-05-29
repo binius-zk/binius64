@@ -57,20 +57,14 @@ impl ExampleCircuit for Sha256Example {
 
 	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
 		// Step 1: Get raw message bytes
-		let raw_message =
-			utils::generate_message_bytes(instance.message_string, instance.message_len);
+		let message = utils::generate_message_bytes(instance.message_string, instance.message_len);
 
-		// Step 2: Zero-pad to maximum length
-		let padded_message =
-			utils::zero_pad_message(raw_message, self.sha256_gadget.max_len_bytes())?;
+		// Step 2: Compute digest using reference implementation
+		let digest = sha2::Sha256::digest(&message);
 
-		// Step 3: Compute digest using reference implementation
-		let digest = sha2::Sha256::digest(&padded_message);
-
-		// Step 4: Populate witness values
-		self.sha256_gadget
-			.populate_len_bytes(w, padded_message.len());
-		self.sha256_gadget.populate_message(w, &padded_message);
+		// Step 3: Populate witness values
+		self.sha256_gadget.populate_len_bytes(w, message.len());
+		self.sha256_gadget.populate_message(w, &message);
 		self.sha256_gadget.populate_digest(w, digest.into());
 
 		Ok(())

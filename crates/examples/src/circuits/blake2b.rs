@@ -11,7 +11,6 @@ use crate::ExampleCircuit;
 /// Blake2b circuit example demonstrating the Blake2b hash function implementation
 pub struct Blake2bExample {
 	blake2b_circuit: Blake2bCircuit,
-	max_msg_len_bytes: usize,
 }
 
 /// Circuit parameters that affect structure (compile-time configuration)
@@ -45,27 +44,20 @@ impl ExampleCircuit for Blake2bExample {
 
 		let blake2b_circuit = Blake2bCircuit::new_with_length(builder, max_msg_len_bytes);
 
-		Ok(Self {
-			blake2b_circuit,
-			max_msg_len_bytes,
-		})
+		Ok(Self { blake2b_circuit })
 	}
 
 	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
 		// Step 1: Get raw message bytes
-		let raw_message =
-			utils::generate_message_bytes(instance.message_string, instance.message_len);
+		let message = utils::generate_message_bytes(instance.message_string, instance.message_len);
 
-		// Step 2: Zero-pad to maximum length
-		let padded_message = utils::zero_pad_message(raw_message, self.max_msg_len_bytes)?;
-
-		// Step 3: Compute digest using reference implementation
-		let expected_digest_vec = blake2b(&padded_message, 64);
+		// Step 2: Compute digest using reference implementation
+		let expected_digest_vec = blake2b(&message, 64);
 		let mut expected_digest = [0u8; 64];
 		expected_digest.copy_from_slice(&expected_digest_vec);
 
-		// Step 4: Populate witness values (Blake2b doesn't use len_bytes)
-		self.blake2b_circuit.populate_message(w, &padded_message);
+		// Step 3: Populate witness values (Blake2b doesn't use len_bytes)
+		self.blake2b_circuit.populate_message(w, &message);
 		self.blake2b_circuit.populate_digest(w, &expected_digest);
 
 		Ok(())

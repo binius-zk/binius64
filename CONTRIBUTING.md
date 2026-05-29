@@ -13,19 +13,18 @@ with automated tooling.
 
 ### Running automated checks
 
-You can run the formatter and linter with
+The codebase is formatted with a nightly version of `cargo fmt` because stable doesn't support all of the rustfmt
+options we use. You can run the formatter and linter with
 
 ```bash
-$ cargo fmt
+$ cargo +nightly-2026-01-01 fmt  # see .pre-commit-config.yaml for the exact nightly version checked by CI
 $ cargo clippy --all --all-features --tests --benches --examples -- -D warnings
 ```
 
-[Pre-commit](https://pre-commit.com/) hooks are configured to run `rustfmt`. The codebase is formatted with a nightly
-version of `cargo fmt` because stable doesn't support all of the rustfmt options we use. To run it, you can use:
+[Pre-commit](https://pre-commit.com/) hooks are configured to run `rustfmt`. You can also invoke it via pre-commit:
 
 ```bash
 $ pre-commit run rustfmt --all-files
-$ cargo +nightly-2026-01-01 fmt  # see .pre-commit-config.yaml for the exact nightly version checked by CI
 ```
 
 ### Documentation
