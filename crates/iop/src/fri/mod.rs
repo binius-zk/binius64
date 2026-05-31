@@ -23,6 +23,7 @@
 //! [BBHR17]: <https://eccc.weizmann.ac.il/report/2017/134/>
 //! [DP24]: <https://eprint.iacr.org/2024/504>
 
+mod batch;
 mod common;
 mod error;
 pub mod fold;

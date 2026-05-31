@@ -101,6 +101,7 @@ where
 	where
 		Challenger_: Challenger,
 	{
+		// TODO: We can prob take in this ntt as a struct param.
 		let subspace = self.params.rs_code().subspace();
 		let domain_context = GenericOnTheFly::generate_from_subspace(subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
