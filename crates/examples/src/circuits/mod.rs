@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+pub mod bip32;
 pub mod bitcoin_block_contains_transaction;
 pub mod bitcoin_header_chain;
 pub mod bitcoin_p2pkh;
