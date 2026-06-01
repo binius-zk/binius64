@@ -26,6 +26,7 @@ use binius_circuits::{
 	hmac::hmac_sha512_fixed,
 	multiplexer::multi_wire_multiplex,
 	secp256k1::{Secp256k1, Secp256k1Affine},
+	sha256::sha256_fixed,
 };
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
@@ -35,14 +36,12 @@ use bitcoin::{
 	secp256k1::{PublicKey, Secp256k1 as BtcSecp256k1},
 };
 use clap::Args;
+use sha2::{Digest, Sha256};
 
 use crate::ExampleCircuit;
 
 /// Bit 31 of a derivation index marks a hardened child.
 const HARDENED_BIT: u32 = 0x8000_0000;
-
-/// Number of 4-byte big-endian words in a compressed public key (33 bytes, zero-padded to 36).
-const COMPRESSED_PUBKEY_WORDS: usize = 9;
 
 /// Derive the BIP32 compressed secp256k1 public key at `depth` along `path`.
 ///
@@ -56,8 +55,8 @@ const COMPRESSED_PUBKEY_WORDS: usize = 9;
 /// * `depth` - the actual path depth (`<= max_depth`) selecting which level's public key to output
 ///
 /// # Returns
-/// The 33-byte compressed public key as [`COMPRESSED_PUBKEY_WORDS`] four-byte big-endian words (the
-/// layout produced by [`compress_pubkey`]).
+/// The 33-byte compressed public key as nine four-byte big-endian words (the layout produced by
+/// [`compress_pubkey`]).
 ///
 /// # Assumptions
 /// The negligible-probability BIP32 invalid-key cases (`parse256(I_L) >= n`, or a derived key equal
@@ -154,6 +153,9 @@ fn compressed_prefix(b: &CircuitBuilder, y: &BigUint) -> Wire {
 /// four big-endian words; only the low 32 bits of `index` are used. The prefix occupies byte 0, so
 /// `value` is shifted right by one byte and straddles word boundaries. The low three bytes of the
 /// last word are left zero — SHA-512 masks them out for a 37-byte message anyway.
+///
+/// The operands combined for each word occupy disjoint byte ranges, so `bxor` (cheaper than `bor`
+/// in this constraint system) is equivalent to a bitwise-or here.
 fn assemble_message(b: &CircuitBuilder, prefix: Wire, value: &[Wire; 4], index: Wire) -> [Wire; 5] {
 	let m0 = b.bxor(prefix, b.shr(value[0], 8));
 	let m1 = b.bxor(b.shl(value[0], 56), b.shr(value[1], 8));
@@ -164,13 +166,16 @@ fn assemble_message(b: &CircuitBuilder, prefix: Wire, value: &[Wire; 4], index: 
 	[m0, m1, m2, m3, m4]
 }
 
-/// Example circuit proving knowledge of a BIP32 seed whose derived compressed public key at a path
-/// equals the public (inout) expected public key.
+/// Example circuit proving knowledge of a BIP32 seed and derivation path whose derived compressed
+/// secp256k1 public key hashes (SHA-256) to a public digest.
+///
+/// The seed, path, and depth are private (witness); only the SHA-256 hash of the compressed public
+/// key is public (inout).
 pub struct Bip32Example {
 	seed: [Wire; 8],
 	path: Vec<Wire>,
 	depth: Wire,
-	expected_pubkey: Vec<Wire>,
+	expected_hash: [Wire; 8],
 	max_depth: usize,
 }
 
@@ -203,18 +208,20 @@ impl ExampleCircuit for Bip32Example {
 		let path: Vec<Wire> = (0..max_depth).map(|_| builder.add_witness()).collect();
 		let depth = builder.add_witness();
 
-		let derived = bip32_derive_compressed(builder, &seed, &path, depth);
+		let pubkey = bip32_derive_compressed(builder, &seed, &path, depth);
 
-		let expected_pubkey: Vec<Wire> = (0..derived.len()).map(|_| builder.add_inout()).collect();
-		for (idx, (&computed, &expected)) in derived.iter().zip(&expected_pubkey).enumerate() {
-			builder.assert_eq(format!("pubkey[{idx}]"), computed, expected);
+		// SHA-256 of the 33-byte compressed public key. The digest is the only public input.
+		let digest = sha256_fixed(builder, &pubkey, 33);
+		let expected_hash: [Wire; 8] = array::from_fn(|_| builder.add_inout());
+		for (idx, (&computed, &expected)) in digest.iter().zip(&expected_hash).enumerate() {
+			builder.assert_eq(format!("pubkey_hash[{idx}]"), computed, expected);
 		}
 
 		Ok(Self {
 			seed,
 			path,
 			depth,
-			expected_pubkey,
+			expected_hash,
 			max_depth,
 		})
 	}
@@ -249,16 +256,18 @@ impl ExampleCircuit for Bip32Example {
 		}
 		w[self.depth] = Word::from_u64(instance.path.len() as u64);
 
-		// Reference derivation via the `bitcoin` crate.
-		let expected = derive_compressed_pubkey(&seed_bytes, &instance.path)?;
-		let words = compressed_pubkey_words(&expected);
-		for i in 0..COMPRESSED_PUBKEY_WORDS {
-			w[self.expected_pubkey[i]] = Word::from_u64(words[i]);
+		// Reference derivation via the `bitcoin` crate, then SHA-256 the compressed public key.
+		let pubkey = derive_compressed_pubkey(&seed_bytes, &instance.path)?;
+		let hash: [u8; 32] = Sha256::digest(pubkey).into();
+		let words = sha256_digest_words(&hash);
+		for i in 0..8 {
+			w[self.expected_hash[i]] = Word::from_u64(words[i]);
 		}
 
 		tracing::info!(
-			"BIP32 derived compressed pubkey: {} (depth {})",
-			hex::encode(expected),
+			"BIP32 compressed pubkey {} -> SHA-256 {} (depth {})",
+			hex::encode(pubkey),
+			hex::encode(hash),
 			instance.path.len()
 		);
 		Ok(())
@@ -307,12 +316,10 @@ fn child_number(idx: u32) -> Result<ChildNumber> {
 	child.map_err(|e| anyhow::anyhow!("invalid child index {idx}: {e}"))
 }
 
-/// Pack a 33-byte compressed public key into nine 4-byte big-endian words (last word zero-padded),
-/// matching the layout produced by [`compress_pubkey`].
-fn compressed_pubkey_words(compressed: &[u8; 33]) -> [u64; COMPRESSED_PUBKEY_WORDS] {
-	let mut padded = [0u8; 36];
-	padded[..33].copy_from_slice(compressed);
-	array::from_fn(|i| u32::from_be_bytes(padded[4 * i..4 * i + 4].try_into().unwrap()) as u64)
+/// Pack a 32-byte SHA-256 digest into eight 4-byte big-endian words (low 32 bits each), matching
+/// the output layout of [`sha256_fixed`].
+fn sha256_digest_words(digest: &[u8; 32]) -> [u64; 8] {
+	array::from_fn(|i| u32::from_be_bytes(digest[4 * i..4 * i + 4].try_into().unwrap()) as u64)
 }
 
 #[cfg(test)]
@@ -321,6 +328,17 @@ mod tests {
 	use binius_frontend::CircuitBuilder;
 
 	use super::*;
+
+	/// Number of 4-byte big-endian words in a compressed public key (33 bytes, zero-padded to 36).
+	const COMPRESSED_PUBKEY_WORDS: usize = 9;
+
+	/// Pack a 33-byte compressed public key into nine 4-byte big-endian words (last word
+	/// zero-padded), matching the layout produced by `compress_pubkey`.
+	fn compressed_pubkey_words(compressed: &[u8; 33]) -> [u64; COMPRESSED_PUBKEY_WORDS] {
+		let mut padded = [0u8; 36];
+		padded[..33].copy_from_slice(compressed);
+		array::from_fn(|i| u32::from_be_bytes(padded[4 * i..4 * i + 4].try_into().unwrap()) as u64)
+	}
 
 	/// Build a standalone circuit around `bip32_derive_compressed`, populate it for `seed`/`path`,
 	/// assert the derived pubkey equals the `bitcoin`-crate oracle, and verify all constraints.
@@ -412,5 +430,30 @@ mod tests {
 		assert_eq!(parse_child("44'").unwrap(), 44 | HARDENED_BIT);
 		assert_eq!(parse_child("5h").unwrap(), 5 | HARDENED_BIT);
 		assert!(parse_child("2147483648").is_err());
+	}
+
+	/// Full example: build the circuit, populate it for a path, and verify that the circuit-computed
+	/// SHA-256 of the compressed pubkey matches the public digest.
+	#[test]
+	fn example_proves_pubkey_hash() {
+		let mut builder = CircuitBuilder::new();
+		let example = Bip32Example::build(Params { max_depth: 3 }, &mut builder)
+			.expect("build example circuit");
+		let circuit = builder.build();
+
+		let mut w = circuit.new_witness_filler();
+		let instance = Instance {
+			seed: None,
+			path: vec![HARDENED_BIT, 1],
+		};
+		example
+			.populate_witness(instance, &mut w)
+			.expect("populate witness");
+
+		circuit
+			.populate_wire_witness(&mut w)
+			.expect("witness population");
+		verify_constraints(circuit.constraint_system(), &w.into_value_vec())
+			.expect("constraints satisfied");
 	}
 }
