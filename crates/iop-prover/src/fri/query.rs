@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_field::{BinaryField, PackedField};
-use binius_iop::{fri::FRIParams, merkle_tree::MerkleTreeScheme};
+use binius_field::{BinaryField, Field, PackedField};
+use binius_iop::merkle_tree::MerkleTreeScheme;
 use binius_math::{FieldBuffer, FieldSlice};
 use binius_transcript::TranscriptWriter;
 use binius_utils::SerializeBytes;
@@ -10,9 +10,8 @@ use tracing::instrument;
 
 use crate::{fri::Error, merkle_tree::MerkleTreeProver};
 
-/// The prover counterpart of a [`ProxTestOracle`], producing the per-oracle query openings.
-///
-/// [`ProxTestOracle`]: binius_iop::fri::ProxTestOracle
+/// The prover counterpart of a `ProxTestOracle` (verifier side), producing the per-oracle query
+/// openings.
 pub trait ProxTestOracleProver<F> {
 	/// Writes the per-oracle batched query openings: the oracle's optimal Merkle layer once,
 	/// followed by each queried coset's values and Merkle opening proof.
@@ -34,7 +33,7 @@ where
 	codeword: FieldBuffer<P>,
 	committed: &'a MerkleProver::Committed,
 	merkle_prover: &'a MerkleProver,
-	coset_log_size: usize,
+	log_batch_size: usize,
 }
 
 impl<'a, P, MerkleProver> BrakedownOracleProver<'a, P, MerkleProver>
@@ -47,13 +46,13 @@ where
 		codeword: FieldBuffer<P>,
 		committed: &'a MerkleProver::Committed,
 		merkle_prover: &'a MerkleProver,
-		coset_log_size: usize,
+		log_batch_size: usize,
 	) -> Self {
 		Self {
 			codeword,
 			committed,
 			merkle_prover,
-			coset_log_size,
+			log_batch_size,
 		}
 	}
 }
@@ -74,17 +73,62 @@ where
 			self.merkle_prover,
 			&self.codeword,
 			self.committed,
-			self.coset_log_size,
+			self.log_batch_size,
 			indices,
 			advice,
 		)
 	}
 }
 
+/// A [`ProxTestOracleProver`] bundling several separately committed [`BrakedownOracleProver`]s.
+///
+/// The bundled oracles all wrap interleaved codewords of the same length that are batched into a
+/// single folded codeword during the first FRI fold. Their query openings are written sequentially,
+/// one oracle's full decommitment after another, so the verifier reads each committed oracle's
+/// advice in turn.
+pub struct BatchBrakedownOracleProver<'a, P, MerkleProver>
+where
+	P: PackedField,
+	MerkleProver: MerkleTreeProver<P::Scalar>,
+{
+	oracles: Vec<BrakedownOracleProver<'a, P, MerkleProver>>,
+}
+
+impl<'a, P, MerkleProver> BatchBrakedownOracleProver<'a, P, MerkleProver>
+where
+	P: PackedField,
+	MerkleProver: MerkleTreeProver<P::Scalar>,
+{
+	/// Constructs a batch oracle prover from the per-commitment oracle provers.
+	pub fn new(oracles: Vec<BrakedownOracleProver<'a, P, MerkleProver>>) -> Self {
+		Self { oracles }
+	}
+}
+
+impl<F, P, MerkleProver, VCS> ProxTestOracleProver<F>
+	for BatchBrakedownOracleProver<'_, P, MerkleProver>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
+	VCS: MerkleTreeScheme<F, Digest: SerializeBytes>,
+{
+	fn open_queries<B: BufMut>(
+		&self,
+		indices: &[usize],
+		advice: &mut TranscriptWriter<B>,
+	) -> Result<(), Error> {
+		for oracle in &self.oracles {
+			oracle.open_queries(indices, advice)?;
+		}
+		Ok(())
+	}
+}
+
 /// The [`ProxTestOracleProver`] for a FRI-style code proximity check.
 pub struct FRIOracleProver<'a, F, MerkleProver>
 where
-	F: BinaryField,
+	F: Field,
 	MerkleProver: MerkleTreeProver<F>,
 {
 	codeword: FieldBuffer<F>,
@@ -177,7 +221,7 @@ where
 /// A prover for the FRI query phase.
 ///
 /// This is a composition of [`ProxTestOracleProver`]s mirroring the verifier's `FRIQueryVerifier`:
-/// a [`BrakedownOracleProver`] for the codeword's interleaved reduction, then one
+/// a [`BatchBrakedownOracleProver`] for the codeword's interleaved reduction, then one
 /// [`FRIOracleProver`] per fold arity for the subsequent reductions.
 pub struct FRIQueryProver<'a, F, P, MerkleProver, VCS>
 where
@@ -186,7 +230,7 @@ where
 	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
 	VCS: MerkleTreeScheme<F>,
 {
-	codeword_oracle: BrakedownOracleProver<'a, P, MerkleProver>,
+	codeword_oracle: BatchBrakedownOracleProver<'a, P, MerkleProver>,
 	fri_oracles: Vec<FRIOracleProver<'a, F, MerkleProver>>,
 }
 
@@ -197,33 +241,15 @@ where
 	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
 	VCS: MerkleTreeScheme<F>,
 {
-	/// Constructs a query prover from the committed codeword and fold-round codewords.
+	/// Constructs a query prover from the per-oracle provers built during the fold phase.
 	///
-	/// `round_committed` holds one entry per fold arity followed by the terminal codeword, which is
-	/// sent in full and therefore excluded here.
+	/// `codeword_oracle` is the [`BatchBrakedownOracleProver`] for the originally committed
+	/// interleaved codeword(s), and `fri_oracles` holds one [`FRIOracleProver`] per fold arity. The
+	/// terminal codeword is sent in full and therefore is not represented here.
 	pub fn new(
-		params: &FRIParams<F>,
-		codeword: FieldBuffer<P>,
-		codeword_committed: &'a MerkleProver::Committed,
-		round_committed: Vec<(FieldBuffer<F>, MerkleProver::Committed)>,
-		merkle_prover: &'a MerkleProver,
+		codeword_oracle: BatchBrakedownOracleProver<'a, P, MerkleProver>,
+		fri_oracles: Vec<FRIOracleProver<'a, F, MerkleProver>>,
 	) -> Self {
-		let codeword_oracle = BrakedownOracleProver::new(
-			codeword,
-			codeword_committed,
-			merkle_prover,
-			params.log_batch_size(),
-		);
-
-		let fri_oracles = round_committed
-			.into_iter()
-			.take(params.fold_arities().len())
-			.zip(params.fold_arities().iter().copied())
-			.map(|((codeword, committed), arity)| {
-				FRIOracleProver::new(codeword, committed, merkle_prover, arity)
-			})
-			.collect();
-
 		Self {
 			codeword_oracle,
 			fri_oracles,

@@ -70,7 +70,7 @@ fn test_commit_prove_verify_success<F, P>(
 
 	// Note: The prover does an initial fold round before receiving any challenges
 	// This is round 0, which won't produce a commitment when log_batch_size > 0
-	let fold_round_output = round_prover.execute_fold_round().unwrap();
+	let fold_round_output = round_prover.execute_fold_round();
 	if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
 		prover_challenger.message().write(&round_commitment);
 	}
@@ -79,7 +79,7 @@ fn test_commit_prove_verify_success<F, P>(
 		let challenge = prover_challenger.sample();
 		round_prover.receive_challenge(challenge);
 
-		let fold_round_output = round_prover.execute_fold_round().unwrap();
+		let fold_round_output = round_prover.execute_fold_round();
 		if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
 			prover_challenger.message().write(&round_commitment);
 		}
@@ -253,7 +253,7 @@ where
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	prover_transcript.message().write(&codeword_commitment);
 
-	let fold_round_output = round_prover.execute_fold_round().unwrap();
+	let fold_round_output = round_prover.execute_fold_round();
 	if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
 		prover_transcript.message().write(&round_commitment);
 	}
@@ -262,7 +262,7 @@ where
 		let challenge = prover_transcript.sample();
 		round_prover.receive_challenge(challenge);
 
-		let fold_round_output = round_prover.execute_fold_round().unwrap();
+		let fold_round_output = round_prover.execute_fold_round();
 		if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
 			prover_transcript.message().write(&round_commitment);
 		}

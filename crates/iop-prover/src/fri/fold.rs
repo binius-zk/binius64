@@ -1,5 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 
+use std::{iter, mem};
+
 use binius_field::{BinaryField, Field, PackedField};
 use binius_iop::{
 	fri::{FRIParams, fold::fold_chunk},
@@ -13,11 +15,14 @@ use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSampleBits, Challenger},
 };
-use binius_utils::{SerializeBytes, checked_arithmetics::log2_strict_usize, rayon::prelude::*};
+use binius_utils::{SerializeBytes, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use tracing::instrument;
 
 use super::{error::Error, query::FRIQueryProver};
-use crate::merkle_tree::MerkleTreeProver;
+use crate::{
+	fri::{BatchBrakedownOracleProver, BrakedownOracleProver, FRIOracleProver},
+	merkle_tree::MerkleTreeProver,
+};
 
 /// The type of the termination round codeword in the FRI protocol.
 pub type TerminateCodeword<F> = FieldBuffer<F>;
@@ -27,6 +32,19 @@ pub enum FoldRoundOutput<VCSCommitment> {
 	Commitment(VCSCommitment),
 }
 
+enum FRIFolderState<'a, P, MTProver>
+where
+	P: PackedField,
+	MTProver: MerkleTreeProver<P::Scalar>,
+{
+	FirstFold(BatchBrakedownFolder<'a, P, MTProver>),
+	LaterFolds {
+		first_oracle: BatchBrakedownOracleProver<'a, P, MTProver>,
+		last_codeword: FieldBuffer<P::Scalar>,
+		last_committed: MTProver::Committed,
+		round_oracles: Vec<FRIOracleProver<'a, P::Scalar, MTProver>>,
+	},
+}
 /// A stateful prover for the FRI fold phase.
 pub struct FRIFoldProver<'a, F, P, NTT, MerkleProver>
 where
@@ -37,9 +55,7 @@ where
 	params: &'a FRIParams<F>,
 	ntt: &'a NTT,
 	merkle_prover: &'a MerkleProver,
-	codeword: FieldBuffer<P>,
-	codeword_committed: &'a MerkleProver::Committed,
-	round_committed: Vec<(FieldBuffer<F>, MerkleProver::Committed)>,
+	state: Option<FRIFolderState<'a, P, MerkleProver>>,
 	curr_round: usize,
 	next_commit_round: Option<usize>,
 	unprocessed_challenges: Vec<F>,
@@ -67,14 +83,21 @@ where
 			));
 		}
 
+		let codeword_folder = ProxTestFolder {
+			log_batch_size: params.log_batch_size(),
+			codeword: committed_codeword,
+			merkle_committed: committed,
+		};
+		// The first fold currently batches a single committed codeword; in the future it will batch
+		// several distinct oracles here.
+		let batch_folder = BatchBrakedownFolder::new(vec![codeword_folder]);
+
 		let next_commit_round = Some(params.log_batch_size());
 		Ok(Self {
 			params,
 			ntt,
 			merkle_prover,
-			codeword: committed_codeword,
-			codeword_committed: committed,
-			round_committed: Vec::with_capacity(params.n_oracles()),
+			state: Some(FRIFolderState::FirstFold(batch_folder)),
 			curr_round: 0,
 			next_commit_round,
 			unprocessed_challenges: Vec::with_capacity(params.rs_code().log_dim()),
@@ -87,16 +110,8 @@ where
 	}
 
 	/// Number of times `execute_fold_round` has been called.
-	pub const fn curr_round(&self) -> usize {
-		self.curr_round
-	}
-
-	/// The length of the current codeword.
-	pub fn current_codeword_len(&self) -> usize {
-		match self.round_committed.last() {
-			Some((codeword, _)) => codeword.len(),
-			None => self.codeword.len(),
-		}
+	pub fn n_rounds_remaining(&self) -> usize {
+		self.n_rounds() - self.curr_round
 	}
 
 	fn is_commitment_round(&self) -> bool {
@@ -114,61 +129,113 @@ where
 	/// As a memory efficient optimization, this method may not actually do the folding, but instead
 	/// accumulate the folding challenge for processing at a later time. This saves us from storing
 	/// intermediate folded codewords.
-	pub fn execute_fold_round(&mut self) -> Result<FoldRoundOutput<MerkleScheme::Digest>, Error> {
+	pub fn execute_fold_round(&mut self) -> FoldRoundOutput<MerkleScheme::Digest> {
 		if !self.is_commitment_round() {
-			return Ok(FoldRoundOutput::NoCommitment);
+			return FoldRoundOutput::NoCommitment;
 		}
 
-		let _fri_round_scope = tracing::debug_span!(
-			"FRI Round",
-			log_len = log2_strict_usize(self.current_codeword_len()),
-			arity = self.unprocessed_challenges.len()
-		)
-		.entered();
+		let state = self
+			.state
+			.take()
+			.expect("state is always Some by struct invariant");
 
-		// Fold the last codeword with the accumulated folding challenges.
-		let fri_fold_span = tracing::debug_span!("FRI Fold").entered();
-		let folded_codeword = match self.round_committed.last() {
-			Some((prev_codeword, _)) => {
+		let (root, new_state) = match state {
+			FRIFolderState::FirstFold(folder) => {
+				let _scope = tracing::debug_span!(
+					"FRI Initial Fold",
+					log_len = folder.log_len(),
+					arity = self.unprocessed_challenges.len()
+				)
+				.entered();
+
+				// Fold the batch of interleaved codewords that were originally committed into a
+				// single codeword with the same block length, and turn them into a batched
+				// Brakedown query oracle.
+				let challenges = mem::take(&mut self.unprocessed_challenges);
+				let (folded_codeword, first_oracle) = folder.fold(self.merkle_prover, &challenges);
+
+				let next_arity = self.params.fold_arities().first().copied();
+				let (root, last_committed) = self.commit_round(&folded_codeword, next_arity);
+
+				let new_state = FRIFolderState::LaterFolds {
+					first_oracle,
+					last_codeword: folded_codeword,
+					last_committed,
+					round_oracles: Vec::with_capacity(self.params.fold_arities().len()),
+				};
+				(root, new_state)
+			}
+			FRIFolderState::LaterFolds {
+				first_oracle,
+				last_codeword,
+				last_committed,
+				mut round_oracles,
+			} => {
+				let _fri_round_scope = tracing::debug_span!(
+					"FRI Round Fold",
+					log_len = last_codeword.log_len(),
+					arity = self.unprocessed_challenges.len()
+				)
+				.entered();
+
 				// Fold a full codeword committed in the previous FRI round into a codeword with
 				// reduced dimension and rate.
-				fold_codeword(self.ntt, prev_codeword.to_ref(), &self.unprocessed_challenges)
-			}
-			None => {
-				// Fold the interleaved codeword that was originally committed into a single
-				// codeword with the same block length.
-				fold_interleaved(
-					self.codeword.to_ref(),
-					&self.unprocessed_challenges,
-					self.params.rs_code().log_len(),
-					self.params.log_batch_size(),
-				)
+				let challenges = mem::take(&mut self.unprocessed_challenges);
+				let fri_fold_span = tracing::debug_span!("FRI Fold").entered();
+				let folded_codeword = fold_codeword(self.ntt, last_codeword.to_ref(), &challenges);
+				drop(fri_fold_span);
+				let oracle = FRIOracleProver::new(
+					last_codeword,
+					last_committed,
+					self.merkle_prover,
+					challenges.len(),
+				);
+
+				let next_arity = self
+					.params
+					.fold_arities()
+					.get(round_oracles.len() + 1)
+					.copied();
+				let (root, last_committed) = self.commit_round(&folded_codeword, next_arity);
+
+				round_oracles.push(oracle);
+				let new_state = FRIFolderState::LaterFolds {
+					first_oracle,
+					last_codeword: folded_codeword,
+					last_committed,
+					round_oracles,
+				};
+				(root, new_state)
 			}
 		};
-		drop(fri_fold_span);
-		self.unprocessed_challenges.clear();
 
-		// take the first arity as coset_log_len, or use inv_rate if arities are empty
-		let next_arity = self
-			.params
-			.fold_arities()
-			.get(self.round_committed.len())
-			.copied();
+		self.state = Some(new_state);
+		FoldRoundOutput::Commitment(root)
+	}
+
+	/// Commits to a folded codeword, advancing `next_commit_round` for the next fold.
+	///
+	/// The coset size is determined by the arity of the *next* fold round, or by the number of
+	/// final challenges once there are no more committed rounds (the terminal codeword).
+	fn commit_round(
+		&mut self,
+		folded_codeword: &FieldBuffer<F>,
+		next_arity: Option<usize>,
+	) -> (MerkleScheme::Digest, MerkleProver::Committed) {
 		let log_coset_size = next_arity.unwrap_or_else(|| self.params.n_final_challenges());
 		let coset_size = 1 << log_coset_size;
-		let merkle_tree_span = tracing::debug_span!("Merkle Tree").entered();
+
+		let _merkle_tree_span = tracing::debug_span!("Merkle Tree").entered();
 		let (commitment, committed) = self
 			.merkle_prover
-			.commit(folded_codeword.as_ref(), coset_size)?;
-		drop(merkle_tree_span);
+			.commit(folded_codeword.as_ref(), coset_size)
+			.expect("merkle commitment cannot fail for a valid codeword");
 
-		self.next_commit_round = self.next_commit_round.take().and_then(|next_commit_round| {
-			let arity = next_arity?;
-			Some(next_commit_round + arity)
-		});
+		// The next commitment lands `next_arity` rounds after the current one. Once there is no
+		// next arity, this is the terminal codeword and no further commitments are made.
+		self.next_commit_round = next_arity.map(|arity| self.curr_round + arity);
 
-		self.round_committed.push((folded_codeword, committed));
-		Ok(FoldRoundOutput::Commitment(commitment.root))
+		(commitment.root, committed)
 	}
 
 	/// Finalizes the FRI folding process.
@@ -188,34 +255,31 @@ where
 			return Err(Error::EarlyProverFinish);
 		}
 
-		let terminate_codeword = self
-			.round_committed
-			.last()
-			.map(|(codeword, _)| codeword.clone())
-			.unwrap_or_else(|| {
-				let scalars: Vec<F> = self.codeword.iter_scalars().collect();
-				FieldBuffer::from_values(&scalars)
-			});
-
 		self.unprocessed_challenges.clear();
 
-		let Self {
-			params,
-			codeword,
-			codeword_committed,
-			round_committed,
-			merkle_prover,
-			..
-		} = self;
-
-		let query_prover = FRIQueryProver::new(
-			params,
-			codeword,
-			codeword_committed,
-			round_committed,
-			merkle_prover,
-		);
-		Ok((terminate_codeword, query_prover))
+		match self
+			.state
+			.take()
+			.expect("state is always Some by struct invariant")
+		{
+			// The final fold round produced the terminal codeword and committed the prior one, so
+			// the state is always `LaterFolds` once `curr_round` reaches `n_rounds`. The
+			// terminal codeword is sent in full and therefore is not wrapped in a query oracle.
+			FRIFolderState::LaterFolds {
+				first_oracle,
+				last_codeword,
+				round_oracles,
+				..
+			} => {
+				let query_prover = FRIQueryProver::new(first_oracle, round_oracles);
+				Ok((last_codeword, query_prover))
+			}
+			// The first fold fires at `curr_round == log_batch_size <= n_rounds` and
+			// `execute_fold_round` runs every round, so the first fold always precedes `finalize`.
+			FRIFolderState::FirstFold(_) => {
+				unreachable!("the first fold always runs before curr_round reaches n_rounds")
+			}
+		}
 	}
 
 	pub fn finish_proof<Challenger_>(
@@ -320,6 +384,118 @@ where
 		)
 		.collect();
 	FieldBuffer::new(folded_log_len, values.into_boxed_slice())
+}
+
+pub struct ProxTestFolder<'a, P: PackedField, MTProver: MerkleTreeProver<P::Scalar>> {
+	log_batch_size: usize,
+	codeword: FieldBuffer<P>,
+	merkle_committed: &'a MTProver::Committed,
+}
+
+impl<'a, F: Field, P: PackedField<Scalar = F>, MTProver> ProxTestFolder<'a, P, MTProver>
+where
+	MTProver: MerkleTreeProver<F>,
+{
+	pub fn log_folded_len(&self) -> usize {
+		self.codeword.log_len() - self.log_batch_size
+	}
+
+	pub fn fold(
+		self,
+		merkle_prover: &'a MTProver,
+		challenges: &[F],
+	) -> (FieldBuffer<F>, BrakedownOracleProver<'a, P, MTProver>) {
+		assert_eq!(challenges.len(), self.log_batch_size); // precondition
+
+		let ProxTestFolder {
+			log_batch_size,
+			codeword,
+			merkle_committed,
+		} = self;
+
+		let log_len = codeword.log_len() - log_batch_size;
+		let folded_codeword =
+			fold_interleaved(codeword.to_ref(), challenges, log_len, log_batch_size);
+		let oracle =
+			BrakedownOracleProver::new(codeword, merkle_committed, merkle_prover, log_batch_size);
+		(folded_codeword, oracle)
+	}
+}
+
+/// Folds and commits a batch of interleaved codewords that share a folded length.
+///
+/// Each [`ProxTestFolder`] is committed separately and folds (by the same challenges) to a codeword
+/// of the common length `codeword.log_len() - log_batch_size`. The folded codewords are summed into
+/// a single codeword that continues through the FRI rounds, and the per-commitment
+/// [`BrakedownOracleProver`]s are bundled into a [`BatchBrakedownOracleProver`].
+pub struct BatchBrakedownFolder<'a, P: PackedField, MTProver: MerkleTreeProver<P::Scalar>> {
+	log_code_len: usize,
+	folders: Vec<ProxTestFolder<'a, P, MTProver>>,
+}
+
+impl<'a, F: Field, P: PackedField<Scalar = F>, MTProver> BatchBrakedownFolder<'a, P, MTProver>
+where
+	MTProver: MerkleTreeProver<F>,
+{
+	/// Constructs a batch folder from one or more interleaved-codeword folders.
+	pub fn new(folders: Vec<ProxTestFolder<'a, P, MTProver>>) -> Self {
+		assert!(!folders.is_empty()); // precondition
+		let log_code_len = folders[0].log_folded_len();
+		for folder in &folders[1..] {
+			assert_eq!(folder.log_folded_len(), log_code_len);
+		}
+		Self {
+			log_code_len,
+			folders,
+		}
+	}
+
+	/// Log2 length of the (interleaved) codewords being folded.
+	fn log_len(&self) -> usize {
+		let max_folder_log_len = self
+			.folders
+			.iter()
+			.map(|folder| folder.codeword.log_len())
+			.max()
+			.expect("folders is not empty by struct invariant");
+		let log_folders = log2_ceil_usize(self.folders.len());
+		max_folder_log_len + log_folders
+	}
+
+	pub fn fold(
+		self,
+		merkle_prover: &'a MTProver,
+		challenges: &[F],
+	) -> (FieldBuffer<F>, BatchBrakedownOracleProver<'a, P, MTProver>) {
+		let max_log_batch_size = self
+			.folders
+			.iter()
+			.map(|folder| folder.log_batch_size)
+			.max()
+			.expect("folders is not empty by struct invariant");
+
+		let (inner_challenges, outer_challenges) = challenges.split_at(max_log_batch_size);
+
+		let n_folders = self.folders.len();
+		let folds = self.folders.into_iter().map(|folder| {
+			let start_idx = max_log_batch_size - folder.log_batch_size;
+			folder.fold(merkle_prover, &inner_challenges[start_idx..])
+		});
+
+		let outer_tensor = eq_ind_partial_eval::<F>(outer_challenges);
+		let mut combined_codeword = FieldBuffer::zeros(self.log_code_len);
+		let mut oracles = Vec::with_capacity(n_folders);
+		// TODO: Special cases when outer_challenges.len() = 0 or 1 for computational efficiency (to reduce # of scaling muls)
+		for ((folded_codeword, oracle), &scalar) in iter::zip(folds, outer_tensor.as_ref()) {
+			assert_eq!(folded_codeword.log_len(), combined_codeword.log_len()); // precondition
+			for (acc, &val) in iter::zip(combined_codeword.as_mut(), folded_codeword.as_ref()) {
+				*acc += val * scalar;
+			}
+			oracles.push(oracle);
+		}
+
+		(combined_codeword, BatchBrakedownOracleProver::new(oracles))
+	}
 }
 
 #[cfg(test)]

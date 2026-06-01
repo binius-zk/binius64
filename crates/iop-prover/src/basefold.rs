@@ -77,7 +77,7 @@ where
 		fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
 	) -> Self {
 		assert_eq!(multilinear.log_len(), transparent_multilinear.log_len());
-		assert_eq!(multilinear.log_len(), fri_folder.n_rounds() - fri_folder.curr_round());
+		assert_eq!(multilinear.log_len(), fri_folder.n_rounds_remaining());
 
 		let sumcheck_prover =
 			BivariateProductSumcheckProver::new([multilinear, transparent_multilinear], claim)
@@ -105,7 +105,7 @@ where
 			.execute()?
 			.try_into()
 			.expect("sumcheck_prover proves only one multivariate");
-		let commitment = self.fri_folder.execute_fold_round()?;
+		let commitment = self.fri_folder.execute_fold_round();
 		Ok((round_coeffs, commitment))
 	}
 
@@ -155,7 +155,7 @@ where
 	/// ## Arguments
 	/// * `prover_challenger` - the prover's mutable transcript
 	fn finish<T: Challenger>(mut self, transcript: &mut ProverTranscript<T>) -> Result<(), Error> {
-		let commitment = self.fri_folder.execute_fold_round()?;
+		let commitment = self.fri_folder.execute_fold_round();
 		if let FoldRoundOutput::Commitment(commitment) = commitment {
 			transcript.message().write(&commitment);
 		}
