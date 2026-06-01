@@ -2,7 +2,8 @@
 use std::array;
 
 use anyhow::Result;
-use binius_circuits::sha512::Sha512;
+use binius_circuits::{fixed_byte_vec::ByteVec, sha512::sha512_varlen};
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use clap::Args;
 use sha2::Digest;
@@ -11,7 +12,8 @@ use super::utils;
 use crate::ExampleCircuit;
 
 pub struct Sha512Example {
-	sha512_gadget: Sha512,
+	message: ByteVec,
+	digest: [Wire; 8],
 }
 
 #[derive(Args, Debug, Clone)]
@@ -44,15 +46,23 @@ impl ExampleCircuit for Sha512Example {
 
 	fn build(params: Params, builder: &mut CircuitBuilder) -> Result<Self> {
 		let max_len_bytes = utils::determine_hash_max_bytes_from_args(params.max_len_bytes)?;
-		let max_len = max_len_bytes.div_ceil(8);
+		let max_len_words = max_len_bytes.div_ceil(8);
+
 		let len_bytes = if params.exact_len {
 			builder.add_constant_64(max_len_bytes as u64)
 		} else {
-			builder.add_witness()
+			builder.add_inout()
 		};
-		let sha512_gadget = mk_circuit(builder, max_len, len_bytes);
+		let data: Vec<Wire> = (0..max_len_words).map(|_| builder.add_inout()).collect();
+		let message = ByteVec::new(data, len_bytes);
 
-		Ok(Self { sha512_gadget })
+		let digest: [Wire; 8] = array::from_fn(|_| builder.add_inout());
+		let computed_digest = sha512_varlen(builder, &message);
+		for i in 0..8 {
+			builder.assert_eq(format!("digest[{i}]"), computed_digest[i], digest[i]);
+		}
+
+		Ok(Self { message, digest })
 	}
 
 	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
@@ -62,10 +72,12 @@ impl ExampleCircuit for Sha512Example {
 		// Step 2: Compute digest using reference implementation
 		let digest = sha2::Sha512::digest(&message);
 
-		// Step 3: Populate witness values
-		self.sha512_gadget.populate_len_bytes(w, message.len());
-		self.sha512_gadget.populate_message(w, &message);
-		self.sha512_gadget.populate_digest(w, digest.into());
+		// Step 3: Populate inout values
+		self.message.populate_data(w, &message);
+		self.message.populate_len_bytes(w, message.len());
+		for (i, chunk) in digest.chunks(8).enumerate() {
+			w[self.digest[i]] = Word(u64::from_be_bytes(chunk.try_into().unwrap()));
+		}
 
 		Ok(())
 	}
@@ -83,10 +95,4 @@ impl ExampleCircuit for Sha512Example {
 			Some(base)
 		}
 	}
-}
-
-fn mk_circuit(b: &mut CircuitBuilder, max_len: usize, len_bytes: Wire) -> Sha512 {
-	let digest: [Wire; 8] = array::from_fn(|_| b.add_inout());
-	let message = (0..max_len).map(|_| b.add_inout()).collect();
-	Sha512::new(b, len_bytes, digest, message)
 }
