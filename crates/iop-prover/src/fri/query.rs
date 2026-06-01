@@ -10,8 +10,175 @@ use tracing::instrument;
 
 use crate::{fri::Error, merkle_tree::MerkleTreeProver};
 
+/// The prover counterpart of a [`ProxTestOracle`], producing the per-oracle query openings.
+///
+/// [`ProxTestOracle`]: binius_iop::fri::ProxTestOracle
+pub trait ProxTestOracleProver<F> {
+	/// Writes the per-oracle batched query openings: the oracle's optimal Merkle layer once,
+	/// followed by each queried coset's values and Merkle opening proof.
+	fn open_queries<B: BufMut>(
+		&self,
+		indices: &[usize],
+		advice: &mut TranscriptWriter<B>,
+	) -> Result<(), Error>;
+}
+
+/// The [`ProxTestOracleProver`] for a [Brakedown]-style interleaved code proximity check.
+///
+/// [Brakedown]: <https://dl.acm.org/doi/10.1007/978-3-031-38545-2_7>
+pub struct BrakedownOracleProver<'a, P, MerkleProver>
+where
+	P: PackedField,
+	MerkleProver: MerkleTreeProver<P::Scalar>,
+{
+	codeword: FieldBuffer<P>,
+	committed: &'a MerkleProver::Committed,
+	merkle_prover: &'a MerkleProver,
+	coset_log_size: usize,
+}
+
+impl<'a, P, MerkleProver> BrakedownOracleProver<'a, P, MerkleProver>
+where
+	P: PackedField,
+	MerkleProver: MerkleTreeProver<P::Scalar>,
+{
+	/// Constructs a new oracle prover wrapping a committed interleaved codeword.
+	pub fn new(
+		codeword: FieldBuffer<P>,
+		committed: &'a MerkleProver::Committed,
+		merkle_prover: &'a MerkleProver,
+		coset_log_size: usize,
+	) -> Self {
+		Self {
+			codeword,
+			committed,
+			merkle_prover,
+			coset_log_size,
+		}
+	}
+}
+
+impl<F, P, MerkleProver, VCS> ProxTestOracleProver<F> for BrakedownOracleProver<'_, P, MerkleProver>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
+	VCS: MerkleTreeScheme<F, Digest: SerializeBytes>,
+{
+	fn open_queries<B: BufMut>(
+		&self,
+		indices: &[usize],
+		advice: &mut TranscriptWriter<B>,
+	) -> Result<(), Error> {
+		open_oracle_queries(
+			self.merkle_prover,
+			&self.codeword,
+			self.committed,
+			self.coset_log_size,
+			indices,
+			advice,
+		)
+	}
+}
+
+/// The [`ProxTestOracleProver`] for a FRI-style code proximity check.
+pub struct FRIOracleProver<'a, F, MerkleProver>
+where
+	F: BinaryField,
+	MerkleProver: MerkleTreeProver<F>,
+{
+	codeword: FieldBuffer<F>,
+	committed: MerkleProver::Committed,
+	merkle_prover: &'a MerkleProver,
+	coset_log_size: usize,
+}
+
+impl<'a, F, MerkleProver> FRIOracleProver<'a, F, MerkleProver>
+where
+	F: BinaryField,
+	MerkleProver: MerkleTreeProver<F>,
+{
+	/// Constructs a new oracle prover wrapping a committed fold-round codeword.
+	pub fn new(
+		codeword: FieldBuffer<F>,
+		committed: MerkleProver::Committed,
+		merkle_prover: &'a MerkleProver,
+		coset_log_size: usize,
+	) -> Self {
+		Self {
+			codeword,
+			committed,
+			merkle_prover,
+			coset_log_size,
+		}
+	}
+}
+
+impl<F, MerkleProver, VCS> ProxTestOracleProver<F> for FRIOracleProver<'_, F, MerkleProver>
+where
+	F: BinaryField,
+	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
+	VCS: MerkleTreeScheme<F, Digest: SerializeBytes>,
+{
+	fn open_queries<B: BufMut>(
+		&self,
+		indices: &[usize],
+		advice: &mut TranscriptWriter<B>,
+	) -> Result<(), Error> {
+		open_oracle_queries(
+			self.merkle_prover,
+			&self.codeword,
+			&self.committed,
+			self.coset_log_size,
+			indices,
+			advice,
+		)
+	}
+}
+
+/// Writes the optimal Merkle layer once, then a coset opening for each queried index.
+///
+/// The coset is opened at the index directly, mirroring the verifier's `open_queries`.
+fn open_oracle_queries<F, P, MerkleProver, B>(
+	merkle_prover: &MerkleProver,
+	codeword: &FieldBuffer<P>,
+	committed: &MerkleProver::Committed,
+	coset_log_size: usize,
+	indices: &[usize],
+	advice: &mut TranscriptWriter<B>,
+) -> Result<(), Error>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	MerkleProver: MerkleTreeProver<F>,
+	<MerkleProver::Scheme as MerkleTreeScheme<F>>::Digest: SerializeBytes,
+	B: BufMut,
+{
+	let scheme = merkle_prover.scheme();
+	// The Merkle tree has one coset per leaf, so its depth is the codeword length minus the coset.
+	let tree_depth = codeword.log_len() - coset_log_size;
+	let layer_depth = scheme.optimal_verify_layer(indices.len(), tree_depth);
+	advice.write_slice(merkle_prover.layer(committed, layer_depth)?);
+	for &index in indices {
+		prove_coset_opening(
+			merkle_prover,
+			codeword.to_ref(),
+			committed,
+			index,
+			coset_log_size,
+			layer_depth,
+			advice,
+		)?;
+	}
+
+	Ok(())
+}
+
 /// A prover for the FRI query phase.
-#[derive(Debug)]
+///
+/// This is a composition of [`ProxTestOracleProver`]s mirroring the verifier's `FRIQueryVerifier`:
+/// a [`BrakedownOracleProver`] for the codeword's interleaved reduction, then one
+/// [`FRIOracleProver`] per fold arity for the subsequent reductions.
 pub struct FRIQueryProver<'a, F, P, MerkleProver, VCS>
 where
 	F: BinaryField,
@@ -19,23 +186,53 @@ where
 	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
 	VCS: MerkleTreeScheme<F>,
 {
-	pub(super) params: &'a FRIParams<F>,
-	pub(super) codeword: FieldBuffer<P>,
-	pub(super) codeword_committed: &'a MerkleProver::Committed,
-	pub(super) round_committed: Vec<(FieldBuffer<F>, MerkleProver::Committed)>,
-	pub(super) merkle_prover: &'a MerkleProver,
+	codeword_oracle: BrakedownOracleProver<'a, P, MerkleProver>,
+	fri_oracles: Vec<FRIOracleProver<'a, F, MerkleProver>>,
 }
 
-impl<F, P, MerkleProver, VCS> FRIQueryProver<'_, F, P, MerkleProver, VCS>
+impl<'a, F, P, MerkleProver, VCS> FRIQueryProver<'a, F, P, MerkleProver, VCS>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
 	VCS: MerkleTreeScheme<F>,
 {
+	/// Constructs a query prover from the committed codeword and fold-round codewords.
+	///
+	/// `round_committed` holds one entry per fold arity followed by the terminal codeword, which is
+	/// sent in full and therefore excluded here.
+	pub fn new(
+		params: &FRIParams<F>,
+		codeword: FieldBuffer<P>,
+		codeword_committed: &'a MerkleProver::Committed,
+		round_committed: Vec<(FieldBuffer<F>, MerkleProver::Committed)>,
+		merkle_prover: &'a MerkleProver,
+	) -> Self {
+		let codeword_oracle = BrakedownOracleProver::new(
+			codeword,
+			codeword_committed,
+			merkle_prover,
+			params.log_batch_size(),
+		);
+
+		let fri_oracles = round_committed
+			.into_iter()
+			.take(params.fold_arities().len())
+			.zip(params.fold_arities().iter().copied())
+			.map(|((codeword, committed), arity)| {
+				FRIOracleProver::new(codeword, committed, merkle_prover, arity)
+			})
+			.collect();
+
+		Self {
+			codeword_oracle,
+			fri_oracles,
+		}
+	}
+
 	/// Number of oracles sent during the fold rounds.
 	pub fn n_oracles(&self) -> usize {
-		self.params.n_oracles()
+		1 + self.fri_oracles.len()
 	}
 
 	/// Proves the FRI challenge queries, batched per oracle.
@@ -58,53 +255,16 @@ where
 		B: BufMut,
 		VCS::Digest: SerializeBytes,
 	{
-		let scheme = self.merkle_prover.scheme();
-		let n_queries = indices.len();
+		self.codeword_oracle.open_queries(indices, advice)?;
 
-		// The codeword oracle, opened as interleaved cosets. Its Merkle tree has one coset per
-		// leaf, so its depth is the number of index bits.
-		let mut tree_depth = self.params.index_bits();
-		let layer_depth = scheme.optimal_verify_layer(n_queries, tree_depth);
-		let layer = self
-			.merkle_prover
-			.layer(self.codeword_committed, layer_depth)?;
-		advice.write_slice(layer);
-		for &index in indices {
-			prove_coset_opening(
-				self.merkle_prover,
-				self.codeword.to_ref(),
-				self.codeword_committed,
-				index,
-				self.params.log_batch_size(),
-				layer_depth,
-				advice,
-			)?;
-		}
-
-		// The fold-round oracles, excluding the terminal codeword which is sent in full.
-		let round_committed_excluding_terminal =
-			&self.round_committed[..self.round_committed.len() - 1];
-		let mut shift = 0;
-		for ((codeword, committed), &arity) in round_committed_excluding_terminal
-			.iter()
-			.zip(self.params.fold_arities())
-		{
-			shift += arity;
-			tree_depth -= arity;
-			let layer_depth = scheme.optimal_verify_layer(n_queries, tree_depth);
-			let layer = self.merkle_prover.layer(committed, layer_depth)?;
-			advice.write_slice(layer);
-			for &index in indices {
-				prove_coset_opening(
-					self.merkle_prover,
-					codeword.to_ref(),
-					committed,
-					index >> shift,
-					arity,
-					layer_depth,
-					advice,
-				)?;
+		// Each subsequent oracle indexes the previous virtual oracle, so shift the query indices
+		// right by the round's arity before opening it.
+		let mut indices = indices.to_vec();
+		for fri_oracle in &self.fri_oracles {
+			for index in &mut indices {
+				*index >>= fri_oracle.coset_log_size;
 			}
+			fri_oracle.open_queries(&indices, advice)?;
 		}
 
 		Ok(())

@@ -208,13 +208,13 @@ where
 			..
 		} = self;
 
-		let query_prover = FRIQueryProver {
+		let query_prover = FRIQueryProver::new(
 			params,
 			codeword,
 			codeword_committed,
 			round_committed,
 			merkle_prover,
-		};
+		);
 		Ok((terminate_codeword, query_prover))
 	}
 
@@ -225,14 +225,15 @@ where
 	where
 		Challenger_: Challenger,
 	{
+		let n_test_queries = self.params.n_test_queries();
+		let index_bits = self.params.index_bits();
 		let (terminate_codeword, query_prover) = self.finalize()?;
 
 		// Sample all query indices before writing the (per-oracle batched) query openings. The
 		// decommitment advice is not absorbed by the challenger, so this matches the verifier
 		// sampling all indices up front.
-		let params = query_prover.params;
-		let indices = (0..params.n_test_queries())
-			.map(|_| transcript.sample_bits(params.index_bits()) as usize)
+		let indices = (0..n_test_queries)
+			.map(|_| transcript.sample_bits(index_bits) as usize)
 			.collect::<Vec<_>>();
 
 		// Write the per-oracle batched query openings, then the terminal codeword in full.
