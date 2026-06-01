@@ -7,15 +7,15 @@ use binius_utils::DeserializeBytes;
 use bytes::Buf;
 
 use crate::merkle_tree::{Commitment, MerkleTreeScheme};
-/// A verification interface for the query phase of a code proximity test.
+/// A virtual oracle for a code proximity test.
 ///
-/// The interactive code proximity tests used in this project (eg. FRI) follow the structure of:
-///
-/// 1. the verifier and prover interactively and randomly fold the codeword
-/// 2. the verifier randomly samples codeword symbol indices
-/// 3. the verifier opens Merkle commitments at those indices and performs consistency checks on the
-///    committed values
-pub trait ProxQueryVerifier<F: BinaryField> {
+/// The interactive code proximity tests used in this project (eg. FRI) commit to a codeword and
+/// then interactively fold it with random challenges. This trait represents the resulting *virtual
+/// oracle*: the folded codeword, whose values are not committed directly but are instead recovered
+/// on demand by opening the committed oracle at the queried indices and applying the folding. An
+/// implementation therefore holds the committed oracle along with the folding challenges, and
+/// verifies decommitted prover advice in order to evaluate the virtual oracle at queried locations.
+pub trait ProxTestOracle<F: BinaryField> {
 	/// The base-2 logarithm of the length of the virtual oracle.
 	///
 	/// The virtual oracle is defined by the committed oracle and the folding challenges. Indices
@@ -40,10 +40,10 @@ pub trait ProxQueryVerifier<F: BinaryField> {
 	) -> Result<Vec<F>, Error>;
 }
 
-/// A [ProxQueryVerifier] implementation for a [Brakedown]-style interleaved code proximity check.
+/// A [ProxTestOracle] implementation for a [Brakedown]-style interleaved code proximity check.
 ///
 /// [Brakedown]: <https://dl.acm.org/doi/10.1007/978-3-031-38545-2_7>
-pub struct BrakedownQueryVerifier<F, MTScheme>
+pub struct BrakedownOracle<F, MTScheme>
 where
 	MTScheme: MerkleTreeScheme<F>,
 {
@@ -52,8 +52,8 @@ where
 	merkle_scheme: MTScheme,
 }
 
-impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> ProxQueryVerifier<F>
-	for BrakedownQueryVerifier<F, MTScheme>
+impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> ProxTestOracle<F>
+	for BrakedownOracle<F, MTScheme>
 {
 	fn log_len(&self) -> usize {
 		self.commitment.depth
@@ -80,12 +80,12 @@ impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> Pr
 	}
 }
 
-/// A [ProxQueryVerifier] implementation for a FRI-style code proximity check.
+/// A [ProxTestOracle] implementation for a FRI-style code proximity check.
 ///
-/// Note that this is distinct from the `FRIQueryVerifier` in the `verify` module, which implements
-/// the full FRI query phase. This one only verifies the openings of a single committed oracle and
-/// folds each opened coset into a single value using FRI folding.
-pub struct FRIQueryVerifier<F, MTScheme, DC>
+/// Note that this is distinct from the full FRI query-phase verifier in the `verify` module. This
+/// one only verifies the openings of a single committed oracle and folds each opened coset into a
+/// single value using FRI folding.
+pub struct FRIOracle<F, MTScheme, DC>
 where
 	MTScheme: MerkleTreeScheme<F>,
 	DC: DomainContext<Field = F>,
@@ -96,7 +96,7 @@ where
 	domain_context: DC,
 }
 
-impl<F, MTScheme, DC> FRIQueryVerifier<F, MTScheme, DC>
+impl<F, MTScheme, DC> FRIOracle<F, MTScheme, DC>
 where
 	F: BinaryField,
 	MTScheme: MerkleTreeScheme<F>,
@@ -141,7 +141,7 @@ where
 	}
 }
 
-impl<F, MTScheme, DC> FRIQueryVerifier<F, MTScheme, DC>
+impl<F, MTScheme, DC> FRIOracle<F, MTScheme, DC>
 where
 	F: BinaryField,
 	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
@@ -198,7 +198,7 @@ where
 	}
 }
 
-impl<F, MTScheme, DC> ProxQueryVerifier<F> for FRIQueryVerifier<F, MTScheme, DC>
+impl<F, MTScheme, DC> ProxTestOracle<F> for FRIOracle<F, MTScheme, DC>
 where
 	F: BinaryField,
 	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
@@ -228,7 +228,7 @@ where
 	}
 }
 
-/// Verifies the Merkle openings shared by the [ProxQueryVerifier] implementations.
+/// Verifies the Merkle openings shared by the [ProxTestOracle] implementations.
 ///
 /// First decommits and verifies the optimal internal layer of the Merkle tree, then returns a lazy
 /// iterator that, for each queried index, reads the opened coset of `1 << coset_log_size` values
