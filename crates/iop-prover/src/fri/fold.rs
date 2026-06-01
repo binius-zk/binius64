@@ -226,19 +226,20 @@ where
 		Challenger_: Challenger,
 	{
 		let (terminate_codeword, query_prover) = self.finalize()?;
-		let mut advice = transcript.decommitment();
-		advice.write_scalar_slice(terminate_codeword.as_ref());
 
-		let layers = query_prover.vcs_optimal_layers()?;
-		for layer in layers {
-			advice.write_slice(&layer);
-		}
-
+		// Sample all query indices before writing the (per-oracle batched) query openings. The
+		// decommitment advice is not absorbed by the challenger, so this matches the verifier
+		// sampling all indices up front.
 		let params = query_prover.params;
-		for _ in 0..params.n_test_queries() {
-			let index = transcript.sample_bits(params.index_bits()) as usize;
-			query_prover.prove_query(index, &mut transcript.decommitment())?;
-		}
+		let indices = (0..params.n_test_queries())
+			.map(|_| transcript.sample_bits(params.index_bits()) as usize)
+			.collect::<Vec<_>>();
+
+		// Write the per-oracle batched query openings, then the terminal codeword in full.
+		query_prover.prove_queries(&indices, &mut transcript.decommitment())?;
+		transcript
+			.decommitment()
+			.write_scalar_slice(terminate_codeword.as_ref());
 
 		Ok(())
 	}

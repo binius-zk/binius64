@@ -1,5 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 
+use super::batch;
 use crate::merkle_tree;
 
 #[derive(Debug, thiserror::Error)]
@@ -23,6 +24,20 @@ impl From<merkle_tree::Error> for Error {
 		match err {
 			merkle_tree::Error::Verification(err) => Self::Verification(err.into()),
 			_ => Self::MerkleError(err),
+		}
+	}
+}
+
+impl From<batch::Error> for Error {
+	fn from(err: batch::Error) -> Self {
+		match err {
+			batch::Error::Merkle(err) => err.into(),
+			batch::Error::Transcript(err) => Self::TranscriptError(err),
+			batch::Error::ClaimMismatch { index } => VerificationError::IncorrectFold {
+				query_round: 0,
+				index,
+			}
+			.into(),
 		}
 	}
 }

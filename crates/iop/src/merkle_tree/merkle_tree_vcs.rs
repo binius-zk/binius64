@@ -1,5 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 
+use auto_impl::auto_impl;
 use binius_transcript::{Buf, TranscriptReader};
 
 use super::error::Error;
@@ -17,6 +18,7 @@ pub struct Commitment<Digest> {
 }
 
 /// A Merkle tree scheme.
+#[auto_impl(&)]
 pub trait MerkleTreeScheme<T> {
 	type Digest: Clone + PartialEq + Eq;
 

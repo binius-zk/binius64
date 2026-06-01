@@ -18,11 +18,10 @@ use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, HasherChallenger},
 };
-use binius_utils::checked_arithmetics::log2_strict_usize;
 use rand::prelude::*;
 
 use super::{CommitOutput, FRIFoldProver, FoldRoundOutput, commit_interleaved};
-use crate::merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver};
+use crate::merkle_tree::prover::BinaryMerkleTreeProver;
 
 type StdChallenger = HasherChallenger<StdDigest>;
 
@@ -124,35 +123,16 @@ fn test_commit_prove_verify_success<F, P>(
 	)
 	.unwrap();
 
-	let mut cloned_verifier_challenger = verifier_challenger.clone();
-
-	let terminate_codeword_len =
-		1 << (params.n_final_challenges() + params.rs_code().log_inv_rate());
-
-	let mut advice = verifier_challenger.decommitment();
-	let terminate_codeword: Vec<F> = advice.read_scalar_slice(terminate_codeword_len).unwrap();
-
-	let log_batch_size =
-		log2_strict_usize(terminate_codeword.len()).saturating_sub(params.rs_code().log_inv_rate());
-
-	let (commitment, tree) = merkle_prover
-		.commit(&terminate_codeword, 1 << log_batch_size)
-		.unwrap();
-
-	// Ensure that the terminate_codeword commitment is correct
-	let last_round_commitment = round_commitments.last().unwrap_or(&codeword_commitment);
-	assert_eq!(*last_round_commitment, commitment.root);
-
-	// Verify that the Merkle tree has exactly inv_rate leaves.
-	assert_eq!(tree.log_len, params.rs_code().log_inv_rate());
-
+	// The verifier checks the terminal codeword against its commitment internally (the terminal
+	// codeword is sent in full at the end of the query phase).
+	//
 	// check c == t(r'_0, ..., r'_{\ell-1})
 	// note that the prover is claiming that the final_message is [c]
 	let mut eval_point = verifier_challenges.clone();
 	eval_point.reverse();
 	let computed_eval = evaluate(&msg, &eval_point);
 
-	let final_fri_value = verifier.verify(&mut cloned_verifier_challenger).unwrap();
+	let final_fri_value = verifier.verify(&mut verifier_challenger).unwrap();
 	assert_eq!(computed_eval, final_fri_value);
 }
 

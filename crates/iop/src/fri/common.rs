@@ -1,6 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use std::{iter, marker::PhantomData};
+use std::marker::PhantomData;
 
 use binius_field::{BinaryField, Field};
 use binius_math::{ntt::DomainContext, reed_solomon::ReedSolomonCode};
@@ -308,23 +308,6 @@ where
 			(log_batch_size, fold_arities)
 		}
 	}
-}
-
-/// This layer allows minimizing the proof size.
-pub fn vcs_optimal_layers_depths_iter<'a, F, VCS>(
-	fri_params: &'a FRIParams<F>,
-	vcs: &'a VCS,
-) -> impl Iterator<Item = usize> + 'a
-where
-	VCS: MerkleTreeScheme<F>,
-	F: BinaryField,
-{
-	iter::once(fri_params.log_batch_size())
-		.chain(fri_params.fold_arities().iter().copied())
-		.scan(fri_params.log_len(), |log_n_cosets, arity| {
-			*log_n_cosets -= arity;
-			Some(vcs.optimal_verify_layer(fri_params.n_test_queries(), *log_n_cosets))
-		})
 }
 
 struct ChooseBatchSizeAndAritiesOutput {

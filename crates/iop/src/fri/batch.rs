@@ -52,6 +52,21 @@ where
 	merkle_scheme: MTScheme,
 }
 
+impl<F: BinaryField, MTScheme: MerkleTreeScheme<F>> BrakedownOracle<F, MTScheme> {
+	/// Constructs a new oracle from the committed interleaved codeword and the folding challenges.
+	pub fn new(
+		challenges: Vec<F>,
+		commitment: Commitment<MTScheme::Digest>,
+		merkle_scheme: MTScheme,
+	) -> Self {
+		Self {
+			challenges,
+			commitment,
+			merkle_scheme,
+		}
+	}
+}
+
 impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> ProxTestOracle<F>
 	for BrakedownOracle<F, MTScheme>
 {
@@ -64,6 +79,7 @@ impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> Pr
 		indices: &[usize],
 		advice: &mut TranscriptReader<B>,
 	) -> Result<Vec<F>, Error> {
+		assert!(indices.iter().all(|&index| index < 1 << self.log_len())); // precondition
 		verify_query_openings(
 			&self.merkle_scheme,
 			&self.commitment,
@@ -102,6 +118,22 @@ where
 	MTScheme: MerkleTreeScheme<F>,
 	DC: DomainContext<Field = F>,
 {
+	/// Constructs a new oracle from a committed oracle, its folding challenges, and the domain
+	/// context providing the FRI fold twiddles.
+	pub fn new(
+		challenges: Vec<F>,
+		commitment: Commitment<MTScheme::Digest>,
+		merkle_scheme: MTScheme,
+		domain_context: DC,
+	) -> Self {
+		Self {
+			challenges,
+			commitment,
+			merkle_scheme,
+			domain_context,
+		}
+	}
+
 	/// The base-2 log of the size of each coset opened from the committed oracle.
 	fn coset_log_size(&self) -> usize {
 		self.challenges.len()
@@ -109,36 +141,57 @@ where
 
 	/// Folds an opened coset into a single value.
 	///
-	/// This implements the fold operation from Definition 4.6 of [DP24], reading twiddle factors
-	/// directly from the held [`DomainContext`]. The twiddle layer is absolute within the full NTT
-	/// domain; for the committed oracle the codeword length in log terms is the Merkle tree depth
-	/// plus the number of folding challenges (one coset per leaf).
-	///
-	/// [DP24]: <https://eprint.iacr.org/2024/504>
-	fn fold_coset(&self, chunk_index: usize, mut values: Vec<F>) -> F {
-		let n_challenges = self.challenges.len();
-		let mut log_len = self.commitment.depth + n_challenges;
-		let mut log_size = n_challenges;
-		for &challenge in &self.challenges {
-			for index_offset in 0..1 << (log_size - 1) {
-				// Perform the inverse additive NTT butterfly, then extrapolate the resulting line
-				// at the folding challenge.
-				let mut u = values[index_offset << 1];
-				let mut v = values[(index_offset << 1) | 1];
-				let twiddle = self
-					.domain_context
-					.twiddle(log_len - 1, (chunk_index << (log_size - 1)) | index_offset);
-				v += u;
-				u += v * twiddle;
-				values[index_offset] = extrapolate_line(u, v, challenge);
-			}
+	/// The committed oracle's codeword length in log terms is the Merkle tree depth plus the number
+	/// of folding challenges (one coset per leaf), which is the `log_len` consumed by
+	/// [`fold_coset`].
+	fn fold_coset(&self, chunk_index: usize, values: Vec<F>) -> F {
+		fold_coset(
+			&self.domain_context,
+			self.commitment.depth + self.challenges.len(),
+			chunk_index,
+			&self.challenges,
+			values,
+		)
+	}
+}
 
-			log_len -= 1;
-			log_size -= 1;
+/// Folds a coset of a codeword into a single value with the given folding challenges.
+///
+/// This implements the fold operation from Definition 4.6 of [DP24], reading twiddle factors from
+/// the domain context. `log_len` is the base-2 log of the length of the codeword the coset belongs
+/// to; the twiddle layer is absolute within the full NTT domain and decreases with each challenge.
+///
+/// [DP24]: <https://eprint.iacr.org/2024/504>
+pub fn fold_coset<F, DC>(
+	domain_context: &DC,
+	mut log_len: usize,
+	chunk_index: usize,
+	challenges: &[F],
+	mut values: Vec<F>,
+) -> F
+where
+	F: BinaryField,
+	DC: DomainContext<Field = F>,
+{
+	let mut log_size = challenges.len();
+	for &challenge in challenges {
+		for index_offset in 0..1 << (log_size - 1) {
+			// Perform the inverse additive NTT butterfly, then extrapolate the resulting line at
+			// the folding challenge.
+			let mut u = values[index_offset << 1];
+			let mut v = values[(index_offset << 1) | 1];
+			let twiddle =
+				domain_context.twiddle(log_len - 1, (chunk_index << (log_size - 1)) | index_offset);
+			v += u;
+			u += v * twiddle;
+			values[index_offset] = extrapolate_line(u, v, challenge);
 		}
 
-		values[0]
+		log_len -= 1;
+		log_size -= 1;
 	}
+
+	values[0]
 }
 
 impl<F, MTScheme, DC> FRIOracle<F, MTScheme, DC>
@@ -170,6 +223,11 @@ where
 		advice: &mut TranscriptReader<B>,
 	) -> Result<Vec<F>, Error> {
 		assert_eq!(indices.len(), claims.len()); // precondition
+		assert!(
+			indices
+				.iter()
+				.all(|&index| index < 1 << (self.log_len() + self.coset_log_size()))
+		); // precondition
 
 		let coset_log_size = self.coset_log_size();
 		let coset_mask = (1 << coset_log_size) - 1;
@@ -213,6 +271,7 @@ where
 		indices: &[usize],
 		advice: &mut TranscriptReader<B>,
 	) -> Result<Vec<F>, Error> {
+		assert!(indices.iter().all(|&index| index < 1 << self.log_len())); // precondition
 		verify_query_openings(
 			&self.merkle_scheme,
 			&self.commitment,

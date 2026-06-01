@@ -1,16 +1,11 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::iter;
-
 use binius_field::{BinaryField, PackedField};
-use binius_iop::{
-	fri::{FRIParams, vcs_optimal_layers_depths_iter},
-	merkle_tree::MerkleTreeScheme,
-};
+use binius_iop::{fri::FRIParams, merkle_tree::MerkleTreeScheme};
 use binius_math::{FieldBuffer, FieldSlice};
 use binius_transcript::TranscriptWriter;
+use binius_utils::SerializeBytes;
 use bytes::BufMut;
-use itertools::izip;
 use tracing::instrument;
 
 use crate::{fri::Error, merkle_tree::MerkleTreeProver};
@@ -43,70 +38,76 @@ where
 		self.params.n_oracles()
 	}
 
-	/// Proves a FRI challenge query.
+	/// Proves the FRI challenge queries, batched per oracle.
+	///
+	/// For each committed oracle (the codeword first, then each fold-round oracle excluding the
+	/// terminal codeword) this writes the oracle's optimal Merkle layer once, followed by the coset
+	/// opening for each query index. This per-oracle batched layout matches the verifier, which
+	/// reads each oracle's layer and then all of its query openings together.
 	///
 	/// ## Arguments
 	///
-	/// * `index` - an index into the original codeword domain
-	#[instrument(skip_all, name = "fri::FRIQueryProver::prove_query", level = "debug")]
-	pub fn prove_query<B>(
+	/// * `indices` - the sampled query indices into the original codeword domain
+	#[instrument(skip_all, name = "fri::FRIQueryProver::prove_queries", level = "debug")]
+	pub fn prove_queries<B>(
 		&self,
-		mut index: usize,
+		indices: &[usize],
 		advice: &mut TranscriptWriter<B>,
 	) -> Result<(), Error>
 	where
 		B: BufMut,
+		VCS::Digest: SerializeBytes,
 	{
-		let mut layer_depths_iter =
-			vcs_optimal_layers_depths_iter(self.params, self.merkle_prover.scheme());
-		let first_layer_depth = layer_depths_iter
-			.next()
-			.expect("not empty by post-condition");
+		let scheme = self.merkle_prover.scheme();
+		let n_queries = indices.len();
 
-		prove_coset_opening(
-			self.merkle_prover,
-			self.codeword.to_ref(),
-			self.codeword_committed,
-			index,
-			self.params.log_batch_size(),
-			first_layer_depth,
-			advice,
-		)?;
-
-		for ((codeword, committed), &arity, optimal_layer_depth) in
-			izip!(&self.round_committed, self.params.fold_arities(), layer_depths_iter)
-		{
-			index >>= arity;
+		// The codeword oracle, opened as interleaved cosets. Its Merkle tree has one coset per
+		// leaf, so its depth is the number of index bits.
+		let mut tree_depth = self.params.index_bits();
+		let layer_depth = scheme.optimal_verify_layer(n_queries, tree_depth);
+		let layer = self
+			.merkle_prover
+			.layer(self.codeword_committed, layer_depth)?;
+		advice.write_slice(layer);
+		for &index in indices {
 			prove_coset_opening(
 				self.merkle_prover,
-				codeword.to_ref(),
-				committed,
+				self.codeword.to_ref(),
+				self.codeword_committed,
 				index,
-				arity,
-				optimal_layer_depth,
+				self.params.log_batch_size(),
+				layer_depth,
 				advice,
 			)?;
 		}
 
-		Ok(())
-	}
-
-	pub fn vcs_optimal_layers(&self) -> Result<Vec<Vec<VCS::Digest>>, Error> {
+		// The fold-round oracles, excluding the terminal codeword which is sent in full.
 		let round_committed_excluding_terminal =
 			&self.round_committed[..self.round_committed.len() - 1];
-		let committed_iter = iter::once(self.codeword_committed).chain(
-			round_committed_excluding_terminal
-				.iter()
-				.map(|(_, committed)| committed),
-		);
+		let mut shift = 0;
+		for ((codeword, committed), &arity) in round_committed_excluding_terminal
+			.iter()
+			.zip(self.params.fold_arities())
+		{
+			shift += arity;
+			tree_depth -= arity;
+			let layer_depth = scheme.optimal_verify_layer(n_queries, tree_depth);
+			let layer = self.merkle_prover.layer(committed, layer_depth)?;
+			advice.write_slice(layer);
+			for &index in indices {
+				prove_coset_opening(
+					self.merkle_prover,
+					codeword.to_ref(),
+					committed,
+					index >> shift,
+					arity,
+					layer_depth,
+					advice,
+				)?;
+			}
+		}
 
-		committed_iter
-			.zip(vcs_optimal_layers_depths_iter(self.params, self.merkle_prover.scheme()))
-			.map(|(committed, optimal_layer_depth)| {
-				let layer = self.merkle_prover.layer(committed, optimal_layer_depth)?;
-				Ok(layer.to_vec())
-			})
-			.collect::<Result<Vec<_>, _>>()
+		Ok(())
 	}
 }
 

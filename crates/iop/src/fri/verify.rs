@@ -1,50 +1,47 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use std::iter;
+use std::iter::{self, repeat_with};
 
 use binius_field::BinaryField;
-use binius_math::{
-	FieldBuffer,
-	multilinear::eq::eq_ind_partial_eval,
-	ntt::{AdditiveNTT, NeighborsLastSingleThread, domain_context::GenericOnTheFly},
-};
+use binius_math::ntt::domain_context::GenericOnTheFly;
 use binius_transcript::{
 	TranscriptReader, VerifierTranscript,
 	fiat_shamir::{CanSampleBits, Challenger},
 };
 use binius_utils::DeserializeBytes;
 use bytes::Buf;
-use itertools::izip;
 
 use super::{
-	common::{FRIParams, vcs_optimal_layers_depths_iter},
+	batch::{BrakedownOracle, FRIOracle, ProxTestOracle, fold_coset},
+	common::FRIParams,
 	error::{Error, VerificationError},
 };
-use crate::{
-	fri::fold::{fold_chunk, fold_interleaved_chunk},
-	merkle_tree::MerkleTreeScheme,
-};
+use crate::merkle_tree::{Commitment, MerkleTreeScheme};
 
 /// A verifier for the FRI query phase.
 ///
 /// The verifier is instantiated after the folding rounds and is used to test consistency of the
 /// round messages and the original purported codeword.
-#[derive(Debug)]
+///
+/// Internally, this is a composition of [`ProxTestOracle`]s: a [`BrakedownOracle`] performs the
+/// first, interleaved reduction of the committed codeword, then one [`FRIOracle`] per fold arity
+/// performs each subsequent FRI reduction. The verifier orchestrates the consistency checks
+/// between these oracles and the final, fully-folded terminal codeword.
 pub struct FRIQueryVerifier<'a, F, VCS>
 where
 	F: BinaryField,
 	VCS: MerkleTreeScheme<F>,
 {
-	vcs: &'a VCS,
 	params: &'a FRIParams<F>,
-	/// Received commitment to the codeword.
-	codeword_commitment: &'a VCS::Digest,
-	/// Received commitments to the round messages.
-	round_commitments: &'a [VCS::Digest],
-	/// The challenges for each round.
-	interleave_tensor: FieldBuffer<F>,
-	/// The challenges for each round.
-	fold_challenges: &'a [F],
+	vcs: &'a VCS,
+	/// Commitment to the fully-folded terminal codeword, sent in full by the prover.
+	terminal_commitment: &'a VCS::Digest,
+	/// The folding challenges applied after the last committed oracle.
+	final_challenges: &'a [F],
+	/// Performs the first, interleaved reduction of the committed codeword.
+	codeword_oracle: BrakedownOracle<F, &'a VCS>,
+	/// Performs each subsequent FRI reduction, one per fold arity.
+	fri_oracles: Vec<FRIOracle<F, &'a VCS, GenericOnTheFly<F>>>,
 }
 
 impl<'a, F, VCS> FRIQueryVerifier<'a, F, VCS>
@@ -52,7 +49,6 @@ where
 	F: BinaryField,
 	VCS: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 {
-	#[allow(clippy::too_many_arguments)]
 	pub fn new(
 		params: &'a FRIParams<F>,
 		vcs: &'a VCS,
@@ -76,16 +72,50 @@ where
 			)));
 		}
 
-		let (interleave_challenges, fold_challenges) = challenges.split_at(params.log_batch_size());
+		// The committed codeword's Merkle tree has one coset per leaf, so its depth is the number
+		// of index bits.
+		let index_bits = params.index_bits();
+		let codeword_oracle = BrakedownOracle::new(
+			challenges[..params.log_batch_size()].to_vec(),
+			Commitment {
+				root: codeword_commitment.clone(),
+				depth: index_bits,
+			},
+			vcs,
+		);
 
-		let interleave_tensor = eq_ind_partial_eval(interleave_challenges);
+		// All FRI reductions fold cosets of the same Reed–Solomon codeword domain, so they share a
+		// single domain context.
+		let domain_context = GenericOnTheFly::generate_from_subspace(params.rs_code().subspace());
+		let mut fri_oracles = Vec::with_capacity(params.fold_arities().len());
+		let mut depth = index_bits;
+		let mut fold_round = params.log_batch_size();
+		for (round_commitment, &arity) in iter::zip(round_commitments, params.fold_arities()) {
+			depth -= arity;
+			fri_oracles.push(FRIOracle::new(
+				challenges[fold_round..fold_round + arity].to_vec(),
+				Commitment {
+					root: round_commitment.clone(),
+					depth,
+				},
+				vcs,
+				domain_context.clone(),
+			));
+			fold_round += arity;
+		}
+
+		let final_challenges = &challenges[fold_round..];
+		let terminal_commitment = round_commitments
+			.last()
+			.expect("round_commitments is non-empty as an invariant");
+
 		Ok(Self {
 			params,
 			vcs,
-			codeword_commitment,
-			round_commitments,
-			interleave_tensor,
-			fold_challenges,
+			terminal_commitment,
+			final_challenges,
+			codeword_oracle,
+			fri_oracles,
 		})
 	}
 
@@ -101,84 +131,90 @@ where
 	where
 		Challenger_: Challenger,
 	{
-		// TODO: We can prob take in this ntt as a struct param.
-		let subspace = self.params.rs_code().subspace();
-		let domain_context = GenericOnTheFly::generate_from_subspace(subspace);
-		let ntt = NeighborsLastSingleThread::new(domain_context);
+		// Sample all query indices up front to facilitate batched Merkle openings.
+		let mut indices = repeat_with(|| transcript.sample_bits(self.params.index_bits()) as usize)
+			.take(self.params.n_test_queries())
+			.collect::<Vec<_>>();
 
-		// Verify that the last oracle sent is a codeword.
-		let terminate_codeword_len =
-			1 << (self.params.n_final_challenges() + self.params.rs_code().log_inv_rate());
+		// Open and reduce the queries through each oracle in turn, reading the per-oracle batched
+		// openings from a single continuous decommitment stream.
 		let mut advice = transcript.decommitment();
-		let terminate_codeword = advice
-			.read_scalar_slice(terminate_codeword_len)
-			.map_err(Error::TranscriptError)?;
-		let final_value = self.verify_last_oracle(&ntt, &terminate_codeword, &mut advice)?;
-
-		// Verify that the provided layers match the commitments.
-		let layers = vcs_optimal_layers_depths_iter(self.params, self.vcs)
-			.map(|layer_depth| advice.read_vec(1 << layer_depth))
-			.collect::<Result<Vec<_>, _>>()?;
-		for (commitment, layer_depth, layer) in izip!(
-			iter::once(self.codeword_commitment).chain(self.round_commitments),
-			vcs_optimal_layers_depths_iter(self.params, self.vcs),
-			&layers
-		) {
-			self.vcs.verify_layer(commitment, layer_depth, layer)?;
+		let mut claims = self.codeword_oracle.open_queries(&indices, &mut advice)?;
+		for (query_round, (oracle, &arity)) in self
+			.fri_oracles
+			.iter()
+			.zip(self.params.fold_arities())
+			.enumerate()
+		{
+			claims = oracle
+				.reduce_queries(&indices, &claims, &mut advice)
+				.map_err(|err| match err {
+					super::batch::Error::ClaimMismatch { index } => {
+						VerificationError::IncorrectFold { query_round, index }.into()
+					}
+					err => Error::from(err),
+				})?;
+			for index in &mut indices {
+				*index >>= arity;
+			}
 		}
 
-		// Verify the random openings against the decommitted layers.
-		for _ in 0..self.params.n_test_queries() {
-			let index = transcript.sample_bits(self.params.index_bits()) as usize;
-			self.verify_query(
-				index,
-				&ntt,
-				&terminate_codeword,
-				&layers,
-				&mut transcript.decommitment(),
-			)?
-		}
-
-		Ok(final_value)
+		// Check the fully-reduced queries against the terminal codeword sent in full.
+		self.verify_terminal_queries(&claims, &indices, &mut advice)
 	}
 
-	/// Verifies that the last oracle sent is a codeword.
+	/// Verifies the terminal codeword the prover sends in full at the end of the query phase.
 	///
-	/// Returns the fully-folded message value.
-	pub fn verify_last_oracle<B: Buf>(
+	/// Reads the terminal codeword from the transcript and checks it against its commitment, then
+	/// checks that the fully-reduced query `claims` match it at the queried `indices`. Finally it
+	/// folds each coset of the terminal codeword and checks they are equal, i.e. that it is a
+	/// repetition codeword of the claimed low degree, and returns the fully-folded message value.
+	fn verify_terminal_queries<B: Buf>(
 		&self,
-		ntt: &impl AdditiveNTT<Field = F>,
-		terminate_codeword: &[F],
+		claims: &[F],
+		indices: &[usize],
 		advice: &mut TranscriptReader<B>,
 	) -> Result<F, Error> {
 		let n_final_challenges = self.params.n_final_challenges();
-		let terminal_commitment = self
-			.round_commitments
-			.last()
-			.expect("round_commitments is non-empty as an invariant");
+		let log_inv_rate = self.params.rs_code().log_inv_rate();
+		let terminate_codeword_len = 1 << (n_final_challenges + log_inv_rate);
 
+		let terminate_codeword = advice
+			.read_scalar_slice::<F>(terminate_codeword_len)
+			.map_err(Error::TranscriptError)?;
 		self.vcs.verify_vector(
-			terminal_commitment,
-			terminate_codeword,
+			self.terminal_commitment,
+			&terminate_codeword,
 			1 << n_final_challenges,
 			advice,
 		)?;
 
-		let n_prior_challenges = self.fold_challenges.len() - n_final_challenges;
-		let final_challenges = &self.fold_challenges[n_prior_challenges..];
+		// Check the fully-reduced claims against the terminal codeword the verifier holds in full.
+		for (&claim, &index) in iter::zip(claims, indices) {
+			if claim != terminate_codeword[index] {
+				return Err(VerificationError::IncorrectFold {
+					query_round: self.n_oracles() - 1,
+					index,
+				}
+				.into());
+			}
+		}
 
-		let mut scratch_buffer = vec![F::default(); 1 << n_final_challenges];
+		// Fold each coset of the terminal codeword and check that the folds are all equal, i.e.
+		// that the codeword has the claimed low degree.
+		let domain_context =
+			GenericOnTheFly::generate_from_subspace(self.params.rs_code().subspace());
+		let log_len = n_final_challenges + log_inv_rate;
 		let repetition_codeword = terminate_codeword
 			.chunks(1 << n_final_challenges)
 			.enumerate()
-			.map(|(i, coset_values)| {
-				scratch_buffer.copy_from_slice(coset_values);
-				fold_chunk(
-					ntt,
-					n_final_challenges + self.params.rs_code().log_inv_rate(),
-					i,
-					&mut scratch_buffer,
-					final_challenges,
+			.map(|(coset_index, coset)| {
+				fold_coset(
+					&domain_context,
+					log_len,
+					coset_index,
+					self.final_challenges,
+					coset.to_vec(),
 				)
 			})
 			.collect::<Vec<_>>();
@@ -195,125 +231,4 @@ where
 
 		Ok(final_value)
 	}
-
-	/// Verifies a FRI challenge query.
-	///
-	/// A FRI challenge query tests for consistency between all consecutive oracles sent by the
-	/// prover. The verifier has full access to the last oracle sent, and this is probabilistically
-	/// verified to be a codeword by `Self::verify_last_oracle`.
-	///
-	/// ## Arguments
-	///
-	/// * `index` - an index into the original codeword domain
-	/// * `proof` - a query proof
-	pub fn verify_query<B: Buf>(
-		&self,
-		mut index: usize,
-		ntt: &impl AdditiveNTT<Field = F>,
-		terminate_codeword: &[F],
-		layers: &[Vec<VCS::Digest>],
-		advice: &mut TranscriptReader<B>,
-	) -> Result<(), Error> {
-		let mut layer_depths_iter = vcs_optimal_layers_depths_iter(self.params, self.vcs);
-		let mut layers_iter = layers.iter();
-
-		// Check the first fold round before the main loop. It is special because in the first
-		// round we need to fold as an interleaved chunk instead of a regular coset.
-		let first_layer_depth = layer_depths_iter
-			.next()
-			.expect("protocol guarantees at least one commitment opening");
-		let first_layer = layers_iter
-			.next()
-			.expect("protocol guarantees at least one commitment opening");
-		let values = verify_coset_opening(
-			self.vcs,
-			index,
-			self.params.log_batch_size(),
-			first_layer_depth,
-			self.params.index_bits(),
-			first_layer,
-			advice,
-		)?;
-		let mut next_value = fold_interleaved_chunk(
-			self.params.log_batch_size(),
-			&values,
-			self.interleave_tensor.as_ref(),
-		);
-
-		// This is the round of the folding phase that the codeword to be folded is committed to.
-		let mut fold_round = 0;
-		let mut log_n_cosets = self.params.index_bits();
-		for (i, (&arity, layer, optimal_layer_depth)) in
-			izip!(self.params.fold_arities(), layers_iter, layer_depths_iter).enumerate()
-		{
-			let coset_index = index >> arity;
-			log_n_cosets -= arity;
-
-			let mut values = verify_coset_opening(
-				self.vcs,
-				coset_index,
-				arity,
-				optimal_layer_depth,
-				log_n_cosets,
-				layer,
-				advice,
-			)?;
-
-			if next_value != values[index % (1 << arity)] {
-				return Err(VerificationError::IncorrectFold {
-					query_round: i,
-					index,
-				}
-				.into());
-			}
-
-			next_value = fold_chunk(
-				ntt,
-				self.params.rs_code().log_len() - fold_round,
-				coset_index,
-				&mut values,
-				&self.fold_challenges[fold_round..fold_round + arity],
-			);
-			index = coset_index;
-			fold_round += arity;
-		}
-
-		if next_value != terminate_codeword[index] {
-			return Err(VerificationError::IncorrectFold {
-				query_round: self.n_oracles() - 1,
-				index,
-			}
-			.into());
-		}
-
-		Ok(())
-	}
-}
-
-/// Verifies that the coset opening provided in the proof is consistent with the VCS commitment.
-#[allow(clippy::too_many_arguments)]
-fn verify_coset_opening<F, MTScheme, B>(
-	vcs: &MTScheme,
-	coset_index: usize,
-	log_coset_size: usize,
-	optimal_layer_depth: usize,
-	tree_depth: usize,
-	layer_digests: &[MTScheme::Digest],
-	advice: &mut TranscriptReader<B>,
-) -> Result<Vec<F>, Error>
-where
-	F: BinaryField,
-	MTScheme: MerkleTreeScheme<F>,
-	B: Buf,
-{
-	let values = advice.read_scalar_slice::<F>(1 << log_coset_size)?;
-	vcs.verify_opening(
-		coset_index,
-		&values,
-		optimal_layer_depth,
-		tree_depth,
-		layer_digests,
-		advice,
-	)?;
-	Ok(values)
 }

@@ -4,7 +4,7 @@ use std::iter;
 
 use binius_field::BinaryField;
 
-use super::common::{FRIParams, vcs_optimal_layers_depths_iter};
+use super::common::FRIParams;
 use crate::merkle_tree::MerkleTreeScheme;
 
 /// Computes the exact byte-size of a FRI proof (including the initial commitment) without running
@@ -50,21 +50,22 @@ where
 		.collect();
 
 	// Compute the Merkle proof sizes and coset value sizes across all n_oracles non-terminal
-	// oracles. vcs_optimal_layers_depths_iter yields layer depths in the same order as arities.
-	let layer_depths: Vec<usize> = vcs_optimal_layers_depths_iter(params, vcs).collect();
-
+	// oracles.
 	let mut merkle_sizes = 0;
 	let mut coset_values_size = 0;
 	let mut log_n_cosets = params.log_len();
 
-	for (i, &arity) in arities.iter().enumerate() {
+	for &arity in &arities {
 		log_n_cosets -= arity;
+
+		// The optimal layer the verifier decommits once for this oracle's tree.
+		let layer_depth = vcs.optimal_verify_layer(n_test_queries, log_n_cosets);
 
 		// VCS proof_size covers both the 2^layer_depth layer digests sent once AND the
 		// (tree_depth - layer_depth) * n_test_queries branch digests sent across all queries.
 		let tree_len = 1 << log_n_cosets;
 		merkle_sizes += vcs
-			.proof_size(tree_len, n_test_queries, layer_depths[i])
+			.proof_size(tree_len, n_test_queries, layer_depth)
 			.expect("layer depth computed with optimal_verify_layer must be valid");
 
 		// Each query opens a coset of 2^arity field values for this oracle.

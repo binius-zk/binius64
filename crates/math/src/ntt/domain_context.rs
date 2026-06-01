@@ -51,7 +51,7 @@ fn generate_evals_from_subspace<F: BinaryField>(subspace: &BinarySubspace<F>) ->
 /// folding. In both cases, all twiddles will be accessed eventually, so they might as well be
 /// precomputed. But it could possibly be used e.g. in the FRI verifier, which only accesses a few
 /// selected twiddles.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GenericOnTheFly<F> {
 	/// The subspace polynomial evaluations.
 	///
