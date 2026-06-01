@@ -16,15 +16,24 @@ use crate::merkle_tree::{Commitment, MerkleTreeScheme};
 /// 3. the verifier opens Merkle commitments at those indices and performs consistency checks on the
 ///    committed values
 pub trait ProxQueryVerifier<F: BinaryField> {
-	/// Verify decommitted prover advice for satisfying values at the committed indices.
+	/// The base-2 logarithm of the length of the virtual oracle.
+	///
+	/// The virtual oracle is defined by the committed oracle and the folding challenges. Indices
+	/// passed to [`Self::open_queries`] must lie in the range `0..2^self.log_len()`.
+	fn log_len(&self) -> usize;
+
+	/// Opens queried locations on the virtual oracle.
 	///
 	/// This has a batch interface for verifying multiple queries because opening multiple Merkle
 	/// tree locations at once amortizes the proof size.
 	///
+	/// ## Preconditions
+	/// The `indices` must lie in the range `0..2^self.log_len()`.
+	///
 	/// ## Returns
 	/// The values of the virtual oracle at the queried indices. The virtual oracle is defined by
 	/// the committed oracle and the folding challenges.
-	fn verify_queries<B: Buf>(
+	fn open_queries<B: Buf>(
 		&self,
 		indices: &[usize],
 		advice: &mut TranscriptReader<B>,
@@ -32,7 +41,7 @@ pub trait ProxQueryVerifier<F: BinaryField> {
 }
 
 /// A [ProxQueryVerifier] implementation for a [Brakedown]-style interleaved code proximity check.
-/// 
+///
 /// [Brakedown]: <https://dl.acm.org/doi/10.1007/978-3-031-38545-2_7>
 pub struct BrakedownQueryVerifier<F, MTScheme>
 where
@@ -46,7 +55,11 @@ where
 impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> ProxQueryVerifier<F>
 	for BrakedownQueryVerifier<F, MTScheme>
 {
-	fn verify_queries<B: Buf>(
+	fn log_len(&self) -> usize {
+		self.commitment.depth
+	}
+
+	fn open_queries<B: Buf>(
 		&self,
 		indices: &[usize],
 		advice: &mut TranscriptReader<B>,
@@ -89,6 +102,11 @@ where
 	MTScheme: MerkleTreeScheme<F>,
 	DC: DomainContext<Field = F>,
 {
+	/// The base-2 log of the size of each coset opened from the committed oracle.
+	fn coset_log_size(&self) -> usize {
+		self.challenges.len()
+	}
+
 	/// Folds an opened coset into a single value.
 	///
 	/// This implements the fold operation from Definition 4.6 of [DP24], reading twiddle factors
@@ -103,8 +121,8 @@ where
 		let mut log_size = n_challenges;
 		for &challenge in &self.challenges {
 			for index_offset in 0..1 << (log_size - 1) {
-				// Perform the inverse additive NTT butterfly, then extrapolate the resulting line at
-				// the folding challenge.
+				// Perform the inverse additive NTT butterfly, then extrapolate the resulting line
+				// at the folding challenge.
 				let mut u = values[index_offset << 1];
 				let mut v = values[(index_offset << 1) | 1];
 				let twiddle = self
@@ -123,13 +141,74 @@ where
 	}
 }
 
+impl<F, MTScheme, DC> FRIQueryVerifier<F, MTScheme, DC>
+where
+	F: BinaryField,
+	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
+	DC: DomainContext<Field = F>,
+{
+	/// Opens queried locations on the base codeword, reducing claims about it to the virtual
+	/// oracle.
+	///
+	/// Whereas [`Self::open_queries`] indexes the virtual oracle, this indexes the base codeword:
+	/// each index lies in the range `0..2^(self.log_len() + self.coset_log_size())` and splits into
+	/// the high `self.log_len()` bits (the coset index into the committed oracle) and the low
+	/// `self.coset_log_size()` bits (the offset within the coset). For each query, the opened coset
+	/// value at that offset is checked against `claims[i]`, after which the coset is folded into
+	/// the virtual oracle value as in [`Self::open_queries`].
+	///
+	/// ## Preconditions
+	/// `claims` must have the same length as `indices`, and the indices must lie in the range
+	/// `0..2^(self.log_len() + self.coset_log_size())`.
+	///
+	/// ## Returns
+	/// The values of the virtual oracle at the queried coset indices.
+	pub fn reduce_queries<B: Buf>(
+		&self,
+		indices: &[usize],
+		claims: &[F],
+		advice: &mut TranscriptReader<B>,
+	) -> Result<Vec<F>, Error> {
+		assert_eq!(indices.len(), claims.len()); // precondition
+
+		let coset_log_size = self.coset_log_size();
+		let coset_mask = (1 << coset_log_size) - 1;
+		let coset_indices = indices
+			.iter()
+			.map(|&index| index >> coset_log_size)
+			.collect::<Vec<_>>();
+
+		verify_query_openings(
+			&self.merkle_scheme,
+			&self.commitment,
+			coset_log_size,
+			&coset_indices,
+			advice,
+		)?
+		.zip(indices.iter().zip(claims))
+		.map(|(opening, (&index, &claim))| {
+			let (coset_index, values) = opening?;
+			// Verify the claimed base-codeword value against the opened coset.
+			if values[index & coset_mask] != claim {
+				return Err(Error::ClaimMismatch { index });
+			}
+			Ok(self.fold_coset(coset_index, values))
+		})
+		.collect()
+	}
+}
+
 impl<F, MTScheme, DC> ProxQueryVerifier<F> for FRIQueryVerifier<F, MTScheme, DC>
 where
 	F: BinaryField,
 	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 	DC: DomainContext<Field = F>,
 {
-	fn verify_queries<B: Buf>(
+	fn log_len(&self) -> usize {
+		self.commitment.depth
+	}
+
+	fn open_queries<B: Buf>(
 		&self,
 		indices: &[usize],
 		advice: &mut TranscriptReader<B>,
@@ -191,8 +270,10 @@ where
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+	#[error("claimed value at index {index} does not match the committed codeword")]
+	ClaimMismatch { index: usize },
 	#[error("Merkle tree error: {0}")]
-	MerkleError(#[from] crate::merkle_tree::Error),
+	Merkle(#[from] crate::merkle_tree::Error),
 	#[error("transcript error: {0}")]
-	TranscriptError(#[from] binius_transcript::Error),
+	Transcript(#[from] binius_transcript::Error),
 }
