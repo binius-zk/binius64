@@ -432,8 +432,8 @@ mod tests {
 		assert!(parse_child("2147483648").is_err());
 	}
 
-	/// Full example: build the circuit, populate it for a path, and verify that the circuit-computed
-	/// SHA-256 of the compressed pubkey matches the public digest.
+	/// Full example: build the circuit, populate it for a path, and verify that the
+	/// circuit-computed SHA-256 of the compressed pubkey matches the public digest.
 	#[test]
 	fn example_proves_pubkey_hash() {
 		let mut builder = CircuitBuilder::new();
