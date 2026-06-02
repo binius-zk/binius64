@@ -69,7 +69,7 @@ where
 	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
 {
-	/// Constructs a new folder.
+	/// Constructs a new folder for a single committed input oracle.
 	pub fn new(
 		params: &'a FRIParams<F>,
 		ntt: &'a NTT,
@@ -77,20 +77,60 @@ where
 		committed_codeword: FieldBuffer<P>,
 		committed: &'a MerkleProver::Committed,
 	) -> Result<Self, Error> {
-		if committed_codeword.len() < 1 << params.log_len() {
-			return Err(Error::InvalidArgs(
-				"Reed-Solomon code length must match interleaved codeword length".to_string(),
-			));
+		Self::new_batch(params, ntt, merkle_prover, vec![(committed_codeword, committed)])
+	}
+
+	/// Constructs a new folder for a batch of committed input oracles.
+	///
+	/// The input oracles share the Reed-Solomon code but may have differing batch sizes; they are
+	/// folded and combined into a single first-round codeword. The codewords must be supplied in
+	/// the same order as [`FRIParams::input_oracles`], and each must match its oracle's batch
+	/// size.
+	pub fn new_batch(
+		params: &'a FRIParams<F>,
+		ntt: &'a NTT,
+		merkle_prover: &'a MerkleProver,
+		committed_codewords: Vec<(FieldBuffer<P>, &'a MerkleProver::Committed)>,
+	) -> Result<Self, Error> {
+		let input_oracles = params.input_oracles();
+		if committed_codewords.len() != input_oracles.len() {
+			return Err(Error::InvalidArgs(format!(
+				"got {} committed codewords, expected {}",
+				committed_codewords.len(),
+				input_oracles.len(),
+			)));
 		}
 
-		let codeword_folder = ProxTestFolder {
-			log_batch_size: params.log_batch_size(),
-			codeword: committed_codeword,
-			merkle_committed: committed,
-		};
-		// The first fold currently batches a single committed codeword; in the future it will batch
-		// several distinct oracles here.
-		let batch_folder = BatchBrakedownFolder::new(vec![codeword_folder]);
+		// Temporary restriction: lifted FRI is not yet implemented, so every input oracle must
+		// reduce to exactly the first-round Reed-Solomon code. FRIParams only guarantees the
+		// inequality `log_msg_len - log_batch_size <= rs_code.log_dim()`.
+		let log_dim = params.rs_code().log_dim();
+		for spec in input_oracles {
+			assert_eq!(
+				spec.log_msg_len - spec.log_batch_size,
+				log_dim,
+				"lifted FRI is unsupported: input oracle dimension must equal rs_code.log_dim()"
+			);
+		}
+
+		let folders = iter::zip(committed_codewords, input_oracles)
+			.map(|((codeword, committed), spec)| {
+				let expected_log_len = params.rs_code().log_len() + spec.log_batch_size;
+				if codeword.log_len() != expected_log_len {
+					return Err(Error::InvalidArgs(
+						"interleaved codeword length must match the Reed-Solomon code length plus the \
+						 oracle's batch size"
+							.to_string(),
+					));
+				}
+				Ok(ProxTestFolder {
+					log_batch_size: spec.log_batch_size,
+					codeword,
+					merkle_committed: committed,
+				})
+			})
+			.collect::<Result<Vec<_>, Error>>()?;
+		let batch_folder = BatchBrakedownFolder::new(folders);
 
 		let next_commit_round = Some(params.log_batch_size());
 		Ok(Self {
@@ -485,7 +525,8 @@ where
 		let outer_tensor = eq_ind_partial_eval::<F>(outer_challenges);
 		let mut combined_codeword = FieldBuffer::zeros(self.log_code_len);
 		let mut oracles = Vec::with_capacity(n_folders);
-		// TODO: Special cases when outer_challenges.len() = 0 or 1 for computational efficiency (to reduce # of scaling muls)
+		// TODO: Special cases when outer_challenges.len() = 0 or 1 for computational efficiency (to
+		// reduce # of scaling muls)
 		for ((folded_codeword, oracle), &scalar) in iter::zip(folds, outer_tensor.as_ref()) {
 			assert_eq!(folded_codeword.log_len(), combined_codeword.log_len()); // precondition
 			for (acc, &val) in iter::zip(combined_codeword.as_mut(), folded_codeword.as_ref()) {

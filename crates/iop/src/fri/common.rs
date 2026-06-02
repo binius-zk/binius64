@@ -26,7 +26,6 @@ pub struct FRIParams<F> {
 	#[getset(get = "pub")]
 	rs_code: ReedSolomonCode<F>,
 	/// Guaranteed to be non-empty.
-	#[allow(unused)]
 	input_oracles: Vec<OracleSpec>,
 	/// log2 the maximum message length of all input oracles.
 	max_log_msg_len: usize,
@@ -247,6 +246,11 @@ where
 	/// The reduction arities between each oracle sent to the verifier.
 	pub fn fold_arities(&self) -> &[usize] {
 		&self.fold_arities
+	}
+
+	/// The specifications of the input oracles batched into the first-round FRI oracle.
+	pub fn input_oracles(&self) -> &[OracleSpec] {
+		&self.input_oracles
 	}
 
 	/// The arity of the reduction to the first round oracle.

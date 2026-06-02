@@ -56,6 +56,35 @@ where
 		round_commitments: &'a [VCS::Digest],
 		challenges: &'a [F],
 	) -> Result<Self, Error> {
+		Self::new_batch(
+			params,
+			vcs,
+			std::slice::from_ref(codeword_commitment),
+			round_commitments,
+			challenges,
+		)
+	}
+
+	/// Constructs a query verifier for a batch of committed input oracles.
+	///
+	/// The input oracles share the Reed-Solomon code but may have differing batch sizes; they are
+	/// reduced into a single first-round FRI oracle. The commitments must be supplied in the same
+	/// order as [`FRIParams::input_oracles`].
+	pub fn new_batch(
+		params: &'a FRIParams<F>,
+		vcs: &'a VCS,
+		codeword_commitments: &'a [VCS::Digest],
+		round_commitments: &'a [VCS::Digest],
+		challenges: &'a [F],
+	) -> Result<Self, Error> {
+		if codeword_commitments.len() != params.input_oracles().len() {
+			return Err(Error::InvalidArgs(format!(
+				"got {} codeword commitments, expected {}",
+				codeword_commitments.len(),
+				params.input_oracles().len(),
+			)));
+		}
+
 		if round_commitments.len() != params.n_oracles() {
 			return Err(Error::InvalidArgs(format!(
 				"got {} round commitments, expected {}",
@@ -72,22 +101,45 @@ where
 			)));
 		}
 
+		// Temporary restriction: lifted FRI is not yet implemented, so every input oracle must
+		// reduce to exactly the first-round Reed-Solomon code. FRIParams only guarantees the
+		// inequality `log_msg_len - log_batch_size <= rs_code.log_dim()`.
+		let log_dim = params.rs_code().log_dim();
+		for spec in params.input_oracles() {
+			assert_eq!(
+				spec.log_msg_len - spec.log_batch_size,
+				log_dim,
+				"lifted FRI is unsupported: input oracle dimension must equal rs_code.log_dim()"
+			);
+		}
+
 		// The committed codeword's Merkle tree has one coset per leaf, so its depth is the number
 		// of index bits.
 		let index_bits = params.index_bits();
-		// A single committed codeword (one-item batch) needs no batching weighting, so the outer
-		// challenges are empty and the combination reduces to the lone oracle's folded values.
-		let codeword_oracle = BatchBrakedownOracle::new(
-			vec![BrakedownOracle::new(
-				challenges[..params.log_batch_size()].to_vec(),
-				Commitment {
-					root: codeword_commitment.clone(),
-					depth: index_bits,
-				},
-				vcs,
-			)],
-			Vec::new(),
-		);
+		// The first fold consumes `log_batch_size()` challenges, split into the inner challenges
+		// (folding each input oracle's interleaving) and the outer challenges (batching the oracles
+		// together). Oracle `i` uses the last `log_batch_size_i` inner challenges.
+		let max_log_batch_size = params
+			.input_oracles()
+			.iter()
+			.map(|spec| spec.log_batch_size)
+			.max()
+			.expect("input_oracles is non-empty as an invariant");
+		let inner_challenges = &challenges[..max_log_batch_size];
+		let outer_challenges = challenges[max_log_batch_size..params.log_batch_size()].to_vec();
+		let codeword_sub_oracles = iter::zip(codeword_commitments, params.input_oracles())
+			.map(|(commitment, spec)| {
+				BrakedownOracle::new(
+					inner_challenges[max_log_batch_size - spec.log_batch_size..].to_vec(),
+					Commitment {
+						root: commitment.clone(),
+						depth: index_bits,
+					},
+					vcs,
+				)
+			})
+			.collect();
+		let codeword_oracle = BatchBrakedownOracle::new(codeword_sub_oracles, outer_challenges);
 
 		// All FRI reductions fold cosets of the same Reed–Solomon codeword domain, so they share a
 		// single domain context.
