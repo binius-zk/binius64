@@ -226,6 +226,16 @@ where
 					.long("zk")
 					.help("Use the zero-knowledge proving config")
 					.action(clap::ArgAction::SetTrue),
+			)
+			.arg(
+				Arg::new("sign_message")
+					.long("sign-message")
+					.value_name("MESSAGE")
+					.requires("zk")
+					.help(
+						"Produce a zero-knowledge signature of knowledge over this message \
+						 instead of a plain proof of knowledge (requires --zk)",
+					),
 			);
 
 		// Augment with Params arguments at top level for default behavior
@@ -265,6 +275,16 @@ where
 					.long("zk")
 					.help("Use the zero-knowledge proving config")
 					.action(clap::ArgAction::SetTrue),
+			)
+			.arg(
+				Arg::new("sign_message")
+					.long("sign-message")
+					.value_name("MESSAGE")
+					.requires("zk")
+					.help(
+						"Produce a zero-knowledge signature of knowledge over this message \
+						 instead of a plain proof of knowledge (requires --zk)",
+					),
 			);
 		cmd = E::Params::augment_args(cmd);
 		cmd = E::Instance::augment_args(cmd);
@@ -475,10 +495,15 @@ where
 			.expect("has default value")
 			.clone();
 		let zk = matches.get_flag("zk");
+		let sign_message = matches.get_one::<String>("sign_message").cloned();
 		tracing::info!("Parsed compression type: {compression:?}");
 		if zk {
 			tracing::info!("Using zero-knowledge proving config");
 		}
+		if sign_message.is_some() {
+			tracing::info!("Producing a signature of knowledge over the provided message");
+		}
+		let message = sign_message.as_deref().map(str::as_bytes);
 
 		// Parse Params and Instance from matches
 		let params = E::Params::from_arg_matches(&matches)?;
@@ -523,12 +548,12 @@ where
 			(true, CompressionType::Sha256) => {
 				tracing::info!("Using SHA256 compression for Merkle tree");
 				let (verifier, prover) = setup_zk::<StdHashSuite>(cs, log_inv_rate as usize)?;
-				prove_verify_zk(&verifier, &prover, witness)?;
+				prove_verify_zk(&verifier, &prover, witness, message)?;
 			}
 			(true, CompressionType::Vision) => {
 				tracing::info!("Using Vision suite for Merkle tree");
 				let (verifier, prover) = setup_zk::<VisionHashSuite>(cs, log_inv_rate as usize)?;
-				prove_verify_zk(&verifier, &prover, witness)?;
+				prove_verify_zk(&verifier, &prover, witness, message)?;
 			}
 		}
 

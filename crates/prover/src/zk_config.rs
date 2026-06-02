@@ -178,6 +178,21 @@ where
 
 		Ok(())
 	}
+
+	/// Generates a ZK signature of knowledge over `message`.
+	///
+	/// Binds `message` into the transcript before any other data, then runs the ordinary
+	/// [`Self::prove`] logic. See [`binius_verifier::signature`] for details.
+	pub fn prove_sig<Challenger_: Challenger>(
+		&self,
+		witness: ValueVec,
+		message: &[u8],
+		rng: impl CryptoRng,
+		transcript: &mut ProverTranscript<Challenger_>,
+	) -> Result<(), Error> {
+		binius_verifier::signature::observe_message::<H, _>(&mut transcript.observe(), message);
+		self.prove(witness, rng, transcript)
+	}
 }
 
 /// Error type for ZK proving.

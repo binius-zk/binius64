@@ -103,3 +103,70 @@ fn test_zk_prove_verify_sha256_preimage() {
 	let (cs, witness) = sha256_preimage_circuit();
 	prove_verify_zk(cs, witness);
 }
+
+/// Produces a ZK signature-of-knowledge proof over `sign_message`, then verifies it against
+/// `verify_message`. Returns whether verification (including transcript finalization) succeeded.
+///
+/// Signatures of knowledge are only supported by the ZK prover/verifier.
+fn sign_verify(
+	cs: ConstraintSystem,
+	witness: ValueVec,
+	sign_message: Option<&[u8]>,
+	verify_message: Option<&[u8]>,
+) -> bool {
+	const LOG_INV_RATE: usize = 1;
+
+	let zk_verifier = ZKVerifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
+	let zk_prover =
+		ZKProver::<OptimalPackedB128, StdHashSuite>::setup(zk_verifier.clone()).unwrap();
+
+	let mut rng = StdRng::seed_from_u64(0);
+	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+	match sign_message {
+		Some(message) => zk_prover
+			.prove_sig(witness.clone(), message, &mut rng, &mut prover_transcript)
+			.unwrap(),
+		None => zk_prover
+			.prove(witness.clone(), &mut rng, &mut prover_transcript)
+			.unwrap(),
+	}
+
+	let mut verifier_transcript = prover_transcript.into_verifier();
+	let verify_ok = match verify_message {
+		Some(message) => zk_verifier
+			.verify_sig(witness.public(), message, &mut verifier_transcript)
+			.is_ok(),
+		None => zk_verifier
+			.verify(witness.public(), &mut verifier_transcript)
+			.is_ok(),
+	};
+	verify_ok && verifier_transcript.finalize().is_ok()
+}
+
+#[test]
+fn test_signature_of_knowledge_roundtrip() {
+	let (cs, witness) = sha256_preimage_circuit();
+	// Signing and verifying with the same message succeeds.
+	assert!(sign_verify(cs, witness, Some(b"hello world"), Some(b"hello world")));
+}
+
+#[test]
+fn test_signature_of_knowledge_wrong_message_fails() {
+	let (cs, witness) = sha256_preimage_circuit();
+	// A proof signed over one message must not verify against a different message.
+	assert!(!sign_verify(cs, witness, Some(b"hello world"), Some(b"goodbye world")));
+}
+
+#[test]
+fn test_signature_of_knowledge_missing_message_fails() {
+	let (cs, witness) = sha256_preimage_circuit();
+	// A signature of knowledge must not verify as a plain proof of knowledge (no message).
+	assert!(!sign_verify(cs, witness, Some(b"hello world"), None));
+}
+
+#[test]
+fn test_plain_proof_rejects_message() {
+	let (cs, witness) = sha256_preimage_circuit();
+	// A plain proof of knowledge must not verify when a message is supplied.
+	assert!(!sign_verify(cs, witness, None, Some(b"hello world")));
+}

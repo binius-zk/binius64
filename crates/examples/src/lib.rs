@@ -116,6 +116,7 @@ pub fn prove_verify_zk<H>(
 	verifier: &ZKVerifier<H>,
 	prover: &ZKProver<OptimalPackedB128, H>,
 	witness: ValueVec,
+	message: Option<&[u8]>,
 ) -> Result<()>
 where
 	H: HashSuite,
@@ -127,7 +128,12 @@ where
 		let _scope = tracing::info_span!("Prove").entered();
 		let mut prover_transcript = ProverTranscript::new(challenger.clone());
 		let mut rng = rand::rng();
-		prover.prove(witness.clone(), &mut rng, &mut prover_transcript)?;
+		match message {
+			Some(message) => {
+				prover.prove_sig(witness.clone(), message, &mut rng, &mut prover_transcript)?
+			}
+			None => prover.prove(witness.clone(), &mut rng, &mut prover_transcript)?,
+		}
 		prover_transcript.finalize()
 	};
 
@@ -135,7 +141,12 @@ where
 
 	let _scope = tracing::info_span!("Verify").entered();
 	let mut verifier_transcript = VerifierTranscript::new(challenger, proof);
-	verifier.verify(witness.public(), &mut verifier_transcript)?;
+	match message {
+		Some(message) => {
+			verifier.verify_sig(witness.public(), message, &mut verifier_transcript)?
+		}
+		None => verifier.verify(witness.public(), &mut verifier_transcript)?,
+	}
 	verifier_transcript.finalize()?;
 
 	Ok(())

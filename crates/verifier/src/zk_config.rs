@@ -196,6 +196,20 @@ where
 
 		Ok(())
 	}
+
+	/// Verifies a ZK signature of knowledge over `message`.
+	///
+	/// Binds `message` into the transcript before any other data, then runs the ordinary
+	/// [`Self::verify`] checks. See [`crate::signature`] for details.
+	pub fn verify_sig<Challenger_: Challenger>(
+		&self,
+		public: &[Word],
+		message: &[u8],
+		transcript: &mut VerifierTranscript<Challenger_>,
+	) -> Result<(), Error> {
+		crate::signature::observe_message::<H, _>(&mut transcript.observe(), message);
+		self.verify(public, transcript)
+	}
 }
 
 /// Error type for ZK verification.
