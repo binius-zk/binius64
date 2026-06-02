@@ -12,7 +12,7 @@ use binius_utils::DeserializeBytes;
 use bytes::Buf;
 
 use super::{
-	batch::{BrakedownOracle, FRIOracle, ProxTestOracle, fold_coset},
+	batch::{BatchBrakedownOracle, BrakedownOracle, FRIOracle, ProxTestOracle, fold_coset},
 	common::FRIParams,
 	error::{Error, VerificationError},
 };
@@ -23,9 +23,9 @@ use crate::merkle_tree::{Commitment, MerkleTreeScheme};
 /// The verifier is instantiated after the folding rounds and is used to test consistency of the
 /// round messages and the original purported codeword.
 ///
-/// Internally, this is a composition of [`ProxTestOracle`]s: a [`BrakedownOracle`] performs the
-/// first, interleaved reduction of the committed codeword, then one [`FRIOracle`] per fold arity
-/// performs each subsequent FRI reduction. The verifier orchestrates the consistency checks
+/// Internally, this is a composition of `ProxTestOracle`s: a `BatchBrakedownOracle` performs
+/// the first, interleaved reduction of the committed codeword(s), then one `FRIOracle` per fold
+/// arity performs each subsequent FRI reduction. The verifier orchestrates the consistency checks
 /// between these oracles and the final, fully-folded terminal codeword.
 pub struct FRIQueryVerifier<'a, F, VCS>
 where
@@ -38,8 +38,8 @@ where
 	terminal_commitment: &'a VCS::Digest,
 	/// The folding challenges applied after the last committed oracle.
 	final_challenges: &'a [F],
-	/// Performs the first, interleaved reduction of the committed codeword.
-	codeword_oracle: BrakedownOracle<F, &'a VCS>,
+	/// Performs the first, interleaved reduction of the committed codeword(s).
+	codeword_oracle: BatchBrakedownOracle<F, &'a VCS>,
 	/// Performs each subsequent FRI reduction, one per fold arity.
 	fri_oracles: Vec<FRIOracle<F, &'a VCS, GenericOnTheFly<F>>>,
 }
@@ -75,13 +75,18 @@ where
 		// The committed codeword's Merkle tree has one coset per leaf, so its depth is the number
 		// of index bits.
 		let index_bits = params.index_bits();
-		let codeword_oracle = BrakedownOracle::new(
-			challenges[..params.log_batch_size()].to_vec(),
-			Commitment {
-				root: codeword_commitment.clone(),
-				depth: index_bits,
-			},
-			vcs,
+		// A single committed codeword (one-item batch) needs no batching weighting, so the outer
+		// challenges are empty and the combination reduces to the lone oracle's folded values.
+		let codeword_oracle = BatchBrakedownOracle::new(
+			vec![BrakedownOracle::new(
+				challenges[..params.log_batch_size()].to_vec(),
+				Commitment {
+					root: codeword_commitment.clone(),
+					depth: index_bits,
+				},
+				vcs,
+			)],
+			Vec::new(),
 		);
 
 		// All FRI reductions fold cosets of the same Reed–Solomon codeword domain, so they share a

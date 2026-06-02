@@ -96,6 +96,60 @@ impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> Pr
 	}
 }
 
+/// A [ProxTestOracle] bundling several separately committed [BrakedownOracle]s.
+///
+/// The bundled oracles wrap interleaved codewords of equal folded length that the prover batched
+/// into a single folded codeword via the outer-challenge tensor expansion. Their query openings are
+/// read sequentially, one oracle's full decommitment after another, and the per-query folded values
+/// are combined as `\sum_i values_i[q] * outer_tensor[i]`, where
+/// `outer_tensor = eq_ind_partial_eval(outer_challenges)`. This mirrors the prover's
+/// `BatchBrakedownFolder::fold`.
+pub struct BatchBrakedownOracle<F, MTScheme>
+where
+	MTScheme: MerkleTreeScheme<F>,
+{
+	oracles: Vec<BrakedownOracle<F, MTScheme>>,
+	outer_challenges: Vec<F>,
+}
+
+impl<F: BinaryField, MTScheme: MerkleTreeScheme<F>> BatchBrakedownOracle<F, MTScheme> {
+	/// Constructs a batch oracle from the per-commitment oracles and the batching challenges.
+	pub fn new(oracles: Vec<BrakedownOracle<F, MTScheme>>, outer_challenges: Vec<F>) -> Self {
+		assert!(!oracles.is_empty()); // precondition
+		Self {
+			oracles,
+			outer_challenges,
+		}
+	}
+}
+
+impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> ProxTestOracle<F>
+	for BatchBrakedownOracle<F, MTScheme>
+{
+	fn log_len(&self) -> usize {
+		self.oracles[0].log_len()
+	}
+
+	fn open_queries<B: Buf>(
+		&self,
+		indices: &[usize],
+		advice: &mut TranscriptReader<B>,
+	) -> Result<Vec<F>, Error> {
+		// Read each bundled oracle's openings in commit order (matching the prover), then combine
+		// across oracles by the outer-challenge tensor expansion:
+		// combined[q] = \sum_i values_i[q] * outer_tensor[i].
+		let outer_tensor = multilinear::eq::eq_ind_partial_eval::<F>(&self.outer_challenges);
+		let mut combined = vec![F::ZERO; indices.len()];
+		for (oracle, &scalar) in self.oracles.iter().zip(outer_tensor.as_ref()) {
+			let values = oracle.open_queries(indices, advice)?;
+			for (acc, value) in combined.iter_mut().zip(values) {
+				*acc += value * scalar;
+			}
+		}
+		Ok(combined)
+	}
+}
+
 /// A [ProxTestOracle] implementation for a FRI-style code proximity check.
 ///
 /// Note that this is distinct from the full FRI query-phase verifier in the `verify` module. This
