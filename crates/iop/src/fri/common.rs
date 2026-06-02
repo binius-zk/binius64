@@ -15,9 +15,13 @@ pub struct FRIParams<F> {
 	/// The Reed-Solomon code the verifier is testing proximity to.
 	#[getset(get = "pub")]
 	rs_code: ReedSolomonCode<F>,
-	/// log2 the interleaved batch size.
-	#[getset(get_copy = "pub")]
-	log_batch_size: usize,
+	/// Guaranteed to be non-empty.
+	#[allow(unused)]
+	input_oracles: Vec<OracleSpec>,
+	/// log2 the maximum message length of all input oracles.
+	max_log_msg_len: usize,
+	/// log2 ceiling of the number of input oracles.
+	log_n_oracles: usize,
 	/// The reduction arities between each oracle sent to the verifier.
 	fold_arities: Vec<usize>,
 	/// log2 the dimension of the terminal codeword.
@@ -25,6 +29,20 @@ pub struct FRIParams<F> {
 	/// The number oracle consistency queries required during the query phase.
 	#[getset(get_copy = "pub")]
 	n_test_queries: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct OracleSpec {
+	/// log2 the dimension of the Reed–Solomon code.
+	log_dim: usize,
+	/// log2 the interleaved batch size.
+	log_batch_size: usize,
+}
+
+impl OracleSpec {
+	pub fn log_msg_len(&self) -> usize {
+		self.log_dim + self.log_batch_size
+	}
 }
 
 impl<F> FRIParams<F>
@@ -43,9 +61,17 @@ where
 			.checked_sub(fold_arities_sum)
 			.ok_or(Error::InvalidFoldAritySequence)?;
 
+		let oracle_spec = OracleSpec {
+			log_dim: rs_code.log_dim(),
+			log_batch_size,
+		};
+		let log_n_oracles = 0;
+		let max_log_msg_len = oracle_spec.log_msg_len();
 		Ok(Self {
 			rs_code,
-			log_batch_size,
+			input_oracles: vec![oracle_spec],
+			max_log_msg_len,
+			log_n_oracles,
 			fold_arities,
 			log_terminal_dim,
 			n_test_queries,
@@ -100,7 +126,7 @@ where
 	}
 
 	pub fn n_fold_rounds(&self) -> usize {
-		self.log_msg_len()
+		self.max_log_msg_len + self.log_n_oracles
 	}
 
 	/// Number of oracles sent during the fold rounds.
@@ -124,14 +150,19 @@ where
 		&self.fold_arities
 	}
 
+	/// The arity of the reduction to the first round oracle.
+	pub fn log_batch_size(&self) -> usize {
+		self.log_msg_len() - self.rs_code().log_dim()
+	}
+
 	/// The binary logarithm of the length of the initial oracle.
 	pub fn log_len(&self) -> usize {
-		self.rs_code.log_len() + self.log_batch_size()
+		self.log_msg_len() + self.rs_code().log_inv_rate()
 	}
 
 	/// The binary logarithm of the length of the initial message.
 	pub fn log_msg_len(&self) -> usize {
-		self.rs_code.log_dim() + self.log_batch_size()
+		self.max_log_msg_len + self.log_n_oracles
 	}
 }
 
