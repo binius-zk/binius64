@@ -101,36 +101,44 @@ where
 			)));
 		}
 
-		// Temporary restriction: lifted FRI is not yet implemented, so every input oracle must
-		// reduce to exactly the first-round Reed-Solomon code. FRIParams only guarantees the
-		// inequality `log_msg_len - log_batch_size <= rs_code.log_dim()`.
+		// Each input oracle's Reed-Solomon dimension must not exceed the first-round (reduced) code
+		// dimension; smaller oracles are lifted (padded) to it. FRIParams only guarantees the
+		// inequality `log_msg_len - log_batch_size <= rs_code.log_dim()`, so validate it here
+		// rather than trusting the caller.
 		let log_dim = params.rs_code().log_dim();
+		let log_inv_rate = params.rs_code().log_inv_rate();
 		for spec in input_oracles {
-			assert_eq!(
-				spec.log_msg_len - spec.log_batch_size,
-				log_dim,
-				"lifted FRI is unsupported: input oracle dimension must equal rs_code.log_dim()"
-			);
+			if spec.log_msg_len - spec.log_batch_size > log_dim {
+				return Err(Error::InvalidArgs(format!(
+					"input oracle dimension {} exceeds the reduced code dimension {log_dim}",
+					spec.log_msg_len - spec.log_batch_size,
+				)));
+			}
 		}
 
 		let folders = iter::zip(committed_codewords, input_oracles)
 			.map(|((codeword, committed), spec)| {
-				let expected_log_len = params.rs_code().log_len() + spec.log_batch_size;
+				// The oracle's own codeword has dimension `log_msg_len - log_batch_size`, so its
+				// interleaved length is `log_msg_len + log_inv_rate`. It is lifted to the common
+				// first-round length by duplicating each entry `2^log_lift` times.
+				let oracle_log_dim = spec.log_msg_len - spec.log_batch_size;
+				let expected_log_len = spec.log_msg_len + log_inv_rate;
 				if codeword.log_len() != expected_log_len {
 					return Err(Error::InvalidArgs(
-						"interleaved codeword length must match the Reed-Solomon code length plus the \
-						 oracle's batch size"
+						"interleaved codeword length must match the oracle's Reed-Solomon code length \
+						 plus its batch size"
 							.to_string(),
 					));
 				}
 				Ok(ProxTestFolder {
 					log_batch_size: spec.log_batch_size,
+					log_lift: log_dim - oracle_log_dim,
 					codeword,
 					merkle_committed: committed,
 				})
 			})
 			.collect::<Result<Vec<_>, Error>>()?;
-		let batch_folder = BatchBrakedownFolder::new(folders);
+		let batch_folder = BatchBrakedownFolder::new(folders, params.rs_code().log_len());
 
 		let next_commit_round = Some(params.log_batch_size());
 		Ok(Self {
@@ -428,6 +436,9 @@ where
 
 pub struct ProxTestFolder<'a, P: PackedField, MTProver: MerkleTreeProver<P::Scalar>> {
 	log_batch_size: usize,
+	/// log2 the lift factor (oracle padding): how many times each folded codeword entry is
+	/// duplicated to reach the common first-round length. Zero when no lifting is needed.
+	log_lift: usize,
 	codeword: FieldBuffer<P>,
 	merkle_committed: &'a MTProver::Committed,
 }
@@ -449,6 +460,7 @@ where
 
 		let ProxTestFolder {
 			log_batch_size,
+			log_lift,
 			codeword,
 			merkle_committed,
 		} = self;
@@ -456,8 +468,13 @@ where
 		let log_len = codeword.log_len() - log_batch_size;
 		let folded_codeword =
 			fold_interleaved(codeword.to_ref(), challenges, log_len, log_batch_size);
-		let oracle =
-			BrakedownOracleProver::new(codeword, merkle_committed, merkle_prover, log_batch_size);
+		let oracle = BrakedownOracleProver::new(
+			codeword,
+			merkle_committed,
+			merkle_prover,
+			log_batch_size,
+			log_lift,
+		);
 		(folded_codeword, oracle)
 	}
 }
@@ -478,11 +495,14 @@ where
 	MTProver: MerkleTreeProver<F>,
 {
 	/// Constructs a batch folder from one or more interleaved-codeword folders.
-	pub fn new(folders: Vec<ProxTestFolder<'a, P, MTProver>>) -> Self {
+	///
+	/// `log_code_len` is the common (first-round) codeword length the folders combine into. Each
+	/// folder's own folded length must not exceed it; folders that fall short are lifted (their
+	/// folded codewords duplicated) up to `log_code_len` during [`Self::fold`].
+	pub fn new(folders: Vec<ProxTestFolder<'a, P, MTProver>>, log_code_len: usize) -> Self {
 		assert!(!folders.is_empty()); // precondition
-		let log_code_len = folders[0].log_folded_len();
-		for folder in &folders[1..] {
-			assert_eq!(folder.log_folded_len(), log_code_len);
+		for folder in &folders {
+			assert!(folder.log_folded_len() <= log_code_len);
 		}
 		Self {
 			log_code_len,
@@ -528,9 +548,14 @@ where
 		// TODO: Special cases when outer_challenges.len() = 0 or 1 for computational efficiency (to
 		// reduce # of scaling muls)
 		for ((folded_codeword, oracle), &scalar) in iter::zip(folds, outer_tensor.as_ref()) {
-			assert_eq!(folded_codeword.log_len(), combined_codeword.log_len()); // precondition
-			for (acc, &val) in iter::zip(combined_codeword.as_mut(), folded_codeword.as_ref()) {
-				*acc += val * scalar;
+			// Lift (pad) the folded codeword up to the common length by duplicating each entry
+			// `2^log_lift` times: the lifted entry at index `j` is the folded entry at `j >>
+			// log_lift` (a contiguous duplication, matching the Reed-Solomon codeword
+			// duplication identity).
+			let log_lift = self.log_code_len - folded_codeword.log_len();
+			let folded = folded_codeword.as_ref();
+			for (j, acc) in combined_codeword.as_mut().iter_mut().enumerate() {
+				*acc += folded[j >> log_lift] * scalar;
 			}
 			oracles.push(oracle);
 		}

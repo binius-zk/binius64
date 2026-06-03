@@ -34,6 +34,10 @@ where
 	committed: &'a MerkleProver::Committed,
 	merkle_prover: &'a MerkleProver,
 	log_batch_size: usize,
+	/// log2 the lift factor (oracle padding). The committed codeword is virtually duplicated
+	/// `2^log_lift` times to reach the common first-round length; a query at global index `k`
+	/// opens the committed codeword at `k >> log_lift`. Zero when no lifting is needed.
+	log_lift: usize,
 }
 
 impl<'a, P, MerkleProver> BrakedownOracleProver<'a, P, MerkleProver>
@@ -42,17 +46,23 @@ where
 	MerkleProver: MerkleTreeProver<P::Scalar>,
 {
 	/// Constructs a new oracle prover wrapping a committed interleaved codeword.
+	///
+	/// `log_lift` is the oracle-padding lift factor (the committed codeword is virtually duplicated
+	/// `2^log_lift` times to reach the common first-round length); pass `0` when no lifting is
+	/// needed.
 	pub fn new(
 		codeword: FieldBuffer<P>,
 		committed: &'a MerkleProver::Committed,
 		merkle_prover: &'a MerkleProver,
 		log_batch_size: usize,
+		log_lift: usize,
 	) -> Self {
 		Self {
 			codeword,
 			committed,
 			merkle_prover,
 			log_batch_size,
+			log_lift,
 		}
 	}
 }
@@ -74,6 +84,7 @@ where
 			&self.codeword,
 			self.committed,
 			self.log_batch_size,
+			self.log_lift,
 			indices,
 			advice,
 		)
@@ -174,6 +185,7 @@ where
 			&self.codeword,
 			&self.committed,
 			self.coset_log_size,
+			0,
 			indices,
 			advice,
 		)
@@ -182,12 +194,15 @@ where
 
 /// Writes the optimal Merkle layer once, then a coset opening for each queried index.
 ///
-/// The coset is opened at the index directly, mirroring the verifier's `open_queries`.
+/// The coset is opened at the index directly, mirroring the verifier's `open_queries`. When the
+/// oracle is lifted (`log_lift > 0`), each global query index is translated to the committed
+/// codeword by dropping its low `log_lift` bits (the duplicated copies), mirroring the verifier.
 fn open_oracle_queries<F, P, MerkleProver, B>(
 	merkle_prover: &MerkleProver,
 	codeword: &FieldBuffer<P>,
 	committed: &MerkleProver::Committed,
 	coset_log_size: usize,
+	log_lift: usize,
 	indices: &[usize],
 	advice: &mut TranscriptWriter<B>,
 ) -> Result<(), Error>
@@ -208,7 +223,7 @@ where
 			merkle_prover,
 			codeword.to_ref(),
 			committed,
-			index,
+			index >> log_lift,
 			coset_log_size,
 			layer_depth,
 			advice,
