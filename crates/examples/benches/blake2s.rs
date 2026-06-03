@@ -7,12 +7,12 @@ use std::alloc::System;
 
 use binius_examples::circuits::blake2s::{Blake2sExample, Instance, Params};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use peakmem_alloc::PeakAlloc;
+use peakmem_alloc::PeakMemAlloc;
 use utils::{ExampleBenchmark, HashBenchConfig, print_benchmark_header, run_cs_benchmark};
 
 // Global allocator that tracks peak memory usage
 #[global_allocator]
-static BLAKE2S_PEAK_ALLOC: PeakAlloc<System> = PeakAlloc::new(System);
+static BLAKE2S_PEAK_ALLOC: PeakMemAlloc<System> = PeakMemAlloc::new(System);
 
 struct Blake2sBenchmark {
 	config: HashBenchConfig,

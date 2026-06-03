@@ -6,13 +6,13 @@ use std::alloc::System;
 
 use binius_examples::circuits::blake2b::{Blake2bExample, Instance, Params};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use peakmem_alloc::PeakAlloc;
+use peakmem_alloc::PeakMemAlloc;
 use utils::{ExampleBenchmark, HashBenchConfig, print_benchmark_header, run_cs_benchmark};
 
 // Global allocator that tracks peak memory usage
 
 #[global_allocator]
-static BLAKE2B_PEAK_ALLOC: PeakAlloc<System> = PeakAlloc::new(System);
+static BLAKE2B_PEAK_ALLOC: PeakMemAlloc<System> = PeakMemAlloc::new(System);
 
 struct Blake2bBenchmark {
 	config: HashBenchConfig,

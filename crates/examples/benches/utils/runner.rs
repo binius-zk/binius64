@@ -12,7 +12,7 @@ use binius_verifier::{
 	transcript::{ProverTranscript, VerifierTranscript},
 };
 use criterion::{BenchmarkId, Criterion, Throughput};
-use peakmem_alloc::PeakAllocTrait;
+use peakmem_alloc::PeakMemAllocTrait;
 
 /// Trait for standardized constraint system benchmarks
 pub trait ExampleBenchmark {
@@ -58,7 +58,7 @@ pub fn run_cs_benchmark<B: ExampleBenchmark>(
 	c: &mut Criterion,
 	benchmark: B,
 	group_prefix: &str,
-	peak_alloc: &impl PeakAllocTrait,
+	peak_alloc: &impl PeakMemAllocTrait,
 ) {
 	use super::reporting::{print_env_help, print_memory_stats, print_proof_size};
 
