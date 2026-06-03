@@ -6,12 +6,12 @@ use std::{alloc::System, env};
 
 use binius_examples::circuits::ethsign::{EthSignExample, Instance, Params};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use peakmem_alloc::PeakAlloc;
+use peakmem_alloc::PeakMemAlloc;
 use utils::{ExampleBenchmark, SignBenchConfig, print_benchmark_header, run_cs_benchmark};
 
 // Global allocator that tracks peak memory usage
 #[global_allocator]
-static ETHSIGN_PEAK_ALLOC: PeakAlloc<System> = PeakAlloc::new(System);
+static ETHSIGN_PEAK_ALLOC: PeakMemAlloc<System> = PeakMemAlloc::new(System);
 
 struct EthSignBenchmark {
 	config: SignBenchConfig,
