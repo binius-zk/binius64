@@ -279,4 +279,82 @@ mod tests {
 		// Test where message length is less than the packing width and codeword length is greater.
 		test_encode_batch_helper::<PackedBinaryGhash4x128b>(1, 2, 0);
 	}
+
+	/// Pins the codeword-duplication identity that underlies Lifted FRI (oracle padding).
+	///
+	/// Lifting a message `π` of dimension `m` to a larger dimension `M = m + η` zero-pads it on
+	/// the most-significant hypercube coordinates (`ZeroPadMSB_η`). The novel-basis / bit-reversed
+	/// encoding turns this into a *duplication* of the codeword: encoding the lifted message over
+	/// the dimension-`M` code yields each entry of the dimension-`m` codeword repeated `2^η` times.
+	/// This test asserts the contiguous form `Enc_M(ZeroPadMSB_η(π))[j] == Enc_m(π)[j >> η]`, which
+	/// is the index translation Lifted FRI's prover and verifier rely on.
+	fn test_lift_duplicate_identity_helper<P: PackedField>(
+		log_dim_small: usize,
+		log_dim_large: usize,
+		log_inv_rate: usize,
+	) where
+		P::Scalar: BinaryField,
+	{
+		assert!(log_dim_small <= log_dim_large);
+		let eta = log_dim_large - log_dim_small;
+
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Both codes are derived from a single shared domain context covering the larger code, so
+		// the smaller code's subspace is the prefix the shared NTT twiddles expect.
+		let subspace = BinarySubspace::<P::Scalar>::with_dim(log_dim_large + log_inv_rate);
+		let domain_context = GenericPreExpanded::<P::Scalar>::generate_from_subspace(&subspace);
+		let ntt = NeighborsLastReference {
+			domain_context: &domain_context,
+		};
+
+		let rs_small = ReedSolomonCode::with_domain_context_subspace(
+			&domain_context,
+			log_dim_small,
+			log_inv_rate,
+		);
+		let rs_large = ReedSolomonCode::with_domain_context_subspace(
+			&domain_context,
+			log_dim_large,
+			log_inv_rate,
+		);
+
+		// Random message for the small code.
+		let msg_small = random_field_buffer::<P>(&mut rng, log_dim_small);
+
+		// ZeroPadMSB lift: the small message occupies the low `2^log_dim_small` hypercube values,
+		// the high coordinates are zero.
+		let mut msg_large = FieldBuffer::<P>::zeros(log_dim_large);
+		for (i, val) in msg_small.iter_scalars().enumerate() {
+			msg_large.set(i, val);
+		}
+
+		let enc_small = rs_small.encode_batch(&ntt, msg_small.to_ref(), 0);
+		let enc_large = rs_large.encode_batch(&ntt, msg_large.to_ref(), 0);
+
+		let small_scalars = enc_small.iter_scalars().collect::<Vec<_>>();
+		let large_scalars = enc_large.iter_scalars().collect::<Vec<_>>();
+		assert_eq!(small_scalars.len(), 1 << (log_dim_small + log_inv_rate));
+		assert_eq!(large_scalars.len(), 1 << (log_dim_large + log_inv_rate));
+
+		for (j, &large) in large_scalars.iter().enumerate() {
+			assert_eq!(
+				large,
+				small_scalars[j >> eta],
+				"lift identity failed at index {j} (eta = {eta})"
+			);
+		}
+	}
+
+	#[test]
+	fn test_lift_duplicate_identity() {
+		// eta = 0 degrades to plain equality.
+		test_lift_duplicate_identity_helper::<PackedBinaryGhash1x128b>(6, 6, 2);
+		// Non-trivial lifts of varying sizes.
+		test_lift_duplicate_identity_helper::<PackedBinaryGhash1x128b>(4, 6, 2);
+		test_lift_duplicate_identity_helper::<PackedBinaryGhash1x128b>(2, 8, 1);
+		test_lift_duplicate_identity_helper::<PackedBinaryGhash1x128b>(0, 4, 3);
+		// Same lifts with a wider packing width.
+		test_lift_duplicate_identity_helper::<PackedBinaryGhash4x128b>(4, 8, 2);
+	}
 }
