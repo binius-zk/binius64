@@ -41,7 +41,7 @@ bytes = "1.7.2"
 cfg-if = "1.0.0"
 clap = { version = "4.5", features = ["derive"] }
 cranelift-entity = "0.121.1"
-criterion = { version = "0.7.0", default-features = false }
+criterion = { version = "0.8.0", default-features = false }
 derive_more = "0.99.17"
 digest = "0.11.2"
 either = "1.11.0"
