@@ -153,7 +153,7 @@ impl IOPProver {
 				c_eval,
 				z_challenge,
 				eval_point,
-			} = prove_bitand_reduction::<B128, _>(bitand_witness, &mut channel)?;
+			} = prove_bitand_reduction::<B128, P, _>(bitand_witness, &mut channel)?;
 			OperatorData {
 				evals: vec![a_eval, b_eval, c_eval],
 				r_zhat_prime: z_challenge,
@@ -416,12 +416,13 @@ fn pack_witness<P: PackedField<Scalar = B128>>(
 	Ok(padded_witness_elems)
 }
 
-fn prove_bitand_reduction<F, Channel>(
+fn prove_bitand_reduction<F, PChallenge, Channel>(
 	witness: AndCheckWitness,
 	channel: &mut Channel,
 ) -> Result<AndCheckOutput<F>, Error>
 where
 	F: BinaryField + From<B8>,
+	PChallenge: PackedField<Scalar = F>,
 	Channel: binius_ip_prover::channel::IPProverChannel<F>,
 {
 	let prover_message_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1);
@@ -435,7 +436,7 @@ where
 	let big_field_zerocheck_challenges =
 		channel.sample_many(log_constraint_count - small_field_zerocheck_challenges.len());
 
-	let prover = OblongZerocheckProver::<_, PackedAESBinaryField16x8b>::new(
+	let prover = OblongZerocheckProver::<_, PackedAESBinaryField16x8b, PChallenge>::new(
 		a,
 		b,
 		c,

@@ -1,4 +1,6 @@
 // Copyright 2025 Irreducible Inc.
+use std::marker::PhantomData;
+
 use binius_core::word::Word;
 use binius_field::{
 	BinaryField, Field, PackedBinaryField128x1b, PackedExtension, PackedField,
@@ -30,10 +32,15 @@ use crate::{
 /// Prover for the AND constraint reduction protocol via oblong univariate zerocheck.
 ///
 /// See [`binius_verifier::protocols::bitand`] for the protocol specification.
-pub struct OblongZerocheckProver<FChallenge, PNTTDomain>
+///
+/// The type parameter `PChallenge` is the packed field over the challenge field `FChallenge` used
+/// for the multilinear sumcheck rounds that follow the univariate round. Packing these rounds over
+/// a wide field provides SIMD acceleration.
+pub struct OblongZerocheckProver<FChallenge, PNTTDomain, PChallenge>
 where
 	FChallenge: Field + From<PNTTDomain::Scalar> + BinaryField,
 	PNTTDomain: PackedField,
+	PChallenge: PackedField<Scalar = FChallenge>,
 {
 	first_col: Vec<Word>,
 	second_col: Vec<Word>,
@@ -42,13 +49,15 @@ where
 	small_field_zerocheck_challenges: Vec<PNTTDomain::Scalar>,
 	univariate_round_message: [FChallenge; ROWS_PER_HYPERCUBE_VERTEX],
 	univariate_round_message_domain: BinarySubspace<FChallenge>,
+	_marker: PhantomData<PChallenge>,
 }
 
-impl<FChallenge, PNTTDomain> OblongZerocheckProver<FChallenge, PNTTDomain>
+impl<FChallenge, PNTTDomain, PChallenge> OblongZerocheckProver<FChallenge, PNTTDomain, PChallenge>
 where
 	FChallenge: Field + From<PNTTDomain::Scalar> + BinaryField,
 	PNTTDomain: PackedField + PackedExtension<B1, PackedSubfield = PackedBinaryField128x1b>,
 	PNTTDomain::Scalar: BinaryField,
+	PChallenge: PackedField<Scalar = FChallenge>,
 {
 	/// Creates a new oblong zerocheck prover for AND constraint reduction.
 	///
@@ -108,6 +117,7 @@ where
 			univariate_round_message,
 			big_field_zerocheck_challenges,
 			univariate_round_message_domain: prover_message_domain.isomorphic(),
+			_marker: PhantomData,
 		}
 	}
 
@@ -170,7 +180,7 @@ where
 				.create(&lagrange_evals);
 
 		let proving_polys = [&self.first_col, &self.second_col, &self.third_col]
-			.map(|col| fold_words_with_transform::<_, FChallenge, _>(&transform, col));
+			.map(|col| fold_words_with_transform::<_, PChallenge, _>(&transform, col));
 
 		let upcasted_small_field_challenges: Vec<_> = self
 			.small_field_zerocheck_challenges
@@ -276,6 +286,7 @@ mod test {
 	use binius_core::word::Word;
 	use binius_field::{
 		AESTowerField8b, PackedAESBinaryField16x8b,
+		arch::OptimalPackedB128,
 		linear_transformation::{
 			BytewiseLookupTransformationFactory, LinearTransformationFactory,
 			OutputWrappingTransformationFactory,
@@ -325,7 +336,7 @@ mod test {
 		// Prover is instantiated
 		let big_field_zerocheck_challenges =
 			prover_challenger.sample_vec(log_num_rows - SKIPPED_VARS - 3);
-		let prover = OblongZerocheckProver::<_, PackedAESBinaryField16x8b>::new(
+		let prover = OblongZerocheckProver::<_, PackedAESBinaryField16x8b, OptimalPackedB128>::new(
 			first_mlv.clone(),
 			second_mlv.clone(),
 			third_mlv.clone(),
