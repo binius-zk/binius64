@@ -27,8 +27,7 @@ pub fn ntt_lookup_from_prover_message_domain<PNTTDomain>(
 	prover_message_domain: BinarySubspace<PNTTDomain::Scalar>,
 ) -> NTTLookup<PNTTDomain>
 where
-	PNTTDomain: PackedField,
-	PNTTDomain::Scalar: BinaryField + From<u8>,
+	PNTTDomain: PackedField<Scalar: BinaryField>,
 {
 	assert!(prover_message_domain.dim() >= 1);
 	let basis = prover_message_domain.basis();

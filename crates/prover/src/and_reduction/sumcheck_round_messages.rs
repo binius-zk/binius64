@@ -70,7 +70,6 @@ where
 	FChallenge: Field + From<PNTTDomain::Scalar> + BinaryField,
 	PNTTDomain: PackedExtension<B1, PackedSubfield = PackedBinaryField128x1b>,
 	PNTTDomain::Scalar: BinaryField,
-	u8: From<PNTTDomain::Scalar>,
 {
 	// This assertion is used as a workaround for Rust's limited support for const-generics,
 	// ideally we would just use PNTTDomain::WIDTH everywhere instead, but since this function only
