@@ -101,16 +101,19 @@ where
 			)));
 		}
 
-		// Temporary restriction: lifted FRI is not yet implemented, so every input oracle must
-		// reduce to exactly the first-round Reed-Solomon code. FRIParams only guarantees the
-		// inequality `log_msg_len - log_batch_size <= rs_code.log_dim()`.
+		// Each input oracle's Reed-Solomon dimension must not exceed the first-round (reduced) code
+		// dimension; smaller oracles are lifted (padded) to it. FRIParams only guarantees the
+		// inequality `log_msg_len - log_batch_size <= rs_code.log_dim()`, so validate it here
+		// rather than trusting the caller.
 		let log_dim = params.rs_code().log_dim();
+		let log_inv_rate = params.rs_code().log_inv_rate();
 		for spec in params.input_oracles() {
-			assert_eq!(
-				spec.log_msg_len - spec.log_batch_size,
-				log_dim,
-				"lifted FRI is unsupported: input oracle dimension must equal rs_code.log_dim()"
-			);
+			if spec.log_msg_len - spec.log_batch_size > log_dim {
+				return Err(Error::InvalidArgs(format!(
+					"input oracle dimension {} exceeds the reduced code dimension {log_dim}",
+					spec.log_msg_len - spec.log_batch_size,
+				)));
+			}
 		}
 
 		// The committed codeword's Merkle tree has one coset per leaf, so its depth is the number
@@ -129,13 +132,20 @@ where
 		let outer_challenges = challenges[max_log_batch_size..params.log_batch_size()].to_vec();
 		let codeword_sub_oracles = iter::zip(codeword_commitments, params.input_oracles())
 			.map(|(commitment, spec)| {
+				// The oracle's own codeword has dimension `log_msg_len - log_batch_size`, so its
+				// Merkle tree depth is that plus the inverse rate. It is lifted to the common
+				// first-round length (`index_bits`) by duplicating each entry `2^log_lift` times.
+				let oracle_log_dim = spec.log_msg_len - spec.log_batch_size;
+				let depth = oracle_log_dim + log_inv_rate;
+				let log_lift = log_dim - oracle_log_dim;
 				BrakedownOracle::new(
 					inner_challenges[max_log_batch_size - spec.log_batch_size..].to_vec(),
 					Commitment {
 						root: commitment.clone(),
-						depth: index_bits,
+						depth,
 					},
 					vcs,
+					log_lift,
 				)
 			})
 			.collect();

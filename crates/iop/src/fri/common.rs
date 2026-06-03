@@ -27,7 +27,8 @@ pub struct FRIParams<F> {
 	rs_code: ReedSolomonCode<F>,
 	/// Guaranteed to be non-empty.
 	input_oracles: Vec<OracleSpec>,
-	/// log2 the maximum message length of all input oracles.
+	/// log2 the maximum message length of all input oracles, after lifting each to the reduced
+	/// dimension. Equals `rs_code.log_dim() + max(input_oracles.log_batch_size)`.
 	max_log_msg_len: usize,
 	/// log2 ceiling of the number of input oracles.
 	log_n_oracles: usize,
@@ -185,11 +186,6 @@ where
 		}
 
 		let log_n_oracles = log2_ceil_usize(oracles.len());
-		let max_log_msg_len = oracles
-			.iter()
-			.map(|oracle| oracle.log_msg_len)
-			.max()
-			.expect("precondition: oracles is not empty");
 
 		let ChooseBatchSizeAndAritiesOutput {
 			proof_size,
@@ -197,6 +193,18 @@ where
 			oracle_specs,
 			fold_arities,
 		} = choose_batch_size_and_arities_multi(merkle_scheme, oracles, log_inv_rate, n_test_queries);
+
+		// After lifting, every input oracle sits at the reduced dimension with its own interleaved
+		// batch, so the effective maximum message length is the reduced dimension plus the largest
+		// batch size. This is what the first fold must consume (the inner, per-oracle interleave
+		// folds) before the `log_n_oracles` outer folds that batch the oracles together. Without
+		// lifting this equals `max(oracle.log_msg_len)`.
+		let max_log_batch_size = oracle_specs
+			.iter()
+			.map(|spec| spec.log_batch_size)
+			.max()
+			.expect("precondition: oracles is not empty");
+		let max_log_msg_len = reduced_log_msg_len + max_log_batch_size;
 
 		let rs_code = ReedSolomonCode::with_domain_context_subspace(
 			domain_context,

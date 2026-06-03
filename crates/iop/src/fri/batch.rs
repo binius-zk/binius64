@@ -50,19 +50,29 @@ where
 	challenges: Vec<F>,
 	commitment: Commitment<MTScheme::Digest>,
 	merkle_scheme: MTScheme,
+	/// log2 the lift factor (oracle padding). The committed codeword is virtually duplicated
+	/// `2^log_lift` times to reach the common first-round length; a query at global index `k`
+	/// reads the committed codeword at `k >> log_lift`. Zero when no lifting is needed.
+	log_lift: usize,
 }
 
 impl<F: BinaryField, MTScheme: MerkleTreeScheme<F>> BrakedownOracle<F, MTScheme> {
 	/// Constructs a new oracle from the committed interleaved codeword and the folding challenges.
+	///
+	/// `log_lift` is the oracle-padding lift factor (the committed codeword is virtually duplicated
+	/// `2^log_lift` times to reach the common first-round length); pass `0` when no lifting is
+	/// needed.
 	pub fn new(
 		challenges: Vec<F>,
 		commitment: Commitment<MTScheme::Digest>,
 		merkle_scheme: MTScheme,
+		log_lift: usize,
 	) -> Self {
 		Self {
 			challenges,
 			commitment,
 			merkle_scheme,
+			log_lift,
 		}
 	}
 }
@@ -71,7 +81,9 @@ impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> Pr
 	for BrakedownOracle<F, MTScheme>
 {
 	fn log_len(&self) -> usize {
-		self.commitment.depth
+		// The virtual (lifted) oracle length: the committed tree depth duplicated `2^log_lift`
+		// times.
+		self.commitment.depth + self.log_lift
 	}
 
 	fn open_queries<B: Buf>(
@@ -80,11 +92,17 @@ impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> Pr
 		advice: &mut TranscriptReader<B>,
 	) -> Result<Vec<F>, Error> {
 		assert!(indices.iter().all(|&index| index < 1 << self.log_len())); // precondition
+		// Translate each query on the virtual lifted oracle into a query on the committed codeword
+		// by dropping the low `log_lift` bits (the duplicated copies).
+		let lifted_indices = indices
+			.iter()
+			.map(|&index| index >> self.log_lift)
+			.collect::<Vec<_>>();
 		verify_query_openings(
 			&self.merkle_scheme,
 			&self.commitment,
 			self.challenges.len(),
-			indices,
+			&lifted_indices,
 			advice,
 		)?
 		.map(|opening| {
@@ -127,6 +145,13 @@ impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> Pr
 	for BatchBrakedownOracle<F, MTScheme>
 {
 	fn log_len(&self) -> usize {
+		// Every bundled oracle reports the same virtual (lifted) length: the common first-round
+		// codeword length they are batched into.
+		debug_assert!(
+			self.oracles
+				.iter()
+				.all(|oracle| oracle.log_len() == self.oracles[0].log_len())
+		);
 		self.oracles[0].log_len()
 	}
 
