@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 //! Hint system.
 //!
@@ -16,12 +17,14 @@ use binius_core::Word;
 mod big_uint_divide;
 mod big_uint_mod_pow;
 mod byte_vec_concat;
+mod mod_divide;
 mod mod_inverse;
 mod secp256k1_endosplit;
 
 pub use big_uint_divide::BigUintDivideHint;
 pub use big_uint_mod_pow::BigUintModPowHint;
 pub use byte_vec_concat::ByteVecConcatHint;
+pub use mod_divide::ModDivideHint;
 pub use mod_inverse::ModInverseHint;
 pub use secp256k1_endosplit::Secp256k1EndosplitHint;
 

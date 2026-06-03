@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use std::iter::repeat_with;
 
@@ -191,6 +192,66 @@ fn test_prime_field() {
 
 	for (&a_limb, &b_limb) in result_big.limbs.iter().zip(&result.limbs) {
 		builder.assert_eq("circuit matches num_bigint::BigUint", a_limb, b_limb);
+	}
+
+	let cs = builder.build();
+	let mut w = cs.new_witness_filler();
+
+	cs.populate_wire_witness(&mut w).unwrap();
+	verify_constraints(cs.constraint_system(), &w.into_value_vec()).unwrap();
+}
+
+#[test]
+fn test_prime_field_div() {
+	let mut rng = StdRng::seed_from_u64(1);
+
+	let builder = CircuitBuilder::new();
+
+	let exists = builder.add_constant(Word::ALL_ONE);
+	let not_exists = builder.add_constant(Word::ZERO);
+
+	let subtrahend = 1u64 << 32 | 977;
+	let field = PseudoMersennePrimeField::new(&builder, 256, &[subtrahend]);
+	let modulus_big =
+		num_bigint::BigUint::from(2usize).pow(256) - num_bigint::BigUint::from(subtrahend);
+	let l = field.limbs_len();
+
+	// Random reduced dividend / invertible divisor: `div` must yield `dividend / divisor (mod p)`.
+	let mut checks = Vec::new();
+	for _ in 0..32 {
+		let dividend_big =
+			from_u64_limbs(repeat_with(|| rng.random()).take(l).collect::<Vec<u64>>())
+				% &modulus_big;
+		let mut divisor_big =
+			from_u64_limbs(repeat_with(|| rng.random()).take(l).collect::<Vec<u64>>())
+				% &modulus_big;
+		if divisor_big == num_bigint::BigUint::ZERO {
+			divisor_big = num_bigint::BigUint::from(1usize);
+		}
+
+		let dividend = BigUint::new_constant(&builder, &dividend_big).zero_extend(&builder, l);
+		let divisor = BigUint::new_constant(&builder, &divisor_big).zero_extend(&builder, l);
+
+		let slope = field.div(&builder, &dividend, &divisor, exists);
+
+		let expected_big =
+			(&dividend_big * divisor_big.modinv(&modulus_big).unwrap()) % &modulus_big;
+		let expected = BigUint::new_constant(&builder, &expected_big).zero_extend(&builder, l);
+		checks.push((slope, expected));
+	}
+
+	// divisor == 0 with exists == false: the reduction constraint is skipped, and the dummy
+	// slope still satisfies the unconditional `slope < modulus` range check.
+	let dividend = BigUint::new_constant(&builder, &num_bigint::BigUint::from(7usize))
+		.zero_extend(&builder, l);
+	let zero_divisor =
+		BigUint::new_constant(&builder, &num_bigint::BigUint::ZERO).zero_extend(&builder, l);
+	let _ = field.div(&builder, &dividend, &zero_divisor, not_exists);
+
+	for (slope, expected) in &checks {
+		for (&exp_limb, &got_limb) in expected.limbs.iter().zip(&slope.limbs) {
+			builder.assert_eq("div matches num_bigint", exp_limb, got_limb);
+		}
 	}
 
 	let cs = builder.build();

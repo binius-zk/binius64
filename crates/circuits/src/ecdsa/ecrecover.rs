@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use binius_frontend::{CircuitBuilder, Wire, util::all_true};
 
@@ -36,9 +37,10 @@ pub fn ecrecover(
 	let valid_r = b.band(b.bnot(r.is_zero(b)), biguint_lt(b, r, f_scalar.modulus()));
 	let valid_s = b.band(b.bnot(s.is_zero(b)), biguint_lt(b, s, f_scalar.modulus()));
 
-	let r_inverse = f_scalar.inverse(b, r, valid_r);
-	let u1 = f_scalar.sub(b, &coord_zero(b), &f_scalar.mul(b, z, &r_inverse));
-	let u2 = f_scalar.mul(b, s, &r_inverse);
+	// u1 = -(z / r), u2 = s / r. `div` requires reduced dividends: `z` (the message hash)
+	// and `s` must be in `[0, n)`. `valid_r` gates the shared divisor `r`.
+	let u1 = f_scalar.sub(b, &coord_zero(b), &f_scalar.div(b, z, r, valid_r));
+	let u2 = f_scalar.div(b, s, r, valid_r);
 
 	let recovered_pk = shamirs_trick_endomorphism(b, &curve, &u1, &u2, nonce);
 

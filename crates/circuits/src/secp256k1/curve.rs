@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use binius_core::consts::WORD_SIZE_BITS;
 use binius_frontend::{CircuitBuilder, Wire};
@@ -205,8 +206,8 @@ impl Secp256k1 {
 		let x_diff = f_p.sub(b, &p2.x, &p1.x);
 		let y_diff_zero = y_diff.is_zero(b);
 		let x_diff_zero = x_diff.is_zero(b);
-		let x_diff_inverse = f_p.inverse(b, &x_diff, b.bnot(x_diff_zero));
-		let slope = f_p.mul(b, &y_diff, &x_diff_inverse);
+		// slope = y_diff / x_diff; y_diff is reduced (output of `sub`) as `div` requires.
+		let slope = f_p.div(b, &y_diff, &x_diff, b.bnot(x_diff_zero));
 		(slope, x_diff_zero, y_diff_zero)
 	}
 
@@ -218,8 +219,8 @@ impl Secp256k1 {
 		// secp256k1 does not allow y=0, but we still have to check to avoid overconstraining.
 		let y_zero = p.y.is_zero(b);
 		let y_by_2 = f_p.add(b, &p.y, &p.y);
-		let y_by_2_inverse = f_p.inverse(b, &y_by_2, b.bnot(y_zero));
-		f_p.mul(b, &x_sqr_by_3, &y_by_2_inverse)
+		// λ = 3x² / 2y; x_sqr_by_3 is reduced (output of `add`) as `div` requires.
+		f_p.div(b, &x_sqr_by_3, &y_by_2, b.bnot(y_zero))
 	}
 
 	fn sloped_add(

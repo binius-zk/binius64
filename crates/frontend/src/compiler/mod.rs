@@ -13,7 +13,7 @@ use crate::compiler::{
 	constraint_builder::ConstraintBuilder,
 	gate_graph::{GateGraph, WireKind},
 	hints::{
-		BigUintDivideHint, BigUintModPowHint, Hint, HintRegistry, ModInverseHint,
+		BigUintDivideHint, BigUintModPowHint, Hint, HintRegistry, ModDivideHint, ModInverseHint,
 		Secp256k1EndosplitHint,
 	},
 	pathspec::PathSpec,
@@ -1215,6 +1215,38 @@ impl CircuitBuilder {
 		let mut out = self.call_hint(ModInverseHint::new(), &[base.len(), modulus.len()], &inputs);
 		let inverse = out.split_off(modulus.len());
 		(out, inverse)
+	}
+
+	/// Modular division.
+	///
+	/// Computes `dividend / divisor (mod modulus) = dividend * divisor^{-1} (mod modulus)`.
+	/// Returns a pair `(quotient, slope)` where `slope` is the modular quotient and `quotient`
+	/// is the non-negative integer satisfying `slope * divisor = dividend + quotient * modulus`.
+	/// Both are set to zero when `divisor` is not invertible modulo `modulus` (e.g. `divisor ==
+	/// 0`).
+	///
+	/// This is a hint - a deterministic computation that happens only on the prover side.
+	/// The result should be additionally constrained by using bignum circuits to check that
+	/// `slope * divisor = dividend + quotient * modulus`.
+	pub fn mod_divide_hint(
+		&self,
+		dividend: &[Wire],
+		divisor: &[Wire],
+		modulus: &[Wire],
+	) -> (Vec<Wire>, Vec<Wire>) {
+		let inputs: Vec<Wire> = dividend
+			.iter()
+			.chain(divisor)
+			.chain(modulus)
+			.copied()
+			.collect();
+		let mut out = self.call_hint(
+			ModDivideHint::new(),
+			&[dividend.len(), divisor.len(), modulus.len()],
+			&inputs,
+		);
+		let slope = out.split_off(modulus.len());
+		(out, slope)
 	}
 
 	/// Secp256k1 endomorphism split

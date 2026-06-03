@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use binius_frontend::{CircuitBuilder, Wire, util::all_true};
 
@@ -37,9 +38,10 @@ pub fn verify(
 	let valid_r = b.band(b.bnot(r.is_zero(b)), biguint_lt(b, r, f_scalar.modulus()));
 	let valid_s = b.band(b.bnot(s.is_zero(b)), biguint_lt(b, s, f_scalar.modulus()));
 
-	let s_inverse = f_scalar.inverse(b, s, valid_s);
-	let u1 = f_scalar.mul(b, z, &s_inverse);
-	let u2 = f_scalar.mul(b, r, &s_inverse);
+	// u1 = z / s, u2 = r / s. `div` requires reduced dividends: `z` (the message hash) and
+	// `r` must be in `[0, n)`. `valid_s` gates the shared divisor `s`.
+	let u1 = f_scalar.div(b, z, s, valid_s);
+	let u2 = f_scalar.div(b, r, s, valid_s);
 
 	let nonce = shamirs_trick_endomorphism(b, &curve, &u1, &u2, pk);
 	let nonce_not_pai = b.bnot(nonce.is_point_at_infinity);

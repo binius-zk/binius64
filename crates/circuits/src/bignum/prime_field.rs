@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use binius_core::{consts::WORD_SIZE_BITS, word::Word};
 use binius_frontend::{CircuitBuilder, Wire, util::num_biguint_from_u64_limbs};
@@ -159,5 +160,68 @@ impl PseudoMersennePrimeField {
 		.constrain_cond(b, exists);
 
 		inverse
+	}
+
+	/// Field division.
+	///
+	/// Equivalent formula (for prime modulus): `(dividend * divisor ** (modulus - 2)) % modulus`,
+	/// i.e. `dividend / divisor (mod modulus)`.
+	///
+	/// This collapses a modular inverse followed by a multiplication into a single modular
+	/// reduction, halving the multiplication cost relative to `mul(dividend, inverse(divisor))`.
+	/// The returned `slope` is constrained by `slope * divisor = dividend + quotient * modulus`,
+	/// which is `slope * divisor ≡ dividend (mod modulus)`.
+	///
+	/// The wire parameter `exists` is a boolean-wire signifying the existence of the quotient
+	/// (i.e. that `divisor` is invertible modulo the modulus); if `exists` is false, the modular
+	/// reduction constraint is not applied. This is useful for avoiding overconstraining in
+	/// skipped parts of larger circuits. The `slope < modulus` range check is unconditional, so
+	/// when `exists` is false the returned value is an unconstrained dummy `< modulus`.
+	///
+	/// # Precondition and incompleteness
+	///
+	/// `dividend` must be reduced (`dividend < modulus`): it plays the role of the remainder in
+	/// the reduction `slope * divisor = dividend + quotient * modulus`. If `dividend >= modulus`
+	/// there is no non-negative `quotient` satisfying that equation, so (when `exists` is true)
+	/// the constraint system has no satisfying witness and proof generation fails — the gadget is
+	/// *incomplete* for unreduced dividends. Callers must reduce the dividend beforehand; the
+	/// field helpers [`add`](Self::add), [`sub`](Self::sub), [`mul`](Self::mul) and
+	/// [`square`](Self::square) all return reduced values. (This matches the standard ECDSA
+	/// convention of reducing the message hash to a scalar in `[0, n)` before computing
+	/// `u1`/`u2`.)
+	pub fn div(
+		&self,
+		b: &CircuitBuilder,
+		dividend: &BigUint,
+		divisor: &BigUint,
+		exists: Wire,
+	) -> BigUint {
+		assert!(
+			dividend.limbs.len() == self.limbs_len() && divisor.limbs.len() == self.limbs_len()
+		);
+		let (quotient, slope) =
+			b.mod_divide_hint(&dividend.limbs, &divisor.limbs, &self.modulus.limbs);
+
+		let zero = b.add_constant(Word::ZERO);
+
+		let quotient = BigUint { limbs: quotient };
+		let slope = BigUint { limbs: slope }.pad_limbs_to(self.limbs_len(), zero);
+
+		let product = textbook_mul(b, &slope, divisor);
+
+		b.assert_true("slope < modulus", biguint_lt(b, &slope, &self.modulus));
+
+		// constraint: slope * divisor = dividend + quotient * modulus
+		PseudoMersenneModReduce::new(
+			b,
+			&product,
+			self.modulus_po2,
+			&self.modulus_subtrahend,
+			&quotient,
+			dividend,
+		)
+		.constrain_cond(b, exists);
+
+		slope
 	}
 }
