@@ -42,7 +42,13 @@ cfg-if = "1.0.0"
 clap = { version = "4.5", features = ["derive"] }
 cranelift-entity = "0.132.0"
 criterion = { version = "0.8.0", default-features = false }
-derive_more = "0.99.17"
+derive_more = { version = "2.1.1", features = [
+    "add",
+    "add_assign",
+    "from",
+    "into",
+    "into_iterator",
+] }
 digest = "0.11.2"
 either = "1.11.0"
 getrandom = "0.4.0"
