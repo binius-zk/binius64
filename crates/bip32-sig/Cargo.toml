@@ -1,0 +1,36 @@
+[package]
+name = "binius-bip32-sig"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "bip32-sig"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+binius-core = { path = "../core" }
+binius-examples = { path = "../examples", default-features = false }
+binius-frontend = { path = "../frontend" }
+binius-hash = { path = "../hash" }
+binius-prover = { path = "../prover", default-features = false }
+binius-utils = { path = "../utils" }
+binius-verifier = { path = "../verifier" }
+bip39 = "2.1.0"
+bitcoin.workspace = true
+clap.workspace = true
+hex.workspace = true
+rand = { workspace = true, features = ["thread_rng"] }
+ripemd.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+hex-literal.workspace = true
+
+[features]
+default = ["rayon"]
+rayon = ["binius-prover/rayon"]

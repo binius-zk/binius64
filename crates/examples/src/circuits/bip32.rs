@@ -192,9 +192,9 @@ pub struct Instance {
 	#[arg(long)]
 	pub seed: Option<String>,
 
-	/// Derivation path as comma-separated children, e.g. "0',1,2'". A trailing `'` or `h` marks a
+	/// Derivation path as comma-separated children, e.g. "0'/1/2'". A trailing `'` or `h` marks a
 	/// hardened child. Empty selects the master key.
-	#[arg(long, value_delimiter = ',', value_parser = parse_child, default_value = "0'")]
+	#[arg(long, value_delimiter = '/', value_parser = parse_child, default_value = "44'/0'/0'/0/0")]
 	pub path: Vec<u32>,
 }
 
