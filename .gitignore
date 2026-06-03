@@ -6,6 +6,7 @@ CLAUDE.local.md
 .claude/settings.local.json
 .claude/local/
 .claude/skills/
+.claude/worktrees/
 /.idea/
 **/.DS_Store
 /.vscode
