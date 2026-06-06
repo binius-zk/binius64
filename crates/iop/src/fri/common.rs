@@ -510,10 +510,9 @@ where
 		let optimal_layer = self
 			.merkle_scheme
 			.optimal_verify_layer(self.n_test_queries, log_code_len);
-		let merkle_size = self
-			.merkle_scheme
-			.proof_size(1 << log_code_len, self.n_test_queries, optimal_layer)
-			.expect("layer computed with optimal_layer must be valid");
+		let merkle_size =
+			self.merkle_scheme
+				.proof_size(1 << log_code_len, self.n_test_queries, optimal_layer);
 
 		leaves_size + merkle_size
 	}

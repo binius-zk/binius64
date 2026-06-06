@@ -64,11 +64,11 @@ where
 	let merkle_tree_span = tracing::debug_span!("Merkle Tree").entered();
 	let (commitment, vcs_committed) = if log_batch_size > P::LOG_WIDTH {
 		let iterated_big_chunks = to_par_scalar_big_chunks(encoded.as_ref(), 1 << log_batch_size);
-		merkle_prover.commit_iterated(iterated_big_chunks)?
+		merkle_prover.commit_iterated(iterated_big_chunks)
 	} else {
 		let iterated_small_chunks =
 			to_par_scalar_small_chunks(encoded.as_ref(), 1 << log_batch_size);
-		merkle_prover.commit_iterated(iterated_small_chunks)?
+		merkle_prover.commit_iterated(iterated_small_chunks)
 	};
 	drop(merkle_tree_span);
 

@@ -217,7 +217,7 @@ where
 	// The Merkle tree has one coset per leaf, so its depth is the codeword length minus the coset.
 	let tree_depth = codeword.log_len() - coset_log_size;
 	let layer_depth = scheme.optimal_verify_layer(indices.len(), tree_depth);
-	advice.write_slice(merkle_prover.layer(committed, layer_depth)?);
+	advice.write_slice(merkle_prover.layer(committed, layer_depth));
 	for &index in indices {
 		prove_coset_opening(
 			merkle_prover,
@@ -332,7 +332,7 @@ where
 	let values = codeword.chunk(log_coset_size, coset_index);
 	advice.write_scalar_iter(values.iter_scalars());
 
-	merkle_prover.prove_opening(committed, optimal_layer_depth, coset_index, advice)?;
+	merkle_prover.prove_opening(committed, optimal_layer_depth, coset_index, advice);
 
 	Ok(())
 }

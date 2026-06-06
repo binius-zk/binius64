@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use binius_field::Field;
 use binius_hash::binary_merkle_tree::{self, BinaryMerkleTree, HashSuite};
-use binius_iop::merkle_tree::{BinaryMerkleTreeScheme, Commitment, Error, MerkleTreeScheme};
+use binius_iop::merkle_tree::{BinaryMerkleTreeScheme, Commitment, MerkleTreeScheme};
 use binius_transcript::{BufMut, TranscriptWriter};
 use binius_utils::rayon::iter::IndexedParallelIterator;
 use digest::Output;
@@ -56,12 +56,10 @@ where
 		&self.scheme
 	}
 
-	fn layer<'a>(
-		&self,
-		committed: &'a Self::Committed,
-		depth: usize,
-	) -> Result<&'a [Output<H::LeafHash>], Error> {
-		Ok(committed.layer(depth)?)
+	fn layer<'a>(&self, committed: &'a Self::Committed, depth: usize) -> &'a [Output<H::LeafHash>] {
+		committed
+			.layer(depth)
+			.expect("precondition: layer_depth must be at most the committed tree's depth")
 	}
 
 	fn prove_opening<B: BufMut>(
@@ -70,20 +68,21 @@ where
 		layer_depth: usize,
 		index: usize,
 		proof: &mut TranscriptWriter<B>,
-	) -> Result<(), Error> {
+	) {
 		let salt = committed.get_salt(index >> layer_depth);
 		proof.write_slice(salt);
 
-		let branch = committed.branch(index, layer_depth)?;
+		let branch = committed
+			.branch(index, layer_depth)
+			.expect("precondition: index and layer_depth must be within the committed tree");
 		proof.write_slice(&branch);
-		Ok(())
 	}
 
 	#[allow(clippy::type_complexity)]
 	fn commit_iterated<ParIter>(
 		&self,
 		leaves: ParIter,
-	) -> Result<(Commitment<<Self::Scheme as MerkleTreeScheme<F>>::Digest>, Self::Committed), Error>
+	) -> (Commitment<<Self::Scheme as MerkleTreeScheme<F>>::Digest>, Self::Committed)
 	where
 		ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
 	{
@@ -96,13 +95,14 @@ where
 			leaves,
 			self.scheme.salt_len(),
 			salt_rng,
-		)?;
+		)
+		.expect("precondition: the number of leaves must be a power of two");
 
 		let commitment = Commitment {
 			root: tree.root(),
 			depth: tree.log_len,
 		};
 
-		Ok((commitment, tree))
+		(commitment, tree)
 	}
 }

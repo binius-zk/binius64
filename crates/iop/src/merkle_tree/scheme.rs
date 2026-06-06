@@ -3,11 +3,7 @@
 
 use std::{array, fmt::Debug, marker::PhantomData};
 
-use binius_hash::{
-	PseudoCompressionFunction,
-	binary_merkle_tree::{self, HashSuite},
-	hash_serialize,
-};
+use binius_hash::{PseudoCompressionFunction, binary_merkle_tree::HashSuite, hash_serialize};
 use binius_transcript::{Buf, TranscriptReader};
 use binius_utils::{
 	DeserializeBytes, SerializeBytes,
@@ -79,19 +75,18 @@ where
 		log2_ceil_usize(n_queries).min(tree_depth)
 	}
 
-	fn proof_size(&self, len: usize, n_queries: usize, layer_depth: usize) -> Result<usize, Error> {
-		if !len.is_power_of_two() {
-			return Err(binary_merkle_tree::Error::PowerOfTwoLengthRequired.into());
-		}
+	/// ## Preconditions
+	/// * `len` must be a power of two.
+	/// * `layer_depth` must be at most `log2(len)`.
+	fn proof_size(&self, len: usize, n_queries: usize, layer_depth: usize) -> usize {
+		assert!(len.is_power_of_two(), "precondition: len must be a power of two");
 
 		let log_len = log2_strict_usize(len);
 
-		if layer_depth > log_len {
-			return Err(binary_merkle_tree::Error::IncorrectLayerDepth.into());
-		}
+		assert!(layer_depth <= log_len, "precondition: layer_depth must be at most log2(len)");
 
-		Ok(((log_len - layer_depth) * n_queries + (1 << layer_depth))
-			* <H::LeafHash as Digest>::output_size())
+		((log_len - layer_depth) * n_queries + (1 << layer_depth))
+			* <H::LeafHash as Digest>::output_size()
 	}
 
 	fn verify_vector<B: Buf>(
@@ -101,9 +96,10 @@ where
 		batch_size: usize,
 		proof: &mut TranscriptReader<B>,
 	) -> Result<(), Error> {
-		if !data.len().is_multiple_of(batch_size) {
-			return Err(binary_merkle_tree::Error::IncorrectBatchSize.into());
-		}
+		assert!(
+			data.len().is_multiple_of(batch_size),
+			"precondition: data length must be a multiple of batch_size"
+		);
 
 		let digests = data
 			.chunks(batch_size)
@@ -122,9 +118,11 @@ where
 		layer_depth: usize,
 		layer_digests: &[Self::Digest],
 	) -> Result<(), Error> {
-		if 1 << layer_depth != layer_digests.len() {
-			return Err(VerificationError::IncorrectVectorLength.into());
-		}
+		assert_eq!(
+			layer_digests.len(),
+			1 << layer_depth,
+			"precondition: layer_digests must have 2^layer_depth entries"
+		);
 
 		let computed_root = fold_digests_vector_inplace(&self.compression, layer_digests.to_vec());
 		if computed_root != *root {
@@ -142,16 +140,12 @@ where
 		layer_digests: &[Self::Digest],
 		proof: &mut TranscriptReader<B>,
 	) -> Result<(), Error> {
-		if (1 << layer_depth) != layer_digests.len() {
-			return Err(VerificationError::IncorrectVectorLength.into());
-		}
-
-		if index >= (1 << tree_depth) {
-			return Err(binary_merkle_tree::Error::IndexOutOfRange {
-				max: (1 << tree_depth) - 1,
-			}
-			.into());
-		}
+		assert_eq!(
+			layer_digests.len(),
+			1 << layer_depth,
+			"precondition: layer_digests must have 2^layer_depth entries"
+		);
+		assert!(index < (1 << tree_depth), "precondition: index must be less than 2^tree_depth");
 
 		let mut leaf_digest = self.compute_leaf_digest(values, proof)?;
 		for branch_node in proof.read_vec(tree_depth - layer_depth)? {

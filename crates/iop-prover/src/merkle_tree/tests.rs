@@ -21,15 +21,13 @@ fn test_binary_merkle_vcs_commit_prove_open_correctly() {
 	let mr_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::new();
 
 	let data = random_scalars::<B128>(&mut rng, 16);
-	let (commitment, tree) = mr_prover.commit(&data, 1).unwrap();
+	let (commitment, tree) = mr_prover.commit(&data, 1);
 
 	assert_eq!(commitment.root, tree.root());
 
 	for (i, value) in data.iter().enumerate() {
 		let mut proof_writer = ProverTranscript::new(StdChallenger::default());
-		mr_prover
-			.prove_opening(&tree, 0, i, &mut proof_writer.message())
-			.unwrap();
+		mr_prover.prove_opening(&tree, 0, i, &mut proof_writer.message());
 
 		let mut proof_reader = proof_writer.into_verifier();
 		mr_prover
@@ -53,20 +51,18 @@ fn test_binary_merkle_vcs_commit_layer_prove_open_correctly() {
 	let mr_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::new();
 
 	let data = random_scalars::<B128>(&mut rng, 32);
-	let (commitment, tree) = mr_prover.commit(&data, 1).unwrap();
+	let (commitment, tree) = mr_prover.commit(&data, 1);
 
 	assert_eq!(commitment.root, tree.root());
 	for layer_depth in 0..5 {
-		let layer = mr_prover.layer(&tree, layer_depth).unwrap();
+		let layer = mr_prover.layer(&tree, layer_depth);
 		mr_prover
 			.scheme()
 			.verify_layer(&commitment.root, layer_depth, layer)
 			.unwrap();
 		for (i, value) in data.iter().enumerate() {
 			let mut proof_writer = ProverTranscript::new(StdChallenger::default());
-			mr_prover
-				.prove_opening(&tree, layer_depth, i, &mut proof_writer.message())
-				.unwrap();
+			mr_prover.prove_opening(&tree, layer_depth, i, &mut proof_writer.message());
 
 			let mut proof_reader = proof_writer.into_verifier();
 			mr_prover
@@ -92,7 +88,7 @@ fn test_binary_merkle_vcs_verify_vector() {
 
 	let mut proof_reader = VerifierTranscript::new(StdChallenger::default(), Vec::new());
 	let data = random_scalars::<B128>(&mut rng, 4);
-	let (commitment, _) = mt_prover.commit(&data, 1).unwrap();
+	let (commitment, _) = mt_prover.commit(&data, 1);
 
 	mt_prover
 		.scheme()
@@ -108,16 +104,14 @@ fn test_binary_merkle_vcs_hiding_commit_prove_open() {
 	let mt_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::hiding(&mut rng, salt_len);
 
 	let data = random_scalars::<B128>(&mut rng, 16);
-	let (commitment, tree) = mt_prover.commit(&data, 1).unwrap();
+	let (commitment, tree) = mt_prover.commit(&data, 1);
 
 	assert_eq!(commitment.root, tree.root());
 
 	// Test that we can prove openings with salt
 	for (i, value) in data.iter().enumerate() {
 		let mut proof_writer = ProverTranscript::new(StdChallenger::default());
-		mt_prover
-			.prove_opening(&tree, 0, i, &mut proof_writer.message())
-			.unwrap();
+		mt_prover.prove_opening(&tree, 0, i, &mut proof_writer.message());
 
 		let mut proof_reader = proof_writer.into_verifier();
 		mt_prover
@@ -142,7 +136,7 @@ fn test_binary_merkle_vcs_hiding_verify_vector() {
 	let mt_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::hiding(&mut rng, salt_len);
 
 	let data = random_scalars::<B128>(&mut rng, 8);
-	let (commitment, tree) = mt_prover.commit(&data, 1).unwrap();
+	let (commitment, tree) = mt_prover.commit(&data, 1);
 
 	// Create a proof transcript with salt values
 	let mut proof_writer = ProverTranscript::new(StdChallenger::default());
@@ -168,16 +162,14 @@ fn test_binary_merkle_vcs_hiding_batch_size() {
 
 	let data = random_scalars::<B128>(&mut rng, 32);
 	let batch_size = 4;
-	let (commitment, tree) = mt_prover.commit(&data, batch_size).unwrap();
+	let (commitment, tree) = mt_prover.commit(&data, batch_size);
 
 	assert_eq!(commitment.root, tree.root());
 
 	// Test openings with batch_size > 1
 	for i in 0..8 {
 		let mut proof_writer = ProverTranscript::new(StdChallenger::default());
-		mt_prover
-			.prove_opening(&tree, 0, i, &mut proof_writer.message())
-			.unwrap();
+		mt_prover.prove_opening(&tree, 0, i, &mut proof_writer.message());
 
 		let mut proof_reader = proof_writer.into_verifier();
 		let values = &data[i * batch_size..(i + 1) * batch_size];

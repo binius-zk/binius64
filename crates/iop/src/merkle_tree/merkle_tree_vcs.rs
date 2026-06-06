@@ -31,9 +31,20 @@ pub trait MerkleTreeScheme<T> {
 	///
 	/// * `len` - the length of the committed vector
 	/// * `n_queries` - the number of opening queries
-	fn proof_size(&self, len: usize, n_queries: usize, layer_depth: usize) -> Result<usize, Error>;
+	/// * `layer_depth` - the depth of the internal layer the verifier decommits once and verifies
+	///   all openings against (see [`Self::optimal_verify_layer`])
+	///
+	/// ## Preconditions
+	///
+	/// * `len` must be a power of two.
+	/// * `layer_depth` must be at most `log2(len)`.
+	fn proof_size(&self, len: usize, n_queries: usize, layer_depth: usize) -> usize;
 
 	/// Verify the opening of the full vector.
+	///
+	/// ## Preconditions
+	///
+	/// * `data.len()` must be a multiple of `batch_size`.
 	fn verify_vector<B: Buf>(
 		&self,
 		root: &Self::Digest,
@@ -47,6 +58,10 @@ pub trait MerkleTreeScheme<T> {
 	/// When a protocol requires verification of many openings at independent and randomly sampled
 	/// indices, it is more efficient for the verifier to verifier an internal layer once, then
 	/// verify all openings with respect to that layer.
+	///
+	/// ## Preconditions
+	///
+	/// * `layer_digests.len()` must equal `2^layer_depth`.
 	fn verify_layer(
 		&self,
 		root: &Self::Digest,
@@ -55,6 +70,11 @@ pub trait MerkleTreeScheme<T> {
 	) -> Result<(), Error>;
 
 	/// Verify an opening proof for an entry in a committed vector at the given index.
+	///
+	/// ## Preconditions
+	///
+	/// * `layer_digests.len()` must equal `2^layer_depth`.
+	/// * `index` must be less than `2^tree_depth`.
 	fn verify_opening<B: Buf>(
 		&self,
 		index: usize,

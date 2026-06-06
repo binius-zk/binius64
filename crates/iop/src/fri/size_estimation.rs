@@ -64,9 +64,7 @@ where
 		// VCS proof_size covers both the 2^layer_depth layer digests sent once AND the
 		// (tree_depth - layer_depth) * n_test_queries branch digests sent across all queries.
 		let tree_len = 1 << log_n_cosets;
-		merkle_sizes += vcs
-			.proof_size(tree_len, n_test_queries, layer_depth)
-			.expect("layer depth computed with optimal_verify_layer must be valid");
+		merkle_sizes += vcs.proof_size(tree_len, n_test_queries, layer_depth);
 
 		// Each query opens a coset of 2^arity field values for this oracle.
 		coset_values_size += n_test_queries * (1 << arity) * value_size;

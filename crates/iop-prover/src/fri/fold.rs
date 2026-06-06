@@ -274,10 +274,8 @@ where
 		let coset_size = 1 << log_coset_size;
 
 		let _merkle_tree_span = tracing::debug_span!("Merkle Tree").entered();
-		let (commitment, committed) = self
-			.merkle_prover
-			.commit(folded_codeword.as_ref(), coset_size)
-			.expect("merkle commitment cannot fail for a valid codeword");
+		let (commitment, committed) =
+			self.merkle_prover.commit(folded_codeword.as_ref(), coset_size);
 
 		// The next commitment lands `next_arity` rounds after the current one. Once there is no
 		// next arity, this is the terminal codeword and no further commitments are made.
