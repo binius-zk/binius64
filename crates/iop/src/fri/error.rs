@@ -5,12 +5,6 @@ use crate::merkle_tree;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-	#[error("fold arities total exceeds the number of fold rounds")]
-	InvalidFoldAritySequence,
-	#[error("conflicting or incorrect constructor argument: {0}")]
-	InvalidArgs(String),
-	#[error("cannot calculate parameters satisfying the security target")]
-	ParameterError,
 	#[error("Merkle tree error: {0}")]
 	MerkleError(merkle_tree::Error),
 	#[error("Reed-Solomon encoding error: {0}")]

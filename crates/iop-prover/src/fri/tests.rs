@@ -44,8 +44,7 @@ fn test_commit_prove_verify_success<F, P>(
 
 	let n_test_queries = 3;
 	let params =
-		FRIParams::new(committed_rs_code, log_batch_size, arities.to_vec(), n_test_queries)
-			.unwrap();
+		FRIParams::new(committed_rs_code, log_batch_size, arities.to_vec(), n_test_queries);
 
 	let subspace = BinarySubspace::with_dim(params.rs_code().log_len());
 	let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
@@ -61,11 +60,11 @@ fn test_commit_prove_verify_success<F, P>(
 		commitment: mut codeword_commitment,
 		committed: codeword_committed,
 		codeword,
-	} = commit_interleaved(&params, &ntt, &merkle_prover, msg.to_ref()).unwrap();
+	} = commit_interleaved(&params, &ntt, &merkle_prover, msg.to_ref());
 
 	// Run the prover to generate the proximity proof
 	let mut round_prover =
-		FRIFoldProver::new(&params, &ntt, &merkle_prover, codeword, &codeword_committed).unwrap();
+		FRIFoldProver::new(&params, &ntt, &merkle_prover, codeword, &codeword_committed);
 
 	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
 	prover_challenger.message().write(&codeword_commitment);
@@ -87,7 +86,7 @@ fn test_commit_prove_verify_success<F, P>(
 		}
 	}
 
-	round_prover.finish_proof(&mut prover_challenger).unwrap();
+	round_prover.finish_proof(&mut prover_challenger);
 	// Now run the verifier
 	let mut verifier_challenger = prover_challenger.into_verifier();
 	codeword_commitment = verifier_challenger.message().read().unwrap();
@@ -112,7 +111,7 @@ fn test_commit_prove_verify_success<F, P>(
 			.unwrap();
 	}
 
-	let round_commitments = fri_fold_verifier.finalize().unwrap();
+	let round_commitments = fri_fold_verifier.finalize();
 
 	assert_eq!(verifier_challenges.len(), params.n_fold_rounds());
 
@@ -122,8 +121,7 @@ fn test_commit_prove_verify_success<F, P>(
 		&codeword_commitment,
 		&round_commitments,
 		&verifier_challenges,
-	)
-	.unwrap();
+	);
 
 	// The verifier checks the terminal codeword against its commitment internally (the terminal
 	// codeword is sent in full at the end of the query phase).
@@ -265,14 +263,13 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 	let mut codewords = Vec::new();
 	for &log_batch_size in &log_batch_sizes {
 		let oracle_params =
-			FRIParams::new(params.rs_code().clone(), log_batch_size, vec![], n_test_queries)
-				.unwrap();
+			FRIParams::new(params.rs_code().clone(), log_batch_size, vec![], n_test_queries);
 		let msg = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
 		let CommitOutput {
 			commitment,
 			committed,
 			codeword,
-		} = commit_interleaved(&oracle_params, &ntt, &merkle_prover, msg.to_ref()).unwrap();
+		} = commit_interleaved(&oracle_params, &ntt, &merkle_prover, msg.to_ref());
 		messages.push(msg);
 		commitments.push(commitment);
 		committeds.push(committed);
@@ -282,7 +279,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 	// Run the prover: write the per-oracle codeword commitments, then fold.
 	let committed_codewords = iter::zip(codewords, &committeds).collect::<Vec<_>>();
 	let mut round_prover =
-		FRIFoldProver::new_batch(&params, &ntt, &merkle_prover, committed_codewords).unwrap();
+		FRIFoldProver::new_batch(&params, &ntt, &merkle_prover, committed_codewords);
 
 	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
 	for commitment in &commitments {
@@ -302,7 +299,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 			prover_challenger.message().write(&round_commitment);
 		}
 	}
-	round_prover.finish_proof(&mut prover_challenger).unwrap();
+	round_prover.finish_proof(&mut prover_challenger);
 
 	// Run the verifier.
 	let mut verifier_challenger = prover_challenger.into_verifier();
@@ -322,7 +319,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 			.process_round(&mut verifier_challenger.message())
 			.unwrap();
 	}
-	let round_commitments = fri_fold_verifier.finalize().unwrap();
+	let round_commitments = fri_fold_verifier.finalize();
 
 	let verifier = FRIQueryVerifier::new_batch(
 		&params,
@@ -330,8 +327,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 		&read_commitments,
 		&round_commitments,
 		&verifier_challenges,
-	)
-	.unwrap();
+	);
 	let final_value = verifier.verify(&mut verifier_challenger).unwrap();
 
 	// The first fold reduces oracle `i` by its inner challenges (the last `log_batch_size_i` of the
@@ -416,14 +412,13 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 			log_dim,
 			log_inv_rate,
 		);
-		let oracle_params =
-			FRIParams::new(rs_code, log_batch_size, vec![], n_test_queries).unwrap();
+		let oracle_params = FRIParams::new(rs_code, log_batch_size, vec![], n_test_queries);
 		let msg = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
 		let CommitOutput {
 			commitment,
 			committed,
 			codeword,
-		} = commit_interleaved(&oracle_params, &ntt, &merkle_prover, msg.to_ref()).unwrap();
+		} = commit_interleaved(&oracle_params, &ntt, &merkle_prover, msg.to_ref());
 		messages.push(msg);
 		commitments.push(commitment);
 		committeds.push(committed);
@@ -433,7 +428,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 	// Run the prover: write the per-oracle codeword commitments, then fold.
 	let committed_codewords = iter::zip(codewords, &committeds).collect::<Vec<_>>();
 	let mut round_prover =
-		FRIFoldProver::new_batch(&params, &ntt, &merkle_prover, committed_codewords).unwrap();
+		FRIFoldProver::new_batch(&params, &ntt, &merkle_prover, committed_codewords);
 
 	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
 	for commitment in &commitments {
@@ -453,7 +448,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 			prover_challenger.message().write(&round_commitment);
 		}
 	}
-	round_prover.finish_proof(&mut prover_challenger).unwrap();
+	round_prover.finish_proof(&mut prover_challenger);
 
 	// Run the verifier.
 	let mut verifier_challenger = prover_challenger.into_verifier();
@@ -473,7 +468,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 			.process_round(&mut verifier_challenger.message())
 			.unwrap();
 	}
-	let round_commitments = fri_fold_verifier.finalize().unwrap();
+	let round_commitments = fri_fold_verifier.finalize();
 
 	let verifier = FRIQueryVerifier::new_batch(
 		&params,
@@ -481,8 +476,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 		&read_commitments,
 		&round_commitments,
 		&verifier_challenges,
-	)
-	.unwrap();
+	);
 	let final_value = verifier.verify(&mut verifier_challenger).unwrap();
 
 	// The first fold reduces oracle `i` by its inner challenges (the last `log_batch_size_i` of the
@@ -543,8 +537,7 @@ where
 
 	let n_test_queries = 3;
 	let params =
-		FRIParams::new(committed_rs_code, log_batch_size, arities.to_vec(), n_test_queries)
-			.unwrap();
+		FRIParams::new(committed_rs_code, log_batch_size, arities.to_vec(), n_test_queries);
 
 	let subspace = BinarySubspace::with_dim(params.rs_code().log_len());
 	let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
@@ -556,10 +549,10 @@ where
 		commitment: codeword_commitment,
 		committed: codeword_committed,
 		codeword,
-	} = commit_interleaved(&params, &ntt, &merkle_prover, msg.to_ref()).unwrap();
+	} = commit_interleaved(&params, &ntt, &merkle_prover, msg.to_ref());
 
 	let mut round_prover =
-		FRIFoldProver::new(&params, &ntt, &merkle_prover, codeword, &codeword_committed).unwrap();
+		FRIFoldProver::new(&params, &ntt, &merkle_prover, codeword, &codeword_committed);
 
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	prover_transcript.message().write(&codeword_commitment);
@@ -579,7 +572,7 @@ where
 		}
 	}
 
-	round_prover.finish_proof(&mut prover_transcript).unwrap();
+	round_prover.finish_proof(&mut prover_transcript);
 
 	let scheme = merkle_prover.scheme().clone();
 	let proof_bytes = prover_transcript.finalize();

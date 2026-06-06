@@ -55,7 +55,7 @@ where
 		codeword_commitment: &'a VCS::Digest,
 		round_commitments: &'a [VCS::Digest],
 		challenges: &'a [F],
-	) -> Result<Self, Error> {
+	) -> Self {
 		Self::new_batch(
 			params,
 			vcs,
@@ -70,50 +70,48 @@ where
 	/// The input oracles share the Reed-Solomon code but may have differing batch sizes; they are
 	/// reduced into a single first-round FRI oracle. The commitments must be supplied in the same
 	/// order as [`FRIParams::input_oracles`].
+	///
+	/// ## Preconditions
+	///
+	/// * `codeword_commitments.len()` must equal `params.input_oracles().len()`.
+	/// * `round_commitments.len()` must equal `params.n_oracles()`.
+	/// * `challenges.len()` must equal `params.n_fold_rounds()`.
+	/// * Each input oracle's dimension (`log_msg_len - log_batch_size`) must be at most
+	///   `params.rs_code().log_dim()`.
 	pub fn new_batch(
 		params: &'a FRIParams<F>,
 		vcs: &'a VCS,
 		codeword_commitments: &'a [VCS::Digest],
 		round_commitments: &'a [VCS::Digest],
 		challenges: &'a [F],
-	) -> Result<Self, Error> {
-		if codeword_commitments.len() != params.input_oracles().len() {
-			return Err(Error::InvalidArgs(format!(
-				"got {} codeword commitments, expected {}",
-				codeword_commitments.len(),
-				params.input_oracles().len(),
-			)));
-		}
-
-		if round_commitments.len() != params.n_oracles() {
-			return Err(Error::InvalidArgs(format!(
-				"got {} round commitments, expected {}",
-				round_commitments.len(),
-				params.n_oracles(),
-			)));
-		}
-
-		if challenges.len() != params.n_fold_rounds() {
-			return Err(Error::InvalidArgs(format!(
-				"got {} folding challenges, expected {}",
-				challenges.len(),
-				params.n_fold_rounds(),
-			)));
-		}
+	) -> Self {
+		assert_eq!(
+			codeword_commitments.len(),
+			params.input_oracles().len(),
+			"precondition: codeword_commitments.len() must equal params.input_oracles().len()"
+		);
+		assert_eq!(
+			round_commitments.len(),
+			params.n_oracles(),
+			"precondition: round_commitments.len() must equal params.n_oracles()"
+		);
+		assert_eq!(
+			challenges.len(),
+			params.n_fold_rounds(),
+			"precondition: challenges.len() must equal params.n_fold_rounds()"
+		);
 
 		// Each input oracle's Reed-Solomon dimension must not exceed the first-round (reduced) code
 		// dimension; smaller oracles are lifted (padded) to it. FRIParams only guarantees the
-		// inequality `log_msg_len - log_batch_size <= rs_code.log_dim()`, so validate it here
-		// rather than trusting the caller.
+		// inequality `log_msg_len - log_batch_size <= rs_code.log_dim()`, so assert it here rather
+		// than trusting the caller.
 		let log_dim = params.rs_code().log_dim();
 		let log_inv_rate = params.rs_code().log_inv_rate();
 		for spec in params.input_oracles() {
-			if spec.log_msg_len - spec.log_batch_size > log_dim {
-				return Err(Error::InvalidArgs(format!(
-					"input oracle dimension {} exceeds the reduced code dimension {log_dim}",
-					spec.log_msg_len - spec.log_batch_size,
-				)));
-			}
+			assert!(
+				spec.log_msg_len - spec.log_batch_size <= log_dim,
+				"precondition: input oracle dimension must not exceed the reduced code dimension"
+			);
 		}
 
 		// The committed codeword's Merkle tree has one coset per leaf, so its depth is the number
@@ -176,14 +174,14 @@ where
 			.last()
 			.expect("round_commitments is non-empty as an invariant");
 
-		Ok(Self {
+		Self {
 			params,
 			vcs,
 			terminal_commitment,
 			final_challenges,
 			codeword_oracle,
 			fri_oracles,
-		})
+		}
 	}
 
 	/// Number of oracles sent during the fold rounds.

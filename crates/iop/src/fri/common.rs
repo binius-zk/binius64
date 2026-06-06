@@ -7,7 +7,6 @@ use binius_math::{ntt::DomainContext, reed_solomon::ReedSolomonCode};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use getset::{CopyGetters, Getters};
 
-use super::error::Error;
 use crate::merkle_tree::MerkleTreeScheme;
 
 /// Parameters for an FRI interleaved code proximity protocol.
@@ -67,17 +66,20 @@ impl<F> FRIParams<F>
 where
 	F: BinaryField,
 {
+	/// ## Preconditions
+	///
+	/// * `sum(fold_arities)` must be at most `rs_code.log_dim()`.
 	pub fn new(
 		rs_code: ReedSolomonCode<F>,
 		log_batch_size: usize,
 		fold_arities: Vec<usize>,
 		n_test_queries: usize,
-	) -> Result<Self, Error> {
+	) -> Self {
 		let fold_arities_sum = fold_arities.iter().sum();
 		let log_terminal_dim = rs_code
 			.log_dim()
 			.checked_sub(fold_arities_sum)
-			.ok_or(Error::InvalidFoldAritySequence)?;
+			.expect("precondition: sum(fold_arities) must be at most rs_code.log_dim()");
 
 		let oracle_spec = OracleSpec {
 			log_msg_len: rs_code.log_dim() + log_batch_size,
@@ -85,7 +87,7 @@ where
 		};
 		let log_n_oracles = 0;
 		let max_log_msg_len = oracle_spec.log_msg_len;
-		Ok(Self {
+		Self {
 			rs_code,
 			input_oracles: vec![oracle_spec],
 			max_log_msg_len,
@@ -93,7 +95,7 @@ where
 			fold_arities,
 			log_terminal_dim,
 			n_test_queries,
-		})
+		}
 	}
 
 	/// Create parameters using the given arity selection strategy.
@@ -122,7 +124,7 @@ where
 		log_inv_rate: usize,
 		n_test_queries: usize,
 		strategy: &Strategy,
-	) -> Result<Self, Error>
+	) -> Self
 	where
 		DC: DomainContext<Field = F>,
 		MerkleScheme: MerkleTreeScheme<F>,
@@ -436,9 +438,6 @@ where
 /// soundness error from the FRI folding phase or any other protocols, only the query phase. This
 /// sets the proximity parameter for FRI to the code's unique decoding radius. See [DP24],
 /// Section 5.2, for concrete soundness analysis.
-///
-/// Throws [`Error::ParameterError`] if the security level is unattainable given the code
-/// parameters.
 ///
 /// [DP24]: <https://eprint.iacr.org/2024/504>
 pub fn calculate_n_test_queries(security_bits: usize, log_inv_rate: usize) -> usize {
@@ -793,8 +792,7 @@ mod tests {
 				log_inv_rate,
 				n_test_queries,
 				&MinProofSizeStrategy,
-			)
-			.unwrap();
+			);
 			assert_eq!(fri_params.fold_arities(), &[]);
 			assert_eq!(fri_params.log_batch_size(), 0);
 		}
@@ -809,8 +807,7 @@ mod tests {
 				log_inv_rate,
 				n_test_queries,
 				&MinProofSizeStrategy,
-			)
-			.unwrap();
+			);
 			assert_eq!(fri_params.fold_arities(), &[]);
 			assert_eq!(fri_params.log_batch_size(), 3);
 		}
@@ -825,8 +822,7 @@ mod tests {
 				log_inv_rate,
 				n_test_queries,
 				&MinProofSizeStrategy,
-			)
-			.unwrap();
+			);
 			assert_eq!(fri_params.fold_arities(), &[4, 4, 4]);
 			assert_eq!(fri_params.log_batch_size(), 4);
 		}
@@ -915,8 +911,7 @@ mod tests {
 				log_inv_rate,
 				n_test_queries,
 				&MinProofSizeStrategy,
-			)
-			.unwrap();
+			);
 			assert_eq!(fri_params.fold_arities(), &[]);
 			assert_eq!(fri_params.log_batch_size(), 1);
 		}
@@ -931,8 +926,7 @@ mod tests {
 				log_inv_rate,
 				n_test_queries,
 				&MinProofSizeStrategy,
-			)
-			.unwrap();
+			);
 			assert_eq!(fri_params.fold_arities(), &[4, 4, 4, 3]);
 			assert_eq!(fri_params.log_batch_size(), 1);
 		}

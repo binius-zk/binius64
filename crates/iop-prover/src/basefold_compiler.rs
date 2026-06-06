@@ -87,7 +87,6 @@ where
 					n_test_queries,
 					&MinProofSizeStrategy,
 				)
-				.expect("FRI params should be valid for given oracle spec")
 			})
 			.collect();
 
@@ -209,7 +208,6 @@ where
 					n_test_queries,
 					&MinProofSizeStrategy,
 				)
-				.expect("FRI params should be valid for given oracle spec")
 			})
 			.collect();
 

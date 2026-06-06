@@ -84,7 +84,6 @@ where
 					n_test_queries,
 					arity_strategy,
 				)
-				.expect("FRI params should be valid for given oracle spec")
 			})
 			.collect();
 
@@ -210,7 +209,6 @@ where
 					n_test_queries,
 					arity_strategy,
 				)
-				.expect("FRI params should be valid for given oracle spec")
 			})
 			.collect();
 

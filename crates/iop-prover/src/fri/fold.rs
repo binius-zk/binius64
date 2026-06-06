@@ -18,7 +18,7 @@ use binius_transcript::{
 use binius_utils::{SerializeBytes, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use tracing::instrument;
 
-use super::{error::Error, query::FRIQueryProver};
+use super::query::FRIQueryProver;
 use crate::{
 	fri::{BatchBrakedownOracleProver, BrakedownOracleProver, FRIOracleProver},
 	merkle_tree::MerkleTreeProver,
@@ -76,7 +76,7 @@ where
 		merkle_prover: &'a MerkleProver,
 		committed_codeword: FieldBuffer<P>,
 		committed: &'a MerkleProver::Committed,
-	) -> Result<Self, Error> {
+	) -> Self {
 		Self::new_batch(params, ntt, merkle_prover, vec![(committed_codeword, committed)])
 	}
 
@@ -86,34 +86,38 @@ where
 	/// folded and combined into a single first-round codeword. The codewords must be supplied in
 	/// the same order as [`FRIParams::input_oracles`], and each must match its oracle's batch
 	/// size.
+	///
+	/// ## Preconditions
+	///
+	/// * `committed_codewords.len()` must equal `params.input_oracles().len()`.
+	/// * Each input oracle's dimension (`log_msg_len - log_batch_size`) must be at most
+	///   `params.rs_code().log_dim()`.
+	/// * Each codeword's length must equal its oracle's Reed-Solomon code length plus its batch
+	///   size (`log_msg_len + log_inv_rate`).
 	pub fn new_batch(
 		params: &'a FRIParams<F>,
 		ntt: &'a NTT,
 		merkle_prover: &'a MerkleProver,
 		committed_codewords: Vec<(FieldBuffer<P>, &'a MerkleProver::Committed)>,
-	) -> Result<Self, Error> {
+	) -> Self {
 		let input_oracles = params.input_oracles();
-		if committed_codewords.len() != input_oracles.len() {
-			return Err(Error::InvalidArgs(format!(
-				"got {} committed codewords, expected {}",
-				committed_codewords.len(),
-				input_oracles.len(),
-			)));
-		}
+		assert_eq!(
+			committed_codewords.len(),
+			input_oracles.len(),
+			"precondition: committed_codewords.len() must equal params.input_oracles().len()"
+		);
 
 		// Each input oracle's Reed-Solomon dimension must not exceed the first-round (reduced) code
 		// dimension; smaller oracles are lifted (padded) to it. FRIParams only guarantees the
-		// inequality `log_msg_len - log_batch_size <= rs_code.log_dim()`, so validate it here
-		// rather than trusting the caller.
+		// inequality `log_msg_len - log_batch_size <= rs_code.log_dim()`, so assert it here rather
+		// than trusting the caller.
 		let log_dim = params.rs_code().log_dim();
 		let log_inv_rate = params.rs_code().log_inv_rate();
 		for spec in input_oracles {
-			if spec.log_msg_len - spec.log_batch_size > log_dim {
-				return Err(Error::InvalidArgs(format!(
-					"input oracle dimension {} exceeds the reduced code dimension {log_dim}",
-					spec.log_msg_len - spec.log_batch_size,
-				)));
-			}
+			assert!(
+				spec.log_msg_len - spec.log_batch_size <= log_dim,
+				"precondition: input oracle dimension must not exceed the reduced code dimension"
+			);
 		}
 
 		let folders = iter::zip(committed_codewords, input_oracles)
@@ -123,25 +127,24 @@ where
 				// first-round length by duplicating each entry `2^log_lift` times.
 				let oracle_log_dim = spec.log_msg_len - spec.log_batch_size;
 				let expected_log_len = spec.log_msg_len + log_inv_rate;
-				if codeword.log_len() != expected_log_len {
-					return Err(Error::InvalidArgs(
-						"interleaved codeword length must match the oracle's Reed-Solomon code length \
-						 plus its batch size"
-							.to_string(),
-					));
-				}
-				Ok(ProxTestFolder {
+				assert_eq!(
+					codeword.log_len(),
+					expected_log_len,
+					"precondition: interleaved codeword length must match the oracle's \
+					 Reed-Solomon code length plus its batch size"
+				);
+				ProxTestFolder {
 					log_batch_size: spec.log_batch_size,
 					log_lift: log_dim - oracle_log_dim,
 					codeword,
 					merkle_committed: committed,
-				})
+				}
 			})
-			.collect::<Result<Vec<_>, Error>>()?;
+			.collect::<Vec<_>>();
 		let batch_folder = BatchBrakedownFolder::new(folders, params.rs_code().log_len());
 
 		let next_commit_round = Some(params.log_batch_size());
-		Ok(Self {
+		Self {
 			params,
 			ntt,
 			merkle_prover,
@@ -149,7 +152,7 @@ where
 			curr_round: 0,
 			next_commit_round,
 			unprocessed_challenges: Vec::with_capacity(params.rs_code().log_dim()),
-		})
+		}
 	}
 
 	/// Number of fold rounds, including the final fold.
@@ -274,8 +277,9 @@ where
 		let coset_size = 1 << log_coset_size;
 
 		let _merkle_tree_span = tracing::debug_span!("Merkle Tree").entered();
-		let (commitment, committed) =
-			self.merkle_prover.commit(folded_codeword.as_ref(), coset_size);
+		let (commitment, committed) = self
+			.merkle_prover
+			.commit(folded_codeword.as_ref(), coset_size);
 
 		// The next commitment lands `next_arity` rounds after the current one. Once there is no
 		// next arity, this is the terminal codeword and no further commitments are made.
@@ -291,15 +295,20 @@ where
 	/// to get the final message. The result is the final message and a query prover instance.
 	///
 	/// This returns the final message and a query prover instance.
+	///
+	/// ## Preconditions
+	///
+	/// * All fold rounds must have been executed (`curr_round == n_rounds()`).
 	#[instrument(skip_all, name = "fri::FRIFolder::finalize", level = "debug")]
 	#[allow(clippy::type_complexity)]
 	pub fn finalize(
 		mut self,
-	) -> Result<(TerminateCodeword<F>, FRIQueryProver<'a, F, P, MerkleProver, MerkleScheme>), Error>
-	{
-		if self.curr_round != self.n_rounds() {
-			return Err(Error::EarlyProverFinish);
-		}
+	) -> (TerminateCodeword<F>, FRIQueryProver<'a, F, P, MerkleProver, MerkleScheme>) {
+		assert_eq!(
+			self.curr_round,
+			self.n_rounds(),
+			"precondition: all fold rounds must be executed before finalize"
+		);
 
 		self.unprocessed_challenges.clear();
 
@@ -318,7 +327,7 @@ where
 				..
 			} => {
 				let query_prover = FRIQueryProver::new(first_oracle, round_oracles);
-				Ok((last_codeword, query_prover))
+				(last_codeword, query_prover)
 			}
 			// The first fold fires at `curr_round == log_batch_size <= n_rounds` and
 			// `execute_fold_round` runs every round, so the first fold always precedes `finalize`.
@@ -328,16 +337,13 @@ where
 		}
 	}
 
-	pub fn finish_proof<Challenger_>(
-		self,
-		transcript: &mut ProverTranscript<Challenger_>,
-	) -> Result<(), Error>
+	pub fn finish_proof<Challenger_>(self, transcript: &mut ProverTranscript<Challenger_>)
 	where
 		Challenger_: Challenger,
 	{
 		let n_test_queries = self.params.n_test_queries();
 		let index_bits = self.params.index_bits();
-		let (terminate_codeword, query_prover) = self.finalize()?;
+		let (terminate_codeword, query_prover) = self.finalize();
 
 		// Sample all query indices before writing the (per-oracle batched) query openings. The
 		// decommitment advice is not absorbed by the challenger, so this matches the verifier
@@ -347,12 +353,10 @@ where
 			.collect::<Vec<_>>();
 
 		// Write the per-oracle batched query openings, then the terminal codeword in full.
-		query_prover.prove_queries(&indices, &mut transcript.decommitment())?;
+		query_prover.prove_queries(&indices, &mut transcript.decommitment());
 		transcript
 			.decommitment()
 			.write_scalar_slice(terminate_codeword.as_ref());
-
-		Ok(())
 	}
 }
 

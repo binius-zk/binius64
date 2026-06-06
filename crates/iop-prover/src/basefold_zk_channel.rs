@@ -195,8 +195,7 @@ where
 			self.merkle_prover,
 			buffer.to_ref(),
 			&mut self.rng,
-		)
-		.expect("FRI commit_masked should succeed with valid params");
+		);
 
 		// Send commitment via transcript.
 		self.transcript.message().write(&commitment);
@@ -240,8 +239,7 @@ where
 				self.merkle_prover,
 				committed_data.codeword.clone(),
 				&committed_data.committed,
-			)
-			.expect("FRI folder creation should succeed");
+			);
 
 			// Always use ZK variant.
 			let prover = basefold::prove_zk(

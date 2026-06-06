@@ -4,8 +4,6 @@
 pub enum Error {
 	#[error("invalid argument {arg}: {msg}")]
 	ArgumentError { arg: String, msg: String },
-	#[error("FRI error: {0}")]
-	Fri(#[from] binius_iop_prover::fri::Error),
 	#[error("basefold error: {0}")]
 	Basefold(#[from] binius_iop_prover::basefold::Error),
 	#[error("transcript error: {0}")]

@@ -83,7 +83,7 @@ where
 
 	// Finalize and get commitments
 	fri_fold_verifier.process_round(&mut transcript.message())?;
-	let round_commitments = fri_fold_verifier.finalize()?;
+	let round_commitments = fri_fold_verifier.finalize();
 
 	let fri_verifier = FRIQueryVerifier::new(
 		fri_params,
@@ -91,7 +91,7 @@ where
 		&codeword_commitment,
 		&round_commitments,
 		&challenges,
-	)?;
+	);
 
 	let final_fri_value = fri_verifier.verify(transcript)?;
 
@@ -147,7 +147,7 @@ where
 
 	// Finalize and get commitments
 	fri_fold_verifier.process_round(&mut transcript.message())?;
-	let round_commitments = fri_fold_verifier.finalize()?;
+	let round_commitments = fri_fold_verifier.finalize();
 
 	// TODO: Make all commitments after the first non-hiding
 	let fri_verifier = FRIQueryVerifier::new(
@@ -156,7 +156,7 @@ where
 		&codeword_commitment,
 		&round_commitments,
 		&challenges,
-	)?;
+	);
 
 	let final_fri_value = fri_verifier.verify(transcript)?;
 

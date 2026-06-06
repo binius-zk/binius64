@@ -188,9 +188,10 @@ where
 		&mut self,
 		transcript: &mut TranscriptReader<B>,
 	) -> Result<Option<Digest>, Error> {
-		if self.curr_round >= self.n_rounds() {
-			return Err(Error::InvalidArgs("FRI fold verifier: too many rounds".to_string()));
-		}
+		assert!(
+			self.curr_round < self.n_rounds(),
+			"precondition: process_round must not be called more than n_rounds() times"
+		);
 
 		let needs_commitment = self.commit_rounds[self.curr_round];
 		let commitment = if needs_commitment {
@@ -217,19 +218,20 @@ where
 
 	/// Finalizes the fold verifier and returns the collected commitments.
 	///
+	/// ## Preconditions
+	///
+	/// * All rounds must have been processed (see [`Self::is_complete`]).
+	///
 	/// ## Returns
 	///
 	/// The collected round commitments
-	pub fn finalize(self) -> Result<Vec<Digest>, Error> {
-		if !self.is_complete() {
-			return Err(Error::InvalidArgs(format!(
-				"FRI fold verifier not complete: processed {} of {} rounds",
-				self.curr_round,
-				self.n_rounds()
-			)));
-		}
+	pub fn finalize(self) -> Vec<Digest> {
+		assert!(
+			self.is_complete(),
+			"precondition: all fold rounds must be processed before finalize"
+		);
 
-		Ok(self.round_commitments)
+		self.round_commitments
 	}
 
 	/// Returns the current round number.

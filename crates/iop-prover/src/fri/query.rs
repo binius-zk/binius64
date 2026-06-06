@@ -8,18 +8,14 @@ use binius_utils::SerializeBytes;
 use bytes::BufMut;
 use tracing::instrument;
 
-use crate::{fri::Error, merkle_tree::MerkleTreeProver};
+use crate::merkle_tree::MerkleTreeProver;
 
 /// The prover counterpart of a `ProxTestOracle` (verifier side), producing the per-oracle query
 /// openings.
 pub trait ProxTestOracleProver<F> {
 	/// Writes the per-oracle batched query openings: the oracle's optimal Merkle layer once,
 	/// followed by each queried coset's values and Merkle opening proof.
-	fn open_queries<B: BufMut>(
-		&self,
-		indices: &[usize],
-		advice: &mut TranscriptWriter<B>,
-	) -> Result<(), Error>;
+	fn open_queries<B: BufMut>(&self, indices: &[usize], advice: &mut TranscriptWriter<B>);
 }
 
 /// The [`ProxTestOracleProver`] for a [Brakedown]-style interleaved code proximity check.
@@ -74,11 +70,7 @@ where
 	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
 	VCS: MerkleTreeScheme<F, Digest: SerializeBytes>,
 {
-	fn open_queries<B: BufMut>(
-		&self,
-		indices: &[usize],
-		advice: &mut TranscriptWriter<B>,
-	) -> Result<(), Error> {
+	fn open_queries<B: BufMut>(&self, indices: &[usize], advice: &mut TranscriptWriter<B>) {
 		open_oracle_queries(
 			self.merkle_prover,
 			&self.codeword,
@@ -124,15 +116,10 @@ where
 	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
 	VCS: MerkleTreeScheme<F, Digest: SerializeBytes>,
 {
-	fn open_queries<B: BufMut>(
-		&self,
-		indices: &[usize],
-		advice: &mut TranscriptWriter<B>,
-	) -> Result<(), Error> {
+	fn open_queries<B: BufMut>(&self, indices: &[usize], advice: &mut TranscriptWriter<B>) {
 		for oracle in &self.oracles {
-			oracle.open_queries(indices, advice)?;
+			oracle.open_queries(indices, advice);
 		}
-		Ok(())
 	}
 }
 
@@ -175,11 +162,7 @@ where
 	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
 	VCS: MerkleTreeScheme<F, Digest: SerializeBytes>,
 {
-	fn open_queries<B: BufMut>(
-		&self,
-		indices: &[usize],
-		advice: &mut TranscriptWriter<B>,
-	) -> Result<(), Error> {
+	fn open_queries<B: BufMut>(&self, indices: &[usize], advice: &mut TranscriptWriter<B>) {
 		open_oracle_queries(
 			self.merkle_prover,
 			&self.codeword,
@@ -205,8 +188,7 @@ fn open_oracle_queries<F, P, MerkleProver, B>(
 	log_lift: usize,
 	indices: &[usize],
 	advice: &mut TranscriptWriter<B>,
-) -> Result<(), Error>
-where
+) where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	MerkleProver: MerkleTreeProver<F>,
@@ -227,10 +209,8 @@ where
 			coset_log_size,
 			layer_depth,
 			advice,
-		)?;
+		);
 	}
-
-	Ok(())
 }
 
 /// A prover for the FRI query phase.
@@ -287,16 +267,12 @@ where
 	///
 	/// * `indices` - the sampled query indices into the original codeword domain
 	#[instrument(skip_all, name = "fri::FRIQueryProver::prove_queries", level = "debug")]
-	pub fn prove_queries<B>(
-		&self,
-		indices: &[usize],
-		advice: &mut TranscriptWriter<B>,
-	) -> Result<(), Error>
+	pub fn prove_queries<B>(&self, indices: &[usize], advice: &mut TranscriptWriter<B>)
 	where
 		B: BufMut,
 		VCS::Digest: SerializeBytes,
 	{
-		self.codeword_oracle.open_queries(indices, advice)?;
+		self.codeword_oracle.open_queries(indices, advice);
 
 		// Each subsequent oracle indexes the previous virtual oracle, so shift the query indices
 		// right by the round's arity before opening it.
@@ -305,10 +281,8 @@ where
 			for index in &mut indices {
 				*index >>= fri_oracle.coset_log_size;
 			}
-			fri_oracle.open_queries(&indices, advice)?;
+			fri_oracle.open_queries(&indices, advice);
 		}
-
-		Ok(())
 	}
 }
 
@@ -320,8 +294,7 @@ fn prove_coset_opening<F, P, MTProver, B>(
 	log_coset_size: usize,
 	optimal_layer_depth: usize,
 	advice: &mut TranscriptWriter<B>,
-) -> Result<(), Error>
-where
+) where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	MTProver: MerkleTreeProver<F>,
@@ -333,6 +306,4 @@ where
 	advice.write_scalar_iter(values.iter_scalars());
 
 	merkle_prover.prove_opening(committed, optimal_layer_depth, coset_index, advice);
-
-	Ok(())
 }

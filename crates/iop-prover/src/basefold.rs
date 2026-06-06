@@ -17,14 +17,12 @@ use binius_transcript::{
 use binius_utils::{SerializeBytes, rayon::prelude::*};
 
 use crate::{
-	fri::{self, FRIFoldProver, FoldRoundOutput},
+	fri::{FRIFoldProver, FoldRoundOutput},
 	merkle_tree::MerkleTreeProver,
 };
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-	#[error("FRI error: {0}")]
-	Fri(#[from] fri::Error),
 	#[error("sumcheck error: {0}")]
 	Sumcheck(#[from] binius_ip_prover::sumcheck::Error),
 }
@@ -145,7 +143,7 @@ where
 			let challenge = transcript.sample();
 			self.fold(challenge)?;
 		}
-		self.finish(transcript)?;
+		self.finish(transcript);
 
 		Ok(())
 	}
@@ -154,14 +152,13 @@ where
 	///
 	/// ## Arguments
 	/// * `prover_challenger` - the prover's mutable transcript
-	fn finish<T: Challenger>(mut self, transcript: &mut ProverTranscript<T>) -> Result<(), Error> {
+	fn finish<T: Challenger>(mut self, transcript: &mut ProverTranscript<T>) {
 		let commitment = self.fri_folder.execute_fold_round();
 		if let FoldRoundOutput::Commitment(commitment) = commitment {
 			transcript.message().write(&commitment);
 		}
 
-		self.fri_folder.finish_proof(transcript)?;
-		Ok(())
+		self.fri_folder.finish_proof(transcript);
 	}
 }
 
@@ -295,19 +292,19 @@ mod test {
 			LOG_INV_RATE,
 			n_test_queries,
 			&ConstantArityStrategy::new(2),
-		)?;
+		);
 
 		let CommitOutput {
 			commitment: codeword_commitment,
 			committed: codeword_committed,
 			codeword,
-		} = fri::commit_interleaved(&fri_params, &ntt, &merkle_prover, multilinear.to_ref())?;
+		} = fri::commit_interleaved(&fri_params, &ntt, &merkle_prover, multilinear.to_ref());
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover_transcript.message().write(&codeword_commitment);
 
 		let fri_folder =
-			FRIFoldProver::new(&fri_params, &ntt, &merkle_prover, codeword, &codeword_committed)?;
+			FRIFoldProver::new(&fri_params, &ntt, &merkle_prover, codeword, &codeword_committed);
 
 		let prover = BaseFoldProver::new(multilinear, eval_point_eq, evaluation_claim, fri_folder);
 		prover.prove(&mut prover_transcript)?;
@@ -396,7 +393,7 @@ mod test {
 			LOG_INV_RATE,
 			32,
 			&ConstantArityStrategy::new(2),
-		)?;
+		);
 
 		// Build the combined (witness || mask) buffer for commitment.
 		let combined_values: Vec<P> = witness
@@ -412,13 +409,13 @@ mod test {
 			commitment: codeword_commitment,
 			committed: codeword_committed,
 			codeword,
-		} = fri::commit_interleaved(&fri_params, &ntt, &merkle_prover, witness_plus_mask.to_ref())?;
+		} = fri::commit_interleaved(&fri_params, &ntt, &merkle_prover, witness_plus_mask.to_ref());
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover_transcript.message().write(&codeword_commitment);
 
 		let fri_folder =
-			FRIFoldProver::new(&fri_params, &ntt, &merkle_prover, codeword, &codeword_committed)?;
+			FRIFoldProver::new(&fri_params, &ntt, &merkle_prover, codeword, &codeword_committed);
 
 		// Run prove_zk then continue with basefold prover
 		let prover = prove_zk(

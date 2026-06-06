@@ -9,7 +9,6 @@ use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT};
 use binius_utils::{rand::par_rand, rayon::prelude::*};
 use rand::{CryptoRng, rngs::StdRng};
 
-use super::error::Error;
 use crate::merkle_tree::MerkleTreeProver;
 
 #[derive(Debug)]
@@ -27,12 +26,16 @@ pub struct CommitOutput<P: PackedField, VCSCommitment, VCSCommitted> {
 /// * `params` - common FRI protocol parameters.
 /// * `merkle_prover` - the merke tree prover to use for committing
 /// * `message` - the interleaved message to encode and commit
+///
+/// ## Preconditions
+///
+/// * `message.log_len()` must equal `params.log_msg_len()`.
 pub fn commit_interleaved<F, P, NTT, MerkleProver, VCS>(
 	params: &FRIParams<F>,
 	ntt: &NTT,
 	merkle_prover: &MerkleProver,
 	message: FieldSlice<P>,
-) -> Result<CommitOutput<P, VCS::Digest, MerkleProver::Committed>, Error>
+) -> CommitOutput<P, VCS::Digest, MerkleProver::Committed>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -40,11 +43,11 @@ where
 	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
 	VCS: MerkleTreeScheme<F>,
 {
-	if message.log_len() != params.log_msg_len() {
-		return Err(Error::InvalidArgs(
-			"interleaved message length does not match code parameters".to_string(),
-		));
-	}
+	assert_eq!(
+		message.log_len(),
+		params.log_msg_len(),
+		"precondition: interleaved message length must match code parameters"
+	);
 
 	let rs_code = params.rs_code();
 	let log_batch_size = params.log_batch_size();
@@ -72,11 +75,11 @@ where
 	};
 	drop(merkle_tree_span);
 
-	Ok(CommitOutput {
+	CommitOutput {
 		commitment: commitment.root,
 		committed: vcs_committed,
 		codeword: encoded,
-	})
+	}
 }
 
 #[derive(Debug)]
@@ -112,7 +115,7 @@ pub fn commit_masked<F, P, NTT, MerkleProver, VCS>(
 	merkle_prover: &MerkleProver,
 	message: FieldSlice<P>,
 	mut rng: impl CryptoRng,
-) -> Result<CommitMaskedOutput<P, VCS::Digest, MerkleProver::Committed>, Error>
+) -> CommitMaskedOutput<P, VCS::Digest, MerkleProver::Committed>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -152,14 +155,14 @@ where
 		commitment,
 		committed,
 		codeword,
-	} = commit_interleaved(params, ntt, merkle_prover, combined.to_ref())?;
+	} = commit_interleaved(params, ntt, merkle_prover, combined.to_ref());
 
-	Ok(CommitMaskedOutput {
+	CommitMaskedOutput {
 		commitment,
 		committed,
 		codeword,
 		mask,
-	})
+	}
 }
 
 /// Creates a parallel iterator over scalars of subfield elements. Assumes chunk_size to be a power
@@ -239,8 +242,7 @@ mod tests {
 			log_inv_rate,
 			n_test_queries,
 			&binius_iop::fri::ConstantArityStrategy::new(2),
-		)
-		.unwrap();
+		);
 
 		assert_eq!(params.log_batch_size(), 1);
 		assert_eq!(params.rs_code().log_dim(), log_dim);
@@ -248,7 +250,7 @@ mod tests {
 		let message = random_field_buffer::<P>(&mut rng, log_dim);
 
 		let output: CommitMaskedOutput<P, _, _> =
-			commit_masked(&params, &ntt, &merkle_prover, message.to_ref(), &mut rng).unwrap();
+			commit_masked(&params, &ntt, &merkle_prover, message.to_ref(), &mut rng);
 
 		// Verify mask has correct dimensions.
 		assert_eq!(output.mask.log_len(), log_dim);

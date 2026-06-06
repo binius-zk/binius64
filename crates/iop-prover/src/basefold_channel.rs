@@ -119,7 +119,6 @@ where
 					n_test_queries,
 					&MinProofSizeStrategy,
 				)
-				.expect("FRI params should be valid for given oracle spec")
 			})
 			.collect();
 
@@ -238,8 +237,7 @@ where
 			commitment,
 			committed,
 			codeword,
-		} = fri::commit_interleaved(fri_params, self.ntt, self.merkle_prover, buffer)
-			.expect("FRI commit should succeed with valid params");
+		} = fri::commit_interleaved(fri_params, self.ntt, self.merkle_prover, buffer);
 
 		// Send commitment via transcript
 		self.transcript.message().write(&commitment);
@@ -285,8 +283,7 @@ where
 				self.merkle_prover,
 				committed_data.codeword.clone(),
 				&committed_data.committed,
-			)
-			.expect("FRI folder creation should succeed");
+			);
 
 			// Run BaseFold proof (non-ZK variant).
 			let prover = BaseFoldProver::new(message, transparent_poly, eval_claim, fri_folder);
