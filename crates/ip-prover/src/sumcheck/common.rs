@@ -54,6 +54,20 @@ pub trait SumcheckProver<F: Field> {
 	/// The returned Vec must have length equal to [`Self::n_claims`].
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error>;
 
+	/// Returns the claimed sums for the current round, one per claim.
+	///
+	/// The returned Vec has length equal to [`Self::n_claims`]. For claim $i$, this is the value
+	/// $s_i$ that the round polynomial $R_i$ returned by [`Self::execute`] satisfies via the
+	/// sumcheck identity $s_i = R_i(0) + R_i(1)$.
+	///
+	/// This may be called either before [`Self::execute`] (when the prover holds the claim sums
+	/// directly) or after it (when the prover holds the round coefficients, in which case the value
+	/// is recovered from them). A regular sumcheck prover recovers it as $R_i(0) + R_i(1)$ (see
+	/// [`RoundCoeffs::sum_over_endpoints`]), while an MLE-check prover (see [`MleCheckProver`])
+	/// recovers it as $(1 - \alpha) R_i(0) + \alpha R_i(1)$ with $\alpha$ the round's coordinate
+	/// (see [`RoundCoeffs::lerp_over_endpoints`]).
+	fn round_claim(&self) -> Vec<F>;
+
 	/// Folds the sumcheck multilinears with a new verifier challenge.
 	fn fold(&mut self, challenge: F) -> Result<(), Error>;
 
@@ -78,6 +92,10 @@ where
 
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
 		either::for_both!(self, inner => inner.execute())
+	}
+
+	fn round_claim(&self) -> Vec<F> {
+		either::for_both!(self, inner => inner.round_claim())
 	}
 
 	fn fold(&mut self, challenge: F) -> Result<(), Error> {

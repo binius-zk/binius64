@@ -26,6 +26,33 @@ impl<F: FieldOps> RoundCoeffs<F> {
 	}
 }
 
+impl<F: Field> RoundCoeffs<F> {
+	/// The claimed sum $R(0) + R(1)$ that this round polynomial encodes.
+	///
+	/// For a sumcheck round polynomial, this is the round's claimed sum: the verifier expects the
+	/// identity $s = R(0) + R(1)$ (see [`RoundProof::recover`]). Note $R(0)$ is the constant
+	/// coefficient and $R(1)$ is the sum of all coefficients.
+	pub fn sum_over_endpoints(&self) -> F {
+		let r_0 = self.0.first().copied().unwrap_or(F::ZERO);
+		let r_1: F = self.0.iter().copied().sum();
+		r_0 + r_1
+	}
+
+	/// The claimed value $(1 - \alpha) R(0) + \alpha R(1)$ that this round polynomial encodes in an
+	/// MLE-check.
+	///
+	/// This is the MLE-check analogue of [`Self::sum_over_endpoints`]: an MLE-check round
+	/// polynomial satisfies the identity $s = (1 - \alpha) R(0) + \alpha R(1)$, where $\alpha$ is
+	/// the round's evaluation-point coordinate (see [`crate::mlecheck::RoundProof::recover`]).
+	/// Equivalently, this is the linear extrapolation of $R$ from the endpoints $0$ and $1$ to the
+	/// point $\alpha$.
+	pub fn lerp_over_endpoints(&self, alpha: F) -> F {
+		let r_0 = self.0.first().copied().unwrap_or(F::ZERO);
+		let r_1: F = self.0.iter().copied().sum();
+		r_0 + alpha * (r_1 - r_0)
+	}
+}
+
 impl<F: Field> Add<&Self> for RoundCoeffs<F> {
 	type Output = Self;
 

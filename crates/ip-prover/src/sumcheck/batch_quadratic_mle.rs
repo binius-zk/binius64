@@ -110,6 +110,19 @@ where
 		M
 	}
 
+	fn round_claim(&self) -> Vec<F> {
+		match &self.last_coeffs_or_eval {
+			RoundCoeffsOrEvals::Evals(evals) => evals.to_vec(),
+			RoundCoeffsOrEvals::Coeffs(coeffs) => {
+				let alpha = self.gruen32.next_coordinate();
+				coeffs
+					.iter()
+					.map(|coeffs| coeffs.lerp_over_endpoints(alpha))
+					.collect()
+			}
+		}
+	}
+
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
 		// State machine: execute consumes evals from the previous round and produces new coeffs.
 		let last_eval = match &self.last_coeffs_or_eval {

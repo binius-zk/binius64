@@ -93,6 +93,17 @@ where
 		}
 	}
 
+	fn round_claim(&self) -> Vec<F> {
+		match &self.last_coeffs_or_sums {
+			RoundCoeffsOrSums::Sums(sums) => sums.clone(),
+			// This prover has a separate evaluation point per claim, so each round polynomial is
+			// interpolated against its own coordinate.
+			RoundCoeffsOrSums::Coeffs(coeffs) => izip!(coeffs, &self.gruen32s)
+				.map(|(coeffs, gruen32)| coeffs.lerp_over_endpoints(gruen32.next_coordinate()))
+				.collect(),
+		}
+	}
+
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
 		let RoundCoeffsOrSums::Sums(sums) = &self.last_coeffs_or_sums else {
 			return Err(Error::ExpectedFold);
@@ -372,6 +383,50 @@ mod tests {
 				assert_eq!(inverted_coeffs.len(), 1);
 				assert_eq!(selector_coeffs, direct_coeffs[0].clone() + &inverted_coeffs[0]);
 			}
+		}
+	}
+
+	// `round_claim` must return the same value before and after `execute()`. This prover has a
+	// distinct evaluation point per claim, so it exercises the per-claim coordinate path.
+	#[test]
+	fn test_round_claim_per_claim_coordinate() {
+		let mut rng = StdRng::seed_from_u64(1);
+		let n_vars = 6;
+		let selector_count = 3;
+
+		let selector_mask = (1u16 << selector_count) - 1;
+		let bitmasks = repeat_with(|| rng.random::<u16>() & selector_mask)
+			.take(1 << n_vars)
+			.collect_vec();
+		let selected_scalars = random_scalars::<F>(&mut rng, 1 << n_vars);
+		let selected = FieldBuffer::<P>::from_values(&selected_scalars);
+
+		let claims = (0..selector_count)
+			.map(|i| {
+				let selector_scalars = bitmasks
+					.iter()
+					.map(|b| if (b >> i) & 1 == 1 { F::ONE } else { F::ZERO })
+					.collect_vec();
+				// The composition is `selected * selector + (1 - selector)`.
+				let masked = izip!(&selected_scalars, &selector_scalars)
+					.map(|(&selected, &selector)| selected * selector + (F::ONE - selector))
+					.collect_vec();
+				let masked = FieldBuffer::<P>::from_values(&masked);
+				let point = random_scalars::<F>(&mut rng, n_vars);
+				let value = multilinear_evaluate(&masked, &point);
+				Claim { point, value }
+			})
+			.collect_vec();
+
+		let mut prover = SelectorMlecheckProver::new(selected, claims, &bitmasks, 0).unwrap();
+
+		for _ in 0..n_vars {
+			// The claim recovered from the round coefficients (post-execute, via lerp against each
+			// claim's coordinate) must equal the stored claim (pre-execute).
+			let before = prover.round_claim();
+			let _ = prover.execute().unwrap();
+			assert_eq!(prover.round_claim(), before, "claim recovered from coeffs");
+			prover.fold(F::random(&mut rng)).unwrap();
 		}
 	}
 }

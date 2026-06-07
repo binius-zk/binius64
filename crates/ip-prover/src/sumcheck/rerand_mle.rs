@@ -82,6 +82,19 @@ where
 		}
 	}
 
+	fn round_claim(&self) -> Vec<F> {
+		match &self.last_coeffs_or_sums {
+			RoundCoeffsOrSums::Sums(sums) => sums.clone(),
+			RoundCoeffsOrSums::Coeffs(coeffs) => {
+				let alpha = self.gruen32.next_coordinate();
+				coeffs
+					.iter()
+					.map(|coeffs| coeffs.lerp_over_endpoints(alpha))
+					.collect()
+			}
+		}
+	}
+
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
 		let RoundCoeffsOrSums::Sums(sums) = &self.last_coeffs_or_sums else {
 			return Err(Error::ExpectedFold);

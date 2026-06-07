@@ -122,6 +122,16 @@ where
 		1
 	}
 
+	fn round_claim(&self) -> Vec<F> {
+		let claim = match &self.last_coeffs_or_eval {
+			RoundCoeffsOrEval::Eval(eval) => *eval,
+			RoundCoeffsOrEval::Coeffs(coeffs) => {
+				coeffs.lerp_over_endpoints(self.gruen32.next_coordinate())
+			}
+		};
+		vec![claim]
+	}
+
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
 		let last_eval = match &self.last_coeffs_or_eval {
 			RoundCoeffsOrEval::Eval(eval) => *eval,
@@ -402,5 +412,45 @@ mod tests {
 			|[a, b, c, d]| (a + b) * (c + d),
 			|[a, b, c, d]| (a + b) * (c + d),
 		);
+	}
+
+	// `round_claim` must return the same value before and after `execute()`: the MLE-check claim
+	// recovered from the round coefficients via `lerp_over_endpoints` must equal the stored claim.
+	#[test]
+	fn test_round_claim_lerp_recovery() {
+		use binius_field::{Random, arch::OptimalB128};
+		type P = OptimalPackedB128;
+		type F = OptimalB128;
+
+		let n_vars = 8;
+		let mut rng = StdRng::seed_from_u64(0);
+
+		let multilinears: [_; 2] = array::from_fn(|_| random_field_buffer::<P>(&mut rng, n_vars));
+		let composition = |[a, b]: [P; 2]| a * b;
+		let composite_vals = (0..1 << n_vars.saturating_sub(P::LOG_WIDTH))
+			.map(|i| composition(array::from_fn(|j| multilinears[j].as_ref()[i])))
+			.collect_vec();
+		let composite_vals = FieldBuffer::new(n_vars, composite_vals);
+		let eval_point = random_scalars::<F>(&mut rng, n_vars);
+		let eval_claim = evaluate(&composite_vals, &eval_point);
+
+		let mut prover = QuadraticMleCheckProver::new(
+			multilinears,
+			composition,
+			composition,
+			eval_point,
+			eval_claim,
+		)
+		.unwrap();
+
+		let mut expected = vec![eval_claim];
+		for _ in 0..n_vars {
+			assert_eq!(prover.round_claim(), expected, "claim before execute");
+			let round = prover.execute().unwrap();
+			assert_eq!(prover.round_claim(), expected, "claim recovered from coeffs");
+			let challenge = F::random(&mut rng);
+			expected = round.iter().map(|r| r.evaluate(challenge)).collect();
+			prover.fold(challenge).unwrap();
+		}
 	}
 }
