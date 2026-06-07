@@ -6,13 +6,22 @@
 //! using FRI commitment and ZK BaseFold opening protocols. Unlike [`super::basefold_channel`],
 //! this channel always applies zero-knowledge blinding to all oracles.
 
+use std::iter;
+
 use binius_field::BinaryField;
-use binius_ip::channel::IPVerifierChannel;
+use binius_ip::{
+	channel::IPVerifierChannel,
+	sumcheck::{self, BatchSumcheckOutput},
+};
+use binius_math::{
+	line::extrapolate_line_packed, multilinear::eq::eq_ind_zero, univariate::evaluate_univariate,
+};
 use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
 use binius_utils::DeserializeBytes;
+use itertools::izip;
 
 use crate::{
 	basefold,
@@ -184,37 +193,78 @@ where
 		&mut self,
 		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error> {
-		for relation in oracle_relations {
-			let index = relation.oracle.index;
+		let relations = oracle_relations.into_iter().collect::<Vec<_>>();
+		if relations.is_empty() {
+			return Ok(());
+		}
+
+		let indices: Vec<usize> = relations.iter().map(|r| r.oracle.index).collect();
+		for &index in &indices {
 			assert!(
 				index < self.oracle_commitments.len(),
 				"oracle index {index} out of bounds, expected < {}",
 				self.oracle_commitments.len()
 			);
+		}
+		let n_vars: Vec<usize> = indices
+			.iter()
+			.map(|&i| self.oracle_specs[i].log_msg_len)
+			.collect();
+		let max_n = *n_vars.iter().max().expect("relations is non-empty");
 
-			let fri_params = &self.fri_params[index];
+		// === Masking step ===
+		// Read the masked inner products σ_i, sample γ, and form the masked claims s_i'.
+		let sigmas = self.recv_many(relations.len())?;
+		let gamma = self.sample();
+		let sum_primes = iter::zip(&relations, sigmas)
+			.map(|(relation, sigma)| extrapolate_line_packed(relation.claim, sigma, gamma))
+			.collect::<Vec<_>>();
+
+		// === Phase A: batched sumcheck on the masked claims (degree 2, bivariate product) ===
+		let BatchSumcheckOutput {
+			batch_coeff: sumcheck_batch_coeff,
+			eval: sumcheck_reduced_eval,
+			challenges: sumcheck_challenges,
+		} = sumcheck::batch_verify::<F, _>(max_n, 2, &sum_primes, self.transcript)?;
+		let alphas = self.recv_many(relations.len())?;
+
+		// `batch_verify` returns binding-order challenges; reverse to variable-indexed
+		// (low-to-high).
+		let mut point = sumcheck_challenges;
+		point.reverse();
+
+		// Reduce the batched claim: each oracle contributes α_i · t_i(ρ_i) · eq(0^extra, padding),
+		// combined with the batching coefficient.
+		let contributions: Vec<F> = izip!(relations, &n_vars, &alphas)
+			.map(|(relation, &n_i, &alpha_i)| {
+				let (eval_coords, padding_coords) = point.split_at(n_i);
+				let pad_eq = eq_ind_zero(padding_coords);
+				let transparent_eval = (relation.transparent)(eval_coords);
+				alpha_i * transparent_eval * pad_eq
+			})
+			.collect();
+		let expected = evaluate_univariate(&contributions, sumcheck_batch_coeff);
+		self.assert_zero(sumcheck_reduced_eval - expected)?;
+
+		// === Phase B: per-oracle MLE-check BaseFold verification ===
+		for (index, alpha, n_i) in izip!(indices, alphas, n_vars) {
 			let commitment = self.oracle_commitments[index].clone();
-
-			// Always use ZK verification.
 			let basefold::ReducedOutput {
 				final_fri_value,
 				final_sumcheck_value,
-				challenges,
-			} = basefold::verify_zk(
-				fri_params,
+				..
+			} = basefold::verify_mlecheck_basefold_zk(
+				&self.fri_params[index],
 				self.merkle_scheme,
 				commitment,
-				relation.claim,
+				alpha,
+				&point[..n_i],
+				gamma,
 				self.transcript,
 			)?;
 
-			// Strip batch challenge (challenges[0]) and reverse remaining for eval point.
-			let mut eval_point: Vec<F> = challenges[1..].to_vec();
-			eval_point.reverse();
-
-			let transparent_eval = (relation.transparent)(&eval_point);
-
-			self.assert_zero(final_sumcheck_value - final_fri_value * transparent_eval)?;
+			// The MLE-check internalizes the eq factor, so consistency is plain equality.
+			self.assert_zero(final_sumcheck_value - final_fri_value)?;
 		}
 
 		Ok(())

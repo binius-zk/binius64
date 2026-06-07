@@ -202,6 +202,18 @@ pub fn eq_ind<F: FieldOps>(x: &[F], y: &[F]) -> F {
 		.product()
 }
 
+/// Evaluates the equality indicator multilinear with one operand fixed to all zeros.
+///
+/// This is `eq_ind(0^n, point)`, which simplifies to
+///
+/// $$
+/// \widetilde{eq}(0^n, Y_0, \ldots, Y_{n-1}) = \prod_{i=0}^{n-1} (1 - Y_i).
+/// $$
+pub fn eq_ind_zero<F: FieldOps>(point: &[F]) -> F {
+	let one = F::one();
+	point.iter().map(|y| one.clone() - y.clone()).product()
+}
+
 /// Computes the partial evaluation of the equality indicator polynomial, returning scalars.
 ///
 /// This is a scalar-only variant of [`eq_ind_partial_eval`] that returns a `Vec<F>` instead of
@@ -281,6 +293,17 @@ mod tests {
 				let hypercube_point = index_to_hypercube_point(coords.len(), i);
 				assert_eq!(v, eq_ind(&hypercube_point, &coords));
 			}
+		}
+	}
+
+	#[test]
+	fn test_eq_ind_zero() {
+		let mut rng = StdRng::seed_from_u64(0);
+		for n in 0..5 {
+			let point = random_scalars::<F>(&mut rng, n);
+			let expected: F = point.iter().map(|&r| F::ONE - r).product();
+			assert_eq!(eq_ind_zero(&point), expected);
+			assert_eq!(eq_ind_zero(&point), eq_ind(&vec![F::ZERO; n], &point));
 		}
 	}
 

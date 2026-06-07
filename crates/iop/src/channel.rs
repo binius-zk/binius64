@@ -28,6 +28,8 @@ pub enum Error {
 	BaseFold(#[from] basefold::Error),
 	#[error("IP channel error: {0}")]
 	IPChannel(#[from] binius_ip::channel::Error),
+	#[error("sumcheck error: {0}")]
+	Sumcheck(#[from] binius_ip::sumcheck::Error),
 }
 
 /// Specification for an oracle to be committed in the IOP.

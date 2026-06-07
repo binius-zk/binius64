@@ -9,17 +9,26 @@
 
 use binius_field::{BinaryField, PackedField};
 use binius_iop::{channel::OracleSpec, fri::FRIParams, merkle_tree::MerkleTreeScheme};
-use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT};
+use binius_ip_prover::{
+	channel::IPProverChannel,
+	sumcheck::{
+		PaddedSumcheckDecorator, batch::batch_prove,
+		bivariate_product::BivariateProductSumcheckProver,
+	},
+};
+use binius_math::{
+	FieldBuffer, FieldSlice, inner_product::inner_product_par, line::extrapolate_line_packed,
+	ntt::AdditiveNTT,
+};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_utils::SerializeBytes;
+use binius_utils::{SerializeBytes, rayon::prelude::*};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::{
-	basefold,
+	basefold::prove_mlecheck_basefold_zk,
 	basefold_compiler::BaseFoldZKProverCompiler,
 	channel::IOPProverChannel,
 	fri::{self, CommitMaskedOutput, FRIFoldProver},
@@ -217,42 +226,104 @@ where
 			Item = (Self::Oracle, FieldBuffer<P>, FieldBuffer<P>, P::Scalar),
 		>,
 	) {
-		for (oracle, message, transparent_poly, eval_claim) in oracle_relations {
-			let index = oracle.index;
+		let relations: Vec<_> = oracle_relations.into_iter().collect();
+		if relations.is_empty() {
+			return;
+		}
+
+		let indices: Vec<usize> = relations.iter().map(|(oracle, ..)| oracle.index).collect();
+		for &index in &indices {
 			assert!(
 				index < self.committed_oracles.len(),
 				"oracle index {index} out of bounds, expected < {}",
 				self.committed_oracles.len()
 			);
+		}
+		let n_vars: Vec<usize> = indices
+			.iter()
+			.map(|&i| self.oracle_specs[i].log_msg_len)
+			.collect();
+		let max_n = *n_vars.iter().max().expect("relations is non-empty");
 
-			let fri_params = &self.fri_params[index];
-			let committed_data = &self.committed_oracles[index];
+		// === Masking step (whitepaper 7.2) ===
+		// Send the masked inner products σ_i = ⟨ω_i, t_i⟩, then sample a single masking challenge
+		// γ.
+		let sigmas: Vec<F> = relations
+			.iter()
+			.zip(&indices)
+			.map(|((_, _, transparent, _), &index)| {
+				inner_product_par(&self.committed_oracles[index].mask, transparent)
+			})
+			.collect();
+		self.send_many(&sigmas);
+		let gamma: F = self.sample();
+		let gamma_broadcast = P::broadcast(gamma);
+
+		// === Phase A: batched sumcheck on the masked claims ⟨π_i', t_i⟩ = s_i' ===
+		// Form π_i' = (1-γ)π_i + γω_i (keep a clone for Phase B), pad each prover to `max_n`.
+		let mut witness_primes = Vec::with_capacity(relations.len());
+		let mut provers = Vec::with_capacity(relations.len());
+		for ((((_, mut message, transparent, claim), &index), &n_i), &sigma) in relations
+			.into_iter()
+			.zip(&indices)
+			.zip(&n_vars)
+			.zip(&sigmas)
+		{
 			assert_eq!(
 				message.log_len(),
-				self.oracle_specs[index].log_msg_len,
+				n_i,
 				"oracle message log_len mismatch for oracle {index}"
 			);
+			let mask = &self.committed_oracles[index].mask;
+			(message.as_mut(), mask.as_ref())
+				.into_par_iter()
+				.for_each(|(message_i, &mask_i)| {
+					*message_i = extrapolate_line_packed(*message_i, mask_i, gamma_broadcast);
+				});
+			witness_primes.push(message.clone());
 
+			let sum_prime = extrapolate_line_packed(claim, sigma, gamma);
+			let inner = BivariateProductSumcheckProver::new([message, transparent], sum_prime)
+				.expect("π_i' and t_i have equal length");
+			provers.push(PaddedSumcheckDecorator::new(inner, max_n - n_i));
+		}
+
+		let output = batch_prove(provers, self).expect("batched sumcheck proving should succeed");
+
+		// Reduced oracle evaluations α_i = π_i'(ρ_i); `output.challenges` is already reversed to
+		// low-to-high (variable-indexed) order, so ρ_i is its first n_i coordinates.
+		let alphas: Vec<F> = output
+			.multilinear_evals
+			.iter()
+			.map(|evals| evals[0])
+			.collect();
+		self.send_many(&alphas);
+
+		// === Phase B: per-oracle BaseFold FRI interleaved with a MultilinearEvalProver ===
+		for (((witness_prime, &index), &n_i), &alpha) in witness_primes
+			.into_iter()
+			.zip(&indices)
+			.zip(&n_vars)
+			.zip(&alphas)
+		{
+			let eval_point = output.challenges[..n_i].to_vec();
+			let committed = &self.committed_oracles[index];
 			let fri_folder = FRIFoldProver::new(
-				fri_params,
+				&self.fri_params[index],
 				self.ntt,
 				self.merkle_prover,
-				committed_data.codeword.clone(),
-				&committed_data.committed,
+				committed.codeword.clone(),
+				&committed.committed,
 			);
-
-			// Always use ZK variant.
-			let prover = basefold::prove_zk(
-				message,
-				committed_data.mask.clone(),
-				transparent_poly,
-				eval_claim,
+			prove_mlecheck_basefold_zk(
+				witness_prime,
+				&eval_point,
+				alpha,
+				gamma,
 				fri_folder,
 				self.transcript,
-			);
-			prover
-				.prove(self.transcript)
-				.expect("BaseFold ZK proof should succeed");
+			)
+			.expect("MLE-check BaseFold proof should succeed");
 		}
 	}
 }
