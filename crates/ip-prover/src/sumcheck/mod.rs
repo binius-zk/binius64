@@ -9,6 +9,7 @@ pub mod common;
 mod error;
 pub mod gruen32;
 mod mle_to_sumcheck;
+pub mod multilinear_eval;
 mod padded;
 mod prove;
 pub mod quadratic_mle;
