@@ -273,6 +273,17 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 		1
 	}
 
+	fn round_claim(&self) -> Vec<F> {
+		let claim = match &self.last_coeffs_or_claim {
+			RoundCoeffsOrClaim::Claim(claim) => *claim,
+			RoundCoeffsOrClaim::Coeffs(coeffs) => {
+				let alpha = self.eval_point[self.n_vars_remaining - 1];
+				coeffs.lerp_over_endpoints(alpha)
+			}
+		};
+		vec![claim]
+	}
+
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
 		let RoundCoeffsOrClaim::Claim(_claim) = &self.last_coeffs_or_claim else {
 			return Err(Error::ExpectedFold);

@@ -44,6 +44,14 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 		1
 	}
 
+	fn round_claim(&self) -> Vec<F> {
+		let claim = match &self.last_coeffs_or_sum {
+			RoundCoeffsOrSum::Sum(sum) => *sum,
+			RoundCoeffsOrSum::Coeffs(coeffs) => coeffs.sum_over_endpoints(),
+		};
+		vec![claim]
+	}
+
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
 		let RoundCoeffsOrSum::Sum(last_sum) = &self.last_coeffs_or_sum else {
 			return Err(Error::ExpectedFold);

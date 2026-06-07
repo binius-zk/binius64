@@ -51,6 +51,17 @@ impl<F: Field, InnerProver: MleCheckProver<F>> SumcheckProver<F>
 		self.mlecheck_prover.n_claims()
 	}
 
+	fn round_claim(&self) -> Vec<F> {
+		// The sumcheck round claim is the inner MLE-check claim scaled by the accumulated equality
+		// prefix: R^sc(0) + R^sc(1) = eq_prefix_eval * [(1 - α) p(0) + α p(1)] = eq_prefix_eval *
+		// m, where m is the inner MLE-check round claim and p its round polynomial.
+		self.mlecheck_prover
+			.round_claim()
+			.into_iter()
+			.map(|m| m * self.eq_prefix_eval)
+			.collect()
+	}
+
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
 		let round_coeffs_multi = self.mlecheck_prover.execute()?;
 

@@ -131,6 +131,19 @@ where
 		1
 	}
 
+	fn round_claim(&self) -> Vec<F> {
+		let claim = match &self.last_coeffs_or_eval {
+			RoundCoeffsOrEval::Eval(eval) => *eval,
+			RoundCoeffsOrEval::Coeffs(coeffs) => {
+				// The coordinate is 0 in the early rounds (zero-padded eval point) and the inout
+				// evaluation-point coordinate in the later rounds.
+				let alpha = self.eval_point()[self.n_vars() - 1];
+				coeffs.lerp_over_endpoints(alpha)
+			}
+		};
+		vec![claim]
+	}
+
 	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
 		let RoundCoeffsOrEval::Eval(last_eval) = &self.last_coeffs_or_eval else {
 			return Err(Error::ExpectedFold);
