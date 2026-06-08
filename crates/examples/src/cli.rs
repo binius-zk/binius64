@@ -195,6 +195,7 @@ where
 		let bless_snapshot_cmd = Self::build_bless_snapshot_subcommand();
 		let save_cmd = Self::build_save_subcommand();
 		let load_prove_cmd = Self::build_load_prove_subcommand();
+		let verify_cmd = Self::build_verify_subcommand();
 
 		let command = command
 			.subcommand(prove_cmd)
@@ -203,7 +204,8 @@ where
 			.subcommand(check_snapshot_cmd)
 			.subcommand(bless_snapshot_cmd)
 			.subcommand(save_cmd)
-			.subcommand(load_prove_cmd);
+			.subcommand(load_prove_cmd)
+			.subcommand(verify_cmd);
 
 		// Add top-level args for default prove behavior (when no subcommand specified)
 		let command = command
@@ -415,6 +417,54 @@ where
 			)
 	}
 
+	fn build_verify_subcommand() -> Command {
+		let mut cmd = Command::new("verify")
+			.about("Verify a proof read from a file")
+			.arg(
+				Arg::new("proof_file")
+					.value_name("PROOF_FILE")
+					.help("Path to the proof file to verify")
+					.required(true),
+			)
+			.arg(
+				Arg::new("log_inv_rate")
+					.short('l')
+					.long("log-inv-rate")
+					.value_name("RATE")
+					.help("Log of the inverse rate for the proof system")
+					.default_value("1")
+					.value_parser(clap::value_parser!(u32).range(1..)),
+			)
+			.arg(
+				Arg::new("compression")
+					.short('c')
+					.long("compression")
+					.value_name("TYPE")
+					.help("Compression function to use")
+					.value_parser(clap::value_parser!(CompressionType))
+					.default_value("sha256"),
+			)
+			.arg(
+				Arg::new("zk")
+					.long("zk")
+					.help("Use the zero-knowledge verifier config")
+					.action(clap::ArgAction::SetTrue),
+			)
+			.arg(
+				Arg::new("sign_message")
+					.long("sign-message")
+					.value_name("MESSAGE")
+					.requires("zk")
+					.help(
+						"Verify a zero-knowledge signature of knowledge over this message \
+						 (requires --zk)",
+					),
+			);
+		cmd = E::Params::augment_args(cmd);
+		cmd = E::Instance::augment_args(cmd);
+		cmd
+	}
+
 	/// Set the about/description text for the command.
 	///
 	/// This appears in the help output.
@@ -495,6 +545,7 @@ where
 			}
 			Some(("save", sub_matches)) => Self::run_save(sub_matches.clone()),
 			Some(("load-prove", sub_matches)) => Self::run_load_prove(sub_matches.clone()),
+			Some(("verify", sub_matches)) => Self::run_verify(sub_matches.clone()),
 			Some((cmd, _)) => anyhow::bail!("Unknown subcommand: {}", cmd),
 			None => {
 				// No subcommand - default to prove behavior for backward compatibility
@@ -811,6 +862,73 @@ where
 			}
 		};
 
+		Ok(())
+	}
+
+	fn run_verify(matches: clap::ArgMatches) -> Result<()> {
+		let proof_file = matches
+			.get_one::<String>("proof_file")
+			.expect("proof_file is required");
+		let log_inv_rate = *matches
+			.get_one::<u32>("log_inv_rate")
+			.expect("has default value");
+		let compression = matches
+			.get_one::<CompressionType>("compression")
+			.expect("has default value")
+			.clone();
+		let zk = matches.get_flag("zk");
+		let sign_message = matches.get_one::<String>("sign_message").cloned();
+		let message = sign_message.as_deref().map(str::as_bytes);
+
+		// Read proof from file
+		let proof: Proof<'static> = read_deserialized(proof_file)?;
+		let (proof_bytes, _) = proof.into_owned();
+
+		// Parse Params and Instance from matches
+		let params = E::Params::from_arg_matches(&matches)?;
+		let instance = E::Instance::from_arg_matches(&matches)?;
+
+		// Build the circuit
+		let build_scope = tracing::info_span!("Building circuit").entered();
+		let mut builder = CircuitBuilder::new();
+		let example = E::build(params, &mut builder)?;
+		let circuit = builder.build();
+		drop(build_scope);
+
+		// Set up verifier
+		let cs = circuit.constraint_system().clone();
+
+		// Populate witness (needed to supply public inputs for verification)
+		let mut filler = circuit.new_witness_filler();
+		example.populate_witness(instance, &mut filler)?;
+		circuit.populate_wire_witness(&mut filler)?;
+		let witness = filler.into_value_vec();
+
+		match (zk, compression) {
+			(false, CompressionType::Sha256) => {
+				tracing::info!("Using SHA256 compression for Merkle tree");
+				let (verifier, _prover) = setup::<StdHashSuite>(cs, log_inv_rate as usize, None)?;
+				check_proof(&verifier, &witness, proof_bytes)?;
+			}
+			(false, CompressionType::Vision) => {
+				tracing::info!("Using Vision suite for Merkle tree");
+				let (verifier, _prover) =
+					setup::<VisionHashSuite>(cs, log_inv_rate as usize, None)?;
+				check_proof(&verifier, &witness, proof_bytes)?;
+			}
+			(true, CompressionType::Sha256) => {
+				tracing::info!("Using SHA256 compression for Merkle tree");
+				let (verifier, _prover) = setup_zk::<StdHashSuite>(cs, log_inv_rate as usize)?;
+				check_proof_zk(&verifier, &witness, proof_bytes, message)?;
+			}
+			(true, CompressionType::Vision) => {
+				tracing::info!("Using Vision suite for Merkle tree");
+				let (verifier, _prover) = setup_zk::<VisionHashSuite>(cs, log_inv_rate as usize)?;
+				check_proof_zk(&verifier, &witness, proof_bytes, message)?;
+			}
+		}
+
+		tracing::info!("Proof verified successfully.");
 		Ok(())
 	}
 
