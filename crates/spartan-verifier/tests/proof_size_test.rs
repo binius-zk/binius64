@@ -56,9 +56,9 @@ fn test_ip_proof_size() {
 	let proof_size = channel.proof_size();
 
 	// Hardcoded expected value to detect proof size regressions.
-	// This measures IP-layer bytes (sumcheck rounds, oracle commitments, evaluations) plus
-	// FRI proof sizes. It is a slight underestimate because it does not account for some
-	// smaller BaseFold components (e.g. sumcheck coefficients within BaseFold, blinding
-	// elements for ZK).
-	assert_eq!(proof_size, 106496, "proof size regression");
+	// This measures IP-layer bytes (sumcheck rounds, oracle commitments, evaluations) plus the
+	// single combined FRI proof opening all oracles together. It is a slight underestimate because
+	// it does not account for some smaller BaseFold components (e.g. sumcheck coefficients within
+	// BaseFold, blinding elements for ZK).
+	assert_eq!(proof_size, 46848, "proof size regression");
 }

@@ -161,32 +161,40 @@ where
 	}
 }
 
-/// Proves a multilinear evaluation claim `witness(eval_point) = eval_claim` by interleaving an
-/// [`MultilinearEvalProver`] MLE-check with FRI folding (the second, FRI-interleaved sumcheck of
-/// the Batched ZK BaseFold construction).
+/// Proves a *combined* multilinear evaluation claim `𝛑(eval_point) = eval_claim` by interleaving a
+/// single [`MultilinearEvalProver`] MLE-check with a single combined FRI over the
+/// piecewise-concatenated oracle of the Batched ZK BaseFold construction (whitepaper §7.2 /
+/// §sec:batched-basefold Step 2).
 ///
-/// The masked oracle `π' = π + γ·ω` has already been formed by the caller (it is passed as
-/// `witness`) and the linear opening claim has already been reduced to this point evaluation by a
-/// prior batched sumcheck. Here we only run the degree-1 MLE-check on `witness` against
-/// `eval_point`, interleaved with the FRI codeword of the committed interleaved `[π ‖ ω]`.
+/// A prior batched sumcheck reduced the `k` masked opening claims to per-oracle point-evaluation
+/// claims `π_i'(ρ_i) = α_i` at a shared point `r ∈ K^𝐧` (`𝐧 = max_i n_i`). The caller has collapsed
+/// the oracle-index variables up front at sampled batching challenges `r'` into a single combined
+/// multilinear `𝛑(X) = Σ_i e[i]·π_i^↑(X)`, `e = eq_ind_partial_eval(r')` (passed as `witness`),
+/// with target `s' = 𝛑(r)`. Here we run the degree-1 MLE-check on `𝛑` against `r`, interleaved with
+/// the FRI codeword built (via [`FRIFoldProver::new_batch`]) from the `k` committed interleaved
+/// `[π_i ‖ ω_i]` codewords.
 ///
 /// ## Arguments
 ///
-/// * `witness` - the masked oracle multilinear `π'` with `log_len = n`
-/// * `eval_point` - the evaluation point `ρ` with `len = n`, in low-to-high variable order
-/// * `eval_claim` - the claimed value `π'(ρ)`
-/// * `batch_challenge` - the masking challenge `γ`; folds the interleaved `[π ‖ ω]` codeword down
-///   to the codeword of `π'` in the FRI unbatch round
-/// * `fri_folder` - the FRI fold prover over the `[π ‖ ω]` codeword, with `n_rounds == n + 1`
+/// * `witness` - the combined oracle multilinear `𝛑` with `log_len = 𝐧`
+/// * `eval_point` - the point `r` with `len = 𝐧`, in low-to-high variable order
+/// * `eval_claim` - the combined target `s' = 𝛑(r)`
+/// * `batch_challenge` - the masking challenge `γ`; folds each interleaved `[π_i ‖ ω_i]` codeword
+///   down to the codeword of `π_i'` in the FRI inner (unbatch) round
+/// * `outer_challenges` - the batching challenges `r'` (`len = log_n_oracles`); combine the `k`
+///   lifted codewords in the FRI outer (oracle-combine) rounds
+/// * `fri_folder` - the combined FRI fold prover, with `n_rounds == 𝐧 + 1 + log_n_oracles`
 /// * `transcript` - the prover transcript
 ///
-/// The final FRI value equals the final MLE-check value `π'(r)` (see
+/// The final FRI value equals the final MLE-check value `𝛑(r)` (see
 /// [`binius_iop::basefold::mlecheck_fri_consistency`]).
-pub fn prove_mlecheck_basefold_zk<'a, F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
+#[allow(clippy::too_many_arguments)]
+pub fn prove_mlecheck_basefold_zk_batch<'a, F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
 	witness: FieldBuffer<P>,
 	eval_point: &[F],
 	eval_claim: F,
 	batch_challenge: F,
+	outer_challenges: &[F],
 	mut fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
 	transcript: &mut ProverTranscript<Challenger_>,
 ) -> Result<(), Error>
@@ -198,17 +206,21 @@ where
 	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
 	Challenger_: Challenger,
 {
-	let _scope = tracing::debug_span!("Basefold MLE-check ZK").entered();
+	let _scope = tracing::debug_span!("Basefold MLE-check ZK (batched)").entered();
 
 	let n_vars = witness.log_len();
 	assert_eq!(eval_point.len(), n_vars);
-	// The FRI folder operates on the codeword of the interleaved (π ‖ ω) polynomial, so
-	// `n_rounds == n + 1`.
-	assert_eq!(n_vars + 1, fri_folder.n_rounds());
+	// The FRI folder has one inner (unbatch) round, `log_n_oracles` outer (oracle-combine) rounds,
+	// and `𝐧` standard fold rounds.
+	assert_eq!(n_vars + 1 + outer_challenges.len(), fri_folder.n_rounds());
 
-	// Unbatch round: fold the interleaved (π ‖ ω) codeword at the masking challenge to obtain the
-	// codeword of π'. No commitment is produced at this round.
+	// Inner (unbatch) round: fold every interleaved (π_i ‖ ω_i) codeword at the masking challenge.
 	fri_folder.receive_challenge(batch_challenge);
+	// Outer rounds: combine the k lifted codewords at the batching challenges r'. These carry no
+	// sumcheck round-polynomial; the folder applies them lazily with γ at the first commit round.
+	for &outer_challenge in outer_challenges {
+		fri_folder.receive_challenge(outer_challenge);
+	}
 
 	let mut sumcheck = MultilinearEvalProver::new(witness, eval_point, eval_claim)?;
 	for _ in 0..n_vars {
@@ -247,7 +259,10 @@ mod test {
 		PackedExtension, PackedField,
 	};
 	use binius_hash::{StdDigest, StdHashSuite};
-	use binius_iop::{basefold as verifier_basefold, fri::ConstantArityStrategy};
+	use binius_iop::{
+		basefold as verifier_basefold,
+		fri::{ConstantArityStrategy, PartialOracleSpec},
+	};
 	use binius_math::{
 		BinarySubspace, FieldBuffer,
 		inner_product::inner_product_buffers,
@@ -263,7 +278,7 @@ mod test {
 	use binius_utils::rayon::prelude::*;
 	use rand::{SeedableRng, rngs::StdRng};
 
-	use super::{BaseFoldProver, prove_mlecheck_basefold_zk};
+	use super::{BaseFoldProver, prove_mlecheck_basefold_zk_batch};
 	use crate::{
 		fri::{self, CommitMaskedOutput, CommitOutput, FRIFoldProver},
 		merkle_tree::prover::BinaryMerkleTreeProver,
@@ -310,7 +325,7 @@ mod test {
 			commitment: codeword_commitment,
 			committed: codeword_committed,
 			codeword,
-		} = fri::commit_interleaved(&fri_params, &ntt, &merkle_prover, multilinear.to_ref());
+		} = fri::commit_interleaved(&fri_params, 0, &ntt, &merkle_prover, multilinear.to_ref());
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover_transcript.message().write(&codeword_commitment);
@@ -419,11 +434,12 @@ mod test {
 			.unwrap();
 	}
 
-	/// Drives [`prove_mlecheck_basefold_zk`] against
-	/// [`binius_iop::basefold::verify_mlecheck_basefold_zk`]: commits the interleaved (π ‖ ω)
-	/// codeword, samples the masking challenge γ, forms π' = (1-γ)π + γω, and proves/verifies the
-	/// point-evaluation claim π'(ρ). If `tamper`, the claim is corrupted and verification must
-	/// fail.
+	/// Drives [`prove_mlecheck_basefold_zk_batch`] against
+	/// [`binius_iop::basefold::verify_mlecheck_basefold_zk_batch`] for a single oracle (`k = 1`, no
+	/// outer rounds): commits the interleaved (π ‖ ω) codeword, samples the masking challenge γ,
+	/// forms π' = (1-γ)π + γω, and proves/verifies the point-evaluation claim π'(ρ) via the
+	/// combined FRI path. If `tamper`, the claim is corrupted and verification must fail. (The
+	/// multi-oracle path is exercised end-to-end by the channel tests.)
 	fn run_mlecheck_basefold_zk_prove_and_verify<F, P>(
 		witness: FieldBuffer<P>,
 		evaluation_point: Vec<F>,
@@ -438,18 +454,22 @@ mod test {
 
 		let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
 
-		let subspace = BinarySubspace::with_dim(n_vars + LOG_INV_RATE);
+		let subspace = BinarySubspace::with_dim(n_vars + 1 + LOG_INV_RATE);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
-		let fri_params = binius_iop::fri::FRIParams::with_strategy(
+		// For a single oracle the combined opening params (`optimal_for_batch`) also satisfy
+		// `commit_masked`'s preconditions (`log_batch_size() == 1`, `rs_code().log_dim() ==
+		// n_vars`).
+		let (fri_params, _) = binius_iop::fri::FRIParams::optimal_for_batch(
 			ntt.domain_context(),
 			merkle_prover.scheme(),
-			n_vars + 1,
-			Some(1),
+			&[PartialOracleSpec {
+				log_msg_len: n_vars + 1,
+				log_batch_size: Some(1),
+			}],
 			LOG_INV_RATE,
 			32,
-			&ConstantArityStrategy::new(2),
 		);
 
 		// Commit the interleaved (witness ‖ mask), generating the mask internally.
@@ -459,7 +479,14 @@ mod test {
 			committed: codeword_committed,
 			codeword,
 			mask,
-		} = fri::commit_masked(&fri_params, &ntt, &merkle_prover, witness.to_ref(), &mut commit_rng);
+		} = fri::commit_masked(
+			&fri_params,
+			0,
+			&ntt,
+			&merkle_prover,
+			witness.to_ref(),
+			&mut commit_rng,
+		);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		prover_transcript.message().write(&codeword_commitment);
@@ -480,13 +507,18 @@ mod test {
 			eval_claim += F::ONE;
 		}
 
-		let fri_folder =
-			FRIFoldProver::new(&fri_params, &ntt, &merkle_prover, codeword, &codeword_committed);
-		prove_mlecheck_basefold_zk(
+		let fri_folder = FRIFoldProver::new_batch(
+			&fri_params,
+			&ntt,
+			&merkle_prover,
+			vec![(codeword, &codeword_committed)],
+		);
+		prove_mlecheck_basefold_zk_batch(
 			witness_prime,
 			&evaluation_point,
 			eval_claim,
 			batch_challenge,
+			&[],
 			fri_folder,
 			&mut prover_transcript,
 		)?;
@@ -499,13 +531,14 @@ mod test {
 			final_fri_value,
 			final_sumcheck_value,
 			..
-		} = verifier_basefold::verify_mlecheck_basefold_zk(
+		} = verifier_basefold::verify_mlecheck_basefold_zk_batch(
 			&fri_params,
 			merkle_prover.scheme(),
-			retrieved_commitment,
+			&[retrieved_commitment],
 			eval_claim,
 			&evaluation_point,
 			batch_challenge_v,
+			&[],
 			&mut verifier_transcript,
 		)?;
 

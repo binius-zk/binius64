@@ -60,7 +60,7 @@ fn test_commit_prove_verify_success<F, P>(
 		commitment: mut codeword_commitment,
 		committed: codeword_committed,
 		codeword,
-	} = commit_interleaved(&params, &ntt, &merkle_prover, msg.to_ref());
+	} = commit_interleaved(&params, 0, &ntt, &merkle_prover, msg.to_ref());
 
 	// Run the prover to generate the proximity proof
 	let mut round_prover =
@@ -269,7 +269,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 			commitment,
 			committed,
 			codeword,
-		} = commit_interleaved(&oracle_params, &ntt, &merkle_prover, msg.to_ref());
+		} = commit_interleaved(&oracle_params, 0, &ntt, &merkle_prover, msg.to_ref());
 		messages.push(msg);
 		commitments.push(commitment);
 		committeds.push(committed);
@@ -418,7 +418,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 			commitment,
 			committed,
 			codeword,
-		} = commit_interleaved(&oracle_params, &ntt, &merkle_prover, msg.to_ref());
+		} = commit_interleaved(&oracle_params, 0, &ntt, &merkle_prover, msg.to_ref());
 		messages.push(msg);
 		commitments.push(commitment);
 		committeds.push(committed);
@@ -549,7 +549,7 @@ where
 		commitment: codeword_commitment,
 		committed: codeword_committed,
 		codeword,
-	} = commit_interleaved(&params, &ntt, &merkle_prover, msg.to_ref());
+	} = commit_interleaved(&params, 0, &ntt, &merkle_prover, msg.to_ref());
 
 	let mut round_prover =
 		FRIFoldProver::new(&params, &ntt, &merkle_prover, codeword, &codeword_committed);

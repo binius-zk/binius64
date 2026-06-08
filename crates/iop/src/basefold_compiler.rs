@@ -14,7 +14,7 @@ use crate::{
 	basefold_channel::BaseFoldVerifierChannel,
 	basefold_zk_channel::BaseFoldZKVerifierChannel,
 	channel::OracleSpec,
-	fri::{AritySelectionStrategy, FRIParams},
+	fri::{AritySelectionStrategy, FRIParams, PartialOracleSpec},
 	merkle_tree::MerkleTreeScheme,
 	size_tracking_channel::SizeTrackingChannel,
 };
@@ -163,7 +163,7 @@ where
 {
 	merkle_scheme: MerkleScheme_,
 	oracle_specs: Vec<OracleSpec>,
-	fri_params: Vec<FRIParams<F>>,
+	fri_params: FRIParams<F>,
 }
 
 impl<F, MerkleScheme_> BaseFoldZKVerifierCompiler<F, MerkleScheme_>
@@ -173,44 +173,49 @@ where
 {
 	/// Creates a new ZK compiler with precomputed FRI parameters.
 	///
-	/// All oracle specs are treated as ZK: FRI parameters use `log_msg_len + 1` and
-	/// `log_batch_size = 1`.
+	/// All oracle specs are treated as ZK: the combined FRI parameters use `log_msg_len + 1` and
+	/// `log_batch_size = 1` per oracle. Requires at least one oracle spec.
 	pub fn new<Strategy>(
 		merkle_scheme: MerkleScheme_,
 		oracle_specs: Vec<OracleSpec>,
 		log_inv_rate: usize,
 		n_test_queries: usize,
-		arity_strategy: &Strategy,
+		_arity_strategy: &Strategy,
 	) -> Self
 	where
 		Strategy: AritySelectionStrategy,
 	{
+		assert!(
+			!oracle_specs.is_empty(),
+			"BaseFoldZKVerifierCompiler requires at least one oracle spec"
+		);
+
 		// ZK adds 1 to each message length; compute max code length across all oracles.
 		let max_log_code_len = oracle_specs
 			.iter()
 			.map(|spec| spec.log_msg_len + 1)
 			.max()
-			.unwrap_or(0)
+			.expect("oracle_specs is non-empty")
 			+ log_inv_rate;
 		let subspace = BinarySubspace::with_dim(max_log_code_len);
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 
-		let fri_params = oracle_specs
+		// The single combined FRI parameters over all oracles. `optimal_for_batch` chooses the fold
+		// arities to minimize proof size, so `_arity_strategy` is not consulted here.
+		let partial_specs: Vec<PartialOracleSpec> = oracle_specs
 			.iter()
-			.map(|spec| {
-				let log_msg_len = spec.log_msg_len + 1;
-				let log_batch_size = Some(1);
-				FRIParams::with_strategy(
-					&domain_context,
-					&merkle_scheme,
-					log_msg_len,
-					log_batch_size,
-					log_inv_rate,
-					n_test_queries,
-					arity_strategy,
-				)
+			.map(|spec| PartialOracleSpec {
+				log_msg_len: spec.log_msg_len + 1,
+				log_batch_size: Some(1),
 			})
 			.collect();
+		let (fri_params, _) = FRIParams::optimal_for_batch(
+			&domain_context,
+			&merkle_scheme,
+			&partial_specs,
+			log_inv_rate,
+			n_test_queries,
+		);
 
 		Self {
 			merkle_scheme,
@@ -224,8 +229,8 @@ where
 		&self.oracle_specs
 	}
 
-	/// Returns a reference to the precomputed FRI parameters.
-	pub fn fri_params(&self) -> &[FRIParams<F>] {
+	/// Returns a reference to the precomputed combined FRI parameters.
+	pub fn fri_params(&self) -> &FRIParams<F> {
 		&self.fri_params
 	}
 
@@ -234,18 +239,18 @@ where
 		&self.merkle_scheme
 	}
 
-	/// Returns the Reed-Solomon code subspace with the largest dimension.
+	/// Returns the Reed-Solomon code subspace of the combined FRI parameters (the largest needed).
 	pub fn max_subspace(&self) -> &BinarySubspace<F> {
-		self.fri_params
-			.iter()
-			.max_by_key(|p| p.rs_code().log_len())
-			.map(|p| p.rs_code().subspace())
-			.expect("fri_params is non-empty")
+		self.fri_params.rs_code().subspace()
 	}
 
 	/// Creates a [`SizeTrackingChannel`] from this compiler's oracle specs.
 	pub fn create_size_tracking_channel(&self) -> SizeTrackingChannel<'_, F, MerkleScheme_> {
-		SizeTrackingChannel::new(self.oracle_specs.clone(), &self.fri_params, &self.merkle_scheme)
+		SizeTrackingChannel::new(
+			self.oracle_specs.clone(),
+			std::slice::from_ref(&self.fri_params),
+			&self.merkle_scheme,
+		)
 	}
 
 	/// Creates a ZK verifier channel from this compiler and a transcript.

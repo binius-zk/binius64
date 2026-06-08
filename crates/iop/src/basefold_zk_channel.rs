@@ -14,14 +14,15 @@ use binius_ip::{
 	sumcheck::{self, BatchSumcheckOutput},
 };
 use binius_math::{
-	line::extrapolate_line_packed, multilinear::eq::eq_ind_zero, univariate::evaluate_univariate,
+	line::extrapolate_line_packed,
+	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
+	univariate::evaluate_univariate,
 };
 use binius_transcript::{
 	VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_utils::DeserializeBytes;
-use itertools::izip;
+use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
 
 use crate::{
 	basefold,
@@ -56,9 +57,7 @@ where
 	transcript: &'a mut VerifierTranscript<Challenger_>,
 	merkle_scheme: &'a MerkleScheme_,
 	oracle_specs: &'a [OracleSpec],
-	/// Per-oracle FRI parameters (`log_batch_size = 1`), one per oracle, used for the per-oracle
-	/// BaseFold openings in [`Self::finish`].
-	fri_params: &'a [FRIParams<F>],
+	fri_params: &'a FRIParams<F>,
 	oracle_commitments: Vec<MerkleScheme_::Digest>,
 	/// Oracle relations queued by [`Self::verify_oracle_relations`], opened together in
 	/// [`Self::finish`].
@@ -80,7 +79,7 @@ where
 		transcript: &'a mut VerifierTranscript<Challenger_>,
 		merkle_scheme: &'a MerkleScheme_,
 		oracle_specs: &'a [OracleSpec],
-		fri_params: &'a [FRIParams<F>],
+		fri_params: &'a FRIParams<F>,
 	) -> Self {
 		Self {
 			transcript,
@@ -142,22 +141,27 @@ where
 /// This drives `channel` — the [`VerifierTranscript`] taken from the destructured
 /// [`BaseFoldZKVerifierChannel`] — through its [`IPVerifierChannel`] interface: it reads the masked
 /// inner products σ_i, runs one batched sumcheck reducing the masked claims to a shared point `r`,
-/// then opens each committed oracle with its own FRI parameters.
+/// then opens all committed oracles together with a single combined FRI over the
+/// piecewise-concatenated oracle.
 ///
 /// The masking inner products and the batched sumcheck process the `relations` in arrival order (so
 /// each reduced eval lines up with its batched-claim coefficient), while the per-oracle evaluations
-/// α_i and the FRI openings are emitted in oracle-index order. Each relation carries its oracle's
-/// index, so the two orders are reconciled by indexing rather than by sorting the relations; the
-/// per-oracle data (`oracle_specs`, `fri_params`, `oracle_commitments`) is all indexed by oracle
-/// index.
+/// α_i are indexed by oracle index. Each relation carries its oracle's index, so the two orders are
+/// reconciled by indexing rather than by sorting the relations; `oracle_specs` and
+/// `oracle_commitments` are indexed by oracle index.
+///
+/// Phase B collapses the oracle-index variables up front at sampled batching challenges `r'`: the
+/// combined target is `s' = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j)` with `e = eq_ind_partial_eval(r')`,
+/// and the single combined FRI (`fri_params`) opens all `k` committed `[π_i ‖ ω_i]` codewords.
 ///
 /// `channel` is the concrete [`VerifierTranscript`] rather than an arbitrary [`IPVerifierChannel`]
 /// because the Phase-B FRI openings read Merkle query proofs, which fall outside that interface.
+#[allow(clippy::too_many_arguments)]
 fn verify_batch_zk_basefold<F, MerkleScheme_, Challenger_>(
 	channel: &mut VerifierTranscript<Challenger_>,
 	merkle_scheme: &MerkleScheme_,
 	oracle_specs: &[OracleSpec],
-	fri_params: &[FRIParams<F>],
+	fri_params: &FRIParams<F>,
 	oracle_commitments: Vec<MerkleScheme_::Digest>,
 	relations: Vec<OracleLinearRelation<'_, BaseFoldZKOracle, F>>,
 ) -> Result<(), Error>
@@ -172,7 +176,8 @@ where
 	let n_vars: Vec<usize> = (0..n_committed)
 		.map(|i| oracle_specs[i].log_msg_len)
 		.collect();
-	let max_n = *n_vars.iter().max().expect("relations is non-empty");
+	// `𝐧 = max_i n_i`, the dimension of the combined codeword.
+	let max_n = fri_params.rs_code().log_dim();
 
 	// === Masking step ===
 	// Read the masked inner products σ_i, sample γ, and form the masked claims s_i'.
@@ -190,7 +195,7 @@ where
 	} = sumcheck::batch_verify::<F, _>(max_n, 2, &sum_primes, channel)?;
 
 	// Receive the evaluation of each oracle at the challenge point.
-	let alphas = channel.recv_many(n_committed)?;
+	let alphas: Vec<F> = channel.recv_many(n_committed)?;
 
 	// `batch_verify` returns binding-order challenges; reverse to variable-indexed (low-to-high).
 	let mut point = sumcheck_challenges;
@@ -211,29 +216,37 @@ where
 	let expected = evaluate_univariate(&contributions, sumcheck_batch_coeff);
 	channel.assert_zero(sumcheck_reduced_eval - expected)?;
 
-	// === Phase B: per-oracle MLE-check BaseFold verification ===
-	// Open each committed oracle at its evaluation point ρ_i = point[..n_i] in oracle-index order,
-	// using its own FRI parameters.
-	for (alpha_i, n_i, commitment, fri_params) in
-		izip!(alphas, n_vars, oracle_commitments, fri_params)
-	{
-		let basefold::ReducedOutput {
-			final_fri_value,
-			final_sumcheck_value,
-			..
-		} = basefold::verify_mlecheck_basefold_zk(
-			fri_params,
-			merkle_scheme,
-			commitment,
-			alpha_i,
-			&point[..n_i],
-			gamma,
-			channel,
-		)?;
+	// === Phase B: single combined-FRI MLE-check over the piecewise-concatenated oracle ===
+	// Collapse the oracle-index variables up front at sampled batching challenges `r'`: the
+	// combined multilinear is 𝛑(X) = Σ_i e[i]·π_i^↑(X) with e = eq(·, r'), and the combined target
+	// is s' = 𝛑(r) = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j).
+	let log_n_oracles = log2_ceil_usize(n_committed);
+	let outer_challenges: Vec<F> = (0..log_n_oracles)
+		.map(|_| IPVerifierChannel::<F>::sample(channel))
+		.collect();
+	let eq_tensor = eq_ind_partial_eval_scalars::<F>(&outer_challenges);
+	let s_prime = iter::zip(&alphas, &n_vars)
+		.enumerate()
+		.map(|(i, (&alpha_i, &n_i))| eq_tensor[i] * alpha_i * eq_ind_zero(&point[n_i..]))
+		.sum::<F>();
 
-		// The MLE-check internalizes the eq factor, so consistency is plain equality.
-		channel.assert_zero(final_sumcheck_value - final_fri_value)?;
-	}
+	let basefold::ReducedOutput {
+		final_fri_value,
+		final_sumcheck_value,
+		..
+	} = basefold::verify_mlecheck_basefold_zk_batch(
+		fri_params,
+		merkle_scheme,
+		&oracle_commitments,
+		s_prime,
+		&point,
+		gamma,
+		&outer_challenges,
+		channel,
+	)?;
+
+	// The MLE-check internalizes the eq factor, so consistency is plain equality.
+	channel.assert_zero(final_sumcheck_value - final_fri_value)?;
 
 	Ok(())
 }

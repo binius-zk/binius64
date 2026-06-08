@@ -7,28 +7,31 @@
 //! this channel always applies zero-knowledge blinding to all oracles by generating masks
 //! internally.
 
+use std::iter;
+
 use binius_field::{BinaryField, PackedField};
 use binius_iop::{channel::OracleSpec, fri::FRIParams, merkle_tree::MerkleTreeScheme};
 use binius_ip_prover::{
 	channel::IPProverChannel,
-	sumcheck::{
-		PaddedSumcheckDecorator, batch::batch_prove,
-		bivariate_product::BivariateProductSumcheckProver,
-	},
+	sumcheck::{self, PaddedSumcheckDecorator, bivariate_product::BivariateProductSumcheckProver},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice, inner_product::inner_product_par, line::extrapolate_line_packed,
+	FieldBuffer, FieldSlice,
+	inner_product::inner_product_par,
+	line::{extrapolate_line, extrapolate_line_packed},
+	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
 	ntt::AdditiveNTT,
 };
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_utils::{SerializeBytes, rayon::prelude::*};
+use binius_utils::{SerializeBytes, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use itertools::izip;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::{
-	basefold::prove_mlecheck_basefold_zk,
+	basefold::prove_mlecheck_basefold_zk_batch,
 	basefold_compiler::BaseFoldZKProverCompiler,
 	channel::IOPProverChannel,
 	fri::{self, CommitMaskedOutput, FRIFoldProver},
@@ -80,9 +83,8 @@ where
 	ntt: &'a NTT,
 	merkle_prover: &'a MerkleProver_,
 	oracle_specs: Vec<OracleSpec>,
-	/// Per-oracle FRI parameters (`log_batch_size = 1`), used for `commit_masked` and the
-	/// per-oracle BaseFold openings in [`Self::finish`].
-	fri_params: Vec<FRIParams<F>>,
+	/// The combined FRI parameters over all committed oracles.
+	fri_params: FRIParams<F>,
 	committed_oracles: Vec<CommittedOracleData<P, MerkleProver_::Committed>>,
 	/// Oracle relations queued by [`Self::prove_oracle_relations`], opened together in
 	/// [`Self::finish`]. Each entry is `(oracle_index, message π_i, transparent t_i, claim s_i)`.
@@ -114,7 +116,7 @@ where
 			ntt: compiler.ntt(),
 			merkle_prover: compiler.merkle_prover(),
 			oracle_specs: compiler.oracle_specs().to_vec(),
-			fri_params: compiler.fri_params().to_vec(),
+			fri_params: compiler.fri_params().clone(),
 			committed_oracles: Vec::new(),
 			queue: Vec::new(),
 			next_oracle_index: 0,
@@ -191,7 +193,7 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 	ntt: &NTT,
 	merkle_prover: &MerkleProver_,
 	oracle_specs: &[OracleSpec],
-	fri_params: &[FRIParams<F>],
+	fri_params: &FRIParams<F>,
 	committed_oracles: Vec<CommittedOracleData<P, MerkleProver_::Committed>>,
 	relations: Vec<(usize, FieldBuffer<P>, FieldBuffer<P>, F)>,
 ) where
@@ -203,22 +205,25 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 	Challenger_: Challenger,
 {
 	let n_committed = committed_oracles.len();
+	assert_eq!(oracle_specs.len(), n_committed);
+
+	// TODO: Remove this limitation, it shouldn't be necessary. It is currently because of how the
+	// sumcheck reduces to the multilinear evaluations (alphas).
 	assert_eq!(relations.len(), n_committed, "expects exactly one relation per committed oracle",);
 
-	let n_vars: Vec<usize> = (0..n_committed)
-		.map(|i| oracle_specs[i].log_msg_len)
-		.collect();
-	let max_n = *n_vars.iter().max().expect("relations is non-empty");
+	// `𝐧 = max_i n_i`, the dimension of the combined codeword.
+	let max_n = fri_params.rs_code().log_dim();
 
 	// === Masking step (whitepaper 7.2) ===
 	// Send the masked inner products σ_i = ⟨ω_i, t_i⟩, then sample a single masking challenge γ.
-	let sigmas: Vec<F> = relations
+	let sigmas = relations
 		.iter()
 		.map(|(index, _, transparent, _)| {
 			inner_product_par(&committed_oracles[*index].mask, transparent)
 		})
-		.collect();
+		.collect::<Vec<_>>();
 	channel.send_many(&sigmas);
+
 	let gamma = IPProverChannel::<F>::sample(channel);
 	let gamma_broadcast = P::broadcast(gamma);
 
@@ -227,13 +232,17 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 	// B keyed by oracle index, and pad each prover to `max_n`. `prover_oracle_indices` records the
 	// oracle index behind each (arrival-order) prover so the reduced evals can be scattered back
 	// into oracle-index order.
-	let mut witness_primes: Vec<Option<FieldBuffer<P>>> = (0..n_committed).map(|_| None).collect();
+	let mut witness_primes = vec![None; n_committed];
 	let mut prover_oracle_indices = Vec::with_capacity(n_committed);
 	let mut provers = Vec::with_capacity(n_committed);
-	for ((index, mut message, transparent, claim), &sigma) in relations.into_iter().zip(&sigmas) {
-		let n_i = n_vars[index];
-		assert_eq!(message.log_len(), n_i, "oracle message log_len mismatch for oracle {index}");
+	for ((index, mut message, transparent, claim), sigma) in iter::zip(relations, sigmas) {
+		let n_i = oracle_specs[index].log_msg_len;
+		assert_eq!(message.log_len(), n_i); // pre-condition
+		assert_eq!(transparent.log_len(), n_i); // pre-condition
+
 		let mask = &committed_oracles[index].mask;
+
+		// Modify the message π_i to be the blinded message π_i'.
 		(message.as_mut(), mask.as_ref())
 			.into_par_iter()
 			.for_each(|(message_i, &mask_i)| {
@@ -242,50 +251,80 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 		witness_primes[index] = Some(message.clone());
 		prover_oracle_indices.push(index);
 
-		let sum_prime = extrapolate_line_packed(claim, sigma, gamma);
+		let sum_prime = extrapolate_line(claim, sigma, gamma);
 		let inner = BivariateProductSumcheckProver::new([message, transparent], sum_prime)
 			.expect("π_i' and t_i have equal length");
 		provers.push(PaddedSumcheckDecorator::new(inner, max_n - n_i));
 	}
 
-	let output = batch_prove(provers, channel).expect("batched sumcheck proving should succeed");
+	let output =
+		sumcheck::batch_prove(provers, channel).expect("batched sumcheck proving should succeed");
 
 	// Reduced oracle evaluations α_i = π_i'(ρ_i) come out in arrival order; scatter them into
 	// oracle-index order to match how the verifier indexes them. `output.challenges` is already
 	// reversed to low-to-high (variable-indexed) order, so ρ_i is its first n_i coords.
+	//
+	// TODO: This will fail if one oracle isn't opened. For robustness, we should do a regular
+	// multilinear evaluation in that case.
 	let mut alphas = vec![F::ZERO; n_committed];
 	for (eval_pos, &index) in prover_oracle_indices.iter().enumerate() {
 		alphas[index] = output.multilinear_evals[eval_pos][0];
 	}
 	channel.send_many(&alphas);
 
-	// === Phase B: per-oracle BaseFold FRI interleaved with a MultilinearEvalProver ===
-	// Open each committed oracle at its evaluation point ρ_i = point[..n_i] in oracle-index order,
-	// matching the order the verifier opens them in, using each oracle's FRI parameters.
+	// === Phase B: single combined-FRI MLE-check over the piecewise-concatenated oracle ===
+	// Collapse the oracle-index variables up front at sampled batching challenges `r'`: build the
+	// combined multilinear 𝛑(X) = Σ_i e[i]·π_i^↑(X) with e = eq(·, r') into one 2^𝐧 buffer, and the
+	// combined target s' = 𝛑(r) = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j).
 	let point = &output.challenges;
-	for (index, witness_prime) in witness_primes.into_iter().enumerate() {
+	let log_n_oracles = log2_ceil_usize(n_committed);
+	let outer_challenges = channel.sample_many(log_n_oracles);
+	let eq_tensor = eq_ind_partial_eval_scalars(&outer_challenges);
+
+	let mut combined = FieldBuffer::<P>::zeros(max_n);
+	let mut s_prime = F::ZERO;
+	for (witness_prime, scalar, alpha_i) in izip!(witness_primes, eq_tensor, alphas) {
 		let witness_prime =
 			witness_prime.expect("every committed oracle carries exactly one queued relation");
-		let n_i = n_vars[index];
-		let eval_point = point[..n_i].to_vec();
-		let committed = &committed_oracles[index];
-		let fri_folder = FRIFoldProver::new(
-			&fri_params[index],
-			ntt,
-			merkle_prover,
-			committed.codeword.clone(),
-			&committed.committed,
-		);
-		prove_mlecheck_basefold_zk(
-			witness_prime,
-			&eval_point,
-			alphas[index],
-			gamma,
-			fri_folder,
-			channel,
-		)
-		.expect("MLE-check BaseFold proof should succeed");
+		let n_i = witness_prime.log_len();
+		// Add scalar · π_i^↑ into the low 2^{n_i} block of the combined buffer (the high block is
+		// the ZeroPadMSB lift, left as the zeros already in `combined`).
+		if n_i >= P::LOG_WIDTH {
+			let scalar_p = P::broadcast(scalar);
+			let src = witness_prime.as_ref();
+			combined.as_mut()[..src.len()]
+				.par_iter_mut()
+				.zip(src)
+				.for_each(|(dst, &w)| {
+					*dst += scalar_p * w;
+				});
+		} else {
+			let src = P::from_scalars(witness_prime.iter_scalars());
+			combined.as_mut()[0] += src;
+		}
+		s_prime += scalar * alpha_i * eq_ind_zero(&point[n_i..]);
 	}
+
+	// Codeword commitments in oracle-index order, matching `open_fri_params.input_oracles()`.
+	let (committed_codewords, committeds) = committed_oracles
+		.into_iter()
+		.map(|committed| (committed.codeword, committed.committed))
+		.unzip::<_, _, Vec<_>, Vec<_>>();
+	// TODO: Annoying that we need to pass references for committeds. Maybe we can change the
+	// FRIFoldProver constructor.
+	let committed_codewords = iter::zip(committed_codewords, &committeds).collect();
+
+	let fri_folder = FRIFoldProver::new_batch(fri_params, ntt, merkle_prover, committed_codewords);
+	prove_mlecheck_basefold_zk_batch(
+		combined,
+		point,
+		s_prime,
+		gamma,
+		&outer_challenges,
+		fri_folder,
+		channel,
+	)
+	.expect("combined MLE-check BaseFold proof should succeed");
 }
 
 impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, Challenger_> IPProverChannel<F>
@@ -341,7 +380,6 @@ where
 
 		let index = self.next_oracle_index;
 		let spec = &remaining[0];
-		let fri_params = &self.fri_params[index];
 
 		// ZK channel expects raw witness buffer (NOT doubled).
 		assert_eq!(
@@ -352,14 +390,16 @@ where
 			buffer.log_len()
 		);
 
-		// Generate mask, interleave, and commit via commit_masked.
+		// Generate mask, interleave, and commit oracle `index` of the combined FRI parameters via
+		// commit_masked.
 		let CommitMaskedOutput {
 			commitment,
 			committed,
 			codeword,
 			mask,
 		} = fri::commit_masked(
-			fri_params,
+			&self.fri_params,
+			index,
 			self.ntt,
 			self.merkle_prover,
 			buffer.to_ref(),
