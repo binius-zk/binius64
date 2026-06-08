@@ -5,9 +5,10 @@ use std::{fs, path::Path};
 use anyhow::Result;
 use binius_core::constraint_system::{ConstraintSystem, Proof, ValueVec, ValuesData};
 use binius_frontend::{CircuitBuilder, CircuitStat};
-use binius_hash::{StdHashSuite, vision::VisionHashSuite};
+use binius_hash::{StdHashSuite, binary_merkle_tree::HashSuite, vision::VisionHashSuite};
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
 use clap::{Arg, Args, Command, FromArgMatches, Subcommand};
+use digest::Output;
 
 use crate::{
 	CompressionType, ExampleCircuit, check_proof, check_proof_zk, create_proof, create_proof_zk,
@@ -36,6 +37,68 @@ fn read_deserialized<T: DeserializeBytes>(path: &str) -> Result<T> {
 		fs::read(path).map_err(|e| anyhow::anyhow!("Failed to read file '{}': {}", path, e))?;
 	T::deserialize(buf.as_slice())
 		.map_err(|e| anyhow::anyhow!("Failed to deserialize data from '{}': {}", path, e))
+}
+
+/// Log the proof size and, if `output` is `Some`, serialize and write the proof to that path.
+fn maybe_write_proof(proof_bytes: &[u8], output: Option<&str>) -> Result<()> {
+	tracing::info!("Proof size: {} KiB", proof_bytes.len() / 1024);
+	if let Some(path) = output {
+		use binius_verifier::config::{ChallengerWithName, StdChallenger};
+		let proof = Proof::owned(proof_bytes.to_vec(), StdChallenger::NAME.to_string());
+		write_serialized(&proof, path)?;
+		tracing::info!("Proof written to '{}'", path);
+	}
+	Ok(())
+}
+
+/// Prove and verify with the given `HashSuite`, branching on `zk`.
+fn prove_with_hash_suite<H>(
+	cs: ConstraintSystem,
+	log_inv_rate: usize,
+	zk: bool,
+	message: Option<&[u8]>,
+	witness: ValueVec,
+	output: Option<&str>,
+) -> Result<()>
+where
+	H: HashSuite + Clone,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
+{
+	if zk {
+		let (verifier, prover) = setup_zk::<H>(cs, log_inv_rate)?;
+		let proof_bytes = create_proof_zk(&prover, witness.clone(), message)?;
+		maybe_write_proof(&proof_bytes, output)?;
+		check_proof_zk(&verifier, &witness, proof_bytes, message)?;
+	} else {
+		let (verifier, prover) = setup::<H>(cs, log_inv_rate, None)?;
+		let proof_bytes = create_proof(&prover, witness.clone())?;
+		maybe_write_proof(&proof_bytes, output)?;
+		check_proof(&verifier, &witness, proof_bytes)?;
+	}
+	Ok(())
+}
+
+/// Verify a proof with the given `HashSuite`, branching on `zk`.
+fn verify_with_hash_suite<H>(
+	cs: ConstraintSystem,
+	log_inv_rate: usize,
+	zk: bool,
+	message: Option<&[u8]>,
+	witness: ValueVec,
+	proof_bytes: Vec<u8>,
+) -> Result<()>
+where
+	H: HashSuite + Clone,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
+{
+	if zk {
+		let verifier = setup_zk_verifier::<H>(cs, log_inv_rate)?;
+		check_proof_zk(&verifier, &witness, proof_bytes, message)?;
+	} else {
+		let verifier = setup_verifier::<H>(cs, log_inv_rate)?;
+		check_proof(&verifier, &witness, proof_bytes)?;
+	}
+	Ok(())
 }
 
 /// A CLI builder for circuit examples that handles all command-line parsing and execution.
@@ -604,62 +667,29 @@ where
 		let witness = filler.into_value_vec();
 		drop(witness_population);
 
-		match (zk, compression) {
-			(false, CompressionType::Sha256) => {
+		let output = output.as_deref();
+		match compression {
+			CompressionType::Sha256 => {
 				tracing::info!("Using SHA256 compression for Merkle tree");
-				let (verifier, prover) = setup::<StdHashSuite>(cs, log_inv_rate as usize, None)?;
-				let proof_bytes = create_proof(&prover, witness.clone())?;
-				tracing::info!("Proof size: {} KiB", proof_bytes.len() / 1024);
-				if let Some(ref path) = output {
-					let challenger_name =
-						<binius_verifier::config::StdChallenger as binius_verifier::config::ChallengerWithName>::NAME.to_string();
-					let proof = Proof::owned(proof_bytes.clone(), challenger_name);
-					write_serialized(&proof, path)?;
-					tracing::info!("Proof written to '{}'", path);
-				}
-				check_proof(&verifier, &witness, proof_bytes)?;
+				prove_with_hash_suite::<StdHashSuite>(
+					cs,
+					log_inv_rate as usize,
+					zk,
+					message,
+					witness,
+					output,
+				)?;
 			}
-			(false, CompressionType::Vision) => {
+			CompressionType::Vision => {
 				tracing::info!("Using Vision suite for Merkle tree");
-				let (verifier, prover) = setup::<VisionHashSuite>(cs, log_inv_rate as usize, None)?;
-				let proof_bytes = create_proof(&prover, witness.clone())?;
-				tracing::info!("Proof size: {} KiB", proof_bytes.len() / 1024);
-				if let Some(ref path) = output {
-					let challenger_name =
-						<binius_verifier::config::StdChallenger as binius_verifier::config::ChallengerWithName>::NAME.to_string();
-					let proof = Proof::owned(proof_bytes.clone(), challenger_name);
-					write_serialized(&proof, path)?;
-					tracing::info!("Proof written to '{}'", path);
-				}
-				check_proof(&verifier, &witness, proof_bytes)?;
-			}
-			(true, CompressionType::Sha256) => {
-				tracing::info!("Using SHA256 compression for Merkle tree");
-				let (verifier, prover) = setup_zk::<StdHashSuite>(cs, log_inv_rate as usize)?;
-				let proof_bytes = create_proof_zk(&prover, witness.clone(), message)?;
-				tracing::info!("Proof size: {} KiB", proof_bytes.len() / 1024);
-				if let Some(ref path) = output {
-					let challenger_name =
-						<binius_verifier::config::StdChallenger as binius_verifier::config::ChallengerWithName>::NAME.to_string();
-					let proof = Proof::owned(proof_bytes.clone(), challenger_name);
-					write_serialized(&proof, path)?;
-					tracing::info!("Proof written to '{}'", path);
-				}
-				check_proof_zk(&verifier, &witness, proof_bytes, message)?;
-			}
-			(true, CompressionType::Vision) => {
-				tracing::info!("Using Vision suite for Merkle tree");
-				let (verifier, prover) = setup_zk::<VisionHashSuite>(cs, log_inv_rate as usize)?;
-				let proof_bytes = create_proof_zk(&prover, witness.clone(), message)?;
-				tracing::info!("Proof size: {} KiB", proof_bytes.len() / 1024);
-				if let Some(ref path) = output {
-					let challenger_name =
-						<binius_verifier::config::StdChallenger as binius_verifier::config::ChallengerWithName>::NAME.to_string();
-					let proof = Proof::owned(proof_bytes.clone(), challenger_name);
-					write_serialized(&proof, path)?;
-					tracing::info!("Proof written to '{}'", path);
-				}
-				check_proof_zk(&verifier, &witness, proof_bytes, message)?;
+				prove_with_hash_suite::<VisionHashSuite>(
+					cs,
+					log_inv_rate as usize,
+					zk,
+					message,
+					witness,
+					output,
+				)?;
 			}
 		}
 
@@ -904,26 +934,28 @@ where
 		circuit.populate_wire_witness(&mut filler)?;
 		let witness = filler.into_value_vec();
 
-		match (zk, compression) {
-			(false, CompressionType::Sha256) => {
+		match compression {
+			CompressionType::Sha256 => {
 				tracing::info!("Using SHA256 compression for Merkle tree");
-				let verifier = setup_verifier::<StdHashSuite>(cs, log_inv_rate as usize)?;
-				check_proof(&verifier, &witness, proof_bytes)?;
+				verify_with_hash_suite::<StdHashSuite>(
+					cs,
+					log_inv_rate as usize,
+					zk,
+					message,
+					witness,
+					proof_bytes,
+				)?;
 			}
-			(false, CompressionType::Vision) => {
+			CompressionType::Vision => {
 				tracing::info!("Using Vision suite for Merkle tree");
-				let verifier = setup_verifier::<VisionHashSuite>(cs, log_inv_rate as usize)?;
-				check_proof(&verifier, &witness, proof_bytes)?;
-			}
-			(true, CompressionType::Sha256) => {
-				tracing::info!("Using SHA256 compression for Merkle tree");
-				let verifier = setup_zk_verifier::<StdHashSuite>(cs, log_inv_rate as usize)?;
-				check_proof_zk(&verifier, &witness, proof_bytes, message)?;
-			}
-			(true, CompressionType::Vision) => {
-				tracing::info!("Using Vision suite for Merkle tree");
-				let verifier = setup_zk_verifier::<VisionHashSuite>(cs, log_inv_rate as usize)?;
-				check_proof_zk(&verifier, &witness, proof_bytes, message)?;
+				verify_with_hash_suite::<VisionHashSuite>(
+					cs,
+					log_inv_rate as usize,
+					zk,
+					message,
+					witness,
+					proof_bytes,
+				)?;
 			}
 		}
 
