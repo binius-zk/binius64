@@ -1,14 +1,18 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 use std::{fs, path::Path};
 
 use anyhow::Result;
-use binius_core::constraint_system::{ConstraintSystem, ValueVec, ValuesData};
+use binius_core::constraint_system::{ConstraintSystem, Proof, ValueVec, ValuesData};
 use binius_frontend::{CircuitBuilder, CircuitStat};
 use binius_hash::{StdHashSuite, vision::VisionHashSuite};
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
 use clap::{Arg, Args, Command, FromArgMatches, Subcommand};
 
-use crate::{CompressionType, ExampleCircuit, prove_verify, prove_verify_zk, setup, setup_zk};
+use crate::{
+	CompressionType, ExampleCircuit, check_proof, check_proof_zk, create_proof, create_proof_zk,
+	prove_verify, setup, setup_zk,
+};
 
 /// Serialize a value implementing `SerializeBytes` and write it to the given path.
 fn write_serialized<T: SerializeBytes>(value: &T, path: &str) -> Result<()> {
@@ -236,6 +240,13 @@ where
 						"Produce a zero-knowledge signature of knowledge over this message \
 						 instead of a plain proof of knowledge (requires --zk)",
 					),
+			)
+			.arg(
+				Arg::new("output")
+					.short('o')
+					.long("output")
+					.value_name("PATH")
+					.help("Write the serialized proof to this file"),
 			);
 
 		// Augment with Params arguments at top level for default behavior
@@ -285,6 +296,13 @@ where
 						"Produce a zero-knowledge signature of knowledge over this message \
 						 instead of a plain proof of knowledge (requires --zk)",
 					),
+			)
+			.arg(
+				Arg::new("output")
+					.short('o')
+					.long("output")
+					.value_name("PATH")
+					.help("Write the serialized proof to this file"),
 			);
 		cmd = E::Params::augment_args(cmd);
 		cmd = E::Instance::augment_args(cmd);
@@ -496,6 +514,7 @@ where
 			.clone();
 		let zk = matches.get_flag("zk");
 		let sign_message = matches.get_one::<String>("sign_message").cloned();
+		let output = matches.get_one::<String>("output").cloned();
 		tracing::info!("Parsed compression type: {compression:?}");
 		if zk {
 			tracing::info!("Using zero-knowledge proving config");
@@ -538,22 +557,58 @@ where
 			(false, CompressionType::Sha256) => {
 				tracing::info!("Using SHA256 compression for Merkle tree");
 				let (verifier, prover) = setup::<StdHashSuite>(cs, log_inv_rate as usize, None)?;
-				prove_verify(&verifier, &prover, witness)?;
+				let proof_bytes = create_proof(&prover, witness.clone())?;
+				tracing::info!("Proof size: {} KiB", proof_bytes.len() / 1024);
+				if let Some(ref path) = output {
+					let challenger_name =
+						<binius_verifier::config::StdChallenger as binius_verifier::config::ChallengerWithName>::NAME.to_string();
+					let proof = Proof::owned(proof_bytes.clone(), challenger_name);
+					write_serialized(&proof, path)?;
+					tracing::info!("Proof written to '{}'", path);
+				}
+				check_proof(&verifier, &witness, proof_bytes)?;
 			}
 			(false, CompressionType::Vision) => {
 				tracing::info!("Using Vision suite for Merkle tree");
 				let (verifier, prover) = setup::<VisionHashSuite>(cs, log_inv_rate as usize, None)?;
-				prove_verify(&verifier, &prover, witness)?;
+				let proof_bytes = create_proof(&prover, witness.clone())?;
+				tracing::info!("Proof size: {} KiB", proof_bytes.len() / 1024);
+				if let Some(ref path) = output {
+					let challenger_name =
+						<binius_verifier::config::StdChallenger as binius_verifier::config::ChallengerWithName>::NAME.to_string();
+					let proof = Proof::owned(proof_bytes.clone(), challenger_name);
+					write_serialized(&proof, path)?;
+					tracing::info!("Proof written to '{}'", path);
+				}
+				check_proof(&verifier, &witness, proof_bytes)?;
 			}
 			(true, CompressionType::Sha256) => {
 				tracing::info!("Using SHA256 compression for Merkle tree");
 				let (verifier, prover) = setup_zk::<StdHashSuite>(cs, log_inv_rate as usize)?;
-				prove_verify_zk(&verifier, &prover, witness, message)?;
+				let proof_bytes = create_proof_zk(&prover, witness.clone(), message)?;
+				tracing::info!("Proof size: {} KiB", proof_bytes.len() / 1024);
+				if let Some(ref path) = output {
+					let challenger_name =
+						<binius_verifier::config::StdChallenger as binius_verifier::config::ChallengerWithName>::NAME.to_string();
+					let proof = Proof::owned(proof_bytes.clone(), challenger_name);
+					write_serialized(&proof, path)?;
+					tracing::info!("Proof written to '{}'", path);
+				}
+				check_proof_zk(&verifier, &witness, proof_bytes, message)?;
 			}
 			(true, CompressionType::Vision) => {
 				tracing::info!("Using Vision suite for Merkle tree");
 				let (verifier, prover) = setup_zk::<VisionHashSuite>(cs, log_inv_rate as usize)?;
-				prove_verify_zk(&verifier, &prover, witness, message)?;
+				let proof_bytes = create_proof_zk(&prover, witness.clone(), message)?;
+				tracing::info!("Proof size: {} KiB", proof_bytes.len() / 1024);
+				if let Some(ref path) = output {
+					let challenger_name =
+						<binius_verifier::config::StdChallenger as binius_verifier::config::ChallengerWithName>::NAME.to_string();
+					let proof = Proof::owned(proof_bytes.clone(), challenger_name);
+					write_serialized(&proof, path)?;
+					tracing::info!("Proof written to '{}'", path);
+				}
+				check_proof_zk(&verifier, &witness, proof_bytes, message)?;
 			}
 		}
 

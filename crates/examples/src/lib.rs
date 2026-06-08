@@ -88,6 +88,80 @@ where
 	Ok((verifier, prover))
 }
 
+/// Run the prover and return the raw proof transcript bytes.
+pub fn create_proof<H>(prover: &Prover<OptimalPackedB128, H>, witness: ValueVec) -> Result<Vec<u8>>
+where
+	H: HashSuite,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
+{
+	let challenger = StdChallenger::default();
+	let mut prover_transcript = ProverTranscript::new(challenger);
+	prover.prove(witness, &mut prover_transcript)?;
+	Ok(prover_transcript.finalize())
+}
+
+/// Run the ZK prover and return the raw proof transcript bytes.
+pub fn create_proof_zk<H>(
+	prover: &ZKProver<OptimalPackedB128, H>,
+	witness: ValueVec,
+	message: Option<&[u8]>,
+) -> Result<Vec<u8>>
+where
+	H: HashSuite,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
+{
+	let challenger = StdChallenger::default();
+	let _scope = tracing::info_span!("Prove").entered();
+	let mut prover_transcript = ProverTranscript::new(challenger);
+	let mut rng = rand::rng();
+	match message {
+		Some(message) => prover.prove_sig(witness, message, &mut rng, &mut prover_transcript)?,
+		None => prover.prove(witness, &mut rng, &mut prover_transcript)?,
+	}
+	Ok(prover_transcript.finalize())
+}
+
+/// Verify a proof given its raw transcript bytes.
+pub fn check_proof<H>(
+	verifier: &Verifier<H>,
+	witness: &ValueVec,
+	proof_bytes: Vec<u8>,
+) -> Result<()>
+where
+	H: HashSuite,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
+{
+	let challenger = StdChallenger::default();
+	let mut verifier_transcript = VerifierTranscript::new(challenger, proof_bytes);
+	verifier.verify(witness.public(), &mut verifier_transcript)?;
+	verifier_transcript.finalize()?;
+	Ok(())
+}
+
+/// Verify a ZK proof given its raw transcript bytes.
+pub fn check_proof_zk<H>(
+	verifier: &ZKVerifier<H>,
+	witness: &ValueVec,
+	proof_bytes: Vec<u8>,
+	message: Option<&[u8]>,
+) -> Result<()>
+where
+	H: HashSuite,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
+{
+	let challenger = StdChallenger::default();
+	let _scope = tracing::info_span!("Verify").entered();
+	let mut verifier_transcript = VerifierTranscript::new(challenger, proof_bytes);
+	match message {
+		Some(message) => {
+			verifier.verify_sig(witness.public(), message, &mut verifier_transcript)?
+		}
+		None => verifier.verify(witness.public(), &mut verifier_transcript)?,
+	}
+	verifier_transcript.finalize()?;
+	Ok(())
+}
+
 pub fn prove_verify<H>(
 	verifier: &Verifier<H>,
 	prover: &Prover<OptimalPackedB128, H>,
@@ -97,18 +171,9 @@ where
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
-	let challenger = StdChallenger::default();
-
-	let mut prover_transcript = ProverTranscript::new(challenger.clone());
-	prover.prove(witness.clone(), &mut prover_transcript)?;
-
-	let proof = prover_transcript.finalize();
-	tracing::info!("Proof size: {} KiB", proof.len() / 1024);
-
-	let mut verifier_transcript = VerifierTranscript::new(challenger, proof);
-	verifier.verify(witness.public(), &mut verifier_transcript)?;
-	verifier_transcript.finalize()?;
-
+	let proof_bytes = create_proof(prover, witness.clone())?;
+	tracing::info!("Proof size: {} KiB", proof_bytes.len() / 1024);
+	check_proof(verifier, &witness, proof_bytes)?;
 	Ok(())
 }
 
@@ -122,33 +187,9 @@ where
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
-	let challenger = StdChallenger::default();
-
-	let proof = {
-		let _scope = tracing::info_span!("Prove").entered();
-		let mut prover_transcript = ProverTranscript::new(challenger.clone());
-		let mut rng = rand::rng();
-		match message {
-			Some(message) => {
-				prover.prove_sig(witness.clone(), message, &mut rng, &mut prover_transcript)?
-			}
-			None => prover.prove(witness.clone(), &mut rng, &mut prover_transcript)?,
-		}
-		prover_transcript.finalize()
-	};
-
-	tracing::info!("Proof size: {} KiB", proof.len() / 1024);
-
-	let _scope = tracing::info_span!("Verify").entered();
-	let mut verifier_transcript = VerifierTranscript::new(challenger, proof);
-	match message {
-		Some(message) => {
-			verifier.verify_sig(witness.public(), message, &mut verifier_transcript)?
-		}
-		None => verifier.verify(witness.public(), &mut verifier_transcript)?,
-	}
-	verifier_transcript.finalize()?;
-
+	let proof_bytes = create_proof_zk(prover, witness.clone(), message)?;
+	tracing::info!("Proof size: {} KiB", proof_bytes.len() / 1024);
+	check_proof_zk(verifier, &witness, proof_bytes, message)?;
 	Ok(())
 }
 
