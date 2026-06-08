@@ -56,8 +56,13 @@ where
 	transcript: &'a mut VerifierTranscript<Challenger_>,
 	merkle_scheme: &'a MerkleScheme_,
 	oracle_specs: &'a [OracleSpec],
+	/// Per-oracle FRI parameters (`log_batch_size = 1`), one per oracle, used for the per-oracle
+	/// BaseFold openings in [`Self::finish`].
 	fri_params: &'a [FRIParams<F>],
 	oracle_commitments: Vec<MerkleScheme_::Digest>,
+	/// Oracle relations queued by [`Self::verify_oracle_relations`], opened together in
+	/// [`Self::finish`].
+	queue: Vec<OracleLinearRelation<'a, BaseFoldZKOracle, F>>,
 	next_oracle_index: usize,
 }
 
@@ -83,6 +88,7 @@ where
 			oracle_specs,
 			fri_params,
 			oracle_commitments: Vec::new(),
+			queue: Vec::new(),
 			next_oracle_index: 0,
 		}
 	}
@@ -92,11 +98,144 @@ where
 		self.transcript
 	}
 
-	/// Consumes the channel, asserting all oracle specs have been consumed.
-	pub fn finish(self) {
-		let n_remaining = self.oracle_specs.len() - self.next_oracle_index;
+	/// Consumes the channel and verifies the single combined opening over **all** committed
+	/// oracles.
+	///
+	/// All oracle relations queued by
+	/// [`verify_oracle_relations`](IOPVerifierChannel::verify_oracle_relations) across every call
+	/// are processed here in one batch: masking, one batched sumcheck reducing the masked claims
+	/// to a shared point `r`, then one combined FRI opening over every committed oracle
+	/// (in oracle-index order). Because the whole opening is deferred to this point, every oracle
+	/// is committed and there is a single sumcheck point, so the precomputed combined `FRIParams`
+	/// (`optimal_for_batch` over all oracle specs) serves the opening.
+	pub fn finish(self) -> Result<(), Error> {
+		let Self {
+			transcript,
+			merkle_scheme,
+			oracle_specs,
+			fri_params,
+			oracle_commitments,
+			queue,
+			next_oracle_index,
+		} = self;
+
+		let n_remaining = oracle_specs.len() - next_oracle_index;
 		assert!(n_remaining == 0, "finish called but {n_remaining} oracle specs remaining",);
+
+		if queue.is_empty() {
+			return Ok(());
+		}
+
+		verify_batch_zk_basefold(
+			transcript,
+			merkle_scheme,
+			oracle_specs,
+			fri_params,
+			oracle_commitments,
+			queue,
+		)
 	}
+}
+
+/// Verifies the combined ZK BaseFold opening over all committed oracles.
+///
+/// This drives `channel` — the [`VerifierTranscript`] taken from the destructured
+/// [`BaseFoldZKVerifierChannel`] — through its [`IPVerifierChannel`] interface: it reads the masked
+/// inner products σ_i, runs one batched sumcheck reducing the masked claims to a shared point `r`,
+/// then opens each committed oracle with its own FRI parameters.
+///
+/// The masking inner products and the batched sumcheck process the `relations` in arrival order (so
+/// each reduced eval lines up with its batched-claim coefficient), while the per-oracle evaluations
+/// α_i and the FRI openings are emitted in oracle-index order. Each relation carries its oracle's
+/// index, so the two orders are reconciled by indexing rather than by sorting the relations; the
+/// per-oracle data (`oracle_specs`, `fri_params`, `oracle_commitments`) is all indexed by oracle
+/// index.
+///
+/// `channel` is the concrete [`VerifierTranscript`] rather than an arbitrary [`IPVerifierChannel`]
+/// because the Phase-B FRI openings read Merkle query proofs, which fall outside that interface.
+fn verify_batch_zk_basefold<F, MerkleScheme_, Challenger_>(
+	channel: &mut VerifierTranscript<Challenger_>,
+	merkle_scheme: &MerkleScheme_,
+	oracle_specs: &[OracleSpec],
+	fri_params: &[FRIParams<F>],
+	oracle_commitments: Vec<MerkleScheme_::Digest>,
+	relations: Vec<OracleLinearRelation<'_, BaseFoldZKOracle, F>>,
+) -> Result<(), Error>
+where
+	F: BinaryField,
+	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
+	Challenger_: Challenger,
+{
+	let n_committed = oracle_commitments.len();
+	assert_eq!(relations.len(), n_committed, "expects exactly one relation per committed oracle",);
+
+	let n_vars: Vec<usize> = (0..n_committed)
+		.map(|i| oracle_specs[i].log_msg_len)
+		.collect();
+	let max_n = *n_vars.iter().max().expect("relations is non-empty");
+
+	// === Masking step ===
+	// Read the masked inner products σ_i, sample γ, and form the masked claims s_i'.
+	let sigmas = channel.recv_many(n_committed)?;
+	let gamma = IPVerifierChannel::<F>::sample(channel);
+	let sum_primes = iter::zip(&relations, sigmas)
+		.map(|(relation, sigma)| extrapolate_line_packed(relation.claim, sigma, gamma))
+		.collect::<Vec<_>>();
+
+	// === Phase A: batched sumcheck on the masked claims (degree 2, bivariate product) ===
+	let BatchSumcheckOutput {
+		batch_coeff: sumcheck_batch_coeff,
+		eval: sumcheck_reduced_eval,
+		challenges: sumcheck_challenges,
+	} = sumcheck::batch_verify::<F, _>(max_n, 2, &sum_primes, channel)?;
+
+	// Receive the evaluation of each oracle at the challenge point.
+	let alphas = channel.recv_many(n_committed)?;
+
+	// `batch_verify` returns binding-order challenges; reverse to variable-indexed (low-to-high).
+	let mut point = sumcheck_challenges;
+	point.reverse();
+
+	// Reduce the batched claim: each oracle contributes α_i · t_i(ρ_i) · eq(0^extra, padding).
+	let contributions = relations
+		.into_iter()
+		.map(|relation| {
+			let alpha_i = alphas[relation.oracle.index];
+			let n_i = n_vars[relation.oracle.index];
+			let (eval_coords, padding_coords) = point.split_at(n_i);
+			let pad_eq = eq_ind_zero(padding_coords);
+			let transparent_eval = (relation.transparent)(eval_coords);
+			alpha_i * transparent_eval * pad_eq
+		})
+		.collect::<Vec<_>>();
+	let expected = evaluate_univariate(&contributions, sumcheck_batch_coeff);
+	channel.assert_zero(sumcheck_reduced_eval - expected)?;
+
+	// === Phase B: per-oracle MLE-check BaseFold verification ===
+	// Open each committed oracle at its evaluation point ρ_i = point[..n_i] in oracle-index order,
+	// using its own FRI parameters.
+	for (alpha_i, n_i, commitment, fri_params) in
+		izip!(alphas, n_vars, oracle_commitments, fri_params)
+	{
+		let basefold::ReducedOutput {
+			final_fri_value,
+			final_sumcheck_value,
+			..
+		} = basefold::verify_mlecheck_basefold_zk(
+			fri_params,
+			merkle_scheme,
+			commitment,
+			alpha_i,
+			&point[..n_i],
+			gamma,
+			channel,
+		)?;
+
+		// The MLE-check internalizes the eq factor, so consistency is plain equality.
+		channel.assert_zero(final_sumcheck_value - final_fri_value)?;
+	}
+
+	Ok(())
 }
 
 impl<F, MerkleScheme_, Challenger_> IPVerifierChannel<F>
@@ -156,8 +295,8 @@ where
 	}
 }
 
-impl<F, MerkleScheme_, Challenger_> IOPVerifierChannel<F>
-	for BaseFoldZKVerifierChannel<'_, F, MerkleScheme_, Challenger_>
+impl<'a, F, MerkleScheme_, Challenger_> IOPVerifierChannel<'a, F>
+	for BaseFoldZKVerifierChannel<'a, F, MerkleScheme_, Challenger_>
 where
 	F: BinaryField,
 	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
@@ -189,84 +328,21 @@ where
 		Ok(BaseFoldZKOracle { index })
 	}
 
-	fn verify_oracle_relations<'a>(
+	fn verify_oracle_relations(
 		&mut self,
 		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error> {
-		let relations = oracle_relations.into_iter().collect::<Vec<_>>();
-		if relations.is_empty() {
-			return Ok(());
-		}
-
-		let indices: Vec<usize> = relations.iter().map(|r| r.oracle.index).collect();
-		for &index in &indices {
+		// Queue the relations; the actual opening (masking + sumcheck + combined FRI) happens once,
+		// over all committed oracles, in [`Self::finish`].
+		for relation in oracle_relations {
 			assert!(
-				index < self.oracle_commitments.len(),
-				"oracle index {index} out of bounds, expected < {}",
+				relation.oracle.index < self.oracle_commitments.len(),
+				"oracle index {} out of bounds, expected < {}",
+				relation.oracle.index,
 				self.oracle_commitments.len()
 			);
+			self.queue.push(relation);
 		}
-		let n_vars: Vec<usize> = indices
-			.iter()
-			.map(|&i| self.oracle_specs[i].log_msg_len)
-			.collect();
-		let max_n = *n_vars.iter().max().expect("relations is non-empty");
-
-		// === Masking step ===
-		// Read the masked inner products σ_i, sample γ, and form the masked claims s_i'.
-		let sigmas = self.recv_many(relations.len())?;
-		let gamma = self.sample();
-		let sum_primes = iter::zip(&relations, sigmas)
-			.map(|(relation, sigma)| extrapolate_line_packed(relation.claim, sigma, gamma))
-			.collect::<Vec<_>>();
-
-		// === Phase A: batched sumcheck on the masked claims (degree 2, bivariate product) ===
-		let BatchSumcheckOutput {
-			batch_coeff: sumcheck_batch_coeff,
-			eval: sumcheck_reduced_eval,
-			challenges: sumcheck_challenges,
-		} = sumcheck::batch_verify::<F, _>(max_n, 2, &sum_primes, self.transcript)?;
-		let alphas = self.recv_many(relations.len())?;
-
-		// `batch_verify` returns binding-order challenges; reverse to variable-indexed
-		// (low-to-high).
-		let mut point = sumcheck_challenges;
-		point.reverse();
-
-		// Reduce the batched claim: each oracle contributes α_i · t_i(ρ_i) · eq(0^extra, padding),
-		// combined with the batching coefficient.
-		let contributions: Vec<F> = izip!(relations, &n_vars, &alphas)
-			.map(|(relation, &n_i, &alpha_i)| {
-				let (eval_coords, padding_coords) = point.split_at(n_i);
-				let pad_eq = eq_ind_zero(padding_coords);
-				let transparent_eval = (relation.transparent)(eval_coords);
-				alpha_i * transparent_eval * pad_eq
-			})
-			.collect();
-		let expected = evaluate_univariate(&contributions, sumcheck_batch_coeff);
-		self.assert_zero(sumcheck_reduced_eval - expected)?;
-
-		// === Phase B: per-oracle MLE-check BaseFold verification ===
-		for (index, alpha, n_i) in izip!(indices, alphas, n_vars) {
-			let commitment = self.oracle_commitments[index].clone();
-			let basefold::ReducedOutput {
-				final_fri_value,
-				final_sumcheck_value,
-				..
-			} = basefold::verify_mlecheck_basefold_zk(
-				&self.fri_params[index],
-				self.merkle_scheme,
-				commitment,
-				alpha,
-				&point[..n_i],
-				gamma,
-				self.transcript,
-			)?;
-
-			// The MLE-check internalizes the eq factor, so consistency is plain equality.
-			self.assert_zero(final_sumcheck_value - final_fri_value)?;
-		}
-
 		Ok(())
 	}
 }

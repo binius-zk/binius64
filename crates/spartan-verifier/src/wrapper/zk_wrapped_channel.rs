@@ -294,17 +294,21 @@ where
 		let outer_cs = self.outer_verifier.constraint_system();
 		let public_size = 1 << outer_cs.log_public();
 
-		let inout_builder = Rc::try_unwrap(self.inout_builder)
-			.expect("CircuitElem values should only hold Weak references")
-			.into_inner();
-
+		// Read the materialized public values by borrow rather than consuming the shared builder:
+		// the queued oracle relations (whose opening is deferred to `inner_channel.finish`) still
+		// hold references to it. The transparent closures never materialize new public values
+		// (their results are required to be non-`Private`), so the public segment is already
+		// final here.
 		let mut public = outer_cs.constants().to_vec();
-		public.extend(inout_builder.into_public_values());
+		public.extend(self.inout_builder.borrow().public_values.iter().copied());
 		public.resize(public_size, F::ZERO);
 
 		let mut inner_channel = self.inner_channel;
 		self.outer_verifier
 			.verify(self.precommit_oracle, public, &mut inner_channel)?;
+		// Both the inner and outer proofs queued their oracle relations onto `inner_channel`; run
+		// the single combined opening over all committed oracles now.
+		inner_channel.finish()?;
 		Ok(())
 	}
 }
@@ -396,8 +400,8 @@ where
 	}
 }
 
-impl<F, MTScheme, Challenger_> IOPVerifierChannel<F>
-	for ZKWrappedVerifierChannel<'_, F, MTScheme, Challenger_>
+impl<'a, F, MTScheme, Challenger_> IOPVerifierChannel<'a, F>
+	for ZKWrappedVerifierChannel<'a, F, MTScheme, Challenger_>
 where
 	F: BinaryField,
 	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
@@ -419,9 +423,9 @@ where
 		self.inner_channel.recv_oracle()
 	}
 
-	fn verify_oracle_relations<'b>(
+	fn verify_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'b, Self::Oracle, Self::Elem>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
 	) -> Result<(), binius_iop::channel::Error> {
 		let oracle_relations = oracle_relations
 			.into_iter()
@@ -439,15 +443,21 @@ where
 						.borrow_mut()
 						.next_inout(decrypted_claim);
 
-					let builder = self.inout_builder.clone();
-
-					// Wrap F values as lazy InOut for the transparent closure (which expects
-					// CircuitElems). The closure can do further arithmetic; results are required
-					// to be value-known (Constant or InOut), never Private.
+					// Wrap the sumcheck challenge coordinates for the transparent closure (which
+					// expects `CircuitElem`s). The closure can do further arithmetic; results are
+					// required to be value-known (Constant or InOut), never Private.
+					//
+					// HACK: the coordinates are sampled challenges, so they are wrapped as
+					// `Constant`s rather than builder-backed InOut wires. This frees the closure
+					// from holding a reference to `inout_builder`, and is sound only because the
+					// symbolic outer circuit (`IronSpartanBuilderChannel`) never invokes the
+					// transparent closure — it attests only `claim == decrypted_claim`, with the
+					// transparent evaluation performed out of circuit. This F->CircuitElem->F
+					// bridge should eventually be replaced by an F-level transparent evaluator.
 					let eval_fn = move |vals: &[F]| {
 						let wrapped_vals = vals
 							.iter()
-							.map(|val| CircuitElem::wire(&builder, WrappedWire::lazy_inout(*val)))
+							.map(|val| CircuitElem::Constant(*val))
 							.collect::<Vec<_>>();
 
 						match transparent(&wrapped_vals) {

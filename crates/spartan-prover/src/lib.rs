@@ -181,7 +181,7 @@ impl<F: Field> IOPProver<F> {
 		precommit_oracle: Channel::Oracle,
 		precommit_packed: FieldBuffer<P>,
 		mut rng: impl CryptoRng,
-		mut channel: Channel,
+		channel: &mut Channel,
 	) -> Result<(), Error>
 	where
 		F: BinaryField,
@@ -268,7 +268,7 @@ impl<F: Field> IOPProver<F> {
 			precommit_packed.to_ref(),
 			private_packed.to_ref(),
 			mulcheck_mask,
-			&mut channel,
+			&mut *channel,
 		)?;
 
 		// λ is the batching challenge for the constraint operands
@@ -309,7 +309,7 @@ impl<F: Field> IOPProver<F> {
 		let libra_eval_tensor =
 			zk_mlecheck::expand_libra_eval::<P>(&r_x, n_vars, mask_degree, m_n, m_d);
 
-		// Prove all oracle relations
+		// Prove all oracle relations.
 		channel.prove_oracle_relations([
 			(precommit_oracle, precommit_packed, precommit_wiring_poly, precommit_claim),
 			(private_oracle, private_packed, private_wiring_poly, private_claim),
@@ -395,8 +395,17 @@ where
 		let (precommit_oracle, precommit_packed) =
 			self.iop_prover
 				.commit_precommit::<P, _>(&witness, &mut rng, &mut channel);
-		self.iop_prover
-			.prove::<P, _>(witness, precommit_oracle, precommit_packed, rng, channel)
+		// The IOP prover only queues the oracle relations; `finish` runs the single combined
+		// opening.
+		self.iop_prover.prove::<P, _>(
+			witness,
+			precommit_oracle,
+			precommit_packed,
+			rng,
+			&mut channel,
+		)?;
+		channel.finish();
+		Ok(())
 	}
 }
 

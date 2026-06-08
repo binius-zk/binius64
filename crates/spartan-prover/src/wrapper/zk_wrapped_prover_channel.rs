@@ -191,7 +191,7 @@ where
 		let _ = tracing::debug_span!("Proving ZK wrapper proof").entered();
 
 		let Self {
-			inner_channel,
+			mut inner_channel,
 			outer_prover,
 			outer_layout,
 			replay_fn,
@@ -220,8 +220,11 @@ where
 			precommit_oracle,
 			precommit_packed,
 			rng,
-			inner_channel,
+			&mut inner_channel,
 		)?;
+		// Both the inner and outer proofs queued their oracle relations onto `inner_channel`; run
+		// the single combined opening over all committed oracles now.
+		inner_channel.finish();
 		Ok(())
 	}
 }

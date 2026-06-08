@@ -33,7 +33,7 @@ pub mod constraint_system;
 pub mod wiring;
 pub mod wrapper;
 
-use std::slice;
+use std::{rc::Rc, slice};
 
 use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
@@ -144,15 +144,16 @@ impl<F: Field> IOPVerifier<F> {
 	/// # Returns
 	///
 	/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
-	pub fn verify<Channel>(
-		&self,
+	pub fn verify<'r, Channel>(
+		&'r self,
 		precommit_oracle: Channel::Oracle,
 		public: Vec<Channel::Elem>,
 		channel: &mut Channel,
 	) -> Result<(), Error>
 	where
 		F: BinaryField,
-		Channel: IOPVerifierChannel<F>,
+		Channel: IOPVerifierChannel<'r, F>,
+		Channel::Elem: 'r,
 	{
 		let cs = &self.constraint_system;
 
@@ -183,8 +184,11 @@ impl<F: Field> IOPVerifier<F> {
 		// Batch together the constraint operand evaluation claims.
 		let batched_sum = evaluate_univariate(&[a_eval, b_eval, c_eval], lambda.clone());
 
-		// Compute rₓ^⊤ (M_A + λ M_B + λ² M_C) x
-		let r_x_tensor = eq_ind_partial_eval_scalars(&r_x);
+		// Compute rₓ^⊤ (M_A + λ M_B + λ² M_C) x. Shared via `Rc` so the transparent closures can
+		// own it and outlive this call (the opening is deferred to the channel's `finish()`). `Rc`
+		// suffices over `Arc` because the closures (`TransparentEvalFn`, no `Send` bound) and the
+		// channel never cross a thread boundary.
+		let r_x_tensor: Rc<[Channel::Elem]> = eq_ind_partial_eval_scalars(&r_x).into();
 
 		// The public-segment contribution to the operand evaluations is purely a function of
 		// public-channel inputs (the public scalars, λ, and rₓ). Trade in those Elems for plain
@@ -219,10 +223,14 @@ impl<F: Field> IOPVerifier<F> {
 		let private_claim = batched_sum - public_eval - precommit_claim.clone();
 
 		// Build transparent closures for each oracle relation
-		let precommit_transparent =
-			wiring::eval_transparent(cs, WitnessSegment::Precommit, &r_x_tensor, lambda.clone());
+		let precommit_transparent = wiring::eval_transparent(
+			cs,
+			WitnessSegment::Precommit,
+			r_x_tensor.clone(),
+			lambda.clone(),
+		);
 		let private_transparent =
-			wiring::eval_transparent(cs, WitnessSegment::Private, &r_x_tensor, lambda);
+			wiring::eval_transparent(cs, WitnessSegment::Private, r_x_tensor.clone(), lambda);
 		let mask_transparent = mask_transparent(cs, &r_x);
 
 		// Verify all oracle relations
@@ -322,11 +330,13 @@ where
 		// Verifier observes the public input (includes it in Fiat-Shamir).
 		transcript.observe().write_slice(public);
 
-		// Create channel, receive the precommit oracle, and delegate to IOPVerifier::verify.
+		// Create channel, receive the precommit oracle, and delegate to IOPVerifier::verify. The
+		// IOP verifier only queues the oracle relations; `finish` runs the single combined opening.
 		let mut channel = self.basefold_compiler.create_channel(transcript);
 		let precommit_oracle = channel.recv_oracle()?;
 		self.iop_verifier
-			.verify(precommit_oracle, public.to_vec(), &mut channel)
+			.verify(precommit_oracle, public.to_vec(), &mut channel)?;
+		Ok(channel.finish()?)
 	}
 }
 

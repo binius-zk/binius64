@@ -159,7 +159,7 @@ where
 	}
 }
 
-impl<F, MerkleScheme_, Challenger_> IOPVerifierChannel<F>
+impl<'r, F, MerkleScheme_, Challenger_> IOPVerifierChannel<'r, F>
 	for BaseFoldVerifierChannel<'_, F, MerkleScheme_, Challenger_>
 where
 	F: BinaryField,
@@ -193,9 +193,9 @@ where
 		Ok(BaseFoldOracle { index })
 	}
 
-	fn verify_oracle_relations<'a>(
+	fn verify_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'r, Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error> {
 		// Process each oracle relation with its own BaseFold verification
 		for relation in oracle_relations {
