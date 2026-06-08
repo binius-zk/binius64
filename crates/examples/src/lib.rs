@@ -88,6 +88,28 @@ where
 	Ok((verifier, prover))
 }
 
+/// Set up only the verifier (no prover) for the given constraint system using `H` as the Merkle
+/// hash suite. Cheaper than `setup` when proving is not needed.
+pub fn setup_verifier<H>(cs: ConstraintSystem, log_inv_rate: usize) -> Result<Verifier<H>>
+where
+	H: HashSuite + Clone,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
+{
+	let _setup_guard = tracing::info_span!("Setup", log_inv_rate).entered();
+	Ok(Verifier::<H>::setup(cs, log_inv_rate)?)
+}
+
+/// Set up only the ZK verifier (no prover) for the given constraint system using `H` as the
+/// Merkle hash suite. Cheaper than `setup_zk` when proving is not needed.
+pub fn setup_zk_verifier<H>(cs: ConstraintSystem, log_inv_rate: usize) -> Result<ZKVerifier<H>>
+where
+	H: HashSuite + Clone,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
+{
+	let _setup_guard = tracing::info_span!("ZK setup", log_inv_rate).entered();
+	Ok(ZKVerifier::<H>::setup(cs, log_inv_rate)?)
+}
+
 /// Run the prover and return the raw proof transcript bytes.
 pub fn create_proof<H>(prover: &Prover<OptimalPackedB128, H>, witness: ValueVec) -> Result<Vec<u8>>
 where
