@@ -714,3 +714,50 @@ proptest! {
 		verify_constraints(cs, &w.value_vec).unwrap();
 	}
 }
+
+#[test]
+fn test_zero_constant_not_in_binius64_operands() {
+	// Build a circuit where a zero constant is used as a gate input; after compilation
+	// the zero constant term must be absent from all constraint operands.
+	let builder = CircuitBuilder::new();
+	let a = builder.add_inout();
+	let b = builder.add_inout();
+	let zero = builder.add_constant(Word::ZERO);
+	let (sum, _cout) = builder.iadd_cin_cout(a, b, zero);
+	let expected = builder.add_inout();
+	builder.assert_false("check", builder.bxor(sum, expected));
+	let circuit = builder.build();
+
+	let cs = circuit.constraint_system();
+	let constants = &cs.constants;
+
+	let zero_const_indices: std::collections::HashSet<usize> = constants
+		.iter()
+		.enumerate()
+		.filter(|&(_, v)| *v == Word::ZERO)
+		.map(|(i, _)| i)
+		.collect();
+
+	for constraint in &cs.and_constraints {
+		for operand in [&constraint.a, &constraint.b, &constraint.c] {
+			for term in operand {
+				assert!(
+					!zero_const_indices.contains(&(term.value_index.0 as usize)),
+					"zero constant at ValueIndex({}) found in AND operand",
+					term.value_index.0
+				);
+			}
+		}
+	}
+	for constraint in &cs.mul_constraints {
+		for operand in [&constraint.a, &constraint.b, &constraint.hi, &constraint.lo] {
+			for term in operand {
+				assert!(
+					!zero_const_indices.contains(&(term.value_index.0 as usize)),
+					"zero constant at ValueIndex({}) found in MUL operand",
+					term.value_index.0
+				);
+			}
+		}
+	}
+}

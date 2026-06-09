@@ -268,7 +268,30 @@ impl CircuitBuilder {
 			}
 			value_vec_alloc.into_assignment()
 		};
-		let (and_constraints, mul_constraints) = builder.build(&wire_mapping, all_one);
+		let (mut and_constraints, mut mul_constraints) = builder.build(&wire_mapping, all_one);
+
+		// Filter zero constant terms from all operands. Any shift of Word::ZERO is zero, so
+		// terms referencing a zero constant contribute nothing to an XOR operand.
+		let n_const = value_vec_layout.n_const;
+		{
+			let filter_zeros = |operand: &mut Vec<_>| {
+				operand.retain(|term: &binius_core::constraint_system::ShiftedValueIndex| {
+					let idx = term.value_index.0 as usize;
+					idx >= n_const || constants[idx] != Word::ZERO
+				});
+			};
+			for c in &mut and_constraints {
+				filter_zeros(&mut c.a);
+				filter_zeros(&mut c.b);
+				filter_zeros(&mut c.c);
+			}
+			for c in &mut mul_constraints {
+				filter_zeros(&mut c.a);
+				filter_zeros(&mut c.b);
+				filter_zeros(&mut c.hi);
+				filter_zeros(&mut c.lo);
+			}
+		}
 
 		let cs =
 			ConstraintSystem::new(constants, value_vec_layout, and_constraints, mul_constraints);

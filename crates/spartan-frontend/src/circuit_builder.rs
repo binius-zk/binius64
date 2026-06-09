@@ -119,6 +119,9 @@ impl<F: Field> ConstraintSystemIR<F> {
 			id: *one_id,
 		};
 
+		// Capture the zero constant wire id before consuming self.constants
+		let zero_const_id: Option<u32> = self.constants.get(&F::ZERO).copied();
+
 		// Convert constants HashMap to Vec
 		let mut constants = zeroed_vec(self.constant_alloc.n_wires as usize);
 		for (val, id) in self.constants {
@@ -153,11 +156,12 @@ impl<F: Field> ConstraintSystemIR<F> {
 			&private_alive,
 		);
 
-		// Map all ConstraintWire to WitnessIndex
+		// Map all ConstraintWire to WitnessIndex, filtering out zero constant wires.
 		let map_operand = |operand: &Operand<ConstraintWire>| -> Operand<WitnessIndex> {
 			let indices: SmallVec<[WitnessIndex; 4]> = operand
 				.wires()
 				.iter()
+				.filter(|wire| !(wire.kind == WireKind::Constant && zero_const_id == Some(wire.id)))
 				.filter_map(|wire| layout.get(wire))
 				.collect();
 			Operand::new(indices)
@@ -516,5 +520,42 @@ mod tests {
 		witness_generator.assert_eq(sum_wire, expected_wire);
 
 		assert!(witness_generator.build().is_err());
+	}
+
+	#[test]
+	fn test_zero_constant_not_in_final_operands() {
+		use crate::{compiler::compile, constraint_system::WitnessSegment};
+
+		// Build a circuit where a zero constant is added to a wire; after compilation the
+		// zero constant term must be absent from all mul-constraint operands.
+		let mut builder = ConstraintBuilder::new();
+		let x = builder.alloc_inout();
+		let zero = builder.constant(B128::ZERO);
+		let sum = builder.add(x, zero);
+		let y = builder.alloc_inout();
+		builder.assert_eq(sum, y);
+
+		let (cs, _layout) = compile(builder);
+
+		let zero_constant_indices: std::collections::HashSet<u32> = cs
+			.constants()
+			.iter()
+			.enumerate()
+			.filter(|&(_, c)| *c == B128::ZERO)
+			.map(|(i, _)| i as u32)
+			.collect();
+
+		for constraint in cs.mul_constraints() {
+			for operand in [&constraint.a, &constraint.b, &constraint.c] {
+				for wire_idx in operand.wires() {
+					assert!(
+						!(wire_idx.segment == WitnessSegment::Public
+							&& zero_constant_indices.contains(&wire_idx.index)),
+						"zero constant found in compiled operand at WitnessIndex::public({})",
+						wire_idx.index
+					);
+				}
+			}
+		}
 	}
 }
