@@ -11,7 +11,7 @@ use binius_field::{BinaryField, PackedField};
 use binius_iop::{
 	basefold_compiler::{BaseFoldVerifierCompiler, BaseFoldZKVerifierCompiler},
 	channel::OracleSpec,
-	fri::FRIParams,
+	fri::{FRIParams, PartialOracleSpec},
 	merkle_tree::MerkleTreeScheme,
 };
 use binius_math::ntt::AdditiveNTT;
@@ -169,7 +169,8 @@ where
 	ntt: NTT,
 	merkle_prover: MerkleProver_,
 	oracle_specs: Vec<OracleSpec>,
-	fri_params: Vec<FRIParams<P::Scalar>>,
+	/// The combined FRI parameters over **all** oracles.
+	fri_params: FRIParams<P::Scalar>,
 	_p_marker: PhantomData<P>,
 }
 
@@ -192,24 +193,28 @@ where
 		log_inv_rate: usize,
 		n_test_queries: usize,
 	) -> Self {
-		use binius_iop::fri::MinProofSizeStrategy;
+		assert!(
+			!oracle_specs.is_empty(),
+			"BaseFoldZKProverCompiler requires at least one oracle spec"
+		);
 
-		let fri_params = oracle_specs
+		// The single combined FRI parameters over all oracles.
+		let partial_specs: Vec<PartialOracleSpec> = oracle_specs
 			.iter()
-			.map(|spec| {
-				let log_msg_len = spec.log_msg_len + 1;
-				let log_batch_size = Some(1);
-				FRIParams::with_strategy(
-					ntt.domain_context(),
-					merkle_prover.scheme(),
-					log_msg_len,
-					log_batch_size,
-					log_inv_rate,
-					n_test_queries,
-					&MinProofSizeStrategy,
-				)
+			.map(|spec| PartialOracleSpec {
+				// Oracle includes message and equal length mask
+				log_msg_len: spec.log_msg_len + 1,
+				// Batch size is 2 for message and mask
+				log_batch_size: Some(1),
 			})
 			.collect();
+		let (fri_params, _) = FRIParams::optimal_for_batch(
+			ntt.domain_context(),
+			merkle_prover.scheme(),
+			&partial_specs,
+			log_inv_rate,
+			n_test_queries,
+		);
 
 		Self {
 			ntt,
@@ -232,7 +237,7 @@ where
 			ntt,
 			merkle_prover,
 			oracle_specs: verifier_compiler.oracle_specs().to_vec(),
-			fri_params: verifier_compiler.fri_params().to_vec(),
+			fri_params: verifier_compiler.fri_params().clone(),
 			_p_marker: PhantomData,
 		}
 	}
@@ -252,8 +257,8 @@ where
 		&self.oracle_specs
 	}
 
-	/// Returns a reference to the precomputed FRI parameters.
-	pub fn fri_params(&self) -> &[FRIParams<F>] {
+	/// Returns a reference to the precomputed combined FRI parameters.
+	pub fn fri_params(&self) -> &FRIParams<F> {
 		&self.fri_params
 	}
 

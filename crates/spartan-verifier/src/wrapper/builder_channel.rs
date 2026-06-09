@@ -243,7 +243,7 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 	}
 }
 
-impl<F: Field> IOPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
+impl<'r, F: Field> IOPVerifierChannel<'r, F> for IronSpartanBuilderChannel<F> {
 	type Oracle = ();
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
@@ -254,9 +254,9 @@ impl<F: Field> IOPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 		Ok(())
 	}
 
-	fn verify_oracle_relations<'a>(
+	fn verify_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'r, Self::Oracle, Self::Elem>>,
 	) -> Result<(), binius_iop::channel::Error> {
 		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
 		// checks in the circuit equality of this value with the expected expression over encrypted

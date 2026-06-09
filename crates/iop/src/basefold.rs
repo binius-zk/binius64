@@ -30,7 +30,7 @@ use binius_transcript::{
 	self as transcript, VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_utils::DeserializeBytes;
+use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
 
 use crate::{
 	fri::{self, FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier},
@@ -105,29 +105,38 @@ where
 	})
 }
 
-/// Verifies a multilinear-evaluation BaseFold opening that interleaves a degree-1 MLE-check with
-/// FRI (the FRI-interleaved sumcheck of the Batched ZK BaseFold construction).
+/// Verifies a *combined* multilinear-evaluation BaseFold opening: a single degree-1 MLE-check
+/// interleaved with a single FRI over the piecewise-concatenated oracle of the Batched ZK BaseFold
+/// construction (whitepaper §7.2 / §sec:batched-basefold Step 2).
 ///
-/// This is the verifier counterpart of `binius_iop_prover::basefold::prove_mlecheck_basefold_zk`.
-/// The masked oracle's opening claim
-/// has already been reduced to a point-evaluation claim `π'(eval_point) = eval_claim` by a prior
-/// batched sumcheck; this routine checks that claim against the committed codeword.
+/// This is the verifier counterpart of
+/// `binius_iop_prover::basefold::prove_mlecheck_basefold_zk_batch`. A prior batched sumcheck has
+/// reduced the `k` masked opening claims to per-oracle point-evaluation claims `π_i'(ρ_i) = α_i` at
+/// a shared point `r ∈ K^𝐧` (`𝐧 = max_i n_i`). The oracle-index variables are then collapsed up
+/// front at sampled batching challenges `r'` into a single combined multilinear
+/// `𝛑(X) = Σ_i e[i] · π_i^↑(X)`, `e = eq_ind_partial_eval(r')`, with target `s' = 𝛑(r)`; this
+/// routine checks `𝛑(r) = s'` against the `k` committed codewords via one combined FRI.
 ///
 /// ## Arguments
 ///
-/// * `eval_claim` - the claimed value `π'(eval_point)`
-/// * `eval_point` - the evaluation point `ρ` (length `n`), in low-to-high variable order
-/// * `batch_challenge` - the masking challenge `γ` used in the FRI unbatch round
+/// * `codeword_commitments` - one per oracle, in the same order as [`FRIParams::input_oracles`].
+/// * `eval_claim` - the combined target `s'`.
+/// * `eval_point` - the point `r` (length `𝐧 = fri_params.rs_code().log_dim()`), low-to-high order.
+/// * `batch_challenge` - the masking challenge `γ` used in the FRI inner (unbatch) round.
+/// * `outer_challenges` - the batching challenges `r'` (length `log_n_oracles`) used in the FRI
+///   outer (oracle-combine) rounds.
 ///
-/// The returned `challenges` begin with `batch_challenge` followed by the `n` MLE-check challenges.
-/// Use [`mlecheck_fri_consistency`] to check the reduced values.
-pub fn verify_mlecheck_basefold_zk<F, MTScheme, Challenger_>(
+/// The returned `challenges` are the FRI fold challenges `[γ] ++ r' ++ fresh_X`. Use
+/// [`mlecheck_fri_consistency`] to check the reduced values.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_mlecheck_basefold_zk_batch<F, MTScheme, Challenger_>(
 	fri_params: &FRIParams<F>,
 	merkle_scheme: &MTScheme,
-	codeword_commitment: MTScheme::Digest,
+	codeword_commitments: &[MTScheme::Digest],
 	eval_claim: F,
 	eval_point: &[F],
 	batch_challenge: F,
+	outer_challenges: &[F],
 	transcript: &mut VerifierTranscript<Challenger_>,
 ) -> Result<ReducedOutput<F>, Error>
 where
@@ -138,18 +147,40 @@ where
 	// The MLE-check round polynomial is degree 1 (the composite is the multilinear itself).
 	const DEGREE: usize = 1;
 
-	assert_eq!(fri_params.log_batch_size(), 1); // precondition
+	// ZK precondition: each oracle is the interleaved (π ‖ ω) mask codeword, so the inner reduction
+	// is a single round folding at `γ`.
+	let max_log_batch_size = fri_params
+		.input_oracles()
+		.iter()
+		.map(|spec| spec.log_batch_size)
+		.max()
+		.expect("input_oracles is non-empty");
+	assert_eq!(max_log_batch_size, 1);
 
+	let log_n_oracles = log2_ceil_usize(fri_params.input_oracles().len());
+	assert_eq!(outer_challenges.len(), log_n_oracles);
+
+	// The combined codeword (after the inner unbatch and the `log_n_oracles` outer oracle-combine
+	// rounds) is a level-𝐧 codeword; the MLE-check therefore runs over `𝐧` variables.
 	let n_vars = fri_params.rs_code().log_dim();
 	assert_eq!(eval_point.len(), n_vars);
-	let mut challenges = Vec::with_capacity(n_vars + 1);
 
+	let mut challenges = Vec::with_capacity(n_vars + 1 + log_n_oracles);
 	let mut fri_fold_verifier = FRIFoldVerifier::new(fri_params);
 
-	// Unbatch round: the FRI folds the interleaved (π ‖ ω) codeword at the masking challenge.
+	// Inner (unbatch) round: fold every interleaved (π_i ‖ ω_i) codeword at the masking challenge.
 	fri_fold_verifier.process_round(&mut transcript.message())?;
 	challenges.push(batch_challenge);
 
+	// Outer rounds: combine the `k` lifted codewords at the batching challenges `r'`. These carry
+	// no sumcheck round-polynomial (the oracle-index variables are collapsed deterministically).
+	for &outer_challenge in outer_challenges {
+		fri_fold_verifier.process_round(&mut transcript.message())?;
+		challenges.push(outer_challenge);
+	}
+
+	// Standard rounds: the only sumcheck (MLE-check) rounds, folding the combined codeword at the
+	// fresh challenges over the `𝐧` variables `X`.
 	let mut sum = eval_claim;
 	for round in 0..n_vars {
 		let round_proof = mlecheck::RoundProof(RoundCoeffs(transcript.message().read_vec(DEGREE)?));
@@ -166,10 +197,10 @@ where
 	fri_fold_verifier.process_round(&mut transcript.message())?;
 	let round_commitments = fri_fold_verifier.finalize();
 
-	let fri_verifier = FRIQueryVerifier::new(
+	let fri_verifier = FRIQueryVerifier::new_batch(
 		fri_params,
 		merkle_scheme,
-		&codeword_commitment,
+		codeword_commitments,
 		&round_commitments,
 		&challenges,
 	);
@@ -216,7 +247,7 @@ pub fn sumcheck_fri_consistency<F: Field>(
 }
 
 /// Verifies that the final FRI oracle is consistent with the MLE-check from
-/// [`verify_mlecheck_basefold_zk`].
+/// [`verify_mlecheck_basefold_zk_batch`].
 ///
 /// In an MLE-check the equality-indicator factor is folded into the round-proof recovery, so the
 /// final reduced value is the multilinear evaluation `π'(r)` with no extra factor. The final FRI

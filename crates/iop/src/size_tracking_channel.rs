@@ -121,7 +121,7 @@ impl<F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IPVerifierChannel<F>
 	}
 }
 
-impl<F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IOPVerifierChannel<F>
+impl<'r, F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IOPVerifierChannel<'r, F>
 	for SizeTrackingChannel<'_, F, MerkleScheme_>
 {
 	type Oracle = ();
@@ -136,9 +136,9 @@ impl<F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IOPVerifierChannel<F>
 		Ok(())
 	}
 
-	fn verify_oracle_relations<'a>(
+	fn verify_oracle_relations(
 		&mut self,
-		_oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
+		_oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'r, Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error> {
 		// Add FRI proof sizes for all oracles. This accounts for the dominant component of
 		// BaseFold proofs (FRI decommitments) but is missing smaller elements (e.g. sumcheck

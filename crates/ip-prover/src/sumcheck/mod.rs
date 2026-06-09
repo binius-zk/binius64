@@ -23,3 +23,5 @@ pub use padded::*;
 pub use prove::*;
 pub mod frac_add_mle;
 pub mod zk_mlecheck;
+
+pub use batch::batch_prove;

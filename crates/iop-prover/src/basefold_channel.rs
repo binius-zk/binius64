@@ -237,7 +237,7 @@ where
 			commitment,
 			committed,
 			codeword,
-		} = fri::commit_interleaved(fri_params, self.ntt, self.merkle_prover, buffer);
+		} = fri::commit_interleaved(fri_params, 0, self.ntt, self.merkle_prover, buffer);
 
 		// Send commitment via transcript
 		self.transcript.message().write(&commitment);

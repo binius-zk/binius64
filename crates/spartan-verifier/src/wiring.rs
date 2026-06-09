@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::iter;
+use std::{iter, rc::Rc};
 
 use binius_field::{Field, field::FieldOps};
 use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, univariate::evaluate_univariate};
@@ -12,11 +12,14 @@ use crate::constraint_system::ConstraintSystemPadded;
 ///
 /// The returned closure computes the expected evaluation of the wiring MLE for the given
 /// segment, batched with lambda, given a challenge point from the BaseFold opening.
-/// `r_x_tensor` is the eq-indicator partial evaluation at r_x.
+/// `r_x_tensor` is the eq-indicator partial evaluation at r_x; it is taken as a shared `Rc` so the
+/// returned closure owns it (the opening is deferred to the channel's `finish()`, so the closure
+/// must outlive the local `r_x_tensor`). The closure still borrows `constraint_system`, which is
+/// long-lived.
 pub fn eval_transparent<'a, G: Field, F: FieldOps + 'a>(
 	constraint_system: &'a ConstraintSystemPadded<G>,
 	segment: WitnessSegment,
-	r_x_tensor: &'a [F],
+	r_x_tensor: Rc<[F]>,
 	lambda: F,
 ) -> binius_iop::channel::TransparentEvalFn<'a, F> {
 	Box::new(move |r_y: &[F]| {
@@ -24,7 +27,7 @@ pub fn eval_transparent<'a, G: Field, F: FieldOps + 'a>(
 			constraint_system.mul_constraints(),
 			segment,
 			lambda.clone(),
-			r_x_tensor,
+			&r_x_tensor,
 			r_y,
 		)
 	})

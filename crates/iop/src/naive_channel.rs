@@ -139,7 +139,7 @@ where
 	}
 }
 
-impl<F, Challenger_> IOPVerifierChannel<F> for NaiveVerifierChannel<'_, F, Challenger_>
+impl<'r, F, Challenger_> IOPVerifierChannel<'r, F> for NaiveVerifierChannel<'_, F, Challenger_>
 where
 	F: Field,
 	Challenger_: Challenger,
@@ -175,9 +175,9 @@ where
 		Ok(NaiveOracle { index })
 	}
 
-	fn verify_oracle_relations<'a>(
+	fn verify_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, F>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'r, Self::Oracle, F>>,
 	) -> Result<(), Error> {
 		for relation in oracle_relations {
 			let index = relation.oracle.index;

@@ -73,7 +73,7 @@ pub struct OracleLinearRelation<'a, Oracle, Elem> {
 /// The caller must call `recv_oracle()` exactly `remaining_oracle_specs().len()` times before
 /// calling `verify_oracle_relations()`. The oracles must be received in order and match their
 /// specifications.
-pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F> {
+pub trait IOPVerifierChannel<'r, F: Field>: IPVerifierChannel<F> {
 	type Oracle: Clone;
 
 	/// Returns the specifications for the remaining oracles to be received.
@@ -88,22 +88,21 @@ pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F> {
 	/// `remaining_oracle_specs()` must be non-empty.
 	fn recv_oracle(&mut self) -> Result<Self::Oracle, Error>;
 
-	/// Verifies all oracle linear relations by running opening protocols.
+	/// Queues oracle linear relations to be opened.
 	///
-	/// For each oracle relation, this method:
-	/// 1. Runs the opening protocol (e.g., BaseFold) to obtain the oracle evaluation and challenge
-	///    point
-	/// 2. Evaluates the transparent polynomial at the challenge point
-	/// 3. Verifies that `eval_numerator == eval_denominator * transparent_eval` using `assert_zero`
-	///    on the underlying channel
+	/// Implementations may either verify the relations immediately, or queue them and defer the
+	/// actual opening (masking + sumcheck + FRI) to `finish()`. Either way, each
+	/// relation asserts that `<oracle_poly, transparent_poly> = claim`.
+	///
+	/// The relation lifetime `'r` is a parameter of the trait so that deferring implementations can
+	/// store the (possibly borrowed) transparent closures until `finish()`.
 	///
 	/// # Preconditions
 	///
-	/// * `remaining_oracle_specs()` must be empty (all oracles received).
 	/// * All oracle handles in `oracle_relations` must be valid handles returned by
 	///   `recv_oracle()`.
-	fn verify_oracle_relations<'a>(
+	fn verify_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'r, Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error>;
 }

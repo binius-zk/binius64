@@ -175,7 +175,7 @@ fn test_zk_wrapped_prove_verify() {
 			inner_precommit_oracle,
 			inner_precommit_packed,
 			&mut rng,
-			channel_ref,
+			&mut channel_ref,
 		)
 		.expect("inner prove failed");
 
