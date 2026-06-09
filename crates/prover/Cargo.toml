@@ -46,10 +46,6 @@ sha2.workspace = true
 bench = false
 
 [[bench]]
-name = "binary_merkle_tree"
-harness = false
-
-[[bench]]
 name = "sumcheck"
 harness = false
 

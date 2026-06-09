@@ -3,14 +3,20 @@
 
 use core::slice;
 
-use binius_field::BinaryField128bGhash as B128;
+use binius_field::{
+	BinaryField128bGhash as B128, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
+};
 use binius_hash::{StdDigest, StdHashSuite};
 use binius_iop::merkle_tree::MerkleTreeScheme;
-use binius_math::test_utils::random_scalars;
+use binius_math::{FieldBuffer, test_utils::random_scalars};
 use binius_transcript::{ProverTranscript, VerifierTranscript, fiat_shamir::HasherChallenger};
+use binius_utils::rayon::prelude::*;
 use rand::prelude::*;
 
-use crate::merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver};
+use crate::merkle_tree::{
+	MerkleTreeProver, prover::BinaryMerkleTreeProver, to_par_scalar_big_chunks,
+	to_par_scalar_small_chunks,
+};
 
 type StdChallenger = HasherChallenger<StdDigest>;
 
@@ -178,4 +184,26 @@ fn test_binary_merkle_vcs_hiding_batch_size() {
 			.verify_opening(i, values, 0, 3, &[commitment.root], &mut proof_reader.message())
 			.unwrap();
 	}
+}
+
+#[test]
+fn test_parallel_iterator() {
+	let mut rng = StdRng::seed_from_u64(0);
+
+	// Compare results for small and large chunk sizes to ensure that they're identical
+	let data = random_scalars::<B128>(&mut rng, 64);
+
+	let data_packed_2 = FieldBuffer::<PackedBinaryGhash2x128b, _>::from_values(&data);
+	let data_packed_4 = FieldBuffer::<PackedBinaryGhash4x128b, _>::from_values(&data);
+
+	let packing_smaller_than_chunk = to_par_scalar_big_chunks(data_packed_2.as_ref(), 2);
+	let packing_bigger_than_chunk = to_par_scalar_small_chunks(data_packed_4.as_ref(), 2);
+
+	let collected_smaller: Vec<_> = packing_smaller_than_chunk
+		.map(|inner| inner.collect::<Vec<_>>())
+		.collect();
+	let collected_bigger: Vec<_> = packing_bigger_than_chunk
+		.map(|inner| inner.collect::<Vec<_>>())
+		.collect();
+	assert_eq!(collected_smaller, collected_bigger);
 }

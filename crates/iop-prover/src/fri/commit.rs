@@ -9,7 +9,7 @@ use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT, reed_solomon::ReedS
 use binius_utils::{rand::par_rand, rayon::prelude::*};
 use rand::{CryptoRng, rngs::StdRng};
 
-use crate::merkle_tree::MerkleTreeProver;
+use crate::merkle_tree::{self, MerkleTreeProver};
 
 #[derive(Debug)]
 pub struct CommitOutput<P: PackedField, VCSCommitment, VCSCommitted> {
@@ -79,14 +79,8 @@ where
 		.in_scope(|| rs_code.encode_batch(ntt, message.to_ref(), log_batch_size));
 
 	let merkle_tree_span = tracing::debug_span!("Merkle Tree").entered();
-	let (commitment, vcs_committed) = if log_batch_size > P::LOG_WIDTH {
-		let iterated_big_chunks = to_par_scalar_big_chunks(encoded.as_ref(), 1 << log_batch_size);
-		merkle_prover.commit_iterated(iterated_big_chunks)
-	} else {
-		let iterated_small_chunks =
-			to_par_scalar_small_chunks(encoded.as_ref(), 1 << log_batch_size);
-		merkle_prover.commit_iterated(iterated_small_chunks)
-	};
+	let (commitment, vcs_committed) =
+		merkle_tree::commit_field_buffer(merkle_prover, encoded.to_ref(), log_batch_size);
 	drop(merkle_tree_span);
 
 	CommitOutput {
@@ -182,51 +176,15 @@ where
 	}
 }
 
-/// Creates a parallel iterator over scalars of subfield elements. Assumes chunk_size to be a power
-/// of two.
-fn to_par_scalar_big_chunks<P>(
-	packed_slice: &[P],
-	chunk_size: usize,
-) -> impl IndexedParallelIterator<Item: Iterator<Item = P::Scalar> + Send + '_>
-where
-	P: PackedField,
-{
-	packed_slice
-		.par_chunks(chunk_size / P::WIDTH)
-		.map(|chunk| PackedField::iter_slice(chunk))
-}
-
-fn to_par_scalar_small_chunks<P>(
-	packed_slice: &[P],
-	chunk_size: usize,
-) -> impl IndexedParallelIterator<Item: Iterator<Item = P::Scalar> + Send + '_>
-where
-	P: PackedField,
-{
-	(0..packed_slice.len() * P::WIDTH)
-		.into_par_iter()
-		.step_by(chunk_size)
-		.map(move |start_index| {
-			let packed_item = &packed_slice[start_index / P::WIDTH];
-			packed_item
-				.iter()
-				.skip(start_index % P::WIDTH)
-				.take(chunk_size)
-		})
-}
-
 #[cfg(test)]
 mod tests {
-	use binius_field::{
-		BinaryField128bGhash as B128, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b,
-		PackedBinaryGhash4x128b,
-	};
+	use binius_field::{BinaryField128bGhash as B128, PackedBinaryGhash1x128b};
 	use binius_hash::StdHashSuite;
 	use binius_iop::fri::FRIParams;
 	use binius_math::{
-		BinarySubspace, FieldBuffer,
+		BinarySubspace,
 		ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly},
-		test_utils::{random_field_buffer, random_scalars},
+		test_utils::random_field_buffer,
 	};
 	use rand::{SeedableRng, rngs::StdRng};
 
@@ -274,27 +232,5 @@ mod tests {
 
 		// Verify the codeword has expected length (log_dim + log_batch_size + log_inv_rate).
 		assert_eq!(output.codeword.log_len(), log_dim + log_batch_size + log_inv_rate);
-	}
-
-	#[test]
-	fn test_parallel_iterator() {
-		let mut rng = StdRng::seed_from_u64(0);
-
-		// Compare results for small and large chunk sizes to ensure that they're identical
-		let data = random_scalars::<B128>(&mut rng, 64);
-
-		let data_packed_2 = FieldBuffer::<PackedBinaryGhash2x128b, _>::from_values(&data);
-		let data_packed_4 = FieldBuffer::<PackedBinaryGhash4x128b, _>::from_values(&data);
-
-		let packing_smaller_than_chunk = to_par_scalar_big_chunks(data_packed_2.as_ref(), 2);
-		let packing_bigger_than_chunk = to_par_scalar_small_chunks(data_packed_4.as_ref(), 2);
-
-		let collected_smaller: Vec<_> = packing_smaller_than_chunk
-			.map(|inner| inner.collect::<Vec<_>>())
-			.collect();
-		let collected_bigger: Vec<_> = packing_bigger_than_chunk
-			.map(|inner| inner.collect::<Vec<_>>())
-			.collect();
-		assert_eq!(collected_smaller, collected_bigger);
 	}
 }
