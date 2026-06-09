@@ -17,14 +17,14 @@ The codebase is formatted with a nightly version of `cargo fmt` because stable d
 options we use. You can run the formatter and linter with
 
 ```bash
-$ cargo +nightly-2026-01-01 fmt  # see .pre-commit-config.yaml for the exact nightly version checked by CI
+$ cargo +nightly-2026-01-01 fmt  # see prek.toml for the exact nightly version checked by CI
 $ cargo clippy --all --all-features --tests --benches --examples -- -D warnings
 ```
 
-[Pre-commit](https://pre-commit.com/) hooks are configured to run `rustfmt`. You can also invoke it via pre-commit:
+[prek](https://prek.j178.dev/) hooks are configured to run `rustfmt`. You can also invoke it via prek:
 
 ```bash
-$ pre-commit run rustfmt --all-files
+$ prek run rustfmt --all-files
 ```
 
 ### Documentation
