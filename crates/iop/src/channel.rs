@@ -91,7 +91,7 @@ pub trait IOPVerifierChannel<'r, F: Field>: IPVerifierChannel<F> {
 	/// Queues oracle linear relations to be opened.
 	///
 	/// Implementations may either verify the relations immediately, or queue them and defer the
-	/// actual opening (masking + sumcheck + FRI) to [`finish`](Self::finish). Either way, each
+	/// actual opening (masking + sumcheck + FRI) to `finish()`. Either way, each
 	/// relation asserts that `<oracle_poly, transparent_poly> = claim`.
 	///
 	/// The relation lifetime `'r` is a parameter of the trait so that deferring implementations can

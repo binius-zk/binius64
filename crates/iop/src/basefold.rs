@@ -110,7 +110,7 @@ where
 /// construction (whitepaper §7.2 / §sec:batched-basefold Step 2).
 ///
 /// This is the verifier counterpart of
-/// [`binius_iop_prover::basefold::prove_mlecheck_basefold_zk_batch`]. A prior batched sumcheck has
+/// `binius_iop_prover::basefold::prove_mlecheck_basefold_zk_batch`. A prior batched sumcheck has
 /// reduced the `k` masked opening claims to per-oracle point-evaluation claims `π_i'(ρ_i) = α_i` at
 /// a shared point `r ∈ K^𝐧` (`𝐧 = max_i n_i`). The oracle-index variables are then collapsed up
 /// front at sampled batching challenges `r'` into a single combined multilinear
