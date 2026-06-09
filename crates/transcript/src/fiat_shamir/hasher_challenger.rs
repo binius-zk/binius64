@@ -95,7 +95,7 @@ where
 	H: Digest + Default + BlockSizeUser,
 {
 	fn into_observer(mut self) -> HasherObserver<H> {
-		Digest::update(&mut self.hasher, self.index.to_le_bytes());
+		Digest::update(&mut self.hasher, (self.index as u64).to_le_bytes());
 
 		HasherObserver {
 			hasher: self.hasher,
