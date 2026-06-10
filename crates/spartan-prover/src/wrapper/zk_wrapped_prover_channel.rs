@@ -5,8 +5,9 @@
 //!
 //! [`ZKWrappedProverChannel`] wraps a [`BaseFoldZKProverChannel`] and records all channel values.
 //! On `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFoldZK channel and records
-//! each value. After the inner proof is run, [`finish`] replays the recorded interaction through
-//! a caller-provided closure to fill the outer witness, then runs the outer IOP prover.
+//! each value. After the inner proof is run, [`finish`] replays the recorded gate sequence
+//! (captured by the symbolic build) against those values to fill the outer witness, then runs the
+//! outer IOP prover.
 //!
 //! [`BaseFoldZKProverChannel`]: binius_iop_prover::basefold_zk_channel::BaseFoldZKProverChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
@@ -31,20 +32,16 @@ use binius_transcript::fiat_shamir::Challenger;
 use binius_utils::SerializeBytes;
 use rand::CryptoRng;
 
-use crate::{Error, IOPProver, pack_and_blind_witness, wrapper::ReplayChannel};
+use crate::{Error, IOPProver, pack_and_blind_witness};
 
 /// A prover channel that wraps a [`BaseFoldZKProverChannel`] and an outer Spartan IOP prover.
 ///
 /// This channel records all channel values. On
 /// `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFoldZK channel and records each
 /// value. After the inner proof is run through this channel, call
-/// [`finish`](Self::finish) to replay the interaction, fill the outer witness, and generate the
-/// outer proof.
-///
-/// The `ReplayFn` closure is called during [`finish`](Self::finish) with a [`ReplayChannel`] to
-/// replay the inner verification and fill the outer witness. This allows the channel to be generic
-/// over different inner verification protocols.
-pub struct ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_, ReplayFn>
+/// [`finish`](Self::finish) to replay the recorded gate sequence, fill the outer witness, and
+/// generate the outer proof.
+pub struct ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_>
 where
 	P: PackedField<Scalar: BinaryField>,
 	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
@@ -54,7 +51,6 @@ where
 	inner_channel: BaseFoldZKProverChannel<'a, P::Scalar, P, NTT, MTProver, Challenger_>,
 	outer_prover: &'a IOPProver<P::Scalar>,
 	outer_layout: &'a WitnessLayout<P::Scalar>,
-	replay_fn: ReplayFn,
 	keys: Vec<P::Scalar>,
 	next_key_idx: usize,
 	interaction: Vec<P::Scalar>,
@@ -69,8 +65,8 @@ where
 	n_outer_suffix_oracles: usize,
 }
 
-impl<'a, F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn>
-	ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_, ReplayFn>
+impl<'a, F, P, NTT, MTScheme, MTProver, Challenger_>
+	ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F> + PackedExtension<F>,
@@ -96,14 +92,11 @@ where
 	/// * `outer_prover` - The IOP prover for the outer (wrapper) constraint system
 	/// * `outer_layout` - The witness layout for the outer constraint system
 	/// * `rng` - RNG used to generate the random precommit buffer (the future OTP key)
-	/// * `replay_fn` - Closure called during [`finish`](Self::finish) with a [`ReplayChannel`] to
-	///   replay the inner verification and fill the outer witness
 	pub fn new(
 		mut inner_channel: BaseFoldZKProverChannel<'a, F, P, NTT, MTProver, Challenger_>,
 		outer_prover: &'a IOPProver<F>,
 		outer_layout: &'a WitnessLayout<F>,
 		rng: impl CryptoRng,
-		replay_fn: ReplayFn,
 	) -> Self {
 		let outer_oracle_specs =
 			IOPVerifier::new(outer_prover.constraint_system().clone()).oracle_specs();
@@ -134,7 +127,6 @@ where
 			inner_channel,
 			outer_prover,
 			outer_layout,
-			replay_fn,
 			keys,
 			next_key_idx: 0,
 			interaction: Vec::new(),
@@ -184,20 +176,16 @@ where
 	///
 	/// This should be called after the inner proof has been run through this channel.
 	/// It:
-	/// 1. Creates a [`ReplayChannel`] from the recorded interaction
-	/// 2. Calls the `replay_fn` closure to replay the inner verification and fill the outer witness
-	/// 3. Validates and generates the outer IOP proof
-	pub fn finish(self, rng: impl CryptoRng, gate_seq: GateSequence<F>) -> Result<(), Error>
-	where
-		ReplayFn: FnOnce(&mut ReplayChannel<'_, F>),
-	{
+	/// 1. Replays the recorded gate sequence against the recorded interaction and OTP keys to fill
+	///    the outer witness (BINIUS-43)
+	/// 2. Validates and generates the outer IOP proof
+	pub fn finish(self, rng: impl CryptoRng, gate_seq: GateSequence<F>) -> Result<(), Error> {
 		let _ = tracing::debug_span!("Proving ZK wrapper proof").entered();
 
 		let Self {
 			mut inner_channel,
 			outer_prover,
 			outer_layout,
-			replay_fn,
 			keys,
 			interaction,
 			precommit_oracle,
@@ -205,37 +193,13 @@ where
 			..
 		} = self;
 
-		// BINIUS-43 migration check: generate the witness from the recorded gate sequence and
-		// assert it is bit-identical to the witness from the legacy ReplayChannel re-execution.
-		// (Borrows `interaction`/`keys`; the ReplayChannel below then consumes them.)
-		let gate_witness =
-			gate_seq.replay(outer_layout, interaction.iter().copied(), keys.iter().copied());
-
-		// Replay the inner verification through the outer witness generator.
+		// Generate the outer witness by replaying the recorded gate sequence: the recorded
+		// interaction supplies the channel `Input` values and the OTP keys supply the precommit
+		// values. Pruned wires are dropped via the witness layout.
 		let witness = {
 			let _ = tracing::debug_span!("Generating ZK wrapper witness").entered();
-			let mut replay_channel = ReplayChannel::new(outer_layout, keys, interaction);
-			replay_fn(&mut replay_channel);
-			replay_channel
-				.finish()
-				.expect("outer witness generation should not fail")
+			gate_seq.replay(outer_layout, interaction.into_iter(), keys.into_iter())
 		};
-
-		assert_eq!(
-			gate_witness.public(),
-			witness.public(),
-			"BINIUS-43: gate-replay public segment differs from ReplayChannel"
-		);
-		assert_eq!(
-			gate_witness.precommit(),
-			witness.precommit(),
-			"BINIUS-43: gate-replay precommit segment differs from ReplayChannel"
-		);
-		assert_eq!(
-			gate_witness.private(),
-			witness.private(),
-			"BINIUS-43: gate-replay private segment differs from ReplayChannel"
-		);
 
 		// Validate and generate the outer proof.
 		let outer_cs = outer_prover.constraint_system();
@@ -254,8 +218,8 @@ where
 	}
 }
 
-impl<F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn> IPProverChannel<F>
-	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_, ReplayFn>
+impl<F, P, NTT, MTScheme, MTProver, Challenger_> IPProverChannel<F>
+	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F> + PackedExtension<F>,
@@ -286,8 +250,8 @@ where
 	}
 }
 
-impl<F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn> IOPProverChannel<P>
-	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_, ReplayFn>
+impl<F, P, NTT, MTScheme, MTProver, Challenger_> IOPProverChannel<P>
+	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F> + PackedExtension<F>,

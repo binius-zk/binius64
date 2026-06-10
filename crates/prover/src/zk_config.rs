@@ -19,7 +19,7 @@ use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpan
 use binius_spartan_frontend::{
 	compiler::compile, constraint_system::WitnessLayout, gate::GateSequence,
 };
-use binius_spartan_prover::wrapper::{ReplayChannel, ZKWrappedProverChannel};
+use binius_spartan_prover::wrapper::ZKWrappedProverChannel;
 use binius_spartan_verifier::{
 	constraint_system::ConstraintSystemPadded, wrapper::IronSpartanBuilderChannel,
 };
@@ -175,9 +175,6 @@ where
 		mut rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		// Clone public words before moving witness into prove().
-		let public_words = witness.public().to_vec();
-
 		// Record the gate sequence used to generate the outer witness in finish() (BINIUS-43).
 		let gate_seq = self.record_gate_sequence();
 
@@ -188,14 +185,6 @@ where
 			&self.outer_iop_prover,
 			&self.outer_layout,
 			&mut rng,
-			{
-				let inner_iop_verifier = &self.inner_iop_verifier;
-				move |replay_channel: &mut ReplayChannel<'_, B128>| {
-					inner_iop_verifier
-						.verify(&public_words, replay_channel)
-						.expect("replay verification should not fail");
-				}
-			},
 		);
 
 		// Run the inner IOP proof through the wrapped channel.

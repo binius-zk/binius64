@@ -20,10 +20,7 @@ use binius_spartan_frontend::{
 	compiler::compile,
 	constraint_system::BlindingInfo,
 };
-use binius_spartan_prover::{
-	IOPProver,
-	wrapper::{ReplayChannel, ZKWrappedProverChannel},
-};
+use binius_spartan_prover::{IOPProver, wrapper::ZKWrappedProverChannel};
 use binius_spartan_verifier::{
 	IOPVerifier, SECURITY_BITS,
 	config::StdChallenger,
@@ -142,23 +139,8 @@ fn test_zk_wrapped_prove_verify() {
 	prover_transcript.observe().write_slice(&public);
 
 	let basefold_channel = zk_basefold_prover.create_channel(&mut prover_transcript, &mut rng);
-	let mut wrapped_prover_channel = ZKWrappedProverChannel::new(
-		basefold_channel,
-		&outer_iop_prover,
-		&outer_layout,
-		&mut rng,
-		{
-			let inner_iop_verifier = &inner_iop_verifier;
-			let public = &public;
-			move |replay_channel: &mut ReplayChannel<'_, B128>| {
-				let inner_public_elems = replay_channel.observe_many(public);
-				// ReplayChannel::Oracle = () and recv_oracle is a no-op, so pass ().
-				inner_iop_verifier
-					.verify((), inner_public_elems, replay_channel)
-					.expect("replay verification should not fail");
-			}
-		},
-	);
+	let mut wrapped_prover_channel =
+		ZKWrappedProverChannel::new(basefold_channel, &outer_iop_prover, &outer_layout, &mut rng);
 
 	// Observe public input through the wrapped channel.
 	(&mut wrapped_prover_channel).observe_many(&public);
