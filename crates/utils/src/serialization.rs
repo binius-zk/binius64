@@ -4,17 +4,42 @@ use bytes::{Buf, BufMut};
 use hybrid_array::{Array, ArraySize};
 use thiserror::Error;
 
-/// Serialize data according to Mode param
+/// Serialize data to a byte buffer.
 pub trait SerializeBytes {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError>;
 }
 
-/// Deserialize data according to Mode param
-pub trait DeserializeBytes {
-	fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError>
-	where
-		Self: Sized;
+/// Deserialize data from a byte buffer.
+pub trait DeserializeBytes: Sized {
+	fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError>;
 }
+
+/// A type whose byte-serialized form has a fixed, compile-time-known size.
+///
+/// Implementors must guarantee that [`SerializeBytes::serialize`] writes exactly
+/// [`BYTE_SIZE`](Self::BYTE_SIZE) bytes and that [`DeserializeBytes::deserialize`] reads exactly
+/// [`BYTE_SIZE`](Self::BYTE_SIZE) bytes.
+pub trait FixedSizeSerializeBytes: SerializeBytes + DeserializeBytes {
+	/// The exact number of bytes written by `serialize` and read by `deserialize`.
+	const BYTE_SIZE: usize;
+}
+
+macro_rules! impl_fixed_size_serialize_bytes {
+	($ty:ty, $size:expr) => {
+		impl FixedSizeSerializeBytes for $ty {
+			const BYTE_SIZE: usize = $size;
+		}
+	};
+}
+
+impl_fixed_size_serialize_bytes!(u8, 1);
+impl_fixed_size_serialize_bytes!(u16, 2);
+impl_fixed_size_serialize_bytes!(u32, 4);
+impl_fixed_size_serialize_bytes!(u64, 8);
+impl_fixed_size_serialize_bytes!(u128, 16);
+// `usize` is serialized as a `u32`.
+impl_fixed_size_serialize_bytes!(usize, 4);
+impl_fixed_size_serialize_bytes!(bool, 1);
 
 #[derive(Error, Debug, Clone)]
 pub enum SerializationError {
