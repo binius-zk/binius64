@@ -161,7 +161,7 @@ fn test_zk_wrapped_prove_verify() {
 		)
 		.expect("inner prove failed");
 
-	// Finish runs the outer proof (and asserts the gate-replay witness matches; BINIUS-43).
+	// Finish fills the outer witness from the recorded gate sequence and runs the outer proof.
 	wrapped_prover_channel
 		.finish(rng, gate_seq)
 		.expect("outer prove failed");
