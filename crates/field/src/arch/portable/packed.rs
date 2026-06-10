@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 // This is because derive(bytemuck::TransparentWrapper) adds some type constraints to
 // PackedPrimitiveType in addition to the type constraints we define. Even more, annoying, the
@@ -21,7 +22,7 @@ use rand::{
 };
 
 use crate::{
-	BinaryField, Divisible, ExtensionField, Field, PackedField,
+	BinaryField, Divisible, ExtensionField, Field, PackedField, WideMul,
 	arithmetic_traits::{InvertOrZero, Square},
 	field::FieldOps,
 	underlier::{NumCast, UnderlierType, UnderlierWithBitOps, WithUnderlier},
@@ -126,14 +127,18 @@ unsafe impl<U: UnderlierType, Scalar: BinaryField> WithUnderlier
 	}
 }
 
-impl<U: UnderlierWithBitOps, Scalar: BinaryField> Debug for PackedPrimitiveType<U, Scalar>
-where
-	Self: PackedField,
+// Note: this bound is deliberately phrased in terms of `Divisible` rather than `Self:
+// PackedField`. `PackedField` now has `WideMul<Output: Debug>` as a parent trait, and the trivial
+// `WideMul` impl sets `Output = Self`, so a `Self: PackedField` bound here would make `Debug`
+// depend on itself and overflow trait resolution.
+impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> Debug
+	for PackedPrimitiveType<U, Scalar>
 {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		let width = checked_int_div(U::BITS, Scalar::N_BITS);
-		let values_str = self
-			.iter()
+		let values_str = (0..width)
+			// Safety: `i` ranges over `0..width`, the number of scalars packed in `U`.
+			.map(|i| Scalar::from_underlier(unsafe { self.0.get_subvalue(i) }))
 			.map(|value| format!("{value}"))
 			.collect::<Vec<_>>()
 			.join(",");
@@ -412,7 +417,8 @@ where
 
 impl<U, Scalar> PackedField for PackedPrimitiveType<U, Scalar>
 where
-	Self: Square + InvertOrZero + Mul<Output = Self>,
+	Self:
+		Square + InvertOrZero + Mul<Output = Self> + WideMul<Output: Debug + Send + Sync + 'static>,
 	U: UnderlierWithBitOps + Divisible<Scalar::Underlier>,
 	Scalar: BinaryField,
 {

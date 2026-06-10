@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{
 	fmt::{Debug, Display, Formatter},
@@ -33,6 +34,8 @@ use crate::{
 //    AESTowerField16b.
 //  ...
 binary_field!(pub AESTowerField8b(u8), 0xD0);
+
+crate::arithmetic_traits::impl_trivial_wide_mul!(AESTowerField8b);
 
 unsafe impl Pod for AESTowerField8b {}
 

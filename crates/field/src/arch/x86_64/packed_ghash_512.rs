@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! VPCLMULQDQ-accelerated implementation of GHASH for x86_64 AVX-512.
 //!
@@ -18,9 +19,12 @@ use crate::{
 	},
 	underlier::UnderlierWithBitOps,
 };
+// Only used by the CLMUL-accelerated `ClMulUnderlier` and `WideMul` impls below.
+#[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+use crate::{arch::shared::ghash, arithmetic_traits::WideMul};
 
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
-impl crate::arch::shared::ghash::ClMulUnderlier for M512 {
+impl ghash::ClMulUnderlier for M512 {
 	#[inline]
 	fn clmulepi64<const IMM8: i32>(a: Self, b: Self) -> Self {
 		unsafe { std::arch::x86_64::_mm512_clmulepi64_epi128::<IMM8>(a.into(), b.into()) }.into()
@@ -126,6 +130,27 @@ cfg_if! {
 		// Potentially we could use an optimized square implementation here with a scaled underlier.
 		// But this case (an architecture with AVX512 but without VPCLMULQDQ) is pretty rare.
 		impl_square_with!(PackedBinaryGhash4x128b @ crate::arch::ReuseMultiplyStrategy);
+	}
+}
+
+// Implement WideMul
+cfg_if! {
+	if #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))] {
+		impl WideMul for PackedBinaryGhash4x128b {
+			type Output = ghash::WideGhashProduct<M512>;
+
+			#[inline]
+			fn wide_mul(a: Self, b: Self) -> Self::Output {
+				ghash::WideGhashProduct::wide_mul(a.to_underlier(), b.to_underlier())
+			}
+
+			#[inline]
+			fn reduce(wide: Self::Output) -> Self {
+				Self::from_underlier(wide.reduce())
+			}
+		}
+	} else {
+		crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash4x128b);
 	}
 }
 

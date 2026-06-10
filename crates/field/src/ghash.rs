@@ -1,4 +1,5 @@
 // Copyright 2023-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! Binary field implementation of GF(2^128) with a modulus of X^128 + X^7 + X^2 + X + 1.
 //! This is the GHASH field used in AES-GCM.
@@ -21,7 +22,7 @@ use super::{
 	extension::ExtensionField,
 };
 use crate::{
-	AESTowerField8b, Field,
+	AESTowerField8b, Field, PackedField, WideMul,
 	arch::packed_ghash_128::PackedBinaryGhash1x128b,
 	arithmetic_traits::InvertOrZero,
 	binary_field_arithmetic::{
@@ -33,6 +34,26 @@ use crate::{
 };
 
 binary_field!(pub BinaryField128bGhash(u128), 0x494ef99794d5244f9152df59d87a9186);
+
+// Deferred-reduction widening multiply, implemented by reusing the width-1 packed GHASH type. On
+// CLMUL backends `Output` is an unreduced `WideGhashProduct`, so accumulating products reduces
+// only once at the end; on portable backends it falls back to the trivial (eager) multiply.
+impl WideMul for BinaryField128bGhash {
+	type Output = <PackedBinaryGhash1x128b as WideMul>::Output;
+
+	#[inline]
+	fn wide_mul(a: Self, b: Self) -> Self::Output {
+		PackedBinaryGhash1x128b::wide_mul(
+			PackedBinaryGhash1x128b::set_single(a),
+			PackedBinaryGhash1x128b::set_single(b),
+		)
+	}
+
+	#[inline]
+	fn reduce(wide: Self::Output) -> Self {
+		PackedBinaryGhash1x128b::reduce(wide).get(0)
+	}
+}
 
 unsafe impl Pod for BinaryField128bGhash {}
 
@@ -531,6 +552,27 @@ mod tests {
 			let converted_a = BinaryField128bGhash::from(a_val);
 			let converted_b = BinaryField128bGhash::from(b_val);
 			assert_eq!(BinaryField128bGhash::from(a_val * b_val), converted_a * converted_b);
+		}
+
+		#[test]
+		fn test_wide_mul_correctness(a in any::<u128>(), b in any::<u128>()) {
+			let a = BinaryField128bGhash::new(a);
+			let b = BinaryField128bGhash::new(b);
+			let reduced = BinaryField128bGhash::reduce(BinaryField128bGhash::wide_mul(a, b));
+			assert_eq!(reduced, a * b);
+		}
+
+		// Exercises the point of the trait: accumulate two unreduced products, reduce once.
+		#[test]
+		fn test_wide_mul_deferred_accumulation(
+			a1 in any::<u128>(), b1 in any::<u128>(),
+			a2 in any::<u128>(), b2 in any::<u128>(),
+		) {
+			let (a1, b1) = (BinaryField128bGhash::new(a1), BinaryField128bGhash::new(b1));
+			let (a2, b2) = (BinaryField128bGhash::new(a2), BinaryField128bGhash::new(b2));
+			let wide =
+				BinaryField128bGhash::wide_mul(a1, b1) + BinaryField128bGhash::wide_mul(a2, b2);
+			assert_eq!(BinaryField128bGhash::reduce(wide), a1 * b1 + a2 * b2);
 		}
 	}
 }

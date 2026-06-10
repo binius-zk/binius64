@@ -18,6 +18,10 @@ use crate::{
 
 pub type PackedAESBinaryField16x8b = PackedPrimitiveType<M128, AESTowerField8b>;
 
+// Defined by hand rather than via `define_packed_binary_fields!`, so the trivial `WideMul` impl
+// (a parent trait of `PackedField`) must be emitted explicitly here.
+crate::arithmetic_traits::impl_trivial_wide_mul!(PackedAESBinaryField16x8b);
+
 impl Mul for PackedAESBinaryField16x8b {
 	type Output = Self;
 

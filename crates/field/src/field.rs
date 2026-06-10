@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{
 	fmt::{Debug, Display},
@@ -12,7 +13,7 @@ use bytemuck::Zeroable;
 
 use super::extension::ExtensionField;
 use crate::{
-	Random,
+	Random, WideMul,
 	arithmetic_traits::{InvertOrZero, Square},
 };
 
@@ -56,6 +57,7 @@ pub trait Field:
 	+ Zeroable
 	+ SerializeBytes
 	+ DeserializeBytes
+	+ WideMul<Output: Debug + Send + Sync + 'static>
 {
 	/// The zero element of the field, the additive identity.
 	const ZERO: Self;

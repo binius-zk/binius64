@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use super::{
 	packed_256::M256,
@@ -19,3 +20,5 @@ define_packed_binary_fields!(
 		},
 	]
 );
+
+crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash2x128b);

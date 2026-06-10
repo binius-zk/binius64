@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 pub use crate::arch::{
 	packed_ghash_128::PackedBinaryGhash1x128b, packed_ghash_256::PackedBinaryGhash2x128b,
@@ -100,9 +101,91 @@ mod test_utils {
 		};
 	}
 
+	macro_rules! define_wide_mul_tests {
+		() => {
+			fn check_widening_correctness<P>(a: P::Underlier, b: P::Underlier)
+			where
+				P: $crate::PackedField<Scalar = $crate::BinaryField128bGhash>
+					+ $crate::WideMul
+					+ $crate::underlier::WithUnderlier,
+			{
+				let a = P::from_underlier(a);
+				let b = P::from_underlier(b);
+				let wide = P::wide_mul(a, b);
+				let reduced = P::reduce(wide);
+				assert_eq!(reduced, a * b);
+			}
+
+			fn check_widening_linearity<P>(
+				a1: P::Underlier,
+				b1: P::Underlier,
+				a2: P::Underlier,
+				b2: P::Underlier,
+			) where
+				P: $crate::PackedField<Scalar = $crate::BinaryField128bGhash>
+					+ $crate::WideMul
+					+ $crate::underlier::WithUnderlier,
+			{
+				let (a1, b1) = (P::from_underlier(a1), P::from_underlier(b1));
+				let (a2, b2) = (P::from_underlier(a2), P::from_underlier(b2));
+				let sum_reduced =
+					P::reduce(P::wide_mul(a1, b1) + P::wide_mul(a2, b2));
+				assert_eq!(sum_reduced, a1 * b1 + a2 * b2);
+			}
+
+			proptest! {
+				#[test]
+				fn test_wide_mul_correctness_128(a in any::<u128>(), b in any::<u128>()) {
+					check_widening_correctness::<$crate::arch::packed_ghash_128::PackedBinaryGhash1x128b>(a.into(), b.into());
+				}
+
+				#[test]
+				fn test_wide_mul_correctness_256(a in any::<[u128; 2]>(), b in any::<[u128; 2]>()) {
+					check_widening_correctness::<$crate::arch::packed_ghash_256::PackedBinaryGhash2x128b>(a.into(), b.into());
+				}
+
+				#[test]
+				fn test_wide_mul_correctness_512(a in any::<[u128; 4]>(), b in any::<[u128; 4]>()) {
+					check_widening_correctness::<$crate::arch::packed_ghash_512::PackedBinaryGhash4x128b>(a.into(), b.into());
+				}
+
+				#[test]
+				fn test_wide_mul_linearity_128(
+					a1 in any::<u128>(), b1 in any::<u128>(),
+					a2 in any::<u128>(), b2 in any::<u128>(),
+				) {
+					check_widening_linearity::<$crate::arch::packed_ghash_128::PackedBinaryGhash1x128b>(
+						a1.into(), b1.into(), a2.into(), b2.into(),
+					);
+				}
+
+				#[test]
+				fn test_wide_mul_linearity_256(
+					a1 in any::<[u128; 2]>(), b1 in any::<[u128; 2]>(),
+					a2 in any::<[u128; 2]>(), b2 in any::<[u128; 2]>(),
+				) {
+					check_widening_linearity::<$crate::arch::packed_ghash_256::PackedBinaryGhash2x128b>(
+						a1.into(), b1.into(), a2.into(), b2.into(),
+					);
+				}
+
+				#[test]
+				fn test_wide_mul_linearity_512(
+					a1 in any::<[u128; 4]>(), b1 in any::<[u128; 4]>(),
+					a2 in any::<[u128; 4]>(), b2 in any::<[u128; 4]>(),
+				) {
+					check_widening_linearity::<$crate::arch::packed_ghash_512::PackedBinaryGhash4x128b>(
+						a1.into(), b1.into(), a2.into(), b2.into(),
+					);
+				}
+			}
+		};
+	}
+
 	pub(crate) use define_invert_tests;
 	pub(crate) use define_multiply_tests;
 	pub(crate) use define_square_tests;
+	pub(crate) use define_wide_mul_tests;
 }
 
 #[cfg(test)]
@@ -111,7 +194,9 @@ mod tests {
 
 	use proptest::{arbitrary::any, proptest};
 
-	use super::test_utils::{define_invert_tests, define_multiply_tests, define_square_tests};
+	use super::test_utils::{
+		define_invert_tests, define_multiply_tests, define_square_tests, define_wide_mul_tests,
+	};
 	use crate::{
 		BinaryField128bGhash, PackedField,
 		arch::{
@@ -151,4 +236,39 @@ mod tests {
 	define_square_tests!(Square::square, PackedField);
 
 	define_invert_tests!(InvertOrZero::invert_or_zero, PackedField);
+
+	define_wide_mul_tests!();
+
+	#[test]
+	fn test_wide_mul_zero_inputs() {
+		use crate::{
+			WideMul, arch::packed_ghash_128::PackedBinaryGhash1x128b as P, field::FieldOps,
+		};
+
+		let zero = P::default();
+		let one = P::one();
+
+		assert_eq!(P::reduce(P::wide_mul(zero, zero)), zero);
+		assert_eq!(P::reduce(P::wide_mul(zero, one)), zero);
+		assert_eq!(P::reduce(P::wide_mul(one, zero)), zero);
+		assert_eq!(P::reduce(P::wide_mul(one, one)), one);
+
+		let wide_zero = <P as WideMul>::Output::default();
+		assert_eq!(P::reduce(wide_zero), zero);
+	}
+
+	#[test]
+	fn test_wide_mul_single_accumulation() {
+		use rand::{SeedableRng, rngs::StdRng};
+
+		use crate::{Random, WideMul, arch::packed_ghash_128::PackedBinaryGhash1x128b as P};
+
+		let mut rng = StdRng::seed_from_u64(77);
+		let a = P::random(&mut rng);
+		let b = P::random(&mut rng);
+
+		let wide = P::wide_mul(a, b);
+		let sum = wide + <P as WideMul>::Output::default();
+		assert_eq!(P::reduce(sum), a * b);
+	}
 }

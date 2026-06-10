@@ -1,4 +1,5 @@
 // Copyright 2023-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! Traits for packed field elements which support SIMD implementations.
 //!
@@ -17,7 +18,7 @@ use binius_utils::{
 use bytemuck::Zeroable;
 
 use super::{PackedExtension, Random, arithmetic_traits::Square};
-use crate::{BinaryField, Field, field::FieldOps};
+use crate::{BinaryField, Field, WideMul, field::FieldOps};
 
 /// A packed field represents a vector of underlying field elements.
 ///
@@ -42,6 +43,7 @@ pub trait PackedField:
 	+ Sync
 	+ Zeroable
 	+ Random
+	+ WideMul<Output: Debug + Send + Sync + 'static>
 	+ 'static
 {
 	/// Base-2 logarithm of the number of field elements packed into one packed element.

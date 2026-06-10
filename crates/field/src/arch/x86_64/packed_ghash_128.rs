@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! PCLMULQDQ-accelerated implementation of GHASH for x86_64.
 //!
@@ -17,9 +18,12 @@ use crate::{
 		impl_square_with,
 	},
 };
+// Only used by the CLMUL-accelerated `ClMulUnderlier` and `WideMul` impls below.
+#[cfg(target_feature = "pclmulqdq")]
+use crate::{arch::shared::ghash, arithmetic_traits::WideMul};
 
 #[cfg(target_feature = "pclmulqdq")]
-impl crate::arch::shared::ghash::ClMulUnderlier for M128 {
+impl ghash::ClMulUnderlier for M128 {
 	#[inline]
 	fn clmulepi64<const IMM8: i32>(a: Self, b: Self) -> Self {
 		unsafe { std::arch::x86_64::_mm_clmulepi64_si128::<IMM8>(a.into(), b.into()) }.into()
@@ -94,6 +98,27 @@ cfg_if! {
 				Self::from_underlier(crate::arithmetic_traits::Square::square(portable_val).to_underlier().into())
 			}
 		}
+	}
+}
+
+// Implement WideMul
+cfg_if! {
+	if #[cfg(target_feature = "pclmulqdq")] {
+		impl WideMul for PackedBinaryGhash1x128b {
+			type Output = ghash::WideGhashProduct<M128>;
+
+			#[inline]
+			fn wide_mul(a: Self, b: Self) -> Self::Output {
+				ghash::WideGhashProduct::wide_mul(a.to_underlier(), b.to_underlier())
+			}
+
+			#[inline]
+			fn reduce(wide: Self::Output) -> Self {
+				Self::from_underlier(wide.reduce())
+			}
+		}
+	} else {
+		crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash1x128b);
 	}
 }
 

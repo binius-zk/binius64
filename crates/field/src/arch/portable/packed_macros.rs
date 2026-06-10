@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 macro_rules! define_packed_binary_fields {
     (
@@ -26,8 +27,23 @@ macro_rules! define_packed_binary_fields {
                 ($($invert)*),
                 ($($transform)*)
             );
+
+            // Every packed field is a `WideMul` (it's a parent trait of `PackedField`). All
+            // packings except `GF(2^128)` use the trivial implementation; the `GF(2^128)`
+            // packings provide their own CLMUL-accelerated (or, on backends without CLMUL,
+            // trivial) impl, so the macro must not emit a conflicting one for them.
+            maybe_impl_trivial_wide_mul!($scalar, $name);
         )*
     };
+}
+
+/// Emits a trivial [`WideMul`](crate::WideMul) impl for every scalar except
+/// `BinaryField128bGhash`, whose packings implement `WideMul` themselves.
+macro_rules! maybe_impl_trivial_wide_mul {
+	(BinaryField128bGhash, $name:ident) => {};
+	($scalar:ident, $name:ident) => {
+		$crate::arithmetic_traits::impl_trivial_wide_mul!($name);
+	};
 }
 
 macro_rules! define_packed_binary_field {
@@ -85,6 +101,7 @@ macro_rules! impl_serialize_deserialize_for_packed_binary_field {
 pub(crate) use define_packed_binary_field;
 pub(crate) use define_packed_binary_fields;
 pub(crate) use impl_serialize_deserialize_for_packed_binary_field;
+pub(crate) use maybe_impl_trivial_wide_mul;
 
 pub(crate) use crate::arithmetic_traits::{impl_invert_with, impl_mul_with, impl_square_with};
 

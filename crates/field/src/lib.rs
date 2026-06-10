@@ -1,4 +1,5 @@
 // Copyright 2023-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 #![warn(rustdoc::missing_crate_level_docs)]
 
@@ -36,6 +37,7 @@ mod underlier;
 pub mod util;
 
 pub use aes_field::*;
+pub use arithmetic_traits::WideMul;
 pub use binary_field::*;
 pub use extension::*;
 pub use field::{Field, FieldOps};

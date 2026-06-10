@@ -79,3 +79,7 @@ harness = false
 [[bench]]
 name = "main_field_binary_ops"
 harness = false
+
+[[bench]]
+name = "ghash_widening"
+harness = false

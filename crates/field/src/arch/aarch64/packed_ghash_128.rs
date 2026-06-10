@@ -1,4 +1,5 @@
 // Copyright 2023-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 // Copyright (c) 2019-2023 RustCrypto Developers
 
 //! ARMv8 `PMULL`-accelerated implementation of GHASH.
@@ -13,11 +14,11 @@ use crate::{
 	BinaryField128bGhash,
 	arch::{
 		portable::packed_macros::{portable_macros::*, *},
-		shared::ghash::ClMulUnderlier,
+		shared::ghash::{self, ClMulUnderlier},
 	},
 	arithmetic_traits::{
-		InvertOrZero, TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
-		impl_square_with,
+		InvertOrZero, TaggedInvertOrZero, TaggedMul, TaggedSquare, WideMul, impl_invert_with,
+		impl_mul_with, impl_square_with,
 	},
 };
 
@@ -79,6 +80,21 @@ impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
 	#[inline]
 	fn square(self) -> Self {
 		Self::from_underlier(crate::arch::shared::ghash::square_clmul(self.to_underlier()))
+	}
+}
+
+// Implement WideMul
+impl WideMul for PackedBinaryGhash1x128b {
+	type Output = ghash::WideGhashProduct<M128>;
+
+	#[inline]
+	fn wide_mul(a: Self, b: Self) -> Self::Output {
+		ghash::WideGhashProduct::wide_mul(a.to_underlier(), b.to_underlier())
+	}
+
+	#[inline]
+	fn reduce(wide: Self::Output) -> Self {
+		Self::from_underlier(wide.reduce())
 	}
 }
 

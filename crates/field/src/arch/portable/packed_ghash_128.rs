@@ -1,4 +1,5 @@
 // Copyright 2023-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! Portable implementation of packed GHASH field operations.
 
@@ -122,6 +123,9 @@ impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
 		ghash_square(self.0).into()
 	}
 }
+
+// Implement WideMul (trivial: no CLMUL, just regular multiply)
+crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash1x128b);
 
 // Implement TaggedInvertOrZero for GhashStrategy
 impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {

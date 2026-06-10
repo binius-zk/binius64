@@ -1,4 +1,5 @@
 // Copyright 2023-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 // Copyright (c) 2019-2023 RustCrypto Developers
 
 //! WASM32 implementation of GHASH.
@@ -82,6 +83,9 @@ impl InvertOrZero for PackedBinaryGhash1x128b {
 		Self::from_underlier(InvertOrZero::invert_or_zero(portable).to_underlier().into())
 	}
 }
+
+// Implement WideMul (trivial: no CLMUL, just regular multiply)
+crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash1x128b);
 
 // Define linear transformations
 impl_transformation_with_strategy!(PackedBinaryGhash1x128b, PairwiseStrategy);

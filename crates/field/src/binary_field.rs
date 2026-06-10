@@ -1,4 +1,5 @@
 // Copyright 2023-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{
 	fmt::{Debug, Display, Formatter},
@@ -459,6 +460,8 @@ macro_rules! impl_field_extension {
 pub(crate) use impl_field_extension;
 
 binary_field!(pub BinaryField1b(U1), U1::new(0x1));
+
+crate::arithmetic_traits::impl_trivial_wide_mul!(BinaryField1b);
 
 macro_rules! serialize_deserialize {
 	($bin_type:ty) => {

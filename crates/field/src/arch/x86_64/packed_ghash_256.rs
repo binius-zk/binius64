@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! VPCLMULQDQ-accelerated implementation of GHASH for x86_64 AVX2.
 //!
@@ -20,6 +21,9 @@ use crate::{
 	},
 	underlier::UnderlierWithBitOps,
 };
+// Only used by the CLMUL-accelerated `WideMul` impl below.
+#[cfg(target_feature = "vpclmulqdq")]
+use crate::{arch::shared::ghash, arithmetic_traits::WideMul};
 
 #[cfg(target_feature = "vpclmulqdq")]
 mod vpclmulqdq {
@@ -125,6 +129,27 @@ cfg_if! {
 				Self::from_underlier(result_underlier)
 			}
 		}
+	}
+}
+
+// Implement WideMul
+cfg_if! {
+	if #[cfg(target_feature = "vpclmulqdq")] {
+		impl WideMul for PackedBinaryGhash2x128b {
+			type Output = ghash::WideGhashProduct<M256>;
+
+			#[inline]
+			fn wide_mul(a: Self, b: Self) -> Self::Output {
+				ghash::WideGhashProduct::wide_mul(a.to_underlier(), b.to_underlier())
+			}
+
+			#[inline]
+			fn reduce(wide: Self::Output) -> Self {
+				Self::from_underlier(wide.reduce())
+			}
+		}
+	} else {
+		crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash2x128b);
 	}
 }
 
