@@ -72,9 +72,6 @@ pub trait ParallelDigest: Send {
 	/// Create new hasher instance with empty state.
 	fn new() -> Self;
 
-	/// Create new hasher instance which has processed the provided data.
-	fn new_with_prefix(data: impl AsRef<[u8]>) -> Self;
-
 	/// Calculate the digest of multiple hashes by processing a parallel iterator of iterators.
 	///
 	/// The source parameter provides a parallel iterator where:
@@ -109,10 +106,6 @@ impl<D: MultiDigest<N, Digest: Send> + Send + Sync, const N: usize> ParallelDige
 
 	fn new() -> Self {
 		Self(D::new())
-	}
-
-	fn new_with_prefix(data: impl AsRef<[u8]>) -> Self {
-		Self(D::new_with_prefix(data.as_ref()))
 	}
 
 	fn digest<I: IntoIterator<Item: SerializeBytes>>(
@@ -155,19 +148,12 @@ impl<D: MultiDigest<N, Digest: Send> + Send + Sync, const N: usize> ParallelDige
 ///
 /// Each Rayon work-item is seeded with a single hasher (via `for_each_with`) which is recycled in
 /// place with `finalize_reset` between leaves, rather than cloning a fresh hasher per leaf. This
-/// requires `D: FixedOutputReset`. Any prefix is re-applied per leaf, since `finalize_reset`
-/// returns the hasher to its empty initial state.
-pub struct ParallelDigestAdapter<D> {
-	prefix: Vec<u8>,
-	_marker: PhantomData<D>,
-}
+/// requires `D: FixedOutputReset`.
+pub struct ParallelDigestAdapter<D>(PhantomData<D>);
 
 impl<D> Default for ParallelDigestAdapter<D> {
 	fn default() -> Self {
-		Self {
-			prefix: Vec::new(),
-			_marker: PhantomData,
-		}
+		Self(PhantomData)
 	}
 }
 
@@ -178,17 +164,7 @@ where
 	type Digest = D;
 
 	fn new() -> Self {
-		Self {
-			prefix: Vec::new(),
-			_marker: PhantomData,
-		}
-	}
-
-	fn new_with_prefix(data: impl AsRef<[u8]>) -> Self {
-		Self {
-			prefix: data.as_ref().to_vec(),
-			_marker: PhantomData,
-		}
+		Self(PhantomData)
 	}
 
 	fn digest<I: IntoIterator<Item: SerializeBytes>>(
@@ -199,9 +175,6 @@ where
 		source
 			.zip(out.par_iter_mut())
 			.for_each_with(D::new(), |hasher, (items, out)| {
-				if !self.prefix.is_empty() {
-					Digest::update(hasher, &self.prefix);
-				}
 				{
 					let mut buffer = HashBuffer::new(hasher);
 					for item in items {
@@ -374,29 +347,6 @@ mod tests {
 			for (result, leaf) in results.into_iter().zip(&data) {
 				assert_eq!(unsafe { result.assume_init() }, <Sha256 as Digest>::digest(leaf));
 			}
-		}
-	}
-
-	#[test]
-	fn test_adapter_with_prefix_matches_serial_sha256() {
-		use sha2::Sha256;
-
-		let prefix = b"binius-prefix";
-		// More leaves than Rayon work-items so each job recycles its hasher across several leaves,
-		// exercising the per-leaf prefix re-application after `finalize_reset`.
-		let data = generate_mock_data(100, 16);
-
-		let adapter = ParallelDigestAdapter::<Sha256>::new_with_prefix(prefix);
-		let mut results = repeat_with(MaybeUninit::<Output<Sha256>>::uninit)
-			.take(data.len())
-			.collect::<Vec<_>>();
-		adapter.digest(data.par_iter(), &mut results);
-
-		for (result, leaf) in results.into_iter().zip(&data) {
-			let expected = <Sha256 as Digest>::new_with_prefix(prefix)
-				.chain_update(leaf)
-				.finalize();
-			assert_eq!(unsafe { result.assume_init() }, expected);
 		}
 	}
 }
