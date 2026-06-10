@@ -86,6 +86,22 @@ being listed as a contributor to the repo.
 Binius64 was originally developed by [Irreducible](https://www.irreducible.com), with funding from
 [Bain Capital Crypto](https://baincapitalcrypto.com/) and [Paradigm](https://www.paradigm.xyz/).
 
+## Contributing
+
+Developers (both human and artificial intelligence) should read the [CONTRIBUTING.md](CONTRIBUTING.md) file before submitting pull requests.
+
+The project welcomes first time contributions from developers who want to learn more about Binius64 and make an impact
+on the open source cryptography community.
+
+If you are new to the project and don't know where to start, you can look for [open issues labeled
+`good first issue`](https://github.com/IrreducibleOSS/binius/issues?q=is%3Aissue+state%3Aopen+label%3A%22good+first+issue%22) or add
+test coverage for existing code. Adding unit tests is a great way to learn how to interact with the codebase, make a
+meaningful contribution, and maybe even find bugs!
+
+On the other hand, _we do not accept typo fix PRs from first-time contributors_. These are not significant enough to
+justify the additional work for maintainers nor any potential benefits, tangible or intangible, one might get from
+being listed as a contributor to the repo.
+
 ## Licensing
 
 ```
