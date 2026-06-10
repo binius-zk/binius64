@@ -150,46 +150,25 @@ impl<D: MultiDigest<N, Digest: Send> + Send + Sync, const N: usize> ParallelDige
 	}
 }
 
-impl<D: Digest + BlockSizeUser + Send + Sync + Clone> ParallelDigest for D {
-	type Digest = D;
-
-	fn new() -> Self {
-		Digest::new()
-	}
-
-	fn new_with_prefix(data: impl AsRef<[u8]>) -> Self {
-		Digest::new_with_prefix(data)
-	}
-
-	fn digest<I: IntoIterator<Item: SerializeBytes>>(
-		&self,
-		source: impl IndexedParallelIterator<Item = I>,
-		out: &mut [MaybeUninit<Output<Self::Digest>>],
-	) {
-		source.zip(out.par_iter_mut()).for_each(|(items, out)| {
-			let mut hasher = self.clone();
-			{
-				let mut buffer = HashBuffer::new(&mut hasher);
-				for item in items {
-					item.serialize(&mut buffer)
-						.expect("pre-condition: items must serialize without error")
-				}
-			}
-			out.write(hasher.finalize());
-		});
-	}
-}
-
-/// A `ParallelDigest` wrapper that reuses a single hasher per Rayon work-item rather than cloning
-/// the hasher for every leaf.
+/// Adapts a sequential [`Digest`] into a [`ParallelDigest`] that hashes one leaf per element of a
+/// parallel iterator.
 ///
-/// The blanket `impl ParallelDigest for D` clones `self` once per leaf and finalizes by value. This
-/// adapter instead seeds each Rayon job with one hasher (via `for_each_with`) and recycles it in
-/// place with `finalize_reset` between leaves, which requires `D: FixedOutputReset`. Any prefix is
-/// re-applied per leaf, since `finalize_reset` returns the hasher to its empty initial state.
+/// Each Rayon work-item is seeded with a single hasher (via `for_each_with`) which is recycled in
+/// place with `finalize_reset` between leaves, rather than cloning a fresh hasher per leaf. This
+/// requires `D: FixedOutputReset`. Any prefix is re-applied per leaf, since `finalize_reset`
+/// returns the hasher to its empty initial state.
 pub struct ParallelDigestAdapter<D> {
 	prefix: Vec<u8>,
 	_marker: PhantomData<D>,
+}
+
+impl<D> Default for ParallelDigestAdapter<D> {
+	fn default() -> Self {
+		Self {
+			prefix: Vec::new(),
+			_marker: PhantomData,
+		}
+	}
 }
 
 impl<D> ParallelDigest for ParallelDigestAdapter<D>
@@ -358,17 +337,10 @@ mod tests {
 			.collect::<Vec<_>>();
 		parallel_digest.digest(data.par_iter(), &mut parallel_results);
 
-		let single_digest_as_parallel = <D::Digest as ParallelDigest>::new();
-		let mut single_results = repeat_with(MaybeUninit::<Output<D::Digest>>::uninit)
-			.take(data.len())
-			.collect::<Vec<_>>();
-		single_digest_as_parallel.digest(data.par_iter(), &mut single_results);
-
 		let serial_results = data.iter().map(<D::Digest as Digest>::digest);
 
-		for (parallel, single, serial) in izip!(parallel_results, single_results, serial_results) {
+		for (parallel, serial) in izip!(parallel_results, serial_results) {
 			assert_eq!(unsafe { parallel.assume_init() }, serial);
-			assert_eq!(unsafe { single.assume_init() }, serial);
 		}
 	}
 

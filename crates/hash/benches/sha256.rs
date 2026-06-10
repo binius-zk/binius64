@@ -64,41 +64,22 @@ fn bench_compress(c: &mut Criterion) {
 	group.finish();
 }
 
-/// Benchmarks `ParallelDigest::digest` over 1 MiB of `B128` elements, varying the number of
+/// Benchmarks [`ParallelDigestAdapter`] over 1 MiB of `B128` elements, varying the number of
 /// elements folded into each leaf digest (`batch_size`). This isolates the leaf-hashing step that
 /// dominates `binary_merkle_tree::build`. The input data size is fixed at 1 MiB, so a larger batch
 /// size means fewer, larger leaves (fewer SHA-256 init/finalize calls).
-///
-/// Two implementations are compared at each batch size:
-/// - `blanket`: the `impl ParallelDigest for D`, which clones the hasher per leaf.
-/// - `adapter`: [`ParallelDigestAdapter`], which reuses one hasher per Rayon job via
-///   `finalize_reset`.
 fn bench_digest(c: &mut Criterion) {
 	let mut rng = rng();
 	let elements: Vec<B128> = (0..N_ELEMS).map(|_| B128::random(&mut rng)).collect();
 
+	let adapter = ParallelDigestAdapter::<Sha256>::new();
 	let mut group = c.benchmark_group("sha256_parallel_digest");
 	group.throughput(Throughput::Bytes(DATA_LEN as u64));
 	for &batch_size in &BATCH_SIZES {
 		let n_leaves = N_ELEMS / batch_size;
 		// Allocate the output buffer once per batch size so the measurement isolates hashing.
 		let mut digests: Vec<Output<Sha256>> = Vec::with_capacity(n_leaves);
-
-		let blanket = <Sha256 as ParallelDigest>::new();
-		group.bench_with_input(BenchmarkId::new("blanket", batch_size), &batch_size, |b, &bs| {
-			b.iter(|| {
-				let out = &mut digests.spare_capacity_mut()[..n_leaves];
-				blanket.digest(
-					black_box(elements.as_slice())
-						.par_chunks(bs)
-						.map(|chunk| chunk.iter().copied()),
-					out,
-				);
-			});
-		});
-
-		let adapter = ParallelDigestAdapter::<Sha256>::new();
-		group.bench_with_input(BenchmarkId::new("adapter", batch_size), &batch_size, |b, &bs| {
+		group.bench_with_input(BenchmarkId::from_parameter(batch_size), &batch_size, |b, &bs| {
 			b.iter(|| {
 				let out = &mut digests.spare_capacity_mut()[..n_leaves];
 				adapter.digest(

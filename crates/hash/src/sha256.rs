@@ -11,6 +11,7 @@ use super::{
 	binary_merkle_tree::HashSuite,
 	compress::{CompressionFunction, PseudoCompressionFunction},
 	parallel_compression::ParallelCompressionAdaptor,
+	parallel_digest::ParallelDigestAdapter,
 };
 
 /// A two-to-one compression function for SHA-256 digests.
@@ -48,6 +49,6 @@ pub struct Sha256HashSuite;
 impl HashSuite for Sha256HashSuite {
 	type LeafHash = Sha256;
 	type Compression = Sha256Compression;
-	type ParLeafHash = Sha256;
+	type ParLeafHash = ParallelDigestAdapter<Sha256>;
 	type ParCompression = ParallelCompressionAdaptor<Sha256Compression>;
 }
