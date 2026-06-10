@@ -37,7 +37,7 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-	let _tracing_guard = tracing_profile::init_tracing().ok();
+	binius_examples::init_tracing();
 	let args = Args::parse();
 
 	// Read and deserialize constraint system

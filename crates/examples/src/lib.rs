@@ -22,6 +22,31 @@ use binius_verifier::{
 use clap::ValueEnum;
 pub use cli::Cli;
 use digest::Output;
+use tracing::level_filters::LevelFilter;
+use tracing_forest::ForestLayer;
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+
+/// Initialize tracing with `tracing-forest`'s tree-formatted profiling output.
+///
+/// Installs a [`ForestLayer`], which prints a timing tree (span durations and their share of
+/// the total) for each root span as it closes. This replaces the human-readable
+/// `PrintTreeLayer` from `tracing-profile`.
+///
+/// Span verbosity defaults to `DEBUG` and can be overridden with `RUST_LOG`
+/// (e.g. `RUST_LOG=binius=trace`), matching the previous behavior.
+///
+/// Calling this when a global subscriber is already installed is a no-op, so it is safe to
+/// invoke from every example entry point.
+pub fn init_tracing() {
+	let env_filter = EnvFilter::builder()
+		.with_default_directive(LevelFilter::DEBUG.into())
+		.from_env_lossy();
+
+	let _ = tracing_subscriber::registry()
+		.with(env_filter)
+		.with(ForestLayer::default())
+		.try_init();
+}
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum CompressionType {

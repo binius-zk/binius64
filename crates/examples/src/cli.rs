@@ -559,41 +559,36 @@ where
 	/// Run the circuit with parsed ArgMatches (implementation).
 	#[allow(unused_variables)]
 	fn run_with_matches_impl(matches: clap::ArgMatches, circuit_name: &str) -> Result<()> {
-		// Initialize tracing once at the beginning for all commands
+		// Initialize tracing once at the beginning for all commands. In perfetto mode the
+		// returned guard must be held for the duration of the program to flush the trace.
+		#[cfg(feature = "perfetto")]
 		let _tracing_guard = {
-			#[cfg(feature = "perfetto")]
+			// Detect threading information
+			let thread_count = binius_utils::rayon::current_num_threads();
+			let thread_mode = if thread_count == 1 { "st" } else { "mt" };
+
+			let mut builder = tracing_profile::TraceFilenameBuilder::for_benchmark(circuit_name)
+				.output_dir("perfetto_traces")
+				.timestamp() // Add timestamp for uniqueness
+				.git_info() // Include git status
+				.platform() // Include OS info
+				.thread_mode(thread_mode);
+
+			// Try to extract params from the appropriate matches for richer context
+			// This will succeed for most commands (prove, stat, save, etc.)
+			// and fail gracefully for commands without params (like load-prove)
+			let matches_for_params = matches.subcommand().map(|(_, sub)| sub).unwrap_or(&matches);
+
+			if let Ok(params) = E::Params::from_arg_matches(matches_for_params)
+				&& let Some(param_summary) = E::param_summary(&params)
 			{
-				// Detect threading information
-				let thread_count = binius_utils::rayon::current_num_threads();
-				let thread_mode = if thread_count == 1 { "st" } else { "mt" };
-
-				let mut builder =
-					tracing_profile::TraceFilenameBuilder::for_benchmark(circuit_name)
-						.output_dir("perfetto_traces")
-						.timestamp() // Add timestamp for uniqueness
-						.git_info() // Include git status
-						.platform() // Include OS info
-						.thread_mode(thread_mode);
-
-				// Try to extract params from the appropriate matches for richer context
-				// This will succeed for most commands (prove, stat, save, etc.)
-				// and fail gracefully for commands without params (like load-prove)
-				let matches_for_params =
-					matches.subcommand().map(|(_, sub)| sub).unwrap_or(&matches);
-
-				if let Ok(params) = E::Params::from_arg_matches(matches_for_params)
-					&& let Some(param_summary) = E::param_summary(&params)
-				{
-					builder = builder.add("params", param_summary);
-				}
-
-				tracing_profile::init_tracing_with_builder(builder)?
+				builder = builder.add("params", param_summary);
 			}
-			#[cfg(not(feature = "perfetto"))]
-			{
-				tracing_profile::init_tracing()?
-			}
+
+			tracing_profile::init_tracing_with_builder(builder)?
 		};
+		#[cfg(not(feature = "perfetto"))]
+		crate::init_tracing();
 
 		// Check if a subcommand was used
 		match matches.subcommand() {
