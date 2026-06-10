@@ -353,7 +353,7 @@ impl<'a, F: Field> CircuitBuilder for WitnessGeneratorWithAlloc<'a, F> {
 		self.inner.mul(lhs, rhs)
 	}
 
-	fn hint<H: Fn([F; IN]) -> [F; OUT], const IN: usize, const OUT: usize>(
+	fn hint<H: Fn([F; IN]) -> [F; OUT] + 'static, const IN: usize, const OUT: usize>(
 		&mut self,
 		inputs: [Self::Wire; IN],
 		f: H,

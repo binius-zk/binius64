@@ -203,13 +203,16 @@ impl<F: Field> IOPVerifier<F> {
 			]
 			.concat();
 
-			let mul_constraints = cs.mul_constraints();
-			channel.compute_public_value(&inputs, move |vals| {
+			// Own the constraints in the closure (via `Rc`) so it is `'static` and the recording
+			// channel can store it for deferred replay (BINIUS-43); non-recording channels run it
+			// immediately as before.
+			let mul_constraints: Rc<[_]> = Rc::from(cs.mul_constraints());
+			channel.compute_public_value_recorded(&inputs, move |vals| {
 				let public_vals = &vals[..public_len];
 				let lambda_val = vals[public_len];
 				let r_x_tensor_vals = &vals[public_len + 1..];
 				evaluate_wiring_mle_public(
-					mul_constraints,
+					&mul_constraints,
 					public_vals,
 					lambda_val,
 					r_x_tensor_vals,

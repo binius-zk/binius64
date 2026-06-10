@@ -191,7 +191,11 @@ impl<F: Field> CircuitBuilder for InOutSegmentBuilder<F> {
 
 	fn mul(&mut self, _lhs: Self::Wire, _rhs: Self::Wire) -> Self::Wire {}
 
-	fn hint<H: Fn([Self::Field; IN]) -> [Self::Field; OUT], const IN: usize, const OUT: usize>(
+	fn hint<
+		H: Fn([Self::Field; IN]) -> [Self::Field; OUT] + 'static,
+		const IN: usize,
+		const OUT: usize,
+	>(
 		&mut self,
 		_inputs: [Self::Wire; IN],
 		_f: H,

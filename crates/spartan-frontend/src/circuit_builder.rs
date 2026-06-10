@@ -38,7 +38,11 @@ pub trait CircuitBuilder {
 
 	fn mul(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire;
 
-	fn hint<H: Fn([Self::Field; IN]) -> [Self::Field; OUT], const IN: usize, const OUT: usize>(
+	fn hint<
+		H: Fn([Self::Field; IN]) -> [Self::Field; OUT] + 'static,
+		const IN: usize,
+		const OUT: usize,
+	>(
 		&mut self,
 		inputs: [Self::Wire; IN],
 		f: H,
@@ -282,7 +286,7 @@ impl<F: Field> CircuitBuilder for ConstraintBuilder<F> {
 		out
 	}
 
-	fn hint<H: Fn([F; IN]) -> [F; OUT], const IN: usize, const OUT: usize>(
+	fn hint<H: Fn([F; IN]) -> [F; OUT] + 'static, const IN: usize, const OUT: usize>(
 		&mut self,
 		_inputs: [Self::Wire; IN],
 		_f: H,
@@ -416,7 +420,7 @@ impl<'a, F: Field> CircuitBuilder for WitnessGenerator<'a, F> {
 		self.alloc_value(lhs.val() * rhs.val())
 	}
 
-	fn hint<H: Fn([F; IN]) -> [F; OUT], const IN: usize, const OUT: usize>(
+	fn hint<H: Fn([F; IN]) -> [F; OUT] + 'static, const IN: usize, const OUT: usize>(
 		&mut self,
 		inputs: [Self::Wire; IN],
 		f: H,
