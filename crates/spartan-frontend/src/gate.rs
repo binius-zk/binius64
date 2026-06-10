@@ -31,10 +31,11 @@
 //! post-symbolic-build wire-elimination pass even though the gate sequence references
 //! pre-elimination wire ids.
 
+use std::collections::HashMap;
+
 use binius_field::Field;
-use binius_spartan_frontend::constraint_system::{
-	ConstraintWire, Witness, WitnessLayout, WitnessSegment,
-};
+
+use crate::constraint_system::{ConstraintWire, Witness, WitnessLayout, WitnessSegment};
 
 /// Dense index of a value produced during the symbolic build.
 pub type RecWire = usize;
@@ -49,8 +50,8 @@ pub enum Val<F> {
 /// Field-level evaluation of a recorded operation: maps input values to output values.
 ///
 /// Captured at recording time for operations whose computation is not a single inline arithmetic
-/// step (public-only short-circuits and hints).
-pub type EvalFn<F> = Box<dyn Fn(&[F]) -> Vec<F>>;
+/// step (public-only short-circuits and hints). Replayed exactly once, so [`FnOnce`] suffices.
+pub type EvalFn<F> = Box<dyn FnOnce(&[F]) -> Vec<F>>;
 
 /// A single recorded high-level operation.
 ///
@@ -130,9 +131,9 @@ impl<F: Field> GateSequence<F> {
 	/// `inputs` supplies the [`Gate::Input`] values in recording order (for the prover, the
 	/// recorded encrypted interaction values); `keys` supplies the [`Gate::Precommit`] OTP keys in
 	/// recording order. `layout` is the *post-elimination* witness layout — writes to wires it
-	/// does not contain are dropped.
+	/// does not contain are dropped. Consumes the sequence (its boxed closures are `FnOnce`).
 	pub fn replay(
-		&self,
+		self,
 		layout: &WitnessLayout<F>,
 		mut inputs: impl Iterator<Item = F>,
 		mut keys: impl Iterator<Item = F>,
@@ -165,15 +166,15 @@ impl<F: Field> GateSequence<F> {
 			}
 		};
 
-		for gate in &self.gates {
+		for gate in self.gates {
 			match gate {
 				Gate::Input { out } => {
-					values[*out] = inputs.next().expect("interaction stream exhausted");
+					values[out] = inputs.next().expect("interaction stream exhausted");
 				}
 				Gate::Precommit { out, cw } => {
 					let value = keys.next().expect("key stream exhausted");
-					values[*out] = value;
-					write(&mut public, &mut precommit, &mut private, cw, value);
+					values[out] = value;
+					write(&mut public, &mut precommit, &mut private, &cw, value);
 				}
 				Gate::Public { ins, outs, f } => {
 					let in_vals = ins.iter().map(|v| val(&values, v)).collect::<Vec<_>>();
@@ -184,14 +185,14 @@ impl<F: Field> GateSequence<F> {
 					}
 				}
 				Gate::Add { a, b, out, cw } => {
-					let value = val(&values, a) + val(&values, b);
-					values[*out] = value;
-					write(&mut public, &mut precommit, &mut private, cw, value);
+					let value = val(&values, &a) + val(&values, &b);
+					values[out] = value;
+					write(&mut public, &mut precommit, &mut private, &cw, value);
 				}
 				Gate::Mul { a, b, out, cw } => {
-					let value = val(&values, a) * val(&values, b);
-					values[*out] = value;
-					write(&mut public, &mut precommit, &mut private, cw, value);
+					let value = val(&values, &a) * val(&values, &b);
+					values[out] = value;
+					write(&mut public, &mut precommit, &mut private, &cw, value);
 				}
 				Gate::Hint { ins, outs, f } => {
 					let in_vals = ins.iter().map(|v| val(&values, v)).collect::<Vec<_>>();
@@ -203,7 +204,7 @@ impl<F: Field> GateSequence<F> {
 					}
 				}
 				Gate::Materialize { rec, cw } => {
-					write(&mut public, &mut precommit, &mut private, cw, values[*rec]);
+					write(&mut public, &mut precommit, &mut private, &cw, values[rec]);
 				}
 			}
 		}
@@ -212,12 +213,128 @@ impl<F: Field> GateSequence<F> {
 	}
 }
 
+/// Builds a [`GateSequence`] in lockstep with the symbolic constraint build.
+///
+/// Held (optionally) inside [`ConstraintBuilder`](crate::circuit_builder::ConstraintBuilder): its
+/// `add`/`mul`/`hint`/`constant` methods record private gates as they allocate constraint wires,
+/// while the symbolic channel/element layer drives the public-side methods
+/// (`input`/`precommit`/`materialize`/`public`). `cw_to_val` maps each materialized
+/// [`ConstraintWire`] back to the [`Val`] the gate inputs should reference.
+#[derive(Default)]
+pub struct GateRecorder<F> {
+	seq: GateSequence<F>,
+	cw_to_val: HashMap<ConstraintWire, Val<F>>,
+}
+
+impl<F: Field> GateRecorder<F> {
+	pub fn new() -> Self {
+		Self {
+			seq: GateSequence::new(),
+			cw_to_val: HashMap::new(),
+		}
+	}
+
+	pub fn into_sequence(self) -> GateSequence<F> {
+		self.seq
+	}
+
+	fn val_of(&self, cw: &ConstraintWire) -> Val<F> {
+		*self
+			.cw_to_val
+			.get(cw)
+			.expect("every materialized constraint wire must be recorded before use")
+	}
+
+	/// Record an external channel input (`recv`/`sample`/`observe`). Returns its [`RecWire`].
+	pub fn input(&mut self) -> RecWire {
+		let out = self.seq.alloc();
+		self.seq.push(Gate::Input { out });
+		out
+	}
+
+	/// Record a precommit (OTP key) wire and map it for later input lookups.
+	pub fn precommit(&mut self, cw: ConstraintWire) {
+		let out = self.seq.alloc();
+		self.seq.push(Gate::Precommit { out, cw });
+		self.cw_to_val.insert(cw, Val::Wire(out));
+	}
+
+	/// Record an interned constant so later gates referencing `cw` resolve to its value.
+	pub fn constant(&mut self, cw: ConstraintWire, value: F) {
+		self.cw_to_val.entry(cw).or_insert(Val::Const(value));
+	}
+
+	/// Record that a lazy public wire (`rec`) was materialized into InOut wire `cw`.
+	pub fn materialize(&mut self, rec: RecWire, cw: ConstraintWire) {
+		self.seq.push(Gate::Materialize { rec, cw });
+		self.cw_to_val.insert(cw, Val::Wire(rec));
+	}
+
+	/// Record an `add` (`out_cw = lhs + rhs`).
+	pub fn add(&mut self, lhs: ConstraintWire, rhs: ConstraintWire, out_cw: ConstraintWire) {
+		let a = self.val_of(&lhs);
+		let b = self.val_of(&rhs);
+		let out = self.seq.alloc();
+		self.seq.push(Gate::Add {
+			a,
+			b,
+			out,
+			cw: out_cw,
+		});
+		self.cw_to_val.insert(out_cw, Val::Wire(out));
+	}
+
+	/// Record a `mul` (`out_cw = lhs * rhs`).
+	pub fn mul(&mut self, lhs: ConstraintWire, rhs: ConstraintWire, out_cw: ConstraintWire) {
+		let a = self.val_of(&lhs);
+		let b = self.val_of(&rhs);
+		let out = self.seq.alloc();
+		self.seq.push(Gate::Mul {
+			a,
+			b,
+			out,
+			cw: out_cw,
+		});
+		self.cw_to_val.insert(out_cw, Val::Wire(out));
+	}
+
+	/// Record a `hint`: `out_cws` are filled with `f(ins)` at replay.
+	pub fn hint(&mut self, ins: &[ConstraintWire], out_cws: &[ConstraintWire], f: EvalFn<F>) {
+		let in_vals = ins.iter().map(|cw| self.val_of(cw)).collect::<Vec<_>>();
+		let outs = out_cws
+			.iter()
+			.map(|cw| {
+				let rec = self.seq.alloc();
+				self.cw_to_val.insert(*cw, Val::Wire(rec));
+				(rec, *cw)
+			})
+			.collect::<Vec<_>>();
+		self.seq.push(Gate::Hint {
+			ins: in_vals,
+			outs,
+			f,
+		});
+	}
+
+	/// Record a public-only computation `outs = f(ins)`. Returns the output [`RecWire`]s, which the
+	/// caller stores in the resulting lazy InOut wires.
+	pub fn public(&mut self, ins: Vec<Val<F>>, n_out: usize, f: EvalFn<F>) -> Vec<RecWire> {
+		let outs = (0..n_out).map(|_| self.seq.alloc()).collect::<Vec<_>>();
+		self.seq.push(Gate::Public {
+			ins,
+			outs: outs.clone(),
+			f,
+		});
+		outs
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use binius_field::{BinaryField128bGhash as B128, Field};
-	use binius_spartan_frontend::constraint_system::{ConstraintWire, WitnessLayout};
 
 	use super::*;
+	use crate::constraint_system::{ConstraintWire, WitnessLayout};
 
 	/// Build a small sequence modelling: receive encrypted `a`, precommit key `k`, decrypt
 	/// `p = a - k` (private), then square `q = p * p` (private). Replay and check the witness.
@@ -246,21 +363,17 @@ mod tests {
 			a: Val::Wire(w_a),
 			b: Val::Wire(w_k),
 			out: w_p,
-			cw: priv_wire(0),
+			cw: ConstraintWire::private(0),
 		});
 		// q = p * p, private wire 1.
 		seq.push(Gate::Mul {
 			a: Val::Wire(w_p),
 			b: Val::Wire(w_p),
 			out: w_q,
-			cw: priv_wire(1),
+			cw: ConstraintWire::private(1),
 		});
 
 		(seq, a_enc, k)
-	}
-
-	fn priv_wire(id: u32) -> ConstraintWire {
-		ConstraintWire::private(id)
 	}
 
 	#[test]

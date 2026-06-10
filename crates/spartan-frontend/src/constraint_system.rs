@@ -11,7 +11,7 @@ use binius_field::Field;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use smallvec::{SmallVec, smallvec};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WireKind {
 	Constant,
 	InOut,
@@ -19,7 +19,7 @@ pub enum WireKind {
 	Private,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConstraintWire {
 	pub(crate) kind: WireKind,
 	pub(crate) id: u32,
