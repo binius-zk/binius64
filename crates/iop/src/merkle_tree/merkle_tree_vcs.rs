@@ -2,6 +2,7 @@
 
 use auto_impl::auto_impl;
 use binius_transcript::{Buf, TranscriptReader};
+use binius_utils::FixedSizeSerializeBytes;
 
 use super::error::Error;
 
@@ -19,7 +20,7 @@ pub struct Commitment<Digest> {
 
 /// A Merkle tree scheme.
 #[auto_impl(&)]
-pub trait MerkleTreeScheme<T> {
+pub trait MerkleTreeScheme<T: FixedSizeSerializeBytes> {
 	type Digest: Clone + PartialEq + Eq;
 
 	/// Returns the optimal layer that the verifier should verify only once.

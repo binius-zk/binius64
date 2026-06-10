@@ -472,8 +472,6 @@ struct ReductionOptimizerEntry {
 struct ReductionOptimizer<'a, F, MTScheme> {
 	merkle_scheme: &'a MTScheme,
 	n_test_queries: usize,
-	/// The byte-size of a serialized field element, cached at construction.
-	value_size: usize,
 	_marker: PhantomData<F>,
 }
 
@@ -483,25 +481,16 @@ where
 	MTScheme: MerkleTreeScheme<F>,
 {
 	fn new(merkle_scheme: &'a MTScheme, n_test_queries: usize) -> Self {
-		// The byte-size of a serialized field element.
-		let value_size = {
-			let mut buf = Vec::new();
-			F::default()
-				.serialize(&mut buf)
-				.expect("default element can be serialized to a resizable buffer");
-			buf.len()
-		};
 		Self {
 			merkle_scheme,
 			n_test_queries,
-			value_size,
 			_marker: PhantomData,
 		}
 	}
 
 	fn compute_layer_reduction_size(&self, log_code_len: usize, arity: usize) -> usize {
 		// Each queried coset contains 2^arity values.
-		let leaf_size = self.value_size << arity;
+		let leaf_size = F::BYTE_SIZE << arity;
 		// One coset per test query.
 		let leaves_size = leaf_size * self.n_test_queries;
 
@@ -550,7 +539,7 @@ where
 
 			// Determine the proof size if this is the terminal codeword. In that case, the proof
 			// simply consists of the 2^(i + log_inv_rate) leaf values.
-			let terminal_proof_size = self.value_size << log_code_len;
+			let terminal_proof_size = F::BYTE_SIZE << log_code_len;
 			let terminal_entry = Entry {
 				proof_size: terminal_proof_size,
 				arity: None,

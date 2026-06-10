@@ -6,7 +6,7 @@ use std::{array, fmt::Debug, marker::PhantomData};
 use binius_hash::{PseudoCompressionFunction, binary_merkle_tree::HashSuite, hash_serialize};
 use binius_transcript::{Buf, TranscriptReader};
 use binius_utils::{
-	DeserializeBytes, SerializeBytes,
+	FixedSizeSerializeBytes,
 	checked_arithmetics::{log2_ceil_usize, log2_strict_usize},
 };
 use digest::{Digest, Output};
@@ -50,7 +50,7 @@ impl<T, H: HashSuite> BinaryMerkleTreeScheme<T, H> {
 
 impl<T, H> BinaryMerkleTreeScheme<T, H>
 where
-	T: SerializeBytes + DeserializeBytes,
+	T: FixedSizeSerializeBytes,
 	H: HashSuite,
 {
 	fn compute_leaf_digest<B: Buf>(
@@ -65,7 +65,7 @@ where
 
 impl<T, H> MerkleTreeScheme<T> for BinaryMerkleTreeScheme<T, H>
 where
-	T: SerializeBytes + DeserializeBytes,
+	T: FixedSizeSerializeBytes,
 	H: HashSuite,
 {
 	type Digest = Output<H::LeafHash>;

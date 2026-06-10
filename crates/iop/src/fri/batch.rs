@@ -3,7 +3,7 @@
 use binius_field::BinaryField;
 use binius_math::{line::extrapolate_line, multilinear, ntt::DomainContext};
 use binius_transcript::TranscriptReader;
-use binius_utils::DeserializeBytes;
+use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
 use bytes::Buf;
 
 use crate::merkle_tree::{Commitment, MerkleTreeScheme};
@@ -45,6 +45,7 @@ pub trait ProxTestOracle<F: BinaryField> {
 /// [Brakedown]: <https://dl.acm.org/doi/10.1007/978-3-031-38545-2_7>
 pub struct BrakedownOracle<F, MTScheme>
 where
+	F: FixedSizeSerializeBytes,
 	MTScheme: MerkleTreeScheme<F>,
 {
 	challenges: Vec<F>,
@@ -124,6 +125,7 @@ impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> Pr
 /// `BatchBrakedownFolder::fold`.
 pub struct BatchBrakedownOracle<F, MTScheme>
 where
+	F: FixedSizeSerializeBytes,
 	MTScheme: MerkleTreeScheme<F>,
 {
 	oracles: Vec<BrakedownOracle<F, MTScheme>>,
@@ -182,6 +184,7 @@ impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> Pr
 /// single value using FRI folding.
 pub struct FRIOracle<F, MTScheme, DC>
 where
+	F: FixedSizeSerializeBytes,
 	MTScheme: MerkleTreeScheme<F>,
 	DC: DomainContext<Field = F>,
 {

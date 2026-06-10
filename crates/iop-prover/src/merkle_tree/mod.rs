@@ -4,7 +4,7 @@ use binius_field::{Field, PackedField};
 use binius_iop::merkle_tree::{Commitment, MerkleTreeScheme};
 use binius_math::FieldSlice;
 use binius_transcript::{BufMut, TranscriptWriter};
-use binius_utils::rayon::prelude::*;
+use binius_utils::{FixedSizeSerializeBytes, rayon::prelude::*};
 
 pub mod prover;
 #[cfg(test)]
@@ -14,7 +14,7 @@ mod tests;
 ///
 /// This is separate from [`MerkleTreeScheme`] so that it may be implemented using a
 /// hardware-accelerated backend.
-pub trait MerkleTreeProver<T> {
+pub trait MerkleTreeProver<T: FixedSizeSerializeBytes> {
 	type Scheme: MerkleTreeScheme<T>;
 	/// Data generated during commitment required to generate opening proofs.
 	type Committed;
