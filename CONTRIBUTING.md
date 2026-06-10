@@ -27,6 +27,62 @@ $ cargo clippy --all --all-features --tests --benches --examples -- -D warnings
 $ prek run rustfmt --all-files
 ```
 
+### Cross-compilation
+
+`binius-field` and `binius-arith-bench` contain architecture-specific optimizations: CLMUL/SIMD
+implementations of `GF(2^128)` (and related) arithmetic, selected at compile time with
+`#[cfg(target_arch = ...)]` and `#[cfg(target_feature = ...)]`. Code on an *inactive* arch/feature
+path is never type-checked by your native build, so it is easy to break the `aarch64` paths from an
+`x86_64` host (or vice versa) and not notice until CI fails — CI builds `x86_64` (both portable and
+`-Ctarget-cpu=native`), `aarch64`, and `wasm32`.
+
+When you touch these crates, cross-compile them for the target(s) you are not running natively.
+You do **not** need an emulator — compiling is enough to type-check the inactive paths.
+
+> **The optimized paths are gated behind target features that are off in the baseline target**
+> (e.g. `aes`/PMULL on `aarch64`, `pclmulqdq` on `x86_64`). A cross-build with *default* features
+> compiles only the portable fallback, which gives false confidence. Enable the features (via the
+> `RUSTFLAGS` below) to actually type-check the optimized code. On your native arch,
+> `-Ctarget-cpu=native` does the same thing.
+
+One-time setup (targets are added to the pinned toolchain in `rust-toolchain.toml`):
+
+```bash
+rustup target add aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu wasm32-wasip1 wasm32-unknown-unknown
+
+# Only needed to *link* aarch64 test/bench binaries (`--all-targets`) or crates with C build
+# dependencies. `cargo check` and a plain library `cargo build` do not link, so they don't need it.
+sudo apt-get install -y gcc-aarch64-linux-gnu
+export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+```
+
+Compile the architecture-specific crates for the non-native arch and for wasm:
+
+```bash
+# aarch64 — +neon,+aes enables the PMULL/CLMUL GHASH paths (not just the portable fallback)
+RUSTFLAGS="-C target-feature=+neon,+aes" \
+  cargo check --target aarch64-unknown-linux-gnu -p binius-field -p binius-arith-bench
+
+# x86_64 — a consistent SIMD+CLMUL set (avx2 is required for the 256-bit vpclmulqdq paths;
+# add +avx512f for the 512-bit path). On an x86_64 host, `-C target-cpu=native` is simpler.
+RUSTFLAGS="-C target-feature=+sse2,+avx2,+pclmulqdq,+vpclmulqdq" \
+  cargo check --target x86_64-unknown-linux-gnu -p binius-field -p binius-arith-bench
+
+# wasm32 — matches CI (binius-field on wasm32-unknown-unknown; the wider crate set on wasm32-wasip1)
+cargo build -p binius-field --target wasm32-unknown-unknown
+cargo build -p binius-field --target wasm32-wasip1
+```
+
+(All four commands above are verified to compile cleanly. The 512-bit AVX-512 path —
+`+sse2,+avx2,+avx512f,+pclmulqdq,+vpclmulqdq` — also compiles cleanly, including
+`cargo build --all-targets` and a full `--workspace` build, even on a host without AVX-512:
+its `std::arch::x86_64::_mm512_*` intrinsics are stable on the pinned toolchain. Older Rust,
+where those intrinsics were unstable, rejects this build.)
+
+`cargo check` is the fast type-check of the library paths. To lint tests and benches the way CI
+does, swap in `cargo clippy --target <triple> -p binius-field -p binius-arith-bench --all-targets
+-- -D warnings` (this links, so it needs the cross C toolchain above).
+
 ### Documentation
 
 We follow guidance from the [rustdoc book](https://doc.rust-lang.org/rustdoc/how-to-write-documentation.html). The
@@ -246,17 +302,3 @@ We use plenty of useful crates from the Rust ecosystem. When including a crate a
 * Is it maintained? If the documentation has an explicit deprecation notice or has not been updated in a long time, try
   to find an alternative.
 * Is it developed by one person or an organization?
-
-## First-time contributions
-
-The project welcomes first time contributions from developers who want to learn more about Binius64 and make an impact
-on the open source cryptography community.
-
-If you are new to the project and don't know where to start, you can look for [open issues labeled
-`good first issue`](https://github.com/IrreducibleOSS/binius/issues?q=is%3Aissue+state%3Aopen+label%3A%22good+first+issue%22) or add
-test coverage for existing code. Adding unit tests is a great way to learn how to interact with the codebase, make a
-meaningful contribution, and maybe even find bugs!
-
-On the other hand, _we do not accept typo fix PRs from first-time contributors_. These are not significant enough to
-justify the additional work for maintainers nor any potential benefits, tangible or intangible, one might get from
-being listed as a contributor to the repo.
