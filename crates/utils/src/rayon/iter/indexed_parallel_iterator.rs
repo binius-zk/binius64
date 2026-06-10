@@ -188,7 +188,10 @@ impl<L: IndexedParallelIteratorInner, R: IndexedParallelIteratorInner<Item = L::
 {
 }
 
-#[allow(private_bounds)]
+// `len` mirrors rayon's `IndexedParallelIterator::len`; this shim is only compiled when the
+// `rayon` feature is off, so without the allow a per-package clippy (no feature unification) flags
+// it even though the full-workspace lint never compiles this file.
+#[allow(private_bounds, clippy::len_without_is_empty)]
 pub trait IndexedParallelIterator:
 	ParallelIterator<Inner: IndexedParallelIteratorInner<Item = Self::Item>>
 {

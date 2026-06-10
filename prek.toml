@@ -25,11 +25,11 @@ hooks = [
   },
   {
     id = "clippy",
-    name = "Run cargo clippy",
+    name = "Run cargo clippy on changed packages",
     types = ["rust"],
-    language = "rust",
-    entry = "cargo clippy --workspace --all-targets -- -D warnings",
-    pass_filenames = false,
+    language = "system",
+    entry = "bash tools/clippy-changed-packages.sh",
+    pass_filenames = true,
     stages = ["pre-push"]
   }
 ]
