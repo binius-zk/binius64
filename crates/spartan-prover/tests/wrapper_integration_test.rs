@@ -76,7 +76,7 @@ fn test_zk_wrapped_prove_verify() {
 	inner_iop_verifier
 		.verify((), dummy_public_elems, &mut builder_channel)
 		.expect("symbolic verify failed");
-	let outer_builder = builder_channel.finish();
+	let (outer_builder, gate_seq) = builder_channel.finish_with_gates();
 	let (outer_cs, outer_layout) = compile(outer_builder);
 
 	// === Step 4: Build outer padded constraint system ===
@@ -179,9 +179,9 @@ fn test_zk_wrapped_prove_verify() {
 		)
 		.expect("inner prove failed");
 
-	// Finish runs the outer proof.
+	// Finish runs the outer proof (and asserts the gate-replay witness matches; BINIUS-43).
 	wrapped_prover_channel
-		.finish(rng)
+		.finish(rng, gate_seq)
 		.expect("outer prove failed");
 
 	// === Step 8: Verify with ZKWrappedVerifierChannel ===

@@ -22,7 +22,10 @@ use binius_iop_prover::{
 };
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT};
-use binius_spartan_frontend::constraint_system::{BlindingInfo, WitnessLayout};
+use binius_spartan_frontend::{
+	constraint_system::{BlindingInfo, WitnessLayout},
+	gate::GateSequence,
+};
 use binius_spartan_verifier::IOPVerifier;
 use binius_transcript::fiat_shamir::Challenger;
 use binius_utils::SerializeBytes;
@@ -184,7 +187,7 @@ where
 	/// 1. Creates a [`ReplayChannel`] from the recorded interaction
 	/// 2. Calls the `replay_fn` closure to replay the inner verification and fill the outer witness
 	/// 3. Validates and generates the outer IOP proof
-	pub fn finish(self, rng: impl CryptoRng) -> Result<(), Error>
+	pub fn finish(self, rng: impl CryptoRng, gate_seq: GateSequence<F>) -> Result<(), Error>
 	where
 		ReplayFn: FnOnce(&mut ReplayChannel<'_, F>),
 	{
@@ -202,6 +205,12 @@ where
 			..
 		} = self;
 
+		// BINIUS-43 migration check: generate the witness from the recorded gate sequence and
+		// assert it is bit-identical to the witness from the legacy ReplayChannel re-execution.
+		// (Borrows `interaction`/`keys`; the ReplayChannel below then consumes them.)
+		let gate_witness =
+			gate_seq.replay(outer_layout, interaction.iter().copied(), keys.iter().copied());
+
 		// Replay the inner verification through the outer witness generator.
 		let witness = {
 			let _ = tracing::debug_span!("Generating ZK wrapper witness").entered();
@@ -211,6 +220,22 @@ where
 				.finish()
 				.expect("outer witness generation should not fail")
 		};
+
+		assert_eq!(
+			gate_witness.public(),
+			witness.public(),
+			"BINIUS-43: gate-replay public segment differs from ReplayChannel"
+		);
+		assert_eq!(
+			gate_witness.precommit(),
+			witness.precommit(),
+			"BINIUS-43: gate-replay precommit segment differs from ReplayChannel"
+		);
+		assert_eq!(
+			gate_witness.private(),
+			witness.private(),
+			"BINIUS-43: gate-replay private segment differs from ReplayChannel"
+		);
 
 		// Validate and generate the outer proof.
 		let outer_cs = outer_prover.constraint_system();
