@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{array, mem::MaybeUninit};
+use std::{array, marker::PhantomData, mem::MaybeUninit};
 
 use binius_utils::{
 	SerializeBytes,
@@ -11,7 +11,7 @@ use binius_utils::{
 	},
 };
 use bytes::BytesMut;
-use digest::{Digest, Output, block_api::BlockSizeUser};
+use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
 
 use crate::HashBuffer;
 
@@ -180,6 +180,61 @@ impl<D: Digest + BlockSizeUser + Send + Sync + Clone> ParallelDigest for D {
 	}
 }
 
+/// A `ParallelDigest` wrapper that reuses a single hasher per Rayon work-item rather than cloning
+/// the hasher for every leaf.
+///
+/// The blanket `impl ParallelDigest for D` clones `self` once per leaf and finalizes by value. This
+/// adapter instead seeds each Rayon job with one hasher (via `for_each_with`) and recycles it in
+/// place with `finalize_reset` between leaves, which requires `D: FixedOutputReset`. Any prefix is
+/// re-applied per leaf, since `finalize_reset` returns the hasher to its empty initial state.
+pub struct ParallelDigestAdapter<D> {
+	prefix: Vec<u8>,
+	_marker: PhantomData<D>,
+}
+
+impl<D> ParallelDigest for ParallelDigestAdapter<D>
+where
+	D: Digest + FixedOutputReset + BlockSizeUser + Send + Sync + Clone,
+{
+	type Digest = D;
+
+	fn new() -> Self {
+		Self {
+			prefix: Vec::new(),
+			_marker: PhantomData,
+		}
+	}
+
+	fn new_with_prefix(data: impl AsRef<[u8]>) -> Self {
+		Self {
+			prefix: data.as_ref().to_vec(),
+			_marker: PhantomData,
+		}
+	}
+
+	fn digest<I: IntoIterator<Item: SerializeBytes>>(
+		&self,
+		source: impl IndexedParallelIterator<Item = I>,
+		out: &mut [MaybeUninit<Output<Self::Digest>>],
+	) {
+		source
+			.zip(out.par_iter_mut())
+			.for_each_with(D::new(), |hasher, (items, out)| {
+				if !self.prefix.is_empty() {
+					Digest::update(hasher, &self.prefix);
+				}
+				{
+					let mut buffer = HashBuffer::new(hasher);
+					for item in items {
+						item.serialize(&mut buffer)
+							.expect("pre-condition: items must serialize without error")
+					}
+				}
+				out.write(hasher.finalize_reset());
+			});
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use std::iter::repeat_with;
@@ -328,6 +383,48 @@ mod tests {
 		for n_hashes in [1, 2, 4, 8, 9] {
 			let data = generate_mock_data(n_hashes, 16);
 			check_parallel_digest_consistency::<ParallelMultidigestImpl<MockMultiDigest, 4>>(data);
+		}
+	}
+
+	#[test]
+	fn test_adapter_matches_serial_sha256() {
+		use sha2::Sha256;
+
+		for n_hashes in [0, 1, 2, 4, 8, 9, 100] {
+			let data = generate_mock_data(n_hashes, 16);
+
+			let adapter = ParallelDigestAdapter::<Sha256>::new();
+			let mut results = repeat_with(MaybeUninit::<Output<Sha256>>::uninit)
+				.take(data.len())
+				.collect::<Vec<_>>();
+			adapter.digest(data.par_iter(), &mut results);
+
+			for (result, leaf) in results.into_iter().zip(&data) {
+				assert_eq!(unsafe { result.assume_init() }, <Sha256 as Digest>::digest(leaf));
+			}
+		}
+	}
+
+	#[test]
+	fn test_adapter_with_prefix_matches_serial_sha256() {
+		use sha2::Sha256;
+
+		let prefix = b"binius-prefix";
+		// More leaves than Rayon work-items so each job recycles its hasher across several leaves,
+		// exercising the per-leaf prefix re-application after `finalize_reset`.
+		let data = generate_mock_data(100, 16);
+
+		let adapter = ParallelDigestAdapter::<Sha256>::new_with_prefix(prefix);
+		let mut results = repeat_with(MaybeUninit::<Output<Sha256>>::uninit)
+			.take(data.len())
+			.collect::<Vec<_>>();
+		adapter.digest(data.par_iter(), &mut results);
+
+		for (result, leaf) in results.into_iter().zip(&data) {
+			let expected = <Sha256 as Digest>::new_with_prefix(prefix)
+				.chain_update(leaf)
+				.finalize();
+			assert_eq!(unsafe { result.assume_init() }, expected);
 		}
 	}
 }

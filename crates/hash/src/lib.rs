@@ -20,7 +20,9 @@ pub mod vision_6;
 
 pub use compress::{CompressionFunction, PseudoCompressionFunction};
 pub use parallel_compression::{ParallelCompressionAdaptor, ParallelPseudoCompression};
-pub use parallel_digest::{MultiDigest, ParallelDigest, ParallelMultidigestImpl};
+pub use parallel_digest::{
+	MultiDigest, ParallelDigest, ParallelDigestAdapter, ParallelMultidigestImpl,
+};
 pub use serialization::*;
 
 /// The standard digest is SHA-256.
