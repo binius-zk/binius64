@@ -316,8 +316,9 @@ impl<F: Field> GateRecorder<F> {
 		});
 	}
 
-	/// Record a public-only computation `outs = f(ins)`. Returns the output [`RecWire`]s, which the
-	/// caller stores in the resulting lazy InOut wires.
+	/// Record a public-only computation `outs = f(ins)`, allocating the output [`RecWire`]s.
+	/// Returns them so the caller can store them in the resulting lazy InOut wires. Used where the
+	/// producing site does not pre-allocate the wires (e.g. `compute_public_value`).
 	pub fn public(&mut self, ins: Vec<Val<F>>, n_out: usize, f: EvalFn<F>) -> Vec<RecWire> {
 		let outs = (0..n_out).map(|_| self.seq.alloc()).collect::<Vec<_>>();
 		self.seq.push(Gate::Public {
@@ -326,6 +327,17 @@ impl<F: Field> GateRecorder<F> {
 			f,
 		});
 		outs
+	}
+
+	/// Allocate a fresh [`RecWire`] without recording a gate. Used by the symbolic element layer to
+	/// label a freshly-created lazy InOut output before [`Self::push_public`] records the gate.
+	pub fn alloc_rec(&mut self) -> RecWire {
+		self.seq.alloc()
+	}
+
+	/// Record a public-only computation `outs = f(ins)` for already-allocated output [`RecWire`]s.
+	pub fn push_public(&mut self, ins: Vec<Val<F>>, outs: Vec<RecWire>, f: EvalFn<F>) {
+		self.seq.push(Gate::Public { ins, outs, f });
 	}
 }
 

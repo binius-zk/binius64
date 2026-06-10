@@ -35,7 +35,7 @@ use binius_field::{
 	arithmetic_traits::{InvertOrZero, Square},
 	field::FieldOps,
 };
-use binius_spartan_frontend::circuit_builder::CircuitBuilder;
+use binius_spartan_frontend::{circuit_builder::CircuitBuilder, gate::EvalFn};
 
 use super::gadgets;
 
@@ -61,6 +61,20 @@ pub trait CircuitWire<F: Field>: Sized {
 			[<Self::Builder as CircuitBuilder>::Wire; IN],
 		) -> [<Self::Builder as CircuitBuilder>::Wire; OUT],
 	) -> [Self; OUT];
+
+	/// Record a public-only operation (`outs = f(ins)`) for gate recording (BINIUS-43).
+	///
+	/// Called after [`Self::combine`] / a public gadget produces a result. The default is a no-op;
+	/// the symbolic-builder backend ([`BuilderWire`](super::builder_channel::BuilderWire)) records
+	/// a `Public` gate when every output is a freshly-allocated lazy InOut wire (the public-only
+	/// path); private/constant results are recorded elsewhere or need no gate.
+	fn record_public_gate(
+		_builder: &mut Self::Builder,
+		_ins: &[&Self],
+		_outs: &[&Self],
+		_f: EvalFn<F>,
+	) {
+	}
 
 	/// Variable-arity version of [`Self::combine`].
 	///
@@ -126,7 +140,10 @@ where
 
 	pub fn combine<const IN: usize, const OUT: usize>(
 		elems: [&Self; IN],
-		f_op: impl Fn([F; IN]) -> [F; OUT],
+		// `Copy + 'static` so a copy of the field-level op can be boxed into the recorded gate
+		// sequence (BINIUS-43) while the original is still handed to `W::combine`. Every caller
+		// passes a capture-free closure, which is `Copy + 'static`.
+		f_op: impl Fn([F; IN]) -> [F; OUT] + Copy + 'static,
 		builder_op: impl Fn(
 			&mut W::Builder,
 			[<W::Builder as CircuitBuilder>::Wire; IN],
@@ -156,7 +173,19 @@ where
 				}
 			});
 			let inner_wire_refs = inner_wires.each_ref().map(AsRef::as_ref);
-			W::combine(&mut *builder, inner_wire_refs, f_op, builder_op).map(|wire| Self::Wire {
+			let out_wires = W::combine(&mut *builder, inner_wire_refs, f_op, builder_op);
+			// Record the public-only gate (no-op for non-recording backends / non-public results).
+			let out_refs = out_wires.each_ref();
+			W::record_public_gate(
+				&mut builder,
+				&inner_wire_refs,
+				&out_refs,
+				Box::new(move |xs: &[F]| {
+					let arr: [F; IN] = xs.try_into().expect("combine input arity mismatch");
+					f_op(arr).to_vec()
+				}),
+			);
+			out_wires.map(|wire| Self::Wire {
 				builder: builder_ptr.clone(),
 				wire,
 			})
@@ -239,6 +268,40 @@ where
 			debug_assert_eq!(result.len(), n_out);
 			result.into_iter().map(Self::Constant).collect()
 		}
+	}
+
+	/// Record a public-only operation `outs = f(ins)` produced by a variable-arity gadget (e.g.
+	/// `square_transpose`) for gate recording (BINIUS-43). No-op for non-recording backends and for
+	/// non-public results. Used where the result is not produced by [`Self::combine`] directly.
+	fn record_public_op(ins: &[&Self], outs: &[&Self], f: EvalFn<F>) {
+		let builder_ptr = ins.iter().chain(outs.iter()).find_map(|elem| match elem {
+			Self::Wire { builder, .. } => Some(builder),
+			_ => None,
+		});
+		let Some(builder_ptr) = builder_ptr else {
+			return;
+		};
+		let Some(builder) = builder_ptr.upgrade() else {
+			return;
+		};
+		let mut builder = builder.borrow_mut();
+		let in_wires = ins
+			.iter()
+			.map(|elem| match elem {
+				Self::Constant(val) => OwnedOrRef::Owned(W::constant(&mut builder, *val)),
+				Self::Wire { wire, .. } => OwnedOrRef::Ref(wire),
+			})
+			.collect::<Vec<_>>();
+		let out_wires = outs
+			.iter()
+			.map(|elem| match elem {
+				Self::Constant(val) => OwnedOrRef::Owned(W::constant(&mut builder, *val)),
+				Self::Wire { wire, .. } => OwnedOrRef::Ref(wire),
+			})
+			.collect::<Vec<_>>();
+		let in_refs = in_wires.iter().map(AsRef::as_ref).collect::<Vec<_>>();
+		let out_refs = out_wires.iter().map(AsRef::as_ref).collect::<Vec<_>>();
+		W::record_public_gate(&mut builder, &in_refs, &out_refs, f);
 	}
 }
 
@@ -493,6 +556,19 @@ impl<F: Field, W: CircuitWire<F> + Clone> FieldOps for CircuitElem<F, W> {
 			},
 			|builder, wires| gadgets::square_transpose::<_, FSub>(builder, wires),
 		);
+		// Record the public-only path (no-op for non-recording backends / private results).
+		let out_refs = outputs.iter().collect::<Vec<_>>();
+		Self::record_public_op(
+			&inputs,
+			&out_refs,
+			Box::new(move |xs: &[F]| {
+				let mut out = xs.to_vec();
+				<F as ExtensionField<FSub>>::square_transpose(&mut out);
+				out
+			}),
+		);
+		drop(out_refs);
+		drop(inputs);
 		for (e, out) in elems.iter_mut().zip(outputs) {
 			*e = out;
 		}
