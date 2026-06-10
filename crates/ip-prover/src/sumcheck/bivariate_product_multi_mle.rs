@@ -1,14 +1,15 @@
 // Copyright 2023-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::cmp::max;
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 use itertools::{Itertools, izip};
 
-use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::RoundEvals2};
+use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::WideRoundEvals2};
 use crate::sumcheck::common::MleCheckProver;
 
 /// Multiple claim version of `BivariateProductMlecheckProver` that can prove mlechecks
@@ -101,8 +102,9 @@ where
 		let packed_prime_evals = (0..1 << (self.n_vars() - 1 - chunk_vars))
 			.into_par_iter()
 			.fold(
-				|| vec![RoundEvals2::default(); sums.len()],
-				|mut packed_prime_evals: Vec<RoundEvals2<P>>, chunk_index| {
+				|| vec![WideRoundEvals2::default(); sums.len()],
+				|mut packed_prime_evals: Vec<WideRoundEvals2<<P as WideMul>::Output>>,
+				 chunk_index| {
 					let eq_chunk = self.gruen32.eq_expansion().chunk(chunk_vars, chunk_index);
 
 					for (round_evals, (evals_a, evals_b)) in
@@ -126,8 +128,11 @@ where
 							let evals_a_inf_i = evals_a_0_i + evals_a_1_i;
 							let evals_b_inf_i = evals_b_0_i + evals_b_1_i;
 
-							round_evals.y_1 += eq_i * evals_a_1_i * evals_b_1_i;
-							round_evals.y_inf += eq_i * evals_a_inf_i * evals_b_inf_i;
+							// The final multiply (by `evals_b_*_i`) of each product is accumulated
+							// in unreduced (wide) form; the wide accumulators persist across the
+							// whole fold and are reduced a single time at the end.
+							round_evals.y_1 += P::wide_mul(eq_i * evals_a_1_i, evals_b_1_i);
+							round_evals.y_inf += P::wide_mul(eq_i * evals_a_inf_i, evals_b_inf_i);
 						}
 					}
 
@@ -135,14 +140,14 @@ where
 				},
 			)
 			.reduce(
-				|| vec![RoundEvals2::default(); sums.len()],
-				|lhs, rhs| izip!(lhs, rhs).map(|(l, r)| l + &r).collect(),
+				|| vec![WideRoundEvals2::default(); sums.len()],
+				|lhs, rhs| izip!(lhs, rhs).map(|(l, r)| l + r).collect(),
 			);
 
 		let alpha = self.gruen32.next_coordinate();
 		let round_coeffs = izip!(sums, packed_prime_evals)
-			.map(|(&sum, packed_evals)| {
-				let round_evals = packed_evals.sum_scalars(self.n_vars());
+			.map(|(&sum, wide_evals)| {
+				let round_evals = wide_evals.reduce::<P>().sum_scalars(self.n_vars());
 				round_evals.interpolate_eq(sum, alpha)
 			})
 			.collect::<Vec<_>>();

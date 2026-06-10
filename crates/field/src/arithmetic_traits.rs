@@ -1,7 +1,10 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::ops::{Add, AddAssign, Sub, SubAssign};
+use std::{
+	iter::Sum,
+	ops::{Add, AddAssign, Sub, SubAssign},
+};
 
 /// Value that can be multiplied by itself
 pub trait Square {
@@ -25,6 +28,8 @@ pub trait Square {
 /// accumulating an unreduced `WideGhashProduct`.
 pub trait WideMul: Sized {
 	type Output: Default
+		+ Clone
+		+ Sum
 		+ Add<Output = Self::Output>
 		+ AddAssign
 		+ Sub<Output = Self::Output>

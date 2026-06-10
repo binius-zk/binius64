@@ -1,11 +1,12 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 
-use crate::sumcheck::{common::SumcheckProver, error::Error, round_evals::RoundEvals2};
+use crate::sumcheck::{common::SumcheckProver, error::Error, round_evals::WideRoundEvals2};
 
 /// A [`SumcheckProver`] implementation for a composite defined as the product of two multilinears.
 ///
@@ -66,7 +67,10 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 		let (evals_a_0, evals_a_1) = self.multilinears[0].split_half_ref();
 		let (evals_b_0, evals_b_1) = self.multilinears[1].split_half_ref();
 
-		// Compute F(1) and F(∞) where F = ∑_{v ∈ B} A(v || X) B(v || X)
+		// Compute F(1) and F(∞) where F = ∑_{v ∈ B} A(v || X) B(v || X).
+		//
+		// The per-point products are accumulated in unreduced (wide) form and reduced a single
+		// time at the end, amortizing the GF(2^128) reduction over the whole sum.
 		let round_evals =
 			(evals_a_0.as_ref(), evals_a_1.as_ref(), evals_b_0.as_ref(), evals_b_1.as_ref())
 				.into_par_iter()
@@ -75,17 +79,15 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 					let evals_a_inf_i = evals_a_0_i + evals_a_1_i;
 					let evals_b_inf_i = evals_b_0_i + evals_b_1_i;
 
-					let prod_1_i = evals_a_1_i * evals_b_1_i;
-					let prod_inf_i = evals_a_inf_i * evals_b_inf_i;
-
-					RoundEvals2 {
-						y_1: prod_1_i,
-						y_inf: prod_inf_i,
+					WideRoundEvals2 {
+						y_1: P::wide_mul(evals_a_1_i, evals_b_1_i),
+						y_inf: P::wide_mul(evals_a_inf_i, evals_b_inf_i),
 					}
 				})
-				.reduce(RoundEvals2::default, |lhs, rhs| lhs + &rhs);
+				.reduce(WideRoundEvals2::default, |lhs, rhs| lhs + rhs);
 
 		let round_coeffs = round_evals
+			.reduce::<P>()
 			.sum_scalars(n_vars_remaining)
 			.interpolate(*last_sum);
 		self.last_coeffs_or_sum = RoundCoeffsOrSum::Coeffs(round_coeffs.clone());

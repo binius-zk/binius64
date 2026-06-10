@@ -2,7 +2,7 @@
 
 use std::cmp::max;
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{
 	AsSlicesMut, FieldBuffer, FieldSliceMut, multilinear::fold::fold_highest_var_inplace,
@@ -167,85 +167,84 @@ where
 		let chunk_count = 1 << (n_vars_remaining - 1 - chunk_vars);
 
 		// Parallel-reduce across eq chunks to amortize composition evaluation.
-		// Each worker accumulates packed y_1 / y_inf values for all M claims.
+		// Each worker accumulates wide (unreduced) y_1 / y_inf values for all M claims, reducing
+		// once at the very end. `WideMul::Output` is not `Copy`, so the accumulator arrays are
+		// built with `array::from_fn` rather than the `[x; M]` repeat shorthand.
+		let zero_wide_acc = || -> [[<P as WideMul>::Output; M]; 2] {
+			std::array::from_fn(|_| std::array::from_fn(|_| Default::default()))
+		};
 		let packed_prime_evals = (0..chunk_count)
 			.into_par_iter()
-			.try_fold(
-				|| [[P::default(); M]; 2],
-				|mut packed_prime_evals, chunk_index| -> Result<_, Error> {
-					let eq_chunk = eq_expansion.chunk(chunk_vars, chunk_index);
+			.try_fold(zero_wide_acc, |mut packed_prime_evals, chunk_index| -> Result<_, Error> {
+				let eq_chunk = eq_expansion.chunk(chunk_vars, chunk_index);
 
-					// Scratch buffers are reused per row to avoid allocations in the hot loop.
-					let [mut y_1_scratch, mut y_inf_scratch] = [[P::default(); M]; 2];
-					let splits_0_chunk = splits_0
-						.iter()
-						.map(|slice| slice.chunk(chunk_vars, chunk_index))
-						.collect::<Vec<_>>();
-					let splits_1_chunk = splits_1
-						.iter()
-						.map(|slice| slice.chunk(chunk_vars, chunk_index))
-						.collect::<Vec<_>>();
+				// Scratch buffers are reused per row to avoid allocations in the hot loop.
+				let [mut y_1_scratch, mut y_inf_scratch] = [[P::default(); M]; 2];
+				let splits_0_chunk = splits_0
+					.iter()
+					.map(|slice| slice.chunk(chunk_vars, chunk_index))
+					.collect::<Vec<_>>();
+				let splits_1_chunk = splits_1
+					.iter()
+					.map(|slice| slice.chunk(chunk_vars, chunk_index))
+					.collect::<Vec<_>>();
 
-					// Accumulate packed evals for this chunk; first index is y_1/y_inf.
-					let [y_1, y_inf] = &mut packed_prime_evals;
-					for (idx, &eq_i) in eq_chunk.as_ref().iter().enumerate() {
-						// Gather the idx-th evaluations of every multilinear at both halves.
-						let mut evals_1 = [P::default(); N];
-						let mut evals_inf = [P::default(); N];
+				// Accumulate packed evals for this chunk; first index is y_1/y_inf.
+				let [y_1, y_inf] = &mut packed_prime_evals;
+				for (idx, &eq_i) in eq_chunk.as_ref().iter().enumerate() {
+					// Gather the idx-th evaluations of every multilinear at both halves.
+					let mut evals_1 = [P::default(); N];
+					let mut evals_inf = [P::default(); N];
 
-						for i in 0..N {
-							let lo_i = splits_0_chunk[i].as_ref()[idx];
-							let hi_i = splits_1_chunk[i].as_ref()[idx];
+					for i in 0..N {
+						let lo_i = splits_0_chunk[i].as_ref()[idx];
+						let hi_i = splits_1_chunk[i].as_ref()[idx];
 
-							// Compose once with the high half and once with the lo+hi combination.
-							// The lo+hi branch corresponds to evaluation at infinity for
-							// multilinears.
-							evals_1[i] = hi_i;
-							evals_inf[i] = lo_i + hi_i;
-						}
-
-						// Apply the compositions for this equality term.
-						comp(evals_1, &mut y_1_scratch);
-						inf_comp(evals_inf, &mut y_inf_scratch);
-
-						for i in 0..M {
-							// Weight by eq indicator to keep the sumcheck claim aligned to
-							// eval_point.
-							y_1[i] += y_1_scratch[i] * eq_i;
-							y_inf[i] += y_inf_scratch[i] * eq_i;
-						}
+						// Compose once with the high half and once with the lo+hi combination.
+						// The lo+hi branch corresponds to evaluation at infinity for
+						// multilinears.
+						evals_1[i] = hi_i;
+						evals_inf[i] = lo_i + hi_i;
 					}
 
-					Ok(packed_prime_evals)
-				},
-			)
-			.try_reduce(
-				|| [[P::default(); M]; 2],
-				|lhs, rhs| {
-					let mut out = [[P::default(); M]; 2];
-					for claim_idx in 0..M {
-						out[0][claim_idx] = lhs[0][claim_idx] + rhs[0][claim_idx];
-						out[1][claim_idx] = lhs[1][claim_idx] + rhs[1][claim_idx];
+					// Apply the compositions for this equality term.
+					comp(evals_1, &mut y_1_scratch);
+					inf_comp(evals_inf, &mut y_inf_scratch);
+
+					for i in 0..M {
+						// Weight by eq indicator to keep the sumcheck claim aligned to
+						// eval_point. Only this final multiply is widened; the composition
+						// products in the scratch buffers are already reduced.
+						y_1[i] += P::wide_mul(y_1_scratch[i], eq_i);
+						y_inf[i] += P::wide_mul(y_inf_scratch[i], eq_i);
 					}
-					Ok(out)
-				},
-			)?;
+				}
+
+				Ok(packed_prime_evals)
+			})
+			.try_reduce(zero_wide_acc, |mut lhs, mut rhs| {
+				for claim_idx in 0..M {
+					lhs[0][claim_idx] += std::mem::take(&mut rhs[0][claim_idx]);
+					lhs[1][claim_idx] += std::mem::take(&mut rhs[1][claim_idx]);
+				}
+				Ok(lhs)
+			})?;
 
 		// Sample the next coordinate and interpolate each round polynomial.
 		// The coordinate ties this round's sum to the original evaluation point.
 		let alpha = self.gruen32.next_coordinate();
-		let round_coeffs = izip!(
-			last_eval.iter().copied(),
-			packed_prime_evals[0].iter().copied(),
-			packed_prime_evals[1].iter().copied()
-		)
-		.map(|(sum, y_1, y_inf)| {
-			// Sum packed values into scalars, then interpolate using the expected sum.
-			// sum_scalars collapses packed lanes down to scalar totals for this round.
-			let round_evals = RoundEvals2 { y_1, y_inf }.sum_scalars(n_vars_remaining);
-			round_evals.interpolate_eq(sum, alpha)
-		})
-		.collect::<Vec<_>>();
+		let [y_1_acc, y_inf_acc] = packed_prime_evals;
+		let round_coeffs = izip!(last_eval.iter().copied(), y_1_acc, y_inf_acc)
+			.map(|(sum, y_1_wide, y_inf_wide)| {
+				// Reduce the wide accumulators, sum packed lanes into scalars, then interpolate.
+				let round_evals = RoundEvals2 {
+					y_1: P::reduce(y_1_wide),
+					y_inf: P::reduce(y_inf_wide),
+				}
+				.sum_scalars(n_vars_remaining);
+				round_evals.interpolate_eq(sum, alpha)
+			})
+			.collect::<Vec<_>>();
 		// State transition: execute produces coeffs for fold to consume.
 		self.last_coeffs_or_eval = RoundCoeffsOrEvals::Coeffs(
 			round_coeffs

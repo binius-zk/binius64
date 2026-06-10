@@ -1,6 +1,7 @@
 // Copyright 2026 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
@@ -87,12 +88,14 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for MultilinearEval
 		debug_assert_eq!(eq_expansion.log_len(), evals_1.log_len());
 
 		// R(1) = <M(.., X = 1), eq(.., z)>, the multilinear evaluation of the top half.
-		let round_evals = (evals_1.as_ref(), eq_expansion.as_ref())
+		// The products are accumulated in unreduced (wide) form and reduced once at the end.
+		let wide_y_1 = (evals_1.as_ref(), eq_expansion.as_ref())
 			.into_par_iter()
-			.map(|(&evals_1_i, &eq_i)| RoundEvals1 {
-				y_1: evals_1_i * eq_i,
-			})
-			.reduce(RoundEvals1::default, |lhs, rhs| lhs + &rhs);
+			.map(|(&evals_1_i, &eq_i)| P::wide_mul(evals_1_i, eq_i))
+			.reduce(<P as WideMul>::Output::default, |lhs, rhs| lhs + rhs);
+		let round_evals = RoundEvals1 {
+			y_1: P::reduce(wide_y_1),
+		};
 
 		let alpha = self.gruen32.next_coordinate();
 		let round_coeffs = round_evals
