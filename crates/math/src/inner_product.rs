@@ -1,8 +1,9 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{iter, ops::Deref};
 
-use binius_field::{ExtensionField, Field, FieldOps, PackedField};
+use binius_field::{ExtensionField, Field, FieldOps, PackedField, WideMul};
 use binius_utils::rayon::prelude::*;
 
 use crate::FieldBuffer;
@@ -47,14 +48,17 @@ where
 	DataB: Deref<Target = [P]>,
 {
 	let n = a.len();
-	a.as_ref()
+	// Accumulate the products in unreduced (wide) form and reduce a single time at the end. For
+	// packed `GF(2^128)` fields this amortizes the reduction cost across all products; for every
+	// other field the widening multiply is the trivial (eager) one, so this is identical to a plain
+	// product-then-sum.
+	let wide_sum = a
+		.as_ref()
 		.par_iter()
 		.zip_eq(b.as_ref().par_iter())
-		.map(|(&a_i, &b_i)| a_i * b_i)
-		.sum::<P>()
-		.into_iter()
-		.take(n)
-		.sum()
+		.map(|(&a_i, &b_i)| P::wide_mul(a_i, b_i))
+		.sum::<<P as WideMul>::Output>();
+	P::reduce(wide_sum).into_iter().take(n).sum()
 }
 
 #[inline]
@@ -90,12 +94,11 @@ where
 	assert_eq!(a.len(), 1 << log_n.saturating_sub(P::LOG_WIDTH)); // pre-condition
 	assert_eq!(b.len(), 1 << log_n.saturating_sub(P::LOG_WIDTH)); // pre-condition
 
-	iter::zip(a, b)
-		.map(|(a_i, b_i)| a_i * b_i)
-		.sum::<P>()
-		.into_iter()
-		.take(1 << log_n)
-		.sum()
+	// See `inner_product_par` for why the products are accumulated in unreduced (wide) form.
+	let wide_sum = iter::zip(a, b)
+		.map(|(a_i, b_i)| P::wide_mul(a_i, b_i))
+		.sum::<<P as WideMul>::Output>();
+	P::reduce(wide_sum).into_iter().take(1 << log_n).sum()
 }
 
 #[cfg(test)]
@@ -104,6 +107,34 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
+
+	// The packed inner products defer the `GF(2^128)` reduction (widening multiply). Check the
+	// reduced result against a naive scalar-by-scalar reference.
+	#[test]
+	fn test_inner_product_matches_naive() {
+		use binius_field::BinaryField128bGhash;
+
+		type P = PackedBinaryGhash4x128b;
+		type F = BinaryField128bGhash;
+
+		let mut rng = StdRng::seed_from_u64(42);
+
+		for log_n in [4, 8, 12] {
+			let n = 1 << log_n;
+			let a_vals: Vec<P> = (0..n / P::WIDTH).map(|_| P::random(&mut rng)).collect();
+			let b_vals: Vec<P> = (0..n / P::WIDTH).map(|_| P::random(&mut rng)).collect();
+
+			let buffer_a = FieldBuffer::new(log_n, a_vals);
+			let buffer_b = FieldBuffer::new(log_n, b_vals);
+
+			let naive: F = (0..n).map(|i| buffer_a.get(i) * buffer_b.get(i)).sum();
+
+			let par: F = inner_product_par(&buffer_a, &buffer_b);
+			let buffers: F = inner_product_buffers(&buffer_a, &buffer_b);
+			assert_eq!(par, naive, "inner_product_par mismatch at log_n={log_n}");
+			assert_eq!(buffers, naive, "inner_product_buffers mismatch at log_n={log_n}");
+		}
+	}
 
 	#[test]
 	fn test_inner_product_packing_width_greater_than_buffer_length() {

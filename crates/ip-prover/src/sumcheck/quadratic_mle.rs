@@ -1,11 +1,12 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{AsSlicesMut, FieldSliceMut, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 
-use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::RoundEvals2};
+use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::WideRoundEvals2};
 use crate::sumcheck::common::MleCheckProver;
 
 /// MLE-check prover for polynomials defined as quadratic compositions of N multilinear polynomials.
@@ -161,7 +162,11 @@ where
 			.unzip::<_, _, Vec<_>, Vec<_>>();
 
 		// Compute F(1) and F(∞) where F = ∑_{v ∈ B} C(M_1(v || X), ..., M_N(v || X)) eq(v, z).
-		// We need to iterate over all positions in parallel
+		// We need to iterate over all positions in parallel.
+		//
+		// The per-position products `C(..) * eq_i` are accumulated in unreduced (wide) form and
+		// reduced a single time at the end, which amortizes the GF(2^128) reduction across all
+		// hypercube points.
 		let round_evals = eq_expansion
 			.as_ref()
 			.into_par_iter()
@@ -175,15 +180,15 @@ where
 					evals_inf[j] = splits_0[j].as_ref()[i] + splits_1[j].as_ref()[i];
 				}
 
-				// Evaluate composition at X=1
-				let y_1 = composition(evals_1) * eq_i;
-
-				// Evaluate composition at X=∞ (where M(∞) = M(0) + M(1))
-				let y_inf = infinity_composition(evals_inf) * eq_i;
-
-				RoundEvals2 { y_1, y_inf }
+				WideRoundEvals2 {
+					// Evaluate composition at X=1
+					y_1: P::wide_mul(composition(evals_1), eq_i),
+					// Evaluate composition at X=∞ (where M(∞) = M(0) + M(1))
+					y_inf: P::wide_mul(infinity_composition(evals_inf), eq_i),
+				}
 			})
-			.reduce(RoundEvals2::default, |lhs, rhs| lhs + &rhs)
+			.reduce(WideRoundEvals2::default, |lhs, rhs| lhs + rhs)
+			.reduce::<P>()
 			.sum_scalars(n_vars_remaining - 1);
 
 		let alpha = self.gruen32.next_coordinate();

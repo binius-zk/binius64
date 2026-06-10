@@ -6,7 +6,10 @@
 // module is unused, so allow dead code here rather than sprinkling attributes on every item.
 #![allow(dead_code)]
 
-use std::ops::{Add, AddAssign, Sub, SubAssign};
+use std::{
+	iter::Sum,
+	ops::{Add, AddAssign, Sub, SubAssign},
+};
 
 use crate::{Divisible, underlier::UnderlierWithBitOps};
 
@@ -155,6 +158,13 @@ impl<U: ClMulUnderlier> AddAssign for WideGhashProduct<U> {
 		self.lo ^= rhs.lo;
 		self.hi ^= rhs.hi;
 		self.mid ^= rhs.mid;
+	}
+}
+
+impl<U: ClMulUnderlier> Sum for WideGhashProduct<U> {
+	#[inline]
+	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+		iter.fold(Self::default(), |acc, x| acc + x)
 	}
 }
 
