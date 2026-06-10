@@ -12,6 +12,7 @@
 pub mod builder_channel;
 pub mod circuit_elem;
 pub mod gadgets;
+pub mod gate;
 pub mod zk_wrapped_channel;
 
 pub use builder_channel::IronSpartanBuilderChannel;

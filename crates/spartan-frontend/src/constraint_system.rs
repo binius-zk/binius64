@@ -43,6 +43,14 @@ impl ConstraintWire {
 			id,
 		}
 	}
+
+	/// Creates a constraint wire referencing a private wire by ID.
+	pub fn private(id: u32) -> Self {
+		Self {
+			kind: WireKind::Private,
+			id,
+		}
+	}
 }
 
 #[derive(Debug, Clone)]
@@ -411,6 +419,10 @@ impl<F: Field> WitnessLayout<F> {
 
 	pub fn n_constants(&self) -> usize {
 		self.constants.len()
+	}
+
+	pub fn constants(&self) -> &[F] {
+		&self.constants
 	}
 
 	pub fn n_inout(&self) -> usize {
