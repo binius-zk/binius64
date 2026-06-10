@@ -12,7 +12,7 @@ use std::{
 };
 
 use binius_utils::{
-	DeserializeBytes, SerializationError, SerializeBytes,
+	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
 };
 use bytemuck::{Pod, Zeroable};
@@ -134,6 +134,10 @@ impl DeserializeBytes for BinaryField128bGhash {
 	{
 		Ok(Self(DeserializeBytes::deserialize(read_buf)?))
 	}
+}
+
+impl FixedSizeSerializeBytes for BinaryField128bGhash {
+	const BYTE_SIZE: usize = 16;
 }
 
 impl From<AESTowerField8b> for BinaryField128bGhash {

@@ -9,7 +9,7 @@ use std::{
 };
 
 use binius_utils::{
-	DeserializeBytes, SerializationError, SerializeBytes,
+	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
 };
 use bytemuck::{Pod, Zeroable};
@@ -90,6 +90,10 @@ impl DeserializeBytes for AESTowerField8b {
 	{
 		Ok(Self(DeserializeBytes::deserialize(read_buf)?))
 	}
+}
+
+impl FixedSizeSerializeBytes for AESTowerField8b {
+	const BYTE_SIZE: usize = 1;
 }
 
 #[cfg(test)]

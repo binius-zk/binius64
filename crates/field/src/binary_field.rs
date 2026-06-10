@@ -8,7 +8,7 @@ use std::{
 };
 
 use binius_utils::{
-	DeserializeBytes, SerializationError, SerializeBytes,
+	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
 };
 use bytemuck::Zeroable;
@@ -480,6 +480,10 @@ macro_rules! serialize_deserialize {
 }
 
 serialize_deserialize!(BinaryField1b);
+
+impl FixedSizeSerializeBytes for BinaryField1b {
+	const BYTE_SIZE: usize = 1;
+}
 
 impl BinaryField1b {
 	/// Creates value without checking that it is within valid range (0 or 1)

@@ -8,7 +8,7 @@ use std::{
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
-use binius_utils::{DeserializeBytes, SerializeBytes};
+use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes, SerializeBytes};
 use bytemuck::Zeroable;
 
 use super::extension::ExtensionField;
@@ -57,6 +57,7 @@ pub trait Field:
 	+ Zeroable
 	+ SerializeBytes
 	+ DeserializeBytes
+	+ FixedSizeSerializeBytes
 	+ WideMul<Output: Debug + Send + Sync + 'static>
 {
 	/// The zero element of the field, the additive identity.
