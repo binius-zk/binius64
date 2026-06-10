@@ -23,6 +23,14 @@ sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+criterion.workspace = true
+rand = { workspace = true, features = ["thread_rng"] }
+
 [features]
 default = []
 rayon = ["binius-utils/rayon"]
+
+[[bench]]
+name = "sha256"
+harness = false
