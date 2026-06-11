@@ -30,9 +30,7 @@ pub struct Keccak256 {
 }
 
 impl Keccak256 {
-	/// The padded-message witness wires (keccak padding applied; filled by
-	/// [`Self::populate_message`]). Exposed for external evaluators that fill the
-	/// witness without the frontend filler (mirrors the public `message`/`digest`).
+	/// Returns the padded-message witness wires (filled by [`Self::populate_message`]).
 	pub fn padded_message(&self) -> &[Wire] {
 		&self.padded_message
 	}
