@@ -47,6 +47,16 @@ impl<'a> WitnessFiller<'a> {
 	pub fn into_value_vec(self) -> ValueVec {
 		self.value_vec
 	}
+
+	/// Returns a reference to the underlying value vector.
+	pub fn value_vec(&self) -> &ValueVec {
+		&self.value_vec
+	}
+
+	/// Returns a mutable reference to the underlying value vector.
+	pub fn value_vec_mut(&mut self) -> &mut ValueVec {
+		&mut self.value_vec
+	}
 }
 
 impl<'a> std::ops::Index<Wire> for WitnessFiller<'a> {
@@ -145,6 +155,11 @@ impl Circuit {
 	/// Returns the constraint system for this circuit.
 	pub fn constraint_system(&self) -> &ConstraintSystem {
 		&self.constraint_system
+	}
+
+	/// Returns the evaluation form (witness-filling bytecode) for this circuit.
+	pub fn eval_form(&self) -> &EvalForm {
+		&self.eval_form
 	}
 
 	/// Returns the number of gates in this circuit.
