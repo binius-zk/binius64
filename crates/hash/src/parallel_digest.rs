@@ -4,7 +4,7 @@
 use std::{array, marker::PhantomData, mem::MaybeUninit};
 
 use binius_utils::{
-	SerializeBytes,
+	FixedSizeSerializeBytes, SerializeBytes,
 	rayon::{
 		iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator},
 		slice::ParallelSliceMut,
@@ -87,6 +87,27 @@ pub trait ParallelDigest: Send {
 		source: impl IndexedParallelIterator<Item = I>,
 		out: &mut [MaybeUninit<Output<Self::Digest>>],
 	);
+
+	/// Like [`digest`](Self::digest), but specialized for the case where every leaf is built from
+	/// exactly `n_items_per_input` items of a [`FixedSizeSerializeBytes`] type, so that each leaf
+	/// has the same, compile-time-derivable byte length.
+	///
+	/// This extra structure lets implementations skip per-leaf length bookkeeping (and, for short
+	/// leaves, the message padding) that [`digest`](Self::digest) must redo every time. The default
+	/// implementation simply forwards to [`digest`](Self::digest).
+	///
+	/// # Panics
+	/// Each iterator in `source` must yield exactly `n_items_per_input` items, and all items must
+	/// serialize without error, or this method may panic.
+	fn digest_with_const_leaves<I: IntoIterator<Item: FixedSizeSerializeBytes>>(
+		&self,
+		n_items_per_input: usize,
+		source: impl IndexedParallelIterator<Item = I>,
+		out: &mut [MaybeUninit<Output<Self::Digest>>],
+	) {
+		let _ = n_items_per_input;
+		self.digest(source, out);
+	}
 }
 
 /// A wrapper that implements the `ParallelDigest` trait for a `MultiDigest` implementation.
