@@ -64,7 +64,7 @@ pub struct Sha256HashSuite;
 impl HashSuite for Sha256HashSuite {
 	type LeafHash = Sha256;
 	type Compression = Sha256Compression;
-	type ParLeafHash = ParallelDigestAdapter<Sha256>;
+	type ParLeafHash = ParallelSha256Digest;
 	type ParCompression = ParallelCompressionAdaptor<Sha256Compression>;
 }
 
