@@ -40,18 +40,24 @@ pub trait MerkleTreeProver<T: FixedSizeSerializeBytes> {
 		self.commit_iterated(
 			data.par_chunks_exact(batch_size)
 				.map(|chunk| chunk.iter().cloned()),
+			batch_size,
 		)
 	}
 
 	/// Commit interleaved elements from iterator by val
 	///
+	/// Each leaf is built from exactly `n_items_per_input` elements, which lets the leaf hasher
+	/// specialize for short, constant-length leaves.
+	///
 	/// ## Preconditions
 	///
 	/// * The number of leaves must be a power of two.
+	/// * Each iterator in `leaves` yields exactly `n_items_per_input` elements.
 	#[allow(clippy::type_complexity)]
 	fn commit_iterated<ParIter>(
 		&self,
 		leaves: ParIter,
+		n_items_per_input: usize,
 	) -> (Commitment<<Self::Scheme as MerkleTreeScheme<T>>::Digest>, Self::Committed)
 	where
 		ParIter: IndexedParallelIterator<Item: IntoIterator<Item = T, IntoIter: Send>>;
@@ -113,11 +119,11 @@ where
 {
 	if log_batch_size >= P::LOG_WIDTH {
 		let iterated_big_chunks = to_par_scalar_big_chunks(buffer.as_ref(), 1 << log_batch_size);
-		merkle_prover.commit_iterated(iterated_big_chunks)
+		merkle_prover.commit_iterated(iterated_big_chunks, 1 << log_batch_size)
 	} else {
 		let iterated_small_chunks =
 			to_par_scalar_small_chunks(buffer.as_ref(), 1 << log_batch_size);
-		merkle_prover.commit_iterated(iterated_small_chunks)
+		merkle_prover.commit_iterated(iterated_small_chunks, 1 << log_batch_size)
 	}
 }
 

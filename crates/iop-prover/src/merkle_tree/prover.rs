@@ -82,6 +82,7 @@ where
 	fn commit_iterated<ParIter>(
 		&self,
 		leaves: ParIter,
+		n_items_per_input: usize,
 	) -> (Commitment<<Self::Scheme as MerkleTreeScheme<F>>::Digest>, Self::Committed)
 	where
 		ParIter: IndexedParallelIterator<Item: IntoIterator<Item = F, IntoIter: Send>>,
@@ -93,6 +94,7 @@ where
 		};
 		let tree = binary_merkle_tree::build_from_iterator::<F, H, _, _>(
 			leaves,
+			n_items_per_input,
 			self.scheme.salt_len(),
 			salt_rng,
 		)

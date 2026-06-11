@@ -89,6 +89,7 @@ where
 		elements
 			.par_chunks(batch_size)
 			.map(|chunk| chunk.iter().copied()),
+		batch_size,
 		salt_len,
 		rng,
 	)
@@ -96,6 +97,7 @@ where
 
 pub fn build_from_iterator<F, H, R, ParIter>(
 	iterated_chunks: ParIter,
+	n_items_per_input: usize,
 	salt_len: usize,
 	mut rng: R,
 ) -> Result<BinaryMerkleTree<Output<H::LeafHash>, F>, Error>
@@ -115,6 +117,7 @@ where
 	let mut inner_nodes = Vec::with_capacity(total_length);
 	hash_leaves::<F, H, _>(
 		iterated_chunks,
+		n_items_per_input,
 		&mut inner_nodes.spare_capacity_mut()[..(1 << log_len)],
 		&salts,
 	);
@@ -202,11 +205,18 @@ impl<D: Clone, F> BinaryMerkleTree<D, F> {
 /// Hashes the elements in chunks of a vector into digests.
 ///
 /// Given a vector of elements and an output buffer of N hash digests, this splits the elements
-/// into N equal-sized chunks and hashes each chunks into the corresponding output digest. This
-/// returns the number of elements hashed into each digest.
+/// into N equal-sized chunks and hashes each chunks into the corresponding output digest.
+///
+/// Each leaf is built from exactly `n_items_per_input` data elements (plus the per-leaf salt, when
+/// salts are present), so the leaf byte length is constant. This is passed to
+/// [`ParallelDigest::digest_with_const_leaves`] so the hasher can specialize for short leaves.
+///
+/// # Preconditions
+/// - Each iterator in `iterated_chunks` yields exactly `n_items_per_input` elements.
 #[tracing::instrument("hash_leaves", skip_all, level = "debug")]
 fn hash_leaves<F, H, ParIter>(
 	iterated_chunks: ParIter,
+	n_items_per_input: usize,
 	digests: &mut [MaybeUninit<Output<H::LeafHash>>],
 	salts: &[F],
 ) where
@@ -218,7 +228,7 @@ fn hash_leaves<F, H, ParIter>(
 		// Need special-case handling when salts is empty, otherwise salt_len is 0 and par_chunks
 		// cannot handle chunk size of 0.
 		let hasher = H::ParLeafHash::default();
-		hasher.digest(iterated_chunks, digests);
+		hasher.digest_with_const_leaves(n_items_per_input, iterated_chunks, digests);
 	} else {
 		assert!(salts.len().is_multiple_of(digests.len()));
 
@@ -229,7 +239,8 @@ fn hash_leaves<F, H, ParIter>(
 			.zip(salts.par_chunks(salt_len))
 			.map(|(chunk, salt)| chunk.into_iter().chain(salt.iter().copied()));
 
+		// Each salted leaf yields the data elements followed by the salt elements.
 		let hasher = H::ParLeafHash::default();
-		hasher.digest(salted_iter, digests);
+		hasher.digest_with_const_leaves(n_items_per_input + salt_len, salted_iter, digests);
 	}
 }
