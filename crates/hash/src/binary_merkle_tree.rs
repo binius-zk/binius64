@@ -209,7 +209,7 @@ impl<D: Clone, F> BinaryMerkleTree<D, F> {
 ///
 /// Each leaf is built from exactly `n_items_per_input` data elements (plus the per-leaf salt, when
 /// salts are present), so the leaf byte length is constant. This is passed to
-/// [`ParallelDigest::digest_with_const_leaves`] so the hasher can specialize for short leaves.
+/// [`ParallelDigest::digest_with_const_len`] so the hasher can specialize for short leaves.
 ///
 /// # Preconditions
 /// - Each iterator in `iterated_chunks` yields exactly `n_items_per_input` elements.
@@ -228,7 +228,7 @@ fn hash_leaves<F, H, ParIter>(
 		// Need special-case handling when salts is empty, otherwise salt_len is 0 and par_chunks
 		// cannot handle chunk size of 0.
 		let hasher = H::ParLeafHash::default();
-		hasher.digest_with_const_leaves(n_items_per_input, iterated_chunks, digests);
+		hasher.digest_with_const_len(n_items_per_input, iterated_chunks, digests);
 	} else {
 		assert!(salts.len().is_multiple_of(digests.len()));
 
@@ -241,6 +241,6 @@ fn hash_leaves<F, H, ParIter>(
 
 		// Each salted leaf yields the data elements followed by the salt elements.
 		let hasher = H::ParLeafHash::default();
-		hasher.digest_with_const_leaves(n_items_per_input + salt_len, salted_iter, digests);
+		hasher.digest_with_const_len(n_items_per_input + salt_len, salted_iter, digests);
 	}
 }

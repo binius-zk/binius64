@@ -128,7 +128,7 @@ fn bench_const_leaves(c: &mut Criterion) {
 	group.bench_function("specialized", |b| {
 		b.iter(|| {
 			let out = &mut digests.spare_capacity_mut()[..n_leaves];
-			specialized.digest_with_const_leaves(
+			specialized.digest_with_const_len(
 				BATCH_SIZE,
 				black_box(elements.as_slice())
 					.par_chunks(BATCH_SIZE)

@@ -69,7 +69,7 @@ impl HashSuite for Sha256HashSuite {
 }
 
 /// A [`ParallelDigest`] for SHA-256 that specializes
-/// [`digest_with_const_leaves`](ParallelDigest::digest_with_const_leaves) for short, fixed-length
+/// [`digest_with_const_len`](ParallelDigest::digest_with_const_len) for short, fixed-length
 /// leaves.
 ///
 /// When every leaf serializes to at most `SINGLE_BLOCK_MAX_LEN` bytes, the whole leaf — message,
@@ -96,7 +96,7 @@ impl ParallelDigest for ParallelSha256Digest {
 		ParallelDigestAdapter::<Sha256>::new().digest(source, out);
 	}
 
-	fn digest_with_const_leaves<I: IntoIterator<Item: FixedSizeSerializeBytes>>(
+	fn digest_with_const_len<I: IntoIterator<Item: FixedSizeSerializeBytes>>(
 		&self,
 		n_items_per_input: usize,
 		source: impl IndexedParallelIterator<Item = I>,
@@ -173,7 +173,7 @@ mod tests {
 			let mut results = repeat_with(MaybeUninit::<Output<Sha256>>::uninit)
 				.take(n_leaves)
 				.collect::<Vec<_>>();
-			digest.digest_with_const_leaves(
+			digest.digest_with_const_len(
 				n_items_per_input,
 				leaves.par_iter().map(|leaf| leaf.iter().copied()),
 				&mut results,

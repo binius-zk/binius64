@@ -99,7 +99,7 @@ pub trait ParallelDigest: Send {
 	/// # Panics
 	/// Each iterator in `source` must yield exactly `n_items_per_input` items, and all items must
 	/// serialize without error, or this method may panic.
-	fn digest_with_const_leaves<I: IntoIterator<Item: FixedSizeSerializeBytes>>(
+	fn digest_with_const_len<I: IntoIterator<Item: FixedSizeSerializeBytes>>(
 		&self,
 		n_items_per_input: usize,
 		source: impl IndexedParallelIterator<Item = I>,
