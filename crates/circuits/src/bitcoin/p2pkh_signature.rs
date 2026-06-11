@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 
 use binius_core::word::Word;
@@ -6,7 +7,7 @@ use binius_frontend::{CircuitBuilder, Wire};
 use crate::{
 	bignum::BigUint,
 	bytes::swap_bytes_32,
-	ecdsa::scalar_mul::scalar_mul_naive,
+	ecdsa::scalar_mul::scalar_mul,
 	ripemd::ripemd160_fixed,
 	secp256k1::{Secp256k1, Secp256k1Affine},
 	sha256::sha256_fixed,
@@ -56,7 +57,7 @@ pub fn build_p2pkh_circuit(
 	let curve = Secp256k1::new(builder);
 	let generator = Secp256k1Affine::generator(builder);
 
-	let public_key_point = scalar_mul_naive(builder, &curve, 256, private_key, generator);
+	let public_key_point = scalar_mul(builder, &curve, private_key, generator);
 
 	// Step 2: Compress public key - (x, y) → 33-byte compressed format
 	let compressed_pubkey = compress_pubkey(builder, &public_key_point.x, &public_key_point.y);
@@ -238,7 +239,7 @@ mod tests {
 		// Compute pubkey in the circuit
 		let curve = Secp256k1::new(&builder);
 		let generator = Secp256k1Affine::generator(&builder);
-		let pub_point = scalar_mul_naive(&builder, &curve, 256, &private_key, generator);
+		let pub_point = scalar_mul(&builder, &curve, &private_key, generator);
 		let compressed = compress_pubkey(&builder, &pub_point.x, &pub_point.y);
 
 		for i in 0..9 {

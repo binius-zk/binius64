@@ -4,7 +4,7 @@ use std::iter;
 use anyhow::Result;
 use binius_circuits::{
 	bignum::{BigUint, assert_eq},
-	ecdsa::scalar_mul::{msm_strauss, msm_strauss_endo},
+	ecdsa::scalar_mul::msm_strauss_endo,
 	secp256k1::{N_LIMBS, Secp256k1, Secp256k1Affine},
 };
 use binius_core::word::Word;
@@ -19,8 +19,8 @@ use rand::prelude::*;
 use crate::ExampleCircuit;
 
 /// Example circuit that computes a multi-scalar multiplication `Σ_i scalars[i] · points[i]` over
-/// secp256k1 with a statically-known number of points, using the fixed-window (Straus) algorithm
-/// (see [`msm_strauss`]).
+/// secp256k1 with a statically-known number of points, using the GLV fixed-window (Straus)
+/// algorithm (see [`msm_strauss_endo`]).
 ///
 /// The points and scalars are public inputs (the points are constrained to lie on the curve), and
 /// the claimed result is a public input that the circuit checks against the in-circuit MSM.
@@ -51,11 +51,8 @@ pub struct Params {
 	#[arg(short = 'n', long, default_value_t = 2, value_parser = clap::value_parser!(u16).range(1..))]
 	pub n_points: u16,
 	/// Window size in bits for the Straus algorithm (4 is typically optimal)
-	#[arg(short = 'w', long, default_value_t = 2, value_parser = clap::value_parser!(u16).range(1..64))]
+	#[arg(short = 'w', long, default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..64))]
 	pub window: u16,
-	/// Combine Straus with the GLV endomorphism (2n base points, 128-bit exponents)
-	#[arg(short = 'e', long, default_value_t = false)]
-	pub endomorphism: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -91,11 +88,7 @@ impl ExampleCircuit for EcMsmExample {
 			.collect::<Vec<_>>();
 
 		let window = params.window as usize;
-		let result = if params.endomorphism {
-			msm_strauss_endo(builder, &curve, window, &scalars, &affine_points)
-		} else {
-			msm_strauss(builder, &curve, window, &scalars, &affine_points)
-		};
+		let result = msm_strauss_endo(builder, &curve, window, &scalars, &affine_points);
 
 		let expected = AffinePoint::new_inout(builder);
 		assert_eq(builder, "msm_result_x", &result.x, &expected.x);
@@ -135,8 +128,7 @@ impl ExampleCircuit for EcMsmExample {
 	}
 
 	fn param_summary(params: &Self::Params) -> Option<String> {
-		let glv = if params.endomorphism { "-glv" } else { "" };
-		Some(format!("{}p-w{}{glv}", params.n_points, params.window))
+		Some(format!("{}p-w{}", params.n_points, params.window))
 	}
 }
 

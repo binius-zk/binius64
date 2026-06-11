@@ -2,7 +2,7 @@
 // Copyright 2025 Irreducible Inc.
 use binius_frontend::{CircuitBuilder, Wire, util::all_true};
 
-use super::scalar_mul::shamirs_trick_endomorphism;
+use super::scalar_mul::{MSM_WINDOW, msm_strauss_endo};
 use crate::{
 	bignum::{BigUint, biguint_lt},
 	secp256k1::{Secp256k1, Secp256k1Affine},
@@ -43,7 +43,9 @@ pub fn verify(
 	let u1 = f_scalar.div(b, z, s, valid_s);
 	let u2 = f_scalar.div(b, r, s, valid_s);
 
-	let nonce = shamirs_trick_endomorphism(b, &curve, &u1, &u2, pk);
+	// Recover the candidate nonce point as the multi-scalar multiplication `u1*G + u2*PK`.
+	let g = Secp256k1Affine::generator(b);
+	let nonce = msm_strauss_endo(b, &curve, MSM_WINDOW, &[u1, u2], &[g, pk]);
 	let nonce_not_pai = b.bnot(nonce.is_point_at_infinity);
 	let r_diff = curve.f_p().sub(b, &nonce.x, r);
 

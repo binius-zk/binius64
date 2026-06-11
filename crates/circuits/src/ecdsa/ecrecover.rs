@@ -2,7 +2,7 @@
 // Copyright 2025 Irreducible Inc.
 use binius_frontend::{CircuitBuilder, Wire, util::all_true};
 
-use super::scalar_mul::shamirs_trick_endomorphism;
+use super::scalar_mul::{MSM_WINDOW, msm_strauss_endo};
 use crate::{
 	bignum::{BigUint, biguint_lt},
 	secp256k1::{Secp256k1, Secp256k1Affine, coord_zero},
@@ -42,7 +42,9 @@ pub fn ecrecover(
 	let u1 = f_scalar.sub(b, &coord_zero(b), &f_scalar.div(b, z, r, valid_r));
 	let u2 = f_scalar.div(b, s, r, valid_r);
 
-	let recovered_pk = shamirs_trick_endomorphism(b, &curve, &u1, &u2, nonce);
+	// Recover the public key as the multi-scalar multiplication `u1*G + u2*R`.
+	let g = Secp256k1Affine::generator(b);
+	let recovered_pk = msm_strauss_endo(b, &curve, MSM_WINDOW, &[u1, u2], &[g, nonce]);
 
 	let conditions = [valid_r, valid_s, nonce_not_pai];
 	recovered_pk.pai_unless(b, all_true(b, conditions))
