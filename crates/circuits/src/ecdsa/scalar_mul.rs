@@ -1,9 +1,13 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
-use binius_core::consts::WORD_SIZE_BITS;
+use std::iter;
+
+use binius_core::{consts::WORD_SIZE_BITS, word::Word};
 use binius_frontend::{CircuitBuilder, Wire};
 
 use crate::{
 	bignum::{BigUint, assert_eq, select as select_biguint},
+	multiplexer::multi_wire_multiplex,
 	secp256k1::{
 		N_LIMBS, Secp256k1, Secp256k1Affine, coord_lambda, coord_zero,
 		select as select_secp256k1_affine,
@@ -247,6 +251,202 @@ pub fn shamirs_trick_endomorphism(
 	acc
 }
 
+/// Compute a multi-scalar multiplication `Σ_i scalars[i] · points[i]` over secp256k1 using
+/// Shamir's trick combined with the curve endomorphism.
+///
+/// `n = points.len()` must equal `scalars.len()` and is statically known to the circuit. Each
+/// scalar is a 256-bit value (`N_LIMBS` limbs). Using the endomorphism `λ`, every
+/// `(point, scalar)` pair is split into two ~128-bit signed subscalars and two base points (`P`
+/// and `endo(P)`), each conditionally negated so that only positive subscalars remain. This
+/// yields `2n` base points, a `2^(2n)`-entry table of all their subset sums, and a main loop of
+/// just 128 conditional additions (versus 256 without the endomorphism — see [`msm_naive`]). It
+/// is the `n`-point generalization of [`shamirs_trick_endomorphism`] (which is the `n = 2` special
+/// case with the generator as one of the points).
+///
+/// The endomorphism halves the number of doublings at the cost of squaring the table size, so it
+/// wins for small `n` but is overtaken by [`msm_naive`] once the `2^(2n)` precomputation dominates.
+///
+/// # Completeness gap
+///
+/// Point additions use [`Secp256k1::add_incomplete`], which asserts false when its inputs are
+/// equal (it handles the point at infinity but not doubling). As with [`scalar_mul`] and
+/// [`shamirs_trick_endomorphism`], the probability of the accumulator or a table entry hitting
+/// such a collision for independent inputs is vanishingly low.
+///
+/// # Panics
+///
+/// Panics if `scalars.len() != points.len()`, if `n == 0`, or if any scalar does not have exactly
+/// `N_LIMBS` limbs.
+pub fn msm(
+	b: &CircuitBuilder,
+	curve: &Secp256k1,
+	scalars: &[BigUint],
+	points: &[Secp256k1Affine],
+) -> Secp256k1Affine {
+	let n = points.len();
+	assert_eq!(scalars.len(), n, "scalars and points must have the same length");
+	assert!(n >= 1, "MSM requires at least one point");
+
+	// Split every scalar via the endomorphism, collecting the 2n positive base points together
+	// with their 128-bit subscalar magnitudes (each is `[Wire; 2]`, little-endian).
+	let mut base_points = Vec::with_capacity(2 * n);
+	let mut subscalars = Vec::with_capacity(2 * n);
+	for (scalar, point) in iter::zip(scalars, points) {
+		assert_eq!(scalar.limbs.len(), N_LIMBS);
+
+		let (k1_neg, k2_neg, k1_abs, k2_abs) = b.secp256k1_endomorphism_split_hint(&scalar.limbs);
+		check_endomorphism_split(b, curve, k1_neg, k2_neg, k1_abs, k2_abs, scalar);
+
+		let point_endo = curve.endomorphism(b, point);
+		base_points.push(curve.negate_if(b, k1_neg, point));
+		subscalars.push(k1_abs);
+		base_points.push(curve.negate_if(b, k2_neg, &point_endo));
+		subscalars.push(k2_abs);
+	}
+
+	let subscalar_refs = subscalars
+		.iter()
+		.map(<[Wire; 2]>::as_slice)
+		.collect::<Vec<_>>();
+	// Each subscalar magnitude fits in 128 bits, so 128 conditional additions suffice.
+	shamir_accumulate(b, curve, &base_points, &subscalar_refs, 128)
+}
+
+/// Compute a multi-scalar multiplication `Σ_i scalars[i] · points[i]` over secp256k1 using
+/// Shamir's trick *without* the curve endomorphism.
+///
+/// `n = points.len()` must equal `scalars.len()` and is statically known to the circuit. Each
+/// scalar is a 256-bit value (`N_LIMBS` limbs). The `n` points are used directly as base points,
+/// giving a `2^n`-entry subset-sum table and a main loop of 256 conditional additions.
+///
+/// Compared to [`msm`], this trades twice as many doublings/additions for a quadratically smaller
+/// table. It is therefore the cheaper strategy once `n` is large enough that the endomorphism's
+/// `2^(2n)` precomputation dominates.
+///
+/// The completeness-gap caveat of [`msm`] applies here too.
+///
+/// # Panics
+///
+/// Panics if `scalars.len() != points.len()`, if `n == 0`, or if any scalar does not have exactly
+/// `N_LIMBS` limbs.
+pub fn msm_naive(
+	b: &CircuitBuilder,
+	curve: &Secp256k1,
+	scalars: &[BigUint],
+	points: &[Secp256k1Affine],
+) -> Secp256k1Affine {
+	let n = points.len();
+	assert_eq!(scalars.len(), n, "scalars and points must have the same length");
+	assert!(n >= 1, "MSM requires at least one point");
+	for scalar in scalars {
+		assert_eq!(scalar.limbs.len(), N_LIMBS);
+	}
+
+	let subscalar_refs = scalars
+		.iter()
+		.map(|s| s.limbs.as_slice())
+		.collect::<Vec<_>>();
+	// Full 256-bit scalars, so 256 conditional additions are required.
+	shamir_accumulate(b, curve, points, &subscalar_refs, 256)
+}
+
+/// Shared core of [`msm`] and [`msm_naive`]: double-and-add over `n_iters` bits, selecting at each
+/// step which subset sum of `base_points` to add via Shamir's trick.
+///
+/// Precomputes a `2^m`-entry table of all subset sums of the `m` base points
+/// (`table[mask] = Σ_{i : bit i of mask set} base_points[i]`), then for each bit position from
+/// `n_iters - 1` down to 0 doubles the accumulator and adds the subset sum selected by that bit of
+/// each subscalar. `subscalars[i]` supplies base point `i`'s exponent bit (it must have enough
+/// limbs to cover `n_iters` bits).
+///
+/// The per-iteration lookup uses [`multi_wire_multiplex`], indexing the flattened table by a
+/// selector word whose bit `i` is base point `i`'s current exponent bit — matching the table
+/// layout.
+fn shamir_accumulate(
+	b: &CircuitBuilder,
+	curve: &Secp256k1,
+	base_points: &[Secp256k1Affine],
+	subscalars: &[&[Wire]],
+	n_iters: usize,
+) -> Secp256k1Affine {
+	let m = base_points.len();
+	assert_eq!(subscalars.len(), m, "one subscalar per base point");
+	// The m exponent bits per iteration are packed into a single-word multiplexer selector.
+	assert!(
+		m < WORD_SIZE_BITS,
+		"Shamir's trick supports at most {} base points",
+		WORD_SIZE_BITS - 1
+	);
+
+	// Precompute the 2^m table of all subset sums of the base points.
+	let mut table = Vec::with_capacity(1 << m);
+	table.push(Secp256k1Affine::point_at_infinity(b));
+	for (i, pt) in base_points.iter().enumerate() {
+		table.push(pt.clone());
+		for j in 1..1 << i {
+			table.push(curve.add_incomplete(b, &table[j], pt));
+		}
+	}
+
+	// Flatten each table entry into its constituent wires so the lookup can use the multi-wire
+	// multiplexer, which selects across `2^m` groups using `m` bits of the selector word.
+	let table_flat: Vec<Vec<Wire>> = table.iter().map(point_to_wires).collect();
+	let table_refs: Vec<&[Wire]> = table_flat.iter().map(Vec::as_slice).collect();
+
+	let one = b.add_constant_64(1);
+	let mut acc = Secp256k1Affine::point_at_infinity(b);
+
+	for bit_index in (0..n_iters).rev() {
+		let limb = bit_index / WORD_SIZE_BITS;
+		let bit = bit_index % WORD_SIZE_BITS;
+
+		if bit_index != n_iters - 1 {
+			acc = curve.double(b, &acc);
+		}
+
+		// Build the multiplexer selector. `multi_wire_multiplex` uses selector bit `i` as bit `i`
+		// of the table index, so we place base point `i`'s current exponent bit at position `i`,
+		// matching the subset-sum table layout (`table[mask]` includes base `i` iff bit `i` set).
+		let mut sel = b.add_constant(Word::ZERO);
+		for (i, subscalar) in subscalars.iter().enumerate() {
+			let bit_val = b.band(b.shr(subscalar[limb], bit as u32), one);
+			sel = b.bor(sel, b.shl(bit_val, i as u32));
+		}
+
+		let selected = point_from_wires(&multi_wire_multiplex(b, &table_refs, sel));
+		acc = curve.add_incomplete(b, &acc, &selected);
+	}
+
+	acc
+}
+
+// Flatten an affine point into its constituent wires: x limbs, then y limbs, then the
+// point-at-infinity flag. Inverse of `point_from_wires`.
+fn point_to_wires(p: &Secp256k1Affine) -> Vec<Wire> {
+	assert_eq!(p.x.limbs.len(), N_LIMBS);
+	assert_eq!(p.y.limbs.len(), N_LIMBS);
+
+	let mut wires = Vec::with_capacity(2 * N_LIMBS + 1);
+	wires.extend_from_slice(&p.x.limbs);
+	wires.extend_from_slice(&p.y.limbs);
+	wires.push(p.is_point_at_infinity);
+	wires
+}
+
+// Reconstruct an affine point from the flat wire layout produced by `point_to_wires`.
+fn point_from_wires(wires: &[Wire]) -> Secp256k1Affine {
+	assert_eq!(wires.len(), 2 * N_LIMBS + 1);
+	Secp256k1Affine {
+		x: BigUint {
+			limbs: wires[..N_LIMBS].to_vec(),
+		},
+		y: BigUint {
+			limbs: wires[N_LIMBS..2 * N_LIMBS].to_vec(),
+		},
+		is_point_at_infinity: wires[2 * N_LIMBS],
+	}
+}
+
 // Constrain the return value of `CircuitBuilder::secp256k1_endomorphism_split_hint`.
 // Verifies that `k1 + λ k2 = k (mod n)` where `n` is scalar field modulus.
 fn check_endomorphism_split(
@@ -445,5 +645,99 @@ mod tests {
 
 		// Verify the point is not at infinity
 		assert_eq!(w[result.is_point_at_infinity], Word::ZERO);
+	}
+
+	type MsmFn = fn(&CircuitBuilder, &Secp256k1, &[BigUint], &[Secp256k1Affine]) -> Secp256k1Affine;
+
+	// Build an MSM circuit (using `msm_fn`) over `n` random (scalar, point) pairs derived from
+	// `seed`, compare the result against a k256-computed reference, and verify the witness
+	// populates successfully.
+	fn check_msm(msm_fn: MsmFn, n: usize, seed: u64) {
+		let builder = CircuitBuilder::new();
+		let curve = Secp256k1::new(&builder);
+		let mut rng = StdRng::seed_from_u64(seed);
+
+		let mut scalars = Vec::with_capacity(n);
+		let mut points = Vec::with_capacity(n);
+		let mut expected = ProjectivePoint::IDENTITY;
+
+		for _ in 0..n {
+			// Random 256-bit multiplier scalar.
+			let mut scalar_bytes = [0u8; 32];
+			rng.fill(&mut scalar_bytes);
+			let k256_scalar = Scalar::from_uint_unchecked(U256::from_be_slice(&scalar_bytes));
+
+			// Random curve point, generated as `g^r` so it is guaranteed on-curve.
+			let mut point_seed = [0u8; 32];
+			rng.fill(&mut point_seed);
+			let r = Scalar::from_uint_unchecked(U256::from_be_slice(&point_seed));
+			let point = ProjectivePoint::mul_by_generator(&r);
+
+			expected += point * k256_scalar;
+
+			let scalar_bigint = num_bigint::BigUint::from_bytes_be(&scalar_bytes);
+			scalars.push(
+				BigUint::new_constant(&builder, &scalar_bigint).zero_extend(&builder, N_LIMBS),
+			);
+
+			let point_bytes = point.to_affine().to_encoded_point(false).to_bytes();
+			let x_coord = num_bigint::BigUint::from_bytes_be(&point_bytes[1..33]);
+			let y_coord = num_bigint::BigUint::from_bytes_be(&point_bytes[33..65]);
+			points.push(Secp256k1Affine {
+				x: BigUint::new_constant(&builder, &x_coord).zero_extend(&builder, N_LIMBS),
+				y: BigUint::new_constant(&builder, &y_coord).zero_extend(&builder, N_LIMBS),
+				is_point_at_infinity: builder.add_constant(Word::ZERO),
+			});
+		}
+
+		let result = msm_fn(&builder, &curve, &scalars, &points);
+
+		let expected_bytes = expected.to_affine().to_encoded_point(false).to_bytes();
+		let expected_x = BigUint::new_constant(
+			&builder,
+			&num_bigint::BigUint::from_bytes_be(&expected_bytes[1..33]),
+		);
+		let expected_y = BigUint::new_constant(
+			&builder,
+			&num_bigint::BigUint::from_bytes_be(&expected_bytes[33..65]),
+		);
+
+		assert_eq(&builder, "msm_x", &result.x, &expected_x);
+		assert_eq(&builder, "msm_y", &result.y, &expected_y);
+
+		let cs = builder.build();
+		let mut w = cs.new_witness_filler();
+		assert!(cs.populate_wire_witness(&mut w).is_ok());
+		assert_eq!(w[result.is_point_at_infinity], Word::ZERO);
+	}
+
+	#[test]
+	fn test_msm_single_point() {
+		check_msm(msm, 1, 0);
+	}
+
+	#[test]
+	fn test_msm_two_points() {
+		check_msm(msm, 2, 1);
+	}
+
+	#[test]
+	fn test_msm_three_points() {
+		check_msm(msm, 3, 2);
+	}
+
+	#[test]
+	fn test_msm_naive_single_point() {
+		check_msm(msm_naive, 1, 0);
+	}
+
+	#[test]
+	fn test_msm_naive_two_points() {
+		check_msm(msm_naive, 2, 1);
+	}
+
+	#[test]
+	fn test_msm_naive_three_points() {
+		check_msm(msm_naive, 3, 2);
 	}
 }
