@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{iter, mem};
 
@@ -360,43 +361,6 @@ where
 	}
 }
 
-/// Fold the interleaved codeword into a single codeword using the given challenges.
-///
-/// ## Arguments
-///
-/// * `codeword` - an interleaved codeword.
-/// * `challenges` - the folding challenges. The length must be at least `log_batch_size`.
-/// * `log_len` - the binary logarithm of the code length.
-/// * `log_batch_size` - the binary logarithm of the interleaved code batch size.
-///
-/// See [DP24], Def. 3.6 and Lemma 3.9 for more details.
-///
-/// [DP24]: <https://eprint.iacr.org/2024/504>
-#[instrument(skip_all, level = "debug")]
-fn fold_interleaved<F, P>(
-	codeword: FieldSlice<P>,
-	challenges: &[F],
-	log_len: usize,
-	log_batch_size: usize,
-) -> FieldBuffer<F>
-where
-	F: Field,
-	P: PackedField<Scalar = F>,
-{
-	assert_eq!(codeword.log_len(), log_len + log_batch_size);
-	assert_eq!(challenges.len(), log_batch_size);
-
-	let tensor = eq_ind_partial_eval(challenges);
-
-	// For each chunk of size `2^chunk_size` in the interleaved codeword, fold it with the folding
-	// challenges.
-	let values = codeword
-		.chunks_par(log_batch_size)
-		.map(|chunk| inner_product_buffers(&chunk, &tensor))
-		.collect::<Vec<_>>();
-	FieldBuffer::new(log_len, values.into_boxed_slice())
-}
-
 /// FRI-fold the codeword using the given challenges.
 ///
 /// ## Arguments
@@ -451,33 +415,6 @@ where
 {
 	pub fn log_folded_len(&self) -> usize {
 		self.codeword.log_len() - self.log_batch_size
-	}
-
-	pub fn fold(
-		self,
-		merkle_prover: &'a MTProver,
-		challenges: &[F],
-	) -> (FieldBuffer<F>, BrakedownOracleProver<'a, P, MTProver>) {
-		assert_eq!(challenges.len(), self.log_batch_size); // precondition
-
-		let ProxTestFolder {
-			log_batch_size,
-			log_lift,
-			codeword,
-			merkle_committed,
-		} = self;
-
-		let log_len = codeword.log_len() - log_batch_size;
-		let folded_codeword =
-			fold_interleaved(codeword.to_ref(), challenges, log_len, log_batch_size);
-		let oracle = BrakedownOracleProver::new(
-			codeword,
-			merkle_committed,
-			merkle_prover,
-			log_batch_size,
-			log_lift,
-		);
-		(folded_codeword, oracle)
 	}
 }
 
@@ -537,29 +474,53 @@ where
 			.expect("folders is not empty by struct invariant");
 
 		let (inner_challenges, outer_challenges) = challenges.split_at(max_log_batch_size);
-
-		let n_folders = self.folders.len();
-		let folds = self.folders.into_iter().map(|folder| {
-			let start_idx = max_log_batch_size - folder.log_batch_size;
-			folder.fold(merkle_prover, &inner_challenges[start_idx..])
-		});
-
 		let outer_tensor = eq_ind_partial_eval::<F>(outer_challenges);
+
 		let mut combined_codeword = FieldBuffer::zeros(self.log_code_len);
-		let mut oracles = Vec::with_capacity(n_folders);
+		let mut oracles = Vec::with_capacity(self.folders.len());
 		// TODO: Special cases when outer_challenges.len() = 0 or 1 for computational efficiency (to
 		// reduce # of scaling muls)
-		for ((folded_codeword, oracle), &scalar) in iter::zip(folds, outer_tensor.as_ref()) {
-			// Lift (pad) the folded codeword up to the common length by duplicating each entry
-			// `2^log_lift` times: the lifted entry at index `j` is the folded entry at `j >>
-			// log_lift` (a contiguous duplication, matching the Reed-Solomon codeword
-			// duplication identity).
-			let log_lift = self.log_code_len - folded_codeword.log_len();
-			let folded = folded_codeword.as_ref();
-			for (j, acc) in combined_codeword.as_mut().iter_mut().enumerate() {
-				*acc += folded[j >> log_lift] * scalar;
+		for (folder, &scalar) in iter::zip(self.folders, outer_tensor.as_ref()) {
+			let ProxTestFolder {
+				log_batch_size,
+				log_lift,
+				codeword,
+				merkle_committed,
+			} = folder;
+			let start_idx = max_log_batch_size - log_batch_size;
+
+			// Fold the outer-challenge tensor value into the inner folding tensor so that every
+			// folded entry comes out already scaled by `scalar`. This replaces one scaling mul per
+			// (lifted) output entry with a single pass over the `2^log_batch_size`-element tensor.
+			let mut tensor = eq_ind_partial_eval::<P>(&inner_challenges[start_idx..]);
+			let scalar_broadcast = P::broadcast(scalar);
+			for packed in tensor.as_mut() {
+				*packed *= scalar_broadcast;
 			}
-			oracles.push(oracle);
+
+			// Fold each `2^log_batch_size`-element interleaved chunk into a single scaled value via
+			// an inner product with the (pre-scaled) tensor, accumulating it directly into the
+			// folded entry's `2^log_lift` contiguous copies in the combined codeword (the
+			// Reed-Solomon codeword duplication identity: `combined[j] += folded[j >> log_lift]`).
+			// No temporary buffer; `1 << log_lift` is `1` when there is no lifting.
+			combined_codeword
+				.as_mut()
+				.par_chunks_mut(1 << log_lift)
+				.zip(codeword.chunks_par(log_batch_size))
+				.for_each(|(copies, chunk)| {
+					let value = inner_product_buffers(&chunk, &tensor);
+					for acc in copies {
+						*acc += value;
+					}
+				});
+
+			oracles.push(BrakedownOracleProver::new(
+				codeword,
+				merkle_committed,
+				merkle_prover,
+				log_batch_size,
+				log_lift,
+			));
 		}
 
 		(combined_codeword, BatchBrakedownOracleProver::new(oracles))
