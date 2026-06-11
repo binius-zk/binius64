@@ -3,7 +3,7 @@
 use std::hint::black_box;
 
 use binius_field::{BinaryField128bGhash as B128, Random};
-use binius_hash::{ParallelDigest, ParallelDigestAdapter, StdDigest};
+use binius_hash::{ParallelDigest, ParallelDigestAdapter, ParallelSha256Digest, StdDigest};
 use binius_utils::rayon::{prelude::*, slice::ParallelSlice};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use digest::{Digest, Output};
@@ -94,5 +94,51 @@ fn bench_digest(c: &mut Criterion) {
 	group.finish();
 }
 
-criterion_group!(benches, bench_sha256, bench_compress, bench_digest);
+/// Compares the specialized [`ParallelSha256Digest`] against the generic [`ParallelDigestAdapter`]
+/// for the case the BINIUS-75 evaluation targets: leaves of 2 `B128` elements (32 bytes), which fit
+/// in a single SHA-256 block. Both paths are identical except for the hashing call — same input
+/// chunking, same pre-allocated output buffer, same throughput accounting — so the measured
+/// difference isolates the per-leaf padding/`update`/`finalize` bookkeeping the specialization
+/// removes.
+fn bench_const_leaves(c: &mut Criterion) {
+	const BATCH_SIZE: usize = 2;
+
+	let mut rng = rng();
+	let elements: Vec<B128> = (0..N_ELEMS).map(|_| B128::random(&mut rng)).collect();
+	let n_leaves = N_ELEMS / BATCH_SIZE;
+
+	let adapter = ParallelDigestAdapter::<Sha256>::new();
+	let specialized = ParallelSha256Digest::new();
+
+	let mut group = c.benchmark_group("sha256_const_leaves");
+	group.throughput(Throughput::Bytes(DATA_LEN as u64));
+
+	let mut digests: Vec<Output<Sha256>> = Vec::with_capacity(n_leaves);
+	group.bench_function("unspecialized", |b| {
+		b.iter(|| {
+			let out = &mut digests.spare_capacity_mut()[..n_leaves];
+			adapter.digest(
+				black_box(elements.as_slice())
+					.par_chunks(BATCH_SIZE)
+					.map(|chunk| chunk.iter().copied()),
+				out,
+			);
+		});
+	});
+	group.bench_function("specialized", |b| {
+		b.iter(|| {
+			let out = &mut digests.spare_capacity_mut()[..n_leaves];
+			specialized.digest_with_const_leaves(
+				BATCH_SIZE,
+				black_box(elements.as_slice())
+					.par_chunks(BATCH_SIZE)
+					.map(|chunk| chunk.iter().copied()),
+				out,
+			);
+		});
+	});
+	group.finish();
+}
+
+criterion_group!(benches, bench_sha256, bench_compress, bench_digest, bench_const_leaves);
 criterion_main!(benches);
