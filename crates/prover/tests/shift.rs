@@ -1,5 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
+use std::sync::Arc;
+
 use binius_circuits::sha256::Sha256;
 use binius_core::{
 	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueVec},
@@ -290,7 +292,7 @@ fn test_shift_prove_and_verify() {
 
 		// Check consistency with verifier output
 		check_eval(
-			&cs,
+			Arc::new(cs.clone()),
 			&verifier_bitand_data,
 			&verifier_intmul_data,
 			&subspace,

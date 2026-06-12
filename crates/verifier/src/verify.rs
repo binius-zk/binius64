@@ -1,5 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
+use std::sync::Arc;
+
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
@@ -46,7 +48,9 @@ pub const SECURITY_BITS: usize = 96;
 /// instead, which wraps this with a BaseFold compiler.
 #[derive(Debug, Clone)]
 pub struct IOPVerifier {
-	constraint_system: ConstraintSystem,
+	/// Held in an [`Arc`] so verification can hand the recording channel a `'static` closure
+	/// owning the constraint system (see `shift::check_eval`) without a deep clone.
+	constraint_system: Arc<ConstraintSystem>,
 	log_public_words: usize,
 }
 
@@ -57,7 +61,7 @@ impl IOPVerifier {
 	/// [`ConstraintSystem::validate_and_prepare`].
 	pub fn new(constraint_system: ConstraintSystem, log_public_words: usize) -> Self {
 		Self {
-			constraint_system,
+			constraint_system: Arc::new(constraint_system),
 			log_public_words,
 		}
 	}
@@ -69,7 +73,7 @@ impl IOPVerifier {
 
 	/// Consumes the IOP verifier and returns the inner constraint system.
 	pub fn into_constraint_system(self) -> ConstraintSystem {
-		self.constraint_system
+		Arc::try_unwrap(self.constraint_system).unwrap_or_else(|cs| (*cs).clone())
 	}
 
 	/// Returns log2 of the number of public constants and input/output words.
@@ -208,7 +212,7 @@ impl IOPVerifier {
 		)
 		.entered();
 		shift::check_eval(
-			self.constraint_system(),
+			Arc::clone(&self.constraint_system),
 			&bitand_claim,
 			&intmul_claim,
 			&domain_subspace,
