@@ -29,7 +29,11 @@ use binius_spartan_verifier::{
 	wrapper::{IronSpartanBuilderChannel, ZKWrappedVerifierChannel},
 };
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
-use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
+use binius_utils::{
+	DeserializeBytes, SerializeBytes, checked_arithmetics::log2_ceil_usize,
+	serialization::SerializationError,
+};
+use bytes::{Buf, BufMut};
 use digest::Output;
 
 use crate::{
@@ -156,6 +160,11 @@ where
 		self.inner_iop_verifier.log_public_words()
 	}
 
+	/// Returns the log of the inverse Reed–Solomon rate this verifier was set up with.
+	pub fn log_inv_rate(&self) -> usize {
+		self.basefold_compiler.fri_params().rs_code().log_inv_rate()
+	}
+
 	/// Verifies a ZK proof against the constraint system.
 	pub fn verify<Challenger_: Challenger>(
 		&self,
@@ -209,6 +218,42 @@ where
 	) -> Result<(), Error> {
 		crate::signature::observe_message::<H, _>(&mut transcript.observe(), message);
 		self.verify(public, transcript)
+	}
+}
+
+/// Serializes the seed a [`ZKVerifier`] is built from — its constraint system and
+/// `log_inv_rate`. The derived state (outer constraint system, oracle specs, BaseFold compiler)
+/// is recomputed on [`DeserializeBytes::deserialize`], which is cheap relative to proving.
+impl<H> SerializeBytes for ZKVerifier<H>
+where
+	H: HashSuite,
+	Output<H::LeafHash>: DeserializeBytes,
+{
+	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
+		const VERSION: u32 = 1;
+		VERSION.serialize(&mut write_buf)?;
+		self.constraint_system().serialize(&mut write_buf)?;
+		self.log_inv_rate().serialize(write_buf)
+	}
+}
+
+impl<H> DeserializeBytes for ZKVerifier<H>
+where
+	H: HashSuite,
+	Output<H::LeafHash>: DeserializeBytes,
+{
+	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
+		const VERSION: u32 = 1;
+		let version = u32::deserialize(&mut read_buf)?;
+		if version != VERSION {
+			return Err(SerializationError::InvalidConstruction {
+				name: "ZKVerifier::version",
+			});
+		}
+		let constraint_system = ConstraintSystem::deserialize(&mut read_buf)?;
+		let log_inv_rate = usize::deserialize(&mut read_buf)?;
+		Self::setup(constraint_system, log_inv_rate)
+			.map_err(|_| SerializationError::InvalidConstruction { name: "ZKVerifier" })
 	}
 }
 
