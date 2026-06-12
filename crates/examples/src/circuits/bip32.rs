@@ -6,6 +6,10 @@
 //! maximum tree depth and the public key at the actual path depth is selected with a multiplexer,
 //! so the circuit shape is independent of the (witness) depth.
 //!
+//! The per-step building blocks are also exposed for composing other derivations:
+//! [`master_from_seed`], [`extended_key_parts`], [`hardened_child`], [`non_hardened_child`], and
+//! the branch-selecting [`child`].
+//!
 //! BIP32 spec: <https://en.bitcoin.it/wiki/BIP_0032>.
 //!
 //! # Word conventions
@@ -70,49 +74,18 @@ pub fn bip32_derive_compressed(
 	let max_depth = path.len();
 	let curve = Secp256k1::new(b);
 
-	// Master key: I = HMAC-SHA512("Bitcoin seed", seed). HMAC zero-pads the key to the block size,
-	// so the four trailing zero bytes of the second key word are exactly the padding the spec adds.
-	let key_words = [
-		b.add_constant_64(u64::from_be_bytes(*b"Bitcoin ")),
-		b.add_constant_64(u64::from_be_bytes([b's', b'e', b'e', b'd', 0, 0, 0, 0])),
-	];
-	let master = hmac_sha512_fixed(b, &key_words, seed, 64);
-	let mut k = il_scalar(&master);
-	let mut c = ir_words(&master);
+	let (mut k, mut c) = master_from_seed(b, seed);
 
 	// Compressed public key at every level 0..=max_depth: needed as the parent pubkey for any
 	// non-hardened step, and as the candidates for the depth multiplexer.
 	let mut serp_levels: Vec<Vec<Wire>> = Vec::with_capacity(max_depth + 1);
 
-	for level in 0..max_depth {
-		// Parent public key P = k * G.
+	for &index in path {
+		// Parent public key P = k * G, reused both as a multiplexer candidate and (for a
+		// non-hardened step) as the CKD input.
 		let point = scalar_mul(b, &curve, &k, Secp256k1Affine::generator(b));
 		serp_levels.push(compress_pubkey(b, &point.x, &point.y));
-
-		// Hardened iff bit 31 of the index is set (moved to the MSB for `select`).
-		let is_hardened = b.shl(path[level], 32);
-
-		// CKD data is `prefix || value[32] || ser32(index)` either way (37 bytes):
-		// hardened => 0x00 || ser256(k_par); normal => (0x02|0x03) || x_be.
-		let prefix_norm = compressed_prefix(b, &point.y);
-		let prefix = b.select(is_hardened, b.add_constant(Word::ZERO), prefix_norm);
-		// Select the 32-byte value field (the scalar `k` or the x-coordinate), then read it out as
-		// big-endian words (limb `3 - i` is the i-th most significant word).
-		let value_field = select_biguint(b, is_hardened, &k, &point.x);
-		let value = [
-			value_field.limbs[3],
-			value_field.limbs[2],
-			value_field.limbs[1],
-			value_field.limbs[0],
-		];
-
-		let message = assemble_message(b, prefix, &value, path[level]);
-		let i = hmac_sha512_fixed(b, &c, &message, 37);
-
-		// k_child = (parse256(I_L) + k_par) mod n ; c_child = I_R.
-		let il = il_scalar(&i);
-		k = curve.f_scalar().add(b, &il, &k);
-		c = ir_words(&i);
+		(k, c) = child(b, &curve, &k, &c, &point, index);
 	}
 
 	// Compressed public key for the deepest derived level.
@@ -121,6 +94,113 @@ pub fn bip32_derive_compressed(
 
 	let refs: Vec<&[Wire]> = serp_levels.iter().map(Vec::as_slice).collect();
 	multi_wire_multiplex(b, &refs, depth)
+}
+
+/// Master key from the BIP32 seed: `I = HMAC-SHA512("Bitcoin seed", seed)`, returned (via
+/// [`extended_key_parts`]) as the scalar `parse256(I_L)` and the chain code `I_R`.
+///
+/// HMAC zero-pads the key to the block size, so the four trailing zero bytes of the second key word
+/// are exactly the padding the spec adds.
+pub fn master_from_seed(b: &mut CircuitBuilder, seed: &[Wire; 8]) -> (BigUint, [Wire; 4]) {
+	let key_words = [
+		b.add_constant_64(u64::from_be_bytes(*b"Bitcoin ")),
+		b.add_constant_64(u64::from_be_bytes([b's', b'e', b'e', b'd', 0, 0, 0, 0])),
+	];
+	let master = hmac_sha512_fixed(b, &key_words, seed, 64);
+	extended_key_parts(&master)
+}
+
+/// Split a SHA-512-shaped 64-byte value `I = I_L || I_R` (eight big-endian 64-bit words — the
+/// layout of both an HMAC-SHA512 output and a raw BIP32 extended private key `private_key ||
+/// chain_code`) into the 256-bit scalar `parse256(I_L)` and the chain code `I_R` (four big-endian
+/// words, ready to use directly as an HMAC-SHA512 key).
+pub fn extended_key_parts(key: &[Wire; 8]) -> (BigUint, [Wire; 4]) {
+	(il_scalar(key), ir_words(key))
+}
+
+/// One BIP32 child-key-derivation step that selects between a hardened and a non-hardened child on
+/// bit 31 of `index`, sharing a single HMAC-SHA512.
+///
+/// `k_par`/`c_par` are the parent scalar and chain code; `parent_point` must be `k_par * G` (the
+/// non-hardened branch hashes the parent public key). Returns the child `(scalar, chain code)`.
+pub fn child(
+	b: &mut CircuitBuilder,
+	curve: &Secp256k1,
+	k_par: &BigUint,
+	c_par: &[Wire; 4],
+	parent_point: &Secp256k1Affine,
+	index: Wire,
+) -> (BigUint, [Wire; 4]) {
+	// Hardened iff bit 31 of the index is set (moved to the MSB for `select`).
+	let is_hardened = b.shl(index, 32);
+
+	// CKD data is `prefix || value[32] || ser32(index)` either way (37 bytes):
+	// hardened => 0x00 || ser256(k_par); normal => (0x02|0x03) || x_be.
+	let prefix_norm = compressed_prefix(b, &parent_point.y);
+	let prefix = b.select(is_hardened, b.add_constant(Word::ZERO), prefix_norm);
+	let value = select_biguint(b, is_hardened, k_par, &parent_point.x);
+
+	let message = assemble_message(b, prefix, &biguint_be_words(&value), index);
+	ckd_from_message(b, curve, k_par, c_par, &message)
+}
+
+/// One hardened BIP32 CKD step: `I = HMAC-SHA512(c_par, 0x00 || ser256(k_par) || ser32(index |
+/// 2^31))`. Any bits of `index` at or above bit 31 are ignored — the message assembly keeps only
+/// the low 32 and the hardened bit is forced on. Because it hashes the parent *scalar* directly, a
+/// hardened step needs no parent public key and therefore no scalar multiplication.
+pub fn hardened_child(
+	b: &mut CircuitBuilder,
+	curve: &Secp256k1,
+	k_par: &BigUint,
+	c_par: &[Wire; 4],
+	index: Wire,
+) -> (BigUint, [Wire; 4]) {
+	let hardened_index = b.bor(index, b.add_constant_64(HARDENED_BIT as u64));
+	let prefix = b.add_constant(Word::ZERO);
+	let message = assemble_message(b, prefix, &biguint_be_words(k_par), hardened_index);
+	ckd_from_message(b, curve, k_par, c_par, &message)
+}
+
+/// One non-hardened BIP32 CKD step: `I = HMAC-SHA512(c_par, ser_compressed(parent_point) ||
+/// ser32(index))`, where `parent_point` must be `k_par * G`. Only the low 31 bits of `index` are
+/// significant.
+pub fn non_hardened_child(
+	b: &mut CircuitBuilder,
+	curve: &Secp256k1,
+	k_par: &BigUint,
+	c_par: &[Wire; 4],
+	parent_point: &Secp256k1Affine,
+	index: Wire,
+) -> (BigUint, [Wire; 4]) {
+	let prefix = compressed_prefix(b, &parent_point.y);
+	let message = assemble_message(b, prefix, &biguint_be_words(&parent_point.x), index);
+	ckd_from_message(b, curve, k_par, c_par, &message)
+}
+
+/// Finish a CKD step from its assembled 37-byte message: `I = HMAC-SHA512(c_par, message)`, then
+/// `k_child = (parse256(I_L) + k_par) mod n` and `c_child = I_R`.
+fn ckd_from_message(
+	b: &mut CircuitBuilder,
+	curve: &Secp256k1,
+	k_par: &BigUint,
+	c_par: &[Wire; 4],
+	message: &[Wire; 5],
+) -> (BigUint, [Wire; 4]) {
+	let i = hmac_sha512_fixed(b, c_par, message, 37);
+	let (il, c) = extended_key_parts(&i);
+	let k = curve.f_scalar().add(b, &il, k_par);
+	(k, c)
+}
+
+/// The four 64-bit limbs of a 256-bit [`BigUint`] in big-endian word order (most significant
+/// first), the layout [`assemble_message`] expects for a 32-byte value field.
+fn biguint_be_words(value: &BigUint) -> [Wire; 4] {
+	[
+		value.limbs[3],
+		value.limbs[2],
+		value.limbs[1],
+		value.limbs[0],
+	]
 }
 
 /// Interpret the first 32 bytes (`I_L`) of a SHA-512 output as a 256-bit scalar (four little-endian

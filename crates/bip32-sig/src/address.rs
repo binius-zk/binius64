@@ -18,7 +18,9 @@ use bitcoin::{
 use ripemd::{Digest as _, Ripemd160};
 use sha2::Sha256;
 
-/// Bit 31 of a derivation index marks a hardened child (matches `Bip32Example`).
+use crate::derive::DerivationInputs;
+
+/// Bit 31 of a derivation index marks a hardened child.
 pub const HARDENED_BIT: u32 = 0x8000_0000;
 
 /// All address types the demo supports. Each maps to its standard BIP purpose.
@@ -70,7 +72,7 @@ impl AddressType {
 }
 
 /// A BIP44-style path `m/purpose'/0'/account'/change/index` as raw indices (hardened bit set on the
-/// first three levels). Depth 5, matching the circuit's `max_depth`.
+/// first three levels). Depth 5: three hardened levels and a two-level non-hardened suffix.
 pub fn bip44_path(ty: AddressType, account: u32, change: u32, index: u32) -> Vec<u32> {
 	vec![
 		ty.purpose() | HARDENED_BIT,
@@ -142,6 +144,74 @@ pub fn derive_compressed_pubkey(seed: &[u8; 64], path: &[u32]) -> Result<Compres
 		.map_err(|e| anyhow::anyhow!("derivation failed: {e}"))?;
 	let pubkey = PublicKey::from_secret_key(&secp, &derived.private_key);
 	Ok(CompressedPublicKey(pubkey))
+}
+
+/// Map an arbitrary BIP32 path onto the truncated circuit's inputs.
+///
+/// The circuit reaches the start of its non-hardened chain by either the seed master key or a
+/// single hardened step from a parent extended private key. The split is therefore at the path's
+/// **last** hardened level: everything before it (any mix of hardened/non-hardened levels) is
+/// derived offline into `parent_xprivkey`, that last hardened level becomes the in-circuit hardened
+/// step, and the suffix after it — necessarily all non-hardened — becomes `path`. A path with no
+/// hardened levels derives straight from the seed master key. The only requirement is that the
+/// non-hardened suffix fit `max_depth`.
+pub fn split_derivation(
+	seed: &[u8; 64],
+	path: &[u32],
+	max_depth: usize,
+) -> Result<DerivationInputs> {
+	// Index of the last hardened level; everything after it is non-hardened by construction.
+	match path.iter().rposition(|&idx| idx & HARDENED_BIT != 0) {
+		None => {
+			// No hardened levels: derive straight from the seed master key.
+			ensure_suffix_fits(path.len(), max_depth)?;
+			Ok(DerivationInputs {
+				seed: *seed,
+				parent_xprivkey: [0u8; 64],
+				hardened_index: 0,
+				use_seed: true,
+				path: path.to_vec(),
+			})
+		}
+		Some(last) => {
+			let suffix = &path[last + 1..];
+			ensure_suffix_fits(suffix.len(), max_depth)?;
+			// Levels before the last hardened one (any mix) fold into the parent offline.
+			Ok(DerivationInputs {
+				seed: *seed,
+				parent_xprivkey: derive_xprivkey(seed, &path[..last])?,
+				hardened_index: path[last] & !HARDENED_BIT,
+				use_seed: false,
+				path: suffix.to_vec(),
+			})
+		}
+	}
+}
+
+/// Error if the non-hardened suffix is deeper than the circuit supports.
+fn ensure_suffix_fits(suffix_len: usize, max_depth: usize) -> Result<()> {
+	if suffix_len > max_depth {
+		bail!("non-hardened suffix depth {suffix_len} exceeds the circuit maximum of {max_depth}");
+	}
+	Ok(())
+}
+
+/// Derive the extended private key at `path` as the raw 64 bytes `private_key || chain_code`.
+fn derive_xprivkey(seed: &[u8; 64], path: &[u32]) -> Result<[u8; 64]> {
+	let secp = Secp256k1::new();
+	let master = Xpriv::new_master(NetworkKind::Main, seed)
+		.map_err(|e| anyhow::anyhow!("master key: {e}"))?;
+	let children: Vec<ChildNumber> = path
+		.iter()
+		.map(|&idx| child_number(idx))
+		.collect::<Result<_>>()?;
+	let xpriv = master
+		.derive_priv(&secp, &children)
+		.map_err(|e| anyhow::anyhow!("derivation failed: {e}"))?;
+	let mut raw = [0u8; 64];
+	raw[..32].copy_from_slice(&xpriv.private_key.secret_bytes());
+	raw[32..].copy_from_slice(&xpriv.chain_code.to_bytes());
+	Ok(raw)
 }
 
 /// SHA-256 of the 33-byte compressed public key — the circuit's public input.

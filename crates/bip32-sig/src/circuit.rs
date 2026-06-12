@@ -12,11 +12,7 @@ use binius_core::{
 	constraint_system::{ConstraintSystem, ValueVecLayout},
 	word::Word,
 };
-use binius_examples::{
-	ExampleCircuit,
-	circuits::bip32::{Bip32Example, Instance, Params},
-	setup_zk,
-};
+use binius_examples::setup_zk;
 use binius_frontend::{Circuit, CircuitBuilder};
 use binius_hash::StdHashSuite;
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
@@ -26,9 +22,12 @@ use binius_verifier::{
 	zk_config::ZKVerifier,
 };
 
-/// BIP32 tree depth supported by the circuit (matches the `bip32` example default). A BIP44 path
-/// `m/purpose'/coin'/account'/change/index` is exactly this deep.
-pub const MAX_DEPTH: usize = 5;
+use crate::derive::{DerivationInputs, TruncatedBip32};
+
+/// Length of the non-hardened derivation chain the circuit supports. The starting key is reached by
+/// a single hardened step (or the seed master), so a BIP44 wallet maps onto a depth-2 non-hardened
+/// suffix `change/index`.
+pub const MAX_DEPTH: usize = 2;
 
 /// Log of the inverse rate for the proof system. Must match between prove and verify.
 pub const LOG_INV_RATE: usize = 3;
@@ -45,17 +44,12 @@ pub fn cs_cache_path() -> PathBuf {
 	PathBuf::from(CS_CACHE_FILE)
 }
 
-/// Build the circuit and the example wrapper used to populate witnesses.
-pub fn build_circuit() -> Result<(Circuit, Bip32Example)> {
+/// Build the circuit and the witness-population helper.
+pub fn build_circuit() -> Result<(Circuit, TruncatedBip32)> {
 	let mut builder = CircuitBuilder::new();
-	let example = Bip32Example::build(
-		Params {
-			max_depth: MAX_DEPTH,
-		},
-		&mut builder,
-	)?;
+	let circuit_def = TruncatedBip32::build(MAX_DEPTH, &mut builder);
 	let circuit = builder.build();
-	Ok((circuit, example))
+	Ok((circuit, circuit_def))
 }
 
 /// Serialize a constraint system to `path`, creating parent directories as needed.
@@ -112,16 +106,16 @@ pub struct Proof {
 	pub verify_time: Duration,
 }
 
-/// Generate a signature-of-knowledge proof for `(seed, path)` over `message`, and self-verify it.
+/// Generate a signature-of-knowledge proof for `inputs` over `message`, and self-verify it.
 ///
 /// The three phases are timed independently: setup (circuit build + prover/verifier setup) is
 /// witness-independent and is the part a future cache could elide; proving covers witness
 /// generation and `prove_sig`; verification is the self-check and is kept out of the proving time.
-pub fn prove(seed: &[u8; 64], path: &[u32], message: &[u8]) -> Result<Proof> {
+pub fn prove(inputs: &DerivationInputs, message: &[u8]) -> Result<Proof> {
 	// Phase 1 — setup: build the circuit and the prover/verifier. None of this depends on the
 	// witness, so it is the work a serialized setup would let us skip.
 	let setup_start = Instant::now();
-	let (circuit, example) = build_circuit()?;
+	let (circuit, circuit_def) = build_circuit()?;
 	let cs = circuit.constraint_system().clone();
 	let (verifier, prover) = setup_zk::<StdHashSuite>(cs, LOG_INV_RATE)?;
 	let setup_time = setup_start.elapsed();
@@ -129,11 +123,7 @@ pub fn prove(seed: &[u8; 64], path: &[u32], message: &[u8]) -> Result<Proof> {
 	// Phase 2 — witness generation + proving.
 	let proving_start = Instant::now();
 	let mut filler = circuit.new_witness_filler();
-	let instance = Instance {
-		seed: Some(hex::encode(seed)),
-		path: path.to_vec(),
-	};
-	example.populate_witness(instance, &mut filler)?;
+	circuit_def.populate_witness(inputs, &mut filler)?;
 	circuit.populate_wire_witness(&mut filler)?;
 	let witness = filler.into_value_vec();
 
