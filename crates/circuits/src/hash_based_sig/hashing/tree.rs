@@ -50,31 +50,19 @@ pub fn circuit_tree_hash(
 	let mut additional_terms = Vec::new();
 
 	// Add level (4 bytes, truncated from 8-byte wire)
-	let level_term = ByteVec {
-		len_bytes: builder.add_constant_64(4),
-		data: vec![level],
-	};
+	let level_term = ByteVec::new_const_len(builder, vec![level], 4);
 	additional_terms.push(level_term);
 
 	// Add index (4 bytes, truncated from 8-byte wire)
-	let index_term = ByteVec {
-		len_bytes: builder.add_constant_64(4),
-		data: vec![index],
-	};
+	let index_term = ByteVec::new_const_len(builder, vec![index], 4);
 	additional_terms.push(index_term);
 
 	// Add left hash
-	let left_term = ByteVec {
-		len_bytes: builder.add_constant_64(32),
-		data: left.to_vec(),
-	};
+	let left_term = ByteVec::new_const_len(builder, left.to_vec(), 32);
 	additional_terms.push(left_term);
 
 	// Add right hash
-	let right_term = ByteVec {
-		len_bytes: builder.add_constant_64(32),
-		data: right.to_vec(),
-	};
+	let right_term = ByteVec::new_const_len(builder, right.to_vec(), 32);
 	additional_terms.push(right_term);
 
 	circuit_tweaked_keccak(

@@ -41,16 +41,10 @@ pub fn circuit_message_hash(
 ) -> Keccak256 {
 	let mut additional_terms = Vec::new();
 
-	let nonce_term = ByteVec {
-		len_bytes: builder.add_constant_64(nonce_len as u64),
-		data: nonce_wires.clone(),
-	};
+	let nonce_term = ByteVec::new_const_len(builder, nonce_wires.clone(), nonce_len);
 	additional_terms.push(nonce_term);
 
-	let message_term = ByteVec {
-		len_bytes: builder.add_constant_64(message_len as u64),
-		data: message_wires.clone(),
-	};
+	let message_term = ByteVec::new_const_len(builder, message_wires.clone(), message_len);
 	additional_terms.push(message_term);
 
 	circuit_tweaked_keccak(

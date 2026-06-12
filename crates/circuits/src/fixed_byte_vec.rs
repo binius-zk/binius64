@@ -1,7 +1,7 @@
 // Copyright 2025-2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 
 use binius_core::{consts::WORD_SIZE_BYTES, word::Word};
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
@@ -18,6 +18,23 @@ use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into
 /// - The actual length is stored in the `len_bytes` wire and can be any value from 0 to the
 ///   capacity
 ///
+/// ## Compile-time length range
+/// Callers very often know a tighter compile-time bound on `len_bytes` than `[0, capacity]` (a
+/// constant-length field, a `concat` output bounded by the sum of its inputs, …). `len_range`
+/// records that bound so gadgets like [`concat`](crate::concat::concat) can elide the dynamic
+/// machinery that would otherwise handle the full `[0, capacity]` range. Invariants:
+/// - `len_range.end() <= capacity` (in bytes), and
+/// - the runtime `len_bytes` satisfies `len_range.start() <= len_bytes <= len_range.end()` (the
+///   bound is inclusive on both ends — the upper end mirrors the capacity, which `len_bytes` is
+///   allowed to reach).
+///
+/// This range is only sound to rely on when the wire is genuinely constrained to it: the
+/// constructors here either fix `len_bytes` to a compile-time constant (`new_const_len`,
+/// `truncate`, `slice_const_range`) or default to the full `0..capacity` range (`new`,
+/// `new_inout`, `new_witness`). [`new_with_len_range`](ByteVec::new_with_len_range) trusts the
+/// caller to have enforced the range by other means (e.g. `concat`, where the output length is the
+/// sum of already-constrained input lengths).
+///
 /// ## Example
 /// ```ignore
 /// // Create a ByteVec with capacity for 32 bytes (4 wires)
@@ -32,32 +49,88 @@ pub struct ByteVec {
 	/// The data wires, each holding up to 8 bytes. The number of wires determines
 	/// the capacity: capacity = data.len() * 8.
 	pub data: Vec<Wire>,
+	/// Compile-time bound on `len_bytes`: `len_range.start() <= len_bytes <= len_range.end()`. See
+	/// the struct docs for the invariants and how the range is established.
+	pub len_range: RangeInclusive<usize>,
 }
 
 impl ByteVec {
 	/// Creates a new fixed byte vector using the given wires and wire
 	/// containing the length of the data in bytes.
+	///
+	/// The length range defaults to the full `0..capacity`, preserving the fully-dynamic behavior.
 	pub fn new(data: Vec<Wire>, len_bytes: Wire) -> Self {
-		Self { len_bytes, data }
+		let capacity = data.len() * WORD_SIZE_BYTES;
+		Self::new_with_len_range(data, len_bytes, 0..=capacity)
+	}
+
+	/// Creates a new fixed byte vector with an explicit compile-time `len_range`.
+	///
+	/// The caller is responsible for ensuring `len_bytes` is actually constrained to lie within
+	/// `len_range`; this constructor only records the bound (and checks it against the capacity).
+	///
+	/// # Panics
+	/// * If `len_range.start() > len_range.end()`
+	/// * If `len_range.end()` exceeds the capacity (`data.len() * 8`)
+	pub fn new_with_len_range(
+		data: Vec<Wire>,
+		len_bytes: Wire,
+		len_range: RangeInclusive<usize>,
+	) -> Self {
+		let capacity = data.len() * WORD_SIZE_BYTES;
+		assert!(len_range.start() <= len_range.end(), "invalid len_range: start > end");
+		assert!(
+			*len_range.end() <= capacity,
+			"len_range.end {} exceeds capacity {capacity}",
+			len_range.end()
+		);
+		Self {
+			len_bytes,
+			data,
+			len_range,
+		}
+	}
+
+	/// Creates a constant-length byte vector: `len_bytes` is fixed to the compile-time constant
+	/// `len`, so `len_range = len..=len`.
+	///
+	/// # Panics
+	/// * If `len` exceeds the capacity (`data.len() * 8`)
+	pub fn new_const_len(b: &CircuitBuilder, data: Vec<Wire>, len: usize) -> Self {
+		let len_bytes = b.add_constant_64(len as u64);
+		Self::new_with_len_range(data, len_bytes, len..=len)
 	}
 
 	/// Creates a new fixed byte vector with the given maximum length as inout wires.
 	pub fn new_inout(b: &CircuitBuilder, max_len: usize) -> Self {
 		let len_bytes = b.add_inout();
 		let data = (0..max_len).map(|_| b.add_inout()).collect();
-		Self { len_bytes, data }
+		Self::new(data, len_bytes)
 	}
 
 	/// Creates a new fixed byte vector with the given maximum length as witness wires.
 	pub fn new_witness(b: &CircuitBuilder, max_len: usize) -> Self {
 		let len_bytes = b.add_inout();
 		let data = (0..max_len).map(|_| b.add_witness()).collect();
-		Self { len_bytes, data }
+		Self::new(data, len_bytes)
 	}
 
 	/// Populate the length wire with the actual vector size in bytes.
+	///
+	/// # Panics
+	/// * If `len_bytes` lies outside `self.len_range`.
 	pub fn populate_len_bytes(&self, w: &mut WitnessFiller, len_bytes: usize) {
+		self.assert_len_in_range(len_bytes);
 		w[self.len_bytes] = Word(len_bytes as u64);
+	}
+
+	/// Asserts that a concrete byte length lies within the compile-time `len_range`.
+	fn assert_len_in_range(&self, len_bytes: usize) {
+		assert!(
+			self.len_range.contains(&len_bytes),
+			"len_bytes {len_bytes} outside len_range {:?}",
+			self.len_range
+		);
 	}
 
 	/// Populate the [`ByteVec`] with bytes.
@@ -67,6 +140,7 @@ impl ByteVec {
 	/// # Panics
 	/// * If bytes.len() exceeds self.max_len
 	pub fn populate_bytes_le(&self, w: &mut WitnessFiller, bytes: &[u8]) {
+		self.assert_len_in_range(bytes.len());
 		pack_bytes_into_wires_le(w, &self.data, bytes);
 		w[self.len_bytes] = Word(bytes.len() as u64);
 	}
@@ -116,9 +190,7 @@ impl ByteVec {
 		assert!(num_wires <= self.data.len(), "num_wires must be less than self.data.len()");
 
 		let trimmed_wires = self.data[0..num_wires].to_vec();
-		let len_bytes = b.add_constant_64((num_wires << 3) as u64);
-
-		ByteVec::new(trimmed_wires, len_bytes)
+		ByteVec::new_const_len(b, trimmed_wires, num_wires << 3)
 	}
 
 	/// Extracts a slice at a compile-time constant range.
@@ -140,11 +212,12 @@ impl ByteVec {
 	/// # Constraints
 	/// - Validates at runtime that `range.end <= self.len_bytes`
 	/// - If the range is not aligned to 8-byte boundaries, words are shifted appropriately
-	/// - Padding bytes beyond the slice length are guaranteed to be zero
+	/// - Bytes of the final word beyond the slice length are unconstrained (a [`ByteVec`] makes no
+	///   guarantee about byte values past its length).
 	///
 	/// # Panics
 	/// * If `range.start > range.end`
-	/// * If `range.end > self.max_len_bytes()`
+	/// * If `range.end > self.len_range.end()`
 	///
 	/// # Example
 	/// ```ignore
@@ -155,72 +228,99 @@ impl ByteVec {
 	pub fn slice_const_range(&self, b: &CircuitBuilder, range: Range<usize>) -> ByteVec {
 		assert!(range.start <= range.end, "Invalid range: start > end");
 		assert!(
-			range.end <= self.max_len_bytes(),
-			"Range end {} exceeds maximum capacity {}",
+			range.end <= *self.len_range.end(),
+			"Range end {} exceeds length bound {}",
 			range.end,
-			self.max_len_bytes()
+			self.len_range.end()
 		);
 
-		let slice_len = range.end - range.start;
-		let len_bytes = b.add_constant_64(slice_len as u64);
+		let slice_len = range.len();
 
 		// Return early if slice is empty
 		if slice_len == 0 {
-			return ByteVec::new(Vec::new(), len_bytes);
+			return ByteVec::new_const_len(b, Vec::new(), 0);
 		}
 
-		let start_word_idx = range.start / WORD_SIZE_BYTES;
-		// Word index containing the last byte of the sliced data.
-		let last_word_index = (range.end - 1) / WORD_SIZE_BYTES;
-		let byte_offset = range.start % WORD_SIZE_BYTES;
-
-		// Calculate number of output words (rounded up to word boundary)
-		let num_output_words = slice_len.div_ceil(WORD_SIZE_BYTES);
-
-		// Validate that range.end <= self.len_bytes at runtime
-		let range_end_const = b.add_constant_64(range.end as u64);
-		let valid = b.icmp_ule(range_end_const, self.len_bytes);
-		b.assert_true("slice_range_check", valid);
-
-		// Extract words with shifting if needed
-		let mut output_words = if byte_offset == 0 {
-			// Aligned case: directly copy the words
-			self.data[start_word_idx..start_word_idx + num_output_words].to_vec()
-		} else {
-			// Unaligned case: combine bytes from two adjacent words
-			(0..num_output_words)
-				.map(|i| {
-					let source_idx = start_word_idx + i;
-
-					let current_word = self.data[source_idx];
-					// Shift current word right by byte_offset bytes to align
-					let shifted_current = b.shr(current_word, (byte_offset * 8) as u32);
-
-					if source_idx < last_word_index {
-						let next_word = self.data[source_idx + 1];
-						// Shift next word left to fill in the high bytes
-						let shifted_next = b.shl(next_word, ((8 - byte_offset) * 8) as u32);
-						// Combine the two parts (XOR is cheaper than OR)
-						b.bxor(shifted_current, shifted_next)
-					} else {
-						shifted_current
-					}
-				})
-				.collect()
-		};
-
-		// Apply byte mask to final word if slice doesn't end on word boundary
-		let final_byte_count = slice_len % 8;
-		if final_byte_count != 0 {
-			let last_idx = output_words.len() - 1;
-			// Create mask with only the lower final_byte_count bytes set
-			let mask_value = (1u64 << (final_byte_count * 8)) - 1;
-			let mask = b.add_constant_64(mask_value);
-			output_words[last_idx] = b.band(output_words[last_idx], mask);
+		// Validate that `range.end <= self.len_bytes` at runtime. For a const-length vec
+		// `len_bytes` is structurally pinned to `len_range.end()`, and the compile-time bound
+		// above already guarantees `range.end <= len_range.end() == len_bytes`, so the check is
+		// provably redundant and only emitted for dynamic-length vecs.
+		if self.len_range.start() != self.len_range.end() {
+			let range_end_const = b.add_constant_64(range.end as u64);
+			let valid = b.icmp_ule(range_end_const, self.len_bytes);
+			b.assert_true("slice_range_check", valid);
 		}
 
-		// Create new ByteVec with constant length
-		ByteVec::new(output_words, len_bytes)
+		let output_words = extract_const_range(b, &self.data, range);
+		ByteVec::new_const_len(b, output_words, slice_len)
+	}
+}
+
+/// Extracts `data[range]` (bytes packed little-endian into 64-bit words) as
+/// `range.len().div_ceil(8)` words.
+///
+/// Bytes of the final word beyond `range.len()` are left as-is (whatever the source words held);
+/// callers that care about those bytes must mask them, but a [`ByteVec`] makes no guarantee about
+/// byte values past its length, so the common case needs no mask.
+///
+/// All indices are compile-time constants, so this lowers to constant shifts (no multiplexer /
+/// dynamic-shift machinery). This is the constant-offset extraction primitive shared by
+/// [`ByteVec::slice_const_range`] and [`concat`](crate::concat::concat).
+///
+/// # Panics
+/// * If `range.start > range.end`
+/// * If `range.end` exceeds the capacity (`data.len() * 8`)
+pub(crate) fn extract_const_range(
+	b: &CircuitBuilder,
+	data: &[Wire],
+	range: Range<usize>,
+) -> Vec<Wire> {
+	assert!(range.start <= range.end, "invalid range: start > end");
+	assert!(
+		range.end <= data.len() * WORD_SIZE_BYTES,
+		"range.end {} exceeds capacity {}",
+		range.end,
+		data.len() * WORD_SIZE_BYTES
+	);
+
+	let slice_len = range.len();
+	if slice_len == 0 {
+		return Vec::new();
+	}
+
+	let start_word_idx = range.start / WORD_SIZE_BYTES;
+	// Word index containing the last byte of the sliced data.
+	let last_word_index = (range.end - 1) / WORD_SIZE_BYTES;
+	let byte_offset = range.start % WORD_SIZE_BYTES;
+	let num_output_words = slice_len.div_ceil(WORD_SIZE_BYTES);
+
+	// Extract words with shifting if needed. Bytes of the final word beyond the slice length are
+	// left as-is (a `ByteVec` makes no guarantee about byte values past its length).
+	if byte_offset == 0 {
+		// Aligned case: directly copy the words.
+		data[start_word_idx..start_word_idx + num_output_words].to_vec()
+	} else {
+		// Unaligned case: combine bytes from two adjacent words.
+		(0..num_output_words)
+			.map(|i| {
+				let source_idx = start_word_idx + i;
+
+				let current_word = data[source_idx];
+				// Shift current word right by byte_offset bytes to align.
+				let shifted_current = b.shr(current_word, (byte_offset * 8) as u32);
+
+				if source_idx < last_word_index {
+					let next_word = data[source_idx + 1];
+					// Shift next word left to fill in the high bytes.
+					let shifted_next =
+						b.shl(next_word, ((WORD_SIZE_BYTES - byte_offset) * 8) as u32);
+					// Combine the two parts (XOR is cheaper than OR).
+					b.bxor(shifted_current, shifted_next)
+				} else {
+					shifted_current
+				}
+			})
+			.collect()
 	}
 }
 
@@ -310,9 +410,10 @@ mod tests {
 		let input_data: Vec<u8> = (0..24).map(|i| i as u8).collect();
 		byte_vec.populate_bytes_le(&mut filler, &input_data);
 
-		// Expected slice: bytes 0-4 (5 bytes), padded to word
-		// Bytes: 00 01 02 03 04 (and upper 3 bytes should be masked to 0)
-		let expected_word = 0x0000000004030201u64; // Note: byte 0 is LSB
+		// Expected slice: bytes 0-7 of the source word. The slice length is 5, but the bytes past
+		// the length are no longer masked to zero (a `ByteVec` makes no guarantee about them), so
+		// the aligned extraction is the source word verbatim.
+		let expected_word = 0x0706050403020100u64; // Note: byte 0 is LSB
 		filler[slice.data[0]] = Word(expected_word);
 
 		circuit.populate_wire_witness(&mut filler).unwrap();
@@ -341,9 +442,10 @@ mod tests {
 		let input_data: Vec<u8> = (0..24).map(|i| i as u8).collect();
 		byte_vec.populate_bytes_le(&mut filler, &input_data);
 
-		// Expected slice: bytes 3-7 (5 bytes)
-		// Bytes: 03 04 05 06 07 (and upper 3 bytes masked to 0)
-		let expected_word = 0x0000000007060504u64 | 0x03; // Construct little-endian
+		// Expected slice: bytes 3-7 (5 bytes), shifted down by the 3-byte offset. The high 3 bytes
+		// happen to be zero here because the right shift fills with zeros (not because of any
+		// trailing-byte mask, which is no longer applied).
+		let expected_word = 0x0000000706050403u64; // bytes 03 04 05 06 07, LSB first
 		filler[slice.data[0]] = Word(expected_word);
 
 		circuit.populate_wire_witness(&mut filler).unwrap();
@@ -498,12 +600,12 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "exceeds maximum capacity")]
+	#[should_panic(expected = "exceeds length bound")]
 	fn test_slice_const_range_exceeds_capacity() {
 		let b = CircuitBuilder::new();
-		let byte_vec = ByteVec::new_witness(&b, 2); // 16 bytes capacity
+		let byte_vec = ByteVec::new_witness(&b, 2); // 16 bytes capacity, len_range 0..=16
 
-		// Should panic: range.end > capacity
+		// Should panic: range.end > len_range.end()
 		byte_vec.slice_const_range(&b, 0..20);
 	}
 
@@ -546,5 +648,75 @@ mod tests {
 		// Verify constraints
 		let cs = circuit.constraint_system();
 		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+	}
+
+	#[test]
+	fn test_new_defaults_to_full_len_range() {
+		let b = CircuitBuilder::new();
+		let v = ByteVec::new_witness(&b, 4); // 4 wires = 32 bytes capacity
+		assert_eq!(v.len_range, 0..=32);
+	}
+
+	#[test]
+	fn test_new_const_len_sets_point_range() {
+		let b = CircuitBuilder::new();
+		let data = vec![b.add_witness(); 4]; // 32 bytes capacity
+		let v = ByteVec::new_const_len(&b, data, 18);
+		assert_eq!(v.len_range, 18..=18);
+	}
+
+	#[test]
+	#[should_panic(expected = "exceeds capacity")]
+	fn test_new_const_len_exceeds_capacity_panics() {
+		let b = CircuitBuilder::new();
+		let data = vec![b.add_witness(); 2]; // 16 bytes capacity
+		ByteVec::new_const_len(&b, data, 17);
+	}
+
+	#[test]
+	#[should_panic(expected = "exceeds capacity")]
+	fn test_new_with_len_range_end_exceeds_capacity_panics() {
+		let b = CircuitBuilder::new();
+		let data = vec![b.add_witness(); 2]; // 16 bytes capacity
+		let len_bytes = b.add_inout();
+		ByteVec::new_with_len_range(data, len_bytes, 0..=17);
+	}
+
+	#[test]
+	#[should_panic(expected = "outside len_range")]
+	fn test_populate_len_bytes_out_of_range_panics() {
+		let b = CircuitBuilder::new();
+		// Constant-length vector pins len_range to 8..8; populating any other length is a bug.
+		let v = ByteVec::new_const_len(&b, vec![b.add_witness(); 2], 8);
+		let circuit = b.build();
+		let mut filler = circuit.new_witness_filler();
+		v.populate_len_bytes(&mut filler, 9);
+	}
+
+	#[test]
+	fn test_slice_const_range_const_len_skips_runtime_check() {
+		// A const-length vec pins `len_bytes` structurally, so `slice_const_range` skips the
+		// runtime `range.end <= len_bytes` check. A sub-range slice must still build and verify.
+		let b = CircuitBuilder::new();
+		let data: Vec<_> = (0..2).map(|_| b.add_witness()).collect(); // 16 bytes capacity
+		let v = ByteVec::new_const_len(&b, data, 16);
+		let slice = v.slice_const_range(&b, 0..11);
+		assert_eq!(slice.data.len(), 2);
+
+		let circuit = b.build();
+		let mut filler = circuit.new_witness_filler();
+		v.populate_data(&mut filler, &(0..16).map(|i| i as u8).collect::<Vec<_>>());
+
+		circuit.populate_wire_witness(&mut filler).unwrap();
+		let cs = circuit.constraint_system();
+		verify_constraints(cs, &filler.into_value_vec()).unwrap();
+	}
+
+	#[test]
+	fn test_slice_const_range_propagates_point_len_range() {
+		let b = CircuitBuilder::new();
+		let v = ByteVec::new_witness(&b, 4);
+		let s = v.slice_const_range(&b, 3..11); // 8-byte slice
+		assert_eq!(s.len_range, 8..=8);
 	}
 }

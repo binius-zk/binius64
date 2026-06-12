@@ -28,10 +28,11 @@ pub fn circuit_tweaked_keccak(
 	digest: [Wire; 4],
 ) -> Keccak256 {
 	let mut terms = Vec::with_capacity(2 + additional_terms.len());
-	terms.push(ByteVec::new(domain_param_wires, builder.add_constant_64(domain_param_len as u64)));
-	terms.push(ByteVec::new(
+	terms.push(ByteVec::new_const_len(builder, domain_param_wires, domain_param_len));
+	terms.push(ByteVec::new_const_len(
+		builder,
 		vec![builder.add_constant_64(tweak_byte as u64)],
-		builder.add_constant_64(1),
+		1,
 	));
 	terms.extend(additional_terms);
 
