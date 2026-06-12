@@ -139,6 +139,10 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Build documentation (including private items for CI checks)
         run: cargo doc --document-private-items --no-deps
+        env:
+          # Promote rustdoc lints (broken intra-doc links, missing crate-level
+          # docs) to errors, matching the `rustdoc` pre-push hook in prek.toml.
+          RUSTDOCFLAGS: "-D warnings"
 
   circuits-snapshot:
     name: circuits-snapshot (${{ matrix.example }})

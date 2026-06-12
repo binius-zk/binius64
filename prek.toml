@@ -31,6 +31,18 @@ hooks = [
     entry = "bash tools/clippy-changed-packages.sh",
     pass_filenames = true,
     stages = ["pre-push"]
+  },
+  {
+    id = "rustdoc",
+    name = "Check Rust docs build",
+    types = ["rust"],
+    language = "system",
+    # RUSTDOCFLAGS="-D warnings" promotes rustdoc lints (broken intra-doc links,
+    # missing crate-level docs) to errors, matching the `rust-doc` CI job.
+    entry = "cargo doc --document-private-items --no-deps",
+    env = { RUSTDOCFLAGS = "-D warnings" },
+    pass_filenames = false,
+    stages = ["pre-push"]
   }
 ]
 
