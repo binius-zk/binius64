@@ -9,7 +9,8 @@
 //! 1. Symbolically executing the inner verifier to build an outer Spartan constraint system
 //! 2. Combining inner and outer oracle specs into a single BaseFold ZK compiler
 //! 3. At verification time, running the inner verifier through a [`ZKWrappedVerifierChannel`] that
-//!    records all values as outer public inputs, then finishing with outer Spartan verification
+//!    records the channel interaction, then deriving the outer public inputs by replaying the
+//!    recorded gate sequence and finishing with outer Spartan verification
 //!
 //! [`ZKWrappedVerifierChannel`]: binius_spartan_verifier::wrapper::ZKWrappedVerifierChannel
 
@@ -22,7 +23,9 @@ use binius_iop::{
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_spartan_frontend::{compiler::compile, constraint_system::BlindingInfo};
+use binius_spartan_frontend::{
+	compiler::compile, constraint_system::BlindingInfo, gate::GateSequence,
+};
 use binius_spartan_verifier::{
 	IOPVerifier as IronSpartanIOPVerifier,
 	constraint_system::ConstraintSystemPadded,
@@ -165,12 +168,34 @@ where
 		self.basefold_compiler.fri_params().rs_code().log_inv_rate()
 	}
 
+	/// Records the gate sequence of the outer wrapper circuit (BINIUS-43).
+	///
+	/// Re-runs the symbolic build of the inner verifier per verify call: the recorded
+	/// [`GateSequence`] is consumed by the public-input derivation, and the build is
+	/// deterministic, so the sequence stays in lockstep with the outer constraint system compiled
+	/// at setup.
+	fn record_gate_sequence(&self) -> GateSequence<B128> {
+		let _guard = tracing::debug_span!("Record ZK wrapper gate sequence").entered();
+		let dummy_public_words =
+			vec![Word::from_u64(0); 1 << self.inner_iop_verifier.log_public_words()];
+		let mut builder_channel = IronSpartanBuilderChannel::new();
+		self.inner_iop_verifier
+			.verify(&dummy_public_words, &mut builder_channel)
+			.expect("symbolic verify should not fail");
+		let (_, gate_seq) = builder_channel.finish_with_gates();
+		gate_seq
+	}
+
 	/// Verifies a ZK proof against the constraint system.
 	pub fn verify<Challenger_: Challenger>(
 		&self,
 		public: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
+		// Record the gate sequence used by finish() to derive the outer public inputs from the
+		// inner channel interaction (BINIUS-43).
+		let gate_seq = self.record_gate_sequence();
+
 		// Create BaseFoldZK channel and wrap with outer verifier.
 		let channel = self.basefold_compiler.create_channel(transcript);
 		let mut wrapped_channel = ZKWrappedVerifierChannel::new(channel, &self.outer_iop_verifier)?;
@@ -200,7 +225,7 @@ where
 			)
 			.entered();
 
-			wrapped_channel.finish()?;
+			wrapped_channel.finish(gate_seq)?;
 		}
 
 		Ok(())

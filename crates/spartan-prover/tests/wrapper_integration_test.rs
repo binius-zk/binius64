@@ -64,16 +64,21 @@ fn test_zk_wrapped_prove_verify() {
 	let inner_iop_prover = IOPProver::new(inner_cs.clone());
 
 	// === Step 3: Symbolically execute verify to build the outer constraint system ===
+	// The recorded gate sequence is consumed by replay, so the (deterministic) symbolic build
+	// runs once for the prover and once for the verifier.
 	let inner_public_size = 1 << inner_cs.log_public();
 
-	let mut builder_channel = IronSpartanBuilderChannel::new();
-	let dummy_public = vec![B128::ZERO; inner_public_size];
-	let dummy_public_elems = builder_channel.observe_many(&dummy_public);
-	// IronSpartanBuilderChannel::Oracle = () and recv_oracle is a no-op, so pass () directly.
-	inner_iop_verifier
-		.verify((), dummy_public_elems, &mut builder_channel)
-		.expect("symbolic verify failed");
-	let (outer_builder, gate_seq) = builder_channel.finish_with_gates();
+	let build_outer = || {
+		let mut builder_channel = IronSpartanBuilderChannel::new();
+		let dummy_public = vec![B128::ZERO; inner_public_size];
+		let dummy_public_elems = builder_channel.observe_many(&dummy_public);
+		// IronSpartanBuilderChannel::Oracle = () and recv_oracle is a no-op, so pass () directly.
+		inner_iop_verifier
+			.verify((), dummy_public_elems, &mut builder_channel)
+			.expect("symbolic verify failed");
+		builder_channel.finish_with_gates()
+	};
+	let (outer_builder, gate_seq) = build_outer();
 	let (outer_cs, outer_layout) = compile(outer_builder);
 
 	// === Step 4: Build outer padded constraint system ===
@@ -186,8 +191,9 @@ fn test_zk_wrapped_prove_verify() {
 		.verify(inner_precommit_oracle, inner_public_elems, &mut wrapped_verifier_channel)
 		.expect("inner IOP verify failed");
 
-	// Finish verifies the outer proof.
+	// Finish derives the outer public inputs from the gate sequence and verifies the outer proof.
+	let (_, verifier_gate_seq) = build_outer();
 	wrapped_verifier_channel
-		.finish()
+		.finish(verifier_gate_seq)
 		.expect("outer IOP verify failed");
 }

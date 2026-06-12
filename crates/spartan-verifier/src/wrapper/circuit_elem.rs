@@ -11,17 +11,13 @@
 //!   constraint recording (used by
 //!   [`IronSpartanBuilderChannel`](super::builder_channel::IronSpartanBuilderChannel)).
 //! - [`WrappedWire`](super::zk_wrapped_channel::WrappedWire) over
-//!   [`InOutSegmentBuilder`](super::zk_wrapped_channel::InOutSegmentBuilder) — no constraint
-//!   recording; values are tracked as `Constant` / `InOut` / `Private` to distinguish what the
-//!   verifier does and does not know concretely, and lazily pushed to the outer public-input
-//!   segment (used by
+//!   [`NoopBuilder`](super::zk_wrapped_channel::NoopBuilder) — no constraint recording; values are
+//!   tracked as `Constant` / `InOut` / `Private` to distinguish what the verifier does and does not
+//!   know concretely (used by
 //!   [`ZKWrappedVerifierChannel`](super::zk_wrapped_channel::ZKWrappedVerifierChannel)).
-//! - `WitnessGenWire` over [`WitnessGenerator`] — concrete evaluation that fills a witness (used by
-//!   `binius_spartan_prover::wrapper::ReplayChannel`).
 //!
 //! [`CircuitBuilder`]: binius_spartan_frontend::circuit_builder::CircuitBuilder
 //! [`ConstraintBuilder`]: binius_spartan_frontend::circuit_builder::ConstraintBuilder
-//! [`WitnessGenerator`]: binius_spartan_frontend::circuit_builder::WitnessGenerator
 
 use std::{
 	cell::RefCell,
