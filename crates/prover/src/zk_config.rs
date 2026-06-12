@@ -6,7 +6,10 @@
 //! Spartan-based zero-knowledge wrapper. The prover counterpart to
 //! [`binius_verifier::zk_config::ZKVerifier`].
 
-use binius_core::{constraint_system::ValueVec, word::Word};
+use binius_core::{
+	constraint_system::{ConstraintSystem, ValueVec},
+	word::Word,
+};
 use binius_field::{
 	BinaryField128bGhash as B128, PackedExtension, PackedField, UnderlierWithBitOps, WithUnderlier,
 };
@@ -19,13 +22,16 @@ use binius_spartan_verifier::{
 	constraint_system::ConstraintSystemPadded, wrapper::IronSpartanBuilderChannel,
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
-use binius_utils::SerializeBytes;
+use binius_utils::{DeserializeBytes, SerializeBytes, serialization::SerializationError};
 use binius_verifier::{IOPVerifier, zk_config::ZKVerifier};
+use bytes::{Buf, BufMut};
 use digest::Output;
 use rand::CryptoRng;
 
 use crate::{
-	IOPProver, merkle_tree::prover::BinaryMerkleTreeProver, protocols::shift::build_key_collection,
+	IOPProver,
+	merkle_tree::prover::BinaryMerkleTreeProver,
+	protocols::shift::{KeyCollection, build_key_collection},
 };
 
 type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
@@ -58,12 +64,22 @@ where
 {
 	/// Constructs a ZK prover from a [`ZKVerifier`].
 	pub fn setup(zk_verifier: ZKVerifier<H>) -> Result<Self, Error> {
-		// Build the inner IOPProver.
-		let inner_iop_verifier = zk_verifier.inner_iop_verifier().clone();
 		let key_collection = {
 			let _guard = tracing::debug_span!("Build key collection").entered();
-			build_key_collection(inner_iop_verifier.constraint_system())
+			build_key_collection(zk_verifier.inner_iop_verifier().constraint_system())
 		};
+		Self::setup_with_key_collection(zk_verifier, key_collection)
+	}
+
+	/// Constructs a ZK prover from a verifier and a prebuilt [`KeyCollection`], skipping the
+	/// dominant key-collection build. Private: external callers use [`Self::setup`], or
+	/// [`DeserializeBytes::deserialize`] to reuse a serialized prover.
+	fn setup_with_key_collection(
+		zk_verifier: ZKVerifier<H>,
+		key_collection: KeyCollection,
+	) -> Result<Self, Error> {
+		// Build the inner IOPProver.
+		let inner_iop_verifier = zk_verifier.inner_iop_verifier().clone();
 		let inner_iop_prover = IOPProver::new(inner_iop_verifier.clone(), key_collection);
 
 		// Re-derive the outer constraint system and layout via symbolic execution.
@@ -204,6 +220,60 @@ where
 	) -> Result<(), Error> {
 		binius_verifier::signature::observe_message::<H, _>(&mut transcript.observe(), message);
 		self.prove(witness, rng, transcript)
+	}
+}
+
+/// Serializes the seed a [`ZKProver`] is built from — constraint system, `log_inv_rate`, and the
+/// prebuilt [`KeyCollection`]. On [`DeserializeBytes::deserialize`] the key collection (the
+/// dominant setup cost) is reused as-is while the cheaper derived state is recomputed.
+impl<P, H> SerializeBytes for ZKProver<P, H>
+where
+	P: PackedField<Scalar = B128>
+		+ PackedExtension<B128>
+		+ PackedExtension<binius_verifier::config::B1>
+		+ WithUnderlier<Underlier: UnderlierWithBitOps>,
+	H: HashSuite,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
+{
+	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
+		const VERSION: u32 = 1;
+		VERSION.serialize(&mut write_buf)?;
+		self.inner_iop_verifier
+			.constraint_system()
+			.serialize(&mut write_buf)?;
+		self.basefold_compiler
+			.fri_params()
+			.rs_code()
+			.log_inv_rate()
+			.serialize(&mut write_buf)?;
+		self.inner_iop_prover.key_collection().serialize(write_buf)
+	}
+}
+
+impl<P, H> DeserializeBytes for ZKProver<P, H>
+where
+	P: PackedField<Scalar = B128>
+		+ PackedExtension<B128>
+		+ PackedExtension<binius_verifier::config::B1>
+		+ WithUnderlier<Underlier: UnderlierWithBitOps>,
+	H: HashSuite,
+	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
+{
+	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
+		const VERSION: u32 = 1;
+		let version = u32::deserialize(&mut read_buf)?;
+		if version != VERSION {
+			return Err(SerializationError::InvalidConstruction {
+				name: "ZKProver::version",
+			});
+		}
+		let constraint_system = ConstraintSystem::deserialize(&mut read_buf)?;
+		let log_inv_rate = usize::deserialize(&mut read_buf)?;
+		let key_collection = KeyCollection::deserialize(&mut read_buf)?;
+		let zk_verifier = ZKVerifier::setup(constraint_system, log_inv_rate)
+			.map_err(|_| SerializationError::InvalidConstruction { name: "ZKProver" })?;
+		Self::setup_with_key_collection(zk_verifier, key_collection)
+			.map_err(|_| SerializationError::InvalidConstruction { name: "ZKProver" })
 	}
 }
 
