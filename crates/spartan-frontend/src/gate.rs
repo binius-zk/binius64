@@ -35,7 +35,7 @@ use std::collections::HashMap;
 
 use binius_field::Field;
 
-use crate::constraint_system::{ConstraintWire, Witness, WitnessLayout, WitnessSegment};
+use crate::constraint_system::{ConstraintWire, WireKind, Witness, WitnessLayout, WitnessSegment};
 
 /// Dense index of a value produced during the symbolic build.
 pub type RecWire = usize;
@@ -210,6 +210,59 @@ impl<F: Field> GateSequence<F> {
 		}
 
 		Witness::new(public, precommit, private)
+	}
+
+	/// Replay only the public-side gates, deriving the InOut segment values from the channel
+	/// interaction stream (BINIUS-43, verifier side).
+	///
+	/// Walks the same recorded sequence as [`Self::replay`], but executes only the gates whose
+	/// values derive from public data: [`Gate::Input`] (consuming `inputs` — the inner channel's
+	/// recv/sample/observe outputs in recording order), [`Gate::Public`], and [`Gate::Materialize`]
+	/// (writing into `public[n_constants + inout_id]`). The private gates ([`Gate::Precommit`],
+	/// [`Gate::Add`], [`Gate::Mul`], [`Gate::Hint`]) are skipped; by construction their outputs are
+	/// never inputs to a public-side gate (an operation with a private input is itself recorded as
+	/// a private gate).
+	///
+	/// `public` is the outer witness's public segment with the constants prefix at the front;
+	/// `n_constants` is the length of that prefix.
+	pub fn replay_public(
+		self,
+		n_constants: usize,
+		public: &mut [F],
+		mut inputs: impl Iterator<Item = F>,
+	) {
+		let mut values: Vec<F> = vec![F::ZERO; self.n_wires];
+
+		let val = |values: &[F], v: &Val<F>| -> F {
+			match v {
+				Val::Wire(id) => values[*id],
+				Val::Const(c) => *c,
+			}
+		};
+
+		for gate in self.gates {
+			match gate {
+				Gate::Input { out } => {
+					values[out] = inputs.next().expect("interaction stream exhausted");
+				}
+				Gate::Public { ins, outs, f } => {
+					let in_vals = ins.iter().map(|v| val(&values, v)).collect::<Vec<_>>();
+					let out_vals = f(&in_vals);
+					debug_assert_eq!(out_vals.len(), outs.len());
+					for (out, value) in outs.iter().zip(out_vals) {
+						values[*out] = value;
+					}
+				}
+				Gate::Materialize { rec, cw } => {
+					debug_assert_eq!(cw.kind, WireKind::InOut);
+					public[n_constants + cw.id as usize] = values[rec];
+				}
+				Gate::Precommit { .. }
+				| Gate::Add { .. }
+				| Gate::Mul { .. }
+				| Gate::Hint { .. } => {}
+			}
+		}
 	}
 }
 
@@ -403,6 +456,16 @@ mod tests {
 		assert_eq!(witness.precommit()[0], k);
 		assert_eq!(witness.private()[0], p);
 		assert_eq!(witness.private()[1], q);
+	}
+
+	#[test]
+	fn replay_public_fills_inout_values() {
+		let (seq, a_enc, _k) = build_seq();
+		// public = [const ONE, inout 0]; replay_public derives the InOut values without the
+		// precommit keys, skipping the private gates.
+		let mut public = vec![B128::ONE, B128::ZERO];
+		seq.replay_public(1, &mut public, [a_enc].into_iter());
+		assert_eq!(public[1], a_enc);
 	}
 
 	#[test]
