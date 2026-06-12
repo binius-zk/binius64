@@ -2,11 +2,12 @@
 //! Interactive CLI for BIP32 Bitcoin signatures of knowledge.
 //!
 //! Proves, in zero knowledge, that you control the seed behind a Bitcoin address and signs a
-//! message with it — without revealing the seed. A thin, friendly wrapper over the `bip32` circuit
-//! in `binius-examples`.
+//! message with it — without revealing the seed. A thin, friendly wrapper over the truncated-BIP32
+//! circuit in [`crate::derive`].
 
 mod address;
 mod circuit;
+mod derive;
 mod proof_file;
 
 use std::{
@@ -24,7 +25,7 @@ use sha2::{Digest, Sha256};
 use crate::{
 	address::{
 		AddressType, address_for, bind_address_to_hash, bip44_path, derive_compressed_pubkey,
-		format_path, parse_address, parse_path, scan_for_path,
+		format_path, parse_address, parse_path, scan_for_path, split_derivation,
 	},
 	circuit::{MAX_DEPTH, cs_cache_path, load_or_create_cs},
 	proof_file::ProofFile,
@@ -104,7 +105,8 @@ fn run_prove(use_existing: bool) -> Result<()> {
 	}
 
 	println!("\nGenerating proof…");
-	let proof = circuit::prove(&wallet.seed, &wallet.path, message.as_bytes())?;
+	let inputs = split_derivation(&wallet.seed, &wallet.path, MAX_DEPTH)?;
+	let proof = circuit::prove(&inputs, message.as_bytes())?;
 	let (setup_time, proving_time, verify_time) =
 		(proof.setup_time, proof.proving_time, proof.verify_time);
 
@@ -220,9 +222,8 @@ fn existing_address_wallet() -> Result<Wallet> {
 			println!("Path not found within {SCAN_LIMIT} addresses.");
 			let entered = prompt_line("Enter the BIP32 path manually (e.g. 44'/0'/0'/0/0): ")?;
 			let path = parse_path(&entered)?;
-			if path.len() > MAX_DEPTH {
-				bail!("path depth {} exceeds the circuit maximum of {MAX_DEPTH}", path.len());
-			}
+			// `split_derivation` (at proving time) enforces the truncated-circuit shape: hardened
+			// levels followed by a non-hardened suffix of at most `MAX_DEPTH`.
 			let pubkey = derive_compressed_pubkey(&seed, &path)?;
 			if address_for(ty, &pubkey) != address {
 				bail!("the entered path does not derive the given address");

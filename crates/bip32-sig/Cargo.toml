@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+binius-circuits = { path = "../circuits" }
 binius-core = { path = "../core" }
 binius-examples = { path = "../examples", default-features = false }
 binius-frontend = { path = "../frontend" }
@@ -27,6 +28,7 @@ hex.workspace = true
 rand = { workspace = true, features = ["thread_rng"] }
 ripemd.workspace = true
 sha2.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 hex-literal.workspace = true
