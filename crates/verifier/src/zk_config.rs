@@ -74,7 +74,7 @@ where
 			vec![Word::from_u64(0); 1 << inner_iop_verifier.log_public_words()];
 
 		let outer_builder = {
-			let _ = tracing::debug_span!("Build ZK wrapper circuit").entered();
+			let _guard = tracing::debug_span!("Build ZK wrapper circuit").entered();
 			let mut builder_channel = IronSpartanBuilderChannel::new();
 			inner_iop_verifier
 				.verify(&dummy_public_words, &mut builder_channel)
@@ -82,7 +82,7 @@ where
 			builder_channel.finish()
 		};
 		let (outer_cs, _) = {
-			let _ = tracing::debug_span!("Compile ZK wrapper circuit").entered();
+			let _guard = tracing::debug_span!("Compile ZK wrapper circuit").entered();
 			compile(outer_builder)
 		};
 

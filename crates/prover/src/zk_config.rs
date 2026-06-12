@@ -60,7 +60,10 @@ where
 	pub fn setup(zk_verifier: ZKVerifier<H>) -> Result<Self, Error> {
 		// Build the inner IOPProver.
 		let inner_iop_verifier = zk_verifier.inner_iop_verifier().clone();
-		let key_collection = build_key_collection(inner_iop_verifier.constraint_system());
+		let key_collection = {
+			let _guard = tracing::debug_span!("Build key collection").entered();
+			build_key_collection(inner_iop_verifier.constraint_system())
+		};
 		let inner_iop_prover = IOPProver::new(inner_iop_verifier.clone(), key_collection);
 
 		// Re-derive the outer constraint system and layout via symbolic execution.
@@ -68,14 +71,20 @@ where
 		// TODO: This duplicates code in ZKVerifier::setup. Prover needs to call it separately
 		// because the Verifier doesn't (and shouldn't) store the layout. However, the code can be
 		// refactored out for DRYness.
-		let dummy_public_words =
-			vec![Word::from_u64(0); 1 << inner_iop_verifier.log_public_words()];
-		let mut builder_channel = IronSpartanBuilderChannel::new();
-		inner_iop_verifier
-			.verify(&dummy_public_words, &mut builder_channel)
-			.expect("symbolic verify should not fail");
-		let outer_builder = builder_channel.finish();
-		let (outer_cs, outer_layout) = compile(outer_builder);
+		let outer_builder = {
+			let _guard = tracing::debug_span!("Build ZK wrapper circuit").entered();
+			let dummy_public_words =
+				vec![Word::from_u64(0); 1 << inner_iop_verifier.log_public_words()];
+			let mut builder_channel = IronSpartanBuilderChannel::new();
+			inner_iop_verifier
+				.verify(&dummy_public_words, &mut builder_channel)
+				.expect("symbolic verify should not fail");
+			builder_channel.finish()
+		};
+		let (outer_cs, outer_layout) = {
+			let _guard = tracing::debug_span!("Compile ZK wrapper circuit").entered();
+			compile(outer_builder)
+		};
 
 		// Pad the outer constraint system with the same blinding as the verifier.
 		let outer_cs = ConstraintSystemPadded::new(
@@ -92,7 +101,10 @@ where
 
 		// Build the BaseFoldZK prover compiler from the verifier compiler.
 		let subspace = zk_verifier.basefold_compiler().max_subspace();
-		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
+		let domain_context = {
+			let _guard = tracing::debug_span!("Precompute NTT domain").entered();
+			GenericPreExpanded::generate_from_subspace(subspace)
+		};
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 		let merkle_prover = BinaryMerkleTreeProver::<_, H>::new();
