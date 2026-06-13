@@ -193,7 +193,7 @@ fn build_g_parts<
 			let mut mask = P::zero();
 			for bit_index in 0..P::WIDTH {
 				if (i >> bit_index) & 1 == 1 {
-					mask.set(bit_index, all_ones_f);
+					PackedField::set(&mut mask, bit_index, all_ones_f);
 				}
 			}
 			mask.to_underlier()

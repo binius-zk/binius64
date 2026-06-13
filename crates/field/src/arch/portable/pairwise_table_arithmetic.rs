@@ -2,7 +2,7 @@
 
 use super::packed::PackedPrimitiveType;
 use crate::{
-	AESTowerField8b,
+	AESTowerField8b, Divisible,
 	arch::PairwiseTableStrategy,
 	arithmetic_traits::{TaggedInvertOrZero, TaggedMul, TaggedSquare},
 	packed::PackedField,

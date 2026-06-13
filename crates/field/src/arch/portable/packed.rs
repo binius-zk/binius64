@@ -468,7 +468,8 @@ where
 	U: UnderlierWithBitOps + Divisible<Scalar::Underlier>,
 	Scalar: BinaryField,
 {
-	const LOG_WIDTH: usize = (U::BITS / Scalar::N_BITS).ilog2() as usize;
+	// LOG_WIDTH defaults to `<Self as Divisible<Scalar>>::LOG_N`, the same `(U::BITS /
+	// Scalar::N_BITS).ilog2()` count.
 
 	#[inline]
 	unsafe fn get_unchecked(&self, i: usize) -> Self::Scalar {
@@ -531,11 +532,6 @@ where
 				.spread::<<Self::Scalar as WithUnderlier>::Underlier>(log_block_len, block_idx)
 				.into()
 		}
-	}
-
-	#[inline]
-	fn broadcast(scalar: Self::Scalar) -> Self {
-		Self::broadcast(scalar)
 	}
 
 	#[inline]

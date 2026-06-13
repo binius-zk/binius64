@@ -49,7 +49,7 @@ mod tests {
 	use proptest::prelude::*;
 
 	use super::*;
-	use crate::packed::PackedField;
+	use crate::Divisible;
 
 	proptest! {
 		#[test]

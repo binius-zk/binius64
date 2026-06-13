@@ -36,7 +36,7 @@ fn benchmark_set_impl<P: PackedField>(group: &mut BenchmarkGroup<'_, WallTime>, 
 		b.iter(|| {
 			indices_values
 				.iter()
-				.for_each(|(i, val)| value.set(*i, *val));
+				.for_each(|(i, val)| PackedField::set(&mut value, *i, *val));
 
 			value
 		})

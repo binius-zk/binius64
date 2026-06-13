@@ -9,6 +9,7 @@ use super::{
 	univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64},
 };
 use crate::{
+	Divisible,
 	arithmetic_traits::{
 		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
 		impl_square_with,

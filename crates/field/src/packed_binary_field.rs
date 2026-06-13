@@ -522,8 +522,8 @@ mod tests {
 		*,
 	};
 	use crate::{
-		PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
-		Random,
+		Divisible, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
+		PackedField, Random,
 		arithmetic_traits::{InvertOrZero, Square},
 		test_utils::check_transpose_all_heights,
 		underlier::{U2, U4},
@@ -559,7 +559,7 @@ mod tests {
 			.collect::<Vec<_>>();
 
 		for (i, val) in scalars.iter().enumerate() {
-			elem.set(i, *val);
+			PackedField::set(&mut elem, i, *val);
 		}
 		for (i, val) in scalars.iter().enumerate() {
 			assert_eq!(elem.get(i), *val);

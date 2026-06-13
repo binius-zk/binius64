@@ -18,7 +18,7 @@ use binius_utils::{
 use bytemuck::Zeroable;
 
 use super::{PackedExtension, Random, arithmetic_traits::Square};
-use crate::{BinaryField, Field, WideMul, field::FieldOps};
+use crate::{BinaryField, Divisible, Field, WideMul, field::FieldOps};
 
 /// A packed field represents a vector of underlying field elements.
 ///
@@ -45,9 +45,15 @@ pub trait PackedField:
 	+ Random
 	+ WideMul<Output: Debug + Send + Sync + 'static>
 	+ 'static
+	// A packed field divides into its `WIDTH` scalars. Element access (`get`), broadcast, and the
+	// scalar iterators are provided by this supertrait; `set` is kept here as an in-place `&mut`
+	// convenience (see [`Self::set`]).
+	+ Divisible<Self::Scalar>
 {
 	/// Base-2 logarithm of the number of field elements packed into one packed element.
-	const LOG_WIDTH: usize;
+	///
+	/// This is the number of scalars the packed field divides into, i.e. its `Divisible` log-count.
+	const LOG_WIDTH: usize = <Self as Divisible<Self::Scalar>>::LOG_N;
 
 	/// The number of field elements packed into one packed element.
 	///
@@ -64,19 +70,12 @@ pub trait PackedField:
 	/// The caller must ensure that `i` is less than `WIDTH`.
 	unsafe fn set_unchecked(&mut self, i: usize, scalar: Self::Scalar);
 
-	/// Get the scalar at a given index.
+	/// Set the scalar at a given index, in place.
 	///
-	/// # Preconditions
-	///
-	/// * `i` must be less than `WIDTH`.
-	#[inline]
-	fn get(&self, i: usize) -> Self::Scalar {
-		assert!(i < Self::WIDTH, "index {i} out of range for width {}", Self::WIDTH);
-		// Safety: assertion above guarantees i < WIDTH
-		unsafe { self.get_unchecked(i) }
-	}
-
-	/// Set the scalar at a given index.
+	/// This is the `&mut self` counterpart to the by-value [`Divisible::set`]. Because `Divisible`
+	/// is a supertrait, both are in scope wherever a `PackedField` bound is visible, and method
+	/// resolution prefers the by-value `Divisible::set` for `packed.set(i, v)`. To call this
+	/// in-place version, use fully-qualified syntax: `PackedField::set(&mut packed, i, v)`.
 	///
 	/// # Preconditions
 	///
@@ -84,8 +83,7 @@ pub trait PackedField:
 	#[inline]
 	fn set(&mut self, i: usize, scalar: Self::Scalar) {
 		assert!(i < Self::WIDTH, "index {i} out of range for width {}", Self::WIDTH);
-		// Safety: assertion above guarantees i < WIDTH
-		unsafe { self.set_unchecked(i, scalar) }
+		*self = <Self as Divisible<Self::Scalar>>::set(*self, i, scalar);
 	}
 
 	#[inline]
@@ -111,12 +109,11 @@ pub trait PackedField:
 	#[inline(always)]
 	fn set_single(scalar: Self::Scalar) -> Self {
 		let mut result = Self::default();
-		result.set(0, scalar);
+		// UFCS to select the in-place `PackedField::set` over the by-value `Divisible::set`.
+		PackedField::set(&mut result, 0, scalar);
 
 		result
 	}
-
-	fn broadcast(scalar: Self::Scalar) -> Self;
 
 	/// Construct a packed field element from a function that returns scalar values by index.
 	fn from_fn(f: impl FnMut(usize) -> Self::Scalar) -> Self;
@@ -142,7 +139,8 @@ pub trait PackedField:
 	fn from_scalars(values: impl IntoIterator<Item = Self::Scalar>) -> Self {
 		let mut result = Self::default();
 		for (i, val) in values.into_iter().take(Self::WIDTH).enumerate() {
-			result.set(i, val);
+			// UFCS to select the in-place `PackedField::set` over the by-value `Divisible::set`.
+			PackedField::set(&mut result, i, val);
 		}
 		result
 	}
@@ -193,7 +191,7 @@ pub trait PackedField:
 	/// Spread takes a block of elements within a packed field and repeats them to the full packing
 	/// width.
 	///
-	/// Spread can be seen as an extension of the functionality of [`Self::broadcast`].
+	/// Spread can be seen as an extension of the functionality of [`Divisible::broadcast`].
 	///
 	/// ## Examples
 	///
@@ -425,7 +423,7 @@ impl<P: PackedField> RandomAccessSequenceMut<P::Scalar> for PackedSliceMut<'_, P
 }
 
 impl<F: Field> PackedField for F {
-	const LOG_WIDTH: usize = 0;
+	// LOG_WIDTH defaults to `<Self as Divisible<Self>>::LOG_N`, which is 0 for a scalar field.
 
 	#[inline]
 	unsafe fn get_unchecked(&self, _i: usize) -> Self::Scalar {
@@ -458,11 +456,6 @@ impl<F: Field> PackedField for F {
 
 	fn unzip(self, _other: Self, _log_block_len: usize) -> (Self, Self) {
 		panic!("cannot transpose when WIDTH = 1");
-	}
-
-	#[inline]
-	fn broadcast(scalar: Self::Scalar) -> Self {
-		scalar
 	}
 
 	#[inline]

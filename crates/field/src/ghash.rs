@@ -22,7 +22,7 @@ use super::{
 	extension::ExtensionField,
 };
 use crate::{
-	AESTowerField8b, Field, PackedField, WideMul,
+	AESTowerField8b, Divisible, Field, PackedField, WideMul,
 	arch::packed_ghash_128::PackedBinaryGhash1x128b,
 	arithmetic_traits::InvertOrZero,
 	binary_field_arithmetic::{
