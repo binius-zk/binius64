@@ -16,8 +16,10 @@ use binius_field::{
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::basefold_compiler::BaseFoldZKProverCompiler;
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded};
-use binius_spartan_frontend::{compiler::compile, constraint_system::WitnessLayout};
-use binius_spartan_prover::wrapper::{ReplayChannel, ZKWrappedProverChannel};
+use binius_spartan_frontend::{
+	compiler::compile, constraint_system::WitnessLayout, gate::GateSequence,
+};
+use binius_spartan_prover::wrapper::ZKWrappedProverChannel;
 use binius_spartan_verifier::{
 	constraint_system::ConstraintSystemPadded, wrapper::IronSpartanBuilderChannel,
 };
@@ -149,6 +151,23 @@ where
 		self.inner_iop_prover.key_collection()
 	}
 
+	/// Records the gate sequence of the outer wrapper circuit (BINIUS-43).
+	///
+	/// Re-runs the symbolic build of the inner verifier per prove call: the recorded
+	/// [`GateSequence`] is consumed by witness generation, and the build is deterministic, so the
+	/// sequence stays in lockstep with the outer constraint system compiled at setup.
+	fn record_gate_sequence(&self) -> GateSequence<B128> {
+		let _guard = tracing::debug_span!("Record ZK wrapper gate sequence").entered();
+		let dummy_public_words =
+			vec![Word::from_u64(0); 1 << self.inner_iop_verifier.log_public_words()];
+		let mut builder_channel = IronSpartanBuilderChannel::new();
+		self.inner_iop_verifier
+			.verify(&dummy_public_words, &mut builder_channel)
+			.expect("symbolic verify should not fail");
+		let (_, gate_seq) = builder_channel.finish_with_gates();
+		gate_seq
+	}
+
 	/// Generates a ZK proof for a witness.
 	pub fn prove<Challenger_: Challenger>(
 		&self,
@@ -156,8 +175,8 @@ where
 		mut rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		// Clone public words before moving witness into prove().
-		let public_words = witness.public().to_vec();
+		// Record the gate sequence used to generate the outer witness in finish() (BINIUS-43).
+		let gate_seq = self.record_gate_sequence();
 
 		// Create BaseFoldZK prover channel and wrap with outer prover.
 		let basefold_channel = self.basefold_compiler.create_channel(transcript, &mut rng);
@@ -166,14 +185,6 @@ where
 			&self.outer_iop_prover,
 			&self.outer_layout,
 			&mut rng,
-			{
-				let inner_iop_verifier = &self.inner_iop_verifier;
-				move |replay_channel: &mut ReplayChannel<'_, B128>| {
-					inner_iop_verifier
-						.verify(&public_words, replay_channel)
-						.expect("replay verification should not fail");
-				}
-			},
 		);
 
 		// Run the inner IOP proof through the wrapped channel.
@@ -201,7 +212,7 @@ where
 			)
 			.entered();
 
-			wrapped_channel.finish(rng)?;
+			wrapped_channel.finish(rng, gate_seq)?;
 		}
 
 		Ok(())

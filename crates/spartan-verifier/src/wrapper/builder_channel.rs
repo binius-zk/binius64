@@ -16,6 +16,7 @@ use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, ConstraintBuilder},
 	constraint_system::ConstraintWire,
+	gate::{EvalFn, GateSequence, RecWire, Val},
 };
 
 use super::circuit_elem::{CircuitElem, CircuitWire};
@@ -25,24 +26,36 @@ use super::circuit_elem::{CircuitElem, CircuitWire};
 #[derive(Debug, Clone)]
 pub enum BuilderWire<F> {
 	Constant(F),
-	InOut(Rc<Cell<Option<ConstraintWire>>>),
+	/// A lazy InOut value: `cw` is the outer constraint-system wire, allocated only when the wire
+	/// is materialized (mixed with a private value). `rec` is its recorded-gate-sequence wire id
+	/// (BINIUS-43), assigned when recording is enabled (always, via the builder channel).
+	InOut {
+		cw: Rc<Cell<Option<ConstraintWire>>>,
+		rec: Option<RecWire>,
+	},
 	Private(ConstraintWire),
 }
 
 impl<F: Field> BuilderWire<F> {
-	fn lazy_inout() -> Self {
-		Self::InOut(Rc::new(Cell::new(None)))
+	fn lazy_inout(rec: Option<RecWire>) -> Self {
+		Self::InOut {
+			cw: Rc::new(Cell::new(None)),
+			rec,
+		}
 	}
 
 	fn materialize(builder: &mut ConstraintBuilder<F>, wire: &Self) -> ConstraintWire {
 		match wire {
 			Self::Constant(val) => builder.constant(*val),
-			Self::InOut(maybe_wire) => {
-				if let Some(wire) = maybe_wire.get() {
+			Self::InOut { cw, rec } => {
+				if let Some(wire) = cw.get() {
 					wire
 				} else {
 					let wire = builder.alloc_inout();
-					maybe_wire.set(Some(wire));
+					cw.set(Some(wire));
+					if let (Some(rec), Some(recorder)) = (rec, builder.recorder_mut()) {
+						recorder.materialize(*rec, wire);
+					}
 					wire
 				}
 			}
@@ -70,9 +83,15 @@ impl<F: Field> CircuitWire<F> for BuilderWire<F> {
 		} else {
 			let is_inout = wires
 				.iter()
-				.all(|wire| matches!(wire, Self::Constant(_) | Self::InOut(_)));
+				.all(|wire| matches!(wire, Self::Constant(_) | Self::InOut { .. }));
 			if is_inout {
-				array::from_fn(|_| Self::lazy_inout())
+				// Public-only result: a fresh lazy InOut per output. Allocate a recorder wire id so
+				// the public gate (recorded by `record_public_gate`) and later `materialize` can
+				// reference it.
+				array::from_fn(|_| {
+					let rec = builder.recorder_mut().map(|r| r.alloc_rec());
+					Self::lazy_inout(rec)
+				})
 			} else {
 				// If any of the inputs are private wires, then lazily materialize in inout wires
 				// and compute the result within the circuit.
@@ -104,9 +123,14 @@ impl<F: Field> CircuitWire<F> for BuilderWire<F> {
 		} else {
 			let is_inout = wires
 				.iter()
-				.all(|wire| matches!(wire, Self::Constant(_) | Self::InOut(_)));
+				.all(|wire| matches!(wire, Self::Constant(_) | Self::InOut { .. }));
 			if is_inout {
-				repeat_with(|| Self::lazy_inout()).take(n_out).collect()
+				repeat_with(|| {
+					let rec = builder.recorder_mut().map(|r| r.alloc_rec());
+					Self::lazy_inout(rec)
+				})
+				.take(n_out)
+				.collect()
 			} else {
 				// If any of the inputs are private wires, then lazily materialize in inout wires
 				// and compute the result within the circuit.
@@ -118,6 +142,38 @@ impl<F: Field> CircuitWire<F> for BuilderWire<F> {
 				debug_assert_eq!(result.len(), n_out);
 				result.into_iter().map(Self::Private).collect()
 			}
+		}
+	}
+
+	fn record_public_gate(
+		builder: &mut Self::Builder,
+		ins: &[&Self],
+		outs: &[&Self],
+		f: EvalFn<F>,
+	) {
+		// Only the public-only path is recorded here: every output is a freshly-allocated lazy
+		// InOut wire carrying a recorder id. Private results (their gates are recorded by the
+		// ConstraintBuilder primitives) and constant-folded results carry no `rec` and are skipped.
+		let mut out_recs = Vec::with_capacity(outs.len());
+		for out in outs {
+			match out {
+				Self::InOut { rec: Some(rec), .. } => out_recs.push(*rec),
+				_ => return,
+			}
+		}
+		let in_vals = ins
+			.iter()
+			.map(|wire| match wire {
+				Self::Constant(val) => Val::Const(*val),
+				Self::InOut { rec: Some(rec), .. } => Val::Wire(*rec),
+				Self::InOut { rec: None, .. } => {
+					unreachable!("public input InOut wire is missing its recorder id")
+				}
+				Self::Private(_) => unreachable!("public op cannot have a private input"),
+			})
+			.collect::<Vec<_>>();
+		if let Some(recorder) = builder.recorder_mut() {
+			recorder.push_public(in_vals, out_recs, f);
 		}
 	}
 }
@@ -142,19 +198,30 @@ impl<F: Field> Default for IronSpartanBuilderChannel<F> {
 }
 
 impl<F: Field> IronSpartanBuilderChannel<F> {
-	/// Creates a new builder channel backed by a fresh [`ConstraintBuilder`].
+	/// Creates a new builder channel backed by a fresh [`ConstraintBuilder`] with gate recording
+	/// enabled (BINIUS-43): the symbolic build records a [`GateSequence`] alongside the constraint
+	/// system, retrievable via [`Self::finish_with_gates`].
 	pub fn new() -> Self {
+		let mut builder = ConstraintBuilder::new();
+		builder.enable_recording();
 		Self {
-			builder: Rc::new(RefCell::new(ConstraintBuilder::new())),
+			builder: Rc::new(RefCell::new(builder)),
 		}
 	}
 
 	fn alloc_inout_elem(&self) -> CircuitElem<F, BuilderWire<F>> {
-		CircuitElem::wire(&self.builder, BuilderWire::lazy_inout())
+		// Each recv/sample/observe value is an external channel input in the recorded sequence.
+		let rec = self.builder.borrow_mut().recorder_mut().map(|r| r.input());
+		CircuitElem::wire(&self.builder, BuilderWire::lazy_inout(rec))
 	}
 
 	fn alloc_precommit_elem(&self) -> CircuitElem<F, BuilderWire<F>> {
-		let wire = self.builder.borrow_mut().alloc_precommit();
+		let mut builder = self.builder.borrow_mut();
+		let wire = builder.alloc_precommit();
+		if let Some(recorder) = builder.recorder_mut() {
+			recorder.precommit(wire);
+		}
+		drop(builder);
 		CircuitElem::wire(&self.builder, BuilderWire::Private(wire))
 	}
 
@@ -166,6 +233,17 @@ impl<F: Field> IronSpartanBuilderChannel<F> {
 		Rc::try_unwrap(self.builder)
 			.expect("CircuitElem values should only hold Weak references")
 			.into_inner()
+	}
+
+	/// Like [`Self::finish`], but also returns the recorded [`GateSequence`] (BINIUS-43).
+	pub fn finish_with_gates(self) -> (ConstraintBuilder<F>, GateSequence<F>) {
+		let mut builder = Rc::try_unwrap(self.builder)
+			.expect("CircuitElem values should only hold Weak references")
+			.into_inner();
+		let gates = builder
+			.take_recording()
+			.expect("recording is enabled in IronSpartanBuilderChannel::new");
+		(builder, gates)
 	}
 }
 
@@ -203,7 +281,7 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 				}
 			}
 			CircuitElem::Wire {
-				wire: BuilderWire::InOut(_),
+				wire: BuilderWire::InOut { .. },
 				..
 			} => {
 				// Nothing to do here. The value can be checked directly in
@@ -240,6 +318,39 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 		outs.into_iter()
 			.next()
 			.expect("combine_varlen returns Vec with len = n_out; n_out = 1")
+	}
+
+	fn compute_public_value_recorded(
+		&mut self,
+		inputs: &[Self::Elem],
+		f: impl FnOnce(&[F]) -> F + 'static,
+	) -> Self::Elem {
+		// The result is a single public (InOut) value; record it as a `Public` gate so replay can
+		// recompute it from the (public) inputs, then return a fresh lazy InOut wire labelled with
+		// the recorded output id.
+		let in_vals = inputs
+			.iter()
+			.map(|elem| match elem {
+				CircuitElem::Constant(c)
+				| CircuitElem::Wire {
+					wire: BuilderWire::Constant(c),
+					..
+				} => Val::Const(*c),
+				CircuitElem::Wire {
+					wire: BuilderWire::InOut { rec: Some(rec), .. },
+					..
+				} => Val::Wire(*rec),
+				_ => panic!("compute_public_value: input is not public"),
+			})
+			.collect::<Vec<_>>();
+
+		let mut builder = self.builder.borrow_mut();
+		let rec = builder.recorder_mut().map(|recorder| {
+			let outs = recorder.public(in_vals, 1, Box::new(move |xs: &[F]| vec![f(xs)]));
+			outs[0]
+		});
+		drop(builder);
+		CircuitElem::wire(&self.builder, BuilderWire::lazy_inout(rec))
 	}
 }
 

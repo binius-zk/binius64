@@ -6,9 +6,12 @@ use binius_field::Field;
 use bytemuck::zeroed_vec;
 use smallvec::{SmallVec, smallvec};
 
-use crate::constraint_system::{
-	ConstraintSystem, ConstraintWire, MulConstraint, Operand, WireKind, Witness, WitnessIndex,
-	WitnessLayout, WitnessSegment,
+use crate::{
+	constraint_system::{
+		ConstraintSystem, ConstraintWire, MulConstraint, Operand, WireKind, Witness, WitnessIndex,
+		WitnessLayout, WitnessSegment,
+	},
+	gate::{EvalFn, GateRecorder, GateSequence},
 };
 
 /// Common interface for circuit construction and witness generation.
@@ -38,7 +41,11 @@ pub trait CircuitBuilder {
 
 	fn mul(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire;
 
-	fn hint<H: Fn([Self::Field; IN]) -> [Self::Field; OUT], const IN: usize, const OUT: usize>(
+	fn hint<
+		H: Fn([Self::Field; IN]) -> [Self::Field; OUT] + 'static,
+		const IN: usize,
+		const OUT: usize,
+	>(
 		&mut self,
 		inputs: [Self::Wire; IN],
 		f: H,
@@ -201,9 +208,22 @@ impl<F: Field> ConstraintSystemIR<F> {
 ///
 /// Implements [`CircuitBuilder`] with [`ConstraintWire`] as the wire type. Operations like
 /// `add` and `mul` allocate new wires and record constraints without evaluating values.
-#[derive(Debug)]
+///
+/// When gate recording is enabled (see [`Self::enable_recording`]), the same operations also
+/// append to a [`GateRecorder`], producing a [`GateSequence`] that can later replay the build to
+/// generate a witness without re-running the producing computation (BINIUS-43).
 pub struct ConstraintBuilder<F: Field> {
 	ir: ConstraintSystemIR<F>,
+	recorder: Option<GateRecorder<F>>,
+}
+
+impl<F: Field> std::fmt::Debug for ConstraintBuilder<F> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("ConstraintBuilder")
+			.field("ir", &self.ir)
+			.field("recording", &self.recorder.is_some())
+			.finish_non_exhaustive()
+	}
 }
 
 impl<F: Field> ConstraintBuilder<F> {
@@ -220,6 +240,7 @@ impl<F: Field> ConstraintBuilder<F> {
 				mul_constraints: Vec::new(),
 				private_wires_status: Vec::new(),
 			},
+			recorder: None,
 		}
 	}
 
@@ -233,6 +254,22 @@ impl<F: Field> ConstraintBuilder<F> {
 
 	pub fn build(self) -> ConstraintSystemIR<F> {
 		self.ir
+	}
+
+	/// Enable gate recording (BINIUS-43). Subsequent `add`/`mul`/`hint`/`constant` calls append
+	/// private gates to the recorder; the channel/element layer drives the public-side recording.
+	pub fn enable_recording(&mut self) {
+		self.recorder = Some(GateRecorder::new());
+	}
+
+	/// Access the gate recorder, if recording is enabled.
+	pub fn recorder_mut(&mut self) -> Option<&mut GateRecorder<F>> {
+		self.recorder.as_mut()
+	}
+
+	/// Take the recorded gate sequence, if recording was enabled.
+	pub fn take_recording(&mut self) -> Option<GateSequence<F>> {
+		self.recorder.take().map(GateRecorder::into_sequence)
 	}
 }
 
@@ -251,15 +288,19 @@ impl<F: Field> CircuitBuilder for ConstraintBuilder<F> {
 	}
 
 	fn constant(&mut self, val: F) -> Self::Wire {
-		let id = self
+		let id = *self
 			.ir
 			.constants
 			.entry(val)
 			.or_insert_with(|| self.ir.constant_alloc.alloc().id);
-		ConstraintWire {
+		let wire = ConstraintWire {
 			kind: WireKind::Constant,
-			id: *id,
+			id,
+		};
+		if let Some(rec) = self.recorder.as_mut() {
+			rec.constant(wire, val);
 		}
+		wire
 	}
 
 	fn add(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire {
@@ -268,6 +309,9 @@ impl<F: Field> CircuitBuilder for ConstraintBuilder<F> {
 		self.ir
 			.zero_constraints
 			.push(Operand::new(smallvec![lhs, rhs, out]));
+		if let Some(rec) = self.recorder.as_mut() {
+			rec.add(lhs, rhs, out);
+		}
 		out
 	}
 
@@ -279,19 +323,30 @@ impl<F: Field> CircuitBuilder for ConstraintBuilder<F> {
 			b: rhs.into(),
 			c: out.into(),
 		});
+		if let Some(rec) = self.recorder.as_mut() {
+			rec.mul(lhs, rhs, out);
+		}
 		out
 	}
 
-	fn hint<H: Fn([F; IN]) -> [F; OUT], const IN: usize, const OUT: usize>(
+	fn hint<H: Fn([F; IN]) -> [F; OUT] + 'static, const IN: usize, const OUT: usize>(
 		&mut self,
-		_inputs: [Self::Wire; IN],
-		_f: H,
+		inputs: [Self::Wire; IN],
+		f: H,
 	) -> [Self::Wire; OUT] {
-		array::from_fn(|_| {
+		let outs: [ConstraintWire; OUT] = array::from_fn(|_| {
 			let wire = self.ir.private_alloc.alloc();
 			self.ir.private_wires_status.push(WireStatus::Unknown);
 			wire
-		})
+		});
+		if let Some(rec) = self.recorder.as_mut() {
+			let boxed: EvalFn<F> = Box::new(move |xs: &[F]| {
+				let arr: [F; IN] = xs.try_into().expect("hint input arity mismatch");
+				f(arr).to_vec()
+			});
+			rec.hint(&inputs, &outs, boxed);
+		}
+		outs
 	}
 }
 
@@ -416,7 +471,7 @@ impl<'a, F: Field> CircuitBuilder for WitnessGenerator<'a, F> {
 		self.alloc_value(lhs.val() * rhs.val())
 	}
 
-	fn hint<H: Fn([F; IN]) -> [F; OUT], const IN: usize, const OUT: usize>(
+	fn hint<H: Fn([F; IN]) -> [F; OUT] + 'static, const IN: usize, const OUT: usize>(
 		&mut self,
 		inputs: [Self::Wire; IN],
 		f: H,

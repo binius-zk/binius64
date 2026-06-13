@@ -14,6 +14,9 @@ pub mod circuit_elem;
 pub mod gadgets;
 pub mod zk_wrapped_channel;
 
+/// Re-export of the recorded gate sequence (moved to the frontend so `ConstraintBuilder` can
+/// build gates while recording the symbolic build).
+pub use binius_spartan_frontend::gate;
 pub use builder_channel::IronSpartanBuilderChannel;
 pub use zk_wrapped_channel::ZKWrappedVerifierChannel;
 

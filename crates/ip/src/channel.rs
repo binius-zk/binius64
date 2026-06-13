@@ -109,6 +109,18 @@ pub trait IPVerifierChannel<F: Field> {
 		inputs: &[Self::Elem],
 		f: impl FnOnce(&[F]) -> F,
 	) -> Self::Elem;
+
+	/// Like [`Self::compute_public_value`], but the closure is required to be `'static` so a
+	/// recording channel (the IronSpartan symbolic builder) can store it for deferred replay as
+	/// part of its recorded gate sequence (BINIUS-43). The default delegates to
+	/// [`Self::compute_public_value`]; non-recording channels need no override.
+	fn compute_public_value_recorded(
+		&mut self,
+		inputs: &[Self::Elem],
+		f: impl FnOnce(&[F]) -> F + 'static,
+	) -> Self::Elem {
+		self.compute_public_value(inputs, f)
+	}
 }
 
 impl<F, Challenger_> IPVerifierChannel<F> for VerifierTranscript<Challenger_>

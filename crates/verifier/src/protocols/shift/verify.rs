@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::iter;
+use std::{iter, sync::Arc};
 
 use binius_core::constraint_system::{AndConstraint, ConstraintSystem, MulConstraint};
 use binius_field::{BinaryField, field::FieldOps};
@@ -205,7 +205,7 @@ where
 /// - `Error::VerificationFailure` if the evaluation equation doesn't hold
 /// - Propagates errors from monster multilinear evaluation
 pub fn check_eval<F, C>(
-	constraint_system: &ConstraintSystem,
+	constraint_system: Arc<ConstraintSystem>,
 	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
 	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
 	subspace: &BinarySubspace<F>,
@@ -251,7 +251,11 @@ where
 			.chain(r_y.iter().cloned())
 			.collect();
 
-		channel.compute_public_value(&inputs, move |vals| {
+		// The closure owns the constraint system (via `Arc`) and the subspace so it is `'static`
+		// and the recording channel can store it for deferred replay (BINIUS-43); non-recording
+		// channels run it immediately as before.
+		let subspace = subspace.clone();
+		channel.compute_public_value_recorded(&inputs, move |vals| {
 			let r_zhat_prime_v = vals[0];
 			let bitand_lambda_v = vals[1];
 			let intmul_lambda_v = vals[2];
@@ -267,7 +271,7 @@ where
 			let r_y_v = &vals[off..off + r_y_len];
 
 			let r_y_tensor = eq_ind_partial_eval_scalars(r_y_v);
-			let l_tilde = lagrange_evals_scalars(subspace, r_zhat_prime_v);
+			let l_tilde = lagrange_evals_scalars(&subspace, r_zhat_prime_v);
 			let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
 
 			let bitand_part = {
