@@ -237,6 +237,49 @@ macro_rules! binary_field {
 			}
 		}
 
+		// A field element divides into exactly one element of itself. This makes the field a
+		// degenerate packed field of width one (see the blanket `PackedField for Field` impl).
+		impl $crate::Divisible<$name> for $name {
+			const LOG_N: usize = 0;
+
+			#[inline]
+			fn value_iter(value: Self) -> impl ExactSizeIterator<Item = $name> + Send + Clone {
+				std::iter::once(value)
+			}
+
+			#[inline]
+			fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = $name> + Send + Clone + '_ {
+				std::iter::once(*value)
+			}
+
+			#[inline]
+			fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = $name> + Send + Clone + '_ {
+				slice.iter().copied()
+			}
+
+			#[inline]
+			fn get(self, index: usize) -> $name {
+				debug_assert_eq!(index, 0);
+				self
+			}
+
+			#[inline]
+			fn set(self, index: usize, val: $name) -> Self {
+				debug_assert_eq!(index, 0);
+				val
+			}
+
+			#[inline]
+			fn broadcast(val: $name) -> Self {
+				val
+			}
+
+			#[inline]
+			fn from_iter(mut iter: impl Iterator<Item = $name>) -> Self {
+				iter.next().unwrap_or(Self::ZERO)
+			}
+		}
+
 		impl ::rand::distr::Distribution<$name> for ::rand::distr::StandardUniform {
 			fn sample<R: ::rand::Rng + ?Sized>(&self, rng: &mut R) -> $name {
 				$name(::rand::distr::StandardUniform.sample(rng))
