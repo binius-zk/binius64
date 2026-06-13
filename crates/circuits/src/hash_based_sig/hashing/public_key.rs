@@ -38,10 +38,7 @@ pub fn circuit_public_key_hash(
 
 	// Add all public key hashes
 	for pk_hash in pk_hashes {
-		let hash_term = ByteVec {
-			len_bytes: builder.add_constant_64(32),
-			data: pk_hash.to_vec(),
-		};
+		let hash_term = ByteVec::new_const_len(builder, pk_hash.to_vec(), 32);
 		additional_terms.push(hash_term);
 	}
 

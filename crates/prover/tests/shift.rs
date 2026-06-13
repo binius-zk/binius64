@@ -73,10 +73,7 @@ pub fn create_concat_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 
 	// Create terms: "Hello" + " " + "World!"
 	let terms: Vec<ByteVec> = (0..3)
-		.map(|_| ByteVec {
-			len_bytes: builder.add_witness(),
-			data: vec![builder.add_witness()],
-		})
+		.map(|_| ByteVec::new(vec![builder.add_witness()], builder.add_witness()))
 		.collect();
 
 	let _joined = concat(&builder, &terms);

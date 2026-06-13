@@ -46,22 +46,13 @@ pub fn circuit_chain_hash(
 	// Build additional terms for hash, chain_index, and position
 	let mut additional_terms = Vec::new();
 
-	let hash_term = ByteVec {
-		len_bytes: builder.add_constant_64(32),
-		data: hash.to_vec(),
-	};
+	let hash_term = ByteVec::new_const_len(builder, hash.to_vec(), 32);
 	additional_terms.push(hash_term);
 
-	let chain_index_term = ByteVec {
-		len_bytes: builder.add_constant_64(8),
-		data: vec![chain_index],
-	};
+	let chain_index_term = ByteVec::new_const_len(builder, vec![chain_index], 8);
 	additional_terms.push(chain_index_term);
 
-	let position_term = ByteVec {
-		len_bytes: builder.add_constant_64(8),
-		data: vec![position],
-	};
+	let position_term = ByteVec::new_const_len(builder, vec![position], 8);
 	additional_terms.push(position_term);
 
 	circuit_tweaked_keccak(
