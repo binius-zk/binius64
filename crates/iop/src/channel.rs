@@ -37,6 +37,31 @@ pub enum Error {
 pub struct OracleSpec {
 	/// Log2 of the message length (number of field elements).
 	pub log_msg_len: usize,
+	/// Whether this oracle must be hidden (zero-knowledge).
+	///
+	/// A ZK oracle is committed together with a random mask: the message is interleaved with a
+	/// mask coset and folded at a batching challenge during opening. A non-ZK oracle is committed
+	/// directly, with no mask. When every oracle in a batch is non-ZK, the opening protocol skips
+	/// sampling the masking challenge entirely.
+	pub is_zk: bool,
+}
+
+impl OracleSpec {
+	/// Creates a non-ZK (unmasked) oracle specification.
+	pub fn new(log_msg_len: usize) -> Self {
+		Self {
+			log_msg_len,
+			is_zk: false,
+		}
+	}
+
+	/// Creates a zero-knowledge (masked) oracle specification.
+	pub fn new_zk(log_msg_len: usize) -> Self {
+		Self {
+			log_msg_len,
+			is_zk: true,
+		}
+	}
 }
 
 /// A boxed closure that evaluates a transparent MLE at a given point.

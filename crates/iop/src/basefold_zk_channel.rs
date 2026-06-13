@@ -179,12 +179,26 @@ where
 	// `𝐧 = max_i n_i`, the dimension of the combined codeword.
 	let max_n = fri_params.rs_code().log_dim();
 
+	let n_zk = oracle_specs.iter().filter(|spec| spec.is_zk).count();
+
 	// === Masking step ===
-	// Read the masked inner products σ_i, sample γ, and form the masked claims s_i'.
-	let sigmas = channel.recv_many(n_committed)?;
-	let gamma = IPVerifierChannel::<F>::sample(channel);
-	let sum_primes = iter::zip(&relations, sigmas)
-		.map(|(relation, sigma)| extrapolate_line_packed(relation.claim, sigma, gamma))
+	// Read the σ_i for the ZK oracles, sample γ only when a ZK oracle is present, and form the
+	// masked claims s_i' (= s_i for non-ZK oracles). Must mirror the prover's transcript exactly.
+	let sigmas = channel.recv_many(n_zk)?;
+	let gamma = (n_zk > 0)
+		.then(|| IPVerifierChannel::<F>::sample(channel));
+	let mut sigmas = sigmas.into_iter();
+	let sum_primes = relations
+		.iter()
+		.map(|relation| {
+			if oracle_specs[relation.oracle.index].is_zk {
+				let gamma = gamma.expect("γ is sampled whenever a ZK oracle is present");
+				let sigma = sigmas.next().expect("one σ per ZK oracle");
+				extrapolate_line_packed(relation.claim, sigma, gamma)
+			} else {
+				relation.claim
+			}
+		})
 		.collect::<Vec<_>>();
 
 	// === Phase A: batched sumcheck on the masked claims (degree 2, bivariate product) ===
@@ -230,6 +244,10 @@ where
 		.map(|(i, (&alpha_i, &n_i))| eq_tensor[i] * alpha_i * eq_ind_zero(&point[n_i..]))
 		.sum::<F>();
 
+	// The single ZK mask-fold round contributes γ as the only inner challenge; with no ZK oracle
+	// there is no inner round.
+	let inner_challenges: Vec<F> = gamma.into_iter().collect();
+
 	let basefold::ReducedOutput {
 		final_fri_value,
 		final_sumcheck_value,
@@ -240,7 +258,7 @@ where
 		&oracle_commitments,
 		s_prime,
 		&point,
-		&[gamma],
+		&inner_challenges,
 		&outer_challenges,
 		channel,
 	)?;

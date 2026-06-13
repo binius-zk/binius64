@@ -46,9 +46,9 @@ pub struct BaseFoldZKOracle {
 
 /// Committed oracle data stored internally.
 struct CommittedOracleData<P: PackedField, Committed> {
-	/// The mask buffer generated during [`fri::commit_masked`]. Held by the channel because it is
-	/// the only party that knows it.
-	mask: FieldBuffer<P>,
+	/// The mask buffer generated during [`fri::commit_masked`], for ZK oracles only. Held by the
+	/// channel because it is the only party that knows it. `None` for non-ZK (unmasked) oracles.
+	mask: Option<FieldBuffer<P>>,
 	/// RS-encoded codeword.
 	codeword: FieldBuffer<P>,
 	/// Merkle commitment data for query proofs.
@@ -214,18 +214,28 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 	// `𝐧 = max_i n_i`, the dimension of the combined codeword.
 	let max_n = fri_params.rs_code().log_dim();
 
+	let n_zk = oracle_specs.iter().filter(|spec| spec.is_zk).count();
+
 	// === Masking step (whitepaper 7.2) ===
-	// Send the masked inner products σ_i = ⟨ω_i, t_i⟩, then sample a single masking challenge γ.
+	// For each ZK oracle, send the masked inner product σ_i = ⟨ω_i, t_i⟩; then sample a single
+	// masking challenge γ shared across all ZK oracles. When no oracle is ZK, no σ is sent and γ is
+	// never sampled, so the transcript matches a purely non-ZK opening.
 	let sigmas = relations
 		.iter()
+		.filter(|rel| oracle_specs[rel.0].is_zk)
 		.map(|(index, _, transparent, _)| {
-			inner_product_par(&committed_oracles[*index].mask, transparent)
+			inner_product_par(
+				committed_oracles[*index]
+					.mask
+					.as_ref()
+					.expect("ZK oracle must have a mask"),
+				transparent,
+			)
 		})
 		.collect::<Vec<_>>();
 	channel.send_many(&sigmas);
 
-	let gamma = IPProverChannel::<F>::sample(channel);
-	let gamma_broadcast = P::broadcast(gamma);
+	let gamma = (n_zk > 0).then(|| IPProverChannel::<F>::sample(channel));
 
 	// === Phase A: batched sumcheck on the masked claims ⟨π_i', t_i⟩ = s_i' ===
 	// Register provers in arrival order; form π_i' = (1-γ)π_i + γω_i, storing each clone for Phase
@@ -235,23 +245,34 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 	let mut witness_primes = vec![None; n_committed];
 	let mut prover_oracle_indices = Vec::with_capacity(n_committed);
 	let mut provers = Vec::with_capacity(n_committed);
-	for ((index, mut message, transparent, claim), sigma) in iter::zip(relations, sigmas) {
+	let mut sigmas = sigmas.into_iter();
+	for (index, mut message, transparent, claim) in relations {
 		let n_i = oracle_specs[index].log_msg_len;
 		assert_eq!(message.log_len(), n_i); // pre-condition
 		assert_eq!(transparent.log_len(), n_i); // pre-condition
 
-		let mask = &committed_oracles[index].mask;
-
-		// Modify the message π_i to be the blinded message π_i'.
-		(message.as_mut(), mask.as_ref())
-			.into_par_iter()
-			.for_each(|(message_i, &mask_i)| {
-				*message_i = extrapolate_line_packed(*message_i, mask_i, gamma_broadcast);
-			});
+		// For a ZK oracle, blind the message π_i' = (1-γ)π_i + γω_i and shift the claim by σ_i; a
+		// non-ZK oracle passes through unmasked, so s_i' = s_i.
+		let sum_prime = if oracle_specs[index].is_zk {
+			let gamma = gamma.expect("γ is sampled whenever a ZK oracle is present");
+			let gamma_broadcast = P::broadcast(gamma);
+			let sigma = sigmas.next().expect("one σ per ZK oracle");
+			let mask = committed_oracles[index]
+				.mask
+				.as_ref()
+				.expect("ZK oracle must have a mask");
+			(message.as_mut(), mask.as_ref())
+				.into_par_iter()
+				.for_each(|(message_i, &mask_i)| {
+					*message_i = extrapolate_line_packed(*message_i, mask_i, gamma_broadcast);
+				});
+			extrapolate_line(claim, sigma, gamma)
+		} else {
+			claim
+		};
 		witness_primes[index] = Some(message.clone());
 		prover_oracle_indices.push(index);
 
-		let sum_prime = extrapolate_line(claim, sigma, gamma);
 		let inner = BivariateProductSumcheckProver::new([message, transparent], sum_prime)
 			.expect("π_i' and t_i have equal length");
 		provers.push(PaddedSumcheckDecorator::new(inner, max_n - n_i));
@@ -315,11 +336,14 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 	let committed_codewords = iter::zip(committed_codewords, &committeds).collect();
 
 	let fri_folder = FRIFoldProver::new_batch(fri_params, ntt, merkle_prover, committed_codewords);
+	// The single ZK mask-fold round contributes γ as the (only) inner challenge; with no ZK oracle
+	// there is no inner round.
+	let inner_challenges: Vec<F> = gamma.into_iter().collect();
 	prove_mlecheck_basefold_zk_batch(
 		combined,
 		point,
 		s_prime,
-		&[gamma],
+		&inner_challenges,
 		&outer_challenges,
 		fri_folder,
 		channel,
@@ -410,7 +434,7 @@ where
 		self.transcript.message().write(&commitment);
 
 		self.committed_oracles.push(CommittedOracleData {
-			mask,
+			mask: Some(mask),
 			codeword,
 			committed,
 		});
@@ -514,9 +538,7 @@ mod tests {
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
-		let oracle_specs = vec![OracleSpec {
-			log_msg_len: n_vars,
-		}];
+		let oracle_specs = vec![OracleSpec::new_zk(n_vars)];
 
 		let merkle_prover = make_merkle_prover();
 		let verifier_compiler = BaseFoldZKVerifierCompiler::new(
@@ -585,14 +607,7 @@ mod tests {
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
-		let oracle_specs = vec![
-			OracleSpec {
-				log_msg_len: n_vars_1,
-			},
-			OracleSpec {
-				log_msg_len: n_vars_2,
-			},
-		];
+		let oracle_specs = vec![OracleSpec::new_zk(n_vars_1), OracleSpec::new_zk(n_vars_2)];
 
 		let merkle_prover = make_merkle_prover();
 		let verifier_compiler = BaseFoldZKVerifierCompiler::new(
@@ -673,7 +688,7 @@ mod tests {
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 		let oracle_specs: Vec<OracleSpec> = n_vars_list
 			.iter()
-			.map(|&n| OracleSpec { log_msg_len: n })
+			.map(|&n| OracleSpec::new_zk(n))
 			.collect();
 
 		let merkle_prover = make_merkle_prover();

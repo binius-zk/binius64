@@ -190,10 +190,13 @@ where
 			"BaseFoldZKVerifierCompiler requires at least one oracle spec"
 		);
 
-		// ZK adds 1 to each message length; compute max code length across all oracles.
+		// A ZK oracle adds 1 to its message length (room for the mask) and is fixed to
+		// `log_batch_size = 1` so the message and mask combine in a single inner fold. A non-ZK
+		// oracle is committed unmasked at its raw length, with a flexible batch size the optimizer
+		// chooses. Compute the max code length across all oracles.
 		let max_log_code_len = oracle_specs
 			.iter()
-			.map(|spec| spec.log_msg_len + 1)
+			.map(|spec| spec.log_msg_len + usize::from(spec.is_zk))
 			.max()
 			.expect("oracle_specs is non-empty")
 			+ log_inv_rate;
@@ -204,10 +207,20 @@ where
 		// arities to minimize proof size, so `_arity_strategy` is not consulted here.
 		let partial_specs: Vec<PartialOracleSpec> = oracle_specs
 			.iter()
-			.map(|spec| PartialOracleSpec {
-				log_msg_len: spec.log_msg_len + 1,
-				log_batch_size: Some(1),
-				skip_batch_challenges: 0,
+			.map(|spec| {
+				if spec.is_zk {
+					PartialOracleSpec {
+						log_msg_len: spec.log_msg_len + 1,
+						log_batch_size: Some(1),
+						skip_batch_challenges: 0,
+					}
+				} else {
+					PartialOracleSpec {
+						log_msg_len: spec.log_msg_len,
+						log_batch_size: None,
+						skip_batch_challenges: 0,
+					}
+				}
 			})
 			.collect();
 		let (fri_params, _) = FRIParams::optimal_for_batch(

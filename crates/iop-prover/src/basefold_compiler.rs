@@ -198,15 +198,25 @@ where
 			"BaseFoldZKProverCompiler requires at least one oracle spec"
 		);
 
-		// The single combined FRI parameters over all oracles.
+		// The single combined FRI parameters over all oracles. A ZK oracle commits its message
+		// interleaved with an equal-length mask (`log_msg_len + 1`, fixed `log_batch_size = 1`); a
+		// non-ZK oracle commits unmasked at its raw length with a flexible batch size.
 		let partial_specs: Vec<PartialOracleSpec> = oracle_specs
 			.iter()
-			.map(|spec| PartialOracleSpec {
-				// Oracle includes message and equal length mask
-				log_msg_len: spec.log_msg_len + 1,
-				// Batch size is 2 for message and mask
-				log_batch_size: Some(1),
-				skip_batch_challenges: 0,
+			.map(|spec| {
+				if spec.is_zk {
+					PartialOracleSpec {
+						log_msg_len: spec.log_msg_len + 1,
+						log_batch_size: Some(1),
+						skip_batch_challenges: 0,
+					}
+				} else {
+					PartialOracleSpec {
+						log_msg_len: spec.log_msg_len,
+						log_batch_size: None,
+						skip_batch_challenges: 0,
+					}
+				}
 			})
 			.collect();
 		let (fri_params, _) = FRIParams::optimal_for_batch(

@@ -375,12 +375,8 @@ mod tests {
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
 		let oracle_specs = vec![
-			OracleSpec {
-				log_msg_len: n_vars_1,
-			},
-			OracleSpec {
-				log_msg_len: n_vars_2,
-			},
+			OracleSpec::new(n_vars_1),
+			OracleSpec::new(n_vars_2),
 		];
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
@@ -420,12 +416,8 @@ mod tests {
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
 		let oracle_specs = vec![
-			OracleSpec {
-				log_msg_len: n_vars_1,
-			},
-			OracleSpec {
-				log_msg_len: n_vars_2,
-			},
+			OracleSpec::new(n_vars_1),
+			OracleSpec::new(n_vars_2),
 		];
 
 		let prover_transcript = ProverTranscript::<StdChallenger>::new(StdChallenger::default());

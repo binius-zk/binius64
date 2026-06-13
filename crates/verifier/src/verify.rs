@@ -93,9 +93,7 @@ impl IOPVerifier {
 	///
 	/// These describe the oracles (the witness) that the prover commits to.
 	pub fn oracle_specs(&self) -> Vec<OracleSpec> {
-		vec![OracleSpec {
-			log_msg_len: self.log_witness_elems(),
-		}]
+		vec![OracleSpec::new(self.log_witness_elems())]
 	}
 
 	/// Verifies a proof using an IOP channel.
