@@ -319,7 +319,7 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 		combined,
 		point,
 		s_prime,
-		gamma,
+		&[gamma],
 		&outer_challenges,
 		fri_folder,
 		channel,

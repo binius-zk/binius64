@@ -179,11 +179,13 @@ where
 /// * `witness` - the combined oracle multilinear `𝛑` with `log_len = 𝐧`
 /// * `eval_point` - the point `r` with `len = 𝐧`, in low-to-high variable order
 /// * `eval_claim` - the combined target `s' = 𝛑(r)`
-/// * `batch_challenge` - the masking challenge `γ`; folds each interleaved `[π_i ‖ ω_i]` codeword
-///   down to the codeword of `π_i'` in the FRI inner (unbatch) round
+/// * `inner_challenges` - the masking challenge(s) `γ`, one per inner (unbatch) round; each folds
+///   every interleaved `[π_i ‖ ω_i]` codeword down to the codeword of `π_i'`. There are
+///   `max_log_batch_size` of them: a single `γ` when any oracle is masked, empty when none is.
 /// * `outer_challenges` - the batching challenges `r'` (`len = log_n_oracles`); combine the `k`
 ///   lifted codewords in the FRI outer (oracle-combine) rounds
-/// * `fri_folder` - the combined FRI fold prover, with `n_rounds == 𝐧 + 1 + log_n_oracles`
+/// * `fri_folder` - the combined FRI fold prover, with
+///   `n_rounds == 𝐧 + max_log_batch_size + log_n_oracles`
 /// * `transcript` - the prover transcript
 ///
 /// The final FRI value equals the final MLE-check value `𝛑(r)` (see
@@ -193,7 +195,7 @@ pub fn prove_mlecheck_basefold_zk_batch<'a, F, P, NTT, MerkleScheme, MerkleProve
 	witness: FieldBuffer<P>,
 	eval_point: &[F],
 	eval_claim: F,
-	batch_challenge: F,
+	inner_challenges: &[F],
 	outer_challenges: &[F],
 	mut fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
 	transcript: &mut ProverTranscript<Challenger_>,
@@ -210,14 +212,20 @@ where
 
 	let n_vars = witness.log_len();
 	assert_eq!(eval_point.len(), n_vars);
-	// The FRI folder has one inner (unbatch) round, `log_n_oracles` outer (oracle-combine) rounds,
-	// and `𝐧` standard fold rounds.
-	assert_eq!(n_vars + 1 + outer_challenges.len(), fri_folder.n_rounds());
+	// The FRI folder has `max_log_batch_size` inner (unbatch) rounds, `log_n_oracles` outer
+	// (oracle-combine) rounds, and `𝐧` standard fold rounds.
+	assert_eq!(
+		n_vars + inner_challenges.len() + outer_challenges.len(),
+		fri_folder.n_rounds()
+	);
 
-	// Inner (unbatch) round: fold every interleaved (π_i ‖ ω_i) codeword at the masking challenge.
-	fri_folder.receive_challenge(batch_challenge);
+	// Inner (unbatch) rounds: fold every interleaved (π_i ‖ ω_i) codeword at the masking challenge(s).
+	// Empty when there are no masked oracles.
+	for &inner_challenge in inner_challenges {
+		fri_folder.receive_challenge(inner_challenge);
+	}
 	// Outer rounds: combine the k lifted codewords at the batching challenges r'. These carry no
-	// sumcheck round-polynomial; the folder applies them lazily with γ at the first commit round.
+	// sumcheck round-polynomial; the folder applies them lazily at the first commit round.
 	for &outer_challenge in outer_challenges {
 		fri_folder.receive_challenge(outer_challenge);
 	}
@@ -518,7 +526,7 @@ mod test {
 			witness_prime,
 			&evaluation_point,
 			eval_claim,
-			batch_challenge,
+			&[batch_challenge],
 			&[],
 			fri_folder,
 			&mut prover_transcript,
@@ -538,7 +546,7 @@ mod test {
 			&[retrieved_commitment],
 			eval_claim,
 			&evaluation_point,
-			batch_challenge_v,
+			&[batch_challenge_v],
 			&[],
 			&mut verifier_transcript,
 		)?;

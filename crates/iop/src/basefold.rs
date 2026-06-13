@@ -122,11 +122,13 @@ where
 /// * `codeword_commitments` - one per oracle, in the same order as [`FRIParams::input_oracles`].
 /// * `eval_claim` - the combined target `s'`.
 /// * `eval_point` - the point `r` (length `𝐧 = fri_params.rs_code().log_dim()`), low-to-high order.
-/// * `batch_challenge` - the masking challenge `γ` used in the FRI inner (unbatch) round.
+/// * `inner_challenges` - the masking challenge(s) `γ` used in the FRI inner (unbatch) rounds, one
+///   per inner round (`max_log_batch_size` of them: a single `γ` when any oracle is masked, empty
+///   when none is).
 /// * `outer_challenges` - the batching challenges `r'` (length `log_n_oracles`) used in the FRI
 ///   outer (oracle-combine) rounds.
 ///
-/// The returned `challenges` are the FRI fold challenges `[γ] ++ r' ++ fresh_X`. Use
+/// The returned `challenges` are the FRI fold challenges `inner ++ r' ++ fresh_X`. Use
 /// [`mlecheck_fri_consistency`] to check the reduced values.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_mlecheck_basefold_zk_batch<F, MTScheme, Challenger_>(
@@ -135,7 +137,7 @@ pub fn verify_mlecheck_basefold_zk_batch<F, MTScheme, Challenger_>(
 	codeword_commitments: &[MTScheme::Digest],
 	eval_claim: F,
 	eval_point: &[F],
-	batch_challenge: F,
+	inner_challenges: &[F],
 	outer_challenges: &[F],
 	transcript: &mut VerifierTranscript<Challenger_>,
 ) -> Result<ReducedOutput<F>, Error>
@@ -147,15 +149,16 @@ where
 	// The MLE-check round polynomial is degree 1 (the composite is the multilinear itself).
 	const DEGREE: usize = 1;
 
-	// ZK precondition: each oracle is the interleaved (π ‖ ω) mask codeword, so the inner reduction
-	// is a single round folding at `γ`.
+	// The inner (unbatch) reduction folds at one challenge per inner FRI round. A ZK oracle
+	// contributes an interleaved (π ‖ ω) mask codeword at `log_batch_size = 1`, so `max_log_batch_size`
+	// is 1 whenever any masked oracle is present and 0 when none is (all oracles unmasked).
 	let max_log_batch_size = fri_params
 		.input_oracles()
 		.iter()
 		.map(|spec| spec.log_batch_size)
 		.max()
 		.expect("input_oracles is non-empty");
-	assert_eq!(max_log_batch_size, 1);
+	assert_eq!(inner_challenges.len(), max_log_batch_size);
 
 	let log_n_oracles = log2_ceil_usize(fri_params.input_oracles().len());
 	assert_eq!(outer_challenges.len(), log_n_oracles);
@@ -165,12 +168,15 @@ where
 	let n_vars = fri_params.rs_code().log_dim();
 	assert_eq!(eval_point.len(), n_vars);
 
-	let mut challenges = Vec::with_capacity(n_vars + 1 + log_n_oracles);
+	let mut challenges = Vec::with_capacity(n_vars + max_log_batch_size + log_n_oracles);
 	let mut fri_fold_verifier = FRIFoldVerifier::new(fri_params);
 
-	// Inner (unbatch) round: fold every interleaved (π_i ‖ ω_i) codeword at the masking challenge.
-	fri_fold_verifier.process_round(&mut transcript.message())?;
-	challenges.push(batch_challenge);
+	// Inner (unbatch) rounds: fold every interleaved (π_i ‖ ω_i) mask codeword at the masking
+	// challenge(s). Empty when there are no masked oracles.
+	for &inner_challenge in inner_challenges {
+		fri_fold_verifier.process_round(&mut transcript.message())?;
+		challenges.push(inner_challenge);
+	}
 
 	// Outer rounds: combine the `k` lifted codewords at the batching challenges `r'`. These carry
 	// no sumcheck round-polynomial (the oracle-index variables are collapsed deterministically).

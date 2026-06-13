@@ -240,7 +240,7 @@ where
 		&oracle_commitments,
 		s_prime,
 		&point,
-		gamma,
+		&[gamma],
 		&outer_challenges,
 		channel,
 	)?;
