@@ -704,14 +704,12 @@ impl Divisible<u128> for M128 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u128 {
-		assert!(index == 0, "index out of bounds");
+	unsafe fn get_unchecked(self, _index: usize) -> u128 {
 		u128::from(self)
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u128) {
-		assert!(index == 0, "index out of bounds");
+	unsafe fn set_unchecked(&mut self, _index: usize, val: u128) {
 		*self = Self::from(val);
 	}
 
@@ -745,23 +743,23 @@ impl Divisible<u64> for M128 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u64 {
+	unsafe fn get_unchecked(self, index: usize) -> u64 {
 		unsafe {
 			match index {
 				0 => _mm_extract_epi64(self.0, 0) as u64,
 				1 => _mm_extract_epi64(self.0, 1) as u64,
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u64) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u64) {
 		*self = unsafe {
 			match index {
 				0 => Self(_mm_insert_epi64(self.0, val as i64, 0)),
 				1 => Self(_mm_insert_epi64(self.0, val as i64, 1)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}
@@ -801,27 +799,27 @@ impl Divisible<u32> for M128 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u32 {
+	unsafe fn get_unchecked(self, index: usize) -> u32 {
 		unsafe {
 			match index {
 				0 => _mm_extract_epi32(self.0, 0) as u32,
 				1 => _mm_extract_epi32(self.0, 1) as u32,
 				2 => _mm_extract_epi32(self.0, 2) as u32,
 				3 => _mm_extract_epi32(self.0, 3) as u32,
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u32) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u32) {
 		*self = unsafe {
 			match index {
 				0 => Self(_mm_insert_epi32(self.0, val as i32, 0)),
 				1 => Self(_mm_insert_epi32(self.0, val as i32, 1)),
 				2 => Self(_mm_insert_epi32(self.0, val as i32, 2)),
 				3 => Self(_mm_insert_epi32(self.0, val as i32, 3)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}
@@ -861,7 +859,7 @@ impl Divisible<u16> for M128 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u16 {
+	unsafe fn get_unchecked(self, index: usize) -> u16 {
 		unsafe {
 			match index {
 				0 => _mm_extract_epi16(self.0, 0) as u16,
@@ -872,13 +870,13 @@ impl Divisible<u16> for M128 {
 				5 => _mm_extract_epi16(self.0, 5) as u16,
 				6 => _mm_extract_epi16(self.0, 6) as u16,
 				7 => _mm_extract_epi16(self.0, 7) as u16,
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u16) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u16) {
 		*self = unsafe {
 			match index {
 				0 => Self(_mm_insert_epi16(self.0, val as i32, 0)),
@@ -889,7 +887,7 @@ impl Divisible<u16> for M128 {
 				5 => Self(_mm_insert_epi16(self.0, val as i32, 5)),
 				6 => Self(_mm_insert_epi16(self.0, val as i32, 6)),
 				7 => Self(_mm_insert_epi16(self.0, val as i32, 7)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}
@@ -929,7 +927,7 @@ impl Divisible<u8> for M128 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u8 {
+	unsafe fn get_unchecked(self, index: usize) -> u8 {
 		unsafe {
 			match index {
 				0 => _mm_extract_epi8(self.0, 0) as u8,
@@ -948,13 +946,13 @@ impl Divisible<u8> for M128 {
 				13 => _mm_extract_epi8(self.0, 13) as u8,
 				14 => _mm_extract_epi8(self.0, 14) as u8,
 				15 => _mm_extract_epi8(self.0, 15) as u8,
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u8) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u8) {
 		*self = unsafe {
 			match index {
 				0 => Self(_mm_insert_epi8(self.0, val as i32, 0)),
@@ -973,7 +971,7 @@ impl Divisible<u8> for M128 {
 				13 => Self(_mm_insert_epi8(self.0, val as i32, 13)),
 				14 => Self(_mm_insert_epi8(self.0, val as i32, 14)),
 				15 => Self(_mm_insert_epi8(self.0, val as i32, 15)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}

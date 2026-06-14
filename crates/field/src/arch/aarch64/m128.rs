@@ -235,19 +235,13 @@ impl Divisible<u128> for M128 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u128 {
-		match index {
-			0 => self.into(),
-			_ => panic!("index out of bounds"),
-		}
+	unsafe fn get_unchecked(self, _index: usize) -> u128 {
+		self.into()
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u128) {
-		match index {
-			0 => *self = Self::from(val),
-			_ => panic!("index out of bounds"),
-		}
+	unsafe fn set_unchecked(&mut self, _index: usize, val: u128) {
+		*self = Self::from(val);
 	}
 
 	#[inline]
@@ -280,23 +274,23 @@ impl Divisible<u64> for M128 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u64 {
+	unsafe fn get_unchecked(self, index: usize) -> u64 {
 		unsafe {
 			match index {
 				0 => vgetq_lane_u64(self.0, 0),
 				1 => vgetq_lane_u64(self.0, 1),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u64) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u64) {
 		*self = unsafe {
 			match index {
 				0 => Self(vsetq_lane_u64(val, self.0, 0)),
 				1 => Self(vsetq_lane_u64(val, self.0, 1)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}
@@ -336,7 +330,7 @@ impl Divisible<u32> for M128 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u32 {
+	unsafe fn get_unchecked(self, index: usize) -> u32 {
 		unsafe {
 			let v: uint32x4_t = self.into();
 			match index {
@@ -344,13 +338,13 @@ impl Divisible<u32> for M128 {
 				1 => vgetq_lane_u32(v, 1),
 				2 => vgetq_lane_u32(v, 2),
 				3 => vgetq_lane_u32(v, 3),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u32) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u32) {
 		*self = unsafe {
 			let v: uint32x4_t = (*self).into();
 			match index {
@@ -358,7 +352,7 @@ impl Divisible<u32> for M128 {
 				1 => Self::from(vsetq_lane_u32(val, v, 1)),
 				2 => Self::from(vsetq_lane_u32(val, v, 2)),
 				3 => Self::from(vsetq_lane_u32(val, v, 3)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}
@@ -398,7 +392,7 @@ impl Divisible<u16> for M128 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u16 {
+	unsafe fn get_unchecked(self, index: usize) -> u16 {
 		unsafe {
 			let v: uint16x8_t = self.into();
 			match index {
@@ -410,13 +404,13 @@ impl Divisible<u16> for M128 {
 				5 => vgetq_lane_u16(v, 5),
 				6 => vgetq_lane_u16(v, 6),
 				7 => vgetq_lane_u16(v, 7),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u16) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u16) {
 		*self = unsafe {
 			let v: uint16x8_t = (*self).into();
 			match index {
@@ -428,7 +422,7 @@ impl Divisible<u16> for M128 {
 				5 => Self::from(vsetq_lane_u16(val, v, 5)),
 				6 => Self::from(vsetq_lane_u16(val, v, 6)),
 				7 => Self::from(vsetq_lane_u16(val, v, 7)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}
@@ -468,7 +462,7 @@ impl Divisible<u8> for M128 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u8 {
+	unsafe fn get_unchecked(self, index: usize) -> u8 {
 		unsafe {
 			let v: uint8x16_t = self.into();
 			match index {
@@ -488,13 +482,13 @@ impl Divisible<u8> for M128 {
 				13 => vgetq_lane_u8(v, 13),
 				14 => vgetq_lane_u8(v, 14),
 				15 => vgetq_lane_u8(v, 15),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u8) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u8) {
 		*self = unsafe {
 			let v: uint8x16_t = (*self).into();
 			match index {
@@ -514,7 +508,7 @@ impl Divisible<u8> for M128 {
 				13 => Self::from(vsetq_lane_u8(val, v, 13)),
 				14 => Self::from(vsetq_lane_u8(val, v, 14)),
 				15 => Self::from(vsetq_lane_u8(val, v, 15)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}

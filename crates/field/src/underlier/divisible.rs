@@ -40,14 +40,38 @@ pub trait Divisible<T>: Copy {
 	/// # Panics
 	///
 	/// Panics if `index >= Self::N`.
-	fn get(self, index: usize) -> T;
+	#[inline]
+	fn get(self, index: usize) -> T {
+		assert!(index < Self::N, "index {index} out of bounds (N = {})", Self::N);
+		// Safety: `index < Self::N` checked above.
+		unsafe { self.get_unchecked(index) }
+	}
 
 	/// Set element at index (LSB-first ordering), in place.
 	///
 	/// # Panics
 	///
 	/// Panics if `index >= Self::N`.
-	fn set(&mut self, index: usize, val: T);
+	#[inline]
+	fn set(&mut self, index: usize, val: T) {
+		assert!(index < Self::N, "index {index} out of bounds (N = {})", Self::N);
+		// Safety: `index < Self::N` checked above.
+		unsafe { self.set_unchecked(index, val) };
+	}
+
+	/// Get element at index (LSB-first ordering) without bounds checking.
+	///
+	/// # Safety
+	///
+	/// The caller must ensure that `index < Self::N`.
+	unsafe fn get_unchecked(self, index: usize) -> T;
+
+	/// Set element at index (LSB-first ordering) in place, without bounds checking.
+	///
+	/// # Safety
+	///
+	/// The caller must ensure that `index < Self::N`.
+	unsafe fn set_unchecked(&mut self, index: usize, val: T);
 
 	/// Create a value with `val` broadcast to all `N` positions.
 	fn broadcast(val: T) -> Self;
@@ -163,51 +187,77 @@ pub mod memcast {
 		})
 	}
 
-	/// Get element at index (LSB-first ordering).
+	/// Get element at index (LSB-first ordering) without bounds checking.
+	///
+	/// # Safety
+	///
+	/// The caller must ensure that `index < N`.
 	#[cfg(target_endian = "little")]
 	#[inline]
-	pub fn get<Big, Small, const N: usize>(value: &Big, index: usize) -> Small
+	pub unsafe fn get<Big, Small, const N: usize>(value: &Big, index: usize) -> Small
 	where
 		Big: Pod,
 		Small: Pod,
 	{
-		bytemuck::must_cast_ref::<Big, [Small; N]>(value)[index]
+		// Safety: the caller guarantees `index < N`.
+		unsafe { *bytemuck::must_cast_ref::<Big, [Small; N]>(value).get_unchecked(index) }
 	}
 
-	/// Get element at index (LSB-first ordering).
+	/// Get element at index (LSB-first ordering) without bounds checking.
+	///
+	/// # Safety
+	///
+	/// The caller must ensure that `index < N`.
 	#[cfg(target_endian = "big")]
 	#[inline]
-	pub fn get<Big, Small, const N: usize>(value: &Big, index: usize) -> Small
+	pub unsafe fn get<Big, Small, const N: usize>(value: &Big, index: usize) -> Small
 	where
 		Big: Pod,
 		Small: Pod,
 	{
-		bytemuck::must_cast_ref::<Big, [Small; N]>(value)[N - 1 - index]
+		// Safety: the caller guarantees `index < N`, so `N - 1 - index < N`.
+		unsafe { *bytemuck::must_cast_ref::<Big, [Small; N]>(value).get_unchecked(N - 1 - index) }
 	}
 
-	/// Set element at index (LSB-first ordering), returning modified value.
+	/// Set element at index (LSB-first ordering), returning modified value, without bounds
+	/// checking.
+	///
+	/// # Safety
+	///
+	/// The caller must ensure that `index < N`.
 	#[cfg(target_endian = "little")]
 	#[inline]
-	pub fn set<Big, Small, const N: usize>(value: &Big, index: usize, val: Small) -> Big
+	pub unsafe fn set<Big, Small, const N: usize>(value: &Big, index: usize, val: Small) -> Big
 	where
 		Big: Pod,
 		Small: Pod,
 	{
 		let mut arr = *bytemuck::must_cast_ref::<Big, [Small; N]>(value);
-		arr[index] = val;
+		// Safety: the caller guarantees `index < N`.
+		unsafe {
+			*arr.get_unchecked_mut(index) = val;
+		}
 		bytemuck::must_cast(arr)
 	}
 
-	/// Set element at index (LSB-first ordering), returning modified value.
+	/// Set element at index (LSB-first ordering), returning modified value, without bounds
+	/// checking.
+	///
+	/// # Safety
+	///
+	/// The caller must ensure that `index < N`.
 	#[cfg(target_endian = "big")]
 	#[inline]
-	pub fn set<Big, Small, const N: usize>(value: &Big, index: usize, val: Small) -> Big
+	pub unsafe fn set<Big, Small, const N: usize>(value: &Big, index: usize, val: Small) -> Big
 	where
 		Big: Pod,
 		Small: Pod,
 	{
 		let mut arr = *bytemuck::must_cast_ref::<Big, [Small; N]>(value);
-		arr[N - 1 - index] = val;
+		// Safety: the caller guarantees `index < N`, so `N - 1 - index < N`.
+		unsafe {
+			*arr.get_unchecked_mut(N - 1 - index) = val;
+		}
 		bytemuck::must_cast(arr)
 	}
 
@@ -259,34 +309,50 @@ pub mod memcast {
 pub mod bitmask {
 	use super::{Divisible, SmallU};
 
-	/// Get a sub-byte element at index (LSB-first ordering).
+	/// Get a sub-byte element at index (LSB-first ordering) without bounds checking.
+	///
+	/// # Safety
+	///
+	/// The caller must ensure that `index < Big::N` (over `SmallU<BITS>` elements).
 	#[inline]
-	pub fn get<Big, const BITS: usize>(value: Big, index: usize) -> SmallU<BITS>
+	pub unsafe fn get<Big, const BITS: usize>(value: Big, index: usize) -> SmallU<BITS>
 	where
 		Big: Divisible<u8>,
 	{
 		let elems_per_byte = 8 / BITS;
 		let byte_index = index / elems_per_byte;
 		let sub_index = index % elems_per_byte;
-		let byte = Divisible::<u8>::get(value, byte_index);
+		// Safety: `index < Big::N` over `SmallU<BITS>` implies `byte_index < Big::N` over `u8`.
+		let byte = unsafe { Divisible::<u8>::get_unchecked(value, byte_index) };
 		let shift = sub_index * BITS;
 		SmallU::<BITS>::new(byte >> shift)
 	}
 
-	/// Set a sub-byte element at index (LSB-first ordering), returning modified value.
+	/// Set a sub-byte element at index (LSB-first ordering), returning modified value, without
+	/// bounds checking.
+	///
+	/// # Safety
+	///
+	/// The caller must ensure that `index < Big::N` (over `SmallU<BITS>` elements).
 	#[inline]
-	pub fn set<Big, const BITS: usize>(mut value: Big, index: usize, val: SmallU<BITS>) -> Big
+	pub unsafe fn set<Big, const BITS: usize>(
+		mut value: Big,
+		index: usize,
+		val: SmallU<BITS>,
+	) -> Big
 	where
 		Big: Divisible<u8>,
 	{
 		let elems_per_byte = 8 / BITS;
 		let byte_index = index / elems_per_byte;
 		let sub_index = index % elems_per_byte;
-		let byte = Divisible::<u8>::get(value, byte_index);
+		// Safety: `index < Big::N` over `SmallU<BITS>` implies `byte_index < Big::N` over `u8`.
+		let byte = unsafe { Divisible::<u8>::get_unchecked(value, byte_index) };
 		let shift = sub_index * BITS;
 		let mask = (1u8 << BITS) - 1;
 		let new_byte = (byte & !(mask << shift)) | (val.val() << shift);
-		Divisible::<u8>::set(&mut value, byte_index, new_byte);
+		// Safety: `byte_index < Big::N` over `u8`, as above.
+		unsafe { Divisible::<u8>::set_unchecked(&mut value, byte_index, new_byte) };
 		value
 	}
 }
@@ -421,15 +487,17 @@ macro_rules! impl_divisible_memcast {
 				}
 
 				#[inline]
-				fn get(self, index: usize) -> $small {
+				unsafe fn get_unchecked(self, index: usize) -> $small {
 					const N: usize = size_of::<$big>() / size_of::<$small>();
-					$crate::underlier::memcast::get::<$big, $small, N>(&self, index)
+					// Safety: the caller guarantees `index < Self::N == N`.
+					unsafe { $crate::underlier::memcast::get::<$big, $small, N>(&self, index) }
 				}
 
 				#[inline]
-				fn set(&mut self, index: usize, val: $small) {
+				unsafe fn set_unchecked(&mut self, index: usize, val: $small) {
 					const N: usize = size_of::<$big>() / size_of::<$small>();
-					*self = $crate::underlier::memcast::set::<$big, $small, N>(&*self, index, val);
+					// Safety: the caller guarantees `index < Self::N == N`.
+					*self = unsafe { $crate::underlier::memcast::set::<$big, $small, N>(&*self, index, val) };
 				}
 
 				#[inline]
@@ -478,13 +546,13 @@ macro_rules! impl_divisible_bitmask {
 				}
 
 				#[inline]
-				fn get(self, index: usize) -> $crate::underlier::SmallU<$bits> {
+				unsafe fn get_unchecked(self, index: usize) -> $crate::underlier::SmallU<$bits> {
 					let shift = index * $bits;
 					$crate::underlier::SmallU::<$bits>::new(self >> shift)
 				}
 
 				#[inline]
-				fn set(&mut self, index: usize, val: $crate::underlier::SmallU<$bits>) {
+				unsafe fn set_unchecked(&mut self, index: usize, val: $crate::underlier::SmallU<$bits>) {
 					let shift = index * $bits;
 					let mask = (1u8 << $bits) - 1;
 					*self = (*self & !(mask << shift)) | (val.val() << shift);
@@ -548,13 +616,15 @@ macro_rules! impl_divisible_bitmask {
 				}
 
 				#[inline]
-				fn get(self, index: usize) -> $crate::underlier::SmallU<$bits> {
-					$crate::underlier::bitmask::get::<Self, $bits>(self, index)
+				unsafe fn get_unchecked(self, index: usize) -> $crate::underlier::SmallU<$bits> {
+					// Safety: the caller guarantees `index < Self::N`.
+					unsafe { $crate::underlier::bitmask::get::<Self, $bits>(self, index) }
 				}
 
 				#[inline]
-				fn set(&mut self, index: usize, val: $crate::underlier::SmallU<$bits>) {
-					*self = $crate::underlier::bitmask::set::<Self, $bits>(*self, index, val);
+				unsafe fn set_unchecked(&mut self, index: usize, val: $crate::underlier::SmallU<$bits>) {
+					// Safety: the caller guarantees `index < Self::N`.
+					*self = unsafe { $crate::underlier::bitmask::set::<Self, $bits>(*self, index, val) };
 				}
 
 				#[inline]
@@ -616,12 +686,12 @@ impl Divisible<SmallU<1>> for SmallU<2> {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> SmallU<1> {
+	unsafe fn get_unchecked(self, index: usize) -> SmallU<1> {
 		SmallU::<1>::new(self.val() >> index)
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: SmallU<1>) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: SmallU<1>) {
 		let mask = 1u8 << index;
 		*self = SmallU::<2>::new((self.val() & !mask) | (val.val() << index));
 	}
@@ -664,12 +734,12 @@ impl Divisible<SmallU<1>> for SmallU<4> {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> SmallU<1> {
+	unsafe fn get_unchecked(self, index: usize) -> SmallU<1> {
 		SmallU::<1>::new(self.val() >> index)
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: SmallU<1>) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: SmallU<1>) {
 		let mask = 1u8 << index;
 		*self = SmallU::<4>::new((self.val() & !mask) | (val.val() << index));
 	}
@@ -714,12 +784,12 @@ impl Divisible<SmallU<2>> for SmallU<4> {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> SmallU<2> {
+	unsafe fn get_unchecked(self, index: usize) -> SmallU<2> {
 		SmallU::<2>::new(self.val() >> (index * 2))
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: SmallU<2>) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: SmallU<2>) {
 		let shift = index * 2;
 		let mask = 0b11u8 << shift;
 		*self = SmallU::<4>::new((self.val() & !mask) | (val.val() << shift));
@@ -767,14 +837,12 @@ macro_rules! impl_divisible_self {
 				}
 
 				#[inline]
-				fn get(self, index: usize) -> $ty {
-					debug_assert_eq!(index, 0);
+				unsafe fn get_unchecked(self, _index: usize) -> $ty {
 					self
 				}
 
 				#[inline]
-				fn set(&mut self, index: usize, val: $ty) {
-					debug_assert_eq!(index, 0);
+				unsafe fn set_unchecked(&mut self, _index: usize, val: $ty) {
 					*self = val;
 				}
 
