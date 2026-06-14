@@ -3,9 +3,7 @@
 use std::{iter, ops::Range};
 
 use binius_core::word::Word;
-use binius_field::{
-	AESTowerField8b, BinaryField, Field, PackedField, UnderlierType, WithUnderlier,
-};
+use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, inner_product::inner_product_buffers};
 use binius_utils::rayon::prelude::*;
@@ -45,8 +43,8 @@ pub fn prove_phase_1<F, P, Channel>(
 	channel: &mut Channel,
 ) -> Result<SumcheckOutput<F>, Error>
 where
-	F: BinaryField + From<AESTowerField8b> + WithUnderlier<Underlier: UnderlierType>,
-	P: PackedField<Scalar = F> + WithUnderlier<Underlier: UnderlierType>,
+	F: BinaryField + From<AESTowerField8b>,
+	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
 {
 	let g_parts = build_g_parts::<_, P>(words, key_collection, bitand_data, intmul_data)?;
@@ -168,10 +166,7 @@ fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverC
 /// Used in phase 1 to construct the constant size g multilinears
 /// that will participate in the phase 1 sumcheck protocol.
 #[instrument(skip_all, name = "build_g_parts")]
-fn build_g_parts<
-	F: BinaryField + WithUnderlier<Underlier: UnderlierType>,
-	P: PackedField<Scalar = F> + WithUnderlier<Underlier: UnderlierType>,
->(
+fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 	words: &[Word],
 	key_collection: &KeyCollection,
 	bitand_operator_data: &PreparedOperatorData<F>,
@@ -184,20 +179,10 @@ fn build_g_parts<
 		"the optimizations below work only when the width of `P` is less than 8 (which is true for all packed 128b fields we use for now)"
 	);
 
-	// Field element that is represented by all ones
-	let all_ones_f = F::from_underlier(UnderlierType::fill_with_bit(1));
-	// Map from u8 with `P::WIDTH` meaningful bits to the `P` where each element has
-	// all zeroes or all ones depending on the corresponding bit value.
+	// Map from a u8 with `P::WIDTH` meaningful bits to the lane mask selecting exactly those lanes,
+	// precomputed once and reused across every accumulator below.
 	let packed_masks_map = (0..1 << P::WIDTH)
-		.map(|i| {
-			let mut mask = P::zero();
-			for bit_index in 0..P::WIDTH {
-				if (i >> bit_index) & 1 == 1 {
-					mask.set(bit_index, all_ones_f);
-				}
-			}
-			mask.to_underlier()
-		})
+		.map(|i| P::make_mask((0..P::WIDTH).map(|bit_index| (i >> bit_index) & 1 == 1)))
 		.collect::<Vec<_>>();
 	// A mask for low `P::WIDTH` bits.
 	let low_bits_mask = (1u8 << P::WIDTH) - 1;
@@ -217,7 +202,7 @@ fn build_g_parts<
 					};
 
 					let acc = key.accumulate(&key_collection.constraint_indices, operator_data);
-					let acc_underlier = P::broadcast(acc).to_underlier();
+					let acc_packed = P::broadcast(acc);
 
 					// The following loop is an optimized version of the following
 					// for i in 0..WORD_SIZE_BITS {
@@ -239,8 +224,7 @@ fn build_g_parts<
 								// Safety:
 								// - `packed_masks_map` is guaranteed to have enough elements to be
 								//   indexed with a `P::WIDTH`-bits value.
-								let packed_mask =
-									*packed_masks_map.get_unchecked(packed_mask_index);
+								let packed_mask = packed_masks_map.get_unchecked(packed_mask_index);
 
 								// Safety:
 								// - `values` is guaranteed to be (8 >> P::LOG_WIDTH) elements long
@@ -248,7 +232,7 @@ fn build_g_parts<
 								// - `value_index` is always in bounds because we iterate over 0..(8
 								//   >> P::LOG_WIDTH)
 								*values.get_unchecked_mut(value_index) +=
-									P::from_underlier(packed_mask & acc_underlier);
+									acc_packed.select(packed_mask);
 							}
 						}
 					}

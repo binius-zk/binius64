@@ -13,7 +13,7 @@ use bytemuck::Zeroable;
 
 use super::extension::ExtensionField;
 use crate::{
-	Divisible, Random, WideMul,
+	Divisible, Maskable, Random, WideMul,
 	arithmetic_traits::{InvertOrZero, Square},
 };
 
@@ -62,6 +62,9 @@ pub trait Field:
 	// A field is a degenerate packed field of width one, so it divides into a single copy of
 	// itself. This mirrors `PackedField: Divisible<Self::Scalar>` for the blanket packed impl.
 	+ Divisible<Self>
+	// A field is maskable as a width-one packed field, mirroring
+	// `PackedField: Maskable<Self::Scalar>`.
+	+ Maskable<Self>
 {
 	/// The zero element of the field, the additive identity.
 	const ZERO: Self;

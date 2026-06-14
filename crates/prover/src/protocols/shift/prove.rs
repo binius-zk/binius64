@@ -1,9 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_core::word::Word;
-use binius_field::{
-	AESTowerField8b, BinaryField, Field, PackedField, UnderlierType, WithUnderlier, util::powers,
-};
+use binius_field::{AESTowerField8b, BinaryField, Field, PackedField, util::powers};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	FieldBuffer, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
@@ -104,8 +102,8 @@ pub fn prove<F, P, Channel>(
 	channel: &mut Channel,
 ) -> Result<SumcheckOutput<F>, Error>
 where
-	F: BinaryField + From<AESTowerField8b> + WithUnderlier<Underlier: UnderlierType>,
-	P: PackedField<Scalar = F> + WithUnderlier<Underlier: UnderlierType>,
+	F: BinaryField + From<AESTowerField8b>,
+	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
 {
 	// Sample lambdas, one for each operator.

@@ -278,6 +278,25 @@ macro_rules! binary_field {
 			}
 		}
 
+		// As a width-one packed field, a field element is masked by its single selector: kept
+		// when selected, otherwise zeroed. Uses the same underlier bitmask strategy as
+		// PackedPrimitiveType so the mask type and AND operation are consistent.
+		impl $crate::Maskable<$name> for $name {
+			type Mask = $typ;
+
+			#[inline]
+			fn make_mask(mut selectors: impl Iterator<Item = bool>) -> $typ {
+				<$typ as $crate::underlier::UnderlierType>::fill_with_bit(
+					u8::from(selectors.next().unwrap_or(false)),
+				)
+			}
+
+			#[inline]
+			fn select(&self, mask: &$typ) -> Self {
+				Self(self.0 & *mask)
+			}
+		}
+
 		impl ::rand::distr::Distribution<$name> for ::rand::distr::StandardUniform {
 			fn sample<R: ::rand::Rng + ?Sized>(&self, rng: &mut R) -> $name {
 				$name(::rand::distr::StandardUniform.sample(rng))

@@ -22,7 +22,7 @@ use rand::{
 };
 
 use crate::{
-	BinaryField, Divisible, ExtensionField, Field, PackedField, WideMul,
+	BinaryField, Divisible, ExtensionField, Field, Maskable, PackedField, WideMul,
 	arithmetic_traits::{InvertOrZero, Square},
 	field::FieldOps,
 	underlier::{NumCast, UnderlierType, WithUnderlier},
@@ -468,6 +468,34 @@ where
 	#[inline]
 	fn from_iter(iter: impl Iterator<Item = Scalar>) -> Self {
 		<U as Divisible<Scalar::Underlier>>::from_iter(iter.map(Scalar::to_underlier)).into()
+	}
+}
+
+// Lane masking lowers to a single bitwise AND against an all-ones/all-zeros per-lane mask, the same
+// operation the shift protocol previously performed by reaching into the underlier directly.
+impl<U, Scalar> Maskable<Scalar> for PackedPrimitiveType<U, Scalar>
+where
+	U: UnderlierType + Divisible<Scalar::Underlier>,
+	Scalar: BinaryField,
+{
+	type Mask = U;
+
+	#[inline]
+	fn make_mask(selectors: impl Iterator<Item = bool>) -> U {
+		// Build a per-lane all-ones/all-zeros sub-underlier for each scalar slot and pack into U.
+		// A selected lane produces fill_with_bit(1) (every bit set); unselected gives ZERO.
+		<U as Divisible<Scalar::Underlier>>::from_iter(
+			selectors
+				.take(<Self as Divisible<Scalar>>::N)
+				.map(|selected| {
+					<Scalar::Underlier as UnderlierType>::fill_with_bit(u8::from(selected))
+				}),
+		)
+	}
+
+	#[inline]
+	fn select(&self, mask: &U) -> Self {
+		Self::from_underlier(self.to_underlier() & *mask)
 	}
 }
 
