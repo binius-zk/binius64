@@ -245,6 +245,7 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 		.map(|&log_batch_size| PartialOracleSpec {
 			log_msg_len: log_dim + log_batch_size,
 			log_batch_size: Some(log_batch_size),
+			skip_batch_challenges: 0,
 		})
 		.collect::<Vec<_>>();
 	let (params, _proof_size) = FRIParams::<F>::optimal_for_batch(
@@ -330,10 +331,11 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 	);
 	let final_value = verifier.verify(&mut verifier_challenger).unwrap();
 
-	// The first fold reduces oracle `i` by its inner challenges (the last `log_batch_size_i` of the
-	// first `max_log_batch_size` challenges) and combines the oracles with the outer-challenge
-	// tensor. The remaining (tail) challenges fold the shared reduced codeword. So the final value
-	// is   sum_i outer_tensor[i] * evaluate(msg_i, reversed(inner_i ++ tail)).
+	// The first fold reduces oracle `i` by its inner challenges (with all skips zero here, the
+	// first `log_batch_size_i` of the `max_log_batch_size` inner challenges) and combines the
+	// oracles with the outer-challenge tensor. The remaining (tail) challenges fold the shared
+	// reduced codeword. So the final value is   sum_i outer_tensor[i] * evaluate(msg_i,
+	// reversed(inner_i ++ tail)).
 	let max_log_batch_size = log_batch_sizes.iter().copied().max().unwrap();
 	let first_fold_arity = params.log_batch_size();
 	let inner = &verifier_challenges[..max_log_batch_size];
@@ -343,7 +345,154 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 
 	let mut expected = F::ZERO;
 	for (i, (msg, &log_batch_size)) in iter::zip(&messages, &log_batch_sizes).enumerate() {
-		let inner_i = &inner[max_log_batch_size - log_batch_size..];
+		let inner_i = &inner[..log_batch_size];
+		let mut eval_point = inner_i.iter().chain(tail).copied().collect::<Vec<_>>();
+		eval_point.reverse();
+		expected += outer_tensor[i] * evaluate(msg, &eval_point);
+	}
+	assert_eq!(final_value, expected);
+}
+
+/// Full FRI round trip that batches oracles consuming **disjoint inner-challenge windows** via
+/// per-oracle `skip_batch_challenges`.
+///
+/// Oracle 0 has `skip_batch_challenges = 0`, `log_batch_size = 1`, so it folds with `inner[0]`
+/// alone — the position a ZK BaseFold oracle reserves for its shared masking challenge γ. Oracle 1
+/// has `skip_batch_challenges = 1`, `log_batch_size = 2`, so it skips `inner[0]` and folds with
+/// `inner[1..3]`. The first fold therefore draws `max(0 + 1, 1 + 2) = 3` inner challenges, and the
+/// two oracles overlap in none of them. This is the routing the homogeneous suffix convention could
+/// not express (it would hand Oracle 0 the *last* inner challenge instead of `inner[0]`).
+#[test]
+fn test_commit_prove_verify_batched_mixed_skip() {
+	type F = B128;
+	type P = PackedBinaryGhash1x128b;
+
+	let mut rng = StdRng::seed_from_u64(0);
+
+	let log_dim = 8;
+	let log_inv_rate = 2;
+	// (log_batch_size, skip_batch_challenges) per oracle.
+	let oracle_params_spec = [(1usize, 0usize), (2usize, 1usize)];
+	let n_test_queries = 3;
+
+	let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
+
+	// Every oracle reduces to the shared dimension `log_dim`, so no lifting is exercised here — the
+	// focus is the inner-challenge windowing.
+	let subspace = BinarySubspace::with_dim(log_dim + log_inv_rate);
+	let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
+	let ntt = NeighborsLastSingleThread::new(domain_context);
+
+	let oracle_specs = oracle_params_spec
+		.iter()
+		.map(|&(log_batch_size, skip_batch_challenges)| PartialOracleSpec {
+			log_msg_len: log_dim + log_batch_size,
+			log_batch_size: Some(log_batch_size),
+			skip_batch_challenges,
+		})
+		.collect::<Vec<_>>();
+	let (params, _proof_size) = FRIParams::<F>::optimal_for_batch(
+		ntt.domain_context(),
+		merkle_prover.scheme(),
+		&oracle_specs,
+		log_inv_rate,
+		n_test_queries,
+	);
+	assert_eq!(params.rs_code().log_dim(), log_dim);
+
+	// Commit each input oracle's interleaved codeword separately.
+	let mut messages = Vec::new();
+	let mut commitments = Vec::new();
+	let mut committeds = Vec::new();
+	let mut codewords = Vec::new();
+	for &(log_batch_size, _) in &oracle_params_spec {
+		let oracle_params =
+			FRIParams::new(params.rs_code().clone(), log_batch_size, vec![], n_test_queries);
+		let msg = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
+		let CommitOutput {
+			commitment,
+			committed,
+			codeword,
+		} = commit_interleaved(&oracle_params, 0, &ntt, &merkle_prover, msg.to_ref());
+		messages.push(msg);
+		commitments.push(commitment);
+		committeds.push(committed);
+		codewords.push(codeword);
+	}
+
+	// Run the prover: write the per-oracle codeword commitments, then fold.
+	let committed_codewords = iter::zip(codewords, &committeds).collect::<Vec<_>>();
+	let mut round_prover =
+		FRIFoldProver::new_batch(&params, &ntt, &merkle_prover, committed_codewords);
+
+	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
+	for commitment in &commitments {
+		prover_challenger.message().write(commitment);
+	}
+
+	let fold_round_output = round_prover.execute_fold_round();
+	if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
+		prover_challenger.message().write(&round_commitment);
+	}
+	for _ in 0..params.n_fold_rounds() {
+		let challenge = prover_challenger.sample();
+		round_prover.receive_challenge(challenge);
+
+		let fold_round_output = round_prover.execute_fold_round();
+		if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
+			prover_challenger.message().write(&round_commitment);
+		}
+	}
+	round_prover.finish_proof(&mut prover_challenger);
+
+	// Run the verifier.
+	let mut verifier_challenger = prover_challenger.into_verifier();
+	let read_commitments = commitments
+		.iter()
+		.map(|_| verifier_challenger.message().read().unwrap())
+		.collect::<Vec<_>>();
+
+	let mut verifier_challenges = Vec::with_capacity(params.n_fold_rounds());
+	let mut fri_fold_verifier = FRIFoldVerifier::new(&params);
+	fri_fold_verifier
+		.process_round(&mut verifier_challenger.message())
+		.unwrap();
+	for _ in 0..params.n_fold_rounds() {
+		verifier_challenges.push(verifier_challenger.sample());
+		fri_fold_verifier
+			.process_round(&mut verifier_challenger.message())
+			.unwrap();
+	}
+	let round_commitments = fri_fold_verifier.finalize();
+
+	let verifier = FRIQueryVerifier::new_batch(
+		&params,
+		merkle_prover.scheme(),
+		&read_commitments,
+		&round_commitments,
+		&verifier_challenges,
+	);
+	let final_value = verifier.verify(&mut verifier_challenger).unwrap();
+
+	// Each oracle folds with the window `inner[skip .. skip + log_batch_size]`, so the inner
+	// segment spans `max(skip + log_batch_size)` challenges. The remaining (tail) challenges fold
+	// the shared reduced codeword. So the final value is
+	//   sum_i outer_tensor[i] * evaluate(msg_i, reversed(inner_i ++ tail)).
+	let max_inner = oracle_params_spec
+		.iter()
+		.map(|&(log_batch_size, skip)| skip + log_batch_size)
+		.max()
+		.unwrap();
+	let first_fold_arity = params.log_batch_size();
+	let inner = &verifier_challenges[..max_inner];
+	let outer = &verifier_challenges[max_inner..first_fold_arity];
+	let tail = &verifier_challenges[first_fold_arity..];
+	let outer_tensor = eq_ind_partial_eval_scalars::<F>(outer);
+
+	let mut expected = F::ZERO;
+	for (i, (msg, &(log_batch_size, skip))) in iter::zip(&messages, &oracle_params_spec).enumerate()
+	{
+		let inner_i = &inner[skip..skip + log_batch_size];
 		let mut eval_point = inner_i.iter().chain(tail).copied().collect::<Vec<_>>();
 		eval_point.reverse();
 		expected += outer_tensor[i] * evaluate(msg, &eval_point);
@@ -389,6 +538,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 		.map(|(log_dim, log_batch_size)| PartialOracleSpec {
 			log_msg_len: log_dim + log_batch_size,
 			log_batch_size: Some(log_batch_size),
+			skip_batch_challenges: 0,
 		})
 		.collect::<Vec<_>>();
 	let (params, _proof_size) = FRIParams::<F>::optimal_for_batch(
@@ -479,9 +629,10 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 	);
 	let final_value = verifier.verify(&mut verifier_challenger).unwrap();
 
-	// The first fold reduces oracle `i` by its inner challenges (the last `log_batch_size_i` of the
-	// first `max_log_batch_size` challenges) and combines the oracles with the outer-challenge
-	// tensor. The remaining `reduced_log_dim` tail challenges fold the combined codeword.
+	// The first fold reduces oracle `i` by its inner challenges (with all skips zero here, the
+	// first `log_batch_size_i` of the `max_log_batch_size` inner challenges) and combines the
+	// oracles with the outer-challenge tensor. The remaining `reduced_log_dim` tail challenges
+	// fold the combined codeword.
 	//
 	// Lifting oracle `i` embeds its codeword as `Enc_M(ZeroPadMSB_eta(m_i'))`, whose multilinear
 	// extension factors as `m_i'(low vars) * prod_j (1 - Y_j)` over the `eta_i = reduced_log_dim -
@@ -505,7 +656,7 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 		let eta = reduced_log_dim - log_dim;
 		// The lift (oracle padding) factor from the zero-padded high message variables.
 		let pad_factor = tail[..eta].iter().map(|&t| F::ONE - t).product::<F>();
-		let inner_i = &inner[max_log_batch_size - log_batch_size..];
+		let inner_i = &inner[..log_batch_size];
 		let mut eval_point = inner_i
 			.iter()
 			.chain(&tail[eta..])

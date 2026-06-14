@@ -207,6 +207,7 @@ where
 			.map(|spec| PartialOracleSpec {
 				log_msg_len: spec.log_msg_len + 1,
 				log_batch_size: Some(1),
+				skip_batch_challenges: 0,
 			})
 			.collect();
 		let (fri_params, _) = FRIParams::optimal_for_batch(
