@@ -16,7 +16,7 @@ use rand::{
 	distr::{Distribution, StandardUniform},
 };
 
-use super::{Divisible, NumCast, UnderlierType, UnderlierWithBitOps, mapget};
+use super::{Divisible, NumCast, UnderlierType, mapget};
 use crate::Random;
 
 /// A type that represents N elements of the same underlier type.
@@ -57,10 +57,6 @@ impl<T: Copy, U: From<[T; 2]>> From<[T; 4]> for ScaledUnderlier<U, 2> {
 
 unsafe impl<U: Zeroable, const N: usize> Zeroable for ScaledUnderlier<U, N> {}
 unsafe impl<U: Pod, const N: usize> Pod for ScaledUnderlier<U, N> {}
-
-impl<U: UnderlierType + Pod, const N: usize> UnderlierType for ScaledUnderlier<U, N> {
-	const LOG_BITS: usize = U::LOG_BITS + checked_log_2(N);
-}
 
 impl<U: BitAnd<Output = U> + Copy, const N: usize> BitAnd for ScaledUnderlier<U, N> {
 	type Output = Self;
@@ -110,7 +106,7 @@ impl<U: BitXorAssign + Copy, const N: usize> BitXorAssign for ScaledUnderlier<U,
 	}
 }
 
-impl<U: UnderlierWithBitOps, const N: usize> Shr<usize> for ScaledUnderlier<U, N> {
+impl<U: UnderlierType, const N: usize> Shr<usize> for ScaledUnderlier<U, N> {
 	type Output = Self;
 
 	fn shr(self, rhs: usize) -> Self::Output {
@@ -130,7 +126,7 @@ impl<U: UnderlierWithBitOps, const N: usize> Shr<usize> for ScaledUnderlier<U, N
 	}
 }
 
-impl<U: UnderlierWithBitOps, const N: usize> Shl<usize> for ScaledUnderlier<U, N> {
+impl<U: UnderlierType, const N: usize> Shl<usize> for ScaledUnderlier<U, N> {
 	type Output = Self;
 
 	fn shl(self, rhs: usize) -> Self::Output {
@@ -158,7 +154,9 @@ impl<U: Not<Output = U>, const N: usize> Not for ScaledUnderlier<U, N> {
 	}
 }
 
-impl<U: UnderlierWithBitOps + Pod, const N: usize> UnderlierWithBitOps for ScaledUnderlier<U, N> {
+impl<U: UnderlierType + Pod, const N: usize> UnderlierType for ScaledUnderlier<U, N> {
+	const LOG_BITS: usize = U::LOG_BITS + checked_log_2(N);
+
 	const ZERO: Self = Self([U::ZERO; N]);
 	const ONE: Self = {
 		let mut arr = [U::ZERO; N];

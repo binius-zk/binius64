@@ -1,124 +1,10 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
-
-use binius_utils::checked_arithmetics::checked_int_div;
-
 use super::{
 	U1, U2, U4,
 	underlier_type::{NumCast, UnderlierType},
 };
 use crate::Divisible;
-
-/// Underlier type that supports bit arithmetic.
-pub trait UnderlierWithBitOps:
-	UnderlierType
-	+ BitAnd<Self, Output = Self>
-	+ BitAndAssign<Self>
-	+ BitOr<Self, Output = Self>
-	+ BitOrAssign<Self>
-	+ BitXor<Self, Output = Self>
-	+ BitXorAssign<Self>
-	+ Shr<usize, Output = Self>
-	+ Shl<usize, Output = Self>
-	+ Not<Output = Self>
-	+ Divisible<U1>
-{
-	const ZERO: Self;
-	const ONE: Self;
-	const ONES: Self;
-
-	/// Fill value with the given bit
-	/// `val` must be 0 or 1.
-	fn fill_with_bit(val: u8) -> Self {
-		Self::broadcast_subvalue(U1::new(val))
-	}
-
-	/// Interleave with the given bit size
-	fn interleave(self, other: Self, log_block_len: usize) -> (Self, Self);
-
-	/// Transpose with the given bit size
-	fn transpose(mut self, mut other: Self, log_block_len: usize) -> (Self, Self) {
-		assert!(log_block_len < Self::LOG_BITS);
-
-		for log_block_len in (log_block_len..Self::LOG_BITS).rev() {
-			(self, other) = self.interleave(other, log_block_len);
-		}
-
-		(self, other)
-	}
-
-	#[inline]
-	fn from_fn<T>(f: impl FnMut(usize) -> T) -> Self
-	where
-		T: UnderlierType,
-		Self: Divisible<T>,
-	{
-		Self::from_iter((0..<Self as Divisible<T>>::N).map(f))
-	}
-
-	/// Broadcast subvalue to fill `Self`.
-	/// `Self::BITS/T::BITS` is supposed to be a power of 2.
-	#[inline]
-	fn broadcast_subvalue<T>(value: T) -> Self
-	where
-		T: UnderlierType,
-		Self: Divisible<T>,
-	{
-		Divisible::<T>::broadcast(value)
-	}
-
-	/// Gets the subvalue from the given position.
-	/// Function panics in case when index is out of range.
-	///
-	/// # Safety
-	/// `i` must be less than `Self::BITS/T::BITS`.
-	#[inline]
-	unsafe fn get_subvalue<T>(&self, i: usize) -> T
-	where
-		T: UnderlierType,
-		Self: Divisible<T>,
-	{
-		debug_assert!(
-			i < checked_int_div(Self::BITS, T::BITS),
-			"i: {} Self::BITS: {}, T::BITS: {}",
-			i,
-			Self::BITS,
-			T::BITS
-		);
-		Divisible::<T>::get(*self, i)
-	}
-
-	/// Sets the subvalue in the given position.
-	/// Function panics in case when index is out of range.
-	///
-	/// # Safety
-	/// `i` must be less than `Self::BITS/T::BITS`.
-	#[inline]
-	unsafe fn set_subvalue<T>(&mut self, i: usize, val: T)
-	where
-		T: UnderlierWithBitOps,
-		Self: Divisible<T>,
-	{
-		debug_assert!(i < checked_int_div(Self::BITS, T::BITS));
-		Divisible::<T>::set(self, i, val);
-	}
-
-	/// Spread takes a block of sub_elements of `T` type within the current value and
-	/// repeats them to the full underlier width.
-	///
-	/// # Safety
-	/// `log_block_len + T::LOG_BITS` must be less than or equal to `Self::LOG_BITS`.
-	/// `block_idx` must be less than `1 << (Self::LOG_BITS - log_block_len)`.
-	#[inline]
-	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
-	where
-		T: UnderlierWithBitOps,
-		Self: Divisible<T>,
-	{
-		unsafe { spread_fallback::<Self, T>(self, log_block_len, block_idx) }
-	}
-}
 
 /// Fallback implementation of `spread` method.
 ///
@@ -127,8 +13,8 @@ pub trait UnderlierWithBitOps:
 /// `block_idx` must be less than `1 << (U::LOG_BITS - log_block_len)`.
 pub(crate) unsafe fn spread_fallback<U, T>(value: U, log_block_len: usize, block_idx: usize) -> U
 where
-	U: UnderlierWithBitOps + Divisible<T>,
-	T: UnderlierWithBitOps,
+	U: UnderlierType + Divisible<T>,
+	T: UnderlierType,
 {
 	debug_assert!(
 		log_block_len + T::LOG_BITS <= U::LOG_BITS,
@@ -163,7 +49,7 @@ where
 
 #[cfg(test)]
 #[allow(unused)]
-pub(crate) fn single_element_mask_bits<T: UnderlierWithBitOps>(bits_count: usize) -> T {
+pub(crate) fn single_element_mask_bits<T: UnderlierType>(bits_count: usize) -> T {
 	use binius_utils::checked_arithmetics::checked_log_2;
 
 	if bits_count == T::BITS {
@@ -211,7 +97,7 @@ impl SpreadToByte for U4 {
 	}
 }
 
-/// A helper functions for implementing `UnderlierWithBitOps::spread_unchecked` for SIMD types.
+/// A helper functions for implementing `UnderlierType::spread` for SIMD types.
 ///
 /// # Safety
 /// `log_block_len + T::LOG_BITS` must be less than or equal to `U::LOG_BITS`.
@@ -222,13 +108,13 @@ pub(crate) unsafe fn get_block_values<U, T, const BLOCK_LEN: usize>(
 	block_idx: usize,
 ) -> [T; BLOCK_LEN]
 where
-	U: UnderlierWithBitOps + From<T> + Divisible<T>,
+	U: UnderlierType + From<T> + Divisible<T>,
 	T: UnderlierType + NumCast<U>,
 {
 	std::array::from_fn(|i| unsafe { value.get_subvalue::<T>(block_idx * BLOCK_LEN + i) })
 }
 
-/// A helper functions for implementing `UnderlierWithBitOps::spread_unchecked` for SIMD types.
+/// A helper functions for implementing `UnderlierType::spread` for SIMD types.
 ///
 /// # Safety
 /// `log_block_len + T::LOG_BITS` must be less than or equal to `U::LOG_BITS`.
@@ -239,7 +125,7 @@ pub(crate) unsafe fn get_spread_bytes<U, T, const BLOCK_LEN: usize>(
 	block_idx: usize,
 ) -> [u8; BLOCK_LEN]
 where
-	U: UnderlierWithBitOps + From<T> + Divisible<T>,
+	U: UnderlierType + From<T> + Divisible<T>,
 	T: UnderlierType + SpreadToByte + NumCast<U>,
 {
 	unsafe { get_block_values::<U, T, BLOCK_LEN>(value, block_idx) }

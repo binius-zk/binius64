@@ -4,7 +4,7 @@ use std::{iter, ops::Range};
 
 use binius_core::word::Word;
 use binius_field::{
-	AESTowerField8b, BinaryField, Field, PackedField, UnderlierWithBitOps, WithUnderlier,
+	AESTowerField8b, BinaryField, Field, PackedField, UnderlierType, WithUnderlier,
 };
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, inner_product::inner_product_buffers};
@@ -45,8 +45,8 @@ pub fn prove_phase_1<F, P, Channel>(
 	channel: &mut Channel,
 ) -> Result<SumcheckOutput<F>, Error>
 where
-	F: BinaryField + From<AESTowerField8b> + WithUnderlier<Underlier: UnderlierWithBitOps>,
-	P: PackedField<Scalar = F> + WithUnderlier<Underlier: UnderlierWithBitOps>,
+	F: BinaryField + From<AESTowerField8b> + WithUnderlier<Underlier: UnderlierType>,
+	P: PackedField<Scalar = F> + WithUnderlier<Underlier: UnderlierType>,
 	Channel: IPProverChannel<F>,
 {
 	let g_parts = build_g_parts::<_, P>(words, key_collection, bitand_data, intmul_data)?;
@@ -169,8 +169,8 @@ fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverC
 /// that will participate in the phase 1 sumcheck protocol.
 #[instrument(skip_all, name = "build_g_parts")]
 fn build_g_parts<
-	F: BinaryField + WithUnderlier<Underlier: UnderlierWithBitOps>,
-	P: PackedField<Scalar = F> + WithUnderlier<Underlier: UnderlierWithBitOps>,
+	F: BinaryField + WithUnderlier<Underlier: UnderlierType>,
+	P: PackedField<Scalar = F> + WithUnderlier<Underlier: UnderlierType>,
 >(
 	words: &[Word],
 	key_collection: &KeyCollection,
@@ -185,7 +185,7 @@ fn build_g_parts<
 	);
 
 	// Field element that is represented by all ones
-	let all_ones_f = F::from_underlier(UnderlierWithBitOps::fill_with_bit(1));
+	let all_ones_f = F::from_underlier(UnderlierType::fill_with_bit(1));
 	// Map from u8 with `P::WIDTH` meaningful bits to the `P` where each element has
 	// all zeroes or all ones depending on the corresponding bit value.
 	let packed_masks_map = (0..1 << P::WIDTH)

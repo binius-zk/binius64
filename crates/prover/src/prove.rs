@@ -7,7 +7,7 @@ use binius_core::{
 };
 use binius_field::{
 	AESTowerField8b as B8, BinaryField, ExtensionField, PackedAESBinaryField16x8b, PackedExtension,
-	PackedField, UnderlierWithBitOps, WithUnderlier,
+	PackedField, UnderlierType, WithUnderlier,
 };
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{
@@ -99,7 +99,7 @@ impl IOPProver {
 		P: PackedField<Scalar = B128>
 			+ PackedExtension<B128>
 			+ PackedExtension<B1>
-			+ WithUnderlier<Underlier: UnderlierWithBitOps>,
+			+ WithUnderlier<Underlier: UnderlierType>,
 		Channel: IOPProverChannel<P>,
 	{
 		let cs = &self.constraint_system;
@@ -273,7 +273,7 @@ where
 	P: PackedField<Scalar = B128>
 		+ PackedExtension<B128>
 		+ PackedExtension<B1>
-		+ WithUnderlier<Underlier: UnderlierWithBitOps>,
+		+ WithUnderlier<Underlier: UnderlierType>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {

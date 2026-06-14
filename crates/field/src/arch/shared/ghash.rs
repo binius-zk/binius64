@@ -11,11 +11,11 @@ use std::{
 	ops::{Add, AddAssign, Sub, SubAssign},
 };
 
-use crate::{Divisible, underlier::UnderlierWithBitOps};
+use crate::{Divisible, underlier::UnderlierType};
 
 /// Trait for underliers that support CLMUL operations which are needed for the
 /// GHASH multiplication algorithm.
-pub trait ClMulUnderlier: UnderlierWithBitOps + Divisible<u128> {
+pub trait ClMulUnderlier: UnderlierType + Divisible<u128> {
 	/// Performs CLMUL operation on two 64-bit values that are selected from 128-bit lanes
 	/// by the bytes of the IMM8 parameter.
 	fn clmulepi64<const IMM8: i32>(a: Self, b: Self) -> Self;
@@ -79,7 +79,7 @@ const POLY: u128 = 0x87;
 /// Performs reduction step: returns t0 + x^64 * t1
 #[inline]
 fn gf2_128_reduce<U: ClMulUnderlier>(mut t0: U, t1: U) -> U {
-	let poly = <U as UnderlierWithBitOps>::broadcast_subvalue(POLY);
+	let poly = <U as UnderlierType>::broadcast_subvalue(POLY);
 
 	// t0 = t0 XOR (t1 << 64)
 	// In SIMD, left shift by 64 bits is shifting by 8 bytes
@@ -94,7 +94,7 @@ fn gf2_128_reduce<U: ClMulUnderlier>(mut t0: U, t1: U) -> U {
 
 /// Returns a `x^64 * t` after reduction.
 fn gf2_128_shift_reduce<U: ClMulUnderlier>(t: U) -> U {
-	let poly = <U as UnderlierWithBitOps>::broadcast_subvalue(POLY);
+	let poly = <U as UnderlierType>::broadcast_subvalue(POLY);
 	let mut result = U::move_64_to_hi(t);
 
 	result ^= U::clmulepi64::<0x01>(t, poly);

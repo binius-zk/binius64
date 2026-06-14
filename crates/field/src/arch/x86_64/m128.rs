@@ -22,8 +22,8 @@ use crate::{
 	BinaryField,
 	arch::portable::packed::PackedPrimitiveType,
 	underlier::{
-		Divisible, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, UnderlierWithBitOps,
-		impl_divisible_bitmask, mapget, spread_fallback,
+		Divisible, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, impl_divisible_bitmask,
+		mapget, spread_fallback,
 	},
 };
 
@@ -324,9 +324,6 @@ pub(super) use m128_from_u128;
 
 impl UnderlierType for M128 {
 	const LOG_BITS: usize = 7;
-}
-
-impl UnderlierWithBitOps for M128 {
 	const ZERO: Self = { Self(m128_from_u128!(0)) };
 	const ONE: Self = { Self(m128_from_u128!(1)) };
 	const ONES: Self = { Self(m128_from_u128!(u128::MAX)) };
@@ -346,7 +343,7 @@ impl UnderlierWithBitOps for M128 {
 	#[inline(always)]
 	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
 	where
-		T: UnderlierWithBitOps,
+		T: UnderlierType,
 		Self: Divisible<T>,
 	{
 		match T::LOG_BITS {

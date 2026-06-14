@@ -23,10 +23,10 @@
 //! Which in turn was adapted from BearSSL's `ghash_ctmul64.c`:
 //! <https://bearssl.org/gitweb/?p=BearSSL;a=blob;f=src/hash/ghash_ctmul64.c;hb=4b6046412>
 
-use crate::underlier::UnderlierWithBitOps;
+use crate::underlier::UnderlierType;
 
 /// Trait for 64-bit underliers that can be used in carryless multiplication.
-pub trait Underlier64bLanes: UnderlierWithBitOps {
+pub trait Underlier64bLanes: UnderlierType {
 	/// Reverse the bits of the 64-bit lanes.
 	fn reverse_bits_64(self) -> Self;
 
@@ -69,7 +69,7 @@ impl Underlier64bLanes for u64 {
 }
 
 /// Trait for 128-bit underliers that can be used in carryless multiplication.
-pub trait Underlier128bLanes: UnderlierWithBitOps {
+pub trait Underlier128bLanes: UnderlierType {
 	/// The twice smaller type containing the 64-bit lanes.
 	type U64: Underlier64bLanes;
 

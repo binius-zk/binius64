@@ -11,7 +11,7 @@ use binius_core::{
 	word::Word,
 };
 use binius_field::{
-	BinaryField128bGhash as B128, PackedExtension, PackedField, UnderlierWithBitOps, WithUnderlier,
+	BinaryField128bGhash as B128, PackedExtension, PackedField, UnderlierType, WithUnderlier,
 };
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::basefold_compiler::BaseFoldZKProverCompiler;
@@ -58,7 +58,7 @@ where
 	P: PackedField<Scalar = B128>
 		+ PackedExtension<B128>
 		+ PackedExtension<binius_verifier::config::B1>
-		+ WithUnderlier<Underlier: UnderlierWithBitOps>,
+		+ WithUnderlier<Underlier: UnderlierType>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {
@@ -231,7 +231,7 @@ where
 	P: PackedField<Scalar = B128>
 		+ PackedExtension<B128>
 		+ PackedExtension<binius_verifier::config::B1>
-		+ WithUnderlier<Underlier: UnderlierWithBitOps>,
+		+ WithUnderlier<Underlier: UnderlierType>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
@@ -255,7 +255,7 @@ where
 	P: PackedField<Scalar = B128>
 		+ PackedExtension<B128>
 		+ PackedExtension<binius_verifier::config::B1>
-		+ WithUnderlier<Underlier: UnderlierWithBitOps>,
+		+ WithUnderlier<Underlier: UnderlierType>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {

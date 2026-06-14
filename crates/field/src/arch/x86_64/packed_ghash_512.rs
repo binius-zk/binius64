@@ -17,7 +17,7 @@ use crate::{
 		InvertOrZero, TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
 		impl_square_with,
 	},
-	underlier::UnderlierWithBitOps,
+	underlier::UnderlierType,
 };
 // Only used by the CLMUL-accelerated `ClMulUnderlier` and `WideMul` impls below.
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]

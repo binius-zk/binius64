@@ -5,28 +5,24 @@ use crate::{
 	BinaryField1b,
 	arch::BitwiseAndStrategy,
 	arithmetic_traits::{TaggedInvertOrZero, TaggedMul, TaggedSquare},
-	underlier::UnderlierWithBitOps,
+	underlier::UnderlierType,
 };
 
-impl<U: UnderlierWithBitOps> TaggedMul<BitwiseAndStrategy>
-	for PackedPrimitiveType<U, BinaryField1b>
-{
+impl<U: UnderlierType> TaggedMul<BitwiseAndStrategy> for PackedPrimitiveType<U, BinaryField1b> {
 	#[inline]
 	fn mul(self, rhs: Self) -> Self {
 		(self.0 & rhs.0).into()
 	}
 }
 
-impl<U: UnderlierWithBitOps> TaggedSquare<BitwiseAndStrategy>
-	for PackedPrimitiveType<U, BinaryField1b>
-{
+impl<U: UnderlierType> TaggedSquare<BitwiseAndStrategy> for PackedPrimitiveType<U, BinaryField1b> {
 	#[inline]
 	fn square(self) -> Self {
 		self
 	}
 }
 
-impl<U: UnderlierWithBitOps> TaggedInvertOrZero<BitwiseAndStrategy>
+impl<U: UnderlierType> TaggedInvertOrZero<BitwiseAndStrategy>
 	for PackedPrimitiveType<U, BinaryField1b>
 {
 	#[inline]

@@ -19,7 +19,7 @@ use rand::{
 	prelude::*,
 };
 
-use super::{UnderlierType, underlier_with_bit_ops::UnderlierWithBitOps};
+use super::UnderlierType;
 use crate::arch::{interleave_mask_even, interleave_with_mask};
 
 /// Unsigned type with a size strictly less than 8 bits.
@@ -136,11 +136,9 @@ impl<const N: usize> Not for SmallU<N> {
 
 unsafe impl<const N: usize> NoUninit for SmallU<N> {}
 
-impl<const N: usize> UnderlierType for SmallU<N> {
-	const LOG_BITS: usize = checked_log_2(N);
-}
+impl UnderlierType for U1 {
+	const LOG_BITS: usize = checked_log_2(1);
 
-impl UnderlierWithBitOps for U1 {
 	const ZERO: Self = Self(0);
 	const ONE: Self = Self(1);
 	const ONES: Self = Self(1);
@@ -150,7 +148,9 @@ impl UnderlierWithBitOps for U1 {
 	}
 }
 
-impl UnderlierWithBitOps for U2 {
+impl UnderlierType for U2 {
+	const LOG_BITS: usize = checked_log_2(2);
+
 	const ZERO: Self = Self(0);
 	const ONE: Self = Self(1);
 	const ONES: Self = Self(0b11);
@@ -161,7 +161,9 @@ impl UnderlierWithBitOps for U2 {
 	}
 }
 
-impl UnderlierWithBitOps for U4 {
+impl UnderlierType for U4 {
+	const LOG_BITS: usize = checked_log_2(4);
+
 	const ZERO: Self = Self(0);
 	const ONE: Self = Self(1);
 	const ONES: Self = Self(0b1111);

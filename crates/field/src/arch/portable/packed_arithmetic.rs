@@ -5,13 +5,13 @@ use crate::{
 	binary_field::BinaryField,
 	linear_transformation::{FieldLinearTransformation, Transformation},
 	packed::PackedBinaryField,
-	underlier::{UnderlierWithBitOps, WithUnderlier},
+	underlier::{UnderlierType, WithUnderlier},
 };
 
 /// Interleave using the provided even mask slice.
 ///
 /// See [Hacker's Delight](https://dl.acm.org/doi/10.5555/2462741), Section 7-3.
-pub fn interleave_with_mask<U: UnderlierWithBitOps>(
+pub fn interleave_with_mask<U: UnderlierType>(
 	a: U,
 	b: U,
 	log_block_len: usize,
@@ -76,7 +76,7 @@ where
 }
 
 /// Broadcast lowest field for each element, e.g. `[<0001><0000>] -> [<1111><0000>]`
-fn broadcast_lowest_bit<U: UnderlierWithBitOps>(mut data: U, log_packed_bits: usize) -> U {
+fn broadcast_lowest_bit<U: UnderlierType>(mut data: U, log_packed_bits: usize) -> U {
 	for i in 0..log_packed_bits {
 		data |= data << (1 << i)
 	}
@@ -90,7 +90,7 @@ where
 	OP: PackedField<Scalar = OF> + WithUnderlier<Underlier = U>,
 	IF: BinaryField,
 	OF: BinaryField,
-	U: UnderlierWithBitOps,
+	U: UnderlierType,
 {
 	fn transform(&self, input: &IP) -> OP {
 		let mut result = OP::zero();

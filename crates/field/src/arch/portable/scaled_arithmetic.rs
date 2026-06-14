@@ -35,7 +35,7 @@ where
 {
 	fn square(self) -> Self {
 		Self::wrap(ScaledUnderlier(self.0.0.map(|sub_underlier| {
-			PackedPrimitiveType::peel(PackedPrimitiveType::wrap(sub_underlier).square())
+			PackedPrimitiveType::peel(Square::square(PackedPrimitiveType::wrap(sub_underlier)))
 		})))
 	}
 }
@@ -47,7 +47,9 @@ where
 {
 	fn invert_or_zero(self) -> Self {
 		Self::wrap(ScaledUnderlier(self.0.0.map(|sub_underlier| {
-			PackedPrimitiveType::peel(PackedPrimitiveType::wrap(sub_underlier).invert_or_zero())
+			PackedPrimitiveType::peel(InvertOrZero::invert_or_zero(PackedPrimitiveType::wrap(
+				sub_underlier,
+			)))
 		})))
 	}
 }

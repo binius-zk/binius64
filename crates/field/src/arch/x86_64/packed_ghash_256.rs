@@ -19,7 +19,7 @@ use crate::{
 		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
 		impl_square_with,
 	},
-	underlier::UnderlierWithBitOps,
+	underlier::UnderlierType,
 };
 // Only used by the CLMUL-accelerated `WideMul` impl below.
 #[cfg(target_feature = "vpclmulqdq")]

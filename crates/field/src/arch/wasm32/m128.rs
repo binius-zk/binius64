@@ -18,8 +18,8 @@ use crate::{
 	BinaryField, Random,
 	arch::portable::{packed::PackedPrimitiveType, packed_arithmetic::interleave_mask_even},
 	underlier::{
-		NumCast, SmallU, U1, U2, U4, UnderlierType, UnderlierWithBitOps, WithUnderlier,
-		impl_divisible_bitmask, impl_divisible_memcast,
+		NumCast, SmallU, U1, U2, U4, UnderlierType, WithUnderlier, impl_divisible_bitmask,
+		impl_divisible_memcast,
 	},
 };
 
@@ -280,9 +280,6 @@ impl std::fmt::Debug for M128 {
 
 impl UnderlierType for M128 {
 	const LOG_BITS: usize = 7;
-}
-
-impl UnderlierWithBitOps for M128 {
 	const ZERO: Self = { Self(u64x2(0, 0)) };
 	const ONE: Self = { Self(u64x2(1, 0)) };
 	const ONES: Self = { Self(u64x2(u64::MAX, u64::MAX)) };

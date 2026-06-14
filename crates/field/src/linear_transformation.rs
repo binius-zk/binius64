@@ -5,9 +5,8 @@ use std::{iter, marker::PhantomData, ops::BitXor};
 use rand::prelude::*;
 
 use crate::{
-	BinaryField, BinaryField1b, ExtensionField, UnderlierWithBitOps, WithUnderlier,
-	packed::PackedBinaryField,
-	underlier::{Divisible, UnderlierType},
+	BinaryField, BinaryField1b, ExtensionField, UnderlierType, WithUnderlier,
+	packed::PackedBinaryField, underlier::Divisible,
 };
 
 /// Generic transformation trait that is used both for scalars and packed fields
@@ -91,7 +90,7 @@ pub struct BytewiseLookupTransformation<UIn, UOut> {
 impl<UIn, UOut> BytewiseLookupTransformation<UIn, UOut>
 where
 	UIn: UnderlierType + Divisible<u8>,
-	UOut: UnderlierWithBitOps,
+	UOut: UnderlierType,
 {
 	pub fn new(cols: &[UOut]) -> Self {
 		assert!(LOG_BITS_PER_BYTE <= UIn::LOG_BITS);
@@ -118,7 +117,7 @@ where
 impl<UIn, UOut> Transformation<UIn, UOut> for BytewiseLookupTransformation<UIn, UOut>
 where
 	UIn: UnderlierType + Divisible<u8>,
-	UOut: UnderlierWithBitOps,
+	UOut: UnderlierType,
 {
 	fn transform(&self, data: &UIn) -> UOut {
 		Divisible::<u8>::ref_iter(data)
@@ -136,7 +135,7 @@ where
 	}
 }
 
-fn expand_subset_xors<U: UnderlierWithBitOps, const N: usize, const N_EXP2: usize>(
+fn expand_subset_xors<U: UnderlierType, const N: usize, const N_EXP2: usize>(
 	elems: [U; N],
 ) -> [U; N_EXP2] {
 	assert_eq!(N_EXP2, 1 << N);
@@ -166,7 +165,7 @@ pub trait LinearTransformationFactory<Input, Output> {
 impl<UIn, UOut> LinearTransformationFactory<UIn, UOut> for BytewiseLookupTransformationFactory
 where
 	UIn: UnderlierType + Divisible<u8>,
-	UOut: UnderlierWithBitOps,
+	UOut: UnderlierType,
 {
 	type Transform = BytewiseLookupTransformation<UIn, UOut>;
 

@@ -20,7 +20,7 @@ use super::super::portable::{
 use crate::{
 	BinaryField,
 	underlier::{
-		NumCast, SmallU, UnderlierType, UnderlierWithBitOps,
+		NumCast, SmallU, UnderlierType,
 		divisible::{Divisible, mapget},
 		impl_divisible_bitmask,
 	},
@@ -622,9 +622,6 @@ impl std::fmt::Debug for M128 {
 
 impl UnderlierType for M128 {
 	const LOG_BITS: usize = 7;
-}
-
-impl UnderlierWithBitOps for M128 {
 	const ZERO: Self = Self::from_u128(0);
 	const ONE: Self = Self::from_u128(1);
 	const ONES: Self = Self::from_u128(u128::MAX);

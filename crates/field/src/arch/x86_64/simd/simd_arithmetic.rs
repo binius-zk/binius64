@@ -2,10 +2,10 @@
 
 use std::{any::TypeId, arch::x86_64::*};
 
-use crate::{BinaryField, aes_field::AESTowerField8b, underlier::UnderlierWithBitOps};
+use crate::{BinaryField, aes_field::AESTowerField8b, underlier::UnderlierType};
 
 #[allow(dead_code)]
-pub trait TowerSimdType: Sized + Copy + UnderlierWithBitOps {
+pub trait TowerSimdType: Sized + Copy + UnderlierType {
 	/// Blend odd and even elements
 	fn blend_odd_even<Scalar: BinaryField>(a: Self, b: Self) -> Self;
 	/// Set alpha to even elements

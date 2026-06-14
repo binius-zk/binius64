@@ -14,14 +14,14 @@ use binius_utils::{
 use bytemuck::Zeroable;
 
 use super::{
-	UnderlierWithBitOps, WithUnderlier, binary_field_arithmetic::TowerFieldArithmetic,
+	UnderlierType, WithUnderlier, binary_field_arithmetic::TowerFieldArithmetic,
 	extension::ExtensionField,
 };
 use crate::{Field, underlier::U1};
 
 /// A finite field with characteristic 2.
 pub trait BinaryField:
-	ExtensionField<BinaryField1b> + WithUnderlier<Underlier: UnderlierWithBitOps>
+	ExtensionField<BinaryField1b> + WithUnderlier<Underlier: UnderlierType>
 {
 	const N_BITS: usize = Self::ORDER_EXPONENT;
 }
@@ -226,8 +226,8 @@ macro_rules! binary_field {
 		}
 
 		impl Field for $name {
-			const ZERO: Self = $name::new(<$typ as $crate::underlier::UnderlierWithBitOps>::ZERO);
-			const ONE: Self = $name::new(<$typ as $crate::underlier::UnderlierWithBitOps>::ONE);
+			const ZERO: Self = $name::new(<$typ as $crate::underlier::UnderlierType>::ZERO);
+			const ONE: Self = $name::new(<$typ as $crate::underlier::UnderlierType>::ONE);
 			const CHARACTERISTIC: usize = 2;
 			const ORDER_EXPONENT: usize = <$typ as $crate::underlier::UnderlierType>::BITS;
 			const MULTIPLICATIVE_GENERATOR: $name = $name($gen);
@@ -324,7 +324,7 @@ macro_rules! mul_by_binary_field_1b {
 			#[inline]
 			#[allow(clippy::suspicious_arithmetic_impl)]
 			fn mul(self, rhs: BinaryField1b) -> Self::Output {
-				use $crate::underlier::{UnderlierWithBitOps, WithUnderlier};
+				use $crate::underlier::{UnderlierType, WithUnderlier};
 
 				$crate::tracing::trace_multiplication!(BinaryField128b, BinaryField1b);
 
@@ -346,7 +346,7 @@ macro_rules! impl_field_extension {
 				use $crate::underlier::NumCast;
 
 				if elem.0 >> $subfield_name::N_BITS
-					== <$typ as $crate::underlier::UnderlierWithBitOps>::ZERO
+					== <$typ as $crate::underlier::UnderlierType>::ZERO
 				{
 					Ok($subfield_name::new(<$subfield_typ>::num_cast_from(elem.val())))
 				} else {
@@ -434,7 +434,7 @@ macro_rules! impl_field_extension {
 
 			#[inline]
 			fn basis(i: usize) -> Self {
-				use $crate::underlier::UnderlierWithBitOps;
+				use $crate::underlier::UnderlierType;
 
 				assert!(
 					i < 1 << $log_degree,
@@ -450,7 +450,7 @@ macro_rules! impl_field_extension {
 				base_elems: impl IntoIterator<Item = $subfield_name>,
 				log_stride: usize,
 			) -> Self {
-				use $crate::underlier::UnderlierWithBitOps;
+				use $crate::underlier::UnderlierType;
 
 				debug_assert!($name::N_BITS.is_power_of_two());
 				let shift_step = ($subfield_name::N_BITS << log_stride) & ($name::N_BITS - 1);
@@ -486,7 +486,7 @@ macro_rules! impl_field_extension {
 
 			#[inline]
 			unsafe fn get_base_unchecked(&self, i: usize) -> $subfield_name {
-				use $crate::underlier::{UnderlierWithBitOps, WithUnderlier};
+				use $crate::underlier::{UnderlierType, WithUnderlier};
 				unsafe { $subfield_name::from_underlier(self.to_underlier().get_subvalue(i)) }
 			}
 

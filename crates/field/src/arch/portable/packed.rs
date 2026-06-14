@@ -25,7 +25,7 @@ use crate::{
 	BinaryField, Divisible, ExtensionField, Field, PackedField, WideMul,
 	arithmetic_traits::{InvertOrZero, Square},
 	field::FieldOps,
-	underlier::{NumCast, UnderlierType, UnderlierWithBitOps, WithUnderlier},
+	underlier::{NumCast, UnderlierType, WithUnderlier},
 };
 
 #[derive(PartialEq, Eq, Clone, Copy, Default, bytemuck::TransparentWrapper)]
@@ -62,7 +62,7 @@ impl<U: UnderlierType, Scalar: BinaryField> PackedPrimitiveType<U, Scalar> {
 	}
 }
 
-impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField>
+impl<U: UnderlierType + Divisible<Scalar::Underlier>, Scalar: BinaryField>
 	PackedPrimitiveType<U, Scalar>
 {
 	#[inline]
@@ -131,7 +131,7 @@ unsafe impl<U: UnderlierType, Scalar: BinaryField> WithUnderlier
 // PackedField`. `PackedField` now has `WideMul<Output: Debug>` as a parent trait, and the trivial
 // `WideMul` impl sets `Output = Self`, so a `Self: PackedField` bound here would make `Debug`
 // depend on itself and overflow trait resolution.
-impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> Debug
+impl<U: UnderlierType + Divisible<Scalar::Underlier>, Scalar: BinaryField> Debug
 	for PackedPrimitiveType<U, Scalar>
 {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -154,7 +154,7 @@ impl<U: UnderlierType, Scalar: BinaryField> From<U> for PackedPrimitiveType<U, S
 	}
 }
 
-impl<U: UnderlierWithBitOps, Scalar: BinaryField> Neg for PackedPrimitiveType<U, Scalar> {
+impl<U: UnderlierType, Scalar: BinaryField> Neg for PackedPrimitiveType<U, Scalar> {
 	type Output = Self;
 
 	#[inline]
@@ -163,7 +163,7 @@ impl<U: UnderlierWithBitOps, Scalar: BinaryField> Neg for PackedPrimitiveType<U,
 	}
 }
 
-impl<U: UnderlierWithBitOps, Scalar: BinaryField> Add for PackedPrimitiveType<U, Scalar> {
+impl<U: UnderlierType, Scalar: BinaryField> Add for PackedPrimitiveType<U, Scalar> {
 	type Output = Self;
 
 	#[inline]
@@ -173,7 +173,7 @@ impl<U: UnderlierWithBitOps, Scalar: BinaryField> Add for PackedPrimitiveType<U,
 	}
 }
 
-impl<U: UnderlierWithBitOps, Scalar: BinaryField> Add<&Self> for PackedPrimitiveType<U, Scalar> {
+impl<U: UnderlierType, Scalar: BinaryField> Add<&Self> for PackedPrimitiveType<U, Scalar> {
 	type Output = Self;
 
 	#[inline]
@@ -183,7 +183,7 @@ impl<U: UnderlierWithBitOps, Scalar: BinaryField> Add<&Self> for PackedPrimitive
 	}
 }
 
-impl<U: UnderlierWithBitOps, Scalar: BinaryField> Sub for PackedPrimitiveType<U, Scalar> {
+impl<U: UnderlierType, Scalar: BinaryField> Sub for PackedPrimitiveType<U, Scalar> {
 	type Output = Self;
 
 	#[inline]
@@ -193,7 +193,7 @@ impl<U: UnderlierWithBitOps, Scalar: BinaryField> Sub for PackedPrimitiveType<U,
 	}
 }
 
-impl<U: UnderlierWithBitOps, Scalar: BinaryField> Sub<&Self> for PackedPrimitiveType<U, Scalar> {
+impl<U: UnderlierType, Scalar: BinaryField> Sub<&Self> for PackedPrimitiveType<U, Scalar> {
 	type Output = Self;
 
 	#[inline]
@@ -257,7 +257,7 @@ where
 	}
 }
 
-impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> Add<Scalar>
+impl<U: UnderlierType + Divisible<Scalar::Underlier>, Scalar: BinaryField> Add<Scalar>
 	for PackedPrimitiveType<U, Scalar>
 {
 	type Output = Self;
@@ -267,7 +267,7 @@ impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField>
 	}
 }
 
-impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> Sub<Scalar>
+impl<U: UnderlierType + Divisible<Scalar::Underlier>, Scalar: BinaryField> Sub<Scalar>
 	for PackedPrimitiveType<U, Scalar>
 {
 	type Output = Self;
@@ -277,7 +277,7 @@ impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField>
 	}
 }
 
-impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> Mul<Scalar>
+impl<U: UnderlierType + Divisible<Scalar::Underlier>, Scalar: BinaryField> Mul<Scalar>
 	for PackedPrimitiveType<U, Scalar>
 where
 	Self: Mul<Output = Self>,
@@ -289,7 +289,7 @@ where
 	}
 }
 
-impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> AddAssign<Scalar>
+impl<U: UnderlierType + Divisible<Scalar::Underlier>, Scalar: BinaryField> AddAssign<Scalar>
 	for PackedPrimitiveType<U, Scalar>
 {
 	fn add_assign(&mut self, rhs: Scalar) {
@@ -297,7 +297,7 @@ impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField>
 	}
 }
 
-impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> SubAssign<Scalar>
+impl<U: UnderlierType + Divisible<Scalar::Underlier>, Scalar: BinaryField> SubAssign<Scalar>
 	for PackedPrimitiveType<U, Scalar>
 {
 	fn sub_assign(&mut self, rhs: Scalar) {
@@ -305,7 +305,7 @@ impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField>
 	}
 }
 
-impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> MulAssign<Scalar>
+impl<U: UnderlierType + Divisible<Scalar::Underlier>, Scalar: BinaryField> MulAssign<Scalar>
 	for PackedPrimitiveType<U, Scalar>
 where
 	Self: MulAssign<Self>,
@@ -333,7 +333,7 @@ where
 	}
 }
 
-impl<U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField> Product
+impl<U: UnderlierType + Divisible<Scalar::Underlier>, Scalar: BinaryField> Product
 	for PackedPrimitiveType<U, Scalar>
 where
 	Self: Mul<Output = Self>,
@@ -343,8 +343,8 @@ where
 	}
 }
 
-impl<'a, U: UnderlierWithBitOps + Divisible<Scalar::Underlier>, Scalar: BinaryField>
-	Product<&'a Self> for PackedPrimitiveType<U, Scalar>
+impl<'a, U: UnderlierType + Divisible<Scalar::Underlier>, Scalar: BinaryField> Product<&'a Self>
+	for PackedPrimitiveType<U, Scalar>
 where
 	Self: Mul<Output = Self>,
 {
@@ -375,7 +375,7 @@ unsafe impl<U: UnderlierType + Pod, Scalar: BinaryField> Pod for PackedPrimitive
 impl<U, Scalar> FieldOps for PackedPrimitiveType<U, Scalar>
 where
 	Self: Square + InvertOrZero + Mul<Output = Self>,
-	U: UnderlierWithBitOps + Divisible<Scalar::Underlier>,
+	U: UnderlierType + Divisible<Scalar::Underlier>,
 	Scalar: BinaryField,
 {
 	type Scalar = Scalar;
@@ -419,7 +419,7 @@ where
 // underlier. This is the supertrait obligation behind `PackedField: Divisible<Self::Scalar>`.
 impl<U, Scalar> Divisible<Scalar> for PackedPrimitiveType<U, Scalar>
 where
-	U: UnderlierWithBitOps + Divisible<Scalar::Underlier>,
+	U: UnderlierType + Divisible<Scalar::Underlier>,
 	Scalar: BinaryField,
 {
 	const LOG_N: usize = (U::BITS / Scalar::N_BITS).ilog2() as usize;
@@ -475,7 +475,7 @@ impl<U, Scalar> PackedField for PackedPrimitiveType<U, Scalar>
 where
 	Self:
 		Square + InvertOrZero + Mul<Output = Self> + WideMul<Output: Debug + Send + Sync + 'static>,
-	U: UnderlierWithBitOps + Divisible<Scalar::Underlier>,
+	U: UnderlierType + Divisible<Scalar::Underlier>,
 	Scalar: BinaryField,
 {
 	// LOG_WIDTH defaults to `<Self as Divisible<Scalar>>::LOG_N`, the same `(U::BITS /
