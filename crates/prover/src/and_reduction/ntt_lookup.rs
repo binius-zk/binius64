@@ -35,7 +35,10 @@
 
 use std::vec;
 
-use binius_field::{BinaryField, BinaryField1b, Field, PackedBinaryField8x1b, PackedField};
+use binius_field::{
+	BinaryField, BinaryField1b, Divisible, Field, PackedBinaryField8x1b, PackedField,
+	field::FieldOps,
+};
 use binius_math::{BinarySubspace, univariate::lagrange_evals_scalars};
 use binius_verifier::protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS};
 
@@ -106,11 +109,10 @@ where
 
 		for eight_bit_chunk_idx in 0..ROWS_PER_HYPERCUBE_VERTEX / 8 {
 			for log_coefficient_as_bit_string in 0..8 {
-				let coefficient_as_bit_string = 1 << log_coefficient_as_bit_string;
-				let nonzero_lagrange_basis_coeffs: Vec<_> =
-					PackedBinaryField8x1b::from_underlier(coefficient_as_bit_string)
-						.iter()
-						.collect();
+				let coefficient_as_bit_string: u8 = 1 << log_coefficient_as_bit_string;
+				let mut nonzero = PackedBinaryField8x1b::zero();
+				nonzero.set(log_coefficient_as_bit_string, BinaryField1b::ONE);
+				let nonzero_lagrange_basis_coeffs: Vec<_> = nonzero.iter().collect();
 				let mut lagrange_basis_coeffs = [BinaryField1b::ZERO; ROWS_PER_HYPERCUBE_VERTEX];
 
 				for (i, nonzero_lagrange_basis_coeff) in
@@ -208,7 +210,8 @@ mod test {
 	use std::iter::repeat_with;
 
 	use binius_field::{
-		AESTowerField8b, Field, PackedAESBinaryField16x8b, PackedBinaryField8x1b, Random,
+		AESTowerField8b, Field, PackedAESBinaryField16x8b, PackedBinaryField8x1b, PackedField,
+		Random,
 		arithmetic_traits::InvertOrZero,
 		field::FieldOps,
 		packed::{get_packed_slice, set_packed_slice},
@@ -270,7 +273,12 @@ mod test {
 			set_packed_slice(&mut coeffs_packed, i, B1::from(u8::from(*coeff)));
 		}
 
-		let coeffs_packed_iter_u8 = coeffs_packed.iter().map(|i| i.to_underlier());
+		let coeffs_packed_iter_u8 = coeffs_packed.iter().map(|packed| {
+			packed
+				.iter()
+				.enumerate()
+				.fold(0u8, |acc, (i, bit)| acc | (u8::from(bit) << i))
+		});
 
 		let input_domain: Vec<_> = (0..SKIPPED_VARS)
 			.map(|x| AESTowerField8b::new(1 << x as u8))
