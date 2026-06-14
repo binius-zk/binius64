@@ -488,6 +488,124 @@ impl<'a, F: Field> CircuitBuilder for WitnessGenerator<'a, F> {
 	}
 }
 
+/// Wire type for [`InstanceGenerator`]: holds the field value of a public wire (a constant, inout,
+/// or derived value the verifier can compute) and is `None` for private/precommit wires, whose
+/// values the verifier does not know. A wire being `Some` mirrors [`WireKind::is_public`], so the
+/// derived-vs-private branching stays aligned with the other builders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublicWire<F: Field>(Option<F>);
+
+/// Reconstructs the public input vector `[constants | inout | derived]` on the verifier side by
+/// re-running the circuit function.
+///
+/// Implements [`CircuitBuilder`] with [`PublicWire`] as the wire type, structurally mirroring
+/// [`WitnessGenerator`], but it only computes the *public* segment. The verifier lacks the secret
+/// (precommit) values, so private wires carry no value; by the soundness invariant a derived wire
+/// never reads a secret, so every derived value is computable from the real public inputs alone.
+/// Derived wires are allocated in the same order as [`ConstraintBuilder`], keeping their ids
+/// aligned so [`WitnessLayout::get`] resolves each to the correct public slot.
+#[derive(Debug)]
+pub struct InstanceGenerator<'a, F: Field> {
+	derived_alloc: WireAllocator,
+	public: Vec<F>,
+	layout: &'a WitnessLayout<F>,
+}
+
+impl<'a, F: Field> InstanceGenerator<'a, F> {
+	pub fn new(layout: &'a WitnessLayout<F>) -> Self {
+		let mut public = zeroed_vec(layout.public_size());
+		public[..layout.constants.len()].copy_from_slice(&layout.constants);
+
+		Self {
+			derived_alloc: WireAllocator::new(WireKind::Derived),
+			public,
+			layout,
+		}
+	}
+
+	/// Writes a real inout value into its public slot.
+	pub fn write_inout(&mut self, wire: ConstraintWire, value: F) -> PublicWire<F> {
+		assert_eq!(wire.kind, WireKind::InOut);
+		self.write_public(wire, value)
+	}
+
+	/// Records a precommit wire as private (value unknown to the verifier). Per the soundness
+	/// invariant a secret never feeds a derived value, so the missing value is inert.
+	pub fn placeholder_precommit(&mut self, wire: ConstraintWire) -> PublicWire<F> {
+		assert_eq!(wire.kind, WireKind::Precommit);
+		PublicWire(None)
+	}
+
+	/// Writes `value` to the wire's public slot if it has one (i.e. it is alive), then returns the
+	/// wire carrying its value. Wires with no slot (pruned intermediates) are computed inline only.
+	fn write_public(&mut self, wire: ConstraintWire, value: F) -> PublicWire<F> {
+		if let Some(index) = self.layout.get(&wire) {
+			debug_assert_eq!(index.segment, WitnessSegment::Public);
+			self.public[index.index as usize] = value;
+		}
+		PublicWire(Some(value))
+	}
+
+	/// Returns the reconstructed public vector `[constants | inout | derived]`, of length
+	/// `1 << layout.log_public()`, ready to pass to `Verifier::verify`.
+	pub fn build(self) -> Vec<F> {
+		self.public
+	}
+}
+
+impl<'a, F: Field> CircuitBuilder for InstanceGenerator<'a, F> {
+	type Wire = PublicWire<F>;
+	type Field = F;
+
+	// Assertions are enforced as ordinary public-segment constraints by the verifier, so they are
+	// no-ops here. They must not allocate, to stay wire-id-aligned with the other builders.
+	fn assert_zero(&mut self, _wire: Self::Wire) {}
+
+	fn assert_eq(&mut self, _lhs: Self::Wire, _rhs: Self::Wire) {}
+
+	fn constant(&mut self, val: F) -> Self::Wire {
+		PublicWire(Some(val))
+	}
+
+	fn add(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire {
+		match (lhs.0, rhs.0) {
+			(Some(lhs), Some(rhs)) => {
+				let wire = self.derived_alloc.alloc();
+				self.write_public(wire, lhs + rhs)
+			}
+			_ => PublicWire(None),
+		}
+	}
+
+	fn mul(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire {
+		match (lhs.0, rhs.0) {
+			(Some(lhs), Some(rhs)) => {
+				let wire = self.derived_alloc.alloc();
+				self.write_public(wire, lhs * rhs)
+			}
+			_ => PublicWire(None),
+		}
+	}
+
+	fn hint<H: Fn([F; IN]) -> [F; OUT], const IN: usize, const OUT: usize>(
+		&mut self,
+		inputs: [Self::Wire; IN],
+		f: H,
+	) -> [Self::Wire; OUT] {
+		// Only invoke `f` when every input is public (its value is known); a non-derived hint would
+		// receive value-less inputs, so `f` is skipped to avoid panics on missing values.
+		if inputs.iter().all(|wire| wire.0.is_some()) {
+			let values = inputs.map(|wire| wire.0.expect("every input checked public above"));
+			f(values).map(|value| {
+				let wire = self.derived_alloc.alloc();
+				self.write_public(wire, value)
+			})
+		} else {
+			[PublicWire(None); OUT]
+		}
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use std::iter::successors;
@@ -620,5 +738,168 @@ mod tests {
 				}
 			}
 		}
+	}
+
+	/// A circuit mixing derived wires (a derived mul, a derived hint, a derived add) with a private
+	/// wire (a mul against a precommit input). Used by the sync test below.
+	///
+	/// `expected` must equal `((a * b) * (a * b).invert_or_zero() + b) * s` (see
+	/// [`mixed_expected`]), so that the witness is satisfiable.
+	fn mixed_circuit<Builder: CircuitBuilder>(
+		builder: &mut Builder,
+		a: Builder::Wire,
+		b: Builder::Wire,
+		s: Builder::Wire,
+		expected: Builder::Wire,
+	) {
+		use binius_field::arithmetic_traits::InvertOrZero;
+
+		let d = builder.mul(a, b); // derived (a, b public-derivable)
+		let [d_inv] = builder.hint([d], |[x]| [x.invert_or_zero()]); // derived hint
+		let one_check = builder.mul(d, d_inv); // derived (== 1 when d != 0)
+		let e = builder.add(one_check, b); // derived
+		let p = builder.mul(e, s); // private (s is precommit)
+		builder.assert_eq(p, expected);
+	}
+
+	// Computes the `expected` inout value for `mixed_circuit` from concrete inputs.
+	fn mixed_expected(a: B128, b: B128, s: B128) -> B128 {
+		use binius_field::arithmetic_traits::InvertOrZero;
+		let d = a * b;
+		let one_check = d * d.invert_or_zero();
+		(one_check + b) * s
+	}
+
+	#[test]
+	fn test_instance_generator_syncs_with_witness() {
+		use crate::compiler::compile;
+
+		let a_val = B128::new(3);
+		let b_val = B128::new(5);
+		let s_val = B128::new(7);
+		let expected_val = mixed_expected(a_val, b_val, s_val);
+
+		let mut cb = ConstraintBuilder::new();
+		let a = cb.alloc_inout();
+		let b = cb.alloc_inout();
+		let s = cb.alloc_precommit();
+		let expected = cb.alloc_inout();
+		mixed_circuit(&mut cb, a, b, s, expected);
+		let (cs, layout) = compile(cb);
+
+		// Witness generation (prover side) fills the full witness including the derived publics.
+		let mut wg = WitnessGenerator::new(&layout);
+		let a_w = wg.write_inout(a, a_val);
+		let b_w = wg.write_inout(b, b_val);
+		let s_w = wg.write_precommit(s, s_val);
+		let expected_w = wg.write_inout(expected, expected_val);
+		mixed_circuit(&mut wg, a_w, b_w, s_w, expected_w);
+		let witness = wg.build().expect("witness generation should succeed");
+		cs.validate(&witness);
+
+		// Instance generation (verifier side) reconstructs only the public segment, without the
+		// secret `s`. It must match the witness's public segment exactly.
+		let mut ig = InstanceGenerator::new(&layout);
+		let a_i = ig.write_inout(a, a_val);
+		let b_i = ig.write_inout(b, b_val);
+		let s_i = ig.placeholder_precommit(s);
+		let expected_i = ig.write_inout(expected, expected_val);
+		mixed_circuit(&mut ig, a_i, b_i, s_i, expected_i);
+		let public = ig.build();
+
+		assert_eq!(public, witness.public());
+	}
+
+	#[test]
+	fn test_derived_elision_no_private_wires() {
+		use crate::compiler::compile;
+
+		// A circuit that is a pure function of inout: x -> x^2 -> x^3, asserting x^3 == y.
+		let mut cb = ConstraintBuilder::new();
+		let x = cb.alloc_inout();
+		let y = cb.alloc_inout();
+		let x2 = cb.mul(x, x); // derived (intermediate, feeds only x3)
+		let x3 = cb.mul(x2, x); // derived (referenced by the assert)
+		cb.assert_eq(x3, y);
+		assert_eq!(x2.kind, WireKind::Derived);
+		assert_eq!(x3.kind, WireKind::Derived);
+		let (cs, layout) = compile(cb);
+
+		// No private wires or mul constraints from the chain; x2 is a pruned intermediate, so only
+		// x3 occupies a derived public slot.
+		assert_eq!(cs.n_private(), 0);
+		assert_eq!(layout.n_derived(), 1);
+
+		let x_val = B128::new(9);
+		let y_val = x_val * x_val * x_val;
+
+		let mut wg = WitnessGenerator::new(&layout);
+		let x_w = wg.write_inout(x, x_val);
+		let y_w = wg.write_inout(y, y_val);
+		let x2_w = wg.mul(x_w, x_w);
+		let x3_w = wg.mul(x2_w, x_w);
+		wg.assert_eq(x3_w, y_w);
+		let witness = wg.build().expect("witness generation should succeed");
+		cs.validate(&witness);
+	}
+
+	#[test]
+	fn test_derived_wire_in_constraint_maps_to_public() {
+		use crate::{compiler::compile, constraint_system::WitnessSegment};
+
+		// `e` is derived but consumed by a mul constraint that also references the private `p`.
+		let mut cb = ConstraintBuilder::new();
+		let a = cb.alloc_inout();
+		let b = cb.alloc_inout();
+		let s = cb.alloc_precommit();
+		let e = cb.add(a, b); // derived
+		let p = cb.mul(e, s); // private; mul constraint references derived `e`
+		cb.assert_zero(p);
+		assert_eq!(e.kind, WireKind::Derived);
+		let (cs, layout) = compile(cb);
+
+		// The derived wire resolves to a slot in the public segment.
+		let e_index = layout.get(&e).expect("alive derived wire must have a slot");
+		assert_eq!(e_index.segment, WitnessSegment::Public);
+
+		// Some surviving mul constraint references that public index.
+		let references_e = cs.mul_constraints().iter().any(|c| {
+			[&c.a, &c.b, &c.c]
+				.iter()
+				.any(|operand| operand.wires().contains(&e_index))
+		});
+		assert!(references_e, "derived wire's public index should appear in a mul constraint");
+
+		// And a consistent witness validates.
+		let a_val = B128::new(3);
+		let b_val = B128::new(5);
+		let s_val = B128::ZERO; // makes p = e * 0 = 0 so assert_zero(p) holds
+		let mut wg = WitnessGenerator::new(&layout);
+		let a_w = wg.write_inout(a, a_val);
+		let b_w = wg.write_inout(b, b_val);
+		let s_w = wg.write_precommit(s, s_val);
+		let e_w = wg.add(a_w, b_w);
+		let p_w = wg.mul(e_w, s_w);
+		wg.assert_zero(p_w);
+		let witness = wg.build().expect("witness generation should succeed");
+		cs.validate(&witness);
+	}
+
+	#[test]
+	fn test_pruned_derived_intermediate_has_no_slot() {
+		use crate::compiler::compile;
+
+		// x2 feeds only the derived x3; only x3 is referenced by a surviving constraint.
+		let mut cb = ConstraintBuilder::<B128>::new();
+		let x = cb.alloc_inout();
+		let y = cb.alloc_inout();
+		let x2 = cb.mul(x, x); // derived intermediate
+		let x3 = cb.mul(x2, x); // derived, referenced by assert
+		cb.assert_eq(x3, y);
+		let (_cs, layout) = compile(cb);
+
+		// The intermediate has no public slot; the alive one does.
+		assert!(layout.get(&x2).is_none(), "pruned derived intermediate must have no slot");
+		assert!(layout.get(&x3).is_some(), "referenced derived wire must have a slot");
 	}
 }
