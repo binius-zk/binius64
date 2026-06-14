@@ -176,8 +176,14 @@ where
 	let n_vars: Vec<usize> = (0..n_committed)
 		.map(|i| oracle_specs[i].log_msg_len)
 		.collect();
-	// `𝐧 = max_i n_i`, the dimension of the combined codeword.
-	let max_n = fri_params.rs_code().log_dim();
+	// `𝐧 = max_i n_i`, the number of variables in the combined MLE-check — the largest oracle's
+	// message dimension. For an all-ZK batch this equals the FRI codeword dim; in general it can
+	// exceed it (non-ZK oracles fold their batch dimensions inside the MLE-check).
+	let max_n = n_vars
+		.iter()
+		.copied()
+		.max()
+		.expect("at least one committed oracle");
 
 	let n_zk = oracle_specs.iter().filter(|spec| spec.is_zk).count();
 
@@ -185,8 +191,7 @@ where
 	// Read the σ_i for the ZK oracles, sample γ only when a ZK oracle is present, and form the
 	// masked claims s_i' (= s_i for non-ZK oracles). Must mirror the prover's transcript exactly.
 	let sigmas = channel.recv_many(n_zk)?;
-	let gamma = (n_zk > 0)
-		.then(|| IPVerifierChannel::<F>::sample(channel));
+	let gamma = (n_zk > 0).then(|| IPVerifierChannel::<F>::sample(channel));
 	let mut sigmas = sigmas.into_iter();
 	let sum_primes = relations
 		.iter()

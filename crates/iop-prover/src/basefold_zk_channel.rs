@@ -211,8 +211,15 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 	// sumcheck reduces to the multilinear evaluations (alphas).
 	assert_eq!(relations.len(), n_committed, "expects exactly one relation per committed oracle",);
 
-	// `𝐧 = max_i n_i`, the dimension of the combined codeword.
-	let max_n = fri_params.rs_code().log_dim();
+	// `𝐧 = max_i n_i`, the number of variables in the combined MLE-check — the largest oracle's
+	// message dimension. For an all-ZK batch this equals the FRI codeword dim
+	// (`rs_code().log_dim()`); in general it can exceed it, since non-ZK oracles fold their batch
+	// dimensions inside the MLE-check rather than before it.
+	let max_n = oracle_specs
+		.iter()
+		.map(|spec| spec.log_msg_len)
+		.max()
+		.expect("at least one committed oracle");
 
 	let n_zk = oracle_specs.iter().filter(|spec| spec.is_zk).count();
 
@@ -686,10 +693,8 @@ mod tests {
 			.collect();
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
-		let oracle_specs: Vec<OracleSpec> = n_vars_list
-			.iter()
-			.map(|&n| OracleSpec::new_zk(n))
-			.collect();
+		let oracle_specs: Vec<OracleSpec> =
+			n_vars_list.iter().map(|&n| OracleSpec::new_zk(n)).collect();
 
 		let merkle_prover = make_merkle_prover();
 		let verifier_compiler = BaseFoldZKVerifierCompiler::new(

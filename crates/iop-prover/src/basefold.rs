@@ -184,8 +184,8 @@ where
 ///   `max_log_batch_size` of them: a single `γ` when any oracle is masked, empty when none is.
 /// * `outer_challenges` - the batching challenges `r'` (`len = log_n_oracles`); combine the `k`
 ///   lifted codewords in the FRI outer (oracle-combine) rounds
-/// * `fri_folder` - the combined FRI fold prover, with
-///   `n_rounds == 𝐧 + max_log_batch_size + log_n_oracles`
+/// * `fri_folder` - the combined FRI fold prover, with `n_rounds == 𝐧 + max_log_batch_size +
+///   log_n_oracles`
 /// * `transcript` - the prover transcript
 ///
 /// The final FRI value equals the final MLE-check value `𝛑(r)` (see
@@ -214,13 +214,10 @@ where
 	assert_eq!(eval_point.len(), n_vars);
 	// The FRI folder has `max_log_batch_size` inner (unbatch) rounds, `log_n_oracles` outer
 	// (oracle-combine) rounds, and `𝐧` standard fold rounds.
-	assert_eq!(
-		n_vars + inner_challenges.len() + outer_challenges.len(),
-		fri_folder.n_rounds()
-	);
+	assert_eq!(n_vars + inner_challenges.len() + outer_challenges.len(), fri_folder.n_rounds());
 
-	// Inner (unbatch) rounds: fold every interleaved (π_i ‖ ω_i) codeword at the masking challenge(s).
-	// Empty when there are no masked oracles.
+	// Inner (unbatch) rounds: fold every interleaved (π_i ‖ ω_i) codeword at the masking
+	// challenge(s). Empty when there are no masked oracles.
 	for &inner_challenge in inner_challenges {
 		fri_folder.receive_challenge(inner_challenge);
 	}

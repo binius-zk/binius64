@@ -150,8 +150,9 @@ where
 	const DEGREE: usize = 1;
 
 	// The inner (unbatch) reduction folds at one challenge per inner FRI round. A ZK oracle
-	// contributes an interleaved (π ‖ ω) mask codeword at `log_batch_size = 1`, so `max_log_batch_size`
-	// is 1 whenever any masked oracle is present and 0 when none is (all oracles unmasked).
+	// contributes an interleaved (π ‖ ω) mask codeword at `log_batch_size = 1`, so
+	// `max_log_batch_size` is 1 whenever any masked oracle is present and 0 when none is (all
+	// oracles unmasked).
 	let max_log_batch_size = fri_params
 		.input_oracles()
 		.iter()
@@ -163,10 +164,11 @@ where
 	let log_n_oracles = log2_ceil_usize(fri_params.input_oracles().len());
 	assert_eq!(outer_challenges.len(), log_n_oracles);
 
-	// The combined codeword (after the inner unbatch and the `log_n_oracles` outer oracle-combine
-	// rounds) is a level-𝐧 codeword; the MLE-check therefore runs over `𝐧` variables.
-	let n_vars = fri_params.rs_code().log_dim();
-	assert_eq!(eval_point.len(), n_vars);
+	// The MLE-check runs over the combined opening's `𝐧` variables, supplied as the sumcheck
+	// `eval_point` (length `max_n`). For an all-ZK batch this equals `rs_code().log_dim()`; in
+	// general it can exceed it, since non-ZK oracles fold their batch dimensions within these
+	// rounds.
+	let n_vars = eval_point.len();
 
 	let mut challenges = Vec::with_capacity(n_vars + max_log_batch_size + log_n_oracles);
 	let mut fri_fold_verifier = FRIFoldVerifier::new(fri_params);
