@@ -101,7 +101,7 @@ pub trait UnderlierWithBitOps:
 		Self: Divisible<T>,
 	{
 		debug_assert!(i < checked_int_div(Self::BITS, T::BITS));
-		*self = (*self).set(i, val);
+		Divisible::<T>::set(self, i, val);
 	}
 
 	/// Spread takes a block of sub_elements of `T` type within the current value and

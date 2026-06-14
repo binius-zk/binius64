@@ -710,9 +710,9 @@ impl Divisible<u128> for M128 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u128) -> Self {
+	fn set(&mut self, index: usize, val: u128) {
 		assert!(index == 0, "index out of bounds");
-		Self::from(val)
+		*self = Self::from(val);
 	}
 
 	#[inline]
@@ -756,14 +756,14 @@ impl Divisible<u64> for M128 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u64) -> Self {
-		unsafe {
+	fn set(&mut self, index: usize, val: u64) {
+		*self = unsafe {
 			match index {
 				0 => Self(_mm_insert_epi64(self.0, val as i64, 0)),
 				1 => Self(_mm_insert_epi64(self.0, val as i64, 1)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]
@@ -814,8 +814,8 @@ impl Divisible<u32> for M128 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u32) -> Self {
-		unsafe {
+	fn set(&mut self, index: usize, val: u32) {
+		*self = unsafe {
 			match index {
 				0 => Self(_mm_insert_epi32(self.0, val as i32, 0)),
 				1 => Self(_mm_insert_epi32(self.0, val as i32, 1)),
@@ -823,7 +823,7 @@ impl Divisible<u32> for M128 {
 				3 => Self(_mm_insert_epi32(self.0, val as i32, 3)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]
@@ -878,8 +878,8 @@ impl Divisible<u16> for M128 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u16) -> Self {
-		unsafe {
+	fn set(&mut self, index: usize, val: u16) {
+		*self = unsafe {
 			match index {
 				0 => Self(_mm_insert_epi16(self.0, val as i32, 0)),
 				1 => Self(_mm_insert_epi16(self.0, val as i32, 1)),
@@ -891,7 +891,7 @@ impl Divisible<u16> for M128 {
 				7 => Self(_mm_insert_epi16(self.0, val as i32, 7)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]
@@ -954,8 +954,8 @@ impl Divisible<u8> for M128 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u8) -> Self {
-		unsafe {
+	fn set(&mut self, index: usize, val: u8) {
+		*self = unsafe {
 			match index {
 				0 => Self(_mm_insert_epi8(self.0, val as i32, 0)),
 				1 => Self(_mm_insert_epi8(self.0, val as i32, 1)),
@@ -975,7 +975,7 @@ impl Divisible<u8> for M128 {
 				15 => Self(_mm_insert_epi8(self.0, val as i32, 15)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]

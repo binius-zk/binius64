@@ -214,7 +214,7 @@ mod tests {
 		let mut val = PT::from_underlier(a.into());
 		for i in 0..WIDTH {
 			assert_eq!(val.get(i), BinaryField128bGhash::from(a[i]));
-			PackedField::set(&mut val, i, BinaryField128bGhash::from(b[i]));
+			val.set(i, BinaryField128bGhash::from(b[i]));
 			assert_eq!(val.get(i), BinaryField128bGhash::from(b[i]));
 		}
 	}

@@ -264,9 +264,9 @@ macro_rules! binary_field {
 			}
 
 			#[inline]
-			fn set(self, index: usize, val: $name) -> Self {
+			fn set(&mut self, index: usize, val: $name) {
 				debug_assert_eq!(index, 0);
-				val
+				*self = val;
 			}
 
 			#[inline]

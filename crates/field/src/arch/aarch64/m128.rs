@@ -243,9 +243,9 @@ impl Divisible<u128> for M128 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u128) -> Self {
+	fn set(&mut self, index: usize, val: u128) {
 		match index {
-			0 => Self::from(val),
+			0 => *self = Self::from(val),
 			_ => panic!("index out of bounds"),
 		}
 	}
@@ -291,14 +291,14 @@ impl Divisible<u64> for M128 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u64) -> Self {
-		unsafe {
+	fn set(&mut self, index: usize, val: u64) {
+		*self = unsafe {
 			match index {
 				0 => Self(vsetq_lane_u64(val, self.0, 0)),
 				1 => Self(vsetq_lane_u64(val, self.0, 1)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]
@@ -350,9 +350,9 @@ impl Divisible<u32> for M128 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u32) -> Self {
-		unsafe {
-			let v: uint32x4_t = self.into();
+	fn set(&mut self, index: usize, val: u32) {
+		*self = unsafe {
+			let v: uint32x4_t = (*self).into();
 			match index {
 				0 => Self::from(vsetq_lane_u32(val, v, 0)),
 				1 => Self::from(vsetq_lane_u32(val, v, 1)),
@@ -360,7 +360,7 @@ impl Divisible<u32> for M128 {
 				3 => Self::from(vsetq_lane_u32(val, v, 3)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]
@@ -416,9 +416,9 @@ impl Divisible<u16> for M128 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u16) -> Self {
-		unsafe {
-			let v: uint16x8_t = self.into();
+	fn set(&mut self, index: usize, val: u16) {
+		*self = unsafe {
+			let v: uint16x8_t = (*self).into();
 			match index {
 				0 => Self::from(vsetq_lane_u16(val, v, 0)),
 				1 => Self::from(vsetq_lane_u16(val, v, 1)),
@@ -430,7 +430,7 @@ impl Divisible<u16> for M128 {
 				7 => Self::from(vsetq_lane_u16(val, v, 7)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]
@@ -494,9 +494,9 @@ impl Divisible<u8> for M128 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u8) -> Self {
-		unsafe {
-			let v: uint8x16_t = self.into();
+	fn set(&mut self, index: usize, val: u8) {
+		*self = unsafe {
+			let v: uint8x16_t = (*self).into();
 			match index {
 				0 => Self::from(vsetq_lane_u8(val, v, 0)),
 				1 => Self::from(vsetq_lane_u8(val, v, 1)),
@@ -516,7 +516,7 @@ impl Divisible<u8> for M128 {
 				15 => Self::from(vsetq_lane_u8(val, v, 15)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]

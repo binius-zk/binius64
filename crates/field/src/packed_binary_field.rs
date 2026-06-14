@@ -559,7 +559,7 @@ mod tests {
 			.collect::<Vec<_>>();
 
 		for (i, val) in scalars.iter().enumerate() {
-			PackedField::set(&mut elem, i, *val);
+			elem.set(i, *val);
 		}
 		for (i, val) in scalars.iter().enumerate() {
 			assert_eq!(elem.get(i), *val);

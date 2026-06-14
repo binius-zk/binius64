@@ -240,12 +240,10 @@ where
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: T) -> Self {
+	fn set(&mut self, index: usize, val: T) {
 		let u_index = index >> <U as Divisible<T>>::LOG_N;
 		let sub_index = index & (<U as Divisible<T>>::N - 1);
-		let mut arr = self.0;
-		arr[u_index] = Divisible::<T>::set(arr[u_index], sub_index, val);
-		Self(arr)
+		Divisible::<T>::set(&mut self.0[u_index], sub_index, val);
 	}
 
 	#[inline]

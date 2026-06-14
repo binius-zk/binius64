@@ -130,14 +130,9 @@ where
 
 					let packed_idx = eval_point_idx / PNTTDomain::WIDTH; // 0, 1, 2, or 3
 					let scalar_idx = eval_point_idx % PNTTDomain::WIDTH; // 0-15
-					// UFCS to select the in-place `PackedField::set` over the by-value
-					// `Divisible::set`.
-					PackedField::set(
-						&mut lookup[eight_bit_chunk_idx][coefficient_as_bit_string as usize]
-							[packed_idx],
-						scalar_idx,
-						result,
-					);
+					let cell = &mut lookup[eight_bit_chunk_idx][coefficient_as_bit_string as usize]
+						[packed_idx];
+					cell.set(scalar_idx, result);
 				}
 			}
 		}

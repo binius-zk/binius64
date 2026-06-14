@@ -190,12 +190,8 @@ fn forward_breadth_first<P: PackedField>(
 
 			let block_start = block << log_block_size;
 			for j in 0..1 << log_half_block_size {
-				PackedField::set(&mut packed_twiddle_offset, block_start | j, twiddle0);
-				PackedField::set(
-					&mut packed_twiddle_offset,
-					block_start | j | (1 << log_half_block_size),
-					twiddle1,
-				);
+				packed_twiddle_offset.set(block_start | j, twiddle0);
+				packed_twiddle_offset.set(block_start | j | (1 << log_half_block_size), twiddle1);
 			}
 		}
 

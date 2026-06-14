@@ -106,7 +106,7 @@ impl<P: PackedField> BatchInversion<P> {
 				let scalar_idx = packed_idx * P::WIDTH + lane;
 				let scalar = packed.get(lane);
 				if scalar == P::Scalar::ZERO {
-					PackedField::set(packed, lane, P::Scalar::ONE);
+					packed.set(lane, P::Scalar::ONE);
 					self.is_zero[scalar_idx] = true;
 				} else {
 					self.is_zero[scalar_idx] = false;
@@ -122,7 +122,7 @@ impl<P: PackedField> BatchInversion<P> {
 			for lane in 0..P::WIDTH {
 				let scalar_idx = packed_idx * P::WIDTH + lane;
 				if self.is_zero[scalar_idx] {
-					PackedField::set(packed, lane, P::Scalar::ZERO);
+					packed.set(lane, P::Scalar::ZERO);
 				}
 			}
 		}
@@ -165,7 +165,7 @@ fn batch_invert_nonzero_with_scratchpad<P: PackedField>(
 			let inv = scalar
 				.invert()
 				.expect("precondition: elements contains no zeros");
-			PackedField::set(packed, 0, inv);
+			packed.set(0, inv);
 		} else {
 			// Unpack, batch invert scalars, repack
 			let mut scalars = packed.into_iter().collect::<Vec<_>>();

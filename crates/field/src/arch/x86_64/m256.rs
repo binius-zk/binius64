@@ -883,14 +883,14 @@ impl Divisible<M128> for M256 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: M128) -> Self {
-		unsafe {
+	fn set(&mut self, index: usize, val: M128) {
+		*self = unsafe {
 			match index {
 				0 => Self(_mm256_inserti128_si256(self.0, val.0, 0)),
 				1 => Self(_mm256_inserti128_si256(self.0, val.0, 1)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]
@@ -933,8 +933,8 @@ impl Divisible<u128> for M256 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u128) -> Self {
-		Divisible::<M128>::set(self, index, M128::from(val))
+	fn set(&mut self, index: usize, val: u128) {
+		Divisible::<M128>::set(self, index, M128::from(val));
 	}
 
 	#[inline]
@@ -985,8 +985,8 @@ impl Divisible<u64> for M256 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u64) -> Self {
-		unsafe {
+	fn set(&mut self, index: usize, val: u64) {
+		*self = unsafe {
 			match index {
 				0 => Self(_mm256_insert_epi64(self.0, val as i64, 0)),
 				1 => Self(_mm256_insert_epi64(self.0, val as i64, 1)),
@@ -994,7 +994,7 @@ impl Divisible<u64> for M256 {
 				3 => Self(_mm256_insert_epi64(self.0, val as i64, 3)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]
@@ -1049,8 +1049,8 @@ impl Divisible<u32> for M256 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u32) -> Self {
-		unsafe {
+	fn set(&mut self, index: usize, val: u32) {
+		*self = unsafe {
 			match index {
 				0 => Self(_mm256_insert_epi32(self.0, val as i32, 0)),
 				1 => Self(_mm256_insert_epi32(self.0, val as i32, 1)),
@@ -1062,7 +1062,7 @@ impl Divisible<u32> for M256 {
 				7 => Self(_mm256_insert_epi32(self.0, val as i32, 7)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]
@@ -1125,8 +1125,8 @@ impl Divisible<u16> for M256 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u16) -> Self {
-		unsafe {
+	fn set(&mut self, index: usize, val: u16) {
+		*self = unsafe {
 			match index {
 				0 => Self(_mm256_insert_epi16(self.0, val as i16, 0)),
 				1 => Self(_mm256_insert_epi16(self.0, val as i16, 1)),
@@ -1146,7 +1146,7 @@ impl Divisible<u16> for M256 {
 				15 => Self(_mm256_insert_epi16(self.0, val as i16, 15)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]
@@ -1225,8 +1225,8 @@ impl Divisible<u8> for M256 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u8) -> Self {
-		unsafe {
+	fn set(&mut self, index: usize, val: u8) {
+		*self = unsafe {
 			match index {
 				0 => Self(_mm256_insert_epi8(self.0, val as i8, 0)),
 				1 => Self(_mm256_insert_epi8(self.0, val as i8, 1)),
@@ -1262,7 +1262,7 @@ impl Divisible<u8> for M256 {
 				31 => Self(_mm256_insert_epi8(self.0, val as i8, 31)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]

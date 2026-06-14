@@ -446,8 +446,8 @@ where
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: Scalar) -> Self {
-		Divisible::<Scalar::Underlier>::set(self.0, index, val.to_underlier()).into()
+	fn set(&mut self, index: usize, val: Scalar) {
+		<U as Divisible<Scalar::Underlier>>::set(&mut self.0, index, val.to_underlier());
 	}
 
 	#[inline]

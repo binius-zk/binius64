@@ -895,14 +895,14 @@ impl Divisible<M256> for M512 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: M256) -> Self {
-		unsafe {
+	fn set(&mut self, index: usize, val: M256) {
+		*self = unsafe {
 			match index {
 				0 => Self(_mm512_inserti64x4(self.0, val.0, 0)),
 				1 => Self(_mm512_inserti64x4(self.0, val.0, 1)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]
@@ -953,8 +953,8 @@ impl Divisible<M128> for M512 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: M128) -> Self {
-		unsafe {
+	fn set(&mut self, index: usize, val: M128) {
+		*self = unsafe {
 			match index {
 				0 => Self(_mm512_inserti32x4(self.0, val.0, 0)),
 				1 => Self(_mm512_inserti32x4(self.0, val.0, 1)),
@@ -962,7 +962,7 @@ impl Divisible<M128> for M512 {
 				3 => Self(_mm512_inserti32x4(self.0, val.0, 3)),
 				_ => panic!("index out of bounds"),
 			}
-		}
+		};
 	}
 
 	#[inline]
@@ -1005,8 +1005,8 @@ impl Divisible<u128> for M512 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u128) -> Self {
-		Divisible::<M128>::set(self, index, M128::from(val))
+	fn set(&mut self, index: usize, val: u128) {
+		Divisible::<M128>::set(self, index, M128::from(val));
 	}
 
 	#[inline]
@@ -1053,12 +1053,12 @@ impl Divisible<u64> for M512 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u64) -> Self {
+	fn set(&mut self, index: usize, val: u64) {
 		let lane_idx = index / 2;
 		let sub_idx = index % 2;
-		let lane = Divisible::<M128>::get(self, lane_idx);
-		let new_lane = Divisible::<u64>::set(lane, sub_idx, val);
-		Divisible::<M128>::set(self, lane_idx, new_lane)
+		let mut lane = Divisible::<M128>::get(*self, lane_idx);
+		Divisible::<u64>::set(&mut lane, sub_idx, val);
+		Divisible::<M128>::set(self, lane_idx, lane);
 	}
 
 	#[inline]
@@ -1105,12 +1105,12 @@ impl Divisible<u32> for M512 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u32) -> Self {
+	fn set(&mut self, index: usize, val: u32) {
 		let lane_idx = index / 4;
 		let sub_idx = index % 4;
-		let lane = Divisible::<M128>::get(self, lane_idx);
-		let new_lane = Divisible::<u32>::set(lane, sub_idx, val);
-		Divisible::<M128>::set(self, lane_idx, new_lane)
+		let mut lane = Divisible::<M128>::get(*self, lane_idx);
+		Divisible::<u32>::set(&mut lane, sub_idx, val);
+		Divisible::<M128>::set(self, lane_idx, lane);
 	}
 
 	#[inline]
@@ -1157,12 +1157,12 @@ impl Divisible<u16> for M512 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u16) -> Self {
+	fn set(&mut self, index: usize, val: u16) {
 		let lane_idx = index / 8;
 		let sub_idx = index % 8;
-		let lane = Divisible::<M128>::get(self, lane_idx);
-		let new_lane = Divisible::<u16>::set(lane, sub_idx, val);
-		Divisible::<M128>::set(self, lane_idx, new_lane)
+		let mut lane = Divisible::<M128>::get(*self, lane_idx);
+		Divisible::<u16>::set(&mut lane, sub_idx, val);
+		Divisible::<M128>::set(self, lane_idx, lane);
 	}
 
 	#[inline]
@@ -1209,12 +1209,12 @@ impl Divisible<u8> for M512 {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: u8) -> Self {
+	fn set(&mut self, index: usize, val: u8) {
 		let lane_idx = index / 16;
 		let sub_idx = index % 16;
-		let lane = Divisible::<M128>::get(self, lane_idx);
-		let new_lane = Divisible::<u8>::set(lane, sub_idx, val);
-		Divisible::<M128>::set(self, lane_idx, new_lane)
+		let mut lane = Divisible::<M128>::get(*self, lane_idx);
+		Divisible::<u8>::set(&mut lane, sub_idx, val);
+		Divisible::<M128>::set(self, lane_idx, lane);
 	}
 
 	#[inline]

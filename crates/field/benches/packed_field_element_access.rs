@@ -34,9 +34,9 @@ fn benchmark_set_impl<P: PackedField>(group: &mut BenchmarkGroup<'_, WallTime>, 
 	group.throughput(Throughput::Elements(BATCH_SIZE as _));
 	group.bench_function(id, |b| {
 		b.iter(|| {
-			indices_values
-				.iter()
-				.for_each(|(i, val)| PackedField::set(&mut value, *i, *val));
+			for (i, val) in &indices_values {
+				value.set(*i, *val);
+			}
 
 			value
 		})

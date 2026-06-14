@@ -42,12 +42,12 @@ pub trait Divisible<T>: Copy {
 	/// Panics if `index >= Self::N`.
 	fn get(self, index: usize) -> T;
 
-	/// Set element at index (LSB-first ordering), returning modified value.
+	/// Set element at index (LSB-first ordering), in place.
 	///
 	/// # Panics
 	///
 	/// Panics if `index >= Self::N`.
-	fn set(self, index: usize, val: T) -> Self;
+	fn set(&mut self, index: usize, val: T);
 
 	/// Create a value with `val` broadcast to all `N` positions.
 	fn broadcast(val: T) -> Self;
@@ -275,7 +275,7 @@ pub mod bitmask {
 
 	/// Set a sub-byte element at index (LSB-first ordering), returning modified value.
 	#[inline]
-	pub fn set<Big, const BITS: usize>(value: Big, index: usize, val: SmallU<BITS>) -> Big
+	pub fn set<Big, const BITS: usize>(mut value: Big, index: usize, val: SmallU<BITS>) -> Big
 	where
 		Big: Divisible<u8>,
 	{
@@ -286,7 +286,8 @@ pub mod bitmask {
 		let shift = sub_index * BITS;
 		let mask = (1u8 << BITS) - 1;
 		let new_byte = (byte & !(mask << shift)) | (val.val() << shift);
-		Divisible::<u8>::set(value, byte_index, new_byte)
+		Divisible::<u8>::set(&mut value, byte_index, new_byte);
+		value
 	}
 }
 
@@ -426,9 +427,9 @@ macro_rules! impl_divisible_memcast {
 				}
 
 				#[inline]
-				fn set(self, index: usize, val: $small) -> Self {
+				fn set(&mut self, index: usize, val: $small) {
 					const N: usize = size_of::<$big>() / size_of::<$small>();
-					$crate::underlier::memcast::set::<$big, $small, N>(&self, index, val)
+					*self = $crate::underlier::memcast::set::<$big, $small, N>(&*self, index, val);
 				}
 
 				#[inline]
@@ -483,10 +484,10 @@ macro_rules! impl_divisible_bitmask {
 				}
 
 				#[inline]
-				fn set(self, index: usize, val: $crate::underlier::SmallU<$bits>) -> Self {
+				fn set(&mut self, index: usize, val: $crate::underlier::SmallU<$bits>) {
 					let shift = index * $bits;
 					let mask = (1u8 << $bits) - 1;
-					(self & !(mask << shift)) | (val.val() << shift)
+					*self = (*self & !(mask << shift)) | (val.val() << shift);
 				}
 
 				#[inline]
@@ -511,7 +512,7 @@ macro_rules! impl_divisible_bitmask {
 					const N: usize = 8 / $bits;
 					let mut result: Self = 0;
 					for (i, val) in iter.take(N).enumerate() {
-						result = $crate::underlier::Divisible::<$crate::underlier::SmallU<$bits>>::set(result, i, val);
+						$crate::underlier::Divisible::<$crate::underlier::SmallU<$bits>>::set(&mut result, i, val);
 					}
 					result
 				}
@@ -552,8 +553,8 @@ macro_rules! impl_divisible_bitmask {
 				}
 
 				#[inline]
-				fn set(self, index: usize, val: $crate::underlier::SmallU<$bits>) -> Self {
-					$crate::underlier::bitmask::set::<Self, $bits>(self, index, val)
+				fn set(&mut self, index: usize, val: $crate::underlier::SmallU<$bits>) {
+					*self = $crate::underlier::bitmask::set::<Self, $bits>(*self, index, val);
 				}
 
 				#[inline]
@@ -568,7 +569,7 @@ macro_rules! impl_divisible_bitmask {
 					const N: usize = 8 * size_of::<$big>() / $bits;
 					let mut result: Self = bytemuck::Zeroable::zeroed();
 					for (i, val) in iter.take(N).enumerate() {
-						result = $crate::underlier::Divisible::<$crate::underlier::SmallU<$bits>>::set(result, i, val);
+						$crate::underlier::Divisible::<$crate::underlier::SmallU<$bits>>::set(&mut result, i, val);
 					}
 					result
 				}
@@ -620,9 +621,9 @@ impl Divisible<SmallU<1>> for SmallU<2> {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: SmallU<1>) -> Self {
+	fn set(&mut self, index: usize, val: SmallU<1>) {
 		let mask = 1u8 << index;
-		SmallU::<2>::new((self.val() & !mask) | (val.val() << index))
+		*self = SmallU::<2>::new((self.val() & !mask) | (val.val() << index));
 	}
 
 	#[inline]
@@ -637,7 +638,10 @@ impl Divisible<SmallU<1>> for SmallU<2> {
 		iter.chain(std::iter::repeat(SmallU::<1>::new(0)))
 			.take(2)
 			.enumerate()
-			.fold(SmallU::<2>::new(0), |acc, (i, val)| acc.set(i, val))
+			.fold(SmallU::<2>::new(0), |mut acc, (i, val)| {
+				acc.set(i, val);
+				acc
+			})
 	}
 }
 
@@ -665,9 +669,9 @@ impl Divisible<SmallU<1>> for SmallU<4> {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: SmallU<1>) -> Self {
+	fn set(&mut self, index: usize, val: SmallU<1>) {
 		let mask = 1u8 << index;
-		SmallU::<4>::new((self.val() & !mask) | (val.val() << index))
+		*self = SmallU::<4>::new((self.val() & !mask) | (val.val() << index));
 	}
 
 	#[inline]
@@ -684,7 +688,10 @@ impl Divisible<SmallU<1>> for SmallU<4> {
 		iter.chain(std::iter::repeat(SmallU::<1>::new(0)))
 			.take(4)
 			.enumerate()
-			.fold(SmallU::<4>::new(0), |acc, (i, val)| acc.set(i, val))
+			.fold(SmallU::<4>::new(0), |mut acc, (i, val)| {
+				acc.set(i, val);
+				acc
+			})
 	}
 }
 
@@ -712,10 +719,10 @@ impl Divisible<SmallU<2>> for SmallU<4> {
 	}
 
 	#[inline]
-	fn set(self, index: usize, val: SmallU<2>) -> Self {
+	fn set(&mut self, index: usize, val: SmallU<2>) {
 		let shift = index * 2;
 		let mask = 0b11u8 << shift;
-		SmallU::<4>::new((self.val() & !mask) | (val.val() << shift))
+		*self = SmallU::<4>::new((self.val() & !mask) | (val.val() << shift));
 	}
 
 	#[inline]
@@ -730,7 +737,10 @@ impl Divisible<SmallU<2>> for SmallU<4> {
 		iter.chain(std::iter::repeat(SmallU::<2>::new(0)))
 			.take(2)
 			.enumerate()
-			.fold(SmallU::<4>::new(0), |acc, (i, val)| acc.set(i, val))
+			.fold(SmallU::<4>::new(0), |mut acc, (i, val)| {
+				acc.set(i, val);
+				acc
+			})
 	}
 }
 
@@ -763,9 +773,9 @@ macro_rules! impl_divisible_self {
 				}
 
 				#[inline]
-				fn set(self, index: usize, val: $ty) -> Self {
+				fn set(&mut self, index: usize, val: $ty) {
 					debug_assert_eq!(index, 0);
-					val
+					*self = val;
 				}
 
 				#[inline]
@@ -798,9 +808,11 @@ mod tests {
 		assert_eq!(Divisible::<U4>::get(val, 1), U4::new(0x3));
 
 		// Test set
-		let modified = Divisible::<U4>::set(val, 0, U4::new(0xF));
+		let mut modified = val;
+		Divisible::<U4>::set(&mut modified, 0, U4::new(0xF));
 		assert_eq!(modified, 0x3F);
-		let modified = Divisible::<U4>::set(val, 1, U4::new(0xA));
+		let mut modified = val;
+		Divisible::<U4>::set(&mut modified, 1, U4::new(0xA));
 		assert_eq!(modified, 0xA4);
 
 		// Test ref_iter
@@ -836,7 +848,8 @@ mod tests {
 		assert_eq!(Divisible::<U4>::get(val, 3), U4::new(0x1));
 
 		// Test set
-		let modified = Divisible::<U4>::set(val, 1, U4::new(0xF));
+		let mut modified = val;
+		Divisible::<U4>::set(&mut modified, 1, U4::new(0xF));
 		assert_eq!(modified, 0x12F4);
 
 		// Test ref_iter
@@ -874,7 +887,8 @@ mod tests {
 		assert_eq!(Divisible::<U1>::get(val, 15), U1::new(1)); // bit 15
 
 		// Test set
-		let modified = Divisible::<U1>::set(val, 0, U1::new(0));
+		let mut modified = val;
+		Divisible::<U1>::set(&mut modified, 0, U1::new(0));
 		assert_eq!(modified, 0b1010110000110100);
 
 		// Test ref_iter
