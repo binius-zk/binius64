@@ -410,9 +410,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 		if self.log_len < P::LOG_WIDTH {
 			let first_elem = self.values.first_mut().expect("values.len() >= 1");
 			for i in 1 << self.log_len..(1 << new_log_len).min(P::WIDTH) {
-				// UFCS to select the in-place `PackedField::set` over the by-value
-				// `Divisible::set`.
-				PackedField::set(first_elem, i, P::Scalar::ZERO);
+				*first_elem = first_elem.set(i, P::Scalar::ZERO);
 			}
 		}
 
@@ -764,7 +762,7 @@ impl<'a, P: PackedField> Drop for FieldBufferChunkMutInner<'a, P> {
 			} => {
 				// Write back the modified chunk values to the parent packed element
 				for i in 0..1 << *log_len {
-					parent.set(*chunk_offset | i, chunk.get(i));
+					**parent = parent.set(*chunk_offset | i, chunk.get(i));
 				}
 			}
 			Self::Slice { .. } => {}

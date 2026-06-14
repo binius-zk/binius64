@@ -70,22 +70,6 @@ pub trait PackedField:
 	/// The caller must ensure that `i` is less than `WIDTH`.
 	unsafe fn set_unchecked(&mut self, i: usize, scalar: Self::Scalar);
 
-	/// Set the scalar at a given index, in place.
-	///
-	/// This is the `&mut self` counterpart to the by-value [`Divisible::set`]. Because `Divisible`
-	/// is a supertrait, both are in scope wherever a `PackedField` bound is visible, and method
-	/// resolution prefers the by-value `Divisible::set` for `packed.set(i, v)`. To call this
-	/// in-place version, use fully-qualified syntax: `PackedField::set(&mut packed, i, v)`.
-	///
-	/// # Preconditions
-	///
-	/// * `i` must be less than `WIDTH`.
-	#[inline]
-	fn set(&mut self, i: usize, scalar: Self::Scalar) {
-		assert!(i < Self::WIDTH, "index {i} out of range for width {}", Self::WIDTH);
-		*self = <Self as Divisible<Self::Scalar>>::set(*self, i, scalar);
-	}
-
 	#[inline]
 	fn into_iter(self) -> impl Iterator<Item = Self::Scalar> + Send + Clone {
 		(0..Self::WIDTH).map_skippable(move |i|
@@ -108,11 +92,7 @@ pub trait PackedField:
 	/// Initialize zero position with `scalar`, set other elements to zero.
 	#[inline(always)]
 	fn set_single(scalar: Self::Scalar) -> Self {
-		let mut result = Self::default();
-		// UFCS to select the in-place `PackedField::set` over the by-value `Divisible::set`.
-		PackedField::set(&mut result, 0, scalar);
-
-		result
+		Self::default().set(0, scalar)
 	}
 
 	/// Construct a packed field element from a function that returns scalar values by index.
@@ -139,8 +119,7 @@ pub trait PackedField:
 	fn from_scalars(values: impl IntoIterator<Item = Self::Scalar>) -> Self {
 		let mut result = Self::default();
 		for (i, val) in values.into_iter().take(Self::WIDTH).enumerate() {
-			// UFCS to select the in-place `PackedField::set` over the by-value `Divisible::set`.
-			PackedField::set(&mut result, i, val);
+			result = result.set(i, val);
 		}
 		result
 	}
