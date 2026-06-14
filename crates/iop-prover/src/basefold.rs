@@ -467,6 +467,7 @@ mod test {
 			&[PartialOracleSpec {
 				log_msg_len: n_vars + 1,
 				log_batch_size: Some(1),
+				skip_batch_challenges: 0,
 			}],
 			LOG_INV_RATE,
 			32,

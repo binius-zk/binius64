@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::marker::PhantomData;
 
@@ -27,7 +28,8 @@ pub struct FRIParams<F> {
 	/// Guaranteed to be non-empty.
 	input_oracles: Vec<OracleSpec>,
 	/// log2 the maximum message length of all input oracles, after lifting each to the reduced
-	/// dimension. Equals `rs_code.log_dim() + max(input_oracles.log_batch_size)`.
+	/// dimension. Equals `rs_code.log_dim() + max(skip_batch_challenges + log_batch_size)` over
+	/// the input oracles (the inner challenges the first fold must draw).
 	max_log_msg_len: usize,
 	/// log2 ceiling of the number of input oracles.
 	log_n_oracles: usize,
@@ -46,6 +48,17 @@ pub struct OracleSpec {
 	pub log_msg_len: usize,
 	/// log2 the interleaved batch size.
 	pub log_batch_size: usize,
+	/// The number of leading inner challenges this oracle skips before its batch fold.
+	///
+	/// The first fold draws `max(skip_batch_challenges + log_batch_size)` inner challenges across
+	/// all oracles; oracle `i` folds its interleaved batch with the window
+	/// `inner_challenges[skip_batch_challenges .. skip_batch_challenges + log_batch_size]`. This
+	/// lets distinct oracles consume distinct (or overlapping) inner challenges — needed when a
+	/// leading inner challenge is reserved for one group of oracles (e.g. the shared masking
+	/// challenge of ZK BaseFold oracles) while others must skip it. It is `0` in the homogeneous
+	/// case, recovering the convention where every oracle folds with a prefix of the inner
+	/// challenges.
+	pub skip_batch_challenges: usize,
 }
 
 /// A partially specified oracle specification.
@@ -60,6 +73,10 @@ pub struct PartialOracleSpec {
 	///
 	/// This field is Some if the log_batch_size is fixed, and None if it's flexible.
 	pub log_batch_size: Option<usize>,
+	/// The number of leading inner challenges this oracle skips before its batch fold.
+	///
+	/// See [`OracleSpec::skip_batch_challenges`]. `0` in the homogeneous case.
+	pub skip_batch_challenges: usize,
 }
 
 impl<F> FRIParams<F>
@@ -84,6 +101,7 @@ where
 		let oracle_spec = OracleSpec {
 			log_msg_len: rs_code.log_dim() + log_batch_size,
 			log_batch_size,
+			skip_batch_challenges: 0,
 		};
 		let log_n_oracles = 0;
 		let max_log_msg_len = oracle_spec.log_msg_len;
@@ -197,16 +215,18 @@ where
 		} = choose_batch_size_and_arities_multi(merkle_scheme, oracles, log_inv_rate, n_test_queries);
 
 		// After lifting, every input oracle sits at the reduced dimension with its own interleaved
-		// batch, so the effective maximum message length is the reduced dimension plus the largest
-		// batch size. This is what the first fold must consume (the inner, per-oracle interleave
-		// folds) before the `log_n_oracles` outer folds that batch the oracles together. Without
-		// lifting this equals `max(oracle.log_msg_len)`.
-		let max_log_batch_size = oracle_specs
+		// batch, so the effective maximum message length is the reduced dimension plus the number
+		// of inner challenges the first fold must draw. Each oracle consumes the window
+		// `inner[skip_batch_challenges .. skip_batch_challenges + log_batch_size]`, so the first
+		// fold must draw `max(skip_batch_challenges + log_batch_size)` inner challenges before
+		// the `log_n_oracles` outer folds that batch the oracles together. With no skips this
+		// equals `max(oracle.log_batch_size)`.
+		let max_inner_challenges = oracle_specs
 			.iter()
-			.map(|spec| spec.log_batch_size)
+			.map(|spec| spec.skip_batch_challenges + spec.log_batch_size)
 			.max()
 			.expect("precondition: oracles is not empty");
-		let max_log_msg_len = reduced_log_msg_len + max_log_batch_size;
+		let max_log_msg_len = reduced_log_msg_len + max_inner_challenges;
 
 		let rs_code = ReedSolomonCode::with_domain_context_subspace(
 			domain_context,
@@ -417,6 +437,7 @@ where
 			OracleSpec {
 				log_msg_len: oracle.log_msg_len,
 				log_batch_size,
+				skip_batch_challenges: oracle.skip_batch_challenges,
 			}
 		})
 		.collect();
@@ -831,14 +852,17 @@ mod tests {
 			PartialOracleSpec {
 				log_msg_len: 10,
 				log_batch_size: Some(1),
+				skip_batch_challenges: 0,
 			},
 			PartialOracleSpec {
 				log_msg_len: 12,
 				log_batch_size: Some(1),
+				skip_batch_challenges: 0,
 			},
 			PartialOracleSpec {
 				log_msg_len: 16,
 				log_batch_size: None,
+				skip_batch_challenges: 0,
 			},
 		];
 

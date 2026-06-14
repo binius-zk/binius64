@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::iter::{self, repeat_with};
 
@@ -119,15 +120,16 @@ where
 		let index_bits = params.index_bits();
 		// The first fold consumes `log_batch_size()` challenges, split into the inner challenges
 		// (folding each input oracle's interleaving) and the outer challenges (batching the oracles
-		// together). Oracle `i` uses the last `log_batch_size_i` inner challenges.
-		let max_log_batch_size = params
+		// together). Oracle `i` folds its interleaved batch with the inner-challenge window
+		// `inner[skip_batch_challenges_i .. skip_batch_challenges_i + log_batch_size_i]`.
+		let max_inner_challenges = params
 			.input_oracles()
 			.iter()
-			.map(|spec| spec.log_batch_size)
+			.map(|spec| spec.skip_batch_challenges + spec.log_batch_size)
 			.max()
 			.expect("input_oracles is non-empty as an invariant");
-		let inner_challenges = &challenges[..max_log_batch_size];
-		let outer_challenges = challenges[max_log_batch_size..params.log_batch_size()].to_vec();
+		let inner_challenges = &challenges[..max_inner_challenges];
+		let outer_challenges = challenges[max_inner_challenges..params.log_batch_size()].to_vec();
 		let codeword_sub_oracles = iter::zip(codeword_commitments, params.input_oracles())
 			.map(|(commitment, spec)| {
 				// The oracle's own codeword has dimension `log_msg_len - log_batch_size`, so its
@@ -136,8 +138,9 @@ where
 				let oracle_log_dim = spec.log_msg_len - spec.log_batch_size;
 				let depth = oracle_log_dim + log_inv_rate;
 				let log_lift = log_dim - oracle_log_dim;
+				let inner_start = spec.skip_batch_challenges;
 				BrakedownOracle::new(
-					inner_challenges[max_log_batch_size - spec.log_batch_size..].to_vec(),
+					inner_challenges[inner_start..inner_start + spec.log_batch_size].to_vec(),
 					Commitment {
 						root: commitment.clone(),
 						depth,

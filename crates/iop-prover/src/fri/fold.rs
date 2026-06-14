@@ -136,6 +136,7 @@ where
 				);
 				ProxTestFolder {
 					log_batch_size: spec.log_batch_size,
+					skip_batch_challenges: spec.skip_batch_challenges,
 					log_lift: log_dim - oracle_log_dim,
 					codeword,
 					merkle_committed: committed,
@@ -402,6 +403,10 @@ where
 
 pub struct ProxTestFolder<'a, P: PackedField, MTProver: MerkleTreeProver<P::Scalar>> {
 	log_batch_size: usize,
+	/// The number of leading inner challenges this oracle skips before its batch fold. The oracle
+	/// folds with the window `inner[skip_batch_challenges .. skip_batch_challenges +
+	/// log_batch_size]`.
+	skip_batch_challenges: usize,
 	/// log2 the lift factor (oracle padding): how many times each folded codeword entry is
 	/// duplicated to reach the common first-round length. Zero when no lifting is needed.
 	log_lift: usize,
@@ -466,14 +471,14 @@ where
 		merkle_prover: &'a MTProver,
 		challenges: &[F],
 	) -> (FieldBuffer<F>, BatchBrakedownOracleProver<'a, P, MTProver>) {
-		let max_log_batch_size = self
+		let max_inner_challenges = self
 			.folders
 			.iter()
-			.map(|folder| folder.log_batch_size)
+			.map(|folder| folder.skip_batch_challenges + folder.log_batch_size)
 			.max()
 			.expect("folders is not empty by struct invariant");
 
-		let (inner_challenges, outer_challenges) = challenges.split_at(max_log_batch_size);
+		let (inner_challenges, outer_challenges) = challenges.split_at(max_inner_challenges);
 		let outer_tensor = eq_ind_partial_eval::<F>(outer_challenges);
 
 		let mut combined_codeword = FieldBuffer::zeros(self.log_code_len);
@@ -483,16 +488,18 @@ where
 		for (folder, &scalar) in iter::zip(self.folders, outer_tensor.as_ref()) {
 			let ProxTestFolder {
 				log_batch_size,
+				skip_batch_challenges,
 				log_lift,
 				codeword,
 				merkle_committed,
 			} = folder;
-			let start_idx = max_log_batch_size - log_batch_size;
 
 			// Fold the outer-challenge tensor value into the inner folding tensor so that every
 			// folded entry comes out already scaled by `scalar`. This replaces one scaling mul per
 			// (lifted) output entry with a single pass over the `2^log_batch_size`-element tensor.
-			let mut tensor = eq_ind_partial_eval::<P>(&inner_challenges[start_idx..]);
+			let mut tensor = eq_ind_partial_eval::<P>(
+				&inner_challenges[skip_batch_challenges..skip_batch_challenges + log_batch_size],
+			);
 			let scalar_broadcast = P::broadcast(scalar);
 			for packed in tensor.as_mut() {
 				*packed *= scalar_broadcast;
