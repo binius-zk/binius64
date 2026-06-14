@@ -233,17 +233,21 @@ where
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> T {
+	unsafe fn get_unchecked(self, index: usize) -> T {
 		let u_index = index >> <U as Divisible<T>>::LOG_N;
 		let sub_index = index & (<U as Divisible<T>>::N - 1);
-		Divisible::<T>::get(self.0[u_index], sub_index)
+		// Safety: `index < Self::N` by the caller's contract, so `sub_index < <U as
+		// Divisible<T>>::N` and `u_index < N`.
+		unsafe { Divisible::<T>::get_unchecked(*self.0.get_unchecked(u_index), sub_index) }
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: T) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: T) {
 		let u_index = index >> <U as Divisible<T>>::LOG_N;
 		let sub_index = index & (<U as Divisible<T>>::N - 1);
-		Divisible::<T>::set(&mut self.0[u_index], sub_index, val);
+		// Safety: `index < Self::N` by the caller's contract, so `sub_index < <U as
+		// Divisible<T>>::N` and `u_index < N`.
+		unsafe { Divisible::<T>::set_unchecked(self.0.get_unchecked_mut(u_index), sub_index, val) };
 	}
 
 	#[inline]

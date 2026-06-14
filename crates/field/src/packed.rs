@@ -45,9 +45,9 @@ pub trait PackedField:
 	+ Random
 	+ WideMul<Output: Debug + Send + Sync + 'static>
 	+ 'static
-	// A packed field divides into its `WIDTH` scalars. Element access (`get`), broadcast, and the
-	// scalar iterators are provided by this supertrait; `set` is kept here as an in-place `&mut`
-	// convenience (see [`Self::set`]).
+	// A packed field divides into its `WIDTH` scalars. Scalar element access (`get`/`set` and
+	// their `_unchecked` variants), broadcast, and the scalar iterators are all provided by this
+	// supertrait.
 	+ Divisible<Self::Scalar>
 {
 	/// Base-2 logarithm of the number of field elements packed into one packed element.
@@ -59,16 +59,6 @@ pub trait PackedField:
 	///
 	/// WIDTH is guaranteed to equal 2^LOG_WIDTH.
 	const WIDTH: usize = 1 << Self::LOG_WIDTH;
-
-	/// Get the scalar at a given index without bounds checking.
-	/// # Safety
-	/// The caller must ensure that `i` is less than `WIDTH`.
-	unsafe fn get_unchecked(&self, i: usize) -> Self::Scalar;
-
-	/// Set the scalar at a given index without bounds checking.
-	/// # Safety
-	/// The caller must ensure that `i` is less than `WIDTH`.
-	unsafe fn set_unchecked(&mut self, i: usize, scalar: Self::Scalar);
 
 	#[inline]
 	fn into_iter(self) -> impl Iterator<Item = Self::Scalar> + Send + Clone {
@@ -405,16 +395,8 @@ impl<P: PackedField> RandomAccessSequenceMut<P::Scalar> for PackedSliceMut<'_, P
 
 impl<F: Field> PackedField for F {
 	// LOG_WIDTH defaults to `<Self as Divisible<Self>>::LOG_N`, which is 0 for a scalar field.
-
-	#[inline]
-	unsafe fn get_unchecked(&self, _i: usize) -> Self::Scalar {
-		*self
-	}
-
-	#[inline]
-	unsafe fn set_unchecked(&mut self, _i: usize, scalar: Self::Scalar) {
-		*self = scalar;
-	}
+	// Scalar element access (`get_unchecked`/`set_unchecked`) is provided by the reflexive
+	// `Divisible<Self>` impl.
 
 	#[inline]
 	fn iter(&self) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {

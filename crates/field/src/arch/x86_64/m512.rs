@@ -884,23 +884,23 @@ impl Divisible<M256> for M512 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> M256 {
+	unsafe fn get_unchecked(self, index: usize) -> M256 {
 		unsafe {
 			match index {
 				0 => M256(_mm512_extracti64x4_epi64(self.0, 0)),
 				1 => M256(_mm512_extracti64x4_epi64(self.0, 1)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: M256) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: M256) {
 		*self = unsafe {
 			match index {
 				0 => Self(_mm512_inserti64x4(self.0, val.0, 0)),
 				1 => Self(_mm512_inserti64x4(self.0, val.0, 1)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}
@@ -940,27 +940,27 @@ impl Divisible<M128> for M512 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> M128 {
+	unsafe fn get_unchecked(self, index: usize) -> M128 {
 		unsafe {
 			match index {
 				0 => M128(_mm512_extracti32x4_epi32(self.0, 0)),
 				1 => M128(_mm512_extracti32x4_epi32(self.0, 1)),
 				2 => M128(_mm512_extracti32x4_epi32(self.0, 2)),
 				3 => M128(_mm512_extracti32x4_epi32(self.0, 3)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: M128) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: M128) {
 		*self = unsafe {
 			match index {
 				0 => Self(_mm512_inserti32x4(self.0, val.0, 0)),
 				1 => Self(_mm512_inserti32x4(self.0, val.0, 1)),
 				2 => Self(_mm512_inserti32x4(self.0, val.0, 2)),
 				3 => Self(_mm512_inserti32x4(self.0, val.0, 3)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}
@@ -1000,13 +1000,15 @@ impl Divisible<u128> for M512 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u128 {
-		u128::from(Divisible::<M128>::get(self, index))
+	unsafe fn get_unchecked(self, index: usize) -> u128 {
+		// Safety: `index < Self::N` by the caller's contract.
+		u128::from(unsafe { Divisible::<M128>::get_unchecked(self, index) })
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u128) {
-		Divisible::<M128>::set(self, index, M128::from(val));
+	unsafe fn set_unchecked(&mut self, index: usize, val: u128) {
+		// Safety: `index < Self::N` by the caller's contract.
+		unsafe { Divisible::<M128>::set_unchecked(self, index, M128::from(val)) };
 	}
 
 	#[inline]
@@ -1044,21 +1046,29 @@ impl Divisible<u64> for M512 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u64 {
+	unsafe fn get_unchecked(self, index: usize) -> u64 {
 		// Extract M128 lane, then use M128's get
 		let lane_idx = index / 2;
 		let sub_idx = index % 2;
-		let lane = Divisible::<M128>::get(self, lane_idx);
-		Divisible::<u64>::get(lane, sub_idx)
+		// Safety: `index < Self::N` by the caller's contract, so `lane_idx` and `sub_idx` are
+		// in bounds.
+		unsafe {
+			let lane = Divisible::<M128>::get_unchecked(self, lane_idx);
+			Divisible::<u64>::get_unchecked(lane, sub_idx)
+		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u64) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u64) {
 		let lane_idx = index / 2;
 		let sub_idx = index % 2;
-		let mut lane = Divisible::<M128>::get(*self, lane_idx);
-		Divisible::<u64>::set(&mut lane, sub_idx, val);
-		Divisible::<M128>::set(self, lane_idx, lane);
+		// Safety: `index < Self::N` by the caller's contract, so `lane_idx` and `sub_idx` are
+		// in bounds.
+		unsafe {
+			let mut lane = Divisible::<M128>::get_unchecked(*self, lane_idx);
+			Divisible::<u64>::set_unchecked(&mut lane, sub_idx, val);
+			Divisible::<M128>::set_unchecked(self, lane_idx, lane);
+		}
 	}
 
 	#[inline]
@@ -1096,21 +1106,29 @@ impl Divisible<u32> for M512 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u32 {
+	unsafe fn get_unchecked(self, index: usize) -> u32 {
 		// Extract M128 lane, then use M128's get
 		let lane_idx = index / 4;
 		let sub_idx = index % 4;
-		let lane = Divisible::<M128>::get(self, lane_idx);
-		Divisible::<u32>::get(lane, sub_idx)
+		// Safety: `index < Self::N` by the caller's contract, so `lane_idx` and `sub_idx` are
+		// in bounds.
+		unsafe {
+			let lane = Divisible::<M128>::get_unchecked(self, lane_idx);
+			Divisible::<u32>::get_unchecked(lane, sub_idx)
+		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u32) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u32) {
 		let lane_idx = index / 4;
 		let sub_idx = index % 4;
-		let mut lane = Divisible::<M128>::get(*self, lane_idx);
-		Divisible::<u32>::set(&mut lane, sub_idx, val);
-		Divisible::<M128>::set(self, lane_idx, lane);
+		// Safety: `index < Self::N` by the caller's contract, so `lane_idx` and `sub_idx` are
+		// in bounds.
+		unsafe {
+			let mut lane = Divisible::<M128>::get_unchecked(*self, lane_idx);
+			Divisible::<u32>::set_unchecked(&mut lane, sub_idx, val);
+			Divisible::<M128>::set_unchecked(self, lane_idx, lane);
+		}
 	}
 
 	#[inline]
@@ -1148,21 +1166,29 @@ impl Divisible<u16> for M512 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u16 {
+	unsafe fn get_unchecked(self, index: usize) -> u16 {
 		// Extract M128 lane, then use M128's get
 		let lane_idx = index / 8;
 		let sub_idx = index % 8;
-		let lane = Divisible::<M128>::get(self, lane_idx);
-		Divisible::<u16>::get(lane, sub_idx)
+		// Safety: `index < Self::N` by the caller's contract, so `lane_idx` and `sub_idx` are
+		// in bounds.
+		unsafe {
+			let lane = Divisible::<M128>::get_unchecked(self, lane_idx);
+			Divisible::<u16>::get_unchecked(lane, sub_idx)
+		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u16) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u16) {
 		let lane_idx = index / 8;
 		let sub_idx = index % 8;
-		let mut lane = Divisible::<M128>::get(*self, lane_idx);
-		Divisible::<u16>::set(&mut lane, sub_idx, val);
-		Divisible::<M128>::set(self, lane_idx, lane);
+		// Safety: `index < Self::N` by the caller's contract, so `lane_idx` and `sub_idx` are
+		// in bounds.
+		unsafe {
+			let mut lane = Divisible::<M128>::get_unchecked(*self, lane_idx);
+			Divisible::<u16>::set_unchecked(&mut lane, sub_idx, val);
+			Divisible::<M128>::set_unchecked(self, lane_idx, lane);
+		}
 	}
 
 	#[inline]
@@ -1200,21 +1226,29 @@ impl Divisible<u8> for M512 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u8 {
+	unsafe fn get_unchecked(self, index: usize) -> u8 {
 		// Extract M128 lane, then use M128's get
 		let lane_idx = index / 16;
 		let sub_idx = index % 16;
-		let lane = Divisible::<M128>::get(self, lane_idx);
-		Divisible::<u8>::get(lane, sub_idx)
+		// Safety: `index < Self::N` by the caller's contract, so `lane_idx` and `sub_idx` are
+		// in bounds.
+		unsafe {
+			let lane = Divisible::<M128>::get_unchecked(self, lane_idx);
+			Divisible::<u8>::get_unchecked(lane, sub_idx)
+		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u8) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u8) {
 		let lane_idx = index / 16;
 		let sub_idx = index % 16;
-		let mut lane = Divisible::<M128>::get(*self, lane_idx);
-		Divisible::<u8>::set(&mut lane, sub_idx, val);
-		Divisible::<M128>::set(self, lane_idx, lane);
+		// Safety: `index < Self::N` by the caller's contract, so `lane_idx` and `sub_idx` are
+		// in bounds.
+		unsafe {
+			let mut lane = Divisible::<M128>::get_unchecked(*self, lane_idx);
+			Divisible::<u8>::set_unchecked(&mut lane, sub_idx, val);
+			Divisible::<M128>::set_unchecked(self, lane_idx, lane);
+		}
 	}
 
 	#[inline]

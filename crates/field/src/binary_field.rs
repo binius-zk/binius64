@@ -258,14 +258,12 @@ macro_rules! binary_field {
 			}
 
 			#[inline]
-			fn get(self, index: usize) -> $name {
-				debug_assert_eq!(index, 0);
+			unsafe fn get_unchecked(self, _index: usize) -> $name {
 				self
 			}
 
 			#[inline]
-			fn set(&mut self, index: usize, val: $name) {
-				debug_assert_eq!(index, 0);
+			unsafe fn set_unchecked(&mut self, _index: usize, val: $name) {
 				*self = val;
 			}
 

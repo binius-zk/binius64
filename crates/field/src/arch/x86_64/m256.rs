@@ -872,23 +872,23 @@ impl Divisible<M128> for M256 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> M128 {
+	unsafe fn get_unchecked(self, index: usize) -> M128 {
 		unsafe {
 			match index {
 				0 => M128(_mm256_extracti128_si256(self.0, 0)),
 				1 => M128(_mm256_extracti128_si256(self.0, 1)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: M128) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: M128) {
 		*self = unsafe {
 			match index {
 				0 => Self(_mm256_inserti128_si256(self.0, val.0, 0)),
 				1 => Self(_mm256_inserti128_si256(self.0, val.0, 1)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}
@@ -928,13 +928,15 @@ impl Divisible<u128> for M256 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u128 {
-		u128::from(Divisible::<M128>::get(self, index))
+	unsafe fn get_unchecked(self, index: usize) -> u128 {
+		// Safety: `index < Self::N` by the caller's contract.
+		u128::from(unsafe { Divisible::<M128>::get_unchecked(self, index) })
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u128) {
-		Divisible::<M128>::set(self, index, M128::from(val));
+	unsafe fn set_unchecked(&mut self, index: usize, val: u128) {
+		// Safety: `index < Self::N` by the caller's contract.
+		unsafe { Divisible::<M128>::set_unchecked(self, index, M128::from(val)) };
 	}
 
 	#[inline]
@@ -972,27 +974,27 @@ impl Divisible<u64> for M256 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u64 {
+	unsafe fn get_unchecked(self, index: usize) -> u64 {
 		unsafe {
 			match index {
 				0 => _mm256_extract_epi64(self.0, 0) as u64,
 				1 => _mm256_extract_epi64(self.0, 1) as u64,
 				2 => _mm256_extract_epi64(self.0, 2) as u64,
 				3 => _mm256_extract_epi64(self.0, 3) as u64,
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u64) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u64) {
 		*self = unsafe {
 			match index {
 				0 => Self(_mm256_insert_epi64(self.0, val as i64, 0)),
 				1 => Self(_mm256_insert_epi64(self.0, val as i64, 1)),
 				2 => Self(_mm256_insert_epi64(self.0, val as i64, 2)),
 				3 => Self(_mm256_insert_epi64(self.0, val as i64, 3)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}
@@ -1032,7 +1034,7 @@ impl Divisible<u32> for M256 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u32 {
+	unsafe fn get_unchecked(self, index: usize) -> u32 {
 		unsafe {
 			match index {
 				0 => _mm256_extract_epi32(self.0, 0) as u32,
@@ -1043,13 +1045,13 @@ impl Divisible<u32> for M256 {
 				5 => _mm256_extract_epi32(self.0, 5) as u32,
 				6 => _mm256_extract_epi32(self.0, 6) as u32,
 				7 => _mm256_extract_epi32(self.0, 7) as u32,
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u32) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u32) {
 		*self = unsafe {
 			match index {
 				0 => Self(_mm256_insert_epi32(self.0, val as i32, 0)),
@@ -1060,7 +1062,7 @@ impl Divisible<u32> for M256 {
 				5 => Self(_mm256_insert_epi32(self.0, val as i32, 5)),
 				6 => Self(_mm256_insert_epi32(self.0, val as i32, 6)),
 				7 => Self(_mm256_insert_epi32(self.0, val as i32, 7)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}
@@ -1100,7 +1102,7 @@ impl Divisible<u16> for M256 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u16 {
+	unsafe fn get_unchecked(self, index: usize) -> u16 {
 		unsafe {
 			match index {
 				0 => _mm256_extract_epi16(self.0, 0) as u16,
@@ -1119,13 +1121,13 @@ impl Divisible<u16> for M256 {
 				13 => _mm256_extract_epi16(self.0, 13) as u16,
 				14 => _mm256_extract_epi16(self.0, 14) as u16,
 				15 => _mm256_extract_epi16(self.0, 15) as u16,
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u16) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u16) {
 		*self = unsafe {
 			match index {
 				0 => Self(_mm256_insert_epi16(self.0, val as i16, 0)),
@@ -1144,7 +1146,7 @@ impl Divisible<u16> for M256 {
 				13 => Self(_mm256_insert_epi16(self.0, val as i16, 13)),
 				14 => Self(_mm256_insert_epi16(self.0, val as i16, 14)),
 				15 => Self(_mm256_insert_epi16(self.0, val as i16, 15)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}
@@ -1184,7 +1186,7 @@ impl Divisible<u8> for M256 {
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> u8 {
+	unsafe fn get_unchecked(self, index: usize) -> u8 {
 		unsafe {
 			match index {
 				0 => _mm256_extract_epi8(self.0, 0) as u8,
@@ -1219,13 +1221,13 @@ impl Divisible<u8> for M256 {
 				29 => _mm256_extract_epi8(self.0, 29) as u8,
 				30 => _mm256_extract_epi8(self.0, 30) as u8,
 				31 => _mm256_extract_epi8(self.0, 31) as u8,
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		}
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: u8) {
+	unsafe fn set_unchecked(&mut self, index: usize, val: u8) {
 		*self = unsafe {
 			match index {
 				0 => Self(_mm256_insert_epi8(self.0, val as i8, 0)),
@@ -1260,7 +1262,7 @@ impl Divisible<u8> for M256 {
 				29 => Self(_mm256_insert_epi8(self.0, val as i8, 29)),
 				30 => Self(_mm256_insert_epi8(self.0, val as i8, 30)),
 				31 => Self(_mm256_insert_epi8(self.0, val as i8, 31)),
-				_ => panic!("index out of bounds"),
+				_ => core::hint::unreachable_unchecked(),
 			}
 		};
 	}

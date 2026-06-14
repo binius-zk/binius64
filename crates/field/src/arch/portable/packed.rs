@@ -441,13 +441,23 @@ where
 	}
 
 	#[inline]
-	fn get(self, index: usize) -> Scalar {
-		Scalar::from_underlier(Divisible::<Scalar::Underlier>::get(self.0, index))
+	unsafe fn get_unchecked(self, index: usize) -> Scalar {
+		// Safety: `index < Self::N` by the caller's contract.
+		Scalar::from_underlier(unsafe {
+			Divisible::<Scalar::Underlier>::get_unchecked(self.0, index)
+		})
 	}
 
 	#[inline]
-	fn set(&mut self, index: usize, val: Scalar) {
-		<U as Divisible<Scalar::Underlier>>::set(&mut self.0, index, val.to_underlier());
+	unsafe fn set_unchecked(&mut self, index: usize, val: Scalar) {
+		// Safety: `index < Self::N` by the caller's contract.
+		unsafe {
+			<U as Divisible<Scalar::Underlier>>::set_unchecked(
+				&mut self.0,
+				index,
+				val.to_underlier(),
+			)
+		};
 	}
 
 	#[inline]
@@ -469,19 +479,9 @@ where
 	Scalar: BinaryField,
 {
 	// LOG_WIDTH defaults to `<Self as Divisible<Scalar>>::LOG_N`, the same `(U::BITS /
-	// Scalar::N_BITS).ilog2()` count.
-
-	#[inline]
-	unsafe fn get_unchecked(&self, i: usize) -> Self::Scalar {
-		Scalar::from_underlier(unsafe { self.0.get_subvalue(i) })
-	}
-
-	#[inline]
-	unsafe fn set_unchecked(&mut self, i: usize, scalar: Scalar) {
-		unsafe {
-			self.0.set_subvalue(i, scalar.to_underlier());
-		}
-	}
+	// Scalar::N_BITS).ilog2()` count. Scalar element access (`get_unchecked`/`set_unchecked`) is
+	// provided by the `Divisible<Scalar>` impl, which routes through `U:
+	// Divisible<Scalar::Underlier>`.
 
 	#[inline]
 	fn iter(&self) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
