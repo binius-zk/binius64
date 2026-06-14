@@ -20,7 +20,7 @@ use super::{
 
 /// A bundle of hash and compression types used to build and verify a binary Merkle tree.
 ///
-/// Most callers want to vary the underlying hash family (SHA-256, Vision, etc.) as a single unit
+/// Most callers want to vary the underlying hash family (SHA-256, etc.) as a single unit
 /// rather than independently picking a leaf hash, a compression function, and their parallel
 /// counterparts. `HashSuite` bundles the four related types so that user-facing prover and
 /// verifier APIs can take a single `H: HashSuite` parameter instead of two or three loose hash

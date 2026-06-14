@@ -2,9 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_field::{BinaryField128bGhash as B128, PackedField, arch::OptimalPackedB128};
-use binius_hash::{
-	binary_merkle_tree::HashSuite, sha256::Sha256HashSuite, vision::VisionHashSuite,
-};
+use binius_hash::{binary_merkle_tree::HashSuite, sha256::Sha256HashSuite};
 use binius_iop_prover::merkle_tree::{commit_field_buffer, prover::BinaryMerkleTreeProver};
 use binius_math::test_utils::random_field_buffer;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
@@ -59,14 +57,5 @@ fn bench_sha256_merkle_tree(c: &mut Criterion) {
 	);
 }
 
-fn bench_vision_merkle_tree(c: &mut Criterion) {
-	bench_binary_merkle_tree::<B128, VisionHashSuite>(c, "Vision", "128b");
-	bench_binary_merkle_tree::<OptimalPackedB128, VisionHashSuite>(
-		c,
-		"Vision",
-		format!("{}x128b", OptimalPackedB128::WIDTH),
-	);
-}
-
-criterion_group!(binary_merkle_tree, bench_sha256_merkle_tree, bench_vision_merkle_tree);
+criterion_group!(binary_merkle_tree, bench_sha256_merkle_tree);
 criterion_main!(binary_merkle_tree);

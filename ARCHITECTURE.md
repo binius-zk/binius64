@@ -48,7 +48,7 @@ The use of binary field arithmetic and XOR-based linear combinations makes this 
 |-------|---------|
 | binius-field | Binary field arithmetic with architecture-specific optimizations |
 | binius-math | Mathematical primitives (multilinear polynomials, FFT, Reed-Solomon) |
-| binius-hash | Hash functions (SHA-256, Vision) and compression functions |
+| binius-hash | Hash functions (SHA-256) and compression functions |
 | binius-transcript | Fiat-Shamir transcript handling for non-interactive proofs |
 | binius-utils | Common utilities (serialization, bitwise operations, arrays) |
 

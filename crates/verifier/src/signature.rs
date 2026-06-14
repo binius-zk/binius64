@@ -40,8 +40,8 @@
 //! - **Reduction to collision resistance.** Because we bind `H(m)` rather than `m`, the binding is
 //!   only as strong as the collision resistance of `H = HashSuite::LeafHash`. If an adversary finds
 //!   `m != m'` with `H(m) = H(m')`, a signature on `m` also verifies for `m'`. The leaf hashes used
-//!   by the shipped suites (SHA-256, Vision) are collision resistant, so this is not a practical
-//!   concern; it is the same assumption the Merkle commitment already relies on.
+//!   by the shipped suites (SHA-256) are collision resistant, so this is not a practical concern;
+//!   it is the same assumption the Merkle commitment already relies on.
 //!
 //! - **Knowledge soundness is preserved.** Observing extra public data at the start of the
 //!   transcript does not weaken the soundness of the underlying argument: it is equivalent to

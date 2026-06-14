@@ -8,9 +8,7 @@ pub mod snapshot;
 use anyhow::Result;
 use binius_core::constraint_system::{ConstraintSystem, ValueVec};
 use binius_frontend::{CircuitBuilder, WitnessFiller};
-use binius_hash::{
-	binary_merkle_tree::HashSuite, sha256::Sha256HashSuite, vision::VisionHashSuite,
-};
+use binius_hash::{binary_merkle_tree::HashSuite, sha256::Sha256HashSuite};
 use binius_prover::{KeyCollection, OptimalPackedB128, Prover, zk_config::ZKProver};
 use binius_utils::{DeserializeBytes, SerializeBytes};
 use binius_verifier::{
@@ -52,26 +50,16 @@ pub fn init_tracing() {
 pub enum CompressionType {
 	/// SHA-256 compression function
 	Sha256,
-	/// Vision compression function (Vision-6 leaves, Vision-4 inner-node compression)
-	Vision,
 }
 
 /// Standard verifier using SHA256 compression
 pub type StdVerifier = Verifier<Sha256HashSuite>;
 /// Standard prover using SHA256 compression
 pub type StdProver = Prover<OptimalPackedB128, Sha256HashSuite>;
-/// Vision verifier (Vision-6 leaves + Vision-4 compression)
-pub type VisionVerifier = Verifier<VisionHashSuite>;
-/// Vision prover (Vision-6 leaves + Vision-4 compression)
-pub type VisionProver = Prover<OptimalPackedB128, VisionHashSuite>;
 /// Standard ZK verifier using SHA256 compression
 pub type StdZKVerifier = ZKVerifier<Sha256HashSuite>;
 /// Standard ZK prover using SHA256 compression
 pub type StdZKProver = ZKProver<OptimalPackedB128, Sha256HashSuite>;
-/// Vision ZK verifier (Vision-6 leaves + Vision-4 compression)
-pub type VisionZKVerifier = ZKVerifier<VisionHashSuite>;
-/// Vision ZK prover (Vision-6 leaves + Vision-4 compression)
-pub type VisionZKProver = ZKProver<OptimalPackedB128, VisionHashSuite>;
 
 /// Set up a non-ZK prover and verifier for the given constraint system using `H` as the
 /// Merkle hash suite.

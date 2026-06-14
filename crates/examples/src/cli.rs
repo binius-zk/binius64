@@ -5,7 +5,7 @@ use std::{fs, path::Path};
 use anyhow::Result;
 use binius_core::constraint_system::{ConstraintSystem, Proof, ValueVec, ValuesData};
 use binius_frontend::{CircuitBuilder, CircuitStat};
-use binius_hash::{StdHashSuite, binary_merkle_tree::HashSuite, vision::VisionHashSuite};
+use binius_hash::{StdHashSuite, binary_merkle_tree::HashSuite};
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
 use clap::{Arg, Args, Command, FromArgMatches, Subcommand};
 use digest::Output;
@@ -675,17 +675,6 @@ where
 					output,
 				)?;
 			}
-			CompressionType::Vision => {
-				tracing::info!("Using Vision suite for Merkle tree");
-				prove_with_hash_suite::<VisionHashSuite>(
-					cs,
-					log_inv_rate as usize,
-					zk,
-					message,
-					witness,
-					output,
-				)?;
-			}
 		}
 
 		Ok(())
@@ -879,12 +868,6 @@ where
 					setup::<StdHashSuite>(cs, log_inv_rate as usize, maybe_key_collection)?;
 				prove_verify(&verifier, &prover, witness)?;
 			}
-			CompressionType::Vision => {
-				tracing::info!("Using Vision suite for Merkle tree");
-				let (verifier, prover) =
-					setup::<VisionHashSuite>(cs, log_inv_rate as usize, maybe_key_collection)?;
-				prove_verify(&verifier, &prover, witness)?;
-			}
 		};
 
 		Ok(())
@@ -933,17 +916,6 @@ where
 			CompressionType::Sha256 => {
 				tracing::info!("Using SHA256 compression for Merkle tree");
 				verify_with_hash_suite::<StdHashSuite>(
-					cs,
-					log_inv_rate as usize,
-					zk,
-					message,
-					witness,
-					proof_bytes,
-				)?;
-			}
-			CompressionType::Vision => {
-				tracing::info!("Using Vision suite for Merkle tree");
-				verify_with_hash_suite::<VisionHashSuite>(
 					cs,
 					log_inv_rate as usize,
 					zk,

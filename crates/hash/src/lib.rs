@@ -5,8 +5,7 @@
 //! Cryptographic hash functions and compression functions for Binius.
 //!
 //! This crate provides hash function implementations used throughout the Binius proof system,
-//! including both standard hash functions (SHA-256) and specialized binary field hash functions
-//! (Vision).
+//! such as standard hash functions (SHA-256).
 
 pub mod binary_merkle_tree;
 pub mod compress;
@@ -14,9 +13,6 @@ pub mod parallel_compression;
 pub mod parallel_digest;
 mod serialization;
 pub mod sha256;
-pub mod vision;
-pub mod vision_4;
-pub mod vision_6;
 
 pub use compress::{CompressionFunction, PseudoCompressionFunction};
 pub use parallel_compression::{ParallelCompressionAdaptor, ParallelPseudoCompression};
