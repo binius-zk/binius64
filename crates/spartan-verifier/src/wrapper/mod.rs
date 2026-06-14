@@ -34,9 +34,13 @@ mod tests {
 
 	type BuildElem = CircuitElem<B128, BuilderWire<B128>>;
 
-	/// Helper to create a BuildElem wire from a ConstraintBuilder Rc for tests.
-	fn alloc_inout_wire(rc: &Rc<std::cell::RefCell<ConstraintBuilder<B128>>>) -> BuildElem {
-		let wire = rc.borrow_mut().alloc_inout();
+	/// Helper to create a private-backed `BuildElem` wire from a ConstraintBuilder Rc for tests.
+	///
+	/// Uses a precommit wire (the real source of `BuilderWire::Private` in wrapper usage — the OTP
+	/// key) so that arithmetic on it stays private and records constraints. An inout-backed wire
+	/// would instead be elided into a derived wire with no constraint.
+	fn alloc_private_wire(rc: &Rc<std::cell::RefCell<ConstraintBuilder<B128>>>) -> BuildElem {
+		let wire = rc.borrow_mut().alloc_precommit();
 		BuildElem::wire(rc, BuilderWire::Private(wire))
 	}
 
@@ -61,7 +65,7 @@ mod tests {
 	#[test]
 	fn test_constant_identity_shortcuts() {
 		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::<B128>::new()));
-		let elem = alloc_inout_wire(&rc);
+		let elem = alloc_private_wire(&rc);
 
 		// Adding zero returns the wire unchanged.
 		let result = elem.clone() + BuildElem::Constant(B128::ZERO);
@@ -79,8 +83,8 @@ mod tests {
 	#[test]
 	fn test_wire_addition_creates_constraint() {
 		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::<B128>::new()));
-		let a = alloc_inout_wire(&rc);
-		let b = alloc_inout_wire(&rc);
+		let a = alloc_private_wire(&rc);
+		let b = alloc_private_wire(&rc);
 
 		let _sum = a + b;
 		// The addition should produce constraints. After finalization, the zero constraint
@@ -92,8 +96,8 @@ mod tests {
 	#[test]
 	fn test_wire_multiplication_creates_constraint() {
 		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::<B128>::new()));
-		let a = alloc_inout_wire(&rc);
-		let b = alloc_inout_wire(&rc);
+		let a = alloc_private_wire(&rc);
+		let b = alloc_private_wire(&rc);
 
 		let _product = a * b;
 		let (cs, _layout) = Rc::try_unwrap(rc).unwrap().into_inner().build().finalize();
@@ -104,7 +108,7 @@ mod tests {
 	#[test]
 	fn test_invert_or_zero_creates_constraints() {
 		let rc = Rc::new(std::cell::RefCell::new(ConstraintBuilder::<B128>::new()));
-		let elem = alloc_inout_wire(&rc);
+		let elem = alloc_private_wire(&rc);
 
 		let _inv = elem.invert_or_zero();
 		let (cs, _layout) = Rc::try_unwrap(rc).unwrap().into_inner().build().finalize();

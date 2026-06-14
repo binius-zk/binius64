@@ -60,5 +60,9 @@ fn test_ip_proof_size() {
 	// single combined FRI proof opening all oracles together. It is a slight underestimate because
 	// it does not account for some smaller BaseFold components (e.g. sumcheck coefficients within
 	// BaseFold, blinding elements for ZK).
-	assert_eq!(proof_size, 46848, "proof size regression");
+	//
+	// The power chain x^2..x^7 is public-derivable (x and y are inout), so those wires are now
+	// `Derived` and emit no mul constraints — only `assert_eq(x^7, y)` survives — shrinking the
+	// proof relative to the pre-derived-wire baseline of 46848.
+	assert_eq!(proof_size, 46784, "proof size regression");
 }

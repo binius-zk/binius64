@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{
 	cmp::Ordering,
@@ -15,8 +16,35 @@ use smallvec::{SmallVec, smallvec};
 pub enum WireKind {
 	Constant,
 	InOut,
+	/// A wire whose value is a pure function of public-derivable inputs (constants, inout, and
+	/// other derived wires). Derived wires live in the public segment and emit no constraint; the
+	/// verifier recomputes them itself via the `InstanceGenerator`.
+	Derived,
 	Precommit,
 	Private,
+}
+
+impl WireKind {
+	/// The witness segment a wire of this kind lives in: constants, inout, and derived wires occupy
+	/// the public segment; precommit and private wires occupy their own segments.
+	pub fn segment(self) -> WitnessSegment {
+		match self {
+			WireKind::Constant | WireKind::InOut | WireKind::Derived => WitnessSegment::Public,
+			WireKind::Precommit => WitnessSegment::Precommit,
+			WireKind::Private => WitnessSegment::Private,
+		}
+	}
+
+	/// Returns whether this wire kind lives in the public segment: its value is determined once the
+	/// public inputs (constants and inout) are known, so the verifier can recompute it without any
+	/// secret data.
+	///
+	/// Shared by all `CircuitBuilder` implementations so they make identical derived-vs-private
+	/// decisions. The output of a binary op (or hint) is [`WireKind::Derived`] iff every input is
+	/// public, and [`WireKind::Private`] otherwise.
+	pub fn is_public(self) -> bool {
+		self.segment() == WitnessSegment::Public
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -334,11 +362,13 @@ pub struct BlindingInfo {
 pub struct WitnessLayout<F: Field> {
 	pub(crate) constants: Vec<F>,
 	n_inout: u32,
+	n_derived: u32,
 	n_precommit: u32,
 	n_private: u32,
 	log_public: u32,
 	log_precommit: u32,
 	log_private: u32,
+	derived_index_map: HashMap<u32, u32>,
 	private_index_map: HashMap<u32, u32>,
 }
 
@@ -347,12 +377,26 @@ impl<F: Field> WitnessLayout<F> {
 		constants: Vec<F>,
 		n_inout: u32,
 		n_precommit: u32,
+		derived_alive: &[bool],
 		private_alive: &[bool],
 	) -> Self {
 		let n_constants = constants.len() as u32;
-		let n_public = n_constants + n_inout;
-		let log_public = log2_ceil_usize(n_public as usize) as u32;
 		let log_precommit = log2_ceil_usize(n_precommit as usize) as u32;
+
+		// Derived wires occupy the public segment after constants and inout. Only derived wires
+		// referenced by a surviving constraint need a slot; intermediates that feed only other
+		// derived wires are computed inline by the generators and get no slot.
+		let derived_index_map = derived_alive
+			.iter()
+			.enumerate()
+			.filter(|(_, alive)| **alive)
+			.enumerate()
+			.map(|(new_idx, (id, _))| (id as u32, new_idx as u32))
+			.collect::<HashMap<_, _>>();
+
+		let n_derived = derived_index_map.len() as u32;
+		let n_public = n_constants + n_inout + n_derived;
+		let log_public = log2_ceil_usize(n_public as usize) as u32;
 
 		let private_index_map = private_alive
 			.iter()
@@ -368,11 +412,13 @@ impl<F: Field> WitnessLayout<F> {
 		Self {
 			constants,
 			n_inout,
+			n_derived,
 			n_precommit,
 			n_private,
 			log_public,
 			log_precommit,
 			log_private,
+			derived_index_map,
 			private_index_map,
 		}
 	}
@@ -417,6 +463,10 @@ impl<F: Field> WitnessLayout<F> {
 		self.n_inout as usize
 	}
 
+	pub fn n_derived(&self) -> usize {
+		self.n_derived as usize
+	}
+
 	pub fn n_precommit(&self) -> usize {
 		self.n_precommit as usize
 	}
@@ -452,6 +502,9 @@ impl<F: Field> WitnessLayout<F> {
 				assert!(wire.id < self.n_inout);
 				Some(WitnessIndex::public(self.constants.len() as u32 + wire.id))
 			}
+			WireKind::Derived => self.derived_index_map.get(&wire.id).map(|&derived_idx| {
+				WitnessIndex::public(self.constants.len() as u32 + self.n_inout + derived_idx)
+			}),
 			WireKind::Precommit => {
 				assert!(wire.id < self.n_precommit);
 				Some(WitnessIndex::precommit(wire.id))

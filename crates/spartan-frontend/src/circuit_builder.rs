@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{array, backtrace::Backtrace, collections::HashMap, mem};
 
@@ -91,6 +92,7 @@ pub enum WireStatus {
 pub struct ConstraintSystemIR<F: Field> {
 	pub(crate) constant_alloc: WireAllocator,
 	pub(crate) public_alloc: WireAllocator,
+	pub(crate) derived_alloc: WireAllocator,
 	pub(crate) precommit_alloc: WireAllocator,
 	pub(crate) private_alloc: WireAllocator,
 	pub(crate) constants: HashMap<F, u32>,
@@ -148,11 +150,27 @@ impl<F: Field> ConstraintSystemIR<F> {
 			.map(|&status| !matches!(status, WireStatus::Pruned))
 			.collect();
 
+		// A derived wire needs a public slot iff it is referenced by a surviving constraint. Scan
+		// the (now fully folded) mul constraints for derived ids; intermediate derived wires that
+		// feed only other derived wires are referenced nowhere and get no slot — the generators
+		// compute them inline and `layout.get` returns `None`.
+		let mut derived_alive = vec![false; self.derived_alloc.n_wires as usize];
+		for MulConstraint { a, b, c } in &self.mul_constraints {
+			for operand in [a, b, c] {
+				for wire in operand.wires() {
+					if wire.kind == WireKind::Derived {
+						derived_alive[wire.id as usize] = true;
+					}
+				}
+			}
+		}
+
 		// Create WitnessLayout
 		let layout = WitnessLayout::sparse(
 			constants.clone(),
 			self.public_alloc.n_wires,
 			self.precommit_alloc.n_wires,
+			&derived_alive,
 			&private_alive,
 		);
 
@@ -213,6 +231,7 @@ impl<F: Field> ConstraintBuilder<F> {
 			ir: ConstraintSystemIR {
 				constant_alloc: WireAllocator::new(WireKind::Constant),
 				public_alloc: WireAllocator::new(WireKind::InOut),
+				derived_alloc: WireAllocator::new(WireKind::Derived),
 				precommit_alloc: WireAllocator::new(WireKind::Precommit),
 				private_alloc: WireAllocator::new(WireKind::Private),
 				constants: HashMap::new(),
@@ -263,6 +282,11 @@ impl<F: Field> CircuitBuilder for ConstraintBuilder<F> {
 	}
 
 	fn add(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire {
+		// If both inputs are public-derivable, the sum is too: allocate a derived wire in the
+		// public segment and emit no constraint. The verifier recomputes it itself.
+		if lhs.kind.is_public() && rhs.kind.is_public() {
+			return self.ir.derived_alloc.alloc();
+		}
 		let out = self.ir.private_alloc.alloc();
 		self.ir.private_wires_status.push(WireStatus::Unknown);
 		self.ir
@@ -272,6 +296,11 @@ impl<F: Field> CircuitBuilder for ConstraintBuilder<F> {
 	}
 
 	fn mul(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire {
+		// If both inputs are public-derivable, the product is too: allocate a derived wire and emit
+		// no multiplication constraint.
+		if lhs.kind.is_public() && rhs.kind.is_public() {
+			return self.ir.derived_alloc.alloc();
+		}
 		let out = self.ir.private_alloc.alloc();
 		self.ir.private_wires_status.push(WireStatus::Unknown);
 		self.ir.mul_constraints.push(MulConstraint {
@@ -284,13 +313,20 @@ impl<F: Field> CircuitBuilder for ConstraintBuilder<F> {
 
 	fn hint<H: Fn([F; IN]) -> [F; OUT], const IN: usize, const OUT: usize>(
 		&mut self,
-		_inputs: [Self::Wire; IN],
+		inputs: [Self::Wire; IN],
 		_f: H,
 	) -> [Self::Wire; OUT] {
+		// A hint over only public-derivable inputs is itself public-derivable. (Hints emit no
+		// constraints regardless; only the allocator choice changes.)
+		let derived = inputs.iter().all(|wire| wire.kind.is_public());
 		array::from_fn(|_| {
-			let wire = self.ir.private_alloc.alloc();
-			self.ir.private_wires_status.push(WireStatus::Unknown);
-			wire
+			if derived {
+				self.ir.derived_alloc.alloc()
+			} else {
+				let wire = self.ir.private_alloc.alloc();
+				self.ir.private_wires_status.push(WireStatus::Unknown);
+				wire
+			}
 		})
 	}
 }
@@ -301,12 +337,22 @@ pub struct WitnessError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WitnessWire<F: Field>(F);
+pub struct WitnessWire<F: Field> {
+	val: F,
+	segment: WitnessSegment,
+}
 
 impl<F: Field> WitnessWire<F> {
 	#[inline]
 	pub fn val(self) -> F {
-		self.0
+		self.val
+	}
+
+	/// Whether this wire's value lives in the public segment, i.e. is public-derivable. Drives the
+	/// derived-vs-private allocation choice, matching [`ConstraintBuilder`].
+	#[inline]
+	fn is_public(self) -> bool {
+		self.segment == WitnessSegment::Public
 	}
 }
 
@@ -317,7 +363,8 @@ impl<F: Field> WitnessWire<F> {
 /// the first constraint violation as an error for debugging.
 #[derive(Debug)]
 pub struct WitnessGenerator<'a, F: Field> {
-	alloc: WireAllocator,
+	derived_alloc: WireAllocator,
+	private_alloc: WireAllocator,
 	public: Vec<F>,
 	precommit: Vec<F>,
 	private: Vec<F>,
@@ -334,7 +381,8 @@ impl<'a, F: Field> WitnessGenerator<'a, F> {
 		let private = zeroed_vec(layout.private_size());
 
 		Self {
-			alloc: WireAllocator::new(WireKind::Private),
+			derived_alloc: WireAllocator::new(WireKind::Derived),
+			private_alloc: WireAllocator::new(WireKind::Private),
 			public,
 			precommit,
 			private,
@@ -343,8 +391,14 @@ impl<'a, F: Field> WitnessGenerator<'a, F> {
 		}
 	}
 
-	fn alloc_value(&mut self, value: F) -> WitnessWire<F> {
-		let wire = self.alloc.alloc();
+	/// Allocates the output wire of an op, choosing the derived or private allocator from the input
+	/// kinds (matching [`ConstraintBuilder`]), and writes its value.
+	fn alloc_op_value(&mut self, all_derivable: bool, value: F) -> WitnessWire<F> {
+		let wire = if all_derivable {
+			self.derived_alloc.alloc()
+		} else {
+			self.private_alloc.alloc()
+		};
 		self.write_value(wire, value)
 	}
 
@@ -356,7 +410,10 @@ impl<'a, F: Field> WitnessGenerator<'a, F> {
 				WitnessSegment::Private => self.private[index.index as usize] = value,
 			}
 		}
-		WitnessWire(value)
+		WitnessWire {
+			val: value,
+			segment: wire.kind.segment(),
+		}
 	}
 
 	pub fn write_inout(&mut self, wire: ConstraintWire, value: F) -> WitnessWire<F> {
@@ -399,21 +456,26 @@ impl<'a, F: Field> CircuitBuilder for WitnessGenerator<'a, F> {
 	}
 
 	fn assert_eq(&mut self, lhs: Self::Wire, rhs: Self::Wire) {
-		if lhs != rhs {
+		if lhs.val() != rhs.val() {
 			self.record_error();
 		}
 	}
 
 	fn constant(&mut self, val: F) -> Self::Wire {
-		WitnessWire(val)
+		WitnessWire {
+			val,
+			segment: WitnessSegment::Public,
+		}
 	}
 
 	fn add(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire {
-		self.alloc_value(lhs.val() + rhs.val())
+		let all_derivable = lhs.is_public() && rhs.is_public();
+		self.alloc_op_value(all_derivable, lhs.val() + rhs.val())
 	}
 
 	fn mul(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire {
-		self.alloc_value(lhs.val() * rhs.val())
+		let all_derivable = lhs.is_public() && rhs.is_public();
+		self.alloc_op_value(all_derivable, lhs.val() * rhs.val())
 	}
 
 	fn hint<H: Fn([F; IN]) -> [F; OUT], const IN: usize, const OUT: usize>(
@@ -421,7 +483,8 @@ impl<'a, F: Field> CircuitBuilder for WitnessGenerator<'a, F> {
 		inputs: [Self::Wire; IN],
 		f: H,
 	) -> [Self::Wire; OUT] {
-		f(inputs.map(WitnessWire::val)).map(|value| self.alloc_value(value))
+		let all_derivable = inputs.iter().all(|wire| wire.is_public());
+		f(inputs.map(WitnessWire::val)).map(|value| self.alloc_op_value(all_derivable, value))
 	}
 }
 

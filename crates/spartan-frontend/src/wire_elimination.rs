@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::mem;
 
@@ -248,11 +249,13 @@ mod tests {
 
 	#[test]
 	fn test_wire_elimination_fibonacci() {
-		// Build constraint system for fibonacci(20)
+		// Build constraint system for fibonacci(20). Inputs are precommit (secret) wires so the
+		// mul chain stays private and exercises wire elimination — all-public inputs would instead
+		// be elided into derived wires, leaving nothing to eliminate.
 		let mut constraint_builder = ConstraintBuilder::new();
-		let x0 = constraint_builder.alloc_inout();
-		let x1 = constraint_builder.alloc_inout();
-		let xn = constraint_builder.alloc_inout();
+		let x0 = constraint_builder.alloc_precommit();
+		let x1 = constraint_builder.alloc_precommit();
+		let xn = constraint_builder.alloc_precommit();
 		let out = fibonacci(&mut constraint_builder, x0, x1, 20);
 		constraint_builder.assert_eq(out, xn);
 		let ir = constraint_builder.build();
@@ -262,9 +265,10 @@ mod tests {
 
 		// Generate witness for optimized constraint system
 		let mut witness_generator = WitnessGenerator::new(&layout);
-		let x0_val = witness_generator.write_inout(x0, B128::ONE);
-		let x1_val = witness_generator.write_inout(x1, B128::MULTIPLICATIVE_GENERATOR);
-		let xn_val = witness_generator.write_inout(xn, B128::MULTIPLICATIVE_GENERATOR.pow(6765));
+		let x0_val = witness_generator.write_precommit(x0, B128::ONE);
+		let x1_val = witness_generator.write_precommit(x1, B128::MULTIPLICATIVE_GENERATOR);
+		let xn_val =
+			witness_generator.write_precommit(xn, B128::MULTIPLICATIVE_GENERATOR.pow(6765));
 		let out_val = fibonacci(&mut witness_generator, x0_val, x1_val, 20);
 		witness_generator.assert_eq(out_val, xn_val);
 		let witness = witness_generator.build().unwrap();
@@ -300,9 +304,12 @@ mod tests {
 
 		let mut constraint_builder = ConstraintBuilder::new();
 
-		// Create 8 input wires and 1 sum wire
-		let inputs: Vec<_> = (0..8).map(|_| constraint_builder.alloc_inout()).collect();
-		let sum_wire = constraint_builder.alloc_inout();
+		// Create 8 input wires and 1 sum wire. Precommit (secret) inputs keep the add chain private
+		// so wire elimination has something to optimize (all-public inputs become derived wires).
+		let inputs: Vec<_> = (0..8)
+			.map(|_| constraint_builder.alloc_precommit())
+			.collect();
+		let sum_wire = constraint_builder.alloc_precommit();
 
 		// Build constraint system
 		let result = chain_adds(&mut constraint_builder, &inputs);
@@ -319,11 +326,11 @@ mod tests {
 		// Generate witness
 		let mut witness_generator = WitnessGenerator::new(&layout);
 		let input_wires: Vec<_> = iter::zip(&inputs, &input_values)
-			.map(|(&wire, &value)| witness_generator.write_inout(wire, value))
+			.map(|(&wire, &value)| witness_generator.write_precommit(wire, value))
 			.collect();
 
 		let result = chain_adds(&mut witness_generator, &input_wires);
-		let sum = witness_generator.write_inout(sum_wire, sum_value);
+		let sum = witness_generator.write_precommit(sum_wire, sum_value);
 		witness_generator.assert_eq(result, sum);
 		let witness = witness_generator.build().unwrap();
 
@@ -361,9 +368,13 @@ mod tests {
 
 		let mut constraint_builder = ConstraintBuilder::new();
 
-		// Create 40 input wires and 1 output wire
-		let inputs: Vec<_> = (0..40).map(|_| constraint_builder.alloc_inout()).collect();
-		let output = constraint_builder.alloc_inout();
+		// Create 40 input wires and 1 output wire. Precommit (secret) inputs keep the add/mul chain
+		// private so wire elimination operates on it; all-public inputs would be elided to derived
+		// wires with no constraints to optimize.
+		let inputs: Vec<_> = (0..40)
+			.map(|_| constraint_builder.alloc_precommit())
+			.collect();
+		let output = constraint_builder.alloc_precommit();
 
 		// Build constraint system
 		let result = chain_add_muls(&mut constraint_builder, &inputs);
@@ -393,11 +404,11 @@ mod tests {
 		// Generate witness
 		let mut witness_generator = WitnessGenerator::new(&layout);
 		let input_wires: Vec<_> = iter::zip(&inputs, &input_values)
-			.map(|(&wire, &value)| witness_generator.write_inout(wire, value))
+			.map(|(&wire, &value)| witness_generator.write_precommit(wire, value))
 			.collect();
 
 		let result = chain_add_muls(&mut witness_generator, &input_wires);
-		let sum = witness_generator.write_inout(output, output_value);
+		let sum = witness_generator.write_precommit(output, output_value);
 		witness_generator.assert_eq(result, sum);
 		let witness = witness_generator.build().unwrap();
 
@@ -487,8 +498,11 @@ mod tests {
 
 		let mut constraint_builder = ConstraintBuilder::new();
 
-		// Create 9 input wires
-		let inputs: Vec<_> = (0..9).map(|_| constraint_builder.alloc_inout()).collect();
+		// Create 9 input wires. Precommit (secret) inputs keep the grouped adds and the mul private
+		// so wire elimination runs (all-public inputs would be elided to derived wires).
+		let inputs: Vec<_> = (0..9)
+			.map(|_| constraint_builder.alloc_precommit())
+			.collect();
 
 		// Build constraint system: assert a * b = c where a, b, c are sums of 3 inputs each
 		let inputs_array: [_; 9] = inputs.clone().try_into().unwrap();
@@ -515,7 +529,7 @@ mod tests {
 		// Generate witness
 		let mut witness_generator = WitnessGenerator::new(&layout);
 		let input_wires: Vec<_> = iter::zip(&inputs, &input_values)
-			.map(|(&wire, &value)| witness_generator.write_inout(wire, value))
+			.map(|(&wire, &value)| witness_generator.write_precommit(wire, value))
 			.collect();
 
 		let input_wires_array: [_; 9] = input_wires.try_into().unwrap();
