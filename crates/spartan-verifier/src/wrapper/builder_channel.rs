@@ -34,7 +34,6 @@ impl<F: Field> CircuitWire<F> for BuilderWire {
 	fn combine<const IN: usize, const OUT: usize>(
 		builder: &mut Self::Builder,
 		wires: [&Self; IN],
-		_f_op: impl Fn([F; IN]) -> [F; OUT],
 		builder_op: impl Fn(&mut Self::Builder, [ConstraintWire; IN]) -> [ConstraintWire; OUT],
 	) -> [Self; OUT] {
 		builder_op(builder, wires.map(|wire| wire.0)).map(Self)
@@ -44,7 +43,6 @@ impl<F: Field> CircuitWire<F> for BuilderWire {
 		builder: &mut Self::Builder,
 		wires: &[&Self],
 		n_out: usize,
-		_f_op: impl FnOnce(&[F]) -> Vec<F>,
 		builder_op: impl FnOnce(&mut Self::Builder, &[ConstraintWire]) -> Vec<ConstraintWire>,
 	) -> Vec<Self> {
 		let inner_wires = wires.iter().map(|wire| wire.0).collect::<Vec<_>>();

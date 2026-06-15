@@ -43,20 +43,21 @@ use super::gadgets;
 /// Backend-specific logic for combining wires under arithmetic operations.
 ///
 /// One method (`combine`, plus its variable-arity sibling `combine_varlen`) suffices for the
-/// arithmetic-trait impls on [`CircuitElem`]. Each impl decides whether to short-circuit constant
-/// inputs into a concrete value or to delegate to its underlying [`CircuitBuilder`].
+/// arithmetic-trait impls on [`CircuitElem`]. Each impl maps its wires through `op` on the
+/// underlying [`CircuitBuilder`], which decides how the operation is recorded or evaluated.
+/// Constant folding happens one level up in [`CircuitElem`], so these methods only ever run on
+/// builder-backed wires.
 pub trait CircuitWire<F: Field>: Sized {
 	type Builder: CircuitBuilder<Field = F>;
 
 	fn constant(builder: &mut Self::Builder, val: F) -> Self {
-		let [ret] = Self::combine(builder, [], |_| [val], |builder, _| [builder.constant(val)]);
+		let [ret] = Self::combine(builder, [], |builder, _| [builder.constant(val)]);
 		ret
 	}
 
 	fn combine<const IN: usize, const OUT: usize>(
 		builder: &mut Self::Builder,
 		wires: [&Self; IN],
-		f_op: impl Fn([F; IN]) -> [F; OUT],
 		op: impl Fn(
 			&mut Self::Builder,
 			[<Self::Builder as CircuitBuilder>::Wire; IN],
@@ -70,13 +71,12 @@ pub trait CircuitWire<F: Field>: Sized {
 	///
 	/// # Contract
 	///
-	/// `f_op` and `op` MUST return a `Vec` of length `n_out` whenever they are called. The impl
-	/// checks this with `debug_assert_eq!`.
+	/// `op` MUST return a `Vec` of length `n_out` whenever it is called. The impl checks this with
+	/// `debug_assert_eq!`.
 	fn combine_varlen(
 		builder: &mut Self::Builder,
 		wires: &[&Self],
 		n_out: usize,
-		f_op: impl FnOnce(&[F]) -> Vec<F>,
 		op: impl FnOnce(
 			&mut Self::Builder,
 			&[<Self::Builder as CircuitBuilder>::Wire],
@@ -157,7 +157,7 @@ where
 				}
 			});
 			let inner_wire_refs = inner_wires.each_ref().map(AsRef::as_ref);
-			W::combine(&mut *builder, inner_wire_refs, f_op, builder_op).map(|wire| Self::Wire {
+			W::combine(&mut *builder, inner_wire_refs, builder_op).map(|wire| Self::Wire {
 				builder: builder_ptr.clone(),
 				wire,
 			})
@@ -217,7 +217,7 @@ where
 				})
 				.collect::<Vec<_>>();
 			let inner_wire_refs = inner_wires.iter().map(AsRef::as_ref).collect::<Vec<_>>();
-			W::combine_varlen(&mut *builder, &inner_wire_refs, n_out, f_op, builder_op)
+			W::combine_varlen(&mut *builder, &inner_wire_refs, n_out, builder_op)
 				.into_iter()
 				.map(|wire| Self::Wire {
 					builder: builder_ptr.clone(),

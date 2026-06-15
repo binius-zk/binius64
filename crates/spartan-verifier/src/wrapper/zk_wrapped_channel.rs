@@ -55,7 +55,6 @@ impl<'a, F: Field> CircuitWire<F> for WrappedWire<'a, F> {
 	fn combine<const IN: usize, const OUT: usize>(
 		builder: &mut Self::Builder,
 		wires: [&Self; IN],
-		_f_op: impl Fn([F; IN]) -> [F; OUT],
 		builder_op: impl Fn(&mut Self::Builder, [PublicWire<F>; IN]) -> [PublicWire<F>; OUT],
 	) -> [Self; OUT] {
 		builder_op(builder, wires.map(|wire| wire.0)).map(Self::new)
@@ -65,7 +64,6 @@ impl<'a, F: Field> CircuitWire<F> for WrappedWire<'a, F> {
 		builder: &mut Self::Builder,
 		wires: &[&Self],
 		n_out: usize,
-		_f_op: impl FnOnce(&[F]) -> Vec<F>,
 		builder_op: impl FnOnce(&mut Self::Builder, &[PublicWire<F>]) -> Vec<PublicWire<F>>,
 	) -> Vec<Self> {
 		let inner_wires = wires.iter().map(|wire| wire.0).collect::<Vec<_>>();
@@ -102,8 +100,8 @@ where
 	/// Allocators for the InOut and Precommit segments. They live here, not on the
 	/// [`InstanceGenerator`], because allocating wires in interaction order is the channel's job;
 	/// the generator just writes a value to a given wire. Allocation order must match the symbolic
-	/// [`IronSpartanBuilderChannel`](super::builder_channel::IronSpartanBuilderChannel) so the wire
-	/// ids align with the outer layout.
+	/// [`IronSpartanBuilderChannel`](super::builder_channel::IronSpartanBuilderChannel) so the
+	/// wire ids align with the outer layout.
 	inout_alloc: WireAllocator,
 	precommit_alloc: WireAllocator,
 	/// Number of outer oracles still to be received on `inner_channel` after inner verification

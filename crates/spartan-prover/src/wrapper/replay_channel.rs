@@ -41,7 +41,6 @@ impl<'a, F: Field> CircuitWire<F> for WitnessGenWire<'a, F> {
 	fn combine<const IN: usize, const OUT: usize>(
 		builder: &mut Self::Builder,
 		wires: [&Self; IN],
-		_f_op: impl Fn([F; IN]) -> [F; OUT],
 		builder_op: impl Fn(&mut Self::Builder, [WitnessWire<F>; IN]) -> [WitnessWire<F>; OUT],
 	) -> [Self; OUT] {
 		builder_op(builder, wires.map(|wire| wire.0)).map(Self::new)
@@ -51,7 +50,6 @@ impl<'a, F: Field> CircuitWire<F> for WitnessGenWire<'a, F> {
 		builder: &mut Self::Builder,
 		wires: &[&Self],
 		n_out: usize,
-		_f_op: impl FnOnce(&[F]) -> Vec<F>,
 		builder_op: impl FnOnce(&mut Self::Builder, &[WitnessWire<F>]) -> Vec<WitnessWire<F>>,
 	) -> Vec<Self> {
 		let inner_wires = wires.iter().map(|wire| wire.0).collect::<Vec<_>>();
@@ -75,8 +73,8 @@ pub struct ReplayChannel<'a, F: Field> {
 	/// Allocators for the InOut and Precommit segments. They live here, not on the
 	/// [`WitnessGenerator`], because allocating wires in interaction order is the channel's job;
 	/// the generator just writes a value to a given wire. Allocation order must match the symbolic
-	/// [`IronSpartanBuilderChannel`](binius_spartan_verifier::wrapper::IronSpartanBuilderChannel) so
-	/// the wire ids align with `layout`.
+	/// [`IronSpartanBuilderChannel`](binius_spartan_verifier::wrapper::IronSpartanBuilderChannel)
+	/// so the wire ids align with `layout`.
 	inout_alloc: WireAllocator,
 	precommit_alloc: WireAllocator,
 	keys: VecIntoIter<F>,
