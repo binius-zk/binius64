@@ -105,7 +105,7 @@ pub trait UnderlierType:
 			Self::BITS,
 			T::BITS
 		);
-		Divisible::<T>::get(*self, i)
+		Divisible::<T>::get(self, i)
 	}
 
 	/// Sets the subvalue in the given position.

@@ -235,8 +235,8 @@ impl Divisible<u128> for M128 {
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, _index: usize) -> u128 {
-		self.into()
+	unsafe fn get_unchecked(&self, _index: usize) -> u128 {
+		(*self).into()
 	}
 
 	#[inline]
@@ -274,7 +274,7 @@ impl Divisible<u64> for M128 {
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, index: usize) -> u64 {
+	unsafe fn get_unchecked(&self, index: usize) -> u64 {
 		unsafe {
 			match index {
 				0 => vgetq_lane_u64(self.0, 0),
@@ -330,9 +330,9 @@ impl Divisible<u32> for M128 {
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, index: usize) -> u32 {
+	unsafe fn get_unchecked(&self, index: usize) -> u32 {
 		unsafe {
-			let v: uint32x4_t = self.into();
+			let v: uint32x4_t = (*self).into();
 			match index {
 				0 => vgetq_lane_u32(v, 0),
 				1 => vgetq_lane_u32(v, 1),
@@ -392,9 +392,9 @@ impl Divisible<u16> for M128 {
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, index: usize) -> u16 {
+	unsafe fn get_unchecked(&self, index: usize) -> u16 {
 		unsafe {
-			let v: uint16x8_t = self.into();
+			let v: uint16x8_t = (*self).into();
 			match index {
 				0 => vgetq_lane_u16(v, 0),
 				1 => vgetq_lane_u16(v, 1),
@@ -462,9 +462,9 @@ impl Divisible<u8> for M128 {
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, index: usize) -> u8 {
+	unsafe fn get_unchecked(&self, index: usize) -> u8 {
 		unsafe {
-			let v: uint8x16_t = self.into();
+			let v: uint8x16_t = (*self).into();
 			match index {
 				0 => vgetq_lane_u8(v, 0),
 				1 => vgetq_lane_u8(v, 1),

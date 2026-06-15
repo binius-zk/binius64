@@ -231,12 +231,12 @@ where
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, index: usize) -> T {
+	unsafe fn get_unchecked(&self, index: usize) -> T {
 		let u_index = index >> <U as Divisible<T>>::LOG_N;
 		let sub_index = index & (<U as Divisible<T>>::N - 1);
 		// Safety: `index < Self::N` by the caller's contract, so `sub_index < <U as
 		// Divisible<T>>::N` and `u_index < N`.
-		unsafe { Divisible::<T>::get_unchecked(*self.0.get_unchecked(u_index), sub_index) }
+		unsafe { Divisible::<T>::get_unchecked(self.0.get_unchecked(u_index), sub_index) }
 	}
 
 	#[inline]

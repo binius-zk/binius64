@@ -441,10 +441,10 @@ where
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, index: usize) -> Scalar {
+	unsafe fn get_unchecked(&self, index: usize) -> Scalar {
 		// Safety: `index < Self::N` by the caller's contract.
 		Scalar::from_underlier(unsafe {
-			Divisible::<Scalar::Underlier>::get_unchecked(self.0, index)
+			Divisible::<Scalar::Underlier>::get_unchecked(&self.0, index)
 		})
 	}
 
