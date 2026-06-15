@@ -291,6 +291,18 @@ impl Ord for M128 {
 	}
 }
 
+impl std::hash::Hash for M128 {
+	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+		u128::from(*self).hash(state);
+	}
+}
+
+impl std::fmt::LowerHex for M128 {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		std::fmt::LowerHex::fmt(&u128::from(*self), f)
+	}
+}
+
 impl Distribution<M128> for StandardUniform {
 	fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> M128 {
 		M128(rng.random())

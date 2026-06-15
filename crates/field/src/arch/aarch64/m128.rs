@@ -79,6 +79,18 @@ impl Ord for M128 {
 	}
 }
 
+impl std::hash::Hash for M128 {
+	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+		u128::from(*self).hash(state);
+	}
+}
+
+impl std::fmt::LowerHex for M128 {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		std::fmt::LowerHex::fmt(&u128::from(*self), f)
+	}
+}
+
 unsafe impl Zeroable for M128 {}
 unsafe impl Pod for M128 {}
 
