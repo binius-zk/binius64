@@ -495,6 +495,15 @@ impl<'a, F: Field> CircuitBuilder for WitnessGenerator<'a, F> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublicWire<F: Field>(Option<F>);
 
+impl<F: Field> PublicWire<F> {
+	/// The wire's value if it is public-derivable (constant, inout, or derived), else `None` for a
+	/// private/precommit wire whose value the verifier does not know.
+	#[inline]
+	pub fn value(self) -> Option<F> {
+		self.0
+	}
+}
+
 /// Reconstructs the public input vector `[constants | inout | derived]` on the verifier side by
 /// re-running the circuit function.
 ///
