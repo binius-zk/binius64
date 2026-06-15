@@ -22,7 +22,10 @@ use binius_iop::{
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_spartan_frontend::{compiler::compile, constraint_system::BlindingInfo};
+use binius_spartan_frontend::{
+	compiler::compile,
+	constraint_system::{BlindingInfo, WitnessLayout},
+};
 use binius_spartan_verifier::{
 	IOPVerifier as IronSpartanIOPVerifier,
 	constraint_system::ConstraintSystemPadded,
@@ -49,6 +52,7 @@ use crate::{
 pub struct ZKVerifier<H: HashSuite> {
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_verifier: IronSpartanIOPVerifier<B128>,
+	outer_layout: WitnessLayout<B128>,
 	basefold_compiler: BaseFoldZKVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>>,
 }
 
@@ -85,7 +89,7 @@ where
 				.expect("symbolic verify should not fail");
 			builder_channel.finish()
 		};
-		let (outer_cs, _) = {
+		let (outer_cs, outer_layout) = {
 			let _guard = tracing::debug_span!("Compile ZK wrapper circuit").entered();
 			compile(outer_builder)
 		};
@@ -105,6 +109,7 @@ where
 			n_dummy_constraints: 2,
 		};
 		let outer_cs = ConstraintSystemPadded::new(outer_cs, blinding_info);
+		let outer_layout = outer_layout.with_blinding(outer_cs.blinding_info().clone());
 		let outer_iop_verifier = IronSpartanIOPVerifier::new(outer_cs);
 
 		// Transcript layout: outer precommit oracle first (committed at wrapper construction),
@@ -129,6 +134,7 @@ where
 		Ok(Self {
 			inner_iop_verifier,
 			outer_iop_verifier,
+			outer_layout,
 			basefold_compiler,
 		})
 	}
@@ -173,7 +179,8 @@ where
 	) -> Result<(), Error> {
 		// Create BaseFoldZK channel and wrap with outer verifier.
 		let channel = self.basefold_compiler.create_channel(transcript);
-		let mut wrapped_channel = ZKWrappedVerifierChannel::new(channel, &self.outer_iop_verifier)?;
+		let mut wrapped_channel =
+			ZKWrappedVerifierChannel::new(channel, &self.outer_iop_verifier, &self.outer_layout)?;
 
 		// Run the inner IOP verification through the wrapped channel.
 		{

@@ -4,9 +4,7 @@
 //! and records the computation as constraints on a [`ConstraintBuilder`].
 
 use std::{
-	array,
-	cell::{Cell, RefCell},
-	iter::repeat_with,
+	cell::RefCell,
 	rc::{Rc, Weak},
 };
 
@@ -22,103 +20,37 @@ use super::circuit_elem::{CircuitElem, CircuitWire};
 
 /// [`CircuitWire`] backend over [`ConstraintBuilder`] — used by [`IronSpartanBuilderChannel`] to
 /// record arithmetic as constraints in a constraint system.
-#[derive(Debug, Clone)]
-pub enum BuilderWire<F> {
-	Constant(F),
-	InOut(Rc<Cell<Option<ConstraintWire>>>),
-	Private(ConstraintWire),
-}
+///
+/// A thin newtype around [`ConstraintWire`]: every operation records itself on the builder, which
+/// decides whether the output is a derived (public-derivable, no constraint) or private wire. The
+/// public-vs-private elision lives in [`ConstraintBuilder`], so this backend needs no tracking of
+/// its own.
+#[derive(Debug, Clone, Copy)]
+pub struct BuilderWire(pub ConstraintWire);
 
-impl<F: Field> BuilderWire<F> {
-	fn lazy_inout() -> Self {
-		Self::InOut(Rc::new(Cell::new(None)))
-	}
-
-	fn materialize(builder: &mut ConstraintBuilder<F>, wire: &Self) -> ConstraintWire {
-		match wire {
-			Self::Constant(val) => builder.constant(*val),
-			Self::InOut(maybe_wire) => {
-				if let Some(wire) = maybe_wire.get() {
-					wire
-				} else {
-					let wire = builder.alloc_inout();
-					maybe_wire.set(Some(wire));
-					wire
-				}
-			}
-			Self::Private(wire) => *wire,
-		}
-	}
-}
-
-impl<F: Field> CircuitWire<F> for BuilderWire<F> {
+impl<F: Field> CircuitWire<F> for BuilderWire {
 	type Builder = ConstraintBuilder<F>;
 
 	fn combine<const IN: usize, const OUT: usize>(
 		builder: &mut Self::Builder,
 		wires: [&Self; IN],
-		f_op: impl Fn([F; IN]) -> [F; OUT],
+		_f_op: impl Fn([F; IN]) -> [F; OUT],
 		builder_op: impl Fn(&mut Self::Builder, [ConstraintWire; IN]) -> [ConstraintWire; OUT],
 	) -> [Self; OUT] {
-		let inner_constants = array_util::try_map(wires, |wire| match wire {
-			Self::Constant(val) => Some(*val),
-			_ => None,
-		});
-
-		if let Some(inner_values) = inner_constants {
-			f_op(inner_values).map(Self::Constant)
-		} else {
-			let is_inout = wires
-				.iter()
-				.all(|wire| matches!(wire, Self::Constant(_) | Self::InOut(_)));
-			if is_inout {
-				array::from_fn(|_| Self::lazy_inout())
-			} else {
-				// If any of the inputs are private wires, then lazily materialize in inout wires
-				// and compute the result within the circuit.
-				let inner_wires = wires.map(|wire| Self::materialize(builder, wire));
-				builder_op(builder, inner_wires).map(Self::Private)
-			}
-		}
+		builder_op(builder, wires.map(|wire| wire.0)).map(Self)
 	}
 
 	fn combine_varlen(
 		builder: &mut Self::Builder,
 		wires: &[&Self],
 		n_out: usize,
-		f_op: impl FnOnce(&[F]) -> Vec<F>,
+		_f_op: impl FnOnce(&[F]) -> Vec<F>,
 		builder_op: impl FnOnce(&mut Self::Builder, &[ConstraintWire]) -> Vec<ConstraintWire>,
 	) -> Vec<Self> {
-		let inner_constants = wires
-			.iter()
-			.map(|wire| match wire {
-				Self::Constant(val) => Some(*val),
-				_ => None,
-			})
-			.collect::<Option<Vec<_>>>();
-
-		if let Some(inner_constants) = inner_constants {
-			let result = f_op(&inner_constants);
-			debug_assert_eq!(result.len(), n_out);
-			result.into_iter().map(Self::Constant).collect()
-		} else {
-			let is_inout = wires
-				.iter()
-				.all(|wire| matches!(wire, Self::Constant(_) | Self::InOut(_)));
-			if is_inout {
-				repeat_with(|| Self::lazy_inout()).take(n_out).collect()
-			} else {
-				// If any of the inputs are private wires, then lazily materialize in inout wires
-				// and compute the result within the circuit.
-				let inner_wires = wires
-					.iter()
-					.map(|wire| Self::materialize(builder, wire))
-					.collect::<Vec<_>>();
-				let result = builder_op(builder, &inner_wires);
-				debug_assert_eq!(result.len(), n_out);
-				result.into_iter().map(Self::Private).collect()
-			}
-		}
+		let inner_wires = wires.iter().map(|wire| wire.0).collect::<Vec<_>>();
+		let result = builder_op(builder, &inner_wires);
+		debug_assert_eq!(result.len(), n_out);
+		result.into_iter().map(Self).collect()
 	}
 }
 
@@ -149,13 +81,14 @@ impl<F: Field> IronSpartanBuilderChannel<F> {
 		}
 	}
 
-	fn alloc_inout_elem(&self) -> CircuitElem<F, BuilderWire<F>> {
-		CircuitElem::wire(&self.builder, BuilderWire::lazy_inout())
+	fn alloc_inout_elem(&self) -> CircuitElem<F, BuilderWire> {
+		let wire = self.builder.borrow_mut().alloc_inout();
+		CircuitElem::wire(&self.builder, BuilderWire(wire))
 	}
 
-	fn alloc_precommit_elem(&self) -> CircuitElem<F, BuilderWire<F>> {
+	fn alloc_precommit_elem(&self) -> CircuitElem<F, BuilderWire> {
 		let wire = self.builder.borrow_mut().alloc_precommit();
-		CircuitElem::wire(&self.builder, BuilderWire::Private(wire))
+		CircuitElem::wire(&self.builder, BuilderWire(wire))
 	}
 
 	/// Consumes the channel and returns the underlying [`ConstraintBuilder`].
@@ -170,7 +103,7 @@ impl<F: Field> IronSpartanBuilderChannel<F> {
 }
 
 impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
-	type Elem = CircuitElem<F, BuilderWire<F>>;
+	type Elem = CircuitElem<F, BuilderWire>;
 
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
 		// For each element that the inner prover sends, the wrapped prover allocates a one-time-pad
@@ -191,28 +124,21 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 
 	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
 		match val {
-			CircuitElem::Constant(c)
-			| CircuitElem::Wire {
-				wire: BuilderWire::Constant(c),
-				..
-			} => {
+			// A compile-time constant is checked here; a non-zero one is an unsatisfiable
+			// assertion.
+			CircuitElem::Constant(c) => {
 				if c == F::ZERO {
 					Ok(())
 				} else {
 					Err(binius_ip::channel::Error::InvalidAssert)
 				}
 			}
-			CircuitElem::Wire {
-				wire: BuilderWire::InOut(_),
-				..
-			} => {
-				// Nothing to do here. The value can be checked directly in
-				// ZKWrappedVerifierChannel.
-				Ok(())
-			}
+			// Record the assertion as a constraint over the wire (whether public-derivable or
+			// private). The outer verifier enforces it; with derived wires there is no need to
+			// special-case public values out of the constraint system.
 			CircuitElem::Wire {
 				builder,
-				wire: BuilderWire::Private(wire),
+				wire: BuilderWire(wire),
 			} => {
 				assert!(Weak::ptr_eq(&Rc::downgrade(&self.builder), &builder));
 				self.builder.borrow_mut().assert_zero(wire);
@@ -223,23 +149,14 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 
 	fn compute_public_value(
 		&mut self,
-		inputs: &[Self::Elem],
-		f: impl FnOnce(&[F]) -> F,
+		_inputs: &[Self::Elem],
+		_f: impl FnOnce(&[F]) -> F,
 	) -> Self::Elem {
-		let input_refs = inputs.iter().collect::<Vec<_>>();
-		let outs = CircuitElem::combine_varlen(
-			&input_refs,
-			1,
-			move |inputs| vec![f(inputs)],
-			|_, _| {
-				// Self::Elem::combine_varlen will only call the builder_op closure if any inputs
-				// are non-public.
-				panic!("compute_public_value: input is not public")
-			},
-		);
-		outs.into_iter()
-			.next()
-			.expect("combine_varlen returns Vec with len = n_out; n_out = 1")
+		// The closure is an arbitrary native computation the constraint system cannot replay, so
+		// its result enters as a single inout wire (a public input the verifier supplies), rather
+		// than a sub-circuit's worth of constraints. The value is filled concretely by the
+		// instance/witness channels; symbolically we only allocate the wire.
+		self.alloc_inout_elem()
 	}
 }
 

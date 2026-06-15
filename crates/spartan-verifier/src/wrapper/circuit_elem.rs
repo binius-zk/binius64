@@ -10,17 +10,18 @@
 //! - [`BuilderWire`](super::builder_channel::BuilderWire) over [`ConstraintBuilder`] — symbolic
 //!   constraint recording (used by
 //!   [`IronSpartanBuilderChannel`](super::builder_channel::IronSpartanBuilderChannel)).
-//! - [`WrappedWire`](super::zk_wrapped_channel::WrappedWire) over
-//!   [`InOutSegmentBuilder`](super::zk_wrapped_channel::InOutSegmentBuilder) — no constraint
-//!   recording; values are tracked as `Constant` / `InOut` / `Private` to distinguish what the
-//!   verifier does and does not know concretely, and lazily pushed to the outer public-input
-//!   segment (used by
+//! - [`WrappedWire`](super::zk_wrapped_channel::WrappedWire) over [`InstanceGenerator`] —
+//!   reconstructs the public-input vector during verification (used by
 //!   [`ZKWrappedVerifierChannel`](super::zk_wrapped_channel::ZKWrappedVerifierChannel)).
 //! - `WitnessGenWire` over [`WitnessGenerator`] — concrete evaluation that fills a witness (used by
 //!   `binius_spartan_prover::wrapper::ReplayChannel`).
 //!
+//! Each backend is a thin newtype over its builder's wire type; the public-vs-private elision lives
+//! in the builders ([`ConstraintBuilder`] derived wires), not in these wrappers.
+//!
 //! [`CircuitBuilder`]: binius_spartan_frontend::circuit_builder::CircuitBuilder
 //! [`ConstraintBuilder`]: binius_spartan_frontend::circuit_builder::ConstraintBuilder
+//! [`InstanceGenerator`]: binius_spartan_frontend::circuit_builder::InstanceGenerator
 //! [`WitnessGenerator`]: binius_spartan_frontend::circuit_builder::WitnessGenerator
 
 use std::{

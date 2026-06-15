@@ -555,6 +555,14 @@ impl<'a, F: Field> InstanceGenerator<'a, F> {
 		PublicWire(Some(value))
 	}
 
+	/// The reconstructed public vector `[constants | inout | derived]` so far, of length
+	/// `1 << layout.log_public()`. Once every inout and alive-derived wire has been written, this
+	/// is the final public vector; reading it by reference (rather than consuming via
+	/// [`Self::build`]) lets callers keep the generator alive for wires that still reference it.
+	pub fn public(&self) -> &[F] {
+		&self.public
+	}
+
 	/// Returns the reconstructed public vector `[constants | inout | derived]`, of length
 	/// `1 << layout.log_public()`, ready to pass to `Verifier::verify`.
 	pub fn build(self) -> Vec<F> {

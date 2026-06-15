@@ -192,7 +192,7 @@ fn test_zk_wrapped_prove_verify() {
 
 	let verifier_channel = zk_basefold_compiler.create_channel(&mut verifier_transcript);
 	let mut wrapped_verifier_channel =
-		ZKWrappedVerifierChannel::new(verifier_channel, &outer_iop_verifier)
+		ZKWrappedVerifierChannel::new(verifier_channel, &outer_iop_verifier, &outer_layout)
 			.expect("ZKWrappedVerifierChannel::new should succeed");
 
 	// Observe public input through the wrapped channel.

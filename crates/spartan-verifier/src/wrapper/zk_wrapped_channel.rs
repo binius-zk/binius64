@@ -3,21 +3,15 @@
 //! ZK-wrapped verifier channel that delegates to a BaseFold ZK channel and an outer IOP verifier.
 //!
 //! [`ZKWrappedVerifierChannel`] wraps a [`BaseFoldZKVerifierChannel`] and an [`IOPVerifier`].
-//! Inner-channel values flow through the wrapper as lazy [`WrappedWire::InOut`] elements; an InOut
-//! is pushed into the outer constraint system's public-input segment only if the inner verifier
-//! forces materialization (the same way [`BuilderWire::InOut`] only allocates an InOut wire when
-//! the symbolic phase forces it). [`finish()`] prepends the outer constants to the materialized
-//! public values, pads to the required public size, and runs the outer verifier against the inner
-//! channel.
+//! Inner-channel values flow through the wrapper as [`WrappedWire`] elements backed by an
+//! [`InstanceGenerator`], which reconstructs the outer constraint system's public-input vector
+//! `[constants | inout | derived]` exactly as the prover's witness generator does — public-derived
+//! intermediate values are recomputed natively rather than tracked by the wrapper. [`finish()`]
+//! hands that public vector to the outer verifier and runs it against the inner channel.
 //!
-//! [`BuilderWire::InOut`]: super::builder_channel::BuilderWire
 //! [`finish()`]: ZKWrappedVerifierChannel::finish
 
-use std::{
-	array,
-	cell::{Cell, RefCell},
-	rc::Rc,
-};
+use std::{cell::RefCell, marker::PhantomData, rc::Rc};
 
 use binius_field::{BinaryField, Field};
 use binius_iop::{
@@ -26,7 +20,10 @@ use binius_iop::{
 	merkle_tree::MerkleTreeScheme,
 };
 use binius_ip::channel::IPVerifierChannel;
-use binius_spartan_frontend::circuit_builder::CircuitBuilder;
+use binius_spartan_frontend::{
+	circuit_builder::{InstanceGenerator, PublicWire, WireAllocator},
+	constraint_system::{WireKind, WitnessLayout},
+};
 use binius_transcript::fiat_shamir::Challenger;
 use binius_utils::DeserializeBytes;
 
@@ -35,184 +32,61 @@ use crate::{
 	wrapper::circuit_elem::{CircuitElem, CircuitWire},
 };
 
-/// [`CircuitWire`] backend used by [`ZKWrappedVerifierChannel`].
+/// [`CircuitWire`] backend over [`InstanceGenerator`] — used by [`ZKWrappedVerifierChannel`] to
+/// reconstruct the outer public-input vector during verification.
 ///
-/// Mirrors the verifier-side [`BuilderWire`](super::builder_channel::BuilderWire) and the
-/// prover-side `WitnessGenWire` (in `binius_spartan_prover::wrapper::replay_channel`):
-///
-/// - `Constant(F)` — known at compile time.
-/// - `InOut { value, is_materialized }` — F is known to the wrapper. Will be pushed to the outer
-///   constraint system's public-input segment if/when the wire is materialized (via the private
-///   `materialize` helper). `is_materialized` is shared via [`Rc`] so all clones of one logical
-///   wire push exactly once.
-/// - `Private` — F is unknown to the wrapper (analog of `BuilderWire::Private`; e.g. the precommit
-///   OTP key, never sent through the inner channel — it lives only in the outer prover's
-///   commitment, accessed by the outer verifier circuit).
-#[derive(Debug, Clone)]
-pub enum WrappedWire<F: Field> {
-	Constant(F),
-	InOut {
-		value: F,
-		is_materialized: Rc<Cell<bool>>,
-	},
-	Private,
-}
+/// A thin newtype around [`PublicWire`]: every operation evaluates on the generator, which fills
+/// the public segment (`constants`/`inout`/`derived`) and leaves private/precommit wires value-less
+/// — the verifier never learns the secrets, and by the soundness invariant no derived value depends
+/// on them. The lifetime ties the wire to the `&WitnessLayout` borrowed by its
+/// [`InstanceGenerator`].
+#[derive(Debug, Clone, Copy)]
+pub struct WrappedWire<'a, F: Field>(PublicWire<F>, PhantomData<&'a ()>);
 
-impl<F: Field> WrappedWire<F> {
-	fn lazy_inout(value: F) -> Self {
-		Self::InOut {
-			value,
-			is_materialized: Rc::new(Cell::new(false)),
-		}
-	}
-
-	/// If `wire` is an unmaterialized [`Self::InOut`], push its value into the
-	/// [`InOutSegmentBuilder`]'s public-values vec and mark it materialized. Otherwise no-op.
-	fn materialize(builder: &mut InOutSegmentBuilder<F>, wire: &Self) {
-		if let Self::InOut {
-			value,
-			is_materialized,
-		} = wire && !is_materialized.get()
-		{
-			builder.next_inout(*value);
-			is_materialized.set(true);
-		}
+impl<'a, F: Field> WrappedWire<'a, F> {
+	fn new(wire: PublicWire<F>) -> Self {
+		Self(wire, PhantomData)
 	}
 }
 
-impl<F: Field> CircuitWire<F> for WrappedWire<F> {
-	type Builder = InOutSegmentBuilder<F>;
+impl<'a, F: Field> CircuitWire<F> for WrappedWire<'a, F> {
+	type Builder = InstanceGenerator<'a, F>;
 
 	fn combine<const IN: usize, const OUT: usize>(
 		builder: &mut Self::Builder,
 		wires: [&Self; IN],
-		f_op: impl Fn([F; IN]) -> [F; OUT],
-		_builder_op: impl Fn(&mut Self::Builder, [(); IN]) -> [(); OUT],
+		_f_op: impl Fn([F; IN]) -> [F; OUT],
+		builder_op: impl Fn(&mut Self::Builder, [PublicWire<F>; IN]) -> [PublicWire<F>; OUT],
 	) -> [Self; OUT] {
-		let inner_values = array_util::try_map(wires, |wire| match wire {
-			Self::Constant(val) => Some(*val),
-			Self::InOut { value, .. } => Some(*value),
-			Self::Private => None,
-		});
-		if let Some(inner_values) = inner_values {
-			let ret_values = f_op(inner_values);
-			let all_constant = wires.iter().all(|w| matches!(w, Self::Constant(_)));
-			if all_constant {
-				ret_values.map(Self::Constant)
-			} else {
-				// Mix of Constant + InOut, no Private: fresh lazy InOut.
-				ret_values.map(Self::lazy_inout)
-			}
-		} else {
-			// Some Private: materialize all InOut inputs (push their F to public_values),
-			// result is Private.
-			for w in &wires {
-				Self::materialize(builder, w);
-			}
-			array::from_fn(|_| Self::Private)
-		}
+		builder_op(builder, wires.map(|wire| wire.0)).map(Self::new)
 	}
 
 	fn combine_varlen(
 		builder: &mut Self::Builder,
 		wires: &[&Self],
 		n_out: usize,
-		f_op: impl FnOnce(&[F]) -> Vec<F>,
-		_builder_op: impl FnOnce(&mut Self::Builder, &[()]) -> Vec<()>,
+		_f_op: impl FnOnce(&[F]) -> Vec<F>,
+		builder_op: impl FnOnce(&mut Self::Builder, &[PublicWire<F>]) -> Vec<PublicWire<F>>,
 	) -> Vec<Self> {
-		let inner_values = wires
-			.iter()
-			.map(|wire| match wire {
-				Self::Constant(val) => Some(*val),
-				Self::InOut { value, .. } => Some(*value),
-				Self::Private => None,
-			})
-			.collect::<Option<Vec<_>>>();
-		if let Some(inner_values) = inner_values {
-			let ret_values = f_op(&inner_values);
-			debug_assert_eq!(ret_values.len(), n_out);
-			let all_constant = wires.iter().all(|w| matches!(w, Self::Constant(_)));
-			if all_constant {
-				ret_values.into_iter().map(Self::Constant).collect()
-			} else {
-				ret_values.into_iter().map(Self::lazy_inout).collect()
-			}
-		} else {
-			for w in wires {
-				Self::materialize(builder, w);
-			}
-			(0..n_out).map(|_| Self::Private).collect()
-		}
-	}
-}
-
-/// [`CircuitBuilder`] backend used by [`ZKWrappedVerifierChannel`]. Has `Wire = ()` because the
-/// wrapper doesn't build a constraint system itself; its sole job is to accumulate the public
-/// values that `WrappedWire::InOut` materialization pushes (in materialization order, which
-/// matches the InOut allocation order in the outer constraint system built symbolically by
-/// [`IronSpartanBuilderChannel`](super::builder_channel::IronSpartanBuilderChannel)).
-///
-/// The `CircuitBuilder` methods (`assert_zero`, `add`, `mul`, `hint`, …) all return `()` and have
-/// no side effects: [`WrappedWire::combine`] never invokes `builder_op` because every value flows
-/// through `f_op` at the F level.
-#[derive(Debug, Default)]
-pub struct InOutSegmentBuilder<F> {
-	public_values: Vec<F>,
-}
-
-impl<F: Field> InOutSegmentBuilder<F> {
-	pub fn with_capacity(cap: usize) -> Self {
-		Self {
-			public_values: Vec::with_capacity(cap),
-		}
-	}
-
-	/// Records a freshly-materialized InOut value. Call order must match the order
-	/// [`BuilderWire::InOut`](super::builder_channel::BuilderWire) materializes in the symbolic
-	/// phase, so the resulting vec aligns 1:1 with the outer CS's InOut segment.
-	pub fn next_inout(&mut self, value: F) {
-		self.public_values.push(value);
-	}
-
-	pub fn into_public_values(self) -> Vec<F> {
-		self.public_values
-	}
-}
-
-impl<F: Field> CircuitBuilder for InOutSegmentBuilder<F> {
-	type Wire = ();
-	type Field = F;
-
-	fn assert_zero(&mut self, _wire: Self::Wire) {}
-
-	fn constant(&mut self, _val: Self::Field) -> Self::Wire {}
-
-	fn add(&mut self, _lhs: Self::Wire, _rhs: Self::Wire) -> Self::Wire {}
-
-	fn mul(&mut self, _lhs: Self::Wire, _rhs: Self::Wire) -> Self::Wire {}
-
-	fn hint<H: Fn([Self::Field; IN]) -> [Self::Field; OUT], const IN: usize, const OUT: usize>(
-		&mut self,
-		_inputs: [Self::Wire; IN],
-		_f: H,
-	) -> [Self::Wire; OUT] {
-		[(); OUT]
+		let inner_wires = wires.iter().map(|wire| wire.0).collect::<Vec<_>>();
+		let result = builder_op(builder, &inner_wires);
+		debug_assert_eq!(result.len(), n_out);
+		result.into_iter().map(Self::new).collect()
 	}
 }
 
 /// A verifier channel that wraps a [`BaseFoldZKVerifierChannel`] and an [`IOPVerifier`].
 ///
-/// `Self::Elem = CircuitElem<F, WrappedWire<F>>`. F values from the inner channel become lazy
-/// [`WrappedWire::InOut`] elements; the wrapper pushes them into `inout_builder`'s public-values
-/// vec only when arithmetic forces materialization (i.e. mixing with a [`WrappedWire::Private`],
-/// which is what `recv_one` arranges via its `inout - key` shape — same trigger as in
-/// [`IronSpartanBuilderChannel::recv_one`](super::builder_channel::IronSpartanBuilderChannel)).
-/// `sample` and `observe_one` return purely lazy InOuts that materialize only if the inner
-/// verifier later combines them with a Private.
+/// `Self::Elem = CircuitElem<F, WrappedWire<F>>`. F values received or sampled from the inner
+/// channel are written into the [`InstanceGenerator`]'s public segment as inout wires (in the same
+/// order the symbolic
+/// [`IronSpartanBuilderChannel`](super::builder_channel::IronSpartanBuilderChannel) allocates
+/// them); arithmetic over public values produces derived public values, and mixing with a precommit
+/// key (as `recv_one` arranges via `inout - key`) yields a value-less private result.
 ///
-/// `transparent` closures supplied via [`OracleLinearRelation`] must depend only on
-/// `Constant` and `InOut` inputs (sampled challenges), never on `Private` ones —
-/// `verify_oracle_relations` panics otherwise.
+/// `transparent` closures supplied via [`OracleLinearRelation`] must depend only on public inputs
+/// (constants and sampled challenges), never on private ones — `verify_oracle_relations` panics
+/// otherwise.
 pub struct ZKWrappedVerifierChannel<'a, F, MTScheme, Challenger_>
 where
 	F: BinaryField,
@@ -222,9 +96,16 @@ where
 	inner_channel: BaseFoldZKVerifierChannel<'a, F, MTScheme, Challenger_>,
 	outer_verifier: &'a IOPVerifier<F>,
 	precommit_oracle: BaseFoldZKOracle,
-	/// Owns the materialized public-values vec and exposes `next_inout(F)` for
-	/// [`WrappedWire::materialize`] to push into.
-	inout_builder: Rc<RefCell<InOutSegmentBuilder<F>>>,
+	/// Reconstructs the outer public-input vector as the channel replays the inner verifier;
+	/// `build()` yields the `[constants | inout | derived]` segment for the outer verify.
+	instance_gen: Rc<RefCell<InstanceGenerator<'a, F>>>,
+	/// Allocators for the InOut and Precommit segments. They live here, not on the
+	/// [`InstanceGenerator`], because allocating wires in interaction order is the channel's job;
+	/// the generator just writes a value to a given wire. Allocation order must match the symbolic
+	/// [`IronSpartanBuilderChannel`](super::builder_channel::IronSpartanBuilderChannel) so the wire
+	/// ids align with the outer layout.
+	inout_alloc: WireAllocator,
+	precommit_alloc: WireAllocator,
 	/// Number of outer oracles still to be received on `inner_channel` after inner verification
 	/// completes (i.e. the outer verifier's non-precommit oracles — private and mask).
 	n_outer_suffix_oracles: usize,
@@ -244,6 +125,9 @@ where
 	/// inner verification completes. `new` receives the outer precommit oracle from the inner
 	/// channel and stores the handle for use in [`Self::finish`].
 	///
+	/// `outer_layout` is the witness layout of the outer constraint system (the same layout the
+	/// prover used); it backs the [`InstanceGenerator`] that reconstructs the public-input vector.
+	///
 	/// # Panics
 	///
 	/// Panics if the channel's oracle specs do not match the expected layout
@@ -251,6 +135,7 @@ where
 	pub fn new(
 		mut inner_channel: BaseFoldZKVerifierChannel<'a, F, MTScheme, Challenger_>,
 		outer_verifier: &'a IOPVerifier<F>,
+		outer_layout: &'a WitnessLayout<F>,
 	) -> Result<Self, Error> {
 		let outer_oracle_specs = outer_verifier.oracle_specs();
 		let channel_oracle_specs = inner_channel.remaining_oracle_specs();
@@ -274,107 +159,103 @@ where
 
 		let precommit_oracle = inner_channel.recv_oracle()?;
 
-		let outer_public_size = 1 << outer_verifier.constraint_system().log_public();
 		Ok(Self {
 			inner_channel,
 			outer_verifier,
 			precommit_oracle,
-			inout_builder: Rc::new(RefCell::new(InOutSegmentBuilder::with_capacity(
-				outer_public_size,
-			))),
+			instance_gen: Rc::new(RefCell::new(InstanceGenerator::new(outer_layout))),
+			inout_alloc: WireAllocator::new(WireKind::InOut),
+			precommit_alloc: WireAllocator::new(WireKind::Precommit),
 			n_outer_suffix_oracles: suffix_len,
 		})
 	}
 
+	/// Allocates the next inout wire, writing `value` into the public segment, and wraps it as an
+	/// element. Allocation order must match the symbolic
+	/// [`IronSpartanBuilderChannel`](super::builder_channel::IronSpartanBuilderChannel).
+	fn alloc_inout_elem(&mut self, value: F) -> CircuitElem<F, WrappedWire<'a, F>> {
+		let wire = self.inout_alloc.alloc();
+		let public_wire = self.instance_gen.borrow_mut().write_inout(wire, value);
+		CircuitElem::wire(&self.instance_gen, WrappedWire::new(public_wire))
+	}
+
+	/// Allocates the next precommit wire (value-less to the verifier) as an element.
+	fn alloc_precommit_elem(&mut self) -> CircuitElem<F, WrappedWire<'a, F>> {
+		let wire = self.precommit_alloc.alloc();
+		let public_wire = self.instance_gen.borrow_mut().placeholder_precommit(wire);
+		CircuitElem::wire(&self.instance_gen, WrappedWire::new(public_wire))
+	}
+
 	/// Consumes the channel and runs the outer verifier.
 	///
-	/// Prepends the outer constraint system's constants to the materialized public values, pads to
-	/// the required public size, and runs [`IOPVerifier::verify`] against the inner channel.
+	/// Reads the outer public-input vector `[constants | inout | derived]` from the
+	/// [`InstanceGenerator`] and runs [`IOPVerifier::verify`] against the inner channel.
 	pub fn finish(self) -> Result<(), Error> {
-		let outer_cs = self.outer_verifier.constraint_system();
-		let public_size = 1 << outer_cs.log_public();
-
-		// Read the materialized public values by borrow rather than consuming the shared builder:
-		// the queued oracle relations (whose opening is deferred to `inner_channel.finish`) still
-		// hold references to it. The transparent closures never materialize new public values
-		// (their results are required to be non-`Private`), so the public segment is already
-		// final here.
-		let mut public = outer_cs.constants().to_vec();
-		public.extend(self.inout_builder.borrow().public_values.iter().copied());
-		public.resize(public_size, F::ZERO);
+		// The instance generator produced every public value (inout + alive-derived) as the inner
+		// verifier ran, so the public segment is already final here — read it by borrow. We must
+		// NOT consume the generator: the oracle relations queued onto `inner_channel` carry
+		// transparent closures that still hold (`Weak`) references to it, and opening them in
+		// `inner_channel.finish()` evaluates those closures. They only allocate dead derived wires
+		// (ids past the layout's count, so `layout.get` returns `None` and nothing is written), so
+		// the public vector read here stays correct.
+		let public = self.instance_gen.borrow().public().to_vec();
 
 		let mut inner_channel = self.inner_channel;
 		self.outer_verifier
 			.verify(self.precommit_oracle, public, &mut inner_channel)?;
 		// Both the inner and outer proofs queued their oracle relations onto `inner_channel`; run
-		// the single combined opening over all committed oracles now.
+		// the single combined opening over all committed oracles now. `instance_gen` stays alive in
+		// `self` for the duration, so the transparent closures' `Weak` upgrades succeed.
 		inner_channel.finish()?;
 		Ok(())
 	}
 }
 
-impl<F, MTScheme, Challenger_> IPVerifierChannel<F>
-	for ZKWrappedVerifierChannel<'_, F, MTScheme, Challenger_>
+impl<'a, F, MTScheme, Challenger_> IPVerifierChannel<F>
+	for ZKWrappedVerifierChannel<'a, F, MTScheme, Challenger_>
 where
 	F: BinaryField,
 	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 	Challenger_: Challenger,
 {
-	type Elem = CircuitElem<F, WrappedWire<F>>;
+	type Elem = CircuitElem<F, WrappedWire<'a, F>>;
 
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
-		// Mirror `IronSpartanBuilderChannel::recv_one`'s shape: `inout - key`. The InOut carries
-		// the encrypted F received from the inner channel; the key is `Private` (the OTP key is
-		// not known to the wrapper). The subtraction triggers materialization of the InOut
-		// (pushing the encrypted F to `public_values`), and the result is `Private` — matching
-		// the symbolic phase's Private result wire.
+		// Mirror `IronSpartanBuilderChannel::recv_one`'s shape: `inout - key`. The inout carries
+		// the encrypted F received from the inner channel (written into the public segment); the
+		// key is a precommit wire whose value the verifier does not know (`PublicWire(None)`).
+		// The subtraction yields a private result, matching the symbolic phase's private result
+		// wire.
 		let val = self.inner_channel.recv_one()?;
-		let inout = CircuitElem::wire(&self.inout_builder, WrappedWire::lazy_inout(val));
-		let key = CircuitElem::wire(&self.inout_builder, WrappedWire::Private);
+		let inout = self.alloc_inout_elem(val);
+		let key = self.alloc_precommit_elem();
 		Ok(inout - key)
 	}
 
 	fn sample(&mut self) -> Self::Elem {
 		let val = self.inner_channel.sample();
-		CircuitElem::wire(&self.inout_builder, WrappedWire::lazy_inout(val))
+		self.alloc_inout_elem(val)
 	}
 
 	fn observe_one(&mut self, val: F) -> Self::Elem {
 		let elem = self.inner_channel.observe_one(val);
-		CircuitElem::wire(&self.inout_builder, WrappedWire::lazy_inout(elem))
+		self.alloc_inout_elem(elem)
 	}
 
 	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
 		match val {
-			CircuitElem::Constant(c)
-			| CircuitElem::Wire {
-				wire: WrappedWire::Constant(c),
-				..
-			} => {
+			// A compile-time constant is checked here; a non-zero one is an unsatisfiable
+			// assertion.
+			CircuitElem::Constant(c) => {
 				if c == F::ZERO {
 					Ok(())
 				} else {
 					Err(binius_ip::channel::Error::InvalidAssert)
 				}
 			}
-			CircuitElem::Wire {
-				wire: WrappedWire::InOut { value, .. },
-				..
-			} => {
-				if value == F::ZERO {
-					Ok(())
-				} else {
-					Err(binius_ip::channel::Error::InvalidAssert)
-				}
-			}
-			CircuitElem::Wire {
-				wire: WrappedWire::Private,
-				..
-			} => {
-				// No-op: the corresponding constraint exists in the outer CS and is checked by
-				// the outer verifier.
-				Ok(())
-			}
+			// No-op for wires: the corresponding constraint was recorded symbolically and is
+			// checked by the outer verifier over the reconstructed public segment.
+			CircuitElem::Wire { .. } => Ok(()),
 		}
 	}
 
@@ -383,20 +264,11 @@ where
 		inputs: &[Self::Elem],
 		f: impl FnOnce(&[F]) -> F,
 	) -> Self::Elem {
-		let input_refs = inputs.iter().collect::<Vec<_>>();
-		let outs = CircuitElem::combine_varlen(
-			&input_refs,
-			1,
-			move |inputs| vec![f(inputs)],
-			|_, _| {
-				// Self::Elem::combine_varlen will only call the builder_op closure if any inputs
-				// are non-public.
-				panic!("compute_public_value: input is not public")
-			},
-		);
-		outs.into_iter()
-			.next()
-			.expect("combine_varlen returns Vec with len = n_out; n_out = 1")
+		// The closure's result enters as a single inout wire (matching the symbolic builder), whose
+		// value the verifier computes natively from the public-derived inputs. See
+		// `IronSpartanBuilderChannel::compute_public_value`.
+		let value = f(&extract_public_values(inputs));
+		self.alloc_inout_elem(value)
 	}
 }
 
@@ -427,67 +299,73 @@ where
 		&mut self,
 		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
 	) -> Result<(), binius_iop::channel::Error> {
-		let oracle_relations = oracle_relations
-			.into_iter()
-			.map(
-				|OracleLinearRelation {
-				     oracle,
-				     transparent,
-				     claim: _,
-				 }| {
-					// For each oracle opening, the prover sends the decrypted evaluation. Push it
-					// to public_values directly (it's a known InOut value the outer verifier
-					// reads) and rebuild the relation for the inner channel.
-					let decrypted_claim = self.inner_channel.recv_one()?;
-					self.inout_builder
-						.borrow_mut()
-						.next_inout(decrypted_claim);
+		let mut inner_relations = Vec::new();
+		for OracleLinearRelation {
+			oracle,
+			transparent,
+			claim,
+		} in oracle_relations
+		{
+			// For each oracle opening, the prover sends the decrypted evaluation. Allocate it as an
+			// inout wire (written into the public segment) and attest `claim == decrypted_claim`,
+			// exactly as the symbolic `IronSpartanBuilderChannel` does. The assertion is a no-op on
+			// values here, but evaluating `claim - decrypted_claim` keeps the instance generator's
+			// wire allocation aligned with the symbolic constraint system. Rebuild the relation
+			// with the decrypted value for the inner channel.
+			let decrypted_value = self.inner_channel.recv_one()?;
+			let decrypted_claim = self.alloc_inout_elem(decrypted_value);
+			self.assert_zero(claim - decrypted_claim)?;
 
-					// Wrap the sumcheck challenge coordinates for the transparent closure (which
-					// expects `CircuitElem`s). The closure can do further arithmetic; results are
-					// required to be value-known (Constant or InOut), never Private.
-					//
-					// HACK: the coordinates are sampled challenges, so they are wrapped as
-					// `Constant`s rather than builder-backed InOut wires. This frees the closure
-					// from holding a reference to `inout_builder`, and is sound only because the
-					// symbolic outer circuit (`IronSpartanBuilderChannel`) never invokes the
-					// transparent closure — it attests only `claim == decrypted_claim`, with the
-					// transparent evaluation performed out of circuit. This F->CircuitElem->F
-					// bridge should eventually be replaced by an F-level transparent evaluator.
-					let eval_fn = move |vals: &[F]| {
-						let wrapped_vals = vals
-							.iter()
-							.map(|val| CircuitElem::Constant(*val))
-							.collect::<Vec<_>>();
+			// Wrap the sumcheck challenge coordinates for the transparent closure (which expects
+			// `CircuitElem`s). The closure can do further arithmetic; results are required to be
+			// value-known (public), never private.
+			//
+			// HACK: the coordinates are sampled challenges, so they are wrapped as `Constant`s
+			// rather than builder-backed wires. This frees the closure from holding a reference to
+			// the instance generator, and is sound only because the symbolic outer circuit
+			// (`IronSpartanBuilderChannel`) never invokes the transparent closure — it attests only
+			// `claim == decrypted_claim`, with the transparent evaluation performed out of circuit.
+			// This F->CircuitElem->F bridge should eventually be replaced by an F-level transparent
+			// evaluator.
+			let eval_fn = move |vals: &[F]| {
+				let wrapped_vals = vals
+					.iter()
+					.map(|val| CircuitElem::Constant(*val))
+					.collect::<Vec<_>>();
 
-						match transparent(&wrapped_vals) {
-							CircuitElem::Constant(val)
-							| CircuitElem::Wire {
-								wire: WrappedWire::Constant(val),
-								..
-							}
-							| CircuitElem::Wire {
-								wire: WrappedWire::InOut { value: val, .. },
-								..
-							} => val,
-							CircuitElem::Wire {
-								wire: WrappedWire::Private,
-								..
-							} => {
-								panic!(
-									"precondition: the transparent polynomial evaluation must depend only on known values (constants or sampled challenges)"
-								);
-							}
-						}
-					};
-					Ok(OracleLinearRelation {
-						oracle,
-						claim: decrypted_claim,
-						transparent: Box::new(eval_fn),
-					})
-				},
-			)
-			.collect::<Result<Vec<_>, binius_iop::channel::Error>>()?;
-		self.inner_channel.verify_oracle_relations(oracle_relations)
+				match transparent(&wrapped_vals) {
+					CircuitElem::Constant(val) => val,
+					CircuitElem::Wire {
+						wire: WrappedWire(public_wire, _),
+						..
+					} => public_wire.value().expect(
+						"precondition: the transparent polynomial evaluation must depend only on known values (constants or sampled challenges)",
+					),
+				}
+			};
+			inner_relations.push(OracleLinearRelation {
+				oracle,
+				claim: decrypted_value,
+				transparent: Box::new(eval_fn),
+			});
+		}
+		self.inner_channel.verify_oracle_relations(inner_relations)
 	}
+}
+
+/// Extracts the concrete field value of each public-derived input. Panics if any input is not
+/// public (value-less), enforcing the [`IPVerifierChannel::compute_public_value`] contract.
+fn extract_public_values<F: Field>(inputs: &[CircuitElem<F, WrappedWire<'_, F>>]) -> Vec<F> {
+	inputs
+		.iter()
+		.map(|elem| match elem {
+			CircuitElem::Constant(c) => *c,
+			CircuitElem::Wire {
+				wire: WrappedWire(public_wire, _),
+				..
+			} => public_wire
+				.value()
+				.expect("compute_public_value: input is not public"),
+		})
+		.collect()
 }
