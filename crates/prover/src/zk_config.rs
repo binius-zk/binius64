@@ -10,9 +10,7 @@ use binius_core::{
 	constraint_system::{ConstraintSystem, ValueVec},
 	word::Word,
 };
-use binius_field::{
-	BinaryField128bGhash as B128, PackedExtension, PackedField, UnderlierType, WithUnderlier,
-};
+use binius_field::{BinaryField128bGhash as B128, PackedExtension, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::basefold_compiler::BaseFoldZKProverCompiler;
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded};
@@ -57,8 +55,7 @@ impl<P, H> ZKProver<P, H>
 where
 	P: PackedField<Scalar = B128>
 		+ PackedExtension<B128>
-		+ PackedExtension<binius_verifier::config::B1>
-		+ WithUnderlier<Underlier: UnderlierType>,
+		+ PackedExtension<binius_verifier::config::B1>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {
@@ -230,8 +227,7 @@ impl<P, H> SerializeBytes for ZKProver<P, H>
 where
 	P: PackedField<Scalar = B128>
 		+ PackedExtension<B128>
-		+ PackedExtension<binius_verifier::config::B1>
-		+ WithUnderlier<Underlier: UnderlierType>,
+		+ PackedExtension<binius_verifier::config::B1>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
@@ -254,8 +250,7 @@ impl<P, H> DeserializeBytes for ZKProver<P, H>
 where
 	P: PackedField<Scalar = B128>
 		+ PackedExtension<B128>
-		+ PackedExtension<binius_verifier::config::B1>
-		+ WithUnderlier<Underlier: UnderlierType>,
+		+ PackedExtension<binius_verifier::config::B1>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {

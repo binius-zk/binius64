@@ -18,7 +18,7 @@ use binius_utils::{
 use bytemuck::Zeroable;
 
 use super::{PackedExtension, Random, arithmetic_traits::Square};
-use crate::{BinaryField, Divisible, Field, WideMul, field::FieldOps};
+use crate::{BinaryField, Divisible, Field, Maskable, WideMul, field::FieldOps};
 
 /// A packed field represents a vector of underlying field elements.
 ///
@@ -49,6 +49,8 @@ pub trait PackedField:
 	// their `_unchecked` variants), broadcast, and the scalar iterators are all provided by this
 	// supertrait.
 	+ Divisible<Self::Scalar>
+	// A packed field supports branchless per-lane masking over its scalars.
+	+ Maskable<Self::Scalar>
 {
 	/// Base-2 logarithm of the number of field elements packed into one packed element.
 	///

@@ -7,7 +7,7 @@ use binius_core::{
 };
 use binius_field::{
 	AESTowerField8b as B8, BinaryField, ExtensionField, PackedAESBinaryField16x8b, PackedExtension,
-	PackedField, UnderlierType, WithUnderlier,
+	PackedField,
 };
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{
@@ -96,10 +96,7 @@ impl IOPProver {
 	/// For most users, [`Prover::prove`] is the simpler interface.
 	pub fn prove<P, Channel>(&self, witness: ValueVec, mut channel: Channel) -> Result<(), Error>
 	where
-		P: PackedField<Scalar = B128>
-			+ PackedExtension<B128>
-			+ PackedExtension<B1>
-			+ WithUnderlier<Underlier: UnderlierType>,
+		P: PackedField<Scalar = B128> + PackedExtension<B128> + PackedExtension<B1>,
 		Channel: IOPProverChannel<P>,
 	{
 		let cs = &self.constraint_system;
@@ -270,10 +267,7 @@ where
 
 impl<P, H> Prover<P, H>
 where
-	P: PackedField<Scalar = B128>
-		+ PackedExtension<B128>
-		+ PackedExtension<B1>
-		+ WithUnderlier<Underlier: UnderlierType>,
+	P: PackedField<Scalar = B128> + PackedExtension<B128> + PackedExtension<B1>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {
