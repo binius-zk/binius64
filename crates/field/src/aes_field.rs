@@ -35,6 +35,12 @@ use crate::{
 //  ...
 binary_field!(pub AESTowerField8b(u8), 0xD0);
 
+impl AESTowerField8b {
+	pub const fn new(value: u8) -> Self {
+		Self(value)
+	}
+}
+
 crate::arithmetic_traits::impl_trivial_wide_mul!(AESTowerField8b);
 
 unsafe impl Pod for AESTowerField8b {}

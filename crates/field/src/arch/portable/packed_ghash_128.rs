@@ -134,7 +134,7 @@ impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
 		// Use the generic nibble-based inversion algorithm
 		let result = nibble_invert_128b(
 			self.get(0),
-			|f| f.to_underlier(), // GHASH uses direct representation (no Montgomery form)
+			|f| f.to_underlier().into(), // GHASH uses direct representation (no Montgomery form)
 			&GHASH_NIBBLE_POW_2_N_TABLE,
 		);
 		Self::set_single(result)
@@ -3559,8 +3559,8 @@ mod tests {
 	proptest! {
 		#[test]
 		fn test_pow_2_2_n(a_val in any::<u128>(), n in 1..4usize) {
-			let a = BinaryField128bGhash::new(a_val);
-			let result = pow_2_2_n(a, n, &|val| val.to_underlier(), &GHASH_NIBBLE_POW_2_N_TABLE);
+			let a = BinaryField128bGhash::from(a_val);
+			let result = pow_2_2_n(a, n, &|val| val.to_underlier().into(), &GHASH_NIBBLE_POW_2_N_TABLE);
 			let mut expected = a;
 			for _ in 0..((1 << (1 << n)) - 1) {
 				expected *= a;
@@ -3574,8 +3574,10 @@ mod tests {
 	#[test]
 	#[ignore]
 	fn generate_ghash_nibble_pow_2_n_table() {
-		let table =
-			generate_nibble_pow_2_n_table(BinaryField128bGhash::new, |field| field.to_underlier());
+		let table = generate_nibble_pow_2_n_table(
+			|v: u128| BinaryField128bGhash::from(v),
+			|field| field.to_underlier().into(),
+		);
 
 		print_nibble_table(&table, "GHASH_NIBBLE_POW_2_N_TABLE");
 	}

@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{
 	arch::x86_64::*,
@@ -23,7 +24,7 @@ use crate::{
 	arch::portable::packed::PackedPrimitiveType,
 	underlier::{
 		Divisible, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, impl_divisible_bitmask,
-		mapget, spread_fallback,
+		impl_divisible_self, mapget, spread_fallback,
 	},
 };
 
@@ -694,6 +695,9 @@ unsafe fn interleave_bits_imm<const BLOCK_LEN: i32>(
 
 // Divisible implementations using SIMD extract/insert intrinsics
 
+// Reflexive divisibility, needed when M128 is itself a field underlier (a width-1 packed field).
+impl_divisible_self!(M128);
+
 impl Divisible<u128> for M128 {
 	const LOG_N: usize = 0;
 
@@ -730,6 +734,48 @@ impl Divisible<u128> for M128 {
 	#[inline]
 	fn from_iter(mut iter: impl Iterator<Item = u128>) -> Self {
 		iter.next().map(Self::from).unwrap_or(Self::ZERO)
+	}
+}
+
+// The reverse of `Divisible<u128> for M128`: a `u128` holds exactly one `M128` (a width-1
+// reinterpret). Needed because `BinaryField128bGhash`'s underlier is `M128` while the portable
+// `PackedBinaryGhash1x128b` packs it in a `u128`.
+impl Divisible<M128> for u128 {
+	const LOG_N: usize = 0;
+
+	#[inline]
+	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = M128> + Send + Clone {
+		std::iter::once(M128::from(value))
+	}
+
+	#[inline]
+	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = M128> + Send + Clone + '_ {
+		std::iter::once(M128::from(*value))
+	}
+
+	#[inline]
+	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = M128> + Send + Clone + '_ {
+		slice.iter().map(|&v| M128::from(v))
+	}
+
+	#[inline]
+	unsafe fn get_unchecked(&self, _index: usize) -> M128 {
+		M128::from(*self)
+	}
+
+	#[inline]
+	unsafe fn set_unchecked(&mut self, _index: usize, val: M128) {
+		*self = u128::from(val);
+	}
+
+	#[inline]
+	fn broadcast(val: M128) -> Self {
+		u128::from(val)
+	}
+
+	#[inline]
+	fn from_iter(mut iter: impl Iterator<Item = M128>) -> Self {
+		iter.next().map(u128::from).unwrap_or(0)
 	}
 }
 

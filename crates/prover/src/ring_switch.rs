@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{iter, ops::Deref};
 
@@ -146,7 +147,7 @@ where
 
 	elems.as_mut().par_iter_mut().for_each(|packed_elem| {
 		*packed_elem = P::from_scalars(packed_elem.into_iter().map(|scalar| {
-			let bytes = scalar.val().to_le_bytes();
+			let bytes = u128::from(scalar.val()).to_le_bytes();
 			bytes
 				.into_iter()
 				.enumerate()
@@ -232,7 +233,7 @@ where
 					{
 						let acc = acc.as_mut();
 						for (j, mat_elem) in mat_scalars.iter().enumerate() {
-							let elem_bytes = mat_elem.val().to_le_bytes();
+							let elem_bytes = u128::from(mat_elem.val()).to_le_bytes();
 							for (i, &byte) in elem_bytes.iter().enumerate() {
 								acc[(i << 3) | j] += lookup[byte as usize & 0x0F];
 								acc[(i << 3) | (1 << 2) | j] += lookup[byte as usize >> 4];

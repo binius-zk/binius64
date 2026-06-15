@@ -82,11 +82,10 @@ macro_rules! binary_field {
 		#[repr(transparent)]
 		$vis struct $name(pub(crate) $typ);
 
+		// NOTE: `new` is intentionally NOT generated here. Each field defines its own `new` so it
+		// can take an ergonomic constructor type independent of the underlier (e.g.
+		// `BinaryField128bGhash::new` takes `u128` even though its underlier is `M128`).
 		impl $name {
-			pub const fn new(value: $typ) -> Self {
-				Self(value)
-			}
-
 			pub const fn val(self) -> $typ {
 				self.0
 			}
@@ -226,8 +225,8 @@ macro_rules! binary_field {
 		}
 
 		impl Field for $name {
-			const ZERO: Self = $name::new(<$typ as $crate::underlier::UnderlierType>::ZERO);
-			const ONE: Self = $name::new(<$typ as $crate::underlier::UnderlierType>::ONE);
+			const ZERO: Self = $name(<$typ as $crate::underlier::UnderlierType>::ZERO);
+			const ONE: Self = $name(<$typ as $crate::underlier::UnderlierType>::ONE);
 			const CHARACTERISTIC: usize = 2;
 			const ORDER_EXPONENT: usize = <$typ as $crate::underlier::UnderlierType>::BITS;
 			const MULTIPLICATIVE_GENERATOR: $name = $name($gen);
@@ -367,7 +366,7 @@ macro_rules! impl_field_extension {
 				if elem.0 >> $subfield_name::N_BITS
 					== <$typ as $crate::underlier::UnderlierType>::ZERO
 				{
-					Ok($subfield_name::new(<$subfield_typ>::num_cast_from(elem.val())))
+					Ok($subfield_name(<$subfield_typ>::num_cast_from(elem.val())))
 				} else {
 					Err(())
 				}
@@ -377,7 +376,7 @@ macro_rules! impl_field_extension {
 		impl From<$subfield_name> for $name {
 			#[inline]
 			fn from(elem: $subfield_name) -> Self {
-				$name::new(<$typ>::from(elem.val()))
+				$name(<$typ>::from(elem.val()))
 			}
 		}
 
@@ -461,7 +460,7 @@ macro_rules! impl_field_extension {
 					i,
 					1 << $log_degree
 				);
-				Self::new(<$typ>::ONE << (i * $subfield_name::N_BITS))
+				Self(<$typ>::ONE << (i * $subfield_name::N_BITS))
 			}
 
 			#[inline]
@@ -482,7 +481,7 @@ macro_rules! impl_field_extension {
 					shift += shift_step;
 				}
 
-				Self::new(value)
+				Self(value)
 			}
 
 			#[inline]
@@ -546,6 +545,10 @@ impl FixedSizeSerializeBytes for BinaryField1b {
 }
 
 impl BinaryField1b {
+	pub const fn new(value: U1) -> Self {
+		Self(value)
+	}
+
 	/// Creates value without checking that it is within valid range (0 or 1)
 	///
 	/// # Safety
@@ -691,7 +694,7 @@ pub(crate) mod tests {
 		assert_eq!(format!("{}", BinaryField1b::from(1)), "0x1");
 		assert_eq!(format!("{}", AESTowerField8b::from(3)), "0x03");
 		assert_eq!(
-			format!("{}", BinaryField128bGhash::from(5)),
+			format!("{}", BinaryField128bGhash::new(5)),
 			"0x00000000000000000000000000000005"
 		);
 	}
@@ -713,7 +716,7 @@ pub(crate) mod tests {
 
 		#[test]
 		fn test_inverse_128b(val in 1u128..) {
-			let x = BinaryField128bGhash::new(val);
+			let x = BinaryField128bGhash::from(val);
 			let x_inverse = x.invert().unwrap();
 			assert_eq!(x * x_inverse, BinaryField128bGhash::ONE);
 		}

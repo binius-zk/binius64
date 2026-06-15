@@ -1,4 +1,5 @@
 // Copyright 2023-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! Generic nibble-based inversion algorithm for 128-bit binary fields.
 //!
@@ -27,7 +28,8 @@ pub(super) fn nibble_invert_128b<F>(
 	nibble_table: &[[[u128; 16]; 32]; 6],
 ) -> F
 where
-	F: Field + WithUnderlier<Underlier = u128> + Square,
+	F: Field + WithUnderlier + Square,
+	F::Underlier: From<u128> + Into<u128>,
 {
 	// Computes value^{2^128-2}
 	// value * value^(2^128 - 2) = value^(2^128-1) = 1 if value != 0
@@ -71,7 +73,8 @@ pub(super) fn pow_2_2_n<F>(
 	nibble_table: &[[[u128; 16]; 32]; 6],
 ) -> F
 where
-	F: Field + WithUnderlier<Underlier = u128> + Square,
+	F: Field + WithUnderlier + Square,
+	F::Underlier: From<u128> + Into<u128>,
 {
 	match n {
 		// value^(2^(2^0)) = value^2
@@ -87,7 +90,7 @@ where
 				})
 				.fold(0, BitXor::bitxor);
 
-			F::from_underlier(result)
+			F::from_underlier(result.into())
 		}
 		_ => value,
 	}
@@ -111,7 +114,7 @@ pub fn generate_nibble_pow_2_n_table<F>(
 	to_u128: impl Fn(F) -> u128,
 ) -> [[[u128; 16]; 32]; 6]
 where
-	F: Field + WithUnderlier<Underlier = u128> + Square,
+	F: Field + WithUnderlier + Square,
 {
 	let mut results = [[[0u128; 16]; 32]; 6];
 

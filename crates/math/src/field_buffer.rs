@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{
 	ops::{Deref, DerefMut, Index, IndexMut},
@@ -981,7 +982,7 @@ mod tests {
 				let mut chunk = chunk_wrapper.get();
 				for i in 0..1 << log_chunk_size {
 					let old_val = chunk.get(i);
-					chunk.set(i, F::new(old_val.val() * 10));
+					chunk.set(i, F::new(u128::from(old_val.val()) * 10));
 				}
 				// chunk_wrapper drops here and writes back changes
 			}
