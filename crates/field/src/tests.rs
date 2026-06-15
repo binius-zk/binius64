@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::iter;
 
@@ -21,8 +22,8 @@ fn test_field_text_debug() {
 	assert_eq!(
 		format!(
 			"{:?}",
-			PackedBinaryGhash1x128b::broadcast(BinaryField128bGhash::new(
-				162259276829213363391578010288127
+			PackedBinaryGhash1x128b::broadcast(BinaryField128bGhash::from(
+				162259276829213363391578010288127u128
 			))
 		),
 		"Packed1x128([0x000007ffffffffffffffffffffffffff])"

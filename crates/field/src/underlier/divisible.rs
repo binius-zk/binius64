@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::mem::size_of;
 
@@ -859,6 +860,9 @@ macro_rules! impl_divisible_self {
 		)+
 	};
 }
+
+#[allow(unused)]
+pub(crate) use impl_divisible_self;
 
 impl_divisible_self!(u8, u16, u32, u64, u128, SmallU<1>, SmallU<2>, SmallU<4>);
 
