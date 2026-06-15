@@ -701,8 +701,8 @@ impl Divisible<u128> for M128 {
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, _index: usize) -> u128 {
-		u128::from(self)
+	unsafe fn get_unchecked(&self, _index: usize) -> u128 {
+		u128::from(*self)
 	}
 
 	#[inline]
@@ -740,7 +740,7 @@ impl Divisible<u64> for M128 {
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, index: usize) -> u64 {
+	unsafe fn get_unchecked(&self, index: usize) -> u64 {
 		unsafe {
 			match index {
 				0 => _mm_extract_epi64(self.0, 0) as u64,
@@ -796,7 +796,7 @@ impl Divisible<u32> for M128 {
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, index: usize) -> u32 {
+	unsafe fn get_unchecked(&self, index: usize) -> u32 {
 		unsafe {
 			match index {
 				0 => _mm_extract_epi32(self.0, 0) as u32,
@@ -856,7 +856,7 @@ impl Divisible<u16> for M128 {
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, index: usize) -> u16 {
+	unsafe fn get_unchecked(&self, index: usize) -> u16 {
 		unsafe {
 			match index {
 				0 => _mm_extract_epi16(self.0, 0) as u16,
@@ -924,7 +924,7 @@ impl Divisible<u8> for M128 {
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, index: usize) -> u8 {
+	unsafe fn get_unchecked(&self, index: usize) -> u8 {
 		unsafe {
 			match index {
 				0 => _mm_extract_epi8(self.0, 0) as u8,

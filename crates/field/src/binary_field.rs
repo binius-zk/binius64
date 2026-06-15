@@ -258,8 +258,8 @@ macro_rules! binary_field {
 			}
 
 			#[inline]
-			unsafe fn get_unchecked(self, _index: usize) -> $name {
-				self
+			unsafe fn get_unchecked(&self, _index: usize) -> $name {
+				*self
 			}
 
 			#[inline]

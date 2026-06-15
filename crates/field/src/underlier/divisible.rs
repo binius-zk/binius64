@@ -19,7 +19,7 @@ use std::mem::size_of;
 /// This abstraction allows code to work with subdivided underliers in a platform-independent way
 /// while maintaining the invariant that the first element always represents the least significant
 /// portion of the value.
-pub trait Divisible<T>: Copy {
+pub trait Divisible<T>: Sized {
 	/// The log2 of the number of `T` elements that fit in `Self`.
 	const LOG_N: usize;
 
@@ -41,7 +41,7 @@ pub trait Divisible<T>: Copy {
 	///
 	/// Panics if `index >= Self::N`.
 	#[inline]
-	fn get(self, index: usize) -> T {
+	fn get(&self, index: usize) -> T {
 		assert!(index < Self::N, "index {index} out of bounds (N = {})", Self::N);
 		// Safety: `index < Self::N` checked above.
 		unsafe { self.get_unchecked(index) }
@@ -64,7 +64,7 @@ pub trait Divisible<T>: Copy {
 	/// # Safety
 	///
 	/// The caller must ensure that `index < Self::N`.
-	unsafe fn get_unchecked(self, index: usize) -> T;
+	unsafe fn get_unchecked(&self, index: usize) -> T;
 
 	/// Set element at index (LSB-first ordering) in place, without bounds checking.
 	///
@@ -323,7 +323,7 @@ pub mod bitmask {
 		let byte_index = index / elems_per_byte;
 		let sub_index = index % elems_per_byte;
 		// Safety: `index < Big::N` over `SmallU<BITS>` implies `byte_index < Big::N` over `u8`.
-		let byte = unsafe { Divisible::<u8>::get_unchecked(value, byte_index) };
+		let byte = unsafe { Divisible::<u8>::get_unchecked(&value, byte_index) };
 		let shift = sub_index * BITS;
 		SmallU::<BITS>::new(byte >> shift)
 	}
@@ -347,7 +347,7 @@ pub mod bitmask {
 		let byte_index = index / elems_per_byte;
 		let sub_index = index % elems_per_byte;
 		// Safety: `index < Big::N` over `SmallU<BITS>` implies `byte_index < Big::N` over `u8`.
-		let byte = unsafe { Divisible::<u8>::get_unchecked(value, byte_index) };
+		let byte = unsafe { Divisible::<u8>::get_unchecked(&value, byte_index) };
 		let shift = sub_index * BITS;
 		let mask = (1u8 << BITS) - 1;
 		let new_byte = (byte & !(mask << shift)) | (val.val() << shift);
@@ -370,10 +370,10 @@ pub mod mapget {
 	#[inline]
 	pub fn value_iter<Big, Small>(value: Big) -> impl ExactSizeIterator<Item = Small> + Send + Clone
 	where
-		Big: Divisible<Small> + Send,
+		Big: Divisible<Small> + Send + Clone,
 		Small: Send,
 	{
-		(0..Big::N).map_skippable(move |i| Divisible::<Small>::get(value, i))
+		(0..Big::N).map_skippable(move |i| Divisible::<Small>::get(&value, i))
 	}
 
 	/// Create a slice iterator by computing global index and using get.
@@ -389,7 +389,7 @@ pub mod mapget {
 		(0..total).map_skippable(move |global_idx| {
 			let elem_idx = global_idx / Big::N;
 			let sub_idx = global_idx % Big::N;
-			Divisible::<Small>::get(slice[elem_idx], sub_idx)
+			Divisible::<Small>::get(&slice[elem_idx], sub_idx)
 		})
 	}
 }
@@ -487,10 +487,10 @@ macro_rules! impl_divisible_memcast {
 				}
 
 				#[inline]
-				unsafe fn get_unchecked(self, index: usize) -> $small {
+				unsafe fn get_unchecked(&self, index: usize) -> $small {
 					const N: usize = size_of::<$big>() / size_of::<$small>();
 					// Safety: the caller guarantees `index < Self::N == N`.
-					unsafe { $crate::underlier::memcast::get::<$big, $small, N>(&self, index) }
+					unsafe { $crate::underlier::memcast::get::<$big, $small, N>(self, index) }
 				}
 
 				#[inline]
@@ -546,9 +546,9 @@ macro_rules! impl_divisible_bitmask {
 				}
 
 				#[inline]
-				unsafe fn get_unchecked(self, index: usize) -> $crate::underlier::SmallU<$bits> {
+				unsafe fn get_unchecked(&self, index: usize) -> $crate::underlier::SmallU<$bits> {
 					let shift = index * $bits;
-					$crate::underlier::SmallU::<$bits>::new(self >> shift)
+					$crate::underlier::SmallU::<$bits>::new(*self >> shift)
 				}
 
 				#[inline]
@@ -616,9 +616,9 @@ macro_rules! impl_divisible_bitmask {
 				}
 
 				#[inline]
-				unsafe fn get_unchecked(self, index: usize) -> $crate::underlier::SmallU<$bits> {
+				unsafe fn get_unchecked(&self, index: usize) -> $crate::underlier::SmallU<$bits> {
 					// Safety: the caller guarantees `index < Self::N`.
-					unsafe { $crate::underlier::bitmask::get::<Self, $bits>(self, index) }
+					unsafe { $crate::underlier::bitmask::get::<Self, $bits>(*self, index) }
 				}
 
 				#[inline]
@@ -686,7 +686,7 @@ impl Divisible<SmallU<1>> for SmallU<2> {
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, index: usize) -> SmallU<1> {
+	unsafe fn get_unchecked(&self, index: usize) -> SmallU<1> {
 		SmallU::<1>::new(self.val() >> index)
 	}
 
@@ -734,7 +734,7 @@ impl Divisible<SmallU<1>> for SmallU<4> {
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, index: usize) -> SmallU<1> {
+	unsafe fn get_unchecked(&self, index: usize) -> SmallU<1> {
 		SmallU::<1>::new(self.val() >> index)
 	}
 
@@ -784,7 +784,7 @@ impl Divisible<SmallU<2>> for SmallU<4> {
 	}
 
 	#[inline]
-	unsafe fn get_unchecked(self, index: usize) -> SmallU<2> {
+	unsafe fn get_unchecked(&self, index: usize) -> SmallU<2> {
 		SmallU::<2>::new(self.val() >> (index * 2))
 	}
 
@@ -837,8 +837,8 @@ macro_rules! impl_divisible_self {
 				}
 
 				#[inline]
-				unsafe fn get_unchecked(self, _index: usize) -> $ty {
-					self
+				unsafe fn get_unchecked(&self, _index: usize) -> $ty {
+					*self
 				}
 
 				#[inline]
@@ -872,8 +872,8 @@ mod tests {
 		let val: u8 = 0x34;
 
 		// Test get - LSB first: nibbles
-		assert_eq!(Divisible::<U4>::get(val, 0), U4::new(0x4));
-		assert_eq!(Divisible::<U4>::get(val, 1), U4::new(0x3));
+		assert_eq!(Divisible::<U4>::get(&val, 0), U4::new(0x4));
+		assert_eq!(Divisible::<U4>::get(&val, 1), U4::new(0x3));
 
 		// Test set
 		let mut modified = val;
@@ -910,10 +910,10 @@ mod tests {
 		let val: u16 = 0x1234;
 
 		// Test get - LSB first: nibbles
-		assert_eq!(Divisible::<U4>::get(val, 0), U4::new(0x4));
-		assert_eq!(Divisible::<U4>::get(val, 1), U4::new(0x3));
-		assert_eq!(Divisible::<U4>::get(val, 2), U4::new(0x2));
-		assert_eq!(Divisible::<U4>::get(val, 3), U4::new(0x1));
+		assert_eq!(Divisible::<U4>::get(&val, 0), U4::new(0x4));
+		assert_eq!(Divisible::<U4>::get(&val, 1), U4::new(0x3));
+		assert_eq!(Divisible::<U4>::get(&val, 2), U4::new(0x2));
+		assert_eq!(Divisible::<U4>::get(&val, 3), U4::new(0x1));
 
 		// Test set
 		let mut modified = val;
@@ -933,9 +933,9 @@ mod tests {
 		let val: u16 = 0b1011001011010011;
 
 		// Test get - LSB first: 2-bit chunks
-		assert_eq!(Divisible::<U2>::get(val, 0), U2::new(0b11)); // bits 0-1
-		assert_eq!(Divisible::<U2>::get(val, 1), U2::new(0b00)); // bits 2-3
-		assert_eq!(Divisible::<U2>::get(val, 7), U2::new(0b10)); // bits 14-15
+		assert_eq!(Divisible::<U2>::get(&val, 0), U2::new(0b11)); // bits 0-1
+		assert_eq!(Divisible::<U2>::get(&val, 1), U2::new(0b00)); // bits 2-3
+		assert_eq!(Divisible::<U2>::get(&val, 7), U2::new(0b10)); // bits 14-15
 
 		// Test ref_iter
 		let parts: Vec<U2> = Divisible::<U2>::ref_iter(&val).collect();
@@ -950,9 +950,9 @@ mod tests {
 		let val: u16 = 0b1010110000110101;
 
 		// Test get - LSB first: individual bits
-		assert_eq!(Divisible::<U1>::get(val, 0), U1::new(1)); // bit 0
-		assert_eq!(Divisible::<U1>::get(val, 1), U1::new(0)); // bit 1
-		assert_eq!(Divisible::<U1>::get(val, 15), U1::new(1)); // bit 15
+		assert_eq!(Divisible::<U1>::get(&val, 0), U1::new(1)); // bit 0
+		assert_eq!(Divisible::<U1>::get(&val, 1), U1::new(0)); // bit 1
+		assert_eq!(Divisible::<U1>::get(&val, 15), U1::new(1)); // bit 15
 
 		// Test set
 		let mut modified = val;
@@ -971,9 +971,9 @@ mod tests {
 		let val: u64 = 0x123456789ABCDEF0;
 
 		// Test get - LSB first: nibbles
-		assert_eq!(Divisible::<U4>::get(val, 0), U4::new(0x0));
-		assert_eq!(Divisible::<U4>::get(val, 1), U4::new(0xF));
-		assert_eq!(Divisible::<U4>::get(val, 15), U4::new(0x1));
+		assert_eq!(Divisible::<U4>::get(&val, 0), U4::new(0x0));
+		assert_eq!(Divisible::<U4>::get(&val, 1), U4::new(0xF));
+		assert_eq!(Divisible::<U4>::get(&val, 15), U4::new(0x1));
 
 		// Test ref_iter
 		let parts: Vec<U4> = Divisible::<U4>::ref_iter(&val).collect();
