@@ -212,8 +212,7 @@ where
 
 	let n_vars = witness.log_len();
 	assert_eq!(eval_point.len(), n_vars);
-	// The FRI folder has `max_log_batch_size` inner (unbatch) rounds, `log_n_oracles` outer
-	// (oracle-combine) rounds, and `𝐧` standard fold rounds.
+	// n_vars = D (rs_code.log_dim()), inner_challenges.len() = max_inner_challenges, outer = log_n.
 	assert_eq!(n_vars + inner_challenges.len() + outer_challenges.len(), fri_folder.n_rounds());
 
 	// Inner (unbatch) rounds: fold every interleaved (π_i ‖ ω_i) codeword at the masking

@@ -249,8 +249,9 @@ where
 		.map(|(i, (&alpha_i, &n_i))| eq_tensor[i] * alpha_i * eq_ind_zero(&point[n_i..]))
 		.sum::<F>();
 
-	// The single ZK mask-fold round contributes γ as the only inner challenge; with no ZK oracle
-	// there is no inner round.
+	// The ZK mask-fold round contributes γ as the only inner challenge; with no ZK oracle there is
+	// no inner round. Non-ZK oracles have log_batch_size = 0 (no FRI interleaving batch), so no
+	// additional inner challenges are needed for them.
 	let inner_challenges: Vec<F> = gamma.into_iter().collect();
 
 	let basefold::ReducedOutput {

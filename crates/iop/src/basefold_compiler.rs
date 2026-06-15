@@ -205,20 +205,26 @@ where
 
 		// The single combined FRI parameters over all oracles. `optimal_for_batch` chooses the fold
 		// arities to minimize proof size, so `_arity_strategy` is not consulted here.
+		let n_zk = oracle_specs.iter().filter(|s| s.is_zk).count();
 		let partial_specs: Vec<PartialOracleSpec> = oracle_specs
 			.iter()
 			.map(|spec| {
 				if spec.is_zk {
+					// ZK oracles commit [π ‖ ω] at batch 1; they grab the shared γ mask challenge
+					// at inner[0], so skip = 0.
 					PartialOracleSpec {
 						log_msg_len: spec.log_msg_len + 1,
 						log_batch_size: Some(1),
 						skip_batch_challenges: 0,
 					}
 				} else {
+					// Non-ZK oracles commit unmasked with no interleaved batch (batch = 1). When
+					// any ZK oracle is present they skip the leading γ slot (skip = 1).
+					// Flexible non-ZK batch-size optimization is a follow-up.
 					PartialOracleSpec {
 						log_msg_len: spec.log_msg_len,
-						log_batch_size: None,
-						skip_batch_challenges: 0,
+						log_batch_size: Some(0),
+						skip_batch_challenges: usize::from(n_zk > 0),
 					}
 				}
 			})

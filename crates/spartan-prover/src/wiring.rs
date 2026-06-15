@@ -459,6 +459,7 @@ mod tests {
 
 		let oracle_specs = vec![OracleSpec {
 			log_msg_len: log_private,
+			is_zk: false,
 		}];
 
 		// === PROVER SIDE ===

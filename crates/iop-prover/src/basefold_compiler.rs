@@ -201,6 +201,7 @@ where
 		// The single combined FRI parameters over all oracles. A ZK oracle commits its message
 		// interleaved with an equal-length mask (`log_msg_len + 1`, fixed `log_batch_size = 1`); a
 		// non-ZK oracle commits unmasked at its raw length with a flexible batch size.
+		let n_zk = oracle_specs.iter().filter(|s| s.is_zk).count();
 		let partial_specs: Vec<PartialOracleSpec> = oracle_specs
 			.iter()
 			.map(|spec| {
@@ -211,10 +212,12 @@ where
 						skip_batch_challenges: 0,
 					}
 				} else {
+					// Non-ZK oracles: no interleaved batch (batch = 1). When ZK is present skip
+					// the leading γ slot. Flexible non-ZK batch optimization is a follow-up.
 					PartialOracleSpec {
 						log_msg_len: spec.log_msg_len,
-						log_batch_size: None,
-						skip_batch_challenges: 0,
+						log_batch_size: Some(0),
+						skip_batch_challenges: usize::from(n_zk > 0),
 					}
 				}
 			})

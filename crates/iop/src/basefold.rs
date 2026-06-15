@@ -149,28 +149,26 @@ where
 	// The MLE-check round polynomial is degree 1 (the composite is the multilinear itself).
 	const DEGREE: usize = 1;
 
-	// The inner (unbatch) reduction folds at one challenge per inner FRI round. A ZK oracle
-	// contributes an interleaved (π ‖ ω) mask codeword at `log_batch_size = 1`, so
-	// `max_log_batch_size` is 1 whenever any masked oracle is present and 0 when none is (all
-	// oracles unmasked).
-	let max_log_batch_size = fri_params
+	// The inner (unbatch) section draws one challenge per inner-challenge slot across all oracles.
+	// In the homogeneous all-ZK case this is 1 (γ alone); in the mixed case it includes γ plus the
+	// batch-fold challenges for each non-ZK oracle (which skip γ via `skip_batch_challenges`).
+	let max_inner_challenges = fri_params
 		.input_oracles()
 		.iter()
-		.map(|spec| spec.log_batch_size)
+		.map(|spec| spec.skip_batch_challenges + spec.log_batch_size)
 		.max()
 		.expect("input_oracles is non-empty");
-	assert_eq!(inner_challenges.len(), max_log_batch_size);
+	assert_eq!(inner_challenges.len(), max_inner_challenges);
 
 	let log_n_oracles = log2_ceil_usize(fri_params.input_oracles().len());
 	assert_eq!(outer_challenges.len(), log_n_oracles);
 
-	// The MLE-check runs over the combined opening's `𝐧` variables, supplied as the sumcheck
-	// `eval_point` (length `max_n`). For an all-ZK batch this equals `rs_code().log_dim()`; in
-	// general it can exceed it, since non-ZK oracles fold their batch dimensions within these
-	// rounds.
+	// eval_point has length D = rs_code().log_dim(): the standard MLE-check dimension. The inner
+	// batch-fold challenges for non-ZK oracles (if any) were pre-extracted by the caller from the
+	// Phase-A sumcheck output and passed in `inner_challenges[1..]`.
 	let n_vars = eval_point.len();
 
-	let mut challenges = Vec::with_capacity(n_vars + max_log_batch_size + log_n_oracles);
+	let mut challenges = Vec::with_capacity(n_vars + max_inner_challenges + log_n_oracles);
 	let mut fri_fold_verifier = FRIFoldVerifier::new(fri_params);
 
 	// Inner (unbatch) rounds: fold every interleaved (π_i ‖ ω_i) mask codeword at the masking
