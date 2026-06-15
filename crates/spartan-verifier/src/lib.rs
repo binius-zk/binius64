@@ -117,15 +117,9 @@ impl<F: Field> IOPVerifier<F> {
 		let log_mask_dim = m_n + m_d;
 
 		vec![
-			OracleSpec {
-				log_msg_len: cs.log_precommit() as usize,
-			},
-			OracleSpec {
-				log_msg_len: cs.log_private() as usize,
-			},
-			OracleSpec {
-				log_msg_len: log_mask_dim,
-			},
+			OracleSpec::new_zk(cs.log_precommit() as usize),
+			OracleSpec::new_zk(cs.log_private() as usize),
+			OracleSpec::new_zk(log_mask_dim),
 		]
 	}
 

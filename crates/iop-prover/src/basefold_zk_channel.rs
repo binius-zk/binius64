@@ -514,9 +514,7 @@ mod tests {
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
-		let oracle_specs = vec![OracleSpec {
-			log_msg_len: n_vars,
-		}];
+		let oracle_specs = vec![OracleSpec::new_zk(n_vars)];
 
 		let merkle_prover = make_merkle_prover();
 		let verifier_compiler = BaseFoldZKVerifierCompiler::new(
@@ -585,14 +583,7 @@ mod tests {
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
-		let oracle_specs = vec![
-			OracleSpec {
-				log_msg_len: n_vars_1,
-			},
-			OracleSpec {
-				log_msg_len: n_vars_2,
-			},
-		];
+		let oracle_specs = vec![OracleSpec::new_zk(n_vars_1), OracleSpec::new_zk(n_vars_2)];
 
 		let merkle_prover = make_merkle_prover();
 		let verifier_compiler = BaseFoldZKVerifierCompiler::new(
@@ -671,10 +662,8 @@ mod tests {
 			.collect();
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
-		let oracle_specs: Vec<OracleSpec> = n_vars_list
-			.iter()
-			.map(|&n| OracleSpec { log_msg_len: n })
-			.collect();
+		let oracle_specs: Vec<OracleSpec> =
+			n_vars_list.iter().map(|&n| OracleSpec::new_zk(n)).collect();
 
 		let merkle_prover = make_merkle_prover();
 		let verifier_compiler = BaseFoldZKVerifierCompiler::new(

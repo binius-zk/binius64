@@ -93,9 +93,10 @@ impl IOPVerifier {
 	///
 	/// These describe the oracles (the witness) that the prover commits to.
 	pub fn oracle_specs(&self) -> Vec<OracleSpec> {
-		vec![OracleSpec {
-			log_msg_len: self.log_witness_elems(),
-		}]
+		// Marked ZK so the witness oracle stays masked when wrapped by the ZK config, matching
+		// current behaviour. The non-ZK path (flexible batch, no mask) lands with the conditional
+		// masking in the follow-up commit.
+		vec![OracleSpec::new_zk(self.log_witness_elems())]
 	}
 
 	/// Verifies a proof using an IOP channel.

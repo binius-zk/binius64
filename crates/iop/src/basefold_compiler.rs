@@ -14,7 +14,7 @@ use crate::{
 	basefold_channel::BaseFoldVerifierChannel,
 	basefold_zk_channel::BaseFoldZKVerifierChannel,
 	channel::OracleSpec,
-	fri::{AritySelectionStrategy, FRIParams, PartialOracleSpec},
+	fri::{AritySelectionStrategy, FRIParams},
 	merkle_tree::MerkleTreeScheme,
 	size_tracking_channel::SizeTrackingChannel,
 };
@@ -190,10 +190,11 @@ where
 			"BaseFoldZKVerifierCompiler requires at least one oracle spec"
 		);
 
-		// ZK adds 1 to each message length; compute max code length across all oracles.
+		// ZK oracles add 1 to the message length for the interleaved mask; non-ZK oracles do not.
+		// Compute max code length across all oracles.
 		let max_log_code_len = oracle_specs
 			.iter()
-			.map(|spec| spec.log_msg_len + 1)
+			.map(|spec| spec.log_msg_len + usize::from(spec.is_zk))
 			.max()
 			.expect("oracle_specs is non-empty")
 			+ log_inv_rate;
@@ -201,19 +202,13 @@ where
 		let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 
 		// The single combined FRI parameters over all oracles. `optimal_for_batch` chooses the fold
-		// arities to minimize proof size, so `_arity_strategy` is not consulted here.
-		let partial_specs: Vec<PartialOracleSpec> = oracle_specs
-			.iter()
-			.map(|spec| PartialOracleSpec {
-				log_msg_len: spec.log_msg_len + 1,
-				log_batch_size: Some(1),
-				skip_batch_challenges: 0,
-			})
-			.collect();
+		// arities to minimize proof size, so `_arity_strategy` is not consulted here. It derives
+		// each oracle's batch size from its ZK flag: ZK oracles fix `log_batch_size = 1` (message
+		// ‖ mask), non-ZK oracles take a flexible batch size.
 		let (fri_params, _) = FRIParams::optimal_for_batch(
 			&domain_context,
 			&merkle_scheme,
-			&partial_specs,
+			&oracle_specs,
 			log_inv_rate,
 			n_test_queries,
 		);

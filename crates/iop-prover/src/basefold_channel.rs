@@ -374,14 +374,7 @@ mod tests {
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
-		let oracle_specs = vec![
-			OracleSpec {
-				log_msg_len: n_vars_1,
-			},
-			OracleSpec {
-				log_msg_len: n_vars_2,
-			},
-		];
+		let oracle_specs = vec![OracleSpec::new(n_vars_1), OracleSpec::new(n_vars_2)];
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover_channel = BaseFoldProverChannel::<_, P, _, _, _>::new(
@@ -419,14 +412,7 @@ mod tests {
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
 
-		let oracle_specs = vec![
-			OracleSpec {
-				log_msg_len: n_vars_1,
-			},
-			OracleSpec {
-				log_msg_len: n_vars_2,
-			},
-		];
+		let oracle_specs = vec![OracleSpec::new(n_vars_1), OracleSpec::new(n_vars_2)];
 
 		let prover_transcript = ProverTranscript::<StdChallenger>::new(StdChallenger::default());
 		let mut verifier_transcript = prover_transcript.into_verifier();

@@ -457,9 +457,7 @@ mod tests {
 		let wiring_transpose =
 			WiringTranspose::transpose(WitnessSegment::Private, private_size, &constraints);
 
-		let oracle_specs = vec![OracleSpec {
-			log_msg_len: log_private,
-		}];
+		let oracle_specs = vec![OracleSpec::new_zk(log_private)];
 
 		// === PROVER SIDE ===
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());

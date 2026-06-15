@@ -102,15 +102,15 @@ where
 			"precondition: challenges.len() must equal params.n_fold_rounds()"
 		);
 
-		// Each input oracle's Reed-Solomon dimension must not exceed the first-round (reduced) code
-		// dimension; smaller oracles are lifted (padded) to it. FRIParams only guarantees the
-		// inequality `log_msg_len - log_batch_size <= rs_code.log_dim()`, so assert it here rather
-		// than trusting the caller.
+		// Each input oracle's Reed-Solomon dimension (`log_dim - log_lift`) must not exceed the
+		// first-round (reduced) code dimension; smaller oracles are lifted (padded) to it. This
+		// holds whenever `log_lift <= log_dim`, so assert it here rather than trusting the
+		// caller.
 		let log_dim = params.rs_code().log_dim();
 		let log_inv_rate = params.rs_code().log_inv_rate();
 		for spec in params.input_oracles() {
 			assert!(
-				spec.log_msg_len - spec.log_batch_size <= log_dim,
+				spec.log_lift <= log_dim,
 				"precondition: input oracle dimension must not exceed the reduced code dimension"
 			);
 		}
@@ -132,12 +132,12 @@ where
 		let outer_challenges = challenges[max_inner_challenges..params.log_batch_size()].to_vec();
 		let codeword_sub_oracles = iter::zip(codeword_commitments, params.input_oracles())
 			.map(|(commitment, spec)| {
-				// The oracle's own codeword has dimension `log_msg_len - log_batch_size`, so its
-				// Merkle tree depth is that plus the inverse rate. It is lifted to the common
-				// first-round length (`index_bits`) by duplicating each entry `2^log_lift` times.
-				let oracle_log_dim = spec.log_msg_len - spec.log_batch_size;
+				// The oracle's own codeword has dimension `log_dim - log_lift`, so its Merkle tree
+				// depth is that plus the inverse rate. It is lifted to the common first-round
+				// length (`index_bits`) by duplicating each entry `2^log_lift` times.
+				let oracle_log_dim = log_dim - spec.log_lift;
 				let depth = oracle_log_dim + log_inv_rate;
-				let log_lift = log_dim - oracle_log_dim;
+				let log_lift = spec.log_lift;
 				let inner_start = spec.skip_batch_challenges;
 				BrakedownOracle::new(
 					inner_challenges[inner_start..inner_start + spec.log_batch_size].to_vec(),

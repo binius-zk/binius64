@@ -260,8 +260,7 @@ mod test {
 	};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
-		basefold as verifier_basefold,
-		fri::{ConstantArityStrategy, PartialOracleSpec},
+		basefold as verifier_basefold, channel::OracleSpec, fri::ConstantArityStrategy,
 	};
 	use binius_math::{
 		BinarySubspace, FieldBuffer,
@@ -464,11 +463,7 @@ mod test {
 		let (fri_params, _) = binius_iop::fri::FRIParams::optimal_for_batch(
 			ntt.domain_context(),
 			merkle_prover.scheme(),
-			&[PartialOracleSpec {
-				log_msg_len: n_vars + 1,
-				log_batch_size: Some(1),
-				skip_batch_challenges: 0,
-			}],
+			&[OracleSpec::new_zk(n_vars)],
 			LOG_INV_RATE,
 			32,
 		);

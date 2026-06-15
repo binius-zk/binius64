@@ -35,7 +35,8 @@ pub struct CommitOutput<P: PackedField, VCSCommitment, VCSCommitted> {
 ///
 /// ## Preconditions
 ///
-/// * `message.log_len()` must equal `params.input_oracles()[oracle_index].log_msg_len`.
+/// * `message.log_len()` must equal the oracle's committed message length,
+///   `params.rs_code().log_dim() - log_lift + log_batch_size`.
 pub fn commit_interleaved<F, P, NTT, MerkleProver, VCS>(
 	params: &FRIParams<F>,
 	oracle_index: usize,
@@ -52,11 +53,13 @@ where
 {
 	let oracle_spec = &params.input_oracles()[oracle_index];
 	let log_batch_size = oracle_spec.log_batch_size;
-	let oracle_log_dim = oracle_spec.log_msg_len - log_batch_size;
+	// The oracle's own codeword dimension is the reduced dimension minus its lift; its committed
+	// (interleaved) message length is that plus the batch size.
+	let oracle_log_dim = params.rs_code().log_dim() - oracle_spec.log_lift;
 
 	assert_eq!(
 		message.log_len(),
-		oracle_spec.log_msg_len,
+		oracle_log_dim + log_batch_size,
 		"precondition: interleaved message length must match the oracle's spec"
 	);
 
@@ -135,8 +138,11 @@ where
 {
 	let oracle_spec = &params.input_oracles()[oracle_index];
 	assert_eq!(oracle_spec.log_batch_size, 1, "commit_masked requires log_batch_size == 1");
+	// With batch size 1, the oracle's own codeword dimension (reduced dimension minus its lift) is
+	// exactly the bare message length; the mask is interleaved internally.
+	let oracle_log_dim = params.rs_code().log_dim() - oracle_spec.log_lift;
 	assert_eq!(
-		oracle_spec.log_msg_len - 1,
+		oracle_log_dim,
 		message.log_len(),
 		"commit_masked requires the oracle's message dimension to match the message length"
 	);

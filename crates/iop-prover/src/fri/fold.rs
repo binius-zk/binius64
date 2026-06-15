@@ -91,10 +91,10 @@ where
 	/// ## Preconditions
 	///
 	/// * `committed_codewords.len()` must equal `params.input_oracles().len()`.
-	/// * Each input oracle's dimension (`log_msg_len - log_batch_size`) must be at most
+	/// * Each input oracle's dimension (`rs_code().log_dim() - log_lift`) must be at most
 	///   `params.rs_code().log_dim()`.
 	/// * Each codeword's length must equal its oracle's Reed-Solomon code length plus its batch
-	///   size (`log_msg_len + log_inv_rate`).
+	///   size (`rs_code().log_dim() - log_lift + log_batch_size + log_inv_rate`).
 	pub fn new_batch(
 		params: &'a FRIParams<F>,
 		ntt: &'a NTT,
@@ -108,26 +108,26 @@ where
 			"precondition: committed_codewords.len() must equal params.input_oracles().len()"
 		);
 
-		// Each input oracle's Reed-Solomon dimension must not exceed the first-round (reduced) code
-		// dimension; smaller oracles are lifted (padded) to it. FRIParams only guarantees the
-		// inequality `log_msg_len - log_batch_size <= rs_code.log_dim()`, so assert it here rather
-		// than trusting the caller.
+		// Each input oracle's Reed-Solomon dimension (`log_dim - log_lift`) must not exceed the
+		// first-round (reduced) code dimension; smaller oracles are lifted (padded) to it. This
+		// holds whenever `log_lift <= log_dim`, so assert it here rather than trusting the
+		// caller.
 		let log_dim = params.rs_code().log_dim();
 		let log_inv_rate = params.rs_code().log_inv_rate();
 		for spec in input_oracles {
 			assert!(
-				spec.log_msg_len - spec.log_batch_size <= log_dim,
+				spec.log_lift <= log_dim,
 				"precondition: input oracle dimension must not exceed the reduced code dimension"
 			);
 		}
 
 		let folders = iter::zip(committed_codewords, input_oracles)
 			.map(|((codeword, committed), spec)| {
-				// The oracle's own codeword has dimension `log_msg_len - log_batch_size`, so its
-				// interleaved length is `log_msg_len + log_inv_rate`. It is lifted to the common
-				// first-round length by duplicating each entry `2^log_lift` times.
-				let oracle_log_dim = spec.log_msg_len - spec.log_batch_size;
-				let expected_log_len = spec.log_msg_len + log_inv_rate;
+				// The oracle's own codeword has dimension `log_dim - log_lift`, so its interleaved
+				// length is that plus the batch size plus the inverse rate. It is lifted to the
+				// common first-round length by duplicating each entry `2^log_lift` times.
+				let oracle_log_dim = log_dim - spec.log_lift;
+				let expected_log_len = oracle_log_dim + spec.log_batch_size + log_inv_rate;
 				assert_eq!(
 					codeword.log_len(),
 					expected_log_len,
@@ -137,7 +137,7 @@ where
 				ProxTestFolder {
 					log_batch_size: spec.log_batch_size,
 					skip_batch_challenges: spec.skip_batch_challenges,
-					log_lift: log_dim - oracle_log_dim,
+					log_lift: spec.log_lift,
 					codeword,
 					merkle_committed: committed,
 				}

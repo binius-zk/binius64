@@ -11,7 +11,7 @@ use binius_field::{BinaryField, PackedField};
 use binius_iop::{
 	basefold_compiler::{BaseFoldVerifierCompiler, BaseFoldZKVerifierCompiler},
 	channel::OracleSpec,
-	fri::{FRIParams, PartialOracleSpec},
+	fri::FRIParams,
 	merkle_tree::MerkleTreeScheme,
 };
 use binius_math::ntt::AdditiveNTT;
@@ -198,21 +198,13 @@ where
 			"BaseFoldZKProverCompiler requires at least one oracle spec"
 		);
 
-		// The single combined FRI parameters over all oracles.
-		let partial_specs: Vec<PartialOracleSpec> = oracle_specs
-			.iter()
-			.map(|spec| PartialOracleSpec {
-				// Oracle includes message and equal length mask
-				log_msg_len: spec.log_msg_len + 1,
-				// Batch size is 2 for message and mask
-				log_batch_size: Some(1),
-				skip_batch_challenges: 0,
-			})
-			.collect();
+		// The single combined FRI parameters over all oracles. `optimal_for_batch` derives each
+		// oracle's batch size from its ZK flag: ZK oracles fix `log_batch_size = 1` (message ‖
+		// equal-length mask); non-ZK oracles take a flexible batch size.
 		let (fri_params, _) = FRIParams::optimal_for_batch(
 			ntt.domain_context(),
 			merkle_prover.scheme(),
-			&partial_specs,
+			&oracle_specs,
 			log_inv_rate,
 			n_test_queries,
 		);
