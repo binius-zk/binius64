@@ -11,46 +11,9 @@ use std::{
 use binius_field::Field;
 use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 use binius_ip::channel::IPVerifierChannel;
-use binius_spartan_frontend::{
-	circuit_builder::{CircuitBuilder, ConstraintBuilder},
-	constraint_system::ConstraintWire,
-};
+use binius_spartan_frontend::circuit_builder::{CircuitBuilder, ConstraintBuilder};
 
-use super::circuit_elem::{CircuitElem, CircuitWire};
-
-/// [`CircuitWire`] backend over [`ConstraintBuilder`] — used by [`IronSpartanBuilderChannel`] to
-/// record arithmetic as constraints in a constraint system.
-///
-/// A thin newtype around [`ConstraintWire`]: every operation records itself on the builder, which
-/// decides whether the output is a derived (public-derivable, no constraint) or private wire. The
-/// public-vs-private elision lives in [`ConstraintBuilder`], so this backend needs no tracking of
-/// its own.
-#[derive(Debug, Clone, Copy)]
-pub struct BuilderWire(pub ConstraintWire);
-
-impl<F: Field> CircuitWire<F> for BuilderWire {
-	type Builder = ConstraintBuilder<F>;
-
-	fn combine<const IN: usize, const OUT: usize>(
-		builder: &mut Self::Builder,
-		wires: [&Self; IN],
-		builder_op: impl Fn(&mut Self::Builder, [ConstraintWire; IN]) -> [ConstraintWire; OUT],
-	) -> [Self; OUT] {
-		builder_op(builder, wires.map(|wire| wire.0)).map(Self)
-	}
-
-	fn combine_varlen(
-		builder: &mut Self::Builder,
-		wires: &[&Self],
-		n_out: usize,
-		builder_op: impl FnOnce(&mut Self::Builder, &[ConstraintWire]) -> Vec<ConstraintWire>,
-	) -> Vec<Self> {
-		let inner_wires = wires.iter().map(|wire| wire.0).collect::<Vec<_>>();
-		let result = builder_op(builder, &inner_wires);
-		debug_assert_eq!(result.len(), n_out);
-		result.into_iter().map(Self).collect()
-	}
-}
+use super::circuit_elem::CircuitElem;
 
 /// A channel that symbolically executes a verifier, building up an IronSpartan constraint system.
 ///
@@ -79,14 +42,14 @@ impl<F: Field> IronSpartanBuilderChannel<F> {
 		}
 	}
 
-	fn alloc_inout_elem(&self) -> CircuitElem<F, BuilderWire> {
+	fn alloc_inout_elem(&self) -> CircuitElem<F, ConstraintBuilder<F>> {
 		let wire = self.builder.borrow_mut().alloc_inout();
-		CircuitElem::wire(&self.builder, BuilderWire(wire))
+		CircuitElem::wire(&self.builder, wire)
 	}
 
-	fn alloc_precommit_elem(&self) -> CircuitElem<F, BuilderWire> {
+	fn alloc_precommit_elem(&self) -> CircuitElem<F, ConstraintBuilder<F>> {
 		let wire = self.builder.borrow_mut().alloc_precommit();
-		CircuitElem::wire(&self.builder, BuilderWire(wire))
+		CircuitElem::wire(&self.builder, wire)
 	}
 
 	/// Consumes the channel and returns the underlying [`ConstraintBuilder`].
@@ -101,7 +64,7 @@ impl<F: Field> IronSpartanBuilderChannel<F> {
 }
 
 impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
-	type Elem = CircuitElem<F, BuilderWire>;
+	type Elem = CircuitElem<F, ConstraintBuilder<F>>;
 
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
 		// For each element that the inner prover sends, the wrapped prover allocates a one-time-pad
@@ -134,10 +97,7 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 			// Record the assertion as a constraint over the wire (whether public-derivable or
 			// private). The outer verifier enforces it; with derived wires there is no need to
 			// special-case public values out of the constraint system.
-			CircuitElem::Wire {
-				builder,
-				wire: BuilderWire(wire),
-			} => {
+			CircuitElem::Wire { builder, wire } => {
 				assert!(Weak::ptr_eq(&Rc::downgrade(&self.builder), &builder));
 				self.builder.borrow_mut().assert_zero(wire);
 				Ok(())
