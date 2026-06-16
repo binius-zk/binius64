@@ -3,7 +3,7 @@
 //! ZK-wrapped verifier channel that delegates to a BaseFold ZK channel and an outer IOP verifier.
 //!
 //! [`ZKWrappedVerifierChannel`] wraps a [`BaseFoldZKVerifierChannel`] and an [`IOPVerifier`].
-//! Inner-channel values flow through the wrapper as [`WrappedWire`] elements backed by an
+//! Inner-channel values flow through the wrapper as `CircuitElem`s backed by an
 //! [`InstanceGenerator`], which reconstructs the outer constraint system's public-input vector
 //! `[constants | inout | derived]` exactly as the prover's witness generator does — public-derived
 //! intermediate values are recomputed natively rather than tracked by the wrapper. [`finish()`]
@@ -11,7 +11,7 @@
 //!
 //! [`finish()`]: ZKWrappedVerifierChannel::finish
 
-use std::{cell::RefCell, marker::PhantomData, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 use binius_field::{BinaryField, Field};
 use binius_iop::{
@@ -21,61 +21,17 @@ use binius_iop::{
 };
 use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::{
-	circuit_builder::{InstanceGenerator, PublicWire, WireAllocator},
+	circuit_builder::{InstanceGenerator, WireAllocator},
 	constraint_system::{WireKind, WitnessLayout},
 };
 use binius_transcript::fiat_shamir::Challenger;
 use binius_utils::DeserializeBytes;
 
-use crate::{
-	Error, IOPVerifier,
-	wrapper::circuit_elem::{CircuitElem, CircuitWire},
-};
-
-/// [`CircuitWire`] backend over [`InstanceGenerator`] — used by [`ZKWrappedVerifierChannel`] to
-/// reconstruct the outer public-input vector during verification.
-///
-/// A thin newtype around [`PublicWire`]: every operation evaluates on the generator, which fills
-/// the public segment (`constants`/`inout`/`derived`) and leaves private/precommit wires value-less
-/// — the verifier never learns the secrets, and by the soundness invariant no derived value depends
-/// on them. The lifetime ties the wire to the `&WitnessLayout` borrowed by its
-/// [`InstanceGenerator`].
-#[derive(Debug, Clone, Copy)]
-pub struct WrappedWire<'a, F: Field>(PublicWire<F>, PhantomData<&'a ()>);
-
-impl<'a, F: Field> WrappedWire<'a, F> {
-	fn new(wire: PublicWire<F>) -> Self {
-		Self(wire, PhantomData)
-	}
-}
-
-impl<'a, F: Field> CircuitWire<F> for WrappedWire<'a, F> {
-	type Builder = InstanceGenerator<'a, F>;
-
-	fn combine<const IN: usize, const OUT: usize>(
-		builder: &mut Self::Builder,
-		wires: [&Self; IN],
-		builder_op: impl Fn(&mut Self::Builder, [PublicWire<F>; IN]) -> [PublicWire<F>; OUT],
-	) -> [Self; OUT] {
-		builder_op(builder, wires.map(|wire| wire.0)).map(Self::new)
-	}
-
-	fn combine_varlen(
-		builder: &mut Self::Builder,
-		wires: &[&Self],
-		n_out: usize,
-		builder_op: impl FnOnce(&mut Self::Builder, &[PublicWire<F>]) -> Vec<PublicWire<F>>,
-	) -> Vec<Self> {
-		let inner_wires = wires.iter().map(|wire| wire.0).collect::<Vec<_>>();
-		let result = builder_op(builder, &inner_wires);
-		debug_assert_eq!(result.len(), n_out);
-		result.into_iter().map(Self::new).collect()
-	}
-}
+use crate::{Error, IOPVerifier, wrapper::circuit_elem::CircuitElem};
 
 /// A verifier channel that wraps a [`BaseFoldZKVerifierChannel`] and an [`IOPVerifier`].
 ///
-/// `Self::Elem = CircuitElem<F, WrappedWire<F>>`. F values received or sampled from the inner
+/// `Self::Elem = CircuitElem<F, InstanceGenerator>`. F values received or sampled from the inner
 /// channel are written into the [`InstanceGenerator`]'s public segment as inout wires (in the same
 /// order the symbolic
 /// [`IronSpartanBuilderChannel`](super::builder_channel::IronSpartanBuilderChannel) allocates
@@ -171,17 +127,17 @@ where
 	/// Allocates the next inout wire, writing `value` into the public segment, and wraps it as an
 	/// element. Allocation order must match the symbolic
 	/// [`IronSpartanBuilderChannel`](super::builder_channel::IronSpartanBuilderChannel).
-	fn alloc_inout_elem(&mut self, value: F) -> CircuitElem<F, WrappedWire<'a, F>> {
+	fn alloc_inout_elem(&mut self, value: F) -> CircuitElem<F, InstanceGenerator<'a, F>> {
 		let wire = self.inout_alloc.alloc();
 		let public_wire = self.instance_gen.borrow_mut().write_inout(wire, value);
-		CircuitElem::wire(&self.instance_gen, WrappedWire::new(public_wire))
+		CircuitElem::wire(&self.instance_gen, public_wire)
 	}
 
 	/// Allocates the next precommit wire (value-less to the verifier) as an element.
-	fn alloc_precommit_elem(&mut self) -> CircuitElem<F, WrappedWire<'a, F>> {
+	fn alloc_precommit_elem(&mut self) -> CircuitElem<F, InstanceGenerator<'a, F>> {
 		let wire = self.precommit_alloc.alloc();
 		let public_wire = self.instance_gen.borrow_mut().placeholder_precommit(wire);
-		CircuitElem::wire(&self.instance_gen, WrappedWire::new(public_wire))
+		CircuitElem::wire(&self.instance_gen, public_wire)
 	}
 
 	/// Consumes the channel and runs the outer verifier.
@@ -216,7 +172,7 @@ where
 	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 	Challenger_: Challenger,
 {
-	type Elem = CircuitElem<F, WrappedWire<'a, F>>;
+	type Elem = CircuitElem<F, InstanceGenerator<'a, F>>;
 
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
 		// Mirror `IronSpartanBuilderChannel::recv_one`'s shape: `inout - key`. The inout carries
@@ -333,10 +289,7 @@ where
 
 				match transparent(&wrapped_vals) {
 					CircuitElem::Constant(val) => val,
-					CircuitElem::Wire {
-						wire: WrappedWire(public_wire, _),
-						..
-					} => public_wire.value().expect(
+					CircuitElem::Wire { wire, .. } => wire.value().expect(
 						"precondition: the transparent polynomial evaluation must depend only on known values (constants or sampled challenges)",
 					),
 				}
@@ -353,15 +306,12 @@ where
 
 /// Extracts the concrete field value of each public-derived input. Panics if any input is not
 /// public (value-less), enforcing the [`IPVerifierChannel::compute_public_value`] contract.
-fn extract_public_values<F: Field>(inputs: &[CircuitElem<F, WrappedWire<'_, F>>]) -> Vec<F> {
+fn extract_public_values<F: Field>(inputs: &[CircuitElem<F, InstanceGenerator<'_, F>>]) -> Vec<F> {
 	inputs
 		.iter()
 		.map(|elem| match elem {
 			CircuitElem::Constant(c) => *c,
-			CircuitElem::Wire {
-				wire: WrappedWire(public_wire, _),
-				..
-			} => public_wire
+			CircuitElem::Wire { wire, .. } => wire
 				.value()
 				.expect("compute_public_value: input is not public"),
 		})

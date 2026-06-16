@@ -30,9 +30,9 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::wrapper::{builder_channel::BuilderWire, circuit_elem::CircuitElem};
+	use crate::wrapper::circuit_elem::CircuitElem;
 
-	type BuildElem = CircuitElem<B128, BuilderWire>;
+	type BuildElem = CircuitElem<B128, ConstraintBuilder<B128>>;
 
 	/// Helper to create a private-backed `BuildElem` wire from a ConstraintBuilder Rc for tests.
 	///
@@ -41,7 +41,7 @@ mod tests {
 	/// instead be elided into a derived wire with no constraint.
 	fn alloc_private_wire(rc: &Rc<std::cell::RefCell<ConstraintBuilder<B128>>>) -> BuildElem {
 		let wire = rc.borrow_mut().alloc_precommit();
-		BuildElem::wire(rc, BuilderWire(wire))
+		BuildElem::wire(rc, wire)
 	}
 
 	#[test]

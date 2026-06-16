@@ -5,7 +5,6 @@
 
 use std::{
 	cell::RefCell,
-	marker::PhantomData,
 	rc::{Rc, Weak},
 	vec::IntoIter as VecIntoIter,
 };
@@ -14,50 +13,10 @@ use binius_field::Field;
 use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::{
-	circuit_builder::{CircuitBuilder, WireAllocator, WitnessError, WitnessGenerator, WitnessWire},
+	circuit_builder::{CircuitBuilder, WireAllocator, WitnessError, WitnessGenerator},
 	constraint_system::{WireKind, Witness, WitnessLayout},
 };
-use binius_spartan_verifier::wrapper::circuit_elem::{CircuitElem, CircuitWire};
-
-/// [`CircuitWire`] backend over [`WitnessGenerator`] — used by [`ReplayChannel`] to evaluate
-/// arithmetic concretely while filling the outer witness.
-///
-/// A thin newtype around [`WitnessWire`]: every operation evaluates on the generator, which routes
-/// the result to the public or private segment by the input wires' kinds (matching
-/// [`ConstraintBuilder`](binius_spartan_frontend::circuit_builder::ConstraintBuilder)). The
-/// lifetime ties the wire to the `&WitnessLayout` borrowed by its [`WitnessGenerator`].
-#[derive(Debug, Clone, Copy)]
-pub struct WitnessGenWire<'a, F: Field>(WitnessWire<F>, PhantomData<&'a ()>);
-
-impl<'a, F: Field> WitnessGenWire<'a, F> {
-	pub fn new(wire: WitnessWire<F>) -> Self {
-		Self(wire, PhantomData)
-	}
-}
-
-impl<'a, F: Field> CircuitWire<F> for WitnessGenWire<'a, F> {
-	type Builder = WitnessGenerator<'a, F>;
-
-	fn combine<const IN: usize, const OUT: usize>(
-		builder: &mut Self::Builder,
-		wires: [&Self; IN],
-		builder_op: impl Fn(&mut Self::Builder, [WitnessWire<F>; IN]) -> [WitnessWire<F>; OUT],
-	) -> [Self; OUT] {
-		builder_op(builder, wires.map(|wire| wire.0)).map(Self::new)
-	}
-
-	fn combine_varlen(
-		builder: &mut Self::Builder,
-		wires: &[&Self],
-		n_out: usize,
-		builder_op: impl FnOnce(&mut Self::Builder, &[WitnessWire<F>]) -> Vec<WitnessWire<F>>,
-	) -> Vec<Self> {
-		let inner_wires = wires.iter().map(|wire| wire.0).collect::<Vec<_>>();
-		let result = builder_op(builder, &inner_wires);
-		debug_assert_eq!(result.len(), n_out);
-		result.into_iter().map(Self::new).collect()
-	}
-}
+use binius_spartan_verifier::wrapper::circuit_elem::CircuitElem;
 
 /// A channel that replays recorded interaction values through a [`WitnessGenerator`], filling
 /// both inout and private wires in the outer witness.
@@ -95,7 +54,7 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 		}
 	}
 
-	fn next_inout_elem(&mut self) -> CircuitElem<F, WitnessGenWire<'a, F>> {
+	fn next_inout_elem(&mut self) -> CircuitElem<F, WitnessGenerator<'a, F>> {
 		let value = self
 			.events
 			.next()
@@ -103,10 +62,10 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 
 		let wire = self.inout_alloc.alloc();
 		let witness_wire = self.witness_gen.borrow_mut().write_inout(wire, value);
-		CircuitElem::wire(&self.witness_gen, WitnessGenWire::new(witness_wire))
+		CircuitElem::wire(&self.witness_gen, witness_wire)
 	}
 
-	fn next_precommit_elem(&mut self) -> CircuitElem<F, WitnessGenWire<'a, F>> {
+	fn next_precommit_elem(&mut self) -> CircuitElem<F, WitnessGenerator<'a, F>> {
 		let value = self
 			.keys
 			.next()
@@ -114,7 +73,7 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 
 		let wire = self.precommit_alloc.alloc();
 		let witness_wire = self.witness_gen.borrow_mut().write_precommit(wire, value);
-		CircuitElem::wire(&self.witness_gen, WitnessGenWire::new(witness_wire))
+		CircuitElem::wire(&self.witness_gen, witness_wire)
 	}
 
 	/// Consumes the channel and builds the outer witness.
@@ -127,7 +86,7 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 }
 
 impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
-	type Elem = CircuitElem<F, WitnessGenWire<'a, F>>;
+	type Elem = CircuitElem<F, WitnessGenerator<'a, F>>;
 
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
 		let encrypted_elem = self.next_inout_elem();
@@ -154,10 +113,7 @@ impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
 					Err(binius_ip::channel::Error::InvalidAssert)
 				}
 			}
-			CircuitElem::Wire {
-				builder,
-				wire: WitnessGenWire(wire, _),
-			} => {
+			CircuitElem::Wire { builder, wire } => {
 				assert!(Weak::ptr_eq(&Rc::downgrade(&self.witness_gen), &builder));
 				self.witness_gen.borrow_mut().assert_zero(wire);
 				Ok(())
@@ -176,22 +132,19 @@ impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
 		let value = f(&extract_public_values(inputs));
 		let wire = self.inout_alloc.alloc();
 		let witness_wire = self.witness_gen.borrow_mut().write_inout(wire, value);
-		CircuitElem::wire(&self.witness_gen, WitnessGenWire::new(witness_wire))
+		CircuitElem::wire(&self.witness_gen, witness_wire)
 	}
 }
 
 /// Extracts the concrete field value of each input. The prover knows every wire's value (public or
 /// not), so no public-tag check is needed here — the [`IPVerifierChannel::compute_public_value`]
 /// contract is enforced verifier-side, where non-public inputs are value-less.
-fn extract_public_values<F: Field>(inputs: &[CircuitElem<F, WitnessGenWire<'_, F>>]) -> Vec<F> {
+fn extract_public_values<F: Field>(inputs: &[CircuitElem<F, WitnessGenerator<'_, F>>]) -> Vec<F> {
 	inputs
 		.iter()
 		.map(|elem| match elem {
 			CircuitElem::Constant(c) => *c,
-			CircuitElem::Wire {
-				wire: WitnessGenWire(wire, _),
-				..
-			} => wire.val(),
+			CircuitElem::Wire { wire, .. } => wire.val(),
 		})
 		.collect()
 }
@@ -230,14 +183,10 @@ mod tests {
 		BinaryField1b as B1, BinaryField128bGhash as B128, ExtensionField, field::FieldOps,
 	};
 	use binius_spartan_frontend::circuit_builder::{ConstraintBuilder, WitnessGenerator};
-	use binius_spartan_verifier::wrapper::{
-		builder_channel::BuilderWire, circuit_elem::CircuitElem,
-	};
+	use binius_spartan_verifier::wrapper::circuit_elem::CircuitElem;
 
-	use super::WitnessGenWire;
-
-	type BuildElem = CircuitElem<B128, BuilderWire>;
-	type WitnessElem<'a> = CircuitElem<B128, WitnessGenWire<'a, B128>>;
+	type BuildElem = CircuitElem<B128, ConstraintBuilder<B128>>;
+	type WitnessElem<'a> = CircuitElem<B128, WitnessGenerator<'a, B128>>;
 
 	#[test]
 	fn test_square_transpose_wires() {
@@ -256,7 +205,7 @@ mod tests {
 		let rc = Rc::new(RefCell::new(constraint_builder));
 		let mut elems: Vec<BuildElem> = inout_wires
 			.iter()
-			.map(|&w| BuildElem::wire(&rc, BuilderWire(w)))
+			.map(|&w| BuildElem::wire(&rc, w))
 			.collect();
 
 		<BuildElem as FieldOps>::square_transpose::<FSub>(&mut elems);
@@ -285,7 +234,7 @@ mod tests {
 		let witness_rc = Rc::new(RefCell::new(witness_gen));
 		let mut witness_elems: Vec<WitnessElem> = witness_wires
 			.iter()
-			.map(|&w| WitnessElem::wire(&witness_rc, WitnessGenWire::new(w)))
+			.map(|&w| WitnessElem::wire(&witness_rc, w))
 			.collect();
 
 		<WitnessElem as FieldOps>::square_transpose::<FSub>(&mut witness_elems);
