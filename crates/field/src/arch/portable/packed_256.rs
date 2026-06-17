@@ -28,4 +28,3 @@ define_packed_binary_fields!(
 		},
 	]
 );
-
