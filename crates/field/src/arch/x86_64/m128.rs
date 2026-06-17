@@ -3,7 +3,7 @@
 
 use std::{
 	arch::x86_64::*,
-	array,
+	array, mem,
 	ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr},
 };
 
@@ -28,6 +28,18 @@ use crate::{
 	},
 };
 
+pub const fn m128i_from_u128(x: u128) -> __m128i {
+	// Static assertion that u128 and __m128i have equal alignment
+	let _: [(); align_of::<u128>()] = [(); align_of::<__m128i>()];
+	unsafe { mem::transmute(x) }
+}
+
+pub const fn u128_from_m128i(x: __m128i) -> u128 {
+	// Static assertion that u128 and __m128i have equal alignment
+	let _: [(); align_of::<u128>()] = [(); align_of::<__m128i>()];
+	unsafe { mem::transmute(x) }
+}
+
 /// 128-bit value that is used for 128-bit SIMD operations
 #[derive(Copy, Clone)]
 #[repr(transparent)]
@@ -36,12 +48,7 @@ pub struct M128(pub(super) __m128i);
 impl M128 {
 	#[inline(always)]
 	pub const fn from_u128(val: u128) -> Self {
-		let mut result = Self::ZERO;
-		unsafe {
-			result.0 = std::mem::transmute_copy(&val);
-		}
-
-		result
+		Self(m128i_from_u128(val))
 	}
 }
 
@@ -54,11 +61,7 @@ impl From<__m128i> for M128 {
 
 impl From<u128> for M128 {
 	fn from(value: u128) -> Self {
-		Self(unsafe {
-			// Safety: u128 is 16-byte aligned
-			assert_eq!(align_of::<u128>(), 16);
-			_mm_load_si128(&raw const value as *const __m128i)
-		})
+		Self(m128i_from_u128(value))
 	}
 }
 

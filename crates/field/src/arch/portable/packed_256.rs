@@ -11,6 +11,10 @@ use crate::{
 
 pub type M256 = ScaledUnderlier<M128, 2>;
 
+pub const fn m256_from_u128s(lo: u128, hi: u128) -> M256 {
+	ScaledUnderlier([M128::from_u128(lo), M128::from_u128(hi)])
+}
+
 define_packed_binary_fields!(
 	underlier: M256,
 	packed_fields: [
@@ -24,3 +28,4 @@ define_packed_binary_fields!(
 		},
 	]
 );
+

@@ -1,7 +1,10 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{
-	array, mem,
+	array,
+	fmt::{self, LowerHex},
+	mem,
 	ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr},
 };
 
@@ -16,12 +19,12 @@ use rand::{
 	distr::{Distribution, StandardUniform},
 };
 
-use super::{Divisible, NumCast, UnderlierType, mapget};
+use super::{Divisible, NumCast, U1, UnderlierType, mapget};
 use crate::Random;
 
 /// A type that represents N elements of the same underlier type.
 /// Used as an underlier for 256-bit and 512-bit packed fields in the portable implementation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct ScaledUnderlier<U, const N: usize>(pub [U; N]);
 
@@ -199,12 +202,70 @@ where
 	}
 }
 
+impl<U: UnderlierType, const N: usize> NumCast<ScaledUnderlier<U, N>> for U1
+where
+	Self: NumCast<U>,
+{
+	fn num_cast_from(val: ScaledUnderlier<U, N>) -> Self {
+		Self::num_cast_from(val.0[0])
+	}
+}
+
+// `M128` is the `BinaryField128bGhash` subfield underlier; this extracts it from the low limb of a
+// `ScaledUnderlier<M128, _>`-backed extension field (`GhashSq256b` off the AVX2 path).
+impl<U: UnderlierType, const N: usize> NumCast<ScaledUnderlier<U, N>> for crate::arch::M128
+where
+	Self: NumCast<U>,
+{
+	fn num_cast_from(val: ScaledUnderlier<U, N>) -> Self {
+		Self::num_cast_from(val.0[0])
+	}
+}
+
 impl<U, const N: usize> From<u8> for ScaledUnderlier<U, N>
 where
 	U: From<u8>,
 {
 	fn from(val: u8) -> Self {
 		Self(array::from_fn(|_| U::from(val)))
+	}
+}
+
+/// Zero-extends an `M128` into the least-significant limb, leaving the rest zero.
+///
+/// This is the embedding of a base-field underlier into a `ScaledUnderlier<M128, _>`-backed
+/// extension field, as used by `impl_field_extension!`'s `from_bases_sparse` (`GhashSq256b` off
+/// the AVX2 path).
+impl<const N: usize> From<crate::arch::M128> for ScaledUnderlier<crate::arch::M128, N> {
+	fn from(val: crate::arch::M128) -> Self {
+		let mut limbs = [<crate::arch::M128 as UnderlierType>::ZERO; N];
+		limbs[0] = val;
+		Self(limbs)
+	}
+}
+
+/// Zero-extends a single bit into the least-significant `M128` limb, leaving the rest zero.
+impl<const N: usize> From<U1> for ScaledUnderlier<crate::arch::M128, N> {
+	fn from(val: U1) -> Self {
+		Self::from(crate::arch::M128::from(val))
+	}
+}
+
+impl<U: UnderlierType + LowerHex, const N: usize> LowerHex for ScaledUnderlier<U, N> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		// Most-significant limb first. Print from the highest non-zero limb so there are no
+		// spurious leading zeros, then zero-pad each remaining limb to its full bit width.
+		let width = U::BITS / 4;
+		let top = self
+			.0
+			.iter()
+			.rposition(|limb| *limb != U::ZERO)
+			.unwrap_or(0);
+		write!(f, "{:x}", self.0[top])?;
+		for limb in self.0[..top].iter().rev() {
+			write!(f, "{limb:0width$x}")?;
+		}
+		Ok(())
 	}
 }
 

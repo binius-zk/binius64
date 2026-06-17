@@ -27,6 +27,7 @@ cfg_if! {
 		pub mod packed_256;
 		pub mod packed_aes_256;
 		pub mod packed_ghash_256;
+
 	} else {
 		pub use super::portable::packed_256::{self, M256};
 		pub use super::portable::packed_aes_256;

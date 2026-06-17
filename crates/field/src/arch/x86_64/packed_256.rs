@@ -6,6 +6,10 @@ use crate::arch::{
 	portable::packed_macros::{portable_macros::*, *},
 };
 
+pub const fn m256_from_u128s(lo: u128, high: u128) -> M256 {
+	M256::from_u128s(lo, high)
+}
+
 define_packed_binary_fields!(
 	underlier: M256,
 	packed_fields: [
