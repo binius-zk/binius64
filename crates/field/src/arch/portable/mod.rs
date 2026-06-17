@@ -1,7 +1,10 @@
 // Copyright 2023-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 pub(crate) mod packed;
 pub(crate) mod packed_macros;
+
+pub mod m128;
 
 pub mod packed_1;
 pub mod packed_128;

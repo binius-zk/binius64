@@ -17,6 +17,6 @@ cfg_if! {
 		pub use super::portable::packed_aes_128;
 		pub use super::portable::packed_ghash_128;
 
-		pub use super::portable::packed_128::M128;
+		pub use super::portable::m128::M128;
 	}
 }

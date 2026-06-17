@@ -14,7 +14,7 @@ use crate::{
 	BinaryField128bGhash,
 	arch::portable::packed_macros::{portable_macros::*, *},
 	arithmetic_traits::{
-		InvertOrZero, TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
+		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
 		impl_square_with,
 	},
 };
@@ -65,12 +65,10 @@ cfg_if! {
 		impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
 			#[inline]
 			fn mul(self, rhs: Self) -> Self {
-				use super::super::portable::packed_ghash_128::PackedBinaryGhash1x128b as PortablePackedBinaryGhash1x128b;
+				use super::super::portable::packed_ghash_128::ghash_mul;
 
-				let portable_lhs = PortablePackedBinaryGhash1x128b::from(u128::from(self.to_underlier()));
-				let portable_rhs = PortablePackedBinaryGhash1x128b::from(u128::from(rhs.to_underlier()));
-
-				Self::from_underlier(std::ops::Mul::mul(portable_lhs, portable_rhs).to_underlier().into())
+				let product = ghash_mul(u128::from(self.to_underlier()), u128::from(rhs.to_underlier()));
+				Self::from_underlier(M128::from(product))
 			}
 		}
 	}
@@ -91,11 +89,9 @@ cfg_if! {
 		impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
 			#[inline]
 			fn square(self) -> Self {
-				use super::super::portable::packed_ghash_128::PackedBinaryGhash1x128b as PortablePackedBinaryGhash1x128b;
+				use super::super::portable::packed_ghash_128::ghash_square;
 
-				let portable_val = PortablePackedBinaryGhash1x128b::from(u128::from(self.to_underlier()));
-
-				Self::from_underlier(crate::arithmetic_traits::Square::square(portable_val).to_underlier().into())
+				Self::from_underlier(M128::from(ghash_square(u128::from(self.to_underlier()))))
 			}
 		}
 	}
@@ -122,13 +118,13 @@ cfg_if! {
 	}
 }
 
-// Implement TaggedInvertOrZero for GhashStrategy (always uses portable fallback)
+// Implement TaggedInvertOrZero for GhashStrategy (software fallback — no CLMUL invert)
 impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
 	fn invert_or_zero(self) -> Self {
-		let portable = super::super::portable::packed_ghash_128::PackedBinaryGhash1x128b::from(
-			u128::from(self.to_underlier()),
-		);
+		use crate::{
+			Divisible, arch::portable::packed_ghash_128::ghash_invert_or_zero, packed::PackedField,
+		};
 
-		Self::from_underlier(InvertOrZero::invert_or_zero(portable).to_underlier().into())
+		Self::set_single(ghash_invert_or_zero(self.get(0)))
 	}
 }

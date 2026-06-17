@@ -17,8 +17,8 @@ use crate::{
 		shared::ghash::{self, ClMulUnderlier},
 	},
 	arithmetic_traits::{
-		InvertOrZero, TaggedInvertOrZero, TaggedMul, TaggedSquare, WideMul, impl_invert_with,
-		impl_mul_with, impl_square_with,
+		TaggedInvertOrZero, TaggedMul, TaggedSquare, WideMul, impl_invert_with, impl_mul_with,
+		impl_square_with,
 	},
 };
 
@@ -98,13 +98,13 @@ impl WideMul for PackedBinaryGhash1x128b {
 	}
 }
 
-// Implement TaggedInvertOrZero for GhashStrategy (uses portable fallback)
+// Implement TaggedInvertOrZero for GhashStrategy (software fallback — no CLMUL invert)
 impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
 	fn invert_or_zero(self) -> Self {
-		let portable = super::super::portable::packed_ghash_128::PackedBinaryGhash1x128b::from(
-			u128::from(self.to_underlier()),
-		);
+		use crate::{
+			Divisible, arch::portable::packed_ghash_128::ghash_invert_or_zero, packed::PackedField,
+		};
 
-		Self::from_underlier(InvertOrZero::invert_or_zero(portable).to_underlier().into())
+		Self::set_single(ghash_invert_or_zero(self.get(0)))
 	}
 }

@@ -4,20 +4,11 @@
 //! Portable implementation of packed GHASH field operations.
 
 use super::{
+	m128::M128,
 	nibble_invert_128b::nibble_invert_128b,
-	packed_macros::{portable_macros::*, *},
-	univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64},
+	univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64, spread_bits_64},
 };
-use crate::{
-	Divisible,
-	arithmetic_traits::{
-		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
-		impl_square_with,
-	},
-	ghash::BinaryField128bGhash,
-	packed::PackedField,
-	underlier::WithUnderlier,
-};
+use crate::{ghash::BinaryField128bGhash, underlier::WithUnderlier};
 
 /// Strategy for GHASH field arithmetic operations.
 pub struct GhashStrategy;
@@ -98,46 +89,109 @@ fn reduce_64<U: Underlier128bLanes>(
 	U::join_u64s(v1, v0)
 }
 
-// Define PackedBinaryGhash1x128b using the macro
-define_packed_binary_field!(
-	PackedBinaryGhash1x128b,
-	BinaryField128bGhash,
-	u128,
-	(GhashStrategy),
-	(GhashStrategy),
-	(GhashStrategy),
-	(None)
-);
+// `M128` packs its GHASH 64-bit lanes the same way `u128` does — delegate through `u128`.
+impl Underlier128bLanes for M128 {
+	type U64 = u64;
 
-// Implement TaggedMul for GhashStrategy
-impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
-	#[inline]
-	fn mul(self, rhs: Self) -> Self {
-		ghash_mul(self.0, rhs.0).into()
+	#[inline(always)]
+	fn split_hi_lo_64(self) -> (u64, u64) {
+		u128::from(self).split_hi_lo_64()
+	}
+
+	#[inline(always)]
+	fn join_u64s(high: u64, low: u64) -> Self {
+		Self::from(u128::join_u64s(high, low))
+	}
+
+	#[inline(always)]
+	fn broadcast_64(val: u64) -> Self {
+		Self::from(u128::broadcast_64(val))
+	}
+
+	#[inline(always)]
+	fn spread_bits_128(self) -> (Self, Self) {
+		let (hi, lo) = self.split_hi_lo_64();
+		(Self::from(spread_bits_64(hi)), Self::from(spread_bits_64(lo)))
 	}
 }
 
-// Implement TaggedSquare for GhashStrategy
-impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
-	#[inline]
-	fn square(self) -> Self {
-		ghash_square(self.0).into()
-	}
+/// Software GHASH inversion via the generic nibble algorithm, shared by every architecture: the
+/// SIMD `packed_ghash_128`s have no CLMUL fast path for inversion and call this. It takes the
+/// scalar directly, so it is independent of how the caller's packed field is laid out.
+pub(crate) fn ghash_invert_or_zero(value: BinaryField128bGhash) -> BinaryField128bGhash {
+	nibble_invert_128b(
+		value,
+		|f| f.to_underlier().into(), // GHASH uses direct representation (no Montgomery form)
+		&GHASH_NIBBLE_POW_2_N_TABLE,
+	)
 }
 
-// Implement WideMul (trivial: no CLMUL, just regular multiply)
-crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash1x128b);
+// The portable GHASH backend, packed over `M128`. Compiled only on the arches that use the portable
+// GHASH — those without a SIMD `M128`, where `arch::M128` is the `u128`-newtype struct — mirroring
+// the SIMD-`M128` cfgs in `{x86_64,aarch64}/mod.rs`. On the SIMD arches `BinaryField128bGhash`'s
+// underlier is the SIMD `M128`, so a width-1 `PackedPrimitiveType<M128, _>` defined here (over the
+// distinct struct `M128`) could not `get`/`set_single`; those arches use their own
+// `packed_ghash_128` and reach the software kernels through `ghash_mul`/`ghash_square`/
+// `ghash_invert_or_zero` above.
+#[cfg(not(any(
+	all(target_arch = "x86_64", target_feature = "sse2"),
+	all(
+		target_arch = "aarch64",
+		target_feature = "neon",
+		target_feature = "aes"
+	)
+)))]
+pub use portable_backend::PackedBinaryGhash1x128b;
 
-// Implement TaggedInvertOrZero for GhashStrategy
-impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
-	fn invert_or_zero(self) -> Self {
-		// Use the generic nibble-based inversion algorithm
-		let result = nibble_invert_128b(
-			self.get(0),
-			|f| f.to_underlier().into(), // GHASH uses direct representation (no Montgomery form)
-			&GHASH_NIBBLE_POW_2_N_TABLE,
-		);
-		Self::set_single(result)
+#[cfg(not(any(
+	all(target_arch = "x86_64", target_feature = "sse2"),
+	all(
+		target_arch = "aarch64",
+		target_feature = "neon",
+		target_feature = "aes"
+	)
+)))]
+mod portable_backend {
+	use super::{
+		BinaryField128bGhash, GhashStrategy, M128, ghash_invert_or_zero, ghash_mul, ghash_square,
+	};
+	use crate::{
+		Divisible,
+		arch::portable::packed_macros::{portable_macros::*, *},
+		arithmetic_traits::{TaggedInvertOrZero, TaggedMul, TaggedSquare},
+		packed::PackedField,
+	};
+
+	define_packed_binary_field!(
+		PackedBinaryGhash1x128b,
+		BinaryField128bGhash,
+		M128,
+		(GhashStrategy),
+		(GhashStrategy),
+		(GhashStrategy),
+		(None)
+	);
+
+	impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
+		#[inline]
+		fn mul(self, rhs: Self) -> Self {
+			ghash_mul(self.0, rhs.0).into()
+		}
+	}
+
+	impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
+		#[inline]
+		fn square(self) -> Self {
+			ghash_square(self.0).into()
+		}
+	}
+
+	crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash1x128b);
+
+	impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
+		fn invert_or_zero(self) -> Self {
+			Self::set_single(ghash_invert_or_zero(self.get(0)))
+		}
 	}
 }
 

@@ -23,7 +23,7 @@ use super::{
 };
 use crate::{
 	AESTowerField8b, Divisible, Field, PackedField, WideMul,
-	arch::{M128, m128_from_u128, packed_ghash_128::PackedBinaryGhash1x128b},
+	arch::{M128, packed_ghash_128::PackedBinaryGhash1x128b},
 	arithmetic_traits::InvertOrZero,
 	binary_field_arithmetic::{
 		TowerFieldArithmetic, invert_or_zero_using_packed, multiple_using_packed,
@@ -33,20 +33,17 @@ use crate::{
 	underlier::{U1, WithUnderlier},
 };
 
-binary_field!(pub BinaryField128bGhash(M128), m128_from_u128(0x494ef99794d5244f9152df59d87a9186));
+binary_field!(pub BinaryField128bGhash(M128), M128::from_u128(0x494ef99794d5244f9152df59d87a9186));
 
 // Convenience `u128` conversions. `binary_field!` already provides `From<M128>`/`From<.. for
-// M128>`; on wasm/portable `M128 = u128`, so those *are* the `u128` conversions and these would
-// collide — hence the arch gate. On x86_64/aarch64 (where `M128` is a SIMD struct) they let callers
-// keep constructing/inspecting `BinaryField128bGhash` via `u128`.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+// M128>`; these let callers keep constructing/inspecting `BinaryField128bGhash` via `u128`. `M128`
+// is a distinct type from `u128` on every target, so these never collide with the macro's impls.
 impl From<u128> for BinaryField128bGhash {
 	fn from(value: u128) -> Self {
 		Self(M128::from(value))
 	}
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 impl From<BinaryField128bGhash> for u128 {
 	fn from(value: BinaryField128bGhash) -> Self {
 		value.0.into()
@@ -77,9 +74,9 @@ unsafe impl Pod for BinaryField128bGhash {}
 
 impl BinaryField128bGhash {
 	/// Constructs an element from its `u128` value. The underlier is `M128`, but `u128` is the
-	/// ergonomic constructor type, so this converts (a no-op where `M128 = u128`).
+	/// ergonomic constructor type, so this converts.
 	pub const fn new(value: u128) -> Self {
-		Self(m128_from_u128(value))
+		Self(M128::from_u128(value))
 	}
 
 	#[inline]

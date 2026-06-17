@@ -737,48 +737,6 @@ impl Divisible<u128> for M128 {
 	}
 }
 
-// The reverse of `Divisible<u128> for M128`: a `u128` holds exactly one `M128` (a width-1
-// reinterpret). Needed because `BinaryField128bGhash`'s underlier is `M128` while the portable
-// `PackedBinaryGhash1x128b` packs it in a `u128`.
-impl Divisible<M128> for u128 {
-	const LOG_N: usize = 0;
-
-	#[inline]
-	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = M128> + Send + Clone {
-		std::iter::once(M128::from(value))
-	}
-
-	#[inline]
-	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = M128> + Send + Clone + '_ {
-		std::iter::once(M128::from(*value))
-	}
-
-	#[inline]
-	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = M128> + Send + Clone + '_ {
-		slice.iter().map(|&v| M128::from(v))
-	}
-
-	#[inline]
-	unsafe fn get_unchecked(&self, _index: usize) -> M128 {
-		M128::from(*self)
-	}
-
-	#[inline]
-	unsafe fn set_unchecked(&mut self, _index: usize, val: M128) {
-		*self = u128::from(val);
-	}
-
-	#[inline]
-	fn broadcast(val: M128) -> Self {
-		u128::from(val)
-	}
-
-	#[inline]
-	fn from_iter(mut iter: impl Iterator<Item = M128>) -> Self {
-		iter.next().map(u128::from).unwrap_or(0)
-	}
-}
-
 impl Divisible<u64> for M128 {
 	const LOG_N: usize = 1;
 

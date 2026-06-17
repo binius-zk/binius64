@@ -1,11 +1,11 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
+use super::m128::M128;
 use crate::arch::{
 	BitwiseAndStrategy,
 	portable::packed_macros::{portable_macros::*, *},
 };
-
-pub type M128 = u128;
 
 define_packed_binary_fields!(
 	underlier: M128,

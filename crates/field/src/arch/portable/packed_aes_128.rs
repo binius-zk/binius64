@@ -1,5 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
+use super::m128::M128;
 use crate::{
 	arch::{
 		PairwiseTableStrategy,
@@ -9,7 +11,7 @@ use crate::{
 };
 
 define_packed_binary_fields!(
-	underlier: u128,
+	underlier: M128,
 	packed_fields: [
 		packed_field {
 			name: PackedAESBinaryField16x8b,

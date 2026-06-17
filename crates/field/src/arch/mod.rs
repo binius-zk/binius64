@@ -27,28 +27,11 @@ cfg_if! {
 
 		mod wasm32;
 		pub use wasm32::{packed_ghash_128, packed_ghash_256};
-		pub use portable::{packed_128::{self, M128}, packed_256::{self, M256}, packed_512, packed_aes_128, packed_aes_256, packed_aes_512, packed_ghash_512};
+		pub use portable::{m128::M128, packed_128, packed_256::{self, M256}, packed_512, packed_aes_128, packed_aes_256, packed_aes_512, packed_ghash_512};
 	} else {
 		mod portable;
-		pub use u128 as M128;
-		pub use portable::{packed_128::{self, M128}, packed_256::{self, M256}, packed_512, packed_aes_128, packed_aes_256, packed_aes_512, packed_ghash_128, packed_ghash_256, packed_ghash_512};
+		pub use portable::{m128::M128, packed_128, packed_256::{self, M256}, packed_512, packed_aes_128, packed_aes_256, packed_aes_512, packed_ghash_128, packed_ghash_256, packed_ghash_512};
 	}
-}
-
-/// Builds an [`M128`] from a `u128` in a `const` context.
-///
-/// `M128` is the architecture-chosen 128-bit underlier — a SIMD register on x86_64/aarch64, plain
-/// `u128` elsewhere. `From<u128>` is not `const`, so this helper is used where a const `M128`
-/// constant is needed (e.g. a field's multiplicative generator).
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-pub(crate) const fn m128_from_u128(value: u128) -> M128 {
-	M128::from_u128(value)
-}
-
-/// Builds an [`M128`] from a `u128` in a `const` context. See the SIMD variant for details.
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-pub(crate) const fn m128_from_u128(value: u128) -> M128 {
-	value
 }
 
 pub use arch_optimal::*;
