@@ -8,7 +8,12 @@ use super::{
 	nibble_invert_128b::nibble_invert_128b,
 	univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64, spread_bits_64},
 };
-use crate::{ghash::BinaryField128bGhash, underlier::WithUnderlier};
+use crate::{
+	arch::portable::packed_macros::{portable_macros::*, *},
+	arithmetic_traits::{TaggedInvertOrZero, TaggedMul, TaggedSquare},
+	ghash::BinaryField128bGhash,
+	underlier::WithUnderlier,
+};
 
 /// Strategy for GHASH field arithmetic operations.
 pub struct GhashStrategy;
@@ -126,45 +131,37 @@ pub(crate) fn ghash_invert_or_zero(value: BinaryField128bGhash) -> BinaryField12
 	)
 }
 
-mod portable_backend {
-	use super::*;
-	use crate::{
-		arch::portable::packed_macros::{portable_macros::*, *},
-		arithmetic_traits::{TaggedInvertOrZero, TaggedMul, TaggedSquare},
-	};
+define_packed_binary_field!(
+	PackedBinaryGhash1x128b,
+	BinaryField128bGhash,
+	M128,
+	(GhashStrategy),
+	(GhashStrategy),
+	(GhashStrategy),
+	(None)
+);
 
-	define_packed_binary_field!(
-		PackedBinaryGhash1x128b,
-		BinaryField128bGhash,
-		M128,
-		(GhashStrategy),
-		(GhashStrategy),
-		(GhashStrategy),
-		(None)
-	);
-
-	impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
-		#[inline]
-		fn mul(self, rhs: Self) -> Self {
-			ghash_mul(self.0, rhs.0).into()
-		}
+impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
+	#[inline]
+	fn mul(self, rhs: Self) -> Self {
+		ghash_mul(self.0, rhs.0).into()
 	}
+}
 
-	impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
-		#[inline]
-		fn square(self) -> Self {
-			ghash_square(self.0).into()
-		}
+impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
+	#[inline]
+	fn square(self) -> Self {
+		ghash_square(self.0).into()
 	}
+}
 
-	crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash1x128b);
+crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash1x128b);
 
-	impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
-		fn invert_or_zero(self) -> Self {
-			let self_as_field = BinaryField128bGhash::new(self.to_underlier().into());
-			let ret_as_field = ghash_invert_or_zero(self_as_field);
-			Self::from_underlier(M128::from_u128(ret_as_field.val().into()))
-		}
+impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
+	fn invert_or_zero(self) -> Self {
+		let self_as_field = BinaryField128bGhash::new(self.to_underlier().into());
+		let ret_as_field = ghash_invert_or_zero(self_as_field);
+		Self::from_underlier(M128::from_u128(ret_as_field.val().into()))
 	}
 }
 
