@@ -16,7 +16,7 @@ use bytemuck::{Pod, Zeroable};
 use cfg_if::cfg_if;
 use rand::{distr::StandardUniform, prelude::*};
 
-use super::m128::{M128, m128i_from_u128, u128_from_m128i};
+use super::m128::{M128, m128i_from_u128};
 use crate::{
 	BinaryField,
 	arch::portable::packed::PackedPrimitiveType,
@@ -25,6 +25,12 @@ use crate::{
 		impl_divisible_bitmask, mapget, spread_fallback,
 	},
 };
+
+const fn u128_from_m128i(x: __m128i) -> u128 {
+	// Static assertion that u128 and __m128i have equal alignment
+	let _: [(); align_of::<u128>()] = [(); align_of::<__m128i>()];
+	unsafe { mem::transmute(x) }
+}
 
 /// 256-bit value that is used for 256-bit SIMD operations
 #[derive(Copy, Clone)]
