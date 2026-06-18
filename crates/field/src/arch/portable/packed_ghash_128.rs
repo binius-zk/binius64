@@ -126,40 +126,11 @@ pub(crate) fn ghash_invert_or_zero(value: BinaryField128bGhash) -> BinaryField12
 	)
 }
 
-// The portable GHASH backend, packed over `M128`. Compiled only on the arches that use the portable
-// GHASH — those without a SIMD `M128`, where `arch::M128` is the `u128`-newtype struct — mirroring
-// the SIMD-`M128` cfgs in `{x86_64,aarch64}/mod.rs`. On the SIMD arches `BinaryField128bGhash`'s
-// underlier is the SIMD `M128`, so a width-1 `PackedPrimitiveType<M128, _>` defined here (over the
-// distinct struct `M128`) could not `get`/`set_single`; those arches use their own
-// `packed_ghash_128` and reach the software kernels through `ghash_mul`/`ghash_square`/
-// `ghash_invert_or_zero` above.
-#[cfg(not(any(
-	all(target_arch = "x86_64", target_feature = "sse2"),
-	all(
-		target_arch = "aarch64",
-		target_feature = "neon",
-		target_feature = "aes"
-	)
-)))]
-pub use portable_backend::PackedBinaryGhash1x128b;
-
-#[cfg(not(any(
-	all(target_arch = "x86_64", target_feature = "sse2"),
-	all(
-		target_arch = "aarch64",
-		target_feature = "neon",
-		target_feature = "aes"
-	)
-)))]
 mod portable_backend {
-	use super::{
-		BinaryField128bGhash, GhashStrategy, M128, ghash_invert_or_zero, ghash_mul, ghash_square,
-	};
+	use super::*;
 	use crate::{
-		Divisible,
 		arch::portable::packed_macros::{portable_macros::*, *},
 		arithmetic_traits::{TaggedInvertOrZero, TaggedMul, TaggedSquare},
-		packed::PackedField,
 	};
 
 	define_packed_binary_field!(
@@ -190,7 +161,9 @@ mod portable_backend {
 
 	impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
 		fn invert_or_zero(self) -> Self {
-			Self::set_single(ghash_invert_or_zero(self.get(0)))
+			let self_as_field = BinaryField128bGhash::new(self.to_underlier().into());
+			let ret_as_field = ghash_invert_or_zero(self_as_field);
+			Self::from_underlier(M128::from_u128(ret_as_field.val().into()))
 		}
 	}
 }

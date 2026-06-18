@@ -32,6 +32,22 @@ const fn u128_from_m128i(x: __m128i) -> u128 {
 	unsafe { mem::transmute(x) }
 }
 
+const fn m256i_from_u128s(lo: u128, hi: u128) -> __m256i {
+	// TODO: use _mm256_set_m128i when const is stable
+	// See: https://github.com/rust-lang/rust/issues/149298
+
+	#[allow(unused)]
+	#[repr(align(32))]
+	struct Aligned2xm128i([__m128i; 2]);
+
+	// Static assertion that Aligned2xm128i and __m256i have equal alignment
+	let _: [(); align_of::<Aligned2xm128i>()] = [(); align_of::<__m256i>()];
+
+	let lo_m128i = m128i_from_u128(lo);
+	let hi_m128i = m128i_from_u128(hi);
+	unsafe { mem::transmute::<Aligned2xm128i, __m256i>(Aligned2xm128i([lo_m128i, hi_m128i])) }
+}
+
 /// 256-bit value that is used for 256-bit SIMD operations
 #[derive(Copy, Clone)]
 #[repr(transparent)]
@@ -45,19 +61,7 @@ impl M256 {
 	/// Builds an `M256` from its two 128-bit halves (`low` is the least-significant 128 bits) in a
 	/// `const` context.
 	pub const fn from_u128s(lo: u128, hi: u128) -> Self {
-		// TODO: use _mm256_set_m128i when const is stable
-		// See: https://github.com/rust-lang/rust/issues/149298
-
-		let lo_m128i = m128i_from_u128(lo);
-		let hi_m128i = m128i_from_u128(hi);
-
-		#[allow(unused)]
-		#[repr(align(32))]
-		struct Aligned2xm128i([__m128i; 2]);
-
-		Self(unsafe {
-			mem::transmute::<Aligned2xm128i, __m256i>(Aligned2xm128i([lo_m128i, hi_m128i]))
-		})
+		Self(m256i_from_u128s(lo, hi))
 	}
 }
 
@@ -867,7 +871,7 @@ cfg_if! {
 				}
 				block_idx += 1;
 			}
-			let mut m256_masks = [m256_from_u128s!(0, 0,); BLOCK_IDX_AMOUNT];
+			let mut m256_masks = [m256i_from_u128s(0, 0); BLOCK_IDX_AMOUNT];
 
 			let mut block_idx = 0;
 
@@ -882,7 +886,7 @@ cfg_if! {
 					}
 					i += 1;
 				}
-				m256_masks[block_idx] = m256_from_u128s!(u128s[0], u128s[1],);
+				m256_masks[block_idx] = m256i_from_u128s(u128s[0], u128s[1]);
 				block_idx += 1;
 			}
 

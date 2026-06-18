@@ -17,7 +17,7 @@ use crate::{
 		InvertOrZero, TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
 		impl_square_with,
 	},
-	underlier::UnderlierType,
+	underlier::Divisible,
 };
 // Only used by the CLMUL-accelerated `ClMulUnderlier` and `WideMul` impls below.
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
@@ -157,31 +157,6 @@ cfg_if! {
 // Implement TaggedInvertOrZero for Ghash512Strategy (always uses element-wise fallback)
 impl TaggedInvertOrZero<Ghash512Strategy> for PackedBinaryGhash4x128b {
 	fn invert_or_zero(self) -> Self {
-		// Fallback: perform scalar invert on each 128-bit element
-		let mut result_underlier = self.to_underlier();
-		unsafe {
-			let self_0 = self.to_underlier().get_subvalue::<u128>(0);
-			let self_1 = self.to_underlier().get_subvalue::<u128>(1);
-			let self_2 = self.to_underlier().get_subvalue::<u128>(2);
-			let self_3 = self.to_underlier().get_subvalue::<u128>(3);
-
-			// Use the portable scalar invert for each element
-			use super::super::portable::packed_ghash_128::PackedBinaryGhash1x128b as PortablePackedBinaryGhash1x128b;
-			let result_0 =
-				InvertOrZero::invert_or_zero(PortablePackedBinaryGhash1x128b::from(self_0));
-			let result_1 =
-				InvertOrZero::invert_or_zero(PortablePackedBinaryGhash1x128b::from(self_1));
-			let result_2 =
-				InvertOrZero::invert_or_zero(PortablePackedBinaryGhash1x128b::from(self_2));
-			let result_3 =
-				InvertOrZero::invert_or_zero(PortablePackedBinaryGhash1x128b::from(self_3));
-
-			result_underlier.set_subvalue(0, result_0.to_underlier());
-			result_underlier.set_subvalue(1, result_1.to_underlier());
-			result_underlier.set_subvalue(2, result_2.to_underlier());
-			result_underlier.set_subvalue(3, result_3.to_underlier());
-		}
-
-		Self::from_underlier(result_underlier)
+		Self::from_iter(Self::value_iter(self).map(InvertOrZero::invert_or_zero))
 	}
 }
