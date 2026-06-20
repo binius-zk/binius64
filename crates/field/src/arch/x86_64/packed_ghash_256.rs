@@ -59,8 +59,7 @@ define_packed_binary_field!(
 	M256,
 	(Ghash256Strategy),
 	(Ghash256Strategy),
-	(Ghash256Strategy),
-	(None)
+	(Ghash256Strategy)
 );
 
 // Implement TaggedMul for Ghash256Strategy

@@ -12,7 +12,6 @@ macro_rules! define_packed_binary_fields {
                     mul: ($($mul:tt)*),
                     square: ($($square:tt)*),
                     invert: ($($invert:tt)*),
-                    transform: ($($transform:tt)*),
                 }
             ),* $(,)?
         ]
@@ -24,8 +23,7 @@ macro_rules! define_packed_binary_fields {
                 $underlier,
                 ($($mul)*),
                 ($($square)*),
-                ($($invert)*),
-                ($($transform)*)
+                ($($invert)*)
             );
 
             // Every packed field is a `WideMul` (it's a parent trait of `PackedField`). All
@@ -51,8 +49,7 @@ macro_rules! define_packed_binary_field {
 		$name:ident, $scalar:path, $underlier:ident,
 		($($mul:tt)*),
 		($($square:tt)*),
-		($($invert:tt)*),
-		($($transform:tt)*)
+		($($invert:tt)*)
 	) => {
 		// Define packed field types
 		pub type $name = $crate::arch::PackedPrimitiveType<$underlier, $scalar>;
@@ -68,9 +65,6 @@ macro_rules! define_packed_binary_field {
 
 		// Define invert
 		impl_strategy!(impl_invert_with    $name, ($($invert)*));
-
-		// Define linear transformations
-		//impl_transformation!($name, ($($transform)*));
 	};
 }
 

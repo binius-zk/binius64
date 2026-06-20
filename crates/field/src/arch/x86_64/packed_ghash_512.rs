@@ -52,8 +52,7 @@ define_packed_binary_field!(
 	M512,
 	(Ghash512Strategy),
 	(Ghash512Strategy),
-	(Ghash512Strategy),
-	(None)
+	(Ghash512Strategy)
 );
 
 // Implement TaggedMul for Ghash512Strategy

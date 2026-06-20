@@ -17,7 +17,6 @@ define_packed_binary_fields!(
 			mul:       (if gfni GfniStrategy else PairwiseTableStrategy),
 			square:    (if gfni ReuseMultiplyStrategy else PairwiseTableStrategy),
 			invert:    (if gfni GfniStrategy else PairwiseTableStrategy),
-			transform: (if gfni GfniStrategy else SimdStrategy),
 		},
 	]
 );

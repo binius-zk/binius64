@@ -125,8 +125,7 @@ define_packed_binary_field!(
 	M128,
 	(GhashStrategy),
 	(GhashStrategy),
-	(GhashStrategy),
-	(None)
+	(GhashStrategy)
 );
 
 impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
