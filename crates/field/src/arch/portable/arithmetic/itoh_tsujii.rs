@@ -11,11 +11,12 @@
 //!
 //! Squaring `beta_a` repeatedly `b` times (the `x -> x^(2^b)` power map) is an `F_2`-linear
 //! transformation. We precompute each power map as a byte-indexed lookup table (the [Method of Four
-//! Russians]) and store it in thread-local storage so the tables are computed once per thread.
+//! Russians]) and hold them in a process-wide [`LazyLock`], so the tables are computed once and
+//! shared read-only across all threads.
 //!
 //! [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
 
-use std::{array, iter, thread::LocalKey};
+use std::{array, iter, sync::LazyLock};
 
 use crate::{
 	BinaryField1b, ExtensionField, Field, PackedField, arithmetic_traits::Square,
@@ -27,16 +28,35 @@ const FIELD_BITS: usize = 128;
 /// Number of bytes in a GHASH element.
 const FIELD_BYTES: usize = FIELD_BITS / 8;
 
-thread_local! {
-	static POW_2_3_TABLES: [[GhashB128; 256]; FIELD_BYTES] = compute_power_map_byte_lookup_tables(3);
-	static POW_2_7_TABLES: [[GhashB128; 256]; FIELD_BYTES] = compute_power_map_byte_lookup_tables(7);
-	static POW_2_14_TABLES: [[GhashB128; 256]; FIELD_BYTES] =
-		compute_power_map_byte_lookup_tables(14);
-	static POW_2_28_TABLES: [[GhashB128; 256]; FIELD_BYTES] =
-		compute_power_map_byte_lookup_tables(28);
-	static POW_2_63_TABLES: [[GhashB128; 256]; FIELD_BYTES] =
-		compute_power_map_byte_lookup_tables(63);
+/// A single byte-indexed lookup table for one `x -> x^(2^n)` power map.
+type PowerMapTable = [[GhashB128; 256]; FIELD_BYTES];
+
+/// The power-map lookup tables needed by the Itoh-Tsujii addition chain for the GHASH field.
+///
+/// Each field holds the table for one power map `x -> x^(2^n)`, for the values of `n` that appear
+/// in the chain (`pow_2_7` is reused for both the `7 -> 14` and `56 -> 63` steps).
+struct GhashPowerMapTables {
+	pow_2_3: PowerMapTable,
+	pow_2_7: PowerMapTable,
+	pow_2_14: PowerMapTable,
+	pow_2_28: PowerMapTable,
+	pow_2_63: PowerMapTable,
 }
+
+impl GhashPowerMapTables {
+	fn new() -> Self {
+		Self {
+			pow_2_3: compute_power_map_byte_lookup_tables(3),
+			pow_2_7: compute_power_map_byte_lookup_tables(7),
+			pow_2_14: compute_power_map_byte_lookup_tables(14),
+			pow_2_28: compute_power_map_byte_lookup_tables(28),
+			pow_2_63: compute_power_map_byte_lookup_tables(63),
+		}
+	}
+}
+
+static GHASH_POWER_MAP_TABLES: LazyLock<GhashPowerMapTables> =
+	LazyLock::new(GhashPowerMapTables::new);
 
 /// Compute a byte-wise lookup table of the power map `x -> x^(2^n)` as an `F_2`-linear
 /// transformation.
@@ -46,7 +66,7 @@ thread_local! {
 /// combination of its columns for every possible byte value. Applying the transform to an input
 /// then reduces to one table lookup per input byte, XOR-ing the results together (see
 /// [`apply_power_map`]).
-fn compute_power_map_byte_lookup_tables(n: usize) -> [[GhashB128; 256]; FIELD_BYTES] {
+fn compute_power_map_byte_lookup_tables(n: usize) -> PowerMapTable {
 	let matrix = compute_power_map_matrix(n);
 	array::from_fn(|byte_idx| {
 		let chunk: [GhashB128; 8] = array::from_fn(|bit| matrix[byte_idx * 8 + bit]);
@@ -74,38 +94,40 @@ pub fn invert_b128<P>(x: P) -> P
 where
 	P: PackedField<Scalar = GhashB128>,
 {
+	let tables = &*GHASH_POWER_MAP_TABLES;
+
 	// Addition chain for 127: 1, 2, 3, 6, 7, 14, 28, 56, 63, 126, 127.
 	let beta_1 = x;
 	let beta_2 = beta_1.square() * beta_1;
 	let beta_3 = beta_2.square() * beta_1;
-	let beta_6 = pow_2_n(beta_3, &POW_2_3_TABLES) * beta_3;
+	let beta_6 = pow_2_n(beta_3, &tables.pow_2_3) * beta_3;
 	let beta_7 = beta_6.square() * beta_1;
-	let beta_14 = pow_2_n(beta_7, &POW_2_7_TABLES) * beta_7;
-	let beta_28 = pow_2_n(beta_14, &POW_2_14_TABLES) * beta_14;
-	let beta_56 = pow_2_n(beta_28, &POW_2_28_TABLES) * beta_28;
-	let beta_63 = pow_2_n(beta_56, &POW_2_7_TABLES) * beta_7;
-	let beta_126 = pow_2_n(beta_63, &POW_2_63_TABLES) * beta_63;
+	let beta_14 = pow_2_n(beta_7, &tables.pow_2_7) * beta_7;
+	let beta_28 = pow_2_n(beta_14, &tables.pow_2_14) * beta_14;
+	let beta_56 = pow_2_n(beta_28, &tables.pow_2_28) * beta_28;
+	let beta_63 = pow_2_n(beta_56, &tables.pow_2_7) * beta_7;
+	let beta_126 = pow_2_n(beta_63, &tables.pow_2_63) * beta_63;
 	let beta_127 = beta_126.square() * beta_1;
 	// x^(-1) = (x^(2^127 - 1))^2.
 	beta_127.square()
 }
 
 /// Apply the power map `x -> x^(2^n)` to every scalar of a packed vector, using the precomputed
-/// byte lookup tables held in the given thread-local.
-fn pow_2_n<P>(x: P, tables: &'static LocalKey<[[GhashB128; 256]; FIELD_BYTES]>) -> P
+/// byte lookup table.
+fn pow_2_n<P>(x: P, table: &PowerMapTable) -> P
 where
 	P: PackedField<Scalar = GhashB128>,
 {
-	tables.with(|tables| P::from_scalars(x.into_iter().map(|x| apply_power_map(x, tables))))
+	P::from_scalars(x.into_iter().map(|x| apply_power_map(x, table)))
 }
 
 /// Apply a byte-wise lookup table power map to a single GHASH scalar.
 ///
-/// The element is split into its little-endian bytes; byte `j` selects from `tables[j]` (which
+/// The element is split into its little-endian bytes; byte `j` selects from `table[j]` (which
 /// covers input bits `8*j .. 8*j + 8`), and the looked-up linear combinations are XOR-ed together.
-fn apply_power_map(x: GhashB128, tables: &[[GhashB128; 256]; FIELD_BYTES]) -> GhashB128 {
+fn apply_power_map(x: GhashB128, table: &PowerMapTable) -> GhashB128 {
 	let bytes = u128::from(x).to_le_bytes();
-	iter::zip(tables, bytes)
+	iter::zip(table, bytes)
 		.map(|(table, byte)| table[byte as usize])
 		.fold(GhashB128::ZERO, |acc, term| acc + term)
 }
