@@ -3,8 +3,10 @@
 
 use std::{
 	iter::Sum,
-	ops::{Add, AddAssign, Sub, SubAssign},
+	ops::{Add, AddAssign, Mul, Sub, SubAssign},
 };
+
+use bytemuck::TransparentWrapper;
 
 /// Value that can be multiplied by itself
 pub trait Square {
@@ -37,6 +39,34 @@ pub trait WideMul: Sized {
 
 	fn wide_mul(a: Self, b: Self) -> Self::Output;
 	fn reduce(wide: Self::Output) -> Self;
+}
+
+#[derive(TransparentWrapper)]
+#[repr(transparent)]
+pub struct TrivialWideMul<T>(T);
+
+impl<T> WideMul for TrivialWideMul<T>
+where
+	T: Default
+		+ Clone
+		+ Sum
+		+ Add<Output = T>
+		+ AddAssign
+		+ Sub<Output = T>
+		+ SubAssign
+		+ Mul<Output = T>,
+{
+	type Output = T;
+
+	#[inline]
+	fn wide_mul(a: Self, b: Self) -> T {
+		Self::peel(a) * Self::peel(b)
+	}
+
+	#[inline]
+	fn reduce(wide: T) -> Self {
+		Self::wrap(wide)
+	}
 }
 
 macro_rules! impl_trivial_wide_mul {
