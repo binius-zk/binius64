@@ -207,7 +207,7 @@ impl Not for M128 {
 }
 
 /// `std::cmp::max` isn't const, so we need our own implementation
-pub(crate) const fn max_i32(left: i32, right: i32) -> i32 {
+const fn max_i32(left: i32, right: i32) -> i32 {
 	if left > right { left } else { right }
 }
 

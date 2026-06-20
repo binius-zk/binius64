@@ -9,11 +9,14 @@ mod simd;
 
 cfg_if! {
 	if #[cfg(target_feature = "sse2")] {
-		pub(super) mod m128;
+		mod m128;
+
+		pub use m128::M128;
 		pub mod packed_128;
 		pub mod packed_aes_128;
 		pub mod packed_ghash_128;
 	} else {
+		pub use super::portable::m128::M128;
 		pub use super::portable::packed_128;
 		pub use super::portable::packed_aes_128;
 		pub use super::portable::packed_ghash_128;
@@ -23,7 +26,7 @@ cfg_if! {
 cfg_if! {
 	if #[cfg(target_feature = "avx2")] {
 		pub use m256::M256;
-		pub(super) mod m256;
+		mod m256;
 		pub mod packed_256;
 		pub mod packed_aes_256;
 		pub mod packed_ghash_256;

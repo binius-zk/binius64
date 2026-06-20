@@ -1,12 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use crate::{
-	PackedField,
-	binary_field::BinaryField,
-	linear_transformation::{FieldLinearTransformation, Transformation},
-	packed::PackedBinaryField,
-	underlier::{UnderlierType, WithUnderlier},
-};
+use crate::underlier::UnderlierType;
 
 /// Interleave using the provided even mask slice.
 ///
@@ -45,66 +39,3 @@ macro_rules! interleave_mask_even {
 }
 
 pub(crate) use interleave_mask_even;
-
-/// Packed transformation implementation.
-/// Stores bases in a form of:
-/// [
-///     [<base vec 1> ... <base vec 1>],
-///     ...
-///     [<base vec N> ... <base vec N>]
-/// ]
-/// Transformation complexity is `N*log(N)` where `N` is `OP::Scalar::DEGREE`.
-pub struct PackedTransformation<OP> {
-	bases: Vec<OP>,
-}
-
-impl<OP> PackedTransformation<OP>
-where
-	OP: PackedBinaryField,
-{
-	pub fn new<Data: AsRef<[OP::Scalar]> + Sync>(
-		transformation: &FieldLinearTransformation<OP::Scalar, Data>,
-	) -> Self {
-		Self {
-			bases: transformation
-				.bases()
-				.iter()
-				.map(|base| OP::broadcast(*base))
-				.collect(),
-		}
-	}
-}
-
-/// Broadcast lowest field for each element, e.g. `[<0001><0000>] -> [<1111><0000>]`
-fn broadcast_lowest_bit<U: UnderlierType>(mut data: U, log_packed_bits: usize) -> U {
-	for i in 0..log_packed_bits {
-		data |= data << (1 << i)
-	}
-
-	data
-}
-
-impl<U, IP, OP, IF, OF> Transformation<IP, OP> for PackedTransformation<OP>
-where
-	IP: PackedField<Scalar = IF> + WithUnderlier<Underlier = U>,
-	OP: PackedField<Scalar = OF> + WithUnderlier<Underlier = U>,
-	IF: BinaryField,
-	OF: BinaryField,
-	U: UnderlierType,
-{
-	fn transform(&self, input: &IP) -> OP {
-		let mut result = OP::zero();
-		let ones = OP::one().to_underlier();
-		let mut input = input.to_underlier();
-
-		for base in &self.bases {
-			let base_component = input & ones;
-			// contains ones at positions which correspond to non-zero components
-			let mask = broadcast_lowest_bit(base_component, OF::LOG_DEGREE);
-			result += OP::from_underlier(mask & base.to_underlier());
-			input = input >> 1;
-		}
-
-		result
-	}
-}

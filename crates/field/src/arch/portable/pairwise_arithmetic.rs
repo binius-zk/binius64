@@ -3,7 +3,6 @@
 use crate::{
 	arch::PairwiseStrategy,
 	arithmetic_traits::{InvertOrZero, Square, TaggedInvertOrZero, TaggedMul, TaggedSquare},
-	linear_transformation::Transformation,
 	packed::PackedField,
 };
 
@@ -46,27 +45,5 @@ where
 		} else {
 			Self::from_fn(|i| InvertOrZero::invert_or_zero(self.get(i)))
 		}
-	}
-}
-
-/// Per element transformation
-pub struct PairwiseTransformation<I> {
-	inner: I,
-}
-
-impl<I> PairwiseTransformation<I> {
-	pub const fn new(inner: I) -> Self {
-		Self { inner }
-	}
-}
-
-impl<IP, OP, IF, OF, I> Transformation<IP, OP> for PairwiseTransformation<I>
-where
-	IP: PackedField<Scalar = IF>,
-	OP: PackedField<Scalar = OF>,
-	I: Transformation<IF, OF>,
-{
-	fn transform(&self, data: &IP) -> OP {
-		OP::from_fn(|i| self.inner.transform(&data.get(i)))
 	}
 }
