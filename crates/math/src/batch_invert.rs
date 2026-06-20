@@ -163,7 +163,7 @@ fn batch_invert_nonzero_with_scratchpad<P: PackedField>(
 			// Direct scalar inversion
 			let scalar = packed.get(0);
 			let inv = scalar
-				.invert()
+				.try_invert()
 				.expect("precondition: elements contains no zeros");
 			packed.set(0, inv);
 		} else {

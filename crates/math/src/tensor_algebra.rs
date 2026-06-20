@@ -254,7 +254,7 @@ mod tests {
 		assert_eq!(elem.try_extract_vertical(), None);
 
 		// Scale back by the inverse to get back to the vertical subring.
-		let hztl_inv = hztl.invert().unwrap();
+		let hztl_inv = hztl.try_invert().unwrap();
 		let elem = elem.scale_horizontal(hztl_inv);
 		assert_eq!(elem.try_extract_vertical(), Some(vert));
 

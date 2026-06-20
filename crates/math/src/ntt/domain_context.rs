@@ -36,7 +36,7 @@ fn generate_evals_from_subspace<F: BinaryField>(subspace: &BinarySubspace<F>) ->
 
 	// normalize so that evaluations of $W_i$ are replaced by evaluations of $hat{W}_i$
 	for evals_i in evals.iter_mut() {
-		let w_i_b_i_inverse = evals_i[0].invert().unwrap();
+		let w_i_b_i_inverse = evals_i[0].try_invert().unwrap();
 		for eval_i_j in evals_i.iter_mut() {
 			*eval_i_j *= w_i_b_i_inverse;
 		}

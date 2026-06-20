@@ -93,7 +93,7 @@ pub trait Field:
 
 	/// Computes the multiplicative inverse of this element,
 	/// failing if the element is zero.
-	fn invert(&self) -> Option<Self> {
+	fn try_invert(&self) -> Option<Self> {
 		let inv = self.invert_or_zero();
 		(!inv.is_zero()).then_some(inv)
 	}

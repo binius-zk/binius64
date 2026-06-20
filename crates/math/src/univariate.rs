@@ -237,7 +237,7 @@ fn compute_barycentric_weights<F: Field>(points: &[F]) -> Vec<F> {
 				.map(|j| points[i] - points[j])
 				.product::<F>();
 			product
-				.invert()
+				.try_invert()
 				.expect("precondition: all points are distinct; invert only fails on 0")
 		})
 		.collect()

@@ -63,6 +63,18 @@ pub(crate) use impl_trivial_wide_mul;
 pub trait InvertOrZero {
 	/// Returns the inverted value or zero in case when `self` is zero
 	fn invert_or_zero(self) -> Self;
+
+	/// Returns the multiplicative inverse.
+	///
+	/// ## Safety
+	/// Requires that `self` is non-zero. Behavior is undefined otherwise.
+	#[inline]
+	unsafe fn invert(self) -> Self
+	where
+		Self: Sized,
+	{
+		self.invert_or_zero()
+	}
 }
 
 /// Multiplication that is parameterized with some some strategy.

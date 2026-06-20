@@ -226,7 +226,7 @@ fn novel_basis<DC: DomainContext>(domain_context: &DC) -> Vec<Polynomial<DC::Fie
 	for i in 0..log_d {
 		let beta_i = domain.basis()[i];
 		let eval = w_hat[i].evaluate(beta_i);
-		w_hat[i] *= eval.invert().unwrap();
+		w_hat[i] *= eval.try_invert().unwrap();
 	}
 
 	// construct novel polynomial basis

@@ -80,7 +80,7 @@ impl FieldOperation for InvertOp {
 	type Result<F> = Option<F>;
 
 	fn call<F: Field>(lhs: F, _: F) -> Option<F> {
-		lhs.invert()
+		lhs.try_invert()
 	}
 }
 

@@ -128,7 +128,7 @@ impl<F: Field> Matrix<F> {
 
 			// Normalize the pivot
 			let scalar = tmp[(i, i)]
-				.invert()
+				.try_invert()
 				.expect("pivot is checked to be non-zero above");
 			tmp.scale_row(i, scalar);
 			out.scale_row(i, scalar);

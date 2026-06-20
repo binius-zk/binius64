@@ -552,7 +552,7 @@ mod tests {
 			let mul_inv_x_result = field_val.mul_inv_x();
 			let regular_mul_result = field_val
 				* BinaryField128bGhash::new(2u128)
-					.invert()
+					.try_invert()
 					.expect("2 is invertible");
 
 			assert_eq!(

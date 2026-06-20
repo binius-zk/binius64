@@ -638,23 +638,23 @@ pub(crate) mod tests {
 
 	#[test]
 	fn test_inverse_on_zero() {
-		assert!(BinaryField1b::ZERO.invert().is_none());
-		assert!(AESTowerField8b::ZERO.invert().is_none());
-		assert!(BinaryField128bGhash::ZERO.invert().is_none());
+		assert!(BinaryField1b::ZERO.try_invert().is_none());
+		assert!(AESTowerField8b::ZERO.try_invert().is_none());
+		assert!(BinaryField128bGhash::ZERO.try_invert().is_none());
 	}
 
 	proptest! {
 		#[test]
 		fn test_inverse_8b(val in 1u8..) {
 			let x = AESTowerField8b::new(val);
-			let x_inverse = x.invert().unwrap();
+			let x_inverse = x.try_invert().unwrap();
 			assert_eq!(x * x_inverse, AESTowerField8b::ONE);
 		}
 
 		#[test]
 		fn test_inverse_128b(val in 1u128..) {
 			let x = BinaryField128bGhash::from(val);
-			let x_inverse = x.invert().unwrap();
+			let x_inverse = x.try_invert().unwrap();
 			assert_eq!(x * x_inverse, BinaryField128bGhash::ONE);
 		}
 	}
