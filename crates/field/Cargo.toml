@@ -83,3 +83,7 @@ harness = false
 [[bench]]
 name = "ghash_widening"
 harness = false
+
+[[bench]]
+name = "ghash_invert"
+harness = false
