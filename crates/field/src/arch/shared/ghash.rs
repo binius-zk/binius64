@@ -11,7 +11,12 @@ use std::{
 	ops::{Add, AddAssign, Sub, SubAssign},
 };
 
-use crate::{Divisible, underlier::UnderlierType};
+use bytemuck::TransparentWrapper;
+
+use crate::{
+	BinaryField128bGhash as GhashB128, Divisible, WideMul, arch::PackedPrimitiveType,
+	underlier::UnderlierType,
+};
 
 /// Trait for underliers that support CLMUL operations which are needed for the
 /// GHASH multiplication algorithm.
@@ -188,6 +193,25 @@ impl<U: ClMulUnderlier> SubAssign for WideGhashProduct<U> {
 		self.lo ^= rhs.lo;
 		self.hi ^= rhs.hi;
 		self.mid ^= rhs.mid;
+	}
+}
+
+#[repr(transparent)]
+#[derive(bytemuck::TransparentWrapper)]
+pub struct WideGhashMul<T>(T);
+
+impl<U: ClMulUnderlier> WideMul for WideGhashMul<PackedPrimitiveType<U, GhashB128>> {
+	type Output = WideGhashProduct<U>;
+
+	fn wide_mul(a: Self, b: Self) -> Self::Output {
+		WideGhashProduct::wide_mul(
+			PackedPrimitiveType::peel(Self::peel(a)),
+			PackedPrimitiveType::peel(Self::peel(b)),
+		)
+	}
+
+	fn reduce(wide: Self::Output) -> Self {
+		Self::wrap(PackedPrimitiveType::wrap(wide.reduce()))
 	}
 }
 
