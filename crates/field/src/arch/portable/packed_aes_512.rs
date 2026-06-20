@@ -15,6 +15,7 @@ define_packed_binary_fields!(
 			mul:       (ScaledStrategy),
 			square:    (ScaledStrategy),
 			invert:    (ScaledStrategy),
+			wide_mul: (TrivialWideMul),
 		},
 	]
 );

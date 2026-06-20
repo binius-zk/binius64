@@ -12,6 +12,7 @@ macro_rules! define_packed_binary_fields {
                     mul: ($($mul:tt)*),
                     square: ($($square:tt)*),
                     invert: ($($invert:tt)*),
+                    wide_mul: ($($wide_mul:tt)*),
                 }
             ),* $(,)?
         ]
@@ -23,25 +24,11 @@ macro_rules! define_packed_binary_fields {
                 $underlier,
                 ($($mul)*),
                 ($($square)*),
-                ($($invert)*)
+                ($($invert)*),
+                ($($wide_mul)*)
             );
-
-            // Every packed field is a `WideMul` (it's a parent trait of `PackedField`). All
-            // packings except `GF(2^128)` use the trivial implementation; the `GF(2^128)`
-            // packings provide their own CLMUL-accelerated (or, on backends without CLMUL,
-            // trivial) impl, so the macro must not emit a conflicting one for them.
-            maybe_impl_trivial_wide_mul!($scalar, $name);
         )*
     };
-}
-
-/// Emits a trivial [`WideMul`](crate::WideMul) impl for every scalar except
-/// `BinaryField128bGhash`, whose packings implement `WideMul` themselves.
-macro_rules! maybe_impl_trivial_wide_mul {
-	(BinaryField128bGhash, $name:ident) => {};
-	($scalar:ident, $name:ident) => {
-		$crate::arithmetic_traits::impl_trivial_wide_mul!($name);
-	};
 }
 
 macro_rules! define_packed_binary_field {
@@ -49,7 +36,8 @@ macro_rules! define_packed_binary_field {
 		$name:ident, $scalar:path, $underlier:ident,
 		($($mul:tt)*),
 		($($square:tt)*),
-		($($invert:tt)*)
+		($($invert:tt)*),
+		($($wide_mul:tt)*)
 	) => {
 		// Define packed field types
 		pub type $name = $crate::arch::PackedPrimitiveType<$underlier, $scalar>;
@@ -65,6 +53,30 @@ macro_rules! define_packed_binary_field {
 
 		// Define invert
 		impl_strategy!(impl_invert_with    $name, ($($invert)*));
+
+		// Define widening multiplication. Every packed field is a `WideMul` (it's a parent trait
+		// of `PackedField`). The caller passes a wrapper struct (a `TransparentWrapper` around this
+		// packed field) that carries the actual `WideMul` impl; here we forward to it by wrapping
+		// the inputs and peeling the reduced result.
+		impl $crate::arithmetic_traits::WideMul for $name {
+			type Output =
+				<$($wide_mul)* <$name> as $crate::arithmetic_traits::WideMul>::Output;
+
+			#[inline]
+			fn wide_mul(a: Self, b: Self) -> Self::Output {
+				<$($wide_mul)* <$name> as $crate::arithmetic_traits::WideMul>::wide_mul(
+					<$($wide_mul)* <$name> as ::bytemuck::TransparentWrapper<$name>>::wrap(a),
+					<$($wide_mul)* <$name> as ::bytemuck::TransparentWrapper<$name>>::wrap(b),
+				)
+			}
+
+			#[inline]
+			fn reduce(wide: Self::Output) -> Self {
+				<$($wide_mul)* <$name> as ::bytemuck::TransparentWrapper<$name>>::peel(
+					<$($wide_mul)* <$name> as $crate::arithmetic_traits::WideMul>::reduce(wide),
+				)
+			}
+		}
 	};
 }
 
@@ -95,8 +107,10 @@ macro_rules! impl_serialize_deserialize_for_packed_binary_field {
 pub(crate) use define_packed_binary_field;
 pub(crate) use define_packed_binary_fields;
 pub(crate) use impl_serialize_deserialize_for_packed_binary_field;
-pub(crate) use maybe_impl_trivial_wide_mul;
 
+// Re-exported so the `wide_mul: (TrivialWideMul)` argument resolves at every macro call site that
+// glob-imports this module.
+pub(crate) use crate::arithmetic_traits::TrivialWideMul;
 pub(crate) use crate::arithmetic_traits::{impl_invert_with, impl_mul_with, impl_square_with};
 
 pub(crate) mod portable_macros {

@@ -59,7 +59,8 @@ define_packed_binary_field!(
 	M256,
 	(Ghash256Strategy),
 	(Ghash256Strategy),
-	(Ghash256Strategy)
+	(Ghash256Strategy),
+	(TrivialWideMul)
 );
 
 // Implement TaggedMul for Ghash256Strategy
@@ -133,27 +134,6 @@ cfg_if! {
 				Self::from_underlier(result_underlier)
 			}
 		}
-	}
-}
-
-// Implement WideMul
-cfg_if! {
-	if #[cfg(target_feature = "vpclmulqdq")] {
-		impl WideMul for PackedBinaryGhash2x128b {
-			type Output = ghash::WideGhashProduct<M256>;
-
-			#[inline]
-			fn wide_mul(a: Self, b: Self) -> Self::Output {
-				ghash::WideGhashProduct::wide_mul(a.to_underlier(), b.to_underlier())
-			}
-
-			#[inline]
-			fn reduce(wide: Self::Output) -> Self {
-				Self::from_underlier(wide.reduce())
-			}
-		}
-	} else {
-		crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash2x128b);
 	}
 }
 

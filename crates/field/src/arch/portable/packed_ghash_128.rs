@@ -125,7 +125,8 @@ define_packed_binary_field!(
 	M128,
 	(GhashStrategy),
 	(GhashStrategy),
-	(GhashStrategy)
+	(GhashStrategy),
+	(TrivialWideMul)
 );
 
 impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
@@ -141,8 +142,6 @@ impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
 		ghash_square(self.0).into()
 	}
 }
-
-crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash1x128b);
 
 impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
 	#[inline]

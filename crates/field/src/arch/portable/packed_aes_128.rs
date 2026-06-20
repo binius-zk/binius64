@@ -19,6 +19,7 @@ define_packed_binary_fields!(
 			mul: (PairwiseTableStrategy),
 			square: (PairwiseTableStrategy),
 			invert: (PairwiseTableStrategy),
+			wide_mul: (TrivialWideMul),
 		},
 	]
 );

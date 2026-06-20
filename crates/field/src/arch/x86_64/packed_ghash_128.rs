@@ -18,9 +18,9 @@ use crate::{
 		impl_square_with,
 	},
 };
-// Only used by the CLMUL-accelerated `ClMulUnderlier` and `WideMul` impls below.
+// Only used by the CLMUL-accelerated `ClMulUnderlier` impl below.
 #[cfg(target_feature = "pclmulqdq")]
-use crate::{arch::shared::ghash, arithmetic_traits::WideMul};
+use crate::arch::shared::ghash;
 
 #[cfg(target_feature = "pclmulqdq")]
 impl ghash::ClMulUnderlier for M128 {
@@ -45,7 +45,8 @@ define_packed_binary_field!(
 	M128,
 	(GhashStrategy),
 	(GhashStrategy),
-	(GhashStrategy)
+	(GhashStrategy),
+	(TrivialWideMul)
 );
 
 // Implement TaggedMul for GhashStrategy
@@ -93,27 +94,6 @@ cfg_if! {
 				Self::from_underlier(M128::from(ghash_square(u128::from(self.to_underlier()))))
 			}
 		}
-	}
-}
-
-// Implement WideMul
-cfg_if! {
-	if #[cfg(target_feature = "pclmulqdq")] {
-		impl WideMul for PackedBinaryGhash1x128b {
-			type Output = ghash::WideGhashProduct<M128>;
-
-			#[inline]
-			fn wide_mul(a: Self, b: Self) -> Self::Output {
-				ghash::WideGhashProduct::wide_mul(a.to_underlier(), b.to_underlier())
-			}
-
-			#[inline]
-			fn reduce(wide: Self::Output) -> Self {
-				Self::from_underlier(wide.reduce())
-			}
-		}
-	} else {
-		crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash1x128b);
 	}
 }
 

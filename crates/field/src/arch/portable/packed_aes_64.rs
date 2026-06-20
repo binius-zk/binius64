@@ -16,6 +16,7 @@ define_packed_binary_fields!(
 			mul:       (if gfni_x86 PackedAESBinaryField16x8b else PairwiseTableStrategy),
 			square:    (if gfni_x86 PackedAESBinaryField16x8b else PairwiseTableStrategy),
 			invert:    (if gfni_x86 PackedAESBinaryField16x8b else PairwiseTableStrategy),
+			wide_mul: (TrivialWideMul),
 		},
 	]
 );

@@ -16,8 +16,7 @@ define_packed_binary_fields!(
 			mul:       (ScaledStrategy),
 			square:    (ScaledStrategy),
 			invert:    (ScaledStrategy),
+			wide_mul: (TrivialWideMul),
 		},
 	]
 );
-
-crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash4x128b);
