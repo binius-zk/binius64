@@ -21,7 +21,7 @@ use super::{
 	mul_by_binary_field_1b,
 };
 use crate::{
-	ExtensionField, Field, TowerField, binary_field_arithmetic::impl_arithmetic_using_packed,
+	ExtensionField, Field, binary_field_arithmetic::impl_arithmetic_using_packed,
 	linear_transformation::Transformation, underlier::U1,
 };
 
@@ -49,15 +49,6 @@ impl_field_extension!(BinaryField1b(U1) < @3 => AESTowerField8b(u8));
 mul_by_binary_field_1b!(AESTowerField8b);
 
 impl_arithmetic_using_packed!(AESTowerField8b);
-
-impl TowerField for AESTowerField8b {
-	fn min_tower_level(self) -> usize {
-		match self {
-			Self::ZERO | Self::ONE => 0,
-			_ => 3,
-		}
-	}
-}
 
 /// A 3- step transformation :
 /// 1. Cast to base b-bit packed field

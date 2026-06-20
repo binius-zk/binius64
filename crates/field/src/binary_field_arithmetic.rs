@@ -4,7 +4,7 @@ use std::ops::Mul;
 
 use super::{
 	arithmetic_traits::{InvertOrZero, Square},
-	binary_field::{BinaryField1b, TowerField},
+	binary_field::BinaryField1b,
 };
 use crate::PackedField;
 
@@ -49,12 +49,6 @@ macro_rules! impl_arithmetic_using_packed {
 }
 
 pub(crate) use impl_arithmetic_using_packed;
-
-impl TowerField for BinaryField1b {
-	fn min_tower_level(self) -> usize {
-		0
-	}
-}
 
 impl InvertOrZero for BinaryField1b {
 	#[inline]

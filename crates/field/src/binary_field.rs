@@ -23,55 +23,6 @@ pub trait BinaryField:
 	const N_BITS: usize = Self::ORDER_EXPONENT;
 }
 
-/// A binary field *isomorphic* to a binary tower field.
-///
-/// The canonical binary field tower construction is specified in [DP23], section 2.3. This is a
-/// family of binary fields with extension degree $2^{\iota}$ for any tower height $\iota$. This
-/// trait can be implemented on any binary field *isomorphic* to the canonical tower field.
-///
-/// [DP23]: https://eprint.iacr.org/2023/1784
-pub trait TowerField: BinaryField {
-	/// The level $\iota$ in the tower, where this field is isomorphic to $T_{\iota}$.
-	const TOWER_LEVEL: usize = Self::N_BITS.ilog2() as usize;
-
-	/// Returns the smallest valid `TOWER_LEVEL` in the tower that can fit the same value.
-	///
-	/// Since which `TOWER_LEVEL` values are valid depends on the tower,
-	/// `F::Canonical::from(elem).min_tower_level()` can return a different result
-	/// from `elem.min_tower_level()`.
-	fn min_tower_level(self) -> usize;
-
-	/// Returns the i'th basis element of this field as an extension over the tower subfield with
-	/// level $\iota$.
-	///
-	/// # Preconditions
-	///
-	/// * `iota` must be at most `TOWER_LEVEL`.
-	/// * `i` must be less than `2^(TOWER_LEVEL - iota)`.
-	fn basis(iota: usize, i: usize) -> Self {
-		assert!(iota <= Self::TOWER_LEVEL, "iota {iota} exceeds tower level {}", Self::TOWER_LEVEL);
-		let n_basis_elts = 1 << (Self::TOWER_LEVEL - iota);
-		assert!(i < n_basis_elts, "index {i} out of range for {n_basis_elts} basis elements");
-		<Self as ExtensionField<BinaryField1b>>::basis(i << iota)
-	}
-}
-
-/// Returns the i'th basis element of `FExt` as a field extension of `FSub`.
-///
-/// This is an alias function for [`ExtensionField::basis`].
-///
-/// ## Pre-conditions
-///
-/// * `i` must be in the range $[0, d)$, where $d$ is the field extension degree.
-#[inline]
-pub fn ext_basis<FExt, FSub>(i: usize) -> FExt
-where
-	FSub: Field,
-	FExt: ExtensionField<FSub>,
-{
-	<FExt as ExtensionField<FSub>>::basis(i)
-}
-
 /// Macro to generate an implementation of a BinaryField.
 macro_rules! binary_field {
 	($vis:vis $name:ident($typ:ty), $gen:expr) => {

@@ -5,7 +5,6 @@
 //! This is the GHASH field used in AES-GCM.
 
 use std::{
-	any::TypeId,
 	fmt::{Debug, Display, Formatter},
 	iter::{Product, Sum},
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
@@ -18,7 +17,7 @@ use binius_utils::{
 use bytemuck::{Pod, Zeroable};
 
 use super::{
-	binary_field::{BinaryField, BinaryField1b, TowerField, binary_field, impl_field_extension},
+	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
 	extension::ExtensionField,
 };
 use crate::{
@@ -108,17 +107,6 @@ impl BinaryField128bGhash {
 		let result = shifted ^ (((1u128 << 127) | 0x43) & mask);
 
 		Self::new(result)
-	}
-}
-
-impl TowerField for BinaryField128bGhash {
-	fn min_tower_level(self) -> usize {
-		// `M128` is not structurally matchable, so compare against the constants directly.
-		if self == Self::ZERO || self == Self::ONE {
-			0
-		} else {
-			7
-		}
 	}
 }
 
@@ -437,12 +425,6 @@ impl From<AESTowerField8b> for BinaryField128bGhash {
 
 		BinaryField128bGhash::new(LOOKUP_TABLE[value.0 as usize])
 	}
-}
-
-#[inline(always)]
-pub fn is_ghash_tower<F: TowerField>() -> bool {
-	TypeId::of::<F>() == TypeId::of::<BinaryField128bGhash>()
-		|| TypeId::of::<F>() == TypeId::of::<BinaryField1b>()
 }
 
 #[cfg(test)]

@@ -28,7 +28,7 @@ use binius_utils::{
 use bytemuck::{Pod, Zeroable};
 
 use super::{
-	binary_field::{BinaryField, BinaryField1b, TowerField, binary_field, impl_field_extension},
+	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
 	extension::ExtensionField,
 };
 use crate::{
@@ -97,20 +97,6 @@ fn square(x: [BinaryField128bGhash; 2]) -> [BinaryField128bGhash; 2] {
 	let t2 = t0_t2.get(1);
 
 	[t0 + t2.mul_inv_x(), t2]
-}
-
-impl TowerField for GhashSq256b {
-	fn min_tower_level(self) -> usize {
-		let [a, b] = self.to_coeffs();
-		if self == Self::ZERO || self == Self::ONE {
-			0
-		} else if b == BinaryField128bGhash::ZERO {
-			// Elements with no `Y` component lie in the GHASH subfield (tower level 7).
-			a.min_tower_level()
-		} else {
-			8
-		}
-	}
 }
 
 impl Mul<GhashSq256b> for GhashSq256b {
