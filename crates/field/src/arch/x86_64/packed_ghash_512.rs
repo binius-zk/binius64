@@ -14,7 +14,7 @@ use crate::{
 	BinaryField128bGhash,
 	arch::portable::packed_macros::{portable_macros::*, *},
 	arithmetic_traits::{
-		InvertOrZero, TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
+		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
 		impl_square_with,
 	},
 	underlier::Divisible,
@@ -154,9 +154,10 @@ cfg_if! {
 	}
 }
 
-// Implement TaggedInvertOrZero for Ghash512Strategy (always uses element-wise fallback)
+// Implement TaggedInvertOrZero for Ghash512Strategy (Itoh-Tsujii over the full 512-bit vector)
 impl TaggedInvertOrZero<Ghash512Strategy> for PackedBinaryGhash4x128b {
+	#[inline]
 	fn invert_or_zero(self) -> Self {
-		Self::from_iter(Self::value_iter(self).map(InvertOrZero::invert_or_zero))
+		crate::arch::invert_b128(self)
 	}
 }

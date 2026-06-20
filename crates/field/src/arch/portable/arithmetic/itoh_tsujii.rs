@@ -16,10 +16,10 @@
 //!
 //! [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
 
-use std::{array, iter, sync::LazyLock};
+use std::{array, iter, ops::Mul, sync::LazyLock};
 
 use crate::{
-	BinaryField1b, ExtensionField, Field, PackedField, arithmetic_traits::Square,
+	BinaryField1b, Divisible, ExtensionField, Field, arithmetic_traits::Square,
 	ghash::BinaryField128bGhash as GhashB128, util::expand_subset_sums_array,
 };
 
@@ -87,12 +87,20 @@ fn compute_power_map_matrix(n: usize) -> [GhashB128; FIELD_BITS] {
 	})
 }
 
-/// Invert a packed vector of GHASH elements via the Itoh-Tsujii algorithm.
+/// Invert each GHASH element (scalar or packed) via the Itoh-Tsujii algorithm.
 ///
 /// Zero elements map to zero, matching `InvertOrZero` semantics.
+///
+/// The bound is phrased in terms of the field operations (`Square`, `Mul`) plus
+/// `Divisible<GhashB128>` rather than `P: PackedField`. `PackedField`'s blanket impl lists
+/// `InvertOrZero` in its where-clause, so requiring it here would form a trait-resolution cycle
+/// when this function backs the `InvertOrZero` impls. `Divisible<GhashB128>` carries no such
+/// obligation, keeps the function statically GHASH-typed, and is satisfied both by the GHASH packed
+/// fields and (reflexively) by the scalar `BinaryField128bGhash`, so the scalar inverts directly
+/// without routing through a packed type.
 pub fn invert_b128<P>(x: P) -> P
 where
-	P: PackedField<Scalar = GhashB128>,
+	P: Copy + Square + Mul<Output = P> + Divisible<GhashB128>,
 {
 	let tables = &*GHASH_POWER_MAP_TABLES;
 
@@ -112,13 +120,15 @@ where
 	beta_127.square()
 }
 
-/// Apply the power map `x -> x^(2^n)` to every scalar of a packed vector, using the precomputed
-/// byte lookup table.
+/// Apply the power map `x -> x^(2^n)` to every GHASH scalar of `x`, using the precomputed byte
+/// lookup table.
 fn pow_2_n<P>(x: P, table: &PowerMapTable) -> P
 where
-	P: PackedField<Scalar = GhashB128>,
+	P: Divisible<GhashB128>,
 {
-	P::from_scalars(x.into_iter().map(|x| apply_power_map(x, table)))
+	Divisible::<GhashB128>::from_iter(
+		Divisible::<GhashB128>::value_iter(x).map(|scalar| apply_power_map(scalar, table)),
+	)
 }
 
 /// Apply a byte-wise lookup table power map to a single GHASH scalar.
@@ -142,7 +152,6 @@ mod tests {
 		arch::{
 			packed_ghash_128::PackedBinaryGhash1x128b, packed_ghash_256::PackedBinaryGhash2x128b,
 		},
-		arithmetic_traits::InvertOrZero,
 	};
 
 	#[test]
@@ -177,15 +186,23 @@ mod tests {
 		assert_eq!(invert_b128(zero), zero);
 	}
 
+	// `invert_b128` now backs `InvertOrZero` itself, so the multiplicative-inverse property (with
+	// `0 -> 0`) is the independent oracle: given a separately-tested `mul`, `x * x^-1 == 1` fully
+	// characterizes invert-or-zero.
 	proptest! {
 		#[test]
-		fn test_invert_b128_matches_invert_or_zero_1x(raw in any::<u128>()) {
-			let x = PackedBinaryGhash1x128b::broadcast(GhashB128::from(raw));
-			prop_assert_eq!(invert_b128(x), x.invert_or_zero());
+		fn test_invert_b128_is_multiplicative_inverse_scalar(raw in any::<u128>()) {
+			let x = GhashB128::from(raw);
+			let inv = invert_b128(x);
+			if x == GhashB128::ZERO {
+				prop_assert_eq!(inv, GhashB128::ZERO);
+			} else {
+				prop_assert_eq!(x * inv, GhashB128::ONE);
+			}
 		}
 
 		#[test]
-		fn test_invert_b128_is_multiplicative_inverse(raw in any::<u128>()) {
+		fn test_invert_b128_is_multiplicative_inverse_1x(raw in any::<u128>()) {
 			let scalar = GhashB128::from(raw);
 			let x = PackedBinaryGhash1x128b::broadcast(scalar);
 			let inv = invert_b128(x);
@@ -197,11 +214,19 @@ mod tests {
 		}
 
 		#[test]
-		fn test_invert_b128_matches_invert_or_zero_2x(a in any::<u128>(), b in any::<u128>()) {
-			let x = PackedBinaryGhash2x128b::from_scalars(
-				[a, b].map(GhashB128::from),
+		fn test_invert_b128_is_multiplicative_inverse_2x(a in any::<u128>(), b in any::<u128>()) {
+			let x = PackedBinaryGhash2x128b::from_scalars([a, b].map(GhashB128::from));
+			let inv = invert_b128(x);
+			let ones = PackedBinaryGhash2x128b::from_scalars(
+				[a, b].map(|raw| {
+					if GhashB128::from(raw) == GhashB128::ZERO {
+						GhashB128::ZERO
+					} else {
+						GhashB128::ONE
+					}
+				}),
 			);
-			prop_assert_eq!(invert_b128(x), x.invert_or_zero());
+			prop_assert_eq!(x * inv, ones);
 		}
 	}
 }
