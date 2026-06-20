@@ -24,10 +24,9 @@ use super::{
 use crate::{
 	AESTowerField8b, Divisible, Field, PackedField, WideMul,
 	arch::{M128, packed_ghash_128::PackedBinaryGhash1x128b},
-	arithmetic_traits::InvertOrZero,
+	arithmetic_traits::{InvertOrZero, Square},
 	binary_field_arithmetic::{
-		TowerFieldArithmetic, invert_or_zero_using_packed, multiple_using_packed,
-		square_using_packed,
+		invert_or_zero_using_packed, multiple_using_packed, square_using_packed,
 	},
 	mul_by_binary_field_1b,
 	underlier::{U1, WithUnderlier},
@@ -125,11 +124,18 @@ impl TowerField for BinaryField128bGhash {
 
 // Cannot use `impl_arithmetic_using_packed!` because `PackedSubfield<Self, Self>` resolves
 // via `Underlier = u128`, but on SIMD targets `PackedBinaryGhash1x128b` uses `M128`.
-impl TowerFieldArithmetic for BinaryField128bGhash {
-	fn multiply(self, rhs: Self) -> Self {
+impl Mul<BinaryField128bGhash> for BinaryField128bGhash {
+	type Output = Self;
+
+	#[inline]
+	fn mul(self, rhs: Self) -> Self {
+		crate::tracing::trace_multiplication!(BinaryField128bGhash);
 		multiple_using_packed::<PackedBinaryGhash1x128b>(self, rhs)
 	}
+}
 
+impl Square for BinaryField128bGhash {
+	#[inline]
 	fn square(self) -> Self {
 		square_using_packed::<PackedBinaryGhash1x128b>(self)
 	}

@@ -35,7 +35,6 @@ use crate::{
 	BinaryField128bGhash, Divisible, Field, PackedBinaryGhash2x128b, PackedField,
 	arch::{M128, M256, packed_256::m256_from_u128s},
 	arithmetic_traits::{InvertOrZero, Square, impl_trivial_wide_mul},
-	binary_field_arithmetic::TowerFieldArithmetic,
 	mul_by_binary_field_1b,
 	underlier::U1,
 };
@@ -114,11 +113,18 @@ impl TowerField for GhashSq256b {
 	}
 }
 
-impl TowerFieldArithmetic for GhashSq256b {
-	fn multiply(self, rhs: Self) -> Self {
+impl Mul<GhashSq256b> for GhashSq256b {
+	type Output = Self;
+
+	#[inline]
+	fn mul(self, rhs: Self) -> Self {
+		crate::tracing::trace_multiplication!(GhashSq256b);
 		Self::from_coeffs(mul(self.to_coeffs(), rhs.to_coeffs()))
 	}
+}
 
+impl Square for GhashSq256b {
+	#[inline]
 	fn square(self) -> Self {
 		Self::from_coeffs(square(self.to_coeffs()))
 	}
