@@ -19,7 +19,7 @@ use crate::{
 		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
 		impl_square_with,
 	},
-	underlier::UnderlierType,
+	underlier::Divisible,
 };
 // Only used by the CLMUL-accelerated `WideMul` impl below.
 #[cfg(target_feature = "vpclmulqdq")]
@@ -77,10 +77,10 @@ cfg_if! {
 				// Fallback: perform scalar multiplication on each 128-bit element
 				let mut result_underlier = self.to_underlier();
 				unsafe {
-					let self_0 = self.to_underlier().get_subvalue::<M128>(0);
-					let self_1 = self.to_underlier().get_subvalue::<M128>(1);
-					let rhs_0 = rhs.to_underlier().get_subvalue::<M128>(0);
-					let rhs_1 = rhs.to_underlier().get_subvalue::<M128>(1);
+					let self_0 = Divisible::<M128>::get_unchecked(&self.to_underlier(), 0);
+					let self_1 = Divisible::<M128>::get_unchecked(&self.to_underlier(), 1);
+					let rhs_0 = Divisible::<M128>::get_unchecked(&rhs.to_underlier(), 0);
+					let rhs_1 = Divisible::<M128>::get_unchecked(&rhs.to_underlier(), 1);
 
 					let result_0 = std::ops::Mul::mul(
 						PackedBinaryGhash1x128b::from(self_0),
@@ -91,8 +91,8 @@ cfg_if! {
 						PackedBinaryGhash1x128b::from(rhs_1),
 					);
 
-					result_underlier.set_subvalue(0, result_0.to_underlier());
-					result_underlier.set_subvalue(1, result_1.to_underlier());
+					Divisible::<M128>::set_unchecked(&mut result_underlier, 0, result_0.to_underlier());
+					Divisible::<M128>::set_unchecked(&mut result_underlier, 1, result_1.to_underlier());
 				}
 
 				Self::from_underlier(result_underlier)
@@ -116,14 +116,14 @@ cfg_if! {
 			fn square(self) -> Self {
 				let mut result_underlier = self.to_underlier();
 				unsafe {
-					let self_0 = self.to_underlier().get_subvalue::<M128>(0);
-					let self_1 = self.to_underlier().get_subvalue::<M128>(1);
+					let self_0 = Divisible::<M128>::get_unchecked(&self.to_underlier(), 0);
+					let self_1 = Divisible::<M128>::get_unchecked(&self.to_underlier(), 1);
 
 					let result_0 = crate::arithmetic_traits::Square::square(PackedBinaryGhash1x128b::from(self_0));
 					let result_1 = crate::arithmetic_traits::Square::square(PackedBinaryGhash1x128b::from(self_1));
 
-					result_underlier.set_subvalue(0, result_0.to_underlier());
-					result_underlier.set_subvalue(1, result_1.to_underlier());
+					Divisible::<M128>::set_unchecked(&mut result_underlier, 0, result_0.to_underlier());
+					Divisible::<M128>::set_unchecked(&mut result_underlier, 1, result_1.to_underlier());
 				}
 
 				Self::from_underlier(result_underlier)
@@ -158,8 +158,8 @@ impl TaggedInvertOrZero<Ghash256Strategy> for PackedBinaryGhash2x128b {
 	fn invert_or_zero(self) -> Self {
 		let mut result_underlier = self.to_underlier();
 		unsafe {
-			let self_0 = self.to_underlier().get_subvalue::<M128>(0);
-			let self_1 = self.to_underlier().get_subvalue::<M128>(1);
+			let self_0 = Divisible::<M128>::get_unchecked(&self.to_underlier(), 0);
+			let self_1 = Divisible::<M128>::get_unchecked(&self.to_underlier(), 1);
 
 			// Use the x86_64 scalar invert for each element
 			let result_0 = crate::arithmetic_traits::InvertOrZero::invert_or_zero(
@@ -169,8 +169,8 @@ impl TaggedInvertOrZero<Ghash256Strategy> for PackedBinaryGhash2x128b {
 				PackedBinaryGhash1x128b::from(self_1),
 			);
 
-			result_underlier.set_subvalue(0, result_0.to_underlier());
-			result_underlier.set_subvalue(1, result_1.to_underlier());
+			Divisible::<M128>::set_unchecked(&mut result_underlier, 0, result_0.to_underlier());
+			Divisible::<M128>::set_unchecked(&mut result_underlier, 1, result_1.to_underlier());
 		}
 
 		Self::from_underlier(result_underlier)

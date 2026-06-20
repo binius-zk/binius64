@@ -5,7 +5,6 @@ use std::{
 	ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr},
 };
 
-use binius_utils::checked_arithmetics::checked_int_div;
 use bytemuck::{NoUninit, TransparentWrapper, Zeroable};
 
 use super::{U1, underlier_with_bit_ops::spread_fallback};
@@ -85,42 +84,6 @@ pub trait UnderlierType:
 		Self: Divisible<T>,
 	{
 		Divisible::<T>::broadcast(value)
-	}
-
-	/// Gets the subvalue from the given position.
-	/// Function panics in case when index is out of range.
-	///
-	/// # Safety
-	/// `i` must be less than `Self::BITS/T::BITS`.
-	#[inline]
-	unsafe fn get_subvalue<T>(&self, i: usize) -> T
-	where
-		T: UnderlierType,
-		Self: Divisible<T>,
-	{
-		debug_assert!(
-			i < checked_int_div(Self::BITS, T::BITS),
-			"i: {} Self::BITS: {}, T::BITS: {}",
-			i,
-			Self::BITS,
-			T::BITS
-		);
-		Divisible::<T>::get(self, i)
-	}
-
-	/// Sets the subvalue in the given position.
-	/// Function panics in case when index is out of range.
-	///
-	/// # Safety
-	/// `i` must be less than `Self::BITS/T::BITS`.
-	#[inline]
-	unsafe fn set_subvalue<T>(&mut self, i: usize, val: T)
-	where
-		T: UnderlierType,
-		Self: Divisible<T>,
-	{
-		debug_assert!(i < checked_int_div(Self::BITS, T::BITS));
-		Divisible::<T>::set(self, i, val);
 	}
 
 	/// Spread takes a block of sub_elements of `T` type within the current value and

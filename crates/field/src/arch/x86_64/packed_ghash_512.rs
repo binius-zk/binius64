@@ -75,14 +75,14 @@ cfg_if! {
 				// Fallback: perform scalar multiplication on each 128-bit element
 				let mut result_underlier = self.to_underlier();
 				unsafe {
-					let self_0 = self.to_underlier().get_subvalue::<u128>(0);
-					let self_1 = self.to_underlier().get_subvalue::<u128>(1);
-					let self_2 = self.to_underlier().get_subvalue::<u128>(2);
-					let self_3 = self.to_underlier().get_subvalue::<u128>(3);
-					let rhs_0 = rhs.to_underlier().get_subvalue::<u128>(0);
-					let rhs_1 = rhs.to_underlier().get_subvalue::<u128>(1);
-					let rhs_2 = rhs.to_underlier().get_subvalue::<u128>(2);
-					let rhs_3 = rhs.to_underlier().get_subvalue::<u128>(3);
+					let self_0 = Divisible::<u128>::get_unchecked(&self.to_underlier(), 0);
+					let self_1 = Divisible::<u128>::get_unchecked(&self.to_underlier(), 1);
+					let self_2 = Divisible::<u128>::get_unchecked(&self.to_underlier(), 2);
+					let self_3 = Divisible::<u128>::get_unchecked(&self.to_underlier(), 3);
+					let rhs_0 = Divisible::<u128>::get_unchecked(&rhs.to_underlier(), 0);
+					let rhs_1 = Divisible::<u128>::get_unchecked(&rhs.to_underlier(), 1);
+					let rhs_2 = Divisible::<u128>::get_unchecked(&rhs.to_underlier(), 2);
+					let rhs_3 = Divisible::<u128>::get_unchecked(&rhs.to_underlier(), 3);
 
 					// Use the portable scalar multiplication for each element
 					use super::super::portable::packed_ghash_128::PackedBinaryGhash1x128b as PortablePackedBinaryGhash1x128b;
@@ -103,10 +103,10 @@ cfg_if! {
 						PortablePackedBinaryGhash1x128b::from(rhs_3),
 					);
 
-					result_underlier.set_subvalue(0, result_0.to_underlier());
-					result_underlier.set_subvalue(1, result_1.to_underlier());
-					result_underlier.set_subvalue(2, result_2.to_underlier());
-					result_underlier.set_subvalue(3, result_3.to_underlier());
+					Divisible::<u128>::set_unchecked(&mut result_underlier, 0, result_0.to_underlier());
+					Divisible::<u128>::set_unchecked(&mut result_underlier, 1, result_1.to_underlier());
+					Divisible::<u128>::set_unchecked(&mut result_underlier, 2, result_2.to_underlier());
+					Divisible::<u128>::set_unchecked(&mut result_underlier, 3, result_3.to_underlier());
 				}
 
 				Self::from_underlier(result_underlier)

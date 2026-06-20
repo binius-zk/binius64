@@ -138,7 +138,11 @@ impl<U: UnderlierType + Divisible<Scalar::Underlier>, Scalar: BinaryField> Debug
 		let width = checked_int_div(U::BITS, Scalar::N_BITS);
 		let values_str = (0..width)
 			// Safety: `i` ranges over `0..width`, the number of scalars packed in `U`.
-			.map(|i| Scalar::from_underlier(unsafe { self.0.get_subvalue(i) }))
+			.map(|i| {
+				Scalar::from_underlier(unsafe {
+					Divisible::<Scalar::Underlier>::get_unchecked(&self.0, i)
+				})
+			})
 			.map(|value| format!("{value}"))
 			.collect::<Vec<_>>()
 			.join(",");

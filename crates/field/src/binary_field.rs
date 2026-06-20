@@ -436,8 +436,13 @@ macro_rules! impl_field_extension {
 
 			#[inline]
 			unsafe fn get_base_unchecked(&self, i: usize) -> $subfield_name {
-				use $crate::underlier::{UnderlierType, WithUnderlier};
-				unsafe { $subfield_name::from_underlier(self.to_underlier().get_subvalue(i)) }
+				use $crate::underlier::{Divisible, WithUnderlier};
+				// Safety: the caller guarantees `i < Self::N` (over subfield elements).
+				unsafe {
+					$subfield_name::from_underlier(Divisible::<
+						<$subfield_name as WithUnderlier>::Underlier,
+					>::get_unchecked(&self.to_underlier(), i))
+				}
 			}
 
 			#[inline]

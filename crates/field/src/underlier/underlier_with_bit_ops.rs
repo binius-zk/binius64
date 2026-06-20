@@ -35,8 +35,15 @@ where
 	let block_offset = block_idx << log_block_len;
 	let log_repeat = U::LOG_BITS - T::LOG_BITS - log_block_len;
 	for i in 0..1 << log_block_len {
+		// Safety: `block_offset + i < block_offset + block_len <= U::BITS / T::BITS`
+		// (precondition), and `i << log_repeat < U::BITS / T::BITS` (by the loop bound and
+		// log_repeat definition).
 		unsafe {
-			result.set_subvalue(i << log_repeat, value.get_subvalue::<T>(block_offset + i));
+			Divisible::<T>::set_unchecked(
+				&mut result,
+				i << log_repeat,
+				Divisible::<T>::get_unchecked(&value, block_offset + i),
+			);
 		}
 	}
 
@@ -111,7 +118,10 @@ where
 	U: UnderlierType + From<T> + Divisible<T>,
 	T: UnderlierType + NumCast<U>,
 {
-	std::array::from_fn(|i| unsafe { value.get_subvalue::<T>(block_idx * BLOCK_LEN + i) })
+	// Safety: `block_idx * BLOCK_LEN + i < U::BITS / T::BITS` by the function preconditions.
+	std::array::from_fn(|i| unsafe {
+		Divisible::<T>::get_unchecked(&value, block_idx * BLOCK_LEN + i)
+	})
 }
 
 /// A helper functions for implementing `UnderlierType::spread` for SIMD types.
@@ -186,63 +196,53 @@ mod tests {
 	}
 
 	#[test]
-	fn test_get_subvalue() {
+	fn test_divisible_get_u32() {
 		let value = 0xab12cd34u32;
 
-		unsafe {
-			assert_eq!(value.get_subvalue::<U1>(0), U1::new(0));
-			assert_eq!(value.get_subvalue::<U1>(1), U1::new(0));
-			assert_eq!(value.get_subvalue::<U1>(2), U1::new(1));
-			assert_eq!(value.get_subvalue::<U1>(31), U1::new(1));
+		assert_eq!(Divisible::<U1>::get(&value, 0), U1::new(0));
+		assert_eq!(Divisible::<U1>::get(&value, 1), U1::new(0));
+		assert_eq!(Divisible::<U1>::get(&value, 2), U1::new(1));
+		assert_eq!(Divisible::<U1>::get(&value, 31), U1::new(1));
 
-			assert_eq!(value.get_subvalue::<U2>(0), U2::new(0));
-			assert_eq!(value.get_subvalue::<U2>(1), U2::new(1));
-			assert_eq!(value.get_subvalue::<U2>(2), U2::new(3));
-			assert_eq!(value.get_subvalue::<U2>(15), U2::new(2));
+		assert_eq!(Divisible::<U2>::get(&value, 0), U2::new(0));
+		assert_eq!(Divisible::<U2>::get(&value, 1), U2::new(1));
+		assert_eq!(Divisible::<U2>::get(&value, 2), U2::new(3));
+		assert_eq!(Divisible::<U2>::get(&value, 15), U2::new(2));
 
-			assert_eq!(value.get_subvalue::<U4>(0), U4::new(4));
-			assert_eq!(value.get_subvalue::<U4>(1), U4::new(3));
-			assert_eq!(value.get_subvalue::<U4>(2), U4::new(13));
-			assert_eq!(value.get_subvalue::<U4>(7), U4::new(10));
+		assert_eq!(Divisible::<U4>::get(&value, 0), U4::new(4));
+		assert_eq!(Divisible::<U4>::get(&value, 1), U4::new(3));
+		assert_eq!(Divisible::<U4>::get(&value, 2), U4::new(13));
+		assert_eq!(Divisible::<U4>::get(&value, 7), U4::new(10));
 
-			assert_eq!(value.get_subvalue::<u8>(0), 0x34u8);
-			assert_eq!(value.get_subvalue::<u8>(1), 0xcdu8);
-			assert_eq!(value.get_subvalue::<u8>(2), 0x12u8);
-			assert_eq!(value.get_subvalue::<u8>(3), 0xabu8);
-		}
+		assert_eq!(Divisible::<u8>::get(&value, 0), 0x34u8);
+		assert_eq!(Divisible::<u8>::get(&value, 1), 0xcdu8);
+		assert_eq!(Divisible::<u8>::get(&value, 2), 0x12u8);
+		assert_eq!(Divisible::<u8>::get(&value, 3), 0xabu8);
 	}
 
 	proptest! {
 		#[test]
-		fn test_set_subvalue_1b(mut init_val in any::<u32>(), i in 0usize..31, val in bits::u8::masked(1)) {
-			unsafe {
-				init_val.set_subvalue(i, U1::new(val));
-				assert_eq!(init_val.get_subvalue::<U1>(i), U1::new(val));
-			}
+		fn test_divisible_set_1b(mut init_val in any::<u32>(), i in 0usize..31, val in bits::u8::masked(1)) {
+			Divisible::<U1>::set(&mut init_val, i, U1::new(val));
+			assert_eq!(Divisible::<U1>::get(&init_val, i), U1::new(val));
 		}
 
 		#[test]
-		fn test_set_subvalue_2b(mut init_val in any::<u32>(), i in 0usize..15, val in bits::u8::masked(3)) {
-			unsafe {
-				init_val.set_subvalue(i, U2::new(val));
-				assert_eq!(init_val.get_subvalue::<U2>(i), U2::new(val));
-			}
+		fn test_divisible_set_2b(mut init_val in any::<u32>(), i in 0usize..15, val in bits::u8::masked(3)) {
+			Divisible::<U2>::set(&mut init_val, i, U2::new(val));
+			assert_eq!(Divisible::<U2>::get(&init_val, i), U2::new(val));
 		}
 
 		#[test]
-		fn test_set_subvalue_4b(mut init_val in any::<u32>(), i in 0usize..7, val in bits::u8::masked(7)) {
-			unsafe {
-				init_val.set_subvalue(i, U4::new(val));
-				assert_eq!(init_val.get_subvalue::<U4>(i), U4::new(val));
-			}
+		fn test_divisible_set_4b(mut init_val in any::<u32>(), i in 0usize..7, val in bits::u8::masked(7)) {
+			Divisible::<U4>::set(&mut init_val, i, U4::new(val));
+			assert_eq!(Divisible::<U4>::get(&init_val, i), U4::new(val));
 		}
 
 		#[test]
-		fn test_set_subvalue_8b(mut init_val in any::<u32>(), i in 0usize..3, val in bits::u8::masked(15)) {
-			unsafe {
-				init_val.set_subvalue(i, val);
-				assert_eq!(init_val.get_subvalue::<u8>(i), val);
-			}
+		fn test_divisible_set_8b(mut init_val in any::<u32>(), i in 0usize..3, val in bits::u8::masked(15)) {
+			Divisible::<u8>::set(&mut init_val, i, val);
+			assert_eq!(Divisible::<u8>::get(&init_val, i), val);
 		}
 	}
 }
