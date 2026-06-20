@@ -13,10 +13,7 @@ use binius_utils::{
 };
 use bytemuck::Zeroable;
 
-use super::{
-	UnderlierType, WithUnderlier, binary_field_arithmetic::TowerFieldArithmetic,
-	extension::ExtensionField,
-};
+use super::{UnderlierType, WithUnderlier, extension::ExtensionField};
 use crate::{Field, underlier::U1};
 
 /// A finite field with characteristic 2.
@@ -139,16 +136,6 @@ macro_rules! binary_field {
 			}
 		}
 
-		impl Mul<Self> for $name {
-			type Output = Self;
-
-			fn mul(self, rhs: Self) -> Self::Output {
-				$crate::tracing::trace_multiplication!($name);
-
-				TowerFieldArithmetic::multiply(self, rhs)
-			}
-		}
-
 		impl Mul<&Self> for $name {
 			type Output = Self;
 
@@ -217,12 +204,6 @@ macro_rules! binary_field {
 			}
 		}
 
-
-		impl crate::arithmetic_traits::Square for $name {
-			fn square(self) -> Self {
-				TowerFieldArithmetic::square(self)
-			}
-		}
 
 		impl Field for $name {
 			const ZERO: Self = $name(<$typ as $crate::underlier::UnderlierType>::ZERO);

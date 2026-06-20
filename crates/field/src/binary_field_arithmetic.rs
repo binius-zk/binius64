@@ -1,13 +1,12 @@
 // Copyright 2023-2025 Irreducible Inc.
 
-use super::{arithmetic_traits::InvertOrZero, binary_field::*};
+use std::ops::Mul;
+
+use super::{
+	arithmetic_traits::{InvertOrZero, Square},
+	binary_field::{BinaryField1b, TowerField},
+};
 use crate::PackedField;
-
-pub(crate) trait TowerFieldArithmetic: TowerField {
-	fn multiply(self, rhs: Self) -> Self;
-
-	fn square(self) -> Self;
-}
 
 macro_rules! impl_arithmetic_using_packed {
 	($name:ident) => {
@@ -22,16 +21,21 @@ macro_rules! impl_arithmetic_using_packed {
 			}
 		}
 
-		impl TowerFieldArithmetic for $name {
+		impl ::core::ops::Mul<$name> for $name {
+			type Output = $name;
+
 			#[inline]
-			fn multiply(self, rhs: Self) -> Self {
+			fn mul(self, rhs: $name) -> $name {
 				use $crate::packed_extension::PackedSubfield;
 
+				$crate::tracing::trace_multiplication!($name);
 				$crate::binary_field_arithmetic::multiple_using_packed::<PackedSubfield<Self, Self>>(
 					self, rhs,
 				)
 			}
+		}
 
+		impl $crate::arithmetic_traits::Square for $name {
 			#[inline]
 			fn square(self) -> Self {
 				use $crate::packed_extension::PackedSubfield;
@@ -46,7 +50,6 @@ macro_rules! impl_arithmetic_using_packed {
 
 pub(crate) use impl_arithmetic_using_packed;
 
-// TODO: try to get rid of `TowerFieldArithmetic` and use `impl_arithmetic_using_packed` here
 impl TowerField for BinaryField1b {
 	fn min_tower_level(self) -> usize {
 		0
@@ -60,12 +63,18 @@ impl InvertOrZero for BinaryField1b {
 	}
 }
 
-impl TowerFieldArithmetic for BinaryField1b {
+#[allow(clippy::suspicious_arithmetic_impl)]
+impl Mul<BinaryField1b> for BinaryField1b {
+	type Output = Self;
+
 	#[inline]
-	fn multiply(self, rhs: Self) -> Self {
+	fn mul(self, rhs: Self) -> Self::Output {
+		crate::tracing::trace_multiplication!(BinaryField1b);
 		Self(self.0 & rhs.0)
 	}
+}
 
+impl Square for BinaryField1b {
 	#[inline]
 	fn square(self) -> Self {
 		self

@@ -18,7 +18,6 @@ use super::{
 	PackedExtension, PackedSubfield,
 	arithmetic_traits::InvertOrZero,
 	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
-	binary_field_arithmetic::TowerFieldArithmetic,
 	mul_by_binary_field_1b,
 };
 use crate::{
