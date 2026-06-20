@@ -3,7 +3,6 @@
 
 use std::{
 	borrow::Cow,
-	cmp,
 	ops::{Index, IndexMut},
 };
 
@@ -560,10 +559,9 @@ impl ConstraintSystem {
 	pub fn validate_and_prepare(&mut self) -> Result<(), ConstraintSystemError> {
 		self.validate()?;
 
-		// Both AND and MUL constraint list have requirements wrt their sizes.
-		let and_target_size = self.and_constraints.len().max(1).next_power_of_two();
-		let mul_target_size =
-			cmp::max(consts::MIN_MUL_CONSTRAINTS, self.mul_constraints.len()).next_power_of_two();
+		// Require all constraint types to have a power-of-two count.
+		let and_target_size = self.and_constraints.len().next_power_of_two();
+		let mul_target_size = self.mul_constraints.len().next_power_of_two();
 
 		self.and_constraints
 			.resize_with(and_target_size, AndConstraint::default);

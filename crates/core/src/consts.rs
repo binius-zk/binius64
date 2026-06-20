@@ -24,10 +24,6 @@ pub const LOG_WORD_SIZE_BITS: usize = checked_log_2(WORD_SIZE_BITS);
 /// This is the minimum size requirement for public input segments in the constraint system.
 pub const MIN_WORDS_PER_SEGMENT: usize = 2;
 
-/// Minimum number of MUL constraints (must be a power of 2).
-/// This is a protocol requirement for the constraint system.
-pub const MIN_MUL_CONSTRAINTS: usize = 1;
-
 /// The number of bits in a byte.
 pub const BYTE_BITS: usize = 8;
 
