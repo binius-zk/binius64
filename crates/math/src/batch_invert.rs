@@ -3,7 +3,7 @@
 
 use std::iter;
 
-use binius_field::{Field, PackedField};
+use binius_field::{Field, PackedField, arithmetic_traits::InvertOrZero};
 
 /// Reusable batch inversion context that owns its scratch buffers.
 ///
@@ -162,9 +162,8 @@ fn batch_invert_nonzero_with_scratchpad<P: PackedField>(
 		if P::WIDTH == 1 {
 			// Direct scalar inversion
 			let scalar = packed.get(0);
-			let inv = scalar
-				.try_invert()
-				.expect("precondition: elements contains no zeros");
+			// Safety: precondition — `elements` contains no zeros.
+			let inv = unsafe { scalar.invert() };
 			packed.set(0, inv);
 		} else {
 			// Unpack, batch invert scalars, repack

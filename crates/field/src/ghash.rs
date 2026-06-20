@@ -550,10 +550,9 @@ mod tests {
 		for &value in &test_cases {
 			let field_val = BinaryField128bGhash::from(value);
 			let mul_inv_x_result = field_val.mul_inv_x();
-			let regular_mul_result = field_val
-				* BinaryField128bGhash::new(2u128)
-					.try_invert()
-					.expect("2 is invertible");
+			// Safety: 2 is a non-zero field element.
+			let regular_mul_result =
+				field_val * unsafe { BinaryField128bGhash::new(2u128).invert() };
 
 			assert_eq!(
 				mul_inv_x_result, regular_mul_result,

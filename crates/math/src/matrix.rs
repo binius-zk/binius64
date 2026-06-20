@@ -126,10 +126,9 @@ impl<F: Field> Matrix<F> {
 				out.swap_rows(i, pivot, &mut row_buffer);
 			}
 
-			// Normalize the pivot
-			let scalar = tmp[(i, i)]
-				.try_invert()
-				.expect("pivot is checked to be non-zero above");
+			// Normalize the pivot.
+			// Safety: the pivot is checked to be non-zero above.
+			let scalar = unsafe { tmp[(i, i)].invert() };
 			tmp.scale_row(i, scalar);
 			out.scale_row(i, scalar);
 

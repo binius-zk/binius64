@@ -525,7 +525,10 @@ pub(crate) mod tests {
 	use proptest::prelude::*;
 
 	use super::BinaryField1b as BF1;
-	use crate::{AESTowerField8b, BinaryField, BinaryField1b, BinaryField128bGhash, Field};
+	use crate::{
+		AESTowerField8b, BinaryField, BinaryField1b, BinaryField128bGhash, Field,
+		arithmetic_traits::InvertOrZero,
+	};
 
 	#[test]
 	fn test_gf2_add() {
@@ -638,23 +641,25 @@ pub(crate) mod tests {
 
 	#[test]
 	fn test_inverse_on_zero() {
-		assert!(BinaryField1b::ZERO.try_invert().is_none());
-		assert!(AESTowerField8b::ZERO.try_invert().is_none());
-		assert!(BinaryField128bGhash::ZERO.try_invert().is_none());
+		assert!(BinaryField1b::ZERO.invert_or_zero().is_zero());
+		assert!(AESTowerField8b::ZERO.invert_or_zero().is_zero());
+		assert!(BinaryField128bGhash::ZERO.invert_or_zero().is_zero());
 	}
 
 	proptest! {
 		#[test]
 		fn test_inverse_8b(val in 1u8..) {
 			let x = AESTowerField8b::new(val);
-			let x_inverse = x.try_invert().unwrap();
+			// Safety: `val` is in `1..`, so `x` is non-zero.
+			let x_inverse = unsafe { x.invert() };
 			assert_eq!(x * x_inverse, AESTowerField8b::ONE);
 		}
 
 		#[test]
 		fn test_inverse_128b(val in 1u128..) {
 			let x = BinaryField128bGhash::from(val);
-			let x_inverse = x.try_invert().unwrap();
+			// Safety: `val` is in `1..`, so `x` is non-zero.
+			let x_inverse = unsafe { x.invert() };
 			assert_eq!(x * x_inverse, BinaryField128bGhash::ONE);
 		}
 	}

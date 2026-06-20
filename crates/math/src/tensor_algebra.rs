@@ -217,7 +217,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{BinaryField1b as B1, Random};
+	use binius_field::{BinaryField1b as B1, Random, arithmetic_traits::InvertOrZero};
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
@@ -254,7 +254,8 @@ mod tests {
 		assert_eq!(elem.try_extract_vertical(), None);
 
 		// Scale back by the inverse to get back to the vertical subring.
-		let hztl_inv = hztl.try_invert().unwrap();
+		// Safety: `hztl` is the non-zero constant 1111.
+		let hztl_inv = unsafe { hztl.invert() };
 		let elem = elem.scale_horizontal(hztl_inv);
 		assert_eq!(elem.try_extract_vertical(), Some(vert));
 

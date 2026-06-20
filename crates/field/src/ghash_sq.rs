@@ -328,9 +328,11 @@ mod tests {
 
 		#[test]
 		fn test_invert(a in arb_elem()) {
-			match a.try_invert() {
-				Some(inv) => prop_assert_eq!(a * inv, GhashSq256b::ONE),
-				None => prop_assert_eq!(a, GhashSq256b::ZERO),
+			let inv = a.invert_or_zero();
+			if a == GhashSq256b::ZERO {
+				prop_assert_eq!(inv, GhashSq256b::ZERO);
+			} else {
+				prop_assert_eq!(a * inv, GhashSq256b::ONE);
 			}
 		}
 

@@ -36,7 +36,9 @@ fn generate_evals_from_subspace<F: BinaryField>(subspace: &BinarySubspace<F>) ->
 
 	// normalize so that evaluations of $W_i$ are replaced by evaluations of $hat{W}_i$
 	for evals_i in evals.iter_mut() {
-		let w_i_b_i_inverse = evals_i[0].try_invert().unwrap();
+		// Safety: `evals_i[0]` is the subspace-polynomial normalization value $W_i(b_i)$, which is
+		// non-zero by construction of the novel polynomial basis.
+		let w_i_b_i_inverse = unsafe { evals_i[0].invert() };
 		for eval_i_j in evals_i.iter_mut() {
 			*eval_i_j *= w_i_b_i_inverse;
 		}

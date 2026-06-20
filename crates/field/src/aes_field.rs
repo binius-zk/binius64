@@ -113,11 +113,11 @@ mod tests {
 	}
 
 	fn check_invert(f: impl Field) {
-		let inversed = f.try_invert();
+		let inversed = f.invert_or_zero();
 		if f.is_zero() {
-			assert!(inversed.is_none());
+			assert!(inversed.is_zero());
 		} else {
-			assert_eq!(inversed.unwrap() * f, Field::ONE);
+			assert_eq!(inversed * f, Field::ONE);
 		}
 	}
 

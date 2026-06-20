@@ -77,10 +77,10 @@ struct InvertOp;
 
 impl FieldOperation for InvertOp {
 	const NAME: &'static str = "scalar/invert";
-	type Result<F> = Option<F>;
+	type Result<F> = F;
 
-	fn call<F: Field>(lhs: F, _: F) -> Option<F> {
-		lhs.try_invert()
+	fn call<F: Field>(lhs: F, _: F) -> F {
+		lhs.invert_or_zero()
 	}
 }
 

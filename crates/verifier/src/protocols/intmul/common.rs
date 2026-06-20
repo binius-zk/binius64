@@ -172,7 +172,9 @@ where
 	// Compute the normalization factors (conjugate - 1)^{-1} in F, then convert to E.
 	let inv_factors: Vec<E> = iterate(F::MULTIPLICATIVE_GENERATOR, |g| g.square())
 		.take(2 << k)
-		.map(|conjugate| E::from((conjugate - F::ONE).try_invert().expect("non-zero")))
+		// Safety: `conjugate` ranges over powers of the multiplicative generator, which has odd
+		// order, so `conjugate - 1` is never zero.
+		.map(|conjugate| E::from(unsafe { (conjugate - F::ONE).invert() }))
 		.collect();
 
 	let (lo_inv_factors, hi_inv_factors) = inv_factors.split_at(1 << k);

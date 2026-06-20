@@ -4,7 +4,7 @@
 
 use std::ops::{Add, AddAssign, Mul, MulAssign};
 
-use binius_field::{BinaryField, Field};
+use binius_field::{BinaryField, Field, arithmetic_traits::InvertOrZero};
 use rand::prelude::*;
 
 use crate::{
@@ -226,7 +226,8 @@ fn novel_basis<DC: DomainContext>(domain_context: &DC) -> Vec<Polynomial<DC::Fie
 	for i in 0..log_d {
 		let beta_i = domain.basis()[i];
 		let eval = w_hat[i].evaluate(beta_i);
-		w_hat[i] *= eval.try_invert().unwrap();
+		// Safety: `eval` is the normalization value $\hat{W}_i(\beta_i)$, non-zero by construction.
+		w_hat[i] *= unsafe { eval.invert() };
 	}
 
 	// construct novel polynomial basis

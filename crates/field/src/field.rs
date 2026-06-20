@@ -91,13 +91,6 @@ pub trait Field:
 	#[must_use]
 	fn double(&self) -> Self;
 
-	/// Computes the multiplicative inverse of this element,
-	/// failing if the element is zero.
-	fn try_invert(&self) -> Option<Self> {
-		let inv = self.invert_or_zero();
-		(!inv.is_zero()).then_some(inv)
-	}
-
 	/// Exponentiates `self` by `exp`, where `exp` is a little-endian order integer
 	/// exponent.
 	fn pow<S: AsRef<[u64]>>(&self, exp: S) -> Self {
