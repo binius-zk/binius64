@@ -37,7 +37,8 @@ cfg_if! {
 pub use arch_optimal::*;
 pub(crate) use portable::packed_arithmetic::{interleave_mask_even, interleave_with_mask};
 pub use portable::{
-	packed::PackedPrimitiveType, packed_1, packed_2, packed_4, packed_8, packed_16, packed_32,
-	packed_64, packed_aes_8, packed_aes_16, packed_aes_32, packed_aes_64,
+	arithmetic::itoh_tsujii::invert_b128, packed::PackedPrimitiveType, packed_1, packed_2,
+	packed_4, packed_8, packed_16, packed_32, packed_64, packed_aes_8, packed_aes_16,
+	packed_aes_32, packed_aes_64,
 };
 pub use strategies::*;
