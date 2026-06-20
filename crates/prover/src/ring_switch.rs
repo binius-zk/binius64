@@ -9,11 +9,12 @@ use binius_field::{
 		BytewiseLookupTransformationFactory, InputWrappingTransformationFactory,
 		LinearTransformationFactory, OutputWrappingTransformationFactory, Transformation,
 	},
+	util::expand_subset_sums_array,
 };
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	FieldBuffer, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
-	span::expand_subset_sums_array, tensor_algebra::TensorAlgebra,
+	tensor_algebra::TensorAlgebra,
 };
 use binius_utils::{
 	checked_arithmetics::{checked_int_div, checked_log_2},

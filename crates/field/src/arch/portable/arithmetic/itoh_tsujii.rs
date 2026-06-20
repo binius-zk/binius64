@@ -19,7 +19,7 @@ use std::{array, iter, thread::LocalKey};
 
 use crate::{
 	BinaryField1b, ExtensionField, Field, PackedField, arithmetic_traits::Square,
-	ghash::BinaryField128bGhash as GhashB128,
+	ghash::BinaryField128bGhash as GhashB128, util::expand_subset_sums_array,
 };
 
 /// Number of bits in a GHASH element.
@@ -108,25 +108,6 @@ fn apply_power_map(x: GhashB128, tables: &[[GhashB128; 256]; FIELD_BYTES]) -> Gh
 	iter::zip(tables, bytes)
 		.map(|(table, byte)| table[byte as usize])
 		.fold(GhashB128::ZERO, |acc, term| acc + term)
-}
-
-/// Expand `N` field elements into the `2^N` subset sums (XORs) indexed by the bits of the index.
-///
-/// Entry `b` is the sum of `elems[k]` over all bit positions `k` set in `b`.
-fn expand_subset_sums_array<F: Field, const N: usize, const N_EXP2: usize>(
-	elems: [F; N],
-) -> [F; N_EXP2] {
-	assert_eq!(N_EXP2, 1 << N);
-
-	let mut expanded = [F::ZERO; N_EXP2];
-	for (i, elem_i) in elems.into_iter().enumerate() {
-		let span = &mut expanded[..1 << (i + 1)];
-		let (lo_half, hi_half) = span.split_at_mut(1 << i);
-		for (lo_half_i, hi_half_i) in iter::zip(lo_half, hi_half) {
-			*hi_half_i = *lo_half_i + elem_i;
-		}
-	}
-	expanded
 }
 
 #[cfg(test)]
