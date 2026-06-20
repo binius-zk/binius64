@@ -6,6 +6,7 @@ pub(crate) mod packed_macros;
 
 pub mod m128;
 
+mod arithmetic;
 pub mod packed_1;
 pub mod packed_128;
 pub mod packed_16;
