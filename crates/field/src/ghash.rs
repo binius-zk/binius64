@@ -21,9 +21,9 @@ use super::{
 	extension::ExtensionField,
 };
 use crate::{
-	AESTowerField8b, Divisible, Field, PackedField, WideMul,
+	AESTowerField8b, Field,
 	arch::{M128, invert_b128, packed_ghash_128::PackedBinaryGhash1x128b},
-	arithmetic_traits::{InvertOrZero, Square},
+	arithmetic_traits::{InvertOrZero, Square, impl_trivial_wide_mul},
 	binary_field_arithmetic::{multiple_using_packed, square_using_packed},
 	mul_by_binary_field_1b,
 	underlier::{U1, WithUnderlier},
@@ -46,6 +46,7 @@ impl From<BinaryField128bGhash> for u128 {
 	}
 }
 
+/*
 // Deferred-reduction widening multiply, implemented by reusing the width-1 packed GHASH type. On
 // CLMUL backends `Output` is an unreduced `WideGhashProduct`, so accumulating products reduces
 // only once at the end; on portable backends it falls back to the trivial (eager) multiply.
@@ -65,6 +66,8 @@ impl WideMul for BinaryField128bGhash {
 		PackedBinaryGhash1x128b::reduce(wide).get(0)
 	}
 }
+*/
+impl_trivial_wide_mul!(BinaryField128bGhash);
 
 unsafe impl Pod for BinaryField128bGhash {}
 
