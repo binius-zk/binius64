@@ -108,8 +108,8 @@ pub(crate) use define_packed_binary_field;
 pub(crate) use define_packed_binary_fields;
 pub(crate) use impl_serialize_deserialize_for_packed_binary_field;
 
-// Re-exported so the `wide_mul: (TrivialWideMul)` argument resolves at every macro call site that
-// glob-imports this module.
+// Re-exported so the `wide_mul: (TrivialWideMul)` argument resolves at every macro call site
+// that glob-imports this module.
 pub(crate) use crate::arithmetic_traits::TrivialWideMul;
 pub(crate) use crate::arithmetic_traits::{impl_invert_with, impl_mul_with, impl_square_with};
 

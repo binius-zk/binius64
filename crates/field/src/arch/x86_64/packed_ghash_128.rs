@@ -10,6 +10,9 @@
 use cfg_if::cfg_if;
 
 use super::m128::M128;
+// Only used by the CLMUL-accelerated `ClMulUnderlier` impl below.
+#[cfg(target_feature = "pclmulqdq")]
+use crate::arch::x86_64::arithmetic::ghash;
 use crate::{
 	BinaryField128bGhash,
 	arch::portable::packed_macros::{portable_macros::*, *},
@@ -18,9 +21,6 @@ use crate::{
 		impl_square_with,
 	},
 };
-// Only used by the CLMUL-accelerated `ClMulUnderlier` impl below.
-#[cfg(target_feature = "pclmulqdq")]
-use crate::arch::shared::ghash;
 
 #[cfg(target_feature = "pclmulqdq")]
 impl ghash::ClMulUnderlier for M128 {
@@ -55,7 +55,7 @@ cfg_if! {
 		impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
 			#[inline]
 			fn mul(self, rhs: Self) -> Self {
-				Self::from_underlier(crate::arch::shared::ghash::mul_clmul(
+				Self::from_underlier(crate::arch::x86_64::arithmetic::ghash::mul_clmul(
 					self.to_underlier(),
 					rhs.to_underlier(),
 				))
@@ -65,7 +65,7 @@ cfg_if! {
 		impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
 			#[inline]
 			fn mul(self, rhs: Self) -> Self {
-				use super::super::portable::packed_ghash_128::ghash_mul;
+				use super::super::portable::arithmetic::ghash::ghash_mul;
 
 				let product = ghash_mul(u128::from(self.to_underlier()), u128::from(rhs.to_underlier()));
 				Self::from_underlier(M128::from(product))
@@ -80,7 +80,7 @@ cfg_if! {
 		impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
 			#[inline]
 			fn square(self) -> Self {
-				Self::from_underlier(crate::arch::shared::ghash::square_clmul(
+				Self::from_underlier(crate::arch::x86_64::arithmetic::ghash::square_clmul(
 					self.to_underlier(),
 				))
 			}
@@ -89,7 +89,7 @@ cfg_if! {
 		impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
 			#[inline]
 			fn square(self) -> Self {
-				use super::super::portable::packed_ghash_128::ghash_square;
+				use super::super::portable::arithmetic::ghash::ghash_square;
 
 				Self::from_underlier(M128::from(ghash_square(u128::from(self.to_underlier()))))
 			}

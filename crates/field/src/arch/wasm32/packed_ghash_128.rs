@@ -15,7 +15,7 @@ use crate::{
 	arch::{
 		PairwiseStrategy,
 		portable::{
-			packed_ghash_128::ghash_mul,
+			arithmetic::ghash::ghash_mul,
 			packed_macros::impl_broadcast,
 			univariate_mul_utils_128::{Underlier128bLanes, spread_bits_64},
 		},
@@ -67,7 +67,7 @@ impl Underlier128bLanes for M128 {
 impl Square for PackedBinaryGhash1x128b {
 	#[inline]
 	fn square(self) -> Self {
-		Self::from_underlier(crate::arch::portable::packed_ghash_128::ghash_square(
+		Self::from_underlier(crate::arch::portable::arithmetic::ghash::ghash_square(
 			self.to_underlier(),
 		))
 	}

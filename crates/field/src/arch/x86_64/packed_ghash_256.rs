@@ -20,9 +20,6 @@ use crate::{
 		impl_square_with,
 	},
 };
-// Only used by the CLMUL-accelerated `WideMul` impl below.
-#[cfg(target_feature = "vpclmulqdq")]
-use crate::{arch::shared::ghash, arithmetic_traits::WideMul};
 // Only used by the element-wise fallback when VPCLMULQDQ is unavailable.
 #[cfg(not(target_feature = "vpclmulqdq"))]
 use crate::{
@@ -33,7 +30,7 @@ use crate::{
 #[cfg(target_feature = "vpclmulqdq")]
 mod vpclmulqdq {
 	use super::*;
-	use crate::arch::shared::ghash::ClMulUnderlier;
+	use crate::arch::x86_64::arithmetic::ghash::ClMulUnderlier;
 
 	impl ClMulUnderlier for M256 {
 		#[inline]
@@ -69,7 +66,7 @@ cfg_if! {
 		impl TaggedMul<Ghash256Strategy> for PackedBinaryGhash2x128b {
 			#[inline]
 			fn mul(self, rhs: Self) -> Self {
-				Self::from_underlier(crate::arch::shared::ghash::mul_clmul(
+				Self::from_underlier(crate::arch::x86_64::arithmetic::ghash::mul_clmul(
 					self.to_underlier(),
 					rhs.to_underlier(),
 				))
@@ -112,7 +109,7 @@ cfg_if! {
 		impl TaggedSquare<Ghash256Strategy> for PackedBinaryGhash2x128b {
 			#[inline]
 			fn square(self) -> Self {
-				Self::from_underlier(crate::arch::shared::ghash::square_clmul(self.to_underlier()))
+				Self::from_underlier(crate::arch::x86_64::arithmetic::ghash::square_clmul(self.to_underlier()))
 			}
 		}
 	} else {

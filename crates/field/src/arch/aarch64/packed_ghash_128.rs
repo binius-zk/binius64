@@ -7,48 +7,15 @@
 //! Based on the optimized GHASH implementation using carryless multiplication
 //! instructions available on ARMv8 processors with NEON support.
 
-use core::arch::aarch64::*;
-
 use super::m128::M128;
 use crate::{
 	BinaryField128bGhash,
-	arch::{
-		portable::packed_macros::{portable_macros::*, *},
-		shared::ghash::ClMulUnderlier,
-	},
+	arch::portable::packed_macros::{portable_macros::*, *},
 	arithmetic_traits::{
 		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
 		impl_square_with,
 	},
 };
-
-impl ClMulUnderlier for M128 {
-	#[inline]
-	fn clmulepi64<const IMM8: i32>(a: Self, b: Self) -> Self {
-		let a_u64x2: uint64x2_t = a.into();
-		let b_u64x2: uint64x2_t = b.into();
-
-		let result = match IMM8 {
-			0x00 => unsafe { vmull_p64(vgetq_lane_u64(a_u64x2, 0), vgetq_lane_u64(b_u64x2, 0)) },
-			0x11 => unsafe { vmull_p64(vgetq_lane_u64(a_u64x2, 1), vgetq_lane_u64(b_u64x2, 1)) },
-			0x10 => unsafe { vmull_p64(vgetq_lane_u64(a_u64x2, 0), vgetq_lane_u64(b_u64x2, 1)) },
-			0x01 => unsafe { vmull_p64(vgetq_lane_u64(a_u64x2, 1), vgetq_lane_u64(b_u64x2, 0)) },
-			_ => panic!("Unsupported IMM8 value for clmulepi64"),
-		};
-
-		unsafe { std::mem::transmute::<u128, uint64x2_t>(result) }.into()
-	}
-
-	#[inline]
-	fn move_64_to_hi(a: Self) -> Self {
-		let a_bytes: uint8x16_t = a.into();
-		// Shift left by 8 bytes
-		unsafe {
-			let zero = vdupq_n_u8(0);
-			vextq_u8::<8>(zero, a_bytes).into()
-		}
-	}
-}
 
 /// Strategy for aarch64 GHASH field arithmetic operations.
 pub struct GhashStrategy;
@@ -68,7 +35,7 @@ define_packed_binary_field!(
 impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
 	#[inline]
 	fn mul(self, rhs: Self) -> Self {
-		Self::from_underlier(crate::arch::shared::ghash::mul_clmul(
+		Self::from_underlier(super::arithmetic::ghash::mul_clmul(
 			self.to_underlier(),
 			rhs.to_underlier(),
 		))
@@ -79,22 +46,7 @@ impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
 impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
 	#[inline]
 	fn square(self) -> Self {
-		Self::from_underlier(crate::arch::shared::ghash::square_clmul(self.to_underlier()))
-	}
-}
-
-// Implement WideMul
-impl WideMul for PackedBinaryGhash1x128b {
-	type Output = ghash::WideGhashProduct<M128>;
-
-	#[inline]
-	fn wide_mul(a: Self, b: Self) -> Self::Output {
-		ghash::WideGhashProduct::wide_mul(a.to_underlier(), b.to_underlier())
-	}
-
-	#[inline]
-	fn reduce(wide: Self::Output) -> Self {
-		Self::from_underlier(wide.reduce())
+		Self::from_underlier(super::arithmetic::ghash::square_clmul(self.to_underlier()))
 	}
 }
 

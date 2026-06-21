@@ -10,6 +10,9 @@
 use cfg_if::cfg_if;
 
 use super::m512::M512;
+// Only used by the CLMUL-accelerated `ClMulUnderlier` impl below.
+#[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+use crate::arch::x86_64::arithmetic::ghash;
 use crate::{
 	BinaryField128bGhash,
 	arch::portable::packed_macros::{portable_macros::*, *},
@@ -19,9 +22,6 @@ use crate::{
 	},
 	underlier::Divisible,
 };
-// Only used by the CLMUL-accelerated `ClMulUnderlier` impl below.
-#[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
-use crate::arch::shared::ghash;
 
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 impl ghash::ClMulUnderlier for M512 {
@@ -62,7 +62,7 @@ cfg_if! {
 		impl TaggedMul<Ghash512Strategy> for PackedBinaryGhash4x128b {
 			#[inline]
 			fn mul(self, rhs: Self) -> Self {
-				Self::from_underlier(crate::arch::shared::ghash::mul_clmul(
+				Self::from_underlier(crate::arch::x86_64::arithmetic::ghash::mul_clmul(
 					self.to_underlier(),
 					rhs.to_underlier(),
 				))
@@ -121,7 +121,7 @@ cfg_if! {
 		impl TaggedSquare<Ghash512Strategy> for PackedBinaryGhash4x128b {
 			#[inline]
 			fn square(self) -> Self {
-				Self::from_underlier(crate::arch::shared::ghash::square_clmul(
+				Self::from_underlier(crate::arch::x86_64::arithmetic::ghash::square_clmul(
 					self.to_underlier(),
 				))
 			}

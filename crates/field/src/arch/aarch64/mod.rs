@@ -7,6 +7,8 @@ cfg_if! {
 		pub(super) mod m128;
 		pub(super) mod simd_arithmetic;
 
+		pub mod arithmetic;
+
 		pub mod packed_128;
 		pub mod packed_aes_128;
 		pub mod packed_ghash_128;

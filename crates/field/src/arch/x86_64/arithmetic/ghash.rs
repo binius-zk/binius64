@@ -1,9 +1,9 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-// Items in this module are conditionally used by architecture-specific GHASH backends. On
-// targets where none of those backends are compiled (e.g. wasm32 without simd128), the entire
-// module is unused, so allow dead code here rather than sprinkling attributes on every item.
+// Items in this module are conditionally used by the x86_64 GHASH backends. Depending on which
+// CLMUL target features are enabled, some items may be unused, so allow dead code here rather
+// than sprinkling attributes on every item.
 #![allow(dead_code)]
 
 use std::{
@@ -20,6 +20,9 @@ use crate::{
 
 /// Trait for underliers that support CLMUL operations which are needed for the
 /// GHASH multiplication algorithm.
+///
+/// On x86_64 this abstracts over the `M128`/`M256`/`M512` wrappers for `__m128i`/`__m256i`/
+/// `__m512i`, so the same algorithm code drives PCLMULQDQ and VPCLMULQDQ.
 pub trait ClMulUnderlier: UnderlierType + Divisible<u128> {
 	/// Performs CLMUL operation on two 64-bit values that are selected from 128-bit lanes
 	/// by the bytes of the IMM8 parameter.
@@ -198,9 +201,9 @@ impl<U: ClMulUnderlier> SubAssign for WideGhashProduct<U> {
 
 #[repr(transparent)]
 #[derive(bytemuck::TransparentWrapper)]
-pub struct WideGhashMul<T>(T);
+pub struct GhashClMulWideMul<T>(T);
 
-impl<U: ClMulUnderlier> WideMul for WideGhashMul<PackedPrimitiveType<U, GhashB128>> {
+impl<U: ClMulUnderlier> WideMul for GhashClMulWideMul<PackedPrimitiveType<U, GhashB128>> {
 	type Output = WideGhashProduct<U>;
 
 	fn wide_mul(a: Self, b: Self) -> Self::Output {

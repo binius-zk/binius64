@@ -433,7 +433,7 @@ mod tests {
 	use proptest::{prelude::any, proptest};
 
 	use super::*;
-	use crate::binary_field::tests::is_binary_field_valid_generator;
+	use crate::{WideMul, binary_field::tests::is_binary_field_valid_generator};
 
 	#[test]
 	fn test_ghash_mul() {

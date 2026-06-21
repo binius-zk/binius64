@@ -2,6 +2,8 @@
 
 use cfg_if::cfg_if;
 
+pub mod arithmetic;
+
 #[cfg(target_feature = "gfni")]
 mod gfni;
 
