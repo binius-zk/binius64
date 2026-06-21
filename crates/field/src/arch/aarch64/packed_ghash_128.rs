@@ -7,7 +7,7 @@
 //! Based on the optimized GHASH implementation using carryless multiplication
 //! instructions available on ARMv8 processors with NEON support.
 
-use super::m128::M128;
+use super::{arithmetic::ghash::GhashClMulWideMul, m128::M128};
 use crate::{
 	BinaryField128bGhash,
 	arch::portable::packed_macros::{portable_macros::*, *},
@@ -28,7 +28,7 @@ define_packed_binary_field!(
 	(GhashStrategy),
 	(GhashStrategy),
 	(GhashStrategy),
-	(TrivialWideMul)
+	(GhashClMulWideMul)
 );
 
 // Implement TaggedMul for GhashStrategy

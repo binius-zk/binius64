@@ -3,10 +3,6 @@
 
 //! Portable (software) implementation of GHASH field multiplication.
 
-// The widening-multiply wrapper is currently unused (the packed type uses `TrivialWideMul`), so
-// allow dead code rather than annotating each item.
-#![allow(dead_code)]
-
 use std::{
 	iter::Sum,
 	ops::{Add, AddAssign, Sub, SubAssign},
@@ -201,5 +197,37 @@ impl WideMul for GhashWideMul<PackedPrimitiveType<M128, GhashB128>> {
 	#[inline]
 	fn reduce(wide: Self::Output) -> Self {
 		Self::wrap(PackedPrimitiveType::wrap(wide.reduce()))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use proptest::{prelude::any, proptest};
+
+	use super::{super::super::m128::M128, ghash_mul, ghash_wide_mul};
+
+	// Exercises the deferred wide-mul building blocks (`ghash_wide_mul` + `WideGhashProduct`) that
+	// `GhashWideMul` wraps, directly on the portable `M128`. This runs on every host, whereas the
+	// portable `PackedBinaryGhash1x128b` is only a usable `PackedField` on targets where it is the
+	// re-exported b128 type (covered there by the proptests in `packed_ghash.rs`).
+	proptest! {
+		// The split must agree with the fused multiply: wide-multiply then reduce == ghash_mul.
+		#[test]
+		fn wide_mul_then_reduce_matches_ghash_mul(a in any::<u128>(), b in any::<u128>()) {
+			let (a, b) = (M128::from(a), M128::from(b));
+			assert_eq!(ghash_wide_mul(a, b).reduce(), ghash_mul(a, b));
+		}
+
+		// Accumulate two unreduced products and reduce once.
+		#[test]
+		fn wide_mul_deferred_accumulation(
+			a1 in any::<u128>(), b1 in any::<u128>(),
+			a2 in any::<u128>(), b2 in any::<u128>(),
+		) {
+			let (a1, b1) = (M128::from(a1), M128::from(b1));
+			let (a2, b2) = (M128::from(a2), M128::from(b2));
+			let acc = ghash_wide_mul(a1, b1) + ghash_wide_mul(a2, b2);
+			assert_eq!(acc.reduce(), ghash_mul(a1, b1) ^ ghash_mul(a2, b2));
+		}
 	}
 }

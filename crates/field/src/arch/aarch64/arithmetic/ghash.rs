@@ -8,10 +8,6 @@
 //! this module calls the `PMULL` intrinsics directly rather than abstracting over an underlier
 //! trait.
 
-// The widening-multiply wrapper is currently unused (the packed type uses `TrivialWideMul`), so
-// allow dead code rather than annotating each item.
-#![allow(dead_code)]
-
 use core::arch::aarch64::*;
 use std::{
 	iter::Sum,

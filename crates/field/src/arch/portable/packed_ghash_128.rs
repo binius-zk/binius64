@@ -5,7 +5,7 @@
 
 use super::{
 	arithmetic::{
-		ghash::{ghash_mul, ghash_square},
+		ghash::{GhashWideMul, ghash_mul, ghash_square},
 		itoh_tsujii::invert_b128,
 	},
 	m128::M128,
@@ -53,7 +53,7 @@ define_packed_binary_field!(
 	(GhashStrategy),
 	(GhashStrategy),
 	(GhashStrategy),
-	(TrivialWideMul)
+	(GhashWideMul)
 );
 
 impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
