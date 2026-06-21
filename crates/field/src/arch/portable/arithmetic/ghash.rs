@@ -7,6 +7,11 @@
 // allow dead code rather than annotating each item.
 #![allow(dead_code)]
 
+use std::{
+	iter::Sum,
+	ops::{Add, AddAssign, Sub, SubAssign},
+};
+
 use bytemuck::TransparentWrapper;
 
 use super::super::{
@@ -25,6 +30,14 @@ use crate::{BinaryField128bGhash as GhashB128, WideMul, arch::PackedPrimitiveTyp
 /// a valid GHASH field multiplication with the modified representation.
 #[inline]
 pub fn ghash_mul<U: Underlier128bLanes>(x: U, y: U) -> U {
+	ghash_wide_mul(x, y).reduce()
+}
+
+/// Widening multiply: the schoolbook polynomial product of two GHASH field elements, without the
+/// modular reduction. The unreduced result can be accumulated by XOR and reduced once at the end
+/// via [`WideGhashProduct::reduce`].
+#[inline]
+pub fn ghash_wide_mul<U: Underlier128bLanes>(x: U, y: U) -> WideGhashProduct<U> {
 	// Convert to U64x2 representation
 	let (x1, x0) = U::split_hi_lo_64(x);
 	let (y1, y0) = U::split_hi_lo_64(y);
@@ -54,12 +67,12 @@ pub fn ghash_mul<U: Underlier128bLanes>(x: U, y: U) -> U {
 	z1h = z1h.reverse_bits_64().shr_64(1);
 	z2h = z2h.reverse_bits_64().shr_64(1);
 
-	let v0 = z0;
-	let v1 = z0h ^ z2;
-	let v2 = z1 ^ z2h;
-	let v3 = z1h;
-
-	reduce_64(v0, v1, v2, v3)
+	WideGhashProduct {
+		v0: z0,
+		v1: z0h ^ z2,
+		v2: z1 ^ z2h,
+		v3: z1h,
+	}
 }
 
 #[inline]
@@ -91,27 +104,102 @@ fn reduce_64<U: Underlier128bLanes>(
 	U::join_u64s(v1, v0)
 }
 
+/// An unreduced GHASH product, stored as the four 64-bit limbs `(v0, v1, v2, v3)` of the 256-bit
+/// schoolbook product. Values of this type can be summed by XOR and reduced once at the end via
+/// [`reduce`](WideGhashProduct::reduce).
+#[derive(Clone, Copy, Default, Debug)]
+pub struct WideGhashProduct<U: Underlier128bLanes> {
+	v0: U::U64,
+	v1: U::U64,
+	v2: U::U64,
+	v3: U::U64,
+}
+
+impl<U: Underlier128bLanes> WideGhashProduct<U> {
+	/// Reduce the accumulated wide product to a single GF(2^128) element.
+	#[inline]
+	pub fn reduce(self) -> U {
+		reduce_64(self.v0, self.v1, self.v2, self.v3)
+	}
+}
+
+impl<U: Underlier128bLanes> Add for WideGhashProduct<U> {
+	type Output = Self;
+
+	#[inline]
+	fn add(self, rhs: Self) -> Self {
+		Self {
+			v0: self.v0 ^ rhs.v0,
+			v1: self.v1 ^ rhs.v1,
+			v2: self.v2 ^ rhs.v2,
+			v3: self.v3 ^ rhs.v3,
+		}
+	}
+}
+
+impl<U: Underlier128bLanes> AddAssign for WideGhashProduct<U> {
+	#[inline]
+	fn add_assign(&mut self, rhs: Self) {
+		self.v0 ^= rhs.v0;
+		self.v1 ^= rhs.v1;
+		self.v2 ^= rhs.v2;
+		self.v3 ^= rhs.v3;
+	}
+}
+
+impl<U: Underlier128bLanes> Sum for WideGhashProduct<U> {
+	#[inline]
+	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+		iter.fold(Self::default(), |acc, x| acc + x)
+	}
+}
+
+// In characteristic 2, subtraction is identical to addition (XOR).
+impl<U: Underlier128bLanes> Sub for WideGhashProduct<U> {
+	type Output = Self;
+
+	#[inline]
+	fn sub(self, rhs: Self) -> Self {
+		Self {
+			v0: self.v0 ^ rhs.v0,
+			v1: self.v1 ^ rhs.v1,
+			v2: self.v2 ^ rhs.v2,
+			v3: self.v3 ^ rhs.v3,
+		}
+	}
+}
+
+impl<U: Underlier128bLanes> SubAssign for WideGhashProduct<U> {
+	#[inline]
+	fn sub_assign(&mut self, rhs: Self) {
+		self.v0 ^= rhs.v0;
+		self.v1 ^= rhs.v1;
+		self.v2 ^= rhs.v2;
+		self.v3 ^= rhs.v3;
+	}
+}
+
 /// Widening-multiply wrapper for the portable GHASH packing.
 ///
-/// The portable backend has no unreduced product representation, so this is an eager multiply:
-/// [`wide_mul`](WideMul::wide_mul) computes the fully reduced product via [`ghash_mul`] and
-/// [`reduce`](WideMul::reduce) is the identity.
+/// [`wide_mul`](WideMul::wide_mul) computes the unreduced schoolbook product via
+/// [`ghash_wide_mul`], and [`reduce`](WideMul::reduce) performs the GHASH modular reduction. This
+/// defers the reduction so a sum of products is reduced only once.
 #[repr(transparent)]
 #[derive(bytemuck::TransparentWrapper)]
 pub struct GhashWideMul<T>(T);
 
 impl WideMul for GhashWideMul<PackedPrimitiveType<M128, GhashB128>> {
-	type Output = PackedPrimitiveType<M128, GhashB128>;
+	type Output = WideGhashProduct<M128>;
 
 	#[inline]
 	fn wide_mul(a: Self, b: Self) -> Self::Output {
 		let a = PackedPrimitiveType::peel(Self::peel(a));
 		let b = PackedPrimitiveType::peel(Self::peel(b));
-		PackedPrimitiveType::wrap(ghash_mul(a, b))
+		ghash_wide_mul(a, b)
 	}
 
 	#[inline]
 	fn reduce(wide: Self::Output) -> Self {
-		Self::wrap(wide)
+		Self::wrap(PackedPrimitiveType::wrap(wide.reduce()))
 	}
 }
