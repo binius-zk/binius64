@@ -1,40 +1,33 @@
 // Copyright 2026 The Binius Developers
 
-//! Benchmark GHASH field inversion: the Itoh-Tsujii algorithm (`invert_b128`) against the
-//! nibble-based `InvertOrZero` implementation.
+//! Benchmark GHASH field inversion (Itoh-Tsujii, which now backs `InvertOrZero`) across packing
+//! widths: the scalar `BinaryField128bGhash` and the 1x/2x/4x packed fields.
 //!
-//! Both compute the same `invert-or-zero` of a `BinaryField128bGhash` scalar; this measures their
-//! throughput over a batch of random elements.
+//! Throughput is reported in scalar elements (batch size times packing width), so the numbers are
+//! directly comparable across widths.
 
 use std::hint::black_box;
 
 use binius_field::{
-	BinaryField128bGhash as GhashB128, Field, Random, arch::invert_b128,
-	arithmetic_traits::InvertOrZero,
+	BinaryField128bGhash as GhashB128, PackedField,
+	arch::{
+		packed_ghash_128::PackedBinaryGhash1x128b, packed_ghash_256::PackedBinaryGhash2x128b,
+		packed_ghash_512::PackedBinaryGhash4x128b,
+	},
 };
 use criterion::{
 	BenchmarkGroup, Criterion, Throughput, criterion_group, criterion_main, measurement::WallTime,
 };
 
-fn bench_at_n(group: &mut BenchmarkGroup<'_, WallTime>, n: usize) {
+fn bench_width<P: PackedField>(group: &mut BenchmarkGroup<'_, WallTime>, label: &str, n: usize) {
 	let mut rng = rand::rng();
-	let vals: Vec<GhashB128> = (0..n).map(|_| GhashB128::random(&mut rng)).collect();
+	let vals: Vec<P> = (0..n).map(|_| P::random(&mut rng)).collect();
 
-	group.throughput(Throughput::Elements(n as u64));
+	group.throughput(Throughput::Elements((n * P::WIDTH) as u64));
 
-	group.bench_function(format!("itoh_tsujii/n={n}"), |b| {
+	group.bench_function(format!("{label}/n={n}"), |b| {
 		b.iter(|| {
-			let mut acc = GhashB128::ZERO;
-			for &x in &vals {
-				acc += invert_b128::<GhashB128>(black_box(x));
-			}
-			black_box(acc)
-		})
-	});
-
-	group.bench_function(format!("invert_or_zero/n={n}"), |b| {
-		b.iter(|| {
-			let mut acc = GhashB128::ZERO;
+			let mut acc = P::zero();
 			for &x in &vals {
 				acc += black_box(x).invert_or_zero();
 			}
@@ -47,7 +40,10 @@ fn bench_ghash_invert(c: &mut Criterion) {
 	let mut group = c.benchmark_group("ghash_invert");
 
 	for &n in &[16, 256, 4096] {
-		bench_at_n(&mut group, n);
+		bench_width::<GhashB128>(&mut group, "scalar", n);
+		bench_width::<PackedBinaryGhash1x128b>(&mut group, "1x128b", n);
+		bench_width::<PackedBinaryGhash2x128b>(&mut group, "2x128b", n);
+		bench_width::<PackedBinaryGhash4x128b>(&mut group, "4x128b", n);
 	}
 
 	group.finish();

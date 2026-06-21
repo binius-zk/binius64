@@ -13,17 +13,22 @@ use crate::{
 	BinaryField128bGhash,
 	arch::{
 		portable::packed_macros::{portable_macros::*, *},
-		x86_64::{m128::M128, m256::M256, packed_ghash_128::PackedBinaryGhash1x128b},
+		x86_64::m256::M256,
 	},
 	arithmetic_traits::{
 		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
 		impl_square_with,
 	},
-	underlier::Divisible,
 };
 // Only used by the CLMUL-accelerated `WideMul` impl below.
 #[cfg(target_feature = "vpclmulqdq")]
 use crate::{arch::shared::ghash, arithmetic_traits::WideMul};
+// Only used by the element-wise fallback when VPCLMULQDQ is unavailable.
+#[cfg(not(target_feature = "vpclmulqdq"))]
+use crate::{
+	arch::x86_64::{m128::M128, packed_ghash_128::PackedBinaryGhash1x128b},
+	underlier::Divisible,
+};
 
 #[cfg(target_feature = "vpclmulqdq")]
 mod vpclmulqdq {
@@ -153,26 +158,10 @@ cfg_if! {
 	}
 }
 
-// Implement TaggedInvertOrZero for Ghash256Strategy (always uses element-wise fallback)
+// Implement TaggedInvertOrZero for Ghash256Strategy (Itoh-Tsujii over the full 256-bit vector)
 impl TaggedInvertOrZero<Ghash256Strategy> for PackedBinaryGhash2x128b {
+	#[inline]
 	fn invert_or_zero(self) -> Self {
-		let mut result_underlier = self.to_underlier();
-		unsafe {
-			let self_0 = Divisible::<M128>::get_unchecked(&self.to_underlier(), 0);
-			let self_1 = Divisible::<M128>::get_unchecked(&self.to_underlier(), 1);
-
-			// Use the x86_64 scalar invert for each element
-			let result_0 = crate::arithmetic_traits::InvertOrZero::invert_or_zero(
-				PackedBinaryGhash1x128b::from(self_0),
-			);
-			let result_1 = crate::arithmetic_traits::InvertOrZero::invert_or_zero(
-				PackedBinaryGhash1x128b::from(self_1),
-			);
-
-			Divisible::<M128>::set_unchecked(&mut result_underlier, 0, result_0.to_underlier());
-			Divisible::<M128>::set_unchecked(&mut result_underlier, 1, result_1.to_underlier());
-		}
-
-		Self::from_underlier(result_underlier)
+		crate::arch::invert_b128(self)
 	}
 }

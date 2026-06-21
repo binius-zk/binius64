@@ -22,11 +22,9 @@ use super::{
 };
 use crate::{
 	AESTowerField8b, Divisible, Field, PackedField, WideMul,
-	arch::{M128, packed_ghash_128::PackedBinaryGhash1x128b},
+	arch::{M128, invert_b128, packed_ghash_128::PackedBinaryGhash1x128b},
 	arithmetic_traits::{InvertOrZero, Square},
-	binary_field_arithmetic::{
-		invert_or_zero_using_packed, multiple_using_packed, square_using_packed,
-	},
+	binary_field_arithmetic::{multiple_using_packed, square_using_packed},
 	mul_by_binary_field_1b,
 	underlier::{U1, WithUnderlier},
 };
@@ -132,7 +130,7 @@ impl Square for BinaryField128bGhash {
 impl InvertOrZero for BinaryField128bGhash {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
-		invert_or_zero_using_packed::<PackedBinaryGhash1x128b>(self)
+		invert_b128(self)
 	}
 }
 

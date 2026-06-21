@@ -75,12 +75,9 @@ impl Square for PackedBinaryGhash1x128b {
 
 // Define invert
 impl InvertOrZero for PackedBinaryGhash1x128b {
+	#[inline]
 	fn invert_or_zero(self) -> Self {
-		let portable = super::super::portable::packed_ghash_128::PackedBinaryGhash1x128b::from(
-			u128::from(self.to_underlier()),
-		);
-
-		Self::from_underlier(InvertOrZero::invert_or_zero(portable).to_underlier().into())
+		crate::arch::invert_b128(self)
 	}
 }
 

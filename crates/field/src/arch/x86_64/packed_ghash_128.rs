@@ -118,13 +118,10 @@ cfg_if! {
 	}
 }
 
-// Implement TaggedInvertOrZero for GhashStrategy (software fallback — no CLMUL invert)
+// Implement TaggedInvertOrZero for GhashStrategy (Itoh-Tsujii — no CLMUL invert)
 impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
+	#[inline]
 	fn invert_or_zero(self) -> Self {
-		use crate::{
-			Divisible, arch::portable::packed_ghash_128::ghash_invert_or_zero, packed::PackedField,
-		};
-
-		Self::set_single(ghash_invert_or_zero(self.get(0)))
+		crate::arch::invert_b128(self)
 	}
 }
