@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "crates/frontend/ceck"]
+members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
@@ -96,14 +96,13 @@ tracing-profile = "0.10.11"
 tracing-forest = { version = "0.3.1", features = ["ansi", "env-filter"] }
 trait-set = "0.3.0"
 uninit = "0.6.2"
-z3 = "0.13.3"
 ureq = "3.1"
 
 [workspace.lints.clippy]
 needless_range_loop = "allow"
 
 [workspace.metadata.typos]
-default.extend-words = { "typ" = "typ", "Toom" = "Toom", "inouts" = "inouts", "ceck" = "ceck" }
+default.extend-words = { "typ" = "typ", "Toom" = "Toom", "inouts" = "inouts" }
 default.extend-ignore-re = [
     "(?Rm)^.*(#|//)\\s*spellchecker:disable-line$",
     "ands\\.mdx",
