@@ -21,7 +21,7 @@ for f in "$@"; do
 	best_dir=""
 	best_name=""
 	# Pick the package whose manifest directory is the longest prefix of the file,
-	# so nested members (e.g. crates/frontend/ceck) resolve correctly.
+	# so nested members resolve correctly.
 	while IFS=$'\t' read -r dir name; do
 		case "$abs" in
 		"$dir"/*) (("${#dir}" > "${#best_dir}")) && {
