@@ -187,46 +187,38 @@ where
 		&intmul_h_ops,
 	);
 
-	// The committed words are not padded to a power of two, but the monster multilinear is folded
-	// alongside the witness as a power-of-two-length multilinear. Build it zero-padded up to that
-	// length; the padding words carry no keys and contribute zero.
-	let word_eval = |word_idx: usize| -> F {
-		let Range { start, end } = key_collection.key_ranges[word_idx];
-		key_collection.keys[start as usize..end as usize]
-			.iter()
-			.map(|key| {
-				let (operator_data, scalars) = match key.operation {
-					Operation::BitwiseAnd => (bitand_operator_data, &bitand_scalars),
-					Operation::IntegerMul => (intmul_operator_data, &intmul_scalars),
-				};
-				key.accumulate_by_operand(&key_collection.constraint_indices, operator_data)
-					.map(|(operand_index, acc)| {
-						let index =
-							key.id as usize + operand_index * SHIFT_VARIANT_COUNT * WORD_SIZE_BITS;
-						acc * scalars[index]
-					})
-					.sum::<F>()
-			})
-			.sum()
-	};
-
 	let n_words = key_collection.key_ranges.len();
 	let log_len = log2_ceil_usize(n_words).max(LOG_WORDS_PER_ELEM);
-	let monster_multilinear = (0..1 << log_len.saturating_sub(P::LOG_WIDTH))
-		.into_par_iter()
-		.map(|i| {
-			P::from_fn(|j| {
-				let word_idx = (i << P::LOG_WIDTH) + j;
-				if word_idx < n_words {
-					word_eval(word_idx)
-				} else {
-					F::ZERO
-				}
-			})
-		})
-		.collect::<Box<[_]>>();
+	let capacity = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 
-	Ok(FieldBuffer::new(log_len, monster_multilinear))
+	let mut monster_multilinear = Vec::<P>::with_capacity(capacity);
+	key_collection
+		.key_ranges
+		.par_chunks(P::WIDTH)
+		.map(|chunk| {
+			P::from_scalars(chunk.iter().map(|&Range { start, end }| {
+				key_collection.keys[start as usize..end as usize]
+					.iter()
+					.map(|key| {
+						let (operator_data, scalars) = match key.operation {
+							Operation::BitwiseAnd => (bitand_operator_data, &bitand_scalars),
+							Operation::IntegerMul => (intmul_operator_data, &intmul_scalars),
+						};
+						key.accumulate_by_operand(&key_collection.constraint_indices, operator_data)
+							.map(|(operand_index, acc)| {
+								let index = key.id as usize
+									+ operand_index * SHIFT_VARIANT_COUNT * WORD_SIZE_BITS;
+								acc * scalars[index]
+							})
+							.sum::<F>()
+					})
+					.sum()
+			}))
+		})
+		.collect_into_vec(&mut monster_multilinear);
+	monster_multilinear.resize(capacity, P::default());
+
+	Ok(FieldBuffer::new(log_len, monster_multilinear.into_boxed_slice()))
 }
 
 #[cfg(test)]

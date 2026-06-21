@@ -78,9 +78,12 @@ impl Alloc {
 		// First, allocate the indices for the public section of the value vec. The public section
 		// consists of constant wires followed by inout wires.
 		//
-		// Next, we align the current index to the next power of 2.
+		// Next, we align the current index to the next power of 2 so the witness section starts at
+		// a power-of-two offset.
 		//
-		// Finally, allocate wires for witness values and internal wires.
+		// Finally, allocate wires for witness values and internal wires. The committed length is
+		// not padded to a power of two; the prover zero-pads the committed witness when it builds
+		// the witness polynomial.
 		let mut cur_index: u32 = 0;
 		let mut constants = Vec::with_capacity(n_const);
 		for (wire, value) in self.w_const {
@@ -102,7 +105,6 @@ impl Alloc {
 			cur_index += 1;
 		}
 
-		cur_index = cur_index.next_power_of_two();
 		let committed_total_len = cur_index as usize;
 
 		for wire in self.w_scratch {
@@ -217,11 +219,13 @@ mod tests {
 		assert_eq!(assignment.value_vec_layout.n_internal, 1);
 		assert_eq!(assignment.value_vec_layout.offset_inout, 3);
 		assert_eq!(assignment.value_vec_layout.offset_witness, witness1_idx.0 as usize);
-		assert!(
-			assignment
-				.value_vec_layout
-				.committed_total_len
-				.is_power_of_two()
+		// The committed length is exactly the public section (padded) plus the witness and
+		// internal values.
+		assert_eq!(
+			assignment.value_vec_layout.committed_total_len,
+			assignment.value_vec_layout.offset_witness
+				+ assignment.value_vec_layout.n_witness
+				+ assignment.value_vec_layout.n_internal
 		);
 	}
 

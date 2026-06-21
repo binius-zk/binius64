@@ -668,8 +668,6 @@ pub struct ValueVecLayout {
 	pub offset_witness: usize,
 	/// The total number of committed values in the values vector. This does not include any
 	/// scratch values.
-	///
-	/// This must be a power-of-two.
 	pub committed_total_len: usize,
 	/// The number of scratch values at the end of the value vec.
 	pub n_scratch: usize,
@@ -680,14 +678,9 @@ impl ValueVecLayout {
 	///
 	/// Specifically checks that:
 	///
-	/// - the total committed length is a power of two.
 	/// - the public segment (constants and inout values) is padded to the power of two.
 	/// - the public segment is not less than the minimum size.
 	pub fn validate(&self) -> Result<(), ConstraintSystemError> {
-		if !self.committed_total_len.is_power_of_two() {
-			return Err(ConstraintSystemError::ValueVecLenNotPowerOfTwo);
-		}
-
 		if !self.offset_witness.is_power_of_two() {
 			return Err(ConstraintSystemError::PublicInputPowerOfTwo);
 		}
@@ -777,7 +770,6 @@ impl DeserializeBytes for ValueVecLayout {
 /// as the primary data structure for both constraint evaluation and polynomial commitment.
 ///
 /// Between these sections, there may be padding regions to satisfy alignment requirements.
-/// The total size is always a power of two as required for technical reasons.
 #[derive(Clone, Debug)]
 pub struct ValueVec {
 	layout: ValueVecLayout,

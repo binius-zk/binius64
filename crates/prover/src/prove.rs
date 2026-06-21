@@ -383,34 +383,25 @@ fn pack_witness<P: PackedField<Scalar = B128>>(
 	let len = 1 << log_witness_elems.saturating_sub(P::LOG_WIDTH);
 	let mut padded_witness_elems = Vec::<P>::with_capacity(len);
 
-	// The `ValueVec` stores only the unpadded committed values; zero-pad the witness up to the
-	// power-of-two length of the witness polynomial as it is packed into field elements.
-	padded_witness_elems
-		.spare_capacity_mut()
-		.into_par_iter()
-		.enumerate()
-		.for_each(|(i, dst)| {
-			// Pack B128 elements into packed elements
-			let offset = i << (P::LOG_WIDTH + 1);
-			let value = P::from_fn(|j| {
-				let word_0 = combined_witness
-					.get(offset + 2 * j)
-					.copied()
-					.unwrap_or(Word::ZERO);
-				let word_1 = combined_witness
-					.get(offset + 2 * j + 1)
-					.copied()
-					.unwrap_or(Word::ZERO);
-				B128::new(((word_1.0 as u128) << 64) | (word_0.0 as u128))
-			});
+	// Pack word pairs into B128 elements (2 words per field element), then group into P.
+	// Zero-pad up to the power-of-two witness polynomial length after the real words.
+	let (pairs, remainder) = witness.as_chunks::<2>();
+	pairs
+		.par_chunks(P::WIDTH)
+		.map(|word_pairs| {
+			P::from_scalars(
+				word_pairs
+					.iter()
+					.map(|[w0, w1]| B128::new(((w1.0 as u128) << 64) | (w0.0 as u128))),
+			)
+		})
+		.collect_into_vec(&mut padded_witness_elems);
 
-			dst.write(value);
-		});
+	if let [last_word] = remainder {
+		padded_witness_elems.push(P::from_scalars(std::iter::once(B128::new(last_word.0 as u128))));
+	}
 
-	// SAFETY: We just initialized all elements
-	unsafe {
-		padded_witness_elems.set_len(len);
-	};
+	padded_witness_elems.resize(len, P::default());
 
 	Ok(FieldBuffer::new(log_witness_elems, padded_witness_elems.into_boxed_slice()))
 }

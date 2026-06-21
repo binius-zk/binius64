@@ -92,7 +92,9 @@ impl CircuitStat {
 		let n_const = cs.value_vec_layout.n_const;
 		let n_inout = cs.value_vec_layout.n_inout;
 		let public_allocated = cs.value_vec_layout.offset_witness;
-		let total_allocated = cs.value_vec_layout.committed_total_len;
+		// The committed values are not padded to a power of two in the layout, but the prover
+		// commits to a power-of-two-length witness polynomial, so report that padded size.
+		let total_allocated = cs.value_vec_layout.committed_total_len.next_power_of_two();
 		let private_allocated = total_allocated - public_allocated;
 
 		Self {

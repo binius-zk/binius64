@@ -7,8 +7,6 @@ use crate::consts::MIN_WORDS_PER_SEGMENT;
 #[allow(missing_docs)] // errors are self-documenting
 #[derive(Debug, thiserror::Error)]
 pub enum ConstraintSystemError {
-	#[error("the total length of the value vector must be a power of two")]
-	ValueVecLenNotPowerOfTwo,
 	#[error("the public input segment must have power of two length")]
 	PublicInputPowerOfTwo,
 	#[error(

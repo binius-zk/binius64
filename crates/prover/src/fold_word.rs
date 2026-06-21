@@ -69,7 +69,8 @@ where
 		.map(|word_chunk| {
 			P::from_scalars(word_chunk.iter().map(|&word| transform.transform(&word.0)))
 		})
-		.collect::<Vec<_>>();
+		.collect_into_vec(&mut values);
+	values.resize(capacity, P::default());
 
 	FieldBuffer::new(log_n, values.into_boxed_slice())
 }
