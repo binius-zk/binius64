@@ -10,7 +10,7 @@
 use cfg_if::cfg_if;
 
 use super::m512::M512;
-// Only used by the CLMUL-accelerated `ClMulUnderlier` impl below.
+// Used by the CLMUL-accelerated `ClMulUnderlier` impl and the `GhashWideMul` alias below.
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 use crate::arch::x86_64::arithmetic::ghash;
 use crate::{
@@ -22,6 +22,14 @@ use crate::{
 	},
 	underlier::Divisible,
 };
+
+/// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
+/// [`GhashClMulWideMul`](ghash::GhashClMulWideMul) when VPCLMULQDQ + AVX-512 are available,
+/// otherwise an eager [`TrivialWideMul`].
+#[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+pub type GhashWideMul<T> = ghash::GhashClMulWideMul<T>;
+#[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
+pub type GhashWideMul<T> = TrivialWideMul<T>;
 
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 impl ghash::ClMulUnderlier for M512 {
@@ -53,7 +61,7 @@ define_packed_binary_field!(
 	(Ghash512Strategy),
 	(Ghash512Strategy),
 	(Ghash512Strategy),
-	(TrivialWideMul)
+	(GhashWideMul)
 );
 
 // Implement TaggedMul for Ghash512Strategy

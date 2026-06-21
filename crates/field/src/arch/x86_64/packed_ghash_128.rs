@@ -10,7 +10,7 @@
 use cfg_if::cfg_if;
 
 use super::m128::M128;
-// Only used by the CLMUL-accelerated `ClMulUnderlier` impl below.
+// Used by the CLMUL-accelerated `ClMulUnderlier` impl and the `GhashWideMul` alias below.
 #[cfg(target_feature = "pclmulqdq")]
 use crate::arch::x86_64::arithmetic::ghash;
 use crate::{
@@ -21,6 +21,14 @@ use crate::{
 		impl_square_with,
 	},
 };
+
+/// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
+/// [`GhashClMulWideMul`](ghash::GhashClMulWideMul) when PCLMULQDQ is available, otherwise an eager
+/// [`TrivialWideMul`].
+#[cfg(target_feature = "pclmulqdq")]
+pub type GhashWideMul<T> = ghash::GhashClMulWideMul<T>;
+#[cfg(not(target_feature = "pclmulqdq"))]
+pub type GhashWideMul<T> = TrivialWideMul<T>;
 
 #[cfg(target_feature = "pclmulqdq")]
 impl ghash::ClMulUnderlier for M128 {
@@ -46,7 +54,7 @@ define_packed_binary_field!(
 	(GhashStrategy),
 	(GhashStrategy),
 	(GhashStrategy),
-	(TrivialWideMul)
+	(GhashWideMul)
 );
 
 // Implement TaggedMul for GhashStrategy

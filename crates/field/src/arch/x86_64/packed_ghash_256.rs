@@ -27,6 +27,13 @@ use crate::{
 	underlier::Divisible,
 };
 
+/// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
+/// `GhashClMulWideMul` when VPCLMULQDQ is available, otherwise an eager `TrivialWideMul`.
+#[cfg(target_feature = "vpclmulqdq")]
+pub type GhashWideMul<T> = crate::arch::x86_64::arithmetic::ghash::GhashClMulWideMul<T>;
+#[cfg(not(target_feature = "vpclmulqdq"))]
+pub type GhashWideMul<T> = TrivialWideMul<T>;
+
 #[cfg(target_feature = "vpclmulqdq")]
 mod vpclmulqdq {
 	use super::*;
@@ -57,7 +64,7 @@ define_packed_binary_field!(
 	(Ghash256Strategy),
 	(Ghash256Strategy),
 	(Ghash256Strategy),
-	(TrivialWideMul)
+	(GhashWideMul)
 );
 
 // Implement TaggedMul for Ghash256Strategy
