@@ -236,7 +236,7 @@ fn update_with_operand(
 
 /// Constructs a `KeyCollection` from a constraint system.
 pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
-	// Initialize a temporary list of builder keys lists, one for each word
+	// Initialize a temporary list of builder keys lists, one for each committed word.
 	let mut builder_key_lists: Vec<Vec<BuilderKey>> = (0..cs.value_vec_layout.committed_total_len)
 		.map(|_| Vec::new())
 		.collect();

@@ -9,7 +9,7 @@ use binius_field::{
 	},
 };
 use binius_math::FieldBuffer;
-use binius_utils::{checked_arithmetics::log2_strict_usize, rayon::prelude::*};
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
 /// Computes a [`FieldBuffer`] where each element is the inner product of the bits of a word and a
 /// vector of field elements.
@@ -20,9 +20,11 @@ use binius_utils::{checked_arithmetics::log2_strict_usize, rayon::prelude::*};
 /// This implementation uses the [Method of Four Russians] to optimize the computation by
 /// precomputing a small lookup table and looking up into it using bitwise chunks of the words.
 ///
+/// The returned buffer has `log2_ceil(words.len())` variables. `words` need not have a power-of-two
+/// length; the high words up to that rounded-up length are treated as zero.
+///
 /// ## Preconditions
 /// * `vec` contains exactly [`binius_core::consts::WORD_SIZE_BITS`] elements
-/// * `words` has a power-of-two length
 ///
 /// [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
 pub fn fold_words<F, P>(words: &[Word], vec: &[F]) -> FieldBuffer<P>
@@ -56,11 +58,13 @@ where
 	P: PackedField<Scalar = F>,
 	T: Transformation<u64, F>,
 {
-	assert!(words.len().is_power_of_two()); // precondition
+	// `words` need not have a power-of-two length; the high words up to the next power of two are
+	// treated as zero, so the remaining slots after the last real word are zero-filled by resize.
+	let log_n = log2_ceil_usize(words.len());
+	let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
 
-	let log_n = log2_strict_usize(words.len());
-
-	let values = words
+	let mut values = Vec::<P>::with_capacity(capacity);
+	words
 		.par_chunks(P::WIDTH)
 		.map(|word_chunk| {
 			P::from_scalars(word_chunk.iter().map(|&word| transform.transform(&word.0)))
@@ -74,6 +78,7 @@ where
 mod tests {
 	use binius_core::consts::WORD_SIZE_BITS;
 	use binius_math::test_utils::random_scalars;
+	use binius_utils::checked_arithmetics::log2_strict_usize;
 	use binius_verifier::config::B128;
 	use rand::prelude::*;
 

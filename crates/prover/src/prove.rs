@@ -103,7 +103,7 @@ impl IOPProver {
 
 		// [phase] Setup - initialization and constraint system setup
 		let setup_guard = tracing::debug_span!("Prepare Witness").entered();
-		let witness_packed = pack_witness::<P>(self.log_witness_elems, &witness)?;
+		let witness_packed = pack_witness::<P>(self.log_witness_elems, witness.combined_witness())?;
 		drop(setup_guard);
 
 		// Observe the public input as B128 elements (includes it in Fiat-Shamir).
@@ -369,10 +369,10 @@ fn compute_batched_transparent<P: PackedField<Scalar = B128>>(
 
 fn pack_witness<P: PackedField<Scalar = B128>>(
 	log_witness_elems: usize,
-	witness: &ValueVec,
+	witness: &[Word],
 ) -> Result<FieldBuffer<P>, Error> {
 	// The number of field elements that constitute the packed witness.
-	let n_witness_elems = witness.size().div_ceil(1 << LOG_WORDS_PER_ELEM);
+	let n_witness_elems = witness.len().div_ceil(1 << LOG_WORDS_PER_ELEM);
 	if n_witness_elems > 1 << log_witness_elems {
 		return Err(Error::ArgumentError {
 			arg: "witness".to_string(),
@@ -383,7 +383,8 @@ fn pack_witness<P: PackedField<Scalar = B128>>(
 	let len = 1 << log_witness_elems.saturating_sub(P::LOG_WIDTH);
 	let mut padded_witness_elems = Vec::<P>::with_capacity(len);
 
-	let combined_witness = witness.combined_witness();
+	// The `ValueVec` stores only the unpadded committed values; zero-pad the witness up to the
+	// power-of-two length of the witness polynomial as it is packed into field elements.
 	padded_witness_elems
 		.spare_capacity_mut()
 		.into_par_iter()
@@ -392,8 +393,14 @@ fn pack_witness<P: PackedField<Scalar = B128>>(
 			// Pack B128 elements into packed elements
 			let offset = i << (P::LOG_WIDTH + 1);
 			let value = P::from_fn(|j| {
-				let word_0 = combined_witness[offset + 2 * j];
-				let word_1 = combined_witness[offset + 2 * j + 1];
+				let word_0 = combined_witness
+					.get(offset + 2 * j)
+					.copied()
+					.unwrap_or(Word::ZERO);
+				let word_1 = combined_witness
+					.get(offset + 2 * j + 1)
+					.copied()
+					.unwrap_or(Word::ZERO);
 				B128::new(((word_1.0 as u128) << 64) | (word_0.0 as u128))
 			});
 
@@ -405,9 +412,7 @@ fn pack_witness<P: PackedField<Scalar = B128>>(
 		padded_witness_elems.set_len(len);
 	};
 
-	let padded_witness_elems =
-		FieldBuffer::new(log_witness_elems, padded_witness_elems.into_boxed_slice());
-	Ok(padded_witness_elems)
+	Ok(FieldBuffer::new(log_witness_elems, padded_witness_elems.into_boxed_slice()))
 }
 
 fn prove_bitand_reduction<F, PChallenge, Channel>(

@@ -10,7 +10,7 @@ use binius_math::{
 	multilinear::eq::eq_ind_partial_eval_scalars,
 	univariate::{evaluate_univariate, lagrange_evals_scalars},
 };
-use binius_utils::checked_arithmetics::strict_log_2;
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 use getset::Getters;
 use itertools::Itertools;
 
@@ -19,7 +19,7 @@ use super::{
 	evaluate_monster_multilinear_for_operation,
 };
 use crate::{
-	config::LOG_WORD_SIZE_BITS,
+	config::{LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM},
 	protocols::sumcheck::{SumcheckOutput, verify as verify_sumcheck},
 };
 
@@ -161,8 +161,11 @@ where
 	let r_s = r_jr_s.split_off(LOG_WORD_SIZE_BITS);
 	let r_j = r_jr_s;
 
-	let log_word_count = strict_log_2(constraint_system.value_vec_layout.committed_total_len)
-		.expect("constraints preprocessed");
+	// The committed witness is folded as a power-of-two-length multilinear, so its number of
+	// variables rounds the (possibly non-power-of-two) committed value count up to the next power
+	// of two. This matches the prover, which zero-pads the witness to the same length.
+	let log_word_count = log2_ceil_usize(constraint_system.value_vec_layout.committed_total_len)
+		.max(LOG_WORDS_PER_ELEM);
 
 	let SumcheckOutput {
 		eval,
