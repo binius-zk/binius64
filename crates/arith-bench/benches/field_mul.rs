@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 #![allow(dead_code)]
 #![allow(unused_imports)]
 
@@ -275,6 +276,25 @@ fn bench_ghash(c: &mut Criterion) {
 			&mut group,
 			"mul_clmul::uint64x2_t",
 			mul_clmul::<uint64x2_t>,
+			&mut rng,
+			128,
+		);
+
+		// Direct poly64x2_t multiplication: the two `mul_wide` variants share an identical
+		// reduction, so the gap between these two benchmarks isolates the schoolbook (4 PMULL)
+		// vs Karatsuba (3 PMULL) widening multiply.
+		run_mul_benchmark(
+			&mut group,
+			"aarch64::mul_schoolbook",
+			ghash::aarch64::mul_schoolbook,
+			&mut rng,
+			128,
+		);
+
+		run_mul_benchmark(
+			&mut group,
+			"aarch64::mul_karatsuba",
+			ghash::aarch64::mul_karatsuba,
 			&mut rng,
 			128,
 		);
