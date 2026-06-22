@@ -3,9 +3,10 @@
 
 //! Portable implementation of packed GHASH field operations.
 
+pub use super::arithmetic::ghash::GhashWideMul;
 use super::{
 	arithmetic::{
-		ghash::{GhashWideMul, ghash_mul, ghash_square},
+		ghash::{ghash_mul, ghash_square},
 		itoh_tsujii::invert_b128,
 	},
 	m128::M128,

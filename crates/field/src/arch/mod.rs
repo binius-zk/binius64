@@ -11,16 +11,20 @@ cfg_if! {
 	if #[cfg(all(target_arch = "x86_64"))] {
 		mod x86_64;
 		pub use x86_64::{packed_128, packed_256, packed_512, packed_aes_128, packed_aes_256, packed_aes_512, packed_ghash_128, packed_ghash_256, packed_ghash_512, M128, M256};
+		pub use x86_64::packed_ghash_128::GhashWideMul;
 	} else if #[cfg(target_arch = "aarch64")] {
 		mod aarch64;
 		pub use aarch64::{packed_128, packed_aes_128, packed_ghash_128, M128};
+		pub use aarch64::packed_ghash_128::GhashWideMul;
 		pub use portable::{packed_256::{self, M256}, packed_512, packed_aes_256, packed_aes_512, packed_ghash_256, packed_ghash_512};
 	} else if #[cfg(target_arch = "wasm32")] {
 		mod wasm32;
 		pub use wasm32::{packed_ghash_128, packed_ghash_256};
+		pub use wasm32::packed_ghash_128::GhashWideMul;
 		pub use portable::{m128::M128, packed_128, packed_256::{self, M256}, packed_512, packed_aes_128, packed_aes_256, packed_aes_512, packed_ghash_512};
 	} else {
 		pub use portable::{m128::M128, packed_128, packed_256::{self, M256}, packed_512, packed_aes_128, packed_aes_256, packed_aes_512, packed_ghash_128, packed_ghash_256, packed_ghash_512};
+		pub use portable::packed_ghash_128::GhashWideMul;
 	}
 }
 

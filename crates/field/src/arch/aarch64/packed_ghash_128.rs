@@ -7,7 +7,7 @@
 //! Based on the optimized GHASH implementation using carryless multiplication
 //! instructions available on ARMv8 processors with NEON support.
 
-use super::{arithmetic::ghash::GhashClMulWideMul, m128::M128};
+use super::m128::M128;
 use crate::{
 	BinaryField128bGhash,
 	arch::portable::packed_macros::{portable_macros::*, *},
@@ -16,6 +16,10 @@ use crate::{
 		impl_square_with,
 	},
 };
+
+/// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
+/// `GhashClMulWideMul`.
+pub type GhashWideMul<T> = super::arithmetic::ghash::GhashClMulWideMul<T>;
 
 /// Strategy for aarch64 GHASH field arithmetic operations.
 pub struct GhashStrategy;
@@ -28,7 +32,7 @@ define_packed_binary_field!(
 	(GhashStrategy),
 	(GhashStrategy),
 	(GhashStrategy),
-	(GhashClMulWideMul)
+	(GhashWideMul)
 );
 
 // Implement TaggedMul for GhashStrategy

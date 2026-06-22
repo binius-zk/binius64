@@ -25,6 +25,10 @@ use crate::{
 
 pub type PackedBinaryGhash1x128b = PackedPrimitiveType<M128, BinaryField128bGhash>;
 
+/// Widening-multiply wrapper used by the GHASH packing. The WASM SIMD packing multiplies eagerly,
+/// so this is the trivial (identity-reduce) wrapper.
+pub type GhashWideMul<T> = crate::arithmetic_traits::TrivialWideMul<T>;
+
 // Define broadcast
 impl_broadcast!(M128, BinaryField128bGhash);
 

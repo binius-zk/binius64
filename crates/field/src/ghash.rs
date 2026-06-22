@@ -14,16 +14,16 @@ use binius_utils::{
 	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
 };
-use bytemuck::{Pod, Zeroable};
+use bytemuck::{Pod, TransparentWrapper, Zeroable};
 
 use super::{
 	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
 	extension::ExtensionField,
 };
 use crate::{
-	AESTowerField8b, Field,
-	arch::{M128, invert_b128, packed_ghash_128::PackedBinaryGhash1x128b},
-	arithmetic_traits::{InvertOrZero, Square, impl_trivial_wide_mul},
+	AESTowerField8b, Field, WideMul,
+	arch::{GhashWideMul, M128, invert_b128, packed_ghash_128::PackedBinaryGhash1x128b},
+	arithmetic_traits::{InvertOrZero, Square},
 	binary_field_arithmetic::{multiple_using_packed, square_using_packed},
 	mul_by_binary_field_1b,
 	underlier::{U1, WithUnderlier},
@@ -46,28 +46,35 @@ impl From<BinaryField128bGhash> for u128 {
 	}
 }
 
-/*
-// Deferred-reduction widening multiply, implemented by reusing the width-1 packed GHASH type. On
-// CLMUL backends `Output` is an unreduced `WideGhashProduct`, so accumulating products reduces
-// only once at the end; on portable backends it falls back to the trivial (eager) multiply.
+// Deferred-reduction widening multiply via the optimal `GhashWideMul` wrapper applied to the
+// width-1 `PackedBinaryGhash1x128b` packing. The scalar and the packing share the `M128` underlier,
+// so the conversions are zero-cost reinterprets.
+//
+// This routes the scalar through the packed type's wrapper rather than wrapping the scalar
+// directly. It relies on every M128 GHASH packing using a deferring wrapper whose `Output` is a
+// concrete `WideGhashProduct` (not the packed type itself): `WideMul` is a supertrait of both
+// `Field` and `PackedField`, and `BinaryField128bGhash` is the `Scalar` of
+// `PackedBinaryGhash1x128b`, so a `TrivialWideMul` fallback (whose `Output` is the packed type,
+// bounded `Add + Mul`) would close a trait-resolution cycle through `Field: WideMul`.
 impl WideMul for BinaryField128bGhash {
-	type Output = <PackedBinaryGhash1x128b as WideMul>::Output;
+	type Output = <GhashWideMul<PackedBinaryGhash1x128b> as WideMul>::Output;
 
 	#[inline]
 	fn wide_mul(a: Self, b: Self) -> Self::Output {
-		PackedBinaryGhash1x128b::wide_mul(
-			PackedBinaryGhash1x128b::set_single(a),
-			PackedBinaryGhash1x128b::set_single(b),
+		let a = PackedBinaryGhash1x128b::from_underlier(a.to_underlier());
+		let b = PackedBinaryGhash1x128b::from_underlier(b.to_underlier());
+		<GhashWideMul<PackedBinaryGhash1x128b> as WideMul>::wide_mul(
+			GhashWideMul::wrap(a),
+			GhashWideMul::wrap(b),
 		)
 	}
 
 	#[inline]
 	fn reduce(wide: Self::Output) -> Self {
-		PackedBinaryGhash1x128b::reduce(wide).get(0)
+		let reduced = <GhashWideMul<PackedBinaryGhash1x128b> as WideMul>::reduce(wide);
+		Self::from_underlier(GhashWideMul::peel(reduced).to_underlier())
 	}
 }
-*/
-impl_trivial_wide_mul!(BinaryField128bGhash);
 
 unsafe impl Pod for BinaryField128bGhash {}
 
