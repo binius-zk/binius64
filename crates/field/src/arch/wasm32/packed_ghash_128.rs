@@ -9,36 +9,38 @@
 
 use std::{arch::wasm32::*, ops::Mul};
 
+use bytemuck::TransparentWrapper;
+
 use super::{super::portable::packed::PackedPrimitiveType, m128::M128};
 use crate::{
 	BinaryField128bGhash,
 	arch::{
 		PairwiseStrategy,
 		portable::{
-			arithmetic::ghash::ghash_mul,
 			packed_macros::impl_broadcast,
 			univariate_mul_utils_128::{Underlier128bLanes, spread_bits_64},
 		},
 	},
-	arithmetic_traits::{InvertOrZero, Square, impl_transformation_with_strategy},
+	arithmetic_traits::{InvertOrZero, Square, WideMul, impl_transformation_with_strategy},
 };
 
 pub type PackedBinaryGhash1x128b = PackedPrimitiveType<M128, BinaryField128bGhash>;
 
-/// Widening-multiply wrapper used by the GHASH packing. The WASM SIMD packing multiplies eagerly,
-/// so this is the trivial (identity-reduce) wrapper.
-pub type GhashWideMul<T> = crate::arithmetic_traits::TrivialWideMul<T>;
+/// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring portable
+/// [`GhashWideMul`](crate::arch::portable::arithmetic::ghash::GhashWideMul). The WASM SIMD `M128`
+/// implements [`Underlier128bLanes`], so the portable schoolbook widening multiply applies.
+pub type GhashWideMul<T> = crate::arch::portable::arithmetic::ghash::GhashWideMul<T>;
 
 // Define broadcast
 impl_broadcast!(M128, BinaryField128bGhash);
 
-// Define multiply
+// Define multiply as `reduce(wide_mul)`, deferring to the widening multiply below.
 impl Mul for PackedBinaryGhash1x128b {
 	type Output = Self;
 
 	#[inline]
 	fn mul(self, rhs: Self) -> Self::Output {
-		Self::from_underlier(ghash_mul(self.0, rhs.0))
+		Self::reduce(Self::wide_mul(self, rhs))
 	}
 }
 
@@ -85,8 +87,20 @@ impl InvertOrZero for PackedBinaryGhash1x128b {
 	}
 }
 
-// Implement WideMul (trivial: no CLMUL, just regular multiply)
-crate::arithmetic_traits::impl_trivial_wide_mul!(PackedBinaryGhash1x128b);
+// Implement the deferring widening multiply via the portable `GhashWideMul` wrapper.
+impl WideMul for PackedBinaryGhash1x128b {
+	type Output = <GhashWideMul<Self> as WideMul>::Output;
+
+	#[inline]
+	fn wide_mul(a: Self, b: Self) -> Self::Output {
+		<GhashWideMul<Self> as WideMul>::wide_mul(GhashWideMul::wrap(a), GhashWideMul::wrap(b))
+	}
+
+	#[inline]
+	fn reduce(wide: Self::Output) -> Self {
+		GhashWideMul::peel(<GhashWideMul<Self> as WideMul>::reduce(wide))
+	}
+}
 
 // Define linear transformations
 impl_transformation_with_strategy!(PackedBinaryGhash1x128b, PairwiseStrategy);

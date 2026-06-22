@@ -1,4 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
+
+use crate::arithmetic_traits::{TaggedMul, WideMul};
 
 /// Packed strategy for arithmetic operations.
 /// (Uses arithmetic operations with underlier and subfield to simultaneously calculate the result
@@ -25,3 +28,15 @@ pub struct BitwiseAndStrategy;
 
 /// Strategy for ScaledUnderlier operations that delegate to sub-underlier operations.
 pub struct ScaledStrategy;
+
+/// Strategy that defines multiplication as `reduce(wide_mul(a, b))`, deferring to the type's own
+/// [`WideMul`] impl. Used by every GHASH packing so the (CLMUL-accelerated or scaled) widening
+/// multiply is the single source of truth for both `Mul` and `WideMul`.
+pub struct GhashMulStrategy;
+
+impl<P: WideMul> TaggedMul<GhashMulStrategy> for P {
+	#[inline]
+	fn mul(self, rhs: Self) -> Self {
+		P::reduce(P::wide_mul(self, rhs))
+	}
+}

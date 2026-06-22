@@ -10,10 +10,12 @@
 use super::m128::M128;
 use crate::{
 	BinaryField128bGhash,
-	arch::portable::packed_macros::{portable_macros::*, *},
+	arch::{
+		portable::packed_macros::{portable_macros::*, *},
+		strategies::GhashMulStrategy,
+	},
 	arithmetic_traits::{
-		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
-		impl_square_with,
+		TaggedInvertOrZero, TaggedSquare, impl_invert_with, impl_mul_with, impl_square_with,
 	},
 };
 
@@ -29,22 +31,11 @@ define_packed_binary_field!(
 	PackedBinaryGhash1x128b,
 	BinaryField128bGhash,
 	M128,
-	(GhashStrategy),
+	(GhashMulStrategy),
 	(GhashStrategy),
 	(GhashStrategy),
 	(GhashWideMul)
 );
-
-// Implement TaggedMul for GhashStrategy
-impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
-	#[inline]
-	fn mul(self, rhs: Self) -> Self {
-		Self::from_underlier(super::arithmetic::ghash::mul_clmul(
-			self.to_underlier(),
-			rhs.to_underlier(),
-		))
-	}
-}
 
 // Implement TaggedSquare for GhashStrategy
 impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {

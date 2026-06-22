@@ -5,16 +5,16 @@
 
 pub use super::arithmetic::ghash::GhashWideMul;
 use super::{
-	arithmetic::{
-		ghash::{ghash_mul, ghash_square},
-		itoh_tsujii::invert_b128,
-	},
+	arithmetic::{ghash::ghash_square, itoh_tsujii::invert_b128},
 	m128::M128,
 	univariate_mul_utils_128::{Underlier128bLanes, spread_bits_64},
 };
 use crate::{
-	arch::portable::packed_macros::{portable_macros::*, *},
-	arithmetic_traits::{TaggedInvertOrZero, TaggedMul, TaggedSquare},
+	arch::{
+		portable::packed_macros::{portable_macros::*, *},
+		strategies::GhashMulStrategy,
+	},
+	arithmetic_traits::{TaggedInvertOrZero, TaggedSquare},
 	ghash::BinaryField128bGhash,
 };
 
@@ -51,18 +51,11 @@ define_packed_binary_field!(
 	PackedBinaryGhash1x128b,
 	BinaryField128bGhash,
 	M128,
-	(GhashStrategy),
+	(GhashMulStrategy),
 	(GhashStrategy),
 	(GhashStrategy),
 	(GhashWideMul)
 );
-
-impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
-	#[inline]
-	fn mul(self, rhs: Self) -> Self {
-		ghash_mul(self.0, rhs.0).into()
-	}
-}
 
 impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
 	#[inline]

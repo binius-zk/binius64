@@ -17,10 +17,12 @@ use crate::arch::portable::univariate_mul_utils_128::{Underlier128bLanes, spread
 use crate::arch::x86_64::arithmetic::ghash;
 use crate::{
 	BinaryField128bGhash,
-	arch::portable::packed_macros::{portable_macros::*, *},
+	arch::{
+		portable::packed_macros::{portable_macros::*, *},
+		strategies::GhashMulStrategy,
+	},
 	arithmetic_traits::{
-		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
-		impl_square_with,
+		TaggedInvertOrZero, TaggedSquare, impl_invert_with, impl_mul_with, impl_square_with,
 	},
 };
 
@@ -84,35 +86,11 @@ define_packed_binary_field!(
 	PackedBinaryGhash1x128b,
 	BinaryField128bGhash,
 	M128,
-	(GhashStrategy),
+	(GhashMulStrategy),
 	(GhashStrategy),
 	(GhashStrategy),
 	(GhashWideMul)
 );
-
-// Implement TaggedMul for GhashStrategy
-cfg_if! {
-	if #[cfg(target_feature = "pclmulqdq")] {
-		impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
-			#[inline]
-			fn mul(self, rhs: Self) -> Self {
-				Self::from_underlier(crate::arch::x86_64::arithmetic::ghash::mul_clmul(
-					self.to_underlier(),
-					rhs.to_underlier(),
-				))
-			}
-		}
-	} else {
-		impl TaggedMul<GhashStrategy> for PackedBinaryGhash1x128b {
-			#[inline]
-			fn mul(self, rhs: Self) -> Self {
-				use super::super::portable::arithmetic::ghash::ghash_mul;
-
-				Self::from_underlier(ghash_mul(self.to_underlier(), rhs.to_underlier()))
-			}
-		}
-	}
-}
 
 // Implement TaggedSquare for GhashStrategy
 cfg_if! {

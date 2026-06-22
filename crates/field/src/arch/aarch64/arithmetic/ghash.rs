@@ -73,26 +73,6 @@ fn gf2_128_shift_reduce(t: M128) -> M128 {
 	result
 }
 
-#[inline]
-pub fn mul_clmul(x: M128, y: M128) -> M128 {
-	// t1a = x.lo * y.hi
-	let t1a = pmull::<0x01>(x, y);
-	// t1b = x.hi * y.lo
-	let t1b = pmull::<0x10>(x, y);
-	// t1 = t1a + t1b (XOR in binary field)
-	let mut t1 = t1a ^ t1b;
-	// t2 = x.hi * y.hi
-	let t2 = pmull::<0x11>(x, y);
-	// Reduce t1 and t2
-	t1 = gf2_128_reduce(t1, t2);
-	// t0 = x.lo * y.lo
-	let mut t0 = pmull::<0x00>(x, y);
-	// Final reduction
-	t0 = gf2_128_reduce(t0, t1);
-
-	t0
-}
-
 /// The version of the multiplication optimized for the square operation.
 #[inline]
 pub fn square_clmul(x: M128) -> M128 {

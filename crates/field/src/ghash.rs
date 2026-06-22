@@ -24,7 +24,7 @@ use crate::{
 	AESTowerField8b, Field, WideMul,
 	arch::{GhashWideMul, M128, invert_b128, packed_ghash_128::PackedBinaryGhash1x128b},
 	arithmetic_traits::{InvertOrZero, Square},
-	binary_field_arithmetic::{multiple_using_packed, square_using_packed},
+	binary_field_arithmetic::square_using_packed,
 	mul_by_binary_field_1b,
 	underlier::{U1, WithUnderlier},
 };
@@ -118,15 +118,16 @@ impl BinaryField128bGhash {
 	}
 }
 
-// Cannot use `impl_arithmetic_using_packed!` because `PackedSubfield<Self, Self>` resolves
-// via `Underlier = u128`, but on SIMD targets `PackedBinaryGhash1x128b` uses `M128`.
+// Multiplication is `reduce(wide_mul)`, deferring to the scalar's own `WideMul` impl above (which
+// routes through the optimal `GhashWideMul` packing). This keeps the widening multiply as the
+// single source of truth for both `Mul` and `WideMul`.
 impl Mul<BinaryField128bGhash> for BinaryField128bGhash {
 	type Output = Self;
 
 	#[inline]
 	fn mul(self, rhs: Self) -> Self {
 		crate::tracing::trace_multiplication!(BinaryField128bGhash);
-		multiple_using_packed::<PackedBinaryGhash1x128b>(self, rhs)
+		Self::reduce(Self::wide_mul(self, rhs))
 	}
 }
 

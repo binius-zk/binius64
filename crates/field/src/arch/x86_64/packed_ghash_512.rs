@@ -10,26 +10,30 @@
 use cfg_if::cfg_if;
 
 use super::m512::M512;
+#[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
+use crate::arch::portable::arithmetic::ghash_scaled::Scaled4xGhashWideMul;
 // Used by the CLMUL-accelerated `ClMulUnderlier` impl and the `GhashWideMul` alias below.
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 use crate::arch::x86_64::arithmetic::ghash;
 use crate::{
 	BinaryField128bGhash,
-	arch::portable::packed_macros::{portable_macros::*, *},
-	arithmetic_traits::{
-		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
-		impl_square_with,
+	arch::{
+		portable::packed_macros::{portable_macros::*, *},
+		strategies::GhashMulStrategy,
 	},
-	underlier::Divisible,
+	arithmetic_traits::{
+		TaggedInvertOrZero, TaggedSquare, impl_invert_with, impl_mul_with, impl_square_with,
+	},
 };
 
-/// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
+/// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring vectorized
 /// [`GhashClMulWideMul`](ghash::GhashClMulWideMul) when VPCLMULQDQ + AVX-512 are available,
-/// otherwise an eager [`TrivialWideMul`].
+/// otherwise the per-lane [`ScaledGhashWideMul`] (still deferring, applying the width-1 GHASH
+/// `WideMul` to each 128-bit lane).
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 pub type GhashWideMul<T> = ghash::GhashClMulWideMul<T>;
 #[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
-pub type GhashWideMul<T> = TrivialWideMul<T>;
+pub type GhashWideMul<T> = Scaled4xGhashWideMul<T>;
 
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 impl ghash::ClMulUnderlier for M512 {
@@ -58,70 +62,11 @@ define_packed_binary_field!(
 	PackedBinaryGhash4x128b,
 	BinaryField128bGhash,
 	M512,
-	(Ghash512Strategy),
+	(GhashMulStrategy),
 	(Ghash512Strategy),
 	(Ghash512Strategy),
 	(GhashWideMul)
 );
-
-// Implement TaggedMul for Ghash512Strategy
-cfg_if! {
-	if #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))] {
-		impl TaggedMul<Ghash512Strategy> for PackedBinaryGhash4x128b {
-			#[inline]
-			fn mul(self, rhs: Self) -> Self {
-				Self::from_underlier(crate::arch::x86_64::arithmetic::ghash::mul_clmul(
-					self.to_underlier(),
-					rhs.to_underlier(),
-				))
-			}
-		}
-	} else {
-		impl TaggedMul<Ghash512Strategy> for PackedBinaryGhash4x128b {
-			#[inline]
-			fn mul(self, rhs: Self) -> Self {
-				// Fallback: perform scalar multiplication on each 128-bit element
-				let mut result_underlier = self.to_underlier();
-				unsafe {
-					let self_0 = Divisible::<u128>::get_unchecked(&self.to_underlier(), 0);
-					let self_1 = Divisible::<u128>::get_unchecked(&self.to_underlier(), 1);
-					let self_2 = Divisible::<u128>::get_unchecked(&self.to_underlier(), 2);
-					let self_3 = Divisible::<u128>::get_unchecked(&self.to_underlier(), 3);
-					let rhs_0 = Divisible::<u128>::get_unchecked(&rhs.to_underlier(), 0);
-					let rhs_1 = Divisible::<u128>::get_unchecked(&rhs.to_underlier(), 1);
-					let rhs_2 = Divisible::<u128>::get_unchecked(&rhs.to_underlier(), 2);
-					let rhs_3 = Divisible::<u128>::get_unchecked(&rhs.to_underlier(), 3);
-
-					// Use the portable scalar multiplication for each element
-					use super::super::portable::packed_ghash_128::PackedBinaryGhash1x128b as PortablePackedBinaryGhash1x128b;
-					let result_0 = std::ops::Mul::mul(
-						PortablePackedBinaryGhash1x128b::from(self_0),
-						PortablePackedBinaryGhash1x128b::from(rhs_0),
-					);
-					let result_1 = std::ops::Mul::mul(
-						PortablePackedBinaryGhash1x128b::from(self_1),
-						PortablePackedBinaryGhash1x128b::from(rhs_1),
-					);
-					let result_2 = std::ops::Mul::mul(
-						PortablePackedBinaryGhash1x128b::from(self_2),
-						PortablePackedBinaryGhash1x128b::from(rhs_2),
-					);
-					let result_3 = std::ops::Mul::mul(
-						PortablePackedBinaryGhash1x128b::from(self_3),
-						PortablePackedBinaryGhash1x128b::from(rhs_3),
-					);
-
-					Divisible::<u128>::set_unchecked(&mut result_underlier, 0, result_0.to_underlier());
-					Divisible::<u128>::set_unchecked(&mut result_underlier, 1, result_1.to_underlier());
-					Divisible::<u128>::set_unchecked(&mut result_underlier, 2, result_2.to_underlier());
-					Divisible::<u128>::set_unchecked(&mut result_underlier, 3, result_3.to_underlier());
-				}
-
-				Self::from_underlier(result_underlier)
-			}
-		}
-	}
-}
 
 // Implement TaggedSquare for Ghash512Strategy
 cfg_if! {

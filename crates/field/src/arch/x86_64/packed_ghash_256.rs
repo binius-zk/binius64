@@ -13,26 +13,30 @@ use crate::{
 	BinaryField128bGhash,
 	arch::{
 		portable::packed_macros::{portable_macros::*, *},
+		strategies::GhashMulStrategy,
 		x86_64::m256::M256,
 	},
 	arithmetic_traits::{
-		TaggedInvertOrZero, TaggedMul, TaggedSquare, impl_invert_with, impl_mul_with,
-		impl_square_with,
+		TaggedInvertOrZero, TaggedSquare, impl_invert_with, impl_mul_with, impl_square_with,
 	},
 };
-// Only used by the element-wise fallback when VPCLMULQDQ is unavailable.
+// Only used by the element-wise square fallback when VPCLMULQDQ is unavailable.
 #[cfg(not(target_feature = "vpclmulqdq"))]
 use crate::{
-	arch::x86_64::{m128::M128, packed_ghash_128::PackedBinaryGhash1x128b},
+	arch::{
+		portable::arithmetic::ghash_scaled::Scaled2xGhashWideMul,
+		x86_64::{m128::M128, packed_ghash_128::PackedBinaryGhash1x128b},
+	},
 	underlier::Divisible,
 };
 
-/// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
-/// `GhashClMulWideMul` when VPCLMULQDQ is available, otherwise an eager `TrivialWideMul`.
+/// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring vectorized
+/// `GhashClMulWideMul` when VPCLMULQDQ is available, otherwise the per-lane `ScaledGhashWideMul`
+/// (which still defers reduction, applying the width-1 GHASH `WideMul` to each 128-bit lane).
 #[cfg(target_feature = "vpclmulqdq")]
 pub type GhashWideMul<T> = crate::arch::x86_64::arithmetic::ghash::GhashClMulWideMul<T>;
 #[cfg(not(target_feature = "vpclmulqdq"))]
-pub type GhashWideMul<T> = TrivialWideMul<T>;
+pub type GhashWideMul<T> = Scaled2xGhashWideMul<T>;
 
 #[cfg(target_feature = "vpclmulqdq")]
 mod vpclmulqdq {
@@ -61,54 +65,11 @@ define_packed_binary_field!(
 	PackedBinaryGhash2x128b,
 	BinaryField128bGhash,
 	M256,
-	(Ghash256Strategy),
+	(GhashMulStrategy),
 	(Ghash256Strategy),
 	(Ghash256Strategy),
 	(GhashWideMul)
 );
-
-// Implement TaggedMul for Ghash256Strategy
-cfg_if! {
-	if #[cfg(target_feature = "vpclmulqdq")] {
-		impl TaggedMul<Ghash256Strategy> for PackedBinaryGhash2x128b {
-			#[inline]
-			fn mul(self, rhs: Self) -> Self {
-				Self::from_underlier(crate::arch::x86_64::arithmetic::ghash::mul_clmul(
-					self.to_underlier(),
-					rhs.to_underlier(),
-				))
-			}
-		}
-	} else {
-		impl TaggedMul<Ghash256Strategy> for PackedBinaryGhash2x128b {
-			#[inline]
-			fn mul(self, rhs: Self) -> Self {
-				// Fallback: perform scalar multiplication on each 128-bit element
-				let mut result_underlier = self.to_underlier();
-				unsafe {
-					let self_0 = Divisible::<M128>::get_unchecked(&self.to_underlier(), 0);
-					let self_1 = Divisible::<M128>::get_unchecked(&self.to_underlier(), 1);
-					let rhs_0 = Divisible::<M128>::get_unchecked(&rhs.to_underlier(), 0);
-					let rhs_1 = Divisible::<M128>::get_unchecked(&rhs.to_underlier(), 1);
-
-					let result_0 = std::ops::Mul::mul(
-						PackedBinaryGhash1x128b::from(self_0),
-						PackedBinaryGhash1x128b::from(rhs_0),
-					);
-					let result_1 = std::ops::Mul::mul(
-						PackedBinaryGhash1x128b::from(self_1),
-						PackedBinaryGhash1x128b::from(rhs_1),
-					);
-
-					Divisible::<M128>::set_unchecked(&mut result_underlier, 0, result_0.to_underlier());
-					Divisible::<M128>::set_unchecked(&mut result_underlier, 1, result_1.to_underlier());
-				}
-
-				Self::from_underlier(result_underlier)
-			}
-		}
-	}
-}
 
 // Implement TaggedSquare for Ghash256Strategy
 cfg_if! {
