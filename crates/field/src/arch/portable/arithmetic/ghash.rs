@@ -10,10 +10,7 @@ use std::{
 
 use bytemuck::TransparentWrapper;
 
-use super::super::{
-	m128::M128,
-	univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64},
-};
+use super::super::univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64};
 use crate::{BinaryField128bGhash as GhashB128, WideMul, arch::PackedPrimitiveType};
 
 /// Multiply two GHASH field elements using software implementation.
@@ -184,8 +181,8 @@ impl<U: Underlier128bLanes> SubAssign for WideGhashProduct<U> {
 #[derive(bytemuck::TransparentWrapper)]
 pub struct GhashWideMul<T>(T);
 
-impl WideMul for GhashWideMul<PackedPrimitiveType<M128, GhashB128>> {
-	type Output = WideGhashProduct<M128>;
+impl<U: Underlier128bLanes> WideMul for GhashWideMul<PackedPrimitiveType<U, GhashB128>> {
+	type Output = WideGhashProduct<U>;
 
 	#[inline]
 	fn wide_mul(a: Self, b: Self) -> Self::Output {
