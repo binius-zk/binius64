@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 use std::arch::aarch64::*;
 
 use rand::prelude::*;
@@ -132,6 +133,42 @@ impl PackedUnderlier<u128> for uint64x2_t {
 	#[inline]
 	fn broadcast(val: u128) -> Self {
 		unsafe { std::mem::transmute(val) }
+	}
+}
+
+impl Underlier for poly64x2_t {
+	const BITS: usize = 128;
+
+	#[inline]
+	fn and(a: Self, b: Self) -> Self {
+		unsafe {
+			vreinterpretq_p64_u64(vandq_u64(vreinterpretq_u64_p64(a), vreinterpretq_u64_p64(b)))
+		}
+	}
+
+	#[inline]
+	fn xor(a: Self, b: Self) -> Self {
+		unsafe {
+			vreinterpretq_p64_u64(veorq_u64(vreinterpretq_u64_p64(a), vreinterpretq_u64_p64(b)))
+		}
+	}
+
+	#[inline]
+	fn zero() -> Self {
+		unsafe { vreinterpretq_p64_p128(0u128) }
+	}
+
+	#[inline]
+	fn is_equal(a: Self, b: Self) -> bool {
+		unsafe {
+			let cmp = vceqq_u64(vreinterpretq_u64_p64(a), vreinterpretq_u64_p64(b));
+			vgetq_lane_u64(cmp, 0) == u64::MAX && vgetq_lane_u64(cmp, 1) == u64::MAX
+		}
+	}
+
+	fn random(mut rng: impl Rng) -> Self {
+		let value: u128 = rng.random();
+		unsafe { vreinterpretq_p64_p128(value) }
 	}
 }
 

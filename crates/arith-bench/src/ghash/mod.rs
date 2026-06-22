@@ -1,6 +1,9 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Arithmetic for the GHASH field, GF(2)\[X\] / (X^128 + X^7 + X^2 + X + 1).
 
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64;
 pub mod bit_sliced;
 pub mod clmul;
 pub mod soft64;
