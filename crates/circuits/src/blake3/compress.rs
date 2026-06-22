@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! BLAKE3 compression primitive.
 //!
 //! A BLAKE3 block is 64 bytes (16 × 32-bit words). The compression function mixes an
@@ -9,12 +10,13 @@
 //!
 //! [reference implementation]: https://github.com/BLAKE3-team/BLAKE3/blob/master/src/portable.rs
 
-use std::array;
+use std::{array, iter};
 
 use binius_core::word::Word;
-use binius_frontend::{CircuitBuilder, Wire};
+use binius_frontend::{CircuitBuilder, Hint, Wire};
 
 use super::{IV, MSG_SCHEDULE};
+use crate::util::clear_high_bits;
 
 /// BLAKE3 compression function.
 ///
@@ -179,69 +181,201 @@ fn round(builder: &CircuitBuilder, state: &mut [Wire; 16], msg: &[Wire; 16], rou
 	g(builder, state, 3, 4, 9, 14, msg[schedule[14]], msg[schedule[15]]);
 }
 
+/// Two sequential BLAKE3 compressions evaluated as the two lanes of [`blake3_compress_2x`].
+///
+/// Computes `C2 = compress(C1, block2, …)` where `C1 = compress(cv, block1, …)` — the output
+/// chaining value of the first compression is the input chaining value of the second. Both
+/// compressions share the single 7-round core of [`blake3_compress_2x`]: the first runs in the
+/// high lane (bits `[32:64]`), the second in the low lane (bits `[0:32]`).
+///
+/// The data dependency — the second compression needs the first's *output* as its input — is
+/// resolved with a `Blake3CompressHint` that precomputes `C1`'s output chaining value. That
+/// value is fed into the low lane of the merged input chaining value (the second compression's
+/// input) and constrained word-for-word against the first compression's in-circuit output (the
+/// high lane of the result), so the hint cannot lie.
+///
+/// # Arguments
+///
+/// All wires carry 32-bit values in their low 32 bits, matching [`blake3_compress`].
+///
+/// - `cv`: input chaining value for the first compression (8 words).
+/// - `blocks`: the two message blocks (`blocks[0]` for C1, `blocks[1]` for C2), 16 words each.
+/// - `counter`: the 64-bit block counter for the first compression. The second compression's
+///   counter is this one incremented by one (the two compressions form a sequence).
+/// - `block_lens`: per-compression block lengths.
+/// - `flags`: per-compression flags.
+///
+/// # Returns
+///
+/// The two output chaining values packed into 8 wires: the second compression's output in the
+/// low 32 bits of each wire, the first compression's output in the high 32 bits.
+pub fn blake3_compress_2x_seq(
+	builder: &CircuitBuilder,
+	cv: [Wire; 8],
+	blocks: [[Wire; 16]; 2],
+	counter: Wire,
+	block_lens: [Wire; 2],
+	flags: [Wire; 2],
+) -> [Wire; 8] {
+	// The hint returns the *merged* input chaining value directly: each word packs the first
+	// compression's output in the low 32 bits (the second compression's input lane) and the first
+	// compression's input `cv` word in the high 32 bits (the first compression's input lane). Both
+	// halves are constrained below, so the hint itself is untrusted.
+	let mut hint_inputs = Vec::with_capacity(27);
+	hint_inputs.extend_from_slice(&cv);
+	hint_inputs.extend_from_slice(&blocks[0]);
+	hint_inputs.push(counter);
+	hint_inputs.push(block_lens[0]);
+	hint_inputs.push(flags[0]);
+	let merged_cv_vec = builder.call_hint(Blake3CompressHint, &[], &hint_inputs);
+	let merged_cv: [Wire; 8] = array::from_fn(|i| merged_cv_vec[i]);
+
+	// Pack two lane values into one wire: low 32 bits = lane 0 (C2), high 32 bits = lane 1 (C1).
+	// `shl` clears the high operand's upper bits; the low operand is cleared explicitly at each
+	// call site, since block/scalar inputs are not guaranteed to be zero-extended to 64 bits.
+	let pack = |lo: Wire, hi: Wire| builder.bxor(lo, builder.shl(hi, 32));
+	let clear = |w: Wire| clear_high_bits(builder, w, 32);
+
+	// Bind the hint's claimed first-compression input (high 32 bits of each merged CV word) to the
+	// genuine input `cv` (low 32 bits), so the high lane provably compresses the real `cv`.
+	for (merged, cv_word) in iter::zip(merged_cv, cv) {
+		builder.assert_eq("blake3_compress_2x_seq.cv_in", builder.shr(merged, 32), clear(cv_word));
+	}
+
+	let merged_block: [Wire; 16] = array::from_fn(|i| pack(clear(blocks[1][i]), blocks[0][i]));
+
+	// The second compression's counter is the first's incremented by one.
+	let (counter2, _carry) = builder.iadd(counter, builder.add_constant_64(1));
+	let merged_counter_lo = pack(clear(counter2), counter);
+	let merged_counter_hi = pack(builder.shr(counter2, 32), builder.shr(counter, 32));
+	let merged_block_len = pack(clear(block_lens[1]), block_lens[0]);
+	let merged_flags = pack(clear(flags[1]), flags[0]);
+
+	let out = blake3_compress_2x(
+		builder,
+		merged_cv,
+		merged_block,
+		merged_counter_lo,
+		merged_counter_hi,
+		merged_block_len,
+		merged_flags,
+	);
+
+	// Bind the hint: the first compression's in-circuit output (high lane of `out`) must equal the
+	// chaining value the hint fed into the second compression's input (low 32 bits of `merged_cv`).
+	for (merged, out_word) in iter::zip(merged_cv, out) {
+		builder.assert_eq(
+			"blake3_compress_2x_seq.c1_out",
+			clear(merged),
+			builder.shr(out_word, 32),
+		);
+	}
+
+	out
+}
+
+/// Custom hint computing the merged input chaining value for [`blake3_compress_2x_seq`].
+///
+/// Runs the first compression off-circuit and packs its result so the output can be fed directly
+/// as the two-lane input chaining value: the low 32 bits seed the second compression's input lane
+/// with the first compression's output, the high 32 bits carry the first compression's input `cv`
+/// word. Both halves are re-derived in-circuit and constrained, so the hint only needs to produce
+/// the honest result.
+///
+/// Input layout (27 words, value in the low 32 bits of each): `cv[0..8]`, `block[0..16]`,
+/// `counter` (full 64 bits), `block_len`, `flags`. Output: 8 packed words where the low 32 bits
+/// hold the compression output chaining value and the high 32 bits hold the corresponding `cv`
+/// input word.
+struct Blake3CompressHint;
+
+impl Hint for Blake3CompressHint {
+	const NAME: &'static str = "binius.blake3_compress";
+
+	fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+		(27, 8)
+	}
+
+	fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+		let cv: [u32; 8] = array::from_fn(|i| inputs[i].as_u64() as u32);
+		let block: [u32; 16] = array::from_fn(|i| inputs[8 + i].as_u64() as u32);
+		let counter = inputs[24].as_u64();
+		let block_len = inputs[25].as_u64() as u32;
+		let flags = inputs[26].as_u64() as u32;
+
+		let out = ref_compress(&cv, &block, counter, block_len, flags);
+		for (i, slot) in outputs.iter_mut().enumerate() {
+			*slot = Word(out[i] as u64 | ((cv[i] as u64) << 32));
+		}
+	}
+}
+
+// --- Pure-Rust reference implementation of BLAKE3 compression ------------------------
+//
+// Shared by [`Blake3CompressHint`] (prover-side witness generation) and the tests.
+
+fn ref_g(v: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize, mx: u32, my: u32) {
+	v[a] = v[a].wrapping_add(v[b]).wrapping_add(mx);
+	v[d] = (v[d] ^ v[a]).rotate_right(16);
+	v[c] = v[c].wrapping_add(v[d]);
+	v[b] = (v[b] ^ v[c]).rotate_right(12);
+	v[a] = v[a].wrapping_add(v[b]).wrapping_add(my);
+	v[d] = (v[d] ^ v[a]).rotate_right(8);
+	v[c] = v[c].wrapping_add(v[d]);
+	v[b] = (v[b] ^ v[c]).rotate_right(7);
+}
+
+fn ref_round(state: &mut [u32; 16], msg: &[u32; 16], round: usize) {
+	let schedule = MSG_SCHEDULE[round];
+
+	ref_g(state, 0, 4, 8, 12, msg[schedule[0]], msg[schedule[1]]);
+	ref_g(state, 1, 5, 9, 13, msg[schedule[2]], msg[schedule[3]]);
+	ref_g(state, 2, 6, 10, 14, msg[schedule[4]], msg[schedule[5]]);
+	ref_g(state, 3, 7, 11, 15, msg[schedule[6]], msg[schedule[7]]);
+
+	ref_g(state, 0, 5, 10, 15, msg[schedule[8]], msg[schedule[9]]);
+	ref_g(state, 1, 6, 11, 12, msg[schedule[10]], msg[schedule[11]]);
+	ref_g(state, 2, 7, 8, 13, msg[schedule[12]], msg[schedule[13]]);
+	ref_g(state, 3, 4, 9, 14, msg[schedule[14]], msg[schedule[15]]);
+}
+
+fn ref_compress(
+	cv: &[u32; 8],
+	block: &[u32; 16],
+	counter: u64,
+	block_len: u32,
+	flags: u32,
+) -> [u32; 8] {
+	let mut v = [
+		cv[0],
+		cv[1],
+		cv[2],
+		cv[3],
+		cv[4],
+		cv[5],
+		cv[6],
+		cv[7],
+		IV[0],
+		IV[1],
+		IV[2],
+		IV[3],
+		counter as u32,
+		(counter >> 32) as u32,
+		block_len,
+		flags,
+	];
+	for i in 0..7 {
+		ref_round(&mut v, block, i);
+	}
+	array::from_fn(|i| v[i] ^ v[i + 8])
+}
+
 #[cfg(test)]
 mod tests {
+	use std::array;
+
 	use binius_frontend::CircuitBuilder;
 
 	use super::*;
-
-	// --- Pure-Rust reference implementation of BLAKE3 compression ---------------------
-
-	fn ref_g(v: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize, mx: u32, my: u32) {
-		v[a] = v[a].wrapping_add(v[b]).wrapping_add(mx);
-		v[d] = (v[d] ^ v[a]).rotate_right(16);
-		v[c] = v[c].wrapping_add(v[d]);
-		v[b] = (v[b] ^ v[c]).rotate_right(12);
-		v[a] = v[a].wrapping_add(v[b]).wrapping_add(my);
-		v[d] = (v[d] ^ v[a]).rotate_right(8);
-		v[c] = v[c].wrapping_add(v[d]);
-		v[b] = (v[b] ^ v[c]).rotate_right(7);
-	}
-
-	fn ref_round(state: &mut [u32; 16], msg: &[u32; 16], round: usize) {
-		let schedule = MSG_SCHEDULE[round];
-
-		ref_g(state, 0, 4, 8, 12, msg[schedule[0]], msg[schedule[1]]);
-		ref_g(state, 1, 5, 9, 13, msg[schedule[2]], msg[schedule[3]]);
-		ref_g(state, 2, 6, 10, 14, msg[schedule[4]], msg[schedule[5]]);
-		ref_g(state, 3, 7, 11, 15, msg[schedule[6]], msg[schedule[7]]);
-
-		ref_g(state, 0, 5, 10, 15, msg[schedule[8]], msg[schedule[9]]);
-		ref_g(state, 1, 6, 11, 12, msg[schedule[10]], msg[schedule[11]]);
-		ref_g(state, 2, 7, 8, 13, msg[schedule[12]], msg[schedule[13]]);
-		ref_g(state, 3, 4, 9, 14, msg[schedule[14]], msg[schedule[15]]);
-	}
-
-	fn ref_compress(
-		cv: &[u32; 8],
-		block: &[u32; 16],
-		counter: u64,
-		block_len: u32,
-		flags: u32,
-	) -> [u32; 8] {
-		let mut v = [
-			cv[0],
-			cv[1],
-			cv[2],
-			cv[3],
-			cv[4],
-			cv[5],
-			cv[6],
-			cv[7],
-			IV[0],
-			IV[1],
-			IV[2],
-			IV[3],
-			counter as u32,
-			(counter >> 32) as u32,
-			block_len,
-			flags,
-		];
-		for i in 0..7 {
-			ref_round(&mut v, block, i);
-		}
-		std::array::from_fn(|i| v[i] ^ v[i + 8])
-	}
 
 	// --- Circuit-level tests --------------------------------------------------------
 
@@ -255,14 +389,14 @@ mod tests {
 		flags: u32,
 	) -> [u32; 8] {
 		let builder = CircuitBuilder::new();
-		let cv_wires: [Wire; 8] = std::array::from_fn(|_| builder.add_witness());
-		let block_wires: [Wire; 16] = std::array::from_fn(|_| builder.add_witness());
+		let cv_wires: [Wire; 8] = array::from_fn(|_| builder.add_witness());
+		let block_wires: [Wire; 16] = array::from_fn(|_| builder.add_witness());
 		let counter_w = builder.add_witness();
 		let block_len_w = builder.add_witness();
 		let flags_w = builder.add_witness();
 
 		let out = blake3_compress(&builder, cv_wires, block_wires, counter_w, block_len_w, flags_w);
-		let out_inout: [Wire; 8] = std::array::from_fn(|_| builder.add_inout());
+		let out_inout: [Wire; 8] = array::from_fn(|_| builder.add_inout());
 		for i in 0..8 {
 			builder.assert_eq("out_match", out[i], out_inout[i]);
 		}
@@ -284,7 +418,7 @@ mod tests {
 			w[out_inout[i]] = Word(expected[i] as u64);
 		}
 		circuit.populate_wire_witness(&mut w).unwrap();
-		std::array::from_fn(|i| w[out_inout[i]].0 as u32)
+		array::from_fn(|i| w[out_inout[i]].0 as u32)
 	}
 
 	#[test]
@@ -309,7 +443,7 @@ mod tests {
 	#[test]
 	fn nonzero_counter_splits_correctly() {
 		let cv = IV;
-		let block = std::array::from_fn(|i| i as u32 * 0x0101_0101);
+		let block = array::from_fn(|i| i as u32 * 0x0101_0101);
 		let counter: u64 = 0x0123_4567_89AB_CDEF;
 		let actual = run_compress(cv, block, counter, 64, super::super::CHUNK_END);
 		let expected = ref_compress(&cv, &block, counter, 64, super::super::CHUNK_END);
@@ -328,7 +462,7 @@ mod tests {
 			0x0123_4567,
 			0x89AB_CDEF,
 		];
-		let block = std::array::from_fn(|i| (i as u32).wrapping_mul(0xDEAD_BEEFu32));
+		let block = array::from_fn(|i| (i as u32).wrapping_mul(0xDEAD_BEEFu32));
 		let actual = run_compress(cv, block, 42, 32, super::super::CHUNK_START);
 		let expected = ref_compress(&cv, &block, 42, 32, super::super::CHUNK_START);
 		assert_eq!(actual, expected);
@@ -354,8 +488,8 @@ mod tests {
 		flags: [u32; 2],
 	) -> [[u32; 8]; 2] {
 		let builder = CircuitBuilder::new();
-		let cv_wires: [Wire; 8] = std::array::from_fn(|_| builder.add_witness());
-		let block_wires: [Wire; 16] = std::array::from_fn(|_| builder.add_witness());
+		let cv_wires: [Wire; 8] = array::from_fn(|_| builder.add_witness());
+		let block_wires: [Wire; 16] = array::from_fn(|_| builder.add_witness());
 		let counter_lo_w = builder.add_witness();
 		let counter_hi_w = builder.add_witness();
 		let block_len_w = builder.add_witness();
@@ -370,7 +504,7 @@ mod tests {
 			block_len_w,
 			flags_w,
 		);
-		let out_inout: [Wire; 8] = std::array::from_fn(|_| builder.add_inout());
+		let out_inout: [Wire; 8] = array::from_fn(|_| builder.add_inout());
 		for i in 0..8 {
 			builder.assert_eq("out_match_2x", out[i], out_inout[i]);
 		}
@@ -428,8 +562,8 @@ mod tests {
 			0x0123_4567,
 			0x89AB_CDEF,
 		];
-		let block0: [u32; 16] = std::array::from_fn(|i| i as u32 * 0x0101_0101);
-		let block1: [u32; 16] = std::array::from_fn(|i| (i as u32).wrapping_mul(0xDEAD_BEEFu32));
+		let block0: [u32; 16] = array::from_fn(|i| i as u32 * 0x0101_0101);
+		let block1: [u32; 16] = array::from_fn(|i| (i as u32).wrapping_mul(0xDEAD_BEEFu32));
 
 		let actual = run_compress_2x(
 			[cv0, cv1],
@@ -447,7 +581,7 @@ mod tests {
 	#[test]
 	fn compress_2x_counter_across_32bit_boundary() {
 		let cv = IV;
-		let block: [u32; 16] = std::array::from_fn(|i| i as u32);
+		let block: [u32; 16] = array::from_fn(|i| i as u32);
 		let counter0: u64 = 0x0123_4567_89AB_CDEF;
 		let counter1: u64 = 0;
 		let actual = run_compress_2x(
@@ -465,5 +599,132 @@ mod tests {
 		let exp1 = ref_compress(&cv, &block, counter1, 64, super::super::CHUNK_END);
 		assert_eq!(actual[0], exp0);
 		assert_eq!(actual[1], exp1);
+	}
+
+	// --- 2× sequential tests -------------------------------------------------------
+
+	/// Run `blake3_compress_2x_seq` and return `(c2_out, c1_out)`: the second and first
+	/// compression outputs, unpacked from the low and high lanes of the packed result.
+	#[allow(clippy::too_many_arguments)]
+	fn run_compress_2x_seq(
+		cv: [u32; 8],
+		block1: [u32; 16],
+		block2: [u32; 16],
+		counter: u64,
+		block_len1: u32,
+		flags1: u32,
+		block_len2: u32,
+		flags2: u32,
+	) -> ([u32; 8], [u32; 8]) {
+		let builder = CircuitBuilder::new();
+		let cv_wires: [Wire; 8] = array::from_fn(|_| builder.add_witness());
+		let block1_wires: [Wire; 16] = array::from_fn(|_| builder.add_witness());
+		let block2_wires: [Wire; 16] = array::from_fn(|_| builder.add_witness());
+		let counter_w = builder.add_witness();
+		let block_len1_w = builder.add_witness();
+		let flags1_w = builder.add_witness();
+		let block_len2_w = builder.add_witness();
+		let flags2_w = builder.add_witness();
+
+		let out = blake3_compress_2x_seq(
+			&builder,
+			cv_wires,
+			[block1_wires, block2_wires],
+			counter_w,
+			[block_len1_w, block_len2_w],
+			[flags1_w, flags2_w],
+		);
+		let out_inout: [Wire; 8] = array::from_fn(|_| builder.add_inout());
+		for i in 0..8 {
+			builder.assert_eq("out_match_2x_seq", out[i], out_inout[i]);
+		}
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		for i in 0..8 {
+			w[cv_wires[i]] = Word(cv[i] as u64);
+		}
+		for i in 0..16 {
+			w[block1_wires[i]] = Word(block1[i] as u64);
+			w[block2_wires[i]] = Word(block2[i] as u64);
+		}
+		w[counter_w] = Word(counter);
+		w[block_len1_w] = Word(block_len1 as u64);
+		w[flags1_w] = Word(flags1 as u64);
+		w[block_len2_w] = Word(block_len2 as u64);
+		w[flags2_w] = Word(flags2 as u64);
+
+		// Expected: the first compression feeds the second; the second's counter is one greater.
+		let c1 = ref_compress(&cv, &block1, counter, block_len1, flags1);
+		let c2 = ref_compress(&c1, &block2, counter + 1, block_len2, flags2);
+		for i in 0..8 {
+			w[out_inout[i]] = Word(pack2x(c2[i], c1[i]));
+		}
+		circuit.populate_wire_witness(&mut w).unwrap();
+
+		let mut c2_out = [0u32; 8];
+		let mut c1_out = [0u32; 8];
+		for i in 0..8 {
+			let (lo, hi) = unpack2x(w[out_inout[i]].0);
+			c2_out[i] = lo;
+			c1_out[i] = hi;
+		}
+		(c2_out, c1_out)
+	}
+
+	#[test]
+	fn compress_2x_seq_chains_two_blocks() {
+		let cv = IV;
+		let block1 = [0u32; 16];
+		let block2: [u32; 16] = array::from_fn(|i| i as u32);
+		let (c2, c1) = run_compress_2x_seq(
+			cv,
+			block1,
+			block2,
+			0,
+			64,
+			super::super::CHUNK_START,
+			64,
+			super::super::CHUNK_END | super::super::ROOT,
+		);
+		let exp_c1 = ref_compress(&cv, &block1, 0, 64, super::super::CHUNK_START);
+		let exp_c2 =
+			ref_compress(&exp_c1, &block2, 1, 64, super::super::CHUNK_END | super::super::ROOT);
+		assert_eq!(c1, exp_c1);
+		assert_eq!(c2, exp_c2);
+	}
+
+	#[test]
+	fn compress_2x_seq_distinct_params() {
+		let cv = [
+			0xDEAD_BEEF,
+			0xCAFE_BABE,
+			0x1234_5678,
+			0x9ABC_DEF0,
+			0x0BAD_F00D,
+			0xFEED_FACE,
+			0x0123_4567,
+			0x89AB_CDEF,
+		];
+		let block1: [u32; 16] = array::from_fn(|i| (i as u32).wrapping_mul(0x0101_0101));
+		let block2: [u32; 16] = array::from_fn(|i| (i as u32).wrapping_mul(0xDEAD_BEEFu32));
+		// Distinct block lengths / flags per compression exercise the lane packing of every
+		// parameter. The counter has a nonzero high half and a low half of all ones, so the
+		// in-circuit `+1` for the second compression carries across the 32-bit boundary.
+		let counter: u64 = 0x0000_0001_FFFF_FFFF;
+		let (c2, c1) = run_compress_2x_seq(
+			cv,
+			block1,
+			block2,
+			counter,
+			64,
+			super::super::CHUNK_START,
+			40,
+			super::super::CHUNK_END,
+		);
+		let exp_c1 = ref_compress(&cv, &block1, counter, 64, super::super::CHUNK_START);
+		let exp_c2 = ref_compress(&exp_c1, &block2, counter + 1, 40, super::super::CHUNK_END);
+		assert_eq!(c1, exp_c1);
+		assert_eq!(c2, exp_c2);
 	}
 }

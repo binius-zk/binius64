@@ -43,3 +43,4 @@ pub mod sha512;
 pub mod shift;
 pub mod skein512;
 pub mod slice;
+mod util;

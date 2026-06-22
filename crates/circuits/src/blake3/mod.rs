@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! BLAKE3 circuit gadgets.
 //!
@@ -8,6 +9,7 @@
 //!
 //! The entry points are:
 //! - [`blake3_compress`] — single-block compression primitive.
+//! - [`blake3_compress_2x_seq`] — two sequential compressions sharing one parallel core.
 //! - [`blake3_fixed`] — single-chunk hash gadget for messages of compile-time-known length up to
 //!   1024 bytes.
 
@@ -16,7 +18,7 @@ use binius_frontend::{CircuitBuilder, Wire};
 
 pub mod compress;
 
-pub use compress::{blake3_compress, blake3_compress_2x};
+pub use compress::{blake3_compress, blake3_compress_2x, blake3_compress_2x_seq};
 
 /// BLAKE3 initial chaining value. Same as the SHA-256 IV.
 pub const IV: [u32; 8] = [
