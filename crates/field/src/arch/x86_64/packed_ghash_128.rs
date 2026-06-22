@@ -10,6 +10,8 @@
 use cfg_if::cfg_if;
 
 use super::m128::M128;
+#[cfg(not(target_feature = "pclmulqdq"))]
+use crate::arch::portable::univariate_mul_utils_128::{Underlier128bLanes, spread_bits_64};
 // Used by the CLMUL-accelerated `ClMulUnderlier` impl and the `GhashWideMul` alias below.
 #[cfg(target_feature = "pclmulqdq")]
 use crate::arch::x86_64::arithmetic::ghash;
@@ -23,12 +25,43 @@ use crate::{
 };
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
-/// [`GhashClMulWideMul`](ghash::GhashClMulWideMul) when PCLMULQDQ is available, otherwise an eager
-/// [`TrivialWideMul`].
+/// [`GhashClMulWideMul`](ghash::GhashClMulWideMul) when PCLMULQDQ is available, otherwise the
+/// portable [`GhashWideMul`](crate::arch::portable::arithmetic::ghash::GhashWideMul) which also
+/// defers reduction for deferred-reduction sum-of-products.
 #[cfg(target_feature = "pclmulqdq")]
 pub type GhashWideMul<T> = ghash::GhashClMulWideMul<T>;
 #[cfg(not(target_feature = "pclmulqdq"))]
-pub type GhashWideMul<T> = TrivialWideMul<T>;
+pub type GhashWideMul<T> = crate::arch::portable::arithmetic::ghash::GhashWideMul<T>;
+
+/// `Underlier128bLanes` for x86_64 `M128` — required for the portable `GhashWideMul` fallback.
+///
+/// Delegates through `u128` (SSE2 load/store) since this path is only active on targets without
+/// PCLMULQDQ, where SIMD lane extraction intrinsics are not necessarily available.
+#[cfg(not(target_feature = "pclmulqdq"))]
+impl Underlier128bLanes for M128 {
+	type U64 = u64;
+
+	#[inline(always)]
+	fn split_hi_lo_64(self) -> (u64, u64) {
+		u128::from(self).split_hi_lo_64()
+	}
+
+	#[inline(always)]
+	fn join_u64s(high: u64, low: u64) -> Self {
+		Self::from(u128::join_u64s(high, low))
+	}
+
+	#[inline(always)]
+	fn broadcast_64(val: u64) -> Self {
+		Self::from(u128::broadcast_64(val))
+	}
+
+	#[inline(always)]
+	fn spread_bits_128(self) -> (Self, Self) {
+		let (hi, lo) = self.split_hi_lo_64();
+		(Self::from(spread_bits_64(hi)), Self::from(spread_bits_64(lo)))
+	}
+}
 
 #[cfg(target_feature = "pclmulqdq")]
 impl ghash::ClMulUnderlier for M128 {
@@ -75,8 +108,7 @@ cfg_if! {
 			fn mul(self, rhs: Self) -> Self {
 				use super::super::portable::arithmetic::ghash::ghash_mul;
 
-				let product = ghash_mul(u128::from(self.to_underlier()), u128::from(rhs.to_underlier()));
-				Self::from_underlier(M128::from(product))
+				Self::from_underlier(ghash_mul(self.to_underlier(), rhs.to_underlier()))
 			}
 		}
 	}
@@ -99,7 +131,7 @@ cfg_if! {
 			fn square(self) -> Self {
 				use super::super::portable::arithmetic::ghash::ghash_square;
 
-				Self::from_underlier(M128::from(ghash_square(u128::from(self.to_underlier()))))
+				Self::from_underlier(ghash_square(self.to_underlier()))
 			}
 		}
 	}
