@@ -6,7 +6,7 @@ use binius_core::{
 	word::Word,
 };
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
-pub use compress::{Compress, State};
+pub use compress::{State, populate_message_block, sha256_compress};
 
 use crate::{
 	bytes::{swap_bytes, swap_bytes_32},
@@ -47,15 +47,15 @@ pub struct Sha256 {
 	/// This circuit will run enough hash blocks to process the entire message.
 	pub message: Vec<Wire>,
 
-	/// Compression gadgets for each 512-bit block.
+	/// Message-block input wires for each 512-bit block.
 	///
-	/// Each compression gadget processes one 512-bit (64-byte) block of the padded message.
-	/// The gadgets are chained together, with each taking the output state from the previous
-	/// compression as input. The first compression starts from the SHA-256 initialization vector.
+	/// Each entry holds the 16 message words fed into one [`sha256_compress`] call (one 512-bit /
+	/// 64-byte block of the padded message). They are retained so witness population can fill them
+	/// via [`populate_message_block`].
 	///
-	/// The number of compression gadgets is `ceil((max_len_bytes + 9) / 64)`, accounting for
-	/// the minimum 9 bytes of padding (1 byte for 0x80 delimiter + 8 bytes for length).
-	compress: Vec<Compress>,
+	/// The number of blocks is `ceil((max_len_bytes + 9) / 64)`, accounting for the minimum 9
+	/// bytes of padding (1 byte for 0x80 delimiter + 8 bytes for length).
+	block_messages: Vec<[Wire; 16]>,
 }
 
 impl Sha256 {
@@ -149,24 +149,25 @@ impl Sha256 {
 		let padded_evens: Vec<Wire> = (0..n_words).map(|_| builder.add_witness()).collect();
 		let padded_odds: Vec<Wire> = (0..n_words).map(|_| builder.add_witness()).collect();
 
-		let mut compress = Vec::with_capacity(n_blocks);
+		let mut block_messages = Vec::with_capacity(n_blocks);
 		let mut states = Vec::with_capacity(n_blocks + 1);
 		states.push(State::iv(builder));
 		for block_no in 0..n_blocks {
-			let c = Compress::new(
+			// grab appropriate interleaved wires, in order to feed into compression gadget.
+			let m: [Wire; 16] = std::array::from_fn(|i| {
+				if i & 1 == 0 {
+					padded_evens[block_no << 3 | i >> 1]
+				} else {
+					padded_odds[block_no << 3 | i >> 1]
+				}
+			});
+			let state_out = sha256_compress(
 				&builder.subcircuit(format!("compress[{block_no}]")),
 				states[block_no].clone(),
-				// grab appropriate interleaved wires, in order to feed into compression gadget.
-				std::array::from_fn(|i| {
-					if i & 1 == 0 {
-						padded_evens[block_no << 3 | i >> 1]
-					} else {
-						padded_odds[block_no << 3 | i >> 1]
-					}
-				}),
+				m,
 			);
-			states.push(c.state_out.clone());
-			compress.push(c);
+			states.push(state_out);
+			block_messages.push(m);
 		}
 
 		// ---- 2a. SHA-256 padding position calculation
@@ -354,7 +355,7 @@ impl Sha256 {
 			len_bytes,
 			digest,
 			message,
-			compress,
+			block_messages,
 		}
 	}
 
@@ -426,7 +427,7 @@ impl Sha256 {
 			self.max_len_bytes()
 		);
 
-		let n_blocks = self.compress.len();
+		let n_blocks = self.block_messages.len();
 		let mut padded_message_bytes = vec![0u8; n_blocks * 64];
 
 		// Apply SHA-256 padding
@@ -476,10 +477,10 @@ impl Sha256 {
 			w[*wire] = Word(word);
 		}
 
-		for (i, compress) in self.compress.iter().enumerate() {
+		for (i, m) in self.block_messages.iter().enumerate() {
 			let block_start = i * 64;
 			let block = &padded_message_bytes[block_start..block_start + 64];
-			compress.populate_m(w, block.try_into().unwrap());
+			populate_message_block(w, m, block.try_into().unwrap());
 		}
 	}
 }
@@ -589,13 +590,11 @@ pub fn sha256_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 		|state, (block_idx, block)| {
 			let block_message: [Wire; 16] = block.try_into().unwrap();
 
-			let compress = Compress::new(
+			sha256_compress(
 				&builder.subcircuit(format!("sha256_fixed_compress[{}]", block_idx)),
 				state.clone(),
 				block_message,
-			);
-
-			compress.state_out
+			)
 		},
 	);
 
