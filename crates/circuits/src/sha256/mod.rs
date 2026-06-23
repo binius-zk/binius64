@@ -6,7 +6,7 @@ use binius_core::{
 	word::Word,
 };
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
-pub use compress::{State, populate_message_block, sha256_compress};
+pub use compress::{State, populate_message_block, sha256_compress, sha256_compress_2x};
 
 use crate::{
 	bytes::{swap_bytes, swap_bytes_32},
