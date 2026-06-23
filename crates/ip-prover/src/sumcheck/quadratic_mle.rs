@@ -176,8 +176,10 @@ where
 				let mut evals_1 = [P::default(); N];
 				let mut evals_inf = [P::default(); N];
 				for j in 0..N {
-					evals_1[j] = splits_1[j].as_ref()[i];
-					evals_inf[j] = splits_0[j].as_ref()[i] + splits_1[j].as_ref()[i];
+					// Monomial basis: the two halves are coeffs `[c0, c1]`, so `M(1) = c0 + c1`
+					// and `M(∞) = c1` (the high half / leading coefficient).
+					evals_1[j] = splits_0[j].as_ref()[i] + splits_1[j].as_ref()[i];
+					evals_inf[j] = splits_1[j].as_ref()[i];
 				}
 
 				WideRoundEvals2 {
@@ -281,6 +283,60 @@ mod tests {
 	use super::*;
 	use crate::sumcheck::prove_single_mlecheck;
 
+	/// Computes the MLE-check claimed value in the monomial basis: the composite
+	/// `F = C(M_1, ..., M_N)` summed over the infinity hypercube and eq-weighted at `point`.
+	///
+	/// Equivalently `evaluate(F_proj, point)`, where `F_proj[v]` is `F` evaluated at the
+	/// infinity-hypercube vertex `v` (the coordinate is `∞` where `v`'s bit is set and `0`
+	/// otherwise). The recursion projects the top variable: its `0`-branch keeps the full
+	/// `composition`; its `∞`-branch keeps only the leading-degree part `infinity_composition`,
+	/// which is its own leading part on the remaining variables.
+	///
+	/// This is the basis-correct replacement for `evaluate(composition(coefficients), point)`,
+	/// which only agrees for homogeneous compositions.
+	fn composite_infinity_eval<F, P, const N: usize>(
+		multilinears: &[FieldBuffer<P>; N],
+		composition: impl Fn([P; N]) -> P,
+		infinity_composition: impl Fn([P; N]) -> P,
+		point: &[F],
+	) -> F
+	where
+		F: Field,
+		P: PackedField<Scalar = F>,
+	{
+		fn scalar<F: Field, P: PackedField<Scalar = F>, const N: usize>(
+			c: &impl Fn([P; N]) -> P,
+			vals: [F; N],
+		) -> F {
+			c(vals.map(P::broadcast)).iter().next().unwrap()
+		}
+		fn proj<F: Field, const N: usize>(
+			mls: [Vec<F>; N],
+			n: usize,
+			comp: &dyn Fn([F; N]) -> F,
+			inf: &dyn Fn([F; N]) -> F,
+		) -> Vec<F> {
+			if n == 0 {
+				return vec![comp(array::from_fn(|j| mls[j][0]))];
+			}
+			let half = 1usize << (n - 1);
+			let los: [Vec<F>; N] = array::from_fn(|j| mls[j][..half].to_vec());
+			let his: [Vec<F>; N] = array::from_fn(|j| mls[j][half..].to_vec());
+			let mut table = proj(los, n - 1, comp, inf);
+			// The ∞-branch keeps only the leading part, which is homogeneous, so it is its own
+			// leading part on deeper variables.
+			table.extend(proj(his, n - 1, inf, inf));
+			table
+		}
+
+		let n = point.len();
+		let coeffs: [Vec<F>; N] = array::from_fn(|j| multilinears[j].iter_scalars().collect());
+		let comp = |vals: [F; N]| scalar(&composition, vals);
+		let inf = |vals: [F; N]| scalar(&infinity_composition, vals);
+		let table = proj(coeffs, n, &comp, &inf);
+		evaluate(&FieldBuffer::<P>::from_values(&table), point)
+	}
+
 	fn test_mlecheck_prove_verify<F, P, Composition, InfinityComposition, const N: usize>(
 		prover: QuadraticMleCheckProver<P, Composition, InfinityComposition, N>,
 		composition: Composition,
@@ -354,17 +410,15 @@ mod tests {
 		// Generate random multilinear polynomials
 		let multilinears: [_; N] = array::from_fn(|_| random_field_buffer::<P>(&mut rng, n_vars));
 
-		// Compute product multilinear
-		let composite_vals = (0..1 << n_vars.saturating_sub(P::LOG_WIDTH))
-			.map(|i| {
-				let vals = array::from_fn(|j| multilinears[j].as_ref()[i]);
-				composition(vals)
-			})
-			.collect_vec();
-		let composite_vals = FieldBuffer::new(n_vars, composite_vals);
-
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
-		let eval_claim = evaluate(&composite_vals, &eval_point);
+		// Monomial basis: the claim is the composite summed over the infinity hypercube, not the
+		// multilinear extension of `composition(coefficients)`.
+		let eval_claim = composite_infinity_eval(
+			&multilinears,
+			&composition,
+			&infinity_composition,
+			&eval_point,
+		);
 
 		// Create the prover
 		let mlecheck_prover = QuadraticMleCheckProver::new(

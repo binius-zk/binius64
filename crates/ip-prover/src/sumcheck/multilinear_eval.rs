@@ -84,14 +84,14 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for MultilinearEval
 		// The eq expansion is over the lower `n_vars_remaining - 1` variables; the top (X = 1) half
 		// of the witness is the partial specialization of the highest variable at 1.
 		let eq_expansion = self.gruen32.eq_expansion();
-		let (_evals_0, evals_1) = self.witness.split_half_ref();
+		let (evals_0, evals_1) = self.witness.split_half_ref();
 		debug_assert_eq!(eq_expansion.log_len(), evals_1.log_len());
 
-		// R(1) = <M(.., X = 1), eq(.., z)>, the multilinear evaluation of the top half.
+		// R(1) = <M(.., X = 1), eq(.., z)>. Monomial basis: M(1) = c0 + c1 (the lo + hi halves).
 		// The products are accumulated in unreduced (wide) form and reduced once at the end.
-		let wide_y_1 = (evals_1.as_ref(), eq_expansion.as_ref())
+		let wide_y_1 = (evals_0.as_ref(), evals_1.as_ref(), eq_expansion.as_ref())
 			.into_par_iter()
-			.map(|(&evals_1_i, &eq_i)| P::wide_mul(evals_1_i, eq_i))
+			.map(|(&evals_0_i, &evals_1_i, &eq_i)| P::wide_mul(evals_0_i + evals_1_i, eq_i))
 			.reduce(<P as WideMul>::Output::default, |lhs, rhs| lhs + rhs);
 		let round_evals = RoundEvals1 {
 			y_1: P::reduce(wide_y_1),

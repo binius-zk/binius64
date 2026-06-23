@@ -74,16 +74,17 @@ impl<P: PackedField> RoundEvals2<P> {
 impl<F: Field> RoundEvals2<F> {
 	// Regular degree-2 interpolation routine.
 	pub fn interpolate(self, sum: F) -> RoundCoeffs<F> {
-		// Computing evaluation at 0 from sum claim and evaluation on 1.
-		let y_0 = sum - self.y_1;
+		// Monomial basis: the sumcheck claim is `sum = R(0) + R(∞)`, where `R(∞)` is the leading
+		// coefficient `y_inf`. So `R(0) = sum - R(∞)`.
+		let y_0 = sum - self.y_inf;
 		calculate_round_coeffs_from_evals_2(y_0, self.y_1, self.y_inf)
 	}
 
 	// Interpolation routine for evaluations on P'(x) in Mlechecks.
 	pub fn interpolate_eq(self, sum: F, alpha: F) -> RoundCoeffs<F> {
-		// We are given a sum claim on prime polynomial from the previous round, we also know that
-		//  sum = (1 - alpha) * P'(0) + alpha * P'(1)
-		let y_0 = (sum - self.y_1 * alpha) * (F::ONE - alpha).invert_or_zero();
+		// Monomial basis: the MLE-check claim is `sum = P'(0) + alpha * P'(∞)`, where `P'(∞)` is
+		// the leading coefficient `y_inf`. So `P'(0) = sum - alpha * P'(∞)` — no inversion needed.
+		let y_0 = sum - self.y_inf * alpha;
 		calculate_round_coeffs_from_evals_2(y_0, self.y_1, self.y_inf)
 	}
 }
@@ -189,15 +190,11 @@ fn calculate_round_coeffs_from_evals_2<F: Field>(y_0: F, y_1: F, y_inf: F) -> Ro
 	RoundCoeffs(vec![c_0, c_1, c_2])
 }
 
-// Multiplication of a polynomial in monomial form by eq(x, alpha).
+// Multiplication of a polynomial in monomial form by the monomial-basis eq indicator eq(α, X).
 pub fn round_coeffs_by_eq<F: Field>(prime: &RoundCoeffs<F>, alpha: F) -> RoundCoeffs<F> {
-	// eq(X, α) = (1 − α) + (2 α − 1) X
-	// NB: In characteristic 2, this expression can be simplified to 1 + α + challenge.
-	let (prime_by_constant_term, mut prime_by_linear_term) = if F::CHARACTERISTIC == 2 {
-		(prime.clone() * (F::ONE + alpha), prime.clone())
-	} else {
-		(prime.clone() * (F::ONE - alpha), prime.clone() * (alpha.double() - F::ONE))
-	};
+	// Monomial basis: eq̃(α, X) = 1 + α X, so prime · eq̃ = prime + α · (X · prime).
+	let prime_by_constant_term = prime.clone();
+	let mut prime_by_linear_term = prime.clone() * alpha;
 
 	prime_by_linear_term.0.insert(0, F::ZERO); // Multiply prime polynomial by X
 	prime_by_constant_term + &prime_by_linear_term

@@ -179,14 +179,16 @@ where
 							selector_0_chunk.as_ref(),
 							selector_1_chunk.as_ref(),
 						) {
-							let selected_inf_i = selected_0_i + selected_1_i;
-							let selector_inf_i = selector_0_i + selector_1_i;
+							// Monomial basis: halves are coeffs `[c0, c1]`, so `M(1) = c0 + c1`
+							// (lo + hi) and `M(∞) = c1` (hi, the leading coefficient).
+							let selected_1_val = selected_0_i + selected_1_i;
+							let selector_1_val = selector_0_i + selector_1_i;
 
 							// selected * selector + (1 - selector)
 							// @one: selector * (selected - 1) + 1
 							// @inf: selector * selected (note that lower degree terms are dropped)
-							let y_1_prod = selector_1_i * (selected_1_i - P::one()) + P::one();
-							let y_inf_prod = selector_inf_i * selected_inf_i;
+							let y_1_prod = selector_1_val * (selected_1_val - P::one()) + P::one();
+							let y_inf_prod = selector_1_i * selected_1_i;
 							chunk_wide.y_1 += P::wide_mul(eq_i, y_1_prod);
 							chunk_wide.y_inf += P::wide_mul(eq_i, y_inf_prod);
 						}

@@ -186,20 +186,21 @@ impl<F> RoundProof<F> {
 	/// Let $s$ denote the current round's claimed sum and $\alpha_i$ be the $i$'th coordinate of
 	/// the evaluation point.
 	///
-	/// The verifier expects the round polynomial $R_i$ to satisfy the identity
-	/// $s = (1 - \alpha) R(0) + \alpha R(1)$, or equivalently, $s = R(0) + (R(1) - R(0)) \alpha$.
+	/// In the monomial basis the verifier expects the round polynomial $R_i$ to satisfy the
+	/// identity $s = R(0) + \alpha R(\infty)$, where $R(\infty)$ is the leading coefficient $a_d$.
 	///
 	/// Using
 	///     $R(0) = a_0$
-	///     $R(1) = \sum_{j=0}^d a_j$
+	///     $R(\infty) = a_d$
 	/// There is a unique $a_0$ that allows $R$ to satisfy the above identity. Specifically,
-	/// $a_0 = s - \alpha \sum_{j=1}^d a_j$.
+	/// $a_0 = s - \alpha a_d$.
 	pub fn recover(self, eval: F, alpha: F) -> RoundCoeffs<F>
 	where
 		F: FieldOps,
 	{
 		let Self(RoundCoeffs(mut coeffs)) = self;
-		let first_coeff = eval - alpha * coeffs.iter().cloned().sum::<F>();
+		let leading = coeffs.last().cloned().unwrap_or_else(F::zero);
+		let first_coeff = eval - alpha * leading;
 		coeffs.insert(0, first_coeff);
 		RoundCoeffs(coeffs)
 	}
@@ -253,7 +254,7 @@ pub fn libra_eval<F: FieldOps>(
 #[cfg(test)]
 mod tests {
 	use binius_field::{Random, arch::OptimalB128 as B128};
-	use binius_math::{line::extrapolate_line_packed, test_utils::random_scalars};
+	use binius_math::test_utils::random_scalars;
 	use rand::prelude::*;
 
 	use super::*;
@@ -261,9 +262,11 @@ mod tests {
 	fn test_recover_with_degree<F: Field>(mut rng: impl Rng, alpha: F, degree: usize) {
 		let coeffs = RoundCoeffs(random_scalars(&mut rng, degree + 1));
 
+		// Monomial-basis MLE-check identity: eval = R(0) + alpha * R(∞), where R(∞) is the
+		// leading coefficient.
 		let v0 = coeffs.evaluate(F::ZERO);
-		let v1 = coeffs.evaluate(F::ONE);
-		let eval = extrapolate_line_packed(v0, v1, alpha);
+		let leading = coeffs.0.last().copied().unwrap_or(F::ZERO);
+		let eval = v0 + alpha * leading;
 
 		let proof = RoundProof::truncate(coeffs.clone());
 		assert_eq!(proof.recover(eval, alpha), coeffs);
@@ -274,7 +277,9 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 		let alpha = B128::random(&mut rng);
 
-		for degree in 0..4 {
+		// Degree must be positive: only then are R(0) and the leading coefficient R(∞) distinct
+		// coefficients, so truncating R(0) and recovering it from R(∞) is well-defined.
+		for degree in 1..4 {
 			// Test with random coordinate
 			test_recover_with_degree(&mut rng, alpha, degree);
 

@@ -75,13 +75,15 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 			(evals_a_0.as_ref(), evals_a_1.as_ref(), evals_b_0.as_ref(), evals_b_1.as_ref())
 				.into_par_iter()
 				.map(|(&evals_a_0_i, &evals_a_1_i, &evals_b_0_i, &evals_b_1_i)| {
-					// Evaluate M(∞) = M(0) + M(1)
-					let evals_a_inf_i = evals_a_0_i + evals_a_1_i;
-					let evals_b_inf_i = evals_b_0_i + evals_b_1_i;
+					// Monomial basis: the two halves are the coefficients `[c0, c1]` of the
+					// highest variable's polynomial, so `M(1) = c0 + c1` and `M(∞) = c1` (the
+					// high half / leading coefficient).
+					let evals_a_1_val = evals_a_0_i + evals_a_1_i;
+					let evals_b_1_val = evals_b_0_i + evals_b_1_i;
 
 					WideRoundEvals2 {
-						y_1: P::wide_mul(evals_a_1_i, evals_b_1_i),
-						y_inf: P::wide_mul(evals_a_inf_i, evals_b_inf_i),
+						y_1: P::wide_mul(evals_a_1_val, evals_b_1_val),
+						y_inf: P::wide_mul(evals_a_1_i, evals_b_1_i),
 					}
 				})
 				.reduce(WideRoundEvals2::default, |lhs, rhs| lhs + rhs);
