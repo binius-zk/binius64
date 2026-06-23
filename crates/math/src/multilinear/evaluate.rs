@@ -21,7 +21,7 @@ use crate::{
 /// This approach uses O(sqrt(2^n)) memory instead of O(2^n).
 ///
 /// # Arguments
-/// * `evals` - A FieldBuffer containing the 2^n evaluations over the boolean hypercube
+/// * `evals` - A FieldBuffer containing the 2^n monomial coefficients over the boolean hypercube
 /// * `point` - The n coordinates at which to evaluate the polynomial
 ///
 /// # Returns
@@ -78,7 +78,8 @@ where
 /// modified in-place.
 ///
 /// # Arguments
-/// * `evals` - A [`FieldBuffer`] containing the $2^n$ evaluations over the boolean hypercube
+/// * `evals` - A [`FieldBuffer`] containing the $2^n$ monomial coefficients over the boolean
+///   hypercube
 /// * `coords` - The $n$ coordinates at which to evaluate the polynomial
 ///
 /// # Returns
@@ -111,13 +112,14 @@ where
 /// Evaluates a multilinear polynomial at a given point in-place using scalar operations.
 ///
 /// This is a simple variant of multilinear evaluation that works directly on slices of scalars
-/// with only a `FieldOps` bound. For each coordinate (highest to lowest), it folds the upper
-/// half into the lower half: `evals[j] += r * (evals[j + half] - evals[j])`.
+/// with only a `FieldOps` bound. For each coordinate (highest to lowest), it folds the upper half
+/// into the lower half using the monomial-basis rule `evals[j] += r * evals[j + half]` (the two
+/// halves are the coefficients `[c0, c1]` of the highest variable's polynomial `c0 + X * c1`).
 ///
 /// The final result is stored in `evals[0]` after all folds.
 ///
 /// # Arguments
-/// * `evals` - The 2^n evaluations over the boolean hypercube, modified in-place
+/// * `evals` - The 2^n monomial coefficients over the boolean hypercube, modified in-place
 /// * `point` - The n coordinates at which to evaluate the polynomial
 ///
 /// # Panics
@@ -132,8 +134,8 @@ pub fn evaluate_inplace_scalars<F: FieldOps>(
 	for (log_half_len, point_i) in point.iter().enumerate().rev() {
 		let half_len = 1 << log_half_len;
 		for j in 0..half_len {
-			let delta = evals[j + half_len].clone() - evals[j].clone();
-			evals[j] += point_i.clone() * delta;
+			let hi = evals[j + half_len].clone();
+			evals[j] += point_i.clone() * hi;
 		}
 	}
 	evals[0].clone()
@@ -201,14 +203,18 @@ mod tests {
 			let index = (rng.next_u32() as usize) % (1 << log_n);
 			let point = index_to_hypercube_point::<F>(log_n, index);
 
-			// Evaluate at the hypercube point
+			// Evaluate at the {0,1} hypercube point
 			let eval_result = evaluate(&buffer, &point);
 
-			// Get the value directly from the buffer
-			let direct_value = buffer.get(index);
+			// In the monomial basis the buffer holds coefficients, so the value at a {0,1} vertex
+			// is the sum of coefficients `c_w` over all `w` whose support is a subset of `index`
+			// (the zeta transform).
+			let expected: F = (0..(1usize << log_n))
+				.filter(|w| w & index == *w)
+				.map(|w| buffer.get(w))
+				.sum();
 
-			// They should be equal
-			assert_eq!(eval_result, direct_value);
+			assert_eq!(eval_result, expected);
 		}
 	}
 

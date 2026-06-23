@@ -26,7 +26,10 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: DerefMut<Target = [P]>>(
 		(lo.as_mut(), hi.as_mut())
 			.into_par_iter()
 			.for_each(|(zero, one)| {
-				*zero += broadcast_scalar * (*one - *zero);
+				// Monomial basis: the two halves are the coefficients `[c0, c1]` of the highest
+				// variable's polynomial `c0 + X * c1`, so partially evaluating at `scalar` gives
+				// `c0 + scalar * c1`.
+				*zero += broadcast_scalar * *one;
 			});
 	}
 
