@@ -229,16 +229,16 @@ where
 	{
 		assert!(!oracles.is_empty()); // precondition
 
-		let ChooseBatchSizeAndAritiesOutput {
+		let ChooseCodewordSpecsOutput {
 			proof_size,
-			reduced_log_msg_len,
+			reduced_log_dim,
 			oracle_specs,
 			fold_arities,
-		} = choose_batch_size_and_arities_multi(merkle_scheme, oracles, log_inv_rate, n_test_queries);
+		} = choose_codeword_specs_for_oracles(merkle_scheme, oracles, log_inv_rate, n_test_queries);
 
 		let rs_code = ReedSolomonCode::with_domain_context_subspace(
 			domain_context,
-			reduced_log_msg_len,
+			reduced_log_dim,
 			log_inv_rate,
 		);
 
@@ -343,14 +343,25 @@ where
 
 struct ChooseBatchSizeAndAritiesOutput {
 	proof_size: usize,
-	reduced_log_msg_len: usize,
-	oracle_specs: Vec<CodewordSpec>,
+	reduced_log_dim: usize,
 	fold_arities: Vec<usize>,
 }
 
+/// Choose the shared reduced dimension, fold arities, and resulting proof size for a batch of
+/// oracles, given each oracle's committed message length and (optionally fixed) batch size.
+///
+/// This is unaware of ZK: an oracle with a fixed `log_batch_size` (`Some`) has its batch size
+/// pinned by the caller, while an oracle with `None` takes a flexible batch size, decided here to
+/// reduce it to the shared dimension. For all input oracles we need their log_batch_size <=
+/// committed message length and committed message length <= reduced_log_dim + log_batch_size. We
+/// allow the committed message length to be less than reduced_log_dim + log_batch_size because we
+/// can lift Reed-Solomon encoded oracles.
+///
+/// `committed`: per oracle, its committed message length and its fixed log_batch_size (`Some`), or
+/// `None` for a flexible batch size.
 fn choose_batch_size_and_arities_multi<F, MerkleScheme>(
 	merkle_scheme: &MerkleScheme,
-	oracles: &[OracleSpec],
+	committed: &[(usize, Option<usize>)],
 	log_inv_rate: usize,
 	n_test_queries: usize,
 ) -> ChooseBatchSizeAndAritiesOutput
@@ -358,55 +369,35 @@ where
 	F: BinaryField,
 	MerkleScheme: MerkleTreeScheme<F>,
 {
-	// We want to determine the dimension of the first folded FRI oracle, which we'll call the
-	// "reduced" oracle. This is reduced_log_msg_len. For each input oracle, we will determine a
-	// log_batch_size. A ZK oracle commits its message interleaved with an equal-length mask, so its
-	// committed message length is `log_msg_len + 1` and its batch size is fixed at 1. A non-ZK
-	// oracle commits the bare message and takes a flexible batch size, decided here. For all input
-	// oracles we need their log_batch_size <= committed message length and committed message length
-	// <= reduced_log_msg_len + log_batch_size. We allow the committed message length to be less
-	// than reduced_log_msg_len + log_batch_size because we can lift Reed-Solomon encoded oracles.
-	//
-	// `committed`: per oracle, its committed message length, its fixed log_batch_size (`Some` for
-	// ZK oracles, `None` for flexible non-ZK ones), and its ZK flag.
-	let committed: Vec<(usize, Option<usize>, bool)> = oracles
-		.iter()
-		.map(|oracle| {
-			let committed_log_msg_len = oracle.log_msg_len + usize::from(oracle.is_zk);
-			let log_batch_size = oracle.is_zk.then_some(1);
-			(committed_log_msg_len, log_batch_size, oracle.is_zk)
-		})
-		.collect();
-
-	// First, figure out lower and upper bounds on the reduced_log_msg_len. If there are any input
+	// First, figure out lower and upper bounds on the reduced_log_dim. If there are any input
 	// oracles with a fixed log_batch_size, then their dimension lower bounds the reduced oracle
 	// dimension.
-	let min_reduced_log_msg_len = committed
+	let min_reduced_log_dim = committed
 		.iter()
-		.filter_map(|&(committed_log_msg_len, log_batch_size, _)| {
+		.filter_map(|&(committed_log_msg_len, log_batch_size)| {
 			Some(committed_log_msg_len - log_batch_size?)
 		})
 		.max()
 		.unwrap_or(0);
 	// The upper bound is then the committed message length of the largest flexible oracle, if
 	// larger.
-	let max_reduced_log_msg_len = committed
+	let max_reduced_log_dim = committed
 		.iter()
-		.filter(|(_, log_batch_size, _)| log_batch_size.is_none())
-		.map(|&(committed_log_msg_len, _, _)| committed_log_msg_len)
+		.filter(|(_, log_batch_size)| log_batch_size.is_none())
+		.map(|&(committed_log_msg_len, _)| committed_log_msg_len)
 		.max()
 		.unwrap_or(0)
-		.max(min_reduced_log_msg_len);
+		.max(min_reduced_log_dim);
 
 	let optimizer = ReductionOptimizer::<F, _>::new(merkle_scheme, n_test_queries);
-	let min_sizes = optimizer.compute_optimal_arities(max_reduced_log_msg_len, log_inv_rate);
+	let min_sizes = optimizer.compute_optimal_arities(max_reduced_log_dim, log_inv_rate);
 
 	// Compute the contribution of the oracles with a fixed batch size to the initial fold reduction
 	// size. It's not necessary to compute this for the purpose of parameter minimization, but it's
 	// nice to get the resulting proof size estimate from this function.
 	let fixed_reduction_size = committed
 		.iter()
-		.filter_map(|&(committed_log_msg_len, log_batch_size, _)| {
+		.filter_map(|&(committed_log_msg_len, log_batch_size)| {
 			log_batch_size.map(|log_batch_size| {
 				optimizer.compute_layer_reduction_size(
 					committed_log_msg_len + log_inv_rate,
@@ -416,37 +407,86 @@ where
 		})
 		.sum::<usize>();
 
-	let (reduced_log_msg_len, proof_size) = min_concave(
-		(min_reduced_log_msg_len..=max_reduced_log_msg_len).rev(),
-		|reduced_log_msg_len| {
+	let (reduced_log_dim, proof_size) =
+		min_concave((min_reduced_log_dim..=max_reduced_log_dim).rev(), |reduced_log_dim| {
 			// Compute the reduction sizes of the oracles with a flexible batch size, assuming
-			// the first FRI round oracle has dimension reduced_log_msg_len.
+			// the first FRI round oracle has dimension reduced_log_dim.
 			let non_fixed_reduction_size = committed
 				.iter()
-				.filter(|(_, log_batch_size, _)| log_batch_size.is_none())
-				.map(|&(committed_log_msg_len, _, _)| {
+				.filter(|(_, log_batch_size)| log_batch_size.is_none())
+				.map(|&(committed_log_msg_len, _)| {
 					optimizer.compute_layer_reduction_size(
 						committed_log_msg_len + log_inv_rate,
-						committed_log_msg_len.saturating_sub(reduced_log_msg_len),
+						committed_log_msg_len.saturating_sub(reduced_log_dim),
 					)
 				})
 				.sum::<usize>();
 
 			let reduction_size = fixed_reduction_size + non_fixed_reduction_size;
-			let reduced_proof_size = min_sizes[reduced_log_msg_len].proof_size;
+			let reduced_proof_size = min_sizes[reduced_log_dim].proof_size;
 			reduction_size + reduced_proof_size
-		},
-	)
-	.expect("range is non-empty because it's inclusive of an upper bound >= the lower bound");
+		})
+		.expect("range is non-empty because it's inclusive of an upper bound >= the lower bound");
+
+	let fold_arities =
+		optimizer.optimizer_entries_to_fold_arities(&min_sizes[..reduced_log_dim + 1]);
+
+	ChooseBatchSizeAndAritiesOutput {
+		proof_size,
+		reduced_log_dim,
+		fold_arities,
+	}
+}
+
+struct ChooseCodewordSpecsOutput {
+	proof_size: usize,
+	reduced_log_dim: usize,
+	oracle_specs: Vec<CodewordSpec>,
+	fold_arities: Vec<usize>,
+}
+
+fn choose_codeword_specs_for_oracles<F, MerkleScheme>(
+	merkle_scheme: &MerkleScheme,
+	oracles: &[OracleSpec],
+	log_inv_rate: usize,
+	n_test_queries: usize,
+) -> ChooseCodewordSpecsOutput
+where
+	F: BinaryField,
+	MerkleScheme: MerkleTreeScheme<F>,
+{
+	// We want to determine the dimension of the first folded FRI oracle, which we'll call the
+	// "reduced" oracle. This is reduced_log_dim. For each input oracle, we will determine a
+	// log_batch_size. A ZK oracle commits its message interleaved with an equal-length mask, so its
+	// committed message length is `log_msg_len + 1` and its batch size is fixed at 1. A non-ZK
+	// oracle commits the bare message and takes a flexible batch size.
+	//
+	// `committed`: per oracle, its committed message length and its fixed log_batch_size (`Some`
+	// for ZK oracles, `None` for flexible non-ZK ones).
+	let committed: Vec<(usize, Option<usize>)> = oracles
+		.iter()
+		.map(|oracle| {
+			let committed_log_msg_len = oracle.log_msg_len + usize::from(oracle.is_zk);
+			let log_batch_size = oracle.is_zk.then_some(1);
+			(committed_log_msg_len, log_batch_size)
+		})
+		.collect();
+
+	let ChooseBatchSizeAndAritiesOutput {
+		proof_size,
+		reduced_log_dim,
+		fold_arities,
+	} = choose_batch_size_and_arities_multi(merkle_scheme, &committed, log_inv_rate, n_test_queries);
 
 	// Resolve each oracle's concrete log_batch_size (fixed, or chosen to reduce to the shared
 	// dimension), paired with its committed message length and is_zk flag.
-	let resolved: Vec<(usize, usize, bool)> = committed
+	let resolved: Vec<(usize, usize, bool)> = oracles
 		.iter()
-		.map(|&(committed_log_msg_len, log_batch_size, is_zk)| {
+		.zip(&committed)
+		.map(|(oracle, &(committed_log_msg_len, log_batch_size))| {
 			let log_batch_size = log_batch_size
-				.unwrap_or_else(|| committed_log_msg_len.saturating_sub(reduced_log_msg_len));
-			(committed_log_msg_len, log_batch_size, is_zk)
+				.unwrap_or_else(|| committed_log_msg_len.saturating_sub(reduced_log_dim));
+			(committed_log_msg_len, log_batch_size, oracle.is_zk)
 		})
 		.collect();
 
@@ -480,7 +520,7 @@ where
 			// The committed codeword's own dimension is `committed_log_msg_len - log_batch_size`;
 			// it is lifted to the reduced dimension, so `log_lift` is the gap between the two.
 			let oracle_log_dim = committed_log_msg_len - log_batch_size;
-			let log_lift = reduced_log_msg_len - oracle_log_dim;
+			let log_lift = reduced_log_dim - oracle_log_dim;
 			CodewordSpec {
 				log_lift,
 				log_batch_size,
@@ -489,11 +529,9 @@ where
 		})
 		.collect();
 
-	let fold_arities =
-		optimizer.optimizer_entries_to_fold_arities(&min_sizes[..reduced_log_msg_len + 1]);
-	ChooseBatchSizeAndAritiesOutput {
+	ChooseCodewordSpecsOutput {
 		proof_size,
-		reduced_log_msg_len,
+		reduced_log_dim,
 		oracle_specs,
 		fold_arities,
 	}
@@ -914,9 +952,9 @@ mod tests {
 
 		// The reduced oracle dimension is the dimension of the first FRI round oracle, equal to
 		// log_terminal_dim + sum(fold_arities).
-		let reduced_log_msg_len = fri_params.rs_code().log_dim();
+		let reduced_log_dim = fri_params.rs_code().log_dim();
 		assert_eq!(
-			reduced_log_msg_len,
+			reduced_log_dim,
 			fri_params.log_terminal_dim + fri_params.fold_arities().iter().sum::<usize>()
 		);
 
@@ -928,7 +966,7 @@ mod tests {
 			let committed_log_msg_len = oracle.log_msg_len + usize::from(oracle.is_zk);
 			// The committed codeword (dimension `committed_log_msg_len - log_batch_size`) is lifted
 			// to the reduced dimension, recovering the committed message length.
-			let oracle_log_dim = reduced_log_msg_len - spec.log_lift;
+			let oracle_log_dim = reduced_log_dim - spec.log_lift;
 			assert_eq!(oracle_log_dim + spec.log_batch_size, committed_log_msg_len);
 			if oracle.is_zk {
 				// ZK oracles keep their fixed batch size of 1.
@@ -941,7 +979,7 @@ mod tests {
 		// The largest input oracle is the non-ZK flexible one, so its batch size folds it down
 		// exactly to the reduced dimension (no lifting).
 		assert_eq!(fri_params.input_oracles[2].log_lift, 0);
-		assert_eq!(fri_params.input_oracles[2].log_batch_size, 16 - reduced_log_msg_len);
+		assert_eq!(fri_params.input_oracles[2].log_batch_size, 16 - reduced_log_dim);
 
 		// Pin the estimated proof size to detect unintended changes in the optimizer.
 		assert_eq!(proof_size, 229376);
