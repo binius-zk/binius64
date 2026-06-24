@@ -451,8 +451,7 @@ mod tests {
 		arch::{
 			packed_1::*, packed_2::*, packed_4::*, packed_8::*, packed_16::*, packed_32::*,
 			packed_64::*, packed_128::*, packed_256::*, packed_512::*, packed_aes_8::*,
-			packed_aes_16::*, packed_aes_32::*, packed_aes_64::*, packed_aes_128::*,
-			packed_aes_256::*, packed_aes_512::*,
+			packed_aes_128::*, packed_aes_256::*, packed_aes_512::*,
 		},
 	};
 
@@ -478,9 +477,6 @@ mod tests {
 		// AES
 		test.run::<AESTowerField8b>();
 		test.run::<PackedAESBinaryField1x8b>();
-		test.run::<PackedAESBinaryField2x8b>();
-		test.run::<PackedAESBinaryField4x8b>();
-		test.run::<PackedAESBinaryField8x8b>();
 		test.run::<PackedAESBinaryField16x8b>();
 		test.run::<PackedAESBinaryField32x8b>();
 		test.run::<PackedAESBinaryField64x8b>();

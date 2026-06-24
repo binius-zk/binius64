@@ -7,10 +7,10 @@ use proptest::prelude::*;
 
 use crate::{
 	AESTowerField8b, BinaryField1b, BinaryField128bGhash, ExtensionField, Field,
-	PackedAESBinaryField4x8b, PackedAESBinaryField8x8b, PackedAESBinaryField16x8b,
-	PackedAESBinaryField32x8b, PackedAESBinaryField64x8b, PackedBinaryField64x1b,
-	PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b,
-	PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
+	PackedAESBinaryField16x8b, PackedAESBinaryField32x8b, PackedAESBinaryField64x8b,
+	PackedBinaryField64x1b, PackedBinaryField128x1b, PackedBinaryField256x1b,
+	PackedBinaryField512x1b, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b,
+	PackedBinaryGhash4x128b, PackedField,
 	field::FieldOps,
 	underlier::{SmallU, WithUnderlier},
 };
@@ -29,8 +29,8 @@ fn test_field_text_debug() {
 		"Packed1x128([0x000007ffffffffffffffffffffffffff])"
 	);
 	assert_eq!(
-		format!("{:?}", PackedAESBinaryField4x8b::broadcast(AESTowerField8b::new(123))),
-		"Packed4x8([0x7b,0x7b,0x7b,0x7b])"
+		format!("{:?}", PackedAESBinaryField16x8b::broadcast(AESTowerField8b::new(123))),
+		"Packed16x8([0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b])"
 	)
 }
 
@@ -107,7 +107,6 @@ generate_spread_tests! {
 	spread_equals_basic_spread_64x8, PackedAESBinaryField64x8b, AESTowerField8b, u8, 64;
 	spread_equals_basic_spread_32x8, PackedAESBinaryField32x8b, AESTowerField8b, u8, 32;
 	spread_equals_basic_spread_16x8, PackedAESBinaryField16x8b, AESTowerField8b, u8, 16;
-	spread_equals_basic_spread_8x8, PackedAESBinaryField8x8b, AESTowerField8b, u8, 8;
 }
 
 generate_spread_tests_small! {
@@ -185,8 +184,8 @@ fn test_scalar_field_ops_square_transpose_1b_over_1b() {
 }
 
 #[test]
-fn test_packed_field_ops_square_transpose_packed_aes4x8b_over_1b() {
-	check_packed_field_ops_square_transpose::<BinaryField1b, PackedAESBinaryField4x8b>();
+fn test_packed_field_ops_square_transpose_packed_aes16x8b_over_1b() {
+	check_packed_field_ops_square_transpose::<BinaryField1b, PackedAESBinaryField16x8b>();
 }
 
 #[test]

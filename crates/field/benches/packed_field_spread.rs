@@ -3,9 +3,9 @@
 use std::array;
 
 use binius_field::{
-	PackedAESBinaryField8x8b, PackedAESBinaryField16x8b, PackedAESBinaryField32x8b,
-	PackedAESBinaryField64x8b, PackedBinaryField64x1b, PackedBinaryField128x1b,
-	PackedBinaryField256x1b, PackedBinaryField512x1b, PackedField,
+	PackedAESBinaryField16x8b, PackedAESBinaryField32x8b, PackedAESBinaryField64x8b,
+	PackedBinaryField64x1b, PackedBinaryField128x1b, PackedBinaryField256x1b,
+	PackedBinaryField512x1b, PackedField,
 };
 use criterion::{
 	BenchmarkGroup, Throughput, criterion_group, criterion_main, measurement::WallTime,
@@ -41,11 +41,6 @@ fn packed_64(c: &mut criterion::Criterion) {
 	benchmark_get_impl::<PackedBinaryField64x1b>(&mut group, "64x1b", 3);
 	benchmark_get_impl::<PackedBinaryField64x1b>(&mut group, "64x1b", 4);
 	benchmark_get_impl::<PackedBinaryField64x1b>(&mut group, "64x1b", 5);
-
-	benchmark_get_impl::<PackedAESBinaryField8x8b>(&mut group, "8x8b", 0);
-	benchmark_get_impl::<PackedAESBinaryField8x8b>(&mut group, "8x8b", 1);
-	benchmark_get_impl::<PackedAESBinaryField8x8b>(&mut group, "8x8b", 2);
-	benchmark_get_impl::<PackedAESBinaryField8x8b>(&mut group, "8x8b", 3);
 }
 
 fn packed_128(c: &mut criterion::Criterion) {

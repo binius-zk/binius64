@@ -3,8 +3,8 @@
 
 pub use crate::arch::{
 	packed_1::*, packed_2::*, packed_4::*, packed_8::*, packed_16::*, packed_32::*, packed_64::*,
-	packed_128::*, packed_256::*, packed_512::*, packed_aes_8::*, packed_aes_16::*,
-	packed_aes_32::*, packed_aes_64::*, packed_aes_128::*, packed_aes_256::*, packed_aes_512::*,
+	packed_128::*, packed_256::*, packed_512::*, packed_aes_8::*, packed_aes_128::*,
+	packed_aes_256::*, packed_aes_512::*,
 };
 
 /// Common code to test different multiply, square and invert implementations
@@ -194,28 +194,22 @@ pub mod test_utils {
 				#[test]
 				fn test_mul_packed_16(a_val in proptest::prelude::any::<u16>(), b_val in proptest::prelude::any::<u16>()) {
 					use $crate::arch::packed_16::*;
-					use $crate::arch::packed_aes_16::*;
 
 					TestMult::<PackedBinaryField16x1b>::test_mul(a_val.into(), b_val.into());
-					TestMult::<PackedAESBinaryField2x8b>::test_mul(a_val.into(), b_val.into());
 				}
 
 				#[test]
 				fn test_mul_packed_32(a_val in proptest::prelude::any::<u32>(), b_val in proptest::prelude::any::<u32>()) {
 					use $crate::arch::packed_32::*;
-					use $crate::arch::packed_aes_32::*;
 
 					TestMult::<PackedBinaryField32x1b>::test_mul(a_val.into(), b_val.into());
-					TestMult::<PackedAESBinaryField4x8b>::test_mul(a_val.into(), b_val.into());
 				}
 
 				#[test]
 				fn test_mul_packed_64(a_val in proptest::prelude::any::<u64>(), b_val in proptest::prelude::any::<u64>()) {
 					use $crate::arch::packed_64::*;
-					use $crate::arch::packed_aes_64::*;
 
 					TestMult::<PackedBinaryField64x1b>::test_mul(a_val.into(), b_val.into());
-					TestMult::<PackedAESBinaryField8x8b>::test_mul(a_val.into(), b_val.into());
 				}
 
 				#[test]
@@ -276,28 +270,22 @@ pub mod test_utils {
 				#[test]
 				fn test_square_packed_16(a_val in proptest::prelude::any::<u16>()) {
 					use $crate::arch::packed_16::*;
-					use $crate::arch::packed_aes_16::*;
 
 					TestSquare::<PackedBinaryField16x1b>::test_square(a_val.into());
-					TestSquare::<PackedAESBinaryField2x8b>::test_square(a_val.into());
 				}
 
 				#[test]
 				fn test_square_packed_32(a_val in proptest::prelude::any::<u32>()) {
 					use $crate::arch::packed_32::*;
-					use $crate::arch::packed_aes_32::*;
 
 					TestSquare::<PackedBinaryField32x1b>::test_square(a_val.into());
-					TestSquare::<PackedAESBinaryField4x8b>::test_square(a_val.into());
 				}
 
 				#[test]
 				fn test_square_packed_64(a_val in proptest::prelude::any::<u64>()) {
 					use $crate::arch::packed_64::*;
-					use $crate::arch::packed_aes_64::*;
 
 					TestSquare::<PackedBinaryField64x1b>::test_square(a_val.into());
-					TestSquare::<PackedAESBinaryField8x8b>::test_square(a_val.into());
 				}
 
 				#[test]
@@ -358,28 +346,22 @@ pub mod test_utils {
 				#[test]
 				fn test_invert_packed_16(a_val in proptest::prelude::any::<u16>()) {
 					use $crate::arch::packed_16::*;
-					use $crate::arch::packed_aes_16::*;
 
 					TestInvert::<PackedBinaryField16x1b>::test_invert(a_val.into());
-					TestInvert::<PackedAESBinaryField2x8b>::test_invert(a_val.into());
 				}
 
 				#[test]
 				fn test_invert_packed_32(a_val in proptest::prelude::any::<u32>()) {
 					use $crate::arch::packed_32::*;
-					use $crate::arch::packed_aes_32::*;
 
 					TestInvert::<PackedBinaryField32x1b>::test_invert(a_val.into());
-					TestInvert::<PackedAESBinaryField4x8b>::test_invert(a_val.into());
 				}
 
 				#[test]
 				fn test_invert_packed_64(a_val in proptest::prelude::any::<u64>()) {
 					use $crate::arch::packed_64::*;
-					use $crate::arch::packed_aes_64::*;
 
 					TestInvert::<PackedBinaryField64x1b>::test_invert(a_val.into());
-					TestInvert::<PackedAESBinaryField8x8b>::test_invert(a_val.into());
 				}
 
 				#[test]
@@ -687,19 +669,16 @@ mod tests {
 		#[test]
 		fn test_interleave_16b(a_val in 0u16.., b_val in 0u16..) {
 			check_interleave_all_heights::<PackedBinaryField16x1b>(a_val, b_val);
-			check_interleave_all_heights::<PackedAESBinaryField2x8b>(a_val, b_val);
 		}
 
 		#[test]
 		fn test_interleave_32b(a_val in 0u32.., b_val in 0u32..) {
 			check_interleave_all_heights::<PackedBinaryField32x1b>(a_val, b_val);
-			check_interleave_all_heights::<PackedAESBinaryField4x8b>(a_val, b_val);
 		}
 
 		#[test]
 		fn test_interleave_64b(a_val in 0u64.., b_val in 0u64..) {
 			check_interleave_all_heights::<PackedBinaryField64x1b>(a_val, b_val);
-			check_interleave_all_heights::<PackedAESBinaryField8x8b>(a_val, b_val);
 		}
 
 		#[test]
@@ -743,19 +722,16 @@ mod tests {
 		#[test]
 		fn check_transpose_16b(a_val in 0u16.., b_val in 0u16..) {
 			check_transpose_all_heights::<PackedBinaryField16x1b>(a_val, b_val);
-			check_transpose_all_heights::<PackedAESBinaryField2x8b>(a_val, b_val);
 		}
 
 		#[test]
 		fn check_transpose_32b(a_val in 0u32.., b_val in 0u32..) {
 			check_transpose_all_heights::<PackedBinaryField32x1b>(a_val, b_val);
-			check_transpose_all_heights::<PackedAESBinaryField4x8b>(a_val, b_val);
 		}
 
 		#[test]
 		fn check_transpose_64b(a_val in 0u64.., b_val in 0u64..) {
 			check_transpose_all_heights::<PackedBinaryField64x1b>(a_val, b_val);
-			check_transpose_all_heights::<PackedAESBinaryField8x8b>(a_val, b_val);
 		}
 
 		#[test]
