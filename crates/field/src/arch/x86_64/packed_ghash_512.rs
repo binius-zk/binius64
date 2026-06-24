@@ -80,9 +80,16 @@ cfg_if! {
 			}
 		}
 	} else {
-		// Potentially we could use an optimized square implementation here with a scaled underlier.
-		// But this case (an architecture with AVX512 but without VPCLMULQDQ) is pretty rare.
-		impl_square_with!(PackedBinaryGhash4x128b @ crate::arch::ReuseMultiplyStrategy);
+		// AVX-512 without VPCLMULQDQ is rare, so rather than a specialized square we reuse
+		// multiplication (x² = x·x). This must implement the `TaggedSquare<Ghash512Strategy>` that
+		// the macro-generated `Square` impl forwards to — emitting a second `Square` impl here would
+		// conflict with it.
+		impl TaggedSquare<Ghash512Strategy> for PackedBinaryGhash4x128b {
+			#[inline]
+			fn square(self) -> Self {
+				TaggedSquare::<crate::arch::ReuseMultiplyStrategy>::square(self)
+			}
+		}
 	}
 }
 
