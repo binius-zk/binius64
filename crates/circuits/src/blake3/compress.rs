@@ -200,8 +200,8 @@ fn round(builder: &CircuitBuilder, state: &mut [Wire; 16], msg: &[Wire; 16], rou
 ///
 /// - `cv`: input chaining value for the first compression (8 words).
 /// - `blocks`: the two message blocks (`blocks[0]` for C1, `blocks[1]` for C2), 16 words each.
-/// - `counter`: the 64-bit block counter for the first compression. The second compression's
-///   counter is this one incremented by one (the two compressions form a sequence).
+/// - `counter`: the 64-bit block counter, shared by both compressions. Sequential chaining only
+///   happens within a single BLAKE3 chunk, where every block carries the chunk counter unchanged.
 /// - `block_lens`: per-compression block lengths.
 /// - `flags`: per-compression flags.
 ///
@@ -244,10 +244,13 @@ pub fn blake3_compress_2x_seq(
 
 	let merged_block: [Wire; 16] = array::from_fn(|i| pack(clear(blocks[1][i]), blocks[0][i]));
 
-	// The second compression's counter is the first's incremented by one.
-	let (counter2, _carry) = builder.iadd(counter, builder.add_constant_64(1));
-	let merged_counter_lo = pack(clear(counter2), counter);
-	let merged_counter_hi = pack(builder.shr(counter2, 32), builder.shr(counter, 32));
+	// Both compressions share the same block counter. Sequential chaining (C2 takes C1's output
+	// as its input chaining value) only occurs within a single BLAKE3 chunk, and every block in a
+	// chunk carries the chunk counter unchanged.
+	let counter_lo = clear(counter);
+	let counter_hi = builder.shr(counter, 32);
+	let merged_counter_lo = pack(counter_lo, counter_lo);
+	let merged_counter_hi = pack(counter_hi, counter_hi);
 	let merged_block_len = pack(clear(block_lens[1]), block_lens[0]);
 	let merged_flags = pack(clear(flags[1]), flags[0]);
 
@@ -654,9 +657,9 @@ mod tests {
 		w[block_len2_w] = Word(block_len2 as u64);
 		w[flags2_w] = Word(flags2 as u64);
 
-		// Expected: the first compression feeds the second; the second's counter is one greater.
+		// Expected: the first compression feeds the second; both share the same counter.
 		let c1 = ref_compress(&cv, &block1, counter, block_len1, flags1);
-		let c2 = ref_compress(&c1, &block2, counter + 1, block_len2, flags2);
+		let c2 = ref_compress(&c1, &block2, counter, block_len2, flags2);
 		for i in 0..8 {
 			w[out_inout[i]] = Word(pack2x(c2[i], c1[i]));
 		}
@@ -689,7 +692,7 @@ mod tests {
 		);
 		let exp_c1 = ref_compress(&cv, &block1, 0, 64, super::super::CHUNK_START);
 		let exp_c2 =
-			ref_compress(&exp_c1, &block2, 1, 64, super::super::CHUNK_END | super::super::ROOT);
+			ref_compress(&exp_c1, &block2, 0, 64, super::super::CHUNK_END | super::super::ROOT);
 		assert_eq!(c1, exp_c1);
 		assert_eq!(c2, exp_c2);
 	}
@@ -709,8 +712,8 @@ mod tests {
 		let block1: [u32; 16] = array::from_fn(|i| (i as u32).wrapping_mul(0x0101_0101));
 		let block2: [u32; 16] = array::from_fn(|i| (i as u32).wrapping_mul(0xDEAD_BEEFu32));
 		// Distinct block lengths / flags per compression exercise the lane packing of every
-		// parameter. The counter has a nonzero high half and a low half of all ones, so the
-		// in-circuit `+1` for the second compression carries across the 32-bit boundary.
+		// parameter. The counter has a nonzero high half so both 32-bit halves are packed into
+		// both lanes.
 		let counter: u64 = 0x0000_0001_FFFF_FFFF;
 		let (c2, c1) = run_compress_2x_seq(
 			cv,
@@ -723,7 +726,7 @@ mod tests {
 			super::super::CHUNK_END,
 		);
 		let exp_c1 = ref_compress(&cv, &block1, counter, 64, super::super::CHUNK_START);
-		let exp_c2 = ref_compress(&exp_c1, &block2, counter + 1, 40, super::super::CHUNK_END);
+		let exp_c2 = ref_compress(&exp_c1, &block2, counter, 40, super::super::CHUNK_END);
 		assert_eq!(c1, exp_c1);
 		assert_eq!(c2, exp_c2);
 	}
