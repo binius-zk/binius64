@@ -7,23 +7,21 @@
 //! available on modern x86_64 processors with AVX-512 support. The implementation follows
 //! the algorithm described in the GHASH specification with polynomial x^128 + x^7 + x^2 + x + 1.
 
-use cfg_if::cfg_if;
-
 use super::m512::M512;
-#[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
-use crate::arch::portable::arithmetic::ghash_scaled::Scaled4xGhashWideMul;
 // Used by the CLMUL-accelerated `ClMulUnderlier` impl and the `GhashWideMul` alias below.
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 use crate::arch::x86_64::arithmetic::ghash;
+// Used by the `GhashWideMul` and `GhashSquareStrategy` fallbacks when VPCLMULQDQ is
+// unavailable.
+#[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
+use crate::arch::{portable::arithmetic::ghash_scaled::Scaled4xGhashWideMul, x86_64::m128::M128};
 use crate::{
 	BinaryField128bGhash,
 	arch::{
 		portable::packed_macros::{portable_macros::*, *},
 		strategies::GhashMulStrategy,
 	},
-	arithmetic_traits::{
-		TaggedInvertOrZero, TaggedSquare, impl_invert_with, impl_mul_with, impl_square_with,
-	},
+	arithmetic_traits::{TaggedInvertOrZero, impl_invert_with, impl_mul_with, impl_square_with},
 };
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring vectorized
@@ -34,6 +32,14 @@ use crate::{
 pub type GhashWideMul<T> = ghash::GhashClMulWideMul<T>;
 #[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
 pub type GhashWideMul<T> = Scaled4xGhashWideMul<T>;
+
+/// Square strategy for the GHASH packing: a full-width CLMUL square when VPCLMULQDQ + AVX-512 are
+/// available, otherwise divide into 128-bit lanes and square each (the 1×128b GHASH square uses
+/// PCLMULQDQ).
+#[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+pub type GhashSquareStrategy = ghash::GhashClMulSquareStrategy;
+#[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
+pub type GhashSquareStrategy = crate::arch::DivideStrategy<M128>;
 
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 impl ghash::ClMulUnderlier for M512 {
@@ -63,35 +69,10 @@ define_packed_binary_field!(
 	BinaryField128bGhash,
 	M512,
 	(GhashMulStrategy),
-	(Ghash512Strategy),
+	(GhashSquareStrategy),
 	(Ghash512Strategy),
 	(GhashWideMul)
 );
-
-// Implement TaggedSquare for Ghash512Strategy
-cfg_if! {
-	if #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))] {
-		impl TaggedSquare<Ghash512Strategy> for PackedBinaryGhash4x128b {
-			#[inline]
-			fn square(self) -> Self {
-				Self::from_underlier(crate::arch::x86_64::arithmetic::ghash::square_clmul(
-					self.to_underlier(),
-				))
-			}
-		}
-	} else {
-		// AVX-512 without VPCLMULQDQ is rare, so rather than a specialized square we reuse
-		// multiplication (x² = x·x). This must implement the `TaggedSquare<Ghash512Strategy>` that
-		// the macro-generated `Square` impl forwards to — emitting a second `Square` impl here would
-		// conflict with it.
-		impl TaggedSquare<Ghash512Strategy> for PackedBinaryGhash4x128b {
-			#[inline]
-			fn square(self) -> Self {
-				TaggedSquare::<crate::arch::ReuseMultiplyStrategy>::square(self)
-			}
-		}
-	}
-}
 
 // Implement TaggedInvertOrZero for Ghash512Strategy (Itoh-Tsujii over the full 512-bit vector)
 impl TaggedInvertOrZero<Ghash512Strategy> for PackedBinaryGhash4x128b {
