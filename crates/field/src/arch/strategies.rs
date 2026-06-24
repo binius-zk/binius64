@@ -23,9 +23,6 @@ pub struct SimdStrategy;
 pub struct GfniSpecializedStrategy256b;
 pub struct GfniSpecializedStrategy512b;
 
-/// Strategy for BinaryField1b operations using bitwise AND for multiplication.
-pub struct BitwiseAndStrategy;
-
 /// Strategy for ScaledUnderlier operations that delegate to sub-underlier operations.
 pub struct ScaledStrategy;
 

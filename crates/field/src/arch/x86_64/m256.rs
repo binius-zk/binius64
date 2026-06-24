@@ -53,6 +53,10 @@ const fn m256i_from_u128s(lo: u128, hi: u128) -> __m256i {
 #[repr(transparent)]
 pub struct M256(pub(super) __m256i);
 
+pub const fn m256_from_u128s(lo: u128, hi: u128) -> M256 {
+	M256::from_u128s(lo, hi)
+}
+
 impl M256 {
 	pub const fn from_equal_u128s(val: u128) -> Self {
 		Self::from_u128s(val, val)

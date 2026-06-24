@@ -3,8 +3,7 @@
 use std::time::Duration;
 
 use binius_field::{
-	PackedField,
-	arch::{packed_128::*, packed_256::*, packed_512::*},
+	PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b, PackedField,
 };
 use criterion::{
 	BenchmarkGroup, Criterion, Throughput, criterion_group, criterion_main, measurement::WallTime,

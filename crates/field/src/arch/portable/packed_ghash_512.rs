@@ -3,7 +3,7 @@
 
 use super::{
 	arithmetic::ghash_scaled::Scaled4xGhashWideMul,
-	packed_512::M512,
+	m512::M512,
 	packed_macros::{portable_macros::*, *},
 };
 use crate::arch::strategies::{GhashMulStrategy, ScaledStrategy};

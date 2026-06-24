@@ -3,8 +3,7 @@
 use std::array;
 
 use binius_field::{
-	PackedField, Random,
-	arch::{packed_128::*, packed_256::*, packed_512::*},
+	PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b, PackedField, Random,
 };
 use criterion::{
 	BenchmarkGroup, Criterion, Throughput, criterion_group, criterion_main, measurement::WallTime,

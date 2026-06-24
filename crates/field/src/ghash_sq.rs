@@ -33,7 +33,7 @@ use super::{
 };
 use crate::{
 	BinaryField128bGhash, Divisible, Field, PackedBinaryGhash2x128b, PackedField,
-	arch::{M128, M256, packed_256::m256_from_u128s},
+	arch::{M128, M256, m256_from_u128s},
 	arithmetic_traits::{InvertOrZero, Square, impl_trivial_wide_mul},
 	mul_by_binary_field_1b,
 	underlier::U1,

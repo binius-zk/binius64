@@ -1,11 +1,71 @@
 // Copyright 2023-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-pub use crate::arch::{
-	packed_1::*, packed_2::*, packed_4::*, packed_8::*, packed_16::*, packed_32::*, packed_64::*,
-	packed_128::*, packed_256::*, packed_512::*, packed_aes_8::*, packed_aes_128::*,
-	packed_aes_256::*, packed_aes_512::*,
+use std::ops::Mul;
+
+pub use crate::arch::{packed_aes_8::*, packed_aes_128::*, packed_aes_256::*, packed_aes_512::*};
+use crate::{
+	BinaryField1b,
+	arch::{M128, M256, M512, PackedPrimitiveType},
+	arithmetic_traits::{InvertOrZero, Square, WideMul},
+	underlier::{U1, U2, U4, UnderlierType},
 };
+
+// Type aliases for the `BinaryField1b` packings. The underlier determines the width; `M128`/`M256`/
+// `M512` resolve to the architecture-appropriate type (SIMD where available, scaled otherwise).
+pub type PackedBinaryField1x1b = PackedPrimitiveType<U1, BinaryField1b>;
+pub type PackedBinaryField2x1b = PackedPrimitiveType<U2, BinaryField1b>;
+pub type PackedBinaryField4x1b = PackedPrimitiveType<U4, BinaryField1b>;
+pub type PackedBinaryField8x1b = PackedPrimitiveType<u8, BinaryField1b>;
+pub type PackedBinaryField16x1b = PackedPrimitiveType<u16, BinaryField1b>;
+pub type PackedBinaryField32x1b = PackedPrimitiveType<u32, BinaryField1b>;
+pub type PackedBinaryField64x1b = PackedPrimitiveType<u64, BinaryField1b>;
+pub type PackedBinaryField128x1b = PackedPrimitiveType<M128, BinaryField1b>;
+pub type PackedBinaryField256x1b = PackedPrimitiveType<M256, BinaryField1b>;
+pub type PackedBinaryField512x1b = PackedPrimitiveType<M512, BinaryField1b>;
+
+// Every `BinaryField1b` packing shares the same arithmetic, which is available for any underlier:
+// addition is bitwise XOR (provided generically for all `PackedPrimitiveType` in `packed.rs`) and
+// multiplication is bitwise AND. Squaring and inversion are the identity, since `0` and `1` are
+// each their own square and inverse. A single blanket impl over `U` therefore replaces the
+// per-type definitions that the `define_packed_binary_field` macro used to generate.
+impl<U: UnderlierType> Mul for PackedPrimitiveType<U, BinaryField1b> {
+	type Output = Self;
+
+	#[inline]
+	#[allow(clippy::suspicious_arithmetic_impl)]
+	fn mul(self, rhs: Self) -> Self {
+		(self.0 & rhs.0).into()
+	}
+}
+
+impl<U: UnderlierType> Square for PackedPrimitiveType<U, BinaryField1b> {
+	#[inline]
+	fn square(self) -> Self {
+		self
+	}
+}
+
+impl<U: UnderlierType> InvertOrZero for PackedPrimitiveType<U, BinaryField1b> {
+	#[inline]
+	fn invert_or_zero(self) -> Self {
+		self
+	}
+}
+
+impl<U: UnderlierType> WideMul for PackedPrimitiveType<U, BinaryField1b> {
+	type Output = Self;
+
+	#[inline]
+	fn wide_mul(a: Self, b: Self) -> Self {
+		a * b
+	}
+
+	#[inline]
+	fn reduce(wide: Self) -> Self {
+		wide
+	}
+}
 
 /// Common code to test different multiply, square and invert implementations
 #[cfg(test)]
@@ -184,7 +244,7 @@ pub mod test_utils {
 			proptest::proptest! {
 				#[test]
 				fn test_mul_packed_8(a_val in proptest::prelude::any::<u8>(), b_val in proptest::prelude::any::<u8>()) {
-					use $crate::arch::packed_8::*;
+					use $crate::PackedBinaryField8x1b;
 					use $crate::arch::packed_aes_8::*;
 
 					TestMult::<PackedBinaryField8x1b>::test_mul(a_val.into(), b_val.into());
@@ -193,28 +253,28 @@ pub mod test_utils {
 
 				#[test]
 				fn test_mul_packed_16(a_val in proptest::prelude::any::<u16>(), b_val in proptest::prelude::any::<u16>()) {
-					use $crate::arch::packed_16::*;
+					use $crate::PackedBinaryField16x1b;
 
 					TestMult::<PackedBinaryField16x1b>::test_mul(a_val.into(), b_val.into());
 				}
 
 				#[test]
 				fn test_mul_packed_32(a_val in proptest::prelude::any::<u32>(), b_val in proptest::prelude::any::<u32>()) {
-					use $crate::arch::packed_32::*;
+					use $crate::PackedBinaryField32x1b;
 
 					TestMult::<PackedBinaryField32x1b>::test_mul(a_val.into(), b_val.into());
 				}
 
 				#[test]
 				fn test_mul_packed_64(a_val in proptest::prelude::any::<u64>(), b_val in proptest::prelude::any::<u64>()) {
-					use $crate::arch::packed_64::*;
+					use $crate::PackedBinaryField64x1b;
 
 					TestMult::<PackedBinaryField64x1b>::test_mul(a_val.into(), b_val.into());
 				}
 
 				#[test]
 				fn test_mul_packed_128(a_val in proptest::prelude::any::<u128>(), b_val in proptest::prelude::any::<u128>()) {
-					use $crate::arch::packed_128::*;
+					use $crate::PackedBinaryField128x1b;
 					use $crate::arch::packed_aes_128::*;
 					use $crate::arch::packed_ghash_128::*;
 
@@ -225,7 +285,7 @@ pub mod test_utils {
 
 				#[test]
 				fn test_mul_packed_256(a_val in proptest::prelude::any::<[u128; 2]>(), b_val in proptest::prelude::any::<[u128; 2]>()) {
-					use $crate::arch::packed_256::*;
+					use $crate::PackedBinaryField256x1b;
 					use $crate::arch::packed_aes_256::*;
 					use $crate::arch::packed_ghash_256::*;
 
@@ -236,7 +296,7 @@ pub mod test_utils {
 
 				#[test]
 				fn test_mul_packed_512(a_val in proptest::prelude::any::<[u128; 4]>(), b_val in proptest::prelude::any::<[u128; 4]>()) {
-					use $crate::arch::packed_512::*;
+					use $crate::PackedBinaryField512x1b;
 					use $crate::arch::packed_aes_512::*;
 					use $crate::arch::packed_ghash_512::*;
 
@@ -260,7 +320,7 @@ pub mod test_utils {
 			proptest::proptest! {
 				#[test]
 				fn test_square_packed_8(a_val in proptest::prelude::any::<u8>()) {
-					use $crate::arch::packed_8::*;
+					use $crate::PackedBinaryField8x1b;
 					use $crate::arch::packed_aes_8::*;
 
 					TestSquare::<PackedBinaryField8x1b>::test_square(a_val.into());
@@ -269,28 +329,28 @@ pub mod test_utils {
 
 				#[test]
 				fn test_square_packed_16(a_val in proptest::prelude::any::<u16>()) {
-					use $crate::arch::packed_16::*;
+					use $crate::PackedBinaryField16x1b;
 
 					TestSquare::<PackedBinaryField16x1b>::test_square(a_val.into());
 				}
 
 				#[test]
 				fn test_square_packed_32(a_val in proptest::prelude::any::<u32>()) {
-					use $crate::arch::packed_32::*;
+					use $crate::PackedBinaryField32x1b;
 
 					TestSquare::<PackedBinaryField32x1b>::test_square(a_val.into());
 				}
 
 				#[test]
 				fn test_square_packed_64(a_val in proptest::prelude::any::<u64>()) {
-					use $crate::arch::packed_64::*;
+					use $crate::PackedBinaryField64x1b;
 
 					TestSquare::<PackedBinaryField64x1b>::test_square(a_val.into());
 				}
 
 				#[test]
 				fn test_square_packed_128(a_val in proptest::prelude::any::<u128>()) {
-					use $crate::arch::packed_128::*;
+					use $crate::PackedBinaryField128x1b;
 					use $crate::arch::packed_aes_128::*;
 					use $crate::arch::packed_ghash_128::*;
 
@@ -301,7 +361,7 @@ pub mod test_utils {
 
 				#[test]
 				fn test_square_packed_256(a_val in proptest::prelude::any::<[u128; 2]>()) {
-					use $crate::arch::packed_256::*;
+					use $crate::PackedBinaryField256x1b;
 					use $crate::arch::packed_aes_256::*;
 					use $crate::arch::packed_ghash_256::*;
 
@@ -312,7 +372,7 @@ pub mod test_utils {
 
 				#[test]
 				fn test_square_packed_512(a_val in proptest::prelude::any::<[u128; 4]>()) {
-					use $crate::arch::packed_512::*;
+					use $crate::PackedBinaryField512x1b;
 					use $crate::arch::packed_aes_512::*;
 					use $crate::arch::packed_ghash_512::*;
 
@@ -336,7 +396,7 @@ pub mod test_utils {
 			proptest::proptest! {
 				#[test]
 				fn test_invert_packed_8(a_val in proptest::prelude::any::<u8>()) {
-					use $crate::arch::packed_8::*;
+					use $crate::PackedBinaryField8x1b;
 					use $crate::arch::packed_aes_8::*;
 
 					TestInvert::<PackedBinaryField8x1b>::test_invert(a_val.into());
@@ -345,28 +405,28 @@ pub mod test_utils {
 
 				#[test]
 				fn test_invert_packed_16(a_val in proptest::prelude::any::<u16>()) {
-					use $crate::arch::packed_16::*;
+					use $crate::PackedBinaryField16x1b;
 
 					TestInvert::<PackedBinaryField16x1b>::test_invert(a_val.into());
 				}
 
 				#[test]
 				fn test_invert_packed_32(a_val in proptest::prelude::any::<u32>()) {
-					use $crate::arch::packed_32::*;
+					use $crate::PackedBinaryField32x1b;
 
 					TestInvert::<PackedBinaryField32x1b>::test_invert(a_val.into());
 				}
 
 				#[test]
 				fn test_invert_packed_64(a_val in proptest::prelude::any::<u64>()) {
-					use $crate::arch::packed_64::*;
+					use $crate::PackedBinaryField64x1b;
 
 					TestInvert::<PackedBinaryField64x1b>::test_invert(a_val.into());
 				}
 
 				#[test]
 				fn test_invert_packed_128(a_val in proptest::prelude::any::<u128>()) {
-					use $crate::arch::packed_128::*;
+					use $crate::PackedBinaryField128x1b;
 					use $crate::arch::packed_aes_128::*;
 					use $crate::arch::packed_ghash_128::*;
 
@@ -377,7 +437,7 @@ pub mod test_utils {
 
 				#[test]
 				fn test_invert_packed_256(a_val in proptest::prelude::any::<[u128; 2]>()) {
-					use $crate::arch::packed_256::*;
+					use $crate::PackedBinaryField256x1b;
 					use $crate::arch::packed_aes_256::*;
 					use $crate::arch::packed_ghash_256::*;
 
@@ -388,7 +448,7 @@ pub mod test_utils {
 
 				#[test]
 				fn test_invert_packed_512(a_val in proptest::prelude::any::<[u128; 4]>()) {
-					use $crate::arch::packed_512::*;
+					use $crate::PackedBinaryField512x1b;
 					use $crate::arch::packed_aes_512::*;
 					use $crate::arch::packed_ghash_512::*;
 

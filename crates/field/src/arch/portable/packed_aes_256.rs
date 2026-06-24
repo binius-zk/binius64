@@ -1,7 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 
 use super::{
-	packed_256::M256,
+	m256::M256,
 	packed_macros::{portable_macros::*, *},
 };
 use crate::arch::strategies::ScaledStrategy;
