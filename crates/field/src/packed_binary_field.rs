@@ -1,4 +1,5 @@
 // Copyright 2023-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 pub use crate::arch::{
 	packed_1::*, packed_2::*, packed_4::*, packed_8::*, packed_16::*, packed_32::*, packed_64::*,
@@ -510,9 +511,11 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
-	use std::{iter::repeat_with, ops::Mul};
+	use std::{fmt::Debug, iter::repeat_with, ops::Mul};
 
-	use binius_utils::{DeserializeBytes, SerializeBytes, bytes::BytesMut};
+	use binius_utils::{
+		DeserializeBytes, FixedSizeSerializeBytes, SerializeBytes, bytes::BytesMut,
+	};
 	use proptest::prelude::*;
 	use rand::prelude::*;
 	use test_utils::check_interleave_all_heights;
@@ -776,5 +779,36 @@ mod tests {
 			check_transpose_all_heights::<PackedAESBinaryField64x8b>(a_val.into(), b_val.into());
 			check_transpose_all_heights::<PackedBinaryGhash4x128b>(a_val.into(), b_val.into());
 		}
+	}
+
+	// The generic `SerializeBytes`/`DeserializeBytes` impls on `PackedPrimitiveType` round-trip
+	// across both integer underliers and (where applicable) SIMD underliers.
+	#[test]
+	fn test_serialize_roundtrip() {
+		fn check_roundtrip<
+			P: PackedField + SerializeBytes + DeserializeBytes + PartialEq + Debug,
+		>(
+			rng: &mut StdRng,
+		) {
+			let value = P::random(rng);
+			let mut buf = BytesMut::new();
+			value.serialize(&mut buf).unwrap();
+			let deserialized = P::deserialize(buf.freeze()).unwrap();
+			assert_eq!(value, deserialized);
+		}
+
+		let mut rng = StdRng::seed_from_u64(0);
+		check_roundtrip::<PackedBinaryField8x1b>(&mut rng);
+		check_roundtrip::<PackedBinaryField64x1b>(&mut rng);
+		check_roundtrip::<PackedBinaryField128x1b>(&mut rng);
+		check_roundtrip::<PackedBinaryGhash1x128b>(&mut rng);
+	}
+
+	// `FixedSizeSerializeBytes` propagates from the underlier. Integer-backed packed fields (here,
+	// `u8`- and `u64`-backed on every arch) report the underlier's byte size.
+	#[test]
+	fn test_fixed_size_byte_size() {
+		assert_eq!(<PackedBinaryField8x1b as FixedSizeSerializeBytes>::BYTE_SIZE, 1);
+		assert_eq!(<PackedBinaryField64x1b as FixedSizeSerializeBytes>::BYTE_SIZE, 8);
 	}
 }

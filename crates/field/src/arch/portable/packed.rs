@@ -14,7 +14,12 @@ use std::{
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
-use binius_utils::{checked_arithmetics::checked_int_div, iter::IterExtensions};
+use binius_utils::{
+	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
+	bytes::{Buf, BufMut},
+	checked_arithmetics::checked_int_div,
+	iter::IterExtensions,
+};
 use bytemuck::{Pod, TransparentWrapper, Zeroable};
 use rand::{
 	Rng,
@@ -156,6 +161,31 @@ impl<U: UnderlierType, Scalar: BinaryField> From<U> for PackedPrimitiveType<U, S
 	fn from(val: U) -> Self {
 		Self(val, PhantomData)
 	}
+}
+
+// Serialization forwards to the underlier, which is a transparent wrapper of `Self`. These are
+// available whenever the underlier implements the corresponding trait, so a single generic impl
+// covers every `PackedPrimitiveType` rather than a per-type macro expansion.
+impl<U: UnderlierType + SerializeBytes, Scalar: BinaryField> SerializeBytes
+	for PackedPrimitiveType<U, Scalar>
+{
+	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
+		self.0.serialize(write_buf)
+	}
+}
+
+impl<U: UnderlierType + DeserializeBytes, Scalar: BinaryField> DeserializeBytes
+	for PackedPrimitiveType<U, Scalar>
+{
+	fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError> {
+		Ok(Self(U::deserialize(read_buf)?, PhantomData))
+	}
+}
+
+impl<U: UnderlierType + FixedSizeSerializeBytes, Scalar: BinaryField> FixedSizeSerializeBytes
+	for PackedPrimitiveType<U, Scalar>
+{
+	const BYTE_SIZE: usize = U::BYTE_SIZE;
 }
 
 impl<U: UnderlierType, Scalar: BinaryField> Neg for PackedPrimitiveType<U, Scalar> {

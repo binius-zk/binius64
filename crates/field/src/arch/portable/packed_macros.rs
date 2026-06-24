@@ -42,8 +42,8 @@ macro_rules! define_packed_binary_field {
 		// Define packed field types
 		pub type $name = $crate::arch::PackedPrimitiveType<$underlier, $scalar>;
 
-		// Define serialization and deserialization
-		impl_serialize_deserialize_for_packed_binary_field!($name);
+		// Serialization is provided by a single generic impl on `PackedPrimitiveType` (see
+		// `packed.rs`), so no per-type impl is needed here.
 
 		// Define multiplication
 		impl_strategy!(impl_mul_with       $name, ($($mul)*));
@@ -80,33 +80,8 @@ macro_rules! define_packed_binary_field {
 	};
 }
 
-macro_rules! impl_serialize_deserialize_for_packed_binary_field {
-	($bin_type:ty) => {
-		impl binius_utils::SerializeBytes for $bin_type {
-			fn serialize(
-				&self,
-				write_buf: impl binius_utils::bytes::BufMut,
-			) -> Result<(), binius_utils::SerializationError> {
-				self.0.serialize(write_buf)
-			}
-		}
-
-		impl binius_utils::DeserializeBytes for $bin_type {
-			fn deserialize(
-				read_buf: impl binius_utils::bytes::Buf,
-			) -> Result<Self, binius_utils::SerializationError> {
-				Ok(Self(
-					binius_utils::DeserializeBytes::deserialize(read_buf)?,
-					std::marker::PhantomData,
-				))
-			}
-		}
-	};
-}
-
 pub(crate) use define_packed_binary_field;
 pub(crate) use define_packed_binary_fields;
-pub(crate) use impl_serialize_deserialize_for_packed_binary_field;
 
 // Re-exported so the `wide_mul: (TrivialWideMul)` argument resolves at every macro call site
 // that glob-imports this module.
