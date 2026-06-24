@@ -19,11 +19,8 @@ pub mod packed_64;
 pub mod packed_8;
 
 pub mod packed_aes_128;
-pub mod packed_aes_16;
 pub mod packed_aes_256;
-pub mod packed_aes_32;
 pub mod packed_aes_512;
-pub mod packed_aes_64;
 pub mod packed_aes_8;
 
 pub mod packed_ghash_128;

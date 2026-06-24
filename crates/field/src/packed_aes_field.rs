@@ -1,9 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-pub use crate::arch::{
-	packed_aes_8::*, packed_aes_16::*, packed_aes_32::*, packed_aes_64::*, packed_aes_128::*,
-	packed_aes_256::*, packed_aes_512::*,
-};
+pub use crate::arch::{packed_aes_8::*, packed_aes_128::*, packed_aes_256::*, packed_aes_512::*};
 
 #[cfg(test)]
 mod test_utils {
@@ -22,36 +19,6 @@ mod test_utils {
 					use $crate::arch::packed_aes_8::*;
 
 					TestMult::<PackedAESBinaryField1x8b>::test_mul(
-						a_val.into(),
-						b_val.into(),
-					);
-				}
-
-				#[test]
-				fn test_mul_packed_16(a_val in any::<u16>(), b_val in any::<u16>()) {
-					use $crate::arch::packed_aes_16::*;
-
-					TestMult::<PackedAESBinaryField2x8b>::test_mul(
-						a_val.into(),
-						b_val.into(),
-					);
-				}
-
-				#[test]
-				fn test_mul_packed_32(a_val in any::<u32>(), b_val in any::<u32>()) {
-					use $crate::arch::packed_aes_32::*;
-
-					TestMult::<PackedAESBinaryField4x8b>::test_mul(
-						a_val.into(),
-						b_val.into(),
-					);
-				}
-
-				#[test]
-				fn test_mul_packed_64(a_val in any::<u64>(), b_val in any::<u64>()) {
-					use $crate::arch::packed_aes_64::*;
-
-					TestMult::<PackedAESBinaryField8x8b>::test_mul(
 						a_val.into(),
 						b_val.into(),
 					);
@@ -108,27 +75,6 @@ mod test_utils {
 				}
 
 				#[test]
-				fn test_square_packed_16(a_val in any::<u16>()) {
-					use $crate::arch::packed_aes_16::*;
-
-					TestSquare::<PackedAESBinaryField2x8b>::test_square(a_val.into());
-				}
-
-				#[test]
-				fn test_square_packed_32(a_val in any::<u32>()) {
-					use $crate::arch::packed_aes_32::*;
-
-					TestSquare::<PackedAESBinaryField4x8b>::test_square(a_val.into());
-				}
-
-				#[test]
-				fn test_square_packed_64(a_val in any::<u64>()) {
-					use $crate::arch::packed_aes_64::*;
-
-					TestSquare::<PackedAESBinaryField8x8b>::test_square(a_val.into());
-				}
-
-				#[test]
 				fn test_square_packed_128(a_val in any::<u128>()) {
 					use $crate::arch::packed_aes_128::*;
 
@@ -167,27 +113,6 @@ mod test_utils {
 					use $crate::arch::packed_aes_8::*;
 
 					TestSquare::<PackedAESBinaryField1x8b>::test_invert(a_val.into());
-				}
-
-				#[test]
-				fn test_invert_packed_16(a_val in any::<u16>()) {
-					use $crate::arch::packed_aes_16::*;
-
-					TestSquare::<PackedAESBinaryField2x8b>::test_invert(a_val.into());
-				}
-
-				#[test]
-				fn test_invert_packed_32(a_val in any::<u32>()) {
-					use $crate::arch::packed_aes_32::*;
-
-					TestSquare::<PackedAESBinaryField4x8b>::test_invert(a_val.into());
-				}
-
-				#[test]
-				fn test_invert_packed_64(a_val in any::<u64>()) {
-					use $crate::arch::packed_aes_64::*;
-
-					TestSquare::<PackedAESBinaryField8x8b>::test_invert(a_val.into());
 				}
 
 				#[test]
