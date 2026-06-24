@@ -16,6 +16,8 @@
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
+use crate::util::clear_high_bits;
+
 pub mod compress;
 
 pub use compress::{blake3_compress, blake3_compress_2x, blake3_compress_2x_seq};
@@ -115,41 +117,70 @@ pub fn blake3_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 	}
 	padded.resize(n_padded_words, zero);
 
-	// Constants used each block.
+	// All blocks of a single chunk share the chunk counter (0).
 	let counter = zero;
-	let flag_start = builder.add_constant(Word(CHUNK_START as u64));
-	let flag_end_root = builder.add_constant(Word((CHUNK_END | ROOT) as u64));
-	let flag_start_end_root = builder.add_constant(Word((CHUNK_START | CHUNK_END | ROOT) as u64));
-	let flag_zero = zero;
+
+	// Per-block message words, byte lengths, and domain-separation flags.
+	let mut blocks: Vec<[Wire; 16]> = (0..n_blocks)
+		.map(|j| std::array::from_fn(|i| padded[j * 16 + i]))
+		.collect();
+	let mut block_lens: Vec<Wire> = (0..n_blocks)
+		.map(|j| {
+			let len = if j + 1 == n_blocks {
+				len_bytes - j * BLOCK_BYTES
+			} else {
+				BLOCK_BYTES
+			};
+			builder.add_constant(Word(len as u64))
+		})
+		.collect();
+	let mut flags: Vec<Wire> = (0..n_blocks)
+		.map(|j| {
+			let start = if j == 0 { CHUNK_START } else { 0 };
+			let end = if j + 1 == n_blocks {
+				CHUNK_END | ROOT
+			} else {
+				0
+			};
+			builder.add_constant(Word((start | end) as u64))
+		})
+		.collect();
+
+	// Pad to an even block count with one unused dummy block so the blocks pair up uniformly.
+	let odd = n_blocks % 2 == 1;
+	if odd {
+		blocks.push([zero; 16]);
+		block_lens.push(zero);
+		flags.push(zero);
+	}
 
 	// Initial chaining value = IV.
 	let mut cv: [Wire; 8] = std::array::from_fn(|i| builder.add_constant(Word(IV[i] as u64)));
 
-	for block_idx in 0..n_blocks {
-		let block: [Wire; 16] = std::array::from_fn(|i| padded[block_idx * 16 + i]);
-
-		let block_byte_count = if block_idx + 1 == n_blocks {
-			len_bytes - block_idx * BLOCK_BYTES
-		} else {
-			BLOCK_BYTES
-		};
-		let block_len = builder.add_constant(Word(block_byte_count as u64));
-
-		let flags = match (block_idx == 0, block_idx + 1 == n_blocks) {
-			(true, true) => flag_start_end_root,
-			(true, false) => flag_start,
-			(false, true) => flag_end_root,
-			(false, false) => flag_zero,
-		};
-
-		cv = blake3_compress(
-			&builder.subcircuit(format!("blake3_fixed_compress[{block_idx}]")),
+	// Compress two blocks at a time: `blake3_compress_2x_seq` chains two sequential block
+	// compressions through a single parallel core, roughly halving the per-block cost.
+	let n_pairs = blocks.len() / 2;
+	for pair in 0..n_pairs {
+		let (lo, hi) = (2 * pair, 2 * pair + 1);
+		let out = blake3_compress_2x_seq(
+			&builder.subcircuit(format!("blake3_fixed_compress[{pair}]")),
 			cv,
-			block,
+			[blocks[lo], blocks[hi]],
 			counter,
-			block_len,
-			flags,
+			[block_lens[lo], block_lens[hi]],
+			[flags[lo], flags[hi]],
 		);
+		// The chaining value after the pair is the second compression's output, in the low 32 bits
+		// of each word. On a trailing odd block the second lane is the unused dummy, so the chunk's
+		// chaining value is instead the first compression's output, in the high 32 bits.
+		let last_odd = odd && pair + 1 == n_pairs;
+		cv = std::array::from_fn(|i| {
+			if last_odd {
+				builder.shr(out[i], 32)
+			} else {
+				clear_high_bits(builder, out[i], 32)
+			}
+		});
 	}
 
 	cv
@@ -222,7 +253,11 @@ mod tests {
 
 	#[test]
 	fn block_boundaries() {
-		for &len in &[1usize, 63, 64, 65, 127, 128, 511, 512, 1023, 1024] {
+		// Lengths chosen to cover 1..=16 blocks, including odd block counts (3, 5, 7) that
+		// exercise the trailing single-block compression after the 2x-sequential pairs.
+		for &len in &[
+			1usize, 63, 64, 65, 127, 128, 129, 192, 256, 257, 320, 448, 511, 512, 1023, 1024,
+		] {
 			let input: Vec<u8> = (0..len).map(|i| (i * 37 + 1) as u8).collect();
 			check(&input);
 		}
