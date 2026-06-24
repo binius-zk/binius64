@@ -1,4 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
+
+use bytemuck::TransparentWrapper;
 
 use crate::{
 	AESTowerField8b,
@@ -6,7 +9,7 @@ use crate::{
 		GfniStrategy, portable::packed::PackedPrimitiveType,
 		x86_64::simd::simd_arithmetic::TowerSimdType,
 	},
-	arithmetic_traits::{TaggedInvertOrZero, TaggedMul},
+	arithmetic_traits::{TaggedInvertOrZero, TaggedMul, WideMul},
 	underlier::UnderlierType,
 };
 
@@ -35,6 +38,29 @@ impl<U: GfniType + UnderlierType> TaggedMul<GfniStrategy>
 	#[inline(always)]
 	fn mul(self, rhs: Self) -> Self {
 		U::gf2p8mul_epi8(self.0, rhs.0).into()
+	}
+}
+
+/// GFNI widening multiply for AES packings: `gf2p8mul` already produces the reduced byte, so the
+/// wide product is `Self` and `reduce` is the identity. The single-instruction multiply covers
+/// `M128`/`M256`/`M512` (any [`GfniType`]).
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct GfniWideMul<T>(T);
+
+impl<U: GfniType + UnderlierType> WideMul for GfniWideMul<PackedPrimitiveType<U, AESTowerField8b>> {
+	type Output = PackedPrimitiveType<U, AESTowerField8b>;
+
+	#[inline(always)]
+	fn wide_mul(a: Self, b: Self) -> Self::Output {
+		let a = Self::peel(a);
+		let b = Self::peel(b);
+		U::gf2p8mul_epi8(a.0, b.0).into()
+	}
+
+	#[inline(always)]
+	fn reduce(wide: Self::Output) -> Self {
+		Self::wrap(wide)
 	}
 }
 

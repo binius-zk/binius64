@@ -1,12 +1,29 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use cfg_if::cfg_if;
 
 use super::m512::M512;
 use crate::{
-	arch::portable::packed_macros::{portable_macros::*, *},
+	arch::{
+		MulFromWideMul,
+		portable::packed_macros::{portable_macros::*, *},
+	},
 	arithmetic_traits::{impl_invert_with, impl_mul_with, impl_square_with},
 };
+
+#[cfg(all(
+	target_arch = "x86_64",
+	target_feature = "sse2",
+	target_feature = "gfni"
+))]
+pub type AesWideMul512<T> = super::gfni::gfni_arithmetics::GfniWideMul<T>;
+#[cfg(not(all(
+	target_arch = "x86_64",
+	target_feature = "sse2",
+	target_feature = "gfni"
+)))]
+pub type AesWideMul512<T> = crate::arch::ElementwiseWideMul<T>;
 
 define_packed_binary_fields!(
 	underlier: M512,
@@ -14,10 +31,10 @@ define_packed_binary_fields!(
 		packed_field {
 			name: PackedAESBinaryField64x8b,
 			scalar: AESTowerField8b,
-			mul:       (if gfni GfniStrategy else PairwiseTableStrategy),
+			mul:       (MulFromWideMul),
 			square:    (if gfni ReuseMultiplyStrategy else PairwiseTableStrategy),
 			invert:    (if gfni GfniStrategy else PairwiseTableStrategy),
-			wide_mul: (TrivialWideMul),
+			wide_mul: (AesWideMul512),
 		},
 	]
 );

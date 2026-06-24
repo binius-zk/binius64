@@ -10,7 +10,7 @@
 // Used by the `GhashWideMul` and `GhashSquareStrategy` fallbacks when VPCLMULQDQ is
 // unavailable.
 #[cfg(not(target_feature = "vpclmulqdq"))]
-use crate::arch::{portable::arithmetic::ghash_scaled::Scaled2xGhashWideMul, x86_64::m128::M128};
+use crate::arch::{portable::scaled_arithmetic::Scaled2xWideMul, x86_64::m128::M128};
 use crate::{
 	BinaryField128bGhash,
 	arch::{
@@ -22,12 +22,12 @@ use crate::{
 };
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring vectorized
-/// `GhashClMulWideMul` when VPCLMULQDQ is available, otherwise the per-lane `ScaledGhashWideMul`
+/// `GhashClMulWideMul` when VPCLMULQDQ is available, otherwise the per-lane `ScaledWideMul`
 /// (which still defers reduction, applying the width-1 GHASH `WideMul` to each 128-bit lane).
 #[cfg(target_feature = "vpclmulqdq")]
 pub type GhashWideMul<T> = crate::arch::x86_64::arithmetic::ghash::GhashClMulWideMul<T>;
 #[cfg(not(target_feature = "vpclmulqdq"))]
-pub type GhashWideMul<T> = Scaled2xGhashWideMul<T>;
+pub type GhashWideMul<T> = Scaled2xWideMul<T>;
 
 /// Square strategy for the GHASH packing: a full-width CLMUL square when VPCLMULQDQ is available,
 /// otherwise divide into 128-bit lanes and square each (the 1×128b GHASH square uses PCLMULQDQ).

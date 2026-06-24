@@ -2,9 +2,9 @@
 // Copyright 2026 The Binius Developers
 
 use super::{
-	arithmetic::ghash_scaled::Scaled4xGhashWideMul,
 	m512::M512,
 	packed_macros::{portable_macros::*, *},
+	scaled_arithmetic::Scaled4xWideMul,
 };
 use crate::arch::strategies::{MulFromWideMul, ScaledStrategy};
 
@@ -17,7 +17,7 @@ define_packed_binary_fields!(
 			mul:       (MulFromWideMul),
 			square:    (ScaledStrategy),
 			invert:    (ScaledStrategy),
-			wide_mul: (Scaled4xGhashWideMul),
+			wide_mul: (Scaled4xWideMul),
 		},
 	]
 );

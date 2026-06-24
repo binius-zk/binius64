@@ -5,25 +5,13 @@ use bytemuck::TransparentWrapper;
 
 use super::packed::PackedPrimitiveType;
 use crate::{
-	AESTowerField8b, Divisible,
+	AESTowerField8b,
 	aes_field::aes_mul_8b,
 	arch::PairwiseTableStrategy,
-	arithmetic_traits::{TaggedInvertOrZero, TaggedMul, TaggedSquare, WideMul},
+	arithmetic_traits::{TaggedInvertOrZero, TaggedSquare, WideMul},
 	packed::PackedField,
 	underlier::UnderlierType,
 };
-
-// Element-wise table multiply. Still used as the non-GFNI fallback for the x86_64 AES packings;
-// the portable AES packings now obtain `Mul` via `WideMul` (`MulFromWideMul`) instead.
-impl<U: UnderlierType> TaggedMul<PairwiseTableStrategy> for PackedPrimitiveType<U, AESTowerField8b>
-where
-	Self: PackedField<Scalar = AESTowerField8b>,
-{
-	#[inline]
-	fn mul(self, rhs: Self) -> Self {
-		Self::from_fn(|i| aes_mul_8b(self.get(i).val(), rhs.get(i).val()).into())
-	}
-}
 
 /// Widening multiply for the portable 1×8b AES packing: a direct log/exp-table multiply (shared
 /// with the scalar via [`aes_mul_8b`]). The wide product is already the reduced byte, so `reduce`
@@ -123,9 +111,10 @@ impl_unary_ops!(TaggedInvertOrZero, invert_or_zero, AES_TOWER_8B_INVERT_MAP, AES
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::test_utils::{define_invert_tests, define_multiply_tests, define_square_tests};
+	use crate::test_utils::{define_invert_tests, define_square_tests};
 
-	define_multiply_tests!(TaggedMul<PairwiseTableStrategy>::mul, TaggedMul<PairwiseTableStrategy>);
+	// Multiplication is now defined via `WideMul` (`AesLookupWideMul` / `ScaledWideMul` / GFNI) and
+	// is covered by the packed AES multiply proptests in `packed_aes_field.rs`.
 
 	define_square_tests!(
 		TaggedSquare<PairwiseTableStrategy>::square,
