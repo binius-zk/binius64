@@ -1,44 +1,47 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::ops::Mul;
-
 use super::{
 	m128::M128,
-	simd_arithmetic::{
-		packed_aes_16x8b_invert_or_zero, packed_aes_16x8b_multiply, packed_aes_16x8b_square,
-	},
+	simd_arithmetic::{VmullWideMul, packed_aes_16x8b_invert_or_zero, packed_aes_16x8b_square},
 };
 use crate::{
 	aes_field::AESTowerField8b,
-	arch::portable::packed::PackedPrimitiveType,
-	arithmetic_traits::{InvertOrZero, Square},
+	arch::{
+		portable::packed_macros::{portable_macros::*, *},
+		strategies::MulFromWideMul,
+	},
+	arithmetic_traits::{
+		TaggedInvertOrZero, TaggedSquare, impl_invert_with, impl_mul_with, impl_square_with,
+	},
 	underlier::WithUnderlier,
 };
 
-pub type PackedAESBinaryField16x8b = PackedPrimitiveType<M128, AESTowerField8b>;
+/// Strategy for aarch64 AES square/invert, both backed by `vqtbl` lookup tables.
+pub struct AesStrategy;
 
-// Defined by hand rather than via `define_packed_binary_fields!`, so the trivial `WideMul` impl
-// (a parent trait of `PackedField`) must be emitted explicitly here.
-crate::arithmetic_traits::impl_trivial_wide_mul!(PackedAESBinaryField16x8b);
+// Define PackedAESBinaryField16x8b using the macro. `Mul` is derived from `WideMul` (supplied by
+// the `VmullWideMul` wrapper, whose `vmull_p8` multiply already produces the reduced byte); square
+// and invert use lookup tables via `AesStrategy`.
+define_packed_binary_field!(
+	PackedAESBinaryField16x8b,
+	AESTowerField8b,
+	M128,
+	(MulFromWideMul),
+	(AesStrategy),
+	(AesStrategy),
+	(VmullWideMul)
+);
 
-impl Mul for PackedAESBinaryField16x8b {
-	type Output = Self;
-
-	fn mul(self, rhs: Self) -> Self {
-		crate::tracing::trace_multiplication!(PackedAESBinaryField16x8b);
-
-		self.mutate_underlier(|underlier| packed_aes_16x8b_multiply(underlier, rhs.to_underlier()))
-	}
-}
-
-impl Square for PackedAESBinaryField16x8b {
+impl TaggedSquare<AesStrategy> for PackedAESBinaryField16x8b {
+	#[inline]
 	fn square(self) -> Self {
 		self.mutate_underlier(packed_aes_16x8b_square)
 	}
 }
 
-impl InvertOrZero for PackedAESBinaryField16x8b {
+impl TaggedInvertOrZero<AesStrategy> for PackedAESBinaryField16x8b {
+	#[inline]
 	fn invert_or_zero(self) -> Self {
 		self.mutate_underlier(packed_aes_16x8b_invert_or_zero)
 	}
@@ -49,7 +52,7 @@ mod tests {
 	use proptest::prelude::*;
 
 	use super::*;
-	use crate::Divisible;
+	use crate::{Divisible, arithmetic_traits::Square};
 
 	proptest! {
 		#[test]

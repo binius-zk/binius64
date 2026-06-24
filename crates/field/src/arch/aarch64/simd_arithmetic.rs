@@ -1,9 +1,19 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::arch::aarch64::*;
+use std::{
+	arch::aarch64::*,
+	iter::Sum,
+	ops::{Add, AddAssign, Sub, SubAssign},
+};
+
+use bytemuck::TransparentWrapper;
 
 use super::m128::M128;
+use crate::{
+	aes_field::AESTowerField8b, arch::portable::packed::PackedPrimitiveType,
+	arithmetic_traits::WideMul,
+};
 
 #[inline]
 pub fn packed_aes_16x8b_invert_or_zero(x: M128) -> M128 {
@@ -53,18 +63,95 @@ pub fn packed_aes_16x8b_square(x: M128) -> M128 {
 	}
 }
 
+/// The unreduced product of two [`PackedAESBinaryField16x8b`](PackedPrimitiveType) values: the 16
+/// per-byte carryless products, split into their low bytes (`lo`, which need no reduction) and high
+/// bytes (`hi`, the overflow above `x^7` still to be folded down). Both the carryless multiply and
+/// the GF(2^8) reduction are linear, so products accumulate by XOR and reduce once at the end via
+/// [`packed_aes_16x8b_reduce`].
+#[derive(Clone, Copy, Default, Debug)]
+pub struct WideAes16x8bProduct {
+	lo: M128,
+	hi: M128,
+}
+
+impl Add for WideAes16x8bProduct {
+	type Output = Self;
+
+	#[inline]
+	fn add(self, rhs: Self) -> Self {
+		Self {
+			lo: self.lo ^ rhs.lo,
+			hi: self.hi ^ rhs.hi,
+		}
+	}
+}
+
+impl AddAssign for WideAes16x8bProduct {
+	#[inline]
+	fn add_assign(&mut self, rhs: Self) {
+		self.lo ^= rhs.lo;
+		self.hi ^= rhs.hi;
+	}
+}
+
+// In characteristic 2, subtraction is identical to addition (XOR).
+impl Sub for WideAes16x8bProduct {
+	type Output = Self;
+
+	#[inline]
+	fn sub(self, rhs: Self) -> Self {
+		Self {
+			lo: self.lo ^ rhs.lo,
+			hi: self.hi ^ rhs.hi,
+		}
+	}
+}
+
+impl SubAssign for WideAes16x8bProduct {
+	#[inline]
+	fn sub_assign(&mut self, rhs: Self) {
+		self.lo ^= rhs.lo;
+		self.hi ^= rhs.hi;
+	}
+}
+
+impl Sum for WideAes16x8bProduct {
+	#[inline]
+	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+		iter.fold(Self::default(), |acc, x| acc + x)
+	}
+}
+
+/// Widening (unreduced) GF(2^8) multiply of the packed bytes via `vmull_p8`, deferring reduction.
+/// See <https://doc.rust-lang.org/beta/core/arch/x86_64/fn._mm_gf2p8mul_epi8.html>.
 #[inline]
-pub fn packed_aes_16x8b_multiply(a: M128, b: M128) -> M128 {
-	//! Performs a multiplication in GF(2^8) on the packed bytes.
-	//! See <https://doc.rust-lang.org/beta/core/arch/x86_64/fn._mm_gf2p8mul_epi8.html>
+pub fn packed_aes_16x8b_wide_mul(a: M128, b: M128) -> WideAes16x8bProduct {
 	unsafe {
 		let a = vreinterpretq_p8_p128(a.into());
 		let b = vreinterpretq_p8_p128(b.into());
 		let c0 = vreinterpretq_p8_p16(vmull_p8(vget_low_p8(a), vget_low_p8(b)));
 		let c1 = vreinterpretq_p8_p16(vmull_p8(vget_high_p8(a), vget_high_p8(b)));
 
-		// Reduces the 16-bit output of a carryless multiplication to 8 bits using equation 22 in
-		// https://www.intel.com/content/dam/develop/external/us/en/documents/clmul-wp-rev-2-02-2014-04-20.pdf
+		// Deinterleave the 16 per-byte carryless products into their low bytes (`lo`) and high
+		// bytes (`hi`, the part above `x^7` that the reduction folds back down).
+		let cl = vuzp1q_p8(c0, c1);
+		let ch = vuzp2q_p8(c0, c1);
+
+		WideAes16x8bProduct {
+			lo: vreinterpretq_p128_p8(cl).into(),
+			hi: vreinterpretq_p128_p8(ch).into(),
+		}
+	}
+}
+
+/// Reduces an accumulated [`WideAes16x8bProduct`] back to the packed GF(2^8) bytes.
+#[inline]
+pub fn packed_aes_16x8b_reduce(wide: WideAes16x8bProduct) -> M128 {
+	// Reduces the 16-bit output of a carryless multiplication to 8 bits using equation 22 in
+	// https://www.intel.com/content/dam/develop/external/us/en/documents/clmul-wp-rev-2-02-2014-04-20.pdf
+	unsafe {
+		let cl = vreinterpretq_p8_p128(wide.lo.into());
+		let ch = vreinterpretq_p8_p128(wide.hi.into());
 
 		// Since q+(x) doesn't fit into 8 bits, we right shift the polynomial (divide by x) and
 		// correct for this later. This works because q+(x) is divisible by x/the last polynomial
@@ -73,9 +160,6 @@ pub fn packed_aes_16x8b_multiply(a: M128, b: M128) -> M128 {
 
 		// q*(x) = x^4 + x^3 + x + 1 = 0b00011011 = 0x1b
 		const QSTAR: poly8x8_t = unsafe { std::mem::transmute(0x1b1b1b1b1b1b1b1b_u64) };
-
-		let cl = vuzp1q_p8(c0, c1);
-		let ch = vuzp2q_p8(c0, c1);
 
 		let tmp0 = vmull_p8(vget_low_p8(ch), QPLUS_RSH1);
 		let tmp1 = vmull_p8(vget_high_p8(ch), QPLUS_RSH1);
@@ -90,6 +174,28 @@ pub fn packed_aes_16x8b_multiply(a: M128, b: M128) -> M128 {
 		let tmp_lo = vuzp1q_p8(tmp0, tmp1);
 
 		vreinterpretq_p128_p8(vaddq_p8(cl, tmp_lo)).into()
+	}
+}
+
+/// Widening-multiply wrapper for the aarch64 `vmull_p8` AES packing, mirroring the GHASH
+/// [`GhashClMulWideMul`](super::arithmetic::ghash::GhashClMulWideMul) pattern: `wide_mul` runs the
+/// carryless multiply (deferring reduction) and `reduce` folds the high bytes back down. The packed
+/// field forwards its `WideMul` to this via the `define_packed_binary_field!` macro.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct VmullWideMul<T>(T);
+
+impl WideMul for VmullWideMul<PackedPrimitiveType<M128, AESTowerField8b>> {
+	type Output = WideAes16x8bProduct;
+
+	#[inline]
+	fn wide_mul(a: Self, b: Self) -> Self::Output {
+		packed_aes_16x8b_wide_mul(Self::peel(a).to_underlier(), Self::peel(b).to_underlier())
+	}
+
+	#[inline]
+	fn reduce(wide: Self::Output) -> Self {
+		Self::wrap(PackedPrimitiveType::from_underlier(packed_aes_16x8b_reduce(wide)))
 	}
 }
 
