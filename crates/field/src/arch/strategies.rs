@@ -3,6 +3,8 @@
 
 use std::marker::PhantomData;
 
+use bytemuck::TransparentWrapper;
+
 use crate::{
 	BinaryField,
 	arch::PackedPrimitiveType,
@@ -53,6 +55,45 @@ where
 				.to_underlier()
 		});
 		Self::from_underlier(Divisible::<SubU>::from_iter(squared))
+	}
+}
+
+/// Widening-multiply wrapper that defers to per-`u8`-lane multiplication: it splits each underlier
+/// into `u8` lanes, applies the 1-byte packing's [`WideMul`], and recombines. This is the `WideMul`
+/// analogue of [`DivideStrategy`] — a generic fallback for packings whose underlier is
+/// `Divisible<u8>`. It requires the 1-byte packing's wide product to already be the reduced element
+/// (`Output = Self`), so `reduce` is the identity.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct ElementwiseWideMul<T>(T);
+
+impl<U, F> WideMul for ElementwiseWideMul<PackedPrimitiveType<U, F>>
+where
+	U: UnderlierType + Divisible<u8>,
+	F: BinaryField,
+	PackedPrimitiveType<u8, F>: WideMul<Output = PackedPrimitiveType<u8, F>>,
+{
+	type Output = PackedPrimitiveType<U, F>;
+
+	#[inline]
+	fn wide_mul(a: Self, b: Self) -> Self::Output {
+		let a = Self::peel(a).to_underlier();
+		let b = Self::peel(b).to_underlier();
+		let product = Divisible::<u8>::value_iter(a)
+			.zip(Divisible::<u8>::value_iter(b))
+			.map(|(lhs, rhs)| {
+				<PackedPrimitiveType<u8, F> as WideMul>::wide_mul(
+					PackedPrimitiveType::from_underlier(lhs),
+					PackedPrimitiveType::from_underlier(rhs),
+				)
+				.to_underlier()
+			});
+		PackedPrimitiveType::from_underlier(Divisible::<u8>::from_iter(product))
+	}
+
+	#[inline]
+	fn reduce(wide: Self::Output) -> Self {
+		Self::wrap(wide)
 	}
 }
 

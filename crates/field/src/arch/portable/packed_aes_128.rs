@@ -4,7 +4,7 @@
 use super::m128::M128;
 use crate::{
 	arch::{
-		PairwiseTableStrategy,
+		ElementwiseWideMul, MulFromWideMul, PairwiseTableStrategy,
 		portable::packed_macros::{portable_macros::*, *},
 	},
 	arithmetic_traits::{impl_invert_with, impl_mul_with, impl_square_with},
@@ -16,10 +16,10 @@ define_packed_binary_fields!(
 		packed_field {
 			name: PackedAESBinaryField16x8b,
 			scalar: AESTowerField8b,
-			mul: (PairwiseTableStrategy),
+			mul: (MulFromWideMul),
 			square: (PairwiseTableStrategy),
 			invert: (PairwiseTableStrategy),
-			wide_mul: (TrivialWideMul),
+			wide_mul: (ElementwiseWideMul),
 		},
 	]
 );
