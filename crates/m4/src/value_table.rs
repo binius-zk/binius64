@@ -61,6 +61,7 @@ impl ValueTable {
 	/// - `log_instances`: base-2 logarithm of the instance count.
 	/// - `fill`: sets the input wires of instance `i`, for `i` in `0..2^log_instances`. It sets the
 	///   inputs evaluation cannot derive: public inputs/outputs and free witnesses.
+	///   It must assign every input on each call, since the witness vector is reused between instances.
 	///
 	/// # Errors
 	///
@@ -91,33 +92,31 @@ impl ValueTable {
 
 		// Populate each instance into its own slice of the buffer, concurrently.
 		// The chunks are disjoint, so the instances never contend for the same words.
-		data.par_chunks_mut(stride)
-			.enumerate()
-			.try_for_each(|(instance, chunk)| {
-				// A fresh witness vector for this instance, including transient scratch space.
-				let mut filler = circuit.new_witness_filler();
-
+		data.par_chunks_mut(stride).enumerate().try_for_each_init(
+			// A witness vector reused across this thread's instances, including transient scratch space.
+			|| circuit.new_witness_filler(),
+			|filler, (instance, chunk)| {
 				// The caller assigns this instance's input wires.
 				// Different instances generally receive different inputs.
-				fill(instance, &mut filler);
+				fill(instance, filler);
 
 				// Evaluate the circuit gate by gate to derive the remaining committed values.
 				// A failed assertion means this instance's inputs do not satisfy the circuit.
 				// Record which instance failed.
 				circuit
-					.populate_wire_witness(&mut filler)
+					.populate_wire_witness(filler)
 					.map_err(|source| PopulateInstanceError { instance, source })?;
 
 				// Keep only the committed words.
-				// The scratch space is dropped together with the filler.
+				// The scratch space stays in the filler for the next instance.
 				//
 				//     filler value vec: [ committed words | scratch ]
 				//     chunk           : [ committed words ]
-				let value_vec = filler.into_value_vec();
-				chunk.copy_from_slice(value_vec.combined_witness());
+				chunk.copy_from_slice(filler.value_vec().combined_witness());
 
 				Ok(())
-			})?;
+			},
+		)?;
 
 		Ok(Self {
 			layout,
