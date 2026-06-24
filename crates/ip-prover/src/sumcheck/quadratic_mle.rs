@@ -281,7 +281,10 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::sumcheck::prove_single_mlecheck;
+	use crate::{
+		channel::IPProverChannel,
+		sumcheck::{multilinear_eval::MultilinearEvalProver, prove_single_mlecheck},
+	};
 
 	/// Computes the MLE-check claimed value in the monomial basis: the composite
 	/// `F = C(M_1, ..., M_N)` summed over the infinity hypercube and eq-weighted at `point`.
@@ -511,5 +514,188 @@ mod tests {
 			expected = round.iter().map(|r| r.evaluate(challenge)).collect();
 			prover.fold(challenge).unwrap();
 		}
+	}
+
+	// EXPERIMENT (BINIUS-114): can the non-homogeneous mul-gate composite `A*B - C` be proven by
+	// SPLITTING the prover into a quadratic prover for the homogeneous product `A*B` and a separate
+	// prover for the multilinear `C`, batched with hardcoded weights `+1` / `-1`, while leaving the
+	// verifier as the unchanged single degree-2 `mlecheck::verify`?
+	//
+	// `make_c_prover` builds the `C` sub-prover (its framing varies across experiments) and
+	// `claim_c` chooses how `C`'s claim is computed. Returns `Ok(())` on a full verify, or `Err`
+	// describing the first inconsistency, so the driver can tabulate outcomes instead of
+	// panicking.
+	fn run_split_mul_gate_experiment<F, P, CProver>(
+		n_vars: usize,
+		claim_c: ClaimC,
+		make_c_prover: impl FnOnce(FieldBuffer<P>, Vec<F>, F) -> CProver,
+	) -> Result<(), String>
+	where
+		F: Field,
+		P: PackedField<Scalar = F>,
+		CProver: SumcheckProver<F>,
+	{
+		let mut rng = StdRng::seed_from_u64(0);
+
+		let multilinears: [FieldBuffer<P>; 3] =
+			array::from_fn(|_| random_field_buffer::<P>(&mut rng, n_vars));
+		let eval_point = random_scalars::<F>(&mut rng, n_vars);
+
+		let ab_multilinears = [multilinears[0].clone(), multilinears[1].clone()];
+		let claim_ab = composite_infinity_eval(
+			&ab_multilinears,
+			|[a, b]: [P; 2]| a * b,
+			|[a, b]: [P; 2]| a * b,
+			&eval_point,
+		);
+		// Two candidate claims for the `C` term:
+		// - `Eval`: the standalone monomial-basis multilinear evaluation `evaluate(C, point)`,
+		//   which is what `MultilinearEvalProver` proves. It includes `C`'s mass at every infinity
+		//   vertex.
+		// - `ConstCoeff`: `C`'s contribution *inside the degree-2 composite*, i.e. its
+		//   leading-degree-2 part summed over the infinity hypercube — `composite_infinity_eval(C,
+		//   inf = 0)`, which collapses to the constant coefficient `c[0]`. This is the value the
+		//   single quadratic prover (and `composite_infinity_eval(a*b - c, a*b)`) implicitly uses
+		//   for `-C`.
+		let claim_c_val = match claim_c {
+			ClaimC::Eval => evaluate(&multilinears[2], &eval_point),
+			ClaimC::ConstCoeff => composite_infinity_eval(
+				&[multilinears[2].clone()],
+				|[c]: [P; 1]| c,
+				|[_c]: [P; 1]| P::zero(),
+				&eval_point,
+			),
+		};
+
+		// Hardcoded batch weights: `A*B - C` (the two coincide in characteristic 2, written out
+		// anyway).
+		let weight_ab = F::ONE;
+		let weight_c = -F::ONE;
+		let verifier_claim = weight_ab * claim_ab + weight_c * claim_c_val;
+
+		let mut ab_prover = QuadraticMleCheckProver::new(
+			ab_multilinears,
+			|[a, b]: [P; 2]| a * b,
+			|[a, b]: [P; 2]| a * b,
+			eval_point.clone(),
+			claim_ab,
+		)
+		.unwrap();
+		let mut c_prover = make_c_prover(multilinears[2].clone(), eval_point.clone(), claim_c_val);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		for _ in 0..n_vars {
+			let ab_round = ab_prover.execute().unwrap();
+			let c_round = c_prover.execute().unwrap();
+			// batched(X) = 1 * R_{A*B}(X) + (-1) * R_C(X). `RoundCoeffs` addition zero-pads the
+			// shorter polynomial, so a lower-degree `R_C` contributes only to the low
+			// coefficients and the degree-2 leading coefficient comes entirely from `R_{A*B}`.
+			let batched = ab_round[0].clone() * weight_ab + &(c_round[0].clone() * weight_c);
+			prover_transcript.send_many(mlecheck::RoundProof::truncate(batched).coeffs());
+			let challenge = prover_transcript.sample();
+			ab_prover.fold(challenge).unwrap();
+			c_prover.fold(challenge).unwrap();
+		}
+
+		let ab_evals = ab_prover.finish().unwrap();
+		let c_evals = c_prover.finish().unwrap();
+		let multilinear_evals = vec![ab_evals[0], ab_evals[1], c_evals[0]];
+		prover_transcript.message().write_slice(&multilinear_evals);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let sumcheck_output =
+			mlecheck::verify(&eval_point, 2, verifier_claim, &mut verifier_transcript).unwrap();
+		let verifier_evals: Vec<F> = verifier_transcript.message().read_vec(3).unwrap();
+
+		let [a, b, c] = [verifier_evals[0], verifier_evals[1], verifier_evals[2]];
+		if a * b - c != sumcheck_output.eval {
+			return Err(format!("composite A*B - C != reduced eval (n_vars={n_vars})"));
+		}
+		let mut reduced_eval_point = sumcheck_output.challenges.clone();
+		reduced_eval_point.reverse();
+		for (multilinear, &claimed) in iter::zip(&multilinears, &verifier_evals) {
+			if evaluate(multilinear, &reduced_eval_point) != claimed {
+				return Err(format!("multilinear eval mismatch (n_vars={n_vars})"));
+			}
+		}
+		Ok(())
+	}
+
+	#[derive(Clone, Copy)]
+	enum ClaimC {
+		Eval,
+		ConstCoeff,
+	}
+
+	// Tabulates the split experiment across `C`-prover framings, claim choices, and sizes. Each row
+	// prints PASS/FAIL so the protocol-level conclusion is visible in the test output. The asserts
+	// at the end encode the empirically-observed conclusion.
+	#[test]
+	fn test_split_mul_gate_experiment_matrix() {
+		type P = OptimalPackedB128;
+		let sizes = [1usize, 2, 3, 8];
+
+		let eval_deg1 = |n, claim| {
+			run_split_mul_gate_experiment::<_, P, _>(n, claim, |witness, point, claim_val| {
+				MultilinearEvalProver::new(witness, &point, claim_val).unwrap()
+			})
+		};
+		let eval_deg2 = |n, claim| {
+			run_split_mul_gate_experiment::<_, P, _>(n, claim, |witness, point, claim_val| {
+				QuadraticMleCheckProver::new(
+					[witness],
+					|[c]: [P; 1]| c,
+					|[_c]: [P; 1]| P::zero(),
+					point,
+					claim_val,
+				)
+				.unwrap()
+			})
+		};
+
+		let print_row =
+			|name: &str, claim: ClaimC, run: &dyn Fn(usize, ClaimC) -> Result<(), String>| {
+				let claim_name = match claim {
+					ClaimC::Eval => "claim_C=evaluate(C)",
+					ClaimC::ConstCoeff => "claim_C=c[0]      ",
+				};
+				let results: Vec<String> = sizes
+					.iter()
+					.map(|&n| match run(n, claim) {
+						Ok(()) => format!("n={n}:PASS"),
+						Err(_) => format!("n={n}:FAIL"),
+					})
+					.collect();
+				println!("{name:32} | {claim_name} | {}", results.join("  "));
+			};
+
+		for claim in [ClaimC::Eval, ClaimC::ConstCoeff] {
+			print_row("MultilinearEvalProver (deg1)", claim, &eval_deg1);
+			print_row("QuadraticMleCheckProver  (deg2)", claim, &eval_deg2);
+		}
+
+		// Empirical conclusion (see printed matrix): under the UNCHANGED degree-2 verifier, no
+		// (framing, claim) combination proves `A*B - C` across multiple rounds. The only passing
+		// cells are single-round (`n_vars=1`), where there is no infinity-mass to carry between
+		// rounds.
+		//
+		// - deg2 framing + `claim_C=c[0]` reproduces the single quadratic prover exactly: it
+		//   carries the right claim but breaks for `n>=2` (the multi-round `-C` handling, the
+		//   original bug).
+		// - deg1 framing (`MultilinearEvalProver`) + `claim_C=evaluate(C)` proves the correct
+		//   standalone `C` claim, but that claim over-counts `C`'s infinity-vertex mass relative to
+		//   the degree-2 composite, and the degree-2 verifier's single `∞` slot cannot carry it —
+		//   fails even at n=1.
+		let passes_multiround = |run: &dyn Fn(usize, ClaimC) -> Result<(), String>, claim| {
+			[2usize, 3, 8].iter().all(|&n| run(n, claim).is_ok())
+		};
+		assert!(
+			!passes_multiround(&eval_deg1, ClaimC::Eval),
+			"deg1 + evaluate(C) unexpectedly verified across rounds"
+		);
+		assert!(
+			!passes_multiround(&eval_deg2, ClaimC::ConstCoeff),
+			"deg2 + c[0] unexpectedly verified across rounds"
+		);
 	}
 }
