@@ -57,11 +57,11 @@ where
 }
 
 /// Strategy that defines multiplication as `reduce(wide_mul(a, b))`, deferring to the type's own
-/// [`WideMul`] impl. Used by every GHASH packing so the (CLMUL-accelerated or scaled) widening
-/// multiply is the single source of truth for both `Mul` and `WideMul`.
-pub struct GhashMulStrategy;
+/// [`WideMul`] impl, making the widening multiply the single source of truth for both `Mul` and
+/// `WideMul`. Used by every GHASH and AES packing.
+pub struct MulFromWideMul;
 
-impl<P: WideMul> TaggedMul<GhashMulStrategy> for P {
+impl<P: WideMul> TaggedMul<MulFromWideMul> for P {
 	#[inline]
 	fn mul(self, rhs: Self) -> Self {
 		P::reduce(P::wide_mul(self, rhs))

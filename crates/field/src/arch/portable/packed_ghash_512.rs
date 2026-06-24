@@ -6,7 +6,7 @@ use super::{
 	m512::M512,
 	packed_macros::{portable_macros::*, *},
 };
-use crate::arch::strategies::{GhashMulStrategy, ScaledStrategy};
+use crate::arch::strategies::{MulFromWideMul, ScaledStrategy};
 
 define_packed_binary_fields!(
 	underlier: M512,
@@ -14,7 +14,7 @@ define_packed_binary_fields!(
 		packed_field {
 			name: PackedBinaryGhash4x128b,
 			scalar: BinaryField128bGhash,
-			mul:       (GhashMulStrategy),
+			mul:       (MulFromWideMul),
 			square:    (ScaledStrategy),
 			invert:    (ScaledStrategy),
 			wide_mul: (Scaled4xGhashWideMul),

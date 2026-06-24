@@ -15,7 +15,7 @@ use crate::{
 	BinaryField128bGhash,
 	arch::{
 		portable::packed_macros::{portable_macros::*, *},
-		strategies::GhashMulStrategy,
+		strategies::MulFromWideMul,
 		x86_64::m256::M256,
 	},
 	arithmetic_traits::{TaggedInvertOrZero, impl_invert_with, impl_mul_with, impl_square_with},
@@ -63,7 +63,7 @@ define_packed_binary_field!(
 	PackedBinaryGhash2x128b,
 	BinaryField128bGhash,
 	M256,
-	(GhashMulStrategy),
+	(MulFromWideMul),
 	(GhashSquareStrategy),
 	(Ghash256Strategy),
 	(GhashWideMul)

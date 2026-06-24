@@ -12,7 +12,7 @@ use super::{
 use crate::{
 	arch::{
 		portable::packed_macros::{portable_macros::*, *},
-		strategies::GhashMulStrategy,
+		strategies::MulFromWideMul,
 	},
 	arithmetic_traits::{TaggedInvertOrZero, TaggedSquare},
 	ghash::BinaryField128bGhash,
@@ -51,7 +51,7 @@ define_packed_binary_field!(
 	PackedBinaryGhash1x128b,
 	BinaryField128bGhash,
 	M128,
-	(GhashMulStrategy),
+	(MulFromWideMul),
 	(GhashStrategy),
 	(GhashStrategy),
 	(GhashWideMul)
