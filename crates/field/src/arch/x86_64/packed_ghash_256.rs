@@ -7,8 +7,10 @@
 //! available on modern x86_64 processors with AVX2 support. The implementation follows
 //! the algorithm described in the GHASH specification with polynomial x^128 + x^7 + x^2 + x + 1.
 
-use cfg_if::cfg_if;
-
+// Used by the `GhashWideMul` and `GhashSquareStrategy` fallbacks when VPCLMULQDQ is
+// unavailable.
+#[cfg(not(target_feature = "vpclmulqdq"))]
+use crate::arch::{portable::arithmetic::ghash_scaled::Scaled2xGhashWideMul, x86_64::m128::M128};
 use crate::{
 	BinaryField128bGhash,
 	arch::{
@@ -16,18 +18,7 @@ use crate::{
 		strategies::GhashMulStrategy,
 		x86_64::m256::M256,
 	},
-	arithmetic_traits::{
-		TaggedInvertOrZero, TaggedSquare, impl_invert_with, impl_mul_with, impl_square_with,
-	},
-};
-// Only used by the element-wise square fallback when VPCLMULQDQ is unavailable.
-#[cfg(not(target_feature = "vpclmulqdq"))]
-use crate::{
-	arch::{
-		portable::arithmetic::ghash_scaled::Scaled2xGhashWideMul,
-		x86_64::{m128::M128, packed_ghash_128::PackedBinaryGhash1x128b},
-	},
-	underlier::Divisible,
+	arithmetic_traits::{TaggedInvertOrZero, impl_invert_with, impl_mul_with, impl_square_with},
 };
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring vectorized
@@ -37,6 +28,13 @@ use crate::{
 pub type GhashWideMul<T> = crate::arch::x86_64::arithmetic::ghash::GhashClMulWideMul<T>;
 #[cfg(not(target_feature = "vpclmulqdq"))]
 pub type GhashWideMul<T> = Scaled2xGhashWideMul<T>;
+
+/// Square strategy for the GHASH packing: a full-width CLMUL square when VPCLMULQDQ is available,
+/// otherwise divide into 128-bit lanes and square each (the 1×128b GHASH square uses PCLMULQDQ).
+#[cfg(target_feature = "vpclmulqdq")]
+pub type GhashSquareStrategy = crate::arch::x86_64::arithmetic::ghash::GhashClMulSquareStrategy;
+#[cfg(not(target_feature = "vpclmulqdq"))]
+pub type GhashSquareStrategy = crate::arch::DivideStrategy<M128>;
 
 #[cfg(target_feature = "vpclmulqdq")]
 mod vpclmulqdq {
@@ -66,41 +64,10 @@ define_packed_binary_field!(
 	BinaryField128bGhash,
 	M256,
 	(GhashMulStrategy),
-	(Ghash256Strategy),
+	(GhashSquareStrategy),
 	(Ghash256Strategy),
 	(GhashWideMul)
 );
-
-// Implement TaggedSquare for Ghash256Strategy
-cfg_if! {
-	if #[cfg(target_feature = "vpclmulqdq")] {
-		impl TaggedSquare<Ghash256Strategy> for PackedBinaryGhash2x128b {
-			#[inline]
-			fn square(self) -> Self {
-				Self::from_underlier(crate::arch::x86_64::arithmetic::ghash::square_clmul(self.to_underlier()))
-			}
-		}
-	} else {
-		impl TaggedSquare<Ghash256Strategy> for PackedBinaryGhash2x128b {
-			#[inline]
-			fn square(self) -> Self {
-				let mut result_underlier = self.to_underlier();
-				unsafe {
-					let self_0 = Divisible::<M128>::get_unchecked(&self.to_underlier(), 0);
-					let self_1 = Divisible::<M128>::get_unchecked(&self.to_underlier(), 1);
-
-					let result_0 = crate::arithmetic_traits::Square::square(PackedBinaryGhash1x128b::from(self_0));
-					let result_1 = crate::arithmetic_traits::Square::square(PackedBinaryGhash1x128b::from(self_1));
-
-					Divisible::<M128>::set_unchecked(&mut result_underlier, 0, result_0.to_underlier());
-					Divisible::<M128>::set_unchecked(&mut result_underlier, 1, result_1.to_underlier());
-				}
-
-				Self::from_underlier(result_underlier)
-			}
-		}
-	}
-}
 
 // Implement TaggedInvertOrZero for Ghash256Strategy (Itoh-Tsujii over the full 256-bit vector)
 impl TaggedInvertOrZero<Ghash256Strategy> for PackedBinaryGhash2x128b {
