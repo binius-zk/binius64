@@ -3,12 +3,15 @@
 //! ZK-wrapped prover channel that runs an inner proof and then proves the outer
 //! wrapper constraint system.
 //!
-//! [`ZKWrappedProverChannel`] wraps a [`BaseFoldZKProverChannel`] and records all channel values.
-//! On `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFoldZK channel and records
-//! each value. After the inner proof is run, [`finish`] replays the recorded interaction through
-//! a caller-provided closure to fill the outer witness, then runs the outer IOP prover.
+//! [`ZKWrappedProverChannel`] wraps a [`BaseFoldZKProverChannel`] and an internal
+//! [`WitnessGenerator`]. On `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFoldZK
+//! channel and writes each value (and the one-time-pad keys) directly into the outer witness,
+//! allocating the inout and precommit wires in the symbolic build's order. After the inner proof is
+//! run, [`finish`] replays the recorded derived-computation gates over that partially-filled
+//! witness to fill the derived and private wires, then runs the outer IOP prover.
 //!
 //! [`BaseFoldZKProverChannel`]: binius_iop_prover::basefold_zk_channel::BaseFoldZKProverChannel
+//! [`WitnessGenerator`]: binius_spartan_frontend::circuit_builder::WitnessGenerator
 //! [`finish`]: ZKWrappedProverChannel::finish
 
 use std::iter::repeat_with;
@@ -22,26 +25,27 @@ use binius_iop_prover::{
 };
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT};
-use binius_spartan_frontend::constraint_system::{BlindingInfo, WitnessLayout};
+use binius_spartan_frontend::{
+	circuit_builder::{WireAllocator, WitnessGenerator},
+	constraint_system::{BlindingInfo, WireKind, WitnessLayout},
+	gate::GateSequence,
+};
 use binius_spartan_verifier::IOPVerifier;
 use binius_transcript::fiat_shamir::Challenger;
 use binius_utils::SerializeBytes;
 use rand::CryptoRng;
 
-use crate::{Error, IOPProver, pack_and_blind_witness, wrapper::ReplayChannel};
+use crate::{Error, IOPProver, pack_and_blind_witness};
 
 /// A prover channel that wraps a [`BaseFoldZKProverChannel`] and an outer Spartan IOP prover.
 ///
-/// This channel records all channel values. On
-/// `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFoldZK channel and records each
-/// value. After the inner proof is run through this channel, call
-/// [`finish`](Self::finish) to replay the interaction, fill the outer witness, and generate the
-/// outer proof.
-///
-/// The `ReplayFn` closure is called during [`finish`](Self::finish) with a [`ReplayChannel`] to
-/// replay the inner verification and fill the outer witness. This allows the channel to be generic
-/// over different inner verification protocols.
-pub struct ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_, ReplayFn>
+/// On `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFoldZK channel and writes each
+/// value (and the one-time-pad keys) directly into the outer witness on its own internal
+/// [`WitnessGenerator`] — allocating the inout and precommit wires in the same order the symbolic
+/// build did. After the inner proof is run through this channel, call [`finish`](Self::finish) with
+/// the recorded gate sequence to replay the derived-computation gates over that partially-filled
+/// witness (substituting for a re-execution of the inner verifier), then generate the outer proof.
+pub struct ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_>
 where
 	P: PackedField<Scalar: BinaryField>,
 	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
@@ -50,11 +54,17 @@ where
 {
 	inner_channel: BaseFoldZKProverChannel<'a, P::Scalar, P, NTT, MTProver, Challenger_>,
 	outer_prover: &'a IOPProver<P::Scalar>,
-	outer_layout: &'a WitnessLayout<P::Scalar>,
-	replay_fn: ReplayFn,
+	/// The outer witness under construction: inout (transcript) and precommit (key) wires are
+	/// written here directly as the inner proof runs; [`finish`](Self::finish) then replays the
+	/// recorded gates to fill the derived and private wires.
+	witness_gen: WitnessGenerator<'a, P::Scalar>,
+	/// Allocators for the inout and precommit segments, advanced in the same order as the symbolic
+	/// [`IronSpartanBuilderChannel`](binius_spartan_verifier::wrapper::IronSpartanBuilderChannel)
+	/// so the wire ids align with the outer layout (and hence the recorded gates).
+	inout_alloc: WireAllocator,
+	precommit_alloc: WireAllocator,
 	keys: Vec<P::Scalar>,
 	next_key_idx: usize,
-	interaction: Vec<P::Scalar>,
 	/// Handle to the outer precommit oracle committed at construction time. The buffer
 	/// (`precommit_packed`) is purely random — it is the one-time-pad encryption key for the
 	/// outer encrypted transcript (to be wired up in a follow-up; for now the outer circuit has
@@ -66,8 +76,8 @@ where
 	n_outer_suffix_oracles: usize,
 }
 
-impl<'a, F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn>
-	ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_, ReplayFn>
+impl<'a, F, P, NTT, MTScheme, MTProver, Challenger_>
+	ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F> + PackedExtension<F>,
@@ -93,14 +103,11 @@ where
 	/// * `outer_prover` - The IOP prover for the outer (wrapper) constraint system
 	/// * `outer_layout` - The witness layout for the outer constraint system
 	/// * `rng` - RNG used to generate the random precommit buffer (the future OTP key)
-	/// * `replay_fn` - Closure called during [`finish`](Self::finish) with a [`ReplayChannel`] to
-	///   replay the inner verification and fill the outer witness
 	pub fn new(
 		mut inner_channel: BaseFoldZKProverChannel<'a, F, P, NTT, MTProver, Challenger_>,
 		outer_prover: &'a IOPProver<F>,
 		outer_layout: &'a WitnessLayout<F>,
 		rng: impl CryptoRng,
-		replay_fn: ReplayFn,
 	) -> Self {
 		let outer_oracle_specs =
 			IOPVerifier::new(outer_prover.constraint_system().clone()).oracle_specs();
@@ -130,11 +137,11 @@ where
 		Self {
 			inner_channel,
 			outer_prover,
-			outer_layout,
-			replay_fn,
+			witness_gen: WitnessGenerator::new(outer_layout),
+			inout_alloc: WireAllocator::new(WireKind::InOut),
+			precommit_alloc: WireAllocator::new(WireKind::Precommit),
 			keys,
 			next_key_idx: 0,
-			interaction: Vec::new(),
 			precommit_oracle,
 			precommit_packed,
 			n_outer_suffix_oracles: suffix_len,
@@ -179,37 +186,35 @@ where
 
 	/// Consumes the channel and runs the outer proof.
 	///
-	/// This should be called after the inner proof has been run through this channel.
-	/// It:
-	/// 1. Creates a [`ReplayChannel`] from the recorded interaction
-	/// 2. Calls the `replay_fn` closure to replay the inner verification and fill the outer witness
-	/// 3. Validates and generates the outer IOP proof
-	pub fn finish(self, rng: impl CryptoRng) -> Result<(), Error>
-	where
-		ReplayFn: FnOnce(&mut ReplayChannel<'_, F>),
-	{
+	/// This should be called after the inner proof has been run through this channel. By then the
+	/// inout (transcript) and precommit (OTP key) wires are already written into the internal
+	/// witness; this replays the recorded derived-computation gates (`gate_seq`) over that
+	/// partially-filled witness to fill the derived and private wires, then validates and generates
+	/// the outer IOP proof.
+	///
+	/// `gate_seq` is the sequence recorded during the symbolic build of the outer constraint system
+	/// (see [`GateRecordingConstraintBuilder`](binius_spartan_frontend::gate::GateRecordingConstraintBuilder)); it holds only
+	/// the inner verifier's derived arithmetic (`Add`/`Mul`/`Generic`).
+	pub fn finish(self, gate_seq: &GateSequence<F>, rng: impl CryptoRng) -> Result<(), Error> {
 		let _ = tracing::debug_span!("Proving ZK wrapper proof").entered();
 
 		let Self {
 			mut inner_channel,
 			outer_prover,
-			outer_layout,
-			replay_fn,
-			keys,
-			interaction,
+			mut witness_gen,
 			precommit_oracle,
 			precommit_packed,
 			..
 		} = self;
 
-		// Replay the inner verification through the outer witness generator.
+		// The inout and precommit wires were written into `witness_gen` as the inner proof ran;
+		// replay the recorded gates to fill the derived and private wires, then build the witness.
 		let witness = {
 			let _ = tracing::debug_span!("Generating ZK wrapper witness").entered();
-			let mut replay_channel = ReplayChannel::new(outer_layout, keys, interaction);
-			replay_fn(&mut replay_channel);
-			replay_channel
-				.finish()
-				.expect("outer witness generation should not fail")
+			witness_gen.apply_gates(gate_seq);
+			witness_gen
+				.build()
+				.expect("apply_gates records no assertions, so witness generation cannot fail")
 		};
 
 		// Validate and generate the outer proof.
@@ -229,8 +234,8 @@ where
 	}
 }
 
-impl<F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn> IPProverChannel<F>
-	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_, ReplayFn>
+impl<F, P, NTT, MTScheme, MTProver, Challenger_> IPProverChannel<F>
+	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F> + PackedExtension<F>,
@@ -241,28 +246,34 @@ where
 {
 	fn send_one(&mut self, elem: F) {
 		let key = self.next_key();
-		// Encrypt the element with the OTP key before sending. Record the encrypted value in
-		// `interaction` — that's what the outer witness's inout wires hold (and what the replay
-		// side adds the key back to in order to recover the plaintext for the inner verifier).
+		// Encrypt the element with the OTP key before sending. The inout wire holds the encrypted
+		// value and the paired precommit wire holds the key, mirroring the symbolic `recv_one`
+		// (`inout - key`); the recorded gates add the key back to recover the plaintext for the
+		// inner verifier. Allocate inout then precommit, matching the symbolic allocation order.
 		let encrypted = elem + key;
 		self.inner_channel.send_one(encrypted);
-		self.interaction.push(encrypted);
+		let inout = self.inout_alloc.alloc();
+		self.witness_gen.write_inout(inout, encrypted);
+		let precommit = self.precommit_alloc.alloc();
+		self.witness_gen.write_precommit(precommit, key);
 	}
 
 	fn observe_one(&mut self, val: F) {
 		self.inner_channel.observe_one(val);
-		self.interaction.push(val);
+		let inout = self.inout_alloc.alloc();
+		self.witness_gen.write_inout(inout, val);
 	}
 
 	fn sample(&mut self) -> F {
 		let val = self.inner_channel.sample();
-		self.interaction.push(val);
+		let inout = self.inout_alloc.alloc();
+		self.witness_gen.write_inout(inout, val);
 		val
 	}
 }
 
-impl<F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn> IOPProverChannel<P>
-	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_, ReplayFn>
+impl<F, P, NTT, MTScheme, MTProver, Challenger_> IOPProverChannel<P>
+	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F> + PackedExtension<F>,
@@ -297,10 +308,12 @@ where
 
 		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
 		// checks in the circuit equality of this value with the expected expression over encrypted
-		// values.
+		// values. The decrypted claim is an inout wire (no paired key), matching the symbolic
+		// `verify_oracle_relations`.
 		for (_, _, _, claim) in &oracle_relations {
 			self.inner_channel.send_one(*claim);
-			self.interaction.push(*claim);
+			let inout = self.inout_alloc.alloc();
+			self.witness_gen.write_inout(inout, *claim);
 		}
 
 		self.inner_channel.prove_oracle_relations(oracle_relations)

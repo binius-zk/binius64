@@ -23,6 +23,7 @@ use binius_iop::{
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_spartan_frontend::{
+	circuit_builder::ConstraintBuilder,
 	compiler::compile,
 	constraint_system::{BlindingInfo, WitnessLayout},
 };
@@ -83,7 +84,7 @@ where
 
 		let outer_builder = {
 			let _guard = tracing::debug_span!("Build ZK wrapper circuit").entered();
-			let mut builder_channel = IronSpartanBuilderChannel::new();
+			let mut builder_channel = IronSpartanBuilderChannel::new(ConstraintBuilder::new());
 			inner_iop_verifier
 				.verify(&dummy_public_words, &mut builder_channel)
 				.expect("symbolic verify should not fail");

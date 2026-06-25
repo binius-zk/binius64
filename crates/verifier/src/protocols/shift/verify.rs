@@ -254,6 +254,12 @@ where
 			.chain(r_y.iter().cloned())
 			.collect();
 
+		// Own the constraint system and subspace so the closure is `'static` (it is stored in a
+		// recorded gate sequence and replayed on every prove/verify call). These clones happen once
+		// per `check_eval` — negligible next to the surrounding sumcheck/FRI work.
+		let constraint_system = constraint_system.clone();
+		let subspace = subspace.clone();
+
 		channel.compute_public_value(&inputs, move |vals| {
 			let r_zhat_prime_v = vals[0];
 			let bitand_lambda_v = vals[1];
@@ -270,7 +276,7 @@ where
 			let r_y_v = &vals[off..off + r_y_len];
 
 			let r_y_tensor = eq_ind_partial_eval_scalars(r_y_v);
-			let l_tilde = lagrange_evals_scalars(subspace, r_zhat_prime_v);
+			let l_tilde = lagrange_evals_scalars(&subspace, r_zhat_prime_v);
 			let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
 
 			let bitand_part = {

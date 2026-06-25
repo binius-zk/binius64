@@ -14,8 +14,12 @@ use binius_field::{BinaryField128bGhash as B128, PackedExtension, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::basefold_compiler::BaseFoldZKProverCompiler;
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded};
-use binius_spartan_frontend::{compiler::compile, constraint_system::WitnessLayout};
-use binius_spartan_prover::wrapper::{ReplayChannel, ZKWrappedProverChannel};
+use binius_spartan_frontend::{
+	compiler::compile_ir,
+	constraint_system::WitnessLayout,
+	gate::{GateRecordingConstraintBuilder, GateSequence},
+};
+use binius_spartan_prover::wrapper::ZKWrappedProverChannel;
 use binius_spartan_verifier::{
 	constraint_system::ConstraintSystemPadded, wrapper::IronSpartanBuilderChannel,
 };
@@ -48,6 +52,9 @@ where
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_prover: binius_spartan_prover::IOPProver<B128>,
 	outer_layout: WitnessLayout<B128>,
+	/// Gate sequence recorded during the symbolic build of the outer constraint system; replayed
+	/// per `prove` call to fill the outer witness (see [`ZKWrappedProverChannel::finish`]).
+	outer_gate_seq: GateSequence<B128>,
 	basefold_compiler: BaseFoldZKProverCompiler<P, ProverNTT<B128>, ProverMerkleProver<B128, H>>,
 }
 
@@ -84,19 +91,20 @@ where
 		// TODO: This duplicates code in ZKVerifier::setup. Prover needs to call it separately
 		// because the Verifier doesn't (and shouldn't) store the layout. However, the code can be
 		// refactored out for DRYness.
-		let outer_builder = {
+		let (outer_ir, outer_gate_seq) = {
 			let _guard = tracing::debug_span!("Build ZK wrapper circuit").entered();
 			let dummy_public_words =
 				vec![Word::from_u64(0); 1 << inner_iop_verifier.log_public_words()];
-			let mut builder_channel = IronSpartanBuilderChannel::new();
+			let mut builder_channel =
+				IronSpartanBuilderChannel::new(GateRecordingConstraintBuilder::<B128>::new());
 			inner_iop_verifier
 				.verify(&dummy_public_words, &mut builder_channel)
 				.expect("symbolic verify should not fail");
-			builder_channel.finish()
+			builder_channel.finish().into_parts()
 		};
 		let (outer_cs, outer_layout) = {
 			let _guard = tracing::debug_span!("Compile ZK wrapper circuit").entered();
-			compile(outer_builder)
+			compile_ir(outer_ir)
 		};
 
 		// Pad the outer constraint system with the same blinding as the verifier.
@@ -132,6 +140,7 @@ where
 			inner_iop_verifier,
 			outer_iop_prover,
 			outer_layout,
+			outer_gate_seq,
 			basefold_compiler,
 		})
 	}
@@ -153,9 +162,6 @@ where
 		mut rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		// Clone public words before moving witness into prove().
-		let public_words = witness.public().to_vec();
-
 		// Create BaseFoldZK prover channel and wrap with outer prover.
 		let basefold_channel = self.basefold_compiler.create_channel(transcript, &mut rng);
 		let mut wrapped_channel = ZKWrappedProverChannel::new(
@@ -163,14 +169,6 @@ where
 			&self.outer_iop_prover,
 			&self.outer_layout,
 			&mut rng,
-			{
-				let inner_iop_verifier = &self.inner_iop_verifier;
-				move |replay_channel: &mut ReplayChannel<'_, B128>| {
-					inner_iop_verifier
-						.verify(&public_words, replay_channel)
-						.expect("replay verification should not fail");
-				}
-			},
 		);
 
 		// Run the inner IOP proof through the wrapped channel.
@@ -198,7 +196,7 @@ where
 			)
 			.entered();
 
-			wrapped_channel.finish(rng)?;
+			wrapped_channel.finish(&self.outer_gate_seq, rng)?;
 		}
 
 		Ok(())

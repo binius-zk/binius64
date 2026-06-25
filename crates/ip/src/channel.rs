@@ -102,12 +102,18 @@ pub trait IPVerifierChannel<F: Field> {
 	/// impls run it on either real or dummy values. Callers must therefore supply a pure function
 	/// with no observable side effects.
 	///
+	/// `f` is `Fn` and `'static`: a gate-recording channel stores it in a [`GateSequence`] that is
+	/// recorded once and replayed on every prove/verify call, so the closure must own its captures
+	/// (e.g. clone a constraint system in rather than borrow it).
+	///
+	/// [`GateSequence`]: https://docs.rs/binius-spartan-frontend
+	///
 	/// HACK: This is a temporary hack to fix a performance regression. This feature should be
 	/// killed and handled more elegantly with better witness generation code.
 	fn compute_public_value(
 		&mut self,
 		inputs: &[Self::Elem],
-		f: impl FnOnce(&[F]) -> F,
+		f: impl Fn(&[F]) -> F + 'static,
 	) -> Self::Elem;
 }
 
@@ -154,7 +160,7 @@ where
 		}
 	}
 
-	fn compute_public_value(&mut self, inputs: &[F], f: impl FnOnce(&[F]) -> F) -> F {
+	fn compute_public_value(&mut self, inputs: &[F], f: impl Fn(&[F]) -> F + 'static) -> F {
 		f(inputs)
 	}
 }

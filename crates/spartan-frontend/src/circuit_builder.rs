@@ -1,15 +1,18 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{array, backtrace::Backtrace, collections::HashMap, mem};
+use std::{backtrace::Backtrace, collections::HashMap, mem};
 
 use binius_field::Field;
 use bytemuck::zeroed_vec;
 use smallvec::{SmallVec, smallvec};
 
-use crate::constraint_system::{
-	ConstraintSystem, ConstraintWire, MulConstraint, Operand, WireKind, Witness, WitnessIndex,
-	WitnessLayout, WitnessSegment,
+use crate::{
+	constraint_system::{
+		ConstraintSystem, ConstraintWire, MulConstraint, Operand, WireKind, Witness, WitnessIndex,
+		WitnessLayout, WitnessSegment,
+	},
+	gate::{Gate, GateSequence},
 };
 
 /// Common interface for circuit construction and witness generation.
@@ -39,23 +42,45 @@ pub trait CircuitBuilder {
 
 	fn mul(&mut self, lhs: Self::Wire, rhs: Self::Wire) -> Self::Wire;
 
-	fn hint<H: Fn([Self::Field; IN]) -> [Self::Field; OUT] + 'static, const IN: usize, const OUT: usize>(
+	// `H: 'static`: a hint is a pure function of its input values (so it can be recorded into a
+	// replayable gate sequence). It must not borrow transient state.
+	fn hint<
+		H: Fn([Self::Field; IN]) -> [Self::Field; OUT] + 'static,
+		const IN: usize,
+		const OUT: usize,
+	>(
 		&mut self,
 		inputs: [Self::Wire; IN],
 		f: H,
 	) -> [Self::Wire; OUT];
 
-	/// A hint whose output arity is a runtime value rather than a compile-time constant: `f` maps the
-	/// input values to exactly `out_len` output values, returned as `out_len` wires. Like
+	/// A hint whose output arity is a runtime value rather than a compile-time constant: `f` maps
+	/// the input values to exactly `out_len` output values, returned as `out_len` wires. Like
 	/// [`Self::hint`], the closure is `'static` (a pure function recordable into a replayable gate
 	/// sequence) and the hint emits no constraints — a hint over only public-derivable inputs is
-	/// itself public-derivable.
+	/// itself public-derivable. `compute_public_value` is a one-output `hint_varsize`.
 	fn hint_varsize(
 		&mut self,
 		inputs: &[Self::Wire],
 		out_len: usize,
 		f: impl Fn(&[Self::Field]) -> Vec<Self::Field> + 'static,
 	) -> Vec<Self::Wire>;
+}
+
+/// A [`CircuitBuilder`] that can also allocate the wrapper channel's external wires: inout
+/// (transcript inputs the verifier supplies) and precommit (one-time-pad keys).
+///
+/// The wrapper builder channel
+/// ([`IronSpartanBuilderChannel`](https://docs.rs/binius-spartan-verifier)) is generic over this
+/// trait, so the same channel either builds only the constraint system ([`ConstraintBuilder`]) or
+/// also records a replayable [`GateSequence`]
+/// ([`GateRecordingConstraintBuilder`](crate::gate::GateRecordingConstraintBuilder)).
+pub trait CircuitBuilderWithAlloc: CircuitBuilder {
+	/// Allocates an inout wire (a transcript input the verifier supplies).
+	fn alloc_inout(&mut self) -> Self::Wire;
+
+	/// Allocates a precommit wire (a one-time-pad key).
+	fn alloc_precommit(&mut self) -> Self::Wire;
 }
 
 #[derive(Debug)]
@@ -265,6 +290,24 @@ impl<F: Field> ConstraintBuilder<F> {
 	pub fn build(self) -> ConstraintSystemIR<F> {
 		self.ir
 	}
+
+	/// Allocates `out_len` hint output wires, choosing the derived or private allocator from
+	/// `inputs_public` (a hint over only public-derivable inputs is itself public-derivable; hints
+	/// emit no constraints regardless). Shared by [`CircuitBuilder::hint`] and
+	/// [`CircuitBuilder::hint_varsize`].
+	fn alloc_hint_outputs(&mut self, inputs_public: bool, out_len: usize) -> Vec<ConstraintWire> {
+		(0..out_len)
+			.map(|_| {
+				if inputs_public {
+					self.ir.derived_alloc.alloc()
+				} else {
+					let wire = self.ir.private_alloc.alloc();
+					self.ir.private_wires_status.push(WireStatus::Unknown);
+					wire
+				}
+			})
+			.collect()
+	}
 }
 
 impl<F: Field> CircuitBuilder for ConstraintBuilder<F> {
@@ -328,18 +371,10 @@ impl<F: Field> CircuitBuilder for ConstraintBuilder<F> {
 		inputs: [Self::Wire; IN],
 		_f: H,
 	) -> [Self::Wire; OUT] {
-		// A hint over only public-derivable inputs is itself public-derivable. (Hints emit no
-		// constraints regardless; only the allocator choice changes.)
-		let derived = inputs.iter().all(|wire| wire.kind.is_public());
-		array::from_fn(|_| {
-			if derived {
-				self.ir.derived_alloc.alloc()
-			} else {
-				let wire = self.ir.private_alloc.alloc();
-				self.ir.private_wires_status.push(WireStatus::Unknown);
-				wire
-			}
-		})
+		let inputs_public = inputs.iter().all(|wire| wire.kind.is_public());
+		self.alloc_hint_outputs(inputs_public, OUT)
+			.try_into()
+			.expect("alloc_hint_outputs returns exactly OUT wires")
 	}
 
 	fn hint_varsize(
@@ -348,20 +383,24 @@ impl<F: Field> CircuitBuilder for ConstraintBuilder<F> {
 		out_len: usize,
 		_f: impl Fn(&[F]) -> Vec<F> + 'static,
 	) -> Vec<Self::Wire> {
-		// A hint over only public-derivable inputs is itself public-derivable; the constraint system
-		// cannot replay the closure, so it allocates the output wires only.
-		let derived = inputs.iter().all(|wire| wire.kind.is_public());
-		(0..out_len)
-			.map(|_| {
-				if derived {
-					self.ir.derived_alloc.alloc()
-				} else {
-					let wire = self.ir.private_alloc.alloc();
-					self.ir.private_wires_status.push(WireStatus::Unknown);
-					wire
-				}
-			})
-			.collect()
+		// Symbolic build: the closure is an opaque native computation the constraint system cannot
+		// replay, so it allocates the output wires only (their values are supplied at
+		// instance/replay time, by the verifier's `InstanceGenerator` or a recorded gate).
+		// Outputs are derived when the inputs are public-derivable — a `compute_public_value`
+		// over public inputs lands in the public segment, sorting after the transcript inout
+		// wires.
+		let inputs_public = inputs.iter().all(|wire| wire.kind.is_public());
+		self.alloc_hint_outputs(inputs_public, out_len)
+	}
+}
+
+impl<F: Field> CircuitBuilderWithAlloc for ConstraintBuilder<F> {
+	fn alloc_inout(&mut self) -> Self::Wire {
+		self.ir.public_alloc.alloc()
+	}
+
+	fn alloc_precommit(&mut self) -> Self::Wire {
+		self.ir.precommit_alloc.alloc()
 	}
 }
 
@@ -470,6 +509,88 @@ impl<'a, F: Field> WitnessGenerator<'a, F> {
 
 	pub fn error(&self) -> Option<&Backtrace> {
 		self.first_error.as_ref()
+	}
+
+	/// Fills the derived and private wires by replaying the recorded derived-computation gate
+	/// sequence over the partially-filled witness. The inout and precommit wires must already be
+	/// written (via [`Self::write_inout`] / [`Self::write_precommit`]) in allocation order; this
+	/// then computes everything the inner verifier's "verify" arithmetic would, without re-running
+	/// it. See [`crate::gate::GateRecordingConstraintBuilder`].
+	///
+	/// Each gate reads its inputs and writes its outputs by wire: a wire that survived
+	/// wire-elimination is read/written in its witness slot; a pruned intermediate (no slot, but
+	/// still consumed by a later gate) is held in a side table.
+	pub fn apply_gates(&mut self, gates: &GateSequence<F>) {
+		// Values of wires with no witness slot (pruned derived intermediates) that later gates
+		// read.
+		let mut pruned: HashMap<ConstraintWire, F> = HashMap::new();
+		for gate in gates.gates() {
+			match gate {
+				Gate::Add { lhs, rhs, out } => {
+					let val = self.read_wire(lhs, &pruned) + self.read_wire(rhs, &pruned);
+					self.put_wire(*out, val, &mut pruned);
+				}
+				Gate::Mul { lhs, rhs, out } => {
+					let val = self.read_wire(lhs, &pruned) * self.read_wire(rhs, &pruned);
+					self.put_wire(*out, val, &mut pruned);
+				}
+				Gate::Generic {
+					inputs,
+					outputs,
+					eval,
+				} => {
+					let in_vals: Vec<F> =
+						inputs.iter().map(|w| self.read_wire(w, &pruned)).collect();
+					let out_vals = eval(&in_vals);
+					assert_eq!(
+						out_vals.len(),
+						outputs.len(),
+						"Generic gate eval returned {} values for {} output wires",
+						out_vals.len(),
+						outputs.len()
+					);
+					for (&wire, val) in outputs.iter().zip(out_vals) {
+						self.put_wire(wire, val, &mut pruned);
+					}
+				}
+			}
+		}
+	}
+
+	/// Reads a gate input's value: from its witness slot if it has one, else from the pruned-wire
+	/// table. Panics if neither holds it (a malformed sequence referencing an unproduced wire).
+	fn read_wire(&self, wire: &ConstraintWire, pruned: &HashMap<ConstraintWire, F>) -> F {
+		match self.layout.get(wire) {
+			Some(index) => match index.segment {
+				WitnessSegment::Public => self.public[index.index as usize],
+				WitnessSegment::Precommit => self.precommit[index.index as usize],
+				WitnessSegment::Private => self.private[index.index as usize],
+			},
+			None => *pruned.get(wire).expect(
+				"gate input wire has neither a witness slot nor a recorded value \
+				 (malformed gate sequence)",
+			),
+		}
+	}
+
+	/// Writes a gate output's value into its witness slot, or into the pruned-wire table if it has
+	/// no slot.
+	fn put_wire(
+		&mut self,
+		wire: ConstraintWire,
+		value: F,
+		pruned: &mut HashMap<ConstraintWire, F>,
+	) {
+		match self.layout.get(&wire) {
+			Some(index) => match index.segment {
+				WitnessSegment::Public => self.public[index.index as usize] = value,
+				WitnessSegment::Precommit => self.precommit[index.index as usize] = value,
+				WitnessSegment::Private => self.private[index.index as usize] = value,
+			},
+			None => {
+				pruned.insert(wire, value);
+			}
+		}
 	}
 
 	fn record_error(&mut self) {
@@ -595,6 +716,16 @@ impl<'a, F: Field> InstanceGenerator<'a, F> {
 		PublicWire(None)
 	}
 
+	/// Writes the result of a `compute_public_value` as a derived public wire. The value is
+	/// computed natively by the verifier (the constraint system cannot derive it); allocating a
+	/// derived wire here — in the same order as the symbolic build's one-output
+	/// [`CircuitBuilder::hint_varsize`] — keeps the derived ids aligned so the value lands in the
+	/// right public slot.
+	pub fn write_compute_public(&mut self, value: F) -> PublicWire<F> {
+		let wire = self.derived_alloc.alloc();
+		self.write_public(wire, value)
+	}
+
 	/// Writes `value` to the wire's public slot if it has one (i.e. it is alive), then returns the
 	/// wire carrying its value. Wires with no slot (pruned intermediates) are computed inline only.
 	fn write_public(&mut self, wire: ConstraintWire, value: F) -> PublicWire<F> {
@@ -678,8 +809,9 @@ impl<'a, F: Field> CircuitBuilder for InstanceGenerator<'a, F> {
 		out_len: usize,
 		f: impl Fn(&[F]) -> Vec<F> + 'static,
 	) -> Vec<Self::Wire> {
-		// Only invoke `f` when every input is public (its value is known to the verifier); otherwise
-		// the outputs are private wires that consume no derived ids, matching `ConstraintBuilder`.
+		// Only invoke `f` when every input is public (its value is known to the verifier);
+		// otherwise the outputs are private wires that consume no derived ids, matching
+		// `ConstraintBuilder`.
 		if inputs.iter().all(|wire| wire.0.is_some()) {
 			let in_vals = inputs
 				.iter()

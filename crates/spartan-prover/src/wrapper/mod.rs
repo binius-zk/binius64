@@ -4,16 +4,14 @@
 //!
 //! This crate provides [`ZKWrappedProverChannel`], the prover-side counterpart to
 //! [`ZKWrappedVerifierChannel`]. It wraps a [`BaseFoldZKProverChannel`] and records all channel
-//! operations. After the inner proof is run through the channel, [`finish`] replays the
-//! interaction through a [`ReplayChannel`] to fill the outer witness, then runs the outer IOP
-//! prover.
+//! operations into a flat interaction vec. After the inner proof is run through the channel,
+//! [`finish`] replays the recorded gate sequence over that interaction to fill the outer witness,
+//! then runs the outer IOP prover.
 //!
 //! [`ZKWrappedVerifierChannel`]: binius_spartan_verifier::wrapper::ZKWrappedVerifierChannel
 //! [`BaseFoldZKProverChannel`]: binius_iop_prover::basefold_zk_channel::BaseFoldZKProverChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
 
-pub mod replay_channel;
 mod zk_wrapped_prover_channel;
 
-pub use replay_channel::ReplayChannel;
 pub use zk_wrapped_prover_channel::ZKWrappedProverChannel;

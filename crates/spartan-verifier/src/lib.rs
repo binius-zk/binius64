@@ -197,13 +197,16 @@ impl<F: Field> IOPVerifier<F> {
 			]
 			.concat();
 
-			let mul_constraints = cs.mul_constraints();
+			// Own the constraints so the closure is `'static` (it is stored in a recorded gate
+			// sequence and replayed per call). The clone is once per verify — negligible next to
+			// the surrounding sumcheck/FRI work.
+			let mul_constraints = cs.mul_constraints().to_vec();
 			channel.compute_public_value(&inputs, move |vals| {
 				let public_vals = &vals[..public_len];
 				let lambda_val = vals[public_len];
 				let r_x_tensor_vals = &vals[public_len + 1..];
 				evaluate_wiring_mle_public(
-					mul_constraints,
+					&mul_constraints,
 					public_vals,
 					lambda_val,
 					r_x_tensor_vals,

@@ -17,13 +17,11 @@ use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFl
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, ConstraintBuilder, WitnessGenerator},
 	circuits::powers,
-	compiler::compile,
+	compiler::{compile, compile_ir},
 	constraint_system::BlindingInfo,
+	gate::GateRecordingConstraintBuilder,
 };
-use binius_spartan_prover::{
-	IOPProver,
-	wrapper::{ReplayChannel, ZKWrappedProverChannel},
-};
+use binius_spartan_prover::{IOPProver, wrapper::ZKWrappedProverChannel};
 use binius_spartan_verifier::{
 	IOPVerifier, SECURITY_BITS,
 	config::StdChallenger,
@@ -69,15 +67,18 @@ fn test_zk_wrapped_prove_verify() {
 	// === Step 3: Symbolically execute verify to build the outer constraint system ===
 	let inner_public_size = 1 << inner_cs.log_public();
 
-	let mut builder_channel = IronSpartanBuilderChannel::new();
+	let mut builder_channel =
+		IronSpartanBuilderChannel::new(GateRecordingConstraintBuilder::<B128>::new());
 	let dummy_public = vec![B128::ZERO; inner_public_size];
 	let dummy_public_elems = builder_channel.observe_many(&dummy_public);
 	// IronSpartanBuilderChannel::Oracle = () and recv_oracle is a no-op, so pass () directly.
 	inner_iop_verifier
 		.verify((), dummy_public_elems, &mut builder_channel)
 		.expect("symbolic verify failed");
-	let outer_builder = builder_channel.finish();
-	let (outer_cs, outer_layout) = compile(outer_builder);
+	// A GateRecordingConstraintBuilder backend yields both the constraint system IR and the
+	// replayable gate sequence the prover uses to fill the outer witness.
+	let (outer_ir, outer_gate_seq) = builder_channel.finish().into_parts();
+	let (outer_cs, outer_layout) = compile_ir(outer_ir);
 
 	// === Step 4: Build outer padded constraint system ===
 	let log_inv_rate = 1;
@@ -142,23 +143,8 @@ fn test_zk_wrapped_prove_verify() {
 	prover_transcript.observe().write_slice(&public);
 
 	let basefold_channel = zk_basefold_prover.create_channel(&mut prover_transcript, &mut rng);
-	let mut wrapped_prover_channel = ZKWrappedProverChannel::new(
-		basefold_channel,
-		&outer_iop_prover,
-		&outer_layout,
-		&mut rng,
-		{
-			let inner_iop_verifier = &inner_iop_verifier;
-			let public = &public;
-			move |replay_channel: &mut ReplayChannel<'_, B128>| {
-				let inner_public_elems = replay_channel.observe_many(public);
-				// ReplayChannel::Oracle = () and recv_oracle is a no-op, so pass ().
-				inner_iop_verifier
-					.verify((), inner_public_elems, replay_channel)
-					.expect("replay verification should not fail");
-			}
-		},
-	);
+	let mut wrapped_prover_channel =
+		ZKWrappedProverChannel::new(basefold_channel, &outer_iop_prover, &outer_layout, &mut rng);
 
 	// Observe public input through the wrapped channel.
 	(&mut wrapped_prover_channel).observe_many(&public);
@@ -179,9 +165,10 @@ fn test_zk_wrapped_prove_verify() {
 		)
 		.expect("inner prove failed");
 
-	// Finish runs the outer proof.
+	// Finish replays the recorded gate sequence to fill the outer witness, then runs the outer
+	// proof.
 	wrapped_prover_channel
-		.finish(rng)
+		.finish(&outer_gate_seq, rng)
 		.expect("outer prove failed");
 
 	// === Step 8: Verify with ZKWrappedVerifierChannel ===

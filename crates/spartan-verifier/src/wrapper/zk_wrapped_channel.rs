@@ -216,13 +216,16 @@ where
 	fn compute_public_value(
 		&mut self,
 		inputs: &[Self::Elem],
-		f: impl FnOnce(&[F]) -> F,
+		f: impl Fn(&[F]) -> F + 'static,
 	) -> Self::Elem {
-		// The closure's result enters as a single inout wire (matching the symbolic builder), whose
-		// value the verifier computes natively from the public-derived inputs. See
-		// `IronSpartanBuilderChannel::compute_public_value`.
+		// The closure's result is a derived public wire (matching the symbolic builder), whose
+		// value the verifier computes natively from the public-derived inputs. It is derived, not
+		// inout, so it sorts after the transcript inout wires; the wire id stays aligned with the
+		// symbolic `IronSpartanBuilderChannel::compute_public_value`, which allocates a derived
+		// wire too.
 		let value = f(&extract_public_values(inputs));
-		self.alloc_inout_elem(value)
+		let public_wire = self.instance_gen.borrow_mut().write_compute_public(value);
+		CircuitElem::wire(&self.instance_gen, public_wire)
 	}
 }
 
