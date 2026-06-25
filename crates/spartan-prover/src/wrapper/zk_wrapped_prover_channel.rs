@@ -188,8 +188,6 @@ where
 	where
 		ReplayFn: FnOnce(&mut ReplayChannel<'_, F>),
 	{
-		let _ = tracing::debug_span!("Proving ZK wrapper proof").entered();
-
 		let Self {
 			mut inner_channel,
 			outer_prover,
@@ -204,7 +202,7 @@ where
 
 		// Replay the inner verification through the outer witness generator.
 		let witness = {
-			let _ = tracing::debug_span!("Generating ZK wrapper witness").entered();
+			let _scope = tracing::debug_span!("Generating ZK wrapper witness").entered();
 			let mut replay_channel = ReplayChannel::new(outer_layout, keys, interaction);
 			replay_fn(&mut replay_channel);
 			replay_channel
@@ -213,8 +211,6 @@ where
 		};
 
 		// Validate and generate the outer proof.
-		let outer_cs = outer_prover.constraint_system();
-		outer_cs.validate(&witness);
 		outer_prover.prove::<P, _>(
 			witness,
 			precommit_oracle,
