@@ -4,7 +4,7 @@ use bytemuck::TransparentWrapper;
 
 use crate::{
 	arch::PairwiseStrategy,
-	arithmetic_traits::{InvertOrZero, Square, TaggedInvertOrZero, TaggedSquare},
+	arithmetic_traits::{InvertOrZero, Square, TaggedInvertOrZero},
 	packed::PackedField,
 };
 
@@ -28,18 +28,19 @@ impl<PT: PackedField> std::ops::Mul for Pairwise<PT> {
 	}
 }
 
-impl<PT: PackedField> TaggedSquare<PairwiseStrategy> for PT
+impl<PT: PackedField> Square for Pairwise<PT>
 where
 	PT::Scalar: Square,
 {
 	#[inline]
 	fn square(self) -> Self {
-		if PT::WIDTH == 1 {
+		let val = Self::peel(self);
+		Self::wrap(if PT::WIDTH == 1 {
 			// fallback to be able to benchmark this strategy
-			Square::square(self)
+			Square::square(val)
 		} else {
-			Self::from_fn(|i| Square::square(self.get(i)))
-		}
+			PT::from_fn(|i| Square::square(val.get(i)))
+		})
 	}
 }
 

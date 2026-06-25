@@ -1,6 +1,8 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use bytemuck::TransparentWrapper;
+
 use super::{
 	m128::M128,
 	simd_arithmetic::{VmullWideMul, packed_aes_16x8b_invert_or_zero, packed_aes_16x8b_square},
@@ -8,15 +10,15 @@ use super::{
 use crate::{
 	aes_field::AESTowerField8b,
 	arch::PackedPrimitiveType,
-	arithmetic_traits::{TaggedInvertOrZero, TaggedSquare},
+	arithmetic_traits::{Square, TaggedInvertOrZero},
 	underlier::WithUnderlier,
 };
 
 /// Widening-multiply wrapper used by the AES packing: the `vmull_p8`-backed `VmullWideMul`.
 pub type AesWideMul16x<T> = VmullWideMul<T>;
 
-/// Square strategy for the `PackedAESBinaryField16x8b` packing.
-pub type AesSquare16x = AesStrategy;
+/// Square wrapper for the `PackedAESBinaryField16x8b` packing.
+pub type AesSquare16x<T> = Aes<T>;
 
 /// Invert strategy for the `PackedAESBinaryField16x8b` packing.
 pub type AesInvert16x = AesStrategy;
@@ -24,10 +26,15 @@ pub type AesInvert16x = AesStrategy;
 /// Strategy for aarch64 AES square/invert, both backed by `vqtbl` lookup tables.
 pub struct AesStrategy;
 
-impl TaggedSquare<AesStrategy> for PackedPrimitiveType<M128, AESTowerField8b> {
+/// Square wrapper for aarch64 AES, backed by `vqtbl` lookup tables.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct Aes<T>(T);
+
+impl Square for Aes<PackedPrimitiveType<M128, AESTowerField8b>> {
 	#[inline]
 	fn square(self) -> Self {
-		self.mutate_underlier(packed_aes_16x8b_square)
+		Self::wrap(Self::peel(self).mutate_underlier(packed_aes_16x8b_square))
 	}
 }
 

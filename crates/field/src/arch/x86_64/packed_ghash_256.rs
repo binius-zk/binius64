@@ -25,12 +25,12 @@ pub type GhashWideMul2x<T> = crate::arch::x86_64::arithmetic::ghash::GhashClMulW
 #[cfg(not(target_feature = "vpclmulqdq"))]
 pub type GhashWideMul2x<T> = Scaled2xWideMul<T>;
 
-/// Square strategy for the GHASH packing: a full-width CLMUL square when VPCLMULQDQ is available,
+/// Square wrapper for the GHASH packing: a full-width CLMUL square when VPCLMULQDQ is available,
 /// otherwise divide into 128-bit lanes and square each (the 1×128b GHASH square uses PCLMULQDQ).
 #[cfg(target_feature = "vpclmulqdq")]
-pub type GhashSquare2x = crate::arch::x86_64::arithmetic::ghash::GhashClMulSquareStrategy;
+pub type GhashSquare2x<T> = crate::arch::x86_64::arithmetic::ghash::GhashClMulSquare<T>;
 #[cfg(not(target_feature = "vpclmulqdq"))]
-pub type GhashSquare2x = crate::arch::DivideStrategy<M128>;
+pub type GhashSquare2x<T> = crate::arch::Divide<M128, T>;
 
 /// Invert strategy for the `PackedBinaryGhash2x128b` packing.
 pub type GhashInvert2x = Ghash256Strategy;

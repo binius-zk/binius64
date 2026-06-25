@@ -28,13 +28,13 @@ pub type GhashWideMul4x<T> = ghash::GhashClMulWideMul<T>;
 #[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
 pub type GhashWideMul4x<T> = Scaled4xWideMul<T>;
 
-/// Square strategy for the GHASH packing: a full-width CLMUL square when VPCLMULQDQ + AVX-512 are
+/// Square wrapper for the GHASH packing: a full-width CLMUL square when VPCLMULQDQ + AVX-512 are
 /// available, otherwise divide into 128-bit lanes and square each (the 1×128b GHASH square uses
 /// PCLMULQDQ).
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
-pub type GhashSquare4x = ghash::GhashClMulSquareStrategy;
+pub type GhashSquare4x<T> = ghash::GhashClMulSquare<T>;
 #[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
-pub type GhashSquare4x = crate::arch::DivideStrategy<M128>;
+pub type GhashSquare4x<T> = crate::arch::Divide<M128, T>;
 
 /// Invert strategy for the `PackedBinaryGhash4x128b` packing.
 pub type GhashInvert4x = Ghash512Strategy;

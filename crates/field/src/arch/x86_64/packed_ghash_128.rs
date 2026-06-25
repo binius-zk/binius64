@@ -7,6 +7,7 @@
 //! available on modern x86_64 processors. The implementation follows the algorithm
 //! described in the GHASH specification with polynomial x^128 + x^7 + x^2 + x + 1.
 
+use bytemuck::TransparentWrapper;
 use cfg_if::cfg_if;
 
 use super::m128::M128;
@@ -18,7 +19,7 @@ use crate::arch::x86_64::arithmetic::ghash;
 use crate::{
 	BinaryField128bGhash,
 	arch::PackedPrimitiveType,
-	arithmetic_traits::{TaggedInvertOrZero, TaggedSquare},
+	arithmetic_traits::{Square, TaggedInvertOrZero},
 };
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
@@ -30,8 +31,8 @@ pub type GhashWideMul1x<T> = ghash::GhashClMulWideMul<T>;
 #[cfg(not(target_feature = "pclmulqdq"))]
 pub type GhashWideMul1x<T> = crate::arch::portable::arithmetic::ghash::GhashWideMul<T>;
 
-/// Square strategy for the `PackedBinaryGhash1x128b` packing.
-pub type GhashSquare1x = GhashStrategy;
+/// Square wrapper for the `PackedBinaryGhash1x128b` packing.
+pub type GhashSquare1x<T> = Ghash<T>;
 
 /// Invert strategy for the `PackedBinaryGhash1x128b` packing.
 pub type GhashInvert1x = GhashStrategy;
@@ -82,24 +83,33 @@ impl ghash::ClMulUnderlier for M128 {
 /// Strategy for x86_64 GHASH field arithmetic operations.
 pub struct GhashStrategy;
 
-// Implement TaggedSquare for GhashStrategy
+/// Square wrapper for x86_64 GHASH field arithmetic.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct Ghash<T>(T);
+
+// Implement Square for the GHASH packing
 cfg_if! {
 	if #[cfg(target_feature = "pclmulqdq")] {
-		impl TaggedSquare<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
+		impl Square for Ghash<PackedPrimitiveType<M128, BinaryField128bGhash>> {
 			#[inline]
 			fn square(self) -> Self {
-				Self::from_underlier(crate::arch::x86_64::arithmetic::ghash::square_clmul(
-					self.to_underlier(),
+				Self::wrap(PackedPrimitiveType::from_underlier(
+					crate::arch::x86_64::arithmetic::ghash::square_clmul(
+						Self::peel(self).to_underlier(),
+					),
 				))
 			}
 		}
 	} else {
-		impl TaggedSquare<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
+		impl Square for Ghash<PackedPrimitiveType<M128, BinaryField128bGhash>> {
 			#[inline]
 			fn square(self) -> Self {
 				use super::super::portable::arithmetic::ghash::ghash_square;
 
-				Self::from_underlier(ghash_square(self.to_underlier()))
+				Self::wrap(PackedPrimitiveType::from_underlier(ghash_square(
+					Self::peel(self).to_underlier(),
+				)))
 			}
 		}
 	}

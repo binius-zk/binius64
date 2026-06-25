@@ -2,5 +2,5 @@
 // Copyright 2026 The Binius Developers
 
 pub type AesWideMul16x<T> = crate::arch::ElementwiseWideMul<T>;
-pub type AesSquare16x = crate::arch::PairwiseTableStrategy;
+pub type AesSquare16x<T> = crate::arch::PairwiseTable<T>;
 pub type AesInvert16x = crate::arch::PairwiseTableStrategy;

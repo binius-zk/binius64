@@ -12,7 +12,7 @@ use super::packed::PackedPrimitiveType;
 use crate::{
 	BinaryField,
 	arch::{M128, ScaledStrategy},
-	arithmetic_traits::{InvertOrZero, Square, TaggedInvertOrZero, TaggedSquare, WideMul},
+	arithmetic_traits::{InvertOrZero, Square, TaggedInvertOrZero, WideMul},
 	underlier::{Divisible, ScaledUnderlier, UnderlierType},
 };
 
@@ -40,15 +40,16 @@ where
 	}
 }
 
-impl<U: UnderlierType + Pod, Scalar: BinaryField, const N: usize> TaggedSquare<ScaledStrategy>
-	for PackedPrimitiveType<ScaledUnderlier<U, N>, Scalar>
+impl<U: UnderlierType + Pod, Scalar: BinaryField, const N: usize> Square
+	for Scaled<PackedPrimitiveType<ScaledUnderlier<U, N>, Scalar>>
 where
 	PackedPrimitiveType<U, Scalar>: Square,
 {
 	fn square(self) -> Self {
-		Self::wrap(ScaledUnderlier(self.0.0.map(|sub_underlier| {
+		let val = Self::peel(self);
+		Self::wrap(PackedPrimitiveType::wrap(ScaledUnderlier(val.0.0.map(|sub_underlier| {
 			PackedPrimitiveType::peel(Square::square(PackedPrimitiveType::wrap(sub_underlier)))
-		})))
+		}))))
 	}
 }
 

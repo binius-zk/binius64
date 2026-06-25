@@ -7,19 +7,21 @@
 //! Based on the optimized GHASH implementation using carryless multiplication
 //! instructions available on ARMv8 processors with NEON support.
 
+use bytemuck::TransparentWrapper;
+
 use super::m128::M128;
 use crate::{
 	BinaryField128bGhash,
 	arch::PackedPrimitiveType,
-	arithmetic_traits::{TaggedInvertOrZero, TaggedSquare},
+	arithmetic_traits::{Square, TaggedInvertOrZero},
 };
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
 /// `GhashClMulWideMul`.
 pub type GhashWideMul1x<T> = super::arithmetic::ghash::GhashClMulWideMul<T>;
 
-/// Square strategy for the `PackedBinaryGhash1x128b` packing.
-pub type GhashSquare1x = GhashStrategy;
+/// Square wrapper for the `PackedBinaryGhash1x128b` packing.
+pub type GhashSquare1x<T> = Ghash<T>;
 
 /// Invert strategy for the `PackedBinaryGhash1x128b` packing.
 pub type GhashInvert1x = GhashStrategy;
@@ -27,11 +29,17 @@ pub type GhashInvert1x = GhashStrategy;
 /// Strategy for aarch64 GHASH field arithmetic operations.
 pub struct GhashStrategy;
 
-// Implement TaggedSquare for GhashStrategy
-impl TaggedSquare<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
+/// Square wrapper for aarch64 GHASH field arithmetic.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct Ghash<T>(T);
+
+impl Square for Ghash<PackedPrimitiveType<M128, BinaryField128bGhash>> {
 	#[inline]
 	fn square(self) -> Self {
-		Self::from_underlier(super::arithmetic::ghash::square_clmul(self.to_underlier()))
+		Self::wrap(PackedPrimitiveType::from_underlier(super::arithmetic::ghash::square_clmul(
+			Self::peel(self).to_underlier(),
+		)))
 	}
 }
 

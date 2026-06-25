@@ -137,17 +137,16 @@ macro_rules! impl_mul_with {
 
 pub(crate) use impl_mul_with;
 
-/// Square operation that is parameterized with some some strategy.
-pub trait TaggedSquare<Strategy> {
-	fn square(self) -> Self;
-}
-
 macro_rules! impl_square_with {
-	($name:ident @ $strategy:ty) => {
+	($name:ident @ $($strategy:tt)*) => {
 		impl $crate::arithmetic_traits::Square for $name {
 			#[inline]
 			fn square(self) -> Self {
-				$crate::arithmetic_traits::TaggedSquare::<$strategy>::square(self)
+				<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::peel(
+					$crate::arithmetic_traits::Square::square(
+						<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::wrap(self),
+					),
+				)
 			}
 		}
 	};

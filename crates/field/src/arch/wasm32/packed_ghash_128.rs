@@ -9,6 +9,8 @@
 
 use std::arch::wasm32::*;
 
+use bytemuck::TransparentWrapper;
+
 use super::{super::portable::packed::PackedPrimitiveType, m128::M128};
 use crate::{
 	BinaryField128bGhash,
@@ -19,7 +21,7 @@ use crate::{
 			univariate_mul_utils_128::{Underlier128bLanes, spread_bits_64},
 		},
 	},
-	arithmetic_traits::{TaggedInvertOrZero, TaggedSquare, impl_transformation_with_strategy},
+	arithmetic_traits::{Square, TaggedInvertOrZero, impl_transformation_with_strategy},
 };
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring portable
@@ -27,8 +29,8 @@ use crate::{
 /// implements [`Underlier128bLanes`], so the portable schoolbook widening multiply applies.
 pub type GhashWideMul1x<T> = crate::arch::portable::arithmetic::ghash::GhashWideMul<T>;
 
-/// Square strategy for the `PackedBinaryGhash1x128b` packing.
-pub type GhashSquare1x = GhashStrategy;
+/// Square wrapper for the `PackedBinaryGhash1x128b` packing.
+pub type GhashSquare1x<T> = Ghash<T>;
 
 /// Invert strategy for the `PackedBinaryGhash1x128b` packing.
 pub type GhashInvert1x = GhashStrategy;
@@ -65,11 +67,16 @@ impl Underlier128bLanes for M128 {
 	}
 }
 
-impl TaggedSquare<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
+/// Square wrapper for WASM32 GHASH field arithmetic.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct Ghash<T>(T);
+
+impl Square for Ghash<PackedPrimitiveType<M128, BinaryField128bGhash>> {
 	#[inline]
 	fn square(self) -> Self {
-		Self::from_underlier(crate::arch::portable::arithmetic::ghash::ghash_square(
-			self.to_underlier(),
+		Self::wrap(PackedPrimitiveType::from_underlier(
+			crate::arch::portable::arithmetic::ghash::ghash_square(Self::peel(self).to_underlier()),
 		))
 	}
 }

@@ -2,13 +2,22 @@
 
 use std::ops::Mul;
 
-use crate::{arch::ReuseMultiplyStrategy, arithmetic_traits::TaggedSquare};
+use bytemuck::TransparentWrapper;
 
-impl<T> TaggedSquare<ReuseMultiplyStrategy> for T
+use crate::arithmetic_traits::Square;
+
+/// Square wrapper that reuses the type's own multiplication: `square(x) = x * x`.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct ReuseMultiply<T>(T);
+
+impl<T> Square for ReuseMultiply<T>
 where
-	T: Mul<Self, Output = Self> + Copy,
+	T: Mul<T, Output = T> + Copy,
 {
+	#[inline]
 	fn square(self) -> Self {
-		self * self
+		let val = Self::peel(self);
+		Self::wrap(val * val)
 	}
 }

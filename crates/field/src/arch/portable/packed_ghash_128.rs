@@ -3,6 +3,8 @@
 
 //! Portable implementation of packed GHASH field operations.
 
+use bytemuck::TransparentWrapper;
+
 use super::{
 	arithmetic::{ghash::ghash_square, itoh_tsujii::invert_b128},
 	m128::M128,
@@ -10,15 +12,15 @@ use super::{
 };
 use crate::{
 	arch::PackedPrimitiveType,
-	arithmetic_traits::{TaggedInvertOrZero, TaggedSquare},
+	arithmetic_traits::{Square, TaggedInvertOrZero},
 	ghash::BinaryField128bGhash,
 };
 
 /// Widening-multiply wrapper used by the `PackedBinaryGhash1x128b` packing.
 pub type GhashWideMul1x<T> = super::arithmetic::ghash::GhashWideMul<T>;
 
-/// Square strategy for the `PackedBinaryGhash1x128b` packing.
-pub type GhashSquare1x = GhashStrategy;
+/// Square wrapper for the `PackedBinaryGhash1x128b` packing.
+pub type GhashSquare1x<T> = Ghash<T>;
 
 /// Invert strategy for the `PackedBinaryGhash1x128b` packing.
 pub type GhashInvert1x = GhashStrategy;
@@ -52,10 +54,15 @@ impl Underlier128bLanes for M128 {
 	}
 }
 
-impl TaggedSquare<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
+/// Square wrapper for portable GHASH field arithmetic.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct Ghash<T>(T);
+
+impl Square for Ghash<PackedPrimitiveType<M128, BinaryField128bGhash>> {
 	#[inline]
 	fn square(self) -> Self {
-		ghash_square(self.0).into()
+		Self::wrap(ghash_square(Self::peel(self).0).into())
 	}
 }
 

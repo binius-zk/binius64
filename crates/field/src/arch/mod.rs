@@ -56,6 +56,8 @@ pub use portable::{
 	packed_aes_8,
 	packed_aes_8::{AesInvert1x, AesSquare1x, AesWideMul1x},
 	pairwise_arithmetic::Pairwise,
+	pairwise_table_arithmetic::PairwiseTable,
+	reuse_multiply_arithmetic::ReuseMultiply,
 	scaled_arithmetic::Scaled,
 };
 pub use strategies::*;

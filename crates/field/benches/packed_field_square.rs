@@ -18,20 +18,45 @@ fn square_main<T: PackedField>(val: T) -> T {
 cfg_if! {
 	if #[cfg(feature = "benchmark_alternative_strategies")] {
 		use binius_field::{
-			arch::{PackedStrategy, PairwiseStrategy, PairwiseTableStrategy},
-			arithmetic_traits::TaggedSquare
+			arch::{Pairwise, PairwiseTable},
+			arithmetic_traits::Square,
 		};
+		use bytemuck::TransparentWrapper;
 
-		fn square_pairwise<T: TaggedSquare<PairwiseStrategy>>(val: T) -> T {
-			val.square()
+		/// Marker trait for packed types whose `Pairwise` wrapper supports squaring.
+		trait PairwiseSquare: Sized {
+			fn pairwise_square(self) -> Self;
+		}
+		impl<T> PairwiseSquare for T
+		where
+			Pairwise<T>: Square,
+		{
+			#[inline]
+			fn pairwise_square(self) -> Self {
+				Pairwise::peel(Square::square(Pairwise::wrap(self)))
+			}
 		}
 
-		fn square_pairwise_table<T: TaggedSquare<PairwiseTableStrategy>>(val: T) -> T {
-			val.square()
+		/// Marker trait for packed types whose `PairwiseTable` wrapper supports squaring.
+		trait PairwiseTableSquare: Sized {
+			fn pairwise_table_square(self) -> Self;
+		}
+		impl<T> PairwiseTableSquare for T
+		where
+			PairwiseTable<T>: Square,
+		{
+			#[inline]
+			fn pairwise_table_square(self) -> Self {
+				PairwiseTable::peel(Square::square(PairwiseTable::wrap(self)))
+			}
 		}
 
-		fn square_packed<T: TaggedSquare<PackedStrategy>>(val: T) -> T {
-			val.square()
+		fn square_pairwise<T: PairwiseSquare>(val: T) -> T {
+			val.pairwise_square()
+		}
+
+		fn square_pairwise_table<T: PairwiseTableSquare>(val: T) -> T {
+			val.pairwise_table_square()
 		}
 
 		benchmark_packed_operation!(
@@ -39,9 +64,8 @@ cfg_if! {
 			bench_type @ unary_op,
 			strategies @ (
 				(main, PackedField, square_main),
-				(pairwise, TaggedSquare::<PairwiseStrategy>, square_pairwise),
-				(pairwise_table, TaggedSquare::<PairwiseTableStrategy>, square_pairwise_table),
-				(packed, TaggedSquare::<PackedStrategy>, square_packed),
+				(pairwise, PairwiseSquare, square_pairwise),
+				(pairwise_table, PairwiseTableSquare, square_pairwise_table),
 			)
 		);
 	} else {
