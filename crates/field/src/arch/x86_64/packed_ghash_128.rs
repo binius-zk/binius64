@@ -19,7 +19,7 @@ use crate::arch::x86_64::arithmetic::ghash;
 use crate::{
 	BinaryField128bGhash,
 	arch::PackedPrimitiveType,
-	arithmetic_traits::{Square, TaggedInvertOrZero},
+	arithmetic_traits::{InvertOrZero, Square},
 };
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
@@ -34,8 +34,8 @@ pub type GhashWideMul1x<T> = crate::arch::portable::arithmetic::ghash::GhashWide
 /// Square wrapper for the `PackedBinaryGhash1x128b` packing.
 pub type GhashSquare1x<T> = Ghash<T>;
 
-/// Invert strategy for the `PackedBinaryGhash1x128b` packing.
-pub type GhashInvert1x = GhashStrategy;
+/// Invert wrapper for the `PackedBinaryGhash1x128b` packing.
+pub type GhashInvert1x<T> = Ghash<T>;
 
 /// `Underlier128bLanes` for x86_64 `M128` — required for the portable `GhashWideMul` fallback.
 ///
@@ -80,9 +80,6 @@ impl ghash::ClMulUnderlier for M128 {
 	}
 }
 
-/// Strategy for x86_64 GHASH field arithmetic operations.
-pub struct GhashStrategy;
-
 /// Square wrapper for x86_64 GHASH field arithmetic.
 #[repr(transparent)]
 #[derive(TransparentWrapper)]
@@ -115,10 +112,10 @@ cfg_if! {
 	}
 }
 
-// Implement TaggedInvertOrZero for GhashStrategy (Itoh-Tsujii — no CLMUL invert)
-impl TaggedInvertOrZero<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
+// Implement InvertOrZero for the GHASH packing (Itoh-Tsujii — no CLMUL invert)
+impl InvertOrZero for Ghash<PackedPrimitiveType<M128, BinaryField128bGhash>> {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
-		crate::arch::invert_b128(self)
+		Self::wrap(crate::arch::invert_b128(Self::peel(self)))
 	}
 }

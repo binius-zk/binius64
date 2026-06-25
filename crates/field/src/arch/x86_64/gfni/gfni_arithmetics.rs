@@ -5,11 +5,8 @@ use bytemuck::TransparentWrapper;
 
 use crate::{
 	AESTowerField8b,
-	arch::{
-		GfniStrategy, portable::packed::PackedPrimitiveType,
-		x86_64::simd::simd_arithmetic::TowerSimdType,
-	},
-	arithmetic_traits::{TaggedInvertOrZero, WideMul},
+	arch::{portable::packed::PackedPrimitiveType, x86_64::simd::simd_arithmetic::TowerSimdType},
+	arithmetic_traits::{InvertOrZero, WideMul},
 	underlier::UnderlierType,
 };
 
@@ -70,18 +67,16 @@ impl<U: GfniType + UnderlierType> WideMul for GfniWideMul<PackedPrimitiveType<U,
 	}
 }
 
-impl<U: GfniType + UnderlierType> TaggedInvertOrZero<GfniStrategy>
-	for PackedPrimitiveType<U, AESTowerField8b>
-{
+impl<U: GfniType + UnderlierType> InvertOrZero for Gfni<PackedPrimitiveType<U, AESTowerField8b>> {
 	#[inline(always)]
 	fn invert_or_zero(self) -> Self {
-		let val_gfni = self.to_underlier();
+		let val_gfni = Self::peel(self).to_underlier();
 
 		// Calculate inversion and linear transformation to the original field with a single
 		// instruction
 		let transform_after = U::set_epi_64(IDENTITY_MAP);
 		let inv_gfni = U::gf2p8affineinv_epi64_epi8(val_gfni, transform_after);
 
-		inv_gfni.into()
+		Self::wrap(inv_gfni.into())
 	}
 }

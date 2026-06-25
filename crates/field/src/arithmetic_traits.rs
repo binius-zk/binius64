@@ -107,6 +107,10 @@ pub trait InvertOrZero {
 	}
 }
 
+// The `@ strategy` arm wires `$name`'s `Mul` to a strategy wrapper: a `TransparentWrapper` struct
+// (e.g. `Pairwise`, `MulFromWideMul`) that carries the actual algorithm. We wrap the inputs, run
+// the wrapper's `Mul`, and peel the result. `$strategy` is captured as raw token-trees (not
+// `:ty`/`:path`) because a matched type fragment is opaque and can't have `<$name>` appended to it.
 macro_rules! impl_mul_with {
 	($name:ident @ $($strategy:tt)*) => {
 		impl std::ops::Mul for $name {
@@ -162,17 +166,16 @@ macro_rules! impl_square_with {
 
 pub(crate) use impl_square_with;
 
-/// Invert or zero operation that is parameterized with some some strategy.
-pub trait TaggedInvertOrZero<Strategy> {
-	fn invert_or_zero(self) -> Self;
-}
-
 macro_rules! impl_invert_with {
-	($name:ident @ $strategy:ty) => {
+	($name:ident @ $($strategy:tt)*) => {
 		impl $crate::arithmetic_traits::InvertOrZero for $name {
 			#[inline]
 			fn invert_or_zero(self) -> Self {
-				$crate::arithmetic_traits::TaggedInvertOrZero::<$strategy>::invert_or_zero(self)
+				<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::peel(
+					$crate::arithmetic_traits::InvertOrZero::invert_or_zero(
+						<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::wrap(self),
+					),
+				)
 			}
 		}
 	};

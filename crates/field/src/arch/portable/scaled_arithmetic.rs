@@ -11,8 +11,8 @@ use bytemuck::{Pod, TransparentWrapper};
 use super::packed::PackedPrimitiveType;
 use crate::{
 	BinaryField,
-	arch::{M128, ScaledStrategy},
-	arithmetic_traits::{InvertOrZero, Square, TaggedInvertOrZero, WideMul},
+	arch::M128,
+	arithmetic_traits::{InvertOrZero, Square, WideMul},
 	underlier::{Divisible, ScaledUnderlier, UnderlierType},
 };
 
@@ -53,17 +53,18 @@ where
 	}
 }
 
-impl<U: UnderlierType + Pod, Scalar: BinaryField, const N: usize> TaggedInvertOrZero<ScaledStrategy>
-	for PackedPrimitiveType<ScaledUnderlier<U, N>, Scalar>
+impl<U: UnderlierType + Pod, Scalar: BinaryField, const N: usize> InvertOrZero
+	for Scaled<PackedPrimitiveType<ScaledUnderlier<U, N>, Scalar>>
 where
 	PackedPrimitiveType<U, Scalar>: InvertOrZero,
 {
 	fn invert_or_zero(self) -> Self {
-		Self::wrap(ScaledUnderlier(self.0.0.map(|sub_underlier| {
+		let val = Self::peel(self);
+		Self::wrap(PackedPrimitiveType::wrap(ScaledUnderlier(val.0.0.map(|sub_underlier| {
 			PackedPrimitiveType::peel(InvertOrZero::invert_or_zero(PackedPrimitiveType::wrap(
 				sub_underlier,
 			)))
-		})))
+		}))))
 	}
 }
 

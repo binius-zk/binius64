@@ -21,7 +21,7 @@ use crate::{
 			univariate_mul_utils_128::{Underlier128bLanes, spread_bits_64},
 		},
 	},
-	arithmetic_traits::{Square, TaggedInvertOrZero, impl_transformation_with_strategy},
+	arithmetic_traits::{InvertOrZero, Square, impl_transformation_with_strategy},
 };
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring portable
@@ -32,11 +32,8 @@ pub type GhashWideMul1x<T> = crate::arch::portable::arithmetic::ghash::GhashWide
 /// Square wrapper for the `PackedBinaryGhash1x128b` packing.
 pub type GhashSquare1x<T> = Ghash<T>;
 
-/// Invert strategy for the `PackedBinaryGhash1x128b` packing.
-pub type GhashInvert1x = GhashStrategy;
-
-/// Strategy for WASM32 GHASH field arithmetic operations.
-pub struct GhashStrategy;
+/// Invert wrapper for the `PackedBinaryGhash1x128b` packing.
+pub type GhashInvert1x<T> = Ghash<T>;
 
 // Define broadcast
 impl_broadcast!(M128, BinaryField128bGhash);
@@ -81,10 +78,10 @@ impl Square for Ghash<PackedPrimitiveType<M128, BinaryField128bGhash>> {
 	}
 }
 
-impl TaggedInvertOrZero<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
+impl InvertOrZero for Ghash<PackedPrimitiveType<M128, BinaryField128bGhash>> {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
-		crate::arch::invert_b128(self)
+		Self::wrap(crate::arch::invert_b128(Self::peel(self)))
 	}
 }
 

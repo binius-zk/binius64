@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{
 	arch::PackedPrimitiveType,
-	arithmetic_traits::{Square, TaggedInvertOrZero},
+	arithmetic_traits::{InvertOrZero, Square},
 	ghash::BinaryField128bGhash,
 };
 
@@ -22,11 +22,8 @@ pub type GhashWideMul1x<T> = super::arithmetic::ghash::GhashWideMul<T>;
 /// Square wrapper for the `PackedBinaryGhash1x128b` packing.
 pub type GhashSquare1x<T> = Ghash<T>;
 
-/// Invert strategy for the `PackedBinaryGhash1x128b` packing.
-pub type GhashInvert1x = GhashStrategy;
-
-/// Strategy for GHASH field arithmetic operations.
-pub struct GhashStrategy;
+/// Invert wrapper for the `PackedBinaryGhash1x128b` packing.
+pub type GhashInvert1x<T> = Ghash<T>;
 
 // `M128` packs its GHASH 64-bit lanes the same way `u128` does — delegate through `u128`.
 impl Underlier128bLanes for M128 {
@@ -66,13 +63,15 @@ impl Square for Ghash<PackedPrimitiveType<M128, BinaryField128bGhash>> {
 	}
 }
 
-impl TaggedInvertOrZero<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
+impl InvertOrZero for Ghash<PackedPrimitiveType<M128, BinaryField128bGhash>> {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
 		// This portable type's underlier is the portable `M128`, which on SIMD targets differs from
 		// `BinaryField128bGhash`'s underlier, so it is not `Divisible<BinaryField128bGhash>`. As a
 		// width-1 packing, bridge through the scalar (whose inverse is also Itoh-Tsujii).
-		let scalar = BinaryField128bGhash::new(self.to_underlier().into());
-		Self::from_underlier(M128::from_u128(u128::from(invert_b128(scalar))))
+		let scalar = BinaryField128bGhash::new(Self::peel(self).to_underlier().into());
+		Self::wrap(PackedPrimitiveType::from_underlier(M128::from_u128(u128::from(invert_b128(
+			scalar,
+		)))))
 	}
 }

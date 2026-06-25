@@ -7,8 +7,7 @@ use super::packed::PackedPrimitiveType;
 use crate::{
 	AESTowerField8b,
 	aes_field::aes_mul_8b,
-	arch::PairwiseTableStrategy,
-	arithmetic_traits::{Square, TaggedInvertOrZero, WideMul},
+	arithmetic_traits::{InvertOrZero, Square, WideMul},
 	packed::PackedField,
 	underlier::UnderlierType,
 };
@@ -63,22 +62,6 @@ where
 	}
 }
 
-/// Implement unary operation with a table search
-macro_rules! impl_unary_ops {
-	($tagged_op_type:ident, $method_name:ident, $table:ident, $field:ty) => {
-		impl<U: UnderlierType> $tagged_op_type<PairwiseTableStrategy>
-			for PackedPrimitiveType<U, $field>
-		where
-			Self: PackedField<Scalar = $field>,
-		{
-			#[inline(always)]
-			fn $method_name(self) -> Self {
-				unary_op_with_table(self, &$table)
-			}
-		}
-	};
-}
-
 #[rustfmt::skip]
 const AES_TOWER_8B_SQUARE_MAP: [u8; 256] = [
     0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15, 0x40, 0x41, 0x44, 0x45, 0x50, 0x51, 0x54, 0x55,
@@ -119,7 +102,15 @@ const AES_TOWER_8B_INVERT_MAP: [u8; 256] = [
     0x5b, 0x23, 0x38, 0x34, 0x68, 0x46, 0x03, 0x8c, 0xdd, 0x9c, 0x7d, 0xa0, 0xcd, 0x1a, 0x41, 0x1c,
 ];
 
-impl_unary_ops!(TaggedInvertOrZero, invert_or_zero, AES_TOWER_8B_INVERT_MAP, AESTowerField8b);
+impl<U: UnderlierType> InvertOrZero for PairwiseTable<PackedPrimitiveType<U, AESTowerField8b>>
+where
+	PackedPrimitiveType<U, AESTowerField8b>: PackedField<Scalar = AESTowerField8b>,
+{
+	#[inline(always)]
+	fn invert_or_zero(self) -> Self {
+		Self::wrap(unary_op_with_table(Self::peel(self), &AES_TOWER_8B_INVERT_MAP))
+	}
+}
 
 #[cfg(test)]
 mod tests {
@@ -145,8 +136,19 @@ mod tests {
 
 	define_square_tests!(PairwiseTableSquare::square, PairwiseTableSquare);
 
-	define_invert_tests!(
-		TaggedInvertOrZero<PairwiseTableStrategy>::invert_or_zero,
-		TaggedInvertOrZero<PairwiseTableStrategy>
-	);
+	/// Helper trait exercising the `PairwiseTable` invert wrapper through the shared invert tests.
+	trait PairwiseTableInvert: Sized {
+		fn invert_or_zero(self) -> Self;
+	}
+	impl<T> PairwiseTableInvert for T
+	where
+		PairwiseTable<T>: InvertOrZero,
+	{
+		#[inline]
+		fn invert_or_zero(self) -> Self {
+			PairwiseTable::peel(InvertOrZero::invert_or_zero(PairwiseTable::wrap(self)))
+		}
+	}
+
+	define_invert_tests!(PairwiseTableInvert::invert_or_zero, PairwiseTableInvert);
 }

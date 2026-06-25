@@ -7,6 +7,8 @@
 //! available on modern x86_64 processors with AVX2 support. The implementation follows
 //! the algorithm described in the GHASH specification with polynomial x^128 + x^7 + x^2 + x + 1.
 
+use bytemuck::TransparentWrapper;
+
 // Used by the `GhashWideMul` and `GhashSquareStrategy` fallbacks when VPCLMULQDQ is
 // unavailable.
 #[cfg(not(target_feature = "vpclmulqdq"))]
@@ -14,7 +16,7 @@ use crate::arch::{portable::scaled_arithmetic::Scaled2xWideMul, x86_64::m128::M1
 use crate::{
 	BinaryField128bGhash,
 	arch::{PackedPrimitiveType, x86_64::m256::M256},
-	arithmetic_traits::TaggedInvertOrZero,
+	arithmetic_traits::InvertOrZero,
 };
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring vectorized
@@ -32,8 +34,8 @@ pub type GhashSquare2x<T> = crate::arch::x86_64::arithmetic::ghash::GhashClMulSq
 #[cfg(not(target_feature = "vpclmulqdq"))]
 pub type GhashSquare2x<T> = crate::arch::Divide<M128, T>;
 
-/// Invert strategy for the `PackedBinaryGhash2x128b` packing.
-pub type GhashInvert2x = Ghash256Strategy;
+/// Invert wrapper for the `PackedBinaryGhash2x128b` packing.
+pub type GhashInvert2x<T> = Ghash256<T>;
 
 #[cfg(target_feature = "vpclmulqdq")]
 mod vpclmulqdq {
@@ -54,13 +56,15 @@ mod vpclmulqdq {
 	}
 }
 
-/// Strategy for x86_64 AVX2 GHASH field arithmetic operations.
-pub struct Ghash256Strategy;
+/// Invert wrapper for x86_64 AVX2 GHASH field arithmetic.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct Ghash256<T>(T);
 
-// Implement TaggedInvertOrZero for Ghash256Strategy (Itoh-Tsujii over the full 256-bit vector)
-impl TaggedInvertOrZero<Ghash256Strategy> for PackedPrimitiveType<M256, BinaryField128bGhash> {
+// Implement InvertOrZero (Itoh-Tsujii over the full 256-bit vector)
+impl InvertOrZero for Ghash256<PackedPrimitiveType<M256, BinaryField128bGhash>> {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
-		crate::arch::invert_b128(self)
+		Self::wrap(crate::arch::invert_b128(Self::peel(self)))
 	}
 }

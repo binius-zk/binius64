@@ -10,7 +10,7 @@ use super::{
 use crate::{
 	aes_field::AESTowerField8b,
 	arch::PackedPrimitiveType,
-	arithmetic_traits::{Square, TaggedInvertOrZero},
+	arithmetic_traits::{InvertOrZero, Square},
 	underlier::WithUnderlier,
 };
 
@@ -20,11 +20,8 @@ pub type AesWideMul16x<T> = VmullWideMul<T>;
 /// Square wrapper for the `PackedAESBinaryField16x8b` packing.
 pub type AesSquare16x<T> = Aes<T>;
 
-/// Invert strategy for the `PackedAESBinaryField16x8b` packing.
-pub type AesInvert16x = AesStrategy;
-
-/// Strategy for aarch64 AES square/invert, both backed by `vqtbl` lookup tables.
-pub struct AesStrategy;
+/// Invert wrapper for the `PackedAESBinaryField16x8b` packing.
+pub type AesInvert16x<T> = Aes<T>;
 
 /// Square wrapper for aarch64 AES, backed by `vqtbl` lookup tables.
 #[repr(transparent)]
@@ -38,10 +35,10 @@ impl Square for Aes<PackedPrimitiveType<M128, AESTowerField8b>> {
 	}
 }
 
-impl TaggedInvertOrZero<AesStrategy> for PackedPrimitiveType<M128, AESTowerField8b> {
+impl InvertOrZero for Aes<PackedPrimitiveType<M128, AESTowerField8b>> {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
-		self.mutate_underlier(packed_aes_16x8b_invert_or_zero)
+		Self::wrap(Self::peel(self).mutate_underlier(packed_aes_16x8b_invert_or_zero))
 	}
 }
 

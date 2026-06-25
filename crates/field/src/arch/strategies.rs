@@ -18,18 +18,11 @@ use crate::{
 pub struct PackedStrategy;
 /// Pairwise strategy. Apply the result of the operation to each packed element independently.
 pub struct PairwiseStrategy;
-/// Get result of operation from the table for each sub-element
-pub struct PairwiseTableStrategy;
-/// Use operations with GFNI instructions
-pub struct GfniStrategy;
 /// Use SIMD operations for packed arithmetic
 pub struct SimdStrategy;
 /// Specialized versions of the above to resolve conflicting implementations
 pub struct GfniSpecializedStrategy256b;
 pub struct GfniSpecializedStrategy512b;
-
-/// Strategy for ScaledUnderlier operations that delegate to sub-underlier operations.
-pub struct ScaledStrategy;
 
 /// Square wrapper that squares by dividing the underlier into `SubU`-sized lanes, squaring each
 /// lane as a `PackedPrimitiveType<SubU, F>`, and recombining. A generic fallback for packings that

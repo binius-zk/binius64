@@ -3,8 +3,7 @@
 use bytemuck::TransparentWrapper;
 
 use crate::{
-	arch::PairwiseStrategy,
-	arithmetic_traits::{InvertOrZero, Square, TaggedInvertOrZero},
+	arithmetic_traits::{InvertOrZero, Square},
 	packed::PackedField,
 };
 
@@ -44,17 +43,18 @@ where
 	}
 }
 
-impl<PT: PackedField> TaggedInvertOrZero<PairwiseStrategy> for PT
+impl<PT: PackedField> InvertOrZero for Pairwise<PT>
 where
 	PT::Scalar: InvertOrZero,
 {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
-		if PT::WIDTH == 1 {
+		let val = Self::peel(self);
+		Self::wrap(if PT::WIDTH == 1 {
 			// fallback to be able to benchmark this strategy
-			InvertOrZero::invert_or_zero(self)
+			InvertOrZero::invert_or_zero(val)
 		} else {
-			Self::from_fn(|i| InvertOrZero::invert_or_zero(self.get(i)))
-		}
+			PT::from_fn(|i| InvertOrZero::invert_or_zero(val.get(i)))
+		})
 	}
 }

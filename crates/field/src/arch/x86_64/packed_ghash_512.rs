@@ -7,6 +7,8 @@
 //! available on modern x86_64 processors with AVX-512 support. The implementation follows
 //! the algorithm described in the GHASH specification with polynomial x^128 + x^7 + x^2 + x + 1.
 
+use bytemuck::TransparentWrapper;
+
 use super::m512::M512;
 // Used by the CLMUL-accelerated `ClMulUnderlier` impl and the `GhashWideMul` alias below.
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
@@ -15,9 +17,7 @@ use crate::arch::x86_64::arithmetic::ghash;
 // unavailable.
 #[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
 use crate::arch::{portable::scaled_arithmetic::Scaled4xWideMul, x86_64::m128::M128};
-use crate::{
-	BinaryField128bGhash, arch::PackedPrimitiveType, arithmetic_traits::TaggedInvertOrZero,
-};
+use crate::{BinaryField128bGhash, arch::PackedPrimitiveType, arithmetic_traits::InvertOrZero};
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring vectorized
 /// [`GhashClMulWideMul`](ghash::GhashClMulWideMul) when VPCLMULQDQ + AVX-512 are available,
@@ -36,8 +36,8 @@ pub type GhashSquare4x<T> = ghash::GhashClMulSquare<T>;
 #[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
 pub type GhashSquare4x<T> = crate::arch::Divide<M128, T>;
 
-/// Invert strategy for the `PackedBinaryGhash4x128b` packing.
-pub type GhashInvert4x = Ghash512Strategy;
+/// Invert wrapper for the `PackedBinaryGhash4x128b` packing.
+pub type GhashInvert4x<T> = Ghash512<T>;
 
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 impl ghash::ClMulUnderlier for M512 {
@@ -58,13 +58,15 @@ impl ghash::ClMulUnderlier for M512 {
 	}
 }
 
-/// Strategy for x86_64 AVX-512 GHASH field arithmetic operations.
-pub struct Ghash512Strategy;
+/// Invert wrapper for x86_64 AVX-512 GHASH field arithmetic.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct Ghash512<T>(T);
 
-// Implement TaggedInvertOrZero for Ghash512Strategy (Itoh-Tsujii over the full 512-bit vector)
-impl TaggedInvertOrZero<Ghash512Strategy> for PackedPrimitiveType<M512, BinaryField128bGhash> {
+// Implement InvertOrZero (Itoh-Tsujii over the full 512-bit vector)
+impl InvertOrZero for Ghash512<PackedPrimitiveType<M512, BinaryField128bGhash>> {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
-		crate::arch::invert_b128(self)
+		Self::wrap(crate::arch::invert_b128(Self::peel(self)))
 	}
 }

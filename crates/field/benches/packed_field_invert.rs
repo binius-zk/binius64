@@ -18,20 +18,45 @@ fn invert_main<T: PackedField>(val: T) -> T {
 cfg_if! {
 	if #[cfg(feature = "benchmark_alternative_strategies")] {
 		use binius_field::{
-			arch::{PackedStrategy, PairwiseStrategy, PairwiseTableStrategy},
-			arithmetic_traits::TaggedInvertOrZero,
+			arch::{Pairwise, PairwiseTable},
+			arithmetic_traits::InvertOrZero,
 		};
+		use bytemuck::TransparentWrapper;
 
-		fn invert_pairwise<T: TaggedInvertOrZero<PairwiseStrategy>>(val: T) -> T {
-			val.invert_or_zero()
+		/// Marker trait for packed types whose `Pairwise` wrapper supports inversion.
+		trait PairwiseInvert: Sized {
+			fn pairwise_invert(self) -> Self;
+		}
+		impl<T> PairwiseInvert for T
+		where
+			Pairwise<T>: InvertOrZero,
+		{
+			#[inline]
+			fn pairwise_invert(self) -> Self {
+				Pairwise::peel(InvertOrZero::invert_or_zero(Pairwise::wrap(self)))
+			}
 		}
 
-		fn invert_pairwise_table<T: TaggedInvertOrZero<PairwiseTableStrategy>>(val: T) -> T {
-			val.invert_or_zero()
+		/// Marker trait for packed types whose `PairwiseTable` wrapper supports inversion.
+		trait PairwiseTableInvert: Sized {
+			fn pairwise_table_invert(self) -> Self;
+		}
+		impl<T> PairwiseTableInvert for T
+		where
+			PairwiseTable<T>: InvertOrZero,
+		{
+			#[inline]
+			fn pairwise_table_invert(self) -> Self {
+				PairwiseTable::peel(InvertOrZero::invert_or_zero(PairwiseTable::wrap(self)))
+			}
 		}
 
-		fn invert_packed<T: TaggedInvertOrZero<PackedStrategy>>(val: T) -> T {
-			val.invert_or_zero()
+		fn invert_pairwise<T: PairwiseInvert>(val: T) -> T {
+			val.pairwise_invert()
+		}
+
+		fn invert_pairwise_table<T: PairwiseTableInvert>(val: T) -> T {
+			val.pairwise_table_invert()
 		}
 
 		benchmark_packed_operation!(
@@ -39,9 +64,8 @@ cfg_if! {
 			bench_type @ unary_op,
 			strategies @ (
 				(main, PackedField, invert_main),
-				(pairwise, TaggedInvertOrZero::<PairwiseStrategy>, invert_pairwise),
-				(pairwise_table, TaggedInvertOrZero::<PairwiseTableStrategy>, invert_pairwise_table),
-				(packed, TaggedInvertOrZero::<PackedStrategy>, invert_packed),
+				(pairwise, PairwiseInvert, invert_pairwise),
+				(pairwise_table, PairwiseTableInvert, invert_pairwise_table),
 			)
 		);
 	} else {
