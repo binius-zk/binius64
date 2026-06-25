@@ -3,20 +3,25 @@
 
 //! Portable implementation of packed GHASH field operations.
 
-pub use super::arithmetic::ghash::GhashWideMul;
 use super::{
 	arithmetic::{ghash::ghash_square, itoh_tsujii::invert_b128},
 	m128::M128,
 	univariate_mul_utils_128::{Underlier128bLanes, spread_bits_64},
 };
 use crate::{
-	arch::{
-		portable::packed_macros::{portable_macros::*, *},
-		strategies::MulFromWideMul,
-	},
+	arch::PackedPrimitiveType,
 	arithmetic_traits::{TaggedInvertOrZero, TaggedSquare},
 	ghash::BinaryField128bGhash,
 };
+
+/// Widening-multiply wrapper used by the `PackedBinaryGhash1x128b` packing.
+pub type GhashWideMul1x<T> = super::arithmetic::ghash::GhashWideMul<T>;
+
+/// Square strategy for the `PackedBinaryGhash1x128b` packing.
+pub type GhashSquare1x = GhashStrategy;
+
+/// Invert strategy for the `PackedBinaryGhash1x128b` packing.
+pub type GhashInvert1x = GhashStrategy;
 
 /// Strategy for GHASH field arithmetic operations.
 pub struct GhashStrategy;
@@ -47,24 +52,14 @@ impl Underlier128bLanes for M128 {
 	}
 }
 
-define_packed_binary_field!(
-	PackedBinaryGhash1x128b,
-	BinaryField128bGhash,
-	M128,
-	(MulFromWideMul),
-	(GhashStrategy),
-	(GhashStrategy),
-	(GhashWideMul)
-);
-
-impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
+impl TaggedSquare<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
 	#[inline]
 	fn square(self) -> Self {
 		ghash_square(self.0).into()
 	}
 }
 
-impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
+impl TaggedInvertOrZero<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
 		// This portable type's underlier is the portable `M128`, which on SIMD targets differs from

@@ -144,12 +144,7 @@ mod tests {
 	use proptest::prelude::*;
 
 	use super::*;
-	use crate::{
-		Field, PackedField,
-		arch::{
-			packed_ghash_128::PackedBinaryGhash1x128b, packed_ghash_256::PackedBinaryGhash2x128b,
-		},
-	};
+	use crate::{Field, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedField};
 
 	#[test]
 	fn test_compute_power_map_matrix_is_squaring() {
