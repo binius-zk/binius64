@@ -44,6 +44,18 @@ pub trait CircuitBuilder {
 		inputs: [Self::Wire; IN],
 		f: H,
 	) -> [Self::Wire; OUT];
+
+	/// A hint whose output arity is a runtime value rather than a compile-time constant: `f` maps the
+	/// input values to exactly `out_len` output values, returned as `out_len` wires. Like
+	/// [`Self::hint`], the closure is `'static` (a pure function recordable into a replayable gate
+	/// sequence) and the hint emits no constraints — a hint over only public-derivable inputs is
+	/// itself public-derivable.
+	fn hint_varsize(
+		&mut self,
+		inputs: &[Self::Wire],
+		out_len: usize,
+		f: impl Fn(&[Self::Field]) -> Vec<Self::Field> + 'static,
+	) -> Vec<Self::Wire>;
 }
 
 #[derive(Debug)]
@@ -329,6 +341,28 @@ impl<F: Field> CircuitBuilder for ConstraintBuilder<F> {
 			}
 		})
 	}
+
+	fn hint_varsize(
+		&mut self,
+		inputs: &[Self::Wire],
+		out_len: usize,
+		_f: impl Fn(&[F]) -> Vec<F> + 'static,
+	) -> Vec<Self::Wire> {
+		// A hint over only public-derivable inputs is itself public-derivable; the constraint system
+		// cannot replay the closure, so it allocates the output wires only.
+		let derived = inputs.iter().all(|wire| wire.kind.is_public());
+		(0..out_len)
+			.map(|_| {
+				if derived {
+					self.ir.derived_alloc.alloc()
+				} else {
+					let wire = self.ir.private_alloc.alloc();
+					self.ir.private_wires_status.push(WireStatus::Unknown);
+					wire
+				}
+			})
+			.collect()
+	}
 }
 
 #[derive(Debug)]
@@ -486,6 +520,22 @@ impl<'a, F: Field> CircuitBuilder for WitnessGenerator<'a, F> {
 		let all_derivable = inputs.iter().all(|wire| wire.is_public());
 		f(inputs.map(WitnessWire::val)).map(|value| self.alloc_op_value(all_derivable, value))
 	}
+
+	fn hint_varsize(
+		&mut self,
+		inputs: &[Self::Wire],
+		out_len: usize,
+		f: impl Fn(&[F]) -> Vec<F> + 'static,
+	) -> Vec<Self::Wire> {
+		let all_derivable = inputs.iter().all(|wire| wire.is_public());
+		let in_vals = inputs.iter().map(|wire| wire.val()).collect::<Vec<_>>();
+		let out_vals = f(&in_vals);
+		assert_eq!(out_vals.len(), out_len, "hint_varsize closure returned wrong output count");
+		out_vals
+			.into_iter()
+			.map(|value| self.alloc_op_value(all_derivable, value))
+			.collect()
+	}
 }
 
 /// Wire type for [`InstanceGenerator`]: holds the field value of a public wire (a constant, inout,
@@ -619,6 +669,33 @@ impl<'a, F: Field> CircuitBuilder for InstanceGenerator<'a, F> {
 			})
 		} else {
 			[PublicWire(None); OUT]
+		}
+	}
+
+	fn hint_varsize(
+		&mut self,
+		inputs: &[Self::Wire],
+		out_len: usize,
+		f: impl Fn(&[F]) -> Vec<F> + 'static,
+	) -> Vec<Self::Wire> {
+		// Only invoke `f` when every input is public (its value is known to the verifier); otherwise
+		// the outputs are private wires that consume no derived ids, matching `ConstraintBuilder`.
+		if inputs.iter().all(|wire| wire.0.is_some()) {
+			let in_vals = inputs
+				.iter()
+				.map(|wire| wire.0.expect("every input checked public above"))
+				.collect::<Vec<_>>();
+			let out_vals = f(&in_vals);
+			assert_eq!(out_vals.len(), out_len, "hint_varsize closure returned wrong output count");
+			out_vals
+				.into_iter()
+				.map(|value| {
+					let wire = self.derived_alloc.alloc();
+					self.write_public(wire, value)
+				})
+				.collect()
+		} else {
+			vec![PublicWire(None); out_len]
 		}
 	}
 }
