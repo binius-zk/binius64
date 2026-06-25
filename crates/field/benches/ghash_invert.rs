@@ -9,11 +9,8 @@
 use std::hint::black_box;
 
 use binius_field::{
-	BinaryField128bGhash as GhashB128, PackedField,
-	arch::{
-		packed_ghash_128::PackedBinaryGhash1x128b, packed_ghash_256::PackedBinaryGhash2x128b,
-		packed_ghash_512::PackedBinaryGhash4x128b,
-	},
+	BinaryField128bGhash as GhashB128, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b,
+	PackedBinaryGhash4x128b, PackedField,
 };
 use criterion::{
 	BenchmarkGroup, Criterion, Throughput, criterion_group, criterion_main, measurement::WallTime,

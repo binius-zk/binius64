@@ -17,13 +17,8 @@ use crate::arch::portable::univariate_mul_utils_128::{Underlier128bLanes, spread
 use crate::arch::x86_64::arithmetic::ghash;
 use crate::{
 	BinaryField128bGhash,
-	arch::{
-		portable::packed_macros::{portable_macros::*, *},
-		strategies::MulFromWideMul,
-	},
-	arithmetic_traits::{
-		TaggedInvertOrZero, TaggedSquare, impl_invert_with, impl_mul_with, impl_square_with,
-	},
+	arch::PackedPrimitiveType,
+	arithmetic_traits::{TaggedInvertOrZero, TaggedSquare},
 };
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
@@ -31,9 +26,15 @@ use crate::{
 /// portable [`GhashWideMul`](crate::arch::portable::arithmetic::ghash::GhashWideMul) which also
 /// defers reduction for deferred-reduction sum-of-products.
 #[cfg(target_feature = "pclmulqdq")]
-pub type GhashWideMul<T> = ghash::GhashClMulWideMul<T>;
+pub type GhashWideMul1x<T> = ghash::GhashClMulWideMul<T>;
 #[cfg(not(target_feature = "pclmulqdq"))]
-pub type GhashWideMul<T> = crate::arch::portable::arithmetic::ghash::GhashWideMul<T>;
+pub type GhashWideMul1x<T> = crate::arch::portable::arithmetic::ghash::GhashWideMul<T>;
+
+/// Square strategy for the `PackedBinaryGhash1x128b` packing.
+pub type GhashSquare1x = GhashStrategy;
+
+/// Invert strategy for the `PackedBinaryGhash1x128b` packing.
+pub type GhashInvert1x = GhashStrategy;
 
 /// `Underlier128bLanes` for x86_64 `M128` — required for the portable `GhashWideMul` fallback.
 ///
@@ -81,21 +82,10 @@ impl ghash::ClMulUnderlier for M128 {
 /// Strategy for x86_64 GHASH field arithmetic operations.
 pub struct GhashStrategy;
 
-// Define PackedBinaryGhash1x128b using the macro
-define_packed_binary_field!(
-	PackedBinaryGhash1x128b,
-	BinaryField128bGhash,
-	M128,
-	(MulFromWideMul),
-	(GhashStrategy),
-	(GhashStrategy),
-	(GhashWideMul)
-);
-
 // Implement TaggedSquare for GhashStrategy
 cfg_if! {
 	if #[cfg(target_feature = "pclmulqdq")] {
-		impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
+		impl TaggedSquare<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
 			#[inline]
 			fn square(self) -> Self {
 				Self::from_underlier(crate::arch::x86_64::arithmetic::ghash::square_clmul(
@@ -104,7 +94,7 @@ cfg_if! {
 			}
 		}
 	} else {
-		impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
+		impl TaggedSquare<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
 			#[inline]
 			fn square(self) -> Self {
 				use super::super::portable::arithmetic::ghash::ghash_square;
@@ -116,7 +106,7 @@ cfg_if! {
 }
 
 // Implement TaggedInvertOrZero for GhashStrategy (Itoh-Tsujii — no CLMUL invert)
-impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
+impl TaggedInvertOrZero<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
 		crate::arch::invert_b128(self)
