@@ -7,11 +7,16 @@ use std::{
 };
 
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
+use bytemuck::{Pod, Zeroable};
 use bytes::{Buf, BufMut};
 
 /// [`Word`] is 64-bit value and is a fundamental unit of data in Binius64. All computation and
 /// constraints operate on it.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// The transparent layout matches the inner 64-bit integer exactly.
+/// That lets slices of words be reinterpreted as raw bytes, and back, for zero-copy bulk copies.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Pod, Zeroable)]
+#[repr(transparent)]
 pub struct Word(pub u64);
 
 impl Word {
