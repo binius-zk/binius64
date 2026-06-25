@@ -78,8 +78,8 @@ pub(crate) mod portable_macros {
 			}
 		};
 		// Path to strategy in caller's scope
-		($impl_macro:ident $name:ident, ($strategy:path)) => {
-			$impl_macro!($name @ $strategy);
+		($impl_macro:ident $name:ident, ($($strategy:tt)*)) => {
+			$impl_macro!($name @ $($strategy)*);
 		};
 	}
 

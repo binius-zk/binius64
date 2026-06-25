@@ -107,13 +107,8 @@ pub trait InvertOrZero {
 	}
 }
 
-/// Multiplication that is parameterized with some some strategy.
-pub trait TaggedMul<Strategy> {
-	fn mul(self, rhs: Self) -> Self;
-}
-
 macro_rules! impl_mul_with {
-	($name:ident @ $strategy:ty) => {
+	($name:ident @ $($strategy:tt)*) => {
 		impl std::ops::Mul for $name {
 			type Output = Self;
 
@@ -121,7 +116,10 @@ macro_rules! impl_mul_with {
 			fn mul(self, rhs: Self) -> Self {
 				$crate::tracing::trace_multiplication!($name);
 
-				$crate::arithmetic_traits::TaggedMul::<$strategy>::mul(self, rhs)
+				<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::peel(
+					<$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::wrap(self)
+						* <$($strategy)* <$name> as ::bytemuck::TransparentWrapper<$name>>::wrap(rhs),
+				)
 			}
 		}
 	};

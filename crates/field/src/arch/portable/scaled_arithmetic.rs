@@ -12,25 +12,31 @@ use super::packed::PackedPrimitiveType;
 use crate::{
 	BinaryField,
 	arch::{M128, ScaledStrategy},
-	arithmetic_traits::{
-		InvertOrZero, Square, TaggedInvertOrZero, TaggedMul, TaggedSquare, WideMul,
-	},
+	arithmetic_traits::{InvertOrZero, Square, TaggedInvertOrZero, TaggedSquare, WideMul},
 	underlier::{Divisible, ScaledUnderlier, UnderlierType},
 };
 
-impl<U: UnderlierType + Pod, Scalar: BinaryField, const N: usize> TaggedMul<ScaledStrategy>
-	for PackedPrimitiveType<ScaledUnderlier<U, N>, Scalar>
+/// Wrapper for `ScaledUnderlier` multiplication that delegates to sub-underlier operations.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct Scaled<T>(T);
+
+impl<U: UnderlierType + Pod, Scalar: BinaryField, const N: usize> std::ops::Mul
+	for Scaled<PackedPrimitiveType<ScaledUnderlier<U, N>, Scalar>>
 where
 	PackedPrimitiveType<U, Scalar>: std::ops::Mul<Output = PackedPrimitiveType<U, Scalar>>,
 {
+	type Output = Self;
+
 	fn mul(self, rhs: Self) -> Self {
-		Self::wrap(ScaledUnderlier(array::from_fn(|i| {
-			let lhs_i = self.0.0[i];
-			let rhs_i = rhs.0.0[i];
+		let (a, b) = (Self::peel(self), Self::peel(rhs));
+		Self::wrap(PackedPrimitiveType::wrap(ScaledUnderlier(array::from_fn(|i| {
+			let lhs_i = a.0.0[i];
+			let rhs_i = b.0.0[i];
 			PackedPrimitiveType::peel(
 				PackedPrimitiveType::wrap(lhs_i) * PackedPrimitiveType::wrap(rhs_i),
 			)
-		})))
+		}))))
 	}
 }
 

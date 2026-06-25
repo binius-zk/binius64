@@ -1,20 +1,30 @@
 // Copyright 2024-2025 Irreducible Inc.
 
+use bytemuck::TransparentWrapper;
+
 use crate::{
 	arch::PairwiseStrategy,
-	arithmetic_traits::{InvertOrZero, Square, TaggedInvertOrZero, TaggedMul, TaggedSquare},
+	arithmetic_traits::{InvertOrZero, Square, TaggedInvertOrZero, TaggedSquare},
 	packed::PackedField,
 };
 
-impl<PT: PackedField> TaggedMul<PairwiseStrategy> for PT {
+/// Pairwise multiplication wrapper. Apply the multiplication to each packed element independently.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct Pairwise<T>(T);
+
+impl<PT: PackedField> std::ops::Mul for Pairwise<PT> {
+	type Output = Self;
+
 	#[inline]
-	fn mul(self, b: Self) -> Self {
-		if PT::WIDTH == 1 {
+	fn mul(self, rhs: Self) -> Self {
+		let (a, b) = (Self::peel(self), Self::peel(rhs));
+		Self::wrap(if PT::WIDTH == 1 {
 			// fallback to be able to benchmark this strategy
-			self * b
+			a * b
 		} else {
-			Self::from_fn(|i| self.get(i) * b.get(i))
-		}
+			PT::from_fn(|i| a.get(i) * b.get(i))
+		})
 	}
 }
 

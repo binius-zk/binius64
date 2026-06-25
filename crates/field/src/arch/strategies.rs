@@ -8,7 +8,7 @@ use bytemuck::TransparentWrapper;
 use crate::{
 	BinaryField,
 	arch::PackedPrimitiveType,
-	arithmetic_traits::{Square, TaggedMul, TaggedSquare, WideMul},
+	arithmetic_traits::{Square, TaggedSquare, WideMul},
 	underlier::{Divisible, UnderlierType},
 };
 
@@ -97,14 +97,18 @@ where
 	}
 }
 
-/// Strategy that defines multiplication as `reduce(wide_mul(a, b))`, deferring to the type's own
+/// Wrapper that defines multiplication as `reduce(wide_mul(a, b))`, deferring to the type's own
 /// [`WideMul`] impl, making the widening multiply the single source of truth for both `Mul` and
 /// `WideMul`. Used by every GHASH and AES packing.
-pub struct MulFromWideMul;
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct MulFromWideMul<T>(T);
 
-impl<P: WideMul> TaggedMul<MulFromWideMul> for P {
+impl<P: WideMul> std::ops::Mul for MulFromWideMul<P> {
+	type Output = Self;
+
 	#[inline]
 	fn mul(self, rhs: Self) -> Self {
-		P::reduce(P::wide_mul(self, rhs))
+		Self::wrap(P::reduce(P::wide_mul(Self::peel(self), Self::peel(rhs))))
 	}
 }

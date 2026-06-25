@@ -24,21 +24,25 @@ fn mul_main<T: SelfMul>(lhs: T, rhs: T) -> T {
 
 cfg_if! {
 	if #[cfg(feature = "benchmark_alternative_strategies")] {
-		use binius_field::{
-			arch::{PackedStrategy, PairwiseStrategy, PairwiseTableStrategy},
-			arithmetic_traits::TaggedMul
-		};
+		use binius_field::arch::Pairwise;
+		use bytemuck::TransparentWrapper;
 
-		fn mul_pairwise<T: TaggedMul<PairwiseStrategy>>(lhs: T, rhs: T) -> T {
-			TaggedMul::<PairwiseStrategy>::mul(lhs, rhs)
+		/// Marker trait for packed types whose `Pairwise` wrapper supports multiplication.
+		trait PairwiseMul: Sized {
+			fn pairwise_mul(self, rhs: Self) -> Self;
+		}
+		impl<T> PairwiseMul for T
+		where
+			Pairwise<T>: Mul<Output = Pairwise<T>>,
+		{
+			#[inline]
+			fn pairwise_mul(self, rhs: Self) -> Self {
+				Pairwise::peel(Pairwise::wrap(self) * Pairwise::wrap(rhs))
+			}
 		}
 
-		fn mul_pairwise_table<T: TaggedMul<PairwiseTableStrategy>>(lhs: T, rhs: T) -> T {
-			TaggedMul::<PairwiseTableStrategy>::mul(lhs, rhs)
-		}
-
-		fn mul_packed<T: TaggedMul<PackedStrategy>>(lhs: T, rhs: T) -> T {
-			TaggedMul::<PackedStrategy>::mul(lhs, rhs)
+		fn mul_pairwise<T: PairwiseMul>(lhs: T, rhs: T) -> T {
+			lhs.pairwise_mul(rhs)
 		}
 
 		benchmark_packed_operation!(
@@ -46,9 +50,7 @@ cfg_if! {
 			bench_type @ binary_op,
 			strategies @ (
 				(main, SelfMul, mul_main),
-				(pairwise, TaggedMul::<PairwiseStrategy>, mul_pairwise),
-				(pairwise_table, TaggedMul::<PairwiseTableStrategy>, mul_pairwise_table),
-				(packed, TaggedMul::<PackedStrategy>, mul_packed),
+				(pairwise, PairwiseMul, mul_pairwise),
 			)
 		);
 	} else {

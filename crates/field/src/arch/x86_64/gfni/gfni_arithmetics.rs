@@ -9,7 +9,7 @@ use crate::{
 		GfniStrategy, portable::packed::PackedPrimitiveType,
 		x86_64::simd::simd_arithmetic::TowerSimdType,
 	},
-	arithmetic_traits::{TaggedInvertOrZero, TaggedMul, WideMul},
+	arithmetic_traits::{TaggedInvertOrZero, WideMul},
 	underlier::UnderlierType,
 };
 
@@ -32,12 +32,18 @@ pub(super) trait GfniType: Copy + TowerSimdType {
 	fn gf2p8affineinv_epi64_epi8(x: Self, a: Self) -> Self;
 }
 
-impl<U: GfniType + UnderlierType> TaggedMul<GfniStrategy>
-	for PackedPrimitiveType<U, AESTowerField8b>
-{
+/// GFNI multiplication wrapper for AES packings: `gf2p8mul` produces the reduced byte directly.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct Gfni<T>(T);
+
+impl<U: GfniType + UnderlierType> std::ops::Mul for Gfni<PackedPrimitiveType<U, AESTowerField8b>> {
+	type Output = Self;
+
 	#[inline(always)]
 	fn mul(self, rhs: Self) -> Self {
-		U::gf2p8mul_epi8(self.0, rhs.0).into()
+		let (a, b) = (Self::peel(self), Self::peel(rhs));
+		Self::wrap(U::gf2p8mul_epi8(a.0, b.0).into())
 	}
 }
 
