@@ -193,7 +193,7 @@ pub fn prove_mlecheck_basefold_zk_batch<'a, F, P, NTT, MerkleScheme, MerkleProve
 	witness: FieldBuffer<P>,
 	eval_point: &[F],
 	eval_claim: F,
-	batch_challenge: F,
+	batch_challenge: Option<F>,
 	outer_challenges: &[F],
 	mut fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
 	transcript: &mut ProverTranscript<Challenger_>,
@@ -210,14 +210,21 @@ where
 
 	let n_vars = witness.log_len();
 	assert_eq!(eval_point.len(), n_vars);
-	// The FRI folder has one inner (unbatch) round, `log_n_oracles` outer (oracle-combine) rounds,
-	// and `𝐧` standard fold rounds.
-	assert_eq!(n_vars + 1 + outer_challenges.len(), fri_folder.n_rounds());
+	// The FRI folder has `n_inner` inner (unbatch) rounds — one for the shared mask challenge γ
+	// when any ZK oracle is present, none otherwise — `log_n_oracles` outer (oracle-combine)
+	// rounds, and `𝐧` standard fold rounds. The non-ZK oracles' batch-fold challenges are drawn
+	// from the leading standard rounds and routed to each oracle via its `skip_batch_challenges`
+	// window in the folder.
+	let n_inner = usize::from(batch_challenge.is_some());
+	assert_eq!(n_vars + n_inner + outer_challenges.len(), fri_folder.n_rounds());
 
-	// Inner (unbatch) round: fold every interleaved (π_i ‖ ω_i) codeword at the masking challenge.
-	fri_folder.receive_challenge(batch_challenge);
+	// Inner (unbatch) round: fold every interleaved (π_i ‖ ω_i) ZK codeword at the masking
+	// challenge.
+	if let Some(gamma) = batch_challenge {
+		fri_folder.receive_challenge(gamma);
+	}
 	// Outer rounds: combine the k lifted codewords at the batching challenges r'. These carry no
-	// sumcheck round-polynomial; the folder applies them lazily with γ at the first commit round.
+	// sumcheck round-polynomial; the folder applies them lazily at the first commit round.
 	for &outer_challenge in outer_challenges {
 		fri_folder.receive_challenge(outer_challenge);
 	}
@@ -513,7 +520,7 @@ mod test {
 			witness_prime,
 			&evaluation_point,
 			eval_claim,
-			batch_challenge,
+			Some(batch_challenge),
 			&[],
 			fri_folder,
 			&mut prover_transcript,
@@ -533,7 +540,7 @@ mod test {
 			&[retrieved_commitment],
 			eval_claim,
 			&evaluation_point,
-			batch_challenge_v,
+			Some(batch_challenge_v),
 			&[],
 			&mut verifier_transcript,
 		)?;

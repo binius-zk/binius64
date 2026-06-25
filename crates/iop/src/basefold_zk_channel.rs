@@ -176,15 +176,32 @@ where
 	let n_vars: Vec<usize> = (0..n_committed)
 		.map(|i| oracle_specs[i].log_msg_len)
 		.collect();
-	// `𝐧 = max_i n_i`, the dimension of the combined codeword.
-	let max_n = fri_params.rs_code().log_dim();
+	// `𝐧 = max_i log_msg_len_i`, the variable count of the combined opening / materialized buffer.
+	let max_n = n_vars.iter().copied().max().expect("at least one oracle");
 
 	// === Masking step ===
-	// Read the masked inner products σ_i, sample γ, and form the masked claims s_i'.
-	let sigmas = channel.recv_many(n_committed)?;
-	let gamma = IPVerifierChannel::<F>::sample(channel);
-	let sum_primes = iter::zip(&relations, sigmas)
-		.map(|(relation, sigma)| extrapolate_line_packed(relation.claim, sigma, gamma))
+	// Only ZK oracles are masked: read their σ_i (one per ZK oracle, in relation order) and sample
+	// the single shared γ. With no ZK oracle, γ is never sampled.
+	let n_zk = oracle_specs.iter().filter(|s| s.is_zk).count();
+	let sigmas = channel.recv_many(n_zk)?;
+	let gamma = (n_zk > 0).then(|| IPVerifierChannel::<F>::sample(channel));
+	// Masked claim per relation: ZK → s_i' = extrapolate_line(claim, σ_i, γ); non-ZK → s_i' =
+	// claim.
+	let mut sigma_iter = sigmas.into_iter();
+	let sum_primes = relations
+		.iter()
+		.map(|relation| {
+			if oracle_specs[relation.oracle.index].is_zk {
+				let sigma = sigma_iter.next().expect("one σ per ZK oracle");
+				extrapolate_line_packed(
+					relation.claim,
+					sigma,
+					gamma.expect("γ sampled when ZK oracles present"),
+				)
+			} else {
+				relation.claim
+			}
+		})
 		.collect::<Vec<_>>();
 
 	// === Phase A: batched sumcheck on the masked claims (degree 2, bivariate product) ===
@@ -225,9 +242,17 @@ where
 		.map(|_| IPVerifierChannel::<F>::sample(channel))
 		.collect();
 	let eq_tensor = eq_ind_partial_eval_scalars::<F>(&outer_challenges);
+	// In the combined buffer each oracle is zero-padded over its `log_lift` dims and *repeated*
+	// over the remaining `log_repeat = max_n - n_i - log_lift` high dims, so its evaluation at
+	// `point` picks up the eq-to-zero factor over the lift dims only (the repeat dims contribute
+	// 1).
+	let input_oracles = fri_params.input_oracles();
 	let s_prime = iter::zip(&alphas, &n_vars)
 		.enumerate()
-		.map(|(i, (&alpha_i, &n_i))| eq_tensor[i] * alpha_i * eq_ind_zero(&point[n_i..]))
+		.map(|(i, (&alpha_i, &n_i))| {
+			let log_lift = input_oracles[i].log_lift;
+			eq_tensor[i] * alpha_i * eq_ind_zero(&point[n_i..n_i + log_lift])
+		})
 		.sum::<F>();
 
 	let basefold::ReducedOutput {
