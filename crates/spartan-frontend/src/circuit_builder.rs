@@ -44,6 +44,18 @@ pub trait CircuitBuilder {
 		inputs: [Self::Wire; IN],
 		f: H,
 	) -> [Self::Wire; OUT];
+
+	/// Runtime-arity variant of [`hint`](Self::hint): takes a slice of input wires and an
+	/// `out_len`, with a closure mapping the input values to `out_len` output values. Emits no
+	/// constraints; the outputs are public-derivable (allocated in the derived segment) iff every
+	/// input is, matching [`hint`](Self::hint). The closure is invoked at most once —
+	/// value-generating builders run it, the symbolic builder skips it.
+	fn hint_varsize<H: FnOnce(&[Self::Field]) -> Vec<Self::Field>>(
+		&mut self,
+		inputs: &[Self::Wire],
+		out_len: usize,
+		f: H,
+	) -> Vec<Self::Wire>;
 }
 
 #[derive(Debug)]
@@ -329,6 +341,28 @@ impl<F: Field> CircuitBuilder for ConstraintBuilder<F> {
 			}
 		})
 	}
+
+	fn hint_varsize<H: FnOnce(&[F]) -> Vec<F>>(
+		&mut self,
+		inputs: &[Self::Wire],
+		out_len: usize,
+		_f: H,
+	) -> Vec<Self::Wire> {
+		// A hint over only public-derivable inputs is itself public-derivable. (Hints emit no
+		// constraints regardless; only the allocator choice changes.)
+		let derived = inputs.iter().all(|wire| wire.kind.is_public());
+		(0..out_len)
+			.map(|_| {
+				if derived {
+					self.ir.derived_alloc.alloc()
+				} else {
+					let wire = self.ir.private_alloc.alloc();
+					self.ir.private_wires_status.push(WireStatus::Unknown);
+					wire
+				}
+			})
+			.collect()
+	}
 }
 
 #[derive(Debug)]
@@ -486,6 +520,26 @@ impl<'a, F: Field> CircuitBuilder for WitnessGenerator<'a, F> {
 		let all_derivable = inputs.iter().all(|wire| wire.is_public());
 		f(inputs.map(WitnessWire::val)).map(|value| self.alloc_op_value(all_derivable, value))
 	}
+
+	fn hint_varsize<H: FnOnce(&[F]) -> Vec<F>>(
+		&mut self,
+		inputs: &[Self::Wire],
+		out_len: usize,
+		f: H,
+	) -> Vec<Self::Wire> {
+		let all_derivable = inputs.iter().all(|wire| wire.is_public());
+		let input_vals: Vec<F> = inputs.iter().map(|wire| wire.val()).collect();
+		let outputs = f(&input_vals);
+		debug_assert_eq!(
+			outputs.len(),
+			out_len,
+			"hint_varsize closure returned wrong output count"
+		);
+		outputs
+			.into_iter()
+			.map(|value| self.alloc_op_value(all_derivable, value))
+			.collect()
+	}
 }
 
 /// Wire type for [`InstanceGenerator`]: holds the field value of a public wire (a constant, inout,
@@ -619,6 +673,38 @@ impl<'a, F: Field> CircuitBuilder for InstanceGenerator<'a, F> {
 			})
 		} else {
 			[PublicWire(None); OUT]
+		}
+	}
+
+	fn hint_varsize<H: FnOnce(&[F]) -> Vec<F>>(
+		&mut self,
+		inputs: &[Self::Wire],
+		out_len: usize,
+		f: H,
+	) -> Vec<Self::Wire> {
+		// Only invoke `f` when every input is public (its value is known); otherwise the outputs
+		// are private (value-less to the verifier) and allocate no derived wires, matching the
+		// other builders' private branch.
+		if inputs.iter().all(|wire| wire.0.is_some()) {
+			let input_vals: Vec<F> = inputs
+				.iter()
+				.map(|wire| wire.0.expect("every input checked public above"))
+				.collect();
+			let outputs = f(&input_vals);
+			debug_assert_eq!(
+				outputs.len(),
+				out_len,
+				"hint_varsize closure returned wrong output count"
+			);
+			outputs
+				.into_iter()
+				.map(|value| {
+					let wire = self.derived_alloc.alloc();
+					self.write_public(wire, value)
+				})
+				.collect()
+		} else {
+			vec![PublicWire(None); out_len]
 		}
 	}
 }
@@ -918,5 +1004,52 @@ mod tests {
 		// The intermediate has no public slot; the alive one does.
 		assert!(layout.get(&x2).is_none(), "pruned derived intermediate must have no slot");
 		assert!(layout.get(&x3).is_some(), "referenced derived wire must have a slot");
+	}
+
+	#[test]
+	fn test_hint_varsize_syncs_with_witness() {
+		use crate::compiler::compile;
+
+		// From two public inouts `a`, `b`, a runtime-arity hint yields `[a + b, a * b]`; the first
+		// output (a derived wire) is asserted equal to an inout `expected`. The second output feeds
+		// nothing and is pruned. The instance generator must reproduce the witness public segment.
+		fn circuit<Builder: CircuitBuilder>(
+			builder: &mut Builder,
+			a: Builder::Wire,
+			b: Builder::Wire,
+			expected: Builder::Wire,
+		) {
+			let outs =
+				builder.hint_varsize(&[a, b], 2, |vals| vec![vals[0] + vals[1], vals[0] * vals[1]]);
+			builder.assert_eq(outs[0], expected);
+		}
+
+		let a_val = B128::new(3);
+		let b_val = B128::new(5);
+		let expected_val = a_val + b_val;
+
+		let mut cb = ConstraintBuilder::new();
+		let a = cb.alloc_inout();
+		let b = cb.alloc_inout();
+		let expected = cb.alloc_inout();
+		circuit(&mut cb, a, b, expected);
+		let (cs, layout) = compile(cb);
+
+		let mut wg = WitnessGenerator::new(&layout);
+		let a_w = wg.write_inout(a, a_val);
+		let b_w = wg.write_inout(b, b_val);
+		let expected_w = wg.write_inout(expected, expected_val);
+		circuit(&mut wg, a_w, b_w, expected_w);
+		let witness = wg.build().expect("witness generation should succeed");
+		cs.validate(&witness);
+
+		let mut ig = InstanceGenerator::new(&layout);
+		let a_i = ig.write_inout(a, a_val);
+		let b_i = ig.write_inout(b, b_val);
+		let expected_i = ig.write_inout(expected, expected_val);
+		circuit(&mut ig, a_i, b_i, expected_i);
+		let public = ig.build();
+
+		assert_eq!(public, witness.public());
 	}
 }

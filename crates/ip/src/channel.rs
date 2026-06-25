@@ -88,9 +88,9 @@ pub trait IPVerifierChannel<F: Field> {
 	/// as a freshly allocated `Elem`.
 	///
 	/// In wrapper channels that build constraints (e.g. `IronSpartanBuilderChannel`), the result
-	/// is materialized as a single inout wire holding the closure's return value, replacing what
-	/// would otherwise be a sub-circuit's worth of constraints. In non-wrapper channels where
-	/// `Elem = F`, the impl is just `f(inputs)`.
+	/// is materialized as a single derived public wire (a one-output `hint_varsize`) holding the
+	/// closure's return value, replacing what would otherwise be a sub-circuit's worth of
+	/// constraints. In non-wrapper channels where `Elem = F`, the impl is just `f(inputs)`.
 	///
 	/// The caller MUST ensure each entry in `inputs` is either a `Constant` or a `Wire` whose
 	/// public-tag is true — i.e. produced by `sample_*` / `observe_*` / `compute_public_value`
