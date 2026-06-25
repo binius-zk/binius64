@@ -5,9 +5,9 @@ mod packed_field_utils;
 use std::ops::Mul;
 
 use binius_field::{
+	PackedAESBinaryField16x8b, PackedAESBinaryField32x8b, PackedAESBinaryField64x8b,
 	PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b,
 	PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
-	arch::{packed_aes_128::*, packed_aes_256::*, packed_aes_512::*},
 };
 use cfg_if::cfg_if;
 use criterion::criterion_main;

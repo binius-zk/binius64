@@ -114,7 +114,7 @@ mod tests {
 	use crate::test_utils::{define_invert_tests, define_square_tests};
 
 	// Multiplication is now defined via `WideMul` (`AesLookupWideMul` / `ScaledWideMul` / GFNI) and
-	// is covered by the packed AES multiply proptests in `packed_aes_field.rs`.
+	// is covered by the packed AES multiply proptests in `packed_aes.rs`.
 
 	define_square_tests!(
 		TaggedSquare<PairwiseTableStrategy>::square,

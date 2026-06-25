@@ -3,38 +3,14 @@
 
 use cfg_if::cfg_if;
 
-use super::m512::M512;
-use crate::{
-	arch::{
-		MulFromWideMul,
-		portable::packed_macros::{portable_macros::*, *},
-	},
-	arithmetic_traits::{impl_invert_with, impl_mul_with, impl_square_with},
-};
-
-#[cfg(all(
-	target_arch = "x86_64",
-	target_feature = "sse2",
-	target_feature = "gfni"
-))]
-pub type AesWideMul512<T> = super::gfni::gfni_arithmetics::GfniWideMul<T>;
-#[cfg(not(all(
-	target_arch = "x86_64",
-	target_feature = "sse2",
-	target_feature = "gfni"
-)))]
-pub type AesWideMul512<T> = crate::arch::ElementwiseWideMul<T>;
-
-define_packed_binary_fields!(
-	underlier: M512,
-	packed_fields: [
-		packed_field {
-			name: PackedAESBinaryField64x8b,
-			scalar: AESTowerField8b,
-			mul:       (MulFromWideMul),
-			square:    (if gfni ReuseMultiplyStrategy else PairwiseTableStrategy),
-			invert:    (if gfni GfniStrategy else PairwiseTableStrategy),
-			wide_mul: (AesWideMul512),
-		},
-	]
-);
+cfg_if! {
+	if #[cfg(all(target_arch = "x86_64", target_feature = "sse2", target_feature = "gfni"))] {
+		pub type AesWideMul64x<T> = super::gfni::gfni_arithmetics::GfniWideMul<T>;
+		pub type AesSquare64x = crate::arch::ReuseMultiplyStrategy;
+		pub type AesInvert64x = crate::arch::GfniStrategy;
+	} else {
+		pub type AesWideMul64x<T> = crate::arch::ElementwiseWideMul<T>;
+		pub type AesSquare64x = crate::arch::PairwiseTableStrategy;
+		pub type AesInvert64x = crate::arch::PairwiseTableStrategy;
+	}
+}
