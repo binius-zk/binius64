@@ -279,7 +279,7 @@ mod test {
 
 	use binius_core::word::Word;
 	use binius_field::{
-		AESTowerField8b, PackedAESBinaryField16x8b,
+		AESTowerField8b, PackedAESBinaryField64x8b,
 		arch::OptimalPackedB128,
 		linear_transformation::{
 			BytewiseLookupTransformationFactory, LinearTransformationFactory,
@@ -330,7 +330,7 @@ mod test {
 		// Prover is instantiated
 		let big_field_zerocheck_challenges =
 			prover_challenger.sample_vec(log_num_rows - SKIPPED_VARS - 3);
-		let prover = OblongZerocheckProver::<_, PackedAESBinaryField16x8b, OptimalPackedB128>::new(
+		let prover = OblongZerocheckProver::<_, PackedAESBinaryField64x8b, OptimalPackedB128>::new(
 			first_mlv.clone(),
 			second_mlv.clone(),
 			third_mlv.clone(),

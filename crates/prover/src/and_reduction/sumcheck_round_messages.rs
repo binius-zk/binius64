@@ -74,7 +74,7 @@ where
 	// ideally we would just use PNTTDomain::WIDTH everywhere instead, but since this function only
 	// supports 128b underliers, this is set to a constant. We would need to rethink for support of
 	// multiple underlier sizes
-	assert_eq!(PNTTDomain::WIDTH, 16);
+	assert_eq!(PNTTDomain::WIDTH, ROWS_PER_HYPERCUBE_VERTEX);
 
 	let expected_log_words =
 		eq_ind_big_field_challenges.log_len() + small_field_zerocheck_challenges.len();
@@ -96,7 +96,7 @@ where
 	)
 		.into_par_iter()
 		.map(|(a_chunk, b_chunk, c_chunk)| {
-			let mut summed_ntt = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
+			let mut summed_ntt = PNTTDomain::zero();
 			let lookup = ntt_lookup.get_lookup();
 
 			for (a_i, b_i, c_i, &weight) in izip!(a_chunk, b_chunk, c_chunk, &eq_ind_small) {
@@ -106,34 +106,26 @@ where
 
 				// In this cycle, we compute the NTT for each column using the lookup table.
 				// We are not using the `NTTLookup::ntt` method directly for performance reasons.
-				let mut first_col_ntt = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
-				let mut second_col_ntt = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
-				let mut third_col_ntt = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
+				let mut first_col_ntt = PNTTDomain::zero();
+				let mut second_col_ntt = PNTTDomain::zero();
+				let mut third_col_ntt = PNTTDomain::zero();
 
 				// Compute the low-degree extensions via the lookup table.
 				for (byte_index, lookup_byte) in lookup.iter().enumerate() {
-					let row_1 = &lookup_byte[col_1_bytes[byte_index] as usize];
-					let row_2 = &lookup_byte[col_2_bytes[byte_index] as usize];
-					let row_3 = &lookup_byte[col_3_bytes[byte_index] as usize];
-					for j in 0..(ROWS_PER_HYPERCUBE_VERTEX / 16) {
-						first_col_ntt[j] += row_1[j];
-						second_col_ntt[j] += row_2[j];
-						third_col_ntt[j] += row_3[j];
-					}
+					first_col_ntt += lookup_byte[col_1_bytes[byte_index] as usize];
+					second_col_ntt += lookup_byte[col_2_bytes[byte_index] as usize];
+					third_col_ntt += &lookup_byte[col_3_bytes[byte_index] as usize];
 				}
 
 				// Compute the weighted composition of the LDE values.
-				for j in 0..(ROWS_PER_HYPERCUBE_VERTEX / 16) {
-					summed_ntt[j] +=
-						(first_col_ntt[j] * second_col_ntt[j] - third_col_ntt[j]) * weight;
-				}
+				summed_ntt += (first_col_ntt * second_col_ntt - third_col_ntt) * weight;
 			}
 
 			summed_ntt
 		})
 		.zip(eq_ind_big_field_challenges.as_ref())
 		.fold_with([F::ZERO; ROWS_PER_HYPERCUBE_VERTEX], |mut acc, (summed_ntt, &eq_weight)| {
-			for (acc_i, summed_ntt_i) in iter::zip(&mut acc, PNTTDomain::iter_slice(&summed_ntt)) {
+			for (acc_i, summed_ntt_i) in iter::zip(&mut acc, summed_ntt.into_iter()) {
 				*acc_i += eq_weight * F::from(summed_ntt_i);
 			}
 			acc
@@ -155,7 +147,7 @@ mod test {
 
 	use binius_core::word::Word;
 	use binius_field::{
-		AESTowerField8b, Field, PackedAESBinaryField16x8b, Random,
+		AESTowerField8b, Field, PackedAESBinaryField64x8b, Random,
 		linear_transformation::{
 			BytewiseLookupTransformationFactory, LinearTransformationFactory,
 			OutputWrappingTransformationFactory,
@@ -225,7 +217,7 @@ mod test {
 		// Agreed-upon proof parameter
 
 		let prover_message_domain = BinarySubspace::with_dim(SKIPPED_VARS + 1);
-		let ntt_lookup = ntt_lookup_from_prover_message_domain::<PackedAESBinaryField16x8b>(
+		let ntt_lookup = ntt_lookup_from_prover_message_domain::<PackedAESBinaryField64x8b>(
 			prover_message_domain.clone(),
 		);
 

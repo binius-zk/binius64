@@ -3,7 +3,7 @@ use std::{iter, iter::repeat_with};
 
 use binius_core::word::Word;
 use binius_field::{
-	AESTowerField8b, Field, PackedAESBinaryField16x8b, Random,
+	AESTowerField8b, Field, PackedAESBinaryField64x8b, Random,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, LinearTransformationFactory,
 		OutputWrappingTransformationFactory,
@@ -57,21 +57,20 @@ fn bench(c: &mut Criterion) {
 		.reduce_dim(prover_message_domain.dim() - 1)
 		.isomorphic();
 
-	let ntt_lookup = ntt_lookup_from_prover_message_domain::<PackedAESBinaryField16x8b>(
+	let ntt_lookup = ntt_lookup_from_prover_message_domain::<PackedAESBinaryField64x8b>(
 		prover_message_domain.clone(),
 	);
 
 	let mut group = c.benchmark_group("evaluate");
-	group.throughput(Throughput::Elements(1 << (log_num_rows - SKIPPED_VARS)));
-
 	group.bench_function("NTT lookup precompute", |bench| {
 		bench.iter(|| {
-			ntt_lookup_from_prover_message_domain::<PackedAESBinaryField16x8b>(
+			ntt_lookup_from_prover_message_domain::<PackedAESBinaryField64x8b>(
 				prover_message_domain.clone(),
 			)
 		});
 	});
 
+	group.throughput(Throughput::Elements(1 << (log_num_rows - SKIPPED_VARS)));
 	group.bench_function(format!("univariate_round_message 2^{log_num_rows}"), |bench| {
 		bench.iter(|| {
 			let eq_ind_mle = eq_ind_partial_eval(&big_field_zerocheck_challenges);
