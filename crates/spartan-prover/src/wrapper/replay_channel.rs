@@ -126,27 +126,19 @@ impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
 		inputs: &[Self::Elem],
 		f: impl FnOnce(&[F]) -> F,
 	) -> Self::Elem {
-		// The closure's result enters as a single inout wire (matching the symbolic builder), whose
-		// value the prover computes natively from the public-derived inputs. See
-		// `IronSpartanBuilderChannel::compute_public_value`.
-		let value = f(&extract_public_values(inputs));
-		let wire = self.inout_alloc.alloc();
-		let witness_wire = self.witness_gen.borrow_mut().write_inout(wire, value);
-		CircuitElem::wire(&self.witness_gen, witness_wire)
+		// The closure's result enters as a single derived public wire (matching the symbolic
+		// builder's `hint_varsize`), whose value the prover computes natively from the
+		// public-derived inputs. See `IronSpartanBuilderChannel::compute_public_value`.
+		let out_wire = {
+			let mut witness_gen = self.witness_gen.borrow_mut();
+			let input_wires: Vec<_> = inputs
+				.iter()
+				.map(|elem| elem.to_wire(&mut witness_gen))
+				.collect();
+			witness_gen.hint_varsize(&input_wires, 1, move |vals| vec![f(vals)])[0]
+		};
+		CircuitElem::wire(&self.witness_gen, out_wire)
 	}
-}
-
-/// Extracts the concrete field value of each input. The prover knows every wire's value (public or
-/// not), so no public-tag check is needed here — the [`IPVerifierChannel::compute_public_value`]
-/// contract is enforced verifier-side, where non-public inputs are value-less.
-fn extract_public_values<F: Field>(inputs: &[CircuitElem<F, WitnessGenerator<'_, F>>]) -> Vec<F> {
-	inputs
-		.iter()
-		.map(|elem| match elem {
-			CircuitElem::Constant(c) => *c,
-			CircuitElem::Wire { wire, .. } => wire.val(),
-		})
-		.collect()
 }
 
 impl<'r, 'a, F: Field> IOPVerifierChannel<'r, F> for ReplayChannel<'a, F> {

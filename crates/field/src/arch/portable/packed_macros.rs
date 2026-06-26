@@ -1,36 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-macro_rules! define_packed_binary_fields {
-    (
-        underlier: $underlier:ident,
-        packed_fields: [
-            $(
-                packed_field {
-                    name: $name:ident,
-                    scalar: $scalar:ident,
-                    mul: ($($mul:tt)*),
-                    square: ($($square:tt)*),
-                    invert: ($($invert:tt)*),
-                    wide_mul: ($($wide_mul:tt)*),
-                }
-            ),* $(,)?
-        ]
-    ) => {
-        $(
-            define_packed_binary_field!(
-                $name,
-                $crate::$scalar,
-                $underlier,
-                ($($mul)*),
-                ($($square)*),
-                ($($invert)*),
-                ($($wide_mul)*)
-            );
-        )*
-    };
-}
-
 macro_rules! define_packed_binary_field {
 	(
 		$name:ident, $scalar:path, $underlier:ident,
@@ -81,7 +51,6 @@ macro_rules! define_packed_binary_field {
 }
 
 pub(crate) use define_packed_binary_field;
-pub(crate) use define_packed_binary_fields;
 
 pub(crate) use crate::arithmetic_traits::{impl_invert_with, impl_mul_with, impl_square_with};
 
@@ -109,8 +78,8 @@ pub(crate) mod portable_macros {
 			}
 		};
 		// Path to strategy in caller's scope
-		($impl_macro:ident $name:ident, ($strategy:path)) => {
-			$impl_macro!($name @ $strategy);
+		($impl_macro:ident $name:ident, ($($strategy:tt)*)) => {
+			$impl_macro!($name @ $($strategy)*);
 		};
 	}
 

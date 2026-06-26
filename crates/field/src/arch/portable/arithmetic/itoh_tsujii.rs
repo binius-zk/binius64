@@ -19,10 +19,12 @@
 
 use std::{array, iter, ops::Mul, sync::LazyLock};
 
+use bytemuck::TransparentWrapper;
+
 use crate::{
 	BinaryField1b, Divisible, ExtensionField,
 	arch::M128,
-	arithmetic_traits::Square,
+	arithmetic_traits::{InvertOrZero, Square},
 	ghash::BinaryField128bGhash as GhashB128,
 	linear_transformation::{
 		BytewiseLookupTransformation, BytewiseLookupTransformationFactory,
@@ -137,6 +139,26 @@ where
 	Divisible::<GhashB128>::from_iter(
 		Divisible::<GhashB128>::value_iter(x).map(|scalar| power_map.transform(&scalar)),
 	)
+}
+
+/// `InvertOrZero` strategy wrapper backed by the [Itoh-Tsujii](invert_b128) inversion.
+///
+/// This is the single inversion strategy for the GHASH field across every architecture — there is
+/// no carryless-multiply inverse, so the same addition-chain algorithm applies whether the square
+/// and multiply underneath are CLMUL/PMULL-accelerated or software. Each arch type-aliases its
+/// `GhashInvert1x` to this wrapper.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct GhashItohTsujii<T>(T);
+
+impl<P> InvertOrZero for GhashItohTsujii<P>
+where
+	P: Copy + Square + Mul<Output = P> + Divisible<GhashB128>,
+{
+	#[inline]
+	fn invert_or_zero(self) -> Self {
+		Self::wrap(invert_b128(Self::peel(self)))
+	}
 }
 
 #[cfg(test)]

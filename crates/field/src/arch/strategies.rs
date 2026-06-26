@@ -8,39 +8,23 @@ use bytemuck::TransparentWrapper;
 use crate::{
 	BinaryField,
 	arch::PackedPrimitiveType,
-	arithmetic_traits::{Square, TaggedMul, TaggedSquare, WideMul},
+	arithmetic_traits::{InvertOrZero, Square, WideMul},
 	underlier::{Divisible, UnderlierType},
 };
 
-/// Packed strategy for arithmetic operations.
-/// (Uses arithmetic operations with underlier and subfield to simultaneously calculate the result
-/// for all packed values)
-pub struct PackedStrategy;
 /// Pairwise strategy. Apply the result of the operation to each packed element independently.
 pub struct PairwiseStrategy;
-/// Get result of operation from the table for each sub-element
-pub struct PairwiseTableStrategy;
-/// Applicable only for multiply by alpha and square operations.
-/// Reuse multiplication operation for that.
-pub struct ReuseMultiplyStrategy;
 
-/// Use operations with GFNI instructions
-pub struct GfniStrategy;
-/// Use SIMD operations for packed arithmetic
-pub struct SimdStrategy;
-/// Specialized versions of the above to resolve conflicting implementations
-pub struct GfniSpecializedStrategy256b;
-pub struct GfniSpecializedStrategy512b;
+/// Square wrapper that squares by dividing the underlier into `SubU`-sized lanes, squaring each
+/// lane as a `PackedPrimitiveType<SubU, F>`, and recombining. A generic fallback for packings that
+/// lack a specialized full-width square. The sub-underlier `SubU` is carried as a `PhantomData`
+/// type parameter so the packing type `T` stays last for the macro's `Divide<SubU, $name>` form.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+#[transparent(T)]
+pub struct Divide<SubU, T>(T, PhantomData<SubU>);
 
-/// Strategy for ScaledUnderlier operations that delegate to sub-underlier operations.
-pub struct ScaledStrategy;
-
-/// Strategy that squares by dividing the underlier into `SubU`-sized lanes, squaring each lane as a
-/// `PackedPrimitiveType<SubU, F>`, and recombining. A generic fallback for packings that lack a
-/// specialized full-width square.
-pub struct DivideStrategy<SubU>(PhantomData<SubU>);
-
-impl<U, SubU, F> TaggedSquare<DivideStrategy<SubU>> for PackedPrimitiveType<U, F>
+impl<U, SubU, F> Square for Divide<SubU, PackedPrimitiveType<U, F>>
 where
 	U: UnderlierType + Divisible<SubU>,
 	SubU: UnderlierType,
@@ -49,18 +33,38 @@ where
 {
 	#[inline]
 	fn square(self) -> Self {
-		let squared = Divisible::<SubU>::value_iter(self.to_underlier()).map(|lane| {
+		let val = Self::peel(self);
+		let squared = Divisible::<SubU>::value_iter(val.to_underlier()).map(|lane| {
 			PackedPrimitiveType::<SubU, F>::from_underlier(lane)
 				.square()
 				.to_underlier()
 		});
-		Self::from_underlier(Divisible::<SubU>::from_iter(squared))
+		Self::wrap(PackedPrimitiveType::from_underlier(Divisible::<SubU>::from_iter(squared)))
+	}
+}
+
+impl<U, SubU, F> InvertOrZero for Divide<SubU, PackedPrimitiveType<U, F>>
+where
+	U: UnderlierType + Divisible<SubU>,
+	SubU: UnderlierType,
+	F: BinaryField,
+	PackedPrimitiveType<SubU, F>: InvertOrZero,
+{
+	#[inline]
+	fn invert_or_zero(self) -> Self {
+		let val = Self::peel(self);
+		let inverted = Divisible::<SubU>::value_iter(val.to_underlier()).map(|lane| {
+			PackedPrimitiveType::<SubU, F>::from_underlier(lane)
+				.invert_or_zero()
+				.to_underlier()
+		});
+		Self::wrap(PackedPrimitiveType::from_underlier(Divisible::<SubU>::from_iter(inverted)))
 	}
 }
 
 /// Widening-multiply wrapper that defers to per-`u8`-lane multiplication: it splits each underlier
 /// into `u8` lanes, applies the 1-byte packing's [`WideMul`], and recombines. This is the `WideMul`
-/// analogue of [`DivideStrategy`] — a generic fallback for packings whose underlier is
+/// analogue of [`Divide`] — a generic fallback for packings whose underlier is
 /// `Divisible<u8>`. It requires the 1-byte packing's wide product to already be the reduced element
 /// (`Output = Self`), so `reduce` is the identity.
 #[repr(transparent)]
@@ -97,14 +101,18 @@ where
 	}
 }
 
-/// Strategy that defines multiplication as `reduce(wide_mul(a, b))`, deferring to the type's own
+/// Wrapper that defines multiplication as `reduce(wide_mul(a, b))`, deferring to the type's own
 /// [`WideMul`] impl, making the widening multiply the single source of truth for both `Mul` and
 /// `WideMul`. Used by every GHASH and AES packing.
-pub struct MulFromWideMul;
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct MulFromWideMul<T>(T);
 
-impl<P: WideMul> TaggedMul<MulFromWideMul> for P {
+impl<P: WideMul> std::ops::Mul for MulFromWideMul<P> {
+	type Output = Self;
+
 	#[inline]
 	fn mul(self, rhs: Self) -> Self {
-		P::reduce(P::wide_mul(self, rhs))
+		Self::wrap(P::reduce(P::wide_mul(Self::peel(self), Self::peel(rhs))))
 	}
 }

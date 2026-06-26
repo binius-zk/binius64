@@ -19,7 +19,7 @@ use crate::{
 			univariate_mul_utils_128::{Underlier128bLanes, spread_bits_64},
 		},
 	},
-	arithmetic_traits::{TaggedInvertOrZero, TaggedSquare, impl_transformation_with_strategy},
+	arithmetic_traits::impl_transformation_with_strategy,
 };
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring portable
@@ -27,14 +27,12 @@ use crate::{
 /// implements [`Underlier128bLanes`], so the portable schoolbook widening multiply applies.
 pub type GhashWideMul1x<T> = crate::arch::portable::arithmetic::ghash::GhashWideMul<T>;
 
-/// Square strategy for the `PackedBinaryGhash1x128b` packing.
-pub type GhashSquare1x = GhashStrategy;
+/// Square wrapper for the `PackedBinaryGhash1x128b` packing: the shared software square (the WASM
+/// SIMD `M128` implements [`Underlier128bLanes`], so the portable bit-spread square applies).
+pub type GhashSquare1x<T> = crate::arch::portable::arithmetic::ghash::GhashSoftMul<T>;
 
-/// Invert strategy for the `PackedBinaryGhash1x128b` packing.
-pub type GhashInvert1x = GhashStrategy;
-
-/// Strategy for WASM32 GHASH field arithmetic operations.
-pub struct GhashStrategy;
+/// Invert wrapper for the `PackedBinaryGhash1x128b` packing: the shared Itoh-Tsujii inversion.
+pub type GhashInvert1x<T> = crate::arch::portable::arithmetic::itoh_tsujii::GhashItohTsujii<T>;
 
 // Define broadcast
 impl_broadcast!(M128, BinaryField128bGhash);
@@ -62,22 +60,6 @@ impl Underlier128bLanes for M128 {
 		let (hi, lo) = self.split_hi_lo_64();
 
 		(Self::from(spread_bits_64(hi)), Self::from(spread_bits_64(lo)))
-	}
-}
-
-impl TaggedSquare<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
-	#[inline]
-	fn square(self) -> Self {
-		Self::from_underlier(crate::arch::portable::arithmetic::ghash::ghash_square(
-			self.to_underlier(),
-		))
-	}
-}
-
-impl TaggedInvertOrZero<GhashStrategy> for PackedPrimitiveType<M128, BinaryField128bGhash> {
-	#[inline]
-	fn invert_or_zero(self) -> Self {
-		crate::arch::invert_b128(self)
 	}
 }
 

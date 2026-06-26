@@ -15,7 +15,7 @@ use bytemuck::TransparentWrapper;
 
 use crate::{
 	BinaryField128bGhash as GhashB128, Divisible, WideMul, arch::PackedPrimitiveType,
-	arithmetic_traits::TaggedSquare, underlier::UnderlierType,
+	arithmetic_traits::Square, underlier::UnderlierType,
 };
 
 /// Trait for underliers that support CLMUL operations which are needed for the
@@ -52,17 +52,19 @@ pub fn square_clmul<U: ClMulUnderlier>(x: U) -> U {
 	t0
 }
 
-/// Strategy for the full-width GHASH square via CLMUL, available for any [`ClMulUnderlier`] — this
-/// single impl covers `M256`/`M512` (and `M128`) whenever the corresponding CLMUL target feature is
-/// present.
-pub struct GhashClMulSquareStrategy;
+/// Square wrapper for the full-width GHASH square via CLMUL, available for any [`ClMulUnderlier`] —
+/// this single impl covers `M256`/`M512` (and `M128`) whenever the corresponding CLMUL target
+/// feature is present.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct GhashClMul<T>(T);
 
-impl<U: ClMulUnderlier> TaggedSquare<GhashClMulSquareStrategy>
-	for PackedPrimitiveType<U, GhashB128>
-{
+impl<U: ClMulUnderlier> Square for GhashClMul<PackedPrimitiveType<U, GhashB128>> {
 	#[inline]
 	fn square(self) -> Self {
-		Self::from_underlier(square_clmul(self.to_underlier()))
+		Self::wrap(PackedPrimitiveType::from_underlier(square_clmul(
+			Self::peel(self).to_underlier(),
+		)))
 	}
 }
 

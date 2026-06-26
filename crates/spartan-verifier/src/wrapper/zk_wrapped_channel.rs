@@ -13,7 +13,7 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use binius_field::{BinaryField, Field};
+use binius_field::BinaryField;
 use binius_iop::{
 	basefold_zk_channel::{BaseFoldZKOracle, BaseFoldZKVerifierChannel},
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
@@ -21,7 +21,7 @@ use binius_iop::{
 };
 use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::{
-	circuit_builder::{InstanceGenerator, WireAllocator},
+	circuit_builder::{CircuitBuilder, InstanceGenerator, WireAllocator},
 	constraint_system::{WireKind, WitnessLayout},
 };
 use binius_transcript::fiat_shamir::Challenger;
@@ -218,11 +218,18 @@ where
 		inputs: &[Self::Elem],
 		f: impl FnOnce(&[F]) -> F,
 	) -> Self::Elem {
-		// The closure's result enters as a single inout wire (matching the symbolic builder), whose
-		// value the verifier computes natively from the public-derived inputs. See
-		// `IronSpartanBuilderChannel::compute_public_value`.
-		let value = f(&extract_public_values(inputs));
-		self.alloc_inout_elem(value)
+		// The closure's result enters as a single derived public wire (matching the symbolic
+		// builder's `hint_varsize`), whose value the verifier computes natively from the
+		// public-derived inputs. See `IronSpartanBuilderChannel::compute_public_value`.
+		let out_wire = {
+			let mut instance_gen = self.instance_gen.borrow_mut();
+			let input_wires: Vec<_> = inputs
+				.iter()
+				.map(|elem| elem.to_wire(&mut instance_gen))
+				.collect();
+			instance_gen.hint_varsize(&input_wires, 1, move |vals| vec![f(vals)])[0]
+		};
+		CircuitElem::wire(&self.instance_gen, out_wire)
 	}
 }
 
@@ -302,18 +309,4 @@ where
 		}
 		self.inner_channel.verify_oracle_relations(inner_relations)
 	}
-}
-
-/// Extracts the concrete field value of each public-derived input. Panics if any input is not
-/// public (value-less), enforcing the [`IPVerifierChannel::compute_public_value`] contract.
-fn extract_public_values<F: Field>(inputs: &[CircuitElem<F, InstanceGenerator<'_, F>>]) -> Vec<F> {
-	inputs
-		.iter()
-		.map(|elem| match elem {
-			CircuitElem::Constant(c) => *c,
-			CircuitElem::Wire { wire, .. } => wire
-				.value()
-				.expect("compute_public_value: input is not public"),
-		})
-		.collect()
 }

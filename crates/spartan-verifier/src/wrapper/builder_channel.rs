@@ -107,14 +107,24 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 
 	fn compute_public_value(
 		&mut self,
-		_inputs: &[Self::Elem],
-		_f: impl FnOnce(&[F]) -> F,
+		inputs: &[Self::Elem],
+		f: impl FnOnce(&[F]) -> F,
 	) -> Self::Elem {
 		// The closure is an arbitrary native computation the constraint system cannot replay, so
-		// its result enters as a single inout wire (a public input the verifier supplies), rather
-		// than a sub-circuit's worth of constraints. The value is filled concretely by the
-		// instance/witness channels; symbolically we only allocate the wire.
-		self.alloc_inout_elem()
+		// its result enters as a single derived public wire (a one-output `hint_varsize`,
+		// computed from the public inputs, emitting no constraints) rather than a sub-circuit's
+		// worth of constraints. Symbolically we only allocate the wire; the value is filled
+		// concretely by the instance/witness channels, which recompute it via their own
+		// `hint_varsize`.
+		let out_wire = {
+			let mut builder = self.builder.borrow_mut();
+			let input_wires: Vec<_> = inputs
+				.iter()
+				.map(|elem| elem.to_wire(&mut builder))
+				.collect();
+			builder.hint_varsize(&input_wires, 1, move |vals| vec![f(vals)])[0]
+		};
+		CircuitElem::wire(&self.builder, out_wire)
 	}
 }
 
