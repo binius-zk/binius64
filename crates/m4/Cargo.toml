@@ -9,11 +9,19 @@ workspace = true
 
 [dependencies]
 binius-core = { path = "../core" }
+binius-field = { path = "../field" }
 binius-frontend = { path = "../frontend" }
+binius-iop = { path = "../iop" }
+binius-iop-prover = { path = "../iop-prover" }
+binius-math = { path = "../math" }
 binius-utils = { path = "../utils" }
+binius-verifier = { path = "../verifier" }
 
 [dev-dependencies]
+binius-prover = { path = "../prover" }
+binius-transcript = { path = "../transcript" }
 proptest = { workspace = true }
+rand = { workspace = true }
 
 [features]
 default = ["rayon"]

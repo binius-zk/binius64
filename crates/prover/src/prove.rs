@@ -5,7 +5,7 @@ use binius_core::{
 	word::Word,
 };
 use binius_field::{
-	AESTowerField8b as B8, BinaryField, ExtensionField, PackedAESBinaryField16x8b, PackedExtension,
+	AESTowerField8b as B8, BinaryField, ExtensionField, PackedAESBinaryField64x8b, PackedExtension,
 	PackedField,
 };
 use binius_hash::binary_merkle_tree::HashSuite;
@@ -366,7 +366,24 @@ fn compute_batched_transparent<P: PackedField<Scalar = B128>>(
 	rs_eq_ind
 }
 
-fn pack_witness<P: PackedField<Scalar = B128>>(
+/// Packs committed witness words into the field buffer committed as the trace oracle.
+///
+/// Two 64-bit words are packed little-endian into one 128-bit field element.
+/// The element sequence is zero-padded up to `2^log_witness_elems`.
+///
+/// # Arguments
+///
+/// - `log_witness_elems`: base-2 logarithm of the committed field-element count.
+/// - `witness`: the committed witness words, in value-vector order.
+///
+/// # Returns
+///
+/// The packed multilinear over `log_witness_elems` variables, ready to commit.
+///
+/// # Errors
+///
+/// Returns an error when the words do not fit in `2^log_witness_elems` field elements.
+pub fn pack_witness<P: PackedField<Scalar = B128>>(
 	log_witness_elems: usize,
 	witness: &[Word],
 ) -> Result<FieldBuffer<P>, Error> {
@@ -425,7 +442,7 @@ where
 	let big_field_zerocheck_challenges =
 		channel.sample_many(log_constraint_count - small_field_zerocheck_challenges.len());
 
-	let prover = OblongZerocheckProver::<_, PackedAESBinaryField16x8b, PChallenge>::new(
+	let prover = OblongZerocheckProver::<_, PackedAESBinaryField64x8b, PChallenge>::new(
 		a,
 		b,
 		c,

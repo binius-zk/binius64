@@ -15,7 +15,7 @@ use crate::{
 pub const SKIPPED_VARS: usize = binius_core::consts::LOG_WORD_SIZE_BITS;
 
 /// Size of the univariate domain
-pub const ROWS_PER_HYPERCUBE_VERTEX: usize = binius_core::consts::WORD_SIZE_BITS;
+pub const ROWS_PER_HYPERCUBE_VERTEX: usize = 1 << SKIPPED_VARS;
 
 /// Output from the AND constraint reduction protocol verification.
 #[derive(Debug, PartialEq)]

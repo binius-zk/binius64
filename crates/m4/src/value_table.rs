@@ -6,8 +6,14 @@ use binius_core::{
 	constraint_system::{ValueVec, ValueVecLayout},
 	word::Word,
 };
+use binius_field::PackedField;
 use binius_frontend::{Circuit, PopulateError, WitnessFiller};
+use binius_iop_prover::channel::IOPProverChannel;
+use binius_math::FieldBuffer;
 use binius_utils::rayon::prelude::*;
+use binius_verifier::config::B128;
+
+use crate::commit::BatchCommitLayout;
 
 /// The witness for a batch of `2^k` independent instances of one circuit.
 ///
@@ -199,6 +205,89 @@ impl ValueTable {
 		ValueVec::new_from_data(self.layout.clone(), public.to_vec(), private.to_vec())
 			.expect("public and private lengths sum to the committed layout length")
 	}
+
+	/// The committed-multilinear layout for this batch.
+	///
+	/// The verifier derives the same layout, so both sides agree on the committed size.
+	pub fn commit_layout(&self) -> BatchCommitLayout {
+		BatchCommitLayout::new(self.instance_stride(), self.log_instances())
+	}
+
+	/// Packs the batch witness into the multilinear committed as the trace oracle.
+	///
+	/// Each instance is zero-padded up to a power-of-two word count.
+	/// So the instance index becomes the high-order coordinates of the committed multilinear.
+	///
+	/// ```text
+	///   [ instance 0 ][ instance 1 ] ... [ instance K-1 ]
+	///   each block padded to 2^log_instance_words words
+	/// ```
+	///
+	/// Every packed element is built in one parallel pass over the table.
+	/// No zero-padded word buffer is materialized in between.
+	/// The result equals the single-instance packer applied to each padded instance.
+	pub fn pack<P>(&self) -> FieldBuffer<P>
+	where
+		P: PackedField<Scalar = B128>,
+	{
+		let layout = self.commit_layout();
+
+		// Element index layout: high bits select the instance, low bits the element within it.
+		let total_elems = 1usize << layout.log_witness_elems;
+		let log_instance_elems = layout.log_witness_elems - layout.log_instances;
+		let elem_mask = (1usize << log_instance_elems) - 1;
+
+		// The unpadded, instance-major word buffer feeds the packing directly.
+		let words = self.as_words();
+		let stride = self.instance_stride();
+
+		// Build every packed field element in parallel, with no padded intermediate buffer.
+		// One element packs two consecutive words of one instance, little-endian.
+		let n_packed = 1usize << layout.log_witness_elems.saturating_sub(P::LOG_WIDTH);
+		let mut values = Vec::with_capacity(n_packed);
+		(0..n_packed)
+			.into_par_iter()
+			.map(|packed_index| {
+				P::from_scalars((0..P::WIDTH).map(|lane| {
+					// The batch-wide element index this lane carries.
+					let elem = (packed_index << P::LOG_WIDTH) | lane;
+
+					// Lanes past the real elements are the commitment's zero padding.
+					if elem >= total_elems {
+						return B128::new(0);
+					}
+
+					// Split into the instance and the element within that instance.
+					let instance = elem >> log_instance_elems;
+					let local = elem & elem_mask;
+
+					// The two words this element packs, zeroed past the instance's real words.
+					let base = instance * stride;
+					let lo = 2 * local;
+					let w0 = if lo < stride { words[base + lo].0 } else { 0 };
+					let w1 = if lo + 1 < stride {
+						words[base + lo + 1].0
+					} else {
+						0
+					};
+					B128::new(((w1 as u128) << 64) | (w0 as u128))
+				}))
+			})
+			.collect_into_vec(&mut values);
+
+		FieldBuffer::new(layout.log_witness_elems, values.into_boxed_slice())
+	}
+
+	/// Commits the batch witness as the trace oracle on the given channel.
+	///
+	/// Returns the oracle handle the later opening proof refers to.
+	pub fn commit<P, Channel>(&self, channel: &mut Channel) -> Channel::Oracle
+	where
+		P: PackedField<Scalar = B128>,
+		Channel: IOPProverChannel<P>,
+	{
+		channel.send_oracle(self.pack::<P>().to_ref())
+	}
 }
 
 /// The failure of a single instance during batch witness population.
@@ -230,10 +319,19 @@ impl error::Error for PopulateInstanceError {
 #[cfg(test)]
 mod tests {
 	use binius_core::verify::verify_constraints;
+	use binius_field::{PackedBinaryGhash1x128b, Random};
 	use binius_frontend::{CircuitBuilder, Wire};
+	use binius_iop_prover::naive_channel::NaiveProverChannel;
+	use binius_math::multilinear::evaluate::evaluate;
+	use binius_transcript::ProverTranscript;
+	use binius_verifier::config::StdChallenger;
 	use proptest::prelude::*;
+	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
+
+	// A width-1 packed field keeps one scalar per element, so scalar iteration is layout-clean.
+	type P = PackedBinaryGhash1x128b;
 
 	// A circuit that asserts `z == x & y` over three public words.
 	//
@@ -417,6 +515,185 @@ mod tests {
 				let reference = reference_value_vec(&c, x, y);
 				prop_assert_eq!(table.instance(i), reference.combined_witness());
 			}
+		}
+	}
+
+	#[test]
+	fn instance_is_the_high_order_block_of_the_commitment() {
+		let c = and_circuit();
+
+		// Fixture state: 2^2 = 4 instances with distinct, satisfying inputs.
+		let inputs: [(u64, u64); 4] = [(1, 3), (5, 6), (9, 12), (0xFF, 0x0F)];
+		let table = ValueTable::populate(&c.circuit, 2, |i, w| {
+			let (x, y) = inputs[i];
+			w[c.x] = Word(x);
+			w[c.y] = Word(y);
+			w[c.z] = Word(x & y);
+		})
+		.unwrap();
+
+		// The committed multilinear, as a flat list of scalars.
+		let batched: Vec<B128> = table.pack::<P>().iter_scalars().collect();
+
+		// One instance occupies `2^log_witness_elems` scalars when committed on its own.
+		let block = 1usize << BatchCommitLayout::new(table.instance_stride(), 0).log_witness_elems;
+
+		// Invariant: block i equals instance i committed on its own.
+		//
+		//     batched: [ block 0 | block 1 | block 2 | block 3 ]
+		//     block i  ==  pack(single-instance table for inputs[i])
+		for (i, &(x, y)) in inputs.iter().enumerate() {
+			let single_table = ValueTable::populate(&c.circuit, 0, |_, w| {
+				w[c.x] = Word(x);
+				w[c.y] = Word(y);
+				w[c.z] = Word(x & y);
+			})
+			.unwrap();
+
+			let single: Vec<B128> = single_table.pack::<P>().iter_scalars().collect();
+
+			assert_eq!(single.len(), block);
+			assert_eq!(
+				&batched[i * block..(i + 1) * block],
+				&single[..],
+				"instance {i} is not the high-order block of the committed table"
+			);
+		}
+	}
+
+	#[test]
+	fn commit_matches_the_verifier_oracle_spec() {
+		let c = and_circuit();
+
+		// Fixture state: 2^2 = 4 instances.
+		let log_instances = 2;
+		let table = ValueTable::populate(&c.circuit, log_instances, |i, w| {
+			let x = i as u64;
+			let y = i as u64 + 1;
+			w[c.x] = Word(x);
+			w[c.y] = Word(y);
+			w[c.z] = Word(x & y);
+		})
+		.unwrap();
+
+		// The verifier builds the oracle spec from the constraint system.
+		// The prover packs the buffer from the table.
+		// `send_oracle` asserts both agree on size: the batched-FRI sizing invariant.
+		let layout =
+			BatchCommitLayout::for_constraint_system(c.circuit.constraint_system(), log_instances);
+		let spec = layout.oracle_spec();
+
+		let mut transcript = ProverTranscript::<StdChallenger>::default();
+		let mut channel = NaiveProverChannel::<B128, _>::new(&mut transcript, vec![spec]);
+
+		let _oracle = table.commit::<P, _>(&mut channel);
+
+		// All declared oracles were committed.
+		channel.finish();
+	}
+
+	#[test]
+	fn pack_matches_single_instance_packer() {
+		let c = and_circuit();
+
+		// Fixture state: 2^2 = 4 instances.
+		let table = ValueTable::populate(&c.circuit, 2, |i, w| {
+			let x = i as u64;
+			let y = i as u64 + 1;
+			w[c.x] = Word(x);
+			w[c.y] = Word(y);
+			w[c.z] = Word(x & y);
+		})
+		.unwrap();
+
+		// Reference: lay each instance into a zero-padded block, then run the base packer.
+		let layout = table.commit_layout();
+		let block = layout.padded_instance_words();
+		let mut padded = vec![Word::ZERO; table.n_instances() * block];
+		for instance in 0..table.n_instances() {
+			let src = table.instance(instance);
+			padded[instance * block..instance * block + src.len()].copy_from_slice(src);
+		}
+		let reference =
+			binius_prover::pack_witness::<P>(layout.log_witness_elems, &padded).unwrap();
+
+		// Invariant: the single-pass packer matches the base packer byte for byte.
+		// This pins the word-to-element layout to the base prover's, with no silent drift.
+		assert_eq!(table.pack::<P>().as_ref(), reference.as_ref());
+	}
+
+	// Packs one instance's words the way the committer packs within an instance:
+	// two little-endian words per element, zero-padded past the instance's real words.
+	//
+	// Independent of the batched packer, so the guardrail cross-checks the layout.
+	fn pack_instance_elems(words: &[Word], n_elems: usize) -> Vec<B128> {
+		(0..n_elems)
+			.map(|e| {
+				// Element e packs words 2e and 2e+1.
+				// Missing words are the commitment's zero-padding.
+				let w0 = words.get(2 * e).map_or(0, |w| w.0);
+				let w1 = words.get(2 * e + 1).map_or(0, |w| w.0);
+				B128::new(((w1 as u128) << 64) | (w0 as u128))
+			})
+			.collect()
+	}
+
+	proptest! {
+		#[test]
+		fn committed_mle_is_block_diagonal_in_the_instance(seed in any::<u64>()) {
+			// Invariant: the committed multilinear is block-diagonal in the instance index.
+			// - The top `k` variables index the instance.
+			// - The bottom `m_0` variables index the words within one instance.
+			//
+			//     committed(r_lo || r_hi) == sum_i eq(r_hi, i) * instance_i(r_lo)
+			//
+			// Evaluating both sides at a uniform random point pins the layout.
+			// A wire-major order, or any instance/word split drift, breaks the identity.
+
+			let c = and_circuit();
+
+			// K = 4 instances with distinct, satisfying inputs.
+			let table = ValueTable::populate(&c.circuit, 2, |i, w| {
+				let x = i as u64;
+				let y = i as u64 + 1;
+				w[c.x] = Word(x);
+				w[c.y] = Word(y);
+				w[c.z] = Word(x & y);
+			})
+			.unwrap();
+
+			let layout = table.commit_layout();
+			let committed = table.pack::<P>();
+
+			// A uniform random point over the committed element hypercube.
+			let mut rng = StdRng::seed_from_u64(seed);
+			let r: Vec<B128> = (0..layout.log_witness_elems)
+				.map(|_| B128::random(&mut rng))
+				.collect();
+
+			// Left side: evaluate the committed multilinear directly at r.
+			let lhs = evaluate(&committed, &r);
+
+			// Split r into the low (within-instance) and high (instance) coordinates.
+			//
+			//     r = [ r_lo ............ | r_hi ......... ]
+			//          \_ m_0 elem bits _/  \_k inst bits_/
+			let log_lo = layout.log_witness_elems - layout.log_instances;
+			let (r_lo, r_hi) = r.split_at(log_lo);
+
+			// Evaluate each instance's own packed multilinear at the low coordinates.
+			// Then combine across instances at the high coordinates.
+			// That combine is itself a multilinear evaluation: sum_i eq(r_hi, i) * s_i.
+			let per_instance: Vec<B128> = (0..table.n_instances())
+				.map(|i| {
+					let elems = pack_instance_elems(table.instance(i), 1 << log_lo);
+					evaluate(&FieldBuffer::<P>::from_values(&elems), r_lo)
+				})
+				.collect();
+			let rhs = evaluate(&FieldBuffer::<P>::from_values(&per_instance), r_hi);
+
+			// Agreement confirms the instance index occupies the high coordinates.
+			prop_assert_eq!(lhs, rhs);
 		}
 	}
 }

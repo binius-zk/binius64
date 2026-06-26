@@ -33,13 +33,15 @@
 //! This trades memory (storing 8 * 256 * 64 field elements) for significant computation savings
 //! compared to computing the NTT from scratch.
 
-use std::vec;
+use std::{array, marker::PhantomData};
 
 use binius_field::{
-	BinaryField, BinaryField1b, Divisible, Field, PackedBinaryField8x1b, PackedField,
-	field::FieldOps,
+	BinaryField, BinaryField1b as B1, Divisible, PackedField, util::expand_subset_sums_array,
 };
-use binius_math::{BinarySubspace, univariate::lagrange_evals_scalars};
+use binius_math::{
+	BinarySubspace, FieldBuffer,
+	ntt::{AdditiveNTT, NeighborsLastReference, domain_context::GenericOnTheFly},
+};
 use binius_verifier::protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS};
 
 /// A precomputed lookup table for fast NTT operations on 64-bit binary field elements.
@@ -64,13 +66,13 @@ use binius_verifier::protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS
 ///
 /// - `P`: The packed field type used for storing precomputed values. Must implement `PackedField`
 ///   with a scalar type that is a binary field.
-#[derive(Clone)]
-pub struct NTTLookup<P>(Box<[[[P; 4]; 256]; 8]>);
+#[derive(Debug, Clone)]
+pub struct NTTLookup<P>(Box<[[P; 256]; 8]>);
 
-impl<PNTTDomain> NTTLookup<PNTTDomain>
+impl<F, PNTTDomain> NTTLookup<PNTTDomain>
 where
-	PNTTDomain: PackedField,
-	PNTTDomain::Scalar: BinaryField + Field,
+	F: BinaryField,
+	PNTTDomain: PackedField<Scalar = F>,
 {
 	/// Creates a new NTT lookup table by precomputing all possible NTT evaluations
 	/// for 8-bit input chunks across all byte positions in a 64-bit word.
@@ -87,72 +89,22 @@ where
 	/// - `PNTTDomain::WIDTH` must equal 16 (packed field constraint)
 	/// - Input domain dimension must equal `SKIPPED_VARS` (6)
 	/// - Output domain length must equal `ROWS_PER_HYPERCUBE_VERTEX` (64)
-	pub fn new(
-		ntt_input_domain: &BinarySubspace<PNTTDomain::Scalar>,
-		ntt_output_domain: &[PNTTDomain::Scalar],
-	) -> Self {
-		assert_eq!(PNTTDomain::WIDTH, 16);
-		assert_eq!(ntt_output_domain.len(), ROWS_PER_HYPERCUBE_VERTEX);
-		assert_eq!(ntt_input_domain.dim(), SKIPPED_VARS);
+	pub fn new(subspace: &BinarySubspace<F>) -> Self {
+		assert_eq!(PNTTDomain::WIDTH, ROWS_PER_HYPERCUBE_VERTEX);
+		assert_eq!(subspace.dim(), SKIPPED_VARS + 1);
 
-		let mut lookup = Box::new([[[PNTTDomain::zero(); 4]; 256]; 8]);
+		let lde = LowDegreeExtension::new(subspace);
+		let lde_mat = array::from_fn::<_, { ROWS_PER_HYPERCUBE_VERTEX / 8 }, _>(|b| {
+			array::from_fn::<_, 8, _>(|i| {
+				let output = lde.transform(1 << (8 * b + i));
+				assert_eq!(output.log_len(), SKIPPED_VARS + 1);
+				// Pull out the second element, corresponding to the output domain
+				output.as_ref()[1]
+			})
+		});
 
-		let mut eval_point_lagrange_evals =
-			vec![
-				vec![PNTTDomain::Scalar::ZERO; ROWS_PER_HYPERCUBE_VERTEX];
-				ntt_output_domain.len()
-			];
-		for (eval_point_idx, eval_point) in ntt_output_domain.iter().enumerate() {
-			eval_point_lagrange_evals[eval_point_idx] =
-				lagrange_evals_scalars(ntt_input_domain, *eval_point);
-		}
-
-		for eight_bit_chunk_idx in 0..ROWS_PER_HYPERCUBE_VERTEX / 8 {
-			for log_coefficient_as_bit_string in 0..8 {
-				let coefficient_as_bit_string: u8 = 1 << log_coefficient_as_bit_string;
-				let mut nonzero = PackedBinaryField8x1b::zero();
-				nonzero.set(log_coefficient_as_bit_string, BinaryField1b::ONE);
-				let nonzero_lagrange_basis_coeffs: Vec<_> = nonzero.iter().collect();
-				let mut lagrange_basis_coeffs = [BinaryField1b::ZERO; ROWS_PER_HYPERCUBE_VERTEX];
-
-				for (i, nonzero_lagrange_basis_coeff) in
-					nonzero_lagrange_basis_coeffs.into_iter().enumerate()
-				{
-					lagrange_basis_coeffs[eight_bit_chunk_idx * 8 + i] =
-						nonzero_lagrange_basis_coeff;
-				}
-
-				#[allow(clippy::needless_range_loop)]
-				for eval_point_idx in 0..ROWS_PER_HYPERCUBE_VERTEX {
-					let mut result = PNTTDomain::Scalar::ZERO;
-					for basis_point_idx in 0..1 << ntt_input_domain.dim() {
-						result += eval_point_lagrange_evals[eval_point_idx][basis_point_idx]
-							* lagrange_basis_coeffs[basis_point_idx];
-					}
-
-					let packed_idx = eval_point_idx / PNTTDomain::WIDTH; // 0, 1, 2, or 3
-					let scalar_idx = eval_point_idx % PNTTDomain::WIDTH; // 0-15
-					let cell = &mut lookup[eight_bit_chunk_idx][coefficient_as_bit_string as usize]
-						[packed_idx];
-					cell.set(scalar_idx, result);
-				}
-			}
-		}
-
-		// Build combined coefficient lookup table
-		for byte_idx in 0..8 {
-			for coefficient_as_bit_string in 0..1 << 8 {
-				let mut result = [PNTTDomain::zero(); 4];
-				for bit_in_string in 0..8 {
-					let this_one_hot = coefficient_as_bit_string & 1 << bit_in_string;
-					for packed_idx in 0..4 {
-						result[packed_idx] += lookup[byte_idx][this_one_hot][packed_idx];
-					}
-				}
-				lookup[byte_idx][coefficient_as_bit_string] = result;
-			}
-		}
-		NTTLookup(lookup)
+		let lookup = lde_mat.map(expand_subset_sums_array::<_, 8, 256>);
+		NTTLookup(Box::new(lookup))
 	}
 
 	/// Computes the NTT of 64 1-bit coefficients using precomputed lookup tables.
@@ -180,158 +132,120 @@ where
 	/// the NTT evaluations at all points in the output domain.
 	#[cfg(test)]
 	#[inline]
-	pub fn ntt(
-		&self,
-		coeffs_in_byte_chunks: impl IntoIterator<Item = u8>,
-	) -> [PNTTDomain; ROWS_PER_HYPERCUBE_VERTEX / 16] {
-		let mut result = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
-
-		let byte_chunks: Vec<u8> = coeffs_in_byte_chunks.into_iter().collect();
-
-		for (eight_bit_chunk_idx, eight_bit_chunk) in byte_chunks.iter().enumerate() {
-			let row = &self.0[eight_bit_chunk_idx][*eight_bit_chunk as usize];
-			for j in 0..ROWS_PER_HYPERCUBE_VERTEX / 16 {
-				result[j] += row[j];
-			}
-		}
-
-		result
+	pub fn ntt<T: Divisible<u8>>(&self, input: T) -> PNTTDomain {
+		Divisible::value_iter(input)
+			.enumerate()
+			.map(|(b, i)| self.0[b][i as usize])
+			.sum()
 	}
 
-	/// Returns a reference to the NTT lookup table.
+	/// Computes the NTTs of `N` 64-bit inputs simultaneously using the precomputed lookup tables.
+	///
+	/// Each input is split into its eight constituent bytes (LSB to MSB), and the NTT is computed
+	/// by looking up the precomputed values for each byte position and summing them, exploiting the
+	/// linearity of the NTT. Processing all `N` inputs together within each byte position keeps the
+	/// independent accumulators in flight, which the compiler turns into instruction-level
+	/// parallelism.
+	///
+	/// ## Parameters
+	///
+	/// - `inputs`: An array of `N` values, each divisible into bytes. The words' `u64`s can be
+	///   passed directly.
+	///
+	/// ## Returns
+	///
+	/// An array of `N` packed field elements containing the NTT evaluations of each input.
 	#[inline]
-	pub fn get_lookup(&self) -> &[[[PNTTDomain; 4]; 256]; 8] {
-		&self.0
+	pub fn multi_ntt_array<T: Divisible<u8>, const N: usize>(
+		&self,
+		inputs: [T; N],
+	) -> [PNTTDomain; N] {
+		let mut results = [PNTTDomain::zero(); N];
+		for (byte_index, lookup_byte) in self.0.iter().enumerate() {
+			for (result, input) in std::iter::zip(&mut results, &inputs) {
+				let byte = Divisible::<u8>::get(input, byte_index);
+				*result += lookup_byte[byte as usize];
+			}
+		}
+		results
+	}
+}
+
+struct LowDegreeExtension<P: PackedField> {
+	interpolation: NeighborsLastReference<GenericOnTheFly<P::Scalar>>,
+	extrapolation: NeighborsLastReference<GenericOnTheFly<P::Scalar>>,
+	_marker: PhantomData<P>,
+}
+
+impl<F, P> LowDegreeExtension<P>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+{
+	fn new(subspace: &BinarySubspace<F>) -> Self {
+		assert_eq!(subspace.dim(), SKIPPED_VARS + 1);
+
+		let input_subspace = subspace.reduce_dim(SKIPPED_VARS);
+		let input_domain_context = GenericOnTheFly::generate_from_subspace(&input_subspace);
+		let output_domain_context = GenericOnTheFly::generate_from_subspace(subspace);
+
+		Self {
+			interpolation: NeighborsLastReference {
+				domain_context: input_domain_context,
+			},
+			extrapolation: NeighborsLastReference {
+				domain_context: output_domain_context,
+			},
+			_marker: PhantomData,
+		}
+	}
+
+	fn transform(&self, input: u64) -> FieldBuffer<P> {
+		let mut values = FieldBuffer::<P>::zeros(SKIPPED_VARS + 1);
+
+		// Inverse NTT the inputs in the first half of the buffer.
+		{
+			let mut values_split = values.split_half_mut();
+			let (mut input_elems, _) = values_split.halves();
+
+			for i in 0..ROWS_PER_HYPERCUBE_VERTEX {
+				input_elems.set(i, F::from(B1::from((input >> i) & 1 == 1)));
+			}
+			self.interpolation.inverse_transform(input_elems, 0, 0);
+		}
+
+		// Forward NTT the zero-padded coefficients.
+		self.extrapolation.forward_transform(values.to_mut(), 0, 0);
+
+		values
 	}
 }
 
 #[cfg(test)]
 mod test {
-	use std::iter::repeat_with;
+	use binius_field::{AESTowerField8b, PackedAESBinaryField64x8b};
+	use binius_math::BinarySubspace;
+	use rand::prelude::*;
 
-	use binius_field::{
-		AESTowerField8b, Field, PackedAESBinaryField16x8b, PackedBinaryField8x1b, PackedField,
-		Random,
-		arithmetic_traits::InvertOrZero,
-		field::FieldOps,
-		packed::{get_packed_slice, set_packed_slice},
-	};
-	use binius_math::{
-		BinarySubspace, FieldSliceMut,
-		ntt::{AdditiveNTT, NeighborsLastReference, domain_context::GenericOnTheFly},
-	};
-	use binius_verifier::{config::B1, protocols::bitand::SKIPPED_VARS};
-	use itertools::Itertools;
-	use rand::{SeedableRng, rngs::StdRng};
-
-	use super::{NTTLookup, ROWS_PER_HYPERCUBE_VERTEX};
-
-	/// Tests NTT accuracy on a well-known polynomial with a single coefficient set.
-	///
-	/// This test verifies the lookup table produces correct results by comparing
-	/// against the expected mathematical result for a simple input polynomial.
-	#[test]
-	fn assert_accurate_ntt_on_well_known_poly() {
-		let input_domain: Vec<_> = (0..SKIPPED_VARS)
-			.map(|x| AESTowerField8b::new(1 << x as u8))
-			.collect();
-
-		let input_domain = BinarySubspace::new_unchecked(input_domain);
-
-		let output_domain: Vec<_> = (ROWS_PER_HYPERCUBE_VERTEX..2 * ROWS_PER_HYPERCUBE_VERTEX)
-			.map(|x| AESTowerField8b::new(x as u8))
-			.collect();
-
-		let lookup = NTTLookup::new(&input_domain, &output_domain);
-
-		let mut slice_to_ntt: [u8; _] = [0; ROWS_PER_HYPERCUBE_VERTEX / 8];
-		slice_to_ntt[0] = 1;
-		let results: [PackedAESBinaryField16x8b; _] = lookup.ntt(slice_to_ntt);
-
-		for (i, input) in output_domain.iter().enumerate() {
-			let expected_result = (1..ROWS_PER_HYPERCUBE_VERTEX)
-				.map(|basis_idx| {
-					let field_elem = AESTowerField8b::new(basis_idx as u8);
-					(*input - field_elem) * field_elem.invert_or_zero()
-				})
-				.product::<AESTowerField8b>();
-
-			assert_eq!(get_packed_slice(&results, i), expected_result);
-		}
-	}
+	use super::*;
 
 	#[test]
-	fn test_against_binius_ntt() {
-		let mut rng = StdRng::from_seed([0; 32]);
-		let mut coeffs = (0..ROWS_PER_HYPERCUBE_VERTEX)
-			.map(|_| AESTowerField8b::from(B1::random(&mut rng)))
-			.collect_vec();
+	fn test_against_ntt() {
+		let subspace = BinarySubspace::with_dim(SKIPPED_VARS + 1);
+		let lde = LowDegreeExtension::<AESTowerField8b>::new(&subspace);
+		let ntt_lookup = NTTLookup::<PackedAESBinaryField64x8b>::new(&subspace);
 
-		let mut coeffs_packed = vec![PackedBinaryField8x1b::zero(); ROWS_PER_HYPERCUBE_VERTEX / 8];
+		// Repeat for 10 random values
+		let mut rng = StdRng::seed_from_u64(0);
+		for _ in 0..10 {
+			let input = rng.random::<u64>();
 
-		for (i, coeff) in coeffs.iter().enumerate() {
-			set_packed_slice(&mut coeffs_packed, i, B1::from(u8::from(*coeff)));
-		}
-
-		let coeffs_packed_iter_u8 = coeffs_packed.iter().map(|packed| {
-			packed
-				.iter()
-				.enumerate()
-				.fold(0u8, |acc, (i, bit)| acc | (u8::from(bit) << i))
-		});
-
-		let input_domain: Vec<_> = (0..SKIPPED_VARS)
-			.map(|x| AESTowerField8b::new(1 << x as u8))
-			.collect();
-
-		let input_domain = BinarySubspace::new_unchecked(input_domain);
-
-		let output_domain: Vec<_> = (ROWS_PER_HYPERCUBE_VERTEX..2 * ROWS_PER_HYPERCUBE_VERTEX)
-			.map(|x| AESTowerField8b::new(x as u8))
-			.collect();
-		let ntt_lookup = NTTLookup::<PackedAESBinaryField16x8b>::new(&input_domain, &output_domain);
-
-		let ntt_lookup_result = ntt_lookup.ntt(coeffs_packed_iter_u8);
-
-		let input_subspace = BinarySubspace::new_unchecked(
-			(0..SKIPPED_VARS)
-				.map(|i| AESTowerField8b::from(1 << i))
-				.collect_vec(),
-		);
-
-		let input_domain_context = GenericOnTheFly::generate_from_subspace(&input_subspace);
-		let input_ntt = NeighborsLastReference {
-			domain_context: input_domain_context,
-		};
-
-		input_ntt.inverse_transform(
-			FieldSliceMut::from_slice(coeffs.len().ilog2() as usize, coeffs.as_mut()),
-			0,
-			0,
-		);
-
-		let output_subspace = BinarySubspace::new_unchecked(
-			(0..SKIPPED_VARS + 1)
-				.map(|i| AESTowerField8b::from((1 << i) as u8))
-				.collect_vec(),
-		);
-
-		coeffs.extend(repeat_with(|| AESTowerField8b::ZERO).take(ROWS_PER_HYPERCUBE_VERTEX));
-
-		let output_domain_context = GenericOnTheFly::generate_from_subspace(&output_subspace);
-		let output_ntt = NeighborsLastReference {
-			domain_context: output_domain_context,
-		};
-
-		output_ntt.forward_transform(
-			FieldSliceMut::from_slice(coeffs.len().ilog2() as usize, coeffs.as_mut()),
-			0,
-			0,
-		);
-
-		for (i, coeff) in coeffs.iter().skip(ROWS_PER_HYPERCUBE_VERTEX).enumerate() {
-			let lookup_result = get_packed_slice(&ntt_lookup_result, i);
-			assert_eq!(lookup_result, *coeff);
+			let lde_result = lde.transform(input);
+			let ntt_lookup_result = ntt_lookup.ntt(input);
+			for i in 0..ROWS_PER_HYPERCUBE_VERTEX {
+				let lookup_result = ntt_lookup_result.get(i);
+				assert_eq!(lookup_result, lde_result.get(i + ROWS_PER_HYPERCUBE_VERTEX));
+			}
 		}
 	}
 }
