@@ -1,7 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 use binius_field::{BinaryField, PackedField};
 use binius_math::BinarySubspace;
-use itertools::Itertools;
 
 use super::ntt_lookup::NTTLookup;
 
@@ -29,19 +28,5 @@ pub fn ntt_lookup_from_prover_message_domain<PNTTDomain>(
 where
 	PNTTDomain: PackedField<Scalar: BinaryField>,
 {
-	assert!(prover_message_domain.dim() >= 1);
-	let basis = prover_message_domain.basis();
-
-	let basis_element_added_to_ntt_input_to_get_ntt_output = basis[prover_message_domain.dim() - 1];
-
-	let ntt_input_domain = prover_message_domain
-		.clone()
-		.reduce_dim(prover_message_domain.dim() - 1);
-
-	let ntt_output_domain = ntt_input_domain
-		.iter()
-		.map(|i| basis_element_added_to_ntt_input_to_get_ntt_output + i)
-		.collect_vec();
-
-	NTTLookup::new(&ntt_input_domain, &ntt_output_domain)
+	NTTLookup::new(&prover_message_domain)
 }
