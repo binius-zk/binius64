@@ -6,8 +6,6 @@
 //! using FRI commitment and ZK BaseFold opening protocols. Unlike [`super::basefold_channel`],
 //! this channel always applies zero-knowledge blinding to all oracles.
 
-use std::iter;
-
 use binius_field::BinaryField;
 use binius_ip::{
 	channel::IPVerifierChannel,
@@ -23,6 +21,7 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
+use itertools::izip;
 
 use crate::{
 	basefold,
@@ -171,20 +170,21 @@ where
 	Challenger_: Challenger,
 {
 	let n_committed = oracle_commitments.len();
-	assert_eq!(relations.len(), n_committed, "expects exactly one relation per committed oracle",);
 
-	let n_vars: Vec<usize> = (0..n_committed)
-		.map(|i| oracle_specs[i].log_msg_len)
-		.collect();
 	// `𝐧 = max_i log_msg_len_i`, the variable count of the combined opening / materialized buffer.
-	let max_n = n_vars.iter().copied().max().expect("at least one oracle");
+	let max_n = oracle_specs
+		.iter()
+		.map(|spec| spec.log_msg_len)
+		.max()
+		.expect("at least one oracle");
 
 	// === Masking step ===
 	// Only ZK oracles are masked: read their σ_i (one per ZK oracle, in relation order) and sample
 	// the single shared γ. With no ZK oracle, γ is never sampled.
 	let n_zk = oracle_specs.iter().filter(|s| s.is_zk).count();
 	let sigmas = channel.recv_many(n_zk)?;
-	let gamma = (n_zk > 0).then(|| IPVerifierChannel::<F>::sample(channel));
+	let gamma = (!sigmas.is_empty()).then(|| IPVerifierChannel::<F>::sample(channel));
+
 	// Masked claim per relation: ZK → s_i' = extrapolate_line(claim, σ_i, γ); non-ZK → s_i' =
 	// claim.
 	let mut sigma_iter = sigmas.into_iter();
@@ -223,7 +223,7 @@ where
 		.into_iter()
 		.map(|relation| {
 			let alpha_i = alphas[relation.oracle.index];
-			let n_i = n_vars[relation.oracle.index];
+			let n_i = oracle_specs[relation.oracle.index].log_msg_len;
 			let (eval_coords, padding_coords) = point.split_at(n_i);
 			let pad_eq = eq_ind_zero(padding_coords);
 			let transparent_eval = (relation.transparent)(eval_coords);
@@ -238,20 +238,17 @@ where
 	// combined multilinear is 𝛑(X) = Σ_i e[i]·π_i^↑(X) with e = eq(·, r'), and the combined target
 	// is s' = 𝛑(r) = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j).
 	let log_n_oracles = log2_ceil_usize(n_committed);
-	let outer_challenges: Vec<F> = (0..log_n_oracles)
-		.map(|_| IPVerifierChannel::<F>::sample(channel))
-		.collect();
+	let outer_challenges = channel.sample_many(log_n_oracles);
 	let eq_tensor = eq_ind_partial_eval_scalars::<F>(&outer_challenges);
 	// In the combined buffer each oracle is zero-padded over its `log_lift` dims and *repeated*
 	// over the remaining `log_repeat = max_n - n_i - log_lift` high dims, so its evaluation at
 	// `point` picks up the eq-to-zero factor over the lift dims only (the repeat dims contribute
 	// 1).
-	let input_oracles = fri_params.input_oracles();
-	let s_prime = iter::zip(&alphas, &n_vars)
-		.enumerate()
-		.map(|(i, (&alpha_i, &n_i))| {
-			let log_lift = input_oracles[i].log_lift;
-			eq_tensor[i] * alpha_i * eq_ind_zero(&point[n_i..n_i + log_lift])
+	let s_prime = izip!(fri_params.input_oracles(), oracle_specs, eq_tensor, alphas)
+		.map(|(fri_oracle, spec, eq_i, alpha_i)| {
+			let n_i = spec.log_msg_len;
+			let log_lift = fri_oracle.log_lift;
+			eq_i * alpha_i * eq_ind_zero(&point[n_i..][..log_lift])
 		})
 		.sum::<F>();
 
