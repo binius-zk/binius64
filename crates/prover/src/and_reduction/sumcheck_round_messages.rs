@@ -151,10 +151,7 @@ mod test {
 	use rand::prelude::*;
 
 	use super::univariate_round_message_extension_domain;
-	use crate::{
-		and_reduction::prover_setup::ntt_lookup_from_prover_message_domain,
-		fold_word::fold_words_with_transform,
-	};
+	use crate::{and_reduction::ntt_lookup::NTTLookup, fold_word::fold_words_with_transform};
 
 	fn random_words(log_num_words: usize, mut rng: impl Rng) -> Vec<Word> {
 		repeat_with(|| Word(rng.random()))
@@ -202,9 +199,7 @@ mod test {
 		// Agreed-upon proof parameter
 
 		let prover_message_domain = BinarySubspace::with_dim(SKIPPED_VARS + 1);
-		let ntt_lookup = ntt_lookup_from_prover_message_domain::<PackedAESBinaryField64x8b>(
-			prover_message_domain.clone(),
-		);
+		let ntt_lookup = NTTLookup::<PackedAESBinaryField64x8b>::new(&prover_message_domain);
 
 		let verifier_message_domain = prover_message_domain.isomorphic::<B128>();
 

@@ -17,8 +17,9 @@ use binius_math::{
 };
 use binius_verifier::protocols::bitand::{AndCheckOutput, ROWS_PER_HYPERCUBE_VERTEX};
 
-use super::{prover_setup::ntt_lookup_from_prover_message_domain, sumcheck_round_messages};
+use super::sumcheck_round_messages;
 use crate::{
+	and_reduction::ntt_lookup::NTTLookup,
 	fold_word::fold_words_with_transform,
 	protocols::sumcheck::{
 		Error, ProveSingleOutput, common::MleCheckProver, prove_single_mlecheck,
@@ -86,9 +87,8 @@ where
 		small_field_zerocheck_challenges: Vec<AESTowerField8b>,
 		prover_message_domain: BinarySubspace<AESTowerField8b>,
 	) -> Self {
-		let ntt_lookup = tracing::debug_span!("Compute univariate LDE table").in_scope(|| {
-			ntt_lookup_from_prover_message_domain::<PNTTDomain>(prover_message_domain.clone())
-		});
+		let ntt_lookup = tracing::debug_span!("Compute univariate LDE table")
+			.in_scope(|| NTTLookup::<PNTTDomain>::new(&prover_message_domain));
 		let eq_ind_big_field_challenges = eq_ind_partial_eval(&big_field_zerocheck_challenges);
 
 		let univariate_round_message = tracing::debug_span!("Compute univariate round message")

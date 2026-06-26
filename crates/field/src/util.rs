@@ -112,7 +112,7 @@ mod tests {
 		let power_values: Vec<_> = powers(generator).take(10).collect();
 
 		for i in 0..10 {
-			assert_eq!(power_values[i], generator.pow([i as u64]));
+			assert_eq!(power_values[i], generator.pow(i as u64));
 		}
 	}
 

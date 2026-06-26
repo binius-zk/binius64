@@ -16,8 +16,7 @@ use binius_math::{
 };
 use binius_prover::{
 	and_reduction::{
-		prover_setup::ntt_lookup_from_prover_message_domain,
-		sumcheck_round_messages::univariate_round_message_extension_domain,
+		NTTLookup, sumcheck_round_messages::univariate_round_message_extension_domain,
 	},
 	fold_word::fold_words_with_transform,
 	protocols::sumcheck::{common::SumcheckProver, quadratic_mle::QuadraticMleCheckProver},
@@ -57,17 +56,11 @@ fn bench(c: &mut Criterion) {
 		.reduce_dim(prover_message_domain.dim() - 1)
 		.isomorphic();
 
-	let ntt_lookup = ntt_lookup_from_prover_message_domain::<PackedAESBinaryField64x8b>(
-		prover_message_domain.clone(),
-	);
+	let ntt_lookup = NTTLookup::<PackedAESBinaryField64x8b>::new(&prover_message_domain);
 
 	let mut group = c.benchmark_group("evaluate");
 	group.bench_function("NTT lookup precompute", |bench| {
-		bench.iter(|| {
-			ntt_lookup_from_prover_message_domain::<PackedAESBinaryField64x8b>(
-				prover_message_domain.clone(),
-			)
-		});
+		bench.iter(|| NTTLookup::<PackedAESBinaryField64x8b>::new(&prover_message_domain));
 	});
 
 	group.throughput(Throughput::Elements(1 << (log_num_rows - SKIPPED_VARS)));
