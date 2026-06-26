@@ -58,6 +58,10 @@ name = "and_reduction"
 harness = false
 
 [[bench]]
+name = "eq_convert"
+harness = false
+
+[[bench]]
 name = "shift_reduction"
 harness = false
 

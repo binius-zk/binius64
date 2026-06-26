@@ -12,12 +12,11 @@ use binius_field::{
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace,
-	multilinear::eq::eq_ind_partial_eval,
 	univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
 };
 use binius_verifier::protocols::bitand::{AndCheckOutput, ROWS_PER_HYPERCUBE_VERTEX};
 
-use super::sumcheck_round_messages;
+use super::eq_convert;
 use crate::{
 	and_reduction::ntt_lookup::NTTLookup,
 	fold_word::fold_words_with_transform,
@@ -89,15 +88,14 @@ where
 	) -> Self {
 		let ntt_lookup = tracing::debug_span!("Compute univariate LDE table")
 			.in_scope(|| NTTLookup::<PNTTDomain>::new(&prover_message_domain));
-		let eq_ind_big_field_challenges = eq_ind_partial_eval(&big_field_zerocheck_challenges);
 
 		let univariate_round_message = tracing::debug_span!("Compute univariate round message")
 			.in_scope(|| {
-				sumcheck_round_messages::univariate_round_message_extension_domain(
+				eq_convert::univariate_round_message(
 					&first_col,
 					&second_col,
 					&third_col,
-					&eq_ind_big_field_challenges,
+					&big_field_zerocheck_challenges,
 					&ntt_lookup,
 					&small_field_zerocheck_challenges,
 				)
