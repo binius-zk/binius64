@@ -8,8 +8,6 @@ use crate::{
 	AESTowerField8b,
 	aes_field::aes_mul_8b,
 	arithmetic_traits::{InvertOrZero, Square, WideMul},
-	packed::PackedField,
-	underlier::UnderlierType,
 };
 
 /// Widening multiply for the portable 1×8b AES packing: a direct log/exp-table multiply (shared
@@ -36,29 +34,27 @@ impl WideMul for AesLookupWideMul<PackedPrimitiveType<u8, AESTowerField8b>> {
 	}
 }
 
-/// Return the result of the operation by a table search for each scalar value
-#[inline(always)]
-fn unary_op_with_table<PT>(val: PT, table: &[u8; 256]) -> PT
-where
-	PT: PackedField,
-	PT::Scalar: From<u8>,
-	u8: From<PT::Scalar>,
-{
-	PT::from_fn(|i| table[u8::from(val.get(i)) as usize].into())
-}
-
-/// Square wrapper that computes the result via a per-scalar table lookup.
+/// Square and invert strategy for the 1×8b AES packing: a direct table lookup on the underlying
+/// byte. Wider AES packings reach this one byte at a time through the
+/// [`Divide`](crate::arch::Divide) strategy, so no AES arithmetic is ever defined in terms of
+/// (packed) scalar iteration.
 #[repr(transparent)]
 #[derive(TransparentWrapper)]
-pub struct PairwiseTable<T>(T);
+pub struct BytewiseLookup<T>(T);
 
-impl<U: UnderlierType> Square for PairwiseTable<PackedPrimitiveType<U, AESTowerField8b>>
-where
-	PackedPrimitiveType<U, AESTowerField8b>: PackedField<Scalar = AESTowerField8b>,
-{
-	#[inline(always)]
+impl Square for BytewiseLookup<PackedPrimitiveType<u8, AESTowerField8b>> {
+	#[inline]
 	fn square(self) -> Self {
-		Self::wrap(unary_op_with_table(Self::peel(self), &AES_TOWER_8B_SQUARE_MAP))
+		let byte = Self::peel(self).to_underlier();
+		Self::wrap(PackedPrimitiveType::from_underlier(AES_TOWER_8B_SQUARE_MAP[byte as usize]))
+	}
+}
+
+impl InvertOrZero for BytewiseLookup<PackedPrimitiveType<u8, AESTowerField8b>> {
+	#[inline]
+	fn invert_or_zero(self) -> Self {
+		let byte = Self::peel(self).to_underlier();
+		Self::wrap(PackedPrimitiveType::from_underlier(AES_TOWER_8B_INVERT_MAP[byte as usize]))
 	}
 }
 
@@ -102,53 +98,6 @@ const AES_TOWER_8B_INVERT_MAP: [u8; 256] = [
     0x5b, 0x23, 0x38, 0x34, 0x68, 0x46, 0x03, 0x8c, 0xdd, 0x9c, 0x7d, 0xa0, 0xcd, 0x1a, 0x41, 0x1c,
 ];
 
-impl<U: UnderlierType> InvertOrZero for PairwiseTable<PackedPrimitiveType<U, AESTowerField8b>>
-where
-	PackedPrimitiveType<U, AESTowerField8b>: PackedField<Scalar = AESTowerField8b>,
-{
-	#[inline(always)]
-	fn invert_or_zero(self) -> Self {
-		Self::wrap(unary_op_with_table(Self::peel(self), &AES_TOWER_8B_INVERT_MAP))
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use crate::test_utils::{define_invert_tests, define_square_tests};
-
-	// Multiplication is now defined via `WideMul` (`AesLookupWideMul` / `ScaledWideMul` / GFNI) and
-	// is covered by the packed AES multiply proptests in `packed_aes.rs`.
-
-	/// Helper trait exercising the `PairwiseTable` square wrapper through the shared square tests.
-	trait PairwiseTableSquare: Sized {
-		fn square(self) -> Self;
-	}
-	impl<T> PairwiseTableSquare for T
-	where
-		PairwiseTable<T>: Square,
-	{
-		#[inline]
-		fn square(self) -> Self {
-			PairwiseTable::peel(Square::square(PairwiseTable::wrap(self)))
-		}
-	}
-
-	define_square_tests!(PairwiseTableSquare::square, PairwiseTableSquare);
-
-	/// Helper trait exercising the `PairwiseTable` invert wrapper through the shared invert tests.
-	trait PairwiseTableInvert: Sized {
-		fn invert_or_zero(self) -> Self;
-	}
-	impl<T> PairwiseTableInvert for T
-	where
-		PairwiseTable<T>: InvertOrZero,
-	{
-		#[inline]
-		fn invert_or_zero(self) -> Self {
-			PairwiseTable::peel(InvertOrZero::invert_or_zero(PairwiseTable::wrap(self)))
-		}
-	}
-
-	define_invert_tests!(PairwiseTableInvert::invert_or_zero, PairwiseTableInvert);
-}
+// Correctness of the byte-lookup square/invert is covered end-to-end by the
+// `PackedAESBinaryField1x8b` square/invert proptests in `packed_aes.rs`, which route
+// `Square`/`InvertOrZero` through this strategy.

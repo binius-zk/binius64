@@ -26,7 +26,6 @@ pub mod packed_ghash_512;
 pub(crate) mod univariate_mul_utils_128;
 
 pub(crate) mod packed_arithmetic;
-pub(super) mod pairwise_arithmetic;
 pub(super) mod pairwise_table_arithmetic;
 pub(super) mod reuse_multiply_arithmetic;
 pub(super) mod scaled_arithmetic;

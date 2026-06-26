@@ -17,7 +17,10 @@ use std::{
 use bytemuck::TransparentWrapper;
 
 use super::super::m128::M128;
-use crate::{BinaryField128bGhash as GhashB128, WideMul, arch::PackedPrimitiveType};
+use crate::{
+	BinaryField128bGhash as GhashB128, WideMul, arch::PackedPrimitiveType,
+	arithmetic_traits::Square,
+};
 
 // The reduction polynomial x^128 + x^7 + x^2 + x + 1 is represented as 0x87.
 const POLY: u128 = 0x87;
@@ -86,6 +89,22 @@ pub fn square_clmul(x: M128) -> M128 {
 	t0 = gf2_128_reduce(t0, t1);
 
 	t0
+}
+
+/// Square strategy wrapper for the aarch64 GHASH packing: the PMULL-accelerated carryless-multiply
+/// square via [`square_clmul`]. Mirrors the x86_64 `GhashClMul`, specialized to the single 128-bit
+/// `M128` lane that aarch64 NEON provides.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct GhashClMul<T>(T);
+
+impl Square for GhashClMul<PackedPrimitiveType<M128, GhashB128>> {
+	#[inline]
+	fn square(self) -> Self {
+		Self::wrap(PackedPrimitiveType::from_underlier(square_clmul(
+			Self::peel(self).to_underlier(),
+		)))
+	}
 }
 
 /// An unreduced product of two `GF(2^128)` elements, stored as three 128-bit limbs

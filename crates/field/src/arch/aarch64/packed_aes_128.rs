@@ -18,24 +18,25 @@ use crate::{
 pub type AesWideMul16x<T> = VmullWideMul<T>;
 
 /// Square wrapper for the `PackedAESBinaryField16x8b` packing.
-pub type AesSquare16x<T> = Aes<T>;
+pub type AesSquare16x<T> = NeonTableLookupArithmetic<T>;
 
 /// Invert wrapper for the `PackedAESBinaryField16x8b` packing.
-pub type AesInvert16x<T> = Aes<T>;
+pub type AesInvert16x<T> = NeonTableLookupArithmetic<T>;
 
-/// Square wrapper for aarch64 AES, backed by `vqtbl` lookup tables.
+/// Square and invert strategy wrapper for aarch64 AES, backed by `vqtbl` table lookups over the
+/// 16-byte `M128` vector.
 #[repr(transparent)]
 #[derive(TransparentWrapper)]
-pub struct Aes<T>(T);
+pub struct NeonTableLookupArithmetic<T>(T);
 
-impl Square for Aes<PackedPrimitiveType<M128, AESTowerField8b>> {
+impl Square for NeonTableLookupArithmetic<PackedPrimitiveType<M128, AESTowerField8b>> {
 	#[inline]
 	fn square(self) -> Self {
 		Self::wrap(Self::peel(self).mutate_underlier(packed_aes_16x8b_square))
 	}
 }
 
-impl InvertOrZero for Aes<PackedPrimitiveType<M128, AESTowerField8b>> {
+impl InvertOrZero for NeonTableLookupArithmetic<PackedPrimitiveType<M128, AESTowerField8b>> {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
 		Self::wrap(Self::peel(self).mutate_underlier(packed_aes_16x8b_invert_or_zero))

@@ -10,7 +10,7 @@ cfg_if! {
 		pub type AesInvert32x<T> = super::gfni::gfni_arithmetics::Gfni<T>;
 	} else {
 		pub type AesWideMul32x<T> = crate::arch::ElementwiseWideMul<T>;
-		pub type AesSquare32x<T> = crate::arch::PairwiseTable<T>;
-		pub type AesInvert32x<T> = crate::arch::PairwiseTable<T>;
+		pub type AesSquare32x<T> = crate::arch::Divide<u8, T>;
+		pub type AesInvert32x<T> = crate::arch::Divide<u8, T>;
 	}
 }

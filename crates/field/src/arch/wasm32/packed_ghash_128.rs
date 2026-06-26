@@ -9,8 +9,6 @@
 
 use std::arch::wasm32::*;
 
-use bytemuck::TransparentWrapper;
-
 use super::{super::portable::packed::PackedPrimitiveType, m128::M128};
 use crate::{
 	BinaryField128bGhash,
@@ -21,7 +19,7 @@ use crate::{
 			univariate_mul_utils_128::{Underlier128bLanes, spread_bits_64},
 		},
 	},
-	arithmetic_traits::{InvertOrZero, Square, impl_transformation_with_strategy},
+	arithmetic_traits::impl_transformation_with_strategy,
 };
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring portable
@@ -29,11 +27,12 @@ use crate::{
 /// implements [`Underlier128bLanes`], so the portable schoolbook widening multiply applies.
 pub type GhashWideMul1x<T> = crate::arch::portable::arithmetic::ghash::GhashWideMul<T>;
 
-/// Square wrapper for the `PackedBinaryGhash1x128b` packing.
-pub type GhashSquare1x<T> = Ghash<T>;
+/// Square wrapper for the `PackedBinaryGhash1x128b` packing: the shared software square (the WASM
+/// SIMD `M128` implements [`Underlier128bLanes`], so the portable bit-spread square applies).
+pub type GhashSquare1x<T> = crate::arch::portable::arithmetic::ghash::GhashSoftMul<T>;
 
-/// Invert wrapper for the `PackedBinaryGhash1x128b` packing.
-pub type GhashInvert1x<T> = Ghash<T>;
+/// Invert wrapper for the `PackedBinaryGhash1x128b` packing: the shared Itoh-Tsujii inversion.
+pub type GhashInvert1x<T> = crate::arch::portable::arithmetic::itoh_tsujii::GhashItohTsujii<T>;
 
 // Define broadcast
 impl_broadcast!(M128, BinaryField128bGhash);
@@ -61,27 +60,6 @@ impl Underlier128bLanes for M128 {
 		let (hi, lo) = self.split_hi_lo_64();
 
 		(Self::from(spread_bits_64(hi)), Self::from(spread_bits_64(lo)))
-	}
-}
-
-/// Square wrapper for WASM32 GHASH field arithmetic.
-#[repr(transparent)]
-#[derive(TransparentWrapper)]
-pub struct Ghash<T>(T);
-
-impl Square for Ghash<PackedPrimitiveType<M128, BinaryField128bGhash>> {
-	#[inline]
-	fn square(self) -> Self {
-		Self::wrap(PackedPrimitiveType::from_underlier(
-			crate::arch::portable::arithmetic::ghash::ghash_square(Self::peel(self).to_underlier()),
-		))
-	}
-}
-
-impl InvertOrZero for Ghash<PackedPrimitiveType<M128, BinaryField128bGhash>> {
-	#[inline]
-	fn invert_or_zero(self) -> Self {
-		Self::wrap(crate::arch::invert_b128(Self::peel(self)))
 	}
 }
 

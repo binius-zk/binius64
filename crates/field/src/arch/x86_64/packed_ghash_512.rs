@@ -7,17 +7,15 @@
 //! available on modern x86_64 processors with AVX-512 support. The implementation follows
 //! the algorithm described in the GHASH specification with polynomial x^128 + x^7 + x^2 + x + 1.
 
-use bytemuck::TransparentWrapper;
-
+// Used by the CLMUL-accelerated `ClMulUnderlier` impl, the `GhashClMulWideMul`, and the
+// `GhashClMul` square aliases below.
+#[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 use super::m512::M512;
-// Used by the CLMUL-accelerated `ClMulUnderlier` impl and the `GhashWideMul` alias below.
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 use crate::arch::x86_64::arithmetic::ghash;
-// Used by the `GhashWideMul` and `GhashSquareStrategy` fallbacks when VPCLMULQDQ is
-// unavailable.
+// Used by the `GhashWideMul4x` and `GhashSquare4x` fallbacks when VPCLMULQDQ is unavailable.
 #[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
 use crate::arch::{portable::scaled_arithmetic::Scaled4xWideMul, x86_64::m128::M128};
-use crate::{BinaryField128bGhash, arch::PackedPrimitiveType, arithmetic_traits::InvertOrZero};
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring vectorized
 /// [`GhashClMulWideMul`](ghash::GhashClMulWideMul) when VPCLMULQDQ + AVX-512 are available,
@@ -28,16 +26,17 @@ pub type GhashWideMul4x<T> = ghash::GhashClMulWideMul<T>;
 #[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
 pub type GhashWideMul4x<T> = Scaled4xWideMul<T>;
 
-/// Square wrapper for the GHASH packing: a full-width CLMUL square when VPCLMULQDQ + AVX-512 are
-/// available, otherwise divide into 128-bit lanes and square each (the 1×128b GHASH square uses
-/// PCLMULQDQ).
+/// Square wrapper for the GHASH packing: a full-width CLMUL square
+/// ([`GhashClMul`](ghash::GhashClMul)) when VPCLMULQDQ + AVX-512 are available, otherwise divide
+/// into 128-bit lanes and square each (the 1×128b GHASH square uses PCLMULQDQ).
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
-pub type GhashSquare4x<T> = ghash::GhashClMulSquare<T>;
+pub type GhashSquare4x<T> = ghash::GhashClMul<T>;
 #[cfg(not(all(target_feature = "vpclmulqdq", target_feature = "avx512f")))]
 pub type GhashSquare4x<T> = crate::arch::Divide<M128, T>;
 
-/// Invert wrapper for the `PackedBinaryGhash4x128b` packing.
-pub type GhashInvert4x<T> = Ghash512<T>;
+/// Invert wrapper for the `PackedBinaryGhash4x128b` packing: the shared Itoh-Tsujii inversion
+/// applied across the full 512-bit vector.
+pub type GhashInvert4x<T> = crate::arch::portable::arithmetic::itoh_tsujii::GhashItohTsujii<T>;
 
 #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 impl ghash::ClMulUnderlier for M512 {
@@ -55,18 +54,5 @@ impl ghash::ClMulUnderlier for M512 {
 			)
 		}
 		.into()
-	}
-}
-
-/// Invert wrapper for x86_64 AVX-512 GHASH field arithmetic.
-#[repr(transparent)]
-#[derive(TransparentWrapper)]
-pub struct Ghash512<T>(T);
-
-// Implement InvertOrZero (Itoh-Tsujii over the full 512-bit vector)
-impl InvertOrZero for Ghash512<PackedPrimitiveType<M512, BinaryField128bGhash>> {
-	#[inline]
-	fn invert_or_zero(self) -> Self {
-		Self::wrap(crate::arch::invert_b128(Self::peel(self)))
 	}
 }

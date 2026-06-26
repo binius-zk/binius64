@@ -57,9 +57,9 @@ pub fn square_clmul<U: ClMulUnderlier>(x: U) -> U {
 /// feature is present.
 #[repr(transparent)]
 #[derive(TransparentWrapper)]
-pub struct GhashClMulSquare<T>(T);
+pub struct GhashClMul<T>(T);
 
-impl<U: ClMulUnderlier> Square for GhashClMulSquare<PackedPrimitiveType<U, GhashB128>> {
+impl<U: ClMulUnderlier> Square for GhashClMul<PackedPrimitiveType<U, GhashB128>> {
 	#[inline]
 	fn square(self) -> Self {
 		Self::wrap(PackedPrimitiveType::from_underlier(square_clmul(

@@ -108,7 +108,7 @@ pub trait InvertOrZero {
 }
 
 // The `@ strategy` arm wires `$name`'s `Mul` to a strategy wrapper: a `TransparentWrapper` struct
-// (e.g. `Pairwise`, `MulFromWideMul`) that carries the actual algorithm. We wrap the inputs, run
+// (e.g. `Gfni`, `MulFromWideMul`) that carries the actual algorithm. We wrap the inputs, run
 // the wrapper's `Mul`, and peel the result. `$strategy` is captured as raw token-trees (not
 // `:ty`/`:path`) because a matched type fragment is opaque and can't have `<$name>` appended to it.
 macro_rules! impl_mul_with {

@@ -8,7 +8,7 @@ use bytemuck::TransparentWrapper;
 use crate::{
 	BinaryField,
 	arch::PackedPrimitiveType,
-	arithmetic_traits::{Square, WideMul},
+	arithmetic_traits::{InvertOrZero, Square, WideMul},
 	underlier::{Divisible, UnderlierType},
 };
 
@@ -40,6 +40,25 @@ where
 				.to_underlier()
 		});
 		Self::wrap(PackedPrimitiveType::from_underlier(Divisible::<SubU>::from_iter(squared)))
+	}
+}
+
+impl<U, SubU, F> InvertOrZero for Divide<SubU, PackedPrimitiveType<U, F>>
+where
+	U: UnderlierType + Divisible<SubU>,
+	SubU: UnderlierType,
+	F: BinaryField,
+	PackedPrimitiveType<SubU, F>: InvertOrZero,
+{
+	#[inline]
+	fn invert_or_zero(self) -> Self {
+		let val = Self::peel(self);
+		let inverted = Divisible::<SubU>::value_iter(val.to_underlier()).map(|lane| {
+			PackedPrimitiveType::<SubU, F>::from_underlier(lane)
+				.invert_or_zero()
+				.to_underlier()
+		});
+		Self::wrap(PackedPrimitiveType::from_underlier(Divisible::<SubU>::from_iter(inverted)))
 	}
 }
 

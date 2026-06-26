@@ -7,17 +7,9 @@
 //! available on modern x86_64 processors with AVX2 support. The implementation follows
 //! the algorithm described in the GHASH specification with polynomial x^128 + x^7 + x^2 + x + 1.
 
-use bytemuck::TransparentWrapper;
-
-// Used by the `GhashWideMul` and `GhashSquareStrategy` fallbacks when VPCLMULQDQ is
-// unavailable.
+// Used by the `GhashWideMul2x` and `GhashSquare2x` fallbacks when VPCLMULQDQ is unavailable.
 #[cfg(not(target_feature = "vpclmulqdq"))]
 use crate::arch::{portable::scaled_arithmetic::Scaled2xWideMul, x86_64::m128::M128};
-use crate::{
-	BinaryField128bGhash,
-	arch::{PackedPrimitiveType, x86_64::m256::M256},
-	arithmetic_traits::InvertOrZero,
-};
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring vectorized
 /// `GhashClMulWideMul` when VPCLMULQDQ is available, otherwise the per-lane `ScaledWideMul`
@@ -27,20 +19,23 @@ pub type GhashWideMul2x<T> = crate::arch::x86_64::arithmetic::ghash::GhashClMulW
 #[cfg(not(target_feature = "vpclmulqdq"))]
 pub type GhashWideMul2x<T> = Scaled2xWideMul<T>;
 
-/// Square wrapper for the GHASH packing: a full-width CLMUL square when VPCLMULQDQ is available,
-/// otherwise divide into 128-bit lanes and square each (the 1×128b GHASH square uses PCLMULQDQ).
+/// Square wrapper for the GHASH packing: a full-width CLMUL square ([`GhashClMul`]) when VPCLMULQDQ
+/// is available, otherwise divide into 128-bit lanes and square each (the 1×128b GHASH square uses
+/// PCLMULQDQ).
+///
+/// [`GhashClMul`]: crate::arch::x86_64::arithmetic::ghash::GhashClMul
 #[cfg(target_feature = "vpclmulqdq")]
-pub type GhashSquare2x<T> = crate::arch::x86_64::arithmetic::ghash::GhashClMulSquare<T>;
+pub type GhashSquare2x<T> = crate::arch::x86_64::arithmetic::ghash::GhashClMul<T>;
 #[cfg(not(target_feature = "vpclmulqdq"))]
 pub type GhashSquare2x<T> = crate::arch::Divide<M128, T>;
 
-/// Invert wrapper for the `PackedBinaryGhash2x128b` packing.
-pub type GhashInvert2x<T> = Ghash256<T>;
+/// Invert wrapper for the `PackedBinaryGhash2x128b` packing: the shared Itoh-Tsujii inversion
+/// applied across the full 256-bit vector.
+pub type GhashInvert2x<T> = crate::arch::portable::arithmetic::itoh_tsujii::GhashItohTsujii<T>;
 
 #[cfg(target_feature = "vpclmulqdq")]
 mod vpclmulqdq {
-	use super::*;
-	use crate::arch::x86_64::arithmetic::ghash::ClMulUnderlier;
+	use crate::arch::x86_64::{arithmetic::ghash::ClMulUnderlier, m256::M256};
 
 	impl ClMulUnderlier for M256 {
 		#[inline]
@@ -53,18 +48,5 @@ mod vpclmulqdq {
 		fn move_64_to_hi(a: Self) -> Self {
 			unsafe { std::arch::x86_64::_mm256_slli_si256::<8>(a.into()) }.into()
 		}
-	}
-}
-
-/// Invert wrapper for x86_64 AVX2 GHASH field arithmetic.
-#[repr(transparent)]
-#[derive(TransparentWrapper)]
-pub struct Ghash256<T>(T);
-
-// Implement InvertOrZero (Itoh-Tsujii over the full 256-bit vector)
-impl InvertOrZero for Ghash256<PackedPrimitiveType<M256, BinaryField128bGhash>> {
-	#[inline]
-	fn invert_or_zero(self) -> Self {
-		Self::wrap(crate::arch::invert_b128(Self::peel(self)))
 	}
 }
