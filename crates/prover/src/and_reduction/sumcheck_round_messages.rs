@@ -6,7 +6,6 @@ use binius_field::{AESTowerField8b, BinaryField, PackedField};
 use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::rayon::prelude::*;
 use binius_verifier::protocols::bitand::ROWS_PER_HYPERCUBE_VERTEX;
-use bytemuck::must_cast_ref;
 use itertools::izip;
 
 use super::ntt_lookup::NTTLookup;
@@ -97,25 +96,11 @@ where
 		.into_par_iter()
 		.map(|(a_chunk, b_chunk, c_chunk)| {
 			let mut summed_ntt = PNTTDomain::zero();
-			let lookup = ntt_lookup.get_lookup();
 
 			for (a_i, b_i, c_i, &weight) in izip!(a_chunk, b_chunk, c_chunk, &eq_ind_small) {
-				let col_1_bytes = must_cast_ref::<_, [u8; 8]>(&a_i.0);
-				let col_2_bytes = must_cast_ref::<_, [u8; 8]>(&b_i.0);
-				let col_3_bytes = must_cast_ref::<_, [u8; 8]>(&c_i.0);
-
-				// In this cycle, we compute the NTT for each column using the lookup table.
-				// We are not using the `NTTLookup::ntt` method directly for performance reasons.
-				let mut first_col_ntt = PNTTDomain::zero();
-				let mut second_col_ntt = PNTTDomain::zero();
-				let mut third_col_ntt = PNTTDomain::zero();
-
-				// Compute the low-degree extensions via the lookup table.
-				for (byte_index, lookup_byte) in lookup.iter().enumerate() {
-					first_col_ntt += lookup_byte[col_1_bytes[byte_index] as usize];
-					second_col_ntt += lookup_byte[col_2_bytes[byte_index] as usize];
-					third_col_ntt += &lookup_byte[col_3_bytes[byte_index] as usize];
-				}
+				// Compute the low-degree extension of each column via the lookup table.
+				let [first_col_ntt, second_col_ntt, third_col_ntt] =
+					ntt_lookup.multi_ntt_array([a_i.0, b_i.0, c_i.0]);
 
 				// Compute the weighted composition of the LDE values.
 				summed_ntt += (first_col_ntt * second_col_ntt - third_col_ntt) * weight;

@@ -187,10 +187,35 @@ where
 		result
 	}
 
-	/// Returns a reference to the NTT lookup table.
+	/// Computes the NTTs of `N` 64-bit inputs simultaneously using the precomputed lookup tables.
+	///
+	/// Each input is split into its eight constituent bytes (LSB to MSB), and the NTT is computed
+	/// by looking up the precomputed values for each byte position and summing them, exploiting the
+	/// linearity of the NTT. Processing all `N` inputs together within each byte position keeps the
+	/// independent accumulators in flight, which the compiler turns into instruction-level
+	/// parallelism.
+	///
+	/// ## Parameters
+	///
+	/// - `inputs`: An array of `N` values, each divisible into bytes. The words' `u64`s can be
+	///   passed directly.
+	///
+	/// ## Returns
+	///
+	/// An array of `N` packed field elements containing the NTT evaluations of each input.
 	#[inline]
-	pub fn get_lookup(&self) -> &[[PNTTDomain; 256]; 8] {
-		&self.0
+	pub fn multi_ntt_array<T: Divisible<u8>, const N: usize>(
+		&self,
+		inputs: [T; N],
+	) -> [PNTTDomain; N] {
+		let mut results = [PNTTDomain::zero(); N];
+		for (byte_index, lookup_byte) in self.0.iter().enumerate() {
+			for (result, input) in std::iter::zip(&mut results, &inputs) {
+				let byte = Divisible::<u8>::get(input, byte_index);
+				*result += lookup_byte[byte as usize];
+			}
+		}
+		results
 	}
 }
 
