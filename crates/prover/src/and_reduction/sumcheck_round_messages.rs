@@ -2,10 +2,10 @@
 use std::iter;
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, Field, PackedBinaryField128x1b, PackedExtension};
+use binius_field::{AESTowerField8b, BinaryField, PackedField};
 use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::rayon::prelude::*;
-use binius_verifier::{config::B1, protocols::bitand::ROWS_PER_HYPERCUBE_VERTEX};
+use binius_verifier::protocols::bitand::ROWS_PER_HYPERCUBE_VERTEX;
 use bytemuck::must_cast_ref;
 use itertools::izip;
 
@@ -58,18 +58,17 @@ use super::ntt_lookup::NTTLookup;
 ///
 /// * `FChallenge` - The challenge field type (must be a binary field)
 /// * `PNTTDomain` - The packed extension field type for NTT operations (width must be 16)
-pub fn univariate_round_message_extension_domain<FChallenge, PNTTDomain>(
+pub fn univariate_round_message_extension_domain<F, PNTTDomain>(
 	first_col: &[Word],
 	second_col: &[Word],
 	third_col: &[Word],
-	eq_ind_big_field_challenges: &FieldBuffer<FChallenge>,
+	eq_ind_big_field_challenges: &FieldBuffer<F>,
 	ntt_lookup: &NTTLookup<PNTTDomain>,
-	small_field_zerocheck_challenges: &[PNTTDomain::Scalar],
-) -> [FChallenge; ROWS_PER_HYPERCUBE_VERTEX]
+	small_field_zerocheck_challenges: &[AESTowerField8b],
+) -> [F; ROWS_PER_HYPERCUBE_VERTEX]
 where
-	FChallenge: Field + From<PNTTDomain::Scalar> + BinaryField,
-	PNTTDomain: PackedExtension<B1, PackedSubfield = PackedBinaryField128x1b>,
-	PNTTDomain::Scalar: BinaryField,
+	F: BinaryField + From<AESTowerField8b>,
+	PNTTDomain: PackedField<Scalar = AESTowerField8b>,
 {
 	// This assertion is used as a workaround for Rust's limited support for const-generics,
 	// ideally we would just use PNTTDomain::WIDTH everywhere instead, but since this function only
@@ -83,11 +82,10 @@ where
 		assert_eq!(col.len(), 1 << expected_log_words);
 	}
 
-	let eq_ind_small: Vec<PNTTDomain> = eq_ind_partial_eval(small_field_zerocheck_challenges)
-		.as_ref()
-		.iter()
-		.map(|&item| PNTTDomain::broadcast(item))
-		.collect();
+	let eq_ind_small = eq_ind_partial_eval::<AESTowerField8b>(small_field_zerocheck_challenges)
+		.iter_scalars()
+		.map(PNTTDomain::broadcast)
+		.collect::<Vec<_>>();
 
 	// Accumulate resulting polynomial evals by iterating over each hypercube vertex
 	let chunk_size = eq_ind_small.len();
@@ -112,6 +110,7 @@ where
 				let mut second_col_ntt = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
 				let mut third_col_ntt = [PNTTDomain::zero(); ROWS_PER_HYPERCUBE_VERTEX / 16];
 
+				// Compute the low-degree extensions via the lookup table.
 				for (byte_index, lookup_byte) in lookup.iter().enumerate() {
 					let row_1 = &lookup_byte[col_1_bytes[byte_index] as usize];
 					let row_2 = &lookup_byte[col_2_bytes[byte_index] as usize];
@@ -123,6 +122,7 @@ where
 					}
 				}
 
+				// Compute the weighted composition of the LDE values.
 				for j in 0..(ROWS_PER_HYPERCUBE_VERTEX / 16) {
 					summed_ntt[j] +=
 						(first_col_ntt[j] * second_col_ntt[j] - third_col_ntt[j]) * weight;
@@ -132,19 +132,14 @@ where
 			summed_ntt
 		})
 		.zip(eq_ind_big_field_challenges.as_ref())
-		.fold_with(
-			[FChallenge::ZERO; ROWS_PER_HYPERCUBE_VERTEX],
-			|mut acc, (summed_ntt, &eq_weight)| {
-				for (acc_i, summed_ntt_i) in
-					iter::zip(&mut acc, PNTTDomain::iter_slice(&summed_ntt))
-				{
-					*acc_i += eq_weight * FChallenge::from(summed_ntt_i);
-				}
-				acc
-			},
-		)
+		.fold_with([F::ZERO; ROWS_PER_HYPERCUBE_VERTEX], |mut acc, (summed_ntt, &eq_weight)| {
+			for (acc_i, summed_ntt_i) in iter::zip(&mut acc, PNTTDomain::iter_slice(&summed_ntt)) {
+				*acc_i += eq_weight * F::from(summed_ntt_i);
+			}
+			acc
+		})
 		.reduce(
-			|| [FChallenge::ZERO; ROWS_PER_HYPERCUBE_VERTEX],
+			|| [F::ZERO; ROWS_PER_HYPERCUBE_VERTEX],
 			|mut lhs, rhs| {
 				for (lhs_i, rhs_i) in iter::zip(&mut lhs, rhs) {
 					*lhs_i += rhs_i;
