@@ -12,17 +12,8 @@ use crate::{
 	underlier::{Divisible, UnderlierType},
 };
 
-/// Packed strategy for arithmetic operations.
-/// (Uses arithmetic operations with underlier and subfield to simultaneously calculate the result
-/// for all packed values)
-pub struct PackedStrategy;
 /// Pairwise strategy. Apply the result of the operation to each packed element independently.
 pub struct PairwiseStrategy;
-/// Use SIMD operations for packed arithmetic
-pub struct SimdStrategy;
-/// Specialized versions of the above to resolve conflicting implementations
-pub struct GfniSpecializedStrategy256b;
-pub struct GfniSpecializedStrategy512b;
 
 /// Square wrapper that squares by dividing the underlier into `SubU`-sized lanes, squaring each
 /// lane as a `PackedPrimitiveType<SubU, F>`, and recombining. A generic fallback for packings that
