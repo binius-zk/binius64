@@ -7,10 +7,7 @@ use super::packed::PackedPrimitiveType;
 use crate::{
 	AESTowerField8b,
 	aes_field::aes_mul_8b,
-	arch::PairwiseTableStrategy,
-	arithmetic_traits::{TaggedInvertOrZero, TaggedSquare, WideMul},
-	packed::PackedField,
-	underlier::UnderlierType,
+	arithmetic_traits::{InvertOrZero, Square, WideMul},
 };
 
 /// Widening multiply for the portable 1×8b AES packing: a direct log/exp-table multiply (shared
@@ -37,31 +34,28 @@ impl WideMul for AesLookupWideMul<PackedPrimitiveType<u8, AESTowerField8b>> {
 	}
 }
 
-/// Return the result of the operation by a table search for each scalar value
-#[inline(always)]
-fn unary_op_with_table<PT>(val: PT, table: &[u8; 256]) -> PT
-where
-	PT: PackedField,
-	PT::Scalar: From<u8>,
-	u8: From<PT::Scalar>,
-{
-	PT::from_fn(|i| table[u8::from(val.get(i)) as usize].into())
+/// Square and invert strategy for the 1×8b AES packing: a direct table lookup on the underlying
+/// byte. Wider AES packings reach this one byte at a time through the
+/// [`Divide`](crate::arch::Divide) strategy, so no AES arithmetic is ever defined in terms of
+/// (packed) scalar iteration.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct BytewiseLookup<T>(T);
+
+impl Square for BytewiseLookup<PackedPrimitiveType<u8, AESTowerField8b>> {
+	#[inline]
+	fn square(self) -> Self {
+		let byte = Self::peel(self).to_underlier();
+		Self::wrap(PackedPrimitiveType::from_underlier(AES_TOWER_8B_SQUARE_MAP[byte as usize]))
+	}
 }
 
-/// Implement unary operation with a table search
-macro_rules! impl_unary_ops {
-	($tagged_op_type:ident, $method_name:ident, $table:ident, $field:ty) => {
-		impl<U: UnderlierType> $tagged_op_type<PairwiseTableStrategy>
-			for PackedPrimitiveType<U, $field>
-		where
-			Self: PackedField<Scalar = $field>,
-		{
-			#[inline(always)]
-			fn $method_name(self) -> Self {
-				unary_op_with_table(self, &$table)
-			}
-		}
-	};
+impl InvertOrZero for BytewiseLookup<PackedPrimitiveType<u8, AESTowerField8b>> {
+	#[inline]
+	fn invert_or_zero(self) -> Self {
+		let byte = Self::peel(self).to_underlier();
+		Self::wrap(PackedPrimitiveType::from_underlier(AES_TOWER_8B_INVERT_MAP[byte as usize]))
+	}
 }
 
 #[rustfmt::skip]
@@ -84,8 +78,6 @@ const AES_TOWER_8B_SQUARE_MAP: [u8; 256] = [
     0x46, 0x47, 0x42, 0x43, 0x56, 0x57, 0x52, 0x53, 0x06, 0x07, 0x02, 0x03, 0x16, 0x17, 0x12, 0x13,
 ];
 
-impl_unary_ops!(TaggedSquare, square, AES_TOWER_8B_SQUARE_MAP, AESTowerField8b);
-
 #[rustfmt::skip]
 const AES_TOWER_8B_INVERT_MAP: [u8; 256] = [
     0x00, 0x01, 0x8d, 0xf6, 0xcb, 0x52, 0x7b, 0xd1, 0xe8, 0x4f, 0x29, 0xc0, 0xb0, 0xe1, 0xe5, 0xc7,
@@ -106,23 +98,6 @@ const AES_TOWER_8B_INVERT_MAP: [u8; 256] = [
     0x5b, 0x23, 0x38, 0x34, 0x68, 0x46, 0x03, 0x8c, 0xdd, 0x9c, 0x7d, 0xa0, 0xcd, 0x1a, 0x41, 0x1c,
 ];
 
-impl_unary_ops!(TaggedInvertOrZero, invert_or_zero, AES_TOWER_8B_INVERT_MAP, AESTowerField8b);
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use crate::test_utils::{define_invert_tests, define_square_tests};
-
-	// Multiplication is now defined via `WideMul` (`AesLookupWideMul` / `ScaledWideMul` / GFNI) and
-	// is covered by the packed AES multiply proptests in `packed_aes_field.rs`.
-
-	define_square_tests!(
-		TaggedSquare<PairwiseTableStrategy>::square,
-		TaggedSquare<PairwiseTableStrategy>
-	);
-
-	define_invert_tests!(
-		TaggedInvertOrZero<PairwiseTableStrategy>::invert_or_zero,
-		TaggedInvertOrZero<PairwiseTableStrategy>
-	);
-}
+// Correctness of the byte-lookup square/invert is covered end-to-end by the
+// `PackedAESBinaryField1x8b` square/invert proptests in `packed_aes.rs`, which route
+// `Square`/`InvertOrZero` through this strategy.

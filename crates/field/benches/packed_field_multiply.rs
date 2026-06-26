@@ -5,13 +5,10 @@ mod packed_field_utils;
 use std::ops::Mul;
 
 use binius_field::{
+	PackedAESBinaryField16x8b, PackedAESBinaryField32x8b, PackedAESBinaryField64x8b,
 	PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b,
-	arch::{
-		packed_aes_128::*, packed_aes_256::*, packed_aes_512::*, packed_ghash_128::*,
-		packed_ghash_256::*, packed_ghash_512::*,
-	},
+	PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
 };
-use cfg_if::cfg_if;
 use criterion::criterion_main;
 use packed_field_utils::benchmark_packed_operation;
 
@@ -24,44 +21,12 @@ fn mul_main<T: SelfMul>(lhs: T, rhs: T) -> T {
 	lhs * rhs
 }
 
-cfg_if! {
-	if #[cfg(feature = "benchmark_alternative_strategies")] {
-		use binius_field::{
-			arch::{PackedStrategy, PairwiseStrategy, PairwiseTableStrategy},
-			arithmetic_traits::TaggedMul
-		};
-
-		fn mul_pairwise<T: TaggedMul<PairwiseStrategy>>(lhs: T, rhs: T) -> T {
-			TaggedMul::<PairwiseStrategy>::mul(lhs, rhs)
-		}
-
-		fn mul_pairwise_table<T: TaggedMul<PairwiseTableStrategy>>(lhs: T, rhs: T) -> T {
-			TaggedMul::<PairwiseTableStrategy>::mul(lhs, rhs)
-		}
-
-		fn mul_packed<T: TaggedMul<PackedStrategy>>(lhs: T, rhs: T) -> T {
-			TaggedMul::<PackedStrategy>::mul(lhs, rhs)
-		}
-
-		benchmark_packed_operation!(
-			op_name @ multiply,
-			bench_type @ binary_op,
-			strategies @ (
-				(main, SelfMul, mul_main),
-				(pairwise, TaggedMul::<PairwiseStrategy>, mul_pairwise),
-				(pairwise_table, TaggedMul::<PairwiseTableStrategy>, mul_pairwise_table),
-				(packed, TaggedMul::<PackedStrategy>, mul_packed),
-			)
-		);
-	} else {
-		benchmark_packed_operation!(
-			op_name @ multiply,
-			bench_type @ binary_op,
-			strategies @ (
-				(main, SelfMul, mul_main),
-			)
-		);
-	}
-}
+benchmark_packed_operation!(
+	op_name @ multiply,
+	bench_type @ binary_op,
+	strategies @ (
+		(main, SelfMul, mul_main),
+	)
+);
 
 criterion_main!(multiply);

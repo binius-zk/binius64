@@ -7,35 +7,35 @@
 //! available on modern x86_64 processors. The implementation follows the algorithm
 //! described in the GHASH specification with polynomial x^128 + x^7 + x^2 + x + 1.
 
-use cfg_if::cfg_if;
-
 use super::m128::M128;
 #[cfg(not(target_feature = "pclmulqdq"))]
 use crate::arch::portable::univariate_mul_utils_128::{Underlier128bLanes, spread_bits_64};
-// Used by the CLMUL-accelerated `ClMulUnderlier` impl and the `GhashWideMul` alias below.
+// Used by the CLMUL-accelerated `ClMulUnderlier` impl and the `GhashWideMul1x`/`GhashSquare1x`
+// aliases below.
 #[cfg(target_feature = "pclmulqdq")]
 use crate::arch::x86_64::arithmetic::ghash;
-use crate::{
-	BinaryField128bGhash,
-	arch::{
-		portable::packed_macros::{portable_macros::*, *},
-		strategies::MulFromWideMul,
-	},
-	arithmetic_traits::{
-		TaggedInvertOrZero, TaggedSquare, impl_invert_with, impl_mul_with, impl_square_with,
-	},
-};
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
-/// [`GhashClMulWideMul`](ghash::GhashClMulWideMul) when PCLMULQDQ is available, otherwise the
-/// portable [`GhashWideMul`](crate::arch::portable::arithmetic::ghash::GhashWideMul) which also
-/// defers reduction for deferred-reduction sum-of-products.
+/// `GhashClMulWideMul` when PCLMULQDQ is available, otherwise the portable `GhashWideMul` which
+/// also defers reduction for deferred-reduction sum-of-products.
 #[cfg(target_feature = "pclmulqdq")]
-pub type GhashWideMul<T> = ghash::GhashClMulWideMul<T>;
+pub type GhashWideMul1x<T> = ghash::GhashClMulWideMul<T>;
 #[cfg(not(target_feature = "pclmulqdq"))]
-pub type GhashWideMul<T> = crate::arch::portable::arithmetic::ghash::GhashWideMul<T>;
+pub type GhashWideMul1x<T> = crate::arch::portable::arithmetic::ghash::GhashWideMul<T>;
 
-/// `Underlier128bLanes` for x86_64 `M128` — required for the portable `GhashWideMul` fallback.
+/// Square wrapper for the `PackedBinaryGhash1x128b` packing: the CLMUL square `GhashClMul` when
+/// PCLMULQDQ is available, otherwise the shared software square `GhashSoftMul`.
+#[cfg(target_feature = "pclmulqdq")]
+pub type GhashSquare1x<T> = ghash::GhashClMul<T>;
+#[cfg(not(target_feature = "pclmulqdq"))]
+pub type GhashSquare1x<T> = crate::arch::portable::arithmetic::ghash::GhashSoftMul<T>;
+
+/// Invert wrapper for the `PackedBinaryGhash1x128b` packing: the shared Itoh-Tsujii inversion
+/// (there is no CLMUL inverse).
+pub type GhashInvert1x<T> = crate::arch::portable::arithmetic::itoh_tsujii::GhashItohTsujii<T>;
+
+/// `Underlier128bLanes` for x86_64 `M128` — required for the portable `GhashWideMul`/`GhashSoftMul`
+/// fallbacks.
 ///
 /// Delegates through `u128` (SSE2 load/store) since this path is only active on targets without
 /// PCLMULQDQ, where SIMD lane extraction intrinsics are not necessarily available.
@@ -75,50 +75,5 @@ impl ghash::ClMulUnderlier for M128 {
 	#[inline]
 	fn move_64_to_hi(a: Self) -> Self {
 		unsafe { std::arch::x86_64::_mm_slli_si128::<8>(a.into()) }.into()
-	}
-}
-
-/// Strategy for x86_64 GHASH field arithmetic operations.
-pub struct GhashStrategy;
-
-// Define PackedBinaryGhash1x128b using the macro
-define_packed_binary_field!(
-	PackedBinaryGhash1x128b,
-	BinaryField128bGhash,
-	M128,
-	(MulFromWideMul),
-	(GhashStrategy),
-	(GhashStrategy),
-	(GhashWideMul)
-);
-
-// Implement TaggedSquare for GhashStrategy
-cfg_if! {
-	if #[cfg(target_feature = "pclmulqdq")] {
-		impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
-			#[inline]
-			fn square(self) -> Self {
-				Self::from_underlier(crate::arch::x86_64::arithmetic::ghash::square_clmul(
-					self.to_underlier(),
-				))
-			}
-		}
-	} else {
-		impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
-			#[inline]
-			fn square(self) -> Self {
-				use super::super::portable::arithmetic::ghash::ghash_square;
-
-				Self::from_underlier(ghash_square(self.to_underlier()))
-			}
-		}
-	}
-}
-
-// Implement TaggedInvertOrZero for GhashStrategy (Itoh-Tsujii — no CLMUL invert)
-impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
-	#[inline]
-	fn invert_or_zero(self) -> Self {
-		crate::arch::invert_b128(self)
 	}
 }

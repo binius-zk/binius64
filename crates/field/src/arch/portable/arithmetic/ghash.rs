@@ -11,7 +11,10 @@ use std::{
 use bytemuck::TransparentWrapper;
 
 use super::super::univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64};
-use crate::{BinaryField128bGhash as GhashB128, WideMul, arch::PackedPrimitiveType};
+use crate::{
+	BinaryField128bGhash as GhashB128, WideMul, arch::PackedPrimitiveType,
+	arithmetic_traits::Square,
+};
 
 /// Multiply two GHASH field elements using software implementation.
 ///
@@ -194,6 +197,24 @@ impl<U: Underlier128bLanes> WideMul for GhashWideMul<PackedPrimitiveType<U, Ghas
 	#[inline]
 	fn reduce(wide: Self::Output) -> Self {
 		Self::wrap(PackedPrimitiveType::wrap(wide.reduce()))
+	}
+}
+
+/// Square strategy wrapper for the software GHASH implementation.
+///
+/// Shared by the portable and wasm32 packings and used by the x86_64 packing when CLMUL is
+/// unavailable. Squares via the bit-spread [`ghash_square`], which interleaves the input bits with
+/// zeroes and reduces — no carryless multiply required.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct GhashSoftMul<T>(T);
+
+impl<U: Underlier128bLanes> Square for GhashSoftMul<PackedPrimitiveType<U, GhashB128>> {
+	#[inline]
+	fn square(self) -> Self {
+		Self::wrap(PackedPrimitiveType::wrap(ghash_square(PackedPrimitiveType::peel(Self::peel(
+			self,
+		)))))
 	}
 }
 

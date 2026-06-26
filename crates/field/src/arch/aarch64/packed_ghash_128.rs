@@ -7,48 +7,13 @@
 //! Based on the optimized GHASH implementation using carryless multiplication
 //! instructions available on ARMv8 processors with NEON support.
 
-use super::m128::M128;
-use crate::{
-	BinaryField128bGhash,
-	arch::{
-		portable::packed_macros::{portable_macros::*, *},
-		strategies::MulFromWideMul,
-	},
-	arithmetic_traits::{
-		TaggedInvertOrZero, TaggedSquare, impl_invert_with, impl_mul_with, impl_square_with,
-	},
-};
-
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring
 /// `GhashClMulWideMul`.
-pub type GhashWideMul<T> = super::arithmetic::ghash::GhashClMulWideMul<T>;
+pub type GhashWideMul1x<T> = super::arithmetic::ghash::GhashClMulWideMul<T>;
 
-/// Strategy for aarch64 GHASH field arithmetic operations.
-pub struct GhashStrategy;
+/// Square wrapper for the `PackedBinaryGhash1x128b` packing: the PMULL carryless-multiply square.
+pub type GhashSquare1x<T> = super::arithmetic::ghash::GhashClMul<T>;
 
-// Define PackedBinaryGhash1x128b using the macro
-define_packed_binary_field!(
-	PackedBinaryGhash1x128b,
-	BinaryField128bGhash,
-	M128,
-	(MulFromWideMul),
-	(GhashStrategy),
-	(GhashStrategy),
-	(GhashWideMul)
-);
-
-// Implement TaggedSquare for GhashStrategy
-impl TaggedSquare<GhashStrategy> for PackedBinaryGhash1x128b {
-	#[inline]
-	fn square(self) -> Self {
-		Self::from_underlier(super::arithmetic::ghash::square_clmul(self.to_underlier()))
-	}
-}
-
-// Implement TaggedInvertOrZero for GhashStrategy (Itoh-Tsujii — no CLMUL invert)
-impl TaggedInvertOrZero<GhashStrategy> for PackedBinaryGhash1x128b {
-	#[inline]
-	fn invert_or_zero(self) -> Self {
-		crate::arch::invert_b128(self)
-	}
-}
+/// Invert wrapper for the `PackedBinaryGhash1x128b` packing: the shared Itoh-Tsujii inversion
+/// (there is no CLMUL inverse).
+pub type GhashInvert1x<T> = crate::arch::portable::arithmetic::itoh_tsujii::GhashItohTsujii<T>;

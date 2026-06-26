@@ -21,8 +21,8 @@ use super::{
 	extension::ExtensionField,
 };
 use crate::{
-	AESTowerField8b, Field, WideMul,
-	arch::{GhashWideMul, M128, invert_b128, packed_ghash_128::PackedBinaryGhash1x128b},
+	AESTowerField8b, Field, PackedBinaryGhash1x128b, WideMul,
+	arch::{GhashWideMul1x, M128, invert_b128},
 	arithmetic_traits::{InvertOrZero, Square},
 	binary_field_arithmetic::square_using_packed,
 	mul_by_binary_field_1b,
@@ -57,22 +57,22 @@ impl From<BinaryField128bGhash> for u128 {
 // `PackedBinaryGhash1x128b`, so a `TrivialWideMul` fallback (whose `Output` is the packed type,
 // bounded `Add + Mul`) would close a trait-resolution cycle through `Field: WideMul`.
 impl WideMul for BinaryField128bGhash {
-	type Output = <GhashWideMul<PackedBinaryGhash1x128b> as WideMul>::Output;
+	type Output = <GhashWideMul1x<PackedBinaryGhash1x128b> as WideMul>::Output;
 
 	#[inline]
 	fn wide_mul(a: Self, b: Self) -> Self::Output {
 		let a = PackedBinaryGhash1x128b::from_underlier(a.to_underlier());
 		let b = PackedBinaryGhash1x128b::from_underlier(b.to_underlier());
-		<GhashWideMul<PackedBinaryGhash1x128b> as WideMul>::wide_mul(
-			GhashWideMul::wrap(a),
-			GhashWideMul::wrap(b),
+		<GhashWideMul1x<PackedBinaryGhash1x128b> as WideMul>::wide_mul(
+			GhashWideMul1x::wrap(a),
+			GhashWideMul1x::wrap(b),
 		)
 	}
 
 	#[inline]
 	fn reduce(wide: Self::Output) -> Self {
-		let reduced = <GhashWideMul<PackedBinaryGhash1x128b> as WideMul>::reduce(wide);
-		Self::from_underlier(GhashWideMul::peel(reduced).to_underlier())
+		let reduced = <GhashWideMul1x<PackedBinaryGhash1x128b> as WideMul>::reduce(wide);
+		Self::from_underlier(GhashWideMul1x::peel(reduced).to_underlier())
 	}
 }
 

@@ -446,12 +446,12 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		AESTowerField8b, BinaryField1b, BinaryField128bGhash, PackedBinaryField1x1b,
-		PackedBinaryField2x1b, PackedBinaryField4x1b, PackedBinaryField8x1b,
+		AESTowerField8b, BinaryField1b, BinaryField128bGhash, PackedAESBinaryField1x8b,
+		PackedAESBinaryField16x8b, PackedAESBinaryField32x8b, PackedAESBinaryField64x8b,
+		PackedBinaryField1x1b, PackedBinaryField2x1b, PackedBinaryField4x1b, PackedBinaryField8x1b,
 		PackedBinaryField16x1b, PackedBinaryField32x1b, PackedBinaryField64x1b,
 		PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b,
 		PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
-		arch::{packed_aes_8::*, packed_aes_128::*, packed_aes_256::*, packed_aes_512::*},
 	};
 
 	trait PackedFieldTest {

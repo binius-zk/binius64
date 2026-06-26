@@ -1,46 +1,45 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::ops::Mul;
+use bytemuck::TransparentWrapper;
 
 use super::{
 	m128::M128,
-	simd_arithmetic::{
-		packed_aes_16x8b_invert_or_zero, packed_aes_16x8b_multiply, packed_aes_16x8b_square,
-	},
+	simd_arithmetic::{VmullWideMul, packed_aes_16x8b_invert_or_zero, packed_aes_16x8b_square},
 };
 use crate::{
 	aes_field::AESTowerField8b,
-	arch::portable::packed::PackedPrimitiveType,
+	arch::PackedPrimitiveType,
 	arithmetic_traits::{InvertOrZero, Square},
 	underlier::WithUnderlier,
 };
 
-pub type PackedAESBinaryField16x8b = PackedPrimitiveType<M128, AESTowerField8b>;
+/// Widening-multiply wrapper used by the AES packing: the `vmull_p8`-backed `VmullWideMul`.
+pub type AesWideMul16x<T> = VmullWideMul<T>;
 
-// Defined by hand rather than via `define_packed_binary_fields!`, so the trivial `WideMul` impl
-// (a parent trait of `PackedField`) must be emitted explicitly here.
-crate::arithmetic_traits::impl_trivial_wide_mul!(PackedAESBinaryField16x8b);
+/// Square wrapper for the `PackedAESBinaryField16x8b` packing.
+pub type AesSquare16x<T> = NeonTableLookupArithmetic<T>;
 
-impl Mul for PackedAESBinaryField16x8b {
-	type Output = Self;
+/// Invert wrapper for the `PackedAESBinaryField16x8b` packing.
+pub type AesInvert16x<T> = NeonTableLookupArithmetic<T>;
 
-	fn mul(self, rhs: Self) -> Self {
-		crate::tracing::trace_multiplication!(PackedAESBinaryField16x8b);
+/// Square and invert strategy wrapper for aarch64 AES, backed by `vqtbl` table lookups over the
+/// 16-byte `M128` vector.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct NeonTableLookupArithmetic<T>(T);
 
-		self.mutate_underlier(|underlier| packed_aes_16x8b_multiply(underlier, rhs.to_underlier()))
-	}
-}
-
-impl Square for PackedAESBinaryField16x8b {
+impl Square for NeonTableLookupArithmetic<PackedPrimitiveType<M128, AESTowerField8b>> {
+	#[inline]
 	fn square(self) -> Self {
-		self.mutate_underlier(packed_aes_16x8b_square)
+		Self::wrap(Self::peel(self).mutate_underlier(packed_aes_16x8b_square))
 	}
 }
 
-impl InvertOrZero for PackedAESBinaryField16x8b {
+impl InvertOrZero for NeonTableLookupArithmetic<PackedPrimitiveType<M128, AESTowerField8b>> {
+	#[inline]
 	fn invert_or_zero(self) -> Self {
-		self.mutate_underlier(packed_aes_16x8b_invert_or_zero)
+		Self::wrap(Self::peel(self).mutate_underlier(packed_aes_16x8b_invert_or_zero))
 	}
 }
 
@@ -48,17 +47,16 @@ impl InvertOrZero for PackedAESBinaryField16x8b {
 mod tests {
 	use proptest::prelude::*;
 
-	use super::*;
-	use crate::Divisible;
+	use crate::{Divisible, arithmetic_traits::Square};
 
 	proptest! {
 		#[test]
 		fn test_square_equals_self_mul_self(a_val in any::<u128>()) {
-			let a = PackedAESBinaryField16x8b::from_underlier(a_val.into());
+			let a = crate::PackedAESBinaryField16x8b::from_underlier(a_val.into());
 
 			let squared = Square::square(a);
 
-			for i in 0..PackedAESBinaryField16x8b::WIDTH {
+			for i in 0..crate::PackedAESBinaryField16x8b::WIDTH {
 				assert_eq!(squared.get(i), a.get(i) * a.get(i));
 			}
 		}

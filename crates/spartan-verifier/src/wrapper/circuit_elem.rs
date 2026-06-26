@@ -91,6 +91,17 @@ where
 		}
 	}
 
+	/// Lowers this element to a wire on `builder`, materializing a `Constant` via
+	/// [`CircuitBuilder::constant`]. A `Wire`'s backing builder is assumed to be `builder`; callers
+	/// mixing elements from different channels must check that themselves (as [`Self::combine`]
+	/// does).
+	pub fn to_wire(&self, builder: &mut B) -> B::Wire {
+		match self {
+			Self::Constant(val) => builder.constant(*val),
+			Self::Wire { wire, .. } => *wire,
+		}
+	}
+
 	/// Combine `elems` under an operation. If every input is a `Constant`, fold at the `F` level
 	/// via `f_op` (no builder is touched). Otherwise convert constants to wires on the shared
 	/// builder and run `builder_op` over the wires.
