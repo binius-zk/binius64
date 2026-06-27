@@ -49,3 +49,7 @@ harness = false
 [[bench]]
 name = "multilinear_evaluate"
 harness = false
+
+[[bench]]
+name = "eq_ind_partial_eval"
+harness = false

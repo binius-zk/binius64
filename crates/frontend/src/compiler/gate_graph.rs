@@ -1,8 +1,7 @@
 // Copyright 2025 Irreducible Inc.
-use std::collections::{HashMap, HashSet};
-
 use binius_core::word::Word;
 use cranelift_entity::{PrimaryMap, SecondaryMap, entity_impl};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::compiler::{
 	gate::opcode::{Opcode, OpcodeShape},
@@ -12,7 +11,10 @@ use crate::compiler::{
 
 #[derive(Default)]
 pub struct ConstPool {
-	pub pool: HashMap<Word, Wire>,
+	/// Interning table mapping each constant value to the wire that holds it.
+	///
+	/// Keyed by a 64-bit word, so a fast integer hasher beats the default SipHash here.
+	pub pool: FxHashMap<Word, Wire>,
 }
 
 impl ConstPool {
@@ -21,7 +23,7 @@ impl ConstPool {
 	}
 
 	pub fn get(&self, value: Word) -> Option<Wire> {
-		self.pool.get(&value).cloned()
+		self.pool.get(&value).copied()
 	}
 
 	pub fn insert(&mut self, word: Word, wire: Wire) {
@@ -197,8 +199,10 @@ pub struct GateGraph {
 	// Use-def analysis
 	/// Maps each wire to the gate that defines it (if any)
 	pub wire_def: SecondaryMap<Wire, Option<Gate>>,
-	/// Maps each wire to the set of gates that use it
-	wire_uses: SecondaryMap<Wire, HashSet<Gate>>,
+	/// Maps each wire to the set of gates that use it.
+	///
+	/// Gate ids are small integers, so a fast integer hasher beats the default SipHash here.
+	wire_uses: SecondaryMap<Wire, FxHashSet<Gate>>,
 }
 
 impl GateGraph {
@@ -410,7 +414,7 @@ impl GateGraph {
 	}
 
 	/// Returns all gates that use the given wire
-	pub fn get_wire_uses(&self, wire: Wire) -> &HashSet<Gate> {
+	pub fn get_wire_uses(&self, wire: Wire) -> &FxHashSet<Gate> {
 		&self.wire_uses[wire]
 	}
 
