@@ -437,18 +437,16 @@ where
 
 	let log_constraint_count = checked_log_2(a.len());
 
-	let mut small_field_zerocheck_challenges = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.to_vec();
-	small_field_zerocheck_challenges.truncate(log_constraint_count);
-
-	let big_field_zerocheck_challenges =
-		channel.sample_many(log_constraint_count - small_field_zerocheck_challenges.len());
+	let n_extra_zerocheck_challenges =
+		log_constraint_count.saturating_sub(PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
+	let big_field_zerocheck_challenges = channel.sample_many(n_extra_zerocheck_challenges);
 
 	let prover = OblongZerocheckProver::<_, PackedAESBinaryField64x8b, PChallenge>::new(
+		log_constraint_count,
 		a,
 		b,
 		c,
 		big_field_zerocheck_challenges,
-		small_field_zerocheck_challenges,
 		prover_message_domain.isomorphic(),
 	);
 

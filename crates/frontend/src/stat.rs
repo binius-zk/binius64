@@ -287,10 +287,10 @@ impl fmt::Display for CircuitStat {
 /// Traverses the constraint system and returns the number of distinct value indices that
 /// are shifted and unshifted, respectively.
 fn traverse_constraint_system(cs: &ConstraintSystem) -> (usize, usize) {
-	use std::collections::HashSet;
+	use rustc_hash::FxHashSet;
 	let mut cx = Cx {
-		shifted_terms: HashSet::new(),
-		unshifted_terms: HashSet::new(),
+		shifted_terms: FxHashSet::default(),
+		unshifted_terms: FxHashSet::default(),
 	};
 	for and in &cs.and_constraints {
 		visit_operand(&and.a, &mut cx);
@@ -306,8 +306,8 @@ fn traverse_constraint_system(cs: &ConstraintSystem) -> (usize, usize) {
 	return (cx.shifted_terms.len(), cx.unshifted_terms.len());
 
 	struct Cx {
-		shifted_terms: HashSet<ShiftedValueIndex>,
-		unshifted_terms: HashSet<ShiftedValueIndex>,
+		shifted_terms: FxHashSet<ShiftedValueIndex>,
+		unshifted_terms: FxHashSet<ShiftedValueIndex>,
 	}
 
 	fn visit_operand(operand: &Operand, cx: &mut Cx) {

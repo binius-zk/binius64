@@ -8,7 +8,7 @@
 
 use std::hint::black_box;
 
-use binius_field::{PackedField, WideMul, arch::OptimalPackedB128};
+use binius_field::{GhashSq256b, PackedField, WideMul, arch::OptimalPackedB128};
 use criterion::{
 	BenchmarkGroup, Criterion, Throughput, criterion_group, criterion_main, measurement::WallTime,
 };
@@ -47,6 +47,12 @@ fn bench_ghash_widening(c: &mut Criterion) {
 	let label = format!("OptimalPacked_{}x128b", OptimalPackedB128::WIDTH);
 	for &n in &[16, 256, 4096] {
 		bench_at_n::<OptimalPackedB128>(&mut group, &label, n);
+	}
+
+	// GF(2^256) is a degree-two extension of GHASH, so one multiply is three GHASH products.
+	// Deferring their reduction across an inner product is where the widening multiply pays off.
+	for &n in &[16, 256, 4096] {
+		bench_at_n::<GhashSq256b>(&mut group, "GhashSq256b", n);
 	}
 
 	group.finish();

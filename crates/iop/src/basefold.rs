@@ -126,7 +126,10 @@ where
 /// * `outer_challenges` - the batching challenges `r'` (length `log_n_oracles`) used in the FRI
 ///   outer (oracle-combine) rounds.
 ///
-/// The returned `challenges` are the FRI fold challenges `[γ] ++ r' ++ fresh_X`. Use
+/// The leading `max_n - D` standard rounds (`D = fri_params.rs_code().log_dim()`, the reduced
+/// first-round code dimension) carry the non-ZK oracles' batch folds; only the trailing `D` are
+/// genuine FRI fold rounds. The returned `challenges` are the FRI fold challenges
+/// `[γ] ++ leading_X ++ r' ++ trailing_X`, matching the prover's feed order. Use
 /// [`mlecheck_fri_consistency`] to check the reduced values.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_mlecheck_basefold_zk_batch<F, MTScheme, Challenger_>(
@@ -135,7 +138,7 @@ pub fn verify_mlecheck_basefold_zk_batch<F, MTScheme, Challenger_>(
 	codeword_commitments: &[MTScheme::Digest],
 	eval_claim: F,
 	eval_point: &[F],
-	batch_challenge: F,
+	batch_challenge: Option<F>,
 	outer_challenges: &[F],
 	transcript: &mut VerifierTranscript<Challenger_>,
 ) -> Result<ReducedOutput<F>, Error>
@@ -147,42 +150,46 @@ where
 	// The MLE-check round polynomial is degree 1 (the composite is the multilinear itself).
 	const DEGREE: usize = 1;
 
-	// ZK precondition: each oracle is the interleaved (π ‖ ω) mask codeword, so the inner reduction
-	// is a single round folding at `γ`.
-	let max_log_batch_size = fri_params
-		.input_oracles()
-		.iter()
-		.map(|spec| spec.log_batch_size)
-		.max()
-		.expect("input_oracles is non-empty");
-	assert_eq!(max_log_batch_size, 1);
-
 	let log_n_oracles = log2_ceil_usize(fri_params.input_oracles().len());
 	assert_eq!(outer_challenges.len(), log_n_oracles);
 
-	// The combined codeword (after the inner unbatch and the `log_n_oracles` outer oracle-combine
-	// rounds) is a level-𝐧 codeword; the MLE-check therefore runs over `𝐧` variables.
-	let n_vars = fri_params.rs_code().log_dim();
-	assert_eq!(eval_point.len(), n_vars);
+	// The MLE-check runs over the combined opening's `𝐧 = max_i log_msg_len_i` variables, supplied
+	// as `eval_point`. For an all-ZK batch this equals `rs_code().log_dim()`; with non-ZK oracles
+	// it can exceed it, since those oracles fold their batch dimensions within the leading MLE
+	// rounds.
+	let n_vars = eval_point.len();
 
-	let mut challenges = Vec::with_capacity(n_vars + 1 + log_n_oracles);
+	// `n_inner` inner (unbatch) rounds: one for the shared mask challenge γ when any ZK oracle is
+	// present, none otherwise. The leading `n_leading = max_n - D` standard rounds carry the non-ZK
+	// oracles' batch folds (inner challenges); the outer (oracle-combine) challenges follow them so
+	// they land in the FirstFold's outer window, exactly mirroring the prover's feed order.
+	let n_inner = usize::from(batch_challenge.is_some());
+	let reduced_log_dim = fri_params.rs_code().log_dim();
+	assert!(reduced_log_dim <= n_vars);
+	let n_leading = n_vars - reduced_log_dim;
+	let mut challenges = Vec::with_capacity(n_vars + n_inner + log_n_oracles);
 	let mut fri_fold_verifier = FRIFoldVerifier::new(fri_params);
 
-	// Inner (unbatch) round: fold every interleaved (π_i ‖ ω_i) codeword at the masking challenge.
-	fri_fold_verifier.process_round(&mut transcript.message())?;
-	challenges.push(batch_challenge);
-
-	// Outer rounds: combine the `k` lifted codewords at the batching challenges `r'`. These carry
-	// no sumcheck round-polynomial (the oracle-index variables are collapsed deterministically).
-	for &outer_challenge in outer_challenges {
+	// Inner (unbatch) round: fold every interleaved (π_i ‖ ω_i) ZK codeword at the masking
+	// challenge.
+	if let Some(gamma) = batch_challenge {
 		fri_fold_verifier.process_round(&mut transcript.message())?;
-		challenges.push(outer_challenge);
+		challenges.push(gamma);
 	}
 
 	// Standard rounds: the only sumcheck (MLE-check) rounds, folding the combined codeword at the
-	// fresh challenges over the `𝐧` variables `X`.
+	// fresh challenges over the `𝐧` variables `X`. The outer (oracle-combine) challenges — which
+	// carry no sumcheck round-polynomial — are processed once the leading batch-fold challenges are
+	// in (all-ZK has `n_leading == 0`, so they precede every standard round as before).
 	let mut sum = eval_claim;
 	for round in 0..n_vars {
+		if round == n_leading {
+			for &outer_challenge in outer_challenges {
+				fri_fold_verifier.process_round(&mut transcript.message())?;
+				challenges.push(outer_challenge);
+			}
+		}
+
 		let round_proof = mlecheck::RoundProof(RoundCoeffs(transcript.message().read_vec(DEGREE)?));
 		fri_fold_verifier.process_round(&mut transcript.message())?;
 
@@ -192,6 +199,14 @@ where
 		let challenge = transcript.sample();
 		sum = round_coeffs.evaluate(challenge);
 		challenges.push(challenge);
+	}
+	// When `D == 0` the leading window spans every standard round, so the outer challenges follow
+	// them here, before the final fold.
+	if n_leading == n_vars {
+		for &outer_challenge in outer_challenges {
+			fri_fold_verifier.process_round(&mut transcript.message())?;
+			challenges.push(outer_challenge);
+		}
 	}
 
 	fri_fold_verifier.process_round(&mut transcript.message())?;

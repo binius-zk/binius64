@@ -16,7 +16,7 @@ use binius_ip_prover::{
 	sumcheck::{self, PaddedSumcheckDecorator, bivariate_product::BivariateProductSumcheckProver},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice,
+	FieldBuffer, FieldSlice, FieldSliceMut,
 	inner_product::inner_product_par,
 	line::{extrapolate_line, extrapolate_line_packed},
 	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
@@ -34,7 +34,7 @@ use crate::{
 	basefold::prove_mlecheck_basefold_zk_batch,
 	basefold_compiler::BaseFoldZKProverCompiler,
 	channel::IOPProverChannel,
-	fri::{self, CommitMaskedOutput, FRIFoldProver},
+	fri::{self, CommitMaskedOutput, CommitOutput, FRIFoldProver},
 	merkle_tree::MerkleTreeProver,
 };
 
@@ -46,9 +46,9 @@ pub struct BaseFoldZKOracle {
 
 /// Committed oracle data stored internally.
 struct CommittedOracleData<P: PackedField, Committed> {
-	/// The mask buffer generated during [`fri::commit_masked`]. Held by the channel because it is
-	/// the only party that knows it.
-	mask: FieldBuffer<P>,
+	/// The mask buffer generated during [`fri::commit_masked`] for a ZK oracle, held by the
+	/// channel because it is the only party that knows it. `None` for a non-ZK (unmasked) oracle.
+	mask: Option<FieldBuffer<P>>,
 	/// RS-encoded codeword.
 	codeword: FieldBuffer<P>,
 	/// Merkle commitment data for query proofs.
@@ -211,21 +211,31 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 	// sumcheck reduces to the multilinear evaluations (alphas).
 	assert_eq!(relations.len(), n_committed, "expects exactly one relation per committed oracle",);
 
-	// `𝐧 = max_i n_i`, the dimension of the combined codeword.
-	let max_n = fri_params.rs_code().log_dim();
+	// `𝐧 = max_i log_msg_len_i`, the variable count of the combined opening / materialized buffer.
+	let max_n = oracle_specs
+		.iter()
+		.map(|spec| spec.log_msg_len)
+		.max()
+		.expect("at least one oracle");
 
 	// === Masking step (whitepaper 7.2) ===
-	// Send the masked inner products σ_i = ⟨ω_i, t_i⟩, then sample a single masking challenge γ.
+	// Only ZK oracles are masked. Send their σ_i = ⟨ω_i, t_i⟩ (one per ZK oracle, in relation
+	// order), then sample the single shared masking challenge γ — skipped entirely when no ZK
+	// oracle is present.
 	let sigmas = relations
 		.iter()
+		.filter(|(index, _, _, _)| oracle_specs[*index].is_zk)
 		.map(|(index, _, transparent, _)| {
-			inner_product_par(&committed_oracles[*index].mask, transparent)
+			let mask = committed_oracles[*index]
+				.mask
+				.as_ref()
+				.expect("ZK oracle carries a mask");
+			inner_product_par(mask, transparent)
 		})
 		.collect::<Vec<_>>();
 	channel.send_many(&sigmas);
 
-	let gamma = IPProverChannel::<F>::sample(channel);
-	let gamma_broadcast = P::broadcast(gamma);
+	let gamma = (!sigmas.is_empty()).then(|| IPProverChannel::<F>::sample(channel));
 
 	// === Phase A: batched sumcheck on the masked claims ⟨π_i', t_i⟩ = s_i' ===
 	// Register provers in arrival order; form π_i' = (1-γ)π_i + γω_i, storing each clone for Phase
@@ -235,26 +245,41 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 	let mut witness_primes = vec![None; n_committed];
 	let mut prover_oracle_indices = Vec::with_capacity(n_committed);
 	let mut provers = Vec::with_capacity(n_committed);
-	for ((index, mut message, transparent, claim), sigma) in iter::zip(relations, sigmas) {
+	let mut sigma_iter = sigmas.into_iter();
+	for (index, mut message, transparent, claim) in relations {
 		let n_i = oracle_specs[index].log_msg_len;
 		assert_eq!(message.log_len(), n_i); // pre-condition
 		assert_eq!(transparent.log_len(), n_i); // pre-condition
 
-		let mask = &committed_oracles[index].mask;
+		// ZK oracle: blind the message π_i' = (1-γ)π_i + γω_i and mask the claim with σ_i.
+		// Non-ZK oracle: the message and claim pass through unmasked.
+		let sum_prime = if oracle_specs[index].is_zk {
+			let sigma = sigma_iter.next().expect("one σ per ZK oracle");
+			let mask = committed_oracles[index]
+				.mask
+				.as_ref()
+				.expect("ZK oracle carries a mask");
+			let gamma = gamma.expect("γ sampled when ZK oracles present");
 
-		// Modify the message π_i to be the blinded message π_i'.
-		(message.as_mut(), mask.as_ref())
-			.into_par_iter()
-			.for_each(|(message_i, &mask_i)| {
-				*message_i = extrapolate_line_packed(*message_i, mask_i, gamma_broadcast);
-			});
-		witness_primes[index] = Some(message.clone());
-		prover_oracle_indices.push(index);
+			let gamma_broadcast = P::broadcast(gamma);
+			(message.as_mut(), mask.as_ref())
+				.into_par_iter()
+				.for_each(|(message_i, &mask_i)| {
+					*message_i = extrapolate_line_packed(*message_i, mask_i, gamma_broadcast);
+				});
 
-		let sum_prime = extrapolate_line(claim, sigma, gamma);
-		let inner = BivariateProductSumcheckProver::new([message, transparent], sum_prime)
+			extrapolate_line(claim, sigma, gamma)
+		} else {
+			claim
+		};
+
+		// TODO: We could cut the size of the message.clone() if the SumcheckProver accepted Cow
+		let inner = BivariateProductSumcheckProver::new([message.clone(), transparent], sum_prime)
 			.expect("π_i' and t_i have equal length");
 		provers.push(PaddedSumcheckDecorator::new(inner, max_n - n_i));
+
+		witness_primes[index] = Some(message.clone());
+		prover_oracle_indices.push(index);
 	}
 
 	let output =
@@ -283,26 +308,35 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 
 	let mut combined = FieldBuffer::<P>::zeros(max_n);
 	let mut s_prime = F::ZERO;
-	for (witness_prime, scalar, alpha_i) in izip!(witness_primes, eq_tensor, alphas) {
+	for (fri_oracle, witness_prime, eq_i, alpha_i) in
+		izip!(fri_params.input_oracles(), witness_primes, eq_tensor, alphas)
+	{
 		let witness_prime =
 			witness_prime.expect("every committed oracle carries exactly one queued relation");
 		let n_i = witness_prime.log_len();
-		// Add scalar · π_i^↑ into the low 2^{n_i} block of the combined buffer (the high block is
-		// the ZeroPadMSB lift, left as the zeros already in `combined`).
-		if n_i >= P::LOG_WIDTH {
-			let scalar_p = P::broadcast(scalar);
-			let src = witness_prime.as_ref();
-			combined.as_mut()[..src.len()]
-				.par_iter_mut()
-				.zip(src)
-				.for_each(|(dst, &w)| {
-					*dst += scalar_p * w;
-				});
-		} else {
-			let src = P::from_scalars(witness_prime.iter_scalars());
-			combined.as_mut()[0] += src;
-		}
-		s_prime += scalar * alpha_i * eq_ind_zero(&point[n_i..]);
+		// Each oracle occupies the low 2^{n_i} of every 2^{log_lift}·2^{n_i}-sized lift block, and
+		// that block is *repeated* across the 2^{log_repeat} high dims so the small oracle is
+		// constant along them (matching the FRI lift/repeat structure).
+		let log_lift = fri_oracle.log_lift;
+
+		// Repeat placement: add scalar · π_i' into the first 2^{n_i} entries of each of the
+		// 2^{log_repeat} chunks of size 2^{n_i + log_lift}.
+		assert!(
+			n_i + log_lift >= P::LOG_WIDTH,
+			"repeat placement requires whole-packed lift blocks",
+		);
+		let scalar_broadcast = P::broadcast(eq_i);
+		let chunk_packed = 1usize << (n_i + log_lift - P::LOG_WIDTH);
+		combined
+			.as_mut()
+			.par_chunks_mut(chunk_packed)
+			.for_each(|chunk| {
+				let chunk_buf = FieldSliceMut::from_slice(n_i + log_lift, chunk);
+				accumulate_scaled_buffer(chunk_buf, witness_prime.to_ref(), scalar_broadcast);
+			});
+
+		// Repeat dims contribute 1; only the lift dims contribute an eq-to-zero factor.
+		s_prime += eq_i * alpha_i * eq_ind_zero(&point[n_i..][..log_lift]);
 	}
 
 	// Codeword commitments in oracle-index order, matching `open_fri_params.input_oracles()`.
@@ -321,10 +355,30 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 		s_prime,
 		gamma,
 		&outer_challenges,
+		fri_params.rs_code().log_dim(),
 		fri_folder,
 		channel,
 	)
 	.expect("combined MLE-check BaseFold proof should succeed");
+}
+
+fn accumulate_scaled_buffer<P: PackedField>(
+	mut dst: FieldSliceMut<P>,
+	src: FieldSlice<P>,
+	scalar_broadcast: P,
+) {
+	if src.log_len() >= P::LOG_WIDTH {
+		let src = src.as_ref();
+		dst.as_mut()
+			.par_iter_mut()
+			.zip(src.as_ref())
+			.for_each(|(dst_i, src_i)| {
+				*dst_i += scalar_broadcast * *src_i;
+			});
+	} else {
+		let src = P::from_scalars(src.iter_scalars());
+		dst.as_mut()[0] += scalar_broadcast * src;
+	}
 }
 
 impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, Challenger_> IPProverChannel<F>
@@ -390,21 +444,37 @@ where
 			buffer.log_len()
 		);
 
-		// Generate mask, interleave, and commit oracle `index` of the combined FRI parameters via
-		// commit_masked.
-		let CommitMaskedOutput {
-			commitment,
-			committed,
-			codeword,
-			mask,
-		} = fri::commit_masked(
-			&self.fri_params,
-			index,
-			self.ntt,
-			self.merkle_prover,
-			buffer.to_ref(),
-			&mut self.rng,
-		);
+		// Commit oracle `index` of the combined FRI parameters. ZK oracles interleave a fresh mask
+		// (`commit_masked`); non-ZK oracles commit the message alone (`commit_interleaved`).
+		let (commitment, committed, codeword, mask) = if spec.is_zk {
+			let CommitMaskedOutput {
+				commitment,
+				committed,
+				codeword,
+				mask,
+			} = fri::commit_masked(
+				&self.fri_params,
+				index,
+				self.ntt,
+				self.merkle_prover,
+				buffer.to_ref(),
+				&mut self.rng,
+			);
+			(commitment, committed, codeword, Some(mask))
+		} else {
+			let CommitOutput {
+				commitment,
+				committed,
+				codeword,
+			} = fri::commit_interleaved(
+				&self.fri_params,
+				index,
+				self.ntt,
+				self.merkle_prover,
+				buffer.to_ref(),
+			);
+			(commitment, committed, codeword, None)
+		};
 
 		// Send commitment via transcript.
 		self.transcript.message().write(&commitment);
@@ -734,11 +804,125 @@ mod tests {
 		verifier_channel.finish().is_ok()
 	}
 
+	/// Like `run_zk_channel` but with per-oracle `(n_vars, is_zk)` flags, exercising the mixed
+	/// ZK/non-ZK opening. If `tamper`, the verifier's claim on the first oracle is corrupted.
+	fn run_mixed_channel(specs: &[(usize, bool)], tamper: bool) -> bool {
+		type F = BinaryField128bGhash;
+		type P = PackedBinaryGhash1x128b;
+
+		let mut rng = StdRng::seed_from_u64(0);
+		let data: Vec<(FieldBuffer<P>, FieldBuffer<P>, F)> = specs
+			.iter()
+			.map(|&(n, _)| generate_zk_oracle_data::<F, P, _>(&mut rng, n))
+			.collect();
+
+		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
+		let oracle_specs: Vec<OracleSpec> = specs
+			.iter()
+			.map(|&(n, is_zk)| {
+				if is_zk {
+					OracleSpec::new_zk(n)
+				} else {
+					OracleSpec::new(n)
+				}
+			})
+			.collect();
+
+		let merkle_prover = make_merkle_prover();
+		let verifier_compiler = BaseFoldZKVerifierCompiler::new(
+			merkle_prover.scheme().clone(),
+			oracle_specs,
+			LOG_INV_RATE,
+			n_test_queries,
+			&MinProofSizeStrategy,
+		);
+
+		let ntt = make_ntt(verifier_compiler.max_subspace());
+		let prover_compiler = BaseFoldZKProverCompiler::<P, _, _>::from_verifier_compiler(
+			&verifier_compiler,
+			ntt,
+			merkle_prover,
+		);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let prover_rng = StdRng::seed_from_u64(1);
+		let mut prover_channel = prover_compiler.create_channel(&mut prover_transcript, prover_rng);
+
+		let oracles: Vec<_> = data
+			.iter()
+			.map(|(buffer, _, _)| prover_channel.send_oracle(buffer.to_ref()))
+			.collect();
+		let prover_relations: Vec<_> = oracles
+			.into_iter()
+			.zip(&data)
+			.map(|(oracle, (buffer, transparent, claim))| {
+				(oracle, buffer.clone(), transparent.clone(), *claim)
+			})
+			.collect();
+		prover_channel.prove_oracle_relations(prover_relations);
+		prover_channel.finish();
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
+
+		let v_oracles: Vec<_> = (0..specs.len())
+			.map(|_| verifier_channel.recv_oracle().unwrap())
+			.collect();
+		let relations: Vec<_> = v_oracles
+			.into_iter()
+			.zip(&data)
+			.enumerate()
+			.map(|(i, (oracle, (_, transparent, claim)))| {
+				let transparent = transparent.clone();
+				let claim = if tamper && i == 0 {
+					*claim + F::ONE
+				} else {
+					*claim
+				};
+				OracleLinearRelation {
+					oracle,
+					transparent: Box::new(move |point: &[F]| {
+						let eq = eq_ind_partial_eval::<P>(point);
+						inner_product_buffers(&transparent, &eq)
+					}),
+					claim,
+				}
+			})
+			.collect();
+		verifier_channel
+			.verify_oracle_relations(relations)
+			.expect("verify_oracle_relations only queues");
+		verifier_channel.finish().is_ok()
+	}
+
 	#[test]
 	fn test_basefold_zk_channel_three_oracles_non_power_of_two() {
 		// 3 oracles (not a power of two) of unequal sizes: exercises oracle padding (Lifted FRI)
 		// and the `⌈log 3⌉ = 2` outer oracle-combine rounds.
 		assert!(run_zk_channel(&[5, 6, 8], false));
+	}
+
+	// Heterogeneous mixed/zero-ZK openings: the non-ZK oracles' batch-fold challenges come from the
+	// leading `max_n - D` MLE rounds, so prove/verify_mlecheck feed the FRI folder's outer
+	// (oracle-combine) challenges *after* those rounds, landing them in the FirstFold's outer
+	// window. All-ZK (`n_leading == 0`) is unaffected: the outers still precede every MLE round.
+	#[test]
+	fn test_basefold_zk_channel_mixed_zk_non_zk() {
+		// One non-ZK oracle (8 vars) and one ZK oracle (6 vars): exercises conditional masking,
+		// the heterogeneous combined-buffer lift/repeat placement, and the non-ZK unmasked commit.
+		assert!(run_mixed_channel(&[(8, false), (6, true)], false));
+	}
+
+	#[test]
+	fn test_basefold_zk_channel_zero_zk() {
+		// All non-ZK oracles: γ must never be sampled and the proof must still verify.
+		assert!(run_mixed_channel(&[(6, false), (8, false)], false));
+	}
+
+	#[test]
+	fn test_basefold_zk_channel_mixed_invalid_proof() {
+		// Tampering the claim on a mixed batch must be rejected.
+		assert!(!run_mixed_channel(&[(8, false), (6, true)], true));
 	}
 
 	#[test]

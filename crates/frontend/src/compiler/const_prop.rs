@@ -5,7 +5,9 @@
 //! with all-constant inputs, evaluating them at compile time, and replacing their
 //! outputs with constant wires.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
+
+use rustc_hash::FxHashSet;
 
 use super::{
 	eval_form::evaluate_gate_constants,
@@ -26,7 +28,8 @@ pub fn constant_propagation(graph: &mut GateGraph, hint_registry: &HintRegistry)
 
 	// Initialize worklist with all gates that might be evaluable
 	let mut worklist: VecDeque<Gate> = VecDeque::new();
-	let mut in_worklist: HashSet<Gate> = HashSet::new();
+	// Gate ids are small integers, so a fast integer hasher beats the default SipHash here.
+	let mut in_worklist: FxHashSet<Gate> = FxHashSet::default();
 
 	// Add all gates that use constant wires to the initial worklist.
 	//
