@@ -12,7 +12,6 @@ use binius_field::{
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace,
-	multilinear::eq::eq_ind_partial_eval,
 	univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
 };
 use binius_verifier::{
@@ -89,7 +88,6 @@ where
 	) -> Self {
 		let ntt_lookup = tracing::debug_span!("Compute univariate LDE table")
 			.in_scope(|| NTTLookup::<PNTTDomain>::new(&prover_message_domain));
-		let eq_ind_big_field_challenges = eq_ind_partial_eval(&big_field_zerocheck_challenges);
 
 		let univariate_round_message = tracing::debug_span!("Compute univariate round message")
 			.in_scope(|| {
@@ -98,7 +96,7 @@ where
 					&first_col,
 					&second_col,
 					&third_col,
-					&eq_ind_big_field_challenges,
+					&big_field_zerocheck_challenges,
 					&ntt_lookup,
 				)
 			});

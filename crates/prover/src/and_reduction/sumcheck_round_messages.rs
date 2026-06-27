@@ -1,11 +1,11 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{borrow::Cow, iter};
+use std::{borrow::Cow, iter, mem};
 
 use binius_core::word::Word;
 use binius_field::{AESTowerField8b, BinaryField, PackedField};
-use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
+use binius_math::multilinear::eq::eq_ind_partial_eval;
 use binius_utils::rayon::prelude::*;
 use binius_verifier::{
 	config::PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES, protocols::bitand::ROWS_PER_HYPERCUBE_VERTEX,
@@ -63,7 +63,7 @@ pub fn univariate_round_message_extension_domain<F, PNTTDomain>(
 	a_words: &[Word],
 	b_words: &[Word],
 	c_words: &[Word],
-	eq_ind_big_field_challenges: &FieldBuffer<F>,
+	big_field_challenges: &[F],
 	ntt_lookup: &NTTLookup<PNTTDomain>,
 ) -> [F; ROWS_PER_HYPERCUBE_VERTEX]
 where
@@ -76,50 +76,93 @@ where
 	// multiple underlier sizes
 	assert_eq!(PNTTDomain::WIDTH, ROWS_PER_HYPERCUBE_VERTEX);
 
-	assert_eq!(
-		eq_ind_big_field_challenges.log_len(),
-		log_words.saturating_sub(PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len())
-	);
+	const N_FIXED_SMALL_CHALLENGES: usize = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len();
+	const N_FIXED_LARGE_CHALLENGES: usize = 3;
+
+	const LOG_CHUNK_SIZE: usize = N_FIXED_SMALL_CHALLENGES + N_FIXED_LARGE_CHALLENGES;
+
+	assert_eq!(big_field_challenges.len(), log_words.saturating_sub(N_FIXED_SMALL_CHALLENGES));
 	for col in [a_words, b_words, c_words] {
 		assert_eq!(col.len(), 1 << log_words);
 	}
 
-	let eq_ind_small: [_; 8] =
+	let eq_ind_small: [_; 1 << N_FIXED_SMALL_CHALLENGES] =
 		eq_ind_partial_eval::<AESTowerField8b>(&PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES)
 			.iter_scalars()
 			.map(PNTTDomain::broadcast)
 			.collect::<Vec<_>>()
 			.try_into()
-			.expect("PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len() == 3; 2^3 == 8");
+			.expect("PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len() == N_FIXED_SMALL_CHALLENGES");
+
+	// We don't actually use fixed large challenges yet, so just take a prefix of the big field
+	// challenges passed in.
+	let (fixed_large_challenges, extra_challenges) = if big_field_challenges.len()
+		< N_FIXED_LARGE_CHALLENGES
+	{
+		let mut fixed_large_challenges = [F::ZERO; N_FIXED_LARGE_CHALLENGES];
+		fixed_large_challenges[..big_field_challenges.len()].copy_from_slice(big_field_challenges);
+		(fixed_large_challenges, &[][..])
+	} else {
+		let (fixed_large_challenges, extra_challenges) =
+			big_field_challenges.split_at(N_FIXED_LARGE_CHALLENGES);
+		let fixed_large_challenges: [_; N_FIXED_LARGE_CHALLENGES] = fixed_large_challenges
+			.try_into()
+			.expect("big_field_challenges.len() >= N_FIXED_LARGE_CHALLENGES");
+		(fixed_large_challenges, extra_challenges)
+	};
+
+	let eq_ind_fixed_large: [_; 1 << N_FIXED_LARGE_CHALLENGES] =
+		eq_ind_partial_eval::<F>(&fixed_large_challenges)
+			.as_ref()
+			.try_into()
+			.expect("fixed_large_challenges.len() == N_FIXED_LARGE_CHALLENGES");
+
+	let eq_ind_extra = eq_ind_partial_eval::<F>(extra_challenges);
 
 	// Process columns in fixed-length chunks of 8 to assist compiler in loop unrolling.
-	let a_col_chunks = duplicate_to_fixed_chunks::<8>(a_words);
-	let b_col_chunks = duplicate_to_fixed_chunks::<8>(b_words);
-	let c_col_chunks = duplicate_to_fixed_chunks::<8>(c_words);
+	let a_col_chunks = duplicate_to_fixed_chunks::<{ 1 << LOG_CHUNK_SIZE }>(a_words);
+	let b_col_chunks = duplicate_to_fixed_chunks::<{ 1 << LOG_CHUNK_SIZE }>(b_words);
+	let c_col_chunks = duplicate_to_fixed_chunks::<{ 1 << LOG_CHUNK_SIZE }>(c_words);
 
 	// Accumulate resulting polynomial evals by iterating over each hypercube vertex.
 	(a_col_chunks.as_ref(), b_col_chunks.as_ref(), c_col_chunks.as_ref())
 		.into_par_iter()
 		.map(|(a_chunk, b_chunk, c_chunk)| {
-			let mut summed_ntt = PNTTDomain::zero();
+			// Reshape the chunk arrays into arrays of arrays
+			let [a_subchunks, b_subchunks, c_subchunks] =
+				[a_chunk, b_chunk, c_chunk].map(|chunk| unsafe {
+					mem::transmute::<
+						&[Word; 1 << LOG_CHUNK_SIZE],
+						&[[Word; 1 << N_FIXED_SMALL_CHALLENGES]; 1 << N_FIXED_SMALL_CHALLENGES],
+					>(chunk)
+				});
 
-			for (a_i, b_i, c_i, &weight) in
-				izip!(a_chunk, b_chunk, c_chunk, eq_ind_small.each_ref())
-			{
-				// Compute the low-degree extension of each column via the lookup table.
-				let [first_col_ntt, second_col_ntt, third_col_ntt] =
-					ntt_lookup.multi_ntt_array([a_i.0, b_i.0, c_i.0]);
+			izip!(a_subchunks, b_subchunks, c_subchunks, &eq_ind_fixed_large).fold(
+				[F::ZERO; ROWS_PER_HYPERCUBE_VERTEX],
+				|mut acc, (a_subchunk, b_subchunk, c_subchunk, outer_weight)| {
+					let summed_ntt =
+						izip!(a_subchunk, b_subchunk, c_subchunk, &eq_ind_small)
+							.map(|(a_i, b_i, c_i, inner_weight)| {
+								// Compute the low-degree extension of each column via the lookup
+								// table.
+								let [first_col_ntt, second_col_ntt, third_col_ntt] =
+									ntt_lookup.multi_ntt_array([a_i.0, b_i.0, c_i.0]);
 
-				// Compute the weighted composition of the LDE values.
-				summed_ntt += (first_col_ntt * second_col_ntt - third_col_ntt) * weight;
-			}
-
-			summed_ntt
+								// Compute the weighted composition of the LDE values.
+								(first_col_ntt * second_col_ntt - third_col_ntt) * inner_weight
+							})
+							.sum::<PNTTDomain>();
+					for (acc_i, summed_ntt_i) in iter::zip(&mut acc, summed_ntt.into_iter()) {
+						*acc_i += F::from(summed_ntt_i) * outer_weight;
+					}
+					acc
+				},
+			)
 		})
-		.zip(eq_ind_big_field_challenges.as_ref())
-		.fold_with([F::ZERO; ROWS_PER_HYPERCUBE_VERTEX], |mut acc, (summed_ntt, &eq_weight)| {
-			for (acc_i, summed_ntt_i) in iter::zip(&mut acc, summed_ntt.into_iter()) {
-				*acc_i += eq_weight * F::from(summed_ntt_i);
+		.zip(eq_ind_extra.as_ref())
+		.map(|(mut acc, eq_weight)| {
+			for acc_i in &mut acc {
+				*acc_i *= eq_weight;
 			}
 			acc
 		})
@@ -233,8 +276,6 @@ mod test {
 		let mlv_2 = random_words(log_num_words, &mut rng);
 		let mlv_3: Vec<Word> = iter::zip(&mlv_1, &mlv_2).map(|(&a, &b)| a & b).collect();
 
-		let eq_ind_only_big = eq_ind_partial_eval(&big_field_zerocheck_challenges);
-
 		// Agreed-upon proof parameter
 
 		let prover_message_domain = BinarySubspace::with_dim(SKIPPED_VARS + 1);
@@ -248,7 +289,7 @@ mod test {
 			&mlv_1,
 			&mlv_2,
 			&mlv_3,
-			&eq_ind_only_big,
+			&big_field_zerocheck_challenges,
 			&ntt_lookup,
 		);
 

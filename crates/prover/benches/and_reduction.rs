@@ -11,7 +11,6 @@ use binius_field::{
 };
 use binius_math::{
 	BinarySubspace,
-	multilinear::eq::eq_ind_partial_eval,
 	univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
 };
 use binius_prover::{
@@ -62,14 +61,12 @@ fn bench(c: &mut Criterion) {
 	group.throughput(Throughput::Elements(1 << log_words));
 	group.bench_function(format!("univariate_round_message 2^{log_words}"), |bench| {
 		bench.iter(|| {
-			let eq_ind_mle = eq_ind_partial_eval(&big_field_zerocheck_challenges);
-
 			let urm: [B128; _] = univariate_round_message_extension_domain(
 				log_words,
 				&a_words,
 				&b_words,
 				&c_words,
-				&eq_ind_mle,
+				&big_field_zerocheck_challenges,
 				&ntt_lookup,
 			);
 
@@ -77,13 +74,12 @@ fn bench(c: &mut Criterion) {
 		});
 	});
 
-	let eq_ind_mle = eq_ind_partial_eval(&big_field_zerocheck_challenges);
 	let urm: [B128; _] = univariate_round_message_extension_domain(
 		log_words,
 		&a_words,
 		&b_words,
 		&c_words,
-		&eq_ind_mle,
+		&big_field_zerocheck_challenges,
 		&ntt_lookup,
 	);
 	let univariate_challenge = B128::random(&mut rng);
