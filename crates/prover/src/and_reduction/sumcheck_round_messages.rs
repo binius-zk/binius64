@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{array, borrow::Cow, iter, mem};
+use std::{array, borrow::Cow, iter};
 
 use binius_core::word::Word;
 use binius_field::{
@@ -80,7 +80,7 @@ where
 	assert_eq!(PNTTDomain::WIDTH, ROWS_PER_HYPERCUBE_VERTEX);
 
 	const N_FIXED_SMALL_CHALLENGES: usize = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len();
-	const N_FIXED_LARGE_CHALLENGES: usize = 3;
+	const N_FIXED_LARGE_CHALLENGES: usize = 4;
 
 	const LOG_CHUNK_SIZE: usize = N_FIXED_SMALL_CHALLENGES + N_FIXED_LARGE_CHALLENGES;
 
@@ -137,33 +137,33 @@ where
 		.map(|(a_chunk, b_chunk, c_chunk)| {
 			// Reshape the chunk arrays into arrays of arrays
 			let [a_subchunks, b_subchunks, c_subchunks] =
-				[a_chunk, b_chunk, c_chunk].map(|chunk| unsafe {
-					mem::transmute::<
-						&[Word; 1 << LOG_CHUNK_SIZE],
-						&[[Word; 1 << N_FIXED_SMALL_CHALLENGES]; 1 << N_FIXED_SMALL_CHALLENGES],
+				[a_chunk, b_chunk, c_chunk].map(|chunk| {
+					bytemuck::must_cast_ref::<
+						[Word; 1 << LOG_CHUNK_SIZE],
+						[[Word; 1 << N_FIXED_SMALL_CHALLENGES]; 1 << N_FIXED_LARGE_CHALLENGES],
 					>(chunk)
 				});
 
-			izip!(a_subchunks, b_subchunks, c_subchunks, &outer_weight_mul_maps).fold(
-				[F::ZERO; ROWS_PER_HYPERCUBE_VERTEX],
-				|mut acc, (a_subchunk, b_subchunk, c_subchunk, outer_weight)| {
-					let summed_ntt = izip!(a_subchunk, b_subchunk, c_subchunk, &eq_ind_small)
-						.map(|(a_i, b_i, c_i, inner_weight)| {
-							// Compute the low-degree extension of each column via the lookup
-							// table.
-							let [first_col_ntt, second_col_ntt, third_col_ntt] =
-								ntt_lookup.multi_ntt_array([a_i.0, b_i.0, c_i.0]);
+			let mut acc = [F::ZERO; ROWS_PER_HYPERCUBE_VERTEX];
+			for (a_subchunk, b_subchunk, c_subchunk, outer_weight) in
+				izip!(a_subchunks, b_subchunks, c_subchunks, &outer_weight_mul_maps)
+			{
+				let mut summed_ntt = PNTTDomain::zero();
+				for (a_i, b_i, c_i, inner_weight) in
+					izip!(a_subchunk, b_subchunk, c_subchunk, &eq_ind_small)
+				{
+					// Compute the low-degree extension of each column via the lookup table.
+					let [first_col_ntt, second_col_ntt, third_col_ntt] =
+						ntt_lookup.multi_ntt_array([a_i.0, b_i.0, c_i.0]);
 
-							// Compute the weighted composition of the LDE values.
-							(first_col_ntt * second_col_ntt - third_col_ntt) * inner_weight
-						})
-						.sum::<PNTTDomain>();
-					for (acc_i, summed_ntt_i) in iter::zip(&mut acc, summed_ntt.into_iter()) {
-						*acc_i += outer_weight.call(summed_ntt_i);
-					}
-					acc
-				},
-			)
+					// Compute the weighted composition of the LDE values.
+					summed_ntt += (first_col_ntt * second_col_ntt - third_col_ntt) * inner_weight;
+				}
+				for (acc_i, summed_ntt_i) in iter::zip(&mut acc, summed_ntt.into_iter()) {
+					*acc_i += outer_weight.call(summed_ntt_i);
+				}
+			}
+			acc
 		})
 		.zip(eq_ind_extra.as_ref())
 		.map(|(mut acc, eq_weight)| {
