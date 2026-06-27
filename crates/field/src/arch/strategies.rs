@@ -1,7 +1,12 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::marker::PhantomData;
+use std::{
+	array,
+	iter::Sum,
+	marker::PhantomData,
+	ops::{Add, AddAssign, Sub, SubAssign},
+};
 
 use bytemuck::TransparentWrapper;
 
@@ -15,16 +20,24 @@ use crate::{
 /// Pairwise strategy. Apply the result of the operation to each packed element independently.
 pub struct PairwiseStrategy;
 
-/// Square wrapper that squares by dividing the underlier into `SubU`-sized lanes, squaring each
-/// lane as a `PackedPrimitiveType<SubU, F>`, and recombining. A generic fallback for packings that
-/// lack a specialized full-width square. The sub-underlier `SubU` is carried as a `PhantomData`
-/// type parameter so the packing type `T` stays last for the macro's `Divide<SubU, $name>` form.
+/// Strategy that splits the underlier into `SubU`-sized lanes, applies the sub-packing
+/// `PackedPrimitiveType<SubU, F>`'s op to each lane, and recombines — a generic fallback for
+/// packings that lack a specialized full-width [`Square`], [`InvertOrZero`], or [`WideMul`]. The
+/// sub-underlier `SubU` is a `PhantomData` parameter so the packing type `T` stays last for the
+/// macro's `Divide<SubU, $name, N>` form.
+///
+/// `N` is the lane count: callers always pass `N = <U as Divisible<SubU>>::N` (or the literal it
+/// works out to). `Square`/`InvertOrZero` stream through [`Divisible`] and ignore `N`, but it is
+/// still required so every `Divide` instantiation names its lane count explicitly. `WideMul` must
+/// defer reduction, so it materializes one unreduced product per lane in an `N`-element
+/// [`LaneWideProduct`] — and an associated const can't be an array length without
+/// `generic_const_exprs`, which is why `N` is a const generic rather than read from `Divisible`.
 #[repr(transparent)]
 #[derive(TransparentWrapper)]
 #[transparent(T)]
-pub struct Divide<SubU, T>(T, PhantomData<SubU>);
+pub struct Divide<SubU, T, const N: usize>(T, PhantomData<SubU>);
 
-impl<U, SubU, F> Square for Divide<SubU, PackedPrimitiveType<U, F>>
+impl<U, SubU, F, const N: usize> Square for Divide<SubU, PackedPrimitiveType<U, F>, N>
 where
 	U: UnderlierType + Divisible<SubU>,
 	SubU: UnderlierType,
@@ -43,7 +56,7 @@ where
 	}
 }
 
-impl<U, SubU, F> InvertOrZero for Divide<SubU, PackedPrimitiveType<U, F>>
+impl<U, SubU, F, const N: usize> InvertOrZero for Divide<SubU, PackedPrimitiveType<U, F>, N>
 where
 	U: UnderlierType + Divisible<SubU>,
 	SubU: UnderlierType,
@@ -62,42 +75,94 @@ where
 	}
 }
 
-/// Widening-multiply wrapper that defers to per-`u8`-lane multiplication: it splits each underlier
-/// into `u8` lanes, applies the 1-byte packing's [`WideMul`], and recombines. This is the `WideMul`
-/// analogue of [`Divide`] — a generic fallback for packings whose underlier is
-/// `Divisible<u8>`. It requires the 1-byte packing's wide product to already be the reduced element
-/// (`Output = Self`), so `reduce` is the identity.
-#[repr(transparent)]
-#[derive(TransparentWrapper)]
-pub struct ElementwiseWideMul<T>(T);
+/// One independent deferred wide product per `SubU` lane of a [`Divide`] widening multiply. Lanes
+/// accumulate (`Add`/`Sub`/`Sum`) and reduce independently, mirroring the packing structure, so a
+/// sum of products is reduced only once per lane. `N` is the lane count.
+#[derive(Clone, Copy, Debug)]
+pub struct LaneWideProduct<O, const N: usize>([O; N]);
 
-impl<U, F> WideMul for ElementwiseWideMul<PackedPrimitiveType<U, F>>
+impl<O: Copy + Default, const N: usize> Default for LaneWideProduct<O, N> {
+	#[inline]
+	fn default() -> Self {
+		Self([O::default(); N])
+	}
+}
+
+impl<O: Copy + Add<Output = O>, const N: usize> Add for LaneWideProduct<O, N> {
+	type Output = Self;
+
+	#[inline]
+	fn add(self, rhs: Self) -> Self {
+		Self(array::from_fn(|i| self.0[i] + rhs.0[i]))
+	}
+}
+
+impl<O: Copy + Add<Output = O>, const N: usize> AddAssign for LaneWideProduct<O, N> {
+	#[inline]
+	fn add_assign(&mut self, rhs: Self) {
+		*self = *self + rhs;
+	}
+}
+
+impl<O: Copy + Sub<Output = O>, const N: usize> Sub for LaneWideProduct<O, N> {
+	type Output = Self;
+
+	#[inline]
+	fn sub(self, rhs: Self) -> Self {
+		Self(array::from_fn(|i| self.0[i] - rhs.0[i]))
+	}
+}
+
+impl<O: Copy + Sub<Output = O>, const N: usize> SubAssign for LaneWideProduct<O, N> {
+	#[inline]
+	fn sub_assign(&mut self, rhs: Self) {
+		*self = *self - rhs;
+	}
+}
+
+impl<O: Copy + Default + Add<Output = O>, const N: usize> Sum for LaneWideProduct<O, N> {
+	#[inline]
+	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+		iter.fold(Self::default(), |acc, x| acc + x)
+	}
+}
+
+impl<U, SubU, F, const N: usize> WideMul for Divide<SubU, PackedPrimitiveType<U, F>, N>
 where
-	U: UnderlierType + Divisible<u8>,
+	U: UnderlierType + Divisible<SubU>,
+	SubU: UnderlierType,
 	F: BinaryField,
-	PackedPrimitiveType<u8, F>: WideMul<Output = PackedPrimitiveType<u8, F>>,
+	PackedPrimitiveType<SubU, F>: WideMul,
+	<PackedPrimitiveType<SubU, F> as WideMul>::Output: Copy + Default,
 {
-	type Output = PackedPrimitiveType<U, F>;
+	type Output = LaneWideProduct<<PackedPrimitiveType<SubU, F> as WideMul>::Output, N>;
 
 	#[inline]
 	fn wide_mul(a: Self, b: Self) -> Self::Output {
+		debug_assert_eq!(N, <U as Divisible<SubU>>::N, "N must equal Divisible<SubU>::N");
+
 		let a = Self::peel(a).to_underlier();
 		let b = Self::peel(b).to_underlier();
-		let product = Divisible::<u8>::value_iter(a)
-			.zip(Divisible::<u8>::value_iter(b))
-			.map(|(lhs, rhs)| {
-				<PackedPrimitiveType<u8, F> as WideMul>::wide_mul(
-					PackedPrimitiveType::from_underlier(lhs),
-					PackedPrimitiveType::from_underlier(rhs),
-				)
-				.to_underlier()
-			});
-		PackedPrimitiveType::from_underlier(Divisible::<u8>::from_iter(product))
+
+		let mut lanes = [<PackedPrimitiveType<SubU, F> as WideMul>::Output::default(); N];
+		for (slot, (lhs, rhs)) in lanes
+			.iter_mut()
+			.zip(Divisible::<SubU>::value_iter(a).zip(Divisible::<SubU>::value_iter(b)))
+		{
+			*slot = <PackedPrimitiveType<SubU, F> as WideMul>::wide_mul(
+				PackedPrimitiveType::from_underlier(lhs),
+				PackedPrimitiveType::from_underlier(rhs),
+			);
+		}
+		LaneWideProduct(lanes)
 	}
 
 	#[inline]
 	fn reduce(wide: Self::Output) -> Self {
-		Self::wrap(wide)
+		let lanes = wide.0.into_iter().map(|product| {
+			<PackedPrimitiveType<SubU, F> as WideMul>::reduce(product).to_underlier()
+		});
+		Self::wrap(PackedPrimitiveType::from_underlier(Divisible::<SubU>::from_iter(lanes)))
 	}
 }
 
