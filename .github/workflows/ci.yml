@@ -151,19 +151,25 @@ jobs:
           RUSTDOCFLAGS: "-D warnings"
 
   circuits-snapshot:
-    name: circuits-snapshot (${{ matrix.example }})
+    name: circuits-snapshot
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        example: [ethsign, zklogin, sha256, sha512, keccak, blake2s, blake3_compress, hashsign, ec_msm]
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Check ${{ matrix.example }} circuit statistics snapshot
-        run: cargo run --example ${{ matrix.example }} -- check-snapshot
+      # One job instead of a 9-way matrix: the examples share the same `binius-examples` crate, so
+      # a matrix recompiled that whole tree (which links the prover + verifier) nine times for a
+      # stats-only check. Building once and running each snapshot in turn keeps the work but cuts
+      # ~8 redundant compiles. See BINIUS-151.
+      - name: Check circuit statistics snapshots
+        run: |
+          set -e
+          for example in ethsign zklogin sha256 sha512 keccak blake2s blake3_compress hashsign ec_msm; do
+            echo "::group::${example}"
+            cargo run --example "${example}" -- check-snapshot
+            echo "::endgroup::"
+          done
 
   # This job ensures all CI checks pass
   ci-all-checks:
