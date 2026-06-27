@@ -21,7 +21,6 @@ use binius_verifier::{
 
 use super::sumcheck_round_messages;
 use crate::{
-	and_reduction::ntt_lookup::NTTLookup,
 	fold_word::fold_words_with_transform,
 	protocols::sumcheck::{
 		Error, ProveSingleOutput, common::MleCheckProver, prove_single_mlecheck,
@@ -86,18 +85,15 @@ where
 		big_field_zerocheck_challenges: Vec<F>,
 		prover_message_domain: BinarySubspace<AESTowerField8b>,
 	) -> Self {
-		let ntt_lookup = tracing::debug_span!("Compute univariate LDE table")
-			.in_scope(|| NTTLookup::<PNTTDomain>::new(&prover_message_domain));
-
 		let univariate_round_message = tracing::debug_span!("Compute univariate round message")
 			.in_scope(|| {
-				sumcheck_round_messages::univariate_round_message_extension_domain(
+				sumcheck_round_messages::univariate_round_message_extension_domain::<F, PNTTDomain>(
 					log_words,
 					&first_col,
 					&second_col,
 					&third_col,
 					&big_field_zerocheck_challenges,
-					&ntt_lookup,
+					&prover_message_domain,
 				)
 			});
 

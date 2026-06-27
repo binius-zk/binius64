@@ -8,7 +8,7 @@ use binius_field::{
 	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, ExtensionField, PackedField, WideMul,
 	util::expand_subset_sums_array,
 };
-use binius_math::multilinear::eq::eq_ind_partial_eval;
+use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::rayon::prelude::*;
 use binius_verifier::{
 	config::PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES, protocols::bitand::ROWS_PER_HYPERCUBE_VERTEX,
@@ -48,7 +48,8 @@ use super::ntt_lookup::NTTLookup;
 /// * `b_words` - Second multiplicand (b) as a one-bit oblong multilinear polynomial
 /// * `c_words` - Product constraint (c) as a one-bit oblong multilinear polynomial
 /// * `eq_ind_big_field_challenges` - Partial equality indicator evaluations for big field variables
-/// * `ntt_lookup` - NTT lookup tables for efficient low-degree extension of each column
+/// * `prover_message_domain` - The NTT domain subspace (dimension `SKIPPED_VARS + 1`) from which
+///   the low-degree-extension lookup table is built internally
 ///
 /// # Returns
 ///
@@ -67,7 +68,7 @@ pub fn univariate_round_message_extension_domain<F, PNTTDomain>(
 	b_words: &[Word],
 	c_words: &[Word],
 	big_field_challenges: &[F],
-	ntt_lookup: &NTTLookup<PNTTDomain>,
+	prover_message_domain: &BinarySubspace<B8>,
 ) -> [F; ROWS_PER_HYPERCUBE_VERTEX]
 where
 	F: BinaryField + From<B8>,
@@ -88,6 +89,9 @@ where
 	for col in [a_words, b_words, c_words] {
 		assert_eq!(col.len(), 1 << log_words);
 	}
+
+	let ntt_lookup = tracing::debug_span!("Compute univariate LDE table")
+		.in_scope(|| NTTLookup::<PNTTDomain>::new(prover_message_domain));
 
 	let eq_ind_small: [_; 1 << N_FIXED_SMALL_CHALLENGES] =
 		eq_ind_partial_eval::<B8>(&PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES)
@@ -304,19 +308,19 @@ mod test {
 		// Agreed-upon proof parameter
 
 		let prover_message_domain = BinarySubspace::with_dim(SKIPPED_VARS + 1);
-		let ntt_lookup = NTTLookup::<PackedAESBinaryField64x8b>::new(&prover_message_domain);
 
 		let verifier_message_domain = prover_message_domain.isomorphic::<B128>();
 
 		// Prover generates first round message
-		let first_round_message_on_ext_domain = univariate_round_message_extension_domain::<B128, _>(
-			log_num_words,
-			&mlv_1,
-			&mlv_2,
-			&mlv_3,
-			&big_field_zerocheck_challenges,
-			&ntt_lookup,
-		);
+		let first_round_message_on_ext_domain =
+			univariate_round_message_extension_domain::<B128, PackedAESBinaryField64x8b>(
+				log_num_words,
+				&mlv_1,
+				&mlv_2,
+				&mlv_3,
+				&big_field_zerocheck_challenges,
+				&prover_message_domain,
+			);
 
 		let mut first_round_message_coeffs = vec![B128::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];
 
