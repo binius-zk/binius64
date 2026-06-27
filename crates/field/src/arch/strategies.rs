@@ -79,7 +79,7 @@ where
 /// accumulate (`Add`/`Sub`/`Sum`) and reduce independently, mirroring the packing structure, so a
 /// sum of products is reduced only once per lane. `N` is the lane count.
 #[derive(Clone, Copy, Debug)]
-pub struct LaneWideProduct<O, const N: usize>([O; N]);
+pub struct LaneWideProduct<O, const N: usize>(pub [O; N]);
 
 impl<O: Copy + Default, const N: usize> Default for LaneWideProduct<O, N> {
 	#[inline]
