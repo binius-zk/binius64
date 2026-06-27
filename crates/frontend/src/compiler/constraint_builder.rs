@@ -505,13 +505,10 @@ pub enum ShiftOp {
 impl WireExpr {
 	#[allow(clippy::wrong_self_convention)]
 	fn to_operand(self) -> WireOperand {
-		let mut result = Vec::new();
-		for term in self.0 {
-			let shifted_wire = term.to_shifted_wire();
-
-			result.push(shifted_wire);
-		}
-		result
+		self.0
+			.into_iter()
+			.map(WireExprTerm::to_shifted_wire)
+			.collect()
 	}
 }
 

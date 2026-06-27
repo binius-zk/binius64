@@ -2,6 +2,7 @@
 //! Constant evaluation support for gates.
 
 use binius_core::{ValueIndex, ValueVec, ValueVecLayout, Word};
+use rustc_hash::FxHashMap;
 
 use super::{BytecodeBuilder, interpreter::Interpreter};
 use crate::compiler::{
@@ -12,8 +13,9 @@ use crate::compiler::{
 
 /// Creates a wire mapping from gate wires to sequential register indices.
 /// Returns the mapping and the total number of registers used.
-fn create_wire_mapping(gate_param: &GateParam) -> (std::collections::HashMap<Wire, u32>, u32) {
-	let mut wire_mapping = std::collections::HashMap::new();
+fn create_wire_mapping(gate_param: &GateParam) -> (FxHashMap<Wire, u32>, u32) {
+	// Wire ids are small integers, so a fast integer hasher beats the default SipHash here.
+	let mut wire_mapping = FxHashMap::default();
 	let mut wire_index = 0u32;
 
 	// Helper to map a slice of wires sequentially

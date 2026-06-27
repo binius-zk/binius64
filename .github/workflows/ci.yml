@@ -46,19 +46,30 @@ jobs:
       fail-fast: false
       matrix:
         arch:
+          # binius-circuits tests are architecture-independent (the crate depends only on
+          # binius-frontend + binius-core, which contain no arch-specific code), so they run only on
+          # the x86_64 leg. The other legs skip them with nextest's run-layer filter (`-E`) rather
+          # than `cargo --exclude`: keeping the build set at `--workspace` matches the Compile step's
+          # feature unification, so the dependency tree is not recompiled. See BINIUS-151.
           - name: x86_64-portable
             runner: ubuntu-24.04
             rustflags: # portable
+            test_args: "-E 'not package(binius-circuits)'"
           - name: x86_64
             runner: ubuntu-24.04
             rustflags: "-Ctarget-cpu=native"
+            test_args: ""
           - name: arm64
             runner: ubuntu-24.04-arm
             rustflags: "-Ctarget-cpu=native"
+            test_args: "-E 'not package(binius-circuits)'"
     name: rust-checks-${{ matrix.arch.name }}
     runs-on: ${{ matrix.arch.runner }}
     env:
-      RUSTFLAGS: ${{ matrix.arch.rustflags }}
+      # Link with lld instead of the default ld.bfd: the rust-checks build links many test and
+      # example binaries, where bfd is a serial bottleneck. Appended to the per-arch flags
+      # (target-cpu). lld is installed below.
+      RUSTFLAGS: "${{ matrix.arch.rustflags }} -Clink-arg=-fuse-ld=lld"
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
@@ -86,14 +97,20 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      - name: Install lld
+        run: sudo apt-get update -qq && sudo apt-get install -y lld
+      # Don't *build* benchmarks: each criterion bench is a separate binary linking the whole crate,
+      # and CI never runs them (`cargo bench`), so codegen + linking them is pure overhead. Clippy
+      # below still checks them via `--all-targets` — that's front-end only (no codegen/link), so it
+      # guards against bench bitrot (API drift) for a fraction of a full build.
       - name: Compile
-        run: cargo build --workspace --all-targets
+        run: cargo build --workspace --lib --bins --tests --examples
       - name: Run platform diagnostics
         run: cargo test -p binius-utils --features platform-diagnostics test_platform_diagnostics -- --nocapture
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Run tests
-        run: cargo nextest run --workspace --no-fail-fast
+        run: cargo nextest run --workspace --no-fail-fast ${{ matrix.arch.test_args }}
       # Must run doctests separately, see https://github.com/nextest-rs/nextest/issues/16
       - name: Run doctests
         run: cargo test --doc --workspace
@@ -145,19 +162,25 @@ jobs:
           RUSTDOCFLAGS: "-D warnings"
 
   circuits-snapshot:
-    name: circuits-snapshot (${{ matrix.example }})
+    name: circuits-snapshot
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        example: [ethsign, zklogin, sha256, sha512, keccak, blake2s, blake3_compress, hashsign, ec_msm]
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Check ${{ matrix.example }} circuit statistics snapshot
-        run: cargo run --example ${{ matrix.example }} -- check-snapshot
+      # One job instead of a 9-way matrix: the examples share the same `binius-examples` crate, so
+      # a matrix recompiled that whole tree (which links the prover + verifier) nine times for a
+      # stats-only check. Building once and running each snapshot in turn keeps the work but cuts
+      # ~8 redundant compiles. See BINIUS-151.
+      - name: Check circuit statistics snapshots
+        run: |
+          set -e
+          for example in ethsign zklogin sha256 sha512 keccak blake2s blake3_compress hashsign ec_msm; do
+            echo "::group::${example}"
+            cargo run --example "${example}" -- check-snapshot
+            echo "::endgroup::"
+          done
 
   # This job ensures all CI checks pass
   ci-all-checks:

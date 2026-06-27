@@ -9,15 +9,15 @@
 
 // Used by the `GhashWideMul2x` and `GhashSquare2x` fallbacks when VPCLMULQDQ is unavailable.
 #[cfg(not(target_feature = "vpclmulqdq"))]
-use crate::arch::{portable::scaled_arithmetic::Scaled2xWideMul, x86_64::m128::M128};
+use crate::arch::{Divide, x86_64::m128::M128};
 
 /// Widening-multiply wrapper used by the GHASH packing: the reduction-deferring vectorized
-/// `GhashClMulWideMul` when VPCLMULQDQ is available, otherwise the per-lane `ScaledWideMul`
-/// (which still defers reduction, applying the width-1 GHASH `WideMul` to each 128-bit lane).
+/// `GhashClMulWideMul` when VPCLMULQDQ is available, otherwise divide into two `M128` lanes and
+/// apply the width-1 GHASH `WideMul` to each, still deferring reduction per lane.
 #[cfg(target_feature = "vpclmulqdq")]
 pub type GhashWideMul2x<T> = crate::arch::x86_64::arithmetic::ghash::GhashClMulWideMul<T>;
 #[cfg(not(target_feature = "vpclmulqdq"))]
-pub type GhashWideMul2x<T> = Scaled2xWideMul<T>;
+pub type GhashWideMul2x<T> = Divide<M128, T, 2>;
 
 /// Square wrapper for the GHASH packing: a full-width CLMUL square ([`GhashClMul`]) when VPCLMULQDQ
 /// is available, otherwise divide into 128-bit lanes and square each (the 1×128b GHASH square uses
@@ -27,7 +27,7 @@ pub type GhashWideMul2x<T> = Scaled2xWideMul<T>;
 #[cfg(target_feature = "vpclmulqdq")]
 pub type GhashSquare2x<T> = crate::arch::x86_64::arithmetic::ghash::GhashClMul<T>;
 #[cfg(not(target_feature = "vpclmulqdq"))]
-pub type GhashSquare2x<T> = crate::arch::Divide<M128, T>;
+pub type GhashSquare2x<T> = Divide<M128, T, 2>;
 
 /// Invert wrapper for the `PackedBinaryGhash2x128b` packing: the shared Itoh-Tsujii inversion
 /// applied across the full 256-bit vector.

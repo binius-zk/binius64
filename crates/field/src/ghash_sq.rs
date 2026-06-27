@@ -34,7 +34,7 @@ use super::{
 use crate::{
 	BinaryField128bGhash, Divisible, Field, PackedBinaryGhash2x128b, PackedField,
 	arch::{M128, M256, m256_from_u128s},
-	arithmetic_traits::{InvertOrZero, Square, impl_trivial_wide_mul},
+	arithmetic_traits::{InvertOrZero, Square, WideMul},
 	mul_by_binary_field_1b,
 	underlier::U1,
 };
@@ -63,27 +63,116 @@ impl GhashSq256b {
 	}
 }
 
-/// Multiplies two GHASH² elements via Karatsuba over GHASH.
-///
-/// For `x = x₀ + x₁·Y` and `y = y₀ + y₁·Y`, with `Y² = Y + X⁻¹`:
-/// `z₀ = x₀·y₀ + (x₁·y₁)·X⁻¹`, `z₁ = (x₀+x₁)·(y₀+y₁) + x₀·y₀`.
-///
-/// The products `t₀ = x₀·y₀` and `t₂ = x₁·y₁` are computed together as a single packed
-/// [`PackedBinaryGhash2x128b`] multiply. On AVX2 this lowers to one `vpclmulqdq` over both
-/// 128-bit lanes — the `mul_m256i_hybrid` algorithm — while remaining portable on other targets.
-/// The third product `t₁` is a scalar GHASH multiply.
-#[inline]
-fn mul(x: [BinaryField128bGhash; 2], y: [BinaryField128bGhash; 2]) -> [BinaryField128bGhash; 2] {
-	let [x0, x1] = x;
-	let [y0, y1] = y;
+/// The two unreduced GHASH products `[x_0·y_0, x_1·y_1]` batched into one packed widening multiply.
+type DiagWide = <PackedBinaryGhash2x128b as WideMul>::Output;
 
-	let t0_t2 = PackedBinaryGhash2x128b::from_scalars([x0, x1])
-		* PackedBinaryGhash2x128b::from_scalars([y0, y1]);
-	let t0 = t0_t2.get(0);
-	let t2 = t0_t2.get(1);
-	let t1 = (x0 + x1) * (y0 + y1);
+/// The single unreduced GHASH product `(x_0+x_1)·(y_0+y_1)` from a scalar widening multiply.
+type CrossWide = <BinaryField128bGhash as WideMul>::Output;
 
-	[t0 + t2.mul_inv_x(), t1 + t0]
+/// The unreduced product of two GHASH^2 elements.
+///
+/// Holds the three GHASH widening products of the Karatsuba decomposition, before any reduction.
+///
+/// Take `x = x_0 + x_1·Y` and `y = y_0 + y_1·Y` over GHASH, with `Y^2 = Y + X^-1`.
+/// Then `z = x·y` has coordinates:
+/// - `z_0 = x_0·y_0 + (x_1·y_1)·X^-1`
+/// - `z_1 = (x_0+x_1)·(y_0+y_1) + x_0·y_0`
+///
+/// The three scalar products it defers are:
+/// - `x_0·y_0` and `x_1·y_1`, computed together as one packed [`PackedBinaryGhash2x128b`] multiply.
+/// - `(x_0+x_1)·(y_0+y_1)`, the Karatsuba cross term, a scalar GHASH multiply.
+///
+/// Both the GHASH reduction and the `X^-1` scaling are GF(2)-linear.
+/// So a sum of products reduces to the reduction of the XOR of their unreduced forms.
+/// An inner product over GHASH^2 then accumulates by XOR and reduces only once at the end.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct WideGhashSqProduct {
+	/// Unreduced `[x_0·y_0, x_1·y_1]`, the diagonal Karatsuba products in their two packed lanes.
+	diag: DiagWide,
+	/// Unreduced `(x_0+x_1)·(y_0+y_1)`, the Karatsuba cross product.
+	cross: CrossWide,
+}
+
+impl Add for WideGhashSqProduct {
+	type Output = Self;
+
+	#[inline]
+	fn add(self, rhs: Self) -> Self {
+		Self {
+			diag: self.diag + rhs.diag,
+			cross: self.cross + rhs.cross,
+		}
+	}
+}
+
+impl AddAssign for WideGhashSqProduct {
+	#[inline]
+	fn add_assign(&mut self, rhs: Self) {
+		self.diag += rhs.diag;
+		self.cross += rhs.cross;
+	}
+}
+
+impl Sub for WideGhashSqProduct {
+	type Output = Self;
+
+	#[inline]
+	fn sub(self, rhs: Self) -> Self {
+		Self {
+			diag: self.diag - rhs.diag,
+			cross: self.cross - rhs.cross,
+		}
+	}
+}
+
+impl SubAssign for WideGhashSqProduct {
+	#[inline]
+	fn sub_assign(&mut self, rhs: Self) {
+		self.diag -= rhs.diag;
+		self.cross -= rhs.cross;
+	}
+}
+
+impl Sum for WideGhashSqProduct {
+	#[inline]
+	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+		iter.fold(Self::default(), |acc, x| acc + x)
+	}
+}
+
+impl WideMul for GhashSq256b {
+	type Output = WideGhashSqProduct;
+
+	#[inline]
+	fn wide_mul(a: Self, b: Self) -> Self::Output {
+		let [x0, x1] = a.to_coeffs();
+		let [y0, y1] = b.to_coeffs();
+
+		// Diagonal `[x_0·y_0, x_1·y_1]` as one two-lane packed widening multiply.
+		// On AVX2 this is a single `vpclmulqdq` over both lanes — the `mul_m256i_hybrid` algorithm.
+		let diag = <PackedBinaryGhash2x128b as WideMul>::wide_mul(
+			PackedBinaryGhash2x128b::from_scalars([x0, x1]),
+			PackedBinaryGhash2x128b::from_scalars([y0, y1]),
+		);
+		// Karatsuba cross product `(x_0+x_1)·(y_0+y_1)` as a scalar widening multiply.
+		let cross = <BinaryField128bGhash as WideMul>::wide_mul(x0 + x1, y0 + y1);
+
+		WideGhashSqProduct { diag, cross }
+	}
+
+	#[inline]
+	fn reduce(wide: Self::Output) -> Self {
+		// Reduce the batched diagonal back to its two GHASH lanes: `t_0 = x_0·y_0`, `t_2 =
+		// x_1·y_1`.
+		let diag = <PackedBinaryGhash2x128b as WideMul>::reduce(wide.diag);
+		let t0 = diag.get(0);
+		let t2 = diag.get(1);
+		// Reduce the cross product: `t_1 = (x_0+x_1)·(y_0+y_1)`.
+		let t1 = <BinaryField128bGhash as WideMul>::reduce(wide.cross);
+
+		// Fold `Y^2 = Y + X^-1` into the basis: `z_0 = t_0 + t_2·X^-1`, `z_1 = t_1 + t_0`.
+		Self::from_coeffs([t0 + t2.mul_inv_x(), t1 + t0])
+	}
 }
 
 /// Squares a GHASH² element.
@@ -105,7 +194,7 @@ impl Mul<GhashSq256b> for GhashSq256b {
 	#[inline]
 	fn mul(self, rhs: Self) -> Self {
 		crate::tracing::trace_multiplication!(GhashSq256b);
-		Self::from_coeffs(mul(self.to_coeffs(), rhs.to_coeffs()))
+		Self::reduce(Self::wide_mul(self, rhs))
 	}
 }
 
@@ -132,8 +221,6 @@ impl InvertOrZero for GhashSq256b {
 		Self::from_coeffs([inv_a, inv_b])
 	}
 }
-
-impl_trivial_wide_mul!(GhashSq256b);
 
 // Degree-two extension over GHASH: the low 128 bits are the coefficient of `1`, the high 128 bits
 // the coefficient of `Y`. `square_transpose` uses the packed fast path via
@@ -324,6 +411,24 @@ mod tests {
 		#[test]
 		fn test_square_equals_mul(a in arb_elem()) {
 			prop_assert_eq!(Square::square(a), a * a);
+		}
+
+		#[test]
+		fn test_wide_mul_deferred_reduction(
+			pairs in prop::collection::vec((arb_elem(), arb_elem()), 1..16),
+		) {
+			// Inner product over GHASH^2: the deferred form must equal the eager form.
+			//
+			//     eager:    sum_i reduce(wide_mul(a_i, b_i))  =  sum_i a_i * b_i
+			//     deferred: reduce( sum_i wide_mul(a_i, b_i) )
+			//
+			// This holds because the GHASH reduction and the `X^-1` scaling are both GF(2)-linear.
+			// So a sum of products costs one reduction, not one per term.
+			let eager: GhashSq256b = pairs.iter().map(|&(a, b)| a * b).sum();
+			let deferred = GhashSq256b::reduce(
+				pairs.iter().map(|&(a, b)| GhashSq256b::wide_mul(a, b)).sum(),
+			);
+			prop_assert_eq!(deferred, eager);
 		}
 
 		#[test]
