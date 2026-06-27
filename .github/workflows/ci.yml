@@ -66,7 +66,10 @@ jobs:
     name: rust-checks-${{ matrix.arch.name }}
     runs-on: ${{ matrix.arch.runner }}
     env:
-      RUSTFLAGS: ${{ matrix.arch.rustflags }}
+      # Link with lld instead of the default ld.bfd: the rust-checks build links many test and
+      # example binaries, where bfd is a serial bottleneck. Appended to the per-arch flags
+      # (target-cpu). lld is installed below.
+      RUSTFLAGS: "${{ matrix.arch.rustflags }} -Clink-arg=-fuse-ld=lld"
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
@@ -94,6 +97,8 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      - name: Install lld
+        run: sudo apt-get update -qq && sudo apt-get install -y lld
       - name: Compile
         run: cargo build --workspace --all-targets
       - name: Run platform diagnostics
