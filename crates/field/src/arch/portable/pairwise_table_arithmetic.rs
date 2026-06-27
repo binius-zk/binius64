@@ -12,8 +12,8 @@ use crate::{
 
 /// Widening multiply for the portable 1×8b AES packing: a direct log/exp-table multiply (shared
 /// with the scalar via [`aes_mul_8b`]). The wide product is already the reduced byte, so `reduce`
-/// is the identity. Wider portable AES packings reach this per lane through the elementwise
-/// strategy (see `arch::ElementwiseWideMul`).
+/// is the identity. Wider AES packings reach this per lane through the `Divide<u8, _, N>` strategy
+/// (see [`Divide`](crate::arch::Divide)).
 #[repr(transparent)]
 #[derive(TransparentWrapper)]
 pub struct AesLookupWideMul<T>(T);
