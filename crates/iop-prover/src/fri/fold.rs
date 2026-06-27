@@ -127,7 +127,7 @@ where
 				// length is that plus the batch size plus the inverse rate. It is lifted to the
 				// common first-round length by duplicating each entry `2^log_lift` times.
 				let oracle_log_dim = log_dim - spec.log_lift;
-				let expected_log_len = oracle_log_dim + spec.log_batch_size + log_inv_rate;
+				let expected_log_len = oracle_log_dim + spec.log_batch_size() + log_inv_rate;
 				assert_eq!(
 					codeword.log_len(),
 					expected_log_len,
@@ -135,8 +135,8 @@ where
 					 Reed-Solomon code length plus its batch size"
 				);
 				ProxTestFolder {
-					log_batch_size: spec.log_batch_size,
-					skip_batch_challenges: spec.skip_batch_challenges,
+					log_early_batch_size: spec.log_early_batch_size,
+					log_later_batch_size: spec.log_later_batch_size,
 					log_lift: spec.log_lift,
 					codeword,
 					merkle_committed: committed,
@@ -402,11 +402,14 @@ where
 }
 
 pub struct ProxTestFolder<'a, P: PackedField, MTProver: MerkleTreeProver<P::Scalar>> {
-	log_batch_size: usize,
-	/// The number of leading inner challenges this oracle skips before its batch fold. The oracle
-	/// folds with the window `inner[skip_batch_challenges .. skip_batch_challenges +
-	/// log_batch_size]`.
-	skip_batch_challenges: usize,
+	/// log2 the number of *early* batch-fold challenges this oracle's interleaving folds with
+	/// (sampled before the outer oracle-combine challenges). The oracle folds with the
+	/// `log_early_batch_size`-length suffix of the early challenges.
+	log_early_batch_size: usize,
+	/// log2 the number of *later* batch-fold challenges this oracle's interleaving folds with
+	/// (sampled after the outer oracle-combine challenges). The oracle folds with the
+	/// `log_later_batch_size`-length suffix of the later challenges.
+	log_later_batch_size: usize,
 	/// log2 the lift factor (oracle padding): how many times each folded codeword entry is
 	/// duplicated to reach the common first-round length. Zero when no lifting is needed.
 	log_lift: usize,
@@ -418,8 +421,13 @@ impl<'a, F: Field, P: PackedField<Scalar = F>, MTProver> ProxTestFolder<'a, P, M
 where
 	MTProver: MerkleTreeProver<F>,
 {
+	/// The total interleave batch size, `log_early_batch_size + log_later_batch_size`.
+	fn log_batch_size(&self) -> usize {
+		self.log_early_batch_size + self.log_later_batch_size
+	}
+
 	pub fn log_folded_len(&self) -> usize {
-		self.codeword.log_len() - self.log_batch_size
+		self.codeword.log_len() - self.log_batch_size()
 	}
 }
 
@@ -471,14 +479,26 @@ where
 		merkle_prover: &'a MTProver,
 		challenges: &[F],
 	) -> (FieldBuffer<F>, BatchBrakedownOracleProver<'a, P, MTProver>) {
-		let max_inner_challenges = self
+		// The first-fold challenge slice is `[early ++ outer ++ later]`: `max_early` early
+		// within-oracle batch challenges, then `log_n_oracles` outer oracle-combine challenges,
+		// then `max_later` later within-oracle batch challenges.
+		let max_early = self
 			.folders
 			.iter()
-			.map(|folder| folder.skip_batch_challenges + folder.log_batch_size)
+			.map(|folder| folder.log_early_batch_size)
 			.max()
 			.expect("folders is not empty by struct invariant");
+		let max_later = self
+			.folders
+			.iter()
+			.map(|folder| folder.log_later_batch_size)
+			.max()
+			.expect("folders is not empty by struct invariant");
+		let log_n_oracles = log2_ceil_usize(self.folders.len());
 
-		let (inner_challenges, outer_challenges) = challenges.split_at(max_inner_challenges);
+		let early_challenges = &challenges[..max_early];
+		let outer_challenges = &challenges[max_early..max_early + log_n_oracles];
+		let later_challenges = &challenges[max_early + log_n_oracles..];
 		let outer_tensor = eq_ind_partial_eval::<F>(outer_challenges);
 
 		let mut combined_codeword = FieldBuffer::zeros(self.log_code_len);
@@ -487,19 +507,26 @@ where
 		// reduce # of scaling muls)
 		for (folder, &scalar) in iter::zip(self.folders, outer_tensor.as_ref()) {
 			let ProxTestFolder {
-				log_batch_size,
-				skip_batch_challenges,
+				log_early_batch_size,
+				log_later_batch_size,
 				log_lift,
 				codeword,
 				merkle_committed,
 			} = folder;
+			let log_batch_size = log_early_batch_size + log_later_batch_size;
+
+			// This oracle folds its interleaving with `early_window ++ later_window`, where each
+			// window is the suffix of its group. An oracle is purely early (ZK) or purely later
+			// (non-ZK), so in practice one window is empty, but the concatenation is general.
+			let early_window = &early_challenges[max_early - log_early_batch_size..];
+			let later_window = &later_challenges[max_later - log_later_batch_size..];
+			let fold_challenges: Vec<F> =
+				early_window.iter().chain(later_window).copied().collect();
 
 			// Fold the outer-challenge tensor value into the inner folding tensor so that every
 			// folded entry comes out already scaled by `scalar`. This replaces one scaling mul per
 			// (lifted) output entry with a single pass over the `2^log_batch_size`-element tensor.
-			let mut tensor = eq_ind_partial_eval::<P>(
-				&inner_challenges[skip_batch_challenges..skip_batch_challenges + log_batch_size],
-			);
+			let mut tensor = eq_ind_partial_eval::<P>(&fold_challenges);
 			let scalar_broadcast = P::broadcast(scalar);
 			for packed in tensor.as_mut() {
 				*packed *= scalar_broadcast;

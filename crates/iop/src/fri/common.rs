@@ -28,8 +28,9 @@ pub struct FRIParams<F> {
 	/// Guaranteed to be non-empty.
 	input_oracles: Vec<CodewordSpec>,
 	/// log2 the maximum message length of all input oracles, after lifting each to the reduced
-	/// dimension. Equals `rs_code.log_dim() + max(skip_batch_challenges + log_batch_size)` over
-	/// the input oracles (the inner challenges the first fold must draw).
+	/// dimension. Equals `rs_code.log_dim() + max_early + max_later`, where `max_early` (resp.
+	/// `max_later`) is the maximum `log_early_batch_size` (resp. `log_later_batch_size`) over the
+	/// input oracles (the within-oracle batch challenges the first fold must draw).
 	max_log_msg_len: usize,
 	/// log2 ceiling of the number of input oracles.
 	log_n_oracles: usize,
@@ -59,19 +60,33 @@ pub struct CodewordSpec {
 	/// message length is `rs_code.log_dim() - log_lift + log_batch_size`. It is `0` when the
 	/// oracle already sits at the reduced dimension.
 	pub log_lift: usize,
-	/// log2 the interleaved batch size.
-	pub log_batch_size: usize,
-	/// The number of leading inner challenges this oracle skips before its batch fold.
+	/// log2 the number of *early* batch-fold challenges this oracle's interleaving folds with.
 	///
-	/// The first fold draws `max(skip_batch_challenges + log_batch_size)` inner challenges across
-	/// all oracles; oracle `i` folds its interleaved batch with the window
-	/// `inner_challenges[skip_batch_challenges .. skip_batch_challenges + log_batch_size]`. This
-	/// lets distinct oracles consume distinct (or overlapping) inner challenges — needed when a
-	/// leading inner challenge is reserved for one group of oracles (e.g. the shared masking
-	/// challenge of ZK BaseFold oracles) while others must skip it. It is `0` in the homogeneous
-	/// case, recovering the convention where every oracle folds with a prefix of the inner
-	/// challenges.
-	pub skip_batch_challenges: usize,
+	/// The first fold draws its within-oracle batch challenges in two groups: `max_early =
+	/// max(log_early_batch_size)` *early* challenges, sampled before the `log_n_oracles` outer
+	/// (oracle-combine) challenges, followed by `max_later = max(log_later_batch_size)` *later*
+	/// challenges, sampled after them. The full first-fold challenge slice is therefore
+	/// `[early (max_early)] ++ [outer (log_n_oracles)] ++ [later (max_later)]`.
+	///
+	/// Oracle `i` folds its interleaving with the concatenation `early_window ++ later_window`,
+	/// where `early_window` is the `log_early_batch_size`-length *suffix* of the early challenges
+	/// and `later_window` is the `log_later_batch_size`-length *suffix* of the later challenges.
+	/// The early group carries the shared masking challenge γ of ZK BaseFold oracles (each such
+	/// oracle is purely early, `log_later_batch_size == 0`); the later group carries the non-ZK
+	/// oracles' flexible batch folds (each such oracle is purely later, `log_early_batch_size ==
+	/// 0`). The total interleave batch size of an oracle is `log_early_batch_size +
+	/// log_later_batch_size` (see [`Self::log_batch_size`]).
+	pub log_early_batch_size: usize,
+	/// log2 the number of *later* batch-fold challenges this oracle's interleaving folds with,
+	/// sampled after the outer (oracle-combine) challenges. See [`Self::log_early_batch_size`].
+	pub log_later_batch_size: usize,
+}
+
+impl CodewordSpec {
+	/// log2 the interleaved batch size: the early plus the later batch challenges.
+	pub fn log_batch_size(&self) -> usize {
+		self.log_early_batch_size + self.log_later_batch_size
+	}
 }
 
 impl<F> FRIParams<F>
@@ -87,12 +102,13 @@ where
 		fold_arities: Vec<usize>,
 		n_test_queries: usize,
 	) -> Self {
-		// A single oracle already sits at the reduced dimension (no lifting) and folds with a
-		// prefix of the inner challenges (no skip).
+		// A single oracle already sits at the reduced dimension (no lifting) and is non-ZK /
+		// homogeneous: its whole batch is "later" (with `log_n_oracles == 0` there is no outer
+		// group between early and later, so this is identical to the old prefix convention).
 		let oracle_spec = CodewordSpec {
 			log_lift: 0,
-			log_batch_size,
-			skip_batch_challenges: 0,
+			log_early_batch_size: 0,
+			log_later_batch_size: log_batch_size,
 		};
 		Self::new_batch(rs_code, vec![oracle_spec], fold_arities, n_test_queries)
 	}
@@ -100,7 +116,7 @@ where
 	/// Create parameters for a batch of committed codewords with an explicit per-codeword layout.
 	///
 	/// This is the low-level constructor: the caller supplies the reduced Reed–Solomon code, each
-	/// codeword's lift / batch size / inner-challenge routing, and the fold arities. The
+	/// codeword's lift / early & later batch-fold routing, and the fold arities. The
 	/// proof-size-minimizing selection of those values from a batch of higher-level oracle
 	/// descriptions lives in [`Self::optimal_for_batch`].
 	///
@@ -125,15 +141,21 @@ where
 
 		let log_n_oracles = log2_ceil_usize(oracles.len());
 
-		// The first fold draws `max(skip_batch_challenges + log_batch_size)` inner challenges
-		// across all oracles (oracle `i` folds with `inner[skip_i .. skip_i + log_batch_size_i]`)
-		// before the `log_n_oracles` outer folds that batch the oracles together.
-		let max_inner_challenges = oracles
+		// The first fold draws its within-oracle batch challenges as `max_early` early challenges
+		// followed (after the `log_n_oracles` outer oracle-combine folds) by `max_later` later
+		// challenges, so the full first-fold slice is `[early ++ outer ++ later]`. The lifted
+		// message length each oracle reaches is `rs_code.log_dim() + max_early + max_later`.
+		let max_early = oracles
 			.iter()
-			.map(|spec| spec.skip_batch_challenges + spec.log_batch_size)
+			.map(|spec| spec.log_early_batch_size)
 			.max()
 			.expect("oracles is non-empty");
-		let max_log_msg_len = rs_code.log_dim() + max_inner_challenges;
+		let max_later = oracles
+			.iter()
+			.map(|spec| spec.log_later_batch_size)
+			.max()
+			.expect("oracles is non-empty");
+		let max_log_msg_len = rs_code.log_dim() + max_early + max_later;
 
 		Self {
 			rs_code,
@@ -490,41 +512,24 @@ where
 		})
 		.collect();
 
-	// ZK-aware `skip_batch_challenges` selection. The inner challenges are the (shared) masking
-	// challenge γ for the ZK oracles plus `n_inner` batch-fold challenges for the non-ZK oracles.
-	// Routing every non-ZK oracle's batch fold to a *suffix* of the inner challenges makes the
-	// inner challenges consistent across a heterogeneous batch (γ folds the ZK oracles' single
-	// mask round at the prefix; the non-ZK oracles share the suffix).
-	let n_inner = resolved
-		.iter()
-		.filter(|(_, _, is_zk)| !is_zk)
-		.map(|(_, log_batch_size, _)| *log_batch_size)
-		.max()
-		.unwrap_or(0);
-	let max_zk_batch = resolved
-		.iter()
-		.filter(|(_, _, is_zk)| *is_zk)
-		.map(|(_, log_batch_size, _)| *log_batch_size)
-		.max()
-		.unwrap_or(0);
-	let n_batch_challenges = n_inner + max_zk_batch;
-
+	// ZK-aware early/later batch-fold routing. A ZK oracle's batch is the shared masking challenge
+	// γ, sampled *before* the outer (oracle-combine) challenges, so it is entirely "early". A
+	// non-ZK oracle's flexible batch is sampled *after* the outer challenges, so it is entirely
+	// "later". The first-fold challenge slice is therefore `[early ++ outer ++ later]`, and each
+	// oracle folds its interleaving with a suffix of whichever group it belongs to.
 	let oracle_specs = resolved
 		.iter()
 		.map(|&(committed_log_msg_len, log_batch_size, is_zk)| {
-			let skip_batch_challenges = if is_zk {
-				0
-			} else {
-				n_batch_challenges - log_batch_size
-			};
+			let log_early_batch_size = if is_zk { log_batch_size } else { 0 };
+			let log_later_batch_size = if is_zk { 0 } else { log_batch_size };
 			// The committed codeword's own dimension is `committed_log_msg_len - log_batch_size`;
 			// it is lifted to the reduced dimension, so `log_lift` is the gap between the two.
 			let oracle_log_dim = committed_log_msg_len - log_batch_size;
 			let log_lift = reduced_log_dim - oracle_log_dim;
 			CodewordSpec {
 				log_lift,
-				log_batch_size,
-				skip_batch_challenges,
+				log_early_batch_size,
+				log_later_batch_size,
 			}
 		})
 		.collect();
@@ -967,19 +972,19 @@ mod tests {
 			// The committed codeword (dimension `committed_log_msg_len - log_batch_size`) is lifted
 			// to the reduced dimension, recovering the committed message length.
 			let oracle_log_dim = reduced_log_dim - spec.log_lift;
-			assert_eq!(oracle_log_dim + spec.log_batch_size, committed_log_msg_len);
+			assert_eq!(oracle_log_dim + spec.log_batch_size(), committed_log_msg_len);
 			if oracle.is_zk {
 				// ZK oracles keep their fixed batch size of 1.
-				assert_eq!(spec.log_batch_size, 1);
+				assert_eq!(spec.log_batch_size(), 1);
 			}
 			// log_batch_size <= committed message length
-			assert!(spec.log_batch_size <= committed_log_msg_len);
+			assert!(spec.log_batch_size() <= committed_log_msg_len);
 		}
 
 		// The largest input oracle is the non-ZK flexible one, so its batch size folds it down
 		// exactly to the reduced dimension (no lifting).
 		assert_eq!(fri_params.input_oracles[2].log_lift, 0);
-		assert_eq!(fri_params.input_oracles[2].log_batch_size, 16 - reduced_log_dim);
+		assert_eq!(fri_params.input_oracles[2].log_batch_size(), 16 - reduced_log_dim);
 
 		// Pin the estimated proof size to detect unintended changes in the optimizer.
 		assert_eq!(proof_size, 229376);
