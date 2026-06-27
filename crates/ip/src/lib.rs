@@ -28,6 +28,7 @@
 
 pub mod channel;
 pub mod fracaddcheck;
+pub mod logup_star;
 pub mod mlecheck;
 pub mod prodcheck;
 pub mod sumcheck;
