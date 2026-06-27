@@ -46,13 +46,15 @@ jobs:
       fail-fast: false
       matrix:
         arch:
+          # binius-circuits tests are architecture-independent (the crate depends only on
+          # binius-frontend + binius-core, which contain no arch-specific code), so they run only on
+          # the x86_64 leg. The other legs skip them with nextest's run-layer filter (`-E`) rather
+          # than `cargo --exclude`: keeping the build set at `--workspace` matches the Compile step's
+          # feature unification, so the dependency tree is not recompiled. See BINIUS-151.
           - name: x86_64-portable
             runner: ubuntu-24.04
             rustflags: # portable
-            # binius-circuits tests are architecture-independent (it depends only on
-            # binius-frontend + binius-core, which contain no arch-specific code), so they run
-            # only on the x86_64 leg below. See BINIUS-151.
-            test_args: "--exclude binius-circuits"
+            test_args: "-E 'not package(binius-circuits)'"
           - name: x86_64
             runner: ubuntu-24.04
             rustflags: "-Ctarget-cpu=native"
@@ -60,7 +62,7 @@ jobs:
           - name: arm64
             runner: ubuntu-24.04-arm
             rustflags: "-Ctarget-cpu=native"
-            test_args: "--exclude binius-circuits"
+            test_args: "-E 'not package(binius-circuits)'"
     name: rust-checks-${{ matrix.arch.name }}
     runs-on: ${{ matrix.arch.runner }}
     env:
