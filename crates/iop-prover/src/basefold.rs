@@ -183,6 +183,9 @@ where
 ///   down to the codeword of `π_i'` in the FRI inner (unbatch) round
 /// * `outer_challenges` - the batching challenges `r'` (`len = log_n_oracles`); combine the `k`
 ///   lifted codewords in the FRI outer (oracle-combine) rounds
+/// * `reduced_log_dim` - the reduced (first-round) code dimension `D = rs_code().log_dim()`. The
+///   leading `max_n - D` standard rounds are the non-ZK oracles' batch folds, fed to the folder as
+///   inner challenges; only the trailing `D` rounds are genuine FRI fold rounds.
 /// * `fri_folder` - the combined FRI fold prover, with `n_rounds == 𝐧 + 1 + log_n_oracles`
 /// * `transcript` - the prover transcript
 ///
@@ -195,6 +198,7 @@ pub fn prove_mlecheck_basefold_zk_batch<'a, F, P, NTT, MerkleScheme, MerkleProve
 	eval_claim: F,
 	batch_challenge: Option<F>,
 	outer_challenges: &[F],
+	reduced_log_dim: usize,
 	mut fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
 	transcript: &mut ProverTranscript<Challenger_>,
 ) -> Result<(), Error>
@@ -218,19 +222,31 @@ where
 	let n_inner = usize::from(batch_challenge.is_some());
 	assert_eq!(n_vars + n_inner + outer_challenges.len(), fri_folder.n_rounds());
 
+	// The leading `max_n - D` standard rounds carry the non-ZK oracles' batch folds; only the
+	// trailing `D` are genuine FRI rounds. The folder's FirstFold consumes its accumulated
+	// challenges as `[inner-batch | outer]`, where the inner-batch challenges are γ (if any)
+	// followed by those `max_n - D` leading challenges, so the outer challenges must be fed only
+	// once the leading ones are in.
+	assert!(reduced_log_dim <= n_vars);
+	let n_leading = n_vars - reduced_log_dim;
+
 	// Inner (unbatch) round: fold every interleaved (π_i ‖ ω_i) ZK codeword at the masking
 	// challenge.
 	if let Some(gamma) = batch_challenge {
 		fri_folder.receive_challenge(gamma);
 	}
-	// Outer rounds: combine the k lifted codewords at the batching challenges r'. These carry no
-	// sumcheck round-polynomial; the folder applies them lazily at the first commit round.
-	for &outer_challenge in outer_challenges {
-		fri_folder.receive_challenge(outer_challenge);
-	}
 
 	let mut sumcheck = MultilinearEvalProver::new(witness, eval_point, eval_claim)?;
-	for _ in 0..n_vars {
+	for round in 0..n_vars {
+		// Once the leading batch-fold challenges are accumulated, feed the outer (oracle-combine)
+		// challenges so they land in the FirstFold's outer window. For an all-ZK batch
+		// `n_leading == 0`, matching the original "feed γ then outers up front" order.
+		if round == n_leading {
+			for &outer_challenge in outer_challenges {
+				fri_folder.receive_challenge(outer_challenge);
+			}
+		}
+
 		let mut round_coeffs_vec = sumcheck.execute()?;
 		let round_coeffs = round_coeffs_vec
 			.pop()
@@ -247,6 +263,13 @@ where
 		let challenge = transcript.sample();
 		sumcheck.fold(challenge)?;
 		fri_folder.receive_challenge(challenge);
+	}
+	// When `D == 0` the leading window spans every standard round, so the outer challenges follow
+	// them here, before the final fold.
+	if n_leading == n_vars {
+		for &outer_challenge in outer_challenges {
+			fri_folder.receive_challenge(outer_challenge);
+		}
 	}
 
 	let commitment = fri_folder.execute_fold_round();
@@ -522,6 +545,7 @@ mod test {
 			eval_claim,
 			Some(batch_challenge),
 			&[],
+			fri_params.rs_code().log_dim(),
 			fri_folder,
 			&mut prover_transcript,
 		)?;

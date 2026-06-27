@@ -355,6 +355,7 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 		s_prime,
 		gamma,
 		&outer_challenges,
+		fri_params.rs_code().log_dim(),
 		fri_folder,
 		channel,
 	)
@@ -901,14 +902,11 @@ mod tests {
 		assert!(run_zk_channel(&[5, 6, 8], false));
 	}
 
-	// WIP (BINIUS-69): the mixed/zero-ZK opening fails Phase-B FRI consistency when the optimizer
-	// gives a non-ZK oracle log_batch_size > 0. Root cause: prove/verify_mlecheck feed the FRI
-	// folder its outer (oracle-combine) challenges *before* the leading MLE rounds that supply the
-	// non-ZK batch-fold challenges, so the FirstFold's `[inner | outer]` split routes them to the
-	// wrong windows. Needs the outer challenges fed after the batch-fold rounds. All-ZK is
-	// unaffected (max_inner == 1).
+	// Heterogeneous mixed/zero-ZK openings: the non-ZK oracles' batch-fold challenges come from the
+	// leading `max_n - D` MLE rounds, so prove/verify_mlecheck feed the FRI folder's outer
+	// (oracle-combine) challenges *after* those rounds, landing them in the FirstFold's outer
+	// window. All-ZK (`n_leading == 0`) is unaffected: the outers still precede every MLE round.
 	#[test]
-	#[ignore = "WIP: heterogeneous Phase-B FRI challenge ordering (see comment)"]
 	fn test_basefold_zk_channel_mixed_zk_non_zk() {
 		// One non-ZK oracle (8 vars) and one ZK oracle (6 vars): exercises conditional masking,
 		// the heterogeneous combined-buffer lift/repeat placement, and the non-ZK unmasked commit.
@@ -916,14 +914,12 @@ mod tests {
 	}
 
 	#[test]
-	#[ignore = "WIP: heterogeneous Phase-B FRI challenge ordering (see comment)"]
 	fn test_basefold_zk_channel_zero_zk() {
 		// All non-ZK oracles: γ must never be sampled and the proof must still verify.
 		assert!(run_mixed_channel(&[(6, false), (8, false)], false));
 	}
 
 	#[test]
-	#[ignore = "WIP: heterogeneous Phase-B FRI challenge ordering (see comment)"]
 	fn test_basefold_zk_channel_mixed_invalid_proof() {
 		// Tampering the claim on a mixed batch must be rejected.
 		assert!(!run_mixed_channel(&[(8, false), (6, true)], true));
