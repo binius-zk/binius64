@@ -39,8 +39,9 @@ use std::{array, marker::PhantomData};
 
 use binius_core::Word;
 use binius_field::{
-	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, FieldOps,
-	PackedAESBinaryField64x8b as Packed64xB8, PackedField, util::expand_subset_sums_array,
+	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, Divisible,
+	PackedAESBinaryField64x8b as Packed64xB8, PackedField, WithUnderlier, arch::M128,
+	util::expand_subset_sums_array,
 };
 use binius_math::{
 	BinarySubspace, FieldBuffer,
@@ -62,7 +63,7 @@ use binius_verifier::protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS
 /// Each entry holds the `ROWS_PER_HYPERCUBE_VERTEX` NTT evaluations of that byte's coefficients at
 /// the corresponding byte position, packed into a single [`Packed64xB8`].
 #[derive(Debug, Clone)]
-pub struct NTTLookup(Box<[[Packed64xB8; 256]; 8]>);
+pub struct NTTLookup(Box<[[Packed64xB8; 256]; 2]>);
 
 impl NTTLookup {
 	/// Creates a new NTT lookup table by precomputing all possible NTT evaluations
@@ -81,7 +82,7 @@ impl NTTLookup {
 		assert_eq!(subspace.dim(), SKIPPED_VARS + 1);
 
 		let lde = LowDegreeExtension::<Packed64xB8>::new(subspace);
-		let lde_mat = array::from_fn::<_, { ROWS_PER_HYPERCUBE_VERTEX / 8 }, _>(|b| {
+		let lde_mat = array::from_fn::<_, 2, _>(|b| {
 			array::from_fn::<_, 8, _>(|i| {
 				let output = lde.transform(1 << (8 * b + i));
 				assert_eq!(output.log_len(), SKIPPED_VARS + 1);
@@ -117,45 +118,21 @@ impl NTTLookup {
 	///
 	/// Array of `ROWS_PER_HYPERCUBE_VERTEX / 16` packed field elements containing
 	/// the NTT evaluations at all points in the output domain.
-	#[cfg(test)]
 	#[inline]
 	pub fn ntt(&self, input: Word) -> Packed64xB8 {
 		let input_bytes = input.as_u64().to_le_bytes();
-		input_bytes
-			.into_iter()
-			.enumerate()
-			.map(|(b, i)| self.0[b][i as usize])
-			.sum()
-	}
 
-	/// Computes the NTTs of `N` 64-bit inputs simultaneously using the precomputed lookup tables.
-	///
-	/// Each input is split into its eight constituent bytes (LSB to MSB), and the NTT is computed
-	/// by looking up the precomputed values for each byte position and summing them, exploiting the
-	/// linearity of the NTT. Processing all `N` inputs together within each byte position keeps the
-	/// independent accumulators in flight, which the compiler turns into instruction-level
-	/// parallelism.
-	///
-	/// ## Parameters
-	///
-	/// - `inputs`: An array of `N` values, each divisible into bytes. The words' `u64`s can be
-	///   passed directly.
-	///
-	/// ## Returns
-	///
-	/// An array of `N` packed field elements containing the NTT evaluations of each input.
-	#[inline]
-	pub fn multi_ntt_array<const N: usize>(&self, inputs: [Word; N]) -> [Packed64xB8; N] {
-		let inputs_bytes = inputs.map(|input| input.as_u64().to_le_bytes());
-
-		let mut results = [Packed64xB8::zero(); N];
-		for (byte_index, lookup_byte) in self.0.iter().enumerate() {
-			for (result, input_bytes) in std::iter::zip(&mut results, &inputs_bytes) {
-				let byte = input_bytes[byte_index];
-				*result += lookup_byte[byte as usize];
-			}
+		let mut out = Packed64xB8::default();
+		// This will get unrolled, so indexing arithmetic washes away.
+		for b in 0..8 {
+			let packed = &self.0[b % 2][input_bytes[b] as usize];
+			let bitvec = packed.to_underlier_ref();
+			let dst_bitvec = Divisible::<M128>::from_iter(
+				(0..4).map(|i| Divisible::<M128>::get(bitvec, i ^ (b / 2))),
+			);
+			out += Packed64xB8::from_underlier(dst_bitvec);
 		}
-		results
+		out
 	}
 }
 

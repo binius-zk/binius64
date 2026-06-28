@@ -146,14 +146,12 @@ where
 					let c_i = a_i & b_i;
 
 					// Compute the low-degree extension of each column via the lookup table.
-					let [first_col_ntt, second_col_ntt, third_col_ntt] =
-						ntt_lookup.multi_ntt_array([a_i, b_i, c_i]);
+					let a_lde = ntt_lookup.ntt(a_i);
+					let b_lde = ntt_lookup.ntt(b_i);
+					let c_lde = ntt_lookup.ntt(c_i);
 
 					// Compute the weighted composition of the LDE values.
-					summed_ntt += Packed64xB8::wide_mul(
-						first_col_ntt * second_col_ntt - third_col_ntt,
-						*inner_weight,
-					);
+					summed_ntt += Packed64xB8::wide_mul(a_lde * b_lde - c_lde, *inner_weight);
 				}
 
 				let summed_ntt_reduced = Packed64xB8::reduce(summed_ntt);
