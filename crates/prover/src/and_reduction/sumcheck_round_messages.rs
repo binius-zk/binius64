@@ -129,29 +129,27 @@ where
 	// Process columns in fixed-length chunks of 8 to assist compiler in loop unrolling.
 	let a_col_chunks = duplicate_to_fixed_chunks::<{ 1 << LOG_CHUNK_SIZE }>(a_words);
 	let b_col_chunks = duplicate_to_fixed_chunks::<{ 1 << LOG_CHUNK_SIZE }>(b_words);
-	let c_col_chunks = duplicate_to_fixed_chunks::<{ 1 << LOG_CHUNK_SIZE }>(c_words);
 
 	// Accumulate resulting polynomial evals by iterating over each hypercube vertex.
-	(a_col_chunks.as_ref(), b_col_chunks.as_ref(), c_col_chunks.as_ref())
+	(a_col_chunks.as_ref(), b_col_chunks.as_ref())
 		.into_par_iter()
-		.map(|(a_chunk, b_chunk, c_chunk)| {
+		.map(|(a_chunk, b_chunk)| {
 			// Reshape the chunk arrays into arrays of arrays
-			let [a_subchunks, b_subchunks, c_subchunks] =
-				[a_chunk, b_chunk, c_chunk].map(|chunk| {
-					bytemuck::must_cast_ref::<
-						[Word; 1 << LOG_CHUNK_SIZE],
-						[[Word; 1 << N_FIXED_SMALL_CHALLENGES]; 1 << N_FIXED_LARGE_CHALLENGES],
-					>(chunk)
-				});
+			let [a_subchunks, b_subchunks] = [a_chunk, b_chunk].map(|chunk| {
+				bytemuck::must_cast_ref::<
+					[Word; 1 << LOG_CHUNK_SIZE],
+					[[Word; 1 << N_FIXED_SMALL_CHALLENGES]; 1 << N_FIXED_LARGE_CHALLENGES],
+				>(chunk)
+			});
 
 			let mut acc = [F::ZERO; ROWS_PER_HYPERCUBE_VERTEX];
-			for (a_subchunk, b_subchunk, c_subchunk, outer_weight) in
-				izip!(a_subchunks, b_subchunks, c_subchunks, &outer_weight_mul_maps)
+			for (a_subchunk, b_subchunk, outer_weight) in
+				izip!(a_subchunks, b_subchunks, &outer_weight_mul_maps)
 			{
 				let mut summed_ntt = <PNTTDomain as WideMul>::Output::default();
-				for (a_i, b_i, c_i, inner_weight) in
-					izip!(a_subchunk, b_subchunk, c_subchunk, &eq_ind_small)
-				{
+				for (a_i, b_i, inner_weight) in izip!(a_subchunk, b_subchunk, &eq_ind_small) {
+					let c_i = *a_i & *b_i;
+
 					// Compute the low-degree extension of each column via the lookup table.
 					let [first_col_ntt, second_col_ntt, third_col_ntt] =
 						ntt_lookup.multi_ntt_array([a_i.0, b_i.0, c_i.0]);
