@@ -19,13 +19,13 @@ use crate::{
 };
 
 /// The output of the batched final layer.
-pub(super) struct FinalLayer<F> {
+pub struct FinalLayer<F> {
 	/// The `m`-coordinate point at which both `T` and `Y` are evaluated.
-	pub(super) table_eval_point: Vec<F>,
+	pub table_eval_point: Vec<F>,
 	/// The claimed evaluation of `T` at the point.
-	pub(super) table_eval_claim: F,
+	pub table_eval_claim: F,
 	/// The claimed evaluation of `Y` at the point.
-	pub(super) pushforward_eval_claim: F,
+	pub pushforward_eval_claim: F,
 }
 
 /// Verify the batched final layer of the table side.
@@ -58,7 +58,7 @@ pub(super) struct FinalLayer<F> {
 /// * `layer1_den` - The layer-1 denominator claim `den_1(Z)`.
 /// * `layer1_point` - The layer-1 point `Z` of length `m-1`.
 /// * `channel` - The verifier channel.
-pub(super) fn verify_final_layer<F, C>(
+pub fn verify_final_layer<F, C>(
 	m: usize,
 	c: C::Elem,
 	eval_claim: C::Elem,

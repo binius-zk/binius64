@@ -48,14 +48,17 @@ use crate::{
 /// The batched final sumcheck is assumed to bind variables from the highest index to the lowest.
 /// This matches the convention of the fractional-addition GKR layers.
 ///
+/// # Preconditions
+///
+/// - `table_n_vars` must be at least 1, so the table-side GKR has a variable to split on.
+///
 /// # Returns
 ///
 /// The reduced [`LogupOutput`] claims on the table, pushforward, and index multilinears.
 ///
 /// # Errors
 ///
-/// Returns an error when the table is empty or the proof is malformed.
-/// Also returns an error when any verification identity fails:
+/// Returns an error when the proof is malformed or any verification identity fails:
 ///
 /// - the two lookup sums disagree,
 /// - the `eq_r` evaluation is wrong,
@@ -71,13 +74,11 @@ where
 	C: IPVerifierChannel<F>,
 	C::Elem: From<F>,
 {
+	// The table-side GKR circuit needs at least one variable to split on.
+	assert!(table_n_vars > 0, "table must have at least one variable");
+
 	let m = table_n_vars;
 	let n = eval_point.len();
-
-	// The table-side GKR circuit needs at least one variable to split on.
-	if m == 0 {
-		return Err(VerificationError::EmptyTable.into());
-	}
 
 	// Sample the logUp challenge c that randomizes the logarithmic-derivative denominators.
 	let c = channel.sample();
@@ -174,16 +175,13 @@ mod tests {
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
 
 	#[test]
-	fn test_empty_table_is_rejected() {
+	#[should_panic(expected = "table must have at least one variable")]
+	fn test_empty_table_panics() {
 		// A zero-variable table has no variable for the GKR circuit to split on.
 		let transcript = ProverTranscript::new(StdChallenger::default());
 		let mut verifier = transcript.into_verifier();
 
-		// Inputs are irrelevant: the guard fires before any transcript interaction.
-		let err = verify::<B128, _>(0, B128::ZERO, &[], &mut verifier)
-			.expect_err("zero-variable table must be rejected");
-
-		// The error pinpoints the empty-table guard.
-		assert!(matches!(err, Error::Verification(VerificationError::EmptyTable)));
+		// The precondition assertion fires before any transcript interaction.
+		let _ = verify::<B128, _>(0, B128::ZERO, &[], &mut verifier);
 	}
 }

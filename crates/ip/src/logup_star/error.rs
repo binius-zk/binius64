@@ -16,8 +16,6 @@ pub enum Error {
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerificationError {
-	#[error("table has zero variables")]
-	EmptyTable,
 	#[error("the two lookup fractional sums are not equal")]
 	LookupSumMismatch,
 	#[error("the eq_r multilinear evaluation is incorrect")]
