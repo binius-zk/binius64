@@ -16,7 +16,6 @@ pub mod rand;
 pub mod random_access_sequence;
 pub mod rayon;
 pub mod serialization;
-pub mod sorting;
 pub mod sparse_index;
 pub mod strided_array;
 
