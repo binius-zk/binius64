@@ -11,7 +11,7 @@ use binius_field::{
 };
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{
-	basefold_channel::BaseFoldProverChannel, basefold_compiler::BaseFoldProverCompiler,
+	basefold_compiler::BaseFoldZKProverCompiler, basefold_zk_channel::BaseFoldZKProverChannel,
 	channel::IOPProverChannel,
 };
 use binius_math::{
@@ -31,6 +31,7 @@ use binius_verifier::{
 	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput, sumcheck::SumcheckOutput},
 };
 use digest::Output;
+use rand::{SeedableRng, rngs::StdRng};
 
 use super::error::Error;
 use crate::{
@@ -262,7 +263,7 @@ where
 	H: HashSuite,
 {
 	iop_prover: IOPProver,
-	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>, ProverMerkleProver<B128, H>>,
+	basefold_compiler: BaseFoldZKProverCompiler<P, ProverNTT<B128>, ProverMerkleProver<B128, H>>,
 }
 
 impl<P, H> Prover<P, H>
@@ -299,7 +300,7 @@ where
 		let merkle_prover = BinaryMerkleTreeProver::<_, H>::new();
 
 		// Create prover compiler from verifier compiler (reuses FRI params and oracle specs)
-		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
+		let basefold_compiler = BaseFoldZKProverCompiler::from_verifier_compiler(
 			verifier.iop_compiler(),
 			ntt,
 			merkle_prover,
@@ -340,8 +341,12 @@ where
 		)
 		.entered();
 
-		// Create channel and delegate to IOPProver::prove
-		let channel = BaseFoldProverChannel::from_compiler(&self.basefold_compiler, transcript);
+		// Create channel and delegate to IOPProver::prove. The unified channel takes an rng to
+		// mask ZK oracles, but a plain `Prover` produces a transparent proof whose only oracle is
+		// non-ZK, so no masks are drawn and the rng is never consumed.
+		let rng = StdRng::seed_from_u64(0);
+		let channel =
+			BaseFoldZKProverChannel::from_compiler(&self.basefold_compiler, transcript, rng);
 		self.iop_prover.prove::<P, _>(witness, channel)
 	}
 }

@@ -3,8 +3,9 @@
 //! BaseFold ZK implementation of the IOP verifier channel.
 //!
 //! This module provides [`BaseFoldZKVerifierChannel`], which implements [`IOPVerifierChannel`]
-//! using FRI commitment and ZK BaseFold opening protocols. Unlike [`super::basefold_channel`],
-//! this channel always applies zero-knowledge blinding to all oracles.
+//! using FRI commitment and the batched ZK BaseFold opening protocol. ZK oracles are blinded with a
+//! mask; non-ZK oracles are committed without a mask. All committed oracles are opened with a
+//! single combined FRI.
 
 use binius_field::BinaryField;
 use binius_ip::{

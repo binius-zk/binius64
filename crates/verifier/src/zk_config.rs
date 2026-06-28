@@ -117,7 +117,7 @@ where
 		let outer_oracle_specs = outer_iop_verifier.oracle_specs();
 		let oracle_specs: Vec<OracleSpec> = [
 			vec![outer_oracle_specs[0]],
-			inner_iop_verifier.oracle_specs(),
+			inner_iop_verifier.oracle_specs(true),
 			outer_oracle_specs[1..].to_vec(),
 		]
 		.concat();

@@ -26,7 +26,6 @@
 #![warn(rustdoc::missing_crate_level_docs)]
 
 pub mod basefold;
-pub mod basefold_channel;
 pub mod basefold_compiler;
 pub mod basefold_zk_channel;
 pub mod channel;

@@ -3,9 +3,9 @@
 //! BaseFold ZK implementation of the IOP prover channel.
 //!
 //! This module provides [`BaseFoldZKProverChannel`], which implements [`IOPProverChannel`]
-//! using FRI commitment and ZK BaseFold opening protocols. Unlike [`super::basefold_channel`],
-//! this channel always applies zero-knowledge blinding to all oracles by generating masks
-//! internally.
+//! using FRI commitment and the batched ZK BaseFold opening protocol. ZK oracles are blinded with a
+//! mask generated internally; non-ZK oracles are committed without a mask. All committed oracles
+//! are opened with a single combined FRI.
 
 use std::iter;
 
