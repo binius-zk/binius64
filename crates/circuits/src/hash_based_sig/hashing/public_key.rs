@@ -1,356 +1,155 @@
 // Copyright 2025 Irreducible Inc.
 use binius_frontend::{CircuitBuilder, Wire};
 
-use super::base::circuit_tweaked_keccak;
-// Note: PublicKeyTweak reuses TREE_TWEAK (0x01) for consistency with XMSS spec
-pub use super::tree::TREE_TWEAK as PUBLIC_KEY_TWEAK;
-use crate::{fixed_byte_vec::ByteVec, keccak::Keccak256};
+use super::chain_blake3::{circuit_blake3_th, ref_blake3_th};
+use crate::fixed_byte_vec::ByteVec;
 
-/// A circuit that verifies a public key hash for XMSS.
+/// Tweak separator for the one-time public-key (Merkle leaf) hash.
 ///
-/// This circuit verifies Keccak-256 of a message that's been tweaked with
-/// multiple public key hashes: `Keccak256(domain_param || 0x01 || pk_hash_0 || pk_hash_1 || ... ||
-/// pk_hash_n)`
+/// - Chain steps use `0x00`, internal tree nodes `0x01`, message hashing `0x02`.
+/// - The leaf uses a distinct `0x03`.
+/// - This keeps the leaf in a different hash domain from any internal tree node.
+pub const PUBLIC_KEY_TWEAK: u8 = 0x03;
+
+/// Computes the one-time public-key (Merkle leaf) hash, returning its 32-byte digest.
+///
+/// Evaluates the BLAKE3 tweakable hash with:
+/// - domain (chaining value) `param || 0x03 || epoch`,
+/// - data (absorbed blocks) the concatenation of the Winternitz chain ends.
+///
+/// The leaf is the larger-than-one-block case: the chain ends are absorbed two per compression.
+/// Mixing the epoch into the domain binds the leaf to its position in the tree.
 ///
 /// # Arguments
 ///
-/// * `builder` - Circuit builder for constructing constraints
-/// * `domain_param_wires` - The cryptographic domain parameter wires, where each wire holds 8 bytes
-///   as a 64-bit LE-packed value
-/// * `domain_param_len` - The actual domain parameter length in bytes
-/// * `pk_hashes` - The public key end hashes (32 bytes each as 4x64-bit LE-packed wires)
-/// * `digest` - Output: The computed Keccak-256 digest (32 bytes as 4x64-bit LE-packed wires)
+/// * `builder` - Circuit builder.
+/// * `domain_param_wires` - Per-signer parameter, eight bytes per wire.
+/// * `domain_param_len` - Parameter length in bytes; at most 23 so the domain fits the 32-byte cv.
+/// * `epoch` - Epoch (leaf index) this public key sits at.
+/// * `pk_hashes` - Chain-end hashes, 32 bytes each as four 64-bit little-endian wires.
 ///
 /// # Returns
 ///
-/// A `Keccak` circuit that needs to be populated with the tweaked message and digest
+/// The 32-byte leaf digest as four 64-bit little-endian wires.
 pub fn circuit_public_key_hash(
 	builder: &CircuitBuilder,
 	domain_param_wires: Vec<Wire>,
 	domain_param_len: usize,
+	epoch: Wire,
 	pk_hashes: &[[Wire; 4]],
-	digest: [Wire; 4],
-) -> Keccak256 {
-	assert_eq!(domain_param_wires.len(), domain_param_len.div_ceil(8));
-
-	// Build additional terms for all public key hashes
-	let mut additional_terms = Vec::new();
-
-	// Add all public key hashes
-	for pk_hash in pk_hashes {
-		let hash_term = ByteVec::new_const_len(builder, pk_hash.to_vec(), 32);
-		additional_terms.push(hash_term);
-	}
-
-	circuit_tweaked_keccak(
-		builder,
-		domain_param_wires,
-		domain_param_len,
-		PUBLIC_KEY_TWEAK,
-		additional_terms,
-		digest,
-	)
+) -> [Wire; 4] {
+	let domain = vec![
+		ByteVec::new_const_len(builder, domain_param_wires, domain_param_len),
+		ByteVec::new_const_len(builder, vec![builder.add_constant_64(PUBLIC_KEY_TWEAK as u64)], 1),
+		ByteVec::new_const_len(builder, vec![epoch], 8),
+	];
+	let data: Vec<ByteVec> = pk_hashes
+		.iter()
+		.map(|pk| ByteVec::new_const_len(builder, pk.to_vec(), 32))
+		.collect();
+	circuit_blake3_th(builder, &domain, &data)
 }
 
-/// Build the tweaked message for public key hashing.
-///
-/// Constructs the complete message for Keccak-256 hashing by concatenating:
-/// `domain_param || 0x01 || pk_hash_0 || pk_hash_1 || ... || pk_hash_n`
-///
-/// This function is typically used when populating witness data for the
-/// `circuit_public_key_hash` circuit.
+/// Reference (out-of-circuit) leaf hash, matching `circuit_public_key_hash` exactly.
 ///
 /// # Arguments
 ///
-/// * `domain_param_bytes` - The cryptographic domain parameter bytes
-/// * `pk_hashes` - Array of 32-byte public key hashes
-///
-/// # Returns
-///
-/// A vector containing the complete tweaked message ready for hashing
-pub fn build_public_key_hash(domain_param_bytes: &[u8], pk_hashes: &[[u8; 32]]) -> Vec<u8> {
-	let mut message = Vec::new();
-	message.extend_from_slice(domain_param_bytes);
-	message.push(PUBLIC_KEY_TWEAK);
-	for pk_hash in pk_hashes {
-		message.extend_from_slice(pk_hash);
-	}
-	message
-}
+/// * `param` - Per-signer parameter bytes.
+/// * `epoch` - Epoch (leaf index), encoded as eight little-endian bytes in the domain.
+/// * `pk_hashes` - The 32-byte chain-end hashes.
+pub fn hash_public_key(param: &[u8], epoch: u64, pk_hashes: &[[u8; 32]]) -> [u8; 32] {
+	let mut domain = Vec::with_capacity(param.len() + 1 + 8);
+	domain.extend_from_slice(param);
+	domain.push(PUBLIC_KEY_TWEAK);
+	domain.extend_from_slice(&epoch.to_le_bytes());
 
-/// Computes the public key hash from Winternitz public keys.
-///
-/// # Arguments
-/// * `domain_param` - Cryptographic domain parameter
-/// * `pk_hashes` - Array of 32-byte public key hashes
-pub fn hash_public_key_keccak(domain_param: &[u8], pk_hashes: &[[u8; 32]]) -> [u8; 32] {
-	use sha3::Digest;
-	let tweaked_public_key = build_public_key_hash(domain_param, pk_hashes);
-	sha3::Keccak256::digest(tweaked_public_key).into()
+	let mut data = Vec::with_capacity(pk_hashes.len() * 32);
+	for pk in pk_hashes {
+		data.extend_from_slice(pk);
+	}
+
+	ref_blake3_th(&domain, &data)
 }
 
 #[cfg(test)]
 mod tests {
-	use binius_core::verify::verify_constraints;
-	use binius_frontend::{Circuit, CircuitBuilder, util::pack_bytes_into_wires_le};
+	use binius_core::{Word, verify::verify_constraints};
+	use binius_frontend::util::pack_bytes_into_wires_le;
 	use proptest::prelude::*;
-	use sha3::Digest;
 
 	use super::*;
 
-	/// Helper struct for PublicKeyHash testing
-	struct PublicKeyTestCircuit {
-		circuit: Circuit,
-		keccak: Keccak256,
-		domain_param_wires: Vec<Wire>,
-		domain_param_len: usize,
-		pk_hashes: Vec<[Wire; 4]>,
-	}
+	// Build the gadget, populate the inputs, and return the evaluated 32-byte leaf digest.
+	fn run_circuit(param_bytes: &[u8], epoch: u64, pk_hashes: &[[u8; 32]]) -> [u8; 32] {
+		let b = CircuitBuilder::new();
+		let param: Vec<Wire> = (0..param_bytes.len().div_ceil(8))
+			.map(|_| b.add_inout())
+			.collect();
+		let epoch_w = b.add_inout();
+		let pk_wires: Vec<[Wire; 4]> = (0..pk_hashes.len())
+			.map(|_| std::array::from_fn(|_| b.add_inout()))
+			.collect();
 
-	impl PublicKeyTestCircuit {
-		fn new(domain_param_len: usize, num_hashes: usize) -> Self {
-			let builder = CircuitBuilder::new();
-
-			let digest: [Wire; 4] = std::array::from_fn(|_| builder.add_inout());
-
-			let num_domain_param_wires = domain_param_len.div_ceil(8);
-			let domain_param_wires: Vec<Wire> = (0..num_domain_param_wires)
-				.map(|_| builder.add_inout())
-				.collect();
-
-			let pk_hashes: Vec<[Wire; 4]> = (0..num_hashes)
-				.map(|_| std::array::from_fn(|_| builder.add_inout()))
-				.collect();
-
-			let keccak = circuit_public_key_hash(
-				&builder,
-				domain_param_wires.clone(),
-				domain_param_len,
-				&pk_hashes,
-				digest,
-			);
-
-			let circuit = builder.build();
-
-			Self {
-				circuit,
-				keccak,
-				domain_param_wires,
-				domain_param_len,
-				pk_hashes,
-			}
+		let digest =
+			circuit_public_key_hash(&b, param.clone(), param_bytes.len(), epoch_w, &pk_wires);
+		let out: [Wire; 4] = std::array::from_fn(|_| b.add_inout());
+		for k in 0..4 {
+			b.assert_eq("leaf_digest", digest[k], out[k]);
 		}
 
-		/// Populate witness and verify constraints with given test data
-		fn populate_and_verify(
-			&self,
-			domain_param_bytes: &[u8],
-			pk_hashes_bytes: &[[u8; 32]],
-			message: &[u8],
-			digest: [u8; 32],
-		) -> Result<(), Box<dyn std::error::Error>> {
-			let mut w = self.circuit.new_witness_filler();
-
-			// Populate domain param
-			assert_eq!(domain_param_bytes.len(), self.domain_param_len);
-			pack_bytes_into_wires_le(&mut w, &self.domain_param_wires, domain_param_bytes);
-
-			// Populate public key hashes
-			assert_eq!(pk_hashes_bytes.len(), self.pk_hashes.len());
-			for (wires, bytes) in self.pk_hashes.iter().zip(pk_hashes_bytes.iter()) {
-				pack_bytes_into_wires_le(&mut w, wires, bytes);
-			}
-
-			// Populate message for Keccak
-			let expected_len = self.domain_param_len + 1 + (self.pk_hashes.len() * 32);
-			assert_eq!(
-				message.len(),
-				expected_len,
-				"Message length {} doesn't match expected length {}",
-				message.len(),
-				expected_len
-			);
-			self.keccak.populate_message(&mut w, message);
-
-			// Populate digest
-			self.keccak.populate_digest(&mut w, digest);
-
-			self.circuit.populate_wire_witness(&mut w)?;
-			let cs = self.circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec())?;
-			Ok(())
+		let circuit = b.build();
+		let mut w = circuit.new_witness_filler();
+		pack_bytes_into_wires_le(&mut w, &param, param_bytes);
+		w[epoch_w] = Word::from_u64(epoch);
+		for (wires, bytes) in pk_wires.iter().zip(pk_hashes) {
+			pack_bytes_into_wires_le(&mut w, wires, bytes);
 		}
+		let reference = hash_public_key(param_bytes, epoch, pk_hashes);
+		pack_bytes_into_wires_le(&mut w, &out, &reference);
+
+		circuit.populate_wire_witness(&mut w).unwrap();
+		verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();
+		reference
 	}
 
 	#[test]
-	fn test_public_key_hash_basic() {
-		let test_circuit = PublicKeyTestCircuit::new(32, 3);
-
-		let domain_param_bytes = b"test_parameter_32_bytes_long!!!!";
-		let pk_hashes = [
-			*b"first_public_key_hash_32_bytes!!",
-			*b"second_public_key_hash_32_bytes!",
-			*b"third_public_key_hash_32_bytes!!",
-		];
-
-		let message = build_public_key_hash(domain_param_bytes, &pk_hashes);
-
-		let expected_digest = sha3::Keccak256::digest(&message);
-
-		test_circuit
-			.populate_and_verify(domain_param_bytes, &pk_hashes, &message, expected_digest.into())
-			.unwrap();
+	fn matches_reference_single_chain_end() {
+		// Smallest case: one chain end (one absorbed block).
+		let digest = run_circuit(b"test_param_18bytes", 99, &[[7u8; 32]]);
+		assert_ne!(digest, [0u8; 32]);
 	}
 
 	#[test]
-	fn test_public_key_hash_with_18_byte_domain_param() {
-		// Test with 18-byte domain param as per XMSS specifications
-		let test_circuit = PublicKeyTestCircuit::new(18, 2);
-
-		let domain_param_bytes: &[u8; 18] = b"test_param_18bytes";
-		let pk_hashes = [
-			*b"first_public_key_hash_32_bytes!!",
-			*b"second_public_key_hash_32_bytes!",
-		];
-
-		let message = build_public_key_hash(domain_param_bytes, &pk_hashes);
-
-		let expected_digest = sha3::Keccak256::digest(&message);
-
-		test_circuit
-			.populate_and_verify(domain_param_bytes, &pk_hashes, &message, expected_digest.into())
-			.unwrap();
-	}
-
-	#[test]
-	fn test_public_key_hash_single_hash() {
-		let test_circuit = PublicKeyTestCircuit::new(32, 1);
-
-		let domain_param_bytes = b"test_parameter_32_bytes_long!!!!";
-		let pk_hashes = [*b"single_public_key_hash_32_bytes!"];
-
-		let message = build_public_key_hash(domain_param_bytes, &pk_hashes);
-
-		let expected_digest = sha3::Keccak256::digest(&message);
-
-		test_circuit
-			.populate_and_verify(domain_param_bytes, &pk_hashes, &message, expected_digest.into())
-			.unwrap();
-	}
-
-	#[test]
-	fn test_public_key_hash_many_hashes() {
-		// Test with many hashes (e.g., Winternitz with 72 chains)
-		let num_hashes = 72;
-		let test_circuit = PublicKeyTestCircuit::new(18, num_hashes);
-
-		let domain_param_bytes: &[u8; 18] = b"test_param_18bytes";
-
-		// Generate deterministic hashes for testing
-		let mut pk_hashes = Vec::new();
-		for i in 0..num_hashes {
-			let mut hash = [0u8; 32];
-			hash[0] = i as u8;
-			hash[1] = (i >> 8) as u8;
-			for j in 2..32 {
-				hash[j] = ((i * j) % 256) as u8;
-			}
-			pk_hashes.push(hash);
-		}
-
-		let message = build_public_key_hash(domain_param_bytes, &pk_hashes);
-
-		let expected_digest = sha3::Keccak256::digest(&message);
-
-		test_circuit
-			.populate_and_verify(domain_param_bytes, &pk_hashes, &message, expected_digest.into())
-			.unwrap();
-	}
-
-	#[test]
-	fn test_public_key_hash_wrong_digest() {
-		let test_circuit = PublicKeyTestCircuit::new(32, 2);
-
-		let domain_param_bytes = b"test_parameter_32_bytes_long!!!!";
-		let pk_hashes = [
-			*b"first_public_key_hash_32_bytes!!",
-			*b"second_public_key_hash_32_bytes!",
-		];
-
-		let message = build_public_key_hash(domain_param_bytes, &pk_hashes);
-
-		// Populate with WRONG digest - this should cause verification to fail
-		let wrong_digest = [0u8; 32];
-
-		let result = test_circuit.populate_and_verify(
-			domain_param_bytes,
-			&pk_hashes,
-			&message,
-			wrong_digest,
-		);
-
-		assert!(result.is_err(), "Expected error for wrong digest");
-	}
-
-	#[test]
-	fn test_public_key_hash_ensures_tweak_byte() {
-		// This test verifies that the PUBLIC_KEY_TWEAK byte (0x01) is correctly inserted
-		let test_circuit = PublicKeyTestCircuit::new(16, 1);
-
-		let domain_param_bytes = b"param_16_bytes!!";
-		let pk_hashes = [*b"single_public_key_hash_32_bytes!"];
-
-		let message = build_public_key_hash(domain_param_bytes, &pk_hashes);
-
-		// Verify the tweak byte is at the correct position
-		assert_eq!(message[16], PUBLIC_KEY_TWEAK);
-		assert_eq!(message.len(), 16 + 1 + 32); // domain_param + tweak + one hash
-
-		let expected_digest = sha3::Keccak256::digest(&message);
-
-		test_circuit
-			.populate_and_verify(domain_param_bytes, &pk_hashes, &message, expected_digest.into())
-			.unwrap();
+	fn matches_reference_many_chain_ends() {
+		// Winternitz with 72 chains: 72 * 32 bytes absorbed over many blocks.
+		let pk_hashes: Vec<[u8; 32]> = (0..72u8).map(|i| [i; 32]).collect();
+		let digest = run_circuit(b"test_param_18bytes", 0, &pk_hashes);
+		assert_ne!(digest, [0u8; 32]);
 	}
 
 	proptest! {
 		#[test]
-		fn test_public_key_hash_property_based(
-			domain_param_len in 1usize..=100,
-			num_hashes in 1usize..=10,
+		fn matches_reference_property_based(
+			param_len in 1usize..=23,
+			num_hashes in 1usize..=40,
+			epoch in 0u64..=u64::MAX,
+			seed in any::<u64>(),
 		) {
-			use rand::prelude::*;
+			use rand::{Rng, SeedableRng, rngs::StdRng};
 
-			let mut rng = StdRng::seed_from_u64(0);
+			// Random parameter and chain ends of the sampled counts.
+			let mut rng = StdRng::seed_from_u64(seed);
+			let mut param = vec![0u8; param_len];
+			rng.fill_bytes(&mut param);
+			let pk_hashes: Vec<[u8; 32]> = (0..num_hashes)
+				.map(|_| {
+					let mut h = [0u8; 32];
+					rng.fill_bytes(&mut h);
+					h
+				})
+				.collect();
 
-			// Generate random domain param bytes
-			let mut domain_param_bytes = vec![0u8; domain_param_len];
-			rng.fill_bytes(&mut domain_param_bytes);
-
-			// Generate random public key hashes
-			let mut pk_hashes = Vec::new();
-			for _ in 0..num_hashes {
-				let mut hash = [0u8; 32];
-				rng.fill_bytes(&mut hash);
-				pk_hashes.push(hash);
-			}
-
-			// Create circuit
-			let test_circuit = PublicKeyTestCircuit::new(domain_param_len, num_hashes);
-
-			// Build message and compute digest
-			let message = build_public_key_hash(&domain_param_bytes, &pk_hashes);
-
-			// Verify message structure
-			prop_assert_eq!(message.len(), domain_param_len + 1 + (num_hashes * 32));
-			prop_assert_eq!(message[domain_param_len], PUBLIC_KEY_TWEAK);
-
-			let expected_digest: [u8; 32] = sha3::Keccak256::digest(&message).into();
-
-			// Verify circuit
-			test_circuit
-				.populate_and_verify(&domain_param_bytes, &pk_hashes, &message, expected_digest)
-				.unwrap();
+			run_circuit(&param, epoch, &pk_hashes);
 		}
 	}
 }

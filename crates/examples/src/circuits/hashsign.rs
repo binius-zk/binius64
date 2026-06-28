@@ -3,9 +3,9 @@
 use anyhow::Result;
 use binius_circuits::hash_based_sig::{
 	winternitz_ots::WinternitzSpec,
-	witness_utils::{ValidatorSignatureData, XmssHasherData, populate_xmss_hashers},
+	witness_utils::ValidatorSignatureData,
 	xmss::XmssSignature,
-	xmss_aggregate::{MultiSigBuilder, XmssMultisigHashers, circuit_xmss_multisig},
+	xmss_aggregate::{MultiSigBuilder, circuit_xmss_multisig},
 };
 use binius_core::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
@@ -19,12 +19,11 @@ pub struct HashBasedSigExample {
 	spec: WinternitzSpec,
 	tree_height: usize,
 	num_validators: usize,
-	param: Vec<Wire>,
+	validator_params: Vec<Vec<Wire>>,
 	message: Vec<Wire>,
 	epoch: Wire,
 	validator_roots: Vec<[Wire; 4]>,
 	validator_signatures: Vec<XmssSignature>,
-	hashers: XmssMultisigHashers,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -72,16 +71,17 @@ impl ExampleCircuit for HashBasedSigExample {
 		let num_validators = params.num_validators;
 
 		let ms_builder = MultiSigBuilder::new(builder, &spec);
-		let (param, message, epoch) = ms_builder.create_public_inputs();
+		let (message, epoch) = ms_builder.create_public_inputs();
+		let validator_params = ms_builder.create_validator_params(num_validators);
 		let validator_roots = ms_builder.create_validator_roots(num_validators);
 		let validator_signatures: Vec<XmssSignature> = (0..num_validators)
 			.map(|_| ms_builder.create_validator_signature(tree_height, epoch))
 			.collect();
 
-		let hashers = circuit_xmss_multisig(
+		circuit_xmss_multisig(
 			builder,
 			&spec,
-			&param,
+			&validator_params,
 			&message,
 			epoch,
 			&validator_roots,
@@ -92,20 +92,16 @@ impl ExampleCircuit for HashBasedSigExample {
 			spec,
 			tree_height,
 			num_validators,
-			param,
+			validator_params,
 			message,
 			epoch,
 			validator_roots,
 			validator_signatures,
-			hashers,
 		})
 	}
 
 	fn populate_witness(&self, _instance: Instance, w: &mut WitnessFiller) -> Result<()> {
 		let mut rng = StdRng::seed_from_u64(42); // Fixed seed for benchmarking consistency
-
-		let mut param_bytes = vec![0u8; self.spec.domain_param_len];
-		rng.fill_bytes(&mut param_bytes);
 
 		// Fixed 32-byte message
 		let mut message_bytes = [0u8; 32];
@@ -114,15 +110,19 @@ impl ExampleCircuit for HashBasedSigExample {
 		// Safe because tree_height is validated to be <= 31 in build()
 		let epoch = rng.next_u32() % (1u32 << self.tree_height);
 
-		// Pack param_bytes (pad to match wire count)
-		let mut padded_param = vec![0u8; self.param.len() * 8];
-		padded_param[..param_bytes.len()].copy_from_slice(&param_bytes);
-		pack_bytes_into_wires_le(w, &self.param, &padded_param);
 		pack_bytes_into_wires_le(w, &self.message, &message_bytes);
 		w[self.epoch] = Word::from_u64(epoch as u64);
 
-		// Generate a signature for each validator
+		// Generate a signature for each validator, each with its own domain parameter.
 		for val_idx in 0..self.num_validators {
+			let mut param_bytes = vec![0u8; self.spec.domain_param_len];
+			rng.fill_bytes(&mut param_bytes);
+
+			// Pack this validator's parameter (pad to match wire count)
+			let mut padded_param = vec![0u8; self.validator_params[val_idx].len() * 8];
+			padded_param[..param_bytes.len()].copy_from_slice(&param_bytes);
+			pack_bytes_into_wires_le(w, &self.validator_params[val_idx], &padded_param);
+
 			let validator_data = ValidatorSignatureData::generate(
 				&mut rng,
 				&param_bytes,
@@ -134,9 +134,12 @@ impl ExampleCircuit for HashBasedSigExample {
 
 			pack_bytes_into_wires_le(w, &self.validator_roots[val_idx], &validator_data.root);
 
-			let mut nonce_padded = [0u8; 24];
-			nonce_padded[..23].copy_from_slice(&validator_data.nonce);
-			pack_bytes_into_wires_le(w, &self.validator_signatures[val_idx].nonce, &nonce_padded);
+			// The nonce already fills the wire capacity exactly, so pack it directly.
+			pack_bytes_into_wires_le(
+				w,
+				&self.validator_signatures[val_idx].nonce,
+				&validator_data.nonce,
+			);
 
 			for (i, sig_hash) in validator_data.signature_hashes.iter().enumerate() {
 				pack_bytes_into_wires_le(
@@ -161,26 +164,9 @@ impl ExampleCircuit for HashBasedSigExample {
 					auth_node,
 				);
 			}
-
-			let hasher_data = XmssHasherData {
-				param_bytes: param_bytes.clone(),
-				message_bytes,
-				nonce_bytes: validator_data.nonce.to_vec(),
-				epoch: epoch as u64,
-				coords: validator_data.coords,
-				sig_hashes: validator_data.signature_hashes,
-				pk_hashes: validator_data.public_key_hashes,
-				auth_path: validator_data.auth_path,
-			};
-
-			populate_xmss_hashers(
-				w,
-				&self.hashers.validator_hashers[val_idx],
-				&self.spec,
-				&hasher_data,
-			);
 		}
 
+		// Every digest is BLAKE3, derived from the inputs, so the evaluator fills them all here.
 		Ok(())
 	}
 

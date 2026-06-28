@@ -20,7 +20,7 @@ use crate::util::clear_high_bits;
 
 pub mod compress;
 
-pub use compress::{blake3_compress, blake3_compress_2x, blake3_compress_2x_seq};
+pub use compress::{blake3_compress, blake3_compress_2x, blake3_compress_2x_seq, ref_compress};
 
 /// BLAKE3 initial chaining value. Same as the SHA-256 IV.
 pub const IV: [u32; 8] = [
