@@ -1,4 +1,6 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
+
 //! # NTT Lookup Table Module
 //!
 //! This module provides a precomputed lookup table implementation for fast Number Theoretic
@@ -35,8 +37,9 @@
 
 use std::{array, marker::PhantomData};
 
+use binius_core::Word;
 use binius_field::{
-	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, Divisible, FieldOps,
+	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, FieldOps,
 	PackedAESBinaryField64x8b as Packed64xB8, PackedField, util::expand_subset_sums_array,
 };
 use binius_math::{
@@ -116,8 +119,10 @@ impl NTTLookup {
 	/// the NTT evaluations at all points in the output domain.
 	#[cfg(test)]
 	#[inline]
-	pub fn ntt<T: Divisible<u8>>(&self, input: T) -> Packed64xB8 {
-		Divisible::value_iter(input)
+	pub fn ntt(&self, input: Word) -> Packed64xB8 {
+		let input_bytes = input.as_u64().to_le_bytes();
+		input_bytes
+			.into_iter()
 			.enumerate()
 			.map(|(b, i)| self.0[b][i as usize])
 			.sum()
@@ -140,14 +145,13 @@ impl NTTLookup {
 	///
 	/// An array of `N` packed field elements containing the NTT evaluations of each input.
 	#[inline]
-	pub fn multi_ntt_array<T: Divisible<u8>, const N: usize>(
-		&self,
-		inputs: [T; N],
-	) -> [Packed64xB8; N] {
+	pub fn multi_ntt_array<const N: usize>(&self, inputs: [Word; N]) -> [Packed64xB8; N] {
+		let inputs_bytes = inputs.map(|input| input.as_u64().to_le_bytes());
+
 		let mut results = [Packed64xB8::zero(); N];
 		for (byte_index, lookup_byte) in self.0.iter().enumerate() {
-			for (result, input) in std::iter::zip(&mut results, &inputs) {
-				let byte = Divisible::<u8>::get(input, byte_index);
+			for (result, input_bytes) in std::iter::zip(&mut results, &inputs_bytes) {
+				let byte = input_bytes[byte_index];
 				*result += lookup_byte[byte as usize];
 			}
 		}
@@ -207,6 +211,7 @@ where
 
 #[cfg(test)]
 mod test {
+	use binius_field::Divisible;
 	use binius_math::BinarySubspace;
 	use rand::prelude::*;
 
@@ -224,7 +229,7 @@ mod test {
 			let input = rng.random::<u64>();
 
 			let lde_result = lde.transform(input);
-			let ntt_lookup_result = ntt_lookup.ntt(input);
+			let ntt_lookup_result = ntt_lookup.ntt(Word(input));
 			for i in 0..ROWS_PER_HYPERCUBE_VERTEX {
 				let lookup_result = ntt_lookup_result.get(i);
 				assert_eq!(lookup_result, lde_result.get(i + ROWS_PER_HYPERCUBE_VERTEX));

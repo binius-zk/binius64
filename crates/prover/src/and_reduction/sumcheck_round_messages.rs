@@ -142,12 +142,12 @@ where
 				izip!(a_subchunks, b_subchunks, &outer_weight_mul_maps)
 			{
 				let mut summed_ntt = <Packed64xB8 as WideMul>::Output::default();
-				for (a_i, b_i, inner_weight) in izip!(a_subchunk, b_subchunk, &eq_ind_small) {
-					let c_i = *a_i & *b_i;
+				for (&a_i, &b_i, inner_weight) in izip!(a_subchunk, b_subchunk, &eq_ind_small) {
+					let c_i = a_i & b_i;
 
 					// Compute the low-degree extension of each column via the lookup table.
 					let [first_col_ntt, second_col_ntt, third_col_ntt] =
-						ntt_lookup.multi_ntt_array([a_i.0, b_i.0, c_i.0]);
+						ntt_lookup.multi_ntt_array([a_i, b_i, c_i]);
 
 					// Compute the weighted composition of the LDE values.
 					summed_ntt += Packed64xB8::wide_mul(
