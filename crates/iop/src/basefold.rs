@@ -38,7 +38,7 @@ use crate::{
 /// construction (whitepaper §7.2 / §sec:batched-basefold Step 2).
 ///
 /// This is the verifier counterpart of
-/// `binius_iop_prover::basefold::prove_mlecheck_basefold_zk_batch`. A prior batched sumcheck has
+/// `binius_iop_prover::basefold::prove_mlecheck_basefold`. A prior batched sumcheck has
 /// reduced the `k` masked opening claims to per-oracle point-evaluation claims `π_i'(ρ_i) = α_i` at
 /// a shared point `r ∈ K^𝐧` (`𝐧 = max_i n_i`). The oracle-index variables are then collapsed up
 /// front at sampled batching challenges `r'` into a single combined multilinear
@@ -57,7 +57,7 @@ use crate::{
 /// The returned `challenges` are the FRI fold challenges `[γ] ++ r' ++ fresh_X`. Use
 /// [`mlecheck_fri_consistency`] to check the reduced values.
 #[allow(clippy::too_many_arguments)]
-pub fn verify_mlecheck_basefold_zk_batch<F, MTScheme, Challenger_>(
+pub fn verify_mlecheck_basefold<F, MTScheme, Challenger_>(
 	fri_params: &FRIParams<F>,
 	merkle_scheme: &MTScheme,
 	codeword_commitments: &[MTScheme::Digest],
@@ -142,7 +142,7 @@ where
 	})
 }
 
-/// Output type of the [`verify_mlecheck_basefold_zk_batch`] function.
+/// Output type of the [`verify_mlecheck_basefold`] function.
 pub struct ReducedOutput<F> {
 	pub final_fri_value: F,
 	pub final_sumcheck_value: F,
@@ -150,7 +150,7 @@ pub struct ReducedOutput<F> {
 }
 
 /// Verifies that the final FRI oracle is consistent with the MLE-check from
-/// [`verify_mlecheck_basefold_zk_batch`].
+/// [`verify_mlecheck_basefold`].
 ///
 /// In an MLE-check the equality-indicator factor is folded into the round-proof recovery, so the
 /// final reduced value is the multilinear evaluation `π'(r)` with no extra factor. The final FRI

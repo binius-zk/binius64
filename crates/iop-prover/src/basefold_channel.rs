@@ -2,7 +2,7 @@
 
 //! BaseFold ZK implementation of the IOP prover channel.
 //!
-//! This module provides [`BaseFoldZKProverChannel`], which implements [`IOPProverChannel`]
+//! This module provides [`BaseFoldProverChannel`], which implements [`IOPProverChannel`]
 //! using FRI commitment and the batched ZK BaseFold opening protocol. ZK oracles are blinded with a
 //! mask generated internally; non-ZK oracles are committed without a mask. All committed oracles
 //! are opened with a single combined FRI.
@@ -31,16 +31,16 @@ use itertools::izip;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::{
-	basefold::prove_mlecheck_basefold_zk_batch,
-	basefold_compiler::BaseFoldZKProverCompiler,
+	basefold::prove_mlecheck_basefold,
+	basefold_compiler::BaseFoldProverCompiler,
 	channel::IOPProverChannel,
 	fri::{self, CommitMaskedOutput, CommitOutput, FRIFoldProver},
 	merkle_tree::MerkleTreeProver,
 };
 
-/// Oracle handle returned by [`BaseFoldZKProverChannel::send_oracle`].
+/// Oracle handle returned by [`BaseFoldProverChannel::send_oracle`].
 #[derive(Debug, Clone, Copy)]
-pub struct BaseFoldZKOracle {
+pub struct BaseFoldOracle {
 	index: usize,
 }
 
@@ -71,7 +71,7 @@ struct CommittedOracleData<P: PackedField, Committed> {
 /// - `NTT`: The additive NTT for Reed-Solomon encoding
 /// - `MerkleProver_`: The Merkle tree prover for commitments
 /// - `Challenger_`: The Fiat-Shamir challenger
-pub struct BaseFoldZKProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
+pub struct BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -94,7 +94,7 @@ where
 }
 
 impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>
-	BaseFoldZKProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
+	BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -107,7 +107,7 @@ where
 	///
 	/// The `rng` is used to seed an internal `StdRng` for mask generation.
 	pub fn from_compiler(
-		compiler: &'a BaseFoldZKProverCompiler<P, NTT, MerkleProver_>,
+		compiler: &'a BaseFoldProverCompiler<P, NTT, MerkleProver_>,
 		transcript: &'a mut ProverTranscript<Challenger_>,
 		mut rng: impl Rng,
 	) -> Self {
@@ -135,9 +135,9 @@ where
 	/// [`prove_oracle_relations`](IOPProverChannel::prove_oracle_relations) across every call are
 	/// processed here in one batch: masking, one batched sumcheck reducing the masked claims to a
 	/// shared point `r`, then one combined FRI opening over every committed oracle
-	/// (in oracle-index order). Mirrors [`BaseFoldZKVerifierChannel::finish`].
+	/// (in oracle-index order). Mirrors [`BaseFoldVerifierChannel::finish`].
 	///
-	/// [`BaseFoldZKVerifierChannel::finish`]: binius_iop::basefold_zk_channel::BaseFoldZKVerifierChannel::finish
+	/// [`BaseFoldVerifierChannel::finish`]: binius_iop::basefold_channel::BaseFoldVerifierChannel::finish
 	pub fn finish(self) {
 		let Self {
 			transcript,
@@ -173,10 +173,10 @@ where
 /// Proves the combined ZK BaseFold opening over all committed oracles.
 ///
 /// This drives `channel` — the [`ProverTranscript`] taken from the destructured
-/// [`BaseFoldZKProverChannel`] — through its [`IPProverChannel`] interface: it sends the masked
+/// [`BaseFoldProverChannel`] — through its [`IPProverChannel`] interface: it sends the masked
 /// inner products σ_i, runs one batched sumcheck reducing the masked claims to a shared point `r`,
 /// then opens each committed oracle with its own FRI parameters. Mirrors
-/// [`binius_iop::basefold_zk_channel::BaseFoldZKVerifierChannel::finish`].
+/// [`binius_iop::basefold_channel::BaseFoldVerifierChannel::finish`].
 ///
 /// The masking inner products and the batched sumcheck process the `relations` in arrival order (so
 /// each reduced eval lines up with its batched-claim coefficient), while the per-oracle evaluations
@@ -349,7 +349,7 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 	let committed_codewords = iter::zip(committed_codewords, &committeds).collect();
 
 	let fri_folder = FRIFoldProver::new_batch(fri_params, ntt, merkle_prover, committed_codewords);
-	prove_mlecheck_basefold_zk_batch(
+	prove_mlecheck_basefold(
 		combined,
 		point,
 		s_prime,
@@ -381,7 +381,7 @@ fn accumulate_scaled_buffer<P: PackedField>(
 }
 
 impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, Challenger_> IPProverChannel<F>
-	for BaseFoldZKProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
+	for BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -412,7 +412,7 @@ where
 }
 
 impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, Challenger_> IOPProverChannel<P>
-	for BaseFoldZKProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
+	for BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -421,7 +421,7 @@ where
 	MerkleProver_: MerkleTreeProver<F, Scheme = MerkleScheme>,
 	Challenger_: Challenger,
 {
-	type Oracle = BaseFoldZKOracle;
+	type Oracle = BaseFoldOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		&self.oracle_specs[self.next_oracle_index..]
@@ -486,7 +486,7 @@ where
 
 		self.next_oracle_index += 1;
 
-		BaseFoldZKOracle { index }
+		BaseFoldOracle { index }
 	}
 
 	fn prove_oracle_relations(
@@ -516,7 +516,7 @@ mod tests {
 	};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
-		basefold_compiler::BaseFoldZKVerifierCompiler,
+		basefold_compiler::BaseFoldVerifierCompiler,
 		channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 		fri::MinProofSizeStrategy,
 	};
@@ -532,7 +532,7 @@ mod tests {
 
 	use super::IOPProverChannel;
 	use crate::{
-		basefold_compiler::BaseFoldZKProverCompiler, merkle_tree::prover::BinaryMerkleTreeProver,
+		basefold_compiler::BaseFoldProverCompiler, merkle_tree::prover::BinaryMerkleTreeProver,
 	};
 
 	type StdChallenger = HasherChallenger<StdDigest>;
@@ -571,7 +571,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_basefold_zk_channel_single_oracle() {
+	fn test_basefold_channel_single_oracle() {
 		type F = BinaryField128bGhash;
 		type P = PackedBinaryGhash1x128b;
 
@@ -586,7 +586,7 @@ mod tests {
 		let oracle_specs = vec![OracleSpec::new_zk(n_vars)];
 
 		let merkle_prover = make_merkle_prover();
-		let verifier_compiler = BaseFoldZKVerifierCompiler::new(
+		let verifier_compiler = BaseFoldVerifierCompiler::new(
 			merkle_prover.scheme().clone(),
 			oracle_specs,
 			LOG_INV_RATE,
@@ -596,7 +596,7 @@ mod tests {
 
 		// === PROVER SIDE ===
 		let ntt = make_ntt(verifier_compiler.max_subspace());
-		let prover_compiler = BaseFoldZKProverCompiler::<P, _, _>::from_verifier_compiler(
+		let prover_compiler = BaseFoldProverCompiler::<P, _, _>::from_verifier_compiler(
 			&verifier_compiler,
 			ntt,
 			merkle_prover,
@@ -637,7 +637,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_basefold_zk_channel_two_oracles() {
+	fn test_basefold_channel_two_oracles() {
 		type F = BinaryField128bGhash;
 		type P = PackedBinaryGhash1x128b;
 
@@ -655,7 +655,7 @@ mod tests {
 		let oracle_specs = vec![OracleSpec::new_zk(n_vars_1), OracleSpec::new_zk(n_vars_2)];
 
 		let merkle_prover = make_merkle_prover();
-		let verifier_compiler = BaseFoldZKVerifierCompiler::new(
+		let verifier_compiler = BaseFoldVerifierCompiler::new(
 			merkle_prover.scheme().clone(),
 			oracle_specs,
 			LOG_INV_RATE,
@@ -665,7 +665,7 @@ mod tests {
 
 		// === PROVER SIDE ===
 		let ntt = make_ntt(verifier_compiler.max_subspace());
-		let prover_compiler = BaseFoldZKProverCompiler::<P, _, _>::from_verifier_compiler(
+		let prover_compiler = BaseFoldProverCompiler::<P, _, _>::from_verifier_compiler(
 			&verifier_compiler,
 			ntt,
 			merkle_prover,
@@ -735,7 +735,7 @@ mod tests {
 			n_vars_list.iter().map(|&n| OracleSpec::new_zk(n)).collect();
 
 		let merkle_prover = make_merkle_prover();
-		let verifier_compiler = BaseFoldZKVerifierCompiler::new(
+		let verifier_compiler = BaseFoldVerifierCompiler::new(
 			merkle_prover.scheme().clone(),
 			oracle_specs,
 			LOG_INV_RATE,
@@ -745,7 +745,7 @@ mod tests {
 
 		// === PROVER SIDE ===
 		let ntt = make_ntt(verifier_compiler.max_subspace());
-		let prover_compiler = BaseFoldZKProverCompiler::<P, _, _>::from_verifier_compiler(
+		let prover_compiler = BaseFoldProverCompiler::<P, _, _>::from_verifier_compiler(
 			&verifier_compiler,
 			ntt,
 			merkle_prover,
@@ -828,7 +828,7 @@ mod tests {
 			.collect();
 
 		let merkle_prover = make_merkle_prover();
-		let verifier_compiler = BaseFoldZKVerifierCompiler::new(
+		let verifier_compiler = BaseFoldVerifierCompiler::new(
 			merkle_prover.scheme().clone(),
 			oracle_specs,
 			LOG_INV_RATE,
@@ -837,7 +837,7 @@ mod tests {
 		);
 
 		let ntt = make_ntt(verifier_compiler.max_subspace());
-		let prover_compiler = BaseFoldZKProverCompiler::<P, _, _>::from_verifier_compiler(
+		let prover_compiler = BaseFoldProverCompiler::<P, _, _>::from_verifier_compiler(
 			&verifier_compiler,
 			ntt,
 			merkle_prover,
@@ -895,7 +895,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_basefold_zk_channel_three_oracles_non_power_of_two() {
+	fn test_basefold_channel_three_oracles_non_power_of_two() {
 		// 3 oracles (not a power of two) of unequal sizes: exercises oracle padding (Lifted FRI)
 		// and the `⌈log 3⌉ = 2` outer oracle-combine rounds.
 		assert!(run_zk_channel(&[5, 6, 8], false));
@@ -906,26 +906,26 @@ mod tests {
 	// non-ZK oracles' batch-fold challenges come from the leading MLE rounds (which follow the
 	// outer challenges in feed order) and land correctly in the FirstFold's later window.
 	#[test]
-	fn test_basefold_zk_channel_mixed_zk_non_zk() {
+	fn test_basefold_channel_mixed_zk_non_zk() {
 		// One non-ZK oracle (8 vars) and one ZK oracle (6 vars): exercises conditional masking,
 		// the heterogeneous combined-buffer lift/repeat placement, and the non-ZK unmasked commit.
 		assert!(run_mixed_channel(&[(8, false), (6, true)], false));
 	}
 
 	#[test]
-	fn test_basefold_zk_channel_zero_zk() {
+	fn test_basefold_channel_zero_zk() {
 		// All non-ZK oracles: γ must never be sampled and the proof must still verify.
 		assert!(run_mixed_channel(&[(6, false), (8, false)], false));
 	}
 
 	#[test]
-	fn test_basefold_zk_channel_mixed_invalid_proof() {
+	fn test_basefold_channel_mixed_invalid_proof() {
 		// Tampering the claim on a mixed batch must be rejected.
 		assert!(!run_mixed_channel(&[(8, false), (6, true)], true));
 	}
 
 	#[test]
-	fn test_basefold_zk_channel_invalid_proof() {
+	fn test_basefold_channel_invalid_proof() {
 		assert!(!run_zk_channel(&[6, 8], true));
 	}
 }

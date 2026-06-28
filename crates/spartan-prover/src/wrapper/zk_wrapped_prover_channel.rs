@@ -3,12 +3,12 @@
 //! ZK-wrapped prover channel that runs an inner proof and then proves the outer
 //! wrapper constraint system.
 //!
-//! [`ZKWrappedProverChannel`] wraps a [`BaseFoldZKProverChannel`] and records all channel values.
-//! On `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFoldZK channel and records
+//! [`ZKWrappedProverChannel`] wraps a [`BaseFoldProverChannel`] and records all channel values.
+//! On `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFold channel and records
 //! each value. After the inner proof is run, [`finish`] replays the recorded interaction through
 //! a caller-provided closure to fill the outer witness, then runs the outer IOP prover.
 //!
-//! [`BaseFoldZKProverChannel`]: binius_iop_prover::basefold_zk_channel::BaseFoldZKProverChannel
+//! [`BaseFoldProverChannel`]: binius_iop_prover::basefold_channel::BaseFoldProverChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
 
 use std::iter::repeat_with;
@@ -16,7 +16,7 @@ use std::iter::repeat_with;
 use binius_field::{BinaryField, PackedExtension, PackedField};
 use binius_iop::{channel::OracleSpec, merkle_tree::MerkleTreeScheme};
 use binius_iop_prover::{
-	basefold_zk_channel::{BaseFoldZKOracle, BaseFoldZKProverChannel},
+	basefold_channel::{BaseFoldOracle, BaseFoldProverChannel},
 	channel::IOPProverChannel,
 	merkle_tree::MerkleTreeProver,
 };
@@ -30,10 +30,10 @@ use rand::CryptoRng;
 
 use crate::{Error, IOPProver, pack_and_blind_witness, wrapper::ReplayChannel};
 
-/// A prover channel that wraps a [`BaseFoldZKProverChannel`] and an outer Spartan IOP prover.
+/// A prover channel that wraps a [`BaseFoldProverChannel`] and an outer Spartan IOP prover.
 ///
 /// This channel records all channel values. On
-/// `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFoldZK channel and records each
+/// `send_*`/`sample`/`observe_*`, it delegates to the inner BaseFold channel and records each
 /// value. After the inner proof is run through this channel, call
 /// [`finish`](Self::finish) to replay the interaction, fill the outer witness, and generate the
 /// outer proof.
@@ -48,7 +48,7 @@ where
 	MTProver: MerkleTreeProver<P::Scalar>,
 	Challenger_: Challenger,
 {
-	inner_channel: BaseFoldZKProverChannel<'a, P::Scalar, P, NTT, MTProver, Challenger_>,
+	inner_channel: BaseFoldProverChannel<'a, P::Scalar, P, NTT, MTProver, Challenger_>,
 	outer_prover: &'a IOPProver<P::Scalar>,
 	outer_layout: &'a WitnessLayout<P::Scalar>,
 	replay_fn: ReplayFn,
@@ -59,7 +59,7 @@ where
 	/// (`precommit_packed`) is purely random — it is the one-time-pad encryption key for the
 	/// outer encrypted transcript (to be wired up in a follow-up; for now the outer circuit has
 	/// no precommit wires that reference it).
-	precommit_oracle: BaseFoldZKOracle,
+	precommit_oracle: BaseFoldOracle,
 	precommit_packed: FieldBuffer<P>,
 	/// Number of outer oracles still to be committed on `inner_channel` during `finish` (the
 	/// outer prover's non-precommit oracles — private and mask).
@@ -96,7 +96,7 @@ where
 	/// * `replay_fn` - Closure called during [`finish`](Self::finish) with a [`ReplayChannel`] to
 	///   replay the inner verification and fill the outer witness
 	pub fn new(
-		mut inner_channel: BaseFoldZKProverChannel<'a, F, P, NTT, MTProver, Challenger_>,
+		mut inner_channel: BaseFoldProverChannel<'a, F, P, NTT, MTProver, Challenger_>,
 		outer_prover: &'a IOPProver<F>,
 		outer_layout: &'a WitnessLayout<F>,
 		rng: impl CryptoRng,
@@ -146,10 +146,10 @@ where
 	/// inner verifier) contains a matching precommit wire per key that the outer proof uses to
 	/// decrypt.
 	fn commit_transcript_mask(
-		inner_channel: &mut BaseFoldZKProverChannel<'a, F, P, NTT, MTProver, Challenger_>,
+		inner_channel: &mut BaseFoldProverChannel<'a, F, P, NTT, MTProver, Challenger_>,
 		outer_prover: &IOPProver<F>,
 		mut rng: impl CryptoRng,
-	) -> (Vec<F>, BaseFoldZKOracle, FieldBuffer<P>) {
+	) -> (Vec<F>, BaseFoldOracle, FieldBuffer<P>) {
 		let cs = outer_prover.constraint_system();
 		let keys = repeat_with(|| F::random(&mut rng))
 			.take(cs.n_precommit() as usize)
@@ -267,7 +267,7 @@ where
 	MTProver: MerkleTreeProver<F, Scheme = MTScheme>,
 	Challenger_: Challenger,
 {
-	type Oracle = BaseFoldZKOracle;
+	type Oracle = BaseFoldOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		let remaining = self.inner_channel.remaining_oracle_specs();

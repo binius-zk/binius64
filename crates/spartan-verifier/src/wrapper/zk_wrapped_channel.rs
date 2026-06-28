@@ -2,7 +2,7 @@
 
 //! ZK-wrapped verifier channel that delegates to a BaseFold ZK channel and an outer IOP verifier.
 //!
-//! [`ZKWrappedVerifierChannel`] wraps a [`BaseFoldZKVerifierChannel`] and an [`IOPVerifier`].
+//! [`ZKWrappedVerifierChannel`] wraps a [`BaseFoldVerifierChannel`] and an [`IOPVerifier`].
 //! Inner-channel values flow through the wrapper as `CircuitElem`s backed by an
 //! [`InstanceGenerator`], which reconstructs the outer constraint system's public-input vector
 //! `[constants | inout | derived]` exactly as the prover's witness generator does — public-derived
@@ -15,7 +15,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use binius_field::BinaryField;
 use binius_iop::{
-	basefold_zk_channel::{BaseFoldZKOracle, BaseFoldZKVerifierChannel},
+	basefold_channel::{BaseFoldOracle, BaseFoldVerifierChannel},
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	merkle_tree::MerkleTreeScheme,
 };
@@ -29,7 +29,7 @@ use binius_utils::DeserializeBytes;
 
 use crate::{Error, IOPVerifier, wrapper::circuit_elem::CircuitElem};
 
-/// A verifier channel that wraps a [`BaseFoldZKVerifierChannel`] and an [`IOPVerifier`].
+/// A verifier channel that wraps a [`BaseFoldVerifierChannel`] and an [`IOPVerifier`].
 ///
 /// `Self::Elem = CircuitElem<F, InstanceGenerator>`. F values received or sampled from the inner
 /// channel are written into the [`InstanceGenerator`]'s public segment as inout wires (in the same
@@ -47,9 +47,9 @@ where
 	MTScheme: MerkleTreeScheme<F>,
 	Challenger_: Challenger,
 {
-	inner_channel: BaseFoldZKVerifierChannel<'a, F, MTScheme, Challenger_>,
+	inner_channel: BaseFoldVerifierChannel<'a, F, MTScheme, Challenger_>,
 	outer_verifier: &'a IOPVerifier<F>,
-	precommit_oracle: BaseFoldZKOracle,
+	precommit_oracle: BaseFoldOracle,
 	/// Reconstructs the outer public-input vector as the channel replays the inner verifier;
 	/// `build()` yields the `[constants | inout | derived]` segment for the outer verify.
 	instance_gen: Rc<RefCell<InstanceGenerator<'a, F>>>,
@@ -87,7 +87,7 @@ where
 	/// Panics if the channel's oracle specs do not match the expected layout
 	/// `[outer_precommit, inner..., outer_private, outer_mask]`.
 	pub fn new(
-		mut inner_channel: BaseFoldZKVerifierChannel<'a, F, MTScheme, Challenger_>,
+		mut inner_channel: BaseFoldVerifierChannel<'a, F, MTScheme, Challenger_>,
 		outer_verifier: &'a IOPVerifier<F>,
 		outer_layout: &'a WitnessLayout<F>,
 	) -> Result<Self, Error> {
@@ -240,7 +240,7 @@ where
 	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 	Challenger_: Challenger,
 {
-	type Oracle = BaseFoldZKOracle;
+	type Oracle = BaseFoldOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		let all = self.inner_channel.remaining_oracle_specs();

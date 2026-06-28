@@ -3,13 +3,13 @@
 use binius_field::{BinaryField128bGhash as B128, Field, Random, arch::OptimalPackedB128};
 use binius_hash::StdHashSuite;
 use binius_iop::{
-	basefold_compiler::BaseFoldZKVerifierCompiler,
+	basefold_compiler::BaseFoldVerifierCompiler,
 	channel::IOPVerifierChannel,
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_iop_prover::{
-	basefold_compiler::BaseFoldZKProverCompiler, merkle_tree::prover::BinaryMerkleTreeProver,
+	basefold_compiler::BaseFoldProverCompiler, merkle_tree::prover::BinaryMerkleTreeProver,
 };
 use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
@@ -105,7 +105,7 @@ fn test_zk_wrapped_prove_verify() {
 	]
 	.concat();
 
-	let zk_basefold_compiler = BaseFoldZKVerifierCompiler::new(
+	let zk_basefold_compiler = BaseFoldVerifierCompiler::new(
 		merkle_scheme,
 		combined_oracle_specs,
 		log_inv_rate,
@@ -117,8 +117,8 @@ fn test_zk_wrapped_prove_verify() {
 	let domain_context = GenericOnTheFly::generate_from_subspace(subspace);
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 	let merkle_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::new();
-	let zk_basefold_prover: BaseFoldZKProverCompiler<OptimalPackedB128, _, _> =
-		BaseFoldZKProverCompiler::from_verifier_compiler(&zk_basefold_compiler, ntt, merkle_prover);
+	let zk_basefold_prover: BaseFoldProverCompiler<OptimalPackedB128, _, _> =
+		BaseFoldProverCompiler::from_verifier_compiler(&zk_basefold_compiler, ntt, merkle_prover);
 
 	// === Step 6: Generate inner witness ===
 	let mut rng = StdRng::seed_from_u64(0);

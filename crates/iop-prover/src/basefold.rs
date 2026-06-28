@@ -51,7 +51,7 @@ pub enum Error {
 /// The final FRI value equals the final MLE-check value `𝛑(r)` (see
 /// [`binius_iop::basefold::mlecheck_fri_consistency`]).
 #[allow(clippy::too_many_arguments)]
-pub fn prove_mlecheck_basefold_zk_batch<'a, F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
+pub fn prove_mlecheck_basefold<'a, F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
 	witness: FieldBuffer<P>,
 	eval_point: &[F],
 	eval_claim: F,
@@ -142,7 +142,7 @@ mod test {
 	use binius_utils::rayon::prelude::*;
 	use rand::{SeedableRng, rngs::StdRng};
 
-	use super::prove_mlecheck_basefold_zk_batch;
+	use super::prove_mlecheck_basefold;
 	use crate::{
 		fri::{self, CommitMaskedOutput, FRIFoldProver},
 		merkle_tree::prover::BinaryMerkleTreeProver,
@@ -152,8 +152,8 @@ mod test {
 
 	pub const LOG_INV_RATE: usize = 1;
 
-	/// Drives [`prove_mlecheck_basefold_zk_batch`] against
-	/// [`binius_iop::basefold::verify_mlecheck_basefold_zk_batch`] for a single oracle (`k = 1`, no
+	/// Drives [`prove_mlecheck_basefold`] against
+	/// [`binius_iop::basefold::verify_mlecheck_basefold`] for a single oracle (`k = 1`, no
 	/// outer rounds): commits the interleaved (π ‖ ω) codeword, samples the masking challenge γ,
 	/// forms π' = (1-γ)π + γω, and proves/verifies the point-evaluation claim π'(ρ) via the
 	/// combined FRI path. If `tamper`, the claim is corrupted and verification must fail. (The
@@ -228,7 +228,7 @@ mod test {
 			&merkle_prover,
 			vec![(codeword, &codeword_committed)],
 		);
-		prove_mlecheck_basefold_zk_batch(
+		prove_mlecheck_basefold(
 			witness_prime,
 			&evaluation_point,
 			eval_claim,
@@ -246,7 +246,7 @@ mod test {
 			final_fri_value,
 			final_sumcheck_value,
 			..
-		} = verifier_basefold::verify_mlecheck_basefold_zk_batch(
+		} = verifier_basefold::verify_mlecheck_basefold(
 			&fri_params,
 			merkle_prover.scheme(),
 			&[retrieved_commitment],

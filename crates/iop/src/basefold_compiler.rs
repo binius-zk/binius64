@@ -2,7 +2,7 @@
 
 //! BaseFold compiler for IOP verifiers.
 //!
-//! This module provides [`BaseFoldZKVerifierCompiler`], which precomputes FRI parameters and can
+//! This module provides [`BaseFoldVerifierCompiler`], which precomputes FRI parameters and can
 //! create verifier channel instances.
 
 use binius_field::BinaryField;
@@ -11,7 +11,7 @@ use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::DeserializeBytes;
 
 use crate::{
-	basefold_zk_channel::BaseFoldZKVerifierChannel,
+	basefold_channel::BaseFoldVerifierChannel,
 	channel::OracleSpec,
 	fri::{AritySelectionStrategy, FRIParams},
 	merkle_tree::MerkleTreeScheme,
@@ -24,7 +24,7 @@ use crate::{
 /// parameters for zero-knowledge mode (`log_msg_len + 1` as the message length and
 /// `log_batch_size = 1`); non-ZK oracles take a flexible batch size with no mask.
 #[derive(Debug, Clone)]
-pub struct BaseFoldZKVerifierCompiler<F, MerkleScheme_>
+pub struct BaseFoldVerifierCompiler<F, MerkleScheme_>
 where
 	F: BinaryField,
 	MerkleScheme_: MerkleTreeScheme<F>,
@@ -34,15 +34,16 @@ where
 	fri_params: FRIParams<F>,
 }
 
-impl<F, MerkleScheme_> BaseFoldZKVerifierCompiler<F, MerkleScheme_>
+impl<F, MerkleScheme_> BaseFoldVerifierCompiler<F, MerkleScheme_>
 where
 	F: BinaryField,
 	MerkleScheme_: MerkleTreeScheme<F>,
 {
-	/// Creates a new ZK compiler with precomputed FRI parameters.
+	/// Creates a new compiler with precomputed combined FRI parameters.
 	///
-	/// All oracle specs are treated as ZK: the combined FRI parameters use `log_msg_len + 1` and
-	/// `log_batch_size = 1` per oracle. Requires at least one oracle spec.
+	/// Each oracle's batch size is derived from its ZK flag: a ZK oracle fixes `log_batch_size = 1`
+	/// (message ‖ equal-length mask), a non-ZK oracle takes a flexible batch size. Requires at
+	/// least one oracle spec.
 	pub fn new<Strategy>(
 		merkle_scheme: MerkleScheme_,
 		oracle_specs: Vec<OracleSpec>,
@@ -55,7 +56,7 @@ where
 	{
 		assert!(
 			!oracle_specs.is_empty(),
-			"BaseFoldZKVerifierCompiler requires at least one oracle spec"
+			"BaseFoldVerifierCompiler requires at least one oracle spec"
 		);
 
 		// ZK oracles add 1 to the message length for the interleaved mask; non-ZK oracles do not.
@@ -121,12 +122,12 @@ where
 	pub fn create_channel<'a, Challenger_>(
 		&'a self,
 		transcript: &'a mut VerifierTranscript<Challenger_>,
-	) -> BaseFoldZKVerifierChannel<'a, F, MerkleScheme_, Challenger_>
+	) -> BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
 	where
 		MerkleScheme_::Digest: DeserializeBytes,
 		Challenger_: Challenger,
 	{
-		BaseFoldZKVerifierChannel::from_precomputed(
+		BaseFoldVerifierChannel::from_precomputed(
 			transcript,
 			&self.merkle_scheme,
 			&self.oracle_specs,

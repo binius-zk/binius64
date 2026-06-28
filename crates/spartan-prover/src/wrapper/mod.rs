@@ -3,13 +3,13 @@
 //! Spartan wrapper prover for ZK-wrapped IOP proving.
 //!
 //! This crate provides [`ZKWrappedProverChannel`], the prover-side counterpart to
-//! [`ZKWrappedVerifierChannel`]. It wraps a [`BaseFoldZKProverChannel`] and records all channel
+//! [`ZKWrappedVerifierChannel`]. It wraps a [`BaseFoldProverChannel`] and records all channel
 //! operations. After the inner proof is run through the channel, [`finish`] replays the
 //! interaction through a [`ReplayChannel`] to fill the outer witness, then runs the outer IOP
 //! prover.
 //!
 //! [`ZKWrappedVerifierChannel`]: binius_spartan_verifier::wrapper::ZKWrappedVerifierChannel
-//! [`BaseFoldZKProverChannel`]: binius_iop_prover::basefold_zk_channel::BaseFoldZKProverChannel
+//! [`BaseFoldProverChannel`]: binius_iop_prover::basefold_channel::BaseFoldProverChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
 
 pub mod replay_channel;

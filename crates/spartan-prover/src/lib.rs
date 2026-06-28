@@ -39,7 +39,7 @@ use std::{
 use binius_field::{BinaryField, Field, PackedExtension, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{
-	basefold_compiler::BaseFoldZKProverCompiler, channel::IOPProverChannel,
+	basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel,
 	merkle_tree::prover::BinaryMerkleTreeProver,
 };
 use binius_ip_prover::{
@@ -100,7 +100,7 @@ where
 {
 	iop_prover: IOPProver<P::Scalar>,
 	basefold_compiler:
-		BaseFoldZKProverCompiler<P, ProverNTT<P::Scalar>, ProverMerkleProver<P::Scalar, H>>,
+		BaseFoldProverCompiler<P, ProverNTT<P::Scalar>, ProverMerkleProver<P::Scalar, H>>,
 }
 
 impl<F: Field> IOPProver<F> {
@@ -342,7 +342,7 @@ where
 
 		// Create the BaseFold ZK compiler from verifier compiler (reuses oracle_specs and
 		// fri_params)
-		let basefold_compiler = BaseFoldZKProverCompiler::from_verifier_compiler(
+		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
 			verifier.iop_compiler(),
 			ntt,
 			merkle_prover,
@@ -364,7 +364,7 @@ where
 	/// Returns a reference to the BaseFold ZK prover compiler.
 	pub fn iop_compiler(
 		&self,
-	) -> &BaseFoldZKProverCompiler<P, ProverNTT<F>, ProverMerkleProver<F, H>> {
+	) -> &BaseFoldProverCompiler<P, ProverNTT<F>, ProverMerkleProver<F, H>> {
 		&self.basefold_compiler
 	}
 

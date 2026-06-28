@@ -12,7 +12,7 @@ use binius_core::{
 };
 use binius_field::{BinaryField128bGhash as B128, PackedExtension, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
-use binius_iop_prover::basefold_compiler::BaseFoldZKProverCompiler;
+use binius_iop_prover::basefold_compiler::BaseFoldProverCompiler;
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded};
 use binius_spartan_frontend::{compiler::compile, constraint_system::WitnessLayout};
 use binius_spartan_prover::wrapper::{ReplayChannel, ZKWrappedProverChannel};
@@ -48,7 +48,7 @@ where
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_prover: binius_spartan_prover::IOPProver<B128>,
 	outer_layout: WitnessLayout<B128>,
-	basefold_compiler: BaseFoldZKProverCompiler<P, ProverNTT<B128>, ProverMerkleProver<B128, H>>,
+	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>, ProverMerkleProver<B128, H>>,
 }
 
 impl<P, H> ZKProver<P, H>
@@ -112,7 +112,7 @@ where
 
 		let outer_iop_prover = binius_spartan_prover::IOPProver::new(outer_cs);
 
-		// Build the BaseFoldZK prover compiler from the verifier compiler.
+		// Build the BaseFold prover compiler from the verifier compiler.
 		let subspace = zk_verifier.basefold_compiler().max_subspace();
 		let domain_context = {
 			let _guard = tracing::debug_span!("Precompute NTT domain").entered();
@@ -121,7 +121,7 @@ where
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 		let merkle_prover = BinaryMerkleTreeProver::<_, H>::new();
-		let basefold_compiler = BaseFoldZKProverCompiler::from_verifier_compiler(
+		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
 			zk_verifier.basefold_compiler(),
 			ntt,
 			merkle_prover,
@@ -156,7 +156,7 @@ where
 		// Clone public words before moving witness into prove().
 		let public_words = witness.public().to_vec();
 
-		// Create BaseFoldZK prover channel and wrap with outer prover.
+		// Create BaseFold prover channel and wrap with outer prover.
 		let basefold_channel = self.basefold_compiler.create_channel(transcript, &mut rng);
 		let mut wrapped_channel = ZKWrappedProverChannel::new(
 			basefold_channel,

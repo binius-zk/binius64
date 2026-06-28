@@ -4,7 +4,7 @@ use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
-	basefold_compiler::BaseFoldZKVerifierCompiler,
+	basefold_compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 };
 use binius_ip::channel::IPVerifierChannel;
@@ -279,7 +279,7 @@ impl IOPVerifier {
 #[derive(Clone)]
 pub struct Verifier<H: HashSuite> {
 	iop_verifier: IOPVerifier,
-	iop_compiler: BaseFoldZKVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>>,
+	iop_compiler: BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>>,
 }
 
 impl<H> Verifier<H>
@@ -318,7 +318,7 @@ where
 
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
 
-		let iop_compiler = BaseFoldZKVerifierCompiler::new(
+		let iop_compiler = BaseFoldVerifierCompiler::new(
 			merkle_scheme,
 			oracle_specs,
 			log_inv_rate,
@@ -373,9 +373,7 @@ where
 	}
 
 	/// Returns the IOP compiler for creating verifier channels.
-	pub fn iop_compiler(
-		&self,
-	) -> &BaseFoldZKVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
+	pub fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
 		&self.iop_compiler
 	}
 

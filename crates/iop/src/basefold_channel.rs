@@ -2,7 +2,7 @@
 
 //! BaseFold ZK implementation of the IOP verifier channel.
 //!
-//! This module provides [`BaseFoldZKVerifierChannel`], which implements [`IOPVerifierChannel`]
+//! This module provides [`BaseFoldVerifierChannel`], which implements [`IOPVerifierChannel`]
 //! using FRI commitment and the batched ZK BaseFold opening protocol. ZK oracles are blinded with a
 //! mask; non-ZK oracles are committed without a mask. All committed oracles are opened with a
 //! single combined FRI.
@@ -31,9 +31,9 @@ use crate::{
 	merkle_tree::MerkleTreeScheme,
 };
 
-/// Oracle handle returned by [`BaseFoldZKVerifierChannel::recv_oracle`].
+/// Oracle handle returned by [`BaseFoldVerifierChannel::recv_oracle`].
 #[derive(Debug, Clone, Copy)]
-pub struct BaseFoldZKOracle {
+pub struct BaseFoldOracle {
 	index: usize,
 }
 
@@ -48,7 +48,7 @@ pub struct BaseFoldZKOracle {
 /// - `F`: The binary field type
 /// - `MerkleScheme_`: The Merkle tree scheme for commitments
 /// - `Challenger_`: The Fiat-Shamir challenger
-pub struct BaseFoldZKVerifierChannel<'a, F, MerkleScheme_, Challenger_>
+pub struct BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
 where
 	F: BinaryField,
 	MerkleScheme_: MerkleTreeScheme<F>,
@@ -61,11 +61,11 @@ where
 	oracle_commitments: Vec<MerkleScheme_::Digest>,
 	/// Oracle relations queued by [`Self::verify_oracle_relations`], opened together in
 	/// [`Self::finish`].
-	queue: Vec<OracleLinearRelation<'a, BaseFoldZKOracle, F>>,
+	queue: Vec<OracleLinearRelation<'a, BaseFoldOracle, F>>,
 	next_oracle_index: usize,
 }
 
-impl<'a, F, MerkleScheme_, Challenger_> BaseFoldZKVerifierChannel<'a, F, MerkleScheme_, Challenger_>
+impl<'a, F, MerkleScheme_, Challenger_> BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
 where
 	F: BinaryField,
 	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
@@ -139,7 +139,7 @@ where
 /// Verifies the combined ZK BaseFold opening over all committed oracles.
 ///
 /// This drives `channel` — the [`VerifierTranscript`] taken from the destructured
-/// [`BaseFoldZKVerifierChannel`] — through its [`IPVerifierChannel`] interface: it reads the masked
+/// [`BaseFoldVerifierChannel`] — through its [`IPVerifierChannel`] interface: it reads the masked
 /// inner products σ_i, runs one batched sumcheck reducing the masked claims to a shared point `r`,
 /// then opens all committed oracles together with a single combined FRI over the
 /// piecewise-concatenated oracle.
@@ -163,7 +163,7 @@ fn verify_batch_zk_basefold<F, MerkleScheme_, Challenger_>(
 	oracle_specs: &[OracleSpec],
 	fri_params: &FRIParams<F>,
 	oracle_commitments: Vec<MerkleScheme_::Digest>,
-	relations: Vec<OracleLinearRelation<'_, BaseFoldZKOracle, F>>,
+	relations: Vec<OracleLinearRelation<'_, BaseFoldOracle, F>>,
 ) -> Result<(), Error>
 where
 	F: BinaryField,
@@ -257,7 +257,7 @@ where
 		final_fri_value,
 		final_sumcheck_value,
 		..
-	} = basefold::verify_mlecheck_basefold_zk_batch(
+	} = basefold::verify_mlecheck_basefold(
 		fri_params,
 		merkle_scheme,
 		&oracle_commitments,
@@ -275,7 +275,7 @@ where
 }
 
 impl<F, MerkleScheme_, Challenger_> IPVerifierChannel<F>
-	for BaseFoldZKVerifierChannel<'_, F, MerkleScheme_, Challenger_>
+	for BaseFoldVerifierChannel<'_, F, MerkleScheme_, Challenger_>
 where
 	F: BinaryField,
 	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
@@ -332,13 +332,13 @@ where
 }
 
 impl<'a, F, MerkleScheme_, Challenger_> IOPVerifierChannel<'a, F>
-	for BaseFoldZKVerifierChannel<'a, F, MerkleScheme_, Challenger_>
+	for BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
 where
 	F: BinaryField,
 	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 	Challenger_: Challenger,
 {
-	type Oracle = BaseFoldZKOracle;
+	type Oracle = BaseFoldOracle;
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
 		&self.oracle_specs[self.next_oracle_index..]
@@ -361,7 +361,7 @@ where
 		self.oracle_commitments.push(commitment);
 		self.next_oracle_index += 1;
 
-		Ok(BaseFoldZKOracle { index })
+		Ok(BaseFoldOracle { index })
 	}
 
 	fn verify_oracle_relations(

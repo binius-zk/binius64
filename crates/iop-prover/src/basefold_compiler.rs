@@ -2,14 +2,14 @@
 
 //! BaseFold compiler for IOP provers.
 //!
-//! This module provides [`BaseFoldZKProverCompiler`], which precomputes FRI parameters and can
+//! This module provides [`BaseFoldProverCompiler`], which precomputes FRI parameters and can
 //! create prover channel instances.
 
 use std::marker::PhantomData;
 
 use binius_field::{BinaryField, PackedField};
 use binius_iop::{
-	basefold_compiler::BaseFoldZKVerifierCompiler, channel::OracleSpec, fri::FRIParams,
+	basefold_compiler::BaseFoldVerifierCompiler, channel::OracleSpec, fri::FRIParams,
 	merkle_tree::MerkleTreeScheme,
 };
 use binius_math::ntt::AdditiveNTT;
@@ -17,14 +17,14 @@ use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::SerializeBytes;
 use rand::Rng;
 
-use crate::{basefold_zk_channel::BaseFoldZKProverChannel, merkle_tree::MerkleTreeProver};
+use crate::{basefold_channel::BaseFoldProverChannel, merkle_tree::MerkleTreeProver};
 
 /// A compiler that creates BaseFold ZK prover channels with precomputed parameters.
 ///
 /// This compiler builds a single combined FRI over all oracles, with ZK oracles configured for
 /// zero-knowledge mode.
 #[derive(Debug)]
-pub struct BaseFoldZKProverCompiler<P, NTT, MerkleProver_>
+pub struct BaseFoldProverCompiler<P, NTT, MerkleProver_>
 where
 	P: PackedField<Scalar: BinaryField>,
 	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
@@ -38,7 +38,7 @@ where
 	_p_marker: PhantomData<P>,
 }
 
-impl<F, P, NTT, MerkleScheme, MerkleProver_> BaseFoldZKProverCompiler<P, NTT, MerkleProver_>
+impl<F, P, NTT, MerkleScheme, MerkleProver_> BaseFoldProverCompiler<P, NTT, MerkleProver_>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -46,10 +46,10 @@ where
 	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
 	MerkleProver_: MerkleTreeProver<F, Scheme = MerkleScheme>,
 {
-	/// Creates a new ZK compiler with precomputed FRI parameters.
+	/// Creates a new compiler with precomputed combined FRI parameters.
 	///
-	/// All oracle specs are treated as ZK: FRI parameters use `log_msg_len + 1` and
-	/// `log_batch_size = 1`.
+	/// Each oracle's batch size is derived from its ZK flag: a ZK oracle fixes `log_batch_size = 1`
+	/// (message ‖ equal-length mask), a non-ZK oracle takes a flexible batch size.
 	pub fn new(
 		ntt: NTT,
 		merkle_prover: MerkleProver_,
@@ -59,7 +59,7 @@ where
 	) -> Self {
 		assert!(
 			!oracle_specs.is_empty(),
-			"BaseFoldZKProverCompiler requires at least one oracle spec"
+			"BaseFoldProverCompiler requires at least one oracle spec"
 		);
 
 		// The single combined FRI parameters over all oracles. `optimal_for_batch` derives each
@@ -82,11 +82,11 @@ where
 		}
 	}
 
-	/// Creates a ZK prover compiler from a ZK verifier compiler.
+	/// Creates a prover compiler from a verifier compiler.
 	///
 	/// This reuses the precomputed FRI parameters and oracle specifications.
 	pub fn from_verifier_compiler(
-		verifier_compiler: &BaseFoldZKVerifierCompiler<F, MerkleScheme>,
+		verifier_compiler: &BaseFoldVerifierCompiler<F, MerkleScheme>,
 		ntt: NTT,
 		merkle_prover: MerkleProver_,
 	) -> Self {
@@ -126,7 +126,7 @@ where
 		&'a self,
 		transcript: &'a mut ProverTranscript<Challenger_>,
 		rng: impl Rng,
-	) -> BaseFoldZKProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_> {
-		BaseFoldZKProverChannel::from_compiler(self, transcript, rng)
+	) -> BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_> {
+		BaseFoldProverChannel::from_compiler(self, transcript, rng)
 	}
 }
