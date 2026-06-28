@@ -18,6 +18,7 @@ use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, HasherChallenger},
 };
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 use rand::prelude::*;
 
 use super::{CommitOutput, FRIFoldProver, FoldRoundOutput, commit_interleaved};
@@ -237,15 +238,15 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 
 	// Each oracle has RS dimension `log_dim` (no lifting), so every oracle sits at the reduced
-	// (first-round) dimension `log_dim`. The non-ZK batch folds are routed to a suffix of the inner
-	// challenges, so oracle `i` skips `max(log_batch_size) - log_batch_size_i` of them.
-	let max_log_batch_size = log_batch_sizes.iter().copied().max().unwrap();
+	// (first-round) dimension `log_dim`. These are all non-ZK oracles, so their batch folds are
+	// "later" challenges (sampled after the outer oracle-combine challenges); oracle `i` folds
+	// with the `log_batch_size_i`-length suffix of the later group.
 	let oracle_specs = log_batch_sizes
 		.iter()
 		.map(|&log_batch_size| CodewordSpec {
 			log_lift: 0,
-			log_batch_size,
-			skip_batch_challenges: max_log_batch_size - log_batch_size,
+			log_early_batch_size: 0,
+			log_later_batch_size: log_batch_size,
 		})
 		.collect::<Vec<_>>();
 	let rs_code =
@@ -327,39 +328,39 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 	);
 	let final_value = verifier.verify(&mut verifier_challenger).unwrap();
 
-	// The first fold reduces oracle `i` by the inner challenges in its window
-	// `inner[skip_i .. skip_i + log_batch_size_i]` (the ZK-aware selection routes every non-ZK
-	// oracle's batch to a suffix, so `skip_i = n_inner - log_batch_size_i`) and combines the
-	// oracles with the outer-challenge tensor. The remaining (tail) challenges fold the shared
-	// reduced codeword. So the final value is   sum_i outer_tensor[i] * evaluate(msg_i,
-	// reversed(inner_i ++ tail)).
-	let max_log_batch_size = log_batch_sizes.iter().copied().max().unwrap();
+	// The first-fold challenge slice is `[early ++ outer ++ later]`. Here every oracle is non-ZK,
+	// so `max_early = 0` and the slice is `[outer ++ later]`. Oracle `i` folds with the
+	// `log_batch_size_i`-length suffix of the later group; the remaining (tail) challenges fold the
+	// shared reduced codeword. So the final value is
+	//   sum_i outer_tensor[i] * evaluate(msg_i, reversed(later_i ++ tail)).
+	let max_later = log_batch_sizes.iter().copied().max().unwrap();
+	let log_n_oracles = log2_ceil_usize(log_batch_sizes.len());
 	let first_fold_arity = params.log_batch_size();
-	let inner = &verifier_challenges[..max_log_batch_size];
-	let outer = &verifier_challenges[max_log_batch_size..first_fold_arity];
+	let outer = &verifier_challenges[..log_n_oracles];
+	let later = &verifier_challenges[log_n_oracles..log_n_oracles + max_later];
 	let tail = &verifier_challenges[first_fold_arity..];
 	let outer_tensor = eq_ind_partial_eval_scalars::<F>(outer);
 
 	let mut expected = F::ZERO;
 	for (i, (msg, &log_batch_size)) in iter::zip(&messages, &log_batch_sizes).enumerate() {
-		let skip = params.input_oracles()[i].skip_batch_challenges;
-		let inner_i = &inner[skip..skip + log_batch_size];
-		let mut eval_point = inner_i.iter().chain(tail).copied().collect::<Vec<_>>();
+		let later_i = &later[max_later - log_batch_size..];
+		let mut eval_point = later_i.iter().chain(tail).copied().collect::<Vec<_>>();
 		eval_point.reverse();
 		expected += outer_tensor[i] * evaluate(msg, &eval_point);
 	}
 	assert_eq!(final_value, expected);
 }
 
-/// Full FRI round trip that batches oracles consuming **disjoint inner-challenge windows** via
-/// per-oracle `skip_batch_challenges`.
+/// Full FRI round trip that batches a ZK oracle (early window) with a non-ZK oracle (later
+/// window), exercising the heterogeneous `[early ++ outer ++ later]` challenge layout.
 ///
-/// Oracle 0 has `skip_batch_challenges = 0`, `log_batch_size = 1`, so it folds with `inner[0]`
-/// alone — the position a ZK BaseFold oracle reserves for its shared masking challenge γ. Oracle 1
-/// has `skip_batch_challenges = 1`, `log_batch_size = 2`, so it skips `inner[0]` and folds with
-/// `inner[1..3]`. The first fold therefore draws `max(0 + 1, 1 + 2) = 3` inner challenges, and the
-/// two oracles overlap in none of them. This is the routing the homogeneous suffix convention could
-/// not express (it would hand Oracle 0 the *last* inner challenge instead of `inner[0]`).
+/// Oracle 0 is ZK with `log_batch_size = 1`, so it is purely *early* (`log_early_batch_size = 1`)
+/// and folds with the single early challenge — the shared masking challenge γ a ZK BaseFold oracle
+/// reserves. Oracle 1 is non-ZK with `log_batch_size = 2`, so it is purely *later*
+/// (`log_later_batch_size = 2`) and folds with the two later challenges, which are sampled after
+/// the `log_n_oracles = 1` outer (oracle-combine) challenge. The first fold therefore draws
+/// `max_early + log_n_oracles + max_later = 1 + 1 + 2 = 4` challenges, with the two oracles folding
+/// disjoint within-oracle windows on opposite sides of the outer challenge.
 #[test]
 fn test_commit_prove_verify_batched_mixed_skip() {
 	type F = B128;
@@ -369,9 +370,9 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 
 	let log_dim = 8;
 	let log_inv_rate = 2;
-	// (log_batch_size, is_zk) per oracle. The ZK oracle (batch 1) takes the prefix masking slot
-	// `inner[0]` (skip 0); the non-ZK oracle (batch 2) is routed to the suffix `inner[1..3]` by the
-	// ZK-aware selection (`skip = n_batch_challenges - log_batch_size = 3 - 2 = 1`).
+	// (log_batch_size, is_zk) per oracle. The ZK oracle (batch 1) folds with the early window
+	// (before the outer challenge); the non-ZK oracle (batch 2) folds with the later window (after
+	// the outer challenge).
 	let oracle_params_spec = [(1usize, true), (2usize, false)];
 	let n_test_queries = 3;
 
@@ -384,33 +385,14 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 
 	// Every oracle sits at the reduced dimension `log_dim` (no lifting). The ZK oracle (batch 1)
-	// takes the prefix masking slot `inner[0]` (skip 0); the non-ZK oracle (batch 2) is routed to
-	// the suffix `inner[1..3]`. With `n_inner = max non-ZK batch = 2` and `max_zk_batch = 1`, the
-	// first fold draws `n_batch_challenges = 3` inner challenges, so the non-ZK oracle skips
-	// `3 - 2 = 1`.
-	let n_inner = oracle_params_spec
-		.iter()
-		.filter(|&&(_, is_zk)| !is_zk)
-		.map(|&(log_batch_size, _)| log_batch_size)
-		.max()
-		.unwrap();
-	let max_zk_batch = oracle_params_spec
-		.iter()
-		.filter(|&&(_, is_zk)| is_zk)
-		.map(|&(log_batch_size, _)| log_batch_size)
-		.max()
-		.unwrap_or(0);
-	let n_batch_challenges = n_inner + max_zk_batch;
+	// is purely early; the non-ZK oracle (batch 2) is purely later. With `max_early = 1`,
+	// `max_later = 2`, and `log_n_oracles = 1`, the first fold draws `1 + 1 + 2 = 4` challenges.
 	let oracle_specs = oracle_params_spec
 		.iter()
 		.map(|&(log_batch_size, is_zk)| CodewordSpec {
 			log_lift: 0,
-			log_batch_size,
-			skip_batch_challenges: if is_zk {
-				0
-			} else {
-				n_batch_challenges - log_batch_size
-			},
+			log_early_batch_size: if is_zk { log_batch_size } else { 0 },
+			log_later_batch_size: if is_zk { 0 } else { log_batch_size },
 		})
 		.collect::<Vec<_>>();
 	let rs_code =
@@ -492,29 +474,44 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 	);
 	let final_value = verifier.verify(&mut verifier_challenger).unwrap();
 
-	// Each oracle folds with the window `inner[skip .. skip + log_batch_size]`, so the inner
-	// segment spans `max(skip + log_batch_size)` challenges. The remaining (tail) challenges fold
+	// The first-fold challenge slice is `[early ++ outer ++ later]`. Oracle `i` folds with
+	// `early_window ++ later_window`, the suffixes of the early and later groups of lengths
+	// `log_early_batch_size_i` and `log_later_batch_size_i`. The remaining (tail) challenges fold
 	// the shared reduced codeword. So the final value is
-	//   sum_i outer_tensor[i] * evaluate(msg_i, reversed(inner_i ++ tail)).
-	let max_inner = params
+	//   sum_i outer_tensor[i] * evaluate(msg_i, reversed(early_i ++ later_i ++ tail)).
+	let max_early = params
 		.input_oracles()
 		.iter()
-		.map(|spec| spec.skip_batch_challenges + spec.log_batch_size)
+		.map(|spec| spec.log_early_batch_size)
 		.max()
 		.unwrap();
+	let max_later = params
+		.input_oracles()
+		.iter()
+		.map(|spec| spec.log_later_batch_size)
+		.max()
+		.unwrap();
+	let log_n_oracles = log2_ceil_usize(oracle_params_spec.len());
 	let first_fold_arity = params.log_batch_size();
-	let inner = &verifier_challenges[..max_inner];
-	let outer = &verifier_challenges[max_inner..first_fold_arity];
+	let early = &verifier_challenges[..max_early];
+	let outer = &verifier_challenges[max_early..max_early + log_n_oracles];
+	let later = &verifier_challenges[max_early + log_n_oracles..first_fold_arity];
 	let tail = &verifier_challenges[first_fold_arity..];
 	let outer_tensor = eq_ind_partial_eval_scalars::<F>(outer);
 
 	let mut expected = F::ZERO;
-	for (i, (msg, &(log_batch_size, _is_zk))) in
+	for (i, (msg, &(_log_batch_size, _is_zk))) in
 		iter::zip(&messages, &oracle_params_spec).enumerate()
 	{
-		let skip = params.input_oracles()[i].skip_batch_challenges;
-		let inner_i = &inner[skip..skip + log_batch_size];
-		let mut eval_point = inner_i.iter().chain(tail).copied().collect::<Vec<_>>();
+		let spec = &params.input_oracles()[i];
+		let early_i = &early[max_early - spec.log_early_batch_size..];
+		let later_i = &later[max_later - spec.log_later_batch_size..];
+		let mut eval_point = early_i
+			.iter()
+			.chain(later_i)
+			.chain(tail)
+			.copied()
+			.collect::<Vec<_>>();
 		eval_point.reverse();
 		expected += outer_tensor[i] * evaluate(msg, &eval_point);
 	}
@@ -554,13 +551,13 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 	let ntt = NeighborsLastSingleThread::new(domain_context);
 
 	// Each oracle is lifted from its own RS dimension up to `reduced_log_dim` (`log_lift` is the
-	// gap), and the non-ZK batch folds are routed to a suffix of the inner challenges.
-	let max_log_batch_size = log_batch_sizes.iter().copied().max().unwrap();
+	// gap). These are all non-ZK oracles, so their batch folds are "later" challenges; oracle `i`
+	// folds with the `log_batch_size_i`-length suffix of the later group.
 	let oracle_specs = iter::zip(oracle_log_dims, log_batch_sizes)
 		.map(|(oracle_log_dim, log_batch_size)| CodewordSpec {
 			log_lift: reduced_log_dim - oracle_log_dim,
-			log_batch_size,
-			skip_batch_challenges: max_log_batch_size - log_batch_size,
+			log_early_batch_size: 0,
+			log_later_batch_size: log_batch_size,
 		})
 		.collect::<Vec<_>>();
 	let rs_code = ReedSolomonCode::with_domain_context_subspace(
@@ -650,10 +647,10 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 	);
 	let final_value = verifier.verify(&mut verifier_challenger).unwrap();
 
-	// The first fold reduces oracle `i` by its inner challenges (with all skips zero here, the
-	// first `log_batch_size_i` of the `max_log_batch_size` inner challenges) and combines the
-	// oracles with the outer-challenge tensor. The remaining `reduced_log_dim` tail challenges
-	// fold the combined codeword.
+	// The first-fold challenge slice is `[early ++ outer ++ later]`. Every oracle is non-ZK here,
+	// so `max_early = 0` and the slice is `[outer ++ later]`. Oracle `i` folds with the
+	// `log_batch_size_i`-length suffix of the later group and combines with the outer-challenge
+	// tensor. The remaining `reduced_log_dim` tail challenges fold the combined codeword.
 	//
 	// Lifting oracle `i` embeds its codeword as `Enc_M(ZeroPadMSB_eta(m_i'))`, whose multilinear
 	// extension factors as `m_i'(low vars) * prod_j (1 - Y_j)` over the `eta_i = reduced_log_dim -
@@ -662,11 +659,12 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 	// (contributing the factor `prod (1 - tail_k)`), and the surviving `log_dim_i` tail challenges
 	// bind the real message. Hence the final value is
 	//   sum_i outer_tensor[i] * prod_{k<eta_i}(1 - tail_k)
-	//                          * evaluate(msg_i, reversed(inner_i ++ tail[eta_i..])).
-	let max_log_batch_size = log_batch_sizes.iter().copied().max().unwrap();
+	//                          * evaluate(msg_i, reversed(later_i ++ tail[eta_i..])).
+	let max_later = log_batch_sizes.iter().copied().max().unwrap();
+	let log_n_oracles = log2_ceil_usize(log_batch_sizes.len());
 	let first_fold_arity = params.log_batch_size();
-	let inner = &verifier_challenges[..max_log_batch_size];
-	let outer = &verifier_challenges[max_log_batch_size..first_fold_arity];
+	let outer = &verifier_challenges[..log_n_oracles];
+	let later = &verifier_challenges[log_n_oracles..log_n_oracles + max_later];
 	let tail = &verifier_challenges[first_fold_arity..];
 	let outer_tensor = eq_ind_partial_eval_scalars::<F>(outer);
 
@@ -675,11 +673,10 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 		iter::zip(iter::zip(&messages, &log_batch_sizes), &oracle_log_dims).enumerate()
 	{
 		let eta = reduced_log_dim - log_dim;
-		let skip = params.input_oracles()[i].skip_batch_challenges;
 		// The lift (oracle padding) factor from the zero-padded high message variables.
 		let pad_factor = tail[..eta].iter().map(|&t| F::ONE - t).product::<F>();
-		let inner_i = &inner[skip..skip + log_batch_size];
-		let mut eval_point = inner_i
+		let later_i = &later[max_later - log_batch_size..];
+		let mut eval_point = later_i
 			.iter()
 			.chain(&tail[eta..])
 			.copied()

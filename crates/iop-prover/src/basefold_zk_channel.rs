@@ -355,7 +355,6 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 		s_prime,
 		gamma,
 		&outer_challenges,
-		fri_params.rs_code().log_dim(),
 		fri_folder,
 		channel,
 	)
@@ -902,10 +901,10 @@ mod tests {
 		assert!(run_zk_channel(&[5, 6, 8], false));
 	}
 
-	// Heterogeneous mixed/zero-ZK openings: the non-ZK oracles' batch-fold challenges come from the
-	// leading `max_n - D` MLE rounds, so prove/verify_mlecheck feed the FRI folder's outer
-	// (oracle-combine) challenges *after* those rounds, landing them in the FirstFold's outer
-	// window. All-ZK (`n_leading == 0`) is unaffected: the outers still precede every MLE round.
+	// Heterogeneous mixed/zero-ZK openings: each non-ZK oracle's batch fold is routed to the
+	// *later* window of the first-fold challenge slice `[early ++ outer ++ later]`, so the
+	// non-ZK oracles' batch-fold challenges come from the leading MLE rounds (which follow the
+	// outer challenges in feed order) and land correctly in the FirstFold's later window.
 	#[test]
 	fn test_basefold_zk_channel_mixed_zk_non_zk() {
 		// One non-ZK oracle (8 vars) and one ZK oracle (6 vars): exercises conditional masking,

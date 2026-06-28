@@ -52,7 +52,7 @@ where
 	VCS: MerkleTreeScheme<F>,
 {
 	let oracle_spec = &params.input_oracles()[oracle_index];
-	let log_batch_size = oracle_spec.log_batch_size;
+	let log_batch_size = oracle_spec.log_batch_size();
 	// The oracle's own codeword dimension is the reduced dimension minus its lift; its committed
 	// (interleaved) message length is that plus the batch size.
 	let oracle_log_dim = params.rs_code().log_dim() - oracle_spec.log_lift;
@@ -137,7 +137,7 @@ where
 	VCS: MerkleTreeScheme<F>,
 {
 	let oracle_spec = &params.input_oracles()[oracle_index];
-	assert_eq!(oracle_spec.log_batch_size, 1, "commit_masked requires log_batch_size == 1");
+	assert_eq!(oracle_spec.log_batch_size(), 1, "commit_masked requires log_batch_size == 1");
 	// With batch size 1, the oracle's own codeword dimension (reduced dimension minus its lift) is
 	// exactly the bare message length; the mask is interleaved internally.
 	let oracle_log_dim = params.rs_code().log_dim() - oracle_spec.log_lift;

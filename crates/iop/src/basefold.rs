@@ -126,10 +126,7 @@ where
 /// * `outer_challenges` - the batching challenges `r'` (length `log_n_oracles`) used in the FRI
 ///   outer (oracle-combine) rounds.
 ///
-/// The leading `max_n - D` standard rounds (`D = fri_params.rs_code().log_dim()`, the reduced
-/// first-round code dimension) carry the non-ZK oracles' batch folds; only the trailing `D` are
-/// genuine FRI fold rounds. The returned `challenges` are the FRI fold challenges
-/// `[γ] ++ leading_X ++ r' ++ trailing_X`, matching the prover's feed order. Use
+/// The returned `challenges` are the FRI fold challenges `[γ] ++ r' ++ fresh_X`. Use
 /// [`mlecheck_fri_consistency`] to check the reduced values.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_mlecheck_basefold_zk_batch<F, MTScheme, Challenger_>(
@@ -160,13 +157,8 @@ where
 	let n_vars = eval_point.len();
 
 	// `n_inner` inner (unbatch) rounds: one for the shared mask challenge γ when any ZK oracle is
-	// present, none otherwise. The leading `n_leading = max_n - D` standard rounds carry the non-ZK
-	// oracles' batch folds (inner challenges); the outer (oracle-combine) challenges follow them so
-	// they land in the FirstFold's outer window, exactly mirroring the prover's feed order.
+	// present, none otherwise.
 	let n_inner = usize::from(batch_challenge.is_some());
-	let reduced_log_dim = fri_params.rs_code().log_dim();
-	assert!(reduced_log_dim <= n_vars);
-	let n_leading = n_vars - reduced_log_dim;
 	let mut challenges = Vec::with_capacity(n_vars + n_inner + log_n_oracles);
 	let mut fri_fold_verifier = FRIFoldVerifier::new(fri_params);
 
@@ -177,19 +169,20 @@ where
 		challenges.push(gamma);
 	}
 
+	// Outer rounds: combine the `k` lifted codewords at the batching challenges `r'`. These carry
+	// no sumcheck round-polynomial (the oracle-index variables are collapsed deterministically).
+	// The first fold consumes its challenges as `[γ] ++ r' ++ fresh_X`, so the outer challenges are
+	// processed here (right after γ) to land in the outer window; the leading standard rounds then
+	// supply each non-ZK oracle's later batch fold.
+	for &outer_challenge in outer_challenges {
+		fri_fold_verifier.process_round(&mut transcript.message())?;
+		challenges.push(outer_challenge);
+	}
+
 	// Standard rounds: the only sumcheck (MLE-check) rounds, folding the combined codeword at the
-	// fresh challenges over the `𝐧` variables `X`. The outer (oracle-combine) challenges — which
-	// carry no sumcheck round-polynomial — are processed once the leading batch-fold challenges are
-	// in (all-ZK has `n_leading == 0`, so they precede every standard round as before).
+	// fresh challenges over the `𝐧` variables `X`.
 	let mut sum = eval_claim;
 	for round in 0..n_vars {
-		if round == n_leading {
-			for &outer_challenge in outer_challenges {
-				fri_fold_verifier.process_round(&mut transcript.message())?;
-				challenges.push(outer_challenge);
-			}
-		}
-
 		let round_proof = mlecheck::RoundProof(RoundCoeffs(transcript.message().read_vec(DEGREE)?));
 		fri_fold_verifier.process_round(&mut transcript.message())?;
 
@@ -199,14 +192,6 @@ where
 		let challenge = transcript.sample();
 		sum = round_coeffs.evaluate(challenge);
 		challenges.push(challenge);
-	}
-	// When `D == 0` the leading window spans every standard round, so the outer challenges follow
-	// them here, before the final fold.
-	if n_leading == n_vars {
-		for &outer_challenge in outer_challenges {
-			fri_fold_verifier.process_round(&mut transcript.message())?;
-			challenges.push(outer_challenge);
-		}
 	}
 
 	fri_fold_verifier.process_round(&mut transcript.message())?;
