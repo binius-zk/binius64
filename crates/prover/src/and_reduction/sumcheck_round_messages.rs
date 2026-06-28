@@ -5,7 +5,7 @@ use std::{array, borrow::Cow, iter};
 
 use binius_core::word::Word;
 use binius_field::{
-	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, ExtensionField, PackedField,
+	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, ExtensionField, PackedField, WideMul,
 	util::expand_subset_sums_array,
 };
 use binius_math::multilinear::eq::eq_ind_partial_eval;
@@ -148,7 +148,7 @@ where
 			for (a_subchunk, b_subchunk, c_subchunk, outer_weight) in
 				izip!(a_subchunks, b_subchunks, c_subchunks, &outer_weight_mul_maps)
 			{
-				let mut summed_ntt = PNTTDomain::zero();
+				let mut summed_ntt = <PNTTDomain as WideMul>::Output::default();
 				for (a_i, b_i, c_i, inner_weight) in
 					izip!(a_subchunk, b_subchunk, c_subchunk, &eq_ind_small)
 				{
@@ -157,9 +157,14 @@ where
 						ntt_lookup.multi_ntt_array([a_i.0, b_i.0, c_i.0]);
 
 					// Compute the weighted composition of the LDE values.
-					summed_ntt += (first_col_ntt * second_col_ntt - third_col_ntt) * inner_weight;
+					summed_ntt += PNTTDomain::wide_mul(
+						first_col_ntt * second_col_ntt - third_col_ntt,
+						*inner_weight,
+					);
 				}
-				for (acc_i, summed_ntt_i) in iter::zip(&mut acc, summed_ntt.into_iter()) {
+
+				let summed_ntt_reduced = PNTTDomain::reduce(summed_ntt);
+				for (acc_i, summed_ntt_i) in iter::zip(&mut acc, summed_ntt_reduced.into_iter()) {
 					*acc_i += outer_weight.call(summed_ntt_i);
 				}
 			}
