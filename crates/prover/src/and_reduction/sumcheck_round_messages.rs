@@ -5,8 +5,8 @@ use std::{array, borrow::Cow, iter};
 
 use binius_core::word::Word;
 use binius_field::{
-	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, ExtensionField, PackedField, WideMul,
-	util::expand_subset_sums_array,
+	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, ExtensionField,
+	PackedAESBinaryField64x8b as Packed64xB8, PackedField, WideMul, util::expand_subset_sums_array,
 };
 use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::rayon::prelude::*;
@@ -60,9 +60,7 @@ use super::ntt_lookup::NTTLookup;
 /// # Type Parameters
 ///
 /// * `F` - The challenge field type (must be a binary field)
-/// * `PNTTDomain` - The packed extension field type for NTT operations (width must equal
-///   `ROWS_PER_HYPERCUBE_VERTEX`)
-pub fn univariate_round_message_extension_domain<F, PNTTDomain>(
+pub fn univariate_round_message_extension_domain<F>(
 	log_words: usize,
 	a_words: &[Word],
 	b_words: &[Word],
@@ -72,14 +70,7 @@ pub fn univariate_round_message_extension_domain<F, PNTTDomain>(
 ) -> [F; ROWS_PER_HYPERCUBE_VERTEX]
 where
 	F: BinaryField + From<B8>,
-	PNTTDomain: PackedField<Scalar = B8>,
 {
-	// This assertion is used as a workaround for Rust's limited support for const-generics,
-	// ideally we would just use PNTTDomain::WIDTH everywhere instead, but since this function only
-	// supports 128b underliers, this is set to a constant. We would need to rethink for support of
-	// multiple underlier sizes
-	assert_eq!(PNTTDomain::WIDTH, ROWS_PER_HYPERCUBE_VERTEX);
-
 	const N_FIXED_SMALL_CHALLENGES: usize = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len();
 	const N_FIXED_LARGE_CHALLENGES: usize = 4;
 
@@ -91,12 +82,12 @@ where
 	}
 
 	let ntt_lookup = tracing::debug_span!("Compute univariate LDE table")
-		.in_scope(|| NTTLookup::<PNTTDomain>::new(prover_message_domain));
+		.in_scope(|| NTTLookup::new(prover_message_domain));
 
 	let eq_ind_small: [_; 1 << N_FIXED_SMALL_CHALLENGES] =
 		eq_ind_partial_eval::<B8>(&PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES)
 			.iter_scalars()
-			.map(PNTTDomain::broadcast)
+			.map(Packed64xB8::broadcast)
 			.collect::<Vec<_>>()
 			.try_into()
 			.expect("PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len() == N_FIXED_SMALL_CHALLENGES");
@@ -150,7 +141,7 @@ where
 			for (a_subchunk, b_subchunk, outer_weight) in
 				izip!(a_subchunks, b_subchunks, &outer_weight_mul_maps)
 			{
-				let mut summed_ntt = <PNTTDomain as WideMul>::Output::default();
+				let mut summed_ntt = <Packed64xB8 as WideMul>::Output::default();
 				for (a_i, b_i, inner_weight) in izip!(a_subchunk, b_subchunk, &eq_ind_small) {
 					let c_i = *a_i & *b_i;
 
@@ -159,13 +150,13 @@ where
 						ntt_lookup.multi_ntt_array([a_i.0, b_i.0, c_i.0]);
 
 					// Compute the weighted composition of the LDE values.
-					summed_ntt += PNTTDomain::wide_mul(
+					summed_ntt += Packed64xB8::wide_mul(
 						first_col_ntt * second_col_ntt - third_col_ntt,
 						*inner_weight,
 					);
 				}
 
-				let summed_ntt_reduced = PNTTDomain::reduce(summed_ntt);
+				let summed_ntt_reduced = Packed64xB8::reduce(summed_ntt);
 				for (acc_i, summed_ntt_i) in iter::zip(&mut acc, summed_ntt_reduced.into_iter()) {
 					*acc_i += outer_weight.call(summed_ntt_i);
 				}
@@ -252,7 +243,7 @@ mod test {
 	use std::iter::repeat_with;
 
 	use binius_field::{
-		BinaryField128bGhash as B128, Field, PackedAESBinaryField64x8b, Random,
+		BinaryField128bGhash as B128, Field, Random,
 		linear_transformation::{
 			BytewiseLookupTransformationFactory, LinearTransformationFactory,
 			OutputWrappingTransformationFactory,
@@ -312,15 +303,14 @@ mod test {
 		let verifier_message_domain = prover_message_domain.isomorphic::<B128>();
 
 		// Prover generates first round message
-		let first_round_message_on_ext_domain =
-			univariate_round_message_extension_domain::<B128, PackedAESBinaryField64x8b>(
-				log_num_words,
-				&mlv_1,
-				&mlv_2,
-				&mlv_3,
-				&big_field_zerocheck_challenges,
-				&prover_message_domain,
-			);
+		let first_round_message_on_ext_domain = univariate_round_message_extension_domain::<B128>(
+			log_num_words,
+			&mlv_1,
+			&mlv_2,
+			&mlv_3,
+			&big_field_zerocheck_challenges,
+			&prover_message_domain,
+		);
 
 		let mut first_round_message_coeffs = vec![B128::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];
 

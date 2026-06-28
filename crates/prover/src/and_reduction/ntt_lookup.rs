@@ -36,7 +36,8 @@
 use std::{array, marker::PhantomData};
 
 use binius_field::{
-	BinaryField, BinaryField1b as B1, Divisible, PackedField, util::expand_subset_sums_array,
+	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, Divisible, FieldOps,
+	PackedAESBinaryField64x8b as Packed64xB8, PackedField, util::expand_subset_sums_array,
 };
 use binius_math::{
 	BinarySubspace, FieldBuffer,
@@ -51,49 +52,32 @@ use binius_verifier::protocols::bitand::{ROWS_PER_HYPERCUBE_VERTEX, SKIPPED_VARS
 ///
 /// ## Structure
 ///
-/// The internal data structure is a boxed 3-dimensional array `Box<[[[P; 4]; 256]; 8]>` where:
+/// The internal data structure is a boxed 2-dimensional array `Box<[[Packed64xB8; 256]; 8]>` where:
 /// - **First dimension**: Index of the 8-bit chunk within the 64-bit input (0-7)
 /// - **Second dimension**: The 8-bit value (0-255) representing coefficient combinations
-/// - **Third dimension**: Packed field element index (0-3)
 ///
-/// ## Memory Layout
-///
-/// Packed field indices are placed on the innermost axis so that the 4 packed evaluations
-/// for a given (byte position, byte value) are contiguous in memory. This is the access
-/// pattern of the hot inner loop in `univariate_round_message_extension_domain`.
-///
-/// ## Type Parameters
-///
-/// - `P`: The packed field type used for storing precomputed values. Must implement `PackedField`
-///   with a scalar type that is a binary field.
+/// Each entry holds the `ROWS_PER_HYPERCUBE_VERTEX` NTT evaluations of that byte's coefficients at
+/// the corresponding byte position, packed into a single [`Packed64xB8`].
 #[derive(Debug, Clone)]
-pub struct NTTLookup<P>(Box<[[P; 256]; 8]>);
+pub struct NTTLookup(Box<[[Packed64xB8; 256]; 8]>);
 
-impl<F, PNTTDomain> NTTLookup<PNTTDomain>
-where
-	F: BinaryField,
-	PNTTDomain: PackedField<Scalar = F>,
-{
+impl NTTLookup {
 	/// Creates a new NTT lookup table by precomputing all possible NTT evaluations
 	/// for 8-bit input chunks across all byte positions in a 64-bit word.
 	///
 	/// ## Parameters
 	///
-	/// - `ntt_input_domain`: Binary subspace defining the input domain for the NTT. Must have
-	///   dimension `SKIPPED_VARS` (6 bits).
-	/// - `ntt_output_domain`: Array of field elements where the NTT will be evaluated. Must have
-	///   length `ROWS_PER_HYPERCUBE_VERTEX` (64 elements).
+	/// - `subspace`: Binary subspace of dimension `SKIPPED_VARS + 1`. Its lower half defines the
+	///   NTT input domain and its upper half the output domain at which evaluations are
+	///   precomputed.
 	///
 	/// ## Constraints
 	///
-	/// - `PNTTDomain::WIDTH` must equal 16 (packed field constraint)
-	/// - Input domain dimension must equal `SKIPPED_VARS` (6)
-	/// - Output domain length must equal `ROWS_PER_HYPERCUBE_VERTEX` (64)
-	pub fn new(subspace: &BinarySubspace<F>) -> Self {
-		assert_eq!(PNTTDomain::WIDTH, ROWS_PER_HYPERCUBE_VERTEX);
+	/// - Subspace dimension must equal `SKIPPED_VARS + 1`
+	pub fn new(subspace: &BinarySubspace<B8>) -> Self {
 		assert_eq!(subspace.dim(), SKIPPED_VARS + 1);
 
-		let lde = LowDegreeExtension::new(subspace);
+		let lde = LowDegreeExtension::<Packed64xB8>::new(subspace);
 		let lde_mat = array::from_fn::<_, { ROWS_PER_HYPERCUBE_VERTEX / 8 }, _>(|b| {
 			array::from_fn::<_, 8, _>(|i| {
 				let output = lde.transform(1 << (8 * b + i));
@@ -132,7 +116,7 @@ where
 	/// the NTT evaluations at all points in the output domain.
 	#[cfg(test)]
 	#[inline]
-	pub fn ntt<T: Divisible<u8>>(&self, input: T) -> PNTTDomain {
+	pub fn ntt<T: Divisible<u8>>(&self, input: T) -> Packed64xB8 {
 		Divisible::value_iter(input)
 			.enumerate()
 			.map(|(b, i)| self.0[b][i as usize])
@@ -159,8 +143,8 @@ where
 	pub fn multi_ntt_array<T: Divisible<u8>, const N: usize>(
 		&self,
 		inputs: [T; N],
-	) -> [PNTTDomain; N] {
-		let mut results = [PNTTDomain::zero(); N];
+	) -> [Packed64xB8; N] {
+		let mut results = [Packed64xB8::zero(); N];
 		for (byte_index, lookup_byte) in self.0.iter().enumerate() {
 			for (result, input) in std::iter::zip(&mut results, &inputs) {
 				let byte = Divisible::<u8>::get(input, byte_index);
@@ -223,7 +207,6 @@ where
 
 #[cfg(test)]
 mod test {
-	use binius_field::{AESTowerField8b, PackedAESBinaryField64x8b};
 	use binius_math::BinarySubspace;
 	use rand::prelude::*;
 
@@ -232,8 +215,8 @@ mod test {
 	#[test]
 	fn test_against_ntt() {
 		let subspace = BinarySubspace::with_dim(SKIPPED_VARS + 1);
-		let lde = LowDegreeExtension::<AESTowerField8b>::new(&subspace);
-		let ntt_lookup = NTTLookup::<PackedAESBinaryField64x8b>::new(&subspace);
+		let lde = LowDegreeExtension::<B8>::new(&subspace);
+		let ntt_lookup = NTTLookup::new(&subspace);
 
 		// Repeat for 10 random values
 		let mut rng = StdRng::seed_from_u64(0);

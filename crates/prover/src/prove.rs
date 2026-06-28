@@ -6,8 +6,7 @@ use binius_core::{
 	word::Word,
 };
 use binius_field::{
-	AESTowerField8b as B8, BinaryField, ExtensionField, PackedAESBinaryField64x8b, PackedExtension,
-	PackedField,
+	AESTowerField8b as B8, BinaryField, ExtensionField, PackedExtension, PackedField,
 };
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{
@@ -446,7 +445,7 @@ where
 		log_constraint_count.saturating_sub(PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
 	let big_field_zerocheck_challenges = channel.sample_many(n_extra_zerocheck_challenges);
 
-	let prover = OblongZerocheckProver::<_, PackedAESBinaryField64x8b, PChallenge>::new(
+	let prover = OblongZerocheckProver::<_, PChallenge>::new(
 		log_constraint_count,
 		a,
 		b,
