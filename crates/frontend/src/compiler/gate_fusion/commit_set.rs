@@ -3,10 +3,8 @@ use std::iter;
 
 use petgraph::{
 	Direction,
-	graph::EdgeIndex,
 	visit::{DfsPostOrder, EdgeRef},
 };
-use rustc_hash::FxHashMap;
 
 use super::{LeGraph, Stat};
 use crate::compiler::constraint_builder::Shift;
@@ -80,8 +78,15 @@ impl CommitSetCx {
 /// Note that this is all-or-nothing decision: if at least one user cannot inline an expression
 /// then no users should inline it.
 pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat) {
-	let mut per_edge: FxHashMap<EdgeIndex, CommitSetCx> = FxHashMap::default();
-	per_edge.reserve(leg.pg.edge_count());
+	// Context carried for each graph edge during the commit-set decision.
+	//
+	// Edge identifiers are dense integers from zero up to the edge count.
+	// A slot in a vector therefore addresses each edge directly, without hashing.
+	//
+	// Invariant: no edge is added or removed during this pass.
+	// So an edge identifier stays a valid index for the whole traversal.
+	let mut per_edge: Vec<Option<CommitSetCx>> = Vec::new();
+	per_edge.resize_with(leg.pg.edge_count(), || None);
 
 	// Iterate the graph in the postorder. That is, we iterate the producers before their consumers.
 	// IOW, when visiting a node all of its children have been already visited.
@@ -112,7 +117,7 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat) {
 				// Just create a new context for each root node with the seed shift.
 				for in_edge in leg.pg.edges_directed(node, Direction::Incoming) {
 					let shift = in_edge.weight().shift;
-					per_edge.insert(in_edge.id(), CommitSetCx::new(shift));
+					per_edge[in_edge.id().index()] = Some(CommitSetCx::new(shift));
 				}
 				continue;
 			}
@@ -132,7 +137,9 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat) {
 			let mut depth = 0;
 
 			'out: for out_edge in outcoming.clone() {
-				let out_edge_cx = &per_edge[&out_edge.id()];
+				let out_edge_cx = per_edge[out_edge.id().index()]
+					.as_ref()
+					.expect("consumer edge context is set before the producer is visited");
 				depth = out_edge_cx.depth.max(depth);
 				for in_edge in incoming.clone() {
 					let in_shift = in_edge.weight().shift;
@@ -150,7 +157,7 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat) {
 				// current shift.
 				for in_edge in incoming {
 					let in_shift = in_edge.weight().shift;
-					per_edge.insert(in_edge.id(), CommitSetCx::new(in_shift));
+					per_edge[in_edge.id().index()] = Some(CommitSetCx::new(in_shift));
 				}
 
 				// Insert into the committed set verifying that this wire was not inserted before.
@@ -168,10 +175,14 @@ pub fn run_decide_commit_set(leg: &mut LeGraph, stat: &mut Stat) {
 				//
 				// TODO: note that we've already visited every child, so we could free up memory
 				// required for their context.
-				let join_cx = CommitSetCx::join(outcoming.map(|edge| &per_edge[&edge.id()]));
+				let join_cx = CommitSetCx::join(outcoming.map(|edge| {
+					per_edge[edge.id().index()]
+						.as_ref()
+						.expect("consumer edge context is set before the producer is visited")
+				}));
 				for in_edge in incoming {
 					let in_shift = in_edge.weight().shift;
-					per_edge.insert(in_edge.id(), join_cx.add(in_shift));
+					per_edge[in_edge.id().index()] = Some(join_cx.add(in_shift));
 				}
 			}
 
