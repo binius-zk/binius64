@@ -44,8 +44,15 @@ pub struct Phase3Output<F> {
 	pub gpow_a_eval: F,
 	/// $C_{\textsf{lo}}(r)$.
 	pub gpow_c_lo_eval: F,
-	/// $C_{\textsf{hi}}(r)$.
+	/// The base-$g$ high-half claim $\widetilde{C}_{\textsf{hi}}(\varphi^{-64}(r)) =
+	/// \varphi^{-64}(\widetilde{D}_{\textsf{hi}}(r))$, obtained by twisting the base-$g^{2^{64}}$
+	/// high-half claim so the $c_{\textsf{hi}}$ product tree runs at base $g$ uniformly with $a$
+	/// and $c_{\textsf{lo}}$ (spec §IntMul high-half twist). Evaluated at `c_hi_eval_point`.
 	pub gpow_c_hi_eval: F,
+	/// The twisted constraint point $\varphi^{-64}(r)$ at which `gpow_c_hi_eval` is taken. Only
+	/// the $c_{\textsf{hi}}$ product tree uses it (at Phase-4 layer 0); $a$ and $c_{\textsf{lo}}$
+	/// use `eval_point`.
+	pub c_hi_eval_point: Vec<F>,
 }
 
 /// Output of Phase 4: all but last GKR layer for $\widetilde{a}$, $\widetilde{c}_{\textsf{lo}}$,
@@ -66,7 +73,7 @@ pub struct Phase4Output<F> {
 /// x^{2^i}$. Its order is $d$ (the extension degree), meaning $\varphi^d = \textsf{id}$.
 /// Therefore $\varphi^{-i} = \varphi^{d - i}$, and we compute $\varphi^{-i}(x) = x^{2^{d-i}}$
 /// by repeated squaring $d - i$ times.
-fn inv_frobenius<F>(x: F, i: usize) -> F
+pub fn inv_frobenius<F>(x: F, i: usize) -> F
 where
 	F: FieldOps,
 	F::Scalar: BinaryField,
@@ -75,6 +82,23 @@ where
 	iterate(x, |g| g.clone().square())
 		.nth(degree - i)
 		.expect("infinite iterator")
+}
+
+/// Apply the inverse Frobenius endomorphism $\varphi^{-i}$ coordinate-wise to an evaluation point.
+///
+/// Used by the high-half twist (spec §IntMul): a base-$g^{2^i}$ root claim $\widetilde{D}(r)$ is
+/// converted to the base-$g$ claim $\widetilde{C}(\varphi^{-i}(r)) =
+/// \varphi^{-i}(\widetilde{D}(r))$, which evaluates the same multilinear at the twisted point
+/// $\varphi^{-i}(r)$.
+pub fn inv_frobenius_point<F>(point: &[F], i: usize) -> Vec<F>
+where
+	F: FieldOps,
+	F::Scalar: BinaryField,
+{
+	point
+		.iter()
+		.map(|coord| inv_frobenius(coord.clone(), i))
+		.collect()
 }
 
 /// Compute the inverse Frobenius sequence $[\varphi^{0}(x), \varphi^{-1}(x), \ldots,
@@ -147,7 +171,7 @@ where
 ///
 /// * $\textsf{select}(a(i, r), g^{2^i})$,
 /// * $\textsf{select}(c_{\textsf{lo}}(i, r), g^{2^i})$,
-/// * $\textsf{select}(c_{\textsf{hi}}(i, r), g^{2^(i + k)}$,
+/// * $\textsf{select}(c_{\textsf{hi}}(i, r), g^{2^i})$,
 ///
 /// for all $i$ in $\{0, \ldots, 2^k - 1\}$, where
 ///
@@ -173,19 +197,19 @@ where
 	assert_eq!(selected_c_lo_evals.len(), 1 << k);
 	assert_eq!(selected_c_hi_evals.len(), 1 << k);
 
-	// Compute the normalization factors (conjugate - 1)^{-1} in F, then convert to E.
+	// Compute the normalization factors (conjugate - 1)^{-1} in F, then convert to E. All three
+	// trees run at base g (the c_hi high-half twist is applied upstream), so they share the same
+	// low generator powers g^{2^i} for i in 0..2^k.
 	let inv_factors: Vec<E> = iterate(F::MULTIPLICATIVE_GENERATOR, |g| g.square())
-		.take(2 << k)
+		.take(1 << k)
 		// Safety: `conjugate` ranges over powers of the multiplicative generator, which has odd
 		// order, so `conjugate - 1` is never zero.
 		.map(|conjugate| E::from(unsafe { (conjugate - F::ONE).invert() }))
 		.collect();
 
-	let (lo_inv_factors, hi_inv_factors) = inv_factors.split_at(1 << k);
-
-	let a_evals = recover_selectors(selected_a_evals, lo_inv_factors);
-	let c_lo_evals = recover_selectors(selected_c_lo_evals, lo_inv_factors);
-	let c_hi_evals = recover_selectors(selected_c_hi_evals, hi_inv_factors);
+	let a_evals = recover_selectors(selected_a_evals, &inv_factors);
+	let c_lo_evals = recover_selectors(selected_c_lo_evals, &inv_factors);
+	let c_hi_evals = recover_selectors(selected_c_hi_evals, &inv_factors);
 
 	[a_evals, c_lo_evals, c_hi_evals]
 }
@@ -211,7 +235,7 @@ fn recover_selectors<F: FieldOps>(selecteds: Vec<F>, inv_factors: &[F]) -> Vec<F
 ///
 /// * $\textsf{select}(a(i, r), g^{2^i})$,
 /// * $\textsf{select}(c_{\textsf{lo}}(i, r), g^{2^i})$,
-/// * $\textsf{select}(c_{\textsf{hi}}(i, r), g^{2^{i + k}})$,
+/// * $\textsf{select}(c_{\textsf{hi}}(i, r), g^{2^i})$,
 ///
 /// for $i \in \{0, \ldots, 2^k - 1\}$, where $\textsf{select}(S, V) = S \cdot (V - 1) + 1$.
 ///
@@ -232,17 +256,17 @@ where
 	assert_eq!(c_lo_evals.len(), 1 << k);
 	assert_eq!(c_hi_evals.len(), 1 << k);
 
-	// powers[j] = g^{2^j}, for j in 0..2^{k+1}.
+	// powers[j] = g^{2^j}, for j in 0..2^k. All three trees run at base g (the c_hi high-half twist
+	// is applied upstream), so c_hi reconstructs from the same low powers as a and c_lo.
 	let powers: Vec<E> = iterate(F::MULTIPLICATIVE_GENERATOR, |g| g.square())
-		.take(2 << k)
+		.take(1 << k)
 		.map(E::from)
 		.collect();
-	let (lo_powers, hi_powers) = powers.split_at(1 << k);
 
 	[
-		apply_selectors(a_evals, lo_powers),
-		apply_selectors(c_lo_evals, lo_powers),
-		apply_selectors(c_hi_evals, hi_powers),
+		apply_selectors(a_evals, &powers),
+		apply_selectors(c_lo_evals, &powers),
+		apply_selectors(c_hi_evals, &powers),
 	]
 }
 

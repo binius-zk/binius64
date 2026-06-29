@@ -13,7 +13,7 @@ use itertools::{Itertools, chain};
 use super::{
 	common::{
 		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, frobenius_twist,
-		reconstruct_selecteds,
+		inv_frobenius, inv_frobenius_point, reconstruct_selecteds,
 	},
 	error::Error,
 };
@@ -29,7 +29,9 @@ use crate::protocols::{
 /// point (challenges) and the claimed factor evaluations.
 #[allow(clippy::type_complexity)]
 fn verify_multi_bivariate_product_mle_layer<F, C>(
-	eval_point: &[C::Elem],
+	a_c_eval_point: &[C::Elem],
+	c_hi_eval_point: &[C::Elem],
+	n_a_c_tuples: usize,
 	evals: &[C::Elem],
 	channel: &mut C,
 ) -> Result<(Vec<C::Elem>, Vec<C::Elem>), Error>
@@ -37,7 +39,7 @@ where
 	F: Field,
 	C: IPVerifierChannel<F>,
 {
-	let n_vars = eval_point.len();
+	let n_vars = a_c_eval_point.len();
 
 	let BatchSumcheckOutput {
 		batch_coeff,
@@ -49,11 +51,23 @@ where
 
 	let multilinear_evals = channel.recv_many(2 * evals.len())?;
 
-	let eq_ind_eval = eq_ind(eval_point, &challenges);
+	// The a and c_lo product tuples (the first `n_a_c_tuples`) are weighted by eq(a_c_eval_point),
+	// the c_hi tuples by eq(c_hi_eval_point). The two points differ (by the φ^{-64} high-half
+	// twist) only at Phase-4 layer 0; thereafter the caller passes the same shared point for both.
+	let a_c_eq_eval = eq_ind(a_c_eval_point, &challenges);
+	let c_hi_eq_eval = eq_ind(c_hi_eval_point, &challenges);
 	let expected_unbatched_terms = multilinear_evals
 		.iter()
 		.tuples()
-		.map(|(left, right)| eq_ind_eval.clone() * left * right)
+		.enumerate()
+		.map(|(i, (left, right))| {
+			let eq_ind_eval = if i < n_a_c_tuples {
+				&a_c_eq_eval
+			} else {
+				&c_hi_eq_eval
+			};
+			eq_ind_eval.clone() * left * right
+		})
 		.collect::<Vec<_>>();
 
 	let expected_eval = evaluate_univariate(&expected_unbatched_terms, batch_coeff);
@@ -119,6 +133,7 @@ fn verify_phase_3<F, C>(
 where
 	F: Field,
 	C: IPVerifierChannel<F>,
+	<C::Elem as FieldOps>::Scalar: BinaryField,
 {
 	let n_vars = c_eval_point.len();
 
@@ -150,8 +165,9 @@ where
 	// A(r)
 	let gpow_a_eval = channel.recv_one()?;
 
-	// C_lo(r), C_hi(r)
-	let [gpow_c_lo_eval, gpow_c_hi_eval] = channel.recv_array::<2>()?;
+	// C_lo(r), and the base-g^{2^64} high-half claim D_hi(r). The high-half product tree is run at
+	// base g^{2^64}, so the LO * HI product check below needs the base-g^{2^64} claim D_hi(r).
+	let [gpow_c_lo_eval, d_hi_eval] = channel.recv_array::<2>()?;
 
 	// Recombine the 2^k per-bit exponent claims b(i, r) into a single claim b(r_I^b, r) by
 	// sampling a recombination point r_I^b in K^k. This carries one exponent claim (rather than
@@ -168,9 +184,9 @@ where
 				* eq_ind(&twisted_eval_point, &eval_point)
 		});
 
-	// - c_lo(r) * c_hi(r) * eq(c_eval_point ; r)
+	// - c_lo(r) * D_hi(r) * eq(c_eval_point ; r)
 	let expected_c_prod_eval =
-		gpow_c_lo_eval.clone() * gpow_c_hi_eval.clone() * eq_ind(c_eval_point, &eval_point);
+		gpow_c_lo_eval.clone() * d_hi_eval.clone() * eq_ind(c_eval_point, &eval_point);
 
 	let expected_terms = expected_selected_terms
 		.chain([expected_c_prod_eval])
@@ -179,6 +195,14 @@ where
 
 	channel.assert_zero(expected_batched_eval - eval)?;
 
+	// High-half twist: convert the base-g^{2^64} claim D_hi(r) into the base-g claim
+	// C_hi(φ^{-64}(r)) = φ^{-64}(D_hi(r)), so the c_hi product tree runs at base g uniformly with a
+	// and c_lo (spec §IntMul). The shift is 2^{2^log_bits} = 2^64, i.e. inv_frobenius with
+	// i = 1 << log_bits applied to both the claim value and the evaluation point.
+	let twist = 1 << log_bits;
+	let gpow_c_hi_eval = inv_frobenius(d_hi_eval, twist);
+	let c_hi_eval_point = inv_frobenius_point(&eval_point, twist);
+
 	Ok(Phase3Output {
 		eval_point,
 		r_ib,
@@ -186,6 +210,7 @@ where
 		gpow_a_eval,
 		gpow_c_lo_eval,
 		gpow_c_hi_eval,
+		c_hi_eval_point,
 	})
 }
 
@@ -197,6 +222,7 @@ where
 fn verify_phase_4<F, C>(
 	log_bits: usize,
 	eval_point: &[C::Elem],
+	c_hi_eval_point: &[C::Elem],
 	a_root_eval: C::Elem,
 	gpow_c_lo_eval: C::Elem,
 	gpow_c_hi_eval: C::Elem,
@@ -209,15 +235,27 @@ where
 	assert!(log_bits >= 1);
 
 	let mut eval_point = eval_point.to_vec();
+	// The c_hi product tree is rooted at the φ^{-64}-twisted point; a and c_lo at `eval_point`.
+	let mut c_hi_eval_point = c_hi_eval_point.to_vec();
 	let mut evals = vec![a_root_eval, gpow_c_lo_eval, gpow_c_hi_eval];
 
 	for depth in 0..log_bits - 1 {
 		assert_eq!(evals.len(), 3 << depth);
 
-		let (challenges, multilinear_evals) =
-			verify_multi_bivariate_product_mle_layer(&eval_point, &evals, channel)?;
+		// a and c_lo occupy the first 2 << depth product tuples, c_hi the last 1 << depth.
+		let n_a_c_tuples = 2 << depth;
+		let (challenges, multilinear_evals) = verify_multi_bivariate_product_mle_layer(
+			&eval_point,
+			&c_hi_eval_point,
+			n_a_c_tuples,
+			&evals,
+			channel,
+		)?;
 
-		eval_point = challenges;
+		// After a layer all three trees fold by the same challenges, so the twisted c_hi point
+		// rejoins the shared point.
+		eval_point = challenges.clone();
+		c_hi_eval_point = challenges;
 		evals = multilinear_evals;
 	}
 
@@ -472,6 +510,7 @@ where
 		gpow_a_eval,
 		gpow_c_lo_eval,
 		gpow_c_hi_eval,
+		c_hi_eval_point,
 	} = verify_phase_3(
 		log_bits,
 		twisted_eval_points,
@@ -490,6 +529,7 @@ where
 	} = verify_phase_4(
 		log_bits,
 		&phase_3_eval_point,
+		&c_hi_eval_point,
 		gpow_a_eval,
 		gpow_c_lo_eval,
 		gpow_c_hi_eval,

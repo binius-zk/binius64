@@ -20,7 +20,7 @@ use binius_utils::rayon::prelude::*;
 use binius_verifier::protocols::{
 	intmul::common::{
 		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, frobenius_twist,
-		normalize_a_c_exponent_evals,
+		inv_frobenius, inv_frobenius_point, normalize_a_c_exponent_evals,
 	},
 	prodcheck::MultilinearEvalClaim,
 };
@@ -29,7 +29,7 @@ use itertools::{Itertools, chain, izip};
 
 use super::{
 	error::Error,
-	witness::{Witness, two_valued_field_buffer},
+	witness::{Witness, frobenius, two_valued_field_buffer},
 };
 use crate::{
 	fold_word::{fold_across_words, fold_words},
@@ -135,6 +135,10 @@ where
 		let (c_lo_exponents, c_lo_root, mut c_lo_layers) = c_lo.split();
 		let (_, c_hi_root, mut c_hi_layers) = c_hi.split();
 
+		// The c_hi tree runs at base g, so its root is C_hi; the LO * HI product check in Phase 3
+		// needs the base-g^{2^64} high-half root D_hi = φ^{2^log_bits}(C_hi).
+		let d_hi_root = frobenius(&c_hi_root, 1 << log_bits);
+
 		let a_last_layer = a_layers.pop().expect("log_bits >= 1");
 		let c_lo_last_layer = c_lo_layers.pop().expect("log_bits >= 1");
 		let c_hi_last_layer = c_hi_layers.pop().expect("log_bits >= 1");
@@ -147,13 +151,14 @@ where
 			gpow_a_eval,
 			gpow_c_lo_eval,
 			gpow_c_hi_eval,
+			c_hi_eval_point,
 		} = self.phase3(
 			log_bits,
 			&twisted_eval_points,
 			&twisted_evals,
 			a_root,
 			b_exponents.as_ref(),
-			[c_lo_root, c_hi_root],
+			[c_lo_root, d_hi_root],
 			&initial_eval_point,
 			exp_eval,
 		)?;
@@ -167,6 +172,7 @@ where
 		} = self.phase4(
 			log_bits,
 			&phase3_eval_point,
+			&c_hi_eval_point,
 			(gpow_a_eval, a_layers.into_iter()),
 			(gpow_c_lo_eval, c_lo_layers.into_iter()),
 			(gpow_c_hi_eval, c_hi_layers.into_iter()),
@@ -276,7 +282,7 @@ where
 			.pop()
 			.expect("selector_prover_evals.len() > 0");
 		let b_evals = selector_prover_evals;
-		let [gpow_c_lo_eval, gpow_c_hi_eval] = c_root_prover_evals
+		let [gpow_c_lo_eval, d_hi_eval] = c_root_prover_evals
 			.try_into()
 			.expect("c_root_prover with two multilinears returns two evals");
 
@@ -286,6 +292,12 @@ where
 		let r_ib = self.channel.sample_many(log_bits);
 		let b_recomb = evaluate(&FieldBuffer::<P>::from_values(&b_evals), &r_ib);
 
+		// High-half twist (mirror the verifier): convert the base-g^{2^64} claim D_hi(r) into the
+		// base-g claim C_hi(φ^{-64}(r)) = φ^{-64}(D_hi(r)) so the c_hi product tree runs at base g.
+		let twist = 1 << log_bits;
+		let gpow_c_hi_eval = inv_frobenius(d_hi_eval, twist);
+		let c_hi_eval_point = inv_frobenius_point(&challenges, twist);
+
 		Ok(Phase3Output {
 			eval_point: challenges,
 			r_ib,
@@ -293,13 +305,16 @@ where
 			gpow_a_eval,
 			gpow_c_lo_eval,
 			gpow_c_hi_eval,
+			c_hi_eval_point,
 		})
 	}
 
+	#[allow(clippy::too_many_arguments)]
 	fn phase4(
 		&mut self,
 		log_bits: usize,
 		eval_point: &[F],
+		c_hi_eval_point: &[F],
 		(a_root_eval, a_layers): (F, impl ExactSizeIterator<Item = Vec<FieldBuffer<P>>>),
 		(gpow_c_lo_eval, c_lo_layers): (F, impl ExactSizeIterator<Item = Vec<FieldBuffer<P>>>),
 		(gpow_c_hi_eval, c_hi_layers): (F, impl ExactSizeIterator<Item = Vec<FieldBuffer<P>>>),
@@ -309,6 +324,10 @@ where
 		assert_eq!(c_hi_layers.len(), log_bits - 1);
 
 		let mut eval_point = eval_point.to_vec();
+		// The c_hi product tree is rooted at the φ^{-64}-twisted point. It is only used at layer 0;
+		// after that all three trees fold by the same challenges, so subsequent layers run a single
+		// prover at the shared `eval_point`.
+		let c_hi_eval_point = c_hi_eval_point.to_vec();
 		let mut evals = vec![a_root_eval, gpow_c_lo_eval, gpow_c_hi_eval];
 
 		for (depth, (a_l, c_lo_l, c_hi_l)) in izip!(a_layers, c_lo_layers, c_hi_layers).enumerate()
@@ -318,25 +337,55 @@ where
 			assert_eq!(c_hi_l.len(), 2 << depth);
 			assert_eq!(evals.len(), 3 << depth);
 
-			let layer = a_l.into_iter().chain(c_lo_l).chain(c_hi_l);
-			let sumcheck_prover = BivariateProductMultiMlecheckProver::new(
-				make_pairs(layer),
-				&eval_point,
-				evals.clone(),
-			)?;
+			let challenges = if depth == 0 {
+				// c_hi is rooted at the twisted point: batch two provers — [a, c_lo] at
+				// `eval_point` and [c_hi] at the twisted point — into one sumcheck, so the c_hi
+				// tuples carry a distinct eq weight while sharing the fold challenges with a
+				// and c_lo.
+				let (a_root, c_lo_root, c_hi_root) = (evals[0], evals[1], evals[2]);
+				let a_c_prover =
+					MleToSumCheckDecorator::new(BivariateProductMultiMlecheckProver::new(
+						make_pairs(a_l.into_iter().chain(c_lo_l)),
+						&eval_point,
+						vec![a_root, c_lo_root],
+					)?);
+				let c_hi_prover =
+					MleToSumCheckDecorator::new(BivariateProductMultiMlecheckProver::new(
+						make_pairs(c_hi_l),
+						&c_hi_eval_point,
+						vec![c_hi_root],
+					)?);
+				let BatchSumcheckOutput {
+					challenges,
+					multilinear_evals,
+				} = batch_prove_and_write_evals(vec![a_c_prover, c_hi_prover], self.channel)?;
+				let [a_c_child_evals, c_hi_child_evals] =
+					<[Vec<F>; 2]>::try_from(multilinear_evals)
+						.expect("batch_prove with two provers returns two eval vecs");
+				evals = a_c_child_evals
+					.into_iter()
+					.chain(c_hi_child_evals)
+					.collect();
+				challenges
+			} else {
+				let layer = a_l.into_iter().chain(c_lo_l).chain(c_hi_l);
+				let prover = MleToSumCheckDecorator::new(BivariateProductMultiMlecheckProver::new(
+					make_pairs(layer),
+					&eval_point,
+					evals.clone(),
+				)?);
+				let BatchSumcheckOutput {
+					challenges,
+					mut multilinear_evals,
+				} = batch_prove_and_write_evals(vec![prover], self.channel)?;
+				assert_eq!(multilinear_evals.len(), 1);
+				evals = multilinear_evals
+					.pop()
+					.expect("multilinear_evals.len() == 1");
+				challenges
+			};
 
-			let prover = MleToSumCheckDecorator::new(sumcheck_prover);
-
-			let BatchSumcheckOutput {
-				challenges,
-				mut multilinear_evals,
-			} = batch_prove_and_write_evals(vec![prover], self.channel)?;
-
-			assert_eq!(multilinear_evals.len(), 1);
 			eval_point = challenges;
-			evals = multilinear_evals
-				.pop()
-				.expect("multilinear_evals.len() == 1");
 		}
 
 		debug_assert_eq!(evals.len(), 3 << (log_bits - 1));

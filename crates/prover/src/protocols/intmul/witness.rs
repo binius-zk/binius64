@@ -79,13 +79,12 @@ where
 		}
 
 		let g = F::MULTIPLICATIVE_GENERATOR;
-		let g_c_hi = iterate(g, |g| g.square())
-			.nth(1 << log_bits)
-			.expect("infinite iterator");
 
 		let a = BinaryTree::constant_base(log_bits, g, a);
 		let c_lo = BinaryTree::constant_base(log_bits, g, c_lo);
-		let c_hi = BinaryTree::constant_base(log_bits, g_c_hi, c_hi);
+		// The c_hi tree runs at base g (uniformly with a and c_lo); the high-half factor 2^64 is
+		// reintroduced by the Frobenius twist downstream (spec §IntMul high-half twist).
+		let c_hi = BinaryTree::constant_base(log_bits, g, c_hi);
 
 		// Compute b_leaves as concatenated leaves for prodcheck
 		let variable_base = a.root().clone();
@@ -94,8 +93,11 @@ where
 		// Create the prodcheck prover; its products layer becomes b_root
 		let (b_prodcheck, b_root) = ProdcheckProver::new(log_bits, b_leaves.clone());
 
-		// The root of a `log_bits + 1` deep tree of the full product `c`.
-		let c_root = buffer_bivariate_product(c_lo.root(), c_hi.root());
+		// The root of a `log_bits + 1` deep tree of the full product `c`. The high-half root is
+		// taken at base g^{2^64} = φ^{2^log_bits}(C_hi_root), so c_root = g^{int(c_lo) + 2^64
+		// int(c_hi)} = g^c.
+		let d_hi_root = frobenius(c_hi.root(), 1 << log_bits);
+		let c_root = buffer_bivariate_product(c_lo.root(), &d_hi_root);
 
 		Ok(Self {
 			a,
@@ -360,6 +362,18 @@ pub fn buffer_bivariate_product<P: PackedField, Data: Deref<Target = [P]>>(
 		.map(|(&a, &b)| a * b)
 		.collect::<Box<[P]>>();
 	FieldBuffer::new(a.log_len(), product)
+}
+
+/// Apply the Frobenius endomorphism `φ^exp` to a field buffer: raise every element to the `2^exp`
+/// power by squaring `exp` times. Used by the IntMul high-half twist to map between the base-`g`
+/// high-half root `C_hi` and the base-`g^{2^64}` root `D_hi = φ^{2^log_bits}(C_hi)`.
+pub fn frobenius<P: PackedField>(buffer: &FieldBuffer<P>, exp: usize) -> FieldBuffer<P> {
+	let values = buffer
+		.as_ref()
+		.iter()
+		.map(|&packed| (0..exp).fold(packed, |acc, _| acc.square()))
+		.collect::<Box<[P]>>();
+	FieldBuffer::new(buffer.log_len(), values)
 }
 
 /// Constructs a field buffer with values selected from `elements` based on the bit values
