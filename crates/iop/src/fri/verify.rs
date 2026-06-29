@@ -9,7 +9,7 @@ use binius_transcript::{
 	TranscriptReader, VerifierTranscript,
 	fiat_shamir::{CanSampleBits, Challenger},
 };
-use binius_utils::DeserializeBytes;
+use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
 use bytes::Buf;
 
 use super::{
@@ -118,18 +118,28 @@ where
 		// The committed codeword's Merkle tree has one coset per leaf, so its depth is the number
 		// of index bits.
 		let index_bits = params.index_bits();
-		// The first fold consumes `log_batch_size()` challenges, split into the inner challenges
-		// (folding each input oracle's interleaving) and the outer challenges (batching the oracles
-		// together). Oracle `i` folds its interleaved batch with the inner-challenge window
-		// `inner[skip_batch_challenges_i .. skip_batch_challenges_i + log_batch_size_i]`.
-		let max_inner_challenges = params
+		// The first fold consumes `log_batch_size()` challenges, ordered `[early ++ outer ++
+		// later]`: `max_early` early within-oracle batch challenges, then `log_n_oracles` outer
+		// challenges (batching the oracles together), then `max_later` later within-oracle batch
+		// challenges. Oracle `i` folds its interleaving with `early_window ++ later_window`, the
+		// suffixes of the early and later groups of lengths `log_early_batch_size_i` and
+		// `log_later_batch_size_i`.
+		let max_early = params
 			.input_oracles()
 			.iter()
-			.map(|spec| spec.skip_batch_challenges + spec.log_batch_size)
+			.map(|spec| spec.log_early_batch_size)
 			.max()
 			.expect("input_oracles is non-empty as an invariant");
-		let inner_challenges = &challenges[..max_inner_challenges];
-		let outer_challenges = challenges[max_inner_challenges..params.log_batch_size()].to_vec();
+		let max_later = params
+			.input_oracles()
+			.iter()
+			.map(|spec| spec.log_later_batch_size)
+			.max()
+			.expect("input_oracles is non-empty as an invariant");
+		let log_n_oracles = log2_ceil_usize(params.input_oracles().len());
+		let early_challenges = &challenges[..max_early];
+		let outer_challenges = challenges[max_early..max_early + log_n_oracles].to_vec();
+		let later_challenges = &challenges[max_early + log_n_oracles..params.log_batch_size()];
 		let codeword_sub_oracles = iter::zip(codeword_commitments, params.input_oracles())
 			.map(|(commitment, spec)| {
 				// The oracle's own codeword has dimension `log_dim - log_lift`, so its Merkle tree
@@ -138,9 +148,12 @@ where
 				let oracle_log_dim = log_dim - spec.log_lift;
 				let depth = oracle_log_dim + log_inv_rate;
 				let log_lift = spec.log_lift;
-				let inner_start = spec.skip_batch_challenges;
+				let early_window = &early_challenges[max_early - spec.log_early_batch_size..];
+				let later_window = &later_challenges[max_later - spec.log_later_batch_size..];
+				let fold_challenges: Vec<F> =
+					early_window.iter().chain(later_window).copied().collect();
 				BrakedownOracle::new(
-					inner_challenges[inner_start..inner_start + spec.log_batch_size].to_vec(),
+					fold_challenges,
 					Commitment {
 						root: commitment.clone(),
 						depth,

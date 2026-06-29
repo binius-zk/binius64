@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use binius_core::word::Word;
 use binius_field::{
-	AESTowerField8b, BinaryField, PackedField,
+	AESTowerField8b as B8, BinaryField, PackedField,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, LinearTransformationFactory,
 		OutputWrappingTransformationFactory,
@@ -21,7 +21,6 @@ use binius_verifier::{
 
 use super::sumcheck_round_messages;
 use crate::{
-	and_reduction::ntt_lookup::NTTLookup,
 	fold_word::fold_words_with_transform,
 	protocols::sumcheck::{
 		Error, ProveSingleOutput, common::MleCheckProver, prove_single_mlecheck,
@@ -36,7 +35,7 @@ use crate::{
 /// The type parameter `PChallenge` is the packed field over the challenge field `FChallenge` used
 /// for the multilinear sumcheck rounds that follow the univariate round. Packing these rounds over
 /// a wide field provides SIMD acceleration.
-pub struct OblongZerocheckProver<FChallenge, PNTTDomain, PChallenge>
+pub struct OblongZerocheckProver<FChallenge, PChallenge>
 where
 	FChallenge: BinaryField,
 {
@@ -47,13 +46,12 @@ where
 	big_field_zerocheck_challenges: Vec<FChallenge>,
 	univariate_round_message: [FChallenge; ROWS_PER_HYPERCUBE_VERTEX],
 	univariate_round_message_domain: BinarySubspace<FChallenge>,
-	_marker: PhantomData<(PNTTDomain, PChallenge)>,
+	_marker: PhantomData<PChallenge>,
 }
 
-impl<F, PNTTDomain, PChallenge> OblongZerocheckProver<F, PNTTDomain, PChallenge>
+impl<F, PChallenge> OblongZerocheckProver<F, PChallenge>
 where
-	F: BinaryField + From<AESTowerField8b>,
-	PNTTDomain: PackedField<Scalar = AESTowerField8b>,
+	F: BinaryField + From<B8>,
 	PChallenge: PackedField<Scalar = F>,
 {
 	/// Creates a new oblong zerocheck prover for AND constraint reduction.
@@ -84,20 +82,17 @@ where
 		second_col: Vec<Word>,
 		third_col: Vec<Word>,
 		big_field_zerocheck_challenges: Vec<F>,
-		prover_message_domain: BinarySubspace<AESTowerField8b>,
+		prover_message_domain: BinarySubspace<B8>,
 	) -> Self {
-		let ntt_lookup = tracing::debug_span!("Compute univariate LDE table")
-			.in_scope(|| NTTLookup::<PNTTDomain>::new(&prover_message_domain));
-
 		let univariate_round_message = tracing::debug_span!("Compute univariate round message")
 			.in_scope(|| {
-				sumcheck_round_messages::univariate_round_message_extension_domain(
+				sumcheck_round_messages::univariate_round_message_extension_domain::<F>(
 					log_words,
 					&first_col,
 					&second_col,
 					&third_col,
 					&big_field_zerocheck_challenges,
-					&ntt_lookup,
+					&prover_message_domain,
 				)
 			});
 
@@ -275,7 +270,7 @@ mod test {
 
 	use binius_core::word::Word;
 	use binius_field::{
-		AESTowerField8b, PackedAESBinaryField64x8b,
+		AESTowerField8b,
 		arch::OptimalPackedB128,
 		linear_transformation::{
 			BytewiseLookupTransformationFactory, LinearTransformationFactory,
@@ -326,7 +321,7 @@ mod test {
 		// Prover is instantiated
 		let big_field_zerocheck_challenges = prover_challenger
 			.sample_vec(log_num_rows - PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
-		let prover = OblongZerocheckProver::<_, PackedAESBinaryField64x8b, OptimalPackedB128>::new(
+		let prover = OblongZerocheckProver::<_, OptimalPackedB128>::new(
 			log_num_rows,
 			first_mlv.clone(),
 			second_mlv.clone(),

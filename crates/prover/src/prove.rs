@@ -6,8 +6,7 @@ use binius_core::{
 	word::Word,
 };
 use binius_field::{
-	AESTowerField8b as B8, BinaryField, ExtensionField, PackedAESBinaryField64x8b, PackedExtension,
-	PackedField,
+	AESTowerField8b as B8, BinaryField, ExtensionField, PackedExtension, PackedField,
 };
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{
@@ -31,6 +30,7 @@ use binius_verifier::{
 	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput, sumcheck::SumcheckOutput},
 };
 use digest::Output;
+use rand::{SeedableRng, rngs::StdRng};
 
 use super::error::Error;
 use crate::{
@@ -340,8 +340,12 @@ where
 		)
 		.entered();
 
-		// Create channel and delegate to IOPProver::prove
-		let channel = BaseFoldProverChannel::from_compiler(&self.basefold_compiler, transcript);
+		// Create channel and delegate to IOPProver::prove. The unified channel takes an rng to
+		// mask ZK oracles, but a plain `Prover` produces a transparent proof whose only oracle is
+		// non-ZK, so no masks are drawn and the rng is never consumed.
+		let rng = StdRng::seed_from_u64(0);
+		let channel =
+			BaseFoldProverChannel::from_compiler(&self.basefold_compiler, transcript, rng);
 		self.iop_prover.prove::<P, _>(witness, channel)
 	}
 }
@@ -441,7 +445,7 @@ where
 		log_constraint_count.saturating_sub(PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
 	let big_field_zerocheck_challenges = channel.sample_many(n_extra_zerocheck_challenges);
 
-	let prover = OblongZerocheckProver::<_, PackedAESBinaryField64x8b, PChallenge>::new(
+	let prover = OblongZerocheckProver::<_, PChallenge>::new(
 		log_constraint_count,
 		a,
 		b,

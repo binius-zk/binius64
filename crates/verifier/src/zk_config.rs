@@ -17,7 +17,7 @@ use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::BinaryField128bGhash as B128;
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
-	basefold_compiler::BaseFoldZKVerifierCompiler,
+	basefold_compiler::BaseFoldVerifierCompiler,
 	channel::OracleSpec,
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
@@ -53,7 +53,7 @@ pub struct ZKVerifier<H: HashSuite> {
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_verifier: IronSpartanIOPVerifier<B128>,
 	outer_layout: WitnessLayout<B128>,
-	basefold_compiler: BaseFoldZKVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>>,
+	basefold_compiler: BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>>,
 }
 
 impl<H> ZKVerifier<H>
@@ -117,13 +117,13 @@ where
 		let outer_oracle_specs = outer_iop_verifier.oracle_specs();
 		let oracle_specs: Vec<OracleSpec> = [
 			vec![outer_oracle_specs[0]],
-			inner_iop_verifier.oracle_specs(),
+			inner_iop_verifier.oracle_specs(true),
 			outer_oracle_specs[1..].to_vec(),
 		]
 		.concat();
 
 		let merkle_scheme = BinaryMerkleTreeScheme::<B128, H>::new();
-		let basefold_compiler = BaseFoldZKVerifierCompiler::new(
+		let basefold_compiler = BaseFoldVerifierCompiler::new(
 			merkle_scheme,
 			oracle_specs,
 			log_inv_rate,
@@ -152,7 +152,7 @@ where
 	/// Returns the BaseFold ZK verifier compiler.
 	pub fn basefold_compiler(
 		&self,
-	) -> &BaseFoldZKVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
+	) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
 		&self.basefold_compiler
 	}
 
@@ -177,7 +177,7 @@ where
 		public: &[Word],
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		// Create BaseFoldZK channel and wrap with outer verifier.
+		// Create BaseFold channel and wrap with outer verifier.
 		let channel = self.basefold_compiler.create_channel(transcript);
 		let mut wrapped_channel =
 			ZKWrappedVerifierChannel::new(channel, &self.outer_iop_verifier, &self.outer_layout)?;

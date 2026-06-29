@@ -5,10 +5,10 @@ use std::{array, borrow::Cow, iter};
 
 use binius_core::word::Word;
 use binius_field::{
-	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, ExtensionField, PackedField,
-	util::expand_subset_sums_array,
+	AESTowerField8b as B8, BinaryField, BinaryField1b as B1, ExtensionField,
+	PackedAESBinaryField64x8b as Packed64xB8, PackedField, WideMul, util::expand_subset_sums_array,
 };
-use binius_math::multilinear::eq::eq_ind_partial_eval;
+use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::rayon::prelude::*;
 use binius_verifier::{
 	config::PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES, protocols::bitand::ROWS_PER_HYPERCUBE_VERTEX,
@@ -48,7 +48,8 @@ use super::ntt_lookup::NTTLookup;
 /// * `b_words` - Second multiplicand (b) as a one-bit oblong multilinear polynomial
 /// * `c_words` - Product constraint (c) as a one-bit oblong multilinear polynomial
 /// * `eq_ind_big_field_challenges` - Partial equality indicator evaluations for big field variables
-/// * `ntt_lookup` - NTT lookup tables for efficient low-degree extension of each column
+/// * `prover_message_domain` - The NTT domain subspace (dimension `SKIPPED_VARS + 1`) from which
+///   the low-degree-extension lookup table is built internally
 ///
 /// # Returns
 ///
@@ -59,26 +60,17 @@ use super::ntt_lookup::NTTLookup;
 /// # Type Parameters
 ///
 /// * `F` - The challenge field type (must be a binary field)
-/// * `PNTTDomain` - The packed extension field type for NTT operations (width must equal
-///   `ROWS_PER_HYPERCUBE_VERTEX`)
-pub fn univariate_round_message_extension_domain<F, PNTTDomain>(
+pub fn univariate_round_message_extension_domain<F>(
 	log_words: usize,
 	a_words: &[Word],
 	b_words: &[Word],
 	c_words: &[Word],
 	big_field_challenges: &[F],
-	ntt_lookup: &NTTLookup<PNTTDomain>,
+	prover_message_domain: &BinarySubspace<B8>,
 ) -> [F; ROWS_PER_HYPERCUBE_VERTEX]
 where
 	F: BinaryField + From<B8>,
-	PNTTDomain: PackedField<Scalar = B8>,
 {
-	// This assertion is used as a workaround for Rust's limited support for const-generics,
-	// ideally we would just use PNTTDomain::WIDTH everywhere instead, but since this function only
-	// supports 128b underliers, this is set to a constant. We would need to rethink for support of
-	// multiple underlier sizes
-	assert_eq!(PNTTDomain::WIDTH, ROWS_PER_HYPERCUBE_VERTEX);
-
 	const N_FIXED_SMALL_CHALLENGES: usize = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len();
 	const N_FIXED_LARGE_CHALLENGES: usize = 4;
 
@@ -89,10 +81,13 @@ where
 		assert_eq!(col.len(), 1 << log_words);
 	}
 
+	let ntt_lookup = tracing::debug_span!("Compute univariate LDE table")
+		.in_scope(|| NTTLookup::new(prover_message_domain));
+
 	let eq_ind_small: [_; 1 << N_FIXED_SMALL_CHALLENGES] =
 		eq_ind_partial_eval::<B8>(&PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES)
 			.iter_scalars()
-			.map(PNTTDomain::broadcast)
+			.map(Packed64xB8::broadcast)
 			.collect::<Vec<_>>()
 			.try_into()
 			.expect("PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len() == N_FIXED_SMALL_CHALLENGES");
@@ -129,37 +124,38 @@ where
 	// Process columns in fixed-length chunks of 8 to assist compiler in loop unrolling.
 	let a_col_chunks = duplicate_to_fixed_chunks::<{ 1 << LOG_CHUNK_SIZE }>(a_words);
 	let b_col_chunks = duplicate_to_fixed_chunks::<{ 1 << LOG_CHUNK_SIZE }>(b_words);
-	let c_col_chunks = duplicate_to_fixed_chunks::<{ 1 << LOG_CHUNK_SIZE }>(c_words);
 
 	// Accumulate resulting polynomial evals by iterating over each hypercube vertex.
-	(a_col_chunks.as_ref(), b_col_chunks.as_ref(), c_col_chunks.as_ref())
+	(a_col_chunks.as_ref(), b_col_chunks.as_ref())
 		.into_par_iter()
-		.map(|(a_chunk, b_chunk, c_chunk)| {
+		.map(|(a_chunk, b_chunk)| {
 			// Reshape the chunk arrays into arrays of arrays
-			let [a_subchunks, b_subchunks, c_subchunks] =
-				[a_chunk, b_chunk, c_chunk].map(|chunk| {
-					bytemuck::must_cast_ref::<
-						[Word; 1 << LOG_CHUNK_SIZE],
-						[[Word; 1 << N_FIXED_SMALL_CHALLENGES]; 1 << N_FIXED_LARGE_CHALLENGES],
-					>(chunk)
-				});
+			let [a_subchunks, b_subchunks] = [a_chunk, b_chunk].map(|chunk| {
+				bytemuck::must_cast_ref::<
+					[Word; 1 << LOG_CHUNK_SIZE],
+					[[Word; 1 << N_FIXED_SMALL_CHALLENGES]; 1 << N_FIXED_LARGE_CHALLENGES],
+				>(chunk)
+			});
 
 			let mut acc = [F::ZERO; ROWS_PER_HYPERCUBE_VERTEX];
-			for (a_subchunk, b_subchunk, c_subchunk, outer_weight) in
-				izip!(a_subchunks, b_subchunks, c_subchunks, &outer_weight_mul_maps)
+			for (a_subchunk, b_subchunk, outer_weight) in
+				izip!(a_subchunks, b_subchunks, &outer_weight_mul_maps)
 			{
-				let mut summed_ntt = PNTTDomain::zero();
-				for (a_i, b_i, c_i, inner_weight) in
-					izip!(a_subchunk, b_subchunk, c_subchunk, &eq_ind_small)
-				{
+				let mut summed_ntt = <Packed64xB8 as WideMul>::Output::default();
+				for (&a_i, &b_i, inner_weight) in izip!(a_subchunk, b_subchunk, &eq_ind_small) {
+					let c_i = a_i & b_i;
+
 					// Compute the low-degree extension of each column via the lookup table.
-					let [first_col_ntt, second_col_ntt, third_col_ntt] =
-						ntt_lookup.multi_ntt_array([a_i.0, b_i.0, c_i.0]);
+					let a_lde = ntt_lookup.ntt(a_i);
+					let b_lde = ntt_lookup.ntt(b_i);
+					let c_lde = ntt_lookup.ntt(c_i);
 
 					// Compute the weighted composition of the LDE values.
-					summed_ntt += (first_col_ntt * second_col_ntt - third_col_ntt) * inner_weight;
+					summed_ntt += Packed64xB8::wide_mul(a_lde * b_lde - c_lde, *inner_weight);
 				}
-				for (acc_i, summed_ntt_i) in iter::zip(&mut acc, summed_ntt.into_iter()) {
+
+				let summed_ntt_reduced = Packed64xB8::reduce(summed_ntt);
+				for (acc_i, summed_ntt_i) in iter::zip(&mut acc, summed_ntt_reduced.into_iter()) {
 					*acc_i += outer_weight.call(summed_ntt_i);
 				}
 			}
@@ -245,7 +241,7 @@ mod test {
 	use std::iter::repeat_with;
 
 	use binius_field::{
-		BinaryField128bGhash as B128, Field, PackedAESBinaryField64x8b, Random,
+		BinaryField128bGhash as B128, Field, Random,
 		linear_transformation::{
 			BytewiseLookupTransformationFactory, LinearTransformationFactory,
 			OutputWrappingTransformationFactory,
@@ -301,18 +297,17 @@ mod test {
 		// Agreed-upon proof parameter
 
 		let prover_message_domain = BinarySubspace::with_dim(SKIPPED_VARS + 1);
-		let ntt_lookup = NTTLookup::<PackedAESBinaryField64x8b>::new(&prover_message_domain);
 
 		let verifier_message_domain = prover_message_domain.isomorphic::<B128>();
 
 		// Prover generates first round message
-		let first_round_message_on_ext_domain = univariate_round_message_extension_domain::<B128, _>(
+		let first_round_message_on_ext_domain = univariate_round_message_extension_domain::<B128>(
 			log_num_words,
 			&mlv_1,
 			&mlv_2,
 			&mlv_3,
 			&big_field_zerocheck_challenges,
-			&ntt_lookup,
+			&prover_message_domain,
 		);
 
 		let mut first_round_message_coeffs = vec![B128::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];

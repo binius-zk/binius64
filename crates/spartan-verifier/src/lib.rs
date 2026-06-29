@@ -39,7 +39,7 @@ use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
 	basefold,
-	basefold_compiler::BaseFoldZKVerifierCompiler,
+	basefold_compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
@@ -95,7 +95,7 @@ where
 {
 	iop_verifier: IOPVerifier<F>,
 	/// BaseFold ZK compiler for creating verifier channels.
-	basefold_compiler: BaseFoldZKVerifierCompiler<F, BinaryMerkleTreeScheme<F, H>>,
+	basefold_compiler: BaseFoldVerifierCompiler<F, BinaryMerkleTreeScheme<F, H>>,
 }
 
 impl<F: Field> IOPVerifier<F> {
@@ -278,7 +278,7 @@ where
 		let merkle_scheme = BinaryMerkleTreeScheme::<F, H>::new();
 
 		// Create the BaseFold ZK compiler for IOP verification
-		let basefold_compiler = BaseFoldZKVerifierCompiler::new(
+		let basefold_compiler = BaseFoldVerifierCompiler::new(
 			merkle_scheme,
 			oracle_specs,
 			log_inv_rate,
@@ -302,7 +302,7 @@ where
 	}
 
 	/// Returns a reference to the BaseFold ZK verifier compiler.
-	pub fn iop_compiler(&self) -> &BaseFoldZKVerifierCompiler<F, BinaryMerkleTreeScheme<F, H>> {
+	pub fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<F, BinaryMerkleTreeScheme<F, H>> {
 		&self.basefold_compiler
 	}
 

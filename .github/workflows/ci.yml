@@ -10,6 +10,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # CI never debugs interactively, so drop most debuginfo to cut compile + link time. Keep line
+  # tables so panic / test-failure backtraces still report file:line.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 concurrency:
   group: ${{ github.event_name }}-${{ github.ref }}
@@ -66,7 +70,10 @@ jobs:
     name: rust-checks-${{ matrix.arch.name }}
     runs-on: ${{ matrix.arch.runner }}
     env:
-      RUSTFLAGS: ${{ matrix.arch.rustflags }}
+      # Link with lld instead of the default ld.bfd: the rust-checks build links many test and
+      # example binaries, where bfd is a serial bottleneck. Appended to the per-arch flags
+      # (target-cpu). lld is installed below.
+      RUSTFLAGS: "${{ matrix.arch.rustflags }} -Clink-arg=-fuse-ld=lld"
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
@@ -94,8 +101,14 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      - name: Install lld
+        run: sudo apt-get update -qq && sudo apt-get install -y lld
+      # Don't *build* benchmarks: each criterion bench is a separate binary linking the whole crate,
+      # and CI never runs them (`cargo bench`), so codegen + linking them is pure overhead. Clippy
+      # below still checks them via `--all-targets` — that's front-end only (no codegen/link), so it
+      # guards against bench bitrot (API drift) for a fraction of a full build.
       - name: Compile
-        run: cargo build --workspace --all-targets
+        run: cargo build --workspace --lib --bins --tests --examples
       - name: Run platform diagnostics
         run: cargo test -p binius-utils --features platform-diagnostics test_platform_diagnostics -- --nocapture
       - name: Run clippy

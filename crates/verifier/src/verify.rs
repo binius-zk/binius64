@@ -92,11 +92,17 @@ impl IOPVerifier {
 	/// Returns the oracle specs for the IOP channel.
 	///
 	/// These describe the oracles (the witness) that the prover commits to.
-	pub fn oracle_specs(&self) -> Vec<OracleSpec> {
-		// Marked ZK so the witness oracle stays masked when wrapped by the ZK config, matching
-		// current behaviour. The non-ZK path (flexible batch, no mask) lands with the conditional
-		// masking in the follow-up commit.
-		vec![OracleSpec::new_zk(self.log_witness_elems())]
+	///
+	/// `is_zk` is the protocol-level zero-knowledge flag: in a ZK proof the witness oracle is
+	/// masked, in a transparent proof it is not. The flag is taken per call so that a non-ZK
+	/// oracle can still participate in a ZK protocol (e.g. indexed relation openings).
+	pub fn oracle_specs(&self, is_zk: bool) -> Vec<OracleSpec> {
+		let log_msg_len = self.log_witness_elems();
+		vec![if is_zk {
+			OracleSpec::new_zk(log_msg_len)
+		} else {
+			OracleSpec::new(log_msg_len)
+		}]
 	}
 
 	/// Verifies a proof using an IOP channel.
@@ -300,7 +306,9 @@ where
 		let iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
 
 		let log_witness_elems = iop_verifier.log_witness_elems();
-		let oracle_specs = iop_verifier.oracle_specs();
+		// A plain `Verifier` produces a transparent (non-ZK) proof, so the witness oracle is not
+		// masked.
+		let oracle_specs = iop_verifier.oracle_specs(false);
 
 		let log_code_len = log_witness_elems + log_inv_rate;
 		let merkle_scheme = BinaryMerkleTreeScheme::<B128, H>::new();
@@ -351,8 +359,7 @@ where
 
 	/// Returns the chosen FRI parameters.
 	pub fn fri_params(&self) -> &FRIParams<B128> {
-		// There is exactly one oracle spec (the witness)
-		&self.iop_compiler.fri_params()[0]
+		self.iop_compiler.fri_params()
 	}
 
 	/// Returns the [`crate::merkle_tree::MerkleTreeScheme`] instance used.

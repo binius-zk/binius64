@@ -1,19 +1,15 @@
 // Copyright 2025-2026 The Binius Developers
 
-use std::{
-	array,
-	iter::Sum,
-	ops::{Add, AddAssign, Sub, SubAssign},
-};
+use std::array;
 
 use bytemuck::{Pod, TransparentWrapper};
 
 use super::packed::PackedPrimitiveType;
 use crate::{
 	BinaryField,
-	arch::M128,
+	arch::LaneWideProduct,
 	arithmetic_traits::{InvertOrZero, Square, WideMul},
-	underlier::{Divisible, ScaledUnderlier, UnderlierType},
+	underlier::{ScaledUnderlier, UnderlierType},
 };
 
 /// Wrapper for `ScaledUnderlier` multiplication that delegates to sub-underlier operations.
@@ -68,117 +64,82 @@ where
 	}
 }
 
-/// The unreduced product of a multi-lane packing: one independent width-1 widening product per
-/// 128-bit lane. Lanes accumulate and reduce independently, mirroring the packing's structure. The
-/// const parameter `N` is the lane count.
-#[derive(Clone, Copy, Debug)]
-pub struct ScaledWideProduct<O, const N: usize>([O; N]);
-
-impl<O: Copy + Default, const N: usize> Default for ScaledWideProduct<O, N> {
-	#[inline]
-	fn default() -> Self {
-		Self([O::default(); N])
-	}
-}
-
-impl<O: Copy + Add<Output = O>, const N: usize> Add for ScaledWideProduct<O, N> {
-	type Output = Self;
-
-	#[inline]
-	fn add(self, rhs: Self) -> Self {
-		Self(array::from_fn(|i| self.0[i] + rhs.0[i]))
-	}
-}
-
-impl<O: Copy + Add<Output = O>, const N: usize> AddAssign for ScaledWideProduct<O, N> {
-	#[inline]
-	fn add_assign(&mut self, rhs: Self) {
-		*self = *self + rhs;
-	}
-}
-
-impl<O: Copy + Sub<Output = O>, const N: usize> Sub for ScaledWideProduct<O, N> {
-	type Output = Self;
-
-	#[inline]
-	fn sub(self, rhs: Self) -> Self {
-		Self(array::from_fn(|i| self.0[i] - rhs.0[i]))
-	}
-}
-
-impl<O: Copy + Sub<Output = O>, const N: usize> SubAssign for ScaledWideProduct<O, N> {
-	#[inline]
-	fn sub_assign(&mut self, rhs: Self) {
-		*self = *self - rhs;
-	}
-}
-
-impl<O: Copy + Default + Add<Output = O>, const N: usize> Sum for ScaledWideProduct<O, N> {
-	#[inline]
-	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-		iter.fold(Self::default(), |acc, x| acc + x)
-	}
-}
-
-/// Widening-multiply wrapper for a multi-lane packing built from 128-bit lanes: it splits the
-/// underlier into its `M128` lanes via [`Divisible`] and applies the width-1 packing's [`WideMul`]
-/// to each. A single impl covers every multi-lane packing whose underlier is `Divisible<M128>` —
-/// both the portable `ScaledUnderlier` packings and the x86_64 SIMD `M256`/`M512` ones — for any
-/// field: GHASH lanes defer a 256-bit product and reduce at the end, while AES lanes carry the
-/// already-reduced byte (`reduce` is then the identity). The const parameter `N` is the lane count
-/// and must equal `<U as Divisible<M128>>::N` for the packed type's underlier.
-///
-/// Use the lane-count aliases [`Scaled2xWideMul`] and [`Scaled4xWideMul`] to avoid repeating the
-/// const argument at each call site.
-#[derive(TransparentWrapper)]
-#[repr(transparent)]
-pub struct ScaledWideMul<T, const N: usize>(pub T);
-
-/// The width-1 packing for the active arch's 128-bit underlier — the per-lane field whose `WideMul`
-/// drives each lane.
-type Lane<Scalar> = PackedPrimitiveType<M128, Scalar>;
-
-impl<U, Scalar, const N: usize> WideMul for ScaledWideMul<PackedPrimitiveType<U, Scalar>, N>
+/// Widening multiply for a `ScaledUnderlier` packing: apply the sub-underlier packing's [`WideMul`]
+/// to each of the `N` lanes independently, deferring reduction per lane via [`LaneWideProduct`].
+/// The `Scaled` analogue of [`Divide`](crate::arch::Divide)'s `WideMul`, but addressing the inner
+/// sub-underliers of `ScaledUnderlier` directly instead of splitting an underlier with `Divisible`.
+impl<U: UnderlierType + Pod, Scalar: BinaryField, const N: usize> WideMul
+	for Scaled<PackedPrimitiveType<ScaledUnderlier<U, N>, Scalar>>
 where
-	U: UnderlierType + Divisible<M128>,
-	Scalar: BinaryField,
-	Lane<Scalar>: WideMul,
-	<Lane<Scalar> as WideMul>::Output: Copy + Default,
+	PackedPrimitiveType<U, Scalar>: WideMul,
+	<PackedPrimitiveType<U, Scalar> as WideMul>::Output: Copy + Default,
 {
-	type Output = ScaledWideProduct<<Lane<Scalar> as WideMul>::Output, N>;
+	type Output = LaneWideProduct<<PackedPrimitiveType<U, Scalar> as WideMul>::Output, N>;
 
 	#[inline]
 	fn wide_mul(a: Self, b: Self) -> Self::Output {
-		debug_assert_eq!(N, <U as Divisible<M128>>::N, "N must equal Divisible<M128>::N");
-
-		let a = Self::peel(a).to_underlier();
-		let b = Self::peel(b).to_underlier();
-
-		let mut out = [<Lane<Scalar> as WideMul>::Output::default(); N];
-		for (slot, (lhs, rhs)) in out
-			.iter_mut()
-			.zip(<U as Divisible<M128>>::value_iter(a).zip(<U as Divisible<M128>>::value_iter(b)))
-		{
-			*slot = <Lane<Scalar>>::wide_mul(
-				Lane::<Scalar>::from_underlier(lhs),
-				Lane::<Scalar>::from_underlier(rhs),
-			);
-		}
-		ScaledWideProduct(out)
+		let (a, b) = (Self::peel(a), Self::peel(b));
+		LaneWideProduct(array::from_fn(|i| {
+			<PackedPrimitiveType<U, Scalar> as WideMul>::wide_mul(
+				PackedPrimitiveType::wrap(a.0.0[i]),
+				PackedPrimitiveType::wrap(b.0.0[i]),
+			)
+		}))
 	}
 
 	#[inline]
 	fn reduce(wide: Self::Output) -> Self {
-		let lanes = wide
-			.0
-			.into_iter()
-			.map(|product| <Lane<Scalar> as WideMul>::reduce(product).to_underlier());
-		Self::wrap(PackedPrimitiveType::from_underlier(<U as Divisible<M128>>::from_iter(lanes)))
+		Self::wrap(PackedPrimitiveType::wrap(ScaledUnderlier(array::from_fn(|i| {
+			PackedPrimitiveType::peel(<PackedPrimitiveType<U, Scalar> as WideMul>::reduce(
+				wide.0[i],
+			))
+		}))))
 	}
 }
 
-/// Convenience alias for the 2-lane (256-bit) scaled widening multiply.
-pub type Scaled2xWideMul<T> = ScaledWideMul<T, 2>;
+#[cfg(test)]
+mod tests {
+	use proptest::prelude::*;
 
-/// Convenience alias for the 4-lane (512-bit) scaled widening multiply.
-pub type Scaled4xWideMul<T> = ScaledWideMul<T, 4>;
+	use super::*;
+	use crate::{aes_field::AESTowerField8b, arch::M128};
+
+	// A two-lane `ScaledUnderlier` AES packing whose `M128` lanes carry their own `WideMul`.
+	type Inner = PackedPrimitiveType<ScaledUnderlier<M128, 2>, AESTowerField8b>;
+	type P = Scaled<Inner>;
+
+	fn packing(lo: u128, hi: u128) -> P {
+		P::wrap(Inner::from_underlier(ScaledUnderlier([M128::from_u128(lo), M128::from_u128(hi)])))
+	}
+
+	proptest! {
+		// `reduce(wide_mul(a, b))` must agree with the `Scaled` multiply.
+		#[test]
+		fn wide_mul_reduce_matches_mul(
+			a_lo in any::<u128>(), a_hi in any::<u128>(),
+			b_lo in any::<u128>(), b_hi in any::<u128>(),
+		) {
+			let (a, b) = (packing(a_lo, a_hi), packing(b_lo, b_hi));
+			let via_wide = P::peel(P::reduce(P::wide_mul(a, b)));
+			let via_mul = P::peel(packing(a_lo, a_hi) * packing(b_lo, b_hi));
+			prop_assert_eq!(via_wide, via_mul);
+		}
+
+		// Deferred per-lane accumulation: summing two wide products then reducing once must equal
+		// the sum of the two reduced products.
+		#[test]
+		fn wide_mul_accumulates(
+			a_lo in any::<u128>(), a_hi in any::<u128>(),
+			b_lo in any::<u128>(), b_hi in any::<u128>(),
+			c_lo in any::<u128>(), c_hi in any::<u128>(),
+			d_lo in any::<u128>(), d_hi in any::<u128>(),
+		) {
+			let acc = P::wide_mul(packing(a_lo, a_hi), packing(b_lo, b_hi))
+				+ P::wide_mul(packing(c_lo, c_hi), packing(d_lo, d_hi));
+			let via_wide = P::peel(P::reduce(acc));
+			let via_mul = P::peel(packing(a_lo, a_hi) * packing(b_lo, b_hi))
+				+ P::peel(packing(c_lo, c_hi) * packing(d_lo, d_hi));
+			prop_assert_eq!(via_wide, via_mul);
+		}
+	}
+}

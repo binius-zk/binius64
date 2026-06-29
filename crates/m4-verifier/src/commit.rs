@@ -1,7 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_core::constraint_system::ConstraintSystem;
-use binius_iop::channel::OracleSpec;
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::config::LOG_WORDS_PER_ELEM;
 
@@ -87,13 +86,6 @@ impl BatchCommitLayout {
 	/// The number of words one instance occupies after power-of-two padding.
 	pub fn padded_instance_words(&self) -> usize {
 		1 << self.log_instance_words
-	}
-
-	/// The oracle specification the verifier expects for the committed batch witness.
-	pub fn oracle_spec(&self) -> OracleSpec {
-		// Marked ZK to match the single-instance trace oracle.
-		// The non-ZK batch path lands with the masking follow-up.
-		OracleSpec::new_zk(self.log_witness_elems)
 	}
 }
 

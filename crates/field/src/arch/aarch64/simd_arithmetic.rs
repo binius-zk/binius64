@@ -68,29 +68,40 @@ pub fn packed_aes_16x8b_square(x: M128) -> M128 {
 /// bytes (`hi`, the overflow above `x^7` still to be folded down). Both the carryless multiply and
 /// the GF(2^8) reduction are linear, so products accumulate by XOR and reduce once at the end via
 /// [`packed_aes_16x8b_reduce`].
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct WideAes16x8bProduct {
-	lo: M128,
-	hi: M128,
+	c0: poly16x8_t,
+	c1: poly16x8_t,
+}
+
+impl Default for WideAes16x8bProduct {
+	fn default() -> Self {
+		unsafe {
+			Self {
+				c0: vdupq_n_p16(0),
+				c1: vdupq_n_p16(0),
+			}
+		}
+	}
 }
 
 impl Add for WideAes16x8bProduct {
 	type Output = Self;
 
 	#[inline]
-	fn add(self, rhs: Self) -> Self {
-		Self {
-			lo: self.lo ^ rhs.lo,
-			hi: self.hi ^ rhs.hi,
-		}
+	fn add(mut self, rhs: Self) -> Self {
+		self += rhs;
+		self
 	}
 }
 
 impl AddAssign for WideAes16x8bProduct {
 	#[inline]
 	fn add_assign(&mut self, rhs: Self) {
-		self.lo ^= rhs.lo;
-		self.hi ^= rhs.hi;
+		unsafe {
+			self.c0 = vaddq_p16(self.c0, rhs.c0);
+			self.c1 = vaddq_p16(self.c1, rhs.c1);
+		}
 	}
 }
 
@@ -99,19 +110,19 @@ impl Sub for WideAes16x8bProduct {
 	type Output = Self;
 
 	#[inline]
-	fn sub(self, rhs: Self) -> Self {
-		Self {
-			lo: self.lo ^ rhs.lo,
-			hi: self.hi ^ rhs.hi,
-		}
+	fn sub(mut self, rhs: Self) -> Self {
+		self -= rhs;
+		self
 	}
 }
 
 impl SubAssign for WideAes16x8bProduct {
 	#[inline]
 	fn sub_assign(&mut self, rhs: Self) {
-		self.lo ^= rhs.lo;
-		self.hi ^= rhs.hi;
+		unsafe {
+			self.c0 = vaddq_p16(self.c0, rhs.c0);
+			self.c1 = vaddq_p16(self.c1, rhs.c1);
+		}
 	}
 }
 
@@ -129,18 +140,10 @@ pub fn packed_aes_16x8b_wide_mul(a: M128, b: M128) -> WideAes16x8bProduct {
 	unsafe {
 		let a = vreinterpretq_p8_p128(a.into());
 		let b = vreinterpretq_p8_p128(b.into());
-		let c0 = vreinterpretq_p8_p16(vmull_p8(vget_low_p8(a), vget_low_p8(b)));
-		let c1 = vreinterpretq_p8_p16(vmull_p8(vget_high_p8(a), vget_high_p8(b)));
+		let c0 = vmull_p8(vget_low_p8(a), vget_low_p8(b));
+		let c1 = vmull_p8(vget_high_p8(a), vget_high_p8(b));
 
-		// Deinterleave the 16 per-byte carryless products into their low bytes (`lo`) and high
-		// bytes (`hi`, the part above `x^7` that the reduction folds back down).
-		let cl = vuzp1q_p8(c0, c1);
-		let ch = vuzp2q_p8(c0, c1);
-
-		WideAes16x8bProduct {
-			lo: vreinterpretq_p128_p8(cl).into(),
-			hi: vreinterpretq_p128_p8(ch).into(),
-		}
+		WideAes16x8bProduct { c0, c1 }
 	}
 }
 
@@ -150,8 +153,15 @@ pub fn packed_aes_16x8b_reduce(wide: WideAes16x8bProduct) -> M128 {
 	// Reduces the 16-bit output of a carryless multiplication to 8 bits using equation 22 in
 	// https://www.intel.com/content/dam/develop/external/us/en/documents/clmul-wp-rev-2-02-2014-04-20.pdf
 	unsafe {
-		let cl = vreinterpretq_p8_p128(wide.lo.into());
-		let ch = vreinterpretq_p8_p128(wide.hi.into());
+		let WideAes16x8bProduct { c0, c1 } = wide;
+
+		// Deinterleave the 16 per-byte carryless products into their low bytes (`lo`) and high
+		// bytes (`hi`, the part above `x^7` that the reduction folds back down).
+		let c0 = vreinterpretq_p8_p16(c0);
+		let c1 = vreinterpretq_p8_p16(c1);
+
+		let cl = vuzp1q_p8(c0, c1);
+		let ch = vuzp2q_p8(c0, c1);
 
 		// Since q+(x) doesn't fit into 8 bits, we right shift the polynomial (divide by x) and
 		// correct for this later. This works because q+(x) is divisible by x/the last polynomial
