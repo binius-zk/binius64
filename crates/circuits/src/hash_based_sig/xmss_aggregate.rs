@@ -8,62 +8,55 @@
 use binius_frontend::{CircuitBuilder, Wire};
 
 use super::{
-	winternitz_ots::WinternitzSpec,
-	xmss::{XmssHashers, XmssSignature, circuit_xmss},
+	winternitz_ots::{NONCE_WIRES_COUNT, WinternitzSpec},
+	xmss::{XmssSignature, circuit_xmss},
 };
-
-/// The collection of XMSS hashers for multi-signature verification.
-/// Contains one `XmssHashers` struct per validator.
-pub struct XmssMultisigHashers {
-	/// Vector of XmssHashers, one for each validator
-	pub validator_hashers: Vec<XmssHashers>,
-}
 
 /// Verifies multiple XMSS signatures on the same message from different validators at a common
 /// epoch.
 ///
-/// This function implements multi-signature aggregation where:
-/// - Each validator has their own independent XMSS tree (different roots)
-/// - All validators sign the same message
-/// - All validators sign at the same epoch (leaf index)
-/// - The proof aggregates all individual signature verifications
+/// - Each validator has its own independent XMSS tree, so the roots differ.
+/// - All validators sign the same message at the same epoch.
+/// - A public key is a `(root, parameter)` pair, so the parameter is per-signer too.
 ///
-/// # Public Inputs (inout wires)
-/// - `domain_param`: Cryptographic domain parameter shared by all validators as 64-bit LE-packed
-///   wires. The actual byte length is specified by `spec.domain_param_len`
-/// - `message`: The common message being signed by all validators
-/// - `epoch`: The common epoch (leaf index) at which all validators sign
-/// - `validator_roots`: Each validator's XMSS tree root
+/// All hashing is BLAKE3, whose digests are derived from the inputs, so this emits constraints
+/// only and returns nothing.
 ///
-/// # Private Inputs (witness wires)
-/// - `validator_signatures`: Each validator's signature data (witness)
-///
-/// # Returns
-///
-/// An `XmssMultisigHashers` struct containing all hashers that need witness population
+/// # Arguments
+/// - `validator_params`: each validator's own parameter, as 64-bit little-endian words.
+/// - `message`: the common message signed by all validators.
+/// - `epoch`: the common epoch (leaf index) at which all validators sign.
+/// - `validator_roots`: each validator's committed XMSS tree root.
+/// - `validator_signatures`: each validator's signature witness.
 pub fn circuit_xmss_multisig(
 	builder: &CircuitBuilder,
 	spec: &WinternitzSpec,
-	domain_param: &[Wire],
+	validator_params: &[Vec<Wire>],
 	message: &[Wire],
 	epoch: Wire,
 	validator_roots: &[[Wire; 4]],
 	validator_signatures: &[XmssSignature],
-) -> XmssMultisigHashers {
+) {
 	assert_eq!(
 		validator_roots.len(),
 		validator_signatures.len(),
 		"Number of validator roots must match number of signatures"
 	);
+	assert_eq!(
+		validator_params.len(),
+		validator_signatures.len(),
+		"Number of validator parameters must match number of signatures"
+	);
 
-	let mut validator_hashers = Vec::new();
-	for (root, sig) in validator_roots.iter().zip(validator_signatures.iter()) {
+	for ((param, root), sig) in validator_params
+		.iter()
+		.zip(validator_roots.iter())
+		.zip(validator_signatures.iter())
+	{
+		// All validators must use the common epoch.
 		builder.assert_eq("epoch_equality", sig.epoch, epoch);
-		let hashers = circuit_xmss(builder, spec, domain_param, message, sig, root);
-		validator_hashers.push(hashers);
+		circuit_xmss(builder, spec, param, message, sig, root);
 	}
-
-	XmssMultisigHashers { validator_hashers }
 }
 
 /// Convenience structure for building multi-signature circuits.
@@ -79,15 +72,26 @@ impl<'a> MultiSigBuilder<'a> {
 		Self { builder, spec }
 	}
 
-	/// Creates public input wires for parameters, message, and epoch.
-	pub fn create_public_inputs(&self) -> (Vec<Wire>, Vec<Wire>, Wire) {
-		let param_wire_count = self.spec.domain_param_len.div_ceil(8);
-		let param: Vec<Wire> = (0..param_wire_count)
-			.map(|_| self.builder.add_inout())
-			.collect();
+	/// Creates public input wires for the common message and epoch.
+	pub fn create_public_inputs(&self) -> (Vec<Wire>, Wire) {
 		let message: Vec<Wire> = (0..4).map(|_| self.builder.add_inout()).collect();
 		let epoch = self.builder.add_inout();
-		(param, message, epoch)
+		(message, epoch)
+	}
+
+	/// Creates per-validator public-input wires for the domain parameters.
+	///
+	/// Each validator carries its own parameter, so this returns one parameter vector per
+	/// validator.
+	pub fn create_validator_params(&self, num_validators: usize) -> Vec<Vec<Wire>> {
+		let param_wire_count = self.spec.domain_param_len.div_ceil(8);
+		(0..num_validators)
+			.map(|_| {
+				(0..param_wire_count)
+					.map(|_| self.builder.add_inout())
+					.collect()
+			})
+			.collect()
 	}
 
 	/// Creates public input wires for validator roots.
@@ -100,7 +104,9 @@ impl<'a> MultiSigBuilder<'a> {
 	/// Creates private witness wires for a single validator's signature using the shared epoch.
 	pub fn create_validator_signature(&self, tree_height: usize, epoch: Wire) -> XmssSignature {
 		XmssSignature {
-			nonce: (0..3).map(|_| self.builder.add_witness()).collect(),
+			nonce: (0..NONCE_WIRES_COUNT)
+				.map(|_| self.builder.add_witness())
+				.collect(),
 			epoch, // Use the shared epoch wire
 			signature_hashes: (0..self.spec.dimension())
 				.map(|_| std::array::from_fn(|_| self.builder.add_witness()))
@@ -125,16 +131,15 @@ mod tests {
 	use rstest::rstest;
 
 	use super::*;
-	use crate::hash_based_sig::witness_utils::{
-		ValidatorSignatureData, XmssHasherData, populate_xmss_hashers,
-	};
+	use crate::hash_based_sig::witness_utils::ValidatorSignatureData;
 
 	fn test_spec_small() -> WinternitzSpec {
 		WinternitzSpec {
 			message_hash_len: 4,
 			coordinate_resolution_bits: 2,
 			target_sum: 24,
-			domain_param_len: 32,
+			// At most 23 bytes so the BLAKE3 tweakable-hash domain fits the 32-byte chaining value.
+			domain_param_len: 18,
 		}
 	}
 
@@ -194,7 +199,8 @@ mod tests {
 
 	// These functions corrupt specific aspects of multisig test data
 	struct MultisigTestData {
-		param_bytes: Vec<u8>,
+		// One domain parameter per validator (part of each validator's public key).
+		validator_param_bytes: Vec<Vec<u8>>,
 		message_bytes: [u8; 32],
 		epoch: u32, // Single shared epoch for all validators
 		validators: Vec<ValidatorSignatureData>,
@@ -209,14 +215,14 @@ mod tests {
 			spec: &WinternitzSpec,
 			rng: &mut StdRng,
 		) -> Self {
-			let mut param_bytes = vec![0u8; spec.domain_param_len];
-			rng.fill_bytes(&mut param_bytes);
-
 			let mut message_bytes = [0u8; 32];
 			rng.fill_bytes(&mut message_bytes);
 
 			let mut validators = Vec::new();
+			let mut validator_param_bytes = Vec::new();
 			for _ in 0..num_validators {
+				let mut param_bytes = vec![0u8; spec.domain_param_len];
+				rng.fill_bytes(&mut param_bytes);
 				validators.push(ValidatorSignatureData::generate(
 					rng,
 					&param_bytes,
@@ -225,10 +231,11 @@ mod tests {
 					spec,
 					tree_height,
 				));
+				validator_param_bytes.push(param_bytes);
 			}
 
 			MultisigTestData {
-				param_bytes,
+				validator_param_bytes,
 				message_bytes,
 				epoch,
 				validators,
@@ -240,8 +247,9 @@ mod tests {
 			let builder = CircuitBuilder::new();
 			let multisig_builder = MultiSigBuilder::new(&builder, spec);
 
-			let (param, message, epoch_wire) = multisig_builder.create_public_inputs();
+			let (message, epoch_wire) = multisig_builder.create_public_inputs();
 			let num_validators = self.validators.len();
+			let validator_params = multisig_builder.create_validator_params(num_validators);
 			let validator_roots = multisig_builder.create_validator_roots(num_validators);
 
 			let mut validator_signatures = Vec::new();
@@ -250,10 +258,10 @@ mod tests {
 					.push(multisig_builder.create_validator_signature(tree_height, epoch_wire));
 			}
 
-			let hashers = circuit_xmss_multisig(
+			circuit_xmss_multisig(
 				&builder,
 				spec,
-				&param,
+				&validator_params,
 				&message,
 				epoch_wire,
 				&validator_roots,
@@ -263,19 +271,20 @@ mod tests {
 			let circuit = builder.build();
 			let mut w = circuit.new_witness_filler();
 
-			// Pack param_bytes (pad to match wire count)
-			let mut padded_param = vec![0u8; param.len() * 8];
-			padded_param[..self.param_bytes.len()].copy_from_slice(&self.param_bytes);
-			pack_bytes_into_wires_le(&mut w, &param, &padded_param);
 			pack_bytes_into_wires_le(&mut w, &message, &self.message_bytes);
 			w[epoch_wire] = Word::from_u64(self.epoch as u64);
 
 			for (i, validator) in self.validators.iter().enumerate() {
+				// Pack this validator's parameter (pad to match wire count)
+				let mut padded_param = vec![0u8; validator_params[i].len() * 8];
+				padded_param[..self.validator_param_bytes[i].len()]
+					.copy_from_slice(&self.validator_param_bytes[i]);
+				pack_bytes_into_wires_le(&mut w, &validator_params[i], &padded_param);
+
 				pack_bytes_into_wires_le(&mut w, &validator_roots[i], &validator.root);
 
-				let mut nonce_padded = [0u8; 24];
-				nonce_padded[..23].copy_from_slice(&validator.nonce);
-				pack_bytes_into_wires_le(&mut w, &validator_signatures[i].nonce, &nonce_padded);
+				// The nonce already fills the wire capacity exactly, so pack it directly.
+				pack_bytes_into_wires_le(&mut w, &validator_signatures[i].nonce, &validator.nonce);
 
 				for (j, sig_hash) in validator.signature_hashes.iter().enumerate() {
 					pack_bytes_into_wires_le(
@@ -302,23 +311,8 @@ mod tests {
 				}
 			}
 
-			for (val_idx, validator) in self.validators.iter().enumerate() {
-				let validator_hasher = &hashers.validator_hashers[val_idx];
-
-				let hasher_data = XmssHasherData {
-					param_bytes: self.param_bytes.to_vec(),
-					message_bytes: self.message_bytes,
-					nonce_bytes: validator.nonce.to_vec(),
-					epoch: self.epoch as u64, // Use shared epoch
-					coords: validator.coords.clone(),
-					sig_hashes: validator.signature_hashes.clone(),
-					pk_hashes: validator.public_key_hashes.clone(),
-					auth_path: validator.auth_path.clone(),
-				};
-
-				populate_xmss_hashers(&mut w, validator_hasher, spec, &hasher_data);
-			}
-
+			// Every digest is BLAKE3, derived from the inputs, so the evaluator fills them all
+			// here.
 			circuit.populate_wire_witness(&mut w)?;
 
 			let cs = circuit.constraint_system();
@@ -377,7 +371,7 @@ mod tests {
 			let spec = test_spec_small();
 			test_data.validators[1] = ValidatorSignatureData::generate(
 				&mut rng,
-				&test_data.param_bytes,
+				&test_data.validator_param_bytes[1],
 				&wrong_message,
 				test_data.epoch,
 				&spec,
@@ -412,7 +406,7 @@ mod tests {
 			let different_epoch = (test_data.epoch + 1) % 8;
 			test_data.validators[1] = ValidatorSignatureData::generate(
 				&mut rng,
-				&test_data.param_bytes,
+				&test_data.validator_param_bytes[1],
 				&test_data.message_bytes,
 				different_epoch,
 				&spec,
@@ -429,9 +423,10 @@ mod tests {
 		let spec = test_spec_small();
 		let multisig_builder = MultiSigBuilder::new(&builder, &spec);
 
-		let (param, message, epoch) = multisig_builder.create_public_inputs();
+		let (message, epoch) = multisig_builder.create_public_inputs();
 
-		// Create 3 roots but only 2 signatures
+		// Create 3 params + 3 roots but only 2 signatures
+		let validator_params = multisig_builder.create_validator_params(3);
 		let validator_roots = multisig_builder.create_validator_roots(3);
 		let validator_signatures = vec![
 			multisig_builder.create_validator_signature(3, epoch),
@@ -442,7 +437,7 @@ mod tests {
 		circuit_xmss_multisig(
 			&builder,
 			&spec,
-			&param,
+			&validator_params,
 			&message,
 			epoch,
 			&validator_roots,

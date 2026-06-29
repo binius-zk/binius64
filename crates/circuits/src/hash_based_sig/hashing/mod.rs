@@ -1,18 +1,14 @@
 // Copyright 2025 Irreducible Inc.
-//! Tweaked Keccak-256 circuits for hash-based signatures.
-mod base;
-mod chain;
+//! BLAKE3 tweakable-hash circuits for hash-based signatures.
+mod chain_blake3;
 mod message;
 mod public_key;
 mod tree;
 
-pub use chain::{
-	CHAIN_TWEAK, FIXED_MESSAGE_OVERHEAD, build_chain_hash, circuit_chain_hash, hash_chain_keccak,
+pub use chain_blake3::{
+	chain_tweak_len, circuit_blake3_th, circuit_chain_hash_blake3, circuit_chain_step_2x_blake3,
+	hash_chain_blake3, ref_blake3_th, ref_chain_step_blake3,
 };
-pub use message::{MESSAGE_TWEAK, build_message_hash, circuit_message_hash, hash_message};
-pub use public_key::{
-	PUBLIC_KEY_TWEAK, build_public_key_hash, circuit_public_key_hash, hash_public_key_keccak,
-};
-pub use tree::{
-	TREE_MESSAGE_OVERHEAD, TREE_TWEAK, build_tree_hash, circuit_tree_hash, hash_tree_node_keccak,
-};
+pub use message::{MESSAGE_TWEAK, circuit_message_hash, hash_message};
+pub use public_key::{PUBLIC_KEY_TWEAK, circuit_public_key_hash, hash_public_key};
+pub use tree::{TREE_TWEAK, circuit_tree_hash, hash_tree_node};

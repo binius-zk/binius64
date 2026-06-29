@@ -2,7 +2,7 @@
 use binius_frontend::{CircuitBuilder, Wire};
 
 use super::hashing::circuit_tree_hash;
-use crate::{keccak::Keccak256, multiplexer::multi_wire_multiplex};
+use crate::multiplexer::multi_wire_multiplex;
 
 /// Verifies a Merkle tree authentication path.
 ///
@@ -23,7 +23,7 @@ use crate::{keccak::Keccak256, multiplexer::multi_wire_multiplex};
 ///
 /// # Returns
 ///
-/// A vector of Keccak hashers that need witness population
+/// Emits constraints only; the BLAKE3 node digests are derived from the inputs by the evaluator.
 pub fn circuit_merkle_path(
 	builder: &CircuitBuilder,
 	domain_param: &[Wire],
@@ -32,7 +32,7 @@ pub fn circuit_merkle_path(
 	leaf_index: Wire,
 	auth_path: &[[Wire; 4]],
 	root_hash: &[Wire; 4],
-) -> Vec<Keccak256> {
+) {
 	assert!(
 		domain_param_len <= domain_param.len() * 8,
 		"domain_param_len {} exceeds maximum capacity {} of domain_param wires",
@@ -41,23 +41,18 @@ pub fn circuit_merkle_path(
 	);
 
 	let tree_height = auth_path.len();
-	let mut hashers = Vec::with_capacity(tree_height);
 	let mut current_hash = *leaf_hash;
 	let mut current_index = leaf_index;
 	let one = builder.add_constant_64(1);
 
-	// Process each level of the tree
+	// Climb one tree level per authentication-path sibling.
 	for level in 0..tree_height {
 		let sibling_hash = auth_path[level];
 
-		// Determine if current node is left or right child
-		// If current_index is even (LSB = 0), current is left child
-		// If current_index is odd (LSB = 1), current is right child
+		// The current node is the left child when its index is even (low bit clear).
 		let is_left = builder.bnot(builder.band(current_index, one));
 
-		// Select left and right hashes based on position
-		// If is_left: left = current, right = sibling
-		// If !is_left: left = sibling, right = current
+		// Order the pair as (left, right): swap in the sibling on the opposite side.
 		let left_hash = multi_wire_multiplex(builder, &[&sibling_hash, &current_hash], is_left)
 			.try_into()
 			.expect("multi_wire_multiplex should return 4 wires");
@@ -65,15 +60,12 @@ pub fn circuit_merkle_path(
 			.try_into()
 			.expect("multi_wire_multiplex should return 4 wires");
 
-		// Compute parent index: parent_index = current_index / 2
+		// The parent index drops the low bit of the current index.
 		let parent_index = builder.shr(current_index, 1);
 
-		// Create output hash wire for this level
-		let parent_hash: [Wire; 4] = std::array::from_fn(|_| builder.add_witness());
-
-		// Create tree node hasher
+		// Hash the ordered pair into the parent; the digest is gate-derived.
 		let level_wire = builder.add_constant_64(level as u64);
-		let hasher = circuit_tree_hash(
+		current_hash = circuit_tree_hash(
 			builder,
 			domain_param.to_vec(),
 			domain_param_len,
@@ -81,20 +73,12 @@ pub fn circuit_merkle_path(
 			right_hash,
 			level_wire,
 			parent_index,
-			parent_hash,
 		);
-
-		hashers.push(hasher);
-
-		// Move up the tree
-		current_hash = parent_hash;
 		current_index = parent_index;
 	}
 
-	// Assert that the final hash matches the expected root
+	// The reconstructed root must equal the committed root.
 	builder.assert_eq_v("merkle_root_check", current_hash, *root_hash);
-
-	hashers
 }
 
 #[cfg(test)]
@@ -103,209 +87,89 @@ mod tests {
 	use binius_frontend::util::pack_bytes_into_wires_le;
 
 	use super::*;
-	use crate::hash_based_sig::hashing::{build_tree_hash, hash_tree_node_keccak};
+	use crate::hash_based_sig::hashing::hash_tree_node;
 
-	#[test]
-	fn test_circuit_merkle_path_verification() {
-		// Build a simple 4-leaf tree for testing
-		// Tree structure:
-		//        root
-		//       /    \
-		//      n2     n3
-		//     / \    / \
-		//    l0 l1  l2 l3
-
+	// Build a 4-leaf tree, run the path circuit for the given leaf, and return the verification
+	// result. The internal node digests are derived by the evaluator, so only inputs are populated.
+	//
+	//          root
+	//         /    \
+	//        n2     n3
+	//       / \    / \
+	//      l0 l1  l2 l3
+	fn run_path(
+		leaf_index: u64,
+		leaf: &[u8; 32],
+		sibling0: &[u8; 32],
+		sibling1: &[u8; 32],
+		root: &[u8; 32],
+	) -> Result<(), String> {
 		let builder = CircuitBuilder::new();
-
-		// Create input wires
-		let domain_param: Vec<Wire> = (0..4).map(|_| builder.add_inout()).collect();
-		let leaf_hash: [Wire; 4] = std::array::from_fn(|_| builder.add_inout());
-		let leaf_index = builder.add_inout();
-		let root_hash: [Wire; 4] = std::array::from_fn(|_| builder.add_inout());
-
-		// Authentication path (2 levels for 4-leaf tree)
-		let auth_path: Vec<[Wire; 4]> = (0..2)
+		let param: Vec<Wire> = (0..PARAM.len().div_ceil(8))
+			.map(|_| builder.add_inout())
+			.collect();
+		let leaf_w: [Wire; 4] = std::array::from_fn(|_| builder.add_inout());
+		let index_w = builder.add_inout();
+		let root_w: [Wire; 4] = std::array::from_fn(|_| builder.add_inout());
+		let path: Vec<[Wire; 4]> = (0..2)
 			.map(|_| std::array::from_fn(|_| builder.add_inout()))
 			.collect();
 
-		// Create the verification circuit
-		let hashers = circuit_merkle_path(
-			&builder,
-			&domain_param,
-			domain_param.len() * 8,
-			&leaf_hash,
-			leaf_index,
-			&auth_path,
-			&root_hash,
-		);
+		circuit_merkle_path(&builder, &param, PARAM.len(), &leaf_w, index_w, &path, &root_w);
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();
+		pack_bytes_into_wires_le(&mut w, &param, PARAM);
+		pack_bytes_into_wires_le(&mut w, &leaf_w, leaf);
+		w[index_w] = Word::from_u64(leaf_index);
+		pack_bytes_into_wires_le(&mut w, &path[0], sibling0);
+		pack_bytes_into_wires_le(&mut w, &path[1], sibling1);
+		pack_bytes_into_wires_le(&mut w, &root_w, root);
 
-		// Set up test data
-		let param_bytes = b"test_merkle_tree_parameter!!!!!!";
-		pack_bytes_into_wires_le(&mut w, &domain_param, param_bytes);
+		circuit
+			.populate_wire_witness(&mut w)
+			.map_err(|e| format!("populate: {e:?}"))?;
+		verify_constraints(circuit.constraint_system(), &w.into_value_vec())
+			.map_err(|e| format!("verify: {e:?}"))
+	}
 
-		// Create leaf hashes
-		let leaf0 = b"leaf_0_hash_value_32_bytes!!!!!!";
-		let leaf1 = b"leaf_1_hash_value_32_bytes!!!!!!";
-		let leaf2 = b"leaf_2_hash_value_32_bytes!!!!!!";
-		let leaf3 = b"leaf_3_hash_value_32_bytes!!!!!!";
+	const PARAM: &[u8; 18] = b"merkle_tree_param!";
+	const L0: &[u8; 32] = b"leaf_0_hash_value_32_bytes!!!!!!";
+	const L1: &[u8; 32] = b"leaf_1_hash_value_32_bytes!!!!!!";
+	const L2: &[u8; 32] = b"leaf_2_hash_value_32_bytes!!!!!!";
+	const L3: &[u8; 32] = b"leaf_3_hash_value_32_bytes!!!!!!";
 
-		// Compute internal nodes
-		let node2 = hash_tree_node_keccak(param_bytes, leaf0, leaf1, 0, 0);
-		let node3 = hash_tree_node_keccak(param_bytes, leaf2, leaf3, 0, 1);
-		let root = hash_tree_node_keccak(param_bytes, &node2, &node3, 1, 0);
-
-		// Test verification for leaf 1 (index 1)
-		// Path: [leaf0 (sibling at level 0), node3 (sibling at level 1)]
-		pack_bytes_into_wires_le(&mut w, &leaf_hash, leaf1);
-		w[leaf_index] = Word::from_u64(1);
-		pack_bytes_into_wires_le(&mut w, &auth_path[0], leaf0);
-		pack_bytes_into_wires_le(&mut w, &auth_path[1], &node3);
-		pack_bytes_into_wires_le(&mut w, &root_hash, &root);
-
-		// Populate hashers
-		// Level 0: hash(leaf0, leaf1) with index 0
-		let hasher0 = &hashers[0];
-		let message0 = build_tree_hash(param_bytes, leaf0, leaf1, 0, 0);
-		hasher0.populate_message(&mut w, &message0);
-		hasher0.populate_digest(&mut w, node2);
-
-		// Level 1: hash(node2, node3) with index 0
-		let hasher1 = &hashers[1];
-		let message1 = build_tree_hash(param_bytes, &node2, &node3, 1, 0);
-		hasher1.populate_message(&mut w, &message1);
-		hasher1.populate_digest(&mut w, root);
-
-		// Populate witness and verify
-		circuit.populate_wire_witness(&mut w).unwrap();
-
-		let cs = circuit.constraint_system();
-		verify_constraints(cs, &w.into_value_vec()).unwrap();
+	// The three internal nodes of the fixture tree, as the BLAKE3 reference computes them.
+	fn fixture_nodes() -> ([u8; 32], [u8; 32], [u8; 32]) {
+		let n2 = hash_tree_node(PARAM, L0, L1, 0, 0);
+		let n3 = hash_tree_node(PARAM, L2, L3, 0, 1);
+		let root = hash_tree_node(PARAM, &n2, &n3, 1, 0);
+		(n2, n3, root)
 	}
 
 	#[test]
-	fn test_negative_circuit_merkle_invalid_auth_path() {
-		// Circuit does not verify invalid auth path
-		let builder = CircuitBuilder::new();
-
-		let param: Vec<Wire> = (0..4).map(|_| builder.add_inout()).collect();
-		let leaf_hash: [Wire; 4] = std::array::from_fn(|_| builder.add_inout());
-		let leaf_index = builder.add_inout();
-		let root_hash: [Wire; 4] = std::array::from_fn(|_| builder.add_inout());
-		let auth_path: Vec<[Wire; 4]> = (0..2)
-			.map(|_| std::array::from_fn(|_| builder.add_inout()))
-			.collect();
-
-		let hashers = circuit_merkle_path(
-			&builder,
-			&param,
-			param.len() * 8,
-			&leaf_hash,
-			leaf_index,
-			&auth_path,
-			&root_hash,
-		);
-
-		let circuit = builder.build();
-		let mut w = circuit.new_witness_filler();
-
-		let param_bytes = b"test_merkle_tree_parameter!!!!!!";
-		pack_bytes_into_wires_le(&mut w, &param, param_bytes);
-
-		let leaf0 = b"leaf_0_hash_value_32_bytes!!!!!!";
-		let leaf1 = b"leaf_1_hash_value_32_bytes!!!!!!";
-		let leaf2 = b"leaf_2_hash_value_32_bytes!!!!!!";
-		let leaf3 = b"leaf_3_hash_value_32_bytes!!!!!!";
-
-		let node2 = hash_tree_node_keccak(param_bytes, leaf0, leaf1, 0, 0);
-		let node3 = hash_tree_node_keccak(param_bytes, leaf2, leaf3, 0, 1);
-		let root = hash_tree_node_keccak(param_bytes, &node2, &node3, 1, 0);
-
-		// Test verification for leaf 2 (index 2)
-		// Path: [leaf3 (sibling at level 0), node2 incorrect!]
-		pack_bytes_into_wires_le(&mut w, &leaf_hash, leaf2);
-		w[leaf_index] = Word::from_u64(2);
-		pack_bytes_into_wires_le(&mut w, &auth_path[0], leaf3);
-		pack_bytes_into_wires_le(&mut w, &auth_path[1], &node3);
-		pack_bytes_into_wires_le(&mut w, &root_hash, &root);
-
-		// Populate hashers
-		// Level 0: hash(leaf2, leaf3) with index 1
-		let hasher0 = &hashers[0];
-		let message0 = build_tree_hash(param_bytes, leaf2, leaf3, 0, 1);
-		hasher0.populate_message(&mut w, &message0);
-		hasher0.populate_digest(&mut w, node3);
-
-		// Level 1: hash(node2, node3) with index 0
-		let hasher1 = &hashers[1];
-		let message1 = build_tree_hash(param_bytes, &node2, &node3, 1, 0);
-		hasher1.populate_message(&mut w, &message1);
-		hasher1.populate_digest(&mut w, root);
-
-		assert!(circuit.populate_wire_witness(&mut w).is_err());
+	fn valid_path_accepts() {
+		// Leaf 1: siblings are l0 (level 0) and n3 (level 1).
+		let (_n2, n3, root) = fixture_nodes();
+		run_path(1, L1, L0, &n3, &root).unwrap();
 	}
 
 	#[test]
-	fn test_negative_circuit_merkle_invalid_hash_population() {
-		// The circuit does not verify an invalid hash population
-		let builder = CircuitBuilder::new();
+	fn wrong_sibling_rejects() {
+		// Leaf 1's valid path is (L0, n3); corrupting the level-1 sibling breaks the root.
+		let (_n2, n3, root) = fixture_nodes();
+		let mut bad_sibling = n3;
+		bad_sibling[0] ^= 0xFF;
+		let result = run_path(1, L1, L0, &bad_sibling, &root);
+		assert!(result.is_err(), "corrupted sibling must fail to match the root");
+	}
 
-		let param: Vec<Wire> = (0..4).map(|_| builder.add_inout()).collect();
-		let leaf_hash: [Wire; 4] = std::array::from_fn(|_| builder.add_inout());
-		let leaf_index = builder.add_inout();
-		let root_hash: [Wire; 4] = std::array::from_fn(|_| builder.add_inout());
-		let auth_path: Vec<[Wire; 4]> = (0..2)
-			.map(|_| std::array::from_fn(|_| builder.add_inout()))
-			.collect();
-
-		let hashers = circuit_merkle_path(
-			&builder,
-			&param,
-			param.len() * 8,
-			&leaf_hash,
-			leaf_index,
-			&auth_path,
-			&root_hash,
-		);
-
-		let circuit = builder.build();
-		let mut w = circuit.new_witness_filler();
-
-		let param_bytes = b"test_merkle_tree_parameter!!!!!!";
-		pack_bytes_into_wires_le(&mut w, &param, param_bytes);
-
-		let leaf0 = b"leaf_0_hash_value_32_bytes!!!!!!";
-		let leaf1 = b"leaf_1_hash_value_32_bytes!!!!!!";
-		let leaf2 = b"leaf_2_hash_value_32_bytes!!!!!!";
-		let leaf3 = b"leaf_3_hash_value_32_bytes!!!!!!";
-
-		let node2 = hash_tree_node_keccak(param_bytes, leaf0, leaf1, 0, 0);
-		let node3 = hash_tree_node_keccak(param_bytes, leaf2, leaf3, 0, 1);
-		let root = hash_tree_node_keccak(param_bytes, &node2, &node3, 1, 0);
-
-		// Test verification for leaf 2 (index 2)
-		// Path: [leaf3 (sibling at level 0), node2 (sibling at level 1)]
-		pack_bytes_into_wires_le(&mut w, &leaf_hash, leaf2);
-		w[leaf_index] = Word::from_u64(2);
-		pack_bytes_into_wires_le(&mut w, &auth_path[0], leaf3);
-		pack_bytes_into_wires_le(&mut w, &auth_path[1], &node2);
-		pack_bytes_into_wires_le(&mut w, &root_hash, &root);
-
-		// Populate hashers
-		// Level 0: hash(leaf2, leaf3) with index 1
-		let hasher0 = &hashers[0];
-		let message0 = build_tree_hash(param_bytes, leaf2, leaf3, 0, 1);
-		hasher0.populate_message(&mut w, &message0);
-		hasher0.populate_digest(&mut w, node3);
-
-		// Level 1: hash(node2, leaf3) with index 0 - incorrect!
-		let hasher1 = &hashers[1];
-		let message1 = build_tree_hash(param_bytes, &node2, leaf3, 1, 0);
-		hasher1.populate_message(&mut w, &message1);
-		hasher1.populate_digest(&mut w, root);
-
-		assert!(circuit.populate_wire_witness(&mut w).is_err());
+	#[test]
+	fn wrong_root_rejects() {
+		// The correct path against a corrupted root must fail.
+		let (_n2, n3, mut root) = fixture_nodes();
+		root[0] ^= 0xFF;
+		let result = run_path(1, L1, L0, &n3, &root);
+		assert!(result.is_err(), "corrupted root must be rejected");
 	}
 }

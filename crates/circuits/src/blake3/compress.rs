@@ -341,7 +341,11 @@ fn ref_round(state: &mut [u32; 16], msg: &[u32; 16], round: usize) {
 	ref_g(state, 3, 4, 9, 14, msg[schedule[14]], msg[schedule[15]]);
 }
 
-fn ref_compress(
+/// Pure-Rust BLAKE3 compression, matching the in-circuit compression exactly.
+///
+/// - Exposed for callers that use a raw 2-to-1 compression as a tweakable hash.
+/// - It reproduces the same value off-circuit for witness generation.
+pub fn ref_compress(
 	cv: &[u32; 8],
 	block: &[u32; 16],
 	counter: u64,

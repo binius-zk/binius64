@@ -1,28 +1,28 @@
 hashsign circuit
 --
 Gates & Instructions
-├─ Number of gates: 1,584,873
-└─ Number of evaluation instructions: 2,073,264
+├─ Number of gates: 414,681
+└─ Number of evaluation instructions: 415,329
 
 Constraints
-├─ AND constraints: 838,500 used (80.0% of 2^20)
-│  [▓▓▓▓▓▓▓░░░] spare: 210,076
+├─ AND constraints: 306,129 used (58.4% of 2^19)
+│  [▓▓▓▓▓░░░░░] spare: 218,159
 ├─ MUL constraints: 0 used (0.0% of 2^0)
 │  [░░░░░░░░░░] spare: 1
-└─ Distinct value indices: 1,740,082
-   ├─ Distinct shifted value indices: 903,542
-   └─ Distinct unshifted value indices: 836,540
+└─ Distinct value indices: 776,857
+   ├─ Distinct shifted value indices: 469,744
+   └─ Distinct unshifted value indices: 307,113
 
 Value Vector
-├─ Public Section: 456 used (89.1% of 2^9)
-│  [▓▓▓▓▓▓▓▓░░] spare: 56
-│  ├─ Constants: 436
-│  └─ Inout: 20
-├─ Private Section: 836,148 used (79.8%)
-│  [▓▓▓▓▓▓▓░░░] spare: 211,916
-│  ├─ Witness: 11,103
-│  └─ Internal: 825,045
-├─ Total Committed: 836,604 used (79.8% of 2^20)
-│  [▓▓▓▓▓▓▓░░░] spare: 211,972
-└─ Scratch (uncommitted): 1,522,038
+├─ Public Section: 183 used (71.5% of 2^8)
+│  [▓▓▓▓▓▓▓░░░] spare: 73
+│  ├─ Constants: 157
+│  └─ Inout: 26
+├─ Private Section: 307,002 used (58.6%)
+│  [▓▓▓▓▓░░░░░] spare: 217,030
+│  ├─ Witness: 1,776
+│  └─ Internal: 305,226
+├─ Total Committed: 307,185 used (58.6% of 2^19)
+│  [▓▓▓▓▓░░░░░] spare: 217,103
+└─ Scratch (uncommitted): 258,588
 

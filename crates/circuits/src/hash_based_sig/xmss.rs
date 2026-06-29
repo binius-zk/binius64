@@ -4,9 +4,8 @@ use binius_frontend::{CircuitBuilder, Wire};
 use super::{
 	hashing::circuit_public_key_hash,
 	merkle_tree::circuit_merkle_path,
-	winternitz_ots::{WinternitzOtsHashers, WinternitzSpec, circuit_winternitz_ots},
+	winternitz_ots::{WinternitzSpec, circuit_winternitz_ots},
 };
-use crate::keccak::Keccak256;
 
 /// An XMSS signature.
 ///
@@ -14,7 +13,7 @@ use crate::keccak::Keccak256;
 /// verified.
 #[derive(Clone)]
 pub struct XmssSignature {
-	/// Nonce (23 bytes in 3 wires)
+	/// Nonce feeding the message hash, eight bytes per wire.
 	pub nonce: Vec<Wire>,
 	/// The epoch is the index of key-pair used in the signature
 	pub epoch: Wire,
@@ -26,51 +25,25 @@ pub struct XmssSignature {
 	pub auth_path: Vec<[Wire; 4]>,
 }
 
-/// The collection of Keccak hashers used in XMSS verification.
-pub struct XmssHashers {
-	/// Winternitz OTS hashers containing the message hasher and chain verification hashers.
-	/// See `WinternitzOtsHashers` documentation for details on populating these.
-	pub winternitz_ots: WinternitzOtsHashers,
-
-	/// Keccak hasher for computing the OTS public key hash from individual Winternitz public keys.
-	/// Computes: `hash(param || TWEAK_PUBLIC_KEY || pk_hash[0] || pk_hash[1] || ... ||
-	/// pk_hash[D-1])` Must be populated with:
-	/// - Message: The concatenated public key data (use `hashing::build_public_key_hash`)
-	/// - Digest: The resulting public key hash (which becomes a leaf in the Merkle tree)
-	pub public_key_hasher: Keccak256,
-
-	/// Vector of Keccak hashers for verifying the Merkle tree authentication path.
-	/// Contains one hasher per level of the tree that needs to be computed.
-	/// Each hasher computes: `hash(param || TWEAK_TREE || level || index || left_child ||
-	/// right_child)` Must be populated with:
-	/// - Message: The tree node hash message (use `hashing::build_tree_hash`)
-	/// - Digest: The parent node hash at that level
-	///
-	/// The hashers are ordered from leaf level upward to the root.
-	pub merkle_path_hashers: Vec<Keccak256>,
-}
-
 /// Verifies an XMSS (eXtended Merkle Signature Scheme) signature.
 ///
-/// This circuit combines:
-/// 1. Winternitz OTS verification for the one-time signature
-/// 2. Computation of public key hash from Winternitz public key
-/// 3. Merkle tree path verification to prove the public key is in the tree
+/// Three checks are stacked:
+/// 1. Winternitz OTS verification recovers the chain ends from the signature.
+/// 2. The chain ends are hashed into the Merkle leaf (the one-time public key).
+/// 3. The authentication path links that leaf to the committed root.
+///
+/// All hashing is BLAKE3, whose digests are derived from the inputs, so this emits constraints
+/// only and returns nothing.
 ///
 /// # Arguments
 ///
-/// * `builder` - Circuit builder for constructing constraints
-/// * `spec` - Winternitz specification parameters (including domain_param_len)
-/// * `domain_param` - Cryptographic domain parameter as 64-bit LE-packed wires. The actual byte
-///   length is specified by `spec.domain_param_len`, and the wires must have sufficient capacity
-///   (i.e., `domain_param.len() * 8 >= spec.domain_param_len`)
-/// * `message` - Message to verify (32 bytes as 4x64-bit LE wires)
-/// * `signature` - The XMSS signature containing all witness data
-/// * `root_hash` - Expected Merkle tree root hash (32 bytes as 4x64-bit LE wires)
-///
-/// # Returns
-///
-/// An `XmssHashers` struct containing all hashers that need witness population
+/// * `builder` - Circuit builder for constructing constraints.
+/// * `spec` - Winternitz specification parameters (including the parameter length).
+/// * `domain_param` - Per-signer parameter as 64-bit little-endian wires, with capacity for
+///   `spec.domain_param_len` bytes.
+/// * `message` - Message to verify, 32 bytes as four 64-bit little-endian wires.
+/// * `signature` - The XMSS signature witness data.
+/// * `root_hash` - Committed Merkle tree root, 32 bytes as four 64-bit little-endian wires.
 pub fn circuit_xmss(
 	builder: &CircuitBuilder,
 	spec: &WinternitzSpec,
@@ -78,11 +51,30 @@ pub fn circuit_xmss(
 	message: &[Wire],
 	signature: &XmssSignature,
 	root_hash: &[Wire; 4],
-) -> XmssHashers {
-	// Step 1: Verify the Winternitz OTS signature
-	let winternitz_ots = circuit_winternitz_ots(
+) {
+	// Step 0: bound the epoch to the tree.
+	// A valid leaf index uses only the low tree_height bits.
+	// Higher bits would change the per-level index tweaks, so the root could never match.
+	let tree_height = signature.auth_path.len();
+	// The range check shifts the epoch right by tree_height, which is only well defined below 64.
+	assert!(
+		tree_height < 64,
+		"tree_height {tree_height} must be < 64 for the epoch range-check shift to be well defined"
+	);
+	let zero = builder.add_constant_64(0);
+	builder.assert_eq(
+		"xmss_epoch_in_range",
+		builder.shr(signature.epoch, tree_height as u32),
+		zero,
+	);
+
+	// Step 1: verify the Winternitz OTS signature.
+	// The epoch is bound into the message and chain tweaks.
+	// This epoch-separates the encoding and the chains, as the security analysis requires.
+	circuit_winternitz_ots(
 		builder,
 		domain_param,
+		signature.epoch,
 		message,
 		&signature.nonce,
 		&signature.signature_hashes,
@@ -90,32 +82,25 @@ pub fn circuit_xmss(
 		spec,
 	);
 
-	// Step 2: Compute the public key hash from the Winternitz public key
-	let pk_hash_output: [Wire; 4] = std::array::from_fn(|_| builder.add_witness());
-	let public_key_hasher = circuit_public_key_hash(
+	// Step 2: hash the chain ends into the one-time public key (the Merkle leaf).
+	let leaf_hash = circuit_public_key_hash(
 		builder,
 		domain_param.to_vec(),
 		spec.domain_param_len,
+		signature.epoch,
 		&signature.public_key_hashes,
-		pk_hash_output,
 	);
 
-	// Step 3: Verify the Merkle tree path
-	let merkle_path_hashers = circuit_merkle_path(
+	// Step 3: check the authentication path links the leaf to the committed root.
+	circuit_merkle_path(
 		builder,
 		domain_param,
 		spec.domain_param_len,
-		&pk_hash_output,
+		&leaf_hash,
 		signature.epoch,
 		&signature.auth_path,
 		root_hash,
 	);
-
-	XmssHashers {
-		winternitz_ots,
-		public_key_hasher,
-		merkle_path_hashers,
-	}
 }
 
 #[cfg(test)]
@@ -127,11 +112,9 @@ mod tests {
 
 	use super::*;
 	use crate::hash_based_sig::{
-		hashing::{hash_chain_keccak, hash_public_key_keccak},
-		winternitz_ots::grind_nonce,
-		witness_utils::{
-			XmssHasherData, build_merkle_tree, extract_auth_path, populate_xmss_hashers,
-		},
+		hashing::{hash_chain_blake3, hash_public_key},
+		winternitz_ots::{NONCE_LENGTH_BYTES, NONCE_WIRES_COUNT, grind_nonce},
+		witness_utils::{build_merkle_tree, extract_auth_path},
 	};
 
 	/// Helper struct containing all test data for XMSS verification
@@ -140,7 +123,6 @@ mod tests {
 		message_bytes: [u8; 32],
 		nonce_bytes: Vec<u8>,
 		epoch: u64,
-		coords: Vec<u8>,
 		sig_hashes: Vec<[u8; 32]>,
 		pk_hashes: Vec<[u8; 32]>,
 		auth_path: Vec<[u8; 32]>,
@@ -164,7 +146,7 @@ mod tests {
 			rng.fill_bytes(&mut message_bytes);
 
 			// Find valid nonce
-			let grind_result = grind_nonce(spec, rng, &param_bytes, &message_bytes)
+			let grind_result = grind_nonce(spec, rng, &param_bytes, signing_epoch, &message_bytes)
 				.expect("Failed to find valid nonce");
 
 			// Generate Winternitz signature and public key
@@ -176,9 +158,10 @@ mod tests {
 				rng.fill_bytes(&mut sig_hash);
 				sig_hashes.push(sig_hash);
 
-				let pk_hash = hash_chain_keccak(
+				let pk_hash = hash_chain_blake3(
 					&param_bytes,
-					chain_idx,
+					signing_epoch as u32,
+					chain_idx as u8,
 					&sig_hash,
 					coord as usize,
 					spec.chain_len() - 1 - coord as usize,
@@ -190,7 +173,7 @@ mod tests {
 			let mut leaves = Vec::new();
 			for i in 0..tree_size {
 				if i as u64 == signing_epoch {
-					leaves.push(hash_public_key_keccak(&param_bytes, &pk_hashes));
+					leaves.push(hash_public_key(&param_bytes, signing_epoch, &pk_hashes));
 				} else {
 					// Fill other epochs with random values - these represent other public keys
 					// in the tree that we're not using for this signature verification
@@ -208,7 +191,6 @@ mod tests {
 				message_bytes,
 				nonce_bytes: grind_result.nonce,
 				epoch: signing_epoch,
-				coords: grind_result.coords,
 				sig_hashes,
 				pk_hashes,
 				auth_path,
@@ -225,7 +207,9 @@ mod tests {
 			let param_wire_count = spec.domain_param_len.div_ceil(8);
 			let param: Vec<Wire> = (0..param_wire_count).map(|_| builder.add_inout()).collect();
 			let message: Vec<Wire> = (0..4).map(|_| builder.add_inout()).collect();
-			let nonce: Vec<Wire> = (0..3).map(|_| builder.add_inout()).collect();
+			let nonce: Vec<Wire> = (0..NONCE_WIRES_COUNT)
+				.map(|_| builder.add_inout())
+				.collect();
 			let epoch = builder.add_inout();
 			let root_hash: [Wire; 4] = std::array::from_fn(|_| builder.add_inout());
 
@@ -250,7 +234,7 @@ mod tests {
 				auth_path: auth_path.clone(),
 			};
 
-			let hashers = circuit_xmss(&builder, spec, &param, &message, &signature, &root_hash);
+			circuit_xmss(&builder, spec, &param, &message, &signature, &root_hash);
 
 			let circuit = builder.build();
 			let mut w = circuit.new_witness_filler();
@@ -261,7 +245,7 @@ mod tests {
 			pack_bytes_into_wires_le(&mut w, &param, &padded_param);
 			pack_bytes_into_wires_le(&mut w, &message, &self.message_bytes);
 
-			let mut nonce_padded = vec![0u8; 24];
+			let mut nonce_padded = vec![0u8; NONCE_LENGTH_BYTES];
 			nonce_padded[..self.nonce_bytes.len()].copy_from_slice(&self.nonce_bytes);
 			pack_bytes_into_wires_le(&mut w, &nonce, &nonce_padded);
 
@@ -280,18 +264,8 @@ mod tests {
 				pack_bytes_into_wires_le(&mut w, &auth_path[i], auth_node);
 			}
 
-			let hasher_data = XmssHasherData {
-				param_bytes: self.param_bytes.clone(),
-				message_bytes: self.message_bytes,
-				nonce_bytes: self.nonce_bytes.clone(),
-				epoch: self.epoch,
-				coords: self.coords.clone(),
-				sig_hashes: self.sig_hashes.clone(),
-				pk_hashes: self.pk_hashes.clone(),
-				auth_path: self.auth_path.clone(),
-			};
-			populate_xmss_hashers(&mut w, &hashers, spec, &hasher_data);
-
+			// Every digest is BLAKE3, derived from the inputs, so the evaluator fills them all
+			// here.
 			circuit
 				.populate_wire_witness(&mut w)
 				.map_err(|e| format!("Wire population failed: {:?}", e))?;
@@ -397,7 +371,8 @@ mod tests {
 			message_hash_len: 4,
 			coordinate_resolution_bits: 2,
 			target_sum: 24,
-			domain_param_len: 32,
+			// At most 23 bytes so the BLAKE3 tweakable-hash domain fits the 32-byte chaining value.
+			domain_param_len: 18,
 		}
 	}
 

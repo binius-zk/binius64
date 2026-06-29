@@ -1,39 +1,34 @@
 // Copyright 2025 Irreducible Inc.
 use binius_frontend::{CircuitBuilder, Wire};
 
-use super::base::circuit_tweaked_keccak;
-use crate::{fixed_byte_vec::ByteVec, keccak::Keccak256};
+use super::chain_blake3::{circuit_blake3_th, ref_blake3_th};
+use crate::fixed_byte_vec::ByteVec;
 
+/// Tweak separator for internal Merkle-tree node hashing.
 pub const TREE_TWEAK: u8 = 0x01;
 
-/// Fixed overhead in the tree node message beyond the parameter length:
-/// - 1 byte: tweak_byte (TREE_TWEAK)
-/// - 4 bytes: level
-/// - 4 bytes: index
-/// - 32 bytes: left hash
-/// - 32 bytes: right hash
-pub const TREE_MESSAGE_OVERHEAD: usize = 1 + 4 + 4 + 32 + 32;
-
-/// A circuit that verifies a tree node hashing for Merkle trees.
+/// Computes an internal Merkle-tree node hash, returning its 32-byte digest as four 64-bit wires.
 ///
-/// This circuit verifies Keccak-256 of a tree node that's been tweaked with
-/// tree-specific parameters: `Keccak256(domain_param || 0x01 || level || index || left || right)`
+/// Evaluates the BLAKE3 tweakable hash with:
+/// - domain (chaining value) `param || 0x01 || level || index`,
+/// - data (absorbed block) `left || right`.
+///
+/// The level and index place each node in its own hash domain, so a node at one position can never
+/// be reused at another.
 ///
 /// # Arguments
 ///
-/// * `builder` - Circuit builder for constructing constraints
-/// * `domain_param_wires` - The cryptographic domain parameter wires, where each wire holds 8 bytes
-///   as a 64-bit LE-packed value
-/// * `domain_param_len` - The actual domain parameter length in bytes
-/// * `left` - The left child hash (32 bytes as 4x64-bit LE-packed wires)
-/// * `right` - The right child hash (32 bytes as 4x64-bit LE-packed wires)
-/// * `level` - The level in the tree (as 64-bit value in wire, only lower 4 bytes used)
-/// * `index` - The index at this level (as 64-bit value in wire, only lower 4 bytes used)
-/// * `digest` - Output: The computed Keccak-256 digest (32 bytes as 4x64-bit LE-packed wires)
+/// * `builder` - Circuit builder.
+/// * `domain_param_wires` - Per-signer parameter, eight bytes per wire.
+/// * `domain_param_len` - Parameter length in bytes; at most 23 so the domain fits the 32-byte cv.
+/// * `left` - Left child hash, 32 bytes as four 64-bit little-endian wires.
+/// * `right` - Right child hash, 32 bytes as four 64-bit little-endian wires.
+/// * `level` - Tree level, low four bytes used.
+/// * `index` - Node index at this level, low four bytes used.
 ///
 /// # Returns
 ///
-/// A `Keccak` circuit that needs to be populated with the tweaked message and digest
+/// The 32-byte parent digest as four 64-bit little-endian wires.
 #[allow(clippy::too_many_arguments)]
 pub fn circuit_tree_hash(
 	builder: &CircuitBuilder,
@@ -43,401 +38,128 @@ pub fn circuit_tree_hash(
 	right: [Wire; 4],
 	level: Wire,
 	index: Wire,
-	digest: [Wire; 4],
-) -> Keccak256 {
-	assert_eq!(domain_param_wires.len(), domain_param_len.div_ceil(8));
-
-	let mut additional_terms = Vec::new();
-
-	// Add level (4 bytes, truncated from 8-byte wire)
-	let level_term = ByteVec::new_const_len(builder, vec![level], 4);
-	additional_terms.push(level_term);
-
-	// Add index (4 bytes, truncated from 8-byte wire)
-	let index_term = ByteVec::new_const_len(builder, vec![index], 4);
-	additional_terms.push(index_term);
-
-	// Add left hash
-	let left_term = ByteVec::new_const_len(builder, left.to_vec(), 32);
-	additional_terms.push(left_term);
-
-	// Add right hash
-	let right_term = ByteVec::new_const_len(builder, right.to_vec(), 32);
-	additional_terms.push(right_term);
-
-	circuit_tweaked_keccak(
-		builder,
-		domain_param_wires,
-		domain_param_len,
-		TREE_TWEAK,
-		additional_terms,
-		digest,
-	)
+) -> [Wire; 4] {
+	let domain = vec![
+		ByteVec::new_const_len(builder, domain_param_wires, domain_param_len),
+		ByteVec::new_const_len(builder, vec![builder.add_constant_64(TREE_TWEAK as u64)], 1),
+		ByteVec::new_const_len(builder, vec![level], 4),
+		ByteVec::new_const_len(builder, vec![index], 4),
+	];
+	let data = vec![
+		ByteVec::new_const_len(builder, left.to_vec(), 32),
+		ByteVec::new_const_len(builder, right.to_vec(), 32),
+	];
+	circuit_blake3_th(builder, &domain, &data)
 }
 
-/// Build the tweaked message for tree node hashing.
-///
-/// Constructs the complete message for Keccak-256 hashing by concatenating:
-/// `domain_param || 0x01 || level || index || left || right`
-///
-/// This function is typically used when populating witness data for the
-/// `circuit_tree_hash` circuit.
+/// Reference (out-of-circuit) internal tree-node hash, matching `circuit_tree_hash` exactly.
 ///
 /// # Arguments
 ///
-/// * `domain_param_bytes` - The cryptographic domain parameter bytes
-/// * `left_bytes` - The 32-byte left child hash
-/// * `right_bytes` - The 32-byte right child hash
-/// * `level` - The level in the tree as a u32 (will be encoded as little-endian)
-/// * `index` - The index at this level as a u32 (will be encoded as little-endian)
-///
-/// # Returns
-///
-/// A vector containing the complete tweaked message ready for hashing
-pub fn build_tree_hash(
-	domain_param_bytes: &[u8],
-	left_bytes: &[u8; 32],
-	right_bytes: &[u8; 32],
-	level: u32,
-	index: u32,
-) -> Vec<u8> {
-	let mut message = Vec::new();
-	message.extend_from_slice(domain_param_bytes);
-	message.push(TREE_TWEAK);
-	message.extend_from_slice(&level.to_le_bytes());
-	message.extend_from_slice(&index.to_le_bytes());
-	message.extend_from_slice(left_bytes);
-	message.extend_from_slice(right_bytes);
-	message
-}
-
-/// Computes a Merkle tree node hash.
-///
-/// # Arguments
-/// * `param` - Cryptographic parameter
-/// * `left` - Left child hash
-/// * `right` - Right child hash
-/// * `level` - Tree level (0 = leaf level)
-/// * `index` - Node index at this level
-pub fn hash_tree_node_keccak(
+/// * `param` - Per-signer parameter bytes.
+/// * `left` - Left child hash.
+/// * `right` - Right child hash.
+/// * `level` - Tree level, encoded as four little-endian bytes.
+/// * `index` - Node index at this level, encoded as four little-endian bytes.
+pub fn hash_tree_node(
 	param: &[u8],
 	left: &[u8; 32],
 	right: &[u8; 32],
 	level: u32,
 	index: u32,
 ) -> [u8; 32] {
-	use sha3::Digest;
-	let tweaked_tree_node = build_tree_hash(param, left, right, level, index);
-	sha3::Keccak256::digest(tweaked_tree_node).into()
+	let mut domain = Vec::with_capacity(param.len() + 1 + 4 + 4);
+	domain.extend_from_slice(param);
+	domain.push(TREE_TWEAK);
+	domain.extend_from_slice(&level.to_le_bytes());
+	domain.extend_from_slice(&index.to_le_bytes());
+
+	let mut data = Vec::with_capacity(64);
+	data.extend_from_slice(left);
+	data.extend_from_slice(right);
+
+	ref_blake3_th(&domain, &data)
 }
 
 #[cfg(test)]
 mod tests {
 	use binius_core::{Word, verify::verify_constraints};
-	use binius_frontend::{Circuit, CircuitBuilder, util::pack_bytes_into_wires_le};
+	use binius_frontend::util::pack_bytes_into_wires_le;
 	use proptest::prelude::*;
-	use sha3::Digest;
 
 	use super::*;
 
-	/// Helper struct for TreeHash testing
-	struct TreeTestCircuit {
-		circuit: Circuit,
-		keccak: Keccak256,
-		domain_param_wires: Vec<Wire>,
-		domain_param_len: usize,
-		left: [Wire; 4],
-		right: [Wire; 4],
-		level: Wire,
-		index: Wire,
-	}
+	// Build the gadget, populate the inputs, and return the evaluated 32-byte parent digest.
+	fn run_circuit(
+		param_bytes: &[u8],
+		left: &[u8; 32],
+		right: &[u8; 32],
+		level: u32,
+		index: u32,
+	) -> [u8; 32] {
+		let b = CircuitBuilder::new();
+		let param: Vec<Wire> = (0..param_bytes.len().div_ceil(8))
+			.map(|_| b.add_inout())
+			.collect();
+		let left_w: [Wire; 4] = std::array::from_fn(|_| b.add_inout());
+		let right_w: [Wire; 4] = std::array::from_fn(|_| b.add_inout());
+		let level_w = b.add_inout();
+		let index_w = b.add_inout();
 
-	impl TreeTestCircuit {
-		fn new(domain_param_len: usize) -> Self {
-			let builder = CircuitBuilder::new();
-
-			let left: [Wire; 4] = std::array::from_fn(|_| builder.add_inout());
-			let right: [Wire; 4] = std::array::from_fn(|_| builder.add_inout());
-			let level = builder.add_inout();
-			let index = builder.add_inout();
-			let digest: [Wire; 4] = std::array::from_fn(|_| builder.add_inout());
-
-			let num_domain_param_wires = domain_param_len.div_ceil(8);
-			let domain_param_wires: Vec<Wire> = (0..num_domain_param_wires)
-				.map(|_| builder.add_inout())
-				.collect();
-
-			let keccak = circuit_tree_hash(
-				&builder,
-				domain_param_wires.clone(),
-				domain_param_len,
-				left,
-				right,
-				level,
-				index,
-				digest,
-			);
-
-			let circuit = builder.build();
-
-			Self {
-				circuit,
-				keccak,
-				domain_param_wires,
-				domain_param_len,
-				left,
-				right,
-				level,
-				index,
-			}
+		let digest = circuit_tree_hash(
+			&b,
+			param.clone(),
+			param_bytes.len(),
+			left_w,
+			right_w,
+			level_w,
+			index_w,
+		);
+		let out: [Wire; 4] = std::array::from_fn(|_| b.add_inout());
+		for k in 0..4 {
+			b.assert_eq("tree_digest", digest[k], out[k]);
 		}
 
-		/// Populate witness and verify constraints with given test data
-		#[allow(clippy::too_many_arguments)]
-		fn populate_and_verify(
-			&self,
-			domain_param_bytes: &[u8],
-			left_bytes: &[u8; 32],
-			right_bytes: &[u8; 32],
-			level_val: u32,
-			index_val: u32,
-			message: &[u8],
-			digest: [u8; 32],
-		) -> Result<(), Box<dyn std::error::Error>> {
-			let mut w = self.circuit.new_witness_filler();
+		let circuit = b.build();
+		let mut w = circuit.new_witness_filler();
+		pack_bytes_into_wires_le(&mut w, &param, param_bytes);
+		pack_bytes_into_wires_le(&mut w, &left_w, left);
+		pack_bytes_into_wires_le(&mut w, &right_w, right);
+		w[level_w] = Word::from_u64(level as u64);
+		w[index_w] = Word::from_u64(index as u64);
+		let reference = hash_tree_node(param_bytes, left, right, level, index);
+		pack_bytes_into_wires_le(&mut w, &out, &reference);
 
-			// Populate domain param
-			assert_eq!(domain_param_bytes.len(), self.domain_param_len);
-			pack_bytes_into_wires_le(&mut w, &self.domain_param_wires, domain_param_bytes);
-
-			// Populate left, right, level, index
-			pack_bytes_into_wires_le(&mut w, &self.left, left_bytes);
-			pack_bytes_into_wires_le(&mut w, &self.right, right_bytes);
-			w[self.level] = Word::from_u64(level_val as u64);
-			w[self.index] = Word::from_u64(index_val as u64);
-
-			// Populate message for Keccak
-			let expected_len = self.domain_param_len + TREE_MESSAGE_OVERHEAD;
-			assert_eq!(
-				message.len(),
-				expected_len,
-				"Message length {} doesn't match expected length {}",
-				message.len(),
-				expected_len
-			);
-			self.keccak.populate_message(&mut w, message);
-
-			// Populate digest
-			self.keccak.populate_digest(&mut w, digest);
-
-			self.circuit.populate_wire_witness(&mut w)?;
-			let cs = self.circuit.constraint_system();
-			verify_constraints(cs, &w.into_value_vec())?;
-			Ok(())
-		}
+		circuit.populate_wire_witness(&mut w).unwrap();
+		verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();
+		reference
 	}
 
 	#[test]
-	fn test_tree_hash_basic() {
-		let test_circuit = TreeTestCircuit::new(32);
-
-		let domain_param_bytes = b"test_parameter_32_bytes_long!!!!";
-		let left_bytes = b"left_child_hash_32_bytes_long!!!";
-		let right_bytes = b"right_child_hash_32_bytes_long!!";
-		let level_val = 5u32;
-		let index_val = 123u32;
-
-		let message =
-			build_tree_hash(domain_param_bytes, left_bytes, right_bytes, level_val, index_val);
-
-		let expected_digest = sha3::Keccak256::digest(&message);
-
-		test_circuit
-			.populate_and_verify(
-				domain_param_bytes,
-				left_bytes,
-				right_bytes,
-				level_val,
-				index_val,
-				&message,
-				expected_digest.into(),
-			)
-			.unwrap();
-	}
-
-	#[test]
-	fn test_tree_hash_with_18_byte_domain_param() {
-		// Test with 18-byte domain param as per XMSS specifications
-		let test_circuit = TreeTestCircuit::new(18);
-
-		let domain_param_bytes: &[u8; 18] = b"test_param_18bytes";
-		let left_bytes = b"left_child_hash_32_bytes_long!!!";
-		let right_bytes = b"right_child_hash_32_bytes_long!!";
-		let level_val = 10u32;
-		let index_val = 456u32;
-
-		let message =
-			build_tree_hash(domain_param_bytes, left_bytes, right_bytes, level_val, index_val);
-
-		let expected_digest = sha3::Keccak256::digest(&message);
-
-		test_circuit
-			.populate_and_verify(
-				domain_param_bytes,
-				left_bytes,
-				right_bytes,
-				level_val,
-				index_val,
-				&message,
-				expected_digest.into(),
-			)
-			.unwrap();
-	}
-
-	#[test]
-	fn test_tree_hash_wrong_digest() {
-		let test_circuit = TreeTestCircuit::new(32);
-
-		let domain_param_bytes = b"test_parameter_32_bytes_long!!!!";
-		let left_bytes = b"left_child_hash_32_bytes_long!!!";
-		let right_bytes = b"right_child_hash_32_bytes_long!!";
-		let level_val = 5u32;
-		let index_val = 123u32;
-
-		let message =
-			build_tree_hash(domain_param_bytes, left_bytes, right_bytes, level_val, index_val);
-
-		// Populate with WRONG digest - this should cause verification to fail
-		let wrong_digest = [0u8; 32];
-
-		let result = test_circuit.populate_and_verify(
-			domain_param_bytes,
-			left_bytes,
-			right_bytes,
-			level_val,
-			index_val,
-			&message,
-			wrong_digest,
-		);
-
-		assert!(result.is_err(), "Expected error for wrong digest");
-	}
-
-	#[test]
-	fn test_tree_hash_wrong_level() {
-		let test_circuit = TreeTestCircuit::new(32);
-
-		let domain_param_bytes = b"test_parameter_32_bytes_long!!!!";
-		let left_bytes = b"left_child_hash_32_bytes_long!!!";
-		let right_bytes = b"right_child_hash_32_bytes_long!!";
-		let correct_level = 5u32;
-		let wrong_level = 10u32;
-		let index_val = 123u32;
-
-		// Message built with correct level
-		let message =
-			build_tree_hash(domain_param_bytes, left_bytes, right_bytes, correct_level, index_val);
-
-		let expected_digest = sha3::Keccak256::digest(&message);
-
-		// Populate with WRONG level but correct digest
-		let result = test_circuit.populate_and_verify(
-			domain_param_bytes,
-			left_bytes,
-			right_bytes,
-			wrong_level,
-			index_val,
-			&message,
-			expected_digest.into(),
-		);
-
-		assert!(result.is_err(), "Expected error for mismatched level");
-	}
-
-	#[test]
-	fn test_tree_hash_ensures_tweak_byte() {
-		// This test verifies that the TREE_TWEAK byte (0x01) is correctly inserted
-		let test_circuit = TreeTestCircuit::new(16);
-
-		let domain_param_bytes = b"param_16_bytes!!";
-		let left_bytes = b"left_child_hash_32_bytes_long!!!";
-		let right_bytes = b"right_child_hash_32_bytes_long!!";
-		let level_val = 3u32;
-		let index_val = 7u32;
-
-		let message =
-			build_tree_hash(domain_param_bytes, left_bytes, right_bytes, level_val, index_val);
-
-		// Verify the tweak byte is at the correct position
-		assert_eq!(message[16], TREE_TWEAK);
-		assert_eq!(message.len(), 16 + TREE_MESSAGE_OVERHEAD);
-
-		let expected_digest = sha3::Keccak256::digest(&message);
-
-		test_circuit
-			.populate_and_verify(
-				domain_param_bytes,
-				left_bytes,
-				right_bytes,
-				level_val,
-				index_val,
-				&message,
-				expected_digest.into(),
-			)
-			.unwrap();
+	fn matches_reference_18_byte_param() {
+		// Real-parameter shape: 18-byte parameter, two 32-byte children.
+		let digest = run_circuit(b"test_param_18bytes", &[1u8; 32], &[2u8; 32], 5, 123);
+		assert_ne!(digest, [0u8; 32]);
 	}
 
 	proptest! {
 		#[test]
-		fn test_tree_hash_property_based(
-			domain_param_len in 1usize..=100,
-			level in 0u32..=20,
-			index in 0u32..=1000,
+		fn matches_reference_property_based(
+			param_len in 1usize..=23,
+			level in 0u32..=32,
+			index in 0u32..=u32::MAX,
+			left in prop::array::uniform32(any::<u8>()),
+			right in prop::array::uniform32(any::<u8>()),
+			seed in any::<u64>(),
 		) {
-			use rand::prelude::*;
+			use rand::{Rng, SeedableRng, rngs::StdRng};
 
-			let mut rng = StdRng::seed_from_u64(0);
+			// Random parameter of the sampled length.
+			let mut rng = StdRng::seed_from_u64(seed);
+			let mut param = vec![0u8; param_len];
+			rng.fill_bytes(&mut param);
 
-			// Generate random domain param bytes
-			let mut domain_param_bytes = vec![0u8; domain_param_len];
-			rng.fill_bytes(&mut domain_param_bytes);
-
-			// Generate random left and right hashes
-			let mut left_bytes = [0u8; 32];
-			rng.fill_bytes(&mut left_bytes);
-			let mut right_bytes = [0u8; 32];
-			rng.fill_bytes(&mut right_bytes);
-
-			// Create circuit
-			let test_circuit = TreeTestCircuit::new(domain_param_len);
-
-			// Build message and compute digest
-			let message = build_tree_hash(
-				&domain_param_bytes,
-				&left_bytes,
-				&right_bytes,
-				level,
-				index,
-			);
-
-			// Verify message structure
-			prop_assert_eq!(message.len(), domain_param_len + TREE_MESSAGE_OVERHEAD);
-			prop_assert_eq!(message[domain_param_len], TREE_TWEAK);
-
-			let expected_digest: [u8; 32] = sha3::Keccak256::digest(&message).into();
-
-			// Verify circuit
-			test_circuit
-				.populate_and_verify(
-					&domain_param_bytes,
-					&left_bytes,
-					&right_bytes,
-					level,
-					index,
-					&message,
-					expected_digest,
-				)
-				.unwrap();
+			run_circuit(&param, &left, &right, level, index);
 		}
 	}
 }

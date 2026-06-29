@@ -30,12 +30,16 @@ pub struct Phase2Output<F> {
 
 /// Output of Phase 3: batched Frobenius selector sumcheck and LO * HI product sumcheck.
 ///
-/// Contains the new evaluation point $r$, $\widetilde{b}$ evaluations, $A(r)$,
+/// Contains the new evaluation point $r$, the recombined $\widetilde{b}$ exponent claim, $A(r)$,
 /// $C_{\textsf{lo}}(r)$, and $C_{\textsf{hi}}(r)$.
 #[derive(Debug, Clone)]
 pub struct Phase3Output<F> {
 	pub eval_point: Vec<F>,
-	pub b_evals: Vec<F>,
+	/// The recombination point $r_I^b \in K^k$ sampled to collapse the $2^k$ per-bit
+	/// $\widetilde{b}$ claims into one.
+	pub r_ib: Vec<F>,
+	/// The recombined exponent claim $\widetilde{b}(r_I^b, r)$, where $r$ is `eval_point`.
+	pub b_recomb: F,
 	/// $A(r)$, where $r$ is `eval_point`.
 	pub gpow_a_eval: F,
 	/// $C_{\textsf{lo}}(r)$.

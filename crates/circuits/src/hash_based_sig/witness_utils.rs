@@ -4,20 +4,12 @@
 //! This module provides helper functions for populating witness data
 //! in hash-based signature circuits, including XMSS and Winternitz OTS.
 
-use binius_core::Word;
-use binius_frontend::{WitnessFiller, util::pack_bytes_into_wires_le};
 use rand::prelude::*;
-use sha3::{Digest, Keccak256};
 
 use super::{
-	hashing::{
-		build_chain_hash, build_message_hash, build_public_key_hash, build_tree_hash,
-		hash_chain_keccak, hash_public_key_keccak, hash_tree_node_keccak,
-	},
-	winternitz_ots::WinternitzSpec,
-	xmss::XmssHashers,
+	hashing::{hash_chain_blake3, hash_public_key, hash_tree_node},
+	winternitz_ots::{NONCE_LENGTH_BYTES, WinternitzSpec, grind_nonce},
 };
-use crate::hash_based_sig::{hashing::hash_message, winternitz_ots::grind_nonce};
 
 /// Builds a complete Merkle tree from leaf nodes.
 ///
@@ -41,7 +33,7 @@ pub fn build_merkle_tree(param: &[u8], leaves: &[[u8; 32]]) -> (Vec<Vec<[u8; 32]
 		let mut next_level = Vec::new();
 
 		for i in (0..current_level.len()).step_by(2) {
-			let parent = hash_tree_node_keccak(
+			let parent = hash_tree_node(
 				param,
 				&current_level[i],
 				&current_level[i + 1],
@@ -89,8 +81,8 @@ pub fn extract_auth_path(tree_levels: &[Vec<[u8; 32]>], leaf_index: usize) -> Ve
 pub struct ValidatorSignatureData {
 	/// Root hash of the validator's Merkle tree
 	pub root: [u8; 32],
-	/// Nonce (23 bytes)
-	pub nonce: [u8; 23],
+	/// Nonce feeding the message hash.
+	pub nonce: [u8; NONCE_LENGTH_BYTES],
 	/// Signature hashes for each Winternitz chain
 	pub signature_hashes: Vec<[u8; 32]>,
 	/// Public key hashes for each Winternitz chain
@@ -137,10 +129,10 @@ impl ValidatorSignatureData {
 			tree_height
 		);
 
-		let grind_result =
-			grind_nonce(spec, rng, param_bytes, message_bytes).expect("Failed to find valid nonce");
+		let grind_result = grind_nonce(spec, rng, param_bytes, epoch as u64, message_bytes)
+			.expect("Failed to find valid nonce");
 
-		let mut nonce = [0u8; 23];
+		let mut nonce = [0u8; NONCE_LENGTH_BYTES];
 		nonce.copy_from_slice(&grind_result.nonce);
 		let coords = grind_result.coords;
 
@@ -160,9 +152,10 @@ impl ValidatorSignatureData {
 			rng.fill_bytes(&mut sig_hash);
 			signature_hashes.push(sig_hash);
 
-			let pk_hash = hash_chain_keccak(
+			let pk_hash = hash_chain_blake3(
 				param_bytes,
-				chain_idx,
+				epoch,
+				chain_idx as u8,
 				&sig_hash,
 				coord as usize,
 				spec.chain_len() - 1 - coord as usize,
@@ -172,7 +165,7 @@ impl ValidatorSignatureData {
 
 		// Build a Merkle tree with 2^tree_height leaves
 		let mut leaves = vec![[0u8; 32]; num_leaves];
-		leaves[epoch as usize] = hash_public_key_keccak(param_bytes, &public_key_hashes);
+		leaves[epoch as usize] = hash_public_key(param_bytes, epoch as u64, &public_key_hashes);
 		for (i, leaf) in leaves.iter_mut().enumerate() {
 			if i != epoch as usize {
 				rng.fill_bytes(leaf);
@@ -190,143 +183,5 @@ impl ValidatorSignatureData {
 			auth_path,
 			coords,
 		}
-	}
-}
-
-/// Data structure containing all the information needed to populate XMSS hashers.
-pub struct XmssHasherData {
-	/// Parameter bytes (variable length based on spec)
-	pub param_bytes: Vec<u8>,
-	/// Message bytes (32 bytes)
-	pub message_bytes: [u8; 32],
-	/// Nonce bytes (variable length, typically 23)
-	pub nonce_bytes: Vec<u8>,
-	/// Epoch/leaf index
-	pub epoch: u64,
-	/// Codeword coordinates
-	pub coords: Vec<u8>,
-	/// Signature hashes for each chain
-	pub sig_hashes: Vec<[u8; 32]>,
-	/// Public key hashes for each chain
-	pub pk_hashes: Vec<[u8; 32]>,
-	/// Authentication path for Merkle tree
-	pub auth_path: Vec<[u8; 32]>,
-}
-
-/// Populates all hashers in an XmssHashers struct with witness data.
-///
-/// This function fills in the message hasher, chain hashers, public key hasher,
-/// and Merkle path hashers with the appropriate witness data for verification.
-///
-/// # Arguments
-///
-/// * `w` - The witness filler to populate
-/// * `hashers` - The XMSS hashers to populate
-/// * `spec` - The Winternitz specification
-/// * `data` - The data to use for population
-///
-/// # Panics
-/// Panics if:
-/// - `data.coord.len()` is not equal to `spec.dimension()`
-/// - `data.sig_hashes.len()` is not equal to `spec.dimension()`
-/// - `data.pk_hashes.len()` is not equal to `spec.dimension()`
-pub fn populate_xmss_hashers(
-	w: &mut WitnessFiller,
-	hashers: &XmssHashers,
-	spec: &WinternitzSpec,
-	data: &XmssHasherData,
-) {
-	assert_eq!(
-		data.coords.len(),
-		spec.dimension(),
-		"Coordinates length {} doesn't match spec dimension {}",
-		data.coords.len(),
-		spec.dimension()
-	);
-	assert_eq!(
-		data.sig_hashes.len(),
-		spec.dimension(),
-		"Signature hashes length {} doesn't match spec dimension {}",
-		data.sig_hashes.len(),
-		spec.dimension()
-	);
-	assert_eq!(
-		data.pk_hashes.len(),
-		spec.dimension(),
-		"Public key hashes length {} doesn't match spec dimension {}",
-		data.pk_hashes.len(),
-		spec.dimension()
-	);
-
-	// 1) Populate message hasher
-	let message_hash = hash_message(&data.param_bytes, &data.nonce_bytes, &data.message_bytes);
-
-	let tweaked_message =
-		build_message_hash(&data.param_bytes, &data.nonce_bytes, &data.message_bytes);
-
-	hashers
-		.winternitz_ots
-		.message_hasher
-		.populate_message(w, &tweaked_message);
-	hashers
-		.winternitz_ots
-		.message_hasher
-		.populate_digest(w, message_hash);
-
-	// 2) Pooled step hashers: fill in chain messages, digests, and metadata (remaining steps)
-	let mut idx = 0usize;
-	for chain_idx in 0..spec.dimension() {
-		let mut cur = data.sig_hashes[chain_idx];
-		let xi = data.coords[chain_idx] as usize;
-		let remaining = spec.chain_len() - 1 - xi;
-		for step in 0..remaining {
-			let msg =
-				build_chain_hash(&data.param_bytes, &cur, chain_idx as u64, (xi + step + 1) as u64);
-			let digest: [u8; 32] = Keccak256::digest(&msg).into();
-
-			let keccak = &hashers.winternitz_ots.step_hashers[idx];
-			keccak.populate_message(w, &msg);
-			keccak.populate_digest(w, digest);
-
-			pack_bytes_into_wires_le(w, &hashers.winternitz_ots.step_hash_inputs[idx], &cur);
-			w[hashers.winternitz_ots.step_chain_indices[idx]] = Word::from_u64(chain_idx as u64);
-			w[hashers.winternitz_ots.step_counts[idx]] = Word::from_u64((step + 1) as u64);
-			w[hashers.winternitz_ots.step_positions[idx]] = Word::from_u64((xi + step + 1) as u64);
-
-			cur = digest;
-			idx += 1;
-		}
-	}
-
-	// 3) Public key hasher
-	let pk_msg = build_public_key_hash(&data.param_bytes, &data.pk_hashes);
-	let pk_digest: [u8; 32] = Keccak256::digest(&pk_msg).into();
-	hashers.public_key_hasher.populate_message(w, &pk_msg);
-	hashers.public_key_hasher.populate_digest(w, pk_digest);
-
-	// 4) Merkle path hashers (from leaf to root)
-	let mut current = hash_public_key_keccak(&data.param_bytes, &data.pk_hashes);
-	let mut index = data.epoch as u32;
-	for (level, hasher) in hashers.merkle_path_hashers.iter().enumerate() {
-		let sibling = data.auth_path[level];
-		let is_left = (index & 1) == 0;
-		let (left, right) = if is_left {
-			(current, sibling)
-		} else {
-			(sibling, current)
-		};
-		let parent = Keccak256::digest(build_tree_hash(
-			&data.param_bytes,
-			&left,
-			&right,
-			level as u32,
-			index >> 1,
-		))
-		.into();
-		let msg = build_tree_hash(&data.param_bytes, &left, &right, level as u32, index >> 1);
-		hasher.populate_message(w, &msg);
-		hasher.populate_digest(w, parent);
-		current = parent;
-		index >>= 1;
 	}
 }
