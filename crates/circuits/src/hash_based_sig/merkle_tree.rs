@@ -133,7 +133,7 @@ mod tests {
 			.map_err(|e| format!("verify: {e:?}"))
 	}
 
-	const PARAM: &[u8; 18] = b"merkle_param_18byt";
+	const PARAM: &[u8; 18] = b"merkle_tree_param!";
 	const L0: &[u8; 32] = b"leaf_0_hash_value_32_bytes!!!!!!";
 	const L1: &[u8; 32] = b"leaf_1_hash_value_32_bytes!!!!!!";
 	const L2: &[u8; 32] = b"leaf_2_hash_value_32_bytes!!!!!!";
