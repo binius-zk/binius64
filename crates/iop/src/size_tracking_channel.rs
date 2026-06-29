@@ -117,7 +117,6 @@ impl<F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IPVerifierChannel<F>
 	}
 
 	fn compute_public_value(&mut self, inputs: &[F], f: impl FieldFn<F>) -> F {
-		// Elem is the base field, so the function runs directly in F.
 		f.call::<F>(inputs)
 	}
 }

@@ -279,10 +279,6 @@ where
 
 /// The monster multilinear evaluation, as a [`FieldFn`] over public-channel-derived inputs.
 ///
-/// This is the named function passed to `compute_public_value` for the shift evaluation.
-/// A [`FieldFn`] is used over a closure so the same evaluation runs in either the native field
-/// or a circuit-element field.
-///
 /// The inputs are the flat concatenation of these sections, in order:
 ///
 /// ```text
@@ -366,7 +362,6 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 			.expect("evaluate_monster_multilinear_for_operation has no fallible path")
 		};
 
-		// The monster evaluation is the sum of the two operator contributions.
 		bitand_part + intmul_part
 	}
 }

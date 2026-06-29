@@ -100,23 +100,19 @@ pub fn evaluate_wiring_mle_public<F: FieldOps>(
 
 /// The public segment's contribution to the batched operand evaluations, as a [`FieldFn`].
 ///
-/// This is the named function passed to `compute_public_value` for the public wiring evaluation.
-/// A [`FieldFn`] is used over a closure so the same evaluation runs in either the native field
-/// or a circuit-element field.
-///
-/// The inputs are laid out as `[public.., lambda, r_x_tensor..]`:
-/// - the first `public_len` elements are the public scalars;
-/// - the next element is the batching challenge `lambda`;
-/// - the rest are the eq-indicator partial evaluation at `r_x`.
+/// The inputs are the flat concatenation of three sections, in order:
+/// - a block of public scalars;
+/// - then the batching challenge `lambda`;
+/// - then the eq-indicator partial evaluation at `r_x`.
 pub struct PublicWiringEvalFn<'a> {
 	/// The multiplication constraints whose operands the evaluation sums over.
 	mul_constraints: &'a [MulConstraint<WitnessIndex>],
-	/// The number of leading inputs that are public scalars.
+	/// The length of the leading block of public scalars.
 	public_len: usize,
 }
 
 impl<'a> PublicWiringEvalFn<'a> {
-	/// Builds the function over the given constraints, with `public_len` leading public inputs.
+	/// Builds the function from the constraints and the count of leading public inputs.
 	pub fn new(mul_constraints: &'a [MulConstraint<WitnessIndex>], public_len: usize) -> Self {
 		Self {
 			mul_constraints,

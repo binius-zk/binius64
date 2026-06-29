@@ -102,8 +102,8 @@ pub trait IPVerifierChannel<F: Field> {
 	/// impls run it on either real or dummy values. Callers must therefore supply a pure function
 	/// with no observable side effects.
 	///
-	/// Taking a [`FieldFn`] rather than a closure lets the same function evaluate in either the
-	/// native field or a circuit-element field, which a monomorphic closure cannot express.
+	/// A [`FieldFn`] is taken rather than a closure to keep the run field generic.
+	/// The same function then evaluates natively or over a circuit-element field.
 	///
 	/// HACK: This is a temporary hack to fix a performance regression. This feature should be
 	/// killed and handled more elegantly with better witness generation code.
@@ -154,7 +154,6 @@ where
 	}
 
 	fn compute_public_value(&mut self, inputs: &[F], f: impl FieldFn<F>) -> F {
-		// Elem is the base field, so the function runs directly in F.
 		f.call::<F>(inputs)
 	}
 }

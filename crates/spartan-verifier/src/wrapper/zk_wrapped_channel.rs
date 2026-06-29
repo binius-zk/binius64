@@ -223,7 +223,6 @@ where
 				.iter()
 				.map(|elem| elem.to_wire(&mut instance_gen))
 				.collect();
-			// The hint runs at witness time over concrete F values.
 			instance_gen.hint_varsize(&input_wires, 1, move |vals| vec![f.call::<F>(vals)])[0]
 		};
 		CircuitElem::wire(&self.instance_gen, out_wire)

@@ -118,7 +118,6 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 				.iter()
 				.map(|elem| elem.to_wire(&mut builder))
 				.collect();
-			// The hint runs at witness time over concrete F values.
 			builder.hint_varsize(&input_wires, 1, move |vals| vec![f.call::<F>(vals)])[0]
 		};
 		CircuitElem::wire(&self.builder, out_wire)
