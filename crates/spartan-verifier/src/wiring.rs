@@ -2,7 +2,7 @@
 
 use std::{iter, rc::Rc};
 
-use binius_field::{Field, field::FieldOps};
+use binius_field::{Field, field::FieldOps, util::FieldFn};
 use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, univariate::evaluate_univariate};
 use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex, WitnessSegment};
 
@@ -96,4 +96,42 @@ pub fn evaluate_wiring_mle_public<F: FieldOps>(
 	}
 
 	evaluate_univariate(&acc, lambda)
+}
+
+/// The public segment's contribution to the batched operand evaluations, as a [`FieldFn`].
+///
+/// This is the named function passed to `compute_public_value` for the public wiring evaluation.
+/// A [`FieldFn`] is used over a closure so the same evaluation runs in either the native field
+/// or a circuit-element field.
+///
+/// The inputs are laid out as `[public.., lambda, r_x_tensor..]`:
+/// - the first `public_len` elements are the public scalars;
+/// - the next element is the batching challenge `lambda`;
+/// - the rest are the eq-indicator partial evaluation at `r_x`.
+pub struct PublicWiringEvalFn<'a> {
+	/// The multiplication constraints whose operands the evaluation sums over.
+	mul_constraints: &'a [MulConstraint<WitnessIndex>],
+	/// The number of leading inputs that are public scalars.
+	public_len: usize,
+}
+
+impl<'a> PublicWiringEvalFn<'a> {
+	/// Builds the function over the given constraints, with `public_len` leading public inputs.
+	pub fn new(mul_constraints: &'a [MulConstraint<WitnessIndex>], public_len: usize) -> Self {
+		Self {
+			mul_constraints,
+			public_len,
+		}
+	}
+}
+
+impl<F: Field> FieldFn<F> for PublicWiringEvalFn<'_> {
+	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, inputs: &[E]) -> E {
+		// Split the flat input back into its three parts.
+		let public = &inputs[..self.public_len];
+		let lambda = inputs[self.public_len].clone();
+		let r_x_tensor = &inputs[self.public_len + 1..];
+
+		evaluate_wiring_mle_public(self.mul_constraints, public, lambda, r_x_tensor)
+	}
 }

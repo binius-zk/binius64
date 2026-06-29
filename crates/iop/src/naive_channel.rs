@@ -6,7 +6,7 @@
 //! that reads full polynomial data from the transcript instead of verifying FRI commitments.
 //! This is intended for unit testing of protocols without the overhead of BaseFold/FRI.
 
-use binius_field::Field;
+use binius_field::{Field, util::FieldFn};
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{FieldBuffer, inner_product::inner_product_buffers};
 use binius_transcript::{
@@ -134,8 +134,9 @@ where
 		}
 	}
 
-	fn compute_public_value(&mut self, inputs: &[F], f: impl FnOnce(&[F]) -> F) -> F {
-		f(inputs)
+	fn compute_public_value(&mut self, inputs: &[F], f: impl FieldFn<F>) -> F {
+		// Elem is the base field, so the function runs directly in F.
+		f.call::<F>(inputs)
 	}
 }
 

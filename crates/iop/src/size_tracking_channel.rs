@@ -5,7 +5,7 @@
 //!
 //! This is useful for estimating proof sizes without running the full protocol.
 
-use binius_field::BinaryField;
+use binius_field::{BinaryField, util::FieldFn};
 use binius_ip::channel::IPVerifierChannel;
 
 use crate::{
@@ -116,8 +116,9 @@ impl<F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IPVerifierChannel<F>
 		Ok(())
 	}
 
-	fn compute_public_value(&mut self, inputs: &[F], f: impl FnOnce(&[F]) -> F) -> F {
-		f(inputs)
+	fn compute_public_value(&mut self, inputs: &[F], f: impl FieldFn<F>) -> F {
+		// Elem is the base field, so the function runs directly in F.
+		f.call::<F>(inputs)
 	}
 }
 
