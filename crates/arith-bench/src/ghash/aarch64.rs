@@ -4,7 +4,7 @@
 //! GHASH elements are represented as `poly64x2_t` (a SIMD vector type, so the multiply stays in
 //! NEON registers across call boundaries). The `PMULL` / `PMULL2` instructions (`vmull_p64` /
 //! `vmull_high_p64`) drive the carryless multiplies, pairwise 128-bit XORs use `vaddq_p128`, and
-//! three-way XORs go through [`xor3`] (`EOR3` when the `SHA3` extension is available). The
+//! three-way XORs go through `xor3` (`EOR3` when the `SHA3` extension is available). The
 //! multiply is split into two phases:
 //!
 //! * `mul_wide`, which produces the unreduced product as three 128-bit limbs `[t0, t1, t2]`: `t0 =

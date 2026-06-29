@@ -100,12 +100,12 @@ where
 	}
 
 	/// Returns a reference to the NTT.
-	pub fn ntt(&self) -> &NTT {
+	pub const fn ntt(&self) -> &NTT {
 		&self.ntt
 	}
 
 	/// Returns a reference to the Merkle prover.
-	pub fn merkle_prover(&self) -> &MerkleProver_ {
+	pub const fn merkle_prover(&self) -> &MerkleProver_ {
 		&self.merkle_prover
 	}
 
@@ -115,7 +115,7 @@ where
 	}
 
 	/// Returns a reference to the precomputed combined FRI parameters.
-	pub fn fri_params(&self) -> &FRIParams<F> {
+	pub const fn fri_params(&self) -> &FRIParams<F> {
 		&self.fri_params
 	}
 

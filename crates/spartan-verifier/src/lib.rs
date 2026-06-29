@@ -100,11 +100,11 @@ where
 
 impl<F: Field> IOPVerifier<F> {
 	/// Constructs an IOP verifier for a constraint system.
-	pub fn new(constraint_system: ConstraintSystemPadded<F>) -> Self {
+	pub const fn new(constraint_system: ConstraintSystemPadded<F>) -> Self {
 		Self { constraint_system }
 	}
 
-	pub fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
+	pub const fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
 		&self.constraint_system
 	}
 
@@ -141,7 +141,7 @@ impl<F: Field> IOPVerifier<F> {
 	pub fn verify<'r, Channel>(
 		&'r self,
 		precommit_oracle: Channel::Oracle,
-		public: Vec<Channel::Elem>,
+		public: &[Channel::Elem],
 		channel: &mut Channel,
 	) -> Result<(), Error>
 	where
@@ -176,7 +176,7 @@ impl<F: Field> IOPVerifier<F> {
 		let lambda = channel.sample();
 
 		// Batch together the constraint operand evaluation claims.
-		let batched_sum = evaluate_univariate(&[a_eval, b_eval, c_eval], lambda.clone());
+		let batched_sum = evaluate_univariate(&[a_eval, b_eval, c_eval], &lambda);
 
 		// Compute rₓ^⊤ (M_A + λ M_B + λ² M_C) x. Shared via `Rc` so the transparent closures can
 		// own it and outlive this call (the opening is deferred to the channel's `finish()`). `Rc`
@@ -190,12 +190,7 @@ impl<F: Field> IOPVerifier<F> {
 		// single inout wire instead of building the entire sub-circuit.
 		let public_eval = {
 			let public_len = public.len();
-			let inputs = [
-				public.as_slice(),
-				slice::from_ref(&lambda),
-				r_x_tensor.as_ref(),
-			]
-			.concat();
+			let inputs = [public, slice::from_ref(&lambda), r_x_tensor.as_ref()].concat();
 
 			let mul_constraints = cs.mul_constraints();
 			channel.compute_public_value(&inputs, move |vals| {
@@ -205,7 +200,7 @@ impl<F: Field> IOPVerifier<F> {
 				evaluate_wiring_mle_public(
 					mul_constraints,
 					public_vals,
-					lambda_val,
+					&lambda_val,
 					r_x_tensor_vals,
 				)
 			})
@@ -224,7 +219,7 @@ impl<F: Field> IOPVerifier<F> {
 			lambda.clone(),
 		);
 		let private_transparent =
-			wiring::eval_transparent(cs, WitnessSegment::Private, r_x_tensor.clone(), lambda);
+			wiring::eval_transparent(cs, WitnessSegment::Private, r_x_tensor, lambda);
 		let mask_transparent = mask_transparent(cs, &r_x);
 
 		// Verify all oracle relations
@@ -293,16 +288,16 @@ where
 	}
 
 	/// Returns a reference to the IOP verifier.
-	pub fn iop_verifier(&self) -> &IOPVerifier<F> {
+	pub const fn iop_verifier(&self) -> &IOPVerifier<F> {
 		&self.iop_verifier
 	}
 
-	pub fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
+	pub const fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
 		self.iop_verifier.constraint_system()
 	}
 
 	/// Returns a reference to the BaseFold ZK verifier compiler.
-	pub fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<F, BinaryMerkleTreeScheme<F, H>> {
+	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<F, BinaryMerkleTreeScheme<F, H>> {
 		&self.basefold_compiler
 	}
 
@@ -329,7 +324,7 @@ where
 		let mut channel = self.basefold_compiler.create_channel(transcript);
 		let precommit_oracle = channel.recv_oracle()?;
 		self.iop_verifier
-			.verify(precommit_oracle, public.to_vec(), &mut channel)?;
+			.verify(precommit_oracle, public, &mut channel)?;
 		Ok(channel.finish()?)
 	}
 }

@@ -115,7 +115,7 @@ fn bench_batch_quadratic_mlecheck_prove(c: &mut Criterion) {
 						multilinears,
 						batch_comp::<P>,
 						batch_inf_comp::<P>,
-						eval_point,
+						&eval_point,
 						eval_claims,
 					)
 					.unwrap();

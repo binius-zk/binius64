@@ -109,7 +109,7 @@ where
 			n_dummy_constraints: 2,
 		};
 		let outer_cs = ConstraintSystemPadded::new(outer_cs, blinding_info);
-		let outer_layout = outer_layout.with_blinding(outer_cs.blinding_info().clone());
+		let outer_layout = outer_layout.with_blinding(outer_cs.blinding_info());
 		let outer_iop_verifier = IronSpartanIOPVerifier::new(outer_cs);
 
 		// Transcript layout: outer precommit oracle first (committed at wrapper construction),
@@ -140,29 +140,29 @@ where
 	}
 
 	/// Returns a reference to the inner IOP verifier.
-	pub fn inner_iop_verifier(&self) -> &IOPVerifier {
+	pub const fn inner_iop_verifier(&self) -> &IOPVerifier {
 		&self.inner_iop_verifier
 	}
 
 	/// Returns a reference to the outer spartan IOP verifier.
-	pub fn outer_iop_verifier(&self) -> &IronSpartanIOPVerifier<B128> {
+	pub const fn outer_iop_verifier(&self) -> &IronSpartanIOPVerifier<B128> {
 		&self.outer_iop_verifier
 	}
 
 	/// Returns the BaseFold ZK verifier compiler.
-	pub fn basefold_compiler(
+	pub const fn basefold_compiler(
 		&self,
 	) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
 		&self.basefold_compiler
 	}
 
 	/// Returns the constraint system.
-	pub fn constraint_system(&self) -> &ConstraintSystem {
+	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		self.inner_iop_verifier.constraint_system()
 	}
 
 	/// Returns log2 of the number of public words.
-	pub fn log_public_words(&self) -> usize {
+	pub const fn log_public_words(&self) -> usize {
 		self.inner_iop_verifier.log_public_words()
 	}
 

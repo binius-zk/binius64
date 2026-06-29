@@ -82,7 +82,7 @@ where
 		second_col: Vec<Word>,
 		third_col: Vec<Word>,
 		big_field_zerocheck_challenges: Vec<F>,
-		prover_message_domain: BinarySubspace<B8>,
+		prover_message_domain: &BinarySubspace<B8>,
 	) -> Self {
 		let univariate_round_message = tracing::debug_span!("Compute univariate round message")
 			.in_scope(|| {
@@ -92,7 +92,7 @@ where
 					&second_col,
 					&third_col,
 					&big_field_zerocheck_challenges,
-					&prover_message_domain,
+					prover_message_domain,
 				)
 			});
 
@@ -125,7 +125,7 @@ where
 	///
 	/// The polynomial evaluations are precomputed in the constructor using the NTT lookup table
 	/// for efficiency. This method simply returns the cached result.
-	pub fn execute(&self) -> &[F; ROWS_PER_HYPERCUBE_VERTEX] {
+	pub const fn execute(&self) -> &[F; ROWS_PER_HYPERCUBE_VERTEX] {
 		&self.univariate_round_message
 	}
 
@@ -157,8 +157,8 @@ where
 	/// 5. Constructs the AND reduction sumcheck prover with the folded multilinears
 	pub fn fold_and_send_reduced_prover(
 		self,
-		round_message_domain: BinarySubspace<F>,
-		challenge: F,
+		round_message_domain: &BinarySubspace<F>,
+		challenge: &F,
 	) -> impl MleCheckProver<F> {
 		let univariate_domain = round_message_domain.reduce_dim(round_message_domain.dim() - 1);
 		let lagrange_evals = lagrange_evals_scalars(&univariate_domain, challenge);
@@ -188,12 +188,8 @@ where
 			proving_polys,
 			|[a, b, c]| a * b - c,
 			|[a, b, _]| a * b,
-			verifier_field_zerocheck_challenges,
-			extrapolate_over_subspace(
-				&round_message_domain,
-				&first_round_message_coeffs,
-				challenge,
-			),
+			&verifier_field_zerocheck_challenges,
+			extrapolate_over_subspace(round_message_domain, &first_round_message_coeffs, challenge),
 		)
 		.expect("multilinears should have consistent dimensions")
 	}
@@ -238,8 +234,8 @@ where
 		let univariate_round_message_domain = self.univariate_round_message_domain.clone();
 		let sumcheck_prover = tracing::debug_span!("Fold univariate round").in_scope(|| {
 			self.fold_and_send_reduced_prover(
-				univariate_round_message_domain,
-				univariate_sumcheck_challenge,
+				&univariate_round_message_domain,
+				&univariate_sumcheck_challenge,
 			)
 		});
 
@@ -327,7 +323,7 @@ mod test {
 			second_mlv.clone(),
 			third_mlv.clone(),
 			big_field_zerocheck_challenges.to_vec(),
-			prover_message_domain.clone(),
+			&prover_message_domain,
 		);
 
 		let prove_output = prover.prove_with_channel(&mut prover_challenger).unwrap();
@@ -369,7 +365,7 @@ mod test {
 		let one_bit_mlvs = [first_mlv, second_mlv, third_mlv];
 
 		let verifier_lagrange_evals =
-			lagrange_evals_scalars(&verifier_univariate_domain, z_challenge);
+			lagrange_evals_scalars(&verifier_univariate_domain, &z_challenge);
 		let verifier_transparent_transform =
 			OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
 				.create(&verifier_lagrange_evals);

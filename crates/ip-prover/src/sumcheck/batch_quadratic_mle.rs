@@ -54,7 +54,7 @@ where
 		mut multilinears: impl AsSlicesMut<P, N> + Send + 'static,
 		composition: Composition,
 		infinity_composition: InfinityComposition,
-		eval_point: Vec<F>,
+		eval_point: &[F],
 		eval_claims: [F; M],
 	) -> Result<Self, Error> {
 		let n_vars = eval_point.len();
@@ -69,7 +69,7 @@ where
 		// The first execute round consumes the claimed composite evaluations at eval_point.
 		let last_coeffs_or_eval = RoundCoeffsOrEvals::Evals(eval_claims);
 		// Gruen32 owns the eq-indicator expansion tied to eval_point and drives per-round folding.
-		let gruen32 = Gruen32::new(&eval_point);
+		let gruen32 = Gruen32::new(eval_point);
 
 		Ok(Self {
 			multilinears: Box::new(multilinears),
@@ -273,7 +273,7 @@ where
 		// Evaluate each round polynomial at the verifier's challenge to form the next sum claim.
 		let evals = prime_coeffs
 			.iter()
-			.map(|coeffs| coeffs.evaluate(challenge))
+			.map(|coeffs| coeffs.evaluate(&challenge))
 			.collect_array()
 			.expect("Will have size M");
 
@@ -425,7 +425,7 @@ mod tests {
 				multilinears.clone(),
 				comp_0::<P> as CompFn<P>,
 				inf_comp_0::<P> as CompFn<P>,
-				eval_point.clone(),
+				&eval_point,
 				eval_claims[0],
 			)
 			.unwrap(),
@@ -433,17 +433,17 @@ mod tests {
 				multilinears.clone(),
 				comp_1::<P> as CompFn<P>,
 				inf_comp_1::<P> as CompFn<P>,
-				eval_point.clone(),
+				&eval_point,
 				eval_claims[1],
 			)
 			.unwrap(),
 		];
 
 		let mut batch_prover = BatchQuadraticMleCheckProver::new(
-			multilinears.clone(),
+			multilinears,
 			batch_comp::<P>,
 			batch_inf_comp::<P>,
-			eval_point,
+			&eval_point,
 			eval_claims,
 		)
 		.unwrap();
@@ -492,7 +492,7 @@ mod tests {
 			multilinears.clone(),
 			batch_comp::<P>,
 			batch_inf_comp::<P>,
-			eval_point.clone(),
+			&eval_point,
 			eval_claims,
 		)
 		.unwrap();
@@ -535,7 +535,7 @@ mod tests {
 						.sum::<P>();
 
 					let eval = packed_eval.iter().take(1 << n_vars_remaining).sum::<F>();
-					assert_eq!(eval, round_coeffs.evaluate(sample));
+					assert_eq!(eval, round_coeffs.evaluate(&sample));
 				}
 			}
 

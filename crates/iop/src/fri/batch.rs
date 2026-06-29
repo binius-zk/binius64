@@ -36,7 +36,7 @@ pub trait ProxTestOracle<F: BinaryField> {
 	fn open_queries<B: Buf>(
 		&self,
 		indices: &[usize],
-		advice: &mut TranscriptReader<B>,
+		advice: &mut TranscriptReader<'_, B>,
 	) -> Result<Vec<F>, Error>;
 }
 
@@ -63,7 +63,7 @@ impl<F: BinaryField, MTScheme: MerkleTreeScheme<F>> BrakedownOracle<F, MTScheme>
 	/// `log_lift` is the oracle-padding lift factor (the committed codeword is virtually duplicated
 	/// `2^log_lift` times to reach the common first-round length); pass `0` when no lifting is
 	/// needed.
-	pub fn new(
+	pub const fn new(
 		challenges: Vec<F>,
 		commitment: Commitment<MTScheme::Digest>,
 		merkle_scheme: MTScheme,
@@ -90,7 +90,7 @@ impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> Pr
 	fn open_queries<B: Buf>(
 		&self,
 		indices: &[usize],
-		advice: &mut TranscriptReader<B>,
+		advice: &mut TranscriptReader<'_, B>,
 	) -> Result<Vec<F>, Error> {
 		assert!(indices.iter().all(|&index| index < 1 << self.log_len())); // precondition
 		// Translate each query on the virtual lifted oracle into a query on the committed codeword
@@ -160,7 +160,7 @@ impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> Pr
 	fn open_queries<B: Buf>(
 		&self,
 		indices: &[usize],
-		advice: &mut TranscriptReader<B>,
+		advice: &mut TranscriptReader<'_, B>,
 	) -> Result<Vec<F>, Error> {
 		// Read each bundled oracle's openings in commit order (matching the prover), then combine
 		// across oracles by the outer-challenge tensor expansion:
@@ -202,7 +202,7 @@ where
 {
 	/// Constructs a new oracle from a committed oracle, its folding challenges, and the domain
 	/// context providing the FRI fold twiddles.
-	pub fn new(
+	pub const fn new(
 		challenges: Vec<F>,
 		commitment: Commitment<MTScheme::Digest>,
 		merkle_scheme: MTScheme,
@@ -217,7 +217,7 @@ where
 	}
 
 	/// The base-2 log of the size of each coset opened from the committed oracle.
-	fn coset_log_size(&self) -> usize {
+	const fn coset_log_size(&self) -> usize {
 		self.challenges.len()
 	}
 
@@ -302,7 +302,7 @@ where
 		&self,
 		indices: &[usize],
 		claims: &[F],
-		advice: &mut TranscriptReader<B>,
+		advice: &mut TranscriptReader<'_, B>,
 	) -> Result<Vec<F>, Error> {
 		assert_eq!(indices.len(), claims.len()); // precondition
 		assert!(
@@ -351,7 +351,7 @@ where
 	fn open_queries<B: Buf>(
 		&self,
 		indices: &[usize],
-		advice: &mut TranscriptReader<B>,
+		advice: &mut TranscriptReader<'_, B>,
 	) -> Result<Vec<F>, Error> {
 		assert!(indices.iter().all(|&index| index < 1 << self.log_len())); // precondition
 		verify_query_openings(
@@ -380,7 +380,7 @@ fn verify_query_openings<'a, F, MTScheme, B>(
 	commitment: &'a Commitment<MTScheme::Digest>,
 	coset_log_size: usize,
 	indices: &'a [usize],
-	advice: &'a mut TranscriptReader<B>,
+	advice: &'a mut TranscriptReader<'_, B>,
 ) -> Result<impl Iterator<Item = Result<(usize, Vec<F>), Error>> + 'a, Error>
 where
 	F: BinaryField,

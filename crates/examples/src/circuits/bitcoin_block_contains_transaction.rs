@@ -47,8 +47,7 @@ impl BlockContainsTransaction {
 		);
 
 		// `block_header` hashes to `block_hash`
-		let block_header =
-			DoubleSha256::construct_circuit(builder, block_header.to_vec(), block_hash);
+		let block_header = DoubleSha256::construct_circuit(builder, &block_header, block_hash);
 
 		Self {
 			merkle_path,
@@ -58,7 +57,7 @@ impl BlockContainsTransaction {
 
 	pub fn populate_inner(
 		&self,
-		filler: &mut WitnessFiller,
+		filler: &mut WitnessFiller<'_>,
 		transaction_hash: [u8; 32],
 		merkle_path: &[([u8; 32], SiblingSide)],
 		block_header: &[u8],

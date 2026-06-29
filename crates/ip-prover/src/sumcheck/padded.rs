@@ -42,7 +42,7 @@ pub struct PaddedSumcheckDecorator<F: Field, Inner> {
 
 impl<F: Field, Inner: SumcheckProver<F>> PaddedSumcheckDecorator<F, Inner> {
 	/// Wraps `inner`, padding its claim with `n_extra_vars` extra (highest-indexed) variables.
-	pub fn new(inner: Inner, n_extra_vars: usize) -> Self {
+	pub const fn new(inner: Inner, n_extra_vars: usize) -> Self {
 		Self {
 			inner,
 			n_extra_vars,
@@ -52,7 +52,7 @@ impl<F: Field, Inner: SumcheckProver<F>> PaddedSumcheckDecorator<F, Inner> {
 	}
 
 	/// Whether the current round binds one of the padding variables.
-	fn in_padding_phase(&self) -> bool {
+	const fn in_padding_phase(&self) -> bool {
 		self.round < self.n_extra_vars
 	}
 }
@@ -248,7 +248,7 @@ mod tests {
 				RoundProof(RoundCoeffs(verifier_transcript.recv_many(degree).unwrap()));
 			let challenge = verifier_transcript.sample();
 			let round_coeffs = round_proof.recover(running_sum);
-			running_sum = round_coeffs.evaluate(challenge);
+			running_sum = round_coeffs.evaluate(&challenge);
 			challenges.push(challenge);
 		}
 		let reduced_eval = running_sum;

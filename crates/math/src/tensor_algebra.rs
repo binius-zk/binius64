@@ -76,7 +76,7 @@ where
 	}
 
 	/// Multiply by an element from the vertical subring.
-	pub fn scale_vertical(mut self, scalar: FE) -> Self {
+	pub fn scale_vertical(mut self, scalar: &FE) -> Self {
 		for elem_i in &mut self.elems {
 			*elem_i *= scalar.clone();
 		}
@@ -88,7 +88,7 @@ where
 	/// Internally, this performs a transpose, vertical scaling, then transpose sequence. If
 	/// multiple horizontal scaling operations are required and performance is a concern, it may be
 	/// better for the caller to do the transposes directly and amortize their cost.
-	pub fn scale_horizontal(self, scalar: FE) -> Self {
+	pub fn scale_horizontal(self, scalar: &FE) -> Self {
 		self.transpose().scale_vertical(scalar).transpose()
 	}
 
@@ -233,7 +233,7 @@ mod tests {
 		let vert = FE::random(&mut rng);
 		let hztl = FE::random(&mut rng);
 
-		let expected = TensorAlgebra::<F, _>::from_vertical(vert).scale_horizontal(hztl);
+		let expected = TensorAlgebra::<F, _>::from_vertical(vert).scale_horizontal(&hztl);
 		assert_eq!(TensorAlgebra::tensor(vert, hztl), expected);
 	}
 
@@ -250,18 +250,18 @@ mod tests {
 
 		// Scale horizontally by an extension element, and we should no longer be vertical.
 		let hztl = FE::new(1111);
-		let elem = elem.scale_horizontal(hztl);
+		let elem = elem.scale_horizontal(&hztl);
 		assert_eq!(elem.try_extract_vertical(), None);
 
 		// Scale back by the inverse to get back to the vertical subring.
 		// Safety: `hztl` is the non-zero constant 1111.
 		let hztl_inv = unsafe { hztl.invert() };
-		let elem = elem.scale_horizontal(hztl_inv);
+		let elem = elem.scale_horizontal(&hztl_inv);
 		assert_eq!(elem.try_extract_vertical(), Some(vert));
 
 		// If we scale horizontally by an F element, we should remain in the vertical subring.
 		let hztl_subfield = FE::from(F::ONE);
-		let elem = elem.scale_horizontal(hztl_subfield);
+		let elem = elem.scale_horizontal(&hztl_subfield);
 		assert_eq!(elem.try_extract_vertical(), Some(vert * hztl_subfield));
 	}
 }

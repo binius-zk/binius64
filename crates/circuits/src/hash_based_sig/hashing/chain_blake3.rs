@@ -51,7 +51,7 @@ const CV_WORDS: usize = 8;
 
 /// Tweak content length in bytes for a given parameter length:
 /// `param || 0x00 || epoch(4) || chain_index(1) || position(1)`.
-pub fn chain_tweak_len(param_len: usize) -> usize {
+pub const fn chain_tweak_len(param_len: usize) -> usize {
 	param_len + 1 + EPOCH_BYTES + CHAIN_INDEX_BYTES + POSITION_BYTES
 }
 

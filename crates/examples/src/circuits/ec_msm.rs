@@ -37,7 +37,7 @@ struct AffinePoint {
 }
 
 impl AffinePoint {
-	fn new_inout(builder: &mut CircuitBuilder) -> Self {
+	fn new_inout(builder: &CircuitBuilder) -> Self {
 		Self {
 			x: BigUint::new_inout(builder, N_LIMBS),
 			y: BigUint::new_inout(builder, N_LIMBS),
@@ -101,7 +101,7 @@ impl ExampleCircuit for EcMsmExample {
 		})
 	}
 
-	fn populate_witness(&self, _instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, _instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		let mut rng = StdRng::seed_from_u64(42);
 		let mut expected = ProjectivePoint::IDENTITY;
 
@@ -133,7 +133,7 @@ impl ExampleCircuit for EcMsmExample {
 }
 
 /// Populate the `x` and `y` limb wires from a k256 projective point's affine coordinates.
-fn populate_point(w: &mut WitnessFiller, p: &ProjectivePoint, x: &BigUint, y: &BigUint) {
+fn populate_point(w: &mut WitnessFiller<'_>, p: &ProjectivePoint, x: &BigUint, y: &BigUint) {
 	let bytes = p.to_affine().to_encoded_point(false).to_bytes();
 	// Uncompressed SEC1 encoding: `0x04 || x (32 bytes) || y (32 bytes)`.
 	x.populate_limbs(w, &le_limbs(&num_bigint::BigUint::from_bytes_be(&bytes[1..33])));

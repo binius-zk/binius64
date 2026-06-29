@@ -19,7 +19,7 @@ pub struct ConstPool {
 
 impl ConstPool {
 	pub fn new() -> Self {
-		ConstPool::default()
+		Self::default()
 	}
 
 	pub fn get(&self, value: Word) -> Option<Wire> {
@@ -52,8 +52,8 @@ pub enum WireKind {
 }
 impl WireKind {
 	/// Returns `true` if this is a constant wire.
-	pub fn is_const(&self) -> bool {
-		matches!(self, WireKind::Constant(_))
+	pub const fn is_const(&self) -> bool {
+		matches!(self, Self::Constant(_))
 	}
 }
 
@@ -120,16 +120,16 @@ impl GateData {
 	/// and must use [`gate_param_with_registry`](Self::gate_param_with_registry) instead.
 	/// The ~25 per-gate-module callers never see `Opcode::Hint`, so they use this method.
 	pub fn gate_param(&self) -> GateParam<'_> {
-		self.gate_param_for_shape(self.opcode.shape(&self.dimensions))
+		self.gate_param_for_shape(&self.opcode.shape(&self.dimensions))
 	}
 
 	/// Like [`gate_param`](Self::gate_param) but works for [`Opcode::Hint`] gates by looking
 	/// up the shape in the provided registry.
 	pub fn gate_param_with_registry(&self, registry: &HintRegistry) -> GateParam<'_> {
-		self.gate_param_for_shape(self.shape(registry))
+		self.gate_param_for_shape(&self.shape(registry))
 	}
 
-	fn gate_param_for_shape(&self, shape: OpcodeShape) -> GateParam<'_> {
+	fn gate_param_for_shape(&self, shape: &OpcodeShape) -> GateParam<'_> {
 		let start_const = 0;
 		let end_const = shape.const_in.len();
 		let start_input = end_const;

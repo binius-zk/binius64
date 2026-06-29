@@ -18,7 +18,7 @@ pub const SKIPPED_VARS: usize = binius_core::consts::LOG_WORD_SIZE_BITS;
 pub const ROWS_PER_HYPERCUBE_VERTEX: usize = 1 << SKIPPED_VARS;
 
 /// Output from the AND constraint reduction protocol verification.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct AndCheckOutput<F> {
 	pub a_eval: F,
 	pub b_eval: F,
@@ -117,7 +117,7 @@ where
 	let sumcheck_claim = extrapolate_over_subspace(
 		round_message_univariate_domain,
 		&univariate_message_coeffs,
-		univariate_sumcheck_challenge.clone(),
+		&univariate_sumcheck_challenge,
 	);
 
 	let SumcheckOutput {

@@ -158,12 +158,12 @@ where
 	}
 
 	/// Number of fold rounds, including the final fold.
-	pub fn n_rounds(&self) -> usize {
+	pub const fn n_rounds(&self) -> usize {
 		self.params.n_fold_rounds()
 	}
 
 	/// Number of times `execute_fold_round` has been called.
-	pub fn n_rounds_remaining(&self) -> usize {
+	pub const fn n_rounds_remaining(&self) -> usize {
 		self.n_rounds() - self.curr_round
 	}
 
@@ -235,7 +235,7 @@ where
 				// reduced dimension and rate.
 				let challenges = mem::take(&mut self.unprocessed_challenges);
 				let fri_fold_span = tracing::debug_span!("FRI Fold").entered();
-				let folded_codeword = fold_codeword(self.ntt, last_codeword.to_ref(), &challenges);
+				let folded_codeword = fold_codeword(self.ntt, &last_codeword.to_ref(), &challenges);
 				drop(fri_fold_span);
 				let oracle = FRIOracleProver::new(
 					last_codeword,
@@ -375,7 +375,11 @@ where
 ///
 /// [DP24]: <https://eprint.iacr.org/2024/504>
 #[instrument(skip_all, level = "debug")]
-fn fold_codeword<F, NTT>(ntt: &NTT, codeword: FieldSlice<F>, challenges: &[F]) -> FieldBuffer<F>
+fn fold_codeword<F, NTT>(
+	ntt: &NTT,
+	codeword: &FieldSlice<'_, F>,
+	challenges: &[F],
+) -> FieldBuffer<F>
 where
 	F: BinaryField,
 	NTT: AdditiveNTT<Field = F> + Sync,
@@ -422,11 +426,11 @@ where
 	MTProver: MerkleTreeProver<F>,
 {
 	/// The total interleave batch size, `log_early_batch_size + log_later_batch_size`.
-	fn log_batch_size(&self) -> usize {
+	const fn log_batch_size(&self) -> usize {
 		self.log_early_batch_size + self.log_later_batch_size
 	}
 
-	pub fn log_folded_len(&self) -> usize {
+	pub const fn log_folded_len(&self) -> usize {
 		self.codeword.log_len() - self.log_batch_size()
 	}
 }
@@ -602,7 +606,7 @@ mod tests {
 		ntt.forward_transform(codeword.to_mut(), 0, 0);
 
 		// Fold the encoded message using FRI folding.
-		let folded_codeword = fold_codeword(&ntt, codeword.to_ref(), &challenges);
+		let folded_codeword = fold_codeword(&ntt, &codeword.to_ref(), &challenges);
 
 		// Encode the folded message.
 		ntt.forward_transform(folded_msg.to_mut(), 0, 0);

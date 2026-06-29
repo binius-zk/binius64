@@ -47,7 +47,7 @@ impl ExampleCircuit for Blake2bExample {
 		Ok(Self { blake2b_circuit })
 	}
 
-	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		// Step 1: Get raw message bytes
 		let message = utils::generate_message_bytes(instance.message_string, instance.message_len);
 

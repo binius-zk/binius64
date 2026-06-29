@@ -17,7 +17,7 @@ use crate::compiler::{CircuitBuilder, Wire, circuit::WitnessFiller};
 ///
 /// # Panics
 /// * If bytes.len() exceeds wires.len() * 8
-pub fn pack_bytes_into_wires_le(w: &mut WitnessFiller, wires: &[Wire], bytes: &[u8]) {
+pub fn pack_bytes_into_wires_le(w: &mut WitnessFiller<'_>, wires: &[Wire], bytes: &[u8]) {
 	let max_value_size = wires.len() * 8;
 	assert!(
 		bytes.len() <= max_value_size,

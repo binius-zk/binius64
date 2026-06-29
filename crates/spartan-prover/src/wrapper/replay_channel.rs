@@ -224,12 +224,12 @@ mod tests {
 			.collect();
 
 		let witness_rc = Rc::new(RefCell::new(witness_gen));
-		let mut witness_elems: Vec<WitnessElem> = witness_wires
+		let mut witness_elems: Vec<WitnessElem<'_>> = witness_wires
 			.iter()
 			.map(|&w| WitnessElem::wire(&witness_rc, w))
 			.collect();
 
-		<WitnessElem as FieldOps>::square_transpose::<FSub>(&mut witness_elems);
+		<WitnessElem<'_> as FieldOps>::square_transpose::<FSub>(&mut witness_elems);
 
 		drop(witness_elems);
 		let witness_gen = Rc::try_unwrap(witness_rc).unwrap().into_inner();

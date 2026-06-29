@@ -22,7 +22,7 @@ fn bench_bit_reverse_helper<F: BinaryField, P: PackedField<Scalar = F>>(
 
 		group.bench_function(BenchmarkId::new("bit_reverse_packed", &parameter), |b| {
 			let mut data = random_field_buffer::<P>(&mut rng, log_d);
-			b.iter(|| bit_reverse_packed(data.to_mut()))
+			b.iter(|| bit_reverse_packed(data.to_mut()));
 		});
 	}
 

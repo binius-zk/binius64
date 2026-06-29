@@ -25,7 +25,7 @@ fn benchmark_iter_impl<P: PackedField>(
 
 	if let Some(skip) = skip {
 		group.bench_function(id, |b| {
-			b.iter(|| iter_packed_slice_with_offset(&values, skip * P::WIDTH).sum::<P::Scalar>())
+			b.iter(|| iter_packed_slice_with_offset(&values, skip * P::WIDTH).sum::<P::Scalar>());
 		});
 	} else {
 		group

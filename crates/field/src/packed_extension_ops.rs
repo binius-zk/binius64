@@ -7,7 +7,9 @@ use binius_utils::rayon::prelude::{
 use crate::{ExtensionField, Field, PackedExtension, PackedField};
 
 pub fn ext_base_mul<PE: PackedExtension<F>, F: Field>(lhs: &mut [PE], rhs: &[PE::PackedSubfield]) {
-	ext_base_op(lhs, rhs, |_, lhs, broadcasted_rhs| PE::cast_ext(lhs.cast_base() * broadcasted_rhs))
+	ext_base_op(lhs, rhs, |_, lhs, broadcasted_rhs| {
+		PE::cast_ext(lhs.cast_base() * broadcasted_rhs)
+	});
 }
 
 pub fn ext_base_mul_par<PE: PackedExtension<F>, F: Field>(
@@ -16,7 +18,7 @@ pub fn ext_base_mul_par<PE: PackedExtension<F>, F: Field>(
 ) {
 	ext_base_op_par(lhs, rhs, |_, lhs, broadcasted_rhs| {
 		PE::cast_ext(lhs.cast_base() * broadcasted_rhs)
-	})
+	});
 }
 
 /// # Safety

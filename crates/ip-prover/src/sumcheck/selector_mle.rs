@@ -226,7 +226,7 @@ where
 
 		let sums = prime_coeffs
 			.iter()
-			.map(|coeffs| coeffs.evaluate(challenge))
+			.map(|coeffs| coeffs.evaluate(&challenge))
 			.collect();
 
 		self.gruen32s

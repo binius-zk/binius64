@@ -12,9 +12,9 @@ pub type FractionalBuffer<P> = (FieldBuffer<P>, FieldBuffer<P>);
 // collections to be added are in either half.
 pub fn new<F, P>(
 	fraction: [FieldBuffer<P>; 4],
-	eval_point: Vec<F>,
+	eval_point: &[F],
 	eval_claims: [F; 2],
-) -> Result<impl MleCheckProver<F>, Error>
+) -> Result<impl MleCheckProver<F> + use<F, P>, Error>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
@@ -58,10 +58,10 @@ mod tests {
 		prover: impl SumcheckProver<F>,
 		eval_claims: [F; 2],
 		eval_point: &[F],
-		num_a: FieldBuffer<P>,
-		num_b: FieldBuffer<P>,
-		den_a: FieldBuffer<P>,
-		den_b: FieldBuffer<P>,
+		num_a: &FieldBuffer<P>,
+		num_b: &FieldBuffer<P>,
+		den_a: &FieldBuffer<P>,
+		den_b: &FieldBuffer<P>,
 	) where
 		F: Field,
 		P: PackedField<Scalar = F>,
@@ -97,10 +97,10 @@ mod tests {
 
 		// Check that the original multilinears evaluate to the claimed values at the challenge
 		// point
-		let eval_num_a = evaluate(&num_a, &reduced_eval_point);
-		let eval_den_a = evaluate(&den_a, &reduced_eval_point);
-		let eval_num_b = evaluate(&num_b, &reduced_eval_point);
-		let eval_den_b = evaluate(&den_b, &reduced_eval_point);
+		let eval_num_a = evaluate(num_a, &reduced_eval_point);
+		let eval_den_a = evaluate(den_a, &reduced_eval_point);
+		let eval_num_b = evaluate(num_b, &reduced_eval_point);
+		let eval_den_b = evaluate(den_b, &reduced_eval_point);
 
 		assert_eq!(
 			eval_num_a, multilinear_evals[0],
@@ -133,7 +133,7 @@ mod tests {
 		);
 
 		// Also verify the challenges match what the prover saw
-		let mut prover_challenges = output.challenges.clone();
+		let mut prover_challenges = output.challenges;
 		prover_challenges.reverse();
 		assert_eq!(
 			prover_challenges, sumcheck_output.challenges,
@@ -175,7 +175,7 @@ mod tests {
 
 		let frac_prover = new(
 			[num_a.clone(), num_b.clone(), den_a.clone(), den_b.clone()],
-			eval_point.clone(),
+			&eval_point,
 			eval_claims,
 		)
 		.unwrap();
@@ -187,10 +187,10 @@ mod tests {
 			prover,
 			eval_claims,
 			&eval_point,
-			num_a,
-			num_b,
-			den_a,
-			den_b,
+			&num_a,
+			&num_b,
+			&den_a,
+			&den_b,
 		);
 	}
 }

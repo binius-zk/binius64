@@ -79,14 +79,14 @@ impl IOPProver {
 	}
 
 	/// Returns the constraint system.
-	pub fn constraint_system(&self) -> &ConstraintSystem {
+	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		&self.constraint_system
 	}
 
 	/// Returns a reference to the KeyCollection.
 	///
 	/// This can be used to serialize the KeyCollection for later use.
-	pub fn key_collection(&self) -> &KeyCollection {
+	pub const fn key_collection(&self) -> &KeyCollection {
 		&self.key_collection
 	}
 
@@ -94,7 +94,7 @@ impl IOPProver {
 	///
 	/// This is the core proving logic, independent of the specific IOP compilation strategy.
 	/// For most users, [`Prover::prove`] is the simpler interface.
-	pub fn prove<P, Channel>(&self, witness: ValueVec, mut channel: Channel) -> Result<(), Error>
+	pub fn prove<P, Channel>(&self, witness: &ValueVec, mut channel: Channel) -> Result<(), Error>
 	where
 		P: PackedField<Scalar = B128> + PackedExtension<B128> + PackedExtension<B1>,
 		Channel: IOPProverChannel<P>,
@@ -130,7 +130,7 @@ impl IOPProver {
 			n_constraints = cs.mul_constraints.len()
 		)
 		.entered();
-		let mul_witness = build_intmul_witness(&cs.mul_constraints, &witness);
+		let mul_witness = build_intmul_witness(&cs.mul_constraints, witness);
 		let intmul_output = prove_intmul_reduction::<_, P, _>(mul_witness, &mut channel)?;
 		drop(intmul_guard);
 
@@ -143,7 +143,7 @@ impl IOPProver {
 		)
 		.entered();
 		let bitand_claim = {
-			let bitand_witness = build_bitand_witness(&cs.and_constraints, &witness);
+			let bitand_witness = build_bitand_witness(&cs.and_constraints, witness);
 			let AndCheckOutput {
 				a_eval,
 				b_eval,
@@ -173,7 +173,7 @@ impl IOPProver {
 
 			let r_zhat_prime = bitand_claim.r_zhat_prime;
 			let subspace = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
-			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
+			let l_tilde = lagrange_evals(&subspace, &r_zhat_prime);
 			let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
 			OperatorData {
 				evals: vec![
@@ -307,27 +307,27 @@ where
 
 		let iop_prover = IOPProver::new(verifier.into_iop_verifier(), key_collection);
 
-		Ok(Prover {
+		Ok(Self {
 			iop_prover,
 			basefold_compiler,
 		})
 	}
 
 	/// Returns a reference to the IOP prover.
-	pub fn iop_prover(&self) -> &IOPProver {
+	pub const fn iop_prover(&self) -> &IOPProver {
 		&self.iop_prover
 	}
 
 	/// Returns a reference to the KeyCollection.
 	///
 	/// This can be used to serialize the KeyCollection for later use.
-	pub fn key_collection(&self) -> &KeyCollection {
+	pub const fn key_collection(&self) -> &KeyCollection {
 		self.iop_prover.key_collection()
 	}
 
 	pub fn prove<Challenger_: Challenger>(
 		&self,
-		witness: ValueVec,
+		witness: &ValueVec,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		let cs = self.iop_prover.constraint_system();
@@ -451,7 +451,7 @@ where
 		b,
 		c,
 		big_field_zerocheck_challenges,
-		prover_message_domain.isomorphic(),
+		&prover_message_domain.isomorphic(),
 	);
 
 	Ok(prover.prove_with_channel(channel)?)

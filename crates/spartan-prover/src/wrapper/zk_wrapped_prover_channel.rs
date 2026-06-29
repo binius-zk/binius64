@@ -212,7 +212,7 @@ where
 
 		// Validate and generate the outer proof.
 		outer_prover.prove::<P, _>(
-			witness,
+			&witness,
 			precommit_oracle,
 			precommit_packed,
 			rng,
@@ -275,7 +275,7 @@ where
 		&remaining[..n_inner_remaining]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldSlice<P>) -> Self::Oracle {
+	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
 		assert!(
 			!self.remaining_oracle_specs().is_empty(),
 			"send_oracle called but no inner oracle specs remaining"
@@ -299,6 +299,6 @@ where
 			self.interaction.push(*claim);
 		}
 
-		self.inner_channel.prove_oracle_relations(oracle_relations)
+		self.inner_channel.prove_oracle_relations(oracle_relations);
 	}
 }

@@ -121,7 +121,7 @@ impl BinaryField128bGhash {
 // Multiplication is `reduce(wide_mul)`, deferring to the scalar's own `WideMul` impl above (which
 // routes through the optimal `GhashWideMul` packing). This keeps the widening multiply as the
 // single source of truth for both `Mul` and `WideMul`.
-impl Mul<BinaryField128bGhash> for BinaryField128bGhash {
+impl Mul<Self> for BinaryField128bGhash {
 	type Output = Self;
 
 	#[inline]
@@ -432,7 +432,7 @@ impl From<AESTowerField8b> for BinaryField128bGhash {
 			0x71af641f08dbd1a0990483806bffbe0d,
 		];
 
-		BinaryField128bGhash::new(LOOKUP_TABLE[value.0 as usize])
+		Self::new(LOOKUP_TABLE[value.0 as usize])
 	}
 }
 

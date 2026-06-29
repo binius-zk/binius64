@@ -56,7 +56,7 @@ where
 	fn compute_leaf_digest<B: Buf>(
 		&self,
 		values: &[T],
-		proof: &mut TranscriptReader<B>,
+		proof: &mut TranscriptReader<'_, B>,
 	) -> Result<Output<H::LeafHash>, Error> {
 		let salt = proof.read_vec::<T>(self.salt_len)?;
 		hash_serialize::<T, H::LeafHash>(values.iter().chain(&salt)).map_err(Error::Serialization)
@@ -94,7 +94,7 @@ where
 		root: &Self::Digest,
 		data: &[T],
 		batch_size: usize,
-		proof: &mut TranscriptReader<B>,
+		proof: &mut TranscriptReader<'_, B>,
 	) -> Result<(), Error> {
 		assert!(
 			data.len().is_multiple_of(batch_size),
@@ -138,7 +138,7 @@ where
 		layer_depth: usize,
 		tree_depth: usize,
 		layer_digests: &[Self::Digest],
-		proof: &mut TranscriptReader<B>,
+		proof: &mut TranscriptReader<'_, B>,
 	) -> Result<(), Error> {
 		assert_eq!(
 			layer_digests.len(),

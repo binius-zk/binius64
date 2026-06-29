@@ -71,14 +71,10 @@ impl ExampleCircuit for BitcoinP2PKHExample {
 		})
 	}
 
-	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		// Generate or use provided private key
-		let private_key_bytes = match instance.private_key {
-			Some(key) => {
-				tracing::info!("Using provided private key");
-				key
-			}
-			None => {
+		let private_key_bytes = instance.private_key.map_or_else(
+			|| {
 				let mut rng = StdRng::seed_from_u64(instance.seed);
 				let mut key = [0u8; 32];
 
@@ -100,8 +96,12 @@ impl ExampleCircuit for BitcoinP2PKHExample {
 					hex::encode(key)
 				);
 				key
-			}
-		};
+			},
+			|key| {
+				tracing::info!("Using provided private key");
+				key
+			},
+		);
 
 		// Get expected Bitcoin address (hash160). If not provided, compute from the private key
 		let expected_address_bytes = match instance.expected_address {
@@ -178,8 +178,8 @@ fn is_valid_secp256k1_key(bytes: &[u8; 32]) -> bool {
 	// secp256k1 group order starts with 0xFFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFE
 	// So any key starting with 0xFFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF is definitely too large
 	// Return false if the first 12 bytes are all 0xFF
-	for i in 0..12 {
-		if bytes[i] != 0xFF {
+	for &byte in &bytes[0..12] {
+		if byte != 0xFF {
 			return true;
 		}
 	}

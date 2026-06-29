@@ -19,11 +19,11 @@ use sha2::{Digest, Sha256 as StdSha256};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let builder = CircuitBuilder::new();
 
-	let content: Vec<_> = (0..4).map(|_| builder.add_witness()).collect();
-	let nonce: Vec<_> = (0..4).map(|_| builder.add_witness()).collect();
+	let content = (0..4).map(|_| builder.add_witness());
+	let nonce = (0..4).map(|_| builder.add_witness());
 	let commitment: [_; 4] = core::array::from_fn(|_| builder.add_inout());
 
-	let message: Vec<_> = content.clone().into_iter().chain(nonce.clone()).collect();
+	let message: Vec<_> = content.chain(nonce).collect();
 	let len_bytes = builder.add_witness();
 	let sha256 = Sha256::new(&builder, len_bytes, commitment, message);
 	let circuit = builder.build();
@@ -57,12 +57,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	let challenger = StdChallenger::default();
 	let mut prover_transcript = ProverTranscript::new(challenger.clone());
-	let public_words = witness_vec.public().to_vec();
-	prover.prove(witness_vec, &mut prover_transcript)?;
+	prover.prove(&witness_vec, &mut prover_transcript)?;
 	let proof = prover_transcript.finalize();
 
 	let mut verifier_transcript = VerifierTranscript::new(challenger, proof);
-	verifier.verify(&public_words, &mut verifier_transcript)?;
+	verifier.verify(witness_vec.public(), &mut verifier_transcript)?;
 	verifier_transcript.finalize()?;
 
 	println!("✓ proof successfully verified");

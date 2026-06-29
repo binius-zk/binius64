@@ -1,7 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright (c) 2024 The Plonky3 Authors
 
-/// Division implementation that fails in case when `a`` isn't divisible by `b`
+/// Division implementation that fails in case when `a` isn't divisible by `b`
 pub const fn checked_int_div(a: usize, b: usize) -> usize {
 	let result = a / b;
 	assert!(b * result == a);
@@ -89,6 +89,6 @@ mod tests {
 	#[test]
 	#[should_panic]
 	const fn test_checked_log2_fail() {
-		_ = checked_log_2(6)
+		_ = checked_log_2(6);
 	}
 }

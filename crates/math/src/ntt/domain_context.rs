@@ -120,13 +120,13 @@ impl<F: BinaryField> GenericPreExpanded<F> {
 		for basis in evals.iter().rev() {
 			let mut expanded_i = Vec::with_capacity(1 << (basis.len() - 1));
 			expanded_i.push(F::ZERO);
-			for i in 1..basis.len() {
+			for basis_i in basis.iter().skip(1) {
 				for j in 0..expanded_i.len() {
-					expanded_i.push(expanded_i[j] + basis[i]);
+					expanded_i.push(expanded_i[j] + *basis_i);
 				}
 			}
 			assert_eq!(expanded_i.len(), 1 << (basis.len() - 1));
-			expanded.push(expanded_i)
+			expanded.push(expanded_i);
 		}
 		assert_eq!(expanded.len(), evals.len());
 
@@ -305,9 +305,9 @@ impl<F: BinaryField + TraceOneElement> GaoMateerPreExpanded<F> {
 
 		let mut expanded = Vec::with_capacity(1 << log_domain_size);
 		expanded.push(F::ZERO);
-		for i in 1..log_domain_size {
+		for basis_i in basis.iter().take(log_domain_size).skip(1) {
 			for j in 0..expanded.len() {
-				expanded.push(expanded[j] + basis[i]);
+				expanded.push(expanded[j] + *basis_i);
 			}
 		}
 		assert_eq!(expanded.len(), 1usize << (log_domain_size - 1));
@@ -359,7 +359,7 @@ mod tests {
 				assert_eq!(dc_1.twiddle(i, block), dc_2.twiddle(i, block));
 			}
 		}
-		assert_eq!(dc_1.subspace(log_domain_size), dc_2.subspace(log_domain_size))
+		assert_eq!(dc_1.subspace(log_domain_size), dc_2.subspace(log_domain_size));
 	}
 
 	#[test]

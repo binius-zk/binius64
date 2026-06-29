@@ -113,8 +113,8 @@ where
 		|eval, (vert_i, hztl_i)| {
 			// This formula is specific to characteristic 2 fields
 			// Here we know that $h v + (1 - h) (1 - v) = 1 + h + v$.
-			let vert_scaled = eval.clone().scale_vertical(vert_i.clone());
-			let hztl_scaled = eval.clone().scale_horizontal(hztl_i.clone());
+			let vert_scaled = eval.clone().scale_vertical(vert_i);
+			let hztl_scaled = eval.clone().scale_horizontal(hztl_i);
 
 			eval + &vert_scaled + &hztl_scaled
 		},

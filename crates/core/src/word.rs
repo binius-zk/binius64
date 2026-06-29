@@ -21,17 +21,17 @@ pub struct Word(pub u64);
 
 impl Word {
 	/// All zero bit pattern, zero, nil, null.
-	pub const ZERO: Word = Word(0);
+	pub const ZERO: Self = Self(0);
 	/// 1.
-	pub const ONE: Word = Word(1);
+	pub const ONE: Self = Self(1);
 	/// All bits set to one.
-	pub const ALL_ONE: Word = Word(u64::MAX);
+	pub const ALL_ONE: Self = Self(u64::MAX);
 	/// 32 lower bits are set to one, all other bits are zero.
-	pub const MASK_32: Word = Word(0x00000000FFFFFFFF);
+	pub const MASK_32: Self = Self(0x00000000FFFFFFFF);
 	/// Most Significant Bit is set to one, all other bits are zero.
 	///
 	/// This is a canonical representation of true.
-	pub const MSB_ONE: Word = Word(0x8000000000000000);
+	pub const MSB_ONE: Self = Self(0x8000000000000000);
 }
 
 impl fmt::Debug for Word {
@@ -44,7 +44,7 @@ impl BitAnd for Word {
 	type Output = Self;
 
 	fn bitand(self, rhs: Self) -> Self::Output {
-		Word(self.0 & rhs.0)
+		Self(self.0 & rhs.0)
 	}
 }
 
@@ -52,7 +52,7 @@ impl BitOr for Word {
 	type Output = Self;
 
 	fn bitor(self, rhs: Self) -> Self::Output {
-		Word(self.0 | rhs.0)
+		Self(self.0 | rhs.0)
 	}
 }
 
@@ -60,7 +60,7 @@ impl BitXor for Word {
 	type Output = Self;
 
 	fn bitxor(self, rhs: Self) -> Self::Output {
-		Word(self.0 ^ rhs.0)
+		Self(self.0 ^ rhs.0)
 	}
 }
 
@@ -68,7 +68,7 @@ impl Shl<u32> for Word {
 	type Output = Self;
 
 	fn shl(self, rhs: u32) -> Self::Output {
-		Word(self.0 << rhs)
+		Self(self.0 << rhs)
 	}
 }
 
@@ -76,7 +76,7 @@ impl Shr<u32> for Word {
 	type Output = Self;
 
 	fn shr(self, rhs: u32) -> Self::Output {
-		Word(self.0 >> rhs)
+		Self(self.0 >> rhs)
 	}
 }
 
@@ -84,14 +84,14 @@ impl Not for Word {
 	type Output = Self;
 
 	fn not(self) -> Self::Output {
-		Word(!self.0)
+		Self(!self.0)
 	}
 }
 
 impl Word {
 	/// Creates a new `Word` from a 64-bit unsigned integer.
-	pub const fn from_u64(value: u64) -> Word {
-		Word(value)
+	pub const fn from_u64(value: u64) -> Self {
+		Self(value)
 	}
 
 	/// Performs parallel 32-bit additions on the upper and lower halves with carry-in.
@@ -102,10 +102,10 @@ impl Word {
 	///
 	/// Returns (sum, carry_out) where the ith carry_out bit is set to one if there is a
 	/// carry out at that bit position.
-	pub fn iadd32_cin_cout(self, rhs: Word, cin: Word) -> (Word, Word) {
-		let Word(lhs) = self;
-		let Word(rhs) = rhs;
-		let Word(cin) = cin;
+	pub const fn iadd32_cin_cout(self, rhs: Self, cin: Self) -> (Self, Self) {
+		let Self(lhs) = self;
+		let Self(rhs) = rhs;
+		let Self(cin) = cin;
 
 		// Extract carry-in bits from MSBs of each 32-bit half
 		let cin_lo = (cin >> 31) & 1;
@@ -123,14 +123,14 @@ impl Word {
 		let sum = (lo_sum as u32 as u64) | ((hi_sum as u32 as u64) << 32);
 
 		let cout = (lhs & rhs) | ((lhs ^ rhs) & !sum);
-		(Word(sum), Word(cout))
+		(Self(sum), Self(cout))
 	}
 
 	/// Performs parallel 32-bit additions on the upper and lower halves.
 	///
 	/// Equivalent to [`iadd32_cin_cout`](Word::iadd32_cin_cout) with zero carry-in.
-	pub fn iadd_cout_32(self, rhs: Word) -> (Word, Word) {
-		self.iadd32_cin_cout(rhs, Word::ZERO)
+	pub const fn iadd_cout_32(self, rhs: Self) -> (Self, Self) {
+		self.iadd32_cin_cout(rhs, Self::ZERO)
 	}
 
 	/// Performs 64-bit addition with carry input bit.
@@ -140,14 +140,14 @@ impl Word {
 	///
 	/// Returns (sum, carry_out) where ith carry_out bit is set to one if there is a carry out at
 	/// that bit position.
-	pub fn iadd_cin_cout(self, rhs: Word, cin: Word) -> (Word, Word) {
-		debug_assert!(cin == Word::ZERO || cin == Word::ONE, "cin must be 0 or 1");
-		let Word(lhs) = self;
-		let Word(rhs) = rhs;
-		let Word(cin) = cin;
+	pub fn iadd_cin_cout(self, rhs: Self, cin: Self) -> (Self, Self) {
+		debug_assert!(cin == Self::ZERO || cin == Self::ONE, "cin must be 0 or 1");
+		let Self(lhs) = self;
+		let Self(rhs) = rhs;
+		let Self(cin) = cin;
 		let sum = lhs.wrapping_add(rhs).wrapping_add(cin);
 		let cout = (lhs & rhs) | ((lhs ^ rhs) & !sum);
-		(Word(sum), Word(cout))
+		(Self(sum), Self(cout))
 	}
 
 	/// Performs 64-bit subtraction with borrow input bit.
@@ -157,46 +157,46 @@ impl Word {
 	///
 	/// Returns (diff, borrow_out) where ith borrow_out bit is set to one if there is a borrow out
 	/// at that bit position.
-	pub fn isub_bin_bout(self, rhs: Word, bin: Word) -> (Word, Word) {
-		debug_assert!(bin == Word::ZERO || bin == Word::ONE, "bin must be 0 or 1");
-		let Word(lhs) = self;
-		let Word(rhs) = rhs;
-		let Word(bin) = bin;
+	pub fn isub_bin_bout(self, rhs: Self, bin: Self) -> (Self, Self) {
+		debug_assert!(bin == Self::ZERO || bin == Self::ONE, "bin must be 0 or 1");
+		let Self(lhs) = self;
+		let Self(rhs) = rhs;
+		let Self(bin) = bin;
 		let diff = lhs.wrapping_sub(rhs).wrapping_sub(bin);
 		let bout = (!lhs & rhs) | (!(lhs ^ rhs) & diff);
-		(Word(diff), Word(bout))
+		(Self(diff), Self(bout))
 	}
 
 	/// Performs shift right by a given number of bits followed by masking with a 32-bit mask.
-	pub fn shr_32(self, n: u32) -> Word {
-		let Word(value) = self;
+	pub const fn shr_32(self, n: u32) -> Self {
+		let Self(value) = self;
 		// Shift right logically by n bits and mask with 32-bit mask
 		let result = (value >> n) & Self::MASK_32.0;
-		Word(result)
+		Self(result)
 	}
 
 	/// Shift Arithmetic Right by a given number of bits.
 	///
 	/// This is similar to a logical shift right, but it shifts the sign bit to the right.
-	pub fn sar(self, n: u32) -> Word {
-		let Word(value) = self;
+	pub const fn sar(self, n: u32) -> Self {
+		let Self(value) = self;
 		let value = value as i64;
 		let result = value >> n;
-		Word(result as u64)
+		Self(result as u64)
 	}
 
 	/// Rotate Right by a given number of bits.
-	pub fn rotr(self, n: u32) -> Word {
-		let Word(value) = self;
-		Word(value.rotate_right(n))
+	pub const fn rotr(self, n: u32) -> Self {
+		let Self(value) = self;
+		Self(value.rotate_right(n))
 	}
 
 	/// Shift Left Logical on 32-bit halves.
 	///
 	/// Performs independent logical left shifts on the upper and lower 32-bit halves.
 	/// Only uses the lower 5 bits of the shift amount (0-31).
-	pub fn sll32(self, n: u32) -> Word {
-		let Word(value) = self;
+	pub const fn sll32(self, n: u32) -> Self {
+		let Self(value) = self;
 		let n = n & 0x1F; // Only use lower 5 bits
 
 		// Extract 32-bit halves
@@ -207,15 +207,15 @@ impl Word {
 		let lo_shifted = (lo << n) as u64;
 		let hi_shifted = ((hi << n) as u64) << 32;
 
-		Word(lo_shifted | hi_shifted)
+		Self(lo_shifted | hi_shifted)
 	}
 
 	/// Shift Right Logical on 32-bit halves.
 	///
 	/// Performs independent logical right shifts on the upper and lower 32-bit halves.
 	/// Only uses the lower 5 bits of the shift amount (0-31).
-	pub fn srl32(self, n: u32) -> Word {
-		let Word(value) = self;
+	pub const fn srl32(self, n: u32) -> Self {
+		let Self(value) = self;
 		let n = n & 0x1F; // Only use lower 5 bits
 
 		// Extract 32-bit halves
@@ -226,7 +226,7 @@ impl Word {
 		let lo_shifted = (lo >> n) as u64;
 		let hi_shifted = ((hi >> n) as u64) << 32;
 
-		Word(lo_shifted | hi_shifted)
+		Self(lo_shifted | hi_shifted)
 	}
 
 	/// Shift Right Arithmetic on 32-bit halves.
@@ -234,8 +234,8 @@ impl Word {
 	/// Performs independent arithmetic right shifts on the upper and lower 32-bit halves.
 	/// Sign extends each 32-bit half independently. Only uses the lower 5 bits of the shift amount
 	/// (0-31).
-	pub fn sra32(self, n: u32) -> Word {
-		let Word(value) = self;
+	pub const fn sra32(self, n: u32) -> Self {
+		let Self(value) = self;
 		let n = n & 0x1F; // Only use lower 5 bits
 
 		// Extract 32-bit halves as signed integers
@@ -246,7 +246,7 @@ impl Word {
 		let lo_shifted = ((lo >> n) as u32) as u64;
 		let hi_shifted = (((hi >> n) as u32) as u64) << 32;
 
-		Word(lo_shifted | hi_shifted)
+		Self(lo_shifted | hi_shifted)
 	}
 
 	/// Rotate Right on 32-bit halves.
@@ -254,8 +254,8 @@ impl Word {
 	/// Performs independent rotate right operations on the upper and lower 32-bit halves.
 	/// Bits shifted off the right end wrap around to the left within each 32-bit half.
 	/// Only uses the lower 5 bits of the shift amount (0-31).
-	pub fn rotr32(self, n: u32) -> Word {
-		let Word(value) = self;
+	pub const fn rotr32(self, n: u32) -> Self {
+		let Self(value) = self;
 		let n = n & 0x1F; // Only use lower 5 bits
 
 		// Extract 32-bit halves
@@ -266,30 +266,30 @@ impl Word {
 		let lo_rotated = lo.rotate_right(n) as u64;
 		let hi_rotated = (hi.rotate_right(n) as u64) << 32;
 
-		Word(lo_rotated | hi_rotated)
+		Self(lo_rotated | hi_rotated)
 	}
 
 	/// Unsigned integer multiplication.
 	///
 	/// Multiplies two 64-bit unsigned integers and returns the 128-bit result split into high and
 	/// low 64-bit words, respectively.
-	pub fn imul(self, rhs: Word) -> (Word, Word) {
-		let Word(lhs) = self;
-		let Word(rhs) = rhs;
+	pub const fn imul(self, rhs: Self) -> (Self, Self) {
+		let Self(lhs) = self;
+		let Self(rhs) = rhs;
 		let result = (lhs as u128) * (rhs as u128);
 
 		let hi = (result >> 64) as u64;
 		let lo = result as u64;
-		(Word(hi), Word(lo))
+		(Self(hi), Self(lo))
 	}
 
 	/// Signed integer multiplication.
 	///
 	/// Multiplies two 64-bit signed integers and returns the 128-bit result split into high and
 	/// low 64-bit words, respectively.
-	pub fn smul(self, rhs: Word) -> (Word, Word) {
-		let Word(lhs) = self;
-		let Word(rhs) = rhs;
+	pub const fn smul(self, rhs: Self) -> (Self, Self) {
+		let Self(lhs) = self;
+		let Self(rhs) = rhs;
 		// Interpret as signed 64-bit integers
 		let a = lhs as i64;
 		let b = rhs as i64;
@@ -298,21 +298,21 @@ impl Word {
 		// Extract high and low 64-bit words
 		let hi = (result >> 64) as u64;
 		let lo = result as u64;
-		(Word(hi), Word(lo))
+		(Self(hi), Self(lo))
 	}
 
 	/// Integer addition.
 	///
 	/// Wraps around on overflow.
-	pub fn wrapping_add(self, rhs: Word) -> Word {
-		Word(self.0.wrapping_add(rhs.0))
+	pub const fn wrapping_add(self, rhs: Self) -> Self {
+		Self(self.0.wrapping_add(rhs.0))
 	}
 
 	/// Integer subtraction.
 	///
 	/// Wraps around on overflow.
-	pub fn wrapping_sub(self, rhs: Word) -> Word {
-		Word(self.0.wrapping_sub(rhs.0))
+	pub const fn wrapping_sub(self, rhs: Self) -> Self {
+		Self(self.0.wrapping_sub(rhs.0))
 	}
 
 	/// Returns the integer value as a 64-bit unsigned integer.
@@ -352,7 +352,7 @@ impl DeserializeBytes for Word {
 	where
 		Self: Sized,
 	{
-		Ok(Word(u64::deserialize(read_buf)?))
+		Ok(Self(u64::deserialize(read_buf)?))
 	}
 }
 
@@ -553,13 +553,12 @@ mod tests {
 
 			// Check sign bit is extended
 			let is_negative = (val as i64) < 0;
+			let mask = !((1u64 << (64 - shift)) - 1);
 			if is_negative {
 				// High bits should all be 1
-				let mask = !((1u64 << (64 - shift)) - 1);
 				assert_eq!(result.0 & mask, mask);
 			} else {
 				// High bits should all be 0
-				let mask = !((1u64 << (64 - shift)) - 1);
 				assert_eq!(result.0 & mask, 0);
 			}
 		}

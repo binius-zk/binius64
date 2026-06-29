@@ -45,21 +45,21 @@ fn run_google_mul_benchmark<U, R>(
 	group.bench_function(name, |b| {
 		b.iter(|| {
 			let mut x = black_box(x);
-			for j in 0..N {
-				y[j] = x;
+			for slot in y.iter_mut().take(N) {
+				*slot = x;
 				x = mul_fn(x, x);
 			}
 			for _i in 0..N * N {
-				for j in 0..N {
-					y[j] = mul_fn(y[j], x);
+				for slot in y.iter_mut().take(N) {
+					*slot = mul_fn(*slot, x);
 				}
 				x = mul_fn(x, x);
 			}
-			for j in 0..N {
-				x = mul_fn(y[j], x);
+			for &elem in y.iter().take(N) {
+				x = mul_fn(elem, x);
 			}
 			x
-		})
+		});
 	});
 }
 
@@ -101,7 +101,7 @@ fn run_mul_benchmark<T, R>(
 					batch[i] = mul_fn(batch[i], batch[(i + BATCH_SIZE / 2) % BATCH_SIZE]);
 				}
 			}
-		})
+		});
 	});
 }
 
@@ -135,11 +135,11 @@ fn run_unary_op_benchmark<T, R>(
 	group.bench_function(name, |b| {
 		b.iter(|| {
 			for _ in 0..N_PASSES {
-				for i in 0..BATCH_SIZE {
-					batch[i] = op_fn(batch[i]);
+				for slot in batch.iter_mut().take(BATCH_SIZE) {
+					*slot = op_fn(*slot);
 				}
 			}
-		})
+		});
 	});
 }
 
@@ -221,7 +221,12 @@ fn bench_polyval(c: &mut Criterion) {
 }
 
 /// Benchmark GF(2^128) GHASH multiplication using CLMUL instructions
-#[allow(unused_imports, unused_variables, unused_mut)]
+#[allow(
+	unused_imports,
+	unused_variables,
+	unused_mut,
+	clippy::significant_drop_tightening
+)]
 fn bench_ghash(c: &mut Criterion) {
 	use binius_arith_bench::ghash::{mul_clmul, square_clmul};
 

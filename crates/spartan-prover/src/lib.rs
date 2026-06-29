@@ -123,7 +123,7 @@ impl<F: Field> IOPProver<F> {
 		}
 	}
 
-	pub fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
+	pub const fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
 		&self.constraint_system
 	}
 
@@ -177,7 +177,7 @@ impl<F: Field> IOPProver<F> {
 	///   [`Self::commit_precommit`])
 	pub fn prove<P, Channel>(
 		&self,
-		witness: Witness<F>,
+		witness: &Witness<F>,
 		precommit_oracle: Channel::Oracle,
 		precommit_packed: FieldBuffer<P>,
 		mut rng: impl CryptoRng,
@@ -265,8 +265,8 @@ impl<F: Field> IOPProver<F> {
 		let (mulcheck_evals, mask_eval, r_x) = prove_mulcheck::<F, P, _>(
 			cs.mul_constraints(),
 			witness.public(),
-			precommit_packed.to_ref(),
-			private_packed.to_ref(),
+			&precommit_packed.to_ref(),
+			&private_packed.to_ref(),
 			mulcheck_mask,
 			&mut *channel,
 		)?;
@@ -275,7 +275,7 @@ impl<F: Field> IOPProver<F> {
 		let lambda = channel.sample();
 
 		// Batch together the constraint operand evaluation claims.
-		let batched_sum = evaluate_univariate(&mulcheck_evals, lambda);
+		let batched_sum = evaluate_univariate(&mulcheck_evals, &lambda);
 
 		// Compute eq indicator tensor for r_x (shared across all segment evaluations)
 		let r_x_tensor = eq_ind_partial_eval::<F>(&r_x);
@@ -284,7 +284,7 @@ impl<F: Field> IOPProver<F> {
 		let public_eval = evaluate_wiring_mle_public(
 			cs.mul_constraints(),
 			witness.public(),
-			lambda,
+			&lambda,
 			r_x_tensor.as_ref(),
 		);
 
@@ -330,7 +330,7 @@ where
 	/// Constructs a prover corresponding to a constraint system verifier.
 	///
 	/// See [`Prover`] struct documentation for details.
-	pub fn setup(verifier: Verifier<F, H>) -> Result<Self, Error> {
+	pub fn setup(verifier: &Verifier<F, H>) -> Result<Self, Error> {
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 
 		// Get the largest subspace from the verifier compiler for NTT creation
@@ -350,19 +350,19 @@ where
 
 		let iop_prover = IOPProver::new(verifier.constraint_system().clone());
 
-		Ok(Prover {
+		Ok(Self {
 			iop_prover,
 			basefold_compiler,
 		})
 	}
 
 	/// Returns a reference to the IOP prover.
-	pub fn iop_prover(&self) -> &IOPProver<P::Scalar> {
+	pub const fn iop_prover(&self) -> &IOPProver<P::Scalar> {
 		&self.iop_prover
 	}
 
 	/// Returns a reference to the BaseFold ZK prover compiler.
-	pub fn iop_compiler(
+	pub const fn iop_compiler(
 		&self,
 	) -> &BaseFoldProverCompiler<P, ProverNTT<F>, ProverMerkleProver<F, H>> {
 		&self.basefold_compiler
@@ -381,7 +381,7 @@ where
 	/// * The witness length must match the constraint system size
 	pub fn prove<Challenger_: Challenger>(
 		&self,
-		witness: Witness<F>,
+		witness: &Witness<F>,
 		mut rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
@@ -394,7 +394,7 @@ where
 		let mut channel = self.basefold_compiler.create_channel(transcript, &mut rng);
 		let (precommit_oracle, precommit_packed) =
 			self.iop_prover
-				.commit_precommit::<P, _>(&witness, &mut rng, &mut channel);
+				.commit_precommit::<P, _>(witness, &mut rng, &mut channel);
 		// The IOP prover only queues the oracle relations; `finish` runs the single combined
 		// opening.
 		self.iop_prover.prove::<P, _>(
@@ -412,8 +412,8 @@ where
 fn prove_mulcheck<F, P, Channel>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	public: &[F],
-	precommit_packed: FieldSlice<P>,
-	private_packed: FieldSlice<P>,
+	precommit_packed: &FieldSlice<'_, P>,
+	private_packed: &FieldSlice<'_, P>,
 	mask: zk_mlecheck::Mask<P, impl Deref<Target = [P]>>,
 	channel: &mut Channel,
 ) -> Result<([F; 3], F, Vec<F>), Error>
@@ -433,7 +433,7 @@ where
 		[mulcheck_witness.a, mulcheck_witness.b, mulcheck_witness.c],
 		|[a, b, c]| a * b - c, // composition
 		|[a, b, _c]| a * b,    // infinity_composition (quadratic term only)
-		r_mulcheck,
+		&r_mulcheck,
 		F::ZERO, // eval_claim: zerocheck
 	)?;
 

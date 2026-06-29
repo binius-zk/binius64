@@ -18,7 +18,7 @@ fn bench_batch_inversion_scalar(c: &mut Criterion) {
 		group.bench_function(format!("{n}"), |b| {
 			b.iter(|| {
 				inverter.invert_or_zero(&mut elements);
-			})
+			});
 		});
 	}
 
@@ -38,7 +38,7 @@ fn bench_batch_inversion_packed(c: &mut Criterion) {
 			.collect();
 		let mut inverter = BatchInversion::<OptimalPackedB128>::new(n);
 		group.bench_function(format!("{n}x{}", OptimalPackedB128::WIDTH), |b| {
-			b.iter(|| inverter.invert_nonzero(&mut elements))
+			b.iter(|| inverter.invert_nonzero(&mut elements));
 		});
 	}
 

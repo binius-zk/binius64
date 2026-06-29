@@ -25,7 +25,7 @@ impl DoubleSha256 {
 	/// - `message.len() * 8 == message_len`
 	pub fn construct_circuit(
 		builder: &CircuitBuilder,
-		message: Vec<Wire>,
+		message: &[Wire],
 		digest: [Wire; 4],
 	) -> Self {
 		// first SHA256 circuit
@@ -79,7 +79,7 @@ impl DoubleSha256 {
 	/// Return the digest.
 	///
 	/// (Hopefully this method is not needed in the future.)
-	pub fn populate_inner(&self, filler: &mut WitnessFiller, message: &[u8]) -> [u8; 32] {
+	pub fn populate_inner(&self, filler: &mut WitnessFiller<'_>, message: &[u8]) -> [u8; 32] {
 		// don't need to `populate_len(...)` because we passed a constant to the length wires
 		self.sha256_0.populate_message(filler, message);
 		let digest_0: [u8; 32] = sha2::Sha256::digest(message).into();
@@ -110,8 +110,7 @@ mod tests {
 		let builder = CircuitBuilder::new();
 		let block_header: [Wire; 10] = array::from_fn(|_| builder.add_witness());
 		let block_hash: [Wire; 4] = array::from_fn(|_| builder.add_witness());
-		let double_sha_256 =
-			DoubleSha256::construct_circuit(&builder, block_header.to_vec(), block_hash);
+		let double_sha_256 = DoubleSha256::construct_circuit(&builder, &block_header, block_hash);
 		let circuit = builder.build();
 
 		// populate_witness
@@ -137,8 +136,7 @@ mod tests {
 		let builder = CircuitBuilder::new();
 		let block_header: [Wire; 10] = array::from_fn(|_| builder.add_witness());
 		let block_hash: [Wire; 4] = array::from_fn(|_| builder.add_witness());
-		let double_sha_256 =
-			DoubleSha256::construct_circuit(&builder, block_header.to_vec(), block_hash);
+		let double_sha_256 = DoubleSha256::construct_circuit(&builder, &block_header, block_hash);
 		let circuit = builder.build();
 
 		// populate_witness

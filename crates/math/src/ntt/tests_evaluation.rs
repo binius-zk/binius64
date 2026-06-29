@@ -147,8 +147,8 @@ impl<F: Field> Mul<&Polynomial<F>> for &Polynomial<F> {
 }
 
 // Polynomial *= &Polynomial
-impl<F: Field> MulAssign<&Polynomial<F>> for Polynomial<F> {
-	fn mul_assign(&mut self, other: &Polynomial<F>) {
+impl<F: Field> MulAssign<&Self> for Polynomial<F> {
+	fn mul_assign(&mut self, other: &Self) {
 		*self = &*self * other;
 	}
 }
@@ -188,7 +188,7 @@ impl<F: Field> MulAssign<F> for Polynomial<F> {
 /// Computes the subspace polynomial of a given binary field subspace $V$.
 ///
 /// That is, it computes $\prod_{a \in V} (X - a)$.
-fn subspace_polynomial<F: BinaryField>(subspace: BinarySubspace<F>) -> Polynomial<F> {
+fn subspace_polynomial<F: BinaryField>(subspace: &BinarySubspace<F>) -> Polynomial<F> {
 	let mut poly = Polynomial::one();
 
 	for elem in subspace.iter() {
@@ -220,22 +220,22 @@ fn novel_basis<DC: DomainContext>(domain_context: &DC) -> Vec<Polynomial<DC::Fie
 	// collect subspace polynomials $W_i$ (this is *not* yet $\hat{W}_i$)
 	let mut w_hat: Vec<_> = (0..log_d)
 		.map(|i| domain.reduce_dim(i))
-		.map(subspace_polynomial)
+		.map(|s| subspace_polynomial(&s))
 		.collect();
 	// and normalize them to get $\hat{W}_i$
-	for i in 0..log_d {
+	for (i, w_hat_i) in w_hat.iter_mut().enumerate().take(log_d) {
 		let beta_i = domain.basis()[i];
-		let eval = w_hat[i].evaluate(beta_i);
+		let eval = w_hat_i.evaluate(beta_i);
 		// Safety: `eval` is the normalization value $\hat{W}_i(\beta_i)$, non-zero by construction.
-		w_hat[i] *= unsafe { eval.invert() };
+		*w_hat_i *= unsafe { eval.invert() };
 	}
 
 	// construct novel polynomial basis
 	let mut novel_basis = Vec::with_capacity(1 << log_d);
 	novel_basis.push(Polynomial::one());
-	for i in 0..log_d {
+	for w_hat_i in w_hat.iter().take(log_d) {
 		for j in 0..novel_basis.len() {
-			novel_basis.push(&novel_basis[j] * &w_hat[i])
+			novel_basis.push(&novel_basis[j] * w_hat_i);
 		}
 	}
 
@@ -264,7 +264,7 @@ fn test_equivalence<F: BinaryField, NTT: AdditiveNTT<Field = F>>(ntt: &NTT) {
 		.collect();
 
 	// way 2 to compute evaluations: use NTT
-	let mut ntt_data = novel_coeffs.clone();
+	let mut ntt_data = novel_coeffs;
 	ntt.forward_transform(ntt_data.to_mut(), 0, 0);
 
 	// check equivalence

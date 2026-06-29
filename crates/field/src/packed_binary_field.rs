@@ -592,7 +592,7 @@ mod tests {
 
 	fn test_mul_packed_random<P: PackedField>() {
 		let mut rng = StdRng::seed_from_u64(0);
-		test_mul_packed(P::random(&mut rng), P::random(&mut rng))
+		test_mul_packed(P::random(&mut rng), P::random(&mut rng));
 	}
 
 	fn test_set_then_get<P: PackedField>() {
@@ -662,33 +662,33 @@ mod tests {
 	proptest! {
 		#[test]
 		fn test_add_packed_128x1b(a_val in any::<u128>(), b_val in any::<u128>()) {
-			test_add_packed::<PackedBinaryField128x1b>(a_val, b_val)
+			test_add_packed::<PackedBinaryField128x1b>(a_val, b_val);
 		}
 
 		#[test]
 		fn test_add_packed_16x8b(a_val in any::<u128>(), b_val in any::<u128>()) {
-			test_add_packed::<PackedAESBinaryField16x8b>(a_val, b_val)
+			test_add_packed::<PackedAESBinaryField16x8b>(a_val, b_val);
 		}
 
 		#[test]
 		fn test_add_packed_1x128b(a_val in any::<u128>(), b_val in any::<u128>()) {
-			test_add_packed::<PackedBinaryGhash1x128b>(a_val, b_val)
+			test_add_packed::<PackedBinaryGhash1x128b>(a_val, b_val);
 		}
 	}
 
 	#[test]
 	fn test_mul_packed_256x1b() {
-		test_mul_packed_random::<PackedBinaryField256x1b>()
+		test_mul_packed_random::<PackedBinaryField256x1b>();
 	}
 
 	#[test]
 	fn test_mul_packed_32x8b() {
-		test_mul_packed_random::<PackedAESBinaryField32x8b>()
+		test_mul_packed_random::<PackedAESBinaryField32x8b>();
 	}
 
 	#[test]
 	fn test_mul_packed_2x128b() {
-		test_mul_packed_random::<PackedBinaryGhash2x128b>()
+		test_mul_packed_random::<PackedBinaryGhash2x128b>();
 	}
 
 	#[test]

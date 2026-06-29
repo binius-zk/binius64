@@ -42,9 +42,6 @@ pub fn sample_bits_reader<Reader: Buf>(mut reader: Reader, bits: usize) -> u32 {
 
 	let unmasked = u32::from_le_bytes(bytes);
 	let mask = 1u32.checked_shl(bits as u32);
-	let mask = match mask {
-		Some(x) => x - 1,
-		None => u32::MAX,
-	};
+	let mask = mask.map_or(u32::MAX, |x| x - 1);
 	mask & unmasked
 }

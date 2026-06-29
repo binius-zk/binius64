@@ -114,7 +114,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> Mask<P, Da
 	/// * `n_vars` - Number of variables (n).
 	/// * `degree` - Degree of each univariate polynomial (d).
 	/// * `buffer` - Buffer with log_len = m_n + m_d.
-	pub fn new(n_vars: usize, degree: usize, buffer: FieldBuffer<P, Data>) -> Self {
+	pub const fn new(n_vars: usize, degree: usize, buffer: FieldBuffer<P, Data>) -> Self {
 		Self {
 			n_vars,
 			degree,
@@ -123,17 +123,17 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> Mask<P, Da
 	}
 
 	/// Returns the number of variables.
-	pub fn n_vars(&self) -> usize {
+	pub const fn n_vars(&self) -> usize {
 		self.n_vars
 	}
 
 	/// Returns the degree of each univariate polynomial.
-	pub fn degree(&self) -> usize {
+	pub const fn degree(&self) -> usize {
 		self.degree
 	}
 
 	/// Returns m_d = ceil(log2(degree + 1)).
-	fn log_degree_plus_one(&self) -> usize {
+	const fn log_degree_plus_one(&self) -> usize {
 		(self.degree + 1).next_power_of_two().ilog2() as usize
 	}
 
@@ -157,7 +157,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> Mask<P, Da
 	/// Evaluates g_i(x) for a specific variable using Horner's method.
 	pub fn evaluate_univariate(&self, var_index: usize, x: F) -> F {
 		let coeffs: Vec<_> = self.coeffs_for_var(var_index).collect();
-		evaluate_univariate(&coeffs, x)
+		evaluate_univariate(&coeffs, &x)
 	}
 
 	/// Computes the MLE of the mask polynomial at a point.
@@ -257,7 +257,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>
 
 	/// Returns the index of the current variable being processed.
 	/// Processing is high-to-low, so we start at n_vars-1 and decrease.
-	fn current_var_index(&self) -> usize {
+	const fn current_var_index(&self) -> usize {
 		self.n_vars_remaining - 1
 	}
 }
@@ -324,7 +324,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 		};
 
 		// Evaluate round polynomial at challenge to get new claim
-		let new_claim = coeffs.evaluate(challenge);
+		let new_claim = coeffs.evaluate(&challenge);
 
 		let var_idx = self.current_var_index();
 
@@ -523,7 +523,7 @@ mod tests {
 		assert_eq!(mask_eval_out, sumcheck_output.eval);
 
 		// Compute the challenge point (reverse for high-to-low order)
-		let mut challenge_point = sumcheck_output.challenges.clone();
+		let mut challenge_point = sumcheck_output.challenges;
 		challenge_point.reverse();
 
 		// Check that the final evaluation matches direct computation
@@ -572,7 +572,7 @@ mod tests {
 		let sumcheck_output =
 			mlecheck::verify(&eval_point, 2, eval_claim, &mut verifier_transcript).unwrap();
 
-		let mut challenge_point = sumcheck_output.challenges.clone();
+		let mut challenge_point = sumcheck_output.challenges;
 		challenge_point.reverse();
 
 		let mask = Mask::new(1, 2, buffer.to_ref());
@@ -710,7 +710,7 @@ mod tests {
 
 		// Create the bivariate product sumcheck prover
 		let prover = BivariateProductSumcheckProver::new(
-			[mask_buffer.clone(), libra_eval_tensor.clone()],
+			[mask_buffer.clone(), libra_eval_tensor],
 			claimed_sum,
 		)
 		.unwrap();

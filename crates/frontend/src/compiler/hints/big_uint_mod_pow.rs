@@ -9,7 +9,7 @@ use crate::util::num_biguint_from_u64_limbs;
 pub struct BigUintModPowHint;
 
 impl BigUintModPowHint {
-	pub fn new() -> Self {
+	pub const fn new() -> Self {
 		Self
 	}
 }
@@ -52,8 +52,12 @@ impl Hint for BigUintModPowHint {
 			outputs[i] = Word::from_u64(limb);
 		}
 
-		for i in modpow.iter_u64_digits().len()..*n_modulus_limbs {
-			outputs[i] = Word::ZERO;
+		for word in outputs
+			.iter_mut()
+			.take(*n_modulus_limbs)
+			.skip(modpow.iter_u64_digits().len())
+		{
+			*word = Word::ZERO;
 		}
 	}
 }

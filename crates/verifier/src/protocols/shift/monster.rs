@@ -249,7 +249,7 @@ mod tests {
 			let s = rng.random_range(0..64);
 
 			let challenge = subspace.get(i);
-			let l_tilde = lagrange_evals_scalars(&subspace, challenge);
+			let l_tilde = lagrange_evals_scalars(&subspace, &challenge);
 
 			let r_j = index_to_hypercube_point::<BinaryField128bGhash>(LOG_WORD_SIZE_BITS, j);
 			let r_s = index_to_hypercube_point::<BinaryField128bGhash>(LOG_WORD_SIZE_BITS, s);
@@ -300,7 +300,7 @@ mod tests {
 		// Generate random evaluation points
 		let challenge = BinaryField128bGhash::random(&mut rng);
 		let subspace = BinarySubspace::<BinaryField128bGhash>::with_dim(LOG_WORD_SIZE_BITS);
-		let l_tilde = lagrange_evals_scalars(&subspace, challenge);
+		let l_tilde = lagrange_evals_scalars(&subspace, &challenge);
 		let r_j = random_scalars::<BinaryField128bGhash>(&mut rng, LOG_WORD_SIZE_BITS);
 		let r_s = random_scalars::<BinaryField128bGhash>(&mut rng, LOG_WORD_SIZE_BITS);
 

@@ -53,7 +53,7 @@ fn bench_intmul_prove(c: &mut Criterion) {
 		BenchmarkId::new("witness", num_exponents),
 		&num_exponents,
 		|bencher, _| {
-			bencher.iter(|| Witness::<P, _, _>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap())
+			bencher.iter(|| Witness::<P, _, _>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap());
 		},
 	);
 
@@ -73,7 +73,7 @@ fn bench_intmul_prove(c: &mut Criterion) {
 					let mut intmul_prover = IntMulProver::new(0, &mut prover_transcript);
 					intmul_prover.prove(witness).unwrap();
 				},
-			)
+			);
 		},
 	);
 
@@ -88,7 +88,7 @@ fn bench_intmul_prove(c: &mut Criterion) {
 				let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 				let mut intmul_prover = IntMulProver::new(0, &mut prover_transcript);
 				intmul_prover.prove(witness).unwrap();
-			})
+			});
 		},
 	);
 

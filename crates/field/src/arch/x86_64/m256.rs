@@ -213,7 +213,7 @@ impl BitAnd for M256 {
 impl BitAndAssign for M256 {
 	#[inline(always)]
 	fn bitand_assign(&mut self, rhs: Self) {
-		*self = *self & rhs
+		*self = *self & rhs;
 	}
 }
 
@@ -229,7 +229,7 @@ impl BitOr for M256 {
 impl BitOrAssign for M256 {
 	#[inline(always)]
 	fn bitor_assign(&mut self, rhs: Self) {
-		*self = *self | rhs
+		*self = *self | rhs;
 	}
 }
 
@@ -276,7 +276,7 @@ impl Shr<usize> for M256 {
 					high = 0;
 				} else {
 					low = (low >> rhs) + (high << (128usize - rhs));
-					high >>= rhs
+					high >>= rhs;
 				}
 				[low, high].into()
 			}
@@ -299,7 +299,7 @@ impl Shl<usize> for M256 {
 					low = 0;
 				} else {
 					high = (high << rhs) + (low >> (128usize - rhs));
-					low <<= rhs
+					low <<= rhs;
 				}
 				[low, high].into()
 			}
@@ -1438,7 +1438,7 @@ mod tests {
 		#[test]
 		#[allow(clippy::tuple_array_conversions)] // false positive
 		fn test_negate(a in any::<u128>(), b in any::<u128>()) {
-			assert_eq!(M256::from([!a, ! b]), !M256::from([a, b]))
+			assert_eq!(M256::from([!a, ! b]), !M256::from([a, b]));
 		}
 
 		#[test]

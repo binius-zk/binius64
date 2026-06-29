@@ -66,11 +66,11 @@ impl WiringTranspose {
 		}
 	}
 
-	pub fn log_size(&self) -> usize {
+	pub const fn log_size(&self) -> usize {
 		self.log_size
 	}
 
-	pub fn size(&self) -> usize {
+	pub const fn size(&self) -> usize {
 		1 << self.log_size
 	}
 
@@ -145,8 +145,8 @@ pub struct MulCheckWitness<P: PackedField> {
 /// Evaluates an operand by XORing witness values at the specified indices.
 fn eval_operand<F: Field, P: PackedField<Scalar = F>>(
 	public: &[F],
-	precommit_packed: &FieldSlice<P>,
-	private_packed: &FieldSlice<P>,
+	precommit_packed: &FieldSlice<'_, P>,
+	private_packed: &FieldSlice<'_, P>,
 	operand: &Operand<WitnessIndex>,
 ) -> F {
 	operand
@@ -169,16 +169,16 @@ fn eval_operand<F: Field, P: PackedField<Scalar = F>>(
 pub fn build_mulcheck_witness<F: Field, P: PackedField<Scalar = F>>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	public: &[F],
-	precommit_packed: FieldSlice<P>,
-	private_packed: FieldSlice<P>,
+	precommit_packed: &FieldSlice<'_, P>,
+	private_packed: &FieldSlice<'_, P>,
 ) -> MulCheckWitness<P> {
-	fn get_a(c: &MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex> {
+	const fn get_a(c: &MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex> {
 		&c.a
 	}
-	fn get_b(c: &MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex> {
+	const fn get_b(c: &MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex> {
 		&c.b
 	}
-	fn get_c(c: &MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex> {
+	const fn get_c(c: &MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex> {
 		&c.c
 	}
 
@@ -208,8 +208,8 @@ pub fn build_mulcheck_witness<F: Field, P: PackedField<Scalar = F>>(
 					if constraint_idx < n_constraints {
 						eval_operand(
 							public,
-							&precommit_packed,
-							&private_packed,
+							precommit_packed,
+							private_packed,
 							get_operand(&mul_constraints[constraint_idx]),
 						)
 					} else {
@@ -292,14 +292,13 @@ mod tests {
 	/// Evaluate the wiring MLE using the transposed representation.
 	fn evaluate_wiring_mle_transposed<F: Field>(
 		transposed: &WiringTranspose,
-		lambda: F,
+		lambda: &F,
 		r_x_tensor: &[F],
 		r_y_tensor: &[F],
 	) -> F {
 		let mut acc = [F::ZERO; 3];
 
-		for idx in 0..transposed.size() {
-			let r_y_weight = r_y_tensor[idx];
+		for (idx, &r_y_weight) in r_y_tensor.iter().enumerate().take(transposed.size()) {
 			for key in transposed.keys_for(idx) {
 				let r_x_weight = r_x_tensor[key.constraint_idx as usize];
 				acc[key.operand_idx as usize] += r_x_weight * r_y_weight;
@@ -337,7 +336,7 @@ mod tests {
 		let expected = evaluate_segment_wiring_mle(
 			&constraints,
 			WitnessSegment::Private,
-			lambda,
+			&lambda,
 			r_x_tensor.as_ref(),
 			&r_y,
 		);
@@ -347,7 +346,7 @@ mod tests {
 			WiringTranspose::transpose(WitnessSegment::Private, private_size, &constraints);
 		let actual = evaluate_wiring_mle_transposed(
 			&transposed,
-			lambda,
+			&lambda,
 			r_x_tensor.as_ref(),
 			r_y_tensor.as_ref(),
 		);
@@ -381,7 +380,7 @@ mod tests {
 		let expected = evaluate_segment_wiring_mle(
 			&constraints,
 			WitnessSegment::Private,
-			lambda,
+			&lambda,
 			r_x_tensor.as_ref(),
 			&r_y,
 		);
@@ -438,8 +437,8 @@ mod tests {
 		let mulcheck_witness = build_mulcheck_witness(
 			&constraints,
 			&public,
-			precommit_buf.to_ref(),
-			private_buf.to_ref(),
+			&precommit_buf.to_ref(),
+			&private_buf.to_ref(),
 		);
 
 		// Sample r_x (sumcheck evaluation point for constraint axis)
@@ -474,9 +473,9 @@ mod tests {
 		let r_x_tensor = eq_ind_partial_eval::<B128>(&r_x);
 
 		// Compute the batched sum and public contribution
-		let batched_sum = evaluate_univariate(&mulcheck_evals, lambda);
+		let batched_sum = evaluate_univariate(&mulcheck_evals, &lambda);
 		let public_eval =
-			evaluate_wiring_mle_public(&constraints, &public, lambda, r_x_tensor.as_ref());
+			evaluate_wiring_mle_public(&constraints, &public, &lambda, r_x_tensor.as_ref());
 		let trace_claim = batched_sum - public_eval;
 
 		// Fold constraints to get the private wiring polynomial
@@ -505,12 +504,12 @@ mod tests {
 		let verifier_lambda: B128 = verifier_channel.sample();
 
 		// Compute the same claim on the verifier side
-		let verifier_batched_sum = evaluate_univariate(&mulcheck_evals, verifier_lambda);
+		let verifier_batched_sum = evaluate_univariate(&mulcheck_evals, &verifier_lambda);
 		let verifier_r_x_tensor = eq_ind_partial_eval::<B128>(&r_x);
 		let verifier_public_eval = evaluate_wiring_mle_public(
 			&constraints,
 			&public,
-			verifier_lambda,
+			&verifier_lambda,
 			verifier_r_x_tensor.as_ref(),
 		);
 		let verifier_trace_claim = verifier_batched_sum - verifier_public_eval;

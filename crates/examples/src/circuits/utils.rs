@@ -46,11 +46,10 @@ pub fn determine_hash_max_bytes_from_args(max_bytes_param: Option<usize>) -> Res
 			}
 		}
 
-		if let Some(msg_string) = message_string {
-			msg_string.len()
-		} else {
-			message_len.unwrap_or(DEFAULT_HASH_MESSAGE_BYTES)
-		}
+		message_string.map_or_else(
+			|| message_len.unwrap_or(DEFAULT_HASH_MESSAGE_BYTES),
+			|msg_string| msg_string.len(),
+		)
 	});
 
 	ensure!(max_bytes > 0, "Message length must be positive");
@@ -68,13 +67,14 @@ pub fn generate_message_bytes(
 	message_string: Option<String>,
 	message_len: Option<usize>,
 ) -> Vec<u8> {
-	if let Some(message_string) = message_string {
-		message_string.as_bytes().to_vec()
-	} else {
-		let mut rng = StdRng::seed_from_u64(DEFAULT_RANDOM_SEED);
-		let len = message_len.unwrap_or(DEFAULT_HASH_MESSAGE_BYTES);
-		let mut message_bytes = vec![0u8; len];
-		rng.fill_bytes(&mut message_bytes);
-		message_bytes
-	}
+	message_string.map_or_else(
+		|| {
+			let mut rng = StdRng::seed_from_u64(DEFAULT_RANDOM_SEED);
+			let len = message_len.unwrap_or(DEFAULT_HASH_MESSAGE_BYTES);
+			let mut message_bytes = vec![0u8; len];
+			rng.fill_bytes(&mut message_bytes);
+			message_bytes
+		},
+		|message_string| message_string.as_bytes().to_vec(),
+	)
 }

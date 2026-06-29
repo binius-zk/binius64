@@ -226,7 +226,7 @@ where
 						expand_subset_sums_array::<_, CHUNK_BITS, { 1 << CHUNK_BITS }>(vec_scalars);
 
 					square_transpose_const_size::<_, LOG_CHUNK_BITS, CHUNK_BITS>(
-						mat_scalars
+						&mut mat_scalars
 							.each_mut()
 							.map(<B128 as PackedExtension<B1>>::cast_base_mut),
 					);
@@ -279,7 +279,7 @@ where
 /// * `LOG_N` must be less than or equal to `P::LOG_WIDTH`
 /// * `LOG_N` must be less than or equal to `log2(S)`
 fn square_transpose_const_size<P: PackedField, const LOG_N: usize, const S: usize>(
-	elems: [&mut P; S],
+	elems: &mut [&mut P; S],
 ) {
 	let log_size = checked_log_2(S);
 
@@ -491,7 +491,7 @@ mod test {
 				.map(|&bits_packed| P::cast_ext(bits_packed))
 				.collect(),
 		);
-		let folded_method2 = fold_elems_inplace(bit_matrix_packed.clone(), &prefix_tensor);
+		let folded_method2 = fold_elems_inplace(bit_matrix_packed, &prefix_tensor);
 		let method2_result = evaluate_inplace(folded_method2, suffix);
 
 		// Compare all three results

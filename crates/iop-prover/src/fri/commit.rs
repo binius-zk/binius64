@@ -42,7 +42,7 @@ pub fn commit_interleaved<F, P, NTT, MerkleProver, VCS>(
 	oracle_index: usize,
 	ntt: &NTT,
 	merkle_prover: &MerkleProver,
-	message: FieldSlice<P>,
+	message: &FieldSlice<'_, P>,
 ) -> CommitOutput<P, VCS::Digest, MerkleProver::Committed>
 where
 	F: BinaryField,
@@ -79,11 +79,11 @@ where
 	.entered();
 
 	let encoded = tracing::debug_span!("Reed-Solomon Encode")
-		.in_scope(|| rs_code.encode_batch(ntt, message.to_ref(), log_batch_size));
+		.in_scope(|| rs_code.encode_batch(ntt, &message.to_ref(), log_batch_size));
 
 	let merkle_tree_span = tracing::debug_span!("Merkle Tree").entered();
 	let (commitment, vcs_committed) =
-		merkle_tree::commit_field_buffer(merkle_prover, encoded.to_ref(), log_batch_size);
+		merkle_tree::commit_field_buffer(merkle_prover, &encoded.to_ref(), log_batch_size);
 	drop(merkle_tree_span);
 
 	CommitOutput {
@@ -126,7 +126,7 @@ pub fn commit_masked<F, P, NTT, MerkleProver, VCS>(
 	oracle_index: usize,
 	ntt: &NTT,
 	merkle_prover: &MerkleProver,
-	message: FieldSlice<P>,
+	message: &FieldSlice<'_, P>,
 	mut rng: impl CryptoRng,
 ) -> CommitMaskedOutput<P, VCS::Digest, MerkleProver::Committed>
 where
@@ -172,7 +172,7 @@ where
 		commitment,
 		committed,
 		codeword,
-	} = commit_interleaved(params, oracle_index, ntt, merkle_prover, combined.to_ref());
+	} = commit_interleaved(params, oracle_index, ntt, merkle_prover, &combined.to_ref());
 
 	CommitMaskedOutput {
 		commitment,
@@ -231,7 +231,7 @@ mod tests {
 		let message = random_field_buffer::<P>(&mut rng, log_dim);
 
 		let output: CommitMaskedOutput<P, _, _> =
-			commit_masked(&params, 0, &ntt, &merkle_prover, message.to_ref(), &mut rng);
+			commit_masked(&params, 0, &ntt, &merkle_prover, &message.to_ref(), &mut rng);
 
 		// Verify mask has correct dimensions.
 		assert_eq!(output.mask.log_len(), log_dim);

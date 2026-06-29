@@ -102,7 +102,7 @@ impl<T: Hint> ErasedHint for T {
 	}
 
 	fn execute(&self, dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
-		<T as Hint>::execute(self, dimensions, inputs, outputs)
+		<T as Hint>::execute(self, dimensions, inputs, outputs);
 	}
 }
 

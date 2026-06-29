@@ -63,7 +63,7 @@ impl ExampleCircuit for EthSignExample {
 				let address = array::from_fn(|_| builder.add_inout());
 
 				let msg_final_state = array::from_fn(|_| builder.add_witness());
-				let msg_keccak = Keccak256::new(builder, msg_len, msg_final_state, message.clone());
+				let msg_keccak = Keccak256::new(builder, msg_len, msg_final_state, message);
 
 				// The Keccak digest is little endian encoded into 4 words, while Ethereum expects
 				// big endian
@@ -127,7 +127,7 @@ impl ExampleCircuit for EthSignExample {
 		})
 	}
 
-	fn populate_witness(&self, _instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, _instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		// Generate random initial state with fixed seed for reproducibility
 		let mut rng = StdRng::seed_from_u64(42);
 

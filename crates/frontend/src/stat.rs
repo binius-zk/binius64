@@ -119,7 +119,7 @@ impl CircuitStat {
 }
 
 impl fmt::Display for CircuitStat {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		// Helper to format numbers with commas
 		fn fmt_num(n: usize) -> String {
 			let s = n.to_string();
@@ -150,7 +150,7 @@ impl fmt::Display for CircuitStat {
 		}
 
 		// Helper to get log2 of a power of 2
-		fn log2(n: usize) -> u32 {
+		const fn log2(n: usize) -> u32 {
 			n.trailing_zeros()
 		}
 

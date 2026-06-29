@@ -89,7 +89,7 @@ pub trait MerkleTreeProver<T: FixedSizeSerializeBytes> {
 		committed: &Self::Committed,
 		layer_depth: usize,
 		index: usize,
-		proof: &mut TranscriptWriter<B>,
+		proof: &mut TranscriptWriter<'_, B>,
 	);
 }
 
@@ -106,7 +106,7 @@ pub trait MerkleTreeProver<T: FixedSizeSerializeBytes> {
 #[allow(clippy::type_complexity)]
 pub fn commit_field_buffer<F, P, MerkleProver>(
 	merkle_prover: &MerkleProver,
-	buffer: FieldSlice<P>,
+	buffer: &FieldSlice<'_, P>,
 	log_batch_size: usize,
 ) -> (
 	Commitment<<MerkleProver::Scheme as MerkleTreeScheme<F>>::Digest>,

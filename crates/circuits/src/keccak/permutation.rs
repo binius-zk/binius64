@@ -80,7 +80,7 @@ impl Permutation {
 	///
 	/// * `w` - The witness to populate the state with.
 	/// * `state` - The state to populate the witness with.
-	pub fn populate_state(&self, w: &mut WitnessFiller, state: [u64; 25]) {
+	pub fn populate_state(&self, w: &mut WitnessFiller<'_>, state: [u64; 25]) {
 		for i in 0..25 {
 			w[self.input_state.words[i]] = Word(state[i]);
 		}

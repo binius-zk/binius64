@@ -55,7 +55,7 @@ impl ExampleCircuit for Sha256Example {
 		Ok(Self { sha256_gadget })
 	}
 
-	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		// Step 1: Get raw message bytes
 		let message = utils::generate_message_bytes(instance.message_string, instance.message_len);
 
@@ -85,7 +85,7 @@ impl ExampleCircuit for Sha256Example {
 	}
 }
 
-fn mk_circuit(b: &mut CircuitBuilder, max_len: usize, len_bytes: Wire) -> Sha256 {
+fn mk_circuit(b: &CircuitBuilder, max_len: usize, len_bytes: Wire) -> Sha256 {
 	let digest: [Wire; 4] = array::from_fn(|_| b.add_inout());
 	let message = (0..max_len).map(|_| b.add_inout()).collect();
 	Sha256::new(b, len_bytes, digest, message)

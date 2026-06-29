@@ -71,7 +71,7 @@ where
 	}
 
 	// Number of variables in all 1-bit multilinears at start of sumcheck.
-	fn n_vars_transparent(&self) -> usize {
+	const fn n_vars_transparent(&self) -> usize {
 		checked_log_2(self.bitmasks.len())
 	}
 
@@ -91,18 +91,19 @@ where
 		assert!(bit_offset < self.n_multilinears);
 		assert_eq!(scratchpad.len(), 1 << chunk_vars);
 
-		if let Some(folded) = &self.folded {
-			folded[bit_offset].chunk(chunk_vars, chunk_index)
-		} else {
-			get_binary_chunk(
-				scratchpad,
-				&self.tensor,
-				&BitSelector::new(bit_offset, self.bitmasks),
-				chunk_vars,
-				chunk_index,
-			);
-			scratchpad.to_ref()
-		}
+		self.folded.as_ref().map_or_else(
+			|| {
+				get_binary_chunk(
+					scratchpad,
+					&self.tensor,
+					&BitSelector::new(bit_offset, self.bitmasks),
+					chunk_vars,
+					chunk_index,
+				);
+				scratchpad.to_ref()
+			},
+			|folded| folded[bit_offset].chunk(chunk_vars, chunk_index),
+		)
 	}
 
 	pub fn fold(&mut self, challenge: F) {
@@ -186,5 +187,5 @@ fn get_binary_chunk<P, DataOut, DataIn>(
 		chunk_vars,
 		chunk_index,
 	);
-	binary_fold_high(dest, tensor, matrix_vert_slice);
+	binary_fold_high(dest, tensor, &matrix_vert_slice);
 }

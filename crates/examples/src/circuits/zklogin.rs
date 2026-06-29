@@ -56,15 +56,15 @@ impl Default for Config {
 }
 
 impl Config {
-	pub fn max_len_base64_jwt_header(&self) -> usize {
+	pub const fn max_len_base64_jwt_header(&self) -> usize {
 		self.max_len_json_jwt_header.div_ceil(3) * 4
 	}
 
-	pub fn max_len_base64_jwt_payload(&self) -> usize {
+	pub const fn max_len_base64_jwt_payload(&self) -> usize {
 		self.max_len_json_jwt_payload.div_ceil(3) * 4
 	}
 
-	pub fn max_len_base64_jwt_signature(&self) -> usize {
+	pub const fn max_len_base64_jwt_signature(&self) -> usize {
 		self.max_len_jwt_signature.div_ceil(3) * 4
 	}
 }
@@ -116,7 +116,7 @@ pub struct ZkLogin {
 }
 
 impl ZkLogin {
-	pub fn new(b: &mut CircuitBuilder, config: Config) -> Self {
+	pub fn new(b: &mut CircuitBuilder, config: &Config) -> Self {
 		let sub = ByteVec::new_inout(b, config.max_len_jwt_sub);
 		let aud = ByteVec::new_inout(b, config.max_len_jwt_aud);
 		let iss = ByteVec::new_inout(b, config.max_len_jwt_iss);
@@ -251,7 +251,7 @@ impl ZkLogin {
 		let base64_check_nonce_builder = b.subcircuit("base64_check_nonce");
 		let _base64decode_check_nonce = Base64UrlSafe::new(
 			&base64_check_nonce_builder,
-			nonce_le_for_base64.clone(),
+			nonce_le_for_base64,
 			base64_jwt_payload_nonce.to_vec(),
 			base64_check_nonce_builder.add_constant_64(32),
 		);
@@ -277,7 +277,7 @@ impl ZkLogin {
 			.collect();
 
 		let jwt_signing_payload =
-			ByteVec::new(jwt_signing_payload_sha256_message.clone(), signing_payload.len_bytes);
+			ByteVec::new(jwt_signing_payload_sha256_message, signing_payload.len_bytes);
 
 		let jwt_signature_verify =
 			Rs256Verify::new(b, jwt_signing_payload, jwt_signature.clone(), rsa_modulus);
@@ -320,92 +320,96 @@ impl ZkLogin {
 		}
 	}
 
-	pub fn populate_sub(&self, w: &mut WitnessFiller, sub_bytes: &[u8]) {
+	pub fn populate_sub(&self, w: &mut WitnessFiller<'_>, sub_bytes: &[u8]) {
 		self.sub.populate_bytes_le(w, sub_bytes);
 	}
 
-	pub fn populate_aud(&self, w: &mut WitnessFiller, aud_bytes: &[u8]) {
+	pub fn populate_aud(&self, w: &mut WitnessFiller<'_>, aud_bytes: &[u8]) {
 		self.aud.populate_bytes_le(w, aud_bytes);
 	}
 
-	pub fn populate_iss(&self, w: &mut WitnessFiller, iss_bytes: &[u8]) {
+	pub fn populate_iss(&self, w: &mut WitnessFiller<'_>, iss_bytes: &[u8]) {
 		self.iss.populate_bytes_le(w, iss_bytes);
 	}
 
-	pub fn populate_salt(&self, w: &mut WitnessFiller, salt_bytes: &[u8]) {
+	pub fn populate_salt(&self, w: &mut WitnessFiller<'_>, salt_bytes: &[u8]) {
 		self.salt.populate_bytes_le(w, salt_bytes);
 	}
 
-	pub fn populate_zkaddr(&self, w: &mut WitnessFiller, zkaddr_hash: &[u8; 32]) {
+	pub fn populate_zkaddr(&self, w: &mut WitnessFiller<'_>, zkaddr_hash: &[u8; 32]) {
 		self.zkaddr_sha256.populate_digest(w, *zkaddr_hash);
 	}
 
-	pub fn populate_zkaddr_preimage(&self, w: &mut WitnessFiller, zkaddr_preimage: &[u8]) {
+	pub fn populate_zkaddr_preimage(&self, w: &mut WitnessFiller<'_>, zkaddr_preimage: &[u8]) {
 		self.zkaddr_sha256
 			.populate_len_bytes(w, zkaddr_preimage.len());
 		self.zkaddr_sha256.populate_message(w, zkaddr_preimage);
 	}
 
-	pub fn populate_jwt_header(&self, w: &mut WitnessFiller, header_bytes: &[u8]) {
+	pub fn populate_jwt_header(&self, w: &mut WitnessFiller<'_>, header_bytes: &[u8]) {
 		self.jwt_header.populate_bytes_le(w, header_bytes);
 	}
 
-	pub fn populate_jwt_payload(&self, w: &mut WitnessFiller, payload_bytes: &[u8]) {
+	pub fn populate_jwt_payload(&self, w: &mut WitnessFiller<'_>, payload_bytes: &[u8]) {
 		self.jwt_payload.populate_bytes_le(w, payload_bytes);
 	}
 
-	pub fn populate_jwt_signature(&self, w: &mut WitnessFiller, signature_bytes: &[u8]) {
+	pub fn populate_jwt_signature(&self, w: &mut WitnessFiller<'_>, signature_bytes: &[u8]) {
 		assert_eq!(signature_bytes.len(), 256, "RSA signature must be 256 bytes");
 		self.jwt_signature.populate_bytes_le(w, signature_bytes);
 	}
 
-	pub fn populate_base64_jwt_header(&self, w: &mut WitnessFiller, bytes: &[u8]) {
+	pub fn populate_base64_jwt_header(&self, w: &mut WitnessFiller<'_>, bytes: &[u8]) {
 		self.base64_jwt_header.populate_bytes_le(w, bytes);
 	}
 
-	pub fn populate_base64_jwt_payload(&self, w: &mut WitnessFiller, bytes: &[u8]) {
+	pub fn populate_base64_jwt_payload(&self, w: &mut WitnessFiller<'_>, bytes: &[u8]) {
 		self.base64_jwt_payload.populate_bytes_le(w, bytes);
 	}
 
-	pub fn populate_base64_jwt_signature(&self, w: &mut WitnessFiller, bytes: &[u8]) {
+	pub fn populate_base64_jwt_signature(&self, w: &mut WitnessFiller<'_>, bytes: &[u8]) {
 		self.base64_jwt_signature.populate_bytes_le(w, bytes);
 	}
 
-	pub fn populate_rsa_modulus(&self, w: &mut WitnessFiller, modulus_bytes: &[u8]) {
+	pub fn populate_rsa_modulus(&self, w: &mut WitnessFiller<'_>, modulus_bytes: &[u8]) {
 		self.jwt_signature_verify
 			.modulus
 			.populate_bytes_le(w, modulus_bytes);
 	}
 
-	pub fn populate_jwt_header_attributes(&self, w: &mut WitnessFiller) {
+	pub fn populate_jwt_header_attributes(&self, w: &mut WitnessFiller<'_>) {
 		// Populate the expected lengths for "alg" and "typ" attributes
 		self.jwt_claims_header.attributes[0].populate_len_bytes(w, 5); // "RS256" is 5 bytes
 		self.jwt_claims_header.attributes[1].populate_len_bytes(w, 3); // "JWT" is 3 bytes
 	}
 
-	pub fn populate_nonce(&self, w: &mut WitnessFiller, nonce_hash: &[u8; 32]) {
+	pub fn populate_nonce(&self, w: &mut WitnessFiller<'_>, nonce_hash: &[u8; 32]) {
 		self.nonce_sha256.populate_digest(w, *nonce_hash);
 	}
 
-	pub fn populate_nonce_preimage(&self, w: &mut WitnessFiller, nonce_preimage: &[u8]) {
+	pub fn populate_nonce_preimage(&self, w: &mut WitnessFiller<'_>, nonce_preimage: &[u8]) {
 		self.nonce_sha256
 			.populate_len_bytes(w, nonce_preimage.len());
 		self.nonce_sha256.populate_message(w, nonce_preimage);
 	}
 
-	pub fn populate_vk_u(&self, w: &mut WitnessFiller, vk_u_bytes: &[u8; 32]) {
+	pub fn populate_vk_u(&self, w: &mut WitnessFiller<'_>, vk_u_bytes: &[u8; 32]) {
 		pack_bytes_into_wires_le(w, &self.vk_u, vk_u_bytes);
 	}
 
-	pub fn populate_t_max(&self, w: &mut WitnessFiller, t_max_bytes: &[u8]) {
+	pub fn populate_t_max(&self, w: &mut WitnessFiller<'_>, t_max_bytes: &[u8]) {
 		self.t_max.populate_bytes_le(w, t_max_bytes);
 	}
 
-	pub fn populate_nonce_r(&self, w: &mut WitnessFiller, nonce_r_bytes: &[u8]) {
+	pub fn populate_nonce_r(&self, w: &mut WitnessFiller<'_>, nonce_r_bytes: &[u8]) {
 		self.nonce_r.populate_bytes_le(w, nonce_r_bytes);
 	}
 
-	pub fn populate_base64_jwt_payload_nonce(&self, w: &mut WitnessFiller, base64_nonce: &[u8]) {
+	pub fn populate_base64_jwt_payload_nonce(
+		&self,
+		w: &mut WitnessFiller<'_>,
+		base64_nonce: &[u8],
+	) {
 		// The base64 nonce is 43 characters, but we need to pad to 48 bytes (6 wires)
 		let mut padded = vec![0u8; 48];
 		padded[..base64_nonce.len()].copy_from_slice(&base64_nonce[..base64_nonce.len()]);
@@ -569,12 +573,12 @@ impl ExampleCircuit for ZkLoginExample {
 
 	fn build(params: Params, builder: &mut CircuitBuilder) -> Result<Self> {
 		let config = params.config.unwrap_or_default();
-		let zklogin = ZkLogin::new(builder, config);
+		let zklogin = ZkLogin::new(builder, &config);
 
 		Ok(Self { zklogin })
 	}
 
-	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		let mut rng = StdRng::seed_from_u64(42);
 
 		// Generate JWT and related data

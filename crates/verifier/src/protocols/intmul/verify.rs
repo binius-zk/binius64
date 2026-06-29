@@ -56,7 +56,7 @@ where
 		.map(|(left, right)| eq_ind_eval.clone() * left * right)
 		.collect::<Vec<_>>();
 
-	let expected_eval = evaluate_univariate(&expected_unbatched_terms, batch_coeff);
+	let expected_eval = evaluate_univariate(&expected_unbatched_terms, &batch_coeff);
 	channel.assert_zero(expected_eval - eval)?;
 
 	Ok((challenges, multilinear_evals))
@@ -175,7 +175,7 @@ where
 	let expected_terms = expected_selected_terms
 		.chain([expected_c_prod_eval])
 		.collect::<Vec<_>>();
-	let expected_batched_eval = evaluate_univariate(&expected_terms, batch_coeff);
+	let expected_batched_eval = evaluate_univariate(&expected_terms, &batch_coeff);
 
 	channel.assert_zero(expected_batched_eval - eval)?;
 
@@ -249,7 +249,7 @@ fn verify_phase_5<F, C>(
 	c_hi_prod_evals: &[C::Elem],
 	b_eval_point: &[C::Elem],
 	r_ib: &[C::Elem],
-	b_recomb: C::Elem,
+	b_recomb: &C::Elem,
 	channel: &mut C,
 ) -> Result<IntMulOutput<C::Elem>, Error>
 where
@@ -273,7 +273,7 @@ where
 		c_lo_prod_evals,
 		c_hi_prod_evals,
 		&[C::Elem::zero()], // overflow parity zerocheck
-		slice::from_ref(&b_recomb),
+		slice::from_ref(b_recomb),
 	]
 	.concat();
 
@@ -332,7 +332,7 @@ where
 		slice::from_ref(&expected_b_rerand_eval),
 	]
 	.concat();
-	let expected_batched_eval = evaluate_univariate(&expected_unbatched_evals, batch_coeff);
+	let expected_batched_eval = evaluate_univariate(&expected_unbatched_evals, &batch_coeff);
 
 	// Compare expected evaluation against given evaluation `eval`.
 	channel.assert_zero(expected_batched_eval - eval)?;
@@ -505,7 +505,7 @@ where
 		&c_hi_evals,
 		&phase_3_eval_point,
 		&r_ib,
-		b_recomb,
+		&b_recomb,
 		channel,
 	)
 }

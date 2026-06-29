@@ -31,7 +31,7 @@ fn test_field_text_debug() {
 	assert_eq!(
 		format!("{:?}", PackedAESBinaryField16x8b::broadcast(AESTowerField8b::new(123))),
 		"Packed16x8([0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b,0x7b])"
-	)
+	);
 }
 
 fn basic_spread<P>(packed: P, log_block_len: usize, block_idx: usize) -> P
@@ -129,13 +129,9 @@ where
 	let mut elems_transposed = elems.clone();
 	<F as FieldOps>::square_transpose::<FSub>(&mut elems_transposed);
 
-	for i in 0..degree {
-		for j in 0..degree {
-			assert_eq!(
-				elems_transposed[i].get_base(j),
-				elems[j].get_base(i),
-				"mismatch at ({i}, {j})"
-			);
+	for (i, transposed) in elems_transposed.iter().enumerate().take(degree) {
+		for (j, elem) in elems.iter().enumerate().take(degree) {
+			assert_eq!(transposed.get_base(j), elem.get_base(i), "mismatch at ({i}, {j})");
 		}
 	}
 }
@@ -160,12 +156,12 @@ where
 	let mut elems_transposed = elems.clone();
 	<P as FieldOps>::square_transpose::<FSub>(&mut elems_transposed);
 
-	for i in 0..degree {
+	for (i, transposed) in elems_transposed.iter().enumerate().take(degree) {
 		for k in 0..P::WIDTH {
-			for j in 0..degree {
+			for (j, elem) in elems.iter().enumerate().take(degree) {
 				assert_eq!(
-					elems_transposed[i].get(k).get_base(j),
-					elems[j].get(k).get_base(i),
+					transposed.get(k).get_base(j),
+					elem.get(k).get_base(i),
 					"mismatch at slice_idx={i}, lane={k}, base={j}"
 				);
 			}

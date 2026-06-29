@@ -118,7 +118,7 @@ where
 		let alpha = eval_point[n_vars - 1 - round];
 		let round_coeffs = round_proof.recover(sum, alpha);
 		let challenge = transcript.sample();
-		sum = round_coeffs.evaluate(challenge);
+		sum = round_coeffs.evaluate(&challenge);
 		challenges.push(challenge);
 	}
 
@@ -178,8 +178,8 @@ pub enum VerificationError {
 impl From<fri::Error> for Error {
 	fn from(err: fri::Error) -> Self {
 		match err {
-			fri::Error::Verification(err) => Error::Verification(err.into()),
-			_ => Error::FRI(err),
+			fri::Error::Verification(err) => Self::Verification(err.into()),
+			_ => Self::FRI(err),
 		}
 	}
 }

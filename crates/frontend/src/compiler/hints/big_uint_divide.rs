@@ -9,7 +9,7 @@ use crate::util::num_biguint_from_u64_limbs;
 pub struct BigUintDivideHint;
 
 impl BigUintDivideHint {
-	pub fn new() -> Self {
+	pub const fn new() -> Self {
 		Self
 	}
 }
@@ -47,7 +47,7 @@ impl Hint for BigUintDivideHint {
 		let (quotient, remainder) = if divisor != zero {
 			(dividend.clone() / divisor.clone(), dividend % divisor)
 		} else {
-			(zero.clone(), zero.clone())
+			(zero.clone(), zero)
 		};
 
 		// Fill quotient limbs (first part of output)
@@ -57,8 +57,12 @@ impl Hint for BigUintDivideHint {
 			}
 		}
 		// Zero remaining quotient outputs
-		for i in quotient.iter_u64_digits().len()..n_quotient {
-			outputs[i] = Word::ZERO;
+		for word in outputs
+			.iter_mut()
+			.take(n_quotient)
+			.skip(quotient.iter_u64_digits().len())
+		{
+			*word = Word::ZERO;
 		}
 
 		// Fill remainder limbs (second part of output)

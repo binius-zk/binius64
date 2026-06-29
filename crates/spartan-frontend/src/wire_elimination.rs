@@ -40,7 +40,7 @@ pub struct CostModel {
 impl Default for CostModel {
 	fn default() -> Self {
 		// This is just a guess, can be tuned later.
-		CostModel {
+		Self {
 			wire_cost: 16,
 			mul_cost: 2,
 			ref_cost: 1,

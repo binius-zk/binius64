@@ -103,7 +103,7 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 			fold_highest_var_inplace(multilin, challenge);
 		}
 
-		let round_sum = last_coeffs.evaluate(challenge);
+		let round_sum = last_coeffs.evaluate(&challenge);
 		self.last_coeffs_or_sum = RoundCoeffsOrSum::Sum(round_sum);
 		Ok(())
 	}

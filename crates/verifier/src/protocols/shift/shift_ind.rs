@@ -173,10 +173,9 @@ mod tests {
 
 		assert_eq!(partial_eval.len(), 1 << n);
 
-		for i_idx in 0..(1 << n) {
+		for (i_idx, &actual) in partial_eval.iter().enumerate() {
 			let i = index_to_hypercube_point::<F>(n, i_idx);
 			let expected = direct_fn(&i, j, s);
-			let actual = partial_eval[i_idx];
 			assert_eq!(
 				actual, expected,
 				"Mismatch at i_idx={}, i={:?}, j={:?}, s={:?}",

@@ -524,9 +524,9 @@ mod tests {
 		map
 	}
 
-	fn assert_operand_eq(actual: &[ShiftedWire], expected: Vec<ShiftedWire>, ctx: &str) {
+	fn assert_operand_eq(actual: &[ShiftedWire], expected: &[ShiftedWire], ctx: &str) {
 		let am = operand_count_map(actual);
-		let em = operand_count_map(&expected);
+		let em = operand_count_map(expected);
 		assert_eq!(
 			am, em,
 			"operand mismatch for {}\nexpected: {:?}\nactual:   {:?}",
@@ -918,7 +918,7 @@ mod tests {
 		let a = &cb2.mul_constraints[0].a;
 		assert_operand_eq(
 			a,
-			vec![
+			&[
 				ShiftedWire {
 					wire: w(0),
 					shift: Shift::None,
@@ -974,7 +974,7 @@ mod tests {
 		let m = &cb2.mul_constraints[0];
 		assert_operand_eq(
 			&m.a,
-			vec![ShiftedWire {
+			&[ShiftedWire {
 				wire: w(1),
 				shift: Shift::Sll(30),
 			}],
@@ -982,7 +982,7 @@ mod tests {
 		);
 		assert_operand_eq(
 			&m.b,
-			vec![
+			&[
 				ShiftedWire {
 					wire: w(3),
 					shift: Shift::None,
@@ -1025,7 +1025,7 @@ mod tests {
 		let m = &cb2.mul_constraints[0];
 		assert_operand_eq(
 			&m.hi,
-			vec![ShiftedWire {
+			&[ShiftedWire {
 				wire: w(1),
 				shift: Shift::Sll(20),
 			}],
@@ -1033,7 +1033,7 @@ mod tests {
 		);
 		assert_operand_eq(
 			&m.lo,
-			vec![
+			&[
 				ShiftedWire {
 					wire: w(3),
 					shift: Shift::None,

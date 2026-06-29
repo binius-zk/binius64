@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+//! Standalone prover binary: loads a constraint system and witness from disk and writes a proof.
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
@@ -66,10 +67,7 @@ fn main() -> Result<()> {
 		.context("Failed to deserialize non-public ValuesData")?;
 
 	// Reconstruct the full ValueVec
-	// Take ownership of the underlying vectors without extra copies
-	let public: Vec<_> = public.into();
-	let non_public: Vec<_> = non_public.into();
-	let witness = ValueVec::new_from_data(cs.value_vec_layout.clone(), public, non_public)
+	let witness = ValueVec::new_from_data(cs.value_vec_layout.clone(), &public, &non_public)
 		.context("Failed to reconstruct ValueVec from provided values")?;
 
 	// Setup prover (verifier is not used here)
@@ -78,7 +76,7 @@ fn main() -> Result<()> {
 	// Prove
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	prover
-		.prove(witness, &mut prover_transcript)
+		.prove(&witness, &mut prover_transcript)
 		.context("Proving failed")?;
 	let transcript = prover_transcript.finalize();
 

@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// Convert 20-byte address payload into five little-endian u32 words (circuit witness layout).
-pub fn addr_bytes_to_le_words(addr: &[u8; 20]) -> [u32; 5] {
+pub const fn addr_bytes_to_le_words(addr: &[u8; 20]) -> [u32; 5] {
 	[
 		u32::from_le_bytes([addr[0], addr[1], addr[2], addr[3]]),
 		u32::from_le_bytes([addr[4], addr[5], addr[6], addr[7]]),
@@ -264,7 +264,7 @@ mod tests {
 
 		// Pack expected compressed bytes into 9 big-endian u32 words (low 32 bits used)
 		let mut expected_word_values = [0u32; 9];
-		for i in 0..9 {
+		for (i, word_value) in expected_word_values.iter_mut().enumerate() {
 			let start = i * 4;
 			let mut word = 0u32;
 			for j in 0..4 {
@@ -272,7 +272,7 @@ mod tests {
 					word |= (expected_compressed_sec1[start + j] as u32) << (24 - j * 8);
 				}
 			}
-			expected_word_values[i] = word;
+			*word_value = word;
 		}
 		for i in 0..9 {
 			w[expected_words[i]] = Word::from_u64(expected_word_values[i] as u64);
@@ -390,7 +390,7 @@ mod tests {
 
 		// Pack expected compressed bytes into 32-bit words for comparison
 		let mut expected_word_values = [0u32; 9];
-		for i in 0..9 {
+		for (i, word_value) in expected_word_values.iter_mut().enumerate() {
 			let word_start = i * 4;
 			if word_start < 33 {
 				let bytes_in_word = std::cmp::min(4, 33 - word_start);
@@ -398,7 +398,7 @@ mod tests {
 				for j in 0..bytes_in_word {
 					word |= (expected_compressed[word_start + j] as u32) << (24 - j * 8);
 				}
-				expected_word_values[i] = word;
+				*word_value = word;
 			}
 		}
 

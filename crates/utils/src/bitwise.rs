@@ -33,7 +33,7 @@ pub struct BitSelector<B: Bitwise, S: AsRef<[B]>> {
 }
 
 impl<B: Bitwise, S: AsRef<[B]>> BitSelector<B, S> {
-	pub fn new(bit_offset: usize, slice: S) -> Self {
+	pub const fn new(bit_offset: usize, slice: S) -> Self {
 		Self {
 			bit_offset,
 			slice,

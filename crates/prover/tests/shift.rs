@@ -163,7 +163,7 @@ fn compute_intmul_images(constraints: &[MulConstraint], witness: &ValueVec) -> [
 fn evaluate_image<F: BinaryField>(
 	subspace: &BinarySubspace<F>,
 	image: &[Word],
-	r_zhat_prime: F,
+	r_zhat_prime: &F,
 	r_x_prime_tensor: &[F],
 ) -> F {
 	let l_tilde = lagrange_evals(subspace, r_zhat_prime);
@@ -235,7 +235,7 @@ fn test_shift_prove_and_verify() {
 			evaluate_image(
 				&subspace,
 				&image,
-				r_zhat_prime,
+				&r_zhat_prime,
 				eq_ind_partial_eval(&r_x_prime_bitand).as_ref(),
 			)
 		});
@@ -244,7 +244,7 @@ fn test_shift_prove_and_verify() {
 			evaluate_image(
 				&subspace,
 				&image,
-				r_zhat_prime,
+				&r_zhat_prime,
 				eq_ind_partial_eval(&r_x_prime_intmul).as_ref(),
 			)
 		});

@@ -54,7 +54,7 @@ fn constrain_modular_addition(
 		.build();
 }
 
-pub fn shape() -> OpcodeShape {
+pub const fn shape() -> OpcodeShape {
 	OpcodeShape {
 		const_in: &[],
 		n_in: 2,

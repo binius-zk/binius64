@@ -1,4 +1,6 @@
 // Copyright 2025 Irreducible Inc.
+//! Standalone verifier binary: loads a constraint system, public input, and proof from disk and
+//! checks the proof.
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result, bail};

@@ -490,7 +490,7 @@ where
 				&mut self.0,
 				index,
 				val.to_underlier(),
-			)
+			);
 		};
 	}
 

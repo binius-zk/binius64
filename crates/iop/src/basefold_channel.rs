@@ -75,7 +75,7 @@ where
 	///
 	/// The FRI parameters should already account for ZK (log_batch_size = 1, doubled message
 	/// length).
-	pub fn from_precomputed(
+	pub const fn from_precomputed(
 		transcript: &'a mut VerifierTranscript<Challenger_>,
 		merkle_scheme: &'a MerkleScheme_,
 		oracle_specs: &'a [OracleSpec],
@@ -93,7 +93,7 @@ where
 	}
 
 	/// Returns a reference to the underlying transcript.
-	pub fn transcript(&self) -> &VerifierTranscript<Challenger_> {
+	pub const fn transcript(&self) -> &VerifierTranscript<Challenger_> {
 		self.transcript
 	}
 
@@ -130,7 +130,7 @@ where
 			merkle_scheme,
 			oracle_specs,
 			fri_params,
-			oracle_commitments,
+			&oracle_commitments,
 			queue,
 		)
 	}
@@ -162,7 +162,7 @@ fn verify_batch_zk_basefold<F, MerkleScheme_, Challenger_>(
 	merkle_scheme: &MerkleScheme_,
 	oracle_specs: &[OracleSpec],
 	fri_params: &FRIParams<F>,
-	oracle_commitments: Vec<MerkleScheme_::Digest>,
+	oracle_commitments: &[MerkleScheme_::Digest],
 	relations: Vec<OracleLinearRelation<'_, BaseFoldOracle, F>>,
 ) -> Result<(), Error>
 where
@@ -231,7 +231,7 @@ where
 			alpha_i * transparent_eval * pad_eq
 		})
 		.collect::<Vec<_>>();
-	let expected = evaluate_univariate(&contributions, sumcheck_batch_coeff);
+	let expected = evaluate_univariate(&contributions, &sumcheck_batch_coeff);
 	channel.assert_zero(sumcheck_reduced_eval - expected)?;
 
 	// === Phase B: single combined-FRI MLE-check over the piecewise-concatenated oracle ===
@@ -260,7 +260,7 @@ where
 	} = basefold::verify_mlecheck_basefold(
 		fri_params,
 		merkle_scheme,
-		&oracle_commitments,
+		oracle_commitments,
 		s_prime,
 		&point,
 		gamma,

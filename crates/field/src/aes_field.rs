@@ -185,7 +185,7 @@ mod tests {
 	proptest! {
 		#[test]
 		fn test_square_8(a in any::<u8>()) {
-			check_square(AESTowerField8b::from(a))
+			check_square(AESTowerField8b::from(a));
 		}
 	}
 
@@ -201,7 +201,7 @@ mod tests {
 	proptest! {
 		#[test]
 		fn test_invert_8(a in any::<u8>()) {
-			check_invert(AESTowerField8b::from(a))
+			check_invert(AESTowerField8b::from(a));
 		}
 	}
 
@@ -239,7 +239,7 @@ mod tests {
 	proptest! {
 		#[test]
 		fn test_mul_8(a in any::<u8>(), b in any::<u8>(), c in any::<u8>()) {
-			check_mul(AESTowerField8b::from(a), AESTowerField8b::from(b), AESTowerField8b::from(c))
+			check_mul(AESTowerField8b::from(a), AESTowerField8b::from(b), AESTowerField8b::from(c));
 		}
 	}
 

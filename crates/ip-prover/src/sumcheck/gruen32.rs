@@ -71,15 +71,15 @@ impl<F: Field, P: PackedField<Scalar = F>> Gruen32<P> {
 		&self.chunk_eq_expansion
 	}
 
-	pub fn chunk_eq_expansion(&self) -> &FieldBuffer<P> {
+	pub const fn chunk_eq_expansion(&self) -> &FieldBuffer<P> {
 		&self.chunk_eq_expansion
 	}
 
-	pub fn suffix_eq_expansion(&self) -> &FieldBuffer<P> {
+	pub const fn suffix_eq_expansion(&self) -> &FieldBuffer<P> {
 		&self.suffix_eq_expansion
 	}
 
-	pub fn n_vars_remaining(&self) -> usize {
+	pub const fn n_vars_remaining(&self) -> usize {
 		self.n_vars_remaining
 	}
 

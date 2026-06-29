@@ -303,9 +303,9 @@ mod tests {
 				P::from_scalars(word_chunk.iter().map(|&word| {
 					// Decompose word into bits and compute inner product
 					let mut sum = F::ZERO;
-					for bit_idx in 0..WORD_SIZE_BITS {
+					for (bit_idx, &vec_bit) in vec.iter().enumerate() {
 						if (word.as_u64() >> bit_idx) & 1 == 1 {
-							sum += vec[bit_idx];
+							sum += vec_bit;
 						}
 					}
 					sum
@@ -363,11 +363,11 @@ mod tests {
 
 			// out[i][j][k] = in[k][j][i]: bit `BITS_PER_BYTE * j + k` of output word `i` equals bit
 			// `BITS_PER_BYTE * j + i` of input word `k`.
-			for i in 0..BITS_PER_BYTE {
+			for (i, output_i) in output.iter().enumerate() {
 				for j in 0..WORD_SIZE_BYTES {
-					for k in 0..BITS_PER_BYTE {
-						let out_bit = (output[i].as_u64() >> (BITS_PER_BYTE * j + k)) & 1;
-						let in_bit = (input[k].as_u64() >> (BITS_PER_BYTE * j + i)) & 1;
+					for (k, input_k) in input.iter().enumerate() {
+						let out_bit = (output_i.as_u64() >> (BITS_PER_BYTE * j + k)) & 1;
+						let in_bit = (input_k.as_u64() >> (BITS_PER_BYTE * j + i)) & 1;
 						assert_eq!(out_bit, in_bit, "mismatch at i={i}, j={j}, k={k}");
 					}
 				}

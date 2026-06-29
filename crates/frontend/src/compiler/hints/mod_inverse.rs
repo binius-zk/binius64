@@ -10,7 +10,7 @@ use crate::util::num_biguint_from_u64_limbs;
 pub struct ModInverseHint;
 
 impl ModInverseHint {
-	pub fn new() -> Self {
+	pub const fn new() -> Self {
 		Self
 	}
 }
@@ -43,12 +43,13 @@ impl Hint for ModInverseHint {
 		let modulus = num_biguint_from_u64_limbs(mod_limbs.iter().map(|w| w.as_u64()));
 
 		let zero = num_bigint::BigUint::ZERO;
-		let (quotient, inverse) = if let Some(inverse) = base.modinv(&modulus) {
-			let quotient = (base * &inverse - num_bigint::BigUint::from(1usize)) / &modulus;
-			(quotient, inverse)
-		} else {
-			(zero.clone(), zero)
-		};
+		let (quotient, inverse) = base.modinv(&modulus).map_or_else(
+			|| (zero.clone(), zero),
+			|inverse| {
+				let quotient = (base * &inverse - num_bigint::BigUint::from(1usize)) / &modulus;
+				(quotient, inverse)
+			},
+		);
 
 		assert_eq!(outputs.len(), 2 * *n_mod);
 		let (quotient_words, inverse_words) = outputs.split_at_mut(*n_mod);
@@ -59,8 +60,12 @@ impl Hint for ModInverseHint {
 		}
 
 		// Zero remaining outputs if quotient has fewer limbs
-		for i in quotient.iter_u64_digits().len()..*n_mod {
-			quotient_words[i] = Word::ZERO;
+		for word in quotient_words
+			.iter_mut()
+			.take(*n_mod)
+			.skip(quotient.iter_u64_digits().len())
+		{
+			*word = Word::ZERO;
 		}
 
 		// Fill output inverse limbs
@@ -68,8 +73,12 @@ impl Hint for ModInverseHint {
 			inverse_words[i] = Word::from_u64(limb);
 		}
 		// Zero remaining outputs if inverse has fewer limbs
-		for i in inverse.iter_u64_digits().len()..*n_mod {
-			inverse_words[i] = Word::ZERO;
+		for word in inverse_words
+			.iter_mut()
+			.take(*n_mod)
+			.skip(inverse.iter_u64_digits().len())
+		{
+			*word = Word::ZERO;
 		}
 	}
 }

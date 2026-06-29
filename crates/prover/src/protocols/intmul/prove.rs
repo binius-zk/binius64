@@ -57,7 +57,7 @@ pub struct IntMulProver<'a, P, S, Channel> {
 }
 
 impl<'a, P, S, Channel> IntMulProver<'a, P, S, Channel> {
-	pub fn new(switchover: usize, channel: &'a mut Channel) -> Self {
+	pub const fn new(switchover: usize, channel: &'a mut Channel) -> Self {
 		Self {
 			_p_marker: PhantomData,
 			_s_marker: PhantomData,
@@ -78,9 +78,9 @@ where
 	///
 	/// This method consumes a `Witness` in order to reduce integer multiplication statement to
 	/// evaluation claims on 1-bit multilinears. More formally:
-	///  * `witness` contains po2-sized integer arrays  `a`, `b`, `c_lo` and `c_hi` that satisfy `a
-	///    * b = c_lo | c_hi << (1 << log_bits)`, as well as the layers of the constant- and
-	///      variable-base GKR product check circuits
+	///  * `witness` contains po2-sized integer arrays `a`, `b`, `c_lo` and `c_hi` that satisfy `a *
+	///    b = c_lo | c_hi << (1 << log_bits)`, as well as the layers of the constant- and
+	///    variable-base GKR product check circuits
 	///  * The proving consists of five phases:
 	///    - Phase 1: GKR tree roots for B & C are evaluated at a sampled point, after which
 	///      reductions are performed to obtain evaluation claims on $(b * (G^{a_i} - 1) + 1)^{2^i}$
@@ -256,7 +256,7 @@ where
 			SelectorMlecheckProver::new(selector, selector_claims, b_exponents, self.switchover)?;
 
 		let c_root_sumcheck_prover =
-			bivariate_product_mle::new(c_lo_hi_roots, c_eval_point.to_vec(), c_root_eval)?;
+			bivariate_product_mle::new(c_lo_hi_roots, c_eval_point, c_root_eval)?;
 
 		let c_root_prover = MleToSumCheckDecorator::new(c_root_sumcheck_prover);
 
@@ -405,7 +405,7 @@ where
 				[a_0, b_0, c_lo_0],
 				|[a, b, c]| a * b - c,
 				|[a, b, _c]| a * b,
-				b_eval_point.to_vec(),
+				b_eval_point,
 				F::ZERO,
 			)?);
 

@@ -21,7 +21,7 @@ impl<F> RoundCoeffs<F> {
 
 impl<F: FieldOps> RoundCoeffs<F> {
 	/// Evaluate the polynomial at a point.
-	pub fn evaluate(&self, x: F) -> F {
+	pub fn evaluate(&self, x: &F) -> F {
 		evaluate_univariate(&self.0, x)
 	}
 }

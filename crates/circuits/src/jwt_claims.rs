@@ -14,7 +14,7 @@ pub struct Attribute {
 
 impl Attribute {
 	/// Populate the actual value length
-	pub fn populate_len_bytes(&self, w: &mut WitnessFiller, len_bytes: usize) {
+	pub fn populate_len_bytes(&self, w: &mut WitnessFiller<'_>, len_bytes: usize) {
 		w[self.len_bytes] = Word(len_bytes as u64);
 	}
 
@@ -22,7 +22,7 @@ impl Attribute {
 	///
 	/// # Panics
 	/// Panics if value.len() > max_value_size (determined by self.value.len() * 8)
-	pub fn populate_value(&self, w: &mut WitnessFiller, value: &[u8]) {
+	pub fn populate_value(&self, w: &mut WitnessFiller<'_>, value: &[u8]) {
 		pack_bytes_into_wires_le(w, &self.value, value);
 	}
 }
@@ -190,7 +190,7 @@ impl JwtClaims {
 			slice::assert_slice_eq(&b, "attr_value", value_length, &extracted, &attr.value);
 		}
 
-		JwtClaims {
+		Self {
 			len_bytes,
 			json,
 			attributes,
@@ -198,7 +198,7 @@ impl JwtClaims {
 	}
 
 	/// Populate the len_bytes wire with the actual JSON size in bytes
-	pub fn populate_len_bytes(&self, w: &mut WitnessFiller, len_bytes: usize) {
+	pub fn populate_len_bytes(&self, w: &mut WitnessFiller<'_>, len_bytes: usize) {
 		w[self.len_bytes] = Word(len_bytes as u64);
 	}
 
@@ -206,7 +206,7 @@ impl JwtClaims {
 	///
 	/// # Panics
 	/// Panics if json.len() > max_len_json (the maximum size specified during construction)
-	pub fn populate_json(&self, w: &mut WitnessFiller, json: &[u8]) {
+	pub fn populate_json(&self, w: &mut WitnessFiller<'_>, json: &[u8]) {
 		pack_bytes_into_wires_le(w, &self.json, json);
 	}
 }

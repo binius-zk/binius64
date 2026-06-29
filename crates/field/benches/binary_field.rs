@@ -18,7 +18,7 @@ fn bench_function<F: Field, M: Measurement, R>(
 	let a: [F; BATCH_SIZE] = array::from_fn(|_| F::random(&mut rng));
 	let b: [F; BATCH_SIZE] = array::from_fn(|_| F::random(&mut rng));
 	c.bench_function(id, |bench| {
-		bench.iter(|| array::from_fn::<_, BATCH_SIZE, _>(|i| func(a[i], b[i])))
+		bench.iter(|| array::from_fn::<_, BATCH_SIZE, _>(|i| func(a[i], b[i])));
 	});
 }
 

@@ -84,7 +84,7 @@ impl BatchCommitLayout {
 	}
 
 	/// The number of words one instance occupies after power-of-two padding.
-	pub fn padded_instance_words(&self) -> usize {
+	pub const fn padded_instance_words(&self) -> usize {
 		1 << self.log_instance_words
 	}
 }

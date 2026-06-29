@@ -95,12 +95,12 @@ where
 	}
 
 	/// Returns a reference to the precomputed combined FRI parameters.
-	pub fn fri_params(&self) -> &FRIParams<F> {
+	pub const fn fri_params(&self) -> &FRIParams<F> {
 		&self.fri_params
 	}
 
 	/// Returns a reference to the Merkle scheme.
-	pub fn merkle_scheme(&self) -> &MerkleScheme_ {
+	pub const fn merkle_scheme(&self) -> &MerkleScheme_ {
 		&self.merkle_scheme
 	}
 

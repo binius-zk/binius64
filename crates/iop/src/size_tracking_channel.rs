@@ -41,7 +41,7 @@ impl<'a, F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>>
 	SizeTrackingChannel<'a, F, MerkleScheme_>
 {
 	/// Creates a new size-tracking channel with default element (16) and oracle (32) sizes.
-	pub fn new(
+	pub const fn new(
 		oracle_specs: Vec<OracleSpec>,
 		fri_params: &'a [FRIParams<F>],
 		merkle_scheme: &'a MerkleScheme_,
@@ -56,7 +56,7 @@ impl<'a, F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>>
 	}
 
 	/// Creates a new size-tracking channel with custom element and oracle sizes.
-	pub fn with_sizes(
+	pub const fn with_sizes(
 		oracle_specs: Vec<OracleSpec>,
 		fri_params: &'a [FRIParams<F>],
 		merkle_scheme: &'a MerkleScheme_,
@@ -75,7 +75,7 @@ impl<'a, F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>>
 	}
 
 	/// Returns the accumulated proof size in bytes.
-	pub fn proof_size(&self) -> usize {
+	pub const fn proof_size(&self) -> usize {
 		self.proof_size
 	}
 }

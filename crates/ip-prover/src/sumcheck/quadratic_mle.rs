@@ -73,7 +73,7 @@ where
 		mut multilinears: impl AsSlicesMut<P, N> + Send + 'static,
 		composition: Composition,
 		infinity_composition: InfinityComposition,
-		eval_point: Vec<F>,
+		eval_point: &[F],
 		eval_claim: F,
 	) -> Result<Self, Error> {
 		let n_vars = eval_point.len();
@@ -85,7 +85,7 @@ where
 		}
 
 		let last_coeffs_or_eval = RoundCoeffsOrEval::Eval(eval_claim);
-		let gruen32 = Gruen32::new(&eval_point);
+		let gruen32 = Gruen32::new(eval_point);
 
 		Ok(Self {
 			multilinears: Box::new(multilinears),
@@ -211,7 +211,7 @@ where
 			thus, n_vars should be > 0"
 		);
 
-		let eval = coeffs.evaluate(challenge);
+		let eval = coeffs.evaluate(&challenge);
 
 		for multilinear in &mut self.multilinears_mut() {
 			fold_highest_var_inplace(multilinear, challenge);
@@ -286,7 +286,7 @@ mod tests {
 		composition: Composition,
 		eval_claim: F,
 		eval_point: &[F],
-		multilinears: Vec<FieldBuffer<P>>,
+		multilinears: &[FieldBuffer<P>],
 	) where
 		F: Field,
 		P: PackedField<Scalar = F>,
@@ -329,7 +329,7 @@ mod tests {
 
 		// Check that the original multilinears evaluate to the claimed values at the challenge
 		// point
-		for (multilinear, claimed_eval) in iter::zip(&multilinears, multilinear_evals) {
+		for (multilinear, claimed_eval) in iter::zip(multilinears, multilinear_evals) {
 			let actual_eval = evaluate(multilinear, &reduced_eval_point);
 			assert_eq!(actual_eval, claimed_eval);
 		}
@@ -371,7 +371,7 @@ mod tests {
 			multilinears.clone(),
 			composition.clone(),
 			infinity_composition,
-			eval_point.clone(),
+			&eval_point,
 			eval_claim,
 		)
 		.unwrap();
@@ -381,7 +381,7 @@ mod tests {
 			composition,
 			eval_claim,
 			&eval_point,
-			multilinears.to_vec(),
+			&multilinears,
 		);
 	}
 
@@ -443,7 +443,7 @@ mod tests {
 			multilinears,
 			composition,
 			composition,
-			eval_point,
+			&eval_point,
 			eval_claim,
 		)
 		.unwrap();
@@ -454,7 +454,7 @@ mod tests {
 			let round = prover.execute().unwrap();
 			assert_eq!(prover.round_claim(), expected, "claim recovered from coeffs");
 			let challenge = F::random(&mut rng);
-			expected = round.iter().map(|r| r.evaluate(challenge)).collect();
+			expected = round.iter().map(|r| r.evaluate(&challenge)).collect();
 			prover.fold(challenge).unwrap();
 		}
 	}

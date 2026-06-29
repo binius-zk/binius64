@@ -79,7 +79,7 @@ impl ExampleBenchmark for Sha256Benchmark {
 
 fn bench_sha256_hash(c: &mut Criterion) {
 	let benchmark = Sha256Benchmark::new();
-	run_cs_benchmark(c, benchmark, "sha256", &SHA256_PEAK_ALLOC);
+	run_cs_benchmark(c, &benchmark, "sha256", &SHA256_PEAK_ALLOC);
 }
 
 criterion_group!(benches, bench_sha256_hash);

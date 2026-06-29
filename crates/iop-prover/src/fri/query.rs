@@ -15,7 +15,7 @@ use crate::merkle_tree::MerkleTreeProver;
 pub trait ProxTestOracleProver<F> {
 	/// Writes the per-oracle batched query openings: the oracle's optimal Merkle layer once,
 	/// followed by each queried coset's values and Merkle opening proof.
-	fn open_queries<B: BufMut>(&self, indices: &[usize], advice: &mut TranscriptWriter<B>);
+	fn open_queries<B: BufMut>(&self, indices: &[usize], advice: &mut TranscriptWriter<'_, B>);
 }
 
 /// The [`ProxTestOracleProver`] for a [Brakedown]-style interleaved code proximity check.
@@ -46,7 +46,7 @@ where
 	/// `log_lift` is the oracle-padding lift factor (the committed codeword is virtually duplicated
 	/// `2^log_lift` times to reach the common first-round length); pass `0` when no lifting is
 	/// needed.
-	pub fn new(
+	pub const fn new(
 		codeword: FieldBuffer<P>,
 		committed: &'a MerkleProver::Committed,
 		merkle_prover: &'a MerkleProver,
@@ -70,7 +70,7 @@ where
 	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
 	VCS: MerkleTreeScheme<F, Digest: SerializeBytes>,
 {
-	fn open_queries<B: BufMut>(&self, indices: &[usize], advice: &mut TranscriptWriter<B>) {
+	fn open_queries<B: BufMut>(&self, indices: &[usize], advice: &mut TranscriptWriter<'_, B>) {
 		open_oracle_queries(
 			self.merkle_prover,
 			&self.codeword,
@@ -79,7 +79,7 @@ where
 			self.log_lift,
 			indices,
 			advice,
-		)
+		);
 	}
 }
 
@@ -103,7 +103,7 @@ where
 	MerkleProver: MerkleTreeProver<P::Scalar>,
 {
 	/// Constructs a batch oracle prover from the per-commitment oracle provers.
-	pub fn new(oracles: Vec<BrakedownOracleProver<'a, P, MerkleProver>>) -> Self {
+	pub const fn new(oracles: Vec<BrakedownOracleProver<'a, P, MerkleProver>>) -> Self {
 		Self { oracles }
 	}
 }
@@ -116,7 +116,7 @@ where
 	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
 	VCS: MerkleTreeScheme<F, Digest: SerializeBytes>,
 {
-	fn open_queries<B: BufMut>(&self, indices: &[usize], advice: &mut TranscriptWriter<B>) {
+	fn open_queries<B: BufMut>(&self, indices: &[usize], advice: &mut TranscriptWriter<'_, B>) {
 		for oracle in &self.oracles {
 			oracle.open_queries(indices, advice);
 		}
@@ -141,7 +141,7 @@ where
 	MerkleProver: MerkleTreeProver<F>,
 {
 	/// Constructs a new oracle prover wrapping a committed fold-round codeword.
-	pub fn new(
+	pub const fn new(
 		codeword: FieldBuffer<F>,
 		committed: MerkleProver::Committed,
 		merkle_prover: &'a MerkleProver,
@@ -162,7 +162,7 @@ where
 	MerkleProver: MerkleTreeProver<F, Scheme = VCS>,
 	VCS: MerkleTreeScheme<F, Digest: SerializeBytes>,
 {
-	fn open_queries<B: BufMut>(&self, indices: &[usize], advice: &mut TranscriptWriter<B>) {
+	fn open_queries<B: BufMut>(&self, indices: &[usize], advice: &mut TranscriptWriter<'_, B>) {
 		open_oracle_queries(
 			self.merkle_prover,
 			&self.codeword,
@@ -171,7 +171,7 @@ where
 			0,
 			indices,
 			advice,
-		)
+		);
 	}
 }
 
@@ -187,7 +187,7 @@ fn open_oracle_queries<F, P, MerkleProver, B>(
 	coset_log_size: usize,
 	log_lift: usize,
 	indices: &[usize],
-	advice: &mut TranscriptWriter<B>,
+	advice: &mut TranscriptWriter<'_, B>,
 ) where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -203,7 +203,7 @@ fn open_oracle_queries<F, P, MerkleProver, B>(
 	for &index in indices {
 		prove_coset_opening(
 			merkle_prover,
-			codeword.to_ref(),
+			&codeword.to_ref(),
 			committed,
 			index >> log_lift,
 			coset_log_size,
@@ -241,7 +241,7 @@ where
 	/// `codeword_oracle` is the [`BatchBrakedownOracleProver`] for the originally committed
 	/// interleaved codeword(s), and `fri_oracles` holds one [`FRIOracleProver`] per fold arity. The
 	/// terminal codeword is sent in full and therefore is not represented here.
-	pub fn new(
+	pub const fn new(
 		codeword_oracle: BatchBrakedownOracleProver<'a, P, MerkleProver>,
 		fri_oracles: Vec<FRIOracleProver<'a, F, MerkleProver>>,
 	) -> Self {
@@ -252,7 +252,7 @@ where
 	}
 
 	/// Number of oracles sent during the fold rounds.
-	pub fn n_oracles(&self) -> usize {
+	pub const fn n_oracles(&self) -> usize {
 		1 + self.fri_oracles.len()
 	}
 
@@ -267,7 +267,7 @@ where
 	///
 	/// * `indices` - the sampled query indices into the original codeword domain
 	#[instrument(skip_all, name = "fri::FRIQueryProver::prove_queries", level = "debug")]
-	pub fn prove_queries<B>(&self, indices: &[usize], advice: &mut TranscriptWriter<B>)
+	pub fn prove_queries<B>(&self, indices: &[usize], advice: &mut TranscriptWriter<'_, B>)
 	where
 		B: BufMut,
 		VCS::Digest: SerializeBytes,
@@ -288,12 +288,12 @@ where
 
 fn prove_coset_opening<F, P, MTProver, B>(
 	merkle_prover: &MTProver,
-	codeword: FieldSlice<P>,
+	codeword: &FieldSlice<'_, P>,
 	committed: &MTProver::Committed,
 	coset_index: usize,
 	log_coset_size: usize,
 	optimal_layer_depth: usize,
-	advice: &mut TranscriptWriter<B>,
+	advice: &mut TranscriptWriter<'_, B>,
 ) where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,

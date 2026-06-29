@@ -64,7 +64,7 @@ pub trait ParallelSliceMut<T: Sync> {
 	where
 		T: Ord,
 	{
-		self.as_parallel_slice_mut().sort()
+		self.as_parallel_slice_mut().sort();
 	}
 
 	#[inline(always)]
@@ -72,7 +72,7 @@ pub trait ParallelSliceMut<T: Sync> {
 	where
 		F: Fn(&T, &T) -> std::cmp::Ordering + Sync,
 	{
-		self.as_parallel_slice_mut().sort_by(compare)
+		self.as_parallel_slice_mut().sort_by(compare);
 	}
 
 	#[inline(always)]
@@ -81,7 +81,7 @@ pub trait ParallelSliceMut<T: Sync> {
 		K: Ord,
 		F: Fn(&T) -> K + Sync,
 	{
-		self.as_parallel_slice_mut().sort_by_key(f)
+		self.as_parallel_slice_mut().sort_by_key(f);
 	}
 
 	#[inline(always)]
@@ -90,7 +90,7 @@ pub trait ParallelSliceMut<T: Sync> {
 		F: Fn(&T) -> K + Sync,
 		K: Ord + Send,
 	{
-		self.as_parallel_slice_mut().sort_by_cached_key(f)
+		self.as_parallel_slice_mut().sort_by_cached_key(f);
 	}
 
 	#[inline(always)]
@@ -98,7 +98,7 @@ pub trait ParallelSliceMut<T: Sync> {
 	where
 		T: Ord,
 	{
-		self.as_parallel_slice_mut().sort_unstable()
+		self.as_parallel_slice_mut().sort_unstable();
 	}
 
 	#[inline(always)]
@@ -106,7 +106,7 @@ pub trait ParallelSliceMut<T: Sync> {
 	where
 		F: Fn(&T, &T) -> std::cmp::Ordering + Sync,
 	{
-		self.as_parallel_slice_mut().sort_unstable_by(compare)
+		self.as_parallel_slice_mut().sort_unstable_by(compare);
 	}
 
 	#[inline(always)]
@@ -115,7 +115,7 @@ pub trait ParallelSliceMut<T: Sync> {
 		K: Ord,
 		F: Fn(&T) -> K + Sync,
 	{
-		self.as_parallel_slice_mut().sort_unstable_by_key(f)
+		self.as_parallel_slice_mut().sort_unstable_by_key(f);
 	}
 
 	#[inline(always)]

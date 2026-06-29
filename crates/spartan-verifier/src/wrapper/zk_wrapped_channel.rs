@@ -156,7 +156,7 @@ where
 
 		let mut inner_channel = self.inner_channel;
 		self.outer_verifier
-			.verify(self.precommit_oracle, public, &mut inner_channel)?;
+			.verify(self.precommit_oracle, &public, &mut inner_channel)?;
 		// Both the inner and outer proofs queued their oracle relations onto `inner_channel`; run
 		// the single combined opening over all committed oracles now. `instance_gen` stays alive in
 		// `self` for the duration, so the transparent closures' `Weak` upgrades succeed.

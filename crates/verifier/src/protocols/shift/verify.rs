@@ -43,14 +43,14 @@ impl<F: FieldOps, const ARITY: usize> OperatorData<F, ARITY> {
 	// Constructs a new operator data instance encoding
 	// evaluation claim with multilinear challenge `r_x_prime` and evaluations `evals`
 	// (one eval for each operand of the operation).
-	pub fn new(r_x_prime: Vec<F>, evals: [F; ARITY]) -> Self {
+	pub const fn new(r_x_prime: Vec<F>, evals: [F; ARITY]) -> Self {
 		Self { r_x_prime, evals }
 	}
 
 	// Batching is scaled by random lambda and therefore this batched
 	// evaluation claim can be added to other batched evaluation claims
 	// without further random scaling.
-	fn batched_eval(&self, lambda: F) -> F {
+	fn batched_eval(&self, lambda: &F) -> F {
 		let lambda_clone = lambda.clone();
 		lambda_clone * evaluate_univariate(&self.evals, lambda)
 	}
@@ -146,8 +146,7 @@ where
 	let bitand_lambda = channel.sample();
 	let intmul_lambda = channel.sample();
 
-	let eval = bitand_data.batched_eval(bitand_lambda.clone())
-		+ intmul_data.batched_eval(intmul_lambda.clone());
+	let eval = bitand_data.batched_eval(&bitand_lambda) + intmul_data.batched_eval(&intmul_lambda);
 
 	let SumcheckOutput {
 		eval: gamma,
@@ -244,7 +243,7 @@ where
 		let r_s_len = r_s.len();
 		let r_y_len = r_y.len();
 
-		let inputs: Vec<C::Elem> = iter::once(r_zhat_prime.clone())
+		let inputs: Vec<C::Elem> = iter::once(r_zhat_prime)
 			.chain(iter::once(bitand_lambda.clone()))
 			.chain(iter::once(intmul_lambda.clone()))
 			.chain(bitand_data.r_x_prime.iter().cloned())
@@ -270,7 +269,7 @@ where
 			let r_y_v = &vals[off..off + r_y_len];
 
 			let r_y_tensor = eq_ind_partial_eval_scalars(r_y_v);
-			let l_tilde = lagrange_evals_scalars(subspace, r_zhat_prime_v);
+			let l_tilde = lagrange_evals_scalars(subspace, &r_zhat_prime_v);
 			let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
 
 			let bitand_part = {

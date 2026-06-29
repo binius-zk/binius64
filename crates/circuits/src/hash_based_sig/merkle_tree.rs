@@ -40,15 +40,12 @@ pub fn circuit_merkle_path(
 		domain_param.len() * 8
 	);
 
-	let tree_height = auth_path.len();
 	let mut current_hash = *leaf_hash;
 	let mut current_index = leaf_index;
 	let one = builder.add_constant_64(1);
 
 	// Climb one tree level per authentication-path sibling.
-	for level in 0..tree_height {
-		let sibling_hash = auth_path[level];
-
+	for (level, &sibling_hash) in auth_path.iter().enumerate() {
 		// The current node is the left child when its index is even (low bit clear).
 		let is_left = builder.bnot(builder.band(current_index, one));
 

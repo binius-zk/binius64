@@ -1,6 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+//! Example Binius64 circuits and a CLI harness for building, proving, and verifying them.
+
 pub mod circuits;
 pub mod cli;
 pub mod snapshot;
@@ -97,7 +99,7 @@ where
 {
 	let _setup_guard = tracing::info_span!("ZK setup", log_inv_rate).entered();
 	let verifier = ZKVerifier::<H>::setup(cs, log_inv_rate)?;
-	let prover = ZKProver::setup(verifier.clone())?;
+	let prover = ZKProver::setup(&verifier)?;
 	Ok((verifier, prover))
 }
 
@@ -124,7 +126,7 @@ where
 }
 
 /// Run the prover and return the raw proof transcript bytes.
-pub fn create_proof<H>(prover: &Prover<OptimalPackedB128, H>, witness: ValueVec) -> Result<Vec<u8>>
+pub fn create_proof<H>(prover: &Prover<OptimalPackedB128, H>, witness: &ValueVec) -> Result<Vec<u8>>
 where
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
@@ -138,7 +140,7 @@ where
 /// Run the ZK prover and return the raw proof transcript bytes.
 pub fn create_proof_zk<H>(
 	prover: &ZKProver<OptimalPackedB128, H>,
-	witness: ValueVec,
+	witness: &ValueVec,
 	message: Option<&[u8]>,
 ) -> Result<Vec<u8>>
 where
@@ -189,7 +191,7 @@ where
 	let mut verifier_transcript = VerifierTranscript::new(challenger, proof_bytes);
 	match message {
 		Some(message) => {
-			verifier.verify_sig(witness.public(), message, &mut verifier_transcript)?
+			verifier.verify_sig(witness.public(), message, &mut verifier_transcript)?;
 		}
 		None => verifier.verify(witness.public(), &mut verifier_transcript)?,
 	}
@@ -200,31 +202,31 @@ where
 pub fn prove_verify<H>(
 	verifier: &Verifier<H>,
 	prover: &Prover<OptimalPackedB128, H>,
-	witness: ValueVec,
+	witness: &ValueVec,
 ) -> Result<()>
 where
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
-	let proof_bytes = create_proof(prover, witness.clone())?;
+	let proof_bytes = create_proof(prover, witness)?;
 	tracing::info!("Proof size: {} KiB", proof_bytes.len() / 1024);
-	check_proof(verifier, &witness, proof_bytes)?;
+	check_proof(verifier, witness, proof_bytes)?;
 	Ok(())
 }
 
 pub fn prove_verify_zk<H>(
 	verifier: &ZKVerifier<H>,
 	prover: &ZKProver<OptimalPackedB128, H>,
-	witness: ValueVec,
+	witness: &ValueVec,
 	message: Option<&[u8]>,
 ) -> Result<()>
 where
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
-	let proof_bytes = create_proof_zk(prover, witness.clone(), message)?;
+	let proof_bytes = create_proof_zk(prover, witness, message)?;
 	tracing::info!("Proof size: {} KiB", proof_bytes.len() / 1024);
-	check_proof_zk(verifier, &witness, proof_bytes, message)?;
+	check_proof_zk(verifier, witness, proof_bytes, message)?;
 	Ok(())
 }
 
@@ -303,7 +305,11 @@ pub trait ExampleCircuit: Sized {
 	/// - Process the instance data (e.g., parse inputs, compute hashes)
 	/// - Fill all witness values using the provided filler
 	/// - Validate that instance data is compatible with circuit parameters
-	fn populate_witness(&self, instance: Self::Instance, filler: &mut WitnessFiller) -> Result<()>;
+	fn populate_witness(
+		&self,
+		instance: Self::Instance,
+		filler: &mut WitnessFiller<'_>,
+	) -> Result<()>;
 
 	/// Generate a concise parameter summary for perfetto trace filenames.
 	///

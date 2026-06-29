@@ -132,22 +132,22 @@ impl ValueTable {
 	}
 
 	/// The base-2 logarithm of the number of instances.
-	pub fn log_instances(&self) -> usize {
+	pub const fn log_instances(&self) -> usize {
 		self.log_instances
 	}
 
 	/// The number of instances in the batch.
-	pub fn n_instances(&self) -> usize {
+	pub const fn n_instances(&self) -> usize {
 		1usize << self.log_instances
 	}
 
 	/// The per-instance value layout shared by every instance.
-	pub fn layout(&self) -> &ValueVecLayout {
+	pub const fn layout(&self) -> &ValueVecLayout {
 		&self.layout
 	}
 
 	/// The number of committed words occupied by a single instance.
-	pub fn instance_stride(&self) -> usize {
+	pub const fn instance_stride(&self) -> usize {
 		self.layout.committed_total_len
 	}
 
@@ -201,7 +201,7 @@ impl ValueTable {
 		// Their lengths sum to one instance's committed length by construction.
 		// So reconstruction never fails here.
 		// The constructor only rejects a mismatched total length.
-		ValueVec::new_from_data(self.layout.clone(), public.to_vec(), private.to_vec())
+		ValueVec::new_from_data(self.layout.clone(), public, private)
 			.expect("public and private lengths sum to the committed layout length")
 	}
 

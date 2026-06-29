@@ -49,14 +49,15 @@ use crate::sumcheck::common::MleCheckProver;
 /// Note 2: evaluation points are 0 (implicit), 1 and Karatsuba infinity.
 ///
 /// [Gruen24]: <https://eprint.iacr.org/2024/108>
-pub fn new<F, P>(
-	multilinears: impl AsSlicesMut<P, 2> + Send + 'static,
-	eval_point: Vec<F>,
+pub fn new<F, P, M>(
+	multilinears: M,
+	eval_point: &[F],
 	eval_claim: F,
-) -> Result<impl MleCheckProver<F>, Error>
+) -> Result<impl MleCheckProver<F> + use<F, P, M>, Error>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
+	M: AsSlicesMut<P, 2> + Send + 'static,
 {
 	QuadraticMleCheckProver::new(
 		multilinears,
@@ -89,8 +90,8 @@ mod tests {
 		prover: impl MleCheckProver<F>,
 		eval_claim: F,
 		eval_point: &[F],
-		multilinear_a: FieldBuffer<P>,
-		multilinear_b: FieldBuffer<P>,
+		multilinear_a: &FieldBuffer<P>,
+		multilinear_b: &FieldBuffer<P>,
 	) where
 		F: Field,
 		P: PackedField<Scalar = F>,
@@ -130,8 +131,8 @@ mod tests {
 		// Check that the original multilinears evaluate to the claimed values at the challenge
 		// point The prover binds variables from high to low, but evaluate expects them from low
 		// to high
-		let eval_a = evaluate(&multilinear_a, &reduced_eval_point);
-		let eval_b = evaluate(&multilinear_b, &reduced_eval_point);
+		let eval_a = evaluate(multilinear_a, &reduced_eval_point);
+		let eval_b = evaluate(multilinear_b, &reduced_eval_point);
 
 		assert_eq!(
 			eval_a, multilinear_evals[0],
@@ -153,8 +154,8 @@ mod tests {
 		mlecheck_prover: impl MleCheckProver<F>,
 		eval_claim: F,
 		eval_point: &[F],
-		multilinear_a: FieldBuffer<P>,
-		multilinear_b: FieldBuffer<P>,
+		multilinear_a: &FieldBuffer<P>,
+		multilinear_b: &FieldBuffer<P>,
 	) where
 		F: Field,
 		P: PackedField<Scalar = F>,
@@ -201,8 +202,8 @@ mod tests {
 
 		// Check that the original multilinears evaluate to the claimed values at the challenge
 		// point
-		let eval_a = evaluate(&multilinear_a, &reduced_eval_point);
-		let eval_b = evaluate(&multilinear_b, &reduced_eval_point);
+		let eval_a = evaluate(multilinear_a, &reduced_eval_point);
+		let eval_b = evaluate(multilinear_b, &reduced_eval_point);
 
 		assert_eq!(
 			eval_a, multilinear_evals[0],
@@ -243,28 +244,26 @@ mod tests {
 
 		// Create the prover
 		let mlecheck_prover =
-			new([multilinear_a.clone(), multilinear_b.clone()], eval_point.clone(), eval_claim)
-				.unwrap();
+			new([multilinear_a.clone(), multilinear_b.clone()], &eval_point, eval_claim).unwrap();
 
 		test_mlecheck_prove_verify(
 			mlecheck_prover,
 			eval_claim,
 			&eval_point,
-			multilinear_a.clone(),
-			multilinear_b.clone(),
+			&multilinear_a,
+			&multilinear_b,
 		);
 
 		// Create another prover for the wrapped test
 		let mlecheck_prover =
-			new([multilinear_a.clone(), multilinear_b.clone()], eval_point.clone(), eval_claim)
-				.unwrap();
+			new([multilinear_a.clone(), multilinear_b.clone()], &eval_point, eval_claim).unwrap();
 
 		test_wrapped_sumcheck_prove_verify(
 			mlecheck_prover,
 			eval_claim,
 			&eval_point,
-			multilinear_a.clone(),
-			multilinear_b.clone(),
+			&multilinear_a,
+			&multilinear_b,
 		);
 	}
 }

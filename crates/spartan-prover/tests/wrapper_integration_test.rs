@@ -61,7 +61,7 @@ fn test_zk_wrapped_prove_verify() {
 			n_dummy_constraints: 0,
 		},
 	);
-	let inner_layout = inner_layout.with_blinding(inner_cs.blinding_info().clone());
+	let inner_layout = inner_layout.with_blinding(inner_cs.blinding_info());
 
 	let inner_iop_verifier = IOPVerifier::new(inner_cs.clone());
 	let inner_iop_prover = IOPProver::new(inner_cs.clone());
@@ -74,7 +74,7 @@ fn test_zk_wrapped_prove_verify() {
 	let dummy_public_elems = builder_channel.observe_many(&dummy_public);
 	// IronSpartanBuilderChannel::Oracle = () and recv_oracle is a no-op, so pass () directly.
 	inner_iop_verifier
-		.verify((), dummy_public_elems, &mut builder_channel)
+		.verify((), &dummy_public_elems, &mut builder_channel)
 		.expect("symbolic verify failed");
 	let outer_builder = builder_channel.finish();
 	let (outer_cs, outer_layout) = compile(outer_builder);
@@ -87,7 +87,7 @@ fn test_zk_wrapped_prove_verify() {
 		n_dummy_constraints: 2,
 	};
 	let outer_cs = ConstraintSystemPadded::new(outer_cs, blinding_info);
-	let outer_layout = outer_layout.with_blinding(outer_cs.blinding_info().clone());
+	let outer_layout = outer_layout.with_blinding(outer_cs.blinding_info());
 
 	// === Step 5: Make combined proof compiler (inner + outer oracle specs) ===
 	let outer_iop_verifier = IOPVerifier::new(outer_cs.clone());
@@ -154,7 +154,7 @@ fn test_zk_wrapped_prove_verify() {
 				let inner_public_elems = replay_channel.observe_many(public);
 				// ReplayChannel::Oracle = () and recv_oracle is a no-op, so pass ().
 				inner_iop_verifier
-					.verify((), inner_public_elems, replay_channel)
+					.verify((), &inner_public_elems, replay_channel)
 					.expect("replay verification should not fail");
 			}
 		},
@@ -171,7 +171,7 @@ fn test_zk_wrapped_prove_verify() {
 		.commit_precommit::<OptimalPackedB128, _>(&inner_witness, &mut rng, &mut channel_ref);
 	inner_iop_prover
 		.prove::<OptimalPackedB128, _>(
-			inner_witness,
+			&inner_witness,
 			inner_precommit_oracle,
 			inner_precommit_packed,
 			&mut rng,
@@ -201,7 +201,7 @@ fn test_zk_wrapped_prove_verify() {
 	// Run the inner IOP verify through the wrapped channel.
 	let inner_precommit_oracle = wrapped_verifier_channel.recv_oracle().unwrap();
 	inner_iop_verifier
-		.verify(inner_precommit_oracle, inner_public_elems, &mut wrapped_verifier_channel)
+		.verify(inner_precommit_oracle, &inner_public_elems, &mut wrapped_verifier_channel)
 		.expect("inner IOP verify failed");
 
 	// Finish verifies the outer proof.

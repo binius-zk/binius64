@@ -95,59 +95,59 @@ impl Opcode {
 
 		match self {
 			// Bitwise operations
-			Opcode::Band => gate::band::shape(),
-			Opcode::Bxor => gate::bxor::shape(),
+			Self::Band => gate::band::shape(),
+			Self::Bxor => gate::bxor::shape(),
 			// TODO: Can we get rid of this gate? This is the only non-hint one with dimensions
-			Opcode::BxorMulti => gate::bxor_multi::shape(dimensions),
-			Opcode::Bor => gate::bor::shape(),
-			Opcode::Fax => gate::fax::shape(),
+			Self::BxorMulti => gate::bxor_multi::shape(dimensions),
+			Self::Bor => gate::bor::shape(),
+			Self::Fax => gate::fax::shape(),
 
 			// Selection
-			Opcode::Select => gate::select::shape(),
+			Self::Select => gate::select::shape(),
 
 			// Arithmetic
-			Opcode::Iadd => gate::iadd::shape(),
-			Opcode::IaddCinCout => gate::iadd_cin_cout::shape(),
-			Opcode::Iadd32 => gate::iadd32::shape(),
-			Opcode::Iadd32CinCout => gate::iadd32_cin_cout::shape(),
-			Opcode::IsubBinBout => gate::isub_bin_bout::shape(),
-			Opcode::Imul => gate::imul::shape(),
-			Opcode::Smul => gate::smul::shape(),
+			Self::Iadd => gate::iadd::shape(),
+			Self::IaddCinCout => gate::iadd_cin_cout::shape(),
+			Self::Iadd32 => gate::iadd32::shape(),
+			Self::Iadd32CinCout => gate::iadd32_cin_cout::shape(),
+			Self::IsubBinBout => gate::isub_bin_bout::shape(),
+			Self::Imul => gate::imul::shape(),
+			Self::Smul => gate::smul::shape(),
 
 			// Shifts
-			Opcode::Shr => gate::shr::shape(),
-			Opcode::Shl => gate::shl::shape(),
-			Opcode::Sll32 => gate::sll32::shape(),
-			Opcode::Sar => gate::sar::shape(),
-			Opcode::Srl32 => gate::srl32::shape(),
-			Opcode::Sra32 => gate::sra32::shape(),
-			Opcode::Rotr => gate::rotr::shape(),
-			Opcode::Rotr32 => gate::rotr32::shape(),
+			Self::Shr => gate::shr::shape(),
+			Self::Shl => gate::shl::shape(),
+			Self::Sll32 => gate::sll32::shape(),
+			Self::Sar => gate::sar::shape(),
+			Self::Srl32 => gate::srl32::shape(),
+			Self::Sra32 => gate::sra32::shape(),
+			Self::Rotr => gate::rotr::shape(),
+			Self::Rotr32 => gate::rotr32::shape(),
 
 			// Comparisons
-			Opcode::IcmpUlt => gate::icmp_ult::shape(),
-			Opcode::IcmpEq => gate::icmp_eq::shape(),
+			Self::IcmpUlt => gate::icmp_ult::shape(),
+			Self::IcmpEq => gate::icmp_eq::shape(),
 
 			// Assertions (no outputs)
-			Opcode::AssertEq => gate::assert_eq::shape(),
-			Opcode::AssertZero => gate::assert_zero::shape(),
-			Opcode::AssertNonZero => gate::assert_non_zero::shape(),
-			Opcode::AssertFalse => gate::assert_false::shape(),
-			Opcode::AssertTrue => gate::assert_true::shape(),
-			Opcode::AssertEqCond => gate::assert_eq_cond::shape(),
+			Self::AssertEq => gate::assert_eq::shape(),
+			Self::AssertZero => gate::assert_zero::shape(),
+			Self::AssertNonZero => gate::assert_non_zero::shape(),
+			Self::AssertFalse => gate::assert_false::shape(),
+			Self::AssertTrue => gate::assert_true::shape(),
+			Self::AssertEqCond => gate::assert_eq_cond::shape(),
 
 			// Hints (no constraints)
-			Opcode::Hint => {
+			Self::Hint => {
 				panic!("Opcode::Hint shape requires the HintRegistry; use GateData::shape instead")
 			}
 		}
 	}
 
-	pub fn is_const_shape(&self) -> bool {
+	pub const fn is_const_shape(&self) -> bool {
 		#[allow(clippy::match_like_matches_macro)]
 		match self {
-			Opcode::BxorMulti => false,
-			Opcode::Hint => false,
+			Self::BxorMulti => false,
+			Self::Hint => false,
 			_ => true,
 		}
 	}

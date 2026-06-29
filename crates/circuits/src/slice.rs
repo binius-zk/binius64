@@ -198,7 +198,7 @@ mod tests {
 	/// Run a success-case test: pack `input_data` and `expected_slice_data` into the test setup,
 	/// run the circuit, and verify constraints.
 	fn run_slice_success(
-		setup: SliceTestSetup,
+		setup: &SliceTestSetup,
 		len_input_val: u64,
 		len_slice_val: u64,
 		offset_val: u64,
@@ -220,7 +220,7 @@ mod tests {
 
 	/// Run a failure-case test: expect `populate_wire_witness` to error.
 	fn run_slice_failure(
-		setup: SliceTestSetup,
+		setup: &SliceTestSetup,
 		len_input_val: u64,
 		len_slice_val: u64,
 		offset_val: u64,
@@ -246,7 +246,7 @@ mod tests {
 			0x0e, 0x0f,
 		];
 		let slice_data = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-		run_slice_success(setup, 16, 8, 0, &input_data, &slice_data);
+		run_slice_success(&setup, 16, 8, 0, &input_data, &slice_data);
 	}
 
 	#[test]
@@ -258,7 +258,7 @@ mod tests {
 			0x0e, 0x0f,
 		];
 		let slice_data = [0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a];
-		run_slice_success(setup, 16, 8, 3, &input_data, &slice_data);
+		run_slice_success(&setup, 16, 8, 3, &input_data, &slice_data);
 	}
 
 	#[test]
@@ -267,7 +267,7 @@ mod tests {
 		let setup = build_slice_check(2, 1);
 		let dummy_input = vec![0u8; 10];
 		let dummy_slice = vec![0u8; 8];
-		run_slice_failure(setup, 10, 8, 5, &dummy_input, &dummy_slice);
+		run_slice_failure(&setup, 10, 8, 5, &dummy_input, &dummy_slice);
 	}
 
 	#[test]
@@ -276,7 +276,7 @@ mod tests {
 		let setup = build_slice_check(2, 1);
 		let input_data = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 		let slice_data = vec![5, 6, 7, 8, 9];
-		run_slice_success(setup, 10, 5, 5, &input_data, &slice_data);
+		run_slice_success(&setup, 10, 5, 5, &input_data, &slice_data);
 	}
 
 	#[test]
@@ -284,7 +284,7 @@ mod tests {
 		// len_slice = 0 — output is all zeros.
 		let setup = build_slice_check(2, 1);
 		let input_data = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-		run_slice_success(setup, 10, 0, 5, &input_data, &[]);
+		run_slice_success(&setup, 10, 0, 5, &input_data, &[]);
 	}
 
 	#[test]
@@ -295,7 +295,7 @@ mod tests {
 		let input_data = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 		// Actual extracted slice at offset 2 with len 5 is [2,3,4,5,6]; we claim [0,1,2,3,4].
 		let wrong_slice_data = vec![0, 1, 2, 3, 4];
-		run_slice_failure(setup, 10, 5, 2, &input_data, &wrong_slice_data);
+		run_slice_failure(&setup, 10, 5, 2, &input_data, &wrong_slice_data);
 	}
 
 	#[test]
@@ -303,7 +303,7 @@ mod tests {
 		// Empty slice at offset 10, where len_input = 10.
 		let setup = build_slice_check(2, 1);
 		let input_data = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-		run_slice_success(setup, 10, 0, 10, &input_data, &[]);
+		run_slice_success(&setup, 10, 0, 10, &input_data, &[]);
 	}
 
 	#[test]
@@ -319,7 +319,7 @@ mod tests {
 				let setup = build_slice_check(3, 1);
 				let input_data: Vec<u8> = (0..24).map(|i| i as u8).collect();
 				let slice_data: Vec<u8> = input_data[offset_val..offset_val + 8].to_vec();
-				run_slice_success(setup, 24, 8, offset_val as u64, &input_data, &slice_data);
+				run_slice_success(&setup, 24, 8, offset_val as u64, &input_data, &slice_data);
 			}
 		}
 	}
@@ -339,7 +339,7 @@ mod tests {
 			0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, // word 0
 			0x08, 0x09, 0x0a, 0x0b, 0x00, 0x00, 0x00, 0x00, // word 1 padded to 16 bytes
 		];
-		run_slice_success(setup, 20, 12, 0, &input_data, &correct_slice);
+		run_slice_success(&setup, 20, 12, 0, &input_data, &correct_slice);
 	}
 
 	#[test]
@@ -417,14 +417,14 @@ mod tests {
 	fn test_edge_case_len_input_zero() {
 		// Empty input + empty slice at offset 0.
 		let setup = build_slice_check(2, 1);
-		run_slice_success(setup, 0, 0, 0, &[], &[]);
+		run_slice_success(&setup, 0, 0, 0, &[], &[]);
 	}
 
 	#[test]
 	fn test_edge_case_len_input_zero_with_nonzero_slice() {
 		// Empty input + non-empty slice → bounds check fails.
 		let setup = build_slice_check(2, 1);
-		run_slice_failure(setup, 0, 5, 0, &[], &[1, 2, 3, 4, 5]);
+		run_slice_failure(&setup, 0, 5, 0, &[], &[1, 2, 3, 4, 5]);
 	}
 
 	#[test]
@@ -434,7 +434,7 @@ mod tests {
 		let input_data = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 		// Slice is 8 bytes, so word 1 is fully zero-padded.
 		let slice_data = vec![2, 3, 4, 5, 6, 7, 8, 9];
-		run_slice_success(setup, 12, 8, 2, &input_data, &slice_data);
+		run_slice_success(&setup, 12, 8, 2, &input_data, &slice_data);
 	}
 
 	#[test]

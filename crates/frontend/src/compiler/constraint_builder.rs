@@ -13,7 +13,7 @@ pub struct ConstraintBuilder {
 }
 
 impl ConstraintBuilder {
-	pub fn new() -> Self {
+	pub const fn new() -> Self {
 		Self {
 			and_constraints: Vec::new(),
 			mul_constraints: Vec::new(),
@@ -22,19 +22,19 @@ impl ConstraintBuilder {
 	}
 
 	/// Build an AND constraint: A ' B = C
-	pub fn and(&mut self) -> AndConstraintBuilder<'_> {
+	pub const fn and(&mut self) -> AndConstraintBuilder<'_> {
 		AndConstraintBuilder::new(self)
 	}
 
 	/// Build a MUL constraint: A * B = (HI << 64) | LO
-	pub fn mul(&mut self) -> MulConstraintBuilder<'_> {
+	pub const fn mul(&mut self) -> MulConstraintBuilder<'_> {
 		MulConstraintBuilder::new(self)
 	}
 
 	/// Build a linear constraint: RHS = DST
 	/// (where RHS is XOR of shifted values and DST is a
 	/// single wire)
-	pub fn linear(&mut self) -> LinearConstraintBuilder<'_> {
+	pub const fn linear(&mut self) -> LinearConstraintBuilder<'_> {
 		LinearConstraintBuilder::new(self)
 	}
 
@@ -207,72 +207,72 @@ impl Shift {
 	/// Try to compose two shift operations.
 	///
 	/// Returns None if the shifts are incompatible.
-	pub fn compose(lhs: Shift, rhs: Shift) -> Option<Self> {
+	pub const fn compose(lhs: Self, rhs: Self) -> Option<Self> {
 		match (lhs, rhs) {
-			(Shift::None, shift) | (shift, Shift::None) => Some(shift),
-			(Shift::Sll(a), Shift::Sll(b)) => {
+			(Self::None, shift) | (shift, Self::None) => Some(shift),
+			(Self::Sll(a), Self::Sll(b)) => {
 				// Left shift composition: shl(shl(x, a), b) = shl(x, a + b)
 				let combined = a + b;
 				if combined < 64 {
-					Some(Shift::Sll(combined))
+					Some(Self::Sll(combined))
 				} else {
 					None
 				}
 			}
-			(Shift::Sll32(a), Shift::Sll32(b)) => {
+			(Self::Sll32(a), Self::Sll32(b)) => {
 				// 32-bit half-wise left shift composition
 				let combined = a + b;
 				if combined < 32 {
-					Some(Shift::Sll32(combined))
+					Some(Self::Sll32(combined))
 				} else {
 					None
 				}
 			}
-			(Shift::Srl(a), Shift::Srl(b)) => {
+			(Self::Srl(a), Self::Srl(b)) => {
 				// Logical right shift composition: shr(shr(x, a), b) = shr(x, a + b)
 				let combined = a + b;
 				if combined < 64 {
-					Some(Shift::Srl(combined))
+					Some(Self::Srl(combined))
 				} else {
 					None
 				}
 			}
-			(Shift::Srl32(a), Shift::Srl32(b)) => {
+			(Self::Srl32(a), Self::Srl32(b)) => {
 				// 32-bit half-wise logical right shift composition
 				let combined = a + b;
 				if combined < 32 {
-					Some(Shift::Srl32(combined))
+					Some(Self::Srl32(combined))
 				} else {
 					None
 				}
 			}
-			(Shift::Sar(a), Shift::Sar(b)) => {
+			(Self::Sar(a), Self::Sar(b)) => {
 				// Arithmetic right shift composition
 				let combined = a + b;
 				if combined < 64 {
-					Some(Shift::Sar(combined))
+					Some(Self::Sar(combined))
 				} else {
 					None
 				}
 			}
-			(Shift::Sra32(a), Shift::Sra32(b)) => {
+			(Self::Sra32(a), Self::Sra32(b)) => {
 				// 32-bit half-wise arithmetic right shift composition
 				let combined = a + b;
 				if combined < 32 {
-					Some(Shift::Sra32(combined))
+					Some(Self::Sra32(combined))
 				} else {
 					None
 				}
 			}
-			(Shift::Rotr(a), Shift::Rotr(b)) => {
+			(Self::Rotr(a), Self::Rotr(b)) => {
 				// Rotate right composition: rotr(rotr(x, a), b) = rotr(x, (a + b) % 64)
 				let combined = (a + b) % 64;
-				Some(Shift::Rotr(combined))
+				Some(Self::Rotr(combined))
 			}
-			(Shift::Rotr32(a), Shift::Rotr32(b)) => {
+			(Self::Rotr32(a), Self::Rotr32(b)) => {
 				// 32-bit half-wise rotate right composition
 				let combined = (a + b) % 32;
-				Some(Shift::Rotr32(combined))
+				Some(Self::Rotr32(combined))
 			}
 			_ => None, // Different shift types are not composable
 		}
@@ -355,7 +355,7 @@ pub struct AndConstraintBuilder<'a> {
 }
 
 impl<'a> AndConstraintBuilder<'a> {
-	fn new(builder: &'a mut ConstraintBuilder) -> Self {
+	const fn new(builder: &'a mut ConstraintBuilder) -> Self {
 		Self {
 			builder,
 			a: Vec::new(),
@@ -407,7 +407,7 @@ pub struct LinearConstraintBuilder<'a> {
 }
 
 impl<'a> MulConstraintBuilder<'a> {
-	fn new(builder: &'a mut ConstraintBuilder) -> Self {
+	const fn new(builder: &'a mut ConstraintBuilder) -> Self {
 		Self {
 			builder,
 			a: Vec::new(),
@@ -448,7 +448,7 @@ impl<'a> MulConstraintBuilder<'a> {
 }
 
 impl<'a> LinearConstraintBuilder<'a> {
-	fn new(builder: &'a mut ConstraintBuilder) -> Self {
+	const fn new(builder: &'a mut ConstraintBuilder) -> Self {
 		Self {
 			builder,
 			rhs: Vec::new(),
@@ -463,7 +463,7 @@ impl<'a> LinearConstraintBuilder<'a> {
 	}
 
 	/// Set the DST operand (destination wire)
-	pub fn dst(mut self, wire: Wire) -> Self {
+	pub const fn dst(mut self, wire: Wire) -> Self {
 		self.dst = Some(wire);
 		self
 	}
@@ -513,13 +513,13 @@ impl WireExpr {
 }
 
 impl WireExprTerm {
-	fn to_shifted_wire(self) -> ShiftedWire {
+	const fn to_shifted_wire(self) -> ShiftedWire {
 		match self {
-			WireExprTerm::Wire(w) => ShiftedWire {
+			Self::Wire(w) => ShiftedWire {
 				wire: w,
 				shift: Shift::None,
 			},
-			WireExprTerm::Shifted(w, op) => ShiftedWire {
+			Self::Shifted(w, op) => ShiftedWire {
 				wire: w,
 				shift: match op {
 					ShiftOp::Sll(n) => Shift::Sll(n),
@@ -541,35 +541,35 @@ pub fn wire(w: Wire) -> WireExpr {
 	WireExpr(smallvec![w.into()])
 }
 
-pub fn sll(w: Wire, n: u32) -> WireExprTerm {
+pub const fn sll(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Sll(n))
 }
 
-pub fn sll32(w: Wire, n: u32) -> WireExprTerm {
+pub const fn sll32(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Sll32(n))
 }
 
-pub fn srl(w: Wire, n: u32) -> WireExprTerm {
+pub const fn srl(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Srl(n))
 }
 
-pub fn srl32(w: Wire, n: u32) -> WireExprTerm {
+pub const fn srl32(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Srl32(n))
 }
 
-pub fn sar(w: Wire, n: u32) -> WireExprTerm {
+pub const fn sar(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Sar(n))
 }
 
-pub fn sra32(w: Wire, n: u32) -> WireExprTerm {
+pub const fn sra32(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Sra32(n))
 }
 
-pub fn rotr(w: Wire, n: u32) -> WireExprTerm {
+pub const fn rotr(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Rotr(n))
 }
 
-pub fn rotr32(w: Wire, n: u32) -> WireExprTerm {
+pub const fn rotr32(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Rotr32(n))
 }
 
@@ -613,13 +613,13 @@ impl From<Wire> for WireExpr {
 
 impl From<Wire> for WireExprTerm {
 	fn from(w: Wire) -> Self {
-		WireExprTerm::Wire(w)
+		Self::Wire(w)
 	}
 }
 
 impl From<WireExprTerm> for WireExpr {
 	fn from(expr: WireExprTerm) -> Self {
-		WireExpr(smallvec![expr])
+		Self(smallvec![expr])
 	}
 }
 

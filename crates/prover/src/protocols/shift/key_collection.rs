@@ -27,7 +27,7 @@ use super::{BITAND_ARITY, INTMUL_ARITY, PreparedOperatorData};
 ///
 /// These operations work with shifted value indices to efficiently encode
 /// computations on 64-bit words without requiring separate shift constraints.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum Operation {
 	BitwiseAnd,
@@ -316,8 +316,8 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 impl SerializeBytes for Operation {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
 		let val = match self {
-			Operation::BitwiseAnd => 0u8,
-			Operation::IntegerMul => 1u8,
+			Self::BitwiseAnd => 0u8,
+			Self::IntegerMul => 1u8,
 		};
 		val.serialize(write_buf)
 	}
@@ -327,8 +327,8 @@ impl DeserializeBytes for Operation {
 	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
 		let val = u8::deserialize(&mut read_buf)?;
 		match val {
-			0 => Ok(Operation::BitwiseAnd),
-			1 => Ok(Operation::IntegerMul),
+			0 => Ok(Self::BitwiseAnd),
+			1 => Ok(Self::IntegerMul),
 			_ => Err(SerializationError::UnknownEnumVariant {
 				name: "Operation",
 				index: val,
@@ -352,7 +352,7 @@ impl DeserializeBytes for Key {
 		let id = u16::deserialize(&mut read_buf)?;
 		let start = u32::deserialize(&mut read_buf)?;
 		let end = u32::deserialize(&mut read_buf)?;
-		Ok(Key {
+		Ok(Self {
 			operation,
 			id,
 			range: start..end,
@@ -371,7 +371,7 @@ impl DeserializeBytes for ConstraintIndex {
 	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
 		let operand_index = u8::deserialize(&mut read_buf)?;
 		let constraint_index = u32::deserialize(&mut read_buf)?;
-		Ok(ConstraintIndex {
+		Ok(Self {
 			operand_index,
 			constraint_index,
 		})
@@ -420,7 +420,7 @@ impl DeserializeBytes for KeyCollection {
 
 		let constraint_indices = Vec::<ConstraintIndex>::deserialize(&mut read_buf)?;
 
-		Ok(KeyCollection {
+		Ok(Self {
 			keys,
 			key_ranges,
 			constraint_indices,

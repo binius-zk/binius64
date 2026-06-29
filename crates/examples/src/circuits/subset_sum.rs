@@ -56,8 +56,8 @@ impl SubsetSum {
 		// compute sum of `values_masked`
 		let mut sum = builder.add_constant(Word::ZERO);
 		let mut carry = builder.add_constant(Word::ZERO);
-		for i in 0..len {
-			(sum, carry) = builder.iadd_cin_cout(sum, values_masked[i], carry);
+		for &value_masked in &values_masked {
+			(sum, carry) = builder.iadd_cin_cout(sum, value_masked, carry);
 			// check that no overflow occurred
 			builder.assert_false("no overflow", carry);
 		}
@@ -77,7 +77,7 @@ impl SubsetSum {
 	///
 	/// - `values` is the list of integers available
 	/// - `target` is the target value that a sublist should sum to
-	pub fn populate_problem(&self, filler: &mut WitnessFiller<'_>, values: Vec<u64>, target: u64) {
+	pub fn populate_problem(&self, filler: &mut WitnessFiller<'_>, values: &[u64], target: u64) {
 		assert_eq!(values.len(), self.len);
 
 		for i in 0..self.len {
@@ -92,7 +92,7 @@ impl SubsetSum {
 	///
 	/// - `selection` should have the same length as the original list, and should contain `true`
 	///   for every number that should be included in the sublist
-	pub fn populate_solution(&self, filler: &mut WitnessFiller<'_>, selection: Vec<bool>) {
+	pub fn populate_solution(&self, filler: &mut WitnessFiller<'_>, selection: &[bool]) {
 		assert_eq!(selection.len(), self.len);
 
 		for i in 0..self.len {
@@ -122,8 +122,8 @@ mod tests {
 
 		// populate witness
 		let mut filler = circuit.new_witness_filler();
-		subset_sum.populate_problem(&mut filler, vec![2, 5, 5, 3, 7], 17);
-		subset_sum.populate_solution(&mut filler, vec![false, true, true, false, true]);
+		subset_sum.populate_problem(&mut filler, &[2, 5, 5, 3, 7], 17);
+		subset_sum.populate_solution(&mut filler, &[false, true, true, false, true]);
 		circuit.populate_wire_witness(&mut filler).unwrap();
 
 		// check
@@ -141,8 +141,8 @@ mod tests {
 
 		// populate witness
 		let mut filler = circuit.new_witness_filler();
-		subset_sum.populate_problem(&mut filler, vec![2, 5, 5, 3, 7], 17);
-		subset_sum.populate_solution(&mut filler, vec![false, true, true, false, false]);
+		subset_sum.populate_problem(&mut filler, &[2, 5, 5, 3, 7], 17);
+		subset_sum.populate_solution(&mut filler, &[false, true, true, false, false]);
 		circuit.populate_wire_witness(&mut filler).unwrap_err();
 	}
 
@@ -157,7 +157,7 @@ mod tests {
 
 		// populate witness
 		let mut filler = circuit.new_witness_filler();
-		subset_sum.populate_problem(&mut filler, vec![3], 1);
+		subset_sum.populate_problem(&mut filler, &[3], 1);
 		// This is trying to be a malicious prover: If the constraints are not assembled
 		// carefully, this could pass because `values ^ selection` sums to target.
 		// In other words, we carefully selected the bits of `selection` so that they
@@ -176,10 +176,10 @@ mod tests {
 
 		// populate witness
 		let mut filler = circuit.new_witness_filler();
-		subset_sum.populate_problem(&mut filler, vec![2 << 62, 3 << 62], 1 << 62);
+		subset_sum.populate_problem(&mut filler, &[2 << 62, 3 << 62], 1 << 62);
 		// This is a valid solution modulo 2^64, so if the constraints are not assembled
 		// carefully, this could pass.
-		subset_sum.populate_solution(&mut filler, vec![true, true]);
+		subset_sum.populate_solution(&mut filler, &[true, true]);
 		circuit.populate_wire_witness(&mut filler).unwrap_err();
 	}
 }

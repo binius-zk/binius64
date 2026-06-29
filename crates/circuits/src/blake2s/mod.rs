@@ -340,7 +340,7 @@ impl Blake2s {
 			let mut m = [builder.add_constant(Word(0)); 16];
 
 			// Fill message words from input qwords
-			for word_idx in 0..16 {
+			for (word_idx, m_word) in m.iter_mut().enumerate() {
 				let message_qword = *message.get(block_idx << 3 | word_idx >> 1).unwrap_or(&zero);
 
 				// Select low or high dword from the qword
@@ -366,7 +366,7 @@ impl Blake2s {
 					message_dword
 				};
 
-				m[word_idx] = padded_message_dword;
+				*m_word = padded_message_dword;
 			}
 
 			// Determine if this block is in the valid range and if it's the final block
@@ -409,7 +409,7 @@ impl Blake2s {
 	///
 	/// * `witness` - Witness filler to populate
 	/// * `message` - The message bytes to hash
-	pub fn populate_message(&self, witness: &mut WitnessFiller, message: &[u8]) {
+	pub fn populate_message(&self, witness: &mut WitnessFiller<'_>, message: &[u8]) {
 		assert!(
 			message.len() == self.length,
 			"Only messages of length {} supported while given {} bytes",
@@ -421,7 +421,7 @@ impl Blake2s {
 		for (i, bytes) in message.chunks(8).enumerate() {
 			let mut le_bytes = [0; 8];
 			le_bytes[..bytes.len()].copy_from_slice(bytes);
-			witness[self.message[i]] = Word(u64::from_le_bytes(le_bytes))
+			witness[self.message[i]] = Word(u64::from_le_bytes(le_bytes));
 		}
 	}
 
@@ -431,7 +431,7 @@ impl Blake2s {
 	///
 	/// * `witness` - Witness filler to populate
 	/// * `digest` - The expected 32-byte Blake2s digest
-	pub fn populate_digest(&self, witness: &mut WitnessFiller, digest: &[u8; 32]) {
+	pub fn populate_digest(&self, witness: &mut WitnessFiller<'_>, digest: &[u8; 32]) {
 		// Convert digest bytes to 8 × 32-bit words (little-endian)
 		for i in 0..8 {
 			let word_bytes = &digest[i * 4..(i + 1) * 4];

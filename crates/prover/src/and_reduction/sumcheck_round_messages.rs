@@ -181,7 +181,7 @@ where
 }
 
 /// Represents a precomputed multiplication map by an extension field constant for
-/// [`B8`].`
+/// [`B8`].
 ///
 /// Multiplication by a constant for a binary field is an $\mathbb{F}_2$-linear transform. For small
 /// inputs, such as $\mathbb{F}_{2^8}$ elements, this can be represented by a small lookup table.
@@ -201,7 +201,7 @@ impl<F: BinaryField + From<B8>> B8ToExtMulMap<F> {
 	}
 
 	#[inline]
-	fn call(&self, input: B8) -> F {
+	const fn call(&self, input: B8) -> F {
 		self.lookup[input.val() as usize]
 	}
 }
@@ -295,11 +295,11 @@ mod test {
 		let expected_next_round_sum = extrapolate_over_subspace(
 			&verifier_message_domain,
 			&first_round_message_coeffs,
-			first_sumcheck_challenge,
+			&first_sumcheck_challenge,
 		);
 
 		let lagrange_evals =
-			lagrange_evals_scalars(&verifier_input_domain, first_sumcheck_challenge);
+			lagrange_evals_scalars(&verifier_input_domain, &first_sumcheck_challenge);
 		let transform =
 			OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
 				.create(&lagrange_evals);

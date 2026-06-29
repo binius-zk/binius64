@@ -43,11 +43,11 @@ fn test_power7_circuit_prover_verifier() {
 	let log_inv_rate = 1;
 	let verifier =
 		Verifier::<_, StdHashSuite>::setup(cs, log_inv_rate).expect("verifier setup failed");
-	let prover = Prover::<OptimalPackedB128, StdHashSuite>::setup(verifier.clone())
-		.expect("prover setup failed");
+	let prover =
+		Prover::<OptimalPackedB128, StdHashSuite>::setup(&verifier).expect("prover setup failed");
 
 	let cs = verifier.constraint_system();
-	let layout = layout.with_blinding(cs.blinding_info().clone());
+	let layout = layout.with_blinding(cs.blinding_info());
 
 	// Choose test values: x = random, y = x^7
 	let mut rng = StdRng::seed_from_u64(0);
@@ -78,7 +78,7 @@ fn test_power7_circuit_prover_verifier() {
 	// Generate proof
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	prover
-		.prove(witness, &mut rng, &mut prover_transcript)
+		.prove(&witness, &mut rng, &mut prover_transcript)
 		.expect("prove failed");
 
 	// Verify proof
@@ -103,11 +103,11 @@ fn test_tampered_derived_value_fails_verification() {
 	let log_inv_rate = 1;
 	let verifier =
 		Verifier::<_, StdHashSuite>::setup(cs, log_inv_rate).expect("verifier setup failed");
-	let prover = Prover::<OptimalPackedB128, StdHashSuite>::setup(verifier.clone())
-		.expect("prover setup failed");
+	let prover =
+		Prover::<OptimalPackedB128, StdHashSuite>::setup(&verifier).expect("prover setup failed");
 
 	let cs = verifier.constraint_system();
-	let layout = layout.with_blinding(cs.blinding_info().clone());
+	let layout = layout.with_blinding(cs.blinding_info());
 
 	let mut rng = StdRng::seed_from_u64(0);
 	let x_val = B128::random(&mut rng);
@@ -138,7 +138,7 @@ fn test_tampered_derived_value_fails_verification() {
 	// The prover observes its tampered public into the transcript while proving.
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	prover
-		.prove(tampered_witness, &mut rng, &mut prover_transcript)
+		.prove(&tampered_witness, &mut rng, &mut prover_transcript)
 		.expect("prove failed");
 
 	// The verifier verifies against the recomputed (correct) public and must reject the proof.

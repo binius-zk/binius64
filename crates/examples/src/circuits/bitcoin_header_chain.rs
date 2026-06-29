@@ -59,7 +59,7 @@ impl ExampleCircuit for BitcoinHeaderChainExample {
 	fn populate_witness(
 		&self,
 		instance: Self::Instance,
-		filler: &mut WitnessFiller,
+		filler: &mut WitnessFiller<'_>,
 	) -> anyhow::Result<()> {
 		let (headers_value, latest_digest_value) =
 			pull_headers(self.headers.len(), instance.to_block)?;
@@ -115,8 +115,6 @@ fn pull_headers(
 			.call()?
 			.body_mut()
 			.read_to_string()?;
-		let mut hash = hex::decode(hash)?;
-		hash.reverse();
 		let header = hex::decode(header)?;
 		headers.push(header);
 	}

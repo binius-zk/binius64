@@ -97,7 +97,7 @@ pub fn emit_gate_bytecode(
 		Opcode::IaddCinCout => iadd_cin_cout::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::Iadd32 => iadd32::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::Iadd32CinCout => {
-			iadd32_cin_cout::emit_eval_bytecode(gate, data, builder, wire_to_reg)
+			iadd32_cin_cout::emit_eval_bytecode(gate, data, builder, wire_to_reg);
 		}
 		Opcode::IsubBinBout => isub_bin_bout::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::Sll32 => sll32::emit_eval_bytecode(gate, data, builder, wire_to_reg),
@@ -107,27 +107,27 @@ pub fn emit_gate_bytecode(
 		Opcode::Rotr => rotr::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::AssertEq => {
 			let assertion_path = graph.assertion_names[gate];
-			assert_eq::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg)
+			assert_eq::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg);
 		}
 		Opcode::AssertZero => {
 			let assertion_path = graph.assertion_names[gate];
-			assert_zero::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg)
+			assert_zero::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg);
 		}
 		Opcode::AssertNonZero => {
 			let assertion_path = graph.assertion_names[gate];
-			assert_non_zero::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg)
+			assert_non_zero::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg);
 		}
 		Opcode::AssertEqCond => {
 			let assertion_path = graph.assertion_names[gate];
-			assert_eq_cond::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg)
+			assert_eq_cond::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg);
 		}
 		Opcode::AssertFalse => {
 			let assertion_path = graph.assertion_names[gate];
-			assert_false::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg)
+			assert_false::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg);
 		}
 		Opcode::AssertTrue => {
 			let assertion_path = graph.assertion_names[gate];
-			assert_true::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg)
+			assert_true::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg);
 		}
 		Opcode::Imul => imul::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::Smul => smul::emit_eval_bytecode(gate, data, builder, wire_to_reg),

@@ -26,7 +26,7 @@ fn benchmark_get_impl<P: PackedField>(group: &mut BenchmarkGroup<'_, WallTime>, 
 				let values = &values[j];
 				P::from_fn(|i| values[i])
 			})
-		})
+		});
 	});
 }
 

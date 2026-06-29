@@ -50,7 +50,7 @@ where
 	let g_parts = build_g_parts::<_, P>(words, key_collection, bitand_data, intmul_data)?;
 
 	// BitAnd and IntMul share the same `r_zhat_prime`.
-	let h_parts = build_h_parts(bitand_data.r_zhat_prime);
+	let h_parts = build_h_parts(&bitand_data.r_zhat_prime);
 
 	run_phase_1_sumcheck(g_parts, h_parts, channel)
 }

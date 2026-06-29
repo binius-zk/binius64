@@ -82,7 +82,7 @@ fn bench(c: &mut Criterion) {
 
 	group.bench_function(format!("univariate fold 2^{log_words}"), |bench| {
 		bench.iter(|| {
-			let lagrange_evals = lagrange_evals_scalars(&univariate_domain, univariate_challenge);
+			let lagrange_evals = lagrange_evals_scalars(&univariate_domain, &univariate_challenge);
 			let transform =
 				OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
 					.create(&lagrange_evals);
@@ -92,7 +92,7 @@ fn bench(c: &mut Criterion) {
 		});
 	});
 
-	let lagrange_evals = lagrange_evals_scalars(&univariate_domain, univariate_challenge);
+	let lagrange_evals = lagrange_evals_scalars(&univariate_domain, &univariate_challenge);
 	let transform = OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
 		.create(&lagrange_evals);
 	let proving_polys = [&a_words, &b_words, &c_words]
@@ -105,7 +105,7 @@ fn bench(c: &mut Criterion) {
 	let next_round_claim = extrapolate_over_subspace(
 		&prover_message_domain.clone().isomorphic::<B128>(),
 		&univariate_message_coeffs,
-		univariate_challenge,
+		&univariate_challenge,
 	);
 
 	group.bench_function(format!("remaining zerocheck 2^{log_words}"), |bench| {
@@ -123,7 +123,7 @@ fn bench(c: &mut Criterion) {
 					proving_polys,
 					|[a, b, c]| a * b - c,
 					|[a, b, _]| a * b,
-					multilinear_zerocheck_challenges,
+					&multilinear_zerocheck_challenges,
 					next_round_claim,
 				)
 				.expect("multilinears should have consistent dimensions");

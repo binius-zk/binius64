@@ -18,7 +18,7 @@ pub struct ValueIndex(pub u32);
 
 impl ValueIndex {
 	/// The value index that is not considered to be valid.
-	pub const INVALID: ValueIndex = ValueIndex(u32::MAX);
+	pub const INVALID: Self = Self(u32::MAX);
 }
 
 /// The most sensible default for a value index is invalid.
@@ -39,7 +39,7 @@ impl DeserializeBytes for ValueIndex {
 	where
 		Self: Sized,
 	{
-		Ok(ValueIndex(u32::deserialize(read_buf)?))
+		Ok(Self(u32::deserialize(read_buf)?))
 	}
 }
 
@@ -88,14 +88,14 @@ pub enum ShiftVariant {
 impl SerializeBytes for ShiftVariant {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
 		let index = match self {
-			ShiftVariant::Sll => 0u8,
-			ShiftVariant::Slr => 1u8,
-			ShiftVariant::Sar => 2u8,
-			ShiftVariant::Rotr => 3u8,
-			ShiftVariant::Sll32 => 4u8,
-			ShiftVariant::Srl32 => 5u8,
-			ShiftVariant::Sra32 => 6u8,
-			ShiftVariant::Rotr32 => 7u8,
+			Self::Sll => 0u8,
+			Self::Slr => 1u8,
+			Self::Sar => 2u8,
+			Self::Rotr => 3u8,
+			Self::Sll32 => 4u8,
+			Self::Srl32 => 5u8,
+			Self::Sra32 => 6u8,
+			Self::Rotr32 => 7u8,
 		};
 		index.serialize(write_buf)
 	}
@@ -108,14 +108,14 @@ impl DeserializeBytes for ShiftVariant {
 	{
 		let index = u8::deserialize(read_buf)?;
 		match index {
-			0 => Ok(ShiftVariant::Sll),
-			1 => Ok(ShiftVariant::Slr),
-			2 => Ok(ShiftVariant::Sar),
-			3 => Ok(ShiftVariant::Rotr),
-			4 => Ok(ShiftVariant::Sll32),
-			5 => Ok(ShiftVariant::Srl32),
-			6 => Ok(ShiftVariant::Sra32),
-			7 => Ok(ShiftVariant::Rotr32),
+			0 => Ok(Self::Sll),
+			1 => Ok(Self::Slr),
+			2 => Ok(Self::Sar),
+			3 => Ok(Self::Rotr),
+			4 => Ok(Self::Sll32),
+			5 => Ok(Self::Srl32),
+			6 => Ok(Self::Sra32),
+			7 => Ok(Self::Rotr32),
 			_ => Err(SerializationError::UnknownEnumVariant {
 				name: "ShiftVariant",
 				index,
@@ -145,7 +145,7 @@ pub struct ShiftedValueIndex {
 impl ShiftedValueIndex {
 	/// Create a value index that just uses the specified value. Equivalent to [`Self::sll`] with
 	/// amount equals 0.
-	pub fn plain(value_index: ValueIndex) -> Self {
+	pub const fn plain(value_index: ValueIndex) -> Self {
 		Self {
 			value_index,
 			shift_variant: ShiftVariant::Sll,
@@ -301,7 +301,7 @@ impl DeserializeBytes for ShiftedValueIndex {
 			});
 		}
 
-		Ok(ShiftedValueIndex {
+		Ok(Self {
 			value_index,
 			shift_variant,
 			amount,
@@ -344,8 +344,8 @@ impl AndConstraint {
 		a: impl IntoIterator<Item = ValueIndex>,
 		b: impl IntoIterator<Item = ValueIndex>,
 		c: impl IntoIterator<Item = ValueIndex>,
-	) -> AndConstraint {
-		AndConstraint {
+	) -> Self {
+		Self {
 			a: a.into_iter().map(ShiftedValueIndex::plain).collect(),
 			b: b.into_iter().map(ShiftedValueIndex::plain).collect(),
 			c: c.into_iter().map(ShiftedValueIndex::plain).collect(),
@@ -357,8 +357,8 @@ impl AndConstraint {
 		a: impl IntoIterator<Item = ShiftedValueIndex>,
 		b: impl IntoIterator<Item = ShiftedValueIndex>,
 		c: impl IntoIterator<Item = ShiftedValueIndex>,
-	) -> AndConstraint {
-		AndConstraint {
+	) -> Self {
+		Self {
 			a: a.into_iter().collect(),
 			b: b.into_iter().collect(),
 			c: c.into_iter().collect(),
@@ -383,7 +383,7 @@ impl DeserializeBytes for AndConstraint {
 		let b = Vec::<ShiftedValueIndex>::deserialize(&mut read_buf)?;
 		let c = Vec::<ShiftedValueIndex>::deserialize(read_buf)?;
 
-		Ok(AndConstraint { a, b, c })
+		Ok(Self { a, b, c })
 	}
 }
 
@@ -426,7 +426,7 @@ impl DeserializeBytes for MulConstraint {
 		let hi = Vec::<ShiftedValueIndex>::deserialize(&mut read_buf)?;
 		let lo = Vec::<ShiftedValueIndex>::deserialize(read_buf)?;
 
-		Ok(MulConstraint { a, b, hi, lo })
+		Ok(Self { a, b, hi, lo })
 	}
 }
 
@@ -467,7 +467,7 @@ impl ConstraintSystem {
 		mul_constraints: Vec<MulConstraint>,
 	) -> Self {
 		assert_eq!(constants.len(), value_vec_layout.n_const);
-		ConstraintSystem {
+		Self {
 			constants,
 			value_vec_layout,
 			and_constraints,
@@ -583,17 +583,17 @@ impl ConstraintSystem {
 	}
 
 	/// Returns the number of AND constraints in the system.
-	pub fn n_and_constraints(&self) -> usize {
+	pub const fn n_and_constraints(&self) -> usize {
 		self.and_constraints.len()
 	}
 
 	/// Returns the number of MUL  constraints in the system.
-	pub fn n_mul_constraints(&self) -> usize {
+	pub const fn n_mul_constraints(&self) -> usize {
 		self.mul_constraints.len()
 	}
 
 	/// The total length of the [`ValueVec`] expected by this constraint system.
-	pub fn value_vec_len(&self) -> usize {
+	pub const fn value_vec_len(&self) -> usize {
 		self.value_vec_layout.committed_total_len
 	}
 
@@ -637,7 +637,7 @@ impl DeserializeBytes for ConstraintSystem {
 			});
 		}
 
-		Ok(ConstraintSystem {
+		Ok(Self {
 			value_vec_layout,
 			constants,
 			and_constraints,
@@ -681,7 +681,7 @@ impl ValueVecLayout {
 	///
 	/// - the public segment (constants and inout values) is padded to the power of two.
 	/// - the public segment is not less than the minimum size.
-	pub fn validate(&self) -> Result<(), ConstraintSystemError> {
+	pub const fn validate(&self) -> Result<(), ConstraintSystemError> {
 		if !self.offset_witness.is_power_of_two() {
 			return Err(ConstraintSystemError::PublicInputPowerOfTwo);
 		}
@@ -695,7 +695,7 @@ impl ValueVecLayout {
 	}
 
 	/// Returns true if the given index points to an area that is considered to be padding.
-	fn is_padding(&self, index: ValueIndex) -> bool {
+	const fn is_padding(&self, index: ValueIndex) -> bool {
 		let idx = index.0 as usize;
 
 		// padding 1: between constants and inout section
@@ -719,7 +719,7 @@ impl ValueVecLayout {
 	}
 
 	/// Returns true if the given index is out-of-bounds for the committed part of this layout.
-	fn is_committed_oob(&self, index: ValueIndex) -> bool {
+	const fn is_committed_oob(&self, index: ValueIndex) -> bool {
 		index.0 as usize >= self.committed_total_len
 	}
 }
@@ -751,7 +751,7 @@ impl DeserializeBytes for ValueVecLayout {
 		let committed_total_len = usize::deserialize(&mut read_buf)?;
 		let n_scratch = usize::deserialize(read_buf)?;
 
-		Ok(ValueVecLayout {
+		Ok(Self {
 			n_const,
 			n_inout,
 			n_witness,
@@ -849,9 +849,9 @@ impl ValueVec {
 	/// Creates a new value vector with the given layout.
 	///
 	/// The values are filled with zeros.
-	pub fn new(layout: ValueVecLayout) -> ValueVec {
+	pub fn new(layout: ValueVecLayout) -> Self {
 		let size = layout.committed_total_len + layout.n_scratch;
-		ValueVec {
+		Self {
 			layout,
 			data: AlignedWords::zeroed(size),
 		}
@@ -862,9 +862,9 @@ impl ValueVec {
 	/// The data is checked to have the correct length.
 	pub fn new_from_data(
 		layout: ValueVecLayout,
-		public: Vec<Word>,
-		private: Vec<Word>,
-	) -> Result<ValueVec, ConstraintSystemError> {
+		public: &[Word],
+		private: &[Word],
+	) -> Result<Self, ConstraintSystemError> {
 		let committed_len = public.len() + private.len();
 		if committed_len != layout.committed_total_len {
 			return Err(ConstraintSystemError::ValueVecLenMismatch {
@@ -878,15 +878,15 @@ impl ValueVec {
 		// Fresh 16-byte-aligned buffer; the scratch tail past the committed words stays zeroed.
 		let mut data = AlignedWords::zeroed(full_len);
 		// Public words occupy the front of the committed region.
-		data[..public.len()].copy_from_slice(&public);
+		data[..public.len()].copy_from_slice(public);
 		// Private words follow, filling the rest of the committed region.
-		data[public.len()..committed_len].copy_from_slice(&private);
+		data[public.len()..committed_len].copy_from_slice(private);
 
-		Ok(ValueVec { layout, data })
+		Ok(Self { layout, data })
 	}
 
 	/// The total size of the committed portion of the vector (excluding scratch).
-	pub fn size(&self) -> usize {
+	pub const fn size(&self) -> usize {
 		self.layout.committed_total_len
 	}
 
@@ -958,14 +958,14 @@ impl<'a> ValuesData<'a> {
 	pub const SERIALIZATION_VERSION: u32 = 1;
 
 	/// Create a new ValuesData from borrowed data
-	pub fn borrowed(data: &'a [Word]) -> Self {
+	pub const fn borrowed(data: &'a [Word]) -> Self {
 		Self {
 			data: Cow::Borrowed(data),
 		}
 	}
 
 	/// Create a new ValuesData from owned data
-	pub fn owned(data: Vec<Word>) -> Self {
+	pub const fn owned(data: Vec<Word>) -> Self {
 		Self {
 			data: Cow::Owned(data),
 		}
@@ -1084,7 +1084,7 @@ impl<'a> Proof<'a> {
 	pub const SERIALIZATION_VERSION: u32 = 1;
 
 	/// Create a new Proof from borrowed transcript data
-	pub fn borrowed(data: &'a [u8], challenger_type: String) -> Self {
+	pub const fn borrowed(data: &'a [u8], challenger_type: String) -> Self {
 		Self {
 			data: Cow::Borrowed(data),
 			challenger_type,
@@ -1092,7 +1092,7 @@ impl<'a> Proof<'a> {
 	}
 
 	/// Create a new Proof from owned transcript data
-	pub fn owned(data: Vec<u8>, challenger_type: String) -> Self {
+	pub const fn owned(data: Vec<u8>, challenger_type: String) -> Self {
 		Self {
 			data: Cow::Owned(data),
 			challenger_type,
@@ -1876,9 +1876,7 @@ mod serialization_tests {
 
 		let public = values.public();
 		let non_public = values.non_public();
-		let combined =
-			ValueVec::new_from_data(values.layout.clone(), public.to_vec(), non_public.to_vec())
-				.unwrap();
+		let combined = ValueVec::new_from_data(values.layout.clone(), public, non_public).unwrap();
 		assert_eq!(combined.combined_witness(), values.combined_witness());
 	}
 
@@ -1927,12 +1925,8 @@ mod serialization_tests {
 		let non_pub2 = ValuesData::deserialize(&mut buf_non_pub.as_slice()).unwrap();
 
 		// Reconstruct ValueVec from deserialized pieces
-		let reconstructed = ValueVec::new_from_data(
-			cs2.value_vec_layout.clone(),
-			pub2.into_owned(),
-			non_pub2.into_owned(),
-		)
-		.unwrap();
+		let reconstructed =
+			ValueVec::new_from_data(cs2.value_vec_layout, &pub2, &non_pub2).unwrap();
 
 		// Ensure committed part matches exactly
 		assert_eq!(reconstructed.combined_witness(), values.combined_witness());
@@ -2521,10 +2515,10 @@ mod serialization_tests {
 			};
 
 			// The public input must fill its whole power-of-two section, so zero-pad it.
-			let mut public_padded = public.clone();
+			let mut public_padded = public;
 			public_padded.resize(offset_witness, Word::ZERO);
 
-			let vv = ValueVec::new_from_data(layout, public_padded.clone(), private.clone()).unwrap();
+			let vv = ValueVec::new_from_data(layout, &public_padded, &private).unwrap();
 
 			// Alignment survives construction for any word count.
 			assert_16_byte_aligned(vv.combined_witness());

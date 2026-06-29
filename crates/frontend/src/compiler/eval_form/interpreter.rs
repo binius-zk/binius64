@@ -30,7 +30,7 @@ pub struct ExecutionContext<'a> {
 }
 
 impl<'a> ExecutionContext<'a> {
-	pub fn new(value_vec: &'a mut ValueVec) -> Self {
+	pub const fn new(value_vec: &'a mut ValueVec) -> Self {
 		Self {
 			value_vec,
 			assertion_failures: Vec::new(),
@@ -96,7 +96,7 @@ pub struct Interpreter<'a> {
 }
 
 impl<'a> Interpreter<'a> {
-	pub fn new(bytecode: &'a [u8], hints: &'a HintRegistry) -> Self {
+	pub const fn new(bytecode: &'a [u8], hints: &'a HintRegistry) -> Self {
 		Self {
 			bytecode,
 			hints,

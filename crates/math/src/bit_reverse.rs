@@ -16,7 +16,7 @@ use crate::field_buffer::FieldSliceMut;
 /// # Returns
 ///
 /// The value with its low `bits` bits reversed
-pub fn reverse_bits(x: usize, bits: u32) -> usize {
+pub const fn reverse_bits(x: usize, bits: u32) -> usize {
 	x.reverse_bits().unbounded_shr(usize::BITS - bits)
 }
 
@@ -29,7 +29,7 @@ pub fn reverse_bits(x: usize, bits: u32) -> usize {
 /// # Arguments
 ///
 /// * `buffer` - Mutable slice of packed field elements to permute
-pub fn bit_reverse_packed<P: PackedField>(mut buffer: FieldSliceMut<P>) {
+pub fn bit_reverse_packed<P: PackedField>(mut buffer: FieldSliceMut<'_, P>) {
 	// The algorithm has two parallelized phases:
 	// 1. Process P::WIDTH x P::WIDTH submatrices in parallel
 	// 2. Apply bit-reversal to independent chunks in parallel
@@ -57,15 +57,15 @@ pub fn bit_reverse_packed<P: PackedField>(mut buffer: FieldSliceMut<P>) {
 				// Therefore, different i values access completely disjoint index sets.
 				unsafe {
 					let data = data_ptr as *mut P;
-					for j in 0..P::WIDTH {
-						tmp[j] = *data.add(reverse_bits(j, bits) | i);
+					for (j, tmp_j) in tmp.iter_mut().enumerate().take(P::WIDTH) {
+						*tmp_j = *data.add(reverse_bits(j, bits) | i);
 					}
 				}
 				square_transpose(P::LOG_WIDTH, tmp);
 				unsafe {
 					let data = data_ptr as *mut P;
-					for j in 0..P::WIDTH {
-						*data.add(reverse_bits(j, bits) | i) = tmp[j];
+					for (j, tmp_j) in tmp.iter().enumerate().take(P::WIDTH) {
+						*data.add(reverse_bits(j, bits) | i) = *tmp_j;
 					}
 				}
 			},
@@ -88,7 +88,7 @@ pub fn bit_reverse_packed<P: PackedField>(mut buffer: FieldSliceMut<P>) {
 /// # Arguments
 ///
 /// * `buffer` - Mutable slice of packed field elements to permute
-fn bit_reverse_packed_naive<P: PackedField>(mut buffer: FieldSliceMut<P>) {
+fn bit_reverse_packed_naive<P: PackedField>(mut buffer: FieldSliceMut<'_, P>) {
 	let bits = buffer.log_len() as u32;
 	for i in 0..buffer.len() {
 		let i_rev = reverse_bits(i, bits);
@@ -159,7 +159,7 @@ mod tests {
 		let data_orig = random_field_buffer::<Packed128b>(&mut rng, log_d);
 
 		let mut data_optimized = data_orig.clone();
-		let mut data_naive = data_orig.clone();
+		let mut data_naive = data_orig;
 
 		bit_reverse_packed(data_optimized.to_mut());
 		bit_reverse_packed_naive(data_naive.to_mut());

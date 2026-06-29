@@ -3,7 +3,7 @@
 use criterion::{BenchmarkGroup, measurement::WallTime};
 
 pub fn run_benchmark<R>(
-	group: &mut BenchmarkGroup<WallTime>,
+	group: &mut BenchmarkGroup<'_, WallTime>,
 	name: &str,
 	func: impl Fn() -> Batch<R>,
 ) {
@@ -22,7 +22,7 @@ macro_rules! benchmark_packed_operation {
 		paste::paste! {
             #[allow(non_snake_case)]
 			#[inline(never)]
-			fn [<$op_name $packed_field $strategy_name>](group: &mut criterion::BenchmarkGroup<criterion::measurement::WallTime>,
+			fn [<$op_name $packed_field $strategy_name>](group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
                 a: &$crate::packed_field_utils::Batch<$packed_field>,
                 b: &$crate::packed_field_utils::Batch<$packed_field>) {
 				#[allow(unused)]
@@ -60,7 +60,7 @@ macro_rules! benchmark_packed_operation {
 		paste::paste! {
             #[allow(non_snake_case)]
 			#[inline(never)]
-			fn [<$op_name $packed_field $strategy_name>](group: &mut criterion::BenchmarkGroup<criterion::measurement::WallTime>,
+			fn [<$op_name $packed_field $strategy_name>](group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
                 a: &$crate::packed_field_utils::Batch<$packed_field>,
                 _b: &$crate::packed_field_utils::Batch<$packed_field>) {
 				#[allow(unused)]

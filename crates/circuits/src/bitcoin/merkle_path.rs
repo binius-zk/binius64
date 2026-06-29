@@ -45,7 +45,7 @@ impl MerklePath {
 				builder.select(sib.1, sib.0[2], leaf[2]),
 				builder.select(sib.1, sib.0[3], leaf[3]),
 			];
-			pairs.push((DoubleSha256::construct_circuit(builder, message, digest), digest));
+			pairs.push((DoubleSha256::construct_circuit(builder, &message, digest), digest));
 
 			let current_length = builder.add_constant_64(i as u64);
 			let past_length = builder.icmp_ult(current_length, length);
@@ -64,7 +64,7 @@ impl MerklePath {
 
 	pub fn populate_inner(
 		&self,
-		filler: &mut WitnessFiller,
+		filler: &mut WitnessFiller<'_>,
 		mut leaf: [u8; 32],
 		siblings: &[([u8; 32], SiblingSide)],
 	) {

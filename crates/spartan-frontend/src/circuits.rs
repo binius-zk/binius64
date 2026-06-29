@@ -242,7 +242,7 @@ mod tests {
 			B128::random(&mut rng),
 		];
 		let z_val = B128::random(&mut rng);
-		let expected = univariate::evaluate_univariate(&coeffs_vals, z_val);
+		let expected = univariate::evaluate_univariate(&coeffs_vals, &z_val);
 
 		test_helper::<UnivariateCircuit, 5>([
 			coeffs_vals[0],

@@ -118,7 +118,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 					&mut prover_transcript,
 				)
 				.unwrap()
-			})
+			});
 		});
 
 		// Pre-run the prover to get the transcript for verifier benchmarking
@@ -157,7 +157,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 				verify(&cs, &verifier_bitand_data, &verifier_intmul_data, &mut verifier_transcript)
 					.unwrap();
-			})
+			});
 		});
 	}
 }

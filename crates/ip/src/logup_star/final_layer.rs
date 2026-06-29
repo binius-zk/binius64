@@ -60,7 +60,7 @@ pub struct FinalLayer<F> {
 /// * `channel` - The verifier channel.
 pub fn verify_final_layer<F, C>(
 	m: usize,
-	c: C::Elem,
+	c: &C::Elem,
 	eval_claim: C::Elem,
 	layer1_num: C::Elem,
 	layer1_den: C::Elem,
@@ -98,7 +98,7 @@ where
 
 	// Table-side denominator halves D_0, D_1 are public: D = c - J with J(x) = sum_t basis(t) *
 	// x_t.
-	let (d_0, d_1) = denominator_halves::<F, C::Elem>(&c, &rho, m);
+	let (d_0, d_1) = denominator_halves::<F, C::Elem>(c, &rho, m);
 
 	// Reconstruct the batched summand at the challenge point and check it equals the reduced eval.
 	//

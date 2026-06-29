@@ -247,12 +247,12 @@ impl WinternitzSpec {
 	}
 
 	/// Returns the number of coordinates/chains
-	pub fn dimension(&self) -> usize {
+	pub const fn dimension(&self) -> usize {
 		self.message_hash_len * 8 / self.coordinate_resolution_bits
 	}
 
 	/// Returns the chain length (2^coordinate_resolution_bits)
-	pub fn chain_len(&self) -> usize {
+	pub const fn chain_len(&self) -> usize {
 		1 << self.coordinate_resolution_bits
 	}
 
@@ -390,13 +390,11 @@ mod tests {
 
 		// Prepare signatures and derive each public key as the endpoint after
 		// (chain_len - 1 - x_i) steps starting from sig_i, at positions x_i+1..chain_len-1.
-		let mut sig_hashes = Vec::with_capacity(spec.dimension());
 		let mut pk_hashes = Vec::with_capacity(spec.dimension());
 
 		for chain_idx in 0..spec.dimension() {
 			let mut sig = [0u8; MESSAGE_LENGTH_BYTES];
 			rng.fill_bytes(&mut sig);
-			sig_hashes.push(sig);
 
 			let xi = grind.coords[chain_idx] as usize;
 			let pk_hash = hash_chain_blake3(

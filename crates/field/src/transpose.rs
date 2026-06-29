@@ -56,7 +56,7 @@ pub fn square_transpose<P: PackedField>(log_n: usize, elems: &mut [P]) {
 pub fn square_transforms_extension_field<F: Field, FE: ExtensionField<F> + PackedExtension<F>>(
 	values: &mut [FE],
 ) {
-	square_transpose(FE::LOG_DEGREE, FE::cast_bases_mut(values))
+	square_transpose(FE::LOG_DEGREE, FE::cast_bases_mut(values));
 }
 
 #[cfg(test)]

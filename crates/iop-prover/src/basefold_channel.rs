@@ -125,7 +125,7 @@ where
 	}
 
 	/// Returns a reference to the underlying transcript.
-	pub fn transcript(&self) -> &ProverTranscript<Challenger_> {
+	pub const fn transcript(&self) -> &ProverTranscript<Challenger_> {
 		self.transcript
 	}
 
@@ -332,7 +332,7 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 			.par_chunks_mut(chunk_packed)
 			.for_each(|chunk| {
 				let chunk_buf = FieldSliceMut::from_slice(n_i + log_lift, chunk);
-				accumulate_scaled_buffer(chunk_buf, witness_prime.to_ref(), scalar_broadcast);
+				accumulate_scaled_buffer(chunk_buf, &witness_prime.to_ref(), scalar_broadcast);
 			});
 
 		// Repeat dims contribute 1; only the lift dims contribute an eq-to-zero factor.
@@ -362,8 +362,8 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 }
 
 fn accumulate_scaled_buffer<P: PackedField>(
-	mut dst: FieldSliceMut<P>,
-	src: FieldSlice<P>,
+	mut dst: FieldSliceMut<'_, P>,
+	src: &FieldSlice<'_, P>,
 	scalar_broadcast: P,
 ) {
 	if src.log_len() >= P::LOG_WIDTH {
@@ -427,7 +427,7 @@ where
 		&self.oracle_specs[self.next_oracle_index..]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldSlice<P>) -> Self::Oracle {
+	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
 		let remaining = self.remaining_oracle_specs();
 		assert!(!remaining.is_empty(), "send_oracle called but no remaining oracle specs");
 
@@ -456,7 +456,7 @@ where
 				index,
 				self.ntt,
 				self.merkle_prover,
-				buffer.to_ref(),
+				&buffer.to_ref(),
 				&mut self.rng,
 			);
 			(commitment, committed, codeword, Some(mask))
@@ -470,7 +470,7 @@ where
 				index,
 				self.ntt,
 				self.merkle_prover,
-				buffer.to_ref(),
+				&buffer.to_ref(),
 			);
 			(commitment, committed, codeword, None)
 		};
@@ -691,8 +691,8 @@ mod tests {
 		let v_oracle_1 = verifier_channel.recv_oracle().unwrap();
 		let v_oracle_2 = verifier_channel.recv_oracle().unwrap();
 
-		let tp1 = transparent_poly_1.clone();
-		let tp2 = transparent_poly_2.clone();
+		let tp1 = transparent_poly_1;
+		let tp2 = transparent_poly_2;
 
 		verifier_channel
 			.verify_oracle_relations([

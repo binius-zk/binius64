@@ -154,7 +154,7 @@ where
 		table_eval_point,
 		table_eval_claim,
 		pushforward_eval_claim,
-	} = verify_final_layer::<F, C>(m, c, eval_claim, layer1_num, layer1_den, &layer1_point, channel)?;
+	} = verify_final_layer::<F, C>(m, &c, eval_claim, layer1_num, layer1_den, &layer1_point, channel)?;
 
 	Ok(LogupOutput {
 		table_eval_point,

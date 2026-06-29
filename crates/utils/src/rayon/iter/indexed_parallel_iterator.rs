@@ -228,7 +228,7 @@ pub trait IndexedParallelIterator:
 
 	#[inline]
 	fn collect_into_vec(self, target: &mut Vec<Self::Item>) {
-		ParallelIterator::into_inner(self).collect_into_vec(target)
+		ParallelIterator::into_inner(self).collect_into_vec(target);
 	}
 
 	#[inline]

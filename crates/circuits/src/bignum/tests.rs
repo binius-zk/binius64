@@ -23,7 +23,7 @@ use super::*;
 ///
 /// # Returns
 /// The `BigUint` value as a `num_biguint::BigUint`
-pub fn biguint_to_num_biguint(w: &WitnessFiller, biguint: &BigUint) -> num_bigint::BigUint {
+pub fn biguint_to_num_biguint(w: &WitnessFiller<'_>, biguint: &BigUint) -> num_bigint::BigUint {
 	let limb_vals: Vec<_> = biguint.limbs.iter().map(|&l| w[l].as_u64()).collect();
 	from_u64_limbs(&limb_vals)
 }

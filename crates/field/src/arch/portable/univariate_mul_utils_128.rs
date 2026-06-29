@@ -95,12 +95,12 @@ impl Underlier128bLanes for u128 {
 
 	#[inline(always)]
 	fn join_u64s(high: Self::U64, low: Self::U64) -> Self {
-		((high as u128) << 64) | (low as u128)
+		((high as Self) << 64) | (low as Self)
 	}
 
 	#[inline(always)]
 	fn broadcast_64(val: u64) -> Self {
-		val as u128
+		val as Self
 	}
 
 	#[inline(always)]
@@ -142,7 +142,7 @@ pub fn bmul64<U: Underlier64bLanes>(x: U, y: U) -> U {
 
 /// Spread bits of a 64-bit value into a 128-bit value by interleaving zeroes.
 #[inline]
-pub fn spread_bits_64(val: u64) -> u128 {
+pub const fn spread_bits_64(val: u64) -> u128 {
 	let mut x = val as u128;
 	x = (x | (x << 32)) & 0x00000000FFFFFFFF00000000FFFFFFFF;
 	x = (x | (x << 16)) & 0x0000FFFF0000FFFF0000FFFF0000FFFF;

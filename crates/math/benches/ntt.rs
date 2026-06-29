@@ -36,7 +36,7 @@ enum ThroughputVariant {
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::single_element_loop)]
 fn bench_ntts<F: BinaryField, P: PackedField<Scalar = F>>(
-	group: &mut BenchmarkGroup<WallTime>,
+	group: &mut BenchmarkGroup<'_, WallTime>,
 	throughput_var: ThroughputVariant,
 	log_d: usize,
 	domain_context: &(impl DomainContext<Field = P::Scalar> + Sync),
@@ -65,7 +65,7 @@ fn bench_ntts<F: BinaryField, P: PackedField<Scalar = F>>(
 			};
 
 			let mut data = random_field_buffer::<P>(&mut rng, log_d);
-			b.iter(|| ntt.forward_transform(data.to_mut(), skip_early, skip_late))
+			b.iter(|| ntt.forward_transform(data.to_mut(), skip_early, skip_late));
 		});
 	}
 
@@ -74,7 +74,7 @@ fn bench_ntts<F: BinaryField, P: PackedField<Scalar = F>>(
 		let ntt = NeighborsLastBreadthFirst { domain_context };
 
 		let mut data = random_field_buffer::<P>(&mut rng, log_d);
-		b.iter(|| ntt.forward_transform(data.to_mut(), skip_early, skip_late))
+		b.iter(|| ntt.forward_transform(data.to_mut(), skip_early, skip_late));
 	});
 
 	for log_num_shares in [0, 3] {
@@ -97,8 +97,8 @@ fn bench_ntts<F: BinaryField, P: PackedField<Scalar = F>>(
 					.build()
 					.unwrap();
 				thread_pool.install(|| {
-					b.iter(|| ntt.forward_transform(data.to_mut(), skip_early, skip_late))
-				})
+					b.iter(|| ntt.forward_transform(data.to_mut(), skip_early, skip_late));
+				});
 			});
 		}
 	}
@@ -219,7 +219,7 @@ fn bench_fields(c: &mut Criterion) {
 }
 
 /// Gives the number of raw field multiplications that are done for an NTT with specific parameters.
-fn num_muls(log_d: usize, skip_early: usize, skip_late: usize) -> u64 {
+const fn num_muls(log_d: usize, skip_early: usize, skip_late: usize) -> u64 {
 	let num_rounds = log_d - skip_late - skip_early;
 	let muls_per_round = 1u64 << (log_d - 1);
 

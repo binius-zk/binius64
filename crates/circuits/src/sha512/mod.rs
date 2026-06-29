@@ -118,7 +118,7 @@ pub fn sha512_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 				.expect("padded_message.len() must be divisible by 16");
 			compress(
 				&builder.subcircuit(format!("sha512_fixed_compress[{}]", block_idx)),
-				state.clone(),
+				state,
 				block_message,
 			)
 		},
@@ -258,11 +258,8 @@ pub fn sha512_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; 8] {
 		let m: [Wire; 16] = padded_message[block_no << 4..(block_no + 1) << 4]
 			.try_into()
 			.unwrap();
-		let state_out = compress(
-			&builder.subcircuit(format!("compress[{block_no}]")),
-			states[block_no].clone(),
-			m,
-		);
+		let state_out =
+			compress(&builder.subcircuit(format!("compress[{block_no}]")), states[block_no], m);
 		states.push(state_out);
 	}
 
@@ -315,8 +312,8 @@ mod tests {
 			let byte_end = ((i + 1) * 8).min(message_bytes.len());
 
 			let mut word = 0u64;
-			for j in byte_start..byte_end {
-				word |= (message_bytes[j] as u64) << (56 - (j - byte_start) * 8);
+			for (k, byte) in message_bytes[byte_start..byte_end].iter().enumerate() {
+				word |= (*byte as u64) << (56 - k * 8);
 			}
 			w[*wire] = Word(word);
 		}

@@ -201,7 +201,7 @@ where
 	}
 
 	/// Number of oracles sent during the fold rounds.
-	pub fn n_oracles(&self) -> usize {
+	pub const fn n_oracles(&self) -> usize {
 		self.params.n_oracles()
 	}
 
@@ -254,7 +254,7 @@ where
 		&self,
 		claims: &[F],
 		indices: &[usize],
-		advice: &mut TranscriptReader<B>,
+		advice: &mut TranscriptReader<'_, B>,
 	) -> Result<F, Error> {
 		let n_final_challenges = self.params.n_final_challenges();
 		let log_inv_rate = self.params.rs_code().log_inv_rate();

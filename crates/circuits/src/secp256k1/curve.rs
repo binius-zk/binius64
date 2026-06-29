@@ -28,12 +28,12 @@ impl Secp256k1 {
 	}
 
 	/// Coordinate field.
-	pub fn f_p(&self) -> &PseudoMersennePrimeField {
+	pub const fn f_p(&self) -> &PseudoMersennePrimeField {
 		&self.f_p
 	}
 
 	/// Scalar field.
-	pub fn f_scalar(&self) -> &PseudoMersennePrimeField {
+	pub const fn f_scalar(&self) -> &PseudoMersennePrimeField {
 		&self.f_scalar
 	}
 

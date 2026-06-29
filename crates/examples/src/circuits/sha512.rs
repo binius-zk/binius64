@@ -65,7 +65,7 @@ impl ExampleCircuit for Sha512Example {
 		Ok(Self { message, digest })
 	}
 
-	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		// Step 1: Get raw message bytes
 		let message = utils::generate_message_bytes(instance.message_string, instance.message_len);
 

@@ -30,7 +30,7 @@ pub(crate) trait ParallelIteratorInner: Sized + Iterator {
 	where
 		OP: Fn(Self::Item),
 	{
-		Iterator::for_each(self, op)
+		Iterator::for_each(self, op);
 	}
 
 	#[inline]
@@ -259,25 +259,20 @@ pub(crate) trait ParallelIteratorInner: Sized + Iterator {
 		Self::Item: Try<Output = T>,
 	{
 		let mut iterator = self.into_iter();
-		match iterator.next() {
-			None => None,
-			Some(first) => {
-				let mut accum = first;
+		let mut accum = iterator.next()?;
 
-				loop {
-					match accum.branch() {
+		loop {
+			match accum.branch() {
+				ControlFlow::Break(r) => break Some(Self::Item::from_residual(r)),
+				ControlFlow::Continue(acc) => match iterator.next() {
+					None => break Some(Self::Item::from_output(acc)),
+					Some(next) => match next.branch() {
 						ControlFlow::Break(r) => break Some(Self::Item::from_residual(r)),
-						ControlFlow::Continue(acc) => match iterator.next() {
-							None => break Some(Self::Item::from_output(acc)),
-							Some(next) => match next.branch() {
-								ControlFlow::Break(r) => break Some(Self::Item::from_residual(r)),
-								ControlFlow::Continue(c) => {
-									accum = op(acc, c);
-								}
-							},
-						},
-					}
-				}
+						ControlFlow::Continue(c) => {
+							accum = op(acc, c);
+						}
+					},
+				},
 			}
 		}
 	}
@@ -632,7 +627,7 @@ pub trait ParallelIterator: Sized {
 	where
 		OP: Fn(Self::Item),
 	{
-		ParallelIteratorInner::for_each(self.into_inner(), op)
+		ParallelIteratorInner::for_each(self.into_inner(), op);
 	}
 
 	#[inline]
@@ -640,7 +635,7 @@ pub trait ParallelIterator: Sized {
 	where
 		OP: Fn(&mut T, Self::Item),
 	{
-		ParallelIteratorInner::for_each_with(self.into_inner(), init, op)
+		ParallelIteratorInner::for_each_with(self.into_inner(), init, op);
 	}
 
 	#[inline]
@@ -649,7 +644,7 @@ pub trait ParallelIterator: Sized {
 		OP: Fn(&mut T, Self::Item),
 		INIT: Fn() -> T,
 	{
-		ParallelIteratorInner::for_each_init(self.into_inner(), init, op)
+		ParallelIteratorInner::for_each_init(self.into_inner(), init, op);
 	}
 
 	#[inline]
@@ -1165,8 +1160,8 @@ where
 	#[inline(always)]
 	fn into_inner(self) -> Self::Inner {
 		match self {
-			Either::Left(left) => Either::Left(left.into_inner()),
-			Either::Right(right) => Either::Right(right.into_inner()),
+			Self::Left(left) => Either::Left(left.into_inner()),
+			Self::Right(right) => Either::Right(right.into_inner()),
 		}
 	}
 
@@ -1241,10 +1236,7 @@ mod private {
 		}
 
 		fn branch(self) -> ControlFlow<Self::Residual, Self::Output> {
-			match self {
-				Some(c) => Continue(c),
-				None => Break(None),
-			}
+			self.map_or(Break(None), Continue)
 		}
 	}
 

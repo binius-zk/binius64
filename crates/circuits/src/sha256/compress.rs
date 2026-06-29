@@ -23,24 +23,24 @@ const K: [u32; 64] = [
 /// 4 x 64-bit words.
 ///
 /// The elements are referred to as a–h or H0–H7.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct State(pub [Wire; 8]);
 
 impl State {
-	pub fn new(wires: [Wire; 8]) -> Self {
-		State(wires)
+	pub const fn new(wires: [Wire; 8]) -> Self {
+		Self(wires)
 	}
 
 	pub fn public(builder: &CircuitBuilder) -> Self {
-		State(std::array::from_fn(|_| builder.add_inout()))
+		Self(std::array::from_fn(|_| builder.add_inout()))
 	}
 
 	pub fn private(builder: &CircuitBuilder) -> Self {
-		State(std::array::from_fn(|_| builder.add_witness()))
+		Self(std::array::from_fn(|_| builder.add_witness()))
 	}
 
 	pub fn iv(builder: &CircuitBuilder) -> Self {
-		State(std::array::from_fn(|i| builder.add_constant(Word(IV[i] as u64))))
+		Self(std::array::from_fn(|i| builder.add_constant(Word(IV[i] as u64))))
 	}
 
 	/// Packs the state into 4 x 64-bit words.
@@ -148,7 +148,7 @@ fn compress_inner(
 	}
 
 	let w: &[Wire; 64] = (&*w).try_into().unwrap();
-	let mut state = state_in.clone();
+	let mut state = state_in;
 	for t in 0..64 {
 		state = round(builder, k[t], w[t], state);
 	}
@@ -170,7 +170,7 @@ fn compress_inner(
 ///
 /// The bytes are packed big-endian into 16 32-bit words, one per wire, with the high 32 bits left
 /// zero — matching the precondition on `m` documented in [`sha256_compress`].
-pub fn populate_message_block(w: &mut WitnessFiller, m: &[Wire; 16], bytes: [u8; 64]) {
+pub fn populate_message_block(w: &mut WitnessFiller<'_>, m: &[Wire; 16], bytes: [u8; 64]) {
 	for (wire, chunk) in m.iter().zip(bytes.chunks_exact(4)) {
 		let word = u32::from_be_bytes(chunk.try_into().unwrap());
 		w[*wire] = Word(word as u64);
@@ -443,8 +443,8 @@ mod tests {
 		let m: [Wire; 16] = std::array::from_fn(|_| circuit.add_witness());
 		let out = sha256_compress_2x(&circuit, State::new(state_in), m);
 		let out_inout: [Wire; 8] = std::array::from_fn(|_| circuit.add_inout());
-		for i in 0..8 {
-			circuit.assert_eq(format!("out[{i}]"), out.0[i], out_inout[i]);
+		for (i, &out_inout_wire) in out_inout.iter().enumerate() {
+			circuit.assert_eq(format!("out[{i}]"), out.0[i], out_inout_wire);
 		}
 
 		let circuit = circuit.build();

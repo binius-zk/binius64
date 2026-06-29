@@ -159,8 +159,8 @@ mod test {
 	/// combined FRI path. If `tamper`, the claim is corrupted and verification must fail. (The
 	/// multi-oracle path is exercised end-to-end by the channel tests.)
 	fn run_mlecheck_basefold_zk_prove_and_verify<F, P>(
-		witness: FieldBuffer<P>,
-		evaluation_point: Vec<F>,
+		witness: &FieldBuffer<P>,
+		evaluation_point: &[F],
 		tamper: bool,
 	) -> Result<()>
 	where
@@ -199,7 +199,7 @@ mod test {
 			0,
 			&ntt,
 			&merkle_prover,
-			witness.to_ref(),
+			&witness.to_ref(),
 			&mut commit_rng,
 		);
 
@@ -216,7 +216,7 @@ mod test {
 				*w = extrapolate_line_packed(*w, m, gamma_broadcast);
 			});
 
-		let eval_point_eq = eq_ind_partial_eval::<P>(&evaluation_point);
+		let eval_point_eq = eq_ind_partial_eval::<P>(evaluation_point);
 		let mut eval_claim = inner_product_buffers(&witness_prime, &eval_point_eq);
 		if tamper {
 			eval_claim += F::ONE;
@@ -230,7 +230,7 @@ mod test {
 		);
 		prove_mlecheck_basefold(
 			witness_prime,
-			&evaluation_point,
+			evaluation_point,
 			eval_claim,
 			Some(batch_challenge),
 			&[],
@@ -251,7 +251,7 @@ mod test {
 			merkle_prover.scheme(),
 			&[retrieved_commitment],
 			eval_claim,
-			&evaluation_point,
+			evaluation_point,
 			Some(batch_challenge_v),
 			&[],
 			&mut verifier_transcript,
@@ -273,7 +273,7 @@ mod test {
 		let witness = random_field_buffer::<P>(&mut rng, n_vars);
 		let evaluation_point = random_scalars(&mut rng, n_vars);
 
-		run_mlecheck_basefold_zk_prove_and_verify::<_, P>(witness, evaluation_point, false)
+		run_mlecheck_basefold_zk_prove_and_verify::<_, P>(&witness, &evaluation_point, false)
 			.unwrap();
 	}
 
@@ -287,7 +287,7 @@ mod test {
 		let evaluation_point = random_scalars(&mut rng, n_vars);
 
 		let result =
-			run_mlecheck_basefold_zk_prove_and_verify::<_, P>(witness, evaluation_point, true);
+			run_mlecheck_basefold_zk_prove_and_verify::<_, P>(&witness, &evaluation_point, true);
 		assert!(result.is_err());
 	}
 }

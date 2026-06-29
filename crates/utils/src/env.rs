@@ -2,8 +2,6 @@
 
 /// Read boolean flag from the environment variable.
 pub fn boolean_env_flag_set(flag: &str) -> bool {
-	match std::env::var(flag) {
-		Ok(val) => ["1", "on", "ON", "true", "TRUE", "yes", "YES"].contains(&val.as_str()),
-		Err(_) => false,
-	}
+	std::env::var(flag)
+		.is_ok_and(|val| ["1", "on", "ON", "true", "TRUE", "yes", "YES"].contains(&val.as_str()))
 }

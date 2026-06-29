@@ -172,9 +172,9 @@ mod tests {
 	fn test_compute_power_map_matrix_is_squaring() {
 		// The 2^1 power map is just squaring; column i must equal basis(i)^2.
 		let matrix = compute_power_map_matrix(1);
-		for i in 0..FIELD_BITS {
+		for (i, col) in matrix.iter().enumerate().take(FIELD_BITS) {
 			let basis = <GhashB128 as ExtensionField<BinaryField1b>>::basis(i);
-			assert_eq!(matrix[i], basis.square());
+			assert_eq!(*col, basis.square());
 		}
 	}
 

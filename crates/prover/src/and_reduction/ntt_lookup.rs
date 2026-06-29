@@ -107,7 +107,7 @@ impl NTTLookup {
 		});
 
 		let lookup = lde_mat.map(expand_subset_sums_array::<_, 8, 256>);
-		NTTLookup(Box::new(lookup))
+		Self(Box::new(lookup))
 	}
 
 	/// Computes the LDE of 64 1-bit coefficients using the precomputed lookup tables.
@@ -135,8 +135,8 @@ impl NTTLookup {
 
 		let mut out = Packed64xB8::default();
 		// This will get unrolled, so indexing arithmetic washes away.
-		for b in 0..8 {
-			let packed = &self.0[b % 2][input_bytes[b] as usize];
+		for (b, &input_byte) in input_bytes.iter().enumerate() {
+			let packed = &self.0[b % 2][input_byte as usize];
 			let bitvec = packed.to_underlier_ref();
 			let dst_bitvec = Divisible::<M128>::from_iter(
 				(0..4).map(|i| Divisible::<M128>::get(bitvec, i ^ (b / 2))),

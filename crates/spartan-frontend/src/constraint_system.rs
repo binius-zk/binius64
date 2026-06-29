@@ -27,11 +27,11 @@ pub enum WireKind {
 impl WireKind {
 	/// The witness segment a wire of this kind lives in: constants, inout, and derived wires occupy
 	/// the public segment; precommit and private wires occupy their own segments.
-	pub fn segment(self) -> WitnessSegment {
+	pub const fn segment(self) -> WitnessSegment {
 		match self {
-			WireKind::Constant | WireKind::InOut | WireKind::Derived => WitnessSegment::Public,
-			WireKind::Precommit => WitnessSegment::Precommit,
-			WireKind::Private => WitnessSegment::Private,
+			Self::Constant | Self::InOut | Self::Derived => WitnessSegment::Public,
+			Self::Precommit => WitnessSegment::Precommit,
+			Self::Private => WitnessSegment::Private,
 		}
 	}
 
@@ -57,7 +57,7 @@ impl ConstraintWire {
 	/// Creates a constraint wire referencing an inout wire by ID.
 	///
 	/// TODO: This is not ideal, and instead we should use some sort of allocator.
-	pub fn inout(id: u32) -> Self {
+	pub const fn inout(id: u32) -> Self {
 		Self {
 			kind: WireKind::InOut,
 			id,
@@ -65,7 +65,7 @@ impl ConstraintWire {
 	}
 
 	/// Creates a constraint wire referencing a precommit wire by ID.
-	pub fn precommit(id: u32) -> Self {
+	pub const fn precommit(id: u32) -> Self {
 		Self {
 			kind: WireKind::Precommit,
 			id,
@@ -78,7 +78,7 @@ pub struct Operand<W>(SmallVec<[W; 4]>);
 
 impl<W> Default for Operand<W> {
 	fn default() -> Self {
-		Operand(SmallVec::new())
+		Self(SmallVec::new())
 	}
 }
 
@@ -115,7 +115,7 @@ impl<W: Copy + Ord> Operand<W> {
 		&self.0
 	}
 
-	pub fn merge(&mut self, rhs: &Self) -> (Operand<W>, Operand<W>) {
+	pub fn merge(&mut self, rhs: &Self) -> (Self, Self) {
 		// Classic merge algorithm for sorted vectors, but where duplicate items cancel out.
 		let lhs = mem::take(&mut self.0);
 		let dst = &mut self.0;
@@ -123,8 +123,8 @@ impl<W: Copy + Ord> Operand<W> {
 		let mut lhs_iter = lhs.into_iter().peekable();
 		let mut rhs_iter = rhs.0.iter().copied().peekable();
 
-		let mut additions = Operand::default();
-		let mut removals = Operand::default();
+		let mut additions = Self::default();
+		let mut removals = Self::default();
 
 		loop {
 			match (lhs_iter.peek(), rhs_iter.peek()) {
@@ -161,7 +161,7 @@ impl<W: Copy + Ord> Operand<W> {
 
 impl<W> From<W> for Operand<W> {
 	fn from(value: W) -> Self {
-		Operand(smallvec![value])
+		Self(smallvec![value])
 	}
 }
 
@@ -191,21 +191,21 @@ pub struct WitnessIndex {
 }
 
 impl WitnessIndex {
-	pub fn public(index: u32) -> Self {
+	pub const fn public(index: u32) -> Self {
 		Self {
 			segment: WitnessSegment::Public,
 			index,
 		}
 	}
 
-	pub fn precommit(index: u32) -> Self {
+	pub const fn precommit(index: u32) -> Self {
 		Self {
 			segment: WitnessSegment::Precommit,
 			index,
 		}
 	}
 
-	pub fn private(index: u32) -> Self {
+	pub const fn private(index: u32) -> Self {
 		Self {
 			segment: WitnessSegment::Private,
 			index,
@@ -220,7 +220,7 @@ pub struct Witness<F> {
 }
 
 impl<F> Witness<F> {
-	pub fn new(public: Vec<F>, precommit: Vec<F>, private: Vec<F>) -> Self {
+	pub const fn new(public: Vec<F>, precommit: Vec<F>, private: Vec<F>) -> Self {
 		Self {
 			public,
 			precommit,
@@ -283,7 +283,7 @@ pub struct ConstraintSystem<F: Field> {
 
 impl<F: Field> ConstraintSystem<F> {
 	/// Create a new constraint system.
-	pub fn new(
+	pub const fn new(
 		constants: Vec<F>,
 		n_inout: u32,
 		n_precommit: u32,
@@ -307,23 +307,23 @@ impl<F: Field> ConstraintSystem<F> {
 		&self.constants
 	}
 
-	pub fn n_inout(&self) -> u32 {
+	pub const fn n_inout(&self) -> u32 {
 		self.n_inout
 	}
 
-	pub fn n_precommit(&self) -> u32 {
+	pub const fn n_precommit(&self) -> u32 {
 		self.n_precommit
 	}
 
-	pub fn n_private(&self) -> u32 {
+	pub const fn n_private(&self) -> u32 {
 		self.n_private
 	}
 
-	pub fn log_public(&self) -> u32 {
+	pub const fn log_public(&self) -> u32 {
 		self.log_public
 	}
 
-	pub fn n_public(&self) -> u32 {
+	pub const fn n_public(&self) -> u32 {
 		1 << self.log_public
 	}
 
@@ -331,7 +331,7 @@ impl<F: Field> ConstraintSystem<F> {
 		&self.mul_constraints
 	}
 
-	pub fn one_wire(&self) -> WitnessIndex {
+	pub const fn one_wire(&self) -> WitnessIndex {
 		WitnessIndex {
 			segment: WitnessSegment::Public,
 			index: self.one_wire_index,
@@ -423,7 +423,7 @@ impl<F: Field> WitnessLayout<F> {
 		}
 	}
 
-	pub fn with_blinding(self, info: BlindingInfo) -> Self {
+	pub fn with_blinding(self, info: &BlindingInfo) -> Self {
 		// Precommit is a ZK-hidden oracle that only needs dummy wires; no dummy mul constraints
 		// are added to it. Private gets both. Keep this in sync with
 		// `ConstraintSystemPadded::new` in the verifier crate.
@@ -443,52 +443,52 @@ impl<F: Field> WitnessLayout<F> {
 		}
 	}
 
-	pub fn public_size(&self) -> usize {
+	pub const fn public_size(&self) -> usize {
 		1 << self.log_public as usize
 	}
 
-	pub fn precommit_size(&self) -> usize {
+	pub const fn precommit_size(&self) -> usize {
 		1 << self.log_precommit as usize
 	}
 
-	pub fn private_size(&self) -> usize {
+	pub const fn private_size(&self) -> usize {
 		1 << self.log_private as usize
 	}
 
-	pub fn n_constants(&self) -> usize {
+	pub const fn n_constants(&self) -> usize {
 		self.constants.len()
 	}
 
-	pub fn n_inout(&self) -> usize {
+	pub const fn n_inout(&self) -> usize {
 		self.n_inout as usize
 	}
 
-	pub fn n_derived(&self) -> usize {
+	pub const fn n_derived(&self) -> usize {
 		self.n_derived as usize
 	}
 
-	pub fn n_precommit(&self) -> usize {
+	pub const fn n_precommit(&self) -> usize {
 		self.n_precommit as usize
 	}
 
-	pub fn n_private(&self) -> usize {
+	pub const fn n_private(&self) -> usize {
 		self.n_private as usize
 	}
 
-	pub fn log_public(&self) -> u32 {
+	pub const fn log_public(&self) -> u32 {
 		self.log_public
 	}
 
-	pub fn log_precommit(&self) -> u32 {
+	pub const fn log_precommit(&self) -> u32 {
 		self.log_precommit
 	}
 
-	pub fn log_private(&self) -> u32 {
+	pub const fn log_private(&self) -> u32 {
 		self.log_private
 	}
 
 	/// Returns the first index of the inout
-	pub fn inout_offset(&self) -> WitnessIndex {
+	pub const fn inout_offset(&self) -> WitnessIndex {
 		WitnessIndex::public(self.constants.len() as u32)
 	}
 

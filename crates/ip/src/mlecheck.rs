@@ -96,7 +96,7 @@ where
 		let challenge = channel.sample();
 
 		let round_coeffs = round_proof.recover(eval, z_i.clone());
-		eval = round_coeffs.evaluate(challenge.clone());
+		eval = round_coeffs.evaluate(&challenge);
 		challenges.push(challenge);
 	}
 
@@ -126,7 +126,7 @@ where
 
 	// Randomly mix the evaluation claim with the mask evaluation claim.
 	let batch_challenge = channel.sample();
-	let batch_eval = eval + batch_challenge.clone() * mask_eval.clone();
+	let batch_eval = eval + batch_challenge.clone() * mask_eval;
 
 	let SumcheckOutput {
 		eval: batch_eval_out,
@@ -261,8 +261,8 @@ mod tests {
 	fn test_recover_with_degree<F: Field>(mut rng: impl Rng, alpha: F, degree: usize) {
 		let coeffs = RoundCoeffs(random_scalars(&mut rng, degree + 1));
 
-		let v0 = coeffs.evaluate(F::ZERO);
-		let v1 = coeffs.evaluate(F::ONE);
+		let v0 = coeffs.evaluate(&F::ZERO);
+		let v1 = coeffs.evaluate(&F::ONE);
 		let eval = extrapolate_line_packed(v0, v1, alpha);
 
 		let proof = RoundProof::truncate(coeffs.clone());

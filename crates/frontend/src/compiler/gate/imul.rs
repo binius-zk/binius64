@@ -8,7 +8,7 @@ use crate::compiler::{
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
 
-pub fn shape() -> OpcodeShape {
+pub const fn shape() -> OpcodeShape {
 	OpcodeShape {
 		const_in: &[],
 		n_in: 2,

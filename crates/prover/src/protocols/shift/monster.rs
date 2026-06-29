@@ -32,7 +32,7 @@ use super::{
 /// Used in phase 1, thus returning an array of multilinear evaluations.
 #[instrument(skip_all, name = "build_h_parts")]
 pub fn build_h_parts<F, P: PackedField<Scalar = F>>(
-	r_zhat_prime: F,
+	r_zhat_prime: &F,
 ) -> [FieldBuffer<P>; SHIFT_VARIANT_COUNT]
 where
 	F: BinaryField + From<AESTowerField8b>,
@@ -151,7 +151,7 @@ where
 		intmul_operator_data.r_zhat_prime,
 	]
 	.map(|r_zhat_prime| {
-		let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
+		let l_tilde = lagrange_evals(&subspace, &r_zhat_prime);
 		evaluate_h_op(l_tilde.as_ref(), r_j, r_s)
 	});
 
@@ -162,10 +162,10 @@ where
 	let mut intmul_scalars = vec![F::ZERO; INTMUL_ARITY * SHIFT_VARIANT_COUNT * WORD_SIZE_BITS];
 
 	let populate_scalars = |scalars: &mut [F], arity: usize, lambda_powers: &[F], h_ops: &[F]| {
-		for operand_idx in 0..arity {
-			for op in 0..SHIFT_VARIANT_COUNT {
+		for (operand_idx, &lambda_power) in lambda_powers[..arity].iter().enumerate() {
+			for (op, &h_op) in h_ops[..SHIFT_VARIANT_COUNT].iter().enumerate() {
 				let operand_op_idx = operand_idx * SHIFT_VARIANT_COUNT + op;
-				let operand_op_scalar = lambda_powers[operand_idx] * h_ops[op];
+				let operand_op_scalar = lambda_power * h_op;
 				for s in 0..WORD_SIZE_BITS {
 					let operand_op_s_idx = operand_op_idx * WORD_SIZE_BITS + s;
 					scalars[operand_op_s_idx] = operand_op_scalar * r_s_tensor.as_ref()[s];
@@ -250,11 +250,11 @@ mod tests {
 			// Method 1: Succinct evaluation using `evaluate_h_op`
 			let subspace =
 				BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
-			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
+			let l_tilde = lagrange_evals(&subspace, &r_zhat_prime);
 			let succinct_evaluations = evaluate_h_op(l_tilde.as_ref(), &r_j, &r_s);
 
 			// Method 2: Direct evaluation via multilinear part
-			let h_parts = build_h_parts(r_zhat_prime);
+			let h_parts = build_h_parts(&r_zhat_prime);
 			let evaluation_point: Vec<F> = [r_j.clone(), r_s.clone()].concat();
 			let tensor = eq_ind_partial_eval::<P>(&evaluation_point);
 			let direct_evaluations = h_parts.map(|buf| inner_product_buffers(&buf, &tensor));

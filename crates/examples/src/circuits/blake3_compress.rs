@@ -77,7 +77,7 @@ impl ExampleCircuit for Blake3CompressExample {
 		Ok(Self { initial_cv, pairs })
 	}
 
-	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		let mut rng = StdRng::seed_from_u64(instance.seed.unwrap_or(DEFAULT_RANDOM_SEED));
 		let mut next = || Word(rng.next_u64());
 

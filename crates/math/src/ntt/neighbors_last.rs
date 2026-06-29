@@ -314,7 +314,7 @@ where
 
 	fn forward_transform<P: PackedField<Scalar = F>>(
 		&self,
-		mut data: FieldSliceMut<P>,
+		mut data: FieldSliceMut<'_, P>,
 		skip_early: usize,
 		skip_late: usize,
 	) {
@@ -340,7 +340,7 @@ where
 
 	fn inverse_transform<P: PackedField<Scalar = F>>(
 		&self,
-		_data: FieldSliceMut<P>,
+		_data: FieldSliceMut<'_, P>,
 		_skip_early: usize,
 		_skip_late: usize,
 	) {
@@ -372,7 +372,7 @@ pub struct NeighborsLastSingleThread<DC> {
 
 impl<DC> NeighborsLastSingleThread<DC> {
 	/// Convenience constructor which sets `log_base_len` to a reasonable default.
-	pub fn new(domain_context: DC) -> Self {
+	pub const fn new(domain_context: DC) -> Self {
 		Self {
 			domain_context,
 			log_base_len: DEFAULT_LOG_BASE_LEN,
@@ -385,7 +385,7 @@ impl<DC: DomainContext> AdditiveNTT for NeighborsLastSingleThread<DC> {
 
 	fn forward_transform<P: PackedField<Scalar = Self::Field>>(
 		&self,
-		mut data: FieldSliceMut<P>,
+		mut data: FieldSliceMut<'_, P>,
 		skip_early: usize,
 		skip_late: usize,
 	) {
@@ -413,7 +413,7 @@ impl<DC: DomainContext> AdditiveNTT for NeighborsLastSingleThread<DC> {
 
 	fn inverse_transform<P: PackedField<Scalar = Self::Field>>(
 		&self,
-		_data_orig: FieldSliceMut<P>,
+		_data_orig: FieldSliceMut<'_, P>,
 		_skip_early: usize,
 		_skip_late: usize,
 	) {
@@ -449,7 +449,7 @@ pub struct NeighborsLastMultiThread<DC> {
 
 impl<DC> NeighborsLastMultiThread<DC> {
 	/// Convenience constructor which sets `log_base_len` to a reasonable default.
-	pub fn new(domain_context: DC, log_num_shares: usize) -> Self {
+	pub const fn new(domain_context: DC, log_num_shares: usize) -> Self {
 		Self {
 			domain_context,
 			log_base_len: DEFAULT_LOG_BASE_LEN,
@@ -463,7 +463,7 @@ impl<DC: DomainContext + Sync> AdditiveNTT for NeighborsLastMultiThread<DC> {
 
 	fn forward_transform<P: PackedField<Scalar = Self::Field>>(
 		&self,
-		mut data: FieldSliceMut<P>,
+		mut data: FieldSliceMut<'_, P>,
 		skip_early: usize,
 		skip_late: usize,
 	) {
@@ -527,7 +527,7 @@ impl<DC: DomainContext + Sync> AdditiveNTT for NeighborsLastMultiThread<DC> {
 
 	fn inverse_transform<P: PackedField<Scalar = Self::Field>>(
 		&self,
-		_data_orig: FieldSliceMut<P>,
+		_data_orig: FieldSliceMut<'_, P>,
 		_skip_early: usize,
 		_skip_late: usize,
 	) {

@@ -47,7 +47,7 @@ impl<F: Field, P: PackedField<Scalar = F>> InOutCheckProver<P> {
 
 		let gruen32 = Gruen32::new(eval_point);
 		let public = witness.chunk(log_public, 0);
-		let public_eval = Self::evaluate_multilinear_with_gruen32(&gruen32, public);
+		let public_eval = Self::evaluate_multilinear_with_gruen32(&gruen32, &public);
 
 		Self {
 			log_public,
@@ -75,7 +75,7 @@ impl<F: Field, P: PackedField<Scalar = F>> InOutCheckProver<P> {
 			.witness
 			.chunk(n_vars, 1 << (self.witness.log_len() - n_vars - 1));
 
-		Self::evaluate_multilinear_with_gruen32(&self.gruen32, truncated_witness)
+		Self::evaluate_multilinear_with_gruen32(&self.gruen32, &truncated_witness)
 	}
 
 	/// Computes the round evaluation for the last m rounds.
@@ -95,7 +95,7 @@ impl<F: Field, P: PackedField<Scalar = F>> InOutCheckProver<P> {
 		inner_product_buffers(&witness_1, eq_expansion)
 	}
 
-	fn evaluate_multilinear_with_gruen32(gruen32: &Gruen32<P>, multilin: FieldSlice<P>) -> F {
+	fn evaluate_multilinear_with_gruen32(gruen32: &Gruen32<P>, multilin: &FieldSlice<'_, P>) -> F {
 		assert_eq!(gruen32.n_vars_remaining(), multilin.log_len());
 
 		if multilin.log_len() == 0 {
@@ -189,7 +189,7 @@ where
 		let n_vars = self.n_vars();
 		assert!(n_vars > 0);
 
-		let eval = coeffs.evaluate(challenge);
+		let eval = coeffs.evaluate(&challenge);
 
 		// Always fold the witness
 		fold_highest_var_inplace(&mut self.witness, challenge);

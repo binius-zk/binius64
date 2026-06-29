@@ -57,7 +57,7 @@ fn prove_with_hash_suite<H>(
 	log_inv_rate: usize,
 	zk: bool,
 	message: Option<&[u8]>,
-	witness: ValueVec,
+	witness: &ValueVec,
 	output: Option<&str>,
 ) -> Result<()>
 where
@@ -66,14 +66,14 @@ where
 {
 	if zk {
 		let (verifier, prover) = setup_zk::<H>(cs, log_inv_rate)?;
-		let proof_bytes = create_proof_zk(&prover, witness.clone(), message)?;
+		let proof_bytes = create_proof_zk(&prover, witness, message)?;
 		maybe_write_proof(&proof_bytes, output)?;
-		check_proof_zk(&verifier, &witness, proof_bytes, message)?;
+		check_proof_zk(&verifier, witness, proof_bytes, message)?;
 	} else {
 		let (verifier, prover) = setup::<H>(cs, log_inv_rate, None)?;
-		let proof_bytes = create_proof(&prover, witness.clone())?;
+		let proof_bytes = create_proof(&prover, witness)?;
 		maybe_write_proof(&proof_bytes, output)?;
-		check_proof(&verifier, &witness, proof_bytes)?;
+		check_proof(&verifier, witness, proof_bytes)?;
 	}
 	Ok(())
 }
@@ -84,7 +84,7 @@ fn verify_with_hash_suite<H>(
 	log_inv_rate: usize,
 	zk: bool,
 	message: Option<&[u8]>,
-	witness: ValueVec,
+	witness: &ValueVec,
 	proof_bytes: Vec<u8>,
 ) -> Result<()>
 where
@@ -93,10 +93,10 @@ where
 {
 	if zk {
 		let verifier = setup_zk_verifier::<H>(cs, log_inv_rate)?;
-		check_proof_zk(&verifier, &witness, proof_bytes, message)?;
+		check_proof_zk(&verifier, witness, proof_bytes, message)?;
 	} else {
 		let verifier = setup_verifier::<H>(cs, log_inv_rate)?;
-		check_proof(&verifier, &witness, proof_bytes)?;
+		check_proof(&verifier, witness, proof_bytes)?;
 	}
 	Ok(())
 }
@@ -558,7 +558,7 @@ where
 
 	/// Run the circuit with parsed ArgMatches (implementation).
 	#[allow(unused_variables)]
-	fn run_with_matches_impl(matches: clap::ArgMatches, circuit_name: &str) -> Result<()> {
+	fn run_with_matches_impl(matches: &clap::ArgMatches, circuit_name: &str) -> Result<()> {
 		// Initialize tracing once at the beginning for all commands. In perfetto mode the
 		// returned guard must be held for the duration of the program to flush the trace.
 		#[cfg(feature = "perfetto")]
@@ -577,7 +577,7 @@ where
 			// Try to extract params from the appropriate matches for richer context
 			// This will succeed for most commands (prove, stat, save, etc.)
 			// and fail gracefully for commands without params (like load-prove)
-			let matches_for_params = matches.subcommand().map(|(_, sub)| sub).unwrap_or(&matches);
+			let matches_for_params = matches.subcommand().map(|(_, sub)| sub).unwrap_or(matches);
 
 			if let Ok(params) = E::Params::from_arg_matches(matches_for_params)
 				&& let Some(param_summary) = E::param_summary(&params)
@@ -592,18 +592,18 @@ where
 
 		// Check if a subcommand was used
 		match matches.subcommand() {
-			Some(("prove", sub_matches)) => Self::run_prove(sub_matches.clone()),
-			Some(("stat", sub_matches)) => Self::run_stat(sub_matches.clone()),
-			Some(("composition", sub_matches)) => Self::run_composition(sub_matches.clone()),
+			Some(("prove", sub_matches)) => Self::run_prove(sub_matches),
+			Some(("stat", sub_matches)) => Self::run_stat(sub_matches),
+			Some(("composition", sub_matches)) => Self::run_composition(sub_matches),
 			Some(("check-snapshot", sub_matches)) => {
-				Self::run_check_snapshot_impl(sub_matches.clone(), circuit_name)
+				Self::run_check_snapshot_impl(sub_matches, circuit_name)
 			}
 			Some(("bless-snapshot", sub_matches)) => {
-				Self::run_bless_snapshot_impl(sub_matches.clone(), circuit_name)
+				Self::run_bless_snapshot_impl(sub_matches, circuit_name)
 			}
-			Some(("save", sub_matches)) => Self::run_save(sub_matches.clone()),
-			Some(("load-prove", sub_matches)) => Self::run_load_prove(sub_matches.clone()),
-			Some(("verify", sub_matches)) => Self::run_verify(sub_matches.clone()),
+			Some(("save", sub_matches)) => Self::run_save(sub_matches),
+			Some(("load-prove", sub_matches)) => Self::run_load_prove(sub_matches),
+			Some(("verify", sub_matches)) => Self::run_verify(sub_matches),
 			Some((cmd, _)) => anyhow::bail!("Unknown subcommand: {}", cmd),
 			None => {
 				// No subcommand - default to prove behavior for backward compatibility
@@ -612,7 +612,7 @@ where
 		}
 	}
 
-	fn run_prove(matches: clap::ArgMatches) -> Result<()> {
+	fn run_prove(matches: &clap::ArgMatches) -> Result<()> {
 		// Extract common arguments
 		let log_inv_rate = *matches
 			.get_one::<u32>("log_inv_rate")
@@ -634,8 +634,8 @@ where
 		let message = sign_message.as_deref().map(str::as_bytes);
 
 		// Parse Params and Instance from matches
-		let params = E::Params::from_arg_matches(&matches)?;
-		let instance = E::Instance::from_arg_matches(&matches)?;
+		let params = E::Params::from_arg_matches(matches)?;
+		let instance = E::Instance::from_arg_matches(matches)?;
 
 		// Build the circuit
 		let build_scope = tracing::info_span!("Building circuit").entered();
@@ -671,7 +671,7 @@ where
 					log_inv_rate as usize,
 					zk,
 					message,
-					witness,
+					&witness,
 					output,
 				)?;
 			}
@@ -680,9 +680,9 @@ where
 		Ok(())
 	}
 
-	fn run_stat(matches: clap::ArgMatches) -> Result<()> {
+	fn run_stat(matches: &clap::ArgMatches) -> Result<()> {
 		// Parse Params from matches
-		let params = E::Params::from_arg_matches(&matches)?;
+		let params = E::Params::from_arg_matches(matches)?;
 
 		// Build the circuit
 		let mut builder = CircuitBuilder::new();
@@ -696,9 +696,9 @@ where
 		Ok(())
 	}
 
-	fn run_composition(matches: clap::ArgMatches) -> Result<()> {
+	fn run_composition(matches: &clap::ArgMatches) -> Result<()> {
 		// Parse Params from matches
-		let params = E::Params::from_arg_matches(&matches)?;
+		let params = E::Params::from_arg_matches(matches)?;
 
 		// Build the circuit
 		let mut builder = CircuitBuilder::new();
@@ -712,9 +712,9 @@ where
 		Ok(())
 	}
 
-	fn run_check_snapshot_impl(matches: clap::ArgMatches, circuit_name: &str) -> Result<()> {
+	fn run_check_snapshot_impl(matches: &clap::ArgMatches, circuit_name: &str) -> Result<()> {
 		// Parse Params from matches
-		let params = E::Params::from_arg_matches(&matches)?;
+		let params = E::Params::from_arg_matches(matches)?;
 
 		// Build the circuit
 		let mut builder = CircuitBuilder::new();
@@ -727,9 +727,9 @@ where
 		Ok(())
 	}
 
-	fn run_bless_snapshot_impl(matches: clap::ArgMatches, circuit_name: &str) -> Result<()> {
+	fn run_bless_snapshot_impl(matches: &clap::ArgMatches, circuit_name: &str) -> Result<()> {
 		// Parse Params from matches
-		let params = E::Params::from_arg_matches(&matches)?;
+		let params = E::Params::from_arg_matches(matches)?;
 
 		// Build the circuit
 		let mut builder = CircuitBuilder::new();
@@ -742,7 +742,7 @@ where
 		Ok(())
 	}
 
-	fn run_save(matches: clap::ArgMatches) -> Result<()> {
+	fn run_save(matches: &clap::ArgMatches) -> Result<()> {
 		// Extract optional output paths
 		let cs_path = matches.get_one::<String>("cs_path").cloned();
 		let pub_witness_path = matches.get_one::<String>("pub_witness_path").cloned();
@@ -760,8 +760,8 @@ where
 		}
 
 		// Parse Params and Instance
-		let params = E::Params::from_arg_matches(&matches)?;
-		let instance = E::Instance::from_arg_matches(&matches)?;
+		let params = E::Params::from_arg_matches(matches)?;
+		let instance = E::Instance::from_arg_matches(matches)?;
 
 		// Build circuit
 		let mut builder = CircuitBuilder::new();
@@ -805,7 +805,7 @@ where
 		Ok(())
 	}
 
-	fn run_load_prove(matches: clap::ArgMatches) -> Result<()> {
+	fn run_load_prove(matches: &clap::ArgMatches) -> Result<()> {
 		// Extract file paths and parameters
 		let cs_path = matches
 			.get_one::<String>("cs_path")
@@ -847,18 +847,14 @@ where
 
 		// Load witness data
 		let witness_load_scope = tracing::info_span!("Loading witness data").entered();
-		let pub_witness_data: ValuesData = read_deserialized(pub_witness_path)?;
+		let pub_witness_data: ValuesData<'_> = read_deserialized(pub_witness_path)?;
 		tracing::info!("Public witness loaded from '{}'", pub_witness_path);
 
-		let non_pub_data: ValuesData = read_deserialized(non_pub_data_path)?;
+		let non_pub_data: ValuesData<'_> = read_deserialized(non_pub_data_path)?;
 		tracing::info!("Non-public data loaded from '{}'", non_pub_data_path);
 
 		// Reconstruct the full witness using the layout
-		let witness = ValueVec::new_from_data(
-			layout,
-			pub_witness_data.into_owned(),
-			non_pub_data.into_owned(),
-		)?;
+		let witness = ValueVec::new_from_data(layout, &pub_witness_data, &non_pub_data)?;
 		drop(witness_load_scope);
 
 		match compression {
@@ -866,14 +862,14 @@ where
 				tracing::info!("Using SHA256 compression for Merkle tree");
 				let (verifier, prover) =
 					setup::<StdHashSuite>(cs, log_inv_rate as usize, maybe_key_collection)?;
-				prove_verify(&verifier, &prover, witness)?;
+				prove_verify(&verifier, &prover, &witness)?;
 			}
 		};
 
 		Ok(())
 	}
 
-	fn run_verify(matches: clap::ArgMatches) -> Result<()> {
+	fn run_verify(matches: &clap::ArgMatches) -> Result<()> {
 		let proof_file = matches
 			.get_one::<String>("proof_file")
 			.expect("proof_file is required");
@@ -893,8 +889,8 @@ where
 		let (proof_bytes, _) = proof.into_owned();
 
 		// Parse Params and Instance from matches
-		let params = E::Params::from_arg_matches(&matches)?;
-		let instance = E::Instance::from_arg_matches(&matches)?;
+		let params = E::Params::from_arg_matches(matches)?;
+		let instance = E::Instance::from_arg_matches(matches)?;
 
 		// Build the circuit
 		let build_scope = tracing::info_span!("Building circuit").entered();
@@ -920,7 +916,7 @@ where
 					log_inv_rate as usize,
 					zk,
 					message,
-					witness,
+					&witness,
 					proof_bytes,
 				)?;
 			}
@@ -941,7 +937,7 @@ where
 	pub fn run(self) -> Result<()> {
 		let name = self.name.clone();
 		let matches = self.command.get_matches();
-		Self::run_with_matches_impl(matches, &name)
+		Self::run_with_matches_impl(&matches, &name)
 	}
 
 	/// Parse arguments and run with custom argument strings (useful for testing).
@@ -955,6 +951,6 @@ where
 	{
 		let name = self.name.clone();
 		let matches = self.command.try_get_matches_from(args)?;
-		Self::run_with_matches_impl(matches, &name)
+		Self::run_with_matches_impl(&matches, &name)
 	}
 }

@@ -13,7 +13,7 @@ use crate::compiler::{
 
 /// Creates a wire mapping from gate wires to sequential register indices.
 /// Returns the mapping and the total number of registers used.
-fn create_wire_mapping(gate_param: &GateParam) -> (FxHashMap<Wire, u32>, u32) {
+fn create_wire_mapping(gate_param: &GateParam<'_>) -> (FxHashMap<Wire, u32>, u32) {
 	// Wire ids are small integers, so a fast integer hasher beats the default SipHash here.
 	let mut wire_mapping = FxHashMap::default();
 	let mut wire_index = 0u32;

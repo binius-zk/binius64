@@ -15,7 +15,7 @@ use crate::util::num_biguint_from_u64_limbs;
 pub struct ModDivideHint;
 
 impl ModDivideHint {
-	pub fn new() -> Self {
+	pub const fn new() -> Self {
 		Self
 	}
 }
@@ -61,7 +61,7 @@ impl Hint for ModDivideHint {
 			let quotient = if numerator >= dividend {
 				(numerator - &dividend) / &modulus
 			} else {
-				zero.clone()
+				zero
 			};
 			(quotient, slope)
 		} else {
@@ -78,8 +78,12 @@ impl Hint for ModDivideHint {
 				quotient_words[i] = Word::from_u64(limb);
 			}
 		}
-		for i in quotient.iter_u64_digits().len()..*n_mod {
-			quotient_words[i] = Word::ZERO;
+		for word in quotient_words
+			.iter_mut()
+			.take(*n_mod)
+			.skip(quotient.iter_u64_digits().len())
+		{
+			*word = Word::ZERO;
 		}
 
 		// Fill slope limbs and zero the remainder.
@@ -88,8 +92,12 @@ impl Hint for ModDivideHint {
 				slope_words[i] = Word::from_u64(limb);
 			}
 		}
-		for i in slope.iter_u64_digits().len()..*n_mod {
-			slope_words[i] = Word::ZERO;
+		for word in slope_words
+			.iter_mut()
+			.take(*n_mod)
+			.skip(slope.iter_u64_digits().len())
+		{
+			*word = Word::ZERO;
 		}
 	}
 }

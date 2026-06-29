@@ -49,7 +49,7 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: DerefMut<Target = [P]>>(
 pub fn binary_fold_high<P, DataOut, DataIn>(
 	values: &mut FieldBuffer<P, DataOut>,
 	tensor: &FieldBuffer<P, DataIn>,
-	bits: impl RandomAccessSequence<bool> + Sync,
+	bits: &(impl RandomAccessSequence<bool> + Sync),
 ) where
 	P: PackedField,
 	DataOut: DerefMut<Target = [P]>,
@@ -144,7 +144,7 @@ mod tests {
 		let mut bits_buffer = FieldBuffer::<P>::from_values(&bits_scalars);
 
 		let mut binary_fold_result = FieldBuffer::<P>::zeros(n_vars - tensor_n_vars);
-		binary_fold_high(&mut binary_fold_result, &tensor, bits.as_slice());
+		binary_fold_high(&mut binary_fold_result, &tensor, &bits.as_slice());
 
 		for &scalar in point.iter().rev() {
 			fold_highest_var_inplace(&mut bits_buffer, scalar);
@@ -156,7 +156,7 @@ mod tests {
 	#[test]
 	fn test_binary_fold_high_conforms_to_regular_fold_high() {
 		for (n_vars, tensor_n_vars) in [(2, 0), (2, 1), (4, 4), (10, 3)] {
-			test_binary_fold_high_conforms_to_regular_fold_high_helper(n_vars, tensor_n_vars)
+			test_binary_fold_high_conforms_to_regular_fold_high_helper(n_vars, tensor_n_vars);
 		}
 	}
 }

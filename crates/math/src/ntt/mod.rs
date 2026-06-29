@@ -73,7 +73,7 @@ pub trait AdditiveNTT {
 	/// [DP24]: <https://eprint.iacr.org/2024/504>
 	fn forward_transform<P: PackedField<Scalar = Self::Field>>(
 		&self,
-		data: FieldSliceMut<P>,
+		data: FieldSliceMut<'_, P>,
 		skip_early: usize,
 		skip_late: usize,
 	);
@@ -88,7 +88,7 @@ pub trait AdditiveNTT {
 	/// - same as [`Self::forward_transform`]
 	fn inverse_transform<P: PackedField<Scalar = Self::Field>>(
 		&self,
-		data: FieldSliceMut<P>,
+		data: FieldSliceMut<'_, P>,
 		skip_early: usize,
 		skip_late: usize,
 	);

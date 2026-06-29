@@ -5,7 +5,7 @@ use std::iter;
 use binius_field::{BinaryField, Field, field::FieldOps};
 use itertools::iterate;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntMulOutput<F> {
 	pub eval_point: Vec<F>,
 	pub a_evals: Vec<F>,

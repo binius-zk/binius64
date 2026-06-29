@@ -16,8 +16,8 @@ struct PathSpecData {
 }
 
 impl PathSpecData {
-	fn new() -> Self {
-		PathSpecData {
+	const fn new() -> Self {
+		Self {
 			name: String::new(),
 			gates: Vec::new(),
 			parent: None,
@@ -35,8 +35,8 @@ struct GateBreakdown {
 }
 
 impl GateBreakdown {
-	fn count(gg: &GateGraph, gates: &[Gate]) -> GateBreakdown {
-		let mut breakdown = GateBreakdown {
+	fn count(gg: &GateGraph, gates: &[Gate]) -> Self {
+		let mut breakdown = Self {
 			by_opcode: BTreeMap::new(),
 		};
 		for gate in gates {
@@ -46,7 +46,7 @@ impl GateBreakdown {
 		breakdown
 	}
 
-	fn merge(mut self, other: &GateBreakdown) -> GateBreakdown {
+	fn merge(mut self, other: &Self) -> Self {
 		for (opcode, count) in &other.by_opcode {
 			*self.by_opcode.entry(opcode.clone()).or_insert(0) += count;
 		}
@@ -60,7 +60,7 @@ struct Cx {
 }
 
 impl Cx {
-	fn new() -> Self {
+	const fn new() -> Self {
 		Self {
 			data: BTreeMap::new(),
 			post_order: Vec::new(),
@@ -213,7 +213,7 @@ impl Cx {
 struct SubcircuitInfo {
 	name: String,
 	n_gates: usize,
-	children: Vec<SubcircuitInfo>,
+	children: Vec<Self>,
 	breakdown: GateBreakdown,
 }
 

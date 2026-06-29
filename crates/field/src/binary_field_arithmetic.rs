@@ -58,7 +58,7 @@ impl InvertOrZero for BinaryField1b {
 }
 
 #[allow(clippy::suspicious_arithmetic_impl)]
-impl Mul<BinaryField1b> for BinaryField1b {
+impl Mul<Self> for BinaryField1b {
 	type Output = Self;
 
 	#[inline]

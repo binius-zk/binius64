@@ -113,7 +113,7 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for MultilinearEval
 
 		assert!(self.n_vars() > 0);
 
-		let sum = coeffs.evaluate(challenge);
+		let sum = coeffs.evaluate(&challenge);
 
 		fold_highest_var_inplace(&mut self.witness, challenge);
 		self.gruen32.fold(challenge);
@@ -188,7 +188,7 @@ mod tests {
 			[witness],
 			|[a]: [P; 1]| a,
 			|[_a]: [P; 1]| P::zero(),
-			eval_point.clone(),
+			&eval_point,
 			eval_claim,
 		)
 		.unwrap();
@@ -243,7 +243,7 @@ mod tests {
 		// The reduced MLE-check evaluation is the witness multilinear at the challenge point.
 		assert_eq!(multilinear_evals[0], sumcheck_output.eval);
 
-		let mut reduced_point = sumcheck_output.challenges.clone();
+		let mut reduced_point = sumcheck_output.challenges;
 		reduced_point.reverse();
 		assert_eq!(evaluate(&witness, &reduced_point), multilinear_evals[0]);
 	}
@@ -267,7 +267,7 @@ mod tests {
 			let round = prover.execute().unwrap();
 			assert_eq!(prover.round_claim(), before);
 			let challenge = F::random(&mut rng);
-			let expected_next = round[0].evaluate(challenge);
+			let expected_next = round[0].evaluate(&challenge);
 			prover.fold(challenge).unwrap();
 			assert_eq!(prover.round_claim(), vec![expected_next]);
 		}

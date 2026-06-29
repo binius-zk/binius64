@@ -79,7 +79,7 @@ where
 	}
 
 	/// Returns the number of remaining layers to prove.
-	pub fn n_layers(&self) -> usize {
+	pub const fn n_layers(&self) -> usize {
 		self.layers.len()
 	}
 
@@ -101,7 +101,8 @@ where
 			Some(self)
 		};
 
-		let prover = bivariate_product_mle::new(split, claim.point, claim.eval)?;
+		let MultilinearEvalClaim { point, eval } = claim;
+		let prover = bivariate_product_mle::new(split, &point, eval)?;
 
 		Ok((prover, remaining))
 	}
@@ -215,7 +216,7 @@ pub fn batch_prove<F: Field, P: PackedField<Scalar = F>>(
 	let (_, claimed_products, eval_point) = (0..n_layers).try_fold(
 		(provers, claimed_products, eval_point),
 		|(provers, claimed_products, eval_point), _| {
-			batch_prove_layer(provers, claimed_products, eval_point, k, channel)
+			batch_prove_layer(provers, claimed_products, &eval_point, k, channel)
 		},
 	)?;
 
@@ -233,7 +234,7 @@ pub fn batch_prove<F: Field, P: PackedField<Scalar = F>>(
 fn batch_prove_layer<F: Field, P: PackedField<Scalar = F>>(
 	provers: Vec<ProdcheckProver<P>>,
 	claimed_products: Vec<F>,
-	eval_point: Vec<F>,
+	eval_point: &[F],
 	k: usize,
 	channel: &mut impl IPProverChannel<F>,
 ) -> Result<(Vec<ProdcheckProver<P>>, Vec<F>, Vec<F>), Error> {
@@ -312,8 +313,7 @@ fn batch_prove_layer<F: Field, P: PackedField<Scalar = F>>(
 	let buffer_0 = FieldBuffer::<P>::from_values(&vals_0);
 	let buffer_1 = FieldBuffer::<P>::from_values(&vals_1);
 
-	let outer_prover =
-		bivariate_product_mle::new([buffer_0, buffer_1], outer_coords.to_vec(), eval)?;
+	let outer_prover = bivariate_product_mle::new([buffer_0, buffer_1], outer_coords, eval)?;
 
 	let ProveSingleOutput {
 		multilinear_evals: outer_evals,
@@ -453,13 +453,10 @@ mod tests {
 			.collect();
 
 		// Create ProdcheckProver for each
-		let provers_and_products: Vec<(ProdcheckProver<P>, FieldBuffer<P>)> = witnesses
+		let (provers, individual_products): (Vec<_>, Vec<_>) = witnesses
 			.iter()
 			.map(|witness| ProdcheckProver::new(n_layers, witness.clone()))
-			.collect();
-
-		let (provers, individual_products): (Vec<_>, Vec<_>) =
-			provers_and_products.into_iter().unzip();
+			.unzip();
 
 		// Products are 0-variate (scalars): just get the single value
 		let claimed_products: Vec<P::Scalar> = individual_products
@@ -488,13 +485,9 @@ mod tests {
 
 		// Run batch_prove
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prover_output = batch_prove(
-			provers,
-			claimed_products,
-			selector_challenge.clone(),
-			&mut prover_transcript,
-		)
-		.unwrap();
+		let prover_output =
+			batch_prove(provers, claimed_products, selector_challenge, &mut prover_transcript)
+				.unwrap();
 
 		// Run verifier with n_layers layers
 		let mut verifier_transcript = prover_transcript.into_verifier();

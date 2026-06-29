@@ -78,14 +78,14 @@ impl Verifier {
 	}
 
 	/// The committed-multilinear shape this verifier expects.
-	pub fn layout(&self) -> &BatchCommitLayout {
+	pub const fn layout(&self) -> &BatchCommitLayout {
 		&self.layout
 	}
 
 	/// The precomputed BaseFold verifier compiler.
 	///
 	/// The prover reuses it so both sides share one set of FRI parameters.
-	pub fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<B128, Scheme> {
+	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<B128, Scheme> {
 		&self.iop_compiler
 	}
 

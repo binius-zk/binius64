@@ -56,7 +56,7 @@ pub trait ExampleBenchmark {
 /// Run a complete benchmark suite for a constraint system
 pub fn run_cs_benchmark<B: ExampleBenchmark>(
 	c: &mut Criterion,
-	benchmark: B,
+	benchmark: &B,
 	group_prefix: &str,
 	peak_alloc: &impl PeakMemAllocTrait,
 ) {
@@ -77,7 +77,7 @@ pub fn run_cs_benchmark<B: ExampleBenchmark>(
 	let instance = benchmark.create_instance();
 
 	let mut builder = CircuitBuilder::new();
-	let example = B::build_example_circuit(params.clone(), &mut builder).unwrap();
+	let example = B::build_example_circuit(params, &mut builder).unwrap();
 	let circuit = builder.build();
 	let cs = circuit.constraint_system().clone();
 	let (verifier, prover) = setup::<StdHashSuite>(cs, benchmark.log_inv_rate(), None).unwrap();
@@ -95,16 +95,14 @@ pub fn run_cs_benchmark<B: ExampleBenchmark>(
 	// Track memory for proof generation
 	peak_alloc.reset_peak_memory();
 	let mut prover_transcript_mem = ProverTranscript::new(StdChallenger::default());
-	prover
-		.prove(witness.clone(), &mut prover_transcript_mem)
-		.unwrap();
+	prover.prove(&witness, &mut prover_transcript_mem).unwrap();
 	let proof_bytes_mem = prover_transcript_mem.finalize();
 	let proof_peak_bytes = peak_alloc.get_peak_memory();
 
 	// Track memory for verification
 	peak_alloc.reset_peak_memory();
 	let mut verifier_transcript_mem =
-		VerifierTranscript::new(StdChallenger::default(), proof_bytes_mem.clone());
+		VerifierTranscript::new(StdChallenger::default(), proof_bytes_mem);
 	verifier
 		.verify(witness.public(), &mut verifier_transcript_mem)
 		.unwrap();
@@ -129,7 +127,7 @@ pub fn run_cs_benchmark<B: ExampleBenchmark>(
 					.unwrap();
 				circuit.populate_wire_witness(&mut filler).unwrap();
 				filler.into_value_vec()
-			})
+			});
 		});
 
 		group.finish();
@@ -145,11 +143,9 @@ pub fn run_cs_benchmark<B: ExampleBenchmark>(
 		group.bench_function(BenchmarkId::from_parameter(&bench_name), |b| {
 			b.iter(|| {
 				let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-				prover
-					.prove(witness.clone(), &mut prover_transcript)
-					.unwrap();
+				prover.prove(&witness, &mut prover_transcript).unwrap();
 				prover_transcript
-			})
+			});
 		});
 
 		group.finish();
@@ -157,9 +153,7 @@ pub fn run_cs_benchmark<B: ExampleBenchmark>(
 
 	// Generate proof for verification and size measurement
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-	prover
-		.prove(witness.clone(), &mut prover_transcript)
-		.unwrap();
+	prover.prove(&witness, &mut prover_transcript).unwrap();
 	let proof_bytes = prover_transcript.finalize();
 	let proof_size = proof_bytes.len();
 
@@ -177,8 +171,8 @@ pub fn run_cs_benchmark<B: ExampleBenchmark>(
 				verifier
 					.verify(witness.public(), &mut verifier_transcript)
 					.unwrap();
-				verifier_transcript.finalize().unwrap()
-			})
+				verifier_transcript.finalize().unwrap();
+			});
 		});
 
 		group.finish();

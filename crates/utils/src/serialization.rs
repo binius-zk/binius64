@@ -281,9 +281,10 @@ impl<T: DeserializeBytes> DeserializeBytes for Option<T> {
 	where
 		Self: Sized,
 	{
-		Ok(match bool::deserialize(&mut read_buf)? {
-			true => Some(T::deserialize(&mut read_buf)?),
-			false => None,
+		Ok(if bool::deserialize(&mut read_buf)? {
+			Some(T::deserialize(&mut read_buf)?)
+		} else {
+			None
 		})
 	}
 }

@@ -175,7 +175,7 @@ where
 
 		let sums = round_coeffs
 			.iter()
-			.map(|coeffs| coeffs.evaluate(challenge))
+			.map(|coeffs| coeffs.evaluate(&challenge))
 			.collect::<Vec<F>>();
 
 		self.switchover.fold(challenge);

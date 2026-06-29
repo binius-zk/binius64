@@ -126,7 +126,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 	pub fn encode_batch<P, NTT>(
 		&self,
 		ntt: &NTT,
-		data: FieldSlice<P>,
+		data: &FieldSlice<'_, P>,
 		log_batch_size: usize,
 	) -> FieldBuffer<P>
 	where
@@ -240,7 +240,7 @@ mod tests {
 		let message = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
 
 		// Test the new encode_batch interface
-		let encoded_buffer = rs_code.encode_batch(&ntt, message.to_ref(), log_batch_size);
+		let encoded_buffer = rs_code.encode_batch(&ntt, &message.to_ref(), log_batch_size);
 
 		// Method 2: Reference implementation - apply NTT with zero-padded coefficients to the
 		// bit-reversal permuted message.
@@ -329,8 +329,8 @@ mod tests {
 			msg_large.set(i, val);
 		}
 
-		let enc_small = rs_small.encode_batch(&ntt, msg_small.to_ref(), 0);
-		let enc_large = rs_large.encode_batch(&ntt, msg_large.to_ref(), 0);
+		let enc_small = rs_small.encode_batch(&ntt, &msg_small.to_ref(), 0);
+		let enc_large = rs_large.encode_batch(&ntt, &msg_large.to_ref(), 0);
 
 		let small_scalars = enc_small.iter_scalars().collect::<Vec<_>>();
 		let large_scalars = enc_large.iter_scalars().collect::<Vec<_>>();

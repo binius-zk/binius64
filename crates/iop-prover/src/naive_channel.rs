@@ -60,7 +60,7 @@ where
 	///
 	/// * `transcript` - The prover transcript for Fiat-Shamir (borrowed mutably)
 	/// * `oracle_specs` - Specifications for each oracle to be committed
-	pub fn new(
+	pub const fn new(
 		transcript: &'a mut ProverTranscript<Challenger_>,
 		oracle_specs: Vec<OracleSpec>,
 	) -> Self {
@@ -74,7 +74,7 @@ where
 	}
 
 	/// Returns a reference to the underlying transcript.
-	pub fn transcript(&self) -> &ProverTranscript<Challenger_> {
+	pub const fn transcript(&self) -> &ProverTranscript<Challenger_> {
 		self.transcript
 	}
 
@@ -123,7 +123,7 @@ where
 		&self.oracle_specs[self.next_oracle_index..]
 	}
 
-	fn send_oracle(&mut self, buffer: FieldSlice<P>) -> Self::Oracle {
+	fn send_oracle(&mut self, buffer: FieldSlice<'_, P>) -> Self::Oracle {
 		let index = self.next_oracle_index;
 		assert!(
 			index < self.oracle_specs.len(),

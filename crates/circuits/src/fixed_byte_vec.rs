@@ -119,7 +119,7 @@ impl ByteVec {
 	///
 	/// # Panics
 	/// * If `len_bytes` lies outside `self.len_range`.
-	pub fn populate_len_bytes(&self, w: &mut WitnessFiller, len_bytes: usize) {
+	pub fn populate_len_bytes(&self, w: &mut WitnessFiller<'_>, len_bytes: usize) {
 		self.assert_len_in_range(len_bytes);
 		w[self.len_bytes] = Word(len_bytes as u64);
 	}
@@ -139,7 +139,7 @@ impl ByteVec {
 	///
 	/// # Panics
 	/// * If bytes.len() exceeds self.max_len
-	pub fn populate_bytes_le(&self, w: &mut WitnessFiller, bytes: &[u8]) {
+	pub fn populate_bytes_le(&self, w: &mut WitnessFiller<'_>, bytes: &[u8]) {
 		self.assert_len_in_range(bytes.len());
 		pack_bytes_into_wires_le(w, &self.data, bytes);
 		w[self.len_bytes] = Word(bytes.len() as u64);
@@ -152,7 +152,7 @@ impl ByteVec {
 	///
 	/// # Panics
 	/// Panics if `data_bytes.len()` > `self.max_len_bytes()`
-	pub fn populate_data(&self, w: &mut WitnessFiller, data_bytes: &[u8]) {
+	pub fn populate_data(&self, w: &mut WitnessFiller<'_>, data_bytes: &[u8]) {
 		assert!(
 			data_bytes.len() <= self.max_len_bytes(),
 			"vector data length {} exceeds maximum {}",
@@ -178,7 +178,7 @@ impl ByteVec {
 	}
 
 	/// Returns the maximum length of this vector in bytes.
-	pub fn max_len_bytes(&self) -> usize {
+	pub const fn max_len_bytes(&self) -> usize {
 		self.data.len() * 8
 	}
 
@@ -186,11 +186,11 @@ impl ByteVec {
 	///
 	/// # Panics
 	/// * If num_wires exceeds self.data.len()
-	pub fn truncate(&self, b: &CircuitBuilder, num_wires: usize) -> ByteVec {
+	pub fn truncate(&self, b: &CircuitBuilder, num_wires: usize) -> Self {
 		assert!(num_wires <= self.data.len(), "num_wires must be less than self.data.len()");
 
 		let trimmed_wires = self.data[0..num_wires].to_vec();
-		ByteVec::new_const_len(b, trimmed_wires, num_wires << 3)
+		Self::new_const_len(b, trimmed_wires, num_wires << 3)
 	}
 
 	/// Extracts a slice at a compile-time constant range.
@@ -225,7 +225,7 @@ impl ByteVec {
 	/// let slice = byte_vec.slice_const_range(&builder, 3..11);
 	/// // slice will have capacity of 16 bytes (2 words) but length of 8 bytes
 	/// ```
-	pub fn slice_const_range(&self, b: &CircuitBuilder, range: Range<usize>) -> ByteVec {
+	pub fn slice_const_range(&self, b: &CircuitBuilder, range: Range<usize>) -> Self {
 		assert!(range.start <= range.end, "Invalid range: start > end");
 		assert!(
 			range.end <= *self.len_range.end(),
@@ -238,7 +238,7 @@ impl ByteVec {
 
 		// Return early if slice is empty
 		if slice_len == 0 {
-			return ByteVec::new_const_len(b, Vec::new(), 0);
+			return Self::new_const_len(b, Vec::new(), 0);
 		}
 
 		// Validate that `range.end <= self.len_bytes` at runtime. For a const-length vec
@@ -252,7 +252,7 @@ impl ByteVec {
 		}
 
 		let output_words = extract_const_range(b, &self.data, range);
-		ByteVec::new_const_len(b, output_words, slice_len)
+		Self::new_const_len(b, output_words, slice_len)
 	}
 }
 

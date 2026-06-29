@@ -38,9 +38,9 @@ pub fn add_with_carry_out(builder: &CircuitBuilder, a: &BigUint, b: &BigUint) ->
 	);
 
 	let mut accumulator = vec![vec![]; a.limbs.len()];
-	for i in 0..a.limbs.len() {
-		accumulator[i].push(a.limbs[i]);
-		accumulator[i].push(b.limbs[i]);
+	for (acc, (a_limb, b_limb)) in accumulator.iter_mut().zip(a.limbs.iter().zip(&b.limbs)) {
+		acc.push(*a_limb);
+		acc.push(*b_limb);
 	}
 
 	let (sum, carry_out) = compute_stack_adds_with_carry_outs(builder, &accumulator);
@@ -50,7 +50,7 @@ pub fn add_with_carry_out(builder: &CircuitBuilder, a: &BigUint, b: &BigUint) ->
 		carry_out
 			.first()
 			.copied()
-			.unwrap_or(builder.add_constant(Word::ZERO)),
+			.unwrap_or_else(|| builder.add_constant(Word::ZERO)),
 	)
 }
 

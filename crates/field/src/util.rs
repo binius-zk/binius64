@@ -111,8 +111,8 @@ mod tests {
 		let generator = BinaryField128bGhash::MULTIPLICATIVE_GENERATOR;
 		let power_values: Vec<_> = powers(generator).take(10).collect();
 
-		for i in 0..10 {
-			assert_eq!(power_values[i], generator.pow(i as u64));
+		for (i, value) in power_values.iter().enumerate().take(10) {
+			assert_eq!(*value, generator.pow(i as u64));
 		}
 	}
 

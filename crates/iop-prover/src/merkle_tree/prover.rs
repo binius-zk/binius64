@@ -67,7 +67,7 @@ where
 		committed: &Self::Committed,
 		layer_depth: usize,
 		index: usize,
-		proof: &mut TranscriptWriter<B>,
+		proof: &mut TranscriptWriter<'_, B>,
 	) {
 		let salt = committed.get_salt(index >> layer_depth);
 		proof.write_slice(salt);

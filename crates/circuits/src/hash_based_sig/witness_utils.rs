@@ -65,9 +65,9 @@ pub fn extract_auth_path(tree_levels: &[Vec<[u8; 32]>], leaf_index: usize) -> Ve
 	let mut idx = leaf_index;
 	let tree_height = tree_levels.len() - 1;
 
-	for level in 0..tree_height {
+	for level in tree_levels.iter().take(tree_height) {
 		let sibling_idx = idx ^ 1;
-		auth_path.push(tree_levels[level][sibling_idx]);
+		auth_path.push(level[sibling_idx]);
 		idx /= 2;
 	}
 
@@ -175,7 +175,7 @@ impl ValidatorSignatureData {
 		let (tree_levels, root) = build_merkle_tree(param_bytes, &leaves);
 		let auth_path = extract_auth_path(&tree_levels, epoch as usize);
 
-		ValidatorSignatureData {
+		Self {
 			root,
 			nonce,
 			signature_hashes,

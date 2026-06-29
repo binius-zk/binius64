@@ -78,7 +78,7 @@ impl ExampleBenchmark for Blake2bBenchmark {
 
 fn bench_blake2b_hash(c: &mut Criterion) {
 	let benchmark = Blake2bBenchmark::new();
-	run_cs_benchmark(c, benchmark, "blake2b", &BLAKE2B_PEAK_ALLOC);
+	run_cs_benchmark(c, &benchmark, "blake2b", &BLAKE2B_PEAK_ALLOC);
 }
 
 criterion_group!(benches, bench_blake2b_hash);

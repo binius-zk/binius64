@@ -78,7 +78,7 @@ impl ExampleBenchmark for KeccakBenchmark {
 
 fn bench_keccak(c: &mut Criterion) {
 	let benchmark = KeccakBenchmark::new();
-	run_cs_benchmark(c, benchmark, "keccak", &KECCAK_PEAK_ALLOC);
+	run_cs_benchmark(c, &benchmark, "keccak", &KECCAK_PEAK_ALLOC);
 }
 
 criterion_group!(keccak, bench_keccak);

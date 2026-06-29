@@ -42,10 +42,10 @@ where
 			packing_name.as_ref()
 		),
 		|b| {
-			b.iter(|| commit_field_buffer(&merkle_prover, buffer.to_ref(), LOG_ELEMS_IN_LEAF));
+			b.iter(|| commit_field_buffer(&merkle_prover, &buffer.to_ref(), LOG_ELEMS_IN_LEAF));
 		},
 	);
-	group.finish()
+	group.finish();
 }
 
 fn bench_sha256_merkle_tree(c: &mut Criterion) {

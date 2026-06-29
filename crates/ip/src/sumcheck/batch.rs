@@ -47,7 +47,7 @@ where
 	// Random linear-combination coefficient that binds all sum claims together.
 	let batch_coeff = channel.sample();
 	// Combine the individual sum claims into a single scalar for sumcheck verification.
-	let sum = evaluate_univariate(sums, batch_coeff.clone());
+	let sum = evaluate_univariate(sums, &batch_coeff);
 
 	let SumcheckOutput { eval, challenges } =
 		sumcheck::verify::<F, C>(n_vars, degree, sum, channel)?;
@@ -77,7 +77,7 @@ where
 	// Random linear-combination coefficient that binds all eval claims together.
 	let batch_coeff = channel.sample();
 	// Combine the individual eval claims into a single scalar for MLE-check verification.
-	let eval = evaluate_univariate(evals, batch_coeff.clone());
+	let eval = evaluate_univariate(evals, &batch_coeff);
 
 	let SumcheckOutput { eval, challenges } =
 		mlecheck::verify::<F, C>(point, degree, eval, channel)?;

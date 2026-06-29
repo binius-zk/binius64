@@ -60,7 +60,7 @@ where
 	Output<H::LeafHash>: SerializeBytes,
 {
 	/// Constructs a ZK prover from a [`ZKVerifier`].
-	pub fn setup(zk_verifier: ZKVerifier<H>) -> Result<Self, Error> {
+	pub fn setup(zk_verifier: &ZKVerifier<H>) -> Result<Self, Error> {
 		let key_collection = {
 			let _guard = tracing::debug_span!("Build key collection").entered();
 			build_key_collection(zk_verifier.inner_iop_verifier().constraint_system())
@@ -72,7 +72,7 @@ where
 	/// dominant key-collection build. Private: external callers use [`Self::setup`], or
 	/// [`DeserializeBytes::deserialize`] to reuse a serialized prover.
 	fn setup_with_key_collection(
-		zk_verifier: ZKVerifier<H>,
+		zk_verifier: &ZKVerifier<H>,
 		key_collection: KeyCollection,
 	) -> Result<Self, Error> {
 		// Build the inner IOPProver.
@@ -108,7 +108,7 @@ where
 				.blinding_info()
 				.clone(),
 		);
-		let outer_layout = outer_layout.with_blinding(outer_cs.blinding_info().clone());
+		let outer_layout = outer_layout.with_blinding(outer_cs.blinding_info());
 
 		let outer_iop_prover = binius_spartan_prover::IOPProver::new(outer_cs);
 
@@ -137,25 +137,22 @@ where
 	}
 
 	/// Returns a reference to the inner IOP prover.
-	pub fn inner_iop_prover(&self) -> &IOPProver {
+	pub const fn inner_iop_prover(&self) -> &IOPProver {
 		&self.inner_iop_prover
 	}
 
 	/// Returns a reference to the KeyCollection.
-	pub fn key_collection(&self) -> &crate::protocols::shift::KeyCollection {
+	pub const fn key_collection(&self) -> &crate::protocols::shift::KeyCollection {
 		self.inner_iop_prover.key_collection()
 	}
 
 	/// Generates a ZK proof for a witness.
 	pub fn prove<Challenger_: Challenger>(
 		&self,
-		witness: ValueVec,
+		witness: &ValueVec,
 		mut rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
-		// Clone public words before moving witness into prove().
-		let public_words = witness.public().to_vec();
-
 		// Create BaseFold prover channel and wrap with outer prover.
 		let basefold_channel = self.basefold_compiler.create_channel(transcript, &mut rng);
 		let mut wrapped_channel = ZKWrappedProverChannel::new(
@@ -167,7 +164,7 @@ where
 				let inner_iop_verifier = &self.inner_iop_verifier;
 				move |replay_channel: &mut ReplayChannel<'_, B128>| {
 					inner_iop_verifier
-						.verify(&public_words, replay_channel)
+						.verify(witness.public(), replay_channel)
 						.expect("replay verification should not fail");
 				}
 			},
@@ -210,7 +207,7 @@ where
 	/// [`Self::prove`] logic. See [`binius_verifier::signature`] for details.
 	pub fn prove_sig<Challenger_: Challenger>(
 		&self,
-		witness: ValueVec,
+		witness: &ValueVec,
 		message: &[u8],
 		rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
@@ -267,7 +264,7 @@ where
 		let key_collection = KeyCollection::deserialize(&mut read_buf)?;
 		let zk_verifier = ZKVerifier::setup(constraint_system, log_inv_rate)
 			.map_err(|_| SerializationError::InvalidConstruction { name: "ZKProver" })?;
-		Self::setup_with_key_collection(zk_verifier, key_collection)
+		Self::setup_with_key_collection(&zk_verifier, key_collection)
 			.map_err(|_| SerializationError::InvalidConstruction { name: "ZKProver" })
 	}
 }

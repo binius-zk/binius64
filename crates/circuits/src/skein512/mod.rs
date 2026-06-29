@@ -106,7 +106,7 @@ impl Skein512 {
 		let mut current_cv = config_ubi_out;
 
 		// Process each message block
-		for block_idx in 0..n_blocks {
+		for (block_idx, &message_block) in message.iter().enumerate().take(n_blocks) {
 			// Calculate position: number of bytes processed so far INCLUDING this block
 			let pos_end = ((block_idx + 1) * 64) as u64;
 
@@ -123,7 +123,7 @@ impl Skein512 {
 			let t_msg_wires = [t_low, t_high];
 
 			// Message UBI: CV_{i+1} = UBI(CV_i, T_msg, message_block_i)
-			current_cv = ubi_block(builder, current_cv, t_msg_wires, message[block_idx]);
+			current_cv = ubi_block(builder, current_cv, t_msg_wires, message_block);
 		}
 
 		// ---- Final Message Block (Empty) ----
@@ -218,7 +218,7 @@ impl Skein512 {
 	}
 
 	/// Get the digest wires
-	pub fn digest_wires(&self) -> [Wire; 8] {
+	pub const fn digest_wires(&self) -> [Wire; 8] {
 		self.digest
 	}
 
@@ -264,7 +264,7 @@ fn mix(circuit: &CircuitBuilder, a: Wire, b: Wire, r: u32) -> (Wire, Wire) {
 /// This corresponds to the Threefish permutation from Table 3 of the Skein specification
 /// for Nw=8 (8 words). The permutation is applied after the MIX operations in each round
 /// to ensure proper diffusion across the state.
-fn permute_512(_circuit: &CircuitBuilder, x: [Wire; 8]) -> [Wire; 8] {
+const fn permute_512(_circuit: &CircuitBuilder, x: [Wire; 8]) -> [Wire; 8] {
 	[x[2], x[1], x[4], x[7], x[6], x[5], x[0], x[3]]
 }
 
@@ -468,9 +468,9 @@ impl Threefish512Block {
 		let mut k_vec = Vec::with_capacity(9);
 		let mut sum = key[0];
 		k_vec.push(key[0]);
-		for i in 1..8 {
-			k_vec.push(key[i]);
-			sum = circuit.bxor(sum, key[i]);
+		for &key_word in key.iter().skip(1) {
+			k_vec.push(key_word);
+			sum = circuit.bxor(sum, key_word);
 		}
 		k_vec.push(circuit.bxor(c240, sum));
 		let k: [Wire; 9] = k_vec.try_into().expect("Vec to array conversion");
@@ -1110,8 +1110,8 @@ mod tests {
 				&circuit, v_in_wires, k_wires, t_wires, group_idx,
 			);
 
-			for i in 0..8 {
-				let expected_wire = circuit.add_constant(Word(expected[i]));
+			for (i, &expected_val) in expected.iter().enumerate() {
+				let expected_wire = circuit.add_constant(Word(expected_val));
 				circuit.assert_eq(format!("{}[{}]", description, i), comp.v_out[i], expected_wire);
 			}
 
@@ -1182,8 +1182,8 @@ mod tests {
 
 			let comp = Threefish512Block::new(&circuit, key_wires, tweak_wires, block_wires);
 
-			for i in 0..8 {
-				let expected_wire = circuit.add_constant(Word(expected[i]));
+			for (i, &expected_val) in expected.iter().enumerate() {
+				let expected_wire = circuit.add_constant(Word(expected_val));
 				circuit.assert_eq(format!("{}[{}]", description, i), comp.v_out[i], expected_wire);
 			}
 

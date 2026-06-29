@@ -51,7 +51,7 @@ fn test_ip_proof_size() {
 		.expect("recv_oracle on size-tracking channel should succeed");
 	verifier
 		.iop_verifier()
-		.verify(precommit_oracle, public_elems, &mut channel)
+		.verify(precommit_oracle, &public_elems, &mut channel)
 		.expect("verify with size tracking channel should succeed");
 	let proof_size = channel.proof_size();
 

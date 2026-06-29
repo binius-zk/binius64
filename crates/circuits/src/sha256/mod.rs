@@ -163,7 +163,7 @@ impl Sha256 {
 			});
 			let state_out = sha256_compress(
 				&builder.subcircuit(format!("compress[{block_no}]")),
-				states[block_no].clone(),
+				states[block_no],
 				m,
 			);
 			states.push(state_out);
@@ -360,7 +360,7 @@ impl Sha256 {
 	}
 
 	/// Returns the maximum message length, in bytes.
-	pub fn max_len_bytes(&self) -> usize {
+	pub const fn max_len_bytes(&self) -> usize {
 		self.message.len() << (LOG_WORD_SIZE_BITS - LOG_BYTE_BITS)
 	}
 
@@ -592,7 +592,7 @@ pub fn sha256_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 
 			sha256_compress(
 				&builder.subcircuit(format!("sha256_fixed_compress[{}]", block_idx)),
-				state.clone(),
+				state,
 				block_message,
 			)
 		},
@@ -613,7 +613,7 @@ mod tests {
 
 	use super::*;
 
-	fn mk_circuit(b: &mut CircuitBuilder, max_len: usize) -> Sha256 {
+	fn mk_circuit(b: &CircuitBuilder, max_len: usize) -> Sha256 {
 		let len = b.add_witness();
 		let digest: [Wire; 4] = std::array::from_fn(|_| b.add_inout());
 		let message = (0..max_len).map(|_| b.add_inout()).collect();
@@ -622,8 +622,8 @@ mod tests {
 
 	#[test]
 	fn full_sha256() {
-		let mut b = CircuitBuilder::new();
-		let c = mk_circuit(&mut b, 256);
+		let b = CircuitBuilder::new();
+		let c = mk_circuit(&b, 256);
 		let circuit = b.build();
 		let mut w = circuit.new_witness_filler();
 		c.populate_len_bytes(&mut w, 3);
@@ -637,8 +637,8 @@ mod tests {
 
 	#[test]
 	fn full_sha256_multi_block() {
-		let mut b = CircuitBuilder::new();
-		let c = mk_circuit(&mut b, 256);
+		let b = CircuitBuilder::new();
+		let c = mk_circuit(&b, 256);
 		let circuit = b.build();
 		let mut w = circuit.new_witness_filler();
 
@@ -654,8 +654,8 @@ mod tests {
 
 	// Helper function to run SHA-256 test with given input and expected digest
 	fn test_sha256_with_input(message_bytes: &[u8], expected_digest: [u8; 32]) {
-		let mut b = CircuitBuilder::new();
-		let c = mk_circuit(&mut b, 256);
+		let b = CircuitBuilder::new();
+		let c = mk_circuit(&b, 256);
 		let circuit = b.build();
 		let cs = circuit.constraint_system();
 		let mut w = circuit.new_witness_filler();
@@ -831,8 +831,8 @@ mod tests {
 	#[test]
 	fn test_bogus_length_rejection() {
 		// Test that providing wrong length causes circuit to reject
-		let mut b = CircuitBuilder::new();
-		let c = mk_circuit(&mut b, 256);
+		let b = CircuitBuilder::new();
+		let c = mk_circuit(&b, 256);
 		let circuit = b.build();
 		let mut w = circuit.new_witness_filler();
 
@@ -854,8 +854,8 @@ mod tests {
 	fn test_length_exceeds_max_rejection() {
 		// Test that providing a length > max_len_bytes causes circuit to reject
 		let max_len = 3;
-		let mut b = CircuitBuilder::new();
-		let c = mk_circuit(&mut b, max_len);
+		let b = CircuitBuilder::new();
+		let c = mk_circuit(&b, max_len);
 		let circuit = b.build();
 		let mut w = circuit.new_witness_filler();
 
@@ -876,8 +876,8 @@ mod tests {
 	#[test]
 	fn test_invalid_digest_rejection() {
 		// Test that providing wrong digest causes circuit to reject
-		let mut b = CircuitBuilder::new();
-		let c = mk_circuit(&mut b, 256);
+		let b = CircuitBuilder::new();
+		let c = mk_circuit(&b, 256);
 		let circuit = b.build();
 		let mut w = circuit.new_witness_filler();
 
@@ -895,8 +895,8 @@ mod tests {
 	#[test]
 	fn test_wrong_message_content() {
 		// Test that providing wrong message content causes circuit to reject
-		let mut b = CircuitBuilder::new();
-		let c = mk_circuit(&mut b, 256);
+		let b = CircuitBuilder::new();
+		let c = mk_circuit(&b, 256);
 		let circuit = b.build();
 		let mut w = circuit.new_witness_filler();
 
@@ -934,8 +934,8 @@ mod tests {
 		];
 
 		for (max_len, description) in test_cases {
-			let mut b = CircuitBuilder::new();
-			let c = mk_circuit(&mut b, max_len);
+			let b = CircuitBuilder::new();
+			let c = mk_circuit(&b, max_len);
 			let circuit = b.build();
 
 			assert_eq!(
@@ -964,8 +964,8 @@ mod tests {
 
 	#[test]
 	fn test_sha256_to_le_wires() {
-		let mut b = CircuitBuilder::new();
-		let c = mk_circuit(&mut b, 64);
+		let b = CircuitBuilder::new();
+		let c = mk_circuit(&b, 64);
 
 		// Obtain LE-packed wires for the digest wires
 		let le_wires = c.digest_to_le_wires(&b);
@@ -995,8 +995,8 @@ mod tests {
 
 	#[test]
 	fn test_message_to_le_wires() {
-		let mut b = CircuitBuilder::new();
-		let c = mk_circuit(&mut b, 16); // Small circuit for simple test
+		let b = CircuitBuilder::new();
+		let c = mk_circuit(&b, 16); // Small circuit for simple test
 
 		// Obtain LE-packed wires for the message
 		let le_message_wires = c.message_to_le_wires(&b);

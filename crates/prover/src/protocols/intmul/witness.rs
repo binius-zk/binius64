@@ -89,7 +89,7 @@ where
 
 		// Compute b_leaves as concatenated leaves for prodcheck
 		let variable_base = a.root().clone();
-		let b_leaves = compute_b_leaves(log_bits, variable_base, &b);
+		let b_leaves = compute_b_leaves(log_bits, &variable_base, &b);
 
 		// Create the prodcheck prover; its products layer becomes b_root
 		let (b_prodcheck, b_root) = ProdcheckProver::new(log_bits, b_leaves.clone());
@@ -116,7 +116,7 @@ where
 /// The leaves are concatenated: `[L_0, L_1, ..., L_{2^k-1}]`
 fn compute_b_leaves<F, P, B, S>(
 	log_bits: usize,
-	bases: FieldBuffer<P>,
+	bases: &FieldBuffer<P>,
 	exponents: &S,
 ) -> FieldBuffer<P>
 where
@@ -129,7 +129,7 @@ where
 
 	if P::LOG_WIDTH <= n_vars {
 		// Parallel optimized path
-		return compute_b_leaves_parallel(log_bits, &bases, exponents);
+		return compute_b_leaves_parallel(log_bits, bases, exponents);
 	}
 
 	// Fallback: bases is too small to parallelize (n_vars < P::LOG_WIDTH)
@@ -301,7 +301,7 @@ where
 		}
 	}
 
-	pub fn log_bits(&self) -> usize {
+	pub const fn log_bits(&self) -> usize {
 		self.tree.len() - 1
 	}
 

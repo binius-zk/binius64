@@ -88,7 +88,7 @@ where
 				(chunk_index << (log_size - 1)) | index_offset,
 				pair,
 				challenge,
-			)
+			);
 		}
 
 		log_len -= 1;
@@ -186,7 +186,7 @@ where
 	/// * `Ok(None)` if no commitment was needed in this round
 	pub fn process_round<B: Buf>(
 		&mut self,
-		transcript: &mut TranscriptReader<B>,
+		transcript: &mut TranscriptReader<'_, B>,
 	) -> Result<Option<Digest>, Error> {
 		assert!(
 			self.curr_round < self.n_rounds(),
@@ -212,7 +212,7 @@ where
 	}
 
 	/// Returns true if all rounds have been processed.
-	pub fn is_complete(&self) -> bool {
+	pub const fn is_complete(&self) -> bool {
 		self.curr_round == self.n_rounds()
 	}
 
@@ -235,12 +235,12 @@ where
 	}
 
 	/// Returns the current round number.
-	pub fn current_round(&self) -> usize {
+	pub const fn current_round(&self) -> usize {
 		self.curr_round
 	}
 
 	/// Returns the total number of rounds.
-	pub fn n_rounds(&self) -> usize {
+	pub const fn n_rounds(&self) -> usize {
 		self.commit_rounds.len()
 	}
 }

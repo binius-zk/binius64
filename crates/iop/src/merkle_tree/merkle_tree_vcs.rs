@@ -51,7 +51,7 @@ pub trait MerkleTreeScheme<T: FixedSizeSerializeBytes> {
 		root: &Self::Digest,
 		data: &[T],
 		batch_size: usize,
-		proof: &mut TranscriptReader<B>,
+		proof: &mut TranscriptReader<'_, B>,
 	) -> Result<(), Error>;
 
 	/// Verify a given layer of the Merkle tree.
@@ -83,6 +83,6 @@ pub trait MerkleTreeScheme<T: FixedSizeSerializeBytes> {
 		layer_depth: usize,
 		tree_depth: usize,
 		layer_digests: &[Self::Digest],
-		proof: &mut TranscriptReader<B>,
+		proof: &mut TranscriptReader<'_, B>,
 	) -> Result<(), Error>;
 }

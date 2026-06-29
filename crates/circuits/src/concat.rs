@@ -314,7 +314,7 @@ mod tests {
 	/// Build a concat over a mix of constant- and dynamic-length terms, populate, verify
 	/// constraints, and return the concatenated bytes. Lets tests drive the constant-offset /
 	/// constant-length branches that the `new_inout`-based `run_concat` never reaches.
-	fn run_concat_mixed(terms: &[Term]) -> Result<Vec<u8>> {
+	fn run_concat_mixed(terms: &[Term<'_>]) -> Result<Vec<u8>> {
 		let b = CircuitBuilder::new();
 		let inputs: Vec<ByteVec> = terms
 			.iter()
@@ -513,7 +513,7 @@ mod tests {
 					.enumerate()
 					.map(|(i, &n)| random_bytes(n, seed.wrapping_add(i as u64)))
 					.collect();
-				let terms: Vec<Term> = term_bytes.iter().map(|d| Term::Const(d.as_slice())).collect();
+				let terms: Vec<Term<'_>> = term_bytes.iter().map(|d| Term::Const(d.as_slice())).collect();
 				let expected: Vec<u8> = term_bytes.iter().flatten().copied().collect();
 				let bytes = run_concat_mixed(&terms).unwrap();
 				prop_assert_eq!(bytes, expected);

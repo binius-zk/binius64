@@ -299,13 +299,13 @@ mod tests {
 
 		let prover_0 = bivariate_product_mle::new(
 			[multilinear_a_0.clone(), multilinear_b_0.clone()],
-			eval_point.clone(),
+			&eval_point,
 			eval_claim_0,
 		)
 		.unwrap();
 		let prover_1 = bivariate_product_mle::new(
 			[multilinear_a_1.clone(), multilinear_b_1.clone()],
-			eval_point.clone(),
+			&eval_point,
 			eval_claim_1,
 		)
 		.unwrap();
@@ -353,7 +353,7 @@ mod tests {
 
 		let composed_evals = vec![eval_a_0 * eval_b_0, eval_a_1 * eval_b_1];
 		let expected_batched_eval =
-			evaluate_univariate(&composed_evals, sumcheck_output.batch_coeff);
+			evaluate_univariate(&composed_evals, &sumcheck_output.batch_coeff);
 
 		assert_eq!(
 			expected_batched_eval, sumcheck_output.eval,
@@ -390,13 +390,13 @@ mod tests {
 
 		let prover_0 = bivariate_product_mle::new(
 			[multilinear_a_0, multilinear_b_0],
-			eval_point,
+			&eval_point,
 			eval_claim_0,
 		)
 		.unwrap();
 		let prover_1 = bivariate_product_mle::new(
 			[multilinear_a_1, multilinear_b_1],
-			other_point,
+			&other_point,
 			eval_claim_1,
 		)
 		.unwrap();
@@ -429,13 +429,13 @@ mod tests {
 
 		let prover_0 = bivariate_product_mle::new(
 			[multilinear_a_0, multilinear_b_0],
-			eval_point_a,
+			&eval_point_a,
 			eval_claim_0,
 		)
 		.unwrap();
 		let prover_1 = bivariate_product_mle::new(
 			[multilinear_a_1, multilinear_b_1],
-			eval_point_b,
+			&eval_point_b,
 			eval_claim_1,
 		)
 		.unwrap();

@@ -115,39 +115,42 @@ where
 			_ => None,
 		});
 
-		if let Some(builder_ptr) = builder {
-			let Some(builder) = builder_ptr.upgrade() else {
-				panic!("combine cannot be called on a CircuitElem after the channel is closed");
-			};
-			let mut builder = builder.borrow_mut();
-			let inner_wires = elems.map(|elem| match elem {
-				Self::Constant(val) => builder.constant(*val),
-				Self::Wire {
-					builder: other_builder_ptr,
-					wire,
-				} => {
-					assert!(
-						Weak::ptr_eq(builder_ptr, other_builder_ptr),
-						"all combined CircuitElems must come from the same channel"
-					);
-					*wire
-				}
-			});
-			builder_op(&mut builder, inner_wires).map(|wire| Self::Wire {
-				builder: builder_ptr.clone(),
-				wire,
-			})
-		} else {
-			let inner_constants = elems.map(|elem| {
-				let Self::Constant(val) = elem else {
-					unreachable!(
-						"the enum has only two variants; none of them are Wire; thus all must be Constant"
-					);
+		builder.map_or_else(
+			|| {
+				let inner_constants = elems.map(|elem| {
+					let Self::Constant(val) = elem else {
+						unreachable!(
+							"the enum has only two variants; none of them are Wire; thus all must be Constant"
+						);
+					};
+					*val
+				});
+				f_op(inner_constants).map(Self::Constant)
+			},
+			|builder_ptr| {
+				let Some(builder) = builder_ptr.upgrade() else {
+					panic!("combine cannot be called on a CircuitElem after the channel is closed");
 				};
-				*val
-			});
-			f_op(inner_constants).map(Self::Constant)
-		}
+				let mut builder = builder.borrow_mut();
+				let inner_wires = elems.map(|elem| match elem {
+					Self::Constant(val) => builder.constant(*val),
+					Self::Wire {
+						builder: other_builder_ptr,
+						wire,
+					} => {
+						assert!(
+							Weak::ptr_eq(builder_ptr, other_builder_ptr),
+							"all combined CircuitElems must come from the same channel"
+						);
+						*wire
+					}
+				});
+				builder_op(&mut builder, inner_wires).map(|wire| Self::Wire {
+					builder: builder_ptr.clone(),
+					wire,
+				})
+			},
+		)
 	}
 
 	/// Variable-arity sibling of [`Self::combine`].
@@ -165,54 +168,57 @@ where
 			_ => None,
 		});
 
-		if let Some(builder_ptr) = builder {
-			let Some(builder) = builder_ptr.upgrade() else {
-				panic!(
-					"combine_varlen cannot be called on a CircuitElem after the channel is closed"
-				);
-			};
-			let mut builder = builder.borrow_mut();
-			let inner_wires = elems
-				.iter()
-				.map(|elem| match elem {
-					Self::Constant(val) => builder.constant(*val),
-					Self::Wire {
-						builder: other_builder_ptr,
+		builder.map_or_else(
+			|| {
+				let inner_constants = elems
+					.iter()
+					.map(|elem| {
+						let Self::Constant(val) = elem else {
+							unreachable!(
+								"no Wire variant exists in elems; all entries must be Constant"
+							);
+						};
+						*val
+					})
+					.collect::<Vec<_>>();
+				let result = f_op(&inner_constants);
+				debug_assert_eq!(result.len(), n_out);
+				result.into_iter().map(Self::Constant).collect()
+			},
+			|builder_ptr| {
+				let Some(builder) = builder_ptr.upgrade() else {
+					panic!(
+						"combine_varlen cannot be called on a CircuitElem after the channel is closed"
+					);
+				};
+				let mut builder = builder.borrow_mut();
+				let inner_wires = elems
+					.iter()
+					.map(|elem| match elem {
+						Self::Constant(val) => builder.constant(*val),
+						Self::Wire {
+							builder: other_builder_ptr,
+							wire,
+						} => {
+							assert!(
+								Weak::ptr_eq(builder_ptr, other_builder_ptr),
+								"all combined CircuitElems must come from the same channel"
+							);
+							*wire
+						}
+					})
+					.collect::<Vec<_>>();
+				let result = builder_op(&mut builder, &inner_wires);
+				debug_assert_eq!(result.len(), n_out);
+				result
+					.into_iter()
+					.map(|wire| Self::Wire {
+						builder: builder_ptr.clone(),
 						wire,
-					} => {
-						assert!(
-							Weak::ptr_eq(builder_ptr, other_builder_ptr),
-							"all combined CircuitElems must come from the same channel"
-						);
-						*wire
-					}
-				})
-				.collect::<Vec<_>>();
-			let result = builder_op(&mut builder, &inner_wires);
-			debug_assert_eq!(result.len(), n_out);
-			result
-				.into_iter()
-				.map(|wire| Self::Wire {
-					builder: builder_ptr.clone(),
-					wire,
-				})
-				.collect()
-		} else {
-			let inner_constants = elems
-				.iter()
-				.map(|elem| {
-					let Self::Constant(val) = elem else {
-						unreachable!(
-							"no Wire variant exists in elems; all entries must be Constant"
-						);
-					};
-					*val
-				})
-				.collect::<Vec<_>>();
-			let result = f_op(&inner_constants);
-			debug_assert_eq!(result.len(), n_out);
-			result.into_iter().map(Self::Constant).collect()
-		}
+					})
+					.collect()
+			},
+		)
 	}
 }
 
@@ -388,7 +394,7 @@ impl<F: Field, B: CircuitBuilder<Field = F>> MulAssign<&Self> for CircuitElem<F,
 
 impl<F: Field, B: CircuitBuilder<Field = F>> Sum for CircuitElem<F, B> {
 	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-		iter.fold(CircuitElem::Constant(F::ZERO), |acc, x| acc + x)
+		iter.fold(Self::Constant(F::ZERO), |acc, x| acc + x)
 	}
 }
 

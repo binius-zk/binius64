@@ -26,7 +26,7 @@ pub fn eval_transparent<'a, G: Field, F: FieldOps + 'a>(
 		evaluate_segment_wiring_mle(
 			constraint_system.mul_constraints(),
 			segment,
-			lambda.clone(),
+			&lambda,
 			&r_x_tensor,
 			r_y,
 		)
@@ -41,7 +41,7 @@ pub fn eval_transparent<'a, G: Field, F: FieldOps + 'a>(
 pub fn evaluate_segment_wiring_mle<F: FieldOps>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	segment: WitnessSegment,
-	lambda: F,
+	lambda: &F,
 	r_x_tensor: &[F],
 	r_y: &[F],
 ) -> F {
@@ -74,7 +74,7 @@ pub fn evaluate_segment_wiring_mle<F: FieldOps>(
 pub fn evaluate_wiring_mle_public<F: FieldOps>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	public: &[F],
-	lambda: F,
+	lambda: &F,
 	r_x_tensor: &[F],
 ) -> F {
 	let mut acc = [F::zero(), F::zero(), F::zero()];
@@ -84,7 +84,7 @@ pub fn evaluate_wiring_mle_public<F: FieldOps>(
 				.wires()
 				.iter()
 				.flat_map(|index| {
-					if let WitnessSegment::Public = index.segment {
+					if index.segment == WitnessSegment::Public {
 						Some(public[index.index as usize].clone())
 					} else {
 						None

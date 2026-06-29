@@ -88,7 +88,7 @@ where
 	}
 
 	/// Returns the number of remaining layers to prove.
-	pub fn n_layers(&self) -> usize {
+	pub const fn n_layers(&self) -> usize {
 		self.layers.len()
 	}
 
@@ -124,7 +124,7 @@ where
 		let den_1 = FieldBuffer::new(den_1.log_len(), den_1.as_ref().into());
 		let prover = frac_add_mle::new(
 			[num_0, num_1, den_0, den_1],
-			num_claim.point.clone(),
+			&num_claim.point,
 			[num_claim.eval, den_claim.eval],
 		)?;
 
@@ -236,9 +236,7 @@ mod tests {
 
 		// 5. Run prover
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prover_output = prover
-			.prove(prover_claim.clone(), &mut prover_transcript)
-			.unwrap();
+		let prover_output = prover.prove(prover_claim, &mut prover_transcript).unwrap();
 
 		// 6. Run verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();

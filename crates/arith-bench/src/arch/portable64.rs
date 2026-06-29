@@ -32,14 +32,14 @@ pub struct U64x2(pub u64, pub u64);
 impl From<u128> for U64x2 {
 	fn from(x: u128) -> Self {
 		// Little-endian: low 64 bits first, then high 64 bits
-		U64x2(x as u64, (x >> 64) as u64)
+		Self(x as u64, (x >> 64) as u64)
 	}
 }
 
 impl From<U64x2> for u128 {
 	fn from(x: U64x2) -> Self {
 		// Little-endian: x.0 is low 64 bits, x.1 is high 64 bits
-		(x.0 as u128) | ((x.1 as u128) << 64)
+		(x.0 as Self) | ((x.1 as Self) << 64)
 	}
 }
 
@@ -72,7 +72,7 @@ pub fn bmul64(x: u64, y: u64) -> u64 {
 }
 
 /// Bit-reverse a `u64` in constant time
-pub fn rev64(mut x: u64) -> u64 {
+pub const fn rev64(mut x: u64) -> u64 {
 	x = ((x & 0x5555_5555_5555_5555) << 1) | ((x >> 1) & 0x5555_5555_5555_5555);
 	x = ((x & 0x3333_3333_3333_3333) << 2) | ((x >> 2) & 0x3333_3333_3333_3333);
 	x = ((x & 0x0f0f_0f0f_0f0f_0f0f) << 4) | ((x >> 4) & 0x0f0f_0f0f_0f0f_0f0f);
@@ -84,7 +84,7 @@ pub fn rev64(mut x: u64) -> u64 {
 /// Squares a GF(2) polynomial, represented bitwise in a `u64`.
 ///
 /// The parameter `x` must have its top 32 bits clear (the polynomial has degree <32).
-pub fn bsqr64(mut x: u64) -> u64 {
+pub const fn bsqr64(mut x: u64) -> u64 {
 	// Algorithm adapted from https://graphics.stanford.edu/~seander/bithacks.html#InterleaveBMN
 	x = (x | (x << 16)) & 0x0000FFFF0000FFFF;
 	x = (x | (x << 8)) & 0x00FF00FF00FF00FF;

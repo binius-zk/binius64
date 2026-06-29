@@ -84,13 +84,13 @@ pub fn bip32_derive_compressed(
 	// non-hardened step, and as the candidates for the depth multiplexer.
 	let mut serp_levels: Vec<Vec<Wire>> = Vec::with_capacity(max_depth + 1);
 
-	for level in 0..max_depth {
+	for &child in path {
 		// Parent public key P = k * G.
 		let point = scalar_mul(b, &curve, &k, Secp256k1Affine::generator(b));
 		serp_levels.push(compress_pubkey(b, &point.x, &point.y));
 
 		// Hardened iff bit 31 of the index is set (moved to the MSB for `select`).
-		let is_hardened = b.shl(path[level], 32);
+		let is_hardened = b.shl(child, 32);
 
 		// CKD data is `prefix || value[32] || ser32(index)` either way (37 bytes):
 		// hardened => 0x00 || ser256(k_par); normal => (0x02|0x03) || x_be.
@@ -106,7 +106,7 @@ pub fn bip32_derive_compressed(
 			value_field.limbs[0],
 		];
 
-		let message = assemble_message(b, prefix, &value, path[level]);
+		let message = assemble_message(b, prefix, &value, child);
 		let i = hmac_sha512_fixed(b, &c, &message, 37);
 
 		// k_child = (parse256(I_L) + k_par) mod n ; c_child = I_R.
@@ -133,7 +133,7 @@ fn il_scalar(hash: &[Wire; 8]) -> BigUint {
 
 /// The last 32 bytes (`I_R`, the chain code) of a SHA-512 output, as four big-endian words ready to
 /// be used directly as an HMAC-SHA512 key.
-fn ir_words(hash: &[Wire; 8]) -> [Wire; 4] {
+const fn ir_words(hash: &[Wire; 8]) -> [Wire; 4] {
 	[hash[4], hash[5], hash[6], hash[7]]
 }
 
@@ -226,7 +226,7 @@ impl ExampleCircuit for Bip32Example {
 		})
 	}
 
-	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
+	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller<'_>) -> Result<()> {
 		if instance.path.len() > self.max_depth {
 			bail!("path depth {} exceeds max_depth {}", instance.path.len(), self.max_depth);
 		}
@@ -277,10 +277,9 @@ impl ExampleCircuit for Bip32Example {
 /// Parse a single derivation-path child like "0", "44'", or "5h" into a 32-bit index with the
 /// hardened bit set when suffixed.
 fn parse_child(s: &str) -> Result<u32, String> {
-	let (digits, hardened) = match s.strip_suffix(['\'', 'h', 'H']) {
-		Some(rest) => (rest, true),
-		None => (s, false),
-	};
+	let (digits, hardened) = s
+		.strip_suffix(['\'', 'h', 'H'])
+		.map_or((s, false), |rest| (rest, true));
 	let idx: u32 = digits
 		.parse()
 		.map_err(|e| format!("invalid child index '{s}': {e}"))?;

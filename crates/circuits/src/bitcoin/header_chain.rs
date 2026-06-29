@@ -43,7 +43,7 @@ impl HeaderChain {
 			// hash equals `latest_digest`
 			header_digests.push(DoubleSha256::construct_circuit(
 				builder,
-				headers[0].to_vec(),
+				&headers[0],
 				latest_digest,
 			));
 
@@ -60,11 +60,7 @@ impl HeaderChain {
 		for i in 1..headers.len() {
 			// hash equals the "previous block hash" in the newer block
 			let digest = previous_block_hash(builder, &headers[i - 1]);
-			header_digests.push(DoubleSha256::construct_circuit(
-				builder,
-				headers[i].to_vec(),
-				digest,
-			));
+			header_digests.push(DoubleSha256::construct_circuit(builder, &headers[i], digest));
 
 			// hash is smaller than target (proof of work)
 			// NOTE: One could save constraints by noting that the target only changes every 2016
@@ -83,7 +79,7 @@ impl HeaderChain {
 		Self { header_digests }
 	}
 
-	pub fn populate_inner(&self, filler: &mut WitnessFiller, headers: &[&[u8]]) {
+	pub fn populate_inner(&self, filler: &mut WitnessFiller<'_>, headers: &[&[u8]]) {
 		for (header_digest, header) in self.header_digests.iter().zip(headers) {
 			header_digest.populate_inner(filler, header);
 		}

@@ -54,7 +54,7 @@ impl ModReduce {
 			&a.pad_limbs_to(n_limbs, zero),
 		);
 
-		ModReduce {
+		Self {
 			a,
 			modulus,
 			quotient,
@@ -158,6 +158,6 @@ impl PseudoMersenneModReduce {
 
 	/// Apply the reduction constraint conditionally based on the value of boolean `mask` wire.
 	pub fn constrain_cond(self, builder: &CircuitBuilder, cond: Wire) {
-		assert_eq_cond(builder, "modred_pseudo_mersenne", &self.lhs, &self.rhs, cond)
+		assert_eq_cond(builder, "modred_pseudo_mersenne", &self.lhs, &self.rhs, cond);
 	}
 }
