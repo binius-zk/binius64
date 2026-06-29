@@ -15,7 +15,7 @@ use binius_iop::{
 use binius_math::ntt::AdditiveNTT;
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::SerializeBytes;
-use rand::Rng;
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::{basefold_channel::BaseFoldProverChannel, merkle_tree::MerkleTreeProver};
 
@@ -128,5 +128,30 @@ where
 		rng: impl Rng,
 	) -> BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_> {
 		BaseFoldProverChannel::from_compiler(self, transcript, rng)
+	}
+
+	/// Creates a prover channel for a compiler whose oracles are all non-ZK.
+	///
+	/// A mask is drawn from the channel's RNG only when committing a ZK oracle.
+	/// With no ZK oracle the RNG is never read, so its seed cannot affect the proof.
+	/// The seed is therefore fixed, and no randomness needs to be supplied by the caller.
+	///
+	/// # Panics
+	///
+	/// Panics if any configured oracle is ZK.
+	/// A ZK oracle would draw its mask from the fixed seed, which destroys the hiding property.
+	/// So this constructor refuses to build a channel that could mask deterministically.
+	pub fn create_channel_without_zk<'a, Challenger_: Challenger>(
+		&'a self,
+		transcript: &'a mut ProverTranscript<Challenger_>,
+	) -> BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_> {
+		// A ZK oracle masks with the RNG, so a fixed seed here would silently break hiding.
+		assert!(
+			self.oracle_specs().iter().all(|spec| !spec.is_zk),
+			"create_channel_without_zk requires every oracle to be non-ZK"
+		);
+
+		// No mask is ever drawn, so the seed is arbitrary; reuse the seeded-RNG constructor.
+		self.create_channel(transcript, StdRng::seed_from_u64(0))
 	}
 }

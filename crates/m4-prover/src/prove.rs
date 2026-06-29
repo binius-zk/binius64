@@ -15,7 +15,6 @@ use binius_math::{
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_verifier::config::B128;
-use rand::CryptoRng;
 
 use crate::ValueTable;
 
@@ -85,7 +84,7 @@ where
 	/// It does not ring-switch down to the bit witness.
 	/// That step belongs with the later reductions.
 	///
-	/// The `rng` seeds the ZK channel's internal mask generation.
+	/// The trace oracle is not ZK, so the channel masks nothing and needs no randomness.
 	///
 	/// # Returns
 	///
@@ -93,13 +92,12 @@ where
 	pub fn prove<Challenger_>(
 		&self,
 		table: &ValueTable,
-		rng: impl CryptoRng,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> (Vec<B128>, B128)
 	where
 		Challenger_: Challenger,
 	{
-		let mut channel = self.basefold_compiler.create_channel(transcript, rng);
+		let mut channel = self.basefold_compiler.create_channel_without_zk(transcript);
 
 		// Pack the 2-D table into one multilinear and commit it as the trace oracle.
 		let packed = table.pack::<P>();
@@ -143,7 +141,6 @@ mod tests {
 	use binius_transcript::VerifierTranscript;
 	use binius_verifier::config::StdChallenger;
 	use proptest::prelude::*;
-	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
 
@@ -204,8 +201,7 @@ mod tests {
 
 			// Prover: commit and open on a fresh transcript.
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-			let rng = StdRng::seed_from_u64(0);
-			let (point, eval) = prover.prove(&table, rng, &mut prover_transcript);
+			let (point, eval) = prover.prove(&table, &mut prover_transcript);
 
 			// Verifier: replay the same transcript and check the opening.
 			let mut verifier_transcript = prover_transcript.into_verifier();
@@ -234,8 +230,7 @@ mod tests {
 
 		// Produce a faithful proof, then collect its bytes.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let rng = StdRng::seed_from_u64(0);
-		let _ = prover.prove(&table, rng, &mut prover_transcript);
+		let _ = prover.prove(&table, &mut prover_transcript);
 		let mut proof = prover_transcript.finalize();
 
 		// Flip one bit deep in the proof; any change to the committed data must break the opening.
