@@ -171,7 +171,7 @@ impl Word {
 	pub fn shr_32(self, n: u32) -> Word {
 		let Word(value) = self;
 		// Shift right logically by n bits and mask with 32-bit mask
-		let result = (value >> n) & 0x00000000_FFFFFFFF;
+		let result = (value >> n) & Self::MASK_32.0;
 		Word(result)
 	}
 
@@ -327,7 +327,7 @@ impl Word {
 	///
 	/// Returns true if the MSB is 1, false otherwise.
 	pub const fn is_msb_true(self) -> bool {
-		(self.0 & 0x8000000000000000) != 0
+		(self.0 & Self::MSB_ONE.0) != 0
 	}
 
 	/// Tests if this Word represents false as an MSB-bool.
@@ -337,7 +337,7 @@ impl Word {
 	///
 	/// Returns true if the MSB is 0, false otherwise.
 	pub const fn is_msb_false(self) -> bool {
-		(self.0 & 0x8000000000000000) == 0
+		!self.is_msb_true()
 	}
 }
 
