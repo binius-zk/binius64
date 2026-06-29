@@ -314,15 +314,16 @@ where
 	// This check catches the attack: if `c = 2^128-1` then `c_lo_0 = 1` (since 2^128-1 is odd),
 	// but `a_0 * b_0 = 0` when `a=0` or `b=0`, so the check `a_0 * b_0 = c_lo_0` fails.
 	//
-	// Implementation: We must perform a zerocheck on `a_0 * b_0 - c_lo_0 = 0`. We can reuse
-	// `a_c_eval_point` as our zerocheck challenge.
+	// Implementation: We must perform a zerocheck on `a_0 * b_0 - c_lo_0 = 0`. We reuse the
+	// Phase-2 constraint point `b_eval_point` (r_2) as the zerocheck challenge — available for
+	// free because the `b` re-randomization already evaluates at r_2.
+	let b_eq_eval = eq_ind(b_eval_point, &challenges);
 	let expected_overflow_eval =
-		a_c_eq_eval.clone() * (a_evals[0].clone() * &b_evals[0] - &c_lo_evals[0]);
+		b_eq_eval.clone() * (a_evals[0].clone() * &b_evals[0] - &c_lo_evals[0]);
 
 	// Bind the prover's raw per-bit evals to the single recombined rerandomization claim:
 	// b(r_I^b, r_x) = sum_i eq(r_I^b, i) * b(i, r_x).
 	let b_at_rx = evaluate_inplace_scalars(b_evals.clone(), r_ib);
-	let b_eq_eval = eq_ind(b_eval_point, &challenges);
 	let expected_b_rerand_eval = b_eq_eval * &b_at_rx;
 
 	let expected_unbatched_evals = [

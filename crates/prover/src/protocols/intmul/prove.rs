@@ -397,13 +397,15 @@ where
 		let b_0: FieldBuffer<P> = two_valued_field_buffer(0, &b_exponents, binary_elements);
 		let c_lo_0: FieldBuffer<P> = two_valued_field_buffer(0, &c_lo_exponents, binary_elements);
 
-		// Make the sumcheck prover for the overflow parity check.
+		// Make the sumcheck prover for the overflow parity check, binding it at the Phase-2
+		// constraint point `b_eval_point` (r_2) per the spec (reused for free from the `b`
+		// re-randomization) rather than the Phase-4 point.
 		let overflow_prover =
 			MleToSumCheckDecorator::new(QuadraticMleCheckProver::<P, _, _, 3>::new(
 				[a_0, b_0, c_lo_0],
 				|[a, b, c]| a * b - c,
 				|[a, b, _c]| a * b,
-				a_c_eval_point.to_vec(),
+				b_eval_point.to_vec(),
 				F::ZERO,
 			)?);
 
