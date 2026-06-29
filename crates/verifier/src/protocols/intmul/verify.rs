@@ -153,6 +153,12 @@ where
 	// C_lo(r), C_hi(r)
 	let [gpow_c_lo_eval, gpow_c_hi_eval] = channel.recv_array::<2>()?;
 
+	// Recombine the 2^k per-bit exponent claims b(i, r) into a single claim b(r_I^b, r) by
+	// sampling a recombination point r_I^b in K^k. This carries one exponent claim (rather than
+	// 2^k) into Phases 4 and 5.
+	let r_ib = channel.sample_many(log_bits);
+	let b_recomb = evaluate_inplace_scalars(b_evals.clone(), &r_ib);
+
 	let eval_point = challenges;
 
 	let expected_selected_terms =
@@ -175,7 +181,8 @@ where
 
 	Ok(Phase3Output {
 		eval_point,
-		b_evals,
+		r_ib,
+		b_recomb,
 		gpow_a_eval,
 		gpow_c_lo_eval,
 		gpow_c_hi_eval,
@@ -230,9 +237,9 @@ where
 /// Verify Phase 5: final GKR layer, $\widetilde{b}$ rerandomization, and parity zerocheck.
 ///
 /// Batches three sumchecks: (a) the final (widest) bivariate product layer for $\widetilde{a}$,
-/// $\widetilde{c}_{\textsf{lo}}$, $\widetilde{c}_{\textsf{hi}}$, (b) a rerandomization sumcheck
-/// on the $\widetilde{b}$ exponent evaluations, and (c) a zerocheck verifying $a_0 \cdot b_0 =
-/// c_{\textsf{lo},0}$.
+/// $\widetilde{c}_{\textsf{lo}}$, $\widetilde{c}_{\textsf{hi}}$, (b) a single-claim
+/// rerandomization (MLE-eval) of the recombined $\widetilde{b}(r_I^b, \cdot)$ exponent claim, and
+/// (c) a zerocheck verifying $a_0 \cdot b_0 = c_{\textsf{lo},0}$.
 #[allow(clippy::too_many_arguments)]
 fn verify_phase_5<F, C>(
 	log_bits: usize,
@@ -241,7 +248,8 @@ fn verify_phase_5<F, C>(
 	c_lo_prod_evals: &[C::Elem],
 	c_hi_prod_evals: &[C::Elem],
 	b_eval_point: &[C::Elem],
-	b_evals_pre: &[C::Elem],
+	r_ib: &[C::Elem],
+	b_recomb: C::Elem,
 	channel: &mut C,
 ) -> Result<IntMulOutput<C::Elem>, Error>
 where
@@ -258,14 +266,14 @@ where
 	assert_eq!(b_eval_point.len(), n_vars);
 
 	// Evals for the batched sumcheck: a (2^(k-1)), c_lo (2^(k-1)), c_hi (2^(k-1)) from the
-	// bivariate product layer, then a_0*b_0 and c_lo_0 for the parity zerocheck, then b
-	// exponent evals (2^k) for the rerandomization sumcheck.
+	// bivariate product layer, then a_0*b_0 and c_lo_0 for the parity zerocheck, then the single
+	// recombined b exponent eval for the rerandomization sumcheck.
 	let evals = [
 		a_prod_evals,
 		c_lo_prod_evals,
 		c_hi_prod_evals,
 		&[C::Elem::zero()], // overflow parity zerocheck
-		b_evals_pre,
+		slice::from_ref(&b_recomb),
 	]
 	.concat();
 
@@ -311,16 +319,16 @@ where
 	let expected_overflow_eval =
 		a_c_eq_eval.clone() * (a_evals[0].clone() * &b_evals[0] - &c_lo_evals[0]);
 
+	// Bind the prover's raw per-bit evals to the single recombined rerandomization claim:
+	// b(r_I^b, r_x) = sum_i eq(r_I^b, i) * b(i, r_x).
+	let b_at_rx = evaluate_inplace_scalars(b_evals.clone(), r_ib);
 	let b_eq_eval = eq_ind(b_eval_point, &challenges);
-	let expected_b_rerand_unbatched_evals = b_evals
-		.iter()
-		.map(|b_eval| b_eq_eval.clone() * b_eval)
-		.collect::<Vec<_>>();
+	let expected_b_rerand_eval = b_eq_eval * &b_at_rx;
 
 	let expected_unbatched_evals = [
 		&expected_bivariate_unbatched_evals,
 		slice::from_ref(&expected_overflow_eval),
-		&expected_b_rerand_unbatched_evals,
+		slice::from_ref(&expected_b_rerand_eval),
 	]
 	.concat();
 	let expected_batched_eval = evaluate_univariate(&expected_unbatched_evals, batch_coeff);
@@ -391,7 +399,9 @@ where
 ///   (b) The deferred product claim $s = \sum \textsf{eq}(r, x) \cdot \widetilde{\textsf{LO}}(x)
 ///   \cdot \widetilde{\textsf{HI}}(x)$. This yields root claims on $\widetilde{P}$ (the
 ///   $\widetilde{a}$ selector), $\widetilde{\textsf{LO}}$, $\widetilde{\textsf{HI}}$, plus $2^k$
-///   exponent claims on $\widetilde{b}$.
+///   exponent claims on $\widetilde{b}$. The verifier then samples a recombination point $r_I^b \in
+///   K^k$ and collapses the $2^k$ exponent claims into a single claim $\widetilde{b}(r_I^b, r) =
+///   \sum_i \textsf{eq}(r_I^b, i) \cdot \widetilde{b}(i, r)$, carried into Phases 4 and 5.
 ///
 /// - **Phase 4 — GKR on $\widetilde{a}$, $\widetilde{c}_{\textsf{lo}}$,
 ///   $\widetilde{c}_{\textsf{hi}}$ (all but last layer):** Batched GKR layers for the three
@@ -401,10 +411,12 @@ where
 ///
 /// - **Phase 5 — Final GKR layer + $\widetilde{b}$ rerandomization + parity check:** The final
 ///   (widest) GKR layer for $\widetilde{a}$, $\widetilde{c}_{\textsf{lo}}$,
-///   $\widetilde{c}_{\textsf{hi}}$ is batched with: (a) A rerandomization sumcheck on the
-///   $\widetilde{b}$ exponent evaluations from Phase 3, bringing them to the same evaluation point
-///   as $\widetilde{a}$ and $\widetilde{c}$. (b) A zerocheck verifying $a_0 \cdot b_0 =
-///   c_{\textsf{lo},0}$ (least significant bits), ruling out the wraparound edge case.
+///   $\widetilde{c}_{\textsf{hi}}$ is batched with: (a) A single-claim rerandomization sumcheck on
+///   the recombined $\widetilde{b}(r_I^b, \cdot)$ exponent claim from Phase 3, bringing it to the
+///   same evaluation point as $\widetilde{a}$ and $\widetilde{c}$. The prover sends the $2^k$ raw
+///   per-bit evals $\widetilde{b}(i, r_x)$, which the verifier binds via $\sum_i \textsf{eq}(r_I^b,
+///   i) \cdot \widetilde{b}(i, r_x) = \widetilde{b}(r_I^b, r_x)$. (b) A zerocheck verifying $a_0
+///   \cdot b_0 = c_{\textsf{lo},0}$ (least significant bits), ruling out the wraparound edge case.
 ///
 /// ### Output
 ///
@@ -454,7 +466,8 @@ where
 	// Phase 3
 	let Phase3Output {
 		eval_point: phase_3_eval_point,
-		b_evals,
+		r_ib,
+		b_recomb,
 		gpow_a_eval,
 		gpow_c_lo_eval,
 		gpow_c_hi_eval,
@@ -490,7 +503,8 @@ where
 		&c_lo_evals,
 		&c_hi_evals,
 		&phase_3_eval_point,
-		&b_evals,
+		&r_ib,
+		b_recomb,
 		channel,
 	)
 }
