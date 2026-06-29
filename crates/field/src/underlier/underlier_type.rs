@@ -215,15 +215,25 @@ pub unsafe trait WithUnderlier:
 	}
 }
 
-/// A trait that represents potentially lossy numeric cast.
-/// Is a drop-in replacement of `as _` in a generic code.
-pub trait NumCast<From> {
-	fn num_cast_from(val: From) -> Self;
+/// A potentially lossy numeric cast, for generic code where the `as _` operator cannot appear.
+///
+/// The low bits of the input are kept.
+/// The remaining high bits are discarded.
+///
+/// [`From`] cannot serve this purpose.
+/// - It is contractually lossless, so it must not express a narrowing cast.
+/// - Its narrowing targets are foreign primitives (`u8` through `u128`).
+/// - The orphan rule forbids adding a `From` impl to a foreign type from this crate.
+///
+/// Hence a crate-local trait.
+pub trait CastFrom<T> {
+	/// Casts the input to this type, keeping its low bits when this type is narrower.
+	fn cast_from(val: T) -> Self;
 }
 
-impl<U: UnderlierType> NumCast<U> for U {
+impl<U: UnderlierType> CastFrom<U> for U {
 	#[inline(always)]
-	fn num_cast_from(val: U) -> Self {
+	fn cast_from(val: U) -> Self {
 		val
 	}
 }

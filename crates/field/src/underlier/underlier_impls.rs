@@ -2,7 +2,7 @@
 
 use super::{
 	small_uint::{U1, U2, U4},
-	underlier_type::{NumCast, UnderlierType},
+	underlier_type::{CastFrom, UnderlierType},
 };
 use crate::arch::{interleave_mask_even, interleave_with_mask};
 
@@ -40,46 +40,46 @@ macro_rules! impl_num_cast {
 	(@pair U2, $bigger:ty) => {impl_num_cast!(@small_u_from_u U2, $bigger);};
 	(@pair U4, $bigger:ty) => {impl_num_cast!(@small_u_from_u U4, $bigger);};
 	(@pair $smaller:ident, $bigger:ident) => {
-		impl NumCast<$bigger> for $smaller {
+		impl CastFrom<$bigger> for $smaller {
 			#[inline(always)]
-			fn num_cast_from(val: $bigger) -> Self {
+			fn cast_from(val: $bigger) -> Self {
 				val as _
 			}
 		}
 
-		impl NumCast<$smaller> for $bigger {
+		impl CastFrom<$smaller> for $bigger {
 			#[inline(always)]
-			fn num_cast_from(val: $smaller) -> Self {
+			fn cast_from(val: $smaller) -> Self {
 				val as _
 			}
 		}
 	};
 	(@small_u_from_small_u $smaller:ty, $bigger:ty) => {
-		impl NumCast<$bigger> for $smaller {
+		impl CastFrom<$bigger> for $smaller {
 			#[inline(always)]
-			fn num_cast_from(val: $bigger) -> Self {
+			fn cast_from(val: $bigger) -> Self {
 				Self::new(val.val()) & Self::ONES
 			}
 		}
 
-		impl NumCast<$smaller> for $bigger {
+		impl CastFrom<$smaller> for $bigger {
 			#[inline(always)]
-			fn num_cast_from(val: $smaller) -> Self {
+			fn cast_from(val: $smaller) -> Self {
 				Self::new(val.val())
 			}
 		}
 	};
 	(@small_u_from_u $smaller:ty, $bigger:ty) => {
-		impl NumCast<$bigger> for $smaller {
+		impl CastFrom<$bigger> for $smaller {
 			#[inline(always)]
-			fn num_cast_from(val: $bigger) -> Self {
+			fn cast_from(val: $bigger) -> Self {
 				Self::new(val as u8) & Self::ONES
 			}
 		}
 
-		impl NumCast<$smaller> for $bigger {
+		impl CastFrom<$smaller> for $bigger {
 			#[inline(always)]
-			fn num_cast_from(val: $smaller) -> Self {
+			fn cast_from(val: $smaller) -> Self {
 				val.val() as _
 			}
 		}

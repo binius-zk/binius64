@@ -19,7 +19,7 @@ use rand::{
 	distr::{Distribution, StandardUniform},
 };
 
-use super::{Divisible, NumCast, U1, UnderlierType, mapget};
+use super::{CastFrom, Divisible, U1, UnderlierType, mapget};
 use crate::Random;
 
 /// A type that represents N elements of the same underlier type.
@@ -193,32 +193,32 @@ impl<U: UnderlierType + Pod, const N: usize> UnderlierType for ScaledUnderlier<U
 	}
 }
 
-impl<U: UnderlierType, const N: usize> NumCast<ScaledUnderlier<U, N>> for u8
+impl<U: UnderlierType, const N: usize> CastFrom<ScaledUnderlier<U, N>> for u8
 where
-	Self: NumCast<U>,
+	Self: CastFrom<U>,
 {
-	fn num_cast_from(val: ScaledUnderlier<U, N>) -> Self {
-		Self::num_cast_from(val.0[0])
+	fn cast_from(val: ScaledUnderlier<U, N>) -> Self {
+		Self::cast_from(val.0[0])
 	}
 }
 
-impl<U: UnderlierType, const N: usize> NumCast<ScaledUnderlier<U, N>> for U1
+impl<U: UnderlierType, const N: usize> CastFrom<ScaledUnderlier<U, N>> for U1
 where
-	Self: NumCast<U>,
+	Self: CastFrom<U>,
 {
-	fn num_cast_from(val: ScaledUnderlier<U, N>) -> Self {
-		Self::num_cast_from(val.0[0])
+	fn cast_from(val: ScaledUnderlier<U, N>) -> Self {
+		Self::cast_from(val.0[0])
 	}
 }
 
 // `M128` is the `BinaryField128bGhash` subfield underlier; this extracts it from the low limb of a
 // `ScaledUnderlier<M128, _>`-backed extension field (`GhashSq256b` off the AVX2 path).
-impl<U: UnderlierType, const N: usize> NumCast<ScaledUnderlier<U, N>> for crate::arch::M128
+impl<U: UnderlierType, const N: usize> CastFrom<ScaledUnderlier<U, N>> for crate::arch::M128
 where
-	Self: NumCast<U>,
+	Self: CastFrom<U>,
 {
-	fn num_cast_from(val: ScaledUnderlier<U, N>) -> Self {
-		Self::num_cast_from(val.0[0])
+	fn cast_from(val: ScaledUnderlier<U, N>) -> Self {
+		Self::cast_from(val.0[0])
 	}
 }
 

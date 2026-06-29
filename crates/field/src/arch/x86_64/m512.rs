@@ -21,7 +21,7 @@ use crate::{
 		x86_64::{m128::M128, m256::M256},
 	},
 	underlier::{
-		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, get_block_values, get_spread_bytes,
+		CastFrom, Divisible, SmallU, U1, U2, U4, UnderlierType, get_block_values, get_spread_bytes,
 		impl_divisible_bitmask, mapget, spread_fallback,
 	},
 };
@@ -111,10 +111,10 @@ impl From<M512> for __m512i {
 		value.0
 	}
 }
-impl<U: NumCast<u128>> NumCast<M512> for U {
-	fn num_cast_from(val: M512) -> Self {
+impl<U: CastFrom<u128>> CastFrom<M512> for U {
+	fn cast_from(val: M512) -> Self {
 		let [low, _, _, _] = val.into();
-		Self::num_cast_from(low)
+		Self::cast_from(low)
 	}
 }
 

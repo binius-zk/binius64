@@ -293,12 +293,12 @@ macro_rules! impl_field_extension {
 
 			#[inline]
 			fn try_from(elem: $name) -> Result<Self, Self::Error> {
-				use $crate::underlier::NumCast;
+				use $crate::underlier::CastFrom;
 
 				if elem.0 >> $subfield_name::N_BITS
 					== <$typ as $crate::underlier::UnderlierType>::ZERO
 				{
-					Ok($subfield_name(<$subfield_typ>::num_cast_from(elem.val())))
+					Ok($subfield_name(<$subfield_typ>::cast_from(elem.val())))
 				} else {
 					Err(())
 				}

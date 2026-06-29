@@ -18,7 +18,7 @@ use crate::{
 	BinaryField, Random,
 	arch::portable::{packed::PackedPrimitiveType, packed_arithmetic::interleave_mask_even},
 	underlier::{
-		NumCast, SmallU, U1, U2, U4, UnderlierType, WithUnderlier, impl_divisible_bitmask,
+		CastFrom, SmallU, U1, U2, U4, UnderlierType, WithUnderlier, impl_divisible_bitmask,
 		impl_divisible_memcast,
 	},
 };
@@ -137,10 +137,10 @@ impl<const N: usize> From<SmallU<N>> for M128 {
 	}
 }
 
-impl<U: NumCast<u128>> NumCast<M128> for U {
+impl<U: CastFrom<u128>> CastFrom<M128> for U {
 	#[inline]
-	fn num_cast_from(val: M128) -> Self {
-		Self::num_cast_from(val.into())
+	fn cast_from(val: M128) -> Self {
+		Self::cast_from(val.into())
 	}
 }
 

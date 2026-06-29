@@ -1,9 +1,6 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use super::{
-	U1, U2, U4,
-	underlier_type::{NumCast, UnderlierType},
-};
+use super::{U1, U2, U4, underlier_type::UnderlierType};
 use crate::Divisible;
 
 /// Fallback implementation of `spread` method.
@@ -116,7 +113,7 @@ pub(crate) unsafe fn get_block_values<U, T, const BLOCK_LEN: usize>(
 ) -> [T; BLOCK_LEN]
 where
 	U: UnderlierType + From<T> + Divisible<T>,
-	T: UnderlierType + NumCast<U>,
+	T: UnderlierType,
 {
 	// Safety: `block_idx * BLOCK_LEN + i < U::BITS / T::BITS` by the function preconditions.
 	std::array::from_fn(|i| unsafe {
@@ -136,7 +133,7 @@ pub(crate) unsafe fn get_spread_bytes<U, T, const BLOCK_LEN: usize>(
 ) -> [u8; BLOCK_LEN]
 where
 	U: UnderlierType + From<T> + Divisible<T>,
-	T: UnderlierType + SpreadToByte + NumCast<U>,
+	T: UnderlierType + SpreadToByte,
 {
 	unsafe { get_block_values::<U, T, BLOCK_LEN>(value, block_idx) }
 		.map(SpreadToByte::spread_to_byte)

@@ -30,7 +30,7 @@ use crate::{
 	BinaryField, Divisible, ExtensionField, Field, Maskable, PackedField, WideMul,
 	arithmetic_traits::{InvertOrZero, Square},
 	field::FieldOps,
-	underlier::{NumCast, UnderlierType, WithUnderlier},
+	underlier::{CastFrom, UnderlierType, WithUnderlier},
 };
 
 #[derive(PartialEq, Eq, Clone, Copy, Default, bytemuck::TransparentWrapper)]
@@ -618,14 +618,14 @@ where
 	PT1: PackedField + WithUnderlier,
 	PT2: PackedField<Scalar = PT1::Scalar> + WithUnderlier,
 	PT2::Underlier: From<PT1::Underlier>,
-	PT1::Underlier: NumCast<PT2::Underlier>,
+	PT1::Underlier: CastFrom<PT2::Underlier>,
 {
 	let bigger_lhs = PT2::from_underlier(lhs.to_underlier().into());
 	let bigger_rhs = PT2::from_underlier(rhs.to_underlier().into());
 
 	let bigger_result = bigger_lhs * bigger_rhs;
 
-	PT1::from_underlier(PT1::Underlier::num_cast_from(bigger_result.to_underlier()))
+	PT1::from_underlier(PT1::Underlier::cast_from(bigger_result.to_underlier()))
 }
 
 /// Square `PT1` values by upcasting to wider `PT2` type with the same scalar.
@@ -636,13 +636,13 @@ where
 	PT1: PackedField + WithUnderlier,
 	PT2: PackedField<Scalar = PT1::Scalar> + WithUnderlier,
 	PT2::Underlier: From<PT1::Underlier>,
-	PT1::Underlier: NumCast<PT2::Underlier>,
+	PT1::Underlier: CastFrom<PT2::Underlier>,
 {
 	let bigger_val = PT2::from_underlier(val.to_underlier().into());
 
 	let bigger_result = bigger_val.square();
 
-	PT1::from_underlier(PT1::Underlier::num_cast_from(bigger_result.to_underlier()))
+	PT1::from_underlier(PT1::Underlier::cast_from(bigger_result.to_underlier()))
 }
 
 /// Invert `PT1` values by upcasting to wider `PT2` type with the same scalar.
@@ -653,11 +653,11 @@ where
 	PT1: PackedField + WithUnderlier,
 	PT2: PackedField<Scalar = PT1::Scalar> + WithUnderlier,
 	PT2::Underlier: From<PT1::Underlier>,
-	PT1::Underlier: NumCast<PT2::Underlier>,
+	PT1::Underlier: CastFrom<PT2::Underlier>,
 {
 	let bigger_val = PT2::from_underlier(val.to_underlier().into());
 
 	let bigger_result = bigger_val.invert_or_zero();
 
-	PT1::from_underlier(PT1::Underlier::num_cast_from(bigger_result.to_underlier()))
+	PT1::from_underlier(PT1::Underlier::cast_from(bigger_result.to_underlier()))
 }

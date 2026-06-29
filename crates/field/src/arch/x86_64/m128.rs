@@ -23,7 +23,7 @@ use crate::{
 	BinaryField,
 	arch::portable::packed::PackedPrimitiveType,
 	underlier::{
-		Divisible, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, impl_divisible_bitmask,
+		CastFrom, Divisible, SmallU, SpreadToByte, U2, U4, UnderlierType, impl_divisible_bitmask,
 		impl_divisible_self, mapget, spread_fallback,
 	},
 };
@@ -134,10 +134,10 @@ impl DeserializeBytes for M128 {
 
 impl_divisible_bitmask!(M128, 1, 2, 4);
 
-impl<U: NumCast<u128>> NumCast<M128> for U {
+impl<U: CastFrom<u128>> CastFrom<M128> for U {
 	#[inline(always)]
-	fn num_cast_from(val: M128) -> Self {
-		Self::num_cast_from(u128::from(val))
+	fn cast_from(val: M128) -> Self {
+		Self::cast_from(u128::from(val))
 	}
 }
 
