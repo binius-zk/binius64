@@ -90,7 +90,7 @@ impl Not for Word {
 
 impl Word {
 	/// Creates a new `Word` from a 64-bit unsigned integer.
-	pub fn from_u64(value: u64) -> Word {
+	pub const fn from_u64(value: u64) -> Word {
 		Word(value)
 	}
 
@@ -178,9 +178,9 @@ impl Word {
 	/// Shift Arithmetic Right by a given number of bits.
 	///
 	/// This is similar to a logical shift right, but it shifts the sign bit to the right.
-	pub fn sar(&self, n: u32) -> Word {
+	pub fn sar(self, n: u32) -> Word {
 		let Word(value) = self;
-		let value = *value as i64;
+		let value = value as i64;
 		let result = value >> n;
 		Word(result as u64)
 	}
@@ -316,7 +316,7 @@ impl Word {
 	}
 
 	/// Returns the integer value as a 64-bit unsigned integer.
-	pub fn as_u64(self) -> u64 {
+	pub const fn as_u64(self) -> u64 {
 		self.0
 	}
 
@@ -326,7 +326,7 @@ impl Word {
 	/// 1. All other bits are ignored for the boolean value.
 	///
 	/// Returns true if the MSB is 1, false otherwise.
-	pub fn is_msb_true(self) -> bool {
+	pub const fn is_msb_true(self) -> bool {
 		(self.0 & 0x8000000000000000) != 0
 	}
 
@@ -336,7 +336,7 @@ impl Word {
 	/// All other bits are ignored for the boolean value.
 	///
 	/// Returns true if the MSB is 0, false otherwise.
-	pub fn is_msb_false(self) -> bool {
+	pub const fn is_msb_false(self) -> bool {
 		(self.0 & 0x8000000000000000) == 0
 	}
 }
