@@ -72,9 +72,9 @@ name = "sha512"
 harness = false
 
 [features]
-default = ["rayon"]
+default = []
 perfetto = ["tracing-profile/perfetto"]
-rayon = ["binius-hash/rayon", "binius-prover/rayon"]
+rayon = ["binius-utils/rayon"]
 
 # Tutorial examples
 [[example]]

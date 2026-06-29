@@ -57,9 +57,9 @@ prove [ 128.58ms | 100.00% ] { operation = prove, perfetto_category = operation,
 ...
 ```
 
-### Disabling multithreading
+### Enabling multithreading
 
-Multithreading is enabled by default using [Rayon](https://github.com/rayon-rs/rayon). This is controlled by the `rayon` Cargo feature. To run an example with multithreading disabled, use `--no-default-features`.
+Multithreading using [Rayon](https://github.com/rayon-rs/rayon) is available, but it is disabled by default. This is controlled by the `rayon` Cargo feature. To run an example with multithreading enabled, use `--features rayon`.
 
 ## Architecture
 

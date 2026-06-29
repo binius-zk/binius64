@@ -12,7 +12,7 @@ binius-field = { path = "../field" }
 binius-hash = { path = "../hash" }
 binius-iop = { path = "../iop" }
 binius-ip = { path = "../ip" }
-binius-ip-prover = { path = "../ip-prover", default-features = false }
+binius-ip-prover = { path = "../ip-prover" }
 binius-math = { path = "../math" }
 binius-transcript = { path = "../transcript" }
 binius-utils = { path = "../utils" }
@@ -34,7 +34,7 @@ rand = { workspace = true, features = ["thread_rng"] }
 sha2.workspace = true
 
 [features]
-default = ["rayon"]
+default = []
 rayon = ["binius-utils/rayon"]
 
 [[bench]]
