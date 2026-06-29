@@ -67,10 +67,21 @@ impl BatchAndCheckWitness {
 	///
 	/// The constraints reference only committed values, never the dropped scratch tail.
 	/// So each instance's committed-word block holds everything an operand can read.
+	///
+	/// # Panics
+	///
+	/// Panics if the constraint count or the instance count is not a power of two.
 	pub fn build(table: &ValueTable, and_constraints: &[AndConstraint]) -> Self {
 		// Rows per instance, and total rows across the batch.
 		let n_and = and_constraints.len();
-		let total = table.n_instances() * n_and;
+		let n_instances = table.n_instances();
+		let total = n_instances * n_and;
+
+		// Both dimensions are powers of two, so both are at least 1.
+		// - The row count `K * n_and` is then at least 1, so the witness is never empty.
+		// - The chunk size used below is then never zero, so the parallel split is well-defined.
+		assert!(n_and.is_power_of_two(), "constraint count must be a power of two");
+		assert!(n_instances.is_power_of_two(), "instance count must be a power of two");
 
 		// One column each for the three operands, laid out instance-major.
 		let mut a = vec![Word::ZERO; total];
@@ -78,10 +89,11 @@ impl BatchAndCheckWitness {
 		let mut c = vec![Word::ZERO; total];
 
 		// Fill one instance's contiguous block of rows per parallel task.
+		// Each chunk is exactly one instance.
 		// The blocks are disjoint, so the instances never contend for the same rows.
-		a.par_chunks_mut(n_and.max(1))
-			.zip(b.par_chunks_mut(n_and.max(1)))
-			.zip(c.par_chunks_mut(n_and.max(1)))
+		a.par_chunks_mut(n_and)
+			.zip(b.par_chunks_mut(n_and))
+			.zip(c.par_chunks_mut(n_and))
 			.enumerate()
 			.for_each(|(instance, ((a_block, b_block), c_block))| {
 				// This instance's committed words; every operand index lands inside this slice.
@@ -111,16 +123,6 @@ impl BatchAndCheckWitness {
 	/// Operand `C` column, `K * n_and` rows in instance-major order.
 	pub fn c(&self) -> &[Word] {
 		&self.c
-	}
-
-	/// The number of rows in each column: `K * n_and`.
-	pub fn len(&self) -> usize {
-		self.a.len()
-	}
-
-	/// Whether the witness has no rows.
-	pub fn is_empty(&self) -> bool {
-		self.a.is_empty()
 	}
 
 	/// Consumes the witness into its three operand columns `(A, B, C)`.
@@ -251,7 +253,6 @@ mod tests {
 
 		// Shape: K * n_and rows, with K = 4.
 		let n_and = and_constraints.len();
-		assert_eq!(witness.len(), 4 * n_and);
 		assert_eq!(witness.a().len(), 4 * n_and);
 		assert_eq!(witness.b().len(), 4 * n_and);
 		assert_eq!(witness.c().len(), 4 * n_and);
@@ -301,6 +302,25 @@ mod tests {
 		assert_eq!(witness.a(), a_ref.as_slice());
 		assert_eq!(witness.b(), b_ref.as_slice());
 		assert_eq!(witness.c(), c_ref.as_slice());
+	}
+
+	#[test]
+	#[should_panic(expected = "constraint count must be a power of two")]
+	fn build_rejects_non_power_of_two_constraint_count() {
+		let c = and_circuit();
+
+		// Fixture state: a valid batch with one instance (K = 1).
+		let table = populate_table(&c, &[(1, 3, 7)]);
+
+		// Invariant: the per-instance constraint count must be a power of two.
+		//
+		// Mutation: hand the builder 3 constraints.
+		//
+		//     3 is not a power of two → build asserts on the count before reading any row.
+		//
+		// The operands are empty, so the panic is the count check, never an out-of-range index.
+		let three = vec![AndConstraint::default(); 3];
+		let _ = BatchAndCheckWitness::build(&table, &three);
 	}
 
 	proptest! {
