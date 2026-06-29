@@ -29,6 +29,7 @@ pub mod packed_binary_field;
 pub mod packed_extension;
 pub mod packed_extension_ops;
 mod packed_ghash;
+mod packed_ghash_sq;
 mod random;
 #[cfg(test)]
 mod tests;
@@ -50,6 +51,7 @@ pub use packed_binary_field::*;
 pub use packed_extension::*;
 pub use packed_extension_ops::*;
 pub use packed_ghash::*;
+pub use packed_ghash_sq::*;
 pub use random::Random;
 pub use transpose::square_transpose;
 pub use underlier::{Divisible, Maskable, UnderlierType, WithUnderlier};

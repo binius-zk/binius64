@@ -22,7 +22,7 @@ use crate::{
 	arch::portable::packed::PackedPrimitiveType,
 	underlier::{
 		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, get_block_values, get_spread_bytes,
-		impl_divisible_bitmask, mapget, spread_fallback,
+		impl_divisible_bitmask, impl_divisible_self, mapget, spread_fallback,
 	},
 };
 
@@ -175,6 +175,10 @@ impl DeserializeBytes for M256 {
 }
 
 impl_divisible_bitmask!(M256, 1, 2, 4);
+
+// A 256-bit register divides into one 256-bit scalar such as `GhashSq256b`.
+// The reflexive case is not covered by the smaller-lane divisions above.
+impl_divisible_self!(M256);
 
 impl<U: NumCast<u128>> NumCast<M256> for U {
 	#[inline(always)]
