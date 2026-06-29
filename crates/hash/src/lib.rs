@@ -8,6 +8,7 @@
 //! such as standard hash functions (SHA-256).
 
 pub mod binary_merkle_tree;
+pub mod blake3;
 pub mod compress;
 pub mod parallel_compression;
 pub mod parallel_digest;
