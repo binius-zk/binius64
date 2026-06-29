@@ -430,17 +430,20 @@ where
 		let selected_c_lo_evals = bivariate_evals.split_off(1 << log_bits);
 		let selected_a_evals = bivariate_evals;
 
-		self.channel.send_many(&selected_a_evals);
-		self.channel.send_many(&selected_c_lo_evals);
-		self.channel.send_many(&selected_c_hi_evals);
-		self.channel.send_many(&b_evals);
-
+		// Recover the raw per-bit evaluations from the leaf selectors and send those (spec Phase
+		// 5). The verifier reconstructs the selectors forward rather than receiving them and
+		// inverting.
 		let [a_evals, c_lo_evals, c_hi_evals] = normalize_a_c_exponent_evals(
 			log_bits,
 			selected_a_evals,
 			selected_c_lo_evals,
 			selected_c_hi_evals,
 		);
+
+		self.channel.send_many(&a_evals);
+		self.channel.send_many(&c_lo_evals);
+		self.channel.send_many(&c_hi_evals);
+		self.channel.send_many(&b_evals);
 
 		let [a_0_eval, b_0_eval, c_lo_0_eval] =
 			lsb_evals.try_into().expect("c_lo_prover_evals.len() == 3");

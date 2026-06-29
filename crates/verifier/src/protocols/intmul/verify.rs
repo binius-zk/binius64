@@ -13,7 +13,7 @@ use itertools::{Itertools, chain};
 use super::{
 	common::{
 		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, frobenius_twist,
-		normalize_a_c_exponent_evals,
+		reconstruct_selecteds,
 	},
 	error::Error,
 };
@@ -276,29 +276,25 @@ where
 	} = batch_verify(n_vars, 3, &evals, channel)?;
 	challenges.reverse();
 
-	// Read the evals of all multilinears.
-	let a_selected_evals = channel.recv_many(1 << log_bits)?;
-	let c_lo_selected_evals = channel.recv_many(1 << log_bits)?;
-	let c_hi_selected_evals = channel.recv_many(1 << log_bits)?;
+	// The prover sends the raw per-bit evaluations of all multilinears; the verifier reconstructs
+	// the leaf selectors forward (rather than receiving selectors and inverting them).
+	let a_evals = channel.recv_many(1 << log_bits)?;
+	let c_lo_evals = channel.recv_many(1 << log_bits)?;
+	let c_hi_evals = channel.recv_many(1 << log_bits)?;
 	let b_evals = channel.recv_many(1 << log_bits)?;
 
-	// Compose the expected evaluation of the batched composition via
-	// the prover's claimed multilinear evals extracted above.
-	// For every pair (p,q) of multilinears, the verifier can be sure that
-	// the MLE of p*q at `a_c_eq_eval` equals the corresponding eval in `evals`.
+	let [a_selected_evals, c_lo_selected_evals, c_hi_selected_evals] =
+		reconstruct_selecteds(log_bits, &a_evals, &c_lo_evals, &c_hi_evals);
+
+	// Compose the expected evaluation of the batched composition via the reconstructed leaf
+	// selectors. For every pair (p,q) of leaf selectors, the verifier checks that the MLE of p*q
+	// at `a_c_eq_eval` equals the corresponding bivariate-product eval in `evals`.
 	let a_c_eq_eval = eq_ind(a_c_eval_point, &challenges);
 	let expected_bivariate_unbatched_evals =
 		chain!(&a_selected_evals, &c_lo_selected_evals, &c_hi_selected_evals)
 			.tuples()
 			.map(|(left, right)| a_c_eq_eval.clone() * left * right)
 			.collect::<Vec<_>>();
-
-	let [a_evals, c_lo_evals, c_hi_evals] = normalize_a_c_exponent_evals(
-		log_bits,
-		a_selected_evals,
-		c_lo_selected_evals,
-		c_hi_selected_evals,
-	);
 
 	// We must check that `a_0 * b_0 = c_lo_0` across all rows, where these represent the least
 	// significant bits of `a_exponents`, `b_exponents`, and `c_lo_exponents` respectively.
