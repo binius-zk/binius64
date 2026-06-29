@@ -1,0 +1,18 @@
+[package]
+name = "binius-m4-verifier"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+binius-core = { path = "../core" }
+binius-hash = { path = "../hash" }
+binius-iop = { path = "../iop" }
+binius-ip = { path = "../ip" }
+binius-math = { path = "../math" }
+binius-transcript = { path = "../transcript" }
+binius-utils = { path = "../utils" }
+binius-verifier = { path = "../verifier" }

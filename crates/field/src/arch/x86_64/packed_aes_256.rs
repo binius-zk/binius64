@@ -9,8 +9,9 @@ cfg_if! {
 		pub type AesSquare32x<T> = crate::arch::ReuseMultiply<T>;
 		pub type AesInvert32x<T> = super::gfni::gfni_arithmetics::Gfni<T>;
 	} else {
-		pub type AesWideMul32x<T> = crate::arch::ElementwiseWideMul<T>;
-		pub type AesSquare32x<T> = crate::arch::Divide<u8, T>;
-		pub type AesInvert32x<T> = crate::arch::Divide<u8, T>;
+		// Divide into 32 `u8` lanes (the 1×8b AES packing) for all three ops.
+		pub type AesWideMul32x<T> = crate::arch::Divide<u8, T, 32>;
+		pub type AesSquare32x<T> = crate::arch::Divide<u8, T, 32>;
+		pub type AesInvert32x<T> = crate::arch::Divide<u8, T, 32>;
 	}
 }

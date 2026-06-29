@@ -9,11 +9,10 @@ use binius_core::{
 use binius_field::PackedField;
 use binius_frontend::{Circuit, PopulateError, WitnessFiller};
 use binius_iop_prover::channel::IOPProverChannel;
+use binius_m4_verifier::BatchCommitLayout;
 use binius_math::FieldBuffer;
 use binius_utils::rayon::prelude::*;
 use binius_verifier::config::B128;
-
-use crate::commit::BatchCommitLayout;
 
 /// The witness for a batch of `2^k` independent instances of one circuit.
 ///
@@ -321,6 +320,7 @@ mod tests {
 	use binius_core::verify::verify_constraints;
 	use binius_field::{PackedBinaryGhash1x128b, Random};
 	use binius_frontend::{CircuitBuilder, Wire};
+	use binius_iop::channel::OracleSpec;
 	use binius_iop_prover::naive_channel::NaiveProverChannel;
 	use binius_math::multilinear::evaluate::evaluate;
 	use binius_transcript::ProverTranscript;
@@ -576,12 +576,12 @@ mod tests {
 		})
 		.unwrap();
 
-		// The verifier builds the oracle spec from the constraint system.
+		// The verifier sizes the oracle from the constraint system, without zero-knowledge.
 		// The prover packs the buffer from the table.
 		// `send_oracle` asserts both agree on size: the batched-FRI sizing invariant.
 		let layout =
 			BatchCommitLayout::for_constraint_system(c.circuit.constraint_system(), log_instances);
-		let spec = layout.oracle_spec();
+		let spec = OracleSpec::new(layout.log_witness_elems);
 
 		let mut transcript = ProverTranscript::<StdChallenger>::default();
 		let mut channel = NaiveProverChannel::<B128, _>::new(&mut transcript, vec![spec]);

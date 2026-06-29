@@ -239,6 +239,37 @@ let vals = elems.iter().map(|e| e.value()).collect::<Vec<_>>();
 let vals: Vec<_> = elems.iter().map(|e| e.value()).collect();
 ```
 
+### Visibility scope
+
+Use `pub(crate)` and `pub(super)` sparingly; instead, prefer to control visibility at the ancestor module level. Most of
+the time, an item that should not be part of the public API can simply be `pub` within a non-`pub` module: keeping the
+module (or one of its ancestors) private already prevents external reachability, and you avoid annotating every item.
+Only reach for `pub(crate)` and `pub(super)` when ancestor-level visibility cannot express what you need:
+
+* A `pub mod` that exposes some items publicly but has helpers that other crate modules must call. Here the module
+  cannot be made private, so `pub(crate)` is the right tool for the internal helpers.
+* A field of a `pub` struct that crate code must access but external code must not. Fields have no ancestor-module
+  escape hatch, so `pub(crate)` (or `pub(super)`) is the only option.
+
+```rust
+// Good: a private module gates external reachability; no per-item modifiers needed.
+mod internal {
+    pub fn helper() {}
+}
+
+// Good: the modifier is necessary because the module is public.
+pub mod codec {
+    pub fn encode() {}          // public API
+    pub(crate) fn scratch() {}  // crate-internal helper
+}
+
+// Good: fields have no module-level alternative.
+pub struct Session {
+    pub id: SessionId,
+    pub(crate) refcount: usize,
+}
+```
+
 ## Prover-verifier separation
 
 Verifier code is optimized for simplicity, security, and readability, whereas prover code is optimized for performance.

@@ -3,7 +3,7 @@ use std::{iter, iter::repeat_with};
 
 use binius_core::word::Word;
 use binius_field::{
-	Field, PackedAESBinaryField64x8b, Random,
+	Field, Random,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, LinearTransformationFactory,
 		OutputWrappingTransformationFactory,
@@ -51,36 +51,32 @@ fn bench(c: &mut Criterion) {
 		.reduce_dim(prover_message_domain.dim() - 1)
 		.isomorphic();
 
-	let ntt_lookup = NTTLookup::<PackedAESBinaryField64x8b>::new(&prover_message_domain);
-
 	let mut group = c.benchmark_group("evaluate");
 	group.bench_function("NTT lookup precompute", |bench| {
-		bench.iter(|| NTTLookup::<PackedAESBinaryField64x8b>::new(&prover_message_domain));
+		bench.iter(|| NTTLookup::new(&prover_message_domain));
 	});
 
 	group.throughput(Throughput::Elements(1 << log_words));
 	group.bench_function(format!("univariate_round_message 2^{log_words}"), |bench| {
 		bench.iter(|| {
-			let urm: [B128; _] = univariate_round_message_extension_domain(
+			univariate_round_message_extension_domain::<B128>(
 				log_words,
 				&a_words,
 				&b_words,
 				&c_words,
 				&big_field_zerocheck_challenges,
-				&ntt_lookup,
-			);
-
-			urm
+				&prover_message_domain,
+			)
 		});
 	});
 
-	let urm: [B128; _] = univariate_round_message_extension_domain(
+	let urm = univariate_round_message_extension_domain::<B128>(
 		log_words,
 		&a_words,
 		&b_words,
 		&c_words,
 		&big_field_zerocheck_challenges,
-		&ntt_lookup,
+		&prover_message_domain,
 	);
 	let univariate_challenge = B128::random(&mut rng);
 

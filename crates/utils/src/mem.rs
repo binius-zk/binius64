@@ -30,35 +30,3 @@ pub fn slice_uninit_mut<T>(slice: &mut [T]) -> &mut [MaybeUninit<T>] {
 		std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut MaybeUninit<T>, slice.len())
 	}
 }
-
-/// This can be removed when MaybeUninit::slice_assume_init_mut is stabilized
-/// <https://github.com/rust-lang/rust/issues/63569>
-///
-/// # Safety
-///
-/// It is up to the caller to guarantee that the `MaybeUninit<T>` elements
-/// really are in an initialized state.
-/// Calling this when the content is not yet fully initialized causes undefined behavior.
-///
-/// See [`assume_init_mut`] for more details and examples.
-///
-/// [`assume_init_mut`]: MaybeUninit::assume_init_mut
-pub const unsafe fn slice_assume_init_mut<T>(slice: &mut [MaybeUninit<T>]) -> &mut [T] {
-	unsafe { std::mem::transmute(slice) }
-}
-
-/// This can be removed when MaybeUninit::slice_assume_init_ref is stabilized
-/// <https://github.com/rust-lang/rust/issues/63569>
-///
-/// # Safety
-///
-/// It is up to the caller to guarantee that the `MaybeUninit<T>` elements
-/// really are in an initialized state.
-/// Calling this when the content is not yet fully initialized causes undefined behavior.
-///
-/// See [`assume_init_ref`] for more details and examples.
-///
-/// [`assume_init_ref`]: MaybeUninit::assume_init_ref
-pub const unsafe fn slice_assume_init_ref<T>(slice: &[MaybeUninit<T>]) -> &[T] {
-	unsafe { std::mem::transmute(slice) }
-}
