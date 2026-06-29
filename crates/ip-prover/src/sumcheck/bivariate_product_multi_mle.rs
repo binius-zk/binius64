@@ -125,14 +125,16 @@ where
 							evals_a_1_chunk.as_ref(),
 							evals_b_1_chunk.as_ref()
 						) {
-							let evals_a_inf_i = evals_a_0_i + evals_a_1_i;
-							let evals_b_inf_i = evals_b_0_i + evals_b_1_i;
+							// Monomial basis: halves are coeffs `[c0, c1]`, so `M(1) = c0 + c1`
+							// (lo + hi) and `M(∞) = c1` (hi, the leading coefficient).
+							let evals_a_1_val = evals_a_0_i + evals_a_1_i;
+							let evals_b_1_val = evals_b_0_i + evals_b_1_i;
 
 							// The final multiply (by `evals_b_*_i`) of each product is accumulated
 							// in unreduced (wide) form; the wide accumulators persist across the
 							// whole fold and are reduced a single time at the end.
-							round_evals.y_1 += P::wide_mul(eq_i * evals_a_1_i, evals_b_1_i);
-							round_evals.y_inf += P::wide_mul(eq_i * evals_a_inf_i, evals_b_inf_i);
+							round_evals.y_1 += P::wide_mul(eq_i * evals_a_1_val, evals_b_1_val);
+							round_evals.y_inf += P::wide_mul(eq_i * evals_a_1_i, evals_b_1_i);
 						}
 					}
 

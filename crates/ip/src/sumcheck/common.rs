@@ -27,29 +27,29 @@ impl<F: FieldOps> RoundCoeffs<F> {
 }
 
 impl<F: Field> RoundCoeffs<F> {
-	/// The claimed sum $R(0) + R(1)$ that this round polynomial encodes.
+	/// The claimed sum $R(0) + R(\infty)$ that this round polynomial encodes.
 	///
 	/// For a sumcheck round polynomial, this is the round's claimed sum: the verifier expects the
-	/// identity $s = R(0) + R(1)$ (see [`RoundProof::recover`]). Note $R(0)$ is the constant
-	/// coefficient and $R(1)$ is the sum of all coefficients.
+	/// identity $s = R(0) + R(\infty)$ (see [`RoundProof::recover`]). Note $R(0)$ is the constant
+	/// coefficient and $R(\infty)$ is the leading (highest-degree) coefficient — the sum runs over
+	/// the infinity hypercube $\{0, \infty\}$.
 	pub fn sum_over_endpoints(&self) -> F {
 		let r_0 = self.0.first().copied().unwrap_or(F::ZERO);
-		let r_1: F = self.0.iter().copied().sum();
-		r_0 + r_1
+		let r_inf = self.0.last().copied().unwrap_or(F::ZERO);
+		r_0 + r_inf
 	}
 
-	/// The claimed value $(1 - \alpha) R(0) + \alpha R(1)$ that this round polynomial encodes in an
+	/// The claimed value $R(0) + \alpha R(\infty)$ that this round polynomial encodes in an
 	/// MLE-check.
 	///
-	/// This is the MLE-check analogue of [`Self::sum_over_endpoints`]: an MLE-check round
-	/// polynomial satisfies the identity $s = (1 - \alpha) R(0) + \alpha R(1)$, where $\alpha$ is
-	/// the round's evaluation-point coordinate (see [`crate::mlecheck::RoundProof::recover`]).
-	/// Equivalently, this is the linear extrapolation of $R$ from the endpoints $0$ and $1$ to the
-	/// point $\alpha$.
+	/// This is the MLE-check analogue of [`Self::sum_over_endpoints`]: in the monomial basis an
+	/// MLE-check round polynomial satisfies the identity $s = R(0) + \alpha R(\infty)$, where
+	/// $\alpha$ is the round's evaluation-point coordinate and $R(\infty)$ is the leading
+	/// coefficient (see [`crate::mlecheck::RoundProof::recover`]).
 	pub fn lerp_over_endpoints(&self, alpha: F) -> F {
 		let r_0 = self.0.first().copied().unwrap_or(F::ZERO);
-		let r_1: F = self.0.iter().copied().sum();
-		r_0 + alpha * (r_1 - r_0)
+		let r_inf = self.0.last().copied().unwrap_or(F::ZERO);
+		r_0 + alpha * r_inf
 	}
 }
 
@@ -108,9 +108,9 @@ impl<F> Index<usize> for RoundCoeffs<F> {
 /// A sumcheck round proof is a univariate polynomial in monomial basis with the coefficient of the
 /// highest-degree term truncated off.
 ///
-/// Since the verifier knows the claimed sum of the polynomial values at the points 0 and 1, the
-/// high-degree term coefficient can be easily recovered. Truncating the coefficient off saves a
-/// small amount of proof data.
+/// Since the verifier knows the claimed sum $R(0) + R(\infty)$ of the polynomial, and $R(\infty)$
+/// is itself the high-degree coefficient, that coefficient can be easily recovered. Truncating the
+/// coefficient off saves a small amount of proof data.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RoundProof<F>(pub RoundCoeffs<F>);
 
@@ -131,13 +131,14 @@ impl<F: FieldOps> RoundProof<F> {
 	///
 	/// Let $s$ denote the current round's claimed sum.
 	/// The verifier expects the round polynomial $r_i$ to satisfy the identity
-	/// $s = r_i(0) + r_i(1)$.
+	/// $s = r_i(0) + r_i(\infty)$, where the sum runs over the infinity hypercube and
+	/// $r_i(\infty)$ is the leading coefficient $a_d$.
 	/// Using
 	///     $r_i(0) = a_0$
-	///     $r_i(1) = \sum_{j=0}^d a_j$
+	///     $r_i(\infty) = a_d$
 	/// There is a unique $a_d$ that allows $r_i$ to satisfy the above identity.
 	/// Specifically
-	///     $a_d = s - a_0 - \sum_{j=0}^{d-1} a_j$
+	///     $a_d = s - a_0$
 	///
 	/// Not sending the whole round polynomial is an optimization.
 	/// In the unoptimized version of the protocol, the verifier will halt and reject
@@ -148,7 +149,7 @@ impl<F: FieldOps> RoundProof<F> {
 	{
 		let Self(RoundCoeffs(mut coeffs)) = self;
 		let first_coeff = coeffs.first().cloned().unwrap_or_else(F::zero);
-		let last_coeff = sum - first_coeff - coeffs.iter().cloned().sum::<F>();
+		let last_coeff = sum - first_coeff;
 		coeffs.push(last_coeff);
 		RoundCoeffs(coeffs)
 	}

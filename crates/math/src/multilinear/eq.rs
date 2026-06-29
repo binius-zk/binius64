@@ -29,7 +29,8 @@ use crate::FieldBuffer;
 ///
 /// # Formal Definition
 /// `values` is updated to contain the result of:
-/// $v \otimes (1 - r_0, r_0) \otimes \ldots \otimes (1 - r_{k-1}, r_{k-1})$
+/// $v \otimes (1, r_0) \otimes \ldots \otimes (1, r_{k-1})$
+/// (the monomial-basis eq indicator factors)
 /// which is now a vector of length $2^{n+k}$. If 2^{n+k} < P::WIDTH, then
 /// the result is packed into a single element of `values` where only the first
 /// 2^{n+k} elements have meaning.
@@ -61,9 +62,9 @@ fn tensor_prod_eq_ind<P: PackedField, Data: DerefMut<Target = [P]>>(
 		(lo.as_mut(), hi.as_mut())
 			.into_par_iter()
 			.for_each(|(lo_i, hi_i)| {
-				let prod = (*lo_i) * packed_r_i;
-				*lo_i -= prod;
-				*hi_i = prod;
+				// Monomial basis: the tensor factor is `(1, r_i)`, so the low half (the constant
+				// monomial coefficient) is unchanged and the high half is `lo * r_i`.
+				*hi_i = (*lo_i) * packed_r_i;
 			});
 	}
 }
@@ -73,7 +74,7 @@ fn tensor_prod_eq_ind<P: PackedField, Data: DerefMut<Target = [P]>>(
 /// # Formal definition
 /// This differs from `tensor_prod_eq_ind` in tensor product being applied on the left
 /// and in reversed order:
-/// $(1 - r_{k-1}, r_{k-1}) \otimes \ldots \otimes (1 - r_0, r_0) \otimes v$
+/// $(1, r_{k-1}) \otimes \ldots \otimes (1, r_0) \otimes v$
 ///
 /// # Implementation
 /// This operation is inplace, singlethreaded, and not very optimized. Main intent is to
@@ -98,7 +99,8 @@ pub fn tensor_prod_eq_ind_prepend<P: PackedField, Data: DerefMut<Target = [P]>>(
 		values.zero_extend(values.log_len() + 1);
 		for i in (0..values.len() / 2).rev() {
 			let eval = get_packed_slice(values.as_ref(), i);
-			set_packed_slice(values.as_mut(), 2 * i, eval * (P::Scalar::ONE - r_i));
+			// Monomial basis: factor `(1, r_i)` — low half unchanged, high half is `eval * r_i`.
+			set_packed_slice(values.as_mut(), 2 * i, eval);
 			set_packed_slice(values.as_mut(), 2 * i + 1, eval * r_i);
 		}
 	}
@@ -108,17 +110,19 @@ pub fn tensor_prod_eq_ind_prepend<P: PackedField, Data: DerefMut<Target = [P]>>(
 ///
 /// Given an $n$-coordinate point $r_0, ..., r_n$, this computes the partial evaluation of the
 /// equality indicator polynomial $\widetilde{eq}(X_0, ..., X_{n-1}, r_0, ..., r_{n-1})$ and
-/// returns its values over the $n$-dimensional hypercube.
+/// returns its monomial coefficients over the $n$-dimensional hypercube.
 ///
 /// The returned values are equal to the tensor product
 ///
 /// $$
-/// (1 - r_0, r_0) \otimes ... \otimes (1 - r_{n-1}, r_{n-1}).
+/// (1, r_0) \otimes ... \otimes (1, r_{n-1}),
 /// $$
 ///
-/// See [DP23], Section 2.1 for more information about the equality indicator polynomial.
+/// i.e. the monomial coefficients of $\widetilde{eq}(X, r) = \prod_i (1 + X_i r_i)$.
 ///
-/// [DP23]: <https://eprint.iacr.org/2023/1784>
+/// See [2026/762], Section 4.2 for the monomial-basis equality indicator.
+///
+/// [2026/762]: <https://eprint.iacr.org/2026/762>
 pub fn eq_ind_partial_eval<P: PackedField>(point: &[P::Scalar]) -> FieldBuffer<P> {
 	// The buffer needs to have the correct size: 2^max(point.len(), P::LOG_WIDTH) elements
 	// but since tensor_prod_eq_ind starts with log_n_values=0, we need the final size
@@ -132,9 +136,10 @@ pub fn eq_ind_partial_eval<P: PackedField>(point: &[P::Scalar]) -> FieldBuffer<P
 /// Truncate the equality indicator expansion to the low indexed variables.
 ///
 /// This routine computes $\widetilde{eq}(X_0, ..., X_{n'-1}, r_0, ..., r_{n'-1})$ from
-/// $\widetilde{eq}(X_0, ..., X_{n-1}, r_0, ..., r_{n-1})$ where $n' \le n$ by repeatedly summing
-/// field buffer "halves" inplace. The equality indicator expansion occupies a prefix of
-/// the field buffer; scalars after the truncated length are zeroed out.
+/// $\widetilde{eq}(X_0, ..., X_{n-1}, r_0, ..., r_{n-1})$ where $n' \le n$. In the monomial basis
+/// the expansion is the tensor $\bigotimes_i (1, r_i)$, whose low-variable restriction is exactly
+/// the prefix of monomial coefficients (those whose high-variable monomials are constant), so the
+/// truncation is a plain length truncation.
 ///
 /// ## Preconditions
 ///
@@ -148,38 +153,24 @@ pub fn eq_ind_truncate_low_inplace<P: PackedField, Data: DerefMut<Target = [P]>>
 		"precondition: truncated_log_len must be at most values.log_len()"
 	);
 
-	for log_len in (truncated_log_len..values.log_len()).rev() {
-		{
-			let mut split = values.split_half_mut();
-			let (mut lo, hi) = split.halves();
-			(lo.as_mut(), hi.as_ref())
-				.into_par_iter()
-				.for_each(|(zero, one)| {
-					*zero += *one;
-				});
-		}
-
-		values.truncate(log_len);
-	}
+	values.truncate(truncated_log_len);
 }
 
-/// Evaluates the 2-variate multilinear which indicates the equality condition over the hypercube.
+/// Evaluates the 2-variate multilinear which indicates the equality condition over the
+/// infinity hypercube.
 ///
-/// This evaluates the bivariate polynomial
-///
-/// $$
-/// \widetilde{eq}(X, Y) = X Y + (1 - X) (1 - Y)
-/// $$
-///
-/// In the special case of binary fields, the evaluation can be simplified to
+/// This evaluates the monomial-basis bivariate polynomial
 ///
 /// $$
-/// \widetilde{eq}(X, Y) = X + Y + 1
+/// \widetilde{eq}(X, Y) = 1 + X Y
 /// $$
+///
+/// the interpolant of the equality function on the infinity hypercube. See [2026/762], Section 4.2.
+///
+/// [2026/762]: <https://eprint.iacr.org/2026/762>
 #[inline(always)]
 pub fn eq_one_var<F: FieldOps>(x: F, y: F) -> F {
-	let one = F::one();
-	x.clone() * y.clone() + (one.clone() - x) * (one.clone() - y)
+	F::one() + x * y
 }
 
 /// Evaluates the equality indicator multilinear at a pair of coordinates.
@@ -187,14 +178,12 @@ pub fn eq_one_var<F: FieldOps>(x: F, y: F) -> F {
 /// This evaluates the 2n-variate multilinear polynomial
 ///
 /// $$
-/// \widetilde{eq}(X_0, \ldots, X_{n-1}, Y_0, \ldots, Y_{n-1}) = \prod_{i=0}^{n-1} X_i Y_i + (1 -
-/// X_i) (1 - Y_i) $$
+/// \widetilde{eq}(X_0, \ldots, X_{n-1}, Y_0, \ldots, Y_{n-1}) = \prod_{i=0}^{n-1} (1 + X_i Y_i)
+/// $$
 ///
-/// In the special case of binary fields, the evaluation can be simplified to
+/// See [2026/762], Section 4.2 for the monomial-basis equality indicator.
 ///
-/// See [DP23], Section 2.1 for more information about the equality indicator polynomial.
-///
-/// [DP23]: <https://eprint.iacr.org/2023/1784>
+/// [2026/762]: <https://eprint.iacr.org/2026/762>
 pub fn eq_ind<F: FieldOps>(x: &[F], y: &[F]) -> F {
 	assert_eq!(x.len(), y.len(), "pre-condition: x and y must be the same length");
 	iter::zip(x, y)
@@ -204,14 +193,15 @@ pub fn eq_ind<F: FieldOps>(x: &[F], y: &[F]) -> F {
 
 /// Evaluates the equality indicator multilinear with one operand fixed to all zeros.
 ///
-/// This is `eq_ind(0^n, point)`, which simplifies to
+/// This is `eq_ind(0^n, point)`. In the monomial basis $\widetilde{eq}(0, Y) = 1 + 0 \cdot Y = 1$,
+/// so this is identically `1`:
 ///
 /// $$
-/// \widetilde{eq}(0^n, Y_0, \ldots, Y_{n-1}) = \prod_{i=0}^{n-1} (1 - Y_i).
+/// \widetilde{eq}(0^n, Y_0, \ldots, Y_{n-1}) = \prod_{i=0}^{n-1} (1 + 0 \cdot Y_i) = 1.
 /// $$
 pub fn eq_ind_zero<F: FieldOps>(point: &[F]) -> F {
-	let one = F::one();
-	point.iter().map(|y| one.clone() - y.clone()).product()
+	let _ = point;
+	F::one()
 }
 
 /// Computes the partial evaluation of the equality indicator polynomial, returning scalars.
@@ -220,20 +210,18 @@ pub fn eq_ind_zero<F: FieldOps>(point: &[F]) -> F {
 /// a [`FieldBuffer`]. It computes the tensor product
 ///
 /// $$
-/// (1 - r_0, r_0) \otimes ... \otimes (1 - r_{n-1}, r_{n-1}).
+/// (1, r_0) \otimes ... \otimes (1, r_{n-1}).
 /// $$
 pub fn eq_ind_partial_eval_scalars<F: FieldOps>(point: &[F]) -> Vec<F> {
 	let mut result = Vec::with_capacity(1 << point.len());
 	result.push(F::one());
 
 	for r_i in point {
-		// Double the buffer size. For each existing value in 0..size,
-		// the lo half gets val * (1 - r_i) and the hi half gets val * r_i.
-		// Process in reverse so that writes to hi don't overwrite values we need.
+		// Double the buffer size. Monomial-basis factor `(1, r_i)`: the lo half (constant monomial
+		// coefficient) is unchanged and the hi half gets `val * r_i`.
 		let len = result.len();
 		for j in 0..len {
 			let prod = result[j].clone() * r_i.clone();
-			result[j] -= prod.clone();
 			result.push(prod);
 		}
 	}
@@ -245,7 +233,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::test_utils::{B128, Packed128b, index_to_hypercube_point, random_scalars};
+	use crate::test_utils::{B128, Packed128b, random_scalars};
 
 	type P = Packed128b;
 	type F = B128;
@@ -260,15 +248,17 @@ mod tests {
 		result.set(0, F::ONE);
 		tensor_prod_eq_ind(&mut result, &query);
 		let result_vec: Vec<F> = P::iter_slice(result.as_ref()).collect();
-		assert_eq!(
-			result_vec,
-			vec![
-				(F::ONE - v0) * (F::ONE - v1),
-				v0 * (F::ONE - v1),
-				(F::ONE - v0) * v1,
-				v0 * v1
-			]
-		);
+		// Monomial-basis tensor `(1, v0) ⊗ (1, v1)`.
+		assert_eq!(result_vec, vec![F::ONE, v0, v1, v0 * v1]);
+	}
+
+	/// Monomial coefficient of `eq_ind_partial_eval(point)` at hypercube `index`:
+	/// the product of `point[j]` over coordinates `j` whose bit is set in `index`.
+	fn monomial_coeff(point: &[F], index: usize) -> F {
+		(0..point.len())
+			.filter(|j| (index >> j) & 1 == 1)
+			.map(|j| point[j])
+			.product()
 	}
 
 	#[test]
@@ -290,8 +280,7 @@ mod tests {
 			assert_eq!(eq_expansion.log_len(), coords.len());
 			for i in 0..eq_expansion.len() {
 				let v = eq_expansion.get(i);
-				let hypercube_point = index_to_hypercube_point(coords.len(), i);
-				assert_eq!(v, eq_ind(&hypercube_point, &coords));
+				assert_eq!(v, monomial_coeff(&coords, i));
 			}
 		}
 	}
@@ -301,8 +290,8 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 		for n in 0..5 {
 			let point = random_scalars::<F>(&mut rng, n);
-			let expected: F = point.iter().map(|&r| F::ONE - r).product();
-			assert_eq!(eq_ind_zero(&point), expected);
+			// Monomial basis: eq(0; ·) is identically 1.
+			assert_eq!(eq_ind_zero(&point), F::ONE);
 			assert_eq!(eq_ind_zero(&point), eq_ind(&vec![F::ZERO; n], &point));
 		}
 	}
@@ -325,7 +314,7 @@ mod tests {
 		assert_eq!(result.log_len(), 1);
 		assert_eq!(result.len(), 2);
 		let result_mut = result;
-		assert_eq!(result_mut.get(0), F::ONE - r0);
+		assert_eq!(result_mut.get(0), F::ONE);
 		assert_eq!(result_mut.get(1), r0);
 	}
 
@@ -338,12 +327,7 @@ mod tests {
 		assert_eq!(result.log_len(), 2);
 		assert_eq!(result.len(), 4);
 		let result_vec: Vec<F> = P::iter_slice(result.as_ref()).collect();
-		let expected = vec![
-			(F::ONE - r0) * (F::ONE - r1),
-			r0 * (F::ONE - r1),
-			(F::ONE - r0) * r1,
-			r0 * r1,
-		];
+		let expected = vec![F::ONE, r0, r1, r0 * r1];
 		assert_eq!(result_vec, expected);
 	}
 
@@ -358,16 +342,7 @@ mod tests {
 		assert_eq!(result.len(), 8);
 		let result_vec: Vec<F> = P::iter_slice(result.as_ref()).collect();
 
-		let expected = vec![
-			(F::ONE - r0) * (F::ONE - r1) * (F::ONE - r2),
-			r0 * (F::ONE - r1) * (F::ONE - r2),
-			(F::ONE - r0) * r1 * (F::ONE - r2),
-			r0 * r1 * (F::ONE - r2),
-			(F::ONE - r0) * (F::ONE - r1) * r2,
-			r0 * (F::ONE - r1) * r2,
-			(F::ONE - r0) * r1 * r2,
-			r0 * r1 * r2,
-		];
+		let expected = vec![F::ONE, r0, r1, r0 * r1, r2, r0 * r2, r1 * r2, r0 * r1 * r2];
 		assert_eq!(result_vec, expected);
 	}
 
@@ -386,10 +361,8 @@ mod tests {
 		let result_mut = result;
 		let partial_eval_value = result_mut.get(index);
 
-		let index_bits = index_to_hypercube_point(n_vars, index);
-		let eq_ind_value = eq_ind(&point, &index_bits);
-
-		assert_eq!(partial_eval_value, eq_ind_value);
+		// In the monomial basis the entry is the monomial coefficient at `index`.
+		assert_eq!(partial_eval_value, monomial_coeff(&point, index));
 	}
 
 	#[test]

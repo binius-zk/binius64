@@ -200,11 +200,10 @@ where
 						let lo_i = splits_0_chunk[i].as_ref()[idx];
 						let hi_i = splits_1_chunk[i].as_ref()[idx];
 
-						// Compose once with the high half and once with the lo+hi combination.
-						// The lo+hi branch corresponds to evaluation at infinity for
-						// multilinears.
-						evals_1[i] = hi_i;
-						evals_inf[i] = lo_i + hi_i;
+						// Monomial basis: the two halves are the coefficients `[c0, c1]`, so
+						// `M(1) = c0 + c1` (lo + hi) and `M(∞) = c1` (hi, the leading coefficient).
+						evals_1[i] = lo_i + hi_i;
+						evals_inf[i] = hi_i;
 					}
 
 					// Apply the compositions for this equality term.
