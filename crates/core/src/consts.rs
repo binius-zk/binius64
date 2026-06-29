@@ -1,14 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 //! Protocol-level constants for the Binius64 constraint system.
 
-/// Computes the base-2 logarithm of a value, panicking if it's not a power of 2.
-///
-/// We redefine this function here instead of using the one from binius-utils
-/// to avoid bringing in unnecessary dependencies and cruft.
-const fn checked_log_2(val: usize) -> usize {
-	assert!(val.is_power_of_two(), "Value is not a power of 2");
-	val.ilog2() as usize
-}
+use binius_utils::checked_arithmetics::checked_log_2;
 
 /// The protocol proves constraint systems over 64-bit words.
 pub const WORD_SIZE_BYTES: usize = 8;
