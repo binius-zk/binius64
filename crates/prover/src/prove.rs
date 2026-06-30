@@ -406,8 +406,10 @@ pub fn pack_witness<P: PackedField<Scalar = B128>>(
 
 	// Pack word pairs into B128 elements (2 words per field element), then group into P.
 	// Zero-pad up to the power-of-two witness polynomial length after the real words.
-	let (pairs, remainder) = witness.as_chunks::<2>();
-	pairs
+	let (pairs, word_remaining) = witness.as_chunks::<2>();
+	let aligned_len = pairs.len() / P::WIDTH * P::WIDTH;
+	let (pairs_aligned, word_pair_remaining) = pairs.split_at(aligned_len);
+	pairs_aligned
 		.par_chunks(P::WIDTH)
 		.map(|word_pairs| {
 			P::from_scalars(
@@ -418,8 +420,18 @@ pub fn pack_witness<P: PackedField<Scalar = B128>>(
 		})
 		.collect_into_vec(&mut padded_witness_elems);
 
-	if let [last_word] = remainder {
-		padded_witness_elems.push(P::from_scalars(std::iter::once(B128::new(last_word.0 as u128))));
+	// The trailing partial group: any leftover word pairs (fewer than `P::WIDTH` of them) together
+	// with a final unpaired word are packed into a single `P` element. This keeps the zero padding
+	// strictly after the last real word, rather than splitting the unpaired word into a separate
+	// element and leaving a zero in the middle of the witness (BINIUS-173).
+	if !word_pair_remaining.is_empty() || !word_remaining.is_empty() {
+		let word_pairs = word_pair_remaining
+			.iter()
+			.copied()
+			.chain(word_remaining.iter().map(|&word| [word, Word::ZERO]));
+		padded_witness_elems.push(P::from_scalars(
+			word_pairs.map(|[w0, w1]| B128::new(((w1.0 as u128) << 64) | (w0.0 as u128))),
+		));
 	}
 
 	padded_witness_elems.resize(len, P::default());
@@ -553,4 +565,65 @@ fn build_intmul_witness(mul_constraints: &[MulConstraint], witness: &ValueVec) -
 	}
 
 	MulCheckWitness { a, b, lo, hi }
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_field::{Field, PackedBinaryGhash2x128b};
+
+	use super::{B128, Word, pack_witness};
+
+	/// The packing `pack_witness` is specified to produce: consecutive little-endian B128 elements
+	/// (low word in bits 0..64, high word in bits 64..128), a final unpaired word in the low half,
+	/// then zero padding up to `n_elems`.
+	fn expected_scalars(words: &[Word], n_elems: usize) -> Vec<B128> {
+		let mut scalars = vec![B128::ZERO; n_elems];
+		for (elem, pair) in scalars.iter_mut().zip(words.chunks(2)) {
+			let lo = pair[0].0 as u128;
+			let hi = pair.get(1).map_or(0, |w| w.0 as u128);
+			*elem = B128::new((hi << 64) | lo);
+		}
+		scalars
+	}
+
+	/// Regression test for BINIUS-173: with `P::WIDTH = 2`, a witness of 7 words has 3 word-pairs
+	/// (not a multiple of the packing width) plus a trailing unpaired word. The buggy code
+	/// zero-padded the final partial `P` chunk and then pushed the unpaired word as a *separate*
+	/// element, shifting the last real scalar by one position.
+	#[test]
+	fn test_pack_witness_unaligned_pair_count_with_remainder() {
+		type P = PackedBinaryGhash2x128b;
+		assert_eq!(P::WIDTH, 2, "this test is meaningful only when the packing width is 2");
+
+		let words: Vec<Word> = (1..=7u64).map(Word).collect();
+		let log_witness_elems = 3; // 8 field elements: 4 real, 4 zero-padding.
+
+		let packed = pack_witness::<P>(log_witness_elems, &words).unwrap();
+		let got: Vec<B128> = packed.iter_scalars().collect();
+
+		assert_eq!(got, expected_scalars(&words, 1 << log_witness_elems));
+	}
+
+	/// Covers every residue of the word count around the `2 * P::WIDTH` boundary (aligned and
+	/// unaligned, with and without a trailing word) plus a few larger sizes.
+	#[test]
+	fn test_pack_witness_various_lengths() {
+		type P = PackedBinaryGhash2x128b;
+
+		for n_words in [1usize, 2, 3, 4, 5, 6, 7, 8, 9, 13, 17] {
+			let words: Vec<Word> = (0..n_words as u64).map(|i| Word(i + 100)).collect();
+			let n_elems = n_words.div_ceil(2);
+			// Round up to a power of two, and to at least one full packed element.
+			let log_witness_elems = n_elems.max(P::WIDTH).next_power_of_two().ilog2() as usize;
+
+			let packed = pack_witness::<P>(log_witness_elems, &words).unwrap();
+			let got: Vec<B128> = packed.iter_scalars().collect();
+
+			assert_eq!(
+				got,
+				expected_scalars(&words, 1 << log_witness_elems),
+				"n_words = {n_words}"
+			);
+		}
+	}
 }
