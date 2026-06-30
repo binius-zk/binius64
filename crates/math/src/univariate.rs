@@ -416,7 +416,7 @@ mod tests {
 
 		// Create a small domain
 		let domain_points: Vec<B128> = (0..10).map(|_| B128::random(&mut rng)).collect();
-		let evaluation_domain = EvaluationDomain::from_points(domain_points.clone());
+		let evaluation_domain = EvaluationDomain::from_points(domain_points);
 
 		// Create random values for interpolation
 		let values: Vec<B128> = (0..10).map(|_| B128::random(&mut rng)).collect();

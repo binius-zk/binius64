@@ -491,7 +491,7 @@ mod test {
 				.map(|&bits_packed| P::cast_ext(bits_packed))
 				.collect(),
 		);
-		let folded_method2 = fold_elems_inplace(bit_matrix_packed.clone(), &prefix_tensor);
+		let folded_method2 = fold_elems_inplace(bit_matrix_packed, &prefix_tensor);
 		let method2_result = evaluate_inplace(folded_method2, suffix);
 
 		// Compare all three results

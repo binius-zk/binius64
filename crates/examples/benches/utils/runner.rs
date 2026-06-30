@@ -77,7 +77,7 @@ pub fn run_cs_benchmark<B: ExampleBenchmark>(
 	let instance = benchmark.create_instance();
 
 	let mut builder = CircuitBuilder::new();
-	let example = B::build_example_circuit(params.clone(), &mut builder).unwrap();
+	let example = B::build_example_circuit(params, &mut builder).unwrap();
 	let circuit = builder.build();
 	let cs = circuit.constraint_system().clone();
 	let (verifier, prover) = setup::<StdHashSuite>(cs, benchmark.log_inv_rate(), None).unwrap();
@@ -104,7 +104,7 @@ pub fn run_cs_benchmark<B: ExampleBenchmark>(
 	// Track memory for verification
 	peak_alloc.reset_peak_memory();
 	let mut verifier_transcript_mem =
-		VerifierTranscript::new(StdChallenger::default(), proof_bytes_mem.clone());
+		VerifierTranscript::new(StdChallenger::default(), proof_bytes_mem);
 	verifier
 		.verify(witness.public(), &mut verifier_transcript_mem)
 		.unwrap();

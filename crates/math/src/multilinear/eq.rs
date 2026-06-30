@@ -179,7 +179,7 @@ pub fn eq_ind_truncate_low_inplace<P: PackedField, Data: DerefMut<Target = [P]>>
 #[inline(always)]
 pub fn eq_one_var<F: FieldOps>(x: F, y: F) -> F {
 	let one = F::one();
-	x.clone() * y.clone() + (one.clone() - x) * (one.clone() - y)
+	x.clone() * y.clone() + (one.clone() - x) * (one - y)
 }
 
 /// Evaluates the equality indicator multilinear at a pair of coordinates.

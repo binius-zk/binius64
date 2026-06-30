@@ -592,7 +592,7 @@ pub fn sha256_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 
 			sha256_compress(
 				&builder.subcircuit(format!("sha256_fixed_compress[{}]", block_idx)),
-				state.clone(),
+				state,
 				block_message,
 			)
 		},

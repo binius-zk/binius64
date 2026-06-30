@@ -210,7 +210,7 @@ impl<F: Field> IOPVerifier<F> {
 			lambda.clone(),
 		);
 		let private_transparent =
-			wiring::eval_transparent(cs, WitnessSegment::Private, r_x_tensor.clone(), lambda);
+			wiring::eval_transparent(cs, WitnessSegment::Private, r_x_tensor, lambda);
 		let mask_transparent = mask_transparent(cs, &r_x);
 
 		// Verify all oracle relations

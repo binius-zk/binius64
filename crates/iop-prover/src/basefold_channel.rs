@@ -691,8 +691,8 @@ mod tests {
 		let v_oracle_1 = verifier_channel.recv_oracle().unwrap();
 		let v_oracle_2 = verifier_channel.recv_oracle().unwrap();
 
-		let tp1 = transparent_poly_1.clone();
-		let tp2 = transparent_poly_2.clone();
+		let tp1 = transparent_poly_1;
+		let tp2 = transparent_poly_2;
 
 		verifier_channel
 			.verify_oracle_relations([

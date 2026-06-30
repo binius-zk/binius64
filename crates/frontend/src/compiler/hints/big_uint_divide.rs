@@ -47,7 +47,7 @@ impl Hint for BigUintDivideHint {
 		let (quotient, remainder) = if divisor != zero {
 			(dividend.clone() / divisor.clone(), dividend % divisor)
 		} else {
-			(zero.clone(), zero.clone())
+			(zero.clone(), zero)
 		};
 
 		// Fill quotient limbs (first part of output)

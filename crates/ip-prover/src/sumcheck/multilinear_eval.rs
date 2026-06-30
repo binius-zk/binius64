@@ -188,7 +188,7 @@ mod tests {
 			[witness],
 			|[a]: [P; 1]| a,
 			|[_a]: [P; 1]| P::zero(),
-			eval_point.clone(),
+			eval_point,
 			eval_claim,
 		)
 		.unwrap();
@@ -243,7 +243,7 @@ mod tests {
 		// The reduced MLE-check evaluation is the witness multilinear at the challenge point.
 		assert_eq!(multilinear_evals[0], sumcheck_output.eval);
 
-		let mut reduced_point = sumcheck_output.challenges.clone();
+		let mut reduced_point = sumcheck_output.challenges;
 		reduced_point.reverse();
 		assert_eq!(evaluate(&witness, &reduced_point), multilinear_evals[0]);
 	}

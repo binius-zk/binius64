@@ -244,7 +244,7 @@ where
 		let r_s_len = r_s.len();
 		let r_y_len = r_y.len();
 
-		let inputs: Vec<C::Elem> = iter::once(r_zhat_prime.clone())
+		let inputs: Vec<C::Elem> = iter::once(r_zhat_prime)
 			.chain(iter::once(bitand_lambda.clone()))
 			.chain(iter::once(intmul_lambda.clone()))
 			.chain(bitand_data.r_x_prime.iter().cloned())

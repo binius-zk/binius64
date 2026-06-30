@@ -126,7 +126,7 @@ where
 
 	// Randomly mix the evaluation claim with the mask evaluation claim.
 	let batch_challenge = channel.sample();
-	let batch_eval = eval + batch_challenge.clone() * mask_eval.clone();
+	let batch_eval = eval + batch_challenge.clone() * mask_eval;
 
 	let SumcheckOutput {
 		eval: batch_eval_out,

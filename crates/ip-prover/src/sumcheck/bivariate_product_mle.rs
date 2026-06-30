@@ -263,8 +263,8 @@ mod tests {
 			mlecheck_prover,
 			eval_claim,
 			&eval_point,
-			multilinear_a.clone(),
-			multilinear_b.clone(),
+			multilinear_a,
+			multilinear_b,
 		);
 	}
 }

@@ -251,7 +251,7 @@ impl ZkLogin {
 		let base64_check_nonce_builder = b.subcircuit("base64_check_nonce");
 		let _base64decode_check_nonce = Base64UrlSafe::new(
 			&base64_check_nonce_builder,
-			nonce_le_for_base64.clone(),
+			nonce_le_for_base64,
 			base64_jwt_payload_nonce.to_vec(),
 			base64_check_nonce_builder.add_constant_64(32),
 		);
@@ -277,7 +277,7 @@ impl ZkLogin {
 			.collect();
 
 		let jwt_signing_payload =
-			ByteVec::new(jwt_signing_payload_sha256_message.clone(), signing_payload.len_bytes);
+			ByteVec::new(jwt_signing_payload_sha256_message, signing_payload.len_bytes);
 
 		let jwt_signature_verify =
 			Rs256Verify::new(b, jwt_signing_payload, jwt_signature.clone(), rsa_modulus);

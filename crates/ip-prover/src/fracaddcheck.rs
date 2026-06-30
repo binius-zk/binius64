@@ -236,9 +236,7 @@ mod tests {
 
 		// 5. Run prover
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prover_output = prover
-			.prove(prover_claim.clone(), &mut prover_transcript)
-			.unwrap();
+		let prover_output = prover.prove(prover_claim, &mut prover_transcript).unwrap();
 
 		// 6. Run verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();

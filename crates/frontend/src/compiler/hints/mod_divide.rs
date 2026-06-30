@@ -61,7 +61,7 @@ impl Hint for ModDivideHint {
 			let quotient = if numerator >= dividend {
 				(numerator - &dividend) / &modulus
 			} else {
-				zero.clone()
+				zero
 			};
 			(quotient, slope)
 		} else {

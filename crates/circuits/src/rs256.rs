@@ -102,7 +102,7 @@ impl Rs256Verify {
 		let signature = if signature.data.len() > 32 {
 			signature.truncate(builder, 32)
 		} else {
-			signature.clone()
+			signature
 		};
 
 		let signature_bignum = fixedbytevec_le_to_biguint(builder, &signature);
