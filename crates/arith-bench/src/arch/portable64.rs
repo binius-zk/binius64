@@ -72,7 +72,7 @@ pub fn bmul64(x: u64, y: u64) -> u64 {
 }
 
 /// Bit-reverse a `u64` in constant time
-pub fn rev64(mut x: u64) -> u64 {
+pub const fn rev64(mut x: u64) -> u64 {
 	x = ((x & 0x5555_5555_5555_5555) << 1) | ((x >> 1) & 0x5555_5555_5555_5555);
 	x = ((x & 0x3333_3333_3333_3333) << 2) | ((x >> 2) & 0x3333_3333_3333_3333);
 	x = ((x & 0x0f0f_0f0f_0f0f_0f0f) << 4) | ((x >> 4) & 0x0f0f_0f0f_0f0f_0f0f);
@@ -84,7 +84,7 @@ pub fn rev64(mut x: u64) -> u64 {
 /// Squares a GF(2) polynomial, represented bitwise in a `u64`.
 ///
 /// The parameter `x` must have its top 32 bits clear (the polynomial has degree <32).
-pub fn bsqr64(mut x: u64) -> u64 {
+pub const fn bsqr64(mut x: u64) -> u64 {
 	// Algorithm adapted from https://graphics.stanford.edu/~seander/bithacks.html#InterleaveBMN
 	x = (x | (x << 16)) & 0x0000FFFF0000FFFF;
 	x = (x | (x << 8)) & 0x00FF00FF00FF00FF;

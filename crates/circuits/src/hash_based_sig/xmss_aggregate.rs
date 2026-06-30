@@ -68,7 +68,7 @@ pub struct MultiSigBuilder<'a> {
 }
 
 impl<'a> MultiSigBuilder<'a> {
-	pub fn new(builder: &'a CircuitBuilder, spec: &'a WinternitzSpec) -> Self {
+	pub const fn new(builder: &'a CircuitBuilder, spec: &'a WinternitzSpec) -> Self {
 		Self { builder, spec }
 	}
 

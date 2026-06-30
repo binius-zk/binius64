@@ -63,7 +63,7 @@ impl<F: BinaryField, MTScheme: MerkleTreeScheme<F>> BrakedownOracle<F, MTScheme>
 	/// `log_lift` is the oracle-padding lift factor (the committed codeword is virtually duplicated
 	/// `2^log_lift` times to reach the common first-round length); pass `0` when no lifting is
 	/// needed.
-	pub fn new(
+	pub const fn new(
 		challenges: Vec<F>,
 		commitment: Commitment<MTScheme::Digest>,
 		merkle_scheme: MTScheme,
@@ -202,7 +202,7 @@ where
 {
 	/// Constructs a new oracle from a committed oracle, its folding challenges, and the domain
 	/// context providing the FRI fold twiddles.
-	pub fn new(
+	pub const fn new(
 		challenges: Vec<F>,
 		commitment: Commitment<MTScheme::Digest>,
 		merkle_scheme: MTScheme,
@@ -217,7 +217,7 @@ where
 	}
 
 	/// The base-2 log of the size of each coset opened from the committed oracle.
-	fn coset_log_size(&self) -> usize {
+	const fn coset_log_size(&self) -> usize {
 		self.challenges.len()
 	}
 

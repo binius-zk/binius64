@@ -116,7 +116,7 @@ pub fn single_wire_multiplex(b: &CircuitBuilder, inputs: &[Wire], sel: Wire) -> 
 }
 
 #[inline]
-fn log2_ceil_usize(n: usize) -> usize {
+const fn log2_ceil_usize(n: usize) -> usize {
 	if n <= 1 {
 		0
 	} else {

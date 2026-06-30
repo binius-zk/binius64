@@ -161,11 +161,11 @@ impl<F: Field> EvaluationDomain<F> {
 		Self { points, weights }
 	}
 
-	pub fn size(&self) -> usize {
+	pub const fn size(&self) -> usize {
 		self.points.len()
 	}
 
-	pub fn points(&self) -> &[F] {
+	pub const fn points(&self) -> &[F] {
 		self.points.as_slice()
 	}
 

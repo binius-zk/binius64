@@ -22,7 +22,7 @@ pub struct Alloc {
 
 impl Alloc {
 	/// Creates a new [`Alloc`] instance.
-	pub fn new() -> Self {
+	pub const fn new() -> Self {
 		Self {
 			w_const: Vec::new(),
 			w_inout: Vec::new(),

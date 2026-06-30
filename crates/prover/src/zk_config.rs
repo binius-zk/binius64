@@ -137,12 +137,12 @@ where
 	}
 
 	/// Returns a reference to the inner IOP prover.
-	pub fn inner_iop_prover(&self) -> &IOPProver {
+	pub const fn inner_iop_prover(&self) -> &IOPProver {
 		&self.inner_iop_prover
 	}
 
 	/// Returns a reference to the KeyCollection.
-	pub fn key_collection(&self) -> &crate::protocols::shift::KeyCollection {
+	pub const fn key_collection(&self) -> &crate::protocols::shift::KeyCollection {
 		self.inner_iop_prover.key_collection()
 	}
 

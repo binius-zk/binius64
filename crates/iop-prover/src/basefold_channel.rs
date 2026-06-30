@@ -125,7 +125,7 @@ where
 	}
 
 	/// Returns a reference to the underlying transcript.
-	pub fn transcript(&self) -> &ProverTranscript<Challenger_> {
+	pub const fn transcript(&self) -> &ProverTranscript<Challenger_> {
 		self.transcript
 	}
 

@@ -372,7 +372,7 @@ pub struct NeighborsLastSingleThread<DC> {
 
 impl<DC> NeighborsLastSingleThread<DC> {
 	/// Convenience constructor which sets `log_base_len` to a reasonable default.
-	pub fn new(domain_context: DC) -> Self {
+	pub const fn new(domain_context: DC) -> Self {
 		Self {
 			domain_context,
 			log_base_len: DEFAULT_LOG_BASE_LEN,
@@ -449,7 +449,7 @@ pub struct NeighborsLastMultiThread<DC> {
 
 impl<DC> NeighborsLastMultiThread<DC> {
 	/// Convenience constructor which sets `log_base_len` to a reasonable default.
-	pub fn new(domain_context: DC, log_num_shares: usize) -> Self {
+	pub const fn new(domain_context: DC, log_num_shares: usize) -> Self {
 		Self {
 			domain_context,
 			log_base_len: DEFAULT_LOG_BASE_LEN,

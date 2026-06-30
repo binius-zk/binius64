@@ -43,7 +43,7 @@ impl<F: FieldOps, const ARITY: usize> OperatorData<F, ARITY> {
 	// Constructs a new operator data instance encoding
 	// evaluation claim with multilinear challenge `r_x_prime` and evaluations `evals`
 	// (one eval for each operand of the operation).
-	pub fn new(r_x_prime: Vec<F>, evals: [F; ARITY]) -> Self {
+	pub const fn new(r_x_prime: Vec<F>, evals: [F; ARITY]) -> Self {
 		Self { r_x_prime, evals }
 	}
 

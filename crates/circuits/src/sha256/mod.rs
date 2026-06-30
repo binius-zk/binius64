@@ -360,7 +360,7 @@ impl Sha256 {
 	}
 
 	/// Returns the maximum message length, in bytes.
-	pub fn max_len_bytes(&self) -> usize {
+	pub const fn max_len_bytes(&self) -> usize {
 		self.message.len() << (LOG_WORD_SIZE_BITS - LOG_BYTE_BITS)
 	}
 

@@ -218,7 +218,7 @@ impl Skein512 {
 	}
 
 	/// Get the digest wires
-	pub fn digest_wires(&self) -> [Wire; 8] {
+	pub const fn digest_wires(&self) -> [Wire; 8] {
 		self.digest
 	}
 
@@ -264,7 +264,7 @@ fn mix(circuit: &CircuitBuilder, a: Wire, b: Wire, r: u32) -> (Wire, Wire) {
 /// This corresponds to the Threefish permutation from Table 3 of the Skein specification
 /// for Nw=8 (8 words). The permutation is applied after the MIX operations in each round
 /// to ensure proper diffusion across the state.
-fn permute_512(_circuit: &CircuitBuilder, x: [Wire; 8]) -> [Wire; 8] {
+const fn permute_512(_circuit: &CircuitBuilder, x: [Wire; 8]) -> [Wire; 8] {
 	[x[2], x[1], x[4], x[7], x[6], x[5], x[0], x[3]]
 }
 

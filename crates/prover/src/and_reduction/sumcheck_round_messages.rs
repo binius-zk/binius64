@@ -201,7 +201,7 @@ impl<F: BinaryField + From<B8>> B8ToExtMulMap<F> {
 	}
 
 	#[inline]
-	fn call(&self, input: B8) -> F {
+	const fn call(&self, input: B8) -> F {
 		self.lookup[input.val() as usize]
 	}
 }

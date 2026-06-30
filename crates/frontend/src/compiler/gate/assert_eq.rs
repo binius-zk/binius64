@@ -21,7 +21,7 @@ use crate::compiler::{
 	pathspec::PathSpec,
 };
 
-pub fn shape() -> OpcodeShape {
+pub const fn shape() -> OpcodeShape {
 	OpcodeShape {
 		const_in: &[Word::ALL_ONE],
 		n_in: 2,

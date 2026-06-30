@@ -176,7 +176,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	}
 
 	/// Returns the number of field elements.
-	pub fn len(&self) -> usize {
+	pub const fn len(&self) -> usize {
 		1 << self.log_len
 	}
 
@@ -719,7 +719,7 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> AsSlicesMut<P, 2>
 pub struct FieldBufferChunkMut<'a, P: PackedField>(FieldBufferChunkMutInner<'a, P>);
 
 impl<'a, P: PackedField> FieldBufferChunkMut<'a, P> {
-	pub fn get(&mut self) -> FieldSliceMut<'_, P> {
+	pub const fn get(&mut self) -> FieldSliceMut<'_, P> {
 		match &mut self.0 {
 			FieldBufferChunkMutInner::Single {
 				log_len,

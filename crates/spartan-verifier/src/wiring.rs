@@ -113,7 +113,10 @@ pub struct PublicWiringEvalFn<'a> {
 
 impl<'a> PublicWiringEvalFn<'a> {
 	/// Builds the function from the constraints and the count of leading public inputs.
-	pub fn new(mul_constraints: &'a [MulConstraint<WitnessIndex>], public_len: usize) -> Self {
+	pub const fn new(
+		mul_constraints: &'a [MulConstraint<WitnessIndex>],
+		public_len: usize,
+	) -> Self {
 		Self {
 			mul_constraints,
 			public_len,

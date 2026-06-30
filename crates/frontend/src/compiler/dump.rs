@@ -16,7 +16,7 @@ struct PathSpecData {
 }
 
 impl PathSpecData {
-	fn new() -> Self {
+	const fn new() -> Self {
 		PathSpecData {
 			name: String::new(),
 			gates: Vec::new(),
@@ -60,7 +60,7 @@ struct Cx {
 }
 
 impl Cx {
-	fn new() -> Self {
+	const fn new() -> Self {
 		Self {
 			data: BTreeMap::new(),
 			post_order: Vec::new(),

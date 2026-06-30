@@ -55,7 +55,7 @@ impl IOPVerifier {
 	///
 	/// The constraint system must already be validated via
 	/// [`ConstraintSystem::validate_and_prepare`].
-	pub fn new(constraint_system: ConstraintSystem, log_public_words: usize) -> Self {
+	pub const fn new(constraint_system: ConstraintSystem, log_public_words: usize) -> Self {
 		Self {
 			constraint_system,
 			log_public_words,
@@ -63,7 +63,7 @@ impl IOPVerifier {
 	}
 
 	/// Returns the constraint system.
-	pub fn constraint_system(&self) -> &ConstraintSystem {
+	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		&self.constraint_system
 	}
 
@@ -73,7 +73,7 @@ impl IOPVerifier {
 	}
 
 	/// Returns log2 of the number of public constants and input/output words.
-	pub fn log_public_words(&self) -> usize {
+	pub const fn log_public_words(&self) -> usize {
 		self.log_public_words
 	}
 
@@ -333,7 +333,7 @@ where
 	}
 
 	/// Returns a reference to the IOP verifier.
-	pub fn iop_verifier(&self) -> &IOPVerifier {
+	pub const fn iop_verifier(&self) -> &IOPVerifier {
 		&self.iop_verifier
 	}
 
@@ -353,27 +353,29 @@ where
 	}
 
 	/// Returns the constraint system.
-	pub fn constraint_system(&self) -> &ConstraintSystem {
+	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		self.iop_verifier.constraint_system()
 	}
 
 	/// Returns the chosen FRI parameters.
-	pub fn fri_params(&self) -> &FRIParams<B128> {
+	pub const fn fri_params(&self) -> &FRIParams<B128> {
 		self.iop_compiler.fri_params()
 	}
 
 	/// Returns the [`crate::merkle_tree::MerkleTreeScheme`] instance used.
-	pub fn merkle_scheme(&self) -> &BinaryMerkleTreeScheme<B128, H> {
+	pub const fn merkle_scheme(&self) -> &BinaryMerkleTreeScheme<B128, H> {
 		self.iop_compiler.merkle_scheme()
 	}
 
 	/// Returns log2 of the number of public constants and input/output words.
-	pub fn log_public_words(&self) -> usize {
+	pub const fn log_public_words(&self) -> usize {
 		self.iop_verifier.log_public_words()
 	}
 
 	/// Returns the IOP compiler for creating verifier channels.
-	pub fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
+	pub const fn iop_compiler(
+		&self,
+	) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
 		&self.iop_compiler
 	}
 

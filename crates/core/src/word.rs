@@ -102,7 +102,7 @@ impl Word {
 	///
 	/// Returns (sum, carry_out) where the ith carry_out bit is set to one if there is a
 	/// carry out at that bit position.
-	pub fn iadd32_cin_cout(self, rhs: Word, cin: Word) -> (Word, Word) {
+	pub const fn iadd32_cin_cout(self, rhs: Word, cin: Word) -> (Word, Word) {
 		let Word(lhs) = self;
 		let Word(rhs) = rhs;
 		let Word(cin) = cin;
@@ -129,7 +129,7 @@ impl Word {
 	/// Performs parallel 32-bit additions on the upper and lower halves.
 	///
 	/// Equivalent to [`iadd32_cin_cout`](Word::iadd32_cin_cout) with zero carry-in.
-	pub fn iadd_cout_32(self, rhs: Word) -> (Word, Word) {
+	pub const fn iadd_cout_32(self, rhs: Word) -> (Word, Word) {
 		self.iadd32_cin_cout(rhs, Word::ZERO)
 	}
 
@@ -168,7 +168,7 @@ impl Word {
 	}
 
 	/// Performs shift right by a given number of bits followed by masking with a 32-bit mask.
-	pub fn shr_32(self, n: u32) -> Word {
+	pub const fn shr_32(self, n: u32) -> Word {
 		let Word(value) = self;
 		// Shift right logically by n bits and mask with 32-bit mask
 		let result = (value >> n) & Self::MASK_32.0;
@@ -178,7 +178,7 @@ impl Word {
 	/// Shift Arithmetic Right by a given number of bits.
 	///
 	/// This is similar to a logical shift right, but it shifts the sign bit to the right.
-	pub fn sar(self, n: u32) -> Word {
+	pub const fn sar(self, n: u32) -> Word {
 		let Word(value) = self;
 		let value = value as i64;
 		let result = value >> n;
@@ -186,7 +186,7 @@ impl Word {
 	}
 
 	/// Rotate Right by a given number of bits.
-	pub fn rotr(self, n: u32) -> Word {
+	pub const fn rotr(self, n: u32) -> Word {
 		let Word(value) = self;
 		Word(value.rotate_right(n))
 	}
@@ -195,7 +195,7 @@ impl Word {
 	///
 	/// Performs independent logical left shifts on the upper and lower 32-bit halves.
 	/// Only uses the lower 5 bits of the shift amount (0-31).
-	pub fn sll32(self, n: u32) -> Word {
+	pub const fn sll32(self, n: u32) -> Word {
 		let Word(value) = self;
 		let n = n & 0x1F; // Only use lower 5 bits
 
@@ -214,7 +214,7 @@ impl Word {
 	///
 	/// Performs independent logical right shifts on the upper and lower 32-bit halves.
 	/// Only uses the lower 5 bits of the shift amount (0-31).
-	pub fn srl32(self, n: u32) -> Word {
+	pub const fn srl32(self, n: u32) -> Word {
 		let Word(value) = self;
 		let n = n & 0x1F; // Only use lower 5 bits
 
@@ -234,7 +234,7 @@ impl Word {
 	/// Performs independent arithmetic right shifts on the upper and lower 32-bit halves.
 	/// Sign extends each 32-bit half independently. Only uses the lower 5 bits of the shift amount
 	/// (0-31).
-	pub fn sra32(self, n: u32) -> Word {
+	pub const fn sra32(self, n: u32) -> Word {
 		let Word(value) = self;
 		let n = n & 0x1F; // Only use lower 5 bits
 
@@ -254,7 +254,7 @@ impl Word {
 	/// Performs independent rotate right operations on the upper and lower 32-bit halves.
 	/// Bits shifted off the right end wrap around to the left within each 32-bit half.
 	/// Only uses the lower 5 bits of the shift amount (0-31).
-	pub fn rotr32(self, n: u32) -> Word {
+	pub const fn rotr32(self, n: u32) -> Word {
 		let Word(value) = self;
 		let n = n & 0x1F; // Only use lower 5 bits
 
@@ -273,7 +273,7 @@ impl Word {
 	///
 	/// Multiplies two 64-bit unsigned integers and returns the 128-bit result split into high and
 	/// low 64-bit words, respectively.
-	pub fn imul(self, rhs: Word) -> (Word, Word) {
+	pub const fn imul(self, rhs: Word) -> (Word, Word) {
 		let Word(lhs) = self;
 		let Word(rhs) = rhs;
 		let result = (lhs as u128) * (rhs as u128);
@@ -287,7 +287,7 @@ impl Word {
 	///
 	/// Multiplies two 64-bit signed integers and returns the 128-bit result split into high and
 	/// low 64-bit words, respectively.
-	pub fn smul(self, rhs: Word) -> (Word, Word) {
+	pub const fn smul(self, rhs: Word) -> (Word, Word) {
 		let Word(lhs) = self;
 		let Word(rhs) = rhs;
 		// Interpret as signed 64-bit integers
@@ -304,14 +304,14 @@ impl Word {
 	/// Integer addition.
 	///
 	/// Wraps around on overflow.
-	pub fn wrapping_add(self, rhs: Word) -> Word {
+	pub const fn wrapping_add(self, rhs: Word) -> Word {
 		Word(self.0.wrapping_add(rhs.0))
 	}
 
 	/// Integer subtraction.
 	///
 	/// Wraps around on overflow.
-	pub fn wrapping_sub(self, rhs: Word) -> Word {
+	pub const fn wrapping_sub(self, rhs: Word) -> Word {
 		Word(self.0.wrapping_sub(rhs.0))
 	}
 

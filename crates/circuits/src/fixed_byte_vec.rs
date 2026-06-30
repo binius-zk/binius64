@@ -178,7 +178,7 @@ impl ByteVec {
 	}
 
 	/// Returns the maximum length of this vector in bytes.
-	pub fn max_len_bytes(&self) -> usize {
+	pub const fn max_len_bytes(&self) -> usize {
 		self.data.len() * 8
 	}
 

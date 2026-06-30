@@ -42,6 +42,7 @@ pub fn adjust_thread_pool() -> &'static Result<(), ThreadPoolBuildError> {
 }
 
 /// Returns the base-2 logarithm of the number of threads that should be used for the task
+#[allow(clippy::missing_const_for_fn)]
 pub fn get_log_max_threads() -> usize {
 	(2 * current_num_threads() - 1).ilog2() as _
 }

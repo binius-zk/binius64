@@ -56,15 +56,15 @@ impl Default for Config {
 }
 
 impl Config {
-	pub fn max_len_base64_jwt_header(&self) -> usize {
+	pub const fn max_len_base64_jwt_header(&self) -> usize {
 		self.max_len_json_jwt_header.div_ceil(3) * 4
 	}
 
-	pub fn max_len_base64_jwt_payload(&self) -> usize {
+	pub const fn max_len_base64_jwt_payload(&self) -> usize {
 		self.max_len_json_jwt_payload.div_ceil(3) * 4
 	}
 
-	pub fn max_len_base64_jwt_signature(&self) -> usize {
+	pub const fn max_len_base64_jwt_signature(&self) -> usize {
 		self.max_len_jwt_signature.div_ceil(3) * 4
 	}
 }

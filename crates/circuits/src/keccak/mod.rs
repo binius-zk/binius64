@@ -201,7 +201,7 @@ impl Keccak256 {
 		}
 	}
 
-	pub fn max_len_bytes(&self) -> usize {
+	pub const fn max_len_bytes(&self) -> usize {
 		self.message.len() << 3
 	}
 

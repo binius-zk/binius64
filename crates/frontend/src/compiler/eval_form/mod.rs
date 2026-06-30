@@ -87,7 +87,7 @@ impl EvalForm {
 	}
 
 	/// Get the number of evaluation instructions
-	pub fn n_eval_insn(&self) -> usize {
+	pub const fn n_eval_insn(&self) -> usize {
 		self.n_eval_insn
 	}
 

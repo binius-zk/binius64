@@ -150,7 +150,7 @@ impl fmt::Display for CircuitStat {
 		}
 
 		// Helper to get log2 of a power of 2
-		fn log2(n: usize) -> u32 {
+		const fn log2(n: usize) -> u32 {
 			n.trailing_zeros()
 		}
 

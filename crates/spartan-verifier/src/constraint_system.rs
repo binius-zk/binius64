@@ -108,47 +108,47 @@ impl<F: Field> ConstraintSystemPadded<F> {
 		self.inner.constants()
 	}
 
-	pub fn n_inout(&self) -> u32 {
+	pub const fn n_inout(&self) -> u32 {
 		self.inner.n_inout()
 	}
 
-	pub fn n_precommit(&self) -> u32 {
+	pub const fn n_precommit(&self) -> u32 {
 		self.inner.n_precommit()
 	}
 
-	pub fn n_private(&self) -> u32 {
+	pub const fn n_private(&self) -> u32 {
 		self.inner.n_private()
 	}
 
-	pub fn log_public(&self) -> u32 {
+	pub const fn log_public(&self) -> u32 {
 		self.inner.log_public()
 	}
 
-	pub fn n_public(&self) -> u32 {
+	pub const fn n_public(&self) -> u32 {
 		self.inner.n_public()
 	}
 
-	pub fn one_wire(&self) -> WitnessIndex {
+	pub const fn one_wire(&self) -> WitnessIndex {
 		self.inner.one_wire()
 	}
 
-	pub fn log_precommit(&self) -> u32 {
+	pub const fn log_precommit(&self) -> u32 {
 		self.log_precommit
 	}
 
-	pub fn precommit_size(&self) -> usize {
+	pub const fn precommit_size(&self) -> usize {
 		1 << self.log_precommit as usize
 	}
 
-	pub fn log_private(&self) -> u32 {
+	pub const fn log_private(&self) -> u32 {
 		self.log_private
 	}
 
-	pub fn private_size(&self) -> usize {
+	pub const fn private_size(&self) -> usize {
 		1 << self.log_private as usize
 	}
 
-	pub fn blinding_info(&self) -> &BlindingInfo {
+	pub const fn blinding_info(&self) -> &BlindingInfo {
 		&self.blinding_info
 	}
 
@@ -157,7 +157,7 @@ impl<F: Field> ConstraintSystemPadded<F> {
 	}
 
 	/// Returns the mask buffer dimensions (m_n, m_d) for the ZK mulcheck mask polynomial.
-	pub fn mask_dims(&self) -> (usize, usize) {
+	pub const fn mask_dims(&self) -> (usize, usize) {
 		self.mask_dims
 	}
 

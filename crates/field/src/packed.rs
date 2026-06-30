@@ -329,7 +329,7 @@ pub struct PackedSlice<'a, P: PackedField> {
 
 impl<'a, P: PackedField> PackedSlice<'a, P> {
 	#[inline(always)]
-	pub fn new(slice: &'a [P]) -> Self {
+	pub const fn new(slice: &'a [P]) -> Self {
 		Self {
 			slice,
 			len: len_packed_slice(slice),
@@ -364,7 +364,7 @@ pub struct PackedSliceMut<'a, P: PackedField> {
 
 impl<'a, P: PackedField> PackedSliceMut<'a, P> {
 	#[inline(always)]
-	pub fn new(slice: &'a mut [P]) -> Self {
+	pub const fn new(slice: &'a mut [P]) -> Self {
 		let len = len_packed_slice(slice);
 		Self { slice, len }
 	}

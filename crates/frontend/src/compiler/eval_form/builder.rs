@@ -9,7 +9,7 @@ pub struct BytecodeBuilder {
 }
 
 impl BytecodeBuilder {
-	pub fn new() -> Self {
+	pub const fn new() -> Self {
 		Self {
 			bytecode: Vec::new(),
 			n_eval_insn: 0,

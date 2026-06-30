@@ -316,7 +316,7 @@ impl Hint for Blake3CompressHint {
 //
 // Shared by [`Blake3CompressHint`] (prover-side witness generation) and the tests.
 
-fn ref_g(v: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize, mx: u32, my: u32) {
+const fn ref_g(v: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize, mx: u32, my: u32) {
 	v[a] = v[a].wrapping_add(v[b]).wrapping_add(mx);
 	v[d] = (v[d] ^ v[a]).rotate_right(16);
 	v[c] = v[c].wrapping_add(v[d]);
@@ -327,7 +327,7 @@ fn ref_g(v: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize, mx: u32, my:
 	v[b] = (v[b] ^ v[c]).rotate_right(7);
 }
 
-fn ref_round(state: &mut [u32; 16], msg: &[u32; 16], round: usize) {
+const fn ref_round(state: &mut [u32; 16], msg: &[u32; 16], round: usize) {
 	let schedule = MSG_SCHEDULE[round];
 
 	ref_g(state, 0, 4, 8, 12, msg[schedule[0]], msg[schedule[1]]);

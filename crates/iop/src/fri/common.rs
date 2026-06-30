@@ -84,7 +84,7 @@ pub struct CodewordSpec {
 
 impl CodewordSpec {
 	/// log2 the interleaved batch size: the early plus the later batch challenges.
-	pub fn log_batch_size(&self) -> usize {
+	pub const fn log_batch_size(&self) -> usize {
 		self.log_early_batch_size + self.log_later_batch_size
 	}
 }
@@ -272,23 +272,23 @@ where
 	///
 	/// This is the largest input message length, plus `log_n_oracles` extra rounds that fold the
 	/// distinct input oracles together into the batched codeword.
-	pub fn n_fold_rounds(&self) -> usize {
+	pub const fn n_fold_rounds(&self) -> usize {
 		self.max_log_msg_len + self.log_n_oracles
 	}
 
 	/// Number of oracles sent during the fold rounds.
-	pub fn n_oracles(&self) -> usize {
+	pub const fn n_oracles(&self) -> usize {
 		// One for the batched codeword commitment, and one for each subsequent one.
 		1 + self.fold_arities.len()
 	}
 
 	/// Number of bits in the query indices sampled during the query phase.
-	pub fn index_bits(&self) -> usize {
+	pub const fn index_bits(&self) -> usize {
 		self.rs_code.log_len()
 	}
 
 	/// Number of folding challenges the verifier sends after receiving the last oracle.
-	pub fn n_final_challenges(&self) -> usize {
+	pub const fn n_final_challenges(&self) -> usize {
 		self.log_terminal_dim
 	}
 
@@ -316,7 +316,7 @@ where
 	///
 	/// This includes the `log_n_oracles` extra rounds used to fold the distinct input oracles
 	/// together, so it equals [`Self::n_fold_rounds`].
-	pub fn log_msg_len(&self) -> usize {
+	pub const fn log_msg_len(&self) -> usize {
 		self.max_log_msg_len + self.log_n_oracles
 	}
 }
@@ -591,7 +591,7 @@ where
 	F: Field,
 	MTScheme: MerkleTreeScheme<F>,
 {
-	fn new(merkle_scheme: &'a MTScheme, n_test_queries: usize) -> Self {
+	const fn new(merkle_scheme: &'a MTScheme, n_test_queries: usize) -> Self {
 		Self {
 			merkle_scheme,
 			n_test_queries,
@@ -743,7 +743,7 @@ pub struct ConstantArityStrategy {
 
 impl ConstantArityStrategy {
 	/// Creates a new strategy with the given arity.
-	pub fn new(arity: usize) -> Self {
+	pub const fn new(arity: usize) -> Self {
 		Self { arity }
 	}
 

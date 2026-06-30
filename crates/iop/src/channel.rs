@@ -46,7 +46,7 @@ pub struct OracleSpec {
 
 impl OracleSpec {
 	/// A non-ZK (unmasked) oracle of the given message length.
-	pub fn new(log_msg_len: usize) -> Self {
+	pub const fn new(log_msg_len: usize) -> Self {
 		Self {
 			log_msg_len,
 			is_zk: false,
@@ -54,7 +54,7 @@ impl OracleSpec {
 	}
 
 	/// A ZK (masked, hiding) oracle of the given message length.
-	pub fn new_zk(log_msg_len: usize) -> Self {
+	pub const fn new_zk(log_msg_len: usize) -> Self {
 		Self {
 			log_msg_len,
 			is_zk: true,

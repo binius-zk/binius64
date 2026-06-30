@@ -301,7 +301,7 @@ where
 		}
 	}
 
-	pub fn log_bits(&self) -> usize {
+	pub const fn log_bits(&self) -> usize {
 		self.tree.len() - 1
 	}
 

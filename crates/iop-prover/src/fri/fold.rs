@@ -158,12 +158,12 @@ where
 	}
 
 	/// Number of fold rounds, including the final fold.
-	pub fn n_rounds(&self) -> usize {
+	pub const fn n_rounds(&self) -> usize {
 		self.params.n_fold_rounds()
 	}
 
 	/// Number of times `execute_fold_round` has been called.
-	pub fn n_rounds_remaining(&self) -> usize {
+	pub const fn n_rounds_remaining(&self) -> usize {
 		self.n_rounds() - self.curr_round
 	}
 
@@ -422,11 +422,11 @@ where
 	MTProver: MerkleTreeProver<F>,
 {
 	/// The total interleave batch size, `log_early_batch_size + log_later_batch_size`.
-	fn log_batch_size(&self) -> usize {
+	const fn log_batch_size(&self) -> usize {
 		self.log_early_batch_size + self.log_later_batch_size
 	}
 
-	pub fn log_folded_len(&self) -> usize {
+	pub const fn log_folded_len(&self) -> usize {
 		self.codeword.log_len() - self.log_batch_size()
 	}
 }

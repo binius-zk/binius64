@@ -88,7 +88,7 @@ where
 	}
 
 	/// Returns the number of remaining layers to prove.
-	pub fn n_layers(&self) -> usize {
+	pub const fn n_layers(&self) -> usize {
 		self.layers.len()
 	}
 

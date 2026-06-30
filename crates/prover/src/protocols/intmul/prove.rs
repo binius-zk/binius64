@@ -57,7 +57,7 @@ pub struct IntMulProver<'a, P, S, Channel> {
 }
 
 impl<'a, P, S, Channel> IntMulProver<'a, P, S, Channel> {
-	pub fn new(switchover: usize, channel: &'a mut Channel) -> Self {
+	pub const fn new(switchover: usize, channel: &'a mut Channel) -> Self {
 		Self {
 			_p_marker: PhantomData,
 			_s_marker: PhantomData,

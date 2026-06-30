@@ -212,7 +212,7 @@ where
 	}
 
 	/// Returns true if all rounds have been processed.
-	pub fn is_complete(&self) -> bool {
+	pub const fn is_complete(&self) -> bool {
 		self.curr_round == self.n_rounds()
 	}
 
@@ -235,12 +235,12 @@ where
 	}
 
 	/// Returns the current round number.
-	pub fn current_round(&self) -> usize {
+	pub const fn current_round(&self) -> usize {
 		self.curr_round
 	}
 
 	/// Returns the total number of rounds.
-	pub fn n_rounds(&self) -> usize {
+	pub const fn n_rounds(&self) -> usize {
 		self.commit_rounds.len()
 	}
 }

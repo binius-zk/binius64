@@ -79,14 +79,14 @@ impl IOPProver {
 	}
 
 	/// Returns the constraint system.
-	pub fn constraint_system(&self) -> &ConstraintSystem {
+	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		&self.constraint_system
 	}
 
 	/// Returns a reference to the KeyCollection.
 	///
 	/// This can be used to serialize the KeyCollection for later use.
-	pub fn key_collection(&self) -> &KeyCollection {
+	pub const fn key_collection(&self) -> &KeyCollection {
 		&self.key_collection
 	}
 
@@ -314,14 +314,14 @@ where
 	}
 
 	/// Returns a reference to the IOP prover.
-	pub fn iop_prover(&self) -> &IOPProver {
+	pub const fn iop_prover(&self) -> &IOPProver {
 		&self.iop_prover
 	}
 
 	/// Returns a reference to the KeyCollection.
 	///
 	/// This can be used to serialize the KeyCollection for later use.
-	pub fn key_collection(&self) -> &KeyCollection {
+	pub const fn key_collection(&self) -> &KeyCollection {
 		self.iop_prover.key_collection()
 	}
 

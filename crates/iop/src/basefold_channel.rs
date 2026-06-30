@@ -75,7 +75,7 @@ where
 	///
 	/// The FRI parameters should already account for ZK (log_batch_size = 1, doubled message
 	/// length).
-	pub fn from_precomputed(
+	pub const fn from_precomputed(
 		transcript: &'a mut VerifierTranscript<Challenger_>,
 		merkle_scheme: &'a MerkleScheme_,
 		oracle_specs: &'a [OracleSpec],
@@ -93,7 +93,7 @@ where
 	}
 
 	/// Returns a reference to the underlying transcript.
-	pub fn transcript(&self) -> &VerifierTranscript<Challenger_> {
+	pub const fn transcript(&self) -> &VerifierTranscript<Challenger_> {
 		self.transcript
 	}
 

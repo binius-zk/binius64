@@ -13,7 +13,7 @@ pub struct ConstraintBuilder {
 }
 
 impl ConstraintBuilder {
-	pub fn new() -> Self {
+	pub const fn new() -> Self {
 		Self {
 			and_constraints: Vec::new(),
 			mul_constraints: Vec::new(),
@@ -22,19 +22,19 @@ impl ConstraintBuilder {
 	}
 
 	/// Build an AND constraint: A ' B = C
-	pub fn and(&mut self) -> AndConstraintBuilder<'_> {
+	pub const fn and(&mut self) -> AndConstraintBuilder<'_> {
 		AndConstraintBuilder::new(self)
 	}
 
 	/// Build a MUL constraint: A * B = (HI << 64) | LO
-	pub fn mul(&mut self) -> MulConstraintBuilder<'_> {
+	pub const fn mul(&mut self) -> MulConstraintBuilder<'_> {
 		MulConstraintBuilder::new(self)
 	}
 
 	/// Build a linear constraint: RHS = DST
 	/// (where RHS is XOR of shifted values and DST is a
 	/// single wire)
-	pub fn linear(&mut self) -> LinearConstraintBuilder<'_> {
+	pub const fn linear(&mut self) -> LinearConstraintBuilder<'_> {
 		LinearConstraintBuilder::new(self)
 	}
 
@@ -207,7 +207,7 @@ impl Shift {
 	/// Try to compose two shift operations.
 	///
 	/// Returns None if the shifts are incompatible.
-	pub fn compose(lhs: Shift, rhs: Shift) -> Option<Self> {
+	pub const fn compose(lhs: Shift, rhs: Shift) -> Option<Self> {
 		match (lhs, rhs) {
 			(Shift::None, shift) | (shift, Shift::None) => Some(shift),
 			(Shift::Sll(a), Shift::Sll(b)) => {
@@ -355,7 +355,7 @@ pub struct AndConstraintBuilder<'a> {
 }
 
 impl<'a> AndConstraintBuilder<'a> {
-	fn new(builder: &'a mut ConstraintBuilder) -> Self {
+	const fn new(builder: &'a mut ConstraintBuilder) -> Self {
 		Self {
 			builder,
 			a: Vec::new(),
@@ -407,7 +407,7 @@ pub struct LinearConstraintBuilder<'a> {
 }
 
 impl<'a> MulConstraintBuilder<'a> {
-	fn new(builder: &'a mut ConstraintBuilder) -> Self {
+	const fn new(builder: &'a mut ConstraintBuilder) -> Self {
 		Self {
 			builder,
 			a: Vec::new(),
@@ -448,7 +448,7 @@ impl<'a> MulConstraintBuilder<'a> {
 }
 
 impl<'a> LinearConstraintBuilder<'a> {
-	fn new(builder: &'a mut ConstraintBuilder) -> Self {
+	const fn new(builder: &'a mut ConstraintBuilder) -> Self {
 		Self {
 			builder,
 			rhs: Vec::new(),
@@ -463,7 +463,7 @@ impl<'a> LinearConstraintBuilder<'a> {
 	}
 
 	/// Set the DST operand (destination wire)
-	pub fn dst(mut self, wire: Wire) -> Self {
+	pub const fn dst(mut self, wire: Wire) -> Self {
 		self.dst = Some(wire);
 		self
 	}
@@ -513,7 +513,7 @@ impl WireExpr {
 }
 
 impl WireExprTerm {
-	fn to_shifted_wire(self) -> ShiftedWire {
+	const fn to_shifted_wire(self) -> ShiftedWire {
 		match self {
 			WireExprTerm::Wire(w) => ShiftedWire {
 				wire: w,
@@ -541,35 +541,35 @@ pub fn wire(w: Wire) -> WireExpr {
 	WireExpr(smallvec![w.into()])
 }
 
-pub fn sll(w: Wire, n: u32) -> WireExprTerm {
+pub const fn sll(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Sll(n))
 }
 
-pub fn sll32(w: Wire, n: u32) -> WireExprTerm {
+pub const fn sll32(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Sll32(n))
 }
 
-pub fn srl(w: Wire, n: u32) -> WireExprTerm {
+pub const fn srl(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Srl(n))
 }
 
-pub fn srl32(w: Wire, n: u32) -> WireExprTerm {
+pub const fn srl32(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Srl32(n))
 }
 
-pub fn sar(w: Wire, n: u32) -> WireExprTerm {
+pub const fn sar(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Sar(n))
 }
 
-pub fn sra32(w: Wire, n: u32) -> WireExprTerm {
+pub const fn sra32(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Sra32(n))
 }
 
-pub fn rotr(w: Wire, n: u32) -> WireExprTerm {
+pub const fn rotr(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Rotr(n))
 }
 
-pub fn rotr32(w: Wire, n: u32) -> WireExprTerm {
+pub const fn rotr32(w: Wire, n: u32) -> WireExprTerm {
 	WireExprTerm::Shifted(w, ShiftOp::Rotr32(n))
 }
 

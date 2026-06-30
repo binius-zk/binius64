@@ -243,7 +243,7 @@ impl<T> IndexMut<(usize, usize)> for StridedArray2DViewMut<'_, T> {
 struct SendPtr<T>(*mut T);
 
 impl<T> SendPtr<T> {
-	fn as_ptr(self) -> *mut T {
+	const fn as_ptr(self) -> *mut T {
 		self.0
 	}
 }

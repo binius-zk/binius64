@@ -125,7 +125,7 @@ where
 	///
 	/// The polynomial evaluations are precomputed in the constructor using the NTT lookup table
 	/// for efficiency. This method simply returns the cached result.
-	pub fn execute(&self) -> &[F; ROWS_PER_HYPERCUBE_VERTEX] {
+	pub const fn execute(&self) -> &[F; ROWS_PER_HYPERCUBE_VERTEX] {
 		&self.univariate_round_message
 	}
 

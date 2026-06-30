@@ -132,22 +132,22 @@ impl ValueTable {
 	}
 
 	/// The base-2 logarithm of the number of instances.
-	pub fn log_instances(&self) -> usize {
+	pub const fn log_instances(&self) -> usize {
 		self.log_instances
 	}
 
 	/// The number of instances in the batch.
-	pub fn n_instances(&self) -> usize {
+	pub const fn n_instances(&self) -> usize {
 		1usize << self.log_instances
 	}
 
 	/// The per-instance value layout shared by every instance.
-	pub fn layout(&self) -> &ValueVecLayout {
+	pub const fn layout(&self) -> &ValueVecLayout {
 		&self.layout
 	}
 
 	/// The number of committed words occupied by a single instance.
-	pub fn instance_stride(&self) -> usize {
+	pub const fn instance_stride(&self) -> usize {
 		self.layout.committed_total_len
 	}
 

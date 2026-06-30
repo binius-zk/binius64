@@ -30,7 +30,7 @@ impl fmt::Debug for Stat {
 }
 
 impl Stat {
-	pub fn new(cb: &ConstraintBuilder) -> Self {
+	pub const fn new(cb: &ConstraintBuilder) -> Self {
 		Self {
 			pre_linear_def: cb.linear_constraints.len(),
 			pre_and_constraints: cb.and_constraints.len(),
@@ -40,15 +40,15 @@ impl Stat {
 		}
 	}
 
-	pub fn note_committed(&mut self) {
+	pub const fn note_committed(&mut self) {
 		self.committed_linear += 1;
 	}
 
-	pub fn note_visited(&mut self) {
+	pub const fn note_visited(&mut self) {
 		self.legraph_visited += 1;
 	}
 
-	pub fn note_committed_linear_depth(&mut self) {
+	pub const fn note_committed_linear_depth(&mut self) {
 		self.committed_linear_depth += 1;
 	}
 }

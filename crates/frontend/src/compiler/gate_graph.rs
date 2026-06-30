@@ -52,7 +52,7 @@ pub enum WireKind {
 }
 impl WireKind {
 	/// Returns `true` if this is a constant wire.
-	pub fn is_const(&self) -> bool {
+	pub const fn is_const(&self) -> bool {
 		matches!(self, WireKind::Constant(_))
 	}
 }

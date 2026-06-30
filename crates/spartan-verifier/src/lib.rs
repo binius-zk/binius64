@@ -97,11 +97,11 @@ where
 
 impl<F: Field> IOPVerifier<F> {
 	/// Constructs an IOP verifier for a constraint system.
-	pub fn new(constraint_system: ConstraintSystemPadded<F>) -> Self {
+	pub const fn new(constraint_system: ConstraintSystemPadded<F>) -> Self {
 		Self { constraint_system }
 	}
 
-	pub fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
+	pub const fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
 		&self.constraint_system
 	}
 
@@ -279,16 +279,16 @@ where
 	}
 
 	/// Returns a reference to the IOP verifier.
-	pub fn iop_verifier(&self) -> &IOPVerifier<F> {
+	pub const fn iop_verifier(&self) -> &IOPVerifier<F> {
 		&self.iop_verifier
 	}
 
-	pub fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
+	pub const fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
 		self.iop_verifier.constraint_system()
 	}
 
 	/// Returns a reference to the BaseFold ZK verifier compiler.
-	pub fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<F, BinaryMerkleTreeScheme<F, H>> {
+	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<F, BinaryMerkleTreeScheme<F, H>> {
 		&self.basefold_compiler
 	}
 

@@ -16,7 +16,7 @@ use crate::field_buffer::FieldSliceMut;
 /// # Returns
 ///
 /// The value with its low `bits` bits reversed
-pub fn reverse_bits(x: usize, bits: u32) -> usize {
+pub const fn reverse_bits(x: usize, bits: u32) -> usize {
 	x.reverse_bits().unbounded_shr(usize::BITS - bits)
 }
 

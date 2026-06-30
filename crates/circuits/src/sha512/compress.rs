@@ -105,7 +105,7 @@ const K: [u64; 80] = [
 pub struct State(pub [Wire; 8]);
 
 impl State {
-	pub fn new(wires: [Wire; 8]) -> Self {
+	pub const fn new(wires: [Wire; 8]) -> Self {
 		State(wires)
 	}
 

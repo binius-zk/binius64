@@ -37,12 +37,12 @@ impl PseudoMersennePrimeField {
 	}
 
 	/// Number of limbs in `BigUint`s representing field elements.
-	pub fn limbs_len(&self) -> usize {
+	pub const fn limbs_len(&self) -> usize {
 		self.modulus.limbs.len()
 	}
 
 	/// Field modulus.
-	pub fn modulus(&self) -> &BigUint {
+	pub const fn modulus(&self) -> &BigUint {
 		&self.modulus
 	}
 

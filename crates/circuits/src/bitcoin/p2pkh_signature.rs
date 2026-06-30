@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// Convert 20-byte address payload into five little-endian u32 words (circuit witness layout).
-pub fn addr_bytes_to_le_words(addr: &[u8; 20]) -> [u32; 5] {
+pub const fn addr_bytes_to_le_words(addr: &[u8; 20]) -> [u32; 5] {
 	[
 		u32::from_le_bytes([addr[0], addr[1], addr[2], addr[3]]),
 		u32::from_le_bytes([addr[4], addr[5], addr[6], addr[7]]),

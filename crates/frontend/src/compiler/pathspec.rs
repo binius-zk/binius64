@@ -69,7 +69,7 @@ impl PathSpecTree {
 	}
 
 	/// Returns the root of the tree.
-	pub fn root(&self) -> PathSpec {
+	pub const fn root(&self) -> PathSpec {
 		self.root
 	}
 }

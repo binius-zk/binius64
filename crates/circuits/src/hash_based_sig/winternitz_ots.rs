@@ -247,12 +247,12 @@ impl WinternitzSpec {
 	}
 
 	/// Returns the number of coordinates/chains
-	pub fn dimension(&self) -> usize {
+	pub const fn dimension(&self) -> usize {
 		self.message_hash_len * 8 / self.coordinate_resolution_bits
 	}
 
 	/// Returns the chain length (2^coordinate_resolution_bits)
-	pub fn chain_len(&self) -> usize {
+	pub const fn chain_len(&self) -> usize {
 		1 << self.coordinate_resolution_bits
 	}
 

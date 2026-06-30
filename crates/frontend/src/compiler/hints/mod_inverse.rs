@@ -10,7 +10,7 @@ use crate::util::num_biguint_from_u64_limbs;
 pub struct ModInverseHint;
 
 impl ModInverseHint {
-	pub fn new() -> Self {
+	pub const fn new() -> Self {
 		Self
 	}
 }

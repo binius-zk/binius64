@@ -49,12 +49,12 @@ impl<'a> WitnessFiller<'a> {
 	}
 
 	/// Returns a reference to the underlying value vector.
-	pub fn value_vec(&self) -> &ValueVec {
+	pub const fn value_vec(&self) -> &ValueVec {
 		&self.value_vec
 	}
 
 	/// Returns a mutable reference to the underlying value vector.
-	pub fn value_vec_mut(&mut self) -> &mut ValueVec {
+	pub const fn value_vec_mut(&mut self) -> &mut ValueVec {
 		&mut self.value_vec
 	}
 }
@@ -153,12 +153,12 @@ impl Circuit {
 	}
 
 	/// Returns the constraint system for this circuit.
-	pub fn constraint_system(&self) -> &ConstraintSystem {
+	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		&self.constraint_system
 	}
 
 	/// Returns the evaluation form (witness-filling bytecode) for this circuit.
-	pub fn eval_form(&self) -> &EvalForm {
+	pub const fn eval_form(&self) -> &EvalForm {
 		&self.eval_form
 	}
 
@@ -171,7 +171,7 @@ impl Circuit {
 	}
 
 	/// Returns the number of evaluation instructions in this circuit.
-	pub fn n_eval_insn(&self) -> usize {
+	pub const fn n_eval_insn(&self) -> usize {
 		self.eval_form.n_eval_insn()
 	}
 

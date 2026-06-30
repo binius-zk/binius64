@@ -76,11 +76,11 @@ pub enum NodeData {
 }
 
 impl NodeData {
-	fn is_root(&self) -> bool {
+	const fn is_root(&self) -> bool {
 		matches!(self, NodeData::Root { .. })
 	}
 
-	fn is_opaque(&self) -> bool {
+	const fn is_opaque(&self) -> bool {
 		matches!(self, NodeData::Opaque { .. })
 	}
 }
@@ -186,7 +186,7 @@ impl LeGraph {
 	/// Returns the set of wires that must be committed (converted to AND constraints).
 	///
 	/// This is populated only after running the commit_set decision pass.
-	pub fn commit_set(&self) -> &EntitySet<Wire> {
+	pub const fn commit_set(&self) -> &EntitySet<Wire> {
 		&self.lin_committed
 	}
 

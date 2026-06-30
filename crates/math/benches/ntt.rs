@@ -219,7 +219,7 @@ fn bench_fields(c: &mut Criterion) {
 }
 
 /// Gives the number of raw field multiplications that are done for an NTT with specific parameters.
-fn num_muls(log_d: usize, skip_early: usize, skip_late: usize) -> u64 {
+const fn num_muls(log_d: usize, skip_early: usize, skip_late: usize) -> u64 {
 	let num_rounds = log_d - skip_late - skip_early;
 	let muls_per_round = 1u64 << (log_d - 1);
 

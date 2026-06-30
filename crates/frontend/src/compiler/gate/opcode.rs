@@ -143,7 +143,7 @@ impl Opcode {
 		}
 	}
 
-	pub fn is_const_shape(&self) -> bool {
+	pub const fn is_const_shape(&self) -> bool {
 		#[allow(clippy::match_like_matches_macro)]
 		match self {
 			Opcode::BxorMulti => false,

@@ -123,7 +123,7 @@ impl<F: Field> IOPProver<F> {
 		}
 	}
 
-	pub fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
+	pub const fn constraint_system(&self) -> &ConstraintSystemPadded<F> {
 		&self.constraint_system
 	}
 
@@ -357,12 +357,12 @@ where
 	}
 
 	/// Returns a reference to the IOP prover.
-	pub fn iop_prover(&self) -> &IOPProver<P::Scalar> {
+	pub const fn iop_prover(&self) -> &IOPProver<P::Scalar> {
 		&self.iop_prover
 	}
 
 	/// Returns a reference to the BaseFold ZK prover compiler.
-	pub fn iop_compiler(
+	pub const fn iop_compiler(
 		&self,
 	) -> &BaseFoldProverCompiler<P, ProverNTT<F>, ProverMerkleProver<F, H>> {
 		&self.basefold_compiler

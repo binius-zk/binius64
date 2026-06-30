@@ -65,11 +65,11 @@ pub struct WireAllocator {
 }
 
 impl WireAllocator {
-	pub fn new(kind: WireKind) -> Self {
+	pub const fn new(kind: WireKind) -> Self {
 		WireAllocator { n_wires: 0, kind }
 	}
 
-	pub fn alloc(&mut self) -> ConstraintWire {
+	pub const fn alloc(&mut self) -> ConstraintWire {
 		let wire = ConstraintWire {
 			kind: self.kind,
 			id: self.n_wires,
@@ -254,11 +254,11 @@ impl<F: Field> ConstraintBuilder<F> {
 		}
 	}
 
-	pub fn alloc_inout(&mut self) -> ConstraintWire {
+	pub const fn alloc_inout(&mut self) -> ConstraintWire {
 		self.ir.public_alloc.alloc()
 	}
 
-	pub fn alloc_precommit(&mut self) -> ConstraintWire {
+	pub const fn alloc_precommit(&mut self) -> ConstraintWire {
 		self.ir.precommit_alloc.alloc()
 	}
 
@@ -378,7 +378,7 @@ pub struct WitnessWire<F: Field> {
 
 impl<F: Field> WitnessWire<F> {
 	#[inline]
-	pub fn val(self) -> F {
+	pub const fn val(self) -> F {
 		self.val
 	}
 
@@ -468,7 +468,7 @@ impl<'a, F: Field> WitnessGenerator<'a, F> {
 		}
 	}
 
-	pub fn error(&self) -> Option<&Backtrace> {
+	pub const fn error(&self) -> Option<&Backtrace> {
 		self.first_error.as_ref()
 	}
 
@@ -553,7 +553,7 @@ impl<F: Field> PublicWire<F> {
 	/// The wire's value if it is public-derivable (constant, inout, or derived), else `None` for a
 	/// private/precommit wire whose value the verifier does not know.
 	#[inline]
-	pub fn value(self) -> Option<F> {
+	pub const fn value(self) -> Option<F> {
 		self.0
 	}
 }

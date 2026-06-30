@@ -13,7 +13,7 @@ use super::Hint;
 pub struct ByteVecConcatHint;
 
 impl ByteVecConcatHint {
-	pub fn new() -> Self {
+	pub const fn new() -> Self {
 		Self
 	}
 }

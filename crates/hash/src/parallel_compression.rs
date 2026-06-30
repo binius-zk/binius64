@@ -57,7 +57,7 @@ pub struct ParallelCompressionAdaptor<C> {
 
 impl<C> ParallelCompressionAdaptor<C> {
 	/// Creates a new adapter wrapping the given compression function.
-	pub fn new(compression: C) -> Self {
+	pub const fn new(compression: C) -> Self {
 		Self { compression }
 	}
 }

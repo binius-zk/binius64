@@ -8,7 +8,7 @@ use super::constants::{BLOCK_BYTES, IV, MAX_OUTPUT_BYTES, R1, R2, R3, R4, ROUNDS
 
 /// Rotate right for 64-bit words
 #[inline(always)]
-fn rotr64(x: u64, n: u32) -> u64 {
+const fn rotr64(x: u64, n: u32) -> u64 {
 	x.rotate_right(n)
 }
 
@@ -16,7 +16,7 @@ fn rotr64(x: u64, n: u32) -> u64 {
 ///
 /// Performs 8 operations mixing two input words with the state
 #[inline(always)]
-pub fn g(v: &mut [u64; 16], a: usize, b: usize, c: usize, d: usize, x: u64, y: u64) {
+pub const fn g(v: &mut [u64; 16], a: usize, b: usize, c: usize, d: usize, x: u64, y: u64) {
 	v[a] = v[a].wrapping_add(v[b]).wrapping_add(x);
 	v[d] = rotr64(v[d] ^ v[a], R1);
 	v[c] = v[c].wrapping_add(v[d]);

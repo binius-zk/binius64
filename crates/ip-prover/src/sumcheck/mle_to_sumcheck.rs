@@ -32,7 +32,7 @@ pub struct MleToSumCheckDecorator<F: Field, InnerProver> {
 }
 
 impl<F: Field, InnerProver: MleCheckProver<F>> MleToSumCheckDecorator<F, InnerProver> {
-	pub fn new(mlecheck_prover: InnerProver) -> Self {
+	pub const fn new(mlecheck_prover: InnerProver) -> Self {
 		Self {
 			mlecheck_prover,
 			eq_prefix_eval: F::ONE,

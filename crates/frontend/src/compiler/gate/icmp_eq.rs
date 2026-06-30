@@ -41,7 +41,7 @@ use crate::compiler::{
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
 
-pub fn shape() -> OpcodeShape {
+pub const fn shape() -> OpcodeShape {
 	OpcodeShape {
 		const_in: &[Word::ALL_ONE, Word::MSB_ONE, Word::ZERO], // Need zero constant for cin
 		n_in: 2,

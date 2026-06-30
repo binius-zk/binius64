@@ -100,6 +100,7 @@ ureq = "3.1"
 
 [workspace.lints.clippy]
 needless_range_loop = "allow"
+missing_const_for_fn = "warn"
 
 [workspace.metadata.typos]
 default.extend-words = { "typ" = "typ", "Toom" = "Toom", "inouts" = "inouts" }

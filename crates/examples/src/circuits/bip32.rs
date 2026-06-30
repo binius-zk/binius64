@@ -133,7 +133,7 @@ fn il_scalar(hash: &[Wire; 8]) -> BigUint {
 
 /// The last 32 bytes (`I_R`, the chain code) of a SHA-512 output, as four big-endian words ready to
 /// be used directly as an HMAC-SHA512 key.
-fn ir_words(hash: &[Wire; 8]) -> [Wire; 4] {
+const fn ir_words(hash: &[Wire; 8]) -> [Wire; 4] {
 	[hash[4], hash[5], hash[6], hash[7]]
 }
 

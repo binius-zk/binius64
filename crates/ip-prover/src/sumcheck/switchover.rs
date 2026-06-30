@@ -71,7 +71,7 @@ where
 	}
 
 	// Number of variables in all 1-bit multilinears at start of sumcheck.
-	fn n_vars_transparent(&self) -> usize {
+	const fn n_vars_transparent(&self) -> usize {
 		checked_log_2(self.bitmasks.len())
 	}
 

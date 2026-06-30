@@ -46,7 +46,7 @@ where
 	/// `log_lift` is the oracle-padding lift factor (the committed codeword is virtually duplicated
 	/// `2^log_lift` times to reach the common first-round length); pass `0` when no lifting is
 	/// needed.
-	pub fn new(
+	pub const fn new(
 		codeword: FieldBuffer<P>,
 		committed: &'a MerkleProver::Committed,
 		merkle_prover: &'a MerkleProver,
@@ -103,7 +103,7 @@ where
 	MerkleProver: MerkleTreeProver<P::Scalar>,
 {
 	/// Constructs a batch oracle prover from the per-commitment oracle provers.
-	pub fn new(oracles: Vec<BrakedownOracleProver<'a, P, MerkleProver>>) -> Self {
+	pub const fn new(oracles: Vec<BrakedownOracleProver<'a, P, MerkleProver>>) -> Self {
 		Self { oracles }
 	}
 }
@@ -141,7 +141,7 @@ where
 	MerkleProver: MerkleTreeProver<F>,
 {
 	/// Constructs a new oracle prover wrapping a committed fold-round codeword.
-	pub fn new(
+	pub const fn new(
 		codeword: FieldBuffer<F>,
 		committed: MerkleProver::Committed,
 		merkle_prover: &'a MerkleProver,
@@ -241,7 +241,7 @@ where
 	/// `codeword_oracle` is the [`BatchBrakedownOracleProver`] for the originally committed
 	/// interleaved codeword(s), and `fri_oracles` holds one [`FRIOracleProver`] per fold arity. The
 	/// terminal codeword is sent in full and therefore is not represented here.
-	pub fn new(
+	pub const fn new(
 		codeword_oracle: BatchBrakedownOracleProver<'a, P, MerkleProver>,
 		fri_oracles: Vec<FRIOracleProver<'a, F, MerkleProver>>,
 	) -> Self {
@@ -252,7 +252,7 @@ where
 	}
 
 	/// Number of oracles sent during the fold rounds.
-	pub fn n_oracles(&self) -> usize {
+	pub const fn n_oracles(&self) -> usize {
 		1 + self.fri_oracles.len()
 	}
 
