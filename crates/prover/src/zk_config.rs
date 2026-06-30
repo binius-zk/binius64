@@ -184,11 +184,6 @@ where
 			)
 			.entered();
 
-			// `ZKWrappedProverChannel` implements `IOPProverChannel` on `&mut Self`, so the channel
-			// type is the reference itself; bind it and pass a mutable borrow of that reference.
-			// The borrow ends with this block, leaving `wrapped_channel` owned for `finish`
-			// below.
-			let mut wrapped_channel = &mut wrapped_channel;
 			self.inner_iop_prover
 				.prove::<P, _>(witness, &mut wrapped_channel)?;
 		}

@@ -226,7 +226,7 @@ where
 }
 
 impl<F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn> IPProverChannel<F>
-	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_, ReplayFn>
+	for ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_, ReplayFn>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F> + PackedExtension<F>,
@@ -258,7 +258,7 @@ where
 }
 
 impl<F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn> IOPProverChannel<P>
-	for &mut ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_, ReplayFn>
+	for ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_, ReplayFn>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F> + PackedExtension<F>,
