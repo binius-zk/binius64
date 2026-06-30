@@ -159,7 +159,7 @@ mod tests {
 		let data_orig = random_field_buffer::<Packed128b>(&mut rng, log_d);
 
 		let mut data_optimized = data_orig.clone();
-		let mut data_naive = data_orig.clone();
+		let mut data_naive = data_orig;
 
 		bit_reverse_packed(data_optimized.to_mut());
 		bit_reverse_packed_naive(data_naive.to_mut());

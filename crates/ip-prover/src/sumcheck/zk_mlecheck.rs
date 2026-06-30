@@ -523,7 +523,7 @@ mod tests {
 		assert_eq!(mask_eval_out, sumcheck_output.eval);
 
 		// Compute the challenge point (reverse for high-to-low order)
-		let mut challenge_point = sumcheck_output.challenges.clone();
+		let mut challenge_point = sumcheck_output.challenges;
 		challenge_point.reverse();
 
 		// Check that the final evaluation matches direct computation
@@ -572,7 +572,7 @@ mod tests {
 		let sumcheck_output =
 			mlecheck::verify(&eval_point, 2, eval_claim, &mut verifier_transcript).unwrap();
 
-		let mut challenge_point = sumcheck_output.challenges.clone();
+		let mut challenge_point = sumcheck_output.challenges;
 		challenge_point.reverse();
 
 		let mask = Mask::new(1, 2, buffer.to_ref());
@@ -710,7 +710,7 @@ mod tests {
 
 		// Create the bivariate product sumcheck prover
 		let prover = BivariateProductSumcheckProver::new(
-			[mask_buffer.clone(), libra_eval_tensor.clone()],
+			[mask_buffer.clone(), libra_eval_tensor],
 			claimed_sum,
 		)
 		.unwrap();

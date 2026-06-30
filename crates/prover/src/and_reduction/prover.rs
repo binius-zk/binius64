@@ -327,7 +327,7 @@ mod test {
 			second_mlv.clone(),
 			third_mlv.clone(),
 			big_field_zerocheck_challenges.to_vec(),
-			prover_message_domain.clone(),
+			prover_message_domain,
 		);
 
 		let prove_output = prover.prove_with_channel(&mut prover_challenger).unwrap();

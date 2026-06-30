@@ -488,13 +488,9 @@ mod tests {
 
 		// Run batch_prove
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prover_output = batch_prove(
-			provers,
-			claimed_products,
-			selector_challenge.clone(),
-			&mut prover_transcript,
-		)
-		.unwrap();
+		let prover_output =
+			batch_prove(provers, claimed_products, selector_challenge, &mut prover_transcript)
+				.unwrap();
 
 		// Run verifier with n_layers layers
 		let mut verifier_transcript = prover_transcript.into_verifier();

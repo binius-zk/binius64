@@ -84,7 +84,7 @@ impl<F: Field> ConstraintSystemPadded<F> {
 			MulConstraint {
 				a: one_operand.clone(),
 				b: one_operand.clone(),
-				c: one_operand.clone(),
+				c: one_operand,
 			},
 		);
 

@@ -440,7 +440,7 @@ mod tests {
 		];
 
 		let mut batch_prover = BatchQuadraticMleCheckProver::new(
-			multilinears.clone(),
+			multilinears,
 			batch_comp::<P>,
 			batch_inf_comp::<P>,
 			eval_point,

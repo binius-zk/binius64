@@ -1927,12 +1927,9 @@ mod serialization_tests {
 		let non_pub2 = ValuesData::deserialize(&mut buf_non_pub.as_slice()).unwrap();
 
 		// Reconstruct ValueVec from deserialized pieces
-		let reconstructed = ValueVec::new_from_data(
-			cs2.value_vec_layout.clone(),
-			pub2.into_owned(),
-			non_pub2.into_owned(),
-		)
-		.unwrap();
+		let reconstructed =
+			ValueVec::new_from_data(cs2.value_vec_layout, pub2.into_owned(), non_pub2.into_owned())
+				.unwrap();
 
 		// Ensure committed part matches exactly
 		assert_eq!(reconstructed.combined_witness(), values.combined_witness());
@@ -2521,7 +2518,7 @@ mod serialization_tests {
 			};
 
 			// The public input must fill its whole power-of-two section, so zero-pad it.
-			let mut public_padded = public.clone();
+			let mut public_padded = public;
 			public_padded.resize(offset_witness, Word::ZERO);
 
 			let vv = ValueVec::new_from_data(layout, public_padded.clone(), private.clone()).unwrap();

@@ -133,7 +133,7 @@ mod tests {
 		);
 
 		// Also verify the challenges match what the prover saw
-		let mut prover_challenges = output.challenges.clone();
+		let mut prover_challenges = output.challenges;
 		prover_challenges.reverse();
 		assert_eq!(
 			prover_challenges, sumcheck_output.challenges,

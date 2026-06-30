@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let nonce: Vec<_> = (0..4).map(|_| builder.add_witness()).collect();
 	let commitment: [_; 4] = core::array::from_fn(|_| builder.add_inout());
 
-	let message: Vec<_> = content.clone().into_iter().chain(nonce.clone()).collect();
+	let message: Vec<_> = content.into_iter().chain(nonce).collect();
 	let len_bytes = builder.add_witness();
 	let sha256 = Sha256::new(&builder, len_bytes, commitment, message);
 	let circuit = builder.build();
