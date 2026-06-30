@@ -8,7 +8,8 @@ use binius_math::{
 	multilinear::{eq::eq_ind, evaluate::evaluate_inplace_scalars},
 	univariate::evaluate_univariate,
 };
-use itertools::{Itertools, chain};
+use binius_utils::checked_arithmetics::log2_ceil_usize;
+use itertools::chain;
 
 use super::{
 	common::{
@@ -21,46 +22,6 @@ use crate::protocols::{
 	prodcheck::{self, MultilinearEvalClaim},
 	sumcheck::{BatchSumcheckOutput, batch_verify},
 };
-
-/// Verify one layer of a batched bivariate product MLE tree.
-///
-/// Given evaluations of product MLEs at a shared point, runs a sumcheck reducing them to
-/// evaluations of the left/right factor MLEs at a new random point. Returns the new evaluation
-/// point (challenges) and the claimed factor evaluations.
-#[allow(clippy::type_complexity)]
-fn verify_multi_bivariate_product_mle_layer<F, C>(
-	eval_point: &[C::Elem],
-	evals: &[C::Elem],
-	channel: &mut C,
-) -> Result<(Vec<C::Elem>, Vec<C::Elem>), Error>
-where
-	F: Field,
-	C: IPVerifierChannel<F>,
-{
-	let n_vars = eval_point.len();
-
-	let BatchSumcheckOutput {
-		batch_coeff,
-		mut challenges,
-		eval,
-	} = batch_verify(n_vars, 3, evals, channel)?;
-
-	challenges.reverse();
-
-	let multilinear_evals = channel.recv_many(2 * evals.len())?;
-
-	let eq_ind_eval = eq_ind(eval_point, &challenges);
-	let expected_unbatched_terms = multilinear_evals
-		.iter()
-		.tuples()
-		.map(|(left, right)| eq_ind_eval.clone() * left * right)
-		.collect::<Vec<_>>();
-
-	let expected_eval = evaluate_univariate(&expected_unbatched_terms, batch_coeff);
-	channel.assert_zero(expected_eval - eval)?;
-
-	Ok((challenges, multilinear_evals))
-}
 
 /// Verify Phase 1: GKR step on the exponentiation product tree.
 ///
@@ -198,8 +159,10 @@ where
 /// Verify Phase 4: all but last layer of the GKR product trees for $\widetilde{a}$,
 /// $\widetilde{c}_{\textsf{lo}}$, and $\widetilde{c}_{\textsf{hi}}$.
 ///
-/// Iteratively applies batched bivariate product sumchecks, doubling the number of leaf
-/// evaluations at each layer, reducing root claims to leaf claims at depth `log_bits - 1`.
+/// Reduces the three tree roots (claimed at the Phase-3 point) to the all-but-last (depth
+/// `log_bits - 1`) layer leaf claims via a single batched prodcheck over the three trees, batched
+/// with $\lceil \log_2 3 \rceil = 2$ selector variables. The prover sends the $3 \cdot 2^{k-1}$
+/// all-but-last-layer evaluations, which the verifier binds to the prodcheck output claim.
 fn verify_phase_4<F, C>(
 	log_bits: usize,
 	eval_point: &[C::Elem],
@@ -214,26 +177,61 @@ where
 {
 	assert!(log_bits >= 1);
 
-	let mut eval_point = eval_point.to_vec();
-	let mut evals = vec![a_root_eval, gpow_c_lo_eval, gpow_c_hi_eval];
+	let n_vars = eval_point.len();
+	let n_layers = log_bits - 1;
+	let width = 1 << n_layers; // = 2^(log_bits - 1) all-but-last-layer node multilinears per tree
 
-	for depth in 0..log_bits - 1 {
-		assert_eq!(evals.len(), 3 << depth);
+	let log_n_trees = log2_ceil_usize(3); // = 2 selector variables
 
-		let (challenges, multilinear_evals) =
-			verify_multi_bivariate_product_mle_layer(&eval_point, &evals, channel)?;
+	// Sample the selector challenges that batch the three trees (padded to 4).
+	let selector = channel.sample_many(log_n_trees);
 
-		eval_point = challenges;
-		evals = multilinear_evals;
-	}
+	// Combined initial claim: eq(selector)-weighted sum of the three root evals (padded to 4 with a
+	// zero), at the point selector ++ eval_point (the Phase-3 content point).
+	let root_evals = vec![a_root_eval, gpow_c_lo_eval, gpow_c_hi_eval, C::Elem::zero()];
+	let combined_root_eval = evaluate_inplace_scalars(root_evals, &selector);
 
-	assert_eq!(evals.len(), 3 << (log_bits - 1));
-	let c_hi_evals = evals.split_off(2 << (log_bits - 1));
-	let c_lo_evals = evals.split_off(1 << (log_bits - 1));
-	let a_evals = evals;
+	let claim = MultilinearEvalClaim {
+		eval: combined_root_eval,
+		point: [selector, eval_point.to_vec()].concat(),
+	};
+
+	// Run the batched prodcheck verification (n_layers = log_bits - 1 reduction layers).
+	let output_claim = prodcheck::verify(n_layers, claim, channel)?;
+
+	// The reduced point is [selector (log_n_trees), suffix (n_vars), bit_index (n_layers)]:
+	//  - selector: the batching coordinates for the three trees (the content batching coordinates,
+	//    reduced through the selector rounds),
+	//  - suffix: the content point at which the node multilinears are now claimed,
+	//  - bit_index: the node-index coordinates of the all-but-last layer (high bits in the prover's
+	//    concatenated buffer, reduced through the layer rounds).
+	assert_eq!(output_claim.point.len(), log_n_trees + n_layers + n_vars);
+	let (selector_point, rest) = output_claim.point.split_at(log_n_trees);
+	let (suffix, bit_index) = rest.split_at(n_vars);
+
+	// Receive the 3 * 2^(log_bits - 1) all-but-last-layer leaf evals (a, then c_lo, then c_hi),
+	// matching the prover's send order.
+	let a_evals = channel.recv_many(width)?;
+	let c_lo_evals = channel.recv_many(width)?;
+	let c_hi_evals = channel.recv_many(width)?;
+
+	// Soundness check: bind the received leaf evals to the prodcheck output. The reduced
+	// multilinear is the eq(selector)-interpolation over trees of the eq(bit_index)-interpolation
+	// over nodes of the leaf evals, evaluated at the suffix point (which the leaf evals already
+	// embed). Concretely:
+	//   output_claim.eval == Σ_t eq(selector, t) · Σ_z eq(bit_index, z) · leaf_eval[t][z],
+	// with the 4th tree slot zero. We fold each tree's 2^(n_layers) leaf evals at bit_index, then
+	// fold the three (padded to 4) per-tree results at selector.
+	let a_folded = evaluate_inplace_scalars(a_evals.clone(), bit_index);
+	let c_lo_folded = evaluate_inplace_scalars(c_lo_evals.clone(), bit_index);
+	let c_hi_folded = evaluate_inplace_scalars(c_hi_evals.clone(), bit_index);
+	let per_tree = vec![a_folded, c_lo_folded, c_hi_folded, C::Elem::zero()];
+	let expected_eval = evaluate_inplace_scalars(per_tree, selector_point);
+
+	channel.assert_zero(expected_eval - output_claim.eval)?;
 
 	Ok(Phase4Output {
-		eval_point,
+		eval_point: suffix.to_vec(),
 		a_evals,
 		c_lo_evals,
 		c_hi_evals,
@@ -301,14 +299,24 @@ where
 		reconstruct_selecteds(log_bits, &a_evals, &c_lo_evals, &c_hi_evals);
 
 	// Compose the expected evaluation of the batched composition via the reconstructed leaf
-	// selectors. For every pair (p,q) of leaf selectors, the verifier checks that the MLE of p*q
-	// at `a_c_eq_eval` equals the corresponding bivariate-product eval in `evals`.
+	// selectors. The prodcheck reduces on the highest node bit, so the final GKR layer pairs leaf
+	// `z` with leaf `z + 2^(log_bits - 1)` (a strided pairing of bits `z` and `z + half`), matching
+	// the natural bit-order leaf layout. For each tree the verifier checks that the MLE of each
+	// strided pair's product at `a_c_eq_eval` equals the corresponding bivariate-product eval in
+	// `evals`, keeping the (a, c_lo, c_hi) order of the batched sumcheck claims.
 	let a_c_eq_eval = eq_ind(a_c_eval_point, &challenges);
-	let expected_bivariate_unbatched_evals =
-		chain!(&a_selected_evals, &c_lo_selected_evals, &c_hi_selected_evals)
-			.tuples()
-			.map(|(left, right)| a_c_eq_eval.clone() * left * right)
-			.collect::<Vec<_>>();
+	let strided_products = |selecteds: &[C::Elem]| {
+		let half = selecteds.len() / 2;
+		(0..half)
+			.map(|z| a_c_eq_eval.clone() * &selecteds[z] * &selecteds[z + half])
+			.collect::<Vec<_>>()
+	};
+	let expected_bivariate_unbatched_evals = chain!(
+		strided_products(&a_selected_evals),
+		strided_products(&c_lo_selected_evals),
+		strided_products(&c_hi_selected_evals),
+	)
+	.collect::<Vec<_>>();
 
 	// We must check that `a_0 * b_0 = c_lo_0` across all rows, where these represent the least
 	// significant bits of `a_exponents`, `b_exponents`, and `c_lo_exponents` respectively.

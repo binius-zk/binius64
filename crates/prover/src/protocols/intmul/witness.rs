@@ -11,9 +11,8 @@ use binius_utils::{
 	rayon::prelude::*,
 	strided_array::StridedArray2DViewMut,
 };
-use derive_more::IntoIterator;
 use getset::Getters;
-use itertools::{Itertools, iterate};
+use itertools::iterate;
 
 use super::error::Error;
 use crate::protocols::prodcheck::ProdcheckProver;
@@ -25,11 +24,12 @@ use crate::protocols::prodcheck::ProdcheckProver;
 /// All four values are of the same bit width that is passed to the prover via `log_bits` parameter
 /// (also denoted $m$). In Binius64, `log_bits = 6` for 64-bit multiplicands and 128-bit product.
 ///
-/// A full binary tree (see [`BinaryTree`]) is constructed from each of `a`, `c_lo`, `c_hi`:
+/// For each of `a`, `c_lo`, `c_hi`, `b` we build the `2^log_bits` "selected" leaf multilinears of
+/// the bivariate-product GKR tree (the widest layer), concatenated into one `(n_vars + log_bits)`
+/// variate buffer with the node index in the high bits. We then construct a [`ProdcheckProver`]
+/// over each, retaining the leaf layer for the final (Phase 5) GKR step:
 ///  1) `a` and `c_lo` select a multiplicative group generator $G$
 ///  2) `c_hi` selects $G^{2^{2^m}}$
-///
-/// For `b`, we only store the leaves (for prodcheck) and the root (for initial evaluation):
 ///  3) `b` selects variable base which is equal to the root of the `a` tree
 ///
 /// Protocol proves that ${(G^a)}^b = G^{c\\_lo} \times (G^{2^{2^m}})^{c\\_hi}$, which is equivalent
@@ -38,7 +38,14 @@ use crate::protocols::prodcheck::ProdcheckProver;
 #[derive(Clone, Getters)]
 #[getset(get = "pub")]
 pub struct Witness<P: PackedField, B: Bitwise, S: AsRef<[B]> + Sync> {
-	pub a: BinaryTree<P, B, S>,
+	/// The log of the bit width ($m$): the tree leaf layer has `2^log_bits` selected multilinears.
+	pub log_bits: usize,
+	/// The exponents for `a` (needed for the phase 5 parity zerocheck on `a_0`).
+	pub a_exponents: S,
+	/// Prodcheck prover for the `a` exponentiation tree (leaf layer retained).
+	pub a_prodcheck: ProdcheckProver<P>,
+	/// The root of the `a` tree (product of all leaves element-wise); the `b` variable base.
+	pub a_root: FieldBuffer<P>,
 	/// The exponents for `b` (needed for phase 5).
 	pub b_exponents: S,
 	/// Concatenated b leaves for prodcheck: [L_0, L_1, ..., L_{2^k-1}].
@@ -48,9 +55,20 @@ pub struct Witness<P: PackedField, B: Bitwise, S: AsRef<[B]> + Sync> {
 	pub b_prodcheck: ProdcheckProver<P>,
 	/// The root of the b tree (product of all leaves element-wise).
 	pub b_root: FieldBuffer<P>,
-	pub c_lo: BinaryTree<P, B, S>,
-	pub c_hi: BinaryTree<P, B, S>,
+	/// The exponents for `c_lo` (needed for the phase 5 parity zerocheck on `c_lo_0`).
+	pub c_lo_exponents: S,
+	/// Prodcheck prover for the `c_lo` exponentiation tree (leaf layer retained).
+	pub c_lo_prodcheck: ProdcheckProver<P>,
+	/// The root of the `c_lo` tree.
+	pub c_lo_root: FieldBuffer<P>,
+	/// Prodcheck prover for the `c_hi` exponentiation tree (leaf layer retained).
+	pub c_hi_prodcheck: ProdcheckProver<P>,
+	/// The root of the `c_hi` tree.
+	pub c_hi_root: FieldBuffer<P>,
+	/// The root of a `log_bits + 1` deep tree of the full product `c` (`c_lo_root * c_hi_root`).
 	pub c_root: FieldBuffer<P>,
+	#[getset(skip)]
+	pub _b_marker: PhantomData<B>,
 }
 
 impl<F, P, B, S> Witness<P, B, S>
@@ -83,31 +101,78 @@ where
 			.nth(1 << log_bits)
 			.expect("infinite iterator");
 
-		let a = BinaryTree::constant_base(log_bits, g, a);
-		let c_lo = BinaryTree::constant_base(log_bits, g, c_lo);
-		let c_hi = BinaryTree::constant_base(log_bits, g_c_hi, c_hi);
+		// Build the constant-base leaf layers and their prodcheck provers. Each prover's products
+		// layer is the corresponding tree root.
+		let a_leaves = constant_base_leaves(log_bits, g, &a);
+		let (a_prodcheck, a_root) = ProdcheckProver::new(log_bits, a_leaves);
 
-		// Compute b_leaves as concatenated leaves for prodcheck
-		let variable_base = a.root().clone();
-		let b_leaves = compute_b_leaves(log_bits, variable_base, &b);
+		let c_lo_leaves = constant_base_leaves(log_bits, g, &c_lo);
+		let (c_lo_prodcheck, c_lo_root) = ProdcheckProver::new(log_bits, c_lo_leaves);
+
+		let c_hi_leaves = constant_base_leaves(log_bits, g_c_hi, &c_hi);
+		let (c_hi_prodcheck, c_hi_root) = ProdcheckProver::new(log_bits, c_hi_leaves);
+
+		// Compute b_leaves as concatenated leaves for prodcheck; the variable base is the `a` root.
+		let b_leaves = compute_b_leaves(log_bits, a_root.clone(), &b);
 
 		// Create the prodcheck prover; its products layer becomes b_root
 		let (b_prodcheck, b_root) = ProdcheckProver::new(log_bits, b_leaves.clone());
 
 		// The root of a `log_bits + 1` deep tree of the full product `c`.
-		let c_root = buffer_bivariate_product(c_lo.root(), c_hi.root());
+		let c_root = buffer_bivariate_product(&c_lo_root, &c_hi_root);
 
 		Ok(Self {
-			a,
+			log_bits,
+			a_exponents: a,
+			a_prodcheck,
+			a_root,
 			b_exponents: b,
 			b_leaves,
 			b_prodcheck,
 			b_root,
-			c_lo,
-			c_hi,
+			c_lo_exponents: c_lo,
+			c_lo_prodcheck,
+			c_lo_root,
+			c_hi_prodcheck,
+			c_hi_root,
 			c_root,
+			_b_marker: PhantomData,
 		})
 	}
+}
+
+/// Build the concatenated constant-base leaf layer for a GKR exponentiation tree.
+///
+/// The widest layer of the tree contains `2^log_bits` selected multilinears: the leaf for bit `b`
+/// has value `base^{2^b}` where the `b`-th bit of the corresponding exponent is set, and `1`
+/// otherwise.
+///
+/// The leaves are concatenated into one `(n_vars + log_bits)`-variate buffer with the node index in
+/// the high bits, in natural bit order: node position `p` carries the leaf for bit `p`. This
+/// matches the `b`-tree layout ([`compute_b_leaves`]). The prodcheck reduces on the highest node
+/// bit, so its first reduction (and the verifier's final GKR layer) pairs leaf `z` with leaf
+/// `z + 2^{log_bits-1}` — a strided pairing of bits `z` and `z + 2^{log_bits-1}`.
+fn constant_base_leaves<F, P, B, S>(log_bits: usize, base: F, exponents: &S) -> FieldBuffer<P>
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+	B: Bitwise,
+	S: AsRef<[B]> + Sync,
+{
+	let bases = iterate(base, |g| g.square())
+		.take(1 << log_bits)
+		.collect::<Vec<_>>();
+
+	let n_vars = checked_log_2(exponents.as_ref().len());
+	let scalars = (0..1 << log_bits)
+		.flat_map(|bit| {
+			let leaf = two_valued_field_buffer::<F, P, S, B>(bit, exponents, [F::ONE, bases[bit]]);
+			leaf.iter_scalars().collect::<Vec<_>>()
+		})
+		.collect::<Vec<_>>();
+
+	debug_assert_eq!(scalars.len(), 1 << (n_vars + log_bits));
+	FieldBuffer::<P>::from_values(&scalars)
 }
 
 /// Compute concatenated b_leaves for prodcheck.
@@ -203,150 +268,6 @@ where
 	unsafe { out_vec.set_len(total) };
 
 	FieldBuffer::new(n_vars + log_bits, out_vec.into_boxed_slice())
-}
-
-/// A helper structure which handles full GKR binary tree for the bivariate product.
-///
-/// On the lowest, widest level, the tree contains `2^log_bits` leaves. Each of the leaves
-/// is a selected multilinear, meaning that `i`-th multilinear contains field multiplicative
-/// identity if the `i`-th bit on the exponent corresponding to the hypercube vertex is zero,
-/// and some base otherwise. Base can be constant (powers of some generator) or variable (value
-/// is specified per hypercube vertex).
-///
-/// Upper `log_bits` of the tree are constructed by taking pairwise per-vertex products of
-/// multilinears. The root contains a single multilinear, each vertex value of which equals to the
-/// base raised to the power of the corresponding exponent.
-///
-/// Tree is laid out from root to the leaves. `IntoIterator` follows this convention.
-#[derive(Clone, Debug, IntoIterator)]
-pub struct BinaryTree<P: PackedField, B: Bitwise, S: AsRef<[B]>> {
-	exponents: S,
-	#[into_iterator(owned)]
-	tree: Vec<Vec<FieldBuffer<P>>>,
-	_b_marker: PhantomData<B>,
-}
-
-impl<F, P, B, S> BinaryTree<P, B, S>
-where
-	F: Field,
-	P: PackedField<Scalar = F>,
-	B: Bitwise,
-	S: AsRef<[B]> + Sync,
-{
-	/// Constant base witness construction.
-	pub fn constant_base(log_bits: usize, base: F, exponents: S) -> Self {
-		let bases = iterate(base, |g| g.square())
-			.take(1 << log_bits)
-			.collect::<Vec<_>>();
-
-		let widest_layer = bases
-			.par_iter()
-			.enumerate()
-			.map(|(bit_offset, base)| {
-				two_valued_field_buffer(bit_offset, &exponents, [F::ONE, *base])
-			})
-			.collect();
-
-		let tree = build_remaining_tree_layers(log_bits, widest_layer);
-		Self {
-			exponents,
-			tree,
-			_b_marker: PhantomData,
-		}
-	}
-
-	/// Variable base witness construction.
-	///
-	/// The `bases` buffer is consumed and modified inplace.
-	pub fn variable_base(log_bits: usize, mut bases: FieldBuffer<P>, exponents: S) -> Self {
-		let n_vars = checked_log_2(exponents.as_ref().len());
-		let p_width = P::WIDTH.min(1 << n_vars);
-		assert_eq!(bases.log_len(), n_vars);
-
-		let mut widest_layer = Vec::with_capacity(1 << log_bits);
-		for bit_offset in 0..1 << log_bits {
-			let bits = BitSelector::new(bit_offset, &exponents);
-			let values = bases
-				.as_mut()
-				.into_par_iter()
-				.enumerate()
-				.map(|(i, bases_packed)| {
-					let scalars = bases_packed
-						.iter()
-						.take(p_width)
-						.enumerate()
-						.map(|(j, base)| {
-							let is_base = unsafe {
-								// Safety: `bits` is guaranteed to be in-bounds
-								bits.get_unchecked(i << P::LOG_WIDTH | j)
-							};
-							if is_base { base } else { F::ONE }
-						});
-
-					let result = P::from_scalars(scalars);
-					*bases_packed = bases_packed.square();
-
-					result
-				})
-				.collect::<Box<[_]>>();
-
-			widest_layer.push(FieldBuffer::new(n_vars, values));
-		}
-
-		let tree = build_remaining_tree_layers(log_bits, widest_layer);
-		Self {
-			exponents,
-			tree,
-			_b_marker: PhantomData,
-		}
-	}
-
-	pub const fn log_bits(&self) -> usize {
-		self.tree.len() - 1
-	}
-
-	pub fn root(&self) -> &FieldBuffer<P> {
-		let first_layer = self
-			.tree
-			.first()
-			.expect("at least one layer is always present");
-		assert_eq!(first_layer.len(), 1);
-
-		first_layer.first().expect("first_layer.len() == 1")
-	}
-
-	pub fn split(mut self) -> (S, FieldBuffer<P>, Vec<Vec<FieldBuffer<P>>>) {
-		let rest = self.tree.split_off(1);
-		let mut root_layer = self.tree.pop().expect("exactly one element");
-		let root = root_layer.pop().expect("exactly one element");
-		(self.exponents, root, rest)
-	}
-}
-
-fn build_remaining_tree_layers<P: PackedField>(
-	log_bits: usize,
-	widest_layer: Vec<FieldBuffer<P>>,
-) -> Vec<Vec<FieldBuffer<P>>> {
-	assert_eq!(widest_layer.len(), 1 << log_bits);
-
-	let mut tree = Vec::with_capacity(log_bits + 1);
-	tree.push(widest_layer);
-
-	for layer_no in (0..log_bits).rev() {
-		let cur_layer = tree.last().expect("always at least one layer in tree");
-
-		assert_eq!(cur_layer.len(), 2 << layer_no);
-		let next_layer = cur_layer
-			.iter()
-			.tuples()
-			.map(|(a, b)| buffer_bivariate_product(a, b))
-			.collect::<Vec<_>>();
-
-		tree.push(next_layer);
-	}
-
-	tree.reverse();
-	tree
 }
 
 /// Compute the per-vertex bivariate product of two equally sized field buffers.
