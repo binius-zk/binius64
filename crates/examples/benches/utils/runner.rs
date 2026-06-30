@@ -4,8 +4,9 @@
 use std::error::Error;
 
 use binius_examples::{ExampleCircuit, setup};
-use binius_frontend::CircuitBuilder;
+use binius_frontend::{Circuit, CircuitBuilder};
 use binius_hash::StdHashSuite;
+use binius_prover::{OptimalPackedB128, Prover};
 use binius_utils::platform_diagnostics::PlatformDiagnostics;
 use binius_verifier::{
 	config::StdChallenger,
@@ -53,13 +54,43 @@ pub trait ExampleBenchmark {
 	fn print_params(&self);
 }
 
+/// Context passed to benchmark-specific extension groups.
+///
+/// Some benchmark binaries load this runner without registering extension groups, so these fields
+/// are only read in targets that use [`run_cs_benchmark_with_extra_groups`].
+#[allow(dead_code)]
+pub struct ConstraintSystemBenchmarkContext<'a, B: ExampleBenchmark> {
+	pub group_prefix: &'a str,
+	pub bench_name: &'a str,
+	pub benchmark: &'a B,
+	pub circuit: &'a Circuit,
+	pub example: &'a B::Example,
+	pub instance: &'a B::Instance,
+	pub prover: &'a Prover<OptimalPackedB128, StdHashSuite>,
+}
+
 /// Run a complete benchmark suite for a constraint system
+#[allow(dead_code)]
 pub fn run_cs_benchmark<B: ExampleBenchmark>(
 	c: &mut Criterion,
 	benchmark: B,
 	group_prefix: &str,
 	peak_alloc: &impl PeakMemAllocTrait,
 ) {
+	run_cs_benchmark_with_extra_groups(c, benchmark, group_prefix, peak_alloc, |_, _| {});
+}
+
+/// Run a complete benchmark suite for a constraint system, with benchmark-specific extra groups.
+pub fn run_cs_benchmark_with_extra_groups<B, F>(
+	c: &mut Criterion,
+	benchmark: B,
+	group_prefix: &str,
+	peak_alloc: &impl PeakMemAllocTrait,
+	extra_groups: F,
+) where
+	B: ExampleBenchmark,
+	F: FnOnce(&mut Criterion, ConstraintSystemBenchmarkContext<'_, B>),
+{
 	use super::reporting::{print_env_help, print_memory_stats, print_proof_size};
 
 	// Check for help
@@ -98,13 +129,13 @@ pub fn run_cs_benchmark<B: ExampleBenchmark>(
 	prover
 		.prove(witness.clone(), &mut prover_transcript_mem)
 		.unwrap();
-	let proof_bytes_mem = prover_transcript_mem.finalize();
+	let proof_bytes = prover_transcript_mem.finalize();
 	let proof_peak_bytes = peak_alloc.get_peak_memory();
 
 	// Track memory for verification
 	peak_alloc.reset_peak_memory();
 	let mut verifier_transcript_mem =
-		VerifierTranscript::new(StdChallenger::default(), proof_bytes_mem);
+		VerifierTranscript::new(StdChallenger::default(), proof_bytes.clone());
 	verifier
 		.verify(witness.public(), &mut verifier_transcript_mem)
 		.unwrap();
@@ -155,12 +186,19 @@ pub fn run_cs_benchmark<B: ExampleBenchmark>(
 		group.finish();
 	}
 
-	// Generate proof for verification and size measurement
-	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-	prover
-		.prove(witness.clone(), &mut prover_transcript)
-		.unwrap();
-	let proof_bytes = prover_transcript.finalize();
+	extra_groups(
+		c,
+		ConstraintSystemBenchmarkContext {
+			group_prefix,
+			bench_name: &bench_name,
+			benchmark: &benchmark,
+			circuit: &circuit,
+			example: &example,
+			instance: &instance,
+			prover: &prover,
+		},
+	);
+
 	let proof_size = proof_bytes.len();
 
 	// Benchmark proof verification

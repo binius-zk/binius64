@@ -3,7 +3,10 @@
 
 use std::env;
 
-use super::config::{DEFAULT_HASH_LOG_INV_RATE, DEFAULT_HASH_MAX_BYTES, DEFAULT_SIGN_LOG_INV_RATE};
+use super::config::{
+	DEFAULT_HASH_LOG_INV_RATE, DEFAULT_HASH_MAX_BYTES, DEFAULT_INDEPENDENT_NUM_PRIMITIVES,
+	DEFAULT_SIGN_LOG_INV_RATE,
+};
 
 /// Print benchmark header with consistent formatting
 pub fn print_benchmark_header(name: &str, params: &[(String, String)]) {
@@ -74,6 +77,16 @@ pub fn print_env_help() {
 			"  HASH_MAX_BYTES         - Maximum bytes for hash benchmarks (default: {})",
 			DEFAULT_HASH_MAX_BYTES
 		);
+		println!("\nIndependent primitive benchmarks:");
+		println!(
+			"  N_COMPRESSIONS         - Number of independent SHA-256/BLAKE3 compressions (default: {})",
+			DEFAULT_INDEPENDENT_NUM_PRIMITIVES
+		);
+		println!(
+			"  N_PERMUTATIONS         - Number of independent Keccak-f[1600] permutations (default: {})",
+			DEFAULT_INDEPENDENT_NUM_PRIMITIVES
+		);
+		println!("  N_PRIMITIVES           - Fallback count for either primitive type");
 		println!("\nSignature aggregation benchmarks:");
 		println!(
 			"  N_SIGNATURES           - Number of signatures (default: 1 for ethsign, 4 for hashsign)"

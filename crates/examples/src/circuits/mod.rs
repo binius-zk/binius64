@@ -10,6 +10,7 @@ pub mod blake3_compress;
 pub mod ec_msm;
 pub mod ethsign;
 pub mod hashsign;
+pub mod independent_hashes;
 pub mod keccak;
 pub mod sha256;
 pub mod sha512;

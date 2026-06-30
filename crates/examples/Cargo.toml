@@ -64,6 +64,18 @@ name = "hashsign"
 harness = false
 
 [[bench]]
+name = "sha256_compressions"
+harness = false
+
+[[bench]]
+name = "blake3_compressions"
+harness = false
+
+[[bench]]
+name = "keccak_permutations"
+harness = false
+
+[[bench]]
 name = "sha256"
 harness = false
 

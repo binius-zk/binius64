@@ -12,6 +12,9 @@ pub const DEFAULT_HASH_LOG_INV_RATE: usize = 1;
 /// Default LOG_INV_RATE for signature benchmarks
 pub const DEFAULT_SIGN_LOG_INV_RATE: usize = 2;
 
+/// Default number of primitives for independent hash primitive benchmarks.
+pub const DEFAULT_INDEPENDENT_NUM_PRIMITIVES: usize = 4096;
+
 /// Common configuration for hash benchmarks
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
