@@ -252,8 +252,21 @@ where
 			})
 			.collect();
 
-		let selector_prover =
-			SelectorMlecheckProver::new(selector, selector_claims, b_exponents, self.switchover)?;
+		// Batch the 2^k Frobenius-twisted leaf claims with eq_k(γ, i): sample γ in K^k and pass the
+		// eq_k(γ, ·) weights to the selector prover, which combines its 2^k per-claim round
+		// polynomials into a single weighted one. This replaces a univariate-power batch over the
+		// 2^k claims with a multilinear one; the verifier mirrors it by weighting the corresponding
+		// terms by eq_k(γ, ·). γ is sampled before the batched sumcheck so the round polynomials
+		// are fixed against it.
+		let gamma = self.channel.sample_many(log_bits);
+		let eq_weights = eq_ind_partial_eval_scalars::<F>(&gamma);
+		let selector_prover = SelectorMlecheckProver::new(
+			selector,
+			selector_claims,
+			b_exponents,
+			eq_weights,
+			self.switchover,
+		)?;
 
 		let c_root_sumcheck_prover =
 			bivariate_product_mle::new(c_lo_hi_roots, c_eval_point.to_vec(), c_root_eval)?;

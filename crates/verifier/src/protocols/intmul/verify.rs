@@ -128,15 +128,19 @@ where
 		assert_eq!(twisted_eval_point.len(), c_eval_point.len());
 	}
 
-	let evals = iter::chain(twisted_evals, [c_eval]).collect::<Vec<_>>();
-
-	// Polynomial is a univariate random combination of 2^k + 1 quartic terms:
+	// Batch the 2^k Frobenius-twisted leaf claims with eq_k(γ, i): sample γ in K^k and take the
+	// multilinear evaluation of the 2^k claims at γ, matching the prover's CombineClaimsDecorator.
+	// The aggregate and the LO·HI claim are then combined into the same sumcheck by the univariate
+	// batch coefficient. γ is sampled before the sumcheck so its round polynomials are fixed
+	// against it.
 	//
-	// First 2^k:
-	// - (b(i, X) * (A(X) - 1) + 1) * eq(φ⁻ⁱ(x) ; X)
-	//
-	// Last one:
+	// The two batched terms (each degree 3) are:
+	// - the 2^k aggregate: Σ_i eq_k(γ, i) * (b(i, X) * (A(X) - 1) + 1) * eq(φ⁻ⁱ(x) ; X)
 	// - LO(X) * HI(X) * eq(c_eval_point ; X)
+	let gamma = channel.sample_many(log_bits);
+	let selector_agg_eval = evaluate_inplace_scalars(twisted_evals, &gamma);
+	let evals = [selector_agg_eval, c_eval];
+
 	let BatchSumcheckOutput {
 		batch_coeff,
 		mut challenges,
@@ -161,20 +165,22 @@ where
 
 	let eval_point = challenges;
 
-	let expected_selected_terms =
-		iter::zip(twisted_eval_points, &b_evals).map(|(twisted_eval_point, b_eval)| {
+	let expected_selected_terms = iter::zip(twisted_eval_points, &b_evals)
+		.map(|(twisted_eval_point, b_eval)| {
 			let one = C::Elem::one();
 			(b_eval.clone() * (gpow_a_eval.clone() - one.clone()) + one)
 				* eq_ind(&twisted_eval_point, &eval_point)
-		});
+		})
+		.collect::<Vec<_>>();
+	// Combine the 2^k selector terms with eq_k(γ, i) — the multilinear evaluation at γ — mirroring
+	// the prover's CombineClaimsDecorator.
+	let expected_selected_agg = evaluate_inplace_scalars(expected_selected_terms, &gamma);
 
 	// - c_lo(r) * c_hi(r) * eq(c_eval_point ; r)
 	let expected_c_prod_eval =
 		gpow_c_lo_eval.clone() * gpow_c_hi_eval.clone() * eq_ind(c_eval_point, &eval_point);
 
-	let expected_terms = expected_selected_terms
-		.chain([expected_c_prod_eval])
-		.collect::<Vec<_>>();
+	let expected_terms = [expected_selected_agg, expected_c_prod_eval];
 	let expected_batched_eval = evaluate_univariate(&expected_terms, batch_coeff);
 
 	channel.assert_zero(expected_batched_eval - eval)?;
