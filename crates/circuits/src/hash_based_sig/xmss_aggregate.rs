@@ -162,7 +162,7 @@ mod tests {
 			let mut rng = StdRng::seed_from_u64(42);
 
 			match self {
-				MultisigTestCase::Valid {
+				Self::Valid {
 					num_validators,
 					tree_height,
 					epoch,
@@ -176,7 +176,7 @@ mod tests {
 					);
 					test_data.run(&spec, *tree_height).unwrap();
 				}
-				MultisigTestCase::Invalid {
+				Self::Invalid {
 					num_validators,
 					tree_height,
 					epoch,
@@ -234,7 +234,7 @@ mod tests {
 				validator_param_bytes.push(param_bytes);
 			}
 
-			MultisigTestData {
+			Self {
 				validator_param_bytes,
 				message_bytes,
 				epoch,

@@ -77,11 +77,11 @@ pub enum NodeData {
 
 impl NodeData {
 	const fn is_root(&self) -> bool {
-		matches!(self, NodeData::Root { .. })
+		matches!(self, Self::Root { .. })
 	}
 
 	const fn is_opaque(&self) -> bool {
-		matches!(self, NodeData::Opaque { .. })
+		matches!(self, Self::Opaque { .. })
 	}
 }
 

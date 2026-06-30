@@ -29,9 +29,9 @@ impl WireKind {
 	/// the public segment; precommit and private wires occupy their own segments.
 	pub const fn segment(self) -> WitnessSegment {
 		match self {
-			WireKind::Constant | WireKind::InOut | WireKind::Derived => WitnessSegment::Public,
-			WireKind::Precommit => WitnessSegment::Precommit,
-			WireKind::Private => WitnessSegment::Private,
+			Self::Constant | Self::InOut | Self::Derived => WitnessSegment::Public,
+			Self::Precommit => WitnessSegment::Precommit,
+			Self::Private => WitnessSegment::Private,
 		}
 	}
 
@@ -78,7 +78,7 @@ pub struct Operand<W>(SmallVec<[W; 4]>);
 
 impl<W> Default for Operand<W> {
 	fn default() -> Self {
-		Operand(SmallVec::new())
+		Self(SmallVec::new())
 	}
 }
 
@@ -115,7 +115,7 @@ impl<W: Copy + Ord> Operand<W> {
 		&self.0
 	}
 
-	pub fn merge(&mut self, rhs: &Self) -> (Operand<W>, Operand<W>) {
+	pub fn merge(&mut self, rhs: &Self) -> (Self, Self) {
 		// Classic merge algorithm for sorted vectors, but where duplicate items cancel out.
 		let lhs = mem::take(&mut self.0);
 		let dst = &mut self.0;
@@ -123,8 +123,8 @@ impl<W: Copy + Ord> Operand<W> {
 		let mut lhs_iter = lhs.into_iter().peekable();
 		let mut rhs_iter = rhs.0.iter().copied().peekable();
 
-		let mut additions = Operand::default();
-		let mut removals = Operand::default();
+		let mut additions = Self::default();
+		let mut removals = Self::default();
 
 		loop {
 			match (lhs_iter.peek(), rhs_iter.peek()) {
@@ -161,7 +161,7 @@ impl<W: Copy + Ord> Operand<W> {
 
 impl<W> From<W> for Operand<W> {
 	fn from(value: W) -> Self {
-		Operand(smallvec![value])
+		Self(smallvec![value])
 	}
 }
 

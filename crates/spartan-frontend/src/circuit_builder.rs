@@ -66,7 +66,7 @@ pub struct WireAllocator {
 
 impl WireAllocator {
 	pub const fn new(kind: WireKind) -> Self {
-		WireAllocator { n_wires: 0, kind }
+		Self { n_wires: 0, kind }
 	}
 
 	pub const fn alloc(&mut self) -> ConstraintWire {
@@ -239,7 +239,7 @@ pub struct ConstraintBuilder<F: Field> {
 impl<F: Field> ConstraintBuilder<F> {
 	#[allow(clippy::new_without_default)]
 	pub fn new() -> Self {
-		ConstraintBuilder {
+		Self {
 			ir: ConstraintSystemIR {
 				constant_alloc: WireAllocator::new(WireKind::Constant),
 				public_alloc: WireAllocator::new(WireKind::InOut),

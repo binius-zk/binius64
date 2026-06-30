@@ -186,7 +186,7 @@ mod tests {
 			let (tree_levels, root_hash) = build_merkle_tree(&param_bytes, &leaves);
 			let auth_path = extract_auth_path(&tree_levels, signing_epoch as usize);
 
-			XmssTestData {
+			Self {
 				param_bytes,
 				message_bytes,
 				nonce_bytes: grind_result.nonce,
@@ -296,7 +296,7 @@ mod tests {
 			let mut rng = StdRng::seed_from_u64(42);
 
 			match self {
-				TestCase::Valid {
+				Self::Valid {
 					tree_size,
 					signing_epoch,
 				} => {
@@ -309,7 +309,7 @@ mod tests {
 						panic!("Test expected to pass but failed: {}", e);
 					});
 				}
-				TestCase::Invalid {
+				Self::Invalid {
 					tree_size,
 					signing_epoch,
 					corrupt_fn,

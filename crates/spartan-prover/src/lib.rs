@@ -350,7 +350,7 @@ where
 
 		let iop_prover = IOPProver::new(verifier.constraint_system().clone());
 
-		Ok(Prover {
+		Ok(Self {
 			iop_prover,
 			basefold_compiler,
 		})

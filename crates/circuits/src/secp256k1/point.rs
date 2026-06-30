@@ -37,10 +37,10 @@ impl Secp256k1Affine {
 
 	/// Return point-at-infinity unless the MSB-boolean `cond` is true, then pass the point
 	/// unchanged.
-	pub fn pai_unless(&self, b: &CircuitBuilder, cond: Wire) -> Secp256k1Affine {
+	pub fn pai_unless(&self, b: &CircuitBuilder, cond: Wire) -> Self {
 		let is_point_at_infinity =
 			b.select(cond, self.is_point_at_infinity, b.add_constant(Word::ALL_ONE));
-		Secp256k1Affine {
+		Self {
 			x: self.x.clone(),
 			y: self.y.clone(),
 			is_point_at_infinity,

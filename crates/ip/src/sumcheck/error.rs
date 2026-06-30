@@ -24,7 +24,7 @@ impl From<TranscriptError> for Error {
 	fn from(err: TranscriptError) -> Self {
 		match err {
 			TranscriptError::NotEnoughBytes => VerificationError::TranscriptIsEmpty.into(),
-			_ => Error::Transcript(err),
+			_ => Self::Transcript(err),
 		}
 	}
 }

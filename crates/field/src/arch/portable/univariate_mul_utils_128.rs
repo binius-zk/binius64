@@ -95,12 +95,12 @@ impl Underlier128bLanes for u128 {
 
 	#[inline(always)]
 	fn join_u64s(high: Self::U64, low: Self::U64) -> Self {
-		((high as u128) << 64) | (low as u128)
+		((high as Self) << 64) | (low as Self)
 	}
 
 	#[inline(always)]
 	fn broadcast_64(val: u64) -> Self {
-		val as u128
+		val as Self
 	}
 
 	#[inline(always)]

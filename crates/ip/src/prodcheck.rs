@@ -85,7 +85,7 @@ impl From<sumcheck::Error> for Error {
 	fn from(err: sumcheck::Error) -> Self {
 		match err {
 			sumcheck::Error::Verification(err) => VerificationError::Sumcheck(err).into(),
-			_ => Error::Sumcheck(err),
+			_ => Self::Sumcheck(err),
 		}
 	}
 }
@@ -94,7 +94,7 @@ impl From<TranscriptError> for Error {
 	fn from(err: TranscriptError) -> Self {
 		match err {
 			TranscriptError::NotEnoughBytes => VerificationError::TranscriptIsEmpty.into(),
-			_ => Error::Transcript(err),
+			_ => Self::Transcript(err),
 		}
 	}
 }

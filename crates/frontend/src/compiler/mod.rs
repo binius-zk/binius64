@@ -164,7 +164,7 @@ pub struct CircuitBuilder {
 
 impl Default for CircuitBuilder {
 	fn default() -> Self {
-		CircuitBuilder::new()
+		Self::new()
 	}
 }
 
@@ -179,7 +179,7 @@ impl CircuitBuilder {
 	pub(crate) fn with_opts(opts: Options) -> Self {
 		let graph = GateGraph::new();
 		let root = graph.path_spec_tree.root();
-		CircuitBuilder {
+		Self {
 			current_path: root,
 			shared: Rc::new(RefCell::new(Some(Shared {
 				graph,
@@ -313,12 +313,12 @@ impl CircuitBuilder {
 	///
 	/// Note that this is the same builder instance, but with a different namespace, and that means
 	/// calling [`Self::build`] on the returned builder is going to build the whole circuit.
-	pub fn subcircuit(&self, name: impl Into<String>) -> CircuitBuilder {
+	pub fn subcircuit(&self, name: impl Into<String>) -> Self {
 		let nested_path = self
 			.graph_mut()
 			.path_spec_tree
 			.extend(self.current_path, name);
-		CircuitBuilder {
+		Self {
 			current_path: nested_path,
 			shared: self.shared.clone(),
 		}

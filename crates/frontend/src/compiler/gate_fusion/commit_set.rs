@@ -35,7 +35,7 @@ impl CommitSetCx {
 	}
 
 	/// Merge multiple contexts into a single one.
-	fn join<'a>(iter: impl Iterator<Item = &'a CommitSetCx>) -> Self {
+	fn join<'a>(iter: impl Iterator<Item = &'a Self>) -> Self {
 		let mut set = Vec::with_capacity(8);
 		let mut depth = 0;
 		for cx in iter {
@@ -48,7 +48,7 @@ impl CommitSetCx {
 	}
 
 	/// Create a new context by adding a new shift and incrementing depth.
-	fn add(&self, out_shift: Shift) -> CommitSetCx {
+	fn add(&self, out_shift: Shift) -> Self {
 		let mut set = self
 			.set
 			.iter()

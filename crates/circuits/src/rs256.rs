@@ -320,7 +320,7 @@ impl RsaIntermediates {
 		let mul_quotient = BigUint::new_witness(builder, 32);
 		let mul_remainder = BigUint::new_witness(builder, 32);
 
-		RsaIntermediates {
+		Self {
 			square_quotients,
 			square_remainders,
 			mul_quotient,

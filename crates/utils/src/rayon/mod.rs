@@ -97,7 +97,7 @@ cfg_if::cfg_if! {
 
 		pub struct Scope<'scope> {
 			#[allow(clippy::type_complexity)]
-			marker: PhantomData<Box<dyn FnOnce(&Scope<'scope>) + Send + Sync + 'scope>>,
+			marker: PhantomData<Box<dyn FnOnce(&Self) + Send + Sync + 'scope>>,
 		}
 
 		impl<'scope> Scope<'scope> {

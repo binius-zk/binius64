@@ -106,19 +106,19 @@ pub struct State(pub [Wire; 8]);
 
 impl State {
 	pub const fn new(wires: [Wire; 8]) -> Self {
-		State(wires)
+		Self(wires)
 	}
 
 	pub fn public(builder: &CircuitBuilder) -> Self {
-		State(std::array::from_fn(|_| builder.add_inout()))
+		Self(std::array::from_fn(|_| builder.add_inout()))
 	}
 
 	pub fn private(builder: &CircuitBuilder) -> Self {
-		State(std::array::from_fn(|_| builder.add_witness()))
+		Self(std::array::from_fn(|_| builder.add_witness()))
 	}
 
 	pub fn iv(builder: &CircuitBuilder) -> Self {
-		State(std::array::from_fn(|i| builder.add_constant(Word(IV[i]))))
+		Self(std::array::from_fn(|i| builder.add_constant(Word(IV[i]))))
 	}
 }
 

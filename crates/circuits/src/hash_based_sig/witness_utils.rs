@@ -175,7 +175,7 @@ impl ValidatorSignatureData {
 		let (tree_levels, root) = build_merkle_tree(param_bytes, &leaves);
 		let auth_path = extract_auth_path(&tree_levels, epoch as usize);
 
-		ValidatorSignatureData {
+		Self {
 			root,
 			nonce,
 			signature_hashes,

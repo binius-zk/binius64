@@ -186,11 +186,11 @@ impl ByteVec {
 	///
 	/// # Panics
 	/// * If num_wires exceeds self.data.len()
-	pub fn truncate(&self, b: &CircuitBuilder, num_wires: usize) -> ByteVec {
+	pub fn truncate(&self, b: &CircuitBuilder, num_wires: usize) -> Self {
 		assert!(num_wires <= self.data.len(), "num_wires must be less than self.data.len()");
 
 		let trimmed_wires = self.data[0..num_wires].to_vec();
-		ByteVec::new_const_len(b, trimmed_wires, num_wires << 3)
+		Self::new_const_len(b, trimmed_wires, num_wires << 3)
 	}
 
 	/// Extracts a slice at a compile-time constant range.
@@ -225,7 +225,7 @@ impl ByteVec {
 	/// let slice = byte_vec.slice_const_range(&builder, 3..11);
 	/// // slice will have capacity of 16 bytes (2 words) but length of 8 bytes
 	/// ```
-	pub fn slice_const_range(&self, b: &CircuitBuilder, range: Range<usize>) -> ByteVec {
+	pub fn slice_const_range(&self, b: &CircuitBuilder, range: Range<usize>) -> Self {
 		assert!(range.start <= range.end, "Invalid range: start > end");
 		assert!(
 			range.end <= *self.len_range.end(),
@@ -238,7 +238,7 @@ impl ByteVec {
 
 		// Return early if slice is empty
 		if slice_len == 0 {
-			return ByteVec::new_const_len(b, Vec::new(), 0);
+			return Self::new_const_len(b, Vec::new(), 0);
 		}
 
 		// Validate that `range.end <= self.len_bytes` at runtime. For a const-length vec
@@ -252,7 +252,7 @@ impl ByteVec {
 		}
 
 		let output_words = extract_const_range(b, &self.data, range);
-		ByteVec::new_const_len(b, output_words, slice_len)
+		Self::new_const_len(b, output_words, slice_len)
 	}
 }
 

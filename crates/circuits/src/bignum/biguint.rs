@@ -18,13 +18,13 @@ impl BigUint {
 	/// Creates a new BigUint with the given number of limbs as inout wires.
 	pub fn new_inout(b: &CircuitBuilder, num_limbs: usize) -> Self {
 		let limbs = (0..num_limbs).map(|_| b.add_inout()).collect();
-		BigUint { limbs }
+		Self { limbs }
 	}
 
 	/// Creates a new BigUint with the given number of limbs as witness wires.
 	pub fn new_witness(b: &CircuitBuilder, num_limbs: usize) -> Self {
 		let limbs = (0..num_limbs).map(|_| b.add_witness()).collect();
-		BigUint { limbs }
+		Self { limbs }
 	}
 
 	/// Creates a constant BigUint from num_bigint::BigUint.
@@ -33,7 +33,7 @@ impl BigUint {
 			.iter_u64_digits()
 			.map(|limb| b.add_constant_64(limb))
 			.collect();
-		BigUint { limbs }
+		Self { limbs }
 	}
 
 	/// Returns zero unless the MSB-boolean `cond` is true, then passes the value unchanged.

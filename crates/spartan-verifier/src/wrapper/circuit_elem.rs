@@ -388,7 +388,7 @@ impl<F: Field, B: CircuitBuilder<Field = F>> MulAssign<&Self> for CircuitElem<F,
 
 impl<F: Field, B: CircuitBuilder<Field = F>> Sum for CircuitElem<F, B> {
 	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-		iter.fold(CircuitElem::Constant(F::ZERO), |acc, x| acc + x)
+		iter.fold(Self::Constant(F::ZERO), |acc, x| acc + x)
 	}
 }
 

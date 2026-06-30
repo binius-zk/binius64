@@ -54,7 +54,7 @@ impl ModReduce {
 			&a.pad_limbs_to(n_limbs, zero),
 		);
 
-		ModReduce {
+		Self {
 			a,
 			modulus,
 			quotient,

@@ -68,7 +68,7 @@ impl EvalForm {
 		}
 
 		let (bytecode, n_eval_insn) = builder.finalize();
-		EvalForm {
+		Self {
 			bytecode,
 			n_eval_insn,
 			hint_registry,

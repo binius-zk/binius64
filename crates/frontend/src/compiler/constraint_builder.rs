@@ -207,72 +207,72 @@ impl Shift {
 	/// Try to compose two shift operations.
 	///
 	/// Returns None if the shifts are incompatible.
-	pub const fn compose(lhs: Shift, rhs: Shift) -> Option<Self> {
+	pub const fn compose(lhs: Self, rhs: Self) -> Option<Self> {
 		match (lhs, rhs) {
-			(Shift::None, shift) | (shift, Shift::None) => Some(shift),
-			(Shift::Sll(a), Shift::Sll(b)) => {
+			(Self::None, shift) | (shift, Self::None) => Some(shift),
+			(Self::Sll(a), Self::Sll(b)) => {
 				// Left shift composition: shl(shl(x, a), b) = shl(x, a + b)
 				let combined = a + b;
 				if combined < 64 {
-					Some(Shift::Sll(combined))
+					Some(Self::Sll(combined))
 				} else {
 					None
 				}
 			}
-			(Shift::Sll32(a), Shift::Sll32(b)) => {
+			(Self::Sll32(a), Self::Sll32(b)) => {
 				// 32-bit half-wise left shift composition
 				let combined = a + b;
 				if combined < 32 {
-					Some(Shift::Sll32(combined))
+					Some(Self::Sll32(combined))
 				} else {
 					None
 				}
 			}
-			(Shift::Srl(a), Shift::Srl(b)) => {
+			(Self::Srl(a), Self::Srl(b)) => {
 				// Logical right shift composition: shr(shr(x, a), b) = shr(x, a + b)
 				let combined = a + b;
 				if combined < 64 {
-					Some(Shift::Srl(combined))
+					Some(Self::Srl(combined))
 				} else {
 					None
 				}
 			}
-			(Shift::Srl32(a), Shift::Srl32(b)) => {
+			(Self::Srl32(a), Self::Srl32(b)) => {
 				// 32-bit half-wise logical right shift composition
 				let combined = a + b;
 				if combined < 32 {
-					Some(Shift::Srl32(combined))
+					Some(Self::Srl32(combined))
 				} else {
 					None
 				}
 			}
-			(Shift::Sar(a), Shift::Sar(b)) => {
+			(Self::Sar(a), Self::Sar(b)) => {
 				// Arithmetic right shift composition
 				let combined = a + b;
 				if combined < 64 {
-					Some(Shift::Sar(combined))
+					Some(Self::Sar(combined))
 				} else {
 					None
 				}
 			}
-			(Shift::Sra32(a), Shift::Sra32(b)) => {
+			(Self::Sra32(a), Self::Sra32(b)) => {
 				// 32-bit half-wise arithmetic right shift composition
 				let combined = a + b;
 				if combined < 32 {
-					Some(Shift::Sra32(combined))
+					Some(Self::Sra32(combined))
 				} else {
 					None
 				}
 			}
-			(Shift::Rotr(a), Shift::Rotr(b)) => {
+			(Self::Rotr(a), Self::Rotr(b)) => {
 				// Rotate right composition: rotr(rotr(x, a), b) = rotr(x, (a + b) % 64)
 				let combined = (a + b) % 64;
-				Some(Shift::Rotr(combined))
+				Some(Self::Rotr(combined))
 			}
-			(Shift::Rotr32(a), Shift::Rotr32(b)) => {
+			(Self::Rotr32(a), Self::Rotr32(b)) => {
 				// 32-bit half-wise rotate right composition
 				let combined = (a + b) % 32;
-				Some(Shift::Rotr32(combined))
+				Some(Self::Rotr32(combined))
 			}
 			_ => None, // Different shift types are not composable
 		}
@@ -515,11 +515,11 @@ impl WireExpr {
 impl WireExprTerm {
 	const fn to_shifted_wire(self) -> ShiftedWire {
 		match self {
-			WireExprTerm::Wire(w) => ShiftedWire {
+			Self::Wire(w) => ShiftedWire {
 				wire: w,
 				shift: Shift::None,
 			},
-			WireExprTerm::Shifted(w, op) => ShiftedWire {
+			Self::Shifted(w, op) => ShiftedWire {
 				wire: w,
 				shift: match op {
 					ShiftOp::Sll(n) => Shift::Sll(n),
@@ -613,13 +613,13 @@ impl From<Wire> for WireExpr {
 
 impl From<Wire> for WireExprTerm {
 	fn from(w: Wire) -> Self {
-		WireExprTerm::Wire(w)
+		Self::Wire(w)
 	}
 }
 
 impl From<WireExprTerm> for WireExpr {
 	fn from(expr: WireExprTerm) -> Self {
-		WireExpr(smallvec![expr])
+		Self(smallvec![expr])
 	}
 }
 

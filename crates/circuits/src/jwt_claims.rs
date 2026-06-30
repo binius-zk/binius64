@@ -190,7 +190,7 @@ impl JwtClaims {
 			slice::assert_slice_eq(&b, "attr_value", value_length, &extracted, &attr.value);
 		}
 
-		JwtClaims {
+		Self {
 			len_bytes,
 			json,
 			attributes,

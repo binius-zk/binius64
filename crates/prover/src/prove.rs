@@ -307,7 +307,7 @@ where
 
 		let iop_prover = IOPProver::new(verifier.into_iop_verifier(), key_collection);
 
-		Ok(Prover {
+		Ok(Self {
 			iop_prover,
 			basefold_compiler,
 		})

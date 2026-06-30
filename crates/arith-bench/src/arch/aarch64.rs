@@ -35,7 +35,7 @@ impl Underlier for uint64x2_t {
 
 	fn random(mut rng: impl Rng) -> Self {
 		let value: u128 = rng.random();
-		unsafe { std::mem::transmute::<_, uint64x2_t>(value) }
+		unsafe { std::mem::transmute::<_, Self>(value) }
 	}
 }
 
@@ -223,7 +223,7 @@ impl crate::underlier::OpsClmul for uint64x2_t {
 					let a_bytes: uint8x16_t = std::mem::transmute(a);
 					let zero: uint8x16_t = vdupq_n_u8(0);
 					let shifted: uint8x16_t = vextq_u8::<IMM8>(zero, a_bytes);
-					std::mem::transmute::<uint8x16_t, uint64x2_t>(shifted)
+					std::mem::transmute::<uint8x16_t, Self>(shifted)
 				}
 				16.. => vdupq_n_u64(0),
 				_ => {
@@ -248,7 +248,7 @@ impl crate::underlier::OpsClmul for uint64x2_t {
 	#[inline]
 	fn movepi64_mask(a: Self) -> Self {
 		unsafe {
-			let a = std::mem::transmute::<uint64x2_t, uint32x4_t>(a);
+			let a = std::mem::transmute::<Self, uint32x4_t>(a);
 			// Get the odd lanes (upper 32 bits of each 64-bit element)
 			let odd_lanes = vtrn2q_u32(a, a);
 			// Arithmetic shift right to broadcast the sign bit

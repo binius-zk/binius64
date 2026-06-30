@@ -94,7 +94,7 @@ impl From<M128> for u128 {
 		let mut result = 0u128;
 		unsafe {
 			// Safety: u128 is 16-byte aligned
-			assert_eq!(align_of::<u128>(), 16);
+			assert_eq!(align_of::<Self>(), 16);
 			_mm_store_si128(&raw mut result as *mut __m128i, value.0)
 		};
 		result

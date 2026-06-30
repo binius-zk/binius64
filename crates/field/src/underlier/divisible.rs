@@ -694,14 +694,14 @@ impl Divisible<SmallU<1>> for SmallU<2> {
 	#[inline]
 	unsafe fn set_unchecked(&mut self, index: usize, val: SmallU<1>) {
 		let mask = 1u8 << index;
-		*self = SmallU::<2>::new((self.val() & !mask) | (val.val() << index));
+		*self = Self::new((self.val() & !mask) | (val.val() << index));
 	}
 
 	#[inline]
 	fn broadcast(val: SmallU<1>) -> Self {
 		// 0b0 -> 0b00, 0b1 -> 0b11
 		let v = val.val();
-		SmallU::<2>::new(v | (v << 1))
+		Self::new(v | (v << 1))
 	}
 
 	#[inline]
@@ -709,7 +709,7 @@ impl Divisible<SmallU<1>> for SmallU<2> {
 		iter.chain(std::iter::repeat(SmallU::<1>::new(0)))
 			.take(2)
 			.enumerate()
-			.fold(SmallU::<2>::new(0), |mut acc, (i, val)| {
+			.fold(Self::new(0), |mut acc, (i, val)| {
 				acc.set(i, val);
 				acc
 			})
@@ -742,7 +742,7 @@ impl Divisible<SmallU<1>> for SmallU<4> {
 	#[inline]
 	unsafe fn set_unchecked(&mut self, index: usize, val: SmallU<1>) {
 		let mask = 1u8 << index;
-		*self = SmallU::<4>::new((self.val() & !mask) | (val.val() << index));
+		*self = Self::new((self.val() & !mask) | (val.val() << index));
 	}
 
 	#[inline]
@@ -751,7 +751,7 @@ impl Divisible<SmallU<1>> for SmallU<4> {
 		let mut v = val.val();
 		v |= v << 1;
 		v |= v << 2;
-		SmallU::<4>::new(v)
+		Self::new(v)
 	}
 
 	#[inline]
@@ -759,7 +759,7 @@ impl Divisible<SmallU<1>> for SmallU<4> {
 		iter.chain(std::iter::repeat(SmallU::<1>::new(0)))
 			.take(4)
 			.enumerate()
-			.fold(SmallU::<4>::new(0), |mut acc, (i, val)| {
+			.fold(Self::new(0), |mut acc, (i, val)| {
 				acc.set(i, val);
 				acc
 			})
@@ -793,14 +793,14 @@ impl Divisible<SmallU<2>> for SmallU<4> {
 	unsafe fn set_unchecked(&mut self, index: usize, val: SmallU<2>) {
 		let shift = index * 2;
 		let mask = 0b11u8 << shift;
-		*self = SmallU::<4>::new((self.val() & !mask) | (val.val() << shift));
+		*self = Self::new((self.val() & !mask) | (val.val() << shift));
 	}
 
 	#[inline]
 	fn broadcast(val: SmallU<2>) -> Self {
 		// 0bXX -> 0bXXXX
 		let v = val.val();
-		SmallU::<4>::new(v | (v << 2))
+		Self::new(v | (v << 2))
 	}
 
 	#[inline]
@@ -808,7 +808,7 @@ impl Divisible<SmallU<2>> for SmallU<4> {
 		iter.chain(std::iter::repeat(SmallU::<2>::new(0)))
 			.take(2)
 			.enumerate()
-			.fold(SmallU::<4>::new(0), |mut acc, (i, val)| {
+			.fold(Self::new(0), |mut acc, (i, val)| {
 				acc.set(i, val);
 				acc
 			})

@@ -107,7 +107,7 @@ impl NTTLookup {
 		});
 
 		let lookup = lde_mat.map(expand_subset_sums_array::<_, 8, 256>);
-		NTTLookup(Box::new(lookup))
+		Self(Box::new(lookup))
 	}
 
 	/// Computes the LDE of 64 1-bit coefficients using the precomputed lookup tables.

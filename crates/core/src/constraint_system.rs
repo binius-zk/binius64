@@ -18,7 +18,7 @@ pub struct ValueIndex(pub u32);
 
 impl ValueIndex {
 	/// The value index that is not considered to be valid.
-	pub const INVALID: ValueIndex = ValueIndex(u32::MAX);
+	pub const INVALID: Self = Self(u32::MAX);
 }
 
 /// The most sensible default for a value index is invalid.
@@ -39,7 +39,7 @@ impl DeserializeBytes for ValueIndex {
 	where
 		Self: Sized,
 	{
-		Ok(ValueIndex(u32::deserialize(read_buf)?))
+		Ok(Self(u32::deserialize(read_buf)?))
 	}
 }
 
@@ -88,14 +88,14 @@ pub enum ShiftVariant {
 impl SerializeBytes for ShiftVariant {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
 		let index = match self {
-			ShiftVariant::Sll => 0u8,
-			ShiftVariant::Slr => 1u8,
-			ShiftVariant::Sar => 2u8,
-			ShiftVariant::Rotr => 3u8,
-			ShiftVariant::Sll32 => 4u8,
-			ShiftVariant::Srl32 => 5u8,
-			ShiftVariant::Sra32 => 6u8,
-			ShiftVariant::Rotr32 => 7u8,
+			Self::Sll => 0u8,
+			Self::Slr => 1u8,
+			Self::Sar => 2u8,
+			Self::Rotr => 3u8,
+			Self::Sll32 => 4u8,
+			Self::Srl32 => 5u8,
+			Self::Sra32 => 6u8,
+			Self::Rotr32 => 7u8,
 		};
 		index.serialize(write_buf)
 	}
@@ -108,14 +108,14 @@ impl DeserializeBytes for ShiftVariant {
 	{
 		let index = u8::deserialize(read_buf)?;
 		match index {
-			0 => Ok(ShiftVariant::Sll),
-			1 => Ok(ShiftVariant::Slr),
-			2 => Ok(ShiftVariant::Sar),
-			3 => Ok(ShiftVariant::Rotr),
-			4 => Ok(ShiftVariant::Sll32),
-			5 => Ok(ShiftVariant::Srl32),
-			6 => Ok(ShiftVariant::Sra32),
-			7 => Ok(ShiftVariant::Rotr32),
+			0 => Ok(Self::Sll),
+			1 => Ok(Self::Slr),
+			2 => Ok(Self::Sar),
+			3 => Ok(Self::Rotr),
+			4 => Ok(Self::Sll32),
+			5 => Ok(Self::Srl32),
+			6 => Ok(Self::Sra32),
+			7 => Ok(Self::Rotr32),
 			_ => Err(SerializationError::UnknownEnumVariant {
 				name: "ShiftVariant",
 				index,
@@ -301,7 +301,7 @@ impl DeserializeBytes for ShiftedValueIndex {
 			});
 		}
 
-		Ok(ShiftedValueIndex {
+		Ok(Self {
 			value_index,
 			shift_variant,
 			amount,
@@ -344,8 +344,8 @@ impl AndConstraint {
 		a: impl IntoIterator<Item = ValueIndex>,
 		b: impl IntoIterator<Item = ValueIndex>,
 		c: impl IntoIterator<Item = ValueIndex>,
-	) -> AndConstraint {
-		AndConstraint {
+	) -> Self {
+		Self {
 			a: a.into_iter().map(ShiftedValueIndex::plain).collect(),
 			b: b.into_iter().map(ShiftedValueIndex::plain).collect(),
 			c: c.into_iter().map(ShiftedValueIndex::plain).collect(),
@@ -357,8 +357,8 @@ impl AndConstraint {
 		a: impl IntoIterator<Item = ShiftedValueIndex>,
 		b: impl IntoIterator<Item = ShiftedValueIndex>,
 		c: impl IntoIterator<Item = ShiftedValueIndex>,
-	) -> AndConstraint {
-		AndConstraint {
+	) -> Self {
+		Self {
 			a: a.into_iter().collect(),
 			b: b.into_iter().collect(),
 			c: c.into_iter().collect(),
@@ -383,7 +383,7 @@ impl DeserializeBytes for AndConstraint {
 		let b = Vec::<ShiftedValueIndex>::deserialize(&mut read_buf)?;
 		let c = Vec::<ShiftedValueIndex>::deserialize(read_buf)?;
 
-		Ok(AndConstraint { a, b, c })
+		Ok(Self { a, b, c })
 	}
 }
 
@@ -426,7 +426,7 @@ impl DeserializeBytes for MulConstraint {
 		let hi = Vec::<ShiftedValueIndex>::deserialize(&mut read_buf)?;
 		let lo = Vec::<ShiftedValueIndex>::deserialize(read_buf)?;
 
-		Ok(MulConstraint { a, b, hi, lo })
+		Ok(Self { a, b, hi, lo })
 	}
 }
 
@@ -467,7 +467,7 @@ impl ConstraintSystem {
 		mul_constraints: Vec<MulConstraint>,
 	) -> Self {
 		assert_eq!(constants.len(), value_vec_layout.n_const);
-		ConstraintSystem {
+		Self {
 			constants,
 			value_vec_layout,
 			and_constraints,
@@ -637,7 +637,7 @@ impl DeserializeBytes for ConstraintSystem {
 			});
 		}
 
-		Ok(ConstraintSystem {
+		Ok(Self {
 			value_vec_layout,
 			constants,
 			and_constraints,
@@ -751,7 +751,7 @@ impl DeserializeBytes for ValueVecLayout {
 		let committed_total_len = usize::deserialize(&mut read_buf)?;
 		let n_scratch = usize::deserialize(read_buf)?;
 
-		Ok(ValueVecLayout {
+		Ok(Self {
 			n_const,
 			n_inout,
 			n_witness,
@@ -849,9 +849,9 @@ impl ValueVec {
 	/// Creates a new value vector with the given layout.
 	///
 	/// The values are filled with zeros.
-	pub fn new(layout: ValueVecLayout) -> ValueVec {
+	pub fn new(layout: ValueVecLayout) -> Self {
 		let size = layout.committed_total_len + layout.n_scratch;
-		ValueVec {
+		Self {
 			layout,
 			data: AlignedWords::zeroed(size),
 		}
@@ -864,7 +864,7 @@ impl ValueVec {
 		layout: ValueVecLayout,
 		public: Vec<Word>,
 		private: Vec<Word>,
-	) -> Result<ValueVec, ConstraintSystemError> {
+	) -> Result<Self, ConstraintSystemError> {
 		let committed_len = public.len() + private.len();
 		if committed_len != layout.committed_total_len {
 			return Err(ConstraintSystemError::ValueVecLenMismatch {
@@ -882,7 +882,7 @@ impl ValueVec {
 		// Private words follow, filling the rest of the committed region.
 		data[public.len()..committed_len].copy_from_slice(&private);
 
-		Ok(ValueVec { layout, data })
+		Ok(Self { layout, data })
 	}
 
 	/// The total size of the committed portion of the vector (excluding scratch).

@@ -32,14 +32,14 @@ pub struct U64x2(pub u64, pub u64);
 impl From<u128> for U64x2 {
 	fn from(x: u128) -> Self {
 		// Little-endian: low 64 bits first, then high 64 bits
-		U64x2(x as u64, (x >> 64) as u64)
+		Self(x as u64, (x >> 64) as u64)
 	}
 }
 
 impl From<U64x2> for u128 {
 	fn from(x: U64x2) -> Self {
 		// Little-endian: x.0 is low 64 bits, x.1 is high 64 bits
-		(x.0 as u128) | ((x.1 as u128) << 64)
+		(x.0 as Self) | ((x.1 as Self) << 64)
 	}
 }
 

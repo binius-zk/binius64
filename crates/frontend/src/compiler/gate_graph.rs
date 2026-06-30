@@ -19,7 +19,7 @@ pub struct ConstPool {
 
 impl ConstPool {
 	pub fn new() -> Self {
-		ConstPool::default()
+		Self::default()
 	}
 
 	pub fn get(&self, value: Word) -> Option<Wire> {
@@ -53,7 +53,7 @@ pub enum WireKind {
 impl WireKind {
 	/// Returns `true` if this is a constant wire.
 	pub const fn is_const(&self) -> bool {
-		matches!(self, WireKind::Constant(_))
+		matches!(self, Self::Constant(_))
 	}
 }
 

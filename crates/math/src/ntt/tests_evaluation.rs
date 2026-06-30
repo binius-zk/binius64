@@ -147,8 +147,8 @@ impl<F: Field> Mul<&Polynomial<F>> for &Polynomial<F> {
 }
 
 // Polynomial *= &Polynomial
-impl<F: Field> MulAssign<&Polynomial<F>> for Polynomial<F> {
-	fn mul_assign(&mut self, other: &Polynomial<F>) {
+impl<F: Field> MulAssign<&Self> for Polynomial<F> {
+	fn mul_assign(&mut self, other: &Self) {
 		*self = &*self * other;
 	}
 }

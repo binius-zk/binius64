@@ -1165,8 +1165,8 @@ where
 	#[inline(always)]
 	fn into_inner(self) -> Self::Inner {
 		match self {
-			Either::Left(left) => Either::Left(left.into_inner()),
-			Either::Right(right) => Either::Right(right.into_inner()),
+			Self::Left(left) => Either::Left(left.into_inner()),
+			Self::Right(right) => Either::Right(right.into_inner()),
 		}
 	}
 

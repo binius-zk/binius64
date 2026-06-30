@@ -178,8 +178,8 @@ pub enum VerificationError {
 impl From<fri::Error> for Error {
 	fn from(err: fri::Error) -> Self {
 		match err {
-			fri::Error::Verification(err) => Error::Verification(err.into()),
-			_ => Error::FRI(err),
+			fri::Error::Verification(err) => Self::Verification(err.into()),
+			_ => Self::FRI(err),
 		}
 	}
 }

@@ -188,7 +188,7 @@ fn square(x: [BinaryField128bGhash; 2]) -> [BinaryField128bGhash; 2] {
 	[t0 + t2.mul_inv_x(), t2]
 }
 
-impl Mul<GhashSq256b> for GhashSq256b {
+impl Mul<Self> for GhashSq256b {
 	type Output = Self;
 
 	#[inline]
