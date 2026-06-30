@@ -94,7 +94,7 @@ impl IOPProver {
 	///
 	/// This is the core proving logic, independent of the specific IOP compilation strategy.
 	/// For most users, [`Prover::prove`] is the simpler interface.
-	pub fn prove<P, Channel>(&self, witness: ValueVec, mut channel: Channel) -> Result<(), Error>
+	pub fn prove<P, Channel>(&self, witness: ValueVec, channel: &mut Channel) -> Result<(), Error>
 	where
 		P: PackedField<Scalar = B128> + PackedExtension<B128> + PackedExtension<B1>,
 		Channel: IOPProverChannel<P>,
@@ -131,7 +131,7 @@ impl IOPProver {
 		)
 		.entered();
 		let mul_witness = build_intmul_witness(&cs.mul_constraints, &witness);
-		let intmul_output = prove_intmul_reduction::<_, P, _>(mul_witness, &mut channel)?;
+		let intmul_output = prove_intmul_reduction::<_, P, _>(mul_witness, &mut *channel)?;
 		drop(intmul_guard);
 
 		// [phase] BitAnd Reduction - AND constraint reduction
@@ -150,7 +150,7 @@ impl IOPProver {
 				c_eval,
 				z_challenge,
 				eval_point,
-			} = prove_bitand_reduction::<B128, P, _>(bitand_witness, &mut channel)?;
+			} = prove_bitand_reduction::<B128, P, _>(bitand_witness, &mut *channel)?;
 			OperatorData {
 				evals: vec![a_eval, b_eval, c_eval],
 				r_zhat_prime: z_challenge,
@@ -202,7 +202,7 @@ impl IOPProver {
 			witness.combined_witness(),
 			bitand_claim,
 			intmul_claim,
-			&mut channel,
+			&mut *channel,
 		)?;
 		drop(shift_guard);
 
@@ -218,7 +218,7 @@ impl IOPProver {
 		let ring_switch::RingSwitchOutput {
 			rs_eq_ind,
 			sumcheck_claim,
-		} = ring_switch::prove(&witness_packed, &eval_point, &mut channel);
+		} = ring_switch::prove(&witness_packed, &eval_point, &mut *channel);
 
 		// Public input check batched with ring-switch
 		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
@@ -340,13 +340,15 @@ where
 		)
 		.entered();
 
-		// Create channel and delegate to IOPProver::prove. The unified channel takes an rng to
-		// mask ZK oracles, but a plain `Prover` produces a transparent proof whose only oracle is
-		// non-ZK, so no masks are drawn and the rng is never consumed.
+		// Create channel, delegate to IOPProver::prove, then finish it. The unified channel takes
+		// an rng to mask ZK oracles, but a plain `Prover` produces a transparent proof whose only
+		// oracle is non-ZK, so no masks are drawn and the rng is never consumed.
 		let rng = StdRng::seed_from_u64(0);
-		let channel =
+		let mut channel =
 			BaseFoldProverChannel::from_compiler(&self.basefold_compiler, transcript, rng);
-		self.iop_prover.prove::<P, _>(witness, channel)
+		self.iop_prover.prove::<P, _>(witness, &mut channel)?;
+		channel.finish();
+		Ok(())
 	}
 }
 

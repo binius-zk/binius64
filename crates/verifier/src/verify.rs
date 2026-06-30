@@ -405,9 +405,11 @@ where
 		)
 		.entered();
 
-		// Create channel and delegate to IOPVerifier::verify
+		// Create channel, delegate to IOPVerifier::verify, then finish it.
 		let mut channel = self.iop_compiler.create_channel(transcript);
-		self.iop_verifier.verify(public, &mut channel)
+		self.iop_verifier.verify(public, &mut channel)?;
+		channel.finish()?;
+		Ok(())
 	}
 }
 
