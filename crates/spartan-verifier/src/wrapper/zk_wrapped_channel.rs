@@ -13,7 +13,7 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use binius_field::BinaryField;
+use binius_field::{BinaryField, util::FieldFn};
 use binius_iop::{
 	basefold_channel::{BaseFoldOracle, BaseFoldVerifierChannel},
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
@@ -213,12 +213,8 @@ where
 		}
 	}
 
-	fn compute_public_value(
-		&mut self,
-		inputs: &[Self::Elem],
-		f: impl FnOnce(&[F]) -> F,
-	) -> Self::Elem {
-		// The closure's result enters as a single derived public wire (matching the symbolic
+	fn compute_public_value(&mut self, inputs: &[Self::Elem], f: impl FieldFn<F>) -> Self::Elem {
+		// The function's result enters as a single derived public wire (matching the symbolic
 		// builder's `hint_varsize`), whose value the verifier computes natively from the
 		// public-derived inputs. See `IronSpartanBuilderChannel::compute_public_value`.
 		let out_wire = {
@@ -227,7 +223,7 @@ where
 				.iter()
 				.map(|elem| elem.to_wire(&mut instance_gen))
 				.collect();
-			instance_gen.hint_varsize(&input_wires, 1, move |vals| vec![f(vals)])[0]
+			instance_gen.hint_varsize(&input_wires, 1, move |vals| vec![f.call::<F>(vals)])[0]
 		};
 		CircuitElem::wire(&self.instance_gen, out_wire)
 	}

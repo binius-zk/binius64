@@ -51,10 +51,7 @@ use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
 use digest::Output;
 
-use crate::{
-	constraint_system::{BlindingInfo, ConstraintSystemPadded},
-	wiring::evaluate_wiring_mle_public,
-};
+use crate::constraint_system::{BlindingInfo, ConstraintSystemPadded};
 
 pub const SECURITY_BITS: usize = 96;
 
@@ -189,7 +186,6 @@ impl<F: Field> IOPVerifier<F> {
 		// field values, run the MLE evaluation in plaintext, and materialize the result as a
 		// single inout wire instead of building the entire sub-circuit.
 		let public_eval = {
-			let public_len = public.len();
 			let inputs = [
 				public.as_slice(),
 				slice::from_ref(&lambda),
@@ -197,18 +193,8 @@ impl<F: Field> IOPVerifier<F> {
 			]
 			.concat();
 
-			let mul_constraints = cs.mul_constraints();
-			channel.compute_public_value(&inputs, move |vals| {
-				let public_vals = &vals[..public_len];
-				let lambda_val = vals[public_len];
-				let r_x_tensor_vals = &vals[public_len + 1..];
-				evaluate_wiring_mle_public(
-					mul_constraints,
-					public_vals,
-					lambda_val,
-					r_x_tensor_vals,
-				)
-			})
+			let eval_fn = wiring::PublicWiringEvalFn::new(cs.mul_constraints(), public.len());
+			channel.compute_public_value(&inputs, eval_fn)
 		};
 
 		// Prover sends the precommit segment's contribution to the operand evaluations.

@@ -15,7 +15,7 @@ use sha2::{Sha256, block_api::compress256, digest::Output};
 
 use super::{
 	binary_merkle_tree::HashSuite,
-	compress::{CompressionFunction, PseudoCompressionFunction},
+	compress::CompressionFunction,
 	parallel_compression::ParallelCompressionAdaptor,
 	parallel_digest::{ParallelDigest, ParallelDigestAdapter},
 };
@@ -44,7 +44,7 @@ impl Default for Sha256Compression {
 	}
 }
 
-impl PseudoCompressionFunction<Output<Sha256>, 2> for Sha256Compression {
+impl CompressionFunction<Output<Sha256>, 2> for Sha256Compression {
 	fn compress(&self, input: [Output<Sha256>; 2]) -> Output<Sha256> {
 		let mut ret = self.initial_state;
 		let mut block = [0u8; 64];
@@ -54,8 +54,6 @@ impl PseudoCompressionFunction<Output<Sha256>, 2> for Sha256Compression {
 		must_cast::<[u32; 8], [u8; 32]>(ret).into()
 	}
 }
-
-impl CompressionFunction<Output<Sha256>, 2> for Sha256Compression {}
 
 /// SHA-256 [`HashSuite`]: SHA-256 leaves and a SHA-256 compression function for inner nodes.
 #[derive(Debug, Clone, Default)]

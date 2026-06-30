@@ -4,6 +4,20 @@ use std::iter;
 
 use crate::{Field, PackedField, field::FieldOps};
 
+/// An arithmetic function over field elements, generic in the field it evaluates in.
+///
+/// A closure `FnOnce(&[F]) -> F` is monomorphic: it runs in one fixed field.
+/// Carrying the genericity on the method instead lets one value run in many fields:
+/// - natively, in the verifier's own base field `F`;
+/// - over any larger field `E` whose scalar is `F`.
+pub trait FieldFn<F: Field> {
+	/// Evaluates the function on `inputs` in the field `E`, returning one element.
+	///
+	/// The scalar of `E` is the base field `F`.
+	/// The `From<F>` bound lets the function embed base-field constants into `E`.
+	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, inputs: &[E]) -> E;
+}
+
 /// Iterate the powers of a given value, beginning with 1 (the 0'th power).
 pub fn powers<F: FieldOps>(val: F) -> impl Iterator<Item = F> {
 	iter::successors(Some(F::one()), move |power| Some(power.clone() * val.clone()))

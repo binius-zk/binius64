@@ -8,7 +8,7 @@ use std::{
 	rc::{Rc, Weak},
 };
 
-use binius_field::Field;
+use binius_field::{Field, util::FieldFn};
 use binius_iop::channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::circuit_builder::{CircuitBuilder, ConstraintBuilder};
@@ -105,12 +105,8 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 		}
 	}
 
-	fn compute_public_value(
-		&mut self,
-		inputs: &[Self::Elem],
-		f: impl FnOnce(&[F]) -> F,
-	) -> Self::Elem {
-		// The closure is an arbitrary native computation the constraint system cannot replay, so
+	fn compute_public_value(&mut self, inputs: &[Self::Elem], f: impl FieldFn<F>) -> Self::Elem {
+		// The function is an arbitrary native computation the constraint system cannot replay, so
 		// its result enters as a single derived public wire (a one-output `hint_varsize`,
 		// computed from the public inputs, emitting no constraints) rather than a sub-circuit's
 		// worth of constraints. Symbolically we only allocate the wire; the value is filled
@@ -122,7 +118,7 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 				.iter()
 				.map(|elem| elem.to_wire(&mut builder))
 				.collect();
-			builder.hint_varsize(&input_wires, 1, move |vals| vec![f(vals)])[0]
+			builder.hint_varsize(&input_wires, 1, move |vals| vec![f.call::<F>(vals)])[0]
 		};
 		CircuitElem::wire(&self.builder, out_wire)
 	}

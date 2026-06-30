@@ -3,7 +3,7 @@
 
 use std::{array, fmt::Debug, marker::PhantomData};
 
-use binius_hash::{PseudoCompressionFunction, binary_merkle_tree::HashSuite, hash_serialize};
+use binius_hash::{CompressionFunction, binary_merkle_tree::HashSuite, hash_serialize};
 use binius_transcript::{Buf, TranscriptReader};
 use binius_utils::{
 	FixedSizeSerializeBytes,
@@ -171,7 +171,7 @@ where
 /// - `digests.len()` is a power of two
 fn fold_digests_vector_inplace<C, D>(compression: &C, mut digests: Vec<D>) -> D
 where
-	C: PseudoCompressionFunction<D, 2>,
+	C: CompressionFunction<D, 2>,
 	D: Clone + Default + Send + Sync + Debug,
 {
 	let log_len = log2_strict_usize(digests.len()); // pre-condition

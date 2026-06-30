@@ -7,7 +7,7 @@
 //! mask; non-ZK oracles are committed without a mask. All committed oracles are opened with a
 //! single combined FRI.
 
-use binius_field::BinaryField;
+use binius_field::{BinaryField, util::FieldFn};
 use binius_ip::{
 	channel::IPVerifierChannel,
 	sumcheck::{self, BatchSumcheckOutput},
@@ -326,8 +326,8 @@ where
 		}
 	}
 
-	fn compute_public_value(&mut self, inputs: &[F], f: impl FnOnce(&[F]) -> F) -> F {
-		f(inputs)
+	fn compute_public_value(&mut self, inputs: &[F], f: impl FieldFn<F>) -> F {
+		f.call::<F>(inputs)
 	}
 }
 

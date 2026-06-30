@@ -13,7 +13,7 @@ use digest::{Digest, FixedOutputReset, Output, block_api::BlockSizeUser};
 use rand::{CryptoRng, Rng, rngs::StdRng};
 
 use super::{
-	compress::PseudoCompressionFunction, parallel_compression::ParallelPseudoCompression,
+	compress::CompressionFunction, parallel_compression::ParallelPseudoCompression,
 	parallel_digest::ParallelDigest,
 };
 
@@ -28,7 +28,7 @@ pub trait HashSuite {
 	/// Sequential hash used to compute leaf digests during verification.
 	type LeafHash: Digest + BlockSizeUser + FixedOutputReset + Send;
 	/// Sequential 2-to-1 compression used to fold inner Merkle nodes during verification.
-	type Compression: PseudoCompressionFunction<Output<Self::LeafHash>, 2> + Default;
+	type Compression: CompressionFunction<Output<Self::LeafHash>, 2> + Default;
 	/// Parallel counterpart of [`Self::LeafHash`] used during proving.
 	type ParLeafHash: ParallelDigest<Digest = Self::LeafHash> + Default;
 	/// Parallel counterpart of [`Self::Compression`] used during proving.

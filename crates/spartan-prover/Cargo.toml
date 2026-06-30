@@ -38,5 +38,5 @@ rand = { workspace = true, features = ["thread_rng"] }
 smallvec.workspace = true
 
 [features]
-default = ["rayon"]
+default = []
 rayon = ["binius-utils/rayon"]

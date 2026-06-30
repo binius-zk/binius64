@@ -5,7 +5,7 @@ use std::{array, fmt::Debug, mem::MaybeUninit};
 
 use binius_utils::rayon::prelude::*;
 
-use crate::PseudoCompressionFunction;
+use crate::CompressionFunction;
 
 /// A trait for parallel application of N-to-1 compression functions.
 ///
@@ -18,7 +18,7 @@ use crate::PseudoCompressionFunction;
 /// - `N`: The arity of the compression function (number of inputs per compression)
 pub trait ParallelPseudoCompression<T, const N: usize> {
 	/// The underlying compression function that performs N-to-1 compression.
-	type Compression: PseudoCompressionFunction<T, N>;
+	type Compression: CompressionFunction<T, N>;
 
 	/// Returns a reference to the underlying compression function.
 	fn compression(&self) -> &Self::Compression;
@@ -46,7 +46,7 @@ pub trait ParallelPseudoCompression<T, const N: usize> {
 	fn parallel_compress(&self, inputs: &[T], out: &mut [MaybeUninit<T>]);
 }
 
-/// A simple adapter that wraps any `PseudoCompressionFunction` to implement `ParallelCompression`.
+/// A simple adapter that wraps any `CompressionFunction` to implement `ParallelCompression`.
 ///
 /// This adapter provides a straightforward way to use existing compression functions
 /// in parallel contexts by applying them sequentially to each N-element chunk.
@@ -60,17 +60,12 @@ impl<C> ParallelCompressionAdaptor<C> {
 	pub fn new(compression: C) -> Self {
 		Self { compression }
 	}
-
-	/// Returns a reference to the underlying compression function.
-	pub fn compression(&self) -> &C {
-		&self.compression
-	}
 }
 
 impl<T, C, const ARITY: usize> ParallelPseudoCompression<T, ARITY> for ParallelCompressionAdaptor<C>
 where
 	T: Clone + Send + Sync,
-	C: PseudoCompressionFunction<T, ARITY> + Sync,
+	C: CompressionFunction<T, ARITY> + Sync,
 {
 	type Compression = C;
 
@@ -105,7 +100,7 @@ mod tests {
 	#[derive(Clone, Debug)]
 	struct XorCompression;
 
-	impl PseudoCompressionFunction<u64, 3> for XorCompression {
+	impl CompressionFunction<u64, 3> for XorCompression {
 		fn compress(&self, input: [u64; 3]) -> u64 {
 			input[0] ^ input[1] ^ input[2]
 		}

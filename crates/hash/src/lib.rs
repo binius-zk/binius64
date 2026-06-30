@@ -15,7 +15,7 @@ pub mod parallel_digest;
 mod serialization;
 pub mod sha256;
 
-pub use compress::{CompressionFunction, PseudoCompressionFunction};
+pub use compress::CompressionFunction;
 pub use parallel_compression::{ParallelCompressionAdaptor, ParallelPseudoCompression};
 pub use parallel_digest::{
 	MultiDigest, ParallelDigest, ParallelDigestAdapter, ParallelMultidigestImpl,

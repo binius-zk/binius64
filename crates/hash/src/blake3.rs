@@ -5,17 +5,15 @@
 use digest::Output;
 
 use super::{
-	binary_merkle_tree::HashSuite,
-	compress::{CompressionFunction, PseudoCompressionFunction},
-	parallel_compression::ParallelCompressionAdaptor,
-	parallel_digest::ParallelDigestAdapter,
+	binary_merkle_tree::HashSuite, compress::CompressionFunction,
+	parallel_compression::ParallelCompressionAdaptor, parallel_digest::ParallelDigestAdapter,
 };
 
 /// A two-to-one compression function that hashes the concatenation of its inputs with Blake3.
 #[derive(Debug, Clone, Default)]
 pub struct Blake3Compression;
 
-impl PseudoCompressionFunction<Output<blake3::Hasher>, 2> for Blake3Compression {
+impl CompressionFunction<Output<blake3::Hasher>, 2> for Blake3Compression {
 	fn compress(&self, input: [Output<blake3::Hasher>; 2]) -> Output<blake3::Hasher> {
 		let mut hasher = blake3::Hasher::new();
 		hasher.update(input[0].as_slice());
@@ -23,8 +21,6 @@ impl PseudoCompressionFunction<Output<blake3::Hasher>, 2> for Blake3Compression 
 		(*hasher.finalize().as_bytes()).into()
 	}
 }
-
-impl CompressionFunction<Output<blake3::Hasher>, 2> for Blake3Compression {}
 
 /// Blake3 [`HashSuite`]: Blake3 leaves and a Blake3 compression function for inner nodes.
 #[derive(Debug, Clone, Default)]

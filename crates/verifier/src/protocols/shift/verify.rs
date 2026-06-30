@@ -3,7 +3,7 @@
 use std::iter;
 
 use binius_core::constraint_system::{AndConstraint, ConstraintSystem, MulConstraint};
-use binius_field::{BinaryField, field::FieldOps};
+use binius_field::{BinaryField, field::FieldOps, util::FieldFn};
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
 	BinarySubspace,
@@ -254,60 +254,16 @@ where
 			.chain(r_y.iter().cloned())
 			.collect();
 
-		channel.compute_public_value(&inputs, move |vals| {
-			let r_zhat_prime_v = vals[0];
-			let bitand_lambda_v = vals[1];
-			let intmul_lambda_v = vals[2];
-			let mut off = 3;
-			let bitand_r_x_prime_v = &vals[off..off + bitand_r_x_prime_len];
-			off += bitand_r_x_prime_len;
-			let intmul_r_x_prime_v = &vals[off..off + intmul_r_x_prime_len];
-			off += intmul_r_x_prime_len;
-			let r_j_v = &vals[off..off + r_j_len];
-			off += r_j_len;
-			let r_s_v = &vals[off..off + r_s_len];
-			off += r_s_len;
-			let r_y_v = &vals[off..off + r_y_len];
-
-			let r_y_tensor = eq_ind_partial_eval_scalars(r_y_v);
-			let l_tilde = lagrange_evals_scalars(subspace, r_zhat_prime_v);
-			let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
-
-			let bitand_part = {
-				let (a, b, c) = constraint_system
-					.and_constraints
-					.iter()
-					.map(|AndConstraint { a, b, c }| (a, b, c))
-					.multiunzip();
-				evaluate_monster_multilinear_for_operation::<F, F>(
-					&[a, b, c],
-					bitand_r_x_prime_v,
-					bitand_lambda_v,
-					r_s_v,
-					&r_y_tensor,
-					&h_op_evals,
-				)
-				.expect("evaluate_monster_multilinear_for_operation has no fallible path")
-			};
-			let intmul_part = {
-				let (a, b, lo, hi) = constraint_system
-					.mul_constraints
-					.iter()
-					.map(|MulConstraint { a, b, hi, lo }| (a, b, lo, hi))
-					.multiunzip();
-				evaluate_monster_multilinear_for_operation::<F, F>(
-					&[a, b, lo, hi],
-					intmul_r_x_prime_v,
-					intmul_lambda_v,
-					r_s_v,
-					&r_y_tensor,
-					&h_op_evals,
-				)
-				.expect("evaluate_monster_multilinear_for_operation has no fallible path")
-			};
-
-			bitand_part + intmul_part
-		})
+		let eval_fn = MonsterEvalFn {
+			subspace,
+			constraint_system,
+			bitand_r_x_prime_len,
+			intmul_r_x_prime_len,
+			r_j_len,
+			r_s_len,
+			r_y_len,
+		};
+		channel.compute_public_value(&inputs, eval_fn)
 	};
 
 	// Check if the prover-provided witness value is satisfying.
@@ -319,4 +275,93 @@ where
 	channel.assert_zero(expected_eval - eval)?;
 
 	Ok(())
+}
+
+/// The monster multilinear evaluation, as a [`FieldFn`] over public-channel-derived inputs.
+///
+/// The inputs are the flat concatenation of these sections, in order:
+///
+/// ```text
+/// r_zhat_prime | bitand_lambda | intmul_lambda | bitand_r_x_prime.. | intmul_r_x_prime.. | r_j.. | r_s.. | r_y..
+/// ```
+///
+/// The stored lengths recover each variable-length section from that flat slice.
+struct MonsterEvalFn<'a, F: BinaryField> {
+	/// The evaluation subspace for the Lagrange basis over the word bits.
+	subspace: &'a BinarySubspace<F>,
+	/// The AND and MUL constraints whose monster multilinears are evaluated.
+	constraint_system: &'a ConstraintSystem,
+	/// Length of the BitAnd operator's `r_x_prime` section.
+	bitand_r_x_prime_len: usize,
+	/// Length of the IntMul operator's `r_x_prime` section.
+	intmul_r_x_prime_len: usize,
+	/// Length of the `r_j` section (the low-order word-bit challenges).
+	r_j_len: usize,
+	/// Length of the `r_s` section (the shift-amount challenges).
+	r_s_len: usize,
+	/// Length of the `r_y` section (the column challenges).
+	r_y_len: usize,
+}
+
+impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
+	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
+		// Split the flat input back into its sections, in the order they were concatenated.
+		let r_zhat_prime_v = vals[0].clone();
+		let bitand_lambda_v = vals[1].clone();
+		let intmul_lambda_v = vals[2].clone();
+		let mut off = 3;
+		let bitand_r_x_prime_v = &vals[off..off + self.bitand_r_x_prime_len];
+		off += self.bitand_r_x_prime_len;
+		let intmul_r_x_prime_v = &vals[off..off + self.intmul_r_x_prime_len];
+		off += self.intmul_r_x_prime_len;
+		let r_j_v = &vals[off..off + self.r_j_len];
+		off += self.r_j_len;
+		let r_s_v = &vals[off..off + self.r_s_len];
+		off += self.r_s_len;
+		let r_y_v = &vals[off..off + self.r_y_len];
+
+		// Expand the column challenge and the per-bit Lagrange / shift-operator evaluations.
+		let r_y_tensor = eq_ind_partial_eval_scalars(r_y_v);
+		let l_tilde = lagrange_evals_scalars(self.subspace, r_zhat_prime_v);
+		let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
+
+		// BitAnd contribution: operands (a, b, c) batched by `bitand_lambda`.
+		let bitand_part = {
+			let (a, b, c) = self
+				.constraint_system
+				.and_constraints
+				.iter()
+				.map(|AndConstraint { a, b, c }| (a, b, c))
+				.multiunzip();
+			evaluate_monster_multilinear_for_operation::<F, E>(
+				&[a, b, c],
+				bitand_r_x_prime_v,
+				bitand_lambda_v,
+				r_s_v,
+				&r_y_tensor,
+				&h_op_evals,
+			)
+			.expect("evaluate_monster_multilinear_for_operation has no fallible path")
+		};
+		// IntMul contribution: operands (a, b, lo, hi) batched by `intmul_lambda`.
+		let intmul_part = {
+			let (a, b, lo, hi) = self
+				.constraint_system
+				.mul_constraints
+				.iter()
+				.map(|MulConstraint { a, b, hi, lo }| (a, b, lo, hi))
+				.multiunzip();
+			evaluate_monster_multilinear_for_operation::<F, E>(
+				&[a, b, lo, hi],
+				intmul_r_x_prime_v,
+				intmul_lambda_v,
+				r_s_v,
+				&r_y_tensor,
+				&h_op_evals,
+			)
+			.expect("evaluate_monster_multilinear_for_operation has no fallible path")
+		};
+
+		bitand_part + intmul_part
+	}
 }
