@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps};
@@ -136,6 +137,16 @@ impl IOPVerifier {
 		// Receive the trace oracle commitment via channel.
 		let trace_oracle = channel.recv_oracle()?;
 
+		// SOUNDNESS: the IntMul reduction must run *before* the BitAnd reduction. The BitAnd
+		// reduction samples the univariate challenge `r_zhat_prime` (the `channel.sample()` in
+		// `bitand::verify_with_channel`), and the IntMul per-bit `a`/`b`/`c_lo`/`c_hi` evaluations
+		// are collapsed at that point via the Lagrange weights `l_tilde(r_zhat_prime)` below. Those
+		// evaluations are bound to the transcript while the IntMul reduction runs, so they must be
+		// committed *before* `r_zhat_prime` is drawn; otherwise a malicious prover could choose
+		// them adaptively as a function of `r_zhat_prime` and satisfy the collapsed claim without
+		// a valid witness. Do not reorder these two reductions, and keep the same order in
+		// `prover::prove`.
+		//
 		// [phase] Verify IntMul Reduction - multiplication constraint verification
 		let intmul_guard = tracing::info_span!(
 			"[phase] Verify IntMul Reduction",
