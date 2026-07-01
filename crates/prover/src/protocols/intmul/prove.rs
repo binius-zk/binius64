@@ -179,7 +179,8 @@ where
 		)
 	}
 
-	fn phase1(
+	#[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
+	pub fn phase1(
 		&mut self,
 		eval_point: &[F],
 		b_prover: ProdcheckProver<P>,
@@ -216,8 +217,9 @@ where
 		})
 	}
 
+	#[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
 	#[allow(clippy::too_many_arguments)]
-	fn phase3(
+	pub fn phase3(
 		&mut self,
 		log_bits: usize,
 		twisted_eval_points: &[Vec<F>],
@@ -304,8 +306,9 @@ where
 		})
 	}
 
+	#[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
 	#[allow(clippy::type_complexity)]
-	fn phase4(
+	pub fn phase4(
 		&mut self,
 		log_bits: usize,
 		eval_point: &[F],
@@ -388,8 +391,9 @@ where
 		))
 	}
 
+	#[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
 	#[allow(clippy::too_many_arguments)]
-	fn phase5(
+	pub fn phase5(
 		&mut self,
 		log_bits: usize,
 		a_c_eval_point: &[F],

@@ -155,7 +155,8 @@ where
 /// matches the `b`-tree layout ([`compute_b_leaves`]). The prodcheck reduces on the highest node
 /// bit, so its first reduction (and the verifier's final GKR layer) pairs leaf `z` with leaf
 /// `z + 2^{log_bits-1}` — a strided pairing of bits `z` and `z + 2^{log_bits-1}`.
-fn constant_base_leaves<F, P>(log_bits: usize, base: F, exponents: &[Word]) -> FieldBuffer<P>
+#[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
+pub fn constant_base_leaves<F, P>(log_bits: usize, base: F, exponents: &[Word]) -> FieldBuffer<P>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
@@ -180,7 +181,8 @@ where
 ///
 /// Each leaf `L_z` contains: if bit z of `exponents[i]` is set then `bases[i]^{2^z}` else 1
 /// The leaves are concatenated: `[L_0, L_1, ..., L_{2^k-1}]`
-fn compute_b_leaves<F, P>(
+#[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
+pub fn compute_b_leaves<F, P>(
 	log_bits: usize,
 	bases: &FieldBuffer<P>,
 	exponents: &[Word],
