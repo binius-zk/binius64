@@ -25,6 +25,7 @@ use gate::Opcode;
 pub mod circuit;
 pub mod const_prop;
 pub mod constraint_builder;
+mod cse;
 mod dce;
 mod dump;
 pub mod eval_form;
@@ -42,6 +43,7 @@ pub use gate_graph::Wire;
 pub(crate) struct Options {
 	enable_gate_fusion: bool,
 	enable_constant_propagation: bool,
+	enable_common_subexpression_elimination: bool,
 	enable_dead_code_elimination: bool,
 }
 
@@ -52,6 +54,7 @@ impl Default for Options {
 		Self {
 			enable_gate_fusion: true,
 			enable_constant_propagation: false,
+			enable_common_subexpression_elimination: true,
 			enable_dead_code_elimination: true,
 		}
 	}
@@ -66,6 +69,9 @@ impl Options {
 		let mut opts = Self::default();
 		if std::env::var("MONBIJOU_CONSTPROP").is_ok() {
 			opts.enable_constant_propagation = true;
+		}
+		if std::env::var("BINIUS_DISABLE_CSE").is_ok() {
+			opts.enable_common_subexpression_elimination = false;
 		}
 		if std::env::var("BINIUS_DISABLE_DCE").is_ok() {
 			opts.enable_dead_code_elimination = false;
@@ -223,6 +229,13 @@ impl CircuitBuilder {
 			}
 		}
 
+		// Common-subexpression elimination: collapse structurally-identical gates.
+		// This runs first so the dead-code pass sees the canonicalized graph.
+		let dead_gates = shared
+			.opts
+			.enable_common_subexpression_elimination
+			.then(|| cse::dedup_gates(&mut graph, &shared.force_committed, &shared.hint_registry));
+
 		// Dead-code elimination: the gates that can affect the constraint system.
 		// A gate outside this set emits no constraint and no committed wire, so it is skipped
 		// below.
@@ -233,6 +246,12 @@ impl CircuitBuilder {
 
 		let mut builder = ConstraintBuilder::new();
 		for (gate_id, _) in graph.gates.iter() {
+			// Drop collapsed duplicates: their outputs are now read through the canonical gate.
+			if let Some(dead_gates) = &dead_gates
+				&& dead_gates.contains(gate_id)
+			{
+				continue;
+			}
 			// Drop dead gates: they would only add constraints on wires that nothing reads.
 			if let Some(live_gates) = &live_gates
 				&& !live_gates.contains(gate_id)

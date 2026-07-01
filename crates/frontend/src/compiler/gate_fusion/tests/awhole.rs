@@ -100,7 +100,8 @@ fn mk_circuit_builder() -> CircuitBuilder {
 		enable_gate_fusion: true,
 		enable_constant_propagation: false,
 		// Keep these snapshots focused on fusion.
-		// Dead-code elimination would drop unrelated gates and change the expected output.
+		// Dead-code elimination and CSE would drop or collapse the gates they assert on.
+		enable_common_subexpression_elimination: false,
 		enable_dead_code_elimination: false,
 	};
 	CircuitBuilder::with_opts(opts)
