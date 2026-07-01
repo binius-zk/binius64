@@ -149,6 +149,13 @@ where
 		&self.outer_iop_verifier
 	}
 
+	/// Returns the witness layout of the outer Spartan constraint system.
+	///
+	/// The layout maps each logical wire to its position in the witness vector.
+	pub const fn outer_layout(&self) -> &WitnessLayout<B128> {
+		&self.outer_layout
+	}
+
 	/// Returns the BaseFold ZK verifier compiler.
 	pub const fn basefold_compiler(
 		&self,

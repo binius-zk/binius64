@@ -6,19 +6,13 @@
 //! Spartan-based zero-knowledge wrapper. The prover counterpart to
 //! [`binius_verifier::zk_config::ZKVerifier`].
 
-use binius_core::{
-	constraint_system::{ConstraintSystem, ValueVec},
-	word::Word,
-};
+use binius_core::constraint_system::{ConstraintSystem, ValueVec};
 use binius_field::{BinaryField128bGhash as B128, PackedExtension, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::basefold_compiler::BaseFoldProverCompiler;
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded};
-use binius_spartan_frontend::{compiler::compile, constraint_system::WitnessLayout};
+use binius_spartan_frontend::constraint_system::WitnessLayout;
 use binius_spartan_prover::wrapper::{ReplayChannel, ZKWrappedProverChannel};
-use binius_spartan_verifier::{
-	constraint_system::ConstraintSystemPadded, wrapper::IronSpartanBuilderChannel,
-};
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, SerializeBytes, serialization::SerializationError};
 use binius_verifier::{IOPVerifier, zk_config::ZKVerifier};
@@ -79,37 +73,14 @@ where
 		let inner_iop_verifier = zk_verifier.inner_iop_verifier().clone();
 		let inner_iop_prover = IOPProver::new(inner_iop_verifier.clone(), key_collection);
 
-		// Re-derive the outer constraint system and layout via symbolic execution.
+		// Reuse the padded outer constraint system and layout the verifier already built.
 		//
-		// TODO: This duplicates code in ZKVerifier::setup. Prover needs to call it separately
-		// because the Verifier doesn't (and shouldn't) store the layout. However, the code can be
-		// refactored out for DRYness.
-		let outer_builder = {
-			let _guard = tracing::debug_span!("Build ZK wrapper circuit").entered();
-			let dummy_public_words =
-				vec![Word::from_u64(0); 1 << inner_iop_verifier.log_public_words()];
-			let mut builder_channel = IronSpartanBuilderChannel::new();
-			inner_iop_verifier
-				.verify(&dummy_public_words, &mut builder_channel)
-				.expect("symbolic verify should not fail");
-			builder_channel.finish()
-		};
-		let (outer_cs, outer_layout) = {
-			let _guard = tracing::debug_span!("Compile ZK wrapper circuit").entered();
-			compile(outer_builder)
-		};
-
-		// Pad the outer constraint system with the same blinding as the verifier.
-		let outer_cs = ConstraintSystemPadded::new(
-			outer_cs,
-			zk_verifier
-				.outer_iop_verifier()
-				.constraint_system()
-				.blinding_info()
-				.clone(),
-		);
-		let outer_layout = outer_layout.with_blinding(outer_cs.blinding_info().clone());
-
+		// Invariant: the verifier builds, pads, and lays out the wrapper circuit once.
+		// - It keeps that result for its own verification.
+		// - The prover's outer circuit is identical to it.
+		// - Cloning the result skips a redundant rebuild.
+		let outer_cs = zk_verifier.outer_iop_verifier().constraint_system().clone();
+		let outer_layout = zk_verifier.outer_layout().clone();
 		let outer_iop_prover = binius_spartan_prover::IOPProver::new(outer_cs);
 
 		// Build the BaseFold prover compiler from the verifier compiler.
