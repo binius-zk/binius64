@@ -484,13 +484,7 @@ where
 
 	let mut mulcheck_prover = IntMulProver::new(0, channel);
 
-	// Words must be converted to u64 because
-	// `Bitwise` requires `From<u8>` and `Shr<usize>`
-	// We could implement these for `Word` in the future.
-	let convert_to_u64 = |w: Vec<Word>| w.into_iter().map(|w| w.0).collect::<Vec<u64>>();
-	let [a_u64, b_u64, lo_u64, hi_u64] = [a, b, lo, hi].map(convert_to_u64);
-	let intmul_witness =
-		IntMulWitness::<P, _, _>::new(LOG_WORD_SIZE_BITS, &a_u64, &b_u64, &lo_u64, &hi_u64)?;
+	let intmul_witness = IntMulWitness::<P>::new(LOG_WORD_SIZE_BITS, &a, &b, &lo, &hi)?;
 
 	Ok(mulcheck_prover.prove(intmul_witness)?)
 }

@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+use binius_core::word::Word;
 use binius_field::PackedBinaryGhash1x128b;
 use binius_prover::protocols::intmul::{prove::IntMulProver, witness::Witness};
 use binius_transcript::ProverTranscript;
@@ -11,7 +12,7 @@ type P = PackedBinaryGhash1x128b;
 
 const LOG_BITS: usize = 6;
 
-fn generate_test_data(log_num: usize) -> (Vec<u64>, Vec<u64>, Vec<u64>, Vec<u64>) {
+fn generate_test_data(log_num: usize) -> (Vec<Word>, Vec<Word>, Vec<Word>, Vec<Word>) {
 	let num_exponents = 1 << log_num;
 	let mut rng = StdRng::seed_from_u64(0);
 
@@ -29,10 +30,10 @@ fn generate_test_data(log_num: usize) -> (Vec<u64>, Vec<u64>, Vec<u64>, Vec<u64>
 		let c_lo_i = full_result as u64;
 		let c_hi_i = (full_result >> 64) as u64;
 
-		a.push(a_i);
-		b.push(b_i);
-		c_lo.push(c_lo_i);
-		c_hi.push(c_hi_i);
+		a.push(Word::from_u64(a_i));
+		b.push(Word::from_u64(b_i));
+		c_lo.push(Word::from_u64(c_lo_i));
+		c_hi.push(Word::from_u64(c_hi_i));
 	}
 
 	(a, b, c_lo, c_hi)
@@ -52,13 +53,11 @@ fn bench_intmul_prove(c: &mut Criterion) {
 	group.bench_with_input(
 		BenchmarkId::new("witness", num_exponents),
 		&num_exponents,
-		|bencher, _| {
-			bencher.iter(|| Witness::<P, _, _>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap())
-		},
+		|bencher, _| bencher.iter(|| Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap()),
 	);
 
 	// prove
-	let witness = Witness::<P, _, _>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
+	let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
 
 	group.bench_with_input(
 		BenchmarkId::new("prove", num_exponents),
@@ -83,7 +82,7 @@ fn bench_intmul_prove(c: &mut Criterion) {
 		&num_exponents,
 		|bencher, _| {
 			bencher.iter(|| {
-				let witness = Witness::<P, _, _>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
+				let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
 
 				let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 				let mut intmul_prover = IntMulProver::new(0, &mut prover_transcript);
