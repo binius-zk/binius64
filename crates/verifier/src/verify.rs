@@ -7,6 +7,7 @@ use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
 	basefold_compiler::BaseFoldVerifierCompiler,
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
+	oracle_setup_channel::OracleSetupChannel,
 };
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
@@ -97,13 +98,18 @@ impl IOPVerifier {
 	/// `is_zk` is the protocol-level zero-knowledge flag: in a ZK proof the witness oracle is
 	/// masked, in a transparent proof it is not. The flag is taken per call so that a non-ZK
 	/// oracle can still participate in a ZK protocol (e.g. indexed relation openings).
+	///
+	/// The specs are derived by running [`Self::verify`] against an [`OracleSetupChannel`], which
+	/// records each oracle received (via `recv_oracle`) without performing any real verification.
+	/// This keeps the spec sequence automatically in lockstep with the `recv_oracle` calls in
+	/// `verify`, rather than duplicating it here.
 	pub fn oracle_specs(&self, is_zk: bool) -> Vec<OracleSpec> {
-		let log_msg_len = self.log_witness_elems();
-		vec![if is_zk {
-			OracleSpec::new_zk(log_msg_len)
-		} else {
-			OracleSpec::new(log_msg_len)
-		}]
+		let mut channel = OracleSetupChannel::new(is_zk);
+		let public = vec![Word::ZERO; 1 << self.log_public_words()];
+		// The result is discarded: the setup channel performs no real verification (all `recv_*`
+		// return zero, `assert_zero` is a no-op), so we only read back the recorded oracle specs.
+		let _ = self.verify(&public, &mut channel);
+		channel.into_oracle_specs()
 	}
 
 	/// Verifies a proof using an IOP channel.
@@ -134,8 +140,9 @@ impl IOPVerifier {
 		let extended_subspace = subfield_subspace.reduce_dim(LOG_WORD_SIZE_BITS + 1);
 		let domain_subspace = extended_subspace.reduce_dim(LOG_WORD_SIZE_BITS);
 
-		// Receive the trace oracle commitment via channel.
-		let trace_oracle = channel.recv_oracle()?;
+		// Receive the trace oracle commitment via channel. The trace is the witness, so it is
+		// witness-dependent (masked in a ZK proof).
+		let trace_oracle = channel.recv_oracle(self.log_witness_elems(), true)?;
 
 		// SOUNDNESS: the IntMul reduction must run *before* the BitAnd reduction. The BitAnd
 		// reduction samples the univariate challenge `r_zhat_prime` (the `channel.sample()` in

@@ -106,10 +106,18 @@ pub trait IOPVerifierChannel<'r, F: Field>: IPVerifierChannel<F> {
 
 	/// Receives an oracle commitment from the prover.
 	///
-	/// # Preconditions
-	///
-	/// `remaining_oracle_specs()` must be non-empty.
-	fn recv_oracle(&mut self) -> Result<Self::Oracle, Error>;
+	/// The caller describes the oracle being received: `log_msg_len` is the log2 of the message
+	/// length, and `is_witness_dependent` is whether the oracle's contents depend on the witness.
+	/// These let a channel record the oracle's [`OracleSpec`] rather than requiring the specs to be
+	/// supplied up front. The resulting oracle is zero-knowledge iff the channel is configured for
+	/// ZK *and* the oracle is witness-dependent — a non-witness-dependent oracle (e.g. a
+	/// pre-indexed commitment to the wiring matrix for succinctness, a planned feature) is never
+	/// masked.
+	fn recv_oracle(
+		&mut self,
+		log_msg_len: usize,
+		is_witness_dependent: bool,
+	) -> Result<Self::Oracle, Error>;
 
 	/// Queues oracle linear relations to be opened.
 	///

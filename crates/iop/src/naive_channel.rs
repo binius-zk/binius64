@@ -150,16 +150,20 @@ where
 		&self.oracle_specs[self.next_oracle_index..]
 	}
 
-	fn recv_oracle(&mut self) -> Result<Self::Oracle, Error> {
+	fn recv_oracle(
+		&mut self,
+		log_msg_len: usize,
+		_is_witness_dependent: bool,
+	) -> Result<Self::Oracle, Error> {
 		assert!(
 			!self.remaining_oracle_specs().is_empty(),
 			"recv_oracle called but no remaining oracle specs"
 		);
 
 		let index = self.next_oracle_index;
-		let spec = &self.oracle_specs[index];
+		debug_assert_eq!(log_msg_len, self.oracle_specs[index].log_msg_len);
 
-		let buffer_len = 1 << spec.log_msg_len;
+		let buffer_len = 1 << log_msg_len;
 
 		// Read all polynomial coefficients from the transcript
 		let values = self

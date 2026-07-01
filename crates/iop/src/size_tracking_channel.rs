@@ -130,7 +130,11 @@ impl<'r, F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IOPVerifierChannel<
 		&self.oracle_specs[self.next_oracle_index..]
 	}
 
-	fn recv_oracle(&mut self) -> Result<Self::Oracle, Error> {
+	fn recv_oracle(
+		&mut self,
+		_log_msg_len: usize,
+		_is_witness_dependent: bool,
+	) -> Result<Self::Oracle, Error> {
 		self.proof_size += self.oracle_size;
 		self.next_oracle_index += 1;
 		Ok(())
