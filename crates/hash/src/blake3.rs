@@ -5,10 +5,7 @@
 use std::{array, mem::MaybeUninit};
 
 use binius_utils::{FixedSizeSerializeBytes, SerializeBytes, rayon::iter::IndexedParallelIterator};
-use blake3::{
-	BLOCK_LEN, CHUNK_LEN, IncrementCounter, OUT_LEN,
-	platform::{Platform, le_bytes_from_words_32, words_from_le_bytes_32},
-};
+use blake3::{BLOCK_LEN, CHUNK_LEN, IncrementCounter, OUT_LEN, platform::Platform};
 use digest::Output;
 
 use super::{
@@ -46,11 +43,12 @@ impl HashSuite for Blake3HashSuite {
 
 /// Blake3 domain-separation flag marking the first block of a chunk.
 ///
-/// Each flag tags a compression with its role in the tree.
-/// This stops a one-block message from ever colliding with an interior parent node.
-/// The crate keeps these flags private, so the spec values are mirrored here.
-/// The values are in Table 3, section 2.2 of the [Blake3 spec](https://github.com/BLAKE3-team/BLAKE3-specs).
-/// The rationale for these flags is in section 7.7.
+/// A flag tags each compression with its role in the tree.
+/// This stops a one-block message from colliding with an interior parent node.
+///
+/// The crate keeps these flag values private, so they are mirrored here.
+/// - Values: Table 3, section 2.2 of the [Blake3 spec](https://github.com/BLAKE3-team/BLAKE3-specs).
+/// - Rationale: section 7.7.
 const CHUNK_START: u8 = 1 << 0;
 
 /// Blake3 domain-separation flag marking the last block of a chunk.
@@ -63,7 +61,7 @@ const ROOT: u8 = 1 << 3;
 ///
 /// A non-keyed hash starts every chunk from these words.
 /// The crate keeps its IV constant private, so the value is mirrored here.
-/// The values are in Table 1, section 2.2 of the [Blake3 spec](https://github.com/BLAKE3-team/BLAKE3-specs).
+/// - Values: Table 1, section 2.2 of the [Blake3 spec](https://github.com/BLAKE3-team/BLAKE3-specs).
 const BLAKE3_IV: [u32; 8] = [
 	0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
@@ -78,140 +76,23 @@ const BLAKE3_IV: [u32; 8] = [
 /// At this width a batch fills the vector with no leftover lanes.
 const SIMD_DEGREE: usize = blake3::platform::MAX_SIMD_DEGREE;
 
-/// A SIMD batch hasher exposed through the parallel-iterator interface.
+/// Maps a runtime block count in `1..=16` to a batch of compile-time leaf length.
 ///
-/// The fixed lane count is hidden behind this alias.
-type Blake3MultiParallel = ParallelMultidigestImpl<Blake3MultiDigest<SIMD_DEGREE>, SIMD_DEGREE>;
-
-/// The parallel digest used for Blake3 leaf hashing.
+/// The batch fixes its per-lane byte length as a const generic, so that length must be a literal.
+/// Each block count therefore gets its own arm.
 ///
-/// The path is chosen by leaf size:
-/// - A leaf of at least one 64-byte block goes through the SIMD batch.
-/// - A smaller leaf is hashed on its own by the generic adapter.
+/// One chunk holds at most `CHUNK_LEN / BLOCK_LEN = 16` whole blocks, giving sixteen arms.
 ///
-/// Blake3's only public multi-lane kernel works a whole block at a time.
-/// It cannot speed up a sub-block message, where the batch's extra buffering would only add cost.
-#[derive(Debug, Clone, Default)]
-pub struct Blake3ParallelDigest;
-
-impl ParallelDigest for Blake3ParallelDigest {
-	type Digest = blake3::Hasher;
-
-	fn new() -> Self {
-		Self
-	}
-
-	fn digest<I: IntoIterator<Item: SerializeBytes>>(
-		&self,
-		source: impl IndexedParallelIterator<Item = I>,
-		out: &mut [MaybeUninit<Output<Self::Digest>>],
-	) {
-		// Send every leaf through the SIMD batch.
-		// The batch picks the fast path or the scalar fallback per group at run time.
-		Blake3MultiParallel::new().digest(source, out);
-	}
-
-	fn digest_with_const_len<I: IntoIterator<Item: FixedSizeSerializeBytes>>(
-		&self,
-		n_items_per_input: usize,
-		source: impl IndexedParallelIterator<Item = I>,
-		out: &mut [MaybeUninit<Output<Self::Digest>>],
-	) {
-		// Every leaf serializes to the same fixed byte length.
-		let leaf_len = n_items_per_input * I::Item::BYTE_SIZE;
-		// Below one 64-byte block the SIMD kernel gives no speedup.
-		// Hash those leaves directly to avoid the batch's buffering overhead.
-		if leaf_len < BLOCK_LEN {
-			ParallelDigestAdapter::<blake3::Hasher>::new().digest(source, out);
-		} else {
-			// One block or larger: batch the leaves through the SIMD path.
-			self.digest(source, out);
+/// `source` is moved and `out` reborrowed inside a single, mutually exclusive match arm.
+macro_rules! dispatch_leaf_blocks {
+	($n_blocks:expr, $source:expr, $out:expr) => {{
+		macro_rules! arm {
+			($len:literal) => {
+				ParallelMultidigestImpl::<Blake3MultiDigest<$len, SIMD_DEGREE>, SIMD_DEGREE>::new()
+					.digest($source, $out)
+			};
 		}
-	}
-}
-
-/// Computes `N` independent Blake3 digests at once with the official crate's SIMD kernel.
-///
-/// The kernel compresses one fixed, block-aligned input per lane, all starting from the IV.
-/// This fits a message that is a single chunk of at most 1024 bytes, the shape of a Merkle leaf.
-///
-/// Fast path, taken when all `N` lanes share one length of at most one chunk:
-/// - One SIMD call compresses the leading whole 64-byte blocks of every lane.
-/// - A scalar compression then finishes each lane's trailing partial or final block.
-///
-/// Fallback, taken when lane lengths differ or any lane spans more than one chunk:
-/// - There is no shared SIMD shape across lanes.
-/// - Each lane is hashed on its own by the scalar reference, which still uses SIMD within a
-///   message.
-#[derive(Clone)]
-pub struct Blake3MultiDigest<const N: usize> {
-	/// One growable byte buffer per lane, holding that lane's message until finalization.
-	///
-	/// The hashing interface is streaming, so bytes arrive across calls and cannot be hashed
-	/// early. Buffering lets the SIMD batch see each lane's full message at finalization.
-	buffers: [Vec<u8>; N],
-}
-
-impl<const N: usize> Default for Blake3MultiDigest<N> {
-	fn default() -> Self {
-		// Every lane starts with an empty, unallocated buffer.
-		Self {
-			buffers: array::from_fn(|_| Vec::new()),
-		}
-	}
-}
-
-/// SIMD-compresses the first `M` bytes of every lane in one call, where `M` is a whole block count.
-///
-/// Every lane starts from the IV at chunk counter 0.
-/// This is Blake3's chunk-hashing kernel run across the `N` messages, not across one message's
-/// chunks.
-///
-/// # Arguments
-///
-/// - `flags_start` is applied to each lane's first block.
-/// - `flags_end` is applied to each lane's last block.
-///
-/// # Returns
-///
-/// Writes the 32-byte chaining value of each lane into `out`.
-fn hash_many_blocks<const M: usize, const N: usize>(
-	platform: &Platform,
-	buffers: &[&[u8]; N],
-	flags_start: u8,
-	flags_end: u8,
-	out: &mut [[u8; OUT_LEN]; N],
-) {
-	// Reborrow each lane's leading `M` bytes as a fixed-size block-aligned input.
-	// The uniform-length precondition guarantees every lane holds at least `M` bytes.
-	let inputs: [&[u8; M]; N] = array::from_fn(|i| {
-		(&buffers[i][..M])
-			.try_into()
-			.expect("lane holds at least M bytes")
-	});
-	// Drive the official kernel: no counter increment, since each lane is its own chunk at counter
-	// 0.
-	platform.hash_many::<M>(
-		&inputs,
-		&BLAKE3_IV,
-		0,
-		IncrementCounter::No,
-		0,
-		flags_start,
-		flags_end,
-		out.as_flattened_mut(),
-	);
-}
-
-/// Dispatches a runtime full-block count in `1..=16` to a fixed-length SIMD call.
-///
-/// The SIMD kernel takes the per-lane byte length as a const generic.
-/// The length must therefore be a compile-time literal, so each block count needs its own arm.
-/// A single chunk holds at most 1024 / 64 = 16 whole blocks, giving these sixteen arms.
-macro_rules! dispatch_full_blocks {
-	($n_full:expr => $f:ident($($args:tt)*)) => {{
-		macro_rules! arm { ($m:literal) => { $f::<$m, N>($($args)*) }; }
-		match $n_full {
+		match $n_blocks {
 			1 => arm!(64),
 			2 => arm!(128),
 			3 => arm!(192),
@@ -228,125 +109,164 @@ macro_rules! dispatch_full_blocks {
 			14 => arm!(896),
 			15 => arm!(960),
 			16 => arm!(1024),
-			_ => unreachable!("a single chunk has at most CHUNK_LEN/BLOCK_LEN = 16 full blocks"),
+			_ => unreachable!("a single chunk has at most CHUNK_LEN / BLOCK_LEN = 16 full blocks"),
 		}
 	}};
 }
 
-impl<const N: usize> Blake3MultiDigest<N> {
-	/// Hashes the `N` lane buffers into `out`, choosing the SIMD fast path or the scalar fallback.
-	fn compute(buffers: &[Vec<u8>; N], out: &mut [MaybeUninit<Output<blake3::Hasher>>; N]) {
-		// View each lane's buffered message as a byte slice.
-		let refs: [&[u8]; N] = array::from_fn(|i| buffers[i].as_slice());
-		// Take the first lane's length as the candidate shared length.
-		let len = refs[0].len();
+/// The parallel digest used for Blake3 leaf hashing.
+///
+/// Leaf size decides the path:
+/// - A whole number of 64-byte blocks, up to one 1024-byte chunk: batched through the SIMD kernel.
+/// - Anything else: hashed on its own by the scalar adapter.
+///
+/// The SIMD kernel only accepts messages whose length is an exact multiple of the 64-byte block.
+/// So a sub-block, non-block-multiple, or multi-chunk leaf has no batchable shape.
+///
+/// The scalar adapter still uses SIMD within a single message.
+#[derive(Debug, Clone, Default)]
+pub struct Blake3ParallelDigest;
 
-		// The fast path needs one shared SIMD shape across all lanes:
-		// - every lane fits in one chunk of at most 1024 bytes, and
-		// - every lane has the same length.
-		if len <= CHUNK_LEN && refs.iter().all(|r| r.len() == len) {
-			Self::single_chunk_simd(&refs, len, out);
-		} else {
-			// No shared shape: hash each lane on its own with the scalar reference.
-			for (r, o) in refs.iter().zip(out.iter_mut()) {
-				// The reference returns a 32-byte root digest.
-				// Store it as this lane's output.
-				o.write((*blake3::hash(r).as_bytes()).into());
-			}
-		}
+impl ParallelDigest for Blake3ParallelDigest {
+	type Digest = blake3::Hasher;
+
+	fn new() -> Self {
+		Self
 	}
 
-	/// Fast path for `N` equal-length single-chunk messages of length at most one chunk.
-	fn single_chunk_simd(
-		refs: &[&[u8]; N],
-		len: usize,
-		out: &mut [MaybeUninit<Output<blake3::Hasher>>; N],
+	fn digest<I: IntoIterator<Item: SerializeBytes>>(
+		&self,
+		source: impl IndexedParallelIterator<Item = I>,
+		out: &mut [MaybeUninit<Output<Self::Digest>>],
 	) {
-		// Pick the best SIMD backend the CPU supports (AVX-512, AVX2, NEON, ...).
-		let platform = Platform::detect();
-		// Split the shared length into whole 64-byte blocks plus a trailing remainder.
-		let n_full = len / BLOCK_LEN;
-		let rem = len % BLOCK_LEN;
-		// Scratch space for one 32-byte chaining value per lane.
-		let mut cv_bytes = [[0u8; OUT_LEN]; N];
+		// Without a fixed leaf length the SIMD lane width (the compile-time `M`) is unknown.
+		// Hash each leaf on its own with the scalar adapter.
+		ParallelDigestAdapter::<blake3::Hasher>::new().digest(source, out);
+	}
 
-		// Case 1: the length is a positive multiple of the block size.
-		// The chunk is all whole blocks, so the last block carries CHUNK_END | ROOT.
-		// One SIMD pass then emits the root digest of every lane directly.
-		if rem == 0 && len > 0 {
-			dispatch_full_blocks!(n_full =>
-				hash_many_blocks(&platform, refs, CHUNK_START, CHUNK_END | ROOT, &mut cv_bytes));
-			// Each lane's chaining value is already its 32-byte root digest.
-			for (b, o) in cv_bytes.iter().zip(out.iter_mut()) {
-				o.write((*b).into());
-			}
-			return;
-		}
+	fn digest_with_const_len<I: IntoIterator<Item: FixedSizeSerializeBytes>>(
+		&self,
+		n_items_per_input: usize,
+		source: impl IndexedParallelIterator<Item = I>,
+		out: &mut [MaybeUninit<Output<Self::Digest>>],
+	) {
+		// Every leaf serializes to the same fixed byte length.
+		let leaf_len = n_items_per_input * I::Item::BYTE_SIZE;
+		// The SIMD kernel needs a leaf that is a positive whole number of 64-byte blocks.
+		// One chunk holds at most CHUNK_LEN / BLOCK_LEN = 16 blocks.
+		let n_blocks = leaf_len / BLOCK_LEN;
 
-		// Case 2: there is a trailing partial block, or the message is empty.
-		// Start each lane's chaining value at the IV.
-		let mut cvs = [BLAKE3_IV; N];
-		// When there are leading whole blocks, compress them across lanes with one SIMD pass.
-		// No end flag is set here, since the final block below carries CHUNK_END | ROOT.
-		if n_full > 0 {
-			dispatch_full_blocks!(n_full =>
-				hash_many_blocks(&platform, refs, CHUNK_START, 0, &mut cv_bytes));
-			// Reload each lane's running chaining value as words to keep chaining the chunk.
-			for (cv, b) in cvs.iter_mut().zip(cv_bytes.iter()) {
-				*cv = words_from_le_bytes_32(b);
-			}
-		}
-
-		// The final block carries CHUNK_END | ROOT.
-		// It also carries CHUNK_START when there were no leading blocks, i.e. it is the only block.
-		let final_flags = (if n_full == 0 { CHUNK_START } else { 0 }) | CHUNK_END | ROOT;
-		// Compress each lane's trailing block on its own, since a sub-block length can't be
-		// batched.
-		for ((cv, r), o) in cvs.iter_mut().zip(refs.iter()).zip(out.iter_mut()) {
-			// Zero-pad the trailing `rem` bytes up to a full 64-byte block.
-			let mut block = [0u8; BLOCK_LEN];
-			block[..rem].copy_from_slice(&r[n_full * BLOCK_LEN..]);
-			// Compress with the true byte count `rem`, so the zero padding does not change the
-			// digest.
-			platform.compress_in_place(cv, &block, rem as u8, 0, final_flags);
-			// After the root compression the chaining value is the lane's 32-byte digest.
-			o.write(le_bytes_from_words_32(cv).into());
+		if leaf_len.is_multiple_of(BLOCK_LEN) && (1..=CHUNK_LEN / BLOCK_LEN).contains(&n_blocks) {
+			// Turn the runtime block count into a compile-time `M`, then batch through the kernel.
+			dispatch_leaf_blocks!(n_blocks, source, out);
+		} else {
+			// Sub-block, non-block-multiple, or multi-chunk leaves have no batchable shape.
+			ParallelDigestAdapter::<blake3::Hasher>::new().digest(source, out);
 		}
 	}
 }
 
-impl<const N: usize> MultiDigest<N> for Blake3MultiDigest<N> {
+/// Computes `N` independent Blake3 digests of `M`-byte messages with the crate's SIMD kernel.
+///
+/// `M` is a positive multiple of the 64-byte block length, no larger than one 1024-byte chunk.
+/// This is the shape of a batch of Merkle leaves: each leaf is a single chunk of whole blocks.
+///
+/// One SIMD pass compresses all `N` lanes together, each its own chunk starting from the IV.
+/// It emits every lane's root digest directly:
+///
+/// ```text
+/// lane 0:  [ block | ... | block ]  ─┐
+/// lane 1:  [ block | ... | block ]   ├─ one SIMD pass → N root digests
+/// ...                                │
+/// lane N-1:[ block | ... | block ]  ─┘
+/// ```
+#[derive(Clone)]
+pub struct Blake3MultiDigest<const M: usize, const N: usize> {
+	/// One fixed-size `M`-byte buffer per lane, holding that lane's message until finalization.
+	///
+	/// The hashing interface is streaming, so bytes arrive across successive updates.
+	/// A fixed array avoids per-lane allocation, and already matches the kernel's input shape.
+	buffers: [[u8; M]; N],
+	/// Per-lane write cursor: how many bytes each lane's buffer currently holds.
+	filled: [usize; N],
+}
+
+impl<const M: usize, const N: usize> Default for Blake3MultiDigest<M, N> {
+	fn default() -> Self {
+		// Every lane starts as a zeroed buffer with an empty cursor.
+		Self {
+			buffers: array::from_fn(|_| [0u8; M]),
+			filled: [0; N],
+		}
+	}
+}
+
+impl<const M: usize, const N: usize> Blake3MultiDigest<M, N> {
+	/// Hashes the `N` `M`-byte lane buffers into `out` with one SIMD pass.
+	fn compute(&self, out: &mut [MaybeUninit<Output<blake3::Hasher>>; N]) {
+		// Pick the best SIMD backend the CPU supports (AVX-512, AVX2, NEON, ...).
+		let platform = Platform::detect();
+		// Scratch for one 32-byte chaining value per lane.
+		let mut cv_bytes = [[0u8; OUT_LEN]; N];
+		// Each lane's buffer is already a fixed `M`-byte block-aligned input.
+		let inputs: [&[u8; M]; N] = array::from_fn(|i| &self.buffers[i]);
+
+		// Each lane is its own single chunk at counter 0, so the counter never increments.
+		// The last block carries CHUNK_END | ROOT, so this one pass emits each lane's root digest.
+		platform.hash_many::<M>(
+			&inputs,
+			&BLAKE3_IV,
+			0,
+			IncrementCounter::No,
+			0,
+			CHUNK_START,
+			CHUNK_END | ROOT,
+			cv_bytes.as_flattened_mut(),
+		);
+
+		// Each lane's chaining value is already its 32-byte root digest.
+		for (b, o) in cv_bytes.iter().zip(out.iter_mut()) {
+			o.write((*b).into());
+		}
+	}
+}
+
+impl<const M: usize, const N: usize> MultiDigest<N> for Blake3MultiDigest<M, N> {
 	type Digest = blake3::Hasher;
 
 	fn new() -> Self {
-		// All lanes start with empty buffers.
+		// All lanes start with zeroed buffers and empty cursors.
 		Self::default()
 	}
 
 	fn update(&mut self, data: [&[u8]; N]) {
-		// Append each lane's new bytes to that lane's buffer.
-		for (buf, chunk) in self.buffers.iter_mut().zip(data) {
-			buf.extend_from_slice(chunk);
+		// Append each lane's new bytes at that lane's cursor.
+		for ((buf, filled), chunk) in self
+			.buffers
+			.iter_mut()
+			.zip(self.filled.iter_mut())
+			.zip(data)
+		{
+			buf[*filled..*filled + chunk.len()].copy_from_slice(chunk);
+			*filled += chunk.len();
 		}
 	}
 
 	fn finalize_into(self, out: &mut [MaybeUninit<Output<Self::Digest>>; N]) {
-		// Hash the buffered messages.
-		// The hasher is consumed, so there is nothing to reset.
-		Self::compute(&self.buffers, out);
+		// Hash the buffered messages; the hasher is consumed.
+		self.compute(out);
 	}
 
 	fn finalize_into_reset(&mut self, out: &mut [MaybeUninit<Output<Self::Digest>>; N]) {
-		// Hash the buffered messages, then clear the buffers so the hasher can be reused.
-		Self::compute(&self.buffers, out);
+		// Hash the buffered messages, then rewind so the hasher can be reused.
+		self.compute(out);
 		self.reset();
 	}
 
 	fn reset(&mut self) {
-		// Drop every lane's buffered bytes while keeping the allocations for reuse.
-		for buf in &mut self.buffers {
-			buf.clear();
-		}
+		// Rewind every lane's cursor.
+		// The const-len contract refills each used lane to `M`, overwriting any stale bytes.
+		self.filled = [0; N];
 	}
 
 	fn digest(data: [&[u8]; N], out: &mut [MaybeUninit<Output<Self::Digest>>; N]) {
@@ -367,31 +287,58 @@ mod tests {
 	use super::*;
 	use crate::ParallelDigest;
 
-	/// Hashes `N` messages through the batch and asserts each lane matches the scalar reference.
-	fn check_multi_digest<const N: usize>(messages: &[Vec<u8>; N]) {
+	/// Runs `N` equal-length `M`-byte messages through the SIMD batch and pins each lane to the
+	/// scalar reference.
+	fn check_simd_batch<const M: usize, const N: usize>(rng: &mut StdRng) {
+		// Fresh random bytes per lane, so lanes don't share a digest by accident.
+		let messages: [Vec<u8>; N] = array::from_fn(|_| {
+			let mut m = vec![0u8; M];
+			rng.fill_bytes(&mut m);
+			m
+		});
 		// Borrow each owned message as a byte slice for the batch input.
 		let refs: [&[u8]; N] = array::from_fn(|i| messages[i].as_slice());
 		// One uninitialized digest slot per lane.
 		let mut out = array::from_fn::<_, N, _>(|_| MaybeUninit::uninit());
 		// Run the batch hasher under test.
-		Blake3MultiDigest::<N>::digest(refs, &mut out);
+		Blake3MultiDigest::<M, N>::digest(refs, &mut out);
 
 		// Each lane's output must equal the single-message reference hash of that lane.
 		for (o, message) in out.iter().zip(messages.iter()) {
 			// digest() initializes every slot, so reading it back is sound.
 			let got = unsafe { o.assume_init_ref() };
-			assert_eq!(got.as_slice(), blake3::hash(message).as_bytes(), "len {}", message.len());
+			assert_eq!(got.as_slice(), blake3::hash(message).as_bytes(), "M = {M}");
 		}
 	}
 
-	/// Builds `N` distinct pseudorandom messages, each `len` bytes long.
-	fn equal_len_messages<const N: usize>(rng: &mut StdRng, len: usize) -> [Vec<u8>; N] {
-		array::from_fn(|_| {
-			// Fresh random bytes per lane, so lanes don't accidentally share a digest.
-			let mut m = vec![0u8; len];
-			rng.fill_bytes(&mut m);
-			m
-		})
+	/// Hashes `n_leaves` leaves of `leaf_len` bytes each through the wired parallel digest, then
+	/// pins every leaf to the scalar reference.
+	fn check_const_len_route(rng: &mut StdRng, leaf_len: usize, n_leaves: usize) {
+		// Each leaf is `leaf_len` random bytes, fed as `leaf_len` u8 items (BYTE_SIZE = 1).
+		let leaves: Vec<Vec<u8>> = (0..n_leaves)
+			.map(|_| {
+				let mut m = vec![0u8; leaf_len];
+				rng.fill_bytes(&mut m);
+				m
+			})
+			.collect();
+
+		// Drive the wired leaf digest over a parallel iterator of leaves, with a known leaf length.
+		let digest = Blake3ParallelDigest::new();
+		let mut results = repeat_with(MaybeUninit::<Output<blake3::Hasher>>::uninit)
+			.take(n_leaves)
+			.collect::<Vec<_>>();
+		digest.digest_with_const_len(
+			leaf_len,
+			leaves.par_iter().map(|leaf| leaf.iter().copied()),
+			&mut results,
+		);
+
+		// Each leaf digest must equal the reference hash of that leaf's bytes.
+		for (result, leaf) in results.into_iter().zip(&leaves) {
+			let got = unsafe { result.assume_init() };
+			assert_eq!(got.as_slice(), blake3::hash(leaf).as_bytes(), "leaf_len {leaf_len}");
+		}
 	}
 
 	/// Checks that the compression function matches `blake3::hash` of the concatenated inputs.
@@ -412,81 +359,83 @@ mod tests {
 	}
 
 	#[test]
-	fn test_multi_digest_equal_lengths_match_reference() {
+	fn test_multi_digest_block_multiples_match_reference() {
 		let mut rng = StdRng::seed_from_u64(0);
 
-		// Invariant: equal-length lanes take the SIMD fast path.
-		// Each lane's digest must match the scalar reference.
-		// Each length exercises a different branch of that path:
-		// - 0           : the lone empty block.
-		// - 1, 31, 63   : a single sub-block (no leading SIMD blocks).
-		// - 64,128,1024 : exact block multiples, hashed entirely by the SIMD pass.
-		// - 65,127,1000 : a SIMD prefix of whole blocks plus a scalar partial tail.
-		for len in [0, 1, 31, 63, 64, 65, 127, 128, 1000, 1024] {
-			// Cover two lane widths:
-			// - 4 lanes fill one NEON batch.
-			// - 8 lanes force the kernel's internal sub-batching.
-			check_multi_digest(&equal_len_messages::<4>(&mut rng, len));
-			check_multi_digest(&equal_len_messages::<8>(&mut rng, len));
-		}
-	}
-
-	#[test]
-	fn test_multi_digest_fallback_matches_reference() {
-		let mut rng = StdRng::seed_from_u64(1);
-		// Helper: build four lanes with the given per-lane lengths.
-		let mut mixed = |lens: [usize; 4]| -> [Vec<u8>; 4] {
-			array::from_fn(|i| {
-				let mut m = vec![0u8; lens[i]];
-				rng.fill_bytes(&mut m);
-				m
-			})
-		};
-
-		// Invariant: lanes without a shared single-chunk shape each fall back to the scalar
-		// reference. Every lane must still match that reference.
-
-		// Unequal lengths, all within one chunk → no shared length → fallback.
-		check_multi_digest(&mixed([10, 64, 200, 1000]));
-		// At least one lane spans more than one chunk (> 1024 bytes) → fallback.
-		check_multi_digest(&mixed([1025, 32, 4096, 0]));
-		// Equal length but multi-chunk (2048 bytes), so still the fallback.
-		check_multi_digest(&equal_len_messages::<4>(&mut rng, 2048));
+		// Invariant: each lane's digest matches the scalar reference.
+		//
+		// The SIMD batch handles any whole number of blocks, up to one chunk.
+		// Each `M` below exercises a different block count:
+		// - 64   : a single block.
+		// - 128  : two blocks.
+		// - 512  : the mid range.
+		// - 1024 : a full chunk, the 16-block maximum.
+		//
+		// Two lane widths per size:
+		// - 4 lanes fill one NEON batch.
+		// - 8 lanes force the kernel's internal sub-batching.
+		check_simd_batch::<64, 4>(&mut rng);
+		check_simd_batch::<64, 8>(&mut rng);
+		check_simd_batch::<128, 4>(&mut rng);
+		check_simd_batch::<128, 8>(&mut rng);
+		check_simd_batch::<512, 4>(&mut rng);
+		check_simd_batch::<512, 8>(&mut rng);
+		check_simd_batch::<1024, 4>(&mut rng);
+		check_simd_batch::<1024, 8>(&mut rng);
 	}
 
 	#[test]
 	fn test_multi_digest_chained_update() {
 		let mut rng = StdRng::seed_from_u64(2);
-		// Four 200-byte messages.
-		let messages = equal_len_messages::<4>(&mut rng, 200);
+		// Four 128-byte messages (two blocks each).
+		let messages: [Vec<u8>; 4] = array::from_fn(|_| {
+			let mut m = vec![0u8; 128];
+			rng.fill_bytes(&mut m);
+			m
+		});
 
 		// Invariant: two updates of a split message hash the same as one update of the whole.
-		let mut hasher = Blake3MultiDigest::<4>::new();
+		let mut hasher = Blake3MultiDigest::<128, 4>::new();
 		// Feed the first 50 bytes of every lane.
 		hasher.update(array::from_fn(|i| &messages[i][..50]));
-		// Then feed the remaining 150 bytes of every lane.
+		// Then feed the remaining 78 bytes of every lane.
 		hasher.update(array::from_fn(|i| &messages[i][50..]));
 		let mut out = array::from_fn::<_, 4, _>(|_| MaybeUninit::uninit());
 		hasher.finalize_into(&mut out);
 
-		// Each lane must equal the reference hash of its full 200-byte message.
+		// Each lane must equal the reference hash of its full 128-byte message.
 		for (o, message) in out.iter().zip(messages.iter()) {
 			assert_eq!(unsafe { o.assume_init_ref() }.as_slice(), blake3::hash(message).as_bytes());
 		}
 	}
 
 	#[test]
-	fn test_parallel_blake3_matches_serial() {
+	fn test_const_len_routing_matches_reference() {
+		let mut rng = StdRng::seed_from_u64(3);
+
+		// Invariant: every leaf size reproduces the scalar reference, whichever path it takes.
+		//
+		// 50 leaves span several full SIMD batches plus a ragged final batch.
+		// Each size targets a specific route:
+		// - 0, 1, 63       : sub-block               -> scalar adapter.
+		// - 65, 100        : non-block-multiple      -> scalar adapter.
+		// - 2048           : multi-chunk (> 1024)    -> scalar adapter.
+		// - 64, 128, 1024  : whole blocks, one chunk -> SIMD batch.
+		for leaf_len in [0, 1, 63, 64, 65, 100, 128, 1024, 2048] {
+			check_const_len_route(&mut rng, leaf_len, 50);
+		}
+	}
+
+	#[test]
+	fn test_parallel_blake3_non_const_len_matches_reference() {
 		let mut rng = StdRng::seed_from_u64(0);
 		let n_leaves = 50;
-		// Each leaf is four u128 values.
-		// A u128 serializes to 16 little-endian bytes, so each leaf is 64 bytes.
-		// At 64 bytes a leaf takes the SIMD path.
+		// Each leaf is four u128 values (64 bytes once serialized).
 		let leaves: Vec<Vec<u128>> = (0..n_leaves)
 			.map(|_| (0..4).map(|_| rng.random::<u128>()).collect())
 			.collect();
 
-		// Drive the wired leaf digest over a parallel iterator of leaves.
+		// The non-const-len `digest` path routes every leaf through the scalar adapter.
 		let digest = Blake3ParallelDigest::new();
 		let mut results = repeat_with(MaybeUninit::<Output<blake3::Hasher>>::uninit)
 			.take(n_leaves)
