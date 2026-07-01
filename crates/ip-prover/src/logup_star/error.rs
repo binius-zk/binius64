@@ -21,12 +21,4 @@ pub enum Error {
 		expected: usize,
 		n_vars: usize,
 	},
-	#[error(
-		"index entry {value} at position {position} is out of range for a table of 2^{table_n_vars} entries"
-	)]
-	IndexOutOfRange {
-		position: usize,
-		value: usize,
-		table_n_vars: usize,
-	},
 }

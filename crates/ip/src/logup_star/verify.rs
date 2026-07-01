@@ -39,10 +39,11 @@ use crate::{
 ///     3. looker-side GKR, n layers                 (see fracaddcheck::verify)
 ///     4. table-side GKR, first m-1 layers          (see fracaddcheck::verify)
 ///     5. batched final layer:
-///        a. sample batch_coeff
-///        b. m-1 rounds of degree-3 sumcheck
-///        c. recv [Y_0, Y_1, T_0, T_1]              (leaf halves, split on the highest variable)
-///        d. sample r                               (final line-fold)
+///        a. recv e_0                               (partial product sum <Y_0, T_0>)
+///        b. sample batch_coeff
+///        c. m-1 rounds of degree-3 sumcheck
+///        d. recv [Y_0, Y_1, T_0, T_1]              (leaf halves, split on the highest variable)
+///        e. sample r                               (final line-fold)
 /// ```
 ///
 /// The batched final sumcheck is assumed to bind variables from the highest index to the lowest.

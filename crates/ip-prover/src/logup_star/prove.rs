@@ -4,7 +4,7 @@
 
 use binius_field::{BinaryField1b, ExtensionField, Field, PackedField};
 use binius_ip::{MultilinearEvalClaim, logup_star::LogupOutput};
-use binius_math::{FieldBuffer, line::extrapolate_line};
+use binius_math::FieldBuffer;
 
 use super::{
 	error::Error,
@@ -12,8 +12,8 @@ use super::{
 	witness,
 };
 use crate::{
-	channel::IPProverChannel, fracaddcheck::FracAddCheckProver,
-	sumcheck::batch::batch_prove_mle_and_write_evals,
+	channel::IPProverChannel,
+	fracaddcheck::{FracAddCheckProver, FracEvalClaim},
 };
 
 /// Prove a logUp* indexed-lookup reduction.
@@ -77,14 +77,12 @@ where
 		});
 	}
 	// Every index must address a real table position for the embedding and pushforward to be valid.
-	let table_size = 1usize << m;
-	if let Some((position, &value)) = index.iter().enumerate().find(|&(_, &v)| v >= table_size) {
-		return Err(Error::IndexOutOfRange {
-			position,
-			value,
-			table_n_vars: m,
-		});
-	}
+	// This is a precondition: the O(n) scan is compiled out of release builds.
+	// An out-of-range index still panics in release, at the pushforward's scatter-add.
+	debug_assert!(
+		index.iter().all(|&j| j < 1usize << m),
+		"every index entry must be less than the table size 2^m"
+	);
 
 	// The looker numerator eq_r depends only on the evaluation point, so build it before sampling
 	// c.
@@ -105,8 +103,7 @@ where
 	// Build both fractional-addition circuits.
 	// Constructing a circuit computes every layer and returns its single root fraction.
 	let (looker_prover, looker_root) = FracAddCheckProver::new(n, (eq_r, looker_den));
-	let (table_prover, table_root) =
-		FracAddCheckProver::new(m, (pushforward.clone(), table_den.clone()));
+	let (table_prover, table_root) = FracAddCheckProver::new(m, (pushforward.clone(), table_den));
 
 	// The two root fractions; their equality is the logUp identity the verifier checks.
 	//
@@ -122,22 +119,29 @@ where
 	//
 	//     leaf numerator   = eq_r(point_l)        (verifier checks this against eq(eval_point, .))
 	//     leaf denominator = c - I(point_l)
-	let (_looker_num_claim, looker_den_claim) =
-		prove_fracadd_layers(looker_prover, num_l, den_l, n, channel)?;
+	let (looker_remaining, (_looker_num_claim, looker_den_claim)) =
+		looker_prover.prove_layers(n, root_claim(num_l, den_l), channel)?;
+	debug_assert!(
+		looker_remaining.is_none_or(|prover| prover.n_layers() == 0),
+		"the looker side runs all n layers"
+	);
 
 	// The looker denominator is c - I(point_l), so the index claim is I(point_l) = c - den.
 	let index_eval_point = looker_den_claim.point;
 	let index_eval_claim = c - looker_den_claim.eval;
 
 	// Table side: run the first m-1 GKR layers, stopping at the layer-1 claim over m-1 variables.
-	let layer1 = prove_fracadd_layers(table_prover, num_r, den_r, m - 1, channel)?;
+	// The leaf layer is left on the prover, to be spliced into the batched final layer.
+	let (table_remaining, layer1) =
+		table_prover.prove_layers(m - 1, root_claim(num_r, den_r), channel)?;
+	let table_leaf_prover = table_remaining.expect("m-1 < m layers leaves the leaf layer");
 
 	// Batched final layer: reduce the layer-1 claims and <T, Y> = e to one shared evaluation point.
 	let FinalLayerOutput {
 		table_eval_point,
 		table_eval_claim,
 		pushforward_eval_claim,
-	} = prove_final_layer(eval_claim, layer1, &pushforward, &table_den, table, channel)?;
+	} = prove_final_layer(eval_claim, table_leaf_prover, layer1, &pushforward, table, channel)?;
 
 	Ok(LogupOutput {
 		table_eval_point,
@@ -148,83 +152,20 @@ where
 	})
 }
 
-/// Run `n_layers` fractional-addition GKR layers from the root claim.
+/// The root claim of a fractional-addition circuit, over zero variables.
 ///
-/// This is the prover counterpart of [`binius_ip::fracaddcheck::verify`].
-/// It starts from the root claim over zero variables.
-/// Each layer adds one variable via a sumcheck and a line-fold.
-/// So the returned claim is over `n_layers` variables.
-///
-/// The looker side runs all `n` layers down to the leaf claim.
-/// The table side runs only the first `m-1` layers.
-/// That leaves its leaf layer to be proved in batch with the product check.
-///
-/// # Preconditions
-///
-/// - The prover must hold at least `n_layers` layers.
-fn prove_fracadd_layers<F, P>(
-	prover: FracAddCheckProver<P>,
-	num_r: F,
-	den_r: F,
-	n_layers: usize,
-	channel: &mut impl IPProverChannel<F>,
-) -> Result<(MultilinearEvalClaim<F>, MultilinearEvalClaim<F>), Error>
-where
-	F: Field,
-	P: PackedField<Scalar = F>,
-{
-	// The root claim over zero variables: the single fraction at the top of the circuit.
-	let mut claim = (
+/// The circuit collapses to one fraction `num / den` at its root, evaluated at the empty point.
+fn root_claim<F: Field>(num: F, den: F) -> FracEvalClaim<F> {
+	(
 		MultilinearEvalClaim {
-			eval: num_r,
+			eval: num,
 			point: Vec::new(),
 		},
 		MultilinearEvalClaim {
-			eval: den_r,
+			eval: den,
 			point: Vec::new(),
 		},
-	);
-
-	// Each layer step consumes the prover and returns the remainder, so thread it through an
-	// Option.
-	let mut prover_opt = Some(prover);
-	for _ in 0..n_layers {
-		let prover = prover_opt
-			.take()
-			.expect("more layers requested than the circuit holds");
-		let (sumcheck_prover, remaining) = prover.layer_prover(claim)?;
-		prover_opt = remaining;
-
-		let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], channel)?;
-
-		let evals = output
-			.multilinear_evals
-			.into_iter()
-			.next()
-			.expect("batch contains one prover");
-		let [num_0, num_1, den_0, den_1] =
-			<[F; 4]>::try_from(evals).expect("layer prover evaluates four multilinears");
-
-		// Fold the highest variable to combine the two halves into the next layer's claim.
-		let r = channel.sample();
-		let next_num = extrapolate_line(num_0, num_1, r);
-		let next_den = extrapolate_line(den_0, den_1, r);
-
-		let mut next_point = output.challenges;
-		next_point.push(r);
-		claim = (
-			MultilinearEvalClaim {
-				eval: next_num,
-				point: next_point.clone(),
-			},
-			MultilinearEvalClaim {
-				eval: next_den,
-				point: next_point,
-			},
-		);
-	}
-
-	Ok(claim)
+	)
 }
 
 #[cfg(test)]
@@ -403,22 +344,15 @@ mod tests {
 	}
 
 	#[test]
-	fn test_rejects_out_of_range_index() {
+	#[should_panic(expected = "every index entry must be less than the table size")]
+	fn test_out_of_range_index_panics() {
 		let mut rng = StdRng::seed_from_u64(0);
 		let table = random_field_buffer::<P>(&mut rng, 2);
 		let eval_point = random_scalars::<F>(&mut rng, 1);
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 
 		// The table has 2^2 = 4 positions, so index value 4 is out of range.
-		let err = prove::<F, P>(&table, &[0, 4], &eval_point, F::ZERO, &mut transcript)
-			.expect_err("an out-of-range index is rejected");
-		assert!(matches!(
-			err,
-			Error::IndexOutOfRange {
-				position: 1,
-				value: 4,
-				table_n_vars: 2
-			}
-		));
+		// The range check is a debug_assert precondition, so this panics in debug builds.
+		let _ = prove::<F, P>(&table, &[0, 4], &eval_point, F::ZERO, &mut transcript);
 	}
 }
