@@ -120,6 +120,40 @@ impl Key {
 		})
 	}
 
+	/// Accumulates the same weighted sum as [`Self::accumulate_by_operand`], but fuses the
+	/// `lambda_powers[operand_index]` weighting into the consecutive-operand scan.
+	#[inline]
+	fn accumulate_weighted<F: Field>(
+		&self,
+		constraint_indices: &[ConstraintIndex],
+		operator_data: &PreparedOperatorData<F>,
+	) -> F {
+		let Range { start, end } = self.range;
+		let mut constraint_indices = constraint_indices[start as usize..end as usize].iter();
+
+		let Some(first) = constraint_indices.next() else {
+			return F::ZERO;
+		};
+
+		let mut operand_index = first.operand_index as usize;
+		let mut acc = F::ZERO;
+		let mut result = F::ZERO;
+		let tensor = operator_data.r_x_prime_tensor.as_ref();
+		acc += tensor[first.constraint_index as usize];
+
+		for current in constraint_indices {
+			let current_operand_index = current.operand_index as usize;
+			if current_operand_index != operand_index {
+				result += acc * operator_data.lambda_powers[operand_index];
+				operand_index = current_operand_index;
+				acc = F::ZERO;
+			}
+			acc += tensor[current.constraint_index as usize];
+		}
+
+		result + acc * operator_data.lambda_powers[operand_index]
+	}
+
 	/// Accumulates the partial evaluation of an operation matrix for the key.
 	///
 	/// A [`Key`] references the operation constraints where one witness word is an operand. This
@@ -130,9 +164,7 @@ impl Key {
 		constraint_indices: &[ConstraintIndex],
 		operator_data: &PreparedOperatorData<F>,
 	) -> F {
-		self.accumulate_by_operand(constraint_indices, operator_data)
-			.map(|(operand_index, acc)| acc * operator_data.lambda_powers[operand_index])
-			.sum()
+		self.accumulate_weighted(constraint_indices, operator_data)
 	}
 }
 
@@ -425,5 +457,117 @@ impl DeserializeBytes for KeyCollection {
 			key_ranges,
 			constraint_indices,
 		})
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_field::{BinaryField128bGhash, Field};
+	use binius_math::FieldBuffer;
+
+	use super::*;
+
+	type F = BinaryField128bGhash;
+
+	fn f(value: u128) -> F {
+		F::new(value)
+	}
+
+	#[test]
+	fn accumulate_weighted_matches_grouped_operand_accumulation() {
+		let constraint_indices = vec![
+			ConstraintIndex {
+				operand_index: 0,
+				constraint_index: 1,
+			},
+			ConstraintIndex {
+				operand_index: 0,
+				constraint_index: 3,
+			},
+			ConstraintIndex {
+				operand_index: 1,
+				constraint_index: 0,
+			},
+			ConstraintIndex {
+				operand_index: 2,
+				constraint_index: 2,
+			},
+			ConstraintIndex {
+				operand_index: 2,
+				constraint_index: 4,
+			},
+		];
+		let key = Key {
+			operation: Operation::BitwiseAnd,
+			id: 0,
+			range: 0..constraint_indices.len() as u32,
+		};
+		let operator_data = PreparedOperatorData {
+			evals: vec![],
+			r_zhat_prime: F::ZERO,
+			r_x_prime_tensor: FieldBuffer::from_values(&[
+				f(2),
+				f(3),
+				f(5),
+				f(7),
+				f(11),
+				f(13),
+				f(17),
+				f(19),
+			]),
+			lambda_powers: vec![f(23), f(29), f(31)],
+		};
+
+		let expected = key
+			.accumulate_by_operand(&constraint_indices, &operator_data)
+			.map(|(operand_index, acc)| acc * operator_data.lambda_powers[operand_index])
+			.sum::<F>();
+
+		assert_eq!(key.accumulate_weighted(&constraint_indices, &operator_data), expected);
+
+		let non_contiguous_constraint_indices = vec![
+			ConstraintIndex {
+				operand_index: 0,
+				constraint_index: 1,
+			},
+			ConstraintIndex {
+				operand_index: 1,
+				constraint_index: 3,
+			},
+			ConstraintIndex {
+				operand_index: 0,
+				constraint_index: 0,
+			},
+			ConstraintIndex {
+				operand_index: 2,
+				constraint_index: 2,
+			},
+			ConstraintIndex {
+				operand_index: 1,
+				constraint_index: 4,
+			},
+		];
+		let non_contiguous_key = Key {
+			operation: Operation::BitwiseAnd,
+			id: 0,
+			range: 0..non_contiguous_constraint_indices.len() as u32,
+		};
+		let non_contiguous_expected = non_contiguous_key
+			.accumulate_by_operand(&non_contiguous_constraint_indices, &operator_data)
+			.map(|(operand_index, acc)| acc * operator_data.lambda_powers[operand_index])
+			.sum::<F>();
+
+		assert_eq!(
+			non_contiguous_key
+				.accumulate_weighted(&non_contiguous_constraint_indices, &operator_data),
+			non_contiguous_expected
+		);
+
+		let empty_key = Key {
+			operation: Operation::BitwiseAnd,
+			id: 0,
+			range: 0..0,
+		};
+		assert_eq!(empty_key.accumulate_weighted(&constraint_indices, &operator_data), F::ZERO);
 	}
 }
