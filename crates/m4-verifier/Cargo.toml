@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 binius-core = { path = "../core" }
+binius-field = { path = "../field" }
 binius-hash = { path = "../hash" }
 binius-iop = { path = "../iop" }
 binius-ip = { path = "../ip" }

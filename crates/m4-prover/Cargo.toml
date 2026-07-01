@@ -16,6 +16,7 @@ binius-iop-prover = { path = "../iop-prover" }
 binius-ip-prover = { path = "../ip-prover" }
 binius-m4-verifier = { path = "../m4-verifier" }
 binius-math = { path = "../math" }
+binius-prover = { path = "../prover" }
 binius-transcript = { path = "../transcript" }
 binius-utils = { path = "../utils" }
 binius-verifier = { path = "../verifier" }
@@ -23,7 +24,7 @@ binius-verifier = { path = "../verifier" }
 [dev-dependencies]
 assert_matches = { workspace = true }
 binius-iop = { path = "../iop" }
-binius-prover = { path = "../prover" }
+binius-ip = { path = "../ip" }
 proptest = { workspace = true }
 rand = { workspace = true }
 

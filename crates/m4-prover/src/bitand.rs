@@ -7,7 +7,15 @@ use binius_core::{
 	verify::eval_shifted_word,
 	word::Word,
 };
-use binius_utils::rayon::prelude::*;
+use binius_field::{AESTowerField8b as B8, PackedField};
+use binius_ip_prover::{channel::IPProverChannel, sumcheck::Error};
+use binius_math::BinarySubspace;
+use binius_prover::and_reduction::prover::OblongZerocheckProver;
+use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_verifier::{
+	config::{B128, LOG_WORD_SIZE_BITS, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
+	protocols::bitand::AndCheckOutput,
+};
 
 use crate::ValueTable;
 
@@ -131,6 +139,88 @@ impl BatchAndCheckWitness {
 	pub fn into_columns(self) -> (Vec<Word>, Vec<Word>, Vec<Word>) {
 		(self.a, self.b, self.c)
 	}
+
+	/// Proves the batched BitAnd check: `A & B == C` on every row of every instance.
+	///
+	/// The check is the univariate-skip zerocheck of the constraint polynomial:
+	///
+	/// ```text
+	/// A(Z, X) * B(Z, X) - C(Z, X) == 0   for all rows (Z, X)
+	/// ```
+	///
+	/// `Z` is the bit index within a 64-bit word.
+	/// `X` is the row index.
+	///
+	/// The batch carries no special structure for this step.
+	/// The stacked rows are one flat hypercube.
+	/// So the batch is just a larger single zerocheck.
+	///
+	/// ```text
+	///     row = instance * n_and + local_constraint
+	///   X bits = log_instances + log(n_and)
+	/// ```
+	///
+	/// This reuses the single-instance kernel verbatim, only over `K * n_and` rows.
+	/// The block-diagonal batch structure is exploited later, in the lincheck, not here.
+	///
+	/// The reduction folds the three bit-columns into one multilinear evaluation point.
+	/// It returns the claimed evaluations of `A`, `B`, `C` at that point.
+	/// A later shift reduction ties those claims back to the committed witness.
+	///
+	/// # Type parameters
+	///
+	/// - `P`: the packed field for the SIMD multilinear sumcheck rounds.
+	///
+	/// # Arguments
+	///
+	/// - `channel`: the prover channel that records messages and draws Fiat-Shamir challenges.
+	///
+	/// # Returns
+	///
+	/// The reduced claim, holding:
+	/// - The claimed `A`, `B`, `C` evaluations.
+	/// - The univariate (bit-index) challenge.
+	/// - The multilinear evaluation point reached by the sumcheck.
+	///
+	/// # Errors
+	///
+	/// Returns an error if the underlying sumcheck fails.
+	pub fn prove<P, Channel>(self, channel: &mut Channel) -> Result<AndCheckOutput<B128>, Error>
+	where
+		P: PackedField<Scalar = B128>,
+		Channel: IPProverChannel<B128>,
+	{
+		// The univariate-skip domain spans one extra dimension above the 64-bit word.
+		// This is the same skip parameter the single-instance check uses.
+		let prover_message_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1);
+
+		let (a, b, c) = self.into_columns();
+
+		// X has `log_instances + log(n_and)` coordinates: the row count is a power of two.
+		let log_total_constraints = checked_log_2(a.len());
+
+		// Pin the first few zerocheck coordinates to fixed small-field elements (friendly
+		// challenges).
+		// Draw the rest from the large field.
+		// The prover and verifier pin and draw the same split, in the same order.
+		//
+		//     coordinates = [ pinned small-field | sampled large-field ]
+		//                    \____ at most 3 ___/
+		let n_extra_zerocheck_challenges =
+			log_total_constraints.saturating_sub(PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
+		let big_field_zerocheck_challenges = channel.sample_many(n_extra_zerocheck_challenges);
+
+		let prover = OblongZerocheckProver::<_, P>::new(
+			log_total_constraints,
+			a,
+			b,
+			c,
+			big_field_zerocheck_challenges,
+			prover_message_domain.isomorphic(),
+		);
+
+		prover.prove_with_channel(channel)
+	}
 }
 
 /// Evaluates one operand against a single instance's committed words.
@@ -154,11 +244,54 @@ fn eval_operand_words(words: &[Word], operand: &[ShiftedValueIndex]) -> Word {
 
 #[cfg(test)]
 mod tests {
+	use assert_matches::assert_matches;
 	use binius_core::{constraint_system::ValueVec, verify::eval_operand};
+	use binius_field::{
+		PackedBinaryGhash1x128b,
+		linear_transformation::{
+			BytewiseLookupTransformationFactory, LinearTransformationFactory,
+			OutputWrappingTransformationFactory,
+		},
+	};
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
+	use binius_ip::channel::Error as ChannelError;
+	use binius_m4_verifier::verify_bitand_reduction;
+	use binius_math::{
+		FieldBuffer, multilinear::evaluate::evaluate, univariate::lagrange_evals_scalars,
+	};
+	use binius_prover::fold_word::fold_words_with_transform;
+	use binius_transcript::{ProverTranscript, VerifierTranscript};
+	use binius_verifier::{
+		Error as VerifierError, config::StdChallenger, protocols::bitand::SKIPPED_VARS,
+	};
 	use proptest::prelude::*;
 
 	use super::*;
+
+	/// A width-1 packed field keeps one scalar per element, so the SIMD sumcheck rounds stay
+	/// simple.
+	type P = PackedBinaryGhash1x128b;
+
+	/// Recomputes the true multilinear evaluation of one bit-column at the reduction's point.
+	///
+	/// This mirrors the single-instance kernel's own consistency check:
+	///
+	///     fold the column at the bit-index challenge z
+	///     evaluate the folded multilinear at the sumcheck point
+	///
+	/// The result must equal the eval the reduction claimed for that column.
+	fn fold_eval_column(col: &[Word], z_challenge: B128, eval_point: &[B128]) -> B128 {
+		// The univariate domain is the skip domain with the extension dimension dropped.
+		let univariate_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1)
+			.isomorphic::<B128>()
+			.reduce_dim(SKIPPED_VARS);
+		let lagrange = lagrange_evals_scalars(&univariate_domain, z_challenge);
+		let transform =
+			OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+				.create(&lagrange);
+		let folded: FieldBuffer<B128> = fold_words_with_transform(&transform, col);
+		evaluate(&folded, eval_point)
+	}
 
 	// The prepared per-instance AND constraints, padded to a power of two.
 	// This mirrors how the prover feeds constraints downstream.
@@ -355,6 +488,114 @@ mod tests {
 			for ((a, b), c) in witness.a().iter().zip(witness.b()).zip(witness.c()) {
 				prop_assert_eq!(a.0 & b.0, c.0);
 			}
+		}
+	}
+
+	#[test]
+	fn small_batch_round_trips_with_only_pinned_challenges() {
+		let c = and_circuit();
+
+		// Fixture state: K = 4 instances, n_and = 2 → 8 rows → log_total = 3.
+		// The row count log equals the pinned-challenge count.
+		// So every coordinate is pinned and no large-field challenge is drawn.
+		let table = populate_table(&c, &[(1, 3, 7), (5, 6, 0), (9, 12, 0xFF), (0xF0, 0x0F, 1)]);
+		let and_constraints = table_constraints(&c);
+		let witness = BatchAndCheckWitness::build(&table, &and_constraints);
+		let log_total = checked_log_2(witness.a().len());
+
+		// Prover and verifier agree on the reduced claim over the batched columns.
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let prove_output = witness.prove::<P, _>(&mut prover_transcript).unwrap();
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let verify_output = verify_bitand_reduction(log_total, &mut verifier_transcript).unwrap();
+		verifier_transcript
+			.finalize()
+			.expect("no trailing proof data");
+
+		assert_eq!(prove_output, verify_output);
+	}
+
+	#[test]
+	fn tampered_proof_is_rejected() {
+		let c = and_circuit();
+
+		// Fixture state: 16 satisfying instances → 32 rows → log_total = 5.
+		let inputs: Vec<(u64, u64, u64)> = (0..16u64)
+			.map(|i| (i, i.wrapping_mul(3) + 1, i ^ 0xAB))
+			.collect();
+		let table = populate_table(&c, &inputs);
+		let and_constraints = table_constraints(&c);
+		let witness = BatchAndCheckWitness::build(&table, &and_constraints);
+		let log_total = checked_log_2(witness.a().len());
+
+		// Produce a faithful proof.
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let _ = witness.prove::<P, _>(&mut prover_transcript).unwrap();
+		let mut proof = prover_transcript.finalize();
+
+		// Mutation: flip a bit in the prover's first message, the univariate round evaluations.
+		proof[0] ^= 1;
+
+		// The verifier redraws a different univariate challenge from the tampered message.
+		// The final consistency check then no longer holds.
+		// So verification fails.
+		let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
+		let err = verify_bitand_reduction(log_total, &mut verifier_transcript).unwrap_err();
+
+		// The closing check is `A_eval * B_eval - C_eval == sumcheck_eval`.
+		// The tampered message moves the claim, so this equality no longer holds.
+		// The channel rejects the non-zero assertion, the protocol's terminal check.
+		assert_matches!(err, VerifierError::Channel(ChannelError::InvalidAssert));
+	}
+
+	proptest! {
+		#[test]
+		fn reduction_round_trips_and_claims_match_columns(
+			inputs in prop::collection::vec((any::<u64>(), any::<u64>(), any::<u64>()), 16),
+		) {
+			// Invariant: the reduction round-trips, and its output claims equal the true column MLEs.
+			//
+			//     prover  : zerocheck A*B - C over K*n_and rows, claim (a_eval, b_eval, c_eval) at p
+			//     verifier: replay, reach the same claim
+			//     check   : fold each column at z and evaluate at p == the claimed eval
+			//
+			// The third check pins the reduction to the actual columns.
+			// Internal transcript agreement alone would not catch a wrong claim point.
+
+			let c = and_circuit();
+			let table = populate_table(&c, &inputs);
+			let and_constraints = table_constraints(&c);
+			let witness = BatchAndCheckWitness::build(&table, &and_constraints);
+
+			// Keep the columns so the claimed evals can be checked against them.
+			let a_cols = witness.a().to_vec();
+			let b_cols = witness.b().to_vec();
+			let c_cols = witness.c().to_vec();
+			let log_total = checked_log_2(witness.a().len());
+
+			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+			let prove_output = witness.prove::<P, _>(&mut prover_transcript).unwrap();
+
+			let mut verifier_transcript = prover_transcript.into_verifier();
+			let verify_output =
+				verify_bitand_reduction(log_total, &mut verifier_transcript).unwrap();
+			verifier_transcript.finalize().expect("no trailing proof data");
+
+			// Both sides reach the same reduced claim.
+			prop_assert_eq!(&prove_output, &verify_output);
+
+			// Each claimed eval is the column's multilinear, folded at z and evaluated at the point.
+			let AndCheckOutput {
+				a_eval,
+				b_eval,
+				c_eval,
+				z_challenge,
+				eval_point,
+			} = verify_output;
+			prop_assert_eq!(fold_eval_column(&a_cols, z_challenge, &eval_point), a_eval);
+			prop_assert_eq!(fold_eval_column(&b_cols, z_challenge, &eval_point), b_eval);
+			prop_assert_eq!(fold_eval_column(&c_cols, z_challenge, &eval_point), c_eval);
 		}
 	}
 }
