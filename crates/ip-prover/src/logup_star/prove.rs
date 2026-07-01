@@ -155,7 +155,7 @@ where
 /// The root claim of a fractional-addition circuit, over zero variables.
 ///
 /// The circuit collapses to one fraction `num / den` at its root, evaluated at the empty point.
-fn root_claim<F: Field>(num: F, den: F) -> FracEvalClaim<F> {
+const fn root_claim<F: Field>(num: F, den: F) -> FracEvalClaim<F> {
 	(
 		MultilinearEvalClaim {
 			eval: num,
