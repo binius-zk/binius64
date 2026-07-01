@@ -43,6 +43,7 @@ use binius_iop::{
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
+	oracle_setup_channel::{DummyElem, OracleSetupChannel},
 };
 use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck};
 use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, univariate::evaluate_univariate};
@@ -108,16 +109,32 @@ impl<F: Field> IOPVerifier<F> {
 	/// Returns the oracle specs for the IOP channel.
 	///
 	/// These describe the oracles (witness and mask) that the prover commits to.
-	pub fn oracle_specs(&self) -> Vec<OracleSpec> {
+	///
+	/// The specs are derived by replaying the oracle-receiving sequence against an
+	/// [`OracleSetupChannel`] (which records each `recv_oracle` without doing real verification),
+	/// rather than hardcoding it. IronSpartan proofs are always zero-knowledge. The precommit
+	/// oracle is received by the outer [`Verifier::verify`] before it delegates to
+	/// [`Self::verify`], so it is recorded here first to match that order.
+	pub fn oracle_specs(&self) -> Vec<OracleSpec>
+	where
+		F: BinaryField,
+	{
 		let cs = &self.constraint_system;
-		let (m_n, m_d) = cs.mask_dims();
-		let log_mask_dim = m_n + m_d;
-
-		vec![
-			OracleSpec::new_zk(cs.log_precommit() as usize),
-			OracleSpec::new_zk(cs.log_private() as usize),
-			OracleSpec::new_zk(log_mask_dim),
-		]
+		let mut channel = OracleSetupChannel::new(true);
+		// Record the precommit oracle first (`OracleSetupChannel` implements the channel trait for
+		// every `F`, so the trait is named explicitly to fix `F`); the `verify` call below fixes it
+		// for the rest of the sequence.
+		<OracleSetupChannel as IOPVerifierChannel<'_, F>>::recv_oracle(
+			&mut channel,
+			cs.log_precommit() as usize,
+			true,
+		)
+		.expect("OracleSetupChannel::recv_oracle is infallible");
+		let public = vec![DummyElem; 1 << cs.log_public()];
+		// Discarded: the setup channel performs no real verification; we only read back the
+		// recorded oracle specs.
+		let _ = self.verify((), public, &mut channel);
+		channel.into_oracle_specs()
 	}
 
 	/// Verifies a proof using an IOP channel.
@@ -156,9 +173,13 @@ impl<F: Field> IOPVerifier<F> {
 			});
 		}
 
-		// Receive the private and mask oracle commitments.
-		let private_oracle = channel.recv_oracle()?;
-		let mask_oracle = channel.recv_oracle()?;
+		// Receive the private and mask oracle commitments. The private witness is
+		// witness-dependent. The mask is passed `is_witness_dependent = true` to preserve its ZK
+		// masking (it is a fresh random mask rather than witness data, but is committed with
+		// hiding in the ZK protocol).
+		let private_oracle = channel.recv_oracle(cs.log_private() as usize, true)?;
+		let (m_n, m_d) = cs.mask_dims();
+		let mask_oracle = channel.recv_oracle(m_n + m_d, true)?;
 
 		// Verify the multiplication constraints.
 		let MulcheckOutput {
@@ -313,7 +334,8 @@ where
 		// Create channel, receive the precommit oracle, and delegate to IOPVerifier::verify. The
 		// IOP verifier only queues the oracle relations; `finish` runs the single combined opening.
 		let mut channel = self.basefold_compiler.create_channel(transcript);
-		let precommit_oracle = channel.recv_oracle()?;
+		let precommit_oracle =
+			channel.recv_oracle(self.constraint_system().log_precommit() as usize, true)?;
 		self.iop_verifier
 			.verify(precommit_oracle, public.to_vec(), &mut channel)?;
 		Ok(channel.finish()?)

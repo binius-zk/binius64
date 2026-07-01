@@ -344,7 +344,13 @@ where
 		&self.oracle_specs[self.next_oracle_index..]
 	}
 
-	fn recv_oracle(&mut self) -> Result<Self::Oracle, Error> {
+	fn recv_oracle(
+		&mut self,
+		_log_msg_len: usize,
+		_is_witness_dependent: bool,
+	) -> Result<Self::Oracle, Error> {
+		// A BaseFold commitment is a fixed-size Merkle digest, so `log_msg_len` is not needed here;
+		// the per-oracle specs (used for the FRI opening) are supplied at channel construction.
 		assert!(
 			!self.remaining_oracle_specs().is_empty(),
 			"recv_oracle called but no remaining oracle specs"
