@@ -15,9 +15,6 @@ pub use m512::M512;
 pub mod arithmetic;
 
 pub mod packed_aes_128;
-pub mod packed_aes_256;
-pub mod packed_aes_512;
-pub mod packed_aes_8;
 
 pub mod packed_ghash_128;
 pub mod packed_ghash_256;
@@ -26,6 +23,4 @@ pub mod packed_ghash_512;
 pub(crate) mod univariate_mul_utils_128;
 
 pub(crate) mod packed_arithmetic;
-pub(super) mod pairwise_table_arithmetic;
-pub(super) mod reuse_multiply_arithmetic;
 pub(super) mod scaled_arithmetic;

@@ -18,7 +18,6 @@ cfg_if! {
 		pub mod packed_ghash_128;
 	} else {
 		pub use super::portable::m128::M128;
-		pub use super::portable::packed_aes_128;
 		pub use super::portable::packed_ghash_128;
 	}
 }
@@ -32,7 +31,6 @@ cfg_if! {
 
 	} else {
 		pub use super::portable::m256::{M256, m256_from_u128s};
-		pub use super::portable::packed_aes_256;
 		pub use super::portable::packed_ghash_256;
 	}
 }
@@ -45,7 +43,6 @@ cfg_if! {
 		pub mod packed_ghash_512;
 	} else {
 		pub use super::portable::m512::M512;
-		pub use super::portable::packed_aes_512;
 		pub use super::portable::packed_ghash_512;
 	}
 }

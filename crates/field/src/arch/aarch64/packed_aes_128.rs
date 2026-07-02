@@ -1,45 +1,36 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use bytemuck::TransparentWrapper;
-
 use super::{
 	m128::M128,
-	simd_arithmetic::{VmullWideMul, packed_aes_16x8b_invert_or_zero, packed_aes_16x8b_square},
+	simd_arithmetic::{
+		WideAes16x8bProduct, packed_aes_16x8b_invert_or_zero, packed_aes_16x8b_reduce,
+		packed_aes_16x8b_square, packed_aes_16x8b_wide_mul,
+	},
 };
-use crate::{
-	aes_field::AESTowerField8b,
-	arch::PackedPrimitiveType,
-	arithmetic_traits::{InvertOrZero, Square},
-	underlier::WithUnderlier,
-};
+use crate::arch::PackedAesArithmetic;
 
-/// Widening-multiply wrapper used by the AES packing: the `vmull_p8`-backed `VmullWideMul`.
-pub type AesWideMul16x<T> = VmullWideMul<T>;
+impl PackedAesArithmetic for M128 {
+	type WideProduct = WideAes16x8bProduct;
 
-/// Square wrapper for the `PackedAESBinaryField16x8b` packing.
-pub type AesSquare16x<T> = NeonTableLookupArithmetic<T>;
-
-/// Invert wrapper for the `PackedAESBinaryField16x8b` packing.
-pub type AesInvert16x<T> = NeonTableLookupArithmetic<T>;
-
-/// Square and invert strategy wrapper for aarch64 AES, backed by `vqtbl` table lookups over the
-/// 16-byte `M128` vector.
-#[repr(transparent)]
-#[derive(TransparentWrapper)]
-pub struct NeonTableLookupArithmetic<T>(T);
-
-impl Square for NeonTableLookupArithmetic<PackedPrimitiveType<M128, AESTowerField8b>> {
 	#[inline]
-	fn square(self) -> Self {
-		Self::wrap(Self::peel(self).mutate_underlier(packed_aes_16x8b_square))
+	fn wide_mul(a: Self, b: Self) -> Self::WideProduct {
+		packed_aes_16x8b_wide_mul(a, b)
 	}
-}
 
-impl InvertOrZero for NeonTableLookupArithmetic<PackedPrimitiveType<M128, AESTowerField8b>> {
 	#[inline]
-	fn invert_or_zero(self) -> Self {
-		Self::wrap(Self::peel(self).mutate_underlier(packed_aes_16x8b_invert_or_zero))
+	fn reduce(wide: Self::WideProduct) -> Self {
+		packed_aes_16x8b_reduce(wide)
+	}
+
+	#[inline]
+	fn square(a: Self) -> Self {
+		packed_aes_16x8b_square(a)
+	}
+
+	#[inline]
+	fn invert_or_zero(a: Self) -> Self {
+		packed_aes_16x8b_invert_or_zero(a)
 	}
 }
 
