@@ -27,8 +27,11 @@
 mod error;
 mod final_layer;
 mod prove;
-mod witness;
+pub mod witness;
 
 pub use binius_ip::logup_star::LogupOutput;
 
-pub use self::{error::Error, prove::prove};
+pub use self::{
+	error::Error,
+	prove::{prove, prove_reduction},
+};

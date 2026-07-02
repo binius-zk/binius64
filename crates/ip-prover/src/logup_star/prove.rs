@@ -84,26 +84,70 @@ where
 		"every index entry must be less than the table size 2^m"
 	);
 
-	// The looker numerator eq_r depends only on the evaluation point, so build it before sampling
-	// c.
+	// Build the two witnesses that do not depend on the logUp challenge c.
+	//
+	//     eq_r = eq(eval_point, .)     the looker numerator
+	//     Y    = I_* eq_r              the pushforward, scattered onto table positions
 	let eq_r = witness::equality_indicator::<F, P>(eval_point);
+	let pushforward = witness::pushforward::<F, P>(&eq_r, index, m);
+
+	// The self-contained prover commits nothing.
+	// It runs the reduction over the witnesses directly.
+	prove_reduction(table, index, eval_claim, eq_r, &pushforward, channel)
+}
+
+/// Run the logUp* reduction over the pre-built witnesses `eq_r` and pushforward `Y`.
+///
+/// This is the reduction core of [`prove`], split out so a caller can build `Y` once and commit it.
+/// The committing prover builds `eq_r` and `Y`, commits `Y`, then hands both here.
+/// That way the scatter-add that forms `Y` runs only once.
+///
+/// # Arguments
+///
+/// * `table` - The table multilinear `T` over `m` variables.
+/// * `index` - The index column, one table position per looker row.
+/// * `eval_claim` - The claimed evaluation `e = (I^* T)(eval_point)`.
+/// * `eq_r` - The looker numerator `eq(eval_point, .)` over `n` variables.
+/// * `pushforward` - The pushforward `Y = I_* eq_r` over `m` variables.
+/// * `channel` - The prover channel.
+///
+/// # Preconditions
+///
+/// - `table.log_len()` is at least 1.
+/// - `index.len()` equals `2^{eq_r.log_len()}`, with every entry less than the table size.
+/// - `pushforward` equals `I_* eq_r`.
+pub fn prove_reduction<F, P>(
+	table: &FieldBuffer<P>,
+	index: &[usize],
+	eval_claim: F,
+	eq_r: FieldBuffer<P>,
+	pushforward: &FieldBuffer<P>,
+	channel: &mut impl IPProverChannel<F>,
+) -> Result<LogupOutput<F>, Error>
+where
+	F: Field + ExtensionField<BinaryField1b>,
+	P: PackedField<Scalar = F>,
+{
+	let m = table.log_len();
+	let n = eq_r.log_len();
 
 	// Sample the logUp challenge c that randomizes the logarithmic-derivative denominators.
 	// This is the prover's first transcript action, mirroring the verifier.
+	// A committing caller must absorb the I, T, and Y commitments into the transcript before this.
 	let c = channel.sample();
 
-	// Build the remaining witnesses, which all depend on c.
+	// Build the denominators, which depend on c.
 	//
 	//     looker side: eq_r(i) / (c - I(i))   over n variables
-	//     table  side: Y(j)    / (c - j)       over m variables, with Y = I_* eq_r
+	//     table  side: Y(j)    / (c - j)       over m variables
 	let looker_den = witness::looker_denominator::<F, P>(c, index);
 	let table_den = witness::table_denominator::<F, P>(c, m);
-	let pushforward = witness::pushforward::<F, P>(&eq_r, index, m);
 
 	// Build both fractional-addition circuits.
 	// Constructing a circuit computes every layer and returns its single root fraction.
 	let (looker_prover, looker_root) = FracAddCheckProver::new(n, (eq_r, looker_den));
-	let (table_prover, table_root) = FracAddCheckProver::new(m, (pushforward.clone(), table_den));
+	let (table_prover, table_root) =
+		FracAddCheckProver::new(m, (FieldBuffer::clone(pushforward), table_den));
 
 	// The two root fractions; their equality is the logUp identity the verifier checks.
 	//
@@ -141,7 +185,7 @@ where
 		table_eval_point,
 		table_eval_claim,
 		pushforward_eval_claim,
-	} = prove_final_layer(eval_claim, table_leaf_prover, layer1, &pushforward, table, channel)?;
+	} = prove_final_layer(eval_claim, table_leaf_prover, layer1, pushforward, table, channel)?;
 
 	Ok(LogupOutput {
 		table_eval_point,
