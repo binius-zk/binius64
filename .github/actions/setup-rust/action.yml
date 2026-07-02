@@ -1,0 +1,38 @@
+name: Setup Rust
+description: >-
+  Install the Rust toolchain and enable caching, with the cache key namespaced
+  by the runner's CPU feature set so heterogeneous GitHub-hosted runners never
+  share build artifacts.
+inputs:
+  components:
+    description: Comma-separated rustup components to install (e.g. clippy, rustfmt).
+    required: false
+    default: ""
+  target:
+    description: Additional Rust target triple to install (e.g. wasm32-wasip1).
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    # GitHub-hosted x86_64 runners include both Intel (with AVX-512/GFNI) and AMD (without) SKUs.
+    # With `-Ctarget-cpu=native`, build artifacts cached on one SKU produce illegal instructions
+    # when restored on another. Hash the CPU feature set into the cache key so heterogeneous runners
+    # do not share artifacts. Jobs that build CPU-agnostic output are unaffected beyond landing in a
+    # stable per-SKU cache bucket.
+    - name: Compute CPU feature cache key
+      id: cpu
+      shell: bash
+      run: |
+        if [ -r /proc/cpuinfo ]; then
+          HASH=$(grep -m1 -E '^(flags|Features)[[:space:]]*:' /proc/cpuinfo | sha256sum | cut -c1-16)
+        else
+          HASH=portable
+        fi
+        echo "key=cpu-${HASH}" >> "$GITHUB_OUTPUT"
+    - name: Setup Rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        components: ${{ inputs.components }}
+        target: ${{ inputs.target }}
+        cache-key: ${{ steps.cpu.outputs.key }}

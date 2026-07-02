@@ -15,6 +15,11 @@ use crate::{
 	},
 };
 
+/// The numerator and denominator evaluation claims of one fractional-addition layer.
+///
+/// Both claims share the same evaluation point, that of the layer they describe.
+pub type FracEvalClaim<F> = (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>);
+
 /// Prover for the fractional addition protocol.
 ///
 /// Each layer is a double of the numerator and denominator values of fractional terms. Each layer
@@ -99,7 +104,7 @@ where
 	/// - `remaining` is `Some(self)` if there are more layers, `None` otherwise
 	pub fn layer_prover(
 		mut self,
-		claim: (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>),
+		claim: FracEvalClaim<F>,
 	) -> Result<(impl MleCheckProver<F>, Option<Self>), Error> {
 		let (num_claim, den_claim) = claim;
 		assert_eq!(
@@ -144,13 +149,53 @@ where
 	/// * `claim.0.point.len() == witness.log_len() - k` (where k is the number of reduction layers)
 	pub fn prove(
 		self,
-		claim: (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>),
+		claim: FracEvalClaim<F>,
 		channel: &mut impl IPProverChannel<F>,
-	) -> Result<(MultilinearEvalClaim<F>, MultilinearEvalClaim<F>), Error> {
+	) -> Result<FracEvalClaim<F>, Error> {
+		// Proving the full circuit runs every layer, so delegate and drop the leftover prover.
+		let n_layers = self.n_layers();
+		let (remaining, claim) = self.prove_layers(n_layers, claim, channel)?;
+		debug_assert!(
+			remaining.is_none_or(|prover| prover.n_layers() == 0),
+			"proving every layer leaves none unproved"
+		);
+		Ok(claim)
+	}
+
+	/// Runs the first `n_layers` fractional-addition layers from a claim, returning the remainder.
+	///
+	/// Each layer adds one variable via a sumcheck and a line-fold.
+	/// So starting from a claim over `d` variables, the returned claim is over `d + n_layers`.
+	///
+	/// This is the building block of [`Self::prove`], which runs every layer.
+	/// Stopping early leaves the remaining prover on its untouched layers.
+	/// A caller can splice the leaf layer into another reduction, as the logUp* final layer does.
+	///
+	/// # Arguments
+	/// * `n_layers` - The number of layers to prove, at most [`Self::n_layers`].
+	/// * `claim` - The initial numerator/denominator claims, sharing an evaluation point.
+	/// * `channel` - The channel for sending prover messages and sampling challenges.
+	///
+	/// # Returns
+	/// * `Some(self)` holding the untouched layers, or `None` if all were proved,
+	/// * the reduced numerator/denominator claims after `n_layers` layers.
+	///
+	/// # Preconditions
+	/// * `n_layers <= self.n_layers()`.
+	pub fn prove_layers(
+		self,
+		n_layers: usize,
+		claim: FracEvalClaim<F>,
+		channel: &mut impl IPProverChannel<F>,
+	) -> Result<(Option<Self>, FracEvalClaim<F>), Error> {
+		// Each layer consumes the prover and returns the remainder, so thread it through an Option.
 		let mut prover_opt = Some(self);
 		let mut claim = claim;
 
-		while let Some(prover) = prover_opt {
+		for _ in 0..n_layers {
+			let prover = prover_opt
+				.take()
+				.expect("precondition: n_layers <= self.n_layers()");
 			let (sumcheck_prover, remaining) = prover.layer_prover(claim)?;
 			prover_opt = remaining;
 
@@ -163,6 +208,7 @@ where
 				.try_into()
 				.expect("prover evaluates four multilinears");
 
+			// Fold the highest variable to combine the two halves into the next layer's claim.
 			let r = channel.sample();
 
 			let next_num = extrapolate_line_packed(num_0, num_1, r);
@@ -183,7 +229,7 @@ where
 			claim = (num_claim, den_claim);
 		}
 
-		Ok(claim)
+		Ok((prover_opt, claim))
 	}
 }
 
