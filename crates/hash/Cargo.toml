@@ -35,3 +35,7 @@ rayon = ["binius-utils/rayon"]
 [[bench]]
 name = "sha256"
 harness = false
+
+[[bench]]
+name = "blake3"
+harness = false
