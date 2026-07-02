@@ -42,30 +42,27 @@ use crate::fold_word::{fold_across_words, fold_words};
 
 /// A helper structure that encapsulates switchover settings and the prover channel for
 /// the integer multiplication protocol.
-pub struct IntMulProver<'a, P, S, Channel> {
+pub struct IntMulProver<'a, P, Channel> {
 	_p_marker: PhantomData<P>,
-	_s_marker: PhantomData<S>,
 
 	switchover: usize,
 	channel: &'a mut Channel,
 }
 
-impl<'a, P, S, Channel> IntMulProver<'a, P, S, Channel> {
+impl<'a, P, Channel> IntMulProver<'a, P, Channel> {
 	pub const fn new(switchover: usize, channel: &'a mut Channel) -> Self {
 		Self {
 			_p_marker: PhantomData,
-			_s_marker: PhantomData,
 			switchover,
 			channel,
 		}
 	}
 }
 
-impl<'a, F, P, S, Channel> IntMulProver<'a, P, S, Channel>
+impl<F, P, Channel> IntMulProver<'_, P, Channel>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
-	S: AsRef<[u64]> + Sync,
 	Channel: IPProverChannel<F>,
 {
 	/// Prove an integer multiplication statement.
@@ -91,7 +88,7 @@ where
 	/// The output of this protocol is a set of evaluation claims on the `b` selectors representing
 	/// all of `a`, `b`, `c_lo` and `c_hi` as column-major bit matrices, at a common evaluation
 	/// point.
-	pub fn prove(&mut self, witness: Witness<P, u64, S>) -> Result<IntMulOutput<F>, IntMulError> {
+	pub fn prove(&mut self, witness: Witness<'_, P>) -> Result<IntMulOutput<F>, IntMulError> {
 		let Witness {
 			log_bits,
 			a_exponents,
@@ -107,7 +104,6 @@ where
 			c_hi_prodcheck,
 			c_hi_root,
 			c_root,
-			_b_marker,
 		} = witness;
 
 		let n_vars = c_root.log_len();
@@ -144,7 +140,7 @@ where
 			&twisted_eval_points,
 			&twisted_evals,
 			a_root,
-			b_exponents.as_ref(),
+			b_exponents,
 			[c_lo_root, c_hi_root],
 			&initial_eval_point,
 			exp_eval,
@@ -174,12 +170,12 @@ where
 			(&a_evals, a_leaves),
 			(&c_lo_evals, c_lo_leaves),
 			(&c_hi_evals, c_hi_leaves),
-			b_exponents.as_ref(),
+			b_exponents,
 			&phase3_eval_point,
 			&r_ib,
 			b_recomb,
-			a_exponents.as_ref(),
-			c_lo_exponents.as_ref(),
+			a_exponents,
+			c_lo_exponents,
 		)
 	}
 
@@ -227,7 +223,7 @@ where
 		twisted_eval_points: &[Vec<F>],
 		twisted_evals: &[F],
 		selector: FieldBuffer<P>,
-		b_exponents: &[u64],
+		b_exponents: &[Word],
 		c_lo_hi_roots: [FieldBuffer<P>; 2],
 		c_eval_point: &[F],
 		c_root_eval: F,
@@ -255,10 +251,14 @@ where
 		// are fixed against it.
 		let gamma = self.channel.sample_many(log_bits);
 		let eq_weights = eq_ind_partial_eval_scalars::<F>(&gamma);
+		// `SelectorMlecheckProver` reads the exponent bits through the `Bitwise` bitmask
+		// abstraction, which is implemented for the primitive integer types. `Word` is
+		// `repr(transparent)` over `u64`, so reinterpret the slice in place.
+		let b_bitmasks: &[u64] = bytemuck::cast_slice(b_exponents);
 		let selector_prover = SelectorMlecheckProver::new(
 			selector,
 			selector_claims,
-			b_exponents,
+			b_bitmasks,
 			eq_weights,
 			self.switchover,
 		)?;
@@ -396,13 +396,13 @@ where
 		(a_evals, a_layer): (&[F], Vec<FieldBuffer<P>>),
 		(c_lo_evals, c_lo_layer): (&[F], Vec<FieldBuffer<P>>),
 		(c_hi_evals, c_hi_layer): (&[F], Vec<FieldBuffer<P>>),
-		b_exponents: &[u64],
+		b_exponents: &[Word],
 		b_eval_point: &[F],
 		r_ib: &[F],
 		b_recomb: F,
 		// Needed for the zerocheck on `a_0 * b_0 = c_lo_0`.
-		a_exponents: &[u64],
-		c_lo_exponents: &[u64],
+		a_exponents: &[Word],
+		c_lo_exponents: &[Word],
 	) -> Result<IntMulOutput<F>, IntMulError> {
 		assert!(log_bits >= 1);
 		assert_eq!(1 << log_bits, a_layer.len());
@@ -429,9 +429,9 @@ where
 		let binary_elements = [F::zero(), F::one()];
 
 		// TODO: Use a special 1-bit-optimized MLE-check with switchover to save memory.
-		let a_0: FieldBuffer<P> = two_valued_field_buffer(0, &a_exponents, binary_elements);
-		let b_0: FieldBuffer<P> = two_valued_field_buffer(0, &b_exponents, binary_elements);
-		let c_lo_0: FieldBuffer<P> = two_valued_field_buffer(0, &c_lo_exponents, binary_elements);
+		let a_0: FieldBuffer<P> = two_valued_field_buffer(0, a_exponents, binary_elements);
+		let b_0: FieldBuffer<P> = two_valued_field_buffer(0, b_exponents, binary_elements);
+		let c_lo_0: FieldBuffer<P> = two_valued_field_buffer(0, c_lo_exponents, binary_elements);
 
 		// Make the sumcheck prover for the overflow parity check, binding it at the Phase-2
 		// constraint point `b_eval_point` (r_2) per the spec (reused for free from the `b`
@@ -451,13 +451,8 @@ where
 		// replaces the 2^k separate b rerandomizations with the spec's single recombined claim.
 		assert_eq!(b_exponents.len(), 1 << b_eval_point.len());
 
-		let b_words = b_exponents
-			.iter()
-			.map(|&word| Word::from_u64(word))
-			.collect::<Vec<_>>();
-
 		let b_tensor = eq_ind_partial_eval_scalars::<F>(r_ib);
-		let b_folded = fold_words::<_, P>(&b_words, &b_tensor);
+		let b_folded = fold_words::<_, P>(b_exponents, &b_tensor);
 
 		let b_eval_prover = MultilinearEvalProver::new(b_folded, b_eval_point, b_recomb)?;
 		let b_sumcheck_prover = MleToSumCheckDecorator::new(b_eval_prover);
@@ -487,7 +482,7 @@ where
 
 		// The prover still sends the 2^k raw per-bit evals b(i, r_x) for Phase-5 leaf
 		// reconstruction; the verifier binds them via sum_i eq(r_I^b, i) * b(i, r_x) = B(r_x).
-		let b_evals = fold_across_words::<_, P>(&b_words, &challenges).to_vec();
+		let b_evals = fold_across_words::<_, P>(b_exponents, &challenges).to_vec();
 
 		// Sanity: the single recombined rerandomization eval B(r_x) equals the recombination of
 		// the raw per-bit evals.

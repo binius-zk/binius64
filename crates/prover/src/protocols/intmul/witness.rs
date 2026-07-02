@@ -1,14 +1,13 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::{iter, marker::PhantomData, mem::MaybeUninit, ops::Deref};
+use std::{iter, mem::MaybeUninit, ops::Deref};
 
+use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField};
 use binius_ip_prover::prodcheck::ProdcheckProver;
 use binius_math::field_buffer::FieldBuffer;
 use binius_utils::{
-	bitwise::{BitSelector, Bitwise},
 	checked_arithmetics::{checked_log_2, strict_log_2},
-	random_access_sequence::RandomAccessSequence,
 	rayon::prelude::*,
 	strided_array::StridedArray2DViewMut,
 };
@@ -37,17 +36,19 @@ use super::error::IntMulError;
 /// separately.
 #[derive(Clone, Getters)]
 #[getset(get = "pub")]
-pub struct Witness<P: PackedField, B: Bitwise, S: AsRef<[B]> + Sync> {
+pub struct Witness<'a, P: PackedField> {
 	/// The log of the bit width ($m$): the tree leaf layer has `2^log_bits` selected multilinears.
 	pub log_bits: usize,
 	/// The exponents for `a` (needed for the phase 5 parity zerocheck on `a_0`).
-	pub a_exponents: S,
+	#[getset(skip)]
+	pub a_exponents: &'a [Word],
 	/// Prodcheck prover for the `a` exponentiation tree (leaf layer retained).
 	pub a_prodcheck: ProdcheckProver<P>,
 	/// The root of the `a` tree (product of all leaves element-wise); the `b` variable base.
 	pub a_root: FieldBuffer<P>,
 	/// The exponents for `b` (needed for phase 5).
-	pub b_exponents: S,
+	#[getset(skip)]
+	pub b_exponents: &'a [Word],
 	/// Concatenated b leaves for prodcheck: [L_0, L_1, ..., L_{2^k-1}].
 	/// Has log_len = n_vars + log_bits.
 	pub b_leaves: FieldBuffer<P>,
@@ -56,7 +57,8 @@ pub struct Witness<P: PackedField, B: Bitwise, S: AsRef<[B]> + Sync> {
 	/// The root of the b tree (product of all leaves element-wise).
 	pub b_root: FieldBuffer<P>,
 	/// The exponents for `c_lo` (needed for the phase 5 parity zerocheck on `c_lo_0`).
-	pub c_lo_exponents: S,
+	#[getset(skip)]
+	pub c_lo_exponents: &'a [Word],
 	/// Prodcheck prover for the `c_lo` exponentiation tree (leaf layer retained).
 	pub c_lo_prodcheck: ProdcheckProver<P>,
 	/// The root of the `c_lo` tree.
@@ -67,31 +69,33 @@ pub struct Witness<P: PackedField, B: Bitwise, S: AsRef<[B]> + Sync> {
 	pub c_hi_root: FieldBuffer<P>,
 	/// The root of a `log_bits + 1` deep tree of the full product `c` (`c_lo_root * c_hi_root`).
 	pub c_root: FieldBuffer<P>,
-	#[getset(skip)]
-	pub _b_marker: PhantomData<B>,
 }
 
-impl<F, P, B, S> Witness<P, B, S>
+impl<'a, F, P> Witness<'a, P>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
-	B: Bitwise,
-	S: AsRef<[B]> + Sync,
 {
 	/// Constructs a new integer multiplication witness from the statement.
 	///
 	/// For statement of size $2^\ell$ using $2^m$-wide integers, the upper bound on the
 	/// witness size is $8^{\ell+m}$ large field elements.
-	pub fn new(log_bits: usize, a: S, b: S, c_lo: S, c_hi: S) -> Result<Self, IntMulError> {
+	pub fn new(
+		log_bits: usize,
+		a: &'a [Word],
+		b: &'a [Word],
+		c_lo: &'a [Word],
+		c_hi: &'a [Word],
+	) -> Result<Self, IntMulError> {
 		// Statement should be of pow-2 length.
-		let Some(n_vars) = strict_log_2(a.as_ref().len()) else {
+		let Some(n_vars) = strict_log_2(a.len()) else {
 			return Err(IntMulError::ExponentsPowerOfTwoLengthRequired);
 		};
 
 		// All statement slices should be of same length.
-		if [&a, &b, &c_lo, &c_hi]
+		if [a, b, c_lo, c_hi]
 			.iter()
-			.any(|exponents| exponents.as_ref().len() != 1 << n_vars)
+			.any(|exponents| exponents.len() != 1 << n_vars)
 		{
 			return Err(IntMulError::ExponentLengthMismatch);
 		}
@@ -103,17 +107,17 @@ where
 
 		// Build the constant-base leaf layers and their prodcheck provers. Each prover's products
 		// layer is the corresponding tree root.
-		let a_leaves = constant_base_leaves(log_bits, g, &a);
+		let a_leaves = constant_base_leaves(log_bits, g, a);
 		let (a_prodcheck, a_root) = ProdcheckProver::new(log_bits, a_leaves);
 
-		let c_lo_leaves = constant_base_leaves(log_bits, g, &c_lo);
+		let c_lo_leaves = constant_base_leaves(log_bits, g, c_lo);
 		let (c_lo_prodcheck, c_lo_root) = ProdcheckProver::new(log_bits, c_lo_leaves);
 
-		let c_hi_leaves = constant_base_leaves(log_bits, g_c_hi, &c_hi);
+		let c_hi_leaves = constant_base_leaves(log_bits, g_c_hi, c_hi);
 		let (c_hi_prodcheck, c_hi_root) = ProdcheckProver::new(log_bits, c_hi_leaves);
 
 		// Compute b_leaves as concatenated leaves for prodcheck; the variable base is the `a` root.
-		let b_leaves = compute_b_leaves(log_bits, a_root.clone(), &b);
+		let b_leaves = compute_b_leaves(log_bits, &a_root, b);
 
 		// Create the prodcheck prover; its products layer becomes b_root
 		let (b_prodcheck, b_root) = ProdcheckProver::new(log_bits, b_leaves.clone());
@@ -136,7 +140,6 @@ where
 			c_hi_prodcheck,
 			c_hi_root,
 			c_root,
-			_b_marker: PhantomData,
 		})
 	}
 }
@@ -152,21 +155,19 @@ where
 /// matches the `b`-tree layout ([`compute_b_leaves`]). The prodcheck reduces on the highest node
 /// bit, so its first reduction (and the verifier's final GKR layer) pairs leaf `z` with leaf
 /// `z + 2^{log_bits-1}` — a strided pairing of bits `z` and `z + 2^{log_bits-1}`.
-fn constant_base_leaves<F, P, B, S>(log_bits: usize, base: F, exponents: &S) -> FieldBuffer<P>
+fn constant_base_leaves<F, P>(log_bits: usize, base: F, exponents: &[Word]) -> FieldBuffer<P>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	B: Bitwise,
-	S: AsRef<[B]> + Sync,
 {
 	let bases = iterate(base, |g| g.square())
 		.take(1 << log_bits)
 		.collect::<Vec<_>>();
 
-	let n_vars = checked_log_2(exponents.as_ref().len());
+	let n_vars = checked_log_2(exponents.len());
 	let scalars = (0..1 << log_bits)
 		.flat_map(|bit| {
-			let leaf = two_valued_field_buffer::<F, P, S, B>(bit, exponents, [F::ONE, bases[bit]]);
+			let leaf = two_valued_field_buffer::<F, P>(bit, exponents, [F::ONE, bases[bit]]);
 			leaf.iter_scalars().collect::<Vec<_>>()
 		})
 		.collect::<Vec<_>>();
@@ -179,32 +180,29 @@ where
 ///
 /// Each leaf `L_z` contains: if bit z of `exponents[i]` is set then `bases[i]^{2^z}` else 1
 /// The leaves are concatenated: `[L_0, L_1, ..., L_{2^k-1}]`
-fn compute_b_leaves<F, P, B, S>(
+fn compute_b_leaves<F, P>(
 	log_bits: usize,
-	bases: FieldBuffer<P>,
-	exponents: &S,
+	bases: &FieldBuffer<P>,
+	exponents: &[Word],
 ) -> FieldBuffer<P>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	B: Bitwise,
-	S: AsRef<[B]> + Sync,
 {
 	let n_vars = bases.log_len();
 
 	if P::LOG_WIDTH <= n_vars {
 		// Parallel optimized path
-		return compute_b_leaves_parallel(log_bits, &bases, exponents);
+		return compute_b_leaves_parallel(log_bits, bases, exponents);
 	}
 
 	// Fallback: bases is too small to parallelize (n_vars < P::LOG_WIDTH)
 	let mut out = FieldBuffer::zeros(n_vars + log_bits);
 	let n_elems = 1 << n_vars;
 
-	let one_bit = B::from(1u8);
-	for (i, (mut base, &exp)) in iter::zip(bases.iter_scalars(), exponents.as_ref()).enumerate() {
+	for (i, (mut base, &exp)) in iter::zip(bases.iter_scalars(), exponents).enumerate() {
 		for z in 0..1 << log_bits {
-			let bit = (exp >> z) & one_bit == one_bit;
+			let bit = exp.extract_bit(z);
 
 			out.set(z * n_elems + i, if bit { base } else { F::ONE });
 
@@ -216,16 +214,14 @@ where
 }
 
 /// Parallel implementation of compute_b_leaves for when bases is large enough to parallelize.
-fn compute_b_leaves_parallel<F, P, B, S>(
+fn compute_b_leaves_parallel<F, P>(
 	log_bits: usize,
 	bases: &FieldBuffer<P>,
-	exponents: &S,
+	exponents: &[Word],
 ) -> FieldBuffer<P>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	B: Bitwise,
-	S: AsRef<[B]> + Sync,
 {
 	let n_vars = bases.log_len();
 	let n_packed = bases.as_ref().len();
@@ -240,9 +236,7 @@ where
 		let mut strided = StridedArray2DViewMut::without_stride(spare, height, n_packed)
 			.expect("dimensions match capacity");
 
-		let one_bit = B::from(1u8);
-
-		(strided.par_iter_cols(), bases.as_ref(), exponents.as_ref().par_chunks(P::WIDTH))
+		(strided.par_iter_cols(), bases.as_ref(), exponents.par_chunks(P::WIDTH))
 			.into_par_iter()
 			.for_each(|(mut col, packed_base, exp_chunk)| {
 				// Keep base as packed element for efficient squaring
@@ -252,7 +246,7 @@ where
 					// Decompose to scalars, apply bit selection, recompose
 					// TODO: Optimize with bit-masking for selection
 					let scalars = packed_base.iter().zip(exp_chunk).map(|(base, &exp)| {
-						let bit = (exp >> z) & one_bit == one_bit;
+						let bit = exp.extract_bit(z);
 						if bit { base } else { F::ONE }
 					});
 
@@ -285,36 +279,29 @@ pub fn buffer_bivariate_product<P: PackedField, Data: Deref<Target = [P]>>(
 
 /// Constructs a field buffer with values selected from `elements` based on the bit values
 /// of `exponents`.
-pub fn two_valued_field_buffer<F, P, S, B>(
+pub fn two_valued_field_buffer<F, P>(
 	bit_offset: usize,
-	exponents: &S,
+	exponents: &[Word],
 	elements: [F; 2],
 ) -> FieldBuffer<P>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	S: AsRef<[B]> + Sync,
-	B: Bitwise,
 {
-	let n_vars = checked_log_2(exponents.as_ref().len());
+	let n_vars = checked_log_2(exponents.len());
 	let p_width = P::WIDTH.min(1 << n_vars);
-	let bits = BitSelector::new(bit_offset, &exponents);
 	let values = (0..1 << n_vars.saturating_sub(P::LOG_WIDTH))
 		.map(|i| {
 			let scalars = (0..p_width).map(|j| {
-				// The following code is equivalent to
-				// ```
-				// if bits.get(i << P::LOG_WIDTH | j) {
-				// 	elements[1]
-				// } else {
-				// 	elements[0]
-				// }
-				// ```
+				let index = i << P::LOG_WIDTH | j;
+				// Select `elements[1]` if bit `bit_offset` of `exponents[index]` is set, else
+				// `elements[0]`.
 				unsafe {
 					// Safety:
-					// - `i << P::LOG_WIDTH | j` is guaranteed to be in-bounds
-					// - elements has two values
-					*elements.get_unchecked(bits.get_unchecked(i << P::LOG_WIDTH | j) as usize)
+					// - `index` is guaranteed to be in-bounds
+					// - `elements` has two values
+					let is_set = exponents.get_unchecked(index).extract_bit(bit_offset);
+					*elements.get_unchecked(is_set as usize)
 				}
 			});
 			P::from_scalars(scalars)
@@ -334,9 +321,7 @@ mod tests {
 
 	const LOG_BITS: usize = 6;
 
-	fn check_consistency<P: PackedField, B: Bitwise, S: AsRef<[B]> + Sync>(
-		witness: &Witness<P, B, S>,
-	) {
+	fn check_consistency<P: PackedField>(witness: &Witness<'_, P>) {
 		let b_root = witness.b_root();
 		let c_root = witness.c_root();
 		assert_eq!(b_root, c_root);
@@ -344,23 +329,23 @@ mod tests {
 
 	#[test]
 	fn test_forwards() {
-		let a: u64 = 2;
-		let b: u64 = 3;
-		let c_lo: u64 = 6; // 2*3 = 6
-		let c_hi: u64 = 0; // no high bits
+		let a = [Word::from_u64(2)];
+		let b = [Word::from_u64(3)];
+		let c_lo = [Word::from_u64(6)]; // 2*3 = 6
+		let c_hi = [Word::from_u64(0)]; // no high bits
 
-		let witness = Witness::<P, _, [u64; 1]>::new(LOG_BITS, [a], [b], [c_lo], [c_hi]).unwrap();
+		let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
 		check_consistency(&witness);
 	}
 
 	#[test]
 	fn test_forwards_larger() {
-		let a: u64 = 1 << 32;
-		let b: u64 = 1 << 33;
-		let c_lo: u64 = 0;
-		let c_hi: u64 = 2; // 2^32 * 2^33 = 2^65, which is 2 in the high 64 bits
+		let a = [Word::from_u64(1 << 32)];
+		let b = [Word::from_u64(1 << 33)];
+		let c_lo = [Word::from_u64(0)];
+		let c_hi = [Word::from_u64(2)]; // 2^32 * 2^33 = 2^65, which is 2 in the high 64 bits
 
-		let witness = Witness::<P, _, [u64; 1]>::new(LOG_BITS, [a], [b], [c_lo], [c_hi]).unwrap();
+		let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
 		check_consistency(&witness);
 	}
 
@@ -384,13 +369,13 @@ mod tests {
 			let c_lo_i = full_result as u64;
 			let c_hi_i = (full_result >> 64) as u64;
 
-			a.push(a_i);
-			b.push(b_i);
-			c_lo.push(c_lo_i);
-			c_hi.push(c_hi_i);
+			a.push(Word::from_u64(a_i));
+			b.push(Word::from_u64(b_i));
+			c_lo.push(Word::from_u64(c_lo_i));
+			c_hi.push(Word::from_u64(c_hi_i));
 		}
 
-		let witness = Witness::<P, _, _>::new(LOG_BITS, a, b, c_lo, c_hi).unwrap();
+		let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
 		check_consistency(&witness);
 	}
 }
