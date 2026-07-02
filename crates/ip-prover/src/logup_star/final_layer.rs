@@ -17,7 +17,6 @@ use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, inner_product::inner_product_par, line::extrapolate_line};
 use either::Either;
 
-use super::error::Error;
 use crate::{
 	channel::IPProverChannel,
 	fracaddcheck::{FracAddCheckProver, FracEvalClaim},
@@ -76,7 +75,7 @@ pub fn prove_final_layer<F, P>(
 	pushforward: &FieldBuffer<P>,
 	table: &FieldBuffer<P>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<FinalLayerOutput<F>, Error>
+) -> FinalLayerOutput<F>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
@@ -91,7 +90,7 @@ where
 	//
 	// The eq factor stays implicit in the MLE-check prover.
 	// The decorator reinstates it each round as an (X - alpha) multiplier, a regular sumcheck.
-	let (frac_prover, remaining) = table_prover.layer_prover(layer1)?;
+	let (frac_prover, remaining) = table_prover.layer_prover(layer1);
 	debug_assert!(remaining.is_none(), "the final layer consumes the last table-side layer");
 	let frac_prover = MleToSumCheckDecorator::new(frac_prover);
 
@@ -112,8 +111,8 @@ where
 
 	// S_3a, S_3b: each half is a bivariate product, held as [Y_half, T_half].
 	// So each prover's two final evaluations are exactly (Y_half, T_half) at the challenge point.
-	let product_0 = BivariateProductSumcheckProver::new([y_0, t_0], e_0)?;
-	let product_1 = BivariateProductSumcheckProver::new([y_1, t_1], e_1)?;
+	let product_0 = BivariateProductSumcheckProver::new([y_0, t_0], e_0);
+	let product_1 = BivariateProductSumcheckProver::new([y_1, t_1], e_1);
 
 	// Batch the three provers into one sumcheck.
 	//
@@ -126,7 +125,7 @@ where
 			Either::Right(product_1),
 		],
 		channel,
-	)?;
+	);
 
 	// Each product prover holds [Y_half, T_half]; read both halves' evaluations, in verifier order.
 	// The fractional prover's Y evaluations agree at the same point, so they need not be sent.
@@ -149,11 +148,11 @@ where
 	let mut table_eval_point = output.challenges;
 	table_eval_point.push(r);
 
-	Ok(FinalLayerOutput {
+	FinalLayerOutput {
 		table_eval_point,
 		table_eval_claim,
 		pushforward_eval_claim,
-	})
+	}
 }
 
 /// Split a multilinear on its highest variable into owned low and high halves.

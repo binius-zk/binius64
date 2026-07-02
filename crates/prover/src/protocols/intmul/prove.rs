@@ -34,10 +34,7 @@ use binius_verifier::protocols::intmul::common::{
 use either::Either;
 use itertools::{chain, izip};
 
-use super::{
-	error::Error,
-	witness::{Witness, buffer_bivariate_product, two_valued_field_buffer},
-};
+use super::witness::{Witness, buffer_bivariate_product, two_valued_field_buffer};
 use crate::fold_word::{fold_across_words, fold_words};
 
 /// A helper structure that encapsulates switchover settings and the prover channel for
@@ -88,7 +85,7 @@ where
 	/// The output of this protocol is a set of evaluation claims on the `b` selectors representing
 	/// all of `a`, `b`, `c_lo` and `c_hi` as column-major bit matrices, at a common evaluation
 	/// point.
-	pub fn prove(&mut self, witness: Witness<'_, P>) -> Result<IntMulOutput<F>, Error> {
+	pub fn prove(&mut self, witness: Witness<'_, P>) -> IntMulOutput<F> {
 		let Witness {
 			log_bits,
 			a_exponents,
@@ -121,7 +118,7 @@ where
 		let Phase1Output {
 			eval_point: phase1_eval_point,
 			b_leaves_evals,
-		} = self.phase1(&initial_eval_point, b_prodcheck, &b_leaves, exp_eval)?;
+		} = self.phase1(&initial_eval_point, b_prodcheck, &b_leaves, exp_eval);
 
 		// Phase 2
 		let Phase2Output {
@@ -146,7 +143,7 @@ where
 			[c_lo_root, c_hi_root],
 			&initial_eval_point,
 			exp_eval,
-		)?;
+		);
 
 		// Phase 4
 		let (
@@ -163,7 +160,7 @@ where
 			(gpow_a_eval, a_prodcheck),
 			(gpow_c_lo_eval, c_lo_prodcheck),
 			(gpow_c_hi_eval, c_hi_prodcheck),
-		)?;
+		);
 
 		// Phase 5
 		self.phase5(
@@ -188,7 +185,7 @@ where
 		b_prover: ProdcheckProver<P>,
 		b_leaves: &FieldBuffer<P>,
 		b_root_eval: F,
-	) -> Result<Phase1Output<F>, Error> {
+	) -> Phase1Output<F> {
 		let n_vars = eval_point.len();
 
 		// Create initial claim
@@ -198,7 +195,7 @@ where
 		};
 
 		// Run prodcheck - reduces to claim on concatenated b_leaves
-		let output_claim = b_prover.prove(claim, self.channel)?;
+		let output_claim = b_prover.prove(claim, self.channel);
 
 		// Split output point: first n are x-point, last k are z-challenges
 		let (x_point, _z_suffix) = output_claim.point.split_at(n_vars);
@@ -213,10 +210,10 @@ where
 		// Write leaf evaluations to channel
 		self.channel.send_many(&b_leaves_evals);
 
-		Ok(Phase1Output {
+		Phase1Output {
 			eval_point: x_point.to_vec(),
 			b_leaves_evals,
-		})
+		}
 	}
 
 	#[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
@@ -231,7 +228,7 @@ where
 		c_lo_hi_roots: [FieldBuffer<P>; 2],
 		c_eval_point: &[F],
 		c_root_eval: F,
-	) -> Result<Phase3Output<F>, Error> {
+	) -> Phase3Output<F> {
 		let n_vars = selector.log_len();
 		assert!(
 			twisted_eval_points
@@ -265,10 +262,10 @@ where
 			b_bitmasks,
 			eq_weights,
 			self.switchover,
-		)?;
+		);
 
 		let c_root_sumcheck_prover =
-			bivariate_product_mle::new(c_lo_hi_roots, c_eval_point.to_vec(), c_root_eval)?;
+			bivariate_product_mle::new(c_lo_hi_roots, c_eval_point.to_vec(), c_root_eval);
 
 		let c_root_prover = MleToSumCheckDecorator::new(c_root_sumcheck_prover);
 
@@ -276,7 +273,7 @@ where
 		let BatchSumcheckOutput {
 			challenges,
 			multilinear_evals,
-		} = batch_prove_and_write_evals(provers, self.channel)?;
+		} = batch_prove_and_write_evals(provers, self.channel);
 
 		let [mut selector_prover_evals, c_root_prover_evals] = multilinear_evals
 			.try_into()
@@ -298,14 +295,14 @@ where
 		let r_ib = self.channel.sample_many(log_bits);
 		let b_recomb = evaluate(&FieldBuffer::<P>::from_values(&b_evals), &r_ib);
 
-		Ok(Phase3Output {
+		Phase3Output {
 			eval_point: challenges,
 			r_ib,
 			b_recomb,
 			gpow_a_eval,
 			gpow_c_lo_eval,
 			gpow_c_hi_eval,
-		})
+		}
 	}
 
 	#[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
@@ -317,7 +314,7 @@ where
 		(a_root_eval, a_prover): (F, ProdcheckProver<P>),
 		(gpow_c_lo_eval, c_lo_prover): (F, ProdcheckProver<P>),
 		(gpow_c_hi_eval, c_hi_prover): (F, ProdcheckProver<P>),
-	) -> Result<(Phase4Output<F>, [Vec<FieldBuffer<P>>; 3]), Error> {
+	) -> (Phase4Output<F>, [Vec<FieldBuffer<P>>; 3]) {
 		let n_vars = eval_point.len();
 		// Each prover is over the full (widest) leaf layer of `2^log_bits` node multilinears.
 		assert_eq!(a_prover.n_layers(), log_bits);
@@ -340,7 +337,7 @@ where
 			selector,
 			eval_point.to_vec(),
 			self.channel,
-		)?;
+		);
 
 		// The reduced point is [selector (2), suffix (n_vars), bit_index (log_bits - 1)]. The
 		// suffix is the content point at which the all-but-last node multilinears are now
@@ -382,7 +379,7 @@ where
 		self.channel.send_many(&c_lo_evals);
 		self.channel.send_many(&c_hi_evals);
 
-		Ok((
+		(
 			Phase4Output {
 				eval_point: suffix,
 				a_evals,
@@ -390,7 +387,7 @@ where
 				c_hi_evals,
 			},
 			[a_leaves, c_lo_leaves, c_hi_leaves],
-		))
+		)
 	}
 
 	#[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
@@ -409,7 +406,7 @@ where
 		// Needed for the zerocheck on `a_0 * b_0 = c_lo_0`.
 		a_exponents: &[Word],
 		c_lo_exponents: &[Word],
-	) -> Result<IntMulOutput<F>, Error> {
+	) -> IntMulOutput<F> {
 		assert!(log_bits >= 1);
 		assert_eq!(1 << log_bits, a_layer.len());
 		assert_eq!(2 * a_evals.len(), a_layer.len());
@@ -428,7 +425,7 @@ where
 		let evals = [a_evals, c_lo_evals, c_hi_evals].concat();
 
 		let bivariate_mle_prover =
-			BivariateProductMultiMlecheckProver::new(pairs, a_c_eval_point, evals)?;
+			BivariateProductMultiMlecheckProver::new(pairs, a_c_eval_point, evals);
 		let bivariate_sumcheck_prover = MleToSumCheckDecorator::new(bivariate_mle_prover);
 
 		// Embed `a_0` and `b_0` bits into field buffers for `BivariateProductMultiMlecheckProver`.
@@ -449,7 +446,7 @@ where
 				|[a, b, _c]| a * b,
 				b_eval_point.to_vec(),
 				F::ZERO,
-			)?);
+			));
 
 		// Fold the 2^k b bit-columns by the recombination tensor into a single field multilinear
 		// B(x) = sum_i eq(r_I^b, i) * b(i, x), then re-randomize its claim B(r_2) = b_recomb from
@@ -460,7 +457,7 @@ where
 		let b_tensor = eq_ind_partial_eval_scalars::<F>(r_ib);
 		let b_folded = fold_words::<_, P>(b_exponents, &b_tensor);
 
-		let b_eval_prover = MultilinearEvalProver::new(b_folded, b_eval_point, b_recomb)?;
+		let b_eval_prover = MultilinearEvalProver::new(b_folded, b_eval_point, b_recomb);
 		let b_sumcheck_prover = MleToSumCheckDecorator::new(b_eval_prover);
 
 		// Batch prove all three provers.
@@ -474,7 +471,7 @@ where
 				Either::Right(Either::Right(b_sumcheck_prover)),
 			],
 			self.channel,
-		)?;
+		);
 
 		// Pull out the evals of all three provers. The b prover is now a single-claim MLE-eval
 		// check, so it yields one recombined eval B(r_x) rather than 2^k per-bit evals.
@@ -526,13 +523,13 @@ where
 		debug_assert_eq!(b_0_eval, b_evals[0]);
 		debug_assert_eq!(c_lo_0_eval, c_lo_evals[0]);
 
-		Ok(IntMulOutput {
+		IntMulOutput {
 			eval_point: challenges,
 			a_evals,
 			b_evals,
 			c_lo_evals,
 			c_hi_evals,
-		})
+		}
 	}
 }
 

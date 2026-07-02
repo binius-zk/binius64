@@ -87,7 +87,7 @@ fn bench_intmul_prove(c: &mut Criterion) {
 				},
 				|(witness, mut prover_transcript)| {
 					let mut intmul_prover = IntMulProver::new(0, &mut prover_transcript);
-					intmul_prover.prove(witness).unwrap();
+					intmul_prover.prove(witness);
 				},
 			)
 		},
@@ -103,7 +103,7 @@ fn bench_intmul_prove(c: &mut Criterion) {
 
 				let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 				let mut intmul_prover = IntMulProver::new(0, &mut prover_transcript);
-				intmul_prover.prove(witness).unwrap();
+				intmul_prover.prove(witness);
 			})
 		},
 	);
@@ -133,39 +133,33 @@ fn bench_intmul_phases(c: &mut Criterion) {
 	let phase1 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
-		prover
-			.phase1(&initial_eval_point, witness.b_prodcheck.clone(), &witness.b_leaves, exp_eval)
-			.unwrap()
+		prover.phase1(&initial_eval_point, witness.b_prodcheck.clone(), &witness.b_leaves, exp_eval)
 	};
 	let phase2 = frobenius_twist(log_bits, &phase1.eval_point, &phase1.b_leaves_evals);
 	let phase3 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
-		prover
-			.phase3(
-				log_bits,
-				&phase2.twisted_eval_points,
-				&phase2.twisted_evals,
-				witness.a_root.clone(),
-				witness.b_exponents,
-				[witness.c_lo_root.clone(), witness.c_hi_root.clone()],
-				&initial_eval_point,
-				exp_eval,
-			)
-			.unwrap()
+		prover.phase3(
+			log_bits,
+			&phase2.twisted_eval_points,
+			&phase2.twisted_evals,
+			witness.a_root.clone(),
+			witness.b_exponents,
+			[witness.c_lo_root.clone(), witness.c_hi_root.clone()],
+			&initial_eval_point,
+			exp_eval,
+		)
 	};
 	let (phase4, leaves) = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
-		prover
-			.phase4(
-				log_bits,
-				&phase3.eval_point,
-				(phase3.gpow_a_eval, witness.a_prodcheck.clone()),
-				(phase3.gpow_c_lo_eval, witness.c_lo_prodcheck.clone()),
-				(phase3.gpow_c_hi_eval, witness.c_hi_prodcheck.clone()),
-			)
-			.unwrap()
+		prover.phase4(
+			log_bits,
+			&phase3.eval_point,
+			(phase3.gpow_a_eval, witness.a_prodcheck.clone()),
+			(phase3.gpow_c_lo_eval, witness.c_lo_prodcheck.clone()),
+			(phase3.gpow_c_hi_eval, witness.c_hi_prodcheck.clone()),
+		)
 	};
 
 	group.bench_function("phase1", |bencher| {
@@ -174,9 +168,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 			|b_prodcheck| {
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
 				let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
-				prover
-					.phase1(&initial_eval_point, b_prodcheck, &witness.b_leaves, exp_eval)
-					.unwrap()
+				prover.phase1(&initial_eval_point, b_prodcheck, &witness.b_leaves, exp_eval)
 			},
 			BatchSize::SmallInput,
 		);
@@ -193,18 +185,16 @@ fn bench_intmul_phases(c: &mut Criterion) {
 			|(a_root, c_lo_hi_roots)| {
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
 				let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
-				prover
-					.phase3(
-						log_bits,
-						&phase2.twisted_eval_points,
-						&phase2.twisted_evals,
-						a_root,
-						witness.b_exponents,
-						c_lo_hi_roots,
-						&initial_eval_point,
-						exp_eval,
-					)
-					.unwrap()
+				prover.phase3(
+					log_bits,
+					&phase2.twisted_eval_points,
+					&phase2.twisted_evals,
+					a_root,
+					witness.b_exponents,
+					c_lo_hi_roots,
+					&initial_eval_point,
+					exp_eval,
+				)
 			},
 			BatchSize::SmallInput,
 		);
@@ -222,15 +212,13 @@ fn bench_intmul_phases(c: &mut Criterion) {
 			|(a_prodcheck, c_lo_prodcheck, c_hi_prodcheck)| {
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
 				let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
-				prover
-					.phase4(
-						log_bits,
-						&phase3.eval_point,
-						(phase3.gpow_a_eval, a_prodcheck),
-						(phase3.gpow_c_lo_eval, c_lo_prodcheck),
-						(phase3.gpow_c_hi_eval, c_hi_prodcheck),
-					)
-					.unwrap()
+				prover.phase4(
+					log_bits,
+					&phase3.eval_point,
+					(phase3.gpow_a_eval, a_prodcheck),
+					(phase3.gpow_c_lo_eval, c_lo_prodcheck),
+					(phase3.gpow_c_hi_eval, c_hi_prodcheck),
+				)
 			},
 			BatchSize::SmallInput,
 		);
@@ -242,21 +230,19 @@ fn bench_intmul_phases(c: &mut Criterion) {
 			|[a_leaves, c_lo_leaves, c_hi_leaves]| {
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
 				let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
-				prover
-					.phase5(
-						log_bits,
-						&phase4.eval_point,
-						(&phase4.a_evals, a_leaves),
-						(&phase4.c_lo_evals, c_lo_leaves),
-						(&phase4.c_hi_evals, c_hi_leaves),
-						witness.b_exponents,
-						&phase3.eval_point,
-						&phase3.r_ib,
-						phase3.b_recomb,
-						witness.a_exponents,
-						witness.c_lo_exponents,
-					)
-					.unwrap()
+				prover.phase5(
+					log_bits,
+					&phase4.eval_point,
+					(&phase4.a_evals, a_leaves),
+					(&phase4.c_lo_evals, c_lo_leaves),
+					(&phase4.c_hi_evals, c_hi_leaves),
+					witness.b_exponents,
+					&phase3.eval_point,
+					&phase3.r_ib,
+					phase3.b_recomb,
+					witness.a_exponents,
+					witness.c_lo_exponents,
+				)
 			},
 			BatchSize::SmallInput,
 		);
@@ -307,9 +293,7 @@ fn bench_intmul_components(c: &mut Criterion) {
 	let phase1 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
-		prover
-			.phase1(&initial_eval_point, witness.b_prodcheck.clone(), &witness.b_leaves, exp_eval)
-			.unwrap()
+		prover.phase1(&initial_eval_point, witness.b_prodcheck.clone(), &witness.b_leaves, exp_eval)
 	};
 	let phase2 = frobenius_twist(log_bits, &phase1.eval_point, &phase1.b_leaves_evals);
 
@@ -332,9 +316,9 @@ fn bench_intmul_components(c: &mut Criterion) {
 			},
 			|(a_root, claims, eq_weights)| {
 				let selector_prover =
-					SelectorMlecheckProver::new(a_root, claims, b_bitmasks, eq_weights, 0).unwrap();
+					SelectorMlecheckProver::new(a_root, claims, b_bitmasks, eq_weights, 0);
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
-				batch_prove(vec![selector_prover], &mut transcript).unwrap()
+				batch_prove(vec![selector_prover], &mut transcript)
 			},
 			BatchSize::SmallInput,
 		);

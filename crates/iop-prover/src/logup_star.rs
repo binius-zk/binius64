@@ -18,14 +18,6 @@ use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
 
 use crate::channel::IOPProverChannel;
 
-/// An error raised while proving a committed logUp* reduction.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-	/// The underlying logUp* reduction failed.
-	#[error("logUp* reduction error: {0}")]
-	Reduction(#[from] reduction::Error),
-}
-
 /// The pushforward oracle relation produced by the prover.
 ///
 /// The four fields match the oracle-relation tuple the prover channel opens.
@@ -85,7 +77,7 @@ pub fn prove<F, P, Channel>(
 	eval_point: &[F],
 	eval_claim: F,
 	channel: &mut Channel,
-) -> Result<LogupProof<P, Channel::Oracle>, Error>
+) -> LogupProof<P, Channel::Oracle>
 where
 	F: Field + ExtensionField<BinaryField1b>,
 	P: PackedField<Scalar = F>,
@@ -104,14 +96,14 @@ where
 	let oracle = channel.send_oracle(pushforward.to_ref());
 
 	// Run the reduction over the committed Y and the shared eq_r, viewing the channel as IP.
-	let output = reduction::prove_reduction(table, index, eval_claim, eq_r, &pushforward, channel)?;
+	let output = reduction::prove_reduction(table, index, eval_claim, eq_r, &pushforward, channel);
 
 	// The pushforward relation opens Y at the reduced point.
 	//
 	//     <Y, eq_r'> = Y(r') = pushforward_eval_claim
 	let transparent = eq_ind_partial_eval::<P>(&output.table_eval_point);
 
-	Ok(LogupProof {
+	LogupProof {
 		table_eval_point: output.table_eval_point,
 		table_eval_claim: output.table_eval_claim,
 		index_eval_point: output.index_eval_point,
@@ -122,7 +114,7 @@ where
 			transparent,
 			claim: output.pushforward_eval_claim,
 		},
-	})
+	}
 }
 
 #[cfg(test)]
@@ -200,8 +192,7 @@ mod tests {
 		let mut prover_channel =
 			NaiveProverChannel::<F, _>::new(&mut prover_transcript, specs.clone());
 		let prover_proof =
-			prove::<F, P, _>(&table, &index, &eval_point, eval_claim, &mut prover_channel)
-				.expect("proving succeeds");
+			prove::<F, P, _>(&table, &index, &eval_point, eval_claim, &mut prover_channel);
 
 		let PushforwardRelation {
 			oracle,
@@ -287,8 +278,7 @@ mod tests {
 		let mut prover_channel =
 			NaiveProverChannel::<F, _>::new(&mut prover_transcript, specs.clone());
 		let prover_proof =
-			prove::<F, P, _>(&table, &index, &eval_point, wrong_claim, &mut prover_channel)
-				.expect("proving a false claim still produces a transcript");
+			prove::<F, P, _>(&table, &index, &eval_point, wrong_claim, &mut prover_channel);
 		let PushforwardRelation {
 			oracle,
 			message,
@@ -356,8 +346,7 @@ mod tests {
 			prover_compiler.create_channel(&mut prover_transcript, prover_channel_rng);
 
 		let prover_proof =
-			prove::<F, BP, _>(&table, &index, &eval_point, eval_claim, &mut prover_channel)
-				.expect("proving succeeds");
+			prove::<F, BP, _>(&table, &index, &eval_point, eval_claim, &mut prover_channel);
 		let PushforwardRelation {
 			oracle,
 			message,

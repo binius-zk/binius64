@@ -5,10 +5,7 @@ use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
 
 use crate::{
 	channel::IPProverChannel,
-	sumcheck::{
-		common::{MleCheckProver, SumcheckProver},
-		error::Error,
-	},
+	sumcheck::common::{MleCheckProver, SumcheckProver},
 };
 
 /// Prover view of the execution result of a batched sumcheck.
@@ -43,23 +40,24 @@ pub struct BatchSumcheckOutput<F: Field> {
 pub fn batch_prove<F, Prover>(
 	mut provers: Vec<Prover>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<BatchSumcheckOutput<F>, Error>
+) -> BatchSumcheckOutput<F>
 where
 	F: Field,
 	Prover: SumcheckProver<F>,
 {
 	let Some(first_prover) = provers.first() else {
-		return Ok(BatchSumcheckOutput {
+		return BatchSumcheckOutput {
 			challenges: Vec::new(),
 			multilinear_evals: Vec::new(),
-		});
+		};
 	};
 
 	let n_vars = first_prover.n_vars();
 
-	if provers.iter().any(|prover| prover.n_vars() != n_vars) {
-		return Err(Error::ProverRoundCountMismatch);
-	}
+	assert!(
+		provers.iter().all(|prover| prover.n_vars() == n_vars),
+		"batched provers must have the same number of rounds"
+	);
 
 	// Random linear-combination coefficient for batching multiple sum claims.
 	let batch_coeff = channel.sample();
@@ -70,7 +68,7 @@ where
 
 		for prover in &mut provers {
 			// Each prover emits its round polynomial; we batch across provers.
-			all_round_coeffs.extend(prover.execute()?);
+			all_round_coeffs.extend(prover.execute());
 		}
 
 		// Horner-fold round polynomials into a single batched polynomial.
@@ -89,7 +87,7 @@ where
 
 		// Fold all provers on the shared challenge to advance the state machine.
 		for prover in &mut provers {
-			prover.fold(challenge)?;
+			prover.fold(challenge);
 		}
 	}
 
@@ -100,12 +98,12 @@ where
 	let multilinear_evals = provers
 		.into_iter()
 		.map(|prover| prover.finish())
-		.collect::<Result<Vec<_>, _>>()?;
+		.collect::<Vec<_>>();
 
-	Ok(BatchSumcheckOutput {
+	BatchSumcheckOutput {
 		challenges,
 		multilinear_evals,
-	})
+	}
 }
 
 /// Prove a batched sumcheck protocol and write evaluation claims to the channel.
@@ -126,18 +124,18 @@ where
 pub fn batch_prove_and_write_evals<F, Prover>(
 	provers: Vec<Prover>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<BatchSumcheckOutput<F>, Error>
+) -> BatchSumcheckOutput<F>
 where
 	F: Field,
 	Prover: SumcheckProver<F>,
 {
-	let output = batch_prove(provers, channel)?;
+	let output = batch_prove(provers, channel);
 
 	for evals in &output.multilinear_evals {
 		// Preserve per-prover ordering when emitting evaluation claims.
 		channel.send_many(evals);
 	}
-	Ok(output)
+	output
 }
 
 /// Prove a batched sumcheck for MLE-check provers sharing a common evaluation point.
@@ -148,32 +146,33 @@ where
 pub fn batch_prove_mle<F, MleCheckProver_>(
 	mut provers: Vec<MleCheckProver_>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<BatchSumcheckOutput<F>, Error>
+) -> BatchSumcheckOutput<F>
 where
 	F: Field,
 	MleCheckProver_: MleCheckProver<F>,
 {
 	let Some(first_prover) = provers.first() else {
-		return Ok(BatchSumcheckOutput {
+		return BatchSumcheckOutput {
 			challenges: Vec::new(),
 			multilinear_evals: Vec::new(),
-		});
+		};
 	};
 
 	let n_vars = first_prover.n_vars();
 	let eval_point = first_prover.eval_point();
 
-	if provers.iter().any(|prover| prover.n_vars() != n_vars) {
-		return Err(Error::ProverRoundCountMismatch);
-	}
+	assert!(
+		provers.iter().all(|prover| prover.n_vars() == n_vars),
+		"batched provers must have the same number of rounds"
+	);
 
-	if provers
-		.iter()
-		.any(|prover| prover.eval_point() != eval_point)
-	{
-		// All MLE-check provers must share the same evaluation point to batch safely.
-		return Err(Error::EvalPointLengthMismatch);
-	}
+	// All MLE-check provers must share the same evaluation point to batch safely.
+	assert!(
+		provers
+			.iter()
+			.all(|prover| prover.eval_point() == eval_point),
+		"batched MLE-check provers must share the same evaluation point"
+	);
 	// Random linear-combination coefficient for batching multiple eval claims.
 	let batch_coeff = channel.sample();
 
@@ -183,7 +182,7 @@ where
 
 		for prover in &mut provers {
 			// Each prover emits its round polynomial; we batch across provers.
-			all_round_coeffs.extend(prover.execute()?);
+			all_round_coeffs.extend(prover.execute());
 		}
 
 		// Horner-fold round polynomials into a single batched polynomial.
@@ -202,7 +201,7 @@ where
 
 		// Fold all provers on the shared challenge to advance the state machine.
 		for prover in &mut provers {
-			prover.fold(challenge)?;
+			prover.fold(challenge);
 		}
 	}
 
@@ -213,29 +212,29 @@ where
 	let multilinear_evals = provers
 		.into_iter()
 		.map(|prover| prover.finish())
-		.collect::<Result<Vec<_>, _>>()?;
+		.collect::<Vec<_>>();
 
-	Ok(BatchSumcheckOutput {
+	BatchSumcheckOutput {
 		challenges,
 		multilinear_evals,
-	})
+	}
 }
 
 pub fn batch_prove_mle_and_write_evals<F, MleCheckProver_>(
 	provers: Vec<MleCheckProver_>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<BatchSumcheckOutput<F>, Error>
+) -> BatchSumcheckOutput<F>
 where
 	F: Field,
 	MleCheckProver_: MleCheckProver<F>,
 {
-	let output = batch_prove_mle(provers, channel)?;
+	let output = batch_prove_mle(provers, channel);
 
 	for evals in &output.multilinear_evals {
 		// Preserve per-prover ordering when emitting evaluation claims.
 		channel.send_many(evals);
 	}
-	Ok(output)
+	output
 }
 
 #[cfg(test)]
@@ -256,7 +255,7 @@ mod tests {
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
 	use rand::prelude::*;
 
-	use super::{Error, batch_prove_mle};
+	use super::batch_prove_mle;
 	use crate::sumcheck::bivariate_product_mle;
 
 	fn product_eval_claim<F, P>(
@@ -301,17 +300,15 @@ mod tests {
 			[multilinear_a_0.clone(), multilinear_b_0.clone()],
 			eval_point.clone(),
 			eval_claim_0,
-		)
-		.unwrap();
+		);
 		let prover_1 = bivariate_product_mle::new(
 			[multilinear_a_1.clone(), multilinear_b_1.clone()],
 			eval_point.clone(),
 			eval_claim_1,
-		)
-		.unwrap();
+		);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = batch_prove_mle(vec![prover_0, prover_1], &mut prover_transcript).unwrap();
+		let output = batch_prove_mle(vec![prover_0, prover_1], &mut prover_transcript);
 
 		let mut writer = prover_transcript.message();
 		for evals in &output.multilinear_evals {
@@ -365,86 +362,6 @@ mod tests {
 		assert_eq!(
 			prover_challenges, sumcheck_output.challenges,
 			"Prover and verifier challenges should match"
-		);
-	}
-
-	#[test]
-	fn test_batch_prove_mle_rejects_mismatched_eval_points() {
-		type F = OptimalB128;
-		type P = OptimalPackedB128;
-
-		let n_vars = 4;
-		let mut rng = StdRng::seed_from_u64(0);
-
-		let eval_point = random_scalars::<F>(&mut rng, n_vars);
-		let mut other_point = eval_point.clone();
-		other_point[0] += F::ONE;
-
-		let multilinear_a_0 = random_field_buffer::<P>(&mut rng, n_vars);
-		let multilinear_b_0 = random_field_buffer::<P>(&mut rng, n_vars);
-		let eval_claim_0 = product_eval_claim(&multilinear_a_0, &multilinear_b_0, &eval_point);
-
-		let multilinear_a_1 = random_field_buffer::<P>(&mut rng, n_vars);
-		let multilinear_b_1 = random_field_buffer::<P>(&mut rng, n_vars);
-		let eval_claim_1 = product_eval_claim(&multilinear_a_1, &multilinear_b_1, &other_point);
-
-		let prover_0 = bivariate_product_mle::new(
-			[multilinear_a_0, multilinear_b_0],
-			eval_point,
-			eval_claim_0,
-		)
-		.unwrap();
-		let prover_1 = bivariate_product_mle::new(
-			[multilinear_a_1, multilinear_b_1],
-			other_point,
-			eval_claim_1,
-		)
-		.unwrap();
-
-		let mut transcript = ProverTranscript::new(StdChallenger::default());
-		let err = batch_prove_mle(vec![prover_0, prover_1], &mut transcript).unwrap_err();
-		assert!(
-			matches!(err, Error::EvalPointLengthMismatch),
-			"Expected eval point mismatch error"
-		);
-	}
-
-	#[test]
-	fn test_batch_prove_mle_rejects_mismatched_round_counts() {
-		type F = OptimalB128;
-		type P = OptimalPackedB128;
-
-		let mut rng = StdRng::seed_from_u64(0);
-
-		let eval_point_a = random_scalars::<F>(&mut rng, 4);
-		let eval_point_b = random_scalars::<F>(&mut rng, 5);
-
-		let multilinear_a_0 = random_field_buffer::<P>(&mut rng, 4);
-		let multilinear_b_0 = random_field_buffer::<P>(&mut rng, 4);
-		let eval_claim_0 = product_eval_claim(&multilinear_a_0, &multilinear_b_0, &eval_point_a);
-
-		let multilinear_a_1 = random_field_buffer::<P>(&mut rng, 5);
-		let multilinear_b_1 = random_field_buffer::<P>(&mut rng, 5);
-		let eval_claim_1 = product_eval_claim(&multilinear_a_1, &multilinear_b_1, &eval_point_b);
-
-		let prover_0 = bivariate_product_mle::new(
-			[multilinear_a_0, multilinear_b_0],
-			eval_point_a,
-			eval_claim_0,
-		)
-		.unwrap();
-		let prover_1 = bivariate_product_mle::new(
-			[multilinear_a_1, multilinear_b_1],
-			eval_point_b,
-			eval_claim_1,
-		)
-		.unwrap();
-
-		let mut transcript = ProverTranscript::new(StdChallenger::default());
-		let err = batch_prove_mle(vec![prover_0, prover_1], &mut transcript).unwrap_err();
-		assert!(
-			matches!(err, Error::ProverRoundCountMismatch),
-			"Expected prover round count mismatch error"
 		);
 	}
 }

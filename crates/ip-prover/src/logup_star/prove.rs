@@ -7,7 +7,6 @@ use binius_ip::{MultilinearEvalClaim, logup_star::LogupOutput};
 use binius_math::FieldBuffer;
 
 use super::{
-	error::Error,
 	final_layer::{FinalLayerOutput, prove_final_layer},
 	witness,
 };
@@ -56,7 +55,7 @@ pub fn prove<F, P>(
 	eval_point: &[F],
 	eval_claim: F,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<LogupOutput<F>, Error>
+) -> LogupOutput<F>
 where
 	F: Field + ExtensionField<BinaryField1b>,
 	P: PackedField<Scalar = F>,
@@ -69,13 +68,12 @@ where
 
 	// The index column has one entry per looker row, i.e. one per point of the n-variable cube.
 	let expected = 1usize << n;
-	if index.len() != expected {
-		return Err(Error::IndexLengthMismatch {
-			got: index.len(),
-			expected,
-			n_vars: n,
-		});
-	}
+	assert_eq!(
+		index.len(),
+		expected,
+		"index column has {} entries but {expected} were expected for {n} variables",
+		index.len()
+	);
 	// Every index must address a real table position for the embedding and pushforward to be valid.
 	// This is a precondition: the O(n) scan is compiled out of release builds.
 	// An out-of-range index still panics in release, at the pushforward's scatter-add.
@@ -123,7 +121,7 @@ pub fn prove_reduction<F, P>(
 	eq_r: FieldBuffer<P>,
 	pushforward: &FieldBuffer<P>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<LogupOutput<F>, Error>
+) -> LogupOutput<F>
 where
 	F: Field + ExtensionField<BinaryField1b>,
 	P: PackedField<Scalar = F>,
@@ -164,7 +162,7 @@ where
 	//     leaf numerator   = eq_r(point_l)        (verifier checks this against eq(eval_point, .))
 	//     leaf denominator = c - I(point_l)
 	let (looker_remaining, (_looker_num_claim, looker_den_claim)) =
-		looker_prover.prove_layers(n, root_claim(num_l, den_l), channel)?;
+		looker_prover.prove_layers(n, root_claim(num_l, den_l), channel);
 	debug_assert!(
 		looker_remaining.is_none_or(|prover| prover.n_layers() == 0),
 		"the looker side runs all n layers"
@@ -177,7 +175,7 @@ where
 	// Table side: run the first m-1 GKR layers, stopping at the layer-1 claim over m-1 variables.
 	// The leaf layer is left on the prover, to be spliced into the batched final layer.
 	let (table_remaining, layer1) =
-		table_prover.prove_layers(m - 1, root_claim(num_r, den_r), channel)?;
+		table_prover.prove_layers(m - 1, root_claim(num_r, den_r), channel);
 	let table_leaf_prover = table_remaining.expect("m-1 < m layers leaves the leaf layer");
 
 	// Batched final layer: reduce the layer-1 claims and <T, Y> = e to one shared evaluation point.
@@ -185,15 +183,15 @@ where
 		table_eval_point,
 		table_eval_claim,
 		pushforward_eval_claim,
-	} = prove_final_layer(eval_claim, table_leaf_prover, layer1, pushforward, table, channel)?;
+	} = prove_final_layer(eval_claim, table_leaf_prover, layer1, pushforward, table, channel);
 
-	Ok(LogupOutput {
+	LogupOutput {
 		table_eval_point,
 		table_eval_claim,
 		pushforward_eval_claim,
 		index_eval_point,
 		index_eval_claim,
-	})
+	}
 }
 
 /// The root claim of a fractional-addition circuit, over zero variables.
@@ -273,8 +271,7 @@ mod tests {
 		// Prove, then replay the transcript through the verifier.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_out =
-			prove::<F, P>(&table, &index, &eval_point, eval_claim, &mut prover_transcript)
-				.expect("proving succeeds");
+			prove::<F, P>(&table, &index, &eval_point, eval_claim, &mut prover_transcript);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let verifier_out =
@@ -341,8 +338,7 @@ mod tests {
 		// Prove a false statement by perturbing the looked-up evaluation.
 		let wrong_claim = eval_claim + F::ONE;
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prove::<F, P>(&table, &index, &eval_point, wrong_claim, &mut prover_transcript)
-			.expect("proving a false claim still produces a transcript");
+		prove::<F, P>(&table, &index, &eval_point, wrong_claim, &mut prover_transcript);
 
 		// The product-check inconsistency must surface as a verification failure.
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -368,6 +364,7 @@ mod tests {
 	}
 
 	#[test]
+	#[should_panic(expected = "index column has 3 entries but 16 were expected for 4 variables")]
 	fn test_rejects_index_length_mismatch() {
 		let mut rng = StdRng::seed_from_u64(0);
 		let table = random_field_buffer::<P>(&mut rng, 3);
@@ -375,16 +372,7 @@ mod tests {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 
 		// eval_point has 4 coordinates, so the index column must have 2^4 = 16 entries, not 3.
-		let err = prove::<F, P>(&table, &[0, 1, 2], &eval_point, F::ZERO, &mut transcript)
-			.expect_err("a short index column is rejected");
-		assert!(matches!(
-			err,
-			Error::IndexLengthMismatch {
-				got: 3,
-				expected: 16,
-				n_vars: 4
-			}
-		));
+		let _ = prove::<F, P>(&table, &[0, 1, 2], &eval_point, F::ZERO, &mut transcript);
 	}
 
 	#[test]

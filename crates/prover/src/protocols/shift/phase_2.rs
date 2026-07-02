@@ -14,8 +14,7 @@ use binius_verifier::config::LOG_WORD_SIZE_BITS;
 use tracing::instrument;
 
 use super::{
-	error::Error, key_collection::KeyCollection, monster::build_monster_multilinear,
-	prove::PreparedOperatorData,
+	key_collection::KeyCollection, monster::build_monster_multilinear, prove::PreparedOperatorData,
 };
 use crate::fold_word::fold_words;
 
@@ -52,7 +51,7 @@ pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel>(
 	intmul_data: &PreparedOperatorData<F>,
 	phase_1_output: SumcheckOutput<F>,
 	channel: &mut Channel,
-) -> Result<SumcheckOutput<F>, Error>
+) -> SumcheckOutput<F>
 where
 	F: BinaryField + From<AESTowerField8b>,
 	Channel: IPProverChannel<F>,
@@ -71,7 +70,7 @@ where
 	let r_j_witness = fold_words::<_, P>(words, r_j_tensor.as_ref());
 
 	let monster_multilinear =
-		build_monster_multilinear(key_collection, bitand_data, intmul_data, &r_j, &r_s)?;
+		build_monster_multilinear(key_collection, bitand_data, intmul_data, &r_j, &r_s);
 
 	run_sumcheck(r_j_witness, monster_multilinear, r_j, gamma, channel)
 }
@@ -97,17 +96,17 @@ fn run_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverChannel<F
 	r_j: Vec<F>,
 	gamma: F,
 	channel: &mut Channel,
-) -> Result<SumcheckOutput<F>, Error> {
+) -> SumcheckOutput<F> {
 	#[cfg(debug_assertions)]
 	let cloned_r_j_witness_for_debugging = r_j_witness.clone();
 
 	// Run sumcheck on bivariate product
-	let prover = BivariateProductSumcheckProver::new([r_j_witness, monster_multilinear], gamma)?;
+	let prover = BivariateProductSumcheckProver::new([r_j_witness, monster_multilinear], gamma);
 
 	let ProveSingleOutput {
 		multilinear_evals,
 		challenges: mut r_y,
-	} = prove_single(prover, channel)?;
+	} = prove_single(prover, channel);
 
 	// Reverse the challenges to get the evaluation point.
 	r_y.reverse();
@@ -129,8 +128,8 @@ fn run_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverChannel<F
 		debug_assert_eq!(witness_eval, expected_witness_eval);
 	}
 
-	Ok(SumcheckOutput {
+	SumcheckOutput {
 		challenges: [r_j, r_y].concat(),
 		eval: witness_eval,
-	})
+	}
 }

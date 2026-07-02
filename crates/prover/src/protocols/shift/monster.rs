@@ -16,7 +16,6 @@ use tracing::instrument;
 
 use super::{
 	SHIFT_VARIANT_COUNT,
-	error::Error,
 	key_collection::{KeyCollection, Operation},
 	prove::PreparedOperatorData,
 };
@@ -140,7 +139,7 @@ pub fn build_monster_multilinear<F, P: PackedField<Scalar = F>>(
 	intmul_operator_data: &PreparedOperatorData<F>,
 	r_j: &[F],
 	r_s: &[F],
-) -> Result<FieldBuffer<P>, Error>
+) -> FieldBuffer<P>
 where
 	F: BinaryField + From<AESTowerField8b>,
 {
@@ -218,7 +217,7 @@ where
 		.collect_into_vec(&mut monster_multilinear);
 	monster_multilinear.resize(capacity, P::default());
 
-	Ok(FieldBuffer::new(log_len, monster_multilinear.into_boxed_slice()))
+	FieldBuffer::new(log_len, monster_multilinear.into_boxed_slice())
 }
 
 #[cfg(test)]

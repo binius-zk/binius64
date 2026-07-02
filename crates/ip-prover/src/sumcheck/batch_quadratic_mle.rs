@@ -11,7 +11,6 @@ use binius_utils::rayon::prelude::*;
 use itertools::{Itertools, izip};
 
 use crate::sumcheck::{
-	Error,
 	common::{MleCheckProver, SumcheckProver},
 	gruen32::Gruen32,
 	round_evals::RoundEvals2,
@@ -56,14 +55,16 @@ where
 		infinity_composition: InfinityComposition,
 		eval_point: Vec<F>,
 		eval_claims: [F; M],
-	) -> Result<Self, Error> {
+	) -> Self {
 		let n_vars = eval_point.len();
 		assert!(N > 0 && M > 0);
 		for multilinear in &multilinears.as_slices_mut() {
 			// All multilinears must agree on the number of variables for consistent folding.
-			if multilinear.log_len() != n_vars {
-				return Err(Error::MultilinearSizeMismatch);
-			}
+			assert_eq!(
+				multilinear.log_len(),
+				n_vars,
+				"multilinears must have number of variables equal to the evaluation point length"
+			);
 		}
 
 		// The first execute round consumes the claimed composite evaluations at eval_point.
@@ -71,13 +72,13 @@ where
 		// Gruen32 owns the eq-indicator expansion tied to eval_point and drives per-round folding.
 		let gruen32 = Gruen32::new(&eval_point);
 
-		Ok(Self {
+		Self {
 			multilinears: Box::new(multilinears),
 			composition,
 			infinity_composition,
 			last_coeffs_or_eval,
 			gruen32,
-		})
+		}
 	}
 
 	/// Gets mutable slices of the multilinears, truncated to the current number of variables.
@@ -123,11 +124,11 @@ where
 		}
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
 		// State machine: execute consumes evals from the previous round and produces new coeffs.
 		let last_eval = match &self.last_coeffs_or_eval {
 			RoundCoeffsOrEvals::Evals(evals) => *evals,
-			RoundCoeffsOrEvals::Coeffs(_) => return Err(Error::ExpectedFold),
+			RoundCoeffsOrEvals::Coeffs(_) => panic!("execute called out of order; expected fold"),
 		};
 
 		// There must be at least one variable left to sum over in this round.
@@ -175,7 +176,7 @@ where
 		};
 		let packed_prime_evals = (0..chunk_count)
 			.into_par_iter()
-			.try_fold(zero_wide_acc, |mut packed_prime_evals, chunk_index| -> Result<_, Error> {
+			.fold(zero_wide_acc, |mut packed_prime_evals, chunk_index| {
 				let eq_chunk = eq_expansion.chunk(chunk_vars, chunk_index);
 
 				// Scratch buffers are reused per row to avoid allocations in the hot loop.
@@ -220,15 +221,15 @@ where
 					}
 				}
 
-				Ok(packed_prime_evals)
+				packed_prime_evals
 			})
-			.try_reduce(zero_wide_acc, |mut lhs, mut rhs| {
+			.reduce(zero_wide_acc, |mut lhs, mut rhs| {
 				for claim_idx in 0..M {
 					lhs[0][claim_idx] += std::mem::take(&mut rhs[0][claim_idx]);
 					lhs[1][claim_idx] += std::mem::take(&mut rhs[1][claim_idx]);
 				}
-				Ok(lhs)
-			})?;
+				lhs
+			});
 
 		// Sample the next coordinate and interpolate each round polynomial.
 		// The coordinate ties this round's sum to the original evaluation point.
@@ -252,13 +253,13 @@ where
 				.try_into()
 				.expect("Will have M elements."),
 		);
-		Ok(round_coeffs)
+		round_coeffs
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) {
 		// State machine: fold consumes coeffs and produces evals at the verifier challenge.
 		let RoundCoeffsOrEvals::Coeffs(prime_coeffs) = &self.last_coeffs_or_eval else {
-			return Err(Error::ExpectedExecute);
+			panic!("fold called out of order; expected execute");
 		};
 
 		// n_vars is decremented in fold, so we must have at least one variable left here.
@@ -287,29 +288,18 @@ where
 		self.gruen32.fold(challenge);
 		// State transition: fold produces evals for the next execute.
 		self.last_coeffs_or_eval = RoundCoeffsOrEvals::Evals(evals);
-		Ok(())
 	}
 
-	fn finish(mut self) -> Result<Vec<F>, Error> {
+	fn finish(mut self) -> Vec<F> {
 		// Finish is only valid after all folds complete (i.e., zero variables remain).
-		if self.n_vars() > 0 {
-			let error = match self.last_coeffs_or_eval {
-				RoundCoeffsOrEvals::Coeffs(_) => Error::ExpectedFold,
-				RoundCoeffsOrEvals::Evals(_) => Error::ExpectedExecute,
-			};
-
-			return Err(error);
-		}
+		assert_eq!(self.n_vars(), 0, "finish called out of order; sumcheck rounds remain");
 
 		// With no variables remaining, each multilinear has length 1 and can be read directly.
 		// These are the evaluations at the verifier's random point.
-		let multilinear_evals = self
-			.multilinears_mut()
+		self.multilinears_mut()
 			.into_iter()
 			.map(|multilinear| multilinear.get(0))
-			.collect();
-
-		Ok(multilinear_evals)
+			.collect()
 	}
 }
 
@@ -427,16 +417,14 @@ mod tests {
 				inf_comp_0::<P> as CompFn<P>,
 				eval_point.clone(),
 				eval_claims[0],
-			)
-			.unwrap(),
+			),
 			QuadraticMleCheckProver::new(
 				multilinears.clone(),
 				comp_1::<P> as CompFn<P>,
 				inf_comp_1::<P> as CompFn<P>,
 				eval_point.clone(),
 				eval_claims[1],
-			)
-			.unwrap(),
+			),
 		];
 
 		let mut batch_prover = BatchQuadraticMleCheckProver::new(
@@ -445,29 +433,28 @@ mod tests {
 			batch_inf_comp::<P>,
 			eval_point,
 			eval_claims,
-		)
-		.unwrap();
+		);
 
 		for _round in 0..n_vars {
-			let round_coeffs_batch = batch_prover.execute().unwrap();
+			let round_coeffs_batch = batch_prover.execute();
 			assert_eq!(round_coeffs_batch.len(), M);
 
 			for (single, batch_coeffs) in single_provers.iter_mut().zip(round_coeffs_batch.iter()) {
-				let round_coeffs_single = single.execute().unwrap();
+				let round_coeffs_single = single.execute();
 				assert_eq!(round_coeffs_single[0], *batch_coeffs);
 			}
 
 			let challenge = F::random(&mut rng);
 			for single in &mut single_provers {
-				single.fold(challenge).unwrap();
+				single.fold(challenge);
 			}
-			batch_prover.fold(challenge).unwrap();
+			batch_prover.fold(challenge);
 		}
 
 		let [single_0, single_1] = single_provers;
-		let multilinear_evals_0 = single_0.finish().unwrap();
-		let multilinear_evals_1 = single_1.finish().unwrap();
-		let multilinear_evals_batch = batch_prover.finish().unwrap();
+		let multilinear_evals_0 = single_0.finish();
+		let multilinear_evals_1 = single_1.finish();
+		let multilinear_evals_batch = batch_prover.finish();
 
 		assert_eq!(multilinear_evals_0, multilinear_evals_batch);
 		assert_eq!(multilinear_evals_1, multilinear_evals_batch);
@@ -494,8 +481,7 @@ mod tests {
 			batch_inf_comp::<P>,
 			eval_point.clone(),
 			eval_claims,
-		)
-		.unwrap();
+		);
 
 		let mut prover = MleToSumCheckDecorator::new(mlecheck_prover);
 
@@ -503,7 +489,7 @@ mod tests {
 		folded_multilinears.push(eq_ind_partial_eval(&eval_point));
 
 		for n_vars_remaining in (1..=n_vars).rev() {
-			let coeffs = prover.execute().unwrap();
+			let coeffs = prover.execute();
 			assert_eq!(coeffs.len(), M);
 
 			for &sample in &samples {
@@ -540,13 +526,13 @@ mod tests {
 			}
 
 			let challenge = F::random(&mut rng);
-			prover.fold(challenge).unwrap();
+			prover.fold(challenge);
 			for folded in &mut folded_multilinears {
 				fold_highest_var_inplace(folded, challenge);
 			}
 		}
 
-		let multilinear_evals = prover.finish().unwrap();
+		let multilinear_evals = prover.finish();
 		assert_eq!(multilinear_evals.len(), N);
 	}
 

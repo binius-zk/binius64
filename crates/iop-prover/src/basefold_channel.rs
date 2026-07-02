@@ -274,16 +274,14 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 		};
 
 		// TODO: We could cut the size of the message.clone() if the SumcheckProver accepted Cow
-		let inner = BivariateProductSumcheckProver::new([message.clone(), transparent], sum_prime)
-			.expect("π_i' and t_i have equal length");
+		let inner = BivariateProductSumcheckProver::new([message.clone(), transparent], sum_prime);
 		provers.push(PaddedSumcheckDecorator::new(inner, max_n - n_i));
 
 		witness_primes[index] = Some(message.clone());
 		prover_oracle_indices.push(index);
 	}
 
-	let output =
-		sumcheck::batch_prove(provers, channel).expect("batched sumcheck proving should succeed");
+	let output = sumcheck::batch_prove(provers, channel);
 
 	// Reduced oracle evaluations α_i = π_i'(ρ_i) come out in arrival order; scatter them into
 	// oracle-index order to match how the verifier indexes them. `output.challenges` is already
@@ -357,8 +355,7 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 		&outer_challenges,
 		fri_folder,
 		channel,
-	)
-	.expect("combined MLE-check BaseFold proof should succeed");
+	);
 }
 
 fn accumulate_scaled_buffer<P: PackedField>(
