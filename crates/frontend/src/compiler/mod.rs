@@ -361,6 +361,20 @@ impl CircuitBuilder {
 		RefMut::map(self.shared.borrow_mut(), |shared| &mut shared.as_mut().unwrap().graph)
 	}
 
+	/// The compile-time value of a wire, when it is a constant.
+	///
+	/// Returns `None` for inputs, witnesses, and gate outputs whose value is only known at
+	/// proving time.
+	/// Used by the builder to fold trivial gate identities at construction.
+	fn const_of(&self, wire: Wire) -> Option<Word> {
+		let shared = self.shared.borrow();
+		let shared = shared.as_ref().expect("CircuitBuilder used after build");
+		match shared.graph.wires[wire].kind {
+			WireKind::Constant(word) => Some(word),
+			_ => None,
+		}
+	}
+
 	/// Creates a wire from a 64-bit word.
 	///
 	/// # Arguments
@@ -447,6 +461,16 @@ impl CircuitBuilder {
 	///
 	/// 1 AND constraint.
 	pub fn band(&self, x: Wire, y: Wire) -> Wire {
+		// Identities that hold bit for bit, so they need no AND constraint:
+		//   c & d  -> fold        0 & y -> 0        all-1 & y -> y
+		match (self.const_of(x), self.const_of(y)) {
+			(Some(a), Some(b)) => return self.add_constant(Word(a.0 & b.0)),
+			(Some(a), _) if a == Word::ZERO => return x,
+			(Some(a), _) if a == Word::ALL_ONE => return y,
+			(_, Some(b)) if b == Word::ZERO => return y,
+			(_, Some(b)) if b == Word::ALL_ONE => return x,
+			_ => {}
+		}
 		let z = self.add_internal();
 		let mut graph = self.graph_mut();
 		graph.emit_gate(self.current_path, Opcode::Band, [x, y], [z]);
@@ -461,6 +485,14 @@ impl CircuitBuilder {
 	///
 	/// 1 linear constraint.
 	pub fn bxor(&self, a: Wire, b: Wire) -> Wire {
+		// Identities that hold bit for bit, so they need no linear constraint:
+		//   c ^ d  -> fold        0 ^ b -> b        a ^ 0 -> a
+		match (self.const_of(a), self.const_of(b)) {
+			(Some(x), Some(y)) => return self.add_constant(Word(x.0 ^ y.0)),
+			(Some(x), _) if x == Word::ZERO => return b,
+			(_, Some(y)) if y == Word::ZERO => return a,
+			_ => {}
+		}
 		let z = self.add_internal();
 		let mut graph = self.graph_mut();
 		graph.emit_gate(self.current_path, Opcode::Bxor, [a, b], [z]);
@@ -520,6 +552,16 @@ impl CircuitBuilder {
 	///
 	/// 1 AND constraint.
 	pub fn bor(&self, a: Wire, b: Wire) -> Wire {
+		// Identities that hold bit for bit, so they need no AND constraint:
+		//   c | d  -> fold        0 | b -> b        all-1 | b -> all-1
+		match (self.const_of(a), self.const_of(b)) {
+			(Some(x), Some(y)) => return self.add_constant(Word(x.0 | y.0)),
+			(Some(x), _) if x == Word::ZERO => return b,
+			(Some(x), _) if x == Word::ALL_ONE => return a,
+			(_, Some(y)) if y == Word::ZERO => return a,
+			(_, Some(y)) if y == Word::ALL_ONE => return b,
+			_ => {}
+		}
 		let z = self.add_internal();
 		let mut graph = self.graph_mut();
 		graph.emit_gate(self.current_path, Opcode::Bor, [a, b], [z]);
@@ -1164,6 +1206,15 @@ impl CircuitBuilder {
 	///
 	/// 1 AND constraint.
 	pub fn select(&self, cond: Wire, t: Wire, f: Wire) -> Wire {
+		// Both arms equal: the choice is irrelevant, so no AND constraint is needed.
+		if t == f {
+			return t;
+		}
+		// A constant condition resolves the branch at compile time.
+		// The selector reads only the most significant bit (bit 63), the MSB-bool.
+		if let Some(c) = self.const_of(cond) {
+			return if (c.0 >> 63) == 1 { t } else { f };
+		}
 		let out = self.add_internal();
 		let mut graph = self.graph_mut();
 		graph.emit_gate(self.current_path, Opcode::Select, [cond, t, f], [out]);
