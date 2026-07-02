@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use num_integer::Integer;
@@ -26,11 +27,14 @@ fn fixedbytevec_le_to_biguint(builder: &mut CircuitBuilder, byte_vec: &ByteVec) 
 			let byte_masked = builder.band(byte, builder.add_constant_64(0xFF));
 			bytes.push(byte_masked);
 		}
-		// Repack bytes in reverse order (byte-swap)
+		// Repack bytes in reverse order (byte-swap). Each `shifted` occupies a distinct
+		// byte lane (`bytes[..]` are masked to 8 bits, then shifted by a multiple of 8), so
+		// the operands are disjoint and `bxor` matches `bor` bit-for-bit while costing no AND
+		// constraint.
 		let mut swapped_limb = bytes[7];
 		for i in 1..8 {
 			let shifted = builder.shl(bytes[7 - i], (i * 8) as u32);
-			swapped_limb = builder.bor(swapped_limb, shifted);
+			swapped_limb = builder.bxor(swapped_limb, shifted);
 		}
 		limbs.push(swapped_limb);
 	}
