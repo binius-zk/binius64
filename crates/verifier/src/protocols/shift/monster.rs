@@ -14,7 +14,7 @@ use binius_math::{
 
 use super::{
 	SHIFT_VARIANT_COUNT,
-	error::Error,
+	error::ShiftError,
 	shift_ind::{partial_eval_phi, partial_eval_sigmas, partial_eval_sigmas_transpose},
 };
 use crate::config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS};
@@ -127,7 +127,7 @@ pub fn evaluate_monster_multilinear_for_operation<F, E>(
 	r_s: &[E],
 	r_y_tensor: &[E],
 	h_op_evals: &[E; SHIFT_VARIANT_COUNT],
-) -> Result<E, Error>
+) -> Result<E, ShiftError>
 where
 	F: BinaryField,
 	E: FieldOps<Scalar = F> + From<F>,

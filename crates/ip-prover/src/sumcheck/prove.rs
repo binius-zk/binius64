@@ -8,7 +8,7 @@
 use binius_field::Field;
 use binius_ip::mlecheck;
 
-use super::{common::SumcheckProver, error::Error};
+use super::{common::SumcheckProver, error::SumcheckError};
 use crate::{channel::IPProverChannel, sumcheck::common::MleCheckProver};
 
 /// Executes the sumcheck proving protocol for a single multivariate polynomial.
@@ -31,8 +31,8 @@ use crate::{channel::IPProverChannel, sumcheck::common::MleCheckProver};
 ///
 /// # Errors
 ///
-/// - [`Error::ArgumentError`] if the prover returns more than one composition polynomial from its
-///   `execute()` method
+/// - [`SumcheckError::ArgumentError`] if the prover returns more than one composition polynomial
+///   from its `execute()` method
 /// - Any error propagated from the underlying prover implementation
 ///
 /// # Protocol Flow
@@ -47,14 +47,14 @@ use crate::{channel::IPProverChannel, sumcheck::common::MleCheckProver};
 pub fn prove_single<F: Field>(
 	mut prover: impl SumcheckProver<F>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<ProveSingleOutput<F>, Error> {
+) -> Result<ProveSingleOutput<F>, SumcheckError> {
 	let n_vars = prover.n_vars();
 	let mut challenges = Vec::with_capacity(n_vars);
 
 	for _ in 0..n_vars {
 		let mut round_coeffs_vec = prover.execute()?;
 		if round_coeffs_vec.len() != 1 {
-			return Err(Error::ArgumentError(format!(
+			return Err(SumcheckError::ArgumentError(format!(
 				"function expects prover to evaluate one composition, but it returned {} from \
 				execute()",
 				round_coeffs_vec.len()
@@ -82,14 +82,14 @@ pub fn prove_single<F: Field>(
 pub fn prove_single_mlecheck<F: Field>(
 	mut prover: impl MleCheckProver<F>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<ProveSingleOutput<F>, Error> {
+) -> Result<ProveSingleOutput<F>, SumcheckError> {
 	let n_vars = prover.n_vars();
 	let mut challenges = Vec::with_capacity(n_vars);
 
 	for _ in 0..n_vars {
 		let mut round_coeffs_vec = prover.execute()?;
 		if round_coeffs_vec.len() != 1 {
-			return Err(Error::ArgumentError(format!(
+			return Err(SumcheckError::ArgumentError(format!(
 				"function expects prover to evaluate one composition, but it returned {} from \
 				execute()",
 				round_coeffs_vec.len()

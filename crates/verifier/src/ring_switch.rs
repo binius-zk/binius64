@@ -3,7 +3,7 @@
 use std::iter;
 
 use binius_field::{BinaryField, ExtensionField, FieldOps, PackedField};
-use binius_ip::channel::IPVerifierChannel;
+use binius_ip::channel::{IPChannelError, IPVerifierChannel};
 use binius_math::{
 	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate_inplace_scalars},
 	tensor_algebra::TensorAlgebra,
@@ -12,9 +12,9 @@ use binius_math::{
 use crate::config::B1;
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum RingSwitchError {
 	#[error("channel: {0}")]
-	Channel(#[from] binius_ip::channel::Error),
+	Channel(#[from] IPChannelError),
 }
 
 /// Output of ring-switching verification.
@@ -49,7 +49,7 @@ pub fn verify<F, C>(
 	evaluation_claim: C::Elem,
 	eval_point: &[C::Elem],
 	channel: &mut C,
-) -> Result<RingSwitchVerifyOutput<C::Elem>, Error>
+) -> Result<RingSwitchVerifyOutput<C::Elem>, RingSwitchError>
 where
 	F: BinaryField + PackedField<Scalar = F>,
 	C: IPVerifierChannel<F>,

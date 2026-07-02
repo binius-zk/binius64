@@ -39,15 +39,15 @@ pub trait IPVerifierChannel<F: Field> {
 	type Elem: FieldOps;
 
 	/// Receives a single field element from the prover.
-	fn recv_one(&mut self) -> Result<Self::Elem, Error>;
+	fn recv_one(&mut self) -> Result<Self::Elem, IPChannelError>;
 
 	/// Receives `n` field elements from the prover.
-	fn recv_many(&mut self, n: usize) -> Result<Vec<Self::Elem>, Error> {
+	fn recv_many(&mut self, n: usize) -> Result<Vec<Self::Elem>, IPChannelError> {
 		repeat_with(|| self.recv_one()).take(n).collect()
 	}
 
 	/// Receives a fixed-size array of field elements from the prover.
-	fn recv_array<const N: usize>(&mut self) -> Result<[Self::Elem; N], Error> {
+	fn recv_array<const N: usize>(&mut self) -> Result<[Self::Elem; N], IPChannelError> {
 		array_util::try_from_fn(|_| self.recv_one())
 	}
 
@@ -81,8 +81,8 @@ pub trait IPVerifierChannel<F: Field> {
 
 	/// Asserts that a value is zero.
 	///
-	/// Returns [`Error::InvalidAssert`] if the value is not zero.
-	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), Error>;
+	/// Returns [`IPChannelError::InvalidAssert`] if the value is not zero.
+	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), IPChannelError>;
 
 	/// Computes a value that is a function of public-channel-derived elements and returns it
 	/// as a freshly allocated `Elem`.
@@ -117,18 +117,22 @@ where
 {
 	type Elem = F;
 
-	fn recv_one(&mut self) -> Result<F, Error> {
-		self.message().read_scalar().map_err(|_| Error::ProofEmpty)
+	fn recv_one(&mut self) -> Result<F, IPChannelError> {
+		self.message()
+			.read_scalar()
+			.map_err(|_| IPChannelError::ProofEmpty)
 	}
 
-	fn recv_many(&mut self, n: usize) -> Result<Vec<F>, Error> {
+	fn recv_many(&mut self, n: usize) -> Result<Vec<F>, IPChannelError> {
 		self.message()
 			.read_scalar_slice(n)
-			.map_err(|_| Error::ProofEmpty)
+			.map_err(|_| IPChannelError::ProofEmpty)
 	}
 
-	fn recv_array<const N: usize>(&mut self) -> Result<[F; N], Error> {
-		self.message().read().map_err(|_| Error::ProofEmpty)
+	fn recv_array<const N: usize>(&mut self) -> Result<[F; N], IPChannelError> {
+		self.message()
+			.read()
+			.map_err(|_| IPChannelError::ProofEmpty)
 	}
 
 	fn sample(&mut self) -> F {
@@ -145,11 +149,11 @@ where
 		vals.to_vec()
 	}
 
-	fn assert_zero(&mut self, val: F) -> Result<(), Error> {
+	fn assert_zero(&mut self, val: F) -> Result<(), IPChannelError> {
 		if val == F::ZERO {
 			Ok(())
 		} else {
-			Err(Error::InvalidAssert)
+			Err(IPChannelError::InvalidAssert)
 		}
 	}
 
@@ -159,7 +163,7 @@ where
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum IPChannelError {
 	#[error("proof is empty")]
 	ProofEmpty,
 	#[error("invalid assertion: value is not zero")]

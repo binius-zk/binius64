@@ -3,7 +3,7 @@
 use binius_field::{Field, PackedField};
 use binius_math::AsSlicesMut;
 
-use super::{error::Error, quadratic_mle::QuadraticMleCheckProver};
+use super::{error::SumcheckError, quadratic_mle::QuadraticMleCheckProver};
 use crate::sumcheck::common::MleCheckProver;
 
 /// Creates an [`MleCheckProver`] that reduces an evaluation claim on a multilinear extension
@@ -53,7 +53,7 @@ pub fn new<F, P>(
 	multilinears: impl AsSlicesMut<P, 2> + Send + 'static,
 	eval_point: Vec<F>,
 	eval_claim: F,
-) -> Result<impl MleCheckProver<F>, Error>
+) -> Result<impl MleCheckProver<F>, SumcheckError>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,

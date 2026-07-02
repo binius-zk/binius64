@@ -7,7 +7,7 @@ use crate::{
 	channel::IPProverChannel,
 	sumcheck::{
 		common::{MleCheckProver, SumcheckProver},
-		error::Error,
+		error::SumcheckError,
 	},
 };
 
@@ -43,7 +43,7 @@ pub struct BatchSumcheckOutput<F: Field> {
 pub fn batch_prove<F, Prover>(
 	mut provers: Vec<Prover>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<BatchSumcheckOutput<F>, Error>
+) -> Result<BatchSumcheckOutput<F>, SumcheckError>
 where
 	F: Field,
 	Prover: SumcheckProver<F>,
@@ -58,7 +58,7 @@ where
 	let n_vars = first_prover.n_vars();
 
 	if provers.iter().any(|prover| prover.n_vars() != n_vars) {
-		return Err(Error::ProverRoundCountMismatch);
+		return Err(SumcheckError::ProverRoundCountMismatch);
 	}
 
 	// Random linear-combination coefficient for batching multiple sum claims.
@@ -126,7 +126,7 @@ where
 pub fn batch_prove_and_write_evals<F, Prover>(
 	provers: Vec<Prover>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<BatchSumcheckOutput<F>, Error>
+) -> Result<BatchSumcheckOutput<F>, SumcheckError>
 where
 	F: Field,
 	Prover: SumcheckProver<F>,
@@ -148,7 +148,7 @@ where
 pub fn batch_prove_mle<F, MleCheckProver_>(
 	mut provers: Vec<MleCheckProver_>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<BatchSumcheckOutput<F>, Error>
+) -> Result<BatchSumcheckOutput<F>, SumcheckError>
 where
 	F: Field,
 	MleCheckProver_: MleCheckProver<F>,
@@ -164,7 +164,7 @@ where
 	let eval_point = first_prover.eval_point();
 
 	if provers.iter().any(|prover| prover.n_vars() != n_vars) {
-		return Err(Error::ProverRoundCountMismatch);
+		return Err(SumcheckError::ProverRoundCountMismatch);
 	}
 
 	if provers
@@ -172,7 +172,7 @@ where
 		.any(|prover| prover.eval_point() != eval_point)
 	{
 		// All MLE-check provers must share the same evaluation point to batch safely.
-		return Err(Error::EvalPointLengthMismatch);
+		return Err(SumcheckError::EvalPointLengthMismatch);
 	}
 	// Random linear-combination coefficient for batching multiple eval claims.
 	let batch_coeff = channel.sample();
@@ -224,7 +224,7 @@ where
 pub fn batch_prove_mle_and_write_evals<F, MleCheckProver_>(
 	provers: Vec<MleCheckProver_>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<BatchSumcheckOutput<F>, Error>
+) -> Result<BatchSumcheckOutput<F>, SumcheckError>
 where
 	F: Field,
 	MleCheckProver_: MleCheckProver<F>,
@@ -256,7 +256,7 @@ mod tests {
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
 	use rand::prelude::*;
 
-	use super::{Error, batch_prove_mle};
+	use super::{SumcheckError, batch_prove_mle};
 	use crate::sumcheck::bivariate_product_mle;
 
 	fn product_eval_claim<F, P>(
@@ -404,7 +404,7 @@ mod tests {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let err = batch_prove_mle(vec![prover_0, prover_1], &mut transcript).unwrap_err();
 		assert!(
-			matches!(err, Error::EvalPointLengthMismatch),
+			matches!(err, SumcheckError::EvalPointLengthMismatch),
 			"Expected eval point mismatch error"
 		);
 	}
@@ -443,7 +443,7 @@ mod tests {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let err = batch_prove_mle(vec![prover_0, prover_1], &mut transcript).unwrap_err();
 		assert!(
-			matches!(err, Error::ProverRoundCountMismatch),
+			matches!(err, SumcheckError::ProverRoundCountMismatch),
 			"Expected prover round count mismatch error"
 		);
 	}

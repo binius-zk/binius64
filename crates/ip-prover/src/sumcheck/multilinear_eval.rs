@@ -8,7 +8,7 @@ use binius_utils::rayon::prelude::*;
 
 use super::{
 	common::{MleCheckProver, SumcheckProver},
-	error::Error,
+	error::SumcheckError,
 	gruen32::Gruen32,
 	round_evals::RoundEvals1,
 };
@@ -38,11 +38,15 @@ impl<F: Field, P: PackedField<Scalar = F>> MultilinearEvalProver<P> {
 	/// Constructs a prover for the multilinear `witness`, given the evaluation point `eval_point`
 	/// and the claimed evaluation `eval_claim` of the multilinear extension at that point.
 	///
-	/// Returns [`Error::MultilinearSizeMismatch`] if the witness length does not match the
+	/// Returns [`SumcheckError::MultilinearSizeMismatch`] if the witness length does not match the
 	/// evaluation point length.
-	pub fn new(witness: FieldBuffer<P>, eval_point: &[F], eval_claim: F) -> Result<Self, Error> {
+	pub fn new(
+		witness: FieldBuffer<P>,
+		eval_point: &[F],
+		eval_claim: F,
+	) -> Result<Self, SumcheckError> {
 		if witness.log_len() != eval_point.len() {
-			return Err(Error::MultilinearSizeMismatch);
+			return Err(SumcheckError::MultilinearSizeMismatch);
 		}
 
 		Ok(Self {
@@ -72,9 +76,9 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for MultilinearEval
 		vec![claim]
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, SumcheckError> {
 		let RoundCoeffsOrSum::Sum(sum) = &self.last_coeffs_or_sum else {
-			return Err(Error::ExpectedFold);
+			return Err(SumcheckError::ExpectedFold);
 		};
 		let sum = *sum;
 
@@ -106,9 +110,9 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for MultilinearEval
 		Ok(vec![round_coeffs])
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) -> Result<(), SumcheckError> {
 		let RoundCoeffsOrSum::Coeffs(coeffs) = &self.last_coeffs_or_sum else {
-			return Err(Error::ExpectedExecute);
+			return Err(SumcheckError::ExpectedExecute);
 		};
 
 		assert!(self.n_vars() > 0);
@@ -122,11 +126,11 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for MultilinearEval
 		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
+	fn finish(self) -> Result<Vec<F>, SumcheckError> {
 		if self.n_vars() > 0 {
 			let error = match self.last_coeffs_or_sum {
-				RoundCoeffsOrSum::Coeffs(_) => Error::ExpectedFold,
-				RoundCoeffsOrSum::Sum(_) => Error::ExpectedExecute,
+				RoundCoeffsOrSum::Coeffs(_) => SumcheckError::ExpectedFold,
+				RoundCoeffsOrSum::Sum(_) => SumcheckError::ExpectedExecute,
 			};
 			return Err(error);
 		}

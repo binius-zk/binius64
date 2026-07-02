@@ -15,21 +15,24 @@
 //! communication and commitment mechanisms.
 
 use binius_field::Field;
-use binius_ip::channel::IPVerifierChannel;
+use binius_ip::{
+	channel::{IPChannelError, IPVerifierChannel},
+	sumcheck::SumcheckError,
+};
 
-use crate::basefold;
+use crate::basefold::BaseFoldError;
 
-/// Error type for IOP verifier channel operations.
+/// IOPChannelError type for IOP verifier channel operations.
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum IOPChannelError {
 	#[error("proof is empty")]
 	ProofEmpty,
 	#[error("BaseFold verification failed: {0}")]
-	BaseFold(#[from] basefold::Error),
+	BaseFold(#[from] BaseFoldError),
 	#[error("IP channel error: {0}")]
-	IPChannel(#[from] binius_ip::channel::Error),
+	IPChannel(#[from] IPChannelError),
 	#[error("sumcheck error: {0}")]
-	Sumcheck(#[from] binius_ip::sumcheck::Error),
+	Sumcheck(#[from] SumcheckError),
 }
 
 /// Specification for an oracle to be committed in the IOP.
@@ -117,7 +120,7 @@ pub trait IOPVerifierChannel<'r, F: Field>: IPVerifierChannel<F> {
 		&mut self,
 		log_msg_len: usize,
 		is_witness_dependent: bool,
-	) -> Result<Self::Oracle, Error>;
+	) -> Result<Self::Oracle, IOPChannelError>;
 
 	/// Queues oracle linear relations to be opened.
 	///
@@ -135,5 +138,5 @@ pub trait IOPVerifierChannel<'r, F: Field>: IPVerifierChannel<F> {
 	fn verify_oracle_relations(
 		&mut self,
 		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'r, Self::Oracle, Self::Elem>>,
-	) -> Result<(), Error>;
+	) -> Result<(), IOPChannelError>;
 }

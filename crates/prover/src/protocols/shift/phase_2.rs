@@ -8,7 +8,7 @@ use binius_verifier::{config::LOG_WORD_SIZE_BITS, protocols::sumcheck::SumcheckO
 use tracing::instrument;
 
 use super::{
-	error::Error, key_collection::KeyCollection, monster::build_monster_multilinear,
+	error::ShiftError, key_collection::KeyCollection, monster::build_monster_multilinear,
 	prove::PreparedOperatorData,
 };
 use crate::{
@@ -51,7 +51,7 @@ pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel>(
 	intmul_data: &PreparedOperatorData<F>,
 	phase_1_output: SumcheckOutput<F>,
 	channel: &mut Channel,
-) -> Result<SumcheckOutput<F>, Error>
+) -> Result<SumcheckOutput<F>, ShiftError>
 where
 	F: BinaryField + From<AESTowerField8b>,
 	Channel: IPProverChannel<F>,
@@ -96,7 +96,7 @@ fn run_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverChannel<F
 	r_j: Vec<F>,
 	gamma: F,
 	channel: &mut Channel,
-) -> Result<SumcheckOutput<F>, Error> {
+) -> Result<SumcheckOutput<F>, ShiftError> {
 	#[cfg(debug_assertions)]
 	let cloned_r_j_witness_for_debugging = r_j_witness.clone();
 

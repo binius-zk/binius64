@@ -88,7 +88,7 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
 	type Elem = CircuitElem<F, WitnessGenerator<'a, F>>;
 
-	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
+	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::IPChannelError> {
 		let encrypted_elem = self.next_inout_elem();
 		let key = self.next_precommit_elem();
 		Ok(encrypted_elem + key)
@@ -102,7 +102,7 @@ impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
 		self.next_inout_elem()
 	}
 
-	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
+	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::IPChannelError> {
 		match val {
 			// A compile-time constant is checked here; any other wire's value is checked by the
 			// witness generator, which records a constraint violation as a build error.
@@ -110,7 +110,7 @@ impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
 				if c == F::ZERO {
 					Ok(())
 				} else {
-					Err(binius_ip::channel::Error::InvalidAssert)
+					Err(binius_ip::channel::IPChannelError::InvalidAssert)
 				}
 			}
 			CircuitElem::Wire { builder, wire } => {
@@ -148,14 +148,14 @@ impl<'r, 'a, F: Field> IOPVerifierChannel<'r, F> for ReplayChannel<'a, F> {
 		&mut self,
 		_log_msg_len: usize,
 		_is_witness_dependent: bool,
-	) -> Result<Self::Oracle, binius_iop::channel::Error> {
+	) -> Result<Self::Oracle, binius_iop::channel::IOPChannelError> {
 		Ok(())
 	}
 
 	fn verify_oracle_relations(
 		&mut self,
 		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'r, Self::Oracle, Self::Elem>>,
-	) -> Result<(), binius_iop::channel::Error> {
+	) -> Result<(), binius_iop::channel::IOPChannelError> {
 		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
 		// checks in the circuit equality of this value with the expected expression over encrypted
 		// values.

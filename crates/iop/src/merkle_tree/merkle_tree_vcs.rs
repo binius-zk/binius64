@@ -4,7 +4,7 @@ use auto_impl::auto_impl;
 use binius_transcript::{Buf, TranscriptReader};
 use binius_utils::FixedSizeSerializeBytes;
 
-use super::error::Error;
+use super::error::MerkleTreeError;
 
 /// A Merkle tree commitment.
 ///
@@ -52,7 +52,7 @@ pub trait MerkleTreeScheme<T: FixedSizeSerializeBytes> {
 		data: &[T],
 		batch_size: usize,
 		proof: &mut TranscriptReader<B>,
-	) -> Result<(), Error>;
+	) -> Result<(), MerkleTreeError>;
 
 	/// Verify a given layer of the Merkle tree.
 	///
@@ -68,7 +68,7 @@ pub trait MerkleTreeScheme<T: FixedSizeSerializeBytes> {
 		root: &Self::Digest,
 		layer_depth: usize,
 		layer_digests: &[Self::Digest],
-	) -> Result<(), Error>;
+	) -> Result<(), MerkleTreeError>;
 
 	/// Verify an opening proof for an entry in a committed vector at the given index.
 	///
@@ -84,5 +84,5 @@ pub trait MerkleTreeScheme<T: FixedSizeSerializeBytes> {
 		tree_depth: usize,
 		layer_digests: &[Self::Digest],
 		proof: &mut TranscriptReader<B>,
-	) -> Result<(), Error>;
+	) -> Result<(), MerkleTreeError>;
 }

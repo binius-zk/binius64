@@ -17,7 +17,7 @@ use binius_math::{
 };
 
 use super::{
-	Error,
+	SumcheckError,
 	common::{MleCheckProver, SumcheckProver},
 };
 use crate::channel::IPProverChannel;
@@ -284,13 +284,13 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 		vec![claim]
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, SumcheckError> {
 		let RoundCoeffsOrClaim::Claim(_claim) = &self.last_coeffs_or_claim else {
-			return Err(Error::ExpectedFold);
+			return Err(SumcheckError::ExpectedFold);
 		};
 
 		if self.n_vars_remaining == 0 {
-			return Err(Error::ExpectedFinish);
+			return Err(SumcheckError::ExpectedFinish);
 		}
 
 		let var_idx = self.current_var_index();
@@ -318,9 +318,9 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 		Ok(vec![round_coeffs])
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) -> Result<(), SumcheckError> {
 		let RoundCoeffsOrClaim::Coeffs(coeffs) = &self.last_coeffs_or_claim else {
-			return Err(Error::ExpectedExecute);
+			return Err(SumcheckError::ExpectedExecute);
 		};
 
 		// Evaluate round polynomial at challenge to get new claim
@@ -337,11 +337,11 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
+	fn finish(self) -> Result<Vec<F>, SumcheckError> {
 		if self.n_vars_remaining > 0 {
 			return match self.last_coeffs_or_claim {
-				RoundCoeffsOrClaim::Coeffs(_) => Err(Error::ExpectedFold),
-				RoundCoeffsOrClaim::Claim(_) => Err(Error::ExpectedExecute),
+				RoundCoeffsOrClaim::Coeffs(_) => Err(SumcheckError::ExpectedFold),
+				RoundCoeffsOrClaim::Claim(_) => Err(SumcheckError::ExpectedExecute),
 			};
 		}
 
@@ -393,7 +393,7 @@ pub fn prove<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>(
 	mut main_prover: impl MleCheckProver<F>,
 	mask: Mask<P, Data>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<ProveZKOutput<F>, Error> {
+) -> Result<ProveZKOutput<F>, SumcheckError> {
 	assert_eq!(
 		main_prover.n_claims(),
 		1,

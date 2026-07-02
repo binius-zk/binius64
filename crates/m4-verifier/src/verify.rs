@@ -104,7 +104,7 @@ impl Verifier {
 	pub fn verify<Challenger_>(
 		&self,
 		transcript: &mut VerifierTranscript<Challenger_>,
-	) -> Result<(Vec<B128>, B128), binius_iop::channel::Error>
+	) -> Result<(Vec<B128>, B128), binius_iop::channel::IOPChannelError>
 	where
 		Challenger_: Challenger,
 	{

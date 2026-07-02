@@ -9,7 +9,8 @@ use binius_math::{
 use binius_verifier::protocols::sumcheck::SumcheckOutput;
 
 use super::{
-	error::Error, key_collection::KeyCollection, phase_1::prove_phase_1, phase_2::prove_phase_2,
+	error::ShiftError, key_collection::KeyCollection, phase_1::prove_phase_1,
+	phase_2::prove_phase_2,
 };
 
 /// Holds the prover data for an operator.
@@ -100,7 +101,7 @@ pub fn prove<F, P, Channel>(
 	bitand_data: OperatorData<F>,
 	intmul_data: OperatorData<F>,
 	channel: &mut Channel,
-) -> Result<SumcheckOutput<F>, Error>
+) -> Result<SumcheckOutput<F>, ShiftError>
 where
 	F: BinaryField + From<AESTowerField8b>,
 	P: PackedField<Scalar = F>,

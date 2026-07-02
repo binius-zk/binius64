@@ -3,7 +3,7 @@
 use binius_field::{Field, PackedField};
 use binius_math::FieldBuffer;
 
-use super::error::Error;
+use super::error::SumcheckError;
 use crate::sumcheck::{batch_quadratic_mle::BatchQuadraticMleCheckProver, common::MleCheckProver};
 
 pub type FractionalBuffer<P> = (FieldBuffer<P>, FieldBuffer<P>);
@@ -14,7 +14,7 @@ pub fn new<F, P>(
 	fraction: [FieldBuffer<P>; 4],
 	eval_point: Vec<F>,
 	eval_claims: [F; 2],
-) -> Result<impl MleCheckProver<F>, Error>
+) -> Result<impl MleCheckProver<F>, SumcheckError>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,

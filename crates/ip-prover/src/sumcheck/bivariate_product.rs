@@ -6,7 +6,7 @@ use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 
-use crate::sumcheck::{common::SumcheckProver, error::Error, round_evals::WideRoundEvals2};
+use crate::sumcheck::{common::SumcheckProver, error::SumcheckError, round_evals::WideRoundEvals2};
 
 /// A [`SumcheckProver`] implementation for a composite defined as the product of two multilinears.
 ///
@@ -24,9 +24,9 @@ pub struct BivariateProductSumcheckProver<P: PackedField> {
 impl<F: Field, P: PackedField<Scalar = F>> BivariateProductSumcheckProver<P> {
 	/// Constructs a prover, given the multilinear polynomial evaluations and the sum over the
 	/// boolean hypercube of their product.
-	pub fn new(multilinears: [FieldBuffer<P>; 2], sum: F) -> Result<Self, Error> {
+	pub fn new(multilinears: [FieldBuffer<P>; 2], sum: F) -> Result<Self, SumcheckError> {
 		if multilinears[0].log_len() != multilinears[1].log_len() {
-			return Err(Error::MultilinearSizeMismatch);
+			return Err(SumcheckError::MultilinearSizeMismatch);
 		}
 
 		Ok(Self {
@@ -53,9 +53,9 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 		vec![claim]
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, SumcheckError> {
 		let RoundCoeffsOrSum::Sum(last_sum) = &self.last_coeffs_or_sum else {
-			return Err(Error::ExpectedFold);
+			return Err(SumcheckError::ExpectedFold);
 		};
 
 		// Multilinear inputs are the same length by invariant
@@ -94,9 +94,9 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 		Ok(vec![round_coeffs])
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) -> Result<(), SumcheckError> {
 		let RoundCoeffsOrSum::Coeffs(last_coeffs) = self.last_coeffs_or_sum.clone() else {
-			return Err(Error::ExpectedExecute);
+			return Err(SumcheckError::ExpectedExecute);
 		};
 
 		for multilin in &mut self.multilinears {
@@ -108,11 +108,11 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
+	fn finish(self) -> Result<Vec<F>, SumcheckError> {
 		if self.n_vars() > 0 {
 			let error = match self.last_coeffs_or_sum {
-				RoundCoeffsOrSum::Coeffs(_) => Error::ExpectedFold,
-				RoundCoeffsOrSum::Sum(_) => Error::ExpectedExecute,
+				RoundCoeffsOrSum::Coeffs(_) => SumcheckError::ExpectedFold,
+				RoundCoeffsOrSum::Sum(_) => SumcheckError::ExpectedExecute,
 			};
 			return Err(error);
 		}

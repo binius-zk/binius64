@@ -1,21 +1,21 @@
 // Copyright 2026 The Binius Developers
 
-//! Error types for logUp* verification.
+//! LogupStarError types for logUp* verification.
 
-use crate::{fracaddcheck, sumcheck};
+use crate::{fracaddcheck::FracAddCheckError, sumcheck::SumcheckError};
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum LogupStarError {
 	#[error("fractional-addition check error: {0}")]
-	FracAddCheck(#[from] fracaddcheck::Error),
+	FracAddCheck(#[from] FracAddCheckError),
 	#[error("sumcheck error: {0}")]
-	Sumcheck(#[from] sumcheck::Error),
+	Sumcheck(#[from] SumcheckError),
 	#[error("verification error: {0}")]
-	Verification(#[from] VerificationError),
+	Verification(#[from] LogupStarVerificationError),
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum VerificationError {
+pub enum LogupStarVerificationError {
 	#[error("the two lookup fractional sums are not equal")]
 	LookupSumMismatch,
 	#[error("the eq_r multilinear evaluation is incorrect")]

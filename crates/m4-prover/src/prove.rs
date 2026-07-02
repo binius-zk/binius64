@@ -133,9 +133,9 @@ mod tests {
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
 	use binius_iop::{
-		basefold::{Error as BaseFoldError, VerificationError as BaseFoldVerificationError},
-		fri::VerificationError as FriVerificationError,
-		merkle_tree::VerificationError as MerkleVerificationError,
+		basefold::{BaseFoldError, BaseFoldVerificationError},
+		fri::FriVerificationError,
+		merkle_tree::MerkleTreeVerificationError,
 	};
 	use binius_math::multilinear::evaluate::evaluate;
 	use binius_transcript::VerifierTranscript;
@@ -243,9 +243,9 @@ mod tests {
 		let err = verifier.verify(&mut verifier_transcript).unwrap_err();
 		assert_matches!(
 			err,
-			binius_iop::channel::Error::BaseFold(BaseFoldError::Verification(
+			binius_iop::channel::IOPChannelError::BaseFold(BaseFoldError::Verification(
 				BaseFoldVerificationError::FRI(FriVerificationError::MerkleError(
-					MerkleVerificationError::InvalidProof
+					MerkleTreeVerificationError::InvalidProof
 				))
 			))
 		);

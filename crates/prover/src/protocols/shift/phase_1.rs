@@ -19,7 +19,7 @@ use itertools::izip;
 use tracing::instrument;
 
 use super::{
-	error::Error,
+	error::ShiftError,
 	key_collection::{KeyCollection, Operation},
 	monster::build_h_parts,
 	prove::PreparedOperatorData,
@@ -41,7 +41,7 @@ pub fn prove_phase_1<F, P, Channel>(
 	bitand_data: &PreparedOperatorData<F>,
 	intmul_data: &PreparedOperatorData<F>,
 	channel: &mut Channel,
-) -> Result<SumcheckOutput<F>, Error>
+) -> Result<SumcheckOutput<F>, ShiftError>
 where
 	F: BinaryField + From<AESTowerField8b>,
 	P: PackedField<Scalar = F>,
@@ -85,7 +85,7 @@ fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverC
 	g_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
 	h_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
 	channel: &mut Channel,
-) -> Result<SumcheckOutput<F>, Error> {
+) -> Result<SumcheckOutput<F>, ShiftError> {
 	// Build `BivariateProductSumcheckProver` provers.
 	let mut provers = iter::zip(g_parts, h_parts)
 		.map(|(g_part, h_part)| {
@@ -171,7 +171,7 @@ fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 	key_collection: &KeyCollection,
 	bitand_operator_data: &PreparedOperatorData<F>,
 	intmul_operator_data: &PreparedOperatorData<F>,
-) -> Result<[FieldBuffer<P>; SHIFT_VARIANT_COUNT], Error> {
+) -> Result<[FieldBuffer<P>; SHIFT_VARIANT_COUNT], ShiftError> {
 	let acc_size: usize = SHIFT_VARIANT_COUNT << (LOG_LEN.saturating_sub(P::LOG_WIDTH));
 
 	assert!(
@@ -263,7 +263,7 @@ fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 #[instrument(skip_all, name = "build_multilinear_parts")]
 fn build_multilinear_parts<P: PackedField>(
 	multilinears: &[P],
-) -> Result<[FieldBuffer<P>; SHIFT_VARIANT_COUNT], Error> {
+) -> Result<[FieldBuffer<P>; SHIFT_VARIANT_COUNT], ShiftError> {
 	assert!(
 		P::LOG_WIDTH < LOG_LEN,
 		"P::WIDTH is not supposed to exceed 8, so this statement must hold"

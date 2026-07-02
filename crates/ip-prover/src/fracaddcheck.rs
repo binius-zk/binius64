@@ -8,7 +8,7 @@ use binius_utils::rayon::iter::{IntoParallelIterator, ParallelIterator};
 use crate::{
 	channel::IPProverChannel,
 	sumcheck::{
-		Error as SumcheckError,
+		SumcheckError,
 		batch::batch_prove_mle_and_write_evals,
 		common::MleCheckProver,
 		frac_add_mle::{self, FractionalBuffer},
@@ -25,7 +25,7 @@ pub struct FracAddCheckProver<P: PackedField> {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum Error {
+pub enum FracAddCheckError {
 	#[error(
 		"mismatched numerator/denominator lengths: numerator log_len {num_log_len}, denominator log_len {den_log_len}"
 	)]
@@ -100,7 +100,7 @@ where
 	pub fn layer_prover(
 		mut self,
 		claim: (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>),
-	) -> Result<(impl MleCheckProver<F>, Option<Self>), Error> {
+	) -> Result<(impl MleCheckProver<F>, Option<Self>), FracAddCheckError> {
 		let (num_claim, den_claim) = claim;
 		assert_eq!(
 			num_claim.point, den_claim.point,
@@ -146,7 +146,7 @@ where
 		self,
 		claim: (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>),
 		channel: &mut impl IPProverChannel<F>,
-	) -> Result<(MultilinearEvalClaim<F>, MultilinearEvalClaim<F>), Error> {
+	) -> Result<(MultilinearEvalClaim<F>, MultilinearEvalClaim<F>), FracAddCheckError> {
 		let mut prover_opt = Some(self);
 		let mut claim = claim;
 

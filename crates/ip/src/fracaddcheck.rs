@@ -7,11 +7,11 @@
 
 use binius_field::Field;
 use binius_math::line::extrapolate_line;
-use binius_transcript::Error as TranscriptError;
+use binius_transcript::TranscriptError;
 
 use crate::{
-	channel::IPVerifierChannel,
-	sumcheck::{self, BatchSumcheckOutput},
+	channel::{IPChannelError, IPVerifierChannel},
+	sumcheck::{self, BatchSumcheckOutput, SumcheckError, SumcheckVerificationError},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,7 +27,7 @@ pub fn verify<F, C>(
 	k: usize,
 	claim: FracAddEvalClaim<C::Elem>,
 	channel: &mut C,
-) -> Result<FracAddEvalClaim<C::Elem>, Error>
+) -> Result<FracAddEvalClaim<C::Elem>, FracAddCheckError>
 where
 	F: Field,
 	C: IPVerifierChannel<F>,
@@ -84,46 +84,48 @@ where
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum FracAddCheckError {
 	#[error("sumcheck error: {0}")]
-	Sumcheck(#[source] sumcheck::Error),
+	Sumcheck(#[source] SumcheckError),
 	#[error("transcript error: {0}")]
 	Transcript(#[source] TranscriptError),
 	#[error("verification error: {0}")]
-	Verification(#[from] VerificationError),
+	Verification(#[from] FracAddCheckVerificationError),
 }
 
-impl From<sumcheck::Error> for Error {
-	fn from(err: sumcheck::Error) -> Self {
+impl From<SumcheckError> for FracAddCheckError {
+	fn from(err: SumcheckError) -> Self {
 		match err {
-			sumcheck::Error::Verification(err) => VerificationError::Sumcheck(err).into(),
-			_ => Error::Sumcheck(err),
+			SumcheckError::Verification(err) => FracAddCheckVerificationError::Sumcheck(err).into(),
+			_ => FracAddCheckError::Sumcheck(err),
 		}
 	}
 }
 
-impl From<TranscriptError> for Error {
+impl From<TranscriptError> for FracAddCheckError {
 	fn from(err: TranscriptError) -> Self {
 		match err {
-			TranscriptError::NotEnoughBytes => VerificationError::TranscriptIsEmpty.into(),
-			_ => Error::Transcript(err),
+			TranscriptError::NotEnoughBytes => {
+				FracAddCheckVerificationError::TranscriptIsEmpty.into()
+			}
+			_ => FracAddCheckError::Transcript(err),
 		}
 	}
 }
 
-impl From<crate::channel::Error> for Error {
-	fn from(err: crate::channel::Error) -> Self {
+impl From<IPChannelError> for FracAddCheckError {
+	fn from(err: IPChannelError) -> Self {
 		match err {
-			crate::channel::Error::ProofEmpty => VerificationError::TranscriptIsEmpty.into(),
-			crate::channel::Error::InvalidAssert => VerificationError::InvalidAssert.into(),
+			IPChannelError::ProofEmpty => FracAddCheckVerificationError::TranscriptIsEmpty.into(),
+			IPChannelError::InvalidAssert => FracAddCheckVerificationError::InvalidAssert.into(),
 		}
 	}
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum VerificationError {
+pub enum FracAddCheckVerificationError {
 	#[error("sumcheck: {0}")]
-	Sumcheck(#[from] sumcheck::VerificationError),
+	Sumcheck(#[from] SumcheckVerificationError),
 	#[error("incorrect layer fraction sum evaluation: {round}")]
 	IncorrectLayerFractionSumEvaluation { round: usize },
 	#[error("incorrect round evaluation: {round}")]

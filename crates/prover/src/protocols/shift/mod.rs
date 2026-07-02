@@ -9,6 +9,6 @@ mod phase_1;
 mod phase_2;
 mod prove;
 
-pub use error::Error;
+pub use error::ShiftError;
 pub use key_collection::{KeyCollection, build_key_collection};
 pub use prove::{OperatorData, PreparedOperatorData, prove};

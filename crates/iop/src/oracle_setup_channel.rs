@@ -22,7 +22,7 @@ use binius_field::{
 };
 use binius_ip::channel::IPVerifierChannel;
 
-use crate::channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec};
+use crate::channel::{IOPChannelError, IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 
 /// A zero-sized dummy field element for [`OracleSetupChannel`].
 ///
@@ -170,15 +170,20 @@ impl OracleSetupChannel {
 impl<F: Field> IPVerifierChannel<F> for OracleSetupChannel {
 	type Elem = DummyElem;
 
-	fn recv_one(&mut self) -> Result<DummyElem, binius_ip::channel::Error> {
+	fn recv_one(&mut self) -> Result<DummyElem, binius_ip::channel::IPChannelError> {
 		Ok(DummyElem)
 	}
 
-	fn recv_many(&mut self, n: usize) -> Result<Vec<DummyElem>, binius_ip::channel::Error> {
+	fn recv_many(
+		&mut self,
+		n: usize,
+	) -> Result<Vec<DummyElem>, binius_ip::channel::IPChannelError> {
 		Ok(vec![DummyElem; n])
 	}
 
-	fn recv_array<const N: usize>(&mut self) -> Result<[DummyElem; N], binius_ip::channel::Error> {
+	fn recv_array<const N: usize>(
+		&mut self,
+	) -> Result<[DummyElem; N], binius_ip::channel::IPChannelError> {
 		Ok([DummyElem; N])
 	}
 
@@ -194,7 +199,7 @@ impl<F: Field> IPVerifierChannel<F> for OracleSetupChannel {
 		vec![DummyElem; vals.len()]
 	}
 
-	fn assert_zero(&mut self, _val: DummyElem) -> Result<(), binius_ip::channel::Error> {
+	fn assert_zero(&mut self, _val: DummyElem) -> Result<(), binius_ip::channel::IPChannelError> {
 		Ok(())
 	}
 
@@ -217,7 +222,7 @@ impl<'r, F: Field> IOPVerifierChannel<'r, F> for OracleSetupChannel {
 		&mut self,
 		log_msg_len: usize,
 		is_witness_dependent: bool,
-	) -> Result<Self::Oracle, Error> {
+	) -> Result<Self::Oracle, IOPChannelError> {
 		self.oracle_specs.push(OracleSpec {
 			log_msg_len,
 			is_zk: self.is_zk && is_witness_dependent,
@@ -228,7 +233,7 @@ impl<'r, F: Field> IOPVerifierChannel<'r, F> for OracleSetupChannel {
 	fn verify_oracle_relations(
 		&mut self,
 		_oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'r, Self::Oracle, Self::Elem>>,
-	) -> Result<(), Error> {
+	) -> Result<(), IOPChannelError> {
 		Ok(())
 	}
 }

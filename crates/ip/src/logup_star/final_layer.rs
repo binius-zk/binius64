@@ -12,7 +12,7 @@ use binius_field::{
 };
 use binius_math::{line::extrapolate_line, multilinear::eq::eq_ind};
 
-use super::error::{Error, VerificationError};
+use super::error::{LogupStarError, LogupStarVerificationError};
 use crate::{
 	channel::IPVerifierChannel,
 	sumcheck::{self, BatchSumcheckOutput},
@@ -66,7 +66,7 @@ pub fn verify_final_layer<F, C>(
 	layer1_den: C::Elem,
 	layer1_point: &[C::Elem],
 	channel: &mut C,
-) -> Result<FinalLayer<C::Elem>, Error>
+) -> Result<FinalLayer<C::Elem>, LogupStarError>
 where
 	F: Field + ExtensionField<BinaryField1b>,
 	C: IPVerifierChannel<F>,
@@ -87,7 +87,7 @@ where
 	//     T_0 = T(rho, 0),  T_1 = T(rho, 1)
 	let [y_0, y_1, t_0, t_1] = channel
 		.recv_array()
-		.map_err(|_| VerificationError::TranscriptIsEmpty)?;
+		.map_err(|_| LogupStarVerificationError::TranscriptIsEmpty)?;
 
 	// Sumcheck binds variables highest-to-lowest; reverse to align with the low-to-high point Z.
 	challenges.reverse();
@@ -117,7 +117,7 @@ where
 		eq_eval * (num_relation + batch_coeff * den_relation) + batch_coeff_sq * prod_relation;
 	channel
 		.assert_zero(eval - expected)
-		.map_err(|_| VerificationError::FinalLayerMismatch)?;
+		.map_err(|_| LogupStarVerificationError::FinalLayerMismatch)?;
 
 	// Fold the highest variable once to collapse the halves into single evaluations.
 	let r = channel.sample();

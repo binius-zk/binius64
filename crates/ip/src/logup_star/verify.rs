@@ -6,7 +6,7 @@ use binius_field::{BinaryField1b, ExtensionField, Field};
 use binius_math::multilinear::eq::eq_ind;
 
 use super::{
-	error::{Error, VerificationError},
+	error::{LogupStarError, LogupStarVerificationError},
 	final_layer::{FinalLayer, verify_final_layer},
 	output::LogupOutput,
 };
@@ -68,7 +68,7 @@ pub fn verify<F, C>(
 	eval_claim: C::Elem,
 	eval_point: &[C::Elem],
 	channel: &mut C,
-) -> Result<LogupOutput<C::Elem>, Error>
+) -> Result<LogupOutput<C::Elem>, LogupStarError>
 where
 	F: Field + ExtensionField<BinaryField1b>,
 	C: IPVerifierChannel<F>,
@@ -89,7 +89,7 @@ where
 	//     table  side: num_r / den_r = sum_{j in B_m} Y(j)    / (c - j)
 	let [num_l, den_l, num_r, den_r] = channel
 		.recv_array()
-		.map_err(|_| VerificationError::TranscriptIsEmpty)?;
+		.map_err(|_| LogupStarVerificationError::TranscriptIsEmpty)?;
 
 	// The lookup identity is the equality of the two fractional sums.
 	//
@@ -97,7 +97,7 @@ where
 	let sum_diff = num_l.clone() * den_r.clone() - num_r.clone() * den_l.clone();
 	channel
 		.assert_zero(sum_diff)
-		.map_err(|_| VerificationError::LookupSumMismatch)?;
+		.map_err(|_| LogupStarVerificationError::LookupSumMismatch)?;
 
 	// Looker side: run the full n-layer GKR to reach the leaf claim.
 	//
@@ -123,7 +123,7 @@ where
 	let expected_eq = eq_ind::<C::Elem>(eval_point, &index_eval_point);
 	channel
 		.assert_zero(looker_num - expected_eq)
-		.map_err(|_| VerificationError::IncorrectXEvaluation)?;
+		.map_err(|_| LogupStarVerificationError::IncorrectXEvaluation)?;
 
 	// The looker denominator is c - I(point_l), so the index claim is I(point_l) = c - den.
 	let index_eval_claim = c.clone() - looker_den;

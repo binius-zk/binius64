@@ -9,7 +9,7 @@ use binius_math::{
 	test_utils::{random_field_buffer, random_scalars},
 };
 use binius_prover::protocols::sumcheck::{
-	Error, batch_quadratic_mle::BatchQuadraticMleCheckProver, common::MleCheckProver,
+	SumcheckError, batch_quadratic_mle::BatchQuadraticMleCheckProver, common::MleCheckProver,
 };
 use binius_transcript::{
 	ProverTranscript,
@@ -71,7 +71,7 @@ where
 fn prove_batch_mlecheck<Ff, Challenger_, Prover>(
 	mut prover: Prover,
 	transcript: &mut ProverTranscript<Challenger_>,
-) -> Result<Vec<Ff>, Error>
+) -> Result<Vec<Ff>, SumcheckError>
 where
 	Ff: Field,
 	Challenger_: Challenger,

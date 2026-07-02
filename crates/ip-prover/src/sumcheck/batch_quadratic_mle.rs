@@ -11,7 +11,7 @@ use binius_utils::rayon::prelude::*;
 use itertools::{Itertools, izip};
 
 use crate::sumcheck::{
-	Error,
+	SumcheckError,
 	common::{MleCheckProver, SumcheckProver},
 	gruen32::Gruen32,
 	round_evals::RoundEvals2,
@@ -56,13 +56,13 @@ where
 		infinity_composition: InfinityComposition,
 		eval_point: Vec<F>,
 		eval_claims: [F; M],
-	) -> Result<Self, Error> {
+	) -> Result<Self, SumcheckError> {
 		let n_vars = eval_point.len();
 		assert!(N > 0 && M > 0);
 		for multilinear in &multilinears.as_slices_mut() {
 			// All multilinears must agree on the number of variables for consistent folding.
 			if multilinear.log_len() != n_vars {
-				return Err(Error::MultilinearSizeMismatch);
+				return Err(SumcheckError::MultilinearSizeMismatch);
 			}
 		}
 
@@ -123,11 +123,11 @@ where
 		}
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, SumcheckError> {
 		// State machine: execute consumes evals from the previous round and produces new coeffs.
 		let last_eval = match &self.last_coeffs_or_eval {
 			RoundCoeffsOrEvals::Evals(evals) => *evals,
-			RoundCoeffsOrEvals::Coeffs(_) => return Err(Error::ExpectedFold),
+			RoundCoeffsOrEvals::Coeffs(_) => return Err(SumcheckError::ExpectedFold),
 		};
 
 		// There must be at least one variable left to sum over in this round.
@@ -175,53 +175,56 @@ where
 		};
 		let packed_prime_evals = (0..chunk_count)
 			.into_par_iter()
-			.try_fold(zero_wide_acc, |mut packed_prime_evals, chunk_index| -> Result<_, Error> {
-				let eq_chunk = eq_expansion.chunk(chunk_vars, chunk_index);
+			.try_fold(
+				zero_wide_acc,
+				|mut packed_prime_evals, chunk_index| -> Result<_, SumcheckError> {
+					let eq_chunk = eq_expansion.chunk(chunk_vars, chunk_index);
 
-				// Scratch buffers are reused per row to avoid allocations in the hot loop.
-				let [mut y_1_scratch, mut y_inf_scratch] = [[P::default(); M]; 2];
-				let splits_0_chunk = splits_0
-					.iter()
-					.map(|slice| slice.chunk(chunk_vars, chunk_index))
-					.collect::<Vec<_>>();
-				let splits_1_chunk = splits_1
-					.iter()
-					.map(|slice| slice.chunk(chunk_vars, chunk_index))
-					.collect::<Vec<_>>();
+					// Scratch buffers are reused per row to avoid allocations in the hot loop.
+					let [mut y_1_scratch, mut y_inf_scratch] = [[P::default(); M]; 2];
+					let splits_0_chunk = splits_0
+						.iter()
+						.map(|slice| slice.chunk(chunk_vars, chunk_index))
+						.collect::<Vec<_>>();
+					let splits_1_chunk = splits_1
+						.iter()
+						.map(|slice| slice.chunk(chunk_vars, chunk_index))
+						.collect::<Vec<_>>();
 
-				// Accumulate packed evals for this chunk; first index is y_1/y_inf.
-				let [y_1, y_inf] = &mut packed_prime_evals;
-				for (idx, &eq_i) in eq_chunk.as_ref().iter().enumerate() {
-					// Gather the idx-th evaluations of every multilinear at both halves.
-					let mut evals_1 = [P::default(); N];
-					let mut evals_inf = [P::default(); N];
+					// Accumulate packed evals for this chunk; first index is y_1/y_inf.
+					let [y_1, y_inf] = &mut packed_prime_evals;
+					for (idx, &eq_i) in eq_chunk.as_ref().iter().enumerate() {
+						// Gather the idx-th evaluations of every multilinear at both halves.
+						let mut evals_1 = [P::default(); N];
+						let mut evals_inf = [P::default(); N];
 
-					for i in 0..N {
-						let lo_i = splits_0_chunk[i].as_ref()[idx];
-						let hi_i = splits_1_chunk[i].as_ref()[idx];
+						for i in 0..N {
+							let lo_i = splits_0_chunk[i].as_ref()[idx];
+							let hi_i = splits_1_chunk[i].as_ref()[idx];
 
-						// Compose once with the high half and once with the lo+hi combination.
-						// The lo+hi branch corresponds to evaluation at infinity for
-						// multilinears.
-						evals_1[i] = hi_i;
-						evals_inf[i] = lo_i + hi_i;
+							// Compose once with the high half and once with the lo+hi combination.
+							// The lo+hi branch corresponds to evaluation at infinity for
+							// multilinears.
+							evals_1[i] = hi_i;
+							evals_inf[i] = lo_i + hi_i;
+						}
+
+						// Apply the compositions for this equality term.
+						comp(evals_1, &mut y_1_scratch);
+						inf_comp(evals_inf, &mut y_inf_scratch);
+
+						for i in 0..M {
+							// Weight by eq indicator to keep the sumcheck claim aligned to
+							// eval_point. Only this final multiply is widened; the composition
+							// products in the scratch buffers are already reduced.
+							y_1[i] += P::wide_mul(y_1_scratch[i], eq_i);
+							y_inf[i] += P::wide_mul(y_inf_scratch[i], eq_i);
+						}
 					}
 
-					// Apply the compositions for this equality term.
-					comp(evals_1, &mut y_1_scratch);
-					inf_comp(evals_inf, &mut y_inf_scratch);
-
-					for i in 0..M {
-						// Weight by eq indicator to keep the sumcheck claim aligned to
-						// eval_point. Only this final multiply is widened; the composition
-						// products in the scratch buffers are already reduced.
-						y_1[i] += P::wide_mul(y_1_scratch[i], eq_i);
-						y_inf[i] += P::wide_mul(y_inf_scratch[i], eq_i);
-					}
-				}
-
-				Ok(packed_prime_evals)
-			})
+					Ok(packed_prime_evals)
+				},
+			)
 			.try_reduce(zero_wide_acc, |mut lhs, mut rhs| {
 				for claim_idx in 0..M {
 					lhs[0][claim_idx] += std::mem::take(&mut rhs[0][claim_idx]);
@@ -255,10 +258,10 @@ where
 		Ok(round_coeffs)
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) -> Result<(), SumcheckError> {
 		// State machine: fold consumes coeffs and produces evals at the verifier challenge.
 		let RoundCoeffsOrEvals::Coeffs(prime_coeffs) = &self.last_coeffs_or_eval else {
-			return Err(Error::ExpectedExecute);
+			return Err(SumcheckError::ExpectedExecute);
 		};
 
 		// n_vars is decremented in fold, so we must have at least one variable left here.
@@ -290,12 +293,12 @@ where
 		Ok(())
 	}
 
-	fn finish(mut self) -> Result<Vec<F>, Error> {
+	fn finish(mut self) -> Result<Vec<F>, SumcheckError> {
 		// Finish is only valid after all folds complete (i.e., zero variables remain).
 		if self.n_vars() > 0 {
 			let error = match self.last_coeffs_or_eval {
-				RoundCoeffsOrEvals::Coeffs(_) => Error::ExpectedFold,
-				RoundCoeffsOrEvals::Evals(_) => Error::ExpectedExecute,
+				RoundCoeffsOrEvals::Coeffs(_) => SumcheckError::ExpectedFold,
+				RoundCoeffsOrEvals::Evals(_) => SumcheckError::ExpectedExecute,
 			};
 
 			return Err(error);

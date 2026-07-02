@@ -6,7 +6,9 @@ use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{AsSlicesMut, FieldSliceMut, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 
-use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::WideRoundEvals2};
+use super::{
+	common::SumcheckProver, error::SumcheckError, gruen32::Gruen32, round_evals::WideRoundEvals2,
+};
 use crate::sumcheck::common::MleCheckProver;
 
 /// MLE-check prover for polynomials defined as quadratic compositions of N multilinear polynomials.
@@ -67,20 +69,20 @@ where
 	///
 	/// # Errors
 	///
-	/// Returns `Error::MultilinearSizeMismatch` if any multilinear has a different number of
-	/// variables than the length of `eval_point`.
+	/// Returns `SumcheckError::MultilinearSizeMismatch` if any multilinear has a different number
+	/// of variables than the length of `eval_point`.
 	pub fn new(
 		mut multilinears: impl AsSlicesMut<P, N> + Send + 'static,
 		composition: Composition,
 		infinity_composition: InfinityComposition,
 		eval_point: Vec<F>,
 		eval_claim: F,
-	) -> Result<Self, Error> {
+	) -> Result<Self, SumcheckError> {
 		let n_vars = eval_point.len();
 
 		for multilinear in &multilinears.as_slices_mut() {
 			if multilinear.log_len() != n_vars {
-				return Err(Error::MultilinearSizeMismatch);
+				return Err(SumcheckError::MultilinearSizeMismatch);
 			}
 		}
 
@@ -133,10 +135,10 @@ where
 		vec![claim]
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, SumcheckError> {
 		let last_eval = match &self.last_coeffs_or_eval {
 			RoundCoeffsOrEval::Eval(eval) => *eval,
-			RoundCoeffsOrEval::Coeffs(_) => return Err(Error::ExpectedFold),
+			RoundCoeffsOrEval::Coeffs(_) => return Err(SumcheckError::ExpectedFold),
 		};
 
 		let n_vars_remaining = self.gruen32.n_vars_remaining();
@@ -198,9 +200,9 @@ where
 		Ok(vec![round_coeffs])
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) -> Result<(), SumcheckError> {
 		let RoundCoeffsOrEval::Coeffs(coeffs) = &self.last_coeffs_or_eval else {
-			return Err(Error::ExpectedExecute);
+			return Err(SumcheckError::ExpectedExecute);
 		};
 
 		assert!(
@@ -222,11 +224,11 @@ where
 		Ok(())
 	}
 
-	fn finish(mut self) -> Result<Vec<F>, Error> {
+	fn finish(mut self) -> Result<Vec<F>, SumcheckError> {
 		if self.n_vars() > 0 {
 			let error = match self.last_coeffs_or_eval {
-				RoundCoeffsOrEval::Coeffs(_) => Error::ExpectedFold,
-				RoundCoeffsOrEval::Eval(_) => Error::ExpectedExecute,
+				RoundCoeffsOrEval::Coeffs(_) => SumcheckError::ExpectedFold,
+				RoundCoeffsOrEval::Eval(_) => SumcheckError::ExpectedExecute,
 			};
 
 			return Err(error);

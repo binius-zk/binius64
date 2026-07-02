@@ -16,7 +16,7 @@ use tracing::instrument;
 
 use super::{
 	SHIFT_VARIANT_COUNT,
-	error::Error,
+	error::ShiftError,
 	key_collection::{KeyCollection, Operation},
 	prove::PreparedOperatorData,
 };
@@ -140,7 +140,7 @@ pub fn build_monster_multilinear<F, P: PackedField<Scalar = F>>(
 	intmul_operator_data: &PreparedOperatorData<F>,
 	r_j: &[F],
 	r_s: &[F],
-) -> Result<FieldBuffer<P>, Error>
+) -> Result<FieldBuffer<P>, ShiftError>
 where
 	F: BinaryField + From<AESTowerField8b>,
 {

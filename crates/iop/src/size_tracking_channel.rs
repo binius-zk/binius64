@@ -9,7 +9,7 @@ use binius_field::{BinaryField, util::FieldFn};
 use binius_ip::channel::IPVerifierChannel;
 
 use crate::{
-	channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec},
+	channel::{IOPChannelError, IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	fri::{self, FRIParams},
 	merkle_tree::MerkleTreeScheme,
 };
@@ -85,17 +85,17 @@ impl<F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IPVerifierChannel<F>
 {
 	type Elem = F;
 
-	fn recv_one(&mut self) -> Result<F, binius_ip::channel::Error> {
+	fn recv_one(&mut self) -> Result<F, binius_ip::channel::IPChannelError> {
 		self.proof_size += self.element_size;
 		Ok(F::ZERO)
 	}
 
-	fn recv_many(&mut self, n: usize) -> Result<Vec<F>, binius_ip::channel::Error> {
+	fn recv_many(&mut self, n: usize) -> Result<Vec<F>, binius_ip::channel::IPChannelError> {
 		self.proof_size += n * self.element_size;
 		Ok(vec![F::ZERO; n])
 	}
 
-	fn recv_array<const N: usize>(&mut self) -> Result<[F; N], binius_ip::channel::Error> {
+	fn recv_array<const N: usize>(&mut self) -> Result<[F; N], binius_ip::channel::IPChannelError> {
 		self.proof_size += N * self.element_size;
 		Ok([F::ZERO; N])
 	}
@@ -112,7 +112,7 @@ impl<F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IPVerifierChannel<F>
 		vec![F::ZERO; vals.len()]
 	}
 
-	fn assert_zero(&mut self, _val: F) -> Result<(), binius_ip::channel::Error> {
+	fn assert_zero(&mut self, _val: F) -> Result<(), binius_ip::channel::IPChannelError> {
 		Ok(())
 	}
 
@@ -134,7 +134,7 @@ impl<'r, F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IOPVerifierChannel<
 		&mut self,
 		_log_msg_len: usize,
 		_is_witness_dependent: bool,
-	) -> Result<Self::Oracle, Error> {
+	) -> Result<Self::Oracle, IOPChannelError> {
 		self.proof_size += self.oracle_size;
 		self.next_oracle_index += 1;
 		Ok(())
@@ -143,7 +143,7 @@ impl<'r, F: BinaryField, MerkleScheme_: MerkleTreeScheme<F>> IOPVerifierChannel<
 	fn verify_oracle_relations(
 		&mut self,
 		_oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'r, Self::Oracle, Self::Elem>>,
-	) -> Result<(), Error> {
+	) -> Result<(), IOPChannelError> {
 		// Add FRI proof sizes for all oracles. This accounts for the dominant component of
 		// BaseFold proofs (FRI decommitments) but is missing smaller elements (e.g. sumcheck
 		// coefficients within BaseFold, blinding elements for ZK), so it's a slight

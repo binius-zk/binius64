@@ -83,7 +83,7 @@ pub fn verify<F, C>(
 	degree: usize,
 	mut eval: C::Elem,
 	channel: &mut C,
-) -> Result<SumcheckOutput<C::Elem>, sumcheck::Error>
+) -> Result<SumcheckOutput<C::Elem>, sumcheck::SumcheckError>
 where
 	F: Field,
 	C: IPVerifierChannel<F>,
@@ -116,7 +116,7 @@ pub fn verify_zk<F, C>(
 	degree: usize,
 	eval: C::Elem,
 	channel: &mut C,
-) -> Result<VerifyZKOutput<C::Elem>, sumcheck::Error>
+) -> Result<VerifyZKOutput<C::Elem>, sumcheck::SumcheckError>
 where
 	F: Field,
 	C: IPVerifierChannel<F>,

@@ -175,7 +175,7 @@ where
 {
 	type Elem = CircuitElem<F, InstanceGenerator<'a, F>>;
 
-	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
+	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::IPChannelError> {
 		// Mirror `IronSpartanBuilderChannel::recv_one`'s shape: `inout - key`. The inout carries
 		// the encrypted F received from the inner channel (written into the public segment); the
 		// key is a precommit wire whose value the verifier does not know (`PublicWire(None)`).
@@ -197,7 +197,7 @@ where
 		self.alloc_inout_elem(elem)
 	}
 
-	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
+	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::IPChannelError> {
 		match val {
 			// A compile-time constant is checked here; a non-zero one is an unsatisfiable
 			// assertion.
@@ -205,7 +205,7 @@ where
 				if c == F::ZERO {
 					Ok(())
 				} else {
-					Err(binius_ip::channel::Error::InvalidAssert)
+					Err(binius_ip::channel::IPChannelError::InvalidAssert)
 				}
 			}
 			// No-op for wires: the corresponding constraint was recorded symbolically and is
@@ -249,7 +249,7 @@ where
 		&mut self,
 		log_msg_len: usize,
 		is_witness_dependent: bool,
-	) -> Result<Self::Oracle, binius_iop::channel::Error> {
+	) -> Result<Self::Oracle, binius_iop::channel::IOPChannelError> {
 		assert!(
 			!self.remaining_oracle_specs().is_empty(),
 			"recv_oracle called but no remaining inner oracle specs"
@@ -261,7 +261,7 @@ where
 	fn verify_oracle_relations(
 		&mut self,
 		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
-	) -> Result<(), binius_iop::channel::Error> {
+	) -> Result<(), binius_iop::channel::IOPChannelError> {
 		let mut inner_relations = Vec::new();
 		for OracleLinearRelation {
 			oracle,

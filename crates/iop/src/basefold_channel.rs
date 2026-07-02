@@ -26,7 +26,7 @@ use itertools::izip;
 
 use crate::{
 	basefold,
-	channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec},
+	channel::{IOPChannelError, IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	fri::FRIParams,
 	merkle_tree::MerkleTreeScheme,
 };
@@ -107,7 +107,7 @@ where
 	/// (in oracle-index order). Because the whole opening is deferred to this point, every oracle
 	/// is committed and there is a single sumcheck point, so the precomputed combined `FRIParams`
 	/// (`optimal_for_batch` over all oracle specs) serves the opening.
-	pub fn finish(self) -> Result<(), Error> {
+	pub fn finish(self) -> Result<(), IOPChannelError> {
 		let Self {
 			transcript,
 			merkle_scheme,
@@ -164,7 +164,7 @@ fn verify_batch_zk_basefold<F, MerkleScheme_, Challenger_>(
 	fri_params: &FRIParams<F>,
 	oracle_commitments: Vec<MerkleScheme_::Digest>,
 	relations: Vec<OracleLinearRelation<'_, BaseFoldOracle, F>>,
-) -> Result<(), Error>
+) -> Result<(), IOPChannelError>
 where
 	F: BinaryField,
 	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
@@ -283,25 +283,25 @@ where
 {
 	type Elem = F;
 
-	fn recv_one(&mut self) -> Result<F, binius_ip::channel::Error> {
+	fn recv_one(&mut self) -> Result<F, binius_ip::channel::IPChannelError> {
 		self.transcript
 			.message()
 			.read_scalar()
-			.map_err(|_| binius_ip::channel::Error::ProofEmpty)
+			.map_err(|_| binius_ip::channel::IPChannelError::ProofEmpty)
 	}
 
-	fn recv_many(&mut self, n: usize) -> Result<Vec<F>, binius_ip::channel::Error> {
+	fn recv_many(&mut self, n: usize) -> Result<Vec<F>, binius_ip::channel::IPChannelError> {
 		self.transcript
 			.message()
 			.read_scalar_slice(n)
-			.map_err(|_| binius_ip::channel::Error::ProofEmpty)
+			.map_err(|_| binius_ip::channel::IPChannelError::ProofEmpty)
 	}
 
-	fn recv_array<const N: usize>(&mut self) -> Result<[F; N], binius_ip::channel::Error> {
+	fn recv_array<const N: usize>(&mut self) -> Result<[F; N], binius_ip::channel::IPChannelError> {
 		self.transcript
 			.message()
 			.read()
-			.map_err(|_| binius_ip::channel::Error::ProofEmpty)
+			.map_err(|_| binius_ip::channel::IPChannelError::ProofEmpty)
 	}
 
 	fn sample(&mut self) -> F {
@@ -318,11 +318,11 @@ where
 		vals.to_vec()
 	}
 
-	fn assert_zero(&mut self, val: F) -> Result<(), binius_ip::channel::Error> {
+	fn assert_zero(&mut self, val: F) -> Result<(), binius_ip::channel::IPChannelError> {
 		if val == F::ZERO {
 			Ok(())
 		} else {
-			Err(binius_ip::channel::Error::InvalidAssert)
+			Err(binius_ip::channel::IPChannelError::InvalidAssert)
 		}
 	}
 
@@ -348,7 +348,7 @@ where
 		&mut self,
 		_log_msg_len: usize,
 		_is_witness_dependent: bool,
-	) -> Result<Self::Oracle, Error> {
+	) -> Result<Self::Oracle, IOPChannelError> {
 		// A BaseFold commitment is a fixed-size Merkle digest, so `log_msg_len` is not needed here;
 		// the per-oracle specs (used for the FRI opening) are supplied at channel construction.
 		assert!(
@@ -362,7 +362,7 @@ where
 			.transcript
 			.message()
 			.read::<MerkleScheme_::Digest>()
-			.map_err(|_| Error::ProofEmpty)?;
+			.map_err(|_| IOPChannelError::ProofEmpty)?;
 
 		self.oracle_commitments.push(commitment);
 		self.next_oracle_index += 1;
@@ -373,7 +373,7 @@ where
 	fn verify_oracle_relations(
 		&mut self,
 		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
-	) -> Result<(), Error> {
+	) -> Result<(), IOPChannelError> {
 		// Queue the relations; the actual opening (masking + sumcheck + combined FRI) happens once,
 		// over all committed oracles, in [`Self::finish`].
 		for relation in oracle_relations {

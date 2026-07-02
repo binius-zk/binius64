@@ -14,7 +14,7 @@ use binius_transcript::{
 	fiat_shamir::{CanSample, Challenger},
 };
 
-use crate::channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec};
+use crate::channel::{IOPChannelError, IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 
 /// Oracle handle returned by [`NaiveVerifierChannel::recv_oracle`].
 #[derive(Debug, Clone, Copy)]
@@ -91,25 +91,25 @@ where
 {
 	type Elem = F;
 
-	fn recv_one(&mut self) -> Result<F, binius_ip::channel::Error> {
+	fn recv_one(&mut self) -> Result<F, binius_ip::channel::IPChannelError> {
 		self.transcript
 			.message()
 			.read_scalar()
-			.map_err(|_| binius_ip::channel::Error::ProofEmpty)
+			.map_err(|_| binius_ip::channel::IPChannelError::ProofEmpty)
 	}
 
-	fn recv_many(&mut self, n: usize) -> Result<Vec<F>, binius_ip::channel::Error> {
+	fn recv_many(&mut self, n: usize) -> Result<Vec<F>, binius_ip::channel::IPChannelError> {
 		self.transcript
 			.message()
 			.read_scalar_slice(n)
-			.map_err(|_| binius_ip::channel::Error::ProofEmpty)
+			.map_err(|_| binius_ip::channel::IPChannelError::ProofEmpty)
 	}
 
-	fn recv_array<const N: usize>(&mut self) -> Result<[F; N], binius_ip::channel::Error> {
+	fn recv_array<const N: usize>(&mut self) -> Result<[F; N], binius_ip::channel::IPChannelError> {
 		self.transcript
 			.message()
 			.read()
-			.map_err(|_| binius_ip::channel::Error::ProofEmpty)
+			.map_err(|_| binius_ip::channel::IPChannelError::ProofEmpty)
 	}
 
 	fn sample(&mut self) -> F {
@@ -126,11 +126,11 @@ where
 		vals.to_vec()
 	}
 
-	fn assert_zero(&mut self, val: F) -> Result<(), binius_ip::channel::Error> {
+	fn assert_zero(&mut self, val: F) -> Result<(), binius_ip::channel::IPChannelError> {
 		if val == F::ZERO {
 			Ok(())
 		} else {
-			Err(binius_ip::channel::Error::InvalidAssert)
+			Err(binius_ip::channel::IPChannelError::InvalidAssert)
 		}
 	}
 
@@ -154,7 +154,7 @@ where
 		&mut self,
 		log_msg_len: usize,
 		_is_witness_dependent: bool,
-	) -> Result<Self::Oracle, Error> {
+	) -> Result<Self::Oracle, IOPChannelError> {
 		assert!(
 			!self.remaining_oracle_specs().is_empty(),
 			"recv_oracle called but no remaining oracle specs"
@@ -170,7 +170,7 @@ where
 			.transcript
 			.message()
 			.read_scalar_slice(buffer_len)
-			.map_err(|_| Error::ProofEmpty)?;
+			.map_err(|_| IOPChannelError::ProofEmpty)?;
 
 		self.stored_polynomials
 			.push(FieldBuffer::from_values(&values));
@@ -182,7 +182,7 @@ where
 	fn verify_oracle_relations(
 		&mut self,
 		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'r, Self::Oracle, F>>,
-	) -> Result<(), Error> {
+	) -> Result<(), IOPChannelError> {
 		for relation in oracle_relations {
 			let index = relation.oracle.index;
 			assert!(index < self.stored_polynomials.len(), "oracle index {index} out of bounds");
@@ -197,7 +197,7 @@ where
 				.transcript
 				.message()
 				.read_scalar_slice(transparent_len)
-				.map_err(|_| Error::ProofEmpty)?;
+				.map_err(|_| IOPChannelError::ProofEmpty)?;
 			let transparent_poly = FieldBuffer::from_values(&transparent_values);
 
 			// Verify the inner product claim directly

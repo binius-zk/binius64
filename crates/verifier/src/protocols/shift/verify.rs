@@ -15,7 +15,7 @@ use getset::Getters;
 use itertools::Itertools;
 
 use super::{
-	BITAND_ARITY, INTMUL_ARITY, error::Error, evaluate_h_op,
+	BITAND_ARITY, INTMUL_ARITY, error::ShiftError, evaluate_h_op,
 	evaluate_monster_multilinear_for_operation,
 };
 use crate::{
@@ -130,15 +130,15 @@ impl<F> VerifyOutput<F> {
 /// or an error if verification fails.
 ///
 /// # Errors
-/// - Returns `Error::VerificationFailure` if monster multilinear evaluations don't match expected
-///   values
+/// - Returns `ShiftError::VerificationFailure` if monster multilinear evaluations don't match
+///   expected values
 /// - Propagates sumcheck verification errors
 pub fn verify<F, C>(
 	constraint_system: &ConstraintSystem,
 	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
 	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
 	channel: &mut C,
-) -> Result<VerifyOutput<C::Elem>, Error>
+) -> Result<VerifyOutput<C::Elem>, ShiftError>
 where
 	F: BinaryField,
 	C: IPVerifierChannel<F>,
@@ -205,7 +205,7 @@ where
 ///
 /// # Errors
 ///
-/// - `Error::VerificationFailure` if the evaluation equation doesn't hold
+/// - `ShiftError::VerificationFailure` if the evaluation equation doesn't hold
 /// - Propagates errors from monster multilinear evaluation
 pub fn check_eval<F, C>(
 	constraint_system: &ConstraintSystem,
@@ -215,7 +215,7 @@ pub fn check_eval<F, C>(
 	r_zhat_prime: C::Elem,
 	output: &VerifyOutput<C::Elem>,
 	channel: &mut C,
-) -> Result<(), Error>
+) -> Result<(), ShiftError>
 where
 	F: BinaryField,
 	C: IPVerifierChannel<F>,

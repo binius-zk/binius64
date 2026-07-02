@@ -16,7 +16,7 @@ use super::{
 		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, frobenius_twist,
 		reconstruct_selecteds,
 	},
-	error::Error,
+	error::IntMulError,
 };
 use crate::protocols::{
 	prodcheck::{self, MultilinearEvalClaim},
@@ -32,7 +32,7 @@ fn verify_phase_1<F, C>(
 	initial_eval_point: &[C::Elem],
 	initial_b_eval: C::Elem,
 	channel: &mut C,
-) -> Result<Phase1Output<C::Elem>, Error>
+) -> Result<Phase1Output<C::Elem>, IntMulError>
 where
 	F: Field,
 	C: IPVerifierChannel<F>,
@@ -76,7 +76,7 @@ fn verify_phase_3<F, C>(
 	c_eval_point: &[C::Elem],
 	c_eval: C::Elem,
 	channel: &mut C,
-) -> Result<Phase3Output<C::Elem>, Error>
+) -> Result<Phase3Output<C::Elem>, IntMulError>
 where
 	F: Field,
 	C: IPVerifierChannel<F>,
@@ -170,7 +170,7 @@ fn verify_phase_4<F, C>(
 	gpow_c_lo_eval: C::Elem,
 	gpow_c_hi_eval: C::Elem,
 	channel: &mut C,
-) -> Result<Phase4Output<C::Elem>, Error>
+) -> Result<Phase4Output<C::Elem>, IntMulError>
 where
 	F: Field,
 	C: IPVerifierChannel<F>,
@@ -255,7 +255,7 @@ fn verify_phase_5<F, C>(
 	r_ib: &[C::Elem],
 	b_recomb: C::Elem,
 	channel: &mut C,
-) -> Result<IntMulOutput<C::Elem>, Error>
+) -> Result<IntMulOutput<C::Elem>, IntMulError>
 where
 	F: Field,
 	C: IPVerifierChannel<F>,
@@ -449,7 +449,7 @@ pub fn verify<F, C>(
 	log_bits: usize,
 	n_vars: usize,
 	channel: &mut C,
-) -> Result<IntMulOutput<C::Elem>, Error>
+) -> Result<IntMulOutput<C::Elem>, IntMulError>
 where
 	F: BinaryField,
 	C: IPVerifierChannel<F>,

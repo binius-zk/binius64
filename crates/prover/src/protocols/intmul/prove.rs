@@ -28,7 +28,7 @@ use either::Either;
 use itertools::{chain, izip};
 
 use super::{
-	error::Error,
+	error::IntMulError,
 	witness::{Witness, buffer_bivariate_product, two_valued_field_buffer},
 };
 use crate::{
@@ -97,7 +97,7 @@ where
 	/// The output of this protocol is a set of evaluation claims on the `b` selectors representing
 	/// all of `a`, `b`, `c_lo` and `c_hi` as column-major bit matrices, at a common evaluation
 	/// point.
-	pub fn prove(&mut self, witness: Witness<P, u64, S>) -> Result<IntMulOutput<F>, Error> {
+	pub fn prove(&mut self, witness: Witness<P, u64, S>) -> Result<IntMulOutput<F>, IntMulError> {
 		let Witness {
 			log_bits,
 			a_exponents,
@@ -195,7 +195,7 @@ where
 		b_prover: ProdcheckProver<P>,
 		b_leaves: &FieldBuffer<P>,
 		b_root_eval: F,
-	) -> Result<Phase1Output<F>, Error> {
+	) -> Result<Phase1Output<F>, IntMulError> {
 		let n_vars = eval_point.len();
 
 		// Create initial claim
@@ -237,7 +237,7 @@ where
 		c_lo_hi_roots: [FieldBuffer<P>; 2],
 		c_eval_point: &[F],
 		c_root_eval: F,
-	) -> Result<Phase3Output<F>, Error> {
+	) -> Result<Phase3Output<F>, IntMulError> {
 		let n_vars = selector.log_len();
 		assert!(
 			twisted_eval_points
@@ -318,7 +318,7 @@ where
 		(a_root_eval, a_prover): (F, ProdcheckProver<P>),
 		(gpow_c_lo_eval, c_lo_prover): (F, ProdcheckProver<P>),
 		(gpow_c_hi_eval, c_hi_prover): (F, ProdcheckProver<P>),
-	) -> Result<(Phase4Output<F>, [Vec<FieldBuffer<P>>; 3]), Error> {
+	) -> Result<(Phase4Output<F>, [Vec<FieldBuffer<P>>; 3]), IntMulError> {
 		let n_vars = eval_point.len();
 		// Each prover is over the full (widest) leaf layer of `2^log_bits` node multilinears.
 		assert_eq!(a_prover.n_layers(), log_bits);
@@ -409,7 +409,7 @@ where
 		// Needed for the zerocheck on `a_0 * b_0 = c_lo_0`.
 		a_exponents: &[u64],
 		c_lo_exponents: &[u64],
-	) -> Result<IntMulOutput<F>, Error> {
+	) -> Result<IntMulOutput<F>, IntMulError> {
 		assert!(log_bits >= 1);
 		assert_eq!(1 << log_bits, a_layer.len());
 		assert_eq!(2 * a_evals.len(), a_layer.len());
