@@ -23,7 +23,7 @@ use binius_math::{
 	inner_product::inner_product_buffers,
 	multilinear::{
 		eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
-		evaluate::evaluate,
+		evaluate::{evaluate, evaluate_inplace},
 	},
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
@@ -97,21 +97,23 @@ where
 			b_exponents,
 			b_leaves,
 			b_prodcheck,
-			b_root: _,
+			b_root,
 			c_lo_exponents,
 			c_lo_prodcheck,
 			c_lo_root,
 			c_hi_prodcheck,
 			c_hi_root,
-			c_root,
 		} = witness;
 
-		let n_vars = c_root.log_len();
+		// `b_root` (the variable-base `b`-exponent tree root) equals the full product `c` root, so
+		// it serves as the MLE root that opens the protocol.
+		let n_vars = b_root.log_len();
 		assert!(log_bits >= 1);
 
 		let initial_eval_point = self.channel.sample_many(n_vars);
 
-		let exp_eval = evaluate(&c_root, &initial_eval_point);
+		// `b_root` is not needed after this, so fold it in place rather than allocating a copy.
+		let exp_eval = evaluate_inplace(b_root, &initial_eval_point);
 
 		self.channel.send_one(exp_eval);
 
