@@ -51,6 +51,38 @@ fn test_icmp_eq() {
 }
 
 #[test]
+fn test_algebraic_folds_return_operand_directly() {
+	// Idempotent and self-inverse identities on equal wires fold at build time.
+	let builder = CircuitBuilder::new();
+	let x = builder.add_witness();
+	let cond = builder.add_witness();
+
+	// x & x = x, x | x = x, and select(_, t, t) = t all return the operand wire itself.
+	assert_eq!(builder.band(x, x), x);
+	assert_eq!(builder.bor(x, x), x);
+	assert_eq!(builder.select(cond, x, x), x);
+
+	// x ^ x = 0 returns the interned zero constant.
+	assert_eq!(builder.bxor(x, x), builder.add_constant(Word::ZERO));
+}
+
+#[test]
+fn test_algebraic_fold_bxor_self_is_zero_in_witness() {
+	// The folded x ^ x wire must carry 0 for any x, and the circuit must still verify.
+	let builder = CircuitBuilder::new();
+	let x = builder.add_inout();
+	let zero = builder.bxor(x, x);
+	let circuit = builder.build();
+
+	let mut w = circuit.new_witness_filler();
+	w[x] = Word(0x1234_5678_9abc_def0);
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	assert_eq!(w[zero], Word::ZERO);
+	verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
+}
+
+#[test]
 fn test_iadd_cin_cout_max_values() {
 	let builder = CircuitBuilder::new();
 
