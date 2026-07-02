@@ -126,9 +126,9 @@ fn bench_intmul_phases(c: &mut Criterion) {
 	// only clone the datastructures a phase consumes by value. The specific transcript challenges
 	// do not affect the work a phase performs, so a throwaway transcript (and a random initial
 	// evaluation point) is sufficient.
-	let n_vars = witness.c_root.log_len();
+	let n_vars = witness.b_root.log_len();
 	let initial_eval_point = random_scalars::<F>(&mut rand::rng(), n_vars);
-	let exp_eval = evaluate(&witness.c_root, &initial_eval_point);
+	let exp_eval = evaluate(&witness.b_root, &initial_eval_point);
 
 	let phase1 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
@@ -301,9 +301,9 @@ fn bench_intmul_components(c: &mut Criterion) {
 	// the per-iteration setup only clones what `SelectorMlecheckProver::new` consumes. `Word` is
 	// `repr(transparent)` over `u64`, so the exponent bitmasks reinterpret the slice in place.
 	let b_bitmasks: &[u64] = bytemuck::cast_slice(witness.b_exponents);
-	let n_vars = witness.c_root.log_len();
+	let n_vars = witness.b_root.log_len();
 	let initial_eval_point = random_scalars::<F>(&mut rand::rng(), n_vars);
-	let exp_eval = evaluate(&witness.c_root, &initial_eval_point);
+	let exp_eval = evaluate(&witness.b_root, &initial_eval_point);
 	let phase1 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);

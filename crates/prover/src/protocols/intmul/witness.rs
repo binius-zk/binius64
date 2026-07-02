@@ -67,8 +67,6 @@ pub struct Witness<'a, P: PackedField> {
 	pub c_hi_prodcheck: ProdcheckProver<P>,
 	/// The root of the `c_hi` tree.
 	pub c_hi_root: FieldBuffer<P>,
-	/// The root of a `log_bits + 1` deep tree of the full product `c` (`c_lo_root * c_hi_root`).
-	pub c_root: FieldBuffer<P>,
 }
 
 impl<'a, F, P> Witness<'a, P>
@@ -122,9 +120,6 @@ where
 		// Create the prodcheck prover; its products layer becomes b_root
 		let (b_prodcheck, b_root) = ProdcheckProver::new(log_bits, b_leaves.clone());
 
-		// The root of a `log_bits + 1` deep tree of the full product `c`.
-		let c_root = buffer_bivariate_product(&c_lo_root, &c_hi_root);
-
 		Ok(Self {
 			log_bits,
 			a_exponents: a,
@@ -139,7 +134,6 @@ where
 			c_lo_root,
 			c_hi_prodcheck,
 			c_hi_root,
-			c_root,
 		})
 	}
 }
@@ -324,9 +318,11 @@ mod tests {
 	const LOG_BITS: usize = 6;
 
 	fn check_consistency<P: PackedField>(witness: &Witness<'_, P>) {
-		let b_root = witness.b_root();
-		let c_root = witness.c_root();
-		assert_eq!(b_root, c_root);
+		// The variable-base `b`-exponent tree root must equal the full product `c` root
+		// (`c_lo_root * c_hi_root`); this equality is what lets the prover reuse `b_root` in place
+		// of a separately stored `c_root`.
+		let c_root = buffer_bivariate_product(witness.c_lo_root(), witness.c_hi_root());
+		assert_eq!(witness.b_root(), &c_root);
 	}
 
 	#[test]
