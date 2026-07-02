@@ -7,13 +7,7 @@ use std::{
 	ops::{Add, AddAssign, Sub, SubAssign},
 };
 
-use bytemuck::TransparentWrapper;
-
 use super::m128::M128;
-use crate::{
-	aes_field::AESTowerField8b, arch::portable::packed::PackedPrimitiveType,
-	arithmetic_traits::WideMul,
-};
 
 #[inline]
 pub fn packed_aes_16x8b_invert_or_zero(x: M128) -> M128 {
@@ -184,28 +178,6 @@ pub fn packed_aes_16x8b_reduce(wide: WideAes16x8bProduct) -> M128 {
 		let tmp_lo = vuzp1q_p8(tmp0, tmp1);
 
 		vreinterpretq_p128_p8(vaddq_p8(cl, tmp_lo)).into()
-	}
-}
-
-/// Widening-multiply wrapper for the aarch64 `vmull_p8` AES packing, mirroring the GHASH
-/// [`GhashClMulWideMul`](super::arithmetic::ghash::GhashClMulWideMul) pattern: `wide_mul` runs the
-/// carryless multiply (deferring reduction) and `reduce` folds the high bytes back down. The packed
-/// field forwards its `WideMul` to this via the `define_packed_binary_field!` macro.
-#[repr(transparent)]
-#[derive(TransparentWrapper)]
-pub struct VmullWideMul<T>(T);
-
-impl WideMul for VmullWideMul<PackedPrimitiveType<M128, AESTowerField8b>> {
-	type Output = WideAes16x8bProduct;
-
-	#[inline]
-	fn wide_mul(a: Self, b: Self) -> Self::Output {
-		packed_aes_16x8b_wide_mul(Self::peel(a).to_underlier(), Self::peel(b).to_underlier())
-	}
-
-	#[inline]
-	fn reduce(wide: Self::Output) -> Self {
-		Self::wrap(PackedPrimitiveType::from_underlier(packed_aes_16x8b_reduce(wide)))
 	}
 }
 

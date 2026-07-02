@@ -3,50 +3,22 @@
 
 use crate::{
 	aes_field::AESTowerField8b,
-	arch::{
-		AesInvert1x, AesInvert16x, AesInvert32x, AesInvert64x, AesSquare1x, AesSquare16x,
-		AesSquare32x, AesSquare64x, AesWideMul1x, AesWideMul16x, AesWideMul32x, AesWideMul64x,
-		M128, M256, M512, MulFromWideMul,
-		portable::packed_macros::{portable_macros::*, *},
-	},
+	arch::{M128, M256, M512, PackedPrimitiveType},
 };
 
-define_packed_binary_field!(
-	PackedAESBinaryField1x8b,
-	AESTowerField8b,
-	u8,
-	(MulFromWideMul),
-	(AesSquare1x),
-	(AesInvert1x),
-	(AesWideMul1x)
-);
-define_packed_binary_field!(
-	PackedAESBinaryField16x8b,
-	AESTowerField8b,
-	M128,
-	(MulFromWideMul),
-	(AesSquare16x),
-	(AesInvert16x),
-	(AesWideMul16x)
-);
-define_packed_binary_field!(
-	PackedAESBinaryField32x8b,
-	AESTowerField8b,
-	M256,
-	(MulFromWideMul),
-	(AesSquare32x),
-	(AesInvert32x),
-	(AesWideMul32x)
-);
-define_packed_binary_field!(
-	PackedAESBinaryField64x8b,
-	AESTowerField8b,
-	M512,
-	(MulFromWideMul),
-	(AesSquare64x),
-	(AesInvert64x),
-	(AesWideMul64x)
-);
+// Arithmetic is provided by the blanket impls on `PackedPrimitiveType<U, AESTowerField8b>`.
+
+/// A single `AESTowerField8b` byte (a degenerate width-1 packing).
+pub type PackedAESBinaryField1x8b = PackedPrimitiveType<u8, AESTowerField8b>;
+
+/// 16 `AESTowerField8b` bytes in a 128-bit underlier.
+pub type PackedAESBinaryField16x8b = PackedPrimitiveType<M128, AESTowerField8b>;
+
+/// 32 `AESTowerField8b` bytes in a 256-bit underlier.
+pub type PackedAESBinaryField32x8b = PackedPrimitiveType<M256, AESTowerField8b>;
+
+/// 64 `AESTowerField8b` bytes in a 512-bit underlier.
+pub type PackedAESBinaryField64x8b = PackedPrimitiveType<M512, AESTowerField8b>;
 
 #[cfg(test)]
 mod test_utils {
