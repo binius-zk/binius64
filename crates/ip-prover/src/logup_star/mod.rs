@@ -24,14 +24,10 @@
 //! It holds reduced evaluation claims on `T`, on `Y`, and on the index multilinear.
 //! The caller verifies those three claims separately.
 
-mod error;
 mod final_layer;
 mod prove;
 pub mod witness;
 
 pub use binius_ip::logup_star::LogupOutput;
 
-pub use self::{
-	error::Error,
-	prove::{prove, prove_reduction},
-};
+pub use self::prove::{prove, prove_reduction};

@@ -125,15 +125,14 @@ fn bench(c: &mut Criterion) {
 					|[a, b, _]| a * b,
 					multilinear_zerocheck_challenges,
 					next_round_claim,
-				)
-				.expect("multilinears should have consistent dimensions");
+				);
 
 				for _ in 0..log_words {
-					let _ = prover.execute().unwrap();
-					prover.fold(B128::random(&mut rng)).unwrap();
+					let _ = prover.execute();
+					prover.fold(B128::random(&mut rng));
 				}
 
-				prover.finish().unwrap()
+				prover.finish()
 			},
 			BatchSize::SmallInput,
 		);

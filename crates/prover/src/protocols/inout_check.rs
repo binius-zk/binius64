@@ -3,7 +3,6 @@
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_ip_prover::sumcheck::{
-	Error,
 	common::{MleCheckProver, SumcheckProver},
 	gruen32::Gruen32,
 };
@@ -143,9 +142,9 @@ where
 		vec![claim]
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
 		let RoundCoeffsOrEval::Eval(last_eval) = &self.last_coeffs_or_eval else {
-			return Err(Error::ExpectedFold);
+			panic!("execute called out of order; expected fold");
 		};
 
 		let n_vars_remaining = self.n_vars();
@@ -177,12 +176,12 @@ where
 		let round_coeffs = RoundCoeffs(vec![c_0, c_1]);
 
 		self.last_coeffs_or_eval = RoundCoeffsOrEval::Coeffs(round_coeffs.clone());
-		Ok(vec![round_coeffs])
+		vec![round_coeffs]
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) {
 		let RoundCoeffsOrEval::Coeffs(coeffs) = &self.last_coeffs_or_eval else {
-			return Err(Error::ExpectedExecute);
+			panic!("fold called out of order; expected execute");
 		};
 
 		let n_vars = self.n_vars();
@@ -199,22 +198,14 @@ where
 		}
 
 		self.last_coeffs_or_eval = RoundCoeffsOrEval::Eval(eval);
-		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
-		if self.n_vars() > 0 {
-			let error = match self.last_coeffs_or_eval {
-				RoundCoeffsOrEval::Coeffs(_) => Error::ExpectedFold,
-				RoundCoeffsOrEval::Eval(_) => Error::ExpectedExecute,
-			};
-
-			return Err(error);
-		}
+	fn finish(self) -> Vec<F> {
+		assert_eq!(self.n_vars(), 0, "finish called out of order; sumcheck rounds remain");
 
 		// Return only the witness evaluation
 		let witness_eval = self.witness.get(0);
-		Ok(vec![witness_eval])
+		vec![witness_eval]
 	}
 }
 
@@ -281,7 +272,7 @@ mod tests {
 
 		// Run the proving protocol
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = prove_single_mlecheck(prover, &mut prover_transcript).unwrap();
+		let output = prove_single_mlecheck(prover, &mut prover_transcript);
 
 		// Write the multilinear evaluations to the transcript
 		prover_transcript

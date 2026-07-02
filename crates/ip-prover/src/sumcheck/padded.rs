@@ -3,7 +3,7 @@ use binius_field::Field;
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::multilinear::eq::eq_one_var;
 
-use crate::sumcheck::{Error, common::SumcheckProver};
+use crate::sumcheck::common::SumcheckProver;
 
 /// Decorator that pads the number of variables of an inner [`SumcheckProver`].
 ///
@@ -77,39 +77,34 @@ impl<F: Field, Inner: SumcheckProver<F>> SumcheckProver<F> for PaddedSumcheckDec
 			.collect()
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
 		if self.in_padding_phase() {
 			// R_i(X) = (s * eq_prefix) * eq(0, X), with eq(0, X) = 1 - X. The inner prover is not
 			// touched during padding rounds.
-			let round_coeffs = self
-				.round_claim()
+			self.round_claim()
 				.into_iter()
 				.map(|claim| RoundCoeffs(vec![claim, -claim]))
-				.collect();
-			Ok(round_coeffs)
+				.collect()
 		} else {
-			let round_coeffs = self
-				.inner
-				.execute()?
+			self.inner
+				.execute()
 				.into_iter()
 				.map(|coeffs| coeffs * self.eq_prefix)
-				.collect();
-			Ok(round_coeffs)
+				.collect()
 		}
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) {
 		if self.in_padding_phase() {
 			// eq(0, challenge) = 1 - challenge.
 			self.eq_prefix *= eq_one_var(F::ZERO, challenge);
 		} else {
-			self.inner.fold(challenge)?;
+			self.inner.fold(challenge);
 		}
 		self.round += 1;
-		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
+	fn finish(self) -> Vec<F> {
 		// The final multilinear evaluations are those of the inner prover; padding does not add
 		// multilinears.
 		self.inner.finish()
@@ -145,7 +140,7 @@ mod tests {
 		let a = random_field_buffer::<P>(&mut *rng, n_vars);
 		let b = random_field_buffer::<P>(&mut *rng, n_vars);
 		let sum = inner_product_par(&a, &b);
-		let prover = BivariateProductSumcheckProver::new([a, b], sum).unwrap();
+		let prover = BivariateProductSumcheckProver::new([a, b], sum);
 		(prover, sum)
 	}
 
@@ -171,7 +166,7 @@ mod tests {
 		for (i, &challenge) in challenges.iter().enumerate() {
 			assert_eq!(padded.n_vars(), n_vars + n_extra_vars - i);
 
-			let round_coeffs = padded.execute().unwrap();
+			let round_coeffs = padded.execute();
 			assert_eq!(round_coeffs.len(), 1);
 
 			if i < n_extra_vars {
@@ -180,13 +175,13 @@ mod tests {
 				assert_eq!(round_coeffs[0], RoundCoeffs(vec![v, -v]));
 			} else {
 				// Inner round polynomial scaled by the (now complete) padding product.
-				let inner_coeffs = bare_inner.execute().unwrap();
+				let inner_coeffs = bare_inner.execute();
 				let expected = inner_coeffs[0].clone() * eq_prefix;
 				assert_eq!(round_coeffs[0], expected);
-				bare_inner.fold(challenge).unwrap();
+				bare_inner.fold(challenge);
 			}
 
-			padded.fold(challenge).unwrap();
+			padded.fold(challenge);
 			if i < n_extra_vars {
 				eq_prefix *= eq_one_var(F::ZERO, challenge);
 			}
@@ -208,12 +203,12 @@ mod tests {
 
 		for _ in 0..n_vars + n_extra_vars {
 			let claims = padded.round_claim();
-			let round_coeffs = padded.execute().unwrap();
+			let round_coeffs = padded.execute();
 			assert_eq!(claims.len(), round_coeffs.len());
 			for (claim, coeffs) in claims.iter().zip(&round_coeffs) {
 				assert_eq!(*claim, coeffs.sum_over_endpoints());
 			}
-			padded.fold(F::random(&mut rng)).unwrap();
+			padded.fold(F::random(&mut rng));
 		}
 	}
 
@@ -229,11 +224,11 @@ mod tests {
 		let a = random_field_buffer::<P>(&mut rng, n_vars);
 		let b = random_field_buffer::<P>(&mut rng, n_vars);
 		let sum = inner_product_par(&a, &b);
-		let inner = BivariateProductSumcheckProver::new([a.clone(), b.clone()], sum).unwrap();
+		let inner = BivariateProductSumcheckProver::new([a.clone(), b.clone()], sum);
 		let padded = PaddedSumcheckDecorator::new(inner, n_extra_vars);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = prove_single(padded, &mut prover_transcript).unwrap();
+		let output = prove_single(padded, &mut prover_transcript);
 		prover_transcript
 			.message()
 			.write_slice(&output.multilinear_evals);
@@ -284,7 +279,7 @@ mod tests {
 		assert_eq!(padded.n_vars(), n_vars);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = prove_single(padded, &mut prover_transcript).unwrap();
+		let output = prove_single(padded, &mut prover_transcript);
 		prover_transcript
 			.message()
 			.write_slice(&output.multilinear_evals);

@@ -57,7 +57,7 @@ fn prove_and_verify() {
 	// Run prover
 	let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 	let mut prover = IntMulProver::new(0, &mut prover_transcript);
-	let prove_output = prover.prove(witness).unwrap();
+	let prove_output = prover.prove(witness);
 
 	let IntMulOutput {
 		eval_point,

@@ -17,12 +17,6 @@ use crate::{
 	merkle_tree::MerkleTreeProver,
 };
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-	#[error("sumcheck error: {0}")]
-	Sumcheck(#[from] binius_ip_prover::sumcheck::Error),
-}
-
 /// Proves a *combined* multilinear evaluation claim `𝛑(eval_point) = eval_claim` by interleaving a
 /// single [`MultilinearEvalProver`] MLE-check with a single combined FRI over the
 /// piecewise-concatenated oracle of the Batched ZK BaseFold construction (whitepaper §7.2 /
@@ -59,8 +53,7 @@ pub fn prove_mlecheck_basefold<'a, F, P, NTT, MerkleScheme, MerkleProver, Challe
 	outer_challenges: &[F],
 	mut fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
 	transcript: &mut ProverTranscript<Challenger_>,
-) -> Result<(), Error>
-where
+) where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
@@ -92,9 +85,9 @@ where
 		fri_folder.receive_challenge(outer_challenge);
 	}
 
-	let mut sumcheck = MultilinearEvalProver::new(witness, eval_point, eval_claim)?;
+	let mut sumcheck = MultilinearEvalProver::new(witness, eval_point, eval_claim);
 	for _ in 0..n_vars {
-		let mut round_coeffs_vec = sumcheck.execute()?;
+		let mut round_coeffs_vec = sumcheck.execute();
 		let round_coeffs = round_coeffs_vec
 			.pop()
 			.expect("MultilinearEvalProver proves exactly one claim");
@@ -108,7 +101,7 @@ where
 		}
 
 		let challenge = transcript.sample();
-		sumcheck.fold(challenge)?;
+		sumcheck.fold(challenge);
 		fri_folder.receive_challenge(challenge);
 	}
 
@@ -117,8 +110,6 @@ where
 		transcript.message().write(&commitment);
 	}
 	fri_folder.finish_proof(transcript);
-
-	Ok(())
 }
 
 #[cfg(test)]
@@ -236,7 +227,7 @@ mod test {
 			&[],
 			fri_folder,
 			&mut prover_transcript,
-		)?;
+		);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let retrieved_commitment = verifier_transcript.message().read()?;

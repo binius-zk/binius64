@@ -272,8 +272,7 @@ fn test_shift_prove_and_verify() {
 			prover_bitand_data.clone(),
 			prover_intmul_data.clone(),
 			&mut prover_transcript,
-		)
-		.unwrap();
+		);
 
 		// Create verifier transcript and call the verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();
