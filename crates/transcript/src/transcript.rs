@@ -7,7 +7,7 @@ use binius_utils::{DeserializeBytes, SerializeBytes};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::{
-	error::Error,
+	error::TranscriptError,
 	fiat_shamir::{Challenger, FiatShamirBuf},
 };
 use crate::fiat_shamir::{CanSample, CanSampleBits, sample_bits_reader};
@@ -55,9 +55,9 @@ impl<Challenger_: Challenger> VerifierTranscript<Challenger_> {
 }
 
 impl<Challenger_: Challenger> VerifierTranscript<Challenger_> {
-	pub fn finalize(self) -> Result<(), Error> {
+	pub fn finalize(self) -> Result<(), TranscriptError> {
 		if self.combined.buffer.has_remaining() {
-			return Err(Error::TranscriptNotEmpty {
+			return Err(TranscriptError::TranscriptNotEmpty {
 				remaining: self.combined.buffer.remaining(),
 			});
 		}
@@ -146,33 +146,36 @@ impl<B: Buf> TranscriptReader<'_, B> {
 		self.buffer
 	}
 
-	pub fn read<T: DeserializeBytes>(&mut self) -> Result<T, Error> {
+	pub fn read<T: DeserializeBytes>(&mut self) -> Result<T, TranscriptError> {
 		T::deserialize(self.buffer()).map_err(Into::into)
 	}
 
-	pub fn read_vec<T: DeserializeBytes>(&mut self, n: usize) -> Result<Vec<T>, Error> {
+	pub fn read_vec<T: DeserializeBytes>(&mut self, n: usize) -> Result<Vec<T>, TranscriptError> {
 		let mut buffer = self.buffer();
 		repeat_with(move || T::deserialize(&mut buffer).map_err(Into::into))
 			.take(n)
 			.collect()
 	}
 
-	pub fn read_bytes(&mut self, buf: &mut [u8]) -> Result<(), Error> {
+	pub fn read_bytes(&mut self, buf: &mut [u8]) -> Result<(), TranscriptError> {
 		let buffer = self.buffer();
 		if buffer.remaining() < buf.len() {
-			return Err(Error::NotEnoughBytes);
+			return Err(TranscriptError::NotEnoughBytes);
 		}
 		buffer.copy_to_slice(buf);
 		Ok(())
 	}
 
-	pub fn read_scalar<F: Field>(&mut self) -> Result<F, Error> {
+	pub fn read_scalar<F: Field>(&mut self) -> Result<F, TranscriptError> {
 		let mut out = F::default();
 		self.read_scalar_slice_into(slice::from_mut(&mut out))?;
 		Ok(out)
 	}
 
-	pub fn read_scalar_slice_into<F: Field>(&mut self, buf: &mut [F]) -> Result<(), Error> {
+	pub fn read_scalar_slice_into<F: Field>(
+		&mut self,
+		buf: &mut [F],
+	) -> Result<(), TranscriptError> {
 		let mut buffer = self.buffer();
 		for elem in buf {
 			*elem = DeserializeBytes::deserialize(&mut buffer)?;
@@ -180,7 +183,7 @@ impl<B: Buf> TranscriptReader<'_, B> {
 		Ok(())
 	}
 
-	pub fn read_scalar_slice<F: Field>(&mut self, len: usize) -> Result<Vec<F>, Error> {
+	pub fn read_scalar_slice<F: Field>(&mut self, len: usize) -> Result<Vec<F>, TranscriptError> {
 		let mut elems = vec![F::default(); len];
 		self.read_scalar_slice_into(&mut elems)?;
 		Ok(elems)

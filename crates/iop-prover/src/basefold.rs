@@ -4,7 +4,9 @@
 use binius_field::{BinaryField, PackedField};
 use binius_iop::merkle_tree::MerkleTreeScheme;
 use binius_ip::mlecheck;
-use binius_ip_prover::sumcheck::{common::SumcheckProver, multilinear_eval::MultilinearEvalProver};
+use binius_ip_prover::sumcheck::{
+	SumcheckError, common::SumcheckProver, multilinear_eval::MultilinearEvalProver,
+};
 use binius_math::{FieldBuffer, ntt::AdditiveNTT};
 use binius_transcript::{
 	ProverTranscript,
@@ -18,9 +20,9 @@ use crate::{
 };
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum BaseFoldError {
 	#[error("sumcheck error: {0}")]
-	Sumcheck(#[from] binius_ip_prover::sumcheck::Error),
+	Sumcheck(#[from] SumcheckError),
 }
 
 /// Proves a *combined* multilinear evaluation claim `𝛑(eval_point) = eval_claim` by interleaving a
@@ -59,7 +61,7 @@ pub fn prove_mlecheck_basefold<'a, F, P, NTT, MerkleScheme, MerkleProver, Challe
 	outer_challenges: &[F],
 	mut fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
 	transcript: &mut ProverTranscript<Challenger_>,
-) -> Result<(), Error>
+) -> Result<(), BaseFoldError>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,

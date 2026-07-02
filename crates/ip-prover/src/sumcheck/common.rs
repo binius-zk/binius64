@@ -4,7 +4,7 @@ use binius_field::Field;
 use binius_ip::sumcheck::RoundCoeffs;
 use either::Either;
 
-use super::error::Error;
+use super::error::SumcheckError;
 
 /// A sumcheck prover with a round-by-round execution interface.
 ///
@@ -52,7 +52,7 @@ pub trait SumcheckProver<F: Field> {
 	/// the highest indexed one) and hypercube sums are performed over the lower indexed variables.
 	///
 	/// The returned Vec must have length equal to [`Self::n_claims`].
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error>;
+	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, SumcheckError>;
 
 	/// Returns the claimed sums for the current round, one per claim.
 	///
@@ -69,11 +69,11 @@ pub trait SumcheckProver<F: Field> {
 	fn round_claim(&self) -> Vec<F>;
 
 	/// Folds the sumcheck multilinears with a new verifier challenge.
-	fn fold(&mut self, challenge: F) -> Result<(), Error>;
+	fn fold(&mut self, challenge: F) -> Result<(), SumcheckError>;
 
 	/// Finishes the sumcheck proving protocol and returns the evaluations of all multilinears at
 	/// the challenge point.
-	fn finish(self) -> Result<Vec<F>, Error>;
+	fn finish(self) -> Result<Vec<F>, SumcheckError>;
 }
 
 impl<F, L, R> SumcheckProver<F> for Either<L, R>
@@ -90,7 +90,7 @@ where
 		either::for_both!(self, inner => inner.n_claims())
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, SumcheckError> {
 		either::for_both!(self, inner => inner.execute())
 	}
 
@@ -98,11 +98,11 @@ where
 		either::for_both!(self, inner => inner.round_claim())
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) -> Result<(), SumcheckError> {
 		either::for_both!(self, inner => inner.fold(challenge))
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
+	fn finish(self) -> Result<Vec<F>, SumcheckError> {
 		either::for_both!(self, inner => inner.finish())
 	}
 }

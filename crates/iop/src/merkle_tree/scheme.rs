@@ -13,7 +13,7 @@ use digest::{Digest, Output};
 use getset::CopyGetters;
 
 use super::{
-	error::{Error, VerificationError},
+	error::{MerkleTreeError, MerkleTreeVerificationError},
 	merkle_tree_vcs::MerkleTreeScheme,
 };
 
@@ -57,9 +57,10 @@ where
 		&self,
 		values: &[T],
 		proof: &mut TranscriptReader<B>,
-	) -> Result<Output<H::LeafHash>, Error> {
+	) -> Result<Output<H::LeafHash>, MerkleTreeError> {
 		let salt = proof.read_vec::<T>(self.salt_len)?;
-		hash_serialize::<T, H::LeafHash>(values.iter().chain(&salt)).map_err(Error::Serialization)
+		hash_serialize::<T, H::LeafHash>(values.iter().chain(&salt))
+			.map_err(MerkleTreeError::Serialization)
 	}
 }
 
@@ -95,7 +96,7 @@ where
 		data: &[T],
 		batch_size: usize,
 		proof: &mut TranscriptReader<B>,
-	) -> Result<(), Error> {
+	) -> Result<(), MerkleTreeError> {
 		assert!(
 			data.len().is_multiple_of(batch_size),
 			"precondition: data length must be a multiple of batch_size"
@@ -107,7 +108,7 @@ where
 			.collect::<Result<Vec<_>, _>>()?;
 
 		if fold_digests_vector_inplace(&self.compression, digests) != *root {
-			return Err(VerificationError::InvalidProof.into());
+			return Err(MerkleTreeVerificationError::InvalidProof.into());
 		}
 		Ok(())
 	}
@@ -117,7 +118,7 @@ where
 		root: &Self::Digest,
 		layer_depth: usize,
 		layer_digests: &[Self::Digest],
-	) -> Result<(), Error> {
+	) -> Result<(), MerkleTreeError> {
 		assert_eq!(
 			layer_digests.len(),
 			1 << layer_depth,
@@ -126,7 +127,7 @@ where
 
 		let computed_root = fold_digests_vector_inplace(&self.compression, layer_digests.to_vec());
 		if computed_root != *root {
-			return Err(VerificationError::InvalidProof.into());
+			return Err(MerkleTreeVerificationError::InvalidProof.into());
 		}
 		Ok(())
 	}
@@ -139,7 +140,7 @@ where
 		tree_depth: usize,
 		layer_digests: &[Self::Digest],
 		proof: &mut TranscriptReader<B>,
-	) -> Result<(), Error> {
+	) -> Result<(), MerkleTreeError> {
 		assert_eq!(
 			layer_digests.len(),
 			1 << layer_depth,
@@ -159,7 +160,7 @@ where
 
 		(leaf_digest == layer_digests[index])
 			.then_some(())
-			.ok_or_else(|| VerificationError::InvalidProof.into())
+			.ok_or_else(|| MerkleTreeVerificationError::InvalidProof.into())
 	}
 }
 

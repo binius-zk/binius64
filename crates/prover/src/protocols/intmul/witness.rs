@@ -14,7 +14,7 @@ use binius_utils::{
 use getset::Getters;
 use itertools::iterate;
 
-use super::error::Error;
+use super::error::IntMulError;
 
 /// An integer multiplication protocol witness. Created from integer slices, consumed during
 /// proving.
@@ -86,10 +86,10 @@ where
 		b: &'a [Word],
 		c_lo: &'a [Word],
 		c_hi: &'a [Word],
-	) -> Result<Self, Error> {
+	) -> Result<Self, IntMulError> {
 		// Statement should be of pow-2 length.
 		let Some(n_vars) = strict_log_2(a.len()) else {
-			return Err(Error::ExponentsPowerOfTwoLengthRequired);
+			return Err(IntMulError::ExponentsPowerOfTwoLengthRequired);
 		};
 
 		// All statement slices should be of same length.
@@ -97,7 +97,7 @@ where
 			.iter()
 			.any(|exponents| exponents.len() != 1 << n_vars)
 		{
-			return Err(Error::ExponentLengthMismatch);
+			return Err(IntMulError::ExponentLengthMismatch);
 		}
 
 		let g = F::MULTIPLICATIVE_GENERATOR;

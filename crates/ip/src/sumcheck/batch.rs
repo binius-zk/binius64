@@ -6,7 +6,7 @@ use binius_math::univariate::evaluate_univariate;
 use crate::{
 	channel::IPVerifierChannel,
 	mlecheck,
-	sumcheck::{self, Error, SumcheckOutput},
+	sumcheck::{self, SumcheckError, SumcheckOutput},
 };
 
 /// The reduced output of a sumcheck verification.
@@ -39,7 +39,7 @@ pub fn batch_verify<F, C>(
 	degree: usize,
 	sums: &[C::Elem],
 	channel: &mut C,
-) -> Result<BatchSumcheckOutput<C::Elem>, Error>
+) -> Result<BatchSumcheckOutput<C::Elem>, SumcheckError>
 where
 	F: Field,
 	C: IPVerifierChannel<F>,
@@ -69,7 +69,7 @@ pub fn batch_verify_mle<F, C>(
 	degree: usize,
 	evals: &[C::Elem],
 	channel: &mut C,
-) -> Result<BatchSumcheckOutput<C::Elem>, Error>
+) -> Result<BatchSumcheckOutput<C::Elem>, SumcheckError>
 where
 	F: Field,
 	C: IPVerifierChannel<F>,

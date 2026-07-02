@@ -11,7 +11,7 @@ use itertools::izip;
 
 use super::{
 	common::{MleCheckProver, SumcheckProver},
-	error::Error,
+	error::SumcheckError,
 	gruen32::Gruen32,
 	round_evals::RoundEvals1,
 	switchover::BinarySwitchover,
@@ -47,11 +47,11 @@ where
 		eval_claims: &[F],
 		bitmasks: &'b [B],
 		switchover: usize,
-	) -> Result<Self, Error> {
+	) -> Result<Self, SumcheckError> {
 		let n_vars = eval_point.len();
 
 		if bitmasks.len() != 1 << n_vars {
-			return Err(Error::BitmasksSizeMismatch);
+			return Err(SumcheckError::BitmasksSizeMismatch);
 		}
 
 		let gruen32 = Gruen32::new(eval_point);
@@ -96,9 +96,9 @@ where
 		}
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, SumcheckError> {
 		let RoundCoeffsOrSums::Sums(sums) = &self.last_coeffs_or_sums else {
-			return Err(Error::ExpectedFold);
+			return Err(SumcheckError::ExpectedFold);
 		};
 
 		assert!(self.n_vars() > 0);
@@ -166,9 +166,9 @@ where
 		Ok(round_coeffs)
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) -> Result<(), SumcheckError> {
 		let RoundCoeffsOrSums::Coeffs(round_coeffs) = &self.last_coeffs_or_sums else {
-			return Err(Error::ExpectedExecute);
+			return Err(SumcheckError::ExpectedExecute);
 		};
 
 		assert!(self.n_vars() > 0);
@@ -185,11 +185,11 @@ where
 		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
+	fn finish(self) -> Result<Vec<F>, SumcheckError> {
 		if self.n_vars() > 0 {
 			let error = match self.last_coeffs_or_sums {
-				RoundCoeffsOrSums::Coeffs(_) => Error::ExpectedFold,
-				RoundCoeffsOrSums::Sums(_) => Error::ExpectedExecute,
+				RoundCoeffsOrSums::Coeffs(_) => SumcheckError::ExpectedFold,
+				RoundCoeffsOrSums::Sums(_) => SumcheckError::ExpectedExecute,
 			};
 
 			return Err(error);

@@ -9,7 +9,9 @@ use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 use itertools::{Itertools, izip};
 
-use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::WideRoundEvals2};
+use super::{
+	common::SumcheckProver, error::SumcheckError, gruen32::Gruen32, round_evals::WideRoundEvals2,
+};
 use crate::sumcheck::common::MleCheckProver;
 
 /// Multiple claim version of `BivariateProductMlecheckProver` that can prove mlechecks
@@ -27,7 +29,7 @@ impl<F: Field, P: PackedField<Scalar = F>> BivariateProductMultiMlecheckProver<P
 		multilinears: Vec<[FieldBuffer<P>; 2]>,
 		eval_point: &[F],
 		eval_claims: Vec<F>,
-	) -> Result<Self, Error> {
+	) -> Result<Self, SumcheckError> {
 		let n_vars = eval_point.len();
 
 		if multilinears
@@ -35,11 +37,11 @@ impl<F: Field, P: PackedField<Scalar = F>> BivariateProductMultiMlecheckProver<P
 			.flatten()
 			.any(|multilinear| multilinear.log_len() != n_vars)
 		{
-			return Err(Error::MultilinearSizeMismatch);
+			return Err(SumcheckError::MultilinearSizeMismatch);
 		}
 
 		if multilinears.len() != eval_claims.len() {
-			return Err(Error::EvalClaimsNumberMismatch);
+			return Err(SumcheckError::EvalClaimsNumberMismatch);
 		}
 
 		let multilinears = multilinears.into_iter().flatten().collect_vec();
@@ -84,9 +86,9 @@ where
 		}
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, SumcheckError> {
 		let RoundCoeffsOrSums::Sums(sums) = &self.last_coeffs_or_sums else {
-			return Err(Error::ExpectedFold);
+			return Err(SumcheckError::ExpectedFold);
 		};
 
 		assert!(self.n_vars() > 0);
@@ -156,9 +158,9 @@ where
 		Ok(round_coeffs)
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) -> Result<(), SumcheckError> {
 		let RoundCoeffsOrSums::Coeffs(prime_coeffs) = &self.last_coeffs_or_sums else {
-			return Err(Error::ExpectedExecute);
+			return Err(SumcheckError::ExpectedExecute);
 		};
 
 		assert!(self.n_vars() > 0);
@@ -177,11 +179,11 @@ where
 		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
+	fn finish(self) -> Result<Vec<F>, SumcheckError> {
 		if self.n_vars() > 0 {
 			let error = match self.last_coeffs_or_sums {
-				RoundCoeffsOrSums::Coeffs(_) => Error::ExpectedFold,
-				RoundCoeffsOrSums::Sums(_) => Error::ExpectedExecute,
+				RoundCoeffsOrSums::Coeffs(_) => SumcheckError::ExpectedFold,
+				RoundCoeffsOrSums::Sums(_) => SumcheckError::ExpectedExecute,
 			};
 
 			return Err(error);

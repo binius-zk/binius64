@@ -4,7 +4,7 @@ mod error;
 pub mod prove;
 pub mod witness;
 
-pub use error::Error;
+pub use error::IntMulError;
 
 #[cfg(test)]
 mod tests;

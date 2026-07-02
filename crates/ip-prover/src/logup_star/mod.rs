@@ -31,4 +31,4 @@ mod witness;
 
 pub use binius_ip::logup_star::LogupOutput;
 
-pub use self::{error::Error, prove::prove};
+pub use self::{error::LogupStarError, prove::prove};

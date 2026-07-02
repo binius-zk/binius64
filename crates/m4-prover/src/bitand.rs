@@ -7,7 +7,7 @@ use binius_core::{
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, PackedField};
-use binius_ip_prover::{channel::IPProverChannel, sumcheck::Error};
+use binius_ip_prover::{channel::IPProverChannel, sumcheck::SumcheckError};
 use binius_math::BinarySubspace;
 use binius_prover::and_reduction::prover::OblongZerocheckProver;
 use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
@@ -184,7 +184,10 @@ impl BatchAndCheckWitness {
 	/// # Errors
 	///
 	/// Returns an error if the underlying sumcheck fails.
-	pub fn prove<P, Channel>(self, channel: &mut Channel) -> Result<AndCheckOutput<B128>, Error>
+	pub fn prove<P, Channel>(
+		self,
+		channel: &mut Channel,
+	) -> Result<AndCheckOutput<B128>, SumcheckError>
 	where
 		P: PackedField<Scalar = B128>,
 		Channel: IPProverChannel<B128>,
@@ -253,7 +256,7 @@ mod tests {
 		},
 	};
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
-	use binius_ip::channel::Error as ChannelError;
+	use binius_ip::channel::IPChannelError;
 	use binius_m4_verifier::verify_bitand_reduction;
 	use binius_math::{
 		FieldBuffer, multilinear::evaluate::evaluate, univariate::lagrange_evals_scalars,
@@ -545,7 +548,7 @@ mod tests {
 		// The closing check is `A_eval * B_eval - C_eval == sumcheck_eval`.
 		// The tampered message moves the claim, so this equality no longer holds.
 		// The channel rejects the non-zero assertion, the protocol's terminal check.
-		assert_matches!(err, VerifierError::Channel(ChannelError::InvalidAssert));
+		assert_matches!(err, VerifierError::Channel(IPChannelError::InvalidAssert));
 	}
 
 	proptest! {

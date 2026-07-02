@@ -104,7 +104,7 @@ mod output;
 mod verify;
 
 pub use self::{
-	error::{Error, VerificationError},
+	error::{LogupStarError, LogupStarVerificationError},
 	output::LogupOutput,
 	verify::verify,
 };

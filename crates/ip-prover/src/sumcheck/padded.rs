@@ -3,7 +3,7 @@ use binius_field::Field;
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::multilinear::eq::eq_one_var;
 
-use crate::sumcheck::{Error, common::SumcheckProver};
+use crate::sumcheck::{SumcheckError, common::SumcheckProver};
 
 /// Decorator that pads the number of variables of an inner [`SumcheckProver`].
 ///
@@ -77,7 +77,7 @@ impl<F: Field, Inner: SumcheckProver<F>> SumcheckProver<F> for PaddedSumcheckDec
 			.collect()
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, SumcheckError> {
 		if self.in_padding_phase() {
 			// R_i(X) = (s * eq_prefix) * eq(0, X), with eq(0, X) = 1 - X. The inner prover is not
 			// touched during padding rounds.
@@ -98,7 +98,7 @@ impl<F: Field, Inner: SumcheckProver<F>> SumcheckProver<F> for PaddedSumcheckDec
 		}
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) -> Result<(), SumcheckError> {
 		if self.in_padding_phase() {
 			// eq(0, challenge) = 1 - challenge.
 			self.eq_prefix *= eq_one_var(F::ZERO, challenge);
@@ -109,7 +109,7 @@ impl<F: Field, Inner: SumcheckProver<F>> SumcheckProver<F> for PaddedSumcheckDec
 		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
+	fn finish(self) -> Result<Vec<F>, SumcheckError> {
 		// The final multilinear evaluations are those of the inner prover; padding does not add
 		// multilinears.
 		self.inner.finish()

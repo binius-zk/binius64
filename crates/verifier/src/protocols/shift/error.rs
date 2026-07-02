@@ -1,15 +1,16 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_ip::channel::Error as ChannelError;
+use binius_ip::{channel::IPChannelError, sumcheck::SumcheckError};
+use binius_transcript::TranscriptError;
 
 #[derive(thiserror::Error, Debug)]
-pub enum Error {
+pub enum ShiftError {
 	#[error("transcript error")]
-	Transcript(#[from] binius_transcript::Error),
+	Transcript(#[from] TranscriptError),
 	#[error("channel error")]
-	Channel(#[from] ChannelError),
+	Channel(#[from] IPChannelError),
 	#[error("sumcheck error")]
-	Sumcheck(#[from] binius_ip::sumcheck::Error),
+	Sumcheck(#[from] SumcheckError),
 	#[error("verification failure")]
 	VerificationFailure,
 }

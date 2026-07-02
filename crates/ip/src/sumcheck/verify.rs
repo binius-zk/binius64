@@ -2,7 +2,7 @@
 
 use binius_field::Field;
 
-use super::error::Error;
+use super::error::SumcheckError;
 use crate::{
 	channel::IPVerifierChannel,
 	sumcheck::{RoundCoeffs, RoundProof},
@@ -41,7 +41,7 @@ pub fn verify<F, C>(
 	degree: usize,
 	mut sum: C::Elem,
 	channel: &mut C,
-) -> Result<SumcheckOutput<C::Elem>, Error>
+) -> Result<SumcheckOutput<C::Elem>, SumcheckError>
 where
 	F: Field,
 	C: IPVerifierChannel<F>,

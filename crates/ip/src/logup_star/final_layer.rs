@@ -12,7 +12,7 @@ use binius_field::{
 };
 use binius_math::{line::extrapolate_line, multilinear::eq::eq_ind};
 
-use super::error::{Error, VerificationError};
+use super::error::{LogupStarError, LogupStarVerificationError};
 use crate::{
 	channel::IPVerifierChannel,
 	sumcheck::{self, BatchSumcheckOutput},
@@ -69,7 +69,7 @@ pub fn verify_final_layer<F, C>(
 	layer1_den: C::Elem,
 	layer1_point: &[C::Elem],
 	channel: &mut C,
-) -> Result<FinalLayer<C::Elem>, Error>
+) -> Result<FinalLayer<C::Elem>, LogupStarError>
 where
 	F: Field + ExtensionField<BinaryField1b>,
 	C: IPVerifierChannel<F>,
@@ -79,7 +79,7 @@ where
 	// Only e_0 = <Y_0, T_0> is sent, so recover e_1 = e - e_0.
 	let e_0 = channel
 		.recv_one()
-		.map_err(|_| VerificationError::TranscriptIsEmpty)?;
+		.map_err(|_| LogupStarVerificationError::TranscriptIsEmpty)?;
 	let e_1 = eval_claim - e_0.clone();
 
 	// Batch the four sum claims with powers of a single coefficient and run the sumcheck.
@@ -97,7 +97,7 @@ where
 	//     T_0 = T(rho, 0),  T_1 = T(rho, 1)
 	let [y_0, y_1, t_0, t_1] = channel
 		.recv_array()
-		.map_err(|_| VerificationError::TranscriptIsEmpty)?;
+		.map_err(|_| LogupStarVerificationError::TranscriptIsEmpty)?;
 
 	// Sumcheck binds variables highest-to-lowest; reverse to align with the low-to-high point Z.
 	challenges.reverse();
@@ -131,7 +131,7 @@ where
 		+ batch_coeff_cube * prod_1;
 	channel
 		.assert_zero(eval - expected)
-		.map_err(|_| VerificationError::FinalLayerMismatch)?;
+		.map_err(|_| LogupStarVerificationError::FinalLayerMismatch)?;
 
 	// Fold the highest variable once to collapse the halves into single evaluations.
 	let r = channel.sample();

@@ -13,14 +13,14 @@ use itertools::izip;
 use crate::{
 	channel::IPProverChannel,
 	sumcheck::{
-		Error as SumcheckError, ProveSingleOutput, bivariate_product_mle,
+		ProveSingleOutput, SumcheckError, bivariate_product_mle,
 		common::{MleCheckProver, SumcheckProver},
 		prove_single_mlecheck,
 	},
 };
 
 #[derive(thiserror::Error, Debug)]
-pub enum Error {
+pub enum ProdcheckError {
 	#[error("sumcheck error: {0}")]
 	Sumcheck(#[from] SumcheckError),
 }
@@ -99,7 +99,7 @@ where
 	pub fn layer_prover(
 		mut self,
 		claim: MultilinearEvalClaim<F>,
-	) -> Result<(impl MleCheckProver<F>, Option<Self>), Error> {
+	) -> Result<(impl MleCheckProver<F>, Option<Self>), ProdcheckError> {
 		let layer = self.layers.pop().expect("layers is non-empty");
 		let split = layer.split_half();
 
@@ -129,7 +129,7 @@ where
 		self,
 		claim: MultilinearEvalClaim<F>,
 		channel: &mut impl IPProverChannel<F>,
-	) -> Result<MultilinearEvalClaim<F>, Error> {
+	) -> Result<MultilinearEvalClaim<F>, ProdcheckError> {
 		let mut prover_opt = Some(self);
 		let mut claim = claim;
 
@@ -236,7 +236,7 @@ pub fn batch_prove<F: Field, P: PackedField<Scalar = F>>(
 	selector_point: Vec<F>,
 	content_point: Vec<F>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<BatchProveOutput<P>, Error> {
+) -> Result<BatchProveOutput<P>, ProdcheckError> {
 	assert!(!provers.is_empty()); // precondition
 	assert_eq!(claimed_products.len(), provers.len()); // precondition
 
@@ -277,7 +277,7 @@ fn batch_prove_layer<F: Field, P: PackedField<Scalar = F>>(
 	eval_point: Vec<F>,
 	k: usize,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<(Vec<ProdcheckProver<P>>, Vec<F>, Vec<F>), Error> {
+) -> Result<(Vec<ProdcheckProver<P>>, Vec<F>, Vec<F>), ProdcheckError> {
 	// Split eval_point into outer (selector) and inner (content) coordinates.
 	let (outer_coords, inner_coords) = eval_point.split_at(k);
 

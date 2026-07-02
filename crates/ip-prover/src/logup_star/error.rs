@@ -2,17 +2,17 @@
 
 //! Error types for logUp* proving.
 
-use crate::{fracaddcheck, sumcheck};
+use crate::{fracaddcheck::FracAddCheckError, sumcheck::SumcheckError};
 
 /// An error raised while proving a logUp* reduction.
 ///
 /// It wraps the sub-protocol failures and the input-validation failures of the index column.
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum LogupStarError {
 	#[error("fractional-addition check error: {0}")]
-	FracAddCheck(#[from] fracaddcheck::Error),
+	FracAddCheck(#[from] FracAddCheckError),
 	#[error("sumcheck error: {0}")]
-	Sumcheck(#[from] sumcheck::Error),
+	Sumcheck(#[from] SumcheckError),
 	#[error(
 		"the index column has {got} entries but {expected} were expected for {n_vars} variables"
 	)]

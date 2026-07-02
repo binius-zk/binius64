@@ -18,21 +18,21 @@
 
 use binius_field::Field;
 use binius_math::line::extrapolate_line;
-use binius_transcript::Error as TranscriptError;
+use binius_transcript::TranscriptError;
 
 // Re-export MultilinearEvalClaim from crate root for backward compatibility
 pub use crate::MultilinearEvalClaim;
 use crate::{
-	channel::IPVerifierChannel,
+	channel::{IPChannelError, IPVerifierChannel},
 	mlecheck,
-	sumcheck::{self, SumcheckOutput},
+	sumcheck::{SumcheckError, SumcheckOutput, SumcheckVerificationError},
 };
 
 pub fn verify<F, C>(
 	k: usize,
 	claim: MultilinearEvalClaim<C::Elem>,
 	channel: &mut C,
-) -> Result<MultilinearEvalClaim<C::Elem>, Error>
+) -> Result<MultilinearEvalClaim<C::Elem>, ProdcheckError>
 where
 	F: Field,
 	C: IPVerifierChannel<F>,
@@ -72,46 +72,46 @@ where
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum ProdcheckError {
 	#[error("sumcheck error: {0}")]
-	Sumcheck(#[source] sumcheck::Error),
+	Sumcheck(#[source] SumcheckError),
 	#[error("transcript error: {0}")]
 	Transcript(#[source] TranscriptError),
 	#[error("verification error: {0}")]
-	Verification(#[from] VerificationError),
+	Verification(#[from] ProdcheckVerificationError),
 }
 
-impl From<sumcheck::Error> for Error {
-	fn from(err: sumcheck::Error) -> Self {
+impl From<SumcheckError> for ProdcheckError {
+	fn from(err: SumcheckError) -> Self {
 		match err {
-			sumcheck::Error::Verification(err) => VerificationError::Sumcheck(err).into(),
-			_ => Error::Sumcheck(err),
+			SumcheckError::Verification(err) => ProdcheckVerificationError::Sumcheck(err).into(),
+			_ => ProdcheckError::Sumcheck(err),
 		}
 	}
 }
 
-impl From<TranscriptError> for Error {
+impl From<TranscriptError> for ProdcheckError {
 	fn from(err: TranscriptError) -> Self {
 		match err {
-			TranscriptError::NotEnoughBytes => VerificationError::TranscriptIsEmpty.into(),
-			_ => Error::Transcript(err),
+			TranscriptError::NotEnoughBytes => ProdcheckVerificationError::TranscriptIsEmpty.into(),
+			_ => ProdcheckError::Transcript(err),
 		}
 	}
 }
 
-impl From<crate::channel::Error> for Error {
-	fn from(err: crate::channel::Error) -> Self {
+impl From<IPChannelError> for ProdcheckError {
+	fn from(err: IPChannelError) -> Self {
 		match err {
-			crate::channel::Error::ProofEmpty => VerificationError::TranscriptIsEmpty.into(),
-			crate::channel::Error::InvalidAssert => VerificationError::InvalidAssert.into(),
+			IPChannelError::ProofEmpty => ProdcheckVerificationError::TranscriptIsEmpty.into(),
+			IPChannelError::InvalidAssert => ProdcheckVerificationError::InvalidAssert.into(),
 		}
 	}
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum VerificationError {
+pub enum ProdcheckVerificationError {
 	#[error("sumcheck: {0}")]
-	Sumcheck(#[from] sumcheck::VerificationError),
+	Sumcheck(#[from] SumcheckVerificationError),
 	#[error("incorrect round evaluation: {round}")]
 	IncorrectRoundEvaluation { round: usize },
 	#[error("transcript is empty")]

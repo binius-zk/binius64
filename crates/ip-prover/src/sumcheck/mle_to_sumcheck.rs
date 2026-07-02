@@ -4,7 +4,7 @@ use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::multilinear::eq::eq_one_var;
 
 use crate::sumcheck::{
-	Error,
+	SumcheckError,
 	common::{MleCheckProver, SumcheckProver},
 	round_evals::round_coeffs_by_eq,
 };
@@ -62,7 +62,7 @@ impl<F: Field, InnerProver: MleCheckProver<F>> SumcheckProver<F>
 			.collect()
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, SumcheckError> {
 		let round_coeffs_multi = self.mlecheck_prover.execute()?;
 
 		// Multiply the round polynomials from the inner MLE-check prover by (X - α).
@@ -75,9 +75,9 @@ impl<F: Field, InnerProver: MleCheckProver<F>> SumcheckProver<F>
 		Ok(wrapped_round_coeffs)
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) -> Result<(), SumcheckError> {
 		if self.n_vars() == 0 {
-			return Err(Error::ExpectedFinish);
+			return Err(SumcheckError::ExpectedFinish);
 		}
 
 		let alpha = self.mlecheck_prover.eval_point()[self.n_vars() - 1];
@@ -86,7 +86,7 @@ impl<F: Field, InnerProver: MleCheckProver<F>> SumcheckProver<F>
 		self.mlecheck_prover.fold(challenge)
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
+	fn finish(self) -> Result<Vec<F>, SumcheckError> {
 		self.mlecheck_prover.finish()
 	}
 }

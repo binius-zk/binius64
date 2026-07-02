@@ -1,39 +1,43 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_transcript::Error as TranscriptError;
+use binius_transcript::TranscriptError;
 
 use crate::channel;
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum SumcheckError {
 	#[error("transcript error: {0}")]
 	Transcript(#[source] TranscriptError),
 	#[error("verification error: {0}")]
-	Verification(#[from] VerificationError),
+	Verification(#[from] SumcheckVerificationError),
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum VerificationError {
+pub enum SumcheckVerificationError {
 	#[error("transcript is empty")]
 	TranscriptIsEmpty,
 	#[error("invalid assertion: value is not zero")]
 	InvalidAssert,
 }
 
-impl From<TranscriptError> for Error {
+impl From<TranscriptError> for SumcheckError {
 	fn from(err: TranscriptError) -> Self {
 		match err {
-			TranscriptError::NotEnoughBytes => VerificationError::TranscriptIsEmpty.into(),
-			_ => Error::Transcript(err),
+			TranscriptError::NotEnoughBytes => SumcheckVerificationError::TranscriptIsEmpty.into(),
+			_ => SumcheckError::Transcript(err),
 		}
 	}
 }
 
-impl From<channel::Error> for Error {
-	fn from(err: channel::Error) -> Self {
+impl From<channel::IPChannelError> for SumcheckError {
+	fn from(err: channel::IPChannelError) -> Self {
 		match err {
-			channel::Error::ProofEmpty => VerificationError::TranscriptIsEmpty.into(),
-			channel::Error::InvalidAssert => VerificationError::InvalidAssert.into(),
+			channel::IPChannelError::ProofEmpty => {
+				SumcheckVerificationError::TranscriptIsEmpty.into()
+			}
+			channel::IPChannelError::InvalidAssert => {
+				SumcheckVerificationError::InvalidAssert.into()
+			}
 		}
 	}
 }

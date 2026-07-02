@@ -66,7 +66,7 @@ impl<F: Field> IronSpartanBuilderChannel<F> {
 impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 	type Elem = CircuitElem<F, ConstraintBuilder<F>>;
 
-	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
+	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::IPChannelError> {
 		// For each element that the inner prover sends, the wrapped prover allocates a one-time-pad
 		// encryption key in the precommit segment and encrypts the underlying value before sending.
 		// Here the verifier gets the encryption key from the precommit segment and decrypts.
@@ -83,7 +83,7 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 		self.alloc_inout_elem()
 	}
 
-	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::Error> {
+	fn assert_zero(&mut self, val: Self::Elem) -> Result<(), binius_ip::channel::IPChannelError> {
 		match val {
 			// A compile-time constant is checked here; a non-zero one is an unsatisfiable
 			// assertion.
@@ -91,7 +91,7 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 				if c == F::ZERO {
 					Ok(())
 				} else {
-					Err(binius_ip::channel::Error::InvalidAssert)
+					Err(binius_ip::channel::IPChannelError::InvalidAssert)
 				}
 			}
 			// Record the assertion as a constraint over the wire (whether public-derivable or
@@ -135,14 +135,14 @@ impl<'r, F: Field> IOPVerifierChannel<'r, F> for IronSpartanBuilderChannel<F> {
 		&mut self,
 		_log_msg_len: usize,
 		_is_witness_dependent: bool,
-	) -> Result<Self::Oracle, binius_iop::channel::Error> {
+	) -> Result<Self::Oracle, binius_iop::channel::IOPChannelError> {
 		Ok(())
 	}
 
 	fn verify_oracle_relations(
 		&mut self,
 		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'r, Self::Oracle, Self::Elem>>,
-	) -> Result<(), binius_iop::channel::Error> {
+	) -> Result<(), binius_iop::channel::IOPChannelError> {
 		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
 		// checks in the circuit equality of this value with the expected expression over encrypted
 		// values.

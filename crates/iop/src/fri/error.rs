@@ -1,33 +1,35 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use super::batch;
-use crate::merkle_tree;
+use binius_transcript::TranscriptError;
+
+use super::batch::BatchFriError;
+use crate::merkle_tree::{MerkleTreeError, MerkleTreeVerificationError};
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum FriError {
 	#[error("Merkle tree error: {0}")]
-	MerkleError(merkle_tree::Error),
+	MerkleError(MerkleTreeError),
 	#[error("Reed-Solomon encoding error: {0}")]
-	Verification(#[from] VerificationError),
+	Verification(#[from] FriVerificationError),
 	#[error("transcript error: {0}")]
-	TranscriptError(#[from] binius_transcript::Error),
+	TranscriptError(#[from] TranscriptError),
 }
 
-impl From<merkle_tree::Error> for Error {
-	fn from(err: merkle_tree::Error) -> Self {
+impl From<MerkleTreeError> for FriError {
+	fn from(err: MerkleTreeError) -> Self {
 		match err {
-			merkle_tree::Error::Verification(err) => Self::Verification(err.into()),
+			MerkleTreeError::Verification(err) => Self::Verification(err.into()),
 			_ => Self::MerkleError(err),
 		}
 	}
 }
 
-impl From<batch::Error> for Error {
-	fn from(err: batch::Error) -> Self {
+impl From<BatchFriError> for FriError {
+	fn from(err: BatchFriError) -> Self {
 		match err {
-			batch::Error::Merkle(err) => err.into(),
-			batch::Error::Transcript(err) => Self::TranscriptError(err),
-			batch::Error::ClaimMismatch { index } => VerificationError::IncorrectFold {
+			BatchFriError::Merkle(err) => err.into(),
+			BatchFriError::Transcript(err) => Self::TranscriptError(err),
+			BatchFriError::ClaimMismatch { index } => FriVerificationError::IncorrectFold {
 				query_round: 0,
 				index,
 			}
@@ -37,7 +39,7 @@ impl From<batch::Error> for Error {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum VerificationError {
+pub enum FriVerificationError {
 	#[error("incorrect codeword folding in query round {query_round} at index {index}")]
 	IncorrectFold { query_round: usize, index: usize },
 	#[error("the size of the query proof is incorrect, expected {expected}")]
@@ -49,5 +51,5 @@ pub enum VerificationError {
 	#[error("The dimension-1 codeword must contain the same values")]
 	IncorrectDegree,
 	#[error("Merkle tree error: {0}")]
-	MerkleError(#[from] merkle_tree::VerificationError),
+	MerkleError(#[from] MerkleTreeVerificationError),
 }

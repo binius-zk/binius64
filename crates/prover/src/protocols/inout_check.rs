@@ -3,7 +3,7 @@
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_ip_prover::sumcheck::{
-	Error,
+	SumcheckError,
 	common::{MleCheckProver, SumcheckProver},
 	gruen32::Gruen32,
 };
@@ -143,9 +143,9 @@ where
 		vec![claim]
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, SumcheckError> {
 		let RoundCoeffsOrEval::Eval(last_eval) = &self.last_coeffs_or_eval else {
-			return Err(Error::ExpectedFold);
+			return Err(SumcheckError::ExpectedFold);
 		};
 
 		let n_vars_remaining = self.n_vars();
@@ -180,9 +180,9 @@ where
 		Ok(vec![round_coeffs])
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) -> Result<(), SumcheckError> {
 		let RoundCoeffsOrEval::Coeffs(coeffs) = &self.last_coeffs_or_eval else {
-			return Err(Error::ExpectedExecute);
+			return Err(SumcheckError::ExpectedExecute);
 		};
 
 		let n_vars = self.n_vars();
@@ -202,11 +202,11 @@ where
 		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
+	fn finish(self) -> Result<Vec<F>, SumcheckError> {
 		if self.n_vars() > 0 {
 			let error = match self.last_coeffs_or_eval {
-				RoundCoeffsOrEval::Coeffs(_) => Error::ExpectedFold,
-				RoundCoeffsOrEval::Eval(_) => Error::ExpectedExecute,
+				RoundCoeffsOrEval::Coeffs(_) => SumcheckError::ExpectedFold,
+				RoundCoeffsOrEval::Eval(_) => SumcheckError::ExpectedExecute,
 			};
 
 			return Err(error);

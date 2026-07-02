@@ -2,11 +2,11 @@
 
 use binius_field::BinaryField;
 use binius_math::{line::extrapolate_line, multilinear, ntt::DomainContext};
-use binius_transcript::TranscriptReader;
+use binius_transcript::{TranscriptError, TranscriptReader};
 use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
 use bytes::Buf;
 
-use crate::merkle_tree::{Commitment, MerkleTreeScheme};
+use crate::merkle_tree::{Commitment, MerkleTreeError, MerkleTreeScheme};
 /// A virtual oracle for a code proximity test.
 ///
 /// The interactive code proximity tests used in this project (eg. FRI) commit to a codeword and
@@ -37,7 +37,7 @@ pub trait ProxTestOracle<F: BinaryField> {
 		&self,
 		indices: &[usize],
 		advice: &mut TranscriptReader<B>,
-	) -> Result<Vec<F>, Error>;
+	) -> Result<Vec<F>, BatchFriError>;
 }
 
 /// A [ProxTestOracle] implementation for a [Brakedown]-style interleaved code proximity check.
@@ -91,7 +91,7 @@ impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> Pr
 		&self,
 		indices: &[usize],
 		advice: &mut TranscriptReader<B>,
-	) -> Result<Vec<F>, Error> {
+	) -> Result<Vec<F>, BatchFriError> {
 		assert!(indices.iter().all(|&index| index < 1 << self.log_len())); // precondition
 		// Translate each query on the virtual lifted oracle into a query on the committed codeword
 		// by dropping the low `log_lift` bits (the duplicated copies).
@@ -161,7 +161,7 @@ impl<F: BinaryField, MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>> Pr
 		&self,
 		indices: &[usize],
 		advice: &mut TranscriptReader<B>,
-	) -> Result<Vec<F>, Error> {
+	) -> Result<Vec<F>, BatchFriError> {
 		// Read each bundled oracle's openings in commit order (matching the prover), then combine
 		// across oracles by the outer-challenge tensor expansion:
 		// combined[q] = \sum_i values_i[q] * outer_tensor[i].
@@ -303,7 +303,7 @@ where
 		indices: &[usize],
 		claims: &[F],
 		advice: &mut TranscriptReader<B>,
-	) -> Result<Vec<F>, Error> {
+	) -> Result<Vec<F>, BatchFriError> {
 		assert_eq!(indices.len(), claims.len()); // precondition
 		assert!(
 			indices
@@ -330,7 +330,7 @@ where
 			let (coset_index, values) = opening?;
 			// Verify the claimed base-codeword value against the opened coset.
 			if values[index & coset_mask] != claim {
-				return Err(Error::ClaimMismatch { index });
+				return Err(BatchFriError::ClaimMismatch { index });
 			}
 			Ok(self.fold_coset(coset_index, values))
 		})
@@ -352,7 +352,7 @@ where
 		&self,
 		indices: &[usize],
 		advice: &mut TranscriptReader<B>,
-	) -> Result<Vec<F>, Error> {
+	) -> Result<Vec<F>, BatchFriError> {
 		assert!(indices.iter().all(|&index| index < 1 << self.log_len())); // precondition
 		verify_query_openings(
 			&self.merkle_scheme,
@@ -381,7 +381,7 @@ fn verify_query_openings<'a, F, MTScheme, B>(
 	coset_log_size: usize,
 	indices: &'a [usize],
 	advice: &'a mut TranscriptReader<B>,
-) -> Result<impl Iterator<Item = Result<(usize, Vec<F>), Error>> + 'a, Error>
+) -> Result<impl Iterator<Item = Result<(usize, Vec<F>), BatchFriError>> + 'a, BatchFriError>
 where
 	F: BinaryField,
 	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
@@ -410,11 +410,11 @@ where
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum BatchFriError {
 	#[error("claimed value at index {index} does not match the committed codeword")]
 	ClaimMismatch { index: usize },
 	#[error("Merkle tree error: {0}")]
-	Merkle(#[from] crate::merkle_tree::Error),
+	Merkle(#[from] MerkleTreeError),
 	#[error("transcript error: {0}")]
-	Transcript(#[from] binius_transcript::Error),
+	Transcript(#[from] TranscriptError),
 }

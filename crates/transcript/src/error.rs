@@ -1,7 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum TranscriptError {
 	#[error("Transcript is not empty, {remaining} bytes")]
 	TranscriptNotEmpty { remaining: usize },
 	#[error("Not enough bytes in the buffer")]

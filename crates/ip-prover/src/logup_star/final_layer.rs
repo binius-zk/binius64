@@ -17,7 +17,7 @@ use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, inner_product::inner_product_par, line::extrapolate_line};
 use either::Either;
 
-use super::error::Error;
+use super::error::LogupStarError;
 use crate::{
 	channel::IPProverChannel,
 	fracaddcheck::{FracAddCheckProver, FracEvalClaim},
@@ -76,7 +76,7 @@ pub fn prove_final_layer<F, P>(
 	pushforward: &FieldBuffer<P>,
 	table: &FieldBuffer<P>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<FinalLayerOutput<F>, Error>
+) -> Result<FinalLayerOutput<F>, LogupStarError>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,

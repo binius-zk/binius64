@@ -1,8 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 
 #[derive(thiserror::Error, Debug)]
-pub enum Error {
-	/// Error indicating invalid arguments were passed to a sumcheck function.
+pub enum SumcheckError {
+	/// SumcheckError indicating invalid arguments were passed to a sumcheck function.
 	#[error("invalid arguments: {0}")]
 	ArgumentError(String),
 	#[error("multilinears do not have equal number of variables")]

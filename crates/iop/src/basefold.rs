@@ -23,13 +23,13 @@
 use binius_field::{BinaryField, Field};
 use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
 use binius_transcript::{
-	self as transcript, VerifierTranscript,
+	TranscriptError, VerifierTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
 use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
 
 use crate::{
-	fri::{self, FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier},
+	fri::{FRIFoldVerifier, FRIParams, FriError, FriVerificationError, verify::FRIQueryVerifier},
 	merkle_tree::MerkleTreeScheme,
 };
 
@@ -66,7 +66,7 @@ pub fn verify_mlecheck_basefold<F, MTScheme, Challenger_>(
 	batch_challenge: Option<F>,
 	outer_challenges: &[F],
 	transcript: &mut VerifierTranscript<Challenger_>,
-) -> Result<ReducedOutput<F>, Error>
+) -> Result<ReducedOutput<F>, BaseFoldError>
 where
 	F: BinaryField,
 	Challenger_: Challenger,
@@ -160,26 +160,26 @@ pub fn mlecheck_fri_consistency<F: Field>(fri_final_oracle: F, sumcheck_final_cl
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum BaseFoldError {
 	#[error("FRI: {0}")]
-	FRI(#[source] fri::Error),
+	FRI(#[source] FriError),
 	#[error("transcript: {0}")]
-	Transcript(#[from] transcript::Error),
+	Transcript(#[from] TranscriptError),
 	#[error("verification error: {0}")]
-	Verification(#[from] VerificationError),
+	Verification(#[from] BaseFoldVerificationError),
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum VerificationError {
+pub enum BaseFoldVerificationError {
 	#[error("FRI: {0}")]
-	FRI(#[from] fri::VerificationError),
+	FRI(#[from] FriVerificationError),
 }
 
-impl From<fri::Error> for Error {
-	fn from(err: fri::Error) -> Self {
+impl From<FriError> for BaseFoldError {
+	fn from(err: FriError) -> Self {
 		match err {
-			fri::Error::Verification(err) => Error::Verification(err.into()),
-			_ => Error::FRI(err),
+			FriError::Verification(err) => BaseFoldError::Verification(err.into()),
+			_ => BaseFoldError::FRI(err),
 		}
 	}
 }

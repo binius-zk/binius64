@@ -10,7 +10,7 @@ use binius_transcript::TranscriptReader;
 use binius_utils::DeserializeBytes;
 use bytes::Buf;
 
-use super::{FRIParams, error::Error};
+use super::{FRIParams, error::FriError};
 
 /// Calculate fold of `values` at `index` with `r` random coefficient.
 ///
@@ -187,7 +187,7 @@ where
 	pub fn process_round<B: Buf>(
 		&mut self,
 		transcript: &mut TranscriptReader<B>,
-	) -> Result<Option<Digest>, Error> {
+	) -> Result<Option<Digest>, FriError> {
 		assert!(
 			self.curr_round < self.n_rounds(),
 			"precondition: process_round must not be called more than n_rounds() times"

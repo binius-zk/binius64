@@ -8,7 +8,7 @@ use binius_utils::rayon::iter::{IntoParallelIterator, ParallelIterator};
 use crate::{
 	channel::IPProverChannel,
 	sumcheck::{
-		Error as SumcheckError,
+		SumcheckError,
 		batch::batch_prove_mle_and_write_evals,
 		common::MleCheckProver,
 		frac_add_mle::{self, FractionalBuffer},
@@ -30,7 +30,7 @@ pub struct FracAddCheckProver<P: PackedField> {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum Error {
+pub enum FracAddCheckError {
 	#[error(
 		"mismatched numerator/denominator lengths: numerator log_len {num_log_len}, denominator log_len {den_log_len}"
 	)]
@@ -105,7 +105,7 @@ where
 	pub fn layer_prover(
 		mut self,
 		claim: FracEvalClaim<F>,
-	) -> Result<(impl MleCheckProver<F>, Option<Self>), Error> {
+	) -> Result<(impl MleCheckProver<F>, Option<Self>), FracAddCheckError> {
 		let (num_claim, den_claim) = claim;
 		assert_eq!(
 			num_claim.point, den_claim.point,
@@ -151,7 +151,7 @@ where
 		self,
 		claim: FracEvalClaim<F>,
 		channel: &mut impl IPProverChannel<F>,
-	) -> Result<FracEvalClaim<F>, Error> {
+	) -> Result<FracEvalClaim<F>, FracAddCheckError> {
 		// Proving the full circuit runs every layer, so delegate and drop the leftover prover.
 		let n_layers = self.n_layers();
 		let (remaining, claim) = self.prove_layers(n_layers, claim, channel)?;
@@ -187,7 +187,7 @@ where
 		n_layers: usize,
 		claim: FracEvalClaim<F>,
 		channel: &mut impl IPProverChannel<F>,
-	) -> Result<(Option<Self>, FracEvalClaim<F>), Error> {
+	) -> Result<(Option<Self>, FracEvalClaim<F>), FracAddCheckError> {
 		// Each layer consumes the prover and returns the remainder, so thread it through an Option.
 		let mut prover_opt = Some(self);
 		let mut claim = claim;

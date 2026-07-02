@@ -11,5 +11,5 @@ pub use monster::*;
 mod error;
 mod verify;
 
-pub use error::Error;
+pub use error::ShiftError;
 pub use verify::{OperatorData, VerifyOutput, check_eval, verify};

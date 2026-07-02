@@ -12,7 +12,7 @@ use binius_field::{
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
-		Error, ProveSingleOutput, common::MleCheckProver, prove_single_mlecheck,
+		ProveSingleOutput, SumcheckError, common::MleCheckProver, prove_single_mlecheck,
 		quadratic_mle::QuadraticMleCheckProver,
 	},
 };
@@ -229,7 +229,7 @@ where
 	pub fn prove_with_channel(
 		self,
 		channel: &mut impl IPProverChannel<F>,
-	) -> Result<AndCheckOutput<F>, Error> {
+	) -> Result<AndCheckOutput<F>, SumcheckError> {
 		let univariate_message_coeffs = self.execute();
 
 		channel.send_many(univariate_message_coeffs);

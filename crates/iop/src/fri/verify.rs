@@ -15,7 +15,7 @@ use bytes::Buf;
 use super::{
 	batch::{BatchBrakedownOracle, BrakedownOracle, FRIOracle, ProxTestOracle, fold_coset},
 	common::FRIParams,
-	error::{Error, VerificationError},
+	error::{FriError, FriVerificationError},
 };
 use crate::merkle_tree::{Commitment, MerkleTreeScheme};
 
@@ -208,7 +208,7 @@ where
 	pub fn verify<Challenger_>(
 		&self,
 		transcript: &mut VerifierTranscript<Challenger_>,
-	) -> Result<F, Error>
+	) -> Result<F, FriError>
 	where
 		Challenger_: Challenger,
 	{
@@ -230,10 +230,10 @@ where
 			claims = oracle
 				.reduce_queries(&indices, &claims, &mut advice)
 				.map_err(|err| match err {
-					super::batch::Error::ClaimMismatch { index } => {
-						VerificationError::IncorrectFold { query_round, index }.into()
+					super::batch::BatchFriError::ClaimMismatch { index } => {
+						FriVerificationError::IncorrectFold { query_round, index }.into()
 					}
-					err => Error::from(err),
+					err => FriError::from(err),
 				})?;
 			for index in &mut indices {
 				*index >>= arity;
@@ -255,14 +255,14 @@ where
 		claims: &[F],
 		indices: &[usize],
 		advice: &mut TranscriptReader<B>,
-	) -> Result<F, Error> {
+	) -> Result<F, FriError> {
 		let n_final_challenges = self.params.n_final_challenges();
 		let log_inv_rate = self.params.rs_code().log_inv_rate();
 		let terminate_codeword_len = 1 << (n_final_challenges + log_inv_rate);
 
 		let terminate_codeword = advice
 			.read_scalar_slice::<F>(terminate_codeword_len)
-			.map_err(Error::TranscriptError)?;
+			.map_err(FriError::TranscriptError)?;
 		self.vcs.verify_vector(
 			self.terminal_commitment,
 			&terminate_codeword,
@@ -273,7 +273,7 @@ where
 		// Check the fully-reduced claims against the terminal codeword the verifier holds in full.
 		for (&claim, &index) in iter::zip(claims, indices) {
 			if claim != terminate_codeword[index] {
-				return Err(VerificationError::IncorrectFold {
+				return Err(FriVerificationError::IncorrectFold {
 					query_round: self.n_oracles() - 1,
 					index,
 				}
@@ -307,7 +307,7 @@ where
 			.iter()
 			.any(|&entry| entry != final_value)
 		{
-			return Err(VerificationError::IncorrectDegree.into());
+			return Err(FriVerificationError::IncorrectDegree.into());
 		}
 
 		Ok(final_value)

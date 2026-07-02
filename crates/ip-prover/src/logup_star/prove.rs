@@ -7,7 +7,7 @@ use binius_ip::{MultilinearEvalClaim, logup_star::LogupOutput};
 use binius_math::FieldBuffer;
 
 use super::{
-	error::Error,
+	error::LogupStarError,
 	final_layer::{FinalLayerOutput, prove_final_layer},
 	witness,
 };
@@ -56,7 +56,7 @@ pub fn prove<F, P>(
 	eval_point: &[F],
 	eval_claim: F,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<LogupOutput<F>, Error>
+) -> Result<LogupOutput<F>, LogupStarError>
 where
 	F: Field + ExtensionField<BinaryField1b>,
 	P: PackedField<Scalar = F>,
@@ -70,7 +70,7 @@ where
 	// The index column has one entry per looker row, i.e. one per point of the n-variable cube.
 	let expected = 1usize << n;
 	if index.len() != expected {
-		return Err(Error::IndexLengthMismatch {
+		return Err(LogupStarError::IndexLengthMismatch {
 			got: index.len(),
 			expected,
 			n_vars: n,
@@ -335,7 +335,7 @@ mod tests {
 			.expect_err("a short index column is rejected");
 		assert!(matches!(
 			err,
-			Error::IndexLengthMismatch {
+			LogupStarError::IndexLengthMismatch {
 				got: 3,
 				expected: 16,
 				n_vars: 4

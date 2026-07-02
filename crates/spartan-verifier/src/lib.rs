@@ -38,17 +38,21 @@ use std::{rc::Rc, slice};
 use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
-	basefold,
+	basefold::BaseFoldError,
 	basefold_compiler::BaseFoldVerifierCompiler,
-	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
-	fri::{self, MinProofSizeStrategy},
+	channel::{IOPChannelError, IOPVerifierChannel, OracleLinearRelation, OracleSpec},
+	fri::{self, FriError, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 	oracle_setup_channel::{DummyElem, OracleSetupChannel},
 };
-use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck};
+use binius_ip::{
+	channel::{IPChannelError, IPVerifierChannel},
+	mlecheck,
+	sumcheck::SumcheckError,
+};
 use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, univariate::evaluate_univariate};
 use binius_spartan_frontend::constraint_system::{ConstraintSystem, WitnessSegment};
-use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
+use binius_transcript::{TranscriptError, VerifierTranscript, fiat_shamir::Challenger};
 use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
 use digest::Output;
 
@@ -400,17 +404,17 @@ fn mask_transparent<'a, F: Field, E: FieldOps + 'a>(
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
 	#[error("FRI error: {0}")]
-	FRI(#[from] fri::Error),
+	FRI(#[from] FriError),
 	#[error("Sumcheck error: {0}")]
-	Sumcheck(#[from] sumcheck::Error),
+	Sumcheck(#[from] SumcheckError),
 	#[error("BaseFold error: {0}")]
-	BaseFold(#[from] basefold::Error),
+	BaseFold(#[from] BaseFoldError),
 	#[error("Transcript error: {0}")]
-	Transcript(#[from] binius_transcript::Error),
+	Transcript(#[from] TranscriptError),
 	#[error("IOP channel error: {0}")]
-	IOPChannel(#[from] binius_iop::channel::Error),
+	IOPChannel(#[from] IOPChannelError),
 	#[error("IP channel error: {0}")]
-	IPChannel(#[from] binius_ip::channel::Error),
+	IPChannel(#[from] IPChannelError),
 	#[error("incorrect public inputs length: expected {expected}, got {actual}")]
 	IncorrectPublicInputLength { expected: usize, actual: usize },
 	#[error("incorrect reduction output of the multiplication check")]
