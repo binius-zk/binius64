@@ -1,13 +1,13 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{arch::OptimalPackedB128, packed::PackedField};
+use binius_ip_prover::sumcheck::{
+	bivariate_product::BivariateProductSumcheckProver, prove_single, prove_single_mlecheck,
+	quadratic_mle::QuadraticMleCheckProver,
+};
 use binius_math::{
 	inner_product::inner_product_par,
 	test_utils::{random_field_buffer, random_scalars},
-};
-use binius_prover::protocols::sumcheck::{
-	bivariate_product::BivariateProductSumcheckProver, prove_single, prove_single_mlecheck,
-	quadratic_mle::QuadraticMleCheckProver,
 };
 use binius_transcript::ProverTranscript;
 use binius_utils::rayon::prelude::*;

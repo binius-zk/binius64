@@ -2,12 +2,10 @@
 use std::iter;
 
 use binius_field::Field;
+use binius_ip::{mlecheck, sumcheck::SumcheckOutput};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
 
-use crate::{
-	error::Error,
-	protocols::{mlecheck, sumcheck::SumcheckOutput},
-};
+use crate::error::Error;
 
 /// Output of [`verify`].
 #[derive(Debug)]

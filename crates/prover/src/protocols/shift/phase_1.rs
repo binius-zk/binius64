@@ -4,15 +4,16 @@ use std::{iter, ops::Range};
 
 use binius_core::word::Word;
 use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
-use binius_ip_prover::channel::IPProverChannel;
+use binius_ip::sumcheck::{SumcheckOutput, common::RoundCoeffs};
+use binius_ip_prover::{
+	channel::IPProverChannel,
+	sumcheck::{bivariate_product::BivariateProductSumcheckProver, common::SumcheckProver},
+};
 use binius_math::{FieldBuffer, inner_product::inner_product_buffers};
 use binius_utils::rayon::prelude::*;
 use binius_verifier::{
 	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS, WORD_SIZE_BYTES},
-	protocols::{
-		shift::SHIFT_VARIANT_COUNT,
-		sumcheck::{SumcheckOutput, common::RoundCoeffs},
-	},
+	protocols::shift::SHIFT_VARIANT_COUNT,
 };
 use bytemuck::zeroed_vec;
 use itertools::izip;
@@ -23,9 +24,6 @@ use super::{
 	key_collection::{KeyCollection, Operation},
 	monster::build_h_parts,
 	prove::PreparedOperatorData,
-};
-use crate::protocols::sumcheck::{
-	bivariate_product::BivariateProductSumcheckProver, common::SumcheckProver,
 };
 
 // This is the number of variables in the g (and h) multilinears of phase 1.

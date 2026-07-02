@@ -11,6 +11,7 @@ workspace = true
 binius-core = { path = "../core" }
 binius-field = { path = "../field" }
 binius-hash = { path = "../hash" }
+binius-ip = { path = "../ip" }
 binius-iop = { path = "../iop" }
 binius-iop-prover = { path = "../iop-prover", default-features = false }
 binius-ip-prover = { path = "../ip-prover", default-features = false }

@@ -9,6 +9,7 @@ use binius_field::{
 		OutputWrappingTransformationFactory,
 	},
 };
+use binius_ip_prover::sumcheck::{common::SumcheckProver, quadratic_mle::QuadraticMleCheckProver};
 use binius_math::{
 	BinarySubspace,
 	univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
@@ -19,7 +20,6 @@ use binius_prover::{
 		NTTLookup, sumcheck_round_messages::univariate_round_message_extension_domain,
 	},
 	fold_word::fold_words_with_transform,
-	protocols::sumcheck::{common::SumcheckProver, quadratic_mle::QuadraticMleCheckProver},
 };
 use binius_verifier::{
 	config::{B128, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},

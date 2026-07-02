@@ -3,6 +3,7 @@
 use std::{iter, marker::PhantomData, mem::MaybeUninit, ops::Deref};
 
 use binius_field::{BinaryField, Field, PackedField};
+use binius_ip_prover::prodcheck::ProdcheckProver;
 use binius_math::field_buffer::FieldBuffer;
 use binius_utils::{
 	bitwise::{BitSelector, Bitwise},
@@ -15,7 +16,6 @@ use getset::Getters;
 use itertools::iterate;
 
 use super::error::Error;
-use crate::protocols::prodcheck::ProdcheckProver;
 
 /// An integer multiplication protocol witness. Created from integer slices, consumed during
 /// proving.

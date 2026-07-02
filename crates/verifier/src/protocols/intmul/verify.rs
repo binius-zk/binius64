@@ -3,7 +3,11 @@
 use std::{iter, slice};
 
 use binius_field::{BinaryField, Field, field::FieldOps};
-use binius_ip::channel::IPVerifierChannel;
+use binius_ip::{
+	channel::IPVerifierChannel,
+	prodcheck::{self, MultilinearEvalClaim},
+	sumcheck::{BatchSumcheckOutput, batch_verify},
+};
 use binius_math::{
 	multilinear::{eq::eq_ind, evaluate::evaluate_inplace_scalars},
 	univariate::evaluate_univariate,
@@ -17,10 +21,6 @@ use super::{
 		reconstruct_selecteds,
 	},
 	error::Error,
-};
-use crate::protocols::{
-	prodcheck::{self, MultilinearEvalClaim},
-	sumcheck::{BatchSumcheckOutput, batch_verify},
 };
 
 /// Verify Phase 1: GKR step on the exponentiation product tree.

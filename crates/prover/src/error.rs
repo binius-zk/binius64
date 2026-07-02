@@ -1,6 +1,9 @@
 // Copyright 2025 Irreducible Inc.
 
-use crate::protocols::{basefold, intmul, shift, sumcheck};
+use binius_iop_prover::basefold;
+use binius_ip_prover::sumcheck;
+
+use crate::protocols::{intmul, shift};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

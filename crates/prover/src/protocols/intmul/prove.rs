@@ -4,9 +4,19 @@ use std::{iter, marker::PhantomData};
 
 use binius_core::word::Word;
 use binius_field::{BinaryField, FieldOps, PackedField};
+use binius_ip::prodcheck::MultilinearEvalClaim;
 use binius_ip_prover::{
 	channel::IPProverChannel,
-	sumcheck::{batch::batch_prove, quadratic_mle::QuadraticMleCheckProver},
+	prodcheck::{self, ProdcheckProver},
+	sumcheck::{
+		MleToSumCheckDecorator,
+		batch::{BatchSumcheckOutput, batch_prove, batch_prove_and_write_evals},
+		bivariate_product_mle,
+		bivariate_product_multi_mle::BivariateProductMultiMlecheckProver,
+		multilinear_eval::MultilinearEvalProver,
+		quadratic_mle::QuadraticMleCheckProver,
+		selector_mle::{Claim, SelectorMlecheckProver},
+	},
 };
 use binius_math::{
 	field_buffer::FieldBuffer,
@@ -17,12 +27,9 @@ use binius_math::{
 	},
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
-use binius_verifier::protocols::{
-	intmul::common::{
-		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, frobenius_twist,
-		normalize_a_c_exponent_evals,
-	},
-	prodcheck::MultilinearEvalClaim,
+use binius_verifier::protocols::intmul::common::{
+	IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, frobenius_twist,
+	normalize_a_c_exponent_evals,
 };
 use either::Either;
 use itertools::{chain, izip};
@@ -31,20 +38,7 @@ use super::{
 	error::Error,
 	witness::{Witness, buffer_bivariate_product, two_valued_field_buffer},
 };
-use crate::{
-	fold_word::{fold_across_words, fold_words},
-	protocols::{
-		prodcheck::{self, ProdcheckProver},
-		sumcheck::{
-			MleToSumCheckDecorator,
-			batch::{BatchSumcheckOutput, batch_prove_and_write_evals},
-			bivariate_product_mle,
-			bivariate_product_multi_mle::BivariateProductMultiMlecheckProver,
-			multilinear_eval::MultilinearEvalProver,
-			selector_mle::{Claim, SelectorMlecheckProver},
-		},
-	},
-};
+use crate::fold_word::{fold_across_words, fold_words};
 
 /// A helper structure that encapsulates switchover settings and the prover channel for
 /// the integer multiplication protocol.

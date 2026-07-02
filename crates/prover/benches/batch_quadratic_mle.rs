@@ -3,19 +3,20 @@
 use std::array;
 
 use binius_field::{Field, FieldOps, PackedField, arch::OptimalPackedB128};
+use binius_ip::mlecheck;
+use binius_ip_prover::sumcheck::{
+	Error, batch_quadratic_mle::BatchQuadraticMleCheckProver, common::MleCheckProver,
+};
 use binius_math::{
 	FieldBuffer,
 	multilinear::evaluate::evaluate_inplace,
 	test_utils::{random_field_buffer, random_scalars},
 };
-use binius_prover::protocols::sumcheck::{
-	Error, batch_quadratic_mle::BatchQuadraticMleCheckProver, common::MleCheckProver,
-};
 use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSample, Challenger},
 };
-use binius_verifier::{config::StdChallenger, protocols::mlecheck};
+use binius_verifier::config::StdChallenger;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use rand::{SeedableRng, rngs::StdRng};
 

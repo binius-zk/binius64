@@ -13,6 +13,7 @@ use binius_iop_prover::{
 	basefold_channel::BaseFoldProverChannel, basefold_compiler::BaseFoldProverCompiler,
 	channel::IOPProverChannel,
 };
+use binius_ip::sumcheck::SumcheckOutput;
 use binius_math::{
 	BinarySubspace, FieldBuffer, FieldSlice,
 	inner_product::inner_product,
@@ -27,7 +28,7 @@ use binius_verifier::{
 	config::{
 		B1, B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
 	},
-	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput, sumcheck::SumcheckOutput},
+	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput},
 };
 use digest::Output;
 use rand::{SeedableRng, rngs::StdRng};

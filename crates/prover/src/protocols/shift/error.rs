@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
-use crate::protocols::sumcheck::Error as SumcheckError;
+use binius_ip_prover::sumcheck::Error as SumcheckError;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {

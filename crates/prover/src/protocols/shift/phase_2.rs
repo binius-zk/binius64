@@ -2,21 +2,22 @@
 
 use binius_core::word::Word;
 use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
-use binius_ip_prover::channel::IPProverChannel;
+use binius_ip::sumcheck::SumcheckOutput;
+use binius_ip_prover::{
+	channel::IPProverChannel,
+	sumcheck::{
+		ProveSingleOutput, bivariate_product::BivariateProductSumcheckProver, prove_single,
+	},
+};
 use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
-use binius_verifier::{config::LOG_WORD_SIZE_BITS, protocols::sumcheck::SumcheckOutput};
+use binius_verifier::config::LOG_WORD_SIZE_BITS;
 use tracing::instrument;
 
 use super::{
 	error::Error, key_collection::KeyCollection, monster::build_monster_multilinear,
 	prove::PreparedOperatorData,
 };
-use crate::{
-	fold_word::fold_words,
-	protocols::sumcheck::{
-		ProveSingleOutput, bivariate_product::BivariateProductSumcheckProver, prove_single,
-	},
-};
+use crate::fold_word::fold_words;
 
 /// Proves the second phase of the shift protocol reduction.
 ///

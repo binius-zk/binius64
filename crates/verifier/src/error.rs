@@ -2,11 +2,11 @@
 
 use binius_core::ConstraintSystemError;
 use binius_iop::channel::Error as IOPChannelError;
-use binius_ip::channel::Error as ChannelError;
+use binius_ip::{channel::Error as ChannelError, sumcheck};
 
 use crate::{
 	fri,
-	protocols::{intmul, shift, sumcheck},
+	protocols::{intmul, shift},
 	ring_switch,
 };
 

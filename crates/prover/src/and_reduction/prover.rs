@@ -9,7 +9,13 @@ use binius_field::{
 		OutputWrappingTransformationFactory,
 	},
 };
-use binius_ip_prover::channel::IPProverChannel;
+use binius_ip_prover::{
+	channel::IPProverChannel,
+	sumcheck::{
+		Error, ProveSingleOutput, common::MleCheckProver, prove_single_mlecheck,
+		quadratic_mle::QuadraticMleCheckProver,
+	},
+};
 use binius_math::{
 	BinarySubspace,
 	univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
@@ -20,13 +26,7 @@ use binius_verifier::{
 };
 
 use super::sumcheck_round_messages;
-use crate::{
-	fold_word::fold_words_with_transform,
-	protocols::sumcheck::{
-		Error, ProveSingleOutput, common::MleCheckProver, prove_single_mlecheck,
-		quadratic_mle::QuadraticMleCheckProver,
-	},
-};
+use crate::fold_word::fold_words_with_transform;
 
 /// Prover for the AND constraint reduction protocol via oblong univariate zerocheck.
 ///

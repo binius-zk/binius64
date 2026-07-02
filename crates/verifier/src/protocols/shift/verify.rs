@@ -4,7 +4,10 @@ use std::iter;
 
 use binius_core::constraint_system::{AndConstraint, ConstraintSystem, MulConstraint};
 use binius_field::{BinaryField, field::FieldOps, util::FieldFn};
-use binius_ip::channel::IPVerifierChannel;
+use binius_ip::{
+	channel::IPVerifierChannel,
+	sumcheck::{SumcheckOutput, verify as verify_sumcheck},
+};
 use binius_math::{
 	BinarySubspace,
 	multilinear::eq::eq_ind_partial_eval_scalars,
@@ -18,10 +21,7 @@ use super::{
 	BITAND_ARITY, INTMUL_ARITY, error::Error, evaluate_h_op,
 	evaluate_monster_multilinear_for_operation,
 };
-use crate::{
-	config::{LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM},
-	protocols::sumcheck::{SumcheckOutput, verify as verify_sumcheck},
-};
+use crate::config::{LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM};
 
 /// Verifier data for an operation with the specified arity.
 ///

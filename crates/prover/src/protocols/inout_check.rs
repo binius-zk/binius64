@@ -1,16 +1,15 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{Field, PackedField};
-use binius_math::{
-	FieldBuffer, FieldSlice, inner_product::inner_product_buffers, line::extrapolate_line_packed,
-	multilinear::fold::fold_highest_var_inplace,
-};
-use binius_verifier::protocols::sumcheck::RoundCoeffs;
-
-use crate::protocols::sumcheck::{
+use binius_ip::sumcheck::RoundCoeffs;
+use binius_ip_prover::sumcheck::{
 	Error,
 	common::{MleCheckProver, SumcheckProver},
 	gruen32::Gruen32,
+};
+use binius_math::{
+	FieldBuffer, FieldSlice, inner_product::inner_product_buffers, line::extrapolate_line_packed,
+	multilinear::fold::fold_highest_var_inplace,
 };
 
 /// An MLE-check prover instance for the argument of public input/witness consistency.
@@ -241,6 +240,7 @@ mod tests {
 		PackedField,
 		arch::{OptimalB128, OptimalPackedB128},
 	};
+	use binius_ip_prover::sumcheck::prove_single_mlecheck;
 	use binius_math::{
 		FieldBuffer, FieldSlice,
 		multilinear::evaluate::evaluate,
@@ -251,7 +251,6 @@ mod tests {
 	use rand::{SeedableRng, prelude::StdRng};
 
 	use super::*;
-	use crate::protocols::sumcheck::prove_single_mlecheck;
 
 	#[test]
 	fn test_pubcheck_prove_verify() {
