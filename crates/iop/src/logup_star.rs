@@ -32,8 +32,8 @@ pub enum Error {
 /// The reduced claims of a committed logUp* verification.
 ///
 /// The table and index claims are left for the caller to open against its own commitments.
-/// The pushforward claim is packaged as an oracle relation against the commitment received here.
-pub struct LogupProof<'a, Oracle, Elem> {
+/// The pushforward claim is opened against the commitment received here, through the channel.
+pub struct LogupProof<Elem> {
 	/// The `m`-coordinate point shared by the table and pushforward claims.
 	pub table_eval_point: Vec<Elem>,
 	/// The claimed evaluation of the table `T` at the point.
@@ -42,8 +42,6 @@ pub struct LogupProof<'a, Oracle, Elem> {
 	pub index_eval_point: Vec<Elem>,
 	/// The claimed evaluations of the per-looker embedded index columns at the point.
 	pub index_eval_claims: Vec<Elem>,
-	/// The oracle relation `<Y, eq_{table_eval_point}> = Y(table_eval_point)` for the pushforward.
-	pub pushforward: OracleLinearRelation<'a, Oracle, Elem>,
 }
 
 /// Verify a logUp* reduction whose pushforward is committed as an oracle.
@@ -51,11 +49,8 @@ pub struct LogupProof<'a, Oracle, Elem> {
 /// This wraps [`binius_ip::logup_star::verify_reduction`] with the pushforward commitment: the
 /// looker batching challenge is sampled first (the prover builds the combined pushforward from
 /// it), then the `Y` oracle is received before the reduction, so the logUp challenge binds the
-/// commitment. It then returns the relation that opens `Y` at the reduced point.
-///
-/// The returned relation asserts `<Y, eq_r'> = Y(r')` at the reduced table point `r'`.
-/// Its transparent polynomial is the equality indicator at `r'`.
-/// The caller batches this relation with the table and index openings into one channel open.
+/// commitment. The relation `<Y, eq_r'> = Y(r')` at the reduced table point `r'` is opened
+/// through the channel, which may defer the actual opening to `finish()`.
 ///
 /// # Arguments
 ///
@@ -70,7 +65,7 @@ pub fn verify<'a, F, C>(
 	table_n_vars: usize,
 	lookers: &[reduction::LookerClaim<'_, C::Elem>],
 	channel: &mut C,
-) -> Result<LogupProof<'a, C::Oracle, C::Elem>, Error>
+) -> Result<LogupProof<C::Elem>, Error>
 where
 	F: Field + ExtensionField<BinaryField1b>,
 	C: IOPVerifierChannel<'a, F>,
@@ -90,23 +85,23 @@ where
 	// Run the bare reduction over the same channel, viewed as an IP channel.
 	let output = reduction::verify_reduction::<F, C>(gamma, table_n_vars, lookers, channel)?;
 
-	// The pushforward relation opens Y at the reduced point.
+	// Open the pushforward relation through the channel; a deferring channel (e.g. BaseFold)
+	// batches it with every other queued relation in `finish()`.
 	//
 	//     <Y, eq_r'> = Y(r') = pushforward_eval_claim
 	//
 	// BaseFold reduces this inner product to a challenge point, where the transparent is eq(r', .).
 	let point = output.table_eval_point.clone();
-	let pushforward = OracleLinearRelation {
+	channel.verify_oracle_relations([OracleLinearRelation {
 		oracle,
 		transparent: Box::new(move |challenge: &[C::Elem]| eq_ind(&point, challenge)),
 		claim: output.pushforward_eval_claim,
-	};
+	}])?;
 
 	Ok(LogupProof {
 		table_eval_point: output.table_eval_point,
 		table_eval_claim: output.table_eval_claim,
 		index_eval_point: output.index_eval_point,
 		index_eval_claims: output.index_eval_claims,
-		pushforward,
 	})
 }

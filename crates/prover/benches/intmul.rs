@@ -21,11 +21,14 @@ use binius_math::{
 };
 use binius_prover::protocols::intmul::{
 	prove::IntMulProver,
-	witness::{Witness, compute_b_leaves, constant_base_leaves},
+	witness::{Witness, compute_b_leaves, power_table},
 };
 use binius_transcript::ProverTranscript;
 use binius_utils::rayon::ThreadPoolBuilder;
-use binius_verifier::{config::StdChallenger, protocols::intmul::common::frobenius_twist};
+use binius_verifier::{
+	config::{LOG_WORD_SIZE_BITS, StdChallenger},
+	protocols::intmul::common::{LIMB_BITS, frobenius_twist},
+};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rand::prelude::*;
 
@@ -34,18 +37,12 @@ type F = BinaryField128bGhash;
 
 /// Number of exponents is `2^LOG_NUM`.
 const LOG_NUM: usize = 14;
-/// Log of the integer bit width; the exponentiation tree has `2^LOG_BITS` leaves per node.
-const LOG_BITS: usize = 6;
 
 /// The Reed-Solomon rate of the standard prover configuration.
 const LOG_INV_RATE: usize = 1;
 /// One FRI test query keeps the parameters cheap; the benchmarks measure commitment cost, not
 /// opening soundness.
 const N_TEST_QUERIES: usize = 1;
-/// Log-length of the oracle budget the channel declares. intmul commits no oracle yet; this
-/// matches the 2^16-entry exponentiation-table pushforward its logup*-based phase 5 commits,
-/// so the harness measures that cost as soon as it lands.
-const LOG_ORACLE_LEN: usize = 16;
 
 /// Builds a BaseFold prover compiler for the prove benchmarks.
 ///
@@ -57,7 +54,7 @@ fn basefold_compiler() -> BaseFoldProverCompiler<P, NeighborsLastSingleThread<Ge
 {
 	let verifier_compiler = BaseFoldVerifierCompiler::new(
 		BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
-		vec![OracleSpec::new(LOG_ORACLE_LEN)],
+		vec![OracleSpec::new(LIMB_BITS)],
 		LOG_INV_RATE,
 		N_TEST_QUERIES,
 		&MinProofSizeStrategy,
@@ -108,11 +105,11 @@ fn bench_intmul_prove(c: &mut Criterion) {
 	group.bench_with_input(
 		BenchmarkId::new("witness", num_exponents),
 		&num_exponents,
-		|bencher, _| bencher.iter(|| Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap()),
+		|bencher, _| bencher.iter(|| Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap()),
 	);
 
 	// prove
-	let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
+	let witness = Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap();
 	let compiler = basefold_compiler();
 
 	group.bench_with_input(
@@ -150,7 +147,7 @@ fn bench_intmul_prove(c: &mut Criterion) {
 				},
 				|channel| {
 					let mut intmul_prover = IntMulProver::new(0, channel);
-					let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
+					let witness = Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap();
 					intmul_prover.prove(witness);
 				},
 				BatchSize::SmallInput,
@@ -167,8 +164,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 	group.throughput(Throughput::Elements(1 << LOG_NUM));
 
 	let (a, b, c_lo, c_hi) = generate_test_data(LOG_NUM);
-	let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
-	let log_bits = witness.log_bits;
+	let witness = Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap();
 
 	// The proving phases are sequential and stateful: each consumes the outputs of the previous
 	// one. Rather than re-deriving every predecessor inside each phase's per-iteration setup, we
@@ -185,12 +181,11 @@ fn bench_intmul_phases(c: &mut Criterion) {
 		let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
 		prover.phase1(&initial_eval_point, witness.b_prodcheck.clone(), &witness.b_leaves, exp_eval)
 	};
-	let phase2 = frobenius_twist(log_bits, &phase1.eval_point, &phase1.b_leaves_evals);
+	let phase2 = frobenius_twist(LOG_WORD_SIZE_BITS, &phase1.eval_point, &phase1.b_leaves_evals);
 	let phase3 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
 		prover.phase3(
-			log_bits,
 			&phase2.twisted_eval_points,
 			&phase2.twisted_evals,
 			witness.a_root.clone(),
@@ -200,15 +195,20 @@ fn bench_intmul_phases(c: &mut Criterion) {
 			exp_eval,
 		)
 	};
-	let (phase4_claims, phase4_eval_point) = {
+	let phase4 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
 		prover.phase4(
-			log_bits,
 			&phase3.eval_point,
 			(phase3.gpow_a_eval, witness.a_prodcheck.clone()),
 			(phase3.gpow_c_lo_eval, witness.c_lo_prodcheck.clone()),
 			(phase3.gpow_c_hi_eval, witness.c_hi_prodcheck.clone()),
+			[
+				witness.a_exponents,
+				witness.c_lo_exponents,
+				witness.c_hi_exponents,
+			],
+			&witness.tables,
 		)
 	};
 
@@ -226,7 +226,9 @@ fn bench_intmul_phases(c: &mut Criterion) {
 
 	// The Frobenius twist consumes nothing by value, so no per-iteration clone is needed.
 	group.bench_function("phase2_frobenius_twist", |bencher| {
-		bencher.iter(|| frobenius_twist(log_bits, &phase1.eval_point, &phase1.b_leaves_evals));
+		bencher.iter(|| {
+			frobenius_twist(LOG_WORD_SIZE_BITS, &phase1.eval_point, &phase1.b_leaves_evals)
+		});
 	});
 
 	group.bench_function("phase3", |bencher| {
@@ -236,7 +238,6 @@ fn bench_intmul_phases(c: &mut Criterion) {
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
 				let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
 				prover.phase3(
-					log_bits,
 					&phase2.twisted_eval_points,
 					&phase2.twisted_evals,
 					a_root,
@@ -263,29 +264,35 @@ fn bench_intmul_phases(c: &mut Criterion) {
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
 				let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
 				prover.phase4(
-					log_bits,
 					&phase3.eval_point,
 					(phase3.gpow_a_eval, a_prodcheck),
 					(phase3.gpow_c_lo_eval, c_lo_prodcheck),
 					(phase3.gpow_c_hi_eval, c_hi_prodcheck),
+					[
+						witness.a_exponents,
+						witness.c_lo_exponents,
+						witness.c_hi_exponents,
+					],
+					&witness.tables,
 				)
 			},
 			BatchSize::SmallInput,
 		);
 	});
 
+	let compiler = basefold_compiler();
 	group.bench_function("phase5", |bencher| {
-		bencher.iter_batched(
-			|| phase4_claims.clone(),
-			|[a_claim, c_lo_claim, c_hi_claim]| {
-				let mut transcript = ProverTranscript::new(StdChallenger::default());
-				let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
+		bencher.iter_batched_ref(
+			|| {
+				compiler
+					.create_channel_without_zk_from_transcript::<StdHashSuite, StdChallenger, _>(
+						ProverTranscript::default(),
+					)
+			},
+			|channel| {
+				let mut prover = IntMulProver::<P, _>::new(0, channel);
 				prover.phase5(
-					log_bits,
-					&phase4_eval_point,
-					a_claim,
-					c_lo_claim,
-					c_hi_claim,
+					&phase4,
 					witness.b_exponents,
 					&phase3.eval_point,
 					&phase3.r_ib,
@@ -293,6 +300,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 					witness.a_exponents,
 					witness.c_lo_exponents,
 					witness.c_hi_exponents,
+					&witness.tables[0],
 				)
 			},
 			BatchSize::SmallInput,
@@ -308,27 +316,26 @@ fn bench_intmul_components(c: &mut Criterion) {
 	group.throughput(Throughput::Elements(1 << LOG_NUM));
 
 	let (a, b, c_lo, c_hi) = generate_test_data(LOG_NUM);
-	let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
-	let log_bits = witness.log_bits;
+	let witness = Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap();
 
-	// Computing the leaves of a constant-base exponentiation tree (fixed generator as base, the `a`
-	// integers as exponents) — the `a` / `c_lo` / `c_hi` trees are built this way.
+	// Building one twisted power table (the `a` / `c_lo` / `c_hi` limb columns read 2·N_LIMBS of
+	// these).
 	let g = F::MULTIPLICATIVE_GENERATOR;
-	group.bench_function("constant_base_leaves", |bencher| {
-		bencher.iter(|| constant_base_leaves::<F, P>(log_bits, g, witness.a_exponents));
+	group.bench_function("power_table", |bencher| {
+		bencher.iter(|| power_table::<F, P>(LIMB_BITS, g));
 	});
 
 	// Computing the leaves of the variable-base exponentiation tree (`a` root as base, `b` as
 	// exponents).
 	group.bench_function("b_leaves", |bencher| {
-		bencher.iter(|| compute_b_leaves::<F, P>(log_bits, &witness.a_root, witness.b_exponents));
+		bencher.iter(|| compute_b_leaves::<F, P>(&witness.a_root, witness.b_exponents));
 	});
 
 	// Computing a product tree over the leaves.
 	group.bench_function("product_tree", |bencher| {
 		bencher.iter_batched(
 			|| witness.b_leaves.clone(),
-			|b_leaves| ProdcheckProver::<P>::new(log_bits, b_leaves),
+			|b_leaves| ProdcheckProver::<P>::new(LOG_WORD_SIZE_BITS, b_leaves),
 			BatchSize::SmallInput,
 		);
 	});
@@ -346,7 +353,7 @@ fn bench_intmul_components(c: &mut Criterion) {
 		let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
 		prover.phase1(&initial_eval_point, witness.b_prodcheck.clone(), &witness.b_leaves, exp_eval)
 	};
-	let phase2 = frobenius_twist(log_bits, &phase1.eval_point, &phase1.b_leaves_evals);
+	let phase2 = frobenius_twist(LOG_WORD_SIZE_BITS, &phase1.eval_point, &phase1.b_leaves_evals);
 
 	group.bench_function("selector_sumcheck", |bencher| {
 		let mut rng = rand::rng();
@@ -361,7 +368,7 @@ fn bench_intmul_components(c: &mut Criterion) {
 						value,
 					})
 					.collect();
-				let gamma = random_scalars::<F>(&mut rng, log_bits);
+				let gamma = random_scalars::<F>(&mut rng, LOG_WORD_SIZE_BITS);
 				let eq_weights = eq_ind_partial_eval_scalars::<F>(&gamma);
 				(witness.a_root.clone(), claims, eq_weights)
 			},

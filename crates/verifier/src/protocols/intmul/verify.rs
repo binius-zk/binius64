@@ -3,36 +3,35 @@
 
 use std::iter;
 
-use binius_field::{BinaryField, Field, field::FieldOps};
-use binius_iop::channel::IOPVerifierChannel;
+use binius_field::{BinaryField, BinaryField1b, ExtensionField, Field, field::FieldOps};
+use binius_iop::{channel::IOPVerifierChannel, logup_star};
 use binius_ip::{
 	channel::IPVerifierChannel,
+	logup_star::LookerClaim,
 	prodcheck::{self, MultilinearEvalClaim},
 	sumcheck::{BatchSumcheckOutput, batch_verify},
 };
 use binius_math::{
-	multilinear::{
-		eq::{eq_ind, eq_ind_zero},
-		evaluate::evaluate_inplace_scalars,
-	},
+	multilinear::{eq::eq_ind, evaluate::evaluate_inplace_scalars},
 	univariate::evaluate_univariate,
 };
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 use super::{
 	common::{
-		IntMulOutput, Phase1Output, Phase2Output, Phase3Output, Phase4Output, frobenius_twist,
-		reconstruct_selecteds,
+		IntMulOutput, LIMB_BITS, LOG_N_LIMBS, N_LIMB_COLUMNS, N_LIMBS, Phase1Output, Phase2Output,
+		Phase3Output, Phase4Output, eval_power_table_mle, frobenius_twist, limb_column_twists,
+		twist_limb_claim,
 	},
 	error::Error,
 };
+use crate::config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS};
 
 /// Verify Phase 1: GKR step on the exponentiation product tree.
 ///
 /// Runs prodcheck verification to reduce the root claim on $\widetilde{Q}$ to $2^k$ leaf
 /// evaluation claims, then verifies the leaf evaluations against the prover's claimed values.
 fn verify_phase_1<F, C>(
-	log_bits: usize,
 	initial_eval_point: &[C::Elem],
 	initial_b_eval: C::Elem,
 	channel: &mut C,
@@ -48,16 +47,16 @@ where
 		eval: initial_b_eval,
 		point: initial_eval_point.to_vec(),
 	};
-	let output_claim = prodcheck::verify(log_bits, claim, channel)?;
+	let output_claim = prodcheck::verify(LOG_WORD_SIZE_BITS, claim, channel)?;
 
 	// Split output point: first n are x-point, last k are z-challenges
 	let (eval_point, z_suffix) = output_claim.point.split_at(n_vars);
 
 	// Read 2^k leaf evaluations from channel
-	let b_leaves_evals = channel.recv_many(1 << log_bits)?;
+	let b_leaves_evals = channel.recv_many(WORD_SIZE_BITS)?;
 
 	// Verify: output_claim.eval = multilinear_eval(b_leaves_evals, z_suffix)
-	// The leaf evals form a multilinear over log_bits variables; evaluate at z_suffix
+	// The leaf evals form a multilinear over LOG_WORD_SIZE_BITS variables; evaluate at z_suffix
 	let expected_eval = evaluate_inplace_scalars(b_leaves_evals.clone(), z_suffix);
 
 	channel.assert_zero(expected_eval - output_claim.eval)?;
@@ -74,7 +73,6 @@ where
 /// claims to exponent evaluations on $\widetilde{b}$ and a selector on $\widetilde{P}$, and
 /// (b) the product claim $\widetilde{\textsf{LO}} \cdot \widetilde{\textsf{HI}}$.
 fn verify_phase_3<F, C>(
-	log_bits: usize,
 	twisted_eval_points: Vec<Vec<C::Elem>>,
 	twisted_evals: Vec<C::Elem>,
 	c_eval_point: &[C::Elem],
@@ -87,7 +85,7 @@ where
 {
 	let n_vars = c_eval_point.len();
 
-	assert_eq!(twisted_eval_points.len(), 1 << log_bits);
+	assert_eq!(twisted_eval_points.len(), WORD_SIZE_BITS);
 
 	for twisted_eval_point in &twisted_eval_points {
 		assert_eq!(twisted_eval_point.len(), c_eval_point.len());
@@ -102,7 +100,7 @@ where
 	// The two batched terms (each degree 3) are:
 	// - the 2^k aggregate: Σ_i eq_k(γ, i) * (b(i, X) * (A(X) - 1) + 1) * eq(φ⁻ⁱ(x) ; X)
 	// - LO(X) * HI(X) * eq(c_eval_point ; X)
-	let gamma = channel.sample_many(log_bits);
+	let gamma = channel.sample_many(LOG_WORD_SIZE_BITS);
 	let selector_agg_eval = evaluate_inplace_scalars(twisted_evals, &gamma);
 	let evals = [selector_agg_eval, c_eval];
 
@@ -114,7 +112,7 @@ where
 	challenges.reverse();
 
 	// b(i, r) for i in 0..2^k
-	let b_evals = channel.recv_many(1 << log_bits)?;
+	let b_evals = channel.recv_many(WORD_SIZE_BITS)?;
 
 	// A(r)
 	let gpow_a_eval = channel.recv_one()?;
@@ -125,7 +123,7 @@ where
 	// Recombine the 2^k per-bit exponent claims b(i, r) into a single claim b(r_I^b, r) by
 	// sampling a recombination point r_I^b in K^k. This carries one exponent claim (rather than
 	// 2^k) into Phases 4 and 5.
-	let r_ib = channel.sample_many(log_bits);
+	let r_ib = channel.sample_many(LOG_WORD_SIZE_BITS);
 	let b_recomb = evaluate_inplace_scalars(b_evals.clone(), &r_ib);
 
 	let eval_point = challenges;
@@ -160,16 +158,16 @@ where
 	})
 }
 
-/// Verify Phase 4: all but last layer of the GKR product trees for $\widetilde{a}$,
-/// $\widetilde{c}_{\textsf{lo}}$, and $\widetilde{c}_{\textsf{hi}}$.
+/// Verify Phase 4: the GKR product trees for $\widetilde{a}$, $\widetilde{c}_{\textsf{lo}}$, and
+/// $\widetilde{c}_{\textsf{hi}}$, reduced to per-limb evaluation claims.
 ///
-/// Reduces the three tree roots (claimed at the Phase-3 point) to the all-but-last (depth
-/// `log_bits - 1`) layer claim via a single batched prodcheck over the three trees, batched with
-/// $\lceil \log_2 3 \rceil = 2$ selector variables. Rather than binding the all-but-last-layer
-/// evaluations here, the reduced claim (content-and-node point, reduced selector coordinates, and
-/// combined evaluation) is handed straight to Phase 5.
+/// Each tree's leaf layer is the concatenation of its `N_LIMBS` limb columns. A single batched
+/// prodcheck over the three trees (batched with $\lceil \log_2 3 \rceil = 2$ selector variables)
+/// runs the all-but-last reduction layer; the final (widest) layer of each tree is then proven by
+/// a batched bivariate-product sumcheck seeded by the three per-tree reduced claims. The prover
+/// sends the per-limb evaluations at the shared content point, which the verifier binds to the
+/// final-layer sumcheck by recombining each tree's two leaf halves via `eq(r_limb)`.
 fn verify_phase_4<F, C>(
-	log_bits: usize,
 	eval_point: &[C::Elem],
 	a_root_eval: C::Elem,
 	gpow_c_lo_eval: C::Elem,
@@ -180,10 +178,7 @@ where
 	F: Field,
 	C: IPVerifierChannel<F>,
 {
-	assert!(log_bits >= 1);
-
 	let n_vars = eval_point.len();
-	let n_layers = log_bits - 1;
 
 	let log_n_trees = log2_ceil_usize(3); // = 2 selector variables
 
@@ -200,116 +195,149 @@ where
 		point: [selector, eval_point.to_vec()].concat(),
 	};
 
-	// Run the batched prodcheck verification (n_layers = log_bits - 1 reduction layers).
-	let output_claim = prodcheck::verify(n_layers, claim, channel)?;
+	// Run the batched prodcheck verification over all LOG_N_LIMBS layers.
+	let output_claim = prodcheck::verify(LOG_N_LIMBS, claim, channel)?;
 
-	// The reduced point is [selector (log_n_trees), suffix (n_vars), bit_index (n_layers)]:
+	// The reduced point is [selector (log_n_trees), r_content (n_vars), r_limb (LOG_N_LIMBS)]:
 	//  - selector: the batching coordinates for the three trees, reduced through the selector
 	//    rounds,
-	//  - suffix ++ bit_index: the content-and-node point at which each tree's all-but-last-layer
-	//    multilinear is now claimed.
-	assert_eq!(output_claim.point.len(), log_n_trees + n_layers + n_vars);
-	let (selector_point, a_c_eval_point) = output_claim.point.split_at(log_n_trees);
+	//  - r_content: the shared point at which the limb columns are claimed,
+	//  - r_limb: the limb-index coordinates of each tree's leaf layer.
+	assert_eq!(output_claim.point.len(), log_n_trees + n_vars + LOG_N_LIMBS);
+	let (selector_point, rest) = output_claim.point.split_at(log_n_trees);
+	let (r_content, r_limb) = rest.split_at(n_vars);
+
+	// The prover sends the per-limb evaluations at r_content for each tree. Each tree's leaf
+	// multilinear stacks its limb columns over the limb coordinates, so its evaluation is the
+	// eq(r_limb)-fold of the per-limb evals; the batched output claim is the eq(selector)-weighted
+	// combination of the tree evaluations (the padding tree slot is zero).
+	let a_limb_evals = channel.recv_many(N_LIMBS)?;
+	let c_lo_limb_evals = channel.recv_many(N_LIMBS)?;
+	let c_hi_limb_evals = channel.recv_many(N_LIMBS)?;
+
+	let tree_eval = |limb_evals: &[C::Elem]| evaluate_inplace_scalars(limb_evals.to_vec(), r_limb);
+	let per_tree = vec![
+		tree_eval(&a_limb_evals),
+		tree_eval(&c_lo_limb_evals),
+		tree_eval(&c_hi_limb_evals),
+		C::Elem::zero(),
+	];
+	let combined = evaluate_inplace_scalars(per_tree, selector_point);
+	channel.assert_zero(combined - output_claim.eval)?;
 
 	Ok(Phase4Output {
-		eval_point: a_c_eval_point.to_vec(),
-		selector: selector_point.to_vec(),
-		combined_eval: output_claim.eval,
+		eval_point: r_content.to_vec(),
+		a_limb_evals,
+		c_lo_limb_evals,
+		c_hi_limb_evals,
 	})
 }
 
-/// Verify Phase 5: final GKR layer, $\widetilde{b}$ rerandomization, and parity zerocheck.
+/// Verify Phase 5: the logup* fixed-base exponentiation lookup, $\widetilde{b}$ rerandomization,
+/// and parity zerocheck.
 ///
-/// First receives one reduced eval per tree ($\widetilde{a}$, $\widetilde{c}_{\textsf{lo}}$,
-/// $\widetilde{c}_{\textsf{hi}}$) and checks they recombine, weighted by
-/// $\textsf{eq}(\text{selector})$, to the Phase-4 prodcheck output claim. Then batches five
-/// sumchecks: the final (widest) GKR layer of each of the three trees (each a regular
-/// prodcheck-layer bivariate product MLE-check seeded by its reduced eval), the parity zerocheck
-/// $a_0 \cdot b_0 = c_{\textsf{lo},0}$, and a single-claim rerandomization of the recombined
-/// $\widetilde{b}(r_I^b, \cdot)$ exponent claim. The latter two span only the content variables and
-/// are padded up to the trees' variable count.
-#[allow(clippy::too_many_arguments)]
-fn verify_phase_5<F, C>(
-	log_bits: usize,
-	a_c_eval_point: &[C::Elem],
-	selector: &[C::Elem],
-	combined_eval: C::Elem,
+/// The per-limb claims from Phase 4 are Frobenius-twisted onto the shared table of generator
+/// powers `i ↦ g^i`, batched to a single stacked lookup claim, and read from the table via a
+/// committed logup* reduction. The reduced table claim is checked against the table's succinct
+/// MLE; the pushforward claim is opened through the channel inside the reduction;
+/// the reduced index claims are carried into a final batched sumcheck — together with the
+/// $\widetilde{b}(r_I^b, \cdot)$ rerandomization and the parity zerocheck $a_0 \cdot b_0 =
+/// c_{\textsf{lo},0}$ — that brings every output claim to one shared point.
+fn verify_phase_5<'r, F, C>(
+	phase_4_output: &Phase4Output<C::Elem>,
 	b_eval_point: &[C::Elem],
 	r_ib: &[C::Elem],
 	b_recomb: C::Elem,
 	channel: &mut C,
 ) -> Result<IntMulOutput<C::Elem>, Error>
 where
-	F: Field,
-	C: IPVerifierChannel<F>,
-	C::Elem: FieldOps<Scalar = F> + From<F>,
+	F: BinaryField,
+	C: IOPVerifierChannel<'r, F>,
+	C::Elem: FieldOps<Scalar = F> + From<F> + 'r,
 {
-	assert!(log_bits >= 1);
 	let n_vars = b_eval_point.len();
-	let n_extra = log_bits - 1;
-	assert_eq!(a_c_eval_point.len(), n_vars + n_extra);
+	assert_eq!(phase_4_output.eval_point.len(), n_vars);
 
-	// Receive the three per-tree reduced claims and check they recombine, weighted by eq(selector)
-	// (padded to four), to the batched prodcheck output claim.
-	let [a_eval, c_lo_eval, c_hi_eval] = channel.recv_array::<3>()?;
-	let per_tree = vec![
-		a_eval.clone(),
-		c_lo_eval.clone(),
-		c_hi_eval.clone(),
-		C::Elem::zero(),
+	// Twist the per-limb claims onto the shared table: column (t, l) is the Frobenius power
+	// φ^{twist} of the looked-up column U_{t,l}(x) = T[e_{t,l}(x)], so its claim becomes a claim on
+	// U_{t,l} at the twisted point.
+	let twists = limb_column_twists();
+	let limb_evals = [
+		&phase_4_output.a_limb_evals,
+		&phase_4_output.c_lo_limb_evals,
+		&phase_4_output.c_hi_limb_evals,
 	];
-	let combined = evaluate_inplace_scalars(per_tree, selector);
-	channel.assert_zero(combined - combined_eval)?;
+	let twisted_claims = iter::zip(&twists, limb_evals.into_iter().flatten())
+		.map(|(&twist, eval)| twist_limb_claim(twist, &phase_4_output.eval_point, eval.clone()))
+		.collect::<Vec<_>>();
 
-	// The batched sumcheck's five per-prover sum claims: the three tree final-layer sumchecks
-	// (seeded by the reduced evals), the overflow parity zerocheck (0), and the single recombined
-	// b exponent eval for the rerandomization.
-	let evals = [a_eval, c_lo_eval, c_hi_eval, C::Elem::zero(), b_recomb];
+	// Read the N_LIMB_COLUMNS looked-up columns from the shared table via the committed multi-
+	// looker logup* reduction. The pushforward oracle is received inside; its opening relation is
+	// returned to the caller. The reduction returns one index claim per column, all at the shared
+	// content point.
+	let looker_claims = twisted_claims
+		.iter()
+		.map(|(twisted_point, twisted_eval)| LookerClaim {
+			eval_point: twisted_point,
+			eval_claim: twisted_eval.clone(),
+		})
+		.collect::<Vec<_>>();
+	let log_cols = log2_ceil_usize(N_LIMB_COLUMNS);
+	let logup_proof = logup_star::verify::<F, C>(LIMB_BITS, &looker_claims, channel)?;
 
+	// The table is succinct: the verifier evaluates its MLE directly.
+	let expected_table_eval = eval_power_table_mle::<F, C::Elem>(&logup_proof.table_eval_point);
+	channel.assert_zero(expected_table_eval - logup_proof.table_eval_claim)?;
+
+	// The reduction hands back the per-column embedded-index claims directly, all at the shared
+	// content point (padding columns read row 0, whose embedding is zero).
+	let index_content_point = logup_proof.index_eval_point.as_slice();
+	let mut padded_column_evals = logup_proof.index_eval_claims.clone();
+	padded_column_evals.resize(1 << log_cols, C::Elem::zero());
+
+	// Collapse the per-column claims into a single claim on the eq(ρ)-folded column V by sampling
+	// ρ, so the final unification runs over the content variables only.
+	let rho = channel.sample_many(log_cols);
+	let folded_index_claim = evaluate_inplace_scalars(padded_column_evals, &rho);
+
+	// Final unification: one batched sumcheck brings the folded index claim, the recombined b
+	// exponent claim, and the parity zerocheck to a shared output point.
+	let evals = [folded_index_claim, C::Elem::zero(), b_recomb];
 	let BatchSumcheckOutput {
 		batch_coeff,
 		mut challenges,
 		eval,
-	} = batch_verify(n_vars + n_extra, 3, &evals, channel)?;
+	} = batch_verify(n_vars, 3, &evals, channel)?;
 	challenges.reverse();
+	let r_out = challenges.as_slice();
 
-	// challenges = [r_content (n_vars), r_bit (n_extra)]: r_content is the shared output point;
-	// r_bit collapses the node dimension (and is the padding point for the overflow / b checks).
-	let (r_content, r_bit) = challenges.split_at(n_vars);
+	// The prover sends the raw per-bit evaluations at r_out.
+	let a_evals = channel.recv_many(WORD_SIZE_BITS)?;
+	let c_lo_evals = channel.recv_many(WORD_SIZE_BITS)?;
+	let c_hi_evals = channel.recv_many(WORD_SIZE_BITS)?;
+	let b_evals = channel.recv_many(WORD_SIZE_BITS)?;
 
-	// The prover sends the raw per-bit evaluations at r_content; the verifier reconstructs the leaf
-	// selectors forward (rather than receiving selectors and inverting them).
-	let a_evals = channel.recv_many(1 << log_bits)?;
-	let c_lo_evals = channel.recv_many(1 << log_bits)?;
-	let c_hi_evals = channel.recv_many(1 << log_bits)?;
-	let b_evals = channel.recv_many(1 << log_bits)?;
+	// Bind the per-bit evals to the folded index claim. The index entries are the GF(2)-linear
+	// embeddings iota(e_{t,l}) = Σ_u basis(u) · bit_u(e_{t,l}), and bit u of limb l is bit
+	// (LIMB_BITS·l + u) of the word, so each column's MLE is a fixed basis-weighted combination of
+	// the word's per-bit column MLEs.
+	let per_word_evals = [&a_evals, &c_lo_evals, &c_hi_evals];
+	let mut column_evals = (0..N_LIMB_COLUMNS)
+		.map(|j| {
+			let (tree, limb) = (j / N_LIMBS, j % N_LIMBS);
+			(0..LIMB_BITS)
+				.map(|u| {
+					let basis = <F as ExtensionField<BinaryField1b>>::basis(u);
+					per_word_evals[tree][limb * LIMB_BITS + u].clone() * C::Elem::from(basis)
+				})
+				.fold(C::Elem::zero(), |acc, term| acc + term)
+		})
+		.collect::<Vec<_>>();
+	column_evals.resize(1 << log_cols, C::Elem::zero());
+	let folded_index_eval = evaluate_inplace_scalars(column_evals, &rho);
+	let expected_index_eval = eq_ind(index_content_point, r_out) * folded_index_eval;
 
-	let [a_selected_evals, c_lo_selected_evals, c_hi_selected_evals] =
-		reconstruct_selecteds(log_bits, &a_evals, &c_lo_evals, &c_hi_evals);
-
-	// eq(a_c_eval_point ; challenges) is the MLE-check equality factor shared by the three
-	// final-layer sumchecks.
-	let a_c_eq_eval = eq_ind(a_c_eval_point, &challenges);
-
-	// Each tree's final-layer product reduces the all-but-last claim to the two halves of its leaf
-	// layer (split on the highest node bit). The verifier recombines the selected leaf evals into
-	// each half via eq(r_bit): half_lo = Σ_{z<half} eq(r_bit, z) · selected[z] and half_hi over
-	// selected[z + half]. The bivariate product is eq_ac · half_lo · half_hi.
-	let tree_product = |selecteds: &[C::Elem]| {
-		let half = selecteds.len() / 2;
-		let lo = evaluate_inplace_scalars(selecteds[..half].to_vec(), r_bit);
-		let hi = evaluate_inplace_scalars(selecteds[half..].to_vec(), r_bit);
-		a_c_eq_eval.clone() * lo * hi
-	};
-	let expected_a = tree_product(&a_selected_evals);
-	let expected_c_lo = tree_product(&c_lo_selected_evals);
-	let expected_c_hi = tree_product(&c_hi_selected_evals);
-
-	// The overflow and b checks span only the content variables, so their padded contribution
-	// carries the factor eq(0^{n_extra} ; r_bit).
-	let eq_pad = eq_ind_zero(r_bit);
-
-	let b_eq_eval = eq_ind(b_eval_point, r_content);
+	let b_eq_eval = eq_ind(b_eval_point, r_out);
 
 	// We must check that `a_0 * b_0 = c_lo_0` across all rows, where these represent the least
 	// significant bits of `a_exponents`, `b_exponents`, and `c_lo_exponents` respectively.
@@ -325,17 +353,15 @@ where
 	// `b_eval_point` (r_2) as the zerocheck challenge — available for free because the `b`
 	// re-randomization already evaluates at r_2.
 	let expected_overflow_eval =
-		eq_pad.clone() * &b_eq_eval * (a_evals[0].clone() * &b_evals[0] - &c_lo_evals[0]);
+		b_eq_eval.clone() * (a_evals[0].clone() * &b_evals[0] - &c_lo_evals[0]);
 
 	// Bind the prover's raw per-bit evals to the single recombined rerandomization claim:
-	// b(r_I^b, r_content) = sum_i eq(r_I^b, i) * b(i, r_content).
+	// b(r_I^b, r_out) = sum_i eq(r_I^b, i) * b(i, r_out).
 	let b_at_rx = evaluate_inplace_scalars(b_evals.clone(), r_ib);
-	let expected_b_rerand_eval = eq_pad * &b_eq_eval * &b_at_rx;
+	let expected_b_rerand_eval = b_eq_eval * &b_at_rx;
 
 	let expected_unbatched_evals = [
-		expected_a,
-		expected_c_lo,
-		expected_c_hi,
+		expected_index_eval,
 		expected_overflow_eval,
 		expected_b_rerand_eval,
 	];
@@ -345,7 +371,7 @@ where
 	channel.assert_zero(expected_batched_eval - eval)?;
 
 	Ok(IntMulOutput {
-		eval_point: r_content.to_vec(),
+		eval_point: r_out.to_vec(),
 		a_evals,
 		b_evals,
 		c_lo_evals,
@@ -412,44 +438,45 @@ where
 ///   \sum_i \textsf{eq}(r_I^b, i) \cdot \widetilde{b}(i, r)$, carried into Phases 4 and 5.
 ///
 /// - **Phase 4 — GKR on $\widetilde{a}$, $\widetilde{c}_{\textsf{lo}}$,
-///   $\widetilde{c}_{\textsf{hi}}$ (all but last layer):** Batched GKR layers for the three
-///   remaining exponentiation product trees. Each layer is a batched bivariate product sumcheck.
-///   Since the bases ($g$ and $g^{2^k}$) are fixed, the Frobenius steps can be skipped — the
-///   verifier locally reduces "scaled" evaluations to plain exponent evaluations.
+///   $\widetilde{c}_{\textsf{hi}}$, down to per-limb claims:** Each exponent word splits into
+///   `N_LIMBS` limbs, so each of the three constant-base exponentiations factors as a product of
+///   `N_LIMBS` limb columns. A batched GKR product check over the three (depth-`LOG_N_LIMBS`) trees
+///   reduces the root claims to one evaluation claim per limb column at a shared content point.
 ///
-/// - **Phase 5 — Final GKR layer + $\widetilde{b}$ rerandomization + parity check:** The final
-///   (widest) GKR layer for $\widetilde{a}$, $\widetilde{c}_{\textsf{lo}}$,
-///   $\widetilde{c}_{\textsf{hi}}$ is batched with: (a) A single-claim rerandomization sumcheck on
-///   the recombined $\widetilde{b}(r_I^b, \cdot)$ exponent claim from Phase 3, bringing it to the
-///   same evaluation point as $\widetilde{a}$ and $\widetilde{c}$. The prover sends the $2^k$ raw
-///   per-bit evals $\widetilde{b}(i, r_x)$, which the verifier binds via $\sum_i \textsf{eq}(r_I^b,
-///   i) \cdot \widetilde{b}(i, r_x) = \widetilde{b}(r_I^b, r_x)$. (b) A zerocheck verifying $a_0
-///   \cdot b_0 = c_{\textsf{lo},0}$ (least significant bits), ruling out the wraparound edge case.
+/// - **Phase 5 — logup* lookup + $\widetilde{b}$ rerandomization + parity check:** Limb column $(t,
+///   l)$ is the Frobenius power $\varphi^{ws}$ of the looked-up column $T[e_{t,l}(\cdot)]$ over the
+///   shared table $T\colon i \mapsto g^i$ of $2^w$ generator powers (where $w$ is the limb bit
+///   width). The per-limb claims are Frobenius-twisted onto $T$, batched to one stacked lookup
+///   claim, and reduced via committed logup* ([Soukhanov25]): the pushforward oracle is committed
+///   mid-protocol and its opening relation returned to the caller; the table claim is checked
+///   against the table's succinct product-of-selects MLE; the index claim is bound to the per-bit
+///   output evals in a final batched sumcheck, together with (a) a single-claim rerandomization of
+///   the recombined $\widetilde{b}(r_I^b, \cdot)$ exponent claim from Phase 3 and (b) a zerocheck
+///   verifying $a_0 \cdot b_0 = c_{\textsf{lo},0}$ (least significant bits), ruling out the
+///   wraparound edge case.
+///
+/// [Soukhanov25]: <https://eprint.iacr.org/2025/946>
 ///
 /// ### Output
 ///
 /// The protocol outputs evaluation claims on $\widetilde{a}_i$, $\widetilde{b}_i$,
 /// $\widetilde{c}_{\textsf{lo},i}$, $\widetilde{c}_{\textsf{hi},i}$ (for $i \in \{0, \ldots,
-/// 2^k - 1\}$) at a common $n$-dimensional evaluation point. These are passed to the shift
-/// reduction.
+/// 2^k - 1\}$) at a common $n$-dimensional evaluation point. The claims are passed to the shift
+/// reduction; the logup* pushforward commitment is opened through the channel inside phase 5.
 ///
 /// ### Parameters
 ///
-/// - `log_bits`: $k$, where $2^k$ is the bit-width of the integer operands.
 /// - `n_vars`: Number of variables in the row dimension (i.e., $\log_2$ of the number of
 ///   multiplication constraints).
-pub fn verify<'r, F, C>(
-	log_bits: usize,
-	n_vars: usize,
-	channel: &mut C,
-) -> Result<IntMulOutput<C::Elem>, Error>
+///
+/// The integer operands are fixed at the `WORD_SIZE_BITS` bit width.
+pub fn verify<'r, F, C>(n_vars: usize, channel: &mut C) -> Result<IntMulOutput<C::Elem>, Error>
 where
 	F: BinaryField,
 	C: IOPVerifierChannel<'r, F>,
-	C::Elem: FieldOps<Scalar = F> + From<F>,
+	C::Elem: FieldOps<Scalar = F> + From<F> + 'r,
 {
-	assert!(log_bits >= 1);
-	assert!((1 << (log_bits + 1)) <= F::N_BITS);
+	assert!(2 * WORD_SIZE_BITS <= F::N_BITS);
 
 	let initial_eval_point = channel.sample_many(n_vars);
 
@@ -460,16 +487,16 @@ where
 	let Phase1Output {
 		eval_point: phase_1_eval_point,
 		b_leaves_evals,
-	} = verify_phase_1(log_bits, &initial_eval_point, exp_eval.clone(), channel)?;
+	} = verify_phase_1(&initial_eval_point, exp_eval.clone(), channel)?;
 
 	assert_eq!(phase_1_eval_point.len(), n_vars);
-	assert_eq!(b_leaves_evals.len(), 1 << log_bits);
+	assert_eq!(b_leaves_evals.len(), WORD_SIZE_BITS);
 
 	// Phase 2
 	let Phase2Output {
 		twisted_eval_points,
 		twisted_evals,
-	} = frobenius_twist(log_bits, &phase_1_eval_point, &b_leaves_evals);
+	} = frobenius_twist(LOG_WORD_SIZE_BITS, &phase_1_eval_point, &b_leaves_evals);
 
 	// Phase 3
 	let Phase3Output {
@@ -479,38 +506,12 @@ where
 		gpow_a_eval,
 		gpow_c_lo_eval,
 		gpow_c_hi_eval,
-	} = verify_phase_3(
-		log_bits,
-		twisted_eval_points,
-		twisted_evals,
-		&initial_eval_point,
-		exp_eval,
-		channel,
-	)?;
+	} = verify_phase_3(twisted_eval_points, twisted_evals, &initial_eval_point, exp_eval, channel)?;
 
 	// Phase 4
-	let Phase4Output {
-		eval_point: phase_4_eval_point,
-		selector,
-		combined_eval,
-	} = verify_phase_4(
-		log_bits,
-		&phase_3_eval_point,
-		gpow_a_eval,
-		gpow_c_lo_eval,
-		gpow_c_hi_eval,
-		channel,
-	)?;
+	let phase_4_output =
+		verify_phase_4(&phase_3_eval_point, gpow_a_eval, gpow_c_lo_eval, gpow_c_hi_eval, channel)?;
 
 	// Phase 5
-	verify_phase_5(
-		log_bits,
-		&phase_4_eval_point,
-		&selector,
-		combined_eval,
-		&phase_3_eval_point,
-		&r_ib,
-		b_recomb,
-		channel,
-	)
+	verify_phase_5(&phase_4_output, &phase_3_eval_point, &r_ib, b_recomb, channel)
 }

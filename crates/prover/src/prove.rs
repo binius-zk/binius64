@@ -7,7 +7,9 @@ use binius_core::{
 	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueVec},
 	word::Word,
 };
-use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, Field, PackedField};
+use binius_field::{
+	AESTowerField8b as B8, BinaryField, Divisible, ExtensionField, Field, PackedField,
+};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip::sumcheck::SumcheckOutput;
@@ -247,7 +249,8 @@ impl IOPProver {
 		let batched_transparent =
 			compute_batched_transparent(rs_eq_ind, pubcheck_point, batch_coeff);
 
-		// Prove oracle relations via channel (runs BaseFold internally)
+		// Prove oracle relations via channel (runs BaseFold internally). The intmul pushforward
+		// relation, when the IntMul reduction ran, was already queued inside phase 5.
 		channel.prove_oracle_relations([(
 			trace_oracle,
 			witness_packed,
@@ -484,7 +487,7 @@ fn prove_intmul_reduction<F, P, Channel>(
 	channel: &mut Channel,
 ) -> Result<IntMulOutput<F>, Error>
 where
-	F: BinaryField,
+	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 	Channel: IOPProverChannel<P>,
 {
@@ -492,7 +495,7 @@ where
 
 	let mut mulcheck_prover = IntMulProver::new(0, channel);
 
-	let intmul_witness = IntMulWitness::<P>::new(LOG_WORD_SIZE_BITS, &a, &b, &lo, &hi)?;
+	let intmul_witness = IntMulWitness::<P>::new(&a, &b, &lo, &hi)?;
 
 	Ok(mulcheck_prover.prove(intmul_witness))
 }

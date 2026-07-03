@@ -169,8 +169,7 @@ impl IOPVerifier {
 			)
 			.entered();
 			let log_n_constraints = checked_log_2(self.constraint_system.n_mul_constraints());
-			let intmul_output =
-				verify_intmul_reduction::<B128, _>(LOG_WORD_SIZE_BITS, log_n_constraints, channel)?;
+			let intmul_output = verify_intmul_reduction::<B128, _>(log_n_constraints, channel)?;
 			drop(intmul_guard);
 			Some(intmul_output)
 		} else {
@@ -291,7 +290,9 @@ impl IOPVerifier {
 			rs_eq_eval + batch_coeff.clone() * pubcheck_eq_eval
 		});
 
-		// Verify oracle relations (runs BaseFold internally and verifies the product check)
+		// Verify oracle relations (runs BaseFold internally and verifies the product check). The
+		// intmul pushforward relation, when the IntMul reduction ran, was already queued inside
+		// phase 5.
 		channel.verify_oracle_relations([OracleLinearRelation {
 			oracle: trace_oracle,
 			transparent,
