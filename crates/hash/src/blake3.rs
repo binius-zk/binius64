@@ -5,8 +5,9 @@
 use digest::Output;
 
 use super::{
-	binary_merkle_tree::HashSuite, compress::CompressionFunction,
-	parallel_compression::ParallelCompressionAdaptor, parallel_digest::ParallelDigestAdapter,
+	binary_merkle_tree::HashSuite, blake3_portable::PortableBlake3ParallelDigest,
+	compress::CompressionFunction, parallel_compression::ParallelCompressionAdaptor,
+	parallel_digest::ParallelDigestAdapter,
 };
 
 /// A two-to-one compression function that hashes the concatenation of its inputs with Blake3.
@@ -30,6 +31,30 @@ impl HashSuite for Blake3HashSuite {
 	type LeafHash = blake3::Hasher;
 	type Compression = Blake3Compression;
 	type ParLeafHash = ParallelDigestAdapter<blake3::Hasher>;
+	type ParCompression = ParallelCompressionAdaptor<Blake3Compression>;
+}
+
+/// Blake3 [`HashSuite`] whose leaves run the portable auto-vectorized kernel.
+///
+/// Every leaf digest is a standard Blake3 hash.
+///
+/// Only the parallel compute path differs from the other Blake3 suite:
+/// - Leaves within one 1024-byte chunk are hashed by the vectorized batch kernel.
+/// - Larger leaves fall back to the scalar adapter that walks the tree.
+///
+/// The speedup is confined to the sub-chunk regime the ZK leaf-hashing path exercises.
+///
+/// The batch width is fixed at 16 lanes:
+/// - The throughput sweet spot on NEON in the portable-kernel benchmark.
+/// - The width the AVX2 / AVX-512 vectorizer fills.
+/// - 4 and 8 lanes both measure slower.
+#[derive(Debug, Clone, Default)]
+pub struct PortableBlake3HashSuite;
+
+impl HashSuite for PortableBlake3HashSuite {
+	type LeafHash = blake3::Hasher;
+	type Compression = Blake3Compression;
+	type ParLeafHash = PortableBlake3ParallelDigest<16>;
 	type ParCompression = ParallelCompressionAdaptor<Blake3Compression>;
 }
 
@@ -83,6 +108,56 @@ mod tests {
 			}
 			let expected = blake3::hash(&bytes);
 			assert_eq!(unsafe { result.assume_init() }.as_slice(), expected.as_bytes());
+		}
+	}
+
+	#[test]
+	fn test_portable_suite_matches_scalar_suite() {
+		// Both Blake3 suites must produce identical leaf digests.
+		//
+		// They share the hash and differ only in compute path, so this pins the two equal.
+		let mut rng = StdRng::seed_from_u64(1);
+		let n_leaves = 50;
+
+		// Leaves are `u8` items (BYTE_SIZE = 1), so `leaf_len` bytes == `leaf_len` items.
+		let mut check = |leaf_len: usize| {
+			let leaves: Vec<Vec<u8>> = (0..n_leaves)
+				.map(|_| (0..leaf_len).map(|_| rng.random::<u8>()).collect())
+				.collect();
+
+			// Both fed through the exact Merkle-tree call, so the routing decision is real.
+			let mut scalar = repeat_with(MaybeUninit::<Output<blake3::Hasher>>::uninit)
+				.take(n_leaves)
+				.collect::<Vec<_>>();
+			<Blake3HashSuite as HashSuite>::ParLeafHash::default().digest_with_const_len(
+				leaf_len,
+				leaves.par_iter().map(|leaf| leaf.iter().copied()),
+				&mut scalar,
+			);
+
+			let mut portable = repeat_with(MaybeUninit::<Output<blake3::Hasher>>::uninit)
+				.take(n_leaves)
+				.collect::<Vec<_>>();
+			<PortableBlake3HashSuite as HashSuite>::ParLeafHash::default().digest_with_const_len(
+				leaf_len,
+				leaves.par_iter().map(|leaf| leaf.iter().copied()),
+				&mut portable,
+			);
+
+			// Invariant: both suites reproduce `blake3::hash`, so their leaf digests match.
+			for ((s, p), leaf) in scalar.into_iter().zip(portable).zip(&leaves) {
+				let expected = blake3::hash(leaf);
+				let (s, p) = unsafe { (s.assume_init(), p.assume_init()) };
+				assert_eq!(s.as_slice(), expected.as_bytes(), "scalar, leaf_len {leaf_len}");
+				assert_eq!(p.as_slice(), expected.as_bytes(), "portable, leaf_len {leaf_len}");
+			}
+		};
+
+		// Straddle the 1024-byte routing boundary:
+		// - 0, 1, 63, 100, 1000, 1024 : within one chunk -> portable batch route.
+		// - 1025, 4096                : multi-chunk       -> scalar adapter fallback.
+		for leaf_len in [0, 1, 63, 100, 1000, 1024, 1025, 4096] {
+			check(leaf_len);
 		}
 	}
 }
