@@ -33,17 +33,17 @@ pub enum Error {
 ///
 /// The table and index claims are left for the caller to open against its own commitments.
 /// The pushforward claim is packaged as an oracle relation against the commitment received here.
-pub struct LogupProof<'a, Oracle, F> {
+pub struct LogupProof<'a, Oracle, Elem> {
 	/// The `m`-coordinate point shared by the table and pushforward claims.
-	pub table_eval_point: Vec<F>,
+	pub table_eval_point: Vec<Elem>,
 	/// The claimed evaluation of the table `T` at the point.
-	pub table_eval_claim: F,
+	pub table_eval_claim: Elem,
 	/// The `n`-coordinate point of the index claim.
-	pub index_eval_point: Vec<F>,
+	pub index_eval_point: Vec<Elem>,
 	/// The claimed evaluation of the embedded index column at its point.
-	pub index_eval_claim: F,
+	pub index_eval_claim: Elem,
 	/// The oracle relation `<Y, eq_{table_eval_point}> = Y(table_eval_point)` for the pushforward.
-	pub pushforward: OracleLinearRelation<'a, Oracle, F>,
+	pub pushforward: OracleLinearRelation<'a, Oracle, Elem>,
 }
 
 /// Verify a logUp* reduction whose pushforward is committed as an oracle.
@@ -68,13 +68,14 @@ pub struct LogupProof<'a, Oracle, F> {
 /// Returns an error when the pushforward commitment is missing or the reduction identity fails.
 pub fn verify<'a, F, C>(
 	table_n_vars: usize,
-	eval_claim: F,
-	eval_point: &[F],
+	eval_claim: C::Elem,
+	eval_point: &[C::Elem],
 	channel: &mut C,
-) -> Result<LogupProof<'a, C::Oracle, F>, Error>
+) -> Result<LogupProof<'a, C::Oracle, C::Elem>, Error>
 where
 	F: Field + ExtensionField<BinaryField1b>,
-	C: IOPVerifierChannel<'a, F, Elem = F>,
+	C: IOPVerifierChannel<'a, F>,
+	C::Elem: From<F> + 'a,
 {
 	// Receive the pushforward Y commitment first, so the reduction's logUp challenge binds it.
 	//
@@ -93,7 +94,7 @@ where
 	let point = output.table_eval_point.clone();
 	let pushforward = OracleLinearRelation {
 		oracle,
-		transparent: Box::new(move |challenge: &[F]| eq_ind(&point, challenge)),
+		transparent: Box::new(move |challenge: &[C::Elem]| eq_ind(&point, challenge)),
 		claim: output.pushforward_eval_claim,
 	};
 
