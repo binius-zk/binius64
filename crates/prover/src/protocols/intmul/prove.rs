@@ -1,9 +1,11 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::marker::PhantomData;
 
 use binius_core::word::Word;
 use binius_field::{BinaryField, FieldOps, PackedField};
+use binius_iop_prover::channel::IOPProverChannel;
 use binius_ip::prodcheck::MultilinearEvalClaim;
 use binius_ip_prover::{
 	channel::IPProverChannel,
@@ -58,7 +60,7 @@ impl<F, P, Channel> IntMulProver<'_, P, Channel>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
-	Channel: IPProverChannel<F>,
+	Channel: IOPProverChannel<P>,
 {
 	/// Prove an integer multiplication statement.
 	///
@@ -169,7 +171,14 @@ where
 			c_hi_exponents,
 		)
 	}
+}
 
+impl<F, P, Channel> IntMulProver<'_, P, Channel>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	Channel: IPProverChannel<F>,
+{
 	#[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
 	pub fn phase1(
 		&mut self,
