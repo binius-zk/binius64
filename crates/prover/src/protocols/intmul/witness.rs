@@ -56,13 +56,17 @@ pub struct Witness<'a, P: PackedField> {
 	pub b_prodcheck: ProdcheckProver<P>,
 	/// The root of the b tree (product of all leaves element-wise).
 	pub b_root: FieldBuffer<P>,
-	/// The exponents for `c_lo` (needed for the phase 5 parity zerocheck on `c_lo_0`).
+	/// The exponents for `c_lo` (needed for the phase 5 parity zerocheck on `c_lo_0` and the raw
+	/// per-bit output evaluations).
 	#[getset(skip)]
 	pub c_lo_exponents: &'a [Word],
 	/// Prodcheck prover for the `c_lo` exponentiation tree (leaf layer retained).
 	pub c_lo_prodcheck: ProdcheckProver<P>,
 	/// The root of the `c_lo` tree.
 	pub c_lo_root: FieldBuffer<P>,
+	/// The exponents for `c_hi` (needed for the phase 5 raw per-bit output evaluations).
+	#[getset(skip)]
+	pub c_hi_exponents: &'a [Word],
 	/// Prodcheck prover for the `c_hi` exponentiation tree (leaf layer retained).
 	pub c_hi_prodcheck: ProdcheckProver<P>,
 	/// The root of the `c_hi` tree.
@@ -132,6 +136,7 @@ where
 			c_lo_exponents: c_lo,
 			c_lo_prodcheck,
 			c_lo_root,
+			c_hi_exponents: c_hi,
 			c_hi_prodcheck,
 			c_hi_root,
 		})
