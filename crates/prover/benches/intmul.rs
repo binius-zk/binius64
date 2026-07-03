@@ -150,7 +150,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 			exp_eval,
 		)
 	};
-	let (phase4, leaves) = {
+	let (phase4_claims, phase4_eval_point) = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
 		prover.phase4(
@@ -226,22 +226,23 @@ fn bench_intmul_phases(c: &mut Criterion) {
 
 	group.bench_function("phase5", |bencher| {
 		bencher.iter_batched(
-			|| leaves.clone(),
-			|[a_leaves, c_lo_leaves, c_hi_leaves]| {
+			|| phase4_claims.clone(),
+			|[a_claim, c_lo_claim, c_hi_claim]| {
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
 				let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
 				prover.phase5(
 					log_bits,
-					&phase4.eval_point,
-					(&phase4.a_evals, a_leaves),
-					(&phase4.c_lo_evals, c_lo_leaves),
-					(&phase4.c_hi_evals, c_hi_leaves),
+					&phase4_eval_point,
+					a_claim,
+					c_lo_claim,
+					c_hi_claim,
 					witness.b_exponents,
 					&phase3.eval_point,
 					&phase3.r_ib,
 					phase3.b_recomb,
 					witness.a_exponents,
 					witness.c_lo_exponents,
+					witness.c_hi_exponents,
 				)
 			},
 			BatchSize::SmallInput,

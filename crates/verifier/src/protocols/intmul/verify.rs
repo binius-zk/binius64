@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::{iter, slice};
+use std::iter;
 
 use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_ip::{
@@ -9,11 +9,13 @@ use binius_ip::{
 	sumcheck::{BatchSumcheckOutput, batch_verify},
 };
 use binius_math::{
-	multilinear::{eq::eq_ind, evaluate::evaluate_inplace_scalars},
+	multilinear::{
+		eq::{eq_ind, eq_ind_zero},
+		evaluate::evaluate_inplace_scalars,
+	},
 	univariate::evaluate_univariate,
 };
 use binius_utils::checked_arithmetics::log2_ceil_usize;
-use itertools::chain;
 
 use super::{
 	common::{
@@ -160,9 +162,10 @@ where
 /// $\widetilde{c}_{\textsf{lo}}$, and $\widetilde{c}_{\textsf{hi}}$.
 ///
 /// Reduces the three tree roots (claimed at the Phase-3 point) to the all-but-last (depth
-/// `log_bits - 1`) layer leaf claims via a single batched prodcheck over the three trees, batched
-/// with $\lceil \log_2 3 \rceil = 2$ selector variables. The prover sends the $3 \cdot 2^{k-1}$
-/// all-but-last-layer evaluations, which the verifier binds to the prodcheck output claim.
+/// `log_bits - 1`) layer claim via a single batched prodcheck over the three trees, batched with
+/// $\lceil \log_2 3 \rceil = 2$ selector variables. Rather than binding the all-but-last-layer
+/// evaluations here, the reduced claim (content-and-node point, reduced selector coordinates, and
+/// combined evaluation) is handed straight to Phase 5.
 fn verify_phase_4<F, C>(
 	log_bits: usize,
 	eval_point: &[C::Elem],
@@ -179,7 +182,6 @@ where
 
 	let n_vars = eval_point.len();
 	let n_layers = log_bits - 1;
-	let width = 1 << n_layers; // = 2^(log_bits - 1) all-but-last-layer node multilinears per tree
 
 	let log_n_trees = log2_ceil_usize(3); // = 2 selector variables
 
@@ -200,57 +202,36 @@ where
 	let output_claim = prodcheck::verify(n_layers, claim, channel)?;
 
 	// The reduced point is [selector (log_n_trees), suffix (n_vars), bit_index (n_layers)]:
-	//  - selector: the batching coordinates for the three trees (the content batching coordinates,
-	//    reduced through the selector rounds),
-	//  - suffix: the content point at which the node multilinears are now claimed,
-	//  - bit_index: the node-index coordinates of the all-but-last layer (high bits in the prover's
-	//    concatenated buffer, reduced through the layer rounds).
+	//  - selector: the batching coordinates for the three trees, reduced through the selector
+	//    rounds,
+	//  - suffix ++ bit_index: the content-and-node point at which each tree's all-but-last-layer
+	//    multilinear is now claimed.
 	assert_eq!(output_claim.point.len(), log_n_trees + n_layers + n_vars);
-	let (selector_point, rest) = output_claim.point.split_at(log_n_trees);
-	let (suffix, bit_index) = rest.split_at(n_vars);
-
-	// Receive the 3 * 2^(log_bits - 1) all-but-last-layer leaf evals (a, then c_lo, then c_hi),
-	// matching the prover's send order.
-	let a_evals = channel.recv_many(width)?;
-	let c_lo_evals = channel.recv_many(width)?;
-	let c_hi_evals = channel.recv_many(width)?;
-
-	// Soundness check: bind the received leaf evals to the prodcheck output. The reduced
-	// multilinear is the eq(selector)-interpolation over trees of the eq(bit_index)-interpolation
-	// over nodes of the leaf evals, evaluated at the suffix point (which the leaf evals already
-	// embed). Concretely:
-	//   output_claim.eval == Σ_t eq(selector, t) · Σ_z eq(bit_index, z) · leaf_eval[t][z],
-	// with the 4th tree slot zero. We fold each tree's 2^(n_layers) leaf evals at bit_index, then
-	// fold the three (padded to 4) per-tree results at selector.
-	let a_folded = evaluate_inplace_scalars(a_evals.clone(), bit_index);
-	let c_lo_folded = evaluate_inplace_scalars(c_lo_evals.clone(), bit_index);
-	let c_hi_folded = evaluate_inplace_scalars(c_hi_evals.clone(), bit_index);
-	let per_tree = vec![a_folded, c_lo_folded, c_hi_folded, C::Elem::zero()];
-	let expected_eval = evaluate_inplace_scalars(per_tree, selector_point);
-
-	channel.assert_zero(expected_eval - output_claim.eval)?;
+	let (selector_point, a_c_eval_point) = output_claim.point.split_at(log_n_trees);
 
 	Ok(Phase4Output {
-		eval_point: suffix.to_vec(),
-		a_evals,
-		c_lo_evals,
-		c_hi_evals,
+		eval_point: a_c_eval_point.to_vec(),
+		selector: selector_point.to_vec(),
+		combined_eval: output_claim.eval,
 	})
 }
 
 /// Verify Phase 5: final GKR layer, $\widetilde{b}$ rerandomization, and parity zerocheck.
 ///
-/// Batches three sumchecks: (a) the final (widest) bivariate product layer for $\widetilde{a}$,
-/// $\widetilde{c}_{\textsf{lo}}$, $\widetilde{c}_{\textsf{hi}}$, (b) a single-claim
-/// rerandomization (MLE-eval) of the recombined $\widetilde{b}(r_I^b, \cdot)$ exponent claim, and
-/// (c) a zerocheck verifying $a_0 \cdot b_0 = c_{\textsf{lo},0}$.
+/// First receives one reduced eval per tree ($\widetilde{a}$, $\widetilde{c}_{\textsf{lo}}$,
+/// $\widetilde{c}_{\textsf{hi}}$) and checks they recombine, weighted by
+/// $\textsf{eq}(\text{selector})$, to the Phase-4 prodcheck output claim. Then batches five
+/// sumchecks: the final (widest) GKR layer of each of the three trees (each a regular
+/// prodcheck-layer bivariate product MLE-check seeded by its reduced eval), the parity zerocheck
+/// $a_0 \cdot b_0 = c_{\textsf{lo},0}$, and a single-claim rerandomization of the recombined
+/// $\widetilde{b}(r_I^b, \cdot)$ exponent claim. The latter two span only the content variables and
+/// are padded up to the trees' variable count.
 #[allow(clippy::too_many_arguments)]
 fn verify_phase_5<F, C>(
 	log_bits: usize,
 	a_c_eval_point: &[C::Elem],
-	a_prod_evals: &[C::Elem],
-	c_lo_prod_evals: &[C::Elem],
-	c_hi_prod_evals: &[C::Elem],
+	selector: &[C::Elem],
+	combined_eval: C::Elem,
 	b_eval_point: &[C::Elem],
 	r_ib: &[C::Elem],
 	b_recomb: C::Elem,
@@ -262,34 +243,40 @@ where
 	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
 	assert!(log_bits >= 1);
-	assert_eq!(2 * a_prod_evals.len(), 1 << log_bits);
-	assert_eq!(2 * c_lo_prod_evals.len(), 1 << log_bits);
-	assert_eq!(2 * c_hi_prod_evals.len(), 1 << log_bits);
+	let n_vars = b_eval_point.len();
+	let n_extra = log_bits - 1;
+	assert_eq!(a_c_eval_point.len(), n_vars + n_extra);
 
-	let n_vars = a_c_eval_point.len();
-	assert_eq!(b_eval_point.len(), n_vars);
+	// Receive the three per-tree reduced claims and check they recombine, weighted by eq(selector)
+	// (padded to four), to the batched prodcheck output claim.
+	let [a_eval, c_lo_eval, c_hi_eval] = channel.recv_array::<3>()?;
+	let per_tree = vec![
+		a_eval.clone(),
+		c_lo_eval.clone(),
+		c_hi_eval.clone(),
+		C::Elem::zero(),
+	];
+	let combined = evaluate_inplace_scalars(per_tree, selector);
+	channel.assert_zero(combined - combined_eval)?;
 
-	// Evals for the batched sumcheck: a (2^(k-1)), c_lo (2^(k-1)), c_hi (2^(k-1)) from the
-	// bivariate product layer, then a_0*b_0 and c_lo_0 for the parity zerocheck, then the single
-	// recombined b exponent eval for the rerandomization sumcheck.
-	let evals = [
-		a_prod_evals,
-		c_lo_prod_evals,
-		c_hi_prod_evals,
-		&[C::Elem::zero()], // overflow parity zerocheck
-		slice::from_ref(&b_recomb),
-	]
-	.concat();
+	// The batched sumcheck's five per-prover sum claims: the three tree final-layer sumchecks
+	// (seeded by the reduced evals), the overflow parity zerocheck (0), and the single recombined
+	// b exponent eval for the rerandomization.
+	let evals = [a_eval, c_lo_eval, c_hi_eval, C::Elem::zero(), b_recomb];
 
 	let BatchSumcheckOutput {
 		batch_coeff,
 		mut challenges,
 		eval,
-	} = batch_verify(n_vars, 3, &evals, channel)?;
+	} = batch_verify(n_vars + n_extra, 3, &evals, channel)?;
 	challenges.reverse();
 
-	// The prover sends the raw per-bit evaluations of all multilinears; the verifier reconstructs
-	// the leaf selectors forward (rather than receiving selectors and inverting them).
+	// challenges = [r_content (n_vars), r_bit (n_extra)]: r_content is the shared output point;
+	// r_bit collapses the node dimension (and is the padding point for the overflow / b checks).
+	let (r_content, r_bit) = challenges.split_at(n_vars);
+
+	// The prover sends the raw per-bit evaluations at r_content; the verifier reconstructs the leaf
+	// selectors forward (rather than receiving selectors and inverting them).
 	let a_evals = channel.recv_many(1 << log_bits)?;
 	let c_lo_evals = channel.recv_many(1 << log_bits)?;
 	let c_hi_evals = channel.recv_many(1 << log_bits)?;
@@ -298,25 +285,29 @@ where
 	let [a_selected_evals, c_lo_selected_evals, c_hi_selected_evals] =
 		reconstruct_selecteds(log_bits, &a_evals, &c_lo_evals, &c_hi_evals);
 
-	// Compose the expected evaluation of the batched composition via the reconstructed leaf
-	// selectors. The prodcheck reduces on the highest node bit, so the final GKR layer pairs leaf
-	// `z` with leaf `z + 2^(log_bits - 1)` (a strided pairing of bits `z` and `z + half`), matching
-	// the natural bit-order leaf layout. For each tree the verifier checks that the MLE of each
-	// strided pair's product at `a_c_eq_eval` equals the corresponding bivariate-product eval in
-	// `evals`, keeping the (a, c_lo, c_hi) order of the batched sumcheck claims.
+	// eq(a_c_eval_point ; challenges) is the MLE-check equality factor shared by the three
+	// final-layer sumchecks.
 	let a_c_eq_eval = eq_ind(a_c_eval_point, &challenges);
-	let strided_products = |selecteds: &[C::Elem]| {
+
+	// Each tree's final-layer product reduces the all-but-last claim to the two halves of its leaf
+	// layer (split on the highest node bit). The verifier recombines the selected leaf evals into
+	// each half via eq(r_bit): half_lo = Σ_{z<half} eq(r_bit, z) · selected[z] and half_hi over
+	// selected[z + half]. The bivariate product is eq_ac · half_lo · half_hi.
+	let tree_product = |selecteds: &[C::Elem]| {
 		let half = selecteds.len() / 2;
-		(0..half)
-			.map(|z| a_c_eq_eval.clone() * &selecteds[z] * &selecteds[z + half])
-			.collect::<Vec<_>>()
+		let lo = evaluate_inplace_scalars(selecteds[..half].to_vec(), r_bit);
+		let hi = evaluate_inplace_scalars(selecteds[half..].to_vec(), r_bit);
+		a_c_eq_eval.clone() * lo * hi
 	};
-	let expected_bivariate_unbatched_evals = chain!(
-		strided_products(&a_selected_evals),
-		strided_products(&c_lo_selected_evals),
-		strided_products(&c_hi_selected_evals),
-	)
-	.collect::<Vec<_>>();
+	let expected_a = tree_product(&a_selected_evals);
+	let expected_c_lo = tree_product(&c_lo_selected_evals);
+	let expected_c_hi = tree_product(&c_hi_selected_evals);
+
+	// The overflow and b checks span only the content variables, so their padded contribution
+	// carries the factor eq(0^{n_extra} ; r_bit).
+	let eq_pad = eq_ind_zero(r_bit);
+
+	let b_eq_eval = eq_ind(b_eval_point, r_content);
 
 	// We must check that `a_0 * b_0 = c_lo_0` across all rows, where these represent the least
 	// significant bits of `a_exponents`, `b_exponents`, and `c_lo_exponents` respectively.
@@ -328,31 +319,31 @@ where
 	// This check catches the attack: if `c = 2^128-1` then `c_lo_0 = 1` (since 2^128-1 is odd),
 	// but `a_0 * b_0 = 0` when `a=0` or `b=0`, so the check `a_0 * b_0 = c_lo_0` fails.
 	//
-	// Implementation: We must perform a zerocheck on `a_0 * b_0 - c_lo_0 = 0`. We reuse the
-	// Phase-2 constraint point `b_eval_point` (r_2) as the zerocheck challenge — available for
-	// free because the `b` re-randomization already evaluates at r_2.
-	let b_eq_eval = eq_ind(b_eval_point, &challenges);
+	// Implementation: A zerocheck on `a_0 * b_0 - c_lo_0 = 0`, reusing the Phase-2 constraint point
+	// `b_eval_point` (r_2) as the zerocheck challenge — available for free because the `b`
+	// re-randomization already evaluates at r_2.
 	let expected_overflow_eval =
-		b_eq_eval.clone() * (a_evals[0].clone() * &b_evals[0] - &c_lo_evals[0]);
+		eq_pad.clone() * &b_eq_eval * (a_evals[0].clone() * &b_evals[0] - &c_lo_evals[0]);
 
 	// Bind the prover's raw per-bit evals to the single recombined rerandomization claim:
-	// b(r_I^b, r_x) = sum_i eq(r_I^b, i) * b(i, r_x).
+	// b(r_I^b, r_content) = sum_i eq(r_I^b, i) * b(i, r_content).
 	let b_at_rx = evaluate_inplace_scalars(b_evals.clone(), r_ib);
-	let expected_b_rerand_eval = b_eq_eval * &b_at_rx;
+	let expected_b_rerand_eval = eq_pad * &b_eq_eval * &b_at_rx;
 
 	let expected_unbatched_evals = [
-		&expected_bivariate_unbatched_evals,
-		slice::from_ref(&expected_overflow_eval),
-		slice::from_ref(&expected_b_rerand_eval),
-	]
-	.concat();
+		expected_a,
+		expected_c_lo,
+		expected_c_hi,
+		expected_overflow_eval,
+		expected_b_rerand_eval,
+	];
 	let expected_batched_eval = evaluate_univariate(&expected_unbatched_evals, batch_coeff);
 
 	// Compare expected evaluation against given evaluation `eval`.
 	channel.assert_zero(expected_batched_eval - eval)?;
 
 	Ok(IntMulOutput {
-		eval_point: challenges,
+		eval_point: r_content.to_vec(),
 		a_evals,
 		b_evals,
 		c_lo_evals,
@@ -498,9 +489,8 @@ where
 	// Phase 4
 	let Phase4Output {
 		eval_point: phase_4_eval_point,
-		a_evals,
-		c_lo_evals,
-		c_hi_evals,
+		selector,
+		combined_eval,
 	} = verify_phase_4(
 		log_bits,
 		&phase_3_eval_point,
@@ -514,9 +504,8 @@ where
 	verify_phase_5(
 		log_bits,
 		&phase_4_eval_point,
-		&a_evals,
-		&c_lo_evals,
-		&c_hi_evals,
+		&selector,
+		combined_eval,
 		&phase_3_eval_point,
 		&r_ib,
 		b_recomb,
