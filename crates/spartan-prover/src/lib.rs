@@ -269,7 +269,7 @@ impl<F: Field> IOPProver<F> {
 			private_packed.to_ref(),
 			mulcheck_mask,
 			&mut *channel,
-		)?;
+		);
 
 		// λ is the batching challenge for the constraint operands
 		let lambda = channel.sample();
@@ -416,7 +416,7 @@ fn prove_mulcheck<F, P, Channel>(
 	private_packed: FieldSlice<P>,
 	mask: zk_mlecheck::Mask<P, impl Deref<Target = [P]>>,
 	channel: &mut Channel,
-) -> Result<([F; 3], F, Vec<F>), Error>
+) -> ([F; 3], F, Vec<F>)
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F> + PackedExtension<F>,
@@ -435,10 +435,10 @@ where
 		|[a, b, _c]| a * b,    // infinity_composition (quadratic term only)
 		r_mulcheck,
 		F::ZERO, // eval_claim: zerocheck
-	)?;
+	);
 
 	// Run the ZK MLE-check protocol
-	let mlecheck_output = zk_mlecheck::prove(mlecheck_prover, mask, channel)?;
+	let mlecheck_output = zk_mlecheck::prove(mlecheck_prover, mask, channel);
 
 	// Extract the reduced evaluation point and multilinear evaluations
 	let mut r_x = mlecheck_output.challenges;
@@ -455,7 +455,7 @@ where
 	let mulcheck_evals = [a_eval, b_eval, c_eval];
 	let mask_eval = mlecheck_output.mask_eval;
 
-	Ok((mulcheck_evals, mask_eval, r_x))
+	(mulcheck_evals, mask_eval, r_x)
 }
 
 /// Packs witness values into a [`FieldBuffer`] and adds blinding values for dummy wires.

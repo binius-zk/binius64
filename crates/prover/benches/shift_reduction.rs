@@ -117,7 +117,6 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 					prover_intmul_data,
 					&mut prover_transcript,
 				)
-				.unwrap()
 			})
 		});
 
@@ -141,8 +140,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			prover_bitand_data,
 			prover_intmul_data,
 			&mut prover_transcript,
-		)
-		.unwrap();
+		);
 
 		let setup_verifier_transcript = prover_transcript.into_verifier();
 

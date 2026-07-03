@@ -9,7 +9,7 @@ use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 use itertools::{Itertools, izip};
 
-use super::{common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::WideRoundEvals2};
+use super::{common::SumcheckProver, gruen32::Gruen32, round_evals::WideRoundEvals2};
 use crate::sumcheck::common::MleCheckProver;
 
 /// Multiple claim version of `BivariateProductMlecheckProver` that can prove mlechecks
@@ -27,31 +27,33 @@ impl<F: Field, P: PackedField<Scalar = F>> BivariateProductMultiMlecheckProver<P
 		multilinears: Vec<[FieldBuffer<P>; 2]>,
 		eval_point: &[F],
 		eval_claims: Vec<F>,
-	) -> Result<Self, Error> {
+	) -> Self {
 		let n_vars = eval_point.len();
 
-		if multilinears
-			.iter()
-			.flatten()
-			.any(|multilinear| multilinear.log_len() != n_vars)
-		{
-			return Err(Error::MultilinearSizeMismatch);
-		}
+		assert!(
+			multilinears
+				.iter()
+				.flatten()
+				.all(|multilinear| multilinear.log_len() == n_vars),
+			"multilinears must have number of variables equal to the evaluation point length"
+		);
 
-		if multilinears.len() != eval_claims.len() {
-			return Err(Error::EvalClaimsNumberMismatch);
-		}
+		assert_eq!(
+			multilinears.len(),
+			eval_claims.len(),
+			"number of eval claims must match the number of multilinears"
+		);
 
 		let multilinears = multilinears.into_iter().flatten().collect_vec();
 		let last_coeffs_or_sums = RoundCoeffsOrSums::Sums(eval_claims);
 
 		let gruen32 = Gruen32::new(eval_point);
 
-		Ok(Self {
+		Self {
 			multilinears,
 			last_coeffs_or_sums,
 			gruen32,
-		})
+		}
 	}
 }
 
@@ -84,9 +86,9 @@ where
 		}
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
 		let RoundCoeffsOrSums::Sums(sums) = &self.last_coeffs_or_sums else {
-			return Err(Error::ExpectedFold);
+			panic!("execute called out of order; expected fold");
 		};
 
 		assert!(self.n_vars() > 0);
@@ -153,12 +155,12 @@ where
 			.collect::<Vec<_>>();
 
 		self.last_coeffs_or_sums = RoundCoeffsOrSums::Coeffs(round_coeffs.clone());
-		Ok(round_coeffs)
+		round_coeffs
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) {
 		let RoundCoeffsOrSums::Coeffs(prime_coeffs) = &self.last_coeffs_or_sums else {
-			return Err(Error::ExpectedExecute);
+			panic!("fold called out of order; expected execute");
 		};
 
 		assert!(self.n_vars() > 0);
@@ -174,26 +176,15 @@ where
 
 		self.gruen32.fold(challenge);
 		self.last_coeffs_or_sums = RoundCoeffsOrSums::Sums(sums);
-		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
-		if self.n_vars() > 0 {
-			let error = match self.last_coeffs_or_sums {
-				RoundCoeffsOrSums::Coeffs(_) => Error::ExpectedFold,
-				RoundCoeffsOrSums::Sums(_) => Error::ExpectedExecute,
-			};
+	fn finish(self) -> Vec<F> {
+		assert_eq!(self.n_vars(), 0, "finish called out of order; sumcheck rounds remain");
 
-			return Err(error);
-		}
-
-		let multilinear_evals = self
-			.multilinears
+		self.multilinears
 			.into_iter()
 			.map(|multilinear| multilinear.get(0))
-			.collect();
-
-		Ok(multilinear_evals)
+			.collect()
 	}
 }
 
@@ -251,29 +242,27 @@ mod tests {
 		let multilinears = [multilinear_a, multilinear_b];
 
 		let mut single_prover =
-			bivariate_product_mle::new(multilinears.clone(), eval_point.clone(), eval_claim)
-				.unwrap();
+			bivariate_product_mle::new(multilinears.clone(), eval_point.clone(), eval_claim);
 
 		let mut multi_prover = BivariateProductMultiMlecheckProver::new(
 			[multilinears].to_vec(),
 			&eval_point,
 			vec![eval_claim],
-		)
-		.unwrap();
+		);
 
 		for _round in 0..n_vars {
-			let round_coeffs_single = single_prover.execute().unwrap();
-			let round_coeffs_multi = multi_prover.execute().unwrap();
+			let round_coeffs_single = single_prover.execute();
+			let round_coeffs_multi = multi_prover.execute();
 
 			assert_eq!(round_coeffs_single, round_coeffs_multi);
 
 			let challenge = F::random(&mut rng);
-			single_prover.fold(challenge).unwrap();
-			multi_prover.fold(challenge).unwrap();
+			single_prover.fold(challenge);
+			multi_prover.fold(challenge);
 		}
 
-		let multilinear_evals_single = single_prover.finish().unwrap();
-		let multilinear_evals_multi = multi_prover.finish().unwrap();
+		let multilinear_evals_single = single_prover.finish();
+		let multilinear_evals_multi = multi_prover.finish();
 		assert_eq!(multilinear_evals_single, multilinear_evals_multi);
 	}
 
@@ -318,8 +307,7 @@ mod tests {
 			.collect_vec();
 
 		let mlecheck_prover =
-			BivariateProductMultiMlecheckProver::new(multilinears, &eval_point, eval_claims)
-				.unwrap();
+			BivariateProductMultiMlecheckProver::new(multilinears, &eval_point, eval_claims);
 		let mut prover = MleToSumCheckDecorator::new(mlecheck_prover);
 
 		// Append eq indicator at the end
@@ -329,7 +317,7 @@ mod tests {
 		// the round polynomials at multiple random points
 		for n_vars_remaining in (1..=n_vars).rev() {
 			// Round polynomials from the prover
-			let coeffs = prover.execute().unwrap();
+			let coeffs = prover.execute();
 
 			// Sample the witness at different points (in specialized variable)
 			for &sample in &samples {
@@ -363,14 +351,14 @@ mod tests {
 			}
 
 			let challenge = F::random(&mut rng);
-			prover.fold(challenge).unwrap();
+			prover.fold(challenge);
 
 			for folded in &mut folded_multilinears {
 				fold_highest_var_inplace(folded, challenge);
 			}
 		}
 
-		let multilinear_evals = prover.finish().unwrap();
+		let multilinear_evals = prover.finish();
 		assert_eq!(multilinear_evals.len(), n_pairs * 2);
 	}
 

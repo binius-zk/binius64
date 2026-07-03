@@ -37,8 +37,8 @@ fn bench_sumcheck_prove(c: &mut Criterion) {
 			b.iter_batched(
 				|| [multilinear_a.clone(), multilinear_b.clone()],
 				|multilinears| {
-					let prover = BivariateProductSumcheckProver::new(multilinears, sum).unwrap();
-					prove_single(prover, &mut transcript).unwrap()
+					let prover = BivariateProductSumcheckProver::new(multilinears, sum);
+					prove_single(prover, &mut transcript)
 				},
 				BatchSize::SmallInput,
 			);
@@ -76,10 +76,9 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 						|[a, b]| a * b,
 						eval_point.clone(),
 						eval_claim,
-					)
-					.unwrap();
+					);
 
-					prove_single_mlecheck(prover, &mut transcript).unwrap()
+					prove_single_mlecheck(prover, &mut transcript)
 				},
 				BatchSize::SmallInput,
 			);
@@ -119,10 +118,9 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 						|[a, b, _c]| a * b,
 						eval_point.clone(),
 						eval_claim,
-					)
-					.unwrap();
+					);
 
-					prove_single_mlecheck(prover, &mut transcript).unwrap()
+					prove_single_mlecheck(prover, &mut transcript)
 				},
 				BatchSize::SmallInput,
 			);

@@ -94,6 +94,13 @@ impl Word {
 		Word(value)
 	}
 
+	/// Returns the bit at position `i`, counting from the least significant bit.
+	///
+	/// `i` must be in `0..64`.
+	pub const fn extract_bit(self, i: usize) -> bool {
+		(self.0 >> i) & 1 == 1
+	}
+
 	/// Performs parallel 32-bit additions on the upper and lower halves with carry-in.
 	///
 	/// Each 32-bit half is added independently, like [`sll32`](Word::sll32) operates on

@@ -8,9 +8,7 @@ use binius_math::{
 	FieldBuffer, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
 };
 
-use super::{
-	error::Error, key_collection::KeyCollection, phase_1::prove_phase_1, phase_2::prove_phase_2,
-};
+use super::{key_collection::KeyCollection, phase_1::prove_phase_1, phase_2::prove_phase_2};
 
 /// Holds the prover data for an operator.
 ///
@@ -100,7 +98,7 @@ pub fn prove<F, P, Channel>(
 	bitand_data: OperatorData<F>,
 	intmul_data: OperatorData<F>,
 	channel: &mut Channel,
-) -> Result<SumcheckOutput<F>, Error>
+) -> SumcheckOutput<F>
 where
 	F: BinaryField + From<AESTowerField8b>,
 	P: PackedField<Scalar = F>,
@@ -125,7 +123,7 @@ where
 		&prepared_bitand_data,
 		&prepared_intmul_data,
 		channel,
-	)?;
+	);
 
 	// Prove the second phase, receiving a `SumcheckOutput`
 	// with challenges `r_y` and eval the evaluation of
@@ -138,8 +136,8 @@ where
 		&prepared_intmul_data,
 		phase_1_output,
 		channel,
-	)?;
+	);
 
 	// Return evaluation claim on the witness.
-	Ok(SumcheckOutput { challenges, eval })
+	SumcheckOutput { challenges, eval }
 }

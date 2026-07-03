@@ -1,28 +1,28 @@
 bitcoin_headers circuit
 --
 Gates & Instructions
-├─ Number of gates: 71,498
-└─ Number of evaluation instructions: 72,938
+├─ Number of gates: 51,268
+└─ Number of evaluation instructions: 52,708
 
 Constraints
-├─ AND constraints: 31,780 used (97.0% of 2^15)
-│  [▓▓▓▓▓▓▓▓▓░] spare: 988
+├─ AND constraints: 23,640 used (72.1% of 2^15)
+│  [▓▓▓▓▓▓▓░░░] spare: 9,128
 ├─ MUL constraints: 0 used (0.0% of 2^0)
 │  [░░░░░░░░░░] spare: 1
-└─ Distinct value indices: 72,825
-   ├─ Distinct shifted value indices: 41,222
-   └─ Distinct unshifted value indices: 31,603
+└─ Distinct value indices: 53,407
+   ├─ Distinct shifted value indices: 29,960
+   └─ Distinct unshifted value indices: 23,447
 
 Value Vector
-├─ Public Section: 111 used (86.7% of 2^7)
-│  [▓▓▓▓▓▓▓▓░░] spare: 17
-│  ├─ Constants: 111
+├─ Public Section: 175 used (68.4% of 2^8)
+│  [▓▓▓▓▓▓░░░░] spare: 81
+│  ├─ Constants: 175
 │  └─ Inout: 0
-├─ Private Section: 31,494 used (96.5%)
-│  [▓▓▓▓▓▓▓▓▓░] spare: 1,146
+├─ Private Section: 23,274 used (71.6%)
+│  [▓▓▓▓▓▓▓░░░] spare: 9,238
 │  ├─ Witness: 804
-│  └─ Internal: 30,690
-├─ Total Committed: 31,605 used (96.5% of 2^15)
-│  [▓▓▓▓▓▓▓▓▓░] spare: 1,163
-└─ Scratch (uncommitted): 59,808
+│  └─ Internal: 22,470
+├─ Total Committed: 23,449 used (71.6% of 2^15)
+│  [▓▓▓▓▓▓▓░░░] spare: 9,319
+└─ Scratch (uncommitted): 41,708
 

@@ -5,7 +5,7 @@ use std::array;
 use binius_field::{Field, FieldOps, PackedField, arch::OptimalPackedB128};
 use binius_ip::mlecheck;
 use binius_ip_prover::sumcheck::{
-	Error, batch_quadratic_mle::BatchQuadraticMleCheckProver, common::MleCheckProver,
+	batch_quadratic_mle::BatchQuadraticMleCheckProver, common::MleCheckProver,
 };
 use binius_math::{
 	FieldBuffer,
@@ -72,7 +72,7 @@ where
 fn prove_batch_mlecheck<Ff, Challenger_, Prover>(
 	mut prover: Prover,
 	transcript: &mut ProverTranscript<Challenger_>,
-) -> Result<Vec<Ff>, Error>
+) -> Vec<Ff>
 where
 	Ff: Field,
 	Challenger_: Challenger,
@@ -81,7 +81,7 @@ where
 	let n_vars = prover.n_vars();
 
 	for _ in 0..n_vars {
-		let round_coeffs_vec = prover.execute()?;
+		let round_coeffs_vec = prover.execute();
 		for round_coeffs in round_coeffs_vec {
 			transcript
 				.message()
@@ -89,7 +89,7 @@ where
 		}
 
 		let challenge = transcript.sample();
-		prover.fold(challenge)?;
+		prover.fold(challenge);
 	}
 
 	prover.finish()
@@ -118,10 +118,9 @@ fn bench_batch_quadratic_mlecheck_prove(c: &mut Criterion) {
 						batch_inf_comp::<P>,
 						eval_point,
 						eval_claims,
-					)
-					.unwrap();
+					);
 
-					prove_batch_mlecheck(prover, &mut transcript).unwrap()
+					prove_batch_mlecheck(prover, &mut transcript)
 				},
 				BatchSize::SmallInput,
 			);

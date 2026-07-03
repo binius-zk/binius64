@@ -17,17 +17,12 @@ use crate::fold_word::fold_words;
 type F = BinaryField128bGhash;
 type P = PackedBinaryGhash2x128b;
 
-pub fn evaluate_witness(words: &[u64], eval_point: &[F]) -> F {
-	let words = words
-		.iter()
-		.map(|&word| Word::from_u64(word))
-		.collect::<Vec<_>>();
-
+pub fn evaluate_witness(words: &[Word], eval_point: &[F]) -> F {
 	let (prefix, suffix) = eval_point.split_at(LOG_WORD_SIZE_BITS);
 	let prefix_tensor = eq_ind_partial_eval::<F>(prefix);
 	let suffix_tensor = eq_ind_partial_eval::<F>(suffix);
 
-	let partially_folded_witness = fold_words::<_, F>(&words, prefix_tensor.as_ref());
+	let partially_folded_witness = fold_words::<_, F>(words, prefix_tensor.as_ref());
 
 	inner_product_buffers(&partially_folded_witness, &suffix_tensor)
 }
@@ -52,17 +47,17 @@ fn prove_and_verify() {
 		let c_lo_i = full_result as u64;
 		let c_hi_i = (full_result >> 64) as u64;
 
-		a.push(a_i);
-		b.push(b_i);
-		c_lo.push(c_lo_i);
-		c_hi.push(c_hi_i);
+		a.push(Word::from_u64(a_i));
+		b.push(Word::from_u64(b_i));
+		c_lo.push(Word::from_u64(c_lo_i));
+		c_hi.push(Word::from_u64(c_hi_i));
 	}
 
-	let witness = Witness::<P, _, _>::new(LOG_WORD_SIZE_BITS, &a, &b, &c_lo, &c_hi).unwrap();
+	let witness = Witness::<P>::new(LOG_WORD_SIZE_BITS, &a, &b, &c_lo, &c_hi).unwrap();
 	// Run prover
 	let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 	let mut prover = IntMulProver::new(0, &mut prover_transcript);
-	let prove_output = prover.prove(witness).unwrap();
+	let prove_output = prover.prove(witness);
 
 	let IntMulOutput {
 		eval_point,

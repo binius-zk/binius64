@@ -16,10 +16,7 @@ use binius_math::{
 	field_buffer::FieldBuffer, line::extrapolate_line_packed, univariate::evaluate_univariate,
 };
 
-use super::{
-	Error,
-	common::{MleCheckProver, SumcheckProver},
-};
+use super::common::{MleCheckProver, SumcheckProver};
 use crate::channel::IPProverChannel;
 
 /// Output of the ZK MLE-check proving protocol.
@@ -284,14 +281,12 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 		vec![claim]
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
 		let RoundCoeffsOrClaim::Claim(_claim) = &self.last_coeffs_or_claim else {
-			return Err(Error::ExpectedFold);
+			panic!("execute called out of order; expected fold");
 		};
 
-		if self.n_vars_remaining == 0 {
-			return Err(Error::ExpectedFinish);
-		}
+		assert_ne!(self.n_vars_remaining, 0, "execute called out of order; expected finish");
 
 		let var_idx = self.current_var_index();
 
@@ -315,12 +310,12 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 
 		let round_coeffs = RoundCoeffs(round_coeffs_vec);
 		self.last_coeffs_or_claim = RoundCoeffsOrClaim::Coeffs(round_coeffs.clone());
-		Ok(vec![round_coeffs])
+		vec![round_coeffs]
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) {
 		let RoundCoeffsOrClaim::Coeffs(coeffs) = &self.last_coeffs_or_claim else {
-			return Err(Error::ExpectedExecute);
+			panic!("fold called out of order; expected execute");
 		};
 
 		// Evaluate round polynomial at challenge to get new claim
@@ -333,21 +328,14 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 
 		self.n_vars_remaining -= 1;
 		self.last_coeffs_or_claim = RoundCoeffsOrClaim::Claim(new_claim);
-
-		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
-		if self.n_vars_remaining > 0 {
-			return match self.last_coeffs_or_claim {
-				RoundCoeffsOrClaim::Coeffs(_) => Err(Error::ExpectedFold),
-				RoundCoeffsOrClaim::Claim(_) => Err(Error::ExpectedExecute),
-			};
-		}
+	fn finish(self) -> Vec<F> {
+		assert_eq!(self.n_vars_remaining, 0, "finish called out of order; sumcheck rounds remain");
 
 		// Final evaluation of g at the challenge point is prefix_sum
 		// (since g(r_0, ..., r_{n-1}) = sum_i g_i(r_i))
-		Ok(vec![self.prefix_sum])
+		vec![self.prefix_sum]
 	}
 }
 
@@ -393,7 +381,7 @@ pub fn prove<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>(
 	mut main_prover: impl MleCheckProver<F>,
 	mask: Mask<P, Data>,
 	channel: &mut impl IPProverChannel<F>,
-) -> Result<ProveZKOutput<F>, Error> {
+) -> ProveZKOutput<F> {
 	assert_eq!(
 		main_prover.n_claims(),
 		1,
@@ -417,10 +405,10 @@ pub fn prove<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>(
 
 	for _ in 0..n_vars {
 		// Execute both provers
-		let mut main_round_coeffs_vec = main_prover.execute()?;
+		let mut main_round_coeffs_vec = main_prover.execute();
 		let main_round_coeffs = main_round_coeffs_vec.pop().expect("n_claims == 1");
 
-		let mut mask_round_coeffs_vec = mask_prover.execute()?;
+		let mut mask_round_coeffs_vec = mask_prover.execute();
 		let mask_round_coeffs = mask_round_coeffs_vec
 			.pop()
 			.expect("mask prover has 1 claim");
@@ -434,23 +422,23 @@ pub fn prove<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>(
 		// Sample challenge and fold both provers
 		let challenge = channel.sample();
 		challenges.push(challenge);
-		main_prover.fold(challenge)?;
-		mask_prover.fold(challenge)?;
+		main_prover.fold(challenge);
+		mask_prover.fold(challenge);
 	}
 
 	// Finish both provers
-	let main_evals = main_prover.finish()?;
-	let mask_evals = mask_prover.finish()?;
+	let main_evals = main_prover.finish();
+	let mask_evals = mask_prover.finish();
 	let mask_eval_out = mask_evals[0];
 
 	// Write final mask evaluation
 	channel.send_one(mask_eval_out);
 
-	Ok(ProveZKOutput {
+	ProveZKOutput {
 		multilinear_evals: main_evals,
 		mask_eval: mask_eval_out,
 		challenges,
-	})
+	}
 }
 
 #[cfg(test)]
@@ -498,7 +486,7 @@ mod tests {
 
 		// Run the proving protocol
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = prove_single_mlecheck(prover, &mut prover_transcript).unwrap();
+		let output = prove_single_mlecheck(prover, &mut prover_transcript);
 
 		// Write the multilinear evaluation to the transcript
 		prover_transcript
@@ -562,7 +550,7 @@ mod tests {
 		let prover = MleCheckMaskProver::new(mask, eval_point.clone(), eval_claim);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = prove_single_mlecheck(prover, &mut prover_transcript).unwrap();
+		let output = prove_single_mlecheck(prover, &mut prover_transcript);
 
 		prover_transcript
 			.message()
@@ -608,7 +596,7 @@ mod tests {
 		// Run the ZK proving protocol
 		let zk_mask = Mask::new(n_vars, mask_degree, zk_buffer.to_ref());
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = prove(main_prover, zk_mask, &mut prover_transcript).unwrap();
+		let output = prove(main_prover, zk_mask, &mut prover_transcript);
 
 		// Write the main polynomial evaluation to the transcript
 		prover_transcript
@@ -712,12 +700,11 @@ mod tests {
 		let prover = BivariateProductSumcheckProver::new(
 			[mask_buffer.clone(), libra_eval_tensor],
 			claimed_sum,
-		)
-		.unwrap();
+		);
 
 		// Run the proving protocol
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = prove_single(prover, &mut prover_transcript).unwrap();
+		let output = prove_single(prover, &mut prover_transcript);
 
 		// Write the multilinear evaluations to the transcript
 		prover_transcript

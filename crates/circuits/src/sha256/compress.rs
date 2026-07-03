@@ -1,6 +1,10 @@
 // Copyright 2025 Irreducible Inc.
+use std::{array, iter};
+
 use binius_core::word::Word;
-use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
+use binius_frontend::{CircuitBuilder, Hint, Wire, WitnessFiller};
+
+use crate::util::clear_high_bits;
 
 const IV: [u32; 8] = [
 	0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -111,6 +115,177 @@ pub fn sha256_compress_2x(builder: &CircuitBuilder, state_in: State, m: [Wire; 1
 		builder.add_constant(Word(kt | (kt << 32)))
 	});
 	compress_inner(builder, state_in, m, &k)
+}
+
+/// Two *sequential* SHA-256 block compressions evaluated in one parallel core.
+///
+/// The second block's compression takes the first block's output state as its input state.
+/// Both run as the two 32-bit lanes of a single parallel compression:
+///
+/// ```text
+///     high lane [32:64]:  S1 = compress(input state, first block)
+///     low  lane [0:32] :  S2 = compress(S1,          second block)
+/// ```
+///
+/// So two chained blocks cost one compression instead of two.
+///
+/// The two lanes run concurrently, yet the low lane needs the high lane's *output* as its input.
+/// A hint breaks this dependency by precomputing `S1` off-circuit.
+/// The hinted `S1` seeds the low lane's input and is constrained two ways, so it cannot lie:
+///
+/// - its high half must equal the real input state (the first compression's input).
+/// - its low half must equal the first compression's in-circuit output.
+///
+/// # Arguments
+///
+/// - `state_in`: 8-word input state for the first compression, value in the low 32 bits of each.
+/// - `blocks`: two 16-word message blocks; `blocks[0]` feeds the first, `blocks[1]` the second.
+///
+/// # Preconditions
+///
+/// - Every input wire holds a valid 32-bit value in its low 32 bits.
+/// - High halves need not be empty; they are cleared internally where it matters.
+///
+/// # Returns
+///
+/// 8 wires, each packing both output states:
+///
+/// - low 32 bits: the second compression's output.
+/// - high 32 bits: the first compression's output.
+pub fn sha256_compress_2x_seq(
+	builder: &CircuitBuilder,
+	state_in: State,
+	blocks: [[Wire; 16]; 2],
+) -> State {
+	// The hint returns the merged input state directly, packed per word as:
+	// - low 32 bits : first compression's output  = second compression's input (low lane)
+	// - high 32 bits: first compression's input state word (high lane)
+	//
+	// Both halves are re-derived and constrained below, so the hint is untrusted.
+	let mut hint_inputs = Vec::with_capacity(24);
+	hint_inputs.extend_from_slice(&state_in.0);
+	hint_inputs.extend_from_slice(&blocks[0]);
+	let merged_vec = builder.call_hint(Sha256CompressHint, &[], &hint_inputs);
+	let merged: [Wire; 8] = array::from_fn(|i| merged_vec[i]);
+
+	// Pack two lanes into one wire: low 32 bits = lane 0 (S2), high 32 bits = lane 1 (S1).
+	// `shl` already clears the high operand's upper bits.
+	// The low operand is cleared explicitly, since inputs are not guaranteed zero-extended.
+	let pack = |lo: Wire, hi: Wire| builder.bxor(lo, builder.shl(hi, 32));
+	let clear = |w: Wire| clear_high_bits(builder, w, 32);
+
+	// Bind the high half of each merged word to the real input state.
+	// The high half is the first compression's claimed input.
+	// This proves the high lane compresses the genuine state.
+	for (m, s) in iter::zip(merged, state_in.0) {
+		builder.assert_eq("sha256_compress_2x_seq.state_in", builder.shr(m, 32), clear(s));
+	}
+
+	// Merged block: low lane = second block, high lane = first block.
+	let merged_block: [Wire; 16] = array::from_fn(|i| pack(clear(blocks[1][i]), blocks[0][i]));
+
+	let out = sha256_compress_2x(builder, State::new(merged), merged_block);
+
+	// Bind the hint's honesty by equating the two derivations of the first output:
+	// - first compression's in-circuit output = high lane of the result
+	// - value the hint fed as the second input = low half of each merged word
+	for (m, o) in iter::zip(merged, out.0) {
+		builder.assert_eq("sha256_compress_2x_seq.s1_out", clear(m), builder.shr(o, 32));
+	}
+
+	out
+}
+
+/// Precomputes the merged input state for the sequential two-lane compression.
+///
+/// Runs the first compression off-circuit and packs each output word to seed both lanes at once:
+///
+/// - low 32 bits: the first compression's output = the second compression's input.
+/// - high 32 bits: the first compression's input state word.
+///
+/// Both halves are re-derived and constrained in-circuit, so the hint only needs to be honest.
+///
+/// Input layout, 24 words with the value in the low 32 bits of each:
+///
+/// - words `0..8`: the input state.
+/// - words `8..24`: the first message block.
+struct Sha256CompressHint;
+
+impl Hint for Sha256CompressHint {
+	const NAME: &'static str = "binius.sha256_compress";
+
+	fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+		(24, 8)
+	}
+
+	fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+		let state_in: [u32; 8] = array::from_fn(|i| inputs[i].as_u64() as u32);
+		let block: [u32; 16] = array::from_fn(|i| inputs[8 + i].as_u64() as u32);
+
+		let out = ref_compress(state_in, block);
+		for (i, slot) in outputs.iter_mut().enumerate() {
+			*slot = Word(out[i] as u64 | ((state_in[i] as u64) << 32));
+		}
+	}
+}
+
+/// Pure-Rust SHA-256 compression of a single 512-bit block.
+///
+/// Matches the in-circuit compression exactly.
+/// Used for prover-side witness generation and as the test reference.
+///
+/// # Arguments
+///
+/// - `state_in`: the 8-word input state, one 32-bit word per entry.
+/// - `m`: the 16-word message block, one 32-bit word per entry.
+///
+/// # Returns
+///
+/// The updated 8-word state.
+pub fn ref_compress(state_in: [u32; 8], m: [u32; 16]) -> [u32; 8] {
+	let mut w = [0u32; 64];
+	w[..16].copy_from_slice(&m);
+	for t in 16..64 {
+		let s0 = w[t - 15].rotate_right(7) ^ w[t - 15].rotate_right(18) ^ (w[t - 15] >> 3);
+		let s1 = w[t - 2].rotate_right(17) ^ w[t - 2].rotate_right(19) ^ (w[t - 2] >> 10);
+		w[t] = w[t - 16]
+			.wrapping_add(s0)
+			.wrapping_add(w[t - 7])
+			.wrapping_add(s1);
+	}
+
+	let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = state_in;
+	for t in 0..64 {
+		let big_s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+		let ch = (e & f) ^ ((!e) & g);
+		let t1 = h
+			.wrapping_add(big_s1)
+			.wrapping_add(ch)
+			.wrapping_add(K[t])
+			.wrapping_add(w[t]);
+		let big_s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+		let maj = (a & b) ^ (a & c) ^ (b & c);
+		let t2 = big_s0.wrapping_add(maj);
+		h = g;
+		g = f;
+		f = e;
+		e = d.wrapping_add(t1);
+		d = c;
+		c = b;
+		b = a;
+		a = t1.wrapping_add(t2);
+	}
+
+	[
+		state_in[0].wrapping_add(a),
+		state_in[1].wrapping_add(b),
+		state_in[2].wrapping_add(c),
+		state_in[3].wrapping_add(d),
+		state_in[4].wrapping_add(e),
+		state_in[5].wrapping_add(f),
+		state_in[6].wrapping_add(g),
+		state_in[7].wrapping_add(h),
+	]
 }
 
 /// Shared core of [`sha256_compress`] and [`sha256_compress_2x`]: runs the message schedule and 64
@@ -256,7 +431,10 @@ mod tests {
 	use binius_core::{verify::verify_constraints, word::Word};
 	use binius_frontend::{CircuitBuilder, Wire};
 
-	use super::{IV, K, State, populate_message_block, sha256_compress, sha256_compress_2x};
+	use super::{
+		IV, State, populate_message_block, ref_compress, sha256_compress, sha256_compress_2x,
+		sha256_compress_2x_seq,
+	};
 
 	/// A test circuit that proves a knowledge of preimage for a given state vector S in
 	///
@@ -380,54 +558,6 @@ mod tests {
 		verify_constraints(cs, &w.into_value_vec()).unwrap();
 	}
 
-	/// Pure-Rust SHA-256 compression of a single 512-bit block, used as the reference for the
-	/// two-lane tests. `state_in` and `m` are 32-bit words; returns the updated state.
-	fn ref_compress(state_in: [u32; 8], m: [u32; 16]) -> [u32; 8] {
-		let mut w = [0u32; 64];
-		w[..16].copy_from_slice(&m);
-		for t in 16..64 {
-			let s0 = w[t - 15].rotate_right(7) ^ w[t - 15].rotate_right(18) ^ (w[t - 15] >> 3);
-			let s1 = w[t - 2].rotate_right(17) ^ w[t - 2].rotate_right(19) ^ (w[t - 2] >> 10);
-			w[t] = w[t - 16]
-				.wrapping_add(s0)
-				.wrapping_add(w[t - 7])
-				.wrapping_add(s1);
-		}
-
-		let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = state_in;
-		for t in 0..64 {
-			let big_s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-			let ch = (e & f) ^ ((!e) & g);
-			let t1 = h
-				.wrapping_add(big_s1)
-				.wrapping_add(ch)
-				.wrapping_add(K[t])
-				.wrapping_add(w[t]);
-			let big_s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-			let maj = (a & b) ^ (a & c) ^ (b & c);
-			let t2 = big_s0.wrapping_add(maj);
-			h = g;
-			g = f;
-			f = e;
-			e = d.wrapping_add(t1);
-			d = c;
-			c = b;
-			b = a;
-			a = t1.wrapping_add(t2);
-		}
-
-		[
-			state_in[0].wrapping_add(a),
-			state_in[1].wrapping_add(b),
-			state_in[2].wrapping_add(c),
-			state_in[3].wrapping_add(d),
-			state_in[4].wrapping_add(e),
-			state_in[5].wrapping_add(f),
-			state_in[6].wrapping_add(g),
-			state_in[7].wrapping_add(h),
-		]
-	}
-
 	fn pack2x(lo: u32, hi: u32) -> u64 {
 		(lo as u64) | ((hi as u64) << 32)
 	}
@@ -513,5 +643,124 @@ mod tests {
 		// Lane 0 = "abc", lane 1 = an all-zero block from the IV. Each lane must match its own
 		// reference, proving the zero lane does not perturb the "abc" lane and vice versa.
 		run_2x(IV, abc_block(), IV, [0; 16]);
+	}
+
+	/// Runs the sequential two-block compression and checks it against the scalar reference.
+	///
+	/// The reference chains two single-block compressions:
+	///
+	/// ```text
+	///     S1 = compress(state_in, block1)   → high lane
+	///     S2 = compress(S1,       block2)   → low lane
+	/// ```
+	fn run_2x_seq(state_in: [u32; 8], block1: [u32; 16], block2: [u32; 16]) {
+		// Scalar reference: the second compression consumes the first's output as its input state.
+		let s1 = ref_compress(state_in, block1);
+		let s2 = ref_compress(s1, block2);
+
+		// Fresh witness wires for the input state and both message blocks.
+		let circuit = CircuitBuilder::new();
+		let state_wires: [Wire; 8] = std::array::from_fn(|_| circuit.add_witness());
+		let block1_wires: [Wire; 16] = std::array::from_fn(|_| circuit.add_witness());
+		let block2_wires: [Wire; 16] = std::array::from_fn(|_| circuit.add_witness());
+
+		// Gadget under test: one parallel core evaluating both sequential compressions.
+		let out =
+			sha256_compress_2x_seq(&circuit, State::new(state_wires), [block1_wires, block2_wires]);
+
+		// Pin the packed output to public wires so dead-code elimination keeps the computation.
+		let out_inout: [Wire; 8] = std::array::from_fn(|_| circuit.add_inout());
+		for i in 0..8 {
+			circuit.assert_eq(format!("out[{i}]"), out.0[i], out_inout[i]);
+		}
+
+		let circuit = circuit.build();
+		let cs = circuit.constraint_system();
+		let mut w = circuit.new_witness_filler();
+
+		// Each 32-bit input goes in the low half of its wire; the high half stays empty.
+		for i in 0..8 {
+			w[state_wires[i]] = Word(state_in[i] as u64);
+		}
+		for i in 0..16 {
+			w[block1_wires[i]] = Word(block1[i] as u64);
+			w[block2_wires[i]] = Word(block2[i] as u64);
+		}
+
+		// Expected packing per word: low 32 bits = second output, high 32 bits = first output.
+		for i in 0..8 {
+			w[out_inout[i]] = Word(pack2x(s2[i], s1[i]));
+		}
+
+		// Witness generation runs the hint; constraint checking then verifies every gate.
+		circuit.populate_wire_witness(&mut w).unwrap();
+		verify_constraints(cs, &w.into_value_vec()).unwrap();
+	}
+
+	/// Packs 64 message bytes into 16 big-endian 32-bit schedule words.
+	fn pack_block_be(bytes: &[u8; 64]) -> [u32; 16] {
+		std::array::from_fn(|i| u32::from_be_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap()))
+	}
+
+	#[test]
+	fn compress_2x_seq_matches_rfc_two_block_kat() {
+		// Known-answer test: RFC 6234 SHA-256 TEST2_1.
+		// A 56-byte message spans two blocks after padding, so the digest is a chained compression.
+		// Chaining both blocks from the IV must reproduce the published digest.
+		let msg = b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+
+		// Padded layout over 128 bytes = two blocks:
+		//     bytes 0..56   : the message.
+		//     byte  56      : the 0x80 delimiter.
+		//     bytes 57..120 : zero fill.
+		//     bytes 120..128: the 64-bit message bit length (56 * 8 = 448).
+		let mut padded = [0u8; 128];
+		padded[..56].copy_from_slice(msg);
+		padded[56] = 0x80;
+		padded[120..128].copy_from_slice(&(56u64 * 8).to_be_bytes());
+		let block0 = pack_block_be(padded[0..64].try_into().unwrap());
+		let block1 = pack_block_be(padded[64..128].try_into().unwrap());
+
+		// Published digest (RFC 6234, SHA-256 TEST2_1).
+		let expected: [u32; 8] = [
+			0x248d_6a61,
+			0xd206_38b8,
+			0xe5c0_2693,
+			0x0c3e_6039,
+			0xa33c_e459,
+			0x64ff_2167,
+			0xf6ec_edd4,
+			0x19db_06c1,
+		];
+
+		// The second compression's output is the message digest; anchor it to the RFC vector.
+		let s1 = ref_compress(IV, block0);
+		let s2 = ref_compress(s1, block1);
+		assert_eq!(s2, expected);
+
+		// Run the same two-block chain in-circuit and cross-check both lanes.
+		run_2x_seq(IV, block0, block1);
+	}
+
+	#[test]
+	fn compress_2x_seq_distinct_params() {
+		// Invariant: the hinted first output is bound twice.
+		//     once as the second compression's input state.
+		//     once against the first compression's in-circuit output.
+		//
+		// Fixture: a non-IV starting state and two unrelated blocks exercise the full lane packing.
+		let state_in: [u32; 8] = [
+			0xdead_beef,
+			0xcafe_babe,
+			0x1234_5678,
+			0x9abc_def0,
+			0x0bad_f00d,
+			0xfeed_face,
+			0x0123_4567,
+			0x89ab_cdef,
+		];
+		let block1: [u32; 16] = std::array::from_fn(|i| (i as u32).wrapping_mul(0xdead_beef));
+		let block2: [u32; 16] = std::array::from_fn(|i| (i as u32).wrapping_mul(0x0101_0101));
+		run_2x_seq(state_in, block1, block2);
 	}
 }
