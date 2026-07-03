@@ -8,7 +8,6 @@ use binius_utils::rayon::iter::{IntoParallelIterator, ParallelIterator};
 use crate::{
 	channel::IPProverChannel,
 	sumcheck::{
-		Error as SumcheckError,
 		batch::batch_prove_mle_and_write_evals,
 		common::MleCheckProver,
 		frac_add_mle::{self, FractionalBuffer},
@@ -27,19 +26,6 @@ pub type FracEvalClaim<F> = (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>);
 /// $$\frac{a_0}{b_0} + \frac{a_1}{b_1} = \frac{a_0b_1 + a_1b_0}{b_0b_1}$
 pub struct FracAddCheckProver<P: PackedField> {
 	layers: Vec<(FieldBuffer<P>, FieldBuffer<P>)>,
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-	#[error(
-		"mismatched numerator/denominator lengths: numerator log_len {num_log_len}, denominator log_len {den_log_len}"
-	)]
-	MismatchedWitnessLengths {
-		num_log_len: usize,
-		den_log_len: usize,
-	},
-	#[error("sumcheck error: {0}")]
-	Sumcheck(#[from] SumcheckError),
 }
 
 impl<F, P> FracAddCheckProver<P>
@@ -61,7 +47,11 @@ where
 	/// * `witness.0.log_len() >= k`
 	pub fn new(k: usize, witness: FractionalBuffer<P>) -> (Self, FractionalBuffer<P>) {
 		let (witness_num, witness_den) = witness;
-		assert!(witness_num.log_len() == witness_den.log_len());
+		assert_eq!(
+			witness_num.log_len(),
+			witness_den.log_len(),
+			"numerator and denominator witnesses must have equal length"
+		);
 		assert!(witness_num.log_len() >= k);
 
 		let mut layers = Vec::with_capacity(k + 1);
@@ -105,7 +95,7 @@ where
 	pub fn layer_prover(
 		mut self,
 		claim: FracEvalClaim<F>,
-	) -> Result<(impl MleCheckProver<F>, Option<Self>), Error> {
+	) -> (impl MleCheckProver<F>, Option<Self>) {
 		let (num_claim, den_claim) = claim;
 		assert_eq!(
 			num_claim.point, den_claim.point,
@@ -131,9 +121,9 @@ where
 			[num_0, num_1, den_0, den_1],
 			num_claim.point.clone(),
 			[num_claim.eval, den_claim.eval],
-		)?;
+		);
 
-		Ok((prover, remaining))
+		(prover, remaining)
 	}
 
 	/// Runs the fractional addition check protocol and returns the final evaluation claims.
@@ -151,15 +141,15 @@ where
 		self,
 		claim: FracEvalClaim<F>,
 		channel: &mut impl IPProverChannel<F>,
-	) -> Result<FracEvalClaim<F>, Error> {
+	) -> FracEvalClaim<F> {
 		// Proving the full circuit runs every layer, so delegate and drop the leftover prover.
 		let n_layers = self.n_layers();
-		let (remaining, claim) = self.prove_layers(n_layers, claim, channel)?;
+		let (remaining, claim) = self.prove_layers(n_layers, claim, channel);
 		debug_assert!(
 			remaining.is_none_or(|prover| prover.n_layers() == 0),
 			"proving every layer leaves none unproved"
 		);
-		Ok(claim)
+		claim
 	}
 
 	/// Runs the first `n_layers` fractional-addition layers from a claim, returning the remainder.
@@ -187,7 +177,7 @@ where
 		n_layers: usize,
 		claim: FracEvalClaim<F>,
 		channel: &mut impl IPProverChannel<F>,
-	) -> Result<(Option<Self>, FracEvalClaim<F>), Error> {
+	) -> (Option<Self>, FracEvalClaim<F>) {
 		// Each layer consumes the prover and returns the remainder, so thread it through an Option.
 		let mut prover_opt = Some(self);
 		let mut claim = claim;
@@ -196,10 +186,10 @@ where
 			let prover = prover_opt
 				.take()
 				.expect("precondition: n_layers <= self.n_layers()");
-			let (sumcheck_prover, remaining) = prover.layer_prover(claim)?;
+			let (sumcheck_prover, remaining) = prover.layer_prover(claim);
 			prover_opt = remaining;
 
-			let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], channel)?;
+			let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], channel);
 
 			let mut multilinear_evals = output.multilinear_evals;
 			let evals = multilinear_evals.pop().expect("batch contains one prover");
@@ -229,7 +219,7 @@ where
 			claim = (num_claim, den_claim);
 		}
 
-		Ok((prover_opt, claim))
+		(prover_opt, claim)
 	}
 }
 
@@ -282,7 +272,7 @@ mod tests {
 
 		// 5. Run prover
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prover_output = prover.prove(prover_claim, &mut prover_transcript).unwrap();
+		let prover_output = prover.prove(prover_claim, &mut prover_transcript);
 
 		// 6. Run verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();

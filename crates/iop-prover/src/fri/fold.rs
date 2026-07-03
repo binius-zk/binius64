@@ -566,7 +566,6 @@ mod tests {
 	use binius_field::BinaryField128bGhash as B128;
 	use binius_math::{
 		BinarySubspace,
-		fold::fold_cols,
 		ntt::{NeighborsLastReference, domain_context::GenericOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
@@ -593,8 +592,13 @@ mod tests {
 
 		let query = eq_ind_partial_eval::<B128>(&challenges);
 
-		// Fold the message using regular folding.
-		let mut folded_msg = fold_cols(&msg, &query);
+		// Fold the message using regular folding: combine the low `arity` columns of each row
+		// with the eq tensor of the challenges (a partial evaluation of each row at the point).
+		let folded_vals: Box<[B128]> = msg
+			.chunks(arity)
+			.map(|row| inner_product_buffers(&row, &query))
+			.collect();
+		let mut folded_msg = FieldBuffer::new(log_dim, folded_vals);
 		assert_eq!(folded_msg.log_len(), log_dim);
 
 		// Encode the message over the large domain.

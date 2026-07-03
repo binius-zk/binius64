@@ -3,7 +3,7 @@
 use binius_field::{Field, PackedField};
 use binius_math::AsSlicesMut;
 
-use super::{error::Error, quadratic_mle::QuadraticMleCheckProver};
+use super::quadratic_mle::QuadraticMleCheckProver;
 use crate::sumcheck::common::MleCheckProver;
 
 /// Creates an [`MleCheckProver`] that reduces an evaluation claim on a multilinear extension
@@ -53,7 +53,7 @@ pub fn new<F, P>(
 	multilinears: impl AsSlicesMut<P, 2> + Send + 'static,
 	eval_point: Vec<F>,
 	eval_claim: F,
-) -> Result<impl MleCheckProver<F>, Error>
+) -> impl MleCheckProver<F>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
@@ -97,7 +97,7 @@ mod tests {
 	{
 		// Run the proving protocol
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = prove_single_mlecheck(prover, &mut prover_transcript).unwrap();
+		let output = prove_single_mlecheck(prover, &mut prover_transcript);
 
 		// Write the multilinear evaluations to the transcript
 		prover_transcript
@@ -164,7 +164,7 @@ mod tests {
 
 		// Run the proving protocol
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = prove_single(prover, &mut prover_transcript).unwrap();
+		let output = prove_single(prover, &mut prover_transcript);
 
 		// Write the multilinear evaluations to the transcript
 		prover_transcript
@@ -243,8 +243,7 @@ mod tests {
 
 		// Create the prover
 		let mlecheck_prover =
-			new([multilinear_a.clone(), multilinear_b.clone()], eval_point.clone(), eval_claim)
-				.unwrap();
+			new([multilinear_a.clone(), multilinear_b.clone()], eval_point.clone(), eval_claim);
 
 		test_mlecheck_prove_verify(
 			mlecheck_prover,
@@ -256,8 +255,7 @@ mod tests {
 
 		// Create another prover for the wrapped test
 		let mlecheck_prover =
-			new([multilinear_a.clone(), multilinear_b.clone()], eval_point.clone(), eval_claim)
-				.unwrap();
+			new([multilinear_a.clone(), multilinear_b.clone()], eval_point.clone(), eval_claim);
 
 		test_wrapped_sumcheck_prove_verify(
 			mlecheck_prover,

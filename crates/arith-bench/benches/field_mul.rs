@@ -163,6 +163,46 @@ fn bench_rijndael(c: &mut Criterion) {
 		run_mul_benchmark(&mut group, "gfni::mul::<__m256i>", mul::<__m256i>, &mut rng, 8);
 	}
 
+	// Benchmark the branch-free Russian-peasant software path — the non-GFNI x86_64 fallback,
+	// across SSE2/AVX2/AVX-512BW register widths.
+	#[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+	{
+		use binius_arith_bench::rijndael::russian_peasant::mul;
+		run_mul_benchmark(
+			&mut group,
+			"russian_peasant::mul::<__m128i>",
+			mul::<__m128i>,
+			&mut rng,
+			8,
+		);
+	}
+
+	#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+	{
+		use binius_arith_bench::rijndael::russian_peasant::mul;
+		run_mul_benchmark(
+			&mut group,
+			"russian_peasant::mul::<__m256i>",
+			mul::<__m256i>,
+			&mut rng,
+			8,
+		);
+	}
+
+	#[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+	{
+		use std::arch::x86_64::__m512i;
+
+		use binius_arith_bench::rijndael::russian_peasant::mul;
+		run_mul_benchmark(
+			&mut group,
+			"russian_peasant::mul::<__m512i>",
+			mul::<__m512i>,
+			&mut rng,
+			8,
+		);
+	}
+
 	// Benchmark vmull uint64x2_t
 	#[cfg(target_arch = "aarch64")]
 	{

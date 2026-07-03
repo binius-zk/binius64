@@ -150,7 +150,7 @@ impl IOPProver {
 				c_eval,
 				z_challenge,
 				eval_point,
-			} = prove_bitand_reduction::<B128, P, _>(bitand_witness, &mut *channel)?;
+			} = prove_bitand_reduction::<B128, P, _>(bitand_witness, &mut *channel);
 			OperatorData {
 				evals: vec![a_eval, b_eval, c_eval],
 				r_zhat_prime: z_challenge,
@@ -203,7 +203,7 @@ impl IOPProver {
 			bitand_claim,
 			intmul_claim,
 			&mut *channel,
-		)?;
+		);
 		drop(shift_guard);
 
 		// [phase] Ring-Switching + PCS Opening
@@ -444,7 +444,7 @@ pub fn pack_witness<P: PackedField<Scalar = B128>>(
 fn prove_bitand_reduction<F, PChallenge, Channel>(
 	witness: AndCheckWitness,
 	channel: &mut Channel,
-) -> Result<AndCheckOutput<F>, Error>
+) -> AndCheckOutput<F>
 where
 	F: BinaryField + From<B8>,
 	PChallenge: PackedField<Scalar = F>,
@@ -468,7 +468,7 @@ where
 		prover_message_domain.isomorphic(),
 	);
 
-	Ok(prover.prove_with_channel(channel)?)
+	prover.prove_with_channel(channel)
 }
 
 fn prove_intmul_reduction<F, P, Channel>(
@@ -484,15 +484,9 @@ where
 
 	let mut mulcheck_prover = IntMulProver::new(0, channel);
 
-	// Words must be converted to u64 because
-	// `Bitwise` requires `From<u8>` and `Shr<usize>`
-	// We could implement these for `Word` in the future.
-	let convert_to_u64 = |w: Vec<Word>| w.into_iter().map(|w| w.0).collect::<Vec<u64>>();
-	let [a_u64, b_u64, lo_u64, hi_u64] = [a, b, lo, hi].map(convert_to_u64);
-	let intmul_witness =
-		IntMulWitness::<P, _, _>::new(LOG_WORD_SIZE_BITS, &a_u64, &b_u64, &lo_u64, &hi_u64)?;
+	let intmul_witness = IntMulWitness::<P>::new(LOG_WORD_SIZE_BITS, &a, &b, &lo, &hi)?;
 
-	Ok(mulcheck_prover.prove(intmul_witness)?)
+	Ok(mulcheck_prover.prove(intmul_witness))
 }
 
 struct AndCheckWitness {

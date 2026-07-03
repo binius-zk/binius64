@@ -9,6 +9,7 @@
 
 pub mod binary_merkle_tree;
 pub mod blake3;
+pub mod blake3_portable;
 pub mod compress;
 pub mod parallel_compression;
 pub mod parallel_digest;
