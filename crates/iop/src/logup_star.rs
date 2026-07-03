@@ -38,19 +38,20 @@ pub struct LogupProof<'a, Oracle, Elem> {
 	pub table_eval_point: Vec<Elem>,
 	/// The claimed evaluation of the table `T` at the point.
 	pub table_eval_claim: Elem,
-	/// The `n`-coordinate point of the index claim.
+	/// The `n`-coordinate point shared by the index claims.
 	pub index_eval_point: Vec<Elem>,
-	/// The claimed evaluation of the embedded index column at its point.
-	pub index_eval_claim: Elem,
+	/// The claimed evaluations of the per-looker embedded index columns at the point.
+	pub index_eval_claims: Vec<Elem>,
 	/// The oracle relation `<Y, eq_{table_eval_point}> = Y(table_eval_point)` for the pushforward.
 	pub pushforward: OracleLinearRelation<'a, Oracle, Elem>,
 }
 
 /// Verify a logUp* reduction whose pushforward is committed as an oracle.
 ///
-/// This wraps [`binius_ip::logup_star::verify`] with the pushforward commitment.
-/// It receives the `Y` oracle before the reduction, so the logUp challenge binds the commitment.
-/// It then returns the relation that opens `Y` at the reduced point.
+/// This wraps [`binius_ip::logup_star::verify_reduction`] with the pushforward commitment: the
+/// looker batching challenge is sampled first (the prover builds the combined pushforward from
+/// it), then the `Y` oracle is received before the reduction, so the logUp challenge binds the
+/// commitment. It then returns the relation that opens `Y` at the reduced point.
 ///
 /// The returned relation asserts `<Y, eq_r'> = Y(r')` at the reduced table point `r'`.
 /// Its transparent polynomial is the equality indicator at `r'`.
@@ -59,8 +60,7 @@ pub struct LogupProof<'a, Oracle, Elem> {
 /// # Arguments
 ///
 /// * `table_n_vars` - The number of table variables `m` (`2^m` entries).
-/// * `eval_claim` - The claimed evaluation `e` of the looked-up vector.
-/// * `eval_point` - The `n`-coordinate evaluation point, whose length defines `n`.
+/// * `lookers` - The looker claims; every evaluation point must have the same length `n`.
 /// * `channel` - The IOP verifier channel carrying the `Y` commitment.
 ///
 /// # Errors
@@ -68,8 +68,7 @@ pub struct LogupProof<'a, Oracle, Elem> {
 /// Returns an error when the pushforward commitment is missing or the reduction identity fails.
 pub fn verify<'a, F, C>(
 	table_n_vars: usize,
-	eval_claim: C::Elem,
-	eval_point: &[C::Elem],
+	lookers: &[reduction::LookerClaim<'_, C::Elem>],
 	channel: &mut C,
 ) -> Result<LogupProof<'a, C::Oracle, C::Elem>, Error>
 where
@@ -77,14 +76,19 @@ where
 	C: IOPVerifierChannel<'a, F>,
 	C::Elem: From<F> + 'a,
 {
-	// Receive the pushforward Y commitment first, so the reduction's logUp challenge binds it.
+	// Sample the looker batching challenge before the commitment: the prover needs gamma to build
+	// the combined pushforward it commits.
+	let gamma = channel.sample();
+
+	// Receive the pushforward Y commitment next, so the reduction's logUp challenge binds it.
 	//
 	//     Y has 2^m entries, so its message length is table_n_vars.
-	//     Y is witness-dependent (it scatters eq_r by the secret index), so it may be masked.
+	//     Y is witness-dependent (it scatters the numerators by the secret indexes), so it may be
+	//     masked.
 	let oracle = channel.recv_oracle(table_n_vars, true)?;
 
 	// Run the bare reduction over the same channel, viewed as an IP channel.
-	let output = reduction::verify::<F, C>(table_n_vars, eval_claim, eval_point, channel)?;
+	let output = reduction::verify_reduction::<F, C>(gamma, table_n_vars, lookers, channel)?;
 
 	// The pushforward relation opens Y at the reduced point.
 	//
@@ -102,7 +106,7 @@ where
 		table_eval_point: output.table_eval_point,
 		table_eval_claim: output.table_eval_claim,
 		index_eval_point: output.index_eval_point,
-		index_eval_claim: output.index_eval_claim,
+		index_eval_claims: output.index_eval_claims,
 		pushforward,
 	})
 }

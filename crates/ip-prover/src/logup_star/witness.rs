@@ -11,9 +11,76 @@
 
 use std::iter;
 
-use binius_field::{BinaryField, Divisible, Field, PackedField};
+use binius_field::{BinaryField, Divisible, Field, PackedField, util::powers};
 use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::rayon::prelude::*;
+use itertools::izip;
+
+use super::prove::Looker;
+
+/// Build every looker's gamma-scaled numerator and the combined pushforward `Y`.
+///
+/// Looker `j`'s numerator is `gamma^j * eq_{r_j}`, the scaled equality indicator its
+/// fractional-addition circuit runs over, so the fractional sum of the per-looker circuits is the
+/// gamma-combination of the looker sums. The combined pushforward is the scatter of the same
+/// numerators:
+///
+/// ```text
+///     Y = sum_j gamma^j * (I_j)_* eq_{r_j}
+/// ```
+///
+/// # Preconditions
+///
+/// * `lookers` is non-empty, every looker has the same evaluation point length `n`, every index
+///   column has `2^n` entries, and every index entry is less than `2^table_n_vars`.
+pub fn combined_lookers<F, P>(
+	lookers: &[Looker<'_, F>],
+	gamma: F,
+	table_n_vars: usize,
+) -> (Vec<FieldBuffer<P>>, FieldBuffer<P>)
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	assert!(!lookers.is_empty(), "at least one looker is required");
+	let n = lookers[0].eval_point.len();
+
+	let numerators = izip!(lookers, powers(gamma))
+		.map(|(looker, power)| {
+			assert_eq!(
+				looker.eval_point.len(),
+				n,
+				"every looker evaluation point must have the same length"
+			);
+			assert_eq!(
+				looker.index.len(),
+				1 << n,
+				"index column has {} entries but {} were expected for {n} variables",
+				looker.index.len(),
+				1usize << n,
+			);
+			let eq_r = equality_indicator::<F, P>(looker.eval_point);
+			let scaled = eq_r
+				.iter_scalars()
+				.map(|eq_i| eq_i * power)
+				.collect::<Vec<_>>();
+			FieldBuffer::from_values(&scaled)
+		})
+		.collect::<Vec<_>>();
+
+	// Scatter each looker's numerator onto the shared table cube and sum.
+	let combined = izip!(lookers, &numerators)
+		.map(|(looker, numerator)| pushforward::<F, P>(numerator, looker.index, table_n_vars))
+		.reduce(|mut acc, term| {
+			for (slot, add) in iter::zip(acc.as_mut(), term.as_ref()) {
+				*slot += *add;
+			}
+			acc
+		})
+		.expect("lookers is non-empty");
+
+	(numerators, combined)
+}
 
 /// Embed a table position `j` into the field through the `GF(2)`-linear basis.
 ///

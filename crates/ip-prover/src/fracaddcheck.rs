@@ -246,8 +246,9 @@ pub struct BatchProveOutput<F> {
 /// This is the fractional-addition analog of [`crate::prodcheck::batch_prove`]. It combines `n`
 /// provers, each for an $m$-variate numerator/denominator pair, using multilinear interpolation
 /// over `k = selector_point.len()` selector variables (where $n \le 2^k$). The combined claim is
-/// the multilinear extrapolation of the individual claimed fractions (padded with zeros to $2^k$)
-/// evaluated at `selector_point ++ content_point`.
+/// the multilinear extrapolation of the individual claimed fractions (padded with the zero
+/// fraction `0/1` to $2^k$: numerators with 0, denominators with 1) evaluated at
+/// `selector_point ++ content_point`.
 ///
 /// The claimed fractions may themselves be evaluations of the $m$-variate fractional-sum
 /// multilinears at a shared `content_point`. When the fractions are scalars (each prover reduces
@@ -446,6 +447,13 @@ where
 	// eq weights for batching over instances: eq(i, outer_coords) for all i in B_k.
 	let eq_weights = eq_ind_partial_eval::<F>(outer_coords);
 
+	// The padding slots beyond the real instances hold the constant fraction 0/1: the numerator
+	// is the constant 0 function and the denominator the constant 1 function. A constant
+	// composition has the constant prime round polynomial (0 for the numerator, 1 for the
+	// denominator) and its claims stay (0, 1) through every fold, so the padding contributes
+	// eq_i * batch_coeff to each batched round polynomial's constant coefficient.
+	let pad_eq_sum: F = eq_weights.iter_scalars().skip(layer_provers.len()).sum();
+
 	let batch_coeff = channel.sample();
 
 	let mut challenges = Vec::with_capacity(eval_point.len());
@@ -453,9 +461,10 @@ where
 	// Content rounds: fold the content variables of every instance in lockstep, sending the
 	// eq(selector)-weighted sum of the per-instance (num, den)-batched round polynomials.
 	for _round in 0..inner_coords.len() {
-		let round_coeffs: RoundCoeffs<F> = iter::zip(&mut layer_provers, eq_weights.iter_scalars())
+		let real_coeffs: RoundCoeffs<F> = iter::zip(&mut layer_provers, eq_weights.iter_scalars())
 			.map(|(prover, eq_i)| combine_claims(prover.execute(), batch_coeff) * eq_i)
 			.sum();
+		let round_coeffs = real_coeffs + &RoundCoeffs(vec![pad_eq_sum * batch_coeff]);
 
 		channel.send_many(mlecheck::RoundProof::truncate(round_coeffs).coeffs());
 
@@ -484,9 +493,10 @@ where
 	let mut num_1s: Vec<F> = finished.iter().map(|e| e[1]).collect();
 	let mut den_0s: Vec<F> = finished.iter().map(|e| e[2]).collect();
 	let mut den_1s: Vec<F> = finished.iter().map(|e| e[3]).collect();
-	for vals in [&mut num_0s, &mut num_1s, &mut den_0s, &mut den_1s] {
-		vals.resize(1 << k, F::ZERO);
-	}
+	num_0s.resize(1 << k, F::ZERO);
+	num_1s.resize(1 << k, F::ZERO);
+	den_0s.resize(1 << k, F::ONE);
+	den_1s.resize(1 << k, F::ONE);
 
 	// The selector claim is the eq(selector)-weighted sum of the fractional-addition composition of
 	// the reduced halves.
@@ -535,7 +545,7 @@ where
 
 	// Reduce the (padded) selector halves to the next layer's fraction claims. Padding with the
 	// selector buffers (not just the `n` real provers) keeps `fractions.len() == 2^k`, so it stays
-	// aligned with the selector `eq` weights on subsequent layers; the padded entries are zero.
+	// aligned with the selector `eq` weights on subsequent layers; the padded entries are 0/1.
 	let next_fractions = izip!(&num_0s, &num_1s, &den_0s, &den_1s)
 		.map(|(&num_0, &num_1, &den_0, &den_1)| {
 			(extrapolate_line_packed(num_0, num_1, r), extrapolate_line_packed(den_0, den_1, r))
@@ -721,9 +731,14 @@ mod tests {
 			fractions.iter().map(|&(n, _)| n),
 			(0..fractions.len()).map(|i| selector_weights.get(i)),
 		);
+		// The padding slots hold the zero fraction 0/1, so they contribute their eq weight to
+		// the denominator.
 		let den_eval = inner_product(
-			fractions.iter().map(|&(_, d)| d),
-			(0..fractions.len()).map(|i| selector_weights.get(i)),
+			fractions
+				.iter()
+				.map(|&(_, d)| d)
+				.chain(iter::repeat_n(F::ONE, (1 << log_n_provers) - fractions.len())),
+			(0..1 << log_n_provers).map(|i| selector_weights.get(i)),
 		);
 		fracaddcheck::FracAddEvalClaim {
 			num_eval,
@@ -774,8 +789,11 @@ mod tests {
 			(0..n_provers).map(|i| eq_weights.get(i)),
 		);
 		let combined_den = inner_product(
-			claimed_fractions.iter().map(|&(_, d)| d),
-			(0..n_provers).map(|i| eq_weights.get(i)),
+			claimed_fractions
+				.iter()
+				.map(|&(_, d)| d)
+				.chain(iter::repeat_n(P::Scalar::ONE, (1 << log_n_provers) - n_provers)),
+			(0..1 << log_n_provers).map(|i| eq_weights.get(i)),
 		);
 
 		let claim = fracaddcheck::FracAddEvalClaim {
@@ -818,8 +836,10 @@ mod tests {
 			(0..n_provers).map(|i| selector_weights.get(i)),
 		);
 		let expected_den = inner_product(
-			(0..n_provers).map(|i| evaluate(&witnesses[i].1, content_challenges)),
-			(0..n_provers).map(|i| selector_weights.get(i)),
+			(0..n_provers)
+				.map(|i| evaluate(&witnesses[i].1, content_challenges))
+				.chain(iter::repeat_n(P::Scalar::ONE, (1 << log_n_provers) - n_provers)),
+			(0..1 << log_n_provers).map(|i| selector_weights.get(i)),
 		);
 
 		assert_eq!(verifier_output.num_eval, expected_num);
@@ -895,8 +915,11 @@ mod tests {
 			(0..n_provers).map(|i| eq_weights.get(i)),
 		);
 		let combined_den = inner_product(
-			claimed_fractions.iter().map(|&(_, d)| d),
-			(0..n_provers).map(|i| eq_weights.get(i)),
+			claimed_fractions
+				.iter()
+				.map(|&(_, d)| d)
+				.chain(iter::repeat_n(P::Scalar::ONE, (1 << log_n_provers) - n_provers)),
+			(0..1 << log_n_provers).map(|i| eq_weights.get(i)),
 		);
 
 		let claim = fracaddcheck::FracAddEvalClaim {
@@ -936,8 +959,10 @@ mod tests {
 			(0..n_provers).map(|i| selector_weights.get(i)),
 		);
 		let expected_den = inner_product(
-			(0..n_provers).map(|i| evaluate(&witnesses[i].1, witness_challenges)),
-			(0..n_provers).map(|i| selector_weights.get(i)),
+			(0..n_provers)
+				.map(|i| evaluate(&witnesses[i].1, witness_challenges))
+				.chain(iter::repeat_n(P::Scalar::ONE, (1 << log_n_provers) - n_provers)),
+			(0..1 << log_n_provers).map(|i| selector_weights.get(i)),
 		);
 
 		assert_eq!(verifier_output.num_eval, expected_num);

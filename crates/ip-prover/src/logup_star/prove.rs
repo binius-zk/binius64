@@ -4,7 +4,8 @@
 
 use binius_field::{BinaryField, Divisible, Field, PackedField};
 use binius_ip::{MultilinearEvalClaim, logup_star::LogupOutput};
-use binius_math::FieldBuffer;
+use binius_math::{FieldBuffer, univariate::evaluate_univariate};
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 use super::{
 	final_layer::{FinalLayerOutput, prove_final_layer},
@@ -12,17 +13,19 @@ use super::{
 };
 use crate::{
 	channel::IPProverChannel,
-	fracaddcheck::{FracAddCheckProver, FracEvalClaim},
+	fracaddcheck::{self, FracAddCheckProver, FracEvalClaim},
 };
 
 /// Prove a logUp* indexed-lookup reduction.
 ///
-/// This is the prover for [`binius_ip::logup_star::verify`].
+/// This is the prover for [`binius_ip::logup_star::verify_reduction`].
 /// It produces the transcript the verifier consumes and returns the same reduced claims.
 ///
-/// The reduction proves the indexed lookup `(I^* T)(eval_point) = eval_claim`.
-/// It never commits the looked-up vector `I^* T`, which would have `2^n` entries.
-/// Instead it commits the pushforward `Y = I_* eq_r`, which has only `2^m` entries.
+/// The reduction proves the indexed lookups `(I_j^* T)(r_j) = e_j` for one or more lookers
+/// sharing the table. The lookers batch by a random linear combination: a challenge `gamma`
+/// scales looker `j`'s equality-indicator numerator by `gamma^j`, and the pushforward is the
+/// gamma-weighted sum of the per-looker pushforwards, still with only `2^m` entries. The
+/// looked-up vectors are never committed.
 /// See [Soukhanov25] for the construction.
 ///
 /// [Soukhanov25]: <https://eprint.iacr.org/2025/946>
@@ -30,30 +33,37 @@ use crate::{
 /// # Arguments
 ///
 /// * `table` - The table multilinear `T` over `m` variables (`2^m` entries).
-/// * `index` - The index column, one table position per looker row.
-///   - Its length defines `n` and must be `2^n`.
-///   - Every entry must be less than `2^m`.
-/// * `eval_point` - The `n`-coordinate evaluation point `r`.
-/// * `eval_claim` - The claimed evaluation `e = (I^* T)(eval_point)`.
+/// * `lookers` - The looker columns and claims; every evaluation point must have the same length
+///   `n`, every index column must have `2^n` entries, and every index entry must be less than
+///   `2^m`.
 /// * `channel` - The prover channel for sending messages and sampling challenges.
 ///
-/// The logUp challenge `c` is sampled against the committed `I`, `T`, and pushforward `Y`.
+/// The logUp challenge `c` is sampled against the committed `I_j`, `T`, and pushforward `Y`.
 /// So the caller must absorb those commitments into the transcript before calling this routine.
 ///
 /// # Preconditions
 ///
 /// - The table must have at least one variable, so the table-side GKR has a variable to split on.
-/// - `eval_claim` must equal `(I^* T)(eval_point)`, or the proof will not verify.
+/// - Every `eval_claim` must equal `(I_j^* T)(r_j)`, or the proof will not verify.
 ///
 /// # Returns
 ///
-/// The reduced claims on the table, the pushforward, and the index multilinears.
-/// The caller verifies those three claims, which is out of scope here.
+/// The reduced claims on the table, the pushforward, and the per-looker index multilinears, all
+/// index claims sharing one evaluation point.
+/// The caller verifies those claims, which is out of scope here.
+/// One looker's column and claim: `(I^* T)(eval_point) = eval_claim` against the shared table.
+pub struct Looker<'a, F> {
+	/// The index column, one table position per looker row (`2^n` entries).
+	pub index: &'a [usize],
+	/// The `n`-coordinate evaluation point of this looker's claim.
+	pub eval_point: &'a [F],
+	/// The claimed evaluation of this looker's looked-up vector at the point.
+	pub eval_claim: F,
+}
+
 pub fn prove<F, P>(
 	table: &FieldBuffer<P>,
-	index: &[usize],
-	eval_point: &[F],
-	eval_claim: F,
+	lookers: &[Looker<'_, F>],
 	channel: &mut impl IPProverChannel<F>,
 ) -> LogupOutput<F>
 where
@@ -61,64 +71,69 @@ where
 	P: PackedField<Scalar = F>,
 {
 	let m = table.log_len();
-	let n = eval_point.len();
 
 	// The table-side GKR circuit needs at least one variable to split on.
 	assert!(m > 0, "table must have at least one variable");
 
-	// The index column has one entry per looker row, i.e. one per point of the n-variable cube.
-	let expected = 1usize << n;
-	assert_eq!(
-		index.len(),
-		expected,
-		"index column has {} entries but {expected} were expected for {n} variables",
-		index.len()
-	);
 	// Every index must address a real table position for the embedding and pushforward to be valid.
 	// This is a precondition: the O(n) scan is compiled out of release builds.
 	// An out-of-range index still panics in release, at the pushforward's scatter-add.
 	debug_assert!(
-		index.iter().all(|&j| j < 1usize << m),
+		lookers
+			.iter()
+			.all(|looker| looker.index.iter().all(|&j| j < 1usize << m)),
 		"every index entry must be less than the table size 2^m"
 	);
 
-	// Build the two witnesses that do not depend on the logUp challenge c.
+	// Sample the batching challenge gamma that combines the looker claims, then build the two
+	// witnesses that do not depend on the logUp challenge c.
 	//
-	//     eq_r = eq(eval_point, .)     the looker numerator
-	//     Y    = I_* eq_r              the pushforward, scattered onto table positions
-	let eq_r = witness::equality_indicator::<F, P>(eval_point);
-	let pushforward = witness::pushforward::<F, P>(&eq_r, index, m);
+	//     gamma^j * eq_{r_j} = the per-looker scaled numerators
+	//     Y = sum_j gamma^j * (I_j)_* eq_{r_j}     the combined pushforward
+	let gamma = channel.sample();
+	let (numerators, pushforward) = witness::combined_lookers::<F, P>(lookers, gamma, m);
+
+	// The product check binds <T, Y> to the gamma-combination of the looker claims.
+	let claims = lookers
+		.iter()
+		.map(|looker| looker.eval_claim)
+		.collect::<Vec<_>>();
+	let combined_eval_claim = evaluate_univariate(&claims, gamma);
 
 	// The self-contained prover commits nothing.
 	// It runs the reduction over the witnesses directly.
-	prove_reduction(table, index, eval_claim, eq_r, &pushforward, channel)
+	prove_reduction(table, lookers, combined_eval_claim, numerators, &pushforward, channel)
 }
 
-/// Run the logUp* reduction over the pre-built witnesses `eq_r` and pushforward `Y`.
+/// Run the logUp* reduction over the pre-built witnesses `numerators` and pushforward `Y`.
 ///
 /// This is the reduction core of [`prove`], split out so a caller can build `Y` once and commit it.
-/// The committing prover builds `eq_r` and `Y`, commits `Y`, then hands both here.
+/// The committing prover builds the numerators and `Y`, commits `Y`, then hands both here.
 /// That way the scatter-add that forms `Y` runs only once.
 ///
 /// # Arguments
 ///
 /// * `table` - The table multilinear `T` over `m` variables.
-/// * `index` - The index column, one table position per looker row.
-/// * `eval_claim` - The claimed evaluation `e = (I^* T)(eval_point)`.
-/// * `eq_r` - The looker numerator `eq(eval_point, .)` over `n` variables.
-/// * `pushforward` - The pushforward `Y = I_* eq_r` over `m` variables.
+/// * `lookers` - The looker columns and claims (the claims are unused here; the caller combines
+///   them into `eval_claim`).
+/// * `eval_claim` - The gamma-combined claimed evaluation.
+/// * `numerators` - The per-looker gamma-scaled numerators `gamma^j * eq_{r_j}` (see
+///   [`witness::combined_lookers`]).
+/// * `pushforward` - The combined pushforward `Y = sum_j gamma^j * (I_j)_* eq_{r_j}`, the scatter
+///   of the numerators.
 /// * `channel` - The prover channel.
 ///
 /// # Preconditions
 ///
 /// - `table.log_len()` is at least 1.
-/// - `index.len()` equals `2^{eq_r.log_len()}`, with every entry less than the table size.
-/// - `pushforward` equals `I_* eq_r`.
+/// - `numerators` has one `n`-variable buffer per looker; every index column has `2^n` entries,
+///   with every entry less than the table size.
+/// - `pushforward` equals the scatter of the numerators.
 pub fn prove_reduction<F, P>(
 	table: &FieldBuffer<P>,
-	index: &[usize],
+	lookers: &[Looker<'_, F>],
 	eval_claim: F,
-	eq_r: FieldBuffer<P>,
+	numerators: Vec<FieldBuffer<P>>,
 	pushforward: &FieldBuffer<P>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> LogupOutput<F>
@@ -127,50 +142,90 @@ where
 	P: PackedField<Scalar = F>,
 {
 	let m = table.log_len();
-	let n = eq_r.log_len();
+	let n = lookers[0].eval_point.len();
+	let log_lookers = log2_ceil_usize(lookers.len());
 
 	// Sample the logUp challenge c that randomizes the logarithmic-derivative denominators.
 	// This is the prover's first transcript action, mirroring the verifier.
 	// A committing caller must absorb the I, T, and Y commitments into the transcript before this.
 	let c = channel.sample();
 
-	// Build the denominators, which depend on c.
-	//
-	//     looker side: eq_r(i) / (c - I(i))   over n variables
-	//     table  side: Y(j)    / (c - j)       over m variables
-	let looker_den = witness::looker_denominator::<F, P>(c, index);
-	let table_den = witness::table_denominator::<F, P>(c, m);
-
-	// Build both fractional-addition circuits.
+	// Build the fractional-addition circuits, one per looker plus the table side.
 	// Constructing a circuit computes every layer and returns its single root fraction.
-	let (looker_prover, looker_root) = FracAddCheckProver::new(n, (eq_r, looker_den));
+	//
+	//     looker j: gamma^j * eq_{r_j}(i) / (c - I_j(i))   over n variables
+	//     table:    Y(v)                  / (c - v)         over m variables
+	let (looker_provers, looker_roots): (Vec<_>, Vec<_>) = std::iter::zip(lookers, numerators)
+		.map(|(looker, numerator)| {
+			let den = witness::looker_denominator::<F, P>(c, looker.index);
+			let (prover, root) = FracAddCheckProver::new(n, (numerator, den));
+			(prover, (root.0.get(0), root.1.get(0)))
+		})
+		.unzip();
+	let table_den = witness::table_denominator::<F, P>(c, m);
 	let (table_prover, table_root) =
 		FracAddCheckProver::new(m, (FieldBuffer::clone(pushforward), table_den));
+	let num_r = table_root.0.get(0);
+	let den_r = table_root.1.get(0);
+
+	// Top circuit: interpolate the per-looker root fractions into a multilinear pair over the
+	// looker variables, padded with the zero fraction (numerators with 0, denominators with 1).
+	// Its root is the fractional sum of every looker circuit, so the looker side runs as one
+	// GKR circuit over n + log_lookers variables.
+	let mut root_nums = looker_roots
+		.iter()
+		.map(|&(num_j, _)| num_j)
+		.collect::<Vec<_>>();
+	let mut root_dens = looker_roots
+		.iter()
+		.map(|&(_, den_j)| den_j)
+		.collect::<Vec<_>>();
+	root_nums.resize(1 << log_lookers, F::ZERO);
+	root_dens.resize(1 << log_lookers, F::ONE);
+	let (top_prover, top_root) = FracAddCheckProver::new(
+		log_lookers,
+		(FieldBuffer::<P>::from_values(&root_nums), FieldBuffer::<P>::from_values(&root_dens)),
+	);
+	let num_l = top_root.0.get(0);
+	let den_l = top_root.1.get(0);
 
 	// The two root fractions; their equality is the logUp identity the verifier checks.
 	//
-	//     num_l / den_l = sum_i eq_r(i) / (c - I(i))
-	//     num_r / den_r = sum_j Y(j)    / (c - j)
-	let num_l = looker_root.0.get(0);
-	let den_l = looker_root.1.get(0);
-	let num_r = table_root.0.get(0);
-	let den_r = table_root.1.get(0);
+	//     num_l / den_l = sum_j gamma^j sum_i eq_{r_j}(i) / (c - I_j(i))
+	//     num_r / den_r = sum_v Y(v) / (c - v)
 	channel.send_many(&[num_l, den_l, num_r, den_r]);
 
-	// Looker side: run the full n-layer GKR down to the leaf claim.
-	//
-	//     leaf numerator   = eq_r(point_l)        (verifier checks this against eq(eval_point, .))
-	//     leaf denominator = c - I(point_l)
-	let (looker_remaining, (_looker_num_claim, looker_den_claim)) =
-		looker_prover.prove_layers(n, root_claim(num_l, den_l), channel);
+	// Looker side, first phase: run the top circuit over the looker variables to completion,
+	// reducing its root to a claim on the interpolated root fractions at a selector point.
+	let (top_remaining, (top_num_claim, _top_den_claim)) =
+		top_prover.prove_layers(log_lookers, root_claim(num_l, den_l), channel);
 	debug_assert!(
-		looker_remaining.is_none_or(|prover| prover.n_layers() == 0),
-		"the looker side runs all n layers"
+		top_remaining.is_none_or(|prover| prover.n_layers() == 0),
+		"the top circuit runs all log_lookers layers"
 	);
+	let selector_point = top_num_claim.point;
 
-	// The looker denominator is c - I(point_l), so the index claim is I(point_l) = c - den.
-	let index_eval_point = looker_den_claim.point;
-	let index_eval_claim = c - looker_den_claim.eval;
+	// Looker side, second phase: continue with the batched GKR over the per-looker circuits down
+	// to the leaf claims, seeded at the selector point. With no looker variables there are no
+	// layers to run: the roots are already the leaf fractions.
+	let batch_output = if n == 0 {
+		fracaddcheck::BatchProveOutput {
+			eval_point: selector_point,
+			fractions: looker_roots,
+		}
+	} else {
+		fracaddcheck::batch_prove(looker_provers, looker_roots, selector_point, Vec::new(), channel)
+	};
+
+	// The per-looker leaf denominators are c - I_j(content), so the index claims are their
+	// c-complements. Send them so the verifier can check they combine to the batched leaf.
+	let index_eval_point = batch_output.eval_point[log_lookers..].to_vec();
+	let index_eval_claims = batch_output
+		.fractions
+		.iter()
+		.map(|&(_num_leaf, den_leaf)| c - den_leaf)
+		.collect::<Vec<_>>();
+	channel.send_many(&index_eval_claims);
 
 	// Table side: run the first m-1 GKR layers, stopping at the layer-1 claim over m-1 variables.
 	// The leaf layer is left on the prover, to be spliced into the batched final layer.
@@ -190,7 +245,7 @@ where
 		table_eval_claim,
 		pushforward_eval_claim,
 		index_eval_point,
-		index_eval_claim,
+		index_eval_claims,
 	}
 }
 
@@ -216,7 +271,7 @@ mod tests {
 		BinaryField1b, ExtensionField, Field,
 		arch::{OptimalB128, OptimalPackedB128},
 	};
-	use binius_ip::logup_star;
+	use binius_ip::{channel::IPVerifierChannel, logup_star};
 	use binius_math::{
 		FieldBuffer,
 		multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
@@ -270,13 +325,26 @@ mod tests {
 
 		// Prove, then replay the transcript through the verifier.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prover_out =
-			prove::<F, P>(&table, &index, &eval_point, eval_claim, &mut prover_transcript);
+		let looker = Looker {
+			index: &index,
+			eval_point: &eval_point,
+			eval_claim,
+		};
+		let prover_out = prove::<F, P>(&table, &[looker], &mut prover_transcript);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let verifier_out =
-			logup_star::verify::<F, _>(m, eval_claim, &eval_point, &mut verifier_transcript)
-				.expect("verification succeeds");
+		let looker_claim = logup_star::LookerClaim {
+			eval_point: &eval_point,
+			eval_claim,
+		};
+		let gamma = IPVerifierChannel::<F>::sample(&mut verifier_transcript);
+		let verifier_out = logup_star::verify_reduction::<F, _>(
+			gamma,
+			m,
+			&[looker_claim],
+			&mut verifier_transcript,
+		)
+		.expect("verification succeeds");
 
 		// The prover and verifier must derive identical reduced claims from the same transcript.
 		assert_eq!(prover_out, verifier_out, "outputs disagree (n={n}, m={m})");
@@ -304,8 +372,8 @@ mod tests {
 		let index_embedded = index.iter().map(|&j| iota(j, m)).collect::<Vec<_>>();
 		let index_embedded = FieldBuffer::<P>::from_values(&index_embedded);
 		assert_eq!(
-			prover_out.index_eval_claim,
-			evaluate(&index_embedded, &prover_out.index_eval_point),
+			prover_out.index_eval_claims,
+			vec![evaluate(&index_embedded, &prover_out.index_eval_point)],
 			"index claim wrong (n={n}, m={m})"
 		);
 	}
@@ -338,17 +406,91 @@ mod tests {
 		// Prove a false statement by perturbing the looked-up evaluation.
 		let wrong_claim = eval_claim + F::ONE;
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prove::<F, P>(&table, &index, &eval_point, wrong_claim, &mut prover_transcript);
+		let looker = Looker {
+			index: &index,
+			eval_point: &eval_point,
+			eval_claim: wrong_claim,
+		};
+		prove::<F, P>(&table, &[looker], &mut prover_transcript);
 
 		// The product-check inconsistency must surface as a verification failure.
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let result = logup_star::verify::<F, _>(
+		let looker_claim = logup_star::LookerClaim {
+			eval_point: &eval_point,
+			eval_claim: wrong_claim,
+		};
+		let gamma = IPVerifierChannel::<F>::sample(&mut verifier_transcript);
+		let result = logup_star::verify_reduction::<F, _>(
+			gamma,
 			table.log_len(),
-			wrong_claim,
-			&eval_point,
+			&[looker_claim],
 			&mut verifier_transcript,
 		);
 		assert!(result.is_err(), "verifier must reject a wrong eval claim");
+	}
+
+	#[test]
+	fn test_multi_looker_round_trip() {
+		let mut rng = StdRng::seed_from_u64(11);
+		let (n, m) = (5, 3);
+		let n_lookers = 3usize;
+
+		let instances = (0..n_lookers)
+			.map(|_| random_instance(&mut rng, n, m))
+			.collect::<Vec<_>>();
+		// All lookers share the first instance's table.
+		let table = instances[0].0.clone();
+		let lookers = instances
+			.iter()
+			.map(|(_, index, eval_point, eq_r, _)| {
+				let eval_claim = index
+					.iter()
+					.zip(eq_r)
+					.map(|(&j, &eq)| eq * table.get(j))
+					.fold(F::ZERO, |acc, t| acc + t);
+				(index, eval_point, eval_claim)
+			})
+			.collect::<Vec<_>>();
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let prover_lookers = lookers
+			.iter()
+			.map(|(index, eval_point, eval_claim)| Looker {
+				index,
+				eval_point,
+				eval_claim: *eval_claim,
+			})
+			.collect::<Vec<_>>();
+		let prover_out = prove::<F, P>(&table, &prover_lookers, &mut prover_transcript);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let looker_claims = lookers
+			.iter()
+			.map(|(_, eval_point, eval_claim)| logup_star::LookerClaim {
+				eval_point,
+				eval_claim: *eval_claim,
+			})
+			.collect::<Vec<_>>();
+		let gamma = IPVerifierChannel::<F>::sample(&mut verifier_transcript);
+		let verifier_out = logup_star::verify_reduction::<F, _>(
+			gamma,
+			m,
+			&looker_claims,
+			&mut verifier_transcript,
+		)
+		.expect("verification succeeds");
+		assert_eq!(prover_out, verifier_out);
+
+		// The reduced table claim is the honest table evaluation.
+		assert_eq!(prover_out.table_eval_claim, evaluate(&table, &prover_out.table_eval_point));
+
+		// Every index claim is the honest evaluation of its looker's embedded index column at the
+		// shared index point.
+		for ((index, _, _), claim) in lookers.iter().zip(&prover_out.index_eval_claims) {
+			let embedded = index.iter().map(|&j| iota(j, m)).collect::<Vec<_>>();
+			let embedded = FieldBuffer::<P>::from_values(&embedded);
+			assert_eq!(*claim, evaluate(&embedded, &prover_out.index_eval_point));
+		}
 	}
 
 	#[test]
@@ -360,7 +502,12 @@ mod tests {
 		// The precondition assertion must fire before any transcript interaction.
 		let table = random_field_buffer::<P>(&mut rng, 0);
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
-		let _ = prove::<F, P>(&table, &[0], &[], F::ZERO, &mut transcript);
+		let looker = Looker {
+			index: &[0],
+			eval_point: &[],
+			eval_claim: F::ZERO,
+		};
+		let _ = prove::<F, P>(&table, &[looker], &mut transcript);
 	}
 
 	#[test]
@@ -372,7 +519,12 @@ mod tests {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 
 		// eval_point has 4 coordinates, so the index column must have 2^4 = 16 entries, not 3.
-		let _ = prove::<F, P>(&table, &[0, 1, 2], &eval_point, F::ZERO, &mut transcript);
+		let looker = Looker {
+			index: &[0, 1, 2],
+			eval_point: &eval_point,
+			eval_claim: F::ZERO,
+		};
+		let _ = prove::<F, P>(&table, &[looker], &mut transcript);
 	}
 
 	#[test]
@@ -385,6 +537,11 @@ mod tests {
 
 		// The table has 2^2 = 4 positions, so index value 4 is out of range.
 		// The range check is a debug_assert precondition, so this panics in debug builds.
-		let _ = prove::<F, P>(&table, &[0, 4], &eval_point, F::ZERO, &mut transcript);
+		let looker = Looker {
+			index: &[0, 4],
+			eval_point: &eval_point,
+			eval_claim: F::ZERO,
+		};
+		let _ = prove::<F, P>(&table, &[looker], &mut transcript);
 	}
 }

@@ -13,8 +13,11 @@
 //! [Soukhanov25]: <https://eprint.iacr.org/2025/946>
 
 use binius_field::{BinaryField, Divisible, PackedField};
+pub use binius_ip_prover::logup_star::Looker;
 use binius_ip_prover::logup_star::{self as reduction, witness};
-use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
+use binius_math::{
+	FieldBuffer, multilinear::eq::eq_ind_partial_eval, univariate::evaluate_univariate,
+};
 
 use crate::channel::IOPProverChannel;
 
@@ -42,10 +45,10 @@ pub struct LogupProof<P: PackedField, Oracle> {
 	pub table_eval_point: Vec<P::Scalar>,
 	/// The claimed evaluation of the table `T` at the point.
 	pub table_eval_claim: P::Scalar,
-	/// The `n`-coordinate point of the index claim.
+	/// The `n`-coordinate point shared by the index claims.
 	pub index_eval_point: Vec<P::Scalar>,
-	/// The claimed evaluation of the embedded index column at its point.
-	pub index_eval_claim: P::Scalar,
+	/// The claimed evaluations of the per-looker embedded index columns at the point.
+	pub index_eval_claims: Vec<P::Scalar>,
 	/// The oracle relation that opens the pushforward at the reduced point.
 	pub pushforward: PushforwardRelation<P, Oracle>,
 }
@@ -62,9 +65,8 @@ pub struct LogupProof<P: PackedField, Oracle> {
 /// # Arguments
 ///
 /// * `table` - The table multilinear `T` over `m` variables (`2^m` entries).
-/// * `index` - The index column, one table position per looker row, of length `2^n`.
-/// * `eval_point` - The `n`-coordinate evaluation point `r`.
-/// * `eval_claim` - The claimed evaluation `e = (I^* T)(eval_point)`.
+/// * `lookers` - The looker columns and claims; every evaluation point must have the same length
+///   `n` and every index column `2^n` entries.
 /// * `channel` - The IOP prover channel, whose next oracle has message length `2^m`.
 ///
 /// # Preconditions
@@ -73,9 +75,7 @@ pub struct LogupProof<P: PackedField, Oracle> {
 /// - Every index entry is less than `2^m`.
 pub fn prove<F, P, Channel>(
 	table: &FieldBuffer<P>,
-	index: &[usize],
-	eval_point: &[F],
-	eval_claim: F,
+	lookers: &[Looker<'_, F>],
 	channel: &mut Channel,
 ) -> LogupProof<P, Channel::Oracle>
 where
@@ -85,18 +85,33 @@ where
 {
 	let m = table.log_len();
 
-	// Build the two witnesses that do not depend on the logUp challenge c.
+	// Sample the looker batching challenge, then build the two witnesses that do not depend on
+	// the logUp challenge c.
 	//
-	//     eq_r = eq(eval_point, .)     the looker numerator
-	//     Y    = I_* eq_r              the pushforward, scattered onto table positions
-	let eq_r = witness::equality_indicator::<F, P>(eval_point);
-	let pushforward = witness::pushforward::<F, P>(&eq_r, index, m);
+	//     gamma^j * eq_{r_j} = the per-looker scaled numerators
+	//     Y = sum_j gamma^j * (I_j)_* eq_{r_j}     the combined pushforward
+	let gamma = channel.sample();
+	let (numerators, pushforward) = witness::combined_lookers::<F, P>(lookers, gamma, m);
 
 	// Commit Y before the reduction, so the logUp challenge binds the commitment.
 	let oracle = channel.send_oracle(pushforward.to_ref());
 
-	// Run the reduction over the committed Y and the shared eq_r, viewing the channel as IP.
-	let output = reduction::prove_reduction(table, index, eval_claim, eq_r, &pushforward, channel);
+	// The product check binds <T, Y> to the gamma-combination of the looker claims.
+	let claims = lookers
+		.iter()
+		.map(|looker| looker.eval_claim)
+		.collect::<Vec<_>>();
+	let combined_eval_claim = evaluate_univariate(&claims, gamma);
+
+	// Run the reduction over the committed Y and the numerators, viewing the channel as IP.
+	let output = reduction::prove_reduction(
+		table,
+		lookers,
+		combined_eval_claim,
+		numerators,
+		&pushforward,
+		channel,
+	);
 
 	// The pushforward relation opens Y at the reduced point.
 	//
@@ -107,7 +122,7 @@ where
 		table_eval_point: output.table_eval_point,
 		table_eval_claim: output.table_eval_claim,
 		index_eval_point: output.index_eval_point,
-		index_eval_claim: output.index_eval_claim,
+		index_eval_claims: output.index_eval_claims,
 		pushforward: PushforwardRelation {
 			oracle,
 			message: pushforward,
@@ -128,6 +143,7 @@ mod tests {
 		logup_star as verify_logup,
 		naive_channel::NaiveVerifierChannel,
 	};
+	use binius_ip::logup_star::LookerClaim;
 	use binius_math::{
 		FieldBuffer,
 		multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
@@ -191,8 +207,12 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover_channel =
 			NaiveProverChannel::<F, _>::new(&mut prover_transcript, specs.clone());
-		let prover_proof =
-			prove::<F, P, _>(&table, &index, &eval_point, eval_claim, &mut prover_channel);
+		let looker = reduction::Looker {
+			index: &index,
+			eval_point: &eval_point,
+			eval_claim,
+		};
+		let prover_proof = prove::<F, P, _>(&table, &[looker], &mut prover_channel);
 
 		let PushforwardRelation {
 			oracle,
@@ -207,9 +227,12 @@ mod tests {
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let mut verifier_channel =
 			NaiveVerifierChannel::<F, _>::new(&mut verifier_transcript, &specs);
-		let verifier_proof =
-			verify_logup::verify(m, eval_claim, &eval_point, &mut verifier_channel)
-				.expect("verification succeeds");
+		let looker_claim = LookerClaim {
+			eval_point: &eval_point,
+			eval_claim,
+		};
+		let verifier_proof = verify_logup::verify(m, &[looker_claim], &mut verifier_channel)
+			.expect("verification succeeds");
 		let verifier_pushforward_claim = verifier_proof.pushforward.claim;
 		verifier_channel
 			.verify_oracle_relations([verifier_proof.pushforward])
@@ -220,7 +243,10 @@ mod tests {
 		assert_eq!(prover_proof.table_eval_point, verifier_proof.table_eval_point, "table point");
 		assert_eq!(prover_proof.table_eval_claim, verifier_proof.table_eval_claim, "table claim");
 		assert_eq!(prover_proof.index_eval_point, verifier_proof.index_eval_point, "index point");
-		assert_eq!(prover_proof.index_eval_claim, verifier_proof.index_eval_claim, "index claim");
+		assert_eq!(
+			prover_proof.index_eval_claims, verifier_proof.index_eval_claims,
+			"index claims"
+		);
 		assert_eq!(pushforward_claim, verifier_pushforward_claim, "pushforward claim");
 
 		// The reduced table claim is the honest evaluation of T at the reduced point.
@@ -246,8 +272,8 @@ mod tests {
 		let index_embedded = index.iter().map(|&j| iota::<F>(j, m)).collect::<Vec<_>>();
 		let index_embedded = FieldBuffer::<P>::from_values(&index_embedded);
 		assert_eq!(
-			prover_proof.index_eval_claim,
-			evaluate(&index_embedded, &prover_proof.index_eval_point),
+			prover_proof.index_eval_claims,
+			vec![evaluate(&index_embedded, &prover_proof.index_eval_point)],
 			"index claim wrong (n={n}, m={m})"
 		);
 	}
@@ -258,6 +284,77 @@ mod tests {
 		for (n, m) in [(6, 2), (5, 3), (4, 4), (3, 5), (7, 1)] {
 			check_prove_verify(n, m, 0);
 		}
+	}
+
+	#[test]
+	fn test_multi_looker_committed_round_trip() {
+		let mut rng = StdRng::seed_from_u64(13);
+		let (n, m) = (5, 3);
+
+		let (table, index_0, eval_point_0, eq_r_0, eval_claim_0) =
+			random_instance::<F, P>(&mut rng, n, m);
+		let (_, index_1, eval_point_1, eq_r_1, _) = random_instance::<F, P>(&mut rng, n, m);
+		// The second looker's claim reads the shared table.
+		let eval_claim_1 = index_1
+			.iter()
+			.zip(&eq_r_1)
+			.map(|(&j, &eq)| eq * table.get(j))
+			.fold(F::ZERO, |acc, t| acc + t);
+
+		let specs = vec![OracleSpec::new(m)];
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let mut prover_channel =
+			NaiveProverChannel::<F, _>::new(&mut prover_transcript, specs.clone());
+		let lookers = [
+			reduction::Looker {
+				index: &index_0,
+				eval_point: &eval_point_0,
+				eval_claim: eval_claim_0,
+			},
+			reduction::Looker {
+				index: &index_1,
+				eval_point: &eval_point_1,
+				eval_claim: eval_claim_1,
+			},
+		];
+		let prover_proof = prove::<F, P, _>(&table, &lookers, &mut prover_channel);
+		let PushforwardRelation {
+			oracle,
+			message,
+			transparent,
+			claim,
+		} = prover_proof.pushforward;
+		prover_channel.prove_oracle_relations([(oracle, message, transparent, claim)]);
+		prover_channel.finish();
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let mut verifier_channel =
+			NaiveVerifierChannel::<F, _>::new(&mut verifier_transcript, &specs);
+		let looker_claims = [
+			LookerClaim {
+				eval_point: &eval_point_0,
+				eval_claim: eval_claim_0,
+			},
+			LookerClaim {
+				eval_point: &eval_point_1,
+				eval_claim: eval_claim_1,
+			},
+		];
+		let verifier_proof = verify_logup::verify(m, &looker_claims, &mut verifier_channel)
+			.expect("verification succeeds");
+		verifier_channel
+			.verify_oracle_relations([verifier_proof.pushforward])
+			.expect("the pushforward opening verifies");
+		verifier_channel.finish();
+
+		assert_eq!(prover_proof.table_eval_point, verifier_proof.table_eval_point);
+		assert_eq!(prover_proof.table_eval_claim, verifier_proof.table_eval_claim);
+		assert_eq!(prover_proof.index_eval_claims, verifier_proof.index_eval_claims);
+		assert_eq!(prover_proof.table_eval_claim, evaluate(&table, &prover_proof.table_eval_point),);
+		// The eq_r tensors of both lookers went into the shared pushforward; nothing further to
+		// check here beyond the openings above.
+		let _ = (eq_r_0, eq_r_1);
 	}
 
 	#[test]
@@ -277,8 +374,12 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover_channel =
 			NaiveProverChannel::<F, _>::new(&mut prover_transcript, specs.clone());
-		let prover_proof =
-			prove::<F, P, _>(&table, &index, &eval_point, wrong_claim, &mut prover_channel);
+		let looker = reduction::Looker {
+			index: &index,
+			eval_point: &eval_point,
+			eval_claim: wrong_claim,
+		};
+		let prover_proof = prove::<F, P, _>(&table, &[looker], &mut prover_channel);
 		let PushforwardRelation {
 			oracle,
 			message,
@@ -292,7 +393,11 @@ mod tests {
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let mut verifier_channel =
 			NaiveVerifierChannel::<F, _>::new(&mut verifier_transcript, &specs);
-		let result = verify_logup::verify(3, wrong_claim, &eval_point, &mut verifier_channel);
+		let looker_claim = LookerClaim {
+			eval_point: &eval_point,
+			eval_claim: wrong_claim,
+		};
+		let result = verify_logup::verify(3, &[looker_claim], &mut verifier_channel);
 		assert!(result.is_err(), "verifier must reject a wrong eval claim");
 	}
 
@@ -345,8 +450,12 @@ mod tests {
 				prover_channel_rng,
 			);
 
-		let prover_proof =
-			prove::<F, BP, _>(&table, &index, &eval_point, eval_claim, &mut prover_channel);
+		let looker = reduction::Looker {
+			index: &index,
+			eval_point: &eval_point,
+			eval_claim,
+		};
+		let prover_proof = prove::<F, BP, _>(&table, &[looker], &mut prover_channel);
 		let PushforwardRelation {
 			oracle,
 			message,
@@ -360,9 +469,12 @@ mod tests {
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let mut verifier_channel = verifier_compiler
 			.create_channel_from_transcript::<StdHashSuite, Chal, _>(&mut verifier_transcript);
-		let verifier_proof =
-			verify_logup::verify(m, eval_claim, &eval_point, &mut verifier_channel)
-				.expect("verification succeeds");
+		let looker_claim = LookerClaim {
+			eval_point: &eval_point,
+			eval_claim,
+		};
+		let verifier_proof = verify_logup::verify(m, &[looker_claim], &mut verifier_channel)
+			.expect("verification succeeds");
 		verifier_channel
 			.verify_oracle_relations([verifier_proof.pushforward])
 			.expect("the FRI pushforward opening verifies");
@@ -374,7 +486,7 @@ mod tests {
 		// Cross-check the table and index claims against honest values.
 		assert_eq!(prover_proof.table_eval_point, verifier_proof.table_eval_point);
 		assert_eq!(prover_proof.table_eval_claim, verifier_proof.table_eval_claim);
-		assert_eq!(prover_proof.index_eval_claim, verifier_proof.index_eval_claim);
+		assert_eq!(prover_proof.index_eval_claims, verifier_proof.index_eval_claims);
 		assert_eq!(
 			prover_proof.table_eval_claim,
 			evaluate(&table, &prover_proof.table_eval_point),

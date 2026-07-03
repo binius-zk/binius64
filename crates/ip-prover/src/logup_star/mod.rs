@@ -5,9 +5,10 @@
 //! This is the prover counterpart of the verifier in [`binius_ip::logup_star`].
 //! See that module for the protocol, its soundness, and the index embedding.
 //!
-//! logUp* proves an indexed lookup `(I^* T)[i] = T[index[i]]`.
-//! - It never commits the looked-up vector `I^* T`, which would have `2^n` entries.
-//! - Instead it commits the pushforward `Y = I_* eq_r`, which has only `2^m` entries.
+//! logUp* proves an indexed lookup `(I^* T)[i] = T[index[i]]`, for one or more lookers sharing
+//! the table (batched by a random linear combination over the looker numerators).
+//! - It never commits the looked-up vectors `I_j^* T`, which would have `2^n` entries each.
+//! - Instead it commits the combined pushforward `Y`, which has only `2^m` entries.
 //! - This rests on the duality `(I^* T)(r) = <I^* T, eq_r> = <T, I_* eq_r> = <T, Y>`.
 //!
 //! # What this prover does
@@ -30,4 +31,4 @@ pub mod witness;
 
 pub use binius_ip::logup_star::LogupOutput;
 
-pub use self::prove::{prove, prove_reduction};
+pub use self::prove::{Looker, prove, prove_reduction};
