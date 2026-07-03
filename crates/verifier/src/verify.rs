@@ -155,17 +155,25 @@ impl IOPVerifier {
 		// `prover::prove`.
 		//
 		// [phase] Verify IntMul Reduction - multiplication constraint verification
-		let intmul_guard = tracing::info_span!(
-			"[phase] Verify IntMul Reduction",
-			phase = "verify_intmul_reduction",
-			perfetto_category = "phase",
-			n_constraints = self.constraint_system.n_mul_constraints()
-		)
-		.entered();
-		let log_n_constraints = checked_log_2(self.constraint_system.n_mul_constraints());
-		let intmul_output =
-			verify_intmul_reduction::<B128, _>(LOG_WORD_SIZE_BITS, log_n_constraints, channel)?;
-		drop(intmul_guard);
+		//
+		// Skipped (no transcript reads) when the constraint system has no MUL constraints,
+		// mirroring the prover's identical guard so the transcript stays in sync.
+		let intmul_output = if self.constraint_system.n_mul_constraints() > 0 {
+			let intmul_guard = tracing::info_span!(
+				"[phase] Verify IntMul Reduction",
+				phase = "verify_intmul_reduction",
+				perfetto_category = "phase",
+				n_constraints = self.constraint_system.n_mul_constraints()
+			)
+			.entered();
+			let log_n_constraints = checked_log_2(self.constraint_system.n_mul_constraints());
+			let intmul_output =
+				verify_intmul_reduction::<B128, _>(LOG_WORD_SIZE_BITS, log_n_constraints, channel)?;
+			drop(intmul_guard);
+			Some(intmul_output)
+		} else {
+			None
+		};
 
 		// [phase] Verify BitAnd Reduction - AND constraint verification
 		let bitand_guard = tracing::info_span!(
@@ -191,27 +199,31 @@ impl IOPVerifier {
 		// Build `OperatorData` for IntMul. The univariate challenge `r_zhat_prime` is
 		// shared with BitAnd (computed above) — sharing it improves prover
 		// ShiftReduction perf and lets the verifier compute `h_op_evals` once for both
-		// operations in `shift::check_eval`.
-		let intmul_claim = {
-			let IntMulOutput {
+		// operations in `shift::check_eval`. When IntMul was skipped, synthesize a zero claim
+		// (four zero evals at an empty point); it contributes zero to the shift reduction, whose
+		// monster evaluation iterates the (empty) MUL constraints.
+		let intmul_claim = match intmul_output {
+			Some(IntMulOutput {
 				a_evals,
 				b_evals,
 				c_lo_evals,
 				c_hi_evals,
 				eval_point,
-			} = intmul_output;
-
-			let l_tilde = lagrange_evals_scalars(&domain_subspace, r_zhat_prime.clone());
-			let make_final_claim = |evals| inner_product_scalars(evals, l_tilde.iter().cloned());
-			OperatorData::new(
-				eval_point,
-				[
-					make_final_claim(a_evals),
-					make_final_claim(b_evals),
-					make_final_claim(c_lo_evals),
-					make_final_claim(c_hi_evals),
-				],
-			)
+			}) => {
+				let l_tilde = lagrange_evals_scalars(&domain_subspace, r_zhat_prime.clone());
+				let make_final_claim =
+					|evals| inner_product_scalars(evals, l_tilde.iter().cloned());
+				OperatorData::new(
+					eval_point,
+					[
+						make_final_claim(a_evals),
+						make_final_claim(b_evals),
+						make_final_claim(c_lo_evals),
+						make_final_claim(c_hi_evals),
+					],
+				)
+			}
+			None => OperatorData::new(Vec::new(), std::array::from_fn(|_| Channel::Elem::zero())),
 		};
 
 		// [phase] Verify Shift Reduction - shift operations and constraint validation

@@ -7,8 +7,8 @@ Gates & Instructions
 Constraints
 ├─ AND constraints: 0 used (0.0% of 2^0)
 │  [░░░░░░░░░░] spare: 1
-├─ MUL constraints: 0 used (0.0% of 2^0)
-│  [░░░░░░░░░░] spare: 1
+├─ MUL constraints: 0 used (0.0% of 0)
+│  [░░░░░░░░░░] spare: 0
 └─ Distinct value indices: 0
    ├─ Distinct shifted value indices: 0
    └─ Distinct unshifted value indices: 0
