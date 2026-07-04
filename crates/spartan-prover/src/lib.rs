@@ -37,7 +37,7 @@ use std::{
 	ops::Deref,
 };
 
-use binius_field::{BinaryField, Field, PackedExtension, PackedField};
+use binius_field::{BinaryField, Field, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::{
@@ -139,7 +139,7 @@ impl<F: Field> IOPProver<F> {
 	) -> (Channel::Oracle, FieldBuffer<P>)
 	where
 		F: BinaryField,
-		P: PackedField<Scalar = F> + PackedExtension<F>,
+		P: PackedField<Scalar = F>,
 		Channel: IOPProverChannel<P>,
 	{
 		let cs = &self.constraint_system;
@@ -183,7 +183,7 @@ impl<F: Field> IOPProver<F> {
 	) -> Result<(), Error>
 	where
 		F: BinaryField,
-		P: PackedField<Scalar = F> + PackedExtension<F>,
+		P: PackedField<Scalar = F>,
 		Channel: IOPProverChannel<P>,
 	{
 		let _prove_guard =
@@ -321,7 +321,7 @@ impl<F: Field> IOPProver<F> {
 impl<F, P, H> Prover<P, H>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {
@@ -413,7 +413,7 @@ fn prove_mulcheck<F, P, Channel>(
 ) -> ([F; 3], F, Vec<F>)
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
 {
 	let mulcheck_witness =
