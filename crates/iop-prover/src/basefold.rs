@@ -98,7 +98,7 @@ pub fn prove_mlecheck_basefold<F, P, NTT, Channel>(
 #[cfg(test)]
 mod test {
 	use anyhow::{Result, bail};
-	use binius_field::{BinaryField, PackedBinaryGhash1x128b, PackedExtension, PackedField};
+	use binius_field::{BinaryField, PackedBinaryGhash1x128b, PackedField};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
 		basefold as verifier_basefold,
@@ -143,7 +143,7 @@ mod test {
 	) -> Result<()>
 	where
 		F: BinaryField,
-		P: PackedField<Scalar = F> + PackedExtension<F>,
+		P: PackedField<Scalar = F>,
 	{
 		let n_vars = evaluation_point.len();
 		assert_eq!(witness.log_len(), n_vars);

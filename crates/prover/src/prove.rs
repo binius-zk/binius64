@@ -7,9 +7,7 @@ use binius_core::{
 	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueVec},
 	word::Word,
 };
-use binius_field::{
-	AESTowerField8b as B8, BinaryField, ExtensionField, Field, PackedExtension, PackedField,
-};
+use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, Field, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip::sumcheck::SumcheckOutput;
@@ -91,7 +89,7 @@ impl IOPProver {
 	/// For most users, [`Prover::prove`] is the simpler interface.
 	pub fn prove<P, Channel>(&self, witness: ValueVec, channel: &mut Channel) -> Result<(), Error>
 	where
-		P: PackedField<Scalar = B128> + PackedExtension<B128> + PackedExtension<B1>,
+		P: PackedField<Scalar = B128>,
 		Channel: IOPProverChannel<P>,
 	{
 		let cs = &self.constraint_system;
@@ -281,7 +279,7 @@ where
 
 impl<P, H> Prover<P, H>
 where
-	P: PackedField<Scalar = B128> + PackedExtension<B128> + PackedExtension<B1>,
+	P: PackedField<Scalar = B128>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {

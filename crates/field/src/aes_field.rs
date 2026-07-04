@@ -4,7 +4,6 @@
 use std::{
 	fmt::{Debug, Display, Formatter},
 	iter::{Product, Sum},
-	marker::PhantomData,
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
@@ -15,14 +14,12 @@ use binius_utils::{
 use bytemuck::{Pod, Zeroable};
 
 use super::{
-	PackedExtension, PackedSubfield,
 	arithmetic_traits::InvertOrZero,
 	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
 	mul_by_binary_field_1b,
 };
 use crate::{
-	ExtensionField, Field, binary_field_arithmetic::impl_arithmetic_using_packed,
-	linear_transformation::Transformation, underlier::U1,
+	ExtensionField, Field, binary_field_arithmetic::impl_arithmetic_using_packed, underlier::U1,
 };
 
 // These fields represent a tower based on AES GF(2^8) field (GF(256)/x^8+x^4+x^3+x+1)
@@ -126,29 +123,6 @@ impl_field_extension!(BinaryField1b(U1) < @3 => AESTowerField8b(u8));
 mul_by_binary_field_1b!(AESTowerField8b);
 
 impl_arithmetic_using_packed!(AESTowerField8b);
-
-/// A 3- step transformation :
-/// 1. Cast to base b-bit packed field
-/// 2. Apply linear transformation between aes and binary b8 tower fields
-/// 3. Cast back to the target field
-pub struct SubfieldTransformer<IF, OF, T> {
-	inner_transform: T,
-	_ip_pd: PhantomData<IF>,
-	_op_pd: PhantomData<OF>,
-}
-
-impl<IF, OF, IEP, OEP, T> Transformation<IEP, OEP> for SubfieldTransformer<IF, OF, T>
-where
-	IF: Field,
-	OF: Field,
-	IEP: PackedExtension<IF>,
-	OEP: PackedExtension<OF>,
-	T: Transformation<PackedSubfield<IEP, IF>, PackedSubfield<OEP, OF>>,
-{
-	fn transform(&self, input: &IEP) -> OEP {
-		OEP::cast_ext(self.inner_transform.transform(IEP::cast_base_ref(input)))
-	}
-}
 
 impl SerializeBytes for AESTowerField8b {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {

@@ -9,7 +9,7 @@
 use std::marker::PhantomData;
 
 use binius_core::constraint_system::{ConstraintSystem, ValueVec};
-use binius_field::{BinaryField128bGhash as B128, PackedExtension, PackedField};
+use binius_field::{BinaryField128bGhash as B128, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::basefold_compiler::BaseFoldProverCompiler;
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded};
@@ -49,9 +49,7 @@ where
 
 impl<P, H> ZKProver<P, H>
 where
-	P: PackedField<Scalar = B128>
-		+ PackedExtension<B128>
-		+ PackedExtension<binius_verifier::config::B1>,
+	P: PackedField<Scalar = B128>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {
@@ -197,9 +195,7 @@ where
 /// dominant setup cost) is reused as-is while the cheaper derived state is recomputed.
 impl<P, H> SerializeBytes for ZKProver<P, H>
 where
-	P: PackedField<Scalar = B128>
-		+ PackedExtension<B128>
-		+ PackedExtension<binius_verifier::config::B1>,
+	P: PackedField<Scalar = B128>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
@@ -220,9 +216,7 @@ where
 
 impl<P, H> DeserializeBytes for ZKProver<P, H>
 where
-	P: PackedField<Scalar = B128>
-		+ PackedExtension<B128>
-		+ PackedExtension<binius_verifier::config::B1>,
+	P: PackedField<Scalar = B128>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {

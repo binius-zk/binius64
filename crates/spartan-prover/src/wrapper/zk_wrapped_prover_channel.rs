@@ -13,7 +13,7 @@
 
 use std::iter::repeat_with;
 
-use binius_field::{BinaryField, PackedExtension, PackedField};
+use binius_field::{BinaryField, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_iop_prover::{
 	basefold_channel::{BaseFoldOracle, BaseFoldProverChannel},
@@ -66,7 +66,7 @@ where
 impl<'a, F, P, NTT, Channel, ReplayFn> ZKWrappedProverChannel<'a, P, NTT, Channel, ReplayFn>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	Channel: MerkleIPProverChannel<F>,
 {
@@ -223,7 +223,7 @@ impl<F, P, NTT, Channel, ReplayFn> IPProverChannel<F>
 	for ZKWrappedProverChannel<'_, P, NTT, Channel, ReplayFn>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	Channel: MerkleIPProverChannel<F>,
 {
@@ -253,7 +253,7 @@ impl<F, P, NTT, Channel, ReplayFn> IOPProverChannel<P>
 	for ZKWrappedProverChannel<'_, P, NTT, Channel, ReplayFn>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	Channel: MerkleIPProverChannel<F>,
 {
