@@ -52,7 +52,7 @@ where
 	precommit_oracle: BaseFoldOracle,
 	/// Reconstructs the outer public-input vector as the channel replays the inner verifier;
 	/// `build()` yields the `[constants | inout | derived]` segment for the outer verify.
-	instance_gen: Rc<RefCell<InstanceGenerator<'a, F>>>,
+	instance_gen: Rc<RefCell<InstanceGenerator<F>>>,
 	/// Allocators for the InOut and Precommit segments. They live here, not on the
 	/// [`InstanceGenerator`], because allocating wires in interaction order is the channel's job;
 	/// the generator just writes a value to a given wire. Allocation order must match the symbolic
@@ -128,14 +128,14 @@ where
 	/// Allocates the next inout wire, writing `value` into the public segment, and wraps it as an
 	/// element. Allocation order must match the symbolic
 	/// [`IronSpartanBuilderChannel`](super::builder_channel::IronSpartanBuilderChannel).
-	fn alloc_inout_elem(&mut self, value: F) -> CircuitElem<F, InstanceGenerator<'a, F>> {
+	fn alloc_inout_elem(&mut self, value: F) -> CircuitElem<F, InstanceGenerator<F>> {
 		let wire = self.inout_alloc.alloc();
 		let public_wire = self.instance_gen.borrow_mut().write_inout(wire, value);
 		CircuitElem::wire(&self.instance_gen, public_wire)
 	}
 
 	/// Allocates the next precommit wire (value-less to the verifier) as an element.
-	fn alloc_precommit_elem(&mut self) -> CircuitElem<F, InstanceGenerator<'a, F>> {
+	fn alloc_precommit_elem(&mut self) -> CircuitElem<F, InstanceGenerator<F>> {
 		let wire = self.precommit_alloc.alloc();
 		let public_wire = self.instance_gen.borrow_mut().placeholder_precommit(wire);
 		CircuitElem::wire(&self.instance_gen, public_wire)
@@ -173,7 +173,7 @@ where
 	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
 	Challenger_: Challenger,
 {
-	type Elem = CircuitElem<F, InstanceGenerator<'a, F>>;
+	type Elem = CircuitElem<F, InstanceGenerator<F>>;
 
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
 		// Mirror `IronSpartanBuilderChannel::recv_one`'s shape: `inout - key`. The inout carries
@@ -230,7 +230,7 @@ where
 	}
 }
 
-impl<'a, F, MTScheme, Challenger_> IOPVerifierChannel<'a, F>
+impl<'a, F, MTScheme, Challenger_> IOPVerifierChannel<F>
 	for ZKWrappedVerifierChannel<'a, F, MTScheme, Challenger_>
 where
 	F: BinaryField,
@@ -260,7 +260,7 @@ where
 
 	fn verify_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<Self::Oracle, Self::Elem>>,
 	) -> Result<(), binius_iop::channel::Error> {
 		let mut inner_relations = Vec::new();
 		for OracleLinearRelation {

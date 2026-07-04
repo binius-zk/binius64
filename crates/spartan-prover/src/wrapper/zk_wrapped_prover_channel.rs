@@ -186,7 +186,7 @@ where
 	/// 3. Validates and generates the outer IOP proof
 	pub fn finish(self, rng: impl CryptoRng) -> Result<(), Error>
 	where
-		ReplayFn: FnOnce(&mut ReplayChannel<'_, F>),
+		ReplayFn: FnOnce(&mut ReplayChannel<F>),
 	{
 		let Self {
 			mut inner_channel,

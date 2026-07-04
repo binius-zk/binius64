@@ -33,7 +33,7 @@ pub enum Error {
 ///
 /// The table and index claims are left for the caller to open against its own commitments.
 /// The pushforward claim is packaged as an oracle relation against the commitment received here.
-pub struct LogupProof<'a, Oracle, F> {
+pub struct LogupProof<Oracle, F> {
 	/// The `m`-coordinate point shared by the table and pushforward claims.
 	pub table_eval_point: Vec<F>,
 	/// The claimed evaluation of the table `T` at the point.
@@ -43,7 +43,7 @@ pub struct LogupProof<'a, Oracle, F> {
 	/// The claimed evaluation of the embedded index column at its point.
 	pub index_eval_claim: F,
 	/// The oracle relation `<Y, eq_{table_eval_point}> = Y(table_eval_point)` for the pushforward.
-	pub pushforward: OracleLinearRelation<'a, Oracle, F>,
+	pub pushforward: OracleLinearRelation<Oracle, F>,
 }
 
 /// Verify a logUp* reduction whose pushforward is committed as an oracle.
@@ -66,15 +66,15 @@ pub struct LogupProof<'a, Oracle, F> {
 /// # Errors
 ///
 /// Returns an error when the pushforward commitment is missing or the reduction identity fails.
-pub fn verify<'a, F, C>(
+pub fn verify<F, C>(
 	table_n_vars: usize,
 	eval_claim: F,
 	eval_point: &[F],
 	channel: &mut C,
-) -> Result<LogupProof<'a, C::Oracle, F>, Error>
+) -> Result<LogupProof<C::Oracle, F>, Error>
 where
 	F: Field + ExtensionField<BinaryField1b>,
-	C: IOPVerifierChannel<'a, F, Elem = F>,
+	C: IOPVerifierChannel<F, Elem = F>,
 {
 	// Receive the pushforward Y commitment first, so the reduction's logUp challenge binds it.
 	//

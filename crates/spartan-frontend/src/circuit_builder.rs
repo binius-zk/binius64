@@ -396,31 +396,33 @@ impl<F: Field> WitnessWire<F> {
 /// `add` and `mul` compute actual field values and populate the witness array. Captures
 /// the first constraint violation as an error for debugging.
 #[derive(Debug)]
-pub struct WitnessGenerator<'a, F: Field> {
+pub struct WitnessGenerator<F: Field> {
 	derived_alloc: WireAllocator,
 	private_alloc: WireAllocator,
 	public: Vec<F>,
 	precommit: Vec<F>,
 	private: Vec<F>,
-	layout: &'a WitnessLayout<F>,
+	layout: WitnessLayout<F>,
 	first_error: Option<Backtrace>,
 }
 
-impl<'a, F: Field> WitnessGenerator<'a, F> {
-	pub fn new(layout: &'a WitnessLayout<F>) -> Self {
+impl<F: Field> WitnessGenerator<F> {
+	pub fn new(layout: &WitnessLayout<F>) -> Self {
 		let mut public = zeroed_vec(layout.public_size());
 		public[..layout.constants.len()].copy_from_slice(&layout.constants);
 
 		let precommit = zeroed_vec(layout.precommit_size());
 		let private = zeroed_vec(layout.private_size());
 
+		// This generator owns its layout, so `CircuitElem`s backed by it are `'static`.
+		// The one-time clone is dominated by the witness replay.
 		Self {
 			derived_alloc: WireAllocator::new(WireKind::Derived),
 			private_alloc: WireAllocator::new(WireKind::Private),
 			public,
 			precommit,
 			private,
-			layout,
+			layout: layout.clone(),
 			first_error: None,
 		}
 	}
@@ -479,7 +481,7 @@ impl<'a, F: Field> WitnessGenerator<'a, F> {
 	}
 }
 
-impl<'a, F: Field> CircuitBuilder for WitnessGenerator<'a, F> {
+impl<F: Field> CircuitBuilder for WitnessGenerator<F> {
 	type Wire = WitnessWire<F>;
 	type Field = F;
 
@@ -568,21 +570,24 @@ impl<F: Field> PublicWire<F> {
 /// Derived wires are allocated in the same order as [`ConstraintBuilder`], keeping their ids
 /// aligned so [`WitnessLayout::get`] resolves each to the correct public slot.
 #[derive(Debug)]
-pub struct InstanceGenerator<'a, F: Field> {
+pub struct InstanceGenerator<F: Field> {
 	derived_alloc: WireAllocator,
 	public: Vec<F>,
-	layout: &'a WitnessLayout<F>,
+	layout: WitnessLayout<F>,
 }
 
-impl<'a, F: Field> InstanceGenerator<'a, F> {
-	pub fn new(layout: &'a WitnessLayout<F>) -> Self {
+impl<F: Field> InstanceGenerator<F> {
+	pub fn new(layout: &WitnessLayout<F>) -> Self {
 		let mut public = zeroed_vec(layout.public_size());
 		public[..layout.constants.len()].copy_from_slice(&layout.constants);
 
+		// This generator owns its layout, so `CircuitElem`s backed by it are `'static`.
+		// A wrapper verifier channel can then hand its transparent closures to a deferring opener.
+		// The one-time clone is dominated by the channel's full circuit replay.
 		Self {
 			derived_alloc: WireAllocator::new(WireKind::Derived),
 			public,
-			layout,
+			layout: layout.clone(),
 		}
 	}
 
@@ -624,7 +629,7 @@ impl<'a, F: Field> InstanceGenerator<'a, F> {
 	}
 }
 
-impl<'a, F: Field> CircuitBuilder for InstanceGenerator<'a, F> {
+impl<F: Field> CircuitBuilder for InstanceGenerator<F> {
 	type Wire = PublicWire<F>;
 	type Field = F;
 

@@ -150,7 +150,7 @@ fn test_zk_wrapped_prove_verify() {
 		{
 			let inner_iop_verifier = &inner_iop_verifier;
 			let public = &public;
-			move |replay_channel: &mut ReplayChannel<'_, B128>| {
+			move |replay_channel: &mut ReplayChannel<B128>| {
 				let inner_public_elems = replay_channel.observe_many(public);
 				// ReplayChannel::Oracle = () and recv_oracle is a no-op, so pass ().
 				inner_iop_verifier

@@ -136,7 +136,7 @@ where
 			&mut rng,
 			{
 				let inner_iop_verifier = &self.inner_iop_verifier;
-				move |replay_channel: &mut ReplayChannel<'_, B128>| {
+				move |replay_channel: &mut ReplayChannel<B128>| {
 					inner_iop_verifier
 						.verify(&public_words, replay_channel)
 						.expect("replay verification should not fail");

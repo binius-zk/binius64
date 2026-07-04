@@ -61,7 +61,7 @@ where
 	oracle_commitments: Vec<MerkleScheme_::Digest>,
 	/// Oracle relations queued by [`Self::verify_oracle_relations`], opened together in
 	/// [`Self::finish`].
-	queue: Vec<OracleLinearRelation<'a, BaseFoldOracle, F>>,
+	queue: Vec<OracleLinearRelation<BaseFoldOracle, F>>,
 	next_oracle_index: usize,
 }
 
@@ -163,7 +163,7 @@ fn verify_batch_zk_basefold<F, MerkleScheme_, Challenger_>(
 	oracle_specs: &[OracleSpec],
 	fri_params: &FRIParams<F>,
 	oracle_commitments: Vec<MerkleScheme_::Digest>,
-	relations: Vec<OracleLinearRelation<'_, BaseFoldOracle, F>>,
+	relations: Vec<OracleLinearRelation<BaseFoldOracle, F>>,
 ) -> Result<(), Error>
 where
 	F: BinaryField,
@@ -331,7 +331,7 @@ where
 	}
 }
 
-impl<'a, F, MerkleScheme_, Challenger_> IOPVerifierChannel<'a, F>
+impl<'a, F, MerkleScheme_, Challenger_> IOPVerifierChannel<F>
 	for BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
 where
 	F: BinaryField,
@@ -372,7 +372,7 @@ where
 
 	fn verify_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error> {
 		// Queue the relations; the actual opening (masking + sumcheck + combined FRI) happens once,
 		// over all committed oracles, in [`Self::finish`].
