@@ -30,24 +30,27 @@ pub struct FinalLayer<F> {
 
 /// Verify the batched final layer of the table side.
 ///
-/// Batches three sum claims over the `m-1`-variable cube, then folds the highest variable once:
+/// Batches four sum claims over the `m-1`-variable cube, then folds the highest variable once:
 ///
 /// ```text
-///     S_1 = sum_{x'} eq(x'; Z) * (Y_0 * D_1 + Y_1 * D_0)(x') = num_1(Z)
-///     S_2 = sum_{x'} eq(x'; Z) * (D_0 * D_1)(x')             = den_1(Z)
-///     S_3 = sum_{x'} (T_0 * Y_0 + T_1 * Y_1)(x')             = e
+///     S_1  = sum_{x'} eq(x'; Z) * (Y_0 * D_1 + Y_1 * D_0)(x') = num_1(Z)
+///     S_2  = sum_{x'} eq(x'; Z) * (D_0 * D_1)(x')             = den_1(Z)
+///     S_3a = sum_{x'} (Y_0 * T_0)(x')                         = e_0
+///     S_3b = sum_{x'} (Y_1 * T_1)(x')                         = e_1
 /// ```
 ///
-/// The three claims are:
+/// The four claims are:
 ///
 /// - `S_1` and `S_2`: the layer-1 numerator and denominator of the fractional-addition circuit.
-/// - `S_3`: the product claim `<T, Y> = e`, split on the highest variable.
+/// - `S_3a` and `S_3b`: the product claim `<T, Y> = e`, split on the highest variable.
 ///
-/// A shared challenge point and a shared line-fold collapse all three to one evaluation point.
+/// Only `e_0` is sent, so the verifier recovers `e_1 = e - e_0`.
+/// A shared challenge point and a shared line-fold collapse all four to one evaluation point.
 /// That gives one evaluation of the pushforward `Y` and one evaluation of the table `T`.
 ///
 /// The summand has degree 3 per variable.
 /// It is the `eq` factor (degree 1) times a product of two halves (degree 2).
+/// The `eq`-free product claims are degree 2, so the batched degree is still 3.
 ///
 /// # Arguments
 ///
@@ -72,14 +75,21 @@ where
 	C: IPVerifierChannel<F>,
 	C::Elem: From<F>,
 {
-	// Batch the three sum claims with powers of a single coefficient and run the sumcheck.
+	// The product claim <T, Y> = e splits on the highest variable into e = e_0 + e_1.
+	// Only e_0 = <Y_0, T_0> is sent, so recover e_1 = e - e_0.
+	let e_0 = channel
+		.recv_one()
+		.map_err(|_| VerificationError::TranscriptIsEmpty)?;
+	let e_1 = eval_claim - e_0.clone();
+
+	// Batch the four sum claims with powers of a single coefficient and run the sumcheck.
 	//
-	//     sum = num_1(Z) + batch_coeff * den_1(Z) + batch_coeff^2 * e
+	//     sum = num_1(Z) + bc * den_1(Z) + bc^2 * e_0 + bc^3 * e_1
 	let BatchSumcheckOutput {
 		batch_coeff,
 		eval,
 		mut challenges,
-	} = sumcheck::batch_verify::<F, C>(m - 1, 3, &[layer1_num, layer1_den, eval_claim], channel)?;
+	} = sumcheck::batch_verify::<F, C>(m - 1, 3, &[layer1_num, layer1_den, e_0, e_1], channel)?;
 
 	// Read the leaf halves of the pushforward and the table at the sumcheck challenge point.
 	//
@@ -104,17 +114,21 @@ where
 	//
 	//     num relation : eq * (Y_0 * D_1 + Y_1 * D_0)      (fractional-addition numerator)
 	//     den relation : eq * (D_0 * D_1)                  (fractional-addition denominator)
-	//     prod relation: T_0 * Y_0 + T_1 * Y_1             (leaf product of <T, Y>)
+	//     prod 0       : Y_0 * T_0                          (leaf product e_0)
+	//     prod 1       : Y_1 * T_1                          (leaf product e_1)
 	let num_relation = y_0.clone() * d_1.clone() + y_1.clone() * d_0.clone();
 	let den_relation = d_0 * d_1;
-	let prod_relation = t_0.clone() * y_0.clone() + t_1.clone() * y_1.clone();
+	let prod_0 = y_0.clone() * t_0.clone();
+	let prod_1 = y_1.clone() * t_1.clone();
 	// Both fractional-addition relations carry the same eq factor, so factor it out.
 	//
-	//     expected = eq * (num_relation + batch_coeff * den_relation)
-	//              + batch_coeff^2 * prod_relation
+	//     expected = eq * (num_relation + bc * den_relation)
+	//              + bc^2 * prod_0 + bc^3 * prod_1
 	let batch_coeff_sq = batch_coeff.clone().square();
-	let expected =
-		eq_eval * (num_relation + batch_coeff * den_relation) + batch_coeff_sq * prod_relation;
+	let batch_coeff_cube = batch_coeff_sq.clone() * batch_coeff.clone();
+	let expected = eq_eval * (num_relation + batch_coeff * den_relation)
+		+ batch_coeff_sq * prod_0
+		+ batch_coeff_cube * prod_1;
 	channel
 		.assert_zero(eval - expected)
 		.map_err(|_| VerificationError::FinalLayerMismatch)?;

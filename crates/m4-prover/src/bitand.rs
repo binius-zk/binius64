@@ -4,11 +4,10 @@
 
 use binius_core::{
 	constraint_system::{AndConstraint, ShiftedValueIndex},
-	verify::eval_shifted_word,
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, PackedField};
-use binius_ip_prover::{channel::IPProverChannel, sumcheck::Error};
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::BinarySubspace;
 use binius_prover::and_reduction::prover::OblongZerocheckProver;
 use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
@@ -181,11 +180,7 @@ impl BatchAndCheckWitness {
 	/// - The claimed `A`, `B`, `C` evaluations.
 	/// - The univariate (bit-index) challenge.
 	/// - The multilinear evaluation point reached by the sumcheck.
-	///
-	/// # Errors
-	///
-	/// Returns an error if the underlying sumcheck fails.
-	pub fn prove<P, Channel>(self, channel: &mut Channel) -> Result<AndCheckOutput<B128>, Error>
+	pub fn prove<P, Channel>(self, channel: &mut Channel) -> AndCheckOutput<B128>
 	where
 		P: PackedField<Scalar = B128>,
 		Channel: IPProverChannel<B128>,
@@ -238,14 +233,14 @@ impl BatchAndCheckWitness {
 fn eval_operand_words(words: &[Word], operand: &[ShiftedValueIndex]) -> Word {
 	operand.iter().fold(Word::ZERO, |acc, sv| {
 		let word = words[sv.value_index.0 as usize];
-		acc ^ eval_shifted_word(word, sv.shift_variant, sv.amount)
+		acc ^ sv.shift_variant.apply(word, sv.amount)
 	})
 }
 
 #[cfg(test)]
 mod tests {
 	use assert_matches::assert_matches;
-	use binius_core::{constraint_system::ValueVec, verify::eval_operand};
+	use binius_core::constraint_system::ValueVec;
 	use binius_field::{
 		PackedBinaryGhash1x128b,
 		linear_transformation::{
@@ -361,9 +356,9 @@ mod tests {
 		let mut b = Vec::new();
 		let mut c = Vec::new();
 		for constraint in and_constraints {
-			a.push(eval_operand(vv, &constraint.a));
-			b.push(eval_operand(vv, &constraint.b));
-			c.push(eval_operand(vv, &constraint.c));
+			a.push(vv.eval_operand(&constraint.a));
+			b.push(vv.eval_operand(&constraint.b));
+			c.push(vv.eval_operand(&constraint.c));
 		}
 		(a, b, c)
 	}
@@ -505,7 +500,7 @@ mod tests {
 
 		// Prover and verifier agree on the reduced claim over the batched columns.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prove_output = witness.prove::<P, _>(&mut prover_transcript).unwrap();
+		let prove_output = witness.prove::<P, _>(&mut prover_transcript);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let verify_output = verify_bitand_reduction(log_total, &mut verifier_transcript).unwrap();
@@ -531,7 +526,7 @@ mod tests {
 
 		// Produce a faithful proof.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let _ = witness.prove::<P, _>(&mut prover_transcript).unwrap();
+		let _ = witness.prove::<P, _>(&mut prover_transcript);
 		let mut proof = prover_transcript.finalize();
 
 		// Mutation: flip a bit in the prover's first message, the univariate round evaluations.
@@ -575,7 +570,7 @@ mod tests {
 			let log_total = checked_log_2(witness.a().len());
 
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-			let prove_output = witness.prove::<P, _>(&mut prover_transcript).unwrap();
+			let prove_output = witness.prove::<P, _>(&mut prover_transcript);
 
 			let mut verifier_transcript = prover_transcript.into_verifier();
 			let verify_output =

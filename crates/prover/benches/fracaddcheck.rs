@@ -1,10 +1,11 @@
 // Copyright 2025-2026 The Binius Developers
 
 use binius_field::arch::OptimalPackedB128;
+use binius_ip::prodcheck::MultilinearEvalClaim;
+use binius_ip_prover::fracaddcheck::FracAddCheckProver;
 use binius_math::{multilinear::evaluate::evaluate, test_utils::random_field_buffer};
-use binius_prover::protocols::fracaddcheck::FracAddCheckProver;
 use binius_transcript::ProverTranscript;
-use binius_verifier::{config::StdChallenger, protocols::prodcheck::MultilinearEvalClaim};
+use binius_verifier::config::StdChallenger;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 
 type P = OptimalPackedB128;
@@ -74,7 +75,7 @@ fn bench_fracaddcheck_prove(c: &mut Criterion) {
 						FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone()));
 					(prover, claim.clone())
 				},
-				|(prover, claim)| prover.prove(claim, &mut transcript).unwrap(),
+				|(prover, claim)| prover.prove(claim, &mut transcript),
 				BatchSize::SmallInput,
 			);
 		});

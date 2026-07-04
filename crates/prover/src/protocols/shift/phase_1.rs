@@ -4,28 +4,25 @@ use std::{iter, ops::Range};
 
 use binius_core::word::Word;
 use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
-use binius_ip_prover::channel::IPProverChannel;
+use binius_ip::sumcheck::{SumcheckOutput, common::RoundCoeffs};
+use binius_ip_prover::{
+	channel::IPProverChannel,
+	sumcheck::{bivariate_product::BivariateProductSumcheckProver, common::SumcheckProver},
+};
 use binius_math::{FieldBuffer, inner_product::inner_product_buffers};
 use binius_utils::rayon::prelude::*;
 use binius_verifier::{
 	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS, WORD_SIZE_BYTES},
-	protocols::{
-		shift::SHIFT_VARIANT_COUNT,
-		sumcheck::{SumcheckOutput, common::RoundCoeffs},
-	},
+	protocols::shift::SHIFT_VARIANT_COUNT,
 };
 use bytemuck::zeroed_vec;
 use itertools::izip;
 use tracing::instrument;
 
 use super::{
-	error::Error,
 	key_collection::{KeyCollection, Operation},
 	monster::build_h_parts,
 	prove::PreparedOperatorData,
-};
-use crate::protocols::sumcheck::{
-	bivariate_product::BivariateProductSumcheckProver, common::SumcheckProver,
 };
 
 // This is the number of variables in the g (and h) multilinears of phase 1.
@@ -41,13 +38,13 @@ pub fn prove_phase_1<F, P, Channel>(
 	bitand_data: &PreparedOperatorData<F>,
 	intmul_data: &PreparedOperatorData<F>,
 	channel: &mut Channel,
-) -> Result<SumcheckOutput<F>, Error>
+) -> SumcheckOutput<F>
 where
 	F: BinaryField + From<AESTowerField8b>,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
 {
-	let g_parts = build_g_parts::<_, P>(words, key_collection, bitand_data, intmul_data)?;
+	let g_parts = build_g_parts::<_, P>(words, key_collection, bitand_data, intmul_data);
 
 	// BitAnd and IntMul share the same `r_zhat_prime`.
 	let h_parts = build_h_parts(bitand_data.r_zhat_prime);
@@ -85,14 +82,14 @@ fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverC
 	g_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
 	h_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
 	channel: &mut Channel,
-) -> Result<SumcheckOutput<F>, Error> {
+) -> SumcheckOutput<F> {
 	// Build `BivariateProductSumcheckProver` provers.
 	let mut provers = iter::zip(g_parts, h_parts)
 		.map(|(g_part, h_part)| {
 			let sum = inner_product_buffers(&g_part, &h_part);
 			BivariateProductSumcheckProver::new([g_part, h_part], sum)
 		})
-		.collect::<Result<Vec<_>, _>>()?;
+		.collect::<Vec<_>>();
 
 	// Perform the sumcheck rounds, collecting challenges.
 	let n_vars = 2 * LOG_WORD_SIZE_BITS;
@@ -100,7 +97,7 @@ fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverC
 	for _ in 0..n_vars {
 		let mut all_round_coeffs = Vec::new();
 		for prover in &mut provers {
-			all_round_coeffs.extend(prover.execute()?);
+			all_round_coeffs.extend(prover.execute());
 		}
 
 		let summed_round_coeffs = all_round_coeffs
@@ -115,7 +112,7 @@ fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverC
 		challenges.push(challenge);
 
 		for prover in &mut provers {
-			prover.fold(challenge)?;
+			prover.fold(challenge);
 		}
 	}
 	challenges.reverse();
@@ -123,7 +120,7 @@ fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverC
 	let multilinear_evals = provers
 		.into_iter()
 		.map(|prover| prover.finish())
-		.collect::<Result<Vec<Vec<F>>, _>>()?;
+		.collect::<Vec<Vec<F>>>();
 
 	// Evaluate the composition polynomial to compute `gamma`.
 	let gamma = multilinear_evals
@@ -136,10 +133,10 @@ fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverC
 		})
 		.sum();
 
-	Ok(SumcheckOutput {
+	SumcheckOutput {
 		challenges,
 		eval: gamma,
-	})
+	}
 }
 
 /// Constructs the "g" multilinear parts for both BITAND and INTMUL operations.
@@ -171,7 +168,7 @@ fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 	key_collection: &KeyCollection,
 	bitand_operator_data: &PreparedOperatorData<F>,
 	intmul_operator_data: &PreparedOperatorData<F>,
-) -> Result<[FieldBuffer<P>; SHIFT_VARIANT_COUNT], Error> {
+) -> [FieldBuffer<P>; SHIFT_VARIANT_COUNT] {
 	let acc_size: usize = SHIFT_VARIANT_COUNT << (LOG_LEN.saturating_sub(P::LOG_WIDTH));
 
 	assert!(
@@ -251,8 +248,7 @@ fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 			},
 		);
 
-	let parts = build_multilinear_parts(&multilinears)?;
-	Ok(parts)
+	build_multilinear_parts(&multilinears)
 }
 
 /// Builds the multilinear parts for a single operation by combining its operand multilinears.
@@ -263,18 +259,16 @@ fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 #[instrument(skip_all, name = "build_multilinear_parts")]
 fn build_multilinear_parts<P: PackedField>(
 	multilinears: &[P],
-) -> Result<[FieldBuffer<P>; SHIFT_VARIANT_COUNT], Error> {
+) -> [FieldBuffer<P>; SHIFT_VARIANT_COUNT] {
 	assert!(
 		P::LOG_WIDTH < LOG_LEN,
 		"P::WIDTH is not supposed to exceed 8, so this statement must hold"
 	);
 
-	let parts = multilinears
+	multilinears
 		.chunks(1 << (LOG_LEN - P::LOG_WIDTH))
 		.map(|chunk| FieldBuffer::new(LOG_LEN, chunk.to_vec().into_boxed_slice()))
 		.collect::<Vec<_>>()
 		.try_into()
-		.expect("chunk has SHIFT_VARIANT_COUNT parts of size 1 << LOG_LEN");
-
-	Ok(parts)
+		.expect("chunk has SHIFT_VARIANT_COUNT parts of size 1 << LOG_LEN")
 }

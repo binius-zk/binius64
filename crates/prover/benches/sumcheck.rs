@@ -1,13 +1,13 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{arch::OptimalPackedB128, packed::PackedField};
+use binius_ip_prover::sumcheck::{
+	bivariate_product::BivariateProductSumcheckProver, prove_single, prove_single_mlecheck,
+	quadratic_mle::QuadraticMleCheckProver,
+};
 use binius_math::{
 	inner_product::inner_product_par,
 	test_utils::{random_field_buffer, random_scalars},
-};
-use binius_prover::protocols::sumcheck::{
-	bivariate_product::BivariateProductSumcheckProver, prove_single, prove_single_mlecheck,
-	quadratic_mle::QuadraticMleCheckProver,
 };
 use binius_transcript::ProverTranscript;
 use binius_utils::rayon::prelude::*;
@@ -37,8 +37,8 @@ fn bench_sumcheck_prove(c: &mut Criterion) {
 			b.iter_batched(
 				|| [multilinear_a.clone(), multilinear_b.clone()],
 				|multilinears| {
-					let prover = BivariateProductSumcheckProver::new(multilinears, sum).unwrap();
-					prove_single(prover, &mut transcript).unwrap()
+					let prover = BivariateProductSumcheckProver::new(multilinears, sum);
+					prove_single(prover, &mut transcript)
 				},
 				BatchSize::SmallInput,
 			);
@@ -76,10 +76,9 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 						|[a, b]| a * b,
 						eval_point.clone(),
 						eval_claim,
-					)
-					.unwrap();
+					);
 
-					prove_single_mlecheck(prover, &mut transcript).unwrap()
+					prove_single_mlecheck(prover, &mut transcript)
 				},
 				BatchSize::SmallInput,
 			);
@@ -119,10 +118,9 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 						|[a, b, _c]| a * b,
 						eval_point.clone(),
 						eval_claim,
-					)
-					.unwrap();
+					);
 
-					prove_single_mlecheck(prover, &mut transcript).unwrap()
+					prove_single_mlecheck(prover, &mut transcript)
 				},
 				BatchSize::SmallInput,
 			);

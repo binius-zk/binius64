@@ -110,8 +110,9 @@ impl Verifier {
 	{
 		let mut channel = self.iop_compiler.create_channel(transcript);
 
-		// Receive the commitment, redraw the same point, and read the claimed evaluation.
-		let oracle = channel.recv_oracle()?;
+		// Receive the commitment, redraw the same point, and read the claimed evaluation. The
+		// packed batch witness is witness-dependent (M4 commits it without ZK regardless).
+		let oracle = channel.recv_oracle(self.layout.log_witness_elems, true)?;
 		let point = channel.sample_many(self.layout.log_witness_elems);
 		let eval = channel.recv_one()?;
 

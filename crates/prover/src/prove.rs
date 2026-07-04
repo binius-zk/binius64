@@ -2,17 +2,17 @@
 
 use binius_core::{
 	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueVec},
-	verify::eval_operand,
 	word::Word,
 };
 use binius_field::{
-	AESTowerField8b as B8, BinaryField, ExtensionField, PackedExtension, PackedField,
+	AESTowerField8b as B8, BinaryField, ExtensionField, Field, PackedExtension, PackedField,
 };
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{
 	basefold_channel::BaseFoldProverChannel, basefold_compiler::BaseFoldProverCompiler,
 	channel::IOPProverChannel,
 };
+use binius_ip::sumcheck::SumcheckOutput;
 use binius_math::{
 	BinarySubspace, FieldBuffer, FieldSlice,
 	inner_product::inner_product,
@@ -27,7 +27,7 @@ use binius_verifier::{
 	config::{
 		B1, B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
 	},
-	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput, sumcheck::SumcheckOutput},
+	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput},
 };
 use digest::Output;
 use rand::{SeedableRng, rngs::StdRng};
@@ -123,16 +123,26 @@ impl IOPProver {
 		drop(witness_commit_guard);
 
 		// [phase] IntMul Reduction - multiplication constraint reduction
-		let intmul_guard = tracing::info_span!(
-			"[phase] IntMul Reduction",
-			phase = "intmul_reduction",
-			perfetto_category = "phase",
-			n_constraints = cs.mul_constraints.len()
-		)
-		.entered();
-		let mul_witness = build_intmul_witness(&cs.mul_constraints, &witness);
-		let intmul_output = prove_intmul_reduction::<_, P, _>(mul_witness, &mut *channel)?;
-		drop(intmul_guard);
+		//
+		// Skipped entirely (no transcript messages) when the constraint system has no MUL
+		// constraints. The verifier applies the identical guard, so the transcript stays in sync;
+		// the zero `OperatorData` synthesized below then contributes nothing to the shift
+		// reduction.
+		let intmul_output = if cs.n_mul_constraints() > 0 {
+			let intmul_guard = tracing::info_span!(
+				"[phase] IntMul Reduction",
+				phase = "intmul_reduction",
+				perfetto_category = "phase",
+				n_constraints = cs.mul_constraints.len()
+			)
+			.entered();
+			let mul_witness = build_intmul_witness(&cs.mul_constraints, &witness);
+			let intmul_output = prove_intmul_reduction::<_, P, _>(mul_witness, &mut *channel)?;
+			drop(intmul_guard);
+			Some(intmul_output)
+		} else {
+			None
+		};
 
 		// [phase] BitAnd Reduction - AND constraint reduction
 		let bitand_guard = tracing::info_span!(
@@ -150,7 +160,7 @@ impl IOPProver {
 				c_eval,
 				z_challenge,
 				eval_point,
-			} = prove_bitand_reduction::<B128, P, _>(bitand_witness, &mut *channel)?;
+			} = prove_bitand_reduction::<B128, P, _>(bitand_witness, &mut *channel);
 			OperatorData {
 				evals: vec![a_eval, b_eval, c_eval],
 				r_zhat_prime: z_challenge,
@@ -161,30 +171,37 @@ impl IOPProver {
 
 		// Build `OperatorData` for IntMul using the same `r_zhat_prime`
 		// challenge as in BitAnd. Sharing this univariate challenge
-		// improves ShiftReduction perf.
-		let intmul_claim = {
-			let IntMulOutput {
+		// improves ShiftReduction perf. When IntMul was skipped, synthesize a zero claim (four
+		// zero evals at an empty point): the shift reduction iterates the (empty) MUL constraints,
+		// so this claim contributes zero to its batched evaluation.
+		let intmul_claim = match intmul_output {
+			Some(IntMulOutput {
 				eval_point,
 				a_evals,
 				b_evals,
 				c_lo_evals,
 				c_hi_evals,
-			} = intmul_output;
-
-			let r_zhat_prime = bitand_claim.r_zhat_prime;
-			let subspace = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
-			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
-			let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
-			OperatorData {
-				evals: vec![
-					make_final_claim(a_evals),
-					make_final_claim(b_evals),
-					make_final_claim(c_lo_evals),
-					make_final_claim(c_hi_evals),
-				],
-				r_zhat_prime,
-				r_x_prime: eval_point,
+			}) => {
+				let r_zhat_prime = bitand_claim.r_zhat_prime;
+				let subspace = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+				let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
+				let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
+				OperatorData {
+					evals: vec![
+						make_final_claim(a_evals),
+						make_final_claim(b_evals),
+						make_final_claim(c_lo_evals),
+						make_final_claim(c_hi_evals),
+					],
+					r_zhat_prime,
+					r_x_prime: eval_point,
+				}
 			}
+			None => OperatorData {
+				evals: vec![B128::ZERO; 4],
+				r_zhat_prime: bitand_claim.r_zhat_prime,
+				r_x_prime: Vec::new(),
+			},
 		};
 
 		// [phase] Shift Reduction - shift operations
@@ -203,7 +220,7 @@ impl IOPProver {
 			bitand_claim,
 			intmul_claim,
 			&mut *channel,
-		)?;
+		);
 		drop(shift_guard);
 
 		// [phase] Ring-Switching + PCS Opening
@@ -444,7 +461,7 @@ pub fn pack_witness<P: PackedField<Scalar = B128>>(
 fn prove_bitand_reduction<F, PChallenge, Channel>(
 	witness: AndCheckWitness,
 	channel: &mut Channel,
-) -> Result<AndCheckOutput<F>, Error>
+) -> AndCheckOutput<F>
 where
 	F: BinaryField + From<B8>,
 	PChallenge: PackedField<Scalar = F>,
@@ -468,7 +485,7 @@ where
 		prover_message_domain.isomorphic(),
 	);
 
-	Ok(prover.prove_with_channel(channel)?)
+	prover.prove_with_channel(channel)
 }
 
 fn prove_intmul_reduction<F, P, Channel>(
@@ -484,15 +501,9 @@ where
 
 	let mut mulcheck_prover = IntMulProver::new(0, channel);
 
-	// Words must be converted to u64 because
-	// `Bitwise` requires `From<u8>` and `Shr<usize>`
-	// We could implement these for `Word` in the future.
-	let convert_to_u64 = |w: Vec<Word>| w.into_iter().map(|w| w.0).collect::<Vec<u64>>();
-	let [a_u64, b_u64, lo_u64, hi_u64] = [a, b, lo, hi].map(convert_to_u64);
-	let intmul_witness =
-		IntMulWitness::<P, _, _>::new(LOG_WORD_SIZE_BITS, &a_u64, &b_u64, &lo_u64, &hi_u64)?;
+	let intmul_witness = IntMulWitness::<P>::new(LOG_WORD_SIZE_BITS, &a, &b, &lo, &hi)?;
 
-	Ok(mulcheck_prover.prove(intmul_witness)?)
+	Ok(mulcheck_prover.prove(intmul_witness))
 }
 
 struct AndCheckWitness {
@@ -519,9 +530,9 @@ fn build_bitand_witness(and_constraints: &[AndConstraint], witness: &ValueVec) -
 	(and_constraints, a.spare_capacity_mut(), b.spare_capacity_mut(), c.spare_capacity_mut())
 		.into_par_iter()
 		.for_each(|(constraint, a_i, b_i, c_i)| {
-			a_i.write(eval_operand(witness, &constraint.a));
-			b_i.write(eval_operand(witness, &constraint.b));
-			c_i.write(eval_operand(witness, &constraint.c));
+			a_i.write(witness.eval_operand(&constraint.a));
+			b_i.write(witness.eval_operand(&constraint.b));
+			c_i.write(witness.eval_operand(&constraint.c));
 		});
 
 	// Safety: all entries in a, b, c are initialized in the parallel loop above.
@@ -552,10 +563,10 @@ fn build_intmul_witness(mul_constraints: &[MulConstraint], witness: &ValueVec) -
 	)
 		.into_par_iter()
 		.for_each(|(constraint, a_i, b_i, lo_i, hi_i)| {
-			a_i.write(eval_operand(witness, &constraint.a));
-			b_i.write(eval_operand(witness, &constraint.b));
-			lo_i.write(eval_operand(witness, &constraint.lo));
-			hi_i.write(eval_operand(witness, &constraint.hi));
+			a_i.write(witness.eval_operand(&constraint.a));
+			b_i.write(witness.eval_operand(&constraint.b));
+			lo_i.write(witness.eval_operand(&constraint.lo));
+			hi_i.write(witness.eval_operand(&constraint.hi));
 		});
 
 	// Safety: all entries in a, b, lo, hi are initialized in the parallel loop above.

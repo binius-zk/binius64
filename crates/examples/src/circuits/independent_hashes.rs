@@ -1,9 +1,17 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 
+//! Batches of independent hash primitive evaluations.
+//!
+//! Each circuit proves `n` independent compression-function or permutation evaluations. The
+//! primitive outputs are exposed as public inout wires and asserted equal to the gadget
+//! outputs: dead-code elimination keeps only gates that feed assertions or public IO, so
+//! without observing the outputs the entire hash computation would be pruned and the
+//! benchmarks would measure an empty circuit.
+
 use anyhow::{Result, ensure};
 use binius_circuits::{
-	blake3::blake3_compress,
+	blake3::{blake3_compress, ref_compress},
 	keccak::permutation::{Permutation, State as KeccakState},
 	sha256::{State as Sha256State, populate_message_block, sha256_compress},
 };
@@ -19,6 +27,11 @@ use crate::ExampleCircuit;
 ///
 /// Benchmark harnesses override this with environment variables.
 pub const DEFAULT_NUM_PRIMITIVES: usize = 16;
+
+/// SHA-256 initial hash value (FIPS 180-4), matching [`Sha256State::iv`].
+const SHA256_IV: [u32; 8] = [
+	0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+];
 
 #[derive(Debug, Clone, Args)]
 pub struct PrimitiveParams {
@@ -36,9 +49,15 @@ pub struct Instance {
 
 /// Independent SHA-256 compression evaluations.
 ///
-/// Each circuit component runs `compress(IV, m_i)` for a fresh 64-byte message block.
+/// Each circuit component runs `compress(IV, m_i)` for a fresh 64-byte message block and
+/// asserts the resulting digest against a public inout copy.
 pub struct IndependentSha256Compressions {
-	blocks: Vec<[Wire; 16]>,
+	compressions: Vec<Sha256Compression>,
+}
+
+struct Sha256Compression {
+	block: [Wire; 16],
+	digest: [Wire; 8],
 }
 
 impl ExampleCircuit for IndependentSha256Compressions {
@@ -48,21 +67,33 @@ impl ExampleCircuit for IndependentSha256Compressions {
 	fn build(params: PrimitiveParams, builder: &mut CircuitBuilder) -> Result<Self> {
 		ensure!(params.num_primitives > 0, "num_primitives must be positive");
 
-		let blocks = (0..params.num_primitives)
-			.map(|_| {
+		let compressions = (0..params.num_primitives)
+			.map(|i| {
 				let block = std::array::from_fn(|_| builder.add_witness());
-				let _out = sha256_compress(builder, Sha256State::iv(builder), block);
-				block
+				let out = sha256_compress(builder, Sha256State::iv(builder), block);
+				let digest = std::array::from_fn(|_| builder.add_inout());
+				// The raw 64-bit equality holds because honest witness population
+				// zero-extends every 32-bit input and the gadget preserves empty high
+				// halves.
+				builder.assert_eq_v(format!("sha256_compression_out[{i}]"), out.0, digest);
+				Sha256Compression { block, digest }
 			})
 			.collect();
 
-		Ok(Self { blocks })
+		Ok(Self { compressions })
 	}
 
 	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
 		let mut rng = StdRng::seed_from_u64(instance.seed.unwrap_or(DEFAULT_RANDOM_SEED));
-		for block in &self.blocks {
-			populate_message_block(w, block, next_block(&mut rng));
+		for compression in &self.compressions {
+			let block_bytes = next_block(&mut rng);
+			populate_message_block(w, &compression.block, block_bytes);
+
+			let mut state = SHA256_IV;
+			sha2::block_api::compress256(&mut state, &[block_bytes]);
+			for (wire, value) in compression.digest.iter().zip(state) {
+				w[*wire] = Word(value as u64);
+			}
 		}
 		Ok(())
 	}
@@ -74,7 +105,8 @@ impl ExampleCircuit for IndependentSha256Compressions {
 
 /// Independent BLAKE3 compression evaluations.
 ///
-/// Each circuit component runs one independent BLAKE3 compression function.
+/// Each circuit component runs one independent BLAKE3 compression function and asserts the
+/// resulting chaining value against a public inout copy.
 pub struct IndependentBlake3Compressions {
 	compressions: Vec<Blake3Compression>,
 }
@@ -85,6 +117,7 @@ struct Blake3Compression {
 	counter: Wire,
 	block_len: Wire,
 	flags: Wire,
+	out_cv: [Wire; 8],
 }
 
 impl ExampleCircuit for IndependentBlake3Compressions {
@@ -95,19 +128,23 @@ impl ExampleCircuit for IndependentBlake3Compressions {
 		ensure!(params.num_primitives > 0, "num_primitives must be positive");
 
 		let compressions = (0..params.num_primitives)
-			.map(|_| {
+			.map(|i| {
 				let cv = std::array::from_fn(|_| builder.add_witness());
 				let block = std::array::from_fn(|_| builder.add_witness());
 				let counter = builder.add_witness();
 				let block_len = builder.add_witness();
 				let flags = builder.add_witness();
-				let _out = blake3_compress(builder, cv, block, counter, block_len, flags);
+				let out = blake3_compress(builder, cv, block, counter, block_len, flags);
+				let out_cv = std::array::from_fn(|_| builder.add_inout());
+				// See the SHA-256 note on raw 64-bit equality over 32-bit lanes.
+				builder.assert_eq_v(format!("blake3_compression_out[{i}]"), out, out_cv);
 				Blake3Compression {
 					cv,
 					block,
 					counter,
 					block_len,
 					flags,
+					out_cv,
 				}
 			})
 			.collect();
@@ -118,15 +155,26 @@ impl ExampleCircuit for IndependentBlake3Compressions {
 	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
 		let mut rng = StdRng::seed_from_u64(instance.seed.unwrap_or(DEFAULT_RANDOM_SEED));
 		for compression in &self.compressions {
-			for wire in compression.cv {
-				w[wire] = next_u32_word(&mut rng);
+			let cv: [u32; 8] = std::array::from_fn(|_| rng.next_u32());
+			let block: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
+			let counter = rng.next_u64();
+			let block_len = rng.next_u32() % 65;
+			let flags = rng.next_u32();
+
+			for (wire, value) in compression.cv.iter().zip(cv) {
+				w[*wire] = Word(value as u64);
 			}
-			for wire in compression.block {
-				w[wire] = next_u32_word(&mut rng);
+			for (wire, value) in compression.block.iter().zip(block) {
+				w[*wire] = Word(value as u64);
 			}
-			w[compression.counter] = Word(rng.next_u64());
-			w[compression.block_len] = Word((rng.next_u32() % 65) as u64);
-			w[compression.flags] = next_u32_word(&mut rng);
+			w[compression.counter] = Word(counter);
+			w[compression.block_len] = Word(block_len as u64);
+			w[compression.flags] = Word(flags as u64);
+
+			let expected = ref_compress(&cv, &block, counter, block_len, flags);
+			for (wire, value) in compression.out_cv.iter().zip(expected) {
+				w[*wire] = Word(value as u64);
+			}
 		}
 		Ok(())
 	}
@@ -137,8 +185,16 @@ impl ExampleCircuit for IndependentBlake3Compressions {
 }
 
 /// Independent Keccak-f\[1600\] permutation evaluations.
+///
+/// Each circuit component runs one independent permutation and asserts the output state
+/// against a public inout copy.
 pub struct IndependentKeccakPermutations {
-	permutations: Vec<Permutation>,
+	permutations: Vec<KeccakPermutation>,
+}
+
+struct KeccakPermutation {
+	permutation: Permutation,
+	output: [Wire; 25],
 }
 
 impl ExampleCircuit for IndependentKeccakPermutations {
@@ -149,9 +205,19 @@ impl ExampleCircuit for IndependentKeccakPermutations {
 		ensure!(params.num_primitives > 0, "num_primitives must be positive");
 
 		let permutations = (0..params.num_primitives)
-			.map(|_| {
+			.map(|i| {
 				let words = std::array::from_fn(|_| builder.add_witness());
-				Permutation::new(builder, KeccakState { words })
+				let permutation = Permutation::new(builder, KeccakState { words });
+				let output = std::array::from_fn(|_| builder.add_inout());
+				builder.assert_eq_v(
+					format!("keccak_permutation_out[{i}]"),
+					permutation.output_state.words,
+					output,
+				);
+				KeccakPermutation {
+					permutation,
+					output,
+				}
 			})
 			.collect();
 
@@ -161,8 +227,14 @@ impl ExampleCircuit for IndependentKeccakPermutations {
 	fn populate_witness(&self, instance: Instance, w: &mut WitnessFiller) -> Result<()> {
 		let mut rng = StdRng::seed_from_u64(instance.seed.unwrap_or(DEFAULT_RANDOM_SEED));
 		for permutation in &self.permutations {
-			let state = std::array::from_fn(|_| rng.next_u64());
-			permutation.populate_state(w, state);
+			let state: [u64; 25] = std::array::from_fn(|_| rng.next_u64());
+			permutation.permutation.populate_state(w, state);
+
+			let mut expected = state;
+			tiny_keccak::keccakf(&mut expected);
+			for (wire, value) in permutation.output.iter().zip(expected) {
+				w[*wire] = Word(value);
+			}
 		}
 		Ok(())
 	}
@@ -170,10 +242,6 @@ impl ExampleCircuit for IndependentKeccakPermutations {
 	fn param_summary(params: &Self::Params) -> Option<String> {
 		Some(format!("{}p", params.num_primitives))
 	}
-}
-
-fn next_u32_word(rng: &mut StdRng) -> Word {
-	Word(rng.next_u32() as u64)
 }
 
 fn next_block(rng: &mut StdRng) -> [u8; 64] {
@@ -252,5 +320,44 @@ mod tests {
 			)
 			.is_err()
 		);
+	}
+
+	/// Guard against dead-code elimination pruning the hash logic: each primitive must emit
+	/// a non-trivial number of AND constraints per evaluation.
+	#[test]
+	fn circuits_emit_hash_constraints() {
+		fn and_count<E>() -> usize
+		where
+			E: ExampleCircuit<Params = PrimitiveParams, Instance = Instance>,
+		{
+			let mut builder = CircuitBuilder::new();
+			E::build(PrimitiveParams { num_primitives: 1 }, &mut builder).unwrap();
+			builder.build().constraint_system().and_constraints.len()
+		}
+
+		assert!(and_count::<IndependentSha256Compressions>() > 100);
+		assert!(and_count::<IndependentBlake3Compressions>() > 100);
+		assert!(and_count::<IndependentKeccakPermutations>() > 100);
+	}
+
+	/// Tampering with the expected output must fail the output assertions during wire
+	/// witness evaluation, proving they are enforced.
+	#[test]
+	fn tampered_digest_fails_output_assertion() {
+		let mut builder = CircuitBuilder::new();
+		let example = IndependentSha256Compressions::build(
+			PrimitiveParams { num_primitives: 1 },
+			&mut builder,
+		)
+		.unwrap();
+		let circuit = builder.build();
+		let mut filler = circuit.new_witness_filler();
+		example
+			.populate_witness(Instance { seed: Some(7) }, &mut filler)
+			.unwrap();
+
+		let digest_wire = example.compressions[0].digest[0];
+		filler[digest_wire] = Word(filler[digest_wire].0 ^ 1);
+		assert!(circuit.populate_wire_witness(&mut filler).is_err());
 	}
 }

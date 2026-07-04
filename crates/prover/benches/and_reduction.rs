@@ -9,6 +9,7 @@ use binius_field::{
 		OutputWrappingTransformationFactory,
 	},
 };
+use binius_ip_prover::sumcheck::{common::SumcheckProver, quadratic_mle::QuadraticMleCheckProver};
 use binius_math::{
 	BinarySubspace,
 	univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
@@ -19,7 +20,6 @@ use binius_prover::{
 		NTTLookup, sumcheck_round_messages::univariate_round_message_extension_domain,
 	},
 	fold_word::fold_words_with_transform,
-	protocols::sumcheck::{common::SumcheckProver, quadratic_mle::QuadraticMleCheckProver},
 };
 use binius_verifier::{
 	config::{B128, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
@@ -125,15 +125,14 @@ fn bench(c: &mut Criterion) {
 					|[a, b, _]| a * b,
 					multilinear_zerocheck_challenges,
 					next_round_claim,
-				)
-				.expect("multilinears should have consistent dimensions");
+				);
 
 				for _ in 0..log_words {
-					let _ = prover.execute().unwrap();
-					prover.fold(B128::random(&mut rng)).unwrap();
+					let _ = prover.execute();
+					prover.fold(B128::random(&mut rng));
 				}
 
-				prover.finish().unwrap()
+				prover.finish()
 			},
 			BatchSize::SmallInput,
 		);

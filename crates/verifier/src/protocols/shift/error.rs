@@ -9,7 +9,7 @@ pub enum Error {
 	#[error("channel error")]
 	Channel(#[from] ChannelError),
 	#[error("sumcheck error")]
-	Sumcheck(#[from] crate::protocols::sumcheck::Error),
+	Sumcheck(#[from] binius_ip::sumcheck::Error),
 	#[error("verification failure")]
 	VerificationFailure,
 }

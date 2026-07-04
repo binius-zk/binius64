@@ -4,42 +4,15 @@
 //! [value vector][`ValueVec`].
 
 use crate::{
-	constraint_system::{
-		AndConstraint, ConstraintSystem, MulConstraint, ShiftVariant, ShiftedValueIndex, ValueVec,
-	},
+	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueVec},
 	word::Word,
 };
 
-/// Evaluates a shifted value given a word
-#[inline]
-pub fn eval_shifted_word(word: Word, shift_variant: ShiftVariant, amount: usize) -> Word {
-	match shift_variant {
-		ShiftVariant::Sll => word << (amount as u32),
-		ShiftVariant::Slr => word >> (amount as u32),
-		ShiftVariant::Sar => word.sar(amount as u32),
-		ShiftVariant::Rotr => word.rotr(amount as u32),
-		ShiftVariant::Sll32 => word.sll32(amount as u32),
-		ShiftVariant::Srl32 => word.srl32(amount as u32),
-		ShiftVariant::Sra32 => word.sra32(amount as u32),
-		ShiftVariant::Rotr32 => word.rotr32(amount as u32),
-	}
-}
-
-/// Evaluates an operand (XOR of shifted values) using a ValueVec
-#[inline]
-pub fn eval_operand(witness: &ValueVec, operand: &[ShiftedValueIndex]) -> Word {
-	operand.iter().fold(Word::ZERO, |acc, sv| {
-		let word = witness[sv.value_index];
-		let shifted_word = eval_shifted_word(word, sv.shift_variant, sv.amount);
-		acc ^ shifted_word
-	})
-}
-
 /// Verifies that an AND constraint is satisfied: (A & B) ^ C = 0
 pub fn verify_and_constraint(witness: &ValueVec, constraint: &AndConstraint) -> Result<(), String> {
-	let Word(a) = eval_operand(witness, &constraint.a);
-	let Word(b) = eval_operand(witness, &constraint.b);
-	let Word(c) = eval_operand(witness, &constraint.c);
+	let Word(a) = witness.eval_operand(&constraint.a);
+	let Word(b) = witness.eval_operand(&constraint.b);
+	let Word(c) = witness.eval_operand(&constraint.c);
 
 	let result = (a & b) ^ c;
 	if result != 0 {
@@ -53,10 +26,10 @@ pub fn verify_and_constraint(witness: &ValueVec, constraint: &AndConstraint) -> 
 
 /// Verifies that a MUL constraint is satisfied: A * B = (HI << 64) | LO
 pub fn verify_mul_constraint(witness: &ValueVec, constraint: &MulConstraint) -> Result<(), String> {
-	let Word(a) = eval_operand(witness, &constraint.a);
-	let Word(b) = eval_operand(witness, &constraint.b);
-	let Word(lo) = eval_operand(witness, &constraint.lo);
-	let Word(hi) = eval_operand(witness, &constraint.hi);
+	let Word(a) = witness.eval_operand(&constraint.a);
+	let Word(b) = witness.eval_operand(&constraint.b);
+	let Word(lo) = witness.eval_operand(&constraint.lo);
+	let Word(hi) = witness.eval_operand(&constraint.hi);
 
 	let a_val = a as u128;
 	let b_val = b as u128;

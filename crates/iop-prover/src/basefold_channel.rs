@@ -274,16 +274,14 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 		};
 
 		// TODO: We could cut the size of the message.clone() if the SumcheckProver accepted Cow
-		let inner = BivariateProductSumcheckProver::new([message.clone(), transparent], sum_prime)
-			.expect("π_i' and t_i have equal length");
+		let inner = BivariateProductSumcheckProver::new([message.clone(), transparent], sum_prime);
 		provers.push(PaddedSumcheckDecorator::new(inner, max_n - n_i));
 
 		witness_primes[index] = Some(message.clone());
 		prover_oracle_indices.push(index);
 	}
 
-	let output =
-		sumcheck::batch_prove(provers, channel).expect("batched sumcheck proving should succeed");
+	let output = sumcheck::batch_prove(provers, channel);
 
 	// Reduced oracle evaluations α_i = π_i'(ρ_i) come out in arrival order; scatter them into
 	// oracle-index order to match how the verifier indexes them. `output.challenges` is already
@@ -357,8 +355,7 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 		&outer_challenges,
 		fri_folder,
 		channel,
-	)
-	.expect("combined MLE-check BaseFold proof should succeed");
+	);
 }
 
 fn accumulate_scaled_buffer<P: PackedField>(
@@ -621,7 +618,7 @@ mod tests {
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
 
-		let v_oracle = verifier_channel.recv_oracle().unwrap();
+		let v_oracle = verifier_channel.recv_oracle(n_vars, true).unwrap();
 
 		verifier_channel
 			.verify_oracle_relations([OracleLinearRelation {
@@ -688,8 +685,8 @@ mod tests {
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
 
-		let v_oracle_1 = verifier_channel.recv_oracle().unwrap();
-		let v_oracle_2 = verifier_channel.recv_oracle().unwrap();
+		let v_oracle_1 = verifier_channel.recv_oracle(n_vars_1, true).unwrap();
+		let v_oracle_2 = verifier_channel.recv_oracle(n_vars_2, true).unwrap();
 
 		let tp1 = transparent_poly_1;
 		let tp2 = transparent_poly_2;
@@ -773,8 +770,9 @@ mod tests {
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
 
-		let v_oracles: Vec<_> = (0..n_vars_list.len())
-			.map(|_| verifier_channel.recv_oracle().unwrap())
+		let v_oracles: Vec<_> = n_vars_list
+			.iter()
+			.map(|&n| verifier_channel.recv_oracle(n, true).unwrap())
 			.collect();
 		let relations: Vec<_> = v_oracles
 			.into_iter()
@@ -864,8 +862,9 @@ mod tests {
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
 
-		let v_oracles: Vec<_> = (0..specs.len())
-			.map(|_| verifier_channel.recv_oracle().unwrap())
+		let v_oracles: Vec<_> = specs
+			.iter()
+			.map(|&(n, _)| verifier_channel.recv_oracle(n, true).unwrap())
 			.collect();
 		let relations: Vec<_> = v_oracles
 			.into_iter()

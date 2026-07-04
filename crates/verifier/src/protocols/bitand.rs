@@ -3,13 +3,10 @@
 use std::iter::{self};
 
 use binius_field::{BinaryField, field::FieldOps};
-use binius_ip::channel::IPVerifierChannel;
+use binius_ip::{channel::IPVerifierChannel, mlecheck::verify, sumcheck::SumcheckOutput};
 use binius_math::{BinarySubspace, univariate::extrapolate_over_subspace};
 
-use crate::{
-	Error,
-	protocols::{mlecheck::verify, sumcheck::SumcheckOutput},
-};
+use crate::Error;
 
 /// log2 size of the univariate domain
 pub const SKIPPED_VARS: usize = binius_core::consts::LOG_WORD_SIZE_BITS;

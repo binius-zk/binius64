@@ -9,5 +9,6 @@
 //! transformation (S-Box) to provide non-linearity in the cipher.
 
 pub mod gfni;
+pub mod russian_peasant;
 #[cfg(target_arch = "aarch64")]
 pub mod vmull;

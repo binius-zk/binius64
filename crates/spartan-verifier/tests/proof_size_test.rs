@@ -47,7 +47,7 @@ fn test_ip_proof_size() {
 	// SizeTrackingChannel::Oracle = (), but we still bind to exercise the real call pattern.
 	#[allow(clippy::let_unit_value)]
 	let precommit_oracle = channel
-		.recv_oracle()
+		.recv_oracle(cs.log_precommit() as usize, true)
 		.expect("recv_oracle on size-tracking channel should succeed");
 	verifier
 		.iop_verifier()

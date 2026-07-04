@@ -3,7 +3,7 @@
 use binius_circuits::sha256::Sha256;
 use binius_core::{
 	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueVec},
-	verify::{eval_operand, verify_constraints},
+	verify::verify_constraints,
 	word::Word,
 };
 use binius_field::{AESTowerField8b, BinaryField};
@@ -134,9 +134,9 @@ pub fn compute_bitand_images(constraints: &[AndConstraint], witness: &ValueVec) 
 	let (a_image, b_image, c_image) = constraints
 		.iter()
 		.map(|constraint| {
-			let a = eval_operand(witness, &constraint.a);
-			let b = eval_operand(witness, &constraint.b);
-			let c = eval_operand(witness, &constraint.c);
+			let a = witness.eval_operand(&constraint.a);
+			let b = witness.eval_operand(&constraint.b);
+			let c = witness.eval_operand(&constraint.c);
 			(a, b, c)
 		})
 		.multiunzip();
@@ -148,10 +148,10 @@ fn compute_intmul_images(constraints: &[MulConstraint], witness: &ValueVec) -> [
 	let (a_image, b_image, hi_image, lo_image) = constraints
 		.iter()
 		.map(|constraint| {
-			let a = eval_operand(witness, &constraint.a);
-			let b = eval_operand(witness, &constraint.b);
-			let hi = eval_operand(witness, &constraint.hi);
-			let lo = eval_operand(witness, &constraint.lo);
+			let a = witness.eval_operand(&constraint.a);
+			let b = witness.eval_operand(&constraint.b);
+			let hi = witness.eval_operand(&constraint.hi);
+			let lo = witness.eval_operand(&constraint.lo);
 			(a, b, hi, lo)
 		})
 		.multiunzip();
@@ -191,7 +191,7 @@ pub fn evaluate_witness<F: BinaryField>(words: &[Word], r_j: &[F], r_y: &[F]) ->
 
 #[test]
 fn test_shift_prove_and_verify() {
-	use binius_field::{BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
+	use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash2x128b, Random};
 	type F = BinaryField128bGhash;
 	type P = PackedBinaryGhash2x128b;
 	let mut rng = StdRng::seed_from_u64(0);
@@ -218,7 +218,13 @@ fn test_shift_prove_and_verify() {
 				.map(F::new)
 				.collect::<Vec<_>>()
 		};
-		let r_x_prime_intmul = {
+		// A constraint system may have zero MUL constraints (e.g. a pure-AND circuit like SHA-256).
+		// The IntMul operator is then empty — an empty challenge point and a zero claim — mirroring
+		// the prover/verifier skip of the IntMul reduction in `binius_prover` / `binius_verifier`.
+		let intmul_is_empty = cs.mul_constraints.is_empty();
+		let r_x_prime_intmul = if intmul_is_empty {
+			Vec::new()
+		} else {
 			let log_intmul_constraint_count = strict_log_2(cs.mul_constraints.len()).unwrap();
 			(0..log_intmul_constraint_count as u128)
 				.map(F::new)
@@ -240,14 +246,18 @@ fn test_shift_prove_and_verify() {
 			)
 		});
 
-		let intmul_evals = compute_intmul_images(&cs.mul_constraints, &value_vec).map(|image| {
-			evaluate_image(
-				&subspace,
-				&image,
-				r_zhat_prime,
-				eq_ind_partial_eval(&r_x_prime_intmul).as_ref(),
-			)
-		});
+		let intmul_evals: [F; 4] = if intmul_is_empty {
+			[F::ZERO; 4]
+		} else {
+			compute_intmul_images(&cs.mul_constraints, &value_vec).map(|image| {
+				evaluate_image(
+					&subspace,
+					&image,
+					r_zhat_prime,
+					eq_ind_partial_eval(&r_x_prime_intmul).as_ref(),
+				)
+			})
+		};
 
 		// Build prover's constraint system
 		let key_collection = build_key_collection(&cs);
@@ -272,8 +282,7 @@ fn test_shift_prove_and_verify() {
 			prover_bitand_data.clone(),
 			prover_intmul_data.clone(),
 			&mut prover_transcript,
-		)
-		.unwrap();
+		);
 
 		// Create verifier transcript and call the verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();

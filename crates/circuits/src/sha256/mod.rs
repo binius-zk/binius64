@@ -6,7 +6,10 @@ use binius_core::{
 	word::Word,
 };
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
-pub use compress::{State, populate_message_block, sha256_compress, sha256_compress_2x};
+pub use compress::{
+	State, populate_message_block, ref_compress, sha256_compress, sha256_compress_2x,
+	sha256_compress_2x_seq,
+};
 
 use crate::{
 	bytes::{swap_bytes, swap_bytes_32},
@@ -152,15 +155,46 @@ impl Sha256 {
 		let mut block_messages = Vec::with_capacity(n_blocks);
 		let mut states = Vec::with_capacity(n_blocks + 1);
 		states.push(State::iv(builder));
-		for block_no in 0..n_blocks {
-			// grab appropriate interleaved wires, in order to feed into compression gadget.
-			let m: [Wire; 16] = std::array::from_fn(|i| {
+
+		// Grab the 16 half-empty schedule wires of one block by interleaving the evens/odds halves.
+		let mk_m = |block_no: usize| -> [Wire; 16] {
+			std::array::from_fn(|i| {
 				if i & 1 == 0 {
 					padded_evens[block_no << 3 | i >> 1]
 				} else {
 					padded_odds[block_no << 3 | i >> 1]
 				}
-			});
+			})
+		};
+
+		// Compress two chained blocks per step through one parallel core.
+		// A pair costs ~one single-lane compression instead of two.
+		// The mask keeps each recovered state word in its low 32 bits, empty high half.
+		// That matches the single-lane convention the digest packing and chaining rely on.
+		let mask32 = builder.add_constant(Word::MASK_32);
+		let mut block_no = 0;
+		while block_no + 1 < n_blocks {
+			let m0 = mk_m(block_no);
+			let m1 = mk_m(block_no + 1);
+			let out = sha256_compress_2x_seq(
+				&builder.subcircuit(format!("compress[{block_no}..{}]", block_no + 2)),
+				states[block_no].clone(),
+				[m0, m1],
+			);
+			// The result packs both output states per word:
+			//     high 32 bits: state after the first block of the pair.
+			//     low  32 bits: state after the second block of the pair.
+			let state_first = State::new(std::array::from_fn(|i| builder.shr(out.0[i], 32)));
+			let state_second = State::new(std::array::from_fn(|i| builder.band(out.0[i], mask32)));
+			states.push(state_first);
+			states.push(state_second);
+			block_messages.push(m0);
+			block_messages.push(m1);
+			block_no += 2;
+		}
+		// A trailing odd block has no partner, so compress it single-lane.
+		if block_no < n_blocks {
+			let m = mk_m(block_no);
 			let state_out = sha256_compress(
 				&builder.subcircuit(format!("compress[{block_no}]")),
 				states[block_no].clone(),
@@ -584,22 +618,40 @@ pub fn sha256_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 	let bitlen = (len_bytes as u64) * 8;
 	padded_message.push(builder.add_constant(Word(bitlen)));
 
-	// Process compression blocks
-	let state_out = padded_message.chunks_exact(16).enumerate().fold(
-		State::iv(builder),
-		|state, (block_idx, block)| {
-			let block_message: [Wire; 16] = block.try_into().unwrap();
+	// Process compression blocks two at a time.
+	// Consecutive blocks chain, so each pair runs in the two lanes of one parallel core.
+	// A pair costs ~half the AND count of two single-lane compressions.
+	// A trailing odd block has no partner and is compressed single-lane.
+	let blocks: Vec<[Wire; 16]> = padded_message
+		.chunks_exact(16)
+		.map(|block| block.try_into().unwrap())
+		.collect();
+	let n_blocks = blocks.len();
 
-			sha256_compress(
-				&builder.subcircuit(format!("sha256_fixed_compress[{}]", block_idx)),
-				state,
-				block_message,
-			)
-		},
-	);
+	let mask32 = builder.add_constant(Word::MASK_32);
+	let mut state = State::iv(builder);
+	let mut block_idx = 0;
+	while block_idx + 1 < n_blocks {
+		let out = sha256_compress_2x_seq(
+			&builder.subcircuit(format!("sha256_fixed_compress[{block_idx}..{}]", block_idx + 2)),
+			state,
+			[blocks[block_idx], blocks[block_idx + 1]],
+		);
+		// The chaining state after the pair is the second compression's output.
+		// It sits in the low 32 bits of each word; the mask restores the empty high half.
+		state = State::new(std::array::from_fn(|i| builder.band(out.0[i], mask32)));
+		block_idx += 2;
+	}
+	if block_idx < n_blocks {
+		state = sha256_compress(
+			&builder.subcircuit(format!("sha256_fixed_compress[{block_idx}]")),
+			state,
+			blocks[block_idx],
+		);
+	}
 
 	// Return the final state as 8 32-bit words
-	state_out.0
+	state.0
 }
 
 #[cfg(test)]

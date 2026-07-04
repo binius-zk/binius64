@@ -1,8 +1,9 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_ip::channel::Error as ChannelError;
-
-use crate::protocols::{prodcheck::Error as ProdcheckError, sumcheck::Error as SumcheckError};
+use binius_ip::{
+	channel::Error as ChannelError, prodcheck::Error as ProdcheckError,
+	sumcheck::Error as SumcheckError,
+};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {

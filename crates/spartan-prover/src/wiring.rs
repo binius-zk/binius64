@@ -498,7 +498,7 @@ mod tests {
 
 		// Receive witness oracle
 		let witness_oracle = verifier_channel
-			.recv_oracle()
+			.recv_oracle(log_private, true)
 			.expect("recv_oracle should succeed");
 
 		// Sample the same lambda as prover

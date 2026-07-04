@@ -9,7 +9,13 @@ use binius_field::{
 		OutputWrappingTransformationFactory,
 	},
 };
-use binius_ip_prover::channel::IPProverChannel;
+use binius_ip_prover::{
+	channel::IPProverChannel,
+	sumcheck::{
+		ProveSingleOutput, common::MleCheckProver, prove_single_mlecheck,
+		quadratic_mle::QuadraticMleCheckProver,
+	},
+};
 use binius_math::{
 	BinarySubspace,
 	univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
@@ -20,13 +26,7 @@ use binius_verifier::{
 };
 
 use super::sumcheck_round_messages;
-use crate::{
-	fold_word::fold_words_with_transform,
-	protocols::sumcheck::{
-		Error, ProveSingleOutput, common::MleCheckProver, prove_single_mlecheck,
-		quadratic_mle::QuadraticMleCheckProver,
-	},
-};
+use crate::fold_word::fold_words_with_transform;
 
 /// Prover for the AND constraint reduction protocol via oblong univariate zerocheck.
 ///
@@ -195,7 +195,6 @@ where
 				challenge,
 			),
 		)
-		.expect("multilinears should have consistent dimensions")
 	}
 
 	/// Executes the complete AND reduction protocol with an IP prover channel.
@@ -216,20 +215,13 @@ where
 	/// - The sumcheck output with evaluation claims and challenges
 	/// - The univariate challenge used for folding
 	///
-	/// # Errors
-	///
-	/// Returns an error if the sumcheck protocol fails
-	///
 	/// # Protocol Flow
 	///
 	/// 1. **Phase 1**: Write univariate polynomial evaluations to channel
 	/// 2. **Challenge**: Sample univariate challenge z via Fiat-Shamir
 	/// 3. **Transition**: Fold oblong multilinears at Z = z
 	/// 4. **Phase 2**: Execute sumcheck protocol on folded multilinears
-	pub fn prove_with_channel(
-		self,
-		channel: &mut impl IPProverChannel<F>,
-	) -> Result<AndCheckOutput<F>, Error> {
+	pub fn prove_with_channel(self, channel: &mut impl IPProverChannel<F>) -> AndCheckOutput<F> {
 		let univariate_message_coeffs = self.execute();
 
 		channel.send_many(univariate_message_coeffs);
@@ -247,20 +239,20 @@ where
 			multilinear_evals: mle_claims,
 			challenges: mut eval_point,
 		} = tracing::debug_span!("MLE-check remaining rounds")
-			.in_scope(|| prove_single_mlecheck(sumcheck_prover, channel))?;
+			.in_scope(|| prove_single_mlecheck(sumcheck_prover, channel));
 
 		eval_point.reverse();
 
 		assert_eq!(mle_claims.len(), 3);
 		channel.send_many(&mle_claims);
 
-		Ok(AndCheckOutput {
+		AndCheckOutput {
 			a_eval: mle_claims[0],
 			b_eval: mle_claims[1],
 			c_eval: mle_claims[2],
 			z_challenge: univariate_sumcheck_challenge,
 			eval_point,
-		})
+		}
 	}
 }
 
@@ -330,7 +322,7 @@ mod test {
 			prover_message_domain,
 		);
 
-		let prove_output = prover.prove_with_channel(&mut prover_challenger).unwrap();
+		let prove_output = prover.prove_with_channel(&mut prover_challenger);
 
 		// Verifier is instantiated
 		let mut verifier_challenger = prover_challenger.into_verifier();
