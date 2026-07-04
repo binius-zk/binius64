@@ -6,6 +6,7 @@
 use std::{
 	cell::RefCell,
 	rc::{Rc, Weak},
+	sync::Arc,
 	vec::IntoIter as VecIntoIter,
 };
 
@@ -44,7 +45,11 @@ impl<F: Field> ReplayChannel<F> {
 	/// Creates a new replay channel.
 	///
 	/// TODO: Document args. Keys are the symmetric OTP keys for the received values.
-	pub fn new(layout: &WitnessLayout<F>, keys: Vec<F>, events: Vec<F>) -> Self {
+	///
+	/// Takes a shared `Arc<WitnessLayout<F>>`, not a borrow.
+	/// The backing [`WitnessGenerator`] must be `'static`: its `CircuitElem`s outlive this call.
+	/// The `Arc` is a bumped reference count on the layout the config already owns, not a clone.
+	pub fn new(layout: Arc<WitnessLayout<F>>, keys: Vec<F>, events: Vec<F>) -> Self {
 		Self {
 			witness_gen: Rc::new(RefCell::new(WitnessGenerator::new(layout))),
 			inout_alloc: WireAllocator::new(WireKind::InOut),
@@ -169,7 +174,7 @@ impl<F: Field> IOPVerifierChannel<F> for ReplayChannel<F> {
 
 #[cfg(test)]
 mod tests {
-	use std::{cell::RefCell, rc::Rc};
+	use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 	use binius_field::{
 		BinaryField1b as B1, BinaryField128bGhash as B128, ExtensionField, field::FieldOps,
@@ -216,7 +221,8 @@ mod tests {
 			.map(<B128 as ExtensionField<FSub>>::basis)
 			.collect();
 
-		let mut witness_gen = WitnessGenerator::new(&layout);
+		let layout = Arc::new(layout);
+		let mut witness_gen = WitnessGenerator::new(Arc::clone(&layout));
 		let witness_wires: Vec<_> = inout_wires
 			.iter()
 			.zip(&test_values)

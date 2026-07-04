@@ -11,7 +11,7 @@
 //!
 //! [`finish()`]: ZKWrappedVerifierChannel::finish
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use binius_field::{BinaryField, util::FieldFn};
 use binius_iop::{
@@ -81,6 +81,9 @@ where
 	///
 	/// `outer_layout` is the witness layout of the outer constraint system (the same layout the
 	/// prover used); it backs the [`InstanceGenerator`] that reconstructs the public-input vector.
+	/// It is a shared `Arc`, not a borrow, so the generator is `'static`.
+	/// Its `CircuitElem`s live in the transparent closures queued onto `inner_channel`.
+	/// The `Arc` shares the layout the config owns rather than cloning it.
 	///
 	/// # Panics
 	///
@@ -89,7 +92,7 @@ where
 	pub fn new(
 		mut inner_channel: BaseFoldVerifierChannel<'a, F, MTScheme, Challenger_>,
 		outer_verifier: &'a IOPVerifier<F>,
-		outer_layout: &'a WitnessLayout<F>,
+		outer_layout: Arc<WitnessLayout<F>>,
 	) -> Result<Self, Error> {
 		let outer_oracle_specs = outer_verifier.oracle_specs();
 		let channel_oracle_specs = inner_channel.remaining_oracle_specs();

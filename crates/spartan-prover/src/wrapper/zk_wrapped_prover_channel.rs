@@ -11,7 +11,7 @@
 //! [`BaseFoldProverChannel`]: binius_iop_prover::basefold_channel::BaseFoldProverChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
 
-use std::iter::repeat_with;
+use std::{iter::repeat_with, sync::Arc};
 
 use binius_field::{BinaryField, PackedExtension, PackedField};
 use binius_iop::{channel::OracleSpec, merkle_tree::MerkleTreeScheme};
@@ -50,7 +50,7 @@ where
 {
 	inner_channel: BaseFoldProverChannel<'a, P::Scalar, P, NTT, MTProver, Challenger_>,
 	outer_prover: &'a IOPProver<P::Scalar>,
-	outer_layout: &'a WitnessLayout<P::Scalar>,
+	outer_layout: Arc<WitnessLayout<P::Scalar>>,
 	replay_fn: ReplayFn,
 	keys: Vec<P::Scalar>,
 	next_key_idx: usize,
@@ -98,7 +98,7 @@ where
 	pub fn new(
 		mut inner_channel: BaseFoldProverChannel<'a, F, P, NTT, MTProver, Challenger_>,
 		outer_prover: &'a IOPProver<F>,
-		outer_layout: &'a WitnessLayout<F>,
+		outer_layout: Arc<WitnessLayout<F>>,
 		rng: impl CryptoRng,
 		replay_fn: ReplayFn,
 	) -> Self {

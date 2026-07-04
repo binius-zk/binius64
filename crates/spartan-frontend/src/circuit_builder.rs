@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{array, backtrace::Backtrace, collections::HashMap, mem};
+use std::{array, backtrace::Backtrace, collections::HashMap, mem, ops::Deref, sync::Arc};
 
 use binius_field::Field;
 use bytemuck::zeroed_vec;
@@ -395,34 +395,39 @@ impl<F: Field> WitnessWire<F> {
 /// Implements [`CircuitBuilder`] with [`WitnessWire`] as the wire type. Operations like
 /// `add` and `mul` compute actual field values and populate the witness array. Captures
 /// the first constraint violation as an error for debugging.
+///
+/// `LayoutRef` is any pointer to a [`WitnessLayout`], chosen by the caller:
+/// - `&WitnessLayout<F>` — a zero-cost borrow, tied to the borrow's lifetime.
+/// - `Arc<WitnessLayout<F>>` — shared and `'static` (the default).
+///
+/// A `'static` generator is what lets its `CircuitElem`s live in a `'static` transparent closure.
+/// Sharing an `Arc` gives that without cloning the layout, so the wrapper channels use it.
 #[derive(Debug)]
-pub struct WitnessGenerator<F: Field> {
+pub struct WitnessGenerator<F: Field, LayoutRef = Arc<WitnessLayout<F>>> {
 	derived_alloc: WireAllocator,
 	private_alloc: WireAllocator,
 	public: Vec<F>,
 	precommit: Vec<F>,
 	private: Vec<F>,
-	layout: WitnessLayout<F>,
+	layout: LayoutRef,
 	first_error: Option<Backtrace>,
 }
 
-impl<F: Field> WitnessGenerator<F> {
-	pub fn new(layout: &WitnessLayout<F>) -> Self {
+impl<F: Field, LayoutRef: Deref<Target = WitnessLayout<F>>> WitnessGenerator<F, LayoutRef> {
+	pub fn new(layout: LayoutRef) -> Self {
 		let mut public = zeroed_vec(layout.public_size());
 		public[..layout.constants.len()].copy_from_slice(&layout.constants);
 
 		let precommit = zeroed_vec(layout.precommit_size());
 		let private = zeroed_vec(layout.private_size());
 
-		// This generator owns its layout, so `CircuitElem`s backed by it are `'static`.
-		// The one-time clone is dominated by the witness replay.
 		Self {
 			derived_alloc: WireAllocator::new(WireKind::Derived),
 			private_alloc: WireAllocator::new(WireKind::Private),
 			public,
 			precommit,
 			private,
-			layout: layout.clone(),
+			layout,
 			first_error: None,
 		}
 	}
@@ -481,7 +486,9 @@ impl<F: Field> WitnessGenerator<F> {
 	}
 }
 
-impl<F: Field> CircuitBuilder for WitnessGenerator<F> {
+impl<F: Field, LayoutRef: Deref<Target = WitnessLayout<F>>> CircuitBuilder
+	for WitnessGenerator<F, LayoutRef>
+{
 	type Wire = WitnessWire<F>;
 	type Field = F;
 
@@ -569,25 +576,29 @@ impl<F: Field> PublicWire<F> {
 /// never reads a secret, so every derived value is computable from the real public inputs alone.
 /// Derived wires are allocated in the same order as [`ConstraintBuilder`], keeping their ids
 /// aligned so [`WitnessLayout::get`] resolves each to the correct public slot.
+///
+/// `LayoutRef` is any pointer to a [`WitnessLayout`], chosen by the caller:
+/// - `&WitnessLayout<F>` — a zero-cost borrow, tied to the borrow's lifetime.
+/// - `Arc<WitnessLayout<F>>` — shared and `'static` (the default).
+///
+/// A `'static` generator is what lets a wrapper channel hand its transparent closures to an opener.
+/// Sharing an `Arc` gives that without cloning the layout, so the wrapper channel uses it.
 #[derive(Debug)]
-pub struct InstanceGenerator<F: Field> {
+pub struct InstanceGenerator<F: Field, LayoutRef = Arc<WitnessLayout<F>>> {
 	derived_alloc: WireAllocator,
 	public: Vec<F>,
-	layout: WitnessLayout<F>,
+	layout: LayoutRef,
 }
 
-impl<F: Field> InstanceGenerator<F> {
-	pub fn new(layout: &WitnessLayout<F>) -> Self {
+impl<F: Field, LayoutRef: Deref<Target = WitnessLayout<F>>> InstanceGenerator<F, LayoutRef> {
+	pub fn new(layout: LayoutRef) -> Self {
 		let mut public = zeroed_vec(layout.public_size());
 		public[..layout.constants.len()].copy_from_slice(&layout.constants);
 
-		// This generator owns its layout, so `CircuitElem`s backed by it are `'static`.
-		// A wrapper verifier channel can then hand its transparent closures to a deferring opener.
-		// The one-time clone is dominated by the channel's full circuit replay.
 		Self {
 			derived_alloc: WireAllocator::new(WireKind::Derived),
 			public,
-			layout: layout.clone(),
+			layout,
 		}
 	}
 
@@ -629,7 +640,9 @@ impl<F: Field> InstanceGenerator<F> {
 	}
 }
 
-impl<F: Field> CircuitBuilder for InstanceGenerator<F> {
+impl<F: Field, LayoutRef: Deref<Target = WitnessLayout<F>>> CircuitBuilder
+	for InstanceGenerator<F, LayoutRef>
+{
 	type Wire = PublicWire<F>;
 	type Field = F;
 
