@@ -95,12 +95,15 @@ impl ConstraintSystem {
 						operand_name,
 					});
 				}
-				if term.amount >= 64 {
+				// Half-word (*32) variants cap at 32, full-width at 64.
+				let max_amount = term.shift_variant.max_amount();
+				if term.amount >= max_amount {
 					return Err(ConstraintSystemError::ShiftAmountTooLarge {
 						constraint_type,
 						constraint_index,
 						operand_name,
 						shift_amount: term.amount,
+						max_amount,
 					});
 				}
 				// Check if the value index is out of bounds.
@@ -646,6 +649,54 @@ mod tests {
 				"Expected OutOfRangeValueIndex to be detected before padding check, got: {:?}",
 				other
 			),
+		}
+	}
+
+	#[test]
+	fn test_validate_rejects_half_word_shift_amount_out_of_range() {
+		let mut cs = ConstraintSystem::new(
+			vec![Word::from_u64(1)],
+			ValueVecLayout {
+				n_const: 1,
+				n_inout: 1,
+				n_witness: 2,
+				n_internal: 2,
+				offset_inout: 4,
+				offset_witness: 8,
+				committed_total_len: 16,
+				n_scratch: 0,
+			},
+			vec![],
+			vec![],
+		);
+
+		// A half-word (*32) shift may only use amounts < 32.
+		// 32 is out of range even though it is below the full-width bound of 64.
+		cs.add_and_constraint(AndConstraint::abc(
+			vec![ShiftedValueIndex {
+				value_index: ValueIndex(0),
+				shift_variant: ShiftVariant::Sll32,
+				amount: 32,
+			}],
+			vec![ShiftedValueIndex::plain(ValueIndex(8))],
+			vec![ShiftedValueIndex::plain(ValueIndex(8))],
+		));
+
+		match cs.validate_and_prepare().unwrap_err() {
+			ConstraintSystemError::ShiftAmountTooLarge {
+				constraint_type,
+				constraint_index,
+				operand_name,
+				shift_amount,
+				max_amount,
+			} => {
+				assert_eq!(constraint_type, "and");
+				assert_eq!(constraint_index, 0);
+				assert_eq!(operand_name, "a");
+				assert_eq!(shift_amount, 32);
+				assert_eq!(max_amount, 32);
+			}
+			other => panic!("Expected ShiftAmountTooLarge, got: {:?}", other),
 		}
 	}
 

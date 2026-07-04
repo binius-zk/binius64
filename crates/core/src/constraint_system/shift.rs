@@ -48,6 +48,31 @@ pub enum ShiftVariant {
 }
 
 impl ShiftVariant {
+	/// Whether this variant operates on the two 32-bit halves independently.
+	///
+	/// - The `*32` family shifts each half on its own.
+	/// - It reads only the lower 5 bits of the amount.
+	/// - Every other variant acts on the whole 64-bit word.
+	#[inline]
+	pub const fn is_half_word(self) -> bool {
+		matches!(
+			self,
+			ShiftVariant::Sll32 | ShiftVariant::Srl32 | ShiftVariant::Sra32 | ShiftVariant::Rotr32
+		)
+	}
+
+	/// The exclusive upper bound on a valid shift amount for this variant.
+	///
+	/// - Half-word (`*32`) variants read only the lower 5 bits, so amounts run `0..32`.
+	/// - Full-width variants take amounts `0..64`.
+	///
+	/// Construction, validation, and deserialization all enforce this same bound.
+	/// A value that passes any of them therefore denotes the same shift everywhere.
+	#[inline]
+	pub const fn max_amount(self) -> usize {
+		if self.is_half_word() { 32 } else { 64 }
+	}
+
 	/// Applies this shift to a 64-bit word and returns the result.
 	///
 	/// The variant selects which word-level operation runs.
@@ -299,8 +324,10 @@ impl DeserializeBytes for ShiftedValueIndex {
 		let shift_variant = ShiftVariant::deserialize(&mut read_buf)?;
 		let amount = usize::deserialize(read_buf)?;
 
-		// Validate that amount is within valid range
-		if amount >= 64 {
+		// Reject any amount the variant cannot represent.
+		// Half-word variants cap at 32, full-width at 64.
+		// This mirrors the bound the constructors enforce.
+		if amount >= shift_variant.max_amount() {
 			return Err(SerializationError::InvalidConstruction {
 				name: "ShiftedValueIndex::amount",
 			});
@@ -391,5 +418,79 @@ mod tests {
 			}
 			_ => panic!("Expected InvalidConstruction error"),
 		}
+	}
+
+	#[test]
+	fn test_max_amount_and_is_half_word() {
+		// Full-width variants take amounts up to 63.
+		for variant in [
+			ShiftVariant::Sll,
+			ShiftVariant::Slr,
+			ShiftVariant::Sar,
+			ShiftVariant::Rotr,
+		] {
+			assert!(!variant.is_half_word());
+			assert_eq!(variant.max_amount(), 64);
+		}
+		// Half-word variants take amounts up to 31.
+		for variant in [
+			ShiftVariant::Sll32,
+			ShiftVariant::Srl32,
+			ShiftVariant::Sra32,
+			ShiftVariant::Rotr32,
+		] {
+			assert!(variant.is_half_word());
+			assert_eq!(variant.max_amount(), 32);
+		}
+	}
+
+	// Deserializes a raw (variant, amount) buffer, bypassing the constructors.
+	// This lets out-of-range half-word amounts reach the deserialization path.
+	fn deserialize_amount(
+		shift_variant: ShiftVariant,
+		amount: usize,
+	) -> Result<ShiftedValueIndex, SerializationError> {
+		let mut buf = Vec::new();
+		ValueIndex(0).serialize(&mut buf).unwrap();
+		shift_variant.serialize(&mut buf).unwrap();
+		amount.serialize(&mut buf).unwrap();
+		ShiftedValueIndex::deserialize(&mut buf.as_slice())
+	}
+
+	#[test]
+	fn test_deserialize_rejects_half_word_amount_at_or_above_32() {
+		// 31 is the largest amount a half-word variant can carry.
+		assert_eq!(
+			deserialize_amount(ShiftVariant::Sll32, 31).unwrap(),
+			ShiftedValueIndex {
+				value_index: ValueIndex(0),
+				shift_variant: ShiftVariant::Sll32,
+				amount: 31,
+			}
+		);
+		// 32 exceeds the 5-bit range and must be rejected.
+		match deserialize_amount(ShiftVariant::Sll32, 32).unwrap_err() {
+			SerializationError::InvalidConstruction { name } => {
+				assert_eq!(name, "ShiftedValueIndex::amount");
+			}
+			other => panic!("Expected InvalidConstruction, got: {other:?}"),
+		}
+		// A full-width variant still accepts 32 and up to 63.
+		assert_eq!(
+			deserialize_amount(ShiftVariant::Sll, 32).unwrap(),
+			ShiftedValueIndex {
+				value_index: ValueIndex(0),
+				shift_variant: ShiftVariant::Sll,
+				amount: 32,
+			}
+		);
+		assert_eq!(
+			deserialize_amount(ShiftVariant::Sll, 63).unwrap(),
+			ShiftedValueIndex {
+				value_index: ValueIndex(0),
+				shift_variant: ShiftVariant::Sll,
+				amount: 63,
+			}
+		);
 	}
 }

@@ -32,13 +32,14 @@ pub enum ConstraintSystemError {
 		constraint_index: usize,
 	},
 	#[error(
-		"{constraint_type} #{constraint_index} uses shift amount n={shift_amount}>=64 {operand_name} operand"
+		"{constraint_type} #{constraint_index} uses shift amount n={shift_amount}>={max_amount} in {operand_name} operand"
 	)]
 	ShiftAmountTooLarge {
 		constraint_type: &'static str,
 		constraint_index: usize,
 		operand_name: &'static str,
 		shift_amount: usize,
+		max_amount: usize,
 	},
 	#[error(
 		"{constraint_type} #{constraint_index} refers to out-of-range value index in {operand_name} operand (index {value_index} >= total length {total_len})"
