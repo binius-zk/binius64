@@ -6,6 +6,8 @@
 //! Spartan-based zero-knowledge wrapper. The prover counterpart to
 //! [`binius_verifier::zk_config::ZKVerifier`].
 
+use std::marker::PhantomData;
+
 use binius_core::constraint_system::{ConstraintSystem, ValueVec};
 use binius_field::{BinaryField128bGhash as B128, PackedExtension, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
@@ -40,7 +42,9 @@ where
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_prover: binius_spartan_prover::IOPProver<B128>,
 	outer_layout: WitnessLayout<B128>,
-	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>, H>,
+	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>>,
+	/// The prover creates its Merkle transcript channels with the hash suite `H`.
+	_hash_marker: PhantomData<H>,
 }
 
 impl<P, H> ZKProver<P, H>
@@ -98,6 +102,7 @@ where
 			outer_iop_prover,
 			outer_layout,
 			basefold_compiler,
+			_hash_marker: PhantomData,
 		})
 	}
 
@@ -122,7 +127,9 @@ where
 		let public_words = witness.public().to_vec();
 
 		// Create BaseFold prover channel and wrap with outer prover.
-		let basefold_channel = self.basefold_compiler.create_channel(transcript, &mut rng);
+		let basefold_channel = self
+			.basefold_compiler
+			.create_channel_from_transcript::<H, Challenger_, _>(transcript, &mut rng);
 		let mut wrapped_channel = ZKWrappedProverChannel::new(
 			basefold_channel,
 			&self.outer_iop_prover,

@@ -53,8 +53,8 @@ const LOG_ORACLE_LEN: usize = 16;
 /// encoding and Merkle tree construction) is measured; a naive channel would serialize
 /// oracles for free. The final batched opening in `finish` is not measured, since the full
 /// system amortizes it into the single opening shared with the witness trace.
-fn basefold_compiler()
--> BaseFoldProverCompiler<P, NeighborsLastSingleThread<GenericPreExpanded<F>>, StdHashSuite> {
+fn basefold_compiler() -> BaseFoldProverCompiler<P, NeighborsLastSingleThread<GenericPreExpanded<F>>>
+{
 	let verifier_compiler = BaseFoldVerifierCompiler::new(
 		BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
 		vec![OracleSpec::new(LOG_ORACLE_LEN)],
@@ -115,18 +115,17 @@ fn bench_intmul_prove(c: &mut Criterion) {
 	let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
 	let compiler = basefold_compiler();
 
-	// The channel is created in the setup closures. It borrows its transcript, and a closure
-	// cannot return a borrow of captured state, so each setup leaks one small transcript; the
-	// leak is bounded by the iteration count.
 	group.bench_with_input(
 		BenchmarkId::new("prove", num_exponents),
 		&witness,
 		|bencher, witness| {
 			bencher.iter_batched_ref(
 				|| {
-					let transcript =
-						Box::leak(Box::new(ProverTranscript::<StdChallenger>::default()));
-					(Some(witness.clone()), compiler.create_channel_without_zk(transcript))
+					let channel = compiler
+						.create_channel_without_zk_from_transcript::<StdHashSuite, StdChallenger, _>(
+							ProverTranscript::default(),
+						);
+					(Some(witness.clone()), channel)
 				},
 				|(witness, channel)| {
 					let mut intmul_prover = IntMulProver::new(0, channel);
@@ -144,9 +143,10 @@ fn bench_intmul_prove(c: &mut Criterion) {
 		|bencher, _| {
 			bencher.iter_batched_ref(
 				|| {
-					let transcript =
-						Box::leak(Box::new(ProverTranscript::<StdChallenger>::default()));
-					compiler.create_channel_without_zk(transcript)
+					compiler
+						.create_channel_without_zk_from_transcript::<StdHashSuite, StdChallenger, _>(
+							ProverTranscript::default(),
+						)
 				},
 				|channel| {
 					let mut intmul_prover = IntMulProver::new(0, channel);

@@ -318,6 +318,18 @@ where
 		let fri_oracle = &self.fri_params.input_oracles()[index];
 		let depth = (self.fri_params.rs_code().log_dim() - fri_oracle.log_lift)
 			+ self.fri_params.rs_code().log_inv_rate();
+
+		// The committed message length implied by this shape is `log_batch_size + depth -
+		// log_inv_rate`; it must cover the spec's message plus, for a ZK oracle, the equal-length
+		// interleaved mask.
+		let spec = &self.oracle_specs[index];
+		assert_eq!(
+			fri_oracle.log_batch_size() + depth - self.fri_params.rs_code().log_inv_rate(),
+			spec.log_msg_len + usize::from(spec.is_zk),
+			"invariant: the FRI commitment shape must be consistent with the oracle spec's \
+			 log_msg_len"
+		);
+
 		let commitment = self
 			.channel
 			.recv_merkle_commitment(1 << fri_oracle.log_batch_size(), depth)

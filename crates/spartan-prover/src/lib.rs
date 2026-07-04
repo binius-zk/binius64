@@ -33,6 +33,7 @@ pub mod wrapper;
 
 use std::{
 	iter::{repeat_n, repeat_with},
+	marker::PhantomData,
 	ops::Deref,
 };
 
@@ -95,7 +96,9 @@ where
 	H: HashSuite,
 {
 	iop_prover: IOPProver<P::Scalar>,
-	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<P::Scalar>, H>,
+	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<P::Scalar>>,
+	/// The prover creates its Merkle transcript channels with the hash suite `H`.
+	_hash_marker: PhantomData<H>,
 }
 
 impl<F: Field> IOPProver<F> {
@@ -343,6 +346,7 @@ where
 		Ok(Prover {
 			iop_prover,
 			basefold_compiler,
+			_hash_marker: PhantomData,
 		})
 	}
 
@@ -352,7 +356,7 @@ where
 	}
 
 	/// Returns a reference to the BaseFold ZK prover compiler.
-	pub const fn iop_compiler(&self) -> &BaseFoldProverCompiler<P, ProverNTT<F>, H> {
+	pub const fn iop_compiler(&self) -> &BaseFoldProverCompiler<P, ProverNTT<F>> {
 		&self.basefold_compiler
 	}
 
@@ -379,7 +383,9 @@ where
 
 		// Create ZK channel (owns the RNG for mask generation), commit the precommit oracle,
 		// and delegate to the IOP prover.
-		let mut channel = self.basefold_compiler.create_channel(transcript, &mut rng);
+		let mut channel = self
+			.basefold_compiler
+			.create_channel_from_transcript::<H, Challenger_, _>(transcript, &mut rng);
 		let (precommit_oracle, precommit_packed) =
 			self.iop_prover
 				.commit_precommit::<P, _>(&witness, &mut rng, &mut channel);

@@ -1,6 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::marker::PhantomData;
+
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
@@ -309,7 +311,9 @@ impl IOPVerifier {
 #[derive(Clone)]
 pub struct Verifier<H: HashSuite> {
 	iop_verifier: IOPVerifier,
-	iop_compiler: BaseFoldVerifierCompiler<B128, H>,
+	iop_compiler: BaseFoldVerifierCompiler<B128>,
+	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
+	_hash_marker: PhantomData<H>,
 }
 
 impl<H> Verifier<H>
@@ -359,6 +363,7 @@ where
 		Ok(Self {
 			iop_verifier,
 			iop_compiler,
+			_hash_marker: PhantomData,
 		})
 	}
 
@@ -392,18 +397,13 @@ where
 		self.iop_compiler.fri_params()
 	}
 
-	/// Returns the [`crate::merkle_tree::MerkleTreeScheme`] instance used.
-	pub const fn merkle_scheme(&self) -> &BinaryMerkleTreeScheme<B128, H> {
-		self.iop_compiler.merkle_scheme()
-	}
-
 	/// Returns log2 of the number of public constants and input/output words.
 	pub const fn log_public_words(&self) -> usize {
 		self.iop_verifier.log_public_words()
 	}
 
 	/// Returns the IOP compiler for creating verifier channels.
-	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<B128, H> {
+	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<B128> {
 		&self.iop_compiler
 	}
 
@@ -423,7 +423,9 @@ where
 		.entered();
 
 		// Create channel, delegate to IOPVerifier::verify, then finish it.
-		let mut channel = self.iop_compiler.create_channel(transcript);
+		let mut channel = self
+			.iop_compiler
+			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 		self.iop_verifier.verify(public, &mut channel)?;
 		channel.finish()?;
 		Ok(())

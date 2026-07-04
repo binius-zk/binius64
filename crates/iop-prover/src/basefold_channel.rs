@@ -547,11 +547,15 @@ mod tests {
 		// === PROVER SIDE ===
 		let ntt = make_ntt(verifier_compiler.max_subspace());
 		let prover_compiler =
-			BaseFoldProverCompiler::<P, _, _>::from_verifier_compiler(&verifier_compiler, ntt);
+			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_rng = StdRng::seed_from_u64(1);
-		let mut prover_channel = prover_compiler.create_channel(&mut prover_transcript, prover_rng);
+		let mut prover_channel = prover_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut prover_transcript,
+				prover_rng,
+			);
 
 		let oracle = prover_channel.send_oracle(buffer.to_ref());
 		assert_eq!(oracle.index, 0);
@@ -566,7 +570,10 @@ mod tests {
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
+		let mut verifier_channel = verifier_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut verifier_transcript,
+			);
 
 		let v_oracle = verifier_channel.recv_oracle(n_vars, true).unwrap();
 
@@ -612,11 +619,15 @@ mod tests {
 		// === PROVER SIDE ===
 		let ntt = make_ntt(verifier_compiler.max_subspace());
 		let prover_compiler =
-			BaseFoldProverCompiler::<P, _, _>::from_verifier_compiler(&verifier_compiler, ntt);
+			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_rng = StdRng::seed_from_u64(1);
-		let mut prover_channel = prover_compiler.create_channel(&mut prover_transcript, prover_rng);
+		let mut prover_channel = prover_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut prover_transcript,
+				prover_rng,
+			);
 
 		let oracle_1 = prover_channel.send_oracle(buffer_1.to_ref());
 		let oracle_2 = prover_channel.send_oracle(buffer_2.to_ref());
@@ -629,7 +640,10 @@ mod tests {
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
+		let mut verifier_channel = verifier_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut verifier_transcript,
+			);
 
 		let v_oracle_1 = verifier_channel.recv_oracle(n_vars_1, true).unwrap();
 		let v_oracle_2 = verifier_channel.recv_oracle(n_vars_2, true).unwrap();
@@ -688,11 +702,15 @@ mod tests {
 		// === PROVER SIDE ===
 		let ntt = make_ntt(verifier_compiler.max_subspace());
 		let prover_compiler =
-			BaseFoldProverCompiler::<P, _, _>::from_verifier_compiler(&verifier_compiler, ntt);
+			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_rng = StdRng::seed_from_u64(1);
-		let mut prover_channel = prover_compiler.create_channel(&mut prover_transcript, prover_rng);
+		let mut prover_channel = prover_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut prover_transcript,
+				prover_rng,
+			);
 
 		let oracles: Vec<_> = data
 			.iter()
@@ -710,7 +728,10 @@ mod tests {
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
+		let mut verifier_channel = verifier_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut verifier_transcript,
+			);
 
 		let v_oracles: Vec<_> = n_vars_list
 			.iter()
@@ -777,11 +798,15 @@ mod tests {
 
 		let ntt = make_ntt(verifier_compiler.max_subspace());
 		let prover_compiler =
-			BaseFoldProverCompiler::<P, _, _>::from_verifier_compiler(&verifier_compiler, ntt);
+			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_rng = StdRng::seed_from_u64(1);
-		let mut prover_channel = prover_compiler.create_channel(&mut prover_transcript, prover_rng);
+		let mut prover_channel = prover_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut prover_transcript,
+				prover_rng,
+			);
 
 		let oracles: Vec<_> = data
 			.iter()
@@ -798,7 +823,10 @@ mod tests {
 		prover_channel.finish();
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
+		let mut verifier_channel = verifier_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut verifier_transcript,
+			);
 
 		let v_oracles: Vec<_> = specs
 			.iter()

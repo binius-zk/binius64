@@ -34,8 +34,8 @@ type Scheme = BinaryMerkleTreeScheme<B128, StdHashSuite>;
 pub struct Verifier {
 	/// The committed-multilinear shape of the batch.
 	layout: BatchCommitLayout,
-	/// The precomputed BaseFold verifier, holding the Merkle scheme and FRI parameters.
-	iop_compiler: BaseFoldVerifierCompiler<B128, StdHashSuite>,
+	/// The precomputed BaseFold verifier, holding the FRI parameters.
+	iop_compiler: BaseFoldVerifierCompiler<B128>,
 }
 
 impl Verifier {
@@ -86,7 +86,7 @@ impl Verifier {
 	/// The precomputed BaseFold verifier compiler.
 	///
 	/// The prover reuses it so both sides share one set of FRI parameters.
-	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<B128, StdHashSuite> {
+	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<B128> {
 		&self.iop_compiler
 	}
 
@@ -109,7 +109,9 @@ impl Verifier {
 	where
 		Challenger_: Challenger,
 	{
-		let mut channel = self.iop_compiler.create_channel(transcript);
+		let mut channel = self
+			.iop_compiler
+			.create_channel_from_transcript::<StdHashSuite, Challenger_, _>(transcript);
 
 		// Receive the commitment, redraw the same point, and read the claimed evaluation. The
 		// packed batch witness is witness-dependent (M4 commits it without ZK regardless).

@@ -33,7 +33,7 @@ pub mod constraint_system;
 pub mod wiring;
 pub mod wrapper;
 
-use std::{rc::Rc, slice};
+use std::{marker::PhantomData, rc::Rc, slice};
 
 use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
@@ -93,7 +93,9 @@ where
 {
 	iop_verifier: IOPVerifier<F>,
 	/// BaseFold ZK compiler for creating verifier channels.
-	basefold_compiler: BaseFoldVerifierCompiler<F, H>,
+	basefold_compiler: BaseFoldVerifierCompiler<F>,
+	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
+	_hash_marker: PhantomData<H>,
 }
 
 impl<F: Field> IOPVerifier<F> {
@@ -296,6 +298,7 @@ where
 		Ok(Self {
 			iop_verifier,
 			basefold_compiler,
+			_hash_marker: PhantomData,
 		})
 	}
 
@@ -309,7 +312,7 @@ where
 	}
 
 	/// Returns a reference to the BaseFold ZK verifier compiler.
-	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<F, H> {
+	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<F> {
 		&self.basefold_compiler
 	}
 
@@ -333,7 +336,9 @@ where
 
 		// Create channel, receive the precommit oracle, and delegate to IOPVerifier::verify. The
 		// IOP verifier only queues the oracle relations; `finish` runs the single combined opening.
-		let mut channel = self.basefold_compiler.create_channel(transcript);
+		let mut channel = self
+			.basefold_compiler
+			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 		let precommit_oracle =
 			channel.recv_oracle(self.constraint_system().log_precommit() as usize, true)?;
 		self.iop_verifier

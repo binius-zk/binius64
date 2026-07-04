@@ -29,8 +29,8 @@ where
 {
 	/// The committed-multilinear shape of the batch, shared with the verifier.
 	layout: BatchCommitLayout,
-	/// The precomputed BaseFold prover, holding the NTT and the Merkle prover.
-	basefold_compiler: BaseFoldProverCompiler<P, ProverNtt, StdHashSuite>,
+	/// The precomputed BaseFold prover, holding the NTT and the FRI parameters.
+	basefold_compiler: BaseFoldProverCompiler<P, ProverNtt>,
 }
 
 impl<P> Prover<P>
@@ -87,7 +87,9 @@ where
 	where
 		Challenger_: Challenger,
 	{
-		let mut channel = self.basefold_compiler.create_channel_without_zk(transcript);
+		let mut channel = self
+			.basefold_compiler
+			.create_channel_without_zk_from_transcript::<StdHashSuite, Challenger_, _>(transcript);
 
 		// Pack the 2-D table into one multilinear and commit it as the trace oracle.
 		let packed = table.pack::<P>();

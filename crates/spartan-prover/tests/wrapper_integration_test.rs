@@ -114,7 +114,7 @@ fn test_zk_wrapped_prove_verify() {
 	let subspace = zk_basefold_compiler.max_subspace();
 	let domain_context = GenericOnTheFly::generate_from_subspace(subspace);
 	let ntt = NeighborsLastSingleThread::new(domain_context);
-	let zk_basefold_prover: BaseFoldProverCompiler<OptimalPackedB128, _, _> =
+	let zk_basefold_prover: BaseFoldProverCompiler<OptimalPackedB128, _> =
 		BaseFoldProverCompiler::from_verifier_compiler(&zk_basefold_compiler, ntt);
 
 	// === Step 6: Generate inner witness ===
@@ -138,7 +138,11 @@ fn test_zk_wrapped_prove_verify() {
 	// Observe inner public input on the transcript (Fiat-Shamir).
 	prover_transcript.observe().write_slice(&public);
 
-	let basefold_channel = zk_basefold_prover.create_channel(&mut prover_transcript, &mut rng);
+	let basefold_channel = zk_basefold_prover
+		.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+			&mut prover_transcript,
+			&mut rng,
+		);
 	let mut wrapped_prover_channel = ZKWrappedProverChannel::new(
 		basefold_channel,
 		&outer_iop_prover,
@@ -188,7 +192,8 @@ fn test_zk_wrapped_prove_verify() {
 	// Verifier observes the public input on the transcript (Fiat-Shamir).
 	verifier_transcript.observe().write_slice(&public);
 
-	let verifier_channel = zk_basefold_compiler.create_channel(&mut verifier_transcript);
+	let verifier_channel = zk_basefold_compiler
+		.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(&mut verifier_transcript);
 	let mut wrapped_verifier_channel =
 		ZKWrappedVerifierChannel::new(verifier_channel, &outer_iop_verifier, &outer_layout)
 			.expect("ZKWrappedVerifierChannel::new should succeed");

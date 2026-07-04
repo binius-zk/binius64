@@ -335,12 +335,15 @@ mod tests {
 			GenericOnTheFly::generate_from_subspace(verifier_compiler.max_subspace());
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 		let prover_compiler =
-			BaseFoldProverCompiler::<BP, _, _>::from_verifier_compiler(&verifier_compiler, ntt);
+			BaseFoldProverCompiler::<BP, _>::from_verifier_compiler(&verifier_compiler, ntt);
 
 		let mut prover_transcript = ProverTranscript::new(Chal::default());
 		let prover_channel_rng = StdRng::seed_from_u64(8);
-		let mut prover_channel =
-			prover_compiler.create_channel(&mut prover_transcript, prover_channel_rng);
+		let mut prover_channel = prover_compiler
+			.create_channel_from_transcript::<StdHashSuite, Chal, _>(
+				&mut prover_transcript,
+				prover_channel_rng,
+			);
 
 		let prover_proof =
 			prove::<F, BP, _>(&table, &index, &eval_point, eval_claim, &mut prover_channel);
@@ -355,7 +358,8 @@ mod tests {
 
 		// Verify: receive Y, run the reduction, open the pushforward through the real FRI check.
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
+		let mut verifier_channel = verifier_compiler
+			.create_channel_from_transcript::<StdHashSuite, Chal, _>(&mut verifier_transcript);
 		let verifier_proof =
 			verify_logup::verify(m, eval_claim, &eval_point, &mut verifier_channel)
 				.expect("verification succeeds");

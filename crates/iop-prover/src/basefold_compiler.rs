@@ -5,7 +5,7 @@
 //! This module provides [`BaseFoldProverCompiler`], which precomputes FRI parameters and can
 //! create prover channel instances.
 
-use std::marker::PhantomData;
+use std::{borrow::BorrowMut, marker::PhantomData};
 
 use binius_field::{BinaryField, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
@@ -20,7 +20,8 @@ use digest::Output;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::{
-	basefold_channel::BaseFoldProverChannel, merkle_channel::ProverMerkleTranscriptChannel,
+	basefold_channel::BaseFoldProverChannel,
+	merkle_channel::{MerkleIPProverChannel, ProverMerkleTranscriptChannel},
 };
 
 /// A compiler that creates BaseFold ZK prover channels with precomputed parameters.
@@ -28,37 +29,40 @@ use crate::{
 /// This compiler builds a single combined FRI over all oracles, with ZK oracles configured for
 /// zero-knowledge mode.
 #[derive(Debug)]
-pub struct BaseFoldProverCompiler<P, NTT, H>
+pub struct BaseFoldProverCompiler<P, NTT>
 where
 	P: PackedField<Scalar: BinaryField>,
 	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
-	H: HashSuite,
 {
 	ntt: NTT,
 	oracle_specs: Vec<OracleSpec>,
 	/// The combined FRI parameters over **all** oracles.
 	fri_params: FRIParams<P::Scalar>,
-	_marker: PhantomData<(P, H)>,
+	_marker: PhantomData<P>,
 }
 
-impl<F, P, NTT, H> BaseFoldProverCompiler<P, NTT, H>
+impl<F, P, NTT> BaseFoldProverCompiler<P, NTT>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
-	H: HashSuite,
-	Output<H::LeafHash>: SerializeBytes,
 {
 	/// Creates a new compiler with precomputed combined FRI parameters.
 	///
-	/// Each oracle's batch size is derived from its ZK flag: a ZK oracle fixes `log_batch_size = 1`
-	/// (message ‖ equal-length mask), a non-ZK oracle takes a flexible batch size.
-	pub fn new(
+	/// The `merkle_scheme` is consulted only for proof-size estimation while choosing the FRI
+	/// parameters; it is not stored. Each oracle's batch size is derived from its ZK flag: a ZK
+	/// oracle fixes `log_batch_size = 1` (message ‖ equal-length mask), a non-ZK oracle takes a
+	/// flexible batch size.
+	pub fn new<H>(
 		ntt: NTT,
+		merkle_scheme: BinaryMerkleTreeScheme<F, H>,
 		oracle_specs: Vec<OracleSpec>,
 		log_inv_rate: usize,
 		n_test_queries: usize,
-	) -> Self {
+	) -> Self
+	where
+		H: HashSuite,
+	{
 		assert!(
 			!oracle_specs.is_empty(),
 			"BaseFoldProverCompiler requires at least one oracle spec"
@@ -69,7 +73,7 @@ where
 		// equal-length mask); non-ZK oracles take a flexible batch size.
 		let (fri_params, _) = FRIParams::optimal_for_batch(
 			ntt.domain_context(),
-			&BinaryMerkleTreeScheme::<F, H>::new(),
+			&merkle_scheme,
 			&oracle_specs,
 			log_inv_rate,
 			n_test_queries,
@@ -87,7 +91,7 @@ where
 	///
 	/// This reuses the precomputed FRI parameters and oracle specifications.
 	pub fn from_verifier_compiler(
-		verifier_compiler: &BaseFoldVerifierCompiler<F, H>,
+		verifier_compiler: &BaseFoldVerifierCompiler<F>,
 		ntt: NTT,
 	) -> Self {
 		Self {
@@ -113,17 +117,20 @@ where
 		&self.fri_params
 	}
 
-	/// Creates a ZK prover channel from this compiler, a transcript, and an RNG.
+	/// Creates a ZK prover channel over the given Merkle channel and an RNG.
 	///
-	/// The returned channel drives all prover interaction through a
-	/// [`ProverMerkleTranscriptChannel`] over the transcript, constructed here with a non-hiding
-	/// Merkle tree prover. The `rng` is used to seed an internal `StdRng` for mask generation.
-	pub fn create_channel<'a, Challenger_: Challenger>(
-		&'a self,
-		transcript: &'a mut ProverTranscript<Challenger_>,
+	/// The returned channel drives all prover interaction through `channel`, committing and opening
+	/// oracles with this compiler's NTT, oracle specs, and combined FRI parameters. The caller
+	/// constructs the Merkle channel, so it decides how commitments are produced. The `rng` is used
+	/// to seed an internal `StdRng` for mask generation.
+	pub fn create_channel<Channel>(
+		&self,
+		channel: Channel,
 		rng: impl Rng,
-	) -> BaseFoldTranscriptProverChannel<'a, F, P, NTT, H, Challenger_> {
-		let channel = ProverMerkleTranscriptChannel::new(transcript);
+	) -> BaseFoldProverChannel<'_, F, P, NTT, Channel>
+	where
+		Channel: MerkleIPProverChannel<F>,
+	{
 		BaseFoldProverChannel::new(
 			channel,
 			&self.ntt,
@@ -144,10 +151,13 @@ where
 	/// Panics if any configured oracle is ZK.
 	/// A ZK oracle would draw its mask from the fixed seed, which destroys the hiding property.
 	/// So this constructor refuses to build a channel that could mask deterministically.
-	pub fn create_channel_without_zk<'a, Challenger_: Challenger>(
-		&'a self,
-		transcript: &'a mut ProverTranscript<Challenger_>,
-	) -> BaseFoldTranscriptProverChannel<'a, F, P, NTT, H, Challenger_> {
+	pub fn create_channel_without_zk<Channel>(
+		&self,
+		channel: Channel,
+	) -> BaseFoldProverChannel<'_, F, P, NTT, Channel>
+	where
+		Channel: MerkleIPProverChannel<F>,
+	{
 		// A ZK oracle masks with the RNG, so a fixed seed here would silently break hiding.
 		assert!(
 			self.oracle_specs().iter().all(|spec| !spec.is_zk),
@@ -155,16 +165,42 @@ where
 		);
 
 		// No mask is ever drawn, so the seed is arbitrary; reuse the seeded-RNG constructor.
-		self.create_channel(transcript, StdRng::seed_from_u64(0))
+		self.create_channel(channel, StdRng::seed_from_u64(0))
+	}
+
+	/// Creates a ZK prover channel over a transcript, for the common case.
+	///
+	/// The transcript (owned or mutably borrowed) is wrapped in a
+	/// [`ProverMerkleTranscriptChannel`] with a non-hiding Merkle tree prover for the given hash
+	/// suite, then passed to [`Self::create_channel`].
+	pub fn create_channel_from_transcript<H, Challenger_, T>(
+		&self,
+		transcript: T,
+		rng: impl Rng,
+	) -> BaseFoldProverChannel<'_, F, P, NTT, ProverMerkleTranscriptChannel<T, Challenger_, F, H>>
+	where
+		H: HashSuite,
+		Challenger_: Challenger,
+		T: BorrowMut<ProverTranscript<Challenger_>>,
+		Output<H::LeafHash>: SerializeBytes,
+	{
+		self.create_channel(ProverMerkleTranscriptChannel::new(transcript), rng)
+	}
+
+	/// Creates a non-ZK prover channel over a transcript, for the common case.
+	///
+	/// The transcript handling matches [`Self::create_channel_from_transcript`]; the channel is
+	/// built with [`Self::create_channel_without_zk`] and panics under the same conditions.
+	pub fn create_channel_without_zk_from_transcript<H, Challenger_, T>(
+		&self,
+		transcript: T,
+	) -> BaseFoldProverChannel<'_, F, P, NTT, ProverMerkleTranscriptChannel<T, Challenger_, F, H>>
+	where
+		H: HashSuite,
+		Challenger_: Challenger,
+		T: BorrowMut<ProverTranscript<Challenger_>>,
+		Output<H::LeafHash>: SerializeBytes,
+	{
+		self.create_channel_without_zk(ProverMerkleTranscriptChannel::new(transcript))
 	}
 }
-
-/// The [`BaseFoldProverChannel`] type produced by [`BaseFoldProverCompiler::create_channel`]: a
-/// BaseFold channel over a [`ProverMerkleTranscriptChannel`] borrowing the transcript.
-pub type BaseFoldTranscriptProverChannel<'a, F, P, NTT, H, Challenger_> = BaseFoldProverChannel<
-	'a,
-	F,
-	P,
-	NTT,
-	ProverMerkleTranscriptChannel<&'a mut ProverTranscript<Challenger_>, Challenger_, F, H>,
->;

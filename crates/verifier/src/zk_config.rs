@@ -13,6 +13,8 @@
 //!
 //! [`ZKWrappedVerifierChannel`]: binius_spartan_verifier::wrapper::ZKWrappedVerifierChannel
 
+use std::marker::PhantomData;
+
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::BinaryField128bGhash as B128;
 use binius_hash::binary_merkle_tree::HashSuite;
@@ -53,7 +55,9 @@ pub struct ZKVerifier<H: HashSuite> {
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_verifier: IronSpartanIOPVerifier<B128>,
 	outer_layout: WitnessLayout<B128>,
-	basefold_compiler: BaseFoldVerifierCompiler<B128, H>,
+	basefold_compiler: BaseFoldVerifierCompiler<B128>,
+	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
+	_hash_marker: PhantomData<H>,
 }
 
 impl<H> ZKVerifier<H>
@@ -136,6 +140,7 @@ where
 			outer_iop_verifier,
 			outer_layout,
 			basefold_compiler,
+			_hash_marker: PhantomData,
 		})
 	}
 
@@ -157,7 +162,7 @@ where
 	}
 
 	/// Returns the BaseFold ZK verifier compiler.
-	pub const fn basefold_compiler(&self) -> &BaseFoldVerifierCompiler<B128, H> {
+	pub const fn basefold_compiler(&self) -> &BaseFoldVerifierCompiler<B128> {
 		&self.basefold_compiler
 	}
 
@@ -183,7 +188,9 @@ where
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		// Create BaseFold channel and wrap with outer verifier.
-		let channel = self.basefold_compiler.create_channel(transcript);
+		let channel = self
+			.basefold_compiler
+			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 		let mut wrapped_channel =
 			ZKWrappedVerifierChannel::new(channel, &self.outer_iop_verifier, &self.outer_layout)?;
 

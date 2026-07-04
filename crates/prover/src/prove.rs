@@ -1,6 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::marker::PhantomData;
+
 use binius_core::{
 	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueVec},
 	word::Word,
@@ -272,7 +274,9 @@ where
 	H: HashSuite,
 {
 	iop_prover: IOPProver,
-	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>, H>,
+	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>>,
+	/// The prover creates its Merkle transcript channels with the hash suite `H`.
+	_hash_marker: PhantomData<H>,
 }
 
 impl<P, H> Prover<P, H>
@@ -315,6 +319,7 @@ where
 		Ok(Prover {
 			iop_prover,
 			basefold_compiler,
+			_hash_marker: PhantomData,
 		})
 	}
 
@@ -348,7 +353,9 @@ where
 		// Create channel, delegate to IOPProver::prove, then finish it. The unified channel takes
 		// an rng to mask ZK oracles, but a plain `Prover` produces a transparent proof whose only
 		// oracle is non-ZK, so no masks are drawn and the rng is never consumed.
-		let mut channel = self.basefold_compiler.create_channel_without_zk(transcript);
+		let mut channel = self
+			.basefold_compiler
+			.create_channel_without_zk_from_transcript::<H, Challenger_, _>(transcript);
 		self.iop_prover.prove::<P, _>(witness, &mut channel)?;
 		channel.finish();
 		Ok(())
