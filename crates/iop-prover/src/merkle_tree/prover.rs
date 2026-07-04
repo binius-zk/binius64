@@ -78,6 +78,16 @@ where
 		proof.write_slice(&branch);
 	}
 
+	fn prove_vector<B: BufMut>(
+		&self,
+		committed: &Self::Committed,
+		proof: &mut TranscriptWriter<B>,
+	) {
+		for leaf_index in 0..1 << committed.log_len {
+			proof.write_slice(committed.get_salt(leaf_index));
+		}
+	}
+
 	#[allow(clippy::type_complexity)]
 	fn commit_iterated<ParIter>(
 		&self,
