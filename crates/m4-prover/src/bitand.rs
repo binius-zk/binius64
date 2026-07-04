@@ -233,7 +233,7 @@ impl BatchAndCheckWitness {
 fn eval_operand_words(words: &[Word], operand: &[ShiftedValueIndex]) -> Word {
 	operand.iter().fold(Word::ZERO, |acc, sv| {
 		let word = words[sv.value_index.0 as usize];
-		acc ^ sv.shift_variant.apply(word, sv.amount)
+		acc ^ sv.shift_variant.apply(word, sv.amount as usize)
 	})
 }
 

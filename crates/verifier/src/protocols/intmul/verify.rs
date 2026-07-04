@@ -1,8 +1,10 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::iter;
 
 use binius_field::{BinaryField, Field, field::FieldOps};
+use binius_iop::channel::IOPVerifierChannel;
 use binius_ip::{
 	channel::IPVerifierChannel,
 	prodcheck::{self, MultilinearEvalClaim},
@@ -436,14 +438,14 @@ where
 /// - `log_bits`: $k$, where $2^k$ is the bit-width of the integer operands.
 /// - `n_vars`: Number of variables in the row dimension (i.e., $\log_2$ of the number of
 ///   multiplication constraints).
-pub fn verify<F, C>(
+pub fn verify<'r, F, C>(
 	log_bits: usize,
 	n_vars: usize,
 	channel: &mut C,
 ) -> Result<IntMulOutput<C::Elem>, Error>
 where
 	F: BinaryField,
-	C: IPVerifierChannel<F>,
+	C: IOPVerifierChannel<'r, F>,
 	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
 	assert!(log_bits >= 1);
