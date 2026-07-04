@@ -8,9 +8,7 @@ use binius_iop::{
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_iop_prover::{
-	basefold_compiler::BaseFoldProverCompiler, merkle_tree::prover::BinaryMerkleTreeProver,
-};
+use binius_iop_prover::basefold_compiler::BaseFoldProverCompiler;
 use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly};
@@ -116,9 +114,8 @@ fn test_zk_wrapped_prove_verify() {
 	let subspace = zk_basefold_compiler.max_subspace();
 	let domain_context = GenericOnTheFly::generate_from_subspace(subspace);
 	let ntt = NeighborsLastSingleThread::new(domain_context);
-	let merkle_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::new();
 	let zk_basefold_prover: BaseFoldProverCompiler<OptimalPackedB128, _, _> =
-		BaseFoldProverCompiler::from_verifier_compiler(&zk_basefold_compiler, ntt, merkle_prover);
+		BaseFoldProverCompiler::from_verifier_compiler(&zk_basefold_compiler, ntt);
 
 	// === Step 6: Generate inner witness ===
 	let mut rng = StdRng::seed_from_u64(0);

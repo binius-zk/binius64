@@ -8,43 +8,46 @@
 use std::marker::PhantomData;
 
 use binius_field::{BinaryField, PackedField};
+use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
 	basefold_compiler::BaseFoldVerifierCompiler, channel::OracleSpec, fri::FRIParams,
-	merkle_tree::MerkleTreeScheme,
+	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_math::ntt::AdditiveNTT;
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::SerializeBytes;
+use digest::Output;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
-use crate::{basefold_channel::BaseFoldProverChannel, merkle_tree::MerkleTreeProver};
+use crate::{
+	basefold_channel::BaseFoldProverChannel, merkle_channel::ProverMerkleTranscriptChannel,
+};
 
 /// A compiler that creates BaseFold ZK prover channels with precomputed parameters.
 ///
 /// This compiler builds a single combined FRI over all oracles, with ZK oracles configured for
 /// zero-knowledge mode.
 #[derive(Debug)]
-pub struct BaseFoldProverCompiler<P, NTT, MerkleProver_>
+pub struct BaseFoldProverCompiler<P, NTT, H>
 where
 	P: PackedField<Scalar: BinaryField>,
 	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
-	MerkleProver_: MerkleTreeProver<P::Scalar>,
+	H: HashSuite,
 {
 	ntt: NTT,
-	merkle_prover: MerkleProver_,
 	oracle_specs: Vec<OracleSpec>,
 	/// The combined FRI parameters over **all** oracles.
 	fri_params: FRIParams<P::Scalar>,
-	_p_marker: PhantomData<P>,
+	_marker: PhantomData<(P, H)>,
 }
 
-impl<F, P, NTT, MerkleScheme, MerkleProver_> BaseFoldProverCompiler<P, NTT, MerkleProver_>
+impl<F, P, NTT, H> BaseFoldProverCompiler<P, NTT, H>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
-	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
-	MerkleProver_: MerkleTreeProver<F, Scheme = MerkleScheme>,
+	H: HashSuite,
+	Output<H::LeafHash>: SerializeBytes,
 {
 	/// Creates a new compiler with precomputed combined FRI parameters.
 	///
@@ -52,7 +55,6 @@ where
 	/// (message ‖ equal-length mask), a non-ZK oracle takes a flexible batch size.
 	pub fn new(
 		ntt: NTT,
-		merkle_prover: MerkleProver_,
 		oracle_specs: Vec<OracleSpec>,
 		log_inv_rate: usize,
 		n_test_queries: usize,
@@ -67,7 +69,7 @@ where
 		// equal-length mask); non-ZK oracles take a flexible batch size.
 		let (fri_params, _) = FRIParams::optimal_for_batch(
 			ntt.domain_context(),
-			merkle_prover.scheme(),
+			&BinaryMerkleTreeScheme::<F, H>::new(),
 			&oracle_specs,
 			log_inv_rate,
 			n_test_queries,
@@ -75,10 +77,9 @@ where
 
 		Self {
 			ntt,
-			merkle_prover,
 			oracle_specs,
 			fri_params,
-			_p_marker: PhantomData,
+			_marker: PhantomData,
 		}
 	}
 
@@ -86,27 +87,20 @@ where
 	///
 	/// This reuses the precomputed FRI parameters and oracle specifications.
 	pub fn from_verifier_compiler(
-		verifier_compiler: &BaseFoldVerifierCompiler<F, MerkleScheme>,
+		verifier_compiler: &BaseFoldVerifierCompiler<F, H>,
 		ntt: NTT,
-		merkle_prover: MerkleProver_,
 	) -> Self {
 		Self {
 			ntt,
-			merkle_prover,
 			oracle_specs: verifier_compiler.oracle_specs().to_vec(),
 			fri_params: verifier_compiler.fri_params().clone(),
-			_p_marker: PhantomData,
+			_marker: PhantomData,
 		}
 	}
 
 	/// Returns a reference to the NTT.
 	pub const fn ntt(&self) -> &NTT {
 		&self.ntt
-	}
-
-	/// Returns a reference to the Merkle prover.
-	pub const fn merkle_prover(&self) -> &MerkleProver_ {
-		&self.merkle_prover
 	}
 
 	/// Returns a reference to the oracle specifications.
@@ -121,13 +115,22 @@ where
 
 	/// Creates a ZK prover channel from this compiler, a transcript, and an RNG.
 	///
-	/// The `rng` is used to seed an internal `StdRng` for mask generation.
+	/// The returned channel drives all prover interaction through a
+	/// [`ProverMerkleTranscriptChannel`] over the transcript, constructed here with a non-hiding
+	/// Merkle tree prover. The `rng` is used to seed an internal `StdRng` for mask generation.
 	pub fn create_channel<'a, Challenger_: Challenger>(
 		&'a self,
 		transcript: &'a mut ProverTranscript<Challenger_>,
 		rng: impl Rng,
-	) -> BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_> {
-		BaseFoldProverChannel::from_compiler(self, transcript, rng)
+	) -> BaseFoldTranscriptProverChannel<'a, F, P, NTT, H, Challenger_> {
+		let channel = ProverMerkleTranscriptChannel::new(transcript);
+		BaseFoldProverChannel::new(
+			channel,
+			&self.ntt,
+			self.oracle_specs.clone(),
+			self.fri_params.clone(),
+			rng,
+		)
 	}
 
 	/// Creates a prover channel for a compiler whose oracles are all non-ZK.
@@ -144,7 +147,7 @@ where
 	pub fn create_channel_without_zk<'a, Challenger_: Challenger>(
 		&'a self,
 		transcript: &'a mut ProverTranscript<Challenger_>,
-	) -> BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_> {
+	) -> BaseFoldTranscriptProverChannel<'a, F, P, NTT, H, Challenger_> {
 		// A ZK oracle masks with the RNG, so a fixed seed here would silently break hiding.
 		assert!(
 			self.oracle_specs().iter().all(|spec| !spec.is_zk),
@@ -155,3 +158,13 @@ where
 		self.create_channel(transcript, StdRng::seed_from_u64(0))
 	}
 }
+
+/// The [`BaseFoldProverChannel`] type produced by [`BaseFoldProverCompiler::create_channel`]: a
+/// BaseFold channel over a [`ProverMerkleTranscriptChannel`] borrowing the transcript.
+pub type BaseFoldTranscriptProverChannel<'a, F, P, NTT, H, Challenger_> = BaseFoldProverChannel<
+	'a,
+	F,
+	P,
+	NTT,
+	ProverMerkleTranscriptChannel<&'a mut ProverTranscript<Challenger_>, Challenger_, F, H>,
+>;

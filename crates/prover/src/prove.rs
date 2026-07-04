@@ -9,10 +9,7 @@ use binius_field::{
 	AESTowerField8b as B8, BinaryField, ExtensionField, Field, PackedExtension, PackedField,
 };
 use binius_hash::binary_merkle_tree::HashSuite;
-use binius_iop_prover::{
-	basefold_channel::BaseFoldProverChannel, basefold_compiler::BaseFoldProverCompiler,
-	channel::IOPProverChannel,
-};
+use binius_iop_prover::{basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_math::{
 	BinarySubspace, FieldBuffer, FieldSlice,
@@ -31,12 +28,10 @@ use binius_verifier::{
 	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput},
 };
 use digest::Output;
-use rand::{SeedableRng, rngs::StdRng};
 
 use super::error::Error;
 use crate::{
 	and_reduction::prover::OblongZerocheckProver,
-	merkle_tree::prover::BinaryMerkleTreeProver,
 	protocols::{
 		intmul::{prove::IntMulProver, witness::Witness as IntMulWitness},
 		shift::{
@@ -48,9 +43,6 @@ use crate::{
 
 /// Type alias for the prover NTT parameterized by field.
 type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
-
-/// Type alias for the prover Merkle tree prover parameterized by field.
-type ProverMerkleProver<F, H> = BinaryMerkleTreeProver<F, H>;
 
 /// IOP prover for a particular constraint system.
 ///
@@ -280,7 +272,7 @@ where
 	H: HashSuite,
 {
 	iop_prover: IOPProver,
-	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>, ProverMerkleProver<B128, H>>,
+	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>, H>,
 }
 
 impl<P, H> Prover<P, H>
@@ -314,14 +306,9 @@ where
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
-		let merkle_prover = BinaryMerkleTreeProver::<_, H>::new();
-
 		// Create prover compiler from verifier compiler (reuses FRI params and oracle specs)
-		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
-			verifier.iop_compiler(),
-			ntt,
-			merkle_prover,
-		);
+		let basefold_compiler =
+			BaseFoldProverCompiler::from_verifier_compiler(verifier.iop_compiler(), ntt);
 
 		let iop_prover = IOPProver::new(verifier.into_iop_verifier(), key_collection);
 
@@ -361,9 +348,7 @@ where
 		// Create channel, delegate to IOPProver::prove, then finish it. The unified channel takes
 		// an rng to mask ZK oracles, but a plain `Prover` produces a transparent proof whose only
 		// oracle is non-ZK, so no masks are drawn and the rng is never consumed.
-		let rng = StdRng::seed_from_u64(0);
-		let mut channel =
-			BaseFoldProverChannel::from_compiler(&self.basefold_compiler, transcript, rng);
+		let mut channel = self.basefold_compiler.create_channel_without_zk(transcript);
 		self.iop_prover.prove::<P, _>(witness, &mut channel)?;
 		channel.finish();
 		Ok(())

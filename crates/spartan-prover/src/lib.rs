@@ -38,10 +38,7 @@ use std::{
 
 use binius_field::{BinaryField, Field, PackedExtension, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
-use binius_iop_prover::{
-	basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel,
-	merkle_tree::prover::BinaryMerkleTreeProver,
-};
+use binius_iop_prover::{basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{quadratic_mle::QuadraticMleCheckProver, zk_mlecheck},
@@ -74,7 +71,6 @@ use rand::CryptoRng;
 use crate::wiring::{WiringTranspose, fold_constraints};
 
 type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
-type ProverMerkleProver<F, H> = BinaryMerkleTreeProver<F, H>;
 
 /// IOP prover for a particular constraint system.
 ///
@@ -99,8 +95,7 @@ where
 	H: HashSuite,
 {
 	iop_prover: IOPProver<P::Scalar>,
-	basefold_compiler:
-		BaseFoldProverCompiler<P, ProverNTT<P::Scalar>, ProverMerkleProver<P::Scalar, H>>,
+	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<P::Scalar>, H>,
 }
 
 impl<F: Field> IOPProver<F> {
@@ -338,15 +333,10 @@ where
 		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
-		let merkle_prover = BinaryMerkleTreeProver::<_, H>::new();
-
 		// Create the BaseFold ZK compiler from verifier compiler (reuses oracle_specs and
 		// fri_params)
-		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
-			verifier.iop_compiler(),
-			ntt,
-			merkle_prover,
-		);
+		let basefold_compiler =
+			BaseFoldProverCompiler::from_verifier_compiler(verifier.iop_compiler(), ntt);
 
 		let iop_prover = IOPProver::new(verifier.constraint_system().clone());
 
@@ -362,9 +352,7 @@ where
 	}
 
 	/// Returns a reference to the BaseFold ZK prover compiler.
-	pub const fn iop_compiler(
-		&self,
-	) -> &BaseFoldProverCompiler<P, ProverNTT<F>, ProverMerkleProver<F, H>> {
+	pub const fn iop_compiler(&self) -> &BaseFoldProverCompiler<P, ProverNTT<F>, H> {
 		&self.basefold_compiler
 	}
 

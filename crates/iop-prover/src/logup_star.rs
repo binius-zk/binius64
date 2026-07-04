@@ -300,12 +300,13 @@ mod tests {
 	fn test_basefold_round_trip() {
 		use binius_field::PackedBinaryGhash1x128b;
 		use binius_hash::{StdDigest, StdHashSuite};
-		use binius_iop::{basefold_compiler::BaseFoldVerifierCompiler, fri::MinProofSizeStrategy};
+		use binius_iop::{
+			basefold_compiler::BaseFoldVerifierCompiler, fri::MinProofSizeStrategy,
+			merkle_tree::BinaryMerkleTreeScheme,
+		};
 		use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly};
 
-		use crate::{
-			basefold_compiler::BaseFoldProverCompiler, merkle_tree::prover::BinaryMerkleTreeProver,
-		};
+		use crate::basefold_compiler::BaseFoldProverCompiler;
 
 		// The commitment field is the GHASH 128-bit field; use a single-lane packing for BaseFold.
 		type BP = PackedBinaryGhash1x128b;
@@ -321,9 +322,8 @@ mod tests {
 		let n_test_queries = SECURITY_BITS.div_ceil(LOG_INV_RATE);
 		let oracle_specs = vec![OracleSpec::new_zk(m)];
 
-		let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
-			merkle_prover.scheme().clone(),
+			BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
 			oracle_specs,
 			LOG_INV_RATE,
 			n_test_queries,
@@ -334,11 +334,8 @@ mod tests {
 		let domain_context =
 			GenericOnTheFly::generate_from_subspace(verifier_compiler.max_subspace());
 		let ntt = NeighborsLastSingleThread::new(domain_context);
-		let prover_compiler = BaseFoldProverCompiler::<BP, _, _>::from_verifier_compiler(
-			&verifier_compiler,
-			ntt,
-			merkle_prover,
-		);
+		let prover_compiler =
+			BaseFoldProverCompiler::<BP, _, _>::from_verifier_compiler(&verifier_compiler, ntt);
 
 		let mut prover_transcript = ProverTranscript::new(Chal::default());
 		let prover_channel_rng = StdRng::seed_from_u64(8);

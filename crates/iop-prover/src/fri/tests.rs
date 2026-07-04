@@ -7,22 +7,24 @@ use binius_field::{
 	BinaryField, BinaryField128bGhash as B128, Field, PackedBinaryGhash1x128b, PackedField,
 };
 use binius_hash::{StdDigest, StdHashSuite};
-use binius_iop::fri::{self, CodewordSpec, FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier};
+use binius_iop::{
+	fri::{self, CodewordSpec, FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier},
+	merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
+};
+use binius_ip::channel::IPVerifierChannel;
+use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
 	BinarySubspace, ReedSolomonCode,
 	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
 	ntt::{AdditiveNTT, NeighborsLastSingleThread, domain_context::GenericOnTheFly},
 	test_utils::{Packed128b, random_field_buffer},
 };
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, HasherChallenger},
-};
+use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 use rand::prelude::*;
 
-use super::{CommitOutput, FRIFoldProver, FoldRoundOutput, commit_interleaved};
-use crate::merkle_tree::prover::BinaryMerkleTreeProver;
+use super::{FRIFoldProver, encode_interleaved};
+use crate::merkle_channel::{MerkleIPProverChannel, ProverMerkleTranscriptChannel};
 
 type StdChallenger = HasherChallenger<StdDigest>;
 
@@ -36,8 +38,6 @@ fn test_commit_prove_verify_success<F, P>(
 	P: PackedField<Scalar = F>,
 {
 	let mut rng = StdRng::seed_from_u64(0);
-
-	let merkle_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::new();
 
 	let committed_rs_code = ReedSolomonCode::<F>::new(log_dimension, log_inv_rate);
 
@@ -54,41 +54,41 @@ fn test_commit_prove_verify_success<F, P>(
 	// Generate a random message
 	let msg = random_field_buffer::<P>(&mut rng, params.log_msg_len());
 
-	// Prover commits the message
-	let CommitOutput {
-		commitment: mut codeword_commitment,
-		committed: codeword_committed,
-		codeword,
-	} = commit_interleaved(&params, 0, &ntt, &merkle_prover, msg.to_ref());
-
-	// Run the prover to generate the proximity proof
-	let mut round_prover =
-		FRIFoldProver::new(&params, &ntt, &merkle_prover, codeword, &codeword_committed);
+	// Prover encodes the message and commits the codeword over a Merkle channel.
+	let codeword = encode_interleaved(&params, 0, &ntt, msg.to_ref());
 
 	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
-	prover_challenger.message().write(&codeword_commitment);
+	let mut prover_channel =
+		ProverMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::new(
+			&mut prover_challenger,
+		);
+	let codeword_commitment =
+		prover_channel.send_merkle_commitment(codeword.to_ref(), 1 << log_batch_size);
+
+	// Run the prover to generate the proximity proof
+	let mut round_prover = FRIFoldProver::new(&params, &ntt, codeword, codeword_commitment);
 
 	// Note: The prover does an initial fold round before receiving any challenges
 	// This is round 0, which won't produce a commitment when log_batch_size > 0
-	let fold_round_output = round_prover.execute_fold_round();
-	if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
-		prover_challenger.message().write(&round_commitment);
-	}
+	round_prover.execute_fold_round(&mut prover_channel);
 
 	for _i in 0..params.n_fold_rounds() {
-		let challenge = prover_challenger.sample();
+		let challenge: F = IPProverChannel::sample(&mut prover_channel);
 		round_prover.receive_challenge(challenge);
-
-		let fold_round_output = round_prover.execute_fold_round();
-		if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
-			prover_challenger.message().write(&round_commitment);
-		}
+		round_prover.execute_fold_round(&mut prover_channel);
 	}
 
-	round_prover.finish_proof(&mut prover_challenger);
-	// Now run the verifier
+	round_prover.finish_proof(&mut prover_channel);
+	drop(prover_channel);
+	// Now run the verifier, receiving commitments and openings over a Merkle channel.
 	let mut verifier_challenger = prover_challenger.into_verifier();
-	codeword_commitment = verifier_challenger.message().read().unwrap();
+	let mut channel = VerifierMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::new(
+		&mut verifier_challenger,
+	);
+	// The committed codeword's Merkle tree has one interleaved coset per leaf.
+	let codeword_commitment = channel
+		.recv_merkle_commitment(1 << log_batch_size, log_dimension + log_inv_rate)
+		.unwrap();
 	let mut verifier_challenges = Vec::with_capacity(params.n_fold_rounds());
 
 	assert_eq!(params.fold_arities().len(), n_round_commitments);
@@ -98,16 +98,12 @@ fn test_commit_prove_verify_success<F, P>(
 	let mut fri_fold_verifier = FRIFoldVerifier::new(&params);
 
 	// Process initial round (before any challenges) - round 0
-	fri_fold_verifier
-		.process_round(&mut verifier_challenger.message())
-		.unwrap();
+	fri_fold_verifier.process_round(&mut channel).unwrap();
 
 	// Process remaining rounds with challenges
 	for _ in 0..params.n_fold_rounds() {
-		verifier_challenges.push(verifier_challenger.sample());
-		fri_fold_verifier
-			.process_round(&mut verifier_challenger.message())
-			.unwrap();
+		verifier_challenges.push(IPVerifierChannel::<F>::sample(&mut channel));
+		fri_fold_verifier.process_round(&mut channel).unwrap();
 	}
 
 	let round_commitments = fri_fold_verifier.finalize();
@@ -116,7 +112,6 @@ fn test_commit_prove_verify_success<F, P>(
 
 	let verifier = FRIQueryVerifier::new(
 		&params,
-		merkle_prover.scheme(),
 		&codeword_commitment,
 		&round_commitments,
 		&verifier_challenges,
@@ -131,7 +126,7 @@ fn test_commit_prove_verify_success<F, P>(
 	eval_point.reverse();
 	let computed_eval = evaluate(&msg, &eval_point);
 
-	let final_fri_value = verifier.verify(&mut verifier_challenger).unwrap();
+	let final_fri_value = verifier.verify(&mut channel).unwrap();
 	assert_eq!(computed_eval, final_fri_value);
 }
 
@@ -229,8 +224,6 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 	let log_batch_sizes = [1usize, 1, 2];
 	let n_test_queries = 3;
 
-	let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
-
 	// The reduced Reed-Solomon code is shared by every input oracle, so the domain only needs to
 	// cover its length.
 	let subspace = BinarySubspace::with_dim(log_dim + log_inv_rate);
@@ -254,79 +247,71 @@ fn test_commit_prove_verify_batched_multi_oracle() {
 	let params = FRIParams::<F>::new_batch(rs_code, oracle_specs, vec![], n_test_queries);
 	assert_eq!(params.rs_code().log_dim(), log_dim);
 
-	// Commit each input oracle's interleaved codeword separately.
+	// Encode each input oracle's interleaved codeword separately and commit it over the channel.
+	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
+	let mut prover_channel =
+		ProverMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::new(
+			&mut prover_challenger,
+		);
 	let mut messages = Vec::new();
-	let mut commitments = Vec::new();
-	let mut committeds = Vec::new();
-	let mut codewords = Vec::new();
+	let mut committed_codewords = Vec::new();
 	for &log_batch_size in &log_batch_sizes {
 		let oracle_params =
 			FRIParams::new(params.rs_code().clone(), log_batch_size, vec![], n_test_queries);
 		let msg = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
-		let CommitOutput {
-			commitment,
-			committed,
-			codeword,
-		} = commit_interleaved(&oracle_params, 0, &ntt, &merkle_prover, msg.to_ref());
+		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.to_ref());
+		let commitment =
+			prover_channel.send_merkle_commitment(codeword.to_ref(), 1 << log_batch_size);
 		messages.push(msg);
-		commitments.push(commitment);
-		committeds.push(committed);
-		codewords.push(codeword);
+		committed_codewords.push((codeword, commitment));
 	}
 
-	// Run the prover: write the per-oracle codeword commitments, then fold.
-	let committed_codewords = iter::zip(codewords, &committeds).collect::<Vec<_>>();
-	let mut round_prover =
-		FRIFoldProver::new_batch(&params, &ntt, &merkle_prover, committed_codewords);
+	// Run the prover to fold the committed codewords.
+	let mut round_prover = FRIFoldProver::new_batch(&params, &ntt, committed_codewords);
 
-	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
-	for commitment in &commitments {
-		prover_challenger.message().write(commitment);
-	}
-
-	let fold_round_output = round_prover.execute_fold_round();
-	if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
-		prover_challenger.message().write(&round_commitment);
-	}
+	round_prover.execute_fold_round(&mut prover_channel);
 	for _ in 0..params.n_fold_rounds() {
-		let challenge = prover_challenger.sample();
+		let challenge: F = IPProverChannel::sample(&mut prover_channel);
 		round_prover.receive_challenge(challenge);
-
-		let fold_round_output = round_prover.execute_fold_round();
-		if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
-			prover_challenger.message().write(&round_commitment);
-		}
+		round_prover.execute_fold_round(&mut prover_channel);
 	}
-	round_prover.finish_proof(&mut prover_challenger);
+	round_prover.finish_proof(&mut prover_channel);
+	drop(prover_channel);
 
-	// Run the verifier.
+	// Run the verifier, receiving commitments and openings over a Merkle channel.
 	let mut verifier_challenger = prover_challenger.into_verifier();
-	let read_commitments = commitments
+	let mut channel = VerifierMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::new(
+		&mut verifier_challenger,
+	);
+	// Each input oracle's Merkle tree has one interleaved coset per leaf and depth equal to its
+	// own (possibly lifted) codeword dimension plus the inverse rate.
+	let read_commitments = params
+		.input_oracles()
 		.iter()
-		.map(|_| verifier_challenger.message().read().unwrap())
+		.map(|spec| {
+			let depth = (params.rs_code().log_dim() - spec.log_lift) + log_inv_rate;
+			channel
+				.recv_merkle_commitment(1 << spec.log_batch_size(), depth)
+				.unwrap()
+		})
 		.collect::<Vec<_>>();
 
 	let mut verifier_challenges = Vec::with_capacity(params.n_fold_rounds());
 	let mut fri_fold_verifier = FRIFoldVerifier::new(&params);
-	fri_fold_verifier
-		.process_round(&mut verifier_challenger.message())
-		.unwrap();
+	fri_fold_verifier.process_round(&mut channel).unwrap();
 	for _ in 0..params.n_fold_rounds() {
-		verifier_challenges.push(verifier_challenger.sample());
-		fri_fold_verifier
-			.process_round(&mut verifier_challenger.message())
-			.unwrap();
+		verifier_challenges.push(IPVerifierChannel::<F>::sample(&mut channel));
+		fri_fold_verifier.process_round(&mut channel).unwrap();
 	}
 	let round_commitments = fri_fold_verifier.finalize();
 
 	let verifier = FRIQueryVerifier::new_batch(
 		&params,
-		merkle_prover.scheme(),
 		&read_commitments,
 		&round_commitments,
 		&verifier_challenges,
 	);
-	let final_value = verifier.verify(&mut verifier_challenger).unwrap();
+	let final_value = verifier.verify(&mut channel).unwrap();
 
 	// The first-fold challenge slice is `[early ++ outer ++ later]`. Here every oracle is non-ZK,
 	// so `max_early = 0` and the slice is `[outer ++ later]`. Oracle `i` folds with the
@@ -376,8 +361,6 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 	let oracle_params_spec = [(1usize, true), (2usize, false)];
 	let n_test_queries = 3;
 
-	let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
-
 	// Every oracle reduces to the shared dimension `log_dim`, so no lifting is exercised here — the
 	// focus is the inner-challenge windowing.
 	let subspace = BinarySubspace::with_dim(log_dim + log_inv_rate);
@@ -400,79 +383,71 @@ fn test_commit_prove_verify_batched_mixed_skip() {
 	let params = FRIParams::<F>::new_batch(rs_code, oracle_specs, vec![], n_test_queries);
 	assert_eq!(params.rs_code().log_dim(), log_dim);
 
-	// Commit each input oracle's interleaved codeword separately.
+	// Encode each input oracle's interleaved codeword separately and commit it over the channel.
+	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
+	let mut prover_channel =
+		ProverMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::new(
+			&mut prover_challenger,
+		);
 	let mut messages = Vec::new();
-	let mut commitments = Vec::new();
-	let mut committeds = Vec::new();
-	let mut codewords = Vec::new();
+	let mut committed_codewords = Vec::new();
 	for &(log_batch_size, _) in &oracle_params_spec {
 		let oracle_params =
 			FRIParams::new(params.rs_code().clone(), log_batch_size, vec![], n_test_queries);
 		let msg = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
-		let CommitOutput {
-			commitment,
-			committed,
-			codeword,
-		} = commit_interleaved(&oracle_params, 0, &ntt, &merkle_prover, msg.to_ref());
+		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.to_ref());
+		let commitment =
+			prover_channel.send_merkle_commitment(codeword.to_ref(), 1 << log_batch_size);
 		messages.push(msg);
-		commitments.push(commitment);
-		committeds.push(committed);
-		codewords.push(codeword);
+		committed_codewords.push((codeword, commitment));
 	}
 
-	// Run the prover: write the per-oracle codeword commitments, then fold.
-	let committed_codewords = iter::zip(codewords, &committeds).collect::<Vec<_>>();
-	let mut round_prover =
-		FRIFoldProver::new_batch(&params, &ntt, &merkle_prover, committed_codewords);
+	// Run the prover to fold the committed codewords.
+	let mut round_prover = FRIFoldProver::new_batch(&params, &ntt, committed_codewords);
 
-	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
-	for commitment in &commitments {
-		prover_challenger.message().write(commitment);
-	}
-
-	let fold_round_output = round_prover.execute_fold_round();
-	if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
-		prover_challenger.message().write(&round_commitment);
-	}
+	round_prover.execute_fold_round(&mut prover_channel);
 	for _ in 0..params.n_fold_rounds() {
-		let challenge = prover_challenger.sample();
+		let challenge: F = IPProverChannel::sample(&mut prover_channel);
 		round_prover.receive_challenge(challenge);
-
-		let fold_round_output = round_prover.execute_fold_round();
-		if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
-			prover_challenger.message().write(&round_commitment);
-		}
+		round_prover.execute_fold_round(&mut prover_channel);
 	}
-	round_prover.finish_proof(&mut prover_challenger);
+	round_prover.finish_proof(&mut prover_channel);
+	drop(prover_channel);
 
-	// Run the verifier.
+	// Run the verifier, receiving commitments and openings over a Merkle channel.
 	let mut verifier_challenger = prover_challenger.into_verifier();
-	let read_commitments = commitments
+	let mut channel = VerifierMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::new(
+		&mut verifier_challenger,
+	);
+	// Each input oracle's Merkle tree has one interleaved coset per leaf and depth equal to its
+	// own (possibly lifted) codeword dimension plus the inverse rate.
+	let read_commitments = params
+		.input_oracles()
 		.iter()
-		.map(|_| verifier_challenger.message().read().unwrap())
+		.map(|spec| {
+			let depth = (params.rs_code().log_dim() - spec.log_lift) + log_inv_rate;
+			channel
+				.recv_merkle_commitment(1 << spec.log_batch_size(), depth)
+				.unwrap()
+		})
 		.collect::<Vec<_>>();
 
 	let mut verifier_challenges = Vec::with_capacity(params.n_fold_rounds());
 	let mut fri_fold_verifier = FRIFoldVerifier::new(&params);
-	fri_fold_verifier
-		.process_round(&mut verifier_challenger.message())
-		.unwrap();
+	fri_fold_verifier.process_round(&mut channel).unwrap();
 	for _ in 0..params.n_fold_rounds() {
-		verifier_challenges.push(verifier_challenger.sample());
-		fri_fold_verifier
-			.process_round(&mut verifier_challenger.message())
-			.unwrap();
+		verifier_challenges.push(IPVerifierChannel::<F>::sample(&mut channel));
+		fri_fold_verifier.process_round(&mut channel).unwrap();
 	}
 	let round_commitments = fri_fold_verifier.finalize();
 
 	let verifier = FRIQueryVerifier::new_batch(
 		&params,
-		merkle_prover.scheme(),
 		&read_commitments,
 		&round_commitments,
 		&verifier_challenges,
 	);
-	let final_value = verifier.verify(&mut verifier_challenger).unwrap();
+	let final_value = verifier.verify(&mut channel).unwrap();
 
 	// The first-fold challenge slice is `[early ++ outer ++ later]`. Oracle `i` folds with
 	// `early_window ++ later_window`, the suffixes of the early and later groups of lengths
@@ -542,8 +517,6 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 	// The reduced (first-round) code dimension is the largest oracle dimension.
 	let reduced_log_dim = oracle_log_dims.iter().copied().max().unwrap();
 
-	let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
-
 	// A single shared domain context covers the reduced code; every per-oracle (smaller) code is
 	// derived from it so their subspaces are nested prefixes of the reduced subspace.
 	let subspace = BinarySubspace::with_dim(reduced_log_dim + log_inv_rate);
@@ -568,12 +541,15 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 	let params = FRIParams::<F>::new_batch(rs_code, oracle_specs, vec![], n_test_queries);
 	assert_eq!(params.rs_code().log_dim(), reduced_log_dim);
 
-	// Commit each input oracle's interleaved codeword separately, using its own smaller code built
-	// from the shared domain context.
+	// Encode each input oracle's interleaved codeword separately, using its own smaller code built
+	// from the shared domain context, and commit it over the channel.
+	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
+	let mut prover_channel =
+		ProverMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::new(
+			&mut prover_challenger,
+		);
 	let mut messages = Vec::new();
-	let mut commitments = Vec::new();
-	let mut committeds = Vec::new();
-	let mut codewords = Vec::new();
+	let mut committed_codewords = Vec::new();
 	for (&log_dim, &log_batch_size) in iter::zip(&oracle_log_dims, &log_batch_sizes) {
 		let rs_code = ReedSolomonCode::with_domain_context_subspace(
 			ntt.domain_context(),
@@ -582,70 +558,59 @@ fn test_commit_prove_verify_lifted_multi_oracle() {
 		);
 		let oracle_params = FRIParams::new(rs_code, log_batch_size, vec![], n_test_queries);
 		let msg = random_field_buffer::<P>(&mut rng, log_dim + log_batch_size);
-		let CommitOutput {
-			commitment,
-			committed,
-			codeword,
-		} = commit_interleaved(&oracle_params, 0, &ntt, &merkle_prover, msg.to_ref());
+		let codeword = encode_interleaved(&oracle_params, 0, &ntt, msg.to_ref());
+		let commitment =
+			prover_channel.send_merkle_commitment(codeword.to_ref(), 1 << log_batch_size);
 		messages.push(msg);
-		commitments.push(commitment);
-		committeds.push(committed);
-		codewords.push(codeword);
+		committed_codewords.push((codeword, commitment));
 	}
 
-	// Run the prover: write the per-oracle codeword commitments, then fold.
-	let committed_codewords = iter::zip(codewords, &committeds).collect::<Vec<_>>();
-	let mut round_prover =
-		FRIFoldProver::new_batch(&params, &ntt, &merkle_prover, committed_codewords);
+	// Run the prover to fold the committed codewords.
+	let mut round_prover = FRIFoldProver::new_batch(&params, &ntt, committed_codewords);
 
-	let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
-	for commitment in &commitments {
-		prover_challenger.message().write(commitment);
-	}
-
-	let fold_round_output = round_prover.execute_fold_round();
-	if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
-		prover_challenger.message().write(&round_commitment);
-	}
+	round_prover.execute_fold_round(&mut prover_channel);
 	for _ in 0..params.n_fold_rounds() {
-		let challenge = prover_challenger.sample();
+		let challenge: F = IPProverChannel::sample(&mut prover_channel);
 		round_prover.receive_challenge(challenge);
-
-		let fold_round_output = round_prover.execute_fold_round();
-		if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
-			prover_challenger.message().write(&round_commitment);
-		}
+		round_prover.execute_fold_round(&mut prover_channel);
 	}
-	round_prover.finish_proof(&mut prover_challenger);
+	round_prover.finish_proof(&mut prover_channel);
+	drop(prover_channel);
 
-	// Run the verifier.
+	// Run the verifier, receiving commitments and openings over a Merkle channel.
 	let mut verifier_challenger = prover_challenger.into_verifier();
-	let read_commitments = commitments
+	let mut channel = VerifierMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::new(
+		&mut verifier_challenger,
+	);
+	// Each input oracle's Merkle tree has one interleaved coset per leaf and depth equal to its
+	// own (possibly lifted) codeword dimension plus the inverse rate.
+	let read_commitments = params
+		.input_oracles()
 		.iter()
-		.map(|_| verifier_challenger.message().read().unwrap())
+		.map(|spec| {
+			let depth = (params.rs_code().log_dim() - spec.log_lift) + log_inv_rate;
+			channel
+				.recv_merkle_commitment(1 << spec.log_batch_size(), depth)
+				.unwrap()
+		})
 		.collect::<Vec<_>>();
 
 	let mut verifier_challenges = Vec::with_capacity(params.n_fold_rounds());
 	let mut fri_fold_verifier = FRIFoldVerifier::new(&params);
-	fri_fold_verifier
-		.process_round(&mut verifier_challenger.message())
-		.unwrap();
+	fri_fold_verifier.process_round(&mut channel).unwrap();
 	for _ in 0..params.n_fold_rounds() {
-		verifier_challenges.push(verifier_challenger.sample());
-		fri_fold_verifier
-			.process_round(&mut verifier_challenger.message())
-			.unwrap();
+		verifier_challenges.push(IPVerifierChannel::<F>::sample(&mut channel));
+		fri_fold_verifier.process_round(&mut channel).unwrap();
 	}
 	let round_commitments = fri_fold_verifier.finalize();
 
 	let verifier = FRIQueryVerifier::new_batch(
 		&params,
-		merkle_prover.scheme(),
 		&read_commitments,
 		&round_commitments,
 		&verifier_challenges,
 	);
-	let final_value = verifier.verify(&mut verifier_challenger).unwrap();
+	let final_value = verifier.verify(&mut channel).unwrap();
 
 	// The first-fold challenge slice is `[early ++ outer ++ later]`. Every oracle is non-ZK here,
 	// so `max_early = 0` and the slice is `[outer ++ later]`. Oracle `i` folds with the
@@ -701,8 +666,6 @@ where
 {
 	let mut rng = StdRng::seed_from_u64(0);
 
-	let merkle_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::new();
-
 	let committed_rs_code = ReedSolomonCode::<F>::new(log_dimension, log_inv_rate);
 
 	let n_test_queries = 3;
@@ -715,36 +678,30 @@ where
 
 	let msg = random_field_buffer::<P>(&mut rng, params.log_msg_len());
 
-	let CommitOutput {
-		commitment: codeword_commitment,
-		committed: codeword_committed,
-		codeword,
-	} = commit_interleaved(&params, 0, &ntt, &merkle_prover, msg.to_ref());
-
-	let mut round_prover =
-		FRIFoldProver::new(&params, &ntt, &merkle_prover, codeword, &codeword_committed);
+	let codeword = encode_interleaved(&params, 0, &ntt, msg.to_ref());
 
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-	prover_transcript.message().write(&codeword_commitment);
+	let mut prover_channel =
+		ProverMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::new(
+			&mut prover_transcript,
+		);
+	let codeword_commitment =
+		prover_channel.send_merkle_commitment(codeword.to_ref(), 1 << log_batch_size);
 
-	let fold_round_output = round_prover.execute_fold_round();
-	if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
-		prover_transcript.message().write(&round_commitment);
-	}
+	let mut round_prover = FRIFoldProver::new(&params, &ntt, codeword, codeword_commitment);
+
+	round_prover.execute_fold_round(&mut prover_channel);
 
 	for _ in 0..params.n_fold_rounds() {
-		let challenge = prover_transcript.sample();
+		let challenge: F = IPProverChannel::sample(&mut prover_channel);
 		round_prover.receive_challenge(challenge);
-
-		let fold_round_output = round_prover.execute_fold_round();
-		if let FoldRoundOutput::Commitment(round_commitment) = fold_round_output {
-			prover_transcript.message().write(&round_commitment);
-		}
+		round_prover.execute_fold_round(&mut prover_channel);
 	}
 
-	round_prover.finish_proof(&mut prover_transcript);
+	round_prover.finish_proof(&mut prover_channel);
+	drop(prover_channel);
 
-	let scheme = merkle_prover.scheme().clone();
+	let scheme = binius_iop::merkle_tree::BinaryMerkleTreeScheme::new();
 	let proof_bytes = prover_transcript.finalize();
 	(proof_bytes, params, scheme)
 }

@@ -6,15 +6,18 @@
 //! create verifier channel instances.
 
 use binius_field::BinaryField;
+use binius_hash::binary_merkle_tree::HashSuite;
 use binius_math::{BinarySubspace, ntt::domain_context::GenericOnTheFly};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
-use binius_utils::DeserializeBytes;
+use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
+use digest::Output;
 
 use crate::{
 	basefold_channel::BaseFoldVerifierChannel,
 	channel::OracleSpec,
 	fri::{AritySelectionStrategy, FRIParams},
-	merkle_tree::MerkleTreeScheme,
+	merkle_channel::VerifierMerkleTranscriptChannel,
+	merkle_tree::BinaryMerkleTreeScheme,
 	size_tracking_channel::SizeTrackingChannel,
 };
 
@@ -23,21 +26,21 @@ use crate::{
 /// This compiler builds a single combined FRI over all oracles. ZK oracles configure FRI
 /// parameters for zero-knowledge mode (`log_msg_len + 1` as the message length and
 /// `log_batch_size = 1`); non-ZK oracles take a flexible batch size with no mask.
-#[derive(Debug, Clone)]
-pub struct BaseFoldVerifierCompiler<F, MerkleScheme_>
+#[derive(Clone)]
+pub struct BaseFoldVerifierCompiler<F, H>
 where
 	F: BinaryField,
-	MerkleScheme_: MerkleTreeScheme<F>,
+	H: HashSuite,
 {
-	merkle_scheme: MerkleScheme_,
+	merkle_scheme: BinaryMerkleTreeScheme<F, H>,
 	oracle_specs: Vec<OracleSpec>,
 	fri_params: FRIParams<F>,
 }
 
-impl<F, MerkleScheme_> BaseFoldVerifierCompiler<F, MerkleScheme_>
+impl<F, H> BaseFoldVerifierCompiler<F, H>
 where
 	F: BinaryField,
-	MerkleScheme_: MerkleTreeScheme<F>,
+	H: HashSuite,
 {
 	/// Creates a new compiler with precomputed combined FRI parameters.
 	///
@@ -45,7 +48,7 @@ where
 	/// (message ‖ equal-length mask), a non-ZK oracle takes a flexible batch size. Requires at
 	/// least one oracle spec.
 	pub fn new<Strategy>(
-		merkle_scheme: MerkleScheme_,
+		merkle_scheme: BinaryMerkleTreeScheme<F, H>,
 		oracle_specs: Vec<OracleSpec>,
 		log_inv_rate: usize,
 		n_test_queries: usize,
@@ -100,7 +103,7 @@ where
 	}
 
 	/// Returns a reference to the Merkle scheme.
-	pub const fn merkle_scheme(&self) -> &MerkleScheme_ {
+	pub const fn merkle_scheme(&self) -> &BinaryMerkleTreeScheme<F, H> {
 		&self.merkle_scheme
 	}
 
@@ -110,7 +113,9 @@ where
 	}
 
 	/// Creates a [`SizeTrackingChannel`] from this compiler's oracle specs.
-	pub fn create_size_tracking_channel(&self) -> SizeTrackingChannel<'_, F, MerkleScheme_> {
+	pub fn create_size_tracking_channel(
+		&self,
+	) -> SizeTrackingChannel<'_, F, BinaryMerkleTreeScheme<F, H>> {
 		SizeTrackingChannel::new(
 			self.oracle_specs.clone(),
 			std::slice::from_ref(&self.fri_params),
@@ -119,19 +124,32 @@ where
 	}
 
 	/// Creates a ZK verifier channel from this compiler and a transcript.
+	///
+	/// The returned channel drives all prover interaction through a
+	/// [`VerifierMerkleTranscriptChannel`] over the transcript, constructed here with a scheme
+	/// matching this compiler's Merkle scheme.
 	pub fn create_channel<'a, Challenger_>(
 		&'a self,
 		transcript: &'a mut VerifierTranscript<Challenger_>,
-	) -> BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
+	) -> BaseFoldTranscriptVerifierChannel<'a, F, H, Challenger_>
 	where
-		MerkleScheme_::Digest: DeserializeBytes,
+		F: FixedSizeSerializeBytes,
+		Output<H::LeafHash>: DeserializeBytes,
 		Challenger_: Challenger,
 	{
-		BaseFoldVerifierChannel::from_precomputed(
-			transcript,
-			&self.merkle_scheme,
-			&self.oracle_specs,
-			&self.fri_params,
-		)
+		// `BinaryMerkleTreeScheme` is fully determined by its salt length, so reconstructing with
+		// the compiler's salt length reproduces the scheme.
+		let scheme = BinaryMerkleTreeScheme::hiding(self.merkle_scheme.salt_len());
+		let channel = VerifierMerkleTranscriptChannel::with_scheme(transcript, scheme);
+		BaseFoldVerifierChannel::new(channel, &self.oracle_specs, &self.fri_params)
 	}
 }
+
+/// The [`BaseFoldVerifierChannel`] type produced by
+/// [`BaseFoldVerifierCompiler::create_channel`]: a BaseFold channel over a
+/// [`VerifierMerkleTranscriptChannel`] borrowing the transcript.
+pub type BaseFoldTranscriptVerifierChannel<'a, F, H, Challenger_> = BaseFoldVerifierChannel<
+	'a,
+	F,
+	VerifierMerkleTranscriptChannel<&'a mut VerifierTranscript<Challenger_>, Challenger_, F, H>,
+>;

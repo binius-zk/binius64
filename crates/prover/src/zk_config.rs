@@ -22,12 +22,10 @@ use rand::CryptoRng;
 
 use crate::{
 	IOPProver,
-	merkle_tree::prover::BinaryMerkleTreeProver,
 	protocols::shift::{KeyCollection, build_key_collection},
 };
 
 type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
-type ProverMerkleProver<F, H> = BinaryMerkleTreeProver<F, H>;
 
 /// Zero-knowledge prover for Binius64 constraint systems.
 ///
@@ -42,7 +40,7 @@ where
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_prover: binius_spartan_prover::IOPProver<B128>,
 	outer_layout: WitnessLayout<B128>,
-	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>, ProverMerkleProver<B128, H>>,
+	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>, H>,
 }
 
 impl<P, H> ZKProver<P, H>
@@ -91,12 +89,8 @@ where
 		};
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
-		let merkle_prover = BinaryMerkleTreeProver::<_, H>::new();
-		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
-			zk_verifier.basefold_compiler(),
-			ntt,
-			merkle_prover,
-		);
+		let basefold_compiler =
+			BaseFoldProverCompiler::from_verifier_compiler(zk_verifier.basefold_compiler(), ntt);
 
 		Ok(Self {
 			inner_iop_prover,

@@ -53,7 +53,7 @@ pub struct ZKVerifier<H: HashSuite> {
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_verifier: IronSpartanIOPVerifier<B128>,
 	outer_layout: WitnessLayout<B128>,
-	basefold_compiler: BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>>,
+	basefold_compiler: BaseFoldVerifierCompiler<B128, H>,
 }
 
 impl<H> ZKVerifier<H>
@@ -157,9 +157,7 @@ where
 	}
 
 	/// Returns the BaseFold ZK verifier compiler.
-	pub const fn basefold_compiler(
-		&self,
-	) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
+	pub const fn basefold_compiler(&self) -> &BaseFoldVerifierCompiler<B128, H> {
 		&self.basefold_compiler
 	}
 

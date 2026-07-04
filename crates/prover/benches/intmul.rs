@@ -4,10 +4,9 @@ use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash1x128b};
 use binius_hash::StdHashSuite;
 use binius_iop::{
 	basefold_compiler::BaseFoldVerifierCompiler, channel::OracleSpec, fri::MinProofSizeStrategy,
+	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_iop_prover::{
-	basefold_compiler::BaseFoldProverCompiler, merkle_tree::prover::BinaryMerkleTreeProver,
-};
+use binius_iop_prover::basefold_compiler::BaseFoldProverCompiler;
 use binius_ip_prover::{
 	prodcheck::ProdcheckProver,
 	sumcheck::{
@@ -54,14 +53,10 @@ const LOG_ORACLE_LEN: usize = 16;
 /// encoding and Merkle tree construction) is measured; a naive channel would serialize
 /// oracles for free. The final batched opening in `finish` is not measured, since the full
 /// system amortizes it into the single opening shared with the witness trace.
-fn basefold_compiler() -> BaseFoldProverCompiler<
-	P,
-	NeighborsLastSingleThread<GenericPreExpanded<F>>,
-	BinaryMerkleTreeProver<F, StdHashSuite>,
-> {
-	let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
+fn basefold_compiler()
+-> BaseFoldProverCompiler<P, NeighborsLastSingleThread<GenericPreExpanded<F>>, StdHashSuite> {
 	let verifier_compiler = BaseFoldVerifierCompiler::new(
-		merkle_prover.scheme().clone(),
+		BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
 		vec![OracleSpec::new(LOG_ORACLE_LEN)],
 		LOG_INV_RATE,
 		N_TEST_QUERIES,
@@ -70,7 +65,7 @@ fn basefold_compiler() -> BaseFoldProverCompiler<
 	let domain_context =
 		GenericPreExpanded::generate_from_subspace(verifier_compiler.max_subspace());
 	let ntt = NeighborsLastSingleThread::new(domain_context);
-	BaseFoldProverCompiler::from_verifier_compiler(&verifier_compiler, ntt, merkle_prover)
+	BaseFoldProverCompiler::from_verifier_compiler(&verifier_compiler, ntt)
 }
 
 fn generate_test_data(log_num: usize) -> (Vec<Word>, Vec<Word>, Vec<Word>, Vec<Word>) {

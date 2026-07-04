@@ -93,7 +93,7 @@ where
 {
 	iop_verifier: IOPVerifier<F>,
 	/// BaseFold ZK compiler for creating verifier channels.
-	basefold_compiler: BaseFoldVerifierCompiler<F, BinaryMerkleTreeScheme<F, H>>,
+	basefold_compiler: BaseFoldVerifierCompiler<F, H>,
 }
 
 impl<F: Field> IOPVerifier<F> {
@@ -309,7 +309,7 @@ where
 	}
 
 	/// Returns a reference to the BaseFold ZK verifier compiler.
-	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<F, BinaryMerkleTreeScheme<F, H>> {
+	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<F, H> {
 		&self.basefold_compiler
 	}
 

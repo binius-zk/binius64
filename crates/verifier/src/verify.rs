@@ -309,7 +309,7 @@ impl IOPVerifier {
 #[derive(Clone)]
 pub struct Verifier<H: HashSuite> {
 	iop_verifier: IOPVerifier,
-	iop_compiler: BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>>,
+	iop_compiler: BaseFoldVerifierCompiler<B128, H>,
 }
 
 impl<H> Verifier<H>
@@ -403,9 +403,7 @@ where
 	}
 
 	/// Returns the IOP compiler for creating verifier channels.
-	pub const fn iop_compiler(
-		&self,
-	) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
+	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<B128, H> {
 		&self.iop_compiler
 	}
 
