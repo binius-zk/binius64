@@ -100,7 +100,7 @@ impl ConstraintSystem {
 						constraint_type,
 						constraint_index,
 						operand_name,
-						shift_amount: term.amount,
+						shift_amount: term.amount as usize,
 					});
 				}
 				// Check if the value index is out of bounds.

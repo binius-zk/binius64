@@ -130,10 +130,11 @@ pub struct ShiftedValueIndex {
 	pub value_index: ValueIndex,
 	/// The flavour of the shift that the value must be shifted by.
 	pub shift_variant: ShiftVariant,
-	/// The number of bits by which the value must be shifted by.
+	/// The number of bits to shift by.
 	///
+	/// Stored as a byte to keep the struct small: constraint systems hold millions of these.
 	/// Must be less than 64.
-	pub amount: usize,
+	pub amount: u8,
 }
 
 impl ShiftedValueIndex {
@@ -156,7 +157,7 @@ impl ShiftedValueIndex {
 		Self {
 			value_index,
 			shift_variant: ShiftVariant::Sll,
-			amount,
+			amount: amount as u8,
 		}
 	}
 
@@ -169,7 +170,7 @@ impl ShiftedValueIndex {
 		Self {
 			value_index,
 			shift_variant: ShiftVariant::Slr,
-			amount,
+			amount: amount as u8,
 		}
 	}
 
@@ -185,7 +186,7 @@ impl ShiftedValueIndex {
 		Self {
 			value_index,
 			shift_variant: ShiftVariant::Sar,
-			amount,
+			amount: amount as u8,
 		}
 	}
 
@@ -200,7 +201,7 @@ impl ShiftedValueIndex {
 		Self {
 			value_index,
 			shift_variant: ShiftVariant::Rotr,
-			amount,
+			amount: amount as u8,
 		}
 	}
 
@@ -216,7 +217,7 @@ impl ShiftedValueIndex {
 		Self {
 			value_index,
 			shift_variant: ShiftVariant::Sll32,
-			amount,
+			amount: amount as u8,
 		}
 	}
 
@@ -232,7 +233,7 @@ impl ShiftedValueIndex {
 		Self {
 			value_index,
 			shift_variant: ShiftVariant::Srl32,
-			amount,
+			amount: amount as u8,
 		}
 	}
 
@@ -249,7 +250,7 @@ impl ShiftedValueIndex {
 		Self {
 			value_index,
 			shift_variant: ShiftVariant::Sra32,
-			amount,
+			amount: amount as u8,
 		}
 	}
 
@@ -266,7 +267,7 @@ impl ShiftedValueIndex {
 		Self {
 			value_index,
 			shift_variant: ShiftVariant::Rotr32,
-			amount,
+			amount: amount as u8,
 		}
 	}
 
@@ -278,7 +279,7 @@ impl ShiftedValueIndex {
 	pub fn eval(&self, witness: &ValueVec) -> Word {
 		// Look up the referenced word, then apply this term's shift.
 		self.shift_variant
-			.apply(witness[self.value_index], self.amount)
+			.apply(witness[self.value_index], self.amount as usize)
 	}
 }
 
@@ -286,7 +287,8 @@ impl SerializeBytes for ShiftedValueIndex {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
 		self.value_index.serialize(&mut write_buf)?;
 		self.shift_variant.serialize(&mut write_buf)?;
-		self.amount.serialize(write_buf)
+		// Keep the wire format a u32 so serialized systems stay byte-compatible.
+		(self.amount as usize).serialize(write_buf)
 	}
 }
 
@@ -299,7 +301,8 @@ impl DeserializeBytes for ShiftedValueIndex {
 		let shift_variant = ShiftVariant::deserialize(&mut read_buf)?;
 		let amount = usize::deserialize(read_buf)?;
 
-		// Validate that amount is within valid range
+		// Validate the range before narrowing to the byte-sized field.
+		// A value below 64 always fits in a u8.
 		if amount >= 64 {
 			return Err(SerializationError::InvalidConstruction {
 				name: "ShiftedValueIndex::amount",
@@ -309,7 +312,7 @@ impl DeserializeBytes for ShiftedValueIndex {
 		Ok(ShiftedValueIndex {
 			value_index,
 			shift_variant,
-			amount,
+			amount: amount as u8,
 		})
 	}
 }
@@ -391,5 +394,13 @@ mod tests {
 			}
 			_ => panic!("Expected InvalidConstruction error"),
 		}
+	}
+
+	#[test]
+	fn shifted_value_index_fits_in_a_word() {
+		// Layout: value_index (u32, 4 bytes) + shift_variant (1 byte) + amount (u8, 1 byte).
+		// Padded to the u32 alignment, that is 8 bytes.
+		// Holding this at one word matters: systems carry millions of these on the prover hot path.
+		assert_eq!(size_of::<ShiftedValueIndex>(), 8);
 	}
 }
