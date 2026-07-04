@@ -69,7 +69,7 @@ where
 		index: usize,
 		proof: &mut TranscriptWriter<B>,
 	) {
-		let salt = committed.get_salt(index >> layer_depth);
+		let salt = committed.get_salt(index);
 		proof.write_slice(salt);
 
 		let branch = committed
