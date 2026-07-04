@@ -7,7 +7,6 @@ use digest::Output;
 use super::{
 	binary_merkle_tree::HashSuite, blake3_portable::PortableBlake3ParallelDigest,
 	compress::CompressionFunction, parallel_compression::ParallelCompressionAdaptor,
-	parallel_digest::ParallelDigestAdapter,
 };
 
 /// A two-to-one compression function that hashes the concatenation of its inputs with Blake3.
@@ -24,22 +23,9 @@ impl CompressionFunction<Output<blake3::Hasher>, 2> for Blake3Compression {
 }
 
 /// Blake3 [`HashSuite`]: Blake3 leaves and a Blake3 compression function for inner nodes.
-#[derive(Debug, Clone, Default)]
-pub struct Blake3HashSuite;
-
-impl HashSuite for Blake3HashSuite {
-	type LeafHash = blake3::Hasher;
-	type Compression = Blake3Compression;
-	type ParLeafHash = ParallelDigestAdapter<blake3::Hasher>;
-	type ParCompression = ParallelCompressionAdaptor<Blake3Compression>;
-}
-
-/// Blake3 [`HashSuite`] whose leaves run the portable auto-vectorized kernel.
 ///
-/// Every leaf digest is a standard Blake3 hash.
-///
-/// Only the parallel compute path differs from the other Blake3 suite:
-/// - Leaves within one 1024-byte chunk are hashed by the vectorized batch kernel.
+/// Every leaf digest is a standard Blake3 hash; only the parallel compute path is specialized.
+/// - Leaves within one 1024-byte chunk are hashed by the portable auto-vectorized batch kernel.
 /// - Larger leaves fall back to the scalar adapter that walks the tree.
 ///
 /// The speedup is confined to the sub-chunk regime the ZK leaf-hashing path exercises.
@@ -49,9 +35,9 @@ impl HashSuite for Blake3HashSuite {
 /// - The width the AVX2 / AVX-512 vectorizer fills.
 /// - 4 and 8 lanes both measure slower.
 #[derive(Debug, Clone, Default)]
-pub struct PortableBlake3HashSuite;
+pub struct Blake3HashSuite;
 
-impl HashSuite for PortableBlake3HashSuite {
+impl HashSuite for Blake3HashSuite {
 	type LeafHash = blake3::Hasher;
 	type Compression = Blake3Compression;
 	type ParLeafHash = PortableBlake3ParallelDigest<16>;
@@ -66,7 +52,7 @@ mod tests {
 	use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::ParallelDigest;
+	use crate::{ParallelDigest, parallel_digest::ParallelDigestAdapter};
 
 	/// Checks that the compression function matches `blake3::hash` of the concatenated inputs.
 	#[test]
@@ -112,10 +98,10 @@ mod tests {
 	}
 
 	#[test]
-	fn test_portable_suite_matches_scalar_suite() {
-		// Both Blake3 suites must produce identical leaf digests.
+	fn test_portable_leaf_hash_matches_scalar_reference() {
+		// The suite's parallel leaf path is the portable vectorized kernel.
 		//
-		// They share the hash and differ only in compute path, so this pins the two equal.
+		// Pin it equal to the scalar adapter and to `blake3::hash` across the routing boundary.
 		let mut rng = StdRng::seed_from_u64(1);
 		let n_leaves = 50;
 
@@ -125,26 +111,27 @@ mod tests {
 				.map(|_| (0..leaf_len).map(|_| rng.random::<u8>()).collect())
 				.collect();
 
-			// Both fed through the exact Merkle-tree call, so the routing decision is real.
+			// The scalar adapter that walks the Blake3 tree — the reference path.
 			let mut scalar = repeat_with(MaybeUninit::<Output<blake3::Hasher>>::uninit)
 				.take(n_leaves)
 				.collect::<Vec<_>>();
-			<Blake3HashSuite as HashSuite>::ParLeafHash::default().digest_with_const_len(
+			ParallelDigestAdapter::<blake3::Hasher>::default().digest_with_const_len(
 				leaf_len,
 				leaves.par_iter().map(|leaf| leaf.iter().copied()),
 				&mut scalar,
 			);
 
+			// The suite's parallel leaf path — the portable batch kernel.
 			let mut portable = repeat_with(MaybeUninit::<Output<blake3::Hasher>>::uninit)
 				.take(n_leaves)
 				.collect::<Vec<_>>();
-			<PortableBlake3HashSuite as HashSuite>::ParLeafHash::default().digest_with_const_len(
+			<Blake3HashSuite as HashSuite>::ParLeafHash::default().digest_with_const_len(
 				leaf_len,
 				leaves.par_iter().map(|leaf| leaf.iter().copied()),
 				&mut portable,
 			);
 
-			// Invariant: both suites reproduce `blake3::hash`, so their leaf digests match.
+			// Invariant: both reproduce `blake3::hash`, so their leaf digests match.
 			for ((s, p), leaf) in scalar.into_iter().zip(portable).zip(&leaves) {
 				let expected = blake3::hash(leaf);
 				let (s, p) = unsafe { (s.assume_init(), p.assume_init()) };
