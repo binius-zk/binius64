@@ -366,6 +366,7 @@ impl DeserializeBytes for Word {
 #[cfg(test)]
 mod tests {
 	use proptest::prelude::*;
+	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::*;
 
@@ -979,5 +980,17 @@ mod tests {
 
 		// Test rotr32 zero rotation
 		assert_eq!(w8.rotr32(0), w8);
+	}
+
+	#[test]
+	fn test_word_serialization_round_trip() {
+		let mut rng = StdRng::seed_from_u64(0);
+		let word = Word::from_u64(rng.next_u64());
+
+		let mut buf = Vec::new();
+		word.serialize(&mut buf).unwrap();
+
+		let deserialized = Word::deserialize(&mut buf.as_slice()).unwrap();
+		assert_eq!(word, deserialized);
 	}
 }
