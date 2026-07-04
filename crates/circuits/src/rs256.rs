@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use num_integer::Integer;
@@ -5,6 +6,7 @@ use num_integer::Integer;
 use super::fixed_byte_vec::ByteVec;
 use crate::{
 	bignum::{BigUint, ModReduce, assert_eq, optimal_mul, optimal_sqr},
+	bytes::swap_bytes,
 	sha256::Sha256,
 };
 
@@ -15,25 +17,12 @@ use crate::{
 fn fixedbytevec_le_to_biguint(builder: &mut CircuitBuilder, byte_vec: &ByteVec) -> BigUint {
 	// With LE packing, each wire contains 8 bytes as: byte0 | byte1<<8 | ... | byte7<<56
 	// For a BE number, we need to both reverse wire order AND byte-swap within each wire
-	let mut limbs = Vec::new();
-	// Process wires in reverse order (big-endian to little-endian conversion)
-	for packed_wire in byte_vec.data.clone().into_iter().rev() {
-		// Extract bytes from LE-packed wire and repack in reverse order
-		let mut bytes = Vec::with_capacity(8);
-		for i in 0..8 {
-			let shift_amount = i * 8;
-			let byte = builder.shr(packed_wire, shift_amount as u32);
-			let byte_masked = builder.band(byte, builder.add_constant_64(0xFF));
-			bytes.push(byte_masked);
-		}
-		// Repack bytes in reverse order (byte-swap)
-		let mut swapped_limb = bytes[7];
-		for i in 1..8 {
-			let shifted = builder.shl(bytes[7 - i], (i * 8) as u32);
-			swapped_limb = builder.bor(swapped_limb, shifted);
-		}
-		limbs.push(swapped_limb);
-	}
+	let limbs = byte_vec
+		.data
+		.iter()
+		.rev()
+		.map(|&packed_wire| swap_bytes(builder, packed_wire))
+		.collect();
 	BigUint { limbs }
 }
 

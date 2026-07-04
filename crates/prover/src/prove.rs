@@ -5,7 +5,7 @@ use binius_core::{
 	word::Word,
 };
 use binius_field::{
-	AESTowerField8b as B8, BinaryField, ExtensionField, PackedExtension, PackedField,
+	AESTowerField8b as B8, BinaryField, ExtensionField, Field, PackedExtension, PackedField,
 };
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{
@@ -123,16 +123,26 @@ impl IOPProver {
 		drop(witness_commit_guard);
 
 		// [phase] IntMul Reduction - multiplication constraint reduction
-		let intmul_guard = tracing::info_span!(
-			"[phase] IntMul Reduction",
-			phase = "intmul_reduction",
-			perfetto_category = "phase",
-			n_constraints = cs.mul_constraints.len()
-		)
-		.entered();
-		let mul_witness = build_intmul_witness(&cs.mul_constraints, &witness);
-		let intmul_output = prove_intmul_reduction::<_, P, _>(mul_witness, &mut *channel)?;
-		drop(intmul_guard);
+		//
+		// Skipped entirely (no transcript messages) when the constraint system has no MUL
+		// constraints. The verifier applies the identical guard, so the transcript stays in sync;
+		// the zero `OperatorData` synthesized below then contributes nothing to the shift
+		// reduction.
+		let intmul_output = if cs.n_mul_constraints() > 0 {
+			let intmul_guard = tracing::info_span!(
+				"[phase] IntMul Reduction",
+				phase = "intmul_reduction",
+				perfetto_category = "phase",
+				n_constraints = cs.mul_constraints.len()
+			)
+			.entered();
+			let mul_witness = build_intmul_witness(&cs.mul_constraints, &witness);
+			let intmul_output = prove_intmul_reduction::<_, P, _>(mul_witness, &mut *channel)?;
+			drop(intmul_guard);
+			Some(intmul_output)
+		} else {
+			None
+		};
 
 		// [phase] BitAnd Reduction - AND constraint reduction
 		let bitand_guard = tracing::info_span!(
@@ -161,30 +171,37 @@ impl IOPProver {
 
 		// Build `OperatorData` for IntMul using the same `r_zhat_prime`
 		// challenge as in BitAnd. Sharing this univariate challenge
-		// improves ShiftReduction perf.
-		let intmul_claim = {
-			let IntMulOutput {
+		// improves ShiftReduction perf. When IntMul was skipped, synthesize a zero claim (four
+		// zero evals at an empty point): the shift reduction iterates the (empty) MUL constraints,
+		// so this claim contributes zero to its batched evaluation.
+		let intmul_claim = match intmul_output {
+			Some(IntMulOutput {
 				eval_point,
 				a_evals,
 				b_evals,
 				c_lo_evals,
 				c_hi_evals,
-			} = intmul_output;
-
-			let r_zhat_prime = bitand_claim.r_zhat_prime;
-			let subspace = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
-			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
-			let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
-			OperatorData {
-				evals: vec![
-					make_final_claim(a_evals),
-					make_final_claim(b_evals),
-					make_final_claim(c_lo_evals),
-					make_final_claim(c_hi_evals),
-				],
-				r_zhat_prime,
-				r_x_prime: eval_point,
+			}) => {
+				let r_zhat_prime = bitand_claim.r_zhat_prime;
+				let subspace = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+				let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
+				let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
+				OperatorData {
+					evals: vec![
+						make_final_claim(a_evals),
+						make_final_claim(b_evals),
+						make_final_claim(c_lo_evals),
+						make_final_claim(c_hi_evals),
+					],
+					r_zhat_prime,
+					r_x_prime: eval_point,
+				}
 			}
+			None => OperatorData {
+				evals: vec![B128::ZERO; 4],
+				r_zhat_prime: bitand_claim.r_zhat_prime,
+				r_x_prime: Vec::new(),
+			},
 		};
 
 		// [phase] Shift Reduction - shift operations

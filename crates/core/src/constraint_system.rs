@@ -603,9 +603,15 @@ impl ConstraintSystem {
 	pub fn validate_and_prepare(&mut self) -> Result<(), ConstraintSystemError> {
 		self.validate()?;
 
-		// Require all constraint types to have a power-of-two count.
+		// Require all constraint types to have a power-of-two count. An empty MUL constraint set is
+		// kept at zero (rather than padded to a single dummy constraint) so the prover and verifier
+		// can skip the IntMul reduction entirely — see `IOPProver::prove` / `IOPVerifier::verify`.
 		let and_target_size = self.and_constraints.len().next_power_of_two();
-		let mul_target_size = self.mul_constraints.len().next_power_of_two();
+		let mul_target_size = if self.mul_constraints.is_empty() {
+			0
+		} else {
+			self.mul_constraints.len().next_power_of_two()
+		};
 
 		self.and_constraints
 			.resize_with(and_target_size, AndConstraint::default);

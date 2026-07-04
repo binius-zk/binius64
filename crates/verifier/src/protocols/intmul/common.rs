@@ -51,13 +51,19 @@ pub struct Phase3Output<F> {
 /// Output of Phase 4: all but last GKR layer for $\widetilde{a}$, $\widetilde{c}_{\textsf{lo}}$,
 /// $\widetilde{c}_{\textsf{hi}}$.
 ///
-/// Contains the evaluation point and leaf evaluations for each of the three product trees at
-/// depth `log_bits - 1`.
+/// Rather than binding the all-but-last-layer evaluations here, Phase 4 hands the reduced prodcheck
+/// claim straight to Phase 5: the content-and-node point at which the three trees' all-but-last
+/// layers are claimed, the reduced selector coordinates that batch them, and the combined claimed
+/// evaluation. Phase 5 receives one reduced eval per tree and checks they recombine, weighted by
+/// `eq(selector)`, to `combined_eval`.
 pub struct Phase4Output<F> {
+	/// The point `[suffix, bit_index]` (content coordinates followed by all-but-last-layer node
+	/// coordinates) at which each tree's all-but-last-layer multilinear is claimed.
 	pub eval_point: Vec<F>,
-	pub a_evals: Vec<F>,
-	pub c_lo_evals: Vec<F>,
-	pub c_hi_evals: Vec<F>,
+	/// The reduced selector coordinates that batch the three trees (padded to four).
+	pub selector: Vec<F>,
+	/// The batched prodcheck output evaluation: `Σ_t eq(selector, t) · eval_t`.
+	pub combined_eval: F,
 }
 
 /// Compute the inverse Frobenius endomorphism $\varphi^{-i}(x)$.
@@ -139,74 +145,11 @@ where
 	}
 }
 
-/// Recovers the multilinear evaluations of the $a, c_{\textsf{lo}}, c_{\textsf{hi}}$ polynomials.
-///
-/// The product checks for the exponentiations reduce to multilinear evaluations of affine
-/// translations of the $a, c_{\textsf{lo}}, c_{\textsf{hi}}$ polynomials. Specifically, the
-/// sumcheck reduces to evaluations of
-///
-/// * $\textsf{select}(a(i, r), g^{2^i})$,
-/// * $\textsf{select}(c_{\textsf{lo}}(i, r), g^{2^i})$,
-/// * $\textsf{select}(c_{\textsf{hi}}(i, r), g^{2^(i + k)}$,
-///
-/// for all $i$ in $\{0, \ldots, 2^k - 1\}$, where
-///
-/// $$
-/// \textsf{select}(S, V) = S * (V - 1) + 1.
-/// $$
-///
-/// $g$ is a constant multiplicative generator of the field $F$.
-///
-/// Given, these evaluations, this function computes and returns $a(i, r), c_{\textsf{lo}}(i, r),
-/// c_{\textsf{hi}}(i, r)$.
-pub fn normalize_a_c_exponent_evals<F, E>(
-	k: usize,
-	selected_a_evals: Vec<E>,
-	selected_c_lo_evals: Vec<E>,
-	selected_c_hi_evals: Vec<E>,
-) -> [Vec<E>; 3]
-where
-	F: Field,
-	E: FieldOps<Scalar = F> + From<F>,
-{
-	assert_eq!(selected_a_evals.len(), 1 << k);
-	assert_eq!(selected_c_lo_evals.len(), 1 << k);
-	assert_eq!(selected_c_hi_evals.len(), 1 << k);
-
-	// Compute the normalization factors (conjugate - 1)^{-1} in F, then convert to E.
-	let inv_factors: Vec<E> = iterate(F::MULTIPLICATIVE_GENERATOR, |g| g.square())
-		.take(2 << k)
-		// Safety: `conjugate` ranges over powers of the multiplicative generator, which has odd
-		// order, so `conjugate - 1` is never zero.
-		.map(|conjugate| E::from(unsafe { (conjugate - F::ONE).invert() }))
-		.collect();
-
-	let (lo_inv_factors, hi_inv_factors) = inv_factors.split_at(1 << k);
-
-	let a_evals = recover_selectors(selected_a_evals, lo_inv_factors);
-	let c_lo_evals = recover_selectors(selected_c_lo_evals, lo_inv_factors);
-	let c_hi_evals = recover_selectors(selected_c_hi_evals, hi_inv_factors);
-
-	[a_evals, c_lo_evals, c_hi_evals]
-}
-
-fn recover_selectors<F: FieldOps>(selecteds: Vec<F>, inv_factors: &[F]) -> Vec<F> {
-	assert_eq!(selecteds.len(), inv_factors.len());
-
-	let one = F::one();
-	iter::zip(selecteds, inv_factors)
-		.map(|(selected, inv_factor)| {
-			// z_i = s_i * (v_i - 1) + 1
-			// Recover s_i = (z_i - 1) * (v_i - 1)^{-1}
-			(selected - one.clone()) * inv_factor
-		})
-		.collect()
-}
-
 /// Reconstruct the "selected" leaf evaluations from the raw per-bit evaluations.
 ///
-/// This is the forward direction of [`normalize_a_c_exponent_evals`]: given the raw bit
-/// evaluations $a(i, r), c_{\textsf{lo}}(i, r), c_{\textsf{hi}}(i, r)$, it returns the selected
+/// The product checks for the exponentiations reduce to multilinear evaluations of affine
+/// translations of the $a, c_{\textsf{lo}}, c_{\textsf{hi}}$ polynomials. Given the raw bit
+/// evaluations $a(i, r), c_{\textsf{lo}}(i, r), c_{\textsf{hi}}(i, r)$, this returns the selected
 /// leaf values
 ///
 /// * $\textsf{select}(a(i, r), g^{2^i})$,
