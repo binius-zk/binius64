@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_core::{
 	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueVec},
@@ -495,7 +496,7 @@ fn prove_intmul_reduction<F, P, Channel>(
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
-	Channel: binius_ip_prover::channel::IPProverChannel<F>,
+	Channel: IOPProverChannel<P>,
 {
 	let MulCheckWitness { a, b, lo, hi } = witness;
 

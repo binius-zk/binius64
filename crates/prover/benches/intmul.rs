@@ -1,6 +1,13 @@
 // Copyright 2025-2026 The Binius Developers
 use binius_core::word::Word;
 use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash1x128b};
+use binius_hash::StdHashSuite;
+use binius_iop::{
+	basefold_compiler::BaseFoldVerifierCompiler, channel::OracleSpec, fri::MinProofSizeStrategy,
+};
+use binius_iop_prover::{
+	basefold_compiler::BaseFoldProverCompiler, merkle_tree::prover::BinaryMerkleTreeProver,
+};
 use binius_ip_prover::{
 	prodcheck::ProdcheckProver,
 	sumcheck::{
@@ -10,6 +17,7 @@ use binius_ip_prover::{
 };
 use binius_math::{
 	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
+	ntt::{NeighborsLastSingleThread, domain_context::GenericPreExpanded},
 	test_utils::random_scalars,
 };
 use binius_prover::protocols::intmul::{
@@ -29,6 +37,41 @@ type F = BinaryField128bGhash;
 const LOG_NUM: usize = 14;
 /// Log of the integer bit width; the exponentiation tree has `2^LOG_BITS` leaves per node.
 const LOG_BITS: usize = 6;
+
+/// The Reed-Solomon rate of the standard prover configuration.
+const LOG_INV_RATE: usize = 1;
+/// One FRI test query keeps the parameters cheap; the benchmarks measure commitment cost, not
+/// opening soundness.
+const N_TEST_QUERIES: usize = 1;
+/// Log-length of the oracle budget the channel declares. intmul commits no oracle yet; this
+/// matches the 2^16-entry exponentiation-table pushforward its logup*-based phase 5 commits,
+/// so the harness measures that cost as soon as it lands.
+const LOG_ORACLE_LEN: usize = 16;
+
+/// Builds a BaseFold prover compiler for the prove benchmarks.
+///
+/// The prove benchmarks run over a real BaseFold channel so that oracle transmission (NTT
+/// encoding and Merkle tree construction) is measured; a naive channel would serialize
+/// oracles for free. The final batched opening in `finish` is not measured, since the full
+/// system amortizes it into the single opening shared with the witness trace.
+fn basefold_compiler() -> BaseFoldProverCompiler<
+	P,
+	NeighborsLastSingleThread<GenericPreExpanded<F>>,
+	BinaryMerkleTreeProver<F, StdHashSuite>,
+> {
+	let merkle_prover = BinaryMerkleTreeProver::<F, StdHashSuite>::new();
+	let verifier_compiler = BaseFoldVerifierCompiler::new(
+		merkle_prover.scheme().clone(),
+		vec![OracleSpec::new(LOG_ORACLE_LEN)],
+		LOG_INV_RATE,
+		N_TEST_QUERIES,
+		&MinProofSizeStrategy,
+	);
+	let domain_context =
+		GenericPreExpanded::generate_from_subspace(verifier_compiler.max_subspace());
+	let ntt = NeighborsLastSingleThread::new(domain_context);
+	BaseFoldProverCompiler::from_verifier_compiler(&verifier_compiler, ntt, merkle_prover)
+}
 
 fn generate_test_data(log_num: usize) -> (Vec<Word>, Vec<Word>, Vec<Word>, Vec<Word>) {
 	let num_exponents = 1 << log_num;
@@ -75,20 +118,26 @@ fn bench_intmul_prove(c: &mut Criterion) {
 
 	// prove
 	let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
+	let compiler = basefold_compiler();
 
+	// The channel is created in the setup closures. It borrows its transcript, and a closure
+	// cannot return a borrow of captured state, so each setup leaks one small transcript; the
+	// leak is bounded by the iteration count.
 	group.bench_with_input(
 		BenchmarkId::new("prove", num_exponents),
 		&witness,
 		|bencher, witness| {
-			bencher.iter_with_setup(
+			bencher.iter_batched_ref(
 				|| {
-					let prover_transcript = ProverTranscript::<StdChallenger>::default();
-					(witness.clone(), prover_transcript)
+					let transcript =
+						Box::leak(Box::new(ProverTranscript::<StdChallenger>::default()));
+					(Some(witness.clone()), compiler.create_channel_without_zk(transcript))
 				},
-				|(witness, mut prover_transcript)| {
-					let mut intmul_prover = IntMulProver::new(0, &mut prover_transcript);
-					intmul_prover.prove(witness);
+				|(witness, channel)| {
+					let mut intmul_prover = IntMulProver::new(0, channel);
+					intmul_prover.prove(witness.take().expect("set in setup"));
 				},
+				BatchSize::SmallInput,
 			)
 		},
 	);
@@ -98,13 +147,19 @@ fn bench_intmul_prove(c: &mut Criterion) {
 		BenchmarkId::new("combined", num_exponents),
 		&num_exponents,
 		|bencher, _| {
-			bencher.iter(|| {
-				let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
-
-				let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
-				let mut intmul_prover = IntMulProver::new(0, &mut prover_transcript);
-				intmul_prover.prove(witness);
-			})
+			bencher.iter_batched_ref(
+				|| {
+					let transcript =
+						Box::leak(Box::new(ProverTranscript::<StdChallenger>::default()));
+					compiler.create_channel_without_zk(transcript)
+				},
+				|channel| {
+					let mut intmul_prover = IntMulProver::new(0, channel);
+					let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
+					intmul_prover.prove(witness);
+				},
+				BatchSize::SmallInput,
+			)
 		},
 	);
 

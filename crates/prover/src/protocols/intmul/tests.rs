@@ -1,7 +1,10 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_core::word::Word;
 use binius_field::{BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
+use binius_iop::naive_channel::NaiveVerifierChannel;
+use binius_iop_prover::naive_channel::NaiveProverChannel;
 use binius_math::{inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval};
 use binius_transcript::ProverTranscript;
 use binius_verifier::{
@@ -56,8 +59,10 @@ fn prove_and_verify() {
 	let witness = Witness::<P>::new(LOG_WORD_SIZE_BITS, &a, &b, &c_lo, &c_hi).unwrap();
 	// Run prover
 	let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
-	let mut prover = IntMulProver::new(0, &mut prover_transcript);
+	let mut prover_channel = NaiveProverChannel::<F, _>::new(&mut prover_transcript, vec![]);
+	let mut prover = IntMulProver::new(0, &mut prover_channel);
 	let prove_output = prover.prove(witness);
+	prover_channel.finish();
 
 	let IntMulOutput {
 		eval_point,
@@ -92,8 +97,9 @@ fn prove_and_verify() {
 	}
 	// Run verifier
 	let mut verifier_transcript = prover_transcript.into_verifier();
-	let verify_output =
-		verify(LOG_WORD_SIZE_BITS, LOG_EXPONENTS, &mut verifier_transcript).unwrap();
+	let mut verifier_channel = NaiveVerifierChannel::new(&mut verifier_transcript, &[]);
+	let verify_output = verify(LOG_WORD_SIZE_BITS, LOG_EXPONENTS, &mut verifier_channel).unwrap();
+	verifier_channel.finish();
 
 	// Check verifier output is consistent with prover output
 	assert_eq!(prove_output, verify_output);
