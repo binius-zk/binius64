@@ -438,7 +438,7 @@ where
 /// - `log_bits`: $k$, where $2^k$ is the bit-width of the integer operands.
 /// - `n_vars`: Number of variables in the row dimension (i.e., $\log_2$ of the number of
 ///   multiplication constraints).
-pub fn verify<'r, F, C>(
+pub fn verify<F, C>(
 	log_bits: usize,
 	n_vars: usize,
 	channel: &mut C,
