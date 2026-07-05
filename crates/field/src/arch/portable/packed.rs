@@ -580,23 +580,6 @@ where
 	}
 
 	#[inline]
-	unsafe fn spread_unchecked(self, log_block_len: usize, block_idx: usize) -> Self {
-		debug_assert!(log_block_len <= Self::LOG_WIDTH, "{} <= {}", log_block_len, Self::LOG_WIDTH);
-		debug_assert!(
-			block_idx < 1 << (Self::LOG_WIDTH - log_block_len),
-			"{} < {}",
-			block_idx,
-			1 << (Self::LOG_WIDTH - log_block_len)
-		);
-
-		unsafe {
-			self.0
-				.spread::<<Self::Scalar as WithUnderlier>::Underlier>(log_block_len, block_idx)
-				.into()
-		}
-	}
-
-	#[inline]
 	fn from_fn(mut f: impl FnMut(usize) -> Self::Scalar) -> Self {
 		U::from_fn(move |i| f(i).to_underlier()).into()
 	}

@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{
 	arch::x86_64::*,
@@ -20,10 +21,7 @@ use crate::{
 		portable::packed::PackedPrimitiveType,
 		x86_64::{m128::M128, m256::M256},
 	},
-	underlier::{
-		Divisible, NumCast, SmallU, U1, U2, U4, UnderlierType, get_block_values, get_spread_bytes,
-		impl_divisible_bitmask, mapget, spread_fallback,
-	},
+	underlier::{Divisible, NumCast, SmallU, UnderlierType, impl_divisible_bitmask, mapget},
 };
 
 /// 512-bit value that is used for 512-bit SIMD operations
@@ -382,176 +380,6 @@ impl UnderlierType for M512 {
 		let (a, b) = unsafe { transpose_bits(self.0, other.0, log_bit_len) };
 		(Self(a), Self(b))
 	}
-
-	#[inline(always)]
-	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
-	where
-		T: UnderlierType,
-		Self: Divisible<T>,
-	{
-		match T::LOG_BITS {
-			0 => match log_block_len {
-				0 => unsafe {
-					let bit = get_block_values::<_, U1, 1>(self, block_idx)[0];
-					Self::fill_with_bit(bit.val())
-				},
-				1 => unsafe {
-					let bits = get_block_values::<_, U1, 2>(self, block_idx);
-					let values = bits.map(|b| u128::fill_with_bit(b.val()));
-
-					Self::from_fn::<u128>(|i| values[i / 2])
-				},
-				2 => unsafe {
-					let bits = get_block_values::<_, U1, 4>(self, block_idx);
-					let values = bits.map(|b| u128::fill_with_bit(b.val()));
-
-					Self::from_fn::<u128>(|i| values[i])
-				},
-				3 => unsafe {
-					let bits = get_block_values::<_, U1, 8>(self, block_idx);
-					let values = bits.map(|b| u64::fill_with_bit(b.val()));
-
-					Self::from_fn::<u64>(|i| values[i])
-				},
-				4 => unsafe {
-					let bits = get_block_values::<_, U1, 16>(self, block_idx);
-					let values = bits.map(|b| u32::fill_with_bit(b.val()));
-
-					Self::from_fn::<u32>(|i| values[i])
-				},
-				5 => unsafe {
-					let bits = get_block_values::<_, U1, 32>(self, block_idx);
-					let values = bits.map(|b| u16::fill_with_bit(b.val()));
-
-					Self::from_fn::<u16>(|i| values[i])
-				},
-				6 => unsafe {
-					let bits = get_block_values::<_, U1, 64>(self, block_idx);
-					let values = bits.map(|b| u8::fill_with_bit(b.val()));
-
-					Self::from_fn::<u8>(|i| values[i])
-				},
-				_ => unsafe { spread_fallback(self, log_block_len, block_idx) },
-			},
-			1 => match log_block_len {
-				0 => unsafe {
-					let bytes = get_spread_bytes::<_, U2, 1>(self, block_idx)[0];
-
-					_mm512_set1_epi8(bytes as _).into()
-				},
-				1 => unsafe {
-					let bytes = get_spread_bytes::<_, U2, 2>(self, block_idx);
-
-					Self::from_fn::<u8>(|i| bytes[i / 32])
-				},
-				2 => unsafe {
-					let bytes = get_spread_bytes::<_, U2, 4>(self, block_idx);
-
-					Self::from_fn::<u8>(|i| bytes[i / 16])
-				},
-				3 => unsafe {
-					let bytes = get_spread_bytes::<_, U2, 8>(self, block_idx);
-
-					Self::from_fn::<u8>(|i| bytes[i / 8])
-				},
-				4 => unsafe {
-					let bytes = get_spread_bytes::<_, U2, 16>(self, block_idx);
-
-					Self::from_fn::<u8>(|i| bytes[i / 4])
-				},
-				5 => unsafe {
-					let bytes = get_spread_bytes::<_, U2, 32>(self, block_idx);
-
-					Self::from_fn::<u8>(|i| bytes[i / 2])
-				},
-				6 => unsafe {
-					let bytes = get_spread_bytes::<_, U2, 64>(self, block_idx);
-
-					Self::from_fn::<u8>(|i| bytes[i])
-				},
-				_ => unsafe { spread_fallback(self, log_block_len, block_idx) },
-			},
-			2 => match log_block_len {
-				0 => unsafe {
-					let bytes = get_spread_bytes::<_, U4, 1>(self, block_idx)[0];
-
-					_mm512_set1_epi8(bytes as _).into()
-				},
-				1 => unsafe {
-					let bytes = get_spread_bytes::<_, U4, 2>(self, block_idx);
-
-					Self::from_fn::<u8>(|i| bytes[i / 32])
-				},
-				2 => unsafe {
-					let bytes = get_spread_bytes::<_, U4, 4>(self, block_idx);
-
-					Self::from_fn::<u8>(|i| bytes[i / 16])
-				},
-				3 => unsafe {
-					let bytes = get_spread_bytes::<_, U4, 8>(self, block_idx);
-
-					Self::from_fn::<u8>(|i| bytes[i / 8])
-				},
-				4 => unsafe {
-					let bytes = get_spread_bytes::<_, U4, 16>(self, block_idx);
-
-					Self::from_fn::<u8>(|i| bytes[i / 4])
-				},
-				5 => unsafe {
-					let bytes = get_spread_bytes::<_, U4, 32>(self, block_idx);
-
-					Self::from_fn::<u8>(|i| bytes[i / 2])
-				},
-				6 => unsafe {
-					let bytes = get_spread_bytes::<_, U4, 64>(self, block_idx);
-
-					Self::from_fn::<u8>(|i| bytes[i])
-				},
-				_ => unsafe { spread_fallback(self, log_block_len, block_idx) },
-			},
-			3 => match log_block_len {
-				0 => unsafe { _mm512_permutexvar_epi8(LOG_B8_0[block_idx], self.0).into() },
-				1 => unsafe { _mm512_permutexvar_epi8(LOG_B8_1[block_idx], self.0).into() },
-				2 => unsafe { _mm512_permutexvar_epi8(LOG_B8_2[block_idx], self.0).into() },
-				3 => unsafe { _mm512_permutexvar_epi8(LOG_B8_3[block_idx], self.0).into() },
-				4 => unsafe { _mm512_permutexvar_epi8(LOG_B8_4[block_idx], self.0).into() },
-				5 => unsafe { _mm512_permutexvar_epi8(LOG_B8_5[block_idx], self.0).into() },
-				6 => self,
-				_ => panic!("unsupported block length"),
-			},
-			4 => match log_block_len {
-				0 => unsafe { _mm512_permutexvar_epi8(LOG_B16_0[block_idx], self.0).into() },
-				1 => unsafe { _mm512_permutexvar_epi8(LOG_B16_1[block_idx], self.0).into() },
-				2 => unsafe { _mm512_permutexvar_epi8(LOG_B16_2[block_idx], self.0).into() },
-				3 => unsafe { _mm512_permutexvar_epi8(LOG_B16_3[block_idx], self.0).into() },
-				4 => unsafe { _mm512_permutexvar_epi8(LOG_B16_4[block_idx], self.0).into() },
-				5 => self,
-				_ => panic!("unsupported block length"),
-			},
-			5 => match log_block_len {
-				0 => unsafe { _mm512_permutexvar_epi8(LOG_B32_0[block_idx], self.0).into() },
-				1 => unsafe { _mm512_permutexvar_epi8(LOG_B32_1[block_idx], self.0).into() },
-				2 => unsafe { _mm512_permutexvar_epi8(LOG_B32_2[block_idx], self.0).into() },
-				3 => unsafe { _mm512_permutexvar_epi8(LOG_B32_3[block_idx], self.0).into() },
-				4 => self,
-				_ => panic!("unsupported block length"),
-			},
-			6 => match log_block_len {
-				0 => unsafe { _mm512_permutexvar_epi8(LOG_B64_0[block_idx], self.0).into() },
-				1 => unsafe { _mm512_permutexvar_epi8(LOG_B64_1[block_idx], self.0).into() },
-				2 => unsafe { _mm512_permutexvar_epi8(LOG_B64_2[block_idx], self.0).into() },
-				3 => self,
-				_ => panic!("unsupported block length"),
-			},
-			7 => match log_block_len {
-				0 => unsafe { _mm512_permutexvar_epi8(LOG_B128_0[block_idx], self.0).into() },
-				1 => unsafe { _mm512_permutexvar_epi8(LOG_B128_1[block_idx], self.0).into() },
-				2 => self,
-				_ => panic!("unsupported block length"),
-			},
-			_ => unsafe { spread_fallback(self, log_block_len, block_idx) },
-		}
-	}
 }
 
 unsafe impl Zeroable for M512 {}
@@ -678,77 +506,6 @@ unsafe fn interleave_bits_imm<const BLOCK_LEN: u32>(
 		let b_prime = _mm512_xor_si512(b, t);
 		(a_prime, b_prime)
 	}
-}
-
-static LOG_B8_0: [__m512i; 64] = precompute_spread_mask::<64>(0, 3);
-static LOG_B8_1: [__m512i; 32] = precompute_spread_mask::<32>(1, 3);
-static LOG_B8_2: [__m512i; 16] = precompute_spread_mask::<16>(2, 3);
-static LOG_B8_3: [__m512i; 8] = precompute_spread_mask::<8>(3, 3);
-static LOG_B8_4: [__m512i; 4] = precompute_spread_mask::<4>(4, 3);
-static LOG_B8_5: [__m512i; 2] = precompute_spread_mask::<2>(5, 3);
-
-static LOG_B16_0: [__m512i; 32] = precompute_spread_mask::<32>(0, 4);
-static LOG_B16_1: [__m512i; 16] = precompute_spread_mask::<16>(1, 4);
-static LOG_B16_2: [__m512i; 8] = precompute_spread_mask::<8>(2, 4);
-static LOG_B16_3: [__m512i; 4] = precompute_spread_mask::<4>(3, 4);
-static LOG_B16_4: [__m512i; 2] = precompute_spread_mask::<2>(4, 4);
-
-static LOG_B32_0: [__m512i; 16] = precompute_spread_mask::<16>(0, 5);
-static LOG_B32_1: [__m512i; 8] = precompute_spread_mask::<8>(1, 5);
-static LOG_B32_2: [__m512i; 4] = precompute_spread_mask::<4>(2, 5);
-static LOG_B32_3: [__m512i; 2] = precompute_spread_mask::<2>(3, 5);
-
-static LOG_B64_0: [__m512i; 8] = precompute_spread_mask::<8>(0, 6);
-static LOG_B64_1: [__m512i; 4] = precompute_spread_mask::<4>(1, 6);
-static LOG_B64_2: [__m512i; 2] = precompute_spread_mask::<2>(2, 6);
-
-static LOG_B128_0: [__m512i; 4] = precompute_spread_mask::<4>(0, 7);
-static LOG_B128_1: [__m512i; 2] = precompute_spread_mask::<2>(1, 7);
-
-const fn precompute_spread_mask<const BLOCK_IDX_AMOUNT: usize>(
-	log_block_len: usize,
-	t_log_bits: usize,
-) -> [__m512i; BLOCK_IDX_AMOUNT] {
-	let element_log_width = t_log_bits - 3;
-
-	let element_width = 1 << element_log_width;
-
-	let block_size = 1 << (log_block_len + element_log_width);
-	let repeat = 1 << (6 - element_log_width - log_block_len);
-	let mut masks = [[0u8; 64]; BLOCK_IDX_AMOUNT];
-
-	let mut block_idx = 0;
-
-	while block_idx < BLOCK_IDX_AMOUNT {
-		let base = block_idx * block_size;
-		let mut j = 0;
-		while j < 64 {
-			masks[block_idx][j] =
-				(base + ((j / element_width) / repeat) * element_width + j % element_width) as u8;
-			j += 1;
-		}
-		block_idx += 1;
-	}
-	let mut m512_masks = [m512_from_u128s!(0, 0, 0, 0,); BLOCK_IDX_AMOUNT];
-
-	let mut block_idx = 0;
-
-	while block_idx < BLOCK_IDX_AMOUNT {
-		let mut u128s = [0; 4];
-		let mut i = 0;
-		while i < 4 {
-			unsafe {
-				u128s[i] = u128::from_le_bytes(
-					*(masks[block_idx].as_ptr().add(16 * i) as *const [u8; 16]),
-				);
-			}
-			i += 1;
-		}
-		m512_masks[block_idx] = m512_from_u128s!(u128s[0], u128s[1], u128s[2], u128s[3],);
-		block_idx += 1;
-	}
-
-	m512_masks
 }
 
 #[inline(always)]
