@@ -5,7 +5,7 @@ use std::{
 	array,
 	fmt::{self, LowerHex},
 	mem,
-	ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr},
+	ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not},
 };
 
 use binius_utils::{
@@ -106,46 +106,6 @@ impl<U: BitXorAssign + Copy, const N: usize> BitXorAssign for ScaledUnderlier<U,
 		for i in 0..N {
 			self.0[i] ^= rhs.0[i];
 		}
-	}
-}
-
-impl<U: UnderlierType, const N: usize> Shr<usize> for ScaledUnderlier<U, N> {
-	type Output = Self;
-
-	fn shr(self, rhs: usize) -> Self::Output {
-		let mut result = Self::default();
-
-		let shift_in_items = rhs / U::BITS;
-		for i in 0..N.saturating_sub(shift_in_items.saturating_sub(1)) {
-			if i + shift_in_items < N {
-				result.0[i] |= self.0[i + shift_in_items] >> (rhs % U::BITS);
-			}
-			if i + shift_in_items + 1 < N && !rhs.is_multiple_of(U::BITS) {
-				result.0[i] |= self.0[i + shift_in_items + 1] << (U::BITS - (rhs % U::BITS));
-			}
-		}
-
-		result
-	}
-}
-
-impl<U: UnderlierType, const N: usize> Shl<usize> for ScaledUnderlier<U, N> {
-	type Output = Self;
-
-	fn shl(self, rhs: usize) -> Self::Output {
-		let mut result = Self::default();
-
-		let shift_in_items = rhs / U::BITS;
-		for i in shift_in_items.saturating_sub(1)..N {
-			if i >= shift_in_items {
-				result.0[i] |= self.0[i - shift_in_items] << (rhs % U::BITS);
-			}
-			if i > shift_in_items && !rhs.is_multiple_of(U::BITS) {
-				result.0[i] |= self.0[i - shift_in_items - 1] >> (U::BITS - (rhs % U::BITS));
-			}
-		}
-
-		result
 	}
 }
 
@@ -335,36 +295,6 @@ impl<U: DeserializeBytes, const N: usize> DeserializeBytes for ScaledUnderlier<U
 #[cfg(test)]
 mod tests {
 	use super::*;
-
-	#[test]
-	fn test_shr() {
-		let val = ScaledUnderlier::<u8, 4>([0, 1, 2, 3]);
-		assert_eq!(
-			val >> 1,
-			ScaledUnderlier::<u8, 4>([0b10000000, 0b00000000, 0b10000001, 0b00000001])
-		);
-		assert_eq!(
-			val >> 2,
-			ScaledUnderlier::<u8, 4>([0b01000000, 0b10000000, 0b11000000, 0b00000000])
-		);
-		assert_eq!(
-			val >> 8,
-			ScaledUnderlier::<u8, 4>([0b00000001, 0b00000010, 0b00000011, 0b00000000])
-		);
-		assert_eq!(
-			val >> 9,
-			ScaledUnderlier::<u8, 4>([0b00000000, 0b10000001, 0b00000001, 0b00000000])
-		);
-	}
-
-	#[test]
-	fn test_shl() {
-		let val = ScaledUnderlier::<u8, 4>([0, 1, 2, 3]);
-		assert_eq!(val << 1, ScaledUnderlier::<u8, 4>([0, 2, 4, 6]));
-		assert_eq!(val << 2, ScaledUnderlier::<u8, 4>([0, 4, 8, 12]));
-		assert_eq!(val << 8, ScaledUnderlier::<u8, 4>([0, 0, 1, 2]));
-		assert_eq!(val << 9, ScaledUnderlier::<u8, 4>([0, 0, 2, 4]));
-	}
 
 	#[test]
 	fn test_interleave_within_element() {
