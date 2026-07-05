@@ -1,7 +1,11 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use binius_core::{consts::WORD_SIZE_BITS, word::Word};
-use binius_frontend::{CircuitBuilder, Wire, util::num_biguint_from_u64_limbs};
+use binius_frontend::{
+	CircuitBuilder, Wire,
+	hints::{BigUintDivideHint, ModDivideHint, ModInverseHint},
+	util::num_biguint_from_u64_limbs,
+};
 
 use super::{
 	BigUint, PseudoMersenneModReduce, add, biguint_lt, sub, textbook_mul, textbook_square,
@@ -104,7 +108,7 @@ impl PseudoMersennePrimeField {
 	}
 
 	fn reduce_product(&self, b: &CircuitBuilder, product: BigUint) -> BigUint {
-		let (quotient, remainder) = b.biguint_divide_hint(&product.limbs, &self.modulus.limbs);
+		let (quotient, remainder) = BigUintDivideHint::call(b, &product.limbs, &self.modulus.limbs);
 
 		let zero = b.add_constant(Word::ZERO);
 
@@ -135,7 +139,7 @@ impl PseudoMersennePrimeField {
 	/// for avoiding overconstraining in skipped parts of larger circuits.
 	pub fn inverse(&self, b: &CircuitBuilder, fe: &BigUint, exists: Wire) -> BigUint {
 		assert!(fe.limbs.len() == self.limbs_len());
-		let (quotient, inverse) = b.mod_inverse_hint(&fe.limbs, &self.modulus.limbs);
+		let (quotient, inverse) = ModInverseHint::call(b, &fe.limbs, &self.modulus.limbs);
 
 		let zero = b.add_constant(Word::ZERO);
 
@@ -200,7 +204,7 @@ impl PseudoMersennePrimeField {
 			dividend.limbs.len() == self.limbs_len() && divisor.limbs.len() == self.limbs_len()
 		);
 		let (quotient, slope) =
-			b.mod_divide_hint(&dividend.limbs, &divisor.limbs, &self.modulus.limbs);
+			ModDivideHint::call(b, &dividend.limbs, &divisor.limbs, &self.modulus.limbs);
 
 		let zero = b.add_constant(Word::ZERO);
 

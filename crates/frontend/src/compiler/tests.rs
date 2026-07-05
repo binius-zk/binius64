@@ -4,7 +4,12 @@ use proptest::prelude::*;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 use super::*;
-use crate::util::num_biguint_from_u64_limbs;
+use crate::{
+	compiler::hints::{
+		BigUintDivideHint, BigUintModPowHint, ModInverseHint, Secp256k1EndosplitHint,
+	},
+	util::num_biguint_from_u64_limbs,
+};
 
 #[test]
 fn test_icmp_ult() {
@@ -111,7 +116,7 @@ fn test_biguint_divide_hint() {
 
 	let m = builder.add_constant_64(u64::MAX - 4);
 
-	let (q, r) = builder.biguint_divide_hint(&[d0, d1], &[m]);
+	let (q, r) = BigUintDivideHint::call(&builder, &[d0, d1], &[m]);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -135,7 +140,7 @@ fn test_biguint_divide_hint_div_by_zero() {
 	let m0 = builder.add_constant_64(0);
 	let m1 = builder.add_constant_64(0);
 
-	let (q, r) = builder.biguint_divide_hint(&[d0, d1], &[m0, m1]);
+	let (q, r) = BigUintDivideHint::call(&builder, &[d0, d1], &[m0, m1]);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -155,7 +160,7 @@ fn test_mod_pow_hint() {
 	let builder = CircuitBuilder::new();
 
 	let c = builder.add_constant_64(0x123456789abcdef0);
-	let modpow = builder.biguint_mod_pow_hint(&[c], &[c, c], &[c, c, c]);
+	let modpow = BigUintModPowHint::call(&builder, &[c], &[c, c], &[c, c, c]);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -177,7 +182,7 @@ fn test_mod_inverse_hint() {
 	let m0 = builder.add_constant_64(u64::MAX);
 	let m1 = builder.add_constant_64((1u64 << 63) - 1);
 
-	let (quotient, inverse) = builder.mod_inverse_hint(&[b], &[m0, m1]);
+	let (quotient, inverse) = ModInverseHint::call(&builder, &[b], &[m0, m1]);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -202,7 +207,7 @@ fn test_mod_inverse_hint_non_coprime() {
 	let m0 = builder.add_constant_64(0xfffffffffff80001);
 	let m1 = builder.add_constant_64(0x3ffff7ffffffffff);
 
-	let (quotient, inverse) = builder.mod_inverse_hint(&[b], &[m0, m1]);
+	let (quotient, inverse) = ModInverseHint::call(&builder, &[b], &[m0, m1]);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -397,7 +402,7 @@ proptest! {
 		let builder = CircuitBuilder::new();
 		let k = k.map(|limb| builder.add_constant_64(limb));
 		let (k1_neg, k2_neg, k1_abs, k2_abs) =
-			builder.secp256k1_endomorphism_split_hint(&k);
+			Secp256k1EndosplitHint::call(&builder, &k);
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();
