@@ -1,4 +1,5 @@
 // Copyright 2023-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 pub mod batch;
 pub mod batch_quadratic_mle;
@@ -13,7 +14,11 @@ mod padded;
 mod prove;
 pub mod quadratic_mle;
 pub mod rerand_mle;
-mod round_evals;
+// `round_evals` is internal implementation, exposed (via `#[doc(hidden)]` `pub mod`) only so
+// `binius-prover` can compute the shift reduction's sparse first sumcheck round with the exact
+// interpolation the in-crate provers use. Not a stable API.
+#[doc(hidden)]
+pub mod round_evals;
 pub mod selector_mle;
 mod switchover;
 pub use mle_to_sumcheck::*;
