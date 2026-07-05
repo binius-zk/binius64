@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 pub const SHIFT_VARIANT_COUNT: usize = 8;
 pub const BITAND_ARITY: usize = 3;
@@ -12,4 +13,4 @@ mod error;
 mod verify;
 
 pub use error::Error;
-pub use verify::{OperatorData, VerifyOutput, check_eval, verify};
+pub use verify::{OperatorData, VerifyOutput, check_eval, evaluate_words_mle, verify};

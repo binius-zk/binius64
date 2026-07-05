@@ -1,6 +1,9 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
+use binius_utils::{
+	checked_arithmetics::log2_ceil_usize,
+	serialization::{DeserializeBytes, SerializationError, SerializeBytes},
+};
 use bytes::{Buf, BufMut};
 
 use super::ValueIndex;
@@ -41,6 +44,8 @@ impl ValueVecLayout {
 	///
 	/// - the public segment (constants and inout values) is padded to the power of two.
 	/// - the public segment is not less than the minimum size.
+	/// - the hidden segment is at least as long as the public segment, so
+	///   [`Self::log_witness_words`] is at least [`Self::log_public_words`].
 	pub const fn validate(&self) -> Result<(), ConstraintSystemError> {
 		if !self.offset_witness.is_power_of_two() {
 			return Err(ConstraintSystemError::PublicInputPowerOfTwo);
@@ -49,6 +54,13 @@ impl ValueVecLayout {
 		let pub_input_size = self.offset_witness;
 		if pub_input_size < consts::MIN_WORDS_PER_SEGMENT {
 			return Err(ConstraintSystemError::PublicInputTooShort { pub_input_size });
+		}
+
+		if self.n_hidden_words() < self.n_public_words() {
+			return Err(ConstraintSystemError::HiddenSegmentTooShort {
+				public_len: self.n_public_words(),
+				hidden_len: self.n_hidden_words(),
+			});
 		}
 
 		Ok(())
@@ -67,10 +79,18 @@ impl ValueVecLayout {
 		self.offset_witness.trailing_zeros() as usize
 	}
 
-	/// Returns the number of non-public words: the witness and internal values, including
-	/// padding up to `committed_total_len`.
-	pub const fn n_non_public_words(&self) -> usize {
+	/// Returns the number of words in the hidden segment: the witness and internal values,
+	/// including padding up to `committed_total_len`.
+	pub const fn n_hidden_words(&self) -> usize {
 		self.committed_total_len - self.offset_witness
+	}
+
+	/// Returns the base-2 logarithm of the hidden segment length in words, rounded up to a
+	/// power of two.
+	///
+	/// [`Self::validate`] guarantees this is at least [`Self::log_public_words`].
+	pub const fn log_witness_words(&self) -> usize {
+		log2_ceil_usize(self.n_hidden_words())
 	}
 
 	/// Returns true if the given index points to an area that is considered to be padding.
@@ -165,6 +185,43 @@ mod tests {
 
 		let deserialized = ValueVecLayout::deserialize(&mut buf.as_slice()).unwrap();
 		assert_eq!(layout, deserialized);
+	}
+
+	#[test]
+	fn test_log_witness_words() {
+		let layout = |offset_witness: usize, committed_total_len: usize| ValueVecLayout {
+			n_const: 0,
+			n_inout: 0,
+			n_witness: 0,
+			n_internal: 0,
+			offset_inout: 0,
+			offset_witness,
+			committed_total_len,
+			n_scratch: 0,
+		};
+		// Typical: more witness words than public words.
+		assert_eq!(layout(4, 68).log_witness_words(), 6);
+		// Exact power-of-two witness count.
+		assert_eq!(layout(4, 36).log_witness_words(), 5);
+	}
+
+	#[test]
+	fn test_validate_rejects_short_hidden_segment() {
+		// The hidden segment (4 words) is shorter than the public segment (16 words).
+		let layout = ValueVecLayout {
+			n_const: 1,
+			n_inout: 8,
+			n_witness: 4,
+			n_internal: 0,
+			offset_inout: 1,
+			offset_witness: 16,
+			committed_total_len: 20,
+			n_scratch: 0,
+		};
+		assert!(matches!(
+			layout.validate(),
+			Err(ConstraintSystemError::HiddenSegmentTooShort { .. })
+		));
 	}
 
 	#[test]

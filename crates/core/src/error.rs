@@ -13,6 +13,13 @@ pub enum ConstraintSystemError {
 		"the public input segment must be at least {MIN_WORDS_PER_SEGMENT} words, got: {pub_input_size}"
 	)]
 	PublicInputTooShort { pub_input_size: usize },
+	#[error(
+		"the hidden segment must be at least as long as the public segment (public: {public_len}, hidden: {hidden_len})"
+	)]
+	HiddenSegmentTooShort {
+		public_len: usize,
+		hidden_len: usize,
+	},
 	#[error("the data length doesn't match layout. Expected: {expected}, Actual: {actual}")]
 	ValueVecLenMismatch { expected: usize, actual: usize },
 	#[error(
