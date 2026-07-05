@@ -34,10 +34,7 @@ use binius_spartan_verifier::{
 	wrapper::{IronSpartanBuilderChannel, ZKWrappedVerifierChannel},
 };
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
-use binius_utils::{
-	DeserializeBytes, SerializeBytes, checked_arithmetics::log2_ceil_usize,
-	serialization::SerializationError,
-};
+use binius_utils::{DeserializeBytes, SerializeBytes, serialization::SerializationError};
 use bytes::{Buf, BufMut};
 use digest::Output;
 
@@ -74,9 +71,9 @@ where
 
 		constraint_system.validate_and_prepare()?;
 
-		let n_public = constraint_system.value_vec_layout.offset_witness;
-		let log_public_words = log2_ceil_usize(n_public);
-		assert!(n_public.is_power_of_two());
+		// The validated layout guarantees a power-of-two public segment of at least one full
+		// element.
+		let log_public_words = constraint_system.value_vec_layout.log_public_words();
 		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
 
 		let inner_iop_verifier = IOPVerifier::new(constraint_system, log_public_words);

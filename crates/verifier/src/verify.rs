@@ -331,11 +331,9 @@ where
 	) -> Result<Self, Error> {
 		constraint_system.validate_and_prepare()?;
 
-		// Use offset_witness which is guaranteed to be power of two and be at least one full
+		// The validated layout guarantees a power-of-two public segment of at least one full
 		// element.
-		let n_public = constraint_system.value_vec_layout.offset_witness;
-		let log_public_words = log2_ceil_usize(n_public);
-		assert!(n_public.is_power_of_two());
+		let log_public_words = constraint_system.value_vec_layout.log_public_words();
 		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
 
 		let iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
