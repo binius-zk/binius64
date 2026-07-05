@@ -270,6 +270,33 @@ pub struct Session {
 }
 ```
 
+## Unit Testing
+
+New functionality should come with tests that cover the expected behavior and edge cases. A few
+conventions keep the test suite reproducible and consistent across the codebase.
+
+### Seed randomized tests deterministically
+
+Tests that need randomness should draw from a seeded RNG so that failures are reproducible. Use
+`StdRng::seed_from_u64(0)` rather than an entropy-seeded RNG.
+
+```rust
+use rand::{rngs::StdRng, SeedableRng};
+
+let mut rng = StdRng::seed_from_u64(0);
+let value = SomeField::random(&mut rng);
+```
+
+### Property-based tests
+
+Prefer [proptest](https://docs.rs/proptest/) for verifying mathematical properties (identities,
+round-trips, invariants) across a range of inputs rather than hand-picking a handful of cases.
+
+### Reuse test utilities
+
+Prefer helper functions from the shared `binius_math::test_utils` module (and similar test-utility
+modules) instead of reimplementing common test setup. This keeps tests concise and consistent.
+
 ## Prover-verifier separation
 
 Verifier code is optimized for simplicity, security, and readability, whereas prover code is optimized for performance.

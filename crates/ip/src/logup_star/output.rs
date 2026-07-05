@@ -14,8 +14,8 @@ pub struct LogupOutput<F> {
 	pub table_eval_claim: F,
 	/// The claimed evaluation of the pushforward multilinear `Y` at the table point.
 	pub pushforward_eval_claim: F,
-	/// The `n`-coordinate point of the index evaluation claim.
+	/// The `n`-coordinate point shared by the index evaluation claims.
 	pub index_eval_point: Vec<F>,
-	/// The claimed evaluation of the index multilinear `I` at the index point.
-	pub index_eval_claim: F,
+	/// The claimed evaluations of the per-looker index multilinears `I_j` at the index point.
+	pub index_eval_claims: Vec<F>,
 }

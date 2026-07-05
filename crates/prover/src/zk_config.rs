@@ -6,10 +6,10 @@
 //! Spartan-based zero-knowledge wrapper. The prover counterpart to
 //! [`binius_verifier::zk_config::ZKVerifier`].
 
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 
 use binius_core::constraint_system::{ConstraintSystem, ValueVec};
-use binius_field::{BinaryField128bGhash as B128, PackedExtension, PackedField};
+use binius_field::{BinaryField128bGhash as B128, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::basefold_compiler::BaseFoldProverCompiler;
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded};
@@ -24,12 +24,10 @@ use rand::CryptoRng;
 
 use crate::{
 	IOPProver,
-	merkle_tree::prover::BinaryMerkleTreeProver,
 	protocols::shift::{KeyCollection, build_key_collection},
 };
 
 type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
-type ProverMerkleProver<F, H> = BinaryMerkleTreeProver<F, H>;
 
 /// Zero-knowledge prover for Binius64 constraint systems.
 ///
@@ -47,14 +45,14 @@ where
 	/// Setup skips deep-cloning the layout, and each `prove` shares it with a reference-count
 	/// bump.
 	outer_layout: Arc<WitnessLayout<B128>>,
-	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>, ProverMerkleProver<B128, H>>,
+	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>>,
+	/// The prover creates its Merkle transcript channels with the hash suite `H`.
+	_hash_marker: PhantomData<H>,
 }
 
 impl<P, H> ZKProver<P, H>
 where
-	P: PackedField<Scalar = B128>
-		+ PackedExtension<B128>
-		+ PackedExtension<binius_verifier::config::B1>,
+	P: PackedField<Scalar = B128>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {
@@ -98,12 +96,8 @@ where
 		};
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
-		let merkle_prover = BinaryMerkleTreeProver::<_, H>::new();
-		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
-			zk_verifier.basefold_compiler(),
-			ntt,
-			merkle_prover,
-		);
+		let basefold_compiler =
+			BaseFoldProverCompiler::from_verifier_compiler(zk_verifier.basefold_compiler(), ntt);
 
 		Ok(Self {
 			inner_iop_prover,
@@ -111,6 +105,7 @@ where
 			outer_iop_prover,
 			outer_layout,
 			basefold_compiler,
+			_hash_marker: PhantomData,
 		})
 	}
 
@@ -135,7 +130,9 @@ where
 		let public_words = witness.public().to_vec();
 
 		// Create BaseFold prover channel and wrap with outer prover.
-		let basefold_channel = self.basefold_compiler.create_channel(transcript, &mut rng);
+		let basefold_channel = self
+			.basefold_compiler
+			.create_channel_from_transcript::<H, Challenger_, _>(transcript, &mut rng);
 		let mut wrapped_channel = ZKWrappedProverChannel::new(
 			basefold_channel,
 			&self.outer_iop_prover,
@@ -203,9 +200,7 @@ where
 /// dominant setup cost) is reused as-is while the cheaper derived state is recomputed.
 impl<P, H> SerializeBytes for ZKProver<P, H>
 where
-	P: PackedField<Scalar = B128>
-		+ PackedExtension<B128>
-		+ PackedExtension<binius_verifier::config::B1>,
+	P: PackedField<Scalar = B128>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {
@@ -226,9 +221,7 @@ where
 
 impl<P, H> DeserializeBytes for ZKProver<P, H>
 where
-	P: PackedField<Scalar = B128>
-		+ PackedExtension<B128>
-		+ PackedExtension<binius_verifier::config::B1>,
+	P: PackedField<Scalar = B128>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes + DeserializeBytes,
 {

@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_core::word::Word;
 use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
@@ -90,7 +91,7 @@ where
 /// # Returns
 /// Returns `SumcheckOutput` with concatenated challenges `[r_j, r_y]` and witness evaluation.
 #[instrument(skip_all, name = "run_sumcheck")]
-fn run_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>>(
+pub fn run_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>>(
 	r_j_witness: FieldBuffer<P>,
 	monster_multilinear: FieldBuffer<P>,
 	r_j: Vec<F>,

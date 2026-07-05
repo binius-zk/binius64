@@ -1,62 +1,19 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
-use super::{
-	U1, U2, U4,
-	underlier_type::{NumCast, UnderlierType},
-};
+#[cfg(test)]
+use std::ops::Shl;
+
+#[cfg(test)]
+use super::underlier_type::UnderlierType;
+#[cfg(test)]
 use crate::Divisible;
-
-/// Fallback implementation of `spread` method.
-///
-/// # Safety
-/// `log_block_len + T::LOG_BITS` must be less than or equal to `U::LOG_BITS`.
-/// `block_idx` must be less than `1 << (U::LOG_BITS - log_block_len)`.
-pub(crate) unsafe fn spread_fallback<U, T>(value: U, log_block_len: usize, block_idx: usize) -> U
-where
-	U: UnderlierType + Divisible<T>,
-	T: UnderlierType,
-{
-	debug_assert!(
-		log_block_len + T::LOG_BITS <= U::LOG_BITS,
-		"log_block_len: {}, U::BITS: {}, T::BITS: {}",
-		log_block_len,
-		U::BITS,
-		T::BITS
-	);
-	debug_assert!(
-		block_idx < 1 << (U::LOG_BITS - log_block_len),
-		"block_idx: {}, U::BITS: {}, log_block_len: {}",
-		block_idx,
-		U::BITS,
-		log_block_len
-	);
-
-	let mut result = U::ZERO;
-	let block_offset = block_idx << log_block_len;
-	let log_repeat = U::LOG_BITS - T::LOG_BITS - log_block_len;
-	for i in 0..1 << log_block_len {
-		// Safety: `block_offset + i < block_offset + block_len <= U::BITS / T::BITS`
-		// (precondition), and `i << log_repeat < U::BITS / T::BITS` (by the loop bound and
-		// log_repeat definition).
-		unsafe {
-			Divisible::<T>::set_unchecked(
-				&mut result,
-				i << log_repeat,
-				Divisible::<T>::get_unchecked(&value, block_offset + i),
-			);
-		}
-	}
-
-	for i in 0..log_repeat {
-		result |= result << (1 << (T::LOG_BITS + i));
-	}
-
-	result
-}
 
 #[cfg(test)]
 #[allow(unused)]
-pub(crate) fn single_element_mask_bits<T: UnderlierType>(bits_count: usize) -> T {
+pub(crate) fn single_element_mask_bits<T: UnderlierType + Shl<usize, Output = T>>(
+	bits_count: usize,
+) -> T {
 	use binius_utils::checked_arithmetics::checked_log_2;
 
 	if bits_count == T::BITS {
@@ -64,82 +21,11 @@ pub(crate) fn single_element_mask_bits<T: UnderlierType>(bits_count: usize) -> T
 	} else {
 		let mut result = T::ONE;
 		for height in 0..checked_log_2(bits_count) {
-			result |= result << (1 << height)
+			result |= result << (1usize << height)
 		}
 
 		result
 	}
-}
-
-/// Value that can be spread to a single u8
-pub(crate) trait SpreadToByte {
-	fn spread_to_byte(self) -> u8;
-}
-
-impl SpreadToByte for U1 {
-	#[inline(always)]
-	fn spread_to_byte(self) -> u8 {
-		u8::fill_with_bit(self.val())
-	}
-}
-
-impl SpreadToByte for U2 {
-	#[inline(always)]
-	fn spread_to_byte(self) -> u8 {
-		let mut result = self.val();
-		result |= result << 2;
-		result |= result << 4;
-
-		result
-	}
-}
-
-impl SpreadToByte for U4 {
-	#[inline(always)]
-	fn spread_to_byte(self) -> u8 {
-		let mut result = self.val();
-		result |= result << 4;
-
-		result
-	}
-}
-
-/// A helper functions for implementing `UnderlierType::spread` for SIMD types.
-///
-/// # Safety
-/// `log_block_len + T::LOG_BITS` must be less than or equal to `U::LOG_BITS`.
-#[allow(unused)]
-#[inline(always)]
-pub(crate) unsafe fn get_block_values<U, T, const BLOCK_LEN: usize>(
-	value: U,
-	block_idx: usize,
-) -> [T; BLOCK_LEN]
-where
-	U: UnderlierType + From<T> + Divisible<T>,
-	T: UnderlierType + NumCast<U>,
-{
-	// Safety: `block_idx * BLOCK_LEN + i < U::BITS / T::BITS` by the function preconditions.
-	std::array::from_fn(|i| unsafe {
-		Divisible::<T>::get_unchecked(&value, block_idx * BLOCK_LEN + i)
-	})
-}
-
-/// A helper functions for implementing `UnderlierType::spread` for SIMD types.
-///
-/// # Safety
-/// `log_block_len + T::LOG_BITS` must be less than or equal to `U::LOG_BITS`.
-#[allow(unused)]
-#[inline(always)]
-pub(crate) unsafe fn get_spread_bytes<U, T, const BLOCK_LEN: usize>(
-	value: U,
-	block_idx: usize,
-) -> [u8; BLOCK_LEN]
-where
-	U: UnderlierType + From<T> + Divisible<T>,
-	T: UnderlierType + SpreadToByte + NumCast<U>,
-{
-	unsafe { get_block_values::<U, T, BLOCK_LEN>(value, block_idx) }
-		.map(SpreadToByte::spread_to_byte)
 }
 
 #[cfg(test)]

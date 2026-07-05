@@ -160,6 +160,40 @@ fn test_binary_merkle_vcs_hiding_verify_vector() {
 }
 
 #[test]
+fn test_binary_merkle_vcs_hiding_prove_open_against_layer() {
+	let mut rng = StdRng::seed_from_u64(0);
+
+	let salt_len = 2;
+	let mt_prover = BinaryMerkleTreeProver::<_, StdHashSuite>::hiding(&mut rng, salt_len);
+
+	let data = random_scalars::<B128>(&mut rng, 32);
+	let (_, tree) = mt_prover.commit(&data, 1);
+
+	// Openings against an internal layer must write the salt of the opened leaf, not of the
+	// layer-relative index.
+	for layer_depth in 1..5 {
+		let layer = mt_prover.layer(&tree, layer_depth);
+		for (i, value) in data.iter().enumerate() {
+			let mut proof_writer = ProverTranscript::new(StdChallenger::default());
+			mt_prover.prove_opening(&tree, layer_depth, i, &mut proof_writer.message());
+
+			let mut proof_reader = proof_writer.into_verifier();
+			mt_prover
+				.scheme()
+				.verify_opening(
+					i,
+					slice::from_ref(value),
+					layer_depth,
+					5,
+					layer,
+					&mut proof_reader.message(),
+				)
+				.unwrap();
+		}
+	}
+}
+
+#[test]
 fn test_binary_merkle_vcs_hiding_batch_size() {
 	let mut rng = StdRng::seed_from_u64(0);
 

@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
 
@@ -51,6 +52,25 @@ impl ValueVecLayout {
 		}
 
 		Ok(())
+	}
+
+	/// Returns the number of words in the public segment: the constants and inout values,
+	/// including padding up to the power-of-two segment length.
+	pub const fn n_public_words(&self) -> usize {
+		self.offset_witness
+	}
+
+	/// Returns the base-2 logarithm of the public segment length in words.
+	///
+	/// [`Self::validate`] guarantees that the public segment length is a power of two.
+	pub const fn log_public_words(&self) -> usize {
+		self.offset_witness.trailing_zeros() as usize
+	}
+
+	/// Returns the number of non-public words: the witness and internal values, including
+	/// padding up to `committed_total_len`.
+	pub const fn n_non_public_words(&self) -> usize {
+		self.committed_total_len - self.offset_witness
 	}
 
 	/// Returns true if the given index points to an area that is considered to be padding.

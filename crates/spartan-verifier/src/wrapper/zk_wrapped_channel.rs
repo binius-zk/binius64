@@ -17,15 +17,13 @@ use binius_field::{BinaryField, util::FieldFn};
 use binius_iop::{
 	basefold_channel::{BaseFoldOracle, BaseFoldVerifierChannel},
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
-	merkle_tree::MerkleTreeScheme,
+	merkle_channel::MerkleIPVerifierChannel,
 };
 use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, InstanceGenerator, WireAllocator},
 	constraint_system::{WireKind, WitnessLayout},
 };
-use binius_transcript::fiat_shamir::Challenger;
-use binius_utils::DeserializeBytes;
 
 use crate::{Error, IOPVerifier, wrapper::circuit_elem::CircuitElem};
 
@@ -41,13 +39,12 @@ use crate::{Error, IOPVerifier, wrapper::circuit_elem::CircuitElem};
 /// `transparent` closures supplied via [`OracleLinearRelation`] must depend only on public inputs
 /// (constants and sampled challenges), never on private ones — `verify_oracle_relations` panics
 /// otherwise.
-pub struct ZKWrappedVerifierChannel<'a, F, MTScheme, Challenger_>
+pub struct ZKWrappedVerifierChannel<'a, F, Channel>
 where
 	F: BinaryField,
-	MTScheme: MerkleTreeScheme<F>,
-	Challenger_: Challenger,
+	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
-	inner_channel: BaseFoldVerifierChannel<'a, F, MTScheme, Challenger_>,
+	inner_channel: BaseFoldVerifierChannel<'a, F, Channel>,
 	outer_verifier: &'a IOPVerifier<F>,
 	precommit_oracle: BaseFoldOracle,
 	/// Reconstructs the outer public-input vector as the channel replays the inner verifier;
@@ -65,11 +62,10 @@ where
 	n_outer_suffix_oracles: usize,
 }
 
-impl<'a, F, MTScheme, Challenger_> ZKWrappedVerifierChannel<'a, F, MTScheme, Challenger_>
+impl<'a, F, Channel> ZKWrappedVerifierChannel<'a, F, Channel>
 where
 	F: BinaryField,
-	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
-	Challenger_: Challenger,
+	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
 	/// Creates a new ZK-wrapped verifier channel.
 	///
@@ -90,7 +86,7 @@ where
 	/// Panics if the channel's oracle specs do not match the expected layout
 	/// `[outer_precommit, inner..., outer_private, outer_mask]`.
 	pub fn new(
-		mut inner_channel: BaseFoldVerifierChannel<'a, F, MTScheme, Challenger_>,
+		mut inner_channel: BaseFoldVerifierChannel<'a, F, Channel>,
 		outer_verifier: &'a IOPVerifier<F>,
 		outer_layout: Arc<WitnessLayout<F>>,
 	) -> Result<Self, Error> {
@@ -169,12 +165,10 @@ where
 	}
 }
 
-impl<'a, F, MTScheme, Challenger_> IPVerifierChannel<F>
-	for ZKWrappedVerifierChannel<'a, F, MTScheme, Challenger_>
+impl<'a, F, Channel> IPVerifierChannel<F> for ZKWrappedVerifierChannel<'a, F, Channel>
 where
 	F: BinaryField,
-	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
-	Challenger_: Challenger,
+	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
 	type Elem = CircuitElem<F, InstanceGenerator<F>>;
 
@@ -233,12 +227,10 @@ where
 	}
 }
 
-impl<'a, F, MTScheme, Challenger_> IOPVerifierChannel<F>
-	for ZKWrappedVerifierChannel<'a, F, MTScheme, Challenger_>
+impl<'a, F, Channel> IOPVerifierChannel<F> for ZKWrappedVerifierChannel<'a, F, Channel>
 where
 	F: BinaryField,
-	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
-	Challenger_: Challenger,
+	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
 	type Oracle = BaseFoldOracle;
 

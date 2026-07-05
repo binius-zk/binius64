@@ -1,9 +1,10 @@
 // Copyright 2023-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_utils::checked_arithmetics::log2_strict_usize;
 
 use super::packed::PackedField;
-use crate::{ExtensionField, Field, PackedExtension};
+use crate::{BinaryField, ExtensionField, PackedSubfield, WithUnderlier, cast_bases_mut};
 
 /// Transpose square blocks of elements within packed field elements in place.
 ///
@@ -53,10 +54,13 @@ pub fn square_transpose<P: PackedField>(log_n: usize, elems: &mut [P]) {
 	}
 }
 
-pub fn square_transforms_extension_field<F: Field, FE: ExtensionField<F> + PackedExtension<F>>(
-	values: &mut [FE],
-) {
-	square_transpose(FE::LOG_DEGREE, FE::cast_bases_mut(values))
+pub fn square_transforms_extension_field<F, FE>(values: &mut [FE])
+where
+	F: BinaryField,
+	FE: PackedField<Scalar: ExtensionField<F>> + WithUnderlier,
+	PackedSubfield<FE, F>: PackedField<Scalar = F>,
+{
+	square_transpose(<FE::Scalar as ExtensionField<F>>::LOG_DEGREE, cast_bases_mut::<F, FE>(values))
 }
 
 #[cfg(test)]
