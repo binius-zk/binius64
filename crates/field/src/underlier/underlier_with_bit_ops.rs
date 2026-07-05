@@ -5,10 +5,14 @@
 use super::underlier_type::UnderlierType;
 #[cfg(test)]
 use crate::Divisible;
+#[cfg(test)]
+use std::ops::Shl;
 
 #[cfg(test)]
 #[allow(unused)]
-pub(crate) fn single_element_mask_bits<T: UnderlierType>(bits_count: usize) -> T {
+pub(crate) fn single_element_mask_bits<T: UnderlierType + Shl<usize, Output = T>>(
+	bits_count: usize,
+) -> T {
 	use binius_utils::checked_arithmetics::checked_log_2;
 
 	if bits_count == T::BITS {
@@ -16,7 +20,7 @@ pub(crate) fn single_element_mask_bits<T: UnderlierType>(bits_count: usize) -> T
 	} else {
 		let mut result = T::ONE;
 		for height in 0..checked_log_2(bits_count) {
-			result |= result << (1 << height)
+			result |= result << (1usize << height)
 		}
 
 		result

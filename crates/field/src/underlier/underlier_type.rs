@@ -3,7 +3,7 @@
 
 use std::{
 	fmt::Debug,
-	ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr},
+	ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not},
 };
 
 use bytemuck::{NoUninit, TransparentWrapper, Zeroable};
@@ -32,8 +32,6 @@ pub trait UnderlierType:
 	+ BitOrAssign<Self>
 	+ BitXor<Self, Output = Self>
 	+ BitXorAssign<Self>
-	+ Shr<usize, Output = Self>
-	+ Shl<usize, Output = Self>
 	+ Not<Output = Self>
 	+ Divisible<U1>
 {
