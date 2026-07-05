@@ -11,9 +11,9 @@ use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
 		OperatorData, PreparedOperatorData, build_key_collection,
-		monster::{build_h_parts, build_monster_multilinear},
+		monster::{build_h_parts, build_monster_segments},
 		phase_1::{build_g_parts, run_phase_1_sumcheck},
-		phase_2::{assemble_witness, run_sumcheck},
+		phase_2::run_sumcheck,
 		prove,
 	},
 };
@@ -251,9 +251,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
 	let public_folded = fold_words::<F, P>(public_words, r_j_tensor.as_ref());
 	let hidden_folded = fold_words::<F, P>(hidden_words, r_j_tensor.as_ref());
-	let witness_folded =
-		assemble_witness(&public_folded, &hidden_folded, key_collection.log_witness_words());
-	let monster_multilinear = build_monster_multilinear::<F, P>(
+	let (public_monster, hidden_monster) = build_monster_segments::<F, P>(
 		&key_collection,
 		&prepared_bitand,
 		&prepared_intmul,
@@ -285,11 +283,11 @@ fn bench_shift_phases(c: &mut Criterion) {
 		);
 	});
 
-	// Phase 2. `build_monster_multilinear` takes its inputs by reference; `run_sumcheck` consumes
-	// `r_j_witness`, `monster_multilinear`, and `r_j` by value.
-	group.bench_function("phase2_build_monster_multilinear", |b| {
+	// Phase 2. `build_monster_segments` takes its inputs by reference; `run_sumcheck` consumes
+	// its buffers and `r_j` by value.
+	group.bench_function("phase2_build_monster_segments", |b| {
 		b.iter(|| {
-			build_monster_multilinear::<F, P>(
+			build_monster_segments::<F, P>(
 				&key_collection,
 				&prepared_bitand,
 				&prepared_intmul,
@@ -300,13 +298,23 @@ fn bench_shift_phases(c: &mut Criterion) {
 	});
 	group.bench_function("phase2_run_sumcheck", |b| {
 		b.iter_batched(
-			|| (witness_folded.clone(), monster_multilinear.clone(), r_j.clone()),
-			|(witness_folded, monster_multilinear, r_j)| {
+			|| {
+				(
+					public_folded.clone(),
+					hidden_folded.clone(),
+					public_monster.clone(),
+					hidden_monster.clone(),
+					r_j.clone(),
+				)
+			},
+			|(public_folded, hidden_folded, public_monster, hidden_monster, r_j)| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
 				run_sumcheck::<F, P, _>(
-					witness_folded,
+					public_folded,
+					hidden_folded,
+					public_monster,
+					hidden_monster,
 					public_words,
-					monster_multilinear,
 					r_j,
 					gamma,
 					&mut transcript,

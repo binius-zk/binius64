@@ -7,7 +7,7 @@ use binius_field::{AESTowerField8b, BinaryField, Field, PackedField, WideMul};
 use binius_math::{
 	BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
 };
-use binius_utils::rayon::prelude::*;
+use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
 use binius_verifier::{
 	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
 	protocols::shift::{BITAND_ARITY, INTMUL_ARITY, evaluate_h_op},
@@ -131,16 +131,18 @@ where
 ///
 /// # Usage
 ///
-/// Used in phase 2 of the shift protocol where the prover needs a single multilinear combining
-/// all shift-related constraints for efficient sumcheck computation.
-#[instrument(skip_all, name = "build_monster_multilinear")]
-pub fn build_monster_multilinear<F, P: PackedField<Scalar = F>>(
+/// Used in phase 2 of the shift protocol. The two returned buffers are the segments of the
+/// witness's monster multilinear: the public piece over `log_public_words` variables and the
+/// hidden piece over `log_witness_words` variables (the hidden words at the base, zeros above).
+/// The sparse first sumcheck round consumes them without materializing the combined buffer.
+#[instrument(skip_all, name = "build_monster_segments")]
+pub fn build_monster_segments<F, P: PackedField<Scalar = F>>(
 	key_collection: &KeyCollection,
 	bitand_operator_data: &PreparedOperatorData<F>,
 	intmul_operator_data: &PreparedOperatorData<F>,
 	r_j: &[F],
 	r_s: &[F],
-) -> FieldBuffer<P>
+) -> (FieldBuffer<P>, FieldBuffer<P>)
 where
 	F: BinaryField + From<AESTowerField8b>,
 {
@@ -189,10 +191,6 @@ where
 		&intmul_h_ops,
 	);
 
-	let log_half = key_collection.log_witness_words();
-	let log_len = log_half + 1;
-	let capacity = 1 << log_len.saturating_sub(P::LOG_WIDTH);
-
 	// The scalar for one word of a segment: the accumulated contribution of all its keys. The
 	// per-key wide accumulations are summed unreduced and reduced once at the end.
 	let word_scalar = |segment: &KeySegment, index: usize| {
@@ -215,31 +213,37 @@ where
 		F::reduce(wide)
 	};
 
-	// The multilinear is indexed over the witness address space: the public segment at the
-	// base of the low half-cube, the hidden segment at the base of the high half-cube, zeros
-	// elsewhere.
-	let half = 1 << log_half;
-	let n_public_words = key_collection.public.n_words();
-	let n_words = half + key_collection.hidden.n_words();
-	let mut monster_multilinear = Vec::<P>::with_capacity(capacity);
-	(0..n_words.div_ceil(P::WIDTH))
-		.into_par_iter()
-		.map(|chunk_index| {
-			let start = chunk_index * P::WIDTH;
-			P::from_scalars((start..(start + P::WIDTH).min(n_words)).map(|word_index| {
-				if word_index < n_public_words {
-					word_scalar(&key_collection.public, word_index)
-				} else if word_index >= half {
-					word_scalar(&key_collection.hidden, word_index - half)
-				} else {
-					F::ZERO
-				}
-			}))
-		})
-		.collect_into_vec(&mut monster_multilinear);
-	monster_multilinear.resize(capacity, P::default());
+	// Each segment sits at the base of its buffer: the public piece fills its power-of-two
+	// length exactly, the hidden piece is zero-padded up to the hidden segment length.
+	let build_segment = |segment: &KeySegment, log_len: usize| {
+		let capacity = 1 << log_len.saturating_sub(P::LOG_WIDTH);
+		let n_words = segment.n_words();
+		// Full packed elements: each maps exactly `P::WIDTH` words, so `from_scalars` sees a
+		// statically-sized iterator. The trailing partial element is filled separately below.
+		let n_full = n_words / P::WIDTH;
+		let mut values = Vec::<P>::with_capacity(capacity);
+		(0..n_full)
+			.into_par_iter()
+			.map(|chunk_index| {
+				let start = chunk_index * P::WIDTH;
+				P::from_scalars((0..P::WIDTH).map(|i| word_scalar(segment, start + i)))
+			})
+			.collect_into_vec(&mut values);
+		if !n_words.is_multiple_of(P::WIDTH) {
+			let start = n_full * P::WIDTH;
+			values.push(P::from_scalars(
+				(start..n_words).map(|word_index| word_scalar(segment, word_index)),
+			));
+		}
+		values.resize(capacity, P::default());
+		FieldBuffer::new(log_len, values.into_boxed_slice())
+	};
 
-	FieldBuffer::new(log_len, monster_multilinear.into_boxed_slice())
+	let log_public_words = checked_log_2(key_collection.public.n_words());
+	let public_monster = build_segment(&key_collection.public, log_public_words);
+	let hidden_monster = build_segment(&key_collection.hidden, key_collection.log_witness_words());
+
+	(public_monster, hidden_monster)
 }
 
 #[cfg(test)]
