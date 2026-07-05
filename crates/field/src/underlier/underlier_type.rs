@@ -1,13 +1,14 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{
 	fmt::Debug,
-	ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr},
+	ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not},
 };
 
 use bytemuck::{NoUninit, TransparentWrapper, Zeroable};
 
-use super::{U1, underlier_with_bit_ops::spread_fallback};
+use super::U1;
 use crate::{Divisible, Random};
 
 /// Primitive integer underlying a binary field or packed binary field implementation.
@@ -31,8 +32,6 @@ pub trait UnderlierType:
 	+ BitOrAssign<Self>
 	+ BitXor<Self, Output = Self>
 	+ BitXorAssign<Self>
-	+ Shr<usize, Output = Self>
-	+ Shl<usize, Output = Self>
 	+ Not<Output = Self>
 	+ Divisible<U1>
 {
@@ -84,21 +83,6 @@ pub trait UnderlierType:
 		Self: Divisible<T>,
 	{
 		Divisible::<T>::broadcast(value)
-	}
-
-	/// Spread takes a block of sub_elements of `T` type within the current value and
-	/// repeats them to the full underlier width.
-	///
-	/// # Safety
-	/// `log_block_len + T::LOG_BITS` must be less than or equal to `Self::LOG_BITS`.
-	/// `block_idx` must be less than `1 << (Self::LOG_BITS - log_block_len)`.
-	#[inline]
-	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
-	where
-		T: UnderlierType,
-		Self: Divisible<T>,
-	{
-		unsafe { spread_fallback::<Self, T>(self, log_block_len, block_idx) }
 	}
 }
 

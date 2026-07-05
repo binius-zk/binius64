@@ -320,6 +320,7 @@ impl<const N: usize> MultiDigest<N> for PortableBlake3MultiDigest<N> {
 /// Leaf size decides the path:
 /// - Up to one 1024-byte chunk (any length): batched through the portable kernel.
 /// - Larger (multi-chunk): hashed on its own by the scalar adapter, which walks the tree.
+#[derive(Debug, Clone, Default)]
 pub struct PortableBlake3ParallelDigest<const LANES: usize>;
 
 impl<const LANES: usize> ParallelDigest for PortableBlake3ParallelDigest<LANES> {

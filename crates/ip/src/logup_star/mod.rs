@@ -4,6 +4,9 @@
 //!
 //! logUp* proves an indexed lookup `(I^* T)[i] = T[I[i]]`.
 //! Unlike classic logUp, it never commits the looked-up vector `I^* T`.
+//! Multiple lookers may share one table (and one pushforward) by a random linear combination:
+//! a challenge `gamma` weights looker `j` by `gamma^j`, and the per-looker circuits run batched
+//! (see [`crate::fracaddcheck`]).
 //! See [Soukhanov25] for the construction.
 //!
 //! [Soukhanov25]: <https://eprint.iacr.org/2025/946>
@@ -106,5 +109,5 @@ mod verify;
 pub use self::{
 	error::{Error, VerificationError},
 	output::LogupOutput,
-	verify::verify,
+	verify::{LookerClaim, verify_reduction},
 };

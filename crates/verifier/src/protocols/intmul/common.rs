@@ -1,9 +1,12 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::iter;
 
-use binius_field::{BinaryField, Field, field::FieldOps};
+use binius_field::{BinaryField, field::FieldOps};
 use itertools::iterate;
+
+use crate::config::LOG_WORD_SIZE_BITS;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IntMulOutput<F> {
@@ -48,16 +51,34 @@ pub struct Phase3Output<F> {
 	pub gpow_c_hi_eval: F,
 }
 
-/// Output of Phase 4: all but last GKR layer for $\widetilde{a}$, $\widetilde{c}_{\textsf{lo}}$,
-/// $\widetilde{c}_{\textsf{hi}}$.
+/// The log2 of the number of limbs each exponent word is split into for the Phase 4/5 fixed-base
+/// lookup.
+pub const LOG_N_LIMBS: usize = 2;
+
+/// The number of exponent limbs per word.
+pub const N_LIMBS: usize = 1 << LOG_N_LIMBS;
+
+/// The bit width of one exponent limb; the lookup table has `2^LIMB_BITS` rows.
+pub const LIMB_BITS: usize = 1 << (LOG_WORD_SIZE_BITS - LOG_N_LIMBS);
+
+/// The number of looked-up limb columns: one per limb of $\widetilde{a}$,
+/// $\widetilde{c}_{\textsf{lo}}$, and $\widetilde{c}_{\textsf{hi}}$.
+pub const N_LIMB_COLUMNS: usize = 3 * N_LIMBS;
+
+/// Output of Phase 4: the three constant-base GKR product trees reduced to per-limb evaluation
+/// claims.
 ///
-/// Contains the evaluation point and leaf evaluations for each of the three product trees at
-/// depth `log_bits - 1`.
+/// Each tree's leaf layer is the concatenation of its `N_LIMBS` limb columns; Phase 4 reduces the
+/// three roots to one evaluation claim per limb column at the shared content point `eval_point`.
 pub struct Phase4Output<F> {
+	/// The shared content point at which the limb columns are claimed.
 	pub eval_point: Vec<F>,
-	pub a_evals: Vec<F>,
-	pub c_lo_evals: Vec<F>,
-	pub c_hi_evals: Vec<F>,
+	/// The `N_LIMBS` per-limb evaluations of the $\widetilde{a}$ tree leaf columns.
+	pub a_limb_evals: Vec<F>,
+	/// The `N_LIMBS` per-limb evaluations of the $\widetilde{c}_{\textsf{lo}}$ tree leaf columns.
+	pub c_lo_limb_evals: Vec<F>,
+	/// The `N_LIMBS` per-limb evaluations of the $\widetilde{c}_{\textsf{hi}}$ tree leaf columns.
+	pub c_hi_limb_evals: Vec<F>,
 }
 
 /// Compute the inverse Frobenius endomorphism $\varphi^{-i}(x)$.
@@ -139,119 +160,55 @@ where
 	}
 }
 
-/// Recovers the multilinear evaluations of the $a, c_{\textsf{lo}}, c_{\textsf{hi}}$ polynomials.
+/// The Frobenius twist amounts (numbers of squarings) mapping each looked-up limb column onto the
+/// shared generator table, ordered `[a limbs, c_lo limbs, c_hi limbs]`.
 ///
-/// The product checks for the exponentiations reduce to multilinear evaluations of affine
-/// translations of the $a, c_{\textsf{lo}}, c_{\textsf{hi}}$ polynomials. Specifically, the
-/// sumcheck reduces to evaluations of
+/// Limb $l$ of $\widetilde{a}$ and $\widetilde{c}_{\textsf{lo}}$ has base $g^{2^{wl}}$ (where $w$
+/// is the limb bit width); limb $l$ of $\widetilde{c}_{\textsf{hi}}$ has base
+/// $g^{2^{w(\textsf{N\_LIMBS} + l)}}$ because the $\widetilde{c}_{\textsf{hi}}$ tree exponentiates
+/// $g^{2^{2^k}}$. So column $(t, l)$ is the Frobenius power $\varphi^{ws}$ of the shared table
+/// column $g^{(\cdot)}$, with $s = l$ for $t \in \{a, c_{\textsf{lo}}\}$ and $s = \textsf{N\_LIMBS}
+/// + l$ for $t = c_{\textsf{hi}}$.
+pub fn limb_column_twists() -> [usize; N_LIMB_COLUMNS] {
+	std::array::from_fn(|j| {
+		let (tree, limb) = (j / N_LIMBS, j % N_LIMBS);
+		let s = if tree == 2 { N_LIMBS + limb } else { limb };
+		LIMB_BITS * s
+	})
+}
+
+/// Twist a limb-column evaluation claim onto the shared generator table.
 ///
-/// * $\textsf{select}(a(i, r), g^{2^i})$,
-/// * $\textsf{select}(c_{\textsf{lo}}(i, r), g^{2^i})$,
-/// * $\textsf{select}(c_{\textsf{hi}}(i, r), g^{2^(i + k)}$,
-///
-/// for all $i$ in $\{0, \ldots, 2^k - 1\}$, where
-///
-/// $$
-/// \textsf{select}(S, V) = S * (V - 1) + 1.
-/// $$
-///
-/// $g$ is a constant multiplicative generator of the field $F$.
-///
-/// Given, these evaluations, this function computes and returns $a(i, r), c_{\textsf{lo}}(i, r),
-/// c_{\textsf{hi}}(i, r)$.
-pub fn normalize_a_c_exponent_evals<F, E>(
-	k: usize,
-	selected_a_evals: Vec<E>,
-	selected_c_lo_evals: Vec<E>,
-	selected_c_hi_evals: Vec<E>,
-) -> [Vec<E>; 3]
+/// The limb column satisfies $L = \varphi^{a} \circ U$ pointwise on the cube, where $U$ is the
+/// looked-up column of the shared table and $a$ is the twist amount. Since $\varphi$ is
+/// $\mathbb{F}_2$-linear and fixes the cube, the MLE claim twists as $\widetilde{U}
+/// (\varphi^{-a}(r)) = \varphi^{-a}(\widetilde{L}(r))$, applying $\varphi^{-a}$ to the value and
+/// every point coordinate.
+pub fn twist_limb_claim<F>(twist: usize, eval_point: &[F], eval: F) -> (Vec<F>, F)
 where
-	F: Field,
+	F: FieldOps,
+	F::Scalar: BinaryField,
+{
+	let twisted_point = eval_point
+		.iter()
+		.map(|coord| inv_frobenius(coord.clone(), twist))
+		.collect();
+	(twisted_point, inv_frobenius(eval, twist))
+}
+
+/// Evaluate the MLE of the fixed-base power table `i ↦ g^i` at a point.
+///
+/// Row $i$ is the product over the set bits $j$ of $i$ of $g^{2^j}$, so the MLE factors as
+/// $\prod_j \textsf{select}(y_j, g^{2^j})$ with $\textsf{select}(S, V) = S \cdot (V - 1) + 1$ —
+/// the same select formulation as the exponentiation tree leaves. The verifier evaluates this
+/// directly in `point.len()` multiplications, so the table needs no commitment.
+pub fn eval_power_table_mle<F, E>(point: &[E]) -> E
+where
+	F: BinaryField,
 	E: FieldOps<Scalar = F> + From<F>,
 {
-	assert_eq!(selected_a_evals.len(), 1 << k);
-	assert_eq!(selected_c_lo_evals.len(), 1 << k);
-	assert_eq!(selected_c_hi_evals.len(), 1 << k);
-
-	// Compute the normalization factors (conjugate - 1)^{-1} in F, then convert to E.
-	let inv_factors: Vec<E> = iterate(F::MULTIPLICATIVE_GENERATOR, |g| g.square())
-		.take(2 << k)
-		// Safety: `conjugate` ranges over powers of the multiplicative generator, which has odd
-		// order, so `conjugate - 1` is never zero.
-		.map(|conjugate| E::from(unsafe { (conjugate - F::ONE).invert() }))
-		.collect();
-
-	let (lo_inv_factors, hi_inv_factors) = inv_factors.split_at(1 << k);
-
-	let a_evals = recover_selectors(selected_a_evals, lo_inv_factors);
-	let c_lo_evals = recover_selectors(selected_c_lo_evals, lo_inv_factors);
-	let c_hi_evals = recover_selectors(selected_c_hi_evals, hi_inv_factors);
-
-	[a_evals, c_lo_evals, c_hi_evals]
-}
-
-fn recover_selectors<F: FieldOps>(selecteds: Vec<F>, inv_factors: &[F]) -> Vec<F> {
-	assert_eq!(selecteds.len(), inv_factors.len());
-
-	let one = F::one();
-	iter::zip(selecteds, inv_factors)
-		.map(|(selected, inv_factor)| {
-			// z_i = s_i * (v_i - 1) + 1
-			// Recover s_i = (z_i - 1) * (v_i - 1)^{-1}
-			(selected - one.clone()) * inv_factor
-		})
-		.collect()
-}
-
-/// Reconstruct the "selected" leaf evaluations from the raw per-bit evaluations.
-///
-/// This is the forward direction of [`normalize_a_c_exponent_evals`]: given the raw bit
-/// evaluations $a(i, r), c_{\textsf{lo}}(i, r), c_{\textsf{hi}}(i, r)$, it returns the selected
-/// leaf values
-///
-/// * $\textsf{select}(a(i, r), g^{2^i})$,
-/// * $\textsf{select}(c_{\textsf{lo}}(i, r), g^{2^i})$,
-/// * $\textsf{select}(c_{\textsf{hi}}(i, r), g^{2^{i + k}})$,
-///
-/// for $i \in \{0, \ldots, 2^k - 1\}$, where $\textsf{select}(S, V) = S \cdot (V - 1) + 1$.
-///
-/// The verifier reconstructs these forward from the prover's raw evaluations and binds them to the
-/// GKR-verified leaf-product claims, rather than receiving them and inverting. $g$ is a constant
-/// multiplicative generator of the field $F$.
-pub fn reconstruct_selecteds<F, E>(
-	k: usize,
-	a_evals: &[E],
-	c_lo_evals: &[E],
-	c_hi_evals: &[E],
-) -> [Vec<E>; 3]
-where
-	F: Field,
-	E: FieldOps<Scalar = F> + From<F>,
-{
-	assert_eq!(a_evals.len(), 1 << k);
-	assert_eq!(c_lo_evals.len(), 1 << k);
-	assert_eq!(c_hi_evals.len(), 1 << k);
-
-	// powers[j] = g^{2^j}, for j in 0..2^{k+1}.
-	let powers: Vec<E> = iterate(F::MULTIPLICATIVE_GENERATOR, |g| g.square())
-		.take(2 << k)
-		.map(E::from)
-		.collect();
-	let (lo_powers, hi_powers) = powers.split_at(1 << k);
-
-	[
-		apply_selectors(a_evals, lo_powers),
-		apply_selectors(c_lo_evals, lo_powers),
-		apply_selectors(c_hi_evals, hi_powers),
-	]
-}
-
-/// Apply the affine selector `z * (V - 1) + 1` pointwise, given the generator powers `V_i`.
-fn apply_selectors<E: FieldOps>(raw_evals: &[E], powers: &[E]) -> Vec<E> {
-	assert_eq!(raw_evals.len(), powers.len());
-
 	let one = E::one();
-	iter::zip(raw_evals, powers)
-		.map(|(raw, power)| raw.clone() * (power.clone() - one.clone()) + one.clone())
-		.collect()
+	iter::zip(iterate(F::MULTIPLICATIVE_GENERATOR, |g| g.square()), point)
+		.map(|(power, coord)| coord.clone() * (E::from(power) - one.clone()) + one.clone())
+		.fold(E::one(), |acc, factor| acc * factor)
 }

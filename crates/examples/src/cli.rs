@@ -5,13 +5,13 @@ use std::{fs, path::Path};
 use anyhow::Result;
 use binius_core::constraint_system::{ConstraintSystem, Proof, ValueVec, ValuesData};
 use binius_frontend::{CircuitBuilder, CircuitStat};
-use binius_hash::{StdHashSuite, binary_merkle_tree::HashSuite};
+use binius_hash::{Blake3HashSuite, StdHashSuite, binary_merkle_tree::HashSuite};
 use binius_utils::serialization::{DeserializeBytes, SerializeBytes};
 use clap::{Arg, Args, Command, FromArgMatches, Subcommand};
 use digest::Output;
 
 use crate::{
-	CompressionType, ExampleCircuit, check_proof, check_proof_zk, create_proof, create_proof_zk,
+	ExampleCircuit, HashSuiteType, check_proof, check_proof_zk, create_proof, create_proof_zk,
 	prove_verify, setup, setup_verifier, setup_zk, setup_zk_verifier,
 };
 
@@ -139,9 +139,9 @@ enum Commands {
 		#[arg(short = 'l', long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
 		log_inv_rate: u32,
 
-		/// Compression function to use
-		#[arg(short = 'c', long, value_enum, default_value_t = CompressionType::Sha256)]
-		compression: CompressionType,
+		/// Merkle hash suite to use (leaf hash + inner-node compression)
+		#[arg(short = 'c', long = "hash-suite", alias = "compression", value_enum, default_value_t = HashSuiteType::Sha256)]
+		hash_suite: HashSuiteType,
 
 		#[command(flatten)]
 		params: CommandArgs,
@@ -282,12 +282,13 @@ where
 					.value_parser(clap::value_parser!(u32).range(1..)),
 			)
 			.arg(
-				Arg::new("compression")
+				Arg::new("hash_suite")
 					.short('c')
-					.long("compression")
-					.value_name("TYPE")
-					.help("Compression function to use")
-					.value_parser(clap::value_parser!(CompressionType))
+					.long("hash-suite")
+					.alias("compression")
+					.value_name("SUITE")
+					.help("Merkle hash suite to use (leaf hash + inner-node compression)")
+					.value_parser(clap::value_parser!(HashSuiteType))
 					.default_value("sha256"),
 			)
 			.arg(
@@ -338,12 +339,13 @@ where
 					.value_parser(clap::value_parser!(u32).range(1..)),
 			)
 			.arg(
-				Arg::new("compression")
+				Arg::new("hash_suite")
 					.short('c')
-					.long("compression")
-					.value_name("TYPE")
-					.help("Compression function to use")
-					.value_parser(clap::value_parser!(CompressionType))
+					.long("hash-suite")
+					.alias("compression")
+					.value_name("SUITE")
+					.help("Merkle hash suite to use (leaf hash + inner-node compression)")
+					.value_parser(clap::value_parser!(HashSuiteType))
 					.default_value("sha256"),
 			)
 			.arg(
@@ -470,12 +472,13 @@ where
 					.value_parser(clap::value_parser!(u32).range(1..)),
 			)
 			.arg(
-				Arg::new("compression")
+				Arg::new("hash_suite")
 					.short('c')
-					.long("compression")
-					.value_name("TYPE")
-					.help("Compression function to use")
-					.value_parser(clap::value_parser!(CompressionType))
+					.long("hash-suite")
+					.alias("compression")
+					.value_name("SUITE")
+					.help("Merkle hash suite to use (leaf hash + inner-node compression)")
+					.value_parser(clap::value_parser!(HashSuiteType))
 					.default_value("sha256"),
 			)
 	}
@@ -499,12 +502,13 @@ where
 					.value_parser(clap::value_parser!(u32).range(1..)),
 			)
 			.arg(
-				Arg::new("compression")
+				Arg::new("hash_suite")
 					.short('c')
-					.long("compression")
-					.value_name("TYPE")
-					.help("Compression function to use")
-					.value_parser(clap::value_parser!(CompressionType))
+					.long("hash-suite")
+					.alias("compression")
+					.value_name("SUITE")
+					.help("Merkle hash suite to use (leaf hash + inner-node compression)")
+					.value_parser(clap::value_parser!(HashSuiteType))
 					.default_value("sha256"),
 			)
 			.arg(
@@ -617,14 +621,14 @@ where
 		let log_inv_rate = *matches
 			.get_one::<u32>("log_inv_rate")
 			.expect("has default value");
-		let compression = matches
-			.get_one::<CompressionType>("compression")
+		let hash_suite = matches
+			.get_one::<HashSuiteType>("hash_suite")
 			.expect("has default value")
 			.clone();
 		let zk = matches.get_flag("zk");
 		let sign_message = matches.get_one::<String>("sign_message").cloned();
 		let output = matches.get_one::<String>("output").cloned();
-		tracing::info!("Parsed compression type: {compression:?}");
+		tracing::info!("Parsed hash suite: {hash_suite:?}");
 		if zk {
 			tracing::info!("Using zero-knowledge proving config");
 		}
@@ -663,10 +667,21 @@ where
 		drop(witness_population);
 
 		let output = output.as_deref();
-		match compression {
-			CompressionType::Sha256 => {
-				tracing::info!("Using SHA256 compression for Merkle tree");
+		match hash_suite {
+			HashSuiteType::Sha256 => {
+				tracing::info!("Using SHA-256 hash suite for Merkle tree");
 				prove_with_hash_suite::<StdHashSuite>(
+					cs,
+					log_inv_rate as usize,
+					zk,
+					message,
+					witness,
+					output,
+				)?;
+			}
+			HashSuiteType::Blake3 => {
+				tracing::info!("Using Blake3 hash suite for Merkle tree");
+				prove_with_hash_suite::<Blake3HashSuite>(
 					cs,
 					log_inv_rate as usize,
 					zk,
@@ -820,8 +835,8 @@ where
 		let log_inv_rate = *matches
 			.get_one::<u32>("log_inv_rate")
 			.expect("has default value");
-		let compression = matches
-			.get_one::<CompressionType>("compression")
+		let hash_suite = matches
+			.get_one::<HashSuiteType>("hash_suite")
 			.expect("has default value")
 			.clone();
 
@@ -861,11 +876,17 @@ where
 		)?;
 		drop(witness_load_scope);
 
-		match compression {
-			CompressionType::Sha256 => {
-				tracing::info!("Using SHA256 compression for Merkle tree");
+		match hash_suite {
+			HashSuiteType::Sha256 => {
+				tracing::info!("Using SHA-256 hash suite for Merkle tree");
 				let (verifier, prover) =
 					setup::<StdHashSuite>(cs, log_inv_rate as usize, maybe_key_collection)?;
+				prove_verify(&verifier, &prover, witness)?;
+			}
+			HashSuiteType::Blake3 => {
+				tracing::info!("Using Blake3 hash suite for Merkle tree");
+				let (verifier, prover) =
+					setup::<Blake3HashSuite>(cs, log_inv_rate as usize, maybe_key_collection)?;
 				prove_verify(&verifier, &prover, witness)?;
 			}
 		};
@@ -880,8 +901,8 @@ where
 		let log_inv_rate = *matches
 			.get_one::<u32>("log_inv_rate")
 			.expect("has default value");
-		let compression = matches
-			.get_one::<CompressionType>("compression")
+		let hash_suite = matches
+			.get_one::<HashSuiteType>("hash_suite")
 			.expect("has default value")
 			.clone();
 		let zk = matches.get_flag("zk");
@@ -912,10 +933,21 @@ where
 		circuit.populate_wire_witness(&mut filler)?;
 		let witness = filler.into_value_vec();
 
-		match compression {
-			CompressionType::Sha256 => {
-				tracing::info!("Using SHA256 compression for Merkle tree");
+		match hash_suite {
+			HashSuiteType::Sha256 => {
+				tracing::info!("Using SHA-256 hash suite for Merkle tree");
 				verify_with_hash_suite::<StdHashSuite>(
+					cs,
+					log_inv_rate as usize,
+					zk,
+					message,
+					witness,
+					proof_bytes,
+				)?;
+			}
+			HashSuiteType::Blake3 => {
+				tracing::info!("Using Blake3 hash suite for Merkle tree");
+				verify_with_hash_suite::<Blake3HashSuite>(
 					cs,
 					log_inv_rate as usize,
 					zk,

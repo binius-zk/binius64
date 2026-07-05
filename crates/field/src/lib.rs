@@ -27,7 +27,6 @@ pub mod packed;
 pub mod packed_aes;
 pub mod packed_binary_field;
 pub mod packed_extension;
-pub mod packed_extension_ops;
 mod packed_ghash;
 mod random;
 #[cfg(test)]
@@ -48,7 +47,6 @@ pub use packed::PackedField;
 pub use packed_aes::*;
 pub use packed_binary_field::*;
 pub use packed_extension::*;
-pub use packed_extension_ops::*;
 pub use packed_ghash::*;
 pub use random::Random;
 pub use transpose::square_transpose;
