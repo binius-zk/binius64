@@ -57,6 +57,101 @@ pub const BLOCK_BYTES: usize = 64;
 /// Byte length of a BLAKE3 chunk.
 pub const CHUNK_BYTES: usize = 1024;
 
+/// Computes the BLAKE3 chaining value of a single chunk.
+///
+/// A BLAKE3 chunk is up to 16 blocks (1024 bytes) compressed in a chain: the chaining value is
+/// threaded block-to-block starting from the [`IV`]. The first block carries [`CHUNK_START`] and
+/// the last carries [`CHUNK_END`]; every block carries the chunk's `counter` (its chunk index).
+/// `last_flags_extra` is OR'd into the last block's flags — pass [`ROOT`] when this chunk is the
+/// entire message (no parent tree), otherwise `0`.
+///
+/// # Arguments
+///
+/// - `builder`: Circuit builder.
+/// - `blocks`: the chunk's message blocks (1..=16), each 16 little-endian 32-bit words.
+/// - `block_lens`: the byte length (0..=64) of each block; the trailing block may be partial.
+/// - `counter`: the chunk index, used as the 64-bit block counter for every block.
+/// - `last_flags_extra`: extra flags OR'd into the last block (e.g. [`ROOT`] for a lone chunk).
+///
+/// # Returns
+///
+/// The chunk's 8-word chaining value, each word a 32-bit value in its low 32 bits.
+pub fn blake3_chunk(
+	builder: &CircuitBuilder,
+	blocks: &[[Wire; 16]],
+	block_lens: &[Wire],
+	counter: u64,
+	last_flags_extra: u32,
+) -> [Wire; 8] {
+	let n_blocks = blocks.len();
+	assert!(
+		(1..=16).contains(&n_blocks),
+		"blake3_chunk: n_blocks ({n_blocks}) must be in 1..=16",
+	);
+	assert_eq!(
+		block_lens.len(),
+		n_blocks,
+		"blake3_chunk: block_lens.len() ({}) must equal blocks.len() ({n_blocks})",
+		block_lens.len(),
+	);
+
+	let zero = builder.add_constant(Word::ZERO);
+	let counter = builder.add_constant_64(counter);
+
+	let mut blocks = blocks.to_vec();
+	let mut block_lens = block_lens.to_vec();
+	let mut flags: Vec<Wire> = (0..n_blocks)
+		.map(|j| {
+			let start = if j == 0 { CHUNK_START } else { 0 };
+			let end = if j + 1 == n_blocks {
+				CHUNK_END | last_flags_extra
+			} else {
+				0
+			};
+			builder.add_constant(Word((start | end) as u64))
+		})
+		.collect();
+
+	// Pad to an even block count with one unused dummy block so the blocks pair up uniformly.
+	let odd = n_blocks % 2 == 1;
+	if odd {
+		blocks.push([zero; 16]);
+		block_lens.push(zero);
+		flags.push(zero);
+	}
+
+	// Initial chaining value = IV.
+	let mut cv: [Wire; 8] = std::array::from_fn(|i| builder.add_constant(Word(IV[i] as u64)));
+
+	// Compress two blocks at a time: `blake3_compress_2x_seq` chains two sequential block
+	// compressions through a single parallel core, roughly halving the per-block cost.
+	let n_pairs = blocks.len() / 2;
+	for pair in 0..n_pairs {
+		let (lo, hi) = (2 * pair, 2 * pair + 1);
+		let out = blake3_compress_2x_seq(
+			&builder.subcircuit(format!("blake3_chunk_compress[{pair}]")),
+			cv,
+			[blocks[lo], blocks[hi]],
+			counter,
+			[block_lens[lo], block_lens[hi]],
+			[flags[lo], flags[hi]],
+		);
+		// The chaining value after the pair is the second compression's output, in the low 32 bits
+		// of each word. On a trailing odd block the second lane is the unused dummy, so the chunk's
+		// chaining value is instead the first compression's output, in the high 32 bits.
+		let last_odd = odd && pair + 1 == n_pairs;
+		cv = std::array::from_fn(|i| {
+			if last_odd {
+				builder.shr(out[i], 32)
+			} else {
+				clear_high_bits(builder, out[i], 32)
+			}
+		});
+	}
+
+	cv
+}
+
 /// Computes the BLAKE3 hash of a compile-time fixed-length message.
 ///
 /// This is the BLAKE3 analog of
@@ -117,14 +212,11 @@ pub fn blake3_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 	}
 	padded.resize(n_padded_words, zero);
 
-	// All blocks of a single chunk share the chunk counter (0).
-	let counter = zero;
-
-	// Per-block message words, byte lengths, and domain-separation flags.
-	let mut blocks: Vec<[Wire; 16]> = (0..n_blocks)
+	// Split the padded words into blocks, and record each block's byte length.
+	let blocks: Vec<[Wire; 16]> = (0..n_blocks)
 		.map(|j| std::array::from_fn(|i| padded[j * 16 + i]))
 		.collect();
-	let mut block_lens: Vec<Wire> = (0..n_blocks)
+	let block_lens: Vec<Wire> = (0..n_blocks)
 		.map(|j| {
 			let len = if j + 1 == n_blocks {
 				len_bytes - j * BLOCK_BYTES
@@ -134,56 +226,9 @@ pub fn blake3_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 			builder.add_constant(Word(len as u64))
 		})
 		.collect();
-	let mut flags: Vec<Wire> = (0..n_blocks)
-		.map(|j| {
-			let start = if j == 0 { CHUNK_START } else { 0 };
-			let end = if j + 1 == n_blocks {
-				CHUNK_END | ROOT
-			} else {
-				0
-			};
-			builder.add_constant(Word((start | end) as u64))
-		})
-		.collect();
 
-	// Pad to an even block count with one unused dummy block so the blocks pair up uniformly.
-	let odd = n_blocks % 2 == 1;
-	if odd {
-		blocks.push([zero; 16]);
-		block_lens.push(zero);
-		flags.push(zero);
-	}
-
-	// Initial chaining value = IV.
-	let mut cv: [Wire; 8] = std::array::from_fn(|i| builder.add_constant(Word(IV[i] as u64)));
-
-	// Compress two blocks at a time: `blake3_compress_2x_seq` chains two sequential block
-	// compressions through a single parallel core, roughly halving the per-block cost.
-	let n_pairs = blocks.len() / 2;
-	for pair in 0..n_pairs {
-		let (lo, hi) = (2 * pair, 2 * pair + 1);
-		let out = blake3_compress_2x_seq(
-			&builder.subcircuit(format!("blake3_fixed_compress[{pair}]")),
-			cv,
-			[blocks[lo], blocks[hi]],
-			counter,
-			[block_lens[lo], block_lens[hi]],
-			[flags[lo], flags[hi]],
-		);
-		// The chaining value after the pair is the second compression's output, in the low 32 bits
-		// of each word. On a trailing odd block the second lane is the unused dummy, so the chunk's
-		// chaining value is instead the first compression's output, in the high 32 bits.
-		let last_odd = odd && pair + 1 == n_pairs;
-		cv = std::array::from_fn(|i| {
-			if last_odd {
-				builder.shr(out[i], 32)
-			} else {
-				clear_high_bits(builder, out[i], 32)
-			}
-		});
-	}
-
-	cv
+	// A single chunk: its chaining value is the digest, so ROOT lands on its final block.
+	blake3_chunk(builder, &blocks, &block_lens, 0, ROOT)
 }
 
 #[cfg(test)]
