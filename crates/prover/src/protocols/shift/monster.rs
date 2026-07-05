@@ -7,9 +7,9 @@ use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
 use binius_math::{
 	BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
 };
-use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_utils::rayon::prelude::*;
 use binius_verifier::{
-	config::{LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, WORD_SIZE_BITS},
+	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
 	protocols::shift::{BITAND_ARITY, INTMUL_ARITY, evaluate_h_op},
 };
 use bytemuck::zeroed_vec;
@@ -187,8 +187,8 @@ where
 		&intmul_h_ops,
 	);
 
-	let n_words = key_collection.n_words();
-	let log_len = log2_ceil_usize(n_words).max(LOG_WORDS_PER_ELEM);
+	let log_half = key_collection.log_witness_words();
+	let log_len = log_half + 1;
 	let capacity = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 
 	// The scalar for one word of a segment: the accumulated contribution of all its keys.
@@ -212,9 +212,12 @@ where
 			.sum::<F>()
 	};
 
-	// The multilinear is indexed by absolute word index: the public segment words followed by
-	// the non-public segment words.
+	// The multilinear is indexed over the witness address space: the public segment at the
+	// base of the low half-cube, the hidden segment at the base of the high half-cube, zeros
+	// elsewhere.
+	let half = 1 << log_half;
 	let n_public_words = key_collection.public.n_words();
+	let n_words = half + key_collection.hidden.n_words();
 	let mut monster_multilinear = Vec::<P>::with_capacity(capacity);
 	(0..n_words.div_ceil(P::WIDTH))
 		.into_par_iter()
@@ -223,8 +226,10 @@ where
 			P::from_scalars((start..(start + P::WIDTH).min(n_words)).map(|word_index| {
 				if word_index < n_public_words {
 					word_scalar(&key_collection.public, word_index)
+				} else if word_index >= half {
+					word_scalar(&key_collection.hidden, word_index - half)
 				} else {
-					word_scalar(&key_collection.non_public, word_index - n_public_words)
+					F::ZERO
 				}
 			}))
 		})

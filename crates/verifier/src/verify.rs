@@ -13,16 +13,10 @@ use binius_iop::{
 };
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
-	BinarySubspace,
-	inner_product::inner_product_scalars,
-	multilinear::{eq::eq_ind, evaluate::evaluate_inplace_scalars},
-	univariate::lagrange_evals_scalars,
+	BinarySubspace, inner_product::inner_product_scalars, univariate::lagrange_evals_scalars,
 };
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
-use binius_utils::{
-	DeserializeBytes,
-	checked_arithmetics::{checked_log_2, log2_ceil_usize},
-};
+use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
 use digest::Output;
 use itertools::chain;
 
@@ -82,14 +76,16 @@ impl IOPVerifier {
 	}
 
 	/// Returns log2 of the number of field elements in the packed trace.
-	pub fn log_witness_elems(&self) -> usize {
-		let log_witness_words =
-			log2_ceil_usize(self.constraint_system.value_vec_len()).max(LOG_WORDS_PER_ELEM);
+	///
+	/// The trace oracle commits only the witness's hidden segment, padded to the segment
+	/// length; the public segment is a verifier-known polynomial.
+	pub const fn log_witness_elems(&self) -> usize {
+		let log_witness_words = self.constraint_system.value_vec_layout.log_witness_words();
 		log_witness_words - LOG_WORDS_PER_ELEM
 	}
 
-	/// Returns log2 of the number of words in the witness.
-	pub fn log_witness_words(&self) -> usize {
+	/// Returns log2 of the number of words in the committed trace.
+	pub const fn log_witness_words(&self) -> usize {
 		self.log_witness_elems() + LOG_WORDS_PER_ELEM
 	}
 
@@ -132,7 +128,7 @@ impl IOPVerifier {
 		}
 
 		// Verifier observes the public input (includes it in Fiat-Shamir).
-		let public_elems = channel.observe_many(&encode_public(public));
+		channel.observe_many(&encode_public(public));
 
 		let _verify_guard =
 			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
@@ -247,6 +243,7 @@ impl IOPVerifier {
 		.entered();
 		shift::check_eval(
 			self.constraint_system(),
+			public,
 			&bitand_claim,
 			&intmul_claim,
 			&domain_subspace,
@@ -264,30 +261,18 @@ impl IOPVerifier {
 		)
 		.entered();
 
-		// Ring-switching verification
+		// Ring-switching verification of the witness claim.
 		let eval_point = [shift_output.r_j(), shift_output.r_y()].concat();
 		let ring_switch::RingSwitchVerifyOutput {
 			eq_r_double_prime,
 			sumcheck_claim,
 		} = ring_switch::verify(shift_output.witness_eval().clone(), &eval_point, channel)?;
 
-		// Public input check batched with ring-switch
 		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 		let eval_point_high = eval_point[log_packing..].to_vec();
 
-		let log_public_elems = self.log_public_words() - LOG_WORDS_PER_ELEM;
-		let pubcheck_point = eval_point_high[..log_public_elems].to_vec();
-		let pubcheck_claim = evaluate_inplace_scalars(public_elems, &pubcheck_point);
-
-		let batch_coeff = channel.sample();
-		let batched_claim = sumcheck_claim + batch_coeff.clone() * pubcheck_claim;
-
-		// Build the transparent closure combining ring-switch and public input check
 		let transparent = Box::new(move |point: &[Channel::Elem]| {
-			let rs_eq_eval =
-				ring_switch::eval_rs_eq(&eval_point_high, point, eq_r_double_prime.as_ref());
-			let pubcheck_eq_eval = eval_pubcheck_eq(&pubcheck_point, point);
-			rs_eq_eval + batch_coeff.clone() * pubcheck_eq_eval
+			ring_switch::eval_rs_eq(&eval_point_high, point, eq_r_double_prime.as_ref())
 		});
 
 		// Verify oracle relations (runs BaseFold internally and verifies the product check). The
@@ -296,7 +281,7 @@ impl IOPVerifier {
 		channel.verify_oracle_relations([OracleLinearRelation {
 			oracle: trace_oracle,
 			transparent,
-			claim: batched_claim,
+			claim: sumcheck_claim,
 		}])?;
 
 		drop(pcs_guard);
@@ -377,12 +362,12 @@ where
 	}
 
 	/// Returns log2 of the number of words in the witness.
-	pub fn log_witness_words(&self) -> usize {
+	pub const fn log_witness_words(&self) -> usize {
 		self.iop_verifier.log_witness_words()
 	}
 
 	/// Returns log2 of the number of field elements in the packed trace.
-	pub fn log_witness_elems(&self) -> usize {
+	pub const fn log_witness_elems(&self) -> usize {
 		self.iop_verifier.log_witness_elems()
 	}
 
@@ -455,21 +440,6 @@ where
 		chain!(small_field_zerocheck_challenges, big_field_zerocheck_challenges)
 			.collect::<Vec<_>>();
 	verify_with_channel(&zerocheck_challenges, channel, eval_domain)
-}
-
-/// Evaluate the public input equality indicator at a query point.
-///
-/// Computes `eq(pubcheck_point || 0, query)`, which selects the first `2^k` entries of the
-/// committed polynomial (the public inputs). In characteristic 2:
-/// `eq(a || 0, x) = eq(a, x[..k]) * prod_{i >= k} (1 - x_i)`
-fn eval_pubcheck_eq<F: FieldOps>(pubcheck_point: &[F], query: &[F]) -> F {
-	let one = F::one();
-	let (query_prefix, query_suffix) = query.split_at(pubcheck_point.len());
-	let prefix_eq = eq_ind(pubcheck_point, query_prefix);
-	let suffix_prod = query_suffix
-		.iter()
-		.fold(one.clone(), |acc, x| acc * (one.clone() - x));
-	prefix_eq * suffix_prod
 }
 
 /// Encode public input words as B128 elements, for compliance with the IOP interface.

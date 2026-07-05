@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_circuits::sha256::Sha256;
 use binius_core::{
@@ -19,7 +20,7 @@ use binius_prover::{
 	protocols::shift::{OperatorData, build_key_collection, prove},
 };
 use binius_transcript::ProverTranscript;
-use binius_utils::checked_arithmetics::strict_log_2;
+use binius_utils::checked_arithmetics::{log2_ceil_usize, strict_log_2};
 use binius_verifier::{
 	config::{LOG_WORD_SIZE_BITS, StdChallenger},
 	protocols::shift::{OperatorData as VerifierOperatorData, check_eval, verify},
@@ -297,6 +298,7 @@ fn test_shift_prove_and_verify() {
 		// Check consistency with verifier output
 		check_eval(
 			&cs,
+			value_vec.public(),
 			&verifier_bitand_data,
 			&verifier_intmul_data,
 			&subspace,
@@ -307,16 +309,25 @@ fn test_shift_prove_and_verify() {
 		.unwrap();
 		verifier_transcript.finalize().unwrap();
 
-		// Check the claimed eval matches the computed eval
-		let expected_eval = evaluate_witness(
-			value_vec.combined_witness(),
-			verifier_output.r_j(),
-			verifier_output.r_y(),
+		// Check the claimed witness eval matches the direct evaluation of the non-public words.
+		// The witness segment is zero-padded from the folded length up to the segment length,
+		// contributing the `(1 - r)` factors.
+		let r_y = verifier_output.r_y();
+		let non_public = value_vec.non_public();
+		let log_folded = log2_ceil_usize(non_public.len());
+		let expected_eval = r_y[log_folded..].iter().fold(
+			evaluate_witness(non_public, verifier_output.r_j(), &r_y[..log_folded]),
+			|acc, &r_y_i| acc * (F::ONE - r_y_i),
 		);
 		assert_eq!(expected_eval, verifier_output.witness_eval);
 
 		// Check consistency of prover and verifier outputs
-		let eval_point = [verifier_output.r_j(), verifier_output.r_y()].concat();
+		let eval_point = [
+			verifier_output.r_j(),
+			r_y,
+			std::slice::from_ref(&verifier_output.r_segment),
+		]
+		.concat();
 		assert_eq!(prover_output.challenges, eval_point);
 		assert_eq!(prover_output.eval, verifier_output.witness_eval);
 	}

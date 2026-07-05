@@ -11,7 +11,10 @@ use binius_core::{
 	consts::LOG_WORD_SIZE_BITS,
 };
 use binius_field::Field;
-use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
+use binius_utils::{
+	checked_arithmetics::log2_ceil_usize,
+	serialization::{DeserializeBytes, SerializationError, SerializeBytes},
+};
 use bytes::{Buf, BufMut};
 
 use super::{BITAND_ARITY, INTMUL_ARITY, PreparedOperatorData};
@@ -212,20 +215,30 @@ impl KeySegment {
 /// A collection of keys that organizes the prover's view of the constraint system.
 ///
 /// The keys are split by value-vector segment: one [`KeySegment`] for the public words
-/// (value-vector indices `[0, n_public_words)`) and one for the non-public committed words
-/// (indices `[n_public_words, committed_total_len)`). Word indices within each segment are
-/// segment-relative. The split prepares for committing the two segments separately
-/// (BINIUS-145); the phases still iterate both segments in absolute value-vector order.
+/// (value-vector indices `[0, n_public_words)`) and one for the hidden words (indices
+/// `[n_public_words, committed_total_len)`). Word indices within each segment are
+/// segment-relative. The phases iterate both segments in absolute value-vector order.
 #[derive(Debug, Clone)]
 pub struct KeyCollection {
 	pub public: KeySegment,
-	pub non_public: KeySegment,
+	pub hidden: KeySegment,
 }
 
 impl KeyCollection {
 	/// The total number of words covered by both segments.
 	pub const fn n_words(&self) -> usize {
-		self.public.n_words() + self.non_public.n_words()
+		self.public.n_words() + self.hidden.n_words()
+	}
+
+	/// The base-2 logarithm of the hidden segment length in words, rounded up to a power of
+	/// two.
+	///
+	/// Matches [`ValueVecLayout::log_witness_words`] for the layout the collection was built
+	/// from; the layout guarantees this is at least the public segment's logarithm.
+	///
+	/// [`ValueVecLayout::log_witness_words`]: binius_core::constraint_system::ValueVecLayout::log_witness_words
+	pub const fn log_witness_words(&self) -> usize {
+		log2_ceil_usize(self.hidden.n_words())
 	}
 }
 
@@ -340,10 +353,10 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 
 	// Split the builder keys lists at the public segment boundary and build one `KeySegment`
 	// per half.
-	let non_public_lists = builder_key_lists.split_off(cs.value_vec_layout.n_public_words());
+	let hidden_lists = builder_key_lists.split_off(cs.value_vec_layout.n_public_words());
 	KeyCollection {
 		public: build_key_segment(builder_key_lists),
-		non_public: build_key_segment(non_public_lists),
+		hidden: build_key_segment(hidden_lists),
 	}
 }
 
@@ -500,7 +513,7 @@ impl SerializeBytes for KeyCollection {
 		VERSION.serialize(&mut write_buf)?;
 
 		self.public.serialize(&mut write_buf)?;
-		self.non_public.serialize(write_buf)
+		self.hidden.serialize(write_buf)
 	}
 }
 
@@ -515,9 +528,9 @@ impl DeserializeBytes for KeyCollection {
 		}
 
 		let public = KeySegment::deserialize(&mut read_buf)?;
-		let non_public = KeySegment::deserialize(read_buf)?;
+		let hidden = KeySegment::deserialize(read_buf)?;
 
-		Ok(KeyCollection { public, non_public })
+		Ok(KeyCollection { public, hidden })
 	}
 }
 

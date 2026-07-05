@@ -7,16 +7,13 @@ use binius_core::{
 	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueVec},
 	word::Word,
 };
-use binius_field::{
-	AESTowerField8b as B8, BinaryField, Divisible, ExtensionField, Field, PackedField,
-};
+use binius_field::{AESTowerField8b as B8, BinaryField, Divisible, Field, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_math::{
-	BinarySubspace, FieldBuffer, FieldSlice,
+	BinarySubspace, FieldBuffer,
 	inner_product::inner_product,
-	multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
 	univariate::lagrange_evals,
 };
@@ -25,7 +22,7 @@ use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::pr
 use binius_verifier::{
 	IOPVerifier, Verifier,
 	config::{
-		B1, B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
+		B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
 	},
 	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput},
 };
@@ -97,16 +94,17 @@ impl IOPProver {
 		let cs = &self.constraint_system;
 
 		// [phase] Setup - initialization and constraint system setup
+		//
+		// Only the non-public words are committed as the trace oracle; the public segment is a
+		// verifier-known polynomial.
 		let setup_guard = tracing::debug_span!("Prepare Witness").entered();
-		let witness_packed = pack_witness::<P>(self.log_witness_elems, witness.combined_witness())?;
+		let witness_packed = pack_witness::<P>(self.log_witness_elems, witness.non_public())?;
 		drop(setup_guard);
 
 		// Observe the public input as B128 elements (includes it in Fiat-Shamir).
-		let n_public_elems = 1 << (self.log_public_words - LOG_WORDS_PER_ELEM);
-		let public_elems = witness_packed
-			.iter_scalars()
-			.take(n_public_elems)
-			.collect::<Vec<_>>();
+		let public_packed =
+			pack_witness::<P>(self.log_public_words - LOG_WORDS_PER_ELEM, witness.public())?;
+		let public_elems = public_packed.iter_scalars().collect::<Vec<_>>();
 		channel.observe_many(&public_elems);
 
 		// [phase] Witness Commit - witness generation and commitment
@@ -226,37 +224,18 @@ impl IOPProver {
 		)
 		.entered();
 
-		// Ring-switching reduction
+		// Ring-switching reduction of the witness claim. The top challenge is the witness's
+		// segment selector, which the verifier consumes when reconstructing the full witness
+		// evaluation.
+		let witness_point = &eval_point[..eval_point.len() - 1];
 		let ring_switch::RingSwitchOutput {
 			rs_eq_ind,
 			sumcheck_claim,
-		} = ring_switch::prove(&witness_packed, &eval_point, &mut *channel);
-
-		// Public input check batched with ring-switch
-		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
-
-		let log_public_elems = self.log_public_words - LOG_WORDS_PER_ELEM;
-		let pubcheck_point = &eval_point[log_packing..][..log_public_elems];
-		let pubcheck_claim = {
-			let public_elems_buf = FieldSlice::from_slice(log_public_elems, &public_elems);
-			evaluate(&public_elems_buf, pubcheck_point)
-		};
-
-		let batch_coeff: B128 = channel.sample();
-		let batched_claim = sumcheck_claim + batch_coeff * pubcheck_claim;
-
-		// Batch the pubcheck transparent with the ring-switch transparent
-		let batched_transparent =
-			compute_batched_transparent(rs_eq_ind, pubcheck_point, batch_coeff);
+		} = ring_switch::prove(&witness_packed, witness_point, &mut *channel);
 
 		// Prove oracle relations via channel (runs BaseFold internally). The intmul pushforward
 		// relation, when the IntMul reduction ran, was already queued inside phase 5.
-		channel.prove_oracle_relations([(
-			trace_oracle,
-			witness_packed,
-			batched_transparent,
-			batched_claim,
-		)]);
+		channel.prove_oracle_relations([(trace_oracle, witness_packed, rs_eq_ind, sumcheck_claim)]);
 
 		drop(pcs_guard);
 
@@ -361,27 +340,6 @@ where
 		channel.finish();
 		Ok(())
 	}
-}
-
-/// Batches the pubcheck transparent polynomial with the ring-switch equality indicator.
-///
-/// Computes `rs_eq_ind + batch_coeff * eq(pubcheck_point || 0, ·)`, adding the scaled
-/// pubcheck equality indicator to the first `2^log_public_elems` entries of `rs_eq_ind`.
-fn compute_batched_transparent<P: PackedField<Scalar = B128>>(
-	mut rs_eq_ind: FieldBuffer<P>,
-	pubcheck_point: &[B128],
-	batch_coeff: B128,
-) -> FieldBuffer<P> {
-	let log_public_elems = pubcheck_point.len();
-	let pubcheck_eq = eq_ind_partial_eval::<P>(pubcheck_point);
-	let mut chunk = rs_eq_ind.chunk_mut(log_public_elems, 0);
-	let mut chunk_data = chunk.get();
-	let batch = P::broadcast(batch_coeff);
-	for (dst, src) in std::iter::zip(chunk_data.as_mut(), pubcheck_eq.as_ref()) {
-		*dst += *src * batch;
-	}
-	drop(chunk);
-	rs_eq_ind
 }
 
 /// Packs committed witness words into the field buffer committed as the trace oracle.

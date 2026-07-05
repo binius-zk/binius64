@@ -185,20 +185,20 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 	// A mask for low `P::WIDTH` bits.
 	let low_bits_mask = (1u8 << P::WIDTH) - 1;
 
-	// Process the public and non-public segments in absolute value-vector order: the public
+	// Process the public and hidden segments in absolute value-vector order: the public
 	// words are the prefix of `words`, and each segment's key ranges are segment-relative.
-	let (public_words, non_public_words) = words.split_at(key_collection.public.n_words());
+	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
 	let public_iter = public_words
 		.par_iter()
 		.zip(key_collection.public.key_ranges.par_iter())
 		.map(|(word, range)| (word, range, &key_collection.public));
-	let non_public_iter = non_public_words
+	let hidden_iter = hidden_words
 		.par_iter()
-		.zip(key_collection.non_public.key_ranges.par_iter())
-		.map(|(word, range)| (word, range, &key_collection.non_public));
+		.zip(key_collection.hidden.key_ranges.par_iter())
+		.map(|(word, range)| (word, range, &key_collection.hidden));
 
 	let multilinears = public_iter
-		.chain(non_public_iter)
+		.chain(hidden_iter)
 		.fold(
 			|| zeroed_vec::<P>(acc_size).into_boxed_slice(),
 			|mut multilinears, (word, Range { start, end }, segment)| {

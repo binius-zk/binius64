@@ -172,7 +172,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 			PreparedOperatorData,
 			monster::{build_h_parts, build_monster_multilinear},
 			phase_1::{build_g_parts, run_phase_1_sumcheck},
-			phase_2::run_sumcheck,
+			phase_2::{assemble_witness, run_sumcheck},
 		},
 	};
 	use binius_verifier::config::LOG_WORD_SIZE_BITS;
@@ -239,7 +239,12 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// Split phase-1 challenges into `r_j` (low) and `r_s` (high) halves.
 	let r_s = r_jr_s.split_off(LOG_WORD_SIZE_BITS);
 	let r_j = r_jr_s;
-	let r_j_witness = fold_words::<F, P>(words, eq_ind_partial_eval::<F>(&r_j).as_ref());
+	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
+	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
+	let public_folded = fold_words::<F, P>(public_words, r_j_tensor.as_ref());
+	let hidden_folded = fold_words::<F, P>(hidden_words, r_j_tensor.as_ref());
+	let witness_folded =
+		assemble_witness(&public_folded, &hidden_folded, key_collection.log_witness_words());
 	let monster_multilinear = build_monster_multilinear::<F, P>(
 		&key_collection,
 		&prepared_bitand,
@@ -287,11 +292,12 @@ fn bench_shift_phases(c: &mut Criterion) {
 	});
 	group.bench_function("phase2_run_sumcheck", |b| {
 		b.iter_batched(
-			|| (r_j_witness.clone(), monster_multilinear.clone(), r_j.clone()),
-			|(r_j_witness, monster_multilinear, r_j)| {
+			|| (witness_folded.clone(), monster_multilinear.clone(), r_j.clone()),
+			|(witness_folded, monster_multilinear, r_j)| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
 				run_sumcheck::<F, P, _>(
-					r_j_witness,
+					witness_folded,
+					public_words,
 					monster_multilinear,
 					r_j,
 					gamma,
