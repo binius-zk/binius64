@@ -8,43 +8,46 @@ use crate::word::Word;
 /// A different variants of shifting a value.
 ///
 /// Note that there is no shift left arithmetic because it is redundant.
+///
+/// The discriminant is stored in a single byte.
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
 pub enum ShiftVariant {
 	/// Shift logical left.
-	Sll,
+	Sll = 0,
 	/// Shift logical right.
-	Slr,
+	Slr = 1,
 	/// Shift arithmetic right.
 	///
 	/// This is similar to the logical shift right but instead of shifting in 0 bits it will
 	/// replicate the sign bit.
-	Sar,
+	Sar = 2,
 	/// Rotate right.
 	///
 	/// Rotates bits to the right, with bits shifted off the right end wrapping around to the left.
-	Rotr,
+	Rotr = 3,
 	/// Shift logical left on 32-bit halves.
 	///
 	/// Performs independent logical left shifts on the upper and lower 32-bit halves of the word.
 	/// Only uses the lower 5 bits of the shift amount (0-31).
-	Sll32,
+	Sll32 = 4,
 	/// Shift logical right on 32-bit halves.
 	///
 	/// Performs independent logical right shifts on the upper and lower 32-bit halves of the word.
 	/// Only uses the lower 5 bits of the shift amount (0-31).
-	Srl32,
+	Srl32 = 5,
 	/// Shift arithmetic right on 32-bit halves.
 	///
 	/// Performs independent arithmetic right shifts on the upper and lower 32-bit halves of the
 	/// word. Sign extends each 32-bit half independently. Only uses the lower 5 bits of the shift
 	/// amount (0-31).
-	Sra32,
+	Sra32 = 6,
 	/// Rotate right on 32-bit halves.
 	///
 	/// Performs independent rotate right operations on the upper and lower 32-bit halves of the
 	/// word. Bits shifted off the right end wrap around to the left within each 32-bit half.
 	/// Only uses the lower 5 bits of the shift amount (0-31).
-	Rotr32,
+	Rotr32 = 7,
 }
 
 impl ShiftVariant {
@@ -81,17 +84,7 @@ impl ShiftVariant {
 
 impl SerializeBytes for ShiftVariant {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
-		let index = match self {
-			ShiftVariant::Sll => 0u8,
-			ShiftVariant::Slr => 1u8,
-			ShiftVariant::Sar => 2u8,
-			ShiftVariant::Rotr => 3u8,
-			ShiftVariant::Sll32 => 4u8,
-			ShiftVariant::Srl32 => 5u8,
-			ShiftVariant::Sra32 => 6u8,
-			ShiftVariant::Rotr32 => 7u8,
-		};
-		index.serialize(write_buf)
+		(*self as u8).serialize(write_buf)
 	}
 }
 
