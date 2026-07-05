@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{iter, mem, ops::Range};
 
@@ -168,30 +169,64 @@ impl Key {
 	}
 }
 
-/// A collection of keys that organizes the prover's view of the constraint system.
+/// The keys for the words of one segment of the value vector.
 ///
-/// The prover operates in both phases by iterating through `key_ranges` (one range per witness
-/// word), then accessing the corresponding keys in the `keys` vector. Each key contains a range
-/// that indexes into `constraint_indices` to identify which constraints involve that
+/// The prover operates in both phases by iterating through `key_ranges` (one range per word of
+/// the segment), then accessing the corresponding keys in the `keys` vector. Each key contains a
+/// range that indexes into `constraint_indices` to identify which constraints involve that
 /// particular shifted operand.
 ///
 /// # Structure
 ///
-/// - **keys**: All keys flattened into a single vector
-/// - **key_ranges**: For every word there is a range of keys within the `keys` vector
+/// - **keys**: All keys of the segment flattened into a single vector
+/// - **key_ranges**: For every word of the segment there is a range of keys within the `keys`
+///   vector
 /// - **constraint_indices**: Flattened list of constraint indices referenced by the keys
 ///
 /// # Organization
 ///
-/// Keys are organized by word index for efficient batch processing. For word `w`,
-/// `key_ranges[w]` gives the range of keys in the `keys` vector that correspond to that word.
-/// Each key's range field then points into `constraint_indices` to specify which constraints
-/// involve that particular shifted operand.
+/// Keys are organized by word index for efficient batch processing. For the word at index `w`
+/// *within the segment*, `key_ranges[w]` gives the range of keys in the `keys` vector that
+/// correspond to that word. Each key's range field then points into `constraint_indices` to
+/// specify which constraints involve that particular shifted operand.
 #[derive(Debug, Clone)]
-pub struct KeyCollection {
+pub struct KeySegment {
 	pub keys: Vec<Key>,
 	pub key_ranges: Vec<Range<u32>>,
 	pub constraint_indices: Vec<ConstraintIndex>,
+}
+
+impl KeySegment {
+	/// The number of words the segment covers.
+	pub const fn n_words(&self) -> usize {
+		self.key_ranges.len()
+	}
+
+	/// The keys for the word at the given segment-relative index.
+	pub fn word_keys(&self, index: usize) -> &[Key] {
+		let Range { start, end } = self.key_ranges[index];
+		&self.keys[start as usize..end as usize]
+	}
+}
+
+/// A collection of keys that organizes the prover's view of the constraint system.
+///
+/// The keys are split by value-vector segment: one [`KeySegment`] for the public words
+/// (value-vector indices `[0, n_public_words)`) and one for the non-public committed words
+/// (indices `[n_public_words, committed_total_len)`). Word indices within each segment are
+/// segment-relative. The split prepares for committing the two segments separately
+/// (BINIUS-145); the phases still iterate both segments in absolute value-vector order.
+#[derive(Debug, Clone)]
+pub struct KeyCollection {
+	pub public: KeySegment,
+	pub non_public: KeySegment,
+}
+
+impl KeyCollection {
+	/// The total number of words covered by both segments.
+	pub const fn n_words(&self) -> usize {
+		self.public.n_words() + self.non_public.n_words()
+	}
 }
 
 /// A `BuilderKey` is a key that is being built up during `KeyCollection`
@@ -303,7 +338,17 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 			);
 		});
 
-	// Compute all three fields of the key collection from the builder keys lists
+	// Split the builder keys lists at the public segment boundary and build one `KeySegment`
+	// per half.
+	let non_public_lists = builder_key_lists.split_off(cs.value_vec_layout.n_public_words());
+	KeyCollection {
+		public: build_key_segment(builder_key_lists),
+		non_public: build_key_segment(non_public_lists),
+	}
+}
+
+/// Computes all three fields of a [`KeySegment`] from the builder keys lists of its words.
+fn build_key_segment(builder_key_lists: Vec<Vec<BuilderKey>>) -> KeySegment {
 	let key_ranges = builder_key_lists
 		.iter()
 		.scan(0u32, |offset, builder_keys| {
@@ -336,7 +381,7 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 		});
 	}
 
-	KeyCollection {
+	KeySegment {
 		keys,
 		key_ranges,
 		constraint_indices,
@@ -410,12 +455,8 @@ impl DeserializeBytes for ConstraintIndex {
 	}
 }
 
-impl SerializeBytes for KeyCollection {
+impl SerializeBytes for KeySegment {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
-		// Version for forward compatibility
-		const VERSION: u32 = 1;
-		VERSION.serialize(&mut write_buf)?;
-
 		self.keys.serialize(&mut write_buf)?;
 
 		// Serialize key_ranges as pairs of start/end
@@ -429,16 +470,8 @@ impl SerializeBytes for KeyCollection {
 	}
 }
 
-impl DeserializeBytes for KeyCollection {
+impl DeserializeBytes for KeySegment {
 	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
-		const VERSION: u32 = 1;
-		let version = u32::deserialize(&mut read_buf)?;
-		if version != VERSION {
-			return Err(SerializationError::InvalidConstruction {
-				name: "KeyCollection::version",
-			});
-		}
-
 		let keys = Vec::<Key>::deserialize(&mut read_buf)?;
 
 		// Deserialize key_ranges
@@ -452,11 +485,39 @@ impl DeserializeBytes for KeyCollection {
 
 		let constraint_indices = Vec::<ConstraintIndex>::deserialize(&mut read_buf)?;
 
-		Ok(KeyCollection {
+		Ok(KeySegment {
 			keys,
 			key_ranges,
 			constraint_indices,
 		})
+	}
+}
+
+impl SerializeBytes for KeyCollection {
+	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
+		// Version for forward compatibility; version 2 introduced the public/non-public split.
+		const VERSION: u32 = 2;
+		VERSION.serialize(&mut write_buf)?;
+
+		self.public.serialize(&mut write_buf)?;
+		self.non_public.serialize(write_buf)
+	}
+}
+
+impl DeserializeBytes for KeyCollection {
+	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
+		const VERSION: u32 = 2;
+		let version = u32::deserialize(&mut read_buf)?;
+		if version != VERSION {
+			return Err(SerializationError::InvalidConstruction {
+				name: "KeyCollection::version",
+			});
+		}
+
+		let public = KeySegment::deserialize(&mut read_buf)?;
+		let non_public = KeySegment::deserialize(read_buf)?;
+
+		Ok(KeyCollection { public, non_public })
 	}
 }
 

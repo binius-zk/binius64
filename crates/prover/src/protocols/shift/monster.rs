@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{iter, ops::Range};
+use std::iter;
 
 use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
 use binius_math::{
@@ -17,7 +17,7 @@ use tracing::instrument;
 
 use super::{
 	SHIFT_VARIANT_COUNT,
-	key_collection::{KeyCollection, Operation},
+	key_collection::{KeyCollection, KeySegment, Operation},
 	prove::PreparedOperatorData,
 };
 
@@ -187,32 +187,45 @@ where
 		&intmul_h_ops,
 	);
 
-	let n_words = key_collection.key_ranges.len();
+	let n_words = key_collection.n_words();
 	let log_len = log2_ceil_usize(n_words).max(LOG_WORDS_PER_ELEM);
 	let capacity = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 
-	let mut monster_multilinear = Vec::<P>::with_capacity(capacity);
-	key_collection
-		.key_ranges
-		.par_chunks(P::WIDTH)
-		.map(|chunk| {
-			P::from_scalars(chunk.iter().map(|&Range { start, end }| {
-				key_collection.keys[start as usize..end as usize]
-					.iter()
-					.map(|key| {
-						let (operator_data, scalars) = match key.operation {
-							Operation::BitwiseAnd => (bitand_operator_data, &bitand_scalars),
-							Operation::IntegerMul => (intmul_operator_data, &intmul_scalars),
-						};
-						key.accumulate_by_operand(&key_collection.constraint_indices, operator_data)
-							.map(|(operand_index, acc)| {
-								let index = key.id as usize
-									+ operand_index * SHIFT_VARIANT_COUNT * WORD_SIZE_BITS;
-								acc * scalars[index]
-							})
-							.sum::<F>()
+	// The scalar for one word of a segment: the accumulated contribution of all its keys.
+	let word_scalar = |segment: &KeySegment, index: usize| {
+		segment
+			.word_keys(index)
+			.iter()
+			.map(|key| {
+				let (operator_data, scalars) = match key.operation {
+					Operation::BitwiseAnd => (bitand_operator_data, &bitand_scalars),
+					Operation::IntegerMul => (intmul_operator_data, &intmul_scalars),
+				};
+				key.accumulate_by_operand(&segment.constraint_indices, operator_data)
+					.map(|(operand_index, acc)| {
+						let index =
+							key.id as usize + operand_index * SHIFT_VARIANT_COUNT * WORD_SIZE_BITS;
+						acc * scalars[index]
 					})
-					.sum()
+					.sum::<F>()
+			})
+			.sum::<F>()
+	};
+
+	// The multilinear is indexed by absolute word index: the public segment words followed by
+	// the non-public segment words.
+	let n_public_words = key_collection.public.n_words();
+	let mut monster_multilinear = Vec::<P>::with_capacity(capacity);
+	(0..n_words.div_ceil(P::WIDTH))
+		.into_par_iter()
+		.map(|chunk_index| {
+			let start = chunk_index * P::WIDTH;
+			P::from_scalars((start..(start + P::WIDTH).min(n_words)).map(|word_index| {
+				if word_index < n_public_words {
+					word_scalar(&key_collection.public, word_index)
+				} else {
+					word_scalar(&key_collection.non_public, word_index - n_public_words)
+				}
 			}))
 		})
 		.collect_into_vec(&mut monster_multilinear);

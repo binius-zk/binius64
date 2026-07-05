@@ -185,13 +185,24 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 	// A mask for low `P::WIDTH` bits.
 	let low_bits_mask = (1u8 << P::WIDTH) - 1;
 
-	let multilinears = words
+	// Process the public and non-public segments in absolute value-vector order: the public
+	// words are the prefix of `words`, and each segment's key ranges are segment-relative.
+	let (public_words, non_public_words) = words.split_at(key_collection.public.n_words());
+	let public_iter = public_words
 		.par_iter()
-		.zip(key_collection.key_ranges.par_iter())
+		.zip(key_collection.public.key_ranges.par_iter())
+		.map(|(word, range)| (word, range, &key_collection.public));
+	let non_public_iter = non_public_words
+		.par_iter()
+		.zip(key_collection.non_public.key_ranges.par_iter())
+		.map(|(word, range)| (word, range, &key_collection.non_public));
+
+	let multilinears = public_iter
+		.chain(non_public_iter)
 		.fold(
 			|| zeroed_vec::<P>(acc_size).into_boxed_slice(),
-			|mut multilinears, (word, Range { start, end })| {
-				let keys = &key_collection.keys[*start as usize..*end as usize];
+			|mut multilinears, (word, Range { start, end }, segment)| {
+				let keys = &segment.keys[*start as usize..*end as usize];
 
 				for key in keys {
 					let operator_data = match key.operation {
@@ -199,7 +210,7 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 						Operation::IntegerMul => intmul_operator_data,
 					};
 
-					let acc = key.accumulate(&key_collection.constraint_indices, operator_data);
+					let acc = key.accumulate(&segment.constraint_indices, operator_data);
 					let acc_packed = P::broadcast(acc);
 
 					// The following loop is an optimized version of the following
