@@ -30,9 +30,10 @@ pub struct ValueVecLayout {
 	/// The public section of the value vec has the power-of-two size and is greater than the
 	/// minimum number of words. By public section we mean the constants and the inout values.
 	pub offset_witness: usize,
-	/// The total number of committed values in the values vector. This does not include any
+	/// The number of words in the hidden segment: the witness and internal values, including
+	/// padding up to the segment length. This does not include the public segment or any
 	/// scratch values.
-	pub committed_total_len: usize,
+	pub n_hidden_words: usize,
 	/// The number of scratch values at the end of the value vec.
 	pub n_scratch: usize,
 }
@@ -56,10 +57,10 @@ impl ValueVecLayout {
 			return Err(ConstraintSystemError::PublicInputTooShort { pub_input_size });
 		}
 
-		if self.n_hidden_words() < self.n_public_words() {
+		if self.n_hidden_words < self.n_public_words() {
 			return Err(ConstraintSystemError::HiddenSegmentTooShort {
 				public_len: self.n_public_words(),
-				hidden_len: self.n_hidden_words(),
+				hidden_len: self.n_hidden_words,
 			});
 		}
 
@@ -79,10 +80,11 @@ impl ValueVecLayout {
 		self.offset_witness.trailing_zeros() as usize
 	}
 
-	/// Returns the number of words in the hidden segment: the witness and internal values,
-	/// including padding up to `committed_total_len`.
-	pub const fn n_hidden_words(&self) -> usize {
-		self.committed_total_len - self.offset_witness
+	/// Returns the combined number of public and hidden words, excluding scratch.
+	///
+	/// This is the length of the value vector prefix that constraint operands can reference.
+	pub const fn combined_len(&self) -> usize {
+		self.offset_witness + self.n_hidden_words
 	}
 
 	/// Returns the base-2 logarithm of the hidden segment length in words, rounded up to a
@@ -90,7 +92,7 @@ impl ValueVecLayout {
 	///
 	/// [`Self::validate`] guarantees this is at least [`Self::log_public_words`].
 	pub const fn log_witness_words(&self) -> usize {
-		log2_ceil_usize(self.n_hidden_words())
+		log2_ceil_usize(self.n_hidden_words)
 	}
 
 	/// Returns true if the given index points to an area that is considered to be padding.
@@ -110,7 +112,7 @@ impl ValueVecLayout {
 
 		// padding 3: between the last internal value and the total len
 		let end_of_internal = self.offset_witness + self.n_witness + self.n_internal;
-		if idx >= end_of_internal && idx < self.committed_total_len {
+		if idx >= end_of_internal && idx < self.combined_len() {
 			return true;
 		}
 
@@ -119,7 +121,7 @@ impl ValueVecLayout {
 
 	/// Returns true if the given index is out-of-bounds for the committed part of this layout.
 	pub(super) const fn is_committed_oob(&self, index: ValueIndex) -> bool {
-		index.0 as usize >= self.committed_total_len
+		index.0 as usize >= self.combined_len()
 	}
 }
 
@@ -131,7 +133,7 @@ impl SerializeBytes for ValueVecLayout {
 		self.n_internal.serialize(&mut write_buf)?;
 		self.offset_inout.serialize(&mut write_buf)?;
 		self.offset_witness.serialize(&mut write_buf)?;
-		self.committed_total_len.serialize(&mut write_buf)?;
+		self.n_hidden_words.serialize(&mut write_buf)?;
 		self.n_scratch.serialize(write_buf)
 	}
 }
@@ -147,7 +149,7 @@ impl DeserializeBytes for ValueVecLayout {
 		let n_internal = usize::deserialize(&mut read_buf)?;
 		let offset_inout = usize::deserialize(&mut read_buf)?;
 		let offset_witness = usize::deserialize(&mut read_buf)?;
-		let committed_total_len = usize::deserialize(&mut read_buf)?;
+		let n_hidden_words = usize::deserialize(&mut read_buf)?;
 		let n_scratch = usize::deserialize(read_buf)?;
 
 		Ok(ValueVecLayout {
@@ -157,7 +159,7 @@ impl DeserializeBytes for ValueVecLayout {
 			n_internal,
 			offset_inout,
 			offset_witness,
-			committed_total_len,
+			n_hidden_words,
 			n_scratch,
 		})
 	}
@@ -176,7 +178,7 @@ mod tests {
 			n_internal: 7,
 			offset_inout: 8,
 			offset_witness: 16,
-			committed_total_len: 32,
+			n_hidden_words: 16,
 			n_scratch: 0,
 		};
 
@@ -189,20 +191,20 @@ mod tests {
 
 	#[test]
 	fn test_log_witness_words() {
-		let layout = |offset_witness: usize, committed_total_len: usize| ValueVecLayout {
+		let layout = |offset_witness: usize, n_hidden_words: usize| ValueVecLayout {
 			n_const: 0,
 			n_inout: 0,
 			n_witness: 0,
 			n_internal: 0,
 			offset_inout: 0,
 			offset_witness,
-			committed_total_len,
+			n_hidden_words,
 			n_scratch: 0,
 		};
 		// Typical: more witness words than public words.
-		assert_eq!(layout(4, 68).log_witness_words(), 6);
+		assert_eq!(layout(4, 64).log_witness_words(), 6);
 		// Exact power-of-two witness count.
-		assert_eq!(layout(4, 36).log_witness_words(), 5);
+		assert_eq!(layout(4, 32).log_witness_words(), 5);
 	}
 
 	#[test]
@@ -215,7 +217,7 @@ mod tests {
 			n_internal: 0,
 			offset_inout: 1,
 			offset_witness: 16,
-			committed_total_len: 20,
+			n_hidden_words: 4,
 			n_scratch: 0,
 		};
 		assert!(matches!(
@@ -228,13 +230,13 @@ mod tests {
 	fn test_is_padding_comprehensive() {
 		// Test layout with all types of padding
 		let layout = ValueVecLayout {
-			n_const: 2,              // constants at indices 0-1
-			n_inout: 3,              // inout at indices 4-6
-			n_witness: 5,            // witness at indices 16-20
-			n_internal: 10,          // internal at indices 21-30
-			offset_inout: 4,         // gap between constants and inout (indices 2-3 are padding)
-			offset_witness: 16,      // public section is 16 (power of 2), gap 7-15 is padding
-			committed_total_len: 64, // total must be power of 2, gap 31-63 is padding
+			n_const: 2,         // constants at indices 0-1
+			n_inout: 3,         // inout at indices 4-6
+			n_witness: 5,       // witness at indices 16-20
+			n_internal: 10,     // internal at indices 21-30
+			offset_inout: 4,    // gap between constants and inout (indices 2-3 are padding)
+			offset_witness: 16, // public section is 16 (power of 2), gap 7-15 is padding
+			n_hidden_words: 48, // total must be power of 2, gap 31-63 is padding
 			n_scratch: 0,
 		};
 
@@ -290,13 +292,13 @@ mod tests {
 	fn test_is_padding_minimal_layout() {
 		// Test a minimal layout with no gaps except required end padding
 		let layout = ValueVecLayout {
-			n_const: 4,              // constants at indices 0-3
-			n_inout: 4,              // inout at indices 4-7
-			n_witness: 4,            // witness at indices 8-11
-			n_internal: 4,           // internal at indices 12-15
-			offset_inout: 4,         // no gap between constants and inout
-			offset_witness: 8,       // no gap between inout and witness
-			committed_total_len: 16, // exactly fits all values
+			n_const: 4,        // constants at indices 0-3
+			n_inout: 4,        // inout at indices 4-7
+			n_witness: 4,      // witness at indices 8-11
+			n_internal: 4,     // internal at indices 12-15
+			offset_inout: 4,   // no gap between constants and inout
+			offset_witness: 8, // no gap between inout and witness
+			n_hidden_words: 8, // exactly fits all values
 			n_scratch: 0,
 		};
 
@@ -314,13 +316,13 @@ mod tests {
 	fn test_is_padding_public_section_min_size() {
 		// Test layout where public section must be padded to meet MIN_WORDS_PER_SEGMENT
 		let layout = ValueVecLayout {
-			n_const: 1,              // only 1 constant
-			n_inout: 1,              // only 1 inout
-			n_witness: 2,            // 2 witness values
-			n_internal: 2,           // 2 internal values
-			offset_inout: 4,         // padding between const and inout to reach min size
-			offset_witness: 8,       // public section padded to 8 (MIN_WORDS_PER_SEGMENT)
-			committed_total_len: 16, // power of 2
+			n_const: 1,        // only 1 constant
+			n_inout: 1,        // only 1 inout
+			n_witness: 2,      // 2 witness values
+			n_internal: 2,     // 2 internal values
+			offset_inout: 4,   // padding between const and inout to reach min size
+			offset_witness: 8, // public section padded to 8 (MIN_WORDS_PER_SEGMENT)
+			n_hidden_words: 8, // power of 2
 			n_scratch: 0,
 		};
 
@@ -363,7 +365,7 @@ mod tests {
 			n_internal: 4,
 			offset_inout: 4,
 			offset_witness: 8,
-			committed_total_len: 16,
+			n_hidden_words: 8,
 			n_scratch: 0,
 		};
 
@@ -403,7 +405,7 @@ mod tests {
 			n_internal: 4,
 			offset_inout: 1,   // right after constants
 			offset_witness: 8, // padded to MIN_WORDS_PER_SEGMENT
-			committed_total_len: 16,
+			n_hidden_words: 8,
 			n_scratch: 0,
 		};
 
@@ -426,7 +428,7 @@ mod tests {
 			n_internal: 0,
 			offset_inout: 4,
 			offset_witness: 8, // exactly MIN_WORDS_PER_SEGMENT, already power of 2
-			committed_total_len: 16,
+			n_hidden_words: 8,
 			n_scratch: 0,
 		};
 
@@ -444,7 +446,7 @@ mod tests {
 			n_internal: 0,
 			offset_inout: 5,
 			offset_witness: 16, // rounded up from 10 to 16 (next power of 2)
-			committed_total_len: 32,
+			n_hidden_words: 16,
 			n_scratch: 0,
 		};
 
@@ -465,13 +467,13 @@ mod tests {
 
 		// Case 4: Test with offsets that show all three padding types
 		let layout4 = ValueVecLayout {
-			n_const: 2,              // indices 0-1
-			n_inout: 2,              // indices 8-9
-			n_witness: 4,            // indices 16-19
-			n_internal: 4,           // indices 20-23
-			offset_inout: 8,         // padding after constants to align
-			offset_witness: 16,      // padding after inout to reach power of 2
-			committed_total_len: 32, // padding after internal to reach total
+			n_const: 2,         // indices 0-1
+			n_inout: 2,         // indices 8-9
+			n_witness: 4,       // indices 16-19
+			n_internal: 4,      // indices 20-23
+			offset_inout: 8,    // padding after constants to align
+			offset_witness: 16, // padding after inout to reach power of 2
+			n_hidden_words: 16, // padding after internal to reach total
 			n_scratch: 0,
 		};
 

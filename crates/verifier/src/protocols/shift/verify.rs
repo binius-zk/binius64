@@ -409,7 +409,7 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 		let layout = &self.constraint_system.value_vec_layout;
 		let half = 1 << (self.r_y_len - 1);
 		let n_public_words = layout.n_public_words();
-		let r_y_tensor = (0..layout.committed_total_len)
+		let r_y_tensor = (0..layout.combined_len())
 			.map(|word_index| {
 				if word_index < n_public_words {
 					witness_tensor[word_index].clone()

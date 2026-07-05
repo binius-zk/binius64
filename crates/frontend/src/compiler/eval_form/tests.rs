@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_core::{ValueIndex, ValueVec, ValueVecLayout, word::Word};
 
@@ -70,7 +71,7 @@ impl InterpreterTest {
 			n_internal: 0,
 			offset_inout: 0,
 			offset_witness: 0,
-			committed_total_len: n_witness,
+			n_hidden_words: n_witness,
 			n_scratch: 0,
 		});
 
@@ -110,7 +111,7 @@ impl InterpreterTest {
 			n_internal: 0,
 			offset_inout: 0,
 			offset_witness: 0,
-			committed_total_len: n_witness,
+			n_hidden_words: n_witness,
 			n_scratch: 0,
 		});
 
