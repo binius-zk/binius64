@@ -12,7 +12,7 @@
 //!
 //! [Soukhanov25]: <https://eprint.iacr.org/2025/946>
 
-use binius_field::{BinaryField1b, ExtensionField, Field, PackedField};
+use binius_field::{BinaryField, Divisible, PackedField};
 use binius_ip_prover::logup_star::{self as reduction, witness};
 use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
 
@@ -79,7 +79,7 @@ pub fn prove<F, P, Channel>(
 	channel: &mut Channel,
 ) -> LogupProof<P, Channel::Oracle>
 where
-	F: Field + ExtensionField<BinaryField1b>,
+	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 	Channel: IOPProverChannel<P>,
 {

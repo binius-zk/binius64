@@ -2,7 +2,7 @@
 
 //! The top-level logUp* proving routine.
 
-use binius_field::{BinaryField1b, ExtensionField, Field, PackedField};
+use binius_field::{BinaryField, Divisible, Field, PackedField};
 use binius_ip::{MultilinearEvalClaim, logup_star::LogupOutput};
 use binius_math::FieldBuffer;
 
@@ -57,7 +57,7 @@ pub fn prove<F, P>(
 	channel: &mut impl IPProverChannel<F>,
 ) -> LogupOutput<F>
 where
-	F: Field + ExtensionField<BinaryField1b>,
+	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 {
 	let m = table.log_len();
@@ -123,7 +123,7 @@ pub fn prove_reduction<F, P>(
 	channel: &mut impl IPProverChannel<F>,
 ) -> LogupOutput<F>
 where
-	F: Field + ExtensionField<BinaryField1b>,
+	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 {
 	let m = table.log_len();

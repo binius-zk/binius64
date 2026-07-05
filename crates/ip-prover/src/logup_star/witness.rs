@@ -9,7 +9,9 @@
 //! - the table denominator `c - J`, with `J` the embedded table positions,
 //! - the pushforward `Y = I_* eq_r`, the looker numerator scattered onto table positions.
 
-use binius_field::{BinaryField1b, ExtensionField, Field, PackedField};
+use std::iter;
+
+use binius_field::{BinaryField, Divisible, Field, PackedField};
 use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
 use binius_utils::rayon::prelude::*;
 
@@ -21,15 +23,16 @@ use binius_utils::rayon::prelude::*;
 ///
 /// This is the same embedding the verifier uses for the table-side denominator `J`.
 /// It makes a position and an index value that point to it embed to the same field element.
+///
+/// The `GF(2)`-linear basis of a binary tower field is its underlier's bit basis: basis element
+/// `t` is the field element whose underlier has only bit `t` set. So `iota(j)` is just the field
+/// element whose underlier is `j`, which we build directly instead of summing basis elements.
+#[inline]
 pub fn embed_position<F>(j: usize) -> F
 where
-	F: Field + ExtensionField<BinaryField1b>,
+	F: BinaryField<Underlier: Divisible<u64>>,
 {
-	// usize::BITS bounds the loop; positions with a set bit at t contribute basis(t).
-	(0..usize::BITS as usize)
-		.filter(|&t| (j >> t) & 1 == 1)
-		.map(<F as ExtensionField<BinaryField1b>>::basis)
-		.fold(F::ZERO, |acc, b| acc + b)
+	F::from_underlier(F::Underlier::from_iter(iter::once(j as u64)))
 }
 
 /// Build the looker numerator `eq_r`, the equality indicator at the evaluation point.
@@ -51,7 +54,7 @@ where
 /// Entry `i` is `c - iota(index[i])`, the logUp denominator for looker row `i`.
 pub fn looker_denominator<F, P>(c: F, index: &[usize]) -> FieldBuffer<P>
 where
-	F: Field + ExtensionField<BinaryField1b>,
+	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 {
 	// One denominator per looker row: shift the challenge by the row's embedded index value.
@@ -67,7 +70,7 @@ where
 /// Entry `j` is `c - iota(j)`, the logUp denominator for table position `j`.
 pub fn table_denominator<F, P>(c: F, table_n_vars: usize) -> FieldBuffer<P>
 where
-	F: Field + ExtensionField<BinaryField1b>,
+	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 {
 	// One denominator per table position: shift the challenge by the position's embedding.
