@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::iter;
 
@@ -6,11 +7,9 @@ use binius_field::{BinaryField, ExtensionField, Field, PackedField};
 use binius_math::{
 	inner_product::inner_product_packed, line::extrapolate_line_packed, ntt::AdditiveNTT,
 };
-use binius_transcript::TranscriptReader;
-use binius_utils::DeserializeBytes;
-use bytes::Buf;
 
 use super::{FRIParams, error::Error};
+use crate::merkle_channel::MerkleIPVerifierChannel;
 
 /// Calculate fold of `values` at `index` with `r` random coefficient.
 ///
@@ -129,34 +128,37 @@ where
 	inner_product_packed(log_batch_size, values.iter().copied(), tensor.iter().copied())
 }
 
-/// A stateful verifier for the FRI fold phase that tracks when to read commitments.
+/// A stateful verifier for the FRI fold phase that tracks when to receive commitments.
 ///
 /// This verifier encapsulates the logic of determining which FRI rounds require
-/// commitments and handles reading them from the transcript at the appropriate times.
-pub struct FRIFoldVerifier<'a, F, Digest>
+/// commitments and handles receiving them over the Merkle channel at the appropriate times. It is
+/// parameterized by the channel's Merkle commitment handle type `C`.
+pub struct FRIFoldVerifier<'a, F, C>
 where
 	F: BinaryField,
 {
-	/// Indicates which rounds require reading a commitment
+	/// Indicates which rounds require receiving a commitment
 	commit_rounds: Vec<bool>,
-	/// The round commitments read from the transcript
-	round_commitments: Vec<Digest>,
+	/// The `(leaf_size, depth)` Merkle tree shape of each expected commitment, matching the
+	/// prover's fold-phase commits.
+	commitment_shapes: Vec<(usize, usize)>,
+	/// The round commitments received over the channel
+	round_commitments: Vec<C>,
 	/// Current round number
 	curr_round: usize,
 	_phantom: std::marker::PhantomData<&'a F>,
 }
 
-impl<'a, F, Digest> FRIFoldVerifier<'a, F, Digest>
+impl<'a, F, C> FRIFoldVerifier<'a, F, C>
 where
 	F: BinaryField,
-	Digest: DeserializeBytes + Clone,
+	C: Clone,
 {
 	/// Creates a new FRI fold verifier.
 	///
 	/// ## Arguments
 	///
 	/// * `params` - The FRI parameters
-	/// * `n_rounds` - The total number of folding rounds (typically equals n_vars for sumcheck)
 	pub fn new(params: &'a FRIParams<F>) -> Self {
 		let commit_rounds = calculate_fri_commit_rounds(
 			params.log_batch_size(),
@@ -166,28 +168,42 @@ where
 
 		let expected_oracles = params.n_oracles();
 
+		// The prover commits each folded codeword with one coset of the *next* fold's arity per
+		// leaf, so commitment `j` has `2^arity_j` scalars per leaf and depth `index_bits` minus the
+		// arities folded so far. The last commitment is the terminal codeword, with one coset of
+		// `2^n_final_challenges` scalars per leaf and one leaf per codeword symbol position, i.e.
+		// depth `log_inv_rate`.
+		let mut commitment_shapes = Vec::with_capacity(expected_oracles);
+		let mut depth = params.index_bits();
+		for &arity in params.fold_arities() {
+			depth -= arity;
+			commitment_shapes.push((1 << arity, depth));
+		}
+		commitment_shapes.push((1 << params.n_final_challenges(), params.rs_code().log_inv_rate()));
+
 		Self {
 			commit_rounds,
+			commitment_shapes,
 			round_commitments: Vec::with_capacity(expected_oracles),
 			curr_round: 0,
 			_phantom: std::marker::PhantomData,
 		}
 	}
 
-	/// Processes the next round, reading a commitment from the transcript if needed.
+	/// Processes the next round, receiving a commitment over the channel if needed.
 	///
 	/// ## Arguments
 	///
-	/// * `transcript` - The transcript to read the commitment from (if needed)
+	/// * `channel` - The channel to receive the commitment from (if needed)
 	///
 	/// ## Returns
 	///
-	/// * `Ok(Some(commitment))` if a commitment was read in this round
+	/// * `Ok(Some(commitment))` if a commitment was received in this round
 	/// * `Ok(None)` if no commitment was needed in this round
-	pub fn process_round<B: Buf>(
-		&mut self,
-		transcript: &mut TranscriptReader<B>,
-	) -> Result<Option<Digest>, Error> {
+	pub fn process_round<Channel>(&mut self, channel: &mut Channel) -> Result<Option<C>, Error>
+	where
+		Channel: MerkleIPVerifierChannel<F, Commitment = C>,
+	{
 		assert!(
 			self.curr_round < self.n_rounds(),
 			"precondition: process_round must not be called more than n_rounds() times"
@@ -195,7 +211,8 @@ where
 
 		let needs_commitment = self.commit_rounds[self.curr_round];
 		let commitment = if needs_commitment {
-			let commitment: Digest = transcript.read()?;
+			let (leaf_size, depth) = self.commitment_shapes[self.round_commitments.len()];
+			let commitment = channel.recv_merkle_commitment(leaf_size, depth)?;
 			self.round_commitments.push(commitment.clone());
 			Some(commitment)
 		} else {
@@ -225,7 +242,7 @@ where
 	/// ## Returns
 	///
 	/// The collected round commitments
-	pub fn finalize(self) -> Vec<Digest> {
+	pub fn finalize(self) -> Vec<C> {
 		assert!(
 			self.is_complete(),
 			"precondition: all fold rounds must be processed before finalize"

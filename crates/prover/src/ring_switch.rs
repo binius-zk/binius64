@@ -4,7 +4,7 @@
 use std::{iter, ops::Deref};
 
 use binius_field::{
-	BinaryField, Divisible, ExtensionField, Field, PackedExtension, PackedField,
+	BinaryField, Divisible, ExtensionField, Field, PackedField, cast_base_mut,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, InputWrappingTransformationFactory,
 		LinearTransformationFactory, OutputWrappingTransformationFactory, Transformation,
@@ -226,9 +226,7 @@ where
 						expand_subset_sums_array::<_, CHUNK_BITS, { 1 << CHUNK_BITS }>(vec_scalars);
 
 					square_transpose_const_size::<_, LOG_CHUNK_BITS, CHUNK_BITS>(
-						mat_scalars
-							.each_mut()
-							.map(<B128 as PackedExtension<B1>>::cast_base_mut),
+						mat_scalars.each_mut().map(cast_base_mut::<B1, _>),
 					);
 
 					{
@@ -382,7 +380,7 @@ where
 mod test {
 	use binius_field::{
 		BinaryField128bGhash, ExtensionField, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
-		PackedExtension, PackedField, PackedSubfield,
+		PackedField, PackedSubfield, cast_ext,
 	};
 	use binius_math::{
 		FieldBuffer,
@@ -488,7 +486,7 @@ mod test {
 			bit_matrix
 				.as_ref()
 				.iter()
-				.map(|&bits_packed| P::cast_ext(bits_packed))
+				.map(|&bits_packed| cast_ext::<B1, P>(bits_packed))
 				.collect(),
 		);
 		let folded_method2 = fold_elems_inplace(bit_matrix_packed, &prefix_tensor);

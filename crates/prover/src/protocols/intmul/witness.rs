@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{iter, mem::MaybeUninit, ops::Deref};
 
@@ -11,6 +12,10 @@ use binius_utils::{
 	rayon::prelude::*,
 	strided_array::StridedArray2DViewMut,
 };
+use binius_verifier::{
+	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
+	protocols::intmul::common::{LIMB_BITS, LOG_N_LIMBS, N_LIMBS},
+};
 use getset::Getters;
 use itertools::iterate;
 
@@ -19,17 +24,21 @@ use super::error::Error;
 /// An integer multiplication protocol witness. Created from integer slices, consumed during
 /// proving.
 ///
-/// The statement being proven is `a * b = c`, where `c` is represented as a pair `(c_lo, c_hi)`.
-/// All four values are of the same bit width that is passed to the prover via `log_bits` parameter
-/// (also denoted $m$). In Binius64, `log_bits = 6` for 64-bit multiplicands and 128-bit product.
+/// The statement being proven is `a * b = c`, where `c` is represented as a pair `(c_lo, c_hi)`:
+/// `WORD_SIZE_BITS`-wide multiplicands with a double-wide product.
 ///
-/// For each of `a`, `c_lo`, `c_hi`, `b` we build the `2^log_bits` "selected" leaf multilinears of
-/// the bivariate-product GKR tree (the widest layer), concatenated into one `(n_vars + log_bits)`
-/// variate buffer with the node index in the high bits. We then construct a [`ProdcheckProver`]
-/// over each, retaining the leaf layer for the final (Phase 5) GKR step:
-///  1) `a` and `c_lo` select a multiplicative group generator $G$
-///  2) `c_hi` selects $G^{2^{2^m}}$
-///  3) `b` selects variable base which is equal to the root of the `a` tree
+/// For each of `a`, `c_lo`, `c_hi` the exponent words split into `N_LIMBS` limbs, and the
+/// constant-base exponentiation factors as a product of `N_LIMBS` limb columns — column `l` reads
+/// the row `limb_l(e)` of the power table of the base $G^{2^{wl}}$ (where $w$ is the limb bit
+/// width). The columns are concatenated into one `(n_vars + LOG_N_LIMBS)`-variate buffer with the
+/// limb index in the high bits, and a [`ProdcheckProver`] is constructed over each:
+///  1) `a` and `c_lo` exponentiate the multiplicative group generator $G$
+///  2) `c_hi` exponentiates $G^{2^{2^m}}$
+///  3) `b` selects a variable base (the root of the `a` tree) per bit, over `WORD_SIZE_BITS`
+///     per-bit leaves as before
+///
+/// The shared power table $T\colon i \mapsto G^i$ over $2^w$ rows is retained for the Phase 5
+/// logup* lookup.
 ///
 /// Protocol proves that ${(G^a)}^b = G^{c\\_lo} \times (G^{2^{2^m}})^{c\\_hi}$, which is equivalent
 /// to $a \times b = c$ modulo $2^{2^{m+1}} - 1$. The special case of `0 * 0 = 1` is handled
@@ -37,9 +46,8 @@ use super::error::Error;
 #[derive(Clone, Getters)]
 #[getset(get = "pub")]
 pub struct Witness<'a, P: PackedField> {
-	/// The log of the bit width ($m$): the tree leaf layer has `2^log_bits` selected multilinears.
-	pub log_bits: usize,
-	/// The exponents for `a` (needed for the phase 5 parity zerocheck on `a_0`).
+	/// The exponents for `a` (needed for the phase 5 lookup indices and parity zerocheck on
+	/// `a_0`).
 	#[getset(skip)]
 	pub a_exponents: &'a [Word],
 	/// Prodcheck prover for the `a` exponentiation tree (leaf layer retained).
@@ -50,27 +58,32 @@ pub struct Witness<'a, P: PackedField> {
 	#[getset(skip)]
 	pub b_exponents: &'a [Word],
 	/// Concatenated b leaves for prodcheck: [L_0, L_1, ..., L_{2^k-1}].
-	/// Has log_len = n_vars + log_bits.
+	/// Has log_len = n_vars + LOG_WORD_SIZE_BITS.
 	pub b_leaves: FieldBuffer<P>,
 	/// The prover for the prodcheck reduction on b_leaves.
 	pub b_prodcheck: ProdcheckProver<P>,
 	/// The root of the b tree (product of all leaves element-wise).
 	pub b_root: FieldBuffer<P>,
-	/// The exponents for `c_lo` (needed for the phase 5 parity zerocheck on `c_lo_0` and the raw
-	/// per-bit output evaluations).
+	/// The exponents for `c_lo` (needed for the phase 5 lookup indices, parity zerocheck on
+	/// `c_lo_0`, and the raw per-bit output evaluations).
 	#[getset(skip)]
 	pub c_lo_exponents: &'a [Word],
 	/// Prodcheck prover for the `c_lo` exponentiation tree (leaf layer retained).
 	pub c_lo_prodcheck: ProdcheckProver<P>,
 	/// The root of the `c_lo` tree.
 	pub c_lo_root: FieldBuffer<P>,
-	/// The exponents for `c_hi` (needed for the phase 5 raw per-bit output evaluations).
+	/// The exponents for `c_hi` (needed for the phase 5 lookup indices and raw per-bit output
+	/// evaluations).
 	#[getset(skip)]
 	pub c_hi_exponents: &'a [Word],
 	/// Prodcheck prover for the `c_hi` exponentiation tree (leaf layer retained).
 	pub c_hi_prodcheck: ProdcheckProver<P>,
 	/// The root of the `c_hi` tree.
 	pub c_hi_root: FieldBuffer<P>,
+	/// The 2·N_LIMBS twisted power tables: `tables[s][i] = (G^{2^{ws}})^i`. Limb column `(t, l)`
+	/// is a gather from table `s(t, l)`; `tables[0]` is the shared table read by the Phase 5
+	/// logup* lookup.
+	pub tables: Vec<FieldBuffer<P>>,
 }
 
 impl<'a, F, P> Witness<'a, P>
@@ -79,16 +92,14 @@ where
 	P: PackedField<Scalar = F>,
 {
 	/// Constructs a new integer multiplication witness from the statement.
-	///
-	/// For statement of size $2^\ell$ using $2^m$-wide integers, the upper bound on the
-	/// witness size is $8^{\ell+m}$ large field elements.
 	pub fn new(
-		log_bits: usize,
 		a: &'a [Word],
 		b: &'a [Word],
 		c_lo: &'a [Word],
 		c_hi: &'a [Word],
 	) -> Result<Self, Error> {
+		assert!(2 * WORD_SIZE_BITS <= F::N_BITS);
+
 		// Statement should be of pow-2 length.
 		let Some(n_vars) = strict_log_2(a.len()) else {
 			return Err(Error::ExponentsPowerOfTwoLengthRequired);
@@ -102,30 +113,38 @@ where
 			return Err(Error::ExponentLengthMismatch);
 		}
 
+		// The 2·N_LIMBS twisted power tables: tables[s][i] = (G^{2^{ws}})^i. The `a` and `c_lo`
+		// limb columns read tables 0..N_LIMBS; the `c_hi` limb columns (base
+		// G^{2^{WORD_SIZE_BITS}}) read tables N_LIMBS..2·N_LIMBS. Table 0 is the shared logup*
+		// table.
 		let g = F::MULTIPLICATIVE_GENERATOR;
-		let g_c_hi = iterate(g, |g| g.square())
-			.nth(1 << log_bits)
-			.expect("infinite iterator");
+		let bases = iterate(g, |g| g.square())
+			.step_by(LIMB_BITS)
+			.take(2 * N_LIMBS)
+			.collect::<Vec<_>>();
+		let tables = bases
+			.into_par_iter()
+			.map(|base| power_table::<F, P>(LIMB_BITS, base))
+			.collect::<Vec<_>>();
 
-		// Build the constant-base leaf layers and their prodcheck provers. Each prover's products
+		// Build the per-limb leaf layers and their prodcheck provers. Each prover's products
 		// layer is the corresponding tree root.
-		let a_leaves = constant_base_leaves(log_bits, g, a);
-		let (a_prodcheck, a_root) = ProdcheckProver::new(log_bits, a_leaves);
+		let a_leaves = limb_leaves(&tables[..N_LIMBS], a);
+		let (a_prodcheck, a_root) = ProdcheckProver::new(LOG_N_LIMBS, a_leaves);
 
-		let c_lo_leaves = constant_base_leaves(log_bits, g, c_lo);
-		let (c_lo_prodcheck, c_lo_root) = ProdcheckProver::new(log_bits, c_lo_leaves);
+		let c_lo_leaves = limb_leaves(&tables[..N_LIMBS], c_lo);
+		let (c_lo_prodcheck, c_lo_root) = ProdcheckProver::new(LOG_N_LIMBS, c_lo_leaves);
 
-		let c_hi_leaves = constant_base_leaves(log_bits, g_c_hi, c_hi);
-		let (c_hi_prodcheck, c_hi_root) = ProdcheckProver::new(log_bits, c_hi_leaves);
+		let c_hi_leaves = limb_leaves(&tables[N_LIMBS..], c_hi);
+		let (c_hi_prodcheck, c_hi_root) = ProdcheckProver::new(LOG_N_LIMBS, c_hi_leaves);
 
 		// Compute b_leaves as concatenated leaves for prodcheck; the variable base is the `a` root.
-		let b_leaves = compute_b_leaves(log_bits, &a_root, b);
+		let b_leaves = compute_b_leaves(&a_root, b);
 
 		// Create the prodcheck prover; its products layer becomes b_root
-		let (b_prodcheck, b_root) = ProdcheckProver::new(log_bits, b_leaves.clone());
+		let (b_prodcheck, b_root) = ProdcheckProver::new(LOG_WORD_SIZE_BITS, b_leaves.clone());
 
 		Ok(Self {
-			log_bits,
 			a_exponents: a,
 			a_prodcheck,
 			a_root,
@@ -139,40 +158,55 @@ where
 			c_hi_exponents: c_hi,
 			c_hi_prodcheck,
 			c_hi_root,
+			tables,
 		})
 	}
 }
 
-/// Build the concatenated constant-base leaf layer for a GKR exponentiation tree.
-///
-/// The widest layer of the tree contains `2^log_bits` selected multilinears: the leaf for bit `b`
-/// has value `base^{2^b}` where the `b`-th bit of the corresponding exponent is set, and `1`
-/// otherwise.
-///
-/// The leaves are concatenated into one `(n_vars + log_bits)`-variate buffer with the node index in
-/// the high bits, in natural bit order: node position `p` carries the leaf for bit `p`. This
-/// matches the `b`-tree layout ([`compute_b_leaves`]). The prodcheck reduces on the highest node
-/// bit, so its first reduction (and the verifier's final GKR layer) pairs leaf `z` with leaf
-/// `z + 2^{log_bits-1}` — a strided pairing of bits `z` and `z + 2^{log_bits-1}`.
-#[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
-pub fn constant_base_leaves<F, P>(log_bits: usize, base: F, exponents: &[Word]) -> FieldBuffer<P>
+/// Build the power table of `base` with `2^log_size` rows: row `i` holds `base^i`.
+pub fn power_table<F, P>(log_size: usize, base: F) -> FieldBuffer<P>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
-	let bases = iterate(base, |g| g.square())
-		.take(1 << log_bits)
-		.collect::<Vec<_>>();
+	let mut scalars = Vec::with_capacity(1 << log_size);
+	let mut row = F::ONE;
+	for _ in 0..1usize << log_size {
+		scalars.push(row);
+		row *= base;
+	}
+	FieldBuffer::<P>::from_values(&scalars)
+}
+
+/// Extract limb `l` of an exponent word as a table row index.
+pub(super) const fn limb_index(word: Word, limb: usize) -> usize {
+	((word.0 >> (limb * LIMB_BITS)) & ((1 << LIMB_BITS) - 1)) as usize
+}
+
+/// Build the concatenated per-limb leaf columns for a constant-base GKR exponentiation tree.
+///
+/// Column `l` has entries `tables[l][limb_l(e)]` — the limb-`l` exponentiation of the
+/// corresponding word. The columns are concatenated into one `(n_vars + LOG_N_LIMBS)`-variate
+/// buffer with the limb index in the high bits, so the prodcheck's node reductions pair column `z`
+/// with column `z + N_LIMBS/2`.
+fn limb_leaves<F, P>(tables: &[FieldBuffer<P>], exponents: &[Word]) -> FieldBuffer<P>
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	assert_eq!(tables.len(), N_LIMBS);
 
 	let n_vars = checked_log_2(exponents.len());
-	let scalars = (0..1 << log_bits)
-		.flat_map(|bit| {
-			let leaf = two_valued_field_buffer::<F, P>(bit, exponents, [F::ONE, bases[bit]]);
-			leaf.iter_scalars().collect::<Vec<_>>()
+	let scalars = (0..N_LIMBS)
+		.flat_map(|limb| {
+			let table = &tables[limb];
+			exponents
+				.iter()
+				.map(move |&word| table.get(limb_index(word, limb)))
 		})
 		.collect::<Vec<_>>();
 
-	debug_assert_eq!(scalars.len(), 1 << (n_vars + log_bits));
+	debug_assert_eq!(scalars.len(), 1 << (n_vars + LOG_N_LIMBS));
 	FieldBuffer::<P>::from_values(&scalars)
 }
 
@@ -181,11 +215,7 @@ where
 /// Each leaf `L_z` contains: if bit z of `exponents[i]` is set then `bases[i]^{2^z}` else 1
 /// The leaves are concatenated: `[L_0, L_1, ..., L_{2^k-1}]`
 #[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
-pub fn compute_b_leaves<F, P>(
-	log_bits: usize,
-	bases: &FieldBuffer<P>,
-	exponents: &[Word],
-) -> FieldBuffer<P>
+pub fn compute_b_leaves<F, P>(bases: &FieldBuffer<P>, exponents: &[Word]) -> FieldBuffer<P>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
@@ -194,15 +224,15 @@ where
 
 	if P::LOG_WIDTH <= n_vars {
 		// Parallel optimized path
-		return compute_b_leaves_parallel(log_bits, bases, exponents);
+		return compute_b_leaves_parallel(bases, exponents);
 	}
 
 	// Fallback: bases is too small to parallelize (n_vars < P::LOG_WIDTH)
-	let mut out = FieldBuffer::zeros(n_vars + log_bits);
+	let mut out = FieldBuffer::zeros(n_vars + LOG_WORD_SIZE_BITS);
 	let n_elems = 1 << n_vars;
 
 	for (i, (mut base, &exp)) in iter::zip(bases.iter_scalars(), exponents).enumerate() {
-		for z in 0..1 << log_bits {
+		for z in 0..WORD_SIZE_BITS {
 			let bit = exp.extract_bit(z);
 
 			out.set(z * n_elems + i, if bit { base } else { F::ONE });
@@ -215,18 +245,14 @@ where
 }
 
 /// Parallel implementation of compute_b_leaves for when bases is large enough to parallelize.
-fn compute_b_leaves_parallel<F, P>(
-	log_bits: usize,
-	bases: &FieldBuffer<P>,
-	exponents: &[Word],
-) -> FieldBuffer<P>
+fn compute_b_leaves_parallel<F, P>(bases: &FieldBuffer<P>, exponents: &[Word]) -> FieldBuffer<P>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
 	let n_vars = bases.log_len();
 	let n_packed = bases.as_ref().len();
-	let height = 1 << log_bits;
+	let height = WORD_SIZE_BITS;
 	let total = n_packed * height;
 
 	let mut out_vec: Vec<P> = Vec::with_capacity(total);
@@ -262,7 +288,7 @@ where
 	// SAFETY: All elements initialized in the parallel loop above
 	unsafe { out_vec.set_len(total) };
 
-	FieldBuffer::new(n_vars + log_bits, out_vec.into_boxed_slice())
+	FieldBuffer::new(n_vars + LOG_WORD_SIZE_BITS, out_vec.into_boxed_slice())
 }
 
 /// Compute the per-vertex bivariate product of two equally sized field buffers.
@@ -320,8 +346,6 @@ mod tests {
 
 	type P = Packed128b;
 
-	const LOG_BITS: usize = 6;
-
 	fn check_consistency<P: PackedField>(witness: &Witness<'_, P>) {
 		// The variable-base `b`-exponent tree root must equal the full product `c` root
 		// (`c_lo_root * c_hi_root`); this equality is what lets the prover reuse `b_root` in place
@@ -337,7 +361,7 @@ mod tests {
 		let c_lo = [Word::from_u64(6)]; // 2*3 = 6
 		let c_hi = [Word::from_u64(0)]; // no high bits
 
-		let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
+		let witness = Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap();
 		check_consistency(&witness);
 	}
 
@@ -348,7 +372,7 @@ mod tests {
 		let c_lo = [Word::from_u64(0)];
 		let c_hi = [Word::from_u64(2)]; // 2^32 * 2^33 = 2^65, which is 2 in the high 64 bits
 
-		let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
+		let witness = Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap();
 		check_consistency(&witness);
 	}
 
@@ -378,7 +402,7 @@ mod tests {
 			c_hi.push(Word::from_u64(c_hi_i));
 		}
 
-		let witness = Witness::<P>::new(LOG_BITS, &a, &b, &c_lo, &c_hi).unwrap();
+		let witness = Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap();
 		check_consistency(&witness);
 	}
 }

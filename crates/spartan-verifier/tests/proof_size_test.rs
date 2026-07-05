@@ -2,7 +2,10 @@
 
 use binius_field::BinaryField128bGhash as B128;
 use binius_hash::StdHashSuite;
-use binius_iop::channel::IOPVerifierChannel;
+use binius_iop::{
+	channel::IOPVerifierChannel, merkle_tree::BinaryMerkleTreeScheme,
+	size_tracking_channel::SizeTrackingChannel,
+};
 use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::{
 	circuit_builder::{CircuitBuilder, ConstraintBuilder},
@@ -40,8 +43,15 @@ fn test_ip_proof_size() {
 	let cs = verifier.constraint_system();
 
 	// Create size tracking channel and run verify with dummy public inputs
-	// (SizeTrackingChannel ignores values).
-	let mut channel = verifier.iop_compiler().create_size_tracking_channel();
+	// (SizeTrackingChannel ignores values). The Merkle scheme matches the one the verifier
+	// estimates proof sizes with at setup.
+	let iop_compiler = verifier.iop_compiler();
+	let merkle_scheme = BinaryMerkleTreeScheme::<B128, StdHashSuite>::new();
+	let mut channel = SizeTrackingChannel::new(
+		iop_compiler.oracle_specs().to_vec(),
+		std::slice::from_ref(iop_compiler.fri_params()),
+		&merkle_scheme,
+	);
 	let public = vec![B128::default(); 1 << cs.log_public()];
 	let public_elems = channel.observe_many(&public);
 	// SizeTrackingChannel::Oracle = (), but we still bind to exercise the real call pattern.

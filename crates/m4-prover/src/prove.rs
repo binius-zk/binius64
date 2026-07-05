@@ -1,11 +1,9 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_field::PackedField;
 use binius_hash::StdHashSuite;
-use binius_iop_prover::{
-	basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel,
-	merkle_tree::prover::BinaryMerkleTreeProver,
-};
+use binius_iop_prover::{basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_m4_verifier::{BatchCommitLayout, Verifier};
 use binius_math::{
@@ -21,9 +19,6 @@ use crate::ValueTable;
 /// The multithreaded additive NTT used to encode the committed codeword.
 type ProverNtt = NeighborsLastMultiThread<GenericPreExpanded<B128>>;
 
-/// The Merkle prover used to commit the codeword.
-type ProverMerkle = BinaryMerkleTreeProver<B128, StdHashSuite>;
-
 /// Proves a batch-witness commitment opened at a verifier-chosen random point.
 ///
 /// Setup builds the BaseFold prover once, reusing the verifier's FRI parameters.
@@ -34,8 +29,8 @@ where
 {
 	/// The committed-multilinear shape of the batch, shared with the verifier.
 	layout: BatchCommitLayout,
-	/// The precomputed BaseFold prover, holding the NTT and the Merkle prover.
-	basefold_compiler: BaseFoldProverCompiler<P, ProverNtt, ProverMerkle>,
+	/// The precomputed BaseFold prover, holding the NTT and the FRI parameters.
+	basefold_compiler: BaseFoldProverCompiler<P, ProverNtt>,
 }
 
 impl<P> Prover<P>
@@ -55,14 +50,9 @@ where
 		let log_num_shares = binius_utils::rayon::current_num_threads().ilog2() as usize;
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
-		let merkle_prover = ProverMerkle::new();
-
 		// Inherit the verifier's oracle specs and FRI parameters verbatim.
-		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
-			verifier.iop_compiler(),
-			ntt,
-			merkle_prover,
-		);
+		let basefold_compiler =
+			BaseFoldProverCompiler::from_verifier_compiler(verifier.iop_compiler(), ntt);
 
 		Self {
 			layout: *verifier.layout(),
@@ -97,7 +87,9 @@ where
 	where
 		Challenger_: Challenger,
 	{
-		let mut channel = self.basefold_compiler.create_channel_without_zk(transcript);
+		let mut channel = self
+			.basefold_compiler
+			.create_channel_without_zk_from_transcript::<StdHashSuite, Challenger_, _>(transcript);
 
 		// Pack the 2-D table into one multilinear and commit it as the trace oracle.
 		let packed = table.pack::<P>();

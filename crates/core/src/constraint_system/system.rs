@@ -97,12 +97,12 @@ impl ConstraintSystem {
 				}
 				// Half-word (*32) variants cap at 32, full-width at 64.
 				let max_amount = term.shift_variant.max_amount();
-				if term.amount >= max_amount {
+				if usize::from(term.amount) >= max_amount {
 					return Err(ConstraintSystemError::ShiftAmountTooLarge {
 						constraint_type,
 						constraint_index,
 						operand_name,
-						shift_amount: term.amount,
+						shift_amount: term.amount as usize,
 						max_amount,
 					});
 				}

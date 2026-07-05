@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use std::iter;
 
@@ -30,7 +31,11 @@ pub fn biguint_lt(builder: &CircuitBuilder, a: &BigUint, b: &BigUint) -> Wire {
 	for (&a_limb, &b_limb) in iter::zip(&a.limbs, &b.limbs) {
 		let lt_flag = builder.icmp_ult(a_limb, b_limb);
 		let eq_flag = builder.icmp_eq(a_limb, b_limb);
-		result = builder.bor(lt_flag, builder.band(eq_flag, result));
+		// `lt_flag` and `eq_flag` are mutually exclusive (a limb cannot be both
+		// less than and equal to another), so their MSB-bools never share a set
+		// bit and OR agrees with XOR on the only bit these flags define. XOR is
+		// linear, saving one AND constraint per limb.
+		result = builder.bxor(lt_flag, builder.band(eq_flag, result));
 	}
 
 	result

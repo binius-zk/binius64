@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_field::{Field, PackedField};
 use binius_iop::merkle_tree::{Commitment, MerkleTreeScheme};
@@ -91,6 +92,12 @@ pub trait MerkleTreeProver<T: FixedSizeSerializeBytes> {
 		index: usize,
 		proof: &mut TranscriptWriter<B>,
 	);
+
+	/// Generate an opening proof for the full committed vector.
+	///
+	/// This writes the binding data that [`MerkleTreeScheme::verify_vector`] reads alongside the
+	/// data itself while recomputing the root — the per-leaf salts, empty for non-hiding trees.
+	fn prove_vector<B: BufMut>(&self, committed: &Self::Committed, proof: &mut TranscriptWriter<B>);
 }
 
 /// Commits a field buffer to a Merkle tree, packing `1 << log_batch_size` scalars into each leaf.

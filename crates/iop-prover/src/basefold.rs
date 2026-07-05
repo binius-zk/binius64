@@ -2,20 +2,11 @@
 // Copyright 2026 The Binius Developers
 
 use binius_field::{BinaryField, PackedField};
-use binius_iop::merkle_tree::MerkleTreeScheme;
 use binius_ip::mlecheck;
 use binius_ip_prover::sumcheck::{common::SumcheckProver, multilinear_eval::MultilinearEvalProver};
 use binius_math::{FieldBuffer, ntt::AdditiveNTT};
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
-use binius_utils::SerializeBytes;
 
-use crate::{
-	fri::{FRIFoldProver, FoldRoundOutput},
-	merkle_tree::MerkleTreeProver,
-};
+use crate::{fri::FRIFoldProver, merkle_channel::MerkleIPProverChannel};
 
 /// Proves a *combined* multilinear evaluation claim `𝛑(eval_point) = eval_claim` by interleaving a
 /// single [`MultilinearEvalProver`] MLE-check with a single combined FRI over the
@@ -40,26 +31,24 @@ use crate::{
 /// * `outer_challenges` - the batching challenges `r'` (`len = log_n_oracles`); combine the `k`
 ///   lifted codewords in the FRI outer (oracle-combine) rounds
 /// * `fri_folder` - the combined FRI fold prover, with `n_rounds == 𝐧 + 1 + log_n_oracles`
-/// * `transcript` - the prover transcript
+/// * `channel` - the Merkle channel carrying all prover interaction: round coefficients,
+///   challenges, commitments, and query openings
 ///
 /// The final FRI value equals the final MLE-check value `𝛑(r)` (see
 /// [`binius_iop::basefold::mlecheck_fri_consistency`]).
-#[allow(clippy::too_many_arguments)]
-pub fn prove_mlecheck_basefold<'a, F, P, NTT, MerkleScheme, MerkleProver, Challenger_>(
+pub fn prove_mlecheck_basefold<F, P, NTT, Channel>(
 	witness: FieldBuffer<P>,
 	eval_point: &[F],
 	eval_claim: F,
 	batch_challenge: Option<F>,
 	outer_challenges: &[F],
-	mut fri_folder: FRIFoldProver<'a, F, P, NTT, MerkleProver>,
-	transcript: &mut ProverTranscript<Challenger_>,
+	mut fri_folder: FRIFoldProver<'_, F, P, NTT, Channel::Commitment>,
+	channel: &mut Channel,
 ) where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
-	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
-	MerkleProver: MerkleTreeProver<F, Scheme = MerkleScheme>,
-	Challenger_: Challenger,
+	Channel: MerkleIPProverChannel<F>,
 {
 	let _scope = tracing::debug_span!("Basefold MLE-check ZK (batched)").entered();
 
@@ -91,33 +80,33 @@ pub fn prove_mlecheck_basefold<'a, F, P, NTT, MerkleScheme, MerkleProver, Challe
 		let round_coeffs = round_coeffs_vec
 			.pop()
 			.expect("MultilinearEvalProver proves exactly one claim");
-		let commitment = fri_folder.execute_fold_round();
 
-		transcript
-			.message()
-			.write_scalar_slice(mlecheck::RoundProof::truncate(round_coeffs).coeffs());
-		if let FoldRoundOutput::Commitment(commitment) = commitment {
-			transcript.message().write(&commitment);
-		}
+		// Send the round coefficients first: on a commitment round, `execute_fold_round` commits
+		// the folded codeword and writes its root, which must land after the coefficients.
+		channel.send_many(mlecheck::RoundProof::truncate(round_coeffs).coeffs());
+		fri_folder.execute_fold_round(channel);
 
-		let challenge = transcript.sample();
+		let challenge = channel.sample();
 		sumcheck.fold(challenge);
 		fri_folder.receive_challenge(challenge);
 	}
 
-	let commitment = fri_folder.execute_fold_round();
-	if let FoldRoundOutput::Commitment(commitment) = commitment {
-		transcript.message().write(&commitment);
-	}
-	fri_folder.finish_proof(transcript);
+	fri_folder.execute_fold_round(channel);
+	fri_folder.finish_proof(channel);
 }
 
 #[cfg(test)]
 mod test {
 	use anyhow::{Result, bail};
-	use binius_field::{BinaryField, PackedBinaryGhash1x128b, PackedExtension, PackedField};
+	use binius_field::{BinaryField, PackedBinaryGhash1x128b, PackedField};
 	use binius_hash::{StdDigest, StdHashSuite};
-	use binius_iop::{basefold as verifier_basefold, channel::OracleSpec};
+	use binius_iop::{
+		basefold as verifier_basefold,
+		channel::OracleSpec,
+		merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
+	};
+	use binius_ip::channel::IPVerifierChannel;
+	use binius_ip_prover::channel::IPProverChannel;
 	use binius_math::{
 		BinarySubspace, FieldBuffer,
 		inner_product::inner_product_buffers,
@@ -126,16 +115,14 @@ mod test {
 		ntt::{AdditiveNTT, NeighborsLastSingleThread, domain_context::GenericOnTheFly},
 		test_utils::{random_field_buffer, random_scalars},
 	};
-	use binius_transcript::{
-		ProverTranscript,
-		fiat_shamir::{CanSample, HasherChallenger},
-	};
+	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 	use binius_utils::rayon::prelude::*;
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::prove_mlecheck_basefold;
 	use crate::{
-		fri::{self, CommitMaskedOutput, FRIFoldProver},
+		fri::{self, FRIFoldProver, MaskedCodeword},
+		merkle_channel::{MerkleIPProverChannel, ProverMerkleTranscriptChannel},
 		merkle_tree::prover::BinaryMerkleTreeProver,
 	};
 
@@ -156,7 +143,7 @@ mod test {
 	) -> Result<()>
 	where
 		F: BinaryField,
-		P: PackedField<Scalar = F> + PackedExtension<F>,
+		P: PackedField<Scalar = F>,
 	{
 		let n_vars = evaluation_point.len();
 		assert_eq!(witness.log_len(), n_vars);
@@ -168,7 +155,7 @@ mod test {
 		let ntt = NeighborsLastSingleThread::new(domain_context);
 
 		// For a single oracle the combined opening params (`optimal_for_batch`) also satisfy
-		// `commit_masked`'s preconditions (`log_batch_size() == 1`, `rs_code().log_dim() ==
+		// `encode_masked`'s preconditions (`log_batch_size() == 1`, `rs_code().log_dim() ==
 		// n_vars`).
 		let (fri_params, _) = binius_iop::fri::FRIParams::optimal_for_batch(
 			ntt.domain_context(),
@@ -178,27 +165,22 @@ mod test {
 			32,
 		);
 
-		// Commit the interleaved (witness ‖ mask), generating the mask internally.
+		// Encode the interleaved (witness ‖ mask), generating the mask internally, and commit the
+		// codeword over the Merkle channel.
 		let mut commit_rng = StdRng::seed_from_u64(7);
-		let CommitMaskedOutput {
-			commitment: codeword_commitment,
-			committed: codeword_committed,
-			codeword,
-			mask,
-		} = fri::commit_masked(
-			&fri_params,
-			0,
-			&ntt,
-			&merkle_prover,
-			witness.to_ref(),
-			&mut commit_rng,
-		);
+		let MaskedCodeword { codeword, mask } =
+			fri::encode_masked(&fri_params, 0, &ntt, witness.to_ref(), &mut commit_rng);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		prover_transcript.message().write(&codeword_commitment);
+		let mut prover_channel =
+			ProverMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::with_merkle_prover(
+				&mut prover_transcript,
+				merkle_prover,
+			);
+		let codeword_commitment = prover_channel.send_merkle_commitment(codeword.to_ref(), 2);
 
 		// Sample the masking challenge γ and form π' = (1-γ)·witness + γ·mask.
-		let batch_challenge: F = prover_transcript.sample();
+		let batch_challenge: F = IPProverChannel::sample(&mut prover_channel);
 		let mut witness_prime = witness.clone();
 		let gamma_broadcast = P::broadcast(batch_challenge);
 		(witness_prime.as_mut(), mask.as_ref())
@@ -213,12 +195,8 @@ mod test {
 			eval_claim += F::ONE;
 		}
 
-		let fri_folder = FRIFoldProver::new_batch(
-			&fri_params,
-			&ntt,
-			&merkle_prover,
-			vec![(codeword, &codeword_committed)],
-		);
+		let fri_folder =
+			FRIFoldProver::new_batch(&fri_params, &ntt, vec![(codeword, codeword_commitment)]);
 		prove_mlecheck_basefold(
 			witness_prime,
 			&evaluation_point,
@@ -226,12 +204,19 @@ mod test {
 			Some(batch_challenge),
 			&[],
 			fri_folder,
-			&mut prover_transcript,
+			&mut prover_channel,
 		);
+		drop(prover_channel);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let retrieved_commitment = verifier_transcript.message().read()?;
-		let batch_challenge_v: F = verifier_transcript.sample();
+		let mut verifier_channel =
+			VerifierMerkleTranscriptChannel::<_, StdChallenger, _, StdHashSuite>::new(
+				&mut verifier_transcript,
+			);
+		// The committed codeword has one interleaved (π ‖ ω) coset of 2 scalars per leaf.
+		let retrieved_commitment =
+			verifier_channel.recv_merkle_commitment(2, n_vars + LOG_INV_RATE)?;
+		let batch_challenge_v: F = IPVerifierChannel::sample(&mut verifier_channel);
 
 		let verifier_basefold::ReducedOutput {
 			final_fri_value,
@@ -239,13 +224,12 @@ mod test {
 			..
 		} = verifier_basefold::verify_mlecheck_basefold(
 			&fri_params,
-			merkle_prover.scheme(),
 			&[retrieved_commitment],
 			eval_claim,
 			&evaluation_point,
 			Some(batch_challenge_v),
 			&[],
-			&mut verifier_transcript,
+			&mut verifier_channel,
 		)?;
 
 		if !verifier_basefold::mlecheck_fri_consistency(final_fri_value, final_sumcheck_value) {

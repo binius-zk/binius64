@@ -1,6 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::marker::PhantomData;
+
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
@@ -167,8 +169,7 @@ impl IOPVerifier {
 			)
 			.entered();
 			let log_n_constraints = checked_log_2(self.constraint_system.n_mul_constraints());
-			let intmul_output =
-				verify_intmul_reduction::<B128, _>(LOG_WORD_SIZE_BITS, log_n_constraints, channel)?;
+			let intmul_output = verify_intmul_reduction::<B128, _>(log_n_constraints, channel)?;
 			drop(intmul_guard);
 			Some(intmul_output)
 		} else {
@@ -289,7 +290,9 @@ impl IOPVerifier {
 			rs_eq_eval + batch_coeff.clone() * pubcheck_eq_eval
 		});
 
-		// Verify oracle relations (runs BaseFold internally and verifies the product check)
+		// Verify oracle relations (runs BaseFold internally and verifies the product check). The
+		// intmul pushforward relation, when the IntMul reduction ran, was already queued inside
+		// phase 5.
 		channel.verify_oracle_relations([OracleLinearRelation {
 			oracle: trace_oracle,
 			transparent,
@@ -309,7 +312,9 @@ impl IOPVerifier {
 #[derive(Clone)]
 pub struct Verifier<H: HashSuite> {
 	iop_verifier: IOPVerifier,
-	iop_compiler: BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>>,
+	iop_compiler: BaseFoldVerifierCompiler<B128>,
+	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
+	_hash_marker: PhantomData<H>,
 }
 
 impl<H> Verifier<H>
@@ -326,11 +331,9 @@ where
 	) -> Result<Self, Error> {
 		constraint_system.validate_and_prepare()?;
 
-		// Use offset_witness which is guaranteed to be power of two and be at least one full
+		// The validated layout guarantees a power-of-two public segment of at least one full
 		// element.
-		let n_public = constraint_system.value_vec_layout.offset_witness;
-		let log_public_words = log2_ceil_usize(n_public);
-		assert!(n_public.is_power_of_two());
+		let log_public_words = constraint_system.value_vec_layout.log_public_words();
 		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
 
 		let iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
@@ -359,6 +362,7 @@ where
 		Ok(Self {
 			iop_verifier,
 			iop_compiler,
+			_hash_marker: PhantomData,
 		})
 	}
 
@@ -392,20 +396,13 @@ where
 		self.iop_compiler.fri_params()
 	}
 
-	/// Returns the [`crate::merkle_tree::MerkleTreeScheme`] instance used.
-	pub const fn merkle_scheme(&self) -> &BinaryMerkleTreeScheme<B128, H> {
-		self.iop_compiler.merkle_scheme()
-	}
-
 	/// Returns log2 of the number of public constants and input/output words.
 	pub const fn log_public_words(&self) -> usize {
 		self.iop_verifier.log_public_words()
 	}
 
 	/// Returns the IOP compiler for creating verifier channels.
-	pub const fn iop_compiler(
-		&self,
-	) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
+	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<B128> {
 		&self.iop_compiler
 	}
 
@@ -425,7 +422,9 @@ where
 		.entered();
 
 		// Create channel, delegate to IOPVerifier::verify, then finish it.
-		let mut channel = self.iop_compiler.create_channel(transcript);
+		let mut channel = self
+			.iop_compiler
+			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 		self.iop_verifier.verify(public, &mut channel)?;
 		channel.finish()?;
 		Ok(())

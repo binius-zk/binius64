@@ -3,13 +3,16 @@
 
 use binius_core::word::Word;
 use binius_field::{BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
-use binius_iop::naive_channel::NaiveVerifierChannel;
+use binius_iop::{channel::OracleSpec, naive_channel::NaiveVerifierChannel};
 use binius_iop_prover::naive_channel::NaiveProverChannel;
 use binius_math::{inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval};
 use binius_transcript::ProverTranscript;
 use binius_verifier::{
 	config::{LOG_WORD_SIZE_BITS, StdChallenger},
-	protocols::intmul::{common::IntMulOutput, verify},
+	protocols::intmul::{
+		common::{IntMulOutput, LIMB_BITS},
+		verify,
+	},
 };
 use itertools::izip;
 use rand::prelude::*;
@@ -56,10 +59,15 @@ fn prove_and_verify() {
 		c_hi.push(Word::from_u64(c_hi_i));
 	}
 
-	let witness = Witness::<P>::new(LOG_WORD_SIZE_BITS, &a, &b, &c_lo, &c_hi).unwrap();
+	let witness = Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap();
+
+	// The one oracle in the protocol is the logup* pushforward, over the table variables.
+	let oracle_specs = [OracleSpec::new(LIMB_BITS)];
+
 	// Run prover
 	let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
-	let mut prover_channel = NaiveProverChannel::<F, _>::new(&mut prover_transcript, vec![]);
+	let mut prover_channel =
+		NaiveProverChannel::<F, _>::new(&mut prover_transcript, oracle_specs.to_vec());
 	let mut prover = IntMulProver::new(0, &mut prover_channel);
 	let prove_output = prover.prove(witness);
 	prover_channel.finish();
@@ -97,8 +105,8 @@ fn prove_and_verify() {
 	}
 	// Run verifier
 	let mut verifier_transcript = prover_transcript.into_verifier();
-	let mut verifier_channel = NaiveVerifierChannel::new(&mut verifier_transcript, &[]);
-	let verify_output = verify(LOG_WORD_SIZE_BITS, LOG_EXPONENTS, &mut verifier_channel).unwrap();
+	let mut verifier_channel = NaiveVerifierChannel::new(&mut verifier_transcript, &oracle_specs);
+	let verify_output = verify(LOG_EXPONENTS, &mut verifier_channel).unwrap();
 	verifier_channel.finish();
 
 	// Check verifier output is consistent with prover output

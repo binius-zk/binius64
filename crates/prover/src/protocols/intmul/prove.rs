@@ -4,14 +4,17 @@
 use std::marker::PhantomData;
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, FieldOps, PackedField};
-use binius_iop_prover::channel::IOPProverChannel;
+use binius_field::{BinaryField, BinaryField1b, Divisible, ExtensionField, FieldOps, PackedField};
+use binius_iop_prover::{
+	channel::IOPProverChannel,
+	logup_star::{self, Looker},
+};
 use binius_ip::prodcheck::MultilinearEvalClaim;
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	prodcheck::{self, ProdcheckProver},
 	sumcheck::{
-		MleToSumCheckDecorator, PaddedSumcheckDecorator,
+		MleToSumCheckDecorator,
 		batch::{BatchSumcheckOutput, batch_prove, batch_prove_and_write_evals},
 		bivariate_product_mle,
 		multilinear_eval::MultilinearEvalProver,
@@ -28,13 +31,17 @@ use binius_math::{
 	},
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
-use binius_verifier::protocols::intmul::common::{
-	IntMulOutput, Phase1Output, Phase2Output, Phase3Output, frobenius_twist,
+use binius_verifier::{
+	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
+	protocols::intmul::common::{
+		IntMulOutput, LIMB_BITS, LOG_N_LIMBS, N_LIMB_COLUMNS, N_LIMBS, Phase1Output, Phase2Output,
+		Phase3Output, Phase4Output, frobenius_twist, limb_column_twists, twist_limb_claim,
+	},
 };
 use either::Either;
 use itertools::izip;
 
-use super::witness::{Witness, two_valued_field_buffer};
+use super::witness::{Witness, limb_index, two_valued_field_buffer};
 use crate::fold_word::{fold_across_words, fold_words};
 
 /// A helper structure that encapsulates switchover settings and the prover channel for
@@ -58,7 +65,7 @@ impl<'a, P, Channel> IntMulProver<'a, P, Channel> {
 
 impl<F, P, Channel> IntMulProver<'_, P, Channel>
 where
-	F: BinaryField,
+	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 	Channel: IOPProverChannel<P>,
 {
@@ -67,7 +74,7 @@ where
 	/// This method consumes a `Witness` in order to reduce integer multiplication statement to
 	/// evaluation claims on 1-bit multilinears. More formally:
 	///  * `witness` contains po2-sized integer arrays  `a`, `b`, `c_lo` and `c_hi` that satisfy `a
-	///    * b = c_lo | c_hi << (1 << log_bits)`, as well as the layers of the constant- and
+	///    * b = c_lo | c_hi << WORD_SIZE_BITS`, as well as the layers of the constant- and
 	///      variable-base GKR product check circuits
 	///  * The proving consists of five phases:
 	///    - Phase 1: GKR tree roots for B & C are evaluated at a sampled point, after which
@@ -77,17 +84,18 @@ where
 	///      - Selector mlecheck to reduce claims on $b * (G^{a_i} - 1) + 1$ to claims on $G^{a_i}$
 	///        and $b$, then recombine the $2^k$ per-bit `b` claims into one via a sampled $r_I^b$
 	///      - First layer of GPA reduction for the `c_lo || c_hi` combined `c` tree
-	///    - Phase 4: Batching all but last layers and `a`, `c_lo` and `c_hi`
-	///    - Phase 5: Proving the last (widest) layers of `a`, `c_lo` and `c_hi` batched with a
-	///      single-claim rerandomization (MLE-eval) of the recombined `b` exponent claim from phase
-	///      3
+	///    - Phase 4: Batched product check over the three depth-`LOG_N_LIMBS` constant-base trees
+	///      (`a`, `c_lo`, `c_hi`), reducing the roots to per-limb evaluation claims
+	///    - Phase 5: The per-limb claims are Frobenius-twisted onto the shared power table `i ↦
+	///      G^i` and read from it via a committed logup* lookup; a final batched sumcheck brings
+	///      the reduced index claim, a single-claim rerandomization (MLE-eval) of the recombined
+	///      `b` exponent claim from phase 3, and the overflow parity zerocheck to one shared point
 	///
 	/// The output of this protocol is a set of evaluation claims on the `b` selectors representing
 	/// all of `a`, `b`, `c_lo` and `c_hi` as column-major bit matrices, at a common evaluation
-	/// point.
+	/// point. The logup* pushforward commitment is opened through the channel inside phase 5.
 	pub fn prove(&mut self, witness: Witness<'_, P>) -> IntMulOutput<F> {
 		let Witness {
-			log_bits,
 			a_exponents,
 			a_prodcheck,
 			a_root,
@@ -101,12 +109,12 @@ where
 			c_hi_exponents,
 			c_hi_prodcheck,
 			c_hi_root,
+			tables,
 		} = witness;
 
 		// `b_root` (the variable-base `b`-exponent tree root) equals the full product `c` root, so
 		// it serves as the MLE root that opens the protocol.
 		let n_vars = b_root.log_len();
-		assert!(log_bits >= 1);
 
 		let initial_eval_point = self.channel.sample_many(n_vars);
 
@@ -125,7 +133,7 @@ where
 		let Phase2Output {
 			twisted_eval_points,
 			twisted_evals,
-		} = frobenius_twist(log_bits, &phase1_eval_point, &b_leaves_evals);
+		} = frobenius_twist(LOG_WORD_SIZE_BITS, &phase1_eval_point, &b_leaves_evals);
 
 		// Phase 3
 		let Phase3Output {
@@ -136,7 +144,6 @@ where
 			gpow_c_lo_eval,
 			gpow_c_hi_eval,
 		} = self.phase3(
-			log_bits,
 			&twisted_eval_points,
 			&twisted_evals,
 			a_root,
@@ -147,21 +154,18 @@ where
 		);
 
 		// Phase 4
-		let ([a_claim, c_lo_claim, c_hi_claim], phase4_eval_point) = self.phase4(
-			log_bits,
+		let phase_4_output = self.phase4(
 			&phase3_eval_point,
 			(gpow_a_eval, a_prodcheck),
 			(gpow_c_lo_eval, c_lo_prodcheck),
 			(gpow_c_hi_eval, c_hi_prodcheck),
+			[a_exponents, c_lo_exponents, c_hi_exponents],
+			&tables,
 		);
 
 		// Phase 5
 		self.phase5(
-			log_bits,
-			&phase4_eval_point,
-			a_claim,
-			c_lo_claim,
-			c_hi_claim,
+			&phase_4_output,
 			b_exponents,
 			&phase3_eval_point,
 			&r_ib,
@@ -169,7 +173,176 @@ where
 			a_exponents,
 			c_lo_exponents,
 			c_hi_exponents,
+			&tables[0],
 		)
+	}
+
+	#[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
+	#[allow(clippy::too_many_arguments)]
+	pub fn phase5(
+		&mut self,
+		phase_4_output: &Phase4Output<F>,
+		b_exponents: &[Word],
+		b_eval_point: &[F],
+		r_ib: &[F],
+		b_recomb: F,
+		// The exponents supply the lookup indices, the overflow zerocheck bits (`a_0`, `c_lo_0`),
+		// and the raw per-bit output evaluations.
+		a_exponents: &[Word],
+		c_lo_exponents: &[Word],
+		c_hi_exponents: &[Word],
+		table: &FieldBuffer<P>,
+	) -> IntMulOutput<F> {
+		let n_vars = b_eval_point.len();
+		assert_eq!(phase_4_output.eval_point.len(), n_vars);
+
+		// Twist each per-limb claim onto the shared table: column (t, l) is the Frobenius power
+		// φ^{twist} of the looked-up column U_{t,l}(x) = T[e_{t,l}(x)], so its claim becomes a
+		// claim on U_{t,l} at the twisted point.
+		let twists = limb_column_twists();
+		let exponents = [a_exponents, c_lo_exponents, c_hi_exponents];
+		let limb_evals = [
+			&phase_4_output.a_limb_evals,
+			&phase_4_output.c_lo_limb_evals,
+			&phase_4_output.c_hi_limb_evals,
+		];
+
+		let index_columns = (0..N_LIMB_COLUMNS)
+			.map(|j| {
+				let (tree, limb) = (j / N_LIMBS, j % N_LIMBS);
+				exponents[tree]
+					.iter()
+					.map(|&word| limb_index(word, limb))
+					.collect::<Vec<_>>()
+			})
+			.collect::<Vec<_>>();
+		let twisted_claims = (0..N_LIMB_COLUMNS)
+			.map(|j| {
+				let (tree, limb) = (j / N_LIMBS, j % N_LIMBS);
+				twist_limb_claim(twists[j], &phase_4_output.eval_point, limb_evals[tree][limb])
+			})
+			.collect::<Vec<_>>();
+
+		// Read the N_LIMB_COLUMNS looked-up columns from the shared table via the committed multi-
+		// looker logup* reduction. The pushforward oracle is committed inside; its opening relation
+		// is returned to the caller. The reduction returns one index claim per column, all at the
+		// shared content point.
+		let lookers = izip!(&index_columns, &twisted_claims)
+			.map(|(index, (twisted_point, twisted_eval))| Looker {
+				index,
+				eval_point: twisted_point,
+				eval_claim: *twisted_eval,
+			})
+			.collect::<Vec<_>>();
+		let log_cols = log2_ceil_usize(N_LIMB_COLUMNS);
+		let logup_proof = logup_star::prove(table, &lookers, self.channel);
+
+		// The index entries are the GF(2)-linear embeddings iota(e) = Σ_u basis(u) · bit_u(e),
+		// materialized by a table of all 2^LIMB_BITS embeddings.
+		let mut iota_table = Vec::with_capacity(1usize << LIMB_BITS);
+		iota_table.push(F::ZERO);
+		for row in 1..1usize << LIMB_BITS {
+			let low_bit_basis =
+				<F as ExtensionField<BinaryField1b>>::basis(row.trailing_zeros() as usize);
+			iota_table.push(iota_table[row & (row - 1)] + low_bit_basis);
+		}
+
+		let index_content_point = logup_proof.index_eval_point.as_slice();
+		let embedded_columns = index_columns
+			.iter()
+			.map(|rows| rows.iter().map(|&row| iota_table[row]).collect::<Vec<_>>())
+			.collect::<Vec<_>>();
+
+		// Collapse the per-column claims into a single claim on the eq(ρ)-folded column V by
+		// sampling ρ, so the final unification runs over the content variables only.
+		let rho = self.channel.sample_many(log_cols);
+		let mut padded_column_evals = logup_proof.index_eval_claims.clone();
+		padded_column_evals.resize(1 << log_cols, F::ZERO);
+		let folded_index_claim =
+			evaluate(&FieldBuffer::<P>::from_values(&padded_column_evals), &rho);
+		let rho_tensor = eq_ind_partial_eval_scalars::<F>(&rho);
+		let folded_column_scalars = (0..1usize << n_vars)
+			.map(|i| {
+				izip!(&embedded_columns, &rho_tensor)
+					.map(|(column, &weight)| column[i] * weight)
+					.sum::<F>()
+			})
+			.collect::<Vec<_>>();
+		let folded_column = FieldBuffer::<P>::from_values(&folded_column_scalars);
+		let index_prover = MleToSumCheckDecorator::new(MultilinearEvalProver::new(
+			folded_column,
+			index_content_point,
+			folded_index_claim,
+		));
+
+		// Embed `a_0`, `b_0`, `c_lo_0` bits into field buffers for the overflow zerocheck.
+		let binary_elements = [F::zero(), F::one()];
+
+		// TODO: Use a special 1-bit-optimized MLE-check with switchover to save memory.
+		let a_0: FieldBuffer<P> = two_valued_field_buffer(0, a_exponents, binary_elements);
+		let b_0: FieldBuffer<P> = two_valued_field_buffer(0, b_exponents, binary_elements);
+		let c_lo_0: FieldBuffer<P> = two_valued_field_buffer(0, c_lo_exponents, binary_elements);
+
+		// The overflow parity check binds at the Phase-2 constraint point `b_eval_point` (r_2) —
+		// reused for free from the `b` re-randomization.
+		let overflow_prover =
+			MleToSumCheckDecorator::new(QuadraticMleCheckProver::<P, _, _, 3>::new(
+				[a_0, b_0, c_lo_0],
+				|[a, b, c]| a * b - c,
+				|[a, b, _c]| a * b,
+				b_eval_point.to_vec(),
+				F::ZERO,
+			));
+
+		// Fold the 2^k b bit-columns by the recombination tensor into a single field multilinear
+		// B(x) = sum_i eq(r_I^b, i) * b(i, x), then re-randomize its claim B(r_2) = b_recomb from
+		// `b_eval_point` (r_2) to the shared point via a single-claim MLE-eval check.
+		assert_eq!(b_exponents.len(), 1 << n_vars);
+		let b_tensor = eq_ind_partial_eval_scalars::<F>(r_ib);
+		let b_folded = fold_words::<_, P>(b_exponents, &b_tensor);
+		let b_sumcheck_prover = MleToSumCheckDecorator::new(MultilinearEvalProver::new(
+			b_folded,
+			b_eval_point,
+			b_recomb,
+		));
+
+		let BatchSumcheckOutput {
+			challenges,
+			multilinear_evals: _,
+		} = batch_prove(
+			vec![
+				Either::Left(index_prover),
+				Either::Right(Either::Left(overflow_prover)),
+				Either::Right(Either::Right(b_sumcheck_prover)),
+			],
+			self.channel,
+		);
+
+		// `challenges` (reversed) is the shared output point for all output claims.
+		let r_out = challenges.as_slice();
+
+		// Send the raw per-bit output evals at `r_out`, computed directly from the exponents. The
+		// verifier binds the stacked-index claim via the GF(2)-linearity of the embedding, the `b`
+		// evals via sum_i eq(r_I^b, i) * b(i, r_out) = B(r_out), and the parity bits directly.
+		let per_bit_evals =
+			|exponents: &[Word]| fold_across_words::<_, P>(exponents, r_out).to_vec();
+		let a_evals = per_bit_evals(a_exponents);
+		let c_lo_evals = per_bit_evals(c_lo_exponents);
+		let c_hi_evals = per_bit_evals(c_hi_exponents);
+		let b_evals = per_bit_evals(b_exponents);
+
+		self.channel.send_many(&a_evals);
+		self.channel.send_many(&c_lo_evals);
+		self.channel.send_many(&c_hi_evals);
+		self.channel.send_many(&b_evals);
+
+		IntMulOutput {
+			eval_point: r_out.to_vec(),
+			a_evals,
+			b_evals,
+			c_lo_evals,
+			c_hi_evals,
+		}
 	}
 }
 
@@ -221,7 +394,6 @@ where
 	#[allow(clippy::too_many_arguments)]
 	pub fn phase3(
 		&mut self,
-		log_bits: usize,
 		twisted_eval_points: &[Vec<F>],
 		twisted_evals: &[F],
 		selector: FieldBuffer<P>,
@@ -251,7 +423,7 @@ where
 		// 2^k claims with a multilinear one; the verifier mirrors it by weighting the corresponding
 		// terms by eq_k(γ, ·). γ is sampled before the batched sumcheck so the round polynomials
 		// are fixed against it.
-		let gamma = self.channel.sample_many(log_bits);
+		let gamma = self.channel.sample_many(LOG_WORD_SIZE_BITS);
 		let eq_weights = eq_ind_partial_eval_scalars::<F>(&gamma);
 		// `SelectorMlecheckProver` reads the exponent bits through the `Bitwise` bitmask
 		// abstraction, which is implemented for the primitive integer types. `Word` is
@@ -280,7 +452,7 @@ where
 			.try_into()
 			.expect("batch_prove with two provers returns length-2 multilinear_evals");
 
-		assert_eq!(selector_prover_evals.len(), 1 + (1 << log_bits));
+		assert_eq!(selector_prover_evals.len(), 1 + WORD_SIZE_BITS);
 
 		let gpow_a_eval = selector_prover_evals
 			.pop()
@@ -293,7 +465,7 @@ where
 		// Recombine the 2^k per-bit b(i, r) claims into a single claim b(r_I^b, r) by sampling a
 		// recombination point r_I^b in K^k, matching the verifier. This carries one exponent claim
 		// (rather than 2^k) into Phases 4 and 5.
-		let r_ib = self.channel.sample_many(log_bits);
+		let r_ib = self.channel.sample_many(LOG_WORD_SIZE_BITS);
 		let b_recomb = evaluate(&FieldBuffer::<P>::from_values(&b_evals), &r_ib);
 
 		Phase3Output {
@@ -307,31 +479,32 @@ where
 	}
 
 	#[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
-	#[allow(clippy::type_complexity)]
+	#[allow(clippy::too_many_arguments)]
 	pub fn phase4(
 		&mut self,
-		log_bits: usize,
 		eval_point: &[F],
 		(a_root_eval, a_prover): (F, ProdcheckProver<P>),
 		(gpow_c_lo_eval, c_lo_prover): (F, ProdcheckProver<P>),
 		(gpow_c_hi_eval, c_hi_prover): (F, ProdcheckProver<P>),
-	) -> ([(F, ProdcheckProver<P>); 3], Vec<F>) {
-		// Each prover is over the full (widest) leaf layer of `2^log_bits` node multilinears.
-		assert_eq!(a_prover.n_layers(), log_bits);
-		assert_eq!(c_lo_prover.n_layers(), log_bits);
-		assert_eq!(c_hi_prover.n_layers(), log_bits);
+		exponents: [&[Word]; 3],
+		tables: &[FieldBuffer<P>],
+	) -> Phase4Output<F> {
+		let n_vars = eval_point.len();
+
+		// Each prover is over the full (widest) leaf layer of `N_LIMBS` limb columns.
+		assert_eq!(a_prover.n_layers(), LOG_N_LIMBS);
+		assert_eq!(c_lo_prover.n_layers(), LOG_N_LIMBS);
+		assert_eq!(c_hi_prover.n_layers(), LOG_N_LIMBS);
 
 		// Sample the selector challenges that batch the 3 trees (padded to 4).
 		let selector = self.channel.sample_many(log2_ceil_usize(3));
 
-		// Run the batched prodcheck: content point is the Phase-3 evaluation point at which the
-		// three roots are claimed. This runs `log_bits - 1` reduction layers, reducing the three
-		// trees down to (but not including) their final (widest) leaf layer, which it returns
-		// inside the remaining provers. Each remaining prover is paired with its reduced eval at
-		// the shared reduced point.
+		// Run the batched prodcheck over all LOG_N_LIMBS layers: content point is the Phase-3
+		// evaluation point at which the three roots are claimed. The output pairs each tree with
+		// its reduced leaf evaluation at the shared reduced point.
 		let prodcheck::BatchProveOutput {
 			eval_point: reduced_point,
-			provers,
+			evals: _tree_evals,
 		} = prodcheck::batch_prove(
 			vec![a_prover, c_lo_prover, c_hi_prover],
 			vec![a_root_eval, gpow_c_lo_eval, gpow_c_hi_eval],
@@ -340,175 +513,42 @@ where
 			self.channel,
 		);
 
-		// The reduced point is [selector (2), suffix (n_vars), bit_index (log_bits - 1)]. Drop the
-		// selector coordinates: `[suffix, bit_index]` is the point at which each retained
-		// all-but-last-layer node multilinear is now claimed, and is the content+node point the
-		// Phase-5 final-layer sumchecks bind. Hand the three per-tree reduced claims (eval +
-		// retained final layer) straight through to Phase 5 — no all-but-last-layer evals are
-		// recomputed or sent here.
+		// The reduced point is [selector (2), r_content (n_vars), r_limb (LOG_N_LIMBS)]:
+		// `r_content` is the shared point at which the limb columns are claimed; `r_limb`
+		// collapses the limb dimension.
 		let selector_len = log2_ceil_usize(3);
-		let a_c_eval_point = reduced_point[selector_len..].to_vec();
+		let (r_content, _r_limb) = reduced_point[selector_len..].split_at(n_vars);
 
-		let claims: [(F, ProdcheckProver<P>); 3] = provers
-			.try_into()
-			.ok()
-			.expect("batch_prove returns three provers");
-
-		(claims, a_c_eval_point)
-	}
-
-	#[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
-	#[allow(clippy::too_many_arguments)]
-	pub fn phase5(
-		&mut self,
-		log_bits: usize,
-		a_c_eval_point: &[F],
-		a_claim: (F, ProdcheckProver<P>),
-		c_lo_claim: (F, ProdcheckProver<P>),
-		c_hi_claim: (F, ProdcheckProver<P>),
-		b_exponents: &[Word],
-		b_eval_point: &[F],
-		r_ib: &[F],
-		b_recomb: F,
-		// The exponents supply the overflow zerocheck bits (`a_0`, `c_lo_0`) and the raw per-bit
-		// output evaluations.
-		a_exponents: &[Word],
-		c_lo_exponents: &[Word],
-		c_hi_exponents: &[Word],
-	) -> IntMulOutput<F> {
-		assert!(log_bits >= 1);
-		let n_vars = b_eval_point.len();
-		// `a_c_eval_point = [suffix (n_vars), bit_index (log_bits - 1)]` — the content point plus
-		// the all-but-last-layer node coordinates. The final-layer sumchecks bind all of it; the
-		// overflow and `b` checks span only the `n_vars` content coordinates and are padded up.
-		let n_extra = log_bits - 1;
-		assert_eq!(a_c_eval_point.len(), n_vars + n_extra);
-
-		// Send the three per-tree reduced claims. The verifier checks they combine, weighted by
-		// eq(selector), to the batched prodcheck output claim, then uses each as the seed for that
-		// tree's final-layer sumcheck.
-		let (a_eval, a_prover) = a_claim;
-		let (c_lo_eval, c_lo_prover) = c_lo_claim;
-		let (c_hi_eval, c_hi_prover) = c_hi_claim;
-		self.channel.send_many(&[a_eval, c_lo_eval, c_hi_eval]);
-
-		// Prove the final (widest) GKR layer of each tree as a regular prodcheck-layer bivariate
-		// product MLE-check, seeded by the tree's reduced claim, wrapped as a sumcheck.
-		let make_tree_prover = |eval: F, prover: ProdcheckProver<P>| {
-			let (mle_prover, remaining) = prover.layer_prover(MultilinearEvalClaim {
-				eval,
-				point: a_c_eval_point.to_vec(),
-			});
-			debug_assert!(remaining.is_none(), "one retained layer per tree");
-			MleToSumCheckDecorator::new(mle_prover)
+		// Send the per-limb evaluations at `r_content`, computed by re-gathering each limb column
+		// from its twisted power table. The verifier recombines each tree's two leaf halves via
+		// eq(r_limb) to bind them to the final-layer sumchecks.
+		let twists = limb_column_twists();
+		let x_tensor = eq_ind_partial_eval(r_content);
+		let limb_evals = |tree: usize| {
+			(0..N_LIMBS)
+				.map(|limb| {
+					let table = &tables[twists[tree * N_LIMBS + limb] / LIMB_BITS];
+					let column_scalars = exponents[tree]
+						.iter()
+						.map(|&word| table.get(limb_index(word, limb)))
+						.collect::<Vec<_>>();
+					let column = FieldBuffer::<P>::from_values(&column_scalars);
+					inner_product_buffers(&column, &x_tensor)
+				})
+				.collect::<Vec<_>>()
 		};
-		let a_tree = make_tree_prover(a_eval, a_prover);
-		let c_lo_tree = make_tree_prover(c_lo_eval, c_lo_prover);
-		let c_hi_tree = make_tree_prover(c_hi_eval, c_hi_prover);
+		let a_limb_evals = limb_evals(0);
+		let c_lo_limb_evals = limb_evals(1);
+		let c_hi_limb_evals = limb_evals(2);
+		self.channel.send_many(&a_limb_evals);
+		self.channel.send_many(&c_lo_limb_evals);
+		self.channel.send_many(&c_hi_limb_evals);
 
-		// Embed `a_0`, `b_0`, `c_lo_0` bits into field buffers for the overflow zerocheck.
-		let binary_elements = [F::zero(), F::one()];
-
-		// TODO: Use a special 1-bit-optimized MLE-check with switchover to save memory.
-		let a_0: FieldBuffer<P> = two_valued_field_buffer(0, a_exponents, binary_elements);
-		let b_0: FieldBuffer<P> = two_valued_field_buffer(0, b_exponents, binary_elements);
-		let c_lo_0: FieldBuffer<P> = two_valued_field_buffer(0, c_lo_exponents, binary_elements);
-
-		// The overflow parity check binds at the Phase-2 constraint point `b_eval_point` (r_2) —
-		// reused for free from the `b` re-randomization. It spans only the `n_vars` content
-		// coordinates, so pad it up by `n_extra` variables to batch with the final-layer sumchecks.
-		let overflow_prover = PaddedSumcheckDecorator::new(
-			MleToSumCheckDecorator::new(QuadraticMleCheckProver::<P, _, _, 3>::new(
-				[a_0, b_0, c_lo_0],
-				|[a, b, c]| a * b - c,
-				|[a, b, _c]| a * b,
-				b_eval_point.to_vec(),
-				F::ZERO,
-			)),
-			n_extra,
-		);
-
-		// Fold the 2^k b bit-columns by the recombination tensor into a single field multilinear
-		// B(x) = sum_i eq(r_I^b, i) * b(i, x), then re-randomize its claim B(r_2) = b_recomb from
-		// `b_eval_point` (r_2) to the shared point via a single-claim MLE-eval check, padded up.
-		assert_eq!(b_exponents.len(), 1 << n_vars);
-		let b_tensor = eq_ind_partial_eval_scalars::<F>(r_ib);
-		let b_folded = fold_words::<_, P>(b_exponents, &b_tensor);
-		let b_sumcheck_prover = PaddedSumcheckDecorator::new(
-			MleToSumCheckDecorator::new(MultilinearEvalProver::new(
-				b_folded,
-				b_eval_point,
-				b_recomb,
-			)),
-			n_extra,
-		);
-
-		// Batch prove all five provers — the three final-layer sumchecks, the overflow zerocheck,
-		// and the `b` re-randomization — all over `n_vars + n_extra` variables.
-		let BatchSumcheckOutput {
-			challenges,
-			multilinear_evals,
-		} = batch_prove(
-			vec![
-				Either::Left(a_tree),
-				Either::Left(c_lo_tree),
-				Either::Left(c_hi_tree),
-				Either::Right(Either::Left(overflow_prover)),
-				Either::Right(Either::Right(b_sumcheck_prover)),
-			],
-			self.channel,
-		);
-
-		// The reduced point is [r_content (n_vars), r_bit (n_extra)]: `r_content` is the shared
-		// evaluation point for the output claims; `r_bit` collapses the node dimension (and is the
-		// padding point for the overflow / `b` checks).
-		let (r_content, _r_bit) = challenges.split_at(n_vars);
-
-		// Send the raw per-bit output evals at `r_content`, computed directly from the exponents.
-		// The verifier reconstructs the selected leaf values from these and recombines them via
-		// eq(r_bit) to bind the final-layer sumchecks; it binds the `b` evals via
-		// sum_i eq(r_I^b, i) * b(i, r_content) = B(r_content).
-		let per_bit_evals =
-			|exponents: &[Word]| fold_across_words::<_, P>(exponents, r_content).to_vec();
-		let a_evals = per_bit_evals(a_exponents);
-		let c_lo_evals = per_bit_evals(c_lo_exponents);
-		let c_hi_evals = per_bit_evals(c_hi_exponents);
-		let b_evals = per_bit_evals(b_exponents);
-
-		self.channel.send_many(&a_evals);
-		self.channel.send_many(&c_lo_evals);
-		self.channel.send_many(&c_hi_evals);
-		self.channel.send_many(&b_evals);
-
-		// Sanity: the overflow zerocheck's finished per-bit evals and the `b` recombined eval match
-		// the sent raw evals. The padded provers' `finish` returns the inner multilinear evals.
-		let [
-			_a_evals2,
-			_c_lo_evals2,
-			_c_hi_evals2,
-			lsb_evals,
-			b_recomb_evals,
-		] = multilinear_evals
-			.try_into()
-			.expect("batch_prove with 5 provers returns 5 multilinear_evals vecs");
-		let [a_0_eval, b_0_eval, c_lo_0_eval] = lsb_evals
-			.try_into()
-			.expect("overflow prover has 3 multilinears");
-		debug_assert_eq!(a_0_eval, a_evals[0]);
-		debug_assert_eq!(b_0_eval, b_evals[0]);
-		debug_assert_eq!(c_lo_0_eval, c_lo_evals[0]);
-		debug_assert_eq!(b_recomb_evals.len(), 1);
-		debug_assert_eq!(
-			b_recomb_evals[0],
-			evaluate(&FieldBuffer::<P>::from_values(&b_evals), r_ib)
-		);
-
-		IntMulOutput {
+		Phase4Output {
 			eval_point: r_content.to_vec(),
-			a_evals,
-			b_evals,
-			c_lo_evals,
-			c_hi_evals,
+			a_limb_evals,
+			c_lo_limb_evals,
+			c_hi_limb_evals,
 		}
 	}
 }

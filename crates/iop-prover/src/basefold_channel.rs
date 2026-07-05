@@ -7,10 +7,8 @@
 //! mask generated internally; non-ZK oracles are committed without a mask. All committed oracles
 //! are opened with a single combined FRI.
 
-use std::iter;
-
 use binius_field::{BinaryField, PackedField};
-use binius_iop::{channel::OracleSpec, fri::FRIParams, merkle_tree::MerkleTreeScheme};
+use binius_iop::{channel::OracleSpec, fri::FRIParams};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{self, PaddedSumcheckDecorator, bivariate_product::BivariateProductSumcheckProver},
@@ -22,20 +20,15 @@ use binius_math::{
 	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
 	ntt::AdditiveNTT,
 };
-use binius_transcript::{
-	ProverTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
-use binius_utils::{SerializeBytes, checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use itertools::izip;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::{
 	basefold::prove_mlecheck_basefold,
-	basefold_compiler::BaseFoldProverCompiler,
 	channel::IOPProverChannel,
-	fri::{self, CommitMaskedOutput, CommitOutput, FRIFoldProver},
-	merkle_tree::MerkleTreeProver,
+	fri::{self, FRIFoldProver, MaskedCodeword},
+	merkle_channel::MerkleIPProverChannel,
 };
 
 /// Oracle handle returned by [`BaseFoldProverChannel::send_oracle`].
@@ -45,14 +38,14 @@ pub struct BaseFoldOracle {
 }
 
 /// Committed oracle data stored internally.
-struct CommittedOracleData<P: PackedField, Committed> {
-	/// The mask buffer generated during [`fri::commit_masked`] for a ZK oracle, held by the
+struct CommittedOracleData<P: PackedField, C> {
+	/// The mask buffer generated during [`fri::encode_masked`] for a ZK oracle, held by the
 	/// channel because it is the only party that knows it. `None` for a non-ZK (unmasked) oracle.
 	mask: Option<FieldBuffer<P>>,
 	/// RS-encoded codeword.
 	codeword: FieldBuffer<P>,
-	/// Merkle commitment data for query proofs.
-	committed: Committed,
+	/// The Merkle commitment handle for query proofs, owning the committed tree.
+	commitment: C,
 }
 
 /// A prover channel that uses ZK BaseFold for all oracle commitments and openings.
@@ -69,23 +62,22 @@ struct CommittedOracleData<P: PackedField, Committed> {
 /// - `F`: The binary field type
 /// - `P`: The packed field type with `Scalar = F`
 /// - `NTT`: The additive NTT for Reed-Solomon encoding
-/// - `MerkleProver_`: The Merkle tree prover for commitments
-/// - `Challenger_`: The Fiat-Shamir challenger
-pub struct BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
+/// - `Channel`: The Merkle channel carrying all prover interaction
+pub struct BaseFoldProverChannel<'a, F, P, NTT, Channel>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
-	MerkleProver_: MerkleTreeProver<F>,
-	Challenger_: Challenger,
+	Channel: MerkleIPProverChannel<F>,
 {
-	transcript: &'a mut ProverTranscript<Challenger_>,
+	/// The Merkle channel carrying all prover interaction: field elements, challenges,
+	/// commitments, and openings.
+	channel: Channel,
 	ntt: &'a NTT,
-	merkle_prover: &'a MerkleProver_,
 	oracle_specs: Vec<OracleSpec>,
 	/// The combined FRI parameters over all committed oracles.
 	fri_params: FRIParams<F>,
-	committed_oracles: Vec<CommittedOracleData<P, MerkleProver_::Committed>>,
+	committed_oracles: Vec<CommittedOracleData<P, Channel::Commitment>>,
 	/// Oracle relations queued by [`Self::prove_oracle_relations`], opened together in
 	/// [`Self::finish`]. Each entry is `(oracle_index, message π_i, transparent t_i, claim s_i)`.
 	queue: Vec<(usize, FieldBuffer<P>, FieldBuffer<P>, F)>,
@@ -93,40 +85,35 @@ where
 	rng: StdRng,
 }
 
-impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>
-	BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
+impl<'a, F, P, NTT, Channel> BaseFoldProverChannel<'a, F, P, NTT, Channel>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
-	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
-	MerkleProver_: MerkleTreeProver<F, Scheme = MerkleScheme>,
-	Challenger_: Challenger,
+	Channel: MerkleIPProverChannel<F>,
 {
-	/// Creates a new BaseFold ZK prover channel from a compiler with precomputed FRI parameters.
+	/// Creates a new BaseFold ZK prover channel over a Merkle channel from precomputed FRI
+	/// parameters.
 	///
-	/// The `rng` is used to seed an internal `StdRng` for mask generation.
-	pub fn from_compiler(
-		compiler: &'a BaseFoldProverCompiler<P, NTT, MerkleProver_>,
-		transcript: &'a mut ProverTranscript<Challenger_>,
+	/// The FRI parameters should already account for ZK (log_batch_size = 1, doubled message
+	/// length). The `rng` is used to seed an internal `StdRng` for mask generation.
+	pub fn new(
+		channel: Channel,
+		ntt: &'a NTT,
+		oracle_specs: Vec<OracleSpec>,
+		fri_params: FRIParams<F>,
 		mut rng: impl Rng,
 	) -> Self {
 		Self {
-			transcript,
-			ntt: compiler.ntt(),
-			merkle_prover: compiler.merkle_prover(),
-			oracle_specs: compiler.oracle_specs().to_vec(),
-			fri_params: compiler.fri_params().clone(),
+			channel,
+			ntt,
+			oracle_specs,
+			fri_params,
 			committed_oracles: Vec::new(),
 			queue: Vec::new(),
 			next_oracle_index: 0,
 			rng: StdRng::from_rng(&mut rng),
 		}
-	}
-
-	/// Returns a reference to the underlying transcript.
-	pub const fn transcript(&self) -> &ProverTranscript<Challenger_> {
-		self.transcript
 	}
 
 	/// Consumes the channel and proves the single combined opening over **all** committed oracles.
@@ -140,9 +127,8 @@ where
 	/// [`BaseFoldVerifierChannel::finish`]: binius_iop::basefold_channel::BaseFoldVerifierChannel::finish
 	pub fn finish(self) {
 		let Self {
-			transcript,
+			mut channel,
 			ntt,
-			merkle_prover,
 			oracle_specs,
 			fri_params,
 			committed_oracles,
@@ -159,9 +145,8 @@ where
 		}
 
 		prove_batch_zk_basefold(
-			transcript,
+			&mut channel,
 			ntt,
-			merkle_prover,
 			&oracle_specs,
 			&fri_params,
 			committed_oracles,
@@ -172,10 +157,10 @@ where
 
 /// Proves the combined ZK BaseFold opening over all committed oracles.
 ///
-/// This drives `channel` — the [`ProverTranscript`] taken from the destructured
-/// [`BaseFoldProverChannel`] — through its [`IPProverChannel`] interface: it sends the masked
-/// inner products σ_i, runs one batched sumcheck reducing the masked claims to a shared point `r`,
-/// then opens each committed oracle with its own FRI parameters. Mirrors
+/// This drives `channel` — the Merkle channel taken from the destructured
+/// [`BaseFoldProverChannel`] — through its [`MerkleIPProverChannel`] interface: it sends the
+/// masked inner products σ_i, runs one batched sumcheck reducing the masked claims to a shared
+/// point `r`, then opens all committed oracles together with a single combined FRI. Mirrors
 /// [`binius_iop::basefold_channel::BaseFoldVerifierChannel::finish`].
 ///
 /// The masking inner products and the batched sumcheck process the `relations` in arrival order (so
@@ -184,25 +169,18 @@ where
 /// index, so the two orders are reconciled by indexing rather than by sorting the relations; the
 /// per-oracle data (`oracle_specs`, `fri_params`, `committed_oracles`) is all indexed by oracle
 /// index.
-///
-/// `channel` is the concrete [`ProverTranscript`] rather than an arbitrary [`IPProverChannel`]
-/// because the Phase-B FRI openings write Merkle query proofs, which fall outside that interface.
-#[allow(clippy::too_many_arguments)]
-fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
-	channel: &mut ProverTranscript<Challenger_>,
+fn prove_batch_zk_basefold<F, P, NTT, Channel>(
+	channel: &mut Channel,
 	ntt: &NTT,
-	merkle_prover: &MerkleProver_,
 	oracle_specs: &[OracleSpec],
 	fri_params: &FRIParams<F>,
-	committed_oracles: Vec<CommittedOracleData<P, MerkleProver_::Committed>>,
+	committed_oracles: Vec<CommittedOracleData<P, Channel::Commitment>>,
 	relations: Vec<(usize, FieldBuffer<P>, FieldBuffer<P>, F)>,
 ) where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
-	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
-	MerkleProver_: MerkleTreeProver<F, Scheme = MerkleScheme>,
-	Challenger_: Challenger,
+	Channel: MerkleIPProverChannel<F>,
 {
 	let n_committed = committed_oracles.len();
 	assert_eq!(oracle_specs.len(), n_committed);
@@ -235,7 +213,7 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 		.collect::<Vec<_>>();
 	channel.send_many(&sigmas);
 
-	let gamma = (!sigmas.is_empty()).then(|| IPProverChannel::<F>::sample(channel));
+	let gamma = (!sigmas.is_empty()).then(|| channel.sample());
 
 	// === Phase A: batched sumcheck on the masked claims ⟨π_i', t_i⟩ = s_i' ===
 	// Register provers in arrival order; form π_i' = (1-γ)π_i + γω_i, storing each clone for Phase
@@ -338,15 +316,12 @@ fn prove_batch_zk_basefold<F, P, NTT, MerkleScheme, MerkleProver_, Challenger_>(
 	}
 
 	// Codeword commitments in oracle-index order, matching `open_fri_params.input_oracles()`.
-	let (committed_codewords, committeds) = committed_oracles
+	let committed_codewords = committed_oracles
 		.into_iter()
-		.map(|committed| (committed.codeword, committed.committed))
-		.unzip::<_, _, Vec<_>, Vec<_>>();
-	// TODO: Annoying that we need to pass references for committeds. Maybe we can change the
-	// FRIFoldProver constructor.
-	let committed_codewords = iter::zip(committed_codewords, &committeds).collect();
+		.map(|committed| (committed.codeword, committed.commitment))
+		.collect();
 
-	let fri_folder = FRIFoldProver::new_batch(fri_params, ntt, merkle_prover, committed_codewords);
+	let fri_folder = FRIFoldProver::new_batch(fri_params, ntt, committed_codewords);
 	prove_mlecheck_basefold(
 		combined,
 		point,
@@ -377,46 +352,40 @@ fn accumulate_scaled_buffer<P: PackedField>(
 	}
 }
 
-impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, Challenger_> IPProverChannel<F>
-	for BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
+impl<'a, F, P, NTT, Channel> IPProverChannel<F> for BaseFoldProverChannel<'a, F, P, NTT, Channel>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
-	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
-	MerkleProver_: MerkleTreeProver<F, Scheme = MerkleScheme>,
-	Challenger_: Challenger,
+	Channel: MerkleIPProverChannel<F>,
 {
 	fn send_one(&mut self, elem: F) {
-		self.transcript.message().write_scalar(elem);
+		self.channel.send_one(elem);
 	}
 
 	fn send_many(&mut self, elems: &[F]) {
-		self.transcript.message().write_scalar_slice(elems);
+		self.channel.send_many(elems);
 	}
 
 	fn observe_one(&mut self, val: F) {
-		self.transcript.observe().write_scalar(val);
+		self.channel.observe_one(val);
 	}
 
 	fn observe_many(&mut self, vals: &[F]) {
-		self.transcript.observe().write_scalar_slice(vals);
+		self.channel.observe_many(vals);
 	}
 
 	fn sample(&mut self) -> F {
-		CanSample::sample(&mut self.transcript)
+		self.channel.sample()
 	}
 }
 
-impl<'a, F, P, NTT, MerkleScheme, MerkleProver_, Challenger_> IOPProverChannel<P>
-	for BaseFoldProverChannel<'a, F, P, NTT, MerkleProver_, Challenger_>
+impl<'a, F, P, NTT, Channel> IOPProverChannel<P> for BaseFoldProverChannel<'a, F, P, NTT, Channel>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
-	MerkleScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
-	MerkleProver_: MerkleTreeProver<F, Scheme = MerkleScheme>,
-	Challenger_: Challenger,
+	Channel: MerkleIPProverChannel<F>,
 {
 	type Oracle = BaseFoldOracle;
 
@@ -440,45 +409,31 @@ where
 			buffer.log_len()
 		);
 
-		// Commit oracle `index` of the combined FRI parameters. ZK oracles interleave a fresh mask
-		// (`commit_masked`); non-ZK oracles commit the message alone (`commit_interleaved`).
-		let (commitment, committed, codeword, mask) = if spec.is_zk {
-			let CommitMaskedOutput {
-				commitment,
-				committed,
-				codeword,
-				mask,
-			} = fri::commit_masked(
+		// Encode oracle `index` of the combined FRI parameters. ZK oracles interleave a fresh mask
+		// (`encode_masked`); non-ZK oracles encode the message alone (`encode_interleaved`).
+		let (codeword, mask) = if spec.is_zk {
+			let MaskedCodeword { codeword, mask } = fri::encode_masked(
 				&self.fri_params,
 				index,
 				self.ntt,
-				self.merkle_prover,
 				buffer.to_ref(),
 				&mut self.rng,
 			);
-			(commitment, committed, codeword, Some(mask))
+			(codeword, Some(mask))
 		} else {
-			let CommitOutput {
-				commitment,
-				committed,
-				codeword,
-			} = fri::commit_interleaved(
-				&self.fri_params,
-				index,
-				self.ntt,
-				self.merkle_prover,
-				buffer.to_ref(),
-			);
-			(commitment, committed, codeword, None)
+			(fri::encode_interleaved(&self.fri_params, index, self.ntt, buffer.to_ref()), None)
 		};
 
-		// Send commitment via transcript.
-		self.transcript.message().write(&commitment);
+		// Commit the codeword over the Merkle channel, with one interleaved coset per leaf.
+		let leaf_size = 1 << self.fri_params.input_oracles()[index].log_batch_size();
+		let commitment = self
+			.channel
+			.send_merkle_commitment(codeword.to_ref(), leaf_size);
 
 		self.committed_oracles.push(CommittedOracleData {
 			mask,
 			codeword,
-			committed,
+			commitment,
 		});
 
 		self.next_oracle_index += 1;
@@ -516,6 +471,7 @@ mod tests {
 		basefold_compiler::BaseFoldVerifierCompiler,
 		channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 		fri::MinProofSizeStrategy,
+		merkle_tree::BinaryMerkleTreeScheme,
 	};
 	use binius_math::{
 		BinarySubspace, FieldBuffer,
@@ -528,9 +484,7 @@ mod tests {
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::IOPProverChannel;
-	use crate::{
-		basefold_compiler::BaseFoldProverCompiler, merkle_tree::prover::BinaryMerkleTreeProver,
-	};
+	use crate::basefold_compiler::BaseFoldProverCompiler;
 
 	type StdChallenger = HasherChallenger<StdDigest>;
 
@@ -548,8 +502,8 @@ mod tests {
 		NeighborsLastSingleThread::new(domain_context)
 	}
 
-	fn make_merkle_prover() -> BinaryMerkleTreeProver<BinaryField128bGhash, StdHashSuite> {
-		BinaryMerkleTreeProver::new()
+	fn make_merkle_scheme() -> BinaryMerkleTreeScheme<BinaryField128bGhash, StdHashSuite> {
+		BinaryMerkleTreeScheme::new()
 	}
 
 	fn generate_zk_oracle_data<F, P, R: Rng>(
@@ -582,9 +536,8 @@ mod tests {
 
 		let oracle_specs = vec![OracleSpec::new_zk(n_vars)];
 
-		let merkle_prover = make_merkle_prover();
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
-			merkle_prover.scheme().clone(),
+			make_merkle_scheme(),
 			oracle_specs,
 			LOG_INV_RATE,
 			n_test_queries,
@@ -593,15 +546,16 @@ mod tests {
 
 		// === PROVER SIDE ===
 		let ntt = make_ntt(verifier_compiler.max_subspace());
-		let prover_compiler = BaseFoldProverCompiler::<P, _, _>::from_verifier_compiler(
-			&verifier_compiler,
-			ntt,
-			merkle_prover,
-		);
+		let prover_compiler =
+			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_rng = StdRng::seed_from_u64(1);
-		let mut prover_channel = prover_compiler.create_channel(&mut prover_transcript, prover_rng);
+		let mut prover_channel = prover_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut prover_transcript,
+				prover_rng,
+			);
 
 		let oracle = prover_channel.send_oracle(buffer.to_ref());
 		assert_eq!(oracle.index, 0);
@@ -616,7 +570,10 @@ mod tests {
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
+		let mut verifier_channel = verifier_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut verifier_transcript,
+			);
 
 		let v_oracle = verifier_channel.recv_oracle(n_vars, true).unwrap();
 
@@ -651,9 +608,8 @@ mod tests {
 
 		let oracle_specs = vec![OracleSpec::new_zk(n_vars_1), OracleSpec::new_zk(n_vars_2)];
 
-		let merkle_prover = make_merkle_prover();
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
-			merkle_prover.scheme().clone(),
+			make_merkle_scheme(),
 			oracle_specs,
 			LOG_INV_RATE,
 			n_test_queries,
@@ -662,15 +618,16 @@ mod tests {
 
 		// === PROVER SIDE ===
 		let ntt = make_ntt(verifier_compiler.max_subspace());
-		let prover_compiler = BaseFoldProverCompiler::<P, _, _>::from_verifier_compiler(
-			&verifier_compiler,
-			ntt,
-			merkle_prover,
-		);
+		let prover_compiler =
+			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_rng = StdRng::seed_from_u64(1);
-		let mut prover_channel = prover_compiler.create_channel(&mut prover_transcript, prover_rng);
+		let mut prover_channel = prover_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut prover_transcript,
+				prover_rng,
+			);
 
 		let oracle_1 = prover_channel.send_oracle(buffer_1.to_ref());
 		let oracle_2 = prover_channel.send_oracle(buffer_2.to_ref());
@@ -683,7 +640,10 @@ mod tests {
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
+		let mut verifier_channel = verifier_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut verifier_transcript,
+			);
 
 		let v_oracle_1 = verifier_channel.recv_oracle(n_vars_1, true).unwrap();
 		let v_oracle_2 = verifier_channel.recv_oracle(n_vars_2, true).unwrap();
@@ -731,9 +691,8 @@ mod tests {
 		let oracle_specs: Vec<OracleSpec> =
 			n_vars_list.iter().map(|&n| OracleSpec::new_zk(n)).collect();
 
-		let merkle_prover = make_merkle_prover();
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
-			merkle_prover.scheme().clone(),
+			make_merkle_scheme(),
 			oracle_specs,
 			LOG_INV_RATE,
 			n_test_queries,
@@ -742,15 +701,16 @@ mod tests {
 
 		// === PROVER SIDE ===
 		let ntt = make_ntt(verifier_compiler.max_subspace());
-		let prover_compiler = BaseFoldProverCompiler::<P, _, _>::from_verifier_compiler(
-			&verifier_compiler,
-			ntt,
-			merkle_prover,
-		);
+		let prover_compiler =
+			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_rng = StdRng::seed_from_u64(1);
-		let mut prover_channel = prover_compiler.create_channel(&mut prover_transcript, prover_rng);
+		let mut prover_channel = prover_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut prover_transcript,
+				prover_rng,
+			);
 
 		let oracles: Vec<_> = data
 			.iter()
@@ -768,7 +728,10 @@ mod tests {
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
+		let mut verifier_channel = verifier_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut verifier_transcript,
+			);
 
 		let v_oracles: Vec<_> = n_vars_list
 			.iter()
@@ -825,9 +788,8 @@ mod tests {
 			})
 			.collect();
 
-		let merkle_prover = make_merkle_prover();
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
-			merkle_prover.scheme().clone(),
+			make_merkle_scheme(),
 			oracle_specs,
 			LOG_INV_RATE,
 			n_test_queries,
@@ -835,15 +797,16 @@ mod tests {
 		);
 
 		let ntt = make_ntt(verifier_compiler.max_subspace());
-		let prover_compiler = BaseFoldProverCompiler::<P, _, _>::from_verifier_compiler(
-			&verifier_compiler,
-			ntt,
-			merkle_prover,
-		);
+		let prover_compiler =
+			BaseFoldProverCompiler::<P, _>::from_verifier_compiler(&verifier_compiler, ntt);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_rng = StdRng::seed_from_u64(1);
-		let mut prover_channel = prover_compiler.create_channel(&mut prover_transcript, prover_rng);
+		let mut prover_channel = prover_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut prover_transcript,
+				prover_rng,
+			);
 
 		let oracles: Vec<_> = data
 			.iter()
@@ -860,7 +823,10 @@ mod tests {
 		prover_channel.finish();
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let mut verifier_channel = verifier_compiler.create_channel(&mut verifier_transcript);
+		let mut verifier_channel = verifier_compiler
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+				&mut verifier_transcript,
+			);
 
 		let v_oracles: Vec<_> = specs
 			.iter()

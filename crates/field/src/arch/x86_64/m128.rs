@@ -3,7 +3,7 @@
 
 use std::{
 	arch::x86_64::*,
-	array, mem,
+	mem,
 	ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr},
 };
 
@@ -23,8 +23,8 @@ use crate::{
 	BinaryField,
 	arch::portable::packed::PackedPrimitiveType,
 	underlier::{
-		Divisible, NumCast, SmallU, SpreadToByte, U2, U4, UnderlierType, impl_divisible_bitmask,
-		impl_divisible_self, mapget, spread_fallback,
+		Divisible, NumCast, SmallU, UnderlierType, impl_divisible_bitmask, impl_divisible_self,
+		mapget,
 	},
 };
 
@@ -337,216 +337,6 @@ impl UnderlierType for M128 {
 			(Self::from(c), Self::from(d))
 		}
 	}
-
-	#[inline(always)]
-	unsafe fn spread<T>(self, log_block_len: usize, block_idx: usize) -> Self
-	where
-		T: UnderlierType,
-		Self: Divisible<T>,
-	{
-		match T::LOG_BITS {
-			0 => match log_block_len {
-				0 => Self::fill_with_bit(((u128::from(self) >> block_idx) & 1) as _),
-				1 => unsafe {
-					let bits: [u8; 2] =
-						array::from_fn(|i| ((u128::from(self) >> (block_idx * 2 + i)) & 1) as _);
-
-					_mm_set_epi64x(
-						u64::fill_with_bit(bits[1]) as i64,
-						u64::fill_with_bit(bits[0]) as i64,
-					)
-					.into()
-				},
-				2 => unsafe {
-					let bits: [u8; 4] =
-						array::from_fn(|i| ((u128::from(self) >> (block_idx * 4 + i)) & 1) as _);
-
-					_mm_set_epi32(
-						u32::fill_with_bit(bits[3]) as i32,
-						u32::fill_with_bit(bits[2]) as i32,
-						u32::fill_with_bit(bits[1]) as i32,
-						u32::fill_with_bit(bits[0]) as i32,
-					)
-					.into()
-				},
-				3 => unsafe {
-					let bits: [u8; 8] =
-						array::from_fn(|i| ((u128::from(self) >> (block_idx * 8 + i)) & 1) as _);
-
-					_mm_set_epi16(
-						u16::fill_with_bit(bits[7]) as i16,
-						u16::fill_with_bit(bits[6]) as i16,
-						u16::fill_with_bit(bits[5]) as i16,
-						u16::fill_with_bit(bits[4]) as i16,
-						u16::fill_with_bit(bits[3]) as i16,
-						u16::fill_with_bit(bits[2]) as i16,
-						u16::fill_with_bit(bits[1]) as i16,
-						u16::fill_with_bit(bits[0]) as i16,
-					)
-					.into()
-				},
-				4 => unsafe {
-					let bits: [u8; 16] =
-						array::from_fn(|i| ((u128::from(self) >> (block_idx * 16 + i)) & 1) as _);
-
-					_mm_set_epi8(
-						u8::fill_with_bit(bits[15]) as i8,
-						u8::fill_with_bit(bits[14]) as i8,
-						u8::fill_with_bit(bits[13]) as i8,
-						u8::fill_with_bit(bits[12]) as i8,
-						u8::fill_with_bit(bits[11]) as i8,
-						u8::fill_with_bit(bits[10]) as i8,
-						u8::fill_with_bit(bits[9]) as i8,
-						u8::fill_with_bit(bits[8]) as i8,
-						u8::fill_with_bit(bits[7]) as i8,
-						u8::fill_with_bit(bits[6]) as i8,
-						u8::fill_with_bit(bits[5]) as i8,
-						u8::fill_with_bit(bits[4]) as i8,
-						u8::fill_with_bit(bits[3]) as i8,
-						u8::fill_with_bit(bits[2]) as i8,
-						u8::fill_with_bit(bits[1]) as i8,
-						u8::fill_with_bit(bits[0]) as i8,
-					)
-					.into()
-				},
-				_ => unsafe { spread_fallback(self, log_block_len, block_idx) },
-			},
-			1 => match log_block_len {
-				0 => unsafe {
-					let value =
-						U2::new((u128::from(self) >> (block_idx * 2)) as _).spread_to_byte();
-
-					_mm_set1_epi8(value as i8).into()
-				},
-				1 => {
-					let bytes: [u8; 2] = array::from_fn(|i| {
-						U2::new((u128::from(self) >> (block_idx * 4 + i * 2)) as _).spread_to_byte()
-					});
-
-					Self::from_fn::<u8>(|i| bytes[i / 8])
-				}
-				2 => {
-					let bytes: [u8; 4] = array::from_fn(|i| {
-						U2::new((u128::from(self) >> (block_idx * 8 + i * 2)) as _).spread_to_byte()
-					});
-
-					Self::from_fn::<u8>(|i| bytes[i / 4])
-				}
-				3 => {
-					let bytes: [u8; 8] = array::from_fn(|i| {
-						U2::new((u128::from(self) >> (block_idx * 16 + i * 2)) as _)
-							.spread_to_byte()
-					});
-
-					Self::from_fn::<u8>(|i| bytes[i / 2])
-				}
-				4 => {
-					let bytes: [u8; 16] = array::from_fn(|i| {
-						U2::new((u128::from(self) >> (block_idx * 32 + i * 2)) as _)
-							.spread_to_byte()
-					});
-
-					Self::from_fn::<u8>(|i| bytes[i])
-				}
-				_ => unsafe { spread_fallback(self, log_block_len, block_idx) },
-			},
-			2 => match log_block_len {
-				0 => {
-					let value =
-						U4::new((u128::from(self) >> (block_idx * 4)) as _).spread_to_byte();
-
-					unsafe { _mm_set1_epi8(value as i8).into() }
-				}
-				1 => {
-					let values: [u8; 2] = array::from_fn(|i| {
-						U4::new((u128::from(self) >> (block_idx * 8 + i * 4)) as _).spread_to_byte()
-					});
-
-					Self::from_fn::<u8>(|i| values[i / 8])
-				}
-				2 => {
-					let values: [u8; 4] = array::from_fn(|i| {
-						U4::new((u128::from(self) >> (block_idx * 16 + i * 4)) as _)
-							.spread_to_byte()
-					});
-
-					Self::from_fn::<u8>(|i| values[i / 4])
-				}
-				3 => {
-					let values: [u8; 8] = array::from_fn(|i| {
-						U4::new((u128::from(self) >> (block_idx * 32 + i * 4)) as _)
-							.spread_to_byte()
-					});
-
-					Self::from_fn::<u8>(|i| values[i / 2])
-				}
-				4 => {
-					let values: [u8; 16] = array::from_fn(|i| {
-						U4::new((u128::from(self) >> (block_idx * 64 + i * 4)) as _)
-							.spread_to_byte()
-					});
-
-					Self::from_fn::<u8>(|i| values[i])
-				}
-				_ => unsafe { spread_fallback(self, log_block_len, block_idx) },
-			},
-			3 => match log_block_len {
-				0 => unsafe { _mm_shuffle_epi8(self.0, LOG_B8_0[block_idx].0).into() },
-				1 => unsafe { _mm_shuffle_epi8(self.0, LOG_B8_1[block_idx].0).into() },
-				2 => unsafe { _mm_shuffle_epi8(self.0, LOG_B8_2[block_idx].0).into() },
-				3 => unsafe { _mm_shuffle_epi8(self.0, LOG_B8_3[block_idx].0).into() },
-				4 => self,
-				_ => panic!("unsupported block length"),
-			},
-			4 => match log_block_len {
-				0 => {
-					let value = (u128::from(self) >> (block_idx * 16)) as u16;
-
-					unsafe { _mm_set1_epi16(value as i16).into() }
-				}
-				1 => {
-					let values: [u16; 2] =
-						array::from_fn(|i| (u128::from(self) >> (block_idx * 32 + i * 16)) as u16);
-
-					Self::from_fn::<u16>(|i| values[i / 4])
-				}
-				2 => {
-					let values: [u16; 4] =
-						array::from_fn(|i| (u128::from(self) >> (block_idx * 64 + i * 16)) as u16);
-
-					Self::from_fn::<u16>(|i| values[i / 2])
-				}
-				3 => self,
-				_ => panic!("unsupported block length"),
-			},
-			5 => match log_block_len {
-				0 => unsafe {
-					let value = (u128::from(self) >> (block_idx * 32)) as u32;
-
-					_mm_set1_epi32(value as i32).into()
-				},
-				1 => {
-					let values: [u32; 2] =
-						array::from_fn(|i| (u128::from(self) >> (block_idx * 64 + i * 32)) as u32);
-
-					Self::from_fn::<u32>(|i| values[i / 2])
-				}
-				2 => self,
-				_ => panic!("unsupported block length"),
-			},
-			6 => match log_block_len {
-				0 => unsafe {
-					let value = (u128::from(self) >> (block_idx * 64)) as u64;
-
-					_mm_set1_epi64x(value as i64).into()
-				},
-				1 => self,
-				_ => panic!("unsupported block length"),
-			},
-			7 => self,
-			_ => panic!("unsupported bit length"),
-		}
-	}
 }
 
 unsafe impl Zeroable for M128 {}
@@ -556,47 +346,6 @@ unsafe impl Pod for M128 {}
 unsafe impl Send for M128 {}
 
 unsafe impl Sync for M128 {}
-
-static LOG_B8_0: [M128; 16] = precompute_spread_mask::<16>(0, 3);
-static LOG_B8_1: [M128; 8] = precompute_spread_mask::<8>(1, 3);
-static LOG_B8_2: [M128; 4] = precompute_spread_mask::<4>(2, 3);
-static LOG_B8_3: [M128; 2] = precompute_spread_mask::<2>(3, 3);
-
-const fn precompute_spread_mask<const BLOCK_IDX_AMOUNT: usize>(
-	log_block_len: usize,
-	t_log_bits: usize,
-) -> [M128; BLOCK_IDX_AMOUNT] {
-	let element_log_width = t_log_bits - 3;
-
-	let element_width = 1 << element_log_width;
-
-	let block_size = 1 << (log_block_len + element_log_width);
-	let repeat = 1 << (4 - element_log_width - log_block_len);
-	let mut masks = [[0u8; 16]; BLOCK_IDX_AMOUNT];
-
-	let mut block_idx = 0;
-
-	while block_idx < BLOCK_IDX_AMOUNT {
-		let base = block_idx * block_size;
-		let mut j = 0;
-		while j < 16 {
-			masks[block_idx][j] =
-				(base + ((j / element_width) / repeat) * element_width + j % element_width) as u8;
-			j += 1;
-		}
-		block_idx += 1;
-	}
-	let mut m128_masks = [M128::ZERO; BLOCK_IDX_AMOUNT];
-
-	let mut block_idx = 0;
-
-	while block_idx < BLOCK_IDX_AMOUNT {
-		m128_masks[block_idx] = M128::from_u128(u128::from_le_bytes(masks[block_idx]));
-		block_idx += 1;
-	}
-
-	m128_masks
-}
 
 impl<Scalar: BinaryField> From<__m128i> for PackedPrimitiveType<M128, Scalar> {
 	fn from(value: __m128i) -> Self {

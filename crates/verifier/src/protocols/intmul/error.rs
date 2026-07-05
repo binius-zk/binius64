@@ -1,5 +1,7 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
+use binius_iop::logup_star::Error as LogupError;
 use binius_ip::{
 	channel::Error as ChannelError, prodcheck::Error as ProdcheckError,
 	sumcheck::Error as SumcheckError,
@@ -15,4 +17,6 @@ pub enum Error {
 	SumcheckVerify(#[from] SumcheckError),
 	#[error("prodcheck verify error")]
 	ProdcheckVerify(#[from] ProdcheckError),
+	#[error("logup* verify error")]
+	LogupVerify(#[from] LogupError),
 }

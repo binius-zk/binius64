@@ -161,9 +161,21 @@ where
 
 /// Output of [`batch_prove`].
 ///
+/// After the full `n_layers` reduction, `evals` holds each input prover's reduced evaluation at
+/// `eval_point`. The batched claim the verifier checks is the eq(selector)-weighted combination
+/// of these evaluations.
+pub struct BatchProveOutput<F> {
+	/// The reduced evaluation point (`selector ++ content ++ node`) shared by all input provers.
+	pub eval_point: Vec<F>,
+	/// Each input prover's reduced evaluation at `eval_point`, in input order.
+	pub evals: Vec<F>,
+}
+
+/// Output of [`batch_prove_until_final_layer`].
+///
 /// After running `n_layers - 1` reduction layers, each prover retains its final (widest) layer.
 /// `provers` pairs each remaining prover with its reduced evaluation at `eval_point`.
-pub struct BatchProveOutput<P: PackedField> {
+pub struct BatchProveUntilFinalLayerOutput<P: PackedField> {
 	/// The reduced evaluation point shared by all remaining provers.
 	pub eval_point: Vec<P::Scalar>,
 	/// Each remaining prover (with its final layer) paired with its reduced eval at `eval_point`.
@@ -198,14 +210,14 @@ pub struct BatchProveOutput<P: PackedField> {
 /// * `claimed_products.len() == provers.len()`.
 /// * `content_point.len() == witness.log_len() - n_layers` for each prover.
 ///
-/// This runs `n_layers - 1` of the per-layer reductions, stopping one layer short so that each
-/// prover retains its final (widest) layer. The remaining provers are returned (each paired with
-/// its reduced eval at the shared reduced `eval_point`) rather than combined into a single claim,
-/// so the caller can finish the final layer itself.
+/// This delegates to [`batch_prove_until_final_layer`] and then runs the final retained layer,
+/// returning the reduced per-input-prover evaluations at the reduced evaluation point. The
+/// batched claim is checked by the ordinary `binius_ip::prodcheck::verify` recursion over
+/// `n_layers` layers (the eq(selector)-weighted combination of the returned evaluations), with
+/// the selector coordinates forming the first `k` coordinates of the claim point.
 ///
 /// # Returns
-/// A [`BatchProveOutput`] with the reduced `eval_point` and the remaining (single-layer) provers,
-/// each paired with its reduced eval at that point.
+/// A [`BatchProveOutput`] with the reduced `eval_point` and each input prover's reduced eval.
 ///
 /// # Mathematical Description
 ///
@@ -230,7 +242,49 @@ pub fn batch_prove<F: Field, P: PackedField<Scalar = F>>(
 	selector_point: Vec<F>,
 	content_point: Vec<F>,
 	channel: &mut impl IPProverChannel<F>,
-) -> BatchProveOutput<P> {
+) -> BatchProveOutput<F> {
+	let n = provers.len();
+	let k = selector_point.len();
+
+	let BatchProveUntilFinalLayerOutput {
+		eval_point,
+		provers,
+	} = batch_prove_until_final_layer(
+		provers,
+		claimed_products,
+		selector_point,
+		content_point,
+		channel,
+	);
+
+	// Finish the retained final layer: run it exactly as an interior reduction layer does.
+	let (claimed_products, provers): (Vec<_>, Vec<_>) = provers.into_iter().unzip();
+	let (provers, mut evals, eval_point) =
+		batch_prove_layer(provers, claimed_products, eval_point, k, channel);
+	debug_assert!(provers.is_empty(), "the final layer leaves no provers");
+
+	// Drop the padded (2^k) selector slots, keeping one reduced eval per input prover.
+	evals.truncate(n);
+
+	BatchProveOutput { eval_point, evals }
+}
+
+/// Runs a batched product check up to (but not finishing) the final layer.
+///
+/// Runs `n_layers - 1` of the per-layer reductions, stopping one layer short so that each prover
+/// retains its final (widest) layer. The remaining provers are returned (each paired with its
+/// reduced eval at the shared reduced `eval_point`) rather than combined into a single claim, so
+/// the caller can finish the final layer itself — e.g. [`batch_prove`] runs it directly, or a
+/// caller splices the retained layers into another reduction.
+///
+/// Arguments and preconditions are as for [`batch_prove`].
+pub fn batch_prove_until_final_layer<F: Field, P: PackedField<Scalar = F>>(
+	provers: Vec<ProdcheckProver<P>>,
+	claimed_products: Vec<F>,
+	selector_point: Vec<F>,
+	content_point: Vec<F>,
+	channel: &mut impl IPProverChannel<F>,
+) -> BatchProveUntilFinalLayerOutput<P> {
 	assert!(!provers.is_empty()); // precondition
 	assert_eq!(claimed_products.len(), provers.len()); // precondition
 
@@ -258,7 +312,7 @@ pub fn batch_prove<F: Field, P: PackedField<Scalar = F>>(
 	// Pair each remaining (single-layer) prover with its reduced eval at `eval_point`.
 	let provers = iter::zip(claimed_products, provers).collect();
 
-	BatchProveOutput {
+	BatchProveUntilFinalLayerOutput {
 		eval_point,
 		provers,
 	}
@@ -391,25 +445,17 @@ mod tests {
 
 	use super::*;
 
-	/// Finishes a [`batch_prove`] output by running the final retained layer and combining the
-	/// per-prover reduced evals into a single [`MultilinearEvalClaim`], matching the full-reduction
-	/// claim the verifier produces.
-	fn finish_batch_prove<F: Field, P: PackedField<Scalar = F>>(
-		output: BatchProveOutput<P>,
+	/// Combines the per-input-prover evals returned by [`batch_prove`] into the single
+	/// [`MultilinearEvalClaim`] the verifier produces: the eq(selector)-weighted sum over the
+	/// first `k` (selector) coordinates of the reduced evaluation point.
+	fn combine_batch_prove<F: Field, P: PackedField<Scalar = F>>(
+		output: BatchProveOutput<F>,
 		k: usize,
-		channel: &mut impl IPProverChannel<F>,
 	) -> MultilinearEvalClaim<F> {
-		let BatchProveOutput {
-			eval_point,
-			provers,
-		} = output;
-		let (claimed_products, provers): (Vec<_>, Vec<_>) = provers.into_iter().unzip();
-
-		let (_provers, claimed_products, eval_point) =
-			batch_prove_layer(provers, claimed_products, eval_point, k, channel);
-
-		let eq_weights = eq_ind_partial_eval::<F>(&eval_point[..k]);
-		let final_eval = inner_product(claimed_products.iter().copied(), eq_weights.iter_scalars());
+		let BatchProveOutput { eval_point, evals } = output;
+		let eq_weights = eq_ind_partial_eval::<P>(&eval_point[..k]);
+		let final_eval =
+			inner_product(evals.iter().copied(), (0..evals.len()).map(|i| eq_weights.get(i)));
 
 		MultilinearEvalClaim {
 			eval: final_eval,
@@ -553,8 +599,8 @@ mod tests {
 			&mut prover_transcript,
 		);
 		// Each remaining prover has exactly one layer.
-		assert!(batch_output.provers.iter().all(|(_, p)| p.n_layers() == 1));
-		let prover_output = finish_batch_prove(batch_output, log_n_provers, &mut prover_transcript);
+		assert_eq!(batch_output.evals.len(), n_provers);
+		let prover_output = combine_batch_prove::<_, P>(batch_output, log_n_provers);
 
 		// Run verifier with n_layers layers
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -671,8 +717,8 @@ mod tests {
 			content_point,
 			&mut prover_transcript,
 		);
-		assert!(batch_output.provers.iter().all(|(_, p)| p.n_layers() == 1));
-		let prover_output = finish_batch_prove(batch_output, log_n_provers, &mut prover_transcript);
+		assert_eq!(batch_output.evals.len(), n_provers);
+		let prover_output = combine_batch_prove::<_, P>(batch_output, log_n_provers);
 
 		// Run verifier with n_layers layers.
 		let mut verifier_transcript = prover_transcript.into_verifier();

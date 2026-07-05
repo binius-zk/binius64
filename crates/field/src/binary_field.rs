@@ -293,11 +293,14 @@ macro_rules! impl_field_extension {
 
 			#[inline]
 			fn try_from(elem: $name) -> Result<Self, Self::Error> {
-				use $crate::underlier::NumCast;
+				use $crate::underlier::{Divisible, NumCast, UnderlierType};
 
-				if elem.0 >> $subfield_name::N_BITS
-					== <$typ as $crate::underlier::UnderlierType>::ZERO
-				{
+				// `elem` lies in the subfield iff every subfield-underlier limb above the
+				// least-significant one is zero (equivalent to `elem >> N_BITS == 0`).
+				let in_subfield = Divisible::<$subfield_typ>::ref_iter(&elem.0)
+					.skip(1)
+					.all(|limb| limb == <$subfield_typ as UnderlierType>::ZERO);
+				if in_subfield {
 					Ok($subfield_name(<$subfield_typ>::num_cast_from(elem.val())))
 				} else {
 					Err(())
@@ -384,7 +387,7 @@ macro_rules! impl_field_extension {
 
 			#[inline]
 			fn basis(i: usize) -> Self {
-				use $crate::underlier::UnderlierType;
+				use $crate::underlier::{Divisible, UnderlierType};
 
 				assert!(
 					i < 1 << $log_degree,
@@ -392,7 +395,15 @@ macro_rules! impl_field_extension {
 					i,
 					1 << $log_degree
 				);
-				Self(<$typ>::ONE << (i * $subfield_name::N_BITS))
+				// The `i`-th basis element sets subfield-underlier limb `i` to one, i.e. bit
+				// `i * N_BITS` (equivalent to `ONE << (i * N_BITS)`).
+				let mut underlier = <$typ as UnderlierType>::ZERO;
+				Divisible::<$subfield_typ>::set(
+					&mut underlier,
+					i,
+					<$subfield_typ as UnderlierType>::ONE,
+				);
+				Self(underlier)
 			}
 
 			#[inline]
@@ -400,20 +411,24 @@ macro_rules! impl_field_extension {
 				base_elems: impl IntoIterator<Item = $subfield_name>,
 				log_stride: usize,
 			) -> Self {
-				use $crate::underlier::UnderlierType;
+				use $crate::underlier::{Divisible, UnderlierType};
 
 				debug_assert!($name::N_BITS.is_power_of_two());
 				let shift_step = ($subfield_name::N_BITS << log_stride) & ($name::N_BITS - 1);
-				let mut value = <$typ>::ZERO;
+				let mut underlier = <$typ as UnderlierType>::ZERO;
 				let mut shift = 0;
 
 				for elem in base_elems.into_iter() {
 					assert!(shift < $name::N_BITS, "too many base elements for extension degree");
-					value |= <$typ>::from(elem.val()) << shift;
+					// `shift` is a multiple of the subfield width, so it addresses limb
+					// `shift / N_BITS`; OR the element in (matching the previous `|= .. << shift`).
+					let limb = shift / $subfield_name::N_BITS;
+					let acc = Divisible::<$subfield_typ>::get(&underlier, limb) | elem.val();
+					Divisible::<$subfield_typ>::set(&mut underlier, limb, acc);
 					shift += shift_step;
 				}
 
-				Self(value)
+				Self(underlier)
 			}
 
 			#[inline]
