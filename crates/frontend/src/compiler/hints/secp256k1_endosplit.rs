@@ -26,7 +26,10 @@ use hex_literal::hex;
 use num_bigint::BigUint;
 
 use super::Hint;
-use crate::util::num_biguint_from_u64_limbs;
+use crate::{
+	compiler::{CircuitBuilder, Wire},
+	util::num_biguint_from_u64_limbs,
+};
 
 pub struct Secp256k1EndosplitHint {
 	minus_b1: BigUint,
@@ -76,6 +79,33 @@ impl Secp256k1EndosplitHint {
 			k1_tight_bound,
 			k2_tight_bound,
 		}
+	}
+
+	/// Secp256k1 endomorphism split.
+	///
+	/// The curve has an endomorphism `λ (x, y) = (βx, y)` where `λ³=1 (mod n)`
+	/// and `β³=1 (mod p)` (`n` being the scalar field modulus and `p` coordinate field one).
+	///
+	/// For a 256-bit scalar `k` it is possible to split it into `k1` and `k2` such that
+	/// `k1 + λ k2 = k (mod n)` and both `k1` and `k2` are no farther than `2^128` from zero.
+	///
+	/// The `k` scalar is represented by four 64-bit limbs in little endian order. The return value
+	/// is quadruple of `(k1_neg, k2_neg, k1_abs, k2_abs)` where `k1_neg` and `k2_neg` are
+	/// MSB-bools indicating whether `k1_abs` or `k2_abs`, respectively, should be negated.
+	/// `k1_abs` and `k2_abs` are at most 128 bits and are represented with two 64-bit limbs.
+	/// When `k` cannot be represented in this way (any valid scalar can, so it has to be modulus
+	/// or above), both `k1_abs` and `k2_abs` are assigned zero values.
+	///
+	/// This is a hint - a deterministic computation that happens only on the prover side.
+	/// The result should be additionally constrained by using bignum circuits to check that
+	/// `k1 + λ k2 = k (mod n)`.
+	pub fn call(builder: &CircuitBuilder, k: &[Wire]) -> (Wire, Wire, [Wire; 2], [Wire; 2]) {
+		assert_eq!(k.len(), 4);
+		let out = builder.call_hint(Self::new(), &[], k);
+		let [k1_neg, k2_neg, k1_abs0, k1_abs1, k2_abs0, k2_abs1] = out.as_slice() else {
+			panic!("Secp256k1EndosplitHint must return 6 wires");
+		};
+		(*k1_neg, *k2_neg, [*k1_abs0, *k1_abs1], [*k2_abs0, *k2_abs1])
 	}
 
 	fn scalar_abs(&self, scalar: BigUint) -> (Word, BigUint) {
