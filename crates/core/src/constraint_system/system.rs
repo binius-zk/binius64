@@ -672,7 +672,7 @@ mod tests {
 		for i in 0..full_len {
 			// Deterministic pattern
 			let val = Word::from_u64(0xA5A5_5A5A ^ (i as u64 * 0x9E37_79B9));
-			values.set(i, val);
+			values[ValueIndex(i as u32)] = val;
 		}
 
 		// Split into public and non-public witnesses and serialize all artifacts
@@ -705,7 +705,11 @@ mod tests {
 		let scratch_start = layout.committed_total_len;
 		let scratch_end = scratch_start + layout.n_scratch;
 		for i in scratch_start..scratch_end {
-			assert_eq!(reconstructed.get(i), Word::ZERO, "scratch index {i} should be zero");
+			assert_eq!(
+				reconstructed[ValueIndex(i as u32)],
+				Word::ZERO,
+				"scratch index {i} should be zero"
+			);
 		}
 	}
 }

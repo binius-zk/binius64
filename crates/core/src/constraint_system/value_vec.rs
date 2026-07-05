@@ -133,20 +133,6 @@ impl ValueVec {
 		self.layout.committed_total_len
 	}
 
-	/// Returns the value stored at the given index.
-	///
-	/// Panics if the index is out of bounds. Will happily return a value from the padding section.
-	pub fn get(&self, index: usize) -> Word {
-		self.data[index]
-	}
-
-	/// Sets the value at the given index.
-	///
-	/// Panics if the index is out of bounds. Will gladly assign a value to the padding section.
-	pub fn set(&mut self, index: usize, value: Word) {
-		self.data[index] = value;
-	}
-
 	/// Returns the public portion of the values vector.
 	pub fn public(&self) -> &[Word] {
 		&self.data[..self.layout.offset_witness]
@@ -313,7 +299,7 @@ mod tests {
 
 			// The scratch tail past the committed words is zeroed and addressable.
 			for i in committed_total_len..committed_total_len + n_scratch {
-				prop_assert_eq!(vv.get(i), Word::ZERO);
+				prop_assert_eq!(vv[ValueIndex(i as u32)], Word::ZERO);
 			}
 		}
 	}
