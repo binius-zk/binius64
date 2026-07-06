@@ -1,16 +1,30 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_circuits::sha256::Sha256;
-use binius_core::{ValueVec, constraint_system::ConstraintSystem};
-use binius_frontend::CircuitBuilder;
+use binius_circuits::sha256::sha256_fixed;
+use binius_core::{ValueVec, constraint_system::ConstraintSystem, word::Word};
+use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
+use binius_frontend::{CircuitBuilder, Wire};
+use binius_ip::sumcheck::SumcheckOutput;
+use binius_math::multilinear::eq::eq_ind_partial_eval;
 use binius_prover::protocols::shift::{OperatorData, build_key_collection, prove};
+use binius_prover::{
+	fold_word::fold_words,
+	protocols::shift::{
+		PreparedOperatorData,
+		monster::{build_h_parts, build_monster_multilinear},
+		phase_1::{build_g_parts, run_phase_1_sumcheck},
+		phase_2::{assemble_witness, run_sumcheck},
+	},
+};
 use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::strict_log_2;
+use binius_verifier::config::LOG_WORD_SIZE_BITS;
 use binius_verifier::{
 	config::StdChallenger,
 	protocols::shift::{OperatorData as VerifierOperatorData, verify},
 };
+use criterion::BatchSize;
 use criterion::{Criterion, criterion_group, criterion_main};
 use sha2::{Digest, Sha256 as Sha256Hasher};
 
@@ -21,34 +35,46 @@ pub fn create_sha256_cs_with_witness(
 	let builder = CircuitBuilder::new();
 	let message_len_bytes: usize = 1 << log_message_len_bytes; // 2^log_message_len
 
-	// Create wires for the SHA256 circuit
-	let len = builder.add_witness(); // Actual message length
-	let digest = [
-		builder.add_inout(), // Expected digest as 4x64-bit words
-		builder.add_inout(),
-		builder.add_inout(),
-		builder.add_inout(),
-	];
-	let message: Vec<binius_frontend::Wire> = (0..message_len_bytes.div_ceil(8usize))
+	// Message wires: one 32-bit word per 4 message bytes (`message_len_bytes` is a power of two,
+	// so this divides evenly).
+	let n_message_words = message_len_bytes.div_ceil(4);
+	let message: Vec<Wire> = (0..n_message_words)
 		.map(|_| builder.add_witness())
 		.collect();
 
-	// Create the SHA256 circuit
-	let sha256 = Sha256::new(&builder, len, digest, message);
+	// Expected digest as 8 big-endian 32-bit words.
+	let expected_digest: [Wire; 8] = std::array::from_fn(|_| builder.add_inout());
+
+	// Compute the SHA256 digest of the fixed-length message and constrain it to the expected wires.
+	let computed_digest = sha256_fixed(&builder, &message, message_len_bytes);
+	for i in 0..8 {
+		builder.assert_eq(format!("digest[{i}]"), computed_digest[i], expected_digest[i]);
+	}
 
 	let circuit = builder.build();
 	let mut witness_filler = circuit.new_witness_filler();
 
-	// Generate random message bytes of specified length
+	// Generate random message bytes of specified length and pack them into big-endian 32-bit words.
 	let mut message_bytes = vec![0u8; message_len_bytes];
 	rng.fill_bytes(&mut message_bytes);
-	sha256.populate_len_bytes(&mut witness_filler, message_bytes.len());
-	sha256.populate_message(&mut witness_filler, &message_bytes);
+	for (word_idx, wire) in message.iter().enumerate() {
+		let mut packed = 0u32;
+		for i in 0..4 {
+			packed |= (message_bytes[word_idx * 4 + i] as u32) << (24 - i * 8);
+		}
+		witness_filler[*wire] = Word(packed as u64);
+	}
 
-	// Calculate SHA256 digest of the message dynamically
+	// Calculate SHA256 digest of the message dynamically and populate the expected digest wires.
 	let hash = Sha256Hasher::digest(&message_bytes);
-	let expected_digest: [u8; 32] = hash.into();
-	sha256.populate_digest(&mut witness_filler, expected_digest);
+	let expected_bytes: [u8; 32] = hash.into();
+	for (i, wire) in expected_digest.iter().enumerate() {
+		let mut word = 0u32;
+		for j in 0..4 {
+			word |= (expected_bytes[i * 4 + j] as u32) << (24 - j * 8);
+		}
+		witness_filler[*wire] = Word(word as u64);
+	}
 
 	// Get the witness vector
 	circuit.populate_wire_witness(&mut witness_filler).unwrap();
@@ -57,9 +83,8 @@ pub fn create_sha256_cs_with_witness(
 }
 
 fn bench_prove_and_verify(c: &mut Criterion) {
-	use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash1x128b, Random};
 	type F = BinaryField128bGhash;
-	type P = PackedBinaryGhash1x128b;
+	type P = OptimalPackedB128;
 	let mut rng = rand::rng();
 
 	// Configurable log message lengths to benchmark (actual lengths will be 2^log_len)
@@ -163,28 +188,13 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 /// `intmul/phases` breakdown. Each of the five phase functions is timed on its own, sharing one
 /// expensive circuit / witness / key-collection setup.
 fn bench_shift_phases(c: &mut Criterion) {
-	use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash1x128b, Random};
-	use binius_ip::sumcheck::SumcheckOutput;
-	use binius_math::multilinear::eq::eq_ind_partial_eval;
-	use binius_prover::{
-		fold_word::fold_words,
-		protocols::shift::{
-			PreparedOperatorData,
-			monster::{build_h_parts, build_monster_multilinear},
-			phase_1::{build_g_parts, run_phase_1_sumcheck},
-			phase_2::{assemble_witness, run_sumcheck},
-		},
-	};
-	use binius_verifier::config::LOG_WORD_SIZE_BITS;
-	use criterion::BatchSize;
-
 	type F = BinaryField128bGhash;
-	type P = PackedBinaryGhash1x128b;
+	type P = OptimalPackedB128;
 	let mut rng = rand::rng();
 
-	// A single fixed size (4096-byte SHA256 message), rather than a sweep, so the per-phase benches
+	// A single fixed size (16384-byte SHA256 message), rather than a sweep, so the per-phase benches
 	// share one setup and stay quick.
-	const LOG_MESSAGE_LEN_BYTES: usize = 12;
+	const LOG_MESSAGE_LEN_BYTES: usize = 14;
 
 	let (mut cs, value_vec) = create_sha256_cs_with_witness(LOG_MESSAGE_LEN_BYTES, &mut rng);
 	cs.validate_and_prepare().unwrap();
