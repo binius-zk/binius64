@@ -124,10 +124,13 @@ impl Key {
 		})
 	}
 
-	/// Accumulates the same weighted sum as [`Self::accumulate_by_operand`], but fuses the
+	/// Accumulates the partial evaluation of an operation matrix for the key.
+	///
+	/// A [`Key`] references the operation constraints where one witness word is an operand. This
+	/// accumulates the partial evaluation of the operation matrix for this key, fusing the
 	/// `lambda_powers[operand_index]` weighting into the consecutive-operand scan.
 	#[inline]
-	fn accumulate_weighted<F: Field>(
+	pub fn accumulate<F: Field>(
 		&self,
 		constraint_indices: &[ConstraintIndex],
 		operator_data: &PreparedOperatorData<F>,
@@ -156,19 +159,6 @@ impl Key {
 		}
 
 		result + acc * operator_data.lambda_powers[operand_index]
-	}
-
-	/// Accumulates the partial evaluation of an operation matrix for the key.
-	///
-	/// A [`Key`] references the operation constraints where one witness word is an operand. This
-	/// accumulates the partial evaluation of the operation matrix for this key.
-	#[inline]
-	pub fn accumulate<F: Field>(
-		&self,
-		constraint_indices: &[ConstraintIndex],
-		operator_data: &PreparedOperatorData<F>,
-	) -> F {
-		self.accumulate_weighted(constraint_indices, operator_data)
 	}
 }
 
@@ -548,7 +538,7 @@ mod tests {
 	}
 
 	#[test]
-	fn accumulate_weighted_matches_grouped_operand_accumulation() {
+	fn accumulate_matches_grouped_operand_accumulation() {
 		let constraint_indices = vec![
 			ConstraintIndex {
 				operand_index: 0,
@@ -597,7 +587,7 @@ mod tests {
 			.map(|(operand_index, acc)| acc * operator_data.lambda_powers[operand_index])
 			.sum::<F>();
 
-		assert_eq!(key.accumulate_weighted(&constraint_indices, &operator_data), expected);
+		assert_eq!(key.accumulate(&constraint_indices, &operator_data), expected);
 
 		let non_contiguous_constraint_indices = vec![
 			ConstraintIndex {
@@ -632,8 +622,7 @@ mod tests {
 			.sum::<F>();
 
 		assert_eq!(
-			non_contiguous_key
-				.accumulate_weighted(&non_contiguous_constraint_indices, &operator_data),
+			non_contiguous_key.accumulate(&non_contiguous_constraint_indices, &operator_data),
 			non_contiguous_expected
 		);
 
@@ -642,6 +631,6 @@ mod tests {
 			id: 0,
 			range: 0..0,
 		};
-		assert_eq!(empty_key.accumulate_weighted(&constraint_indices, &operator_data), F::ZERO);
+		assert_eq!(empty_key.accumulate(&constraint_indices, &operator_data), F::ZERO);
 	}
 }
