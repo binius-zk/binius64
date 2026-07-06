@@ -13,7 +13,7 @@
 //!
 //! [`ZKWrappedVerifierChannel`]: binius_spartan_verifier::wrapper::ZKWrappedVerifierChannel
 
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::Arc};
 
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::BinaryField128bGhash as B128;
@@ -51,7 +51,7 @@ use crate::{
 pub struct ZKVerifier<H: HashSuite> {
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_verifier: IronSpartanIOPVerifier<B128>,
-	outer_layout: WitnessLayout<B128>,
+	outer_layout: Arc<WitnessLayout<B128>>,
 	basefold_compiler: BaseFoldVerifierCompiler<B128>,
 	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
 	_hash_marker: PhantomData<H>,
@@ -110,7 +110,7 @@ where
 			n_dummy_constraints: 2,
 		};
 		let outer_cs = ConstraintSystemPadded::new(outer_cs, blinding_info);
-		let outer_layout = outer_layout.with_blinding(outer_cs.blinding_info().clone());
+		let outer_layout = Arc::new(outer_layout.with_blinding(outer_cs.blinding_info().clone()));
 		let outer_iop_verifier = IronSpartanIOPVerifier::new(outer_cs);
 
 		// Transcript layout: outer precommit oracle first (committed at wrapper construction),
@@ -154,8 +154,15 @@ where
 	/// Returns the witness layout of the outer Spartan constraint system.
 	///
 	/// The layout maps each logical wire to its position in the witness vector.
-	pub const fn outer_layout(&self) -> &WitnessLayout<B128> {
+	pub fn outer_layout(&self) -> &WitnessLayout<B128> {
 		&self.outer_layout
+	}
+
+	/// Returns the shared handle to the outer witness layout.
+	///
+	/// The prover clones this `Arc` to share the layout instead of deep-cloning it.
+	pub fn outer_layout_arc(&self) -> Arc<WitnessLayout<B128>> {
+		Arc::clone(&self.outer_layout)
 	}
 
 	/// Returns the BaseFold ZK verifier compiler.
@@ -188,8 +195,11 @@ where
 		let channel = self
 			.basefold_compiler
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
-		let mut wrapped_channel =
-			ZKWrappedVerifierChannel::new(channel, &self.outer_iop_verifier, &self.outer_layout)?;
+		let mut wrapped_channel = ZKWrappedVerifierChannel::new(
+			channel,
+			&self.outer_iop_verifier,
+			Arc::clone(&self.outer_layout),
+		)?;
 
 		// Run the inner IOP verification through the wrapped channel.
 		{

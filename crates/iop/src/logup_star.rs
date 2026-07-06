@@ -61,15 +61,15 @@ pub struct LogupProof<Elem> {
 /// # Errors
 ///
 /// Returns an error when the pushforward commitment is missing or the reduction identity fails.
-pub fn verify<'a, F, C>(
+pub fn verify<F, C>(
 	table_n_vars: usize,
 	lookers: &[reduction::LookerClaim<'_, C::Elem>],
 	channel: &mut C,
 ) -> Result<LogupProof<C::Elem>, Error>
 where
 	F: Field + ExtensionField<BinaryField1b>,
-	C: IOPVerifierChannel<'a, F>,
-	C::Elem: From<F> + 'a,
+	C: IOPVerifierChannel<F>,
+	C::Elem: From<F>,
 {
 	// Sample the looker batching challenge before the commitment: the prover needs gamma to build
 	// the combined pushforward it commits.

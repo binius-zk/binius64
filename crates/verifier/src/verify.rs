@@ -114,10 +114,10 @@ impl IOPVerifier {
 	///
 	/// This is the core verification logic, independent of the specific IOP compilation strategy.
 	/// For most users, [`Verifier::verify`] is the simpler interface.
-	pub fn verify<'r, Channel>(&self, public: &[Word], channel: &mut Channel) -> Result<(), Error>
+	pub fn verify<Channel>(&self, public: &[Word], channel: &mut Channel) -> Result<(), Error>
 	where
-		Channel: IOPVerifierChannel<'r, B128>,
-		Channel::Elem: FieldOps<Scalar = B128> + From<B128> + 'r,
+		Channel: IOPVerifierChannel<B128>,
+		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 	{
 		// Check that the public input length is correct
 		if public.len() != 1 << self.log_public_words() {

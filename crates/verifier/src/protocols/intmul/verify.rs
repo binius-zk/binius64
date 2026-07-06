@@ -243,7 +243,7 @@ where
 /// the reduced index claims are carried into a final batched sumcheck — together with the
 /// $\widetilde{b}(r_I^b, \cdot)$ rerandomization and the parity zerocheck $a_0 \cdot b_0 =
 /// c_{\textsf{lo},0}$ — that brings every output claim to one shared point.
-fn verify_phase_5<'r, F, C>(
+fn verify_phase_5<F, C>(
 	phase_4_output: &Phase4Output<C::Elem>,
 	b_eval_point: &[C::Elem],
 	r_ib: &[C::Elem],
@@ -252,8 +252,8 @@ fn verify_phase_5<'r, F, C>(
 ) -> Result<IntMulOutput<C::Elem>, Error>
 where
 	F: BinaryField,
-	C: IOPVerifierChannel<'r, F>,
-	C::Elem: FieldOps<Scalar = F> + From<F> + 'r,
+	C: IOPVerifierChannel<F>,
+	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
 	let n_vars = b_eval_point.len();
 	assert_eq!(phase_4_output.eval_point.len(), n_vars);
@@ -470,11 +470,11 @@ where
 ///   multiplication constraints).
 ///
 /// The integer operands are fixed at the `WORD_SIZE_BITS` bit width.
-pub fn verify<'r, F, C>(n_vars: usize, channel: &mut C) -> Result<IntMulOutput<C::Elem>, Error>
+pub fn verify<F, C>(n_vars: usize, channel: &mut C) -> Result<IntMulOutput<C::Elem>, Error>
 where
 	F: BinaryField,
-	C: IOPVerifierChannel<'r, F>,
-	C::Elem: FieldOps<Scalar = F> + From<F> + 'r,
+	C: IOPVerifierChannel<F>,
+	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
 	assert!(2 * WORD_SIZE_BITS <= F::N_BITS);
 

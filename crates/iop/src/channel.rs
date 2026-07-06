@@ -63,7 +63,10 @@ impl OracleSpec {
 }
 
 /// A boxed closure that evaluates a transparent MLE at a given point.
-pub type TransparentEvalFn<'a, Elem> = Box<dyn Fn(&[Elem]) -> Elem + 'a>;
+///
+/// The closure is `'static` and owns every value it reads, sharing large data via `Rc`/`Arc`.
+/// A channel that defers the opening can therefore store it and evaluate it later.
+pub type TransparentEvalFn<Elem> = Box<dyn Fn(&[Elem]) -> Elem + 'static>;
 
 /// An oracle linear relation specifying an inner product claim between a committed oracle
 /// polynomial and a transparent polynomial.
@@ -71,14 +74,14 @@ pub type TransparentEvalFn<'a, Elem> = Box<dyn Fn(&[Elem]) -> Elem + 'a>;
 /// The claim asserts that `<oracle_poly, transparent_poly> = claim`, where `transparent_poly` is
 /// the multilinear extension defined by the `transparent` closure evaluated at the challenge point
 /// sampled during the protocol.
-pub struct OracleLinearRelation<'a, Oracle, Elem> {
+pub struct OracleLinearRelation<Oracle, Elem> {
 	/// The oracle handle for the committed polynomial.
 	pub oracle: Oracle,
 	/// A closure that evaluates the transparent MLE at a given point.
 	///
 	/// The closure receives the challenge point (sampled during `verify_oracle_relations`) and
 	/// returns the evaluation of the transparent polynomial's MLE at that point.
-	pub transparent: TransparentEvalFn<'a, Elem>,
+	pub transparent: TransparentEvalFn<Elem>,
 	/// The claimed inner product of the oracle polynomial and the transparent polynomial.
 	pub claim: Elem,
 }
@@ -96,7 +99,7 @@ pub struct OracleLinearRelation<'a, Oracle, Elem> {
 /// The caller must call `recv_oracle()` exactly `remaining_oracle_specs().len()` times before
 /// calling `verify_oracle_relations()`. The oracles must be received in order and match their
 /// specifications.
-pub trait IOPVerifierChannel<'r, F: Field>: IPVerifierChannel<F> {
+pub trait IOPVerifierChannel<F: Field>: IPVerifierChannel<F, Elem: 'static> {
 	type Oracle: Clone;
 
 	/// Returns the specifications for the remaining oracles to be received.
@@ -125,8 +128,8 @@ pub trait IOPVerifierChannel<'r, F: Field>: IPVerifierChannel<F> {
 	/// actual opening (masking + sumcheck + FRI) to `finish()`. Either way, each
 	/// relation asserts that `<oracle_poly, transparent_poly> = claim`.
 	///
-	/// The relation lifetime `'r` is a parameter of the trait so that deferring implementations can
-	/// store the (possibly borrowed) transparent closures until `finish()`.
+	/// The transparent closures are `'static` and own their captures.
+	/// An implementation that defers the opening can store the relations and evaluate them later.
 	///
 	/// # Preconditions
 	///
@@ -134,6 +137,6 @@ pub trait IOPVerifierChannel<'r, F: Field>: IPVerifierChannel<F> {
 	///   `recv_oracle()`.
 	fn verify_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'r, Self::Oracle, Self::Elem>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error>;
 }

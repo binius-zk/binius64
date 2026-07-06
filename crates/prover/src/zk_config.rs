@@ -6,7 +6,7 @@
 //! Spartan-based zero-knowledge wrapper. The prover counterpart to
 //! [`binius_verifier::zk_config::ZKVerifier`].
 
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::Arc};
 
 use binius_core::constraint_system::{ConstraintSystem, ValueVec};
 use binius_field::{BinaryField128bGhash as B128, PackedField};
@@ -41,7 +41,10 @@ where
 	inner_iop_prover: IOPProver,
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_prover: binius_spartan_prover::IOPProver<B128>,
-	outer_layout: WitnessLayout<B128>,
+	/// Shared with the verifier via an `Arc`, not owned outright.
+	/// Setup skips deep-cloning the layout, and each `prove` shares it with a reference-count
+	/// bump.
+	outer_layout: Arc<WitnessLayout<B128>>,
 	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>>,
 	/// The prover creates its Merkle transcript channels with the hash suite `H`.
 	_hash_marker: PhantomData<H>,
@@ -78,9 +81,11 @@ where
 		// Invariant: the verifier builds, pads, and lays out the wrapper circuit once.
 		// - It keeps that result for its own verification.
 		// - The prover's outer circuit is identical to it.
-		// - Cloning the result skips a redundant rebuild.
+		// - Reusing the result skips a redundant rebuild.
+		//
+		// The layout is shared via `Arc`, so the prover and verifier hold one allocation, not two.
 		let outer_cs = zk_verifier.outer_iop_verifier().constraint_system().clone();
-		let outer_layout = zk_verifier.outer_layout().clone();
+		let outer_layout = zk_verifier.outer_layout_arc();
 		let outer_iop_prover = binius_spartan_prover::IOPProver::new(outer_cs);
 
 		// Build the BaseFold prover compiler from the verifier compiler.
@@ -131,11 +136,11 @@ where
 		let mut wrapped_channel = ZKWrappedProverChannel::new(
 			basefold_channel,
 			&self.outer_iop_prover,
-			&self.outer_layout,
+			Arc::clone(&self.outer_layout),
 			&mut rng,
 			{
 				let inner_iop_verifier = &self.inner_iop_verifier;
-				move |replay_channel: &mut ReplayChannel<'_, B128>| {
+				move |replay_channel: &mut ReplayChannel<B128>| {
 					inner_iop_verifier
 						.verify(&public_words, replay_channel)
 						.expect("replay verification should not fail");

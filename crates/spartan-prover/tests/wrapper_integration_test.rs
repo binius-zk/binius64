@@ -1,5 +1,7 @@
 // Copyright 2026 The Binius Developers
 
+use std::sync::Arc;
+
 use binius_field::{BinaryField128bGhash as B128, Field, Random, arch::OptimalPackedB128};
 use binius_hash::StdHashSuite;
 use binius_iop::{
@@ -85,7 +87,7 @@ fn test_zk_wrapped_prove_verify() {
 		n_dummy_constraints: 2,
 	};
 	let outer_cs = ConstraintSystemPadded::new(outer_cs, blinding_info);
-	let outer_layout = outer_layout.with_blinding(outer_cs.blinding_info().clone());
+	let outer_layout = Arc::new(outer_layout.with_blinding(outer_cs.blinding_info().clone()));
 
 	// === Step 5: Make combined proof compiler (inner + outer oracle specs) ===
 	let outer_iop_verifier = IOPVerifier::new(outer_cs.clone());
@@ -146,12 +148,12 @@ fn test_zk_wrapped_prove_verify() {
 	let mut wrapped_prover_channel = ZKWrappedProverChannel::new(
 		basefold_channel,
 		&outer_iop_prover,
-		&outer_layout,
+		Arc::clone(&outer_layout),
 		&mut rng,
 		{
 			let inner_iop_verifier = &inner_iop_verifier;
 			let public = &public;
-			move |replay_channel: &mut ReplayChannel<'_, B128>| {
+			move |replay_channel: &mut ReplayChannel<B128>| {
 				let inner_public_elems = replay_channel.observe_many(public);
 				// ReplayChannel::Oracle = () and recv_oracle is a no-op, so pass ().
 				inner_iop_verifier
@@ -194,9 +196,12 @@ fn test_zk_wrapped_prove_verify() {
 
 	let verifier_channel = zk_basefold_compiler
 		.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(&mut verifier_transcript);
-	let mut wrapped_verifier_channel =
-		ZKWrappedVerifierChannel::new(verifier_channel, &outer_iop_verifier, &outer_layout)
-			.expect("ZKWrappedVerifierChannel::new should succeed");
+	let mut wrapped_verifier_channel = ZKWrappedVerifierChannel::new(
+		verifier_channel,
+		&outer_iop_verifier,
+		Arc::clone(&outer_layout),
+	)
+	.expect("ZKWrappedVerifierChannel::new should succeed");
 
 	// Observe public input through the wrapped channel.
 	let inner_public_elems = wrapped_verifier_channel.observe_many(&public);
