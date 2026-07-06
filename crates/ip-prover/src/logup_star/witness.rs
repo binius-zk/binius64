@@ -12,7 +12,7 @@
 use std::iter;
 
 use binius_field::{BinaryField, Divisible, Field, PackedField, util::powers};
-use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval};
+use binius_math::{FieldBuffer, multilinear::eq::scaled_eq_ind_partial_eval};
 use binius_utils::rayon::prelude::*;
 use itertools::izip;
 
@@ -59,12 +59,10 @@ where
 				looker.index.len(),
 				1usize << n,
 			);
-			let eq_r = equality_indicator::<F, P>(looker.eval_point);
-			let scaled = eq_r
-				.iter_scalars()
-				.map(|eq_i| eq_i * power)
-				.collect::<Vec<_>>();
-			FieldBuffer::from_values(&scaled)
+			// Looker j's numerator is gamma^j * eq_{r_j}.
+			// Seeding the expansion with gamma^j folds the scale into the tensor product.
+			// That keeps it to one pass over one 2^n buffer.
+			scaled_eq_ind_partial_eval::<P>(looker.eval_point, power)
 		})
 		.collect::<Vec<_>>();
 
@@ -100,20 +98,6 @@ where
 	F: BinaryField<Underlier: Divisible<u64>>,
 {
 	F::from_underlier(F::Underlier::from_iter(iter::once(j as u64)))
-}
-
-/// Build the looker numerator `eq_r`, the equality indicator at the evaluation point.
-///
-/// `eq_r[i] = eq(eval_point, i)`, the multilinear `X = eq_r` of [Soukhanov25, Section 4].
-///
-/// [Soukhanov25]: <https://eprint.iacr.org/2025/946>
-pub fn equality_indicator<F, P>(eval_point: &[F]) -> FieldBuffer<P>
-where
-	F: Field,
-	P: PackedField<Scalar = F>,
-{
-	// The equality indicator's hypercube values are the Lagrange weights at the point.
-	eq_ind_partial_eval(eval_point)
 }
 
 /// Build the looker denominator `c - I` over the `n`-variable looker cube.
