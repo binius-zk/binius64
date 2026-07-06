@@ -62,6 +62,133 @@ pub enum ConstraintSystemError {
 		value_index: u32,
 		segment_len: usize,
 	},
+	#[error("chip call #{call_index} has a malformed operand #{operand_index}: {source}")]
+	ChipCallOperand {
+		call_index: usize,
+		operand_index: usize,
+		#[source]
+		source: OperandFault,
+	},
+	#[error("{} calls chip {chip_id}, but the system has {n_chips} chips", chip_name(*chip_index))]
+	OutOfRangeChipId {
+		chip_index: Option<usize>,
+		chip_id: usize,
+		n_chips: usize,
+	},
+	#[error(
+		"{}'s call #{call_index} passes {arity} operands to chip {chip_id}, which has {n_inout} inout values",
+		chip_name(*chip_index)
+	)]
+	WrongCallArity {
+		chip_index: Option<usize>,
+		call_index: usize,
+		chip_id: usize,
+		arity: usize,
+		n_inout: usize,
+	},
+	#[error("the chip call graph has a cycle")]
+	CyclicChipCalls,
+}
+
+/// The way one term of an operand is malformed, said without naming where the operand sits.
+///
+/// A diagnostic pairs this with the position of the operand it checked, which differs between a
+/// constraint and a chip call.
+#[allow(missing_docs)] // errors are self-documenting
+#[derive(Debug, thiserror::Error)]
+pub enum OperandFault {
+	#[error("the shift is not canonical")]
+	NonCanonicalShift,
+	#[error("the shift amount n={shift_amount}>={max_amount}")]
+	ShiftAmountTooLarge {
+		shift_amount: usize,
+		max_amount: usize,
+	},
+	#[error("a lone shift sits in the outer slot; the canonical form places it inner")]
+	NonCanonicalShiftSequence,
+	#[error("a shift pair composes to {composition:?} rather than staying a pair")]
+	CollapsibleShiftSequence { composition: Composition },
+	#[error("it refers to a scratch value")]
+	ScratchValueIndex,
+	#[error("it refers to {segment:?} index {value_index} >= segment length {segment_len}")]
+	OutOfRangeValueIndex {
+		segment: ValueSegment,
+		value_index: u32,
+		segment_len: usize,
+	},
+}
+
+/// Names the chip of an M4 constraint system that a diagnostic is about.
+///
+/// The main chip is not one of the numbered chips, so it has no index.
+fn chip_name(chip_index: Option<usize>) -> String {
+	match chip_index {
+		Some(chip_index) => format!("chip #{chip_index}"),
+		None => "the main chip".to_string(),
+	}
+}
+
+/// Names the chip instance an M4 diagnostic blames a call on.
+///
+/// The main chip runs once, so only a numbered chip's instance is worth naming.
+fn caller_name(chip_index: Option<usize>, instance: usize) -> String {
+	match chip_index {
+		Some(chip_index) => format!("chip #{chip_index} instance #{instance}"),
+		None => "the main chip".to_string(),
+	}
+}
+
+/// Reason a witness fails to satisfy an M4 constraint system.
+///
+/// A witness is the main chip's value vector and one list of instance value vectors per chip.
+/// It must satisfy every chip's local constraints on every instance, and serve every chip call
+/// with the instance at the call's position.
+#[allow(missing_docs)] // errors are self-documenting
+#[derive(Debug, thiserror::Error)]
+pub enum VerificationM4Error {
+	#[error("the witness covers {n_witness_chips} chips, but the system has {n_chips}")]
+	WrongChipCount {
+		n_witness_chips: usize,
+		n_chips: usize,
+	},
+	#[error("the main chip is not satisfied: {0}")]
+	Main(#[from] VerificationError),
+	#[error("chip #{chip_id} instance #{instance} is not satisfied: {source}")]
+	ChipInstance {
+		chip_id: usize,
+		instance: usize,
+		#[source]
+		source: VerificationError,
+	},
+	#[error("chip #{chip_id} has {n_instances} instances, fewer than its {n_active} active ones")]
+	MissingInstances {
+		chip_id: usize,
+		n_instances: usize,
+		n_active: usize,
+	},
+	#[error(
+		"{n_invocations} invocations reach chip #{chip_id}, which has {n_active} active instances"
+	)]
+	WrongInvocationCount {
+		chip_id: usize,
+		n_invocations: usize,
+		n_active: usize,
+	},
+	#[error(
+		"call #{call_index} of {} reaches chip #{chip_id} as invocation #{row}, passing {passed:016x} \
+		 as inout value {word}, but the instance holds {served:016x}",
+		caller_name(*caller_chip, *caller_instance)
+	)]
+	CallMismatch {
+		chip_id: usize,
+		row: usize,
+		caller_chip: Option<usize>,
+		caller_instance: usize,
+		call_index: usize,
+		word: usize,
+		passed: u64,
+		served: u64,
+	},
 }
 
 /// The arithmetic by which a single constraint fails on a value vector.

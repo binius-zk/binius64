@@ -2,22 +2,27 @@
 // Copyright 2025 Irreducible Inc.
 use std::{
 	cell::{RefCell, RefMut},
+	iter, mem,
 	rc::Rc,
 };
 
 use binius_core::{
-	constraint_system::{ConstraintSystem, ShiftVariant, ValueSegment},
+	constraint_system::{ConstraintSystem, ShiftVariant, ShiftedValueIndex, ValueSegment},
+	m4::ChipCall,
 	word::Word,
 };
 use cranelift_entity::EntitySet;
 use itertools::chain;
 
-use crate::compiler::{
-	circuit::Circuit,
-	constraint_builder::ConstraintBuilder,
-	gate_graph::{GateGraph, WireKind},
-	hints::{Hint, HintRegistry},
-	pathspec::PathSpec,
+use crate::{
+	chip::{ChipRef, CircuitM4, EmbeddedCircuit},
+	compiler::{
+		circuit::Circuit,
+		constraint_builder::ConstraintBuilder,
+		gate_graph::{GateGraph, WireKind},
+		hints::{Hint, HintRegistry},
+		pathspec::PathSpec,
+	},
 };
 
 mod gate;
@@ -95,6 +100,19 @@ pub(crate) struct Shared {
 	pub(crate) opts: Options,
 	pub(crate) force_committed: EntitySet<Wire>,
 	pub(crate) hint_registry: HintRegistry,
+	/// The chips registered on the builder, indexed by chip ID.
+	pub(crate) chips: Vec<EmbeddedCircuit>,
+	/// The calls the built circuit makes, in the order they were emitted.
+	pub(crate) chip_calls: Vec<PendingCall>,
+}
+
+/// A chip call named by the wires it passes, before the build assigns them value indices.
+///
+/// A [`ChipCall`] reads its words out of the value vector, and which word a wire holds is only
+/// settled once the circuit is built.
+pub(crate) struct PendingCall {
+	chip: ChipRef,
+	inout: Vec<Wire>,
 }
 
 /// Circuit builder for constructing zero-knowledge proof circuits.
@@ -208,8 +226,90 @@ impl CircuitBuilder {
 				opts,
 				force_committed: EntitySet::new(),
 				hint_registry: HintRegistry::new(),
+				chips: Vec::new(),
+				chip_calls: Vec::new(),
 			}))),
 		}
+	}
+
+	/// Registers a chip the built circuit can delegate subrelations to, and returns a reference
+	/// naming it.
+	///
+	/// The registered system is flattened into the builder's own: its main circuit becomes the
+	/// chip the returned reference names, and the chips it calls follow, with the IDs inside it
+	/// shifted to their new slots. Each system occupies one contiguous run of IDs and calls only
+	/// into its own run, so the chips stay in the topological order [`CircuitM4::validate`]
+	/// requires.
+	///
+	/// The registered system's active-instance counts are dropped. They say how often its own main
+	/// reached each chip, which says nothing about how often this circuit will;
+	/// [`Self::build_m4`] recounts the whole graph.
+	///
+	/// Only [`Self::build_m4`] returns the registered chips; [`Self::build`] rejects a builder
+	/// carrying any.
+	pub fn add_chip(&self, chip: CircuitM4) -> ChipRef {
+		let mut shared = self.shared.borrow_mut();
+		let chips = &mut shared
+			.as_mut()
+			.expect("CircuitBuilder used after build")
+			.chips;
+
+		let chip_id = chips.len();
+		// The system's main takes the next slot and its own chips follow it, so an ID naming its
+		// chip `i` now names the slot one past main's.
+		let offset = chip_id + 1;
+		let CircuitM4 {
+			main,
+			chips: nested,
+		} = chip;
+		chips.extend(
+			iter::once(main)
+				.chain(nested.into_iter().map(|(embedded, _)| embedded))
+				.map(|mut embedded| {
+					for call in &mut embedded.chip_calls {
+						call.chip_id += offset;
+					}
+					embedded
+				}),
+		);
+		ChipRef::new(chip_id)
+	}
+
+	/// Calls a registered chip, passing the given wires as the inout words of one invocation.
+	///
+	/// The chip gains an instance serving this call, and that instance's inout values are these
+	/// wires' words. The chip's own constraints are what relate them, so this is how a circuit
+	/// delegates a relation rather than constraining it inline.
+	///
+	/// A chip does not say which of its inout words are inputs and which are outputs; a call
+	/// constrains them all alike. The expected shape computes the outputs from the inputs with a
+	/// hint and passes both: the hint hands the witness its values, and the call is the
+	/// constraint that makes them correct.
+	///
+	/// The build treats a call as a constraint on the words it names. Each wire passed takes a
+	/// committed word of the value vector, and the gate defining it stays live however little
+	/// else reads it. A call names words rather than expressions, though, so a linear argument
+	/// such as `a ^ b` is committed together with the ZERO constraint defining it, where a
+	/// constraint operand would have fused it in for free.
+	///
+	/// The wires are matched positionally against the callee's
+	/// [`Circuit::inout`](Circuit::inout), so they are given in that order and there is one per
+	/// inout word.
+	///
+	/// # Panics
+	///
+	/// Panics if the wire count differs from the callee's inout word count.
+	pub fn call_chip(&self, chip: ChipRef, inout: &[Wire]) {
+		let mut shared = self.shared.borrow_mut();
+		let shared = shared.as_mut().expect("CircuitBuilder used after build");
+
+		let n_inout = shared.chips[chip.chip_id()].circuit.inout().len();
+		assert_eq!(inout.len(), n_inout, "chip #{} takes {n_inout} inout words", chip.chip_id());
+
+		shared.chip_calls.push(PendingCall {
+			chip,
+			inout: inout.to_vec(),
+		});
 	}
 
 	/// Returns the circuit built by this builder.
@@ -219,14 +319,81 @@ impl CircuitBuilder {
 	///
 	/// # Preconditions
 	///
-	/// Must be called only once.
+	/// Must be called only once, on a builder with no chip registered by [`Self::add_chip`].
 	pub fn build(&self) -> Circuit {
-		let shared = self.shared.borrow_mut().take();
+		let shared = self.take_shared();
+		assert!(
+			shared.chips.is_empty(),
+			"a builder carrying chips builds with CircuitBuilder::build_m4"
+		);
+		Self::compile(shared, &[])
+	}
 
+	/// Returns the chip-composed circuit built by this builder.
+	///
+	/// The built circuit is the main one, over the chips registered with [`Self::add_chip`] and
+	/// making the calls emitted by [`Self::call_chip`]. Each call's wires resolve to the value
+	/// indices the build assigned them, and each chip's active-instance count is counted off the
+	/// resulting call graph.
+	///
+	/// # Preconditions
+	///
+	/// Must be called only once.
+	pub fn build_m4(&self) -> CircuitM4 {
+		let mut shared = self.take_shared();
+		let chips = mem::take(&mut shared.chips);
+		let pending = mem::take(&mut shared.chip_calls);
+		let circuit = Self::compile(shared, &pending);
+
+		let chip_calls = pending
+			.into_iter()
+			.map(|call| ChipCall {
+				chip_id: call.chip.chip_id(),
+				inout: call
+					.inout
+					.iter()
+					.map(|&wire| vec![ShiftedValueIndex::plain(circuit.witness_index(wire))])
+					.collect(),
+			})
+			.collect();
+
+		let mut circuit = CircuitM4 {
+			main: EmbeddedCircuit {
+				circuit,
+				chip_calls,
+			},
+			chips: chips.into_iter().map(|chip| (chip, 0)).collect(),
+		};
+		circuit.recompute_n_active();
+		circuit
+	}
+
+	/// Takes the builder's state, leaving it spent.
+	///
+	/// # Panics
+	///
+	/// Panics if the state was already taken, which is what makes building a one-shot operation.
+	fn take_shared(&self) -> Shared {
+		let shared = self.shared.borrow_mut().take();
 		let Some(shared) = shared else {
 			panic!("CircuitBuilder::build called twice");
 		};
+		shared
+	}
+
+	/// Compiles the builder's state into a circuit, running every optimization pass it enables.
+	fn compile(shared: Shared, chip_calls: &[PendingCall]) -> Circuit {
 		let mut graph = shared.graph;
+
+		// A chip call is a constraint on the words its wires hold, but the compiler passes have
+		// no notion of a call. Folding its wires into the pinned set gives them the treatment a
+		// constraint's wires get: dead-code elimination keeps the gates defining them,
+		// common-subexpression elimination keeps them distinct, and gate fusion keeps a linear
+		// definition committed rather than inlining it away.
+		let mut pinned = shared.force_committed;
+		for wire in chip_calls.iter().flat_map(|call| &call.inout) {
+			pinned.insert(*wire);
+		}
 
 		// The all-one wire is seeded as the first constant when the graph is constructed.
 		let all_one = graph.all_one;
@@ -241,7 +408,7 @@ impl CircuitBuilder {
 		// Zero propagation: drop the gates a zero operand turns into the identity.
 		// This runs before the dead-code pass, which is what removes the gates it strands.
 		if shared.opts.enable_zero_propagation {
-			zero_fold::zero_propagation(&mut graph, &shared.force_committed, &shared.hint_registry);
+			zero_fold::zero_propagation(&mut graph, &pinned, &shared.hint_registry);
 		}
 
 		// Common-subexpression elimination: collapse structurally-identical gates.
@@ -249,7 +416,7 @@ impl CircuitBuilder {
 		let dead_gates = shared
 			.opts
 			.enable_common_subexpression_elimination
-			.then(|| cse::dedup_gates(&mut graph, &shared.force_committed, &shared.hint_registry));
+			.then(|| cse::dedup_gates(&mut graph, &pinned, &shared.hint_registry));
 
 		// Dead-code elimination: the gates that can affect the constraint system.
 		// A gate outside this set emits no constraint and no committed wire, so it is skipped
@@ -257,7 +424,7 @@ impl CircuitBuilder {
 		let live_gates = shared
 			.opts
 			.enable_dead_code_elimination
-			.then(|| dce::live_gates(&mut graph, &shared.force_committed, &shared.hint_registry));
+			.then(|| dce::live_gates(&mut graph, &pinned, &shared.hint_registry));
 
 		let mut builder = ConstraintBuilder::new();
 		for (gate_id, _) in graph.gates.iter() {
@@ -278,10 +445,17 @@ impl CircuitBuilder {
 
 		// Perform fusion if the corresponding feature flag is turned on.
 		if shared.opts.enable_gate_fusion {
-			gate_fusion::run_pass(&mut builder, &shared.force_committed);
+			gate_fusion::run_pass(&mut builder, &pinned);
 		}
 
-		let constrained_wires = builder.mark_used_wires();
+		let mut constrained_wires = builder.mark_used_wires();
+
+		// A chip call reads its words out of the value vector just as a constraint operand does,
+		// so the wires it names are committed on the same footing. This is what commits a hint
+		// output: no constraint defines it, and constraining it is the call's purpose.
+		for wire in chip_calls.iter().flat_map(|call| &call.inout) {
+			constrained_wires.insert(*wire);
+		}
 
 		// Collect the values no constraint operand mentions.
 		//
@@ -315,6 +489,7 @@ impl CircuitBuilder {
 			wire_mapping,
 			value_vec_layout,
 			constants,
+			inout,
 		} = {
 			let mut value_vec_alloc = value_vec_alloc::Alloc::new(scratch_alloc.n_slots());
 			for (wire, kind) in graph.wires.iter() {
@@ -398,6 +573,7 @@ impl CircuitBuilder {
 			cs,
 			value_vec_layout,
 			wire_mapping,
+			inout,
 			eval_form,
 			scratch_alloc.peak_live(),
 		)

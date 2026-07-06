@@ -26,10 +26,12 @@
 
 #![warn(rustdoc::missing_crate_level_docs)]
 
+pub mod chip;
 mod compiler;
 pub mod ops;
 pub mod stat;
 
+pub use chip::{ChipRef, CircuitM4, CircuitM4Error, EmbeddedCircuit};
 pub use compiler::{
 	CircuitBuilder, Options, Wire,
 	circuit::{AssertionFailure, Circuit, PopulateError, WitnessFiller},

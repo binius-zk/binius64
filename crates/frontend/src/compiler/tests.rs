@@ -1091,3 +1091,171 @@ fn mark_inout_wire_is_derived_by_population() {
 		);
 	}
 }
+
+// `inout()` is the reverse of `witness_index` over the inout segment, so it must agree with it
+// position by position. The segment is ordered by wire creation, which for a promoted wire is when
+// its gate ran rather than when it was promoted: `and` is created before `xor` is promoted, yet
+// follows it here.
+#[test]
+fn inout_lists_the_public_wires_in_segment_order() {
+	let builder = CircuitBuilder::new();
+	let a = builder.add_inout();
+	let b = builder.add_inout();
+	let xor = builder.bxor(a, b);
+	let and = builder.band(xor, a);
+	builder.mark_inout(and);
+	builder.mark_inout(xor);
+	let circuit = builder.build();
+
+	assert_eq!(circuit.inout(), [a, b, xor, and]);
+	for (index, &wire) in circuit.inout().iter().enumerate() {
+		assert_eq!(circuit.witness_index(wire), ValueIndex::inout(index as u32));
+	}
+}
+
+/// A chip taking no inout words, as a whole system of its own.
+fn empty_chip() -> CircuitM4 {
+	CircuitM4::from(CircuitBuilder::new().build())
+}
+
+/// A one-chip system, as a leaf chip a main circuit calls once.
+fn leaf_caller() -> CircuitM4 {
+	let builder = CircuitBuilder::new();
+	let chip = builder.add_chip(empty_chip());
+	builder.call_chip(chip, &[]);
+	builder.build_m4()
+}
+
+// Registering a system splices its chips in behind its main, so the IDs inside it have to move
+// with them. Nesting two levels puts a call at every depth: main's calls to the two systems, each
+// outer main's call to its own leaf.
+//
+// Calling one system twice and the other once also separates the counts the registered systems
+// declared, where each leaf served one call, from the counts here.
+#[test]
+fn add_chip_remaps_the_ids_of_a_nested_system() {
+	let builder = CircuitBuilder::new();
+	let twice = builder.add_chip(leaf_caller());
+	let once = builder.add_chip(leaf_caller());
+	for chip in [twice, twice, once] {
+		builder.call_chip(chip, &[]);
+	}
+	let circuit = builder.build_m4();
+
+	// Each system takes two slots, its main then its leaf, and its call names the leaf's new slot.
+	assert_eq!((twice.chip_id(), once.chip_id()), (0, 2));
+	let callees = |(chip, _): &(EmbeddedCircuit, usize)| {
+		chip.chip_calls
+			.iter()
+			.map(|call| call.chip_id)
+			.collect::<Vec<_>>()
+	};
+	assert_eq!(
+		circuit.chips.iter().map(callees).collect::<Vec<_>>(),
+		[vec![1], vec![], vec![3], vec![]]
+	);
+
+	// The twice-called system's leaf serves both of its main's instances, not the one call it
+	// declared before being registered.
+	assert_eq!(circuit.chips.iter().map(|&(_, n)| n).collect::<Vec<_>>(), [2, 2, 1, 1]);
+	circuit.validate().unwrap();
+}
+
+// `build` returns a plain circuit, which has nowhere to carry the chips its calls would name.
+#[test]
+#[should_panic(expected = "builds with CircuitBuilder::build_m4")]
+fn build_rejects_a_builder_carrying_chips() {
+	let builder = CircuitBuilder::new();
+	builder.add_chip(empty_chip());
+	builder.build();
+}
+
+// A call passes its words positionally against the callee's inout segment, so a call of the wrong
+// length would silently shift every word past the gap.
+#[test]
+#[should_panic(expected = "chip #0 takes 2 inout words")]
+fn call_chip_rejects_the_wrong_number_of_words() {
+	let chip = CircuitBuilder::new();
+	chip.assert_eq("eq", chip.add_inout(), chip.add_inout());
+
+	let builder = CircuitBuilder::new();
+	let chip = builder.add_chip(CircuitM4::from(chip.build()));
+	builder.call_chip(chip, &[builder.add_witness()]);
+}
+
+// A call reads its words out of the value vector, so the wires it names have to survive the build
+// as committed words. Nothing else here reads the conjunction, so the call is what keeps it.
+#[test]
+fn call_chip_resolves_and_pins_the_wires_it_passes() {
+	let chip = CircuitBuilder::new();
+	chip.assert_eq("eq", chip.add_inout(), chip.add_inout());
+
+	let builder = CircuitBuilder::new();
+	let chip_ref = builder.add_chip(CircuitM4::from(chip.build()));
+	let a = builder.add_inout();
+	let b = builder.add_inout();
+	let and = builder.band(a, b);
+	builder.call_chip(chip_ref, &[and, a]);
+	let circuit = builder.build_m4();
+
+	// The call names one word per wire, at the index the build gave that wire.
+	let main = &circuit.main.circuit;
+	let operands = circuit.main.chip_calls[0]
+		.inout
+		.iter()
+		.map(|operand| operand.as_slice())
+		.collect::<Vec<_>>();
+	assert_eq!(
+		operands,
+		[
+			[ShiftedValueIndex::plain(main.witness_index(and))].as_slice(),
+			[ShiftedValueIndex::plain(main.witness_index(a))].as_slice(),
+		]
+	);
+
+	// The conjunction is a committed private word rather than an uncommitted temporary, and the
+	// AND constraint defining it survives. Nothing but the call reads it, so the call is what
+	// keeps that definition — a committed word without one would be a prover's to choose.
+	assert_eq!(main.witness_index(and).segment(), ValueSegment::Private);
+	let cs = main.constraint_system();
+	assert_eq!(cs.and_constraints.len(), 1);
+	assert!(
+		cs.and_constraints[0]
+			.0
+			.iter()
+			.flatten()
+			.any(|term| term.value_index == main.witness_index(and))
+	);
+
+	circuit.validate().unwrap();
+}
+
+// What a linear argument costs. `a ^ b` reaching a constraint fuses into its operand and occupies
+// no word, but a chip call reads its words out of the value vector, so passing the same expression
+// commits it and keeps the equation defining it.
+#[test]
+fn call_chip_commits_a_linear_argument() {
+	// The XOR reaching a constraint fuses into its operand, so it holds no word of the value
+	// vector: it stays an uncommitted temporary of the circuit.
+	let builder = CircuitBuilder::new();
+	let (a, b) = (builder.add_inout(), builder.add_inout());
+	let xor = builder.bxor(a, b);
+	builder.mark_inout(builder.band(xor, b));
+	let fused = builder.build();
+	assert_eq!(fused.witness_index(xor).segment(), ValueSegment::Scratch);
+
+	// The same XOR passed to a chip call instead.
+	let chip = CircuitBuilder::new();
+	chip.assert_eq("eq", chip.add_inout(), chip.add_inout());
+
+	let builder = CircuitBuilder::new();
+	let chip_ref = builder.add_chip(CircuitM4::from(chip.build()));
+	let (a, b) = (builder.add_inout(), builder.add_inout());
+	let xor = builder.bxor(a, b);
+	builder.call_chip(chip_ref, &[xor, a]);
+	let called = builder.build_m4().main.circuit;
+
+	assert_eq!(called.witness_index(xor).segment(), ValueSegment::Private);
+	assert_eq!(called.value_vec_layout().n_private(), 1);
+	assert_eq!(called.constraint_system().n_zero_constraints(), 1);
+}

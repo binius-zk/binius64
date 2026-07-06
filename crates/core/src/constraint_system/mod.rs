@@ -1,8 +1,10 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Constraint system and related definitions.
 
 mod constraint;
 mod layout;
+pub mod m4;
 mod proof;
 mod shift;
 mod system;
