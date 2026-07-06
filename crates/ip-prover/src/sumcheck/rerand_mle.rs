@@ -11,7 +11,6 @@ use itertools::izip;
 
 use super::{
 	common::{MleCheckProver, SumcheckProver},
-	error::Error,
 	gruen32::Gruen32,
 	round_evals::RoundEvals1,
 	round_state::RoundState,
@@ -43,27 +42,24 @@ where
 	/// Constructs a prover, given `bitmasks` as representation of 1-bit columns, evaluation claims
 	/// `eval_claims` on the shared `eval_point`, and `switchover` being the round at which 1-bit
 	/// columns should be folded.
-	pub fn new(
-		eval_point: &[F],
-		eval_claims: &[F],
-		bitmasks: &'b [B],
-		switchover: usize,
-	) -> Result<Self, Error> {
+	pub fn new(eval_point: &[F], eval_claims: &[F], bitmasks: &'b [B], switchover: usize) -> Self {
 		let n_vars = eval_point.len();
 
-		if bitmasks.len() != 1 << n_vars {
-			return Err(Error::BitmasksSizeMismatch);
-		}
+		assert_eq!(
+			bitmasks.len(),
+			1 << n_vars,
+			"bitmasks slice length must match the evaluation point length"
+		);
 
 		let gruen32 = Gruen32::new(eval_point);
 		let switchover = BinarySwitchover::new(eval_claims.len(), switchover.min(n_vars), bitmasks);
 		let last_coeffs_or_sums = RoundState::Claim(eval_claims.to_vec());
 
-		Ok(Self {
+		Self {
 			last_coeffs_or_sums,
 			gruen32,
 			switchover,
-		})
+		}
 	}
 }
 
@@ -97,8 +93,8 @@ where
 		}
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
-		let sums = self.last_coeffs_or_sums.claim()?;
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
+		let sums = self.last_coeffs_or_sums.claim();
 
 		assert!(self.n_vars() > 0);
 
@@ -162,11 +158,11 @@ where
 			.collect::<Vec<_>>();
 
 		self.last_coeffs_or_sums = RoundState::Coeffs(round_coeffs.clone());
-		Ok(round_coeffs)
+		round_coeffs
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
-		let round_coeffs = self.last_coeffs_or_sums.coeffs()?;
+	fn fold(&mut self, challenge: F) {
+		let round_coeffs = self.last_coeffs_or_sums.coeffs();
 
 		assert!(self.n_vars() > 0);
 
@@ -179,25 +175,19 @@ where
 		self.gruen32.fold(challenge);
 
 		self.last_coeffs_or_sums = RoundState::Claim(sums);
-		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
-		if self.n_vars() > 0 {
-			return Err(self.last_coeffs_or_sums.unfinished_err());
-		}
+	fn finish(self) -> Vec<F> {
+		assert_eq!(self.n_vars(), 0, "finish called out of order; sumcheck rounds remain");
 
-		let multilinear_evals = self
-			.switchover
+		self.switchover
 			.finalize()
 			.into_iter()
 			.map(|multilinear| {
 				debug_assert_eq!(multilinear.log_len(), 0);
 				multilinear.get(0)
 			})
-			.collect();
-
-		Ok(multilinear_evals)
+			.collect()
 	}
 }
 
@@ -273,16 +263,14 @@ mod tests {
 				.collect_vec(),
 			&eval_point,
 			eval_claims.clone(),
-		)
-		.unwrap();
+		);
 
 		let mut rerand_prover =
-			RerandMlecheckProver::<P, _>::new(&eval_point, &eval_claims, &bitmasks, switchover)
-				.unwrap();
+			RerandMlecheckProver::<P, _>::new(&eval_point, &eval_claims, &bitmasks, switchover);
 
 		for _round in 0..n_vars {
-			let rerand_round_coeffs = rerand_prover.execute().unwrap();
-			let multi_bivariate_round_coeffs = multi_bivariate_prover.execute().unwrap();
+			let rerand_round_coeffs = rerand_prover.execute();
+			let multi_bivariate_round_coeffs = multi_bivariate_prover.execute();
 
 			for (rerand, mut multi) in izip!(rerand_round_coeffs, multi_bivariate_round_coeffs) {
 				// Bivariate product prover sizes round polynomials for degree-3 but they are
@@ -292,12 +280,12 @@ mod tests {
 			}
 
 			let challenge = F::random(&mut rng);
-			rerand_prover.fold(challenge).unwrap();
-			multi_bivariate_prover.fold(challenge).unwrap();
+			rerand_prover.fold(challenge);
+			multi_bivariate_prover.fold(challenge);
 		}
 
-		let rerand_multilinear_evals = rerand_prover.finish().unwrap();
-		let multi_bivariate_multilinear_evals = multi_bivariate_prover.finish().unwrap();
+		let rerand_multilinear_evals = rerand_prover.finish();
+		let multi_bivariate_multilinear_evals = multi_bivariate_prover.finish();
 
 		for (rerand, multi) in
 			izip!(rerand_multilinear_evals, multi_bivariate_multilinear_evals.chunks(2))

@@ -20,6 +20,8 @@ pub enum VerificationError {
 	LookupSumMismatch,
 	#[error("the eq_r multilinear evaluation is incorrect")]
 	IncorrectXEvaluation,
+	#[error("the index evaluations do not combine to the leaf denominator")]
+	IncorrectIndexEvaluation,
 	#[error("the batched final layer evaluation is incorrect")]
 	FinalLayerMismatch,
 	#[error("the proof is truncated or empty")]

@@ -33,15 +33,13 @@ pub mod wrapper;
 
 use std::{
 	iter::{repeat_n, repeat_with},
+	marker::PhantomData,
 	ops::Deref,
 };
 
-use binius_field::{BinaryField, Field, PackedExtension, PackedField};
+use binius_field::{BinaryField, Field, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
-use binius_iop_prover::{
-	basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel,
-	merkle_tree::prover::BinaryMerkleTreeProver,
-};
+use binius_iop_prover::{basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{quadratic_mle::QuadraticMleCheckProver, zk_mlecheck},
@@ -74,7 +72,6 @@ use rand::CryptoRng;
 use crate::wiring::{WiringTranspose, fold_constraints};
 
 type ProverNTT<F> = NeighborsLastMultiThread<GenericPreExpanded<F>>;
-type ProverMerkleProver<F, H> = BinaryMerkleTreeProver<F, H>;
 
 /// IOP prover for a particular constraint system.
 ///
@@ -99,8 +96,9 @@ where
 	H: HashSuite,
 {
 	iop_prover: IOPProver<P::Scalar>,
-	basefold_compiler:
-		BaseFoldProverCompiler<P, ProverNTT<P::Scalar>, ProverMerkleProver<P::Scalar, H>>,
+	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<P::Scalar>>,
+	/// The prover creates its Merkle transcript channels with the hash suite `H`.
+	_hash_marker: PhantomData<H>,
 }
 
 impl<F: Field> IOPProver<F> {
@@ -141,7 +139,7 @@ impl<F: Field> IOPProver<F> {
 	) -> (Channel::Oracle, FieldBuffer<P>)
 	where
 		F: BinaryField,
-		P: PackedField<Scalar = F> + PackedExtension<F>,
+		P: PackedField<Scalar = F>,
 		Channel: IOPProverChannel<P>,
 	{
 		let cs = &self.constraint_system;
@@ -185,7 +183,7 @@ impl<F: Field> IOPProver<F> {
 	) -> Result<(), Error>
 	where
 		F: BinaryField,
-		P: PackedField<Scalar = F> + PackedExtension<F>,
+		P: PackedField<Scalar = F>,
 		Channel: IOPProverChannel<P>,
 	{
 		let _prove_guard =
@@ -269,7 +267,7 @@ impl<F: Field> IOPProver<F> {
 			private_packed.to_ref(),
 			mulcheck_mask,
 			&mut *channel,
-		)?;
+		);
 
 		// λ is the batching challenge for the constraint operands
 		let lambda = channel.sample();
@@ -323,7 +321,7 @@ impl<F: Field> IOPProver<F> {
 impl<F, P, H> Prover<P, H>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F>,
 	H: HashSuite,
 	Output<H::LeafHash>: SerializeBytes,
 {
@@ -338,21 +336,17 @@ where
 		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
 		let ntt = NeighborsLastMultiThread::new(domain_context, log_num_shares);
 
-		let merkle_prover = BinaryMerkleTreeProver::<_, H>::new();
-
 		// Create the BaseFold ZK compiler from verifier compiler (reuses oracle_specs and
 		// fri_params)
-		let basefold_compiler = BaseFoldProverCompiler::from_verifier_compiler(
-			verifier.iop_compiler(),
-			ntt,
-			merkle_prover,
-		);
+		let basefold_compiler =
+			BaseFoldProverCompiler::from_verifier_compiler(verifier.iop_compiler(), ntt);
 
 		let iop_prover = IOPProver::new(verifier.constraint_system().clone());
 
 		Ok(Prover {
 			iop_prover,
 			basefold_compiler,
+			_hash_marker: PhantomData,
 		})
 	}
 
@@ -362,9 +356,7 @@ where
 	}
 
 	/// Returns a reference to the BaseFold ZK prover compiler.
-	pub const fn iop_compiler(
-		&self,
-	) -> &BaseFoldProverCompiler<P, ProverNTT<F>, ProverMerkleProver<F, H>> {
+	pub const fn iop_compiler(&self) -> &BaseFoldProverCompiler<P, ProverNTT<F>> {
 		&self.basefold_compiler
 	}
 
@@ -391,7 +383,9 @@ where
 
 		// Create ZK channel (owns the RNG for mask generation), commit the precommit oracle,
 		// and delegate to the IOP prover.
-		let mut channel = self.basefold_compiler.create_channel(transcript, &mut rng);
+		let mut channel = self
+			.basefold_compiler
+			.create_channel_from_transcript::<H, Challenger_, _>(transcript, &mut rng);
 		let (precommit_oracle, precommit_packed) =
 			self.iop_prover
 				.commit_precommit::<P, _>(&witness, &mut rng, &mut channel);
@@ -416,10 +410,10 @@ fn prove_mulcheck<F, P, Channel>(
 	private_packed: FieldSlice<P>,
 	mask: zk_mlecheck::Mask<P, impl Deref<Target = [P]>>,
 	channel: &mut Channel,
-) -> Result<([F; 3], F, Vec<F>), Error>
+) -> ([F; 3], F, Vec<F>)
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
 {
 	let mulcheck_witness =
@@ -435,10 +429,10 @@ where
 		|[a, b, _c]| a * b,    // infinity_composition (quadratic term only)
 		r_mulcheck,
 		F::ZERO, // eval_claim: zerocheck
-	)?;
+	);
 
 	// Run the ZK MLE-check protocol
-	let mlecheck_output = zk_mlecheck::prove(mlecheck_prover, mask, channel)?;
+	let mlecheck_output = zk_mlecheck::prove(mlecheck_prover, mask, channel);
 
 	// Extract the reduced evaluation point and multilinear evaluations
 	let mut r_x = mlecheck_output.challenges;
@@ -455,7 +449,7 @@ where
 	let mulcheck_evals = [a_eval, b_eval, c_eval];
 	let mask_eval = mlecheck_output.mask_eval;
 
-	Ok((mulcheck_evals, mask_eval, r_x))
+	(mulcheck_evals, mask_eval, r_x)
 }
 
 /// Packs witness values into a [`FieldBuffer`] and adds blinding values for dummy wires.

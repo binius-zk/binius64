@@ -9,12 +9,14 @@
 
 pub mod binary_merkle_tree;
 pub mod blake3;
+pub mod blake3_portable;
 pub mod compress;
 pub mod parallel_compression;
 pub mod parallel_digest;
 mod serialization;
 pub mod sha256;
 
+pub use blake3::{Blake3Compression, Blake3HashSuite};
 pub use compress::CompressionFunction;
 pub use parallel_compression::{ParallelCompressionAdaptor, ParallelPseudoCompression};
 pub use parallel_digest::{

@@ -8,7 +8,6 @@ use binius_utils::rayon::prelude::*;
 
 use super::{
 	common::{MleCheckProver, SumcheckProver},
-	error::Error,
 	gruen32::Gruen32,
 	round_evals::RoundEvals1,
 	round_state::RoundState,
@@ -39,18 +38,19 @@ impl<F: Field, P: PackedField<Scalar = F>> MultilinearEvalProver<P> {
 	/// Constructs a prover for the multilinear `witness`, given the evaluation point `eval_point`
 	/// and the claimed evaluation `eval_claim` of the multilinear extension at that point.
 	///
-	/// Returns [`Error::MultilinearSizeMismatch`] if the witness length does not match the
-	/// evaluation point length.
-	pub fn new(witness: FieldBuffer<P>, eval_point: &[F], eval_claim: F) -> Result<Self, Error> {
-		if witness.log_len() != eval_point.len() {
-			return Err(Error::MultilinearSizeMismatch);
-		}
+	/// Panics if the witness length does not match the evaluation point length.
+	pub fn new(witness: FieldBuffer<P>, eval_point: &[F], eval_claim: F) -> Self {
+		assert_eq!(
+			witness.log_len(),
+			eval_point.len(),
+			"witness must have number of variables equal to the evaluation point length"
+		);
 
-		Ok(Self {
+		Self {
 			witness,
 			gruen32: Gruen32::new(eval_point),
 			last_coeffs_or_sum: RoundState::Claim(eval_claim),
-		})
+		}
 	}
 }
 
@@ -73,8 +73,8 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for MultilinearEval
 		vec![claim]
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
-		let sum = *self.last_coeffs_or_sum.claim()?;
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
+		let sum = *self.last_coeffs_or_sum.claim();
 
 		let n_vars_remaining = self.n_vars();
 		assert!(n_vars_remaining > 0);
@@ -101,11 +101,11 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for MultilinearEval
 			.interpolate_eq(sum, alpha);
 
 		self.last_coeffs_or_sum = RoundState::Coeffs(round_coeffs.clone());
-		Ok(vec![round_coeffs])
+		vec![round_coeffs]
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
-		let coeffs = self.last_coeffs_or_sum.coeffs()?;
+	fn fold(&mut self, challenge: F) {
+		let coeffs = self.last_coeffs_or_sum.coeffs();
 
 		assert!(self.n_vars() > 0);
 
@@ -115,16 +115,13 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for MultilinearEval
 		self.gruen32.fold(challenge);
 
 		self.last_coeffs_or_sum = RoundState::Claim(sum);
-		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
-		if self.n_vars() > 0 {
-			return Err(self.last_coeffs_or_sum.unfinished_err());
-		}
+	fn finish(self) -> Vec<F> {
+		assert_eq!(self.n_vars(), 0, "finish called out of order; sumcheck rounds remain");
 
 		debug_assert_eq!(self.witness.log_len(), 0);
-		Ok(vec![self.witness.get(0)])
+		vec![self.witness.get(0)]
 	}
 }
 
@@ -168,20 +165,18 @@ mod tests {
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 		let eval_claim = evaluate(&witness, &eval_point);
 
-		let mut eval_prover =
-			MultilinearEvalProver::new(witness.clone(), &eval_point, eval_claim).unwrap();
+		let mut eval_prover = MultilinearEvalProver::new(witness.clone(), &eval_point, eval_claim);
 		let mut quadratic_prover = QuadraticMleCheckProver::new(
 			[witness],
 			|[a]: [P; 1]| a,
 			|[_a]: [P; 1]| P::zero(),
 			eval_point,
 			eval_claim,
-		)
-		.unwrap();
+		);
 
 		for _ in 0..n_vars {
-			let eval_round = eval_prover.execute().unwrap();
-			let mut quadratic_round = quadratic_prover.execute().unwrap();
+			let eval_round = eval_prover.execute();
+			let mut quadratic_round = quadratic_prover.execute();
 			assert_eq!(eval_round.len(), 1);
 			assert_eq!(quadratic_round.len(), 1);
 
@@ -194,11 +189,11 @@ mod tests {
 			assert_eq!(eval_prover.round_claim(), quadratic_prover.round_claim());
 
 			let challenge = F::random(&mut rng);
-			eval_prover.fold(challenge).unwrap();
-			quadratic_prover.fold(challenge).unwrap();
+			eval_prover.fold(challenge);
+			quadratic_prover.fold(challenge);
 		}
 
-		assert_eq!(eval_prover.finish().unwrap(), quadratic_prover.finish().unwrap());
+		assert_eq!(eval_prover.finish(), quadratic_prover.finish());
 	}
 
 	// Full prove/verify roundtrip through the MLE-check protocol.
@@ -211,10 +206,10 @@ mod tests {
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 		let eval_claim = evaluate(&witness, &eval_point);
 
-		let prover = MultilinearEvalProver::new(witness.clone(), &eval_point, eval_claim).unwrap();
+		let prover = MultilinearEvalProver::new(witness.clone(), &eval_point, eval_claim);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = prove_single_mlecheck(prover, &mut prover_transcript).unwrap();
+		let output = prove_single_mlecheck(prover, &mut prover_transcript);
 		prover_transcript
 			.message()
 			.write_slice(&output.multilinear_evals);
@@ -245,16 +240,16 @@ mod tests {
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 		let eval_claim = evaluate(&witness, &eval_point);
 
-		let mut prover = MultilinearEvalProver::new(witness, &eval_point, eval_claim).unwrap();
+		let mut prover = MultilinearEvalProver::new(witness, &eval_point, eval_claim);
 		assert_eq!(prover.round_claim(), vec![eval_claim]);
 
 		for _ in 0..n_vars {
 			let before = prover.round_claim();
-			let round = prover.execute().unwrap();
+			let round = prover.execute();
 			assert_eq!(prover.round_claim(), before);
 			let challenge = F::random(&mut rng);
 			let expected_next = round[0].evaluate(challenge);
-			prover.fold(challenge).unwrap();
+			prover.fold(challenge);
 			assert_eq!(prover.round_claim(), vec![expected_next]);
 		}
 	}

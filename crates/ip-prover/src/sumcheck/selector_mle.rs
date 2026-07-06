@@ -11,7 +11,6 @@ use itertools::izip;
 
 use super::{
 	common::SumcheckProver,
-	error::Error,
 	gruen32::Gruen32,
 	round_evals::{RoundEvals2, WideRoundEvals2},
 	round_state::RoundState,
@@ -59,20 +58,25 @@ impl<'b, F: Field, P: PackedField<Scalar = F>, B: Bitwise> SelectorMlecheckProve
 		bitmasks: &'b [B],
 		weights: Vec<F>,
 		switchover: usize,
-	) -> Result<Self, Error> {
+	) -> Self {
 		let n_vars = selected.log_len();
 
-		if claims.iter().any(|claim| claim.point.len() != n_vars) {
-			return Err(Error::MultilinearSizeMismatch);
-		}
+		assert!(
+			claims.iter().all(|claim| claim.point.len() == n_vars),
+			"multilinears must have equal number of variables"
+		);
 
-		if weights.len() != claims.len() {
-			return Err(Error::EvalClaimsNumberMismatch);
-		}
+		assert_eq!(
+			weights.len(),
+			claims.len(),
+			"number of weights must match the number of claims"
+		);
 
-		if bitmasks.len() != selected.len() {
-			return Err(Error::BitmasksSizeMismatch);
-		}
+		assert_eq!(
+			bitmasks.len(),
+			selected.len(),
+			"bitmasks slice length must match the selected multilinear length"
+		);
 
 		const MAX_CHUNK_VARS: usize = 8;
 		let (gruen32s, sums) = claims
@@ -83,13 +87,13 @@ impl<'b, F: Field, P: PackedField<Scalar = F>, B: Bitwise> SelectorMlecheckProve
 		let switchover = BinarySwitchover::new(sums.len(), switchover.min(n_vars), bitmasks);
 		let last_coeffs_or_sums = RoundState::Claim(sums);
 
-		Ok(Self {
+		Self {
 			last_coeffs_or_sums,
 			selected,
 			gruen32s,
 			weights,
 			switchover,
-		})
+		}
 	}
 }
 
@@ -121,8 +125,8 @@ where
 		vec![izip!(per_claim, &self.weights).map(|(m, &w)| m * w).sum()]
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
-		let sums = self.last_coeffs_or_sums.claim()?;
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
+		let sums = self.last_coeffs_or_sums.claim();
 
 		assert!(self.n_vars() > 0);
 
@@ -231,11 +235,11 @@ where
 		let combined = izip!(round_coeffs, &self.weights)
 			.map(|(coeffs, &w)| coeffs * w)
 			.sum();
-		Ok(vec![combined])
+		vec![combined]
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
-		let prime_coeffs = self.last_coeffs_or_sums.coeffs()?;
+	fn fold(&mut self, challenge: F) {
+		let prime_coeffs = self.last_coeffs_or_sums.coeffs();
 
 		assert!(self.n_vars() > 0);
 
@@ -252,13 +256,10 @@ where
 		fold_highest_var_inplace(&mut self.selected, challenge);
 
 		self.last_coeffs_or_sums = RoundState::Claim(sums);
-		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
-		if self.n_vars() > 0 {
-			return Err(self.last_coeffs_or_sums.unfinished_err());
-		}
+	fn finish(self) -> Vec<F> {
+		assert_eq!(self.n_vars(), 0, "finish called out of order; sumcheck rounds remain");
 
 		let mut multilinear_evals = Vec::with_capacity(self.gruen32s.len() + 1);
 
@@ -271,7 +272,7 @@ where
 		debug_assert_eq!(self.selected.log_len(), 0);
 		multilinear_evals.push(self.selected.get(0));
 
-		Ok(multilinear_evals)
+		multilinear_evals
 	}
 }
 
@@ -351,8 +352,7 @@ mod tests {
 					[[direct_selector, selected.clone()]].to_vec(),
 					&point,
 					vec![direct_eval_claim],
-				)
-				.unwrap();
+				);
 				let direct_prover = MleToSumCheckDecorator::new(direct_mle_prover);
 
 				let inverted_eval_claim = multilinear_evaluate(&inverted_selector, &point);
@@ -360,8 +360,7 @@ mod tests {
 					[[inverted_selector, ones.clone()]].to_vec(),
 					&point,
 					vec![inverted_eval_claim],
-				)
-				.unwrap();
+				);
 				let inverted_prover = MleToSumCheckDecorator::new(inverted_mle_prover);
 
 				let selector_mlecheck_claim = Claim { point, value };
@@ -377,15 +376,14 @@ mod tests {
 		let switchover = 0;
 		let weights = random_scalars::<F>(&mut rng, selector_count);
 		let mut selector_prover =
-			SelectorMlecheckProver::new(selected, claims, &bitmasks, weights.clone(), switchover)
-				.unwrap();
+			SelectorMlecheckProver::new(selected, claims, &bitmasks, weights.clone(), switchover);
 
 		for _n_rounds_remaining in (1..=n_vars).rev() {
 			// NB: this is unsound, for test usage only!
 			let challenge = F::random(&mut rng);
 
-			let all_selector_coeffs = selector_prover.execute().unwrap();
-			selector_prover.fold(challenge).unwrap();
+			let all_selector_coeffs = selector_prover.execute();
+			selector_prover.fold(challenge);
 
 			// The prover combines its per-selector round polynomials into the single weighted
 			// polynomial `Σ_i weights[i] · (direct_i + inverted_i)`.
@@ -394,11 +392,11 @@ mod tests {
 			for (&weight, (direct_prover, inverted_prover)) in
 				izip!(&weights, &mut bivariate_provers)
 			{
-				let direct_coeffs = direct_prover.execute().unwrap();
-				let inverted_coeffs = inverted_prover.execute().unwrap();
+				let direct_coeffs = direct_prover.execute();
+				let inverted_coeffs = inverted_prover.execute();
 
-				direct_prover.fold(challenge).unwrap();
-				inverted_prover.fold(challenge).unwrap();
+				direct_prover.fold(challenge);
+				inverted_prover.fold(challenge);
 
 				assert_eq!(direct_coeffs.len(), 1);
 				assert_eq!(inverted_coeffs.len(), 1);
@@ -441,16 +439,15 @@ mod tests {
 			.collect_vec();
 
 		let weights = random_scalars::<F>(&mut rng, selector_count);
-		let mut prover =
-			SelectorMlecheckProver::new(selected, claims, &bitmasks, weights, 0).unwrap();
+		let mut prover = SelectorMlecheckProver::new(selected, claims, &bitmasks, weights, 0);
 
 		for _ in 0..n_vars {
 			// The claim recovered from the round coefficients (post-execute, via lerp against each
 			// claim's coordinate) must equal the stored claim (pre-execute).
 			let before = prover.round_claim();
-			let _ = prover.execute().unwrap();
+			let _ = prover.execute();
 			assert_eq!(prover.round_claim(), before, "claim recovered from coeffs");
-			prover.fold(F::random(&mut rng)).unwrap();
+			prover.fold(F::random(&mut rng));
 		}
 	}
 }

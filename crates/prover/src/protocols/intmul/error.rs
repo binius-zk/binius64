@@ -1,7 +1,5 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_ip_prover::{prodcheck::Error as ProdcheckError, sumcheck::Error as SumcheckError};
-
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
 	#[error("Exponent length should be a power of two")]
@@ -10,8 +8,4 @@ pub enum Error {
 	ExponentLengthMismatch,
 	#[error("transcript error")]
 	Transcript(#[from] binius_transcript::Error),
-	#[error("sumcheck error: {0}")]
-	Sumcheck(#[from] SumcheckError),
-	#[error("prodcheck error: {0}")]
-	Prodcheck(#[from] ProdcheckError),
 }

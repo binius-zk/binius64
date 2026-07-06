@@ -231,7 +231,7 @@ impl ExampleCircuit for IndependentKeccakPermutations {
 			permutation.permutation.populate_state(w, state);
 
 			let mut expected = state;
-			tiny_keccak::keccakf(&mut expected);
+			keccak::Keccak::new().with_f1600(|f1600| f1600(&mut expected));
 			for (wire, value) in permutation.output.iter().zip(expected) {
 				w[*wire] = Word(value);
 			}

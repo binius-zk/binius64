@@ -141,7 +141,7 @@ impl Circuit {
 	pub fn populate_wire_witness(&self, w: &mut WitnessFiller) -> Result<(), PopulateError> {
 		// Fill the constant part from the witness.
 		for (index, constant) in self.constraint_system.constants.iter().enumerate() {
-			w.value_vec.set(index, *constant);
+			w.value_vec[ValueIndex(index as u32)] = *constant;
 		}
 
 		// Execute the evaluation form - it modifies the ValueVec in place

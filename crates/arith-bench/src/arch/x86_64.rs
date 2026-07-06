@@ -480,6 +480,64 @@ impl crate::underlier::OpsClmul for __m256i {
 	}
 }
 
+#[cfg(target_feature = "avx512bw")]
+impl Underlier for __m512i {
+	const BITS: usize = 512;
+
+	#[inline]
+	fn and(a: Self, b: Self) -> Self {
+		unsafe { _mm512_and_si512(a, b) }
+	}
+
+	#[inline]
+	fn xor(a: Self, b: Self) -> Self {
+		unsafe { _mm512_xor_si512(a, b) }
+	}
+
+	#[inline]
+	fn zero() -> Self {
+		unsafe { _mm512_setzero_si512() }
+	}
+
+	#[inline]
+	fn is_equal(a: Self, b: Self) -> bool {
+		unsafe { _mm512_cmpeq_epi8_mask(a, b) == u64::MAX }
+	}
+
+	fn random(mut rng: impl Rng) -> Self {
+		let mut bytes = [0u8; 64];
+		rng.fill_bytes(&mut bytes);
+		unsafe { _mm512_loadu_si512(bytes.as_ptr().cast()) }
+	}
+}
+
+#[cfg(target_feature = "avx512bw")]
+impl PackedUnderlier<u8> for __m512i {
+	const LOG_WIDTH: usize = 6; // 2^6 = 64 elements
+
+	#[inline]
+	fn get(self, index: usize) -> u8 {
+		assert!(index < 64, "index out of bounds");
+		let mut bytes = [0u8; 64];
+		unsafe { _mm512_storeu_si512(bytes.as_mut_ptr().cast(), self) };
+		bytes[index]
+	}
+
+	#[inline]
+	fn set(self, index: usize, val: u8) -> Self {
+		assert!(index < 64, "index out of bounds");
+		let mut bytes = [0u8; 64];
+		unsafe { _mm512_storeu_si512(bytes.as_mut_ptr().cast(), self) };
+		bytes[index] = val;
+		unsafe { _mm512_loadu_si512(bytes.as_ptr().cast()) }
+	}
+
+	#[inline]
+	fn broadcast(val: u8) -> Self {
+		unsafe { _mm512_set1_epi8(val as i8) }
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use proptest::prelude::*;

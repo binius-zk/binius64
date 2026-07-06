@@ -205,7 +205,7 @@ impl<F: Field> IPVerifierChannel<F> for OracleSetupChannel {
 	}
 }
 
-impl<'r, F: Field> IOPVerifierChannel<'r, F> for OracleSetupChannel {
+impl<F: Field> IOPVerifierChannel<F> for OracleSetupChannel {
 	type Oracle = ();
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
@@ -227,7 +227,7 @@ impl<'r, F: Field> IOPVerifierChannel<'r, F> for OracleSetupChannel {
 
 	fn verify_oracle_relations(
 		&mut self,
-		_oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'r, Self::Oracle, Self::Elem>>,
+		_oracle_relations: impl IntoIterator<Item = OracleLinearRelation<Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error> {
 		Ok(())
 	}

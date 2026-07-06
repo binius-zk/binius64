@@ -75,7 +75,7 @@ fn bench_fracaddcheck_prove(c: &mut Criterion) {
 						FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone()));
 					(prover, claim.clone())
 				},
-				|(prover, claim)| prover.prove(claim, &mut transcript).unwrap(),
+				|(prover, claim)| prover.prove(claim, &mut transcript),
 				BatchSize::SmallInput,
 			);
 		});

@@ -6,6 +6,7 @@
 use std::{
 	cell::RefCell,
 	rc::{Rc, Weak},
+	sync::Arc,
 	vec::IntoIter as VecIntoIter,
 };
 
@@ -27,8 +28,8 @@ use binius_spartan_verifier::wrapper::circuit_elem::CircuitElem;
 /// the next value and writes it to the corresponding inout wire in the [`WitnessGenerator`]. When
 /// the verifier's arithmetic runs on the returned [`CircuitElem`] values, the [`WitnessGenerator`]
 /// fills private wires.
-pub struct ReplayChannel<'a, F: Field> {
-	witness_gen: Rc<RefCell<WitnessGenerator<'a, F>>>,
+pub struct ReplayChannel<F: Field> {
+	witness_gen: Rc<RefCell<WitnessGenerator<F>>>,
 	/// Allocators for the InOut and Precommit segments. They live here, not on the
 	/// [`WitnessGenerator`], because allocating wires in interaction order is the channel's job;
 	/// the generator just writes a value to a given wire. Allocation order must match the symbolic
@@ -40,11 +41,15 @@ pub struct ReplayChannel<'a, F: Field> {
 	events: VecIntoIter<F>,
 }
 
-impl<'a, F: Field> ReplayChannel<'a, F> {
+impl<F: Field> ReplayChannel<F> {
 	/// Creates a new replay channel.
 	///
 	/// TODO: Document args. Keys are the symmetric OTP keys for the received values.
-	pub fn new(layout: &'a WitnessLayout<F>, keys: Vec<F>, events: Vec<F>) -> Self {
+	///
+	/// Takes a shared `Arc<WitnessLayout<F>>`, not a borrow.
+	/// The backing [`WitnessGenerator`] must be `'static`: its `CircuitElem`s outlive this call.
+	/// The `Arc` is a bumped reference count on the layout the config already owns, not a clone.
+	pub fn new(layout: Arc<WitnessLayout<F>>, keys: Vec<F>, events: Vec<F>) -> Self {
 		Self {
 			witness_gen: Rc::new(RefCell::new(WitnessGenerator::new(layout))),
 			inout_alloc: WireAllocator::new(WireKind::InOut),
@@ -54,7 +59,7 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 		}
 	}
 
-	fn next_inout_elem(&mut self) -> CircuitElem<F, WitnessGenerator<'a, F>> {
+	fn next_inout_elem(&mut self) -> CircuitElem<F, WitnessGenerator<F>> {
 		let value = self
 			.events
 			.next()
@@ -65,7 +70,7 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 		CircuitElem::wire(&self.witness_gen, witness_wire)
 	}
 
-	fn next_precommit_elem(&mut self) -> CircuitElem<F, WitnessGenerator<'a, F>> {
+	fn next_precommit_elem(&mut self) -> CircuitElem<F, WitnessGenerator<F>> {
 		let value = self
 			.keys
 			.next()
@@ -85,8 +90,8 @@ impl<'a, F: Field> ReplayChannel<'a, F> {
 	}
 }
 
-impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
-	type Elem = CircuitElem<F, WitnessGenerator<'a, F>>;
+impl<F: Field> IPVerifierChannel<F> for ReplayChannel<F> {
+	type Elem = CircuitElem<F, WitnessGenerator<F>>;
 
 	fn recv_one(&mut self) -> Result<Self::Elem, binius_ip::channel::Error> {
 		let encrypted_elem = self.next_inout_elem();
@@ -137,7 +142,7 @@ impl<'a, F: Field> IPVerifierChannel<F> for ReplayChannel<'a, F> {
 	}
 }
 
-impl<'r, 'a, F: Field> IOPVerifierChannel<'r, F> for ReplayChannel<'a, F> {
+impl<F: Field> IOPVerifierChannel<F> for ReplayChannel<F> {
 	type Oracle = ();
 
 	fn remaining_oracle_specs(&self) -> &[OracleSpec] {
@@ -154,7 +159,7 @@ impl<'r, 'a, F: Field> IOPVerifierChannel<'r, F> for ReplayChannel<'a, F> {
 
 	fn verify_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'r, Self::Oracle, Self::Elem>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<Self::Oracle, Self::Elem>>,
 	) -> Result<(), binius_iop::channel::Error> {
 		// For each oracle opening, the prover sends the decrypted evaluation. The outer verifier
 		// checks in the circuit equality of this value with the expected expression over encrypted
@@ -169,7 +174,7 @@ impl<'r, 'a, F: Field> IOPVerifierChannel<'r, F> for ReplayChannel<'a, F> {
 
 #[cfg(test)]
 mod tests {
-	use std::{cell::RefCell, rc::Rc};
+	use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 	use binius_field::{
 		BinaryField1b as B1, BinaryField128bGhash as B128, ExtensionField, field::FieldOps,
@@ -178,7 +183,7 @@ mod tests {
 	use binius_spartan_verifier::wrapper::circuit_elem::CircuitElem;
 
 	type BuildElem = CircuitElem<B128, ConstraintBuilder<B128>>;
-	type WitnessElem<'a> = CircuitElem<B128, WitnessGenerator<'a, B128>>;
+	type WitnessElem = CircuitElem<B128, WitnessGenerator<B128>>;
 
 	#[test]
 	fn test_square_transpose_wires() {
@@ -216,7 +221,8 @@ mod tests {
 			.map(<B128 as ExtensionField<FSub>>::basis)
 			.collect();
 
-		let mut witness_gen = WitnessGenerator::new(&layout);
+		let layout = Arc::new(layout);
+		let mut witness_gen = WitnessGenerator::new(Arc::clone(&layout));
 		let witness_wires: Vec<_> = inout_wires
 			.iter()
 			.zip(&test_values)

@@ -4,7 +4,10 @@
 use binius_core::Word;
 
 use super::Hint;
-use crate::util::num_biguint_from_u64_limbs;
+use crate::{
+	compiler::{CircuitBuilder, Wire},
+	util::num_biguint_from_u64_limbs,
+};
 
 /// ModInverse hint implementation
 pub struct ModInverseHint;
@@ -12,6 +15,26 @@ pub struct ModInverseHint;
 impl ModInverseHint {
 	pub const fn new() -> Self {
 		Self
+	}
+
+	/// Modular inverse.
+	///
+	/// Computes the modular inverse of `base` modulo `modulus`.
+	/// Returns a pair `(quotient, inverse)` where both numbers are Bézout coefficients when
+	/// `base` and `modulus` are coprime. Both numbers are set to zero if `gcd(base, modulus) > 1`.
+	///
+	/// This is a hint - a deterministic computation that happens only on the prover side.
+	/// The result should be additionally constrained by using bignum circuits to check that
+	/// `base * inverse = 1 + quotient * modulus`.
+	pub fn call(
+		builder: &CircuitBuilder,
+		base: &[Wire],
+		modulus: &[Wire],
+	) -> (Vec<Wire>, Vec<Wire>) {
+		let inputs: Vec<Wire> = base.iter().chain(modulus).copied().collect();
+		let mut out = builder.call_hint(Self::new(), &[base.len(), modulus.len()], &inputs);
+		let inverse = out.split_off(modulus.len());
+		(out, inverse)
 	}
 }
 

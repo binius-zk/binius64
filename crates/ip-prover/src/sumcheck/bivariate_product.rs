@@ -7,7 +7,7 @@ use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 
 use crate::sumcheck::{
-	common::SumcheckProver, error::Error, round_evals::WideRoundEvals2, round_state::RoundState,
+	common::SumcheckProver, round_evals::WideRoundEvals2, round_state::RoundState,
 };
 
 /// A [`SumcheckProver`] implementation for a composite defined as the product of two multilinears.
@@ -26,15 +26,17 @@ pub struct BivariateProductSumcheckProver<P: PackedField> {
 impl<F: Field, P: PackedField<Scalar = F>> BivariateProductSumcheckProver<P> {
 	/// Constructs a prover, given the multilinear polynomial evaluations and the sum over the
 	/// boolean hypercube of their product.
-	pub fn new(multilinears: [FieldBuffer<P>; 2], sum: F) -> Result<Self, Error> {
-		if multilinears[0].log_len() != multilinears[1].log_len() {
-			return Err(Error::MultilinearSizeMismatch);
-		}
+	pub fn new(multilinears: [FieldBuffer<P>; 2], sum: F) -> Self {
+		assert_eq!(
+			multilinears[0].log_len(),
+			multilinears[1].log_len(),
+			"multilinears must have equal number of variables"
+		);
 
-		Ok(Self {
+		Self {
 			multilinears,
 			last_coeffs_or_sum: RoundState::Claim(sum),
-		})
+		}
 	}
 }
 
@@ -55,8 +57,8 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 		vec![claim]
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
-		let last_sum = self.last_coeffs_or_sum.claim()?;
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
+		let last_sum = self.last_coeffs_or_sum.claim();
 
 		// Multilinear inputs are the same length by invariant
 		debug_assert_eq!(self.multilinears[0].len(), self.multilinears[1].len());
@@ -91,11 +93,11 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 			.sum_scalars(n_vars_remaining)
 			.interpolate(*last_sum);
 		self.last_coeffs_or_sum = RoundState::Coeffs(round_coeffs.clone());
-		Ok(vec![round_coeffs])
+		vec![round_coeffs]
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
-		let last_coeffs = self.last_coeffs_or_sum.coeffs()?.clone();
+	fn fold(&mut self, challenge: F) {
+		let last_coeffs = self.last_coeffs_or_sum.coeffs().clone();
 
 		for multilin in &mut self.multilinears {
 			fold_highest_var_inplace(multilin, challenge);
@@ -103,20 +105,15 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for BivariateProduc
 
 		let round_sum = last_coeffs.evaluate(challenge);
 		self.last_coeffs_or_sum = RoundState::Claim(round_sum);
-		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
-		if self.n_vars() > 0 {
-			return Err(self.last_coeffs_or_sum.unfinished_err());
-		}
+	fn finish(self) -> Vec<F> {
+		assert_eq!(self.n_vars(), 0, "finish called out of order; sumcheck rounds remain");
 
-		let multilinear_evals = self
-			.multilinears
+		self.multilinears
 			.into_iter()
 			.map(|multilinear| multilinear.get(0))
-			.collect();
-		Ok(multilinear_evals)
+			.collect()
 	}
 }
 
@@ -155,12 +152,11 @@ mod tests {
 		let prover = BivariateProductSumcheckProver::new(
 			[multilinear_a.clone(), multilinear_b.clone()],
 			expected_sum,
-		)
-		.unwrap();
+		);
 
 		// Run the proving protocol
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = prove_single(prover, &mut prover_transcript).unwrap();
+		let output = prove_single(prover, &mut prover_transcript);
 
 		// Write the multilinear evaluations to the transcript
 		prover_transcript

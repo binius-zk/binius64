@@ -5,17 +5,21 @@
 //! This module provides [`BaseFoldVerifierCompiler`], which precomputes FRI parameters and can
 //! create verifier channel instances.
 
+use std::borrow::BorrowMut;
+
 use binius_field::BinaryField;
+use binius_hash::binary_merkle_tree::HashSuite;
 use binius_math::{BinarySubspace, ntt::domain_context::GenericOnTheFly};
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
-use binius_utils::DeserializeBytes;
+use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
+use digest::Output;
 
 use crate::{
 	basefold_channel::BaseFoldVerifierChannel,
 	channel::OracleSpec,
 	fri::{AritySelectionStrategy, FRIParams},
-	merkle_tree::MerkleTreeScheme,
-	size_tracking_channel::SizeTrackingChannel,
+	merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
+	merkle_tree::BinaryMerkleTreeScheme,
 };
 
 /// A compiler that creates BaseFold ZK verifier channels with precomputed parameters.
@@ -23,35 +27,34 @@ use crate::{
 /// This compiler builds a single combined FRI over all oracles. ZK oracles configure FRI
 /// parameters for zero-knowledge mode (`log_msg_len + 1` as the message length and
 /// `log_batch_size = 1`); non-ZK oracles take a flexible batch size with no mask.
-#[derive(Debug, Clone)]
-pub struct BaseFoldVerifierCompiler<F, MerkleScheme_>
+#[derive(Clone)]
+pub struct BaseFoldVerifierCompiler<F>
 where
 	F: BinaryField,
-	MerkleScheme_: MerkleTreeScheme<F>,
 {
-	merkle_scheme: MerkleScheme_,
 	oracle_specs: Vec<OracleSpec>,
 	fri_params: FRIParams<F>,
 }
 
-impl<F, MerkleScheme_> BaseFoldVerifierCompiler<F, MerkleScheme_>
+impl<F> BaseFoldVerifierCompiler<F>
 where
 	F: BinaryField,
-	MerkleScheme_: MerkleTreeScheme<F>,
 {
 	/// Creates a new compiler with precomputed combined FRI parameters.
 	///
-	/// Each oracle's batch size is derived from its ZK flag: a ZK oracle fixes `log_batch_size = 1`
-	/// (message ‖ equal-length mask), a non-ZK oracle takes a flexible batch size. Requires at
-	/// least one oracle spec.
-	pub fn new<Strategy>(
-		merkle_scheme: MerkleScheme_,
+	/// The `merkle_scheme` is consulted only for proof-size estimation while choosing the FRI
+	/// parameters; it is not stored. Each oracle's batch size is derived from its ZK flag: a ZK
+	/// oracle fixes `log_batch_size = 1` (message ‖ equal-length mask), a non-ZK oracle takes a
+	/// flexible batch size. Requires at least one oracle spec.
+	pub fn new<H, Strategy>(
+		merkle_scheme: BinaryMerkleTreeScheme<F, H>,
 		oracle_specs: Vec<OracleSpec>,
 		log_inv_rate: usize,
 		n_test_queries: usize,
 		_arity_strategy: &Strategy,
 	) -> Self
 	where
+		H: HashSuite,
 		Strategy: AritySelectionStrategy,
 	{
 		assert!(
@@ -83,7 +86,6 @@ where
 		);
 
 		Self {
-			merkle_scheme,
 			oracle_specs,
 			fri_params,
 		}
@@ -99,39 +101,42 @@ where
 		&self.fri_params
 	}
 
-	/// Returns a reference to the Merkle scheme.
-	pub const fn merkle_scheme(&self) -> &MerkleScheme_ {
-		&self.merkle_scheme
-	}
-
 	/// Returns the Reed-Solomon code subspace of the combined FRI parameters (the largest needed).
 	pub fn max_subspace(&self) -> &BinarySubspace<F> {
 		self.fri_params.rs_code().subspace()
 	}
 
-	/// Creates a [`SizeTrackingChannel`] from this compiler's oracle specs.
-	pub fn create_size_tracking_channel(&self) -> SizeTrackingChannel<'_, F, MerkleScheme_> {
-		SizeTrackingChannel::new(
-			self.oracle_specs.clone(),
-			std::slice::from_ref(&self.fri_params),
-			&self.merkle_scheme,
-		)
+	/// Creates a ZK verifier channel over the given Merkle channel.
+	///
+	/// The returned channel drives all prover interaction through `channel`, opening oracles with
+	/// this compiler's oracle specs and combined FRI parameters. The caller constructs the Merkle
+	/// channel, so it decides how commitments are received and verified.
+	pub fn create_channel<Channel>(
+		&self,
+		channel: Channel,
+	) -> BaseFoldVerifierChannel<'_, F, Channel>
+	where
+		Channel: MerkleIPVerifierChannel<F, Elem = F>,
+	{
+		BaseFoldVerifierChannel::new(channel, &self.oracle_specs, &self.fri_params)
 	}
 
-	/// Creates a ZK verifier channel from this compiler and a transcript.
-	pub fn create_channel<'a, Challenger_>(
-		&'a self,
-		transcript: &'a mut VerifierTranscript<Challenger_>,
-	) -> BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
+	/// Creates a ZK verifier channel over a transcript, for the common case.
+	///
+	/// The transcript (owned or mutably borrowed) is wrapped in a
+	/// [`VerifierMerkleTranscriptChannel`] with a non-hiding [`BinaryMerkleTreeScheme`] for the
+	/// given hash suite, then passed to [`Self::create_channel`].
+	pub fn create_channel_from_transcript<H, Challenger_, T>(
+		&self,
+		transcript: T,
+	) -> BaseFoldVerifierChannel<'_, F, VerifierMerkleTranscriptChannel<T, Challenger_, F, H>>
 	where
-		MerkleScheme_::Digest: DeserializeBytes,
+		F: FixedSizeSerializeBytes,
+		H: HashSuite,
 		Challenger_: Challenger,
+		T: BorrowMut<VerifierTranscript<Challenger_>>,
+		Output<H::LeafHash>: DeserializeBytes,
 	{
-		BaseFoldVerifierChannel::from_precomputed(
-			transcript,
-			&self.merkle_scheme,
-			&self.oracle_specs,
-			&self.fri_params,
-		)
+		self.create_channel(VerifierMerkleTranscriptChannel::new(transcript))
 	}
 }

@@ -27,12 +27,12 @@ ethsign = "0.9.0"
 hex.workspace = true
 jwt-simple.workspace = true
 k256 = { workspace = true, features = ["arithmetic"] }
+keccak.workspace = true
 num-bigint = { workspace = true }
 peakmem-alloc = "0.3.0"
 rand = { workspace = true, features = ["thread_rng"] }
 sha2.workspace = true
 sha3.workspace = true
-tiny-keccak = { version = "2.0.2", features = ["keccak"] }
 tracing-forest.workspace = true
 tracing-profile.workspace = true
 tracing-subscriber.workspace = true

@@ -4,8 +4,6 @@ use binius_field::Field;
 use binius_ip::sumcheck::RoundCoeffs;
 use either::Either;
 
-use super::error::Error;
-
 /// A sumcheck prover with a round-by-round execution interface.
 ///
 /// Sumcheck prover logic is accessed via a trait because important optimizations are available
@@ -20,8 +18,8 @@ use super::error::Error;
 ///
 /// The caller must make a specific sequence of calls to the provers. For a prover where
 /// [`Self::n_vars`] is $n$, the caller must call [`Self::execute`] and then [`Self::fold`] $n$
-/// times, and finally call [`Self::finish`]. If the calls aren't made in that order, the caller
-/// will get an error result.
+/// times, and finally call [`Self::finish`]. If the calls aren't made in that order, the prover
+/// will panic.
 ///
 /// This trait is _not_ object-safe.
 ///
@@ -52,7 +50,7 @@ pub trait SumcheckProver<F: Field> {
 	/// the highest indexed one) and hypercube sums are performed over the lower indexed variables.
 	///
 	/// The returned Vec must have length equal to [`Self::n_claims`].
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error>;
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>>;
 
 	/// Returns the claimed sums for the current round, one per claim.
 	///
@@ -69,11 +67,11 @@ pub trait SumcheckProver<F: Field> {
 	fn round_claim(&self) -> Vec<F>;
 
 	/// Folds the sumcheck multilinears with a new verifier challenge.
-	fn fold(&mut self, challenge: F) -> Result<(), Error>;
+	fn fold(&mut self, challenge: F);
 
 	/// Finishes the sumcheck proving protocol and returns the evaluations of all multilinears at
 	/// the challenge point.
-	fn finish(self) -> Result<Vec<F>, Error>;
+	fn finish(self) -> Vec<F>;
 }
 
 impl<F, L, R> SumcheckProver<F> for Either<L, R>
@@ -90,7 +88,7 @@ where
 		either::for_both!(self, inner => inner.n_claims())
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
 		either::for_both!(self, inner => inner.execute())
 	}
 
@@ -98,11 +96,11 @@ where
 		either::for_both!(self, inner => inner.round_claim())
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
+	fn fold(&mut self, challenge: F) {
 		either::for_both!(self, inner => inner.fold(challenge))
 	}
 
-	fn finish(self) -> Result<Vec<F>, Error> {
+	fn finish(self) -> Vec<F> {
 		either::for_both!(self, inner => inner.finish())
 	}
 }

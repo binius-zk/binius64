@@ -62,7 +62,7 @@ fn bench_prodcheck_prove(c: &mut Criterion) {
 					let (prover, _products) = ProdcheckProver::new(k, witness.clone());
 					(prover, claim.clone())
 				},
-				|(prover, claim)| prover.prove(claim, &mut transcript).unwrap(),
+				|(prover, claim)| prover.prove(claim, &mut transcript),
 				BatchSize::SmallInput,
 			);
 		});

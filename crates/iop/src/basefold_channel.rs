@@ -17,18 +17,14 @@ use binius_math::{
 	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
 	univariate::evaluate_univariate,
 };
-use binius_transcript::{
-	VerifierTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
-use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 use itertools::izip;
 
 use crate::{
 	basefold,
 	channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	fri::FRIParams,
-	merkle_tree::MerkleTreeScheme,
+	merkle_channel::MerkleIPVerifierChannel,
 };
 
 /// Oracle handle returned by [`BaseFoldVerifierChannel::recv_oracle`].
@@ -46,55 +42,47 @@ pub struct BaseFoldOracle {
 ///
 /// - `'a`: Lifetime for borrowed references
 /// - `F`: The binary field type
-/// - `MerkleScheme_`: The Merkle tree scheme for commitments
-/// - `Challenger_`: The Fiat-Shamir challenger
-pub struct BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
+/// - `Channel`: The Merkle channel carrying all prover interaction
+pub struct BaseFoldVerifierChannel<'a, F, Channel>
 where
 	F: BinaryField,
-	MerkleScheme_: MerkleTreeScheme<F>,
-	Challenger_: Challenger,
+	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
-	transcript: &'a mut VerifierTranscript<Challenger_>,
-	merkle_scheme: &'a MerkleScheme_,
+	/// The Merkle channel carrying all prover interaction: field elements, challenges,
+	/// commitments, and openings.
+	channel: Channel,
 	oracle_specs: &'a [OracleSpec],
 	fri_params: &'a FRIParams<F>,
-	oracle_commitments: Vec<MerkleScheme_::Digest>,
+	oracle_commitments: Vec<Channel::Commitment>,
 	/// Oracle relations queued by [`Self::verify_oracle_relations`], opened together in
 	/// [`Self::finish`].
-	queue: Vec<OracleLinearRelation<'a, BaseFoldOracle, F>>,
+	queue: Vec<OracleLinearRelation<BaseFoldOracle, F>>,
 	next_oracle_index: usize,
 }
 
-impl<'a, F, MerkleScheme_, Challenger_> BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
+impl<'a, F, Channel> BaseFoldVerifierChannel<'a, F, Channel>
 where
 	F: BinaryField,
-	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
-	Challenger_: Challenger,
+	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
-	/// Creates a new BaseFold ZK verifier channel from precomputed FRI parameters.
+	/// Creates a new BaseFold ZK verifier channel over a Merkle channel from precomputed FRI
+	/// parameters.
 	///
 	/// The FRI parameters should already account for ZK (log_batch_size = 1, doubled message
 	/// length).
-	pub const fn from_precomputed(
-		transcript: &'a mut VerifierTranscript<Challenger_>,
-		merkle_scheme: &'a MerkleScheme_,
+	pub const fn new(
+		channel: Channel,
 		oracle_specs: &'a [OracleSpec],
 		fri_params: &'a FRIParams<F>,
 	) -> Self {
 		Self {
-			transcript,
-			merkle_scheme,
+			channel,
 			oracle_specs,
 			fri_params,
 			oracle_commitments: Vec::new(),
 			queue: Vec::new(),
 			next_oracle_index: 0,
 		}
-	}
-
-	/// Returns a reference to the underlying transcript.
-	pub const fn transcript(&self) -> &VerifierTranscript<Challenger_> {
-		self.transcript
 	}
 
 	/// Consumes the channel and verifies the single combined opening over **all** committed
@@ -109,8 +97,7 @@ where
 	/// (`optimal_for_batch` over all oracle specs) serves the opening.
 	pub fn finish(self) -> Result<(), Error> {
 		let Self {
-			transcript,
-			merkle_scheme,
+			mut channel,
 			oracle_specs,
 			fri_params,
 			oracle_commitments,
@@ -125,23 +112,16 @@ where
 			return Ok(());
 		}
 
-		verify_batch_zk_basefold(
-			transcript,
-			merkle_scheme,
-			oracle_specs,
-			fri_params,
-			oracle_commitments,
-			queue,
-		)
+		verify_batch_zk_basefold(&mut channel, oracle_specs, fri_params, oracle_commitments, queue)
 	}
 }
 
 /// Verifies the combined ZK BaseFold opening over all committed oracles.
 ///
-/// This drives `channel` — the [`VerifierTranscript`] taken from the destructured
-/// [`BaseFoldVerifierChannel`] — through its [`IPVerifierChannel`] interface: it reads the masked
-/// inner products σ_i, runs one batched sumcheck reducing the masked claims to a shared point `r`,
-/// then opens all committed oracles together with a single combined FRI over the
+/// This drives `channel` — the Merkle channel taken from the destructured
+/// [`BaseFoldVerifierChannel`] — through its [`MerkleIPVerifierChannel`] interface: it reads the
+/// masked inner products σ_i, runs one batched sumcheck reducing the masked claims to a shared
+/// point `r`, then opens all committed oracles together with a single combined FRI over the
 /// piecewise-concatenated oracle.
 ///
 /// The masking inner products and the batched sumcheck process the `relations` in arrival order (so
@@ -153,22 +133,16 @@ where
 /// Phase B collapses the oracle-index variables up front at sampled batching challenges `r'`: the
 /// combined target is `s' = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j)` with `e = eq_ind_partial_eval(r')`,
 /// and the single combined FRI (`fri_params`) opens all `k` committed `[π_i ‖ ω_i]` codewords.
-///
-/// `channel` is the concrete [`VerifierTranscript`] rather than an arbitrary [`IPVerifierChannel`]
-/// because the Phase-B FRI openings read Merkle query proofs, which fall outside that interface.
-#[allow(clippy::too_many_arguments)]
-fn verify_batch_zk_basefold<F, MerkleScheme_, Challenger_>(
-	channel: &mut VerifierTranscript<Challenger_>,
-	merkle_scheme: &MerkleScheme_,
+fn verify_batch_zk_basefold<F, Channel>(
+	channel: &mut Channel,
 	oracle_specs: &[OracleSpec],
 	fri_params: &FRIParams<F>,
-	oracle_commitments: Vec<MerkleScheme_::Digest>,
-	relations: Vec<OracleLinearRelation<'_, BaseFoldOracle, F>>,
+	oracle_commitments: Vec<Channel::Commitment>,
+	relations: Vec<OracleLinearRelation<BaseFoldOracle, F>>,
 ) -> Result<(), Error>
 where
 	F: BinaryField,
-	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
-	Challenger_: Challenger,
+	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
 	let n_committed = oracle_commitments.len();
 
@@ -184,7 +158,7 @@ where
 	// the single shared γ. With no ZK oracle, γ is never sampled.
 	let n_zk = oracle_specs.iter().filter(|s| s.is_zk).count();
 	let sigmas = channel.recv_many(n_zk)?;
-	let gamma = (!sigmas.is_empty()).then(|| IPVerifierChannel::<F>::sample(channel));
+	let gamma = (!sigmas.is_empty()).then(|| channel.sample());
 
 	// Masked claim per relation: ZK → s_i' = extrapolate_line(claim, σ_i, γ); non-ZK → s_i' =
 	// claim.
@@ -259,7 +233,6 @@ where
 		..
 	} = basefold::verify_mlecheck_basefold(
 		fri_params,
-		merkle_scheme,
 		&oracle_commitments,
 		s_prime,
 		&point,
@@ -274,69 +247,50 @@ where
 	Ok(())
 }
 
-impl<F, MerkleScheme_, Challenger_> IPVerifierChannel<F>
-	for BaseFoldVerifierChannel<'_, F, MerkleScheme_, Challenger_>
+impl<F, Channel> IPVerifierChannel<F> for BaseFoldVerifierChannel<'_, F, Channel>
 where
 	F: BinaryField,
-	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
-	Challenger_: Challenger,
+	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
 	type Elem = F;
 
 	fn recv_one(&mut self) -> Result<F, binius_ip::channel::Error> {
-		self.transcript
-			.message()
-			.read_scalar()
-			.map_err(|_| binius_ip::channel::Error::ProofEmpty)
+		self.channel.recv_one()
 	}
 
 	fn recv_many(&mut self, n: usize) -> Result<Vec<F>, binius_ip::channel::Error> {
-		self.transcript
-			.message()
-			.read_scalar_slice(n)
-			.map_err(|_| binius_ip::channel::Error::ProofEmpty)
+		self.channel.recv_many(n)
 	}
 
 	fn recv_array<const N: usize>(&mut self) -> Result<[F; N], binius_ip::channel::Error> {
-		self.transcript
-			.message()
-			.read()
-			.map_err(|_| binius_ip::channel::Error::ProofEmpty)
+		self.channel.recv_array()
 	}
 
 	fn sample(&mut self) -> F {
-		CanSample::sample(&mut self.transcript)
+		self.channel.sample()
 	}
 
 	fn observe_one(&mut self, val: F) -> F {
-		self.transcript.observe().write_scalar(val);
-		val
+		self.channel.observe_one(val)
 	}
 
 	fn observe_many(&mut self, vals: &[F]) -> Vec<F> {
-		self.transcript.observe().write_scalar_slice(vals);
-		vals.to_vec()
+		self.channel.observe_many(vals)
 	}
 
 	fn assert_zero(&mut self, val: F) -> Result<(), binius_ip::channel::Error> {
-		if val == F::ZERO {
-			Ok(())
-		} else {
-			Err(binius_ip::channel::Error::InvalidAssert)
-		}
+		self.channel.assert_zero(val)
 	}
 
 	fn compute_public_value(&mut self, inputs: &[F], f: impl FieldFn<F>) -> F {
-		f.call::<F>(inputs)
+		self.channel.compute_public_value(inputs, f)
 	}
 }
 
-impl<'a, F, MerkleScheme_, Challenger_> IOPVerifierChannel<'a, F>
-	for BaseFoldVerifierChannel<'a, F, MerkleScheme_, Challenger_>
+impl<'a, F, Channel> IOPVerifierChannel<F> for BaseFoldVerifierChannel<'a, F, Channel>
 where
 	F: BinaryField,
-	MerkleScheme_: MerkleTreeScheme<F, Digest: DeserializeBytes>,
-	Challenger_: Challenger,
+	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
 	type Oracle = BaseFoldOracle;
 
@@ -358,10 +312,27 @@ where
 
 		let index = self.next_oracle_index;
 
+		// Receive the commitment with its Merkle tree shape, matching the prover-side commit: the
+		// oracle's codeword has dimension `log_dim - log_lift` and one interleaved coset of
+		// `2^log_batch_size` scalars per leaf.
+		let fri_oracle = &self.fri_params.input_oracles()[index];
+		let depth = (self.fri_params.rs_code().log_dim() - fri_oracle.log_lift)
+			+ self.fri_params.rs_code().log_inv_rate();
+
+		// The committed message length implied by this shape is `log_batch_size + depth -
+		// log_inv_rate`; it must cover the spec's message plus, for a ZK oracle, the equal-length
+		// interleaved mask.
+		let spec = &self.oracle_specs[index];
+		assert_eq!(
+			fri_oracle.log_batch_size() + depth - self.fri_params.rs_code().log_inv_rate(),
+			spec.log_msg_len + usize::from(spec.is_zk),
+			"invariant: the FRI commitment shape must be consistent with the oracle spec's \
+			 log_msg_len"
+		);
+
 		let commitment = self
-			.transcript
-			.message()
-			.read::<MerkleScheme_::Digest>()
+			.channel
+			.recv_merkle_commitment(1 << fri_oracle.log_batch_size(), depth)
 			.map_err(|_| Error::ProofEmpty)?;
 
 		self.oracle_commitments.push(commitment);
@@ -372,7 +343,7 @@ where
 
 	fn verify_oracle_relations(
 		&mut self,
-		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<'a, Self::Oracle, Self::Elem>>,
+		oracle_relations: impl IntoIterator<Item = OracleLinearRelation<Self::Oracle, Self::Elem>>,
 	) -> Result<(), Error> {
 		// Queue the relations; the actual opening (masking + sumcheck + combined FRI) happens once,
 		// over all committed oracles, in [`Self::finish`].

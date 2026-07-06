@@ -5,19 +5,14 @@ use std::iter::{self, repeat_with};
 
 use binius_field::BinaryField;
 use binius_math::ntt::domain_context::GenericOnTheFly;
-use binius_transcript::{
-	TranscriptReader, VerifierTranscript,
-	fiat_shamir::{CanSampleBits, Challenger},
-};
-use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
-use bytes::Buf;
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 use super::{
 	batch::{BatchBrakedownOracle, BrakedownOracle, FRIOracle, ProxTestOracle, fold_coset},
 	common::FRIParams,
 	error::{Error, VerificationError},
 };
-use crate::merkle_tree::{Commitment, MerkleTreeScheme};
+use crate::merkle_channel::MerkleIPVerifierChannel;
 
 /// A verifier for the FRI query phase.
 ///
@@ -27,39 +22,37 @@ use crate::merkle_tree::{Commitment, MerkleTreeScheme};
 /// Internally, this is a composition of `ProxTestOracle`s: a `BatchBrakedownOracle` performs
 /// the first, interleaved reduction of the committed codeword(s), then one `FRIOracle` per fold
 /// arity performs each subsequent FRI reduction. The verifier orchestrates the consistency checks
-/// between these oracles and the final, fully-folded terminal codeword.
-pub struct FRIQueryVerifier<'a, F, VCS>
+/// between these oracles and the final, fully-folded terminal codeword. The oracles are
+/// parameterized by the Merkle commitment handle type `C` of the channel that receives the query
+/// openings.
+pub struct FRIQueryVerifier<'a, F, C>
 where
 	F: BinaryField,
-	VCS: MerkleTreeScheme<F>,
 {
 	params: &'a FRIParams<F>,
-	vcs: &'a VCS,
 	/// Commitment to the fully-folded terminal codeword, sent in full by the prover.
-	terminal_commitment: &'a VCS::Digest,
+	terminal_commitment: C,
 	/// The folding challenges applied after the last committed oracle.
 	final_challenges: &'a [F],
 	/// Performs the first, interleaved reduction of the committed codeword(s).
-	codeword_oracle: BatchBrakedownOracle<F, &'a VCS>,
+	codeword_oracle: BatchBrakedownOracle<F, C>,
 	/// Performs each subsequent FRI reduction, one per fold arity.
-	fri_oracles: Vec<FRIOracle<F, &'a VCS, GenericOnTheFly<F>>>,
+	fri_oracles: Vec<FRIOracle<F, C, GenericOnTheFly<F>>>,
 }
 
-impl<'a, F, VCS> FRIQueryVerifier<'a, F, VCS>
+impl<'a, F, C> FRIQueryVerifier<'a, F, C>
 where
 	F: BinaryField,
-	VCS: MerkleTreeScheme<F, Digest: DeserializeBytes>,
+	C: Clone,
 {
 	pub fn new(
 		params: &'a FRIParams<F>,
-		vcs: &'a VCS,
-		codeword_commitment: &'a VCS::Digest,
-		round_commitments: &'a [VCS::Digest],
+		codeword_commitment: &C,
+		round_commitments: &[C],
 		challenges: &'a [F],
 	) -> Self {
 		Self::new_batch(
 			params,
-			vcs,
 			std::slice::from_ref(codeword_commitment),
 			round_commitments,
 			challenges,
@@ -81,9 +74,8 @@ where
 	///   `params.rs_code().log_dim()`.
 	pub fn new_batch(
 		params: &'a FRIParams<F>,
-		vcs: &'a VCS,
-		codeword_commitments: &'a [VCS::Digest],
-		round_commitments: &'a [VCS::Digest],
+		codeword_commitments: &[C],
+		round_commitments: &[C],
 		challenges: &'a [F],
 	) -> Self {
 		assert_eq!(
@@ -152,15 +144,7 @@ where
 				let later_window = &later_challenges[max_later - spec.log_later_batch_size..];
 				let fold_challenges: Vec<F> =
 					early_window.iter().chain(later_window).copied().collect();
-				BrakedownOracle::new(
-					fold_challenges,
-					Commitment {
-						root: commitment.clone(),
-						depth,
-					},
-					vcs,
-					log_lift,
-				)
+				BrakedownOracle::new(fold_challenges, commitment.clone(), depth, log_lift)
 			})
 			.collect();
 		let codeword_oracle = BatchBrakedownOracle::new(codeword_sub_oracles, outer_challenges);
@@ -175,11 +159,8 @@ where
 			depth -= arity;
 			fri_oracles.push(FRIOracle::new(
 				challenges[fold_round..fold_round + arity].to_vec(),
-				Commitment {
-					root: round_commitment.clone(),
-					depth,
-				},
-				vcs,
+				round_commitment.clone(),
+				depth,
 				domain_context.clone(),
 			));
 			fold_round += arity;
@@ -188,11 +169,11 @@ where
 		let final_challenges = &challenges[fold_round..];
 		let terminal_commitment = round_commitments
 			.last()
-			.expect("round_commitments is non-empty as an invariant");
+			.expect("round_commitments is non-empty as an invariant")
+			.clone();
 
 		Self {
 			params,
-			vcs,
 			terminal_commitment,
 			final_challenges,
 			codeword_oracle,
@@ -205,70 +186,61 @@ where
 		self.params.n_oracles()
 	}
 
-	pub fn verify<Challenger_>(
-		&self,
-		transcript: &mut VerifierTranscript<Challenger_>,
-	) -> Result<F, Error>
+	pub fn verify<Channel>(&self, channel: &mut Channel) -> Result<F, Error>
 	where
-		Challenger_: Challenger,
+		Channel: MerkleIPVerifierChannel<F, Commitment = C>,
 	{
 		// Sample all query indices up front to facilitate batched Merkle openings.
-		let mut indices = repeat_with(|| transcript.sample_bits(self.params.index_bits()) as usize)
+		let mut indices = repeat_with(|| channel.sample_bits(self.params.index_bits()))
 			.take(self.params.n_test_queries())
 			.collect::<Vec<_>>();
 
-		// Open and reduce the queries through each oracle in turn, reading the per-oracle batched
-		// openings from a single continuous decommitment stream.
-		let mut advice = transcript.decommitment();
-		let mut claims = self.codeword_oracle.open_queries(&indices, &mut advice)?;
+		// Open and reduce the queries through each oracle in turn, receiving the per-oracle
+		// batched openings over the channel.
+		let mut claims = self.codeword_oracle.open_queries(&indices, channel)?;
 		for (query_round, (oracle, &arity)) in self
 			.fri_oracles
 			.iter()
 			.zip(self.params.fold_arities())
 			.enumerate()
 		{
-			claims = oracle
-				.reduce_queries(&indices, &claims, &mut advice)
-				.map_err(|err| match err {
-					super::batch::Error::ClaimMismatch { index } => {
-						VerificationError::IncorrectFold { query_round, index }.into()
-					}
-					err => Error::from(err),
-				})?;
+			claims =
+				oracle
+					.reduce_queries(&indices, &claims, channel)
+					.map_err(|err| match err {
+						super::batch::Error::ClaimMismatch { index } => {
+							VerificationError::IncorrectFold { query_round, index }.into()
+						}
+						err => Error::from(err),
+					})?;
 			for index in &mut indices {
 				*index >>= arity;
 			}
 		}
 
 		// Check the fully-reduced queries against the terminal codeword sent in full.
-		self.verify_terminal_queries(&claims, &indices, &mut advice)
+		self.verify_terminal_queries(&claims, &indices, channel)
 	}
 
 	/// Verifies the terminal codeword the prover sends in full at the end of the query phase.
 	///
-	/// Reads the terminal codeword from the transcript and checks it against its commitment, then
+	/// Receives the terminal codeword over the channel, checked against its commitment, then
 	/// checks that the fully-reduced query `claims` match it at the queried `indices`. Finally it
 	/// folds each coset of the terminal codeword and checks they are equal, i.e. that it is a
 	/// repetition codeword of the claimed low degree, and returns the fully-folded message value.
-	fn verify_terminal_queries<B: Buf>(
+	fn verify_terminal_queries<Channel>(
 		&self,
 		claims: &[F],
 		indices: &[usize],
-		advice: &mut TranscriptReader<B>,
-	) -> Result<F, Error> {
+		channel: &mut Channel,
+	) -> Result<F, Error>
+	where
+		Channel: MerkleIPVerifierChannel<F, Commitment = C>,
+	{
 		let n_final_challenges = self.params.n_final_challenges();
 		let log_inv_rate = self.params.rs_code().log_inv_rate();
-		let terminate_codeword_len = 1 << (n_final_challenges + log_inv_rate);
 
-		let terminate_codeword = advice
-			.read_scalar_slice::<F>(terminate_codeword_len)
-			.map_err(Error::TranscriptError)?;
-		self.vcs.verify_vector(
-			self.terminal_commitment,
-			&terminate_codeword,
-			1 << n_final_challenges,
-			advice,
-		)?;
+		let terminate_codeword = channel.recv_committed_vector(&self.terminal_commitment)?;
 
 		// Check the fully-reduced claims against the terminal codeword the verifier holds in full.
 		for (&claim, &index) in iter::zip(claims, indices) {

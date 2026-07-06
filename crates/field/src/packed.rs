@@ -17,7 +17,7 @@ use binius_utils::{
 };
 use bytemuck::Zeroable;
 
-use super::{PackedExtension, Random, arithmetic_traits::Square};
+use super::{Random, arithmetic_traits::Square};
 use crate::{BinaryField, Divisible, Field, Maskable, WideMul, field::FieldOps};
 
 /// A packed field represents a vector of underlying field elements.
@@ -305,11 +305,6 @@ pub fn packed_from_fn_with_offset<P: PackedField>(
 	mut f: impl FnMut(usize) -> P::Scalar,
 ) -> P {
 	P::from_fn(|i| f(i + offset * P::WIDTH))
-}
-
-/// Multiply packed field element by a subfield scalar.
-pub fn mul_by_subfield_scalar<P: PackedExtension<FS>, FS: Field>(val: P, multiplier: FS) -> P {
-	P::cast_ext(P::cast_base(val) * P::PackedSubfield::broadcast(multiplier))
 }
 
 /// Pack a slice of scalars into a vector of packed field elements.

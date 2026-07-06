@@ -6,30 +6,21 @@ use binius_field::{Field, field::FieldOps, util::FieldFn};
 use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, univariate::evaluate_univariate};
 use binius_spartan_frontend::constraint_system::{MulConstraint, WitnessIndex, WitnessSegment};
 
-use crate::constraint_system::ConstraintSystemPadded;
-
 /// Returns a closure that evaluates the wiring transparent polynomial for a specific segment.
 ///
-/// The returned closure computes the expected evaluation of the wiring MLE for the given
-/// segment, batched with lambda, given a challenge point from the BaseFold opening.
-/// `r_x_tensor` is the eq-indicator partial evaluation at r_x; it is taken as a shared `Rc` so the
-/// returned closure owns it (the opening is deferred to the channel's `finish()`, so the closure
-/// must outlive the local `r_x_tensor`). The closure still borrows `constraint_system`, which is
-/// long-lived.
-pub fn eval_transparent<'a, G: Field, F: FieldOps + 'a>(
-	constraint_system: &'a ConstraintSystemPadded<G>,
+/// The closure evaluates the wiring MLE at a challenge point drawn during the BaseFold opening.
+/// The three operand contributions are batched together with the challenge `lambda`.
+/// The multiplication constraints and the eq-indicator evaluation at `r_x` are shared via `Rc`.
+/// Sharing lets the closure own them and be `'static`.
+/// The opening is deferred, so the closure must outlive this call.
+pub fn eval_transparent<F: FieldOps + 'static>(
+	mul_constraints: Rc<[MulConstraint<WitnessIndex>]>,
 	segment: WitnessSegment,
 	r_x_tensor: Rc<[F]>,
 	lambda: F,
-) -> binius_iop::channel::TransparentEvalFn<'a, F> {
+) -> binius_iop::channel::TransparentEvalFn<F> {
 	Box::new(move |r_y: &[F]| {
-		evaluate_segment_wiring_mle(
-			constraint_system.mul_constraints(),
-			segment,
-			lambda.clone(),
-			&r_x_tensor,
-			r_y,
-		)
+		evaluate_segment_wiring_mle(&mul_constraints, segment, lambda.clone(), &r_x_tensor, r_y)
 	})
 }
 

@@ -22,15 +22,11 @@
 
 use binius_field::{BinaryField, Field};
 use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
-use binius_transcript::{
-	self as transcript, VerifierTranscript,
-	fiat_shamir::{CanSample, Challenger},
-};
-use binius_utils::{DeserializeBytes, checked_arithmetics::log2_ceil_usize};
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 use crate::{
 	fri::{self, FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier},
-	merkle_tree::MerkleTreeScheme,
+	merkle_channel::MerkleIPVerifierChannel,
 };
 
 /// Verifies a *combined* multilinear-evaluation BaseFold opening: a single degree-1 MLE-check
@@ -47,30 +43,31 @@ use crate::{
 ///
 /// ## Arguments
 ///
-/// * `codeword_commitments` - one per oracle, in the same order as [`FRIParams::input_oracles`].
+/// * `codeword_commitments` - one per oracle, in the same order as [`FRIParams::input_oracles`], as
+///   commitment handles previously received over `channel` (via
+///   [`MerkleIPVerifierChannel::recv_merkle_commitment`]).
 /// * `eval_claim` - the combined target `s'`.
 /// * `eval_point` - the point `r` (length `𝐧 = fri_params.rs_code().log_dim()`), low-to-high order.
 /// * `batch_challenge` - the masking challenge `γ` used in the FRI inner (unbatch) round.
 /// * `outer_challenges` - the batching challenges `r'` (length `log_n_oracles`) used in the FRI
 ///   outer (oracle-combine) rounds.
+/// * `channel` - the Merkle channel carrying all prover interaction: round coefficients,
+///   challenges, commitments, and query openings.
 ///
 /// The returned `challenges` are the FRI fold challenges `[γ] ++ r' ++ fresh_X`. Use
 /// [`mlecheck_fri_consistency`] to check the reduced values.
-#[allow(clippy::too_many_arguments)]
-pub fn verify_mlecheck_basefold<F, MTScheme, Challenger_>(
+pub fn verify_mlecheck_basefold<F, Channel>(
 	fri_params: &FRIParams<F>,
-	merkle_scheme: &MTScheme,
-	codeword_commitments: &[MTScheme::Digest],
+	codeword_commitments: &[Channel::Commitment],
 	eval_claim: F,
 	eval_point: &[F],
 	batch_challenge: Option<F>,
 	outer_challenges: &[F],
-	transcript: &mut VerifierTranscript<Challenger_>,
+	channel: &mut Channel,
 ) -> Result<ReducedOutput<F>, Error>
 where
 	F: BinaryField,
-	Challenger_: Challenger,
-	MTScheme: MerkleTreeScheme<F, Digest: DeserializeBytes>,
+	Channel: MerkleIPVerifierChannel<F, Elem = F>,
 {
 	// The MLE-check round polynomial is degree 1 (the composite is the multilinear itself).
 	const DEGREE: usize = 1;
@@ -93,7 +90,7 @@ where
 	// Inner (unbatch) round: fold every interleaved (π_i ‖ ω_i) ZK codeword at the masking
 	// challenge.
 	if let Some(gamma) = batch_challenge {
-		fri_fold_verifier.process_round(&mut transcript.message())?;
+		fri_fold_verifier.process_round(channel)?;
 		challenges.push(gamma);
 	}
 
@@ -103,7 +100,7 @@ where
 	// processed here (right after γ) to land in the outer window; the leading standard rounds then
 	// supply each non-ZK oracle's later batch fold.
 	for &outer_challenge in outer_challenges {
-		fri_fold_verifier.process_round(&mut transcript.message())?;
+		fri_fold_verifier.process_round(channel)?;
 		challenges.push(outer_challenge);
 	}
 
@@ -111,29 +108,28 @@ where
 	// fresh challenges over the `𝐧` variables `X`.
 	let mut sum = eval_claim;
 	for round in 0..n_vars {
-		let round_proof = mlecheck::RoundProof(RoundCoeffs(transcript.message().read_vec(DEGREE)?));
-		fri_fold_verifier.process_round(&mut transcript.message())?;
+		let round_proof = mlecheck::RoundProof(RoundCoeffs(channel.recv_many(DEGREE)?));
+		fri_fold_verifier.process_round(channel)?;
 
 		// MLE-check binds variables high-to-low, so round `i` uses coordinate `eval_point[n-1-i]`.
 		let alpha = eval_point[n_vars - 1 - round];
 		let round_coeffs = round_proof.recover(sum, alpha);
-		let challenge = transcript.sample();
+		let challenge = channel.sample();
 		sum = round_coeffs.evaluate(challenge);
 		challenges.push(challenge);
 	}
 
-	fri_fold_verifier.process_round(&mut transcript.message())?;
+	fri_fold_verifier.process_round(channel)?;
 	let round_commitments = fri_fold_verifier.finalize();
 
 	let fri_verifier = FRIQueryVerifier::new_batch(
 		fri_params,
-		merkle_scheme,
 		codeword_commitments,
 		&round_commitments,
 		&challenges,
 	);
 
-	let final_fri_value = fri_verifier.verify(transcript)?;
+	let final_fri_value = fri_verifier.verify(channel)?;
 
 	Ok(ReducedOutput {
 		final_fri_value,
@@ -163,8 +159,8 @@ pub fn mlecheck_fri_consistency<F: Field>(fri_final_oracle: F, sumcheck_final_cl
 pub enum Error {
 	#[error("FRI: {0}")]
 	FRI(#[source] fri::Error),
-	#[error("transcript: {0}")]
-	Transcript(#[from] transcript::Error),
+	#[error("IP channel: {0}")]
+	IPChannel(#[from] binius_ip::channel::Error),
 	#[error("verification error: {0}")]
 	Verification(#[from] VerificationError),
 }

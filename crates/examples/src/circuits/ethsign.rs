@@ -13,7 +13,7 @@ use binius_frontend::{
 use clap::Args;
 use ethsign::SecretKey;
 use rand::prelude::*;
-use tiny_keccak::{Hasher, Keccak as KeccakHasher};
+use sha3::{Digest, Keccak256 as Sha3Keccak256};
 
 use crate::ExampleCircuit;
 
@@ -205,11 +205,7 @@ fn assert_address_eq(b: &CircuitBuilder, digest: &[Wire], address: &[Wire]) {
 }
 
 fn keccak256(bytes: &[u8]) -> [u8; 32] {
-	let mut hasher = KeccakHasher::v256();
+	let mut hasher = Sha3Keccak256::new();
 	hasher.update(bytes);
-
-	let mut digest = [0u8; 32];
-	hasher.finalize(&mut digest);
-
-	digest
+	hasher.finalize().into()
 }

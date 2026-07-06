@@ -4,7 +4,10 @@
 use binius_core::Word;
 
 use super::Hint;
-use crate::util::num_biguint_from_u64_limbs;
+use crate::{
+	compiler::{CircuitBuilder, Wire},
+	util::num_biguint_from_u64_limbs,
+};
 
 /// ModDivide hint implementation.
 ///
@@ -17,6 +20,38 @@ pub struct ModDivideHint;
 impl ModDivideHint {
 	pub const fn new() -> Self {
 		Self
+	}
+
+	/// Modular division.
+	///
+	/// Computes `dividend / divisor (mod modulus) = dividend * divisor^{-1} (mod modulus)`.
+	/// Returns a pair `(quotient, slope)` where `slope` is the modular quotient and `quotient`
+	/// is the non-negative integer satisfying `slope * divisor = dividend + quotient * modulus`.
+	/// Both are set to zero when `divisor` is not invertible modulo `modulus` (e.g. `divisor ==
+	/// 0`).
+	///
+	/// This is a hint - a deterministic computation that happens only on the prover side.
+	/// The result should be additionally constrained by using bignum circuits to check that
+	/// `slope * divisor = dividend + quotient * modulus`.
+	pub fn call(
+		builder: &CircuitBuilder,
+		dividend: &[Wire],
+		divisor: &[Wire],
+		modulus: &[Wire],
+	) -> (Vec<Wire>, Vec<Wire>) {
+		let inputs: Vec<Wire> = dividend
+			.iter()
+			.chain(divisor)
+			.chain(modulus)
+			.copied()
+			.collect();
+		let mut out = builder.call_hint(
+			Self::new(),
+			&[dividend.len(), divisor.len(), modulus.len()],
+			&inputs,
+		);
+		let slope = out.split_off(modulus.len());
+		(out, slope)
 	}
 }
 

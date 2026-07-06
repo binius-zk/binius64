@@ -36,8 +36,17 @@ pub struct FieldBuffer<P: PackedField, Data: Deref<Target = [P]> = Box<[P]>> {
 
 impl<P: PackedField, Data: Deref<Target = [P]>> PartialEq for FieldBuffer<P, Data> {
 	fn eq(&self, other: &Self) -> bool {
-		// Custom equality impl is needed because values beyond length until capacity can be
-		// arbitrary.
+		// Lanes from the logical length up to the capacity hold arbitrary data.
+		// Equality compares only the live scalars, never the raw packed backing store.
+		//
+		// Invariant: buffers of different lengths are never equal.
+		//
+		// The length-below-width branch compares only a prefix of a single packed word.
+		//   - Shorter and longer buffers sharing that prefix would otherwise compare equal.
+		//   - The shorter buffer's out-of-range lanes are arbitrary and must not be read.
+		if self.log_len != other.log_len {
+			return false;
+		}
 		if self.log_len < P::LOG_WIDTH {
 			let iter_1 = self
 				.values
@@ -54,7 +63,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> PartialEq for FieldBuffer<P, Dat
 			iter_1.eq(iter_2)
 		} else {
 			let prefix = 1 << (self.log_len - P::LOG_WIDTH);
-			self.log_len == other.log_len && self.values[..prefix] == other.values[..prefix]
+			self.values[..prefix] == other.values[..prefix]
 		}
 	}
 }
@@ -773,6 +782,8 @@ impl<'a, P: PackedField> Drop for FieldBufferChunkMutInner<'a, P> {
 
 #[cfg(test)]
 mod tests {
+	use proptest::prelude::*;
+
 	use super::*;
 	use crate::test_utils::{B128, Packed128b};
 
@@ -1462,5 +1473,27 @@ mod tests {
 	fn test_split_half_mut_size_one() {
 		let mut buffer = FieldBuffer::<P>::zeros(0); // 1 element
 		let _ = buffer.split_half_mut();
+	}
+
+	proptest! {
+		#[test]
+		fn unequal_length_buffers_are_never_equal(
+			log_len_a in 0usize..=6,
+			log_len_b in 0usize..=6,
+			fill in any::<u128>(),
+		) {
+			// Invariant: buffers are equal iff same length and same scalars.
+			let value = F::new(fill);
+			let buf_a = FieldBuffer::<P>::from_values(&vec![value; 1 << log_len_a]);
+			let buf_b = FieldBuffer::<P>::from_values(&vec![value; 1 << log_len_b]);
+
+			// - Same length -> equal;
+			// - Different length -> unequal despite matching scalars.
+			if log_len_a == log_len_b {
+				prop_assert_eq!(buf_a, buf_b);
+			} else {
+				prop_assert_ne!(buf_a, buf_b);
+			}
+		}
 	}
 }

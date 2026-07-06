@@ -3,7 +3,6 @@
 use binius_field::{Field, PackedField};
 use binius_math::FieldBuffer;
 
-use super::error::Error;
 use crate::sumcheck::{batch_quadratic_mle::BatchQuadraticMleCheckProver, common::MleCheckProver};
 
 pub type FractionalBuffer<P> = (FieldBuffer<P>, FieldBuffer<P>);
@@ -14,7 +13,7 @@ pub fn new<F, P>(
 	fraction: [FieldBuffer<P>; 4],
 	eval_point: Vec<F>,
 	eval_claims: [F; 2],
-) -> Result<impl MleCheckProver<F>, Error>
+) -> impl MleCheckProver<F>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
@@ -69,7 +68,7 @@ mod tests {
 		let n_vars = prover.n_vars();
 		// Run the proving protocol
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = batch_prove(vec![prover], &mut prover_transcript).unwrap();
+		let output = batch_prove(vec![prover], &mut prover_transcript);
 
 		assert_eq!(output.multilinear_evals.len(), 1);
 		let prover_evals = output.multilinear_evals[0].clone();
@@ -177,8 +176,7 @@ mod tests {
 			[num_a.clone(), num_b.clone(), den_a.clone(), den_b.clone()],
 			eval_point.clone(),
 			eval_claims,
-		)
-		.unwrap();
+		);
 
 		// Wrap the MLE-check prover so it emits sumcheck-compatible round polynomials.
 		let prover = MleToSumCheckDecorator::new(frac_prover);

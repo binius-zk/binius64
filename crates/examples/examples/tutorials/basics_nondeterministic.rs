@@ -7,7 +7,7 @@
 //! Guide: https://www.binius.xyz/building/
 
 use binius_core::verify::verify_constraints;
-use binius_frontend::CircuitBuilder;
+use binius_frontend::{CircuitBuilder, hints::BigUintDivideHint};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let builder = CircuitBuilder::new();
@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let divisor = vec![builder.add_constant_64(83)];
 
 	// Hint computes quotient and remainder externally
-	let (quotient, remainder) = builder.biguint_divide_hint(&dividend, &divisor);
+	let (quotient, remainder) = BigUintDivideHint::call(&builder, &dividend, &divisor);
 
 	// Verify: dividend = divisor × quotient + remainder
 	let (_hi, lo) = builder.imul(divisor[0], quotient[0]);

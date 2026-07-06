@@ -1,14 +1,15 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
-use std::{iter, ops::Range};
+use std::iter;
 
 use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
 use binius_math::{
 	BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
 };
-use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_utils::rayon::prelude::*;
 use binius_verifier::{
-	config::{LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, WORD_SIZE_BITS},
+	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
 	protocols::shift::{BITAND_ARITY, INTMUL_ARITY, evaluate_h_op},
 };
 use bytemuck::zeroed_vec;
@@ -16,8 +17,7 @@ use tracing::instrument;
 
 use super::{
 	SHIFT_VARIANT_COUNT,
-	error::Error,
-	key_collection::{KeyCollection, Operation},
+	key_collection::{KeyCollection, KeySegment, Operation},
 	prove::PreparedOperatorData,
 };
 
@@ -140,7 +140,7 @@ pub fn build_monster_multilinear<F, P: PackedField<Scalar = F>>(
 	intmul_operator_data: &PreparedOperatorData<F>,
 	r_j: &[F],
 	r_s: &[F],
-) -> Result<FieldBuffer<P>, Error>
+) -> FieldBuffer<P>
 where
 	F: BinaryField + From<AESTowerField8b>,
 {
@@ -187,38 +187,56 @@ where
 		&intmul_h_ops,
 	);
 
-	let n_words = key_collection.key_ranges.len();
-	let log_len = log2_ceil_usize(n_words).max(LOG_WORDS_PER_ELEM);
+	let log_half = key_collection.log_witness_words();
+	let log_len = log_half + 1;
 	let capacity = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 
-	let mut monster_multilinear = Vec::<P>::with_capacity(capacity);
-	key_collection
-		.key_ranges
-		.par_chunks(P::WIDTH)
-		.map(|chunk| {
-			P::from_scalars(chunk.iter().map(|&Range { start, end }| {
-				key_collection.keys[start as usize..end as usize]
-					.iter()
-					.map(|key| {
-						let (operator_data, scalars) = match key.operation {
-							Operation::BitwiseAnd => (bitand_operator_data, &bitand_scalars),
-							Operation::IntegerMul => (intmul_operator_data, &intmul_scalars),
-						};
-						key.accumulate_by_operand(&key_collection.constraint_indices, operator_data)
-							.map(|(operand_index, acc)| {
-								let index = key.id as usize
-									+ operand_index * SHIFT_VARIANT_COUNT * WORD_SIZE_BITS;
-								acc * scalars[index]
-							})
-							.sum::<F>()
+	// The scalar for one word of a segment: the accumulated contribution of all its keys.
+	let word_scalar = |segment: &KeySegment, index: usize| {
+		segment
+			.word_keys(index)
+			.iter()
+			.map(|key| {
+				let (operator_data, scalars) = match key.operation {
+					Operation::BitwiseAnd => (bitand_operator_data, &bitand_scalars),
+					Operation::IntegerMul => (intmul_operator_data, &intmul_scalars),
+				};
+				key.accumulate_by_operand(&segment.constraint_indices, operator_data)
+					.map(|(operand_index, acc)| {
+						let index =
+							key.id as usize + operand_index * SHIFT_VARIANT_COUNT * WORD_SIZE_BITS;
+						acc * scalars[index]
 					})
-					.sum()
+					.sum::<F>()
+			})
+			.sum::<F>()
+	};
+
+	// The multilinear is indexed over the witness address space: the public segment at the
+	// base of the low half-cube, the hidden segment at the base of the high half-cube, zeros
+	// elsewhere.
+	let half = 1 << log_half;
+	let n_public_words = key_collection.public.n_words();
+	let n_words = half + key_collection.hidden.n_words();
+	let mut monster_multilinear = Vec::<P>::with_capacity(capacity);
+	(0..n_words.div_ceil(P::WIDTH))
+		.into_par_iter()
+		.map(|chunk_index| {
+			let start = chunk_index * P::WIDTH;
+			P::from_scalars((start..(start + P::WIDTH).min(n_words)).map(|word_index| {
+				if word_index < n_public_words {
+					word_scalar(&key_collection.public, word_index)
+				} else if word_index >= half {
+					word_scalar(&key_collection.hidden, word_index - half)
+				} else {
+					F::ZERO
+				}
 			}))
 		})
 		.collect_into_vec(&mut monster_multilinear);
 	monster_multilinear.resize(capacity, P::default());
 
-	Ok(FieldBuffer::new(log_len, monster_multilinear.into_boxed_slice()))
+	FieldBuffer::new(log_len, monster_multilinear.into_boxed_slice())
 }
 
 #[cfg(test)]

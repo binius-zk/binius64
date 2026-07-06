@@ -7,8 +7,7 @@ use binius_math::{AsSlicesMut, FieldSliceMut, multilinear::fold::fold_highest_va
 use binius_utils::rayon::prelude::*;
 
 use super::{
-	common::SumcheckProver, error::Error, gruen32::Gruen32, round_evals::WideRoundEvals2,
-	round_state::RoundState,
+	common::SumcheckProver, gruen32::Gruen32, round_evals::WideRoundEvals2, round_state::RoundState,
 };
 use crate::sumcheck::common::MleCheckProver;
 
@@ -68,35 +67,37 @@ where
 	///
 	/// A configured prover instance ready to execute the sumcheck protocol.
 	///
-	/// # Errors
+	/// # Panics
 	///
-	/// Returns `Error::MultilinearSizeMismatch` if any multilinear has a different number of
-	/// variables than the length of `eval_point`.
+	/// Panics if any multilinear has a different number of variables than the length of
+	/// `eval_point`.
 	pub fn new(
 		mut multilinears: impl AsSlicesMut<P, N> + Send + 'static,
 		composition: Composition,
 		infinity_composition: InfinityComposition,
 		eval_point: Vec<F>,
 		eval_claim: F,
-	) -> Result<Self, Error> {
+	) -> Self {
 		let n_vars = eval_point.len();
 
 		for multilinear in &multilinears.as_slices_mut() {
-			if multilinear.log_len() != n_vars {
-				return Err(Error::MultilinearSizeMismatch);
-			}
+			assert_eq!(
+				multilinear.log_len(),
+				n_vars,
+				"multilinears must have number of variables equal to the evaluation point length"
+			);
 		}
 
 		let last_coeffs_or_eval = RoundState::Claim(eval_claim);
 		let gruen32 = Gruen32::new(&eval_point);
 
-		Ok(Self {
+		Self {
 			multilinears: Box::new(multilinears),
 			composition,
 			infinity_composition,
 			last_coeffs_or_eval,
 			gruen32,
-		})
+		}
 	}
 
 	/// Gets mutable slices of the multilinears, truncated to the current number of variables.
@@ -136,8 +137,8 @@ where
 		vec![claim]
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, Error> {
-		let last_eval = *self.last_coeffs_or_eval.claim()?;
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
+		let last_eval = *self.last_coeffs_or_eval.claim();
 
 		let n_vars_remaining = self.gruen32.n_vars_remaining();
 		assert!(n_vars_remaining > 0);
@@ -195,16 +196,16 @@ where
 		let round_coeffs = round_evals.interpolate_eq(last_eval, alpha);
 
 		self.last_coeffs_or_eval = RoundState::Coeffs(round_coeffs.clone());
-		Ok(vec![round_coeffs])
+		vec![round_coeffs]
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), Error> {
-		let coeffs = self.last_coeffs_or_eval.coeffs()?;
+	fn fold(&mut self, challenge: F) {
+		let coeffs = self.last_coeffs_or_eval.coeffs();
 
 		assert!(
 			self.n_vars() > 0,
 			"n_vars is decremented in fold; \
-			fold changes last_coeffs_or_eval to Eval variant; \
+			fold changes last_coeffs_or_eval to Claim variant; \
 			fold only executes with Coeffs variant; \
 			thus, n_vars should be > 0"
 		);
@@ -217,21 +218,15 @@ where
 
 		self.gruen32.fold(challenge);
 		self.last_coeffs_or_eval = RoundState::Claim(eval);
-		Ok(())
 	}
 
-	fn finish(mut self) -> Result<Vec<F>, Error> {
-		if self.n_vars() > 0 {
-			return Err(self.last_coeffs_or_eval.unfinished_err());
-		}
+	fn finish(mut self) -> Vec<F> {
+		assert_eq!(self.n_vars(), 0, "finish called out of order; sumcheck rounds remain");
 
-		let multilinear_evals = self
-			.multilinears_mut()
+		self.multilinears_mut()
 			.into_iter()
 			.map(|multilinear| multilinear.get(0))
-			.collect();
-
-		Ok(multilinear_evals)
+			.collect()
 	}
 }
 
@@ -282,7 +277,7 @@ mod tests {
 	{
 		// Run the proving protocol
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let output = prove_single_mlecheck(prover, &mut prover_transcript).unwrap();
+		let output = prove_single_mlecheck(prover, &mut prover_transcript);
 
 		// Write the multilinear evaluations to the transcript
 		prover_transcript
@@ -360,8 +355,7 @@ mod tests {
 			infinity_composition,
 			eval_point.clone(),
 			eval_claim,
-		)
-		.unwrap();
+		);
 
 		test_mlecheck_prove_verify(
 			mlecheck_prover,
@@ -432,17 +426,16 @@ mod tests {
 			composition,
 			eval_point,
 			eval_claim,
-		)
-		.unwrap();
+		);
 
 		let mut expected = vec![eval_claim];
 		for _ in 0..n_vars {
 			assert_eq!(prover.round_claim(), expected, "claim before execute");
-			let round = prover.execute().unwrap();
+			let round = prover.execute();
 			assert_eq!(prover.round_claim(), expected, "claim recovered from coeffs");
 			let challenge = F::random(&mut rng);
 			expected = round.iter().map(|r| r.evaluate(challenge)).collect();
-			prover.fold(challenge).unwrap();
+			prover.fold(challenge);
 		}
 	}
 }

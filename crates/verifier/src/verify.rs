@@ -1,6 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::marker::PhantomData;
+
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
@@ -11,16 +13,10 @@ use binius_iop::{
 };
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
-	BinarySubspace,
-	inner_product::inner_product_scalars,
-	multilinear::{eq::eq_ind, evaluate::evaluate_inplace_scalars},
-	univariate::lagrange_evals_scalars,
+	BinarySubspace, inner_product::inner_product_scalars, univariate::lagrange_evals_scalars,
 };
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
-use binius_utils::{
-	DeserializeBytes,
-	checked_arithmetics::{checked_log_2, log2_ceil_usize},
-};
+use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
 use digest::Output;
 use itertools::chain;
 
@@ -80,14 +76,16 @@ impl IOPVerifier {
 	}
 
 	/// Returns log2 of the number of field elements in the packed trace.
-	pub fn log_witness_elems(&self) -> usize {
-		let log_witness_words =
-			log2_ceil_usize(self.constraint_system.value_vec_len()).max(LOG_WORDS_PER_ELEM);
+	///
+	/// The trace oracle commits only the witness's hidden segment, padded to the segment
+	/// length; the public segment is a verifier-known polynomial.
+	pub const fn log_witness_elems(&self) -> usize {
+		let log_witness_words = self.constraint_system.value_vec_layout.log_witness_words();
 		log_witness_words - LOG_WORDS_PER_ELEM
 	}
 
-	/// Returns log2 of the number of words in the witness.
-	pub fn log_witness_words(&self) -> usize {
+	/// Returns log2 of the number of words in the committed trace.
+	pub const fn log_witness_words(&self) -> usize {
 		self.log_witness_elems() + LOG_WORDS_PER_ELEM
 	}
 
@@ -116,10 +114,10 @@ impl IOPVerifier {
 	///
 	/// This is the core verification logic, independent of the specific IOP compilation strategy.
 	/// For most users, [`Verifier::verify`] is the simpler interface.
-	pub fn verify<'r, Channel>(&self, public: &[Word], channel: &mut Channel) -> Result<(), Error>
+	pub fn verify<Channel>(&self, public: &[Word], channel: &mut Channel) -> Result<(), Error>
 	where
-		Channel: IOPVerifierChannel<'r, B128>,
-		Channel::Elem: FieldOps<Scalar = B128> + From<B128> + 'r,
+		Channel: IOPVerifierChannel<B128>,
+		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 	{
 		// Check that the public input length is correct
 		if public.len() != 1 << self.log_public_words() {
@@ -130,7 +128,7 @@ impl IOPVerifier {
 		}
 
 		// Verifier observes the public input (includes it in Fiat-Shamir).
-		let public_elems = channel.observe_many(&encode_public(public));
+		channel.observe_many(&encode_public(public));
 
 		let _verify_guard =
 			tracing::info_span!("Verify", operation = "verify", perfetto_category = "operation")
@@ -155,17 +153,24 @@ impl IOPVerifier {
 		// `prover::prove`.
 		//
 		// [phase] Verify IntMul Reduction - multiplication constraint verification
-		let intmul_guard = tracing::info_span!(
-			"[phase] Verify IntMul Reduction",
-			phase = "verify_intmul_reduction",
-			perfetto_category = "phase",
-			n_constraints = self.constraint_system.n_mul_constraints()
-		)
-		.entered();
-		let log_n_constraints = checked_log_2(self.constraint_system.n_mul_constraints());
-		let intmul_output =
-			verify_intmul_reduction::<B128, _>(LOG_WORD_SIZE_BITS, log_n_constraints, channel)?;
-		drop(intmul_guard);
+		//
+		// Skipped (no transcript reads) when the constraint system has no MUL constraints,
+		// mirroring the prover's identical guard so the transcript stays in sync.
+		let intmul_output = if self.constraint_system.n_mul_constraints() > 0 {
+			let intmul_guard = tracing::info_span!(
+				"[phase] Verify IntMul Reduction",
+				phase = "verify_intmul_reduction",
+				perfetto_category = "phase",
+				n_constraints = self.constraint_system.n_mul_constraints()
+			)
+			.entered();
+			let log_n_constraints = checked_log_2(self.constraint_system.n_mul_constraints());
+			let intmul_output = verify_intmul_reduction::<B128, _>(log_n_constraints, channel)?;
+			drop(intmul_guard);
+			Some(intmul_output)
+		} else {
+			None
+		};
 
 		// [phase] Verify BitAnd Reduction - AND constraint verification
 		let bitand_guard = tracing::info_span!(
@@ -191,27 +196,31 @@ impl IOPVerifier {
 		// Build `OperatorData` for IntMul. The univariate challenge `r_zhat_prime` is
 		// shared with BitAnd (computed above) — sharing it improves prover
 		// ShiftReduction perf and lets the verifier compute `h_op_evals` once for both
-		// operations in `shift::check_eval`.
-		let intmul_claim = {
-			let IntMulOutput {
+		// operations in `shift::check_eval`. When IntMul was skipped, synthesize a zero claim
+		// (four zero evals at an empty point); it contributes zero to the shift reduction, whose
+		// monster evaluation iterates the (empty) MUL constraints.
+		let intmul_claim = match intmul_output {
+			Some(IntMulOutput {
 				a_evals,
 				b_evals,
 				c_lo_evals,
 				c_hi_evals,
 				eval_point,
-			} = intmul_output;
-
-			let l_tilde = lagrange_evals_scalars(&domain_subspace, r_zhat_prime.clone());
-			let make_final_claim = |evals| inner_product_scalars(evals, l_tilde.iter().cloned());
-			OperatorData::new(
-				eval_point,
-				[
-					make_final_claim(a_evals),
-					make_final_claim(b_evals),
-					make_final_claim(c_lo_evals),
-					make_final_claim(c_hi_evals),
-				],
-			)
+			}) => {
+				let l_tilde = lagrange_evals_scalars(&domain_subspace, r_zhat_prime.clone());
+				let make_final_claim =
+					|evals| inner_product_scalars(evals, l_tilde.iter().cloned());
+				OperatorData::new(
+					eval_point,
+					[
+						make_final_claim(a_evals),
+						make_final_claim(b_evals),
+						make_final_claim(c_lo_evals),
+						make_final_claim(c_hi_evals),
+					],
+				)
+			}
+			None => OperatorData::new(Vec::new(), std::array::from_fn(|_| Channel::Elem::zero())),
 		};
 
 		// [phase] Verify Shift Reduction - shift operations and constraint validation
@@ -234,6 +243,7 @@ impl IOPVerifier {
 		.entered();
 		shift::check_eval(
 			self.constraint_system(),
+			public,
 			&bitand_claim,
 			&intmul_claim,
 			&domain_subspace,
@@ -251,37 +261,27 @@ impl IOPVerifier {
 		)
 		.entered();
 
-		// Ring-switching verification
+		// Ring-switching verification of the witness claim.
 		let eval_point = [shift_output.r_j(), shift_output.r_y()].concat();
 		let ring_switch::RingSwitchVerifyOutput {
 			eq_r_double_prime,
 			sumcheck_claim,
 		} = ring_switch::verify(shift_output.witness_eval().clone(), &eval_point, channel)?;
 
-		// Public input check batched with ring-switch
 		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 		let eval_point_high = eval_point[log_packing..].to_vec();
 
-		let log_public_elems = self.log_public_words() - LOG_WORDS_PER_ELEM;
-		let pubcheck_point = eval_point_high[..log_public_elems].to_vec();
-		let pubcheck_claim = evaluate_inplace_scalars(public_elems, &pubcheck_point);
-
-		let batch_coeff = channel.sample();
-		let batched_claim = sumcheck_claim + batch_coeff.clone() * pubcheck_claim;
-
-		// Build the transparent closure combining ring-switch and public input check
 		let transparent = Box::new(move |point: &[Channel::Elem]| {
-			let rs_eq_eval =
-				ring_switch::eval_rs_eq(&eval_point_high, point, eq_r_double_prime.as_ref());
-			let pubcheck_eq_eval = eval_pubcheck_eq(&pubcheck_point, point);
-			rs_eq_eval + batch_coeff.clone() * pubcheck_eq_eval
+			ring_switch::eval_rs_eq(&eval_point_high, point, eq_r_double_prime.as_ref())
 		});
 
-		// Verify oracle relations (runs BaseFold internally and verifies the product check)
+		// Verify oracle relations (runs BaseFold internally and verifies the product check). The
+		// intmul pushforward relation, when the IntMul reduction ran, was already queued inside
+		// phase 5.
 		channel.verify_oracle_relations([OracleLinearRelation {
 			oracle: trace_oracle,
 			transparent,
-			claim: batched_claim,
+			claim: sumcheck_claim,
 		}])?;
 
 		drop(pcs_guard);
@@ -297,7 +297,9 @@ impl IOPVerifier {
 #[derive(Clone)]
 pub struct Verifier<H: HashSuite> {
 	iop_verifier: IOPVerifier,
-	iop_compiler: BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>>,
+	iop_compiler: BaseFoldVerifierCompiler<B128>,
+	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
+	_hash_marker: PhantomData<H>,
 }
 
 impl<H> Verifier<H>
@@ -314,11 +316,9 @@ where
 	) -> Result<Self, Error> {
 		constraint_system.validate_and_prepare()?;
 
-		// Use offset_witness which is guaranteed to be power of two and be at least one full
+		// The validated layout guarantees a power-of-two public segment of at least one full
 		// element.
-		let n_public = constraint_system.value_vec_layout.offset_witness;
-		let log_public_words = log2_ceil_usize(n_public);
-		assert!(n_public.is_power_of_two());
+		let log_public_words = constraint_system.value_vec_layout.log_public_words();
 		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
 
 		let iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
@@ -347,6 +347,7 @@ where
 		Ok(Self {
 			iop_verifier,
 			iop_compiler,
+			_hash_marker: PhantomData,
 		})
 	}
 
@@ -361,12 +362,12 @@ where
 	}
 
 	/// Returns log2 of the number of words in the witness.
-	pub fn log_witness_words(&self) -> usize {
+	pub const fn log_witness_words(&self) -> usize {
 		self.iop_verifier.log_witness_words()
 	}
 
 	/// Returns log2 of the number of field elements in the packed trace.
-	pub fn log_witness_elems(&self) -> usize {
+	pub const fn log_witness_elems(&self) -> usize {
 		self.iop_verifier.log_witness_elems()
 	}
 
@@ -380,20 +381,13 @@ where
 		self.iop_compiler.fri_params()
 	}
 
-	/// Returns the [`crate::merkle_tree::MerkleTreeScheme`] instance used.
-	pub const fn merkle_scheme(&self) -> &BinaryMerkleTreeScheme<B128, H> {
-		self.iop_compiler.merkle_scheme()
-	}
-
 	/// Returns log2 of the number of public constants and input/output words.
 	pub const fn log_public_words(&self) -> usize {
 		self.iop_verifier.log_public_words()
 	}
 
 	/// Returns the IOP compiler for creating verifier channels.
-	pub const fn iop_compiler(
-		&self,
-	) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
+	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<B128> {
 		&self.iop_compiler
 	}
 
@@ -413,7 +407,9 @@ where
 		.entered();
 
 		// Create channel, delegate to IOPVerifier::verify, then finish it.
-		let mut channel = self.iop_compiler.create_channel(transcript);
+		let mut channel = self
+			.iop_compiler
+			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 		self.iop_verifier.verify(public, &mut channel)?;
 		channel.finish()?;
 		Ok(())
@@ -444,21 +440,6 @@ where
 		chain!(small_field_zerocheck_challenges, big_field_zerocheck_challenges)
 			.collect::<Vec<_>>();
 	verify_with_channel(&zerocheck_challenges, channel, eval_domain)
-}
-
-/// Evaluate the public input equality indicator at a query point.
-///
-/// Computes `eq(pubcheck_point || 0, query)`, which selects the first `2^k` entries of the
-/// committed polynomial (the public inputs). In characteristic 2:
-/// `eq(a || 0, x) = eq(a, x[..k]) * prod_{i >= k} (1 - x_i)`
-fn eval_pubcheck_eq<F: FieldOps>(pubcheck_point: &[F], query: &[F]) -> F {
-	let one = F::one();
-	let (query_prefix, query_suffix) = query.split_at(pubcheck_point.len());
-	let prefix_eq = eq_ind(pubcheck_point, query_prefix);
-	let suffix_prod = query_suffix
-		.iter()
-		.fold(one.clone(), |acc, x| acc * (one.clone() - x));
-	prefix_eq * suffix_prod
 }
 
 /// Encode public input words as B128 elements, for compliance with the IOP interface.
