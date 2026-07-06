@@ -189,12 +189,20 @@ impl fmt::Display for CircuitStat {
 			0.0
 		};
 		let mul_spare = self.mul_allocated - self.n_mul_constraints;
+		// A circuit with no MUL constraints allocates nothing (the IntMul reduction is skipped),
+		// so there is no power-of-two allocation to report — unlike AND, which is always padded to
+		// at least one.
+		let mul_allocation = if self.mul_allocated == 0 {
+			"0".to_string()
+		} else {
+			format!("2^{}", log2(self.mul_allocated))
+		};
 		writeln!(
 			f,
-			"├─ MUL constraints: {} used ({:.1}% of 2^{})",
+			"├─ MUL constraints: {} used ({:.1}% of {})",
 			fmt_num(self.n_mul_constraints),
 			mul_percent,
-			log2(self.mul_allocated)
+			mul_allocation
 		)?;
 		writeln!(
 			f,

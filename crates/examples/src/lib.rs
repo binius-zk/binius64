@@ -46,10 +46,19 @@ pub fn init_tracing() {
 		.try_init();
 }
 
+/// Selects which Merkle [`HashSuite`] the prover and verifier use.
+///
+/// A hash suite fixes both halves of the Merkle tree at once:
+/// - the leaf hash applied to the committed values, and
+/// - the two-to-one compression that folds a pair of child nodes into their parent.
+///
+/// It does not select a compression function alone, which is why the flag is `--hash-suite`.
 #[derive(Debug, Clone, ValueEnum)]
-pub enum CompressionType {
-	/// SHA-256 compression function
+pub enum HashSuiteType {
+	/// SHA-256 leaves with a SHA-256 two-to-one compression.
 	Sha256,
+	/// Blake3 leaves with a Blake3 two-to-one compression.
+	Blake3,
 }
 
 /// Standard verifier using SHA256 compression

@@ -4,7 +4,7 @@
 //! [value vector][`ValueVec`].
 
 use crate::{
-	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueVec},
+	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueIndex, ValueVec},
 	word::Word,
 };
 
@@ -55,7 +55,7 @@ pub fn verify_constraints(cs: &ConstraintSystem, witness: &ValueVec) -> Result<(
 
 	// First check that the witness correctly populated the constants section.
 	for (index, constant) in cs.constants.iter().enumerate() {
-		if witness.get(index) != *constant {
+		if witness[ValueIndex(index as u32)] != *constant {
 			return Err(format!(
 				"Constant at index {index} does not match expected value {:016x} in value vec",
 				constant.as_u64()

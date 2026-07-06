@@ -530,7 +530,7 @@ impl<'a> Interpreter<'a> {
 	}
 
 	fn store(&self, ctx: &mut ExecutionContext<'_>, reg: u32, value: Word) {
-		ctx.value_vec.set(reg as usize, value);
+		ctx.value_vec[ValueIndex(reg)] = value;
 	}
 
 	// Bytecode reading helpers

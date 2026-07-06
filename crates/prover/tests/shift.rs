@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_circuits::sha256::Sha256;
 use binius_core::{
@@ -19,7 +20,7 @@ use binius_prover::{
 	protocols::shift::{OperatorData, build_key_collection, prove},
 };
 use binius_transcript::ProverTranscript;
-use binius_utils::checked_arithmetics::strict_log_2;
+use binius_utils::checked_arithmetics::{log2_ceil_usize, strict_log_2};
 use binius_verifier::{
 	config::{LOG_WORD_SIZE_BITS, StdChallenger},
 	protocols::shift::{OperatorData as VerifierOperatorData, check_eval, verify},
@@ -191,7 +192,7 @@ pub fn evaluate_witness<F: BinaryField>(words: &[Word], r_j: &[F], r_y: &[F]) ->
 
 #[test]
 fn test_shift_prove_and_verify() {
-	use binius_field::{BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
+	use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash2x128b, Random};
 	type F = BinaryField128bGhash;
 	type P = PackedBinaryGhash2x128b;
 	let mut rng = StdRng::seed_from_u64(0);
@@ -218,7 +219,13 @@ fn test_shift_prove_and_verify() {
 				.map(F::new)
 				.collect::<Vec<_>>()
 		};
-		let r_x_prime_intmul = {
+		// A constraint system may have zero MUL constraints (e.g. a pure-AND circuit like SHA-256).
+		// The IntMul operator is then empty — an empty challenge point and a zero claim — mirroring
+		// the prover/verifier skip of the IntMul reduction in `binius_prover` / `binius_verifier`.
+		let intmul_is_empty = cs.mul_constraints.is_empty();
+		let r_x_prime_intmul = if intmul_is_empty {
+			Vec::new()
+		} else {
 			let log_intmul_constraint_count = strict_log_2(cs.mul_constraints.len()).unwrap();
 			(0..log_intmul_constraint_count as u128)
 				.map(F::new)
@@ -240,14 +247,18 @@ fn test_shift_prove_and_verify() {
 			)
 		});
 
-		let intmul_evals = compute_intmul_images(&cs.mul_constraints, &value_vec).map(|image| {
-			evaluate_image(
-				&subspace,
-				&image,
-				r_zhat_prime,
-				eq_ind_partial_eval(&r_x_prime_intmul).as_ref(),
-			)
-		});
+		let intmul_evals: [F; 4] = if intmul_is_empty {
+			[F::ZERO; 4]
+		} else {
+			compute_intmul_images(&cs.mul_constraints, &value_vec).map(|image| {
+				evaluate_image(
+					&subspace,
+					&image,
+					r_zhat_prime,
+					eq_ind_partial_eval(&r_x_prime_intmul).as_ref(),
+				)
+			})
+		};
 
 		// Build prover's constraint system
 		let key_collection = build_key_collection(&cs);
@@ -287,6 +298,7 @@ fn test_shift_prove_and_verify() {
 		// Check consistency with verifier output
 		check_eval(
 			&cs,
+			value_vec.public(),
 			&verifier_bitand_data,
 			&verifier_intmul_data,
 			&subspace,
@@ -297,16 +309,25 @@ fn test_shift_prove_and_verify() {
 		.unwrap();
 		verifier_transcript.finalize().unwrap();
 
-		// Check the claimed eval matches the computed eval
-		let expected_eval = evaluate_witness(
-			value_vec.combined_witness(),
-			verifier_output.r_j(),
-			verifier_output.r_y(),
+		// Check the claimed witness eval matches the direct evaluation of the non-public words.
+		// The witness segment is zero-padded from the folded length up to the segment length,
+		// contributing the `(1 - r)` factors.
+		let r_y = verifier_output.r_y();
+		let non_public = value_vec.non_public();
+		let log_folded = log2_ceil_usize(non_public.len());
+		let expected_eval = r_y[log_folded..].iter().fold(
+			evaluate_witness(non_public, verifier_output.r_j(), &r_y[..log_folded]),
+			|acc, &r_y_i| acc * (F::ONE - r_y_i),
 		);
 		assert_eq!(expected_eval, verifier_output.witness_eval);
 
 		// Check consistency of prover and verifier outputs
-		let eval_point = [verifier_output.r_j(), verifier_output.r_y()].concat();
+		let eval_point = [
+			verifier_output.r_j(),
+			r_y,
+			std::slice::from_ref(&verifier_output.r_segment),
+		]
+		.concat();
 		assert_eq!(prover_output.challenges, eval_point);
 		assert_eq!(prover_output.eval, verifier_output.witness_eval);
 	}

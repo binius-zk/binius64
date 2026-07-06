@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{iter, mem, ops::Range};
 
@@ -9,8 +10,11 @@ use binius_core::{
 	},
 	consts::LOG_WORD_SIZE_BITS,
 };
-use binius_field::Field;
-use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
+use binius_field::{Field, WideMul};
+use binius_utils::{
+	checked_arithmetics::log2_ceil_usize,
+	serialization::{DeserializeBytes, SerializationError, SerializeBytes},
+};
 use bytes::{Buf, BufMut};
 
 use super::{BITAND_ARITY, INTMUL_ARITY, PreparedOperatorData};
@@ -120,46 +124,128 @@ impl Key {
 		})
 	}
 
-	/// Accumulates the partial evaluation of an operation matrix for the key.
+	/// Accumulates the partial evaluation of an operation matrix for the key, in unreduced (wide)
+	/// form.
 	///
 	/// A [`Key`] references the operation constraints where one witness word is an operand. This
-	/// accumulates the partial evaluation of the operation matrix for this key.
+	/// accumulates the partial evaluation of the operation matrix for this key, weighting each
+	/// operand's contribution by `scalars[operand_index]` and fusing that weighting into the
+	/// consecutive-operand scan. The caller reduces the result via [`WideMul::reduce`], and may
+	/// sum several wide accumulations before that single reduction.
+	#[inline]
+	pub fn accumulate_wide<F: Field>(
+		&self,
+		constraint_indices: &[ConstraintIndex],
+		r_x_prime_tensor: &[F],
+		scalars: &[F],
+	) -> <F as WideMul>::Output {
+		let Range { start, end } = self.range;
+		let mut constraint_indices = constraint_indices[start as usize..end as usize].iter();
+
+		let mut result = <F as WideMul>::Output::default();
+		let Some(first) = constraint_indices.next() else {
+			return result;
+		};
+
+		let mut operand_index = first.operand_index as usize;
+		let mut acc = F::ZERO;
+		acc += r_x_prime_tensor[first.constraint_index as usize];
+
+		for current in constraint_indices {
+			let current_operand_index = current.operand_index as usize;
+			if current_operand_index != operand_index {
+				result += F::wide_mul(acc, scalars[operand_index]);
+				operand_index = current_operand_index;
+				acc = F::ZERO;
+			}
+			acc += r_x_prime_tensor[current.constraint_index as usize];
+		}
+
+		result + F::wide_mul(acc, scalars[operand_index])
+	}
+
+	/// Accumulates the partial evaluation of an operation matrix for the key.
+	///
+	/// This is [`Self::accumulate_wide`] followed by a single reduction.
 	#[inline]
 	pub fn accumulate<F: Field>(
 		&self,
 		constraint_indices: &[ConstraintIndex],
-		operator_data: &PreparedOperatorData<F>,
+		r_x_prime_tensor: &[F],
+		scalars: &[F],
 	) -> F {
-		self.accumulate_by_operand(constraint_indices, operator_data)
-			.map(|(operand_index, acc)| acc * operator_data.lambda_powers[operand_index])
-			.sum()
+		F::reduce(self.accumulate_wide(constraint_indices, r_x_prime_tensor, scalars))
+	}
+}
+
+/// The keys for the words of one segment of the value vector.
+///
+/// The prover operates in both phases by iterating through `key_ranges` (one range per word of
+/// the segment), then accessing the corresponding keys in the `keys` vector. Each key contains a
+/// range that indexes into `constraint_indices` to identify which constraints involve that
+/// particular shifted operand.
+///
+/// # Structure
+///
+/// - **keys**: All keys of the segment flattened into a single vector
+/// - **key_ranges**: For every word of the segment there is a range of keys within the `keys`
+///   vector
+/// - **constraint_indices**: Flattened list of constraint indices referenced by the keys
+///
+/// # Organization
+///
+/// Keys are organized by word index for efficient batch processing. For the word at index `w`
+/// *within the segment*, `key_ranges[w]` gives the range of keys in the `keys` vector that
+/// correspond to that word. Each key's range field then points into `constraint_indices` to
+/// specify which constraints involve that particular shifted operand.
+#[derive(Debug, Clone)]
+pub struct KeySegment {
+	pub keys: Vec<Key>,
+	pub key_ranges: Vec<Range<u32>>,
+	pub constraint_indices: Vec<ConstraintIndex>,
+}
+
+impl KeySegment {
+	/// The number of words the segment covers.
+	pub const fn n_words(&self) -> usize {
+		self.key_ranges.len()
+	}
+
+	/// The keys for the word at the given segment-relative index.
+	pub fn word_keys(&self, index: usize) -> &[Key] {
+		let Range { start, end } = self.key_ranges[index];
+		&self.keys[start as usize..end as usize]
 	}
 }
 
 /// A collection of keys that organizes the prover's view of the constraint system.
 ///
-/// The prover operates in both phases by iterating through `key_ranges` (one range per witness
-/// word), then accessing the corresponding keys in the `keys` vector. Each key contains a range
-/// that indexes into `constraint_indices` to identify which constraints involve that
-/// particular shifted operand.
-///
-/// # Structure
-///
-/// - **keys**: All keys flattened into a single vector
-/// - **key_ranges**: For every word there is a range of keys within the `keys` vector
-/// - **constraint_indices**: Flattened list of constraint indices referenced by the keys
-///
-/// # Organization
-///
-/// Keys are organized by word index for efficient batch processing. For word `w`,
-/// `key_ranges[w]` gives the range of keys in the `keys` vector that correspond to that word.
-/// Each key's range field then points into `constraint_indices` to specify which constraints
-/// involve that particular shifted operand.
+/// The keys are split by value-vector segment: one [`KeySegment`] for the public words
+/// (value-vector indices `[0, n_public_words)`) and one for the hidden words (indices
+/// `[n_public_words, committed_total_len)`). Word indices within each segment are
+/// segment-relative. The phases iterate both segments in absolute value-vector order.
 #[derive(Debug, Clone)]
 pub struct KeyCollection {
-	pub keys: Vec<Key>,
-	pub key_ranges: Vec<Range<u32>>,
-	pub constraint_indices: Vec<ConstraintIndex>,
+	pub public: KeySegment,
+	pub hidden: KeySegment,
+}
+
+impl KeyCollection {
+	/// The total number of words covered by both segments.
+	pub const fn n_words(&self) -> usize {
+		self.public.n_words() + self.hidden.n_words()
+	}
+
+	/// The base-2 logarithm of the hidden segment length in words, rounded up to a power of
+	/// two.
+	///
+	/// Matches [`ValueVecLayout::log_witness_words`] for the layout the collection was built
+	/// from; the layout guarantees this is at least the public segment's logarithm.
+	///
+	/// [`ValueVecLayout::log_witness_words`]: binius_core::constraint_system::ValueVecLayout::log_witness_words
+	pub const fn log_witness_words(&self) -> usize {
+		log2_ceil_usize(self.hidden.n_words())
+	}
 }
 
 /// A `BuilderKey` is a key that is being built up during `KeyCollection`
@@ -271,7 +357,17 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 			);
 		});
 
-	// Compute all three fields of the key collection from the builder keys lists
+	// Split the builder keys lists at the public segment boundary and build one `KeySegment`
+	// per half.
+	let hidden_lists = builder_key_lists.split_off(cs.value_vec_layout.n_public_words());
+	KeyCollection {
+		public: build_key_segment(builder_key_lists),
+		hidden: build_key_segment(hidden_lists),
+	}
+}
+
+/// Computes all three fields of a [`KeySegment`] from the builder keys lists of its words.
+fn build_key_segment(builder_key_lists: Vec<Vec<BuilderKey>>) -> KeySegment {
 	let key_ranges = builder_key_lists
 		.iter()
 		.scan(0u32, |offset, builder_keys| {
@@ -304,7 +400,7 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 		});
 	}
 
-	KeyCollection {
+	KeySegment {
 		keys,
 		key_ranges,
 		constraint_indices,
@@ -378,12 +474,8 @@ impl DeserializeBytes for ConstraintIndex {
 	}
 }
 
-impl SerializeBytes for KeyCollection {
+impl SerializeBytes for KeySegment {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
-		// Version for forward compatibility
-		const VERSION: u32 = 1;
-		VERSION.serialize(&mut write_buf)?;
-
 		self.keys.serialize(&mut write_buf)?;
 
 		// Serialize key_ranges as pairs of start/end
@@ -397,16 +489,8 @@ impl SerializeBytes for KeyCollection {
 	}
 }
 
-impl DeserializeBytes for KeyCollection {
+impl DeserializeBytes for KeySegment {
 	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
-		const VERSION: u32 = 1;
-		let version = u32::deserialize(&mut read_buf)?;
-		if version != VERSION {
-			return Err(SerializationError::InvalidConstruction {
-				name: "KeyCollection::version",
-			});
-		}
-
 		let keys = Vec::<Key>::deserialize(&mut read_buf)?;
 
 		// Deserialize key_ranges
@@ -420,10 +504,167 @@ impl DeserializeBytes for KeyCollection {
 
 		let constraint_indices = Vec::<ConstraintIndex>::deserialize(&mut read_buf)?;
 
-		Ok(KeyCollection {
+		Ok(KeySegment {
 			keys,
 			key_ranges,
 			constraint_indices,
 		})
+	}
+}
+
+impl SerializeBytes for KeyCollection {
+	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
+		// Version for forward compatibility; version 2 introduced the public/non-public split.
+		const VERSION: u32 = 2;
+		VERSION.serialize(&mut write_buf)?;
+
+		self.public.serialize(&mut write_buf)?;
+		self.hidden.serialize(write_buf)
+	}
+}
+
+impl DeserializeBytes for KeyCollection {
+	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError> {
+		const VERSION: u32 = 2;
+		let version = u32::deserialize(&mut read_buf)?;
+		if version != VERSION {
+			return Err(SerializationError::InvalidConstruction {
+				name: "KeyCollection::version",
+			});
+		}
+
+		let public = KeySegment::deserialize(&mut read_buf)?;
+		let hidden = KeySegment::deserialize(read_buf)?;
+
+		Ok(KeyCollection { public, hidden })
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_field::{BinaryField128bGhash, Field};
+	use binius_math::FieldBuffer;
+
+	use super::*;
+
+	type F = BinaryField128bGhash;
+
+	fn f(value: u128) -> F {
+		F::new(value)
+	}
+
+	#[test]
+	fn accumulate_matches_grouped_operand_accumulation() {
+		let constraint_indices = vec![
+			ConstraintIndex {
+				operand_index: 0,
+				constraint_index: 1,
+			},
+			ConstraintIndex {
+				operand_index: 0,
+				constraint_index: 3,
+			},
+			ConstraintIndex {
+				operand_index: 1,
+				constraint_index: 0,
+			},
+			ConstraintIndex {
+				operand_index: 2,
+				constraint_index: 2,
+			},
+			ConstraintIndex {
+				operand_index: 2,
+				constraint_index: 4,
+			},
+		];
+		let key = Key {
+			operation: Operation::BitwiseAnd,
+			id: 0,
+			range: 0..constraint_indices.len() as u32,
+		};
+		let operator_data = PreparedOperatorData {
+			evals: vec![],
+			r_zhat_prime: F::ZERO,
+			r_x_prime_tensor: FieldBuffer::from_values(&[
+				f(2),
+				f(3),
+				f(5),
+				f(7),
+				f(11),
+				f(13),
+				f(17),
+				f(19),
+			]),
+			lambda_powers: vec![f(23), f(29), f(31)],
+		};
+
+		let expected = key
+			.accumulate_by_operand(&constraint_indices, &operator_data)
+			.map(|(operand_index, acc)| acc * operator_data.lambda_powers[operand_index])
+			.sum::<F>();
+
+		assert_eq!(
+			key.accumulate(
+				&constraint_indices,
+				operator_data.r_x_prime_tensor.as_ref(),
+				&operator_data.lambda_powers
+			),
+			expected
+		);
+
+		let non_contiguous_constraint_indices = vec![
+			ConstraintIndex {
+				operand_index: 0,
+				constraint_index: 1,
+			},
+			ConstraintIndex {
+				operand_index: 1,
+				constraint_index: 3,
+			},
+			ConstraintIndex {
+				operand_index: 0,
+				constraint_index: 0,
+			},
+			ConstraintIndex {
+				operand_index: 2,
+				constraint_index: 2,
+			},
+			ConstraintIndex {
+				operand_index: 1,
+				constraint_index: 4,
+			},
+		];
+		let non_contiguous_key = Key {
+			operation: Operation::BitwiseAnd,
+			id: 0,
+			range: 0..non_contiguous_constraint_indices.len() as u32,
+		};
+		let non_contiguous_expected = non_contiguous_key
+			.accumulate_by_operand(&non_contiguous_constraint_indices, &operator_data)
+			.map(|(operand_index, acc)| acc * operator_data.lambda_powers[operand_index])
+			.sum::<F>();
+
+		assert_eq!(
+			non_contiguous_key.accumulate(
+				&non_contiguous_constraint_indices,
+				operator_data.r_x_prime_tensor.as_ref(),
+				&operator_data.lambda_powers
+			),
+			non_contiguous_expected
+		);
+
+		let empty_key = Key {
+			operation: Operation::BitwiseAnd,
+			id: 0,
+			range: 0..0,
+		};
+		assert_eq!(
+			empty_key.accumulate(
+				&constraint_indices,
+				operator_data.r_x_prime_tensor.as_ref(),
+				&operator_data.lambda_powers
+			),
+			F::ZERO
+		);
 	}
 }

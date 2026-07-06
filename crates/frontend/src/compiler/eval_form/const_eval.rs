@@ -56,7 +56,7 @@ fn setup_value_vec(shape: &OpcodeShape, concrete_inputs: &[Word], wire_count: u3
 		.chain(concrete_inputs.iter())
 		.enumerate()
 	{
-		value_vec.set(i, const_val);
+		value_vec[ValueIndex(i as u32)] = const_val;
 	}
 
 	value_vec

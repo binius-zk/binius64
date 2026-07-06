@@ -194,7 +194,7 @@ fn evaluate_matrices<F: BinaryField, E: FieldOps<Scalar = F> + From<F>>(
 						ShiftVariant::Sra32 => 6,
 						ShiftVariant::Rotr32 => 7,
 					};
-					evals[shift_id][*amount] +=
+					evals[shift_id][*amount as usize] +=
 						constraint_eval.clone() * &r_y_tensor[value_index.0 as usize];
 				}
 			}

@@ -14,28 +14,36 @@
 //! ```
 //!
 //! Each 0/1 bit becomes one field element, folded across the batch rows.
-//! The single-instance two-phase reduction then runs unchanged on this virtual instance.
+//! The two-phase reduction then runs on this virtual instance over the flat committed witness.
 //! Its claim is `W_hat(r_j, r_y, r_kappa)`, with `r_kappa` on the high (instance) coordinates.
 //!
 //! This handles BitAnd only; IntMul is out of scope for the initial M4 batch.
+//! It reduces to the flat committed witness, matching the M4 batch commitment.
 
 use binius_core::word::Word;
 use binius_field::{AESTowerField8b, BinaryField, PackedField};
 use binius_ip::sumcheck::SumcheckOutput;
-use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval_scalars};
+use binius_ip_prover::{
+	channel::IPProverChannel,
+	sumcheck::{
+		ProveSingleOutput, bivariate_product::BivariateProductSumcheckProver, prove_single,
+	},
+};
+use binius_math::{
+	BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval_scalars,
+	univariate::lagrange_evals,
+};
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::{
-	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
-	protocols::shift::{INTMUL_ARITY, SHIFT_VARIANT_COUNT},
+	config::{LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, WORD_SIZE_BITS},
+	protocols::shift::{BITAND_ARITY, SHIFT_VARIANT_COUNT, evaluate_h_op},
 };
 use tracing::instrument;
 
 use super::{
-	key_collection::{KeyCollection, Operation},
-	monster::{build_h_parts, build_monster_multilinear},
+	key_collection::{KeyCollection, KeySegment, Operation},
+	monster::build_h_parts,
 	phase_1::run_phase_1_sumcheck,
-	phase_2::run_sumcheck,
 	prove::{OperatorData, PreparedOperatorData},
 };
 
@@ -92,8 +100,8 @@ where
 	let n_instances = 1usize << r_kappa.len();
 	assert_eq!(instances.len(), n_instances, "instance count must be 2^r_kappa.len()");
 
-	// One key range per committed word of a single instance.
-	let n_words = key_collection.key_ranges.len();
+	// Every committed word of a single instance, across both value-vector segments.
+	let n_words = key_collection.n_words();
 
 	// Sample the operand-batching coefficient for (a, b, c).
 	// Only BitAnd is reduced here, so a single lambda suffices.
@@ -126,35 +134,17 @@ where
 	let r_s = r_jr_s.split_off(LOG_WORD_SIZE_BITS);
 	let r_j = r_jr_s;
 
-	// Phase 2: pair the r_j-folded witness against the monster over the word index y.
-	// The monster is instance-independent, so it is the single-instance monster verbatim.
-	// A neutral IntMul operand contributes nothing: there are no IntMul keys to read its scalars.
-	let neutral_intmul = PreparedOperatorData::new(
-		OperatorData {
-			evals: vec![F::ZERO; INTMUL_ARITY],
-			r_zhat_prime,
-			r_x_prime: Vec::new(),
-		},
-		F::ZERO,
-	);
-	let monster = build_monster_multilinear::<F, P>(
-		key_collection,
-		&bitand_prep,
-		&neutral_intmul,
-		&r_j,
-		&r_s,
-	);
-
-	// Fold W_tilde at r_j: r_j_witness(y) = sum_j eq(r_j, j) * W_tilde[y][j].
+	// Phase 2: pair the r_j-folded witness against the monster over the flat word index y.
+	let monster = build_flat_monster::<F, P>(key_collection, &bitand_prep, &r_j, &r_s);
 	let mut r_j_witness = fold_witness_at_r_j::<F, P>(&w_tilde, &r_j);
 
-	// Match the monster's variable count so the bivariate product sumcheck lines up.
 	// The monster rounds the word count up to at least one committed field element.
+	// Pad the folded witness to the same variable count so the bivariate product lines up.
 	if r_j_witness.log_len() < monster.log_len() {
 		r_j_witness.zero_extend(monster.log_len());
 	}
 
-	run_sumcheck(r_j_witness, monster, r_j, gamma, channel)
+	run_flat_sumcheck(r_j_witness, monster, r_j, gamma, channel)
 }
 
 /// Folds the batch onto one field-valued virtual instance.
@@ -215,24 +205,35 @@ where
 	#[allow(clippy::useless_vec)]
 	let mut g_flat = vec![F::ZERO; SHIFT_VARIANT_COUNT << LOG_LEN];
 
-	for (range, row) in key_collection.key_ranges.iter().zip(w_tilde) {
-		let keys = &key_collection.keys[range.start as usize..range.end as usize];
-		for key in keys {
-			// IntMul is out of scope; a prepared BitAnd-only system has only BitAnd keys anyway.
-			if key.operation != Operation::BitwiseAnd {
-				continue;
-			}
+	// The folded words are in flat value-vector order: the public segment, then the hidden one.
+	let n_public = key_collection.public.n_words();
+	let mut accumulate_segment = |segment: &KeySegment, word_offset: usize| {
+		for w in 0..segment.n_words() {
+			let row = &w_tilde[word_offset + w];
+			for key in segment.word_keys(w) {
+				// IntMul is out of scope; a prepared BitAnd-only system has only BitAnd keys
+				// anyway.
+				if key.operation != Operation::BitwiseAnd {
+					continue;
+				}
 
-			// acc = sum_operand lambda^operand * (r_x tensor summed over this key's constraints).
-			let acc = key.accumulate(&key_collection.constraint_indices, bitand_prep);
+				// acc batches the key's operands by the lambda powers over its r_x tensor weights.
+				let acc = key.accumulate(
+					&segment.constraint_indices,
+					bitand_prep.r_x_prime_tensor.as_ref(),
+					&bitand_prep.lambda_powers,
+				);
 
-			// key.id selects the (variant, amount) block; j indexes the bit within the word.
-			let base = key.id as usize * WORD_SIZE_BITS;
-			for (j, &w) in row.iter().enumerate() {
-				g_flat[base + j] += w * acc;
+				// key.id selects the (variant, amount) block; j indexes the bit within the word.
+				let base = key.id as usize * WORD_SIZE_BITS;
+				for (j, &w_val) in row.iter().enumerate() {
+					g_flat[base + j] += w_val * acc;
+				}
 			}
 		}
-	}
+	};
+	accumulate_segment(&key_collection.public, 0);
+	accumulate_segment(&key_collection.hidden, n_public);
 
 	// Split the flat buffer into one multilinear per shift variant.
 	g_flat
@@ -243,9 +244,82 @@ where
 		.expect("g_flat has SHIFT_VARIANT_COUNT blocks of 2^LOG_LEN scalars")
 }
 
+/// Builds the phase-2 monster multilinear over the flat committed word index.
+///
+/// The monster is witness-independent: a public function of the constraint system and challenges.
+/// Word `y` holds the summed contribution of its keys:
+///
+/// ```text
+///   monster[y] = sum_key sum_operand lambda^operand * h_op[variant](r_j, r_s) * eq(r_s, amount) * acc
+/// ```
+///
+/// The words are in flat value-vector order: the public segment, then the hidden one.
+fn build_flat_monster<F, P>(
+	key_collection: &KeyCollection,
+	bitand_prep: &PreparedOperatorData<F>,
+	r_j: &[F],
+	r_s: &[F],
+) -> FieldBuffer<P>
+where
+	F: BinaryField + From<AESTowerField8b>,
+	P: PackedField<Scalar = F>,
+{
+	// The shift kernels evaluated at (r_j, r_s), collapsed at the univariate bit challenge.
+	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+	let l_tilde = lagrange_evals(&subspace, bitand_prep.r_zhat_prime);
+	let h_ops = evaluate_h_op(l_tilde.as_ref(), r_j, r_s);
+	let r_s_tensor = eq_ind_partial_eval_scalars(r_s);
+
+	// The per-(operand, variant, amount) scalar folded into each key contribution.
+	// Layout: operand is the top block, then variant, then amount in the low bits.
+	// Heap-allocated on purpose: keep this off the stack.
+	#[allow(clippy::useless_vec)]
+	let mut scalars = vec![F::ZERO; BITAND_ARITY * SHIFT_VARIANT_COUNT * WORD_SIZE_BITS];
+	for operand in 0..BITAND_ARITY {
+		for variant in 0..SHIFT_VARIANT_COUNT {
+			let operand_variant = bitand_prep.lambda_powers[operand] * h_ops[variant];
+			for s in 0..WORD_SIZE_BITS {
+				scalars[(operand * SHIFT_VARIANT_COUNT + variant) * WORD_SIZE_BITS + s] =
+					operand_variant * r_s_tensor[s];
+			}
+		}
+	}
+
+	// The contribution of one word of a segment: sum over its keys and their operands.
+	let word_scalar = |segment: &KeySegment, w: usize| -> F {
+		segment
+			.word_keys(w)
+			.iter()
+			.filter(|key| key.operation == Operation::BitwiseAnd)
+			.map(|key| {
+				key.accumulate_by_operand(&segment.constraint_indices, bitand_prep)
+					.map(|(operand, acc)| {
+						acc * scalars
+							[key.id as usize + operand * SHIFT_VARIANT_COUNT * WORD_SIZE_BITS]
+					})
+					.sum::<F>()
+			})
+			.sum()
+	};
+
+	// Place each word at its flat index: public segment first, then the hidden segment.
+	let n_words = key_collection.n_words();
+	let log_len = log2_ceil_usize(n_words).max(LOG_WORDS_PER_ELEM);
+	let mut monster = vec![F::ZERO; 1 << log_len];
+	let n_public = key_collection.public.n_words();
+	for w in 0..n_public {
+		monster[w] = word_scalar(&key_collection.public, w);
+	}
+	for w in 0..key_collection.hidden.n_words() {
+		monster[n_public + w] = word_scalar(&key_collection.hidden, w);
+	}
+
+	FieldBuffer::from_values(&monster)
+}
+
 /// Folds the field-valued witness at the bit-index challenge `r_j`.
 ///
-/// The result is a multilinear over the word index:
+/// The result is a multilinear over the flat word index:
 ///
 /// ```text
 ///   folded[y] = sum_j eq(r_j, j) * W_tilde[y][j]
@@ -272,4 +346,42 @@ where
 		});
 
 	FieldBuffer::from_values(&folded)
+}
+
+/// Runs the phase-2 bivariate product sumcheck and sends the witness evaluation.
+///
+/// It reduces `gamma = sum_y r_j_witness(y) * monster(y)` to a product at the sumcheck point.
+/// It then sends the folded witness evaluation for the verifier's final check.
+fn run_flat_sumcheck<F, P, Channel>(
+	r_j_witness: FieldBuffer<P>,
+	monster: FieldBuffer<P>,
+	r_j: Vec<F>,
+	gamma: F,
+	channel: &mut Channel,
+) -> SumcheckOutput<F>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	Channel: IPProverChannel<F>,
+{
+	let prover = BivariateProductSumcheckProver::new([r_j_witness, monster], gamma);
+
+	let ProveSingleOutput {
+		multilinear_evals,
+		challenges: mut r_y,
+	} = prove_single(prover, channel);
+
+	// The evaluation point orders the word index from most to least significant.
+	r_y.reverse();
+
+	// The folded witness evaluation is the reduction's output claim.
+	let [witness_eval, _monster_eval] = multilinear_evals
+		.try_into()
+		.expect("prover has 2 multilinear polynomials");
+	channel.send_one(witness_eval);
+
+	SumcheckOutput {
+		challenges: [r_j, r_y].concat(),
+		eval: witness_eval,
+	}
 }

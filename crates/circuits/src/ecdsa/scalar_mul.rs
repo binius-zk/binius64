@@ -1,7 +1,7 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use binius_core::{consts::WORD_SIZE_BITS, word::Word};
-use binius_frontend::{CircuitBuilder, Wire};
+use binius_frontend::{CircuitBuilder, Wire, hints::Secp256k1EndosplitHint};
 
 use crate::{
 	bignum::{BigUint, assert_eq, select as select_biguint},
@@ -36,7 +36,7 @@ pub fn scalar_mul(
 	msm_strauss_endo(b, curve, MSM_WINDOW, std::slice::from_ref(scalar), &[point])
 }
 
-// Constrain the return value of `CircuitBuilder::secp256k1_endomorphism_split_hint`.
+// Constrain the return value of `Secp256k1EndosplitHint::call`.
 // Verifies that `k1 + λ k2 = k (mod n)` where `n` is scalar field modulus.
 fn check_endomorphism_split(
 	b: &CircuitBuilder,
@@ -122,7 +122,7 @@ pub fn msm_strauss_endo(
 	for (scalar, point) in scalars.iter().zip(points) {
 		assert_eq!(scalar.limbs.len(), N_LIMBS);
 
-		let (k1_neg, k2_neg, k1_abs, k2_abs) = b.secp256k1_endomorphism_split_hint(&scalar.limbs);
+		let (k1_neg, k2_neg, k1_abs, k2_abs) = Secp256k1EndosplitHint::call(b, &scalar.limbs);
 		check_endomorphism_split(b, curve, k1_neg, k2_neg, k1_abs, k2_abs, scalar);
 
 		// Table for the (possibly negated) base point `±P`, built with point additions.

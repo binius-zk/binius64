@@ -1,14 +1,15 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
-use std::{iter, ops::Range};
+use std::iter;
 
-use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
+use binius_field::{AESTowerField8b, BinaryField, Field, PackedField, WideMul};
 use binius_math::{
 	BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
 };
-use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_utils::rayon::prelude::*;
 use binius_verifier::{
-	config::{LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, WORD_SIZE_BITS},
+	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
 	protocols::shift::{BITAND_ARITY, INTMUL_ARITY, evaluate_h_op},
 };
 use bytemuck::zeroed_vec;
@@ -16,7 +17,7 @@ use tracing::instrument;
 
 use super::{
 	SHIFT_VARIANT_COUNT,
-	key_collection::{KeyCollection, Operation},
+	key_collection::{KeyCollection, KeySegment, Operation},
 	prove::PreparedOperatorData,
 };
 
@@ -122,11 +123,11 @@ where
 ///
 /// For each word w, computes:
 /// ```text
-/// ∑_{key ∈ keys[w]} key.accumulate(constraint_indices, tensor) × scalars[key.id]
+/// ∑_{key ∈ keys[w]} key.accumulate(constraint_indices, tensor, scalars[key.id])
 /// ```
-/// where the scalars encode `λ^(operand_idx+1) × h_op[shift_variant] × r_s_tensor[shift_amount]`
-/// for operand index `operand_idx` and `shift_variant` in {SLL, SRL, SRA} and `shift_amount` in
-/// [0, WORD_SIZE_BITS).
+/// where `scalars[key.id]` is the contiguous per-operand chunk encoding
+/// `λ^(operand_idx+1) × h_op[shift_variant] × r_s_tensor[shift_amount]` for operand index
+/// `operand_idx` and `shift_variant` in {SLL, SRL, SRA} and `shift_amount` in [0, WORD_SIZE_BITS).
 ///
 /// # Usage
 ///
@@ -156,18 +157,20 @@ where
 
 	let r_s_tensor = eq_ind_partial_eval::<F>(r_s);
 
-	// Allocate and populate the scalars
+	// Allocate and populate the scalars, laid out with the operand index innermost so that the
+	// `arity` weights for one `key.id` (= `op * WORD_SIZE_BITS + s`) form a contiguous chunk that
+	// [`Key::accumulate`] can index directly by operand index.
 	let mut bitand_scalars = vec![F::ZERO; BITAND_ARITY * SHIFT_VARIANT_COUNT * WORD_SIZE_BITS];
 	let mut intmul_scalars = vec![F::ZERO; INTMUL_ARITY * SHIFT_VARIANT_COUNT * WORD_SIZE_BITS];
 
 	let populate_scalars = |scalars: &mut [F], arity: usize, lambda_powers: &[F], h_ops: &[F]| {
-		for operand_idx in 0..arity {
-			for op in 0..SHIFT_VARIANT_COUNT {
-				let operand_op_idx = operand_idx * SHIFT_VARIANT_COUNT + op;
-				let operand_op_scalar = lambda_powers[operand_idx] * h_ops[op];
-				for s in 0..WORD_SIZE_BITS {
-					let operand_op_s_idx = operand_op_idx * WORD_SIZE_BITS + s;
-					scalars[operand_op_s_idx] = operand_op_scalar * r_s_tensor.as_ref()[s];
+		for op in 0..SHIFT_VARIANT_COUNT {
+			for s in 0..WORD_SIZE_BITS {
+				let key_id = op * WORD_SIZE_BITS + s;
+				let op_s_scalar = h_ops[op] * r_s_tensor.as_ref()[s];
+				for operand_idx in 0..arity {
+					scalars[key_id * arity + operand_idx] =
+						lambda_powers[operand_idx] * op_s_scalar;
 				}
 			}
 		}
@@ -186,32 +189,51 @@ where
 		&intmul_h_ops,
 	);
 
-	let n_words = key_collection.key_ranges.len();
-	let log_len = log2_ceil_usize(n_words).max(LOG_WORDS_PER_ELEM);
+	let log_half = key_collection.log_witness_words();
+	let log_len = log_half + 1;
 	let capacity = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 
+	// The scalar for one word of a segment: the accumulated contribution of all its keys. The
+	// per-key wide accumulations are summed unreduced and reduced once at the end.
+	let word_scalar = |segment: &KeySegment, index: usize| {
+		let wide = segment
+			.word_keys(index)
+			.iter()
+			.map(|key| {
+				let (operator_data, scalars, arity) = match key.operation {
+					Operation::BitwiseAnd => (bitand_operator_data, &bitand_scalars, BITAND_ARITY),
+					Operation::IntegerMul => (intmul_operator_data, &intmul_scalars, INTMUL_ARITY),
+				};
+				let base = key.id as usize * arity;
+				key.accumulate_wide(
+					&segment.constraint_indices,
+					operator_data.r_x_prime_tensor.as_ref(),
+					&scalars[base..base + arity],
+				)
+			})
+			.sum::<<F as WideMul>::Output>();
+		F::reduce(wide)
+	};
+
+	// The multilinear is indexed over the witness address space: the public segment at the
+	// base of the low half-cube, the hidden segment at the base of the high half-cube, zeros
+	// elsewhere.
+	let half = 1 << log_half;
+	let n_public_words = key_collection.public.n_words();
+	let n_words = half + key_collection.hidden.n_words();
 	let mut monster_multilinear = Vec::<P>::with_capacity(capacity);
-	key_collection
-		.key_ranges
-		.par_chunks(P::WIDTH)
-		.map(|chunk| {
-			P::from_scalars(chunk.iter().map(|&Range { start, end }| {
-				key_collection.keys[start as usize..end as usize]
-					.iter()
-					.map(|key| {
-						let (operator_data, scalars) = match key.operation {
-							Operation::BitwiseAnd => (bitand_operator_data, &bitand_scalars),
-							Operation::IntegerMul => (intmul_operator_data, &intmul_scalars),
-						};
-						key.accumulate_by_operand(&key_collection.constraint_indices, operator_data)
-							.map(|(operand_index, acc)| {
-								let index = key.id as usize
-									+ operand_index * SHIFT_VARIANT_COUNT * WORD_SIZE_BITS;
-								acc * scalars[index]
-							})
-							.sum::<F>()
-					})
-					.sum()
+	(0..n_words.div_ceil(P::WIDTH))
+		.into_par_iter()
+		.map(|chunk_index| {
+			let start = chunk_index * P::WIDTH;
+			P::from_scalars((start..(start + P::WIDTH).min(n_words)).map(|word_index| {
+				if word_index < n_public_words {
+					word_scalar(&key_collection.public, word_index)
+				} else if word_index >= half {
+					word_scalar(&key_collection.hidden, word_index - half)
+				} else {
+					F::ZERO
+				}
 			}))
 		})
 		.collect_into_vec(&mut monster_multilinear);

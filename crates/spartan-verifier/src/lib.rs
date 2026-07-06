@@ -33,7 +33,7 @@ pub mod constraint_system;
 pub mod wiring;
 pub mod wrapper;
 
-use std::{rc::Rc, slice};
+use std::{marker::PhantomData, rc::Rc, slice};
 
 use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
@@ -93,7 +93,9 @@ where
 {
 	iop_verifier: IOPVerifier<F>,
 	/// BaseFold ZK compiler for creating verifier channels.
-	basefold_compiler: BaseFoldVerifierCompiler<F, BinaryMerkleTreeScheme<F, H>>,
+	basefold_compiler: BaseFoldVerifierCompiler<F>,
+	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
+	_hash_marker: PhantomData<H>,
 }
 
 impl<F: Field> IOPVerifier<F> {
@@ -124,7 +126,7 @@ impl<F: Field> IOPVerifier<F> {
 		// Record the precommit oracle first (`OracleSetupChannel` implements the channel trait for
 		// every `F`, so the trait is named explicitly to fix `F`); the `verify` call below fixes it
 		// for the rest of the sequence.
-		<OracleSetupChannel as IOPVerifierChannel<'_, F>>::recv_oracle(
+		<OracleSetupChannel as IOPVerifierChannel<F>>::recv_oracle(
 			&mut channel,
 			cs.log_precommit() as usize,
 			true,
@@ -152,16 +154,15 @@ impl<F: Field> IOPVerifier<F> {
 	/// # Returns
 	///
 	/// `Ok(())` if the proof is valid, `Err(_)` otherwise.
-	pub fn verify<'r, Channel>(
-		&'r self,
+	pub fn verify<Channel>(
+		&self,
 		precommit_oracle: Channel::Oracle,
 		public: Vec<Channel::Elem>,
 		channel: &mut Channel,
 	) -> Result<(), Error>
 	where
 		F: BinaryField,
-		Channel: IOPVerifierChannel<'r, F>,
-		Channel::Elem: 'r,
+		Channel: IOPVerifierChannel<F>,
 	{
 		let cs = &self.constraint_system;
 
@@ -223,15 +224,18 @@ impl<F: Field> IOPVerifier<F> {
 
 		let private_claim = batched_sum - public_eval - precommit_claim.clone();
 
-		// Build transparent closures for each oracle relation
+		// Build one transparent closure per oracle relation.
+		// The two wiring closures share the multiplication constraints through a single `Rc`.
+		// They own this handle and are `'static`, outliving this call for the deferred opening.
+		let mul_constraints: Rc<[_]> = cs.mul_constraints().into();
 		let precommit_transparent = wiring::eval_transparent(
-			cs,
+			mul_constraints.clone(),
 			WitnessSegment::Precommit,
 			r_x_tensor.clone(),
 			lambda.clone(),
 		);
 		let private_transparent =
-			wiring::eval_transparent(cs, WitnessSegment::Private, r_x_tensor, lambda);
+			wiring::eval_transparent(mul_constraints, WitnessSegment::Private, r_x_tensor, lambda);
 		let mask_transparent = mask_transparent(cs, &r_x);
 
 		// Verify all oracle relations
@@ -296,6 +300,7 @@ where
 		Ok(Self {
 			iop_verifier,
 			basefold_compiler,
+			_hash_marker: PhantomData,
 		})
 	}
 
@@ -309,7 +314,7 @@ where
 	}
 
 	/// Returns a reference to the BaseFold ZK verifier compiler.
-	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<F, BinaryMerkleTreeScheme<F, H>> {
+	pub const fn iop_compiler(&self) -> &BaseFoldVerifierCompiler<F> {
 		&self.basefold_compiler
 	}
 
@@ -333,7 +338,9 @@ where
 
 		// Create channel, receive the precommit oracle, and delegate to IOPVerifier::verify. The
 		// IOP verifier only queues the oracle relations; `finish` runs the single combined opening.
-		let mut channel = self.basefold_compiler.create_channel(transcript);
+		let mut channel = self
+			.basefold_compiler
+			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
 		let precommit_oracle =
 			channel.recv_oracle(self.constraint_system().log_precommit() as usize, true)?;
 		self.iop_verifier
@@ -380,10 +387,10 @@ where
 }
 
 /// Returns a closure that evaluates the mask transparent polynomial at a given point.
-fn mask_transparent<'a, F: Field, E: FieldOps + 'a>(
+fn mask_transparent<F: Field, E: FieldOps + 'static>(
 	cs: &ConstraintSystemPadded<F>,
 	r_x: &[E],
-) -> binius_iop::channel::TransparentEvalFn<'a, E> {
+) -> binius_iop::channel::TransparentEvalFn<E> {
 	let (_m_n, m_d) = cs.mask_dims();
 	let n_vars = r_x.len();
 	let mask_degree = 2; // quadratic composition

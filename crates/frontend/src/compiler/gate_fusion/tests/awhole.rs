@@ -320,8 +320,8 @@ fn test_deep_xor_in_both_a_and_c() {
 	let b = mk_circuit_builder();
 
 	// v2 = v0 ^ v1 ^ sra(v3, 1)
-	// v7 = (v2 ^ v4) & all-1   ; implements v7 = v2 ^ v4
-	// → v7 = ((v0 ^ v1 ^ sra(v3, 1)) ^ v4) & all-1
+	// v7 = (v2 ^ v4) & mask
+	// → the whole XOR cone inlines into operand A of the AND.
 	let v0 = b.add_witness();
 	let v1 = b.add_witness();
 	let v2 = b.add_witness();
@@ -331,11 +331,11 @@ fn test_deep_xor_in_both_a_and_c() {
 
 	let v4 = b.add_witness();
 	let lhs = b.bxor(v2_expr, v4);
-	let all_one = b.add_constant_64(u64::MAX);
-	let _v7 = b.band(lhs, all_one);
+	let mask = b.add_witness();
+	let _v7 = b.band(lhs, mask);
 
 	let cs = compile(b);
-	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[2] ⊕ v[3] ⊕ v[4]a≫1 ⊕ v[5]) ∧ (all-1) = (v[6])");
+	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[2] ⊕ v[3] ⊕ v[4]a≫1 ⊕ v[5]) ∧ (v[6]) = (v[7])");
 }
 
 #[test]
@@ -489,8 +489,8 @@ fn test_xor_feeding_xor_via_all_one() {
 	let b = mk_circuit_builder();
 
 	// v2 = v0 ^ sll(v1, 2)
-	// v8 = (v2 ^ v3 ^ v4) & all-1
-	// → v8 = ((v0 ^ sll(v1, 2) ^ v3 ^ v4)) & all-1
+	// v8 = (v2 ^ v3 ^ v4) & mask
+	// → the whole XOR cone inlines into operand A of the AND.
 	let v0 = b.add_witness();
 	let v1 = b.add_witness();
 	let v1_sll = b.shl(v1, 2);
@@ -500,11 +500,11 @@ fn test_xor_feeding_xor_via_all_one() {
 	let v4 = b.add_witness();
 	let xor1 = b.bxor(v2, v3);
 	let lhs = b.bxor(xor1, v4);
-	let all_one = b.add_constant_64(u64::MAX);
-	let _v5 = b.band(lhs, all_one);
+	let mask = b.add_witness();
+	let _v5 = b.band(lhs, mask);
 
 	let cs = compile(b);
-	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[2] ⊕ v[3]≪2 ⊕ v[4] ⊕ v[5]) ∧ (all-1) = (v[6])");
+	insta::assert_snapshot!(stringify_constraint_system(&cs), @"AND[0]: (v[2] ⊕ v[3]≪2 ⊕ v[4] ⊕ v[5]) ∧ (v[6]) = (v[7])");
 }
 
 #[test]

@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{iter, ops::Range};
 
@@ -78,11 +79,7 @@ where
 ///
 /// `SumcheckOutput` containing the challenge vector and final evaluation `gamma`
 #[instrument(skip_all, name = "run_sumcheck")]
-pub(crate) fn run_phase_1_sumcheck<
-	F: Field,
-	P: PackedField<Scalar = F>,
-	Channel: IPProverChannel<F>,
->(
+pub fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>>(
 	g_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
 	h_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
 	channel: &mut Channel,
@@ -167,7 +164,7 @@ pub(crate) fn run_phase_1_sumcheck<
 /// Used in phase 1 to construct the constant size g multilinears
 /// that will participate in the phase 1 sumcheck protocol.
 #[instrument(skip_all, name = "build_g_parts")]
-fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
+pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 	words: &[Word],
 	key_collection: &KeyCollection,
 	bitand_operator_data: &PreparedOperatorData<F>,
@@ -188,13 +185,24 @@ fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 	// A mask for low `P::WIDTH` bits.
 	let low_bits_mask = (1u8 << P::WIDTH) - 1;
 
-	let multilinears = words
+	// Process the public and hidden segments in absolute value-vector order: the public
+	// words are the prefix of `words`, and each segment's key ranges are segment-relative.
+	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
+	let public_iter = public_words
 		.par_iter()
-		.zip(key_collection.key_ranges.par_iter())
+		.zip(key_collection.public.key_ranges.par_iter())
+		.map(|(word, range)| (word, range, &key_collection.public));
+	let hidden_iter = hidden_words
+		.par_iter()
+		.zip(key_collection.hidden.key_ranges.par_iter())
+		.map(|(word, range)| (word, range, &key_collection.hidden));
+
+	let multilinears = public_iter
+		.chain(hidden_iter)
 		.fold(
 			|| zeroed_vec::<P>(acc_size).into_boxed_slice(),
-			|mut multilinears, (word, Range { start, end })| {
-				let keys = &key_collection.keys[*start as usize..*end as usize];
+			|mut multilinears, (word, Range { start, end }, segment)| {
+				let keys = &segment.keys[*start as usize..*end as usize];
 
 				for key in keys {
 					let operator_data = match key.operation {
@@ -202,7 +210,11 @@ fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 						Operation::IntegerMul => intmul_operator_data,
 					};
 
-					let acc = key.accumulate(&key_collection.constraint_indices, operator_data);
+					let acc = key.accumulate(
+						&segment.constraint_indices,
+						operator_data.r_x_prime_tensor.as_ref(),
+						&operator_data.lambda_powers,
+					);
 					let acc_packed = P::broadcast(acc);
 
 					// The following loop is an optimized version of the following

@@ -26,6 +26,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+proptest.workspace = true
 rand = { workspace = true, features = ["thread_rng"] }
 
 [features]
@@ -34,4 +35,8 @@ rayon = ["binius-utils/rayon"]
 
 [[bench]]
 name = "sha256"
+harness = false
+
+[[bench]]
+name = "blake3_portable"
 harness = false

@@ -4,13 +4,34 @@
 use binius_core::Word;
 
 use super::Hint;
-use crate::util::num_biguint_from_u64_limbs;
+use crate::{
+	compiler::{CircuitBuilder, Wire},
+	util::num_biguint_from_u64_limbs,
+};
 
 pub struct BigUintDivideHint;
 
 impl BigUintDivideHint {
 	pub const fn new() -> Self {
 		Self
+	}
+
+	/// BigUint division.
+	///
+	/// Returns `(quotient, remainder)` of the division of `dividend` by `divisor`.
+	///
+	/// This is a hint - a deterministic computation that happens only on the prover side.
+	/// The result should be additionally constrained by using bignum circuits to check that
+	/// `remainder + divisor * quotient == dividend`.
+	pub fn call(
+		builder: &CircuitBuilder,
+		dividend: &[Wire],
+		divisor: &[Wire],
+	) -> (Vec<Wire>, Vec<Wire>) {
+		let inputs: Vec<Wire> = dividend.iter().chain(divisor).copied().collect();
+		let mut out = builder.call_hint(Self::new(), &[dividend.len(), divisor.len()], &inputs);
+		let remainder = out.split_off(dividend.len());
+		(out, remainder)
 	}
 }
 

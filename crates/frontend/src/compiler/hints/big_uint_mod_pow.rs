@@ -4,13 +4,31 @@
 use binius_core::Word;
 
 use super::Hint;
-use crate::util::num_biguint_from_u64_limbs;
+use crate::{
+	compiler::{CircuitBuilder, Wire},
+	util::num_biguint_from_u64_limbs,
+};
 
 pub struct BigUintModPowHint;
 
 impl BigUintModPowHint {
 	pub const fn new() -> Self {
 		Self
+	}
+
+	/// Modular exponentiation.
+	///
+	/// Computes `(base^exp) % modulus`.
+	/// This is a hint - a deterministic computation that happens only on the prover side.
+	/// The result should be additionally constrained using bignum circuits.
+	pub fn call(
+		builder: &CircuitBuilder,
+		base: &[Wire],
+		exp: &[Wire],
+		modulus: &[Wire],
+	) -> Vec<Wire> {
+		let inputs: Vec<Wire> = base.iter().chain(exp).chain(modulus).copied().collect();
+		builder.call_hint(Self::new(), &[base.len(), exp.len(), modulus.len()], &inputs)
 	}
 }
 

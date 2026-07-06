@@ -1,7 +1,7 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use binius_core::consts::WORD_SIZE_BITS;
-use binius_frontend::{CircuitBuilder, Wire};
+use binius_frontend::{CircuitBuilder, Wire, hints::BigUintModPowHint};
 
 use super::{
 	common::{coord_b, coord_beta, coord_field, coord_zero, pow_sqrt, scalar_field},
@@ -65,7 +65,7 @@ impl Secp256k1 {
 
 		// p = 2^256 - 2^32 - 977 = 3 (mod 4), compute the quadratic residue by raising to (p+1)/4
 		let res_1_limbs =
-			b.biguint_mod_pow_hint(&y_squared.limbs, &pow_sqrt(b).limbs, &f_p.modulus().limbs);
+			BigUintModPowHint::call(b, &y_squared.limbs, &pow_sqrt(b).limbs, &f_p.modulus().limbs);
 		let res_1 = BigUint { limbs: res_1_limbs };
 		let res_2 = f_p.sub(b, &coord_zero(b), &res_1);
 

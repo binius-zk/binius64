@@ -69,13 +69,23 @@ where
 		index: usize,
 		proof: &mut TranscriptWriter<B>,
 	) {
-		let salt = committed.get_salt(index >> layer_depth);
+		let salt = committed.get_salt(index);
 		proof.write_slice(salt);
 
 		let branch = committed
 			.branch(index, layer_depth)
 			.expect("precondition: index and layer_depth must be within the committed tree");
 		proof.write_slice(&branch);
+	}
+
+	fn prove_vector<B: BufMut>(
+		&self,
+		committed: &Self::Committed,
+		proof: &mut TranscriptWriter<B>,
+	) {
+		for leaf_index in 0..1 << committed.log_len {
+			proof.write_slice(committed.get_salt(leaf_index));
+		}
 	}
 
 	#[allow(clippy::type_complexity)]

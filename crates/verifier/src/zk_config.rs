@@ -13,6 +13,8 @@
 //!
 //! [`ZKWrappedVerifierChannel`]: binius_spartan_verifier::wrapper::ZKWrappedVerifierChannel
 
+use std::{marker::PhantomData, sync::Arc};
+
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::BinaryField128bGhash as B128;
 use binius_hash::binary_merkle_tree::HashSuite;
@@ -32,10 +34,7 @@ use binius_spartan_verifier::{
 	wrapper::{IronSpartanBuilderChannel, ZKWrappedVerifierChannel},
 };
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
-use binius_utils::{
-	DeserializeBytes, SerializeBytes, checked_arithmetics::log2_ceil_usize,
-	serialization::SerializationError,
-};
+use binius_utils::{DeserializeBytes, SerializeBytes, serialization::SerializationError};
 use bytes::{Buf, BufMut};
 use digest::Output;
 
@@ -52,8 +51,10 @@ use crate::{
 pub struct ZKVerifier<H: HashSuite> {
 	inner_iop_verifier: IOPVerifier,
 	outer_iop_verifier: IronSpartanIOPVerifier<B128>,
-	outer_layout: WitnessLayout<B128>,
-	basefold_compiler: BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>>,
+	outer_layout: Arc<WitnessLayout<B128>>,
+	basefold_compiler: BaseFoldVerifierCompiler<B128>,
+	/// The verifier creates its Merkle transcript channels with the hash suite `H`.
+	_hash_marker: PhantomData<H>,
 }
 
 impl<H> ZKVerifier<H>
@@ -70,9 +71,9 @@ where
 
 		constraint_system.validate_and_prepare()?;
 
-		let n_public = constraint_system.value_vec_layout.offset_witness;
-		let log_public_words = log2_ceil_usize(n_public);
-		assert!(n_public.is_power_of_two());
+		// The validated layout guarantees a power-of-two public segment of at least one full
+		// element.
+		let log_public_words = constraint_system.value_vec_layout.log_public_words();
 		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
 
 		let inner_iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
@@ -109,7 +110,7 @@ where
 			n_dummy_constraints: 2,
 		};
 		let outer_cs = ConstraintSystemPadded::new(outer_cs, blinding_info);
-		let outer_layout = outer_layout.with_blinding(outer_cs.blinding_info().clone());
+		let outer_layout = Arc::new(outer_layout.with_blinding(outer_cs.blinding_info().clone()));
 		let outer_iop_verifier = IronSpartanIOPVerifier::new(outer_cs);
 
 		// Transcript layout: outer precommit oracle first (committed at wrapper construction),
@@ -136,6 +137,7 @@ where
 			outer_iop_verifier,
 			outer_layout,
 			basefold_compiler,
+			_hash_marker: PhantomData,
 		})
 	}
 
@@ -152,14 +154,19 @@ where
 	/// Returns the witness layout of the outer Spartan constraint system.
 	///
 	/// The layout maps each logical wire to its position in the witness vector.
-	pub const fn outer_layout(&self) -> &WitnessLayout<B128> {
+	pub fn outer_layout(&self) -> &WitnessLayout<B128> {
 		&self.outer_layout
 	}
 
+	/// Returns the shared handle to the outer witness layout.
+	///
+	/// The prover clones this `Arc` to share the layout instead of deep-cloning it.
+	pub fn outer_layout_arc(&self) -> Arc<WitnessLayout<B128>> {
+		Arc::clone(&self.outer_layout)
+	}
+
 	/// Returns the BaseFold ZK verifier compiler.
-	pub const fn basefold_compiler(
-		&self,
-	) -> &BaseFoldVerifierCompiler<B128, BinaryMerkleTreeScheme<B128, H>> {
+	pub const fn basefold_compiler(&self) -> &BaseFoldVerifierCompiler<B128> {
 		&self.basefold_compiler
 	}
 
@@ -185,9 +192,14 @@ where
 		transcript: &mut VerifierTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		// Create BaseFold channel and wrap with outer verifier.
-		let channel = self.basefold_compiler.create_channel(transcript);
-		let mut wrapped_channel =
-			ZKWrappedVerifierChannel::new(channel, &self.outer_iop_verifier, &self.outer_layout)?;
+		let channel = self
+			.basefold_compiler
+			.create_channel_from_transcript::<H, Challenger_, _>(transcript);
+		let mut wrapped_channel = ZKWrappedVerifierChannel::new(
+			channel,
+			&self.outer_iop_verifier,
+			Arc::clone(&self.outer_layout),
+		)?;
 
 		// Run the inner IOP verification through the wrapped channel.
 		{

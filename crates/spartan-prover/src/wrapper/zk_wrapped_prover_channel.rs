@@ -11,21 +11,19 @@
 //! [`BaseFoldProverChannel`]: binius_iop_prover::basefold_channel::BaseFoldProverChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
 
-use std::iter::repeat_with;
+use std::{iter::repeat_with, sync::Arc};
 
-use binius_field::{BinaryField, PackedExtension, PackedField};
-use binius_iop::{channel::OracleSpec, merkle_tree::MerkleTreeScheme};
+use binius_field::{BinaryField, PackedField};
+use binius_iop::channel::OracleSpec;
 use binius_iop_prover::{
 	basefold_channel::{BaseFoldOracle, BaseFoldProverChannel},
 	channel::IOPProverChannel,
-	merkle_tree::MerkleTreeProver,
+	merkle_channel::MerkleIPProverChannel,
 };
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT};
 use binius_spartan_frontend::constraint_system::{BlindingInfo, WitnessLayout};
 use binius_spartan_verifier::IOPVerifier;
-use binius_transcript::fiat_shamir::Challenger;
-use binius_utils::SerializeBytes;
 use rand::CryptoRng;
 
 use crate::{Error, IOPProver, pack_and_blind_witness, wrapper::ReplayChannel};
@@ -41,16 +39,15 @@ use crate::{Error, IOPProver, pack_and_blind_witness, wrapper::ReplayChannel};
 /// The `ReplayFn` closure is called during [`finish`](Self::finish) with a [`ReplayChannel`] to
 /// replay the inner verification and fill the outer witness. This allows the channel to be generic
 /// over different inner verification protocols.
-pub struct ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_, ReplayFn>
+pub struct ZKWrappedProverChannel<'a, P, NTT, Channel, ReplayFn>
 where
 	P: PackedField<Scalar: BinaryField>,
 	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
-	MTProver: MerkleTreeProver<P::Scalar>,
-	Challenger_: Challenger,
+	Channel: MerkleIPProverChannel<P::Scalar>,
 {
-	inner_channel: BaseFoldProverChannel<'a, P::Scalar, P, NTT, MTProver, Challenger_>,
+	inner_channel: BaseFoldProverChannel<'a, P::Scalar, P, NTT, Channel>,
 	outer_prover: &'a IOPProver<P::Scalar>,
-	outer_layout: &'a WitnessLayout<P::Scalar>,
+	outer_layout: Arc<WitnessLayout<P::Scalar>>,
 	replay_fn: ReplayFn,
 	keys: Vec<P::Scalar>,
 	next_key_idx: usize,
@@ -66,15 +63,12 @@ where
 	n_outer_suffix_oracles: usize,
 }
 
-impl<'a, F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn>
-	ZKWrappedProverChannel<'a, P, NTT, MTProver, Challenger_, ReplayFn>
+impl<'a, F, P, NTT, Channel, ReplayFn> ZKWrappedProverChannel<'a, P, NTT, Channel, ReplayFn>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
-	MTScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
-	MTProver: MerkleTreeProver<F, Scheme = MTScheme>,
-	Challenger_: Challenger,
+	Channel: MerkleIPProverChannel<F>,
 {
 	/// Creates a new ZK-wrapped prover channel.
 	///
@@ -96,9 +90,9 @@ where
 	/// * `replay_fn` - Closure called during [`finish`](Self::finish) with a [`ReplayChannel`] to
 	///   replay the inner verification and fill the outer witness
 	pub fn new(
-		mut inner_channel: BaseFoldProverChannel<'a, F, P, NTT, MTProver, Challenger_>,
+		mut inner_channel: BaseFoldProverChannel<'a, F, P, NTT, Channel>,
 		outer_prover: &'a IOPProver<F>,
-		outer_layout: &'a WitnessLayout<F>,
+		outer_layout: Arc<WitnessLayout<F>>,
 		rng: impl CryptoRng,
 		replay_fn: ReplayFn,
 	) -> Self {
@@ -146,7 +140,7 @@ where
 	/// inner verifier) contains a matching precommit wire per key that the outer proof uses to
 	/// decrypt.
 	fn commit_transcript_mask(
-		inner_channel: &mut BaseFoldProverChannel<'a, F, P, NTT, MTProver, Challenger_>,
+		inner_channel: &mut BaseFoldProverChannel<'a, F, P, NTT, Channel>,
 		outer_prover: &IOPProver<F>,
 		mut rng: impl CryptoRng,
 	) -> (Vec<F>, BaseFoldOracle, FieldBuffer<P>) {
@@ -186,7 +180,7 @@ where
 	/// 3. Validates and generates the outer IOP proof
 	pub fn finish(self, rng: impl CryptoRng) -> Result<(), Error>
 	where
-		ReplayFn: FnOnce(&mut ReplayChannel<'_, F>),
+		ReplayFn: FnOnce(&mut ReplayChannel<F>),
 	{
 		let Self {
 			mut inner_channel,
@@ -225,15 +219,13 @@ where
 	}
 }
 
-impl<F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn> IPProverChannel<F>
-	for ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_, ReplayFn>
+impl<F, P, NTT, Channel, ReplayFn> IPProverChannel<F>
+	for ZKWrappedProverChannel<'_, P, NTT, Channel, ReplayFn>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
-	MTScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
-	MTProver: MerkleTreeProver<F, Scheme = MTScheme>,
-	Challenger_: Challenger,
+	Channel: MerkleIPProverChannel<F>,
 {
 	fn send_one(&mut self, elem: F) {
 		let key = self.next_key();
@@ -257,15 +249,13 @@ where
 	}
 }
 
-impl<F, P, NTT, MTScheme, MTProver, Challenger_, ReplayFn> IOPProverChannel<P>
-	for ZKWrappedProverChannel<'_, P, NTT, MTProver, Challenger_, ReplayFn>
+impl<F, P, NTT, Channel, ReplayFn> IOPProverChannel<P>
+	for ZKWrappedProverChannel<'_, P, NTT, Channel, ReplayFn>
 where
 	F: BinaryField,
-	P: PackedField<Scalar = F> + PackedExtension<F>,
+	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
-	MTScheme: MerkleTreeScheme<F, Digest: SerializeBytes>,
-	MTProver: MerkleTreeProver<F, Scheme = MTScheme>,
-	Challenger_: Challenger,
+	Channel: MerkleIPProverChannel<F>,
 {
 	type Oracle = BaseFoldOracle;
 
