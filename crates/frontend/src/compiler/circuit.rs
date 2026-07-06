@@ -152,6 +152,24 @@ impl Circuit {
 		Ok(())
 	}
 
+	/// Populates non-input values by evaluating independent components in parallel.
+	///
+	/// When the `rayon` feature is disabled, this uses the same sequential fallback as the rest of
+	/// the repo's rayon compatibility layer.
+	pub fn populate_wire_witness_parallel(
+		&self,
+		w: &mut WitnessFiller,
+	) -> Result<(), PopulateError> {
+		for (index, constant) in self.constraint_system.constants.iter().enumerate() {
+			w.value_vec[ValueIndex(index as u32)] = *constant;
+		}
+
+		self.eval_form
+			.evaluate_parallel(&mut w.value_vec, Some(&self.gate_graph.path_spec_tree))?;
+
+		Ok(())
+	}
+
 	/// Returns the constraint system for this circuit.
 	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		&self.constraint_system

@@ -143,6 +143,11 @@ impl ValueVec {
 		&self.data[self.layout.offset_witness..self.layout.committed_total_len]
 	}
 
+	/// Returns the full mutable backing store, including scratch space.
+	pub fn as_mut_slice(&mut self) -> &mut [Word] {
+		&mut self.data
+	}
+
 	/// Returns the witness portion of the values vector.
 	pub fn witness(&self) -> &[Word] {
 		let start = self.layout.offset_witness;

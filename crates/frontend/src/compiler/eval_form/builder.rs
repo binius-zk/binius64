@@ -16,6 +16,10 @@ impl BytecodeBuilder {
 		}
 	}
 
+	pub(crate) const fn byte_len(&self) -> usize {
+		self.bytecode.len()
+	}
+
 	// Bitwise operations
 	pub fn emit_band(&mut self, dst: u32, src1: u32, src2: u32) {
 		self.n_eval_insn += 1;

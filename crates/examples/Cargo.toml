@@ -86,7 +86,7 @@ harness = false
 [features]
 default = []
 perfetto = ["tracing-profile/perfetto"]
-rayon = ["binius-utils/rayon"]
+rayon = ["binius-frontend/rayon", "binius-utils/rayon"]
 
 # Tutorial examples
 [[example]]

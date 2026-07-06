@@ -2,14 +2,38 @@
 
 use binius_core::{ValueIndex, ValueVec, ValueVecLayout, word::Word};
 
+#[cfg(feature = "rayon")]
+use crate::compiler::{CircuitBuilder, Options};
 use crate::compiler::{
 	circuit::PopulateError,
 	eval_form::{
 		BytecodeBuilder,
-		interpreter::{ExecutionContext, Interpreter},
+		interpreter::{ExecutionContext, Interpreter, ValueStore},
 	},
 	hints::HintRegistry,
 };
+
+#[cfg(feature = "rayon")]
+#[test]
+fn parallel_components_do_not_depend_on_rebuilt_use_def_chains() {
+	let builder = CircuitBuilder::with_opts(Options {
+		enable_gate_fusion: false,
+		enable_constant_propagation: false,
+		enable_dead_code_elimination: false,
+	});
+
+	let a = builder.add_inout();
+	let b = builder.add_inout();
+	let c = builder.add_inout();
+	let first = builder.band(a, b);
+	let dependent = builder.bxor(first, c);
+	let expected = builder.add_inout();
+	builder.assert_eq("dependent", dependent, expected);
+
+	let circuit = builder.build();
+
+	assert_eq!(circuit.eval_form().parallel_components.len(), 1);
+}
 
 /// Test harness for interpreter tests that makes them much more concise
 struct InterpreterTest {
@@ -45,16 +69,16 @@ impl InterpreterTest {
 
 	/// Run the test and expect success (no assertion failures)
 	fn expect_success(self) {
-		let (result, ctx) = self.execute();
+		let (result, assertions) = self.execute();
 		assert!(result.is_ok(), "Interpreter should execute successfully");
-		assert!(ctx.check_assertions(None).is_ok(), "Should have no assertion failures");
+		assert!(assertions.is_ok(), "Should have no assertion failures");
 	}
 
 	/// Run the test and expect assertion failure
 	fn expect_assertion_failure(self) {
-		let (result, ctx) = self.execute();
+		let (result, assertions) = self.execute();
 		assert!(result.is_ok(), "Interpreter should execute successfully");
-		assert!(ctx.check_assertions(None).is_err(), "Should have assertion failures");
+		assert!(assertions.is_err(), "Should have assertion failures");
 	}
 
 	/// Run the test and check that specific values match expectations
@@ -81,7 +105,7 @@ impl InterpreterTest {
 
 		let hint_registry = HintRegistry::new();
 		let mut interpreter = Interpreter::new(&bytecode, &hint_registry);
-		let mut ctx = ExecutionContext::new(&mut value_vec);
+		let mut ctx = ExecutionContext::new(ValueStore::new(&mut value_vec));
 
 		let result = interpreter.run(&mut ctx);
 		assert!(result.is_ok(), "Interpreter should execute successfully");
@@ -97,8 +121,8 @@ impl InterpreterTest {
 		}
 	}
 
-	/// Execute the bytecode and return the result and context
-	fn execute(self) -> (Result<(), PopulateError>, ExecutionContext<'static>) {
+	/// Execute the bytecode and return the interpreter and assertion results.
+	fn execute(self) -> (Result<(), PopulateError>, Result<(), PopulateError>) {
 		let (bytecode, _) = self.builder.finalize();
 
 		// Create value vec with the right size
@@ -122,12 +146,11 @@ impl InterpreterTest {
 		let hint_registry = HintRegistry::new();
 		let mut interpreter = Interpreter::new(&bytecode, &hint_registry);
 
-		// Leak the value_vec to get 'static lifetime - this is ok in tests
-		let value_vec = Box::leak(Box::new(value_vec));
-		let mut ctx = ExecutionContext::new(value_vec);
+		let mut ctx = ExecutionContext::new(ValueStore::new(&mut value_vec));
 
 		let result = interpreter.run(&mut ctx);
-		(result, ctx)
+		let assertions = ctx.check_assertions(None);
+		(result, assertions)
 	}
 }
 

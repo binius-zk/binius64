@@ -770,3 +770,157 @@ fn test_zero_constant_not_in_binius64_operands() {
 		}
 	}
 }
+
+#[test]
+fn populate_wire_witness_parallel_matches_sequential_for_independent_components() {
+	let builder = CircuitBuilder::new();
+
+	let a = builder.add_inout();
+	let b = builder.add_inout();
+	let and = builder.band(a, b);
+	let rotate = builder.rotr(a, 13);
+	let first = builder.bxor(and, rotate);
+	let first_expected = builder.add_inout();
+	builder.assert_eq("first", first, first_expected);
+
+	let c = builder.add_inout();
+	let d = builder.add_inout();
+	let zero = builder.add_constant(Word::ZERO);
+	let (sum, carry) = builder.iadd_cin_cout(c, d, zero);
+	let second = builder.bxor(sum, carry);
+	let second_expected = builder.add_inout();
+	builder.assert_eq("second", second, second_expected);
+
+	let e = builder.add_inout();
+	let f = builder.add_inout();
+	let third = builder.icmp_eq(e, f);
+	let third_expected = builder.add_inout();
+	builder.assert_eq("third", third, third_expected);
+
+	let circuit = builder.build();
+
+	let a_value = Word(0xf0f0_f0f0_f0f0_f0f0);
+	let b_value = Word(0x1234_5678_9abc_def0);
+	let c_value = Word(0xffff_ffff_ffff_fff0);
+	let d_value = Word(0x25);
+	let e_value = Word(0xfeed_face_cafe_beef);
+	let (sum_value, carry_value) = c_value.iadd_cin_cout(d_value, Word::ZERO);
+
+	let mut sequential = circuit.new_witness_filler();
+	sequential[a] = a_value;
+	sequential[b] = b_value;
+	sequential[first_expected] = (a_value & b_value) ^ a_value.rotr(13);
+	sequential[c] = c_value;
+	sequential[d] = d_value;
+	sequential[second_expected] = sum_value ^ carry_value;
+	sequential[e] = e_value;
+	sequential[f] = e_value;
+	sequential[third_expected] = Word::MSB_ONE;
+	circuit.populate_wire_witness(&mut sequential).unwrap();
+
+	let mut parallel = circuit.new_witness_filler();
+	parallel[a] = a_value;
+	parallel[b] = b_value;
+	parallel[first_expected] = (a_value & b_value) ^ a_value.rotr(13);
+	parallel[c] = c_value;
+	parallel[d] = d_value;
+	parallel[second_expected] = sum_value ^ carry_value;
+	parallel[e] = e_value;
+	parallel[f] = e_value;
+	parallel[third_expected] = Word::MSB_ONE;
+	circuit
+		.populate_wire_witness_parallel(&mut parallel)
+		.unwrap();
+
+	let mut sequential_values = sequential.into_value_vec();
+	let mut parallel_values = parallel.into_value_vec();
+	assert_eq!(sequential_values.as_mut_slice(), parallel_values.as_mut_slice());
+	verify_constraints(circuit.constraint_system(), &parallel_values).unwrap();
+}
+
+#[cfg(feature = "rayon")]
+#[test]
+fn populate_wire_witness_parallel_matches_sequential_when_dce_is_disabled() {
+	let builder = CircuitBuilder::with_opts(Options {
+		enable_gate_fusion: false,
+		enable_constant_propagation: false,
+		enable_dead_code_elimination: false,
+	});
+
+	let a = builder.add_inout();
+	let b = builder.add_inout();
+	let c = builder.add_inout();
+	let first = builder.band(a, b);
+	let second = builder.rotr(first, 17);
+	let third = builder.bxor(second, c);
+	let expected = builder.add_inout();
+	builder.assert_eq("dce_disabled", third, expected);
+
+	let circuit = builder.build();
+
+	let a_value = Word(0x0f0f_f0f0_3333_cccc);
+	let b_value = Word(0xffff_0000_5555_aaaa);
+	let c_value = Word(0x1234_5678_9abc_def0);
+	let expected_value = (a_value & b_value).rotr(17) ^ c_value;
+
+	let mut sequential = circuit.new_witness_filler();
+	sequential[a] = a_value;
+	sequential[b] = b_value;
+	sequential[c] = c_value;
+	sequential[expected] = expected_value;
+	circuit.populate_wire_witness(&mut sequential).unwrap();
+
+	let mut parallel = circuit.new_witness_filler();
+	parallel[a] = a_value;
+	parallel[b] = b_value;
+	parallel[c] = c_value;
+	parallel[expected] = expected_value;
+	circuit
+		.populate_wire_witness_parallel(&mut parallel)
+		.unwrap();
+
+	let mut sequential_values = sequential.into_value_vec();
+	let mut parallel_values = parallel.into_value_vec();
+	assert_eq!(sequential_values.as_mut_slice(), parallel_values.as_mut_slice());
+	verify_constraints(circuit.constraint_system(), &parallel_values).unwrap();
+}
+
+#[test]
+fn populate_wire_witness_parallel_reports_independent_assertion_failures() {
+	let builder = CircuitBuilder::new();
+
+	let a = builder.add_inout();
+	let b = builder.add_inout();
+	builder.assert_eq("first", a, b);
+
+	let c = builder.add_inout();
+	let d = builder.add_inout();
+	builder.assert_eq("second", c, d);
+
+	let circuit = builder.build();
+
+	let mut sequential = circuit.new_witness_filler();
+	sequential[a] = Word(1);
+	sequential[b] = Word(2);
+	sequential[c] = Word(3);
+	sequential[d] = Word(4);
+	let sequential_err = circuit.populate_wire_witness(&mut sequential).unwrap_err();
+
+	let mut parallel = circuit.new_witness_filler();
+	parallel[a] = Word(1);
+	parallel[b] = Word(2);
+	parallel[c] = Word(3);
+	parallel[d] = Word(4);
+	let parallel_err = circuit
+		.populate_wire_witness_parallel(&mut parallel)
+		.unwrap_err();
+
+	assert_eq!(parallel_err.total_count, sequential_err.total_count);
+	assert_eq!(parallel_err.total_count, 2);
+
+	let mut sequential_messages = sequential_err.messages;
+	let mut parallel_messages = parallel_err.messages;
+	sequential_messages.sort();
+	parallel_messages.sort();
+	assert_eq!(parallel_messages, sequential_messages);
+}

@@ -133,13 +133,24 @@ pub fn run_independent_hash_benchmark<E>(
 		benchmark,
 		primitive.group_prefix(),
 		peak_alloc,
-		bench_witness_generation_and_proving,
+		bench_independent_hash_extra_groups,
 	);
+}
+
+fn bench_independent_hash_extra_groups<B>(
+	c: &mut Criterion,
+	ctx: ConstraintSystemBenchmarkContext<'_, B>,
+) where
+	B: ExampleBenchmark,
+{
+	bench_witness_generation_and_proving(c, &ctx);
+	#[cfg(feature = "rayon")]
+	bench_parallel_witness_generation_and_proving(c, &ctx);
 }
 
 fn bench_witness_generation_and_proving<B>(
 	c: &mut Criterion,
-	ctx: ConstraintSystemBenchmarkContext<'_, B>,
+	ctx: &ConstraintSystemBenchmarkContext<'_, B>,
 ) where
 	B: ExampleBenchmark,
 {
@@ -158,6 +169,38 @@ fn bench_witness_generation_and_proving<B>(
 				.populate_witness(ctx.instance.clone(), &mut filler)
 				.unwrap();
 			ctx.circuit.populate_wire_witness(&mut filler).unwrap();
+			let witness = filler.into_value_vec();
+			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+			ctx.prover.prove(witness, &mut prover_transcript).unwrap();
+			prover_transcript
+		})
+	});
+
+	group.finish();
+}
+
+#[cfg(feature = "rayon")]
+fn bench_parallel_witness_generation_and_proving<B>(
+	c: &mut Criterion,
+	ctx: &ConstraintSystemBenchmarkContext<'_, B>,
+) where
+	B: ExampleBenchmark,
+{
+	let mut group =
+		c.benchmark_group(format!("{}_parallel_witness_generation_and_proving", ctx.group_prefix));
+	group.throughput(ctx.benchmark.throughput());
+	group.sample_size(10);
+	group.warm_up_time(Duration::from_secs(2));
+
+	group.bench_function(BenchmarkId::from_parameter(ctx.bench_name), |b| {
+		b.iter(|| {
+			let mut filler = ctx.circuit.new_witness_filler();
+			ctx.example
+				.populate_witness(ctx.instance.clone(), &mut filler)
+				.unwrap();
+			ctx.circuit
+				.populate_wire_witness_parallel(&mut filler)
+				.unwrap();
 			let witness = filler.into_value_vec();
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 			ctx.prover.prove(witness, &mut prover_transcript).unwrap();

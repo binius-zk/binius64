@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 binius-core = { path = "../core" }
+binius-utils = { path = "../utils" }
 cranelift-entity = { workspace = true }
 hex-literal.workspace = true
 num-bigint = { workspace = true }
@@ -24,3 +25,7 @@ rand = { workspace = true, features = ["thread_rng"] }
 hex-literal = { workspace = true }
 proptest = { workspace = true }
 insta = { workspace = true }
+
+[features]
+default = []
+rayon = ["binius-utils/rayon"]
