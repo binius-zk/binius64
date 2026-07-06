@@ -233,9 +233,11 @@ where
 
 	for (i, (mut base, &exp)) in iter::zip(bases.iter_scalars(), exponents).enumerate() {
 		for z in 0..WORD_SIZE_BITS {
-			let bit = exp.extract_bit(z);
-
-			out.set(z * n_elems + i, if bit { base } else { F::ONE });
+			// Branchless select of `base` when bit `z` is set, else `F::ONE`: on the selected lane
+			// `mask` is all-ones so `select` keeps `base - 1` and the `+ 1` restores `base`; on the
+			// unselected lane `select` yields `0` and the `+ 1` gives `F::ONE`.
+			let mask = F::make_mask(iter::once(exp.extract_bit(z)));
+			out.set(z * n_elems + i, F::ONE + (base - F::ONE).select(&mask));
 
 			base = base.square();
 		}
@@ -263,6 +265,7 @@ where
 		let mut strided = StridedArray2DViewMut::without_stride(spare, height, n_packed)
 			.expect("dimensions match capacity");
 
+		let ones = P::broadcast(F::ONE);
 		(strided.par_iter_cols(), bases.as_ref(), exponents.par_chunks(P::WIDTH))
 			.into_par_iter()
 			.for_each(|(mut col, packed_base, exp_chunk)| {
@@ -270,14 +273,12 @@ where
 				let mut packed_base = *packed_base;
 
 				for z in 0..height {
-					// Decompose to scalars, apply bit selection, recompose
-					// TODO: Optimize with bit-masking for selection
-					let scalars = packed_base.iter().zip(exp_chunk).map(|(base, &exp)| {
-						let bit = exp.extract_bit(z);
-						if bit { base } else { F::ONE }
-					});
-
-					col[z].write(P::from_scalars(scalars));
+					// Branchless select, per lane, of `base` when bit `z` of the lane's exponent is
+					// set, else `F::ONE`. On selected lanes `mask` is all-ones so `select` keeps
+					// `base - 1` and the `+ 1` restores `base`; on unselected lanes `select` yields
+					// `0` and the `+ 1` gives `F::ONE`.
+					let mask = P::make_mask(exp_chunk.iter().map(|&exp| exp.extract_bit(z)));
+					col[z].write(ones + (packed_base - ones).select(&mask));
 
 					// Square packed base for next iteration
 					packed_base = packed_base.square();
@@ -404,5 +405,49 @@ mod tests {
 
 		let witness = Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap();
 		check_consistency(&witness);
+	}
+
+	/// Directly checks `compute_b_leaves` against its specification — leaf `z` holds
+	/// `bases[i]^(2^z)` where bit `z` of `exponents[i]` is set, else `F::ONE` — over both the
+	/// parallel path (`n_vars >= P::LOG_WIDTH`) and the scalar fallback (`n_vars < P::LOG_WIDTH`).
+	#[test]
+	fn compute_b_leaves_matches_spec() {
+		use binius_field::{BinaryField128bGhash, Random, arithmetic_traits::Square};
+		use rand::prelude::*;
+
+		type F = BinaryField128bGhash;
+
+		let mut rng = StdRng::seed_from_u64(1);
+		// `Packed128b` has `LOG_WIDTH == 2`: `n_vars = 0` exercises the scalar fallback and
+		// `n_vars = 4` the parallel path.
+		for n_vars in [0usize, 4] {
+			let n_elems = 1 << n_vars;
+			let base_scalars = (0..n_elems)
+				.map(|_| F::random(&mut rng))
+				.collect::<Vec<_>>();
+			let bases = FieldBuffer::<P>::from_values(&base_scalars);
+			let exponents = (0..n_elems)
+				.map(|_| Word::from_u64(rng.random()))
+				.collect::<Vec<_>>();
+
+			let leaves = compute_b_leaves::<F, P>(&bases, &exponents);
+
+			for (i, &base0) in base_scalars.iter().enumerate() {
+				let mut base = base0;
+				for z in 0..WORD_SIZE_BITS {
+					let expected = if exponents[i].extract_bit(z) {
+						base
+					} else {
+						F::ONE
+					};
+					assert_eq!(
+						leaves.get(z * n_elems + i),
+						expected,
+						"mismatch at n_vars={n_vars}, i={i}, z={z}"
+					);
+					base = base.square();
+				}
+			}
+		}
 	}
 }
