@@ -3,7 +3,7 @@
 
 use std::iter;
 
-use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
+use binius_field::{AESTowerField8b, BinaryField, Field, PackedField, WideMul};
 use binius_math::{
 	BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
 };
@@ -192,9 +192,10 @@ where
 	let log_len = log_half + 1;
 	let capacity = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 
-	// The scalar for one word of a segment: the accumulated contribution of all its keys.
+	// The scalar for one word of a segment: the accumulated contribution of all its keys. The
+	// per-key wide accumulations are summed unreduced and reduced once at the end.
 	let word_scalar = |segment: &KeySegment, index: usize| {
-		segment
+		let wide = segment
 			.word_keys(index)
 			.iter()
 			.map(|key| {
@@ -203,13 +204,14 @@ where
 					Operation::IntegerMul => (intmul_operator_data, &intmul_scalars, INTMUL_ARITY),
 				};
 				let base = key.id as usize * arity;
-				key.accumulate(
+				key.accumulate_wide(
 					&segment.constraint_indices,
 					operator_data.r_x_prime_tensor.as_ref(),
 					&scalars[base..base + arity],
 				)
 			})
-			.sum::<F>()
+			.sum::<<F as WideMul>::Output>();
+		F::reduce(wide)
 	};
 
 	// The multilinear is indexed over the witness address space: the public segment at the

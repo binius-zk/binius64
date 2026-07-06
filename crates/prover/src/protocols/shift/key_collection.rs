@@ -124,29 +124,31 @@ impl Key {
 		})
 	}
 
-	/// Accumulates the partial evaluation of an operation matrix for the key.
+	/// Accumulates the partial evaluation of an operation matrix for the key, in unreduced (wide)
+	/// form.
 	///
 	/// A [`Key`] references the operation constraints where one witness word is an operand. This
 	/// accumulates the partial evaluation of the operation matrix for this key, weighting each
 	/// operand's contribution by `scalars[operand_index]` and fusing that weighting into the
-	/// consecutive-operand scan.
+	/// consecutive-operand scan. The caller reduces the result via [`WideMul::reduce`], and may
+	/// sum several wide accumulations before that single reduction.
 	#[inline]
-	pub fn accumulate<F: Field>(
+	pub fn accumulate_wide<F: Field>(
 		&self,
 		constraint_indices: &[ConstraintIndex],
 		r_x_prime_tensor: &[F],
 		scalars: &[F],
-	) -> F {
+	) -> <F as WideMul>::Output {
 		let Range { start, end } = self.range;
 		let mut constraint_indices = constraint_indices[start as usize..end as usize].iter();
 
+		let mut result = <F as WideMul>::Output::default();
 		let Some(first) = constraint_indices.next() else {
-			return F::ZERO;
+			return result;
 		};
 
 		let mut operand_index = first.operand_index as usize;
 		let mut acc = F::ZERO;
-		let mut result = <F as WideMul>::Output::default();
 		acc += r_x_prime_tensor[first.constraint_index as usize];
 
 		for current in constraint_indices {
@@ -159,7 +161,20 @@ impl Key {
 			acc += r_x_prime_tensor[current.constraint_index as usize];
 		}
 
-		F::reduce(result + F::wide_mul(acc, scalars[operand_index]))
+		result + F::wide_mul(acc, scalars[operand_index])
+	}
+
+	/// Accumulates the partial evaluation of an operation matrix for the key.
+	///
+	/// This is [`Self::accumulate_wide`] followed by a single reduction.
+	#[inline]
+	pub fn accumulate<F: Field>(
+		&self,
+		constraint_indices: &[ConstraintIndex],
+		r_x_prime_tensor: &[F],
+		scalars: &[F],
+	) -> F {
+		F::reduce(self.accumulate_wide(constraint_indices, r_x_prime_tensor, scalars))
 	}
 }
 
