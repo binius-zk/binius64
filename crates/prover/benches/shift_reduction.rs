@@ -7,25 +7,23 @@ use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128}
 use binius_frontend::{CircuitBuilder, Wire};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_math::multilinear::eq::eq_ind_partial_eval;
-use binius_prover::protocols::shift::{OperatorData, build_key_collection, prove};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
-		PreparedOperatorData,
+		OperatorData, PreparedOperatorData, build_key_collection,
 		monster::{build_h_parts, build_monster_multilinear},
 		phase_1::{build_g_parts, run_phase_1_sumcheck},
 		phase_2::{assemble_witness, run_sumcheck},
+		prove,
 	},
 };
 use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::strict_log_2;
-use binius_verifier::config::LOG_WORD_SIZE_BITS;
 use binius_verifier::{
-	config::StdChallenger,
+	config::{LOG_WORD_SIZE_BITS, StdChallenger},
 	protocols::shift::{OperatorData as VerifierOperatorData, verify},
 };
-use criterion::BatchSize;
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use sha2::{Digest, Sha256 as Sha256Hasher};
 
 pub fn create_sha256_cs_with_witness(
@@ -192,8 +190,8 @@ fn bench_shift_phases(c: &mut Criterion) {
 	type P = OptimalPackedB128;
 	let mut rng = rand::rng();
 
-	// A single fixed size (16384-byte SHA256 message), rather than a sweep, so the per-phase benches
-	// share one setup and stay quick.
+	// A single fixed size (16384-byte SHA256 message), rather than a sweep, so the per-phase
+	// benches share one setup and stay quick.
 	const LOG_MESSAGE_LEN_BYTES: usize = 14;
 
 	let (mut cs, value_vec) = create_sha256_cs_with_witness(LOG_MESSAGE_LEN_BYTES, &mut rng);

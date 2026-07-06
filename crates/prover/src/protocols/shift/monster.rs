@@ -169,7 +169,8 @@ where
 				let key_id = op * WORD_SIZE_BITS + s;
 				let op_s_scalar = h_ops[op] * r_s_tensor.as_ref()[s];
 				for operand_idx in 0..arity {
-					scalars[key_id * arity + operand_idx] = lambda_powers[operand_idx] * op_s_scalar;
+					scalars[key_id * arity + operand_idx] =
+						lambda_powers[operand_idx] * op_s_scalar;
 				}
 			}
 		}
