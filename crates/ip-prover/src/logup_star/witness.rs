@@ -33,6 +33,12 @@ use super::prove::Looker;
 ///
 /// * `lookers` is non-empty, every looker has the same evaluation point length `n`, every index
 ///   column has `2^n` entries, and every index entry is less than `2^table_n_vars`.
+#[tracing::instrument(
+	skip_all,
+	level = "debug",
+	name = "Build logup* witnesses",
+	fields(n_lookers = lookers.len(), table_n_vars)
+)]
 pub fn combined_lookers<F, P>(
 	lookers: &[Looker<'_, F>],
 	gamma: F,

@@ -117,6 +117,7 @@ where
 		// limb columns read tables 0..N_LIMBS; the `c_hi` limb columns (base
 		// G^{2^{WORD_SIZE_BITS}}) read tables N_LIMBS..2·N_LIMBS. Table 0 is the shared logup*
 		// table.
+		let power_table_scope = tracing::debug_span!("Build power tables").entered();
 		let g = F::MULTIPLICATIVE_GENERATOR;
 		let bases = iterate(g, |g| g.square())
 			.step_by(LIMB_BITS)
@@ -126,9 +127,12 @@ where
 			.into_par_iter()
 			.map(|base| power_table::<F, P>(LIMB_BITS, base))
 			.collect::<Vec<_>>();
+		drop(power_table_scope);
 
 		// Build the per-limb leaf layers and their prodcheck provers. Each prover's products
 		// layer is the corresponding tree root.
+		let fixed_base_tree_scope =
+			tracing::debug_span!("Compute fixed-base prodcheck layers").entered();
 		let a_leaves = limb_leaves(&tables[..N_LIMBS], a);
 		let (a_prodcheck, a_root) = ProdcheckProver::new(LOG_N_LIMBS, a_leaves);
 
@@ -137,12 +141,14 @@ where
 
 		let c_hi_leaves = limb_leaves(&tables[N_LIMBS..], c_hi);
 		let (c_hi_prodcheck, c_hi_root) = ProdcheckProver::new(LOG_N_LIMBS, c_hi_leaves);
+		drop(fixed_base_tree_scope);
 
 		// Compute b_leaves as concatenated leaves for prodcheck; the variable base is the `a` root.
+		let variable_base_tree_scope =
+			tracing::debug_span!("Compute variable-base prodcheck layers").entered();
 		let b_leaves = compute_b_leaves(&a_root, b);
-
-		// Create the prodcheck prover; its products layer becomes b_root
 		let (b_prodcheck, b_root) = ProdcheckProver::new(LOG_WORD_SIZE_BITS, b_leaves.clone());
+		drop(variable_base_tree_scope);
 
 		Ok(Self {
 			a_exponents: a,
