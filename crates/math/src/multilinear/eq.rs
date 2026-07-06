@@ -120,11 +120,36 @@ pub fn tensor_prod_eq_ind_prepend<P: PackedField, Data: DerefMut<Target = [P]>>(
 ///
 /// [DP23]: <https://eprint.iacr.org/2023/1784>
 pub fn eq_ind_partial_eval<P: PackedField>(point: &[P::Scalar]) -> FieldBuffer<P> {
-	// The buffer needs to have the correct size: 2^max(point.len(), P::LOG_WIDTH) elements
-	// but since tensor_prod_eq_ind starts with log_n_values=0, we need the final size
+	// The unscaled indicator is the scaled indicator with a scale of one.
+	scaled_eq_ind_partial_eval(point, P::Scalar::ONE)
+}
+
+/// Computes the partial evaluation of the equality indicator polynomial, scaled by a constant.
+///
+/// Every hypercube value of the equality indicator is multiplied by `scale`:
+///
+/// $$
+/// scale \cdot (1 - r_0, r_0) \otimes ... \otimes (1 - r_{n-1}, r_{n-1}).
+/// $$
+///
+/// # Arguments
+///
+/// * `point` - The evaluation point whose length is the number of variables.
+/// * `scale` - The constant every returned value is multiplied by.
+///
+/// A scale of one reproduces the unscaled equality indicator.
+pub fn scaled_eq_ind_partial_eval<P: PackedField>(
+	point: &[P::Scalar],
+	scale: P::Scalar,
+) -> FieldBuffer<P> {
+	// The expansion starts from a single value and grows one variable at a time.
+	// Allocate at the final capacity 2^n now, so the growth never reallocates.
 	let log_size = point.len();
 	let mut buffer = FieldBuffer::zeros_truncated(0, log_size);
-	buffer.set(0, P::Scalar::ONE);
+
+	// Seed the starting value with the scale.
+	// The expansion multiplies it through, so every hypercube value ends up scaled.
+	buffer.set(0, scale);
 	tensor_prod_eq_ind(&mut buffer, point);
 	buffer
 }
@@ -242,6 +267,7 @@ pub fn eq_ind_partial_eval_scalars<F: FieldOps>(point: &[F]) -> Vec<F> {
 
 #[cfg(test)]
 mod tests {
+	use proptest::prelude::*;
 	use rand::prelude::*;
 
 	use super::*;
@@ -452,5 +478,67 @@ mod tests {
 		tensor_prod_eq_ind_prepend(&mut prepend, prefix);
 
 		assert_eq!(append, prepend);
+	}
+
+	#[test]
+	fn test_scaled_eq_ind_partial_eval_scale_one_matches_unscaled() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Invariant: a scale of one is the identity on the expansion.
+		// So the scaled and unscaled indicators must be the identical buffer.
+		//
+		// Sizes span the empty point (0 variables) up to a 256-value cube (8 variables).
+		for log_n in [0, 1, 2, 5, 8] {
+			let point = random_scalars::<F>(&mut rng, log_n);
+
+			// Equality is checked packed-word for packed-word, not just value by value.
+			assert_eq!(
+				scaled_eq_ind_partial_eval::<P>(&point, F::ONE),
+				eq_ind_partial_eval::<P>(&point),
+				"mismatch at log_n={log_n}"
+			);
+		}
+	}
+
+	#[test]
+	fn test_scaled_eq_ind_partial_eval_scale_zero_is_zero() {
+		let mut rng = StdRng::seed_from_u64(1);
+
+		// Invariant: the expansion is linear in its starting value.
+		// So a starting value of zero yields the all-zero polynomial.
+		for log_n in [0, 1, 2, 5] {
+			let point = random_scalars::<F>(&mut rng, log_n);
+
+			// Every one of the 2^log_n hypercube values must be zero.
+			let scaled = scaled_eq_ind_partial_eval::<P>(&point, F::ZERO);
+			assert!(scaled.iter_scalars().all(|v| v == F::ZERO), "nonzero at log_n={log_n}");
+		}
+	}
+
+	proptest! {
+		#![proptest_config(ProptestConfig::with_cases(16))]
+
+		// Invariant: scaling commutes with the expansion, value by value.
+		//
+		//     scaled_eq(point, s)[i] == s * eq(point)[i]   for every hypercube index i
+		#[test]
+		fn scaled_eq_ind_partial_eval_matches_scaled_reference(
+			seed in any::<u64>(),
+			log_n in 0usize..=8,
+		) {
+			// Draw the point and an independent scale from one seeded stream.
+			let mut rng = StdRng::seed_from_u64(seed);
+			let point = random_scalars::<F>(&mut rng, log_n);
+			let scale = random_scalars::<F>(&mut rng, 1)[0];
+
+			// Reference: the unscaled expansion, to be compared against the scaled one.
+			let scaled = scaled_eq_ind_partial_eval::<P>(&point, scale);
+			let reference = eq_ind_partial_eval::<P>(&point);
+
+			// The scaled value at each index must equal the scale times the reference value.
+			for (got, base) in scaled.iter_scalars().zip(reference.iter_scalars()) {
+				prop_assert_eq!(got, scale * base);
+			}
+		}
 	}
 }
