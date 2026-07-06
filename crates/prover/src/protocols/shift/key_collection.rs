@@ -10,7 +10,7 @@ use binius_core::{
 	},
 	consts::LOG_WORD_SIZE_BITS,
 };
-use binius_field::Field;
+use binius_field::{Field, WideMul};
 use binius_utils::{
 	checked_arithmetics::log2_ceil_usize,
 	serialization::{DeserializeBytes, SerializationError, SerializeBytes},
@@ -144,21 +144,21 @@ impl Key {
 
 		let mut operand_index = first.operand_index as usize;
 		let mut acc = F::ZERO;
-		let mut result = F::ZERO;
+		let mut result = <F as WideMul>::Output::default();
 		let tensor = operator_data.r_x_prime_tensor.as_ref();
 		acc += tensor[first.constraint_index as usize];
 
 		for current in constraint_indices {
 			let current_operand_index = current.operand_index as usize;
 			if current_operand_index != operand_index {
-				result += acc * operator_data.lambda_powers[operand_index];
+				result += F::wide_mul(acc, operator_data.lambda_powers[operand_index]);
 				operand_index = current_operand_index;
 				acc = F::ZERO;
 			}
 			acc += tensor[current.constraint_index as usize];
 		}
 
-		result + acc * operator_data.lambda_powers[operand_index]
+		F::reduce(result + F::wide_mul(acc, operator_data.lambda_powers[operand_index]))
 	}
 }
 
