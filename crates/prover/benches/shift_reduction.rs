@@ -4,7 +4,9 @@
 use binius_circuits::sha256::Sha256;
 use binius_core::{ValueVec, constraint_system::ConstraintSystem};
 use binius_frontend::CircuitBuilder;
-use binius_prover::protocols::shift::{OperatorData, build_key_collection, prove};
+use binius_prover::protocols::shift::{
+	OperatorData, build_key_collection, build_wiring_info, prove,
+};
 use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::strict_log_2;
 use binius_verifier::{
@@ -171,7 +173,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 		protocols::shift::{
 			PreparedOperatorData,
 			monster::{build_h_parts, build_monster_multilinear},
-			phase_1::{build_g_parts, run_phase_1_sumcheck},
+			phase_1::{build_g_parts, build_g_parts_wiring, run_phase_1_sumcheck},
 			phase_2::{assemble_witness, run_sumcheck},
 		},
 	};
@@ -182,9 +184,9 @@ fn bench_shift_phases(c: &mut Criterion) {
 	type P = PackedBinaryGhash1x128b;
 	let mut rng = rand::rng();
 
-	// A single fixed size (4096-byte SHA256 message), rather than a sweep, so the per-phase benches
-	// share one setup and stay quick.
-	const LOG_MESSAGE_LEN_BYTES: usize = 12;
+	// A single fixed size (16384-byte SHA256 message), rather than a sweep, so the per-phase
+	// benches share one setup and stay quick.
+	const LOG_MESSAGE_LEN_BYTES: usize = 14;
 
 	let (mut cs, value_vec) = create_sha256_cs_with_witness(LOG_MESSAGE_LEN_BYTES, &mut rng);
 	cs.validate_and_prepare().unwrap();
@@ -201,6 +203,8 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let intmul_evals = [F::ZERO; 4];
 
 	let key_collection = build_key_collection(&cs);
+	// The alternate phase-1 layout (BINIUS-228), benchmarked head-to-head with `KeyCollection`.
+	let wiring = build_wiring_info(&cs);
 	let words = value_vec.combined_witness();
 
 	// Prepare the operator data. Lambda sampling is cheap and not part of any benched phase, so a
@@ -262,6 +266,10 @@ fn bench_shift_phases(c: &mut Criterion) {
 		b.iter(|| {
 			build_g_parts::<F, P>(words, &key_collection, &prepared_bitand, &prepared_intmul)
 		});
+	});
+	// The BINIUS-228 alternate: same output as `build_g_parts`, over the `WiringInfo` layout.
+	group.bench_function("phase1_build_g_parts_wiring", |b| {
+		b.iter(|| build_g_parts_wiring::<F, P>(words, &wiring, &prepared_bitand, &prepared_intmul));
 	});
 	group.bench_function("phase1_build_h_parts", |b| {
 		b.iter(|| build_h_parts::<F, P>(prepared_bitand.r_zhat_prime));
