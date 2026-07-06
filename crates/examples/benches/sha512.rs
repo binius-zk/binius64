@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 //! SHA-512 hash benchmark
 
@@ -5,7 +6,10 @@ mod utils;
 
 use std::alloc::System;
 
-use binius_examples::circuits::sha512::{Instance, Params, Sha512Example};
+use binius_examples::circuits::{
+	sha512::Sha512Example,
+	utils::{HasherInstance, HasherParams},
+};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use peakmem_alloc::PeakMemAlloc;
 use utils::{ExampleBenchmark, HashBenchConfig, print_benchmark_header, run_cs_benchmark};
@@ -26,21 +30,22 @@ impl Sha512Benchmark {
 }
 
 impl ExampleBenchmark for Sha512Benchmark {
-	type Params = Params;
-	type Instance = Instance;
+	type Params = HasherParams;
+	type Instance = HasherInstance;
 	type Example = Sha512Example;
 
 	fn create_params(&self) -> Self::Params {
-		Params {
-			max_len_bytes: Some(self.config.max_bytes),
-			exact_len: true,
+		HasherParams {
+			message_len: Some(self.config.max_bytes),
+			max_message_len: None,
 		}
 	}
 
 	fn create_instance(&self) -> Self::Instance {
-		Instance {
-			message_len: Some(self.config.max_bytes),
-			message_string: None,
+		HasherInstance {
+			random_message: false,
+			random_message_len: None,
+			message: None,
 		}
 	}
 

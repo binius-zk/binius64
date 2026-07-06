@@ -39,12 +39,12 @@ lto = "thin"
 
 The `prover/examples/` directory contains example circuits, which you can run using the [CLI framework](https://www.binius.xyz/building/getting-started/cli).
 
-For example, to run an example proving a SHA-512 preimage:
+For example, to run an example proving a SHA-512 preimage of a fixed-length 65536-byte message:
 
 ```bash
-$ RUSTFLAGS="-Ctarget-cpu=native" cargo run --release --example sha512 prove --max-len-bytes 65536 --exact-len
+$ RUSTFLAGS="-Ctarget-cpu=native" cargo run --release --example sha512 prove --message-len 65536
    Finished `release` profile [optimized + debuginfo] target(s) in 0.09s
-     Running `target/release/examples/sha512 prove --max-len-bytes 65536 --exact-len`
+     Running `target/release/examples/sha512 prove --message-len 65536`
 Building circuit [ 2.99s | 100.00% ]
 
 Setup [ 619.81ms | 100.00% ] { log_inv_rate = 1 }
@@ -55,6 +55,14 @@ Generating witness [ 14.12ms | 100.00% ]
 
 prove [ 128.58ms | 100.00% ] { operation = prove, perfetto_category = operation, n_witness_words = 1048576, n_bitand = 1048576, n_intmul = 1 }
 ...
+```
+
+Pass `--max-message-len` instead of `--message-len` (the two are mutually exclusive) to build the
+variable-length circuit, whose capacity is fixed at build time but whose message length is a runtime
+witness bounded by that capacity:
+
+```bash
+$ RUSTFLAGS="-Ctarget-cpu=native" cargo run --release --example sha512 prove --max-message-len 131072
 ```
 
 ### Enabling multithreading
