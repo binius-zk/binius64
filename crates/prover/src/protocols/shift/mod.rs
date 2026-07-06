@@ -14,6 +14,11 @@ pub mod phase_1;
 #[doc(hidden)]
 pub mod phase_2;
 mod prove;
+// `wiring` holds the alternate `WiringInfo` phase-1 layout, benchmarked head-to-head against the
+// `KeyCollection` path (BINIUS-228). Exposed only so the `shift_reduction` benchmark can build it.
+#[doc(hidden)]
+pub mod wiring;
 
 pub use key_collection::{KeyCollection, KeySegment, build_key_collection};
 pub use prove::{OperatorData, PreparedOperatorData, prove};
+pub use wiring::{WiringCollection, WiringEntry, WiringInfo, WiringMatrix, build_wiring_info};
