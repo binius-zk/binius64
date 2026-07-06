@@ -103,17 +103,30 @@ where
 /// Build the looker denominator `c - I` over the `n`-variable looker cube.
 ///
 /// Entry `i` is `c - iota(index[i])`, the logUp denominator for looker row `i`.
+///
+/// # Preconditions
+///
+/// * `index.len()` is a power of two.
 pub fn looker_denominator<F, P>(c: F, index: &[usize]) -> FieldBuffer<P>
 where
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 {
-	// One denominator per looker row: shift the challenge by the row's embedded index value.
-	let values = index
-		.iter()
-		.map(|&i| c - embed_position::<F>(i))
-		.collect::<Vec<_>>();
-	FieldBuffer::from_values(&values)
+	// n, the number of looker variables, from the 2^n rows.
+	let log_len = index.len().ilog2() as usize;
+
+	// One denominator per row: shift the challenge by the row's embedded index value.
+	// Pack P::WIDTH consecutive denominators into each word as they are computed.
+	// So the packed buffer is built in one pass, with no scalar buffer materialized first.
+	let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
+	let mut packed = Vec::with_capacity(packed_len);
+	packed.extend(
+		index
+			.chunks(P::WIDTH)
+			.map(|chunk| P::from_scalars(chunk.iter().map(|&i| c - embed_position::<F>(i)))),
+	);
+
+	FieldBuffer::new(log_len, packed.into_boxed_slice())
 }
 
 /// Build the table denominator `c - J` over the `m`-variable table cube.
@@ -199,11 +212,14 @@ mod tests {
 		Field,
 		arch::{OptimalB128, OptimalPackedB128},
 	};
-	use binius_math::{FieldBuffer, test_utils::random_field_buffer};
+	use binius_math::{
+		FieldBuffer,
+		test_utils::{random_field_buffer, random_scalars},
+	};
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
-	use super::pushforward;
+	use super::{embed_position, looker_denominator, pushforward};
 
 	type F = OptimalB128;
 	type P = OptimalPackedB128;
@@ -248,5 +264,46 @@ mod tests {
 		// n = 0 is the one-row edge; (10, 1) packs 2^10 rows into 2 buckets.
 		check(0, 3, 7);
 		check(10, 1, 42);
+	}
+
+	// The scalar reference for the looker denominator: c - iota(index[i]) per row.
+	fn denominator_reference(c: F, index: &[usize]) -> Vec<F> {
+		index.iter().map(|&i| c - embed_position::<F>(i)).collect()
+	}
+
+	#[test]
+	fn looker_denominator_small_cases() {
+		let c = F::new(7);
+
+		// n = 0: a single row, so the packed word carries one meaningful lane.
+		let one_row = looker_denominator::<F, P>(c, &[3])
+			.iter_scalars()
+			.collect::<Vec<_>>();
+		assert_eq!(one_row, denominator_reference(c, &[3]));
+
+		// n = 2: four rows with distinct embedded positions.
+		let index = [0usize, 1, 2, 5];
+		let four_rows = looker_denominator::<F, P>(c, &index)
+			.iter_scalars()
+			.collect::<Vec<_>>();
+		assert_eq!(four_rows, denominator_reference(c, &index));
+	}
+
+	proptest! {
+		#![proptest_config(ProptestConfig::with_cases(16))]
+
+		// The direct packed build must equal the scalar reference, value by value.
+		// n spans below, at, and above the packing width; index values exercise multi-bit embeddings.
+		#[test]
+		fn looker_denominator_matches_reference(seed in any::<u64>(), n in 0usize..=8) {
+			let mut rng = StdRng::seed_from_u64(seed);
+			let c = random_scalars::<F>(&mut rng, 1)[0];
+			let index = (0..(1usize << n))
+				.map(|_| rng.random_range(0..(1usize << 12)))
+				.collect::<Vec<_>>();
+
+			let got = looker_denominator::<F, P>(c, &index).iter_scalars().collect::<Vec<_>>();
+			prop_assert_eq!(got, denominator_reference(c, &index));
+		}
 	}
 }
