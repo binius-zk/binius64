@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
@@ -161,8 +162,10 @@ impl JwtClaims {
 				let is_comma = b.icmp_eq(byte_at_pos, comma);
 				let is_close_brace = b.icmp_eq(byte_at_pos, close_brace);
 
-				// It's a terminator if it's any of the three
-				let is_terminator = b.bor(b.bor(is_quote, is_comma), is_close_brace);
+				// It's a terminator if it's any of the three. The three equality flags test
+				// the same byte against distinct constants, so at most one is set and OR
+				// agrees with the linear XOR on the only bit (the MSB) they define.
+				let is_terminator = b.bxor(b.bxor(is_quote, is_comma), is_close_brace);
 
 				let found_here = b.band(should_check, is_terminator);
 
@@ -170,7 +173,10 @@ impl JwtClaims {
 				// When found_here is all-1s, include pos_wire in value_end
 				// When found_here is all-0s, masked_pos is 0 and OR leaves value_end unchanged
 				value_end = b.select(found_here, pos_wire, value_end);
-				found_end = b.bor(found_end, found_here);
+				// `should_check` gates `found_here` on `not_found_yet = bnot(found_end)`, so once
+				// `found_end` is set no later position contributes again. The accumulator and the
+				// new term never share the MSB, so XOR matches OR there and is linear.
+				found_end = b.bxor(found_end, found_here);
 			}
 
 			// Assert that we found a terminator (found_end should be all-1s)
