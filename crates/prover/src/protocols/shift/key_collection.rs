@@ -127,13 +127,15 @@ impl Key {
 	/// Accumulates the partial evaluation of an operation matrix for the key.
 	///
 	/// A [`Key`] references the operation constraints where one witness word is an operand. This
-	/// accumulates the partial evaluation of the operation matrix for this key, fusing the
-	/// `lambda_powers[operand_index]` weighting into the consecutive-operand scan.
+	/// accumulates the partial evaluation of the operation matrix for this key, weighting each
+	/// operand's contribution by `scalars[operand_index]` and fusing that weighting into the
+	/// consecutive-operand scan.
 	#[inline]
 	pub fn accumulate<F: Field>(
 		&self,
 		constraint_indices: &[ConstraintIndex],
-		operator_data: &PreparedOperatorData<F>,
+		r_x_prime_tensor: &[F],
+		scalars: &[F],
 	) -> F {
 		let Range { start, end } = self.range;
 		let mut constraint_indices = constraint_indices[start as usize..end as usize].iter();
@@ -145,20 +147,19 @@ impl Key {
 		let mut operand_index = first.operand_index as usize;
 		let mut acc = F::ZERO;
 		let mut result = <F as WideMul>::Output::default();
-		let tensor = operator_data.r_x_prime_tensor.as_ref();
-		acc += tensor[first.constraint_index as usize];
+		acc += r_x_prime_tensor[first.constraint_index as usize];
 
 		for current in constraint_indices {
 			let current_operand_index = current.operand_index as usize;
 			if current_operand_index != operand_index {
-				result += F::wide_mul(acc, operator_data.lambda_powers[operand_index]);
+				result += F::wide_mul(acc, scalars[operand_index]);
 				operand_index = current_operand_index;
 				acc = F::ZERO;
 			}
-			acc += tensor[current.constraint_index as usize];
+			acc += r_x_prime_tensor[current.constraint_index as usize];
 		}
 
-		F::reduce(result + F::wide_mul(acc, operator_data.lambda_powers[operand_index]))
+		F::reduce(result + F::wide_mul(acc, scalars[operand_index]))
 	}
 }
 
@@ -587,7 +588,14 @@ mod tests {
 			.map(|(operand_index, acc)| acc * operator_data.lambda_powers[operand_index])
 			.sum::<F>();
 
-		assert_eq!(key.accumulate(&constraint_indices, &operator_data), expected);
+		assert_eq!(
+			key.accumulate(
+				&constraint_indices,
+				operator_data.r_x_prime_tensor.as_ref(),
+				&operator_data.lambda_powers
+			),
+			expected
+		);
 
 		let non_contiguous_constraint_indices = vec![
 			ConstraintIndex {
@@ -622,7 +630,11 @@ mod tests {
 			.sum::<F>();
 
 		assert_eq!(
-			non_contiguous_key.accumulate(&non_contiguous_constraint_indices, &operator_data),
+			non_contiguous_key.accumulate(
+				&non_contiguous_constraint_indices,
+				operator_data.r_x_prime_tensor.as_ref(),
+				&operator_data.lambda_powers
+			),
 			non_contiguous_expected
 		);
 
@@ -631,6 +643,13 @@ mod tests {
 			id: 0,
 			range: 0..0,
 		};
-		assert_eq!(empty_key.accumulate(&constraint_indices, &operator_data), F::ZERO);
+		assert_eq!(
+			empty_key.accumulate(
+				&constraint_indices,
+				operator_data.r_x_prime_tensor.as_ref(),
+				&operator_data.lambda_powers
+			),
+			F::ZERO
+		);
 	}
 }

@@ -210,7 +210,11 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 						Operation::IntegerMul => intmul_operator_data,
 					};
 
-					let acc = key.accumulate(&segment.constraint_indices, operator_data);
+					let acc = key.accumulate(
+						&segment.constraint_indices,
+						operator_data.r_x_prime_tensor.as_ref(),
+						&operator_data.lambda_powers,
+					);
 					let acc_packed = P::broadcast(acc);
 
 					// The following loop is an optimized version of the following
