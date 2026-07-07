@@ -221,7 +221,7 @@ where
 				.iter()
 				.map(|elem| elem.to_wire(&mut instance_gen))
 				.collect();
-			instance_gen.hint_varsize(&input_wires, 1, move |vals| vec![f.call::<F>(vals)])[0]
+			instance_gen.hint_varsize(&input_wires, 1, move |vals| vec![f.call_native(vals)])[0]
 		};
 		CircuitElem::wire(&self.instance_gen, out_wire)
 	}

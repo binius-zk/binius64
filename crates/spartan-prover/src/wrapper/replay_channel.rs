@@ -136,7 +136,7 @@ impl<F: Field> IPVerifierChannel<F> for ReplayChannel<F> {
 				.iter()
 				.map(|elem| elem.to_wire(&mut witness_gen))
 				.collect();
-			witness_gen.hint_varsize(&input_wires, 1, move |vals| vec![f.call::<F>(vals)])[0]
+			witness_gen.hint_varsize(&input_wires, 1, move |vals| vec![f.call_native(vals)])[0]
 		};
 		CircuitElem::wire(&self.witness_gen, out_wire)
 	}

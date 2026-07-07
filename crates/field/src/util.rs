@@ -16,6 +16,16 @@ pub trait FieldFn<F: Field> {
 	/// The scalar of `E` is the base field `F`.
 	/// The `From<F>` bound lets the function embed base-field constants into `E`.
 	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, inputs: &[E]) -> E;
+
+	/// Evaluates the function on `inputs` natively in the base field `F`.
+	///
+	/// The default is `self.call::<F>(inputs)`; implementors may override with a base-field
+	/// specialized fast path (e.g. deferred `WideMul` reduction) that the generic
+	/// [`call`](Self::call) — which cannot assume `E: WideMul` — can't express. Callers evaluating
+	/// in `F` should prefer this.
+	fn call_native(&self, inputs: &[F]) -> F {
+		self.call::<F>(inputs)
+	}
 }
 
 /// Iterate the powers of a given value, beginning with 1 (the 0'th power).

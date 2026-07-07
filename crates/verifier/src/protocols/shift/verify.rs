@@ -4,7 +4,7 @@
 use std::{array, iter};
 
 use binius_core::{
-	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint},
+	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, Operand},
 	word::Word,
 };
 use binius_field::{BinaryField, field::FieldOps, util::FieldFn};
@@ -24,6 +24,7 @@ use itertools::Itertools;
 use super::{
 	BITAND_ARITY, INTMUL_ARITY, SHIFT_VARIANT_COUNT, error::Error, evaluate_h_op,
 	evaluate_monster_multilinear_for_operation,
+	monster::evaluate_monster_multilinear_for_operation_native,
 };
 use crate::config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS};
 
@@ -384,8 +385,19 @@ struct MonsterEvalFn<'a, F: BinaryField> {
 	r_y_len: usize,
 }
 
-impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
-	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
+impl<F: BinaryField> MonsterEvalFn<'_, F> {
+	/// Shared evaluation logic for [`FieldFn::call`] and [`FieldFn::call_native`].
+	///
+	/// `eval_op` computes one operation's monster evaluation from its operands and the shared
+	/// tensors — the expensive part that differs between the generic
+	/// ([`evaluate_monster_multilinear_for_operation`]) and native
+	/// (`evaluate_monster_multilinear_for_operation_native`) paths. Everything else (the input
+	/// splitting and the tensor expansions) is shared.
+	fn evaluate<E, G>(&self, vals: &[E], eval_op: G) -> E
+	where
+		E: FieldOps<Scalar = F> + From<F>,
+		G: Fn(&[Vec<&Operand>], &[E], E, &[E; SHIFT_VARIANT_COUNT * WORD_SIZE_BITS], &[E]) -> E,
+	{
 		// Split the flat input back into its sections, in the order they were concatenated.
 		let r_zhat_prime_v = vals[0].clone();
 		let bitand_lambda_v = vals[1].clone();
@@ -438,13 +450,7 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 				.iter()
 				.map(|AndConstraint { a, b, c }| (a, b, c))
 				.multiunzip();
-			evaluate_monster_multilinear_for_operation::<F, E>(
-				&[a, b, c],
-				bitand_r_x_prime_v,
-				bitand_lambda_v,
-				&shift_scalars,
-				&r_y_tensor,
-			)
+			eval_op(&[a, b, c], bitand_r_x_prime_v, bitand_lambda_v, &shift_scalars, &r_y_tensor)
 		};
 		// IntMul contribution: operands (a, b, lo, hi) batched by `intmul_lambda`.
 		let intmul_part = if !self.constraint_system.mul_constraints.is_empty() {
@@ -454,7 +460,7 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 				.iter()
 				.map(|MulConstraint { a, b, hi, lo }| (a, b, lo, hi))
 				.multiunzip();
-			evaluate_monster_multilinear_for_operation::<F, E>(
+			eval_op(
 				&[a, b, lo, hi],
 				intmul_r_x_prime_v,
 				intmul_lambda_v,
@@ -466,6 +472,18 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 		};
 
 		bitand_part + intmul_part
+	}
+}
+
+impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
+	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
+		self.evaluate(vals, evaluate_monster_multilinear_for_operation)
+	}
+
+	/// Native fast path: the per-operation evaluation defers `WideMul` reductions (see
+	/// `evaluate_monster_multilinear_for_operation_native`).
+	fn call_native(&self, vals: &[F]) -> F {
+		self.evaluate(vals, evaluate_monster_multilinear_for_operation_native)
 	}
 }
 
