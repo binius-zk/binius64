@@ -7,6 +7,7 @@ use binius_field::{BinaryField, FieldOps, WideMul, util::powers};
 use binius_math::{
 	inner_product::inner_product_scalars, multilinear::eq::eq_ind_partial_eval_scalars,
 };
+use binius_utils::rayon::prelude::*;
 
 use super::{
 	SHIFT_VARIANT_COUNT,
@@ -194,20 +195,26 @@ pub(crate) fn evaluate_monster_multilinear_for_operation_native<F: BinaryField>(
 	let r_x_prime_tensor = eq_ind_partial_eval_scalars(r_x_prime);
 	let operand_shift_scalars = operand_shift_scalar_table(shift_scalars, lambda, arity);
 
-	// One unreduced wide product per constraint, reduced once at the end.
-	let mut eval = <F as WideMul>::Output::default();
-	for (constraint, &r_x_prime_entry) in r_x_prime_tensor.iter().enumerate() {
-		let mut constraint_eval = F::ZERO;
-		for (operand_id, operand_vec) in operand_vecs.iter().enumerate() {
-			for svi in operand_vec[constraint] {
-				let variant = svi.shift_variant as usize;
-				let index = (variant * WORD_SIZE_BITS + svi.amount as usize) * arity + operand_id;
-				constraint_eval +=
-					operand_shift_scalars[index] * r_y_tensor[svi.value_index.0 as usize];
+	// One unreduced wide product per constraint. The constraints partition cleanly across rayon:
+	// each produces a single wide element and they are summed, so there is no large per-task
+	// accumulator. The single final reduction is `F`-linear.
+	let eval = r_x_prime_tensor
+		.par_iter()
+		.enumerate()
+		.map(|(constraint, &r_x_prime_entry)| {
+			let mut constraint_eval = F::ZERO;
+			for (operand_id, operand_vec) in operand_vecs.iter().enumerate() {
+				for svi in operand_vec[constraint] {
+					let variant = svi.shift_variant as usize;
+					let index =
+						(variant * WORD_SIZE_BITS + svi.amount as usize) * arity + operand_id;
+					constraint_eval +=
+						operand_shift_scalars[index] * r_y_tensor[svi.value_index.0 as usize];
+				}
 			}
-		}
-		eval += F::wide_mul(constraint_eval, r_x_prime_entry);
-	}
+			F::wide_mul(constraint_eval, r_x_prime_entry)
+		})
+		.sum::<<F as WideMul>::Output>();
 	F::reduce(eval)
 }
 
