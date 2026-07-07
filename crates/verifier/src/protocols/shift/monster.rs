@@ -1,20 +1,16 @@
 // Copyright 2025 Irreducible Inc.
 
-use std::{array, iter};
+use std::iter;
 
-use binius_core::{
-	ShiftVariant,
-	constraint_system::{Operand, ShiftedValueIndex},
-};
-use binius_field::{BinaryField, FieldOps, util::powers};
+use binius_core::constraint_system::Operand;
+use binius_field::{BinaryField, FieldOps, WideMul, util::powers};
 use binius_math::{
-	inner_product::inner_product_scalars,
-	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate_inplace_scalars},
+	inner_product::inner_product_scalars, multilinear::eq::eq_ind_partial_eval_scalars,
 };
+use binius_utils::rayon::prelude::*;
 
 use super::{
 	SHIFT_VARIANT_COUNT,
-	error::Error,
 	shift_ind::{partial_eval_phi, partial_eval_sigmas, partial_eval_sigmas_transpose},
 };
 use crate::config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS};
@@ -109,113 +105,117 @@ pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SH
 /// # Arguments
 ///
 /// * `operand_vecs` - Vector of operand vectors, one per operand position in the constraint
-/// * `r_x_prime` - Multilinear challenge `r_x'` for the constraint variables
+/// * `r_x_prime` - The constraint challenge `r_x'`; its equality indicator tensor is expanded here.
 /// * `lambda` - Random coefficient for batching operand evaluations
-/// * `r_s` - Challenge point for shift variables (length `LOG_WORD_SIZE_BITS`)
+/// * `shift_scalars` - Tensor product of the shift-selector evaluations `h_op` and the shift-amount
+///   equality indicator `eq(r_s)`, indexed by `variant * WORD_SIZE_BITS + amount`. Shared across
+///   operations.
 /// * `r_y_tensor` - Equality indicator tensor expansion of the word index challenge `r_y`
-/// * `h_op_evals` - Precomputed shift selector evaluations from `evaluate_h_op`, shared across
-///   operations
 ///
 /// # Returns
 ///
-/// The evaluation of the monster multilinear at the given challenge points, or an error
-/// if the computation fails.
+/// The evaluation of the monster multilinear at the given challenge points.
 pub fn evaluate_monster_multilinear_for_operation<F, E>(
 	operand_vecs: &[Vec<&Operand>],
 	r_x_prime: &[E],
 	lambda: E,
-	r_s: &[E],
+	shift_scalars: &[E; SHIFT_VARIANT_COUNT * WORD_SIZE_BITS],
 	r_y_tensor: &[E],
-	h_op_evals: &[E; SHIFT_VARIANT_COUNT],
-) -> Result<E, Error>
+) -> E
 where
 	F: BinaryField,
 	E: FieldOps<Scalar = F> + From<F>,
 {
+	let arity = operand_vecs.len();
+	for operands in operand_vecs {
+		assert_eq!(operands.len(), (1 << r_x_prime.len()));
+	}
+
 	let r_x_prime_tensor = eq_ind_partial_eval_scalars(r_x_prime);
+	let operand_shift_scalars = operand_shift_scalar_table(shift_scalars, lambda, arity);
 
-	let lambda_powers = powers(lambda)
-		.skip(1)
-		.take(operand_vecs.len())
-		.collect::<Vec<_>>();
-	let evals = evaluate_matrices(operand_vecs, &lambda_powers, &r_x_prime_tensor, r_y_tensor);
+	// Accumulate one contribution per constraint. Within a constraint, each shifted-value term over
+	// all operands is weighted by its operand shift scalar and the word-index tensor entry; the
+	// running sum is then scaled by the constraint-index tensor entry.
+	let mut eval = E::zero();
+	for (constraint, r_x_prime_entry) in r_x_prime_tensor.iter().enumerate() {
+		let mut constraint_eval = E::zero();
+		for (operand_id, operand_vec) in operand_vecs.iter().enumerate() {
+			for svi in operand_vec[constraint] {
+				let variant = svi.shift_variant as usize;
+				let index = (variant * WORD_SIZE_BITS + svi.amount as usize) * arity + operand_id;
+				constraint_eval +=
+					operand_shift_scalars[index].clone() * &r_y_tensor[svi.value_index.0 as usize];
+			}
+		}
+		eval += constraint_eval * r_x_prime_entry;
+	}
 
-	let eval = inner_product_scalars(
-		evals.map(|mut evals_op| evaluate_inplace_scalars(&mut evals_op[..], r_s)),
-		h_op_evals.iter().cloned(),
-	);
-
-	Ok(eval)
+	eval
 }
 
-/// Calculate a batched sum of the M_{\text{op}}(r'_x, r_y, s) matrices.
-///
-/// Computes one evaluation per shift op, shift amount pair. The matrix evaluations are scaled by
-/// the operand coefficients (λ powers) and accumulated.
-///
-/// # Arguments
-///
-/// * `operands` - Three-dimensional array of operands where:
-///   - dim 1: operation arity
-///   - dim 2: constraints
-///   - dim 3: shifted indices per term
-/// * `operand_coeffs` - Coefficients (λ powers) for batching operand evaluations
-/// * `r_x_prime_tensor` - Multilinear challenge tensor for constraint variables
-/// * `r_y_tensor` - Challenge tensor for word index variables
-fn evaluate_matrices<F: BinaryField, E: FieldOps<Scalar = F> + From<F>>(
-	operands: &[Vec<&Operand>],
-	operand_coeffs: &[E],
-	r_x_prime_tensor: &[E],
-	r_y_tensor: &[E],
-) -> [[E; WORD_SIZE_BITS]; SHIFT_VARIANT_COUNT] {
-	assert_eq!(operands.len(), operand_coeffs.len());
+/// Folds the operand batching coefficients (λ powers) into the shared shift scalars, producing a
+/// table indexed by `(variant, amount, operand_id)` whose entry is
+/// `shift_scalars[variant * WORD_SIZE_BITS + amount] · λ^{operand_id + 1}` — the scalar that
+/// multiplies each shifted-value term.
+fn operand_shift_scalar_table<E: FieldOps>(
+	shift_scalars: &[E; SHIFT_VARIANT_COUNT * WORD_SIZE_BITS],
+	lambda: E,
+	arity: usize,
+) -> Vec<E> {
+	let lambda_powers = powers(lambda).skip(1).take(arity).collect::<Vec<_>>();
+	let mut table = Vec::with_capacity(shift_scalars.len() * arity);
+	for shift_scalar in shift_scalars {
+		for lambda_power in &lambda_powers {
+			table.push(shift_scalar.clone() * lambda_power);
+		}
+	}
+	table
+}
 
-	let zero_evals = array::from_fn(|_| array::from_fn::<E, WORD_SIZE_BITS, _>(|_| E::zero()));
+/// Native, `WideMul`-accelerated variant of [`evaluate_monster_multilinear_for_operation`] over the
+/// base field `F`.
+///
+/// Produces the identical result, but defers the `GF(2^128)` reductions: the per-constraint
+/// contributions accumulate into a single *unreduced* wide element, reduced exactly once at the end
+/// (reduction is `F`-linear, so this equals reducing each per-constraint product and summing). The
+/// generic path can't do this because `E: FieldOps` does not imply `WideMul`.
+pub(crate) fn evaluate_monster_multilinear_for_operation_native<F: BinaryField>(
+	operand_vecs: &[Vec<&Operand>],
+	r_x_prime: &[F],
+	lambda: F,
+	shift_scalars: &[F; SHIFT_VARIANT_COUNT * WORD_SIZE_BITS],
+	r_y_tensor: &[F],
+) -> F {
+	let arity = operand_vecs.len();
+	for operands in operand_vecs {
+		assert_eq!(operands.len(), 1 << r_x_prime.len());
+	}
 
-	iter::zip(operand_coeffs, operands)
-		.map(|(coeff, constraint_operands)| {
-			let mut evals: [[E; WORD_SIZE_BITS]; SHIFT_VARIANT_COUNT] =
-				array::from_fn(|_| array::from_fn::<E, WORD_SIZE_BITS, _>(|_| E::zero()));
-			for (operand_terms, constraint_eval) in iter::zip(constraint_operands, r_x_prime_tensor)
-			{
-				for ShiftedValueIndex {
-					value_index,
-					shift_variant,
-					amount,
-				} in *operand_terms
-				{
-					let shift_id = match shift_variant {
-						ShiftVariant::Sll => 0,
-						ShiftVariant::Slr => 1,
-						ShiftVariant::Sar => 2,
-						ShiftVariant::Rotr => 3,
-						ShiftVariant::Sll32 => 4,
-						ShiftVariant::Srl32 => 5,
-						ShiftVariant::Sra32 => 6,
-						ShiftVariant::Rotr32 => 7,
-					};
-					evals[shift_id][*amount as usize] +=
-						constraint_eval.clone() * &r_y_tensor[value_index.0 as usize];
+	let r_x_prime_tensor = eq_ind_partial_eval_scalars(r_x_prime);
+	let operand_shift_scalars = operand_shift_scalar_table(shift_scalars, lambda, arity);
+
+	// One unreduced wide product per constraint. The constraints partition cleanly across rayon:
+	// each produces a single wide element and they are summed, so there is no large per-task
+	// accumulator. The single final reduction is `F`-linear.
+	let eval = r_x_prime_tensor
+		.par_iter()
+		.enumerate()
+		.map(|(constraint, &r_x_prime_entry)| {
+			let mut constraint_eval = F::ZERO;
+			for (operand_id, operand_vec) in operand_vecs.iter().enumerate() {
+				for svi in operand_vec[constraint] {
+					let variant = svi.shift_variant as usize;
+					let index =
+						(variant * WORD_SIZE_BITS + svi.amount as usize) * arity + operand_id;
+					constraint_eval +=
+						operand_shift_scalars[index] * r_y_tensor[svi.value_index.0 as usize];
 				}
 			}
-
-			// Scale all evaluations by the batching coefficient.
-			for evals_op in &mut evals {
-				for evals_op_s in &mut *evals_op {
-					*evals_op_s *= coeff;
-				}
-			}
-
-			evals
+			F::wide_mul(constraint_eval, r_x_prime_entry)
 		})
-		.fold(zero_evals, |mut a, b| {
-			for (a_op, b_op) in iter::zip(&mut a, b) {
-				for (a_op_s, b_op_s) in iter::zip(&mut *a_op, b_op) {
-					*a_op_s += b_op_s;
-				}
-			}
-			a
-		})
+		.sum::<<F as WideMul>::Output>();
+	F::reduce(eval)
 }
 
 #[cfg(test)]
@@ -229,6 +229,74 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
+
+	/// The native `WideMul` variant must produce exactly the same result as the generic
+	/// evaluation (deferred reduction is `F`-linear).
+	#[test]
+	fn evaluate_monster_native_matches_generic() {
+		use binius_core::{
+			ShiftVariant,
+			constraint_system::{ShiftedValueIndex, ValueIndex},
+		};
+
+		type F = BinaryField128bGhash;
+		let mut rng = StdRng::seed_from_u64(3);
+
+		let shift_variants = [
+			ShiftVariant::Sll,
+			ShiftVariant::Slr,
+			ShiftVariant::Sar,
+			ShiftVariant::Rotr,
+			ShiftVariant::Sll32,
+			ShiftVariant::Srl32,
+			ShiftVariant::Sra32,
+			ShiftVariant::Rotr32,
+		];
+		let n_words = 40usize;
+		let log_constraints = 6usize;
+		let n_constraints = 1usize << log_constraints;
+		let arity = 3usize;
+
+		let owned: Vec<Vec<Operand>> = (0..arity)
+			.map(|_| {
+				(0..n_constraints)
+					.map(|_| {
+						(0..rng.random_range(0..=3))
+							.map(|_| ShiftedValueIndex {
+								value_index: ValueIndex(rng.random_range(0..n_words) as u32),
+								shift_variant: shift_variants
+									[rng.random_range(0..SHIFT_VARIANT_COUNT)],
+								amount: rng.random_range(0..WORD_SIZE_BITS) as u8,
+							})
+							.collect()
+					})
+					.collect()
+			})
+			.collect();
+		let operand_vecs: Vec<Vec<&Operand>> = owned.iter().map(|v| v.iter().collect()).collect();
+
+		let r_x_prime = random_scalars::<F>(&mut rng, log_constraints);
+		let lambda = F::random(&mut rng);
+		let shift_scalars: [F; SHIFT_VARIANT_COUNT * WORD_SIZE_BITS] =
+			std::array::from_fn(|_| F::random(&mut rng));
+		let r_y_tensor = random_scalars::<F>(&mut rng, n_words);
+
+		let generic = evaluate_monster_multilinear_for_operation::<F, F>(
+			&operand_vecs,
+			&r_x_prime,
+			lambda,
+			&shift_scalars,
+			&r_y_tensor,
+		);
+		let native = evaluate_monster_multilinear_for_operation_native::<F>(
+			&operand_vecs,
+			&r_x_prime,
+			lambda,
+			&shift_scalars,
+			&r_y_tensor,
+		);
+		assert_eq!(generic, native);
+	}
 
 	#[test]
 	fn test_evaluate_h_op_hypercube_vertices() {

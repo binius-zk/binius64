@@ -1,7 +1,7 @@
 // Copyright 2025-2026 The Binius Developers
 
 use binius_field::{Field, PackedField};
-use binius_math::FieldBuffer;
+use binius_math::{AsSlicesMut, FieldBuffer};
 
 use crate::sumcheck::{batch_quadratic_mle::BatchQuadraticMleCheckProver, common::MleCheckProver};
 
@@ -10,7 +10,7 @@ pub type FractionalBuffer<P> = (FieldBuffer<P>, FieldBuffer<P>);
 // denominators to be added in a single buffer respectively, with the assumption that the 2
 // collections to be added are in either half.
 pub fn new<F, P>(
-	fraction: [FieldBuffer<P>; 4],
+	fraction: impl AsSlicesMut<P, 4> + Send + 'static,
 	eval_point: Vec<F>,
 	eval_claims: [F; 2],
 ) -> impl MleCheckProver<F>

@@ -1,28 +1,28 @@
 sha256 circuit
 --
 Gates & Instructions
-├─ Number of gates: 22,441
-└─ Number of evaluation instructions: 23,276
+├─ Number of gates: 20,616
+└─ Number of evaluation instructions: 20,616
 
 Constraints
-├─ AND constraints: 10,383 used (63.4% of 2^14)
-│  [▓▓▓▓▓▓░░░░] spare: 6,001
+├─ AND constraints: 8,880 used (54.2% of 2^14)
+│  [▓▓▓▓▓░░░░░] spare: 7,504
 ├─ MUL constraints: 0 used (0.0% of 0)
 │  [░░░░░░░░░░] spare: 0
-└─ Distinct value indices: 23,860
-   ├─ Distinct shifted value indices: 13,392
-   └─ Distinct unshifted value indices: 10,468
+└─ Distinct value indices: 21,511
+   ├─ Distinct shifted value indices: 12,563
+   └─ Distinct unshifted value indices: 8,948
 
 Value Vector
-├─ Public Section: 421 used (82.2% of 2^9)
-│  [▓▓▓▓▓▓▓▓░░] spare: 91
-│  ├─ Constants: 289
-│  └─ Inout: 132
-├─ Private Section: 10,057 used (63.4%)
-│  [▓▓▓▓▓▓░░░░] spare: 5,815
-│  ├─ Witness: 273
-│  └─ Internal: 9,784
-├─ Total Committed: 10,478 used (64.0% of 2^14)
-│  [▓▓▓▓▓▓░░░░] spare: 5,906
-└─ Scratch (uncommitted): 18,576
+├─ Public Section: 405 used (79.1% of 2^9)
+│  [▓▓▓▓▓▓▓░░░] spare: 107
+│  ├─ Constants: 141
+│  └─ Inout: 264
+├─ Private Section: 8,808 used (55.5%)
+│  [▓▓▓▓▓░░░░░] spare: 7,064
+│  ├─ Witness: 0
+│  └─ Internal: 8,808
+├─ Total Committed: 9,213 used (56.2% of 2^14)
+│  [▓▓▓▓▓░░░░░] spare: 7,171
+└─ Scratch (uncommitted): 17,128
 

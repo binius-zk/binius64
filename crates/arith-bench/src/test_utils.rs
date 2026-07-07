@@ -19,8 +19,8 @@ where
 	U: PackedUnderlier<Inner>,
 	Inner: Underlier + std::fmt::Debug,
 {
-	let mut subject = U::zero();
-	let mut reference = vec![Inner::zero(); 1 << U::LOG_WIDTH];
+	let mut subject = U::ZERO;
+	let mut reference = vec![Inner::ZERO; 1 << U::LOG_WIDTH];
 	for op in ops {
 		match op {
 			GetSetOp::Get { index } => {

@@ -56,6 +56,12 @@ pub struct LogupProof<F> {
 ///
 /// - The table has at least one variable.
 /// - Every index entry is less than `2^m`.
+#[tracing::instrument(
+	skip_all,
+	level = "debug",
+	name = "logup* (committed)",
+	fields(n_lookers = lookers.len(), table_n_vars = table.log_len())
+)]
 pub fn prove<F, P, Channel>(
 	table: &FieldBuffer<P>,
 	lookers: &[Looker<'_, F>],
@@ -77,7 +83,8 @@ where
 	let (numerators, pushforward) = witness::combined_lookers::<F, P>(lookers, gamma, m);
 
 	// Commit Y before the reduction, so the logUp challenge binds the commitment.
-	let oracle = channel.send_oracle(pushforward.to_ref());
+	let oracle = tracing::debug_span!("Commit pushforward")
+		.in_scope(|| channel.send_oracle(pushforward.to_ref()));
 
 	// The product check binds <T, Y> to the gamma-combination of the looker claims.
 	let claims = lookers
@@ -100,6 +107,7 @@ where
 	// batches it with every other queued relation in `finish()`.
 	//
 	//     <Y, eq_r'> = Y(r') = pushforward_eval_claim
+	let _open_guard = tracing::debug_span!("Open pushforward relation").entered();
 	let transparent = eq_ind_partial_eval::<P>(&output.table_eval_point);
 	channel.prove_oracle_relations([(
 		oracle,

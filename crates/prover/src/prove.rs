@@ -123,13 +123,13 @@ impl IOPProver {
 		// reduction.
 		let intmul_output = if cs.n_mul_constraints() > 0 {
 			let intmul_guard = tracing::info_span!(
-				"[phase] IntMul Reduction",
-				phase = "intmul_reduction",
-				perfetto_category = "phase",
+				"[phase] IntMul check",
 				n_constraints = cs.mul_constraints.len()
 			)
 			.entered();
-			let mul_witness = build_intmul_witness(&cs.mul_constraints, &witness);
+			let mul_witness = tracing::debug_span!("Assemble columns")
+				.in_scope(|| build_intmul_witness(&cs.mul_constraints, &witness));
+
 			let intmul_output = prove_intmul_reduction::<_, P, _>(mul_witness, &mut *channel)?;
 			drop(intmul_guard);
 			Some(intmul_output)
@@ -138,15 +138,13 @@ impl IOPProver {
 		};
 
 		// [phase] BitAnd Reduction - AND constraint reduction
-		let bitand_guard = tracing::info_span!(
-			"[phase] BitAnd Reduction",
-			phase = "bitand_reduction",
-			perfetto_category = "phase",
-			n_constraints = cs.and_constraints.len()
-		)
-		.entered();
+		let bitand_guard =
+			tracing::info_span!("[phase] BitAnd check", n_constraints = cs.and_constraints.len())
+				.entered();
 		let bitand_claim = {
-			let bitand_witness = build_bitand_witness(&cs.and_constraints, &witness);
+			let bitand_witness = tracing::debug_span!("Assemble columns")
+				.in_scope(|| build_bitand_witness(&cs.and_constraints, &witness));
+
 			let AndCheckOutput {
 				a_eval,
 				b_eval,
@@ -167,6 +165,11 @@ impl IOPProver {
 		// improves ShiftReduction perf. When IntMul was skipped, synthesize a zero claim (four
 		// zero evals at an empty point): the shift reduction iterates the (empty) MUL constraints,
 		// so this claim contributes zero to its batched evaluation.
+		//
+		// Build the oblong domain subspace once and pass it into the shift reduction, mirroring
+		// the verifier side (`shift::check_eval` takes the domain subspace). It is reused for the
+		// IntMul claim collapse below.
+		let subspace = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 		let intmul_claim = match intmul_output {
 			Some(IntMulOutput {
 				eval_point,
@@ -176,7 +179,6 @@ impl IOPProver {
 				c_hi_evals,
 			}) => {
 				let r_zhat_prime = bitand_claim.r_zhat_prime;
-				let subspace = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 				let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
 				let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
 				OperatorData {
@@ -212,6 +214,7 @@ impl IOPProver {
 			witness.combined_witness(),
 			bitand_claim,
 			intmul_claim,
+			&subspace,
 			&mut *channel,
 		);
 		drop(shift_guard);
@@ -324,7 +327,7 @@ where
 
 		let _prove_guard = tracing::info_span!(
 			"Prove",
-			n_witness_words = cs.value_vec_layout.committed_total_len,
+			n_hidden_words = cs.value_vec_layout.n_hidden_words,
 			n_bitand = cs.and_constraints.len(),
 			n_intmul = cs.mul_constraints.len(),
 		)
@@ -453,7 +456,8 @@ where
 
 	let mut mulcheck_prover = IntMulProver::new(0, channel);
 
-	let intmul_witness = IntMulWitness::<P>::new(&a, &b, &lo, &hi)?;
+	let intmul_witness = tracing::debug_span!("Build IntMul witness")
+		.in_scope(|| IntMulWitness::<P>::new(&a, &b, &lo, &hi))?;
 
 	Ok(mulcheck_prover.prove(intmul_witness))
 }
@@ -471,7 +475,6 @@ struct MulCheckWitness {
 	hi: Vec<Word>,
 }
 
-#[tracing::instrument(skip_all, "Build BitAnd witness", level = "debug")]
 fn build_bitand_witness(and_constraints: &[AndConstraint], witness: &ValueVec) -> AndCheckWitness {
 	let n_constraints = and_constraints.len();
 
@@ -497,7 +500,6 @@ fn build_bitand_witness(and_constraints: &[AndConstraint], witness: &ValueVec) -
 	AndCheckWitness { a, b, c }
 }
 
-#[tracing::instrument(skip_all, "Build IntMul witness", level = "debug")]
 fn build_intmul_witness(mul_constraints: &[MulConstraint], witness: &ValueVec) -> MulCheckWitness {
 	let n_constraints = mul_constraints.len();
 

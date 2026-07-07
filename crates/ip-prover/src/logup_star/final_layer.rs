@@ -68,6 +68,7 @@ pub struct FinalLayerOutput<F> {
 /// * `pushforward` - The pushforward `Y` over the `m`-variable cube.
 /// * `table` - The table `T` over the `m`-variable cube.
 /// * `channel` - The prover channel.
+#[tracing::instrument(skip_all, level = "debug", name = "logup* final layer")]
 pub fn prove_final_layer<F, P>(
 	eval_claim: F,
 	table_prover: FracAddCheckProver<P>,

@@ -21,6 +21,7 @@ binius-verifier = { path = "../verifier" }
 bitcoin_hashes.workspace = true
 bitcoin.workspace = true
 blake2.workspace = true
+blake3.workspace = true
 clap.workspace = true
 digest.workspace = true
 ethsign = "0.9.0"

@@ -116,14 +116,11 @@ where
 		};
 
 		let (num, den) = layer;
-		let (num_0, num_1) = num.split_half_ref();
-		let (den_0, den_1) = den.split_half_ref();
-		let num_0 = FieldBuffer::new(num_0.log_len(), num_0.as_ref().into());
-		let num_1 = FieldBuffer::new(num_1.log_len(), num_1.as_ref().into());
-		let den_0 = FieldBuffer::new(den_0.log_len(), den_0.as_ref().into());
-		let den_1 = FieldBuffer::new(den_1.log_len(), den_1.as_ref().into());
+		// The MLE-check reduces four multilinears.
+		// These are the low and high halves of the numerator buffer and of the denominator buffer.
+		// Splitting the owned buffers hands those halves over by borrow, so the fold runs in place.
 		let prover = frac_add_mle::new(
-			[num_0, num_1, den_0, den_1],
+			[num.split_half(), den.split_half()],
 			num_claim.point.clone(),
 			[num_claim.eval, den_claim.eval],
 		);

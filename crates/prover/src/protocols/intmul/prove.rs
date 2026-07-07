@@ -119,7 +119,8 @@ where
 		let initial_eval_point = self.channel.sample_many(n_vars);
 
 		// `b_root` is not needed after this, so fold it in place rather than allocating a copy.
-		let exp_eval = evaluate_inplace(b_root, &initial_eval_point);
+		let exp_eval = tracing::debug_span!("Evaluate exponent root")
+			.in_scope(|| evaluate_inplace(b_root, &initial_eval_point));
 
 		self.channel.send_one(exp_eval);
 
@@ -133,7 +134,8 @@ where
 		let Phase2Output {
 			twisted_eval_points,
 			twisted_evals,
-		} = frobenius_twist(LOG_WORD_SIZE_BITS, &phase1_eval_point, &b_leaves_evals);
+		} = tracing::debug_span!("IntMul phase2 (Frobenius twist)")
+			.in_scope(|| frobenius_twist(LOG_WORD_SIZE_BITS, &phase1_eval_point, &b_leaves_evals));
 
 		// Phase 3
 		let Phase3Output {
@@ -207,6 +209,7 @@ where
 			&phase_4_output.c_hi_limb_evals,
 		];
 
+		let columns_guard = tracing::debug_span!("Gather lookup index columns").entered();
 		let index_columns = (0..N_LIMB_COLUMNS)
 			.map(|j| {
 				let (tree, limb) = (j / N_LIMBS, j % N_LIMBS);
@@ -222,6 +225,7 @@ where
 				twist_limb_claim(twists[j], &phase_4_output.eval_point, limb_evals[tree][limb])
 			})
 			.collect::<Vec<_>>();
+		drop(columns_guard);
 
 		// Read the N_LIMB_COLUMNS looked-up columns from the shared table via the committed multi-
 		// looker logup* reduction. The pushforward oracle is committed inside; its opening relation
@@ -239,6 +243,7 @@ where
 
 		// The index entries are the GF(2)-linear embeddings iota(e) = Σ_u basis(u) · bit_u(e),
 		// materialized by a table of all 2^LIMB_BITS embeddings.
+		let embed_guard = tracing::debug_span!("Embed index columns").entered();
 		let mut iota_table = Vec::with_capacity(1usize << LIMB_BITS);
 		iota_table.push(F::ZERO);
 		for row in 1..1usize << LIMB_BITS {
@@ -252,6 +257,7 @@ where
 			.iter()
 			.map(|rows| rows.iter().map(|&row| iota_table[row]).collect::<Vec<_>>())
 			.collect::<Vec<_>>();
+		drop(embed_guard);
 
 		// Collapse the per-column claims into a single claim on the eq(ρ)-folded column V by
 		// sampling ρ, so the final unification runs over the content variables only.
@@ -261,6 +267,7 @@ where
 		let folded_index_claim =
 			evaluate(&FieldBuffer::<P>::from_values(&padded_column_evals), &rho);
 		let rho_tensor = eq_ind_partial_eval_scalars::<F>(&rho);
+		let fold_guard = tracing::debug_span!("Fold index columns by rho").entered();
 		let folded_column_scalars = (0..1usize << n_vars)
 			.map(|i| {
 				izip!(&embedded_columns, &rho_tensor)
@@ -269,6 +276,7 @@ where
 			})
 			.collect::<Vec<_>>();
 		let folded_column = FieldBuffer::<P>::from_values(&folded_column_scalars);
+		drop(fold_guard);
 		let index_prover = MleToSumCheckDecorator::new(MultilinearEvalProver::new(
 			folded_column,
 			index_content_point,
@@ -306,6 +314,7 @@ where
 			b_recomb,
 		));
 
+		let batch_guard = tracing::debug_span!("Final batched sumcheck").entered();
 		let BatchSumcheckOutput {
 			challenges,
 			multilinear_evals: _,
@@ -317,6 +326,7 @@ where
 			],
 			self.channel,
 		);
+		drop(batch_guard);
 
 		// `challenges` (reversed) is the shared output point for all output claims.
 		let r_out = challenges.as_slice();
@@ -324,12 +334,14 @@ where
 		// Send the raw per-bit output evals at `r_out`, computed directly from the exponents. The
 		// verifier binds the stacked-index claim via the GF(2)-linearity of the embedding, the `b`
 		// evals via sum_i eq(r_I^b, i) * b(i, r_out) = B(r_out), and the parity bits directly.
+		let output_guard = tracing::debug_span!("Compute output bit evals").entered();
 		let per_bit_evals =
 			|exponents: &[Word]| fold_across_words::<_, P>(exponents, r_out).to_vec();
 		let a_evals = per_bit_evals(a_exponents);
 		let c_lo_evals = per_bit_evals(c_lo_exponents);
 		let c_hi_evals = per_bit_evals(c_hi_exponents);
 		let b_evals = per_bit_evals(b_exponents);
+		drop(output_guard);
 
 		self.channel.send_many(&a_evals);
 		self.channel.send_many(&c_lo_evals);
@@ -369,17 +381,23 @@ where
 		};
 
 		// Run prodcheck - reduces to claim on concatenated b_leaves
-		let output_claim = b_prover.prove(claim, self.channel);
+		let MultilinearEvalClaim {
+			eval: _,
+			point: reduced_point,
+		} = tracing::debug_span!("Variable-base product check")
+			.in_scope(|| b_prover.prove(claim, self.channel));
 
 		// Split output point: first n are x-point, last k are z-challenges
-		let (x_point, _z_suffix) = output_claim.point.split_at(n_vars);
+		let (x_point, _z_suffix) = reduced_point.split_at(n_vars);
 
 		// Compute leaf evaluations at x_point
+		let leaf_guard = tracing::debug_span!("Compute base layer partial evals").entered();
 		let x_tensor = eq_ind_partial_eval(x_point);
 		let b_leaves_evals = b_leaves
 			.chunks_par(n_vars)
 			.map(|b_leaf| inner_product_buffers(&b_leaf, &x_tensor))
 			.collect::<Vec<_>>();
+		drop(leaf_guard);
 
 		// Write leaf evaluations to channel
 		self.channel.send_many(&b_leaves_evals);
@@ -443,10 +461,12 @@ where
 		let c_root_prover = MleToSumCheckDecorator::new(c_root_sumcheck_prover);
 
 		let provers = vec![Either::Left(selector_prover), Either::Right(c_root_prover)];
+		let sumcheck_guard = tracing::debug_span!("Batched selector + C-root sumcheck").entered();
 		let BatchSumcheckOutput {
 			challenges,
 			multilinear_evals,
 		} = batch_prove_and_write_evals(provers, self.channel);
+		drop(sumcheck_guard);
 
 		let [mut selector_prover_evals, c_root_prover_evals] = multilinear_evals
 			.try_into()
@@ -502,6 +522,7 @@ where
 		// Run the batched prodcheck over all LOG_N_LIMBS layers: content point is the Phase-3
 		// evaluation point at which the three roots are claimed. The output pairs each tree with
 		// its reduced leaf evaluation at the shared reduced point.
+		let prodcheck_guard = tracing::debug_span!("Batched constant-base prodcheck").entered();
 		let prodcheck::BatchProveOutput {
 			eval_point: reduced_point,
 			evals: _tree_evals,
@@ -512,6 +533,7 @@ where
 			eval_point.to_vec(),
 			self.channel,
 		);
+		drop(prodcheck_guard);
 
 		// The reduced point is [selector (2), r_content (n_vars), r_limb (LOG_N_LIMBS)]:
 		// `r_content` is the shared point at which the limb columns are claimed; `r_limb`
@@ -522,6 +544,7 @@ where
 		// Send the per-limb evaluations at `r_content`, computed by re-gathering each limb column
 		// from its twisted power table. The verifier recombines each tree's two leaf halves via
 		// eq(r_limb) to bind them to the final-layer sumchecks.
+		let regather_guard = tracing::debug_span!("Regather per-limb evals").entered();
 		let twists = limb_column_twists();
 		let x_tensor = eq_ind_partial_eval(r_content);
 		let limb_evals = |tree: usize| {
@@ -540,6 +563,7 @@ where
 		let a_limb_evals = limb_evals(0);
 		let c_lo_limb_evals = limb_evals(1);
 		let c_hi_limb_evals = limb_evals(2);
+		drop(regather_guard);
 		self.channel.send_many(&a_limb_evals);
 		self.channel.send_many(&c_lo_limb_evals);
 		self.channel.send_many(&c_hi_limb_evals);

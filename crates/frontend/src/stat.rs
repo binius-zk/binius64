@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! Circuit statistics module for analyzing constraint counts and circuit complexity.
 
@@ -94,7 +95,7 @@ impl CircuitStat {
 		let public_allocated = cs.value_vec_layout.offset_witness;
 		// The committed values are not padded to a power of two in the layout, but the prover
 		// commits to a power-of-two-length witness polynomial, so report that padded size.
-		let total_allocated = cs.value_vec_layout.committed_total_len.next_power_of_two();
+		let total_allocated = cs.value_vec_layout.combined_len().next_power_of_two();
 		let private_allocated = total_allocated - public_allocated;
 
 		Self {

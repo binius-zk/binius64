@@ -118,7 +118,7 @@ impl<F: Field> IPVerifierChannel<F> for IronSpartanBuilderChannel<F> {
 				.iter()
 				.map(|elem| elem.to_wire(&mut builder))
 				.collect();
-			builder.hint_varsize(&input_wires, 1, move |vals| vec![f.call::<F>(vals)])[0]
+			builder.hint_varsize(&input_wires, 1, move |vals| vec![f.call_native(vals)])[0]
 		};
 		CircuitElem::wire(&self.builder, out_wire)
 	}

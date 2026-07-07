@@ -129,6 +129,12 @@ where
 /// - `numerators` has one `n`-variable buffer per looker; every index column has `2^n` entries,
 ///   with every entry less than the table size.
 /// - `pushforward` equals the scatter of the numerators.
+#[tracing::instrument(
+	skip_all,
+	level = "debug",
+	name = "logup* reduction",
+	fields(n_lookers = lookers.len(), table_n_vars = table.log_len())
+)]
 pub fn prove_reduction<F, P>(
 	table: &FieldBuffer<P>,
 	lookers: &[Looker<'_, F>],
@@ -155,6 +161,7 @@ where
 	//
 	//     looker j: gamma^j * eq_{r_j}(i) / (c - I_j(i))   over n variables
 	//     table:    Y(v)                  / (c - v)         over m variables
+	let circuits_guard = tracing::debug_span!("Build fracadd circuits").entered();
 	let (looker_provers, looker_roots): (Vec<_>, Vec<_>) = std::iter::zip(lookers, numerators)
 		.map(|(looker, numerator)| {
 			let den = witness::looker_denominator::<F, P>(c, looker.index);
@@ -188,6 +195,7 @@ where
 	);
 	let num_l = top_root.0.get(0);
 	let den_l = top_root.1.get(0);
+	drop(circuits_guard);
 
 	// The two root fractions; their equality is the logUp identity the verifier checks.
 	//
@@ -195,6 +203,7 @@ where
 	//     num_r / den_r = sum_v Y(v) / (c - v)
 	channel.send_many(&[num_l, den_l, num_r, den_r]);
 
+	let looker_gkr_guard = tracing::debug_span!("Looker-side GKR").entered();
 	// Looker side, first phase: run the top circuit over the looker variables to completion,
 	// reducing its root to a claim on the interpolated root fractions at a selector point.
 	let (top_remaining, (top_num_claim, _top_den_claim)) =
@@ -216,6 +225,7 @@ where
 	} else {
 		fracaddcheck::batch_prove(looker_provers, looker_roots, selector_point, Vec::new(), channel)
 	};
+	drop(looker_gkr_guard);
 
 	// The per-looker leaf denominators are c - I_j(content), so the index claims are their
 	// c-complements. Send them so the verifier can check they combine to the batched leaf.
@@ -229,9 +239,11 @@ where
 
 	// Table side: run the first m-1 GKR layers, stopping at the layer-1 claim over m-1 variables.
 	// The leaf layer is left on the prover, to be spliced into the batched final layer.
+	let table_gkr_guard = tracing::debug_span!("Table-side GKR layers").entered();
 	let (table_remaining, layer1) =
 		table_prover.prove_layers(m - 1, root_claim(num_r, den_r), channel);
 	let table_leaf_prover = table_remaining.expect("m-1 < m layers leaves the leaf layer");
+	drop(table_gkr_guard);
 
 	// Batched final layer: reduce the layer-1 claims and <T, Y> = e to one shared evaluation point.
 	let FinalLayerOutput {

@@ -61,7 +61,7 @@ where
 		ReedSolomonCode::with_ntt_subspace(ntt, oracle_log_dim, params.rs_code().log_inv_rate());
 
 	let _scope = tracing::debug_span!(
-		"FRI Encode",
+		"Reed–Solomon Encode",
 		log_batch_size,
 		log_dim = rs_code.log_dim(),
 		log_inv_rate = rs_code.log_inv_rate(),
@@ -69,8 +69,7 @@ where
 	)
 	.entered();
 
-	tracing::debug_span!("Reed-Solomon Encode")
-		.in_scope(|| rs_code.encode_batch(ntt, message.to_ref(), log_batch_size))
+	rs_code.encode_batch(ntt, message.to_ref(), log_batch_size)
 }
 
 /// Output of [`encode_masked`]: the interleaved (message ‖ mask) codeword and the generated mask.
@@ -123,16 +122,20 @@ where
 	// Generate random mask of equal length to message.
 	let log_len = message.log_len();
 	let packed_len = 1usize << log_len.saturating_sub(P::LOG_WIDTH);
+
+	let gen_mask_scope = tracing::debug_span!("Generate random mask").entered();
 	let mask = FieldBuffer::<P>::new(
 		log_len,
 		par_rand::<StdRng, _, _>(packed_len, &mut rng, P::random).collect(),
 	);
+	drop(gen_mask_scope);
 
 	let combined_values = if log_len < P::LOG_WIDTH {
 		let combined_value =
 			P::from_scalars(iter::chain(message.iter_scalars(), mask.iter_scalars()));
 		vec![combined_value]
 	} else {
+		let _scope = tracing::debug_span!("Concatenate message and mask").entered();
 		// TODO: Ideally, encoding should not allocate and copy the memory into a temp buffer.
 		let mut combined_values: Vec<P> = Vec::with_capacity(2 * packed_len);
 		combined_values.extend_from_slice(message.as_ref());

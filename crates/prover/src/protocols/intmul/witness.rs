@@ -117,6 +117,7 @@ where
 		// limb columns read tables 0..N_LIMBS; the `c_hi` limb columns (base
 		// G^{2^{WORD_SIZE_BITS}}) read tables N_LIMBS..2·N_LIMBS. Table 0 is the shared logup*
 		// table.
+		let power_table_scope = tracing::debug_span!("Build power tables").entered();
 		let g = F::MULTIPLICATIVE_GENERATOR;
 		let bases = iterate(g, |g| g.square())
 			.step_by(LIMB_BITS)
@@ -126,9 +127,12 @@ where
 			.into_par_iter()
 			.map(|base| power_table::<F, P>(LIMB_BITS, base))
 			.collect::<Vec<_>>();
+		drop(power_table_scope);
 
 		// Build the per-limb leaf layers and their prodcheck provers. Each prover's products
 		// layer is the corresponding tree root.
+		let fixed_base_tree_scope =
+			tracing::debug_span!("Compute fixed-base prodcheck layers").entered();
 		let a_leaves = limb_leaves(&tables[..N_LIMBS], a);
 		let (a_prodcheck, a_root) = ProdcheckProver::new(LOG_N_LIMBS, a_leaves);
 
@@ -137,12 +141,14 @@ where
 
 		let c_hi_leaves = limb_leaves(&tables[N_LIMBS..], c_hi);
 		let (c_hi_prodcheck, c_hi_root) = ProdcheckProver::new(LOG_N_LIMBS, c_hi_leaves);
+		drop(fixed_base_tree_scope);
 
 		// Compute b_leaves as concatenated leaves for prodcheck; the variable base is the `a` root.
+		let variable_base_tree_scope =
+			tracing::debug_span!("Compute variable-base prodcheck layers").entered();
 		let b_leaves = compute_b_leaves(&a_root, b);
-
-		// Create the prodcheck prover; its products layer becomes b_root
 		let (b_prodcheck, b_root) = ProdcheckProver::new(LOG_WORD_SIZE_BITS, b_leaves.clone());
+		drop(variable_base_tree_scope);
 
 		Ok(Self {
 			a_exponents: a,
@@ -163,19 +169,70 @@ where
 	}
 }
 
+/// Number of packed columns filled as one independent group before chaining to the next block.
+///
+/// The power chain `base^i` is inherently serial; striding the fill into blocks of
+/// `2^LOG_STRIDE` independent packed multiplies exposes instruction-level parallelism so the
+/// multiplier pipeline stays busy. `4` keeps a block (16 packed elements) comfortably in registers.
+const LOG_STRIDE: usize = 4;
+
+/// The first `count` powers of `base` (`base^0 .. base^(count-1)`) plus the next power
+/// `base^count`.
+fn sequential_powers<F: Field>(count: usize, base: F) -> (Vec<F>, F) {
+	let mut scalars = Vec::with_capacity(count);
+	let mut row = F::ONE;
+	for _ in 0..count {
+		scalars.push(row);
+		row *= base;
+	}
+	(scalars, row)
+}
+
 /// Build the power table of `base` with `2^log_size` rows: row `i` holds `base^i`.
 pub fn power_table<F, P>(log_size: usize, base: F) -> FieldBuffer<P>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
-	let mut scalars = Vec::with_capacity(1 << log_size);
-	let mut row = F::ONE;
-	for _ in 0..1usize << log_size {
-		scalars.push(row);
-		row *= base;
+	// The first block spans `2^log_block` scalars = `2^LOG_STRIDE` packed elements.
+	let log_block = P::LOG_WIDTH + LOG_STRIDE;
+
+	// Small tables (at most one block) don't benefit from striding; build them sequentially. This
+	// also covers `log_size < P::LOG_WIDTH` (a single partially-filled packed element).
+	if log_size <= log_block {
+		let (scalars, _) = sequential_powers(1 << log_size, base);
+		return FieldBuffer::<P>::from_values(&scalars);
 	}
-	FieldBuffer::<P>::from_values(&scalars)
+
+	// Build the first block's `2^log_block` sequential powers, packed into `2^LOG_STRIDE` elements;
+	// `incr = base^(2^log_block)` is the per-block increment.
+	let (block_scalars, incr_scalar) = sequential_powers(1 << log_block, base);
+	let incr = P::broadcast(incr_scalar);
+
+	let block_len = 1 << LOG_STRIDE; // packed elements per block
+	let packed_len = 1 << (log_size - P::LOG_WIDTH);
+	let mut table = Vec::<P>::with_capacity(packed_len);
+	table.extend(
+		block_scalars
+			.chunks(P::WIDTH)
+			.map(|chunk| P::from_scalars(chunk.iter().copied())),
+	);
+	table.resize(packed_len, P::zero());
+
+	// Fill each block from the previous one; the `block_len` multiplies within a block are
+	// independent, so only the block-to-block step carries a dependency.
+	let mut blocks = table.chunks_mut(block_len);
+	let mut prev = blocks
+		.next()
+		.expect("log_size > log_block, so packed_len > block_len");
+	for cur in blocks {
+		for (dst, &src) in cur.iter_mut().zip(prev.iter()) {
+			*dst = src * incr;
+		}
+		prev = cur;
+	}
+
+	FieldBuffer::new(log_size, table.into_boxed_slice())
 }
 
 /// Extract limb `l` of an exponent word as a table row index.
@@ -406,7 +463,6 @@ mod tests {
 		let witness = Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap();
 		check_consistency(&witness);
 	}
-
 	/// Directly checks `compute_b_leaves` against its specification — leaf `z` holds
 	/// `bases[i]^(2^z)` where bit `z` of `exponents[i]` is set, else `F::ONE` — over both the
 	/// parallel path (`n_vars >= P::LOG_WIDTH`) and the scalar fallback (`n_vars < P::LOG_WIDTH`).
@@ -447,6 +503,30 @@ mod tests {
 					);
 					base = base.square();
 				}
+			}
+		}
+	}
+
+	/// Checks `power_table` against a sequential reference (`row i == base^i`) across both the
+	/// small sequential fallback (`log_size <= P::LOG_WIDTH + LOG_STRIDE`) and the strided packed
+	/// path.
+	#[test]
+	fn power_table_matches_sequential() {
+		use binius_field::{BinaryField128bGhash, Random};
+		use rand::prelude::*;
+
+		type F = BinaryField128bGhash;
+
+		let mut rng = StdRng::seed_from_u64(2);
+		let base = F::random(&mut rng);
+		// `Packed128b` has `LOG_WIDTH == 2`, so `log_block == 6`: sizes up to 6 take the sequential
+		// fallback; 7 and 10 (multiple blocks) exercise the strided path.
+		for log_size in [0usize, 3, 6, 7, 10] {
+			let table = power_table::<F, P>(log_size, base);
+			let mut expected = F::ONE;
+			for i in 0..1usize << log_size {
+				assert_eq!(table.get(i), expected, "mismatch at log_size={log_size}, i={i}");
+				expected *= base;
 			}
 		}
 	}

@@ -425,10 +425,12 @@ where
 		};
 
 		// Commit the codeword over the Merkle channel, with one interleaved coset per leaf.
+		let merkle_scope = tracing::debug_span!("Merkle commit").entered();
 		let leaf_size = 1 << self.fri_params.input_oracles()[index].log_batch_size();
 		let commitment = self
 			.channel
 			.send_merkle_commitment(codeword.to_ref(), leaf_size);
+		drop(merkle_scope);
 
 		self.committed_oracles.push(CommittedOracleData {
 			mask,

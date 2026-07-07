@@ -1,10 +1,10 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::iter;
+use std::{array, iter};
 
 use binius_core::{
-	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint},
+	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, Operand},
 	word::Word,
 };
 use binius_field::{BinaryField, field::FieldOps, util::FieldFn};
@@ -15,15 +15,18 @@ use binius_ip::{
 use binius_math::{
 	BinarySubspace,
 	line::extrapolate_line,
-	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
+	multilinear::eq::{
+		eq_ind_partial_eval_scalars, eq_ind_zero, eq_one_var, scaled_eq_ind_partial_eval_scalars,
+	},
 	univariate::{evaluate_univariate, lagrange_evals_scalars},
 };
 use getset::Getters;
 use itertools::Itertools;
 
 use super::{
-	BITAND_ARITY, INTMUL_ARITY, error::Error, evaluate_h_op,
+	BITAND_ARITY, INTMUL_ARITY, SHIFT_VARIANT_COUNT, error::Error, evaluate_h_op,
 	evaluate_monster_multilinear_for_operation,
+	monster::evaluate_monster_multilinear_for_operation_native,
 };
 use crate::config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS};
 
@@ -290,7 +293,7 @@ where
 		let intmul_r_x_prime_len = intmul_data.r_x_prime.len();
 		let r_j_len = r_j.len();
 		let r_s_len = r_s.len();
-		let r_y_len = r_y.len() + 1;
+		let r_y_len = r_y.len();
 
 		let inputs: Vec<C::Elem> = iter::once(r_zhat_prime)
 			.chain(iter::once(bitand_lambda.clone()))
@@ -384,8 +387,19 @@ struct MonsterEvalFn<'a, F: BinaryField> {
 	r_y_len: usize,
 }
 
-impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
-	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
+impl<F: BinaryField> MonsterEvalFn<'_, F> {
+	/// Shared evaluation logic for [`FieldFn::call`] and [`FieldFn::call_native`].
+	///
+	/// `eval_op` computes one operation's monster evaluation from its operands and the shared
+	/// tensors — the expensive part that differs between the generic
+	/// ([`evaluate_monster_multilinear_for_operation`]) and native
+	/// (`evaluate_monster_multilinear_for_operation_native`) paths. Everything else (the input
+	/// splitting and the tensor expansions) is shared.
+	fn evaluate<E, G>(&self, vals: &[E], eval_op: G) -> E
+	where
+		E: FieldOps<Scalar = F> + From<F>,
+		G: Fn(&[Vec<&Operand>], &[E], E, &[E; SHIFT_VARIANT_COUNT * WORD_SIZE_BITS], &[E]) -> E,
+	{
 		// Split the flat input back into its sections, in the order they were concatenated.
 		let r_zhat_prime_v = vals[0].clone();
 		let bitand_lambda_v = vals[1].clone();
@@ -400,26 +414,48 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 		let r_s_v = &vals[off..off + self.r_s_len];
 		off += self.r_s_len;
 		let r_y_v = &vals[off..off + self.r_y_len];
+		off += self.r_y_len;
+		// `r_segment` is the top word-index coordinate, appended after `r_y`; it selects the public
+		// (0) vs hidden (1) segment.
+		let r_segment = vals[off].clone();
 
-		// Expand the column challenge and the per-bit Lagrange / shift-operator evaluations.
-		// The tensor is expanded over the witness address space, then rearranged into a lookup
-		// by absolute value-vector index: public words keep their index in the low half, and
-		// hidden words move to the base of the high half.
-		let witness_tensor = eq_ind_partial_eval_scalars(r_y_v);
+		// Build the word-index equality tensor over the value vector: public words in the low
+		// segment, hidden words in the high segment.
+		//
+		// Rather than expand the full `(r_y, r_segment)` tensor (which doubles the multiplications
+		// and then gets re-indexed), build each segment's portion directly from the shared `r_y`
+		// indicator:
+		//   * hidden — the `r_y` indicator scaled by `r_segment` (the high-half weight);
+		//   * public — the `log_public_words`-length prefix indicator (the public segment occupies
+		//     that prefix of the address space) scaled by `(1 - r_segment)` and the eq-zero padding
+		//     over the unused `r_y` coordinates — the same `padded_public_eval` factor that
+		//     `check_eval` reconstructs the witness evaluation with.
 		let layout = &self.constraint_system.value_vec_layout;
-		let half = 1 << (self.r_y_len - 1);
 		let n_public_words = layout.n_public_words();
-		let r_y_tensor = (0..layout.committed_total_len)
-			.map(|word_index| {
-				if word_index < n_public_words {
-					witness_tensor[word_index].clone()
-				} else {
-					witness_tensor[half + word_index - n_public_words].clone()
-				}
-			})
-			.collect::<Vec<_>>();
+		let log_public_words = layout.log_public_words();
+
+		let public_scale =
+			eq_one_var(r_segment.clone(), E::zero()) * eq_ind_zero(&r_y_v[log_public_words..]);
+		let public_tensor =
+			scaled_eq_ind_partial_eval_scalars(&r_y_v[..log_public_words], public_scale);
+		let hidden_tensor = scaled_eq_ind_partial_eval_scalars(r_y_v, r_segment);
+
+		// `n_public_words` is a power of two, so the public prefix indicator has exactly that many
+		// entries; the hidden portion fills the remainder of the value vector.
+		let mut r_y_tensor = Vec::with_capacity(layout.combined_len());
+		r_y_tensor.extend_from_slice(&public_tensor);
+		r_y_tensor.extend_from_slice(&hidden_tensor[..layout.combined_len() - n_public_words]);
 		let l_tilde = lagrange_evals_scalars(self.subspace, r_zhat_prime_v);
 		let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
+
+		// Tensor the shift-selector evaluations with the shift-amount equality indicator once, so
+		// both the BitAnd and IntMul monster evaluations share it. Indexed by
+		// `variant * WORD_SIZE_BITS + amount`.
+		let eq_r_s = eq_ind_partial_eval_scalars(r_s_v);
+		let shift_scalars =
+			Box::new(array::from_fn::<_, { SHIFT_VARIANT_COUNT * WORD_SIZE_BITS }, _>(|i| {
+				h_op_evals[i / WORD_SIZE_BITS].clone() * &eq_r_s[i % WORD_SIZE_BITS]
+			}));
 
 		// BitAnd contribution: operands (a, b, c) batched by `bitand_lambda`.
 		let bitand_part = {
@@ -429,36 +465,40 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 				.iter()
 				.map(|AndConstraint { a, b, c }| (a, b, c))
 				.multiunzip();
-			evaluate_monster_multilinear_for_operation::<F, E>(
-				&[a, b, c],
-				bitand_r_x_prime_v,
-				bitand_lambda_v,
-				r_s_v,
-				&r_y_tensor,
-				&h_op_evals,
-			)
-			.expect("evaluate_monster_multilinear_for_operation has no fallible path")
+			eval_op(&[a, b, c], bitand_r_x_prime_v, bitand_lambda_v, &shift_scalars, &r_y_tensor)
 		};
 		// IntMul contribution: operands (a, b, lo, hi) batched by `intmul_lambda`.
-		let intmul_part = {
+		let intmul_part = if !self.constraint_system.mul_constraints.is_empty() {
 			let (a, b, lo, hi) = self
 				.constraint_system
 				.mul_constraints
 				.iter()
 				.map(|MulConstraint { a, b, hi, lo }| (a, b, lo, hi))
 				.multiunzip();
-			evaluate_monster_multilinear_for_operation::<F, E>(
+			eval_op(
 				&[a, b, lo, hi],
 				intmul_r_x_prime_v,
 				intmul_lambda_v,
-				r_s_v,
+				&shift_scalars,
 				&r_y_tensor,
-				&h_op_evals,
 			)
-			.expect("evaluate_monster_multilinear_for_operation has no fallible path")
+		} else {
+			E::zero()
 		};
 
 		bitand_part + intmul_part
+	}
+}
+
+impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
+	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
+		self.evaluate(vals, evaluate_monster_multilinear_for_operation)
+	}
+
+	/// Native fast path: the per-operation evaluation defers `WideMul` reductions (see
+	/// `evaluate_monster_multilinear_for_operation_native`).
+	fn call_native(&self, vals: &[F]) -> F {
+		self.evaluate(vals, evaluate_monster_multilinear_for_operation_native)
 	}
 }
 

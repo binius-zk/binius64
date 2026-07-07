@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 use binius_core::{ValueIndex, ValueVecLayout, Word, consts::MIN_WORDS_PER_SEGMENT};
 use cranelift_entity::SecondaryMap;
 
@@ -109,7 +110,7 @@ impl Alloc {
 		// `log_witness_words >= log_public_words` (see `ValueVecLayout::validate`).
 		cur_index = cur_index.max(2 * offset_witness as u32);
 
-		let committed_total_len = cur_index as usize;
+		let n_hidden_words = cur_index as usize - offset_witness;
 
 		for wire in self.w_scratch {
 			wire_mapping[wire] = ValueIndex(cur_index);
@@ -123,7 +124,7 @@ impl Alloc {
 			n_internal,
 			offset_inout,
 			offset_witness,
-			committed_total_len,
+			n_hidden_words,
 			n_scratch,
 		};
 
@@ -223,9 +224,8 @@ mod tests {
 		assert_eq!(assignment.value_vec_layout.n_internal, 1);
 		assert_eq!(assignment.value_vec_layout.offset_inout, 3);
 		assert_eq!(assignment.value_vec_layout.offset_witness, witness1_idx.0 as usize);
-		// The committed length is the public section (8 words after padding) plus the witness
-		// segment, itself padded from 4 up to the public segment length.
-		assert_eq!(assignment.value_vec_layout.committed_total_len, 16);
+		// The witness segment is padded from 4 words up to the public segment length (8).
+		assert_eq!(assignment.value_vec_layout.n_hidden_words, 8);
 	}
 
 	#[test]

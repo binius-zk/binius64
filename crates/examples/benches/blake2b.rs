@@ -1,10 +1,14 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 
 mod utils;
 
 use std::alloc::System;
 
-use binius_examples::circuits::blake2b::{Blake2bExample, Instance, Params};
+use binius_examples::circuits::{
+	blake2b::Blake2bExample,
+	utils::{HasherInstance, HasherParams},
+};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use peakmem_alloc::PeakMemAlloc;
 use utils::{ExampleBenchmark, HashBenchConfig, print_benchmark_header, run_cs_benchmark};
@@ -26,20 +30,22 @@ impl Blake2bBenchmark {
 }
 
 impl ExampleBenchmark for Blake2bBenchmark {
-	type Params = Params;
-	type Instance = Instance;
+	type Params = HasherParams;
+	type Instance = HasherInstance;
 	type Example = Blake2bExample;
 
 	fn create_params(&self) -> Self::Params {
-		Params {
-			max_msg_len_bytes: Some(self.config.max_bytes),
+		HasherParams {
+			message_len: Some(self.config.max_bytes),
+			max_message_len: None,
 		}
 	}
 
 	fn create_instance(&self) -> Self::Instance {
-		Instance {
-			message_len: Some(self.config.max_bytes),
-			message_string: None,
+		HasherInstance {
+			random_message: false,
+			random_message_len: None,
+			message: None,
 		}
 	}
 

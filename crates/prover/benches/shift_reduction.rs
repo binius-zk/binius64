@@ -3,17 +3,17 @@
 
 use binius_circuits::sha256::sha256_fixed;
 use binius_core::{ValueVec, constraint_system::ConstraintSystem, word::Word};
-use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
+use binius_field::{AESTowerField8b, BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Wire};
 use binius_ip::sumcheck::SumcheckOutput;
-use binius_math::multilinear::eq::eq_ind_partial_eval;
+use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
 		OperatorData, PreparedOperatorData, build_key_collection,
-		monster::{build_h_parts, build_monster_multilinear},
+		monster::{build_h_parts, build_monster_segments},
 		phase_1::{build_g_parts, run_phase_1_sumcheck},
-		phase_2::{assemble_witness, run_sumcheck},
+		phase_2::run_sumcheck,
 		prove,
 	},
 };
@@ -111,6 +111,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		let bitand_evals = [F::random(&mut rng); 3];
 		let intmul_evals = [F::ZERO; 4];
 		let key_collection = build_key_collection(&cs);
+		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 
 		let mut group = c.benchmark_group(format!(
 			"shift_reduction_log2_{log_message_len_bytes}_bytes_{message_len_bytes}"
@@ -137,6 +138,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 					value_vec.combined_witness(),
 					prover_bitand_data,
 					prover_intmul_data,
+					&subspace,
 					&mut prover_transcript,
 				)
 			})
@@ -161,6 +163,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			value_vec.combined_witness(),
 			prover_bitand_data,
 			prover_intmul_data,
+			&subspace,
 			&mut prover_transcript,
 		);
 
@@ -210,6 +213,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 
 	let key_collection = build_key_collection(&cs);
 	let words = value_vec.combined_witness();
+	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 
 	// Prepare the operator data. Lambda sampling is cheap and not part of any benched phase, so a
 	// random lambda (rather than one drawn from a transcript) yields realistic-magnitude data.
@@ -236,7 +240,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// then only clone what a phase consumes by value. The specific transcript challenges do not
 	// change the work a phase performs.
 	let g_parts = build_g_parts::<F, P>(words, &key_collection, &prepared_bitand, &prepared_intmul);
-	let h_parts = build_h_parts::<F, P>(prepared_bitand.r_zhat_prime);
+	let h_parts = build_h_parts::<F, P>(&subspace, prepared_bitand.r_zhat_prime);
 	let SumcheckOutput {
 		challenges: mut r_jr_s,
 		eval: gamma,
@@ -251,12 +255,11 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
 	let public_folded = fold_words::<F, P>(public_words, r_j_tensor.as_ref());
 	let hidden_folded = fold_words::<F, P>(hidden_words, r_j_tensor.as_ref());
-	let witness_folded =
-		assemble_witness(&public_folded, &hidden_folded, key_collection.log_witness_words());
-	let monster_multilinear = build_monster_multilinear::<F, P>(
+	let (public_monster, hidden_monster) = build_monster_segments::<F, P>(
 		&key_collection,
 		&prepared_bitand,
 		&prepared_intmul,
+		&subspace,
 		&r_j,
 		&r_s,
 	);
@@ -272,7 +275,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 		});
 	});
 	group.bench_function("phase1_build_h_parts", |b| {
-		b.iter(|| build_h_parts::<F, P>(prepared_bitand.r_zhat_prime));
+		b.iter(|| build_h_parts::<F, P>(&subspace, prepared_bitand.r_zhat_prime));
 	});
 	group.bench_function("phase1_run_sumcheck", |b| {
 		b.iter_batched(
@@ -285,14 +288,15 @@ fn bench_shift_phases(c: &mut Criterion) {
 		);
 	});
 
-	// Phase 2. `build_monster_multilinear` takes its inputs by reference; `run_sumcheck` consumes
-	// `r_j_witness`, `monster_multilinear`, and `r_j` by value.
-	group.bench_function("phase2_build_monster_multilinear", |b| {
+	// Phase 2. `build_monster_segments` takes its inputs by reference; `run_sumcheck` consumes
+	// its buffers and `r_j` by value.
+	group.bench_function("phase2_build_monster_segments", |b| {
 		b.iter(|| {
-			build_monster_multilinear::<F, P>(
+			build_monster_segments::<F, P>(
 				&key_collection,
 				&prepared_bitand,
 				&prepared_intmul,
+				&subspace,
 				&r_j,
 				&r_s,
 			)
@@ -300,13 +304,23 @@ fn bench_shift_phases(c: &mut Criterion) {
 	});
 	group.bench_function("phase2_run_sumcheck", |b| {
 		b.iter_batched(
-			|| (witness_folded.clone(), monster_multilinear.clone(), r_j.clone()),
-			|(witness_folded, monster_multilinear, r_j)| {
+			|| {
+				(
+					public_folded.clone(),
+					hidden_folded.clone(),
+					public_monster.clone(),
+					hidden_monster.clone(),
+					r_j.clone(),
+				)
+			},
+			|(public_folded, hidden_folded, public_monster, hidden_monster, r_j)| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
 				run_sumcheck::<F, P, _>(
-					witness_folded,
+					public_folded,
+					hidden_folded,
+					public_monster,
+					hidden_monster,
 					public_words,
-					monster_multilinear,
 					r_j,
 					gamma,
 					&mut transcript,

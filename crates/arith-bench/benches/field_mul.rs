@@ -34,7 +34,7 @@ fn run_google_mul_benchmark<U, R>(
 	const N: usize = 64;
 
 	let x = U::random(rng);
-	let mut y = [U::zero(); N];
+	let mut y = [U::ZERO; N];
 
 	// Calculate throughput based on elements per underlier
 	let elements_per_underlier = U::BITS / element_bits;

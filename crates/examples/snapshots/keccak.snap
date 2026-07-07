@@ -1,28 +1,28 @@
 keccak circuit
 --
 Gates & Instructions
-├─ Number of gates: 23,352
-└─ Number of evaluation instructions: 23,921
+├─ Number of gates: 22,189
+└─ Number of evaluation instructions: 22,189
 
 Constraints
-├─ AND constraints: 6,650 used (81.2% of 2^13)
-│  [▓▓▓▓▓▓▓▓░░] spare: 1,542
+├─ AND constraints: 5,750 used (70.2% of 2^13)
+│  [▓▓▓▓▓▓▓░░░] spare: 2,442
 ├─ MUL constraints: 0 used (0.0% of 0)
 │  [░░░░░░░░░░] spare: 0
-└─ Distinct value indices: 21,433
-   ├─ Distinct shifted value indices: 14,598
-   └─ Distinct unshifted value indices: 6,835
+└─ Distinct value indices: 19,903
+   ├─ Distinct shifted value indices: 14,001
+   └─ Distinct unshifted value indices: 5,902
 
 Value Vector
-├─ Public Section: 320 used (62.5% of 2^9)
-│  [▓▓▓▓▓▓░░░░] spare: 192
-│  ├─ Constants: 188
+├─ Public Section: 157 used (61.3% of 2^8)
+│  [▓▓▓▓▓▓░░░░] spare: 99
+│  ├─ Constants: 25
 │  └─ Inout: 132
-├─ Private Section: 6,517 used (84.9%)
-│  [▓▓▓▓▓▓▓▓░░] spare: 1,163
-│  ├─ Witness: 137
-│  └─ Internal: 6,380
-├─ Total Committed: 6,837 used (83.5% of 2^13)
-│  [▓▓▓▓▓▓▓▓░░] spare: 1,355
-└─ Scratch (uncommitted): 17,568
+├─ Private Section: 5,746 used (72.4%)
+│  [▓▓▓▓▓▓▓░░░] spare: 2,190
+│  ├─ Witness: 0
+│  └─ Internal: 5,746
+├─ Total Committed: 5,903 used (72.1% of 2^13)
+│  [▓▓▓▓▓▓▓░░░] spare: 2,289
+└─ Scratch (uncommitted): 16,439
 
