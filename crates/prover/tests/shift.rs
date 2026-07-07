@@ -282,6 +282,7 @@ fn test_shift_prove_and_verify() {
 			value_vec.combined_witness(),
 			prover_bitand_data.clone(),
 			prover_intmul_data.clone(),
+			&subspace,
 			&mut prover_transcript,
 		);
 

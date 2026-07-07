@@ -4,7 +4,7 @@
 use std::iter;
 
 use binius_core::word::Word;
-use binius_field::{AESTowerField8b, BinaryField, Field, PackedField, WideMul};
+use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_ip::sumcheck::{RoundCoeffs, SumcheckOutput};
 use binius_ip_prover::{
 	channel::IPProverChannel,
@@ -14,7 +14,7 @@ use binius_ip_prover::{
 	},
 };
 use binius_math::{
-	FieldBuffer,
+	BinarySubspace, FieldBuffer,
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_zero},
 };
 use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
@@ -57,11 +57,12 @@ pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel>(
 	words: &[Word],
 	bitand_data: &PreparedOperatorData<F>,
 	intmul_data: &PreparedOperatorData<F>,
+	domain_subspace: &BinarySubspace<F>,
 	phase_1_output: SumcheckOutput<F>,
 	channel: &mut Channel,
 ) -> SumcheckOutput<F>
 where
-	F: BinaryField + From<AESTowerField8b>,
+	F: BinaryField,
 	Channel: IPProverChannel<F>,
 {
 	let SumcheckOutput {
@@ -83,8 +84,14 @@ where
 	let public_folded = fold_words::<_, P>(public_words, r_j_tensor.as_ref());
 	let hidden_folded = fold_words::<_, P>(hidden_words, r_j_tensor.as_ref());
 
-	let (public_monster, hidden_monster) =
-		build_monster_segments(key_collection, bitand_data, intmul_data, &r_j, &r_s);
+	let (public_monster, hidden_monster) = build_monster_segments(
+		key_collection,
+		bitand_data,
+		intmul_data,
+		domain_subspace,
+		&r_j,
+		&r_s,
+	);
 
 	run_sumcheck(
 		public_folded,
@@ -119,7 +126,7 @@ fn first_round_coeffs<F, P: PackedField<Scalar = F>>(
 	gamma: F,
 ) -> RoundCoeffs<F>
 where
-	F: BinaryField + From<AESTowerField8b>,
+	F: BinaryField,
 {
 	// The dense hidden-segment pass.
 	let wide_dense = (hidden_folded.as_ref(), hidden_monster.as_ref())
@@ -210,7 +217,7 @@ pub fn run_sumcheck<F, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>>(
 	channel: &mut Channel,
 ) -> SumcheckOutput<F>
 where
-	F: BinaryField + From<AESTowerField8b>,
+	F: BinaryField,
 {
 	let log_hidden = hidden_folded.log_len();
 	assert_eq!(hidden_monster.log_len(), log_hidden);

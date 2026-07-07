@@ -3,13 +3,13 @@
 
 use std::iter;
 
-use binius_field::{AESTowerField8b, BinaryField, Field, PackedField, WideMul};
+use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_math::{
 	BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
 };
 use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
 use binius_verifier::{
-	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
+	config::WORD_SIZE_BITS,
 	protocols::shift::{BITAND_ARITY, INTMUL_ARITY, evaluate_h_op},
 };
 use bytemuck::zeroed_vec;
@@ -32,13 +32,13 @@ use super::{
 /// Used in phase 1, thus returning an array of multilinear evaluations.
 #[instrument(skip_all, name = "build_h_parts")]
 pub fn build_h_parts<F, P: PackedField<Scalar = F>>(
+	domain_subspace: &BinarySubspace<F>,
 	r_zhat_prime: F,
 ) -> [FieldBuffer<P>; SHIFT_VARIANT_COUNT]
 where
-	F: BinaryField + From<AESTowerField8b>,
+	F: BinaryField,
 {
-	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
-	let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
+	let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
 	let l_tilde = l_tilde.as_ref();
 
 	fn build_part<F: Field, P: PackedField<Scalar = F>>(
@@ -140,20 +140,20 @@ pub fn build_monster_segments<F, P: PackedField<Scalar = F>>(
 	key_collection: &KeyCollection,
 	bitand_operator_data: &PreparedOperatorData<F>,
 	intmul_operator_data: &PreparedOperatorData<F>,
+	domain_subspace: &BinarySubspace<F>,
 	r_j: &[F],
 	r_s: &[F],
 ) -> (FieldBuffer<P>, FieldBuffer<P>)
 where
-	F: BinaryField + From<AESTowerField8b>,
+	F: BinaryField,
 {
 	// Compute h evaluations
-	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 	let [bitand_h_ops, intmul_h_ops] = [
 		bitand_operator_data.r_zhat_prime,
 		intmul_operator_data.r_zhat_prime,
 	]
 	.map(|r_zhat_prime| {
-		let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
+		let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
 		evaluate_h_op(l_tilde.as_ref(), r_j, r_s)
 	});
 
@@ -248,9 +248,9 @@ where
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
+	use binius_field::{AESTowerField8b, BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
 	use binius_math::{inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval};
-	use binius_verifier::protocols::shift::evaluate_h_op;
+	use binius_verifier::{config::LOG_WORD_SIZE_BITS, protocols::shift::evaluate_h_op};
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
@@ -279,7 +279,7 @@ mod tests {
 			let succinct_evaluations = evaluate_h_op(l_tilde.as_ref(), &r_j, &r_s);
 
 			// Method 2: Direct evaluation via multilinear part
-			let h_parts = build_h_parts(r_zhat_prime);
+			let h_parts = build_h_parts(&subspace, r_zhat_prime);
 			let evaluation_point: Vec<F> = [r_j.clone(), r_s.clone()].concat();
 			let tensor = eq_ind_partial_eval::<P>(&evaluation_point);
 			let direct_evaluations = h_parts.map(|buf| inner_product_buffers(&buf, &tensor));

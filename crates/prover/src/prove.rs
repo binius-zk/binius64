@@ -165,6 +165,11 @@ impl IOPProver {
 		// improves ShiftReduction perf. When IntMul was skipped, synthesize a zero claim (four
 		// zero evals at an empty point): the shift reduction iterates the (empty) MUL constraints,
 		// so this claim contributes zero to its batched evaluation.
+		//
+		// Build the oblong domain subspace once and pass it into the shift reduction, mirroring
+		// the verifier side (`shift::check_eval` takes the domain subspace). It is reused for the
+		// IntMul claim collapse below.
+		let subspace = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 		let intmul_claim = match intmul_output {
 			Some(IntMulOutput {
 				eval_point,
@@ -174,7 +179,6 @@ impl IOPProver {
 				c_hi_evals,
 			}) => {
 				let r_zhat_prime = bitand_claim.r_zhat_prime;
-				let subspace = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 				let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
 				let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
 				OperatorData {
@@ -210,6 +214,7 @@ impl IOPProver {
 			witness.combined_witness(),
 			bitand_claim,
 			intmul_claim,
+			&subspace,
 			&mut *channel,
 		);
 		drop(shift_guard);

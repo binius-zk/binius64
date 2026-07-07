@@ -4,13 +4,13 @@
 use std::{iter, ops::Range};
 
 use binius_core::word::Word;
-use binius_field::{AESTowerField8b, BinaryField, Field, PackedField};
+use binius_field::{BinaryField, Field, PackedField};
 use binius_ip::sumcheck::{SumcheckOutput, common::RoundCoeffs};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{bivariate_product::BivariateProductSumcheckProver, common::SumcheckProver},
 };
-use binius_math::{FieldBuffer, inner_product::inner_product_buffers};
+use binius_math::{BinarySubspace, FieldBuffer, inner_product::inner_product_buffers};
 use binius_utils::rayon::prelude::*;
 use binius_verifier::{
 	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS, WORD_SIZE_BYTES},
@@ -38,17 +38,18 @@ pub fn prove_phase_1<F, P, Channel>(
 	words: &[Word],
 	bitand_data: &PreparedOperatorData<F>,
 	intmul_data: &PreparedOperatorData<F>,
+	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
 ) -> SumcheckOutput<F>
 where
-	F: BinaryField + From<AESTowerField8b>,
+	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
 {
 	let g_parts = build_g_parts::<_, P>(words, key_collection, bitand_data, intmul_data);
 
 	// BitAnd and IntMul share the same `r_zhat_prime`.
-	let h_parts = build_h_parts(bitand_data.r_zhat_prime);
+	let h_parts = build_h_parts(domain_subspace, bitand_data.r_zhat_prime);
 
 	run_phase_1_sumcheck(g_parts, h_parts, channel)
 }

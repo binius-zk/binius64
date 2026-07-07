@@ -3,10 +3,10 @@
 
 use binius_circuits::sha256::sha256_fixed;
 use binius_core::{ValueVec, constraint_system::ConstraintSystem, word::Word};
-use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
+use binius_field::{AESTowerField8b, BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Wire};
 use binius_ip::sumcheck::SumcheckOutput;
-use binius_math::multilinear::eq::eq_ind_partial_eval;
+use binius_math::{BinarySubspace, multilinear::eq::eq_ind_partial_eval};
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::shift::{
@@ -111,6 +111,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		let bitand_evals = [F::random(&mut rng); 3];
 		let intmul_evals = [F::ZERO; 4];
 		let key_collection = build_key_collection(&cs);
+		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 
 		let mut group = c.benchmark_group(format!(
 			"shift_reduction_log2_{log_message_len_bytes}_bytes_{message_len_bytes}"
@@ -137,6 +138,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 					value_vec.combined_witness(),
 					prover_bitand_data,
 					prover_intmul_data,
+					&subspace,
 					&mut prover_transcript,
 				)
 			})
@@ -161,6 +163,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			value_vec.combined_witness(),
 			prover_bitand_data,
 			prover_intmul_data,
+			&subspace,
 			&mut prover_transcript,
 		);
 
@@ -210,6 +213,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 
 	let key_collection = build_key_collection(&cs);
 	let words = value_vec.combined_witness();
+	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 
 	// Prepare the operator data. Lambda sampling is cheap and not part of any benched phase, so a
 	// random lambda (rather than one drawn from a transcript) yields realistic-magnitude data.
@@ -236,7 +240,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// then only clone what a phase consumes by value. The specific transcript challenges do not
 	// change the work a phase performs.
 	let g_parts = build_g_parts::<F, P>(words, &key_collection, &prepared_bitand, &prepared_intmul);
-	let h_parts = build_h_parts::<F, P>(prepared_bitand.r_zhat_prime);
+	let h_parts = build_h_parts::<F, P>(&subspace, prepared_bitand.r_zhat_prime);
 	let SumcheckOutput {
 		challenges: mut r_jr_s,
 		eval: gamma,
@@ -255,6 +259,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 		&key_collection,
 		&prepared_bitand,
 		&prepared_intmul,
+		&subspace,
 		&r_j,
 		&r_s,
 	);
@@ -270,7 +275,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 		});
 	});
 	group.bench_function("phase1_build_h_parts", |b| {
-		b.iter(|| build_h_parts::<F, P>(prepared_bitand.r_zhat_prime));
+		b.iter(|| build_h_parts::<F, P>(&subspace, prepared_bitand.r_zhat_prime));
 	});
 	group.bench_function("phase1_run_sumcheck", |b| {
 		b.iter_batched(
@@ -291,6 +296,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 				&key_collection,
 				&prepared_bitand,
 				&prepared_intmul,
+				&subspace,
 				&r_j,
 				&r_s,
 			)
