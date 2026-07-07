@@ -17,7 +17,7 @@ use binius_math::{
 };
 use binius_prover::{
 	fold_word::fold_words,
-	protocols::shift::{OperatorData, build_key_collection, prove},
+	protocols::shift::{OperatorData, build_key_collection, prove, prove_batch},
 };
 use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::{log2_ceil_usize, strict_log_2};
@@ -332,4 +332,144 @@ fn test_shift_prove_and_verify() {
 		assert_eq!(prover_output.challenges, eval_point);
 		assert_eq!(prover_output.eval, verifier_output.witness_eval);
 	}
+}
+
+// Builds `K = 2^log_instances` value vectors of one circuit with shifted AND operands.
+// Each instance is populated with distinct inputs.
+// Returns the prepared constraint system and the per-instance value vectors.
+//
+// The circuit asserts, over public words x, y, z0, z1:
+//     shl(x, 5) & rotr(y, 13) == z0     (Sll amount 5, Rotr amount 13)
+//     shr(x, 7) & sar(y, 3)   == z1     (Slr amount 7, Sar amount 3)
+// Four shift variants at non-zero amounts flow through the batched g-build and monster.
+fn build_shifted_batch(log_instances: usize) -> (ConstraintSystem, Vec<ValueVec>) {
+	let builder = CircuitBuilder::new();
+	let x = builder.add_inout();
+	let y = builder.add_inout();
+	let z0 = builder.add_inout();
+	let z1 = builder.add_inout();
+	let and0 = builder.band(builder.shl(x, 5), builder.rotr(y, 13));
+	builder.assert_eq("z0", and0, z0);
+	let and1 = builder.band(builder.shr(x, 7), builder.sar(y, 3));
+	builder.assert_eq("z1", and1, z1);
+	let circuit = builder.build();
+
+	let value_vecs = (0..(1usize << log_instances))
+		.map(|i| {
+			// Distinct inputs per instance, so the public and hidden segments both differ.
+			let xv = 0x0123_4567_89ab_cdefu64.wrapping_mul(i as u64 + 1) ^ 0xdead_beef;
+			let yv = 0xfedc_ba98_7654_3210u64.wrapping_add(i as u64 * 0x9e37) ^ 0x1234;
+			let mut filler = circuit.new_witness_filler();
+			filler[x] = Word(xv);
+			filler[y] = Word(yv);
+			filler[z0] = Word((xv << 5) & yv.rotate_right(13));
+			filler[z1] = Word((xv >> 7) & (((yv as i64) >> 3) as u64));
+			circuit.populate_wire_witness(&mut filler).unwrap();
+			filler.into_value_vec()
+		})
+		.collect();
+
+	let mut cs = circuit.constraint_system().clone();
+	cs.validate_and_prepare().unwrap();
+	(cs, value_vecs)
+}
+
+#[test]
+fn test_batch_shift_prove_with_unmodified_verifier() {
+	use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash2x128b, Random};
+	use binius_math::multilinear::eq::eq_ind_partial_eval_scalars;
+	type F = BinaryField128bGhash;
+	type P = PackedBinaryGhash2x128b;
+	let mut rng = StdRng::seed_from_u64(0);
+
+	// Fixture state: K = 4 instances of one circuit, distinct inputs, four shift variants.
+	let log_instances = 2;
+	let (cs, value_vecs) = build_shifted_batch(log_instances);
+	for vv in &value_vecs {
+		verify_constraints(&cs, vv).unwrap();
+	}
+	let instances = value_vecs
+		.iter()
+		.map(|v| v.combined_witness())
+		.collect::<Vec<_>>();
+
+	// Challenges: the local constraint point, the univariate bit point, and the instance point.
+	let r_x_prime_bitand = (0..strict_log_2(cs.and_constraints.len()).unwrap())
+		.map(|_| F::random(&mut rng))
+		.collect::<Vec<_>>();
+	let r_zhat_prime = F::random(&mut rng);
+	let r_kappa = (0..log_instances)
+		.map(|_| F::random(&mut rng))
+		.collect::<Vec<_>>();
+	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+
+	// The batched operand claim: the eq(r_kappa, .)-weighted sum of the per-instance operand evals.
+	// This is exactly what the folded witness produces, so the reduction chains.
+	let eps = eq_ind_partial_eval_scalars(&r_kappa);
+	let r_x_tensor = eq_ind_partial_eval(&r_x_prime_bitand);
+	let mut bitand_evals = [F::ZERO; 3];
+	for (kappa, vv) in value_vecs.iter().enumerate() {
+		let images = compute_bitand_images(&cs.and_constraints, vv);
+		for (eval, image) in bitand_evals.iter_mut().zip(&images) {
+			*eval +=
+				eps[kappa] * evaluate_image(&subspace, image, r_zhat_prime, r_x_tensor.as_ref());
+		}
+	}
+
+	// This circuit is pure-AND, so the IntMul operator is empty (mirrors the single-instance skip).
+	let intmul_evals = [F::ZERO; 4];
+	let r_x_prime_intmul: Vec<F> = Vec::new();
+
+	let key_collection = build_key_collection(&cs);
+	let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
+	let bitand_data = OperatorData {
+		evals: bitand_evals.to_vec(),
+		r_zhat_prime,
+		r_x_prime: r_x_prime_bitand.clone(),
+	};
+	let intmul_data = OperatorData {
+		evals: intmul_evals.to_vec(),
+		r_zhat_prime,
+		r_x_prime: r_x_prime_intmul.clone(),
+	};
+	let prover_output = prove_batch::<F, P, _>(
+		&key_collection,
+		&instances,
+		&r_kappa,
+		bitand_data,
+		intmul_data,
+		&subspace,
+		&mut prover_transcript,
+	);
+
+	// Verify with the UNMODIFIED single-instance verifier and its evaluation check.
+	// The public words are the shared reconstruction set (instance 0's public segment).
+	let mut verifier_transcript = prover_transcript.into_verifier();
+	let verifier_bitand_data = VerifierOperatorData::new(r_x_prime_bitand, bitand_evals);
+	let verifier_intmul_data = VerifierOperatorData::new(r_x_prime_intmul, intmul_evals);
+	let verifier_output =
+		verify(&cs, &verifier_bitand_data, &verifier_intmul_data, &mut verifier_transcript)
+			.unwrap();
+	check_eval(
+		&cs,
+		value_vecs[0].public(),
+		&verifier_bitand_data,
+		&verifier_intmul_data,
+		&subspace,
+		r_zhat_prime,
+		&verifier_output,
+		&mut verifier_transcript,
+	)
+	.unwrap();
+	verifier_transcript.finalize().unwrap();
+
+	// The prover and verifier agree on the reduced claim.
+	let eval_point = [
+		verifier_output.r_j(),
+		verifier_output.r_y(),
+		std::slice::from_ref(&verifier_output.r_segment),
+	]
+	.concat();
+	assert_eq!(prover_output.challenges, eval_point);
+	assert_eq!(prover_output.eval, verifier_output.witness_eval);
 }

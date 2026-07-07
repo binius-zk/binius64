@@ -3,6 +3,7 @@
 
 use binius_verifier::protocols::shift::{BITAND_ARITY, INTMUL_ARITY, SHIFT_VARIANT_COUNT};
 
+mod batch;
 mod key_collection;
 // `monster`, `phase_1`, and `phase_2` are internal implementation, exposed (via `#[doc(hidden)]`
 // `pub mod`) only so the `shift_reduction` benchmark can time individual phase functions (see
@@ -15,5 +16,6 @@ pub mod phase_1;
 pub mod phase_2;
 mod prove;
 
+pub use batch::prove_batch;
 pub use key_collection::{KeyCollection, KeySegment, build_key_collection};
 pub use prove::{OperatorData, PreparedOperatorData, prove};
