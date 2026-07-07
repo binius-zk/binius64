@@ -15,7 +15,9 @@ use binius_ip::{
 use binius_math::{
 	BinarySubspace,
 	line::extrapolate_line,
-	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
+	multilinear::eq::{
+		eq_ind_partial_eval_scalars, eq_ind_zero, eq_one_var, scaled_eq_ind_partial_eval_scalars,
+	},
 	univariate::{evaluate_univariate, lagrange_evals_scalars},
 };
 use getset::Getters;
@@ -291,7 +293,7 @@ where
 		let intmul_r_x_prime_len = intmul_data.r_x_prime.len();
 		let r_j_len = r_j.len();
 		let r_s_len = r_s.len();
-		let r_y_len = r_y.len() + 1;
+		let r_y_len = r_y.len();
 
 		let inputs: Vec<C::Elem> = iter::once(r_zhat_prime)
 			.chain(iter::once(bitand_lambda.clone()))
@@ -412,24 +414,37 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		let r_s_v = &vals[off..off + self.r_s_len];
 		off += self.r_s_len;
 		let r_y_v = &vals[off..off + self.r_y_len];
+		off += self.r_y_len;
+		// `r_segment` is the top word-index coordinate, appended after `r_y`; it selects the public
+		// (0) vs hidden (1) segment.
+		let r_segment = vals[off].clone();
 
-		// Expand the column challenge and the per-bit Lagrange / shift-operator evaluations.
-		// The tensor is expanded over the witness address space, then rearranged into a lookup
-		// by absolute value-vector index: public words keep their index in the low half, and
-		// hidden words move to the base of the high half.
-		let witness_tensor = eq_ind_partial_eval_scalars(r_y_v);
+		// Build the word-index equality tensor over the value vector: public words in the low
+		// segment, hidden words in the high segment.
+		//
+		// Rather than expand the full `(r_y, r_segment)` tensor (which doubles the multiplications
+		// and then gets re-indexed), build each segment's portion directly from the shared `r_y`
+		// indicator:
+		//   * hidden — the `r_y` indicator scaled by `r_segment` (the high-half weight);
+		//   * public — the `log_public_words`-length prefix indicator (the public segment occupies
+		//     that prefix of the address space) scaled by `(1 - r_segment)` and the eq-zero padding
+		//     over the unused `r_y` coordinates — the same `padded_public_eval` factor that
+		//     `check_eval` reconstructs the witness evaluation with.
 		let layout = &self.constraint_system.value_vec_layout;
-		let half = 1 << (self.r_y_len - 1);
 		let n_public_words = layout.n_public_words();
-		let r_y_tensor = (0..layout.combined_len())
-			.map(|word_index| {
-				if word_index < n_public_words {
-					witness_tensor[word_index].clone()
-				} else {
-					witness_tensor[half + word_index - n_public_words].clone()
-				}
-			})
-			.collect::<Vec<_>>();
+		let log_public_words = layout.log_public_words();
+
+		let public_scale =
+			eq_one_var(r_segment.clone(), E::zero()) * eq_ind_zero(&r_y_v[log_public_words..]);
+		let public_tensor =
+			scaled_eq_ind_partial_eval_scalars(&r_y_v[..log_public_words], public_scale);
+		let hidden_tensor = scaled_eq_ind_partial_eval_scalars(r_y_v, r_segment);
+
+		// `n_public_words` is a power of two, so the public prefix indicator has exactly that many
+		// entries; the hidden portion fills the remainder of the value vector.
+		let mut r_y_tensor = Vec::with_capacity(layout.combined_len());
+		r_y_tensor.extend_from_slice(&public_tensor);
+		r_y_tensor.extend_from_slice(&hidden_tensor[..layout.combined_len() - n_public_words]);
 		let l_tilde = lagrange_evals_scalars(self.subspace, r_zhat_prime_v);
 		let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
 
