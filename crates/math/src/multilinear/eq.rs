@@ -248,8 +248,25 @@ pub fn eq_ind_zero<F: FieldOps>(point: &[F]) -> F {
 /// (1 - r_0, r_0) \otimes ... \otimes (1 - r_{n-1}, r_{n-1}).
 /// $$
 pub fn eq_ind_partial_eval_scalars<F: FieldOps>(point: &[F]) -> Vec<F> {
+	// The unscaled indicator is the scaled indicator with a scale of one.
+	scaled_eq_ind_partial_eval_scalars(point, F::one())
+}
+
+/// Computes the partial evaluation of the equality indicator polynomial scaled by a constant,
+/// returning scalars.
+///
+/// This is a scalar-only variant of [`scaled_eq_ind_partial_eval`] that returns a `Vec<F>` instead
+/// of a [`FieldBuffer`]. Every hypercube value of the tensor product
+///
+/// $$
+/// (1 - r_0, r_0) \otimes ... \otimes (1 - r_{n-1}, r_{n-1})
+/// $$
+///
+/// is multiplied by `scale`. A scale of one reproduces [`eq_ind_partial_eval_scalars`].
+pub fn scaled_eq_ind_partial_eval_scalars<F: FieldOps>(point: &[F], scale: F) -> Vec<F> {
 	let mut result = Vec::with_capacity(1 << point.len());
-	result.push(F::one());
+	// Seed with the scale; the expansion multiplies it through every hypercube value.
+	result.push(scale);
 
 	for r_i in point {
 		// Double the buffer size. For each existing value in 0..size,
@@ -267,6 +284,7 @@ pub fn eq_ind_partial_eval_scalars<F: FieldOps>(point: &[F]) -> Vec<F> {
 
 #[cfg(test)]
 mod tests {
+	use binius_field::Random;
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
@@ -457,6 +475,23 @@ mod tests {
 
 			let packed_scalars: Vec<F> = packed_result.iter_scalars().collect();
 			assert_eq!(packed_scalars, scalar_result, "mismatch at log_n={log_n}");
+		}
+	}
+
+	#[test]
+	fn test_scaled_eq_ind_partial_eval_scalars_is_unscaled_times_scale() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		for log_n in [0, 1, 2, 5, 8] {
+			let point = random_scalars::<F>(&mut rng, log_n);
+			let scale = F::random(&mut rng);
+
+			let scaled = scaled_eq_ind_partial_eval_scalars(&point, scale);
+			let expected: Vec<F> = eq_ind_partial_eval_scalars(&point)
+				.into_iter()
+				.map(|x| x * scale)
+				.collect();
+			assert_eq!(scaled, expected, "mismatch at log_n={log_n}");
 		}
 	}
 
