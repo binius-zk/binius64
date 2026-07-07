@@ -503,6 +503,37 @@ mod tests {
 		folded
 	}
 
+	// Expands the public words into FoldedWords without folding over the instance axis.
+	//
+	// The public words are constants, identical across every instance, so their instance fold is
+	// `bit * sum_rho eq(r_rho, rho) = bit` (the equality weights sum to one). Folding is therefore
+	// unnecessary: take the first instance's public words and embed each bit as F::ONE or F::ZERO.
+	// The assertion pins the "identical across instances" premise this relies on.
+	fn expand_public_words(table: &ValueTable) -> Vec<FoldedWord<B128>> {
+		let offset = table.layout().offset_witness;
+		let public = &table.instance(0)[..offset];
+		for rho in 1..table.n_instances() {
+			assert_eq!(
+				&table.instance(rho)[..offset],
+				public,
+				"public words differ across instances"
+			);
+		}
+
+		public
+			.iter()
+			.map(|word| {
+				std::array::from_fn(|b| {
+					if (word.0 >> b) & 1 == 1 {
+						B128::ONE
+					} else {
+						B128::ZERO
+					}
+				})
+			})
+			.collect()
+	}
+
 	// The batched prove is still a stub; feeding it a real folded witness must reach the `todo!()`.
 	// This pins the plumbing that produces `prove`'s inputs (folded witness, operator data) even
 	// before the reduction itself exists.
@@ -629,7 +660,7 @@ mod tests {
 		);
 		let offset = table.layout().offset_witness;
 		let stride = table.instance_stride();
-		let public_folded = fold_words_over_instances(&table, &r_rho, 0..offset);
+		let public_folded = expand_public_words(&table);
 		let hidden_folded = fold_words_over_instances(&table, &r_rho, offset..stride);
 
 		// Prepare the operator data: lambda batches the three operand claims. The circuit has no
