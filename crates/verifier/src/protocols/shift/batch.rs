@@ -105,8 +105,9 @@ where
 
 	// The witness folds as a power-of-two multilinear.
 	// So the word index rounds the committed word count up, floored at one field element.
-	let log_word_count = log2_ceil_usize(constraint_system.value_vec_layout.committed_total_len)
-		.max(LOG_WORDS_PER_ELEM);
+	// The committed count is the flat public-plus-hidden length, matching the prover's key count.
+	let log_word_count =
+		log2_ceil_usize(constraint_system.value_vec_layout.combined_len()).max(LOG_WORDS_PER_ELEM);
 
 	// Phase 2: sumcheck over the per-instance word index, degree 2.
 	let SumcheckOutput {
