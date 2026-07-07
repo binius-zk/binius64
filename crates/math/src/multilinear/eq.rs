@@ -203,8 +203,14 @@ pub fn eq_ind_truncate_low_inplace<P: PackedField, Data: DerefMut<Target = [P]>>
 /// $$
 #[inline(always)]
 pub fn eq_one_var<F: FieldOps>(x: F, y: F) -> F {
-	let one = F::one();
-	x.clone() * y.clone() + (one.clone() - x) * (one - y)
+	// Over characteristic 2, `X·Y + (1−X)(1−Y)` simplifies to `X + Y + 1` (the `2·X·Y` term
+	// vanishes). The condition is a compile-time constant, so only one arm is generated.
+	if F::Scalar::CHARACTERISTIC == 2 {
+		x + y + F::one()
+	} else {
+		let one = F::one();
+		x.clone() * y.clone() + (one.clone() - x) * (one - y)
+	}
 }
 
 /// Evaluates the equality indicator multilinear at a pair of coordinates.
