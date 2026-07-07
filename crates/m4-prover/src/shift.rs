@@ -6,10 +6,19 @@
 
 use binius_core::consts::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS};
 use binius_field::{BinaryField, PackedField};
-use binius_math::{FieldBuffer, multilinear::eq::eq_ind_partial_eval_scalars};
+use binius_ip::sumcheck::SumcheckOutput;
+use binius_ip_prover::channel::IPProverChannel;
+use binius_math::{BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval_scalars};
+use binius_prover::protocols::shift::{KeyCollection, OperatorData};
 use binius_utils::checked_arithmetics::log2_strict_usize;
 
 use crate::ValueTable;
+
+/// A committed witness word after folding its bits into the field.
+///
+/// Each 64-bit word contributes one field element per bit position, so a folded word is the oblong
+/// representation of that word: its bit axis expanded to full field elements.
+pub type FoldedWord<F> = [F; WORD_SIZE_BITS];
 
 /// Folds the committed witness of a batch value table along the instance axis.
 ///
@@ -72,6 +81,42 @@ where
 	}
 
 	FieldBuffer::from_values(&out)
+}
+
+/// Proves the batched shift-reduction, reducing the bitand and intmul evaluation claims to a single
+/// multilinear claim on the batched witness.
+///
+/// This mirrors the single-instance shift reduction, but the witness enters already folded over the
+/// instance axis: `folded_witness` holds one [`FoldedWord`] per committed word, the oblong
+/// representation produced by [`fold_instances`]. The two operator claims and the domain subspace
+/// play the same roles as in the single-instance prover.
+///
+/// # Parameters
+/// - `key_collection`: the prover's key collection for the constraint system.
+/// - `folded_witness`: the batched witness, folded over the instance axis, one word per entry.
+/// - `bitand_data`: operator data for the bitand (AND) constraints.
+/// - `intmul_data`: operator data for the intmul (MUL) constraints.
+/// - `domain_subspace`: the univariate evaluation domain.
+/// - `channel`: the prover channel driving the interactive protocol.
+///
+/// # Returns
+/// The `SumcheckOutput` with the final challenges and the reduced witness evaluation.
+// `P` is unused only while the body is a stub; the reduction's sumcheck rounds are generic over it.
+#[allow(clippy::extra_unused_type_parameters)]
+pub fn prove<F, P, Channel>(
+	key_collection: &KeyCollection,
+	folded_witness: &[FoldedWord<F>],
+	bitand_data: OperatorData<F>,
+	intmul_data: OperatorData<F>,
+	domain_subspace: &BinarySubspace<F>,
+	channel: &mut Channel,
+) -> SumcheckOutput<F>
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+	Channel: IPProverChannel<F>,
+{
+	todo!()
 }
 
 /// A CRC-64/GO-ISO circuit and reference implementation used to build shift-heavy witnesses for the
@@ -179,10 +224,7 @@ mod crc64 {
 	///
 	/// The instance count is the number of tuples, which must be a power of two. Each instance's
 	/// four message words are the corresponding tuple, and circuit evaluation derives the rest.
-	pub fn populate_crc64_witness(
-		c: &Crc64Circuit,
-		inputs: &[[u64; N_INPUT_WORDS]],
-	) -> ValueTable {
+	pub fn populate_crc64_witness(c: &Crc64Circuit, inputs: &[[u64; N_INPUT_WORDS]]) -> ValueTable {
 		let log_instances = inputs.len().ilog2() as usize;
 		ValueTable::populate(&c.circuit, log_instances, |i, filler| {
 			for (wire, &w) in c.input.iter().zip(&inputs[i]) {
@@ -196,10 +238,11 @@ mod crc64 {
 #[cfg(test)]
 mod tests {
 	use binius_core::{verify::verify_constraints, word::Word};
-	use binius_field::PackedBinaryGhash1x128b;
+	use binius_field::{AESTowerField8b, PackedBinaryGhash1x128b};
 	use binius_math::{multilinear::evaluate::evaluate, test_utils::random_scalars};
-	use binius_prover::fold_word::fold_words;
-	use binius_verifier::config::B128;
+	use binius_prover::{fold_word::fold_words, protocols::shift::build_key_collection};
+	use binius_transcript::ProverTranscript;
+	use binius_verifier::config::{B128, StdChallenger};
 	use rand::prelude::*;
 
 	use super::{crc64::*, *};
@@ -328,5 +371,72 @@ mod tests {
 		let rhs = evaluate(&folded_words, &point);
 
 		assert_eq!(lhs, rhs);
+	}
+
+	// The batched prove is still a stub; feeding it a real folded witness must reach the `todo!()`.
+	// This pins the plumbing that produces `prove`'s inputs (folded witness, operator data) even
+	// before the reduction itself exists.
+	#[test]
+	#[should_panic(expected = "not yet implemented")]
+	fn prove_reaches_unimplemented_reduction() {
+		type P = PackedBinaryGhash1x128b;
+
+		let c = crc64_circuit();
+
+		// Same setup as the fold commutativity test: a modest batch of random instances.
+		let log_instances = 6;
+		let n_instances = 1usize << log_instances;
+
+		let mut rng = StdRng::seed_from_u64(0);
+		let inputs: Vec<[u64; N_INPUT_WORDS]> = (0..n_instances)
+			.map(|_| std::array::from_fn(|_| rng.random()))
+			.collect();
+		let table = populate_crc64_witness(&c, &inputs);
+
+		// The prepared constraint system feeds the key collection and fixes the AND-constraint
+		// count.
+		let mut cs = c.circuit.constraint_system().clone();
+		cs.validate_and_prepare().unwrap();
+		let key_collection = build_key_collection(&cs);
+
+		// Fold the instance axis, then reshape the resulting multilinear into one folded word per
+		// committed word: `fold_instances` lays the 64 bit elements of each word contiguously.
+		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
+		let folded = fold_instances::<B128, P>(&table, &r_rho);
+		let scalars: Vec<B128> = folded.iter_scalars().collect();
+		let folded_witness: Vec<FoldedWord<B128>> = scalars
+			.chunks_exact(WORD_SIZE_BITS)
+			.map(|chunk| chunk.try_into().unwrap())
+			.collect();
+
+		// The bitand operator claim: a shared univariate challenge r_z, a multilinear challenge r_x
+		// over the AND constraints, and one eval per operand position.
+		let r_z = random_scalars::<B128>(&mut rng, 1)[0];
+		let r_x = random_scalars::<B128>(&mut rng, log2_strict_usize(cs.and_constraints.len()));
+		let bitand_data = OperatorData {
+			evals: random_scalars::<B128>(&mut rng, 3),
+			r_zhat_prime: r_z,
+			r_x_prime: r_x,
+		};
+
+		// The circuit has no MUL constraints, so the intmul claim is empty: no evals and an empty
+		// point, whose tensor expansion is the trivial one-element FieldBuffer.
+		let intmul_data = OperatorData {
+			evals: Vec::new(),
+			r_zhat_prime: r_z,
+			r_x_prime: Vec::new(),
+		};
+
+		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+		let mut transcript = ProverTranscript::<StdChallenger>::default();
+
+		prove::<B128, P, _>(
+			&key_collection,
+			&folded_witness,
+			bitand_data,
+			intmul_data,
+			&subspace,
+			&mut transcript,
+		);
 	}
 }
