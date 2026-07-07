@@ -15,6 +15,9 @@ pub trait Underlier: Sized + Clone + Copy + Debug {
 	/// The number of bits in this underlier type.
 	const BITS: usize;
 
+	/// The all-bits-zero value for this underlier type.
+	const ZERO: Self;
+
 	/// Performs bitwise AND operation.
 	fn and(a: Self, b: Self) -> Self;
 
@@ -33,9 +36,6 @@ pub trait Underlier: Sized + Clone + Copy + Debug {
 		*self = Self::xor(*self, other);
 	}
 
-	/// Returns the zero value for this underlier type.
-	fn zero() -> Self;
-
 	/// Checks if two underlier values are equal.
 	fn is_equal(a: Self, b: Self) -> bool;
 
@@ -45,6 +45,7 @@ pub trait Underlier: Sized + Clone + Copy + Debug {
 
 impl<U: Underlier, const N: usize> Underlier for [U; N] {
 	const BITS: usize = U::BITS * N;
+	const ZERO: Self = [U::ZERO; N];
 
 	#[inline]
 	fn and(a: Self, b: Self) -> Self {
@@ -62,11 +63,6 @@ impl<U: Underlier, const N: usize> Underlier for [U; N] {
 			result[i] = U::xor(a[i], b[i]);
 		}
 		result
-	}
-
-	#[inline]
-	fn zero() -> Self {
-		std::array::from_fn(|_| U::zero())
 	}
 
 	#[inline]
@@ -193,6 +189,7 @@ macro_rules! impl_underlier_for_native_uint {
 	($type:ty) => {
 		impl Underlier for $type {
 			const BITS: usize = <$type>::BITS as usize;
+			const ZERO: Self = 0;
 
 			#[inline]
 			fn and(a: Self, b: Self) -> Self {
@@ -202,11 +199,6 @@ macro_rules! impl_underlier_for_native_uint {
 			#[inline]
 			fn xor(a: Self, b: Self) -> Self {
 				a ^ b
-			}
-
-			#[inline]
-			fn zero() -> Self {
-				0
 			}
 
 			#[inline]

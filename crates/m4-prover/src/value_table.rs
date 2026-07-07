@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{error, fmt};
 
@@ -82,9 +83,9 @@ impl ValueTable {
 		// Every instance shares the single-instance layout exactly.
 		let layout = circuit.constraint_system().value_vec_layout.clone();
 
-		// The committed-word count of one instance, with no scratch.
+		// The public and committed words of one instance, with no scratch.
 		// This is the gap between consecutive instances in the flat buffer.
-		let stride = layout.committed_total_len;
+		let stride = layout.combined_len();
 
 		// Number of instances in the batch: a power of two by construction.
 		let n_instances = 1usize << log_instances;
@@ -146,9 +147,9 @@ impl ValueTable {
 		&self.layout
 	}
 
-	/// The number of committed words occupied by a single instance.
+	/// The number of public and committed words occupied by a single instance.
 	pub const fn instance_stride(&self) -> usize {
-		self.layout.committed_total_len
+		self.layout.combined_len()
 	}
 
 	/// The committed words of one instance.
@@ -401,7 +402,7 @@ mod tests {
 			.circuit
 			.constraint_system()
 			.value_vec_layout
-			.committed_total_len;
+			.combined_len();
 		assert_eq!(table.log_instances(), log_instances);
 		assert_eq!(table.n_instances(), 8);
 		assert_eq!(table.instance_stride(), stride);

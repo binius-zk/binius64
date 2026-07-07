@@ -49,7 +49,7 @@ pub fn mul<U: RijndaelBytewise>(a: U, b: U) -> U {
 	// carries out of bit 7.
 	let poly = <U as PackedUnderlier<u8>>::broadcast(0x1b);
 
-	let mut r = U::zero();
+	let mut r = U::ZERO;
 	// MSB-first double-and-add. On step `k` we test bit `i = 7 - k` of `b`: shifting `b` left by
 	// `k` moves that bit into each byte's sign bit, so `sign_mask_epi8` broadcasts it to a
 	// full-byte mask.
@@ -158,8 +158,8 @@ mod tests {
 	/// oracle.
 	#[allow(dead_code)]
 	fn check<U: RijndaelBytewise>(a: &[u8], b: &[u8]) -> Result<(), TestCaseError> {
-		let mut pa = U::zero();
-		let mut pb = U::zero();
+		let mut pa = U::ZERO;
+		let mut pb = U::ZERO;
 		for (i, (&x, &y)) in a.iter().zip(b).enumerate() {
 			pa = pa.set(i, x);
 			pb = pb.set(i, y);

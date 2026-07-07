@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 use std::ops::{Deref, DerefMut, Index, IndexMut};
 
 use bytemuck::{Pod, Zeroable};
@@ -93,7 +94,7 @@ impl ValueVec {
 	///
 	/// The values are filled with zeros.
 	pub fn new(layout: ValueVecLayout) -> ValueVec {
-		let size = layout.committed_total_len + layout.n_scratch;
+		let size = layout.combined_len() + layout.n_scratch;
 		ValueVec {
 			layout,
 			data: AlignedWords::zeroed(size),
@@ -102,35 +103,39 @@ impl ValueVec {
 
 	/// Creates a new value vector with the given layout and data.
 	///
-	/// The data is checked to have the correct length.
+	/// Each segment is checked to have exactly the length the layout prescribes.
 	pub fn new_from_data(
 		layout: ValueVecLayout,
 		public: Vec<Word>,
 		private: Vec<Word>,
 	) -> Result<ValueVec, ConstraintSystemError> {
-		let committed_len = public.len() + private.len();
-		if committed_len != layout.committed_total_len {
+		if public.len() != layout.n_public_words() {
 			return Err(ConstraintSystemError::ValueVecLenMismatch {
-				expected: layout.committed_total_len,
-				actual: committed_len,
+				expected: layout.n_public_words(),
+				actual: public.len(),
+			});
+		}
+		if private.len() != layout.n_hidden_words {
+			return Err(ConstraintSystemError::ValueVecLenMismatch {
+				expected: layout.n_hidden_words,
+				actual: private.len(),
 			});
 		}
 
-		// Full buffer = committed words + scratch tail.
-		let full_len = layout.committed_total_len + layout.n_scratch;
+		// Full buffer = public words + committed words + scratch tail.
+		let full_len = layout.combined_len() + layout.n_scratch;
 		// Fresh 16-byte-aligned buffer; the scratch tail past the committed words stays zeroed.
 		let mut data = AlignedWords::zeroed(full_len);
-		// Public words occupy the front of the committed region.
+		// Public words occupy the front, committed words follow.
 		data[..public.len()].copy_from_slice(&public);
-		// Private words follow, filling the rest of the committed region.
-		data[public.len()..committed_len].copy_from_slice(&private);
+		data[public.len()..public.len() + private.len()].copy_from_slice(&private);
 
 		Ok(ValueVec { layout, data })
 	}
 
-	/// The total size of the committed portion of the vector (excluding scratch).
+	/// The total size of the public and committed portions of the vector (excluding scratch).
 	pub const fn size(&self) -> usize {
-		self.layout.committed_total_len
+		self.layout.combined_len()
 	}
 
 	/// Returns the public portion of the values vector.
@@ -140,7 +145,7 @@ impl ValueVec {
 
 	/// Return all non-public values (witness + internal) without scratch space.
 	pub fn non_public(&self) -> &[Word] {
-		&self.data[self.layout.offset_witness..self.layout.committed_total_len]
+		&self.data[self.layout.offset_witness..self.layout.combined_len()]
 	}
 
 	/// Returns the witness portion of the values vector.
@@ -152,9 +157,7 @@ impl ValueVec {
 
 	/// Returns the combined values vector.
 	pub fn combined_witness(&self) -> &[Word] {
-		let start = 0;
-		let end = self.layout.committed_total_len;
-		&self.data[start..end]
+		&self.data[..self.layout.combined_len()]
 	}
 
 	/// Evaluates an operand against this witness.
@@ -199,7 +202,7 @@ mod tests {
 			n_internal: 2,
 			offset_inout: 2,
 			offset_witness: 4,
-			committed_total_len: 8,
+			n_hidden_words: 4,
 			n_scratch: 0,
 		});
 
@@ -269,11 +272,11 @@ mod tests {
 			// The public section is padded to a power of two.
 			// The witness section follows it, then the scratch tail.
 			//
-			//     [0, offset_witness)                    -> public  (power of two)
-			//     [offset_witness, committed_total_len)  -> witness
-			//     [committed_total_len, +n_scratch)      -> scratch
+			//     [0, offset_witness)                            -> public  (power of two)
+			//     [offset_witness, offset_witness + n_hidden_words) -> witness
+			//     then the scratch tail
 			let offset_witness = public.len().next_power_of_two();
-			let committed_total_len = offset_witness + private.len();
+			let n_hidden_words = private.len();
 			let layout = ValueVecLayout {
 				n_const: 0,
 				n_inout: public.len(),
@@ -281,7 +284,7 @@ mod tests {
 				n_internal: 0,
 				offset_inout: 0,
 				offset_witness,
-				committed_total_len,
+				n_hidden_words,
 				n_scratch,
 			};
 
@@ -289,6 +292,7 @@ mod tests {
 			let mut public_padded = public;
 			public_padded.resize(offset_witness, Word::ZERO);
 
+			let layout_combined_len = layout.combined_len();
 			let vv = ValueVec::new_from_data(layout, public_padded.clone(), private.clone()).unwrap();
 
 			// Alignment survives construction for any word count.
@@ -298,7 +302,8 @@ mod tests {
 			prop_assert_eq!(vv.witness(), &private[..]);
 
 			// The scratch tail past the committed words is zeroed and addressable.
-			for i in committed_total_len..committed_total_len + n_scratch {
+			let combined_len = layout_combined_len;
+			for i in combined_len..combined_len + n_scratch {
 				prop_assert_eq!(vv[ValueIndex(i as u32)], Word::ZERO);
 			}
 		}

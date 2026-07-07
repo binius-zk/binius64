@@ -9,7 +9,7 @@ pub fn mul_naive<U>(x: [U; 128], y: [U; 128]) -> [U; 128]
 where
 	U: Underlier,
 {
-	let mut result = [U::zero(); 256];
+	let mut result = [U::ZERO; 256];
 	cmul_naive::<U, Level256>(&x, &y, &mut result);
 
 	reduce_bit_sliced(&mut result);
@@ -24,7 +24,7 @@ pub fn mul_katatsuba<U>(x: [U; 128], y: [U; 128]) -> [U; 128]
 where
 	U: Underlier,
 {
-	let mut result = [U::zero(); 256];
+	let mut result = [U::ZERO; 256];
 	cmul_karatsuba_impl::<U, Level256>(&x, &y, &mut result);
 
 	reduce_bit_sliced(&mut result);
@@ -108,7 +108,7 @@ impl Level for Level1 {
 	where
 		U: Underlier,
 	{
-		[U::zero(); Self::N]
+		[U::ZERO; Self::N]
 	}
 
 	#[inline]
@@ -158,7 +158,7 @@ macro_rules! define_level {
 			where
 				U: Underlier,
 			{
-				[U::zero(); Self::N]
+				[U::ZERO; Self::N]
 			}
 
 			#[inline]
