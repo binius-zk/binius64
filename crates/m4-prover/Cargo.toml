@@ -25,6 +25,7 @@ binius-verifier = { path = "../verifier" }
 assert_matches = { workspace = true }
 binius-iop = { path = "../iop" }
 binius-ip = { path = "../ip" }
+binius-math = { path = "../math", features = ["test-utils"] }
 proptest = { workspace = true }
 rand = { workspace = true }
 
