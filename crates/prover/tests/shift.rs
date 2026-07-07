@@ -358,7 +358,7 @@ fn build_shifted_batch(log_instances: usize) -> (ConstraintSystem, Vec<ValueVec>
 		.map(|i| {
 			// Distinct inputs per instance, so the public and hidden segments both differ.
 			let xv = 0x0123_4567_89ab_cdefu64.wrapping_mul(i as u64 + 1) ^ 0xdead_beef;
-			let yv = 0xfedc_ba98_7654_3210u64.wrapping_add(i as u64 * 0x9e37) ^ 0x1234;
+			let yv = 0xfedc_9b98_7654_3210u64.wrapping_add(i as u64 * 0x9e37) ^ 0x1234;
 			let mut filler = circuit.new_witness_filler();
 			filler[x] = Word(xv);
 			filler[y] = Word(yv);
