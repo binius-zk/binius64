@@ -1,16 +1,20 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Circuit representation in the evaluation form.
 //!
 //! The main purpose of the evaluation form is to evaluate and assign the intermediate witness
 //! values. Those are also referred as internal wires.
 
+mod batch_interpreter;
 mod builder;
 mod const_eval;
 mod interpreter;
 #[cfg(test)]
 mod tests;
 
-use binius_core::{ValueIndex, ValueVec};
+pub use batch_interpreter::{BatchInterpreter, BatchPopulateError};
+use binius_core::{ValueIndex, ValueVec, Word};
+use binius_utils::strided_array::StridedArray2DViewMut;
 pub use builder::BytecodeBuilder;
 pub use const_eval::evaluate_gate_constants;
 use cranelift_entity::SecondaryMap;
@@ -84,6 +88,20 @@ impl EvalForm {
 		let mut interpreter = interpreter::Interpreter::new(&self.bytecode, &self.hint_registry);
 		interpreter.run_with_value_vec(value_vec, path_spec_tree)?;
 		Ok(())
+	}
+
+	/// Execute the evaluation form over a batch of instances at once.
+	///
+	/// `values` is the transposed value array: rows are value-vector indices and columns are
+	/// instances. The constant and input rows must already be populated for every instance. This
+	/// is the structure-of-arrays counterpart to [`Self::evaluate`].
+	pub fn evaluate_batched(
+		&self,
+		values: &mut StridedArray2DViewMut<'_, Word>,
+		path_spec_tree: Option<&PathSpecTree>,
+	) -> Result<(), BatchPopulateError> {
+		let mut interpreter = BatchInterpreter::new(&self.bytecode, &self.hint_registry);
+		interpreter.run(values, path_spec_tree)
 	}
 
 	/// Get the number of evaluation instructions

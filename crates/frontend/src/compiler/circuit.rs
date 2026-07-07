@@ -1,14 +1,16 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 use std::{error, fmt};
 
 use binius_core::{
 	constraint_system::{ConstraintSystem, ValueIndex, ValueVec},
 	word::Word,
 };
+use binius_utils::strided_array::StridedArray2DViewMut;
 use cranelift_entity::SecondaryMap;
 
 use crate::compiler::{
-	eval_form::EvalForm,
+	eval_form::{BatchPopulateError, EvalForm},
 	gate_graph::{GateGraph, Wire},
 };
 
@@ -150,6 +152,39 @@ impl Circuit {
 			.evaluate(&mut w.value_vec, Some(&self.gate_graph.path_spec_tree))?;
 
 		Ok(())
+	}
+
+	/// Populates non-input values for a batch of instances at once.
+	///
+	/// This is the structure-of-arrays counterpart to [`Self::populate_wire_witness`]. `values` is
+	/// the transposed value array: rows are value-vector indices (in the same order a single
+	/// instance's [`ValueVec`] uses) and columns are instances. Its height must be the full
+	/// value-vector length (including scratch) and its width is the instance count.
+	///
+	/// The caller must fill each instance's input rows first — the witness wires and any inout
+	/// wires. This function fills the constant rows (broadcasting each constant across every
+	/// instance) and then evaluates the circuit gate-by-gate for all instances.
+	///
+	/// # Errors
+	///
+	/// If any instance is not satisfiable, returns an error naming the lowest-indexed failing
+	/// instance and its assertion failures.
+	pub fn populate_wire_witness_batched(
+		&self,
+		values: &mut StridedArray2DViewMut<'_, Word>,
+	) -> Result<(), BatchPopulateError> {
+		// Broadcast each constant into its row across every instance. The constants are the same
+		// for all instances, so this fills the constant rows uniformly.
+		let n_instances = values.width();
+		for (index, &constant) in self.constraint_system.constants.iter().enumerate() {
+			for instance in 0..n_instances {
+				values[(index, instance)] = constant;
+			}
+		}
+
+		// Evaluate the bytecode across all instances, symbolicating assertion failures.
+		self.eval_form
+			.evaluate_batched(values, Some(&self.gate_graph.path_spec_tree))
 	}
 
 	/// Returns the constraint system for this circuit.
