@@ -239,7 +239,31 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// here (with a throwaway transcript) to capture each phase's inputs; the setup closures below
 	// then only clone what a phase consumes by value. The specific transcript challenges do not
 	// change the work a phase performs.
-	let g_parts = build_g_parts::<F, P>(words, &key_collection, &prepared_bitand, &prepared_intmul);
+	// `build_g_parts` runs per key segment; the full g parts are the sum of the public and hidden
+	// segment parts.
+	let build_combined_g_parts = || {
+		let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
+		let mut g_parts = build_g_parts::<F, P>(
+			public_words,
+			&key_collection.public,
+			&prepared_bitand,
+			&prepared_intmul,
+		);
+		let hidden_g_parts = build_g_parts::<F, P>(
+			hidden_words,
+			&key_collection.hidden,
+			&prepared_bitand,
+			&prepared_intmul,
+		);
+		for (g, hidden_g) in g_parts.iter_mut().zip(&hidden_g_parts) {
+			for (slot, add) in g.as_mut().iter_mut().zip(hidden_g.as_ref()) {
+				*slot += *add;
+			}
+		}
+		g_parts
+	};
+
+	let g_parts = build_combined_g_parts();
 	let h_parts = build_h_parts::<F, P>(&subspace, prepared_bitand.r_zhat_prime);
 	let SumcheckOutput {
 		challenges: mut r_jr_s,
@@ -270,9 +294,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// Phase 1. `build_g_parts` / `build_h_parts` take their inputs by reference, so no
 	// per-iteration clone is needed; `run_phase_1_sumcheck` consumes `g_parts`/`h_parts` by value.
 	group.bench_function("phase1_build_g_parts", |b| {
-		b.iter(|| {
-			build_g_parts::<F, P>(words, &key_collection, &prepared_bitand, &prepared_intmul)
-		});
+		b.iter(&build_combined_g_parts);
 	});
 	group.bench_function("phase1_build_h_parts", |b| {
 		b.iter(|| build_h_parts::<F, P>(&subspace, prepared_bitand.r_zhat_prime));
