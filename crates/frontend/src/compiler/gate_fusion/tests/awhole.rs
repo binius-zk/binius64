@@ -1,7 +1,29 @@
 // Copyright 2025 Irreducible Inc.
-use binius_core::ConstraintSystem;
+// Copyright 2026 The Binius Developers
+use binius_core::{ConstraintSystem, verify::verify_constraints, word::Word};
 
 use crate::compiler::{CircuitBuilder, Options, gate_fusion::commit_set::MAX_DEPTH};
+
+#[test]
+fn test_force_commit_non_linear_output_without_inout() {
+	// Regression: force-committing a non-linear (AND) output when the circuit has no inout wires
+	// must not panic in gate fusion. A committed AND output is not a linear definition, so it must
+	// stay out of the linear-commit set. This is the M4 accelerator pattern: witness inputs, no
+	// inout, output pinned with `force_commit` so dead-code elimination keeps the constraint.
+	let builder = CircuitBuilder::new();
+	let x = builder.add_witness();
+	let y = builder.add_witness();
+	let and_out = builder.band(x, y);
+	builder.force_commit(and_out);
+	let circuit = builder.build();
+
+	let mut w = circuit.new_witness_filler();
+	w[x] = Word(0xF0F0_F0F0_F0F0_F0F0);
+	w[y] = Word(0xFF00_FF00_FF00_FF00);
+	circuit.populate_wire_witness(&mut w).unwrap();
+	assert_eq!(w[and_out], Word(0xF0F0_F0F0_F0F0_F0F0 & 0xFF00_FF00_FF00_FF00));
+	verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
+}
 
 /// Returns a string that represents the given constraint system in a textual form.
 fn stringify_constraint_system(cs: &ConstraintSystem) -> String {

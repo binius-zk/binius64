@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Gate fusion optimization.
 //!
 //! The main cost of our system is coming from the number of AND constraints. The less we have the
@@ -36,7 +37,15 @@ pub fn run_pass(cb: &mut ConstraintBuilder, pinned_wires: &EntitySet<Wire>, all_
 
 	let mut leg = LeGraph::new(cb, &mut stat);
 	commit_set::run_decide_commit_set(&mut leg, &mut stat);
-	leg.lin_committed.extend(pinned_wires.iter());
+	// Pin force-committed wires that are linear definitions so their values survive as committed
+	// AND constraints. Pinned wires that are not linear definitions (e.g. AND or MUL outputs) are
+	// already committed by their own constraints, so they must be excluded here: `patch::build`
+	// treats every wire in the commit set as a linear definition and would otherwise panic.
+	let pinned_lin_defs = pinned_wires
+		.iter()
+		.filter(|&wire| leg.is_lin_def(wire))
+		.collect::<Vec<_>>();
+	leg.lin_committed.extend(pinned_lin_defs);
 	let patches = patch::build(cb, &leg, all_one);
 	patch::apply_patches(cb, patches);
 }
