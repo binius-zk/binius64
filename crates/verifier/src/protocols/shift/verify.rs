@@ -440,14 +440,14 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 				.multiunzip();
 			evaluate_monster_multilinear_for_operation::<F, E>(
 				&[a, b, c],
-				&bitand_r_x_prime_v,
+				bitand_r_x_prime_v,
 				bitand_lambda_v,
 				&shift_scalars,
 				&r_y_tensor,
 			)
 		};
 		// IntMul contribution: operands (a, b, lo, hi) batched by `intmul_lambda`.
-		let intmul_part = {
+		let intmul_part = if !self.constraint_system.mul_constraints.is_empty() {
 			let (a, b, lo, hi) = self
 				.constraint_system
 				.mul_constraints
@@ -456,11 +456,13 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 				.multiunzip();
 			evaluate_monster_multilinear_for_operation::<F, E>(
 				&[a, b, lo, hi],
-				&intmul_r_x_prime_v,
+				intmul_r_x_prime_v,
 				intmul_lambda_v,
 				&shift_scalars,
 				&r_y_tensor,
 			)
+		} else {
+			E::zero()
 		};
 
 		bitand_part + intmul_part
