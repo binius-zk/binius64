@@ -646,7 +646,7 @@ mod tests {
 			.map(|chunk| chunk.try_into().unwrap())
 			.collect();
 		let offset = table.layout().offset_witness;
-		let public_words = table.instance(0)[..offset].to_vec();
+		let public_words = &cs.constants;
 
 		// The bitand operand evals at (r_z, r_x, r_rho); the circuit has no MUL constraints, so the
 		// intmul claim is the zero claim over an empty point.
@@ -664,7 +664,7 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 		let prover_output = prove::<B128, P, _>(
 			&key_collection,
-			&public_words,
+			public_words,
 			&folded_witness,
 			OperatorData {
 				evals: bitand_evals.to_vec(),
@@ -688,7 +688,7 @@ mod tests {
 			verify(&cs, &verifier_bitand, &verifier_intmul, &mut verifier_transcript).unwrap();
 		check_eval(
 			&cs,
-			&public_words,
+			public_words,
 			&verifier_bitand,
 			&verifier_intmul,
 			&domain_subspace,
@@ -766,7 +766,7 @@ mod tests {
 		);
 		let offset = table.layout().offset_witness;
 		let stride = table.instance_stride();
-		let public_words = table.instance(0)[..offset].to_vec();
+		let public_words = &cs.constants;
 		let hidden_folded = fold_words_over_instances(&table, &r_rho, offset..stride);
 
 		// Prepare the operator data: lambda batches the three operand claims. The circuit has no
@@ -792,7 +792,7 @@ mod tests {
 		// builder, the hidden segment from the instance-folded words. Add them. The h parts come
 		// from the single-instance prover.
 		let mut g_parts = build_g_parts::<B128, B128>(
-			&public_words,
+			public_words,
 			&key_collection.public,
 			&prepared_bitand,
 			&prepared_intmul,
