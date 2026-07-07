@@ -111,7 +111,8 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	constrain_modular_addition(builder, *result1, *correction_b, *carry_b_correction, *hi_u);
 
 	// Step 4: Low word is the same for signed and unsigned
-	builder.and().a(*lo_u).b(*lo).c(*lo).build();
+	// Bind lo = lo_u with a linear equality constraint, not a submask relation.
+	builder.linear().rhs(*lo_u).dst(*lo).build();
 }
 
 pub fn emit_eval_bytecode(
@@ -372,6 +373,43 @@ mod tests {
 		// Constraints should verify correctly
 		let cs = circuit.constraint_system();
 		verify_constraints(cs, &w.into_value_vec()).unwrap();
+	}
+
+	// Soundness regression: the signed-mul low word must EQUAL the unsigned low word, not
+	// merely be a submask of it. The old constraint `lo_u ∧ lo = lo` only enforced `lo ⊆ lo_u`,
+	// so a malicious prover could supply any submask of the true low word as the signed output.
+	#[test]
+	fn test_smul_forge_low_word_submask_rejected() {
+		// smul(3, 5) has true low word 15 and high word 0. Populate a valid witness, then
+		// overwrite the signed low output `lo` with 14 — a strict submask of `lo_u = 15`
+		// (15 & 14 = 14). The old submask constraint accepted this; the equality constraint
+		// (lo_u & all_one = lo) must reject it.
+		//
+		// `hi` is consumed via `assert_zero` so the smul gate survives dead-code elimination
+		// (its outputs must be referenced for its constraints to be emitted). Crucially, `lo`
+		// is NOT constrained anywhere except inside the smul gate, so the only thing that can
+		// reject the forged low word is the smul low-word constraint itself.
+		let builder = CircuitBuilder::new();
+		let x = builder.add_inout();
+		let y = builder.add_inout();
+		let (hi, lo) = builder.smul(x, y);
+		builder.assert_zero("hi_is_zero", hi);
+		let circuit = builder.build();
+
+		let mut w = circuit.new_witness_filler();
+		w[x] = Word(3);
+		w[y] = Word(5);
+		w.circuit.populate_wire_witness(&mut w).unwrap();
+
+		// Forge: replace the signed low output with a strict submask of the true low word.
+		w[lo] = Word(14);
+
+		let cs = circuit.constraint_system();
+		let result = verify_constraints(cs, &w.into_value_vec());
+		assert!(
+			result.is_err(),
+			"verify_constraints must reject the forged submask low word, got: {result:?}"
+		);
 	}
 
 	// Test specific edge cases that are important for signed multiplication
