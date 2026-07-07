@@ -17,7 +17,7 @@ use binius_math::{
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
 };
 use binius_prover::{
-	fold_word::fold_words,
+	fold_word::{WordFolder, fold_words},
 	protocols::shift::{
 		KeyCollection, KeySegment, Operation, OperatorData, PreparedOperatorData,
 		monster::{build_h_parts, build_monster_segments},
@@ -25,7 +25,7 @@ use binius_prover::{
 		phase_2::run_sumcheck,
 	},
 };
-use binius_utils::checked_arithmetics::log2_strict_usize;
+use binius_utils::{checked_arithmetics::log2_strict_usize, rayon::prelude::*};
 use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 
 use crate::ValueTable;
@@ -42,9 +42,13 @@ pub type FoldedWord<F> = [F; WORD_SIZE_BITS];
 
 /// Folds the committed witness of a batch value table along the instance axis.
 ///
-/// The batch value table is a three-axis object: the bits within each 64-bit word, the committed
-/// words within one instance, and the instances themselves. This collapses the instance axis by the
-/// equality-indicator weights of `r_rho`, leaving a multilinear over the other two axes.
+/// The batch value table has three axes:
+/// * the bits within each 64-bit word.
+/// * the committed words within one instance.
+/// * the instances themselves.
+///
+/// This collapses the instance axis by the equality-indicator weights of `r_rho`.
+/// What remains is a multilinear over the other two axes.
 ///
 /// For committed word `w` and bit `b`, the output element is
 ///
@@ -52,24 +56,27 @@ pub type FoldedWord<F> = [F; WORD_SIZE_BITS];
 /// out[w][b] = sum_rho eq(r_rho, rho) * bit_b(word[rho][w])
 /// ```
 ///
-/// so each message bit contributes its instance's equality weight to a full field element. The
-/// result is laid out with the bit axis in the low coordinates and the word axis in the high
-/// coordinates, making it a multilinear over `LOG_WORD_SIZE_BITS + log2(n_committed)` variables:
+/// so each set bit contributes its instance's equality weight to a full field element.
+///
+/// The result places the bit axis in the low coordinates and the word axis in the high coordinates.
+/// It is a multilinear over `LOG_WORD_SIZE_BITS + log2(n_committed)` variables:
 ///
 /// ```text
 /// index = w * WORD_SIZE_BITS + b     (b occupies the low LOG_WORD_SIZE_BITS coordinates)
 /// ```
 ///
-/// The public words at the front of each instance are excluded; only the committed witness words
-/// are folded, so the word axis has `combined_len - offset_witness` entries.
+/// The public words at the front of each instance are excluded.
+/// Only the committed witness words are folded.
+/// So the word axis has `combined_len - offset_witness` entries.
 ///
-/// This implementation is intentionally naive: it walks every committed word of every instance and
-/// scans its bits one at a time. A faster method-of-four-Russians version will replace it later.
+/// Every committed word position folds against the same instance point `r_rho`.
+/// So the lookup tables and per-chunk weights are built once and shared across all word positions.
+/// The word positions are independent, so the fold runs in parallel.
+/// Each task produces one output word.
 ///
 /// # Panics
 ///
-/// Panics if `r_rho.len()` does not equal the batch dimension, or if the committed word count is
-/// not a power of two.
+/// Panics if `r_rho.len()` does not equal the batch dimension.
 pub fn fold_instances<F, P>(table: &ValueTable, r_rho: &[F]) -> FieldBuffer<P>
 where
 	F: BinaryField,
@@ -82,23 +89,35 @@ where
 	let offset = layout.offset_witness;
 	let log_committed = layout.log_witness_words();
 
-	// One equality weight per instance: eq(r_rho, rho).
-	let eq = eq_ind_partial_eval_scalars::<F>(r_rho);
+	// The instance-major buffer and stride let each word position be read as a strided column.
+	let data = table.as_words();
+	let stride = table.instance_stride();
+	let n_instances = table.n_instances();
 
-	// Accumulate every committed word bit into its field element, weighted by its instance. Walking
-	// instances outermost lets each instance's slice and weight be read once.
+	// The committed word count is `combined_len - offset`.
+	// Word positions past it are the multilinear's zero padding up to `2^log_committed`.
+	let n_committed = layout.combined_len() - offset;
+
+	// Build the instance-fold tables once; the lookups and weights depend only on r_rho.
+	let folder = WordFolder::<F>::new(r_rho);
+
+	// Each output chunk holds one committed word position:
+	//     out[w * WORD_SIZE_BITS + b] = sum_rho eq(r_rho, rho) * bit_b(word[rho][w]).
+	// The word positions are independent, so fold them in parallel.
+	// Positions beyond the committed count keep their zero padding.
 	let mut out = vec![F::ZERO; 1 << (LOG_WORD_SIZE_BITS + log_committed)];
-	for (rho, &weight) in eq.iter().enumerate() {
-		let words = &table.instance(rho)[offset..];
-		for (w, word) in words.iter().enumerate() {
-			let base = w << LOG_WORD_SIZE_BITS;
-			for b in 0..WORD_SIZE_BITS {
-				if (word.0 >> b) & 1 == 1 {
-					out[base + b] += weight;
-				}
-			}
-		}
-	}
+	out.par_chunks_mut(WORD_SIZE_BITS)
+		.take(n_committed)
+		.enumerate()
+		.for_each(|(w, slot)| {
+			// Gather word position w across every instance.
+			// It is a stride-`stride` column of the instance-major buffer.
+			// Collecting it makes the column contiguous, so the fold can chunk it.
+			let column: Vec<Word> = (0..n_instances)
+				.map(|rho| data[rho * stride + offset + w])
+				.collect();
+			slot.copy_from_slice(&folder.fold(&column));
+		});
 
 	FieldBuffer::from_values(&out)
 }
@@ -510,50 +529,52 @@ mod tests {
 		type P = PackedBinaryGhash1x128b;
 
 		let c = crc64_circuit();
-
-		// A modest batch keeps the naive fold quick while still exercising a non-trivial rho axis.
-		let log_instances = 6;
-		let n_instances = 1usize << log_instances;
-
 		let mut rng = StdRng::seed_from_u64(0);
-		let inputs: Vec<[u64; N_INPUT_WORDS]> = (0..n_instances)
-			.map(|_| std::array::from_fn(|_| rng.random()))
-			.collect();
-		let table = populate_crc64_witness(&c, &inputs);
 
-		// The committed witness segment, whose word count fixes the word (x) axis.
-		let layout = table.layout();
-		let offset = layout.offset_witness;
-		let n_committed = layout.combined_len() - offset;
-		let log_committed = log2_strict_usize(n_committed);
+		// Cover every chunk regime of the per-column fold.
+		// A sub-chunk batch (< CHUNK_SIZE instances), exactly one chunk, and several chunks.
+		for log_instances in [3, LOG_WORD_SIZE_BITS, LOG_WORD_SIZE_BITS + 2] {
+			let n_instances = 1usize << log_instances;
 
-		// The instance-fold point, and a fresh point over the (bit, word) axes.
-		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
-		let r = random_scalars::<B128>(&mut rng, LOG_WORD_SIZE_BITS + log_committed);
+			let inputs: Vec<[u64; N_INPUT_WORDS]> = (0..n_instances)
+				.map(|_| std::array::from_fn(|_| rng.random()))
+				.collect();
+			let table = populate_crc64_witness(&c, &inputs);
 
-		// Route A: fold the instance axis, then evaluate the resulting (bit, word) multilinear at
-		// r.
-		let folded = fold_instances::<B128, P>(&table, &r_rho);
-		let lhs = evaluate(&folded, &r);
+			// The committed witness segment, whose word count fixes the word (x) axis.
+			let layout = table.layout();
+			let offset = layout.offset_witness;
+			let n_committed = layout.combined_len() - offset;
+			let log_committed = log2_strict_usize(n_committed);
 
-		// Route B: fold each word's bits by the tensor expansion of the bit coordinates, then
-		// evaluate the resulting (word, instance) multilinear over the word and instance axes.
-		let (r_bit, r_wire) = r.split_at(LOG_WORD_SIZE_BITS);
-		let bit_tensor = eq_ind_partial_eval_scalars::<B128>(r_bit);
+			// The instance-fold point, and a fresh point over the (bit, word) axes.
+			let r_rho = random_scalars::<B128>(&mut rng, log_instances);
+			let r = random_scalars::<B128>(&mut rng, LOG_WORD_SIZE_BITS + log_committed);
 
-		// Gather the committed words of every instance, instance-major: index = rho * n_committed +
-		// w.
-		let mut committed = Vec::with_capacity(n_instances * n_committed);
-		for rho in 0..n_instances {
-			committed.extend_from_slice(&table.instance(rho)[offset..]);
+			// Route A: fold the instance axis, then evaluate the resulting (bit, word) multilinear
+			// at r.
+			let folded = fold_instances::<B128, P>(&table, &r_rho);
+			let lhs = evaluate(&folded, &r);
+
+			// Route B: fold each word's bits by the tensor expansion of the bit coordinates, then
+			// evaluate the resulting (word, instance) multilinear over the word and instance axes.
+			let (r_bit, r_wire) = r.split_at(LOG_WORD_SIZE_BITS);
+			let bit_tensor = eq_ind_partial_eval_scalars::<B128>(r_bit);
+
+			// Gather the committed words of every instance, instance-major: index = rho *
+			// n_committed + w.
+			let mut committed = Vec::with_capacity(n_instances * n_committed);
+			for rho in 0..n_instances {
+				committed.extend_from_slice(&table.instance(rho)[offset..]);
+			}
+			let folded_words = fold_words::<B128, P>(&committed, &bit_tensor);
+
+			let mut point = r_wire.to_vec();
+			point.extend_from_slice(&r_rho);
+			let rhs = evaluate(&folded_words, &point);
+
+			assert_eq!(lhs, rhs, "mismatch at log_instances = {log_instances}");
 		}
-		let folded_words = fold_words::<B128, P>(&committed, &bit_tensor);
-
-		let mut point = r_wire.to_vec();
-		point.extend_from_slice(&r_rho);
-		let rhs = evaluate(&folded_words, &point);
-
-		assert_eq!(lhs, rhs);
 	}
 
 	// The oblong evaluation of each bitand operand column A, B, C at the shift challenges.

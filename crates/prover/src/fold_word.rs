@@ -117,44 +117,23 @@ where
 {
 	assert_eq!(words.len(), 1 << point.len());
 
-	// Split the point into a prefix of at most LOG_CHUNK_SIZE coordinates and a suffix. The prefix
-	// is zero-padded up to LOG_CHUNK_SIZE coordinates. This padding leaves the result unchanged:
-	// when `words.len() < CHUNK_SIZE`, `duplicate_to_fixed_chunks` fills the chunk by repeating the
-	// words, and the padding pairs each repeated copy with a zero weight in the prefix expansion.
-	let prefix_len = point.len().min(LOG_CHUNK_SIZE);
-	let mut prefix = [F::ZERO; LOG_CHUNK_SIZE];
-	prefix[..prefix_len].copy_from_slice(&point[..prefix_len]);
-	let suffix = &point[prefix_len..];
-
-	// Build one 256-entry subset-sum lookup table per byte of the words. The prefix tensor
-	// expansion has CHUNK_SIZE entries (one per word in a chunk), split into WORD_SIZE_BYTES groups
-	// of BITS_PER_BYTE. Table `s` folds the words at positions `s * BITS_PER_BYTE + t` within a
-	// chunk, weighted by expansion entry `t` of the group.
-	let prefix_expansion = eq_ind_partial_eval_scalars::<F>(&prefix);
-	let lookups: [[F; 1 << BITS_PER_BYTE]; WORD_SIZE_BYTES] = array::from_fn(|byte| {
-		let group: [F; BITS_PER_BYTE] = prefix_expansion
-			[byte * BITS_PER_BYTE..(byte + 1) * BITS_PER_BYTE]
-			.try_into()
-			.expect("prefix_expansion has CHUNK_SIZE = WORD_SIZE_BYTES * BITS_PER_BYTE entries");
-		expand_subset_sums_array(group)
-	});
-
-	// The suffix tensor expansion provides one weight per chunk of CHUNK_SIZE words.
-	let suffix_weights = eq_ind_partial_eval::<F>(suffix);
-
+	// Build the point tables, then fold the one word-list over its chunks in parallel.
+	// A single list can span many chunks (up to 2^20 words in the benchmark).
+	// Parallelizing over the chunk axis is what keeps a lone fold fast.
+	let folder = WordFolder::<F>::new(point);
 	let chunks = duplicate_to_fixed_chunks::<CHUNK_SIZE>(words);
-	debug_assert_eq!(chunks.len(), suffix_weights.as_ref().len());
+	debug_assert_eq!(chunks.len(), folder.suffix_weights.as_ref().len());
 
-	// Each chunk folds into an accumulator that is transposed relative to bit position: the entry
-	// at `BITS_PER_BYTE * a + j` holds the result for bit position `BITS_PER_BYTE * j + a` (see
-	// `transpose_bits` and `fold_chunk`). The chunk accumulators are scaled by their suffix weight
-	// and summed, then transposed once at the end.
+	// Each chunk folds into an accumulator that is transposed relative to bit position.
+	// The entry at `BITS_PER_BYTE * a + j` holds the result for bit position `BITS_PER_BYTE * j +
+	// a`. Scale each chunk accumulator by its suffix weight and sum them.
+	// Transpose the total once at the end.
 	let folded = chunks
 		.as_ref()
 		.par_iter()
-		.zip(suffix_weights.as_ref().par_iter())
+		.zip(folder.suffix_weights.as_ref().par_iter())
 		.map(|(chunk, &suffix_weight)| {
-			let mut acc = fold_chunk(chunk, &lookups);
+			let mut acc = fold_chunk(chunk, &folder.lookups);
 			for acc_i in &mut acc {
 				*acc_i *= suffix_weight;
 			}
@@ -170,8 +149,112 @@ where
 			},
 		);
 
-	// Transpose the accumulator as a WORD_SIZE_BYTES × BITS_PER_BYTE matrix to index by bit
-	// position.
+	transpose_accumulator(folded)
+}
+
+/// A reusable [Method of Four Russians] folder over a fixed evaluation point.
+///
+/// [`fold_across_words`] folds one word-list per call and rebuilds its point tables each time.
+/// Many word-lists often share one point, and then those tables can be built once and reused.
+/// The batched instance fold is that case: every committed word folds against the same point.
+///
+/// The two tables it holds:
+/// * per-byte subset-sum lookups, built from the point's prefix.
+/// * one weight per chunk, built from the point's suffix.
+///
+/// [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
+pub struct WordFolder<F: BinaryField> {
+	/// One 256-entry subset-sum table per byte of a word, from the prefix expansion.
+	///
+	/// Table `s` folds the words at positions `s * BITS_PER_BYTE + t` within a chunk.
+	/// Each such word is weighted by prefix-expansion entry `t` of that group.
+	lookups: [[F; 1 << BITS_PER_BYTE]; WORD_SIZE_BYTES],
+	/// One weight per chunk of `CHUNK_SIZE` words, from the suffix expansion.
+	suffix_weights: FieldBuffer<F>,
+	/// The exact word-list length each [`fold`](Self::fold) consumes: `2^point.len()`.
+	n_words: usize,
+}
+
+impl<F: BinaryField> WordFolder<F> {
+	/// Builds the folding tables for `point`.
+	///
+	/// Each later [`fold`](Self::fold) call folds a `2^point.len()`-word list against this point.
+	pub fn new(point: &[F]) -> Self {
+		// Split the point into a prefix of at most LOG_CHUNK_SIZE coordinates and a suffix.
+		// Zero-pad the prefix up to LOG_CHUNK_SIZE coordinates.
+		// Why the padding is harmless:
+		//   - a list shorter than one chunk is filled by repeating its words.
+		//   - each repeated copy pairs with a zero prefix weight, so it adds nothing.
+		let prefix_len = point.len().min(LOG_CHUNK_SIZE);
+		let mut prefix = [F::ZERO; LOG_CHUNK_SIZE];
+		prefix[..prefix_len].copy_from_slice(&point[..prefix_len]);
+		let suffix = &point[prefix_len..];
+
+		// Build one 256-entry subset-sum lookup table per byte of the words.
+		// The prefix tensor expansion has CHUNK_SIZE entries, one per word in a chunk.
+		// Split those entries into WORD_SIZE_BYTES groups of BITS_PER_BYTE.
+		let prefix_expansion = eq_ind_partial_eval_scalars::<F>(&prefix);
+		let lookups: [[F; 1 << BITS_PER_BYTE]; WORD_SIZE_BYTES] = array::from_fn(|byte| {
+			let group: [F; BITS_PER_BYTE] = prefix_expansion
+				[byte * BITS_PER_BYTE..(byte + 1) * BITS_PER_BYTE]
+				.try_into()
+				.expect(
+					"prefix_expansion has CHUNK_SIZE = WORD_SIZE_BYTES * BITS_PER_BYTE entries",
+				);
+			expand_subset_sums_array(group)
+		});
+
+		// The suffix tensor expansion provides one weight per chunk of CHUNK_SIZE words.
+		let suffix_weights = eq_ind_partial_eval::<F>(suffix);
+
+		Self {
+			lookups,
+			suffix_weights,
+			n_words: 1 << point.len(),
+		}
+	}
+
+	/// Folds one word-list against the point.
+	///
+	/// Returns the array whose entry at bit position `b` is
+	///
+	/// ```text
+	/// out[b] = sum_i eq(point, i) * bit_b(words[i])
+	/// ```
+	///
+	/// with a clear bit read as zero and a set bit read as one.
+	///
+	/// This runs sequentially over the list's chunks.
+	/// A caller folding many lists against one point should parallelize across the lists instead.
+	///
+	/// ## Preconditions
+	///
+	/// * `words.len() == 1 << point.len()`
+	pub fn fold(&self, words: &[Word]) -> [F; WORD_SIZE_BITS] {
+		assert_eq!(words.len(), self.n_words, "words.len() must equal 2^point.len()");
+
+		let chunks = duplicate_to_fixed_chunks::<CHUNK_SIZE>(words);
+		debug_assert_eq!(chunks.len(), self.suffix_weights.as_ref().len());
+
+		// Accumulate each chunk's contribution, scaled by its suffix weight.
+		// The accumulator stays in the chunk kernel's transposed bit layout until the end.
+		let mut folded = [F::ZERO; WORD_SIZE_BITS];
+		for (chunk, &suffix_weight) in iter::zip(chunks.as_ref(), self.suffix_weights.as_ref()) {
+			let acc = fold_chunk(chunk, &self.lookups);
+			for (folded_i, acc_i) in iter::zip(&mut folded, acc) {
+				*folded_i += acc_i * suffix_weight;
+			}
+		}
+
+		transpose_accumulator(folded)
+	}
+}
+
+/// Transposes a reduced chunk accumulator back into bit-position order.
+///
+/// The chunk kernel stores bit `BITS_PER_BYTE * j + a`'s contribution at index `BITS_PER_BYTE * a +
+/// j`. Transposing that `WORD_SIZE_BYTES`-by-`BITS_PER_BYTE` layout restores bit-position order.
+fn transpose_accumulator<F: BinaryField>(folded: [F; WORD_SIZE_BITS]) -> [F; WORD_SIZE_BITS] {
 	let mut result = [F::ZERO; WORD_SIZE_BITS];
 	for a in 0..BITS_PER_BYTE {
 		for j in 0..WORD_SIZE_BYTES {
@@ -399,6 +482,35 @@ mod tests {
 			let result_naive = naive_fold_across_words(&words, &point);
 
 			assert_eq!(result_optimized, result_naive, "mismatch at log_n = {log_n}");
+		}
+	}
+
+	#[test]
+	fn test_word_folder_fold_matches_naive() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// The sequential fold driver differs from the parallel one, so pin it to the naive
+		// reference. Cover every chunk regime: sub-chunk (log_n < 6), one chunk (log_n = 6), many
+		// chunks (> 6).
+		for log_n in [
+			0,
+			1,
+			3,
+			LOG_CHUNK_SIZE,
+			LOG_CHUNK_SIZE + 1,
+			LOG_CHUNK_SIZE + 4,
+		] {
+			let n_words = 1 << log_n;
+
+			let words = (0..n_words)
+				.map(|_| Word::from_u64(rng.random::<u64>()))
+				.collect::<Vec<_>>();
+			let point = random_scalars::<B128>(&mut rng, log_n);
+
+			let result_folder = WordFolder::new(&point).fold(&words);
+			let result_naive = naive_fold_across_words(&words, &point);
+
+			assert_eq!(result_folder, result_naive, "mismatch at log_n = {log_n}");
 		}
 	}
 }
