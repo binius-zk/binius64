@@ -39,7 +39,7 @@ pub fn mul_inv_x<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: U) -> U {
 	// Carry bit 0 of the high qword into bit 63 of the low qword within each 128-bit lane.
 	// unpackhi gives us [hi_a, hi_b] from two inputs; with zero as second arg, this moves
 	// the high qword to the low position and zeros the high.
-	let carry = U::unpackhi_epi64(lsb_at_top, U::zero());
+	let carry = U::unpackhi_epi64(lsb_at_top, U::ZERO);
 	let shifted = U::xor(shifted, carry);
 
 	// Build a mask from the original LSB of each 128-bit element (bit 0 of the low qword).

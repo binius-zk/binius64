@@ -9,6 +9,8 @@ use crate::underlier::{PackedUnderlier, Underlier};
 
 impl Underlier for uint64x2_t {
 	const BITS: usize = 128;
+	// Safety: all-zero bytes are a valid bit pattern for every 128-bit SIMD register.
+	const ZERO: Self = unsafe { std::mem::transmute(0u128) };
 
 	#[inline]
 	fn and(a: Self, b: Self) -> Self {
@@ -18,11 +20,6 @@ impl Underlier for uint64x2_t {
 	#[inline]
 	fn xor(a: Self, b: Self) -> Self {
 		unsafe { veorq_u64(a, b) }
-	}
-
-	#[inline]
-	fn zero() -> Self {
-		unsafe { vdupq_n_u64(0) }
 	}
 
 	#[inline]
@@ -138,6 +135,8 @@ impl PackedUnderlier<u128> for uint64x2_t {
 
 impl Underlier for poly64x2_t {
 	const BITS: usize = 128;
+	// Safety: all-zero bytes are a valid bit pattern for every 128-bit SIMD register.
+	const ZERO: Self = unsafe { std::mem::transmute(0u128) };
 
 	#[inline]
 	fn and(a: Self, b: Self) -> Self {
@@ -151,11 +150,6 @@ impl Underlier for poly64x2_t {
 		unsafe {
 			vreinterpretq_p64_u64(veorq_u64(vreinterpretq_u64_p64(a), vreinterpretq_u64_p64(b)))
 		}
-	}
-
-	#[inline]
-	fn zero() -> Self {
-		unsafe { vreinterpretq_p64_p128(0u128) }
 	}
 
 	#[inline]
@@ -552,7 +546,7 @@ mod tests {
 			assert_eq!(vgetq_lane_u64(xor_result, 1), expected_xor_high);
 
 			// Test zero
-			let zero_result = <uint64x2_t as Underlier>::zero();
+			let zero_result = <uint64x2_t as Underlier>::ZERO;
 			assert_eq!(vgetq_lane_u64(zero_result, 0), 0);
 			assert_eq!(vgetq_lane_u64(zero_result, 1), 0);
 

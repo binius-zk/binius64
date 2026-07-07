@@ -9,6 +9,8 @@ use crate::underlier::{PackedUnderlier, Underlier};
 #[cfg(target_feature = "sse2")]
 impl Underlier for __m128i {
 	const BITS: usize = 128;
+	// Safety: all-zero bytes are a valid bit pattern for every 128-bit SIMD register.
+	const ZERO: Self = unsafe { std::mem::transmute(0u128) };
 
 	#[inline]
 	fn and(a: Self, b: Self) -> Self {
@@ -18,11 +20,6 @@ impl Underlier for __m128i {
 	#[inline]
 	fn xor(a: Self, b: Self) -> Self {
 		unsafe { _mm_xor_si128(a, b) }
-	}
-
-	#[inline]
-	fn zero() -> Self {
-		unsafe { _mm_setzero_si128() }
 	}
 
 	#[inline]
@@ -216,6 +213,8 @@ impl crate::underlier::OpsClmul for __m128i {
 #[cfg(target_feature = "avx2")]
 impl Underlier for __m256i {
 	const BITS: usize = 256;
+	// Safety: all-zero bytes are a valid bit pattern for every 256-bit SIMD register.
+	const ZERO: Self = unsafe { std::mem::transmute([0u128; 2]) };
 
 	#[inline]
 	fn and(a: Self, b: Self) -> Self {
@@ -225,11 +224,6 @@ impl Underlier for __m256i {
 	#[inline]
 	fn xor(a: Self, b: Self) -> Self {
 		unsafe { _mm256_xor_si256(a, b) }
-	}
-
-	#[inline]
-	fn zero() -> Self {
-		unsafe { _mm256_setzero_si256() }
 	}
 
 	#[inline]
@@ -483,6 +477,8 @@ impl crate::underlier::OpsClmul for __m256i {
 #[cfg(target_feature = "avx512bw")]
 impl Underlier for __m512i {
 	const BITS: usize = 512;
+	// Safety: all-zero bytes are a valid bit pattern for every 512-bit SIMD register.
+	const ZERO: Self = unsafe { std::mem::transmute([0u128; 4]) };
 
 	#[inline]
 	fn and(a: Self, b: Self) -> Self {
@@ -492,11 +488,6 @@ impl Underlier for __m512i {
 	#[inline]
 	fn xor(a: Self, b: Self) -> Self {
 		unsafe { _mm512_xor_si512(a, b) }
-	}
-
-	#[inline]
-	fn zero() -> Self {
-		unsafe { _mm512_setzero_si512() }
 	}
 
 	#[inline]
