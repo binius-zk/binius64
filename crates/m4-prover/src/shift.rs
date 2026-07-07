@@ -237,15 +237,19 @@ mod crc64 {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::{verify::verify_constraints, word::Word};
-	use binius_field::{AESTowerField8b, PackedBinaryGhash1x128b};
-	use binius_math::{multilinear::evaluate::evaluate, test_utils::random_scalars};
+	use binius_core::{constraint_system::AndConstraint, verify::verify_constraints, word::Word};
+	use binius_field::{AESTowerField8b, PackedBinaryGhash1x128b, Random};
+	use binius_math::{
+		multilinear::evaluate::evaluate, test_utils::random_scalars,
+		univariate::lagrange_evals_scalars,
+	};
 	use binius_prover::{fold_word::fold_words, protocols::shift::build_key_collection};
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::config::{B128, StdChallenger};
 	use rand::prelude::*;
 
 	use super::{crc64::*, *};
+	use crate::BatchAndCheckWitness;
 
 	#[test]
 	fn circuit_matches_reference() {
@@ -373,6 +377,34 @@ mod tests {
 		assert_eq!(lhs, rhs);
 	}
 
+	// The oblong evaluation of each bitand operand column A, B, C at the shift challenges.
+	//
+	// Builds the batched AND witness, then for each column folds its word bits by the Lagrange
+	// basis at r_z and evaluates the resulting row multilinear at the (constraint, instance) point
+	// r_x || r_rho. The columns are instance-major, so r_x (low) indexes the constraint within an
+	// instance and r_rho (high) indexes the instance.
+	fn evaluate_and_witness<P: PackedField<Scalar = B128>>(
+		table: &ValueTable,
+		and_constraints: &[AndConstraint],
+		domain_subspace: &BinarySubspace<B128>,
+		r_z: B128,
+		r_x: &[B128],
+		r_rho: &[B128],
+	) -> [B128; 3] {
+		let witness = BatchAndCheckWitness::build(table, and_constraints);
+		let lagrange = lagrange_evals_scalars::<B128, B128>(domain_subspace, r_z);
+		let row_point: Vec<B128> = r_x.iter().chain(r_rho).copied().collect();
+		let operand_eval = |column: &[Word]| {
+			let folded_column = fold_words::<B128, P>(column, &lagrange);
+			evaluate(&folded_column, &row_point)
+		};
+		[
+			operand_eval(witness.a()),
+			operand_eval(witness.b()),
+			operand_eval(witness.c()),
+		]
+	}
+
 	// The batched prove is still a stub; feeding it a real folded witness must reach the `todo!()`.
 	// This pins the plumbing that produces `prove`'s inputs (folded witness, operator data) even
 	// before the reduction itself exists.
@@ -393,15 +425,24 @@ mod tests {
 			.collect();
 		let table = populate_crc64_witness(&c, &inputs);
 
-		// The prepared constraint system feeds the key collection and fixes the AND-constraint
-		// count.
+		// The prepared constraint system feeds the key collection, the AND-constraint count, and
+		// the per-instance AND constraints shared by every instance.
 		let mut cs = c.circuit.constraint_system().clone();
 		cs.validate_and_prepare().unwrap();
 		let key_collection = build_key_collection(&cs);
+		let n_and = cs.n_and_constraints();
+		let log_and_constraints = log2_strict_usize(n_and);
+
+		// The univariate bit challenge r_z and the multilinear constraint challenge r_x. The domain
+		// subspace is also the one r_z's Lagrange basis is taken over.
+		let domain_subspace =
+			BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+		let r_z = B128::random(&mut rng);
+		let r_x = random_scalars::<B128>(&mut rng, log_and_constraints);
+		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 
 		// Fold the instance axis, then reshape the resulting multilinear into one folded word per
 		// committed word: `fold_instances` lays the 64 bit elements of each word contiguously.
-		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 		let folded = fold_instances::<B128, P>(&table, &r_rho);
 		let scalars: Vec<B128> = folded.iter_scalars().collect();
 		let folded_witness: Vec<FoldedWord<B128>> = scalars
@@ -409,12 +450,18 @@ mod tests {
 			.map(|chunk| chunk.try_into().unwrap())
 			.collect();
 
-		// The bitand operator claim: a shared univariate challenge r_z, a multilinear challenge r_x
-		// over the AND constraints, and one eval per operand position.
-		let r_z = random_scalars::<B128>(&mut rng, 1)[0];
-		let r_x = random_scalars::<B128>(&mut rng, log2_strict_usize(cs.and_constraints.len()));
+		// The bitand operator claim: the oblong evaluation of each operand column A, B, C at the
+		// challenges, plus the challenges themselves.
+		let bitand_evals = evaluate_and_witness::<P>(
+			&table,
+			&cs.and_constraints,
+			&domain_subspace,
+			r_z,
+			&r_x,
+			&r_rho,
+		);
 		let bitand_data = OperatorData {
-			evals: random_scalars::<B128>(&mut rng, 3),
+			evals: bitand_evals.to_vec(),
 			r_zhat_prime: r_z,
 			r_x_prime: r_x,
 		};
@@ -427,7 +474,6 @@ mod tests {
 			r_x_prime: Vec::new(),
 		};
 
-		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
 		let mut transcript = ProverTranscript::<StdChallenger>::default();
 
 		prove::<B128, P, _>(
@@ -435,7 +481,7 @@ mod tests {
 			&folded_witness,
 			bitand_data,
 			intmul_data,
-			&subspace,
+			&domain_subspace,
 			&mut transcript,
 		);
 	}
