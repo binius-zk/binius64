@@ -19,6 +19,10 @@
 //!
 //! This handles BitAnd only; IntMul is out of scope for the initial M4 batch.
 //! It reduces to the flat committed witness, matching the M4 batch commitment.
+//!
+//! The flat monster and phase-2 sumcheck here duplicate the segmented single-instance path.
+//! This monster and the verifier's monster evaluation are independent implementations.
+//! The round-trip tests over shifted operands cross-check them and catch any drift.
 
 use binius_core::word::Word;
 use binius_field::{AESTowerField8b, BinaryField, PackedField};

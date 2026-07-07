@@ -12,7 +12,6 @@
 //!
 //! This splits the point, folds the instance dimension into the witness, and returns `r_kappa`.
 
-use binius_core::word::Word;
 use binius_field::PackedField;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_prover::protocols::shift::{KeyCollection, OperatorData, prove_batch};
@@ -73,9 +72,9 @@ impl ShiftReductionOutput {
 		};
 
 		// One committed-word slice per instance, in instance order.
-		let instances: Vec<&[Word]> = (0..table.n_instances())
+		let instances = (0..table.n_instances())
 			.map(|i| table.instance(i))
-			.collect();
+			.collect::<Vec<_>>();
 
 		let reduced =
 			prove_batch::<B128, P, _>(key_collection, &instances, r_kappa, bitand_data, channel);
@@ -103,7 +102,7 @@ mod tests {
 	};
 	use binius_transcript::ProverTranscript;
 	use binius_utils::checked_arithmetics::checked_log_2;
-	use binius_verifier::config::{B128, StdChallenger};
+	use binius_verifier::config::{B128, LOG_WORD_SIZE_BITS, StdChallenger};
 	use proptest::prelude::*;
 
 	use super::*;
@@ -183,37 +182,86 @@ mod tests {
 			.sum()
 	}
 
+	// A circuit whose AND operands are *shifted* committed words, over three public words.
+	//
+	//     inputs : x, y, z0, z1   (all inout)
+	//     assert : shl(x, 5)  & rotr(y, 13) == z0     (Sll amount 5, Rotr amount 13)
+	//     assert : shr(x, 7)  & sar(y, 3)   == z1     (Slr amount 7, Sar amount 3)
+	//
+	// The shifts fold into the operands, so the reduction exercises four shift variants at
+	// non-zero amounts, not just the amount-0 identity.
+	struct ShiftedAndCircuit {
+		circuit: Circuit,
+		x: Wire,
+		y: Wire,
+		z0: Wire,
+		z1: Wire,
+	}
+
+	fn shifted_and_circuit() -> ShiftedAndCircuit {
+		let builder = CircuitBuilder::new();
+		let x = builder.add_inout();
+		let y = builder.add_inout();
+		let z0 = builder.add_inout();
+		let z1 = builder.add_inout();
+		let and0 = builder.band(builder.shl(x, 5), builder.rotr(y, 13));
+		builder.assert_eq("z0_eq_shl_x_and_rotr_y", and0, z0);
+		let and1 = builder.band(builder.shr(x, 7), builder.sar(y, 3));
+		builder.assert_eq("z1_eq_shr_x_and_sar_y", and1, z1);
+		ShiftedAndCircuit {
+			circuit: builder.build(),
+			x,
+			y,
+			z0,
+			z1,
+		}
+	}
+
+	// Populate the shifted circuit; the outputs are derived so every instance is satisfying.
+	fn populate_shifted_table(c: &ShiftedAndCircuit, inputs: &[(u64, u64)]) -> ValueTable {
+		let log_instances = checked_log_2(inputs.len());
+		ValueTable::populate(&c.circuit, log_instances, |i, filler| {
+			let (x, y) = inputs[i];
+			filler[c.x] = Word(x);
+			filler[c.y] = Word(y);
+			// z0 = shl(x, 5) & rotr(y, 13); z1 = shr(x, 7) & sar(y, 3).
+			filler[c.z0] = Word((x << 5) & y.rotate_right(13));
+			filler[c.z1] = Word((x >> 7) & (((y as i64) >> 3) as u64));
+		})
+		.unwrap()
+	}
+
 	// The prepared per-instance constraint system: constraints padded to a power of two.
-	fn prepared_cs(c: &AndCircuit) -> binius_core::constraint_system::ConstraintSystem {
-		let mut cs = c.circuit.constraint_system().clone();
+	fn prepared_cs(circuit: &Circuit) -> binius_core::constraint_system::ConstraintSystem {
+		let mut cs = circuit.constraint_system().clone();
 		cs.validate_and_prepare().unwrap();
 		cs
 	}
 
-	// Runs the full chain on `inputs`: batched BitAnd reduction, then shift reduction, then verify.
+	// Runs the full chain: batched BitAnd reduction, then shift reduction, then verify.
 	// Returns the honest witness eval and both sides' claimed evals for the caller to compare.
-	fn run_chain(inputs: &[(u64, u64, u64)]) -> (F, F, F) {
-		let c = and_circuit();
-		let table = populate_table(&c, inputs);
-		let cs = prepared_cs(&c);
-		let key_collection = build_key_collection(&cs);
+	fn run_chain(
+		table: &ValueTable,
+		cs: &binius_core::constraint_system::ConstraintSystem,
+	) -> (F, F, F) {
+		let key_collection = build_key_collection(cs);
 
 		// Prover: batched BitAnd reduction feeds the shift reduction on one transcript.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let and_witness = BatchAndCheckWitness::build(&table, &cs.and_constraints);
+		let and_witness = BatchAndCheckWitness::build(table, &cs.and_constraints);
 		let log_total = checked_log_2(and_witness.a().len());
 		let and_output = and_witness.prove::<P, _>(&mut prover_transcript);
 		let prove_out = ShiftReductionOutput::prove::<P, _>(
-			&table,
+			table,
 			&key_collection,
 			and_output,
 			&mut prover_transcript,
 		);
 
 		// Honest evaluation of the committed batch witness at the reduction's point.
-		let r_j = &prove_out.challenges[..6];
-		let r_y = &prove_out.challenges[6..];
-		let honest = honest_witness_eval(&table, r_j, r_y, &prove_out.r_kappa);
+		let r_j = &prove_out.challenges[..LOG_WORD_SIZE_BITS];
+		let r_y = &prove_out.challenges[LOG_WORD_SIZE_BITS..];
+		let honest = honest_witness_eval(table, r_j, r_y, &prove_out.r_kappa);
 
 		// Verifier: replay the same transcript.
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -221,7 +269,7 @@ mod tests {
 			binius_m4_verifier::verify_bitand_reduction(log_total, &mut verifier_transcript)
 				.unwrap();
 		let verify_out = binius_m4_verifier::ShiftReductionOutput::verify(
-			&cs,
+			cs,
 			table.log_instances(),
 			and_output,
 			&mut verifier_transcript,
@@ -241,10 +289,43 @@ mod tests {
 	#[test]
 	fn round_trip_reduces_to_the_honest_batch_evaluation() {
 		// Fixture state: K = 4 satisfying instances of `z = (x & y) ^ w`.
-		let inputs = [(1, 3, 7), (5, 6, 0), (9, 12, 0xFF), (0xF0, 0x0F, 1)];
+		let c = and_circuit();
+		let table = populate_table(&c, &[(1, 3, 7), (5, 6, 0), (9, 12, 0xFF), (0xF0, 0x0F, 1)]);
+		let cs = prepared_cs(&c.circuit);
 
 		// The reduction round-trips, and the claimed eval is the honest committed-witness eval.
-		let (honest, prove_eval, verify_eval) = run_chain(&inputs);
+		let (honest, prove_eval, verify_eval) = run_chain(&table, &cs);
+		assert_eq!(prove_eval, verify_eval);
+		assert_eq!(prove_eval, honest);
+	}
+
+	#[test]
+	fn shifted_operands_round_trip() {
+		// Fixture state: K = 4 satisfying instances whose AND operands are shifted words.
+		let c = shifted_and_circuit();
+		let table = populate_shifted_table(
+			&c,
+			&[
+				(0x0123456789abcdef, 0xfedcba9876543210),
+				(1, 2),
+				(0xdead, 0xbeef),
+				(u64::MAX, 7),
+			],
+		);
+		let cs = prepared_cs(&c.circuit);
+
+		// Invariant: the reduction must actually exercise non-zero shift amounts.
+		// Otherwise the shift-variant paths in the g-build and the monster stay untested.
+		let exercises_shift = cs.and_constraints.iter().any(|con| {
+			[&con.a, &con.b, &con.c]
+				.iter()
+				.any(|operand| operand.iter().any(|term| term.amount != 0))
+		});
+		assert!(exercises_shift, "test circuit must feed shifted operands to the reduction");
+
+		// The prover's flat monster and the verifier's monster evaluation must agree across the
+		// exercised variants; a disagreement trips the verifier's closing check.
+		let (honest, prove_eval, verify_eval) = run_chain(&table, &cs);
 		assert_eq!(prove_eval, verify_eval);
 		assert_eq!(prove_eval, honest);
 	}
@@ -254,8 +335,10 @@ mod tests {
 		// Fixture state: log_instances = 0 -> exactly one instance (K = 1), r_kappa is empty.
 		//
 		// This degenerate batch is the single-instance shift argument on that one instance.
-		let inputs = [(0xABCD, 0x0F0F, 0x55)];
-		let (honest, prove_eval, verify_eval) = run_chain(&inputs);
+		let c = and_circuit();
+		let table = populate_table(&c, &[(0xABCD, 0x0F0F, 0x55)]);
+		let cs = prepared_cs(&c.circuit);
+		let (honest, prove_eval, verify_eval) = run_chain(&table, &cs);
 		assert_eq!(prove_eval, verify_eval);
 		assert_eq!(prove_eval, honest);
 	}
@@ -264,14 +347,14 @@ mod tests {
 	#[should_panic(expected = "per-instance committed-word count")]
 	fn prove_batch_rejects_short_instance_slice() {
 		let c = and_circuit();
-		let cs = prepared_cs(&c);
+		let cs = prepared_cs(&c.circuit);
 		let key_collection = build_key_collection(&cs);
 
 		// Fixture state: K = 2 instances, both satisfying.
 		let table = populate_table(&c, &[(1, 3, 7), (5, 6, 0)]);
-		let full: Vec<&[Word]> = (0..table.n_instances())
+		let full = (0..table.n_instances())
 			.map(|i| table.instance(i))
-			.collect();
+			.collect::<Vec<_>>();
 
 		// Mutation: truncate instance 1 to one word short of the per-instance committed count.
 		//
@@ -304,7 +387,7 @@ mod tests {
 		let c = and_circuit();
 		let inputs = [(1, 3, 7), (5, 6, 0), (9, 12, 0xFF), (0xF0, 0x0F, 1)];
 		let table = populate_table(&c, &inputs);
-		let cs = prepared_cs(&c);
+		let cs = prepared_cs(&c.circuit);
 		let key_collection = build_key_collection(&cs);
 
 		// Produce a faithful proof.
@@ -345,9 +428,13 @@ mod tests {
 		// is the honest evaluation of the committed batch witness at (r_j, r_y, r_kappa).
 		#[test]
 		fn round_trip_matches_honest_eval(
-			inputs in prop::collection::vec((any::<u64>(), any::<u64>(), any::<u64>()), 8),
+			inputs in prop::collection::vec((any::<u64>(), any::<u64>()), 8),
 		) {
-			let (honest, prove_eval, verify_eval) = run_chain(&inputs);
+			// The shifted circuit feeds four shift variants at non-zero amounts through the batch.
+			let c = shifted_and_circuit();
+			let table = populate_shifted_table(&c, &inputs);
+			let cs = prepared_cs(&c.circuit);
+			let (honest, prove_eval, verify_eval) = run_chain(&table, &cs);
 			prop_assert_eq!(prove_eval, verify_eval);
 			prop_assert_eq!(prove_eval, honest);
 		}
