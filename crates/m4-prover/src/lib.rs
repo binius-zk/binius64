@@ -4,6 +4,7 @@
 
 mod bitand;
 mod prove;
+mod shift;
 mod value_table;
 
 pub use bitand::BatchAndCheckWitness;
