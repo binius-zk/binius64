@@ -10,7 +10,7 @@ use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval_scalars};
 use binius_prover::protocols::shift::{
-	KeyCollection, Operation, OperatorData, PreparedOperatorData,
+	KeyCollection, KeySegment, Operation, OperatorData, PreparedOperatorData,
 };
 use binius_utils::checked_arithmetics::log2_strict_usize;
 use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
@@ -126,13 +126,19 @@ where
 	todo!()
 }
 
-/// Constructs the phase-1 "g" multilinear parts, one per shift variant, from a folded witness.
+/// Constructs the phase-1 "g" multilinear parts, one per shift variant, for a single key segment.
 ///
-/// This is the batched analogue of the single-instance `build_g_parts`: it consumes the witness
-/// already folded over the instance axis, so each committed word is a [`FoldedWord`] whose bits are
+/// This is the batched analogue of the single-instance `build_g_parts`: it consumes the segment's
+/// words already folded over the instance axis, so each word is a [`FoldedWord`] whose bits are
 /// full field elements rather than a packed `u64`. Where the single-instance builder scatters an
 /// accumulator onto a word's set bits by masking, this scales the accumulator by each folded bit
 /// with a field multiplication, which coincides with masking when the folded bit is 0 or 1.
+///
+/// Because the value vector's public and hidden words are folded by different means, the collection
+/// splits into a public and a hidden [`KeySegment`]. Call this once per segment with that segment's
+/// folded words, then add the two results to obtain the complete g parts. `folded_words` is paired
+/// with `segment.key_ranges` in order, so any power-of-two padding beyond the segment's word count
+/// is ignored.
 ///
 /// The result is a flat accumulator split into `SHIFT_VARIANT_COUNT` multilinears of [`LOG_LEN`]
 /// variables each. Each multilinear is indexed by `(shift amount, bit position)`: for shift key
@@ -143,8 +149,8 @@ where
 /// This scalar implementation ignores the packed-field and parallelism optimizations of the
 /// single-instance builder.
 pub fn build_g_parts<F: BinaryField>(
-	folded_witness: &[FoldedWord<F>],
-	key_collection: &KeyCollection,
+	folded_words: &[FoldedWord<F>],
+	segment: &KeySegment,
 	bitand_operator_data: &PreparedOperatorData<F>,
 	intmul_operator_data: &PreparedOperatorData<F>,
 ) -> [FieldBuffer<F>; SHIFT_VARIANT_COUNT] {
@@ -153,19 +159,8 @@ pub fn build_g_parts<F: BinaryField>(
 	#[allow(clippy::useless_vec)]
 	let mut multilinears = vec![F::ZERO; SHIFT_VARIANT_COUNT << LOG_LEN];
 
-	// Process the public and hidden segments in absolute value-vector order: the public words are
-	// the prefix of the folded witness, and each segment's key ranges are segment-relative.
-	let (public_words, hidden_words) = folded_witness.split_at(key_collection.public.n_words());
-	let public_iter = public_words
-		.iter()
-		.zip(&key_collection.public.key_ranges)
-		.map(|(word, range)| (word, range, &key_collection.public));
-	let hidden_iter = hidden_words
-		.iter()
-		.zip(&key_collection.hidden.key_ranges)
-		.map(|(word, range)| (word, range, &key_collection.hidden));
-
-	for (word, range, segment) in public_iter.chain(hidden_iter) {
+	// Each folded word carries the keys named by the segment-relative range at its position.
+	for (word, range) in folded_words.iter().zip(&segment.key_ranges) {
 		let keys = &segment.keys[range.start as usize..range.end as usize];
 		for key in keys {
 			let operator_data = match key.operation {
@@ -486,14 +481,18 @@ mod tests {
 		]
 	}
 
-	// Folds the full combined witness (public prefix then hidden) over the instance axis, one
-	// FoldedWord per value-vector word. Unlike `fold_instances`, this keeps the public words, since
-	// `build_g_parts` consumes the public and hidden segments together.
-	fn fold_full_witness(table: &ValueTable, r_rho: &[B128]) -> Vec<FoldedWord<B128>> {
+	// Folds a contiguous run of value-vector words over the instance axis, one FoldedWord per word.
+	// This lets the public and hidden segments be folded separately, matching how `build_g_parts`
+	// consumes one segment at a time.
+	fn fold_words_over_instances(
+		table: &ValueTable,
+		r_rho: &[B128],
+		words: std::ops::Range<usize>,
+	) -> Vec<FoldedWord<B128>> {
 		let eq = eq_ind_partial_eval_scalars::<B128>(r_rho);
-		let mut folded = vec![[B128::ZERO; WORD_SIZE_BITS]; table.instance_stride()];
+		let mut folded = vec![[B128::ZERO; WORD_SIZE_BITS]; words.len()];
 		for (rho, &weight) in eq.iter().enumerate() {
-			for (word, out) in table.instance(rho).iter().zip(&mut folded) {
+			for (word, out) in table.instance(rho)[words.clone()].iter().zip(&mut folded) {
 				for (b, out_b) in out.iter_mut().enumerate() {
 					if (word.0 >> b) & 1 == 1 {
 						*out_b += weight;
@@ -628,7 +627,10 @@ mod tests {
 			&r_x,
 			&r_rho,
 		);
-		let folded_witness = fold_full_witness(&table, &r_rho);
+		let offset = table.layout().offset_witness;
+		let stride = table.instance_stride();
+		let public_folded = fold_words_over_instances(&table, &r_rho, 0..offset);
+		let hidden_folded = fold_words_over_instances(&table, &r_rho, offset..stride);
 
 		// Prepare the operator data: lambda batches the three operand claims. The circuit has no
 		// MUL constraints, so the intmul claim is empty.
@@ -649,10 +651,25 @@ mod tests {
 			B128::random(&mut rng),
 		);
 
-		// The g parts (batched) and h parts (single-instance prover), then the summed inner
-		// product.
-		let g_parts =
-			build_g_parts(&folded_witness, &key_collection, &prepared_bitand, &prepared_intmul);
+		// The g parts: build each segment's contribution separately and add them. The h parts come
+		// from the single-instance prover.
+		let mut g_parts = build_g_parts(
+			&public_folded,
+			&key_collection.public,
+			&prepared_bitand,
+			&prepared_intmul,
+		);
+		let hidden_g_parts = build_g_parts(
+			&hidden_folded,
+			&key_collection.hidden,
+			&prepared_bitand,
+			&prepared_intmul,
+		);
+		for (g, hidden_g) in g_parts.iter_mut().zip(&hidden_g_parts) {
+			for (slot, add) in g.as_mut().iter_mut().zip(hidden_g.as_ref()) {
+				*slot += *add;
+			}
+		}
 		let h_parts = build_h_parts::<B128, B128>(&domain_subspace, r_z);
 		let inner_product: B128 = g_parts
 			.iter()
