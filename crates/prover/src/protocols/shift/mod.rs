@@ -15,5 +15,5 @@ pub mod phase_1;
 pub mod phase_2;
 mod prove;
 
-pub use key_collection::{KeyCollection, KeySegment, build_key_collection};
+pub use key_collection::{KeyCollection, KeySegment, Operation, build_key_collection};
 pub use prove::{OperatorData, PreparedOperatorData, prove};
