@@ -22,13 +22,14 @@
 //!
 //! # Constraints
 //!
-//! The gate generates 1 AND constraint:
-//! - `(x ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout`
+//! The gate generates 2 constraints:
+//! - AND: `(x ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout`
+//! - AND: `sar(cout, 63) ∧ all-1 = all-1` (forces `MSB(cout) = 1`, i.e. `x ≠ 0`)
 
 use binius_core::word::Word;
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, sll, xor2},
+	constraint_builder::{ConstraintBuilder, sar, sll, xor2},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 	pathspec::PathSpec,
@@ -36,7 +37,8 @@ use crate::compiler::{
 
 pub const fn shape() -> OpcodeShape {
 	OpcodeShape {
-		const_in: &[Word::ALL_ONE, Word::ZERO], // Need zero constant for cin
+		// ALL_ONE is the addend for the carry.
+		const_in: &[Word::ALL_ONE],
 		n_in: 1,
 		n_out: 0,
 		n_aux: 1,
@@ -52,9 +54,7 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 		aux,
 		..
 	} = data.gate_param();
-	let [all_one, _zero] = constants else {
-		unreachable!()
-	};
+	let [all_one] = constants else { unreachable!() };
 	let [x] = inputs else { unreachable!() };
 	let [cout] = aux else { unreachable!() };
 
@@ -67,6 +67,18 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 		.a(xor2(*x, cin))
 		.b(xor2(*all_one, cin))
 		.c(xor2(cin, *cout))
+		.build();
+
+	// Constraint 2 (AND): sar(cout, 63) ∧ all_one = all_one, i.e. MSB(cout) = 1 (x ≠ 0).
+	// sar(cout, 63) sign-extends the MSB across all 64 bits, so it equals all_one iff
+	// MSB(cout) = 1; the AND with all_one then equals all_one iff MSB(cout) = 1. This is
+	// emitted as an AND (which defines no wire) so gate fusion cannot inline it and
+	// substitute the constant back into Constraint 1, reopening the soundness hole.
+	builder
+		.and()
+		.a(sar(*cout, 63))
+		.b(*all_one)
+		.c(*all_one)
 		.build();
 }
 
@@ -84,22 +96,19 @@ pub fn emit_eval_bytecode(
 		scratch,
 		..
 	} = data.gate_param();
-	let [all_one, zero] = constants else {
-		unreachable!()
-	};
+	let [all_one] = constants else { unreachable!() };
 	let [x] = inputs else { unreachable!() };
 	let [cout] = aux else { unreachable!() };
 	let [scratch_sum_unused] = scratch else {
 		unreachable!()
 	};
 
-	// Compute carry bits from all_one + diff
-	builder.emit_iadd_cin_cout(
+	// Compute carry bits from all_one + x (cin = 0 implicit)
+	builder.emit_iadd_cout(
 		wire_to_reg(*scratch_sum_unused), // sum (unused)
 		wire_to_reg(*cout),               // cout
 		wire_to_reg(*all_one),            // all_one
 		wire_to_reg(*x),                  // x
-		wire_to_reg(*zero),               // cin = 0
 	);
 
 	builder.emit_assert_non_zero(wire_to_reg(*cout), assertion_path.as_u32());
@@ -165,6 +174,43 @@ mod tests {
 			let cs = circuit.constraint_system();
 			verify_constraints(cs, &w.into_value_vec()).unwrap();
 		}
+	}
+
+	#[test]
+	fn test_assert_non_zero_forge_zero_rejected() {
+		use binius_core::constraint_system::ValueIndex;
+
+		// Soundness regression: a malicious prover claims `x ≠ 0` while actually planting
+		// `x = 0` and the aux carry-out `cout = 0`. Before the `MSB(cout) = 1` constraint
+		// (`sar(cout, 63) ∧ all_one = all_one`) was added, only the carry-defining AND was
+		// emitted, and `x = 0, cout = 0` satisfies it, so `verify_constraints` wrongly accepted
+		// this forged witness.
+		//
+		// The existing `test_assert_non_zero_fails_on_zero` only exercises the prover-side
+		// `populate_wire_witness` panic; it does not touch the verifier-side hole. This test
+		// bypasses the prover and injects the malicious witness directly.
+		let builder = CircuitBuilder::new();
+		let x = builder.add_inout();
+		builder.assert_non_zero("non_zero", x);
+		let circuit = builder.build();
+
+		// Build the forged witness by hand. A fresh value vec is all zeros, so the input `x`
+		// and the aux carry-out `cout` are already 0. We cannot call `populate_wire_witness`
+		// (it panics on `x = 0`), so we only fill the constants section directly, exactly as
+		// `populate_wire_witness` would, so the verifier's constant check passes.
+		let mut w = circuit.new_witness_filler();
+		let cs = circuit.constraint_system();
+		for (i, c) in cs.constants.iter().enumerate() {
+			w.value_vec_mut()[ValueIndex(i as u32)] = *c;
+		}
+
+		// The carry-out constraint is satisfied by the all-zero witness, but the AND
+		// `sar(cout, 63) ∧ all_one = all_one` constraint (`MSB(cout) = 1`) must reject it.
+		let result = verify_constraints(cs, w.value_vec());
+		assert!(
+			result.is_err(),
+			"verify_constraints must reject the forged x = 0 witness, got: {result:?}"
+		);
 	}
 
 	#[test]
