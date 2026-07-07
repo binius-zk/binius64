@@ -222,7 +222,7 @@ impl KeySegment {
 ///
 /// The keys are split by value-vector segment: one [`KeySegment`] for the public words
 /// (value-vector indices `[0, n_public_words)`) and one for the hidden words (indices
-/// `[n_public_words, committed_total_len)`). Word indices within each segment are
+/// `[n_public_words, combined_len)`). Word indices within each segment are
 /// segment-relative. The phases iterate both segments in absolute value-vector order.
 #[derive(Debug, Clone)]
 pub struct KeyCollection {
@@ -323,7 +323,7 @@ fn update_with_operand(
 /// Constructs a `KeyCollection` from a constraint system.
 pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 	// Initialize a temporary list of builder keys lists, one for each committed word.
-	let mut builder_key_lists: Vec<Vec<BuilderKey>> = (0..cs.value_vec_layout.committed_total_len)
+	let mut builder_key_lists: Vec<Vec<BuilderKey>> = (0..cs.value_vec_layout.combined_len())
 		.map(|_| Vec::new())
 		.collect();
 

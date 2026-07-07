@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Constant evaluation support for gates.
 
 use binius_core::{ValueIndex, ValueVec, ValueVecLayout, Word};
@@ -44,7 +45,7 @@ fn setup_value_vec(shape: &OpcodeShape, concrete_inputs: &[Word], wire_count: u3
 		n_internal: wire_count as usize,
 		offset_inout: shape.const_in.len(),
 		offset_witness: shape.const_in.len(),
-		committed_total_len: wire_count as usize,
+		n_hidden_words: wire_count as usize - shape.const_in.len(),
 		n_scratch: 0,
 	};
 	let mut value_vec = ValueVec::new(layout);

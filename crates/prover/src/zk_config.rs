@@ -153,7 +153,7 @@ where
 			let inner_cs = self.inner_iop_prover.constraint_system();
 			let _scope = tracing::debug_span!(
 				"Binius64",
-				n_witness_words = inner_cs.value_vec_layout.committed_total_len,
+				n_hidden_words = inner_cs.value_vec_layout.n_hidden_words,
 				n_bitand = inner_cs.and_constraints.len(),
 				n_intmul = inner_cs.mul_constraints.len(),
 			)
