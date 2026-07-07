@@ -109,7 +109,9 @@ pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SH
 /// # Arguments
 ///
 /// * `operand_vecs` - Vector of operand vectors, one per operand position in the constraint
-/// * `r_x_prime` - Multilinear challenge `r_x'` for the constraint variables
+/// * `r_x_prime_tensor` - Equality indicator tensor expansion of the constraint challenge `r_x'`.
+///   The expansion is passed in (rather than computed here) so a single call can share it and so
+///   the [`FieldFn`](binius_field::util::FieldFn) `call` / `call_native` paths compute it once.
 /// * `lambda` - Random coefficient for batching operand evaluations
 /// * `r_s` - Challenge point for shift variables (length `LOG_WORD_SIZE_BITS`)
 /// * `r_y_tensor` - Equality indicator tensor expansion of the word index challenge `r_y`
@@ -122,7 +124,7 @@ pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SH
 /// if the computation fails.
 pub fn evaluate_monster_multilinear_for_operation<F, E>(
 	operand_vecs: &[Vec<&Operand>],
-	r_x_prime: &[E],
+	r_x_prime_tensor: &[E],
 	lambda: E,
 	r_s: &[E],
 	r_y_tensor: &[E],
@@ -132,13 +134,11 @@ where
 	F: BinaryField,
 	E: FieldOps<Scalar = F> + From<F>,
 {
-	let r_x_prime_tensor = eq_ind_partial_eval_scalars(r_x_prime);
-
 	let lambda_powers = powers(lambda)
 		.skip(1)
 		.take(operand_vecs.len())
 		.collect::<Vec<_>>();
-	let evals = evaluate_matrices(operand_vecs, &lambda_powers, &r_x_prime_tensor, r_y_tensor);
+	let evals = evaluate_matrices(operand_vecs, &lambda_powers, r_x_prime_tensor, r_y_tensor);
 
 	let eval = inner_product_scalars(
 		evals.map(|mut evals_op| evaluate_inplace_scalars(&mut evals_op[..], r_s)),

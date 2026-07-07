@@ -421,6 +421,11 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 		let l_tilde = lagrange_evals_scalars(self.subspace, r_zhat_prime_v);
 		let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
 
+		// Expand the per-operation constraint-challenge tensors once here (rather than inside each
+		// `evaluate_monster_multilinear_for_operation` call).
+		let bitand_r_x_prime_tensor = eq_ind_partial_eval_scalars(bitand_r_x_prime_v);
+		let intmul_r_x_prime_tensor = eq_ind_partial_eval_scalars(intmul_r_x_prime_v);
+
 		// BitAnd contribution: operands (a, b, c) batched by `bitand_lambda`.
 		let bitand_part = {
 			let (a, b, c) = self
@@ -431,7 +436,7 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 				.multiunzip();
 			evaluate_monster_multilinear_for_operation::<F, E>(
 				&[a, b, c],
-				bitand_r_x_prime_v,
+				&bitand_r_x_prime_tensor,
 				bitand_lambda_v,
 				r_s_v,
 				&r_y_tensor,
@@ -449,7 +454,7 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 				.multiunzip();
 			evaluate_monster_multilinear_for_operation::<F, E>(
 				&[a, b, lo, hi],
-				intmul_r_x_prime_v,
+				&intmul_r_x_prime_tensor,
 				intmul_lambda_v,
 				r_s_v,
 				&r_y_tensor,
