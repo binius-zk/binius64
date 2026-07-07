@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::iter;
+use std::{array, iter};
 
 use binius_core::{
 	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint},
@@ -22,7 +22,7 @@ use getset::Getters;
 use itertools::Itertools;
 
 use super::{
-	BITAND_ARITY, INTMUL_ARITY, error::Error, evaluate_h_op,
+	BITAND_ARITY, INTMUL_ARITY, SHIFT_VARIANT_COUNT, error::Error, evaluate_h_op,
 	evaluate_monster_multilinear_for_operation,
 };
 use crate::config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS};
@@ -421,10 +421,14 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 		let l_tilde = lagrange_evals_scalars(self.subspace, r_zhat_prime_v);
 		let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
 
-		// Expand the per-operation constraint-challenge tensors once here (rather than inside each
-		// `evaluate_monster_multilinear_for_operation` call).
-		let bitand_r_x_prime_tensor = eq_ind_partial_eval_scalars(bitand_r_x_prime_v);
-		let intmul_r_x_prime_tensor = eq_ind_partial_eval_scalars(intmul_r_x_prime_v);
+		// Tensor the shift-selector evaluations with the shift-amount equality indicator once, so
+		// both the BitAnd and IntMul monster evaluations share it. Indexed by
+		// `variant * WORD_SIZE_BITS + amount`.
+		let eq_r_s = eq_ind_partial_eval_scalars(r_s_v);
+		let shift_scalars =
+			Box::new(array::from_fn::<_, { SHIFT_VARIANT_COUNT * WORD_SIZE_BITS }, _>(|i| {
+				h_op_evals[i / WORD_SIZE_BITS].clone() * &eq_r_s[i % WORD_SIZE_BITS]
+			}));
 
 		// BitAnd contribution: operands (a, b, c) batched by `bitand_lambda`.
 		let bitand_part = {
@@ -436,13 +440,11 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 				.multiunzip();
 			evaluate_monster_multilinear_for_operation::<F, E>(
 				&[a, b, c],
-				&bitand_r_x_prime_tensor,
+				&bitand_r_x_prime_v,
 				bitand_lambda_v,
-				r_s_v,
+				&shift_scalars,
 				&r_y_tensor,
-				&h_op_evals,
 			)
-			.expect("evaluate_monster_multilinear_for_operation has no fallible path")
 		};
 		// IntMul contribution: operands (a, b, lo, hi) batched by `intmul_lambda`.
 		let intmul_part = {
@@ -454,13 +456,11 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 				.multiunzip();
 			evaluate_monster_multilinear_for_operation::<F, E>(
 				&[a, b, lo, hi],
-				&intmul_r_x_prime_tensor,
+				&intmul_r_x_prime_v,
 				intmul_lambda_v,
-				r_s_v,
+				&shift_scalars,
 				&r_y_tensor,
-				&h_op_evals,
 			)
-			.expect("evaluate_monster_multilinear_for_operation has no fallible path")
 		};
 
 		bitand_part + intmul_part
