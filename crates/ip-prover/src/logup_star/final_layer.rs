@@ -91,8 +91,10 @@ where
 	//
 	// The eq factor stays implicit in the MLE-check prover.
 	// The decorator reinstates it each round as an (X - alpha) multiplier, a regular sumcheck.
-	let (frac_prover, remaining) = table_prover.layer_prover(layer1);
-	debug_assert!(remaining.is_none(), "the final layer consumes the last table-side layer");
+	debug_assert_eq!(table_prover.n_layers(), 1, "the final layer is the last table-side layer");
+	let (remaining_prover, frac_prover, _cols) = table_prover.layer_prover(layer1);
+	assert!(remaining_prover.is_none());
+
 	let frac_prover = MleToSumCheckDecorator::new(frac_prover);
 
 	// The product check <T, Y> = e is split on the highest variable into two leaf products.
