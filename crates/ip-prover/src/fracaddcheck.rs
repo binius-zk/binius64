@@ -354,10 +354,26 @@ where
 	);
 
 	// Finish the retained final layer: run its per-instance content MLE-checks and the selector
-	// merge, exactly as an interior reduction layer does.
-	let layer_provers = final_layer
-		.into_iter()
-		.map(|(_frac, prover)| prover)
+	// merge, exactly as an interior reduction layer does. The final layer's buffers are owned by
+	// `final_layer`, which outlives the borrowing per-instance provers.
+	let inner_coords = eval_point[k..].to_vec();
+	let layer_provers: Vec<_> = final_layer
+		.iter()
+		.map(|((num, den), layer)| {
+			layer_mlecheck_prover(
+				layer,
+				(
+					MultilinearEvalClaim {
+						eval: *num,
+						point: inner_coords.clone(),
+					},
+					MultilinearEvalClaim {
+						eval: *den,
+						point: inner_coords.clone(),
+					},
+				),
+			)
+		})
 		.collect();
 	let (mut fractions, eval_point) =
 		reduce_layer::<F, P, _>(layer_provers, eval_point, k, channel);
@@ -376,39 +392,41 @@ where
 /// After running `n_layers - 1` reductions, holds — for each input prover, in input order — its
 /// reduced `(num, den)` fraction paired with the [`MleCheckProver`] `MP` for its final (widest)
 /// layer, at the shared `eval_point` (`selector ++ content`).
-pub struct BatchProveUntilFinalLayerOutput<F, MP> {
+pub struct BatchProveUntilFinalLayerOutput<F, P: PackedField> {
 	/// The reduced evaluation point (`selector ++ content`) at which the final layer is claimed.
 	pub eval_point: Vec<F>,
-	/// Each input prover's reduced `(num, den)` fraction and final-layer MLE-check prover.
-	pub final_layer: Vec<((F, F), MP)>,
+	/// Each input prover's reduced `(num, den)` fraction and its popped final-layer buffers.
+	///
+	/// The caller builds the borrowing MLE-check prover from the owned buffers, keeping them alive
+	/// for the reduction's duration.
+	pub final_layer: Vec<((F, F), FractionalBuffer<P>)>,
 }
 
 /// Runs a batched fractional-addition check up to (but not finishing) the final layer's MLE-check.
 ///
 /// Runs `n_layers - 1` of the per-layer reductions, then — for each input prover — pops its final
-/// (widest) layer as an [`MleCheckProver`] (via [`FracAddCheckProver::layer_prover`]), seeded at
-/// the reduced content coordinates with the prover's reduced `(num, den)` fraction claim.
+/// (widest) layer's buffers, returned owned so the caller can build and drive the borrowing
+/// MLE-check prover seeded at the reduced content coordinates with the reduced `(num, den)` claim.
 ///
 /// # Returns
 /// * the reduced evaluation point (`selector ++ content`) at which the final layer is claimed, and
-/// * for each input prover, its reduced `(num, den)` fraction paired with the final-layer
-///   [`MleCheckProver`].
+/// * for each input prover, its reduced `(num, den)` fraction paired with its owned final-layer
+///   buffers.
 ///
 /// The caller finishes the final layer — e.g. [`batch_prove`] runs its MLE-check directly, or the
 /// logUp* final layer splices these provers into another reduction.
 ///
 /// Arguments and preconditions are as for [`batch_prove`].
-pub fn batch_prove_until_final_layer<F, P, Channel>(
+pub fn batch_prove_until_final_layer<F, P>(
 	provers: Vec<FracAddCheckProver<P>>,
 	claimed_fractions: Vec<(F, F)>,
 	selector_point: Vec<F>,
 	content_point: Vec<F>,
-	channel: &mut Channel,
-) -> BatchProveUntilFinalLayerOutput<F, impl MleCheckProver<F> + use<F, P, Channel>>
+	channel: &mut impl IPProverChannel<F>,
+) -> BatchProveUntilFinalLayerOutput<F, P>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	Channel: IPProverChannel<F>,
 {
 	assert!(!provers.is_empty()); // precondition
 	assert_eq!(claimed_fractions.len(), provers.len()); // precondition
@@ -434,24 +452,13 @@ where
 		},
 	);
 
-	// Pop each remaining single-layer prover's final layer as an MLE-check prover, seeded at the
-	// content coordinates with its reduced fraction. `claimed_fractions` is padded to `2^k`; zip
-	// with the `n` real provers keeps only the real (input-prover) entries.
-	let inner_coords = eval_point[k..].to_vec();
+	// Pop each remaining single-layer prover's final (widest) layer as owned buffers, paired with
+	// its reduced fraction. The caller seeds and drives the borrowing MLE-check prover.
 	let final_layer = iter::zip(provers, claimed_fractions)
-		.map(|(prover, (num, den))| {
-			let (mle_prover, remaining) = prover.layer_prover((
-				MultilinearEvalClaim {
-					eval: num,
-					point: inner_coords.clone(),
-				},
-				MultilinearEvalClaim {
-					eval: den,
-					point: inner_coords.clone(),
-				},
-			));
-			debug_assert!(remaining.is_none(), "one retained layer per prover");
-			((num, den), mle_prover)
+		.map(|(mut prover, (num, den))| {
+			let layer = prover.pop_last_layer();
+			debug_assert_eq!(prover.n_layers(), 0, "one retained layer per prover");
+			((num, den), layer)
 		})
 		.collect();
 
@@ -558,17 +565,26 @@ where
 		.sum();
 
 	// Selector rounds: fold the selector variables with a single fractional-addition MLE-check over
-	// the packed reduced halves, reusing the same `batch_coeff`.
-	let mut selector_prover = frac_add_mle::new(
-		[
-			FieldBuffer::<P>::from_values(&num_0s),
-			FieldBuffer::<P>::from_values(&num_1s),
-			FieldBuffer::<P>::from_values(&den_0s),
-			FieldBuffer::<P>::from_values(&den_1s),
-		],
+	// the packed reduced halves, reusing the same `batch_coeff`. The reduced halves are freshly
+	// packed, so the store owns them directly.
+	let mut selector_store = MleStore::new(k);
+	let selector_cols = [
+		FieldBuffer::<P>::from_values(&num_0s),
+		FieldBuffer::<P>::from_values(&num_1s),
+		FieldBuffer::<P>::from_values(&den_0s),
+		FieldBuffer::<P>::from_values(&den_1s),
+	]
+	.map(|buffer| selector_store.push_owned(buffer));
+	let (selector_num, selector_den) = frac_add_mle::evaluators(
+		&mut selector_store,
+		selector_cols,
 		outer_coords.to_vec(),
 		[num_eval, den_eval],
 	);
+	let selector_evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> =
+		vec![Box::new(selector_num), Box::new(selector_den)];
+	let mut selector_prover =
+		SharedMleCheckProver::new(selector_store, selector_evaluators, outer_coords.to_vec());
 
 	for _round in 0..k {
 		let round_coeffs = combine_claims(selector_prover.execute(), batch_coeff);
@@ -609,7 +625,7 @@ where
 /// per-instance fractions (padded to `2^k`), and the next evaluation point.
 #[allow(clippy::type_complexity)]
 fn batch_prove_layer<F, P>(
-	provers: Vec<FracAddCheckProver<P>>,
+	mut provers: Vec<FracAddCheckProver<P>>,
 	claimed_fractions: Vec<(F, F)>,
 	eval_point: Vec<F>,
 	k: usize,
@@ -619,30 +635,36 @@ where
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
-	// Build a fractional-addition MLE-check prover per instance, seeded with a claim at the content
-	// coordinates.
+	// Pop each instance's current layer into owned buffers, kept alive here while the borrowing
+	// per-instance MLE-check provers fold in lockstep. Each prover retains its remaining layers,
+	// so `provers` is the next layer's provers.
 	let inner_coords = eval_point[k..].to_vec();
-	let (layer_provers, next_provers): (Vec<_>, Vec<_>) = iter::zip(provers, &claimed_fractions)
-		.map(|(prover, &(num, den))| {
-			prover.layer_prover((
-				MultilinearEvalClaim {
-					eval: num,
-					point: inner_coords.clone(),
-				},
-				MultilinearEvalClaim {
-					eval: den,
-					point: inner_coords.clone(),
-				},
-			))
+	let layer_buffers: Vec<FractionalBuffer<P>> = provers
+		.iter_mut()
+		.map(|prover| prover.pop_last_layer())
+		.collect();
+	let layer_provers: Vec<_> = iter::zip(&layer_buffers, &claimed_fractions)
+		.map(|(layer, &(num, den))| {
+			layer_mlecheck_prover(
+				layer,
+				(
+					MultilinearEvalClaim {
+						eval: num,
+						point: inner_coords.clone(),
+					},
+					MultilinearEvalClaim {
+						eval: den,
+						point: inner_coords.clone(),
+					},
+				),
+			)
 		})
-		.unzip();
+		.collect();
 
 	let (next_fractions, next_point) =
 		reduce_layer::<F, P, _>(layer_provers, eval_point, k, channel);
 
-	let next_provers = next_provers.into_iter().flatten().collect();
-
-	(next_provers, next_fractions, next_point)
+	(provers, next_fractions, next_point)
 }
 
 #[cfg(test)]
