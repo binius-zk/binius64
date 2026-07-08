@@ -19,6 +19,7 @@ pub mod rerand_mle;
 // interpolation the in-crate provers use. Not a stable API.
 #[doc(hidden)]
 pub mod round_evals;
+mod round_state;
 pub mod selector_mle;
 mod switchover;
 pub use mle_to_sumcheck::*;

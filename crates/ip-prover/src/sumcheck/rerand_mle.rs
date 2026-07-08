@@ -13,6 +13,7 @@ use super::{
 	common::{MleCheckProver, SumcheckProver},
 	gruen32::Gruen32,
 	round_evals::RoundEvals1,
+	round_state::RoundState,
 	switchover::BinarySwitchover,
 };
 
@@ -27,7 +28,7 @@ use super::{
 /// To combat memory blowup issues arising from folding 1-bit multilinears, this prover introduces
 /// switchover. See `BinarySwitchover` for more in-depth explanation of the mechanism.
 pub struct RerandMlecheckProver<'b, P: PackedField, B: Bitwise> {
-	last_coeffs_or_sums: RoundCoeffsOrSums<P::Scalar>,
+	last_coeffs_or_sums: RoundState<Vec<RoundCoeffs<P::Scalar>>, Vec<P::Scalar>>,
 	gruen32: Gruen32<P>,
 	switchover: BinarySwitchover<'b, P, B>,
 }
@@ -52,7 +53,7 @@ where
 
 		let gruen32 = Gruen32::new(eval_point);
 		let switchover = BinarySwitchover::new(eval_claims.len(), switchover.min(n_vars), bitmasks);
-		let last_coeffs_or_sums = RoundCoeffsOrSums::Sums(eval_claims.to_vec());
+		let last_coeffs_or_sums = RoundState::Claim(eval_claims.to_vec());
 
 		Self {
 			last_coeffs_or_sums,
@@ -74,15 +75,15 @@ where
 
 	fn n_claims(&self) -> usize {
 		match &self.last_coeffs_or_sums {
-			RoundCoeffsOrSums::Coeffs(v) => v.len(),
-			RoundCoeffsOrSums::Sums(v) => v.len(),
+			RoundState::Coeffs(v) => v.len(),
+			RoundState::Claim(v) => v.len(),
 		}
 	}
 
 	fn round_claim(&self) -> Vec<F> {
 		match &self.last_coeffs_or_sums {
-			RoundCoeffsOrSums::Sums(sums) => sums.clone(),
-			RoundCoeffsOrSums::Coeffs(coeffs) => {
+			RoundState::Claim(sums) => sums.clone(),
+			RoundState::Coeffs(coeffs) => {
 				let alpha = self.gruen32.next_coordinate();
 				coeffs
 					.iter()
@@ -93,9 +94,7 @@ where
 	}
 
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
-		let RoundCoeffsOrSums::Sums(sums) = &self.last_coeffs_or_sums else {
-			panic!("execute called out of order; expected fold");
-		};
+		let sums = self.last_coeffs_or_sums.claim();
 
 		assert!(self.n_vars() > 0);
 
@@ -158,14 +157,12 @@ where
 			})
 			.collect::<Vec<_>>();
 
-		self.last_coeffs_or_sums = RoundCoeffsOrSums::Coeffs(round_coeffs.clone());
+		self.last_coeffs_or_sums = RoundState::Coeffs(round_coeffs.clone());
 		round_coeffs
 	}
 
 	fn fold(&mut self, challenge: F) {
-		let RoundCoeffsOrSums::Coeffs(round_coeffs) = &self.last_coeffs_or_sums else {
-			panic!("fold called out of order; expected execute");
-		};
+		let round_coeffs = self.last_coeffs_or_sums.coeffs();
 
 		assert!(self.n_vars() > 0);
 
@@ -177,7 +174,7 @@ where
 		self.switchover.fold(challenge);
 		self.gruen32.fold(challenge);
 
-		self.last_coeffs_or_sums = RoundCoeffsOrSums::Sums(sums);
+		self.last_coeffs_or_sums = RoundState::Claim(sums);
 	}
 
 	fn finish(self) -> Vec<F> {
@@ -203,11 +200,6 @@ where
 	fn eval_point(&self) -> &[F] {
 		self.gruen32.eval_point()
 	}
-}
-
-enum RoundCoeffsOrSums<F: Field> {
-	Coeffs(Vec<RoundCoeffs<F>>),
-	Sums(Vec<F>),
 }
 
 #[cfg(test)]

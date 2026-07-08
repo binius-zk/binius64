@@ -14,6 +14,7 @@ use crate::sumcheck::{
 	common::{MleCheckProver, SumcheckProver},
 	gruen32::Gruen32,
 	round_evals::RoundEvals2,
+	round_state::RoundState,
 };
 
 /// Batch MLE-check prover for M quadratic compositions over N multilinears.
@@ -36,7 +37,7 @@ pub struct BatchQuadraticMleCheckProver<
 	// Composition restricted to highest-degree terms for the "x = ∞" evaluation (Karatsuba).
 	infinity_composition: InfinityComposition,
 	// State machine storage: last round's evals (execute input) or current coeffs (fold input).
-	last_coeffs_or_eval: RoundCoeffsOrEvals<P::Scalar, M>,
+	last_coeffs_or_eval: RoundState<[RoundCoeffs<P::Scalar>; M], [P::Scalar; M]>,
 	// Tracks the eq-indicator expansion and evaluation-point folding across rounds.
 	gruen32: Gruen32<P>,
 }
@@ -68,7 +69,7 @@ where
 		}
 
 		// The first execute round consumes the claimed composite evaluations at eval_point.
-		let last_coeffs_or_eval = RoundCoeffsOrEvals::Evals(eval_claims);
+		let last_coeffs_or_eval = RoundState::Claim(eval_claims);
 		// Gruen32 owns the eq-indicator expansion tied to eval_point and drives per-round folding.
 		let gruen32 = Gruen32::new(&eval_point);
 
@@ -113,8 +114,8 @@ where
 
 	fn round_claim(&self) -> Vec<F> {
 		match &self.last_coeffs_or_eval {
-			RoundCoeffsOrEvals::Evals(evals) => evals.to_vec(),
-			RoundCoeffsOrEvals::Coeffs(coeffs) => {
+			RoundState::Claim(evals) => evals.to_vec(),
+			RoundState::Coeffs(coeffs) => {
 				let alpha = self.gruen32.next_coordinate();
 				coeffs
 					.iter()
@@ -126,10 +127,7 @@ where
 
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
 		// State machine: execute consumes evals from the previous round and produces new coeffs.
-		let last_eval = match &self.last_coeffs_or_eval {
-			RoundCoeffsOrEvals::Evals(evals) => *evals,
-			RoundCoeffsOrEvals::Coeffs(_) => panic!("execute called out of order; expected fold"),
-		};
+		let last_eval = *self.last_coeffs_or_eval.claim();
 
 		// There must be at least one variable left to sum over in this round.
 		let n_vars_remaining = self.gruen32.n_vars_remaining();
@@ -247,7 +245,7 @@ where
 			})
 			.collect::<Vec<_>>();
 		// State transition: execute produces coeffs for fold to consume.
-		self.last_coeffs_or_eval = RoundCoeffsOrEvals::Coeffs(
+		self.last_coeffs_or_eval = RoundState::Coeffs(
 			round_coeffs
 				.clone()
 				.try_into()
@@ -258,15 +256,13 @@ where
 
 	fn fold(&mut self, challenge: F) {
 		// State machine: fold consumes coeffs and produces evals at the verifier challenge.
-		let RoundCoeffsOrEvals::Coeffs(prime_coeffs) = &self.last_coeffs_or_eval else {
-			panic!("fold called out of order; expected execute");
-		};
+		let prime_coeffs = self.last_coeffs_or_eval.coeffs();
 
 		// n_vars is decremented in fold, so we must have at least one variable left here.
 		assert!(
 			self.n_vars() > 0,
 			"n_vars is decremented in fold; \
-			fold changes last_coeffs_or_eval to Eval variant; \
+			fold changes last_coeffs_or_eval to Claim variant; \
 			fold only executes with Coeffs variant; \
 			thus, n_vars should be > 0"
 		);
@@ -287,7 +283,7 @@ where
 		// Keep the equality polynomial in sync with the folding of multilinears.
 		self.gruen32.fold(challenge);
 		// State transition: fold produces evals for the next execute.
-		self.last_coeffs_or_eval = RoundCoeffsOrEvals::Evals(evals);
+		self.last_coeffs_or_eval = RoundState::Claim(evals);
 	}
 
 	fn finish(mut self) -> Vec<F> {
@@ -314,12 +310,6 @@ where
 	fn eval_point(&self) -> &[F] {
 		&self.gruen32.eval_point()[..self.n_vars()]
 	}
-}
-
-#[derive(Debug, Clone)]
-enum RoundCoeffsOrEvals<F: Field, const M: usize> {
-	Coeffs([RoundCoeffs<F>; M]),
-	Evals([F; M]),
 }
 
 #[cfg(test)]

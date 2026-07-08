@@ -9,14 +9,16 @@ use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 use itertools::{Itertools, izip};
 
-use super::{common::SumcheckProver, gruen32::Gruen32, round_evals::WideRoundEvals2};
+use super::{
+	common::SumcheckProver, gruen32::Gruen32, round_evals::WideRoundEvals2, round_state::RoundState,
+};
 use crate::sumcheck::common::MleCheckProver;
 
 /// Multiple claim version of `BivariateProductMlecheckProver` that can prove mlechecks
 /// that share the evaluation point. This allows deduplicating folding and evaluation work.
 pub struct BivariateProductMultiMlecheckProver<P: PackedField> {
 	multilinears: Vec<FieldBuffer<P>>,
-	last_coeffs_or_sums: RoundCoeffsOrSums<P::Scalar>,
+	last_coeffs_or_sums: RoundState<Vec<RoundCoeffs<P::Scalar>>, Vec<P::Scalar>>,
 	gruen32: Gruen32<P>,
 }
 
@@ -45,7 +47,7 @@ impl<F: Field, P: PackedField<Scalar = F>> BivariateProductMultiMlecheckProver<P
 		);
 
 		let multilinears = multilinears.into_iter().flatten().collect_vec();
-		let last_coeffs_or_sums = RoundCoeffsOrSums::Sums(eval_claims);
+		let last_coeffs_or_sums = RoundState::Claim(eval_claims);
 
 		let gruen32 = Gruen32::new(eval_point);
 
@@ -68,15 +70,15 @@ where
 
 	fn n_claims(&self) -> usize {
 		match &self.last_coeffs_or_sums {
-			RoundCoeffsOrSums::Coeffs(v) => v.len(),
-			RoundCoeffsOrSums::Sums(v) => v.len(),
+			RoundState::Coeffs(v) => v.len(),
+			RoundState::Claim(v) => v.len(),
 		}
 	}
 
 	fn round_claim(&self) -> Vec<F> {
 		match &self.last_coeffs_or_sums {
-			RoundCoeffsOrSums::Sums(sums) => sums.clone(),
-			RoundCoeffsOrSums::Coeffs(coeffs) => {
+			RoundState::Claim(sums) => sums.clone(),
+			RoundState::Coeffs(coeffs) => {
 				let alpha = self.gruen32.next_coordinate();
 				coeffs
 					.iter()
@@ -87,9 +89,7 @@ where
 	}
 
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
-		let RoundCoeffsOrSums::Sums(sums) = &self.last_coeffs_or_sums else {
-			panic!("execute called out of order; expected fold");
-		};
+		let sums = self.last_coeffs_or_sums.claim();
 
 		assert!(self.n_vars() > 0);
 
@@ -154,14 +154,12 @@ where
 			})
 			.collect::<Vec<_>>();
 
-		self.last_coeffs_or_sums = RoundCoeffsOrSums::Coeffs(round_coeffs.clone());
+		self.last_coeffs_or_sums = RoundState::Coeffs(round_coeffs.clone());
 		round_coeffs
 	}
 
 	fn fold(&mut self, challenge: F) {
-		let RoundCoeffsOrSums::Coeffs(prime_coeffs) = &self.last_coeffs_or_sums else {
-			panic!("fold called out of order; expected execute");
-		};
+		let prime_coeffs = self.last_coeffs_or_sums.coeffs();
 
 		assert!(self.n_vars() > 0);
 
@@ -175,7 +173,7 @@ where
 			.for_each(|multilinear| fold_highest_var_inplace(multilinear, challenge));
 
 		self.gruen32.fold(challenge);
-		self.last_coeffs_or_sums = RoundCoeffsOrSums::Sums(sums);
+		self.last_coeffs_or_sums = RoundState::Claim(sums);
 	}
 
 	fn finish(self) -> Vec<F> {
@@ -196,11 +194,6 @@ where
 	fn eval_point(&self) -> &[F] {
 		self.gruen32.eval_point()
 	}
-}
-
-enum RoundCoeffsOrSums<F: Field> {
-	Coeffs(Vec<RoundCoeffs<F>>),
-	Sums(Vec<F>),
 }
 
 #[cfg(test)]
