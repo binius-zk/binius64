@@ -1,27 +1,13 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-//! Arithmetic for the Monbijou field, GF(2)\[X\] / (X^64 + X^4 + X^3 + X + 1).
+//! CLMUL-based multiplication for the Monbijou field and its degree-2 extension.
 //!
-//! This module implements arithmetic in the GF(2^64) binary field defined by the
-//! reduction polynomial X^64 + X^4 + X^3 + X + 1, which is used in the ISO 3309
-//! standard for CRC-64 error detection.
-//!
-//! The implementation uses carry-less multiplication (CLMUL) CPU instructions for
-//! efficient field multiplication on modern x86_64 processors. The algorithm is
-//! optimized for SIMD parallelism, processing multiple field elements simultaneously
-//! when using vector types like __m128i or __m256i.
+//! These implementations use carry-less multiplication (CLMUL) CPU instructions for efficient
+//! field multiplication on modern x86_64 processors. The algorithm is optimized for SIMD
+//! parallelism, processing multiple field elements simultaneously when using vector types like
+//! __m128i or __m256i.
 
 use crate::{PackedUnderlier, Underlier, underlier::OpsClmul};
-
-/// The multiplicative identity in the Monbijou field
-///
-/// In this field, the standard representation of 1 is simply 0x01
-pub const MONBIJOU_ONE: u64 = 0x01;
-
-/// The multiplicative identity in the Monbijou 128-bit extension field
-///
-/// In the degree-2 extension GF(2^128), the standard representation of 1 is simply 0x01
-pub const MONBIJOU_128B_ONE: u128 = 0x01;
 
 /// Multiplies two elements in GF(2^64) using SIMD carry-less multiplication.
 ///
@@ -30,7 +16,7 @@ pub const MONBIJOU_128B_ONE: u128 = 0x01;
 /// reduction process to efficiently handle the polynomial reduction after multiplication.
 #[inline]
 #[allow(dead_code)]
-pub fn mul_clmul<U: Underlier + OpsClmul + PackedUnderlier<u64>>(a: U, b: U) -> U {
+pub fn mul<U: Underlier + OpsClmul + PackedUnderlier<u64>>(a: U, b: U) -> U {
 	// Step 1: Carry-less multiplication of 64-bit operands produces 128-bit results
 	// For SIMD types, this processes multiple pairs in parallel
 	let prod_0 = U::clmulepi64::<0x00>(a, b); // 128-bit pre-reduction product elements 0
@@ -42,7 +28,7 @@ pub fn mul_clmul<U: Underlier + OpsClmul + PackedUnderlier<u64>>(a: U, b: U) -> 
 ///
 /// This field is defined as GF(2)[X, Y] / (X^64 + X^4 + X^3 + X + 1) / (Y^2 + XY + 1).
 #[inline]
-pub fn mul_128b_clmul<U: Underlier + OpsClmul + PackedUnderlier<u64>>(x: U, y: U) -> U {
+pub fn mul_128b<U: Underlier + OpsClmul + PackedUnderlier<u64>>(x: U, y: U) -> U {
 	// This is the bit representation of the lower-degree terms (X^4 + X^3 + X + 1)
 	const POLY: u64 = 0x1B;
 	let poly = <U as PackedUnderlier<u64>>::broadcast(POLY);
@@ -77,7 +63,7 @@ pub fn mul_128b_clmul<U: Underlier + OpsClmul + PackedUnderlier<u64>>(x: U, y: U
 /// coefficient 1, where each coefficient is an element (or SIMD pack of elements) of the base
 /// field GF(2^64). This transposed layout keeps the two coefficients in separate registers, so
 /// the multiplication is built from base-field carry-less multiplications and processes every
-/// packed lane in parallel. It computes the same field product as [`mul_128b_clmul`], which
+/// packed lane in parallel. It computes the same field product as [`mul_128b`], which
 /// instead packs the two coefficients into the low and high halves of a single value.
 ///
 /// The extension is GF(2)\[X, Y\] / (X^64 + X^4 + X^3 + X + 1) / (Y^2 + XY + 1), so `Y^2 = XY + 1`
@@ -90,10 +76,10 @@ pub fn mul_128b_clmul<U: Underlier + OpsClmul + PackedUnderlier<u64>>(x: U, y: U
 ///
 /// The base-field products are kept unreduced and combined into the two output coefficients, so
 /// only a single `reduce_pair` is spent per coefficient (one reduction per element), matching
-/// [`mul_128b_clmul`]. The cross term `a0·b1 + a1·b0` is recovered from Karatsuba as `t1 + t0 +
+/// [`mul_128b`]. The cross term `a0·b1 + a1·b0` is recovered from Karatsuba as `t1 + t0 +
 /// t2`.
 #[inline]
-pub fn mul_sliced_128b_clmul<U: Underlier + OpsClmul + PackedUnderlier<u64>>(
+pub fn mul_sliced_128b<U: Underlier + OpsClmul + PackedUnderlier<u64>>(
 	x: [U; 2],
 	y: [U; 2],
 ) -> [U; 2] {
@@ -109,7 +95,7 @@ pub fn mul_sliced_128b_clmul<U: Underlier + OpsClmul + PackedUnderlier<u64>>(
 	let ym = U::xor(y0, y1);
 
 	// Unreduced base-field products, one 128-bit product per lane (the `0x00`/`0x11` immediates
-	// select the low/high halves of each 128-bit lane, as in `mul_clmul`).
+	// select the low/high halves of each 128-bit lane, as in `mul`).
 	// t0 = a0·b0, t2 = a1·b1, t1 = (a0 + a1)·(b0 + b1).
 	let t0_lo = U::clmulepi64::<0x00>(x0, y0);
 	let t0_hi = U::clmulepi64::<0x11>(x0, y0);
@@ -175,7 +161,7 @@ mod tests {
 
 	use proptest::prelude::*;
 
-	use super::{mul_128b_clmul, mul_sliced_128b_clmul};
+	use super::{mul_128b, mul_sliced_128b};
 
 	// A packed GF(2^128) element is a `u128` with coefficient 0 in the low 64 bits and coefficient
 	// 1 in the high 64 bits, matching `__m128i`'s lane layout.
@@ -204,7 +190,7 @@ mod tests {
 
 	fn packed_mul(a: u128, b: u128) -> u128 {
 		unsafe {
-			std::mem::transmute::<__m128i, u128>(mul_128b_clmul::<__m128i>(
+			std::mem::transmute::<__m128i, u128>(mul_128b::<__m128i>(
 				std::mem::transmute::<u128, __m128i>(a),
 				std::mem::transmute::<u128, __m128i>(b),
 			))
@@ -222,7 +208,7 @@ mod tests {
 			b1 in any::<u128>(),
 		) {
 			// Lane 0 multiplies a0 by b0; lane 1 multiplies a1 by b1.
-			let z = mul_sliced_128b_clmul::<__m128i>(to_sliced(a0, a1), to_sliced(b0, b1));
+			let z = mul_sliced_128b::<__m128i>(to_sliced(a0, a1), to_sliced(b0, b1));
 			let (z0, z1) = from_sliced(z);
 
 			prop_assert_eq!(z0, packed_mul(a0, b0));

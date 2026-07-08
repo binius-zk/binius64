@@ -519,14 +519,18 @@ fn bench_ghash(c: &mut Criterion) {
 	group.finish();
 }
 
-/// Benchmark GF(2^64) Monbijou multiplication using CLMUL instructions
+/// Benchmark GF(2^64) Monbijou multiplication, comparing the portable soft64 implementation with
+/// the CLMUL implementations.
 #[allow(unused_variables, unused_mut)]
 fn bench_monbijou(c: &mut Criterion) {
-	use binius_arith_bench::monbijou::mul_clmul;
+	use binius_arith_bench::monbijou::{mul_clmul, soft64};
 
 	let mut rng = rand::rng();
 
 	let mut group = c.benchmark_group("monbijou_64b");
+
+	// Portable soft64 (no CLMUL/SIMD)
+	run_mul_benchmark(&mut group, "soft64::mul", soft64::mul, &mut rng, 64);
 
 	// Benchmark __m128i
 	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
@@ -568,11 +572,14 @@ fn bench_monbijou(c: &mut Criterion) {
 /// (`mul_sliced_128b_clmul`).
 #[allow(unused_imports, unused_variables, unused_mut)]
 fn bench_monbijou_128b(c: &mut Criterion) {
-	use binius_arith_bench::monbijou::{mul_128b_clmul, mul_sliced_128b_clmul};
+	use binius_arith_bench::monbijou::{mul_128b_clmul, mul_sliced_128b_clmul, soft64};
 
 	let mut rng = rand::rng();
 
 	let mut group = c.benchmark_group("monbijou_128b");
+
+	// Portable soft64 (no CLMUL/SIMD)
+	run_mul_benchmark(&mut group, "soft64::mul_128b", soft64::mul_128b, &mut rng, 128);
 
 	// Packed __m128i
 	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
