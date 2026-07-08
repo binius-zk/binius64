@@ -1,11 +1,15 @@
 // Copyright 2025 Irreducible Inc.
-use binius_field::Field;
+// Copyright 2026 The Binius Developers
+
+use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::multilinear::eq::eq_one_var;
 
 use crate::sumcheck::{
 	common::{MleCheckProver, SumcheckProver},
+	mle_store::{EqId, MleStore},
 	round_evals::round_coeffs_by_eq,
+	round_evaluator::{RoundContext, RoundEvaluator},
 };
 
 /// Adaptor that exposes a `SumcheckProver` interface for an internal `MleCheckProver`.
@@ -83,5 +87,83 @@ impl<F: Field, InnerProver: MleCheckProver<F>> SumcheckProver<F>
 
 	fn finish(self) -> Vec<F> {
 		self.mlecheck_prover.finish()
+	}
+}
+
+/// Adaptor that turns an MLE-check [`RoundEvaluator`] into a regular sumcheck one.
+///
+/// This is the evaluator-level mirror of [`MleToSumCheckDecorator`], applying the same [Gruen24]
+/// technique: each round, the inner evaluator's prime round polynomials are multiplied by the
+/// linear equality term in the bound coordinate and by the accumulated equality prefix. It lets
+/// eq-weighted and plain claims live in one evaluator group behind a single
+/// [`SumcheckProver`](super::round_evaluator::SharedSumcheckProver).
+///
+/// The accumulation pass is delegated to the inner evaluator untouched; only the interpolated
+/// polynomials and the claim bookkeeping change.
+///
+/// The wrapper holds only the [`EqId`] of the shared evaluation point's eq tracker. The round's
+/// alpha and the accumulated equality prefix are read from that tracker, which the store folds in
+/// lockstep — so the wrapper keeps no copy of the point and no equality bookkeeping of its own.
+///
+/// [Gruen24]: <https://eprint.iacr.org/2024/108>
+pub struct MleToSumCheckEvaluator<Inner> {
+	inner: Inner,
+	// The shared eq tracker for the inner MLE-check evaluation point; the store maintains its
+	// current alpha and equality prefix.
+	eq_tracker: EqId,
+}
+
+impl<Inner> MleToSumCheckEvaluator<Inner> {
+	/// Wraps an MLE-check evaluator whose claims share the point of eq tracker `eq_tracker`.
+	pub const fn new(inner: Inner, eq_tracker: EqId) -> Self {
+		Self { inner, eq_tracker }
+	}
+}
+
+impl<F, P, Inner> RoundEvaluator<F, P> for MleToSumCheckEvaluator<Inner>
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+	Inner: RoundEvaluator<F, P>,
+{
+	fn degree(&self) -> usize {
+		// The eq factor multiplies the emitted round polynomial, not the accumulator: the wide
+		// slots still hold the inner evaluator's prime-polynomial evaluations.
+		self.inner.degree()
+	}
+
+	fn round_claim(&self, store: &MleStore<'_, P>) -> F {
+		// The sumcheck round claim is the inner MLE-check claim scaled by the accumulated
+		// equality prefix; see [`MleToSumCheckDecorator::round_claim`].
+		self.inner.round_claim(store) * store.eq_prefix(self.eq_tracker)
+	}
+
+	fn accumulate(
+		&self,
+		ctx: &RoundContext<'_, '_, P>,
+		chunk_index: usize,
+		accum: &mut [<P as WideMul>::Output],
+	) {
+		self.inner.accumulate(ctx, chunk_index, accum)
+	}
+
+	fn interpolate(
+		&mut self,
+		store: &MleStore<'_, P>,
+		accum: &[<P as WideMul>::Output],
+	) -> RoundCoeffs<F> {
+		let round_coeffs = self.inner.interpolate(store, accum);
+
+		// Multiply the round polynomial from the inner MLE-check evaluator by (X - α) and the
+		// equality prefix, both read from the shared eq tracker (the store has not yet folded this
+		// round, so the tracker is at the current round's alpha and prefix).
+		let alpha = store.eq_alpha(self.eq_tracker);
+		round_coeffs_by_eq(&round_coeffs, alpha) * store.eq_prefix(self.eq_tracker)
+	}
+
+	fn fold(&mut self, challenge: F) {
+		// The store folds the shared eq tracker, advancing its alpha and equality prefix, so the
+		// wrapper only advances the inner evaluator's claim state.
+		self.inner.fold(challenge)
 	}
 }
