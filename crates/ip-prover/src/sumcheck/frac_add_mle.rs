@@ -3,8 +3,15 @@
 use binius_field::{Field, PackedField};
 use binius_math::{AsSlicesMut, FieldBuffer};
 
-use crate::sumcheck::{batch_quadratic_mle::BatchQuadraticMleCheckProver, common::MleCheckProver};
+use crate::sumcheck::{
+	batch_quadratic_mle::BatchQuadraticMleCheckProver,
+	common::MleCheckProver,
+	mle_store::{ColId, MleStore},
+	quadratic_mle_evaluator::QuadraticMleEvaluator,
+	round_evaluator::RoundEvaluator,
+};
 
+/// The numerator and denominator buffers of one fractional-addition layer.
 pub type FractionalBuffer<P> = (FieldBuffer<P>, FieldBuffer<P>);
 // Prover for the fractional additional claims required in LogUp*. We keep numerators and
 // denominators to be added in a single buffer respectively, with the assumption that the 2
@@ -33,6 +40,46 @@ where
 		eval_point,
 		eval_claims,
 	)
+}
+
+/// Creates the round evaluators for the fractional-addition claims required in logUp*.
+///
+/// The columns are `[num_a, num_b, den_a, den_b]`: the numerators and denominators of the two
+/// fraction collections being added, split as either half of one layer buffer. The two claims —
+/// one evaluator each — are the fractional-addition numerator `num_a * den_b + num_b * den_a` over
+/// all four columns and the denominator `den_a * den_b` over `[den_a, den_b]`, both weighted by the
+/// equality indicator at `eval_point`. The evaluators share the store's eq tracker for
+/// `eval_point`.
+pub fn evaluators<F, P>(
+	store: &mut MleStore<'_, P>,
+	cols: [ColId; 4],
+	eval_point: Vec<F>,
+	eval_claims: [F; 2],
+) -> (impl RoundEvaluator<F, P> + 'static, impl RoundEvaluator<F, P> + 'static)
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	let [num_a, num_b, den_a, den_b] = cols;
+	// The fractional addition formulas are purely quadratic, so each infinity composition matches
+	// its regular composition.
+	let numerator = QuadraticMleEvaluator::new(
+		store,
+		[num_a, num_b, den_a, den_b],
+		|[num_a, num_b, den_a, den_b]: [P; 4]| num_a * den_b + num_b * den_a,
+		|[num_a, num_b, den_a, den_b]: [P; 4]| num_a * den_b + num_b * den_a,
+		eval_point.clone(),
+		eval_claims[0],
+	);
+	let denominator = QuadraticMleEvaluator::new(
+		store,
+		[den_a, den_b],
+		|[den_a, den_b]: [P; 2]| den_a * den_b,
+		|[den_a, den_b]: [P; 2]| den_a * den_b,
+		eval_point,
+		eval_claims[1],
+	);
+	(numerator, denominator)
 }
 
 #[cfg(test)]

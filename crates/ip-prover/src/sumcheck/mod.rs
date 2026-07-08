@@ -4,21 +4,25 @@
 pub mod batch;
 pub mod batch_quadratic_mle;
 pub mod bivariate_product;
+pub mod bivariate_product_evaluator;
 pub mod bivariate_product_mle;
 pub mod bivariate_product_multi_mle;
 pub mod common;
 pub mod gruen32;
+pub mod mle_store;
 mod mle_to_sumcheck;
 pub mod multilinear_eval;
 mod padded;
 mod prove;
 pub mod quadratic_mle;
+pub mod quadratic_mle_evaluator;
 pub mod rerand_mle;
 // `round_evals` is internal implementation, exposed (via `#[doc(hidden)]` `pub mod`) only so
 // `binius-prover` can compute the shift reduction's sparse first sumcheck round with the exact
 // interpolation the in-crate provers use. Not a stable API.
 #[doc(hidden)]
 pub mod round_evals;
+pub mod round_evaluator;
 mod round_state;
 pub mod selector_mle;
 mod switchover;
