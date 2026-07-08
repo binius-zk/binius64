@@ -563,16 +563,18 @@ fn bench_monbijou(c: &mut Criterion) {
 	group.finish();
 }
 
-/// Benchmark GF(2^128) Monbijou 128-bit extension field multiplication using CLMUL instructions
+/// Benchmark GF(2^128) Monbijou 128-bit extension field multiplication using CLMUL instructions,
+/// comparing the packed representation (`mul_128b_clmul`) against the sliced representation
+/// (`mul_sliced_128b_clmul`).
 #[allow(unused_imports, unused_variables, unused_mut)]
 fn bench_monbijou_128b(c: &mut Criterion) {
-	use binius_arith_bench::monbijou::mul_128b_clmul;
+	use binius_arith_bench::monbijou::{mul_128b_clmul, mul_sliced_128b_clmul};
 
 	let mut rng = rand::rng();
 
 	let mut group = c.benchmark_group("monbijou_128b");
 
-	// Benchmark __m128i
+	// Packed __m128i
 	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
 	{
 		run_mul_benchmark(
@@ -584,7 +586,7 @@ fn bench_monbijou_128b(c: &mut Criterion) {
 		);
 	}
 
-	// Benchmark __m256i
+	// Packed __m256i
 	#[cfg(all(
 		target_feature = "vpclmulqdq",
 		target_feature = "avx2",
@@ -600,7 +602,7 @@ fn bench_monbijou_128b(c: &mut Criterion) {
 		);
 	}
 
-	// Benchmark uint64x2_t (AARCH64 NEON)
+	// Packed uint64x2_t (AARCH64 NEON)
 	#[cfg(all(
 		target_arch = "aarch64",
 		target_feature = "neon",
@@ -611,6 +613,50 @@ fn bench_monbijou_128b(c: &mut Criterion) {
 			&mut group,
 			"mul_128b_clmul::uint64x2_t",
 			mul_128b_clmul::<uint64x2_t>,
+			&mut rng,
+			128,
+		);
+	}
+
+	// Sliced __m128i (a `[__m128i; 2]` holds two GF(2^128) elements)
+	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
+	{
+		run_mul_benchmark(
+			&mut group,
+			"mul_sliced_128b_clmul::<__m128i>",
+			mul_sliced_128b_clmul::<__m128i>,
+			&mut rng,
+			128,
+		);
+	}
+
+	// Sliced __m256i (a `[__m256i; 2]` holds four GF(2^128) elements)
+	#[cfg(all(
+		target_feature = "vpclmulqdq",
+		target_feature = "avx2",
+		target_feature = "sse2"
+	))]
+	{
+		run_mul_benchmark(
+			&mut group,
+			"mul_sliced_128b_clmul::<__m256i>",
+			mul_sliced_128b_clmul::<__m256i>,
+			&mut rng,
+			128,
+		);
+	}
+
+	// Sliced uint64x2_t (AARCH64 NEON)
+	#[cfg(all(
+		target_arch = "aarch64",
+		target_feature = "neon",
+		target_feature = "aes"
+	))]
+	{
+		run_mul_benchmark(
+			&mut group,
+			"mul_sliced_128b_clmul::uint64x2_t",
+			mul_sliced_128b_clmul::<uint64x2_t>,
 			&mut rng,
 			128,
 		);
