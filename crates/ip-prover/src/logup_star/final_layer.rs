@@ -19,7 +19,7 @@ use either::Either;
 
 use crate::{
 	channel::IPProverChannel,
-	fracaddcheck::{FracAddCheckProver, FracEvalClaim},
+	fracaddcheck::{FracAddCheckProver, FracEvalClaim, layer_mlecheck_prover},
 	sumcheck::{
 		MleToSumCheckDecorator, batch::batch_prove,
 		bivariate_product::BivariateProductSumcheckProver,
@@ -71,7 +71,7 @@ pub struct FinalLayerOutput<F> {
 #[tracing::instrument(skip_all, level = "debug", name = "logup* final layer")]
 pub fn prove_final_layer<F, P>(
 	eval_claim: F,
-	table_prover: FracAddCheckProver<P>,
+	mut table_prover: FracAddCheckProver<P>,
 	layer1: FracEvalClaim<F>,
 	pushforward: &FieldBuffer<P>,
 	table: &FieldBuffer<P>,
@@ -91,8 +91,16 @@ where
 	//
 	// The eq factor stays implicit in the MLE-check prover.
 	// The decorator reinstates it each round as an (X - alpha) multiplier, a regular sumcheck.
-	let (frac_prover, remaining) = table_prover.layer_prover(layer1);
-	debug_assert!(remaining.is_none(), "the final layer consumes the last table-side layer");
+	//
+	// Pop the leaf layer so its buffers are owned here, then hand them by borrow to the store-based
+	// prover for the duration of this final layer.
+	let leaf_layer = table_prover.pop_last_layer();
+	debug_assert_eq!(
+		table_prover.n_layers(),
+		0,
+		"the final layer consumes the last table-side layer"
+	);
+	let frac_prover = layer_mlecheck_prover(&leaf_layer, layer1);
 	let frac_prover = MleToSumCheckDecorator::new(frac_prover);
 
 	// The product check <T, Y> = e is split on the highest variable into two leaf products.

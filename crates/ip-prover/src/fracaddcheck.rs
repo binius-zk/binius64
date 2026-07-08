@@ -27,7 +27,7 @@ use crate::{
 /// columns, so the fold runs in place with no up-front copy; `layer` must outlive the returned
 /// prover. The two claims — the fractional-addition numerator and denominator — share `claim`'s
 /// evaluation point.
-fn layer_mlecheck_prover<F, P>(
+pub(crate) fn layer_mlecheck_prover<F, P>(
 	layer: &FractionalBuffer<P>,
 	claim: FracEvalClaim<F>,
 ) -> impl MleCheckProver<F> + '_
@@ -139,44 +139,8 @@ where
 	///
 	/// # Preconditions
 	/// * `self.n_layers() > 0`
-	fn pop_last_layer(&mut self) -> FractionalBuffer<P> {
+	pub(crate) fn pop_last_layer(&mut self) -> FractionalBuffer<P> {
 		self.layers.pop().expect("precondition: n_layers() > 0")
-	}
-
-	/// Pops the last layer and returns a sumcheck prover for it.
-	///
-	/// Returns `(layer_prover, remaining)` where:
-	/// - `layer_prover` is a sumcheck prover for the popped layer
-	/// - `remaining` is `Some(self)` if there are more layers, `None` otherwise
-	pub fn layer_prover(
-		mut self,
-		claim: FracEvalClaim<F>,
-	) -> (impl MleCheckProver<F>, Option<Self>) {
-		let (num_claim, den_claim) = claim;
-		assert_eq!(
-			num_claim.point, den_claim.point,
-			"fractional claims must share the evaluation point"
-		);
-
-		let layer = self.layers.pop().expect("layers is non-empty");
-
-		let remaining = if self.layers.is_empty() {
-			None
-		} else {
-			Some(self)
-		};
-
-		let (num, den) = layer;
-		// The MLE-check reduces four multilinears.
-		// These are the low and high halves of the numerator buffer and of the denominator buffer.
-		// Splitting the owned buffers hands those halves over by borrow, so the fold runs in place.
-		let prover = frac_add_mle::new(
-			[num.split_half(), den.split_half()],
-			num_claim.point.clone(),
-			[num_claim.eval, den_claim.eval],
-		);
-
-		(prover, remaining)
 	}
 
 	/// Runs the fractional addition check protocol and returns the final evaluation claims.

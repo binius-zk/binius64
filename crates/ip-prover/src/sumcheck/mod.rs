@@ -2,7 +2,6 @@
 // Copyright 2026 The Binius Developers
 
 pub mod batch;
-pub mod batch_quadratic_mle;
 pub mod bivariate_product;
 pub mod bivariate_product_evaluator;
 pub mod bivariate_product_mle;
