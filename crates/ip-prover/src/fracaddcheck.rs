@@ -16,8 +16,48 @@ use crate::{
 		batch::batch_prove_mle_and_write_evals,
 		common::{MleCheckProver, SumcheckProver},
 		frac_add_mle::{self, FractionalBuffer},
+		mle_store::MleStore,
+		round_evaluator::{RoundEvaluator, SharedMleCheckProver},
 	},
 };
+
+/// Builds an MLE-check prover for one fractional-addition layer, borrowing the layer's buffers.
+///
+/// The store borrows the low and high halves of the numerator and denominator buffers as its four
+/// columns, so the fold runs in place with no up-front copy; `layer` must outlive the returned
+/// prover. The two claims — the fractional-addition numerator and denominator — share `claim`'s
+/// evaluation point.
+fn layer_mlecheck_prover<F, P>(
+	layer: &FractionalBuffer<P>,
+	claim: FracEvalClaim<F>,
+) -> impl MleCheckProver<F> + '_
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	let (num_claim, den_claim) = claim;
+	assert_eq!(
+		num_claim.point, den_claim.point,
+		"fractional claims must share the evaluation point"
+	);
+
+	let (num, den) = layer;
+	let (num_0, num_1) = num.split_half_ref();
+	let (den_0, den_1) = den.split_half_ref();
+
+	let mut store = MleStore::new(num.log_len() - 1);
+	let cols = [num_0, num_1, den_0, den_1].map(|half| store.push(half));
+	let (num_evaluator, den_evaluator) = frac_add_mle::evaluators(
+		&mut store,
+		cols,
+		num_claim.point.clone(),
+		[num_claim.eval, den_claim.eval],
+	);
+
+	let evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> =
+		vec![Box::new(num_evaluator), Box::new(den_evaluator)];
+	SharedMleCheckProver::new(store, evaluators, num_claim.point)
+}
 
 /// The numerator and denominator evaluation claims of one fractional-addition layer.
 ///
@@ -90,6 +130,17 @@ where
 	/// Returns the number of remaining layers to prove.
 	pub const fn n_layers(&self) -> usize {
 		self.layers.len()
+	}
+
+	/// Pops and returns the smallest remaining layer's numerator/denominator buffers.
+	///
+	/// The caller owns the returned buffers, so it can hand them by borrow to a store-based
+	/// [`layer_mlecheck_prover`] while this prover advances to its remaining layers.
+	///
+	/// # Preconditions
+	/// * `self.n_layers() > 0`
+	fn pop_last_layer(&mut self) -> FractionalBuffer<P> {
+		self.layers.pop().expect("precondition: n_layers() > 0")
 	}
 
 	/// Pops the last layer and returns a sumcheck prover for it.
@@ -175,21 +226,18 @@ where
 	/// # Preconditions
 	/// * `n_layers <= self.n_layers()`.
 	pub fn prove_layers(
-		self,
+		mut self,
 		n_layers: usize,
 		claim: FracEvalClaim<F>,
 		channel: &mut impl IPProverChannel<F>,
 	) -> (Option<Self>, FracEvalClaim<F>) {
-		// Each layer consumes the prover and returns the remainder, so thread it through an Option.
-		let mut prover_opt = Some(self);
 		let mut claim = claim;
 
 		for _ in 0..n_layers {
-			let prover = prover_opt
-				.take()
-				.expect("precondition: n_layers <= self.n_layers()");
-			let (sumcheck_prover, remaining) = prover.layer_prover(claim);
-			prover_opt = remaining;
+			// Pop the layer so its buffers are owned locally, then hand them by borrow to the
+			// store-based prover for the duration of this reduction.
+			let layer = self.pop_last_layer();
+			let sumcheck_prover = layer_mlecheck_prover(&layer, claim);
 
 			let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], channel);
 
@@ -221,7 +269,12 @@ where
 			claim = (num_claim, den_claim);
 		}
 
-		(prover_opt, claim)
+		let remaining = if self.n_layers() == 0 {
+			None
+		} else {
+			Some(self)
+		};
+		(remaining, claim)
 	}
 }
 
