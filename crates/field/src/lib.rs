@@ -28,7 +28,9 @@ pub mod packed_aes;
 pub mod packed_binary_field;
 pub mod packed_extension;
 mod packed_ghash;
+mod packed_ghash_sq;
 mod random;
+pub mod sliced_packed_field;
 #[cfg(test)]
 mod tests;
 mod tracing;
@@ -48,6 +50,8 @@ pub use packed_aes::*;
 pub use packed_binary_field::*;
 pub use packed_extension::*;
 pub use packed_ghash::*;
+pub use packed_ghash_sq::*;
 pub use random::Random;
+pub use sliced_packed_field::SlicedPackedField;
 pub use transpose::square_transpose;
 pub use underlier::{Divisible, Maskable, UnderlierType, WithUnderlier};
