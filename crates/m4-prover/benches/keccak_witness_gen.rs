@@ -19,6 +19,9 @@ const LOG_INSTANCES: usize = 13;
 /// The number of 64-bit lanes in a Keccak-f1600 state.
 const STATE_LANES: usize = 25;
 
+/// Candidate instance-stripe widths for parallel [`ValueTable2`] witness generation.
+const STRIPE_WIDTHS: [usize; 3] = [256, 512, 1024];
+
 /// Builds a circuit that applies one Keccak-f1600 permutation to a witness-input state and
 /// force-commits the permuted output words. Returns the circuit and the 25 input state wires.
 fn build_keccak_circuit() -> (Circuit, [Wire; STATE_LANES]) {
@@ -73,6 +76,24 @@ fn bench_keccak_witness_gen(c: &mut Criterion) {
 			.unwrap()
 		});
 	});
+
+	for stripe_width in STRIPE_WIDTHS {
+		group.bench_function(format!("value_table2_parallel_{stripe_width}"), |b| {
+			b.iter(|| {
+				ValueTable2::populate_parallel_with_stripe_width(
+					&circuit,
+					LOG_INSTANCES,
+					stripe_width,
+					|instance, w| {
+						for lane in 0..STATE_LANES {
+							w[input[lane]] = input_word(instance, lane);
+						}
+					},
+				)
+				.unwrap()
+			});
+		});
+	}
 
 	group.finish();
 }

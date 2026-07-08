@@ -14,7 +14,7 @@ mod tests;
 
 pub use batch_interpreter::{BatchInterpreter, BatchPopulateError};
 use binius_core::{ValueIndex, ValueVec, Word};
-use binius_utils::strided_array::StridedArray2DViewMut;
+use binius_utils::{rayon::prelude::*, strided_array::StridedArray2DViewMut};
 pub use builder::BytecodeBuilder;
 pub use const_eval::evaluate_gate_constants;
 use cranelift_entity::SecondaryMap;
@@ -102,6 +102,31 @@ impl EvalForm {
 	) -> Result<(), BatchPopulateError> {
 		let mut interpreter = BatchInterpreter::new(&self.bytecode, &self.hint_registry);
 		interpreter.run(values, path_spec_tree)
+	}
+
+	/// Execute the evaluation form over disjoint vertical instance stripes in parallel.
+	pub fn evaluate_batched_parallel(
+		&self,
+		values: StridedArray2DViewMut<'_, Word>,
+		stripe_width: usize,
+		path_spec_tree: Option<&PathSpecTree>,
+	) -> Result<(), BatchPopulateError> {
+		assert!(stripe_width > 0, "stripe width must be positive");
+
+		values
+			.into_par_strides(stripe_width)
+			.enumerate()
+			.map(|(stripe_index, mut stripe)| {
+				let mut interpreter = BatchInterpreter::new(&self.bytecode, &self.hint_registry);
+				interpreter.run_with_instance_offset(
+					&mut stripe,
+					stripe_index * stripe_width,
+					path_spec_tree,
+				)
+			})
+			.collect::<Result<Vec<_>, _>>()?;
+
+		Ok(())
 	}
 
 	/// Get the number of evaluation instructions

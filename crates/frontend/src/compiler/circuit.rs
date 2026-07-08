@@ -187,6 +187,35 @@ impl Circuit {
 			.evaluate_batched(values, Some(&self.gate_graph.path_spec_tree))
 	}
 
+	/// Populates non-input values for a batch of instances split into vertical stripes.
+	///
+	/// This is the parallel counterpart to [`Self::populate_wire_witness_batched`]. Constants are
+	/// broadcast once over the full value array, then the bytecode interpreter runs independently
+	/// on disjoint instance-column stripes of at most `stripe_width` columns.
+	pub fn populate_wire_witness_batched_parallel(
+		&self,
+		mut values: StridedArray2DViewMut<'_, Word>,
+		stripe_width: usize,
+	) -> Result<(), BatchPopulateError> {
+		assert!(stripe_width > 0, "stripe width must be positive");
+
+		// Broadcast each constant into its row across every instance. The constants are the same
+		// for all instances, so this fills the constant rows uniformly before the stripes split.
+		let n_instances = values.width();
+		for (index, &constant) in self.constraint_system.constants.iter().enumerate() {
+			for instance in 0..n_instances {
+				values[(index, instance)] = constant;
+			}
+		}
+
+		// Evaluate independent instance stripes in parallel, symbolicating assertion failures.
+		self.eval_form.evaluate_batched_parallel(
+			values,
+			stripe_width,
+			Some(&self.gate_graph.path_spec_tree),
+		)
+	}
+
 	/// Returns the constraint system for this circuit.
 	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		&self.constraint_system

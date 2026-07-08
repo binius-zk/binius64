@@ -9,6 +9,9 @@ use binius_core::{
 use binius_frontend::{BatchPopulateError, Circuit, Wire};
 use binius_utils::strided_array::StridedArray2DViewMut;
 
+/// Default number of instance columns evaluated by one parallel witness-generation task.
+const DEFAULT_PARALLEL_STRIPE_WIDTH: usize = 1024;
+
 /// The witness for a batch of `2^k` independent instances of one circuit, in wire-major order.
 ///
 /// This is the transpose of [`ValueTable`](crate::ValueTable). Where `ValueTable` stores each
@@ -84,6 +87,63 @@ impl ValueTable2 {
 	where
 		F: Fn(usize, &mut Batch2WitnessFiller<'_, '_>),
 	{
+		Self::populate_with(circuit, log_instances, None, fill)
+	}
+
+	/// Builds the batch witness in wire-major order, evaluating instance stripes in parallel.
+	///
+	/// This is the parallel counterpart to [`Self::populate`]. Input filling is still performed
+	/// once up front, then circuit evaluation runs over disjoint vertical instance stripes.
+	///
+	/// # Panics
+	///
+	/// Panics if the circuit's layout has any inout wires.
+	pub fn populate_parallel<F>(
+		circuit: &Circuit,
+		log_instances: usize,
+		fill: F,
+	) -> Result<Self, BatchPopulateError>
+	where
+		F: Fn(usize, &mut Batch2WitnessFiller<'_, '_>),
+	{
+		Self::populate_parallel_with_stripe_width(
+			circuit,
+			log_instances,
+			DEFAULT_PARALLEL_STRIPE_WIDTH,
+			fill,
+		)
+	}
+
+	/// Builds the batch witness in parallel using a caller-provided stripe width.
+	///
+	/// This is exposed for benchmarking stripe widths. Production callers should use
+	/// [`Self::populate_parallel`].
+	///
+	/// # Panics
+	///
+	/// Panics if `stripe_width == 0` or if the circuit's layout has any inout wires.
+	pub fn populate_parallel_with_stripe_width<F>(
+		circuit: &Circuit,
+		log_instances: usize,
+		stripe_width: usize,
+		fill: F,
+	) -> Result<Self, BatchPopulateError>
+	where
+		F: Fn(usize, &mut Batch2WitnessFiller<'_, '_>),
+	{
+		assert!(stripe_width > 0, "stripe width must be positive");
+		Self::populate_with(circuit, log_instances, Some(stripe_width), fill)
+	}
+
+	fn populate_with<F>(
+		circuit: &Circuit,
+		log_instances: usize,
+		parallel_stripe_width: Option<usize>,
+		fill: F,
+	) -> Result<Self, BatchPopulateError>
+	where
+		F: Fn(usize, &mut Batch2WitnessFiller<'_, '_>),
+	{
 		let layout = circuit.constraint_system().value_vec_layout.clone();
 		assert_eq!(
 			layout.n_inout, 0,
@@ -113,8 +173,14 @@ impl ValueTable2 {
 				fill(instance, &mut filler);
 			}
 
-			// Broadcast the constants and evaluate every instance's remaining wires.
-			circuit.populate_wire_witness_batched(&mut values)?;
+			if let Some(stripe_width) = parallel_stripe_width {
+				// Broadcast the constants once, then evaluate disjoint instance stripes in
+				// parallel.
+				circuit.populate_wire_witness_batched_parallel(values, stripe_width)?;
+			} else {
+				// Broadcast the constants and evaluate every instance's remaining wires.
+				circuit.populate_wire_witness_batched(&mut values)?;
+			}
 		}
 
 		// Keep only the hidden segment: rows `[offset_witness, combined_len)`. In the wire-major
@@ -344,6 +410,44 @@ mod tests {
 	}
 
 	#[test]
+	fn parallel_population_matches_serial_for_varied_stripe_widths() {
+		let c = mix_circuit();
+		let log_instances = 3;
+
+		let serial = ValueTable2::populate(&c.circuit, log_instances, |i, w| {
+			w[c.a] = Word((i as u64).wrapping_mul(0x9e37_79b9));
+			w[c.b] = Word((i as u64).rotate_left(17) ^ 0xdead_beef);
+		})
+		.unwrap();
+
+		let default_parallel = ValueTable2::populate_parallel(&c.circuit, log_instances, |i, w| {
+			w[c.a] = Word((i as u64).wrapping_mul(0x9e37_79b9));
+			w[c.b] = Word((i as u64).rotate_left(17) ^ 0xdead_beef);
+		})
+		.unwrap();
+		assert_eq!(default_parallel.as_words(), serial.as_words());
+
+		for stripe_width in [1, 2, 3, 8, 64] {
+			let parallel = ValueTable2::populate_parallel_with_stripe_width(
+				&c.circuit,
+				log_instances,
+				stripe_width,
+				|i, w| {
+					w[c.a] = Word((i as u64).wrapping_mul(0x9e37_79b9));
+					w[c.b] = Word((i as u64).rotate_left(17) ^ 0xdead_beef);
+				},
+			)
+			.unwrap();
+
+			assert_eq!(
+				parallel.as_words(),
+				serial.as_words(),
+				"stripe width {stripe_width} changed the populated table"
+			);
+		}
+	}
+
+	#[test]
 	fn unsatisfiable_instance_reports_its_index() {
 		// A circuit that asserts a == b; instances where they differ fail.
 		let builder = CircuitBuilder::new();
@@ -365,6 +469,56 @@ mod tests {
 			err.source.messages,
 			vec![".a_eq_b: Word(0x0000000000000002) != Word(0x0000000000000063)".to_string()]
 		);
+	}
+
+	#[test]
+	fn parallel_unsatisfiable_instance_reports_global_index_across_stripes() {
+		// A circuit that asserts a == b; instances where they differ fail.
+		let builder = CircuitBuilder::new();
+		let a = builder.add_witness();
+		let b = builder.add_witness();
+		builder.assert_eq("a_eq_b", a, b);
+		let circuit = builder.build();
+
+		// Instance 5 is in the third two-column stripe. Reporting a local stripe index would
+		// incorrectly return 1 instead of the global instance index 5.
+		let result = ValueTable2::populate_parallel_with_stripe_width(&circuit, 3, 2, |i, w| {
+			w[a] = Word(i as u64);
+			w[b] = Word(if i == 5 { 99 } else { i as u64 });
+		});
+
+		let err = result.expect_err("instance 5 violates a == b");
+		assert_eq!(err.instance, 5);
+		assert_eq!(err.source.total_count, 1);
+		assert_eq!(
+			err.source.messages,
+			vec![".a_eq_b: Word(0x0000000000000005) != Word(0x0000000000000063)".to_string()]
+		);
+	}
+
+	#[test]
+	fn parallel_failure_diagnostics_match_serial_for_failures_in_different_stripes() {
+		// A circuit that asserts a == b; instances where they differ fail.
+		let builder = CircuitBuilder::new();
+		let a = builder.add_witness();
+		let b = builder.add_witness();
+		builder.assert_eq("a_eq_b", a, b);
+		let circuit = builder.build();
+
+		// Instances 5 and 7 fail in different two-column stripes. The batched interpreter reports
+		// the lowest failing instance's diagnostics, so the parallel path should match the serial
+		// path exactly rather than aggregating failures from unrelated later instances.
+		let fill = |i: usize, w: &mut Batch2WitnessFiller<'_, '_>| {
+			w[a] = Word(i as u64);
+			w[b] = Word(if i == 5 || i == 7 { 99 } else { i as u64 });
+		};
+		let serial = ValueTable2::populate(&circuit, 3, fill).expect_err("instances fail");
+		let parallel = ValueTable2::populate_parallel_with_stripe_width(&circuit, 3, 2, fill)
+			.expect_err("instances fail");
+
+		assert_eq!(parallel.instance, serial.instance);
+		assert_eq!(parallel.source.total_count, serial.source.total_count);
+		assert_eq!(parallel.source.messages, serial.source.messages);
 	}
 
 	#[test]

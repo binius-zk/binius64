@@ -53,6 +53,8 @@ pub struct BatchPopulateError {
 struct BatchExecutionContext<'a, 'v> {
 	/// Rows are value-vector indices; columns are instances.
 	values: &'a mut StridedArray2DViewMut<'v, Word>,
+	/// The global instance index represented by local column 0.
+	instance_offset: usize,
 	/// Assertion failures recorded during evaluation, capped by [`MAX_ASSERTION_FAILURES`].
 	failures: Vec<InstanceAssertionFailure>,
 	/// The total number of assertion violations recorded, across all instances.
@@ -62,9 +64,10 @@ struct BatchExecutionContext<'a, 'v> {
 }
 
 impl<'a, 'v> BatchExecutionContext<'a, 'v> {
-	const fn new(values: &'a mut StridedArray2DViewMut<'v, Word>) -> Self {
+	const fn new(values: &'a mut StridedArray2DViewMut<'v, Word>, instance_offset: usize) -> Self {
 		Self {
 			values,
+			instance_offset,
 			failures: Vec::new(),
 			total_count: 0,
 			min_failing_instance: None,
@@ -92,6 +95,7 @@ impl<'a, 'v> BatchExecutionContext<'a, 'v> {
 	/// updates the count and the lowest-failing-instance tracker.
 	#[cold]
 	fn note_assertion_failure(&mut self, instance: usize, path_spec: PathSpec, message: String) {
+		let instance = self.instance_offset + instance;
 		self.total_count += 1;
 		self.min_failing_instance = Some(
 			self.min_failing_instance
@@ -169,7 +173,17 @@ impl<'a> BatchInterpreter<'a> {
 		values: &mut StridedArray2DViewMut<'_, Word>,
 		path_spec_tree: Option<&PathSpecTree>,
 	) -> Result<(), BatchPopulateError> {
-		let mut ctx = BatchExecutionContext::new(values);
+		self.run_with_instance_offset(values, 0, path_spec_tree)
+	}
+
+	/// Evaluate the bytecode over a view whose local column 0 corresponds to `instance_offset`.
+	pub(crate) fn run_with_instance_offset(
+		&mut self,
+		values: &mut StridedArray2DViewMut<'_, Word>,
+		instance_offset: usize,
+		path_spec_tree: Option<&PathSpecTree>,
+	) -> Result<(), BatchPopulateError> {
+		let mut ctx = BatchExecutionContext::new(values, instance_offset);
 		while self.pc < self.bytecode.len() {
 			let opcode = self.read_u8();
 			match opcode {
