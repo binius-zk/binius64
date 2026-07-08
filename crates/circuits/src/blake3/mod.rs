@@ -13,11 +13,13 @@
 //! - [`blake3_chunk`] — single-chunk (up to 16 blocks) chaining-value gadget.
 //! - [`blake3_fixed`] — full hash gadget for messages of compile-time-known length, spanning any
 //!   number of chunks via BLAKE3's parent tree.
+//! - [`blake3_variable`] — full hash gadget for messages of runtime-variable length, bounded by a
+//!   compile-time capacity.
 
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
-use crate::util::clear_high_bits;
+use crate::{multiplexer::multi_wire_multiplex, util::clear_high_bits};
 
 pub mod compress;
 
@@ -353,6 +355,177 @@ pub fn blake3_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 	}
 }
 
+/// Computes the BLAKE3 hash of a runtime-variable-length message bounded by a compile-time maximum.
+///
+/// The BLAKE3 analog of [`Sha256::new`](crate::sha256::Sha256): the circuit shape is fixed at
+/// construction time by the capacity `max_len_bytes`, while the actual message length is a runtime
+/// witness `len_bytes` in `0..=max_len_bytes`. Where [`blake3_fixed`] bakes the exact chunk/tree
+/// shape and the trailing partial-block length into the circuit, this gadget must resolve them at
+/// proving time.
+///
+/// # Construction
+///
+/// The digest of a length-`len` message is fully determined by three runtime quantities: the index
+/// `bd` of the final message block, that block's byte length `fbl` (`1..=64`, or `0` for the empty
+/// message), and the message content. Every block before `bd` is a full 64-byte block, so the whole
+/// chunk/tree shape follows from `bd` alone. The gadget therefore:
+///
+/// 1. Masks the message tail: byte `4*i + j` of word `i` survives iff `4*i + j < len_bytes`. This
+///    zero-pads the (runtime) final block per BLAKE3's rules and clears every word's high 32 bits.
+/// 2. Builds one candidate digest per possible final-block index `p` in `0..max_blocks`, each an
+///    exact replica of the [`blake3_fixed`] computation for a message occupying blocks `0..=p`,
+///    with the sole difference that block `p`'s `block_len` is the runtime wire `fbl` rather than a
+///    constant. This makes the candidate for `p == bd` reproduce the true hash.
+/// 3. Selects the candidate at index `bd` with a [`multi_wire_multiplex`].
+///
+/// Full interior chunks are shared across candidates. The selector stays in range because
+/// `len_bytes <= max_len_bytes` is enforced, which bounds `bd < max_blocks`.
+///
+/// # Arguments
+///
+/// - `builder`: Circuit builder.
+/// - `message`: Input message as 32-bit little-endian words (4 bytes per wire), of length
+///   `max_len_bytes.div_ceil(4)`. Words (and the bytes within the boundary word) beyond `len_bytes`
+///   are ignored — the gadget masks them — so they may hold any value.
+/// - `len_bytes`: Runtime message length in bytes; constrained to `0..=max_len_bytes`.
+/// - `max_len_bytes`: Compile-time capacity in bytes.
+///
+/// # Returns
+///
+/// The BLAKE3 digest as 8 wires, each holding a 32-bit little-endian word in its low 32 bits.
+///
+/// # Panics
+///
+/// Panics if `message.len()` does not equal `max_len_bytes.div_ceil(4)`.
+pub fn blake3_variable(
+	builder: &CircuitBuilder,
+	message: &[Wire],
+	len_bytes: Wire,
+	max_len_bytes: usize,
+) -> [Wire; 8] {
+	assert_eq!(
+		message.len(),
+		max_len_bytes.div_ceil(4),
+		"blake3_variable: message.len() ({}) must equal max_len_bytes.div_ceil(4) ({})",
+		message.len(),
+		max_len_bytes.div_ceil(4),
+	);
+
+	let zero = builder.add_constant(Word::ZERO);
+
+	// Reject len_bytes > max_len_bytes: the final-block selector below must stay in range for the
+	// multiplexer to be sound.
+	let too_long = builder.icmp_ugt(len_bytes, builder.add_constant_64(max_len_bytes as u64));
+	builder.assert_false("blake3_variable.len_check", too_long);
+
+	let blocks_per_chunk = CHUNK_BYTES / BLOCK_BYTES; // 16
+	let max_blocks = max_len_bytes.div_ceil(BLOCK_BYTES).max(1);
+	let max_chunks = max_len_bytes.div_ceil(CHUNK_BYTES).max(1);
+
+	// ---- Mask the message tail to zero.
+	//
+	// BLAKE3 zero-pads the final (partial) block and records its true byte count in `block_len`.
+	// The boundary is a runtime value, so rather than masking a single boundary word (as
+	// `blake3_fixed` does for its compile-time boundary) we mask every word against `len_bytes`.
+	// This zero-extends the tail for whichever candidate is ultimately selected and, as a side
+	// effect, clears the high 32 bits of every word — a precondition of the compression gadget.
+	// Trailing wires past the message capacity are simply zero.
+	let n_words = max_blocks * blocks_per_chunk;
+	let masked: Vec<Wire> = (0..n_words)
+		.map(|i| {
+			if i >= message.len() {
+				return zero;
+			}
+			let mut mask = zero;
+			for j in 0..4 {
+				let byte_pos = builder.add_constant_64((i * 4 + j) as u64);
+				let valid = builder.icmp_ult(byte_pos, len_bytes);
+				let byte_mask = builder.add_constant_64(0xFFu64 << (j * 8));
+				mask = builder.bor(mask, builder.select(valid, byte_mask, zero));
+			}
+			builder.band(message[i], mask)
+		})
+		.collect();
+
+	// ---- Final-block index `bd` and final-block length `fbl`.
+	//
+	// For a non-empty message the final block is the one containing byte `len_bytes - 1`, and its
+	// length is `len_bytes - bd * 64` (in `1..=64`). The empty message is a single block of length
+	// 0 at index 0. These mirror `blake3_fixed`'s `n_blocks - 1` and trailing `block_len`.
+	let one = builder.add_constant_64(1);
+	let is_empty = builder.icmp_eq(len_bytes, zero);
+	let (len_m1, _) = builder.isub_bin_bout(len_bytes, one, zero);
+	let last_byte = builder.select(is_empty, zero, len_m1);
+	let bd = builder.shr(last_byte, 6);
+	let bd_bytes = builder.shl(bd, 6);
+	let (fbl_nonempty, _) = builder.isub_bin_bout(len_bytes, bd_bytes, zero);
+	let fbl = builder.select(is_empty, zero, fbl_nonempty);
+
+	let const_block_bytes = builder.add_constant_64(BLOCK_BYTES as u64);
+	let block_at =
+		|j: usize| -> [Wire; 16] { std::array::from_fn(|i| masked[j * blocks_per_chunk + i]) };
+
+	// ---- Chaining values of the full interior chunks, shared across candidates.
+	//
+	// Chunk `c` is interior (a full 16-block chunk, no ROOT) in every candidate whose final block
+	// lies in a later chunk. The highest such chunk is `max_chunks - 2`.
+	let full_chunk_cvs: Vec<[Wire; 8]> = (0..max_chunks.saturating_sub(1))
+		.map(|c| {
+			let blocks: Vec<[Wire; 16]> = (0..blocks_per_chunk)
+				.map(|b| block_at(c * blocks_per_chunk + b))
+				.collect();
+			let block_lens = vec![const_block_bytes; blocks_per_chunk];
+			blake3_chunk(
+				&builder.subcircuit(format!("blake3_variable_full_chunk[{c}]")),
+				&blocks,
+				&block_lens,
+				c as u64,
+				0,
+			)
+		})
+		.collect();
+
+	// ---- One candidate digest per possible final-block index.
+	//
+	// Candidate `p` is the digest of a message occupying blocks `0..=p`: the last chunk spans its
+	// first block through block `p` (whose `block_len` is the runtime `fbl`), preceded by the full
+	// interior chunks. ROOT lands on the lone chunk when `p` is in the first chunk, otherwise on
+	// the tree root — exactly as in `blake3_fixed`.
+	let candidates: Vec<[Wire; 8]> = (0..max_blocks)
+		.map(|p| {
+			let last_chunk = p / blocks_per_chunk;
+			let first_block = last_chunk * blocks_per_chunk;
+			let n_blk = p - first_block + 1;
+			let blocks: Vec<[Wire; 16]> = (0..n_blk).map(|b| block_at(first_block + b)).collect();
+			let block_lens: Vec<Wire> = (0..n_blk)
+				.map(|b| {
+					if b + 1 == n_blk {
+						fbl
+					} else {
+						const_block_bytes
+					}
+				})
+				.collect();
+			let last_flags_extra = if last_chunk == 0 { ROOT } else { 0 };
+			let sub = builder.subcircuit(format!("blake3_variable_candidate[{p}]"));
+			let last_cv =
+				blake3_chunk(&sub, &blocks, &block_lens, last_chunk as u64, last_flags_extra);
+			if last_chunk == 0 {
+				last_cv
+			} else {
+				let mut leaves: Vec<[Wire; 8]> = full_chunk_cvs[..last_chunk].to_vec();
+				leaves.push(last_cv);
+				blake3_tree_root(&sub, leaves)
+			}
+		})
+		.collect();
+
+	// ---- Select the digest for the actual final-block index.
+	let inputs: Vec<&[Wire]> = candidates.iter().map(|d| &d[..]).collect();
+	let digest = multi_wire_multiplex(builder, &inputs, bd);
+	std::array::from_fn(|i| digest[i])
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -450,5 +623,114 @@ mod tests {
 			let input: Vec<u8> = (0..len).map(|i| (i * 37 + 1) as u8).collect();
 			check(&input);
 		}
+	}
+
+	/// Run `blake3_variable` with capacity `max_len_bytes` over `input` and assert the circuit
+	/// digest matches `blake3::hash(input)`.
+	fn check_variable(max_len_bytes: usize, input: &[u8]) {
+		assert!(input.len() <= max_len_bytes);
+
+		let builder = CircuitBuilder::new();
+		let message: Vec<Wire> = (0..max_len_bytes.div_ceil(4))
+			.map(|_| builder.add_witness())
+			.collect();
+		let len_wire = builder.add_witness();
+		let digest = blake3_variable(&builder, &message, len_wire, max_len_bytes);
+		let digest_out: [Wire; 8] = std::array::from_fn(|_| builder.add_inout());
+		for i in 0..8 {
+			builder.assert_eq("digest_match", digest[i], digest_out[i]);
+		}
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+
+		// Fill every message wire: real words for the message, zero for the tail (the gadget masks
+		// the tail, so these values are irrelevant to the digest, but every witness must be set).
+		let words = bytes_to_le_words(input);
+		for (i, wire) in message.iter().enumerate() {
+			w[*wire] = Word(words.get(i).copied().unwrap_or(0));
+		}
+		w[len_wire] = Word(input.len() as u64);
+
+		let expected = blake3::hash(input);
+		let expected_words: [u32; 8] = std::array::from_fn(|i| {
+			u32::from_le_bytes(expected.as_bytes()[i * 4..i * 4 + 4].try_into().unwrap())
+		});
+		for i in 0..8 {
+			w[digest_out[i]] = Word(expected_words[i] as u64);
+		}
+		circuit.populate_wire_witness(&mut w).unwrap_or_else(|e| {
+			panic!("blake3_variable failed for max={max_len_bytes} len={}: {e:?}", input.len())
+		});
+	}
+
+	#[test]
+	fn variable_single_block_capacity() {
+		// Capacity within one block: exercises the empty message and the lone-candidate multiplex.
+		for len in [0usize, 1, 13, 32, 63, 64] {
+			let input: Vec<u8> = (0..len).map(|i| (i * 37 + 1) as u8).collect();
+			check_variable(64, &input);
+		}
+	}
+
+	#[test]
+	fn variable_single_chunk_capacity() {
+		// Capacity of one full chunk: every length shares the same circuit, selecting a different
+		// final block (and a different partial `block_len`) at proving time.
+		for len in [
+			0usize, 1, 3, 64, 65, 100, 127, 128, 200, 512, 1000, 1023, 1024,
+		] {
+			let input: Vec<u8> = (0..len).map(|i| (i * 37 + 1) as u8).collect();
+			check_variable(1024, &input);
+		}
+	}
+
+	#[test]
+	fn variable_multi_chunk_capacity() {
+		// Capacity spanning several chunks: exercises the shared interior chunks, the parent tree,
+		// and the ROOT node moving from the lone chunk to the tree root as the length grows.
+		let max = 3072;
+		for len in [0usize, 1, 1024, 1025, 1536, 2048, 2049, 3000, 3072] {
+			let input: Vec<u8> = (0..len).map(|i| (i * 37 + 1) as u8).collect();
+			check_variable(max, &input);
+		}
+	}
+
+	#[test]
+	fn variable_odd_capacity() {
+		// A capacity that is neither block- nor chunk-aligned: the final message word is partial
+		// and the final chunk is short.
+		for len in [0usize, 1, 50, 100, 1500, 2500, 2555] {
+			let input: Vec<u8> = (0..len).map(|i| (i * 37 + 1) as u8).collect();
+			check_variable(2555, &input);
+		}
+	}
+
+	#[test]
+	fn variable_rejects_overlong_length() {
+		// A `len_bytes` beyond the capacity must make witness population fail (len_check).
+		let builder = CircuitBuilder::new();
+		let message: Vec<Wire> = (0..16).map(|_| builder.add_witness()).collect();
+		let len_wire = builder.add_witness();
+		let digest = blake3_variable(&builder, &message, len_wire, 64);
+		let digest_out: [Wire; 8] = std::array::from_fn(|_| builder.add_inout());
+		for i in 0..8 {
+			builder.assert_eq("digest_match", digest[i], digest_out[i]);
+		}
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		for wire in &message {
+			w[*wire] = Word::ZERO;
+		}
+		w[len_wire] = Word(65); // exceeds capacity of 64
+		let expected = blake3::hash(&[0u8; 65][..64]);
+		let expected_words: [u32; 8] = std::array::from_fn(|i| {
+			u32::from_le_bytes(expected.as_bytes()[i * 4..i * 4 + 4].try_into().unwrap())
+		});
+		for i in 0..8 {
+			w[digest_out[i]] = Word(expected_words[i] as u64);
+		}
+		assert!(circuit.populate_wire_witness(&mut w).is_err());
 	}
 }
