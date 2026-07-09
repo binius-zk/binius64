@@ -15,14 +15,13 @@
 
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, inner_product::inner_product_par, line::extrapolate_line};
-use either::Either;
 
 use crate::{
 	channel::IPProverChannel,
 	fracaddcheck::{FracAddCheckProver, FracEvalClaim},
 	sumcheck::{
-		MleToSumCheckDecorator, batch::batch_prove,
-		bivariate_product::BivariateProductSumcheckProver,
+		batch::batch_prove, bivariate_product_evaluator::BivariateProductEvaluator,
+		round_evaluator::RoundEvaluator,
 	},
 };
 
@@ -47,12 +46,18 @@ pub struct FinalLayerOutput<F> {
 ///     S_3b = sum_{x'} (Y_1 * T_1)(x')                         = e_1
 /// ```
 ///
-/// The claims play two different roles:
+/// The claims play two different roles, but all four read one shared column store:
 ///
 /// - `S_1` and `S_2` are the layer-1 numerator and denominator of the fractional-addition circuit.
-/// - They carry the equality factor `eq(x'; Z)`, so they run as a decorated MLE-check prover.
-/// - `S_3a` and `S_3b` split the product claim `<T, Y> = e` on the highest variable.
-/// - They carry no `eq` factor; each is a plain [`BivariateProductSumcheckProver`].
+///   They carry the equality factor `eq(x'; Z)`, so they run as eq-weighted MLE-check evaluators.
+/// - `S_3a` and `S_3b` split the product claim `<T, Y> = e` on the highest variable. They carry no
+///   `eq` factor; each is a plain [`BivariateProductEvaluator`].
+///
+/// The fractional prover popped for the leaf layer already owns the four columns `[Y_0, Y_1, D_0,
+/// D_1]`, and its numerator halves `Y_0, Y_1` are the pushforward halves the product claims read.
+/// So only the table halves `T_0, T_1` are pushed as new columns, and converting the fractional
+/// prover to a plain sumcheck (folding the `eq` factor into its round polynomials) lets all four
+/// claims batch as one shared-store sumcheck over `[Y_0, Y_1, D_0, D_1, T_0, T_1]`.
 ///
 /// The split obeys `e_0 + e_1 = e`, so only `e_0` is sent.
 /// The verifier recovers `e_1 = e - e_0`.
@@ -89,19 +94,28 @@ where
 	//     leaf layer holds numerator Y and denominator D
 	//     splitting both on the highest variable gives the mle-check over [Y_0, Y_1, D_0, D_1]
 	//
-	// The eq factor stays implicit in the MLE-check prover.
-	// The decorator reinstates it each round as an (X - alpha) multiplier, a regular sumcheck.
+	// `layer_prover` owns those four columns in the returned prover's store and hands back their
+	// column ids; `y_0_col`/`y_1_col` are the pushforward halves the product check reuses. Each
+	// prover retains exactly its final layer, so consume it popping that layer.
 	debug_assert_eq!(table_prover.n_layers(), 1, "the final layer is the last table-side layer");
-	let (remaining_prover, frac_prover, _cols) = table_prover.layer_prover(layer1);
+	let (remaining_prover, frac_prover, [y_0_col, y_1_col, _d_0_col, _d_1_col]) =
+		table_prover.layer_prover(layer1);
 	assert!(remaining_prover.is_none());
 
-	let frac_prover = MleToSumCheckDecorator::new(frac_prover);
+	// The eq factor is folded into the fractional prover's round polynomials, turning it into a
+	// plain sumcheck over the shared store so the product claims — which carry no eq factor — join
+	// it in one evaluator group.
+	let mut prover = frac_prover.into_shared_sumcheck();
 
 	// The product check <T, Y> = e is split on the highest variable into two leaf products.
 	//
 	//     half 0: highest variable fixed to 0
 	//     half 1: highest variable fixed to 1
-	let [y_0, y_1] = split_halves(pushforward);
+	//
+	// Y_0, Y_1 are already store columns (the fractional numerator halves), so only the table
+	// halves T_0, T_1 are pushed as new columns. Only Y_0 is needed here, to form e_0; e_1 follows
+	// as e - e_0.
+	let [y_0, _y_1] = split_halves(pushforward);
 	let [t_0, t_1] = split_halves(table);
 
 	// e_0 is the first half's product sum.
@@ -112,34 +126,28 @@ where
 	channel.send_one(e_0);
 	let e_1 = eval_claim - e_0;
 
-	// S_3a, S_3b: each half is a bivariate product, held as [Y_half, T_half].
-	// So each prover's two final evaluations are exactly (Y_half, T_half) at the challenge point.
-	let product_0 = BivariateProductSumcheckProver::new([y_0, t_0], e_0);
-	let product_1 = BivariateProductSumcheckProver::new([y_1, t_1], e_1);
+	// S_3a, S_3b: each half is a bivariate product over the shared Y column and the pushed T
+	// column.
+	let t_0_col = prover.push_owned_column(t_0);
+	let t_1_col = prover.push_owned_column(t_1);
+	let product_0 = BivariateProductEvaluator::new([y_0_col, t_0_col], e_0);
+	prover.add_evaluator(Box::new(product_0) as Box<dyn RoundEvaluator<F, P>>);
+	let product_1 = BivariateProductEvaluator::new([y_1_col, t_1_col], e_1);
+	prover.add_evaluator(Box::new(product_1) as Box<dyn RoundEvaluator<F, P>>);
 
-	// Batch the three provers into one sumcheck.
+	// Drive the one shared-store sumcheck.
 	//
 	// The flattened round-polynomial order is [num_1, den_1, e_0, e_1].
 	// That matches the verifier's batched order [layer1_num, layer1_den, e_0, e_1].
-	let output = batch_prove(
-		vec![
-			Either::Left(frac_prover),
-			Either::Right(product_0),
-			Either::Right(product_1),
-		],
-		channel,
-	);
+	let output = batch_prove(vec![prover], channel);
 
-	// Each product prover holds [Y_half, T_half]; read both halves' evaluations, in verifier order.
-	// The fractional prover's Y evaluations agree at the same point, so they need not be sent.
-	let [y_0_eval, t_0_eval] = output.multilinear_evals[1]
+	// The shared prover emits each store column's evaluation once, in push order
+	// [Y_0, Y_1, D_0, D_1, T_0, T_1]; the public denominator halves are not sent.
+	let [y_0_eval, y_1_eval, _d_0_eval, _d_1_eval, t_0_eval, t_1_eval]: [F; 6] = output
+		.multilinear_evals[0]
 		.as_slice()
 		.try_into()
-		.expect("a bivariate product prover evaluates two multilinears");
-	let [y_1_eval, t_1_eval] = output.multilinear_evals[2]
-		.as_slice()
-		.try_into()
-		.expect("a bivariate product prover evaluates two multilinears");
+		.expect("the final-layer shared store has six columns");
 	channel.send_many(&[y_0_eval, y_1_eval, t_0_eval, t_1_eval]);
 
 	// Fold the highest variable once to collapse each pair of halves into one evaluation.
