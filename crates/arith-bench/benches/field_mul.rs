@@ -153,14 +153,16 @@ fn run_unary_op_benchmark<T, R>(
 /// `T` is the underlier of the operands (`u128` for the software path, a SIMD type for the packed
 /// paths) and `W` the unreduced product accumulator — either a field element (reduce-every-term) or
 /// a multi-limb product like `[u64; 4]` / `[__m128i; 3]`, all [`Underlier`]s (arrays via the
-/// blanket impl), so accumulation is `W::xor`. Each GHASH element is 128 bits, so a `T`-wide
-/// underlier carries `T::BITS / 128` inner-product terms.
+/// blanket impl), so accumulation is `W::xor`. `element_bits` is the field element size (e.g. 128
+/// for GHASH, 64 for the base Monbijou field), so a `T`-wide underlier carries `T::BITS /
+/// element_bits` inner-product terms.
 fn run_inner_product_benchmark<T, W, R>(
 	group: &mut BenchmarkGroup<'_, criterion::measurement::WallTime>,
 	name: &str,
 	wide_mul: impl Fn(T, T) -> W,
 	mut rng: R,
 	log_len: usize,
+	element_bits: usize,
 ) where
 	T: Underlier,
 	W: Underlier,
@@ -170,7 +172,7 @@ fn run_inner_product_benchmark<T, W, R>(
 	let a: Vec<T> = (0..len).map(|_| T::random(&mut rng)).collect();
 	let b: Vec<T> = (0..len).map(|_| T::random(&mut rng)).collect();
 
-	let elements_per_underlier = T::BITS / 128;
+	let elements_per_underlier = T::BITS / element_bits;
 	group.throughput(Throughput::Elements((len * elements_per_underlier) as u64));
 	group.bench_function(name, |bencher| {
 		bencher.iter(|| {
@@ -841,7 +843,14 @@ fn bench_ghash_inner_product(c: &mut Criterion) {
 	let mut group = c.benchmark_group("ghash_inner_product");
 
 	// Baseline: reduce each product, accumulate the reduced GHASH elements.
-	run_inner_product_benchmark(&mut group, "soft64::mul", ghash::soft64::mul, &mut rng, LOG_LEN);
+	run_inner_product_benchmark(
+		&mut group,
+		"soft64::mul",
+		ghash::soft64::mul,
+		&mut rng,
+		LOG_LEN,
+		128,
+	);
 
 	// Widening: accumulate the unreduced four-limb products by XOR, skip the final reduction.
 	run_inner_product_benchmark(
@@ -850,6 +859,7 @@ fn bench_ghash_inner_product(c: &mut Criterion) {
 		ghash::soft64::mul_wide,
 		&mut rng,
 		LOG_LEN,
+		128,
 	);
 
 	// CLMUL path (__m128i): the reduction is a larger fraction of a single fast pclmulqdq multiply,
@@ -864,6 +874,7 @@ fn bench_ghash_inner_product(c: &mut Criterion) {
 			clmul::mul::<__m128i>,
 			&mut rng,
 			LOG_LEN,
+			128,
 		);
 
 		run_inner_product_benchmark(
@@ -872,6 +883,7 @@ fn bench_ghash_inner_product(c: &mut Criterion) {
 			clmul::mul_wide::<__m128i>,
 			&mut rng,
 			LOG_LEN,
+			128,
 		);
 	}
 
@@ -899,6 +911,7 @@ fn bench_ghash_sq_inner_product(c: &mut Criterion) {
 		ghash_sq::soft64::mul_sliced,
 		&mut rng,
 		LOG_LEN,
+		128,
 	);
 
 	// Widening: accumulate the unreduced coefficients by XOR, reduce once at the very end.
@@ -908,6 +921,7 @@ fn bench_ghash_sq_inner_product(c: &mut Criterion) {
 		ghash_sq::soft64::mul_wide_sliced,
 		&mut rng,
 		LOG_LEN,
+		128,
 	);
 
 	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
@@ -918,6 +932,7 @@ fn bench_ghash_sq_inner_product(c: &mut Criterion) {
 			ghash_sq::x86_64::mul_sliced::<__m128i>,
 			&mut rng,
 			LOG_LEN,
+			128,
 		);
 
 		run_inner_product_benchmark(
@@ -926,6 +941,59 @@ fn bench_ghash_sq_inner_product(c: &mut Criterion) {
 			ghash_sq::x86_64::mul_wide_sliced::<__m128i>,
 			&mut rng,
 			LOG_LEN,
+			128,
+		);
+	}
+
+	group.finish();
+}
+
+/// Benchmark inner products over the base Monbijou field GF(2^64), contrasting the widening
+/// multiply (accumulate the unreduced products, reduce once) against the reduce-every-term
+/// multiply.
+#[allow(unused_imports, unused_variables, unused_mut)]
+fn bench_monbijou_inner_product(c: &mut Criterion) {
+	use binius_arith_bench::monbijou::{clmul, soft64};
+
+	/// Length of the inner product. Long enough that the single skipped final reduction is
+	/// negligible.
+	const LOG_LEN: usize = 10;
+
+	let mut rng = rand::rng();
+
+	let mut group = c.benchmark_group("monbijou_inner_product");
+
+	// Baseline: reduce each product, accumulate the reduced base-field elements.
+	run_inner_product_benchmark(&mut group, "soft64::mul", soft64::mul, &mut rng, LOG_LEN, 64);
+
+	// Widening: accumulate the unreduced [low, high] products by XOR, skip the final reduction.
+	run_inner_product_benchmark(
+		&mut group,
+		"soft64::mul_wide",
+		soft64::mul_wide,
+		&mut rng,
+		LOG_LEN,
+		64,
+	);
+
+	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
+	{
+		run_inner_product_benchmark(
+			&mut group,
+			"clmul::mul::<__m128i>",
+			clmul::mul::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+			64,
+		);
+
+		run_inner_product_benchmark(
+			&mut group,
+			"clmul::mul_wide::<__m128i>",
+			clmul::mul_wide::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+			64,
 		);
 	}
 
@@ -942,5 +1010,6 @@ criterion_group!(
 	bench_monbijou_128b,
 	bench_ghash_inner_product,
 	bench_ghash_sq_inner_product,
+	bench_monbijou_inner_product,
 );
 criterion_main!(benches);

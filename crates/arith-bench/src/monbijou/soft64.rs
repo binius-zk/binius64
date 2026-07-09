@@ -10,7 +10,7 @@ use crate::arch::portable64::{bmul64, rev64};
 /// Widening (unreduced) Monbijou multiply: the 128-bit carry-less product of two 64-bit polynomials
 /// as `[low, high]` 64-bit limbs, without the modular reduction.
 ///
-/// [`bmul64`] gives the low limb directly. The high limb comes from multiplying the bit-reversed
+/// `bmul64` gives the low limb directly. The high limb comes from multiplying the bit-reversed
 /// operands and reversing the result: reversing a product of two degree-`<64` polynomials leaves it
 /// shifted by one bit, which the final shift removes. Because [`reduce`] is F2-linear, these limbs
 /// can be XOR-accumulated across many products and reduced only once — an inner product of `n`
