@@ -5,7 +5,10 @@
 //! the portable carry-less multiply primitives in `crate::arch::portable64` rather than on CLMUL or
 //! SIMD intrinsics. They operate on scalar `u64`/`u128` values, one field element at a time.
 
-use crate::arch::portable64::{bmul64, rev64};
+use crate::{
+	Underlier,
+	arch::portable64::{bmul64, rev64},
+};
 
 /// Widening (unreduced) Monbijou multiply: the 128-bit carry-less product of two 64-bit polynomials
 /// as `[low, high]` 64-bit limbs, without the modular reduction.
@@ -88,11 +91,71 @@ pub fn mul_128b(x: u128, y: u128) -> u128 {
 	(z0 as u128) | ((z1 as u128) << 64)
 }
 
+/// Widening (unreduced) degree-3 Monbijou multiply: the six raw base-field Karatsuba products
+/// `[m0, m1, m2, m01, m02, m12]` of two GF(2^192) elements `[a0, a1, a2]`, `[b0, b1, b2]`, where
+/// `m0 = a0·b0`, `m1 = a1·b1`, `m2 = a2·b2`, and the sum products `m01 = (a0+a1)(b0+b1)`,
+/// `m02 = (a0+a2)(b0+b2)`, `m12 = (a1+a2)(b1+b2)`.
+///
+/// No combination, scaling, or reduction is done here — those are all F2-linear and deferred to
+/// [`reduce_192b`], so an inner product XOR-accumulates the six products and reduces once.
+#[inline]
+pub fn mul_wide_192b(a: [u64; 3], b: [u64; 3]) -> [[u64; 2]; 6] {
+	let [a0, a1, a2] = a;
+	let [b0, b1, b2] = b;
+	[
+		mul_wide(a0, b0),
+		mul_wide(a1, b1),
+		mul_wide(a2, b2),
+		mul_wide(a0 ^ a1, b0 ^ b1),
+		mul_wide(a0 ^ a2, b0 ^ b2),
+		mul_wide(a1 ^ a2, b1 ^ b2),
+	]
+}
+
+/// Reduce the six raw products from [`mul_wide_192b`] into a GF(2^192) element.
+///
+/// The tower is GF(2)\[X, Y\] / (X^64 + X^4 + X^3 + X + 1) / (Y^3 + X), so `Y^3 = X`. Karatsuba
+/// gives the degree-≤4 product coefficients `c0..c4` (`c0 = m0`, `c1 = m01+m0+m1`, `c2 =
+/// m02+m0+m1+m2`, `c3 = m12+m1+m2`, `c4 = m2`); folding `Y^3 = X`, `Y^4 = X·Y` gives `z0 = c0 +
+/// X·c3`, `z1 = c1 + X·c4`, `z2 = c2`. The multiply-by-X (a 1-bit left shift of the unreduced
+/// `[low, high]` product, whose degree ≤ 126 leaves room) is done here, on the unreduced values, so
+/// only the three output coefficients are reduced.
+#[inline]
+pub fn reduce_192b([m0, m1, m2, m01, m02, m12]: [[u64; 2]; 6]) -> [u64; 3] {
+	// `[u64; 2]` is itself an `Underlier` (blanket array impl), so `Underlier::xor` adds the
+	// unreduced product pairs component-wise.
+	let c0 = m0;
+	let c1 = Underlier::xor(Underlier::xor(m01, m0), m1);
+	let c2 = Underlier::xor(Underlier::xor(Underlier::xor(m02, m0), m1), m2);
+	let c3 = Underlier::xor(Underlier::xor(m12, m1), m2);
+	let c4 = m2;
+
+	let z0 = reduce(Underlier::xor(c0, mul_x_wide(c3)));
+	let z1 = reduce(Underlier::xor(c1, mul_x_wide(c4)));
+	let z2 = reduce(c2);
+	[z0, z1, z2]
+}
+
+/// Multiply an unreduced base-field product pair `[low, high]` by X: a one-bit left shift of the
+/// 128-bit value (whose degree ≤ 126 leaves room, so no reduction is needed here).
+#[inline]
+const fn mul_x_wide([lo, hi]: [u64; 2]) -> [u64; 2] {
+	[lo << 1, (hi << 1) | (lo >> 63)]
+}
+
+/// Multiplies two elements of GF(2^192), the degree-3 extension of the Monbijou field.
+///
+/// Composes [`mul_wide_192b`] with [`reduce_192b`]; both are inlined.
+#[inline]
+pub fn mul_192b(a: [u64; 3], b: [u64; 3]) -> [u64; 3] {
+	reduce_192b(mul_wide_192b(a, b))
+}
+
 #[cfg(test)]
 mod tests {
 	use proptest::prelude::*;
 
-	use super::{mul, mul_128b, mul_wide, reduce};
+	use super::{mul, mul_128b, mul_192b, mul_wide, reduce};
 	use crate::{
 		monbijou::MONBIJOU_128B_ONE,
 		test_utils::multiplication_tests::{
@@ -148,6 +211,32 @@ mod tests {
 		#[test]
 		fn ext_mul_identity(a in any::<u128>()) {
 			prop_assert_eq!(mul_128b(a, MONBIJOU_128B_ONE), a);
+		}
+
+		// The degree-3 extension GF(2^192): field axioms ([u64; 3] is an Underlier via the blanket
+		// array impl, so the generic helpers apply).
+		#[test]
+		fn ext192_mul_commutative(a in any::<[u64; 3]>(), b in any::<[u64; 3]>()) {
+			test_mul_commutative(a, b, mul_192b, "Monbijou 192b");
+		}
+
+		#[test]
+		fn ext192_mul_associative(
+			a in any::<[u64; 3]>(), b in any::<[u64; 3]>(), c in any::<[u64; 3]>(),
+		) {
+			test_mul_associative(a, b, c, mul_192b, "Monbijou 192b");
+		}
+
+		#[test]
+		fn ext192_mul_distributive(
+			a in any::<[u64; 3]>(), b in any::<[u64; 3]>(), c in any::<[u64; 3]>(),
+		) {
+			test_mul_distributive(a, b, c, mul_192b, "Monbijou 192b");
+		}
+
+		#[test]
+		fn ext192_mul_identity(a in any::<[u64; 3]>()) {
+			prop_assert_eq!(mul_192b(a, [0x01, 0, 0]), a);
 		}
 	}
 

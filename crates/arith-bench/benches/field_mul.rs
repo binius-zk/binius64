@@ -712,6 +712,66 @@ fn bench_monbijou_128b(c: &mut Criterion) {
 	group.finish();
 }
 
+/// Benchmark GF(2^192) Monbijou degree-3 extension field multiplication in the sliced
+/// representation, comparing portable soft64 against the CLMUL implementation.
+#[allow(unused_imports, unused_variables, unused_mut)]
+fn bench_monbijou_192b(c: &mut Criterion) {
+	use binius_arith_bench::monbijou::{mul_sliced_192b_clmul, soft64};
+
+	let mut rng = rand::rng();
+
+	let mut group = c.benchmark_group("monbijou_192b");
+
+	// Portable soft64 (no CLMUL/SIMD)
+	run_mul_benchmark(&mut group, "soft64::mul_192b", soft64::mul_192b, &mut rng, 192);
+
+	// Sliced __m128i (a `[__m128i; 3]` holds two GF(2^192) elements)
+	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
+	{
+		run_mul_benchmark(
+			&mut group,
+			"mul_sliced_192b_clmul::<__m128i>",
+			mul_sliced_192b_clmul::<__m128i>,
+			&mut rng,
+			192,
+		);
+	}
+
+	// Sliced __m256i (a `[__m256i; 3]` holds four GF(2^192) elements)
+	#[cfg(all(
+		target_feature = "vpclmulqdq",
+		target_feature = "avx2",
+		target_feature = "sse2"
+	))]
+	{
+		run_mul_benchmark(
+			&mut group,
+			"mul_sliced_192b_clmul::<__m256i>",
+			mul_sliced_192b_clmul::<__m256i>,
+			&mut rng,
+			192,
+		);
+	}
+
+	// Sliced uint64x2_t (AARCH64 NEON)
+	#[cfg(all(
+		target_arch = "aarch64",
+		target_feature = "neon",
+		target_feature = "aes"
+	))]
+	{
+		run_mul_benchmark(
+			&mut group,
+			"mul_sliced_192b_clmul::uint64x2_t",
+			mul_sliced_192b_clmul::<uint64x2_t>,
+			&mut rng,
+			192,
+		);
+	}
+
+	group.finish();
+}
+
 /// Benchmark GHASH² (degree-2 extension of GHASH) sliced multiplication
 #[allow(unused_variables, unused_mut)]
 fn bench_ghash_sq(c: &mut Criterion) {
@@ -1000,6 +1060,62 @@ fn bench_monbijou_inner_product(c: &mut Criterion) {
 	group.finish();
 }
 
+/// Benchmark inner products over the degree-3 Monbijou extension GF(2^192), contrasting the
+/// delayed-reduction widening multiply (accumulate the six raw products, reduce once) against the
+/// reduce-every-term sliced multiply.
+#[allow(unused_imports, unused_variables, unused_mut)]
+fn bench_monbijou_192b_inner_product(c: &mut Criterion) {
+	use binius_arith_bench::monbijou::{clmul, soft64};
+
+	/// Length of the inner product.
+	const LOG_LEN: usize = 10;
+
+	let mut rng = rand::rng();
+
+	let mut group = c.benchmark_group("monbijou_192b_inner_product");
+
+	// Baseline: reduce each product; widening: accumulate the six raw products, reduce once.
+	run_inner_product_benchmark(
+		&mut group,
+		"soft64::mul_192b",
+		soft64::mul_192b,
+		&mut rng,
+		LOG_LEN,
+		192,
+	);
+	run_inner_product_benchmark(
+		&mut group,
+		"soft64::mul_wide_192b",
+		soft64::mul_wide_192b,
+		&mut rng,
+		LOG_LEN,
+		192,
+	);
+
+	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
+	{
+		run_inner_product_benchmark(
+			&mut group,
+			"clmul::mul_sliced_192b::<__m128i>",
+			clmul::mul_sliced_192b::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+			192,
+		);
+
+		run_inner_product_benchmark(
+			&mut group,
+			"clmul::mul_wide_sliced_192b::<__m128i>",
+			clmul::mul_wide_sliced_192b::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+			192,
+		);
+	}
+
+	group.finish();
+}
+
 criterion_group!(
 	benches,
 	bench_rijndael,
@@ -1008,8 +1124,10 @@ criterion_group!(
 	bench_ghash_sq,
 	bench_monbijou,
 	bench_monbijou_128b,
+	bench_monbijou_192b,
 	bench_ghash_inner_product,
 	bench_ghash_sq_inner_product,
 	bench_monbijou_inner_product,
+	bench_monbijou_192b_inner_product,
 );
 criterion_main!(benches);

@@ -131,6 +131,83 @@ pub fn mul_sliced_128b<U: Underlier + OpsClmul + PackedUnderlier<u64>>(
 	[z0, z1]
 }
 
+/// Widening (unreduced) degree-3 Monbijou multiply in *sliced* representation: the six raw
+/// base-field Karatsuba products `[m0, m1, m2, m01, m02, m12]` (each a `[U; 2]` lane pair, as from
+/// [`mul_wide`]) of two GF(2^192) elements `[U; 3]`.
+///
+/// Each element is `[U; 3]`: index i holds coefficient i (a base-field element or SIMD pack), so
+/// the three coefficients live in separate registers. No combination, scaling, or reduction happens
+/// here — all F2-linear and deferred to [`reduce_sliced_192b`], so an inner product
+/// XOR-accumulates the six products and reduces once.
+#[inline]
+pub fn mul_wide_sliced_192b<U: Underlier + OpsClmul + PackedUnderlier<u64>>(
+	x: [U; 3],
+	y: [U; 3],
+) -> [[U; 2]; 6] {
+	let [x0, x1, x2] = x;
+	let [y0, y1, y2] = y;
+	[
+		mul_wide(x0, y0),
+		mul_wide(x1, y1),
+		mul_wide(x2, y2),
+		mul_wide(U::xor(x0, x1), U::xor(y0, y1)),
+		mul_wide(U::xor(x0, x2), U::xor(y0, y2)),
+		mul_wide(U::xor(x1, x2), U::xor(y1, y2)),
+	]
+}
+
+/// Reduce the six raw products from [`mul_wide_sliced_192b`] into a GF(2^192) element `[U; 3]`.
+///
+/// The tower is GF(2)\[X, Y\] / (X^64 + X^4 + X^3 + X + 1) / (Y^3 + X), so `Y^3 = X`; see
+/// [`super::soft64::mul_192b`] for the algebra. Karatsuba gives the degree-≤4 coefficients
+/// `c0..c4`; folding `Y^3 = X`, `Y^4 = X·Y` gives `z0 = c0 + X·c3`, `z1 = c1 + X·c4`, `z2 = c2`.
+/// The combinations and the multiply-by-X (per lane: shift the unreduced product left by one and
+/// fold the overflow bit back in with the polynomial) happen here, so each output coefficient is
+/// reduced once by [`reduce`].
+#[inline]
+pub fn reduce_sliced_192b<U: Underlier + OpsClmul + PackedUnderlier<u64>>(
+	[m0, m1, m2, m01, m02, m12]: [[U; 2]; 6],
+) -> [U; 3] {
+	// Product coefficients (unreduced): c0 = m0, c4 = m2, and the Karatsuba cross terms
+	//   c1 = m01 + m0 + m1,  c2 = m02 + m0 + m1 + m2,  c3 = m12 + m1 + m2.
+	// `[U; 2]` is itself an `Underlier` (blanket array impl), so `Underlier::xor` adds the
+	// unreduced product pairs lane-wise.
+	let c0 = m0;
+	let c1 = Underlier::xor(Underlier::xor(m01, m0), m1);
+	let c2 = Underlier::xor(Underlier::xor(Underlier::xor(m02, m0), m1), m2);
+	let c3 = Underlier::xor(Underlier::xor(m12, m1), m2);
+	let c4 = m2;
+
+	let z0 = reduce(Underlier::xor(c0, mul_x_wide(c3)));
+	let z1 = reduce(Underlier::xor(c1, mul_x_wide(c4)));
+	let z2 = reduce(c2);
+	[z0, z1, z2]
+}
+
+/// Multiply an unreduced base-field product pair `[lo, hi]` by X, lane-wise.
+///
+/// Each 64-bit lane holds one unreduced product; shift it left by one and fold the overflow bit
+/// back in with the low terms of the reduction polynomial (X^4 + X^3 + X + 1).
+#[inline]
+fn mul_x_wide<U: Underlier + OpsClmul + PackedUnderlier<u64>>([lo, hi]: [U; 2]) -> [U; 2] {
+	const POLY: u64 = 0x1B;
+	let poly = <U as PackedUnderlier<u64>>::broadcast(POLY);
+	[
+		U::xor(U::slli_epi64::<1>(lo), U::and(poly, U::movepi64_mask(lo))),
+		U::xor(U::slli_epi64::<1>(hi), U::and(poly, U::movepi64_mask(hi))),
+	]
+}
+
+/// Multiplies two elements of GF(2^192), the degree-3 extension of the Monbijou field, in *sliced*
+/// representation. Composes [`mul_wide_sliced_192b`] with [`reduce_sliced_192b`].
+#[inline]
+pub fn mul_sliced_192b<U: Underlier + OpsClmul + PackedUnderlier<u64>>(
+	x: [U; 3],
+	y: [U; 3],
+) -> [U; 3] {
+	reduce_sliced_192b(mul_wide_sliced_192b(x, y))
+}
+
 /// Reduce a Monbijou widening product `[prod_0, prod_1]` (two 128-bit carry-less products) to a
 /// single packed base-field element, modulo X^64 + X^4 + X^3 + X + 1.
 ///
@@ -177,7 +254,7 @@ mod tests {
 
 	use proptest::prelude::*;
 
-	use super::{mul, mul_128b, mul_sliced_128b, mul_wide, reduce};
+	use super::{mul, mul_128b, mul_sliced_128b, mul_sliced_192b, mul_wide, reduce};
 	use crate::{Underlier, monbijou::soft64};
 
 	// A packed GF(2^128) element is a `u128` with coefficient 0 in the low 64 bits and coefficient
@@ -253,6 +330,30 @@ mod tests {
 			let [q0, q1] = mul_wide::<__m128i>(to(x2), to(y2));
 			let acc = reduce([Underlier::xor(p0, q0), Underlier::xor(p1, q1)]);
 			prop_assert_eq!(from(acc), soft64::mul(x1, y1) ^ soft64::mul(x2, y2));
+		}
+
+		// The degree-3 sliced multiply agrees with the soft64 reference in both packed lanes.
+		#[test]
+		fn sliced_matches_soft64_192b(
+			xa in any::<[u64; 3]>(), xb in any::<[u64; 3]>(),
+			ya in any::<[u64; 3]>(), yb in any::<[u64; 3]>(),
+		) {
+			// Coefficient i is [lane0 = e0[i], lane1 = e1[i]] packed into an __m128i.
+			let to_sliced = |e0: [u64; 3], e1: [u64; 3]| -> [__m128i; 3] {
+				std::array::from_fn(|i| unsafe {
+					std::mem::transmute::<u128, __m128i>((e0[i] as u128) | ((e1[i] as u128) << 64))
+				})
+			};
+			let lane = |z: [__m128i; 3], lane: u32| -> [u64; 3] {
+				std::array::from_fn(|i| {
+					let c = unsafe { std::mem::transmute::<__m128i, u128>(z[i]) };
+					(c >> (64 * lane)) as u64
+				})
+			};
+
+			let z = mul_sliced_192b::<__m128i>(to_sliced(xa, xb), to_sliced(ya, yb));
+			prop_assert_eq!(lane(z, 0), soft64::mul_192b(xa, ya));
+			prop_assert_eq!(lane(z, 1), soft64::mul_192b(xb, yb));
 		}
 	}
 }
