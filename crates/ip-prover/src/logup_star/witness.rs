@@ -72,18 +72,94 @@ where
 		})
 		.collect::<Vec<_>>();
 
-	// Scatter each looker's numerator onto the shared table cube and sum.
-	let combined = izip!(lookers, &numerators)
-		.map(|(looker, numerator)| pushforward::<F, P>(numerator, looker.index, table_n_vars))
-		.reduce(|mut acc, term| {
-			for (slot, add) in iter::zip(acc.as_mut(), term.as_ref()) {
-				*slot += *add;
-			}
-			acc
-		})
-		.expect("lookers is non-empty");
+	// Scatter every looker's numerator onto the shared table cube, summed into one buffer.
+	let combined = combined_pushforward::<F, P>(&numerators, lookers, table_n_vars);
 
 	(numerators, combined)
+}
+
+/// Scatter every looker's numerator onto the shared `m`-variable table cube and sum.
+///
+/// ```text
+///     Y[v] = sum_j sum_{i : index_j[i] = v} numerator_j[i]
+/// ```
+///
+/// The per-looker `gamma^j` scale already lives in each numerator.
+/// So the plain sum of the scatters is the gamma-combined pushforward.
+/// The sum is over a field, so the accumulation order does not matter.
+///
+/// # Performance
+///
+/// The scatter over every looker row is the dominant `n`-axis cost.
+/// Two choices keep it lean:
+///
+/// - Each looker is read sequentially in row order, so no row pays an indexed lane-extract.
+/// - The work parallelizes across lookers, not rows.
+/// - So each task fills a single `2^m` accumulator for its run of lookers.
+/// - The per-task accumulators merge in a single pass.
+///
+/// With few lookers this leaves cores idle on the `n`-axis.
+/// The target regime has one looker per column, so the tasks stay busy.
+///
+/// # Preconditions
+///
+/// * `numerators` and `lookers` have equal length.
+/// * Each numerator has one entry per row of its looker's index column.
+/// * Every index entry is less than `2^table_n_vars`.
+fn combined_pushforward<F, P>(
+	numerators: &[FieldBuffer<P>],
+	lookers: &[Looker<'_, F>],
+	table_n_vars: usize,
+) -> FieldBuffer<P>
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	// One accumulator slot per table position.
+	let table_size = 1usize << table_n_vars;
+
+	let buckets = (0..numerators.len())
+		.into_par_iter()
+		// Each task scatters a contiguous run of lookers into its own accumulator.
+		.fold(
+			|| vec![F::ZERO; table_size],
+			|mut acc, j| {
+				scatter_add(&mut acc, &numerators[j], lookers[j].index);
+				acc
+			},
+		)
+		// Merge the per-task accumulators position by position into one.
+		.reduce(
+			|| vec![F::ZERO; table_size],
+			|mut acc, partial| {
+				for (slot, add) in iter::zip(acc.iter_mut(), partial) {
+					*slot += add;
+				}
+				acc
+			},
+		);
+
+	// Repack the merged scalar accumulator into the packed table buffer.
+	FieldBuffer::from_values(&buckets)
+}
+
+/// Scatter-add one looker's numerator onto the table accumulator in row order.
+///
+/// ```text
+///     acc[index[i]] += numerator[i]
+/// ```
+///
+/// The numerator is read sequentially, so each row is a lane read, not an indexed lookup.
+#[inline]
+fn scatter_add<F, P>(acc: &mut [F], numerator: &FieldBuffer<P>, index: &[usize])
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	// Row i's numerator value lands in the table position that row indexes into.
+	for (value, &target) in numerator.iter_scalars().zip(index) {
+		acc[target] += value;
+	}
 }
 
 /// Embed a table position `j` into the field through the `GF(2)`-linear basis.
@@ -156,6 +232,9 @@ where
 /// `Y` is the dual of the pullback under the inner product, so `<T, Y> = (I^* T)(eval_point)`.
 /// It has only `2^m` entries, which is the cost saving over committing the `2^n`-entry pullback.
 ///
+/// This is the single-looker scatter.
+/// The prover combines many lookers by summing their scatters onto the same cube.
+///
 /// # Preconditions
 ///
 /// * every `index[i]` is less than `2^table_n_vars`.
@@ -168,45 +247,12 @@ where
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
-	// Row count at or above which parallel scatter beats the single-threaded scan.
-	//
-	// Obtained by experimentation, can be tuned in the future.
-	const PARALLEL_THRESHOLD: usize = 1 << 18;
-
-	let table_size = 1usize << table_n_vars;
-
-	let values = if index.len() < PARALLEL_THRESHOLD {
-		// One thread scatters every row into a single bucket array.
-		let mut buckets = vec![F::ZERO; table_size];
-		for (eq_i, &j) in eq_r.iter_scalars().zip(index) {
-			buckets[j] += eq_i;
-		}
-		buckets
-	} else {
-		// Each job folds a contiguous run of rows into its own bucket array, reading eq_r in order.
-		//
-		// The per-job arrays are then summed position by position.
-		index
-			.par_iter()
-			.enumerate()
-			.fold(
-				|| vec![F::ZERO; table_size],
-				|mut buckets, (i, &j)| {
-					buckets[j] += eq_r.get(i);
-					buckets
-				},
-			)
-			.reduce(
-				|| vec![F::ZERO; table_size],
-				|mut acc, partial| {
-					for (slot, add) in acc.iter_mut().zip(partial) {
-						*slot += add;
-					}
-					acc
-				},
-			)
-	};
-	FieldBuffer::from_values(&values)
+	// One accumulator slot per table position, all starting empty.
+	let mut buckets = vec![F::ZERO; 1usize << table_n_vars];
+	// Add each row's numerator value into the position it indexes into.
+	scatter_add(&mut buckets, eq_r, index);
+	// Repack the scalar accumulator into the packed table buffer.
+	FieldBuffer::from_values(&buckets)
 }
 
 #[cfg(test)]
@@ -222,7 +268,7 @@ mod tests {
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
-	use super::{embed_position, looker_denominator, pushforward};
+	use super::{Looker, combined_pushforward, embed_position, looker_denominator, pushforward};
 
 	type F = OptimalB128;
 	type P = OptimalPackedB128;
@@ -250,23 +296,90 @@ mod tests {
 		assert_eq!(got, reference(&eq_r, &index, m));
 	}
 
-	proptest! {
-		#![proptest_config(ProptestConfig::with_cases(8))]
+	#[test]
+	fn pushforward_matches_reference() {
+		// n = 0: the single-row edge.
+		check(0, 3, 7);
+		// 2^10 rows collapsed into 2 buckets: every position takes heavy collisions.
+		check(10, 1, 42);
+		// A wider 16-bucket cube with sparser collisions.
+		check(12, 4, 1);
+	}
 
-		// 2^18 rows crosses the threshold, so this fuzzes the parallel scatter.
-		// Small m forces heavy collisions into few buckets.
-		#[test]
-		fn parallel_scatter_matches_reference(seed in any::<u64>(), m in 1usize..=6) {
-			check(18, m, seed);
+	// Reference scatter: the gamma-combined pushforward, single-threaded, one pass per looker.
+	// The fused parallel build must reproduce this exactly.
+	fn combined_reference(
+		numerators: &[FieldBuffer<P>],
+		indices: &[Vec<usize>],
+		m: usize,
+	) -> Vec<F> {
+		let mut acc = vec![F::ZERO; 1usize << m];
+		for (numerator, index) in numerators.iter().zip(indices) {
+			for (value, &target) in numerator.iter_scalars().zip(index) {
+				acc[target] += value;
+			}
 		}
+		acc
+	}
+
+	// Assert the fused scatter equals the reference on a random multi-looker instance.
+	fn check_combined(n: usize, m: usize, n_lookers: usize, seed: u64) {
+		let mut rng = StdRng::seed_from_u64(seed);
+
+		// Each looker gets its own numerator buffer and its own index column.
+		let numerators = (0..n_lookers)
+			.map(|_| random_field_buffer::<P>(&mut rng, n))
+			.collect::<Vec<_>>();
+		let indices = (0..n_lookers)
+			.map(|_| {
+				(0..(1usize << n))
+					.map(|_| rng.random_range(0..(1usize << m)))
+					.collect::<Vec<_>>()
+			})
+			.collect::<Vec<_>>();
+
+		// The scatter reads only the index column.
+		// The evaluation point and claim are unused here, so leave them empty.
+		let eval_points = vec![Vec::<F>::new(); n_lookers];
+		let lookers = indices
+			.iter()
+			.zip(&eval_points)
+			.map(|(index, eval_point)| Looker {
+				index,
+				eval_point,
+				eval_claim: F::ZERO,
+			})
+			.collect::<Vec<_>>();
+
+		let got = combined_pushforward::<F, P>(&numerators, &lookers, m)
+			.iter_scalars()
+			.collect::<Vec<_>>();
+		assert_eq!(got, combined_reference(&numerators, &indices, m));
 	}
 
 	#[test]
-	fn sequential_scatter_matches_reference() {
-		// Below the threshold the single-threaded path runs.
-		// n = 0 is the one-row edge; (10, 1) packs 2^10 rows into 2 buckets.
-		check(0, 3, 7);
-		check(10, 1, 42);
+	fn combined_pushforward_small_cases() {
+		// One looker: the combined scatter degenerates to a single pushforward.
+		check_combined(4, 3, 1, 5);
+		// n = 0: each looker contributes a single row.
+		check_combined(0, 3, 3, 6);
+	}
+
+	proptest! {
+		#![proptest_config(ProptestConfig::with_cases(8))]
+
+		// Fuzz the fused scatter across shapes.
+		// Small m forces heavy collisions into few buckets.
+		// Several lookers exercise the parallel fold and the merging reduce.
+		#[test]
+		fn combined_pushforward_matches_reference(
+			seed in any::<u64>(),
+			n in 0usize..=10,
+			m in 1usize..=6,
+			n_lookers in 1usize..=5,
+		) {
+			check_combined(n, m, n_lookers, seed);
+		}
 	}
 
 	// The scalar reference for the looker denominator: c - iota(index[i]) per row.
