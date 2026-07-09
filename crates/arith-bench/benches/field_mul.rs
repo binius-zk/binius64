@@ -11,7 +11,6 @@ use std::{array, hint::black_box};
 
 use binius_arith_bench::{Underlier, ghash, ghash_sq, polyval};
 use criterion::{BenchmarkGroup, Criterion, Throughput, criterion_group, criterion_main};
-use proptest::num::u128;
 use rand::{
 	Rng,
 	distr::{Distribution, StandardUniform},
@@ -139,6 +138,45 @@ fn run_unary_op_benchmark<T, R>(
 					batch[i] = op_fn(batch[i]);
 				}
 			}
+		})
+	});
+}
+
+/// Benchmark helper for an inner product of two fixed-size buffers.
+///
+/// This is the setting where a widening multiply pays off: the per-term products are
+/// XOR-accumulated in their unreduced form and the single final reduction is skipped entirely (an
+/// inner product needs only one reduction at the very end, negligible against the `2^log_len`
+/// terms). The gap between a `wide_mul` variant and the corresponding reduce-every-term `mul`
+/// isolates the cost of the amortized reduction.
+///
+/// `T` is the underlier of the operands (`u128` for the software path, a SIMD type for the packed
+/// paths) and `W` the unreduced product accumulator — either a field element (reduce-every-term) or
+/// a multi-limb product like `[u64; 4]` / `[__m128i; 3]`, all [`Underlier`]s (arrays via the
+/// blanket impl), so accumulation is `W::xor`. Each GHASH element is 128 bits, so a `T`-wide
+/// underlier carries `T::BITS / 128` inner-product terms.
+fn run_inner_product_benchmark<T, W, R>(
+	group: &mut BenchmarkGroup<'_, criterion::measurement::WallTime>,
+	name: &str,
+	wide_mul: impl Fn(T, T) -> W,
+	mut rng: R,
+	log_len: usize,
+) where
+	T: Underlier,
+	W: Underlier,
+	R: Rng,
+{
+	let len = 1usize << log_len;
+	let a: Vec<T> = (0..len).map(|_| T::random(&mut rng)).collect();
+	let b: Vec<T> = (0..len).map(|_| T::random(&mut rng)).collect();
+
+	let elements_per_underlier = T::BITS / 128;
+	group.throughput(Throughput::Elements((len * elements_per_underlier) as u64));
+	group.bench_function(name, |bencher| {
+		bencher.iter(|| {
+			black_box(std::iter::zip(&a, &b).fold(W::ZERO, |acc, (&ai, &bi)| {
+				W::xor(acc, wide_mul(black_box(ai), black_box(bi)))
+			}))
 		})
 	});
 }
@@ -790,6 +828,33 @@ fn bench_ghash_sq(c: &mut Criterion) {
 	group.finish();
 }
 
+/// Benchmark inner products over the GHASH field, contrasting the widening multiply (accumulate
+/// unreduced, reduce once) against the reduce-every-term multiply.
+#[allow(unused_imports, unused_variables, unused_mut)]
+fn bench_ghash_inner_product(c: &mut Criterion) {
+	/// Length of the inner product. Long enough that the single skipped final reduction is
+	/// negligible.
+	const LOG_LEN: usize = 10;
+
+	let mut rng = rand::rng();
+
+	let mut group = c.benchmark_group("ghash_inner_product");
+
+	// Baseline: reduce each product, accumulate the reduced GHASH elements.
+	run_inner_product_benchmark(&mut group, "soft64::mul", ghash::soft64::mul, &mut rng, LOG_LEN);
+
+	// Widening: accumulate the unreduced four-limb products by XOR, skip the final reduction.
+	run_inner_product_benchmark(
+		&mut group,
+		"soft64::mul_wide",
+		ghash::soft64::mul_wide,
+		&mut rng,
+		LOG_LEN,
+	);
+
+	group.finish();
+}
+
 criterion_group!(
 	benches,
 	bench_rijndael,
@@ -798,5 +863,6 @@ criterion_group!(
 	bench_ghash_sq,
 	bench_monbijou,
 	bench_monbijou_128b,
+	bench_ghash_inner_product,
 );
 criterion_main!(benches);
