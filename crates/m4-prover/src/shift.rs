@@ -28,7 +28,7 @@ use binius_prover::{
 use binius_utils::{checked_arithmetics::log2_strict_usize, rayon::prelude::*};
 use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 
-use crate::ValueTable;
+use crate::ValueTable2;
 
 /// The number of variables in each "g" (and "h") multilinear of phase 1: one 6-bit shift-amount
 /// axis and one 6-bit bit-position axis.
@@ -42,10 +42,10 @@ pub type FoldedWord<F> = [F; WORD_SIZE_BITS];
 
 /// Folds the committed witness of a batch value table along the instance axis.
 ///
-/// The batch value table has three axes:
-/// * the bits within each 64-bit word.
-/// * the committed words within one instance.
-/// * the instances themselves.
+/// The committed witness has three axes:
+/// - the bits within each 64-bit word.
+/// - the committed words within one instance.
+/// - the instances themselves.
 ///
 /// This collapses the instance axis by the equality-indicator weights of `r_rho`.
 /// What remains is a multilinear over the other two axes.
@@ -58,45 +58,41 @@ pub type FoldedWord<F> = [F; WORD_SIZE_BITS];
 ///
 /// so each set bit contributes its instance's equality weight to a full field element.
 ///
-/// The result places the bit axis in the low coordinates and the word axis in the high coordinates.
-/// It is a multilinear over `LOG_WORD_SIZE_BITS + log2(n_committed)` variables:
+/// The bit axis occupies the low coordinates and the word axis the high coordinates.
+/// The result is a multilinear over `LOG_WORD_SIZE_BITS + log2(n_committed)` variables:
 ///
 /// ```text
 /// index = w * WORD_SIZE_BITS + b     (b occupies the low LOG_WORD_SIZE_BITS coordinates)
 /// ```
 ///
-/// The public words at the front of each instance are excluded.
-/// Only the committed witness words are folded.
-/// So the word axis has `combined_len - offset_witness` entries.
+/// The table stores exactly the committed (hidden) words, so nothing here is excluded.
+/// The constants and public words live once on the constraint system, folded separately.
 ///
-/// Every committed word position folds against the same instance point `r_rho`.
+/// The wire-major layout makes this cheap: one wire's values across every instance are stored
+/// contiguously, so each word position is a plain sub-slice rather than a strided gather.
+///
+/// Every word position folds against the same instance point `r_rho`.
 /// So the lookup tables and per-chunk weights are built once and shared across all word positions.
-/// The word positions are independent, so the fold runs in parallel.
-/// Each task produces one output word.
+/// The word positions are independent, so the fold runs in parallel, one output word per task.
 ///
 /// # Panics
 ///
 /// Panics if `r_rho.len()` does not equal the batch dimension.
-pub fn fold_instances<F, P>(table: &ValueTable, r_rho: &[F]) -> FieldBuffer<P>
+pub fn fold_instances<F, P>(table: &ValueTable2, r_rho: &[F]) -> FieldBuffer<P>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 {
 	assert_eq!(r_rho.len(), table.log_instances(), "r_rho must match the batch dimension");
 
-	// The committed witness words occupy the tail of each instance, after the public segment.
-	let layout = table.layout();
-	let offset = layout.offset_witness;
-	let log_committed = layout.log_witness_words();
-
-	// The instance-major buffer and stride let each word position be read as a strided column.
+	// The wire-major buffer holds one row per committed word, each row spanning all instances.
+	let log_instances = table.log_instances();
 	let data = table.as_words();
-	let stride = table.instance_stride();
-	let n_instances = table.n_instances();
 
-	// The committed word count is `combined_len - offset`.
+	// The committed word count sizes the word axis.
 	// Word positions past it are the multilinear's zero padding up to `2^log_committed`.
-	let n_committed = layout.combined_len() - offset;
+	let n_committed = table.n_hidden_words();
+	let log_committed = table.layout().log_witness_words();
 
 	// Build the instance-fold tables once; the lookups and weights depend only on r_rho.
 	let folder = WordFolder::<F>::new(r_rho);
@@ -110,13 +106,10 @@ where
 		.take(n_committed)
 		.enumerate()
 		.for_each(|(w, slot)| {
-			// Gather word position w across every instance.
-			// It is a stride-`stride` column of the instance-major buffer.
-			// Collecting it makes the column contiguous, so the fold can chunk it.
-			let column: Vec<Word> = (0..n_instances)
-				.map(|rho| data[rho * stride + offset + w])
-				.collect();
-			slot.copy_from_slice(&folder.fold(&column));
+			// Word position w across every instance is row w of the wire-major buffer.
+			// It is already contiguous, so the fold reads it in place with no gather or copy.
+			let column = &data[w << log_instances..(w + 1) << log_instances];
+			slot.copy_from_slice(&folder.fold(column));
 		});
 
 	FieldBuffer::from_values(&out)
@@ -306,7 +299,7 @@ mod crc64 {
 	use binius_core::word::Word;
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
 
-	use crate::ValueTable;
+	use crate::{ValueTable, ValueTable2};
 
 	/// CRC-64/GO-ISO parameters.
 	///
@@ -412,6 +405,23 @@ mod crc64 {
 		})
 		.unwrap()
 	}
+
+	/// Populates a wire-major batch table with one instance per input tuple.
+	///
+	/// This is the [`ValueTable2`] counterpart of [`populate_crc64_witness`], for the paths that
+	/// fold over the instance axis. The circuit has no inout wires, so it is admissible here.
+	pub fn populate_crc64_witness2(
+		c: &Crc64Circuit,
+		inputs: &[[u64; N_INPUT_WORDS]],
+	) -> ValueTable2 {
+		let log_instances = inputs.len().ilog2() as usize;
+		ValueTable2::populate(&c.circuit, log_instances, |i, filler| {
+			for (wire, &w) in c.input.iter().zip(&inputs[i]) {
+				filler[*wire] = Word(w);
+			}
+		})
+		.unwrap()
+	}
 }
 
 #[cfg(test)]
@@ -435,7 +445,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::{crc64::*, *};
-	use crate::BatchAndCheckWitness;
+	use crate::{BatchAndCheckWitness, ValueTable};
 
 	#[test]
 	fn circuit_matches_reference() {
@@ -527,7 +537,8 @@ mod tests {
 			let inputs: Vec<[u64; N_INPUT_WORDS]> = (0..n_instances)
 				.map(|_| std::array::from_fn(|_| rng.random()))
 				.collect();
-			let table = populate_crc64_witness(&c, &inputs);
+			let table = populate_crc64_witness2(&c, &inputs);
+			let constants = &c.circuit.constraint_system().constants;
 
 			// The committed witness segment, whose word count fixes the word (x) axis.
 			let layout = table.layout();
@@ -550,10 +561,11 @@ mod tests {
 			let bit_tensor = eq_ind_partial_eval_scalars::<B128>(r_bit);
 
 			// Gather the committed words of every instance, instance-major: index = rho *
-			// n_committed + w.
+			// n_committed + w. Each instance is reconstructed independently of the fold under test.
 			let mut committed = Vec::with_capacity(n_instances * n_committed);
 			for rho in 0..n_instances {
-				committed.extend_from_slice(&table.instance(rho)[offset..]);
+				let vv = table.instance_value_vec(rho, constants);
+				committed.extend_from_slice(&vv.combined_witness()[offset..]);
 			}
 			let folded_words = fold_words::<B128, P>(&committed, &bit_tensor);
 
@@ -659,8 +671,10 @@ mod tests {
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 
 		// The hidden witness folded over instances (reshaped to one FoldedWord per word), and the
-		// public constants.
-		let folded = fold_instances::<B128, P>(&table, &r_rho);
+		// public constants. The fold consumes the wire-major table; the bitand path below consumes
+		// the instance-major one. Both describe the same witness, built from the same inputs.
+		let table2 = populate_crc64_witness2(&c, &inputs);
+		let folded = fold_instances::<B128, P>(&table2, &r_rho);
 		let scalars: Vec<B128> = folded.iter_scalars().collect();
 		let folded_witness: Vec<FoldedWord<B128>> = scalars
 			.chunks_exact(WORD_SIZE_BITS)
