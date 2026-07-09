@@ -9,19 +9,29 @@
 
 use crate::{PackedUnderlier, Underlier, underlier::OpsClmul};
 
+/// Widening (unreduced) Monbijou multiply: the two 128-bit carry-less products `[prod_0, prod_1]`,
+/// without the modular reduction.
+///
+/// The `0x00`/`0x11` immediates select the low·low and high·high halves of each 128-bit SIMD lane,
+/// i.e. the two independent base elements packed per lane. Because [`reduce`] is F2-linear, these
+/// products can be XOR-accumulated across many products and reduced only once — an inner product of
+/// `n` terms costs one reduction instead of `n`.
+#[inline]
+pub fn mul_wide<U: Underlier + OpsClmul + PackedUnderlier<u64>>(a: U, b: U) -> [U; 2] {
+	let prod_0 = U::clmulepi64::<0x00>(a, b); // 128-bit pre-reduction product elements 0
+	let prod_1 = U::clmulepi64::<0x11>(a, b); // 128-bit pre-reduction product elements 1
+	[prod_0, prod_1]
+}
+
 /// Multiplies two elements in GF(2^64) using SIMD carry-less multiplication.
 ///
 /// This function performs multiplication in the Monbijou field GF(2^64) defined by
-/// the reduction polynomial X^64 + X^4 + X^3 + X + 1. The algorithm uses a two-stage
-/// reduction process to efficiently handle the polynomial reduction after multiplication.
+/// the reduction polynomial X^64 + X^4 + X^3 + X + 1. Composes the widening multiply [`mul_wide`]
+/// with the two-stage [`reduce`]; both are inlined.
 #[inline]
 #[allow(dead_code)]
 pub fn mul<U: Underlier + OpsClmul + PackedUnderlier<u64>>(a: U, b: U) -> U {
-	// Step 1: Carry-less multiplication of 64-bit operands produces 128-bit results
-	// For SIMD types, this processes multiple pairs in parallel
-	let prod_0 = U::clmulepi64::<0x00>(a, b); // 128-bit pre-reduction product elements 0
-	let prod_1 = U::clmulepi64::<0x11>(a, b); // 128-bit pre-reduction product elements 1
-	reduce_pair(prod_0, prod_1)
+	reduce(mul_wide(a, b))
 }
 
 /// Multiplies two elements in GF(2^128), represented as a degree-2 extension of GF(2^64).
@@ -53,7 +63,7 @@ pub fn mul_128b<U: Underlier + OpsClmul + PackedUnderlier<u64>>(x: U, y: U) -> U
 	let term0 = U::xor(t0, t2);
 	let term1 = U::xor(t1, t2_times_x);
 
-	reduce_pair(term0, term1)
+	reduce([term0, term1])
 }
 
 /// Multiplies two elements of GF(2^128), the degree-2 extension of the Monbijou field, in
@@ -75,7 +85,7 @@ pub fn mul_128b<U: Underlier + OpsClmul + PackedUnderlier<u64>>(x: U, y: U) -> U
 /// ```
 ///
 /// The base-field products are kept unreduced and combined into the two output coefficients, so
-/// only a single `reduce_pair` is spent per coefficient (one reduction per element), matching
+/// only a single [`reduce`] is spent per coefficient (one reduction per element), matching
 /// [`mul_128b`]. The cross term `a0·b1 + a1·b0` is recovered from Karatsuba as `t1 + t0 +
 /// t2`.
 #[inline]
@@ -115,14 +125,20 @@ pub fn mul_sliced_128b<U: Underlier + OpsClmul + PackedUnderlier<u64>>(
 	let term1_lo = U::xor(U::xor(U::xor(t1_lo, t0_lo), t2_lo), t2x_lo);
 	let term1_hi = U::xor(U::xor(U::xor(t1_hi, t0_hi), t2_hi), t2x_hi);
 
-	let z0 = reduce_pair(term0_lo, term0_hi);
-	let z1 = reduce_pair(term1_lo, term1_hi);
+	let z0 = reduce([term0_lo, term0_hi]);
+	let z1 = reduce([term1_lo, term1_hi]);
 
 	[z0, z1]
 }
 
+/// Reduce a Monbijou widening product `[prod_0, prod_1]` (two 128-bit carry-less products) to a
+/// single packed base-field element, modulo X^64 + X^4 + X^3 + X + 1.
+///
+/// Two CLMUL folds by the low-degree terms `0x1B`; each lane's low 64 bits are packed into the
+/// output via `unpacklo_epi64`. This is an F2-linear map, so unreduced products may be summed by
+/// XOR and reduced once at the end.
 #[inline]
-fn reduce_pair<U: Underlier + OpsClmul + PackedUnderlier<u64>>(prod_0: U, prod_1: U) -> U {
+pub fn reduce<U: Underlier + OpsClmul + PackedUnderlier<u64>>([prod_0, prod_1]: [U; 2]) -> U {
 	// The reduction polynomial X^64 + X^4 + X^3 + X + 1 is represented as 0x1B
 	// This is the bit representation of the lower-degree terms (X^4 + X^3 + X + 1)
 	const POLY: u64 = 0x1B;
@@ -161,7 +177,8 @@ mod tests {
 
 	use proptest::prelude::*;
 
-	use super::{mul_128b, mul_sliced_128b};
+	use super::{mul, mul_128b, mul_sliced_128b, mul_wide, reduce};
+	use crate::{Underlier, monbijou::soft64};
 
 	// A packed GF(2^128) element is a `u128` with coefficient 0 in the low 64 bits and coefficient
 	// 1 in the high 64 bits, matching `__m128i`'s lane layout.
@@ -213,6 +230,29 @@ mod tests {
 
 			prop_assert_eq!(z0, packed_mul(a0, b0));
 			prop_assert_eq!(z1, packed_mul(a1, b1));
+		}
+
+		// The CLMUL base-field mul agrees with the soft64 reference (compared in lane 0).
+		#[test]
+		fn base_mul_matches_soft64(x in any::<u64>(), y in any::<u64>()) {
+			let to = |v: u64| unsafe { std::mem::transmute::<u128, __m128i>(v as u128) };
+			let got = unsafe { std::mem::transmute::<__m128i, u128>(mul::<__m128i>(to(x), to(y))) };
+			prop_assert_eq!(got as u64, soft64::mul(x, y));
+		}
+
+		// The reduction is F2-linear: accumulating two unreduced products by XOR and reducing once
+		// equals reducing each and summing (lane 0).
+		#[test]
+		fn base_wide_mul_deferred_reduction(
+			x1 in any::<u64>(), y1 in any::<u64>(),
+			x2 in any::<u64>(), y2 in any::<u64>(),
+		) {
+			let to = |v: u64| unsafe { std::mem::transmute::<u128, __m128i>(v as u128) };
+			let from = |v: __m128i| unsafe { std::mem::transmute::<__m128i, u128>(v) } as u64;
+			let [p0, p1] = mul_wide::<__m128i>(to(x1), to(y1));
+			let [q0, q1] = mul_wide::<__m128i>(to(x2), to(y2));
+			let acc = reduce([Underlier::xor(p0, q0), Underlier::xor(p1, q1)]);
+			prop_assert_eq!(from(acc), soft64::mul(x1, y1) ^ soft64::mul(x2, y2));
 		}
 	}
 }
