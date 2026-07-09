@@ -878,6 +878,60 @@ fn bench_ghash_inner_product(c: &mut Criterion) {
 	group.finish();
 }
 
+/// Benchmark inner products over the GHASH² field, contrasting the delayed-reduction widening
+/// multiply (accumulate the two unreduced coefficients, reduce once at the end) against the
+/// reduce-every-term sliced multiply.
+#[allow(unused_imports, unused_variables, unused_mut)]
+fn bench_ghash_sq_inner_product(c: &mut Criterion) {
+	/// Length of the inner product. Long enough that the two skipped final reductions are
+	/// negligible.
+	const LOG_LEN: usize = 10;
+
+	let mut rng = rand::rng();
+
+	let mut group = c.benchmark_group("ghash_sq_inner_product");
+
+	// Baseline: reduce each product (two base-field reductions per term), accumulate the reduced
+	// GHASH² elements.
+	run_inner_product_benchmark(
+		&mut group,
+		"soft64::mul_sliced",
+		ghash_sq::soft64::mul_sliced,
+		&mut rng,
+		LOG_LEN,
+	);
+
+	// Widening: accumulate the unreduced coefficients by XOR, reduce once at the very end.
+	run_inner_product_benchmark(
+		&mut group,
+		"soft64::mul_wide_sliced",
+		ghash_sq::soft64::mul_wide_sliced,
+		&mut rng,
+		LOG_LEN,
+	);
+
+	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
+	{
+		run_inner_product_benchmark(
+			&mut group,
+			"x86_64::mul_sliced::<__m128i>",
+			ghash_sq::x86_64::mul_sliced::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+		);
+
+		run_inner_product_benchmark(
+			&mut group,
+			"x86_64::mul_wide_sliced::<__m128i>",
+			ghash_sq::x86_64::mul_wide_sliced::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+		);
+	}
+
+	group.finish();
+}
+
 criterion_group!(
 	benches,
 	bench_rijndael,
@@ -887,5 +941,6 @@ criterion_group!(
 	bench_monbijou,
 	bench_monbijou_128b,
 	bench_ghash_inner_product,
+	bench_ghash_sq_inner_product,
 );
 criterion_main!(benches);
