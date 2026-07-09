@@ -127,6 +127,15 @@ impl<O: Copy + Default + Add<Output = O>, const N: usize> Sum for LaneWideProduc
 	}
 }
 
+impl<O: Copy + crate::arithmetic_traits::WideMulX, const N: usize>
+	crate::arithmetic_traits::WideMulX for LaneWideProduct<O, N>
+{
+	#[inline]
+	fn mul_x(self) -> Self {
+		Self(self.0.map(|lane| lane.mul_x()))
+	}
+}
+
 impl<U, SubU, F, const N: usize> WideMul for Divide<SubU, PackedPrimitiveType<U, F>, N>
 where
 	U: UnderlierType + Divisible<SubU>,

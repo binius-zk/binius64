@@ -89,6 +89,18 @@ macro_rules! impl_trivial_wide_mul {
 
 pub(crate) use impl_trivial_wide_mul;
 
+/// Multiplies a deferred (unreduced) widening product by the field generator `x`.
+///
+/// The scaling is applied without reducing, so it commutes with the final reduction:
+/// `reduce(w.mul_x()) == reduce(w) * x`. This lets a caller fold a constant `x`-power factor into
+/// an accumulated widening product and reduce once, keeping the reduction deferred. For a
+/// `GF(2^128)` widening product the unreduced value has degree `< 255`, so `x·P` still fits without
+/// a modular reduction — the operation is a plain shift of the wide limbs.
+pub trait WideMulX {
+	/// Returns the widening product scaled by the generator `x`.
+	fn mul_x(self) -> Self;
+}
+
 /// Value that can be inverted
 pub trait InvertOrZero {
 	/// Returns the inverted value or zero in case when `self` is zero

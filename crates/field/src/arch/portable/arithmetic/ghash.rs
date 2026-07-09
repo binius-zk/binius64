@@ -119,6 +119,21 @@ impl<U: Underlier128bLanes> WideGhashProduct<U> {
 	}
 }
 
+impl<U: Underlier128bLanes> crate::arithmetic_traits::WideMulX for WideGhashProduct<U> {
+	/// Scale the unreduced product by `x`: a one-bit left shift across the four 64-bit limbs (`v0`
+	/// lowest). The product has degree `< 255`, so nothing is lost off the top and no reduction is
+	/// needed.
+	#[inline]
+	fn mul_x(self) -> Self {
+		Self {
+			v0: self.v0.shl_64(1),
+			v1: self.v1.shl_64(1) ^ self.v0.shr_64(63),
+			v2: self.v2.shl_64(1) ^ self.v1.shr_64(63),
+			v3: self.v3.shl_64(1) ^ self.v2.shr_64(63),
+		}
+	}
+}
+
 impl<U: Underlier128bLanes> Add for WideGhashProduct<U> {
 	type Output = Self;
 
@@ -246,6 +261,16 @@ mod tests {
 			let (a2, b2) = (M128::from(a2), M128::from(b2));
 			let acc = ghash_wide_mul(a1, b1) + ghash_wide_mul(a2, b2);
 			assert_eq!(acc.reduce(), ghash_mul(a1, b1) ^ ghash_mul(a2, b2));
+		}
+
+		// Scaling the unreduced product by `x` commutes with the reduction: `reduce(w.mul_x())`
+		// equals `reduce(w) * x` (`x` is the GHASH generator, the field element `2`).
+		#[test]
+		fn wide_mul_x_commutes_with_reduce(a in any::<u128>(), b in any::<u128>()) {
+			use crate::arithmetic_traits::WideMulX;
+			let (a, b) = (M128::from(a), M128::from(b));
+			let w = ghash_wide_mul(a, b);
+			assert_eq!(w.mul_x().reduce(), ghash_mul(w.reduce(), M128::from(2u128)));
 		}
 	}
 }

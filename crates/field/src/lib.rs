@@ -39,7 +39,7 @@ mod underlier;
 pub mod util;
 
 pub use aes_field::*;
-pub use arithmetic_traits::WideMul;
+pub use arithmetic_traits::{WideMul, WideMulX};
 pub use binary_field::*;
 pub use extension::*;
 pub use field::{Field, FieldOps};
