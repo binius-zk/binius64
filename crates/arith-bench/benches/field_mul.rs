@@ -852,6 +852,29 @@ fn bench_ghash_inner_product(c: &mut Criterion) {
 		LOG_LEN,
 	);
 
+	// CLMUL path (__m128i): the reduction is a larger fraction of a single fast pclmulqdq multiply,
+	// so amortizing it across the inner product should help more than in the software path.
+	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
+	{
+		use binius_arith_bench::ghash::clmul;
+
+		run_inner_product_benchmark(
+			&mut group,
+			"clmul::mul::<__m128i>",
+			clmul::mul::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+		);
+
+		run_inner_product_benchmark(
+			&mut group,
+			"clmul::mul_wide::<__m128i>",
+			clmul::mul_wide::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+		);
+	}
+
 	group.finish();
 }
 
