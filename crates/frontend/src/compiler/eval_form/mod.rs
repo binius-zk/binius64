@@ -113,7 +113,7 @@ impl EvalForm {
 	) -> Result<(), BatchPopulateError> {
 		assert!(stripe_width > 0, "stripe width must be positive");
 
-		values
+		let results = values
 			.into_par_strides(stripe_width)
 			.enumerate()
 			.map(|(stripe_index, mut stripe)| {
@@ -124,9 +124,17 @@ impl EvalForm {
 					path_spec_tree,
 				)
 			})
-			.collect::<Result<Vec<_>, _>>()?;
+			.collect::<Vec<_>>();
 
-		Ok(())
+		if let Some(err) = results
+			.into_iter()
+			.filter_map(Result::err)
+			.min_by_key(|err| err.instance)
+		{
+			Err(err)
+		} else {
+			Ok(())
+		}
 	}
 
 	/// Get the number of evaluation instructions
