@@ -10,7 +10,31 @@ use crate::{PackedUnderlier, Underlier, ghash, underlier::OpsClmul};
 /// Multiply packed GHASH² elements in sliced representation using CLMUL arithmetic.
 #[inline]
 pub fn mul_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: [U; 2], y: [U; 2]) -> [U; 2] {
-	super::sliced::mul_sliced(x, y, ghash::clmul::mul, ghash::clmul::mul_inv_x)
+	super::sliced::mul_sliced(
+		x,
+		y,
+		ghash::clmul::mul_wide,
+		ghash::clmul::reduce,
+		ghash::clmul::mul_inv_x,
+	)
+}
+
+/// Widening (unreduced) multiply of packed GHASH² elements in sliced representation using CLMUL
+/// arithmetic. Returns the three raw GHASH products (`[U; 3]` each); see
+/// [`super::sliced::mul_wide_sliced`] and reduce with [`reduce_sliced`].
+#[inline]
+pub fn mul_wide_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(
+	x: [U; 2],
+	y: [U; 2],
+) -> [[U; 3]; 3] {
+	super::sliced::mul_wide_sliced(x, y, ghash::clmul::mul_wide)
+}
+
+/// Reduce the three raw products from [`mul_wide_sliced`] into a GHASH² element using CLMUL
+/// arithmetic; see [`super::sliced::reduce_sliced`].
+#[inline]
+pub fn reduce_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(t: [[U; 3]; 3]) -> [U; 2] {
+	super::sliced::reduce_sliced(t, ghash::clmul::reduce, ghash::clmul::mul_inv_x)
 }
 
 /// Square packed GHASH² elements in sliced representation using CLMUL arithmetic.
@@ -106,6 +130,58 @@ pub fn mul_m256i_hybrid(x: __m256i, y: __m256i) -> __m256i {
 	let z0 = Underlier::xor(t0, ghash::clmul::mul_inv_x(t2));
 	let z1 = Underlier::xor(t1, t0);
 	unsafe { _mm256_set_m128i(z1, z0) }
+}
+
+// CLMUL sliced multiply cross-checks that run wherever `pclmulqdq` is available (the tests below
+// additionally need `vpclmulqdq`/`avx2` for the packed-256 variants).
+#[cfg(test)]
+#[cfg(all(
+	target_arch = "x86_64",
+	target_feature = "pclmulqdq",
+	target_feature = "sse2"
+))]
+mod clmul_tests {
+	use std::arch::x86_64::__m128i;
+
+	use proptest::prelude::*;
+
+	use super::*;
+	use crate::ghash_sq::soft64;
+
+	fn to_u(x: u128) -> __m128i {
+		<__m128i as PackedUnderlier<u128>>::broadcast(x)
+	}
+
+	fn from_u(x: __m128i) -> u128 {
+		<__m128i as PackedUnderlier<u128>>::get(x, 0)
+	}
+
+	proptest! {
+		// The CLMUL delayed-reduction sliced multiply agrees with the soft64 reference.
+		#[test]
+		fn test_clmul_mul_sliced_matches_soft64(
+			a in any::<[u128; 2]>(), b in any::<[u128; 2]>(),
+		) {
+			let got = mul_sliced::<__m128i>([to_u(a[0]), to_u(a[1])], [to_u(b[0]), to_u(b[1])]);
+			prop_assert_eq!([from_u(got[0]), from_u(got[1])], soft64::mul_sliced(a, b));
+		}
+
+		// Deferred reduction: accumulating the three raw products by XOR and calling reduce_sliced
+		// once equals summing the reduced products.
+		#[test]
+		fn test_clmul_wide_sliced_deferred_reduction(
+			a1 in any::<[u128; 2]>(), b1 in any::<[u128; 2]>(),
+			a2 in any::<[u128; 2]>(), b2 in any::<[u128; 2]>(),
+		) {
+			let mul = |a: [u128; 2], b: [u128; 2]| {
+				mul_wide_sliced::<__m128i>([to_u(a[0]), to_u(a[1])], [to_u(b[0]), to_u(b[1])])
+			};
+			let acc = <[[__m128i; 3]; 3]>::xor(mul(a1, b1), mul(a2, b2));
+			let reduced = reduce_sliced::<__m128i>(acc);
+			let sum = <[u128; 2]>::xor(soft64::mul_sliced(a1, b1), soft64::mul_sliced(a2, b2));
+			prop_assert_eq!([from_u(reduced[0]), from_u(reduced[1])], sum);
+		}
+	}
 }
 
 #[cfg(test)]
