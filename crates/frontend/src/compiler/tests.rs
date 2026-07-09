@@ -139,6 +139,19 @@ fn test_isub_bin_bout_from_zero() {
 }
 
 #[test]
+fn test_all_one_is_first_constant() {
+	// The gate graph seeds the all-one word as its first constant at construction.
+	// So every built circuit exposes it at constant index 0, ahead of any user constant.
+	let builder = CircuitBuilder::new();
+	// A user constant added first still does not displace the seeded all-one word.
+	builder.add_constant_64(0x1234);
+	let circuit = builder.build();
+
+	let constants = &circuit.constraint_system().constants;
+	assert_eq!(constants[0], Word::ALL_ONE);
+}
+
+#[test]
 fn test_biguint_divide_hint() {
 	let builder = CircuitBuilder::new();
 
