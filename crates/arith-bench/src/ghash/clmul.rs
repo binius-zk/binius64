@@ -187,5 +187,6 @@ mod tests {
 			]);
 			prop_assert_eq!(from_u(acc), soft64::mul(a1, b1) ^ soft64::mul(a2, b2));
 		}
+
 	}
 }

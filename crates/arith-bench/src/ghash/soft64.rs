@@ -186,6 +186,7 @@ mod tests {
 			prop_assert_eq!(mul_inv_x(a), mul(a, INV_X), "mul_inv_x does not match mul by INV_X");
 		}
 
+
 		#[test]
 		fn test_ghash_soft64_square(
 			a in any::<u128>(),
