@@ -390,6 +390,33 @@ pub fn blake3_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 /// - `len_bytes`: Runtime message length in bytes; constrained to `0..=max_len_bytes`.
 /// - `max_len_bytes`: Compile-time capacity in bytes.
 ///
+/// # Soundness: the caller must constrain `len_bytes`
+///
+/// This gadget hashes the *claimed* length. It enforces
+/// `digest == blake3(message[..len_bytes])` and, in-circuit, that `len_bytes <= max_len_bytes`. It
+/// does **not** — and cannot — constrain the value on `len_bytes` itself; that is the caller's
+/// responsibility.
+///
+/// Concretely, the returned digest equals `blake3(message[..len_bytes])` for a prover-chosen
+/// `len_bytes`; it does **not** equal `blake3(message)` for the full committed `message`. If
+/// `len_bytes` is a free witness, the constraint system is satisfiable for **any prefix** of the
+/// message: a prover can pick any `l <= max_len_bytes`, set `len_bytes = l`, and the masking +
+/// final-block-length logic reproduces `blake3(message[..l])`. An unconstrained `len_bytes`
+/// therefore binds "the digest of *some* prefix", not "the digest of *the* message".
+///
+/// The attack requires the prover to be able to choose the digest. If the digest is itself a
+/// verifier-fixed public input, a free `len_bytes` is harmless — the prover cannot substitute the
+/// prefix digest. But a composed circuit that consumes the digest *internally* (feeding it into
+/// further constraints) has no such protection, so in that setting a free `len_bytes` is a
+/// soundness hole. Callers who intend a specific length **must** constrain `len_bytes` — bind it to
+/// a public input, derive it from other constrained wires, or, for a length known at construction
+/// time, use [`blake3_fixed`] (which is also cheaper, as it needs no runtime length checks or
+/// candidate multiplexing).
+///
+/// Relatedly, message content beyond the claimed length is unconstrained: bytes at or above
+/// `len_bytes` are masked to zero before hashing, so a satisfying witness may leave them arbitrary.
+/// Only `message[..len_bytes]` is bound.
+///
 /// # Returns
 ///
 /// The BLAKE3 digest as 8 wires, each holding a 32-bit little-endian word in its low 32 bits.
@@ -732,5 +759,90 @@ mod tests {
 			w[digest_out[i]] = Word(expected_words[i] as u64);
 		}
 		assert!(circuit.populate_wire_witness(&mut w).is_err());
+	}
+
+	// ---------------------------------------------------------------------------
+	// Soundness characterization tests for the `len_bytes` caller obligation.
+	//
+	// `blake3_variable` hashes the *claimed* length (the value on the `len_bytes`
+	// wire); it does not constrain what that length is (see the gadget doc). These
+	// tests pin down the resulting semantics so the contract stays documented and
+	// covered.
+	//
+	// The message wires here are `add_inout` (a fixed, committed statement) while
+	// `len_bytes` is a free witness. That models the composed-circuit case where the
+	// digest is an internal / prover-influenced value; a verifier-fixed public digest
+	// would neutralize the prefix substitution (the prover could not swap it), but a
+	// free `len_bytes` remains a hazard whenever the digest is not so pinned.
+	// ---------------------------------------------------------------------------
+
+	/// Build a `blake3_variable` over `max_len_bytes` with `len_bytes` a *free witness*, commit the
+	/// full `message` on `add_inout` wires, claim `claimed_len` and `claimed_digest`, then run the
+	/// circuit. Returns `Ok(())` iff the constraint system is satisfiable.
+	fn run_variable_claim(
+		max_len_bytes: usize,
+		message: &[u8],
+		claimed_len: usize,
+		claimed_digest: &[u8; 32],
+	) -> Result<(), String> {
+		assert!(message.len() <= max_len_bytes);
+		let builder = CircuitBuilder::new();
+		let msg_wires: Vec<Wire> = (0..max_len_bytes.div_ceil(4))
+			.map(|_| builder.add_inout())
+			.collect();
+		let len_wire = builder.add_witness();
+		let digest = blake3_variable(&builder, &msg_wires, len_wire, max_len_bytes);
+		let digest_out: [Wire; 8] = std::array::from_fn(|_| builder.add_inout());
+		for i in 0..8 {
+			builder.assert_eq("digest_match", digest[i], digest_out[i]);
+		}
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		let words = bytes_to_le_words(message);
+		for (i, wire) in msg_wires.iter().enumerate() {
+			w[*wire] = Word(words.get(i).copied().unwrap_or(0));
+		}
+		w[len_wire] = Word(claimed_len as u64);
+		let digest_words: [u32; 8] = std::array::from_fn(|i| {
+			u32::from_le_bytes(claimed_digest[i * 4..i * 4 + 4].try_into().unwrap())
+		});
+		for i in 0..8 {
+			w[digest_out[i]] = Word(digest_words[i] as u64);
+		}
+		circuit
+			.populate_wire_witness(&mut w)
+			.map(|_| ())
+			.map_err(|e| format!("{e:?}"))
+	}
+
+	/// SOUNDNESS CHARACTERIZATION (a caller obligation, not a bug in this gadget):
+	/// with `len_bytes` wired as a free witness, a prover can prove the BLAKE3 hash of an arbitrary
+	/// *prefix* of the committed message. A 100-byte message is committed, but the prover claims
+	/// `len = 50` and supplies `digest = blake3(message[..50])`, and the circuit is satisfiable.
+	/// Callers must constrain `len_bytes` (see the `blake3_variable` doc).
+	#[test]
+	fn variable_unconstrained_len_admits_prefix_hash() {
+		const MAX: usize = 1024;
+		let msg: Vec<u8> = (0..100u32).map(|i| (i * 7 + 3) as u8).collect();
+
+		// Honest control: claiming the true length verifies with the true digest.
+		let full = blake3::hash(&msg);
+		run_variable_claim(MAX, &msg, msg.len(), full.as_bytes())
+			.expect("honest full-length witness must verify");
+
+		// Attack: claim a shorter length and prove the prefix digest against the *same* committed
+		// message. The tail-masking + runtime final-block length reproduce `blake3(message[..50])`.
+		let prefix = &msg[..50];
+		let prefix_digest = blake3::hash(prefix);
+		run_variable_claim(MAX, &msg, prefix.len(), prefix_digest.as_bytes())
+			.expect("a free len_bytes admits the prefix digest (caller obligation)");
+
+		// Positive-binding control: `message[..len_bytes]` *is* bound. Under the same claimed
+		// `len = 50`, the full-message digest must be rejected — the gadget hashes only the prefix.
+		assert!(
+			run_variable_claim(MAX, &msg, prefix.len(), full.as_bytes()).is_err(),
+			"digest must equal blake3(message[..len_bytes]), not blake3(message)"
+		);
 	}
 }
