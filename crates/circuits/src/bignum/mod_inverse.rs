@@ -2,12 +2,7 @@
 //! Modular inverse hint implementation
 
 use binius_core::Word;
-
-use super::Hint;
-use crate::{
-	compiler::{CircuitBuilder, Wire},
-	util::num_biguint_from_u64_limbs,
-};
+use binius_frontend::{CircuitBuilder, Wire, hints::Hint, util::num_biguint_from_u64_limbs};
 
 /// ModInverse hint implementation
 pub struct ModInverseHint;
@@ -94,5 +89,60 @@ impl Hint for ModInverseHint {
 		for i in inverse.iter_u64_digits().len()..*n_mod {
 			inverse_words[i] = Word::ZERO;
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_mod_inverse_hint() {
+		let builder = CircuitBuilder::new();
+
+		let b = builder.add_constant_64(0x123456789abcdef0);
+
+		// M12 = 2^127-1
+		let m0 = builder.add_constant_64(u64::MAX);
+		let m1 = builder.add_constant_64((1u64 << 63) - 1);
+
+		let (quotient, inverse) = ModInverseHint::call(&builder, &[b], &[m0, m1]);
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		circuit.populate_wire_witness(&mut w).unwrap();
+
+		assert_eq!(inverse.len(), 2);
+		assert_eq!(w[inverse[0]], Word(0xe5a542e11f99750a));
+		assert_eq!(w[inverse[1]], Word(0x1849faf75fbb9752));
+
+		assert_eq!(quotient.len(), 2);
+		assert_eq!(w[quotient[0]], Word(0x37455c1554b9aa1));
+		assert_eq!(w[quotient[1]], Word::ZERO);
+	}
+
+	#[test]
+	fn test_mod_inverse_hint_non_coprime() {
+		let builder = CircuitBuilder::new();
+
+		let b = builder.add_constant_64((1 << 19) - 1);
+
+		// M7 * M11 = (2^19-1)*(2^107-1)
+		let m0 = builder.add_constant_64(0xfffffffffff80001);
+		let m1 = builder.add_constant_64(0x3ffff7ffffffffff);
+
+		let (quotient, inverse) = ModInverseHint::call(&builder, &[b], &[m0, m1]);
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		circuit.populate_wire_witness(&mut w).unwrap();
+
+		assert_eq!(inverse.len(), 2);
+		assert_eq!(w[inverse[0]], Word::ZERO);
+		assert_eq!(w[inverse[1]], Word::ZERO);
+
+		assert_eq!(quotient.len(), 2);
+		assert_eq!(w[quotient[0]], Word::ZERO);
+		assert_eq!(w[quotient[1]], Word::ZERO);
 	}
 }

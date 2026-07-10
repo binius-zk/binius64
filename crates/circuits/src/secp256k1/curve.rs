@@ -1,13 +1,15 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use binius_core::consts::WORD_SIZE_BITS;
-use binius_frontend::{CircuitBuilder, Wire, hints::BigUintModPowHint};
+use binius_frontend::{CircuitBuilder, Wire};
 
 use super::{
 	common::{coord_b, coord_beta, coord_field, coord_zero, pow_sqrt, scalar_field},
 	point::Secp256k1Affine,
 };
-use crate::bignum::{BigUint, PseudoMersennePrimeField, assert_eq, biguint_eq, select};
+use crate::bignum::{
+	BigUint, BigUintModPowHint, PseudoMersennePrimeField, assert_eq, biguint_eq, select,
+};
 
 /// Secp256k1 - a short Weierstrass elliptic curve of the form `y^2 = x^3 + 7` over
 /// the prime field of modulus `2^256 - 2^32 - 977`.

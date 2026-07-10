@@ -14,6 +14,8 @@
 //
 // Modified by Irreducible Inc. (2025): Translated from C++ to Rust
 // Original: lib/gf2k/sysdep.h from google/longfellow-zk
+//
+// Copyright 2026 The Binius Developers
 
 //! Hardware-accelerated GHASH multiplication using CLMUL instructions.
 //!
@@ -50,28 +52,43 @@ pub fn mul_inv_x<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: U) -> U {
 	U::xor(shifted, U::and(inv_x, lsb_mask))
 }
 
-/// Multiply two GHASH field elements using CLMUL instructions.
+/// Widening (unreduced) CLMUL GHASH multiply: the schoolbook product as three 128-bit limbs
+/// `[t0, t1, t2]`, without the modular reduction.
+///
+/// Per 128-bit lane, `t0 = x.lo·y.lo` (low), `t1 = x.lo·y.hi ⊕ x.hi·y.lo` (middle, at offset
+/// `X^64`), and `t2 = x.hi·y.hi` (high, at offset `X^128`), so the product is
+/// `t0 + t1·X^64 + t2·X^128`. Because the reduction ([`reduce`]) is F2-linear, these limbs can be
+/// XOR-accumulated across many products and reduced only once — an inner product of `n` terms
+/// costs one reduction instead of `n`.
 #[inline]
-pub fn mul<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: U, y: U) -> U {
-	// Based on the C++ reference implementation
-	// The algorithm performs polynomial multiplication followed by reduction
-
-	// t1a = x.lo * y.hi
-	let t1a = U::clmulepi64::<0x01>(x, y);
-	// t1b = x.hi * y.lo
-	let t1b = U::clmulepi64::<0x10>(x, y);
-	// t1 = t1a + t1b (XOR in binary field)
-	let mut t1 = U::xor(t1a, t1b);
+pub fn mul_wide<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: U, y: U) -> [U; 3] {
+	// t0 = x.lo * y.lo
+	let t0 = U::clmulepi64::<0x00>(x, y);
+	// t1 = x.lo * y.hi + x.hi * y.lo (XOR in binary field)
+	let t1 = U::xor(U::clmulepi64::<0x01>(x, y), U::clmulepi64::<0x10>(x, y));
 	// t2 = x.hi * y.hi
 	let t2 = U::clmulepi64::<0x11>(x, y);
-	// Reduce t1 and t2
-	t1 = gf2_128_reduce(t1, t2);
-	// t0 = x.lo * y.lo
-	let mut t0 = U::clmulepi64::<0x00>(x, y);
-	// Final reduction
-	t0 = gf2_128_reduce(t0, t1);
 
-	t0
+	[t0, t1, t2]
+}
+
+/// Reduce the wide product `[t0, t1, t2]` to a single GHASH field element.
+///
+/// Folds the high limb into the middle, then the middle into the low, via `gf2_128_reduce`. Each
+/// fold is F2-linear, so `reduce` is F2-linear in the limbs: unreduced products may be summed by
+/// XOR and reduced once at the end.
+#[inline]
+pub fn reduce<U: Underlier + OpsClmul + PackedUnderlier<u128>>([t0, t1, t2]: [U; 3]) -> U {
+	let t1 = gf2_128_reduce(t1, t2);
+	gf2_128_reduce(t0, t1)
+}
+
+/// Multiply two GHASH field elements using CLMUL instructions.
+///
+/// Composes the widening multiply [`mul_wide`] with the modular [`reduce`]; both are inlined.
+#[inline]
+pub fn mul<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: U, y: U) -> U {
+	reduce(mul_wide(x, y))
 }
 
 /// Multiply two GHASH field elements using CLMUL instructions.
@@ -123,4 +140,53 @@ fn gf2_128_shift_reduce<U: Underlier + OpsClmul + PackedUnderlier<u128>>(t1: U) 
 	t0 = U::xor(t0, U::clmulepi64::<0x01>(t1, poly));
 
 	t0
+}
+
+#[cfg(all(
+	test,
+	target_arch = "x86_64",
+	target_feature = "pclmulqdq",
+	target_feature = "sse2"
+))]
+mod tests {
+	use std::arch::x86_64::__m128i;
+
+	use proptest::prelude::*;
+
+	use super::*;
+	use crate::ghash::soft64;
+
+	fn to_u(x: u128) -> __m128i {
+		<__m128i as PackedUnderlier<u128>>::broadcast(x)
+	}
+
+	fn from_u(x: __m128i) -> u128 {
+		<__m128i as PackedUnderlier<u128>>::get(x, 0)
+	}
+
+	proptest! {
+		// The widening multiply followed by reduction agrees with the reference software multiply.
+		#[test]
+		fn test_clmul_mul_matches_soft64(a in any::<u128>(), b in any::<u128>()) {
+			prop_assert_eq!(from_u(mul(to_u(a), to_u(b))), soft64::mul(a, b));
+		}
+
+		// The reduction is F2-linear, so accumulating two unreduced products by XOR and reducing
+		// once equals reducing each and summing.
+		#[test]
+		fn test_clmul_wide_mul_deferred_reduction(
+			a1 in any::<u128>(), b1 in any::<u128>(),
+			a2 in any::<u128>(), b2 in any::<u128>(),
+		) {
+			let [p0, p1, p2] = mul_wide(to_u(a1), to_u(b1));
+			let [q0, q1, q2] = mul_wide(to_u(a2), to_u(b2));
+			let acc = reduce([
+				Underlier::xor(p0, q0),
+				Underlier::xor(p1, q1),
+				Underlier::xor(p2, q2),
+			]);
+			prop_assert_eq!(from_u(acc), soft64::mul(a1, b1) ^ soft64::mul(a2, b2));
+		}
+
+	}
 }

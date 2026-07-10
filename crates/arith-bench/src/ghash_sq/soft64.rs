@@ -6,7 +6,28 @@ use crate::ghash;
 /// Multiply packed GHASH² elements in sliced representation using soft64 arithmetic.
 #[inline]
 pub fn mul_sliced(x: [u128; 2], y: [u128; 2]) -> [u128; 2] {
-	super::sliced::mul_sliced(x, y, ghash::soft64::mul, ghash::soft64::mul_inv_x)
+	super::sliced::mul_sliced(
+		x,
+		y,
+		ghash::soft64::mul_wide,
+		ghash::soft64::reduce,
+		ghash::soft64::mul_inv_x,
+	)
+}
+
+/// Widening (unreduced) multiply of packed GHASH² elements in sliced representation using soft64
+/// arithmetic. Returns the three raw GHASH products (`[u64; 4]` each); see
+/// [`super::sliced::mul_wide_sliced`] and reduce with [`reduce_sliced`].
+#[inline]
+pub fn mul_wide_sliced(x: [u128; 2], y: [u128; 2]) -> [[u64; 4]; 3] {
+	super::sliced::mul_wide_sliced(x, y, ghash::soft64::mul_wide)
+}
+
+/// Reduce the three raw products from [`mul_wide_sliced`] into a GHASH² element using soft64
+/// arithmetic; see [`super::sliced::reduce_sliced`].
+#[inline]
+pub fn reduce_sliced(t: [[u64; 4]; 3]) -> [u128; 2] {
+	super::sliced::reduce_sliced(t, ghash::soft64::reduce, ghash::soft64::mul_inv_x)
 }
 
 /// Square packed GHASH² elements in sliced representation using soft64 arithmetic.
@@ -75,6 +96,19 @@ mod tests {
 			a in any::<[u128; 2]>(),
 		) {
 			test_square_equals_mul(a, mul_sliced, square_sliced, "GHASH²");
+		}
+
+		// Deferred reduction: accumulating the three raw products by XOR and calling reduce_sliced
+		// once equals summing the reduced products — the F2-linear property the inner-product
+		// benchmark relies on (the multiply-by-X⁻¹ is likewise deferred into reduce_sliced).
+		#[test]
+		fn test_ghash_sq_soft64_wide_deferred_reduction(
+			a1 in any::<[u128; 2]>(), b1 in any::<[u128; 2]>(),
+			a2 in any::<[u128; 2]>(), b2 in any::<[u128; 2]>(),
+		) {
+			let acc = <[[u64; 4]; 3]>::xor(mul_wide_sliced(a1, b1), mul_wide_sliced(a2, b2));
+			let sum = <[u128; 2]>::xor(mul_sliced(a1, b1), mul_sliced(a2, b2));
+			prop_assert_eq!(reduce_sliced(acc), sum);
 		}
 	}
 }

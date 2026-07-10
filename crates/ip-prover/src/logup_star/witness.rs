@@ -14,7 +14,6 @@ use std::iter;
 use binius_field::{BinaryField, Divisible, Field, PackedField, util::powers};
 use binius_math::{FieldBuffer, multilinear::eq::scaled_eq_ind_partial_eval};
 use binius_utils::rayon::prelude::*;
-use itertools::izip;
 
 use super::prove::Looker;
 
@@ -51,8 +50,21 @@ where
 	assert!(!lookers.is_empty(), "at least one looker is required");
 	let n = lookers[0].eval_point.len();
 
-	let numerators = izip!(lookers, powers(gamma))
-		.map(|(looker, power)| {
+	// The scale for looker j is gamma^j.
+	// The powers chain is sequential: each power depends on the last.
+	// So the scales are materialized once here, ahead of the parallel region.
+	let scales = powers(gamma).take(lookers.len()).collect::<Vec<_>>();
+
+	// Build one numerator per looker, fanned out across lookers.
+	// Why fan out: the per-looker expansion is itself parallel.
+	//   But it under-saturates the machine at moderate n.
+	//   Spreading the lookers over the cores fills them.
+	// Invariant: the parallel build writes results back in looker order.
+	//   So numerator j stays gamma^j * eq_{r_j}.
+	let numerators = (0..lookers.len())
+		.into_par_iter()
+		.map(|j| {
+			let looker = &lookers[j];
 			assert_eq!(
 				looker.eval_point.len(),
 				n,
@@ -68,7 +80,7 @@ where
 			// Looker j's numerator is gamma^j * eq_{r_j}.
 			// Seeding the expansion with gamma^j folds the scale into the tensor product.
 			// That keeps it to one pass over one 2^n buffer.
-			scaled_eq_ind_partial_eval::<P>(looker.eval_point, power)
+			scaled_eq_ind_partial_eval::<P>(looker.eval_point, scales[j])
 		})
 		.collect::<Vec<_>>();
 

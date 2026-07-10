@@ -6,6 +6,7 @@
 //! where a tuple `(x, y, z)` corresponds to a tuple `(x/z^2, y/z^3)` in affine form.
 mod common;
 mod curve;
+mod endosplit;
 mod point;
 
 #[cfg(test)]
@@ -13,4 +14,5 @@ mod tests;
 
 pub use common::{N_LIMBS, coord_lambda, coord_zero};
 pub use curve::Secp256k1;
+pub use endosplit::Secp256k1EndosplitHint;
 pub use point::{Secp256k1Affine, select};

@@ -2,12 +2,7 @@
 //! Modular division hint implementation
 
 use binius_core::Word;
-
-use super::Hint;
-use crate::{
-	compiler::{CircuitBuilder, Wire},
-	util::num_biguint_from_u64_limbs,
-};
+use binius_frontend::{CircuitBuilder, Wire, hints::Hint, util::num_biguint_from_u64_limbs};
 
 /// ModDivide hint implementation.
 ///

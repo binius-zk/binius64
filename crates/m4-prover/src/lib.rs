@@ -6,10 +6,8 @@
 mod bitand;
 mod prove;
 mod shift;
-mod value_table;
 mod value_table2;
 
 pub use bitand::BatchAndCheckWitness;
 pub use prove::Prover;
-pub use value_table::{PopulateInstanceError, ValueTable};
 pub use value_table2::{Batch2WitnessFiller, ValueTable2};
