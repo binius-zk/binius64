@@ -6,8 +6,8 @@
 mod bitand;
 mod prove;
 mod shift;
-mod value_table2;
+mod value_table;
 
 pub use bitand::BatchAndCheckWitness;
 pub use prove::Prover;
-pub use value_table2::{Batch2WitnessFiller, ValueTable2};
+pub use value_table::{BatchWitnessFiller, ValueTable};

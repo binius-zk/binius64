@@ -28,7 +28,7 @@ use binius_prover::{
 use binius_utils::{checked_arithmetics::log2_strict_usize, rayon::prelude::*};
 use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 
-use crate::ValueTable2;
+use crate::ValueTable;
 
 /// The number of variables in each "g" (and "h") multilinear of phase 1: one 6-bit shift-amount
 /// axis and one 6-bit bit-position axis.
@@ -78,7 +78,7 @@ pub type FoldedWord<F> = [F; WORD_SIZE_BITS];
 /// # Panics
 ///
 /// Panics if `r_rho.len()` does not equal the batch dimension.
-pub fn fold_instances<F, P>(table: &ValueTable2, r_rho: &[F]) -> FieldBuffer<P>
+pub fn fold_instances<F, P>(table: &ValueTable, r_rho: &[F]) -> FieldBuffer<P>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -299,7 +299,7 @@ mod crc64 {
 	use binius_core::word::Word;
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
 
-	use crate::ValueTable2;
+	use crate::ValueTable;
 
 	/// CRC-64/GO-ISO parameters.
 	///
@@ -398,12 +398,9 @@ mod crc64 {
 	/// Each instance's four message words are the corresponding tuple.
 	/// Circuit evaluation derives the rest.
 	/// The circuit has no inout wires, so it is admissible in the wire-major table.
-	pub fn populate_crc64_witness(
-		c: &Crc64Circuit,
-		inputs: &[[u64; N_INPUT_WORDS]],
-	) -> ValueTable2 {
+	pub fn populate_crc64_witness(c: &Crc64Circuit, inputs: &[[u64; N_INPUT_WORDS]]) -> ValueTable {
 		let log_instances = inputs.len().ilog2() as usize;
-		ValueTable2::populate(&c.circuit, log_instances, |i, filler| {
+		ValueTable::populate(&c.circuit, log_instances, |i, filler| {
 			for (wire, &w) in c.input.iter().zip(&inputs[i]) {
 				filler[*wire] = Word(w);
 			}
@@ -574,7 +571,7 @@ mod tests {
 	// r_x || r_rho. The columns are instance-major, so r_x (low) indexes the constraint within an
 	// instance and r_rho (high) indexes the instance.
 	fn evaluate_and_witness<P: PackedField<Scalar = B128>>(
-		table: &ValueTable2,
+		table: &ValueTable,
 		constants: &[Word],
 		and_constraints: &[AndConstraint],
 		domain_subspace: &BinarySubspace<B128>,
@@ -600,7 +597,7 @@ mod tests {
 	// This lets the public and hidden segments be folded separately, matching how `build_g_parts`
 	// consumes one segment at a time.
 	fn fold_words_over_instances(
-		table: &ValueTable2,
+		table: &ValueTable,
 		constants: &[Word],
 		r_rho: &[B128],
 		words: std::ops::Range<usize>,

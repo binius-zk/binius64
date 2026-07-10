@@ -1,5 +1,5 @@
 // Copyright 2026 The Binius Developers
-//! Witness-generation benchmark for [`ValueTable2`], serial and parallel.
+//! Witness-generation benchmark for [`ValueTable`], serial and parallel.
 //!
 //! The circuit applies one Keccak-f1600 permutation to a 25-word state. The state words are
 //! witness inputs and the permuted output words are force-committed, so the circuit has no inout
@@ -10,7 +10,7 @@ use std::array;
 use binius_circuits::keccak::permutation::Permutation;
 use binius_core::word::Word;
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
-use binius_m4_prover::ValueTable2;
+use binius_m4_prover::ValueTable;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 /// The base-2 logarithm of the instance count: 2^13 = 8192 instances.
@@ -19,7 +19,7 @@ const LOG_INSTANCES: usize = 13;
 /// The number of 64-bit lanes in a Keccak-f1600 state.
 const STATE_LANES: usize = 25;
 
-/// Candidate instance-stripe widths for parallel [`ValueTable2`] witness generation.
+/// Candidate instance-stripe widths for parallel [`ValueTable`] witness generation.
 const STRIPE_WIDTHS: [usize; 3] = [256, 512, 1024];
 
 /// Builds a circuit that applies one Keccak-f1600 permutation to a witness-input state and
@@ -55,9 +55,9 @@ fn bench_keccak_witness_gen(c: &mut Criterion) {
 	// Each iteration generates the witness for 8192 instances, so keep the sample count modest.
 	group.sample_size(10);
 
-	group.bench_function("value_table2", |b| {
+	group.bench_function("value_table", |b| {
 		b.iter(|| {
-			ValueTable2::populate(&circuit, LOG_INSTANCES, |instance, w| {
+			ValueTable::populate(&circuit, LOG_INSTANCES, |instance, w| {
 				for lane in 0..STATE_LANES {
 					w[input[lane]] = input_word(instance, lane);
 				}
@@ -67,9 +67,9 @@ fn bench_keccak_witness_gen(c: &mut Criterion) {
 	});
 
 	for stripe_width in STRIPE_WIDTHS {
-		group.bench_function(format!("value_table2_parallel_{stripe_width}"), |b| {
+		group.bench_function(format!("value_table_parallel_{stripe_width}"), |b| {
 			b.iter(|| {
-				ValueTable2::populate_parallel_with_stripe_width(
+				ValueTable::populate_parallel_with_stripe_width(
 					&circuit,
 					LOG_INSTANCES,
 					stripe_width,
