@@ -16,7 +16,14 @@ use binius_verifier::{
 	protocols::bitand::AndCheckOutput,
 };
 
-use crate::ValueTable;
+use crate::ValueTable2;
+
+/// Instance columns processed by one parallel witness-assembly task.
+///
+/// A task streams contiguous sub-rows of this many instances out of the wire-major table.
+/// Wide enough that each row read amortizes over many instances.
+/// Small enough to spread across cores on realistic batch sizes.
+const STRIPE_WIDTH: usize = 256;
 
 /// The operand columns of the BitAnd check for a whole batch of instances.
 ///
@@ -57,28 +64,42 @@ pub struct BatchAndCheckWitness {
 }
 
 impl BatchAndCheckWitness {
-	/// Builds the batched BitAnd witness from a populated batch value table.
+	/// Builds the batched BitAnd witness from a populated wire-major batch table.
 	///
-	/// Every AND constraint is evaluated against every instance's committed words.
-	/// This produces `K * n_and` rows, laid out instance-major.
+	/// Every AND constraint is evaluated against every instance.
+	/// This produces `K * n_and` rows laid out instance-major.
+	/// Row `instance * n_and + j` is constraint `j` of that instance.
 	///
-	/// An operand is a XOR of shifted committed values.
-	/// Its evaluation is the same fold the single-instance check uses, over a different word slice.
+	/// An operand is a XOR of shifted committed values:
+	///
+	/// ```text
+	/// operand(instance) = XOR_t shift_t( value(index_t, instance) )
+	/// ```
+	///
+	/// A value index splits by the witness offset:
+	/// - below it: a public word, the same constant in every instance.
+	/// - at or above it: a hidden word read from the table.
+	///
+	/// One index's hidden words across all instances form one contiguous row of the buffer.
+	/// So a term streams that row, XOR-ing its shifted words into the column.
+	/// This replaces the per-instance gather the instance-major layout required.
 	///
 	/// # Arguments
 	///
-	/// - `table`: the populated batch witness, one block of committed words per instance.
+	/// - `table`: the wire-major batch witness holding every instance's hidden words.
+	/// - `constants`: the circuit's constant words, shared by every instance.
 	/// - `and_constraints`: the per-instance AND constraints, shared by every instance.
 	///
 	/// Pass constraints from a prepared constraint system, so their count is a power of two.
 	///
-	/// The constraints reference only committed values, never the dropped scratch tail.
-	/// So each instance's committed-word block holds everything an operand can read.
-	///
 	/// # Panics
 	///
 	/// Panics if the constraint count or the instance count is not a power of two.
-	pub fn build(table: &ValueTable, and_constraints: &[AndConstraint]) -> Self {
+	pub fn build(
+		table: &ValueTable2,
+		constants: &[Word],
+		and_constraints: &[AndConstraint],
+	) -> Self {
 		// Rows per instance, and total rows across the batch.
 		let n_and = and_constraints.len();
 		let n_instances = table.n_instances();
@@ -95,22 +116,39 @@ impl BatchAndCheckWitness {
 		let mut b = vec![Word::ZERO; total];
 		let mut c = vec![Word::ZERO; total];
 
-		// Fill one instance's contiguous block of rows per parallel task.
-		// Each chunk is exactly one instance.
-		// The blocks are disjoint, so the instances never contend for the same rows.
-		a.par_chunks_mut(n_and)
-			.zip(b.par_chunks_mut(n_and))
-			.zip(c.par_chunks_mut(n_and))
-			.enumerate()
-			.for_each(|(instance, ((a_block, b_block), c_block))| {
-				// This instance's committed words; every operand index lands inside this slice.
-				let words = table.instance(instance);
+		// The witness offset splits public words (below) from hidden rows (at or above).
+		let offset = table.layout().offset_witness;
+		let log_instances = table.log_instances();
+		let data = table.as_words();
 
-				// Evaluate the three operands of each constraint against this instance's words.
+		// Each task owns a contiguous stripe of instances.
+		// Its output blocks are those instances' rows of the three instance-major columns.
+		// Reads stay contiguous: within a stripe, one hidden row is a contiguous sub-slice.
+		let block = STRIPE_WIDTH.min(n_instances) * n_and;
+		a.par_chunks_mut(block)
+			.zip(b.par_chunks_mut(block))
+			.zip(c.par_chunks_mut(block))
+			.enumerate()
+			.for_each(|(stripe, ((a_block, b_block), c_block))| {
+				// The first global instance of this stripe.
+				// The instances in this stripe, derived from the block length.
+				let base = stripe * STRIPE_WIDTH;
+				let width = a_block.len() / n_and;
+
 				for (j, constraint) in and_constraints.iter().enumerate() {
-					a_block[j] = eval_operand_words(words, &constraint.a);
-					b_block[j] = eval_operand_words(words, &constraint.b);
-					c_block[j] = eval_operand_words(words, &constraint.c);
+					let ctx = OperandContext {
+						data,
+						constants,
+						offset,
+						log_instances,
+						base,
+						width,
+						n_and,
+						j,
+					};
+					ctx.accumulate(a_block, &constraint.a);
+					ctx.accumulate(b_block, &constraint.b);
+					ctx.accumulate(c_block, &constraint.c);
 				}
 			});
 
@@ -218,23 +256,65 @@ impl BatchAndCheckWitness {
 	}
 }
 
-/// Evaluates one operand against a single instance's committed words.
+/// The placement of one operand column for one constraint over one instance stripe.
 ///
-/// An operand is a XOR of shifted values:
-///
-/// ```text
-/// operand(words) = XOR_t  shift_t( words[index_t] )
-/// ```
-///
-/// The words are read straight from the instance's slice.
-/// So the batch never rebuilds one value vector per instance.
-/// Every operand index is below the committed length, so indexing the slice stays in range.
-#[inline]
-fn eval_operand_words(words: &[Word], operand: &[ShiftedValueIndex]) -> Word {
-	operand.iter().fold(Word::ZERO, |acc, sv| {
-		let word = words[sv.value_index.0 as usize];
-		acc ^ sv.shift_variant.apply(word, sv.amount as usize)
-	})
+/// It names where to read source words: the wire-major table and the constant bank.
+/// It names where to write them: one constraint's column across the stripe's instances.
+struct OperandContext<'a> {
+	/// The wire-major hidden words: row `r` spans all instances of hidden value `offset + r`.
+	data: &'a [Word],
+	/// The circuit's constant words, shared by every instance.
+	constants: &'a [Word],
+	/// The value index at which hidden words begin.
+	/// Public words lie below it.
+	offset: usize,
+	/// The base-2 logarithm of the instance count, i.e. the stride of one hidden row.
+	log_instances: usize,
+	/// The first global instance of this stripe.
+	base: usize,
+	/// The number of instances this stripe spans.
+	width: usize,
+	/// The number of constraints, i.e. the stride between one instance's columns and the next.
+	n_and: usize,
+	/// The constraint index whose column this operand fills.
+	j: usize,
+}
+
+impl OperandContext<'_> {
+	/// Accumulates one operand into its constraint's column across this stripe's instances.
+	///
+	/// For each term the operand XORs, the shifted source word is added into every instance:
+	///
+	/// ```text
+	/// out[local * n_and + j] ^= shift_t( value(index_t, base + local) )   for local in 0..width
+	/// ```
+	///
+	/// A hidden term streams one contiguous sub-row.
+	/// A public term broadcasts one shared word.
+	fn accumulate(&self, out: &mut [Word], operand: &[ShiftedValueIndex]) {
+		for sv in operand {
+			let idx = sv.value_index.0 as usize;
+			let amount = sv.amount as usize;
+			if idx >= self.offset {
+				// Hidden word: this stripe's slice of row `idx - offset` is contiguous.
+				let row = idx - self.offset;
+				let src = &self.data[(row << self.log_instances) + self.base..][..self.width];
+				for (local, &word) in src.iter().enumerate() {
+					let slot = &mut out[local * self.n_and + self.j];
+					*slot = *slot ^ sv.shift_variant.apply(word, amount);
+				}
+			} else {
+				// Public word: the same constant enters every instance of this stripe.
+				// Indices past the constant bank are layout padding, read as zero.
+				let word = self.constants.get(idx).copied().unwrap_or(Word::ZERO);
+				let shifted = sv.shift_variant.apply(word, amount);
+				for local in 0..self.width {
+					let slot = &mut out[local * self.n_and + self.j];
+					*slot = *slot ^ shifted;
+				}
+			}
+		}
+	}
 }
 
 #[cfg(test)]
@@ -296,9 +376,15 @@ mod tests {
 		cs.and_constraints
 	}
 
-	// A circuit asserting `z == (x & y) ^ w`, over four public words.
+	// The circuit's constant words, shared by every instance.
+	// This circuit declares none, so the slice is empty; operands read only hidden words.
+	fn constants(c: &AndCircuit) -> &[Word] {
+		&c.circuit.constraint_system().constants
+	}
+
+	// A circuit asserting `z == (x & y) ^ w`, over four witness words.
 	//
-	//     inputs : x, y, w, z   (all inout)
+	//     inputs : x, y, w, z   (all witness — the wire-major table admits no inout)
 	//     gate   : and = x & y
 	//     assert : and ^ w == z
 	struct AndCircuit {
@@ -311,10 +397,10 @@ mod tests {
 
 	fn and_circuit() -> AndCircuit {
 		let builder = CircuitBuilder::new();
-		let x = builder.add_inout();
-		let y = builder.add_inout();
-		let w = builder.add_inout();
-		let z = builder.add_inout();
+		let x = builder.add_witness();
+		let y = builder.add_witness();
+		let w = builder.add_witness();
+		let z = builder.add_witness();
 		let and = builder.band(x, y);
 		let lhs = builder.bxor(and, w);
 		builder.assert_eq("z_eq_x_and_y_xor_w", lhs, z);
@@ -334,9 +420,9 @@ mod tests {
 	//
 	// `w` is an arbitrary mask that only feeds the XOR, never the AND.
 	// So a tuple like `(1, 3, 7)` means `x=1, y=3, w=7`, not `1 & 3 = 7`.
-	fn populate_table(c: &AndCircuit, inputs: &[(u64, u64, u64)]) -> ValueTable {
+	fn populate_table(c: &AndCircuit, inputs: &[(u64, u64, u64)]) -> ValueTable2 {
 		let log_instances = inputs.len().ilog2() as usize;
-		ValueTable::populate(&c.circuit, log_instances, |i, filler| {
+		ValueTable2::populate(&c.circuit, log_instances, |i, filler| {
 			let (x, y, w) = inputs[i];
 			filler[c.x] = Word(x);
 			filler[c.y] = Word(y);
@@ -377,7 +463,7 @@ mod tests {
 		let table = populate_table(&c, &inputs);
 
 		let and_constraints = &table_constraints(&c);
-		let witness = BatchAndCheckWitness::build(&table, and_constraints);
+		let witness = BatchAndCheckWitness::build(&table, constants(&c), and_constraints);
 
 		// Shape: K * n_and rows, with K = 4.
 		let n_and = and_constraints.len();
@@ -388,7 +474,7 @@ mod tests {
 		// Invariant: row `instance * n_and + j` is constraint `j` of that instance.
 		// Each instance's block equals the single-instance reference for its inputs.
 		for instance in 0..table.n_instances() {
-			let vv = table.instance_value_vec(instance);
+			let vv = table.instance_value_vec(instance, constants(&c));
 			let (a_ref, b_ref, c_ref) = reference_rows(and_constraints, &vv);
 
 			let start = instance * n_and;
@@ -404,7 +490,7 @@ mod tests {
 
 		// Fixture state: 4 satisfying instances, each tuple `(x, y, w)`.
 		let table = populate_table(&c, &[(1, 3, 7), (5, 6, 0), (9, 12, 0xFF), (0xF0, 0x0F, 1)]);
-		let witness = BatchAndCheckWitness::build(&table, &table_constraints(&c));
+		let witness = BatchAndCheckWitness::build(&table, constants(&c), &table_constraints(&c));
 
 		// The single AND constraint is `and = x & y`, so each row is `A=x`, `B=y`, `C=x&y`.
 		// A satisfying witness therefore makes `A & B == C` hold on every row.
@@ -422,10 +508,10 @@ mod tests {
 		// Fixture state: log_instances = 0 → exactly one instance (K = 1).
 		let table = populate_table(&c, &[(0xABCD, 0x0F0F, 0x55)]);
 		let and_constraints = table_constraints(&c);
-		let witness = BatchAndCheckWitness::build(&table, &and_constraints);
+		let witness = BatchAndCheckWitness::build(&table, constants(&c), &and_constraints);
 
 		// The degenerate batch reproduces the single-instance BitAnd columns exactly.
-		let vv = table.instance_value_vec(0);
+		let vv = table.instance_value_vec(0, constants(&c));
 		let (a_ref, b_ref, c_ref) = reference_rows(&and_constraints, &vv);
 		assert_eq!(witness.a(), a_ref.as_slice());
 		assert_eq!(witness.b(), b_ref.as_slice());
@@ -448,7 +534,7 @@ mod tests {
 		//
 		// The operands are empty, so the panic is the count check, never an out-of-range index.
 		let three = vec![AndConstraint::default(); 3];
-		let _ = BatchAndCheckWitness::build(&table, &three);
+		let _ = BatchAndCheckWitness::build(&table, constants(&c), &three);
 	}
 
 	proptest! {
@@ -467,10 +553,10 @@ mod tests {
 
 			let and_constraints = table_constraints(&c);
 			let n_and = and_constraints.len();
-			let witness = BatchAndCheckWitness::build(&table, &and_constraints);
+			let witness = BatchAndCheckWitness::build(&table, constants(&c),&and_constraints);
 
 			for instance in 0..table.n_instances() {
-				let vv = table.instance_value_vec(instance);
+				let vv = table.instance_value_vec(instance, constants(&c));
 				let (a_ref, b_ref, c_ref) = reference_rows(&and_constraints, &vv);
 
 				let start = instance * n_and;
@@ -487,6 +573,34 @@ mod tests {
 	}
 
 	#[test]
+	fn build_spans_multiple_instance_stripes() {
+		let c = and_circuit();
+
+		// Fixture state: 2 * STRIPE_WIDTH instances, so the build spans more than one stripe.
+		// The second stripe starts at a nonzero base offset.
+		// That exercises the stripe index arithmetic the small-batch tests never reach.
+		let n = 2 * STRIPE_WIDTH;
+		let inputs: Vec<(u64, u64, u64)> = (0..n as u64)
+			.map(|i| (i.wrapping_mul(0x9e37_79b9), i ^ 0xdead, i.rotate_left(7)))
+			.collect();
+		let table = populate_table(&c, &inputs);
+		let and_constraints = table_constraints(&c);
+		let n_and = and_constraints.len();
+		let witness = BatchAndCheckWitness::build(&table, constants(&c), &and_constraints);
+
+		// Every instance's block equals its independent single-instance reference.
+		// This includes instances at or beyond STRIPE_WIDTH, which only the second stripe produces.
+		for instance in 0..table.n_instances() {
+			let vv = table.instance_value_vec(instance, constants(&c));
+			let (a_ref, b_ref, c_ref) = reference_rows(&and_constraints, &vv);
+			let start = instance * n_and;
+			assert_eq!(&witness.a()[start..start + n_and], a_ref.as_slice());
+			assert_eq!(&witness.b()[start..start + n_and], b_ref.as_slice());
+			assert_eq!(&witness.c()[start..start + n_and], c_ref.as_slice());
+		}
+	}
+
+	#[test]
 	fn small_batch_round_trips_with_only_pinned_challenges() {
 		let c = and_circuit();
 
@@ -495,7 +609,7 @@ mod tests {
 		// So every coordinate is pinned and no large-field challenge is drawn.
 		let table = populate_table(&c, &[(1, 3, 7), (5, 6, 0), (9, 12, 0xFF), (0xF0, 0x0F, 1)]);
 		let and_constraints = table_constraints(&c);
-		let witness = BatchAndCheckWitness::build(&table, &and_constraints);
+		let witness = BatchAndCheckWitness::build(&table, constants(&c), &and_constraints);
 		let log_total = checked_log_2(witness.a().len());
 
 		// Prover and verifier agree on the reduced claim over the batched columns.
@@ -521,7 +635,7 @@ mod tests {
 			.collect();
 		let table = populate_table(&c, &inputs);
 		let and_constraints = table_constraints(&c);
-		let witness = BatchAndCheckWitness::build(&table, &and_constraints);
+		let witness = BatchAndCheckWitness::build(&table, constants(&c), &and_constraints);
 		let log_total = checked_log_2(witness.a().len());
 
 		// Produce a faithful proof.
@@ -561,7 +675,7 @@ mod tests {
 			let c = and_circuit();
 			let table = populate_table(&c, &inputs);
 			let and_constraints = table_constraints(&c);
-			let witness = BatchAndCheckWitness::build(&table, &and_constraints);
+			let witness = BatchAndCheckWitness::build(&table, constants(&c),&and_constraints);
 
 			// Keep the columns so the claimed evals can be checked against them.
 			let a_cols = witness.a().to_vec();
