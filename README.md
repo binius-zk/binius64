@@ -37,7 +37,7 @@ lto = "thin"
 
 ### Running Examples
 
-The `prover/examples/` directory contains example circuits, which you can run using the [CLI framework](https://www.binius.xyz/building/getting-started/cli).
+The `prover/examples/` directory contains example circuits, which you can run using the [CLI framework](https://www.binius.xyz/building/tutorials).
 
 For example, to run an example proving a SHA-512 preimage of a fixed-length 65536-byte message:
 
