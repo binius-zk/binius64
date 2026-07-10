@@ -51,44 +51,53 @@ pub fn mul(x: u64, y: u64) -> u64 {
 	reduce(mul_wide(x, y))
 }
 
-/// Multiplies two elements of GF(2^128), the degree-2 extension of the Monbijou field.
+/// Widening (unreduced) degree-2 Monbijou multiply: the three raw base-field Karatsuba products
+/// `[t0, t1, t2] = [a0·b0, (a0+a1)·(b0+b1), a1·b1]` of two GF(2^128) elements, each packed into a
+/// `u128` with `a0` in the low 64 bits and `a1` in the high 64 bits (matching
+/// [`super::mul_128b_clmul`]). Each product is an unreduced `[low, high]` limb pair.
 ///
-/// The element `a0 + a1·Y` is packed into a `u128` with `a0` in the low 64 bits and `a1` in the
-/// high 64 bits, matching [`super::mul_128b_clmul`]. The extension is `Y^2 = XY + 1`, so for
-/// `a = a0 + a1·Y` and `b = b0 + b1·Y`:
-///
-/// ```text
-/// coeff 0 = a0·b0 + a1·b1
-/// coeff 1 = a0·b1 + a1·b0 + X·(a1·b1)
-/// ```
-///
-/// with Karatsuba recovering the cross term `a0·b1 + a1·b0` as `t1 + t0 + t2`. The three base-field
-/// products are kept unreduced and the multiply-by-X is a plain shift of the unreduced `a1·b1`, so
-/// only the two output coefficients need reducing — two reductions instead of three, matching the
-/// CLMUL path's deferred reduction.
+/// No combination, scaling, or reduction happens here — those are all F2-linear and deferred to
+/// [`reduce_128b`], so an inner product XOR-accumulates the three products and reduces once.
 #[inline]
-pub fn mul_128b(x: u128, y: u128) -> u128 {
+pub fn mul_wide_128b(x: u128, y: u128) -> [[u64; 2]; 3] {
 	let (x0, x1) = (x as u64, (x >> 64) as u64);
 	let (y0, y1) = (y as u64, (y >> 64) as u64);
+	[
+		mul_wide(x0, y0),           // a0·b0
+		mul_wide(x0 ^ x1, y0 ^ y1), // (a0 + a1)·(b0 + b1)
+		mul_wide(x1, y1),           // a1·b1
+	]
+}
 
-	// Unreduced 128-bit carry-less products, as [low, high] limbs.
-	let [t0l, t0h] = mul_wide(x0, y0); // a0·b0
-	let [t2l, t2h] = mul_wide(x1, y1); // a1·b1
-	let [t1l, t1h] = mul_wide(x0 ^ x1, y0 ^ y1); // (a0 + a1)·(b0 + b1)
-
-	// coeff 0 = a0·b0 + a1·b1; reduction is linear, so summing before reducing gives one reduction.
-	let z0 = reduce([t0l ^ t2l, t0h ^ t2h]);
-
-	// coeff 1 = (a0·b1 + a1·b0) + X·(a1·b1). Karatsuba gives the cross term as t1 + t0 + t2;
-	// X·(a1·b1) is the unreduced a1·b1 shifted up one bit (its degree is ≤ 126, so the shift stays
-	// in 128 bits).
-	let cross_lo = t1l ^ t0l ^ t2l;
-	let cross_hi = t1h ^ t0h ^ t2h;
-	let xt2_lo = t2l << 1;
-	let xt2_hi = (t2h << 1) | (t2l >> 63);
-	let z1 = reduce([cross_lo ^ xt2_lo, cross_hi ^ xt2_hi]);
-
+/// Reduce the three raw products from [`mul_wide_128b`] into a GF(2^128) element (`u128`).
+///
+/// The extension is `Y^2 = XY + 1`, so for `a = a0 + a1·Y` and `b = b0 + b1·Y`:
+///
+/// ```text
+/// coeff 0 = a0·b0 + a1·b1                 = t0 + t2
+/// coeff 1 = a0·b1 + a1·b0 + X·(a1·b1)     = (t1 + t0 + t2) + X·t2
+/// ```
+///
+/// with Karatsuba recovering the cross term `a0·b1 + a1·b0` as `t1 + t0 + t2`. The combinations and
+/// the multiply-by-X (a plain shift of the unreduced `t2`, whose degree ≤ 126 leaves room) happen
+/// here on the unreduced values, so only the two output coefficients are reduced — two reductions
+/// instead of three.
+#[inline]
+pub fn reduce_128b([t0, t1, t2]: [[u64; 2]; 3]) -> u128 {
+	// `[u64; 2]` is itself an `Underlier` (blanket array impl), so `Underlier::xor` adds the
+	// unreduced product pairs component-wise.
+	let z0 = reduce(Underlier::xor(t0, t2));
+	let cross = Underlier::xor(Underlier::xor(t1, t0), t2);
+	let z1 = reduce(Underlier::xor(cross, mul_x_wide(t2)));
 	(z0 as u128) | ((z1 as u128) << 64)
+}
+
+/// Multiplies two elements of GF(2^128), the degree-2 extension of the Monbijou field.
+///
+/// Composes [`mul_wide_128b`] with [`reduce_128b`]; both are inlined.
+#[inline]
+pub fn mul_128b(x: u128, y: u128) -> u128 {
+	reduce_128b(mul_wide_128b(x, y))
 }
 
 /// Widening (unreduced) degree-3 Monbijou multiply: the six raw base-field Karatsuba products
@@ -155,7 +164,7 @@ pub fn mul_192b(a: [u64; 3], b: [u64; 3]) -> [u64; 3] {
 mod tests {
 	use proptest::prelude::*;
 
-	use super::{mul, mul_128b, mul_192b, mul_wide, reduce};
+	use super::{mul, mul_128b, mul_192b, mul_wide, mul_wide_128b, reduce, reduce_128b};
 	use crate::{
 		monbijou::MONBIJOU_128B_ONE,
 		test_utils::multiplication_tests::{
@@ -211,6 +220,17 @@ mod tests {
 		#[test]
 		fn ext_mul_identity(a in any::<u128>()) {
 			prop_assert_eq!(mul_128b(a, MONBIJOU_128B_ONE), a);
+		}
+
+		// The 128b reduction is F2-linear: accumulating two widening products by XOR and reducing
+		// once equals reducing each (a field multiply) and summing (field addition is XOR).
+		#[test]
+		fn ext128_wide_mul_deferred_reduction(
+			a1 in any::<u128>(), b1 in any::<u128>(),
+			a2 in any::<u128>(), b2 in any::<u128>(),
+		) {
+			let acc = crate::Underlier::xor(mul_wide_128b(a1, b1), mul_wide_128b(a2, b2));
+			prop_assert_eq!(reduce_128b(acc), mul_128b(a1, b1) ^ mul_128b(a2, b2));
 		}
 
 		// The degree-3 extension GF(2^192): field axioms ([u64; 3] is an Underlier via the blanket
