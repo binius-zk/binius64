@@ -299,7 +299,7 @@ mod crc64 {
 	use binius_core::word::Word;
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
 
-	use crate::{ValueTable, ValueTable2};
+	use crate::ValueTable2;
 
 	/// CRC-64/GO-ISO parameters.
 	///
@@ -392,25 +392,13 @@ mod crc64 {
 		}
 	}
 
-	/// Populates a batch value table with one instance per input tuple.
-	///
-	/// The instance count is the number of tuples, which must be a power of two. Each instance's
-	/// four message words are the corresponding tuple, and circuit evaluation derives the rest.
-	pub fn populate_crc64_witness(c: &Crc64Circuit, inputs: &[[u64; N_INPUT_WORDS]]) -> ValueTable {
-		let log_instances = inputs.len().ilog2() as usize;
-		ValueTable::populate(&c.circuit, log_instances, |i, filler| {
-			for (wire, &w) in c.input.iter().zip(&inputs[i]) {
-				filler[*wire] = Word(w);
-			}
-		})
-		.unwrap()
-	}
-
 	/// Populates a wire-major batch table with one instance per input tuple.
 	///
-	/// This is the [`ValueTable2`] counterpart of [`populate_crc64_witness`], for the paths that
-	/// fold over the instance axis. The circuit has no inout wires, so it is admissible here.
-	pub fn populate_crc64_witness2(
+	/// The instance count is the number of tuples, which must be a power of two.
+	/// Each instance's four message words are the corresponding tuple.
+	/// Circuit evaluation derives the rest.
+	/// The circuit has no inout wires, so it is admissible in the wire-major table.
+	pub fn populate_crc64_witness(
 		c: &Crc64Circuit,
 		inputs: &[[u64; N_INPUT_WORDS]],
 	) -> ValueTable2 {
@@ -445,7 +433,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::{crc64::*, *};
-	use crate::{BatchAndCheckWitness, ValueTable};
+	use crate::BatchAndCheckWitness;
 
 	#[test]
 	fn circuit_matches_reference() {
@@ -490,22 +478,24 @@ mod tests {
 			.collect();
 
 		let table = populate_crc64_witness(&c, &inputs);
+		let constants = &c.circuit.constraint_system().constants;
 
-		// Shape: 2^10 instances, one committed witness per instance.
-		let stride = c
+		// Shape: 2^10 instances, one hidden-word row per committed word.
+		let n_hidden_words = c
 			.circuit
 			.constraint_system()
 			.value_vec_layout
-			.combined_len();
+			.n_hidden_words;
 		assert_eq!(table.log_instances(), log_instances);
 		assert_eq!(table.n_instances(), n_instances);
-		assert_eq!(table.instance_stride(), stride);
+		assert_eq!(table.n_hidden_words(), n_hidden_words);
+		assert_eq!(table.as_words().len(), n_hidden_words * n_instances);
 
 		// Spot-check a few instances: each reconstructs to a valid single-instance witness whose
 		// output word is the reference CRC of its inputs.
 		let output_index = c.circuit.witness_index(c.output);
 		for i in [0, 1, 42, n_instances - 1] {
-			let vv = table.instance_value_vec(i);
+			let vv = table.instance_value_vec(i, constants);
 			verify_constraints(c.circuit.constraint_system(), &vv)
 				.unwrap_or_else(|e| panic!("instance {i} failed verification: {e}"));
 			assert_eq!(vv[output_index], Word(crc64_iso_reference(&inputs[i])));
@@ -537,7 +527,7 @@ mod tests {
 			let inputs: Vec<[u64; N_INPUT_WORDS]> = (0..n_instances)
 				.map(|_| std::array::from_fn(|_| rng.random()))
 				.collect();
-			let table = populate_crc64_witness2(&c, &inputs);
+			let table = populate_crc64_witness(&c, &inputs);
 			let constants = &c.circuit.constraint_system().constants;
 
 			// The committed witness segment, whose word count fixes the word (x) axis.
@@ -584,14 +574,15 @@ mod tests {
 	// r_x || r_rho. The columns are instance-major, so r_x (low) indexes the constraint within an
 	// instance and r_rho (high) indexes the instance.
 	fn evaluate_and_witness<P: PackedField<Scalar = B128>>(
-		table: &ValueTable,
+		table: &ValueTable2,
+		constants: &[Word],
 		and_constraints: &[AndConstraint],
 		domain_subspace: &BinarySubspace<B128>,
 		r_z: B128,
 		r_x: &[B128],
 		r_rho: &[B128],
 	) -> [B128; 3] {
-		let witness = BatchAndCheckWitness::build(table, and_constraints);
+		let witness = BatchAndCheckWitness::build(table, constants, and_constraints);
 		let lagrange = lagrange_evals_scalars::<B128, B128>(domain_subspace, r_z);
 		let row_point: Vec<B128> = r_x.iter().chain(r_rho).copied().collect();
 		let operand_eval = |column: &[Word]| {
@@ -609,14 +600,17 @@ mod tests {
 	// This lets the public and hidden segments be folded separately, matching how `build_g_parts`
 	// consumes one segment at a time.
 	fn fold_words_over_instances(
-		table: &ValueTable,
+		table: &ValueTable2,
+		constants: &[Word],
 		r_rho: &[B128],
 		words: std::ops::Range<usize>,
 	) -> Vec<FoldedWord<B128>> {
 		let eq = eq_ind_partial_eval_scalars::<B128>(r_rho);
 		let mut folded = vec![[B128::ZERO; WORD_SIZE_BITS]; words.len()];
 		for (rho, &weight) in eq.iter().enumerate() {
-			for (word, out) in table.instance(rho)[words.clone()].iter().zip(&mut folded) {
+			// Reconstruct this instance independently of the fold, then fold its chosen word range.
+			let vv = table.instance_value_vec(rho, constants);
+			for (word, out) in vv.combined_witness()[words.clone()].iter().zip(&mut folded) {
 				for (b, out_b) in out.iter_mut().enumerate() {
 					if (word.0 >> b) & 1 == 1 {
 						*out_b += weight;
@@ -671,10 +665,8 @@ mod tests {
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 
 		// The hidden witness folded over instances (reshaped to one FoldedWord per word), and the
-		// public constants. The fold consumes the wire-major table; the bitand path below consumes
-		// the instance-major one. Both describe the same witness, built from the same inputs.
-		let table2 = populate_crc64_witness2(&c, &inputs);
-		let folded = fold_instances::<B128, P>(&table2, &r_rho);
+		// public constants.
+		let folded = fold_instances::<B128, P>(&table, &r_rho);
 		let scalars: Vec<B128> = folded.iter_scalars().collect();
 		let folded_witness: Vec<FoldedWord<B128>> = scalars
 			.chunks_exact(WORD_SIZE_BITS)
@@ -687,6 +679,7 @@ mod tests {
 		// intmul claim is the zero claim over an empty point.
 		let bitand_evals = evaluate_and_witness::<P>(
 			&table,
+			public_words,
 			&cs.and_constraints,
 			&domain_subspace,
 			r_z,
@@ -777,6 +770,7 @@ mod tests {
 			.map(|_| std::array::from_fn(|_| rng.random()))
 			.collect();
 		let table = populate_crc64_witness(&c, &inputs);
+		let constants = &c.circuit.constraint_system().constants;
 
 		let mut cs = c.circuit.constraint_system().clone();
 		cs.validate_and_prepare().unwrap();
@@ -793,16 +787,18 @@ mod tests {
 		// the same r_rho, so g and the claim agree on the instance point.
 		let bitand_evals = evaluate_and_witness::<P>(
 			&table,
+			constants,
 			&cs.and_constraints,
 			&domain_subspace,
 			r_z,
 			&r_x,
 			&r_rho,
 		);
+		// The hidden segment spans value indices `[offset_witness, combined_len)`.
 		let offset = table.layout().offset_witness;
-		let stride = table.instance_stride();
+		let combined = table.layout().combined_len();
 		let public_words = &cs.constants;
-		let hidden_folded = fold_words_over_instances(&table, &r_rho, offset..stride);
+		let hidden_folded = fold_words_over_instances(&table, constants, &r_rho, offset..combined);
 
 		// Prepare the operator data: lambda batches the three operand claims. The circuit has no
 		// MUL constraints, so the intmul claim is empty.
