@@ -2,18 +2,18 @@
 
 //! A CRC-64/GO-ISO circuit and reference implementation for building shift-heavy test witnesses.
 //!
-//! It is shared by the shift-reduction and constraint-reduction tests, both of which need a
-//! circuit whose AND-constraint operands carry real shifts.
+//! It is shared by the shift-reduction and constraint-reduction tests.
+//! Both need a circuit whose AND-constraint operands carry real shifts.
 
 use binius_core::word::Word;
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
 
 use crate::ValueTable2;
 
-/// CRC-64/GO-ISO parameters.
+/// The CRC-64/GO-ISO generator polynomial, in reflected form.
 ///
-/// The generator polynomial is `x^64 + x^4 + x^3 + x + 1`, normal form `0x1b`. Both input and
-/// output are reflected, so the polynomial enters the register in its bit-reversed form.
+/// The polynomial is `x^64 + x^4 + x^3 + x + 1`, normal form `0x1b`.
+/// Input and output are reflected, so it enters the register bit-reversed.
 const POLY_REFLECTED: u64 = 0xd800000000000000;
 /// The register is preset to all ones before absorbing the message.
 const INIT: u64 = 0xffffffffffffffff;
@@ -25,10 +25,13 @@ pub const N_INPUT_WORDS: usize = 4;
 
 /// Computes CRC-64/GO-ISO over `words`, absorbing bits least-significant-first.
 ///
-/// Each input word contributes its 64 bits in order from bit 0 up to bit 63, and the words are
-/// absorbed in index order. This is the reflected bitwise algorithm: for every message bit, the
-/// register's low bit is combined with the message bit, the register is shifted right by one,
-/// and the polynomial is conditionally mixed in.
+/// Each input word contributes its 64 bits in order from bit 0 up to bit 63.
+/// The words are absorbed in index order.
+///
+/// This is the reflected bitwise algorithm. For every message bit:
+/// - combine the register's low bit with the message bit;
+/// - shift the register right by one;
+/// - conditionally mix in the polynomial.
 ///
 /// The `Circuit` counterpart mirrors this loop gate for gate, so the two agree bit for bit.
 pub fn crc64_iso_reference(words: &[u64; N_INPUT_WORDS]) -> u64 {
@@ -48,9 +51,11 @@ pub fn crc64_iso_reference(words: &[u64; N_INPUT_WORDS]) -> u64 {
 
 /// A circuit computing CRC-64/GO-ISO over four private witness words.
 ///
-/// The four inputs are ordinary witness wires, not public inout wires, so the whole computation
-/// lives in the private witness. The output wire is force-committed: without an assertion or a
-/// public output reading it, dead-code elimination would otherwise prune the entire CRC.
+/// The four inputs are ordinary witness wires, not public inout wires.
+/// So the whole computation lives in the private witness.
+///
+/// The output wire is force-committed.
+/// Without an assertion or public output reading it, dead-code elimination would prune the CRC.
 pub struct Crc64Circuit {
 	pub circuit: Circuit,
 	pub input: [Wire; N_INPUT_WORDS],
