@@ -3,10 +3,7 @@
 
 use std::{array, borrow::Cow, iter};
 
-use binius_core::{
-	consts::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS, WORD_SIZE_BYTES},
-	word::Word,
-};
+use binius_core::word::Word;
 use binius_field::{
 	BinaryField, Field, PackedField,
 	linear_transformation::{
@@ -22,12 +19,12 @@ use binius_math::{
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
 /// Base-2 logarithm of the number of words folded together within a single chunk.
-const LOG_CHUNK_SIZE: usize = LOG_WORD_SIZE_BITS;
+const LOG_CHUNK_SIZE: usize = Word::LOG_BITS;
 /// Number of words folded together within a single chunk.
 const CHUNK_SIZE: usize = 1 << LOG_CHUNK_SIZE;
 /// Number of bits in a byte; [`fold_across_words`] processes each chunk in groups of this many
 /// words, one per byte of the words.
-const BITS_PER_BYTE: usize = WORD_SIZE_BITS / WORD_SIZE_BYTES;
+const BITS_PER_BYTE: usize = Word::BITS / Word::BYTES;
 
 /// Computes a [`FieldBuffer`] where each element is the inner product of the bits of a word and a
 /// vector of field elements.
@@ -42,7 +39,7 @@ const BITS_PER_BYTE: usize = WORD_SIZE_BITS / WORD_SIZE_BYTES;
 /// length; the high words up to that rounded-up length are treated as zero.
 ///
 /// ## Preconditions
-/// * `vec` contains exactly [`binius_core::consts::WORD_SIZE_BITS`] elements
+/// * `vec` contains exactly [`Word::BITS`] elements
 ///
 /// [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
 pub fn fold_words<F, P>(words: &[Word], vec: &[F]) -> FieldBuffer<P>
@@ -110,7 +107,7 @@ where
 /// * `words.len() == 1 << point.len()`
 ///
 /// [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
-pub fn fold_across_words<F, P>(words: &[Word], point: &[F]) -> [F; WORD_SIZE_BITS]
+pub fn fold_across_words<F, P>(words: &[Word], point: &[F]) -> [F; Word::BITS]
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -140,7 +137,7 @@ where
 			acc
 		})
 		.reduce(
-			|| [F::ZERO; WORD_SIZE_BITS],
+			|| [F::ZERO; Word::BITS],
 			|mut lhs, rhs| {
 				for (lhs_i, rhs_i) in iter::zip(&mut lhs, rhs) {
 					*lhs_i += rhs_i;
@@ -168,7 +165,7 @@ pub struct WordFolder<F: BinaryField> {
 	///
 	/// Table `s` folds the words at positions `s * BITS_PER_BYTE + t` within a chunk.
 	/// Each such word is weighted by prefix-expansion entry `t` of that group.
-	lookups: [[F; 1 << BITS_PER_BYTE]; WORD_SIZE_BYTES],
+	lookups: [[F; 1 << BITS_PER_BYTE]; Word::BYTES],
 	/// One weight per chunk of `CHUNK_SIZE` words, from the suffix expansion.
 	suffix_weights: FieldBuffer<F>,
 	/// The exact word-list length each [`fold`](Self::fold) consumes: `2^point.len()`.
@@ -192,15 +189,13 @@ impl<F: BinaryField> WordFolder<F> {
 
 		// Build one 256-entry subset-sum lookup table per byte of the words.
 		// The prefix tensor expansion has CHUNK_SIZE entries, one per word in a chunk.
-		// Split those entries into WORD_SIZE_BYTES groups of BITS_PER_BYTE.
+		// Split those entries into Word::BYTES groups of BITS_PER_BYTE.
 		let prefix_expansion = eq_ind_partial_eval_scalars::<F>(&prefix);
-		let lookups: [[F; 1 << BITS_PER_BYTE]; WORD_SIZE_BYTES] = array::from_fn(|byte| {
+		let lookups: [[F; 1 << BITS_PER_BYTE]; Word::BYTES] = array::from_fn(|byte| {
 			let group: [F; BITS_PER_BYTE] = prefix_expansion
 				[byte * BITS_PER_BYTE..(byte + 1) * BITS_PER_BYTE]
 				.try_into()
-				.expect(
-					"prefix_expansion has CHUNK_SIZE = WORD_SIZE_BYTES * BITS_PER_BYTE entries",
-				);
+				.expect("prefix_expansion has CHUNK_SIZE = Word::BYTES * BITS_PER_BYTE entries");
 			expand_subset_sums_array(group)
 		});
 
@@ -230,7 +225,7 @@ impl<F: BinaryField> WordFolder<F> {
 	/// ## Preconditions
 	///
 	/// * `words.len() == 1 << point.len()`
-	pub fn fold(&self, words: &[Word]) -> [F; WORD_SIZE_BITS] {
+	pub fn fold(&self, words: &[Word]) -> [F; Word::BITS] {
 		assert_eq!(words.len(), self.n_words, "words.len() must equal 2^point.len()");
 
 		let chunks = duplicate_to_fixed_chunks::<CHUNK_SIZE>(words);
@@ -238,7 +233,7 @@ impl<F: BinaryField> WordFolder<F> {
 
 		// Accumulate each chunk's contribution, scaled by its suffix weight.
 		// The accumulator stays in the chunk kernel's transposed bit layout until the end.
-		let mut folded = [F::ZERO; WORD_SIZE_BITS];
+		let mut folded = [F::ZERO; Word::BITS];
 		for (chunk, &suffix_weight) in iter::zip(chunks.as_ref(), self.suffix_weights.as_ref()) {
 			let acc = fold_chunk(chunk, &self.lookups);
 			for (folded_i, acc_i) in iter::zip(&mut folded, acc) {
@@ -253,11 +248,11 @@ impl<F: BinaryField> WordFolder<F> {
 /// Transposes a reduced chunk accumulator back into bit-position order.
 ///
 /// The chunk kernel stores bit `BITS_PER_BYTE * j + a`'s contribution at index `BITS_PER_BYTE * a +
-/// j`. Transposing that `WORD_SIZE_BYTES`-by-`BITS_PER_BYTE` layout restores bit-position order.
-fn transpose_accumulator<F: BinaryField>(folded: [F; WORD_SIZE_BITS]) -> [F; WORD_SIZE_BITS] {
-	let mut result = [F::ZERO; WORD_SIZE_BITS];
+/// j`. Transposing that `Word::BYTES`-by-`BITS_PER_BYTE` layout restores bit-position order.
+fn transpose_accumulator<F: BinaryField>(folded: [F; Word::BITS]) -> [F; Word::BITS] {
+	let mut result = [F::ZERO; Word::BITS];
 	for a in 0..BITS_PER_BYTE {
-		for j in 0..WORD_SIZE_BYTES {
+		for j in 0..Word::BYTES {
 			result[BITS_PER_BYTE * j + a] = folded[BITS_PER_BYTE * a + j];
 		}
 	}
@@ -272,15 +267,13 @@ fn transpose_accumulator<F: BinaryField>(folded: [F; WORD_SIZE_BITS]) -> [F; WOR
 /// transposes the reduced accumulator back into bit-position order.
 fn fold_chunk<F: BinaryField>(
 	chunk: &[Word; CHUNK_SIZE],
-	lookups: &[[F; 1 << BITS_PER_BYTE]; WORD_SIZE_BYTES],
-) -> [F; WORD_SIZE_BITS] {
+	lookups: &[[F; 1 << BITS_PER_BYTE]; Word::BYTES],
+) -> [F; Word::BITS] {
 	// Reshape the chunk into one sub-array per lookup table, each holding BITS_PER_BYTE words.
-	let subchunks = bytemuck::must_cast_ref::<
-		[Word; CHUNK_SIZE],
-		[[Word; BITS_PER_BYTE]; WORD_SIZE_BYTES],
-	>(chunk);
+	let subchunks =
+		bytemuck::must_cast_ref::<[Word; CHUNK_SIZE], [[Word; BITS_PER_BYTE]; Word::BYTES]>(chunk);
 
-	let mut acc = [F::ZERO; WORD_SIZE_BITS];
+	let mut acc = [F::ZERO; Word::BITS];
 	for (subchunk, lookup) in iter::zip(subchunks, lookups) {
 		// After the transpose, byte `j` of output word `a` collects bit `BITS_PER_BYTE * j + a`
 		// across the BITS_PER_BYTE words of this sub-chunk. Looking it up sums the prefix weights
@@ -298,7 +291,7 @@ fn fold_chunk<F: BinaryField>(
 
 /// Bit-transposes the within-byte bit axis and the word axis of [`BITS_PER_BYTE`] words in place.
 ///
-/// Viewing the input and output as `BITS_PER_BYTE`×`WORD_SIZE_BYTES`×`BITS_PER_BYTE` bit matrices
+/// Viewing the input and output as `BITS_PER_BYTE`×`Word::BYTES`×`BITS_PER_BYTE` bit matrices
 /// where the axes are (bit within a byte, byte within a word, word), this permutes
 /// `out[i][j][k] = in[k][j][i]`, leaving the byte-within-word axis `j` unchanged. After the call,
 /// byte `j` of word `i` holds, in bit `k`, the value of bit `BITS_PER_BYTE * j + i` of input word
@@ -361,7 +354,6 @@ pub(crate) fn duplicate_to_fixed_chunks<const N: usize>(words: &[Word]) -> Cow<'
 
 #[cfg(test)]
 mod tests {
-	use binius_core::consts::WORD_SIZE_BITS;
 	use binius_field::arch::OptimalPackedB128;
 	use binius_math::test_utils::random_scalars;
 	use binius_utils::checked_arithmetics::log2_strict_usize;
@@ -375,7 +367,7 @@ mod tests {
 		F: Field,
 		P: PackedField<Scalar = F>,
 	{
-		assert_eq!(vec.len(), WORD_SIZE_BITS);
+		assert_eq!(vec.len(), Word::BITS);
 		assert!(words.len().is_power_of_two());
 
 		let log_n = log2_strict_usize(words.len());
@@ -386,7 +378,7 @@ mod tests {
 				P::from_scalars(word_chunk.iter().map(|&word| {
 					// Decompose word into bits and compute inner product
 					let mut sum = F::ZERO;
-					for bit_idx in 0..WORD_SIZE_BITS {
+					for bit_idx in 0..Word::BITS {
 						if (word.as_u64() >> bit_idx) & 1 == 1 {
 							sum += vec[bit_idx];
 						}
@@ -410,7 +402,7 @@ mod tests {
 			.map(|_| Word::from_u64(rng.random::<u64>()))
 			.collect::<Vec<_>>();
 
-		let vec = random_scalars(&mut rng, WORD_SIZE_BITS);
+		let vec = random_scalars(&mut rng, Word::BITS);
 
 		// Compute using both methods
 		let result_optimized = fold_words::<B128, B128>(&words, &vec);
@@ -420,11 +412,11 @@ mod tests {
 		assert_eq!(result_optimized, result_naive);
 	}
 
-	fn naive_fold_across_words<F: BinaryField>(words: &[Word], point: &[F]) -> [F; WORD_SIZE_BITS] {
+	fn naive_fold_across_words<F: BinaryField>(words: &[Word], point: &[F]) -> [F; Word::BITS] {
 		assert_eq!(words.len(), 1 << point.len());
 
 		let eq = eq_ind_partial_eval_scalars(point);
-		let mut out = [F::ZERO; WORD_SIZE_BITS];
+		let mut out = [F::ZERO; Word::BITS];
 		for (word, &weight) in iter::zip(words, &eq) {
 			for (bit_idx, out_i) in out.iter_mut().enumerate() {
 				if (word.as_u64() >> bit_idx) & 1 == 1 {
@@ -447,7 +439,7 @@ mod tests {
 			// out[i][j][k] = in[k][j][i]: bit `BITS_PER_BYTE * j + k` of output word `i` equals bit
 			// `BITS_PER_BYTE * j + i` of input word `k`.
 			for i in 0..BITS_PER_BYTE {
-				for j in 0..WORD_SIZE_BYTES {
+				for j in 0..Word::BYTES {
 					for k in 0..BITS_PER_BYTE {
 						let out_bit = (output[i].as_u64() >> (BITS_PER_BYTE * j + k)) & 1;
 						let in_bit = (input[k].as_u64() >> (BITS_PER_BYTE * j + i)) & 1;

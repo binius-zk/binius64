@@ -2,7 +2,7 @@
 
 use std::iter;
 
-use binius_core::constraint_system::Operand;
+use binius_core::{constraint_system::Operand, word::Word};
 use binius_field::{BinaryField, FieldOps, WideMul, util::powers};
 use binius_math::{
 	inner_product::inner_product_scalars, multilinear::eq::eq_ind_partial_eval_scalars,
@@ -13,7 +13,6 @@ use super::{
 	SHIFT_VARIANT_COUNT,
 	shift_ind::{partial_eval_phi, partial_eval_sigmas, partial_eval_sigmas_transpose},
 };
-use crate::config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS};
 
 /// Evaluates the three h multilinear polynomials (corresponding to SLL, SRL, SRA) at challenge
 /// points.
@@ -21,9 +20,9 @@ use crate::config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS};
 /// This is the verifier's version of the h-parts evaluation - instead of building
 /// full multilinear polynomials, it directly computes their evaluations.
 pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SHIFT_VARIANT_COUNT] {
-	assert_eq!(l_tilde.len(), WORD_SIZE_BITS);
-	assert_eq!(r_j.len(), LOG_WORD_SIZE_BITS);
-	assert_eq!(r_s.len(), LOG_WORD_SIZE_BITS);
+	assert_eq!(l_tilde.len(), Word::BITS);
+	assert_eq!(r_j.len(), Word::LOG_BITS);
+	assert_eq!(r_s.len(), Word::LOG_BITS);
 
 	// Use helper functions to compute shift indicator helpers for 64-bit shifts
 	let (sigma, sigma_prime) = partial_eval_sigmas(r_j, r_s);
@@ -108,7 +107,7 @@ pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SH
 /// * `r_x_prime` - The constraint challenge `r_x'`; its equality indicator tensor is expanded here.
 /// * `lambda` - Random coefficient for batching operand evaluations
 /// * `shift_scalars` - Tensor product of the shift-selector evaluations `h_op` and the shift-amount
-///   equality indicator `eq(r_s)`, indexed by `variant * WORD_SIZE_BITS + amount`. Shared across
+///   equality indicator `eq(r_s)`, indexed by `variant * Word::BITS + amount`. Shared across
 ///   operations.
 /// * `r_y_tensor` - Equality indicator tensor expansion of the word index challenge `r_y`
 ///
@@ -119,7 +118,7 @@ pub fn evaluate_monster_multilinear_for_operation<F, E>(
 	operand_vecs: &[Vec<&Operand>],
 	r_x_prime: &[E],
 	lambda: E,
-	shift_scalars: &[E; SHIFT_VARIANT_COUNT * WORD_SIZE_BITS],
+	shift_scalars: &[E; SHIFT_VARIANT_COUNT * Word::BITS],
 	r_y_tensor: &[E],
 ) -> E
 where
@@ -143,7 +142,7 @@ where
 		for (operand_id, operand_vec) in operand_vecs.iter().enumerate() {
 			for svi in operand_vec[constraint] {
 				let variant = svi.shift_variant as usize;
-				let index = (variant * WORD_SIZE_BITS + svi.amount as usize) * arity + operand_id;
+				let index = (variant * Word::BITS + svi.amount as usize) * arity + operand_id;
 				constraint_eval +=
 					operand_shift_scalars[index].clone() * &r_y_tensor[svi.value_index.0 as usize];
 			}
@@ -156,10 +155,10 @@ where
 
 /// Folds the operand batching coefficients (λ powers) into the shared shift scalars, producing a
 /// table indexed by `(variant, amount, operand_id)` whose entry is
-/// `shift_scalars[variant * WORD_SIZE_BITS + amount] · λ^{operand_id + 1}` — the scalar that
+/// `shift_scalars[variant * Word::BITS + amount] · λ^{operand_id + 1}` — the scalar that
 /// multiplies each shifted-value term.
 fn operand_shift_scalar_table<E: FieldOps>(
-	shift_scalars: &[E; SHIFT_VARIANT_COUNT * WORD_SIZE_BITS],
+	shift_scalars: &[E; SHIFT_VARIANT_COUNT * Word::BITS],
 	lambda: E,
 	arity: usize,
 ) -> Vec<E> {
@@ -184,7 +183,7 @@ pub(crate) fn evaluate_monster_multilinear_for_operation_native<F: BinaryField>(
 	operand_vecs: &[Vec<&Operand>],
 	r_x_prime: &[F],
 	lambda: F,
-	shift_scalars: &[F; SHIFT_VARIANT_COUNT * WORD_SIZE_BITS],
+	shift_scalars: &[F; SHIFT_VARIANT_COUNT * Word::BITS],
 	r_y_tensor: &[F],
 ) -> F {
 	let arity = operand_vecs.len();
@@ -206,8 +205,7 @@ pub(crate) fn evaluate_monster_multilinear_for_operation_native<F: BinaryField>(
 			for (operand_id, operand_vec) in operand_vecs.iter().enumerate() {
 				for svi in operand_vec[constraint] {
 					let variant = svi.shift_variant as usize;
-					let index =
-						(variant * WORD_SIZE_BITS + svi.amount as usize) * arity + operand_id;
+					let index = (variant * Word::BITS + svi.amount as usize) * arity + operand_id;
 					constraint_eval +=
 						operand_shift_scalars[index] * r_y_tensor[svi.value_index.0 as usize];
 				}
@@ -266,7 +264,7 @@ mod tests {
 								value_index: ValueIndex(rng.random_range(0..n_words) as u32),
 								shift_variant: shift_variants
 									[rng.random_range(0..SHIFT_VARIANT_COUNT)],
-								amount: rng.random_range(0..WORD_SIZE_BITS) as u8,
+								amount: rng.random_range(0..Word::BITS) as u8,
 							})
 							.collect()
 					})
@@ -277,7 +275,7 @@ mod tests {
 
 		let r_x_prime = random_scalars::<F>(&mut rng, log_constraints);
 		let lambda = F::random(&mut rng);
-		let shift_scalars: [F; SHIFT_VARIANT_COUNT * WORD_SIZE_BITS] =
+		let shift_scalars: [F; SHIFT_VARIANT_COUNT * Word::BITS] =
 			std::array::from_fn(|_| F::random(&mut rng));
 		let r_y_tensor = random_scalars::<F>(&mut rng, n_words);
 
@@ -308,7 +306,7 @@ mod tests {
 		// - sra == 1 iff i + s == j || i + s >= 64 && j == 63
 		// - rotr == 1 iff (i + s) % 64 == j
 		let mut rng = StdRng::seed_from_u64(0);
-		let subspace = BinarySubspace::<BinaryField128bGhash>::with_dim(LOG_WORD_SIZE_BITS);
+		let subspace = BinarySubspace::<BinaryField128bGhash>::with_dim(Word::LOG_BITS);
 
 		// Run a reasonable number of random trials
 		for _trial in 0..1024 {
@@ -319,8 +317,8 @@ mod tests {
 			let challenge = subspace.get(i);
 			let l_tilde = lagrange_evals_scalars(&subspace, challenge);
 
-			let r_j = index_to_hypercube_point::<BinaryField128bGhash>(LOG_WORD_SIZE_BITS, j);
-			let r_s = index_to_hypercube_point::<BinaryField128bGhash>(LOG_WORD_SIZE_BITS, s);
+			let r_j = index_to_hypercube_point::<BinaryField128bGhash>(Word::LOG_BITS, j);
+			let r_s = index_to_hypercube_point::<BinaryField128bGhash>(Word::LOG_BITS, s);
 
 			let [sll, srl, sra, rotr, sll32, srl32, sra32, rotr32] =
 				evaluate_h_op(&l_tilde, &r_j, &r_s);
@@ -367,13 +365,13 @@ mod tests {
 
 		// Generate random evaluation points
 		let challenge = BinaryField128bGhash::random(&mut rng);
-		let subspace = BinarySubspace::<BinaryField128bGhash>::with_dim(LOG_WORD_SIZE_BITS);
+		let subspace = BinarySubspace::<BinaryField128bGhash>::with_dim(Word::LOG_BITS);
 		let l_tilde = lagrange_evals_scalars(&subspace, challenge);
-		let r_j = random_scalars::<BinaryField128bGhash>(&mut rng, LOG_WORD_SIZE_BITS);
-		let r_s = random_scalars::<BinaryField128bGhash>(&mut rng, LOG_WORD_SIZE_BITS);
+		let r_j = random_scalars::<BinaryField128bGhash>(&mut rng, Word::LOG_BITS);
+		let r_s = random_scalars::<BinaryField128bGhash>(&mut rng, Word::LOG_BITS);
 
 		// Check linearity in each variable
-		for i in 0..LOG_WORD_SIZE_BITS {
+		for i in 0..Word::LOG_BITS {
 			// Check r_j[i]
 			let mut r_j_at_0 = r_j.clone();
 			r_j_at_0[i] = BinaryField128bGhash::ZERO;

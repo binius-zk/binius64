@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
-use binius_core::{consts::WORD_SIZE_BITS, word::Word};
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
 use crate::{
@@ -103,7 +103,7 @@ fn check_endomorphism_split(
 /// # Panics
 ///
 /// Panics if `scalars.len() != points.len()`, if `n == 0`, if `window` is not in
-/// `1..WORD_SIZE_BITS`, or if any scalar does not have exactly `N_LIMBS` limbs.
+/// `1..Word::BITS`, or if any scalar does not have exactly `N_LIMBS` limbs.
 pub fn msm_strauss_endo(
 	b: &CircuitBuilder,
 	curve: &Secp256k1,
@@ -114,7 +114,7 @@ pub fn msm_strauss_endo(
 	let n = points.len();
 	assert_eq!(scalars.len(), n, "scalars and points must have the same length");
 	assert!(n >= 1, "MSM requires at least one point");
-	assert!(0 < window && window < WORD_SIZE_BITS, "window must be in 1..WORD_SIZE_BITS");
+	assert!(0 < window && window < Word::BITS, "window must be in 1..Word::BITS");
 
 	// Split each scalar via the endomorphism into two base points (`±P`, `±φ(P)`) with 128-bit
 	// subscalars. Build `±P`'s table with point additions, then derive `±φ(P)`'s table by applying
@@ -233,8 +233,8 @@ fn strauss_accumulate(
 				if bit_index >= exponent_bits {
 					continue; // past the top of the exponent — contributes a zero bit
 				}
-				let limb = bit_index / WORD_SIZE_BITS;
-				let bit = bit_index % WORD_SIZE_BITS;
+				let limb = bit_index / Word::BITS;
+				let bit = bit_index % Word::BITS;
 				let bit_val = b.band(b.shr(subscalar[limb], bit as u32), one);
 				sel = b.bor(sel, b.shl(bit_val, j as u32));
 			}

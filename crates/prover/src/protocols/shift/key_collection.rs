@@ -8,7 +8,7 @@ use binius_core::{
 	constraint_system::{
 		AndConstraint, ConstraintSystem, MulConstraint, Operand, ShiftedValueIndex,
 	},
-	consts::LOG_WORD_SIZE_BITS,
+	word::Word,
 };
 use binius_field::{Field, WideMul};
 use binius_utils::{
@@ -52,7 +52,7 @@ pub enum Operation {
 /// # Relationship to Formal Specification
 ///
 /// The paper defines one `M` multilinear polynomial for each (operation, operand, shift variant)
-/// tuple. Each `M` multilinear forms a 3D matrix that decomposes into `WORD_SIZE_BITS`
+/// tuple. Each `M` multilinear forms a 3D matrix that decomposes into `Word::BITS`
 /// 2D matrices. Each `Key` corresponds to one such 2D matrix. We operate at 2D granularity
 /// because the prover performs field operations on 2D matrices during both protocol phases.
 ///
@@ -67,7 +67,7 @@ pub enum Operation {
 /// The `id` packs three values:
 /// - Operand index (which operand in the constraint)
 /// - Shift variant (logical left, logical right, arithmetic right)
-/// - Shift amount (0 to `WORD_SIZE_BITS-1` bits)
+/// - Shift amount (0 to `Word::BITS-1` bits)
 ///
 /// This ordering places shift information (fundamental to Binius64) in lower bits,
 /// with operation and operand data in higher bits. Future operations can simply extend
@@ -297,7 +297,7 @@ fn update_with_operand(
 				ShiftVariant::Sra32 => 6,
 				ShiftVariant::Rotr32 => 7,
 			};
-			let id = (shift_variant_val << LOG_WORD_SIZE_BITS) + *amount as u16;
+			let id = (shift_variant_val << Word::LOG_BITS) + *amount as u16;
 
 			// Find existing builder key or create a new one for this (operation, id) pair
 			let constraint_index = ConstraintIndex {

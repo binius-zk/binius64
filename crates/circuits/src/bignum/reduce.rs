@@ -1,5 +1,5 @@
 // Copyright 2025 Irreducible Inc.
-use binius_core::{consts::WORD_SIZE_BITS, word::Word};
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
 use super::{
@@ -85,8 +85,7 @@ impl PseudoMersenneModReduce {
 	/// # Arguments
 	/// * `builder` - Circuit builder for constraint generation
 	/// * `a` - The dividend
-	/// * `modulus_po2` - the power of two modulus minuend (has to be a multiple of
-	///   `WORD_SIZE_BITS`)
+	/// * `modulus_po2` - the power of two modulus minuend (has to be a multiple of `Word::BITS`)
 	/// * `modulus_subtrahend` - the value subtracted form `2^modulus_po2` to obtain modulus
 	/// * `quotient` - The quotient
 	/// * `remainder` - The remainder
@@ -115,13 +114,13 @@ impl PseudoMersenneModReduce {
 		// max(lo, remainder) < 2^modulus_po2
 		// quotient < |a/(2^modulus_po2 - modulus_subtrahend)|
 		// quotient >= hi
-		assert!(modulus_po2.is_multiple_of(WORD_SIZE_BITS));
-		assert!(modulus_subtrahend.limbs.len() * WORD_SIZE_BITS <= modulus_po2);
-		assert!(remainder.limbs.len() * WORD_SIZE_BITS <= modulus_po2);
+		assert!(modulus_po2.is_multiple_of(Word::BITS));
+		assert!(modulus_subtrahend.limbs.len() * Word::BITS <= modulus_po2);
+		assert!(remainder.limbs.len() * Word::BITS <= modulus_po2);
 
 		let zero = builder.add_constant(Word::ZERO);
 
-		let n_lo_limbs = modulus_po2 / WORD_SIZE_BITS;
+		let n_lo_limbs = modulus_po2 / Word::BITS;
 
 		let (a_lo, a_hi) = a.pad_limbs_to(n_lo_limbs, zero).split_at_limbs(n_lo_limbs);
 

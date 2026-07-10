@@ -2,12 +2,13 @@
 
 //! Verifier for the batched BitAnd reduction of the data-parallel M4 proof system.
 
+use binius_core::word::Word;
 use binius_field::AESTowerField8b as B8;
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::BinarySubspace;
 use binius_verifier::{
 	Error,
-	config::{B128, LOG_WORD_SIZE_BITS, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
+	config::{B128, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
 	protocols::bitand::{AndCheckOutput, verify_with_channel},
 };
 
@@ -56,7 +57,7 @@ where
 	// The prover sends round-message evaluations over exactly this domain.
 	let eval_domain = BinarySubspace::<B8>::default()
 		.isomorphic::<B128>()
-		.reduce_dim(LOG_WORD_SIZE_BITS + 1);
+		.reduce_dim(Word::LOG_BITS + 1);
 
 	// The first few zerocheck coordinates are pinned to fixed small-field elements.
 	// The prover pins the same prefix, so both sides agree on this split.

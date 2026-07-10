@@ -21,9 +21,7 @@ use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::prelude::*};
 use binius_verifier::{
 	IOPVerifier, Verifier,
-	config::{
-		B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
-	},
+	config::{B128, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
 	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput},
 };
 use digest::Output;
@@ -169,7 +167,7 @@ impl IOPProver {
 		// Build the oblong domain subspace once and pass it into the shift reduction, mirroring
 		// the verifier side (`shift::check_eval` takes the domain subspace). It is reused for the
 		// IntMul claim collapse below.
-		let subspace = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+		let subspace = BinarySubspace::<B8>::with_dim(Word::LOG_BITS).isomorphic();
 		let intmul_claim = match intmul_output {
 			Some(IntMulOutput {
 				eval_point,
@@ -422,7 +420,7 @@ where
 	PChallenge: PackedField<Scalar = F>,
 	Channel: binius_ip_prover::channel::IPProverChannel<F>,
 {
-	let prover_message_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1);
+	let prover_message_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1);
 	let AndCheckWitness { a, b, c } = witness;
 
 	let log_constraint_count = checked_log_2(a.len());

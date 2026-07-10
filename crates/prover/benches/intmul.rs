@@ -26,7 +26,7 @@ use binius_prover::protocols::intmul::{
 use binius_transcript::ProverTranscript;
 use binius_utils::rayon::ThreadPoolBuilder;
 use binius_verifier::{
-	config::{LOG_WORD_SIZE_BITS, StdChallenger},
+	config::StdChallenger,
 	protocols::intmul::common::{LIMB_BITS, frobenius_twist},
 };
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -181,7 +181,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 		let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
 		prover.phase1(&initial_eval_point, witness.b_prodcheck.clone(), &witness.b_leaves, exp_eval)
 	};
-	let phase2 = frobenius_twist(LOG_WORD_SIZE_BITS, &phase1.eval_point, &phase1.b_leaves_evals);
+	let phase2 = frobenius_twist(Word::LOG_BITS, &phase1.eval_point, &phase1.b_leaves_evals);
 	let phase3 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
@@ -226,9 +226,8 @@ fn bench_intmul_phases(c: &mut Criterion) {
 
 	// The Frobenius twist consumes nothing by value, so no per-iteration clone is needed.
 	group.bench_function("phase2_frobenius_twist", |bencher| {
-		bencher.iter(|| {
-			frobenius_twist(LOG_WORD_SIZE_BITS, &phase1.eval_point, &phase1.b_leaves_evals)
-		});
+		bencher
+			.iter(|| frobenius_twist(Word::LOG_BITS, &phase1.eval_point, &phase1.b_leaves_evals));
 	});
 
 	group.bench_function("phase3", |bencher| {
@@ -335,7 +334,7 @@ fn bench_intmul_components(c: &mut Criterion) {
 	group.bench_function("product_tree", |bencher| {
 		bencher.iter_batched(
 			|| witness.b_leaves.clone(),
-			|b_leaves| ProdcheckProver::<P>::new(LOG_WORD_SIZE_BITS, b_leaves),
+			|b_leaves| ProdcheckProver::<P>::new(Word::LOG_BITS, b_leaves),
 			BatchSize::SmallInput,
 		);
 	});
@@ -353,7 +352,7 @@ fn bench_intmul_components(c: &mut Criterion) {
 		let mut prover = IntMulProver::<P, _>::new(0, &mut transcript);
 		prover.phase1(&initial_eval_point, witness.b_prodcheck.clone(), &witness.b_leaves, exp_eval)
 	};
-	let phase2 = frobenius_twist(LOG_WORD_SIZE_BITS, &phase1.eval_point, &phase1.b_leaves_evals);
+	let phase2 = frobenius_twist(Word::LOG_BITS, &phase1.eval_point, &phase1.b_leaves_evals);
 
 	group.bench_function("selector_sumcheck", |bencher| {
 		let mut rng = rand::rng();
@@ -368,7 +367,7 @@ fn bench_intmul_components(c: &mut Criterion) {
 						value,
 					})
 					.collect();
-				let gamma = random_scalars::<F>(&mut rng, LOG_WORD_SIZE_BITS);
+				let gamma = random_scalars::<F>(&mut rng, Word::LOG_BITS);
 				let eq_weights = eq_ind_partial_eval_scalars::<F>(&gamma);
 				(witness.a_root.clone(), claims, eq_weights)
 			},

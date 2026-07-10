@@ -3,15 +3,13 @@
 
 use std::iter;
 
+use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_math::{
 	BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
 };
 use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
-use binius_verifier::{
-	config::WORD_SIZE_BITS,
-	protocols::shift::{BITAND_ARITY, INTMUL_ARITY, evaluate_h_op},
-};
+use binius_verifier::protocols::shift::{BITAND_ARITY, INTMUL_ARITY, evaluate_h_op};
 use bytemuck::zeroed_vec;
 use tracing::instrument;
 
@@ -42,9 +40,9 @@ where
 	let l_tilde = l_tilde.as_ref();
 
 	fn build_part<F: Field, P: PackedField<Scalar = F>>(
-		fill: impl Fn(usize, &mut [F; WORD_SIZE_BITS]),
+		fill: impl Fn(usize, &mut [F; Word::BITS]),
 	) -> FieldBuffer<P> {
-		let mut data = zeroed_vec::<[F; WORD_SIZE_BITS]>(WORD_SIZE_BITS);
+		let mut data = zeroed_vec::<[F; Word::BITS]>(Word::BITS);
 		for (s, chunk) in data.iter_mut().enumerate() {
 			fill(s, chunk);
 		}
@@ -52,21 +50,21 @@ where
 	}
 
 	let sll = build_part(|s, sll_s| {
-		sll_s[..WORD_SIZE_BITS - s].copy_from_slice(&l_tilde[s..]);
+		sll_s[..Word::BITS - s].copy_from_slice(&l_tilde[s..]);
 	});
 
 	let srl = build_part(|s, srl_s| {
-		srl_s[s..].copy_from_slice(&l_tilde[..WORD_SIZE_BITS - s]);
+		srl_s[s..].copy_from_slice(&l_tilde[..Word::BITS - s]);
 	});
 
 	let sra = build_part(|s, sra_s| {
-		sra_s[s..].copy_from_slice(&l_tilde[..WORD_SIZE_BITS - s]);
-		sra_s[WORD_SIZE_BITS - 1] += l_tilde[WORD_SIZE_BITS - s..].iter().sum::<F>();
+		sra_s[s..].copy_from_slice(&l_tilde[..Word::BITS - s]);
+		sra_s[Word::BITS - 1] += l_tilde[Word::BITS - s..].iter().sum::<F>();
 	});
 
 	let rotr = build_part(|s, rotr_s| {
-		rotr_s[..s].copy_from_slice(&l_tilde[WORD_SIZE_BITS - s..]);
-		rotr_s[s..].copy_from_slice(&l_tilde[..WORD_SIZE_BITS - s]);
+		rotr_s[..s].copy_from_slice(&l_tilde[Word::BITS - s..]);
+		rotr_s[s..].copy_from_slice(&l_tilde[..Word::BITS - s]);
 	});
 
 	let sll32 = build_part(|s, sll32_s| {
@@ -127,7 +125,7 @@ where
 /// ```
 /// where `scalars[key.id]` is the contiguous per-operand chunk encoding
 /// `λ^(operand_idx+1) × h_op[shift_variant] × r_s_tensor[shift_amount]` for operand index
-/// `operand_idx` and `shift_variant` in {SLL, SRL, SRA} and `shift_amount` in [0, WORD_SIZE_BITS).
+/// `operand_idx` and `shift_variant` in {SLL, SRL, SRA} and `shift_amount` in [0, Word::BITS).
 ///
 /// # Usage
 ///
@@ -160,15 +158,15 @@ where
 	let r_s_tensor = eq_ind_partial_eval::<F>(r_s);
 
 	// Allocate and populate the scalars, laid out with the operand index innermost so that the
-	// `arity` weights for one `key.id` (= `op * WORD_SIZE_BITS + s`) form a contiguous chunk that
+	// `arity` weights for one `key.id` (= `op * Word::BITS + s`) form a contiguous chunk that
 	// [`Key::accumulate`] can index directly by operand index.
-	let mut bitand_scalars = vec![F::ZERO; BITAND_ARITY * SHIFT_VARIANT_COUNT * WORD_SIZE_BITS];
-	let mut intmul_scalars = vec![F::ZERO; INTMUL_ARITY * SHIFT_VARIANT_COUNT * WORD_SIZE_BITS];
+	let mut bitand_scalars = vec![F::ZERO; BITAND_ARITY * SHIFT_VARIANT_COUNT * Word::BITS];
+	let mut intmul_scalars = vec![F::ZERO; INTMUL_ARITY * SHIFT_VARIANT_COUNT * Word::BITS];
 
 	let populate_scalars = |scalars: &mut [F], arity: usize, lambda_powers: &[F], h_ops: &[F]| {
 		for op in 0..SHIFT_VARIANT_COUNT {
-			for s in 0..WORD_SIZE_BITS {
-				let key_id = op * WORD_SIZE_BITS + s;
+			for s in 0..Word::BITS {
+				let key_id = op * Word::BITS + s;
 				let op_s_scalar = h_ops[op] * r_s_tensor.as_ref()[s];
 				for operand_idx in 0..arity {
 					scalars[key_id * arity + operand_idx] =
@@ -250,7 +248,7 @@ where
 mod tests {
 	use binius_field::{AESTowerField8b, BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
 	use binius_math::{inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval};
-	use binius_verifier::{config::LOG_WORD_SIZE_BITS, protocols::shift::evaluate_h_op};
+	use binius_verifier::protocols::shift::evaluate_h_op;
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
@@ -273,8 +271,7 @@ mod tests {
 			let r_s: Vec<F> = (0..6).map(|_| F::random(&mut rng)).collect();
 
 			// Method 1: Succinct evaluation using `evaluate_h_op`
-			let subspace =
-				BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+			let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 			let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
 			let succinct_evaluations = evaluate_h_op(l_tilde.as_ref(), &r_j, &r_s);
 
