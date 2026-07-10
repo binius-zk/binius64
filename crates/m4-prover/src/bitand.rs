@@ -2,6 +2,8 @@
 
 //! The batched BitAnd-check witness built from a populated batch value table.
 
+use std::mem::MaybeUninit;
+
 use binius_core::{
 	constraint_system::{AndConstraint, ShiftedValueIndex},
 	word::Word,
@@ -112,9 +114,11 @@ impl BatchAndCheckWitness {
 		assert!(n_instances.is_power_of_two(), "instance count must be a power of two");
 
 		// One column each for the three operands, laid out instance-major.
-		let mut a = vec![Word::ZERO; total];
-		let mut b = vec![Word::ZERO; total];
-		let mut c = vec![Word::ZERO; total];
+		// The columns are left uninitialized here.
+		// Each task zeroes its own chunk, fusing the zero-fill into the write pass.
+		let mut a = Vec::<Word>::with_capacity(total);
+		let mut b = Vec::<Word>::with_capacity(total);
+		let mut c = Vec::<Word>::with_capacity(total);
 
 		// The witness offset splits public words (below) from hidden rows (at or above).
 		let offset = table.layout().offset_witness;
@@ -125,32 +129,53 @@ impl BatchAndCheckWitness {
 		// Its output blocks are those instances' rows of the three instance-major columns.
 		// Reads stay contiguous: within a stripe, one hidden row is a contiguous sub-slice.
 		let block = STRIPE_WIDTH.min(n_instances) * n_and;
-		a.par_chunks_mut(block)
-			.zip(b.par_chunks_mut(block))
-			.zip(c.par_chunks_mut(block))
-			.enumerate()
-			.for_each(|(stripe, ((a_block, b_block), c_block))| {
-				// The first global instance of this stripe.
-				// The instances in this stripe, derived from the block length.
-				let base = stripe * STRIPE_WIDTH;
-				let width = a_block.len() / n_and;
+		{
+			let a_spare = &mut a.spare_capacity_mut()[..total];
+			let b_spare = &mut b.spare_capacity_mut()[..total];
+			let c_spare = &mut c.spare_capacity_mut()[..total];
+			a_spare
+				.par_chunks_mut(block)
+				.zip(b_spare.par_chunks_mut(block))
+				.zip(c_spare.par_chunks_mut(block))
+				.enumerate()
+				.for_each(|(stripe, ((a_block, b_block), c_block))| {
+					// Zero this chunk, then view it as an initialized slice to accumulate into.
+					let a_block = init_zeroed(a_block);
+					let b_block = init_zeroed(b_block);
+					let c_block = init_zeroed(c_block);
 
-				for (j, constraint) in and_constraints.iter().enumerate() {
-					let ctx = OperandContext {
-						data,
-						constants,
-						offset,
-						log_instances,
-						base,
-						width,
-						n_and,
-						j,
-					};
-					ctx.accumulate(a_block, &constraint.a);
-					ctx.accumulate(b_block, &constraint.b);
-					ctx.accumulate(c_block, &constraint.c);
-				}
-			});
+					// The first global instance of this stripe.
+					// The instances in this stripe, derived from the block length.
+					let base = stripe * STRIPE_WIDTH;
+					let width = a_block.len() / n_and;
+
+					for (j, constraint) in and_constraints.iter().enumerate() {
+						let ctx = OperandContext {
+							data,
+							constants,
+							offset,
+							log_instances,
+							base,
+							width,
+							n_and,
+							j,
+						};
+						ctx.accumulate(a_block, &constraint.a);
+						ctx.accumulate(b_block, &constraint.b);
+						ctx.accumulate(c_block, &constraint.c);
+					}
+				});
+		}
+
+		// The stripes partition `[0, total)` and each zeroed its whole range.
+		// So all `total` elements of every column are initialized.
+		//
+		// SAFETY: every element in `0..total` was written above.
+		unsafe {
+			a.set_len(total);
+			b.set_len(total);
+			c.set_len(total);
+		}
 
 		Self { a, b, c }
 	}
@@ -254,6 +279,21 @@ impl BatchAndCheckWitness {
 
 		prover.prove_with_channel(channel)
 	}
+}
+
+/// Zeroes an uninitialized word chunk and returns it as an initialized slice.
+///
+/// Every element is set to `Word::ZERO`, so the caller can XOR operand terms into it.
+/// Chunks whose constraints have empty operands then stay zero, as the reduction expects.
+fn init_zeroed(chunk: &mut [MaybeUninit<Word>]) -> &mut [Word] {
+	for slot in chunk.iter_mut() {
+		slot.write(Word::ZERO);
+	}
+	// Every element was just written.
+	// `MaybeUninit<Word>` shares the layout of `Word`.
+	//
+	// SAFETY: the whole chunk is initialized, so reinterpreting it as `Word` is sound.
+	unsafe { &mut *(chunk as *mut [MaybeUninit<Word>] as *mut [Word]) }
 }
 
 /// The placement of one operand column for one constraint over one instance stripe.
