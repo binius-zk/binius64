@@ -14,20 +14,6 @@ use std::{
 
 use binius_core::Word;
 
-mod big_uint_divide;
-mod big_uint_mod_pow;
-mod byte_vec_concat;
-mod mod_divide;
-mod mod_inverse;
-mod secp256k1_endosplit;
-
-pub use big_uint_divide::BigUintDivideHint;
-pub use big_uint_mod_pow::BigUintModPowHint;
-pub use byte_vec_concat::ByteVecConcatHint;
-pub use mod_divide::ModDivideHint;
-pub use mod_inverse::ModInverseHint;
-pub use secp256k1_endosplit::Secp256k1EndosplitHint;
-
 pub type HintId = u32;
 
 /// Hint handler trait for extensible operations.
@@ -50,9 +36,9 @@ pub type HintId = u32;
 /// (e.g. always 4 inputs / 6 outputs) takes an empty slice and ignores it. A hint that is
 /// parameterized over, say, big-integer limb counts takes those counts as `dimensions`.
 ///
-/// Example: `BigUintDivideHint` uses `dimensions = [dividend_limbs, divisor_limbs]` and
-/// computes `(n_in, n_out) = (dividend_limbs + divisor_limbs, dividend_limbs + divisor_limbs)`.
-/// `Secp256k1EndosplitHint` uses an empty `dimensions` and returns `(4, 6)` unconditionally.
+/// Two arity modes illustrate the contract:
+/// - A parameterized hint reads limb counts from `dimensions` and derives its arity from them.
+/// - A fixed-arity hint ignores `dimensions` (an empty slice) and returns a constant shape.
 pub trait Hint: Send + Sync + 'static {
 	/// Globally unique name for this hint. Used to derive a stable [`HintId`].
 	const NAME: &'static str;

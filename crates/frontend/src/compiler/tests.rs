@@ -4,12 +4,6 @@ use proptest::prelude::*;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 use super::*;
-use crate::{
-	compiler::hints::{
-		BigUintDivideHint, BigUintModPowHint, ModInverseHint, Secp256k1EndosplitHint,
-	},
-	util::num_biguint_from_u64_limbs,
-};
 
 #[test]
 fn test_icmp_ult() {
@@ -53,6 +47,38 @@ fn test_icmp_eq() {
 		w[expected] = Word(if w[a].0 == w[b].0 { u64::MAX } else { 0 });
 		w.circuit.populate_wire_witness(&mut w).unwrap();
 	}
+}
+
+#[test]
+fn test_algebraic_folds_return_operand_directly() {
+	// Idempotent and self-inverse identities on equal wires fold at build time.
+	let builder = CircuitBuilder::new();
+	let x = builder.add_witness();
+	let cond = builder.add_witness();
+
+	// x & x = x, x | x = x, and select(_, t, t) = t all return the operand wire itself.
+	assert_eq!(builder.band(x, x), x);
+	assert_eq!(builder.bor(x, x), x);
+	assert_eq!(builder.select(cond, x, x), x);
+
+	// x ^ x = 0 returns the interned zero constant.
+	assert_eq!(builder.bxor(x, x), builder.add_constant(Word::ZERO));
+}
+
+#[test]
+fn test_algebraic_fold_bxor_self_is_zero_in_witness() {
+	// The folded x ^ x wire must carry 0 for any x, and the circuit must still verify.
+	let builder = CircuitBuilder::new();
+	let x = builder.add_inout();
+	let zero = builder.bxor(x, x);
+	let circuit = builder.build();
+
+	let mut w = circuit.new_witness_filler();
+	w[x] = Word(0x1234_5678_9abc_def0);
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	assert_eq!(w[zero], Word::ZERO);
+	verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
 }
 
 #[test]
@@ -107,119 +133,16 @@ fn test_isub_bin_bout_from_zero() {
 }
 
 #[test]
-fn test_biguint_divide_hint() {
+fn test_all_one_is_first_constant() {
+	// The gate graph seeds the all-one word as its first constant at construction.
+	// So every built circuit exposes it at constant index 0, ahead of any user constant.
 	let builder = CircuitBuilder::new();
-
-	// (2^128-1) % (2^64-5) = 24
-	let d0 = builder.add_constant_64(u64::MAX);
-	let d1 = builder.add_constant_64(u64::MAX);
-
-	let m = builder.add_constant_64(u64::MAX - 4);
-
-	let (q, r) = BigUintDivideHint::call(&builder, &[d0, d1], &[m]);
-
+	// A user constant added first still does not displace the seeded all-one word.
+	builder.add_constant_64(0x1234);
 	let circuit = builder.build();
-	let mut w = circuit.new_witness_filler();
-	circuit.populate_wire_witness(&mut w).unwrap();
 
-	assert_eq!(r.len(), 1);
-	assert_eq!(w[r[0]], Word(24));
-
-	assert_eq!(q.len(), 2);
-	assert_eq!(w[q[0]], Word(5));
-	assert_eq!(w[q[1]], Word(1));
-}
-
-#[test]
-fn test_biguint_divide_hint_div_by_zero() {
-	let builder = CircuitBuilder::new();
-
-	let d0 = builder.add_constant_64(u64::MAX);
-	let d1 = builder.add_constant_64(u64::MAX);
-
-	let m0 = builder.add_constant_64(0);
-	let m1 = builder.add_constant_64(0);
-
-	let (q, r) = BigUintDivideHint::call(&builder, &[d0, d1], &[m0, m1]);
-
-	let circuit = builder.build();
-	let mut w = circuit.new_witness_filler();
-	circuit.populate_wire_witness(&mut w).unwrap();
-
-	assert_eq!(r.len(), 2);
-	assert_eq!(w[r[0]], Word(0));
-	assert_eq!(w[r[1]], Word(0));
-
-	assert_eq!(q.len(), 2);
-	assert_eq!(w[q[0]], Word(0));
-	assert_eq!(w[q[1]], Word(0));
-}
-
-#[test]
-fn test_mod_pow_hint() {
-	let builder = CircuitBuilder::new();
-
-	let c = builder.add_constant_64(0x123456789abcdef0);
-	let modpow = BigUintModPowHint::call(&builder, &[c], &[c, c], &[c, c, c]);
-
-	let circuit = builder.build();
-	let mut w = circuit.new_witness_filler();
-	circuit.populate_wire_witness(&mut w).unwrap();
-
-	assert_eq!(modpow.len(), 3);
-	assert_eq!(w[modpow[0]], Word(0x6f151e00d2c39f30));
-	assert_eq!(w[modpow[1]], Word(0xfef75acc27ead52f));
-	assert_eq!(w[modpow[2]], Word(0x00443adf222ea27));
-}
-
-#[test]
-fn test_mod_inverse_hint() {
-	let builder = CircuitBuilder::new();
-
-	let b = builder.add_constant_64(0x123456789abcdef0);
-
-	// M12 = 2^127-1
-	let m0 = builder.add_constant_64(u64::MAX);
-	let m1 = builder.add_constant_64((1u64 << 63) - 1);
-
-	let (quotient, inverse) = ModInverseHint::call(&builder, &[b], &[m0, m1]);
-
-	let circuit = builder.build();
-	let mut w = circuit.new_witness_filler();
-	circuit.populate_wire_witness(&mut w).unwrap();
-
-	assert_eq!(inverse.len(), 2);
-	assert_eq!(w[inverse[0]], Word(0xe5a542e11f99750a));
-	assert_eq!(w[inverse[1]], Word(0x1849faf75fbb9752));
-
-	assert_eq!(quotient.len(), 2);
-	assert_eq!(w[quotient[0]], Word(0x37455c1554b9aa1));
-	assert_eq!(w[quotient[1]], Word::ZERO);
-}
-
-#[test]
-fn test_mod_inverse_hint_non_coprime() {
-	let builder = CircuitBuilder::new();
-
-	let b = builder.add_constant_64((1 << 19) - 1);
-
-	// M7 * M11 = (2^19-1)*(2^107-1)
-	let m0 = builder.add_constant_64(0xfffffffffff80001);
-	let m1 = builder.add_constant_64(0x3ffff7ffffffffff);
-
-	let (quotient, inverse) = ModInverseHint::call(&builder, &[b], &[m0, m1]);
-
-	let circuit = builder.build();
-	let mut w = circuit.new_witness_filler();
-	circuit.populate_wire_witness(&mut w).unwrap();
-
-	assert_eq!(inverse.len(), 2);
-	assert_eq!(w[inverse[0]], Word::ZERO);
-	assert_eq!(w[inverse[1]], Word::ZERO);
-
-	assert_eq!(quotient.len(), 2);
-	assert_eq!(w[quotient[0]], Word::ZERO);
-	assert_eq!(w[quotient[1]], Word::ZERO);
+	let constants = &circuit.constraint_system().constants;
+	assert_eq!(constants[0], Word::ALL_ONE);
 }
 
 #[test]
@@ -385,48 +308,6 @@ proptest! {
 	fn prop_icmp_eq_not_equal(a in any::<u64>(), b in any::<u64>()) {
 		prop_assume!(a != b);
 		prop_check_icmp_eq(a, b, Word::ZERO);
-	}
-
-	#[test]
-	fn prop_secp256k1_endosplit(k in any::<[u64; 4]>()) {
-		let modulus = num_bigint::BigUint::from_bytes_be(
-			&hex_literal::hex!("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
-		);
-		let lambda =  num_bigint::BigUint::from_bytes_be(
-			&hex_literal::hex!("5363ad4cc05c30e0a5261c028812645a122e22ea20816678df02967c1b23bd72")
-		);
-		let k_bignum = num_biguint_from_u64_limbs(k.iter());
-		prop_assume!(k_bignum < modulus);
-		prop_assume!(k_bignum > num_bigint::BigUint::ZERO);
-
-		let builder = CircuitBuilder::new();
-		let k = k.map(|limb| builder.add_constant_64(limb));
-		let (k1_neg, k2_neg, k1_abs, k2_abs) =
-			Secp256k1EndosplitHint::call(&builder, &k);
-
-		let circuit = builder.build();
-		let mut w = circuit.new_witness_filler();
-		circuit.populate_wire_witness(&mut w).unwrap();
-
-		let k1_abs_bignum = num_biguint_from_u64_limbs(k1_abs.iter().map(|&l| &w[l].0));
-		let k2_abs_bignum = num_biguint_from_u64_limbs(k2_abs.iter().map(|&l| &w[l].0));
-
-		assert!(k1_abs_bignum.bits() <= 128);
-		assert!(k2_abs_bignum.bits() <= 128);
-
-		let k1 = if w[k1_neg] != Word::ZERO {
-			&modulus - k1_abs_bignum
-		} else {
-			k1_abs_bignum
-		};
-
-		let k2 = if w[k2_neg] != Word::ZERO {
-			&modulus - k2_abs_bignum
-		} else {
-			k2_abs_bignum
-		};
-
-		assert_eq!((k1 + lambda * k2) % modulus, k_bignum);
 	}
 }
 

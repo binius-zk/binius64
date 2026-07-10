@@ -6,8 +6,9 @@
 //!
 //! Guide: https://www.binius.xyz/building/
 
+use binius_circuits::bignum::BigUintDivideHint;
 use binius_core::verify::verify_constraints;
-use binius_frontend::{CircuitBuilder, hints::BigUintDivideHint};
+use binius_frontend::CircuitBuilder;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let builder = CircuitBuilder::new();

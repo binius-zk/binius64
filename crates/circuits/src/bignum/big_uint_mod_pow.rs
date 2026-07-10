@@ -2,12 +2,7 @@
 //! BigUint mod pow hint implementation
 
 use binius_core::Word;
-
-use super::Hint;
-use crate::{
-	compiler::{CircuitBuilder, Wire},
-	util::num_biguint_from_u64_limbs,
-};
+use binius_frontend::{CircuitBuilder, Wire, hints::Hint, util::num_biguint_from_u64_limbs};
 
 pub struct BigUintModPowHint;
 
@@ -73,5 +68,27 @@ impl Hint for BigUintModPowHint {
 		for i in modpow.iter_u64_digits().len()..*n_modulus_limbs {
 			outputs[i] = Word::ZERO;
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_mod_pow_hint() {
+		let builder = CircuitBuilder::new();
+
+		let c = builder.add_constant_64(0x123456789abcdef0);
+		let modpow = BigUintModPowHint::call(&builder, &[c], &[c, c], &[c, c, c]);
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		circuit.populate_wire_witness(&mut w).unwrap();
+
+		assert_eq!(modpow.len(), 3);
+		assert_eq!(w[modpow[0]], Word(0x6f151e00d2c39f30));
+		assert_eq!(w[modpow[1]], Word(0xfef75acc27ead52f));
+		assert_eq!(w[modpow[2]], Word(0x00443adf222ea27));
 	}
 }

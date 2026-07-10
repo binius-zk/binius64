@@ -229,11 +229,14 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 					//     }
 					// }
 					let start = key.id as usize * (WORD_SIZE_BITS >> P::LOG_WIDTH);
-					let word_bytes = word.0.to_le_bytes();
-					for (&byte, values) in word_bytes.iter().zip(
-						multilinears[start..start + (WORD_SIZE_BITS >> P::LOG_WIDTH)]
-							.chunks_exact_mut(WORD_SIZE_BYTES >> P::LOG_WIDTH),
-					) {
+					let values = &mut multilinears[start..start + (WORD_SIZE_BITS >> P::LOG_WIDTH)];
+					let values_per_byte = WORD_SIZE_BYTES >> P::LOG_WIDTH;
+					let mut remaining_word = word.0;
+					let mut byte_index = 0;
+					while remaining_word != 0 {
+						let byte = remaining_word as u8;
+						let byte_values =
+							&mut values[byte_index * values_per_byte..][..values_per_byte];
 						for value_index in 0..(8 >> P::LOG_WIDTH) {
 							unsafe {
 								let packed_mask_index =
@@ -249,10 +252,12 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 								//   due to the chunking
 								// - `value_index` is always in bounds because we iterate over 0..(8
 								//   >> P::LOG_WIDTH)
-								*values.get_unchecked_mut(value_index) +=
+								*byte_values.get_unchecked_mut(value_index) +=
 									acc_packed.select(packed_mask);
 							}
 						}
+						remaining_word >>= 8;
+						byte_index += 1;
 					}
 				}
 

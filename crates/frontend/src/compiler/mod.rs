@@ -42,6 +42,7 @@ pub(crate) struct Options {
 	enable_constant_propagation: bool,
 	enable_common_subexpression_elimination: bool,
 	enable_dead_code_elimination: bool,
+	enable_algebraic_folding: bool,
 }
 
 // Shut up clippy since this is just so happens to be derivable for now.
@@ -53,6 +54,7 @@ impl Default for Options {
 			enable_constant_propagation: false,
 			enable_common_subexpression_elimination: true,
 			enable_dead_code_elimination: true,
+			enable_algebraic_folding: true,
 		}
 	}
 }
@@ -72,6 +74,9 @@ impl Options {
 		}
 		if std::env::var("BINIUS_DISABLE_DCE").is_ok() {
 			opts.enable_dead_code_elimination = false;
+		}
+		if std::env::var("BINIUS_DISABLE_ALGEBRAIC_FOLDING").is_ok() {
+			opts.enable_algebraic_folding = false;
 		}
 		opts
 	}
@@ -208,13 +213,15 @@ impl CircuitBuilder {
 	///
 	/// Must be called only once.
 	pub fn build(&self) -> Circuit {
-		let all_one = self.add_constant(Word::ALL_ONE);
 		let shared = self.shared.borrow_mut().take();
 
 		let Some(shared) = shared else {
 			panic!("CircuitBuilder::build called twice");
 		};
 		let mut graph = shared.graph;
+
+		// The all-one wire is seeded as the first constant when the graph is constructed.
+		let all_one = graph.all_one;
 
 		graph.validate(&shared.hint_registry);
 
@@ -304,6 +311,12 @@ impl CircuitBuilder {
 			}
 			value_vec_alloc.into_assignment()
 		};
+
+		// Invariant: the all-one constant seeded at graph construction is the first constant.
+		// Downstream consumers reference it by the fixed index 0.
+		debug_assert_eq!(wire_mapping[all_one], binius_core::ValueIndex(0));
+		debug_assert_eq!(constants.first(), Some(&Word::ALL_ONE));
+
 		let (mut and_constraints, mut mul_constraints) = builder.build(&wire_mapping, all_one);
 
 		// Filter zero constant terms from all operands. Any shift of Word::ZERO is zero, so
@@ -469,14 +482,28 @@ impl CircuitBuilder {
 		self.graph_mut().add_internal()
 	}
 
+	/// Whether build-time algebraic identity folding is enabled.
+	fn algebraic_folding(&self) -> bool {
+		self.shared
+			.borrow()
+			.as_ref()
+			.expect("CircuitBuilder used after build")
+			.opts
+			.enable_algebraic_folding
+	}
+
 	/// Bitwise AND.
 	///
 	/// Returns z = x & y
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint.
+	/// 1 AND constraint, or none when both operands are the same wire.
 	pub fn band(&self, x: Wire, y: Wire) -> Wire {
+		// Idempotent: x & x = x, bit for bit, so return x and emit no gate.
+		if self.algebraic_folding() && x == y {
+			return x;
+		}
 		// Identities that hold bit for bit, so they need no AND constraint:
 		//   c & d  -> fold        0 & y -> 0        all-1 & y -> y
 		match (self.const_of(x), self.const_of(y)) {
@@ -499,8 +526,12 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 linear constraint.
+	/// 1 linear constraint, or none when both operands are the same wire.
 	pub fn bxor(&self, a: Wire, b: Wire) -> Wire {
+		// Self-inverse: x ^ x = 0, so return the zero constant and emit no gate.
+		if self.algebraic_folding() && a == b {
+			return self.add_constant(Word::ZERO);
+		}
 		// Identities that hold bit for bit, so they need no linear constraint:
 		//   c ^ d  -> fold        0 ^ b -> b        a ^ 0 -> a
 		match (self.const_of(a), self.const_of(b)) {
@@ -566,8 +597,12 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint.
+	/// 1 AND constraint, or none when both operands are the same wire.
 	pub fn bor(&self, a: Wire, b: Wire) -> Wire {
+		// Idempotent: x | x = x, bit for bit, so return x and emit no gate.
+		if self.algebraic_folding() && a == b {
+			return a;
+		}
 		// Identities that hold bit for bit, so they need no AND constraint:
 		//   c | d  -> fold        0 | b -> b        all-1 | b -> all-1
 		match (self.const_of(a), self.const_of(b)) {
@@ -1198,10 +1233,11 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// 1 AND constraint.
+	/// 1 AND constraint, or none when both arms are the same wire.
 	pub fn select(&self, cond: Wire, t: Wire, f: Wire) -> Wire {
-		// Both arms equal: the choice is irrelevant, so no AND constraint is needed.
-		if t == f {
+		// Both arms identical: the result is that wire regardless of the condition.
+		// This reads no bit of `cond`, so it is independent of the MSB-boolean convention.
+		if self.algebraic_folding() && t == f {
 			return t;
 		}
 		// A constant condition resolves the branch at compile time.

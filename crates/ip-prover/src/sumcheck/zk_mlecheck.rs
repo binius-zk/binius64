@@ -16,7 +16,10 @@ use binius_math::{
 	field_buffer::FieldBuffer, line::extrapolate_line_packed, univariate::evaluate_univariate,
 };
 
-use super::common::{MleCheckProver, SumcheckProver};
+use super::{
+	common::{MleCheckProver, SumcheckProver},
+	round_state::RoundState,
+};
 use crate::channel::IPProverChannel;
 
 /// Output of the ZK MLE-check proving protocol.
@@ -204,13 +207,7 @@ pub struct MleCheckMaskProver<F: Field, P: PackedField<Scalar = F>, Data: Deref<
 	/// Precomputed (1-z_j)*g_j(0) + z_j*g_j(1) for each variable
 	suffix_sums: Vec<F>,
 	/// State: either last round coefficients (after execute) or current claim (after fold)
-	last_coeffs_or_claim: RoundCoeffsOrClaim<F>,
-}
-
-#[derive(Debug, Clone)]
-enum RoundCoeffsOrClaim<F: Field> {
-	Coeffs(RoundCoeffs<F>),
-	Claim(F),
+	last_coeffs_or_claim: RoundState<RoundCoeffs<F>, F>,
 }
 
 impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>
@@ -248,7 +245,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>>
 			n_vars_remaining: n_vars,
 			prefix_sum: F::ZERO,
 			suffix_sums,
-			last_coeffs_or_claim: RoundCoeffsOrClaim::Claim(eval_claim),
+			last_coeffs_or_claim: RoundState::Claim(eval_claim),
 		}
 	}
 
@@ -272,8 +269,8 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 
 	fn round_claim(&self) -> Vec<F> {
 		let claim = match &self.last_coeffs_or_claim {
-			RoundCoeffsOrClaim::Claim(claim) => *claim,
-			RoundCoeffsOrClaim::Coeffs(coeffs) => {
+			RoundState::Claim(claim) => *claim,
+			RoundState::Coeffs(coeffs) => {
 				let alpha = self.eval_point[self.n_vars_remaining - 1];
 				coeffs.lerp_over_endpoints(alpha)
 			}
@@ -282,9 +279,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 	}
 
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
-		let RoundCoeffsOrClaim::Claim(_claim) = &self.last_coeffs_or_claim else {
-			panic!("execute called out of order; expected fold");
-		};
+		self.last_coeffs_or_claim.claim();
 
 		assert_ne!(self.n_vars_remaining, 0, "execute called out of order; expected finish");
 
@@ -309,14 +304,12 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 		}
 
 		let round_coeffs = RoundCoeffs(round_coeffs_vec);
-		self.last_coeffs_or_claim = RoundCoeffsOrClaim::Coeffs(round_coeffs.clone());
+		self.last_coeffs_or_claim = RoundState::Coeffs(round_coeffs.clone());
 		vec![round_coeffs]
 	}
 
 	fn fold(&mut self, challenge: F) {
-		let RoundCoeffsOrClaim::Coeffs(coeffs) = &self.last_coeffs_or_claim else {
-			panic!("fold called out of order; expected execute");
-		};
+		let coeffs = self.last_coeffs_or_claim.coeffs();
 
 		// Evaluate round polynomial at challenge to get new claim
 		let new_claim = coeffs.evaluate(challenge);
@@ -327,7 +320,7 @@ impl<F: Field, P: PackedField<Scalar = F>, Data: Deref<Target = [P]>> SumcheckPr
 		self.prefix_sum += self.mask.evaluate_univariate(var_idx, challenge);
 
 		self.n_vars_remaining -= 1;
-		self.last_coeffs_or_claim = RoundCoeffsOrClaim::Claim(new_claim);
+		self.last_coeffs_or_claim = RoundState::Claim(new_claim);
 	}
 
 	fn finish(self) -> Vec<F> {

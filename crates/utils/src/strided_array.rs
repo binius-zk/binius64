@@ -108,7 +108,7 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 	}
 
 	/// Returns parallel iterator over vertical slices of the data for the given stride.
-	pub fn into_par_strides(self, stride: usize) -> impl ParallelIterator<Item = Self> + 'a
+	pub fn into_par_strides(self, stride: usize) -> impl IndexedParallelIterator<Item = Self> + 'a
 	where
 		T: Send + Sync,
 	{

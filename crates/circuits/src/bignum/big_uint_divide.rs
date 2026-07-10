@@ -2,12 +2,7 @@
 //! BigUint division hint implementation
 
 use binius_core::Word;
-
-use super::Hint;
-use crate::{
-	compiler::{CircuitBuilder, Wire},
-	util::num_biguint_from_u64_limbs,
-};
+use binius_frontend::{CircuitBuilder, Wire, hints::Hint, util::num_biguint_from_u64_limbs};
 
 pub struct BigUintDivideHint;
 
@@ -92,5 +87,59 @@ impl Hint for BigUintDivideHint {
 		for i in remainder.iter_u64_digits().len()..n_remainder {
 			outputs[n_quotient + i] = Word::ZERO;
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_biguint_divide_hint() {
+		let builder = CircuitBuilder::new();
+
+		// (2^128-1) % (2^64-5) = 24
+		let d0 = builder.add_constant_64(u64::MAX);
+		let d1 = builder.add_constant_64(u64::MAX);
+
+		let m = builder.add_constant_64(u64::MAX - 4);
+
+		let (q, r) = BigUintDivideHint::call(&builder, &[d0, d1], &[m]);
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		circuit.populate_wire_witness(&mut w).unwrap();
+
+		assert_eq!(r.len(), 1);
+		assert_eq!(w[r[0]], Word(24));
+
+		assert_eq!(q.len(), 2);
+		assert_eq!(w[q[0]], Word(5));
+		assert_eq!(w[q[1]], Word(1));
+	}
+
+	#[test]
+	fn test_biguint_divide_hint_div_by_zero() {
+		let builder = CircuitBuilder::new();
+
+		let d0 = builder.add_constant_64(u64::MAX);
+		let d1 = builder.add_constant_64(u64::MAX);
+
+		let m0 = builder.add_constant_64(0);
+		let m1 = builder.add_constant_64(0);
+
+		let (q, r) = BigUintDivideHint::call(&builder, &[d0, d1], &[m0, m1]);
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		circuit.populate_wire_witness(&mut w).unwrap();
+
+		assert_eq!(r.len(), 2);
+		assert_eq!(w[r[0]], Word(0));
+		assert_eq!(w[r[1]], Word(0));
+
+		assert_eq!(q.len(), 2);
+		assert_eq!(w[q[0]], Word(0));
+		assert_eq!(w[q[1]], Word(0));
 	}
 }

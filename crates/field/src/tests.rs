@@ -10,7 +10,7 @@ use crate::{
 	PackedAESBinaryField16x8b, PackedAESBinaryField32x8b, PackedAESBinaryField64x8b,
 	PackedBinaryField64x1b, PackedBinaryField128x1b, PackedBinaryField256x1b,
 	PackedBinaryField512x1b, PackedBinaryGhash1x128b, PackedBinaryGhash2x128b,
-	PackedBinaryGhash4x128b, PackedField,
+	PackedBinaryGhash4x128b, PackedField, SlicedGhashSq2x256b,
 	field::FieldOps,
 	underlier::{SmallU, WithUnderlier},
 };
@@ -191,4 +191,14 @@ fn test_packed_field_ops_square_transpose_packed_aes16x8b_over_1b() {
 #[test]
 fn test_packed_field_ops_square_transpose_packed128x1b_over_1b() {
 	check_packed_field_ops_square_transpose::<BinaryField1b, PackedBinaryField128x1b>();
+}
+
+#[test]
+fn test_packed_field_ops_square_transpose_ghashsq2x256b_over_ghash() {
+	check_packed_field_ops_square_transpose::<BinaryField128bGhash, SlicedGhashSq2x256b>();
+}
+
+#[test]
+fn test_packed_field_ops_square_transpose_ghashsq2x256b_over_1b() {
+	check_packed_field_ops_square_transpose::<BinaryField1b, SlicedGhashSq2x256b>();
 }

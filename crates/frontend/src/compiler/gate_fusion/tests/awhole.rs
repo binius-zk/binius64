@@ -122,9 +122,10 @@ fn mk_circuit_builder() -> CircuitBuilder {
 		enable_gate_fusion: true,
 		enable_constant_propagation: false,
 		// Keep these snapshots focused on fusion.
-		// Dead-code elimination and CSE would drop or collapse the gates they assert on.
+		// DCE, CSE, and algebraic folding would drop or rewrite the gates they assert on.
 		enable_common_subexpression_elimination: false,
 		enable_dead_code_elimination: false,
+		enable_algebraic_folding: false,
 	};
 	CircuitBuilder::with_opts(opts)
 }

@@ -53,7 +53,7 @@ impl Alloc {
 		self.w_scratch.push(wire);
 	}
 
-	pub fn into_assignment(mut self) -> Assignment {
+	pub fn into_assignment(self) -> Assignment {
 		// `ValueVec` expects the wires to be in a certain order. Specifically:
 		//
 		// 1. const
@@ -72,9 +72,9 @@ impl Alloc {
 		let n_internal = self.w_internal.len();
 		let n_scratch = self.w_scratch.len();
 
-		// Sort the wires pointing to the constant section of the input value vector ascending
-		// to their values.
-		self.w_const.sort_by_key(|&(_, value)| value);
+		// Constants keep the order in which they were added, which is wire-creation order.
+		// The gate graph seeds the all-one constant first (see `GateGraph::new`).
+		// So it is the first constant here and lands at value index 0.
 
 		// First, allocate the indices for the public section of the value vec. The public section
 		// consists of constant wires followed by inout wires.
@@ -153,7 +153,7 @@ mod tests {
 
 		let mut alloc = Alloc::new();
 
-		// Add wires in mixed order to test sorting
+		// Add wires in a deliberately mixed order to test section ordering.
 		let witness1 = Wire::from_u32(0);
 		let const1 = Wire::from_u32(1);
 		let internal1 = Wire::from_u32(2);
@@ -182,12 +182,12 @@ mod tests {
 		// Build the assignment
 		let assignment = alloc.into_assignment();
 
-		// Verify constants come first and are sorted by value
+		// Constants come first, in the order they were added.
 		assert_eq!(assignment.wire_mapping[const1], ValueIndex(0));
 		assert_eq!(assignment.wire_mapping[const2], ValueIndex(1));
 		assert_eq!(assignment.wire_mapping[const3], ValueIndex(2));
 
-		// Verify the constants vector is sorted by value
+		// The constants vector preserves insertion order.
 		assert_eq!(assignment.constants, vec![Word(42), Word(100), Word(200)]);
 
 		// Inout wires should come after constants

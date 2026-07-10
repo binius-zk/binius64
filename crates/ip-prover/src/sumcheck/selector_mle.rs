@@ -13,6 +13,7 @@ use super::{
 	common::SumcheckProver,
 	gruen32::Gruen32,
 	round_evals::{RoundEvals2, WideRoundEvals2},
+	round_state::RoundState,
 	switchover::BinarySwitchover,
 };
 
@@ -35,7 +36,7 @@ pub struct Claim<F: Field> {
 /// that the need to expand the equality indicator for each multilinear still results in some
 /// blowup.
 pub struct SelectorMlecheckProver<'b, P: PackedField, B: Bitwise> {
-	last_coeffs_or_sums: RoundCoeffsOrSums<P::Scalar>,
+	last_coeffs_or_sums: RoundState<Vec<RoundCoeffs<P::Scalar>>, Vec<P::Scalar>>,
 	selected: FieldBuffer<P>,
 	gruen32s: Vec<Gruen32<P>>,
 	weights: Vec<P::Scalar>,
@@ -84,7 +85,7 @@ impl<'b, F: Field, P: PackedField<Scalar = F>, B: Bitwise> SelectorMlecheckProve
 			.collect::<(Vec<_>, Vec<_>)>();
 
 		let switchover = BinarySwitchover::new(sums.len(), switchover.min(n_vars), bitmasks);
-		let last_coeffs_or_sums = RoundCoeffsOrSums::Sums(sums);
+		let last_coeffs_or_sums = RoundState::Claim(sums);
 
 		Self {
 			last_coeffs_or_sums,
@@ -113,10 +114,10 @@ where
 
 	fn round_claim(&self) -> Vec<F> {
 		let per_claim: Vec<F> = match &self.last_coeffs_or_sums {
-			RoundCoeffsOrSums::Sums(sums) => sums.clone(),
+			RoundState::Claim(sums) => sums.clone(),
 			// This prover has a separate evaluation point per claim, so each round polynomial is
 			// interpolated against its own coordinate.
-			RoundCoeffsOrSums::Coeffs(coeffs) => izip!(coeffs, &self.gruen32s)
+			RoundState::Coeffs(coeffs) => izip!(coeffs, &self.gruen32s)
 				.map(|(coeffs, gruen32)| coeffs.lerp_over_endpoints(gruen32.next_coordinate()))
 				.collect(),
 		};
@@ -125,9 +126,7 @@ where
 	}
 
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
-		let RoundCoeffsOrSums::Sums(sums) = &self.last_coeffs_or_sums else {
-			panic!("execute called out of order; expected fold");
-		};
+		let sums = self.last_coeffs_or_sums.claim();
 
 		assert!(self.n_vars() > 0);
 
@@ -229,7 +228,7 @@ where
 			})
 			.unzip::<_, _, Vec<_>, Vec<_>>();
 
-		self.last_coeffs_or_sums = RoundCoeffsOrSums::Coeffs(prime_coeffs);
+		self.last_coeffs_or_sums = RoundState::Coeffs(prime_coeffs);
 
 		// Combine the per-claim round polynomials into the single weighted round polynomial
 		// `Σ_i weights[i] · R_i`.
@@ -240,9 +239,7 @@ where
 	}
 
 	fn fold(&mut self, challenge: F) {
-		let RoundCoeffsOrSums::Coeffs(prime_coeffs) = &self.last_coeffs_or_sums else {
-			panic!("fold called out of order; expected execute");
-		};
+		let prime_coeffs = self.last_coeffs_or_sums.coeffs();
 
 		assert!(self.n_vars() > 0);
 
@@ -258,7 +255,7 @@ where
 		self.switchover.fold(challenge);
 		fold_highest_var_inplace(&mut self.selected, challenge);
 
-		self.last_coeffs_or_sums = RoundCoeffsOrSums::Sums(sums);
+		self.last_coeffs_or_sums = RoundState::Claim(sums);
 	}
 
 	fn finish(self) -> Vec<F> {
@@ -277,11 +274,6 @@ where
 
 		multilinear_evals
 	}
-}
-
-enum RoundCoeffsOrSums<F: Field> {
-	Coeffs(Vec<RoundCoeffs<F>>),
-	Sums(Vec<F>),
 }
 
 #[cfg(test)]

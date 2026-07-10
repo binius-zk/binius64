@@ -235,7 +235,28 @@ mod tests {
 
 	#[test]
 	fn test_constant_propagation_with_hint() {
-		use crate::compiler::hints::BigUintDivideHint;
+		use crate::compiler::hints::Hint;
+
+		// A minimal single-limb divide hint. It exercises constant propagation across a hint
+		// gate without depending on any concrete circuit hint: given `[dividend, divisor]` it
+		// returns `[quotient, remainder]`.
+		struct DivRemHint;
+
+		impl Hint for DivRemHint {
+			const NAME: &'static str = "test::div_rem";
+
+			fn shape(&self, dimensions: &[usize]) -> (usize, usize) {
+				assert!(dimensions.is_empty(), "DivRemHint has constant shape");
+				(2, 2)
+			}
+
+			fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+				let dividend = inputs[0].as_u64();
+				let divisor = inputs[1].as_u64();
+				outputs[0] = Word::from_u64(dividend / divisor);
+				outputs[1] = Word::from_u64(dividend % divisor);
+			}
+		}
 
 		let mut graph = GateGraph::new();
 		let root = graph.path_spec_tree.root();
@@ -247,11 +268,11 @@ mod tests {
 		let remainder = graph.add_witness();
 
 		let mut hint_registry = HintRegistry::new();
-		let hint_id = hint_registry.register(BigUintDivideHint::new());
+		let hint_id = hint_registry.register(DivRemHint);
 		graph.emit_hint_gate(
 			root,
 			hint_id,
-			&[1, 1],
+			&[],
 			vec![dividend, divisor],
 			vec![quotient, remainder],
 		);

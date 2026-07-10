@@ -1,12 +1,14 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use binius_core::{consts::WORD_SIZE_BITS, word::Word};
-use binius_frontend::{CircuitBuilder, Wire, hints::Secp256k1EndosplitHint};
+use binius_frontend::{CircuitBuilder, Wire};
 
 use crate::{
 	bignum::{BigUint, assert_eq, select as select_biguint},
 	multiplexer::multi_wire_multiplex,
-	secp256k1::{N_LIMBS, Secp256k1, Secp256k1Affine, coord_lambda, coord_zero},
+	secp256k1::{
+		N_LIMBS, Secp256k1, Secp256k1Affine, Secp256k1EndosplitHint, coord_lambda, coord_zero,
+	},
 };
 
 /// Optimal Straus window size (in bits) for secp256k1 multi-scalar multiplications; see

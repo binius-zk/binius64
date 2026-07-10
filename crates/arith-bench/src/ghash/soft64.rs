@@ -14,6 +14,8 @@
 // shall be included in all copies or substantial portions
 // of the Software.
 
+// Copyright 2026 The Binius Developers
+
 //! Constant-time software implementation of GHASH for 64-bit architectures.
 //!
 //! This implementation is adapted from the RustCrypto/universal-hashes repository:
@@ -29,7 +31,13 @@
 
 use crate::arch::portable64::{U64x2, bmul64, bsqr64, rev64};
 
-/// Multiply two GHASH field elements using software implementation.
+/// Widening (unreduced) GHASH multiply: the 256-bit schoolbook polynomial product of two GHASH
+/// field elements, without the modular reduction.
+///
+/// Returns the four 64-bit limbs `[v0, v1, v2, v3]` of the product `v0 + v1·X^64 + v2·X^128 +
+/// v3·X^192`. Because the reduction ([`reduce`]) is F2-linear, these limbs can be XOR-accumulated
+/// across many products and reduced only once — an inner product of `n` terms costs one reduction
+/// instead of `n`.
 ///
 /// Method described at:
 /// * <https://www.bearssl.org/constanttime.html#ghash-for-gcm>
@@ -37,7 +45,8 @@ use crate::arch::portable64::{U64x2, bmul64, bsqr64, rev64};
 ///
 /// This code does not conform to the bit-endianness requirements of the GCM specification, but is
 /// a valid GHASH field multiplication with the modified representation.
-pub fn mul(x: u128, y: u128) -> u128 {
+#[inline]
+pub fn mul_wide(x: u128, y: u128) -> [u64; 4] {
 	// Convert to U64x2 representation
 	let U64x2(x0, x1) = U64x2::from(x);
 	let U64x2(y0, y1) = U64x2::from(y);
@@ -67,12 +76,16 @@ pub fn mul(x: u128, y: u128) -> u128 {
 	z1h = rev64(z1h) >> 1;
 	z2h = rev64(z2h) >> 1;
 
-	let mut v0 = z0;
-	let mut v1 = z0h ^ z2;
-	let mut v2 = z1 ^ z2h;
-	let v3 = z1h;
+	[z0, z0h ^ z2, z1 ^ z2h, z1h]
+}
 
-	// Reduce modulo X^128 + X^7 + X^2 + X + 1.
+/// Reduce a 256-bit widening product, given as its four 64-bit limbs `[v0, v1, v2, v3]`, to a
+/// single GHASH field element modulo `X^128 + X^7 + X^2 + X + 1`.
+///
+/// This is an F2-linear map, so `reduce(a) ^ reduce(b) == reduce([a0 ^ b0, ..])`: unreduced
+/// products may be summed by XOR and reduced once at the end.
+#[inline]
+pub fn reduce([mut v0, mut v1, mut v2, v3]: [u64; 4]) -> u128 {
 	v1 ^= v3 ^ (v3 << 1) ^ (v3 << 2) ^ (v3 << 7);
 	v2 ^= (v3 >> 63) ^ (v3 >> 62) ^ (v3 >> 57);
 	v0 ^= v2 ^ (v2 << 1) ^ (v2 << 2) ^ (v2 << 7);
@@ -80,6 +93,14 @@ pub fn mul(x: u128, y: u128) -> u128 {
 
 	// Convert back to u128
 	U64x2(v0, v1).into()
+}
+
+/// Multiply two GHASH field elements using software implementation.
+///
+/// Composes the widening multiply [`mul_wide`] with the modular [`reduce`]; both are inlined.
+#[inline]
+pub fn mul(x: u128, y: u128) -> u128 {
+	reduce(mul_wide(x, y))
 }
 
 /// Square a GHASH field element using software implementation.
@@ -97,19 +118,7 @@ pub fn square(x: u128) -> u128 {
 	let x1l = x1 & 0x00000000FFFFFFFF;
 	let x1h = x1 >> 32;
 
-	let mut v0 = bsqr64(x0l);
-	let mut v1 = bsqr64(x0h);
-	let mut v2 = bsqr64(x1l);
-	let v3 = bsqr64(x1h);
-
-	// Reduce modulo X^128 + X^7 + X^2 + X + 1.
-	v1 ^= v3 ^ (v3 << 1) ^ (v3 << 2) ^ (v3 << 7);
-	v2 ^= (v3 >> 63) ^ (v3 >> 62) ^ (v3 >> 57);
-	v0 ^= v2 ^ (v2 << 1) ^ (v2 << 2) ^ (v2 << 7);
-	v1 ^= (v2 >> 63) ^ (v2 >> 62) ^ (v2 >> 57);
-
-	// Convert back to u128
-	U64x2(v0, v1).into()
+	reduce([bsqr64(x0l), bsqr64(x0h), bsqr64(x1l), bsqr64(x1h)])
 }
 
 /// Multiply a GHASH field element by X^{-1}.
@@ -177,11 +186,25 @@ mod tests {
 			prop_assert_eq!(mul_inv_x(a), mul(a, INV_X), "mul_inv_x does not match mul by INV_X");
 		}
 
+
 		#[test]
 		fn test_ghash_soft64_square(
 			a in any::<u128>(),
 		) {
 			test_square_equals_mul(a, mul, square, "GHASH");
+		}
+
+		// The reduction is F2-linear, so accumulating two unreduced products by XOR and reducing
+		// once equals reducing each and summing.
+		#[test]
+		fn test_ghash_soft64_wide_mul_deferred_reduction(
+			a1 in any::<u128>(), b1 in any::<u128>(),
+			a2 in any::<u128>(), b2 in any::<u128>(),
+		) {
+			let [p0, p1, p2, p3] = mul_wide(a1, b1);
+			let [q0, q1, q2, q3] = mul_wide(a2, b2);
+			let acc = reduce([p0 ^ q0, p1 ^ q1, p2 ^ q2, p3 ^ q3]);
+			prop_assert_eq!(acc, mul(a1, b1) ^ mul(a2, b2));
 		}
 	}
 }

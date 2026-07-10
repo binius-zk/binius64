@@ -196,6 +196,13 @@ pub struct GateGraph {
 	pub n_witness: usize,
 	pub n_inout: usize,
 
+	/// The all-one constant wire, seeded as the first constant at construction.
+	///
+	/// - The linear-to-AND lowering and gate fusion both need an all-one word.
+	/// - Seeding it before any other wire makes it Wire 0 and the first constant.
+	/// - So it lands at constant index 0 of the value vector, with no later fix-up.
+	pub all_one: Wire,
+
 	// Use-def analysis
 	/// Maps each wire to the gate that defines it (if any)
 	pub wire_def: SecondaryMap<Wire, Option<Gate>>,
@@ -209,7 +216,7 @@ impl GateGraph {
 	pub fn new() -> Self {
 		let path_spec_tree = PathSpecTree::new();
 		let root = path_spec_tree.root();
-		Self {
+		let mut graph = Self {
 			gates: PrimaryMap::new(),
 			wires: PrimaryMap::new(),
 			path_spec_tree,
@@ -218,9 +225,15 @@ impl GateGraph {
 			const_pool: ConstPool::new(),
 			n_witness: 0,
 			n_inout: 0,
+			// Placeholder; overwritten by the seeding call below before any other wire exists.
+			all_one: Wire::from_u32(0),
 			wire_def: SecondaryMap::new(),
 			wire_uses: SecondaryMap::new(),
-		}
+		};
+		// Seed the all-one constant before anything else is added.
+		// This makes it Wire 0 and the first constant in the value vector's constants segment.
+		graph.all_one = graph.add_constant(Word::ALL_ONE);
+		graph
 	}
 
 	/// Runs a validation pass ensuring all the invariants hold.
