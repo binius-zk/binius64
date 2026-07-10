@@ -6,17 +6,19 @@ use binius_core::{
 	constraint_system::{ValueVec, ValueVecLayout},
 	word::Word,
 };
+use binius_field::PackedField;
 use binius_frontend::{BatchPopulateError, Circuit, Wire};
+use binius_m4_verifier::BatchCommitLayout;
+use binius_math::FieldBuffer;
 use binius_utils::strided_array::StridedArray2DViewMut;
+use binius_verifier::config::B128;
 
 /// Default number of instance columns evaluated by one parallel witness-generation task.
 const DEFAULT_PARALLEL_STRIPE_WIDTH: usize = 1024;
 
 /// The witness for a batch of `2^k` independent instances of one circuit, in wire-major order.
 ///
-/// This is the transpose of [`ValueTable`](crate::ValueTable). Where `ValueTable` stores each
-/// instance's words back to back (instance-major), `ValueTable2` groups each wire's values across
-/// all instances (wire-major):
+/// Each wire's values across all instances are grouped together, one wire per row (wire-major):
 ///
 /// ```text
 ///                 instance 0   instance 1   ...   instance K-1
@@ -25,14 +27,11 @@ const DEFAULT_PARALLEL_STRIPE_WIDTH: usize = 1024;
 ///        ...
 /// ```
 ///
-/// Each row is one wire and each column is one instance, so a batched interpreter can advance every
-/// instance of a wire in a single pass. Transposing the value table this way is expected to pay off
-/// throughout the rest of the M4 protocol.
+/// Each row is one wire and each column is one instance.
+/// So a batched interpreter can advance every instance of a wire in a single pass.
 ///
-/// # Differences from `ValueTable`
-///
-/// This table is specialized for the M4 accelerator setting, where a circuit plugs into a larger
-/// system rather than exposing public inputs and outputs:
+/// This table is specialized for the M4 accelerator setting.
+/// A circuit plugs into a larger system rather than exposing public inputs and outputs:
 ///
 /// 1. **No inout wires.** The circuit's [`ValueVecLayout`] must have `n_inout == 0`. Output wires
 ///    are kept alive with
@@ -256,6 +255,31 @@ impl ValueTable2 {
 		ValueVec::new_from_data(self.layout.clone(), public, private)
 			.expect("public and private lengths match the layout by construction")
 	}
+
+	/// The committed-multilinear layout for this batch.
+	///
+	/// The verifier derives the same layout from the constraint system.
+	/// So both sides agree on the committed size.
+	pub fn commit_layout(&self) -> BatchCommitLayout {
+		BatchCommitLayout::new(self.n_hidden_words(), self.log_instances())
+	}
+
+	/// Packs the wire-major hidden buffer into the multilinear committed as the trace oracle.
+	///
+	/// Two little-endian words pack into one field element.
+	/// The element sequence is zero-padded up to the committed element count.
+	/// The instance index occupies the low coordinates, the hidden-word index the high coordinates.
+	/// Only the hidden segment is committed; the shared constants are not part of the oracle.
+	pub fn pack<P>(&self) -> FieldBuffer<P>
+	where
+		P: PackedField<Scalar = B128>,
+	{
+		// The stored buffer is already the committed word sequence, wire-major.
+		// The base packer zero-pads it up to `2^log_witness_elems` elements.
+		let layout = self.commit_layout();
+		binius_prover::pack_witness::<P>(layout.log_witness_elems, self.as_words())
+			.expect("the hidden buffer fits in 2^log_witness_elems field elements by construction")
+	}
 }
 
 /// Assigns witness input wires of one instance into a [`ValueTable2`] working buffer.
@@ -286,6 +310,7 @@ impl IndexMut<Wire> for Batch2WitnessFiller<'_, '_> {
 #[cfg(test)]
 mod tests {
 	use binius_core::verify::verify_constraints;
+	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::{CircuitBuilder, Wire};
 	use proptest::prelude::*;
 
@@ -535,5 +560,36 @@ mod tests {
 			w[a] = Word(1);
 			w[b] = Word(1);
 		});
+	}
+
+	#[test]
+	fn pack_lays_out_hidden_words_wire_major() {
+		type P = PackedBinaryGhash1x128b;
+		let c = mix_circuit();
+
+		// Fixture state: 4 instances with distinct witness inputs.
+		let table = ValueTable2::populate(&c.circuit, 2, |i, w| {
+			w[c.a] = Word((i as u64).wrapping_mul(0x9e37_79b9));
+			w[c.b] = Word(i as u64 ^ 0xdead);
+		})
+		.unwrap();
+
+		let layout = table.commit_layout();
+		let packed: Vec<B128> = table.pack::<P>().iter_scalars().collect();
+
+		// The committed scalars are the wire-major buffer taken two little-endian words per
+		// element. Indices past the stored words are the commitment's zero padding.
+		let words = table.as_words();
+		let total_elems = 1usize << layout.log_witness_elems;
+		let expected: Vec<B128> = (0..total_elems)
+			.map(|e| {
+				let w0 = words.get(2 * e).map_or(0, |w| w.0);
+				let w1 = words.get(2 * e + 1).map_or(0, |w| w.0);
+				B128::new(((w1 as u128) << 64) | (w0 as u128))
+			})
+			.collect();
+
+		assert_eq!(packed.len(), total_elems);
+		assert_eq!(packed, expected);
 	}
 }
