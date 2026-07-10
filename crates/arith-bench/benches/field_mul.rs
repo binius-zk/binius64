@@ -1116,6 +1116,80 @@ fn bench_monbijou_192b_inner_product(c: &mut Criterion) {
 	group.finish();
 }
 
+/// Benchmark inner products over the degree-2 Monbijou extension GF(2^128), contrasting the
+/// delayed-reduction widening multiply (accumulate the three raw products, reduce once) against the
+/// reduce-every-term multiply, for both the packed (`u128`) and sliced representations.
+#[allow(unused_imports, unused_variables, unused_mut)]
+fn bench_monbijou_128b_inner_product(c: &mut Criterion) {
+	use binius_arith_bench::monbijou::{clmul, soft64};
+
+	/// Length of the inner product.
+	const LOG_LEN: usize = 10;
+
+	let mut rng = rand::rng();
+
+	let mut group = c.benchmark_group("monbijou_128b_inner_product");
+
+	// Portable soft64 (unsliced u128): reduce each product vs accumulate the three raw products.
+	run_inner_product_benchmark(
+		&mut group,
+		"soft64::mul_128b",
+		soft64::mul_128b,
+		&mut rng,
+		LOG_LEN,
+		128,
+	);
+	run_inner_product_benchmark(
+		&mut group,
+		"soft64::mul_wide_128b",
+		soft64::mul_wide_128b,
+		&mut rng,
+		LOG_LEN,
+		128,
+	);
+
+	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
+	{
+		// Packed representation (coefficients in the low/high halves of each lane).
+		run_inner_product_benchmark(
+			&mut group,
+			"clmul::mul_128b::<__m128i>",
+			clmul::mul_128b::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+			128,
+		);
+		run_inner_product_benchmark(
+			&mut group,
+			"clmul::mul_wide_128b::<__m128i>",
+			clmul::mul_wide_128b::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+			128,
+		);
+
+		// Sliced representation (coefficients in separate registers).
+		run_inner_product_benchmark(
+			&mut group,
+			"clmul::mul_sliced_128b::<__m128i>",
+			clmul::mul_sliced_128b::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+			128,
+		);
+		run_inner_product_benchmark(
+			&mut group,
+			"clmul::mul_wide_sliced_128b::<__m128i>",
+			clmul::mul_wide_sliced_128b::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+			128,
+		);
+	}
+
+	group.finish();
+}
+
 criterion_group!(
 	benches,
 	bench_rijndael,
@@ -1128,6 +1202,7 @@ criterion_group!(
 	bench_ghash_inner_product,
 	bench_ghash_sq_inner_product,
 	bench_monbijou_inner_product,
+	bench_monbijou_128b_inner_product,
 	bench_monbijou_192b_inner_product,
 );
 criterion_main!(benches);
