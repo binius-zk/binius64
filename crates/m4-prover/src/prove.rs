@@ -14,7 +14,7 @@ use binius_math::{
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_verifier::config::B128;
 
-use crate::ValueTable;
+use crate::ValueTable2;
 
 /// The multithreaded additive NTT used to encode the committed codeword.
 type ProverNtt = NeighborsLastMultiThread<GenericPreExpanded<B128>>;
@@ -81,7 +81,7 @@ where
 	/// The random point and the evaluation the prover commits to at it.
 	pub fn prove<Challenger_>(
 		&self,
-		table: &ValueTable,
+		table: &ValueTable2,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> (Vec<B128>, B128)
 	where
@@ -138,7 +138,7 @@ mod tests {
 
 	type P = PackedBinaryGhash1x128b;
 
-	// A circuit asserting `z == x & y` over three public words.
+	// A circuit asserting `z == x & y` over three witness words (no inout — the M4 setting).
 	// Satisfiable for an instance exactly when it sets z = x & y.
 	struct AndCircuit {
 		circuit: Circuit,
@@ -149,9 +149,9 @@ mod tests {
 
 	fn and_circuit() -> AndCircuit {
 		let builder = CircuitBuilder::new();
-		let x = builder.add_inout();
-		let y = builder.add_inout();
-		let z = builder.add_inout();
+		let x = builder.add_witness();
+		let y = builder.add_witness();
+		let z = builder.add_witness();
 		let and = builder.band(x, y);
 		builder.assert_eq("z_eq_x_and_y", and, z);
 		AndCircuit {
@@ -163,9 +163,9 @@ mod tests {
 	}
 
 	// Populate one instance per `(x, y)` pair; the instance count is the pair count.
-	fn populate_table(c: &AndCircuit, inputs: &[(u64, u64)]) -> ValueTable {
+	fn populate_table(c: &AndCircuit, inputs: &[(u64, u64)]) -> ValueTable2 {
 		let log_instances = inputs.len().ilog2() as usize;
-		ValueTable::populate(&c.circuit, log_instances, |i, w| {
+		ValueTable2::populate(&c.circuit, log_instances, |i, w| {
 			let (x, y) = inputs[i];
 			w[c.x] = Word(x);
 			w[c.y] = Word(y);
