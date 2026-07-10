@@ -14,14 +14,13 @@ pub const N_WORDS_PER_STATE: usize = 25;
 pub const RATE_BYTES: usize = 136;
 pub const N_WORDS_PER_BLOCK: usize = RATE_BYTES / 8;
 
-/// Keccak-256 circuit that can handle variable-length inputs up to a specified maximum length.
+/// Keccak-256 circuit for variable-length inputs up to a fixed maximum.
 ///
-/// # Arguments
-///
-/// * `len_bytes` - A wire representing the input message length in bytes
-/// * `digest` - Array of 4 wires representing the 256-bit output digest
-/// * `message` - Vector of wires representing the input message
+/// Satisfiable iff `digest` is the Keccak-256 hash of `message[..len_bytes]`. The prover
+/// chooses `len_bytes`; see [`Keccak256::new`] for the caller obligation that implies.
 pub struct Keccak256 {
+	/// Claimed message length. Only bounded by `len_bytes <= max_len_bytes`; callers must
+	/// constrain the value (see [`Keccak256::new`]).
 	pub len_bytes: Wire,
 	pub digest: [Wire; N_WORDS_PER_DIGEST],
 	pub message: Vec<Wire>,
@@ -35,18 +34,34 @@ impl Keccak256 {
 		&self.padded_message
 	}
 
-	/// Create a new keccak circuit using the circuit builder
+	/// Create a new keccak circuit using the circuit builder.
+	///
+	/// The resulting circuit is satisfiable iff `digest` is the Keccak-256 hash of the first
+	/// `len_bytes` bytes of `message`. The maximum supported length is fixed at construction
+	/// time by `message.len()` (`max_len_bytes = message.len() * 8`).
 	///
 	/// # Arguments
 	///
-	/// * `builder` - circuit builder object
-	/// * `max_len` - max message length in bytes for this circuit instance
-	/// * `len` - wire representing the claimed input message length in bytes
-	/// * `digest` - array of 4 wires representing the claimed 256-bit output digest
-	/// * `message` - vector of wires representing the claimed input message
+	/// * `b` - circuit builder object
+	/// * `len_bytes` - wire holding the *claimed* input message length in bytes
+	/// * `digest` - array of 4 wires holding the claimed 256-bit output digest
+	/// * `message` - wires holding the claimed input message, packed 8 bytes per wire,
+	///   little-endian; `message.len()` fixes `max_len_bytes` for this instance
 	///
-	/// ## Preconditions
-	/// * max_len > 0
+	/// # Preconditions
+	/// * `message` is non-empty (`max_len_bytes > 0`).
+	///
+	/// # Soundness — callers must constrain `len_bytes`
+	///
+	/// This proves `digest == keccak256(message[..len_bytes])` for a *prover-chosen* `len_bytes`
+	/// (the only in-circuit check is `len_bytes <= max_len_bytes`), **not**
+	/// `digest == keccak256(message)`. So if `len_bytes` is a free witness and `digest` is
+	/// prover-influenced, the system is satisfiable for any prefix: claim a shorter length and
+	/// supply that prefix's digest with matching padding. A verifier-fixed public `digest`
+	/// neutralizes this; a digest consumed internally does not. Callers must pin `len_bytes` — to
+	/// a public input, a constant, or another constrained wire; for a compile-time length, prefer
+	/// the cheaper [`fixed_length::keccak256`]. The in-tree `ethsign` circuit is the safe pattern.
+	/// Message bytes past `len_bytes` are unconstrained.
 	pub fn new(
 		b: &CircuitBuilder,
 		len_bytes: Wire,
@@ -301,8 +316,8 @@ impl Keccak256 {
 
 #[cfg(test)]
 mod tests {
-	use binius_core::verify::verify_constraints;
-	use binius_frontend::{CircuitBuilder, Wire};
+	use binius_core::{verify::verify_constraints, word::Word};
+	use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 	use rand::prelude::*;
 	use rstest::rstest;
 	use sha3::Digest;
@@ -362,5 +377,128 @@ mod tests {
 		let cs = circuit.constraint_system();
 		verify_constraints(cs, &witness.into_value_vec())
 			.expect("All constraints should be satisfied");
+	}
+
+	// Characterization tests for the `len_bytes` caller obligation (see `Keccak256::new`).
+	// They drive the constraint system directly with all wires prover-populated, modelling
+	// the composed-circuit case where `digest` is prover-influenced. The gadget previously
+	// had no negative tests.
+
+	fn keccak256_native(msg: &[u8]) -> [u8; 32] {
+		let mut h = sha3::Keccak256::new();
+		h.update(msg);
+		h.finalize().into()
+	}
+
+	/// Build a variable-length `Keccak256` with `len_bytes` a free witness, populate `msg`
+	/// claiming `claimed_len`/`claimed_digest`, apply `tamper`, and return whether the
+	/// system is satisfiable.
+	fn run_free_len(
+		cap_words: usize,
+		msg: &[u8],
+		claimed_len: usize,
+		claimed_digest: [u8; 32],
+		tamper: impl Fn(&mut WitnessFiller<'_>, &Keccak256),
+	) -> Result<(), String> {
+		let b = CircuitBuilder::new();
+		let len = b.add_witness();
+		let digest: [Wire; N_WORDS_PER_DIGEST] = std::array::from_fn(|_| b.add_inout());
+		let message: Vec<Wire> = (0..cap_words).map(|_| b.add_inout()).collect();
+		let keccak = Keccak256::new(&b, len, digest, message);
+		let circuit = b.build();
+
+		let mut w = circuit.new_witness_filler();
+		keccak.populate_len_bytes(&mut w, claimed_len);
+		keccak.populate_message(&mut w, msg);
+		keccak.populate_digest(&mut w, claimed_digest);
+		tamper(&mut w, &keccak);
+
+		circuit
+			.populate_wire_witness(&mut w)
+			.map_err(|e| format!("populate: {e:?}"))?;
+		verify_constraints(circuit.constraint_system(), &w.into_value_vec())
+			.map_err(|e| format!("verify: {e}"))
+	}
+
+	/// Overwrite every `padded_message` wire with valid Keccak padding for `prefix`
+	/// (assumed to fit in a single rate block), mounting the prefix-hash attack.
+	fn install_prefix_padding(w: &mut WitnessFiller<'_>, k: &Keccak256, prefix: &[u8]) {
+		assert!(prefix.len() < RATE_BYTES, "helper only builds single-block padding");
+		let mut padded = vec![0u8; k.padded_message().len() * 8];
+		padded[..prefix.len()].copy_from_slice(prefix);
+		padded[prefix.len()] = 0x01; // start of keccak `pad10*1`
+		padded[RATE_BYTES - 1] |= 0x80; // ... and its end, within the first rate block
+		for (i, chunk) in padded.chunks_exact(8).enumerate() {
+			w[k.padded_message()[i]] = Word(u64::from_le_bytes(chunk.try_into().unwrap()));
+		}
+	}
+
+	/// With `len_bytes` a free witness, a prover can prove the hash of an arbitrary *prefix*:
+	/// commit a 100-byte message, claim `len = 50`, supply `keccak256(message[..50])`, and the
+	/// circuit is satisfiable. (Caller obligation, not a gadget bug — see `Keccak256::new`.)
+	#[test]
+	fn test_unconstrained_len_admits_prefix_hash() {
+		const CAP_WORDS: usize = 51; // max_len_bytes = 408 => 4 rate blocks
+		let msg: Vec<u8> = (0..100u32).map(|i| (i * 7 + 3) as u8).collect();
+
+		// Honest control: claiming the true length verifies with the true digest.
+		let full = keccak256_native(&msg);
+		run_free_len(CAP_WORDS, &msg, msg.len(), full, |_, _| {})
+			.expect("honest full-length witness must verify");
+
+		// Attack: claim a shorter length and prove the prefix digest instead.
+		let prefix = &msg[..50];
+		let prefix_digest = keccak256_native(prefix);
+		let res = run_free_len(CAP_WORDS, &msg, prefix.len(), prefix_digest, |w, k| {
+			install_prefix_padding(w, k, prefix);
+		});
+		assert!(res.is_ok(), "an unconstrained len_bytes admits the prefix hash; got {res:?}");
+	}
+
+	/// The one length check the gadget *does* enforce is `len_bytes <= max_len_bytes`.
+	/// Claiming a length past the message capacity is rejected in-circuit.
+	#[test]
+	fn test_len_greater_than_capacity_is_rejected() {
+		const CAP_WORDS: usize = 51; // max_len_bytes = 408
+		let msg: Vec<u8> = (0..100u32).map(|i| (i * 7 + 3) as u8).collect();
+		let digest = keccak256_native(&msg);
+		let res = run_free_len(CAP_WORDS, &msg, msg.len(), digest, |w, k| {
+			w[k.len_bytes] = Word(500); // > max_len_bytes (408)
+		});
+		assert!(res.is_err(), "len_bytes > max_len_bytes must be rejected, got {res:?}");
+	}
+
+	/// Companion / mitigation for `test_unconstrained_len_admits_prefix_hash`: once the
+	/// caller pins `len_bytes` to a constant at construction time, the prefix attack no
+	/// longer verifies. (For a compile-time-constant length, `fixed_length::keccak256` is
+	/// the cheaper choice; this test shows the variable gadget is also sound once its
+	/// length wire is constrained.)
+	#[test]
+	fn test_constant_len_rejects_prefix_hash() {
+		const CAP_WORDS: usize = 51;
+		let msg: Vec<u8> = (0..100u32).map(|i| (i * 7 + 3) as u8).collect();
+		let prefix = &msg[..50];
+		let prefix_digest = keccak256_native(prefix);
+
+		let b = CircuitBuilder::new();
+		// Length pinned to the true message length at construction time.
+		let len = b.add_constant_64(msg.len() as u64);
+		let digest: [Wire; N_WORDS_PER_DIGEST] = std::array::from_fn(|_| b.add_inout());
+		let message: Vec<Wire> = (0..CAP_WORDS).map(|_| b.add_inout()).collect();
+		let keccak = Keccak256::new(&b, len, digest, message);
+		let circuit = b.build();
+
+		let mut w = circuit.new_witness_filler();
+		// `len_bytes` is a constant wire, so it is not populated here.
+		keccak.populate_message(&mut w, &msg);
+		keccak.populate_digest(&mut w, prefix_digest);
+		install_prefix_padding(&mut w, &keccak, prefix);
+
+		let res = match circuit.populate_wire_witness(&mut w) {
+			Err(e) => Err(format!("populate: {e:?}")),
+			Ok(()) => verify_constraints(circuit.constraint_system(), &w.into_value_vec())
+				.map_err(|e| format!("verify: {e}")),
+		};
+		assert!(res.is_err(), "a pinned len_bytes must reject the prefix hash, got {res:?}");
 	}
 }
