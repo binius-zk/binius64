@@ -312,7 +312,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::{BatchAndCheckWitness, crc64::*};
+	use crate::{BatchAndCheckWitness, test_utils::*};
 
 	#[test]
 	fn circuit_matches_reference() {

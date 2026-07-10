@@ -131,7 +131,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::crc64::{N_INPUT_WORDS, crc64_circuit, populate_crc64_witness};
+	use crate::test_utils::{N_INPUT_WORDS, crc64_circuit, populate_crc64_witness};
 
 	type P = PackedBinaryGhash1x128b;
 
