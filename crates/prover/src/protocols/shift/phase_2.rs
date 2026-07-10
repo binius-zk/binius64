@@ -18,7 +18,7 @@ use binius_math::{
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_zero},
 };
 use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
-use binius_verifier::{config::LOG_WORD_SIZE_BITS, protocols::shift::evaluate_words_mle};
+use binius_verifier::protocols::shift::evaluate_words_mle;
 use tracing::instrument;
 
 use super::{
@@ -69,10 +69,10 @@ where
 		challenges: mut r_jr_s,
 		eval: gamma,
 	} = phase_1_output;
-	// Split challenges as r_j,r_s where r_j is the first LOG_WORD_SIZE_BITS
-	// variables and r_s is the last LOG_WORD_SIZE_BITS variables
+	// Split challenges as r_j,r_s where r_j is the first Word::LOG_BITS
+	// variables and r_s is the last Word::LOG_BITS variables
 	// Thus r_s are the more significant variables.
-	let r_s = r_jr_s.split_off(LOG_WORD_SIZE_BITS);
+	let r_s = r_jr_s.split_off(Word::LOG_BITS);
 	let r_j = r_jr_s;
 
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);

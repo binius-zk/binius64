@@ -9,7 +9,7 @@ use binius_math::{BinarySubspace, univariate::extrapolate_over_subspace};
 use crate::Error;
 
 /// log2 size of the univariate domain
-pub const SKIPPED_VARS: usize = binius_core::consts::LOG_WORD_SIZE_BITS;
+pub const SKIPPED_VARS: usize = binius_core::Word::LOG_BITS;
 
 /// Size of the univariate domain
 pub const ROWS_PER_HYPERCUBE_VERTEX: usize = 1 << SKIPPED_VARS;

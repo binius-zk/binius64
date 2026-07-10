@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
-use binius_core::{consts::WORD_SIZE_BITS, word::Word};
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, util::num_biguint_from_u64_limbs};
 
 use super::{
@@ -57,7 +57,7 @@ impl PseudoMersennePrimeField {
 		let zero = b.add_constant(Word::ZERO);
 
 		// May need an extra limb to accommodate overflow.
-		let extra_limbs = if self.modulus_po2 + 1 > l * WORD_SIZE_BITS {
+		let extra_limbs = if self.modulus_po2 + 1 > l * Word::BITS {
 			1
 		} else {
 			0

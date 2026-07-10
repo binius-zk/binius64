@@ -20,7 +20,7 @@ use binius_prover::{
 use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::strict_log_2;
 use binius_verifier::{
-	config::{LOG_WORD_SIZE_BITS, StdChallenger},
+	config::StdChallenger,
 	protocols::shift::{OperatorData as VerifierOperatorData, verify},
 };
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
@@ -111,7 +111,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		let bitand_evals = [F::random(&mut rng); 3];
 		let intmul_evals = [F::ZERO; 4];
 		let key_collection = build_key_collection(&cs);
-		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 
 		let mut group = c.benchmark_group(format!(
 			"shift_reduction_log2_{log_message_len_bytes}_bytes_{message_len_bytes}"
@@ -213,7 +213,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 
 	let key_collection = build_key_collection(&cs);
 	let words = value_vec.combined_witness();
-	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+	let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 
 	// Prepare the operator data. Lambda sampling is cheap and not part of any benched phase, so a
 	// random lambda (rather than one drawn from a transcript) yields realistic-magnitude data.
@@ -273,7 +273,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 		run_phase_1_sumcheck::<F, P, _>(g_parts.clone(), h_parts.clone(), &mut transcript)
 	};
 	// Split phase-1 challenges into `r_j` (low) and `r_s` (high) halves.
-	let r_s = r_jr_s.split_off(LOG_WORD_SIZE_BITS);
+	let r_s = r_jr_s.split_off(Word::LOG_BITS);
 	let r_j = r_jr_s;
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());

@@ -14,7 +14,7 @@ use binius_math::BinarySubspace;
 use binius_prover::and_reduction::prover::OblongZerocheckProver;
 use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
 use binius_verifier::{
-	config::{B128, LOG_WORD_SIZE_BITS, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
+	config::{B128, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
 	protocols::bitand::AndCheckOutput,
 };
 
@@ -250,7 +250,7 @@ impl BatchAndCheckWitness {
 	{
 		// The univariate-skip domain spans one extra dimension above the 64-bit word.
 		// This is the same skip parameter the single-instance check uses.
-		let prover_message_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1);
+		let prover_message_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1);
 
 		let (a, b, c) = self.into_columns();
 
@@ -397,7 +397,7 @@ mod tests {
 	/// The result must equal the eval the reduction claimed for that column.
 	fn fold_eval_column(col: &[Word], z_challenge: B128, eval_point: &[B128]) -> B128 {
 		// The univariate domain is the skip domain with the extension dimension dropped.
-		let univariate_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1)
+		let univariate_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1)
 			.isomorphic::<B128>()
 			.reduce_dim(SKIPPED_VARS);
 		let lagrange = lagrange_evals_scalars(&univariate_domain, z_challenge);

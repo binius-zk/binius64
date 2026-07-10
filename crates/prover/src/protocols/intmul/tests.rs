@@ -8,7 +8,7 @@ use binius_iop_prover::naive_channel::NaiveProverChannel;
 use binius_math::{inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval};
 use binius_transcript::ProverTranscript;
 use binius_verifier::{
-	config::{LOG_WORD_SIZE_BITS, StdChallenger},
+	config::StdChallenger,
 	protocols::intmul::{
 		common::{IntMulOutput, LIMB_BITS},
 		verify,
@@ -24,7 +24,7 @@ type F = BinaryField128bGhash;
 type P = PackedBinaryGhash2x128b;
 
 pub fn evaluate_witness(words: &[Word], eval_point: &[F]) -> F {
-	let (prefix, suffix) = eval_point.split_at(LOG_WORD_SIZE_BITS);
+	let (prefix, suffix) = eval_point.split_at(Word::LOG_BITS);
 	let prefix_tensor = eq_ind_partial_eval::<F>(prefix);
 	let suffix_tensor = eq_ind_partial_eval::<F>(suffix);
 
@@ -83,9 +83,7 @@ fn prove_and_verify() {
 	// Instead of evaluating each exponent bit column
 	// separately, we batch them together with a `z_challenge`
 	// and check consistency by evaluating at a single point `consistency_check_eval_point`.
-	let z_challenge: Vec<F> = (0..LOG_WORD_SIZE_BITS)
-		.map(|_| F::random(&mut rng))
-		.collect();
+	let z_challenge: Vec<F> = (0..Word::LOG_BITS).map(|_| F::random(&mut rng)).collect();
 	let z_tensor = eq_ind_partial_eval::<F>(&z_challenge);
 	let consistency_check_eval_point = [z_challenge, eval_point].concat();
 	let get_consistency_check_eval =

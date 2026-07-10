@@ -28,31 +28,30 @@ use super::{
 	evaluate_monster_multilinear_for_operation,
 	monster::evaluate_monster_multilinear_for_operation_native,
 };
-use crate::config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS};
 
 /// Evaluates the bit-level multilinear extension of a word slice at the point `r_j ++ r_y`.
 ///
-/// The multilinear has `LOG_WORD_SIZE_BITS + r_y.len()` variables: the low variables index the
+/// The multilinear has `Word::LOG_BITS + r_y.len()` variables: the low variables index the
 /// bit within a word and the high variables index the word. Words past `words.len()` (up to
 /// `2^r_y.len()`) are treated as zero.
 ///
 /// ## Preconditions
 ///
-/// * `r_j` has exactly `LOG_WORD_SIZE_BITS` entries
+/// * `r_j` has exactly `Word::LOG_BITS` entries
 /// * `words` has at most `2^r_y.len()` entries
 pub fn evaluate_words_mle<F, E>(words: &[Word], r_j: &[E], r_y: &[E]) -> E
 where
 	F: BinaryField,
 	E: FieldOps<Scalar = F> + From<F>,
 {
-	assert_eq!(r_j.len(), LOG_WORD_SIZE_BITS); // precondition
+	assert_eq!(r_j.len(), Word::LOG_BITS); // precondition
 	assert!(words.len() <= 1 << r_y.len()); // precondition
 
 	let r_j_tensor = eq_ind_partial_eval_scalars(r_j);
 	let r_y_tensor = eq_ind_partial_eval_scalars(r_y);
 	iter::zip(words, r_y_tensor)
 		.map(|(word, weight)| {
-			let word_eval = (0..WORD_SIZE_BITS)
+			let word_eval = (0..Word::BITS)
 				.filter(|bit| (word.as_u64() >> bit) & 1 == 1)
 				.map(|bit| &r_j_tensor[bit])
 				.sum::<E>();
@@ -105,9 +104,9 @@ pub struct VerifyOutput<F> {
 	bitand_lambda: F,
 	/// Random coefficient for batching MUL constraint evaluations.
 	intmul_lambda: F,
-	/// Challenge point for the bit index variables (length `LOG_WORD_SIZE_BITS`).
+	/// Challenge point for the bit index variables (length `Word::LOG_BITS`).
 	pub r_j: Vec<F>,
-	/// Challenge point for the shift variables (length `LOG_WORD_SIZE_BITS`).
+	/// Challenge point for the shift variables (length `Word::LOG_BITS`).
 	pub r_s: Vec<F>,
 	/// Challenge point for the word index variables (length `log_witness_words`).
 	pub r_y: Vec<F>,
@@ -123,7 +122,7 @@ pub struct VerifyOutput<F> {
 impl<F> VerifyOutput<F> {
 	/// Returns the challenge point for bit index variables.
 	///
-	/// This corresponds to the first `LOG_WORD_SIZE_BITS` variables
+	/// This corresponds to the first `Word::LOG_BITS` variables
 	/// in the witness encoding, indexing individual bits within words.
 	pub fn r_j(&self) -> &[F] {
 		&self.r_j
@@ -131,7 +130,7 @@ impl<F> VerifyOutput<F> {
 
 	/// Returns the challenge point for shift variables.
 	///
-	/// This corresponds to `LOG_WORD_SIZE_BITS` variables encoding
+	/// This corresponds to `Word::LOG_BITS` variables encoding
 	/// the shift operations in the constraint system.
 	pub fn r_s(&self) -> &[F] {
 		&self.r_s
@@ -151,8 +150,7 @@ impl<F> VerifyOutput<F> {
 /// # Protocol Overview
 /// 1. **Sampling Phase**: Samples random lambda coefficients for batching bitand and intmul
 ///    evaluation claims across operands.
-/// 2. **First Sumcheck**: Verifies the batched evaluation claim over `LOG_WORD_SIZE_BITS * 2`
-///    variables
+/// 2. **First Sumcheck**: Verifies the batched evaluation claim over `Word::LOG_BITS * 2` variables
 /// 3. **Challenge Splitting**: Splits sumcheck challenges into `r_j` and `r_s` components
 /// 4. **Second Sumcheck**: Verifies the gamma claim over `log_word_count` variables
 /// 5. **Monster Multilinear Verification**: Checks that the claimed evaluations match expected
@@ -192,13 +190,13 @@ where
 	let SumcheckOutput {
 		eval: gamma,
 		challenges: mut r_jr_s,
-	} = verify_sumcheck(LOG_WORD_SIZE_BITS * 2, 2, eval, channel)?;
+	} = verify_sumcheck(Word::LOG_BITS * 2, 2, eval, channel)?;
 
 	r_jr_s.reverse();
-	// Split challenges as `r_j,r_s` where `r_j` is the first `LOG_WORD_SIZE_BITS`
-	// variables and `r_s` is the last `LOG_WORD_SIZE_BITS` variables
+	// Split challenges as `r_j,r_s` where `r_j` is the first `Word::LOG_BITS`
+	// variables and `r_s` is the last `Word::LOG_BITS` variables
 	// Thus `r_s` are the more significant variables.
-	let r_s = r_jr_s.split_off(LOG_WORD_SIZE_BITS);
+	let r_s = r_jr_s.split_off(Word::LOG_BITS);
 	let r_j = r_jr_s;
 
 	// The second sumcheck runs over the witness: the public segment in the low half-cube and
@@ -356,7 +354,7 @@ struct PublicWordsEvalFn<'a> {
 
 impl<F: BinaryField> FieldFn<F> for PublicWordsEvalFn<'_> {
 	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
-		let (r_j, r_y_low) = vals.split_at(LOG_WORD_SIZE_BITS);
+		let (r_j, r_y_low) = vals.split_at(Word::LOG_BITS);
 		evaluate_words_mle(self.public, r_j, r_y_low)
 	}
 }
@@ -398,7 +396,7 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 	fn evaluate<E, G>(&self, vals: &[E], eval_op: G) -> E
 	where
 		E: FieldOps<Scalar = F> + From<F>,
-		G: Fn(&[Vec<&Operand>], &[E], E, &[E; SHIFT_VARIANT_COUNT * WORD_SIZE_BITS], &[E]) -> E,
+		G: Fn(&[Vec<&Operand>], &[E], E, &[E; SHIFT_VARIANT_COUNT * Word::BITS], &[E]) -> E,
 	{
 		// Split the flat input back into its sections, in the order they were concatenated.
 		let r_zhat_prime_v = vals[0].clone();
@@ -450,11 +448,11 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 
 		// Tensor the shift-selector evaluations with the shift-amount equality indicator once, so
 		// both the BitAnd and IntMul monster evaluations share it. Indexed by
-		// `variant * WORD_SIZE_BITS + amount`.
+		// `variant * Word::BITS + amount`.
 		let eq_r_s = eq_ind_partial_eval_scalars(r_s_v);
 		let shift_scalars =
-			Box::new(array::from_fn::<_, { SHIFT_VARIANT_COUNT * WORD_SIZE_BITS }, _>(|i| {
-				h_op_evals[i / WORD_SIZE_BITS].clone() * &eq_r_s[i % WORD_SIZE_BITS]
+			Box::new(array::from_fn::<_, { SHIFT_VARIANT_COUNT * Word::BITS }, _>(|i| {
+				h_op_evals[i / Word::BITS].clone() * &eq_r_s[i % Word::BITS]
 			}));
 
 		// BitAnd contribution: operands (a, b, c) batched by `bitand_lambda`.
@@ -519,7 +517,7 @@ mod tests {
 		let words = (0..(1 << log_words) - 3)
 			.map(|_| Word::from_u64(rng.random::<u64>()))
 			.collect::<Vec<_>>();
-		let r_j = random_scalars::<B128>(&mut rng, LOG_WORD_SIZE_BITS);
+		let r_j = random_scalars::<B128>(&mut rng, Word::LOG_BITS);
 		let r_y = random_scalars::<B128>(&mut rng, log_words);
 
 		// Naive reference: sum the full bit-level eq tensor over every set bit.
@@ -527,9 +525,9 @@ mod tests {
 		let full_tensor = eq_ind_partial_eval_scalars::<B128>(&full_point);
 		let mut expected = B128::ZERO;
 		for (word_index, word) in words.iter().enumerate() {
-			for bit in 0..WORD_SIZE_BITS {
+			for bit in 0..Word::BITS {
 				if (word.as_u64() >> bit) & 1 == 1 {
-					expected += full_tensor[(word_index << LOG_WORD_SIZE_BITS) | bit];
+					expected += full_tensor[(word_index << Word::LOG_BITS) | bit];
 				}
 			}
 		}

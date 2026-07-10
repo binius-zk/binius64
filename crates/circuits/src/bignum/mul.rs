@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 use std::iter;
 
-use binius_core::consts::WORD_SIZE_BITS;
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
 use super::{
@@ -150,7 +150,7 @@ pub fn karatsuba_mul(builder: &CircuitBuilder, a: &BigUint, b: &BigUint) -> BigU
 
 	// a(t) = a_0 + t * a_∞
 	// b(t) = b_0 + t * b_∞
-	// for t = 2^(WORD_SIZE_BITS*n/2), a = a(t), b = b(t)
+	// for t = 2^(Word::BITS*n/2), a = a(t), b = b(t)
 	let n_half = n >> 1;
 	let (a_0, a_inf) = a.clone().split_at_limbs(n_half);
 	let (b_0, b_inf) = b.clone().split_at_limbs(n_half);
@@ -168,7 +168,7 @@ pub fn karatsuba_mul(builder: &CircuitBuilder, a: &BigUint, b: &BigUint) -> BigU
 
 	// Multiply a(1) and b(1) carry out bits only
 	let ab_1_carry_out =
-		builder.shr(builder.band(a_1_carry_out, b_1_carry_out), (WORD_SIZE_BITS - 1) as u32);
+		builder.shr(builder.band(a_1_carry_out, b_1_carry_out), (Word::BITS - 1) as u32);
 
 	// Addition chain for overflow_sum = ab_0 + ab_inf * 2^n + ab_1 * 2^n/2
 	let mut product_stacks = vec![Vec::new(); 2 * n];
@@ -200,7 +200,7 @@ pub fn karatsuba_mul(builder: &CircuitBuilder, a: &BigUint, b: &BigUint) -> BigU
 		.expect("at least one carry out");
 	overflow_sum
 		.limbs
-		.push(builder.shr(carry_out, (WORD_SIZE_BITS - 1) as u32));
+		.push(builder.shr(carry_out, (Word::BITS - 1) as u32));
 
 	// now we need to subtract (ab_0 + ab_inf) * 2^n/2, separate the lower limbs that won't get
 	// affected
