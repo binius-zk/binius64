@@ -335,7 +335,7 @@ fn evaluate(&self, point: &[F]) -> F {
 Errors should be returned when **unchecked external input could cause a panic**. The key distinction is:
 
 - **Verifier**: The high-level input is the proof. The verifier cannot trust the proof, so it must return
-  `VerificationError` for invalid proofs rather than panicking. This is the boundary where untrusted data enters.
+  an `Error` for invalid proofs rather than panicking. This is the boundary where untrusted data enters.
 
 - **Prover**: The high-level input is the witness. The prover **may assume the witness is satisfying**. If the witness
   is invalid, the prover code may panic. This is acceptable because the caller is responsible for providing a valid
@@ -346,7 +346,7 @@ Errors should be returned when **unchecked external input could cause a panic**.
 Error types should only be used at high-level interfaces:
 
 - `binius_prover::Prover` - returns errors only for system-level failures (not invalid witnesses)
-- `binius_verifier::Verifier` - returns `VerificationError` for invalid proofs
+- `binius_verifier::Verifier` - returns an `Error` for invalid proofs
 - Similar interfaces in spartan modules
 
 Below these interfaces, code should use precondition contracts. This keeps internal APIs simple and pushes validation
