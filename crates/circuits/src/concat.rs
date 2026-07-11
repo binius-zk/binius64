@@ -1,5 +1,5 @@
 // Copyright 2025 Irreducible Inc.
-use binius_core::{consts::WORD_SIZE_BYTES, word::Word};
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, hints::Hint};
 
 use crate::{
@@ -130,11 +130,8 @@ pub fn concat(b: &CircuitBuilder, inputs: &[ByteVec]) -> ByteVec {
 			} else {
 				// Constant offset, dynamic length: extract the term's (capacity-sized) region with
 				// constant shifts, then mask the comparison to the runtime length.
-				let region = extract_const_range(
-					b,
-					&output_data,
-					off..off + input.data.len() * WORD_SIZE_BYTES,
-				);
+				let region =
+					extract_const_range(b, &output_data, off..off + input.data.len() * Word::BYTES);
 				assert_slice_eq(b, &name, input.len_bytes, &region, &input.data);
 			}
 		} else {
@@ -177,7 +174,7 @@ fn assert_const_slice_eq(
 	// bytes before comparing.
 	let extracted = extract_const_range(b, output, offset..offset + len);
 	let n_words = extracted.len();
-	let final_bytes = len % WORD_SIZE_BYTES;
+	let final_bytes = len % Word::BYTES;
 	for (k, &a) in extracted.iter().enumerate() {
 		let e = input[k];
 		if k + 1 == n_words && final_bytes != 0 {

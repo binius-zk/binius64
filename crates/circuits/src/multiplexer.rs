@@ -1,5 +1,5 @@
 // Copyright 2025 Irreducible Inc.
-use binius_core::{consts::WORD_SIZE_BITS, word::Word};
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
 /// Creates a multiplexer circuit that selects a group of wires from multiple groups based on a
@@ -91,7 +91,7 @@ pub fn single_wire_multiplex(b: &CircuitBuilder, inputs: &[Wire], sel: Wire) -> 
 
 	// Process level by level until we have a single output
 	for bit_level in 0..num_sel_bits {
-		let sel_bit = b.shl(sel, (WORD_SIZE_BITS - 1 - bit_level) as u32);
+		let sel_bit = b.shl(sel, (Word::BITS - 1 - bit_level) as u32);
 
 		// Process pairs of wires at the current level
 		let next_level = current_level

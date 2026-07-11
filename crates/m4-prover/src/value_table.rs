@@ -45,7 +45,7 @@ const DEFAULT_PARALLEL_STRIPE_WIDTH: usize = 1024;
 /// So the stored data holds exactly the hidden segment of every instance: `n_hidden_words` rows by
 /// `2^log_instances` columns.
 #[derive(Clone, Debug)]
-pub struct ValueTable2 {
+pub struct ValueTable {
 	/// The per-instance value layout, shared by every instance in the batch.
 	layout: ValueVecLayout,
 	/// The base-2 logarithm of the instance count.
@@ -58,7 +58,7 @@ pub struct ValueTable2 {
 	data: Vec<Word>,
 }
 
-impl ValueTable2 {
+impl ValueTable {
 	/// Builds the batch witness in wire-major order, populating all `2^log_instances` instances.
 	///
 	/// The instances are independent. For each, `fill` sets the witness input wires; the batched
@@ -84,7 +84,7 @@ impl ValueTable2 {
 		fill: F,
 	) -> Result<Self, BatchPopulateError>
 	where
-		F: Fn(usize, &mut Batch2WitnessFiller<'_, '_>),
+		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
 	{
 		Self::populate_with(circuit, log_instances, None, fill)
 	}
@@ -103,7 +103,7 @@ impl ValueTable2 {
 		fill: F,
 	) -> Result<Self, BatchPopulateError>
 	where
-		F: Fn(usize, &mut Batch2WitnessFiller<'_, '_>),
+		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
 	{
 		Self::populate_parallel_with_stripe_width(
 			circuit,
@@ -128,7 +128,7 @@ impl ValueTable2 {
 		fill: F,
 	) -> Result<Self, BatchPopulateError>
 	where
-		F: Fn(usize, &mut Batch2WitnessFiller<'_, '_>),
+		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
 	{
 		assert!(stripe_width > 0, "stripe width must be positive");
 		Self::populate_with(circuit, log_instances, Some(stripe_width), fill)
@@ -141,12 +141,12 @@ impl ValueTable2 {
 		fill: F,
 	) -> Result<Self, BatchPopulateError>
 	where
-		F: Fn(usize, &mut Batch2WitnessFiller<'_, '_>),
+		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
 	{
 		let layout = circuit.constraint_system().value_vec_layout.clone();
 		assert_eq!(
 			layout.n_inout, 0,
-			"ValueTable2 requires a constraint system with no inout wires; \
+			"ValueTable requires a constraint system with no inout wires; \
 			 use force_commit on output wires instead"
 		);
 
@@ -164,7 +164,7 @@ impl ValueTable2 {
 
 			// The caller assigns each instance's witness input wires into that instance's column.
 			for instance in 0..n_instances {
-				let mut filler = Batch2WitnessFiller {
+				let mut filler = BatchWitnessFiller {
 					circuit,
 					values: &mut values,
 					instance,
@@ -282,17 +282,17 @@ impl ValueTable2 {
 	}
 }
 
-/// Assigns witness input wires of one instance into a [`ValueTable2`] working buffer.
+/// Assigns witness input wires of one instance into a [`ValueTable`] working buffer.
 ///
 /// Indexing by [`Wire`] targets that wire's row in the instance's column, mirroring the
 /// single-instance [`WitnessFiller`](binius_frontend::WitnessFiller).
-pub struct Batch2WitnessFiller<'a, 'v> {
+pub struct BatchWitnessFiller<'a, 'v> {
 	circuit: &'a Circuit,
 	values: &'a mut StridedArray2DViewMut<'v, Word>,
 	instance: usize,
 }
 
-impl Index<Wire> for Batch2WitnessFiller<'_, '_> {
+impl Index<Wire> for BatchWitnessFiller<'_, '_> {
 	type Output = Word;
 
 	fn index(&self, wire: Wire) -> &Self::Output {
@@ -300,7 +300,7 @@ impl Index<Wire> for Batch2WitnessFiller<'_, '_> {
 	}
 }
 
-impl IndexMut<Wire> for Batch2WitnessFiller<'_, '_> {
+impl IndexMut<Wire> for BatchWitnessFiller<'_, '_> {
 	fn index_mut(&mut self, wire: Wire) -> &mut Self::Output {
 		let row = self.circuit.witness_index(wire).0 as usize;
 		&mut self.values[(row, self.instance)]
@@ -361,7 +361,7 @@ mod tests {
 	fn shape_matches_layout() {
 		let c = mix_circuit();
 		let log_instances = 3;
-		let table = ValueTable2::populate(&c.circuit, log_instances, |i, w| {
+		let table = ValueTable::populate(&c.circuit, log_instances, |i, w| {
 			w[c.a] = Word(i as u64);
 			w[c.b] = Word(i as u64 + 1);
 		})
@@ -379,7 +379,7 @@ mod tests {
 		let c = mix_circuit();
 		let constants = &c.circuit.constraint_system().constants;
 
-		let table = ValueTable2::populate(&c.circuit, 2, |i, w| {
+		let table = ValueTable::populate(&c.circuit, 2, |i, w| {
 			w[c.a] = Word(i as u64 * 0x9e37_79b9);
 			w[c.b] = Word(i as u64 ^ 0xdead);
 		})
@@ -397,7 +397,7 @@ mod tests {
 		let c = mix_circuit();
 		let constants = &c.circuit.constraint_system().constants;
 
-		let table = ValueTable2::populate(&c.circuit, 0, |_, w| {
+		let table = ValueTable::populate(&c.circuit, 0, |_, w| {
 			w[c.a] = Word(0xABCD);
 			w[c.b] = Word(0x0F0F);
 		})
@@ -419,7 +419,7 @@ mod tests {
 			let c = mix_circuit();
 			let constants = c.circuit.constraint_system().constants.clone();
 
-			let table = ValueTable2::populate(&c.circuit, 2, |i, w| {
+			let table = ValueTable::populate(&c.circuit, 2, |i, w| {
 				let (a, b) = inputs[i];
 				w[c.a] = Word(a);
 				w[c.b] = Word(b);
@@ -439,13 +439,13 @@ mod tests {
 		let c = mix_circuit();
 		let log_instances = 3;
 
-		let serial = ValueTable2::populate(&c.circuit, log_instances, |i, w| {
+		let serial = ValueTable::populate(&c.circuit, log_instances, |i, w| {
 			w[c.a] = Word((i as u64).wrapping_mul(0x9e37_79b9));
 			w[c.b] = Word((i as u64).rotate_left(17) ^ 0xdead_beef);
 		})
 		.unwrap();
 
-		let default_parallel = ValueTable2::populate_parallel(&c.circuit, log_instances, |i, w| {
+		let default_parallel = ValueTable::populate_parallel(&c.circuit, log_instances, |i, w| {
 			w[c.a] = Word((i as u64).wrapping_mul(0x9e37_79b9));
 			w[c.b] = Word((i as u64).rotate_left(17) ^ 0xdead_beef);
 		})
@@ -453,7 +453,7 @@ mod tests {
 		assert_eq!(default_parallel.as_words(), serial.as_words());
 
 		for stripe_width in [1, 2, 3, 8, 64] {
-			let parallel = ValueTable2::populate_parallel_with_stripe_width(
+			let parallel = ValueTable::populate_parallel_with_stripe_width(
 				&c.circuit,
 				log_instances,
 				stripe_width,
@@ -482,7 +482,7 @@ mod tests {
 		let circuit = builder.build();
 
 		// Instance 2 violates a == b; the others satisfy it.
-		let result = ValueTable2::populate(&circuit, 2, |i, w| {
+		let result = ValueTable::populate(&circuit, 2, |i, w| {
 			w[a] = Word(i as u64);
 			w[b] = Word(if i == 2 { 99 } else { i as u64 });
 		});
@@ -507,7 +507,7 @@ mod tests {
 
 		// Instance 5 is in the third two-column stripe. Reporting a local stripe index would
 		// incorrectly return 1 instead of the global instance index 5.
-		let result = ValueTable2::populate_parallel_with_stripe_width(&circuit, 3, 2, |i, w| {
+		let result = ValueTable::populate_parallel_with_stripe_width(&circuit, 3, 2, |i, w| {
 			w[a] = Word(i as u64);
 			w[b] = Word(if i == 5 { 99 } else { i as u64 });
 		});
@@ -533,12 +533,12 @@ mod tests {
 		// Instances 5 and 7 fail in different two-column stripes. The batched interpreter reports
 		// the lowest failing instance's diagnostics, so the parallel path should match the serial
 		// path exactly rather than aggregating failures from unrelated later instances.
-		let fill = |i: usize, w: &mut Batch2WitnessFiller<'_, '_>| {
+		let fill = |i: usize, w: &mut BatchWitnessFiller<'_, '_>| {
 			w[a] = Word(i as u64);
 			w[b] = Word(if i == 5 || i == 7 { 99 } else { i as u64 });
 		};
-		let serial = ValueTable2::populate(&circuit, 3, fill).expect_err("instances fail");
-		let parallel = ValueTable2::populate_parallel_with_stripe_width(&circuit, 3, 2, fill)
+		let serial = ValueTable::populate(&circuit, 3, fill).expect_err("instances fail");
+		let parallel = ValueTable::populate_parallel_with_stripe_width(&circuit, 3, 2, fill)
 			.expect_err("instances fail");
 
 		assert_eq!(parallel.instance, serial.instance);
@@ -556,7 +556,7 @@ mod tests {
 		builder.force_commit(and);
 		let circuit = builder.build();
 
-		let _ = ValueTable2::populate(&circuit, 1, |_, w| {
+		let _ = ValueTable::populate(&circuit, 1, |_, w| {
 			w[a] = Word(1);
 			w[b] = Word(1);
 		});
@@ -568,7 +568,7 @@ mod tests {
 		let c = mix_circuit();
 
 		// Fixture state: 4 instances with distinct witness inputs.
-		let table = ValueTable2::populate(&c.circuit, 2, |i, w| {
+		let table = ValueTable::populate(&c.circuit, 2, |i, w| {
 			w[c.a] = Word((i as u64).wrapping_mul(0x9e37_79b9));
 			w[c.b] = Word(i as u64 ^ 0xdead);
 		})

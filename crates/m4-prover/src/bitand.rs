@@ -14,11 +14,11 @@ use binius_math::BinarySubspace;
 use binius_prover::and_reduction::prover::OblongZerocheckProver;
 use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
 use binius_verifier::{
-	config::{B128, LOG_WORD_SIZE_BITS, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
+	config::{B128, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
 	protocols::bitand::AndCheckOutput,
 };
 
-use crate::ValueTable2;
+use crate::ValueTable;
 
 /// Instance columns processed by one parallel witness-assembly task.
 ///
@@ -33,7 +33,7 @@ const STRIPE_WIDTH: usize = 256;
 /// It enforces the bitwise relation `A & B == C` on every row.
 ///
 /// This holds those three columns for a batch of `K = 2^log_instances` instances at once.
-/// The rows are stacked in instance-major order, the same layout the batch witness uses:
+/// The rows are stacked in instance-major order, with the instance index on the high coordinates:
 ///
 /// ```text
 ///         instance 0         instance 1            instance K-1
@@ -98,7 +98,7 @@ impl BatchAndCheckWitness {
 	///
 	/// Panics if the constraint count or the instance count is not a power of two.
 	pub fn build(
-		table: &ValueTable2,
+		table: &ValueTable,
 		constants: &[Word],
 		and_constraints: &[AndConstraint],
 	) -> Self {
@@ -250,7 +250,7 @@ impl BatchAndCheckWitness {
 	{
 		// The univariate-skip domain spans one extra dimension above the 64-bit word.
 		// This is the same skip parameter the single-instance check uses.
-		let prover_message_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1);
+		let prover_message_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1);
 
 		let (a, b, c) = self.into_columns();
 
@@ -397,7 +397,7 @@ mod tests {
 	/// The result must equal the eval the reduction claimed for that column.
 	fn fold_eval_column(col: &[Word], z_challenge: B128, eval_point: &[B128]) -> B128 {
 		// The univariate domain is the skip domain with the extension dimension dropped.
-		let univariate_domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS + 1)
+		let univariate_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1)
 			.isomorphic::<B128>()
 			.reduce_dim(SKIPPED_VARS);
 		let lagrange = lagrange_evals_scalars(&univariate_domain, z_challenge);
@@ -460,9 +460,9 @@ mod tests {
 	//
 	// `w` is an arbitrary mask that only feeds the XOR, never the AND.
 	// So a tuple like `(1, 3, 7)` means `x=1, y=3, w=7`, not `1 & 3 = 7`.
-	fn populate_table(c: &AndCircuit, inputs: &[(u64, u64, u64)]) -> ValueTable2 {
+	fn populate_table(c: &AndCircuit, inputs: &[(u64, u64, u64)]) -> ValueTable {
 		let log_instances = inputs.len().ilog2() as usize;
-		ValueTable2::populate(&c.circuit, log_instances, |i, filler| {
+		ValueTable::populate(&c.circuit, log_instances, |i, filler| {
 			let (x, y, w) = inputs[i];
 			filler[c.x] = Word(x);
 			filler[c.y] = Word(y);

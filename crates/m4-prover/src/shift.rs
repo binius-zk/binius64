@@ -4,10 +4,7 @@
 
 #![allow(unused)]
 
-use binius_core::{
-	consts::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
-	word::Word,
-};
+use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
@@ -28,17 +25,17 @@ use binius_prover::{
 use binius_utils::{checked_arithmetics::log2_strict_usize, rayon::prelude::*};
 use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 
-use crate::ValueTable2;
+use crate::ValueTable;
 
 /// The number of variables in each "g" (and "h") multilinear of phase 1: one 6-bit shift-amount
 /// axis and one 6-bit bit-position axis.
-const LOG_LEN: usize = LOG_WORD_SIZE_BITS + LOG_WORD_SIZE_BITS;
+const LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS;
 
 /// A committed witness word after folding its bits into the field.
 ///
 /// Each 64-bit word contributes one field element per bit position, so a folded word is the oblong
 /// representation of that word: its bit axis expanded to full field elements.
-pub type FoldedWord<F> = [F; WORD_SIZE_BITS];
+pub type FoldedWord<F> = [F; Word::BITS];
 
 /// Folds the committed witness of a batch value table along the instance axis.
 ///
@@ -59,10 +56,10 @@ pub type FoldedWord<F> = [F; WORD_SIZE_BITS];
 /// so each set bit contributes its instance's equality weight to a full field element.
 ///
 /// The bit axis occupies the low coordinates and the word axis the high coordinates.
-/// The result is a multilinear over `LOG_WORD_SIZE_BITS + log2(n_committed)` variables:
+/// The result is a multilinear over `Word::LOG_BITS + log2(n_committed)` variables:
 ///
 /// ```text
-/// index = w * WORD_SIZE_BITS + b     (b occupies the low LOG_WORD_SIZE_BITS coordinates)
+/// index = w * Word::BITS + b     (b occupies the low Word::LOG_BITS coordinates)
 /// ```
 ///
 /// The table stores exactly the committed (hidden) words, so nothing here is excluded.
@@ -78,7 +75,7 @@ pub type FoldedWord<F> = [F; WORD_SIZE_BITS];
 /// # Panics
 ///
 /// Panics if `r_rho.len()` does not equal the batch dimension.
-pub fn fold_instances<F, P>(table: &ValueTable2, r_rho: &[F]) -> FieldBuffer<P>
+pub fn fold_instances<F, P>(table: &ValueTable, r_rho: &[F]) -> FieldBuffer<P>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -98,11 +95,11 @@ where
 	let folder = WordFolder::<F>::new(r_rho);
 
 	// Each output chunk holds one committed word position:
-	//     out[w * WORD_SIZE_BITS + b] = sum_rho eq(r_rho, rho) * bit_b(word[rho][w]).
+	//     out[w * Word::BITS + b] = sum_rho eq(r_rho, rho) * bit_b(word[rho][w]).
 	// The word positions are independent, so fold them in parallel.
 	// Positions beyond the committed count keep their zero padding.
-	let mut out = vec![F::ZERO; 1 << (LOG_WORD_SIZE_BITS + log_committed)];
-	out.par_chunks_mut(WORD_SIZE_BITS)
+	let mut out = vec![F::ZERO; 1 << (Word::LOG_BITS + log_committed)];
+	out.par_chunks_mut(Word::BITS)
 		.take(n_committed)
 		.enumerate()
 		.for_each(|(w, slot)| {
@@ -190,7 +187,7 @@ where
 		challenges: mut r_jr_s,
 		eval: gamma,
 	} = phase_1_output;
-	let r_s = r_jr_s.split_off(LOG_WORD_SIZE_BITS);
+	let r_s = r_jr_s.split_off(Word::LOG_BITS);
 	let r_j = r_jr_s;
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 
@@ -241,7 +238,7 @@ where
 ///
 /// The result is a flat accumulator split into `SHIFT_VARIANT_COUNT` multilinears of [`LOG_LEN`]
 /// variables each. Each multilinear is indexed by `(shift amount, bit position)`: for shift key
-/// `id = (variant << LOG_WORD_SIZE_BITS) | amount`, the slot at `id * WORD_SIZE_BITS + bit`
+/// `id = (variant << Word::LOG_BITS) | amount`, the slot at `id * Word::BITS + bit`
 /// accumulates, over every word carrying that key, the word's folded bit times the key's
 /// lambda-weighted partial evaluation tensor.
 ///
@@ -275,7 +272,7 @@ pub fn build_g_parts_from_folded_words<F: BinaryField>(
 			);
 
 			// Scatter the accumulator across this key's bit slots, scaling each by the folded bit.
-			let bit_base = key.id as usize * WORD_SIZE_BITS;
+			let bit_base = key.id as usize * Word::BITS;
 			for (bit, &folded_bit) in word.iter().enumerate() {
 				multilinears[bit_base + bit] += acc * folded_bit;
 			}
@@ -389,7 +386,7 @@ mod tests {
 	//     sum_{rho, w, b} eq(r_rho, rho) * eq(r_wire, w) * eq(r_bit, b) * bit_b(word[rho][w])
 	//
 	// The evaluation point `r` is fresh and unrelated to the reduction's own r_z / r_x challenges;
-	// its low LOG_WORD_SIZE_BITS coordinates are the bit axis and its high coordinates are the word
+	// its low Word::LOG_BITS coordinates are the bit axis and its high coordinates are the word
 	// axis, matching the layout `fold_instances` produces.
 	#[test]
 	fn fold_instances_commutes_with_evaluation() {
@@ -400,7 +397,7 @@ mod tests {
 
 		// Cover every chunk regime of the per-column fold.
 		// A sub-chunk batch (< CHUNK_SIZE instances), exactly one chunk, and several chunks.
-		for log_instances in [3, LOG_WORD_SIZE_BITS, LOG_WORD_SIZE_BITS + 2] {
+		for log_instances in [3, Word::LOG_BITS, Word::LOG_BITS + 2] {
 			let n_instances = 1usize << log_instances;
 
 			let inputs: Vec<[u64; N_INPUT_WORDS]> = (0..n_instances)
@@ -417,7 +414,7 @@ mod tests {
 
 			// The instance-fold point, and a fresh point over the (bit, word) axes.
 			let r_rho = random_scalars::<B128>(&mut rng, log_instances);
-			let r = random_scalars::<B128>(&mut rng, LOG_WORD_SIZE_BITS + log_committed);
+			let r = random_scalars::<B128>(&mut rng, Word::LOG_BITS + log_committed);
 
 			// Route A: fold the instance axis, then evaluate the resulting (bit, word) multilinear
 			// at r.
@@ -426,7 +423,7 @@ mod tests {
 
 			// Route B: fold each word's bits by the tensor expansion of the bit coordinates, then
 			// evaluate the resulting (word, instance) multilinear over the word and instance axes.
-			let (r_bit, r_wire) = r.split_at(LOG_WORD_SIZE_BITS);
+			let (r_bit, r_wire) = r.split_at(Word::LOG_BITS);
 			let bit_tensor = eq_ind_partial_eval_scalars::<B128>(r_bit);
 
 			// Gather the committed words of every instance, instance-major: index = rho *
@@ -453,7 +450,7 @@ mod tests {
 	// r_x || r_rho. The columns are instance-major, so r_x (low) indexes the constraint within an
 	// instance and r_rho (high) indexes the instance.
 	fn evaluate_and_witness<P: PackedField<Scalar = B128>>(
-		table: &ValueTable2,
+		table: &ValueTable,
 		constants: &[Word],
 		and_constraints: &[AndConstraint],
 		domain_subspace: &BinarySubspace<B128>,
@@ -479,13 +476,13 @@ mod tests {
 	// This lets the public and hidden segments be folded separately, matching how `build_g_parts`
 	// consumes one segment at a time.
 	fn fold_words_over_instances(
-		table: &ValueTable2,
+		table: &ValueTable,
 		constants: &[Word],
 		r_rho: &[B128],
 		words: std::ops::Range<usize>,
 	) -> Vec<FoldedWord<B128>> {
 		let eq = eq_ind_partial_eval_scalars::<B128>(r_rho);
-		let mut folded = vec![[B128::ZERO; WORD_SIZE_BITS]; words.len()];
+		let mut folded = vec![[B128::ZERO; Word::BITS]; words.len()];
 		for (rho, &weight) in eq.iter().enumerate() {
 			// Reconstruct this instance independently of the fold, then fold its chosen word range.
 			let vv = table.instance_value_vec(rho, constants);
@@ -538,7 +535,7 @@ mod tests {
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace =
-			BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+			BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 		let r_z = B128::random(&mut rng);
 		let r_x = random_scalars::<B128>(&mut rng, log2_strict_usize(cs.n_and_constraints()));
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
@@ -548,7 +545,7 @@ mod tests {
 		let folded = fold_instances::<B128, P>(&table, &r_rho);
 		let scalars: Vec<B128> = folded.iter_scalars().collect();
 		let folded_witness: Vec<FoldedWord<B128>> = scalars
-			.chunks_exact(WORD_SIZE_BITS)
+			.chunks_exact(Word::BITS)
 			.map(|chunk| chunk.try_into().unwrap())
 			.collect();
 		let offset = table.layout().offset_witness;
@@ -657,7 +654,7 @@ mod tests {
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace =
-			BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+			BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 		let r_z = B128::random(&mut rng);
 		let r_x = random_scalars::<B128>(&mut rng, log2_strict_usize(cs.n_and_constraints()));
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);

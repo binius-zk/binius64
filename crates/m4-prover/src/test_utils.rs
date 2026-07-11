@@ -8,7 +8,7 @@
 use binius_core::word::Word;
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
 
-use crate::ValueTable2;
+use crate::ValueTable;
 
 /// The CRC-64/GO-ISO generator polynomial, in reflected form.
 ///
@@ -112,9 +112,9 @@ pub fn crc64_circuit() -> Crc64Circuit {
 /// Each instance's four message words are the corresponding tuple.
 /// Circuit evaluation derives the rest.
 /// The circuit has no inout wires, so it is admissible in the wire-major table.
-pub fn populate_crc64_witness(c: &Crc64Circuit, inputs: &[[u64; N_INPUT_WORDS]]) -> ValueTable2 {
+pub fn populate_crc64_witness(c: &Crc64Circuit, inputs: &[[u64; N_INPUT_WORDS]]) -> ValueTable {
 	let log_instances = inputs.len().ilog2() as usize;
-	ValueTable2::populate(&c.circuit, log_instances, |i, filler| {
+	ValueTable::populate(&c.circuit, log_instances, |i, filler| {
 		for (wire, &w) in c.input.iter().zip(&inputs[i]) {
 			filler[*wire] = Word(w);
 		}

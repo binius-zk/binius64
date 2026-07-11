@@ -3,6 +3,7 @@
 
 use std::iter;
 
+use binius_core::word::Word;
 use binius_field::{BinaryField, BinaryField1b, ExtensionField, Field, field::FieldOps};
 use binius_iop::{channel::IOPVerifierChannel, logup_star};
 use binius_ip::{
@@ -25,7 +26,6 @@ use super::{
 	},
 	error::Error,
 };
-use crate::config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS};
 
 /// Verify Phase 1: GKR step on the exponentiation product tree.
 ///
@@ -47,16 +47,16 @@ where
 		eval: initial_b_eval,
 		point: initial_eval_point.to_vec(),
 	};
-	let output_claim = prodcheck::verify(LOG_WORD_SIZE_BITS, claim, channel)?;
+	let output_claim = prodcheck::verify(Word::LOG_BITS, claim, channel)?;
 
 	// Split output point: first n are x-point, last k are z-challenges
 	let (eval_point, z_suffix) = output_claim.point.split_at(n_vars);
 
 	// Read 2^k leaf evaluations from channel
-	let b_leaves_evals = channel.recv_many(WORD_SIZE_BITS)?;
+	let b_leaves_evals = channel.recv_many(Word::BITS)?;
 
 	// Verify: output_claim.eval = multilinear_eval(b_leaves_evals, z_suffix)
-	// The leaf evals form a multilinear over LOG_WORD_SIZE_BITS variables; evaluate at z_suffix
+	// The leaf evals form a multilinear over Word::LOG_BITS variables; evaluate at z_suffix
 	let expected_eval = evaluate_inplace_scalars(b_leaves_evals.clone(), z_suffix);
 
 	channel.assert_zero(expected_eval - output_claim.eval)?;
@@ -85,7 +85,7 @@ where
 {
 	let n_vars = c_eval_point.len();
 
-	assert_eq!(twisted_eval_points.len(), WORD_SIZE_BITS);
+	assert_eq!(twisted_eval_points.len(), Word::BITS);
 
 	for twisted_eval_point in &twisted_eval_points {
 		assert_eq!(twisted_eval_point.len(), c_eval_point.len());
@@ -100,7 +100,7 @@ where
 	// The two batched terms (each degree 3) are:
 	// - the 2^k aggregate: Σ_i eq_k(γ, i) * (b(i, X) * (A(X) - 1) + 1) * eq(φ⁻ⁱ(x) ; X)
 	// - LO(X) * HI(X) * eq(c_eval_point ; X)
-	let gamma = channel.sample_many(LOG_WORD_SIZE_BITS);
+	let gamma = channel.sample_many(Word::LOG_BITS);
 	let selector_agg_eval = evaluate_inplace_scalars(twisted_evals, &gamma);
 	let evals = [selector_agg_eval, c_eval];
 
@@ -112,7 +112,7 @@ where
 	challenges.reverse();
 
 	// b(i, r) for i in 0..2^k
-	let b_evals = channel.recv_many(WORD_SIZE_BITS)?;
+	let b_evals = channel.recv_many(Word::BITS)?;
 
 	// A(r)
 	let gpow_a_eval = channel.recv_one()?;
@@ -123,7 +123,7 @@ where
 	// Recombine the 2^k per-bit exponent claims b(i, r) into a single claim b(r_I^b, r) by
 	// sampling a recombination point r_I^b in K^k. This carries one exponent claim (rather than
 	// 2^k) into Phases 4 and 5.
-	let r_ib = channel.sample_many(LOG_WORD_SIZE_BITS);
+	let r_ib = channel.sample_many(Word::LOG_BITS);
 	let b_recomb = evaluate_inplace_scalars(b_evals.clone(), &r_ib);
 
 	let eval_point = challenges;
@@ -312,10 +312,10 @@ where
 	let r_out = challenges.as_slice();
 
 	// The prover sends the raw per-bit evaluations at r_out.
-	let a_evals = channel.recv_many(WORD_SIZE_BITS)?;
-	let c_lo_evals = channel.recv_many(WORD_SIZE_BITS)?;
-	let c_hi_evals = channel.recv_many(WORD_SIZE_BITS)?;
-	let b_evals = channel.recv_many(WORD_SIZE_BITS)?;
+	let a_evals = channel.recv_many(Word::BITS)?;
+	let c_lo_evals = channel.recv_many(Word::BITS)?;
+	let c_hi_evals = channel.recv_many(Word::BITS)?;
+	let b_evals = channel.recv_many(Word::BITS)?;
 
 	// Bind the per-bit evals to the folded index claim. The index entries are the GF(2)-linear
 	// embeddings iota(e_{t,l}) = Σ_u basis(u) · bit_u(e_{t,l}), and bit u of limb l is bit
@@ -469,14 +469,14 @@ where
 /// - `n_vars`: Number of variables in the row dimension (i.e., $\log_2$ of the number of
 ///   multiplication constraints).
 ///
-/// The integer operands are fixed at the `WORD_SIZE_BITS` bit width.
+/// The integer operands are fixed at the `Word::BITS` bit width.
 pub fn verify<F, C>(n_vars: usize, channel: &mut C) -> Result<IntMulOutput<C::Elem>, Error>
 where
 	F: BinaryField,
 	C: IOPVerifierChannel<F>,
 	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
-	assert!(2 * WORD_SIZE_BITS <= F::N_BITS);
+	assert!(2 * Word::BITS <= F::N_BITS);
 
 	let initial_eval_point = channel.sample_many(n_vars);
 
@@ -490,13 +490,13 @@ where
 	} = verify_phase_1(&initial_eval_point, exp_eval.clone(), channel)?;
 
 	assert_eq!(phase_1_eval_point.len(), n_vars);
-	assert_eq!(b_leaves_evals.len(), WORD_SIZE_BITS);
+	assert_eq!(b_leaves_evals.len(), Word::BITS);
 
 	// Phase 2
 	let Phase2Output {
 		twisted_eval_points,
 		twisted_evals,
-	} = frobenius_twist(LOG_WORD_SIZE_BITS, &phase_1_eval_point, &b_leaves_evals);
+	} = frobenius_twist(Word::LOG_BITS, &phase_1_eval_point, &b_leaves_evals);
 
 	// Phase 3
 	let Phase3Output {

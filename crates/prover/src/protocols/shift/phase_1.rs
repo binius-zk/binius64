@@ -12,10 +12,7 @@ use binius_ip_prover::{
 };
 use binius_math::{BinarySubspace, FieldBuffer, inner_product::inner_product_buffers};
 use binius_utils::rayon::prelude::*;
-use binius_verifier::{
-	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS, WORD_SIZE_BYTES},
-	protocols::shift::SHIFT_VARIANT_COUNT,
-};
+use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 use bytemuck::zeroed_vec;
 use itertools::izip;
 use tracing::instrument;
@@ -27,7 +24,7 @@ use super::{
 };
 
 // This is the number of variables in the g (and h) multilinears of phase 1.
-const LOG_LEN: usize = LOG_WORD_SIZE_BITS + LOG_WORD_SIZE_BITS;
+const LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS;
 
 /// Constructs the "g" multilinear parts for both BITAND and INTMUL operations.
 /// Proves the first phase of the shift reduction.
@@ -105,7 +102,7 @@ pub fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPPro
 		.collect::<Vec<_>>();
 
 	// Perform the sumcheck rounds, collecting challenges.
-	let n_vars = 2 * LOG_WORD_SIZE_BITS;
+	let n_vars = 2 * Word::LOG_BITS;
 	let mut challenges = Vec::with_capacity(n_vars);
 	for _ in 0..n_vars {
 		let mut all_round_coeffs = Vec::new();
@@ -223,14 +220,14 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 					let acc_packed = P::broadcast(acc);
 
 					// The following loop is an optimized version of the following
-					// for i in 0..WORD_SIZE_BITS {
+					// for i in 0..Word::BITS {
 					//     if get_bit(word, i) {
 					//         values[start + i] += acc;
 					//     }
 					// }
-					let start = key.id as usize * (WORD_SIZE_BITS >> P::LOG_WIDTH);
-					let values = &mut multilinears[start..start + (WORD_SIZE_BITS >> P::LOG_WIDTH)];
-					let values_per_byte = WORD_SIZE_BYTES >> P::LOG_WIDTH;
+					let start = key.id as usize * (Word::BITS >> P::LOG_WIDTH);
+					let values = &mut multilinears[start..start + (Word::BITS >> P::LOG_WIDTH)];
+					let values_per_byte = Word::BYTES >> P::LOG_WIDTH;
 					let mut remaining_word = word.0;
 					let mut byte_index = 0;
 					while remaining_word != 0 {

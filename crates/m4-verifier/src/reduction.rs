@@ -12,14 +12,14 @@
 //! The output is that witness claim together with `r_rho`.
 //! Binding the claim to the committed trace oracle is a later step, not done here.
 
-use binius_core::constraint_system::ConstraintSystem;
+use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, Field};
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::BinarySubspace;
 use binius_utils::checked_arithmetics::checked_log_2;
 use binius_verifier::{
 	Error,
-	config::{B128, LOG_WORD_SIZE_BITS},
+	config::B128,
 	protocols::{
 		bitand::AndCheckOutput,
 		shift::{self, OperatorData, VerifyOutput},
@@ -75,7 +75,7 @@ where
 	let shift = shift::verify::<B128, _>(cs, &bitand, &intmul, channel)?;
 
 	// Tie in the shared constants through the public-input consistency check.
-	let domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS).isomorphic::<B128>();
+	let domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS).isomorphic::<B128>();
 	shift::check_eval::<B128, _>(
 		cs,
 		&cs.constants,

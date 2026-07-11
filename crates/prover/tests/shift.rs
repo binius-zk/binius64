@@ -22,7 +22,7 @@ use binius_prover::{
 use binius_transcript::ProverTranscript;
 use binius_utils::checked_arithmetics::{log2_ceil_usize, strict_log_2};
 use binius_verifier::{
-	config::{LOG_WORD_SIZE_BITS, StdChallenger},
+	config::StdChallenger,
 	protocols::shift::{OperatorData as VerifierOperatorData, check_eval, verify},
 };
 use itertools::Itertools;
@@ -236,7 +236,7 @@ fn test_shift_prove_and_verify() {
 		// `r_zhat_prime` so the verifier can compute `h_op_evals` once for both.
 		let r_zhat_prime = F::random(&mut rng);
 
-		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+		let subspace = BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 
 		let bitand_evals = compute_bitand_images(&cs.and_constraints, &value_vec).map(|image| {
 			evaluate_image(

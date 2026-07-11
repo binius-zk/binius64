@@ -14,7 +14,7 @@ use binius_math::{
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_verifier::config::B128;
 
-use crate::ValueTable2;
+use crate::ValueTable;
 
 /// The multithreaded additive NTT used to encode the committed codeword.
 type ProverNtt = NeighborsLastMultiThread<GenericPreExpanded<B128>>;
@@ -81,7 +81,7 @@ where
 	/// The random point and the evaluation the prover commits to at it.
 	pub fn prove<Challenger_>(
 		&self,
-		table: &ValueTable2,
+		table: &ValueTable,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> (Vec<B128>, B128)
 	where
@@ -163,9 +163,9 @@ mod tests {
 	}
 
 	// Populate one instance per `(x, y)` pair; the instance count is the pair count.
-	fn populate_table(c: &AndCircuit, inputs: &[(u64, u64)]) -> ValueTable2 {
+	fn populate_table(c: &AndCircuit, inputs: &[(u64, u64)]) -> ValueTable {
 		let log_instances = inputs.len().ilog2() as usize;
-		ValueTable2::populate(&c.circuit, log_instances, |i, w| {
+		ValueTable::populate(&c.circuit, log_instances, |i, w| {
 			let (x, y) = inputs[i];
 			w[c.x] = Word(x);
 			w[c.y] = Word(y);

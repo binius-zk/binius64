@@ -16,10 +16,7 @@
 //!
 //! Only AND constraints are handled, so the circuit must have no MUL constraints.
 
-use binius_core::{
-	constraint_system::ConstraintSystem,
-	consts::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
-};
+use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
@@ -29,7 +26,7 @@ use binius_utils::checked_arithmetics::checked_log_2;
 use binius_verifier::{config::B128, protocols::bitand::AndCheckOutput};
 
 use crate::{
-	BatchAndCheckWitness, ValueTable2,
+	BatchAndCheckWitness, ValueTable,
 	shift::{FoldedWord, fold_instances, prove as prove_shift},
 };
 
@@ -56,7 +53,7 @@ pub struct ReductionProverOutput {
 pub fn prove_reduction<P, Channel>(
 	cs: &ConstraintSystem,
 	key_collection: &KeyCollection,
-	table: &ValueTable2,
+	table: &ValueTable,
 	channel: &mut Channel,
 ) -> ReductionProverOutput
 where
@@ -88,13 +85,13 @@ where
 	let folded = fold_instances::<B128, P>(table, r_rho);
 	let scalars: Vec<B128> = folded.iter_scalars().collect();
 	let folded_witness: Vec<FoldedWord<B128>> = scalars
-		.chunks_exact(WORD_SIZE_BITS)
-		.map(|chunk| chunk.try_into().expect("chunk has WORD_SIZE_BITS elements"))
+		.chunks_exact(Word::BITS)
+		.map(|chunk| chunk.try_into().expect("chunk has Word::BITS elements"))
 		.collect();
 
 	// Reduce the operand claims to one witness evaluation.
 	// No MUL constraints here, so the intmul claim is a zero claim at an empty point.
-	let domain = BinarySubspace::<B8>::with_dim(LOG_WORD_SIZE_BITS).isomorphic::<B128>();
+	let domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS).isomorphic::<B128>();
 	let witness_claim = prove_shift::<B128, P, _>(
 		key_collection,
 		&cs.constants,
@@ -201,7 +198,7 @@ mod tests {
 		let folded = fold_instances::<B128, P>(&table, &verifier_out.r_rho);
 		let scalars: Vec<B128> = folded.iter_scalars().collect();
 		let folded_witness: Vec<FoldedWord<B128>> = scalars
-			.chunks_exact(WORD_SIZE_BITS)
+			.chunks_exact(Word::BITS)
 			.map(|chunk| chunk.try_into().unwrap())
 			.collect();
 		let expected = evaluate_folded_witness(
