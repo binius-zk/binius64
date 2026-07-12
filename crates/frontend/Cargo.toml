@@ -11,7 +11,6 @@ workspace = true
 binius-core = { path = "../core" }
 binius-utils = { path = "../utils" }
 cranelift-entity = { workspace = true }
-hex-literal.workspace = true
 num-bigint = { workspace = true }
 rand.workspace = true
 petgraph.workspace = true
@@ -22,6 +21,5 @@ rustc-hash.workspace = true
 
 [dev-dependencies]
 rand = { workspace = true, features = ["thread_rng"] }
-hex-literal = { workspace = true }
 proptest = { workspace = true }
 insta = { workspace = true }

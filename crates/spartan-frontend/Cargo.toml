@@ -7,9 +7,7 @@ authors.workspace = true
 [dependencies]
 binius-field = { path = "../field" }
 binius-utils = { path = "../utils" }
-bytemuck.workspace = true
-getset.workspace = true
-itertools.workspace = true
+bytemuck = { workspace = true, features = ["extern_crate_alloc"] }
 smallvec.workspace = true
 
 [dev-dependencies]

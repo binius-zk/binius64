@@ -8,7 +8,6 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-array-util.workspace = true
 binius-field = { path = "../field" }
 binius-hash = { path = "../hash", default-features = false }
 binius-iop = { path = "../iop" }
@@ -19,7 +18,6 @@ binius-spartan-frontend = { path = "../spartan-frontend" }
 binius-utils = { path = "../utils" }
 digest.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
 binius-spartan-frontend = { path = "../spartan-frontend" }
