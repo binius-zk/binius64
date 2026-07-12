@@ -116,7 +116,7 @@ where
 
 		// Split each column into low/high halves for the top variable and take this pass's chunk:
 		// the low half corresponds to x=0, the high half to x=1.
-		let cols: [FieldSlice<'_, P>; N] = self.cols.map(|id| ctx.col(id));
+		let cols: [&FieldSlice<'_, P>; N] = self.cols.map(|id| ctx.col(id));
 		let halves: [_; N] = array::from_fn(|i| cols[i].split_half_ref());
 		let lo_chunks: [_; N] = array::from_fn(|i| halves[i].0.chunk(chunk_vars, chunk_index));
 		let hi_chunks: [_; N] = array::from_fn(|i| halves[i].1.chunk(chunk_vars, chunk_index));

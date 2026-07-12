@@ -30,8 +30,12 @@ use super::{
 /// The pass runs over the halved hypercube: with `n` variables remaining, each column splits on
 /// the highest variable into two halves of `n - 1` variables, and both halves divide into chunks
 /// of `2^chunk_vars` scalars addressed by a shared chunk index.
+///
+/// The store's columns are expanded once, at the start of the round, into one slice per logical
+/// column (a split-half column becomes its two halves), so [`Self::col`] is a plain index.
 pub struct RoundContext<'b, 'a, P: PackedField> {
 	store: &'b MleStore<'a, P>,
+	cols: Vec<FieldSlice<'b, P>>,
 	chunk_vars: usize,
 }
 
@@ -42,8 +46,8 @@ impl<'b, P: PackedField> RoundContext<'b, '_, P> {
 	}
 
 	/// Returns a borrowed view of a column, over all remaining variables.
-	pub fn col(&self, id: ColId) -> FieldSlice<'b, P> {
-		self.store.col(id)
+	pub fn col(&self, id: ColId) -> &FieldSlice<'b, P> {
+		&self.cols[id.index()]
 	}
 
 	/// Returns the equality-indicator expansion of a registered tracker.
@@ -222,6 +226,7 @@ where
 			.expect("offsets has one entry per evaluator, plus one");
 
 		let ctx = RoundContext {
+			cols: self.store.column_slices(),
 			store: &self.store,
 			chunk_vars,
 		};

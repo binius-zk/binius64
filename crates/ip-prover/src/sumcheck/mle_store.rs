@@ -19,10 +19,11 @@
 //! over the columns is a plain read. A deferred-fold variant that fuses the fold into the next
 //! round's read pass can replace the internals without changing this interface.
 
-use std::sync::Arc;
-
 use binius_field::{Field, PackedField};
-use binius_math::{FieldBuffer, FieldSlice, line::extrapolate_line_packed, multilinear::fold::fold_highest_var_inplace};
+use binius_math::{
+	FieldBuffer, FieldSlice, line::extrapolate_line_packed,
+	multilinear::fold::fold_highest_var_inplace,
+};
 use binius_utils::rayon::prelude::*;
 
 use super::gruen32::Gruen32;
@@ -43,37 +44,21 @@ impl ColId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EqId(usize);
 
-/// State of one multilinear column.
+/// One physical entry in the store, holding one or two logical columns.
 ///
-/// A column starts out `Borrowed` when pushed by reference, or `SplitHalf` when pushed as one half
-/// of a shared parent buffer. In both cases the first fold writes the folded values into a fresh
-/// half-size owned buffer, so a column is never copied at full size up front.
+/// A `Borrowed` or `Owned` entry is a single column. A `SplitHalf` entry holds two adjacent
+/// columns — the low and high halves of one parent buffer — in a single allocation, so no copy is
+/// made to separate them.
 enum Column<'a, P: PackedField> {
 	Borrowed(FieldSlice<'a, P>),
 	Owned(FieldBuffer<P>),
-	/// One half of a parent buffer shared with its sibling column, selected by `high`.
+	/// A parent buffer whose low and high halves are two adjacent columns.
 	///
-	/// Pushed by [`MleStore::push_split_half`], which splits a buffer into its low and high halves
-	/// without copying: both halves share the parent via the [`Arc`], and the parent is freed once
-	/// both siblings have folded (each fold replaces its `SplitHalf` with an [`Owned`](Self::Owned)
-	/// half-size buffer, dropping that side's reference).
-	SplitHalf {
-		parent: Arc<FieldBuffer<P>>,
-		high: bool,
-	},
-}
-
-impl<P: PackedField> Column<'_, P> {
-	fn as_slice(&self) -> FieldSlice<'_, P> {
-		match self {
-			Column::Borrowed(slice) => slice.to_ref(),
-			Column::Owned(buffer) => buffer.to_ref(),
-			Column::SplitHalf { parent, high } => {
-				let (low, hi) = parent.split_half_ref();
-				if *high { hi } else { low }
-			}
-		}
-	}
+	/// Pushed by [`MleStore::push_split_half`]. The buffer keeps its original length for the life
+	/// of the store; each [`MleStore::fold`] advances both halves in place within it, and the two
+	/// columns are read as the front `2^n_vars` scalars of the low and high halves. This shares one
+	/// allocation between the sibling columns with no copy at any point.
+	SplitHalf(FieldBuffer<P>),
 }
 
 /// A store of equal-length multilinear columns shared by a group of round evaluators.
@@ -82,6 +67,9 @@ impl<P: PackedField> Column<'_, P> {
 pub struct MleStore<'a, P: PackedField> {
 	n_vars: usize,
 	columns: Vec<Column<'a, P>>,
+	/// Number of logical columns, counting each [`Column::SplitHalf`] entry as two. This is the
+	/// number of assigned [`ColId`]s and the length of the [`Self::final_evals`] output.
+	n_cols: usize,
 	eq_trackers: Vec<Gruen32<P>>,
 }
 
@@ -91,6 +79,7 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 		Self {
 			n_vars,
 			columns: Vec::new(),
+			n_cols: 0,
 			eq_trackers: Vec::new(),
 		}
 	}
@@ -113,7 +102,7 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 			"column must have number of variables equal to the store"
 		);
 		self.columns.push(Column::Borrowed(column));
-		ColId(self.columns.len() - 1)
+		self.next_col_id()
 	}
 
 	/// Pushes an owned column and returns its identifier.
@@ -125,17 +114,24 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 			"column must have number of variables equal to the store"
 		);
 		self.columns.push(Column::Owned(column));
-		ColId(self.columns.len() - 1)
+		self.next_col_id()
+	}
+
+	/// Allocates the identifier for one newly pushed logical column.
+	const fn next_col_id(&mut self) -> ColId {
+		let id = ColId(self.n_cols);
+		self.n_cols += 1;
+		id
 	}
 
 	/// Pushes the low and high halves of `buffer` as two columns, returning their ids `[low,
 	/// high]`.
 	///
-	/// The halves are not copied: the store takes ownership of `buffer` and both columns share it,
-	/// so no up-front copy of the full buffer is made. The first [`Self::fold`] of each half writes
-	/// into a fresh quarter-size buffer, and the shared parent is freed once both halves have
-	/// folded. `buffer` splits on its highest variable, so its low half fixes that variable to 0
-	/// and its high half to 1 — matching the store's high-to-low fold order.
+	/// The halves are not copied: the store takes ownership of `buffer` and holds both columns in
+	/// it as a single split-half entry, so no up-front copy of the full buffer is made.
+	/// Each [`Self::fold`] advances both halves in place within the buffer. `buffer` splits on its
+	/// highest variable, so its low half fixes that variable to 0 and its high half to 1 —
+	/// matching the store's high-to-low fold order.
 	pub fn push_split_half(&mut self, buffer: FieldBuffer<P>) -> [ColId; 2] {
 		// precondition
 		assert_eq!(
@@ -143,18 +139,10 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 			self.n_vars + 1,
 			"buffer must have one more variable than the store so each half matches it"
 		);
-		let parent = Arc::new(buffer);
-		let low = {
-			self.columns.push(Column::SplitHalf {
-				parent: Arc::clone(&parent),
-				high: false,
-			});
-			ColId(self.columns.len() - 1)
-		};
-		let high = {
-			self.columns.push(Column::SplitHalf { parent, high: true });
-			ColId(self.columns.len() - 1)
-		};
+		self.columns.push(Column::SplitHalf(buffer));
+		let low = ColId(self.n_cols);
+		let high = ColId(self.n_cols + 1);
+		self.n_cols += 2;
 		[low, high]
 	}
 
@@ -180,11 +168,6 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 			self.eq_trackers.len() - 1
 		});
 		EqId(index)
-	}
-
-	/// Returns a borrowed view of a column.
-	pub fn col(&self, id: ColId) -> FieldSlice<'_, P> {
-		self.columns[id.0].as_slice()
 	}
 
 	/// Returns the equality-indicator expansion of a registered tracker.
@@ -237,6 +220,9 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 		// precondition
 		assert!(self.n_vars > 0, "fold requires at least one remaining variable");
 
+		// The number of live variables in each column before this fold; a split-half buffer keeps
+		// its full length, so its halves must be truncated to this before folding.
+		let n_vars = self.n_vars;
 		for column in &mut self.columns {
 			match column {
 				Column::Owned(buffer) => fold_highest_var_inplace(buffer, challenge),
@@ -245,12 +231,18 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 					// buffer, avoiding an up-front copy of the full column.
 					*column = Column::Owned(fold_highest_var(slice, challenge));
 				}
-				Column::SplitHalf { parent, high } => {
-					// The first fold of a shared half writes into a fresh owned buffer, then drops
-					// this side's reference to the parent; no full-size copy is ever made.
-					let (low, hi) = parent.split_half_ref();
-					let half = if *high { hi } else { low };
-					*column = Column::Owned(fold_highest_var(&half, challenge));
+				Column::SplitHalf(buffer) => {
+					// Fold each half on its own highest variable in place. The two halves are the
+					// two columns, so folding the whole buffer's highest variable would instead
+					// combine them; splitting first binds each column's variable independently. The
+					// buffer keeps its length — the folded columns are the (now shorter) fronts of
+					// its halves — so no copy is made.
+					let mut split = buffer.split_half_mut();
+					let (mut low, mut high) = split.halves();
+					low.truncate(n_vars);
+					high.truncate(n_vars);
+					fold_highest_var_inplace(&mut low, challenge);
+					fold_highest_var_inplace(&mut high, challenge);
 				}
 			}
 		}
@@ -260,6 +252,30 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 		self.n_vars -= 1;
 	}
 
+	/// Expands the store into one borrowed slice per logical column, in [`ColId`] order.
+	///
+	/// A split-half entry expands into the front `2^n_vars` scalars of its low and high
+	/// halves, so the returned length is the logical column count — larger than the physical entry
+	/// count whenever a split-half column is present.
+	pub fn column_slices(&self) -> Vec<FieldSlice<'_, P>> {
+		let mut slices = Vec::with_capacity(self.n_cols);
+		for column in &self.columns {
+			match column {
+				Column::Borrowed(slice) => slices.push(slice.to_ref()),
+				Column::Owned(buffer) => slices.push(buffer.to_ref()),
+				Column::SplitHalf(buffer) => {
+					// The buffer holds the two columns as its low and high halves; each column is
+					// the front `2^n_vars` scalars of one half, so read it as that half's
+					// chunk 0.
+					let high_start = 1 << (buffer.log_len() - 1 - self.n_vars);
+					slices.push(buffer.chunk(self.n_vars, 0));
+					slices.push(buffer.chunk(self.n_vars, high_start));
+				}
+			}
+		}
+		slices
+	}
+
 	/// Returns the evaluation of every column at the challenge point, indexed by [`ColId`].
 	///
 	/// Each column's evaluation is computed once, no matter how many claims read the column.
@@ -267,9 +283,9 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 		// precondition
 		assert_eq!(self.n_vars, 0, "final_evals requires all variables to be folded");
 
-		self.columns
+		self.column_slices()
 			.iter()
-			.map(|column| column.as_slice().get(0))
+			.map(|slice| slice.get(0))
 			.collect()
 	}
 }
@@ -278,7 +294,10 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 ///
 /// This is the out-of-place counterpart of [`fold_highest_var_inplace`], used for the first fold
 /// of a borrowed column.
-fn fold_highest_var<P: PackedField>(values: &FieldSlice<P>, challenge: P::Scalar) -> FieldBuffer<P> {
+fn fold_highest_var<P: PackedField>(
+	values: &FieldSlice<P>,
+	challenge: P::Scalar,
+) -> FieldBuffer<P> {
 	assert!(values.log_len() > 0);
 
 	let challenge_broadcast = P::broadcast(challenge);

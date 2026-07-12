@@ -55,7 +55,7 @@ impl<F: Field, P: PackedField<Scalar = F>> RoundEvaluator<F, P> for BivariatePro
 	) {
 		let chunk_vars = ctx.chunk_vars();
 
-		let [a, b]: [FieldSlice<'_, P>; 2] = self.cols.map(|id| ctx.col(id));
+		let [a, b]: [&FieldSlice<'_, P>; 2] = self.cols.map(|id| ctx.col(id));
 		let (a_0, a_1) = a.split_half_ref();
 		let (b_0, b_1) = b.split_half_ref();
 		let a_0 = a_0.chunk(chunk_vars, chunk_index);
