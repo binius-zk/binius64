@@ -192,6 +192,12 @@ impl Circuit {
 	/// This is the parallel counterpart to [`Self::populate_wire_witness_batched`]. Constants are
 	/// broadcast once over the full value array, then the bytecode interpreter runs independently
 	/// on disjoint instance-column stripes of at most `stripe_width` columns.
+	///
+	/// # Errors
+	///
+	/// If any instance is not satisfiable, returns an error naming a failing instance and its
+	/// assertion failures. The reported instance is not guaranteed to be the lowest failing
+	/// instance across all stripes.
 	pub fn populate_wire_witness_batched_parallel(
 		&self,
 		mut values: StridedArray2DViewMut<'_, Word>,

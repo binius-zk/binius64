@@ -105,6 +105,10 @@ impl EvalForm {
 	}
 
 	/// Execute the evaluation form over disjoint vertical instance stripes in parallel.
+	///
+	/// Returns an error from one failing stripe if any instance is unsatisfiable. Unlike
+	/// [`Self::evaluate_batched`], this does not guarantee that the reported instance is the
+	/// lowest-indexed failing instance across the full batch.
 	pub fn evaluate_batched_parallel(
 		&self,
 		values: StridedArray2DViewMut<'_, Word>,

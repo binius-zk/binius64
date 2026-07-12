@@ -94,6 +94,11 @@ impl ValueTable {
 	/// This is the parallel counterpart to [`Self::populate`]. Input filling is still performed
 	/// once up front, then circuit evaluation runs over disjoint vertical instance stripes.
 	///
+	/// # Errors
+	///
+	/// Returns an error naming a failing instance whose inputs do not satisfy the circuit. The
+	/// reported instance is not guaranteed to be the lowest failing instance across all stripes.
+	///
 	/// # Panics
 	///
 	/// Panics if the circuit's layout has any inout wires.
@@ -117,6 +122,11 @@ impl ValueTable {
 	///
 	/// This is exposed for benchmarking stripe widths. Production callers should use
 	/// [`Self::populate_parallel`].
+	///
+	/// # Errors
+	///
+	/// Returns an error naming a failing instance whose inputs do not satisfy the circuit. The
+	/// reported instance is not guaranteed to be the lowest failing instance across all stripes.
 	///
 	/// # Panics
 	///
@@ -522,7 +532,7 @@ mod tests {
 	}
 
 	#[test]
-	fn parallel_failure_diagnostics_match_serial_for_failures_in_different_stripes() {
+	fn parallel_failure_diagnostics_report_global_instance_across_stripes() {
 		// A circuit that asserts a == b; instances where they differ fail.
 		let builder = CircuitBuilder::new();
 		let a = builder.add_witness();
@@ -530,20 +540,25 @@ mod tests {
 		builder.assert_eq("a_eq_b", a, b);
 		let circuit = builder.build();
 
-		// Instances 5 and 7 fail in different two-column stripes. The batched interpreter reports
-		// the lowest failing instance's diagnostics, so the parallel path should match the serial
-		// path exactly rather than aggregating failures from unrelated later instances.
+		// Instances 5 and 7 fail in different two-column stripes. The parallel path may report
+		// either stripe depending on scheduling, but it must report a global instance index and
+		// diagnostics for that instance rather than aggregating unrelated stripes.
 		let fill = |i: usize, w: &mut BatchWitnessFiller<'_, '_>| {
 			w[a] = Word(i as u64);
 			w[b] = Word(if i == 5 || i == 7 { 99 } else { i as u64 });
 		};
-		let serial = ValueTable::populate(&circuit, 3, fill).expect_err("instances fail");
 		let parallel = ValueTable::populate_parallel_with_stripe_width(&circuit, 3, 2, fill)
 			.expect_err("instances fail");
 
-		assert_eq!(parallel.instance, serial.instance);
-		assert_eq!(parallel.source.total_count, serial.source.total_count);
-		assert_eq!(parallel.source.messages, serial.source.messages);
+		assert!(parallel.instance == 5 || parallel.instance == 7);
+		assert_eq!(parallel.source.total_count, 1);
+		assert_eq!(
+			parallel.source.messages,
+			vec![format!(
+				".a_eq_b: Word(0x{0:016x}) != Word(0x0000000000000063)",
+				parallel.instance
+			)]
+		);
 	}
 
 	#[test]

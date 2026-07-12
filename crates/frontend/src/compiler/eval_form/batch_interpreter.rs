@@ -39,11 +39,11 @@ struct InstanceAssertionFailure {
 
 /// The failure of batch witness population, attributed to a single instance.
 ///
-/// When several instances fail, this reports the one with the lowest index, matching what
-/// populating that instance on its own would produce.
+/// Serial batched evaluation reports the lowest-indexed failing instance. Parallel batched
+/// evaluation runs over independent stripes, and may report the first failing stripe observed.
 #[derive(Debug)]
 pub struct BatchPopulateError {
-	/// The index of the reported instance, the lowest-numbered failing instance.
+	/// The index of the reported failing instance.
 	pub instance: usize,
 	/// The assertion failures recorded for that instance.
 	pub source: PopulateError,
