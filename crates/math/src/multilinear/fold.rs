@@ -5,7 +5,7 @@ use std::ops::{Deref, DerefMut};
 use binius_field::{Field, PackedField};
 use binius_utils::{random_access_sequence::RandomAccessSequence, rayon::prelude::*};
 
-use crate::FieldBuffer;
+use crate::{FieldBuffer, line::extrapolate_line_packed};
 
 /// Computes the partial evaluation of a multilinear on its highest variable, inplace.
 ///
@@ -25,8 +25,8 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: DerefMut<Target = [P]>>(
 		let (mut lo, mut hi) = split.halves();
 		(lo.as_mut(), hi.as_mut())
 			.into_par_iter()
-			.for_each(|(zero, one)| {
-				*zero += broadcast_scalar * (*one - *zero);
+			.for_each(|(lo_i, hi_i)| {
+				*lo_i = extrapolate_line_packed(*lo_i, *hi_i, broadcast_scalar)
 			});
 	}
 

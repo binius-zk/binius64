@@ -22,7 +22,7 @@
 use std::sync::Arc;
 
 use binius_field::{Field, PackedField};
-use binius_math::{FieldBuffer, FieldSlice, multilinear::fold::fold_highest_var_inplace};
+use binius_math::{FieldBuffer, FieldSlice, line::extrapolate_line_packed, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 
 use super::gruen32::Gruen32;
@@ -278,14 +278,14 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 ///
 /// This is the out-of-place counterpart of [`fold_highest_var_inplace`], used for the first fold
 /// of a borrowed column.
-fn fold_highest_var<P: PackedField>(values: &FieldSlice<P>, scalar: P::Scalar) -> FieldBuffer<P> {
-	let broadcast_scalar = P::broadcast(scalar);
+fn fold_highest_var<P: PackedField>(values: &FieldSlice<P>, challenge: P::Scalar) -> FieldBuffer<P> {
+	assert!(values.log_len() > 0);
+
+	let challenge_broadcast = P::broadcast(challenge);
 	let (lo, hi) = values.split_half_ref();
-	let mut out = FieldBuffer::zeros(values.log_len() - 1);
-	(out.as_mut(), lo.as_ref(), hi.as_ref())
+	let out_vals = (lo.as_ref(), hi.as_ref())
 		.into_par_iter()
-		.for_each(|(out, &lo, &hi)| {
-			*out = lo + broadcast_scalar * (hi - lo);
-		});
-	out
+		.map(|(&lo_i, &hi_i)| extrapolate_line_packed(lo_i, hi_i, challenge_broadcast))
+		.collect();
+	FieldBuffer::new(values.log_len() - 1, out_vals)
 }
