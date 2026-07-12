@@ -2,6 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_core::constraint_system::ConstraintSystem;
+use binius_field::ExtensionField;
 use binius_hash::StdHashSuite;
 use binius_iop::{
 	basefold_compiler::BaseFoldVerifierCompiler,
@@ -9,12 +10,17 @@ use binius_iop::{
 	fri::{ConstantArityStrategy, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_ip::channel::IPVerifierChannel;
-use binius_math::multilinear::eq::eq_ind;
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
-use binius_verifier::config::B128;
+use binius_verifier::{
+	Error,
+	config::{B1, B128},
+	ring_switch::{self, RingSwitchVerifyOutput},
+};
 
-use crate::commit::BatchCommitLayout;
+use crate::{
+	commit::BatchCommitLayout,
+	reduction::{ReductionVerifierOutput, verify_reduction},
+};
 
 /// The target soundness, in bits.
 ///
@@ -25,13 +31,16 @@ const SECURITY_BITS: usize = 96;
 /// The Merkle commitment scheme over the committed field.
 type Scheme = BinaryMerkleTreeScheme<B128, StdHashSuite>;
 
-/// Verifies a batch-witness commitment opened at a verifier-chosen random point.
+/// Verifies the data-parallel M4 proof for a batch of `2^log_instances` circuit instances.
 ///
-/// Setup fixes the committed-oracle shape and the BaseFold parameters once.
-/// A later opening proof is then checked against that fixed setup.
+/// The proof reduces the whole batch to one claim about the committed trace, then opens the trace.
+/// One-time setup fixes the constraint system, the committed-oracle shape, and the FRI parameters.
+/// A later verification checks one proof against that fixed setup.
 ///
 /// The prover is built from this verifier, so both sides share one set of FRI parameters.
 pub struct Verifier {
+	/// The prepared single-instance constraint system shared by every instance.
+	cs: ConstraintSystem,
 	/// The committed-multilinear shape of the batch.
 	layout: BatchCommitLayout,
 	/// The precomputed BaseFold verifier, holding the FRI parameters.
@@ -43,7 +52,7 @@ impl Verifier {
 	///
 	/// # Arguments
 	///
-	/// - `cs`: the single-instance constraint system shared by every instance.
+	/// - `cs`: the prepared single-instance constraint system shared by every instance.
 	/// - `log_instances`: base-2 logarithm of the instance count.
 	/// - `log_inv_rate`: base-2 logarithm of the inverse Reed-Solomon rate.
 	pub fn setup(cs: &ConstraintSystem, log_instances: usize, log_inv_rate: usize) -> Self {
@@ -73,9 +82,15 @@ impl Verifier {
 		);
 
 		Self {
+			cs: cs.clone(),
 			layout,
 			iop_compiler,
 		}
+	}
+
+	/// The prepared constraint system this verifier checks against.
+	pub const fn constraint_system(&self) -> &ConstraintSystem {
+		&self.cs
 	}
 
 	/// The committed-multilinear shape this verifier expects.
@@ -90,22 +105,27 @@ impl Verifier {
 		&self.iop_compiler
 	}
 
-	/// Verifies a batch-witness commitment opened at a verifier-chosen random point.
+	/// Verifies one M4 proof.
 	///
-	/// The verifier receives the commitment, redraws the same point, reads the claim, and checks
-	/// the opening.
+	/// The steps mirror the prover on the same transcript:
+	/// - Receive the trace commitment.
+	/// - Replay the AND-check and shift reduction to one folded-witness claim.
+	/// - Ring-switch that claim onto the committed trace.
+	/// - Check the trace opening.
 	///
-	/// # Returns
-	///
-	/// The random point and the evaluation the opening proves at it.
+	/// The reduction ends with a claim about the witness folded over instances at `r_rho`.
+	/// The trace's bit index is `[bit | instance | wire]`.
+	/// So evaluating its instance coordinates at `r_rho` performs that fold.
+	/// The ring-switch therefore opens the trace at `r_j || r_rho || r_y`.
+	/// That evaluation equals the folded-witness claim the reduction produced.
 	///
 	/// # Errors
 	///
-	/// Returns an error if the commitment opening does not verify.
+	/// Returns an error if the reduction, the ring-switch, or the trace opening fails.
 	pub fn verify<Challenger_>(
 		&self,
 		transcript: &mut VerifierTranscript<Challenger_>,
-	) -> Result<(Vec<B128>, B128), binius_iop::channel::Error>
+	) -> Result<(), Error>
 	where
 		Challenger_: Challenger,
 	{
@@ -113,28 +133,36 @@ impl Verifier {
 			.iop_compiler
 			.create_channel_from_transcript::<StdHashSuite, Challenger_, _>(transcript);
 
-		// Receive the commitment, redraw the same point, and read the claimed evaluation. The
-		// packed batch witness is witness-dependent (M4 commits it without ZK regardless).
-		let oracle = channel.recv_oracle(self.layout.log_witness_elems, true)?;
-		let point = channel.sample_many(self.layout.log_witness_elems);
-		let eval = channel.recv_one()?;
+		// Receive the trace commitment.
+		// The witness is committed without zero-knowledge.
+		let trace_oracle = channel.recv_oracle(self.layout.log_witness_elems, true)?;
 
-		// The committed multilinear opened at `point` must equal `eval`.
-		//
-		// The transparent multilinear is eq(point, .).
-		// BaseFold reduces to a challenge point `pt`, where this transparent evaluates to eq(point,
-		// pt).
-		let point_at_pt = point.clone();
+		// Replay the AND-check and shift reduction to a single folded-witness claim.
+		let ReductionVerifierOutput { r_rho, shift } =
+			verify_reduction(&self.cs, self.layout.log_instances, &mut channel)?;
 
-		// The channel only queues the relation here.
-		// `finish` runs the single combined FRI opening check.
+		// Ring-switch the reduced claim onto the committed trace.
+		// The point is `r_j || r_rho || r_y`.
+		// Its instance coordinates fold the trace at `r_rho`.
+		let trace_point = [shift.r_j(), r_rho.as_slice(), shift.r_y()].concat();
+		let RingSwitchVerifyOutput {
+			eq_r_double_prime,
+			sumcheck_claim,
+		} = ring_switch::verify(shift.witness_eval, &trace_point, &mut channel)?;
+
+		// Open the trace oracle against the ring-switch's transparent multilinear.
+		// BaseFold reduces to a challenge point where the transparent evaluates as below.
+		let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
+		let eval_point_high = trace_point[log_packing..].to_vec();
 		channel.verify_oracle_relations([OracleLinearRelation {
-			oracle,
-			transparent: Box::new(move |pt: &[B128]| eq_ind(&point_at_pt, pt)),
-			claim: eval,
+			oracle: trace_oracle,
+			transparent: Box::new(move |pt: &[B128]| {
+				ring_switch::eval_rs_eq(&eval_point_high, pt, &eq_r_double_prime)
+			}),
+			claim: sumcheck_claim,
 		}])?;
 		channel.finish()?;
 
-		Ok((point, eval))
+		Ok(())
 	}
 }

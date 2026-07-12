@@ -10,7 +10,8 @@
 //! 4. The public-input consistency check ties in the shared constants.
 //!
 //! The output is that witness claim together with `r_rho`.
-//! Binding the claim to the committed trace oracle is a later step, not done here.
+//! The caller binds it to the committed trace by ring-switching at `r_j || r_rho || r_y`.
+//! Evaluating the trace's instance coordinates at `r_rho` performs that instance fold.
 
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, Field};

@@ -10,9 +10,9 @@
 //! 3. The witness is folded over the instance axis at `r_rho`.
 //! 4. The shift reduction reduces the operand claims to a single evaluation of the folded witness.
 //!
-//! The output is that witness claim.
-//! Binding it to the committed trace oracle is a later step, not done here.
-//! That tie binds `r_rho` and bridges the bit witness to the packed commitment.
+//! The output is that witness claim, together with `r_rho`.
+//! The caller binds it to the committed trace by ring-switching at `r_j || r_rho || r_y`.
+//! Evaluating the trace's instance coordinates at `r_rho` performs that instance fold.
 //!
 //! Only AND constraints are handled, so the circuit must have no MUL constraints.
 
