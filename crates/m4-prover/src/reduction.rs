@@ -128,6 +128,7 @@ mod tests {
 	use std::array;
 
 	use binius_field::PackedBinaryGhash1x128b;
+	use binius_frontend::CircuitBuilder;
 	use binius_m4_verifier::verify_reduction;
 	use binius_math::{inner_product::inner_product, multilinear::eq::eq_ind_partial_eval};
 	use binius_prover::protocols::shift::build_key_collection;
@@ -250,5 +251,25 @@ mod tests {
 					.expect_err("a tampered proof must not verify and finalize cleanly");
 			}
 		}
+	}
+
+	#[test]
+	#[should_panic(
+		expected = "the M4 reduction handles only AND constraints; the circuit must have no MUL constraints"
+	)]
+	fn verifier_rejects_mul_constraints_before_reading_transcript() {
+		let builder = CircuitBuilder::new();
+		let x = builder.add_witness();
+		let y = builder.add_witness();
+		let (hi, lo) = builder.smul(x, y);
+		builder.force_commit(hi);
+		builder.force_commit(lo);
+		let circuit = builder.build();
+
+		let mut cs = circuit.constraint_system().clone();
+		cs.validate_and_prepare().unwrap();
+
+		let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), Vec::new());
+		let _ = verify_reduction(&cs, 0, &mut verifier_transcript);
 	}
 }

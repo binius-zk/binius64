@@ -47,6 +47,10 @@ pub struct ReductionVerifierOutput {
 /// # Errors
 ///
 /// Returns an error if the AND-check, the shift reduction, or the public-input check fails.
+///
+/// # Panics
+///
+/// Panics if the constraint system has any MUL constraints, which this reduction does not handle.
 pub fn verify_reduction<Channel>(
 	cs: &ConstraintSystem,
 	log_instances: usize,
@@ -55,6 +59,11 @@ pub fn verify_reduction<Channel>(
 where
 	Channel: IPVerifierChannel<B128, Elem = B128>,
 {
+	assert!(
+		cs.mul_constraints.is_empty(),
+		"the M4 reduction handles only AND constraints; the circuit must have no MUL constraints"
+	);
+
 	// One base domain shared by the AND-check and the shift, consistent by construction.
 	// The AND-check's univariate-skip domain spans one dimension above the 64-bit word.
 	let andcheck_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1);
