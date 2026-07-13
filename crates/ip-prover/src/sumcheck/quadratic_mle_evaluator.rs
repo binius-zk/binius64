@@ -4,9 +4,9 @@ use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 
 use super::{
-	mle_store::{ColId, EqId, MleStore},
+	mle_store::{ColId, ColumnChunk, EqId, EvaluationChunk, MleStore},
 	round_evals::RoundEvals2,
-	round_evaluator::{ColumnChunk, EvaluationChunk, RoundEvaluator},
+	round_evaluator::RoundEvaluator,
 };
 
 /// MLE-check round evaluator for one quadratic composition over N store columns.

@@ -7,9 +7,9 @@ use binius_math::multilinear::eq::eq_one_var;
 
 use crate::sumcheck::{
 	common::{MleCheckProver, SumcheckProver},
-	mle_store::{EqId, MleStore},
+	mle_store::{EqId, EvaluationChunk, MleStore},
 	round_evals::round_coeffs_by_eq,
-	round_evaluator::{EvaluationChunk, RoundEvaluator},
+	round_evaluator::RoundEvaluator,
 };
 
 /// Adaptor that exposes a `SumcheckProver` interface for an internal `MleCheckProver`.

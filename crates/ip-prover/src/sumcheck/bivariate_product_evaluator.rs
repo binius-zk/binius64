@@ -5,9 +5,9 @@ use binius_ip::sumcheck::RoundCoeffs;
 use itertools::izip;
 
 use super::{
-	mle_store::{ColId, MleStore},
+	mle_store::{ColId, EvaluationChunk, MleStore},
 	round_evals::WideRoundEvals2,
-	round_evaluator::{EvaluationChunk, RoundEvaluator},
+	round_evaluator::RoundEvaluator,
 };
 
 /// Sumcheck round evaluator for a composite defined as the product of two store columns.
