@@ -16,7 +16,6 @@ binius-utils = { path = "../utils" }
 auto_impl.workspace = true
 either.workspace = true
 itertools.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

@@ -18,7 +18,6 @@ binius-transcript = { path = "../transcript" }
 binius-spartan-frontend = { path = "../spartan-frontend", default-features = false }
 binius-spartan-verifier = { path = "../spartan-verifier", default-features = false }
 binius-utils = { path = "../utils" }
-bytemuck.workspace = true
 bytes.workspace = true
 digest.workspace = true
 getset.workspace = true
