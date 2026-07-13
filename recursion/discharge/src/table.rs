@@ -606,7 +606,13 @@ pub fn native_monster_eval(cs: &ConstraintSystem, parsed: &ParsedClaim) -> B128 
 			&r_y_tensor,
 		)
 	};
-	let intmul_part = {
+	// FWD-PORT (empty-mul guard): match upstream MonsterEvalFn (verify.rs:469-485) — the prepared
+	// AND-only CS carries ZERO mul constraints, and `evaluate_monster_multilinear_for_operation`
+	// asserts `operands.len() == 1 << r_x_prime.len()` (monster.rs:130), which fails for empty
+	// operand vecs. Skip the intmul contribution entirely when there are no mul constraints.
+	let intmul_part = if cs.mul_constraints.is_empty() {
+		B128::ZERO
+	} else {
 		let (a, b, lo, hi) = cs
 			.mul_constraints
 			.iter()
