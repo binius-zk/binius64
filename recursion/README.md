@@ -44,20 +44,26 @@ Everything is MIT/Apache-clean and separable; the general contribution is the di
 (`discharge/`) plus the K-inner wrap (`multizk/multi_zk.rs`) and the substituting-channel
 seam (`wrap/substituting.rs`).
 
+## Status on this branch (upstream/main `922df33f`)
+
+`discharge/` is **green on current upstream**, including the STEP-2 committed-PCS endgame
+(the flat-verify headline). The re-derived segmented Y-block cross-validates bit-for-bit
+against the real `Verifier::verify`. The sibling crates `wrap/`, `multizk/`, `gate/` are
+**mid-port** to upstream's channel-oriented BaseFold refactor (#1611/#1693/#1500/#1586) —
+their source is here for reference but they are **excluded from the workspace build** until
+ported (a separate, comparable port). So the reviewed, runnable deliverable is `discharge/`.
+
 ## Reproduce (one `cargo test`)
 
 From the repo root. The heavy synthetic discharge wants `--release`; single-threaded
 keeps peak RAM modest.
 
 ```sh
-# Everything, green:
-cargo test --release -p binius-recursion-discharge -p binius-recursion-wrap \
-                     -p binius-recursion-gate -- --test-threads=1
+# The discharge, green on upstream/main (STEP-1 + STEP-2):
+cargo test --release -p binius-recursion-discharge --features step2 -- --test-threads=1
 
-# Or per crate, with the interesting output:
-cargo test --release -p binius-recursion-discharge -- --nocapture --test-threads=1
-cargo test --release -p binius-recursion-wrap      -- --nocapture --test-threads=1
-cargo test --release -p binius-recursion-gate      -- --nocapture --test-threads=1
+# With the interesting output (STEP-1 cross-validate vs the REAL Verifier::verify, negatives):
+cargo test --release -p binius-recursion-discharge --features step2 -- --nocapture --test-threads=1
 
 # The synthetic scaling demo (the flat-verify headline; see numbers below):
 cargo run  --release -p binius-recursion-discharge --bin scaling_demo

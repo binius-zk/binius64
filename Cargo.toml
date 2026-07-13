@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/*", "recursion/*"]
+members = ["crates/*", "recursion/discharge"]
+# recursion/{wrap,multizk,gate} are mid-port to upstream's channel-oriented BaseFold
+# refactor (#1611/#1693/#1500/#1586); excluded from the build until ported. The reviewed
+# deliverable is recursion/discharge (green: `cargo test -p binius-recursion-discharge --features step2`).
+exclude = ["recursion/wrap", "recursion/multizk", "recursion/gate"]
 resolver = "2"
 
 [workspace.package]
