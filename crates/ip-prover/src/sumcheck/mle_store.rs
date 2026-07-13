@@ -44,6 +44,13 @@ impl ColId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EqId(usize);
 
+impl EqId {
+	/// Returns the registration position of the tracker in the store.
+	pub const fn index(self) -> usize {
+		self.0
+	}
+}
+
 /// One physical entry in the store, holding one or two logical columns.
 ///
 /// A `Borrowed` or `Owned` entry is a single column. A `SplitHalf` entry holds two adjacent
@@ -178,6 +185,18 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 		self.eq_trackers[id.0].eq_expansion()
 	}
 
+	/// Returns the equality-indicator expansion of every registered tracker, in [`EqId`] order.
+	///
+	/// The driving prover slices each expansion per chunk once per round; the returned order
+	/// matches [`EqId::index`], so an evaluator's tracker id indexes the resulting per-chunk
+	/// slices.
+	pub fn eq_expansions(&self) -> Vec<&FieldBuffer<P>> {
+		self.eq_trackers
+			.iter()
+			.map(|tracker| tracker.eq_expansion())
+			.collect()
+	}
+
 	/// Returns the full evaluation point of a registered eq tracker.
 	///
 	/// The point spans all of the store's original variables — it is not truncated as the store
@@ -287,6 +306,116 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 			.iter()
 			.map(|slice| slice.get(0))
 			.collect()
+	}
+
+	/// Prepares one round's accumulation pass over the columns and eq trackers.
+	///
+	/// The returned [`ExecuteContext`] borrows the store's expanded column slices and eq-indicator
+	/// expansions and hands each parallel chunk to the round evaluators (see
+	/// [`ExecuteContext::par_chunks`]).
+	pub fn execute_context(&self) -> ExecuteContext<'_, P> {
+		ExecuteContext {
+			n_vars: self.n_vars,
+			cols: self.column_slices(),
+			eqs: self.eq_expansions(),
+		}
+	}
+}
+
+/// One store column's low and high halves at a single chunk of the halved hypercube.
+///
+/// The column is split on the round's highest variable: `lo` fixes that variable to 0, `hi` to 1.
+/// Both range over the chunk's `2^chunk_vars` scalars.
+pub struct ColumnChunk<'c, P: PackedField> {
+	pub lo: FieldSlice<'c, P>,
+	pub hi: FieldSlice<'c, P>,
+}
+
+/// One chunk of the halved hypercube, prepared for the round evaluators.
+///
+/// With `n` variables remaining, each column splits on the highest variable into two halves of
+/// `n - 1` variables, and both halves divide into chunks of `2^chunk_vars` scalars. This holds one
+/// such chunk: the split halves of every logical column and the same chunk of every eq-indicator
+/// expansion. A column read by several evaluators is chunked a single time. Evaluators read their
+/// columns by [`ColId`] and their eq trackers by [`EqId`].
+pub struct EvaluationChunk<'c, P: PackedField> {
+	cols: Vec<ColumnChunk<'c, P>>,
+	eqs: Vec<FieldSlice<'c, P>>,
+}
+
+impl<'c, P: PackedField> EvaluationChunk<'c, P> {
+	/// Returns the low and high halves of a column at this chunk.
+	pub fn col(&self, id: ColId) -> &ColumnChunk<'c, P> {
+		&self.cols[id.index()]
+	}
+
+	/// Returns the equality-indicator expansion of a registered tracker at this chunk.
+	///
+	/// The expansion ranges over the halved hypercube, so it is chunked with the same chunk index
+	/// as the column halves.
+	pub fn eq(&self, id: EqId) -> &FieldSlice<'c, P> {
+		&self.eqs[id.index()]
+	}
+}
+
+/// A round's expanded columns and eq-indicator expansions, borrowed from an [`MleStore`].
+///
+/// Produced by [`MleStore::execute_context`]. It expands the store's columns once — a split-half
+/// column becomes its two halves — and drives the parallel round pass through
+/// [`Self::par_chunks`], which slices each column and eq expansion per chunk into an
+/// [`EvaluationChunk`].
+pub struct ExecuteContext<'b, P: PackedField> {
+	// The store's remaining variable count; the halved hypercube has `n_vars - 1` variables.
+	n_vars: usize,
+	// One slice per logical column, over all `n_vars` remaining variables, in `ColId` order.
+	cols: Vec<FieldSlice<'b, P>>,
+	// One eq-indicator expansion per registered tracker, over `n_vars - 1` variables, in `EqId`
+	// order.
+	eqs: Vec<&'b FieldBuffer<P>>,
+}
+
+impl<'b, P: PackedField> ExecuteContext<'b, P> {
+	/// Returns a parallel iterator over the chunks of the halved hypercube.
+	///
+	/// Each item is one [`EvaluationChunk`]: the split low/high halves of every column and the
+	/// matching chunk of every eq-indicator expansion, at `2^chunk_vars` scalars per chunk. A
+	/// column's low half is the front chunk `chunk_index` of the full column; its high half is
+	/// chunk `chunk_count + chunk_index`, the corresponding chunk of the back half — so the column
+	/// is sliced without materializing its halves separately.
+	///
+	/// ## Preconditions
+	///
+	/// * `chunk_vars` must be at most `n_vars - 1`.
+	pub fn par_chunks(
+		&self,
+		chunk_vars: usize,
+	) -> impl IndexedParallelIterator<Item = EvaluationChunk<'_, P>> {
+		// precondition
+		assert!(
+			chunk_vars < self.n_vars,
+			"chunk_vars must be at most the halved hypercube's variable count"
+		);
+
+		let chunk_count = 1usize << (self.n_vars - 1 - chunk_vars);
+		(0..chunk_count).into_par_iter().map(move |chunk_index| {
+			// The full column at `chunk_vars` holds the low half in its first `chunk_count` chunks
+			// and the high half in the next `chunk_count`, so the two halves of this chunk are the
+			// full column's chunks `chunk_index` and `chunk_count + chunk_index`.
+			let cols = self
+				.cols
+				.iter()
+				.map(|col| ColumnChunk {
+					lo: col.chunk(chunk_vars, chunk_index),
+					hi: col.chunk(chunk_vars, chunk_count + chunk_index),
+				})
+				.collect();
+			let eqs = self
+				.eqs
+				.iter()
+				.map(|eq| eq.chunk(chunk_vars, chunk_index))
+				.collect();
+			EvaluationChunk { cols, eqs }
+		})
 	}
 }
 

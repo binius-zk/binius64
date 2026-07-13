@@ -11,53 +11,19 @@
 //! existing [`SumcheckProver`] interface, and [`SharedMleCheckProver`] to the [`MleCheckProver`]
 //! interface, so they batch alongside standalone provers unchanged.
 
-use std::{cmp::max, iter};
+use std::iter;
 
 use auto_impl::auto_impl;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldBuffer, FieldSlice};
+use binius_math::FieldBuffer;
 use binius_utils::rayon::prelude::*;
 
 use super::{
 	MleToSumCheckEvaluator,
 	common::{MleCheckProver, SumcheckProver},
-	mle_store::{ColId, EqId, MleStore},
+	mle_store::{ColId, EvaluationChunk, MleStore},
 };
-
-/// Read-only view of the store during one round's accumulation pass.
-///
-/// The pass runs over the halved hypercube: with `n` variables remaining, each column splits on
-/// the highest variable into two halves of `n - 1` variables, and both halves divide into chunks
-/// of `2^chunk_vars` scalars addressed by a shared chunk index.
-///
-/// The store's columns are expanded once, at the start of the round, into one slice per logical
-/// column (a split-half column becomes its two halves), so [`Self::col`] is a plain index.
-pub struct RoundContext<'b, 'a, P: PackedField> {
-	store: &'b MleStore<'a, P>,
-	cols: Vec<FieldSlice<'b, P>>,
-	chunk_vars: usize,
-}
-
-impl<'b, P: PackedField> RoundContext<'b, '_, P> {
-	/// Returns log2 the number of scalars in one chunk of the halved hypercube.
-	pub const fn chunk_vars(&self) -> usize {
-		self.chunk_vars
-	}
-
-	/// Returns a borrowed view of a column, over all remaining variables.
-	pub fn col(&self, id: ColId) -> &FieldSlice<'b, P> {
-		&self.cols[id.index()]
-	}
-
-	/// Returns the equality-indicator expansion of a registered tracker.
-	///
-	/// The expansion ranges over the halved hypercube, so it chunks with the same chunk index as
-	/// the column halves.
-	pub fn eq_expansion(&self, id: EqId) -> &'b FieldBuffer<P> {
-		self.store.eq_expansion(id)
-	}
-}
 
 /// Per-round-polynomial logic for one composite claim over store columns.
 ///
@@ -96,14 +62,11 @@ pub trait RoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + Sync {
 
 	/// Accumulates one chunk of the halved hypercube into `accum`.
 	///
-	/// `accum` is this evaluator's run of [`Self::degree`] wide slots, zero-initialized on the
-	/// first chunk and carried across the worker's chunks.
-	fn accumulate(
-		&self,
-		ctx: &RoundContext<'_, '_, P>,
-		chunk_index: usize,
-		accum: &mut [<P as WideMul>::Output],
-	);
+	/// The driving prover prepares `chunk` — the split, per-chunk column halves and eq-indicator
+	/// expansions — so the evaluator only reads its columns by [`ColId`] and eq trackers by
+	/// [`EqId`](super::mle_store::EqId). `accum` is this evaluator's run of [`Self::degree`] wide
+	/// slots, zero-initialized on the first chunk and carried across the worker's chunks.
+	fn accumulate(&self, chunk: &EvaluationChunk<'_, P>, accum: &mut [<P as WideMul>::Output]);
 
 	/// Interpolates this round's polynomial from the slot-wise summed accumulator slice.
 	///
@@ -127,7 +90,7 @@ pub trait RoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + Sync {
 ///
 /// Chunked accumulation keeps the equality-indicator chunk resident in L1 cache while all
 /// evaluators read it, mirroring the chunking of the pre-store quadratic prover.
-const MAX_CHUNK_VARS: usize = 8;
+const MAX_CHUNK_VARS: usize = 12;
 
 /// A [`SumcheckProver`] over a shared [`MleStore`] and a list of [`RoundEvaluator`]s, one per
 /// claim.
@@ -214,8 +177,10 @@ where
 
 		// One parallel pass over the halved hypercube feeds every evaluator, so shared columns
 		// and eq-indicator chunks are read once per round while they are cache-resident.
-		let chunk_vars = max(MAX_CHUNK_VARS, P::LOG_WIDTH).min(n_vars_remaining - 1);
-		let chunk_count = 1usize << (n_vars_remaining - 1 - chunk_vars);
+		//
+		// TODO: dynamically choose chunk size based on the number of columns and P byte-size,
+		// based on estimated L1 cache size.
+		let chunk_vars = (n_vars_remaining - 1).min(MAX_CHUNK_VARS.max(P::LOG_WIDTH));
 
 		// Each evaluator owns a contiguous run of `degree` wide slots in one flat per-worker
 		// buffer; `offsets` holds the run boundaries as a prefix sum, so `offsets[i]..offsets[i +
@@ -225,18 +190,16 @@ where
 			.last()
 			.expect("offsets has one entry per evaluator, plus one");
 
-		let ctx = RoundContext {
-			cols: self.store.column_slices(),
-			store: &self.store,
-			chunk_vars,
-		};
+		// The store prepares one `EvaluationChunk` per chunk of the halved hypercube — the split
+		// column halves and eq-indicator expansions each evaluator reads.
+		let ctx = self.store.execute_context();
 		let evaluators = &self.evaluators;
 		let new_accum = || -> Vec<<P as WideMul>::Output> { vec![Default::default(); total_slots] };
-		let accum = (0..chunk_count)
-			.into_par_iter()
-			.fold(new_accum, |mut accum, chunk_index| {
+		let accum = ctx
+			.par_chunks(chunk_vars)
+			.fold(new_accum, |mut accum, chunk| {
 				for (evaluator, window) in iter::zip(evaluators, offsets.windows(2)) {
-					evaluator.accumulate(&ctx, chunk_index, &mut accum[window[0]..window[1]]);
+					evaluator.accumulate(&chunk, &mut accum[window[0]..window[1]]);
 				}
 				accum
 			})

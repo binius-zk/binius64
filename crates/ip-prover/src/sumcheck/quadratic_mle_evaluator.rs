@@ -1,15 +1,12 @@
 // Copyright 2026 The Binius Developers
 
-use std::array;
-
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::FieldSlice;
 
 use super::{
-	mle_store::{ColId, EqId, MleStore},
+	mle_store::{ColId, ColumnChunk, EqId, EvaluationChunk, MleStore},
 	round_evals::RoundEvals2,
-	round_evaluator::{RoundContext, RoundEvaluator},
+	round_evaluator::RoundEvaluator,
 };
 
 /// MLE-check round evaluator for one quadratic composition over N store columns.
@@ -102,24 +99,12 @@ where
 		}
 	}
 
-	fn accumulate(
-		&self,
-		ctx: &RoundContext<'_, '_, P>,
-		chunk_index: usize,
-		accum: &mut [<P as WideMul>::Output],
-	) {
-		let chunk_vars = ctx.chunk_vars();
+	fn accumulate(&self, chunk: &EvaluationChunk<'_, P>, accum: &mut [<P as WideMul>::Output]) {
+		let eq_chunk = chunk.eq(self.eq_tracker);
 
-		let eq_chunk = ctx
-			.eq_expansion(self.eq_tracker)
-			.chunk(chunk_vars, chunk_index);
-
-		// Split each column into low/high halves for the top variable and take this pass's chunk:
-		// the low half corresponds to x=0, the high half to x=1.
-		let cols: [&FieldSlice<'_, P>; N] = self.cols.map(|id| ctx.col(id));
-		let halves: [_; N] = array::from_fn(|i| cols[i].split_half_ref());
-		let lo_chunks: [_; N] = array::from_fn(|i| halves[i].0.chunk(chunk_vars, chunk_index));
-		let hi_chunks: [_; N] = array::from_fn(|i| halves[i].1.chunk(chunk_vars, chunk_index));
+		// Each column arrives split into low/high halves for the top variable: the low half
+		// corresponds to x=0, the high half to x=1.
+		let cols: [&ColumnChunk<'_, P>; N] = self.cols.map(|id| chunk.col(id));
 
 		// The evaluator's run holds `y_1` in slot 0 and `y_inf` in slot 1.
 		let mut y_1 = <P as WideMul>::Output::default();
@@ -130,8 +115,8 @@ where
 			let mut evals_inf = [P::default(); N];
 
 			for i in 0..N {
-				let lo_i = lo_chunks[i].as_ref()[idx];
-				let hi_i = hi_chunks[i].as_ref()[idx];
+				let lo_i = cols[i].lo.as_ref()[idx];
+				let hi_i = cols[i].hi.as_ref()[idx];
 
 				// Compose once with the high half and once with the lo+hi combination.
 				// The lo+hi branch corresponds to evaluation at infinity for multilinears.

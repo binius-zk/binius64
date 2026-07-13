@@ -2,13 +2,12 @@
 
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::FieldSlice;
 use itertools::izip;
 
 use super::{
-	mle_store::{ColId, MleStore},
+	mle_store::{ColId, EvaluationChunk, MleStore},
 	round_evals::WideRoundEvals2,
-	round_evaluator::{RoundContext, RoundEvaluator},
+	round_evaluator::RoundEvaluator,
 };
 
 /// Sumcheck round evaluator for a composite defined as the product of two store columns.
@@ -47,29 +46,18 @@ impl<F: Field, P: PackedField<Scalar = F>> RoundEvaluator<F, P> for BivariatePro
 		}
 	}
 
-	fn accumulate(
-		&self,
-		ctx: &RoundContext<'_, '_, P>,
-		chunk_index: usize,
-		accum: &mut [<P as WideMul>::Output],
-	) {
-		let chunk_vars = ctx.chunk_vars();
+	fn accumulate(&self, chunk: &EvaluationChunk<'_, P>, accum: &mut [<P as WideMul>::Output]) {
+		let a = chunk.col(self.cols[0]);
+		let b = chunk.col(self.cols[1]);
 
-		let [a, b]: [&FieldSlice<'_, P>; 2] = self.cols.map(|id| ctx.col(id));
-		let (a_0, a_1) = a.split_half_ref();
-		let (b_0, b_1) = b.split_half_ref();
-		let a_0 = a_0.chunk(chunk_vars, chunk_index);
-		let a_1 = a_1.chunk(chunk_vars, chunk_index);
-		let b_0 = b_0.chunk(chunk_vars, chunk_index);
-		let b_1 = b_1.chunk(chunk_vars, chunk_index);
-
-		// Accumulate F(1) and F(∞) where F = ∑_{v ∈ B} A(v || X) B(v || X).
+		// Accumulate F(1) and F(∞) where F = ∑_{v ∈ B} A(v || X) B(v || X). The low half is the
+		// v-prefix at x=0, the high half at x=1.
 		//
 		// The per-point products are accumulated in unreduced (wide) form and reduced a single
 		// time in interpolate, amortizing the GF(2^128) reduction over the whole sum.
 		let mut evals = WideRoundEvals2::<<P as WideMul>::Output>::default();
 		for (&a_0_i, &a_1_i, &b_0_i, &b_1_i) in
-			izip!(a_0.as_ref(), a_1.as_ref(), b_0.as_ref(), b_1.as_ref())
+			izip!(a.lo.as_ref(), a.hi.as_ref(), b.lo.as_ref(), b.hi.as_ref())
 		{
 			// Evaluate M(∞) = M(0) + M(1)
 			let a_inf_i = a_0_i + a_1_i;

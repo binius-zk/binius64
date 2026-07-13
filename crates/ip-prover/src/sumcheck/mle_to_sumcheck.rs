@@ -7,9 +7,9 @@ use binius_math::multilinear::eq::eq_one_var;
 
 use crate::sumcheck::{
 	common::{MleCheckProver, SumcheckProver},
-	mle_store::{EqId, MleStore},
+	mle_store::{EqId, EvaluationChunk, MleStore},
 	round_evals::round_coeffs_by_eq,
-	round_evaluator::{RoundContext, RoundEvaluator},
+	round_evaluator::RoundEvaluator,
 };
 
 /// Adaptor that exposes a `SumcheckProver` interface for an internal `MleCheckProver`.
@@ -138,13 +138,8 @@ where
 		self.inner.round_claim(store) * store.eq_prefix(self.eq_tracker)
 	}
 
-	fn accumulate(
-		&self,
-		ctx: &RoundContext<'_, '_, P>,
-		chunk_index: usize,
-		accum: &mut [<P as WideMul>::Output],
-	) {
-		self.inner.accumulate(ctx, chunk_index, accum)
+	fn accumulate(&self, chunk: &EvaluationChunk<'_, P>, accum: &mut [<P as WideMul>::Output]) {
+		self.inner.accumulate(chunk, accum)
 	}
 
 	fn interpolate(
