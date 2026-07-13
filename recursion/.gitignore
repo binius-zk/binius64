@@ -1,0 +1,14 @@
+# Build output (the workspace shares the root /target; this is belt-and-suspenders).
+target/
+
+# Local experiment artifacts a user might dump while poking at the discharge
+# (none are written by the committed code).
+*.vk
+*.vkm
+*.proof
+*.bin
+*.log
+
+# Perf traces / OS cruft.
+*.perfetto-trace
+**/.DS_Store

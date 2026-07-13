@@ -1,0 +1,26 @@
+[package]
+name = "binius-recursion-multizk"
+version = "0.1.0"
+edition = "2024"
+description = "Multi-inner generalization of the Binius64 ZK wrap: K (possibly distinct) leaf constraint systems verified by ONE outer IronSpartan circuit on one transcript with one combined BaseFold opening."
+
+[dependencies]
+binius-core = { path = "../../crates/core" }
+binius-field = { path = "../../crates/field" }
+binius-hash = { path = "../../crates/hash" }
+binius-frontend = { path = "../../crates/frontend" }
+binius-circuits = { path = "../../crates/circuits" }
+binius-prover = { path = "../../crates/prover" }
+binius-verifier = { path = "../../crates/verifier" }
+binius-transcript = { path = "../../crates/transcript" }
+binius-utils = { path = "../../crates/utils" }
+binius-iop = { path = "../../crates/iop" }
+binius-iop-prover = { path = "../../crates/iop-prover" }
+binius-math = { path = "../../crates/math" }
+binius-spartan-frontend = { path = "../../crates/spartan-frontend" }
+binius-spartan-prover = { path = "../../crates/spartan-prover" }
+binius-spartan-verifier = { path = "../../crates/spartan-verifier" }
+anyhow = "1"
+rand = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

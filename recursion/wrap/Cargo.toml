@@ -1,0 +1,25 @@
+[package]
+name = "binius-recursion-wrap"
+version = "0.1.0"
+edition = "2024"
+description = "Integrated flat wrap: K same-shape Binius64 leaf IOPs through substituting channels + one outer IronSpartan proof + the committed-table monster discharge, all on one Fiat-Shamir transcript."
+
+[dependencies]
+binius-recursion-discharge = { path = "../discharge" }
+binius-core = { path = "../../crates/core" }
+binius-field = { path = "../../crates/field" }
+binius-hash = { path = "../../crates/hash" }
+binius-prover = { path = "../../crates/prover" }
+binius-verifier = { path = "../../crates/verifier" }
+binius-transcript = { path = "../../crates/transcript" }
+binius-utils = { path = "../../crates/utils" }
+binius-iop = { path = "../../crates/iop" }
+binius-iop-prover = { path = "../../crates/iop-prover" }
+binius-ip = { path = "../../crates/ip" }
+binius-math = { path = "../../crates/math" }
+binius-spartan-frontend = { path = "../../crates/spartan-frontend" }
+binius-spartan-prover = { path = "../../crates/spartan-prover" }
+binius-spartan-verifier = { path = "../../crates/spartan-verifier" }
+anyhow = "1"
+rand = "0.10"
+tracing = "0.1"

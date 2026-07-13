@@ -1,0 +1,23 @@
+[package]
+name = "binius-recursion-discharge"
+version = "0.1.0"
+edition = "2024"
+description = "Committed-table batched discharge of K deferred Binius64 monster claims (STEP 1 native check + STEP 2 committed-table PCS check)."
+
+[dependencies]
+binius-core = { path = "../../crates/core" }
+binius-field = { path = "../../crates/field" }
+binius-hash = { path = "../../crates/hash" }
+binius-prover = { path = "../../crates/prover" }
+binius-verifier = { path = "../../crates/verifier" }
+binius-transcript = { path = "../../crates/transcript" }
+binius-utils = { path = "../../crates/utils" }
+binius-iop = { path = "../../crates/iop" }
+binius-iop-prover = { path = "../../crates/iop-prover" }
+binius-math = { path = "../../crates/math" }
+binius-ip = { path = "../../crates/ip" }
+binius-ip-prover = { path = "../../crates/ip-prover" }
+anyhow = "1"
+rand = "0.10"
+sha2 = "0.10"
+itertools = "0.14"

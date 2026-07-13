@@ -1,0 +1,23 @@
+[package]
+name = "binius-recursion-gate"
+version = "0.1.0"
+edition = "2024"
+description = "Phase-0 recursion gate: the smallest end-to-end native Binius64 recursion (toy AND+MUL and SHA-256 inner circuits wrapped by the IOP verifier, monster deferred via compute_public_value)."
+
+[[bin]]
+name = "recursion-gate"
+path = "src/main.rs"
+
+[dependencies]
+binius-core = { path = "../../crates/core" }
+binius-frontend = { path = "../../crates/frontend" }
+binius-circuits = { path = "../../crates/circuits" }
+binius-verifier = { path = "../../crates/verifier" }
+binius-prover = { path = "../../crates/prover" }
+binius-field = { path = "../../crates/field" }
+binius-hash = { path = "../../crates/hash" }
+binius-transcript = { path = "../../crates/transcript" }
+anyhow = "1"
+rand = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
