@@ -31,6 +31,8 @@ use criterion::{BenchmarkId, Criterion, Throughput};
 /// - `circuit`: the single-instance circuit; it must have no inout wires.
 /// - `log_instances`: base-2 logarithm of the instance count.
 /// - `log_inv_rate`: base-2 logarithm of the inverse Reed-Solomon rate.
+/// - `elements_per_instance`: primitives computed by one instance, used only for the throughput
+///   count (one instance may pack several primitives, e.g. two lanes of a compression).
 /// - `fill`: assigns instance `i`'s witness inputs; it must set every witness input.
 ///
 /// # Panics
@@ -43,6 +45,7 @@ pub fn bench_m4_proving<F>(
 	circuit: &Circuit,
 	log_instances: usize,
 	log_inv_rate: usize,
+	elements_per_instance: u64,
 	fill: F,
 ) where
 	F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
@@ -74,13 +77,13 @@ pub fn bench_m4_proving<F>(
 			.expect("no trailing proof data");
 	}
 
-	// One instance runs one primitive, so instances per second equals primitives per second.
-	let n_instances = 1u64 << log_instances;
+	// The batch proves `elements_per_instance` primitives per instance, over all instances.
+	let n_elements = elements_per_instance << log_instances;
 
 	let mut group = c.benchmark_group(group_name);
 	// One batch per iteration is heavy, so keep the sample count modest.
 	group.sample_size(10);
-	group.throughput(Throughput::Elements(n_instances));
+	group.throughput(Throughput::Elements(n_elements));
 
 	group.bench_function(BenchmarkId::from_parameter(log_instances), |b| {
 		b.iter(|| {

@@ -4,12 +4,10 @@
 
 mod bitand;
 mod commit;
-mod public_words;
 mod reduction;
 mod verify;
 
 pub use bitand::verify_bitand_reduction;
 pub use commit::BatchCommitLayout;
-pub use public_words::padded_public_words;
 pub use reduction::{ReductionVerifierOutput, verify_reduction};
 pub use verify::Verifier;

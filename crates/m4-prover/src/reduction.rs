@@ -20,7 +20,6 @@ use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_m4_verifier::padded_public_words;
 use binius_math::BinarySubspace;
 use binius_prover::protocols::shift::{KeyCollection, OperatorData};
 use binius_utils::checked_arithmetics::checked_log_2;
@@ -100,12 +99,11 @@ where
 
 	// Reduce the operand claims to one witness evaluation.
 	// No MUL constraints here, so the intmul claim is a zero claim at an empty point.
-	// The shift reads the public words over a power-of-two hypercube.
-	// So pad the constant bank up to the layout's public length.
-	let public_words = padded_public_words(cs);
+	// The shift evaluates the constants over the layout's power-of-two word count.
+	// Their count need not be a power of two, so they are passed unpadded.
 	let witness_claim = prove_shift::<B128, P, _>(
 		key_collection,
-		&public_words,
+		&cs.constants,
 		&folded_witness,
 		OperatorData {
 			evals: vec![a_eval, b_eval, c_eval],
@@ -134,7 +132,7 @@ mod tests {
 	use binius_circuits::blake3::blake3_compress;
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::{CircuitBuilder, Wire};
-	use binius_m4_verifier::{padded_public_words, verify_reduction};
+	use binius_m4_verifier::verify_reduction;
 	use binius_math::{inner_product::inner_product, multilinear::eq::eq_ind_partial_eval};
 	use binius_prover::protocols::shift::build_key_collection;
 	use binius_transcript::{ProverTranscript, VerifierTranscript};
@@ -258,36 +256,9 @@ mod tests {
 		}
 	}
 
-	// Invariant: the padded public segment has the layout's power-of-two length.
-	// Its prefix is the constants, and its tail is zero.
-	#[test]
-	fn padded_public_words_matches_the_layout_segment() {
-		// Fixture: a circuit with two constants, each combined with one witness input by an AND.
-		let builder = CircuitBuilder::new();
-		let x = builder.add_witness();
-		let c1 = builder.add_constant_64(0xAB);
-		let c2 = builder.add_constant_64(0xCD);
-		builder.force_commit(builder.band(x, c1));
-		builder.force_commit(builder.band(x, c2));
-
-		// Preparation fixes the public segment length.
-		let mut cs = builder.build().constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
-
-		let words = padded_public_words(&cs);
-
-		// The length is the layout's power-of-two public length.
-		assert_eq!(words.len(), 1 << cs.value_vec_layout.log_public_words());
-		assert!(words.len().is_power_of_two());
-
-		// The constants sit at the low indices, unchanged.
-		assert_eq!(&words[..cs.constants.len()], cs.constants.as_slice());
-		// Everything past the constants is zero padding.
-		assert!(words[cs.constants.len()..].iter().all(|w| *w == Word::ZERO));
-	}
-
 	// Invariant: a circuit whose constant count is not a power of two proves and verifies.
-	// The public segment is padded up to the layout's power-of-two length on both sides.
+	// The shift evaluates the constants over the layout's power-of-two word count.
+	// It treats the words past the constant count as zero, so no caller padding is needed.
 	//
 	// Fixture: one BLAKE3 compression per instance, over 2^6 instances.
 	// A BLAKE3 compression is a real circuit with a non-power-of-two constant count.

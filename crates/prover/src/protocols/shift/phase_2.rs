@@ -17,7 +17,7 @@ use binius_math::{
 	BinarySubspace, FieldBuffer,
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_zero},
 };
-use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::protocols::shift::evaluate_words_mle;
 use tracing::instrument;
 
@@ -256,7 +256,9 @@ where
 	// selector challenge is zero.
 	let log_half = r_y.len() - 1;
 	let r_segment = r_y[log_half];
-	let log_public_words = checked_log_2(public_words.len());
+	// Round the public word count up to a power of two: the segment spans that many word slots.
+	// The count itself need not be a power of two, and the MLE reads the missing words as zero.
+	let log_public_words = log2_ceil_usize(public_words.len());
 	let public_eval = evaluate_words_mle::<F, F>(public_words, &r_j, &r_y[..log_public_words]);
 	let padded_public_eval = eq_ind_zero(&r_y[log_public_words..log_half]) * public_eval;
 	let witness_eval =
