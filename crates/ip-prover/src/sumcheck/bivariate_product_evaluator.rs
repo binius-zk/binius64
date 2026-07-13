@@ -157,8 +157,9 @@ mod tests {
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
 
-	// Proving the product sum of two multilinears via the shared store, then verifying, recovers the
-	// two multilinear evaluations at the challenge point and their product as the reduced eval.
+	// Proving the product sum of two multilinears via the shared store, then verifying, recovers
+	// the two multilinear evaluations at the challenge point and their product as the reduced
+	// eval.
 	#[test]
 	fn test_bivariate_product_sumcheck() {
 		type F = OptimalB128;

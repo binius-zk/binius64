@@ -192,9 +192,9 @@ fn fold_segments<F: Field, P: PackedField<Scalar = F>>(
 /// The witness `W` and monster `M` are each given as a (public, hidden) segment pair; the top
 /// word-index variable selects the segment. The first round (`first_round_coeffs`) binds that
 /// selector without materializing the mostly-zero combined buffers. After the selector challenge
-/// the segment pairs fold into single dense buffers (`fold_segments`) and the standard
-/// [`BivariateProductSumcheckProver`] proves the remaining rounds, so every round message is
-/// identical to the dense prover's.
+/// the segment pairs fold into single dense buffers (`fold_segments`) and the standard shared
+/// bivariate-product prover (`bivariate_product_prover`) proves the remaining rounds, so every
+/// round message is identical to the dense prover's.
 ///
 /// After the sumcheck this derives the witness evaluation from the combined evaluation by
 /// evaluating the public segment (cheap, like the verifier does), subtracting its padded

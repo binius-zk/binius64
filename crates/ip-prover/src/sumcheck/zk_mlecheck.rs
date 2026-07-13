@@ -690,7 +690,8 @@ mod tests {
 		let claimed_sum = inner_product_par(&mask_buffer, &libra_eval_tensor);
 
 		// Create the bivariate product sumcheck prover
-		let prover = bivariate_product_prover([mask_buffer.clone(), libra_eval_tensor], claimed_sum);
+		let prover =
+			bivariate_product_prover([mask_buffer.clone(), libra_eval_tensor], claimed_sum);
 
 		// Run the proving protocol
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
