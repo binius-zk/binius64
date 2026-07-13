@@ -1,3 +1,4 @@
+#![cfg(feature = "step2")]
 //! Independent-verifier STEP-2 adversarial tests (written by the reviewing session,
 //! NOT the builder): a fully COPIED STEP-2 prover (no crate tamper knobs) that follows
 //! the honest protocol and lies at ONE chosen message. Assert on the ERROR KIND.

@@ -19,7 +19,10 @@ use binius_math::FieldBuffer;
 use binius_utils::rayon::prelude::*;
 use binius_verifier::config::B128;
 
-use crate::table::{Term, TermTable};
+use crate::table::Term;
+#[cfg(feature = "step2")]
+use crate::table::{TermTable, cube_y};
+#[cfg(feature = "step2")]
 use crate::vk::{tags, vk_entry};
 
 /// The prover-side packed field for all discharge buffers.
@@ -97,7 +100,7 @@ pub fn assemble_m_d_packed<P: PackedField<Scalar = B128>>(
 		let t = w & mask;
 		match blk {
 			0 => h.d_x.get(t).copied().unwrap_or(B128::ZERO),
-			1 => h.d_y.get(t).copied().unwrap_or(B128::ZERO),
+			1 => h.d_seg.get(t).copied().unwrap_or(B128::ZERO),
 			2 => h.d_g.get(t).copied().unwrap_or(B128::ZERO),
 			_ => B128::ZERO,
 		}
@@ -112,6 +115,7 @@ pub fn assemble_m_d_packed<P: PackedField<Scalar = B128>>(
 ///
 /// `eq_rho` is the packed eq tensor of rho (2^n_t scalars, n_t <= n_l); `m_d` the packed
 /// M_D buffer (2^n_l scalars).
+#[cfg(feature = "step2")]
 pub fn build_phase_c_leaf_halves<P: PackedField<Scalar = B128>>(
 	table: &TermTable,
 	tau: B128,
@@ -121,7 +125,7 @@ pub fn build_phase_c_leaf_halves<P: PackedField<Scalar = B128>>(
 	let dims = &table.dims;
 	let n_l = dims.n_d;
 	anyhow::ensure!(
-		tau.val() >= (1u128 << (dims.n_a + 2)),
+		tau.val() >= (1u128 << (dims.n_a + 2)).into(),
 		"tau hit the committed-value range (a pole): honest abort, resample the batch"
 	);
 	anyhow::ensure!(n_l >= P::LOG_WIDTH && dims.n_t >= P::LOG_WIDTH, "domain too small for packing");
@@ -161,7 +165,7 @@ pub fn build_phase_c_leaf_halves<P: PackedField<Scalar = B128>>(
 						let term = &terms[t];
 						let addr = match blk {
 							0 => term.x as u64,
-							1 => term.y as u64,
+							1 => cube_y(dims, term.y) as u64,
 							_ => term.u as u64,
 						};
 						tau + vk_entry(blk, addr, dims.n_a)
@@ -185,6 +189,7 @@ pub fn build_phase_c_leaf_halves<P: PackedField<Scalar = B128>>(
 }
 
 /// Packed parallel `build_m_vk`: identical values/layout to [`crate::vk::build_m_vk`].
+#[cfg(feature = "step2")]
 pub fn build_m_vk_packed<P: PackedField<Scalar = B128>>(table: &TermTable) -> FieldBuffer<P> {
 	let dims = &table.dims;
 	let n_l = dims.n_d;
@@ -201,7 +206,7 @@ pub fn build_m_vk_packed<P: PackedField<Scalar = B128>>(table: &TermTable) -> Fi
 					let term = &terms[t];
 					let addr = match blk {
 						0 => term.x as u64,
-						1 => term.y as u64,
+						1 => cube_y(dims, term.y) as u64,
 						_ => term.u as u64,
 					};
 					vk_entry(blk, addr, dims.n_a)
@@ -215,6 +220,7 @@ pub fn build_m_vk_packed<P: PackedField<Scalar = B128>>(table: &TermTable) -> Fi
 }
 
 /// Packed-lane accumulator for the three VK corner values + the real-row eq mass.
+#[cfg(feature = "step2")]
 struct CornerAcc<P: PackedField> {
 	vx: P,
 	vy: P,
@@ -222,6 +228,7 @@ struct CornerAcc<P: PackedField> {
 	se: P,
 }
 
+#[cfg(feature = "step2")]
 impl<P: PackedField> Default for CornerAcc<P> {
 	fn default() -> Self {
 		Self {
@@ -233,6 +240,7 @@ impl<P: PackedField> Default for CornerAcc<P> {
 	}
 }
 
+#[cfg(feature = "step2")]
 impl<P: PackedField> CornerAcc<P> {
 	fn merge(self, rhs: Self) -> Self {
 		Self {
@@ -247,6 +255,7 @@ impl<P: PackedField> CornerAcc<P> {
 /// Packed parallel `vk_corner_values`: the three VK column MLE evaluations at pi_lo,
 /// value-identical to the scalar original (fused single pass, no column
 /// materialization). `eq_pi` is the packed eq tensor of pi_lo (2^n_l scalars).
+#[cfg(feature = "step2")]
 pub fn vk_corner_values_packed<P: PackedField<Scalar = B128>>(
 	table: &TermTable,
 	eq_pi: &FieldBuffer<P>,
@@ -266,7 +275,7 @@ pub fn vk_corner_values_packed<P: PackedField<Scalar = B128>>(
 				(0..P::WIDTH).map(|j| vk_entry(0, terms[base + j].x as u64, dims.n_a)),
 			);
 			let ty = P::from_scalars(
-				(0..P::WIDTH).map(|j| vk_entry(1, terms[base + j].y as u64, dims.n_a)),
+				(0..P::WIDTH).map(|j| vk_entry(1, cube_y(dims, terms[base + j].y) as u64, dims.n_a)),
 			);
 			let tu = P::from_scalars(
 				(0..P::WIDTH).map(|j| vk_entry(2, terms[base + j].u as u64, dims.n_a)),
@@ -290,7 +299,7 @@ pub fn vk_corner_values_packed<P: PackedField<Scalar = B128>>(
 	for t in (n_full << P::LOG_WIDTH)..n {
 		let e = eq_pi.get(t);
 		v[0] += e * vk_entry(0, terms[t].x as u64, dims.n_a);
-		v[1] += e * vk_entry(1, terms[t].y as u64, dims.n_a);
+		v[1] += e * vk_entry(1, cube_y(dims, terms[t].y) as u64, dims.n_a);
 		v[2] += e * vk_entry(2, terms[t].u as u64, dims.n_a);
 		sum_real += e;
 	}
@@ -312,7 +321,9 @@ pub fn axpy_dense_par(w_eq: &mut [B128], tensor: &[B128], scale: B128) {
 		.for_each(|(slot, t_val)| *slot += scale * *t_val);
 }
 
-#[cfg(test)]
+// This test exercises the STEP-2 M_VK / Phase-C / corner builders (gated with `step2`); the
+// STEP-1 packed builders are covered end-to-end by tests/rederivation_step1.rs.
+#[cfg(all(test, feature = "step2"))]
 mod tests {
 	use binius_field::Random;
 	use binius_math::multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars};
@@ -380,7 +391,7 @@ mod tests {
 				0 | 1 | 2 => {
 					if t < table.terms.len() {
 						let term = &table.terms[t];
-						let addr = [term.x as u64, term.y as u64, term.u as u64][blk];
+						let addr = [term.x as u64, cube_y(dims, term.y) as u64, term.u as u64][blk];
 						tau + vk_entry(blk, addr, dims.n_a)
 					} else {
 						tau + tags(dims.n_a)[blk]
@@ -403,7 +414,7 @@ mod tests {
 			for (t, term) in table.terms.iter().enumerate() {
 				let e = eq_pi_scalars[t];
 				v[0] += e * vk_entry(0, term.x as u64, dims.n_a);
-				v[1] += e * vk_entry(1, term.y as u64, dims.n_a);
+				v[1] += e * vk_entry(1, cube_y(dims, term.y) as u64, dims.n_a);
 				v[2] += e * vk_entry(2, term.u as u64, dims.n_a);
 				sum_real += e;
 			}

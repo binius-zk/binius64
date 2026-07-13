@@ -247,12 +247,10 @@ pub fn discharge_prove_step2_on_table<C: Challenger>(
 					}),
 				],
 				ctx.sum,
-			)
-			.map_err(|e| anyhow::anyhow!("cubic prover: {e}"))?,
+			),
 		);
 	}
-	let output = batch_prove_and_write_evals(provers, transcript)
-		.map_err(|e| anyhow::anyhow!("phase A batch_prove: {e}"))?;
+	let output = batch_prove_and_write_evals(provers, transcript);
 	let rho = output.challenges.clone(); // driver returns low-first
 	ensure!(rho.len() == dims.n_t, "phase A round count");
 	let phase_a_s = t.elapsed().as_secs_f64();
@@ -333,9 +331,7 @@ pub fn discharge_prove_step2_on_table<C: Challenger>(
 			point: Vec::new(),
 		},
 	);
-	let (num_leaf_claim, _den_leaf_claim) = frac_prover
-		.prove(root_claim, transcript)
-		.map_err(|e| anyhow::anyhow!("phase C fracaddcheck prove: {e}"))?;
+	let (num_leaf_claim, _den_leaf_claim) = frac_prover.prove(root_claim, transcript);
 	sub("layer prove", &mut lap);
 	let pi = num_leaf_claim.point;
 	ensure!(pi.len() == n_l + 2, "phase C leaf point arity");
@@ -383,11 +379,9 @@ pub fn discharge_prove_step2_on_table<C: Challenger>(
 	let prover_b = BivariateProductSumcheckProver::new(
 		[FieldBuffer::<PB>::from_values(&w_eq), m_d.clone()],
 		combined,
-	)
-	.map_err(|e| anyhow::anyhow!("phase B prover: {e}"))?;
+	);
 	drop(w_eq);
-	let out_b = prove_single(prover_b, transcript)
-		.map_err(|e| anyhow::anyhow!("phase B prove: {e}"))?;
+	let out_b = prove_single(prover_b, transcript);
 	let mut sigma = out_b.challenges.clone();
 	sigma.reverse(); // low-first
 	ensure!(sigma.len() == dims.n_d, "phase B round count");
@@ -559,7 +553,7 @@ pub fn discharge_verify_step2<C: Challenger>(
 		.map_err(|e| anyhow::anyhow!("digest_D read: {e}"))?;
 	let tau: B128 = IPVerifierChannel::<B128>::sample(transcript);
 	ensure!(
-		tau.val() >= (1u128 << (dims.n_a + 2)),
+		tau.val() >= (1u128 << (dims.n_a + 2)).into(),
 		"tau hit the committed-value range (honest abort)"
 	);
 	let d_root: B128 = IPVerifierChannel::<B128>::recv_one(transcript)

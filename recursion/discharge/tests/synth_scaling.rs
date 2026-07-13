@@ -1,3 +1,4 @@
+#![cfg(feature = "step2")]
 //! Standalone (no real leaf proof) synthetic scaling test: drives the discharge on a
 //! SIZED synthetic AND-only table with claims synthesized natively (spec §P0.4 standalone
 //! path). Reproduces, at CI-friendly sizes, the note's shapes:

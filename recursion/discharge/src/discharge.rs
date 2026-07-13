@@ -276,15 +276,13 @@ pub fn discharge_prove<C: Challenger>(
 				),
 			],
 			ctx.sum,
-		)
-		.map_err(|e| anyhow::anyhow!("cubic prover: {e}"))?;
+		);
 		provers.push(prover);
 	}
 	let build_columns_s = t.elapsed().as_secs_f64();
 
 	let t = Instant::now();
-	let output = batch_prove_and_write_evals(provers, transcript)
-		.map_err(|e| anyhow::anyhow!("phase A batch_prove: {e}"))?;
+	let output = batch_prove_and_write_evals(provers, transcript);
 	// output.challenges are already reversed by the driver -> low-first rho.
 	let rho = output.challenges.clone();
 	ensure!(rho.len() == dims.n_t, "phase A round count");
@@ -336,10 +334,8 @@ pub fn discharge_prove<C: Challenger>(
 	let prover_b = BivariateProductSumcheckProver::new(
 		[FieldBuffer::<crate::packed::PB>::from_values(&w_eq), m_d],
 		combined,
-	)
-	.map_err(|e| anyhow::anyhow!("phase B prover: {e}"))?;
-	let out_b = prove_single(prover_b, transcript)
-		.map_err(|e| anyhow::anyhow!("phase B prove: {e}"))?;
+	);
+	let out_b = prove_single(prover_b, transcript);
 	// prove_single challenges are in round order (high-to-low binding).
 	let mut sigma = out_b.challenges.clone();
 	sigma.reverse();

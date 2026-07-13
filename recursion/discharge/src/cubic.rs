@@ -27,7 +27,9 @@ use std::ops::Add;
 
 use binius_field::{Field, PackedField};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_ip_prover::sumcheck::{Error as SumcheckError, common::SumcheckProver};
+// FWD-PORT: `SumcheckProver` is now INFALLIBLE (execute/fold/finish return values, not `Result`);
+// the `Error` type was removed. Round math is unchanged (monomial `RoundCoeffs`).
+use binius_ip_prover::sumcheck::common::SumcheckProver;
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};
 use binius_utils::rayon::prelude::*;
 
@@ -67,17 +69,23 @@ pub struct CubicProductSumcheckProver<P: PackedField> {
 
 impl<F: Field, P: PackedField<Scalar = F>> CubicProductSumcheckProver<P> {
 	/// Constructs a prover from the three multilinears and the claimed hypercube sum
-	/// of their product.
-	pub fn new(multilinears: [FieldBuffer<P>; 3], sum: F) -> Result<Self, SumcheckError> {
-		if multilinears[0].log_len() != multilinears[1].log_len()
-			|| multilinears[0].log_len() != multilinears[2].log_len()
-		{
-			return Err(SumcheckError::MultilinearSizeMismatch);
-		}
-		Ok(Self {
+	/// of their product. Infallible (asserts equal lengths), mirroring the upstream
+	/// `BivariateProductSumcheckProver::new`.
+	pub fn new(multilinears: [FieldBuffer<P>; 3], sum: F) -> Self {
+		assert_eq!(
+			multilinears[0].log_len(),
+			multilinears[1].log_len(),
+			"multilinears must have equal number of variables"
+		);
+		assert_eq!(
+			multilinears[0].log_len(),
+			multilinears[2].log_len(),
+			"multilinears must have equal number of variables"
+		);
+		Self {
 			multilinears,
 			last_coeffs_or_sum: RoundCoeffsOrSum::Sum(sum),
-		})
+		}
 	}
 }
 
@@ -98,10 +106,11 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for CubicProductSum
 		vec![claim]
 	}
 
-	fn execute(&mut self) -> Result<Vec<RoundCoeffs<F>>, SumcheckError> {
-		let RoundCoeffsOrSum::Sum(_) = &self.last_coeffs_or_sum else {
-			return Err(SumcheckError::ExpectedFold);
-		};
+	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
+		assert!(
+			matches!(self.last_coeffs_or_sum, RoundCoeffsOrSum::Sum(_)),
+			"execute called out of order; fold expected"
+		);
 		let n_vars_remaining = self.n_vars();
 		assert!(n_vars_remaining > 0);
 
@@ -145,34 +154,23 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for CubicProductSum
 
 		let round_coeffs = RoundCoeffs(c);
 		self.last_coeffs_or_sum = RoundCoeffsOrSum::Coeffs(round_coeffs.clone());
-		Ok(vec![round_coeffs])
+		vec![round_coeffs]
 	}
 
-	fn fold(&mut self, challenge: F) -> Result<(), SumcheckError> {
+	fn fold(&mut self, challenge: F) {
 		let RoundCoeffsOrSum::Coeffs(last_coeffs) = self.last_coeffs_or_sum.clone() else {
-			return Err(SumcheckError::ExpectedExecute);
+			panic!("fold called out of order; execute expected");
 		};
 		for multilin in &mut self.multilinears {
 			fold_highest_var_inplace(multilin, challenge);
 		}
 		let round_sum = last_coeffs.evaluate(challenge);
 		self.last_coeffs_or_sum = RoundCoeffsOrSum::Sum(round_sum);
-		Ok(())
 	}
 
-	fn finish(self) -> Result<Vec<F>, SumcheckError> {
-		if self.n_vars() > 0 {
-			let error = match self.last_coeffs_or_sum {
-				RoundCoeffsOrSum::Coeffs(_) => SumcheckError::ExpectedFold,
-				RoundCoeffsOrSum::Sum(_) => SumcheckError::ExpectedExecute,
-			};
-			return Err(error);
-		}
-		Ok(self
-			.multilinears
-			.into_iter()
-			.map(|m| m.get(0))
-			.collect())
+	fn finish(self) -> Vec<F> {
+		assert_eq!(self.n_vars(), 0, "finish called out of order; sumcheck rounds remain");
+		self.multilinears.into_iter().map(|m| m.get(0)).collect()
 	}
 }
 
@@ -211,13 +209,11 @@ mod tests {
 			.sum();
 
 		let prover =
-			CubicProductSumcheckProver::new([a.clone(), b.clone(), g.clone()], expected_sum)
-				.unwrap();
+			CubicProductSumcheckProver::new([a.clone(), b.clone(), g.clone()], expected_sum);
 
 		let mut pt = ProverTranscript::new(StdChallenger::default());
 		let output =
-			binius_ip_prover::sumcheck::batch::batch_prove_and_write_evals(vec![prover], &mut pt)
-				.unwrap();
+			binius_ip_prover::sumcheck::batch::batch_prove_and_write_evals(vec![prover], &mut pt);
 
 		let mut vt = pt.into_verifier();
 		let out = binius_ip::sumcheck::batch_verify::<B128, _>(
@@ -245,9 +241,8 @@ mod tests {
 
 		// return the transcript bytes for the packed-vs-scalar identity check
 		let mut pt2 = ProverTranscript::new(StdChallenger::default());
-		let prover2 = CubicProductSumcheckProver::new([a, b, g], expected_sum).unwrap();
-		binius_ip_prover::sumcheck::batch::batch_prove_and_write_evals(vec![prover2], &mut pt2)
-			.unwrap();
+		let prover2 = CubicProductSumcheckProver::new([a, b, g], expected_sum);
+		binius_ip_prover::sumcheck::batch::batch_prove_and_write_evals(vec![prover2], &mut pt2);
 		(point, pt2.finalize())
 	}
 

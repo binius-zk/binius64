@@ -28,7 +28,7 @@ use binius_core::{
 		AndConstraint, ConstraintSystem, ShiftVariant, ShiftedValueIndex, ValueIndex, ValueVec,
 		ValueVecLayout,
 	},
-	verify::{eval_operand, verify_constraints},
+	verify::verify_constraints,
 	word::Word,
 };
 use binius_field::{Field, Random};
@@ -53,6 +53,8 @@ const INPUTS: [u64; 5] = [
 /// N_pad - N = 1 is ODD: parity = true (the spec 1.3 w_d correction is load-bearing).
 pub fn synth_cs(variant: u8) -> ConstraintSystem {
 	let constants = vec![Word(1), Word(42), Word(0xDEADBEEF)];
+	// Segmented layout (upstream #1554/#1724): public segment = offset_witness = 8 words
+	// (n_pub=8, lp=3); hidden segment = 24 words (lw=log2_ceil(24)=5); combined_len = 32.
 	let layout = ValueVecLayout {
 		n_const: 3,
 		n_inout: 2,
@@ -60,7 +62,7 @@ pub fn synth_cs(variant: u8) -> ConstraintSystem {
 		n_internal: 0,
 		offset_inout: 4,
 		offset_witness: 8,
-		committed_total_len: 32,
+		n_hidden_words: 24,
 		n_scratch: 0,
 	};
 	let mut and_constraints = Vec::new();
@@ -86,10 +88,10 @@ pub fn synth_cs(variant: u8) -> ConstraintSystem {
 	ConstraintSystem::new(constants, layout, and_constraints, Vec::new())
 }
 
-fn shift_meta(variant: u8, i: u32) -> (ShiftVariant, usize, ShiftVariant, usize) {
+fn shift_meta(variant: u8, i: u32) -> (ShiftVariant, u8, ShiftVariant, u8) {
 	match variant {
-		0 => (ShiftVariant::Sll, (3 * i as usize + 1) % 64, ShiftVariant::Slr, (5 * i as usize + 2) % 64),
-		_ => (ShiftVariant::Rotr, (7 * i as usize + 3) % 64, ShiftVariant::Sar, (11 * i as usize + 5) % 64),
+		0 => (ShiftVariant::Sll, ((3 * i as usize + 1) % 64) as u8, ShiftVariant::Slr, ((5 * i as usize + 2) % 64) as u8),
+		_ => (ShiftVariant::Rotr, ((7 * i as usize + 3) % 64) as u8, ShiftVariant::Sar, ((11 * i as usize + 5) % 64) as u8),
 	}
 }
 
@@ -98,26 +100,26 @@ fn shift_meta(variant: u8, i: u32) -> (ShiftVariant, usize, ShiftVariant, usize)
 pub fn synth_witness(cs: &ConstraintSystem, instance: u64) -> anyhow::Result<ValueVec> {
 	let mut vv = cs.new_value_vec();
 	for (i, c) in cs.constants.iter().enumerate() {
-		vv.set(i, *c);
+		vv[ValueIndex(i as u32)] = *c;
 	}
-	vv.set(4, Word(instance));
-	vv.set(5, Word(instance.wrapping_mul(0x9e3779b97f4a7c15)));
+	vv[ValueIndex(4)] = Word(instance);
+	vv[ValueIndex(5)] = Word(instance.wrapping_mul(0x9e3779b97f4a7c15));
 	for (i, w) in INPUTS.iter().enumerate() {
-		vv.set(8 + i, Word(*w));
+		vv[ValueIndex(8 + i as u32)] = Word(*w);
 	}
 	// Solve the c-words: c = (A & B) for each constraint (single-term a/b operands).
 	for (idx, con) in cs.and_constraints.iter().enumerate() {
 		if con.a.is_empty() {
 			continue; // padding constraint
 		}
-		let a = eval_operand(&vv, &con.a);
-		let b = eval_operand(&vv, &con.b);
+		let a = vv.eval_operand(&con.a);
+		let b = vv.eval_operand(&con.b);
 		let c_index = con.c[0].value_index;
 		ensure!(
 			con.c.len() == 1 && con.c[0].amount == 0,
 			"constraint {idx}: expected plain single-term c"
 		);
-		vv.set(c_index.0 as usize, Word(a.as_u64() & b.as_u64()));
+		vv[c_index] = Word(a.as_u64() & b.as_u64());
 	}
 	verify_constraints(cs, &vv).map_err(|e| anyhow::anyhow!("synth witness unsatisfied: {e}"))?;
 	Ok(vv)
@@ -138,9 +140,11 @@ pub fn synth_witness(cs: &ConstraintSystem, instance: u64) -> anyhow::Result<Val
 /// preparation only appends the empty MUL padding (keeping the shape AND-only).
 pub fn synth_cs_sized(log2_constraints: usize, n_y_log: usize, variant: u8) -> ConstraintSystem {
 	assert!(n_y_log >= 4, "value vector too small to index operands");
-	let committed_total_len = 1usize << n_y_log;
+	let combined_total_len = 1usize << n_y_log;
 	let offset_witness = 8usize;
-	let witness_span = committed_total_len - offset_witness;
+	let witness_span = combined_total_len - offset_witness;
+	// combined_len = offset_witness + n_hidden_words = 2^n_y_log (all operands land in the
+	// hidden segment; the public segment holds only constants/inout).
 	let layout = ValueVecLayout {
 		n_const: 3,
 		n_inout: 2,
@@ -148,7 +152,7 @@ pub fn synth_cs_sized(log2_constraints: usize, n_y_log: usize, variant: u8) -> C
 		n_internal: 0,
 		offset_inout: 4,
 		offset_witness,
-		committed_total_len,
+		n_hidden_words: witness_span,
 		n_scratch: 0,
 	};
 	let constants = vec![Word(1), Word(42), Word(0xDEADBEEF)];
@@ -161,7 +165,7 @@ pub fn synth_cs_sized(log2_constraints: usize, n_y_log: usize, variant: u8) -> C
 	let idx = |seed: u64| offset_witness + (seed as usize % witness_span);
 	// Canonical non-plain shift amount: always in [1, 63] (amount 0 is legal only for the
 	// SLL "plain" form, per ConstraintSystem::validate_and_prepare canonicity).
-	let amt = |seed: u64| 1 + (seed as usize % 63);
+	let amt = |seed: u64| (1 + (seed as usize % 63)) as u8;
 	let mut and_constraints = Vec::with_capacity(c);
 	for i in 0..c as u64 {
 		let a = ShiftedValueIndex {

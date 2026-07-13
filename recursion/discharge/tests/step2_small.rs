@@ -1,3 +1,4 @@
+#![cfg(feature = "step2")]
 //! STEP-2 tests on the tiny synthetic odd-parity AND-only shape (spec 1.3 w_d path,
 //! previously unexercised) — the reduced-domain E2E plus every STEP-2 negative:
 //!

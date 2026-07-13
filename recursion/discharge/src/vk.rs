@@ -37,7 +37,7 @@ use binius_math::{
 use binius_utils::{DeserializeBytes, SerializeBytes};
 use binius_verifier::config::B128;
 
-use crate::table::{ShapeDims, TermTable};
+use crate::table::{ShapeDims, TermTable, cube_y};
 
 /// Spec-layout version frozen into the VKM (P0.1 "canonical row-order version").
 /// v3: merged batched opening (W2) — ONE combined FRIParams over [M_VK, M_D].
@@ -118,8 +118,9 @@ impl DischargeVkm {
 		)));
 		let d = &self.dims;
 		for v in [
-			d.n_x, d.n_x_mul, d.n_y, d.n_a, d.n_d, d.n_terms, d.n_pad, d.n_t, d.parity as usize,
-			d.arity, self.tag_bits.0, self.tag_bits.1, self.log_inv_rate, self.n_test_queries,
+			d.n_x, d.n_x_mul, d.n_y, d.lp, d.n_pub, d.combined_len, d.n_a, d.n_d, d.n_terms,
+			d.n_pad, d.n_t, d.parity as usize, d.arity, self.tag_bits.0, self.tag_bits.1,
+			self.log_inv_rate, self.n_test_queries,
 		] {
 			push_u(v as u64, &mut out);
 		}
@@ -282,9 +283,9 @@ pub fn build_m_vk(table: &TermTable) -> FieldBuffer<B128> {
 	for (t, term) in table.terms.iter().enumerate() {
 		vals[t] = vk_entry(0, term.x as u64, dims.n_a);
 	}
-	// Block Y.
+	// Block Y (SEGMENTED cube index address).
 	for (t, term) in table.terms.iter().enumerate() {
-		vals[block + t] = vk_entry(1, term.y as u64, dims.n_a);
+		vals[block + t] = vk_entry(1, cube_y(dims, term.y) as u64, dims.n_a);
 	}
 	vals[block + table.terms.len()..2 * block].fill(kappa[1]);
 	// Block U.
@@ -326,8 +327,10 @@ pub fn vkgen(table: &TermTable) -> anyhow::Result<(DischargeVkm, f64)> {
 		for j in 0..4 {
 			if i != j {
 				let diff = kappa[i] + kappa[j];
+				// FWD-PORT: `B128::val()` now returns the `M128` underlier (not `u128`); test the
+				// high bits against the zero underlier.
 				ensure!(
-					diff.val() >> dims.n_a != 0,
+					(diff.val() >> dims.n_a) != B128::ZERO.val(),
 					"tag coset condition violated: kappa_{i} ^ kappa_{j} lies in V"
 				);
 			}

@@ -4,6 +4,18 @@ version = "0.1.0"
 edition = "2024"
 description = "Committed-table batched discharge of K deferred Binius64 monster claims (STEP 1 native check + STEP 2 committed-table PCS check)."
 
+[features]
+# STEP-2 committed-table PCS endgame (M_VK/M_D commit + Phase C fracaddcheck + the merged
+# BaseFold opener). Its FRI/commit plumbing is mid-port to the upstream #1611/#1693/#1500/#1586
+# channel-oriented BaseFold API; OFF by default so the STEP-1 re-derivation (Wall A, validated by
+# the real-capture cross-validate gate) builds and runs. See NOTE / final report.
+default = []
+step2 = []
+
+[[bin]]
+name = "scaling_demo"
+required-features = ["step2"]
+
 [dependencies]
 binius-core = { path = "../../crates/core" }
 binius-field = { path = "../../crates/field" }

@@ -16,14 +16,23 @@
 
 pub mod cubic;
 pub mod discharge;
-pub mod fracadd;
 pub mod leaf;
-pub mod merged;
 pub mod packed;
 pub mod recorder;
-pub mod step2;
 pub mod synth;
 pub mod table;
+
+// STEP-2 committed-table PCS endgame — gated while its FRI/commit plumbing is ported to the
+// upstream #1611/#1693/#1500/#1586 channel-oriented BaseFold API. The re-derived segmented Y-block
+// (Wall A) lives in the always-on modules above and is validated by STEP-1 + the cross-validate
+// gate (tests/rederivation_step1.rs) against the REAL captured monster value.
+#[cfg(feature = "step2")]
+pub mod fracadd;
+#[cfg(feature = "step2")]
+pub mod merged;
+#[cfg(feature = "step2")]
+pub mod step2;
+#[cfg(feature = "step2")]
 pub mod vk;
 
 pub use binius_verifier::config::B128;

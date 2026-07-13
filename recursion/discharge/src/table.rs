@@ -14,7 +14,10 @@ use binius_field::{Field, arithmetic_traits::InvertOrZero};
 use binius_math::{
 	BinarySubspace, FieldBuffer,
 	multilinear::{
-		eq::{eq_ind, eq_ind_partial_eval_scalars},
+		eq::{
+			eq_ind, eq_ind_partial_eval_scalars, eq_ind_zero, eq_one_var,
+			scaled_eq_ind_partial_eval_scalars,
+		},
 		evaluate::evaluate,
 	},
 	univariate::lagrange_evals_scalars,
@@ -53,8 +56,23 @@ pub struct ShapeDims {
 	pub n_x: usize,
 	/// log2 of the prepared MUL-constraint count (= |r_x'_mul|); 0 for AND-only CS.
 	pub n_x_mul: usize,
-	/// log2 of committed_total_len (= |r_y|).
+	/// SEGMENTED Y-block address width = `log_witness_words() + 1` (= the leaf's second
+	/// sumcheck `log_word_count`). Since upstream #1554/#1583/#1724/#1585 the value-vec MLE
+	/// is two zero-padded segments (public low half, hidden high half) selected by a top
+	/// word-index variable `r_segment`. The Y histogram `D_seg` lives on the (lw+1)-var
+	/// SEGMENTED CUBE: public word `y < n_pub` -> cube index `y`; hidden word `y >= n_pub`
+	/// -> cube index `(y - n_pub) + 2^lw`. `r_y` in the claim point has length `lw = n_y-1`
+	/// and is followed by the extra `r_segment` coordinate.
 	pub n_y: usize,
+	/// `log_public_words()` — the public segment occupies value indices `[0, n_pub)` and its
+	/// eq tensor uses only these low `lp` word-index coordinates.
+	pub lp: usize,
+	/// `n_public_words()` (= `2^lp`, a power of two) — the public/hidden split boundary.
+	pub n_pub: usize,
+	/// `combined_len()` = `n_pub + n_hidden_words` — the number of value-vector words the
+	/// constraint operands can reference (need NOT be a power of two). It is the length of the
+	/// segmented `r_y_tensor` (indexed by flat value index), NOT a sumcheck domain width.
+	pub combined_len: usize,
 	/// Address width of M_D blocks: max(n_x, n_y, N_U, n_t - 2).
 	///
 	/// The `n_t - 2` term pads the M_D address space so that `n_d == max(n_t, n_d_natural)`,
@@ -109,13 +127,29 @@ fn strict_log2(v: usize, what: &str) -> anyhow::Result<usize> {
 pub fn shape_dims(cs: &ConstraintSystem) -> anyhow::Result<ShapeDims> {
 	ensure!(andonly(cs), "P0.3 ANDONLY violated: CS has non-empty MUL constraints");
 	let n_x = strict_log2(cs.and_constraints.len(), "and_constraints.len()")?;
-	let n_x_mul = strict_log2(cs.mul_constraints.len(), "mul_constraints.len()")?;
-	// FWD-PORT (#1724/#1554 value-vec layout): `ValueVecLayout::committed_total_len` was replaced;
-	// the total committed (public+hidden) length is now `combined_len()`. NOTE: this preserves the
-	// OLD flat interpretation of the value-vec MLE and is only self-consistent for the standalone
-	// path; the real leaf verifier now uses a SEGMENTED public/hidden r_y_tensor (see headline
-	// finding A) so this n_y no longer matches the captured claim's structure.
-	let n_y = strict_log2(cs.value_vec_layout.combined_len(), "combined_len")?;
+	// FWD-PORT: the prepared AND-only CS now carries ZERO mul constraints (upstream dropped the
+	// MIN_MUL_CONSTRAINTS=1 padding), so the intmul reduction emits an EMPTY r_x_mul. Match the
+	// captured claim: n_x_mul = 0 when there are no mul constraints.
+	let n_x_mul = if cs.mul_constraints.is_empty() {
+		0
+	} else {
+		strict_log2(cs.mul_constraints.len(), "mul_constraints.len()")?
+	};
+	// RE-DERIVED (upstream #1554/#1583/#1724/#1585 segmented value vector): the value-vec MLE
+	// is now two zero-padded segments (public low half, hidden high half) selected by a top
+	// word-index variable. The captured claim carries `r_y` of length `log_witness_words()`
+	// PLUS a trailing `r_segment`; the Y histogram lives on the `(lw+1)`-var segmented cube.
+	// `n_y` is therefore the SEGMENTED Y-address width `lw + 1` (= the leaf `log_word_count`),
+	// and is what the M_D (1,0) block / the y-point / the arity all key off. `combined_len`
+	// (which need no longer be a power of two) is NOT used as a domain width anywhere.
+	let layout = &cs.value_vec_layout;
+	let lp = layout.log_public_words();
+	let n_pub = layout.n_public_words();
+	let lw = layout.log_witness_words();
+	let combined_len = layout.combined_len();
+	ensure!(n_pub.is_power_of_two(), "public segment length must be a power of two");
+	ensure!(lw >= lp, "hidden segment must be at least as long as the public segment");
+	let n_y = lw + 1;
 	let n_terms: usize = cs
 		.and_constraints
 		.iter()
@@ -129,6 +163,9 @@ pub fn shape_dims(cs: &ConstraintSystem) -> anyhow::Result<ShapeDims> {
 		n_x,
 		n_x_mul,
 		n_y,
+		lp,
+		n_pub,
+		combined_len,
 		n_a,
 		n_d: n_a + 2,
 		n_terms,
@@ -176,6 +213,47 @@ pub fn extract_table(cs: &ConstraintSystem) -> anyhow::Result<TermTable> {
 	})
 }
 
+/// Builds the SEGMENTED word-index tensor `R`, indexed by flat value index `y ∈ [0, combined_len)`,
+/// EXACTLY as the leaf verifier's `MonsterEvalFn` (crates/verifier/src/protocols/shift/verify.rs:
+/// 435-445): the public words occupy the low `n_pub = 2^lp` entries, the hidden words the next
+/// `n_hidden = combined_len - n_pub` entries.
+///
+/// * public (`y < n_pub`): `R[y] = (1+r_seg)·eq_ind_zero(r_y[lp:])·eq(y, r_y[0:lp])`
+/// * hidden (`y >= n_pub`): `R[y] = r_seg·eq(y - n_pub, r_y)`
+///
+/// `r_y.len() == lw = dims.n_y - 1`. This is the crux of the re-derivation: `R` is the monster's
+/// `r_y_tensor`, so `native_term_sum` (which multiplies `R[t.y]`) reproduces `monster_eval`
+/// bit-for-bit.
+pub fn segmented_y_tensor(dims: &ShapeDims, r_y: &[B128], r_segment: B128) -> Vec<B128> {
+	let lp = dims.lp;
+	debug_assert_eq!(r_y.len(), dims.n_y - 1, "r_y must have length lw = n_y - 1");
+	let public_scale = eq_one_var(r_segment, B128::ZERO) * eq_ind_zero(&r_y[lp..]);
+	let public_tensor = scaled_eq_ind_partial_eval_scalars(&r_y[..lp], public_scale);
+	let hidden_tensor = scaled_eq_ind_partial_eval_scalars(r_y, r_segment);
+	let mut r_y_tensor = Vec::with_capacity(dims.combined_len);
+	r_y_tensor.extend_from_slice(&public_tensor);
+	r_y_tensor.extend_from_slice(&hidden_tensor[..dims.combined_len - dims.n_pub]);
+	r_y_tensor
+}
+
+/// The segmented-CUBE index of a flat value index `y` (the address into the `(lw+1)`-var Y block
+/// `D_seg` / the M_VK Y column): public words keep their index in the low half, hidden words are
+/// re-indexed into the low positions of the high half.
+///
+/// * `y < n_pub`  -> `y`                    (segment 0)
+/// * `y >= n_pub` -> `(y - n_pub) + 2^lw`   (segment 1)
+///
+/// This is exactly the compaction under which `R[y] = eq(cube_y(y), r_y ++ r_segment)`.
+#[inline]
+pub fn cube_y(dims: &ShapeDims, y: u32) -> u32 {
+	let n_pub = dims.n_pub as u32;
+	if y < n_pub {
+		y
+	} else {
+		(y - n_pub) + (1u32 << (dims.n_y - 1))
+	}
+}
+
 /// A captured deferred monster claim: the exact `compute_public_value` inputs (claim
 /// point c_l, concatenation order of shift/verify.rs:244-252) and output (v_l).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +272,12 @@ pub struct ParsedClaim {
 	pub r_x_mul: Vec<B128>,
 	pub r_j: Vec<B128>,
 	pub r_s: Vec<B128>,
+	/// The word-index challenge, length `lw = log_witness_words() = n_y - 1` (low cube coords).
 	pub r_y: Vec<B128>,
+	/// The segment-selector challenge (the top word-index coordinate, appended after `r_y` in
+	/// the captured claim point — shift/verify.rs:304). Weights the public (1+r_seg) vs hidden
+	/// (r_seg) sub-tensors of the segmented value vector.
+	pub r_segment: B128,
 }
 
 /// Parses a claim point against the shape dims; enforces the arity assert (P0.4).
@@ -217,7 +300,9 @@ pub fn parse_claim(dims: &ShapeDims, claim: &Claim) -> anyhow::Result<ParsedClai
 	let r_x_mul = take(dims.n_x_mul);
 	let r_j = take(LOG_WORD_SIZE_BITS);
 	let r_s = take(LOG_WORD_SIZE_BITS);
-	let r_y = take(dims.n_y);
+	// r_y has length lw = n_y - 1; r_segment is the final coordinate (the segment selector).
+	let r_y = take(dims.n_y - 1);
+	let r_segment = take(1)[0];
 	ensure!(off == p.len(), "claim parse length bug");
 	let parsed = ParsedClaim {
 		r_zhat: head[0],
@@ -228,6 +313,7 @@ pub fn parse_claim(dims: &ShapeDims, claim: &Claim) -> anyhow::Result<ParsedClai
 		r_j,
 		r_s,
 		r_y,
+		r_segment,
 	};
 	// (G) decomposition requires lambda_and not in {0, 1} (spec 1.2; FS-random, abort
 	// probability <= 2/2^128 per claim).
@@ -306,7 +392,10 @@ impl ClaimTransparents {
 	pub fn new(dims: &ShapeDims, claim: &Claim) -> anyhow::Result<Self> {
 		let mut ctx = Self::new_light(dims, claim)?;
 		ctx.x_tensor = eq_ind_partial_eval_scalars(&ctx.parsed.r_x);
-		ctx.y_tensor = eq_ind_partial_eval_scalars(&ctx.parsed.r_y);
+		// RE-DERIVED: the Y virtual column is the SEGMENTED tensor R (indexed by flat value
+		// index), NOT the old flat eq(r_y). This makes native_term_sum == the segmented
+		// monster_eval bit-for-bit.
+		ctx.y_tensor = segmented_y_tensor(dims, &ctx.parsed.r_y, ctx.parsed.r_segment);
 		ctx.g_tab = g_table(ctx.parsed.lambda_and, &ctx.h_ops, &ctx.parsed.r_s);
 		debug_assert_eq!(
 			ctx.dummy_weight,
@@ -326,10 +415,13 @@ impl ClaimTransparents {
 			v.iter()
 				.fold(B128::ONE, |acc, &r| acc * (B128::ONE + r))
 		};
+		// RE-DERIVED: the dummy row has y=0 (public segment), so its Y weight is
+		// R[0] = (1+r_seg)·Π_{k<lw}(1+r_y[k]) — the extra (1+r_segment) factor is new.
 		let dummy_weight = parsed.lambda_and
 			* h_ops[0]
 			* prod_one_plus(&parsed.r_s)
 			* prod_one_plus(&parsed.r_x)
+			* (B128::ONE + parsed.r_segment)
 			* prod_one_plus(&parsed.r_y);
 		Ok(Self {
 			parsed,
@@ -370,46 +462,52 @@ pub fn native_term_sum(table: &TermTable, tr: &ClaimTransparents) -> B128 {
 	acc
 }
 
-/// The rho-weighted histograms D_x, D_y, D_g (spec identity (D)), over ALL n_pad rows
-/// (pads scatter to address 0 in each block).
+/// The rho-weighted histograms D_x, D_seg, D_g (spec identity (D), re-derived), over ALL n_pad
+/// rows (pads scatter to address 0 in each block).
+///
+/// `d_seg` is the SEGMENTED Y histogram over the `(lw+1)`-var cube (width `2^n_y`): the reduced
+/// Y-column eval is `b_ℓ = D̃_seg([r_y, r_segment])` (a single M_D claim), replacing the old flat
+/// `D̃_y(r_y)`.
 pub struct Histograms {
 	pub d_x: Vec<B128>,
-	pub d_y: Vec<B128>,
+	pub d_seg: Vec<B128>,
 	pub d_g: Vec<B128>,
 }
 
 /// One table pass: expand eq(., rho) tensor (2^n_t), scatter-add into the three
-/// histograms. rho must be low-coordinate-first.
+/// histograms. rho must be low-coordinate-first. The Y address is the SEGMENTED cube index
+/// `cube_y(term.y)`, so `D_seg` is the histogram whose MLE at `[r_y, r_segment]` reproduces the
+/// segmented monster's reduced Y-column eval.
 pub fn build_histograms(table: &TermTable, rho: &[B128]) -> Histograms {
 	let dims = &table.dims;
 	assert_eq!(rho.len(), dims.n_t);
 	let eq_rho = eq_ind_partial_eval_scalars(rho);
 	let mut d_x = vec![B128::ZERO; 1 << dims.n_x];
-	let mut d_y = vec![B128::ZERO; 1 << dims.n_y];
+	let mut d_seg = vec![B128::ZERO; 1 << dims.n_y];
 	let mut d_g = vec![B128::ZERO; 1 << N_U];
 	for (t, term) in table.terms.iter().enumerate() {
 		let w = eq_rho[t];
 		d_x[term.x as usize] += w;
-		d_y[term.y as usize] += w;
+		d_seg[cube_y(dims, term.y) as usize] += w;
 		d_g[term.u as usize] += w;
 	}
-	// Pad rows: fixed dummy tuple (x=0, y=0, u=0), appended after the real rows.
+	// Pad rows: fixed dummy tuple (x=0, y=0, u=0); y=0 maps to cube index 0 (public low).
 	for &w in &eq_rho[dims.n_terms..] {
 		d_x[0] += w;
-		d_y[0] += w;
+		d_seg[0] += w;
 		d_g[0] += w;
 	}
-	Histograms { d_x, d_y, d_g }
+	Histograms { d_x, d_seg, d_g }
 }
 
 /// Assembles the M_D buffer (2^{n_d} entries) per spec 1.1:
-/// index = a + 2^{n_a} * (c0 + 2*c1); blocks c=(0,0) -> D_x, (1,0) -> D_y,
-/// (0,1) -> D_g (zero-padded), (1,1) -> 0.
+/// index = a + 2^{n_a} * (c0 + 2*c1); blocks c=(0,0) -> D_x, (1,0) -> D_seg (the SEGMENTED
+/// Y histogram, 2^{n_y} = 2^{lw+1} entries), (0,1) -> D_g (zero-padded), (1,1) -> 0.
 pub fn assemble_m_d(dims: &ShapeDims, h: &Histograms) -> FieldBuffer<B128> {
 	let block = 1usize << dims.n_a;
 	let mut vals = vec![B128::ZERO; 1 << dims.n_d];
 	vals[..h.d_x.len()].copy_from_slice(&h.d_x);
-	vals[block..block + h.d_y.len()].copy_from_slice(&h.d_y);
+	vals[block..block + h.d_seg.len()].copy_from_slice(&h.d_seg);
 	vals[2 * block..2 * block + h.d_g.len()].copy_from_slice(&h.d_g);
 	FieldBuffer::from_values(&vals)
 }
@@ -427,8 +525,10 @@ pub fn m_d_points(dims: &ShapeDims, tr: &ClaimTransparents) -> Vec<Vec<B128>> {
 	px.push(zero);
 	px.push(zero);
 	points.push(px);
-	// y-claim: [r_y | 0^(n_a-n_y) | c=(1,0)]
+	// y-claim (SEGMENTED): address = [r_y (lw) | r_segment | 0^(n_a - n_y) | c=(1,0)]. The eval
+	// is b_ℓ = D̃_seg([r_y, r_segment]) — the single re-derived Y claim.
 	let mut py = tr.parsed.r_y.clone();
+	py.push(tr.parsed.r_segment);
 	py.resize(dims.n_a, zero);
 	py.push(one);
 	py.push(zero);
@@ -469,7 +569,18 @@ pub fn eq_point(a: &[B128], b: &[B128]) -> B128 {
 pub fn native_monster_eval(cs: &ConstraintSystem, parsed: &ParsedClaim) -> B128 {
 	use binius_verifier::protocols::shift::evaluate_monster_multilinear_for_operation;
 	use itertools::Itertools as _;
-	let r_y_tensor = eq_ind_partial_eval_scalars(&parsed.r_y);
+	// RE-DERIVED: build the SEGMENTED r_y_tensor exactly as MonsterEvalFn (verify.rs:435-445).
+	let layout = &cs.value_vec_layout;
+	let lp = layout.log_public_words();
+	let n_pub = layout.n_public_words();
+	let combined_len = layout.combined_len();
+	let public_scale =
+		eq_one_var(parsed.r_segment, B128::ZERO) * eq_ind_zero(&parsed.r_y[lp..]);
+	let public_tensor = scaled_eq_ind_partial_eval_scalars(&parsed.r_y[..lp], public_scale);
+	let hidden_tensor = scaled_eq_ind_partial_eval_scalars(&parsed.r_y, parsed.r_segment);
+	let mut r_y_tensor = Vec::with_capacity(combined_len);
+	r_y_tensor.extend_from_slice(&public_tensor);
+	r_y_tensor.extend_from_slice(&hidden_tensor[..combined_len - n_pub]);
 	let subspace = domain_subspace();
 	let l_tilde = lagrange_evals_scalars(&subspace, parsed.r_zhat);
 	let h_op_evals = evaluate_h_op(&l_tilde, &parsed.r_j, &parsed.r_s);

@@ -18,11 +18,13 @@
 
 use binius_field::PackedField;
 use binius_ip::prodcheck::MultilinearEvalClaim;
+// FWD-PORT: `frac_add_mle::new` and `batch_prove_mle_and_write_evals` are now INFALLIBLE (return
+// the prover / output directly), so this vendored `prove` is infallible too — the fracaddcheck
+// `Error` type was removed.
 use binius_ip_prover::{
 	channel::IPProverChannel,
-	fracaddcheck::Error as FracError,
-	sumcheck::frac_add_mle,
 	sumcheck::batch::batch_prove_mle_and_write_evals,
+	sumcheck::frac_add_mle,
 };
 use binius_math::{FieldBuffer, line::extrapolate_line_packed};
 use binius_utils::rayon::prelude::*;
@@ -157,7 +159,7 @@ impl<P: PackedField<Scalar = B128>> FastFracAddProver<P> {
 		mut self,
 		claim: (MultilinearEvalClaim<B128>, MultilinearEvalClaim<B128>),
 		channel: &mut impl IPProverChannel<B128>,
-	) -> Result<(MultilinearEvalClaim<B128>, MultilinearEvalClaim<B128>), FracError> {
+	) -> (MultilinearEvalClaim<B128>, MultilinearEvalClaim<B128>) {
 		let mut claim = claim;
 		while let Some(layer) = self.layers.pop() {
 			let (num_claim, den_claim) = claim;
@@ -169,9 +171,9 @@ impl<P: PackedField<Scalar = B128>> FastFracAddProver<P> {
 				[layer.num_lo, layer.num_hi, layer.den_lo, layer.den_hi],
 				num_claim.point.clone(),
 				[num_claim.eval, den_claim.eval],
-			)?;
+			);
 
-			let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], channel)?;
+			let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], channel);
 
 			let mut multilinear_evals = output.multilinear_evals;
 			let evals = multilinear_evals.pop().expect("batch contains one prover");
@@ -196,7 +198,7 @@ impl<P: PackedField<Scalar = B128>> FastFracAddProver<P> {
 				},
 			);
 		}
-		Ok(claim)
+		claim
 	}
 }
 
@@ -238,7 +240,7 @@ mod tests {
 					},
 				);
 				let mut pt = ProverTranscript::new(StdChallenger::default());
-				let out = prover.prove(root_claim, &mut pt).unwrap();
+				let out = prover.prove(root_claim, &mut pt);
 				(pt.finalize(), out, sums.0.get(0), sums.1.get(0))
 			};
 
@@ -265,7 +267,7 @@ mod tests {
 					},
 				);
 				let mut pt = ProverTranscript::new(StdChallenger::default());
-				let out = prover.prove(root_claim, &mut pt).unwrap();
+				let out = prover.prove(root_claim, &mut pt);
 				(pt.finalize(), out)
 			};
 
@@ -295,7 +297,7 @@ mod tests {
 						point: Vec::new(),
 					},
 				);
-				prover.prove(root_claim, &mut pt).unwrap();
+				prover.prove(root_claim, &mut pt);
 			}
 			let mut vt = pt.into_verifier();
 			fracaddcheck::verify::<B128, _>(
