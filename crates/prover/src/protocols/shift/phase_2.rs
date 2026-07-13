@@ -9,8 +9,7 @@ use binius_ip::sumcheck::{RoundCoeffs, SumcheckOutput};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
-		ProveSingleOutput, bivariate_product::BivariateProductSumcheckProver, prove_single,
-		round_evals::RoundEvals2,
+		ProveSingleOutput, bivariate_product_prover, prove_single, round_evals::RoundEvals2,
 	},
 };
 use binius_math::{
@@ -235,7 +234,7 @@ where
 	// standard prover.
 	let folded_witness = fold_segments(&public_folded, hidden_folded, alpha);
 	let folded_monster = fold_segments(&public_monster, hidden_monster, alpha);
-	let prover = BivariateProductSumcheckProver::new([folded_witness, folded_monster], round_sum);
+	let prover = bivariate_product_prover([folded_witness, folded_monster], round_sum);
 
 	let ProveSingleOutput {
 		multilinear_evals,

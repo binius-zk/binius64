@@ -2,12 +2,13 @@
 
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
+use binius_math::FieldBuffer;
 use itertools::izip;
 
 use super::{
 	mle_store::{ColId, EvaluationChunk, MleStore},
 	round_evals::WideRoundEvals2,
-	round_evaluator::RoundEvaluator,
+	round_evaluator::{RoundEvaluator, SharedSumcheckProver},
 };
 
 /// Sumcheck round evaluator for a composite defined as the product of two store columns.
@@ -29,6 +30,28 @@ impl<F: Field, P: PackedField<Scalar = F>> BivariateProductEvaluator<P> {
 			last_coeffs_or_sum: RoundCoeffsOrSum::Sum(sum),
 		}
 	}
+}
+
+/// Builds a [`SumcheckProver`](crate::sumcheck::common::SumcheckProver) for the plain hypercube sum
+/// of the product of two multilinears.
+///
+/// This is the store-backed replacement for the former bespoke bivariate-product prover: it loads
+/// the two columns into a fresh [`MleStore`] and drives a single [`BivariateProductEvaluator`]. The
+/// multilinears must have the same number of variables; the returned prover's `finish` emits their
+/// two evaluations in the given order.
+pub fn bivariate_product_prover<F: Field, P: PackedField<Scalar = F>>(
+	multilinears: [FieldBuffer<P>; 2],
+	sum: F,
+) -> SharedSumcheckProver<'static, P, BivariateProductEvaluator<P>> {
+	assert_eq!(
+		multilinears[0].log_len(),
+		multilinears[1].log_len(),
+		"multilinears must have equal number of variables"
+	);
+
+	let mut store = MleStore::new(multilinears[0].log_len());
+	let cols = multilinears.map(|col| store.push_owned(col));
+	SharedSumcheckProver::new(store, vec![BivariateProductEvaluator::new(cols, sum)])
 }
 
 impl<F: Field, P: PackedField<Scalar = F>> RoundEvaluator<F, P> for BivariateProductEvaluator<P> {
@@ -116,4 +139,62 @@ impl<F: Field, P: PackedField<Scalar = F>> RoundEvaluator<F, P> for BivariatePro
 enum RoundCoeffsOrSum<F: Field> {
 	Coeffs(RoundCoeffs<F>),
 	Sum(F),
+}
+
+#[cfg(test)]
+mod tests {
+	use binius_field::arch::{OptimalB128, OptimalPackedB128};
+	use binius_ip::sumcheck::verify;
+	use binius_math::{
+		inner_product::inner_product_par, multilinear::evaluate::evaluate,
+		test_utils::random_field_buffer,
+	};
+	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+	use rand::prelude::*;
+
+	use super::*;
+	use crate::sumcheck::prove::prove_single;
+
+	type StdChallenger = HasherChallenger<sha2::Sha256>;
+
+	// Proving the product sum of two multilinears via the shared store, then verifying, recovers the
+	// two multilinear evaluations at the challenge point and their product as the reduced eval.
+	#[test]
+	fn test_bivariate_product_sumcheck() {
+		type F = OptimalB128;
+		type P = OptimalPackedB128;
+
+		let n_vars = 8;
+		let mut rng = StdRng::seed_from_u64(0);
+
+		let multilinear_a = random_field_buffer::<P>(&mut rng, n_vars);
+		let multilinear_b = random_field_buffer::<P>(&mut rng, n_vars);
+		let expected_sum = inner_product_par(&multilinear_a, &multilinear_b);
+
+		let prover =
+			bivariate_product_prover([multilinear_a.clone(), multilinear_b.clone()], expected_sum);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let output = prove_single(prover, &mut prover_transcript);
+		prover_transcript
+			.message()
+			.write_slice(&output.multilinear_evals);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let sumcheck_output = verify(n_vars, 2, expected_sum, &mut verifier_transcript).unwrap();
+		let multilinear_evals: Vec<F> = verifier_transcript.message().read_vec(2).unwrap();
+
+		assert_eq!(
+			multilinear_evals[0] * multilinear_evals[1],
+			sumcheck_output.eval,
+			"product of the multilinear evaluations should equal the reduced evaluation"
+		);
+
+		// The prover binds variables high-to-low; `evaluate` expects them low-to-high.
+		let mut eval_point = sumcheck_output.challenges.clone();
+		eval_point.reverse();
+		assert_eq!(evaluate(&multilinear_a, &eval_point), multilinear_evals[0]);
+		assert_eq!(evaluate(&multilinear_b, &eval_point), multilinear_evals[1]);
+		assert_eq!(output.challenges, sumcheck_output.challenges);
+	}
 }

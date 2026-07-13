@@ -11,7 +11,7 @@ use binius_field::{BinaryField, PackedField};
 use binius_iop::{channel::OracleSpec, fri::FRIParams};
 use binius_ip_prover::{
 	channel::IPProverChannel,
-	sumcheck::{self, PaddedSumcheckDecorator, bivariate_product::BivariateProductSumcheckProver},
+	sumcheck::{self, PaddedSumcheckDecorator, bivariate_product_prover},
 };
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldSliceMut,
@@ -252,7 +252,7 @@ fn prove_batch_zk_basefold<F, P, NTT, Channel>(
 		};
 
 		// TODO: We could cut the size of the message.clone() if the SumcheckProver accepted Cow
-		let inner = BivariateProductSumcheckProver::new([message.clone(), transparent], sum_prime);
+		let inner = bivariate_product_prover([message.clone(), transparent], sum_prime);
 		provers.push(PaddedSumcheckDecorator::new(inner, max_n - n_i));
 
 		witness_primes[index] = Some(message.clone());

@@ -363,8 +363,7 @@ mod tests {
 	use crate::sumcheck::{
 		MleToSumCheckDecorator, MleToSumCheckEvaluator,
 		batch::{batch_prove, batch_prove_mle},
-		bivariate_product::BivariateProductSumcheckProver,
-		bivariate_product_evaluator::BivariateProductEvaluator,
+		bivariate_product_evaluator::{BivariateProductEvaluator, bivariate_product_prover},
 		frac_add_mle,
 		quadratic_mle::QuadraticMleCheckProver,
 	};
@@ -569,8 +568,8 @@ mod tests {
 			let old_provers = vec![
 				Either::Left(MleToSumCheckDecorator::new(old_num)),
 				Either::Left(MleToSumCheckDecorator::new(old_den)),
-				Either::Right(BivariateProductSumcheckProver::new([y_0.clone(), t_0.clone()], e_0)),
-				Either::Right(BivariateProductSumcheckProver::new([y_1.clone(), t_1.clone()], e_1)),
+				Either::Right(bivariate_product_prover([y_0.clone(), t_0.clone()], e_0)),
+				Either::Right(bivariate_product_prover([y_1.clone(), t_1.clone()], e_1)),
 			];
 			let mut old_transcript = ProverTranscript::new(StdChallenger::default());
 			let old_output = batch_prove(old_provers, &mut old_transcript);
