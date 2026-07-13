@@ -30,6 +30,9 @@ binius-math = { path = "../math", features = ["test-utils"] }
 criterion = { workspace = true }
 proptest = { workspace = true }
 rand = { workspace = true }
+tracing = { workspace = true }
+tracing-forest = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [features]
 default = []
