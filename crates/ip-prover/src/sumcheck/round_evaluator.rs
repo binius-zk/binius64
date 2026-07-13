@@ -127,7 +127,7 @@ pub trait RoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + Sync {
 ///
 /// Chunked accumulation keeps the equality-indicator chunk resident in L1 cache while all
 /// evaluators read it, mirroring the chunking of the pre-store quadratic prover.
-const MAX_CHUNK_VARS: usize = 8;
+const MAX_CHUNK_VARS: usize = 12;
 
 /// A [`SumcheckProver`] over a shared [`MleStore`] and a list of [`RoundEvaluator`]s, one per
 /// claim.

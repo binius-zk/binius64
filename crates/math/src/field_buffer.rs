@@ -226,6 +226,7 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	///
 	/// * `log_chunk_size` must be at most `log_len`.
 	/// * `chunk_index` must be less than the chunk count.
+	#[inline]
 	pub fn chunk(&self, log_chunk_size: usize, chunk_index: usize) -> FieldSlice<'_, P> {
 		assert!(
 			log_chunk_size <= self.log_len,
