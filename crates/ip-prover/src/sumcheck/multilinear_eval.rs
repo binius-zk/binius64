@@ -18,15 +18,12 @@ use super::{
 ///
 /// Given a multilinear polynomial $M$ over the field $F$ and a claim $M(z) = s$, this proves the
 /// MLE-check relation $s = \sum_{v \in B_n} M(v) \cdot \text{eq}(v, z)$ (which, since $M$ is
-/// multilinear, holds iff $M(z) = s$). It is the large-field analogue of [`RerandMlecheckProver`],
-/// which handles 1-bit multilinears; this prover handles a single multilinear over $F$.
+/// multilinear, holds iff $M(z) = s$). It handles a single multilinear over the large field $F$.
 ///
 /// Because $M$ is multilinear, each round polynomial is degree 1. The prover folds the witness with
 /// each challenge, and in each round computes the round polynomial's evaluation at 1 by taking the
 /// top half of the folded witness (the partial specialization at the highest variable = 1) and
 /// dotting it with the [`Gruen32`] equality-indicator expansion over the remaining variables.
-///
-/// [`RerandMlecheckProver`]: super::rerand_mle::RerandMlecheckProver
 #[derive(Debug, Clone)]
 pub struct MultilinearEvalProver<P: PackedField> {
 	witness: FieldBuffer<P>,
