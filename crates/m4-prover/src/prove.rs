@@ -141,7 +141,13 @@ mod tests {
 	use std::array;
 
 	use assert_matches::assert_matches;
+	use binius_circuits::hash_based_sig::{
+		winternitz_ots::{NONCE_WIRES_COUNT, WinternitzSpec},
+		witness_utils::ValidatorSignatureData,
+		xmss::{XmssSignature, circuit_xmss},
+	};
 	use binius_field::PackedBinaryGhash1x128b;
+	use binius_frontend::{CircuitBuilder, Wire};
 	use binius_iop::{
 		basefold::{Error as BaseFoldError, VerificationError as BaseFoldVerificationError},
 		channel::Error as IOPChannelError,
@@ -153,7 +159,24 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::test_utils::{N_INPUT_WORDS, crc64_circuit, populate_crc64_witness};
+	use crate::{
+		BatchWitnessFiller,
+		test_utils::{N_INPUT_WORDS, crc64_circuit, populate_crc64_witness},
+	};
+
+	// Packs little-endian bytes into 64-bit word wires, zero-filling any trailing wires.
+	fn pack_bytes_le(w: &mut BatchWitnessFiller<'_, '_>, wires: &[Wire], bytes: &[u8]) {
+		// Each wire takes the next 8 bytes, little-endian; a short final chunk is zero-extended.
+		for (&wire, chunk) in wires.iter().zip(bytes.chunks(8)) {
+			let mut word = [0u8; 8];
+			word[..chunk.len()].copy_from_slice(chunk);
+			w[wire] = Word(u64::from_le_bytes(word));
+		}
+		// Any wire past the packed bytes is zeroed.
+		for &wire in &wires[bytes.len().div_ceil(8)..] {
+			w[wire] = Word::ZERO;
+		}
+	}
 
 	type P = PackedBinaryGhash1x128b;
 
@@ -193,6 +216,132 @@ mod tests {
 		verifier
 			.verify(&mut verifier_transcript)
 			.expect("a faithful proof verifies");
+		verifier_transcript
+			.finalize()
+			.expect("no trailing proof data");
+	}
+
+	// Invariant: a batch of full XMSS signature verifications proves and verifies through M4.
+	//
+	// XMSS verification recomputes a Merkle root from a signature and asserts it equals the
+	// committed root. The signature is a Winternitz one-time signature: one hash chain per
+	// codeword coordinate, whose chain ends hash into a Merkle leaf, plus an authentication path
+	// from that leaf to the root. Every hash is BLAKE3, so the circuit is MUL-free, as M4 requires.
+	//
+	// Fixture: spec_1 (72 Winternitz chains of length 4), a height-2 tree (4 epochs), 2^3 = 8
+	// instances.
+	#[test]
+	fn xmss_batch_round_trips() {
+		let spec = WinternitzSpec::spec_1();
+		let tree_height = 2;
+		let log_instances = 3;
+
+		// Allocate every circuit input as a witness wire, so the circuit has no inout wires.
+		// M4 forbids inout, so the public data (parameter, message, root) becomes witness too.
+		// The verification still asserts the recomputed root equals the committed root.
+		// So no gate is pruned even though nothing is a public output.
+		let builder = CircuitBuilder::new();
+		// The per-signer domain parameter is a byte string; each wire holds 8 of its bytes.
+		let param: Vec<Wire> = (0..spec.domain_param_len.div_ceil(8))
+			.map(|_| builder.add_witness())
+			.collect();
+		// The message digest is 32 bytes across four 64-bit wires.
+		let message: Vec<Wire> = (0..4).map(|_| builder.add_witness()).collect();
+		// The committed Merkle root is 32 bytes across four wires.
+		let root_hash: [Wire; 4] = array::from_fn(|_| builder.add_witness());
+		// The nonce feeds the message hash and fills four wires exactly.
+		let nonce: Vec<Wire> = (0..NONCE_WIRES_COUNT)
+			.map(|_| builder.add_witness())
+			.collect();
+		// The epoch is the signing leaf index within the tree.
+		let epoch = builder.add_witness();
+		// One chain value per Winternitz coordinate (the signature), each a four-wire digest.
+		let signature_hashes: Vec<[Wire; 4]> = (0..spec.dimension())
+			.map(|_| array::from_fn(|_| builder.add_witness()))
+			.collect();
+		// One chain end per coordinate (the one-time public key), each a four-wire digest.
+		let public_key_hashes: Vec<[Wire; 4]> = (0..spec.dimension())
+			.map(|_| array::from_fn(|_| builder.add_witness()))
+			.collect();
+		// One authentication-path node per tree level.
+		let auth_path: Vec<[Wire; 4]> = (0..tree_height)
+			.map(|_| array::from_fn(|_| builder.add_witness()))
+			.collect();
+		// Assemble the signature and emit the verification constraints.
+		let signature = XmssSignature {
+			nonce: nonce.clone(),
+			epoch,
+			signature_hashes: signature_hashes.clone(),
+			public_key_hashes: public_key_hashes.clone(),
+			auth_path: auth_path.clone(),
+		};
+		circuit_xmss(&builder, &spec, &param, &message, &signature, &root_hash);
+		let circuit = builder.build();
+
+		// Generate one valid signature.
+		// This runs the nonce grind and builds the Merkle tree, so it is one-time setup here.
+		let mut rng = StdRng::seed_from_u64(0);
+		// A random per-signer domain parameter.
+		let mut param_bytes = vec![0u8; spec.domain_param_len];
+		rng.fill_bytes(&mut param_bytes);
+		// A random 32-byte message.
+		let mut message_bytes = [0u8; 32];
+		rng.fill_bytes(&mut message_bytes);
+		// A signing epoch inside the tree: any leaf index below 2^tree_height = 4.
+		let sig_epoch = rng.next_u32() % (1u32 << tree_height);
+		// Sign: derive the chain values, chain ends, Merkle leaf, and authentication path.
+		let data = ValidatorSignatureData::generate(
+			&mut rng,
+			&param_bytes,
+			&message_bytes,
+			sig_epoch,
+			&spec,
+			tree_height,
+		);
+
+		// Fill all 8 instances with that one signature.
+		// Proving is data-independent, so identical instances measure the same work as distinct
+		// ones, and one signature suffices.
+		let table = ValueTable::populate(&circuit, log_instances, |_, w| {
+			// The public inputs, folded into the witness.
+			pack_bytes_le(w, &param, &param_bytes);
+			pack_bytes_le(w, &message, &message_bytes);
+			pack_bytes_le(w, &root_hash, &data.root);
+			// The signature's nonce and epoch.
+			pack_bytes_le(w, &nonce, &data.nonce);
+			w[epoch] = Word::from_u64(sig_epoch as u64);
+			// One chain value per coordinate.
+			for (dst, src) in signature_hashes.iter().zip(&data.signature_hashes) {
+				pack_bytes_le(w, dst, src);
+			}
+			// One chain end per coordinate.
+			for (dst, src) in public_key_hashes.iter().zip(&data.public_key_hashes) {
+				pack_bytes_le(w, dst, src);
+			}
+			// One authentication-path node per tree level.
+			for (dst, src) in auth_path.iter().zip(&data.auth_path) {
+				pack_bytes_le(w, dst, src);
+			}
+		})
+		.unwrap();
+
+		// Prepare the shared constraint system, which fixes the public-segment layout.
+		let mut cs = circuit.constraint_system().clone();
+		cs.validate_and_prepare().unwrap();
+
+		// Setup once: the verifier fixes the shape and FRI parameters; the prover inherits them.
+		let verifier = Verifier::setup(&cs, log_instances, 1);
+		let prover = Prover::<P>::setup(&verifier);
+
+		// Prove: commit the batch witness, reduce, and open, on a fresh transcript.
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		prover.prove(&table, &mut prover_transcript);
+
+		// Verify: replay the transcript end to end; it must accept and leave no trailing data.
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		verifier
+			.verify(&mut verifier_transcript)
+			.expect("a faithful XMSS proof verifies");
 		verifier_transcript
 			.finalize()
 			.expect("no trailing proof data");
