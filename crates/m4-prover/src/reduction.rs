@@ -14,7 +14,8 @@
 //! The caller binds it to the committed trace by ring-switching at `r_j || r_rho || r_y`.
 //! Evaluating the trace's instance coordinates at `r_rho` performs that instance fold.
 //!
-//! Only AND constraints are handled, so the circuit must have no MUL constraints.
+//! Only the AND-check is reduced so far. When the circuit has MUL constraints the IntMul operand
+//! columns are also built, but they are not yet consumed by the reduction.
 
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
@@ -27,6 +28,7 @@ use binius_verifier::{config::B128, protocols::bitand::AndCheckOutput};
 
 use crate::{
 	BatchAndCheckWitness, ValueTable,
+	bitand::build_operation_witness,
 	shift::{FoldedWord, fold_instances, prove as prove_shift},
 };
 
@@ -46,10 +48,6 @@ pub struct ReductionProverOutput {
 /// - `key_collection`: the shift keys for `cs`, built once in a setup phase and reused.
 /// - `table`: the populated wire-major batch witness.
 /// - `channel`: the prover channel recording messages and drawing Fiat-Shamir challenges.
-///
-/// # Panics
-///
-/// Panics if the constraint system has any MUL constraints, which this reduction does not handle.
 pub fn prove_reduction<P, Channel>(
 	cs: &ConstraintSystem,
 	key_collection: &KeyCollection,
@@ -60,10 +58,19 @@ where
 	P: PackedField<Scalar = B128>,
 	Channel: IPProverChannel<B128>,
 {
-	assert!(
-		cs.mul_constraints.is_empty(),
-		"the M4 reduction handles only AND constraints; the circuit must have no MUL constraints"
-	);
+	// Build the IntMul operand witness whenever the circuit has MUL constraints: the four operand
+	// columns `A`, `B`, `HI`, `LO` of every constraint over every instance, laid out
+	// instance-major. The reduction does not consume these yet; wiring them into the IntMul check
+	// is future work, so for now they are built and dropped.
+	let _mul_witness = (!cs.mul_constraints.is_empty()).then(|| {
+		build_operation_witness(
+			table,
+			&cs.constants,
+			cs.mul_constraints
+				.iter()
+				.map(|con| [&con.a, &con.b, &con.hi, &con.lo]),
+		)
+	});
 
 	// One base domain shared by the AND-check and the shift, consistent by construction.
 	// The AND-check's univariate-skip domain spans one dimension above the 64-bit word.
@@ -98,9 +105,10 @@ where
 		.collect();
 
 	// Reduce the operand claims to one witness evaluation.
-	// No MUL constraints here, so the intmul claim is a zero claim at an empty point.
 	// The shift evaluates the constants over the layout's power-of-two word count.
 	// Their count need not be a power of two, so they are passed unpadded.
+	// The IntMul witness is not fed in yet, so the intmul claim stays a zero claim at an empty
+	// point.
 	let witness_claim = prove_shift::<B128, P, _>(
 		key_collection,
 		&cs.constants,
