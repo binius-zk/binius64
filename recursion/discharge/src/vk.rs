@@ -13,6 +13,18 @@
 //! VKGen is a PURE function of the canonical prepared-CS serialization; vk_digest ↔
 //! cs_digest correspondence is trust root T1, discharged by the deterministic
 //! regeneration audit (spec 8.12) — see tests (vkgen twice ⇒ byte-identical digest).
+//!
+//! ## Upstream channel port (STEP-2 endgame on upstream/main)
+//!
+//! The FRI plumbing is the upstream #1611/#1693/#1500/#1586 channel-oriented BaseFold:
+//! the merged [M_VK, M_D] opening is ONE combined FRI built from `optimal_for_batch` over
+//! two NON-ZK [`OracleSpec`]s (M_VK: `n_d + 2` vars, M_D: `n_d` vars). The optimizer
+//! chooses each oracle's interleave batch size + lift (they need NOT be uniform), so the
+//! VKM records the resulting `fold_arities` and the port re-derives the whole shape from
+//! `dims` deterministically. `vk_digest` is the Merkle root of the ENCODED M_VK codeword
+//! (transcript-free `encode_interleaved` + `commit_field_buffer`), identical to the root
+//! the channel's `send_merkle_commitment` emits at opening time (which the verifier binds
+//! to this audited `vk_digest`).
 
 use std::time::Instant;
 
@@ -20,12 +32,13 @@ use anyhow::{Context, ensure};
 use binius_field::Field;
 use binius_hash::StdHashSuite;
 use binius_iop::{
-	fri::{FRIParams, PartialOracleSpec, calculate_n_test_queries},
+	channel::OracleSpec,
+	fri::{FRIParams, calculate_n_test_queries},
 	merkle_tree::{BinaryMerkleTreeScheme, MerkleTreeScheme},
 };
 use binius_iop_prover::{
-	fri::{CommitOutput, commit_interleaved},
-	merkle_tree::{MerkleTreeProver, prover::BinaryMerkleTreeProver},
+	fri::encode_interleaved,
+	merkle_tree::{commit_field_buffer, prover::BinaryMerkleTreeProver},
 };
 use binius_math::{
 	BinarySubspace, FieldBuffer,
@@ -40,8 +53,9 @@ use binius_verifier::config::B128;
 use crate::table::{ShapeDims, TermTable, cube_y};
 
 /// Spec-layout version frozen into the VKM (P0.1 "canonical row-order version").
-/// v3: merged batched opening (W2) — ONE combined FRIParams over [M_VK, M_D].
-pub const LAYOUT_VERSION: u64 = 3;
+/// v4: upstream channel-oriented merged opening (W2) — ONE combined FRIParams over two
+/// non-ZK OracleSpecs [M_VK, M_D] via `optimal_for_batch` (per-oracle batch/lift).
+pub const LAYOUT_VERSION: u64 = 4;
 /// Canonical row order: constraint-major, slot-major a→b→c, operand-position; dummy
 /// rows appended on [N, N_pad); zero-weight pad rows on [N_pad, 2^n_l).
 pub const ROW_ORDER_VERSION: u64 = 1;
@@ -58,14 +72,14 @@ pub type Digest = <Scheme as MerkleTreeScheme<B128>>::Digest;
 pub type DischargeMerkleProver = BinaryMerkleTreeProver<B128, StdHashSuite>;
 pub type DischargeNtt = NeighborsLastMultiThread<GenericPreExpanded<B128>>;
 
-/// Pinned batched FRI shape for the merged opening (W2): ONE `FRIParams` over the two
-/// oracles [M_VK (n_d + 2 vars), M_D (n_d vars)] with a UNIFORM interleave batch.
-/// All fields FS-observed via `DischargeVkm::to_elems`.
+/// Pinned batched FRI shape for the merged opening (W2): the deterministic `fold_arities`
+/// that `FRIParams::optimal_for_batch` selects for the two-oracle batch [M_VK, M_D]. The
+/// per-oracle interleave batch sizes and lifts live inside the derived `FRIParams`
+/// (`input_oracles()`), re-derived from `dims` and asserted equal in [`build_pcs`]. All
+/// fields FS-observed via [`DischargeVkm::to_elems`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchFriShape {
-	/// Uniform per-oracle log2 interleaved batch size (Merkle leaf coset width).
-	pub log_batch_size: usize,
-	/// The RESULTING combined fold arities (recorded, re-derived + asserted at build).
+	/// The combined fold arities (re-derived + asserted at build).
 	pub fold_arities: Vec<usize>,
 }
 
@@ -108,7 +122,7 @@ impl DischargeVkm {
 			self.cs_digest[16..].try_into().expect("16 bytes"),
 		)));
 		// vk_digest: 32 bytes -> 2 elems (P0.1 hard requirement: FRI queries only bind
-		// what the transcript absorbed, fri/verify.rs:200).
+		// what the transcript absorbed — the digest MUST be observed before mu).
 		assert_eq!(self.vk_digest.len(), 32, "sha256 digest");
 		out.push(B128::new(u128::from_le_bytes(
 			self.vk_digest[..16].try_into().expect("16 bytes"),
@@ -124,7 +138,6 @@ impl DischargeVkm {
 		] {
 			push_u(v as u64, &mut out);
 		}
-		push_u(self.fri_batch.log_batch_size as u64, &mut out);
 		push_u(self.fri_batch.fold_arities.len() as u64, &mut out);
 		for &a in &self.fri_batch.fold_arities {
 			push_u(a as u64, &mut out);
@@ -132,7 +145,7 @@ impl DischargeVkm {
 		out
 	}
 
-	/// The typed Merkle digest for `basefold::verify`.
+	/// The typed Merkle digest for the merged opening's pinned commitment.
 	pub fn vk_digest_typed(&self) -> anyhow::Result<Digest> {
 		Digest::deserialize(&self.vk_digest[..]).context("vk_digest deserialize")
 	}
@@ -173,47 +186,43 @@ pub fn vk_entry(blk: usize, addr: u64, n_a: usize) -> B128 {
 	}
 }
 
-/// Deterministic batched FRI shape for the merged [M_VK, M_D] opening (W2). Pure
-/// function of the dims: uniform interleave batch 6, oracle order [M_VK, M_D],
-/// combined arities chosen by `FRIParams::optimal_for_batch`.
+/// The two-oracle batch spec for the merged [M_VK, M_D] opening, in `input_oracles`
+/// order. Both are NON-ZK (the discharge uses no ZK masking — see spec §3.2), of
+/// differing message lengths (`n_d + 2` and `n_d`); `optimal_for_batch` reduces them into
+/// one combined FRI, choosing each oracle's interleave batch and lift.
+fn oracle_specs(dims: &ShapeDims) -> [OracleSpec; 2] {
+	[OracleSpec::new(dims.n_d + 2), OracleSpec::new(dims.n_d)]
+}
+
+/// log2 of the shared FRI domain (max codeword length). The optimizer's reduced dimension
+/// is at most `max(log_msg_len) = n_d + 2`, so a domain of `n_d + 2 + log_inv_rate` covers
+/// every codeword the batch can produce (the prover NTT and the params' RS subspace are
+/// both prefixes of this canonical `with_dim` subspace).
+fn log_domain_for(dims: &ShapeDims) -> usize {
+	dims.n_d + 2 + LOG_INV_RATE
+}
+
+/// Deterministic batched FRI shape for the merged [M_VK, M_D] opening (W2). Pure function
+/// of the dims: `optimal_for_batch` over the two non-ZK oracle specs.
 pub fn fri_shapes(dims: &ShapeDims) -> (usize, BatchFriShape) {
 	let scheme = Scheme::new();
 	let n_test_queries = calculate_n_test_queries(SECURITY_BITS, LOG_INV_RATE);
-	// Batch width 6: 64-element Merkle leaf cosets. Bounds the M_VK tree at
-	// 2^{n_d + 2 - 6 + 1} digests and keeps per-query coset reads at 1 KiB.
-	let log_batch_size = 6usize.min(dims.n_d.saturating_sub(1));
-	let params = build_batch_params(dims, log_batch_size, n_test_queries, &scheme);
+	let params = build_batch_params(dims, n_test_queries, &scheme);
 	(
 		n_test_queries,
 		BatchFriShape {
-			log_batch_size,
 			fold_arities: params.fold_arities().to_vec(),
 		},
 	)
 }
 
-fn build_batch_params(
-	dims: &ShapeDims,
-	log_batch_size: usize,
-	n_test_queries: usize,
-	scheme: &Scheme,
-) -> FRIParams<B128> {
-	let log_domain = dims.n_d + 2 - log_batch_size + LOG_INV_RATE;
-	let subspace: BinarySubspace<B128> = BinarySubspace::with_dim(log_domain);
+fn build_batch_params(dims: &ShapeDims, n_test_queries: usize, scheme: &Scheme) -> FRIParams<B128> {
+	let subspace: BinarySubspace<B128> = BinarySubspace::with_dim(log_domain_for(dims));
 	let domain_context = GenericOnTheFly::generate_from_subspace(&subspace);
 	let (params, _est) = FRIParams::optimal_for_batch(
 		&domain_context,
 		scheme,
-		&[
-			PartialOracleSpec {
-				log_msg_len: dims.n_d + 2,
-				log_batch_size: Some(log_batch_size),
-			},
-			PartialOracleSpec {
-				log_msg_len: dims.n_d,
-				log_batch_size: Some(log_batch_size),
-			},
-		],
+		&oracle_specs(dims),
 		LOG_INV_RATE,
 		n_test_queries,
 	);
@@ -229,6 +238,22 @@ pub struct Pcs {
 	pub log_domain: usize,
 }
 
+impl Pcs {
+	/// Interleaved-coset leaf size of oracle `i` (`i = 0` → M_VK, `i = 1` → M_D), i.e.
+	/// `2^log_batch_size`. Both the transcript-free commit and the channel commit use it.
+	pub fn leaf_size(&self, oracle: usize) -> usize {
+		1 << self.params.input_oracles()[oracle].log_batch_size()
+	}
+
+	/// Merkle-tree depth of oracle `i`'s committed codeword: `oracle_log_dim + log_inv_rate`
+	/// where `oracle_log_dim = rs_code.log_dim() - log_lift`. Matches the verifier channel's
+	/// `recv_merkle_commitment` depth (basefold_channel `recv_oracle`).
+	pub fn depth(&self, oracle: usize) -> usize {
+		let rs = self.params.rs_code();
+		(rs.log_dim() - self.params.input_oracles()[oracle].log_lift) + rs.log_inv_rate()
+	}
+}
+
 pub fn build_pcs(vkm: &DischargeVkm) -> anyhow::Result<Pcs> {
 	ensure!(vkm.layout_version == LAYOUT_VERSION, "layout version mismatch");
 	ensure!(vkm.row_order_version == ROW_ORDER_VERSION, "row order version mismatch");
@@ -240,19 +265,14 @@ pub fn build_pcs(vkm: &DischargeVkm) -> anyhow::Result<Pcs> {
 		"tag basis indices must be (n_a, n_a+1)"
 	);
 	let scheme = Scheme::new();
-	let log_domain = vkm.dims.n_d + 2 - vkm.fri_batch.log_batch_size + vkm.log_inv_rate;
-	let params = build_batch_params(
-		&vkm.dims,
-		vkm.fri_batch.log_batch_size,
-		vkm.n_test_queries,
-		&scheme,
-	);
+	let params = build_batch_params(&vkm.dims, vkm.n_test_queries, &scheme);
 	ensure!(
 		params.fold_arities() == vkm.fri_batch.fold_arities,
 		"VKM fold_arities mismatch: derived {:?} vs pinned {:?}",
 		params.fold_arities(),
 		vkm.fri_batch.fold_arities
 	);
+	let log_domain = log_domain_for(&vkm.dims);
 	Ok(Pcs {
 		params,
 		scheme,
@@ -261,7 +281,9 @@ pub fn build_pcs(vkm: &DischargeVkm) -> anyhow::Result<Pcs> {
 }
 
 /// Prover-side NTT over the shared domain (same construction as the main prover:
-/// NeighborsLastMultiThread over GenericPreExpanded).
+/// NeighborsLastMultiThread over GenericPreExpanded). Its subspace `with_dim(log_domain)`
+/// is a superset (by prefix) of the params' RS subspace, so `encode_interleaved`'s
+/// per-oracle `with_ntt_subspace` restriction stays consistent with the combined fold.
 pub fn build_ntt(log_domain: usize) -> DischargeNtt {
 	let subspace: BinarySubspace<B128> = BinarySubspace::with_dim(log_domain);
 	let domain_context = GenericPreExpanded::generate_from_subspace(&subspace);
@@ -297,25 +319,36 @@ pub fn build_m_vk(table: &TermTable) -> FieldBuffer<B128> {
 	FieldBuffer::new(n_l + 2, vals.into_boxed_slice())
 }
 
-/// Output of a VK commit: digest + the retained codeword/tree (for opening).
-pub type VkCommit<P> =
-	CommitOutput<P, Digest, <DischargeMerkleProver as MerkleTreeProver<B128>>::Committed>;
+/// Encodes M_VK as oracle 0 of the batched params (the interleaved Reed–Solomon
+/// codeword the merged FRI opens). Transcript-free; generic over the prover packing.
+pub fn encode_m_vk<P: binius_field::PackedField<Scalar = B128>>(
+	pcs: &Pcs,
+	ntt: &DischargeNtt,
+	m_vk: &FieldBuffer<P>,
+) -> FieldBuffer<P> {
+	encode_interleaved(&pcs.params, 0, ntt, m_vk.to_ref())
+}
 
-/// Commits M_VK transcript-free via `fri::commit_interleaved` (iop-prover fri/commit.rs)
-/// as ORACLE 0 of the batched params. Generic over the prover packing (W1: instantiated
-/// at `packed::PB`); the digest is a function of the scalar message values only.
-pub fn commit_m_vk<P: binius_field::PackedField<Scalar = B128>>(
+/// The M_VK commitment DIGEST (the vk_digest): the Merkle root of the encoded M_VK
+/// codeword, committed transcript-free with one interleaved coset per leaf. This is
+/// byte-identical to the root the channel's `send_merkle_commitment` emits at opening
+/// (both call `commit_field_buffer` with the same leaf size), so the opening's pinned
+/// commitment binds to exactly this audited digest. Pure function of the table + params.
+pub fn commit_m_vk_digest<P: binius_field::PackedField<Scalar = B128>>(
 	pcs: &Pcs,
 	ntt: &DischargeNtt,
 	merkle_prover: &DischargeMerkleProver,
 	m_vk: &FieldBuffer<P>,
-) -> VkCommit<P> {
-	commit_interleaved(&pcs.params, 0, ntt, merkle_prover, m_vk.to_ref())
+) -> Digest {
+	let codeword = encode_m_vk(pcs, ntt, m_vk);
+	let log_leaf = pcs.params.input_oracles()[0].log_batch_size();
+	let (commitment, _committed) = commit_field_buffer(merkle_prover, codeword.to_ref(), log_leaf);
+	commitment.root
 }
 
 /// VKGEN (once per CS shape): deterministic. Builds M_VK, asserts the [REV S3] coset
-/// condition, commits, and returns the VKM. The commitment data is DROPPED (each
-/// prover process re-commits deterministically and asserts digest equality, spec §4).
+/// condition, commits (digest only — each prover process re-commits deterministically and
+/// the verifier binds the opening to this audited digest, spec §4), and returns the VKM.
 pub fn vkgen(table: &TermTable) -> anyhow::Result<(DischargeVkm, f64)> {
 	let t0 = Instant::now();
 	let dims = table.dims.clone();
@@ -327,8 +360,8 @@ pub fn vkgen(table: &TermTable) -> anyhow::Result<(DischargeVkm, f64)> {
 		for j in 0..4 {
 			if i != j {
 				let diff = kappa[i] + kappa[j];
-				// FWD-PORT: `B128::val()` now returns the `M128` underlier (not `u128`); test the
-				// high bits against the zero underlier.
+				// `B128::val()` returns the `M128` underlier; test the high bits against
+				// the zero underlier.
 				ensure!(
 					(diff.val() >> dims.n_a) != B128::ZERO.val(),
 					"tag coset condition violated: kappa_{i} ^ kappa_{j} lies in V"
@@ -356,7 +389,7 @@ pub fn vkgen(table: &TermTable) -> anyhow::Result<(DischargeVkm, f64)> {
 	let ntt = build_ntt(pcs.log_domain);
 	let merkle_prover = DischargeMerkleProver::new();
 	let m_vk = crate::packed::build_m_vk_packed::<crate::packed::PB>(table);
-	let commit = commit_m_vk(&pcs, &ntt, &merkle_prover, &m_vk);
-	vkm.vk_digest = serialize_digest(&commit.commitment);
+	let digest = commit_m_vk_digest(&pcs, &ntt, &merkle_prover, &m_vk);
+	vkm.vk_digest = serialize_digest(&digest);
 	Ok((vkm, t0.elapsed().as_secs_f64()))
 }

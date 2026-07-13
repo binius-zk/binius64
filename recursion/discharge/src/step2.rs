@@ -23,6 +23,7 @@ use std::time::Instant;
 use anyhow::ensure;
 use binius_core::constraint_system::ConstraintSystem;
 use binius_field::Field;
+use binius_hash::StdHashSuite;
 use binius_ip::{
 	channel::IPVerifierChannel,
 	fracaddcheck::{self, FracAddEvalClaim},
@@ -35,8 +36,13 @@ use binius_ip_prover::{
 		prove_single,
 	},
 };
+use binius_iop::{
+	merkle_channel::{MerkleIPVerifierChannel, TranscriptMerkleCommitment, VerifierMerkleTranscriptChannel},
+	merkle_tree::Commitment,
+};
 use binius_iop_prover::{
-	fri::commit_interleaved,
+	fri::encode_interleaved,
+	merkle_channel::{MerkleIPProverChannel, ProverMerkleTranscriptChannel},
 };
 use binius_math::{
 	FieldBuffer,
@@ -50,15 +56,13 @@ use crate::{
 	cubic::CubicProductSumcheckProver,
 	discharge::{DischargeStatement, axpy_point_tensor, claim_contexts_from_dims},
 	fracadd::FastFracAddProver,
+	merged::OpenClaim,
 	packed::{
 		PB, assemble_m_d_packed, axpy_dense_par, build_m_vk_packed, build_phase_c_leaf_halves,
 		gather_column, vk_corner_values_packed,
 	},
 	table::{TermTable, build_histograms, evaluate_d_g, eq_point, extract_table, m_d_points},
-	vk::{
-		Digest, DischargeMerkleProver, DischargeVkm, beta, build_ntt, build_pcs,
-		commit_m_vk, serialize_digest,
-	},
+	vk::{Digest, DischargeVkm, beta, build_ntt, build_pcs, encode_m_vk},
 };
 
 /// Adversarial knobs for the STEP-2 prover (tests only; `None` = honest). The tampered
@@ -71,9 +75,14 @@ pub enum Step2Tamper {
 	/// to Phases A and B (W_eq vanishes there and m/m_pi are consistently tampered);
 	/// in STEP 1 only the native rebuild caught this — here Phase C MUST.
 	MdBlock3,
-	/// Flip one byte of digest_D at the observation point (the tree and all openings
-	/// remain honest): the FS stream is consistent on both sides, so every phase
-	/// passes until the M_D opening's Merkle verification rejects.
+	/// Commit the HONEST M_D (so digest_D is FS-consistent on both sides and every
+	/// transcript phase passes), but hand the merged opener an M_D codeword that no
+	/// longer matches that committed digest. Under the upstream channel API the prover
+	/// cannot both write a flipped root and open the real tree (the commitment handle is
+	/// only obtainable from `send_merkle_commitment`, which writes the true root), so the
+	/// digest↔polynomial mismatch is realized on the codeword the FRI opens: every query
+	/// leaf then fails to authenticate against the honest committed root — the M_D
+	/// opening's Merkle verification rejects.
 	DigestD,
 }
 
@@ -221,7 +230,6 @@ pub fn discharge_prove_step2_on_table<C: Challenger>(
 
 	let pcs = build_pcs(vkm)?;
 	let ntt = build_ntt(pcs.log_domain);
-	let merkle_prover = DischargeMerkleProver::new();
 
 	// Phase 0: VKM + statement absorption (P0.1) — before mu is sampled.
 	IPProverChannel::<B128>::observe_many(transcript, &vkm.to_elems());
@@ -276,7 +284,7 @@ pub fn discharge_prove_step2_on_table<C: Challenger>(
 	let ctxs = ctxs; // immutable from here
 	let histograms_s = t.elapsed().as_secs_f64();
 
-	// ---- Commit M_D (second non-ZK oracle); digest observed BEFORE tau (P0.1). ----
+	// ---- Commit M_D (oracle 1 of the batched params); digest observed BEFORE tau. ----
 	let t = Instant::now();
 	let mut m_d = assemble_m_d_packed::<PB>(dims, &hist);
 	if tamper == Step2Tamper::MdBlock3 {
@@ -284,17 +292,29 @@ pub fn discharge_prove_step2_on_table<C: Challenger>(
 		let cur = m_d.get(idx);
 		m_d.set(idx, cur + B128::ONE);
 	}
-	// M_D is ORACLE 1 of the batched params (W2 merged opening).
-	let commit_d = commit_interleaved(&pcs.params, 1, &ntt, &merkle_prover, m_d.to_ref());
-	if tamper == Step2Tamper::DigestD {
-		let mut bytes = serialize_digest(&commit_d.commitment);
-		bytes[0] ^= 1;
-		use binius_utils::DeserializeBytes;
-		let flipped = Digest::deserialize(&bytes[..]).expect("32-byte digest roundtrip");
-		transcript.message().write(&flipped);
+	// Encode M_D as oracle 1 of the batched params, then commit it over a Merkle channel:
+	// `send_merkle_commitment` writes digest_D as an OBSERVED message (before tau, P0.1)
+	// and returns the opening handle held for the merged FRI.
+	let m_d_codeword = encode_interleaved(&pcs.params, 1, &ntt, m_d.to_ref());
+	let d_commitment = {
+		let mut mchan =
+			ProverMerkleTranscriptChannel::<_, C, B128, StdHashSuite>::new(&mut *transcript);
+		mchan.send_merkle_commitment(m_d_codeword.to_ref(), pcs.leaf_size(1))
+	};
+	// DigestD adversary: digest_D above is HONEST (so the FS stream is consistent and every
+	// transcript phase passes), but the codeword handed to the merged opener is tampered on
+	// EVERY leaf, so each FRI query fails to authenticate against the honest committed root
+	// (Merkle rejection). The upstream channel API gives no way to write a flipped root while
+	// opening the real tree, so the digest↔polynomial mismatch is realized here instead.
+	let m_d_codeword_fri = if tamper == Step2Tamper::DigestD {
+		let mut c = m_d_codeword.clone();
+		for i in 0..(1usize << c.log_len()) {
+			c.set(i, c.get(i) + B128::ONE);
+		}
+		c
 	} else {
-		transcript.message().write(&commit_d.commitment);
-	}
+		m_d_codeword
+	};
 	let commit_d_s = t.elapsed().as_secs_f64();
 
 	// ---- Phase C: weighted fracaddcheck over the (n_l + 2)-var union domain. ----
@@ -394,14 +414,12 @@ pub fn discharge_prove_step2_on_table<C: Challenger>(
 	// both point-evaluation claims are fixed before the opening begins.
 	let rho_c: Vec<B128> = IPProverChannel::<B128>::sample_many(transcript, 2);
 	let t = Instant::now();
-	// Deterministic re-commit (spec section 4): rebuild M_VK from the CS-derived table
-	// and assert the digest matches the VKM (T1 regeneration in-process).
+	// Rebuild M_VK from the CS-derived table (spec section 4) and encode it (oracle 0). The
+	// channel commit below re-emits its Merkle root; for the HONEST prover this equals the
+	// audited vk_digest, which the verifier asserts (the T1 / table-swap binding), so no
+	// separate prover-side re-commit assert is needed.
 	let m_vk = build_m_vk_packed::<PB>(vk_table);
-	let commit_vk = commit_m_vk(&pcs, &ntt, &merkle_prover, &m_vk);
-	ensure!(
-		serialize_digest(&commit_vk.commitment) == vkm.vk_digest,
-		"re-committed M_VK digest differs from the VKM's vk_digest (T1 violation)"
-	);
+	let vk_codeword = encode_m_vk(&pcs, &ntt, &m_vk);
 	let recommit_vk_s = t.elapsed().as_secs_f64();
 
 	let t = Instant::now();
@@ -411,71 +429,30 @@ pub fn discharge_prove_step2_on_table<C: Challenger>(
 	let mut vk_point = pi_lo.to_vec();
 	vk_point.extend_from_slice(&rho_c);
 	{
-		let b = vkm.fri_batch.log_batch_size;
-		// The combined witness is REGENERATED from the table + M_D at combine time (no
-		// clone of the 2^{n_d+2} M_VK buffer is held through the reduction).
-		let table_for_w = vk_table;
-		let m_d_for_w = m_d.clone();
-		let n_big = dims.n_d + 2;
-		let dim_small = dims.n_d - b;
+		// One Merkle channel drives the whole opening: commit M_VK (writes its root — bound
+		// by the verifier to the audited vk_digest), then reduction + combine + the native
+		// combined FRI over BOTH pinned codewords (see merged.rs / upstream
+		// verify_mlecheck_basefold).
+		let mut mchan =
+			ProverMerkleTranscriptChannel::<_, C, B128, StdHashSuite>::new(&mut *transcript);
+		let vk_commitment = mchan.send_merkle_commitment(vk_codeword.to_ref(), pcs.leaf_size(0));
 		crate::merged::prove_merged_openings(
 			&pcs.params,
 			&ntt,
-			&merkle_prover,
-			crate::merged::MergedClaim {
-				message: m_vk,
-				point: &vk_point,
-				eval: claim_vk,
-			},
-			crate::merged::MergedClaim {
-				message: m_d,
-				point: &sigma,
-				eval: m,
-			},
-			|e| {
-				// W = e0*M_VK + e1*midpad(M_D), lanes generated (M_VK never re-buffered).
-				let n = table_for_w.terms.len();
-				let terms = &table_for_w.terms;
-				let kappa = crate::vk::tags(dims.n_a);
-				let n_l = dims.n_d;
-				let mask_l = (1usize << n_l) - 1;
-				let pad_mask = (1usize << (n_big - dims.n_d)) - 1;
-				let low_mask = (1usize << dim_small) - 1;
-				crate::packed::build_buffer_par::<PB, _>(n_big, |w| {
-					// M_VK lane (build_m_vk_packed generator, inlined).
-					let blk = w >> n_l;
-					let tt = w & mask_l;
-					let vk_lane = match blk {
-						0 | 1 | 2 => {
-							if tt < n {
-								let term = &terms[tt];
-								let addr = match blk {
-									0 => term.x as u64,
-									1 => term.y as u64,
-									_ => term.u as u64,
-								};
-								crate::vk::vk_entry(blk, addr, dims.n_a)
-							} else {
-								kappa[blk]
-							}
-						}
-						_ => B128::ZERO,
-					};
-					let mut v = e[0] * vk_lane;
-					let pad = (w >> dim_small) & pad_mask;
-					if pad == 0 {
-						let top = w >> (n_big - b);
-						let low = w & low_mask;
-						v += e[1] * m_d_for_w.get(low | (top << dim_small));
-					}
-					v
-				})
-			},
-			vec![
-				(commit_vk.codeword, &commit_vk.committed),
-				(commit_d.codeword, &commit_d.committed),
+			&mut mchan,
+			[
+				OpenClaim {
+					message: m_vk,
+					point: &vk_point,
+					eval: claim_vk,
+				},
+				OpenClaim {
+					message: m_d,
+					point: &sigma,
+					eval: m,
+				},
 			],
-			transcript,
+			vec![(vk_codeword, vk_commitment), (m_d_codeword_fri, d_commitment)],
 		)?;
 	}
 	let open_merged_s = t.elapsed().as_secs_f64();
@@ -546,11 +523,20 @@ pub fn discharge_verify_step2<C: Challenger>(
 		ensure!(g_l == rhs, "phase A (G) recombination failed for claim {l}");
 	}
 
-	// ---- digest_D (bound by FS before tau), then Phase C. ----
+	// ---- digest_D (M_D commitment; bound by FS before tau), then Phase C. ----
 	let digest_d: Digest = transcript
 		.message()
 		.read()
 		.map_err(|e| anyhow::anyhow!("digest_D read: {e}"))?;
+	// Package M_D's PINNED commitment (oracle 1) for the merged opening; its depth and
+	// leaf size come from the deterministic batch params (not from the prover).
+	let d_commitment = TranscriptMerkleCommitment {
+		commitment: Commitment {
+			root: digest_d,
+			depth: pcs.depth(1),
+		},
+		leaf_size: pcs.leaf_size(1),
+	};
 	let tau: B128 = IPVerifierChannel::<B128>::sample(transcript);
 	ensure!(
 		tau.val() >= (1u128 << (dims.n_a + 2)).into(),
@@ -643,17 +629,29 @@ pub fn discharge_verify_step2<C: Challenger>(
 	let mut vk_point = pi_lo.to_vec();
 	vk_point.extend_from_slice(&rho_c);
 	let vk_digest = vkm.vk_digest_typed()?;
-	crate::merged::verify_merged_openings(
-		&pcs.params,
-		&pcs.scheme,
-		&[vk_digest, digest_d],
-		&vk_point,
-		claim_vk,
-		&sigma,
-		m,
-		transcript,
-	)
-	.map_err(|e| anyhow::anyhow!("merged [M_VK, M_D] opening: {e}"))?;
+	{
+		// One Merkle channel drives the opening. Receive M_VK's commitment (oracle 0) and
+		// PIN it to the audited vk_digest: the FRI queries bind only what the transcript
+		// carries, so the opened root MUST equal the audited one (the table-swap / T1
+		// binding). Then run the merged reduction + combined FRI over both pinned
+		// commitments [M_VK, M_D].
+		let mut mchan =
+			VerifierMerkleTranscriptChannel::<_, C, B128, StdHashSuite>::new(&mut *transcript);
+		let vk_commitment = mchan
+			.recv_merkle_commitment(pcs.leaf_size(0), pcs.depth(0))
+			.map_err(|e| anyhow::anyhow!("M_VK commitment recv: {e}"))?;
+		ensure!(
+			vk_commitment.commitment.root == vk_digest,
+			"P0.1: opened M_VK digest != audited vk_digest (table-swap)"
+		);
+		crate::merged::verify_merged_openings(
+			&pcs.params,
+			&mut mchan,
+			&[vk_commitment, d_commitment],
+			[(&vk_point, claim_vk), (&sigma, m)],
+		)
+		.map_err(|e| anyhow::anyhow!("merged [M_VK, M_D] opening: {e}"))?;
+	}
 	let open_merged_s = t.elapsed().as_secs_f64();
 
 	Ok(VerifyTimings2 {

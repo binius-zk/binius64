@@ -22,6 +22,7 @@
 
 use binius_core::constraint_system::ConstraintSystem;
 use binius_field::Field;
+use binius_hash::StdHashSuite;
 use binius_ip::prodcheck::MultilinearEvalClaim;
 use binius_ip_prover::{
 	channel::IPProverChannel,
@@ -31,13 +32,16 @@ use binius_ip_prover::{
 		prove_single,
 	},
 };
-use binius_iop_prover::fri::commit_interleaved;
+use binius_iop_prover::{
+	fri::encode_interleaved,
+	merkle_channel::{MerkleIPProverChannel, ProverMerkleTranscriptChannel},
+};
 use binius_math::{
 	FieldBuffer,
 	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
 	univariate::evaluate_univariate,
 };
-use binius_transcript::{ProverTranscript, VerifierTranscript};
+use binius_transcript::{ProverTranscript, VerifierTranscript, fiat_shamir::Challenger};
 use binius_verifier::{
 	config::{B128, StdChallenger},
 	protocols::shift::SHIFT_VARIANT_COUNT,
@@ -46,11 +50,12 @@ use binius_recursion_discharge::{
 	cubic::CubicProductSumcheckProver,
 	discharge::DischargeStatement,
 	leaf::LeafPipeline,
+	merged::OpenClaim,
 	recorder::verify_and_capture,
 	step2::discharge_verify_step2,
 	synth::{synth_cs, synth_witness},
-	table::{ClaimTransparents, TermTable, assemble_m_d, build_histograms, eq_point, evaluate_d_g, extract_table, m_d_points, N_U},
-	vk::{DischargeVkm, DischargeMerkleProver, build_m_vk, build_ntt, build_pcs, commit_m_vk, tags, vk_entry, vkgen},
+	table::{ClaimTransparents, TermTable, assemble_m_d, build_histograms, cube_y, eq_point, evaluate_d_g, extract_table, m_d_points, N_U},
+	vk::{DischargeVkm, build_m_vk, build_ntt, build_pcs, encode_m_vk, tags, vk_entry, vkgen},
 };
 
 const K: usize = 2;
@@ -63,12 +68,12 @@ enum Tamper {
 }
 
 /// Copied STEP-2 prover with tamper knobs at the Phase-C corner message.
-fn copied_prove_step2(
+fn copied_prove_step2<C: Challenger>(
 	cs: &ConstraintSystem,
 	vkm: &DischargeVkm,
 	stmt: &DischargeStatement,
 	tamper: Tamper,
-	transcript: &mut ProverTranscript<impl binius_transcript::fiat_shamir::Challenger>,
+	transcript: &mut ProverTranscript<C>,
 ) -> anyhow::Result<()> {
 	let table: TermTable = extract_table(cs)?;
 	anyhow::ensure!(table.cs_digest == vkm.cs_digest && table.dims == vkm.dims, "shape");
@@ -97,7 +102,6 @@ fn copied_prove_step2(
 
 	let pcs = build_pcs(vkm)?;
 	let ntt = build_ntt(pcs.log_domain);
-	let merkle_prover = DischargeMerkleProver::new();
 
 	// Phase 0: VKM + statement absorption (must match the crate's encodings).
 	IPProverChannel::<B128>::observe_many(transcript, &vkm.to_elems());
@@ -133,20 +137,16 @@ fn copied_prove_step2(
 		e_x.resize(dims.n_pad, tr.x_tensor[0]);
 		e_y.resize(dims.n_pad, tr.y_tensor[0]);
 		e_g.resize(dims.n_pad, tr.g_tab[0]);
-		provers.push(
-			CubicProductSumcheckProver::new(
-				[
-					FieldBuffer::<B128>::from_values(&e_x),
-					FieldBuffer::<B128>::from_values(&e_y),
-					FieldBuffer::<B128>::from_values(&e_g),
-				],
-				*sum,
-			)
-			.map_err(|e| anyhow::anyhow!("cubic prover: {e}"))?,
-		);
+		provers.push(CubicProductSumcheckProver::new(
+			[
+				FieldBuffer::<B128>::from_values(&e_x),
+				FieldBuffer::<B128>::from_values(&e_y),
+				FieldBuffer::<B128>::from_values(&e_g),
+			],
+			*sum,
+		));
 	}
-	let output = batch_prove_and_write_evals(provers, transcript)
-		.map_err(|e| anyhow::anyhow!("phase A: {e}"))?;
+	let output = batch_prove_and_write_evals(provers, transcript);
 	let rho = output.challenges.clone(); // low-first on the prover side
 
 	// Histograms + 8K d values.
@@ -160,15 +160,20 @@ fn copied_prove_step2(
 	}
 	IPProverChannel::<B128>::send_many(transcript, &d_vals);
 
-	// Commit M_D (honest; ORACLE 1 of the batched params).
+	// Commit M_D (honest; oracle 1 of the batched params) over a Merkle channel, which
+	// writes digest_D as an observed message before tau.
 	let m_d = assemble_m_d(&dims, &hist);
-	let commit_d = commit_interleaved(&pcs.params, 1, &ntt, &merkle_prover, m_d.to_ref());
-	transcript.message().write(&commit_d.commitment);
+	let m_d_codeword = encode_interleaved(&pcs.params, 1, &ntt, m_d.to_ref());
+	let d_commitment = {
+		let mut mchan =
+			ProverMerkleTranscriptChannel::<_, C, B128, StdHashSuite>::new(&mut *transcript);
+		mchan.send_merkle_commitment(m_d_codeword.to_ref(), pcs.leaf_size(1))
+	};
 
 	// Phase C: leaf columns built the straightforward way (independent of the crate's
 	// direct-write builder).
 	let tau: B128 = IPProverChannel::<B128>::sample(transcript);
-	anyhow::ensure!(tau.val() >= (1u128 << (dims.n_a + 2)), "tau pole guard");
+	anyhow::ensure!(tau.val() >= (1u128 << (dims.n_a + 2)).into(), "tau pole guard");
 	let kappa = tags(dims.n_a);
 	let eq_rho = eq_ind_partial_eval_scalars(&rho);
 	let mut num = vec![B128::ZERO; block << 2];
@@ -181,7 +186,7 @@ fn copied_prove_step2(
 		if t < table.terms.len() {
 			let term = &table.terms[t];
 			den[t] = tau + vk_entry(0, term.x as u64, dims.n_a);
-			den[block + t] = tau + vk_entry(1, term.y as u64, dims.n_a);
+			den[block + t] = tau + vk_entry(1, cube_y(&dims, term.y) as u64, dims.n_a);
 			den[2 * block + t] = tau + vk_entry(2, term.u as u64, dims.n_a);
 		} else {
 			den[t] = tau; // kappa_x = 0
@@ -212,9 +217,7 @@ fn copied_prove_step2(
 			point: Vec::new(),
 		},
 	);
-	let (num_leaf_claim, _den_leaf_claim) = frac_prover
-		.prove(root_claim, transcript)
-		.map_err(|e| anyhow::anyhow!("phase C prove: {e}"))?;
+	let (num_leaf_claim, _den_leaf_claim) = frac_prover.prove(root_claim, transcript);
 	let pi = num_leaf_claim.point;
 	anyhow::ensure!(pi.len() == n_l + 2, "leaf point arity");
 	let (pi_lo, pi_hi) = pi.split_at(n_l);
@@ -285,48 +288,44 @@ fn copied_prove_step2(
 	let prover_b = BivariateProductSumcheckProver::new(
 		[FieldBuffer::<B128>::from_values(&w_eq), m_d.clone()],
 		combined,
-	)
-	.map_err(|e| anyhow::anyhow!("phase B prover: {e}"))?;
-	let out_b = prove_single(prover_b, transcript).map_err(|e| anyhow::anyhow!("phase B: {e}"))?;
+	);
+	let out_b = prove_single(prover_b, transcript);
 	let mut sigma = out_b.challenges.clone();
 	sigma.reverse();
 	let m = out_b.multilinear_evals[1];
 	IPProverChannel::<B128>::send_one(transcript, m);
 
-	// Merged [M_VK, M_D] opening (W2; honest claims — bytes depend on the honest data,
-	// while the verifier derives ITS claims from the sent corner values, so a corner
-	// forgery diverges inside the merged-opening layer).
+	// Merged [M_VK, M_D] opening (honest claims — the opening's own claim_vk is derived
+	// from the HONEST corners v_honest, while the verifier derives ITS claim_vk from the
+	// SENT corners v_sent, so a corner forgery diverges at the merged-opening reduction).
 	let rho_c: Vec<B128> = IPProverChannel::<B128>::sample_many(transcript, 2);
-	let commit_vk = commit_m_vk(&pcs, &ntt, &merkle_prover, &m_vk);
+	let vk_codeword = encode_m_vk(&pcs, &ntt, &m_vk);
 	let claim_vk = eq_point(&[zero, zero], &rho_c) * v_honest[0]
 		+ eq_point(&[one, zero], &rho_c) * v_honest[1]
 		+ eq_point(&[zero, one], &rho_c) * v_honest[2];
 	let mut vk_point = pi_lo.to_vec();
 	vk_point.extend_from_slice(&rho_c);
 	{
-		let b = vkm.fri_batch.log_batch_size;
-		let m_vk_for_w = m_vk.clone();
-		let m_d_for_w = m_d.clone();
+		let mut mchan =
+			ProverMerkleTranscriptChannel::<_, C, B128, StdHashSuite>::new(&mut *transcript);
+		let vk_commitment = mchan.send_merkle_commitment(vk_codeword.to_ref(), pcs.leaf_size(0));
 		binius_recursion_discharge::merged::prove_merged_openings(
 			&pcs.params,
 			&ntt,
-			&merkle_prover,
-			binius_recursion_discharge::merged::MergedClaim {
-				message: m_vk,
-				point: &vk_point,
-				eval: claim_vk,
-			},
-			binius_recursion_discharge::merged::MergedClaim {
-				message: m_d,
-				point: &sigma,
-				eval: m,
-			},
-			|e| binius_recursion_discharge::merged::build_combined_witness(&m_vk_for_w, &m_d_for_w, b, e),
-			vec![
-				(commit_vk.codeword, &commit_vk.committed),
-				(commit_d.codeword, &commit_d.committed),
+			&mut mchan,
+			[
+				OpenClaim {
+					message: m_vk,
+					point: &vk_point,
+					eval: claim_vk,
+				},
+				OpenClaim {
+					message: m_d,
+					point: &sigma,
+					eval: m,
+				},
 			],
-			transcript,
+			vec![(vk_codeword, vk_commitment), (m_d_codeword, d_commitment)],
 		)
 		.map_err(|e| anyhow::anyhow!("merged open: {e}"))?;
 	}

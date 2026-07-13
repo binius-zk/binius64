@@ -22,10 +22,13 @@ pub mod recorder;
 pub mod synth;
 pub mod table;
 
-// STEP-2 committed-table PCS endgame — gated while its FRI/commit plumbing is ported to the
-// upstream #1611/#1693/#1500/#1586 channel-oriented BaseFold API. The re-derived segmented Y-block
-// (Wall A) lives in the always-on modules above and is validated by STEP-1 + the cross-validate
-// gate (tests/rederivation_step1.rs) against the REAL captured monster value.
+// STEP-2 committed-table PCS endgame — PORTED to the upstream #1611/#1693/#1500/#1586
+// channel-oriented BaseFold API (native combined `verify_mlecheck_basefold` over two non-ZK
+// oracles; the vendored batched opener is deleted). Kept behind the opt-in `step2` feature so
+// the always-on STEP-1 re-derivation (Wall A, validated by tests/rederivation_step1.rs against
+// the REAL captured monster value) is the default build. STEP-2 E2E + all negatives are green:
+// tests/step2_small.rs, tests/step2_adversarial.rs, tests/synth_scaling.rs (run with
+// `--features step2`).
 #[cfg(feature = "step2")]
 pub mod fracadd;
 #[cfg(feature = "step2")]

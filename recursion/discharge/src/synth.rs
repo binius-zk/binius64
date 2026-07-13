@@ -163,9 +163,11 @@ pub fn synth_cs_sized(log2_constraints: usize, n_y_log: usize, variant: u8) -> C
 		_ => (5, 7, 11),
 	};
 	let idx = |seed: u64| offset_witness + (seed as usize % witness_span);
-	// Canonical non-plain shift amount: always in [1, 63] (amount 0 is legal only for the
-	// SLL "plain" form, per ConstraintSystem::validate_and_prepare canonicity).
-	let amt = |seed: u64| (1 + (seed as usize % 63)) as u8;
+	// Canonical non-plain shift amount in [1, 31]: amount 0 is legal only for the SLL
+	// "plain" form, and upstream `validate_and_prepare` rejects amount >= 32 for the
+	// 32-bit-lane variants (Sll32/Srl32/Sra32/Rotr32) this table mixes in. Capping at 31 is
+	// valid for all eight variants and the discharge is agnostic to the exact amount.
+	let amt = |seed: u64| (1 + (seed as usize % 31)) as u8;
 	let mut and_constraints = Vec::with_capacity(c);
 	for i in 0..c as u64 {
 		let a = ShiftedValueIndex {
