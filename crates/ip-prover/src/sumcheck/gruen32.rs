@@ -95,7 +95,6 @@ impl<F: Field, P: PackedField<Scalar = F>> Gruen32<P> {
 
 	// An interpolation routine for degree-2 round polynomials. Takes P'(x) evals and sum claim on
 	// P(x).
-	#[allow(dead_code)]
 	pub fn interpolate2(
 		&self,
 		sum: F,
