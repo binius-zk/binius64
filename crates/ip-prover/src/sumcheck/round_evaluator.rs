@@ -25,37 +25,42 @@ use super::{
 	mle_store::{ColId, EqId, MleStore},
 };
 
-/// Read-only view of the store during one round's accumulation pass.
+/// One store column's low and high halves at a single chunk of the halved hypercube.
+///
+/// The column is split on the round's highest variable: `lo` fixes that variable to 0, `hi` to 1.
+/// Both range over the chunk's `2^chunk_vars` scalars.
+pub struct ColumnChunk<'c, P: PackedField> {
+	pub lo: FieldSlice<'c, P>,
+	pub hi: FieldSlice<'c, P>,
+}
+
+/// One chunk of the halved hypercube, prepared by the driving prover for the round evaluators.
 ///
 /// The pass runs over the halved hypercube: with `n` variables remaining, each column splits on
 /// the highest variable into two halves of `n - 1` variables, and both halves divide into chunks
-/// of `2^chunk_vars` scalars addressed by a shared chunk index.
+/// of `2^chunk_vars` scalars.
 ///
-/// The store's columns are expanded once, at the start of the round, into one slice per logical
-/// column (a split-half column becomes its two halves), so [`Self::col`] is a plain index.
-pub struct RoundContext<'b, 'a, P: PackedField> {
-	store: &'b MleStore<'a, P>,
-	cols: Vec<FieldSlice<'b, P>>,
-	chunk_vars: usize,
+/// The driver splits every store column on the round's highest variable and slices this chunk out
+/// of each half, and slices the same chunk out of each eq-indicator expansion — once per chunk, so
+/// a column read by several evaluators is split and chunked a single time. Evaluators read their
+/// columns by [`ColId`] and their eq trackers by [`EqId`].
+pub struct EvaluationChunk<'c, P: PackedField> {
+	cols: Vec<ColumnChunk<'c, P>>,
+	eqs: Vec<FieldSlice<'c, P>>,
 }
 
-impl<'b, P: PackedField> RoundContext<'b, '_, P> {
-	/// Returns log2 the number of scalars in one chunk of the halved hypercube.
-	pub const fn chunk_vars(&self) -> usize {
-		self.chunk_vars
-	}
-
-	/// Returns a borrowed view of a column, over all remaining variables.
-	pub fn col(&self, id: ColId) -> &FieldSlice<'b, P> {
+impl<'c, P: PackedField> EvaluationChunk<'c, P> {
+	/// Returns the low and high halves of a column at this chunk.
+	pub fn col(&self, id: ColId) -> &ColumnChunk<'c, P> {
 		&self.cols[id.index()]
 	}
 
-	/// Returns the equality-indicator expansion of a registered tracker.
+	/// Returns the equality-indicator expansion of a registered tracker at this chunk.
 	///
-	/// The expansion ranges over the halved hypercube, so it chunks with the same chunk index as
-	/// the column halves.
-	pub fn eq_expansion(&self, id: EqId) -> &'b FieldBuffer<P> {
-		self.store.eq_expansion(id)
+	/// The expansion ranges over the halved hypercube, so it is chunked with the same chunk index
+	/// as the column halves.
+	pub fn eq(&self, id: EqId) -> &FieldSlice<'c, P> {
+		&self.eqs[id.index()]
 	}
 }
 
@@ -96,14 +101,11 @@ pub trait RoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + Sync {
 
 	/// Accumulates one chunk of the halved hypercube into `accum`.
 	///
-	/// `accum` is this evaluator's run of [`Self::degree`] wide slots, zero-initialized on the
-	/// first chunk and carried across the worker's chunks.
-	fn accumulate(
-		&self,
-		ctx: &RoundContext<'_, '_, P>,
-		chunk_index: usize,
-		accum: &mut [<P as WideMul>::Output],
-	);
+	/// The driving prover prepares `chunk` — the split, per-chunk column halves and eq-indicator
+	/// expansions — so the evaluator only reads its columns by [`ColId`] and eq trackers by
+	/// [`EqId`]. `accum` is this evaluator's run of [`Self::degree`] wide slots, zero-initialized
+	/// on the first chunk and carried across the worker's chunks.
+	fn accumulate(&self, chunk: &EvaluationChunk<'_, P>, accum: &mut [<P as WideMul>::Output]);
 
 	/// Interpolates this round's polynomial from the slot-wise summed accumulator slice.
 	///
@@ -225,18 +227,37 @@ where
 			.last()
 			.expect("offsets has one entry per evaluator, plus one");
 
-		let ctx = RoundContext {
-			cols: self.store.column_slices(),
-			store: &self.store,
-			chunk_vars,
-		};
+		// Split every column on the round's highest variable once; the halves are re-sliced per
+		// chunk below into the `EvaluationChunk` each evaluator reads. The eq-indicator expansions
+		// already range over the halved hypercube, so they are chunked directly.
+		let col_slices = self.store.column_slices();
+		let col_halves = col_slices
+			.iter()
+			.map(|col| col.split_half_ref())
+			.collect::<Vec<_>>();
+		let eq_expansions = self.store.eq_expansions();
+
 		let evaluators = &self.evaluators;
 		let new_accum = || -> Vec<<P as WideMul>::Output> { vec![Default::default(); total_slots] };
 		let accum = (0..chunk_count)
 			.into_par_iter()
 			.fold(new_accum, |mut accum, chunk_index| {
+				// Prepare this chunk's column halves and eq expansions once for every evaluator.
+				let chunk = EvaluationChunk {
+					cols: col_halves
+						.iter()
+						.map(|(lo, hi)| ColumnChunk {
+							lo: lo.chunk(chunk_vars, chunk_index),
+							hi: hi.chunk(chunk_vars, chunk_index),
+						})
+						.collect(),
+					eqs: eq_expansions
+						.iter()
+						.map(|eq| eq.chunk(chunk_vars, chunk_index))
+						.collect(),
+				};
 				for (evaluator, window) in iter::zip(evaluators, offsets.windows(2)) {
-					evaluator.accumulate(&ctx, chunk_index, &mut accum[window[0]..window[1]]);
+					evaluator.accumulate(&chunk, &mut accum[window[0]..window[1]]);
 				}
 				accum
 			})

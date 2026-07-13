@@ -44,6 +44,13 @@ impl ColId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EqId(usize);
 
+impl EqId {
+	/// Returns the registration position of the tracker in the store.
+	pub const fn index(self) -> usize {
+		self.0
+	}
+}
+
 /// One physical entry in the store, holding one or two logical columns.
 ///
 /// A `Borrowed` or `Owned` entry is a single column. A `SplitHalf` entry holds two adjacent
@@ -176,6 +183,18 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 	/// variable currently being bound.
 	pub fn eq_expansion(&self, id: EqId) -> &FieldBuffer<P> {
 		self.eq_trackers[id.0].eq_expansion()
+	}
+
+	/// Returns the equality-indicator expansion of every registered tracker, in [`EqId`] order.
+	///
+	/// The driving prover slices each expansion per chunk once per round; the returned order
+	/// matches [`EqId::index`], so an evaluator's tracker id indexes the resulting per-chunk
+	/// slices.
+	pub fn eq_expansions(&self) -> Vec<&FieldBuffer<P>> {
+		self.eq_trackers
+			.iter()
+			.map(|tracker| tracker.eq_expansion())
+			.collect()
 	}
 
 	/// Returns the full evaluation point of a registered eq tracker.
