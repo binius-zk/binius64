@@ -5,7 +5,10 @@ use std::array;
 use binius_field::{Field, FieldOps, PackedField, arch::OptimalPackedB128};
 use binius_ip::mlecheck;
 use binius_ip_prover::sumcheck::{
-	batch_quadratic_mle::BatchQuadraticMleCheckProver, common::MleCheckProver,
+	common::MleCheckProver,
+	mle_store::MleStore,
+	quadratic_mle_evaluator::QuadraticMleEvaluator,
+	round_evaluator::{RoundEvaluator, SharedMleCheckProver},
 };
 use binius_math::{
 	FieldBuffer,
@@ -30,20 +33,16 @@ fn comp_0<Pf: PackedField>([a, b, c]: [Pf; N]) -> Pf {
 	a * b - c
 }
 
+fn comp_0_inf<Pf: PackedField>([a, b, _c]: [Pf; N]) -> Pf {
+	a * b
+}
+
 fn comp_1<Pf: PackedField>([a, b, c]: [Pf; N]) -> Pf {
 	(a + b) * c
 }
 
-fn batch_comp<Pf: PackedField>(evals: [Pf; N], out: &mut [Pf; M]) {
-	let [a, b, c] = evals;
-	out[0] = a * b - c;
-	out[1] = (a + b) * c;
-}
-
-fn batch_inf_comp<Pf: PackedField>(evals: [Pf; N], out: &mut [Pf; M]) {
-	let [a, b, c] = evals;
-	out[0] = a * b;
-	out[1] = (a + b) * c;
+fn comp_1_inf<Pf: PackedField>([a, b, c]: [Pf; N]) -> Pf {
+	(a + b) * c
 }
 
 fn eval_claims<Ff, Pf>(multilinears: &[FieldBuffer<Pf>; N], eval_point: &[Ff]) -> [Ff; M]
@@ -112,13 +111,28 @@ fn bench_batch_quadratic_mlecheck_prove(c: &mut Criterion) {
 			b.iter_batched(
 				|| (multilinears.clone(), eval_point.clone()),
 				|(multilinears, eval_point)| {
-					let prover = BatchQuadraticMleCheckProver::new(
-						multilinears,
-						batch_comp::<P>,
-						batch_inf_comp::<P>,
-						eval_point,
-						eval_claims,
+					let mut store = MleStore::new(eval_point.len());
+					let cols = multilinears.map(|multilinear| store.push_owned(multilinear));
+					// One single-claim evaluator per composition, sharing the store's columns and
+					// one eq tracker registered for the shared point.
+					let eq_tracker = store.register_eq_tracker(&eval_point);
+					let evaluator_0 = QuadraticMleEvaluator::new(
+						cols,
+						eq_tracker,
+						comp_0::<P>,
+						comp_0_inf::<P>,
+						eval_claims[0],
 					);
+					let evaluator_1 = QuadraticMleEvaluator::new(
+						cols,
+						eq_tracker,
+						comp_1::<P>,
+						comp_1_inf::<P>,
+						eval_claims[1],
+					);
+					let evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> =
+						vec![Box::new(evaluator_0), Box::new(evaluator_1)];
+					let prover = SharedMleCheckProver::new(store, evaluators, eval_point);
 
 					prove_batch_mlecheck(prover, &mut transcript)
 				},
