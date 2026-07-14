@@ -9,11 +9,11 @@
 //! drives the AND-check zerocheck; [`build_intmul_witness`] builds the four IntMul columns, not
 //! yet consumed downstream.
 
-use std::{iter, ptr};
+use std::{iter, mem::MaybeUninit, ptr};
 
 use binius_core::{
 	ValueIndex,
-	constraint_system::{AndConstraint, MulConstraint, Operand},
+	constraint_system::{AndConstraint, MulConstraint, Operand, ShiftedValueIndex},
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, PackedField};
@@ -266,73 +266,27 @@ pub fn build_operation_witness<'a>(
 			let mut shifted_indices_iter = operand.iter();
 
 			if let Some(shifted_index_0) = shifted_indices_iter.next() {
-				// Special handling for the first index, which initializes the output cell.
-				if shifted_index_0.value_index < witness_offset {
-					let constant = constants[shifted_index_0.value_index.0 as usize];
-					let shifted_constant = shifted_index_0
-						.shift_variant
-						.apply(constant, shifted_index_0.amount as usize);
-					for out_i in &mut *out_chunk {
-						out_i.write(shifted_constant);
-					}
-				} else {
-					let index = shifted_index_0.value_index.0 as usize - witness_offset.0 as usize;
-					let src =
-						&table_words[(index << log_instances)..((index + 1) << log_instances)];
-
-					if shifted_index_0.amount == 0 {
-						// Safety:
-						// * out_chunk.len() == src.len()
-						// * MaybeUninit<Word> has the same memory repr as Word
-						unsafe {
-							ptr::copy_nonoverlapping(
-								src.as_ptr(),
-								out_chunk.as_mut_ptr() as *mut Word,
-								out_chunk.len(),
-							)
-						};
-					} else {
-						for (out_i, &src_i) in iter::zip(&mut *out_chunk, src) {
-							out_i.write(
-								shifted_index_0
-									.shift_variant
-									.apply(src_i, shifted_index_0.amount as usize),
-							);
-						}
-					}
-				}
+				write_shifted_values(
+					out_chunk,
+					shifted_index_0,
+					constants,
+					table_words,
+					witness_offset,
+					log_instances,
+				);
 
 				// out_chunk is fully initialized in the block above.
 				let out_chunk = unsafe { out_chunk.assume_init_mut() };
 
 				for shifted_index in shifted_indices_iter {
-					if shifted_index.value_index < witness_offset {
-						let constant = constants[shifted_index.value_index.0 as usize];
-						let shifted_constant = shifted_index
-							.shift_variant
-							.apply(constant, shifted_index.amount as usize);
-						for out_i in &mut *out_chunk {
-							*out_i = *out_i ^ shifted_constant;
-						}
-					} else {
-						let index =
-							shifted_index.value_index.0 as usize - witness_offset.0 as usize;
-						let src =
-							&table_words[(index << log_instances)..((index + 1) << log_instances)];
-
-						if shifted_index.amount == 0 {
-							for (out_i, &src_i) in iter::zip(&mut *out_chunk, src) {
-								*out_i = *out_i ^ src_i;
-							}
-						} else {
-							for (out_i, &src_i) in iter::zip(&mut *out_chunk, src) {
-								let shifted_src_i = shifted_index
-									.shift_variant
-									.apply(src_i, shifted_index.amount as usize);
-								*out_i = *out_i ^ shifted_src_i;
-							}
-						}
-					}
+					accum_shifted_values(
+						out_chunk,
+						shifted_index,
+						constants,
+						table_words,
+						witness_offset,
+						log_instances,
+					);
 				}
 			} else {
 				// When the operand is empty, write 0 words to the stripe.
@@ -347,6 +301,111 @@ pub fn build_operation_witness<'a>(
 	// SAFETY: every element in `0..total` of every column was written above.
 	unsafe { out.set_len(1 << (log_instances + log_constraints)) };
 	out
+}
+
+/// Writes one shifted value into every element of `out_chunk`, initializing it.
+///
+/// This is the first term of an operand's accumulation: it initializes the cell rather than
+/// XOR-ing into it, so the caller need not zero `out_chunk` first. Use [`accum_shifted_values`]
+/// for every subsequent term.
+///
+/// # Arguments
+///
+/// - `out_chunk`: the uninitialized output cells to write, one per instance in this stripe.
+/// - `shifted_index`: the shifted value index to write.
+/// - `constants`: the circuit's constant words, shared by every instance.
+/// - `table_words`: the wire-major batch witness's hidden words.
+/// - `witness_offset`: the value index at which hidden words begin; public words lie below it.
+/// - `log_instances`: the base-2 logarithm of the instance count, i.e. one hidden row's stride.
+fn write_shifted_values(
+	out_chunk: &mut [MaybeUninit<Word>],
+	shifted_index: &ShiftedValueIndex,
+	constants: &[Word],
+	table_words: &[Word],
+	witness_offset: ValueIndex,
+	log_instances: usize,
+) {
+	if shifted_index.value_index < witness_offset {
+		let constant = constants[shifted_index.value_index.0 as usize];
+		let shifted_constant = shifted_index
+			.shift_variant
+			.apply(constant, shifted_index.amount as usize);
+		for out_i in &mut *out_chunk {
+			out_i.write(shifted_constant);
+		}
+	} else {
+		let index = shifted_index.value_index.0 as usize - witness_offset.0 as usize;
+		let src = &table_words[(index << log_instances)..((index + 1) << log_instances)];
+
+		if shifted_index.amount == 0 {
+			// Safety:
+			// * out_chunk.len() == src.len()
+			// * MaybeUninit<Word> has the same memory repr as Word
+			unsafe {
+				ptr::copy_nonoverlapping(
+					src.as_ptr(),
+					out_chunk.as_mut_ptr() as *mut Word,
+					out_chunk.len(),
+				)
+			};
+		} else {
+			for (out_i, &src_i) in iter::zip(&mut *out_chunk, src) {
+				out_i.write(
+					shifted_index
+						.shift_variant
+						.apply(src_i, shifted_index.amount as usize),
+				);
+			}
+		}
+	}
+}
+
+/// XORs one shifted value into every element of `out_chunk`.
+///
+/// Use this for every term of an operand's accumulation after the first; see
+/// [`write_shifted_values`] for the first term, which initializes `out_chunk` instead.
+///
+/// # Arguments
+///
+/// - `out_chunk`: the initialized output cells to accumulate into, one per instance in this stripe.
+/// - `shifted_index`: the shifted value index to accumulate.
+/// - `constants`: the circuit's constant words, shared by every instance.
+/// - `table_words`: the wire-major batch witness's hidden words.
+/// - `witness_offset`: the value index at which hidden words begin; public words lie below it.
+/// - `log_instances`: the base-2 logarithm of the instance count, i.e. one hidden row's stride.
+fn accum_shifted_values(
+	out_chunk: &mut [Word],
+	shifted_index: &ShiftedValueIndex,
+	constants: &[Word],
+	table_words: &[Word],
+	witness_offset: ValueIndex,
+	log_instances: usize,
+) {
+	if shifted_index.value_index < witness_offset {
+		let constant = constants[shifted_index.value_index.0 as usize];
+		let shifted_constant = shifted_index
+			.shift_variant
+			.apply(constant, shifted_index.amount as usize);
+		for out_i in &mut *out_chunk {
+			*out_i = *out_i ^ shifted_constant;
+		}
+	} else {
+		let index = shifted_index.value_index.0 as usize - witness_offset.0 as usize;
+		let src = &table_words[(index << log_instances)..((index + 1) << log_instances)];
+
+		if shifted_index.amount == 0 {
+			for (out_i, &src_i) in iter::zip(&mut *out_chunk, src) {
+				*out_i = *out_i ^ src_i;
+			}
+		} else {
+			for (out_i, &src_i) in iter::zip(&mut *out_chunk, src) {
+				let shifted_src_i = shifted_index
+					.shift_variant
+					.apply(src_i, shifted_index.amount as usize);
+				*out_i = *out_i ^ shifted_src_i;
+			}
+		}
+	}
 }
 
 /// Builds the batched IntMul operand witness from a populated wire-major batch table.
@@ -395,7 +454,7 @@ pub fn build_intmul_witness(
 #[cfg(test)]
 mod tests {
 	use assert_matches::assert_matches;
-	use binius_core::constraint_system::{ShiftVariant, ShiftedValueIndex, ValueVec};
+	use binius_core::constraint_system::{ShiftVariant, ValueVec};
 	use binius_field::{
 		PackedBinaryGhash1x128b,
 		linear_transformation::{
