@@ -3,7 +3,10 @@ use std::{array, iter};
 
 use anyhow::Result;
 use binius_circuits::{
-	bignum::BigUint, ecdsa::ecrecover, fixed_byte_vec::ByteVec, keccak::Keccak256,
+	bignum::BigUint,
+	ecdsa::ecrecover,
+	fixed_byte_vec::ByteVec,
+	keccak::{Keccak256, keccak256_varlen},
 };
 use binius_core::word::Word;
 use binius_frontend::{
@@ -63,7 +66,8 @@ impl ExampleCircuit for EthSignExample {
 				let address = array::from_fn(|_| builder.add_inout());
 
 				let msg_final_state = array::from_fn(|_| builder.add_witness());
-				let msg_keccak = Keccak256::new(builder, msg_len, msg_final_state, message);
+				let message_vec = ByteVec::new(message, msg_len);
+				let msg_keccak = keccak256_varlen(builder, &message_vec, msg_final_state);
 
 				// The Keccak digest is little endian encoded into 4 words, while Ethereum expects
 				// big endian
@@ -99,12 +103,10 @@ impl ExampleCircuit for EthSignExample {
 					.collect::<Vec<_>>();
 
 				let address_final_state = array::from_fn(|_| builder.add_witness());
-				let address_keccak = Keccak256::new(
-					builder,
-					builder.add_constant_64(64),
-					address_final_state,
-					public_key_message,
-				);
+				// Length pinned to a constant, so the digest is over the whole public key.
+				let public_key_vec = ByteVec::new_const_len(builder, public_key_message, 64);
+				let address_keccak =
+					keccak256_varlen(builder, &public_key_vec, address_final_state);
 
 				// Assert that the provided address equals digest bytes 12..32
 				assert_address_eq(builder, &address_keccak.digest, &address);

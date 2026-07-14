@@ -35,6 +35,18 @@ use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into
 /// caller to have enforced the range by other means (e.g. `concat`, where the output length is the
 /// sum of already-constrained input lengths).
 ///
+/// ## Soundness — constrain `len_bytes` before hashing
+/// The default constructors ([`new`](ByteVec::new), [`new_inout`](ByteVec::new_inout),
+/// [`new_witness`](ByteVec::new_witness)) leave `len_bytes` unconstrained over the whole
+/// `0..=capacity` range — a free witness (`new`) or an unbound public `inout` (`new_inout`,
+/// `new_witness`), either of which the prover controls. A gadget that digests the vector — e.g.
+/// [`keccak256_varlen`](crate::keccak::keccak256_varlen) — then proves a statement only about the
+/// prover-chosen prefix `data[..len_bytes]`, not the full buffer: unless the digest is fixed by the
+/// verifier, the prover can shrink `len_bytes` and supply the shorter prefix's digest. Pin
+/// `len_bytes` — via a public input, a constant, or [`new_const_len`](ByteVec::new_const_len) —
+/// whenever such a digest is consumed internally rather than checked against a verifier-fixed
+/// value.
+///
 /// ## Example
 /// ```ignore
 /// // Create a ByteVec with capacity for 32 bytes (4 wires)

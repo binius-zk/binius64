@@ -3,7 +3,10 @@
 use std::array;
 
 use anyhow::Result;
-use binius_circuits::keccak::{Keccak256, N_WORDS_PER_DIGEST, fixed_length::keccak256};
+use binius_circuits::{
+	fixed_byte_vec::ByteVec,
+	keccak::{Keccak256, N_WORDS_PER_DIGEST, fixed_length::keccak256, keccak256_varlen},
+};
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use sha3::Digest;
@@ -53,7 +56,8 @@ impl ExampleCircuit for KeccakExample {
 				let len_bytes = builder.add_witness();
 				let digest: [Wire; N_WORDS_PER_DIGEST] = array::from_fn(|_| builder.add_inout());
 				let message = (0..n_words).map(|_| builder.add_inout()).collect();
-				KeccakCircuit::Variable(Keccak256::new(builder, len_bytes, digest, message))
+				let message_vec = ByteVec::new(message, len_bytes);
+				KeccakCircuit::Variable(keccak256_varlen(builder, &message_vec, digest))
 			}
 		};
 
