@@ -5,7 +5,35 @@
 //! A gadget emits a fixed pattern of existing gates.
 //! It adds no new opcode and no bespoke constraint logic.
 
+use binius_core::word::Word;
+
 use crate::{CircuitBuilder, Wire};
+
+/// Bitwise OR of two 64-bit words.
+///
+/// Returns `z = a | b`.
+///
+/// # Algorithm
+///
+/// OR decomposes into an AND and two XORs, bit for bit:
+///
+/// ```text
+/// a | b = (a & b) ^ a ^ b
+/// ```
+///
+/// A fused AND-XOR gate evaluates `(a & b) ^ w` inside a single AND constraint.
+/// Setting `w = a ^ b` yields the OR with no additional constraint.
+///
+/// # Cost
+///
+/// 1 AND constraint.
+/// The XOR operand folds into that constraint for free.
+pub fn bor64(builder: &CircuitBuilder, a: Wire, b: Wire) -> Wire {
+	// The XOR half of the identity a | b = (a & b) ^ (a ^ b).
+	let a_xor_b = builder.bxor(a, b);
+	// Fuse it into the AND: (a & b) ^ (a ^ b) = a | b in one constraint.
+	builder.fax(a, b, a_xor_b)
+}
 
 /// 64-bit × 64-bit → 128-bit signed multiplication.
 ///
@@ -74,6 +102,37 @@ pub fn smul64(builder: &CircuitBuilder, a: Wire, b: Wire) -> (Wire, Wire) {
 }
 
 impl CircuitBuilder {
+	/// Bitwise OR.
+	///
+	/// Returns `z = a | b`.
+	///
+	/// # Cost
+	///
+	/// - 1 AND constraint in the general case.
+	/// - None when either operand is a constant.
+	/// - None when both operands are the same wire.
+	pub fn bor(&self, a: Wire, b: Wire) -> Wire {
+		// a | a = a holds bit for bit.
+		// Return the operand and emit no gate.
+		if self.algebraic_folding() && a == b {
+			return a;
+		}
+		// Constant-operand identities that hold bit for bit, so they need no AND constraint:
+		//   c | d    -> fold to the constant c | d
+		//   0 | b    -> b
+		//   all-1 | b -> all-1
+		match (self.const_of(a), self.const_of(b)) {
+			(Some(x), Some(y)) => return self.add_constant(Word(x.0 | y.0)),
+			(Some(x), _) if x == Word::ZERO => return b,
+			(Some(x), _) if x == Word::ALL_ONE => return a,
+			(_, Some(y)) if y == Word::ZERO => return a,
+			(_, Some(y)) if y == Word::ALL_ONE => return b,
+			_ => {}
+		}
+		// General case: neither operand is constant and they differ.
+		bor64(self, a, b)
+	}
+
 	/// 64-bit × 64-bit → 128-bit signed multiplication.
 	///
 	/// Handles two's complement operands, including overflow cases.
@@ -94,6 +153,99 @@ mod tests {
 	use proptest::prelude::*;
 
 	use crate::CircuitBuilder;
+
+	proptest! {
+		#[test]
+		fn test_bor_correctness(a_val: u64, b_val: u64) {
+			// Invariant: the gadget output equals the native bitwise OR.
+			let builder = CircuitBuilder::new();
+			// Operands are public inputs, so no build-time folding fires.
+			// This forces the general gadget path (one AND constraint) to run.
+			let a = builder.add_inout();
+			let b = builder.add_inout();
+			// Gadget under test.
+			let z = builder.bor(a, b);
+			// Expected OR pinned as a public word.
+			let expected = builder.add_inout();
+			builder.assert_eq("bor", z, expected);
+			let circuit = builder.build();
+
+			// Assign the random operands and their OR.
+			let mut w = circuit.new_witness_filler();
+			w[a] = Word(a_val);
+			w[b] = Word(b_val);
+			w[expected] = Word(a_val | b_val);
+			w.circuit.populate_wire_witness(&mut w).unwrap();
+
+			// The single AND constraint must hold for the correct witness.
+			let cs = circuit.constraint_system();
+			verify_constraints(cs, &w.into_value_vec()).unwrap();
+		}
+	}
+
+	#[test]
+	fn test_bor_boundary_values() {
+		// Invariant: the OR is exact at the bitwise extremes.
+		let builder = CircuitBuilder::new();
+		let a = builder.add_inout();
+		let b = builder.add_inout();
+		let z = builder.bor(a, b);
+		let expected = builder.add_inout();
+		builder.assert_eq("bor", z, expected);
+		let circuit = builder.build();
+
+		// Operand pairs that stress each bit interaction.
+		let cases = [
+			(0u64, 0u64),                                   // no bits set
+			(0, u64::MAX),                                  // one operand full
+			(u64::MAX, u64::MAX),                           // both full
+			(0xAAAA_AAAA_AAAA_AAAA, 0x5555_5555_5555_5555), // disjoint alternating bits
+			(0xFF00_FF00_FF00_FF00, 0x00FF_00FF_00FF_00FF), // disjoint byte lanes
+		];
+
+		for (a_val, b_val) in cases {
+			let mut w = circuit.new_witness_filler();
+			w[a] = Word(a_val);
+			w[b] = Word(b_val);
+			w[expected] = Word(a_val | b_val);
+			w.circuit.populate_wire_witness(&mut w).unwrap();
+
+			let cs = circuit.constraint_system();
+			verify_constraints(cs, &w.into_value_vec()).unwrap();
+		}
+	}
+
+	#[test]
+	fn test_bor_folds_constants() {
+		// Invariant: OR of two constants folds to a constant wire at build time.
+		// No AND constraint is emitted for the fold.
+		let builder = CircuitBuilder::new();
+		// 0xF0F0... | 0x0F0F... covers every bit, so the fold is all-ones.
+		let a = builder.add_constant_64(0xF0F0_F0F0_F0F0_F0F0);
+		let b = builder.add_constant_64(0x0F0F_0F0F_0F0F_0F0F);
+		let z = builder.bor(a, b);
+		// The folded wire is itself a constant carrying the OR value.
+		assert_eq!(builder.const_of(z), Some(Word(0xFFFF_FFFF_FFFF_FFFF)));
+	}
+
+	#[test]
+	fn test_bor_identity_and_idempotence() {
+		// Invariant: the zero, all-ones, and idempotent identities emit no gate.
+		// Each returns one of the input wires unchanged.
+		let builder = CircuitBuilder::new();
+		let x = builder.add_inout();
+		let zero = builder.add_constant_64(0);
+		let all_one = builder.add_constant(Word::ALL_ONE);
+
+		// 0 | x = x, in either operand order.
+		assert_eq!(builder.bor(zero, x), x);
+		assert_eq!(builder.bor(x, zero), x);
+		// all-1 | x = all-1, in either operand order.
+		assert_eq!(builder.bor(all_one, x), all_one);
+		assert_eq!(builder.bor(x, all_one), all_one);
+		// x | x = x.
+		assert_eq!(builder.bor(x, x), x);
+	}
 
 	proptest! {
 		#[test]

@@ -25,14 +25,6 @@ impl BytecodeBuilder {
 		self.emit_reg(src2);
 	}
 
-	pub fn emit_bor(&mut self, dst: u32, src1: u32, src2: u32) {
-		self.n_eval_insn += 1;
-		self.emit_u8(0x02);
-		self.emit_reg(dst);
-		self.emit_reg(src1);
-		self.emit_reg(src2);
-	}
-
 	pub fn emit_bxor(&mut self, dst: u32, src1: u32, src2: u32) {
 		self.n_eval_insn += 1;
 		self.emit_u8(0x03);

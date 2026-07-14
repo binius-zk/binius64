@@ -73,7 +73,6 @@ impl<'a> Executor<'a> {
 			match opcode {
 				// Bitwise operations
 				0x01 => self.exec_band(ctx),
-				0x02 => self.exec_bor(ctx),
 				0x03 => self.exec_bxor(ctx),
 				0x05 => self.exec_select(ctx),
 				0x06 => self.exec_bxor_multi(ctx),
@@ -126,16 +125,6 @@ impl<'a> Executor<'a> {
 		let src2 = self.read_reg();
 		for i in 0..ctx.n_instances() {
 			let val = ctx.load(src1, i) & ctx.load(src2, i);
-			ctx.store(dst, i, val);
-		}
-	}
-
-	fn exec_bor<C: EvalContext>(&mut self, ctx: &mut C) {
-		let dst = self.read_reg();
-		let src1 = self.read_reg();
-		let src2 = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src1, i) | ctx.load(src2, i);
 			ctx.store(dst, i, val);
 		}
 	}

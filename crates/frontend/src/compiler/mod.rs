@@ -395,7 +395,7 @@ impl CircuitBuilder {
 	/// Returns `None` for inputs, witnesses, and gate outputs whose value is only known at
 	/// proving time.
 	/// Used by the builder to fold trivial gate identities at construction.
-	fn const_of(&self, wire: Wire) -> Option<Word> {
+	pub fn const_of(&self, wire: Wire) -> Option<Word> {
 		let shared = self.shared.borrow();
 		let shared = shared.as_ref().expect("CircuitBuilder used after build");
 		match shared.graph.wires[wire].kind {
@@ -483,7 +483,7 @@ impl CircuitBuilder {
 	}
 
 	/// Whether build-time algebraic identity folding is enabled.
-	fn algebraic_folding(&self) -> bool {
+	pub fn algebraic_folding(&self) -> bool {
 		self.shared
 			.borrow()
 			.as_ref()
@@ -589,34 +589,6 @@ impl CircuitBuilder {
 	pub fn bnot(&self, a: Wire) -> Wire {
 		let all_one = self.add_constant(Word::ALL_ONE);
 		self.bxor(a, all_one)
-	}
-
-	/// Bitwise OR.
-	///
-	/// Returns z = x | y
-	///
-	/// # Cost
-	///
-	/// 1 AND constraint, or none when both operands are the same wire.
-	pub fn bor(&self, a: Wire, b: Wire) -> Wire {
-		// Idempotent: x | x = x, bit for bit, so return x and emit no gate.
-		if self.algebraic_folding() && a == b {
-			return a;
-		}
-		// Identities that hold bit for bit, so they need no AND constraint:
-		//   c | d  -> fold        0 | b -> b        all-1 | b -> all-1
-		match (self.const_of(a), self.const_of(b)) {
-			(Some(x), Some(y)) => return self.add_constant(Word(x.0 | y.0)),
-			(Some(x), _) if x == Word::ZERO => return b,
-			(Some(x), _) if x == Word::ALL_ONE => return a,
-			(_, Some(y)) if y == Word::ZERO => return a,
-			(_, Some(y)) if y == Word::ALL_ONE => return b,
-			_ => {}
-		}
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::Bor, [a, b], [z]);
-		z
 	}
 
 	/// Fused AND-XOR operation.

@@ -182,18 +182,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_bor_constant_eval() {
-		let (graph, gate, constants) = create_test_gate(
-			Opcode::Bor,
-			&[Word::from_u64(0xFF00FF00), Word::from_u64(0x0F0F0F0F)],
-		);
-
-		let result =
-			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
-		assert_eq!(result[0], Word::from_u64(0xFF0FFF0F));
-	}
-
-	#[test]
 	fn test_imul_constant_eval() {
 		// Test IMUL (has 2 outputs: hi, lo)
 		let (graph, gate, constants) = create_test_gate(

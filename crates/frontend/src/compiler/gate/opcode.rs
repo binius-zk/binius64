@@ -9,7 +9,6 @@ pub enum Opcode {
 	Band,
 	Bxor,
 	BxorMulti,
-	Bor,
 	Fax,
 
 	// Selection
@@ -98,7 +97,6 @@ impl Opcode {
 			Opcode::Bxor => gate::bxor::shape(),
 			// TODO: Can we get rid of this gate? This is the only non-hint one with dimensions
 			Opcode::BxorMulti => gate::bxor_multi::shape(dimensions),
-			Opcode::Bor => gate::bor::shape(),
 			Opcode::Fax => gate::fax::shape(),
 
 			// Selection
