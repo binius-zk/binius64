@@ -23,14 +23,7 @@ pub enum Opcode {
 	Imul,
 
 	// Shifts
-	Shl,
-	Sll32,
-	Shr,
-	Srl32,
-	Sar,
-	Sra32,
-	Rotr,
-	Rotr32,
+	Shift,
 
 	// Comparisons
 	IcmpUlt,
@@ -111,14 +104,7 @@ impl Opcode {
 			Opcode::Imul => gate::imul::shape(),
 
 			// Shifts
-			Opcode::Shr => gate::shr::shape(),
-			Opcode::Shl => gate::shl::shape(),
-			Opcode::Sll32 => gate::sll32::shape(),
-			Opcode::Sar => gate::sar::shape(),
-			Opcode::Srl32 => gate::srl32::shape(),
-			Opcode::Sra32 => gate::sra32::shape(),
-			Opcode::Rotr => gate::rotr::shape(),
-			Opcode::Rotr32 => gate::rotr32::shape(),
+			Opcode::Shift => gate::shift::shape(),
 
 			// Comparisons
 			Opcode::IcmpUlt => gate::icmp_ult::shape(),

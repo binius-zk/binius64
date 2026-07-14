@@ -5,7 +5,10 @@ use std::{
 	rc::Rc,
 };
 
-use binius_core::{constraint_system::ConstraintSystem, word::Word};
+use binius_core::{
+	constraint_system::{ConstraintSystem, ShiftVariant},
+	word::Word,
+};
 use cranelift_entity::EntitySet;
 
 use crate::compiler::{
@@ -714,6 +717,24 @@ impl CircuitBuilder {
 		(diff, bout)
 	}
 
+	/// Emits one shift/rotate gate for the given variant and amount.
+	///
+	/// The variant and amount are carried as the gate's two immediates.
+	/// The caller enforces the amount range and any identity fast-paths.
+	fn emit_shift(&self, variant: ShiftVariant, x: Wire, n: u32) -> Wire {
+		let z = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate_generic(
+			self.current_path,
+			Opcode::Shift,
+			[x],
+			[z],
+			&[],
+			&[variant as u32, n],
+		);
+		z
+	}
+
 	/// 32-bit half-wise rotate left.
 	///
 	/// Rotates the upper and lower 32-bit halves left independently by `n`.
@@ -733,10 +754,7 @@ impl CircuitBuilder {
 		if n == 0 {
 			return x;
 		}
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate_imm(self.current_path, Opcode::Rotr32, [x], [z], 32 - n);
-		z
+		self.emit_shift(ShiftVariant::Rotr32, x, 32 - n)
 	}
 
 	/// 32-bit half-wise rotate right.
@@ -758,11 +776,7 @@ impl CircuitBuilder {
 		if n == 0 {
 			return x;
 		}
-
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate_imm(self.current_path, Opcode::Rotr32, [x], [z], n);
-		z
+		self.emit_shift(ShiftVariant::Rotr32, x, n)
 	}
 
 	/// 64-bit rotate left.
@@ -784,10 +798,7 @@ impl CircuitBuilder {
 		if n == 0 {
 			return x;
 		}
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate_imm(self.current_path, Opcode::Rotr, [x], [z], 64 - n);
-		z
+		self.emit_shift(ShiftVariant::Rotr, x, 64 - n)
 	}
 
 	/// 64-bit rotate right.
@@ -809,11 +820,7 @@ impl CircuitBuilder {
 		if n == 0 {
 			return x;
 		}
-
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate_imm(self.current_path, Opcode::Rotr, [x], [z], n);
-		z
+		self.emit_shift(ShiftVariant::Rotr, x, n)
 	}
 
 	/// 32-bit half-wise logical right shift.
@@ -832,11 +839,7 @@ impl CircuitBuilder {
 	/// 1 AND constraint.
 	pub fn srl32(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 32, "shift amount n={n} out of range");
-
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate_imm(self.current_path, Opcode::Srl32, [x], [z], n);
-		z
+		self.emit_shift(ShiftVariant::Srl32, x, n)
 	}
 
 	/// 32-bit half-wise logical left shift.
@@ -855,11 +858,7 @@ impl CircuitBuilder {
 	/// 1 AND constraint.
 	pub fn sll32(&self, x: Wire, n: u32) -> Wire {
 		assert!(n < 32, "shift amount n={n} out of range for 32-bit half shift");
-
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate_imm(self.current_path, Opcode::Sll32, [x], [z], n);
-		z
+		self.emit_shift(ShiftVariant::Sll32, x, n)
 	}
 
 	/// Logical left shift.
@@ -873,10 +872,7 @@ impl CircuitBuilder {
 	/// 1 AND constraint.
 	pub fn shl(&self, a: Wire, n: u32) -> Wire {
 		assert!(n < 64, "shift amount n={n} out of range");
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate_imm(self.current_path, Opcode::Shl, [a], [z], n);
-		z
+		self.emit_shift(ShiftVariant::Sll, a, n)
 	}
 
 	/// Logical right shift.
@@ -890,10 +886,7 @@ impl CircuitBuilder {
 	/// 1 AND constraint.
 	pub fn shr(&self, a: Wire, n: u32) -> Wire {
 		assert!(n < 64, "shift amount n={n} out of range");
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate_imm(self.current_path, Opcode::Shr, [a], [z], n);
-		z
+		self.emit_shift(ShiftVariant::Slr, a, n)
 	}
 
 	/// Arithmetic right shift.
@@ -907,10 +900,7 @@ impl CircuitBuilder {
 	/// 1 AND constraint.
 	pub fn sar(&self, a: Wire, n: u32) -> Wire {
 		assert!(n < 64, "shift amount n={n} out of range");
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate_imm(self.current_path, Opcode::Sar, [a], [z], n);
-		z
+		self.emit_shift(ShiftVariant::Sar, a, n)
 	}
 
 	/// 32-bit half-wise arithmetic right shift.
@@ -929,10 +919,7 @@ impl CircuitBuilder {
 	/// 1 AND constraint.
 	pub fn sra32(&self, a: Wire, n: u32) -> Wire {
 		assert!(n < 32, "shift amount n={n} out of range for 32-bit half shift");
-		let z = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate_imm(self.current_path, Opcode::Sra32, [a], [z], n);
-		z
+		self.emit_shift(ShiftVariant::Sra32, a, n)
 	}
 
 	/// Equality assertion.

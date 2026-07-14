@@ -2,7 +2,7 @@
 //! Parallel 32-bit unsigned integer addition without carry-in.
 //!
 //! Performs simultaneous independent 32-bit additions on the upper and lower 32-bit halves of
-//! the 64-bit word (like [`sll32`](super::sll32) operates on independent halves).
+//! the 64-bit word. Carries do not cross the 32-bit lane boundary.
 //!
 //! # Wires
 //!
