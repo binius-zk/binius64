@@ -3,11 +3,11 @@
 //!
 //! Monbijou elements are represented with the `poly64x2_t` underlier (a SIMD vector, so the
 //! multiply stays in NEON registers across call boundaries), matching the [`ghash::aarch64`]
-//! module. The `PMULL` / `PMULL2` instructions (`vmull_p64` / `vmull_high_p64`) drive the carryless
-//! multiplies. In contrast to GHASH, the Monbijou reduction polynomial X^64 + X^4 + X^3 + X + 1 has
-//! only low-degree tail terms (`0x1B`), so the reduction is done with plain shifts and XORs rather
-//! than further carryless multiplies — the same algorithm as [`super::soft64`], vectorized across
-//! the two 64-bit lanes.
+//! module. The `PMULL` / `PMULL2` instructions (`vmull_p64` / `vmull_high_p64`) drive both the
+//! carryless multiplies and the modular reduction: the high limb is folded down by carrylessly
+//! multiplying it with the reduction polynomial's tail `0x1B` (`X^64 ≡ X^4 + X^3 + X + 1`), the
+//! same strategy the generic [`OpsClmul`](crate::underlier::OpsClmul) path uses. Everything stays
+//! in NEON registers, and the two 64-bit lanes are reduced in parallel.
 //!
 //! [`ghash::aarch64`]: crate::ghash::aarch64
 
@@ -34,34 +34,33 @@ fn mul_wide(x: poly64x2_t, y: poly64x2_t) -> Wide {
 	}
 }
 
+/// The reduction polynomial's tail: X^64 ≡ X^4 + X^3 + X + 1 = `0x1B`.
+const POLY: u64 = 0x1B;
+
 /// Reduce a widening product `(lo, hi)` to a packed base-field element, modulo
-/// X^64 + X^4 + X^3 + X + 1, operating on both lanes in parallel.
+/// X^64 + X^4 + X^3 + X + 1, folding both lanes in parallel with `PMULL`.
 ///
-/// The high limb holds the coefficients of X^64..X^127. Folding it down multiplies by X^64 ≡
-/// `0x1B` (`= 1 + X + X^3 + X^4`); the left shifts drop the bits past X^63 and the matching right
-/// shifts collect those (coefficients X^64..X^67), which fold in once more. This is an F2-linear
-/// map, so unreduced products may be summed by XOR and reduced once at the end.
+/// The high limb holds the coefficients of X^64..X^127, so `hi·X^64 ≡ hi·0x1B` folds it down. That
+/// carryless product is up to 69 bits, so its own overflow past X^63 is folded once more by the
+/// same `·0x1B`. Both folds are `PMULL`s (`vmull_p64` / `vmull_high_p64`), and the low limbs of the
+/// two lanes' products are gathered with `vzip1q`. This is an F2-linear map, so unreduced products
+/// may be summed by XOR and reduced once at the end.
 #[inline]
 fn reduce((lo, hi): Wide) -> poly64x2_t {
 	unsafe {
-		// The bits of hi·0x1B that spill past X^63 (from the <<1, <<3, <<4 terms): X^64..X^67.
-		let spill = veorq_u64(
-			veorq_u64(vshrq_n_u64::<63>(hi), vshrq_n_u64::<61>(hi)),
-			vshrq_n_u64::<60>(hi),
-		);
-		let lo = veorq_u64(
-			lo,
-			veorq_u64(
-				veorq_u64(hi, vshlq_n_u64::<1>(hi)),
-				veorq_u64(vshlq_n_u64::<3>(hi), vshlq_n_u64::<4>(hi)),
-			),
-		);
-		// spill < 2^4, so folding it back in (spill·X^64 ≡ spill·0x1B) no longer spills past X^63.
-		let folded_spill = veorq_u64(
-			veorq_u64(spill, vshlq_n_u64::<1>(spill)),
-			veorq_u64(vshlq_n_u64::<3>(spill), vshlq_n_u64::<4>(spill)),
-		);
-		vreinterpretq_p64_u64(veorq_u64(lo, folded_spill))
+		let poly = vreinterpretq_p64_u64(vdupq_n_u64(POLY));
+		let hi = vreinterpretq_p64_u64(hi);
+		// First fold: fr_i = hi_i · 0x1B (lane 0 via PMULL, lane 1 via PMULL2).
+		let fr0 = vreinterpretq_u64_p128(vmull_p64(vgetq_lane_p64::<0>(hi), POLY));
+		let fr1 = vreinterpretq_u64_p128(vmull_high_p64(hi, poly));
+		let acc = veorq_u64(lo, vzip1q_u64(fr0, fr1));
+		// Second fold: the bits of fr_i past X^63 (its high limb) folded by ·0x1B; the result fits
+		// in the low 64 bits, so only those are gathered.
+		let fr0 = vreinterpretq_p64_u64(fr0);
+		let fr1 = vreinterpretq_p64_u64(fr1);
+		let sr0 = vreinterpretq_u64_p128(vmull_p64(vgetq_lane_p64::<1>(fr0), POLY));
+		let sr1 = vreinterpretq_u64_p128(vmull_p64(vgetq_lane_p64::<1>(fr1), POLY));
+		vreinterpretq_p64_u64(veorq_u64(acc, vzip1q_u64(sr0, sr1)))
 	}
 }
 
@@ -78,6 +77,18 @@ fn mul_x_wide((lo, hi): Wide) -> Wide {
 	unsafe {
 		let new_hi = veorq_u64(vshlq_n_u64::<1>(hi), vshrq_n_u64::<63>(lo));
 		(vshlq_n_u64::<1>(lo), new_hi)
+	}
+}
+
+/// Multiply a single unreduced product `[lo, hi]` (packed into one register, low limb in lane 0) by
+/// X: a one-bit left shift of the whole 128-bit value, carrying lane 0's top bit into lane 1. The
+/// product's degree ≤ 126 leaves room, so no reduction is needed here.
+#[inline]
+fn mul_x_packed(p: uint64x2_t) -> uint64x2_t {
+	unsafe {
+		// `[0, lo >> 63]`: the bit shifted out of lane 0 lands in lane 1.
+		let carry = vextq_u64(vdupq_n_u64(0), vshrq_n_u64::<63>(p), 1);
+		veorq_u64(vshlq_n_u64::<1>(p), carry)
 	}
 }
 
@@ -103,19 +114,18 @@ pub fn mul_128b(x: poly64x2_t, y: poly64x2_t) -> poly64x2_t {
 		let y0 = vgetq_lane_p64::<0>(y);
 		let y1 = vgetq_lane_p64::<1>(y);
 
-		let t0 = vmull_p64(x0, y0);
-		let t2 = vmull_high_p64(x, y); // x1·y1
-		let t1 = vmull_p64(x0 ^ x1, y0 ^ y1);
+		let t0 = vreinterpretq_u64_p128(vmull_p64(x0, y0));
+		let t2 = vreinterpretq_u64_p128(vmull_high_p64(x, y)); // x1·y1
+		let t1 = vreinterpretq_u64_p128(vmull_p64(x0 ^ x1, y0 ^ y1));
 
 		// coeff 0 = t0 + t2; coeff 1 = (t1 + t0 + t2) + X·t2 (Karatsuba recovers the cross term
 		// x0·y1 + x1·y0 as t1 + t0 + t2). The multiply-by-X on the unreduced t2 (degree ≤ 126) is a
-		// plain 128-bit left shift.
-		let term0 = t0 ^ t2;
-		let term1 = t1 ^ t0 ^ t2 ^ (t2 << 1);
+		// plain 128-bit left shift. All combining stays in NEON registers.
+		let term0 = veorq_u64(t0, t2);
+		let term1 = veorq_u64(veorq_u64(veorq_u64(t1, t0), t2), mul_x_packed(t2));
 
-		// Reduce coeff 0 in lane 0 and coeff 1 in lane 1 with a single 2-lane reduction.
-		let term0 = vreinterpretq_u64_p128(term0);
-		let term1 = vreinterpretq_u64_p128(term1);
+		// Reduce coeff 0 (in lane 0) and coeff 1 (in lane 1) with a single 2-lane reduction:
+		// transpose the two `[lo, hi]` products into `([lo0, lo1], [hi0, hi1])`.
 		reduce((vzip1q_u64(term0, term1), vzip2q_u64(term0, term1)))
 	}
 }
