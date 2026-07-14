@@ -6,16 +6,20 @@
 //! reduction polynomial X^64 + X^4 + X^3 + X + 1, which is used in the ISO 3309
 //! standard for CRC-64 error detection.
 //!
-//! The [`clmul`] submodule provides implementations using carry-less multiplication (CLMUL) CPU
-//! instructions, optimized for SIMD parallelism across vector types like __m128i or __m256i. The
-//! [`soft64`] submodule provides portable implementations that use no CLMUL or SIMD intrinsics.
+//! The `x86_64` submodule provides implementations using x86_64 carry-less multiplication (CLMUL)
+//! instructions via the [`OpsClmul`](crate::underlier::OpsClmul) trait, optimized for SIMD
+//! parallelism across vector types like __m128i or __m256i. The `aarch64` submodule provides direct
+//! aarch64 PMULL implementations on the `poly64x2_t` underlier. The [`soft64`] submodule provides
+//! portable implementations that use no CLMUL or SIMD intrinsics.
 
 #[cfg(target_arch = "aarch64")]
 pub mod aarch64;
-pub mod clmul;
 pub mod soft64;
+#[cfg(target_arch = "x86_64")]
+pub mod x86_64;
 
-pub use clmul::{
+#[cfg(target_arch = "x86_64")]
+pub use x86_64::{
 	mul as mul_clmul, mul_128b as mul_128b_clmul, mul_sliced_128b as mul_sliced_128b_clmul,
 	mul_sliced_192b as mul_sliced_192b_clmul,
 };

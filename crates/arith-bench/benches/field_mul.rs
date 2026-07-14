@@ -4,7 +4,7 @@
 #![allow(unused_imports)]
 
 #[cfg(target_arch = "aarch64")]
-use std::arch::aarch64::uint64x2_t;
+use std::arch::aarch64::{poly64x2_t, uint64x2_t};
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{__m128i, __m256i};
 use std::{array, hint::black_box};
@@ -563,7 +563,7 @@ fn bench_ghash(c: &mut Criterion) {
 /// the CLMUL implementations.
 #[allow(unused_variables, unused_mut)]
 fn bench_monbijou(c: &mut Criterion) {
-	use binius_arith_bench::monbijou::{mul_clmul, soft64};
+	use binius_arith_bench::monbijou::soft64;
 
 	let mut rng = rand::rng();
 
@@ -575,6 +575,7 @@ fn bench_monbijou(c: &mut Criterion) {
 	// Benchmark __m128i
 	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
 	{
+		use binius_arith_bench::monbijou::mul_clmul;
 		run_mul_benchmark(&mut group, "mul_clmul::<__m128i>", mul_clmul::<__m128i>, &mut rng, 64);
 	}
 
@@ -585,23 +586,19 @@ fn bench_monbijou(c: &mut Criterion) {
 		target_feature = "sse2"
 	))]
 	{
+		use binius_arith_bench::monbijou::mul_clmul;
 		run_mul_benchmark(&mut group, "mul_clmul::<__m256i>", mul_clmul::<__m256i>, &mut rng, 64);
 	}
 
-	// Benchmark uint64x2_t (AARCH64 NEON)
+	// Benchmark poly64x2_t (AARCH64 NEON PMULL)
 	#[cfg(all(
 		target_arch = "aarch64",
 		target_feature = "neon",
 		target_feature = "aes"
 	))]
 	{
-		run_mul_benchmark(
-			&mut group,
-			"mul_clmul::uint64x2_t",
-			mul_clmul::<uint64x2_t>,
-			&mut rng,
-			64,
-		);
+		use binius_arith_bench::monbijou::aarch64;
+		run_mul_benchmark(&mut group, "aarch64::mul", aarch64::mul, &mut rng, 64);
 	}
 
 	group.finish();
@@ -612,7 +609,7 @@ fn bench_monbijou(c: &mut Criterion) {
 /// (`mul_sliced_128b_clmul`).
 #[allow(unused_imports, unused_variables, unused_mut)]
 fn bench_monbijou_128b(c: &mut Criterion) {
-	use binius_arith_bench::monbijou::{mul_128b_clmul, mul_sliced_128b_clmul, soft64};
+	use binius_arith_bench::monbijou::soft64;
 
 	let mut rng = rand::rng();
 
@@ -624,6 +621,7 @@ fn bench_monbijou_128b(c: &mut Criterion) {
 	// Packed __m128i
 	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
 	{
+		use binius_arith_bench::monbijou::mul_128b_clmul;
 		run_mul_benchmark(
 			&mut group,
 			"mul_128b_clmul::<__m128i>",
@@ -640,6 +638,7 @@ fn bench_monbijou_128b(c: &mut Criterion) {
 		target_feature = "sse2"
 	))]
 	{
+		use binius_arith_bench::monbijou::mul_128b_clmul;
 		run_mul_benchmark(
 			&mut group,
 			"mul_128b_clmul::<__m256i>",
@@ -649,25 +648,21 @@ fn bench_monbijou_128b(c: &mut Criterion) {
 		);
 	}
 
-	// Packed uint64x2_t (AARCH64 NEON)
+	// Packed poly64x2_t (AARCH64 NEON PMULL)
 	#[cfg(all(
 		target_arch = "aarch64",
 		target_feature = "neon",
 		target_feature = "aes"
 	))]
 	{
-		run_mul_benchmark(
-			&mut group,
-			"mul_128b_clmul::uint64x2_t",
-			mul_128b_clmul::<uint64x2_t>,
-			&mut rng,
-			128,
-		);
+		use binius_arith_bench::monbijou::aarch64;
+		run_mul_benchmark(&mut group, "aarch64::mul_128b", aarch64::mul_128b, &mut rng, 128);
 	}
 
 	// Sliced __m128i (a `[__m128i; 2]` holds two GF(2^128) elements)
 	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
 	{
+		use binius_arith_bench::monbijou::mul_sliced_128b_clmul;
 		run_mul_benchmark(
 			&mut group,
 			"mul_sliced_128b_clmul::<__m128i>",
@@ -684,6 +679,7 @@ fn bench_monbijou_128b(c: &mut Criterion) {
 		target_feature = "sse2"
 	))]
 	{
+		use binius_arith_bench::monbijou::mul_sliced_128b_clmul;
 		run_mul_benchmark(
 			&mut group,
 			"mul_sliced_128b_clmul::<__m256i>",
@@ -693,17 +689,18 @@ fn bench_monbijou_128b(c: &mut Criterion) {
 		);
 	}
 
-	// Sliced uint64x2_t (AARCH64 NEON)
+	// Sliced poly64x2_t (AARCH64 NEON PMULL): a `[poly64x2_t; 2]` holds two GF(2^128) elements
 	#[cfg(all(
 		target_arch = "aarch64",
 		target_feature = "neon",
 		target_feature = "aes"
 	))]
 	{
+		use binius_arith_bench::monbijou::aarch64;
 		run_mul_benchmark(
 			&mut group,
-			"mul_sliced_128b_clmul::uint64x2_t",
-			mul_sliced_128b_clmul::<uint64x2_t>,
+			"aarch64::mul_sliced_128b",
+			aarch64::mul_sliced_128b,
 			&mut rng,
 			128,
 		);
@@ -716,7 +713,7 @@ fn bench_monbijou_128b(c: &mut Criterion) {
 /// representation, comparing portable soft64 against the CLMUL implementation.
 #[allow(unused_imports, unused_variables, unused_mut)]
 fn bench_monbijou_192b(c: &mut Criterion) {
-	use binius_arith_bench::monbijou::{mul_sliced_192b_clmul, soft64};
+	use binius_arith_bench::monbijou::soft64;
 
 	let mut rng = rand::rng();
 
@@ -728,6 +725,7 @@ fn bench_monbijou_192b(c: &mut Criterion) {
 	// Sliced __m128i (a `[__m128i; 3]` holds two GF(2^192) elements)
 	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
 	{
+		use binius_arith_bench::monbijou::mul_sliced_192b_clmul;
 		run_mul_benchmark(
 			&mut group,
 			"mul_sliced_192b_clmul::<__m128i>",
@@ -744,6 +742,7 @@ fn bench_monbijou_192b(c: &mut Criterion) {
 		target_feature = "sse2"
 	))]
 	{
+		use binius_arith_bench::monbijou::mul_sliced_192b_clmul;
 		run_mul_benchmark(
 			&mut group,
 			"mul_sliced_192b_clmul::<__m256i>",
@@ -753,17 +752,18 @@ fn bench_monbijou_192b(c: &mut Criterion) {
 		);
 	}
 
-	// Sliced uint64x2_t (AARCH64 NEON)
+	// Sliced poly64x2_t (AARCH64 NEON PMULL): a `[poly64x2_t; 3]` holds two GF(2^192) elements
 	#[cfg(all(
 		target_arch = "aarch64",
 		target_feature = "neon",
 		target_feature = "aes"
 	))]
 	{
+		use binius_arith_bench::monbijou::aarch64;
 		run_mul_benchmark(
 			&mut group,
-			"mul_sliced_192b_clmul::uint64x2_t",
-			mul_sliced_192b_clmul::<uint64x2_t>,
+			"aarch64::mul_sliced_192b",
+			aarch64::mul_sliced_192b,
 			&mut rng,
 			192,
 		);
@@ -1013,7 +1013,7 @@ fn bench_ghash_sq_inner_product(c: &mut Criterion) {
 /// multiply.
 #[allow(unused_imports, unused_variables, unused_mut)]
 fn bench_monbijou_inner_product(c: &mut Criterion) {
-	use binius_arith_bench::monbijou::{clmul, soft64};
+	use binius_arith_bench::monbijou::soft64;
 
 	/// Length of the inner product. Long enough that the single skipped final reduction is
 	/// negligible.
@@ -1038,10 +1038,11 @@ fn bench_monbijou_inner_product(c: &mut Criterion) {
 
 	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
 	{
+		use binius_arith_bench::monbijou::x86_64;
 		run_inner_product_benchmark(
 			&mut group,
-			"clmul::mul::<__m128i>",
-			clmul::mul::<__m128i>,
+			"x86_64::mul::<__m128i>",
+			x86_64::mul::<__m128i>,
 			&mut rng,
 			LOG_LEN,
 			64,
@@ -1049,8 +1050,8 @@ fn bench_monbijou_inner_product(c: &mut Criterion) {
 
 		run_inner_product_benchmark(
 			&mut group,
-			"clmul::mul_wide::<__m128i>",
-			clmul::mul_wide::<__m128i>,
+			"x86_64::mul_wide::<__m128i>",
+			x86_64::mul_wide::<__m128i>,
 			&mut rng,
 			LOG_LEN,
 			64,
@@ -1065,7 +1066,7 @@ fn bench_monbijou_inner_product(c: &mut Criterion) {
 /// reduce-every-term sliced multiply.
 #[allow(unused_imports, unused_variables, unused_mut)]
 fn bench_monbijou_192b_inner_product(c: &mut Criterion) {
-	use binius_arith_bench::monbijou::{clmul, soft64};
+	use binius_arith_bench::monbijou::soft64;
 
 	/// Length of the inner product.
 	const LOG_LEN: usize = 10;
@@ -1094,10 +1095,11 @@ fn bench_monbijou_192b_inner_product(c: &mut Criterion) {
 
 	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
 	{
+		use binius_arith_bench::monbijou::x86_64;
 		run_inner_product_benchmark(
 			&mut group,
-			"clmul::mul_sliced_192b::<__m128i>",
-			clmul::mul_sliced_192b::<__m128i>,
+			"x86_64::mul_sliced_192b::<__m128i>",
+			x86_64::mul_sliced_192b::<__m128i>,
 			&mut rng,
 			LOG_LEN,
 			192,
@@ -1105,8 +1107,8 @@ fn bench_monbijou_192b_inner_product(c: &mut Criterion) {
 
 		run_inner_product_benchmark(
 			&mut group,
-			"clmul::mul_wide_sliced_192b::<__m128i>",
-			clmul::mul_wide_sliced_192b::<__m128i>,
+			"x86_64::mul_wide_sliced_192b::<__m128i>",
+			x86_64::mul_wide_sliced_192b::<__m128i>,
 			&mut rng,
 			LOG_LEN,
 			192,
@@ -1121,7 +1123,7 @@ fn bench_monbijou_192b_inner_product(c: &mut Criterion) {
 /// reduce-every-term multiply, for both the packed (`u128`) and sliced representations.
 #[allow(unused_imports, unused_variables, unused_mut)]
 fn bench_monbijou_128b_inner_product(c: &mut Criterion) {
-	use binius_arith_bench::monbijou::{clmul, soft64};
+	use binius_arith_bench::monbijou::soft64;
 
 	/// Length of the inner product.
 	const LOG_LEN: usize = 10;
@@ -1150,19 +1152,21 @@ fn bench_monbijou_128b_inner_product(c: &mut Criterion) {
 
 	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
 	{
+		use binius_arith_bench::monbijou::x86_64;
+
 		// Packed representation (coefficients in the low/high halves of each lane).
 		run_inner_product_benchmark(
 			&mut group,
-			"clmul::mul_128b::<__m128i>",
-			clmul::mul_128b::<__m128i>,
+			"x86_64::mul_128b::<__m128i>",
+			x86_64::mul_128b::<__m128i>,
 			&mut rng,
 			LOG_LEN,
 			128,
 		);
 		run_inner_product_benchmark(
 			&mut group,
-			"clmul::mul_wide_128b::<__m128i>",
-			clmul::mul_wide_128b::<__m128i>,
+			"x86_64::mul_wide_128b::<__m128i>",
+			x86_64::mul_wide_128b::<__m128i>,
 			&mut rng,
 			LOG_LEN,
 			128,
@@ -1171,16 +1175,16 @@ fn bench_monbijou_128b_inner_product(c: &mut Criterion) {
 		// Sliced representation (coefficients in separate registers).
 		run_inner_product_benchmark(
 			&mut group,
-			"clmul::mul_sliced_128b::<__m128i>",
-			clmul::mul_sliced_128b::<__m128i>,
+			"x86_64::mul_sliced_128b::<__m128i>",
+			x86_64::mul_sliced_128b::<__m128i>,
 			&mut rng,
 			LOG_LEN,
 			128,
 		);
 		run_inner_product_benchmark(
 			&mut group,
-			"clmul::mul_wide_sliced_128b::<__m128i>",
-			clmul::mul_wide_sliced_128b::<__m128i>,
+			"x86_64::mul_wide_sliced_128b::<__m128i>",
+			x86_64::mul_wide_sliced_128b::<__m128i>,
 			&mut rng,
 			LOG_LEN,
 			128,

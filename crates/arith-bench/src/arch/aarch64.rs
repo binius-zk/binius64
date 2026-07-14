@@ -264,10 +264,6 @@ mod tests {
 			INV_X, ONE, clmul::mul_inv_x as ghash_mul_inv_x, mul_clmul as ghash_mul,
 			square_clmul as ghash_square,
 		},
-		monbijou::{
-			MONBIJOU_128B_ONE, MONBIJOU_ONE, mul_128b_clmul as monbijou_128b_mul,
-			mul_clmul as monbijou_mul,
-		},
 		polyval::{MONTGOMERY_ONE, mul_clmul as polyval_mul},
 		rijndael::vmull::mul as rijndael_mul,
 		test_utils::{
@@ -387,74 +383,6 @@ mod tests {
 			a in arb_uint64x2_t()
 		) {
 			test_square_equals_mul(a, ghash_mul, ghash_square, "GHASH");
-		}
-
-		// Monbijou multiplication property tests for uint64x2_t
-		#[test]
-		fn test_uint64x2_t_monbijou_mul_commutative_proptest(
-			a in arb_uint64x2_t(),
-			b in arb_uint64x2_t()
-		) {
-			test_mul_commutative(a, b, monbijou_mul, "Monbijou");
-		}
-
-		#[test]
-		fn test_uint64x2_t_monbijou_mul_associative_proptest(
-			a in arb_uint64x2_t(),
-			b in arb_uint64x2_t(),
-			c in arb_uint64x2_t()
-		) {
-			test_mul_associative(a, b, c, monbijou_mul, "Monbijou");
-		}
-
-		#[test]
-		fn test_uint64x2_t_monbijou_mul_identity_proptest(
-			a in arb_uint64x2_t()
-		) {
-			test_mul_identity(a, MONBIJOU_ONE, monbijou_mul, "Monbijou");
-		}
-
-		#[test]
-		fn test_uint64x2_t_monbijou_mul_distributive_proptest(
-			a in arb_uint64x2_t(),
-			b in arb_uint64x2_t(),
-			c in arb_uint64x2_t()
-		) {
-			test_mul_distributive(a, b, c, monbijou_mul, "Monbijou");
-		}
-
-		// Monbijou 128-bit multiplication property tests for uint64x2_t
-		#[test]
-		fn test_uint64x2_t_monbijou_128b_mul_commutative_proptest(
-			a in arb_uint64x2_t(),
-			b in arb_uint64x2_t()
-		) {
-			test_mul_commutative(a, b, monbijou_128b_mul, "Monbijou 128b");
-		}
-
-		#[test]
-		fn test_uint64x2_t_monbijou_128b_mul_associative_proptest(
-			a in arb_uint64x2_t(),
-			b in arb_uint64x2_t(),
-			c in arb_uint64x2_t()
-		) {
-			test_mul_associative(a, b, c, monbijou_128b_mul, "Monbijou 128b");
-		}
-
-		#[test]
-		fn test_uint64x2_t_monbijou_128b_mul_identity_proptest(
-			a in arb_uint64x2_t()
-		) {
-			test_mul_identity(a, MONBIJOU_128B_ONE, monbijou_128b_mul, "Monbijou 128b");
-		}
-
-		#[test]
-		fn test_uint64x2_t_monbijou_128b_mul_distributive_proptest(
-			a in arb_uint64x2_t(),
-			b in arb_uint64x2_t(),
-			c in arb_uint64x2_t()
-		) {
-			test_mul_distributive(a, b, c, monbijou_128b_mul, "Monbijou 128b");
 		}
 
 		// GF(2^8) Rijndael multiplication property tests for uint64x2_t

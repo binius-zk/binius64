@@ -53,8 +53,8 @@ pub fn mul(x: u64, y: u64) -> u64 {
 
 /// Widening (unreduced) degree-2 Monbijou multiply: the three raw base-field Karatsuba products
 /// `[t0, t1, t2] = [a0·b0, (a0+a1)·(b0+b1), a1·b1]` of two GF(2^128) elements, each packed into a
-/// `u128` with `a0` in the low 64 bits and `a1` in the high 64 bits (matching
-/// [`super::mul_128b_clmul`]). Each product is an unreduced `[low, high]` limb pair.
+/// `u128` with `a0` in the low 64 bits and `a1` in the high 64 bits (matching the packed layout of
+/// [`mul_128b`]). Each product is an unreduced `[low, high]` limb pair.
 ///
 /// No combination, scaling, or reduction happens here — those are all F2-linear and deferred to
 /// [`reduce_128b`], so an inner product XOR-accumulates the three products and reduces once.
