@@ -947,6 +947,34 @@ fn bench_ghash_inner_product(c: &mut Criterion) {
 		);
 	}
 
+	// CLMUL path on aarch64 (uint64x2_t via NEON PMULL).
+	#[cfg(all(
+		target_arch = "aarch64",
+		target_feature = "neon",
+		target_feature = "aes"
+	))]
+	{
+		use binius_arith_bench::ghash::clmul;
+
+		run_inner_product_benchmark(
+			&mut group,
+			"clmul::mul::<uint64x2_t>",
+			clmul::mul::<uint64x2_t>,
+			&mut rng,
+			LOG_LEN,
+			128,
+		);
+
+		run_inner_product_benchmark(
+			&mut group,
+			"clmul::mul_wide::<uint64x2_t>",
+			clmul::mul_wide::<uint64x2_t>,
+			&mut rng,
+			LOG_LEN,
+			128,
+		);
+	}
+
 	group.finish();
 }
 
@@ -999,6 +1027,31 @@ fn bench_ghash_sq_inner_product(c: &mut Criterion) {
 			&mut group,
 			"x86_64::mul_wide_sliced::<__m128i>",
 			ghash_sq::x86_64::mul_wide_sliced::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+			128,
+		);
+	}
+
+	#[cfg(all(
+		target_arch = "aarch64",
+		target_feature = "neon",
+		target_feature = "aes"
+	))]
+	{
+		run_inner_product_benchmark(
+			&mut group,
+			"aarch64::mul_sliced::<uint64x2_t>",
+			ghash_sq::aarch64::mul_sliced::<uint64x2_t>,
+			&mut rng,
+			LOG_LEN,
+			128,
+		);
+
+		run_inner_product_benchmark(
+			&mut group,
+			"aarch64::mul_wide_sliced::<uint64x2_t>",
+			ghash_sq::aarch64::mul_wide_sliced::<uint64x2_t>,
 			&mut rng,
 			LOG_LEN,
 			128,
@@ -1058,6 +1111,31 @@ fn bench_monbijou_inner_product(c: &mut Criterion) {
 		);
 	}
 
+	#[cfg(all(
+		target_arch = "aarch64",
+		target_feature = "neon",
+		target_feature = "aes"
+	))]
+	{
+		use binius_arith_bench::monbijou::aarch64;
+		run_inner_product_benchmark(
+			&mut group,
+			"aarch64::mul",
+			aarch64::mul,
+			&mut rng,
+			LOG_LEN,
+			64,
+		);
+		run_inner_product_benchmark(
+			&mut group,
+			"aarch64::mul_wide",
+			aarch64::mul_wide,
+			&mut rng,
+			LOG_LEN,
+			64,
+		);
+	}
+
 	group.finish();
 }
 
@@ -1109,6 +1187,32 @@ fn bench_monbijou_192b_inner_product(c: &mut Criterion) {
 			&mut group,
 			"x86_64::mul_wide_sliced_192b::<__m128i>",
 			x86_64::mul_wide_sliced_192b::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+			192,
+		);
+	}
+
+	#[cfg(all(
+		target_arch = "aarch64",
+		target_feature = "neon",
+		target_feature = "aes"
+	))]
+	{
+		use binius_arith_bench::monbijou::aarch64;
+		run_inner_product_benchmark(
+			&mut group,
+			"aarch64::mul_sliced_192b",
+			aarch64::mul_sliced_192b,
+			&mut rng,
+			LOG_LEN,
+			192,
+		);
+
+		run_inner_product_benchmark(
+			&mut group,
+			"aarch64::mul_wide_sliced_192b",
+			aarch64::mul_wide_sliced_192b,
 			&mut rng,
 			LOG_LEN,
 			192,
@@ -1185,6 +1289,51 @@ fn bench_monbijou_128b_inner_product(c: &mut Criterion) {
 			&mut group,
 			"x86_64::mul_wide_sliced_128b::<__m128i>",
 			x86_64::mul_wide_sliced_128b::<__m128i>,
+			&mut rng,
+			LOG_LEN,
+			128,
+		);
+	}
+
+	#[cfg(all(
+		target_arch = "aarch64",
+		target_feature = "neon",
+		target_feature = "aes"
+	))]
+	{
+		use binius_arith_bench::monbijou::aarch64;
+
+		// Packed representation (coefficients in the low/high halves of each lane).
+		run_inner_product_benchmark(
+			&mut group,
+			"aarch64::mul_128b",
+			aarch64::mul_128b,
+			&mut rng,
+			LOG_LEN,
+			128,
+		);
+		run_inner_product_benchmark(
+			&mut group,
+			"aarch64::mul_wide_128b",
+			aarch64::mul_wide_128b,
+			&mut rng,
+			LOG_LEN,
+			128,
+		);
+
+		// Sliced representation (coefficients in separate registers).
+		run_inner_product_benchmark(
+			&mut group,
+			"aarch64::mul_sliced_128b",
+			aarch64::mul_sliced_128b,
+			&mut rng,
+			LOG_LEN,
+			128,
+		);
+		run_inner_product_benchmark(
+			&mut group,
+			"aarch64::mul_wide_sliced_128b",
+			aarch64::mul_wide_sliced_128b,
 			&mut rng,
 			LOG_LEN,
 			128,
