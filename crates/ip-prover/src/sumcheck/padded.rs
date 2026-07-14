@@ -130,17 +130,24 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::sumcheck::{bivariate_product::BivariateProductSumcheckProver, prove::prove_single};
+	use crate::sumcheck::{
+		bivariate_product_evaluator::{BivariateProductEvaluator, bivariate_product_prover},
+		prove::prove_single,
+		round_evaluator::SharedSumcheckProver,
+	};
 
 	type F = OptimalB128;
 	type P = OptimalPackedB128;
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
 
-	fn make_inner(rng: &mut impl Rng, n_vars: usize) -> (BivariateProductSumcheckProver<P>, F) {
+	fn make_inner(
+		rng: &mut impl Rng,
+		n_vars: usize,
+	) -> (SharedSumcheckProver<'static, P, BivariateProductEvaluator<P>>, F) {
 		let a = random_field_buffer::<P>(&mut *rng, n_vars);
 		let b = random_field_buffer::<P>(&mut *rng, n_vars);
 		let sum = inner_product_par(&a, &b);
-		let prover = BivariateProductSumcheckProver::new([a, b], sum);
+		let prover = bivariate_product_prover([a, b], sum);
 		(prover, sum)
 	}
 
@@ -224,7 +231,7 @@ mod tests {
 		let a = random_field_buffer::<P>(&mut rng, n_vars);
 		let b = random_field_buffer::<P>(&mut rng, n_vars);
 		let sum = inner_product_par(&a, &b);
-		let inner = BivariateProductSumcheckProver::new([a.clone(), b.clone()], sum);
+		let inner = bivariate_product_prover([a.clone(), b.clone()], sum);
 		let padded = PaddedSumcheckDecorator::new(inner, n_extra_vars);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());

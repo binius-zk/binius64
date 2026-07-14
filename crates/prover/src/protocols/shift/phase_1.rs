@@ -8,7 +8,7 @@ use binius_field::{BinaryField, Field, PackedField};
 use binius_ip::sumcheck::{SumcheckOutput, common::RoundCoeffs};
 use binius_ip_prover::{
 	channel::IPProverChannel,
-	sumcheck::{bivariate_product::BivariateProductSumcheckProver, common::SumcheckProver},
+	sumcheck::{bivariate_product_prover, common::SumcheckProver},
 };
 use binius_math::{BinarySubspace, FieldBuffer, inner_product::inner_product_buffers};
 use binius_utils::rayon::prelude::*;
@@ -93,11 +93,11 @@ pub fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPPro
 	h_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
 	channel: &mut Channel,
 ) -> SumcheckOutput<F> {
-	// Build `BivariateProductSumcheckProver` provers.
+	// Build one shared bivariate-product prover per shift variant.
 	let mut provers = iter::zip(g_parts, h_parts)
 		.map(|(g_part, h_part)| {
 			let sum = inner_product_buffers(&g_part, &h_part);
-			BivariateProductSumcheckProver::new([g_part, h_part], sum)
+			bivariate_product_prover([g_part, h_part], sum)
 		})
 		.collect::<Vec<_>>();
 

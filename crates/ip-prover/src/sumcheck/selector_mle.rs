@@ -1,8 +1,6 @@
 // Copyright 2023-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-#![allow(dead_code)]
-
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldBuffer, multilinear::fold::fold_highest_var_inplace};

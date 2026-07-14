@@ -11,7 +11,6 @@ workspace = true
 
 [dependencies]
 binius-field = { path = "../field" }
-binius-math = { path = "../math" }
 binius-transcript = { path = "../transcript" }
 binius-utils = { path = "../utils" }
 blake3 = { workspace = true, features = ["traits-preview"] }

@@ -1,34 +1,39 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::PackedField;
 use binius_hash::StdHashSuite;
 use binius_iop_prover::{basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
-use binius_ip_prover::channel::IPProverChannel;
-use binius_m4_verifier::{BatchCommitLayout, Verifier};
-use binius_math::{
-	inner_product::inner_product_buffers,
-	multilinear::eq::eq_ind_partial_eval,
-	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
+use binius_m4_verifier::Verifier;
+use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded};
+use binius_prover::{
+	protocols::shift::{KeyCollection, build_key_collection},
+	ring_switch::{self, RingSwitchOutput},
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
 use binius_verifier::config::B128;
 
-use crate::ValueTable;
+use crate::{
+	ValueTable,
+	reduction::{ReductionProverOutput, prove_reduction},
+};
 
 /// The multithreaded additive NTT used to encode the committed codeword.
 type ProverNtt = NeighborsLastMultiThread<GenericPreExpanded<B128>>;
 
-/// Proves a batch-witness commitment opened at a verifier-chosen random point.
+/// Proves the data-parallel M4 statement for a batch of `2^log_instances` circuit instances.
 ///
-/// Setup builds the BaseFold prover once, reusing the verifier's FRI parameters.
-/// A later call commits a witness table and opens it at a transcript-chosen point.
+/// One-time setup builds the shift keys and the BaseFold prover, reusing the verifier's parameters.
+/// A later proving call commits a witness table and proves it satisfies every AND constraint.
 pub struct Prover<P>
 where
 	P: PackedField<Scalar = B128>,
 {
-	/// The committed-multilinear shape of the batch, shared with the verifier.
-	layout: BatchCommitLayout,
+	/// The prepared single-instance constraint system shared by every instance.
+	cs: ConstraintSystem,
+	/// The shift keys for the constraint system, built once and reused across proofs.
+	key_collection: KeyCollection,
 	/// The precomputed BaseFold prover, holding the NTT and the FRI parameters.
 	basefold_compiler: BaseFoldProverCompiler<P, ProverNtt>,
 }
@@ -37,7 +42,7 @@ impl<P> Prover<P>
 where
 	P: PackedField<Scalar = B128>,
 {
-	/// Builds the prover from a verifier, inheriting its FRI parameters.
+	/// Builds the prover from a verifier, inheriting its constraint system and FRI parameters.
 	///
 	/// The prover encodes the codeword with the multithreaded NTT, spread across the cores.
 	/// Reusing the verifier's compiler keeps both sides on one set of FRI parameters.
@@ -54,37 +59,41 @@ where
 		let basefold_compiler =
 			BaseFoldProverCompiler::from_verifier_compiler(verifier.iop_compiler(), ntt);
 
+		// Build the shift keys once from the shared constraint system.
+		let key_collection = build_key_collection(verifier.constraint_system());
+
 		Self {
-			layout: *verifier.layout(),
+			cs: verifier.constraint_system().clone(),
+			key_collection,
 			basefold_compiler,
 		}
 	}
 
-	/// Commits the batch witness and proves its evaluation at a verifier-chosen random point.
+	/// Proves that every instance in the batch satisfies the constraint system.
 	///
-	/// The flow is the standard polynomial-commitment open:
+	/// The flow composes the commitment, the reduction, and the opening on one transcript:
 	/// - Pack the table into one B128 multilinear and commit it as the trace oracle.
-	/// - Draw a random point from the transcript.
-	/// - Open the commitment at that point.
+	/// - Run the AND-check and shift reduction to a claim about the instance-folded witness.
+	/// - Ring-switch that claim onto the committed trace and open it.
 	///
-	/// The point is drawn after the commitment.
-	/// So Fiat-Shamir binds it to the committed data.
+	/// The trace commits before the reduction draws its challenges.
+	/// So Fiat-Shamir binds every challenge to the committed data.
 	///
-	/// This opens the packed B128 multilinear directly.
-	/// It does not ring-switch down to the bit witness.
-	/// That step belongs with the later reductions.
+	/// The reduction ends with a claim about the witness folded over instances at `r_rho`.
+	/// The trace's bit index is `[bit | instance | wire]`.
+	/// Evaluating its instance coordinates at `r_rho` performs that fold.
+	/// So the ring-switch opens the trace at `r_j || r_rho || r_y`, matching the reduced claim.
 	///
 	/// The trace oracle is not ZK, so the channel masks nothing and needs no randomness.
 	///
-	/// # Returns
+	/// # Panics
 	///
-	/// The random point and the evaluation the prover commits to at it.
+	/// Panics if the constraint system has any MUL constraints.
 	pub fn prove<Challenger_>(
 		&self,
 		table: &ValueTable,
 		transcript: &mut ProverTranscript<Challenger_>,
-	) -> (Vec<B128>, B128)
-	where
+	) where
 		Challenger_: Challenger,
 	{
 		let mut channel = self
@@ -92,154 +101,143 @@ where
 			.create_channel_without_zk_from_transcript::<StdHashSuite, Challenger_, _>(transcript);
 
 		// Pack the 2-D table into one multilinear and commit it as the trace oracle.
-		let packed = table.pack::<P>();
-		let oracle = channel.send_oracle(packed.to_ref());
+		let trace_packed = {
+			let _scope = tracing::debug_span!("Prepare trace").entered();
+			table.pack::<P>()
+		};
+		let trace_oracle = {
+			let _scope = tracing::debug_span!("Commit trace").entered();
+			channel.send_oracle(trace_packed.to_ref())
+		};
 
-		// Sample the evaluation point only now.
-		// This makes it depend on the commitment.
-		let point = channel.sample_many(self.layout.log_witness_elems);
+		// Reduce the AND constraints and shift to one folded-witness claim.
+		// Every challenge is drawn now, after the commitment.
+		let ReductionProverOutput {
+			r_rho,
+			witness_claim,
+		} = prove_reduction::<P, _>(&self.cs, &self.key_collection, table, &mut channel);
 
-		// The claimed evaluation is the inner product of the committed values with eq(point, .).
-		//
-		//     committed(point) = sum_w committed[w] * eq(point, w) = <committed, eq_ind(point)>
-		let eq = eq_ind_partial_eval::<P>(&point);
-		let eval = inner_product_buffers(&packed, &eq);
+		let RingSwitchOutput {
+			rs_eq_ind,
+			sumcheck_claim,
+		} = {
+			let _scope = tracing::debug_span!("Ring-switching reduction").entered();
 
-		// Send the claim, then open the commitment to prove it.
-		// The verifier cannot recompute the claim, since the point depends on the commitment.
-		channel.send_one(eval);
+			// Split the shift's final point `r_j || r_y || r_segment` into its three parts.
+			// The bit index `r_j` is the low coordinates addressing a bit within a 64-bit word.
+			// The segment selector `r_segment` is the last coordinate, choosing public or hidden
+			// words. The hidden-only trace drops it.
+			// The word index `r_y` is everything in between.
+			let challenges = &witness_claim.challenges;
+			let r_j = &challenges[..Word::LOG_BITS];
+			let r_y = &challenges[Word::LOG_BITS..challenges.len() - 1];
 
-		// The ZK channel only queues the relation here.
-		// `finish` runs the single combined FRI opening and writes it to the transcript.
-		channel.prove_oracle_relations([(oracle, packed, eq, eval)]);
+			// Ring-switch the reduced claim onto the committed trace.
+			// The point is `r_j || r_rho || r_y`.
+			// Its instance coordinates fold the trace at `r_rho`.
+			let trace_point = [r_j, r_rho.as_slice(), r_y].concat();
+			ring_switch::prove(&trace_packed, &trace_point, &mut channel)
+		};
+
+		// Queue the trace opening against the ring-switch's transparent multilinear.
+		// The final call runs the single combined FRI opening and writes it to the transcript.
+		channel.prove_oracle_relations([(trace_oracle, trace_packed, rs_eq_ind, sumcheck_claim)]);
+
+		let _scope = tracing::debug_span!("PCS opening").entered();
 		channel.finish();
-
-		(point, eval)
 	}
 }
 
 #[cfg(test)]
 mod tests {
+	use std::array;
+
 	use assert_matches::assert_matches;
-	use binius_core::word::Word;
 	use binius_field::PackedBinaryGhash1x128b;
-	use binius_frontend::{Circuit, CircuitBuilder, Wire};
 	use binius_iop::{
 		basefold::{Error as BaseFoldError, VerificationError as BaseFoldVerificationError},
+		channel::Error as IOPChannelError,
 		fri::VerificationError as FriVerificationError,
 		merkle_tree::VerificationError as MerkleVerificationError,
 	};
-	use binius_math::multilinear::evaluate::evaluate;
 	use binius_transcript::VerifierTranscript;
-	use binius_verifier::config::StdChallenger;
-	use proptest::prelude::*;
+	use binius_verifier::{Error, config::StdChallenger};
+	use rand::prelude::*;
 
 	use super::*;
+	use crate::test_utils::{N_INPUT_WORDS, crc64_circuit, populate_crc64_witness};
 
 	type P = PackedBinaryGhash1x128b;
 
-	// A circuit asserting `z == x & y` over three witness words (no inout — the M4 setting).
-	// Satisfiable for an instance exactly when it sets z = x & y.
-	struct AndCircuit {
-		circuit: Circuit,
-		x: Wire,
-		y: Wire,
-		z: Wire,
+	// Builds a batch of `2^log_instances` CRC-64 instances with random input words.
+	fn setup_batch(log_instances: usize, seed: u64) -> (ConstraintSystem, ValueTable) {
+		let c = crc64_circuit();
+		let n_instances = 1usize << log_instances;
+		let mut rng = StdRng::seed_from_u64(seed);
+		let inputs: Vec<[u64; N_INPUT_WORDS]> = (0..n_instances)
+			.map(|_| array::from_fn(|_| rng.random()))
+			.collect();
+		let table = populate_crc64_witness(&c, &inputs);
+
+		let mut cs = c.circuit.constraint_system().clone();
+		cs.validate_and_prepare().unwrap();
+		(cs, table)
 	}
 
-	fn and_circuit() -> AndCircuit {
-		let builder = CircuitBuilder::new();
-		let x = builder.add_witness();
-		let y = builder.add_witness();
-		let z = builder.add_witness();
-		let and = builder.band(x, y);
-		builder.assert_eq("z_eq_x_and_y", and, z);
-		AndCircuit {
-			circuit: builder.build(),
-			x,
-			y,
-			z,
-		}
-	}
-
-	// Populate one instance per `(x, y)` pair; the instance count is the pair count.
-	fn populate_table(c: &AndCircuit, inputs: &[(u64, u64)]) -> ValueTable {
-		let log_instances = inputs.len().ilog2() as usize;
-		ValueTable::populate(&c.circuit, log_instances, |i, w| {
-			let (x, y) = inputs[i];
-			w[c.x] = Word(x);
-			w[c.y] = Word(y);
-			w[c.z] = Word(x & y);
-		})
-		.unwrap()
-	}
-
-	proptest! {
-		// Round-trip: a commitment opened at the transcript point verifies, and the value the
-		// opening proves is the committed multilinear evaluated at that same point.
-		//
-		//     prover  : commit, draw point, open at point, claim e
-		//     verifier: commit', draw point' (== point), read e, check the opening
-		//
-		// The inputs vary the witness, so each case commits to different data.
-		#[test]
-		fn commit_open_round_trips(inputs in prop::collection::vec((any::<u64>(), any::<u64>()), 4)) {
-			let c = and_circuit();
-			let table = populate_table(&c, &inputs);
-
-			// Setup once: the verifier fixes the shape and FRI parameters; the prover inherits them.
-			let verifier = Verifier::setup(c.circuit.constraint_system(), 2, 1);
-			let prover = Prover::<P>::setup(&verifier);
-
-			// Prover: commit and open on a fresh transcript.
-			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-			let (point, eval) = prover.prove(&table, &mut prover_transcript);
-
-			// Verifier: replay the same transcript and check the opening.
-			let mut verifier_transcript = prover_transcript.into_verifier();
-			let (v_point, v_eval) = verifier
-				.verify(&mut verifier_transcript)
-				.expect("a faithful opening verifies");
-			verifier_transcript.finalize().expect("no trailing proof data");
-
-			// Both sides drew the same Fiat-Shamir point and agree on the opened value.
-			prop_assert_eq!(&v_point, &point);
-			prop_assert_eq!(v_eval, eval);
-
-			// The opened value is the committed multilinear evaluated at the point.
-			let direct = evaluate(&table.pack::<P>(), &point);
-			prop_assert_eq!(eval, direct);
-		}
-	}
-
+	// The prover and verifier run the whole protocol on one transcript.
+	// A faithful proof over 64 instances verifies and leaves no trailing data.
 	#[test]
-	fn tampered_proof_is_rejected() {
-		let c = and_circuit();
-		let table = populate_table(&c, &[(1, 2), (3, 4), (5, 6), (7, 8)]);
+	fn protocol_round_trips() {
+		let log_instances = 6;
+		let (cs, table) = setup_batch(log_instances, 0);
 
-		let verifier = Verifier::setup(c.circuit.constraint_system(), 2, 1);
+		// Setup once: the verifier fixes the shape and FRI parameters.
+		// The prover inherits them.
+		let verifier = Verifier::setup(&cs, log_instances, 1);
+		let prover = Prover::<P>::setup(&verifier);
+
+		// Prover: commit, reduce, and open on a fresh transcript.
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		prover.prove(&table, &mut prover_transcript);
+
+		// Verifier: replay the same transcript end to end.
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		verifier
+			.verify(&mut verifier_transcript)
+			.expect("a faithful proof verifies");
+		verifier_transcript
+			.finalize()
+			.expect("no trailing proof data");
+	}
+
+	// Tampering with the trace opening breaks the final FRI check.
+	#[test]
+	fn tampered_opening_is_rejected() {
+		let log_instances = 6;
+		let (cs, table) = setup_batch(log_instances, 1);
+
+		let verifier = Verifier::setup(&cs, log_instances, 1);
 		let prover = Prover::<P>::setup(&verifier);
 
 		// Produce a faithful proof, then collect its bytes.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let _ = prover.prove(&table, &mut prover_transcript);
+		prover.prove(&table, &mut prover_transcript);
 		let mut proof = prover_transcript.finalize();
 
-		// Flip one bit deep in the proof; any change to the committed data must break the opening.
-		let mid = proof.len() / 2;
-		proof[mid] ^= 1;
-
-		// The flipped byte lands in a FRI query's Merkle opening.
+		// Flip one bit in the last byte, which lands in a FRI query's Merkle opening.
 		// The opening no longer matches the committed root, so BaseFold verification rejects it.
+		let last = proof.len() - 1;
+		proof[last] ^= 1;
+
 		let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
 		let err = verifier.verify(&mut verifier_transcript).unwrap_err();
 		assert_matches!(
 			err,
-			binius_iop::channel::Error::BaseFold(BaseFoldError::Verification(
+			Error::IOPChannel(IOPChannelError::BaseFold(BaseFoldError::Verification(
 				BaseFoldVerificationError::FRI(FriVerificationError::MerkleError(
 					MerkleVerificationError::InvalidProof
 				))
-			))
+			)))
 		);
 	}
 }

@@ -10,7 +10,8 @@
 //! 4. The public-input consistency check ties in the shared constants.
 //!
 //! The output is that witness claim together with `r_rho`.
-//! Binding the claim to the committed trace oracle is a later step, not done here.
+//! The caller binds it to the committed trace by ring-switching at `r_j || r_rho || r_y`.
+//! Evaluating the trace's instance coordinates at `r_rho` performs that instance fold.
 
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, Field};
@@ -47,6 +48,10 @@ pub struct ReductionVerifierOutput {
 /// # Errors
 ///
 /// Returns an error if the AND-check, the shift reduction, or the public-input check fails.
+///
+/// # Panics
+///
+/// Panics if the constraint system has any MUL constraints, which this reduction does not handle.
 pub fn verify_reduction<Channel>(
 	cs: &ConstraintSystem,
 	log_instances: usize,
@@ -55,6 +60,11 @@ pub fn verify_reduction<Channel>(
 where
 	Channel: IPVerifierChannel<B128, Elem = B128>,
 {
+	assert!(
+		cs.mul_constraints.is_empty(),
+		"the M4 reduction handles only AND constraints; the circuit must have no MUL constraints"
+	);
+
 	// One base domain shared by the AND-check and the shift, consistent by construction.
 	// The AND-check's univariate-skip domain spans one dimension above the 64-bit word.
 	let andcheck_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1);
@@ -83,6 +93,8 @@ where
 	let shift = shift::verify::<B128, _>(cs, &bitand, &intmul, channel)?;
 
 	// Tie in the shared constants through the public-input consistency check.
+	// The shift evaluates them over the layout's power-of-two word count.
+	// Their count need not be a power of two, so they are passed unpadded.
 	shift::check_eval::<B128, _>(
 		cs,
 		&cs.constants,

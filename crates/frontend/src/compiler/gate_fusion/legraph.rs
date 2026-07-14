@@ -2,10 +2,7 @@
 //! linear expression graph.
 
 use cranelift_entity::EntitySet;
-use petgraph::{
-	dot::Dot,
-	graph::{DiGraph, NodeIndex},
-};
+use petgraph::graph::{DiGraph, NodeIndex};
 use rustc_hash::FxHashMap;
 
 use super::Stat;
@@ -69,10 +66,7 @@ pub enum NodeData {
 	/// x = input()     // Creates an Opaque node for x
 	/// y = a * b       // Creates Opaque nodes for y (MUL output)
 	/// ```
-	Opaque {
-		/// The opaque wire that cannot be inlined.
-		wire: Wire,
-	},
+	Opaque,
 }
 
 impl NodeData {
@@ -81,7 +75,7 @@ impl NodeData {
 	}
 
 	const fn is_opaque(&self) -> bool {
-		matches!(self, NodeData::Opaque { .. })
+		matches!(self, NodeData::Opaque)
 	}
 }
 
@@ -265,7 +259,7 @@ impl LeGraph {
 		} else {
 			// This is a use of a wire that is not defined by a linear. That means it's opaque!
 			let opaque_node = *self.wire_to_node.entry(producer).or_insert_with(|| {
-				let t = self.pg.add_node(NodeData::Opaque { wire: producer });
+				let t = self.pg.add_node(NodeData::Opaque);
 				self.opaque.push(t);
 				t
 			});
@@ -279,63 +273,6 @@ impl LeGraph {
 		let root_node = self.pg.add_node(NodeData::Root { constraint });
 		self.roots.push(root_node);
 		self.pg.add_edge(node_p, root_node, EdgeData { shift });
-	}
-
-	/// A pure diagnostic tool which can come in handy if you are in trouble.
-	#[doc(hidden)]
-	#[allow(dead_code)]
-	pub fn render_graphviz(&self) -> String {
-		let fmt_edge =
-			|_g: &petgraph::Graph<NodeData, EdgeData>,
-			 _edge: petgraph::graph::EdgeReference<'_, EdgeData>| { String::new() };
-		let fmt_node = |_g: &petgraph::Graph<NodeData, EdgeData>,
-		                (_node, data): (NodeIndex, &NodeData)| {
-			match data {
-				NodeData::Root { .. } => {
-					let label = "root".to_string();
-					format!("shape=box color=red label=\"{label}\"")
-				}
-				NodeData::LinDef { dst, operand, .. } => {
-					let fmt_operand = if operand.len() == 1 {
-						format_shifted_wire(&operand[0])
-					} else {
-						operand
-							.iter()
-							.map(format_shifted_wire)
-							.collect::<Vec<String>>()
-							.join("^")
-					};
-
-					let label = format!("{:?} = {fmt_operand}", dst);
-					let shape = if self.lin_committed.contains(*dst) {
-						"shape=octogon"
-					} else {
-						"shape=box"
-					};
-					format!("{shape} label=\"{label}\"")
-				}
-				NodeData::Opaque { wire } => {
-					let label = format!("opaque: {:?}", wire);
-					format!("shape=box color=blue label=\"{label}\"")
-				}
-			}
-		};
-		let dot = Dot::with_attr_getters(&self.pg, &[], &fmt_edge, &fmt_node);
-		return format!("{:?}", dot);
-
-		fn format_shifted_wire(t: &crate::compiler::constraint_builder::ShiftedWire) -> String {
-			match t.shift {
-				Shift::None => format!("{:?}", t.wire),
-				Shift::Sll(amount) => format!("{:?} << {:?}", t.wire, amount),
-				Shift::Sll32(amount) => format!("{:?} <<32 {:?}", t.wire, amount),
-				Shift::Srl(amount) => format!("{:?} >> {:?}", t.wire, amount),
-				Shift::Srl32(amount) => format!("{:?} >>32 {:?}", t.wire, amount),
-				Shift::Sar(amount) => format!("{:?} sar {:?}", t.wire, amount),
-				Shift::Sra32(amount) => format!("{:?} sar32 {:?}", t.wire, amount),
-				Shift::Rotr(amount) => format!("{:?} rotr {:?}", t.wire, amount),
-				Shift::Rotr32(amount) => format!("{:?} rotr32 {:?}", t.wire, amount),
-			}
-		}
 	}
 }
 

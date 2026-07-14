@@ -8,6 +8,7 @@
 mod batch_interpreter;
 mod builder;
 mod const_eval;
+mod exec;
 mod interpreter;
 #[cfg(test)]
 mod tests;

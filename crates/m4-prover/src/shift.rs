@@ -2,16 +2,12 @@
 
 //! The batched shift-reduction prover for the data-parallel Binius64 M4 proof system.
 
-#![allow(unused)]
-
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	BinarySubspace, FieldBuffer,
-	inner_product::inner_product,
-	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
+	BinarySubspace, FieldBuffer, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
 };
 use binius_prover::{
 	fold_word::{WordFolder, fold_words},
@@ -22,7 +18,7 @@ use binius_prover::{
 		phase_2::run_sumcheck,
 	},
 };
-use binius_utils::{checked_arithmetics::log2_strict_usize, rayon::prelude::*};
+use binius_utils::rayon::prelude::*;
 use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 
 use crate::ValueTable;
@@ -293,15 +289,17 @@ mod tests {
 	use binius_core::{constraint_system::AndConstraint, verify::verify_constraints, word::Word};
 	use binius_field::{AESTowerField8b, Field, PackedBinaryGhash1x128b, Random};
 	use binius_math::{
-		inner_product::inner_product_buffers, multilinear::evaluate::evaluate,
-		test_utils::random_scalars, univariate::lagrange_evals_scalars,
+		inner_product::inner_product_buffers,
+		multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
+		test_utils::random_scalars,
+		univariate::lagrange_evals_scalars,
 	};
 	use binius_prover::{
 		fold_word::fold_words,
 		protocols::shift::{build_key_collection, monster::build_h_parts},
 	};
 	use binius_transcript::ProverTranscript;
-	use binius_utils::checked_arithmetics::log2_ceil_usize;
+	use binius_utils::checked_arithmetics::{log2_ceil_usize, log2_strict_usize};
 	use binius_verifier::{
 		config::{B128, StdChallenger},
 		protocols::shift::{OperatorData as VerifierOperatorData, check_eval, verify},
@@ -548,7 +546,7 @@ mod tests {
 			.chunks_exact(Word::BITS)
 			.map(|chunk| chunk.try_into().unwrap())
 			.collect();
-		let offset = table.layout().offset_witness;
+		let _offset = table.layout().offset_witness;
 		let public_words = &cs.constants;
 
 		// The bitand operand evals at (r_z, r_x, r_rho); the circuit has no MUL constraints, so the

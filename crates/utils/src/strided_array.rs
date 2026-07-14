@@ -85,7 +85,6 @@ impl<'a, T> StridedArray2DViewMut<'a, T> {
 	}
 
 	/// Returns iterator over vertical slices of the data for the given stride.
-	#[allow(dead_code)]
 	pub fn into_strides(self, stride: usize) -> impl Iterator<Item = Self> + 'a {
 		let Self {
 			data,
