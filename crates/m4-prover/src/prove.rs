@@ -101,8 +101,14 @@ where
 			.create_channel_without_zk_from_transcript::<StdHashSuite, Challenger_, _>(transcript);
 
 		// Pack the 2-D table into one multilinear and commit it as the trace oracle.
-		let packed = table.pack::<P>();
-		let trace_oracle = channel.send_oracle(packed.to_ref());
+		let trace_packed = {
+			let _scope = tracing::debug_span!("Prepare trace").entered();
+			table.pack::<P>()
+		};
+		let trace_oracle = {
+			let _scope = tracing::debug_span!("Commit trace").entered();
+			channel.send_oracle(trace_packed.to_ref())
+		};
 
 		// Reduce the AND constraints and shift to one folded-witness claim.
 		// Every challenge is drawn now, after the commitment.
@@ -111,27 +117,33 @@ where
 			witness_claim,
 		} = prove_reduction::<P, _>(&self.cs, &self.key_collection, table, &mut channel);
 
-		// Split the shift's final point `r_j || r_y || r_segment` into its three parts.
-		// The bit index `r_j` is the low coordinates addressing a bit within a 64-bit word.
-		// The segment selector `r_segment` is the last coordinate, choosing public or hidden words.
-		// The hidden-only trace drops it.
-		// The word index `r_y` is everything in between.
-		let challenges = &witness_claim.challenges;
-		let r_j = &challenges[..Word::LOG_BITS];
-		let r_y = &challenges[Word::LOG_BITS..challenges.len() - 1];
-
-		// Ring-switch the reduced claim onto the committed trace.
-		// The point is `r_j || r_rho || r_y`.
-		// Its instance coordinates fold the trace at `r_rho`.
-		let trace_point = [r_j, r_rho.as_slice(), r_y].concat();
 		let RingSwitchOutput {
 			rs_eq_ind,
 			sumcheck_claim,
-		} = ring_switch::prove(&packed, &trace_point, &mut channel);
+		} = {
+			let _scope = tracing::debug_span!("Ring-switching reduction").entered();
+
+			// Split the shift's final point `r_j || r_y || r_segment` into its three parts.
+			// The bit index `r_j` is the low coordinates addressing a bit within a 64-bit word.
+			// The segment selector `r_segment` is the last coordinate, choosing public or hidden
+			// words. The hidden-only trace drops it.
+			// The word index `r_y` is everything in between.
+			let challenges = &witness_claim.challenges;
+			let r_j = &challenges[..Word::LOG_BITS];
+			let r_y = &challenges[Word::LOG_BITS..challenges.len() - 1];
+
+			// Ring-switch the reduced claim onto the committed trace.
+			// The point is `r_j || r_rho || r_y`.
+			// Its instance coordinates fold the trace at `r_rho`.
+			let trace_point = [r_j, r_rho.as_slice(), r_y].concat();
+			ring_switch::prove(&trace_packed, &trace_point, &mut channel)
+		};
 
 		// Queue the trace opening against the ring-switch's transparent multilinear.
 		// The final call runs the single combined FRI opening and writes it to the transcript.
-		channel.prove_oracle_relations([(trace_oracle, packed, rs_eq_ind, sumcheck_claim)]);
+		channel.prove_oracle_relations([(trace_oracle, trace_packed, rs_eq_ind, sumcheck_claim)]);
+
+		let _scope = tracing::debug_span!("PCS opening").entered();
 		channel.finish();
 	}
 }

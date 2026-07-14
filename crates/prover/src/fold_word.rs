@@ -5,7 +5,7 @@ use std::{array, borrow::Cow, iter};
 
 use binius_core::word::Word;
 use binius_field::{
-	BinaryField, Field, PackedField,
+	BinaryField, Field, PackedField, WideMul,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, LinearTransformationFactory,
 		OutputWrappingTransformationFactory, Transformation,
@@ -13,7 +13,7 @@ use binius_field::{
 	util::expand_subset_sums_array,
 };
 use binius_math::{
-	FieldBuffer,
+	FieldBuffer, FieldSlice,
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
@@ -88,6 +88,65 @@ where
 	values.resize(capacity, P::default());
 
 	FieldBuffer::new(log_n, values.into_boxed_slice())
+}
+
+/// Folds a slice of words along both axes at once, contracting the matrix to a single scalar.
+///
+/// The words form a matrix over GF(2): row `i` is `words[i]`, column `b` is bit position `b`.
+/// The result is the bilinear form
+///
+/// ```text
+/// out = sum_i sum_b bit_b(words[i]) * index_scalars[b] * row_scalars[i]
+/// ```
+///
+/// reading a clear bit as zero and a set bit as one.
+///
+/// - [`fold_words`] contracts only the bit-index axis, giving one scalar per word.
+/// - [`fold_across_words`] contracts only the word axis, giving one scalar per bit position.
+/// - This contracts both axes, giving a single scalar.
+///
+/// A `words` slice shorter than `row_scalars` reads the missing high rows as zero.
+///
+/// ## Preconditions
+///
+/// * `index_scalars.len()` is exactly [`Word::BITS`]
+/// * `words.len()` is less than or equal to `row_scalars.len()`
+pub fn fold_words_both_axes<F, P>(
+	words: &[Word],
+	index_scalars: &[F],
+	row_scalars: FieldSlice<P>,
+) -> F
+where
+	F: BinaryField,
+	P: PackedField<Scalar = F>,
+{
+	assert_eq!(index_scalars.len(), Word::BITS);
+	assert!(words.len() <= row_scalars.len());
+
+	// Build the Method of Four Russians transform from the bit-index scalars, as `fold_words` does.
+	// Each word then folds to one scalar by bytewise table lookup.
+	let transform = OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+		.create(index_scalars);
+
+	// Fold each chunk to a packed element, then wide-multiply against the matching row element.
+	// Alignment: chunk `c` spans words `c*WIDTH .. (c+1)*WIDTH`, which is exactly packed row
+	// element `c`.
+	//
+	// The zip stops at the shorter word side.
+	// Dropped trailing row scalars pair with zero words, so they add nothing.
+	let wide = words
+		.par_chunks(P::WIDTH)
+		.zip(row_scalars.as_ref().par_iter())
+		.map(|(word_chunk, &row_i)| {
+			let folded =
+				P::from_scalars(word_chunk.iter().map(|&word| transform.transform(&word.0)));
+			P::wide_mul(folded, row_i)
+		})
+		.reduce(<P as WideMul>::Output::default, |lhs, rhs| lhs + rhs);
+
+	// One reduction closes the deferred products.
+	// Summing the lanes collapses the packed inner product to the scalar `out` above.
+	P::reduce(wide).iter().sum()
 }
 
 /// Computes the bitwise fold of the word vector with a tensor product, by bit position.
@@ -355,7 +414,7 @@ pub(crate) fn duplicate_to_fixed_chunks<const N: usize>(words: &[Word]) -> Cow<'
 #[cfg(test)]
 mod tests {
 	use binius_field::arch::OptimalPackedB128;
-	use binius_math::test_utils::random_scalars;
+	use binius_math::test_utils::{random_field_buffer, random_scalars};
 	use binius_utils::checked_arithmetics::log2_strict_usize;
 	use binius_verifier::config::B128;
 	use rand::prelude::*;
@@ -410,6 +469,68 @@ mod tests {
 
 		// Compare results
 		assert_eq!(result_optimized, result_naive);
+	}
+
+	fn naive_fold_words_both_axes<F, P>(
+		words: &[Word],
+		index_scalars: &[F],
+		row_scalars: &FieldBuffer<P>,
+	) -> F
+	where
+		F: BinaryField,
+		P: PackedField<Scalar = F>,
+	{
+		assert_eq!(index_scalars.len(), Word::BITS);
+		assert!(words.len() <= row_scalars.len());
+
+		// Contract row by row: fold each word's set bits against `index_scalars`, then weight the
+		// per-word scalar by its row scalar and sum. Words beyond `words.len()` are absent (zero).
+		let mut out = F::ZERO;
+		for (i, &word) in words.iter().enumerate() {
+			let mut per_word = F::ZERO;
+			for bit_idx in 0..Word::BITS {
+				if (word.as_u64() >> bit_idx) & 1 == 1 {
+					per_word += index_scalars[bit_idx];
+				}
+			}
+			out += per_word * row_scalars.get(i);
+		}
+		out
+	}
+
+	#[test]
+	fn test_fold_words_both_axes_equivalence() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// (log_rows, n_words) covering: single element, full chunk, shorter power-of-two list,
+		// non-power-of-two list with a partial trailing chunk, a multi-chunk partial list, and the
+		// empty list.
+		for (log_rows, n_words) in [
+			(0, 1),
+			(LOG_CHUNK_SIZE, 1 << LOG_CHUNK_SIZE),
+			(LOG_CHUNK_SIZE, 1 << 3),
+			(LOG_CHUNK_SIZE, 40),
+			(LOG_CHUNK_SIZE + 2, (1 << (LOG_CHUNK_SIZE + 2)) - 3),
+			(3, 0),
+		] {
+			let words = (0..n_words)
+				.map(|_| Word::from_u64(rng.random::<u64>()))
+				.collect::<Vec<_>>();
+			let index_scalars = random_scalars::<B128>(&mut rng, Word::BITS);
+			let row_scalars = random_field_buffer::<OptimalPackedB128>(&mut rng, log_rows);
+
+			let result_optimized = fold_words_both_axes::<_, OptimalPackedB128>(
+				&words,
+				&index_scalars,
+				row_scalars.to_ref(),
+			);
+			let result_naive = naive_fold_words_both_axes(&words, &index_scalars, &row_scalars);
+
+			assert_eq!(
+				result_optimized, result_naive,
+				"mismatch at log_rows = {log_rows}, n_words = {n_words}"
+			);
+		}
 	}
 
 	fn naive_fold_across_words<F: BinaryField>(words: &[Word], point: &[F]) -> [F; Word::BITS] {

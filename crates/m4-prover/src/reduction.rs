@@ -63,6 +63,7 @@ where
 	// instance-major. The reduction does not consume these yet; wiring them into the IntMul check
 	// is future work, so for now they are built and dropped.
 	let _mul_witness = (!cs.mul_constraints.is_empty()).then(|| {
+		let _scope = tracing::debug_span!("Assemble IntMul witness").entered();
 		build_operation_witness(
 			table,
 			&cs.constants,
@@ -81,51 +82,64 @@ where
 		.isomorphic::<B128>();
 
 	// AND-check the `A & B == C` relation over all `K * n_and` rows.
-	let and_witness = BatchAndCheckWitness::build(table, &cs.constants, &cs.and_constraints);
 	let AndCheckOutput {
 		a_eval,
 		b_eval,
 		c_eval,
 		z_challenge,
 		eval_point,
-	} = and_witness.prove::<P, _>(&andcheck_domain, channel);
+	} = {
+		let _scope = tracing::debug_span!("BitAnd check").entered();
 
-	// The row point is `r_x || r_rho`: the constraint index on the low coordinates, the instance
+		let and_witness = {
+			let _scope = tracing::debug_span!("Assemble BitAnd witness").entered();
+			BatchAndCheckWitness::build(table, &cs.constants, &cs.and_constraints)
+		};
+		and_witness.prove::<P, _>(&andcheck_domain, channel)
+	};
+
 	// index on the high coordinates.
 	let log_n_and = checked_log_2(cs.and_constraints.len());
 	let (r_x, r_rho) = eval_point.split_at(log_n_and);
 
 	// Fold the committed witness over the instance axis, then reshape into one folded word per
 	// committed word.
-	let folded = fold_instances::<B128, P>(table, r_rho);
-	let scalars: Vec<B128> = folded.iter_scalars().collect();
-	let folded_witness: Vec<FoldedWord<B128>> = scalars
-		.chunks_exact(Word::BITS)
-		.map(|chunk| chunk.try_into().expect("chunk has Word::BITS elements"))
-		.collect();
+	let folded_witness = {
+		let _scope = tracing::debug_span!("Fold instances").entered();
+		// TODO: fold_instances should return values in the right shape
+		let folded = fold_instances::<B128, P>(table, r_rho);
+		let scalars: Vec<B128> = folded.iter_scalars().collect::<Vec<_>>();
+		scalars
+			.chunks_exact(Word::BITS)
+			.map(|chunk| FoldedWord::try_from(chunk).expect("chunk has Word::BITS elements"))
+			.collect::<Vec<_>>()
+	};
 
 	// Reduce the operand claims to one witness evaluation.
 	// The shift evaluates the constants over the layout's power-of-two word count.
 	// Their count need not be a power of two, so they are passed unpadded.
 	// The IntMul witness is not fed in yet, so the intmul claim stays a zero claim at an empty
 	// point.
-	let witness_claim = prove_shift::<B128, P, _>(
-		key_collection,
-		&cs.constants,
-		&folded_witness,
-		OperatorData {
-			evals: vec![a_eval, b_eval, c_eval],
-			r_zhat_prime: z_challenge,
-			r_x_prime: r_x.to_vec(),
-		},
-		OperatorData {
-			evals: vec![B128::ZERO; 4],
-			r_zhat_prime: z_challenge,
-			r_x_prime: Vec::new(),
-		},
-		&shift_domain,
-		channel,
-	);
+	let witness_claim = {
+		let _scope = tracing::debug_span!("Prove shift reduction").entered();
+		prove_shift::<B128, P, _>(
+			key_collection,
+			&cs.constants,
+			&folded_witness,
+			OperatorData {
+				evals: vec![a_eval, b_eval, c_eval],
+				r_zhat_prime: z_challenge,
+				r_x_prime: r_x.to_vec(),
+			},
+			OperatorData {
+				evals: vec![B128::ZERO; 4],
+				r_zhat_prime: z_challenge,
+				r_x_prime: Vec::new(),
+			},
+			&shift_domain,
+			channel,
+		)
+	};
 
 	ReductionProverOutput {
 		r_rho: r_rho.to_vec(),
