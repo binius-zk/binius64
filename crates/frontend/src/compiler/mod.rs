@@ -672,20 +672,6 @@ impl CircuitBuilder {
 		(sum, cout)
 	}
 
-	/// 64-bit integer addition returning the sum and carry-out.
-	///
-	/// # Cost
-	///
-	/// - 1 AND constraint,
-	/// - 1 linear constraint.
-	pub fn iadd(&self, a: Wire, b: Wire) -> (Wire, Wire) {
-		let sum = self.add_internal();
-		let cout = self.add_internal();
-		let mut graph = self.graph_mut();
-		graph.emit_gate(self.current_path, Opcode::Iadd, [a, b], [sum, cout]);
-		(sum, cout)
-	}
-
 	/// 64-bit integer addition with carry input and output.
 	///
 	/// Performs full 64-bit unsigned addition of two wires plus a carry input.

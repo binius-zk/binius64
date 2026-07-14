@@ -74,6 +74,26 @@ pub fn smul64(builder: &CircuitBuilder, a: Wire, b: Wire) -> (Wire, Wire) {
 }
 
 impl CircuitBuilder {
+	/// 64-bit unsigned integer addition, returning the sum and carry-out.
+	///
+	/// Addition with a carry-in is the general primitive.
+	/// Plain addition is the special case where the carry-in is zero.
+	///
+	/// Returns `(sum, cout)` where:
+	///
+	/// - `sum` is the 64-bit result `a + b`.
+	/// - `cout` has a set bit at every position where a carry occurred.
+	///
+	/// # Cost
+	///
+	/// - 1 AND constraint,
+	/// - 1 linear constraint.
+	pub fn iadd(&self, a: Wire, b: Wire) -> (Wire, Wire) {
+		// Zero carry-in: the MSB of `cin` is the carry bit, and zero carries nothing.
+		let cin = self.add_constant_64(0);
+		self.iadd_cin_cout(a, b, cin)
+	}
+
 	/// 64-bit × 64-bit → 128-bit signed multiplication.
 	///
 	/// Handles two's complement operands, including overflow cases.

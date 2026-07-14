@@ -16,7 +16,6 @@ pub enum Opcode {
 	Select,
 
 	// Arithmetic
-	Iadd,
 	IaddCinCout,
 	Iadd32,
 	Iadd32CinCout,
@@ -105,7 +104,6 @@ impl Opcode {
 			Opcode::Select => gate::select::shape(),
 
 			// Arithmetic
-			Opcode::Iadd => gate::iadd::shape(),
 			Opcode::IaddCinCout => gate::iadd_cin_cout::shape(),
 			Opcode::Iadd32 => gate::iadd32::shape(),
 			Opcode::Iadd32CinCout => gate::iadd32_cin_cout::shape(),
