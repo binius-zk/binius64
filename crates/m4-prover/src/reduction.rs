@@ -6,7 +6,7 @@
 //! The result takes the constraint system to a single claim about the committed witness:
 //!
 //! 1. The AND-check reduces `A & B == C` over all rows to operand claims at a row point.
-//! 2. That point splits into a constraint part `r_x` (low) and an instance part `r_rho` (high).
+//! 2. That point splits into an instance part `r_rho` (low) and a constraint part `r_x` (high).
 //! 3. The witness is folded over the instance axis at `r_rho`.
 //! 4. The shift reduction reduces the operand claims to a single evaluation of the folded witness.
 //!
@@ -23,18 +23,17 @@ use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::BinarySubspace;
 use binius_prover::protocols::shift::{KeyCollection, OperatorData};
-use binius_utils::checked_arithmetics::checked_log_2;
 use binius_verifier::{config::B128, protocols::bitand::AndCheckOutput};
 
 use crate::{
 	BatchAndCheckWitness, ValueTable,
-	bitand::build_operation_witness,
-	shift::{FoldedWord, fold_instances, prove as prove_shift},
+	operand_witness::build_intmul_witness,
+	shift::{fold_instances, prove as prove_shift},
 };
 
 /// The prover's output of the M4 constraint reduction.
 pub struct ReductionProverOutput {
-	/// The instance-fold challenge: the high coordinates of the AND-check row point.
+	/// The instance-fold challenge: the low coordinates of the AND-check row point.
 	pub r_rho: Vec<B128>,
 	/// The reduced claim: the instance-folded witness evaluated at the shift's final point.
 	pub witness_claim: SumcheckOutput<B128>,
@@ -58,19 +57,12 @@ where
 	P: PackedField<Scalar = B128>,
 	Channel: IPProverChannel<B128>,
 {
-	// Build the IntMul operand witness whenever the circuit has MUL constraints: the four operand
-	// columns `A`, `B`, `HI`, `LO` of every constraint over every instance, laid out
-	// instance-major. The reduction does not consume these yet; wiring them into the IntMul check
-	// is future work, so for now they are built and dropped.
+	// Build the IntMul operand witness whenever the circuit has MUL constraints. The reduction
+	// does not consume these yet; wiring them into the IntMul check is future work, so for now
+	// they are built and dropped.
 	let _mul_witness = (!cs.mul_constraints.is_empty()).then(|| {
 		let _scope = tracing::debug_span!("Assemble IntMul witness").entered();
-		build_operation_witness(
-			table,
-			&cs.constants,
-			cs.mul_constraints
-				.iter()
-				.map(|con| [&con.a, &con.b, &con.hi, &con.lo]),
-		)
+		build_intmul_witness(table, &cs.constants, &cs.mul_constraints)
 	});
 
 	// One base domain shared by the AND-check and the shift, consistent by construction.
@@ -98,21 +90,15 @@ where
 		and_witness.prove::<P, _>(&andcheck_domain, channel)
 	};
 
+	// The row point is `r_rho || r_x`: the instance index on the low coordinates, the constraint
 	// index on the high coordinates.
-	let log_n_and = checked_log_2(cs.and_constraints.len());
-	let (r_x, r_rho) = eval_point.split_at(log_n_and);
+	let (r_rho, r_x) = eval_point.split_at(table.log_instances());
 
 	// Fold the committed witness over the instance axis, then reshape into one folded word per
 	// committed word.
 	let folded_witness = {
 		let _scope = tracing::debug_span!("Fold instances").entered();
-		// TODO: fold_instances should return values in the right shape
-		let folded = fold_instances::<B128, P>(table, r_rho);
-		let scalars: Vec<B128> = folded.iter_scalars().collect::<Vec<_>>();
-		scalars
-			.chunks_exact(Word::BITS)
-			.map(|chunk| FoldedWord::try_from(chunk).expect("chunk has Word::BITS elements"))
-			.collect::<Vec<_>>()
+		fold_instances(table, r_rho)
 	};
 
 	// Reduce the operand claims to one witness evaluation.
@@ -163,7 +149,10 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::test_utils::{N_INPUT_WORDS, crc64_circuit, populate_crc64_witness};
+	use crate::{
+		shift::FoldedWord,
+		test_utils::{N_INPUT_WORDS, crc64_circuit, populate_crc64_witness},
+	};
 
 	type P = PackedBinaryGhash1x128b;
 
@@ -228,12 +217,7 @@ mod tests {
 		assert_eq!(prover_out.witness_claim.eval, verifier_out.shift.witness_eval);
 
 		// The reduced claim equals the instance-folded witness evaluated at the shift point.
-		let folded = fold_instances::<B128, P>(&table, &verifier_out.r_rho);
-		let scalars: Vec<B128> = folded.iter_scalars().collect();
-		let folded_witness: Vec<FoldedWord<B128>> = scalars
-			.chunks_exact(Word::BITS)
-			.map(|chunk| chunk.try_into().unwrap())
-			.collect();
+		let folded_witness = fold_instances::<B128>(&table, &verifier_out.r_rho);
 		let expected = evaluate_folded_witness(
 			&folded_witness,
 			verifier_out.shift.r_j(),

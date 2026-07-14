@@ -18,7 +18,7 @@ use binius_prover::{
 		phase_2::run_sumcheck,
 	},
 };
-use binius_utils::rayon::prelude::*;
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 
 use crate::ValueTable;
@@ -71,21 +71,8 @@ pub type FoldedWord<F> = [F; Word::BITS];
 /// # Panics
 ///
 /// Panics if `r_rho.len()` does not equal the batch dimension.
-pub fn fold_instances<F, P>(table: &ValueTable, r_rho: &[F]) -> FieldBuffer<P>
-where
-	F: BinaryField,
-	P: PackedField<Scalar = F>,
-{
+pub fn fold_instances<F: BinaryField>(table: &ValueTable, r_rho: &[F]) -> Vec<FoldedWord<F>> {
 	assert_eq!(r_rho.len(), table.log_instances(), "r_rho must match the batch dimension");
-
-	// The wire-major buffer holds one row per committed word, each row spanning all instances.
-	let log_instances = table.log_instances();
-	let data = table.as_words();
-
-	// The committed word count sizes the word axis.
-	// Word positions past it are the multilinear's zero padding up to `2^log_committed`.
-	let n_committed = table.n_hidden_words();
-	let log_committed = table.layout().log_witness_words();
 
 	// Build the instance-fold tables once; the lookups and weights depend only on r_rho.
 	let folder = WordFolder::<F>::new(r_rho);
@@ -94,18 +81,11 @@ where
 	//     out[w * Word::BITS + b] = sum_rho eq(r_rho, rho) * bit_b(word[rho][w]).
 	// The word positions are independent, so fold them in parallel.
 	// Positions beyond the committed count keep their zero padding.
-	let mut out = vec![F::ZERO; 1 << (Word::LOG_BITS + log_committed)];
-	out.par_chunks_mut(Word::BITS)
-		.take(n_committed)
-		.enumerate()
-		.for_each(|(w, slot)| {
-			// Word position w across every instance is row w of the wire-major buffer.
-			// It is already contiguous, so the fold reads it in place with no gather or copy.
-			let column = &data[w << log_instances..(w + 1) << log_instances];
-			slot.copy_from_slice(&folder.fold(column));
-		});
-
-	FieldBuffer::from_values(&out)
+	table
+		.as_words()
+		.par_chunks(1 << table.log_instances())
+		.map(|instance_words| folder.fold(instance_words))
+		.collect()
 }
 
 /// Proves the batched shift-reduction, reducing the bitand and intmul evaluation claims to a single
@@ -189,12 +169,15 @@ where
 
 	// The witness folded at `r_j`, per segment. The public fold is a raw-word fold; the hidden fold
 	// is a partial evaluation of `folded_witness` along the bit axis, contracting each word's
-	// folded bits against the `r_j` tensor.
+	// folded bits against the `r_j` tensor. The committed word count need not be a power of two, so
+	// the scalars are zero-padded up to the next one, mirroring `fold_words`'s own padding of the
+	// public segment.
 	let public_folded = fold_words::<F, P>(public_words, r_j_tensor.as_ref());
-	let hidden_scalars: Vec<F> = folded_witness
+	let mut hidden_scalars: Vec<F> = folded_witness
 		.iter()
 		.map(|word| inner_product(word.iter().copied(), r_j_tensor.as_ref().iter().copied()))
 		.collect();
+	hidden_scalars.resize(1 << log2_ceil_usize(hidden_scalars.len()), F::ZERO);
 	let hidden_folded = FieldBuffer::<P>::from_values(&hidden_scalars);
 
 	let (public_monster, hidden_monster) = build_monster_segments::<F, P>(
@@ -414,14 +397,14 @@ mod tests {
 			let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 			let r = random_scalars::<B128>(&mut rng, Word::LOG_BITS + log_committed);
 
-			// Route A: fold the instance axis, then evaluate the resulting (bit, word) multilinear
-			// at r.
-			let folded = fold_instances::<B128, P>(&table, &r_rho);
-			let lhs = evaluate(&folded, &r);
+			// Route A: fold the instance axis, giving one FoldedWord per committed word, then
+			// evaluate that (bit, word) multilinear at r.
+			let folded = fold_instances::<B128>(&table, &r_rho);
+			let (r_bit, r_wire) = r.split_at(Word::LOG_BITS);
+			let lhs = evaluate_folded_witness(&folded, r_bit, r_wire);
 
 			// Route B: fold each word's bits by the tensor expansion of the bit coordinates, then
 			// evaluate the resulting (word, instance) multilinear over the word and instance axes.
-			let (r_bit, r_wire) = r.split_at(Word::LOG_BITS);
 			let bit_tensor = eq_ind_partial_eval_scalars::<B128>(r_bit);
 
 			// Gather the committed words of every instance, instance-major: index = rho *
@@ -444,9 +427,9 @@ mod tests {
 	// The oblong evaluation of each bitand operand column A, B, C at the shift challenges.
 	//
 	// Builds the batched AND witness, then for each column folds its word bits by the Lagrange
-	// basis at r_z and evaluates the resulting row multilinear at the (constraint, instance) point
-	// r_x || r_rho. The columns are instance-major, so r_x (low) indexes the constraint within an
-	// instance and r_rho (high) indexes the instance.
+	// basis at r_z and evaluates the resulting row multilinear at the (instance, constraint) point
+	// r_rho || r_x. The columns are constraint-major, so r_rho (low) indexes the instance within a
+	// constraint and r_x (high) indexes the constraint.
 	fn evaluate_and_witness<P: PackedField<Scalar = B128>>(
 		table: &ValueTable,
 		constants: &[Word],
@@ -458,7 +441,7 @@ mod tests {
 	) -> [B128; 3] {
 		let witness = BatchAndCheckWitness::build(table, constants, and_constraints);
 		let lagrange = lagrange_evals_scalars::<B128, B128>(domain_subspace, r_z);
-		let row_point: Vec<B128> = r_x.iter().chain(r_rho).copied().collect();
+		let row_point: Vec<B128> = r_rho.iter().chain(r_x).copied().collect();
 		let operand_eval = |column: &[Word]| {
 			let folded_column = fold_words::<B128, P>(column, &lagrange);
 			evaluate(&folded_column, &row_point)
@@ -538,14 +521,9 @@ mod tests {
 		let r_x = random_scalars::<B128>(&mut rng, log2_strict_usize(cs.n_and_constraints()));
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 
-		// The hidden witness folded over instances (reshaped to one FoldedWord per word), and the
+		// The hidden witness folded over instances (one FoldedWord per committed word), and the
 		// public constants.
-		let folded = fold_instances::<B128, P>(&table, &r_rho);
-		let scalars: Vec<B128> = folded.iter_scalars().collect();
-		let folded_witness: Vec<FoldedWord<B128>> = scalars
-			.chunks_exact(Word::BITS)
-			.map(|chunk| chunk.try_into().unwrap())
-			.collect();
+		let folded_witness = fold_instances::<B128>(&table, &r_rho);
 		let _offset = table.layout().offset_witness;
 		let public_words = &cs.constants;
 

@@ -3,7 +3,7 @@
 
 //! Witness table and prover for the data-parallel Binius64 M4 proof system.
 
-mod bitand;
+mod operand_witness;
 mod prove;
 mod reduction;
 mod shift;
@@ -11,7 +11,7 @@ mod shift;
 mod test_utils;
 mod value_table;
 
-pub use bitand::BatchAndCheckWitness;
+pub use operand_witness::BatchAndCheckWitness;
 pub use prove::Prover;
 pub use reduction::{ReductionProverOutput, prove_reduction};
 pub use value_table::{BatchWitnessFiller, ValueTable};
