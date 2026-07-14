@@ -20,42 +20,46 @@ use core::arch::aarch64::*;
 
 use crate::Underlier;
 
-/// A widening (unreduced) base-field product held as two 64-bit lanes: `[0]` is the low limb and
-/// `[1]` the high limb, with each lane carrying an independent GF(2^64) product. `[uint64x2_t; 2]`
-/// is itself an [`Underlier`], so widening products XOR-accumulate lane- and limb-wise.
+/// A widening (unreduced) base-field product `[prod_0, prod_1]`: one 128-bit carryless product per
+/// lane, each held in a register as `[lo, hi]`. `[uint64x2_t; 2]` is itself an [`Underlier`], so
+/// widening products XOR-accumulate. The transpose that gathers the limbs for the modular reduction
+/// is deferred to [`reduce`], so an inner product pays it once rather than per term.
 type Wide = [uint64x2_t; 2];
 
 /// The reduction polynomial's tail: X^64 ≡ X^4 + X^3 + X + 1 = `0x1B`.
 const POLY: u64 = 0x1B;
 
-/// Widening (unreduced) 2-lane Monbijou multiply: the two 128-bit carryless products of the paired
-/// lanes, transposed into `[low, high]` limbs so lane `i` holds `[x_i·y_i].lo` / `[x_i·y_i].hi`.
+/// Widening (unreduced) 2-lane Monbijou multiply: the two 128-bit carryless products
+/// `[x0·y0, x1·y1]` of the paired lanes, each held as `[lo, hi]`.
 ///
-/// Because [`reduce`] is F2-linear, these limbs can be XOR-accumulated across many products and
+/// Because [`reduce`] is F2-linear, these products can be XOR-accumulated across many terms and
 /// reduced only once — an inner product of `n` terms costs one reduction instead of `n`.
 #[inline]
 pub fn mul_wide(x: poly64x2_t, y: poly64x2_t) -> Wide {
 	unsafe {
-		let p0 = vreinterpretq_u64_p128(vmull_p64(vgetq_lane_p64::<0>(x), vgetq_lane_p64::<0>(y)));
-		let p1 = vreinterpretq_u64_p128(vmull_high_p64(x, y));
-		// Transpose the two `[lo, hi]` products into `[[lo0, lo1], [hi0, hi1]]`.
-		[vzip1q_u64(p0, p1), vzip2q_u64(p0, p1)]
+		[
+			vreinterpretq_u64_p128(vmull_p64(vgetq_lane_p64::<0>(x), vgetq_lane_p64::<0>(y))),
+			vreinterpretq_u64_p128(vmull_high_p64(x, y)),
+		]
 	}
 }
 
-/// Reduce a widening product `[lo, hi]` to a packed base-field element, modulo
-/// X^64 + X^4 + X^3 + X + 1, folding both lanes in parallel with `PMULL`.
+/// Reduce a widening product `[prod_0, prod_1]` (one 128-bit product per lane) to a packed
+/// base-field element, modulo X^64 + X^4 + X^3 + X + 1, folding both lanes in parallel with
+/// `PMULL`.
 ///
+/// The two products are first transposed with `vzip` into `[lo, hi]` limbs (`lo = [prod_0.lo,
+/// prod_1.lo]`, `hi = [prod_0.hi, prod_1.hi]`); this is the gather deferred out of [`mul_wide`].
 /// The high limb holds the coefficients of X^64..X^127, so `hi·X^64 ≡ hi·0x1B` folds it down. That
 /// carryless product is up to 69 bits, so its own overflow past X^63 is folded once more by the
-/// same `·0x1B`. Both folds are `PMULL`s (`vmull_p64` / `vmull_high_p64`), and the low limbs of the
-/// two lanes' products are gathered with `vzip1q`. This is an F2-linear map, so unreduced products
-/// may be summed by XOR and reduced once at the end.
+/// same `·0x1B`. Both folds are `PMULL`s. This is an F2-linear map, so unreduced products may be
+/// summed by XOR and reduced once at the end.
 #[inline]
-pub fn reduce([lo, hi]: Wide) -> poly64x2_t {
+pub fn reduce([p0, p1]: Wide) -> poly64x2_t {
 	unsafe {
+		let lo = vzip1q_u64(p0, p1);
+		let hi = vreinterpretq_p64_u64(vzip2q_u64(p0, p1));
 		let poly = vreinterpretq_p64_u64(vdupq_n_u64(POLY));
-		let hi = vreinterpretq_p64_u64(hi);
 		// First fold: fr_i = hi_i · 0x1B (lane 0 via PMULL, lane 1 via PMULL2).
 		let fr0 = vreinterpretq_u64_p128(vmull_p64(vgetq_lane_p64::<0>(hi), POLY));
 		let fr1 = vreinterpretq_u64_p128(vmull_high_p64(hi, poly));
@@ -70,26 +74,22 @@ pub fn reduce([lo, hi]: Wide) -> poly64x2_t {
 	}
 }
 
-/// Multiply an unreduced product by X: a one-bit left shift of each lane's 128-bit `[lo, hi]` value
-/// (whose degree ≤ 126 leaves room, so no reduction is needed here).
-#[inline]
-fn mul_x_wide([lo, hi]: Wide) -> Wide {
-	unsafe {
-		let new_hi = veorq_u64(vshlq_n_u64::<1>(hi), vshrq_n_u64::<63>(lo));
-		[vshlq_n_u64::<1>(lo), new_hi]
-	}
-}
-
-/// Multiply a single unreduced product `[lo, hi]` (packed into one register, low limb in lane 0) by
+/// Multiply a single unreduced product `[lo, hi]` (packed in one register, low limb in lane 0) by
 /// X: a one-bit left shift of the whole 128-bit value, carrying lane 0's top bit into lane 1. The
 /// product's degree ≤ 126 leaves room, so no reduction is needed here.
 #[inline]
-fn mul_x_packed(p: uint64x2_t) -> uint64x2_t {
+fn mul_x(p: uint64x2_t) -> uint64x2_t {
 	unsafe {
 		// `[0, lo >> 63]`: the bit shifted out of lane 0 lands in lane 1.
 		let carry = vextq_u64(vdupq_n_u64(0), vshrq_n_u64::<63>(p), 1);
 		veorq_u64(vshlq_n_u64::<1>(p), carry)
 	}
+}
+
+/// Multiply a widening product `[prod_0, prod_1]` by X, one lane's product at a time.
+#[inline]
+fn mul_x_wide([p0, p1]: Wide) -> Wide {
+	[mul_x(p0), mul_x(p1)]
 }
 
 /// Multiplies two elements of the base field GF(2^64), the Monbijou field, for each of the two
@@ -129,9 +129,9 @@ pub fn mul_wide_128b(x: poly64x2_t, y: poly64x2_t) -> [uint64x2_t; 3] {
 pub fn reduce_128b([t0, t1, t2]: [uint64x2_t; 3]) -> poly64x2_t {
 	unsafe {
 		let term0 = veorq_u64(t0, t2);
-		let term1 = veorq_u64(veorq_u64(veorq_u64(t1, t0), t2), mul_x_packed(t2));
-		// Transpose the two `[lo, hi]` coefficient products into `[[lo0, lo1], [hi0, hi1]]`.
-		reduce([vzip1q_u64(term0, term1), vzip2q_u64(term0, term1)])
+		let term1 = veorq_u64(veorq_u64(veorq_u64(t1, t0), t2), mul_x(t2));
+		// term0 is coefficient 0's product, term1 coefficient 1's; `reduce` gathers their limbs.
+		reduce([term0, term1])
 	}
 }
 
