@@ -13,7 +13,7 @@ use std::{iter, mem::MaybeUninit, ptr};
 
 use binius_core::{
 	ValueIndex,
-	constraint_system::{AndConstraint, MulConstraint, Operand, ShiftedValueIndex},
+	constraint_system::{AndConstraint, MulConstraint, Operand, ShiftVariant, ShiftedValueIndex},
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, PackedField};
@@ -303,6 +303,22 @@ pub fn build_operation_witness<'a>(
 	out
 }
 
+/// Writes `shift(src[i])` into `out_chunk[i]` for every `i`, initializing each cell.
+///
+/// `shift` is a concrete per-variant closure bound once by the caller's match on
+/// [`ShiftVariant`], so each call site monomorphizes to a loop with the shift operation inlined,
+/// rather than branching on the variant every iteration.
+#[inline]
+fn write_shifted_words(
+	out_chunk: &mut [MaybeUninit<Word>],
+	src: &[Word],
+	shift: impl Fn(Word) -> Word,
+) {
+	for (out_i, &src_i) in iter::zip(out_chunk, src) {
+		out_i.write(shift(src_i));
+	}
+}
+
 /// Writes one shifted value into every element of `out_chunk`, initializing it.
 ///
 /// This is the first term of an operand's accumulation: it initializes the cell rather than
@@ -325,19 +341,24 @@ fn write_shifted_values(
 	witness_offset: ValueIndex,
 	log_instances: usize,
 ) {
-	if shifted_index.value_index < witness_offset {
-		let constant = constants[shifted_index.value_index.0 as usize];
-		let shifted_constant = shifted_index
-			.shift_variant
-			.apply(constant, shifted_index.amount as usize);
+	let ShiftedValueIndex {
+		value_index,
+		shift_variant,
+		amount: shift_amount,
+	} = *shifted_index;
+	let amount = shift_amount as u32;
+
+	if value_index < witness_offset {
+		let constant = constants[value_index.0 as usize];
+		let shifted_constant = shift_variant.apply(constant, shift_amount as usize);
 		for out_i in &mut *out_chunk {
 			out_i.write(shifted_constant);
 		}
 	} else {
-		let index = shifted_index.value_index.0 as usize - witness_offset.0 as usize;
+		let index = value_index.0 as usize - witness_offset.0 as usize;
 		let src = &table_words[(index << log_instances)..((index + 1) << log_instances)];
 
-		if shifted_index.amount == 0 {
+		if amount == 0 {
 			// Safety:
 			// * out_chunk.len() == src.len()
 			// * MaybeUninit<Word> has the same memory repr as Word
@@ -349,14 +370,29 @@ fn write_shifted_values(
 				)
 			};
 		} else {
-			for (out_i, &src_i) in iter::zip(&mut *out_chunk, src) {
-				out_i.write(
-					shifted_index
-						.shift_variant
-						.apply(src_i, shifted_index.amount as usize),
-				);
+			match shift_variant {
+				ShiftVariant::Sll => write_shifted_words(out_chunk, src, |w| w << amount),
+				ShiftVariant::Slr => write_shifted_words(out_chunk, src, |w| w >> amount),
+				ShiftVariant::Sar => write_shifted_words(out_chunk, src, |w| w.sar(amount)),
+				ShiftVariant::Rotr => write_shifted_words(out_chunk, src, |w| w.rotr(amount)),
+				ShiftVariant::Sll32 => write_shifted_words(out_chunk, src, |w| w.sll32(amount)),
+				ShiftVariant::Srl32 => write_shifted_words(out_chunk, src, |w| w.srl32(amount)),
+				ShiftVariant::Sra32 => write_shifted_words(out_chunk, src, |w| w.sra32(amount)),
+				ShiftVariant::Rotr32 => write_shifted_words(out_chunk, src, |w| w.rotr32(amount)),
 			}
 		}
+	}
+}
+
+/// XORs `shift(src[i])` into `out_chunk[i]` for every `i`.
+///
+/// `shift` is a concrete per-variant closure bound once by the caller's match on
+/// [`ShiftVariant`], so each call site monomorphizes to a loop with the shift operation inlined,
+/// rather than branching on the variant every iteration.
+#[inline]
+fn xor_shifted_words(out_chunk: &mut [Word], src: &[Word], shift: impl Fn(Word) -> Word) {
+	for (out_i, &src_i) in iter::zip(out_chunk, src) {
+		*out_i = *out_i ^ shift(src_i);
 	}
 }
 
@@ -381,28 +417,37 @@ fn accum_shifted_values(
 	witness_offset: ValueIndex,
 	log_instances: usize,
 ) {
-	if shifted_index.value_index < witness_offset {
-		let constant = constants[shifted_index.value_index.0 as usize];
-		let shifted_constant = shifted_index
-			.shift_variant
-			.apply(constant, shifted_index.amount as usize);
+	let ShiftedValueIndex {
+		value_index,
+		shift_variant,
+		amount: shift_amount,
+	} = *shifted_index;
+	let amount = shift_amount as u32;
+
+	if value_index < witness_offset {
+		let constant = constants[value_index.0 as usize];
+		let shifted_constant = shift_variant.apply(constant, shift_amount as usize);
 		for out_i in &mut *out_chunk {
 			*out_i = *out_i ^ shifted_constant;
 		}
 	} else {
-		let index = shifted_index.value_index.0 as usize - witness_offset.0 as usize;
+		let index = value_index.0 as usize - witness_offset.0 as usize;
 		let src = &table_words[(index << log_instances)..((index + 1) << log_instances)];
 
-		if shifted_index.amount == 0 {
+		if amount == 0 {
 			for (out_i, &src_i) in iter::zip(&mut *out_chunk, src) {
 				*out_i = *out_i ^ src_i;
 			}
 		} else {
-			for (out_i, &src_i) in iter::zip(&mut *out_chunk, src) {
-				let shifted_src_i = shifted_index
-					.shift_variant
-					.apply(src_i, shifted_index.amount as usize);
-				*out_i = *out_i ^ shifted_src_i;
+			match shift_variant {
+				ShiftVariant::Sll => xor_shifted_words(out_chunk, src, |w| w << amount),
+				ShiftVariant::Slr => xor_shifted_words(out_chunk, src, |w| w >> amount),
+				ShiftVariant::Sar => xor_shifted_words(out_chunk, src, |w| w.sar(amount)),
+				ShiftVariant::Rotr => xor_shifted_words(out_chunk, src, |w| w.rotr(amount)),
+				ShiftVariant::Sll32 => xor_shifted_words(out_chunk, src, |w| w.sll32(amount)),
+				ShiftVariant::Srl32 => xor_shifted_words(out_chunk, src, |w| w.srl32(amount)),
+				ShiftVariant::Sra32 => xor_shifted_words(out_chunk, src, |w| w.sra32(amount)),
+				ShiftVariant::Rotr32 => xor_shifted_words(out_chunk, src, |w| w.rotr32(amount)),
 			}
 		}
 	}
@@ -454,7 +499,7 @@ pub fn build_intmul_witness(
 #[cfg(test)]
 mod tests {
 	use assert_matches::assert_matches;
-	use binius_core::constraint_system::{ShiftVariant, ValueVec};
+	use binius_core::constraint_system::ValueVec;
 	use binius_field::{
 		PackedBinaryGhash1x128b,
 		linear_transformation::{
