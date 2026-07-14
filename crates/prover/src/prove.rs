@@ -95,7 +95,7 @@ impl IOPProver {
 		//
 		// Only the non-public words are committed as the trace oracle; the public segment is a
 		// verifier-known polynomial.
-		let setup_guard = tracing::debug_span!("Prepare Witness").entered();
+		let setup_guard = tracing::debug_span!("Prepare witness").entered();
 		let witness_packed = pack_witness::<P>(self.log_witness_elems, witness.non_public())?;
 		drop(setup_guard);
 
@@ -106,7 +106,7 @@ impl IOPProver {
 		channel.observe_many(&public_elems);
 
 		// [phase] Witness Commit - witness generation and commitment
-		let witness_commit_guard = tracing::info_span!("Commit Witness").entered();
+		let witness_commit_guard = tracing::info_span!("Commit witness").entered();
 
 		// Commit witness via channel
 		let trace_oracle = channel.send_oracle(witness_packed.to_ref());

@@ -21,6 +21,8 @@ binius-prover = { path = "../prover" }
 binius-transcript = { path = "../transcript" }
 binius-utils = { path = "../utils" }
 binius-verifier = { path = "../verifier" }
+itertools.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 assert_matches = { workspace = true }
@@ -30,7 +32,6 @@ binius-math = { path = "../math", features = ["test-utils"] }
 criterion = { workspace = true }
 proptest = { workspace = true }
 rand = { workspace = true }
-tracing = { workspace = true }
 tracing-forest = { workspace = true }
 tracing-subscriber = { workspace = true }
 
