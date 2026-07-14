@@ -5,7 +5,7 @@
 //! This mirrors the prover's composition on the same transcript:
 //!
 //! 1. The AND-check verifies `A & B == C` over all rows, yielding operand claims at a row point.
-//! 2. That point's low coordinates are the constraint index `r_x`, its high coordinates `r_rho`.
+//! 2. That point's low coordinates are the instance index `r_rho`, its high coordinates `r_x`.
 //! 3. The shift reduction reduces the operand claims to one evaluation of the folded witness.
 //! 4. The public-input consistency check ties in the shared constants.
 //!
@@ -31,7 +31,7 @@ use crate::verify_bitand_reduction;
 
 /// The verifier's output of the M4 constraint reduction.
 pub struct ReductionVerifierOutput {
-	/// The instance-fold challenge: the high coordinates of the AND-check row point.
+	/// The instance-fold challenge: the low coordinates of the AND-check row point.
 	pub r_rho: Vec<B128>,
 	/// The reduced claim about the instance-folded witness, from the shift reduction.
 	pub shift: VerifyOutput<B128>,
@@ -83,8 +83,8 @@ where
 		eval_point,
 	} = verify_bitand_reduction(log_instances + log_n_and, &andcheck_domain, channel)?;
 
-	// The row point is `r_x || r_rho`: the constraint index low, the instance index high.
-	let (r_x, r_rho) = eval_point.split_at(log_n_and);
+	// The row point is `r_rho || r_x`: the instance index low, the constraint index high.
+	let (r_rho, r_x) = eval_point.split_at(log_instances);
 
 	// Reduce the operand claims to one witness evaluation.
 	// No MUL constraints here, so the intmul claim is a zero claim at an empty point.

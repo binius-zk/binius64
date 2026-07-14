@@ -2,17 +2,21 @@
 
 //! The batched BitAnd-check witness built from a populated batch value table.
 
-use std::{array, mem::MaybeUninit, slice};
+use std::{iter, ptr};
 
 use binius_core::{
-	constraint_system::{AndConstraint, Operand, ShiftedValueIndex},
+	ValueIndex,
+	constraint_system::{AndConstraint, MulConstraint, Operand},
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, PackedField};
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::BinarySubspace;
 use binius_prover::and_reduction::prover::OblongZerocheckProver;
-use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_utils::{
+	checked_arithmetics::{checked_log_2, log2_strict_usize},
+	rayon::{self, prelude::*},
+};
 use binius_verifier::{
 	config::{B128, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
 	protocols::bitand::AndCheckOutput,
@@ -20,48 +24,42 @@ use binius_verifier::{
 
 use crate::ValueTable;
 
-/// Instance columns processed by one parallel witness-assembly task.
-///
-/// A task streams contiguous sub-rows of this many instances out of the wire-major table.
-/// Wide enough that each row read amortizes over many instances.
-/// Small enough to spread across cores on realistic batch sizes.
-const STRIPE_WIDTH: usize = 256;
-
 /// The operand columns of the BitAnd check for a whole batch of instances.
 ///
 /// The BitAnd check works on three columns of words, one row per AND constraint.
 /// It enforces the bitwise relation `A & B == C` on every row.
 ///
 /// This holds those three columns for a batch of `K = 2^log_instances` instances at once.
-/// The rows are stacked in instance-major order, with the instance index on the high coordinates:
+/// The rows are stacked in constraint-major order, with the constraint index on the high
+/// coordinates:
 ///
 /// ```text
-///         instance 0         instance 1            instance K-1
-///   A: [ a_0 .. a_{n-1} ][ a_0 .. a_{n-1} ] ... [ a_0 .. a_{n-1} ]
-///   B: [ b_0 .. b_{n-1} ][ b_0 .. b_{n-1} ] ... [ b_0 .. b_{n-1} ]
-///   C: [ c_0 .. c_{n-1} ][ c_0 .. c_{n-1} ] ... [ c_0 .. c_{n-1} ]
-///       \___ n_and ___/
+///      constraint 0         constraint 1          constraint n_and-1
+///   A: [ a_0 .. a_{K-1} ][ a_0 .. a_{K-1} ] ... [ a_0 .. a_{K-1} ]
+///   B: [ b_0 .. b_{K-1} ][ b_0 .. b_{K-1} ] ... [ b_0 .. b_{K-1} ]
+///   C: [ c_0 .. c_{K-1} ][ c_0 .. c_{K-1} ] ... [ c_0 .. c_{K-1} ]
+///       \____ K ____/
 /// ```
 ///
-/// The row index splits cleanly into the instance and the per-instance constraint:
+/// The row index splits cleanly into the constraint and the per-constraint instance:
 ///
 /// ```text
-/// row = instance * n_and + local_constraint
+/// row = local_constraint * K + instance
 /// ```
 ///
-/// - The high `log_instances` bits select the instance.
-/// - The low bits select the constraint within that instance.
+/// - The high bits select the constraint.
+/// - The low `log_instances` bits select the instance within that constraint.
 /// - The reduction reads each column as a multilinear over `log_instances + log(n_and)` bits.
 ///
 /// `n_and` is a power of two when the constraints come from a prepared constraint system.
-/// So the batch forms a clean hypercube whose high coordinates are the instance index.
+/// So the batch forms a clean hypercube whose low coordinates are the instance index.
 #[derive(Clone, Debug)]
 pub struct BatchAndCheckWitness {
-	/// Operand `A` of every constraint of every instance, instance-major.
+	/// Operand `A` of every constraint of every instance, constraint-major.
 	a: Vec<Word>,
-	/// Operand `B` of every constraint of every instance, instance-major.
+	/// Operand `B` of every constraint of every instance, constraint-major.
 	b: Vec<Word>,
-	/// Operand `C` of every constraint of every instance, instance-major.
+	/// Operand `C` of every constraint of every instance, constraint-major.
 	c: Vec<Word>,
 }
 
@@ -69,7 +67,7 @@ impl BatchAndCheckWitness {
 	/// Builds the batched BitAnd witness from a populated wire-major batch table.
 	///
 	/// Every AND constraint contributes one row per instance to each of the three operand
-	/// columns `A`, `B`, `C`, laid out instance-major. This delegates to the arity-generic
+	/// columns `A`, `B`, `C`, laid out constraint-major. This delegates to the arity-generic
 	/// `build_operation_witness`, projecting each constraint to its three operands.
 	///
 	/// # Arguments
@@ -88,25 +86,32 @@ impl BatchAndCheckWitness {
 		constants: &[Word],
 		and_constraints: &[AndConstraint],
 	) -> Self {
-		let [a, b, c] = build_operation_witness(
-			table,
-			constants,
-			and_constraints.iter().map(|con| [&con.a, &con.b, &con.c]),
+		let a_operand_iter = and_constraints.par_iter().map(|constraint| &constraint.a);
+		let b_operand_iter = and_constraints.par_iter().map(|constraint| &constraint.b);
+		let c_operand_iter = and_constraints.par_iter().map(|constraint| &constraint.c);
+		let ((a, b), c) = rayon::join(
+			|| {
+				rayon::join(
+					|| build_operation_witness(table, constants, a_operand_iter),
+					|| build_operation_witness(table, constants, b_operand_iter),
+				)
+			},
+			|| build_operation_witness(table, constants, c_operand_iter),
 		);
 		Self { a, b, c }
 	}
 
-	/// Operand `A` column, `K * n_and` rows in instance-major order.
+	/// Operand `A` column, `K * n_and` rows in constraint-major order.
 	pub fn a(&self) -> &[Word] {
 		&self.a
 	}
 
-	/// Operand `B` column, `K * n_and` rows in instance-major order.
+	/// Operand `B` column, `K * n_and` rows in constraint-major order.
 	pub fn b(&self) -> &[Word] {
 		&self.b
 	}
 
-	/// Operand `C` column, `K * n_and` rows in instance-major order.
+	/// Operand `C` column, `K * n_and` rows in constraint-major order.
 	pub fn c(&self) -> &[Word] {
 		&self.c
 	}
@@ -134,7 +139,7 @@ impl BatchAndCheckWitness {
 	/// So the batch is just a larger single zerocheck.
 	///
 	/// ```text
-	///     row = instance * n_and + local_constraint
+	///     row = local_constraint * K + instance
 	///   X bits = log_instances + log(n_and)
 	/// ```
 	///
@@ -203,11 +208,11 @@ impl BatchAndCheckWitness {
 ///
 /// This is the arity-generic core shared by every per-operation witness: BitAnd projects each
 /// constraint to its three operands `[A, B, C]`; IntMul projects to its four `[A, B, HI, LO]`.
-/// Every constraint contributes one row per instance to each of the `ARITY` operand columns,
-/// laid out instance-major exactly as [`BatchAndCheckWitness`] documents:
+/// Every constraint contributes one row per instance to each operand column, laid out
+/// constraint-major exactly as [`BatchAndCheckWitness`] documents:
 ///
 /// ```text
-/// row = instance * n_constraints + local_constraint
+/// row = local_constraint * n_instances + instance
 /// ```
 ///
 /// An operand is a XOR of shifted committed values:
@@ -221,217 +226,168 @@ impl BatchAndCheckWitness {
 /// - at or above it: a hidden word read from the table.
 ///
 /// One index's hidden words across all instances form one contiguous row of the buffer.
-/// So a term streams that row, XOR-ing its shifted words into the column.
-/// This replaces the per-instance gather the instance-major layout required.
+/// So a term streams that row, XOR-ing its shifted words into the column, which lands exactly on
+/// one constraint's contiguous instance block, matching the constraint-major output layout.
 ///
 /// # Arguments
 ///
 /// - `table`: the wire-major batch witness holding every instance's hidden words.
 /// - `constants`: the circuit's constant words, shared by every instance.
-/// - `constraints`: the per-instance constraints, each projected to its `ARITY` operands in a fixed
-///   order. The returned columns follow that same order. Cloned once per instance stripe to drive
-///   the sequential inner loop. Pass constraints from a prepared constraint system, so their count
-///   is a power of two.
+/// - `operands`: one operand per constraint, in order; the returned column follows that same
+///   order. Pass operands from a prepared constraint system, so their count is a power of two.
 ///
 /// # Panics
 ///
-/// Panics if the constraint count or the instance count is not a power of two.
-pub fn build_operation_witness<'a, const ARITY: usize>(
+/// Panics if the constraint count is not a power of two.
+pub fn build_operation_witness<'a>(
 	table: &ValueTable,
 	constants: &[Word],
-	constraints: impl ExactSizeIterator<Item = [&'a Operand; ARITY]> + Clone + Sync,
-) -> [Vec<Word>; ARITY] {
+	operands: impl IndexedParallelIterator<Item = &'a Operand>,
+) -> Vec<Word> {
 	// Rows per instance, and total rows across the batch.
-	let n_constraints = constraints.len();
-	let n_instances = table.n_instances();
-	let total = n_instances * n_constraints;
-
-	// Both dimensions are powers of two, so both are at least 1.
-	// - The row count `K * n_constraints` is then at least 1, so the witness is never empty.
-	// - The chunk size used below is then never zero, so the parallel split is well-defined.
-	assert!(n_constraints.is_power_of_two(), "constraint count must be a power of two");
-	assert!(n_instances.is_power_of_two(), "instance count must be a power of two");
-
-	// One column per operand, laid out instance-major.
-	// The columns are left uninitialized here.
-	// Each task zeroes its own chunk, fusing the zero-fill into the write pass.
-	let mut columns: [Vec<Word>; ARITY] = array::from_fn(|_| Vec::<Word>::with_capacity(total));
-
-	// The witness offset splits public words (below) from hidden rows (at or above).
-	let offset = table.layout().offset_witness;
+	let log_constraints = log2_strict_usize(operands.len());
 	let log_instances = table.log_instances();
-	let data = table.as_words();
 
-	// Each task owns a contiguous stripe of instances.
-	// Its output blocks are those instances' rows of the `ARITY` instance-major columns.
-	// Reads stay contiguous: within a stripe, one hidden row is a contiguous sub-slice.
-	let block = STRIPE_WIDTH.min(n_instances) * n_constraints;
-	let n_stripes = total.div_ceil(block);
-	{
-		// A raw pointer to each column's reserved spare capacity. The stripes below partition
-		// `[0, total)`, so each writes a disjoint sub-range of every column; reconstructing that
-		// stripe's mutable slice from these pointers therefore never aliases across tasks.
-		let column_ptrs: [SendPtr<MaybeUninit<Word>>; ARITY] = columns
-			.each_mut()
-			.map(|col| SendPtr(col.spare_capacity_mut().as_mut_ptr()));
+	let table_words = table.as_words();
+	let witness_offset = ValueIndex(table.layout().offset_witness as u32);
 
-		(0..n_stripes).into_par_iter().for_each(|stripe| {
-			// This stripe's half-open range of rows, clamped for the final short stripe.
-			let start = stripe * block;
-			let len = block.min(total - start);
+	let mut out = Vec::<Word>::with_capacity(1 << (log_instances + log_constraints));
 
-			// This stripe's chunk of every column, zeroed and viewed as initialized slices.
-			//
-			// SAFETY: `start + len <= total`, which is the reserved capacity of every column, and
-			// the `[start, start + len)` ranges are disjoint across stripes. So each pointer is
-			// valid for `len` writes and no two tasks touch the same element.
-			let mut blocks: [&mut [Word]; ARITY] = array::from_fn(|k| {
-				let chunk = unsafe { slice::from_raw_parts_mut(column_ptrs[k].0.add(start), len) };
-				init_zeroed(chunk)
-			});
+	operands
+		.zip(out.spare_capacity_mut().par_chunks_mut(1 << log_instances))
+		.for_each(|(operand, out_chunk)| {
+			let mut shifted_indices_iter = operand.iter();
 
-			// The first global instance of this stripe.
-			// The instances in this stripe, derived from the block length.
-			let base = stripe * STRIPE_WIDTH;
-			let width = len / n_constraints;
+			if let Some(shifted_index_0) = shifted_indices_iter.next() {
+				// Special handling for the first index, which initializes the output cell.
+				if shifted_index_0.value_index < witness_offset {
+					let constant = constants[shifted_index_0.value_index.0 as usize];
+					let shifted_constant = shifted_index_0
+						.shift_variant
+						.apply(constant, shifted_index_0.amount as usize);
+					for out_i in &mut *out_chunk {
+						out_i.write(shifted_constant);
+					}
+				} else {
+					let index = shifted_index_0.value_index.0 as usize - witness_offset.0 as usize;
+					let src =
+						&table_words[(index << log_instances)..((index + 1) << log_instances)];
 
-			// Clone the operand iterator so each stripe walks the full constraint list
-			// independently.
-			for (j, operands) in constraints.clone().enumerate() {
-				let ctx = OperandContext {
-					data,
-					constants,
-					offset,
-					log_instances,
-					base,
-					width,
-					n_constraints,
-					j,
-				};
-				for (col, &operand) in blocks.iter_mut().zip(operands.iter()) {
-					ctx.accumulate(col, operand);
+					if shifted_index_0.amount == 0 {
+						// Safety:
+						// * out_chunk.len() == src.len()
+						// * MaybeUninit<Word> has the same memory repr as Word
+						unsafe {
+							ptr::copy_nonoverlapping(
+								src.as_ptr(),
+								out_chunk.as_mut_ptr() as *mut Word,
+								out_chunk.len(),
+							)
+						};
+					} else {
+						for (out_i, &src_i) in iter::zip(&mut *out_chunk, src) {
+							out_i.write(
+								shifted_index_0
+									.shift_variant
+									.apply(src_i, shifted_index_0.amount as usize),
+							);
+						}
+					}
 				}
+
+				// out_chunk is fully initialized in the block above.
+				let out_chunk = unsafe { out_chunk.assume_init_mut() };
+
+				for shifted_index in shifted_indices_iter {
+					if shifted_index.value_index < witness_offset {
+						let constant = constants[shifted_index.value_index.0 as usize];
+						let shifted_constant = shifted_index
+							.shift_variant
+							.apply(constant, shifted_index.amount as usize);
+						for out_i in &mut *out_chunk {
+							*out_i = *out_i ^ shifted_constant;
+						}
+					} else {
+						let index = shifted_index.value_index.0 as usize - witness_offset.0 as usize;
+						let src =
+							&table_words[(index << log_instances)..((index + 1) << log_instances)];
+
+						if shifted_index.amount == 0 {
+							for (out_i, &src_i) in iter::zip(&mut *out_chunk, src) {
+								*out_i = *out_i ^ src_i;
+							}
+						} else {
+							for (out_i, &src_i) in iter::zip(&mut *out_chunk, src) {
+								let shifted_src_i = shifted_index
+									.shift_variant
+									.apply(src_i, shifted_index.amount as usize);
+								*out_i = *out_i ^ shifted_src_i;
+							}
+						}
+					}
+				}
+			} else {
+				// When the operand is empty, write 0 words to the stripe.
+				// Safety: out_chunk is a valid slice of Word, writing zero bytes writes zero words.
+				unsafe { ptr::write_bytes(out_chunk.as_mut_ptr(), 0, out_chunk.len()) };
 			}
 		});
-	}
 
 	// The stripes partition `[0, total)` and each zeroed its whole range.
 	// So all `total` elements of every column are initialized.
 	//
 	// SAFETY: every element in `0..total` of every column was written above.
-	unsafe {
-		for col in &mut columns {
-			col.set_len(total);
-		}
-	}
-
-	columns
+	unsafe { out.set_len(1 << (log_instances + log_constraints)) };
+	out
 }
 
-/// A raw pointer that is [`Send`] and [`Sync`], so it can be shared across the parallel stripe
-/// tasks of [`build_operation_witness`].
+/// Builds the batched IntMul operand witness from a populated wire-major batch table.
 ///
-/// This is sound only because every stripe writes a disjoint sub-range of the pointed-to buffer,
-/// so no two tasks ever access the same element through it.
-#[derive(Clone, Copy)]
-struct SendPtr<T>(*mut T);
-
-// SAFETY: shared only to hand out disjoint sub-slices; see `build_operation_witness`.
-unsafe impl<T: Send> Send for SendPtr<T> {}
-unsafe impl<T: Sync> Sync for SendPtr<T> {}
-
-/// Zeroes an uninitialized word chunk and returns it as an initialized slice.
+/// Every MUL constraint contributes one row per instance to each of the four operand columns
+/// `A`, `B`, `HI`, `LO`, laid out constraint-major. This delegates to the arity-generic
+/// `build_operation_witness`, projecting each constraint to its four operands.
 ///
-/// Every element is set to `Word::ZERO`, so the caller can XOR operand terms into it.
-/// Chunks whose constraints have empty operands then stay zero, as the reduction expects.
-fn init_zeroed(chunk: &mut [MaybeUninit<Word>]) -> &mut [Word] {
-	for slot in chunk.iter_mut() {
-		slot.write(Word::ZERO);
-	}
-	// Every element was just written.
-	// `MaybeUninit<Word>` shares the layout of `Word`.
-	//
-	// SAFETY: the whole chunk is initialized, so reinterpreting it as `Word` is sound.
-	unsafe { &mut *(chunk as *mut [MaybeUninit<Word>] as *mut [Word]) }
-}
-
-/// The placement of one operand column for one constraint over one instance stripe.
+/// # Arguments
 ///
-/// It names where to read source words: the wire-major table and the constant bank.
-/// It names where to write them: one constraint's column across the stripe's instances.
-struct OperandContext<'a> {
-	/// The wire-major hidden words: row `r` spans all instances of hidden value `offset + r`.
-	data: &'a [Word],
-	/// The circuit's constant words, shared by every instance.
-	constants: &'a [Word],
-	/// The value index at which hidden words begin.
-	/// Public words lie below it.
-	offset: usize,
-	/// The base-2 logarithm of the instance count, i.e. the stride of one hidden row.
-	log_instances: usize,
-	/// The first global instance of this stripe.
-	base: usize,
-	/// The number of instances this stripe spans.
-	width: usize,
-	/// The number of constraints, i.e. the stride between one instance's columns and the next.
-	n_constraints: usize,
-	/// The constraint index whose column this operand fills.
-	j: usize,
-}
-
-impl OperandContext<'_> {
-	/// Accumulates one operand into its constraint's column across this stripe's instances.
-	///
-	/// For each term the operand XORs, the shifted source word is added into every instance:
-	///
-	/// ```text
-	/// out[local * n_constraints + j] ^= shift_t( value(index_t, base + local) )   for local in 0..width
-	/// ```
-	///
-	/// A hidden term streams one contiguous sub-row.
-	/// A public term broadcasts one shared word.
-	fn accumulate(&self, out: &mut [Word], operand: &[ShiftedValueIndex]) {
-		for sv in operand {
-			let idx = sv.value_index.0 as usize;
-			let amount = sv.amount as usize;
-			if idx >= self.offset {
-				// Hidden word: this stripe's slice of row `idx - offset` is contiguous.
-				let row = idx - self.offset;
-				let src = &self.data[(row << self.log_instances) + self.base..][..self.width];
-
-				// The shift is fixed for the whole stripe, so test it once, not per word.
-				// An unshifted term is a left shift by zero, i.e. the identity.
-				if amount == 0 {
-					// Unshifted: XOR the raw words, skipping the shift entirely.
-					for (local, &word) in src.iter().enumerate() {
-						let slot = &mut out[local * self.n_constraints + self.j];
-						*slot = *slot ^ word;
-					}
-				} else {
-					// Shifted: apply the per-word shift.
-					for (local, &word) in src.iter().enumerate() {
-						let slot = &mut out[local * self.n_constraints + self.j];
-						*slot = *slot ^ sv.shift_variant.apply(word, amount);
-					}
-				}
-			} else {
-				// Public word: the same constant enters every instance of this stripe.
-				// Indices past the constant bank are layout padding, read as zero.
-				let word = self.constants.get(idx).copied().unwrap_or(Word::ZERO);
-				let shifted = sv.shift_variant.apply(word, amount);
-				for local in 0..self.width {
-					let slot = &mut out[local * self.n_constraints + self.j];
-					*slot = *slot ^ shifted;
-				}
-			}
-		}
-	}
+/// - `table`: the wire-major batch witness holding every instance's hidden words.
+/// - `constants`: the circuit's constant words, shared by every instance.
+/// - `mul_constraints`: the per-instance MUL constraints, shared by every instance.
+///
+/// Pass constraints from a prepared constraint system, so their count is a power of two.
+///
+/// # Panics
+///
+/// Panics if the constraint count is not a power of two.
+pub fn build_intmul_witness(
+	table: &ValueTable,
+	constants: &[Word],
+	mul_constraints: &[MulConstraint],
+) -> [Vec<Word>; 4] {
+	let a_operand_iter = mul_constraints.par_iter().map(|constraint| &constraint.a);
+	let b_operand_iter = mul_constraints.par_iter().map(|constraint| &constraint.b);
+	let hi_operand_iter = mul_constraints.par_iter().map(|constraint| &constraint.hi);
+	let lo_operand_iter = mul_constraints.par_iter().map(|constraint| &constraint.lo);
+	let ((a, b), (hi, lo)) = rayon::join(
+		|| {
+			rayon::join(
+				|| build_operation_witness(table, constants, a_operand_iter),
+				|| build_operation_witness(table, constants, b_operand_iter),
+			)
+		},
+		|| {
+			rayon::join(
+				|| build_operation_witness(table, constants, hi_operand_iter),
+				|| build_operation_witness(table, constants, lo_operand_iter),
+			)
+		},
+	);
+	[a, b, hi, lo]
 }
 
 #[cfg(test)]
 mod tests {
 	use assert_matches::assert_matches;
-	use binius_core::constraint_system::{ShiftVariant, ValueVec};
+	use binius_core::constraint_system::{ShiftVariant, ShiftedValueIndex, ValueVec};
 	use binius_field::{
 		PackedBinaryGhash1x128b,
 		linear_transformation::{
@@ -565,8 +521,33 @@ mod tests {
 		(a, b, c)
 	}
 
+	// The reference columns across the whole batch, transposed to the batch witness's
+	// constraint-major layout: `columns.a[j * n_instances + instance]` is constraint `j`'s
+	// operand `A` evaluated on `instance`.
+	fn reference_columns(
+		table: &ValueTable,
+		constants: &[Word],
+		and_constraints: &[AndConstraint],
+	) -> (Vec<Word>, Vec<Word>, Vec<Word>) {
+		let n_and = and_constraints.len();
+		let n_instances = table.n_instances();
+		let mut a = vec![Word::ZERO; n_and * n_instances];
+		let mut b = vec![Word::ZERO; n_and * n_instances];
+		let mut c = vec![Word::ZERO; n_and * n_instances];
+		for instance in 0..n_instances {
+			let vv = table.instance_value_vec(instance, constants);
+			let (a_ref, b_ref, c_ref) = reference_rows(and_constraints, &vv);
+			for j in 0..n_and {
+				a[j * n_instances + instance] = a_ref[j];
+				b[j * n_instances + instance] = b_ref[j];
+				c[j * n_instances + instance] = c_ref[j];
+			}
+		}
+		(a, b, c)
+	}
+
 	#[test]
-	fn columns_are_instance_major_with_the_expected_shape() {
+	fn columns_are_constraint_major_with_the_expected_shape() {
 		let c = and_circuit();
 
 		// Fixture state: 2^2 = 4 instances with distinct, satisfying inputs.
@@ -587,17 +568,11 @@ mod tests {
 		assert_eq!(witness.b().len(), 4 * n_and);
 		assert_eq!(witness.c().len(), 4 * n_and);
 
-		// Invariant: row `instance * n_and + j` is constraint `j` of that instance.
-		// Each instance's block equals the single-instance reference for its inputs.
-		for instance in 0..table.n_instances() {
-			let vv = table.instance_value_vec(instance, constants(&c));
-			let (a_ref, b_ref, c_ref) = reference_rows(and_constraints, &vv);
-
-			let start = instance * n_and;
-			assert_eq!(&witness.a()[start..start + n_and], a_ref.as_slice());
-			assert_eq!(&witness.b()[start..start + n_and], b_ref.as_slice());
-			assert_eq!(&witness.c()[start..start + n_and], c_ref.as_slice());
-		}
+		// Invariant: row `j * n_instances + instance` is constraint `j` of that instance.
+		let (a_ref, b_ref, c_ref) = reference_columns(&table, constants(&c), and_constraints);
+		assert_eq!(witness.a(), a_ref.as_slice());
+		assert_eq!(witness.b(), b_ref.as_slice());
+		assert_eq!(witness.c(), c_ref.as_slice());
 	}
 
 	// A circuit computing one unsigned 64×64→128 product, with both result words committed.
@@ -638,7 +613,7 @@ mod tests {
 		.unwrap()
 	}
 
-	// The arity-4 IntMul witness lays out its four operand columns [A, B, HI, LO] instance-major,
+	// The arity-4 IntMul witness lays out its four operand columns [A, B, HI, LO] constraint-major,
 	// each row matching the single-instance operand evaluator. This is the batched IntMul witness
 	// the reduction will consume once the IntMul check is wired in.
 	#[test]
@@ -661,13 +636,7 @@ mod tests {
 		let mul_constraints = &cs.mul_constraints;
 		assert!(!mul_constraints.is_empty(), "the circuit must emit a MUL constraint");
 
-		let [a, b, hi, lo] = build_operation_witness(
-			&table,
-			constants,
-			mul_constraints
-				.iter()
-				.map(|con| [&con.a, &con.b, &con.hi, &con.lo]),
-		);
+		let [a, b, hi, lo] = build_intmul_witness(&table, constants, mul_constraints);
 
 		// Shape: K * n_mul rows, with K = 4.
 		let n_mul = mul_constraints.len();
@@ -675,16 +644,17 @@ mod tests {
 			assert_eq!(col.len(), 4 * n_mul);
 		}
 
-		// Invariant: row `instance * n_mul + j` is constraint `j` of that instance, and each of the
-		// four columns equals the single-instance reference for its inputs.
-		for instance in 0..table.n_instances() {
+		// Invariant: row `j * n_instances + instance` is constraint `j` of that instance, and each of
+		// the four columns equals the single-instance reference for its inputs.
+		let n_instances = table.n_instances();
+		for instance in 0..n_instances {
 			let vv = table.instance_value_vec(instance, constants);
-			let start = instance * n_mul;
 			for (j, con) in mul_constraints.iter().enumerate() {
-				assert_eq!(a[start + j], vv.eval_operand(&con.a));
-				assert_eq!(b[start + j], vv.eval_operand(&con.b));
-				assert_eq!(hi[start + j], vv.eval_operand(&con.hi));
-				assert_eq!(lo[start + j], vv.eval_operand(&con.lo));
+				let idx = j * n_instances + instance;
+				assert_eq!(a[idx], vv.eval_operand(&con.a));
+				assert_eq!(b[idx], vv.eval_operand(&con.b));
+				assert_eq!(hi[idx], vv.eval_operand(&con.hi));
+				assert_eq!(lo[idx], vv.eval_operand(&con.lo));
 			}
 		}
 	}
@@ -724,7 +694,7 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "constraint count must be a power of two")]
+	#[should_panic(expected = "Not a power of two")]
 	fn build_rejects_non_power_of_two_constraint_count() {
 		let c = and_circuit();
 
@@ -745,7 +715,7 @@ mod tests {
 	proptest! {
 		// Invariant: every batch row equals the single-instance reference for that instance.
 		//
-		//     witness[instance * n_and + j]  ==  eval_operand(instance value vec, constraint j)
+		//     witness[j * n_instances + instance]  ==  eval_operand(instance value vec, constraint j)
 		//
 		// This pins the batched, slice-based evaluator to the core value-vec evaluator.
 		// And since each instance is satisfying, the AND relation `A & B == C` holds on every row.
@@ -757,18 +727,12 @@ mod tests {
 			let table = populate_table(&c, &inputs);
 
 			let and_constraints = table_constraints(&c);
-			let n_and = and_constraints.len();
 			let witness = BatchAndCheckWitness::build(&table, constants(&c),&and_constraints);
 
-			for instance in 0..table.n_instances() {
-				let vv = table.instance_value_vec(instance, constants(&c));
-				let (a_ref, b_ref, c_ref) = reference_rows(&and_constraints, &vv);
-
-				let start = instance * n_and;
-				prop_assert_eq!(&witness.a()[start..start + n_and], a_ref.as_slice());
-				prop_assert_eq!(&witness.b()[start..start + n_and], b_ref.as_slice());
-				prop_assert_eq!(&witness.c()[start..start + n_and], c_ref.as_slice());
-			}
+			let (a_ref, b_ref, c_ref) = reference_columns(&table, constants(&c), &and_constraints);
+			prop_assert_eq!(witness.a(), a_ref.as_slice());
+			prop_assert_eq!(witness.b(), b_ref.as_slice());
+			prop_assert_eq!(witness.c(), c_ref.as_slice());
 
 			// The built columns satisfy the AND constraint on every row, padding included.
 			for ((a, b), c) in witness.a().iter().zip(witness.b()).zip(witness.c()) {
@@ -781,28 +745,23 @@ mod tests {
 	fn build_spans_multiple_instance_stripes() {
 		let c = and_circuit();
 
-		// Fixture state: 2 * STRIPE_WIDTH instances, so the build spans more than one stripe.
-		// The second stripe starts at a nonzero base offset.
-		// That exercises the stripe index arithmetic the small-batch tests never reach.
-		let n = 2 * STRIPE_WIDTH;
+		// Fixture state: enough instances that the per-constraint parallel chunks span multiple
+		// rayon tasks, exercising the multi-chunk path the small-batch tests never reach.
+		const LOG_INSTANCES: usize = 9;
+		let n = 1 << LOG_INSTANCES;
 		let inputs: Vec<(u64, u64, u64)> = (0..n as u64)
 			.map(|i| (i.wrapping_mul(0x9e37_79b9), i ^ 0xdead, i.rotate_left(7)))
 			.collect();
 		let table = populate_table(&c, &inputs);
 		let and_constraints = table_constraints(&c);
-		let n_and = and_constraints.len();
 		let witness = BatchAndCheckWitness::build(&table, constants(&c), &and_constraints);
 
-		// Every instance's block equals its independent single-instance reference.
+		// Every instance's contribution equals its independent single-instance reference.
 		// This includes instances at or beyond STRIPE_WIDTH, which only the second stripe produces.
-		for instance in 0..table.n_instances() {
-			let vv = table.instance_value_vec(instance, constants(&c));
-			let (a_ref, b_ref, c_ref) = reference_rows(&and_constraints, &vv);
-			let start = instance * n_and;
-			assert_eq!(&witness.a()[start..start + n_and], a_ref.as_slice());
-			assert_eq!(&witness.b()[start..start + n_and], b_ref.as_slice());
-			assert_eq!(&witness.c()[start..start + n_and], c_ref.as_slice());
-		}
+		let (a_ref, b_ref, c_ref) = reference_columns(&table, constants(&c), &and_constraints);
+		assert_eq!(witness.a(), a_ref.as_slice());
+		assert_eq!(witness.b(), b_ref.as_slice());
+		assert_eq!(witness.c(), c_ref.as_slice());
 	}
 
 	#[test]
@@ -840,19 +799,14 @@ mod tests {
 			});
 		assert!(shifted, "fixture must contain a shifted operand");
 
-		let n_and = and_constraints.len();
 		let witness = BatchAndCheckWitness::build(&table, constants(&c), &and_constraints);
 
-		// Each instance's block equals the shift-aware value-vec reference for the same
+		// Each constraint's block equals the shift-aware value-vec reference for the same
 		// constraints.
-		for instance in 0..table.n_instances() {
-			let vv = table.instance_value_vec(instance, constants(&c));
-			let (a_ref, b_ref, c_ref) = reference_rows(&and_constraints, &vv);
-			let start = instance * n_and;
-			assert_eq!(&witness.a()[start..start + n_and], a_ref.as_slice());
-			assert_eq!(&witness.b()[start..start + n_and], b_ref.as_slice());
-			assert_eq!(&witness.c()[start..start + n_and], c_ref.as_slice());
-		}
+		let (a_ref, b_ref, c_ref) = reference_columns(&table, constants(&c), &and_constraints);
+		assert_eq!(witness.a(), a_ref.as_slice());
+		assert_eq!(witness.b(), b_ref.as_slice());
+		assert_eq!(witness.c(), c_ref.as_slice());
 	}
 
 	#[test]
