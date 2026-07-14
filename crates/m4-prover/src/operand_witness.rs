@@ -95,16 +95,18 @@ impl BatchAndCheckWitness {
 	) -> Self {
 		let a_operand_iter = and_constraints.par_iter().map(|constraint| &constraint.a);
 		let b_operand_iter = and_constraints.par_iter().map(|constraint| &constraint.b);
-		let c_operand_iter = and_constraints.par_iter().map(|constraint| &constraint.c);
-		let ((a, b), c) = rayon::join(
-			|| {
-				rayon::join(
-					|| build_operation_witness(table, constants, a_operand_iter),
-					|| build_operation_witness(table, constants, b_operand_iter),
-				)
-			},
-			|| build_operation_witness(table, constants, c_operand_iter),
+		let (a, b) = rayon::join(
+			|| build_operation_witness(table, constants, a_operand_iter),
+			|| build_operation_witness(table, constants, b_operand_iter),
 		);
+
+		// Instead of constructing c from the original word Vec, it's cheaper to compute it from the
+		// constraint relation.
+		let c = (a.as_slice(), b.as_slice())
+			.into_par_iter()
+			.map(|(&a_i, &b_i)| a_i & b_i)
+			.collect();
+
 		Self { a, b, c }
 	}
 
