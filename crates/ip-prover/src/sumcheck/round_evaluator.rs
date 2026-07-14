@@ -190,26 +190,47 @@ where
 			.last()
 			.expect("offsets has one entry per evaluator, plus one");
 
-		// The store prepares one `EvaluationChunk` per chunk of the halved hypercube — the split
-		// column halves and eq-indicator expansions each evaluator reads.
-		let ctx = self.store.execute_context();
 		let evaluators = &self.evaluators;
 		let new_accum = || -> Vec<<P as WideMul>::Output> { vec![Default::default(); total_slots] };
-		let accum = ctx
-			.par_chunks(chunk_vars)
-			.fold(new_accum, |mut accum, chunk| {
-				for (evaluator, window) in iter::zip(evaluators, offsets.windows(2)) {
-					evaluator.accumulate(&chunk, &mut accum[window[0]..window[1]]);
-				}
-				accum
-			})
-			.reduce(new_accum, |mut lhs, rhs| {
-				// The only merge: sum the workers' slices slot-wise, generic over every evaluator.
-				for (dst, src) in iter::zip(&mut lhs, rhs) {
-					*dst += src;
-				}
-				lhs
-			});
+		// One chunk's contribution: every evaluator accumulates its columns' folded halves into its
+		// own run of wide slots.
+		let accumulate_chunk = |mut accum: Vec<<P as WideMul>::Output>,
+		                        chunk: &EvaluationChunk<'_, P>| {
+			for (evaluator, window) in iter::zip(evaluators, offsets.windows(2)) {
+				evaluator.accumulate(chunk, &mut accum[window[0]..window[1]]);
+			}
+			accum
+		};
+		// The only merge: sum the workers' slices slot-wise, generic over every evaluator.
+		let reduce_accum = |mut lhs: Vec<<P as WideMul>::Output>,
+		                    rhs: Vec<<P as WideMul>::Output>| {
+			for (dst, src) in iter::zip(&mut lhs, rhs) {
+				*dst += src;
+			}
+			lhs
+		};
+
+		// With a pending deferred fold and whole-packed chunks over non-borrowed columns, fold the
+		// columns while accumulating in one memory pass. Otherwise (the first round, tiny rounds
+		// whose chunks are sub-packing-width, or the test-only borrowed columns whose first fold is
+		// out of place) apply the pending fold eagerly and run a plain read pass — same result,
+		// since fusing only reorders the associative field additions.
+		let accum = if self.store.has_pending_fold()
+			&& chunk_vars >= P::LOG_WIDTH
+			&& !self.store.has_borrowed_column()
+		{
+			self.store
+				.fused_execute(chunk_vars, new_accum, accumulate_chunk, reduce_accum)
+		} else {
+			self.store.apply_pending_fold();
+			// The store prepares one `EvaluationChunk` per chunk of the halved hypercube — the
+			// split column halves and eq-indicator expansions each evaluator reads.
+			self.store
+				.execute_context()
+				.par_chunks(chunk_vars)
+				.fold(new_accum, |accum, chunk| accumulate_chunk(accum, &chunk))
+				.reduce(new_accum, reduce_accum)
+		};
 
 		// The store is read (immutably) for the round's point coordinates while the evaluators are
 		// interpolated (mutably); they are disjoint fields, so borrow the store separately.
@@ -228,9 +249,10 @@ where
 		}
 	}
 
-	fn finish(self) -> Vec<F> {
-		// The store owns each column once and computes its evaluation a single time, no matter how
-		// many claims read it; emit every column's evaluation in store order.
+	fn finish(mut self) -> Vec<F> {
+		// Apply the last round's deferred fold, then emit each column's evaluation once — the store
+		// owns each column a single time no matter how many claims read it, in store order.
+		self.store.apply_pending_fold();
 		self.store.final_evals()
 	}
 }
@@ -453,7 +475,10 @@ mod tests {
 	// polynomials, evaluation points, and final evaluations must all match exactly.
 	#[test]
 	fn test_shared_frac_add_matches_single_provers_lockstep() {
-		for n_vars in [1, 2, 3, 8] {
+		// The larger case drives many fused rounds (the borrowed columns become owned after the
+		// first fold, so every later round takes the fused deferred pass); the direct multi-chunk
+		// coverage lives in `mle_store`'s `test_fused_fold_matches_eager_reference`.
+		for n_vars in [1, 2, 3, 8, 14] {
 			let mut rng = StdRng::seed_from_u64(0);
 			let (cols, eval_point, claims) = frac_instance(&mut rng, n_vars);
 
