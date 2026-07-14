@@ -3,7 +3,7 @@ use binius_core::word::Word;
 use binius_field::arch::OptimalPackedB128;
 use binius_math::test_utils::random_scalars;
 use binius_prover::fold_word::fold_words;
-use binius_verifier::config::{B128, WORD_SIZE_BITS};
+use binius_verifier::config::B128;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rand::prelude::*;
 
@@ -21,7 +21,7 @@ fn bench_fold_words(c: &mut Criterion) {
 			let words = (0..n_words)
 				.map(|_| Word::from_u64(rng.random::<u64>()))
 				.collect::<Vec<_>>();
-			let vec = random_scalars::<B128>(&mut rng, WORD_SIZE_BITS);
+			let vec = random_scalars::<B128>(&mut rng, Word::BITS);
 
 			b.iter(|| fold_words::<_, OptimalPackedB128>(&words, &vec));
 		});

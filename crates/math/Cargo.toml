@@ -10,13 +10,11 @@ workspace = true
 [dependencies]
 binius-field = { path = "../field", default-features = false }
 binius-utils = { path = "../utils", default-features = false }
-bytemuck.workspace = true
+bytemuck = { workspace = true, features = ["extern_crate_alloc"] }
 getset.workspace = true
 itertools.workspace = true
 rand.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
-uninit.workspace = true
 
 [dev-dependencies]
 assert_matches.workspace = true

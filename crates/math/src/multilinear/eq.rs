@@ -1,83 +1,15 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use std::{iter, ops::DerefMut};
+use std::ops::DerefMut;
 
-use binius_field::{
-	Field, PackedField,
-	field::FieldOps,
-	packed::{get_packed_slice, set_packed_slice},
-};
-use binius_utils::rayon::prelude::*;
+use binius_field::{PackedField, field::FieldOps};
 
+use super::hypercube::{self, Hypercube, OneCube};
 use crate::FieldBuffer;
-
-/// Tensor of values with the eq indicator evaluated at extra_query_coordinates.
-///
-/// Let $n$ be log_n_values, $p$, $k$ be the lengths of `packed_values` and
-/// `extra_query_coordinates`. Requires
-///     * $n \geq k$
-///     * p = max(1, 2^{n+k} / P::WIDTH)
-/// Let $v$ be a vector corresponding to the first $2^n$ scalar values of `values`.
-/// Let $r = (r_0, \ldots, r_{k-1})$ be the vector of `extra_query_coordinates`.
-///
-/// ## Preconditions
-///
-/// * `values` must have enough capacity: `values.log_cap() >= values.log_len() +
-///   extra_query_coordinates.len()`
-/// * `values` must be zero-extended to the new log length before calling this function. This
-///   condition is necessary to get the best performance.
-///
-/// # Formal Definition
-/// `values` is updated to contain the result of:
-/// $v \otimes (1 - r_0, r_0) \otimes \ldots \otimes (1 - r_{k-1}, r_{k-1})$
-/// which is now a vector of length $2^{n+k}$. If 2^{n+k} < P::WIDTH, then
-/// the result is packed into a single element of `values` where only the first
-/// 2^{n+k} elements have meaning.
-///
-/// # Interpretation
-/// Let $f$ be an $n$ variate multilinear polynomial that has evaluations over
-/// the $n$ dimensional hypercube corresponding to $v$.
-/// Then `values` is updated to contain the evaluations of $g$ over the $n+k$-dimensional
-/// hypercube where
-/// * $g(x_0, \ldots, x_{n+k-1}) = f(x_0, \ldots, x_{n-1}) * eq(x_n, \ldots, x_{n+k-1}, r)$
-fn tensor_prod_eq_ind<P: PackedField, Data: DerefMut<Target = [P]>>(
-	values: &mut FieldBuffer<P, Data>,
-	extra_query_coordinates: &[P::Scalar],
-) {
-	let new_log_len = values.log_len() + extra_query_coordinates.len();
-
-	assert!(
-		values.log_cap() >= new_log_len,
-		"precondition: values capacity must be sufficient for expansion"
-	);
-
-	for &r_i in extra_query_coordinates {
-		let packed_r_i = P::broadcast(r_i);
-
-		values.resize(values.log_len() + 1);
-		let mut split = values.split_half_mut();
-		let (mut lo, mut hi) = split.halves();
-
-		(lo.as_mut(), hi.as_mut())
-			.into_par_iter()
-			.for_each(|(lo_i, hi_i)| {
-				let prod = (*lo_i) * packed_r_i;
-				*lo_i -= prod;
-				*hi_i = prod;
-			});
-	}
-}
 
 /// Left tensor of values with the eq indicator evaluated at extra_query_coordinates.
 ///
-/// # Formal definition
-/// This differs from `tensor_prod_eq_ind` in tensor product being applied on the left
-/// and in reversed order:
-/// $(1 - r_{k-1}, r_{k-1}) \otimes \ldots \otimes (1 - r_0, r_0) \otimes v$
-///
-/// # Implementation
-/// This operation is inplace, singlethreaded, and not very optimized. Main intent is to
-/// use it on small tensors out of the hot paths.
+/// This is [`hypercube::tensor_prod_eq_ind_prepend`] over the Boolean hypercube.
 ///
 /// ## Preconditions
 ///
@@ -87,21 +19,7 @@ pub fn tensor_prod_eq_ind_prepend<P: PackedField, Data: DerefMut<Target = [P]>>(
 	values: &mut FieldBuffer<P, Data>,
 	extra_query_coordinates: &[P::Scalar],
 ) {
-	let new_log_len = values.log_len() + extra_query_coordinates.len();
-
-	assert!(
-		values.log_cap() >= new_log_len,
-		"precondition: values capacity must be sufficient for expansion"
-	);
-
-	for &r_i in extra_query_coordinates.iter().rev() {
-		values.zero_extend(values.log_len() + 1);
-		for i in (0..values.len() / 2).rev() {
-			let eval = get_packed_slice(values.as_ref(), i);
-			set_packed_slice(values.as_mut(), 2 * i, eval * (P::Scalar::ONE - r_i));
-			set_packed_slice(values.as_mut(), 2 * i + 1, eval * r_i);
-		}
-	}
+	hypercube::tensor_prod_eq_ind_prepend::<OneCube, _, _>(values, extra_query_coordinates)
 }
 
 /// Computes the partial evaluation of the equality indicator polynomial.
@@ -120,8 +38,7 @@ pub fn tensor_prod_eq_ind_prepend<P: PackedField, Data: DerefMut<Target = [P]>>(
 ///
 /// [DP23]: <https://eprint.iacr.org/2023/1784>
 pub fn eq_ind_partial_eval<P: PackedField>(point: &[P::Scalar]) -> FieldBuffer<P> {
-	// The unscaled indicator is the scaled indicator with a scale of one.
-	scaled_eq_ind_partial_eval(point, P::Scalar::ONE)
+	hypercube::eq_ind_partial_eval::<OneCube, P>(point)
 }
 
 /// Computes the partial evaluation of the equality indicator polynomial, scaled by a constant.
@@ -142,16 +59,7 @@ pub fn scaled_eq_ind_partial_eval<P: PackedField>(
 	point: &[P::Scalar],
 	scale: P::Scalar,
 ) -> FieldBuffer<P> {
-	// The expansion starts from a single value and grows one variable at a time.
-	// Allocate at the final capacity 2^n now, so the growth never reallocates.
-	let log_size = point.len();
-	let mut buffer = FieldBuffer::zeros_truncated(0, log_size);
-
-	// Seed the starting value with the scale.
-	// The expansion multiplies it through, so every hypercube value ends up scaled.
-	buffer.set(0, scale);
-	tensor_prod_eq_ind(&mut buffer, point);
-	buffer
+	hypercube::scaled_eq_ind_partial_eval::<OneCube, P>(point, scale)
 }
 
 /// Truncate the equality indicator expansion to the low indexed variables.
@@ -168,24 +76,7 @@ pub fn eq_ind_truncate_low_inplace<P: PackedField, Data: DerefMut<Target = [P]>>
 	values: &mut FieldBuffer<P, Data>,
 	truncated_log_len: usize,
 ) {
-	assert!(
-		truncated_log_len <= values.log_len(),
-		"precondition: truncated_log_len must be at most values.log_len()"
-	);
-
-	for log_len in (truncated_log_len..values.log_len()).rev() {
-		{
-			let mut split = values.split_half_mut();
-			let (mut lo, hi) = split.halves();
-			(lo.as_mut(), hi.as_ref())
-				.into_par_iter()
-				.for_each(|(zero, one)| {
-					*zero += *one;
-				});
-		}
-
-		values.truncate(log_len);
-	}
+	hypercube::eq_ind_truncate_low_inplace::<OneCube, _, _>(values, truncated_log_len)
 }
 
 /// Evaluates the 2-variate multilinear which indicates the equality condition over the hypercube.
@@ -203,14 +94,7 @@ pub fn eq_ind_truncate_low_inplace<P: PackedField, Data: DerefMut<Target = [P]>>
 /// $$
 #[inline(always)]
 pub fn eq_one_var<F: FieldOps>(x: F, y: F) -> F {
-	// Over characteristic 2, `X·Y + (1−X)(1−Y)` simplifies to `X + Y + 1` (the `2·X·Y` term
-	// vanishes). The condition is a compile-time constant, so only one arm is generated.
-	if F::Scalar::CHARACTERISTIC == 2 {
-		x + y + F::one()
-	} else {
-		let one = F::one();
-		x.clone() * y.clone() + (one.clone() - x) * (one - y)
-	}
+	OneCube::eq_one_var(x, y)
 }
 
 /// Evaluates the equality indicator multilinear at a pair of coordinates.
@@ -227,10 +111,7 @@ pub fn eq_one_var<F: FieldOps>(x: F, y: F) -> F {
 ///
 /// [DP23]: <https://eprint.iacr.org/2023/1784>
 pub fn eq_ind<F: FieldOps>(x: &[F], y: &[F]) -> F {
-	assert_eq!(x.len(), y.len(), "pre-condition: x and y must be the same length");
-	iter::zip(x, y)
-		.map(|(x, y)| eq_one_var(x.clone(), y.clone()))
-		.product()
+	hypercube::eq_ind::<OneCube, F>(x, y)
 }
 
 /// Evaluates the equality indicator multilinear with one operand fixed to all zeros.
@@ -241,8 +122,7 @@ pub fn eq_ind<F: FieldOps>(x: &[F], y: &[F]) -> F {
 /// \widetilde{eq}(0^n, Y_0, \ldots, Y_{n-1}) = \prod_{i=0}^{n-1} (1 - Y_i).
 /// $$
 pub fn eq_ind_zero<F: FieldOps>(point: &[F]) -> F {
-	let one = F::one();
-	point.iter().map(|y| one.clone() - y.clone()).product()
+	hypercube::eq_ind_zero::<OneCube, F>(point)
 }
 
 /// Computes the partial evaluation of the equality indicator polynomial, returning scalars.
@@ -254,8 +134,7 @@ pub fn eq_ind_zero<F: FieldOps>(point: &[F]) -> F {
 /// (1 - r_0, r_0) \otimes ... \otimes (1 - r_{n-1}, r_{n-1}).
 /// $$
 pub fn eq_ind_partial_eval_scalars<F: FieldOps>(point: &[F]) -> Vec<F> {
-	// The unscaled indicator is the scaled indicator with a scale of one.
-	scaled_eq_ind_partial_eval_scalars(point, F::one())
+	hypercube::eq_ind_partial_eval_scalars::<OneCube, F>(point)
 }
 
 /// Computes the partial evaluation of the equality indicator polynomial scaled by a constant,
@@ -270,32 +149,20 @@ pub fn eq_ind_partial_eval_scalars<F: FieldOps>(point: &[F]) -> Vec<F> {
 ///
 /// is multiplied by `scale`. A scale of one reproduces [`eq_ind_partial_eval_scalars`].
 pub fn scaled_eq_ind_partial_eval_scalars<F: FieldOps>(point: &[F], scale: F) -> Vec<F> {
-	let mut result = Vec::with_capacity(1 << point.len());
-	// Seed with the scale; the expansion multiplies it through every hypercube value.
-	result.push(scale);
-
-	for r_i in point {
-		// Double the buffer size. For each existing value in 0..size,
-		// the lo half gets val * (1 - r_i) and the hi half gets val * r_i.
-		// Process in reverse so that writes to hi don't overwrite values we need.
-		let len = result.len();
-		for j in 0..len {
-			let prod = result[j].clone() * r_i.clone();
-			result[j] -= prod.clone();
-			result.push(prod);
-		}
-	}
-	result
+	hypercube::scaled_eq_ind_partial_eval_scalars::<OneCube, F>(point, scale)
 }
 
 #[cfg(test)]
 mod tests {
-	use binius_field::Random;
+	use binius_field::{Field, Random};
 	use proptest::prelude::*;
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::test_utils::{B128, Packed128b, index_to_hypercube_point, random_scalars};
+	use crate::{
+		multilinear::hypercube::tensor_prod_eq_ind,
+		test_utils::{B128, Packed128b, index_to_hypercube_point, random_scalars},
+	};
 
 	type P = Packed128b;
 	type F = B128;
@@ -308,7 +175,7 @@ mod tests {
 		// log_len = 0, query.len() = 2, so total log_cap = 2
 		let mut result = FieldBuffer::zeros_truncated(0, query.len());
 		result.set(0, F::ONE);
-		tensor_prod_eq_ind(&mut result, &query);
+		tensor_prod_eq_ind::<OneCube, P, _>(&mut result, &query);
 		let result_vec: Vec<F> = P::iter_slice(result.as_ref()).collect();
 		assert_eq!(
 			result_vec,
@@ -334,7 +201,7 @@ mod tests {
 		for extra_count in 1..=exps {
 			let extra = random_scalars(&mut rng, extra_count);
 
-			tensor_prod_eq_ind::<P, _>(&mut eq_expansion, &extra);
+			tensor_prod_eq_ind::<OneCube, P, _>(&mut eq_expansion, &extra);
 			coords.extend(&extra);
 
 			assert_eq!(eq_expansion.log_len(), coords.len());
@@ -515,7 +382,7 @@ mod tests {
 		let mut prepend = FieldBuffer::<P>::zeros_truncated(0, n_vars);
 		let (prefix, suffix) = point.split_at(n_vars - base_vars);
 		prepend.set(0, F::ONE);
-		tensor_prod_eq_ind(&mut prepend, suffix);
+		tensor_prod_eq_ind::<OneCube, P, _>(&mut prepend, suffix);
 		tensor_prod_eq_ind_prepend(&mut prepend, prefix);
 
 		assert_eq!(append, prepend);

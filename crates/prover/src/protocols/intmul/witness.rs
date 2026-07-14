@@ -12,10 +12,7 @@ use binius_utils::{
 	rayon::prelude::*,
 	strided_array::StridedArray2DViewMut,
 };
-use binius_verifier::{
-	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
-	protocols::intmul::common::{LIMB_BITS, LOG_N_LIMBS, N_LIMBS},
-};
+use binius_verifier::protocols::intmul::common::{LIMB_BITS, LOG_N_LIMBS, N_LIMBS};
 use getset::Getters;
 use itertools::iterate;
 
@@ -25,7 +22,7 @@ use super::error::Error;
 /// proving.
 ///
 /// The statement being proven is `a * b = c`, where `c` is represented as a pair `(c_lo, c_hi)`:
-/// `WORD_SIZE_BITS`-wide multiplicands with a double-wide product.
+/// `Word::BITS`-wide multiplicands with a double-wide product.
 ///
 /// For each of `a`, `c_lo`, `c_hi` the exponent words split into `N_LIMBS` limbs, and the
 /// constant-base exponentiation factors as a product of `N_LIMBS` limb columns — column `l` reads
@@ -34,8 +31,8 @@ use super::error::Error;
 /// limb index in the high bits, and a [`ProdcheckProver`] is constructed over each:
 ///  1) `a` and `c_lo` exponentiate the multiplicative group generator $G$
 ///  2) `c_hi` exponentiates $G^{2^{2^m}}$
-///  3) `b` selects a variable base (the root of the `a` tree) per bit, over `WORD_SIZE_BITS`
-///     per-bit leaves as before
+///  3) `b` selects a variable base (the root of the `a` tree) per bit, over `Word::BITS` per-bit
+///     leaves as before
 ///
 /// The shared power table $T\colon i \mapsto G^i$ over $2^w$ rows is retained for the Phase 5
 /// logup* lookup.
@@ -58,7 +55,7 @@ pub struct Witness<'a, P: PackedField> {
 	#[getset(skip)]
 	pub b_exponents: &'a [Word],
 	/// Concatenated b leaves for prodcheck: [L_0, L_1, ..., L_{2^k-1}].
-	/// Has log_len = n_vars + LOG_WORD_SIZE_BITS.
+	/// Has log_len = n_vars + Word::LOG_BITS.
 	pub b_leaves: FieldBuffer<P>,
 	/// The prover for the prodcheck reduction on b_leaves.
 	pub b_prodcheck: ProdcheckProver<P>,
@@ -98,7 +95,7 @@ where
 		c_lo: &'a [Word],
 		c_hi: &'a [Word],
 	) -> Result<Self, Error> {
-		assert!(2 * WORD_SIZE_BITS <= F::N_BITS);
+		assert!(2 * Word::BITS <= F::N_BITS);
 
 		// Statement should be of pow-2 length.
 		let Some(n_vars) = strict_log_2(a.len()) else {
@@ -115,7 +112,7 @@ where
 
 		// The 2·N_LIMBS twisted power tables: tables[s][i] = (G^{2^{ws}})^i. The `a` and `c_lo`
 		// limb columns read tables 0..N_LIMBS; the `c_hi` limb columns (base
-		// G^{2^{WORD_SIZE_BITS}}) read tables N_LIMBS..2·N_LIMBS. Table 0 is the shared logup*
+		// G^{2^{Word::BITS}}) read tables N_LIMBS..2·N_LIMBS. Table 0 is the shared logup*
 		// table.
 		let power_table_scope = tracing::debug_span!("Build power tables").entered();
 		let g = F::MULTIPLICATIVE_GENERATOR;
@@ -147,7 +144,7 @@ where
 		let variable_base_tree_scope =
 			tracing::debug_span!("Compute variable-base prodcheck layers").entered();
 		let b_leaves = compute_b_leaves(&a_root, b);
-		let (b_prodcheck, b_root) = ProdcheckProver::new(LOG_WORD_SIZE_BITS, b_leaves.clone());
+		let (b_prodcheck, b_root) = ProdcheckProver::new(Word::LOG_BITS, b_leaves.clone());
 		drop(variable_base_tree_scope);
 
 		Ok(Self {
@@ -285,11 +282,11 @@ where
 	}
 
 	// Fallback: bases is too small to parallelize (n_vars < P::LOG_WIDTH)
-	let mut out = FieldBuffer::zeros(n_vars + LOG_WORD_SIZE_BITS);
+	let mut out = FieldBuffer::zeros(n_vars + Word::LOG_BITS);
 	let n_elems = 1 << n_vars;
 
 	for (i, (mut base, &exp)) in iter::zip(bases.iter_scalars(), exponents).enumerate() {
-		for z in 0..WORD_SIZE_BITS {
+		for z in 0..Word::BITS {
 			// Branchless select of `base` when bit `z` is set, else `F::ONE`: on the selected lane
 			// `mask` is all-ones so `select` keeps `base - 1` and the `+ 1` restores `base`; on the
 			// unselected lane `select` yields `0` and the `+ 1` gives `F::ONE`.
@@ -311,7 +308,7 @@ where
 {
 	let n_vars = bases.log_len();
 	let n_packed = bases.as_ref().len();
-	let height = WORD_SIZE_BITS;
+	let height = Word::BITS;
 	let total = n_packed * height;
 
 	let mut out_vec: Vec<P> = Vec::with_capacity(total);
@@ -346,7 +343,7 @@ where
 	// SAFETY: All elements initialized in the parallel loop above
 	unsafe { out_vec.set_len(total) };
 
-	FieldBuffer::new(n_vars + LOG_WORD_SIZE_BITS, out_vec.into_boxed_slice())
+	FieldBuffer::new(n_vars + Word::LOG_BITS, out_vec.into_boxed_slice())
 }
 
 /// Compute the per-vertex bivariate product of two equally sized field buffers.
@@ -490,7 +487,7 @@ mod tests {
 
 			for (i, &base0) in base_scalars.iter().enumerate() {
 				let mut base = base0;
-				for z in 0..WORD_SIZE_BITS {
+				for z in 0..Word::BITS {
 					let expected = if exponents[i].extract_bit(z) {
 						base
 					} else {

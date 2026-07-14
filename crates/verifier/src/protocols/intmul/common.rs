@@ -3,10 +3,9 @@
 
 use std::iter;
 
+use binius_core::word::Word;
 use binius_field::{BinaryField, field::FieldOps};
 use itertools::iterate;
-
-use crate::config::LOG_WORD_SIZE_BITS;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IntMulOutput<F> {
@@ -59,7 +58,7 @@ pub const LOG_N_LIMBS: usize = 2;
 pub const N_LIMBS: usize = 1 << LOG_N_LIMBS;
 
 /// The bit width of one exponent limb; the lookup table has `2^LIMB_BITS` rows.
-pub const LIMB_BITS: usize = 1 << (LOG_WORD_SIZE_BITS - LOG_N_LIMBS);
+pub const LIMB_BITS: usize = 1 << (Word::LOG_BITS - LOG_N_LIMBS);
 
 /// The number of looked-up limb columns: one per limb of $\widetilde{a}$,
 /// $\widetilde{c}_{\textsf{lo}}$, and $\widetilde{c}_{\textsf{hi}}$.

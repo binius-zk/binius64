@@ -114,122 +114,92 @@ pub fn partial_eval_sigmas_transpose<E: FieldOps>(r_j: &[E], r_s: &[E]) -> Vec<E
 
 #[cfg(test)]
 mod tests {
-	use binius_field::{BinaryField128bGhash, Field};
-	use binius_math::{
-		multilinear::shift::{rotr_ind, sll_ind, sra_ind, srl_ind},
-		test_utils::{index_to_hypercube_point, random_scalars},
-	};
+	use binius_field::{BinaryField128bGhash as B128, Field};
+	use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, test_utils::random_scalars};
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
 
-	fn sll_ind_partial_eval<F: Field>(j: &[F], s: &[F]) -> Vec<F> {
-		partial_eval_sigmas_transpose(j, s)
+	// Ground truth for a shift-indicator MLE, independent of the recurrence under test.
+	//
+	// Fix j, s to the challenges r_j, r_s.
+	//
+	// Over the hypercube in i, the indicator's MLE expands over the (j, s) cube as:
+	//     mle[i] = sum_{j, s in {0,1}^n : cond(i, j, s)} eq(r_j, j) * eq(r_s, s)
+	fn reference_indicator(
+		r_j: &[B128],
+		r_s: &[B128],
+		cond: impl Fn(usize, usize, usize) -> bool,
+	) -> Vec<B128> {
+		let n = r_j.len();
+		// eq_j[j] = eq(r_j, j), eq_s[s] = eq(r_s, s).
+		//
+		// Both index little-endian, matching the recurrence's bit order.
+		let eq_j = eq_ind_partial_eval_scalars(r_j);
+		let eq_s = eq_ind_partial_eval_scalars(r_s);
+
+		(0..1 << n)
+			.map(|i| {
+				let mut acc = B128::ZERO;
+				for j in 0..1 << n {
+					for s in 0..1 << n {
+						if cond(i, j, s) {
+							acc += eq_j[j] * eq_s[s];
+						}
+					}
+				}
+				acc
+			})
+			.collect()
 	}
 
-	fn srl_ind_partial_eval<F: Field>(j: &[F], s: &[F]) -> Vec<F> {
-		let (sigma, _) = partial_eval_sigmas(j, s);
-		sigma
-	}
-
-	fn sra_ind_partial_eval<F: Field>(j: &[F], s: &[F]) -> Vec<F> {
-		assert_eq!(j.len(), s.len(), "j and s must have the same length");
-
-		let (sigma, _) = partial_eval_sigmas(j, s);
-		let phi = partial_eval_phi(s);
-		let j_prod = j.iter().product::<F>();
-
-		let n = j.len();
-		let mut result = vec![F::ZERO; 1 << n];
-		for i in 0..(1 << n) {
-			result[i] = sigma[i] + j_prod * phi[i];
-		}
-
-		result
-	}
-
-	fn rotr_ind_partial_eval<F: Field>(j: &[F], s: &[F]) -> Vec<F> {
-		let (sigma, sigma_prime) = partial_eval_sigmas(j, s);
-
-		let n = j.len();
-		let mut result = vec![F::ZERO; 1 << n];
-		for i in 0..(1 << n) {
-			result[i] = sigma[i] + sigma_prime[i];
-		}
-
-		result
-	}
-
-	type ShiftIndicatorFn<F> = fn(&[F], &[F], &[F]) -> F;
-
-	fn test_partial_eval_helper<F: Field>(
-		partial_eval_fn: fn(&[F], &[F]) -> Vec<F>,
-		direct_fn: ShiftIndicatorFn<F>,
-		j: &[F],
-		s: &[F],
-	) {
-		let n = j.len();
-		let partial_eval = partial_eval_fn(j, s);
-
-		assert_eq!(partial_eval.len(), 1 << n);
-
-		for i_idx in 0..(1 << n) {
-			let i = index_to_hypercube_point::<F>(n, i_idx);
-			let expected = direct_fn(&i, j, s);
-			let actual = partial_eval[i_idx];
-			assert_eq!(
-				actual, expected,
-				"Mismatch at i_idx={}, i={:?}, j={:?}, s={:?}",
-				i_idx, i, j, s
-			);
-		}
+	// Draw a pseudo-random challenge (r_j, r_s).
+	// The fixed seed keeps failures reproducible.
+	fn challenges(n: usize) -> (Vec<B128>, Vec<B128>) {
+		let mut rng = StdRng::seed_from_u64(0);
+		(random_scalars(&mut rng, n), random_scalars(&mut rng, n))
 	}
 
 	#[test]
-	fn test_sll_ind_partial_eval() {
-		let mut rng = StdRng::seed_from_u64(0);
-		let n = 6;
-
-		// Test with random j and s
-		let j = random_scalars::<BinaryField128bGhash>(&mut rng, n);
-		let s = random_scalars::<BinaryField128bGhash>(&mut rng, n);
-
-		test_partial_eval_helper(sll_ind_partial_eval, sll_ind, &j, &s);
+	fn srl_matches_reference() {
+		// srl: output bit i reads input bit j = i + s.
+		// Bits shifted past the top vanish, since no such j is in range.
+		let (r_j, r_s) = challenges(6);
+		let (sigma, _) = partial_eval_sigmas(&r_j, &r_s);
+		assert_eq!(sigma, reference_indicator(&r_j, &r_s, |i, j, s| j == i + s));
 	}
 
 	#[test]
-	fn test_srl_ind_partial_eval() {
-		let mut rng = StdRng::seed_from_u64(0);
-		let n = 6;
-
-		// Test with random j and s
-		let j = random_scalars::<BinaryField128bGhash>(&mut rng, n);
-		let s = random_scalars::<BinaryField128bGhash>(&mut rng, n);
-
-		test_partial_eval_helper(srl_ind_partial_eval, srl_ind, &j, &s);
+	fn sll_matches_reference() {
+		// sll is the transpose of srl.
+		// Output bit i = j + s reads input bit j.
+		let (r_j, r_s) = challenges(6);
+		let sigma_transpose = partial_eval_sigmas_transpose(&r_j, &r_s);
+		assert_eq!(sigma_transpose, reference_indicator(&r_j, &r_s, |i, j, s| i == j + s));
 	}
 
 	#[test]
-	fn test_sra_ind_partial_eval() {
-		let mut rng = StdRng::seed_from_u64(0);
-		let n = 6;
-
-		// Test with random j and s
-		let j = random_scalars::<BinaryField128bGhash>(&mut rng, n);
-		let s = random_scalars::<BinaryField128bGhash>(&mut rng, n);
-
-		test_partial_eval_helper(sra_ind_partial_eval, sra_ind, &j, &s);
+	fn sra_matches_reference() {
+		// sra behaves like srl within range.
+		// Past the shift, the sign bit j = 2^n - 1 fills every position.
+		let (r_j, r_s) = challenges(6);
+		let n = r_j.len();
+		let (sigma, _) = partial_eval_sigmas(&r_j, &r_s);
+		let phi = partial_eval_phi(&r_s);
+		// prod(r_j) is the eq-indicator selecting the all-ones sign position j = 2^n - 1.
+		let j_product: B128 = r_j.iter().copied().product();
+		let sra: Vec<_> = (0..1 << n).map(|i| sigma[i] + j_product * phi[i]).collect();
+		assert_eq!(sra, reference_indicator(&r_j, &r_s, |i, j, s| j == (i + s).min((1 << n) - 1)));
 	}
 
 	#[test]
-	fn test_rotr_ind_partial_eval() {
-		let mut rng = StdRng::seed_from_u64(0);
-		let n = 6;
-
-		// Test with random j and s
-		let j = random_scalars::<BinaryField128bGhash>(&mut rng, n);
-		let s = random_scalars::<BinaryField128bGhash>(&mut rng, n);
-
-		test_partial_eval_helper(rotr_ind_partial_eval, rotr_ind, &j, &s);
+	fn rotr_matches_reference() {
+		// rotr wraps bits leaving the bottom back to the top.
+		// So j = (i + s) mod 2^n.
+		let (r_j, r_s) = challenges(6);
+		let n = r_j.len();
+		let (sigma, sigma_prime) = partial_eval_sigmas(&r_j, &r_s);
+		let rotr: Vec<_> = (0..1 << n).map(|i| sigma[i] + sigma_prime[i]).collect();
+		assert_eq!(rotr, reference_indicator(&r_j, &r_s, |i, j, s| j == (i + s) % (1 << n)));
 	}
 }

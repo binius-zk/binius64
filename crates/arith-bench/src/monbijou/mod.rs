@@ -15,6 +15,7 @@ pub mod soft64;
 
 pub use clmul::{
 	mul as mul_clmul, mul_128b as mul_128b_clmul, mul_sliced_128b as mul_sliced_128b_clmul,
+	mul_sliced_192b as mul_sliced_192b_clmul,
 };
 
 /// The multiplicative identity in the Monbijou field

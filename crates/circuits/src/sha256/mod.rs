@@ -1,10 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 pub mod compress;
 
-use binius_core::{
-	consts::{LOG_BYTE_BITS, LOG_WORD_SIZE_BITS},
-	word::Word,
-};
+use binius_core::{consts::LOG_BYTE_BITS, word::Word};
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 pub use compress::{
 	State, populate_message_block, ref_compress, sha256_compress, sha256_compress_2x,
@@ -71,7 +68,7 @@ impl Sha256 {
 	/// * `message` - Input message as packed 64-bit words (8 bytes per wire)
 	///
 	/// # Panics If the total number of bits of content contained in `message` cannot be represented in 32
-	///   bits; i.e., if `message.len() << LOG_WORD_SIZE_BITS > u32::MAX`
+	///   bits; i.e., if `message.len() << Word::LOG_BITS > u32::MAX`
 	///
 	/// # Circuit Structure
 	/// The circuit performs the following validations:
@@ -117,11 +114,11 @@ impl Sha256 {
 		//
 		// We also verify that the actual input length len is within bounds.
 		assert!(
-			message.len() << LOG_WORD_SIZE_BITS <= u32::MAX as usize,
+			message.len() << Word::LOG_BITS <= u32::MAX as usize,
 			"length of message in bits must fit within 32 bits"
 		);
 
-		let max_len_bytes = message.len() << (LOG_WORD_SIZE_BITS - LOG_BYTE_BITS);
+		let max_len_bytes = message.len() << (Word::LOG_BITS - LOG_BYTE_BITS);
 		let n_blocks = (message.len() + 2).div_ceil(8);
 		let n_words = n_blocks << 3; // 8 message words per compression gadget block
 
@@ -395,7 +392,7 @@ impl Sha256 {
 
 	/// Returns the maximum message length, in bytes.
 	pub const fn max_len_bytes(&self) -> usize {
-		self.message.len() << (LOG_WORD_SIZE_BITS - LOG_BYTE_BITS)
+		self.message.len() << (Word::LOG_BITS - LOG_BYTE_BITS)
 	}
 
 	/// Populates the length wire with the actual message size in bytes.

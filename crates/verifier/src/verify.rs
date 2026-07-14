@@ -22,9 +22,7 @@ use itertools::chain;
 
 use super::error::Error;
 use crate::{
-	config::{
-		B1, B128, LOG_WORD_SIZE_BITS, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES,
-	},
+	config::{B1, B128, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
 	fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
 	protocols::{
@@ -135,8 +133,8 @@ impl IOPVerifier {
 				.entered();
 
 		let subfield_subspace = BinarySubspace::<B8>::default().isomorphic();
-		let extended_subspace = subfield_subspace.reduce_dim(LOG_WORD_SIZE_BITS + 1);
-		let domain_subspace = extended_subspace.reduce_dim(LOG_WORD_SIZE_BITS);
+		let extended_subspace = subfield_subspace.reduce_dim(Word::LOG_BITS + 1);
+		let domain_subspace = extended_subspace.reduce_dim(Word::LOG_BITS);
 
 		// Receive the trace oracle commitment via channel. The trace is the witness, so it is
 		// witness-dependent (masked in a ZK proof).

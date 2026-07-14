@@ -2,19 +2,12 @@
 
 //! The batched shift-reduction prover for the data-parallel Binius64 M4 proof system.
 
-#![allow(unused)]
-
-use binius_core::{
-	consts::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
-	word::Word,
-};
+use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	BinarySubspace, FieldBuffer,
-	inner_product::inner_product,
-	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_scalars},
+	BinarySubspace, FieldBuffer, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
 };
 use binius_prover::{
 	fold_word::{WordFolder, fold_words},
@@ -25,20 +18,20 @@ use binius_prover::{
 		phase_2::run_sumcheck,
 	},
 };
-use binius_utils::{checked_arithmetics::log2_strict_usize, rayon::prelude::*};
+use binius_utils::rayon::prelude::*;
 use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 
-use crate::ValueTable2;
+use crate::ValueTable;
 
 /// The number of variables in each "g" (and "h") multilinear of phase 1: one 6-bit shift-amount
 /// axis and one 6-bit bit-position axis.
-const LOG_LEN: usize = LOG_WORD_SIZE_BITS + LOG_WORD_SIZE_BITS;
+const LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS;
 
 /// A committed witness word after folding its bits into the field.
 ///
 /// Each 64-bit word contributes one field element per bit position, so a folded word is the oblong
 /// representation of that word: its bit axis expanded to full field elements.
-pub type FoldedWord<F> = [F; WORD_SIZE_BITS];
+pub type FoldedWord<F> = [F; Word::BITS];
 
 /// Folds the committed witness of a batch value table along the instance axis.
 ///
@@ -59,10 +52,10 @@ pub type FoldedWord<F> = [F; WORD_SIZE_BITS];
 /// so each set bit contributes its instance's equality weight to a full field element.
 ///
 /// The bit axis occupies the low coordinates and the word axis the high coordinates.
-/// The result is a multilinear over `LOG_WORD_SIZE_BITS + log2(n_committed)` variables:
+/// The result is a multilinear over `Word::LOG_BITS + log2(n_committed)` variables:
 ///
 /// ```text
-/// index = w * WORD_SIZE_BITS + b     (b occupies the low LOG_WORD_SIZE_BITS coordinates)
+/// index = w * Word::BITS + b     (b occupies the low Word::LOG_BITS coordinates)
 /// ```
 ///
 /// The table stores exactly the committed (hidden) words, so nothing here is excluded.
@@ -78,7 +71,7 @@ pub type FoldedWord<F> = [F; WORD_SIZE_BITS];
 /// # Panics
 ///
 /// Panics if `r_rho.len()` does not equal the batch dimension.
-pub fn fold_instances<F, P>(table: &ValueTable2, r_rho: &[F]) -> FieldBuffer<P>
+pub fn fold_instances<F, P>(table: &ValueTable, r_rho: &[F]) -> FieldBuffer<P>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -98,11 +91,11 @@ where
 	let folder = WordFolder::<F>::new(r_rho);
 
 	// Each output chunk holds one committed word position:
-	//     out[w * WORD_SIZE_BITS + b] = sum_rho eq(r_rho, rho) * bit_b(word[rho][w]).
+	//     out[w * Word::BITS + b] = sum_rho eq(r_rho, rho) * bit_b(word[rho][w]).
 	// The word positions are independent, so fold them in parallel.
 	// Positions beyond the committed count keep their zero padding.
-	let mut out = vec![F::ZERO; 1 << (LOG_WORD_SIZE_BITS + log_committed)];
-	out.par_chunks_mut(WORD_SIZE_BITS)
+	let mut out = vec![F::ZERO; 1 << (Word::LOG_BITS + log_committed)];
+	out.par_chunks_mut(Word::BITS)
 		.take(n_committed)
 		.enumerate()
 		.for_each(|(w, slot)| {
@@ -190,7 +183,7 @@ where
 		challenges: mut r_jr_s,
 		eval: gamma,
 	} = phase_1_output;
-	let r_s = r_jr_s.split_off(LOG_WORD_SIZE_BITS);
+	let r_s = r_jr_s.split_off(Word::LOG_BITS);
 	let r_j = r_jr_s;
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 
@@ -241,7 +234,7 @@ where
 ///
 /// The result is a flat accumulator split into `SHIFT_VARIANT_COUNT` multilinears of [`LOG_LEN`]
 /// variables each. Each multilinear is indexed by `(shift amount, bit position)`: for shift key
-/// `id = (variant << LOG_WORD_SIZE_BITS) | amount`, the slot at `id * WORD_SIZE_BITS + bit`
+/// `id = (variant << Word::LOG_BITS) | amount`, the slot at `id * Word::BITS + bit`
 /// accumulates, over every word carrying that key, the word's folded bit times the key's
 /// lambda-weighted partial evaluation tensor.
 ///
@@ -275,7 +268,7 @@ pub fn build_g_parts_from_folded_words<F: BinaryField>(
 			);
 
 			// Scatter the accumulator across this key's bit slots, scaling each by the folded bit.
-			let bit_base = key.id as usize * WORD_SIZE_BITS;
+			let bit_base = key.id as usize * Word::BITS;
 			for (bit, &folded_bit) in word.iter().enumerate() {
 				multilinears[bit_base + bit] += acc * folded_bit;
 			}
@@ -291,149 +284,30 @@ pub fn build_g_parts_from_folded_words<F: BinaryField>(
 		.expect("chunks yield SHIFT_VARIANT_COUNT parts of size 1 << LOG_LEN")
 }
 
-/// A CRC-64/GO-ISO circuit and reference implementation used to build shift-heavy witnesses for the
-/// shift-prover tests. These helpers will likely move to a crate-level module once the prover needs
-/// them outside of tests.
-#[cfg(test)]
-mod crc64 {
-	use binius_core::word::Word;
-	use binius_frontend::{Circuit, CircuitBuilder, Wire};
-
-	use crate::ValueTable2;
-
-	/// CRC-64/GO-ISO parameters.
-	///
-	/// The generator polynomial is `x^64 + x^4 + x^3 + x + 1`, normal form `0x1b`. Both input and
-	/// output are reflected, so the polynomial enters the register in its bit-reversed form.
-	const POLY_REFLECTED: u64 = 0xd800000000000000;
-	/// The register is preset to all ones before absorbing the message.
-	const INIT: u64 = 0xffffffffffffffff;
-	/// The final register is XORed with all ones before being returned.
-	const XOR_OUT: u64 = 0xffffffffffffffff;
-
-	/// The number of 64-bit input words the CRC circuit consumes.
-	pub const N_INPUT_WORDS: usize = 4;
-
-	/// Computes CRC-64/GO-ISO over `words`, absorbing bits least-significant-first.
-	///
-	/// Each input word contributes its 64 bits in order from bit 0 up to bit 63, and the words are
-	/// absorbed in index order. This is the reflected bitwise algorithm: for every message bit, the
-	/// register's low bit is combined with the message bit, the register is shifted right by one,
-	/// and the polynomial is conditionally mixed in.
-	///
-	/// The `Circuit` counterpart mirrors this loop gate for gate, so the two agree bit for bit.
-	pub fn crc64_iso_reference(words: &[u64; N_INPUT_WORDS]) -> u64 {
-		let mut crc = INIT;
-		for &word in words {
-			for i in 0..64 {
-				let bit = (word >> i) & 1;
-				let mix = (crc ^ bit) & 1;
-				crc >>= 1;
-				if mix != 0 {
-					crc ^= POLY_REFLECTED;
-				}
-			}
-		}
-		crc ^ XOR_OUT
-	}
-
-	/// A circuit computing CRC-64/GO-ISO over four private witness words.
-	///
-	/// The four inputs are ordinary witness wires, not public inout wires, so the whole computation
-	/// lives in the private witness. The output wire is force-committed: without an assertion or a
-	/// public output reading it, dead-code elimination would otherwise prune the entire CRC.
-	pub struct Crc64Circuit {
-		pub circuit: Circuit,
-		pub input: [Wire; N_INPUT_WORDS],
-		pub output: Wire,
-	}
-
-	/// Builds the CRC-64/GO-ISO circuit, mirroring [`crc64_iso_reference`] gate for gate.
-	pub fn crc64_circuit() -> Crc64Circuit {
-		let builder = CircuitBuilder::new();
-
-		// The four message words are private witnesses supplied by the prover.
-		let input = std::array::from_fn(|_| builder.add_witness());
-
-		// The register starts at the all-ones preset and the polynomial is a constant.
-		let mut crc = builder.add_constant_64(INIT);
-		let poly = builder.add_constant_64(POLY_REFLECTED);
-
-		for word in input {
-			for i in 0..64 {
-				// Isolate message bit `i` into the low bit; the higher bits are junk we discard.
-				let bit = if i == 0 { word } else { builder.shr(word, i) };
-
-				// The low bit that decides whether the polynomial is mixed in this step.
-				let mixed = builder.bxor(crc, bit);
-
-				// Broadcast that low bit across the whole word: all ones iff it is set, else zero.
-				// Shifting it up to bit 63 then arithmetic-shifting back fills every bit from it.
-				let to_msb = builder.shl(mixed, 63);
-				let mask = builder.sar(to_msb, 63);
-				let poly_term = builder.band(mask, poly);
-
-				// Advance the register: shift right by one, then conditionally mix the polynomial.
-				let shifted = builder.shr(crc, 1);
-				crc = builder.bxor(shifted, poly_term);
-			}
-		}
-
-		// Apply the final output XOR to produce the CRC value.
-		let output = builder.bxor(crc, builder.add_constant_64(XOR_OUT));
-
-		// Pin the output so the constraint compiler keeps the CRC computation alive.
-		builder.force_commit(output);
-
-		Crc64Circuit {
-			circuit: builder.build(),
-			input,
-			output,
-		}
-	}
-
-	/// Populates a wire-major batch table with one instance per input tuple.
-	///
-	/// The instance count is the number of tuples, which must be a power of two.
-	/// Each instance's four message words are the corresponding tuple.
-	/// Circuit evaluation derives the rest.
-	/// The circuit has no inout wires, so it is admissible in the wire-major table.
-	pub fn populate_crc64_witness(
-		c: &Crc64Circuit,
-		inputs: &[[u64; N_INPUT_WORDS]],
-	) -> ValueTable2 {
-		let log_instances = inputs.len().ilog2() as usize;
-		ValueTable2::populate(&c.circuit, log_instances, |i, filler| {
-			for (wire, &w) in c.input.iter().zip(&inputs[i]) {
-				filler[*wire] = Word(w);
-			}
-		})
-		.unwrap()
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use binius_core::{constraint_system::AndConstraint, verify::verify_constraints, word::Word};
 	use binius_field::{AESTowerField8b, Field, PackedBinaryGhash1x128b, Random};
 	use binius_math::{
-		inner_product::inner_product_buffers, multilinear::evaluate::evaluate,
-		test_utils::random_scalars, univariate::lagrange_evals_scalars,
+		inner_product::inner_product_buffers,
+		multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
+		test_utils::random_scalars,
+		univariate::lagrange_evals_scalars,
 	};
 	use binius_prover::{
 		fold_word::fold_words,
 		protocols::shift::{build_key_collection, monster::build_h_parts},
 	};
 	use binius_transcript::ProverTranscript;
-	use binius_utils::checked_arithmetics::log2_ceil_usize;
+	use binius_utils::checked_arithmetics::{log2_ceil_usize, log2_strict_usize};
 	use binius_verifier::{
 		config::{B128, StdChallenger},
 		protocols::shift::{OperatorData as VerifierOperatorData, check_eval, verify},
 	};
 	use rand::prelude::*;
 
-	use super::{crc64::*, *};
-	use crate::BatchAndCheckWitness;
+	use super::*;
+	use crate::{BatchAndCheckWitness, test_utils::*};
 
 	#[test]
 	fn circuit_matches_reference() {
@@ -510,7 +384,7 @@ mod tests {
 	//     sum_{rho, w, b} eq(r_rho, rho) * eq(r_wire, w) * eq(r_bit, b) * bit_b(word[rho][w])
 	//
 	// The evaluation point `r` is fresh and unrelated to the reduction's own r_z / r_x challenges;
-	// its low LOG_WORD_SIZE_BITS coordinates are the bit axis and its high coordinates are the word
+	// its low Word::LOG_BITS coordinates are the bit axis and its high coordinates are the word
 	// axis, matching the layout `fold_instances` produces.
 	#[test]
 	fn fold_instances_commutes_with_evaluation() {
@@ -521,7 +395,7 @@ mod tests {
 
 		// Cover every chunk regime of the per-column fold.
 		// A sub-chunk batch (< CHUNK_SIZE instances), exactly one chunk, and several chunks.
-		for log_instances in [3, LOG_WORD_SIZE_BITS, LOG_WORD_SIZE_BITS + 2] {
+		for log_instances in [3, Word::LOG_BITS, Word::LOG_BITS + 2] {
 			let n_instances = 1usize << log_instances;
 
 			let inputs: Vec<[u64; N_INPUT_WORDS]> = (0..n_instances)
@@ -538,7 +412,7 @@ mod tests {
 
 			// The instance-fold point, and a fresh point over the (bit, word) axes.
 			let r_rho = random_scalars::<B128>(&mut rng, log_instances);
-			let r = random_scalars::<B128>(&mut rng, LOG_WORD_SIZE_BITS + log_committed);
+			let r = random_scalars::<B128>(&mut rng, Word::LOG_BITS + log_committed);
 
 			// Route A: fold the instance axis, then evaluate the resulting (bit, word) multilinear
 			// at r.
@@ -547,7 +421,7 @@ mod tests {
 
 			// Route B: fold each word's bits by the tensor expansion of the bit coordinates, then
 			// evaluate the resulting (word, instance) multilinear over the word and instance axes.
-			let (r_bit, r_wire) = r.split_at(LOG_WORD_SIZE_BITS);
+			let (r_bit, r_wire) = r.split_at(Word::LOG_BITS);
 			let bit_tensor = eq_ind_partial_eval_scalars::<B128>(r_bit);
 
 			// Gather the committed words of every instance, instance-major: index = rho *
@@ -574,7 +448,7 @@ mod tests {
 	// r_x || r_rho. The columns are instance-major, so r_x (low) indexes the constraint within an
 	// instance and r_rho (high) indexes the instance.
 	fn evaluate_and_witness<P: PackedField<Scalar = B128>>(
-		table: &ValueTable2,
+		table: &ValueTable,
 		constants: &[Word],
 		and_constraints: &[AndConstraint],
 		domain_subspace: &BinarySubspace<B128>,
@@ -600,13 +474,13 @@ mod tests {
 	// This lets the public and hidden segments be folded separately, matching how `build_g_parts`
 	// consumes one segment at a time.
 	fn fold_words_over_instances(
-		table: &ValueTable2,
+		table: &ValueTable,
 		constants: &[Word],
 		r_rho: &[B128],
 		words: std::ops::Range<usize>,
 	) -> Vec<FoldedWord<B128>> {
 		let eq = eq_ind_partial_eval_scalars::<B128>(r_rho);
-		let mut folded = vec![[B128::ZERO; WORD_SIZE_BITS]; words.len()];
+		let mut folded = vec![[B128::ZERO; Word::BITS]; words.len()];
 		for (rho, &weight) in eq.iter().enumerate() {
 			// Reconstruct this instance independently of the fold, then fold its chosen word range.
 			let vv = table.instance_value_vec(rho, constants);
@@ -659,7 +533,7 @@ mod tests {
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace =
-			BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+			BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 		let r_z = B128::random(&mut rng);
 		let r_x = random_scalars::<B128>(&mut rng, log2_strict_usize(cs.n_and_constraints()));
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
@@ -669,10 +543,10 @@ mod tests {
 		let folded = fold_instances::<B128, P>(&table, &r_rho);
 		let scalars: Vec<B128> = folded.iter_scalars().collect();
 		let folded_witness: Vec<FoldedWord<B128>> = scalars
-			.chunks_exact(WORD_SIZE_BITS)
+			.chunks_exact(Word::BITS)
 			.map(|chunk| chunk.try_into().unwrap())
 			.collect();
-		let offset = table.layout().offset_witness;
+		let _offset = table.layout().offset_witness;
 		let public_words = &cs.constants;
 
 		// The bitand operand evals at (r_z, r_x, r_rho); the circuit has no MUL constraints, so the
@@ -778,7 +652,7 @@ mod tests {
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace =
-			BinarySubspace::<AESTowerField8b>::with_dim(LOG_WORD_SIZE_BITS).isomorphic();
+			BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 		let r_z = B128::random(&mut rng);
 		let r_x = random_scalars::<B128>(&mut rng, log2_strict_usize(cs.n_and_constraints()));
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);

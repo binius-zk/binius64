@@ -4,7 +4,7 @@
 
 use std::iter;
 
-use binius_core::{Word, consts::WORD_SIZE_BITS};
+use binius_core::Word;
 
 use crate::compiler::{CircuitBuilder, Wire, circuit::WitnessFiller};
 
@@ -96,7 +96,7 @@ pub fn all_true(b: &CircuitBuilder, booleans: impl IntoIterator<Item = Wire>) ->
 
 /// Convert MSB-bool into an all-1/all-0 mask.
 pub fn bool_to_mask(b: &CircuitBuilder, boolean: Wire) -> Wire {
-	b.sar(boolean, (WORD_SIZE_BITS - 1) as u32)
+	b.sar(boolean, (Word::BITS - 1) as u32)
 }
 
 /// Swap the byte order of the word.
@@ -109,7 +109,7 @@ pub fn byteswap(b: &CircuitBuilder, word: Wire) -> Wire {
 	});
 	bytes
 		.reduce(|lhs, rhs| b.bxor(lhs, rhs))
-		.expect("WORD_SIZE_BITS > 0")
+		.expect("Word::BITS > 0")
 }
 
 #[cfg(test)]

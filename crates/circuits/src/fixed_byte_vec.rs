@@ -3,7 +3,7 @@
 
 use std::ops::{Range, RangeInclusive};
 
-use binius_core::{consts::WORD_SIZE_BYTES, word::Word};
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
 
 /// A variable-length byte vector with fixed capacity determined at circuit construction time.
@@ -72,7 +72,7 @@ impl ByteVec {
 	///
 	/// The length range defaults to the full `0..capacity`, preserving the fully-dynamic behavior.
 	pub fn new(data: Vec<Wire>, len_bytes: Wire) -> Self {
-		let capacity = data.len() * WORD_SIZE_BYTES;
+		let capacity = data.len() * Word::BYTES;
 		Self::new_with_len_range(data, len_bytes, 0..=capacity)
 	}
 
@@ -89,7 +89,7 @@ impl ByteVec {
 		len_bytes: Wire,
 		len_range: RangeInclusive<usize>,
 	) -> Self {
-		let capacity = data.len() * WORD_SIZE_BYTES;
+		let capacity = data.len() * Word::BYTES;
 		assert!(len_range.start() <= len_range.end(), "invalid len_range: start > end");
 		assert!(
 			*len_range.end() <= capacity,
@@ -289,10 +289,10 @@ pub(crate) fn extract_const_range(
 ) -> Vec<Wire> {
 	assert!(range.start <= range.end, "invalid range: start > end");
 	assert!(
-		range.end <= data.len() * WORD_SIZE_BYTES,
+		range.end <= data.len() * Word::BYTES,
 		"range.end {} exceeds capacity {}",
 		range.end,
-		data.len() * WORD_SIZE_BYTES
+		data.len() * Word::BYTES
 	);
 
 	let slice_len = range.len();
@@ -300,11 +300,11 @@ pub(crate) fn extract_const_range(
 		return Vec::new();
 	}
 
-	let start_word_idx = range.start / WORD_SIZE_BYTES;
+	let start_word_idx = range.start / Word::BYTES;
 	// Word index containing the last byte of the sliced data.
-	let last_word_index = (range.end - 1) / WORD_SIZE_BYTES;
-	let byte_offset = range.start % WORD_SIZE_BYTES;
-	let num_output_words = slice_len.div_ceil(WORD_SIZE_BYTES);
+	let last_word_index = (range.end - 1) / Word::BYTES;
+	let byte_offset = range.start % Word::BYTES;
+	let num_output_words = slice_len.div_ceil(Word::BYTES);
 
 	// Extract words with shifting if needed. Bytes of the final word beyond the slice length are
 	// left as-is (a `ByteVec` makes no guarantee about byte values past its length).
@@ -324,8 +324,7 @@ pub(crate) fn extract_const_range(
 				if source_idx < last_word_index {
 					let next_word = data[source_idx + 1];
 					// Shift next word left to fill in the high bytes.
-					let shifted_next =
-						b.shl(next_word, ((WORD_SIZE_BYTES - byte_offset) * 8) as u32);
+					let shifted_next = b.shl(next_word, ((Word::BYTES - byte_offset) * 8) as u32);
 					// Combine the two parts (XOR is cheaper than OR).
 					b.bxor(shifted_current, shifted_next)
 				} else {

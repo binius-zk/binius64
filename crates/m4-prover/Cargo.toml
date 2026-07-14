@@ -38,3 +38,7 @@ rayon = ["binius-utils/rayon"]
 [[bench]]
 name = "keccak_witness_gen"
 harness = false
+
+[[bench]]
+name = "blake3_compressions"
+harness = false

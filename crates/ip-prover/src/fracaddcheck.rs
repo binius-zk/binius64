@@ -16,6 +16,8 @@ use crate::{
 		batch::batch_prove_mle_and_write_evals,
 		common::{MleCheckProver, SumcheckProver},
 		frac_add_mle::{self, FractionalBuffer},
+		mle_store::{ColId, MleStore},
+		round_evaluator::{RoundEvaluator, SharedMleCheckProver},
 	},
 };
 
@@ -23,6 +25,13 @@ use crate::{
 ///
 /// Both claims share the same evaluation point, that of the layer they describe.
 pub type FracEvalClaim<F> = (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>);
+
+/// The store-based MLE-check prover for one fractional-addition layer.
+///
+/// Returned by `FracAddCheckProver::layer_prover`. It owns its four half-columns, so it is
+/// self-contained: a caller can drive it, batch it, or extend its store with more columns and
+/// evaluators (as the logUp* final layer does).
+pub type LayerProver<F, P> = SharedMleCheckProver<'static, F, P, Box<dyn RoundEvaluator<F, P>>>;
 
 /// Prover for the fractional addition protocol.
 ///
@@ -94,20 +103,21 @@ where
 
 	/// Pops the last layer and returns a sumcheck prover for it.
 	///
-	/// Returns `(layer_prover, remaining)` where:
-	/// - `layer_prover` is a sumcheck prover for the popped layer
+	/// Returns `(layer_prover, remaining, cols)` where:
 	/// - `remaining` is `Some(self)` if there are more layers, `None` otherwise
+	/// - `layer_prover` is a sumcheck prover for the popped layer
+	/// - `cols` contains the [`MleStore`] column IDs `[num_0, num_1, den_0, den_1]`
 	pub fn layer_prover(
 		mut self,
 		claim: FracEvalClaim<F>,
-	) -> (impl MleCheckProver<F>, Option<Self>) {
+	) -> (Option<Self>, LayerProver<F, P>, [ColId; 4]) {
 		let (num_claim, den_claim) = claim;
 		assert_eq!(
 			num_claim.point, den_claim.point,
 			"fractional claims must share the evaluation point"
 		);
 
-		let layer = self.layers.pop().expect("layers is non-empty");
+		let (num, den) = self.layers.pop().expect("layers is non-empty");
 
 		let remaining = if self.layers.is_empty() {
 			None
@@ -115,17 +125,24 @@ where
 			Some(self)
 		};
 
-		let (num, den) = layer;
-		// The MLE-check reduces four multilinears.
-		// These are the low and high halves of the numerator buffer and of the denominator buffer.
-		// Splitting the owned buffers hands those halves over by borrow, so the fold runs in place.
-		let prover = frac_add_mle::new(
-			[num.split_half(), den.split_half()],
+		// The MLE-check reduces four multilinears: the low and high halves of the numerator buffer
+		// and of the denominator buffer. The store takes ownership of the two popped buffers and
+		// shares each between its halves, so the prover is self-contained with no up-front copy of
+		// the popped layer.
+		let mut store = MleStore::new(num.log_len() - 1);
+		let [num_0, num_1] = store.push_split_half(num);
+		let [den_0, den_1] = store.push_split_half(den);
+		let cols = [num_0, num_1, den_0, den_1];
+		let (num_evaluator, den_evaluator) = frac_add_mle::evaluators(
+			&mut store,
+			cols,
 			num_claim.point.clone(),
 			[num_claim.eval, den_claim.eval],
 		);
 
-		(prover, remaining)
+		let evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> =
+			vec![Box::new(num_evaluator), Box::new(den_evaluator)];
+		(remaining, SharedMleCheckProver::new(store, evaluators, num_claim.point), cols)
 	}
 
 	/// Runs the fractional addition check protocol and returns the final evaluation claims.
@@ -188,7 +205,7 @@ where
 			let prover = prover_opt
 				.take()
 				.expect("precondition: n_layers <= self.n_layers()");
-			let (sumcheck_prover, remaining) = prover.layer_prover(claim);
+			let (remaining, sumcheck_prover, _) = prover.layer_prover(claim);
 			prover_opt = remaining;
 
 			let output = batch_prove_mle_and_write_evals(vec![sumcheck_prover], channel);
@@ -333,7 +350,7 @@ pub struct BatchProveUntilFinalLayerOutput<F, MP> {
 /// Runs a batched fractional-addition check up to (but not finishing) the final layer's MLE-check.
 ///
 /// Runs `n_layers - 1` of the per-layer reductions, then — for each input prover — pops its final
-/// (widest) layer as an [`MleCheckProver`] (via [`FracAddCheckProver::layer_prover`]), seeded at
+/// (widest) layer as an [`MleCheckProver`] (via `FracAddCheckProver::layer_prover`), seeded at
 /// the reduced content coordinates with the prover's reduced `(num, den)` fraction claim.
 ///
 /// # Returns
@@ -351,7 +368,7 @@ pub fn batch_prove_until_final_layer<F, P, Channel>(
 	selector_point: Vec<F>,
 	content_point: Vec<F>,
 	channel: &mut Channel,
-) -> BatchProveUntilFinalLayerOutput<F, impl MleCheckProver<F> + use<F, P, Channel>>
+) -> BatchProveUntilFinalLayerOutput<F, LayerProver<F, P>>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
@@ -387,7 +404,7 @@ where
 	let inner_coords = eval_point[k..].to_vec();
 	let final_layer = iter::zip(provers, claimed_fractions)
 		.map(|(prover, (num, den))| {
-			let (mle_prover, remaining) = prover.layer_prover((
+			let (remaining, mle_prover, _cols) = prover.layer_prover((
 				MultilinearEvalClaim {
 					eval: num,
 					point: inner_coords.clone(),
@@ -505,17 +522,26 @@ where
 		.sum();
 
 	// Selector rounds: fold the selector variables with a single fractional-addition MLE-check over
-	// the packed reduced halves, reusing the same `batch_coeff`.
-	let mut selector_prover = frac_add_mle::new(
-		[
-			FieldBuffer::<P>::from_values(&num_0s),
-			FieldBuffer::<P>::from_values(&num_1s),
-			FieldBuffer::<P>::from_values(&den_0s),
-			FieldBuffer::<P>::from_values(&den_1s),
-		],
+	// the packed reduced halves, reusing the same `batch_coeff`. The reduced halves are freshly
+	// packed, so the store owns them directly.
+	let mut selector_store = MleStore::new(k);
+	let selector_cols = [
+		FieldBuffer::<P>::from_values(&num_0s),
+		FieldBuffer::<P>::from_values(&num_1s),
+		FieldBuffer::<P>::from_values(&den_0s),
+		FieldBuffer::<P>::from_values(&den_1s),
+	]
+	.map(|buffer| selector_store.push_owned(buffer));
+	let (selector_num, selector_den) = frac_add_mle::evaluators(
+		&mut selector_store,
+		selector_cols,
 		outer_coords.to_vec(),
 		[num_eval, den_eval],
 	);
+	let selector_evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> =
+		vec![Box::new(selector_num), Box::new(selector_den)];
+	let mut selector_prover =
+		SharedMleCheckProver::new(selector_store, selector_evaluators, outer_coords.to_vec());
 
 	for _round in 0..k {
 		let round_coeffs = combine_claims(selector_prover.execute(), batch_coeff);
@@ -571,7 +597,7 @@ where
 	let inner_coords = eval_point[k..].to_vec();
 	let (layer_provers, next_provers): (Vec<_>, Vec<_>) = iter::zip(provers, &claimed_fractions)
 		.map(|(prover, &(num, den))| {
-			prover.layer_prover((
+			let (remaining, layer_prover, _cols) = prover.layer_prover((
 				MultilinearEvalClaim {
 					eval: num,
 					point: inner_coords.clone(),
@@ -580,7 +606,8 @@ where
 					eval: den,
 					point: inner_coords.clone(),
 				},
-			))
+			));
+			(layer_prover, remaining)
 		})
 		.unzip();
 

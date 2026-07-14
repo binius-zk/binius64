@@ -81,14 +81,14 @@ impl BigUint {
 	}
 
 	/// Splits the `BigUint` at a given limb position into `(lo, hi)`. The result
-	/// satisfies `lo + 2^(WORD_SIZE_BITS * lo.limbs.len()) * hi`.
+	/// satisfies `lo + 2^(Word::BITS * lo.limbs.len()) * hi`.
 	pub fn split_at_limbs(mut self, at_limbs: usize) -> (Self, Self) {
 		let hi_limbs = self.limbs.split_off(at_limbs);
 		(self, Self { limbs: hi_limbs })
 	}
 
 	/// Concatenate the limbs of another `BigUint` on top. The resulting value
-	/// equals `self + 2^(WORD_SIZE_BITS * self.limbs.len()) * hi`.
+	/// equals `self + 2^(Word::BITS * self.limbs.len()) * hi`.
 	pub fn concat_limbs(&self, hi: &Self) -> Self {
 		let mut limbs = self.limbs.clone();
 		limbs.extend(&hi.limbs);

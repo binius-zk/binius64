@@ -9,16 +9,15 @@ use binius_ip::sumcheck::{RoundCoeffs, SumcheckOutput};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
-		ProveSingleOutput, bivariate_product::BivariateProductSumcheckProver, prove_single,
-		round_evals::RoundEvals2,
+		ProveSingleOutput, bivariate_product_prover, prove_single, round_evals::RoundEvals2,
 	},
 };
 use binius_math::{
 	BinarySubspace, FieldBuffer,
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_zero},
 };
-use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
-use binius_verifier::{config::LOG_WORD_SIZE_BITS, protocols::shift::evaluate_words_mle};
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_verifier::protocols::shift::evaluate_words_mle;
 use tracing::instrument;
 
 use super::{
@@ -69,10 +68,10 @@ where
 		challenges: mut r_jr_s,
 		eval: gamma,
 	} = phase_1_output;
-	// Split challenges as r_j,r_s where r_j is the first LOG_WORD_SIZE_BITS
-	// variables and r_s is the last LOG_WORD_SIZE_BITS variables
+	// Split challenges as r_j,r_s where r_j is the first Word::LOG_BITS
+	// variables and r_s is the last Word::LOG_BITS variables
 	// Thus r_s are the more significant variables.
-	let r_s = r_jr_s.split_off(LOG_WORD_SIZE_BITS);
+	let r_s = r_jr_s.split_off(Word::LOG_BITS);
 	let r_j = r_jr_s;
 
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
@@ -193,9 +192,9 @@ fn fold_segments<F: Field, P: PackedField<Scalar = F>>(
 /// The witness `W` and monster `M` are each given as a (public, hidden) segment pair; the top
 /// word-index variable selects the segment. The first round (`first_round_coeffs`) binds that
 /// selector without materializing the mostly-zero combined buffers. After the selector challenge
-/// the segment pairs fold into single dense buffers (`fold_segments`) and the standard
-/// [`BivariateProductSumcheckProver`] proves the remaining rounds, so every round message is
-/// identical to the dense prover's.
+/// the segment pairs fold into single dense buffers (`fold_segments`) and the standard shared
+/// bivariate-product prover (`bivariate_product_prover`) proves the remaining rounds, so every
+/// round message is identical to the dense prover's.
 ///
 /// After the sumcheck this derives the witness evaluation from the combined evaluation by
 /// evaluating the public segment (cheap, like the verifier does), subtracting its padded
@@ -235,7 +234,7 @@ where
 	// standard prover.
 	let folded_witness = fold_segments(&public_folded, hidden_folded, alpha);
 	let folded_monster = fold_segments(&public_monster, hidden_monster, alpha);
-	let prover = BivariateProductSumcheckProver::new([folded_witness, folded_monster], round_sum);
+	let prover = bivariate_product_prover([folded_witness, folded_monster], round_sum);
 
 	let ProveSingleOutput {
 		multilinear_evals,
@@ -256,7 +255,9 @@ where
 	// selector challenge is zero.
 	let log_half = r_y.len() - 1;
 	let r_segment = r_y[log_half];
-	let log_public_words = checked_log_2(public_words.len());
+	// Round the public word count up to a power of two: the segment spans that many word slots.
+	// The count itself need not be a power of two, and the MLE reads the missing words as zero.
+	let log_public_words = log2_ceil_usize(public_words.len());
 	let public_eval = evaluate_words_mle::<F, F>(public_words, &r_j, &r_y[..log_public_words]);
 	let padded_public_eval = eq_ind_zero(&r_y[log_public_words..log_half]) * public_eval;
 	let witness_eval =

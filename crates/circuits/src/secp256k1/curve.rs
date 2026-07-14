@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
-use binius_core::consts::WORD_SIZE_BITS;
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
 use super::{
@@ -73,7 +73,7 @@ impl Secp256k1 {
 
 		// both residues differ in parity
 		let res_1_low_limb = *res_1.limbs.first().expect("N_LIMBS > 0");
-		let odd_1 = b.shl(res_1_low_limb, (WORD_SIZE_BITS - 1) as u32);
+		let odd_1 = b.shl(res_1_low_limb, (Word::BITS - 1) as u32);
 		let is_res_2 = b.bxor(odd_1, recid_odd);
 
 		let y = select(b, is_res_2, &res_2, &res_1);

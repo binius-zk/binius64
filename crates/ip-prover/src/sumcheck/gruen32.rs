@@ -66,6 +66,16 @@ impl<F: Field, P: PackedField<Scalar = F>> Gruen32<P> {
 		self.eval_point[self.n_vars_remaining - 1]
 	}
 
+	/// Returns the product of the equality terms of all previously bound coordinates.
+	///
+	/// This is the accumulated `∏ eq(challenge_i, α_i)` over the coordinates folded so far, the
+	/// scaling factor the [Gruen24] technique applies to each round polynomial.
+	///
+	/// [Gruen24]: <https://eprint.iacr.org/2024/108>
+	pub const fn eq_prefix_eval(&self) -> F {
+		self.eq_prefix_eval
+	}
+
 	pub fn eq_expansion(&self) -> &FieldBuffer<P> {
 		assert_eq!(self.suffix_eq_expansion.log_len(), 0);
 		&self.chunk_eq_expansion
@@ -85,7 +95,6 @@ impl<F: Field, P: PackedField<Scalar = F>> Gruen32<P> {
 
 	// An interpolation routine for degree-2 round polynomials. Takes P'(x) evals and sum claim on
 	// P(x).
-	#[allow(dead_code)]
 	pub fn interpolate2(
 		&self,
 		sum: F,

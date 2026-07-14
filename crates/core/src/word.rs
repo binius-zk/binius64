@@ -6,7 +6,10 @@ use std::{
 	ops::{BitAnd, BitOr, BitXor, Not, Shl, Shr},
 };
 
-use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
+use binius_utils::{
+	checked_arithmetics::checked_log_2,
+	serialization::{DeserializeBytes, SerializationError, SerializeBytes},
+};
 use bytemuck::{Pod, Zeroable};
 use bytes::{Buf, BufMut};
 
@@ -20,6 +23,13 @@ use bytes::{Buf, BufMut};
 pub struct Word(pub u64);
 
 impl Word {
+	/// The size of a [`Word`] in bytes; the protocol proves constraint systems over 64-bit words.
+	pub const BYTES: usize = size_of::<Word>();
+	/// The size of a [`Word`] in bits (mirrors [`u64::BITS`]).
+	pub const BITS: usize = Self::BYTES * 8;
+	/// log2 of [`Word::BITS`].
+	pub const LOG_BITS: usize = checked_log_2(Self::BITS);
+
 	/// All zero bit pattern, zero, nil, null.
 	pub const ZERO: Word = Word(0);
 	/// 1.

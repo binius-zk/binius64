@@ -31,12 +31,9 @@ use binius_math::{
 	},
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
-use binius_verifier::{
-	config::{LOG_WORD_SIZE_BITS, WORD_SIZE_BITS},
-	protocols::intmul::common::{
-		IntMulOutput, LIMB_BITS, LOG_N_LIMBS, N_LIMB_COLUMNS, N_LIMBS, Phase1Output, Phase2Output,
-		Phase3Output, Phase4Output, frobenius_twist, limb_column_twists, twist_limb_claim,
-	},
+use binius_verifier::protocols::intmul::common::{
+	IntMulOutput, LIMB_BITS, LOG_N_LIMBS, N_LIMB_COLUMNS, N_LIMBS, Phase1Output, Phase2Output,
+	Phase3Output, Phase4Output, frobenius_twist, limb_column_twists, twist_limb_claim,
 };
 use either::Either;
 use itertools::izip;
@@ -74,7 +71,7 @@ where
 	/// This method consumes a `Witness` in order to reduce integer multiplication statement to
 	/// evaluation claims on 1-bit multilinears. More formally:
 	///  * `witness` contains po2-sized integer arrays  `a`, `b`, `c_lo` and `c_hi` that satisfy `a
-	///    * b = c_lo | c_hi << WORD_SIZE_BITS`, as well as the layers of the constant- and
+	///    * b = c_lo | c_hi << Word::BITS`, as well as the layers of the constant- and
 	///      variable-base GKR product check circuits
 	///  * The proving consists of five phases:
 	///    - Phase 1: GKR tree roots for B & C are evaluated at a sampled point, after which
@@ -135,7 +132,7 @@ where
 			twisted_eval_points,
 			twisted_evals,
 		} = tracing::debug_span!("IntMul phase2 (Frobenius twist)")
-			.in_scope(|| frobenius_twist(LOG_WORD_SIZE_BITS, &phase1_eval_point, &b_leaves_evals));
+			.in_scope(|| frobenius_twist(Word::LOG_BITS, &phase1_eval_point, &b_leaves_evals));
 
 		// Phase 3
 		let Phase3Output {
@@ -441,7 +438,7 @@ where
 		// 2^k claims with a multilinear one; the verifier mirrors it by weighting the corresponding
 		// terms by eq_k(γ, ·). γ is sampled before the batched sumcheck so the round polynomials
 		// are fixed against it.
-		let gamma = self.channel.sample_many(LOG_WORD_SIZE_BITS);
+		let gamma = self.channel.sample_many(Word::LOG_BITS);
 		let eq_weights = eq_ind_partial_eval_scalars::<F>(&gamma);
 		// `SelectorMlecheckProver` reads the exponent bits through the `Bitwise` bitmask
 		// abstraction, which is implemented for the primitive integer types. `Word` is
@@ -472,7 +469,7 @@ where
 			.try_into()
 			.expect("batch_prove with two provers returns length-2 multilinear_evals");
 
-		assert_eq!(selector_prover_evals.len(), 1 + WORD_SIZE_BITS);
+		assert_eq!(selector_prover_evals.len(), 1 + Word::BITS);
 
 		let gpow_a_eval = selector_prover_evals
 			.pop()
@@ -485,7 +482,7 @@ where
 		// Recombine the 2^k per-bit b(i, r) claims into a single claim b(r_I^b, r) by sampling a
 		// recombination point r_I^b in K^k, matching the verifier. This carries one exponent claim
 		// (rather than 2^k) into Phases 4 and 5.
-		let r_ib = self.channel.sample_many(LOG_WORD_SIZE_BITS);
+		let r_ib = self.channel.sample_many(Word::LOG_BITS);
 		let b_recomb = evaluate(&FieldBuffer::<P>::from_values(&b_evals), &r_ib);
 
 		Phase3Output {
