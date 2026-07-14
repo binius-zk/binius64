@@ -10,6 +10,8 @@
 //! instructions, optimized for SIMD parallelism across vector types like __m128i or __m256i. The
 //! [`soft64`] submodule provides portable implementations that use no CLMUL or SIMD intrinsics.
 
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64;
 pub mod clmul;
 pub mod soft64;
 
