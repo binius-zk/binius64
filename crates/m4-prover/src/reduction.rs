@@ -27,7 +27,7 @@ use binius_verifier::{config::B128, protocols::bitand::AndCheckOutput};
 
 use crate::{
 	BatchAndCheckWitness, ValueTable,
-	bitand::build_intmul_witness,
+	operand_witness::build_intmul_witness,
 	shift::{fold_instances, prove as prove_shift},
 };
 

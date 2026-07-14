@@ -1,6 +1,13 @@
 // Copyright 2025 Irreducible Inc.
 
-//! The batched BitAnd-check witness built from a populated batch value table.
+//! The batched operand-column witnesses built from a populated batch value table.
+//!
+//! Every AND and MUL constraint is projected to its fixed-arity operand columns (`[A, B, C]` for
+//! AND, `[A, B, HI, LO]` for MUL), one column per operand, stacked over every instance in the
+//! batch. [`build_operation_witness`] is the shared arity-generic core: it projects one operand
+//! per constraint into one column. [`BatchAndCheckWitness`] builds the three AND columns and
+//! drives the AND-check zerocheck; [`build_intmul_witness`] builds the four IntMul columns, not
+//! yet consumed downstream.
 
 use std::{iter, ptr};
 
@@ -233,8 +240,8 @@ impl BatchAndCheckWitness {
 ///
 /// - `table`: the wire-major batch witness holding every instance's hidden words.
 /// - `constants`: the circuit's constant words, shared by every instance.
-/// - `operands`: one operand per constraint, in order; the returned column follows that same
-///   order. Pass operands from a prepared constraint system, so their count is a power of two.
+/// - `operands`: one operand per constraint, in order; the returned column follows that same order.
+///   Pass operands from a prepared constraint system, so their count is a power of two.
 ///
 /// # Panics
 ///
@@ -308,7 +315,8 @@ pub fn build_operation_witness<'a>(
 							*out_i = *out_i ^ shifted_constant;
 						}
 					} else {
-						let index = shifted_index.value_index.0 as usize - witness_offset.0 as usize;
+						let index =
+							shifted_index.value_index.0 as usize - witness_offset.0 as usize;
 						let src =
 							&table_words[(index << log_instances)..((index + 1) << log_instances)];
 
@@ -644,8 +652,8 @@ mod tests {
 			assert_eq!(col.len(), 4 * n_mul);
 		}
 
-		// Invariant: row `j * n_instances + instance` is constraint `j` of that instance, and each of
-		// the four columns equals the single-instance reference for its inputs.
+		// Invariant: row `j * n_instances + instance` is constraint `j` of that instance, and each
+		// of the four columns equals the single-instance reference for its inputs.
 		let n_instances = table.n_instances();
 		for instance in 0..n_instances {
 			let vv = table.instance_value_vec(instance, constants);
