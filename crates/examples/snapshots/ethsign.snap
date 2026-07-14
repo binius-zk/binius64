@@ -1,28 +1,28 @@
 ethsign circuit
 --
 Gates & Instructions
-├─ Number of gates: 231,747
-└─ Number of evaluation instructions: 277,447
+├─ Number of gates: 215,211
+└─ Number of evaluation instructions: 252,748
 
 Constraints
-├─ AND constraints: 176,819 used (67.5% of 2^18)
-│  [▓▓▓▓▓▓░░░░] spare: 85,325
+├─ AND constraints: 162,132 used (61.8% of 2^18)
+│  [▓▓▓▓▓▓░░░░] spare: 100,012
 ├─ MUL constraints: 20,554 used (62.7% of 2^15)
 │  [▓▓▓▓▓▓░░░░] spare: 12,214
-└─ Distinct value indices: 396,181
-   ├─ Distinct shifted value indices: 191,069
-   └─ Distinct unshifted value indices: 205,112
+└─ Distinct value indices: 367,241
+   ├─ Distinct shifted value indices: 174,974
+   └─ Distinct unshifted value indices: 192,267
 
 Value Vector
 ├─ Public Section: 119 used (93.0% of 2^7)
 │  [▓▓▓▓▓▓▓▓▓░] spare: 9
 │  ├─ Constants: 90
 │  └─ Inout: 29
-├─ Private Section: 205,003 used (78.2%)
-│  [▓▓▓▓▓▓▓░░░] spare: 57,013
+├─ Private Section: 192,158 used (73.3%)
+│  [▓▓▓▓▓▓▓░░░] spare: 69,858
 │  ├─ Witness: 42
-│  └─ Internal: 204,961
-├─ Total Committed: 205,122 used (78.2% of 2^18)
-│  [▓▓▓▓▓▓▓░░░] spare: 57,022
-└─ Scratch (uncommitted): 212,427
+│  └─ Internal: 192,116
+├─ Total Committed: 192,277 used (73.3% of 2^18)
+│  [▓▓▓▓▓▓▓░░░] spare: 69,867
+└─ Scratch (uncommitted): 193,718
 

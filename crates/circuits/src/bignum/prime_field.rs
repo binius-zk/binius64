@@ -4,7 +4,8 @@ use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, util::num_biguint_from_u64_limbs};
 
 use super::{
-	BigUint, BigUintDivideHint, ModDivideHint, ModInverseHint, PseudoMersenneModReduce, add,
+	BigUint, BigUintDivideHint, ModDivideHint, ModInverseHint, PseudoMersenneModReduce,
+	addsub::{add_with_carry_out, sub_with_borrow_out},
 	biguint_lt, sub, textbook_mul, textbook_square,
 };
 
@@ -54,27 +55,22 @@ impl PseudoMersennePrimeField {
 		let l = self.limbs_len();
 		assert!(fe1.limbs.len() == l && fe2.limbs.len() == l);
 
-		let zero = b.add_constant(Word::ZERO);
+		// Both inputs are reduced, so the sum is below `2 * modulus` and the overflow past
+		// the top limb is a single bit. Carrying it in a wire avoids widening every limbwise
+		// operation below by an extra limb.
+		let (sum, carry) = add_with_carry_out(b, fe1, fe2);
 
-		// May need an extra limb to accommodate overflow.
-		let extra_limbs = if self.modulus_po2 + 1 > l * Word::BITS {
-			1
-		} else {
-			0
-		};
-
-		let fe1 = fe1.pad_limbs_to(l + extra_limbs, zero);
-		let fe2 = fe2.pad_limbs_to(l + extra_limbs, zero);
-		let modulus = self.modulus.pad_limbs_to(l + extra_limbs, zero);
-
-		let unreduced_sum = add(b, &fe1, &fe2);
+		// A carry means the sum reached `2^(64 * l)`, which is above the modulus, so the
+		// comparison only matters when no carry occurred.
 		// TODO: consider nondeterminism
-		let need_reduction = b.bnot(biguint_lt(b, &unreduced_sum, &modulus));
-		let reduced = sub(b, &unreduced_sum, &modulus.zero_unless(b, need_reduction));
+		let need_reduction = b.bor(carry, b.bnot(biguint_lt(b, &sum, &self.modulus)));
 
-		// Higher limb is zero if max(fe1, fe2) < modulus (both are correctly represented)
-		let (result, _) = reduced.split_at_limbs(l);
-		result
+		// Wrapping subtraction is exact here: without a carry the difference is non-negative,
+		// and with one it borrows out by exactly the `2^(64 * l)` the carry stands for.
+		let (reduced, _borrow) =
+			sub_with_borrow_out(b, &sum, &self.modulus.zero_unless(b, need_reduction));
+
+		reduced
 	}
 
 	/// Field subtraction.
