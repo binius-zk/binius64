@@ -889,6 +889,10 @@ mod tests {
 		// Hand-craft constraints that carry real shifts on hidden operands.
 		// The circuit compiler emits unshifted operands here, so the shifted branch of the
 		// accumulator would otherwise go untested by this module.
+		//
+		// The `c` operand is deliberately unrelated to `a & b`: `BatchAndCheckWitness::build`
+		// derives `c` from `a` and `b` rather than evaluating the constraint's `c` operand, so this
+		// fixture need not satisfy the AND relation to exercise `a` and `b`'s shift handling.
 		let x = c.circuit.witness_index(c.x);
 		let y = c.circuit.witness_index(c.y);
 		let z = c.circuit.witness_index(c.z);
@@ -906,7 +910,7 @@ mod tests {
 		// Sanity: at least one operand term really is shifted, so the else-branch runs.
 		let shifted = and_constraints
 			.iter()
-			.flat_map(|con| [&con.a, &con.b, &con.c])
+			.flat_map(|con| [&con.a, &con.b])
 			.any(|op| {
 				op.iter()
 					.any(|sv| sv.shift_variant != ShiftVariant::Sll || sv.amount != 0)
@@ -915,12 +919,15 @@ mod tests {
 
 		let witness = BatchAndCheckWitness::build(&table, constants(&c), &and_constraints);
 
-		// Each constraint's block equals the shift-aware value-vec reference for the same
-		// constraints.
-		let (a_ref, b_ref, c_ref) = reference_columns(&table, constants(&c), &and_constraints);
+		// `a` and `b` equal the shift-aware value-vec reference for the same constraints.
+		let (a_ref, b_ref, _) = reference_columns(&table, constants(&c), &and_constraints);
 		assert_eq!(witness.a(), a_ref.as_slice());
 		assert_eq!(witness.b(), b_ref.as_slice());
-		assert_eq!(witness.c(), c_ref.as_slice());
+
+		// `c` is defined as `a & b`, not evaluated from the constraint's `c` operand.
+		for ((a, b), c) in witness.a().iter().zip(witness.b()).zip(witness.c()) {
+			assert_eq!(a.0 & b.0, c.0);
+		}
 	}
 
 	#[test]
