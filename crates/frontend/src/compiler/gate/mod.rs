@@ -28,15 +28,8 @@ pub mod icmp_eq;
 pub mod icmp_ult;
 pub mod imul;
 pub mod isub_bin_bout;
-pub mod rotr;
-pub mod rotr32;
-pub mod sar;
 pub mod select;
-pub mod shl;
-pub mod shr;
-pub mod sll32;
-pub mod sra32;
-pub mod srl32;
+pub mod shift;
 
 pub fn constrain(gate: Gate, graph: &GateGraph, builder: &mut ConstraintBuilder) {
 	let data = &graph.gates[gate];
@@ -51,11 +44,7 @@ pub fn constrain(gate: Gate, graph: &GateGraph, builder: &mut ConstraintBuilder)
 		Opcode::Iadd32 => iadd32::constrain(gate, data, builder),
 		Opcode::Iadd32CinCout => iadd32_cin_cout::constrain(gate, data, builder),
 		Opcode::IsubBinBout => isub_bin_bout::constrain(gate, data, builder),
-		Opcode::Sll32 => sll32::constrain(gate, data, builder),
-		Opcode::Srl32 => srl32::constrain(gate, data, builder),
-		Opcode::Rotr32 => rotr32::constrain(gate, data, builder),
-		Opcode::Sra32 => sra32::constrain(gate, data, builder),
-		Opcode::Rotr => rotr::constrain(gate, data, builder),
+		Opcode::Shift => shift::constrain(gate, data, builder),
 		Opcode::AssertEq => assert_eq::constrain(gate, data, builder),
 		Opcode::AssertZero => assert_zero::constrain(gate, data, builder),
 		Opcode::AssertNonZero => assert_non_zero::constrain(gate, data, builder),
@@ -65,9 +54,6 @@ pub fn constrain(gate: Gate, graph: &GateGraph, builder: &mut ConstraintBuilder)
 		Opcode::Imul => imul::constrain(gate, data, builder),
 		Opcode::IcmpUlt => icmp_ult::constrain(gate, data, builder),
 		Opcode::IcmpEq => icmp_eq::constrain(gate, data, builder),
-		Opcode::Shr => shr::constrain(gate, data, builder),
-		Opcode::Shl => shl::constrain(gate, data, builder),
-		Opcode::Sar => sar::constrain(gate, data, builder),
 		// Hints do not introduce constraints
 		Opcode::Hint => (),
 	}
@@ -95,11 +81,7 @@ pub fn emit_gate_bytecode(
 			iadd32_cin_cout::emit_eval_bytecode(gate, data, builder, wire_to_reg)
 		}
 		Opcode::IsubBinBout => isub_bin_bout::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Sll32 => sll32::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Srl32 => srl32::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Rotr32 => rotr32::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Sra32 => sra32::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Rotr => rotr::emit_eval_bytecode(gate, data, builder, wire_to_reg),
+		Opcode::Shift => shift::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::AssertEq => {
 			let assertion_path = graph.assertion_names[gate];
 			assert_eq::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg)
@@ -127,9 +109,6 @@ pub fn emit_gate_bytecode(
 		Opcode::Imul => imul::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::IcmpUlt => icmp_ult::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::IcmpEq => icmp_eq::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Shr => shr::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Shl => shl::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Sar => sar::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 
 		Opcode::Hint => {
 			// Generic hint: hint already lives in the registry from `CircuitBuilder::call_hint`,

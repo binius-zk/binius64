@@ -51,6 +51,25 @@ pub enum ShiftVariant {
 }
 
 impl ShiftVariant {
+	/// Decodes a variant from its `u8` discriminant.
+	///
+	/// The discriminants match the `#[repr(u8)]` layout: `0..=7` map to the eight variants.
+	/// Any other byte returns `None`.
+	#[inline]
+	pub const fn from_u8(byte: u8) -> Option<Self> {
+		match byte {
+			0 => Some(ShiftVariant::Sll),
+			1 => Some(ShiftVariant::Slr),
+			2 => Some(ShiftVariant::Sar),
+			3 => Some(ShiftVariant::Rotr),
+			4 => Some(ShiftVariant::Sll32),
+			5 => Some(ShiftVariant::Srl32),
+			6 => Some(ShiftVariant::Sra32),
+			7 => Some(ShiftVariant::Rotr32),
+			_ => None,
+		}
+	}
+
 	/// Whether this variant operates on the two 32-bit halves independently.
 	///
 	/// - The `*32` family shifts each half on its own.
@@ -496,5 +515,26 @@ mod tests {
 		// Padded to the u32 alignment, that is 8 bytes.
 		// Holding this at one word matters: systems carry millions of these on the prover hot path.
 		assert_eq!(size_of::<ShiftedValueIndex>(), 8);
+	}
+
+	#[test]
+	fn test_shift_variant_from_u8_round_trip() {
+		// Every variant decodes back from its own discriminant.
+		let variants = [
+			ShiftVariant::Sll,
+			ShiftVariant::Slr,
+			ShiftVariant::Sar,
+			ShiftVariant::Rotr,
+			ShiftVariant::Sll32,
+			ShiftVariant::Srl32,
+			ShiftVariant::Sra32,
+			ShiftVariant::Rotr32,
+		];
+		for variant in variants {
+			assert_eq!(ShiftVariant::from_u8(variant as u8), Some(variant));
+		}
+		// The discriminants are exactly 0..=7, so 8 and above are undefined.
+		assert_eq!(ShiftVariant::from_u8(8), None);
+		assert_eq!(ShiftVariant::from_u8(255), None);
 	}
 }

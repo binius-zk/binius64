@@ -126,7 +126,7 @@ fn try_evaluate_gate_with_constants(
 
 #[cfg(test)]
 mod tests {
-	use binius_core::word::Word;
+	use binius_core::{constraint_system::ShiftVariant, word::Word};
 
 	use super::*;
 	use crate::compiler::gate::opcode::Opcode;
@@ -195,13 +195,27 @@ mod tests {
 		// Create a constant wire
 		let const_16 = graph.add_constant(Word(16));
 
-		// Create a shift right gate
+		// Create a shift right gate (logical right shift by 2)
 		let shr_out = graph.add_witness();
-		let _shr_gate = graph.emit_gate_imm(root, Opcode::Shr, vec![const_16], vec![shr_out], 2);
+		let _shr_gate = graph.emit_gate_generic(
+			root,
+			Opcode::Shift,
+			vec![const_16],
+			vec![shr_out],
+			&[],
+			&[ShiftVariant::Slr as u32, 2],
+		);
 
-		// Create a shift left gate using the output
+		// Create a shift left gate using the output (logical left shift by 1)
 		let shl_out = graph.add_witness();
-		let shl_gate = graph.emit_gate_imm(root, Opcode::Shl, vec![shr_out], vec![shl_out], 1);
+		let shl_gate = graph.emit_gate_generic(
+			root,
+			Opcode::Shift,
+			vec![shr_out],
+			vec![shl_out],
+			&[],
+			&[ShiftVariant::Sll as u32, 1],
+		);
 
 		// Create a test gate to verify propagation
 		let test_out = graph.add_witness();
