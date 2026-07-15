@@ -162,7 +162,9 @@ jobs:
       - name: Check circuit statistics snapshots
         run: |
           set -e
-          for example in ethsign zklogin sha256 sha512 keccak blake2s blake3_compress hashsign ec_msm; do
+          # Keep this list in sync with the committed snapshots in crates/examples/snapshots:
+          # every example that ships a .snap must be checked here, or it can drift undetected.
+          for example in ethsign zklogin sha256 sha512 keccak blake2s blake2b blake3_compress blake3 hashsign ec_msm bitcoin_header_chain bitcoin_p2pkh; do
             echo "::group::${example}"
             cargo run --example "${example}" -- check-snapshot
             echo "::endgroup::"
