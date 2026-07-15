@@ -186,14 +186,18 @@ pub fn reduce_sliced_192b<U: Underlier + OpsClmul + PackedUnderlier<u64>>(
 	[z0, z1, z2]
 }
 
-/// Multiply an unreduced base-field product by X, per lane: shift each 64-bit lane left by one and
-/// fold the overflow bit (bit 63) back in with the low terms of the reduction polynomial
-/// (X^4 + X^3 + X + 1).
+/// Multiply an unreduced product by X: a plain 128-bit left shift by one.
+///
+/// The input is a carry-less product of two 64-bit values, so its bit 127 is zero and it has degree
+/// at most 126. Multiplying by X can therefore never overflow the 128-bit container, so no modular
+/// reduction is needed here — it stays deferred to the single [`reduce`].
+///
+/// `slli_epi64::<1>` shifts each 64-bit lane left by one; `slli_si128::<8>` carries bit 63 of the
+/// low lane into bit 0 of the high lane. The bit shifted out of the high lane is bit 127, which the
+/// precondition guarantees is zero.
 #[inline]
 fn mul_x<U: Underlier + OpsClmul + PackedUnderlier<u64>>(p: U) -> U {
-	const POLY: u64 = 0x1B;
-	let poly = <U as PackedUnderlier<u64>>::broadcast(POLY);
-	U::xor(U::slli_epi64::<1>(p), U::and(poly, U::movepi64_mask(p)))
+	U::xor(U::slli_epi64::<1>(p), U::slli_si128::<8>(U::srli_epi64::<63>(p)))
 }
 
 /// Multiply an unreduced product pair `[lo, hi]` by X, applying [`mul_x`] to each limb.
