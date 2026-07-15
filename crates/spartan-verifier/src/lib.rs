@@ -132,7 +132,7 @@ impl<F: Field> IOPVerifier<F> {
 			true,
 		)
 		.expect("OracleSetupChannel::recv_oracle is infallible");
-		let public = vec![DummyElem; 1 << cs.log_public()];
+		let public = vec![DummyElem::<F>::default(); 1 << cs.log_public()];
 		// Discarded: the setup channel performs no real verification; we only read back the
 		// recorded oracle specs.
 		let _ = self.verify((), public, &mut channel);

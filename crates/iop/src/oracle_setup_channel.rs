@@ -12,11 +12,12 @@
 
 use std::{
 	iter::{Product, Sum},
+	marker::PhantomData,
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
 use binius_field::{
-	BinaryField128bGhash, ExtensionField, Field, FieldOps,
+	ExtensionField, Field, FieldOps,
 	arithmetic_traits::{InvertOrZero, Square},
 	util::FieldFn,
 };
@@ -24,24 +25,24 @@ use binius_ip::channel::IPVerifierChannel;
 
 use crate::channel::{Error, IOPVerifierChannel, OracleLinearRelation, OracleSpec};
 
-/// A zero-sized dummy field element for [`OracleSetupChannel`].
+/// A dummy field element for [`OracleSetupChannel`], generic over the field `F` it stands in for.
 ///
 /// The setup channel performs no real verification, so the field values flowing through it are
-/// never inspected. `DummyElem` is a stand-in whose arithmetic is all no-ops; it lets the setup
-/// channel be a single non-generic type and avoids doing (pointless) real field arithmetic during
-/// the structural dry run.
+/// never inspected. `DummyElem<F>` is a zero-sized stand-in whose arithmetic is all no-ops; the
+/// `PhantomData<F>` lets it satisfy `FieldOps<Scalar = F>` without doing (pointless) real field
+/// arithmetic during the structural dry run.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct DummyElem;
+pub struct DummyElem<F>(PhantomData<F>);
 
 macro_rules! dummy_binop {
 	($trait:ident, $method:ident) => {
-		impl $trait for DummyElem {
+		impl<F> $trait for DummyElem<F> {
 			type Output = Self;
 			fn $method(self, _rhs: Self) -> Self {
 				self
 			}
 		}
-		impl $trait<&DummyElem> for DummyElem {
+		impl<F> $trait<&DummyElem<F>> for DummyElem<F> {
 			type Output = Self;
 			fn $method(self, _rhs: &Self) -> Self {
 				self
@@ -55,10 +56,10 @@ dummy_binop!(Mul, mul);
 
 macro_rules! dummy_assign {
 	($trait:ident, $method:ident) => {
-		impl $trait for DummyElem {
+		impl<F> $trait for DummyElem<F> {
 			fn $method(&mut self, _rhs: Self) {}
 		}
-		impl $trait<&DummyElem> for DummyElem {
+		impl<F> $trait<&DummyElem<F>> for DummyElem<F> {
 			fn $method(&mut self, _rhs: &Self) {}
 		}
 	};
@@ -67,67 +68,65 @@ dummy_assign!(AddAssign, add_assign);
 dummy_assign!(SubAssign, sub_assign);
 dummy_assign!(MulAssign, mul_assign);
 
-impl Neg for DummyElem {
+impl<F> Neg for DummyElem<F> {
 	type Output = Self;
 	fn neg(self) -> Self {
 		self
 	}
 }
 
-impl Sum for DummyElem {
+impl<F> Sum for DummyElem<F> {
 	fn sum<I: Iterator<Item = Self>>(_iter: I) -> Self {
-		Self
+		Self(PhantomData)
 	}
 }
-impl<'a> Sum<&'a DummyElem> for DummyElem {
+impl<'a, F> Sum<&'a DummyElem<F>> for DummyElem<F> {
 	fn sum<I: Iterator<Item = &'a Self>>(_iter: I) -> Self {
-		Self
+		Self(PhantomData)
 	}
 }
-impl Product for DummyElem {
+impl<F> Product for DummyElem<F> {
 	fn product<I: Iterator<Item = Self>>(_iter: I) -> Self {
-		Self
+		Self(PhantomData)
 	}
 }
-impl<'a> Product<&'a DummyElem> for DummyElem {
+impl<'a, F> Product<&'a DummyElem<F>> for DummyElem<F> {
 	fn product<I: Iterator<Item = &'a Self>>(_iter: I) -> Self {
-		Self
+		Self(PhantomData)
 	}
 }
 
-impl Square for DummyElem {
+impl<F> Square for DummyElem<F> {
 	fn square(self) -> Self {
 		self
 	}
 }
-impl InvertOrZero for DummyElem {
+impl<F> InvertOrZero for DummyElem<F> {
 	fn invert_or_zero(self) -> Self {
 		self
 	}
 }
 
-impl From<BinaryField128bGhash> for DummyElem {
-	fn from(_value: BinaryField128bGhash) -> Self {
-		Self
+impl<F> From<F> for DummyElem<F> {
+	fn from(_value: F) -> Self {
+		Self(PhantomData)
 	}
 }
 
-impl FieldOps for DummyElem {
-	// The scalar is arbitrary; nothing reads it. `BinaryField128bGhash` satisfies the
-	// `FieldOps<Scalar = B128>` bound that `binius_verifier`'s IOP verify requires.
-	type Scalar = BinaryField128bGhash;
+impl<F: Field> FieldOps for DummyElem<F> {
+	type Scalar = F;
 
 	fn zero() -> Self {
-		Self
+		Self(PhantomData)
 	}
 
 	fn one() -> Self {
-		Self
+		Self(PhantomData)
 	}
 
 	fn square_transpose<FSub: Field>(_elems: &mut [Self])
 	where
-		BinaryField128bGhash: ExtensionField<FSub>,
+		F: ExtensionField<FSub>,
 	{
 	}
 }
@@ -168,40 +167,46 @@ impl OracleSetupChannel {
 }
 
 impl<F: Field> IPVerifierChannel<F> for OracleSetupChannel {
-	type Elem = DummyElem;
+	type Elem = DummyElem<F>;
 
-	fn recv_one(&mut self) -> Result<DummyElem, binius_ip::channel::Error> {
-		Ok(DummyElem)
+	fn recv_one(&mut self) -> Result<DummyElem<F>, binius_ip::channel::Error> {
+		Ok(DummyElem(PhantomData))
 	}
 
-	fn recv_many(&mut self, n: usize) -> Result<Vec<DummyElem>, binius_ip::channel::Error> {
-		Ok(vec![DummyElem; n])
+	fn recv_many(&mut self, n: usize) -> Result<Vec<DummyElem<F>>, binius_ip::channel::Error> {
+		Ok(vec![DummyElem(PhantomData); n])
 	}
 
-	fn recv_array<const N: usize>(&mut self) -> Result<[DummyElem; N], binius_ip::channel::Error> {
-		Ok([DummyElem; N])
+	fn recv_array<const N: usize>(
+		&mut self,
+	) -> Result<[DummyElem<F>; N], binius_ip::channel::Error> {
+		Ok([DummyElem(PhantomData); N])
 	}
 
-	fn sample(&mut self) -> DummyElem {
-		DummyElem
+	fn sample(&mut self) -> DummyElem<F> {
+		DummyElem(PhantomData)
 	}
 
-	fn observe_one(&mut self, _val: F) -> DummyElem {
-		DummyElem
+	fn observe_one(&mut self, _val: F) -> DummyElem<F> {
+		DummyElem(PhantomData)
 	}
 
-	fn observe_many(&mut self, vals: &[F]) -> Vec<DummyElem> {
-		vec![DummyElem; vals.len()]
+	fn observe_many(&mut self, vals: &[F]) -> Vec<DummyElem<F>> {
+		vec![DummyElem(PhantomData); vals.len()]
 	}
 
-	fn assert_zero(&mut self, _val: DummyElem) -> Result<(), binius_ip::channel::Error> {
+	fn assert_zero(&mut self, _val: DummyElem<F>) -> Result<(), binius_ip::channel::Error> {
 		Ok(())
 	}
 
-	fn compute_public_value(&mut self, _inputs: &[DummyElem], _f: impl FieldFn<F>) -> DummyElem {
+	fn compute_public_value(
+		&mut self,
+		_inputs: &[DummyElem<F>],
+		_f: impl FieldFn<F>,
+	) -> DummyElem<F> {
 		// The setup channel performs no real computation; skipping `f` is permitted (see the
 		// `IPVerifierChannel::compute_public_value` contract).
-		DummyElem
+		DummyElem(PhantomData)
 	}
 }
 
