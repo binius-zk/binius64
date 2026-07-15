@@ -555,8 +555,8 @@ mod tests {
 		)
 	))]
 	use crate::monbijou::{
-		MONBIJOU_128B_ONE, MONBIJOU_ONE, mul_128b_clmul as monbijou_128b_mul,
-		mul_clmul as monbijou_mul,
+		MONBIJOU_128B_ONE, MONBIJOU_ONE,
+		x86_64::{mul as monbijou_mul, mul_128b as monbijou_128b_mul},
 	};
 	#[cfg(any(
 		all(target_feature = "pclmulqdq", target_feature = "sse2"),

@@ -18,12 +18,6 @@ pub mod soft64;
 #[cfg(target_arch = "x86_64")]
 pub mod x86_64;
 
-#[cfg(target_arch = "x86_64")]
-pub use x86_64::{
-	mul as mul_clmul, mul_128b as mul_128b_clmul, mul_sliced_128b as mul_sliced_128b_clmul,
-	mul_sliced_192b as mul_sliced_192b_clmul,
-};
-
 /// The multiplicative identity in the Monbijou field
 ///
 /// In this field, the standard representation of 1 is simply 0x01

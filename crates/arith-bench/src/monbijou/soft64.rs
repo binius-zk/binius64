@@ -272,7 +272,7 @@ mod tests {
 		use proptest::prelude::*;
 
 		use super::super::{mul, mul_128b};
-		use crate::monbijou::{mul_128b_clmul, mul_clmul};
+		use crate::monbijou::x86_64::{mul as mul_clmul, mul_128b as mul_128b_clmul};
 
 		proptest! {
 			// The base-field soft64 mul matches `mul_clmul` (compared in lane 0 of an `__m128i`).
