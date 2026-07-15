@@ -3,7 +3,10 @@
 use std::array;
 
 use anyhow::Result;
-use binius_circuits::keccak::{Keccak256, N_WORDS_PER_DIGEST, fixed_length::keccak256};
+use binius_circuits::{
+	fixed_byte_vec::ByteVec,
+	keccak::{N_WORDS_PER_DIGEST, fixed_length::keccak256, keccak256_varlen},
+};
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use sha3::Digest;
@@ -25,7 +28,10 @@ enum KeccakCircuit {
 		digest: [Wire; N_WORDS_PER_DIGEST],
 	},
 	/// Variable-length gadget: message length is a runtime witness.
-	Variable(Keccak256),
+	Variable {
+		message: ByteVec,
+		digest: [Wire; N_WORDS_PER_DIGEST],
+	},
 }
 
 impl ExampleCircuit for KeccakExample {
@@ -51,9 +57,14 @@ impl ExampleCircuit for KeccakExample {
 			HasherMode::Variable { max_len_bytes } => {
 				let n_words = max_len_bytes.div_ceil(8);
 				let len_bytes = builder.add_witness();
+				let data = (0..n_words).map(|_| builder.add_inout()).collect();
+				let message = ByteVec::new(data, len_bytes);
 				let digest: [Wire; N_WORDS_PER_DIGEST] = array::from_fn(|_| builder.add_inout());
-				let message = (0..n_words).map(|_| builder.add_inout()).collect();
-				KeccakCircuit::Variable(Keccak256::new(builder, len_bytes, digest, message))
+				let computed_digest = keccak256_varlen(builder, &message);
+				for i in 0..N_WORDS_PER_DIGEST {
+					builder.assert_eq(format!("digest[{i}]"), computed_digest[i], digest[i]);
+				}
+				KeccakCircuit::Variable { message, digest }
 			}
 		};
 
@@ -83,10 +94,16 @@ impl ExampleCircuit for KeccakExample {
 					w[digest_wires[i]] = Word(u64::from_le_bytes(chunk.try_into().unwrap()));
 				}
 			}
-			KeccakCircuit::Variable(gadget) => {
-				gadget.populate_len_bytes(w, message.len());
-				gadget.populate_message(w, &message);
-				gadget.populate_digest(w, digest);
+			KeccakCircuit::Variable {
+				message: byte_vec,
+				digest: digest_wires,
+			} => {
+				byte_vec.populate_data(w, &message);
+				byte_vec.populate_len_bytes(w, message.len());
+				// Digest: 4 x 64-bit little-endian words.
+				for (i, chunk) in digest.chunks(8).enumerate() {
+					w[digest_wires[i]] = Word(u64::from_le_bytes(chunk.try_into().unwrap()));
+				}
 			}
 		}
 

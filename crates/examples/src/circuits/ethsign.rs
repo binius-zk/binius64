@@ -3,7 +3,7 @@ use std::{array, iter};
 
 use anyhow::Result;
 use binius_circuits::{
-	bignum::BigUint, ecdsa::ecrecover, fixed_byte_vec::ByteVec, keccak::Keccak256,
+	bignum::BigUint, ecdsa::ecrecover, fixed_byte_vec::ByteVec, keccak::keccak256_varlen,
 };
 use binius_core::word::Word;
 use binius_frontend::{
@@ -22,8 +22,8 @@ struct Signature {
 	s: [Wire; 4],
 	recid_odd: Wire,
 	address: [Wire; 3],
-	msg_keccak: Keccak256,
-	address_keccak: Keccak256,
+	/// The signed message, hashed in-circuit by [`keccak256_varlen`].
+	msg: ByteVec,
 }
 
 /// Example circuit that proves validity of Ethereum-style ECDSA signatures.
@@ -62,13 +62,13 @@ impl ExampleCircuit for EthSignExample {
 				let recid_odd = builder.add_inout();
 				let address = array::from_fn(|_| builder.add_inout());
 
-				let msg_final_state = array::from_fn(|_| builder.add_witness());
-				let msg_keccak = Keccak256::new(builder, msg_len, msg_final_state, message);
+				let msg = ByteVec::new(message, msg_len);
+				let msg_digest = keccak256_varlen(builder, &msg);
 
 				// The Keccak digest is little endian encoded into 4 words, while Ethereum expects
 				// big endian
 				let z = BigUint {
-					limbs: msg_final_state[..4]
+					limbs: msg_digest
 						.iter()
 						.rev()
 						.map(|&word| byteswap(builder, word))
@@ -98,25 +98,21 @@ impl ExampleCircuit for EthSignExample {
 					.map(|word| byteswap(builder, word))
 					.collect::<Vec<_>>();
 
-				let address_final_state = array::from_fn(|_| builder.add_witness());
-				let address_keccak = Keccak256::new(
-					builder,
-					builder.add_constant_64(64),
-					address_final_state,
-					public_key_message,
-				);
+				// The public key is always 64 bytes; hash it with a constant-length `ByteVec`. Its
+				// data wires are derived from `ecrecover`, so nothing needs populating at witness
+				// time.
+				let address_msg = ByteVec::new_const_len(builder, public_key_message, 64);
+				let address_digest = keccak256_varlen(builder, &address_msg);
 
 				// Assert that the provided address equals digest bytes 12..32
-				assert_address_eq(builder, &address_keccak.digest, &address);
+				assert_address_eq(builder, &address_digest, &address);
 
 				Signature {
 					r,
 					s,
 					recid_odd,
 					address,
-
-					msg_keccak,
-					address_keccak,
+					msg,
 				}
 			})
 			.collect();
@@ -136,8 +132,7 @@ impl ExampleCircuit for EthSignExample {
 			s,
 			recid_odd,
 			address,
-			msg_keccak,
-			address_keccak,
+			msg,
 		} in &self.signatures
 		{
 			// Random private key
@@ -153,10 +148,9 @@ impl ExampleCircuit for EthSignExample {
 			let mut signature = secret_key.sign(&msg_hash)?;
 			let public = secret_key.public();
 
-			// Hash the message with Keccak
-			msg_keccak.populate_len_bytes(w, msg_len);
-			msg_keccak.populate_message(w, &msg_bytes);
-			msg_keccak.populate_digest(w, msg_hash);
+			// Populate the message bytes; its Keccak digest is computed in-circuit.
+			msg.populate_data(w, &msg_bytes);
+			msg.populate_len_bytes(w, msg_len);
 
 			// ethsign crate returns 0/1 recid, convert to `recid_odd` boolean
 			w[*recid_odd] = if signature.v != 0 {
@@ -172,14 +166,8 @@ impl ExampleCircuit for EthSignExample {
 			signature.s.reverse();
 			pack_bytes_into_wires_le(w, s, &signature.s);
 
-			// Hash the (big endian) public key
-			let pk_bytes = public.bytes();
-			let pk_hash = keccak256(pk_bytes);
-
-			address_keccak.populate_len_bytes(w, 64);
-			address_keccak.populate_message(w, pk_bytes);
-			address_keccak.populate_digest(w, pk_hash);
-
+			// The public key (and hence the address-hash input) is derived in-circuit from the
+			// recovered signature, so only the expected address wires need populating.
 			pack_bytes_into_wires_le(w, address, public.address());
 		}
 
