@@ -14,6 +14,8 @@
 //! The gate generates 1 AND constraint:
 //! - `(x ⊕ y) ∧ (cond ~>> 63) = 0`
 
+use binius_core::constraint_system::ShiftVariant;
+
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, empty, sar, xor2},
 	gate::opcode::OpcodeShape,
@@ -55,7 +57,7 @@ pub fn emit_eval_bytecode(
 	let [mask] = scratch else { unreachable!() };
 
 	// Broadcast MSB: mask = cond >> 63 (arithmetic)
-	builder.emit_sar(wire_to_reg(*mask), wire_to_reg(*cond), 63);
+	builder.emit_shift(wire_to_reg(*mask), wire_to_reg(*cond), ShiftVariant::Sar, 63);
 
 	builder.emit_assert_eq_cond(
 		wire_to_reg(*mask),

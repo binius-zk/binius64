@@ -2,6 +2,8 @@
 // Copyright 2025 Irreducible Inc.
 //! Bytecode builder for generating evaluation instructions
 
+use binius_core::constraint_system::ShiftVariant;
+
 /// Builder for constructing bytecode during circuit compilation
 pub struct BytecodeBuilder {
 	bytecode: Vec<u8>,
@@ -69,29 +71,18 @@ impl BytecodeBuilder {
 		self.emit_reg(f);
 	}
 
-	// Shifts
-	pub fn emit_sll(&mut self, dst: u32, src: u32, shift: u8) {
+	/// One instruction covering every shift and rotate variant.
+	///
+	/// Layout: `[0x10][dst reg][src reg][variant u8][amount u8]`.
+	/// The variant byte selects the shift operation.
+	/// The amount byte is the shift count in bits.
+	pub fn emit_shift(&mut self, dst: u32, src: u32, variant: ShiftVariant, amount: u8) {
 		self.n_eval_insn += 1;
 		self.emit_u8(0x10);
 		self.emit_reg(dst);
 		self.emit_reg(src);
-		self.emit_u8(shift);
-	}
-
-	pub fn emit_slr(&mut self, dst: u32, src: u32, shift: u8) {
-		self.n_eval_insn += 1;
-		self.emit_u8(0x11);
-		self.emit_reg(dst);
-		self.emit_reg(src);
-		self.emit_u8(shift);
-	}
-
-	pub fn emit_sar(&mut self, dst: u32, src: u32, shift: u8) {
-		self.n_eval_insn += 1;
-		self.emit_u8(0x12);
-		self.emit_reg(dst);
-		self.emit_reg(src);
-		self.emit_u8(shift);
+		self.emit_u8(variant as u8);
+		self.emit_u8(amount);
 	}
 
 	// Arithmetic with carry
@@ -173,46 +164,6 @@ impl BytecodeBuilder {
 		self.emit_reg(dst_cout);
 		self.emit_reg(src1);
 		self.emit_reg(src2);
-	}
-
-	pub fn emit_rotr32(&mut self, dst: u32, src: u32, rotate: u8) {
-		self.n_eval_insn += 1;
-		self.emit_u8(0x41);
-		self.emit_reg(dst);
-		self.emit_reg(src);
-		self.emit_u8(rotate);
-	}
-
-	pub fn emit_srl32(&mut self, dst: u32, src: u32, shift: u8) {
-		self.n_eval_insn += 1;
-		self.emit_u8(0x42);
-		self.emit_reg(dst);
-		self.emit_reg(src);
-		self.emit_u8(shift);
-	}
-
-	pub fn emit_sll32(&mut self, dst: u32, src: u32, shift: u8) {
-		self.n_eval_insn += 1;
-		self.emit_u8(0x44);
-		self.emit_reg(dst);
-		self.emit_reg(src);
-		self.emit_u8(shift);
-	}
-
-	pub fn emit_sra32(&mut self, dst: u32, src: u32, shift: u8) {
-		self.n_eval_insn += 1;
-		self.emit_u8(0x45);
-		self.emit_reg(dst);
-		self.emit_reg(src);
-		self.emit_u8(shift);
-	}
-
-	pub fn emit_rotr(&mut self, dst: u32, src: u32, rotate: u8) {
-		self.n_eval_insn += 1;
-		self.emit_u8(0x43);
-		self.emit_reg(dst);
-		self.emit_reg(src);
-		self.emit_u8(rotate);
 	}
 
 	// Assertions
