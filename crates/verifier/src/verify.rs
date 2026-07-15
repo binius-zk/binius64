@@ -414,7 +414,22 @@ where
 	}
 }
 
-fn verify_bitand_reduction<F, C>(
+/// Verifies the batched BitAnd check: `A & B == C` on every row.
+///
+/// This is the univariate-skip zerocheck of `A(Z, X) * B(Z, X) - C(Z, X) == 0` for all rows
+/// `(Z, X)`, where `Z` is the bit index within a 64-bit word and `X` is the row index.
+///
+/// # Arguments
+///
+/// - `log_constraint_count`: base-2 logarithm of the row count.
+/// - `eval_domain`: the univariate-skip domain, one dimension above the 64-bit word, already lifted
+///   to `F`. The caller passes it so it matches the shift reduction's domain by construction.
+/// - `channel`: the verifier channel that reads messages and redraws Fiat-Shamir challenges.
+///
+/// # Errors
+///
+/// Returns an error if any sumcheck round message or the final consistency check fails.
+pub fn verify_bitand_reduction<F, C>(
 	log_constraint_count: usize,
 	eval_domain: &BinarySubspace<F>,
 	channel: &mut C,

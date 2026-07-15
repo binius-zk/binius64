@@ -511,7 +511,6 @@ mod tests {
 	};
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
 	use binius_ip::channel::Error as ChannelError;
-	use binius_m4_verifier::verify_bitand_reduction;
 	use binius_math::{
 		FieldBuffer, multilinear::evaluate::evaluate, univariate::lagrange_evals_scalars,
 	};
@@ -519,6 +518,7 @@ mod tests {
 	use binius_transcript::{ProverTranscript, VerifierTranscript};
 	use binius_verifier::{
 		Error as VerifierError, config::StdChallenger, protocols::bitand::SKIPPED_VARS,
+		verify_bitand_reduction,
 	};
 	use proptest::prelude::*;
 
@@ -947,9 +947,12 @@ mod tests {
 		let prove_output = witness.prove::<P, _>(&message_domain(), &mut prover_transcript);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
-		let verify_output =
-			verify_bitand_reduction(log_total, &message_domain(), &mut verifier_transcript)
-				.unwrap();
+		let verify_output = verify_bitand_reduction(
+			log_total,
+			&message_domain().isomorphic::<B128>(),
+			&mut verifier_transcript,
+		)
+		.unwrap();
 		verifier_transcript
 			.finalize()
 			.expect("no trailing proof data");
@@ -982,8 +985,12 @@ mod tests {
 		// The final consistency check then no longer holds.
 		// So verification fails.
 		let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
-		let err = verify_bitand_reduction(log_total, &message_domain(), &mut verifier_transcript)
-			.unwrap_err();
+		let err = verify_bitand_reduction(
+			log_total,
+			&message_domain().isomorphic::<B128>(),
+			&mut verifier_transcript,
+		)
+		.unwrap_err();
 
 		// The closing check is `A_eval * B_eval - C_eval == sumcheck_eval`.
 		// The tampered message moves the claim, so this equality no longer holds.
@@ -1021,7 +1028,7 @@ mod tests {
 
 			let mut verifier_transcript = prover_transcript.into_verifier();
 			let verify_output =
-				verify_bitand_reduction(log_total, &message_domain(), &mut verifier_transcript).unwrap();
+				verify_bitand_reduction(log_total, &message_domain().isomorphic::<B128>(), &mut verifier_transcript).unwrap();
 			verifier_transcript.finalize().expect("no trailing proof data");
 
 			// Both sides reach the same reduced claim.

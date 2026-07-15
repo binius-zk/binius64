@@ -2,7 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
-use binius_field::{AESTowerField8b as B8, ExtensionField, Field};
+use binius_field::{AESTowerField8b as B8, ExtensionField, FieldOps};
 use binius_hash::StdHashSuite;
 use binius_iop::{
 	basefold_compiler::BaseFoldVerifierCompiler,
@@ -10,10 +10,13 @@ use binius_iop::{
 	fri::{ConstantArityStrategy, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_ip::sumcheck::{BatchSumcheckOutput, batch_verify};
+use binius_ip::{
+	channel::IPVerifierChannel,
+	sumcheck::{BatchSumcheckOutput, batch_verify},
+};
 use binius_math::{
 	BinarySubspace,
-	inner_product::inner_product,
+	inner_product::inner_product_scalars,
 	multilinear::eq::eq_ind,
 	univariate::{evaluate_univariate, lagrange_evals_scalars},
 };
@@ -28,9 +31,10 @@ use binius_verifier::{
 		shift::{self, BITAND_ARITY, INTMUL_ARITY, OperatorData},
 	},
 	ring_switch::{self, RingSwitchVerifyOutput},
+	verify_bitand_reduction,
 };
 
-use crate::{commit::BatchCommitLayout, verify_bitand_reduction};
+use crate::commit::BatchCommitLayout;
 
 /// The target soundness, in bits.
 ///
@@ -105,7 +109,8 @@ impl IOPVerifier {
 	/// Returns an error if the reduction, the ring-switch, or the trace opening fails.
 	pub fn verify<Channel>(&self, channel: &mut Channel) -> Result<(), Error>
 	where
-		Channel: IOPVerifierChannel<B128, Elem = B128>,
+		Channel: IOPVerifierChannel<B128>,
+		Channel::Elem: FieldOps<Scalar = B128> + From<B128>,
 	{
 		let cs = &self.cs;
 		let log_instances = self.layout.log_instances;
@@ -116,11 +121,11 @@ impl IOPVerifier {
 
 		// One base domain shared by the AND-check, the shift, and the IntMul operand collapse.
 		// The AND-check's univariate-skip domain spans one dimension above the 64-bit word.
-		let andcheck_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1);
+		// `verify_bitand_reduction` expects the domain already lifted to the channel's field.
+		let subfield_subspace = BinarySubspace::<B8>::default().isomorphic::<B128>();
+		let andcheck_domain = subfield_subspace.reduce_dim(Word::LOG_BITS + 1);
 		// The shift domain drops that extra dimension.
-		let shift_domain = andcheck_domain
-			.reduce_dim(Word::LOG_BITS)
-			.isomorphic::<B128>();
+		let shift_domain = andcheck_domain.reduce_dim(Word::LOG_BITS);
 
 		// SOUNDNESS: the IntMul check verifies before the BitAnd check, mirroring the prover.
 		// Its per-bit operand evaluations are read from the transcript here.
@@ -157,7 +162,10 @@ impl IOPVerifier {
 				// Both operations enter the re-randomization as operand claims at their own
 				// instance point. BitAnd is already oblong; IntMul is collapsed from its
 				// per-bit form.
-				let lagrange = lagrange_evals_scalars::<B128, B128>(&shift_domain, z_challenge);
+				let lagrange = lagrange_evals_scalars::<B128, Channel::Elem>(
+					&shift_domain,
+					z_challenge.clone(),
+				);
 				RerandomizedOperations {
 					bitand: OperationClaim::new([a_eval, b_eval, c_eval], r_x_and, r_rho_and),
 					intmul: OperationClaim::from_intmul(intmul_output, &lagrange, log_instances),
@@ -169,7 +177,7 @@ impl IOPVerifier {
 			None => (
 				r_rho_and.to_vec(),
 				OperatorData::new(r_x_and.to_vec(), [a_eval, b_eval, c_eval]),
-				OperatorData::new(Vec::new(), [B128::ZERO; 4]),
+				OperatorData::new(Vec::new(), std::array::from_fn(|_| Channel::Elem::zero())),
 			),
 		};
 
@@ -205,7 +213,7 @@ impl IOPVerifier {
 		let eval_point_high = trace_point[log_packing..].to_vec();
 		channel.verify_oracle_relations([OracleLinearRelation {
 			oracle: trace_oracle,
-			transparent: Box::new(move |pt: &[B128]| {
+			transparent: Box::new(move |pt: &[Channel::Elem]| {
 				ring_switch::eval_rs_eq(&eval_point_high, pt, &eq_r_double_prime)
 			}),
 			claim: sumcheck_claim,
@@ -337,24 +345,27 @@ impl Verifier {
 const RERAND_DEGREE: usize = 3;
 
 /// The shared instance point together with both operations' operand data at that point.
-type RerandOutput = (Vec<B128>, OperatorData<B128, BITAND_ARITY>, OperatorData<B128, INTMUL_ARITY>);
+type RerandOutput<F> = (Vec<F>, OperatorData<F, BITAND_ARITY>, OperatorData<F, INTMUL_ARITY>);
 
 /// One operation's oblong operand claims and the points they are claimed at.
 ///
 /// The AND-check and the IntMul check both reduce to this shape.
 /// The re-randomization transports the claims to the instance point shared by both operations.
-struct OperationClaim<const ARITY: usize> {
+///
+/// Generic over the channel's element type `F`, so this composes with a channel whose challenges
+/// live in an extension of the base field (e.g. a symbolic verifier channel), not only `B128`.
+struct OperationClaim<F, const ARITY: usize> {
 	/// The oblong operand claim per operand, in operand order.
-	operand_claims: [B128; ARITY],
+	operand_claims: [F; ARITY],
 	/// The constraint-index point the operands are claimed at.
-	r_x: Vec<B128>,
+	r_x: Vec<F>,
 	/// The instance-index point the operands are claimed at.
-	r_rho: Vec<B128>,
+	r_rho: Vec<F>,
 }
 
-impl<const ARITY: usize> OperationClaim<ARITY> {
+impl<F: FieldOps, const ARITY: usize> OperationClaim<F, ARITY> {
 	/// The operand claims at the constraint point `r_x` and instance point `r_rho`.
-	fn new(operand_claims: [B128; ARITY], r_x: &[B128], r_rho: &[B128]) -> Self {
+	fn new(operand_claims: [F; ARITY], r_x: &[F], r_rho: &[F]) -> Self {
 		Self {
 			operand_claims,
 			r_x: r_x.to_vec(),
@@ -363,17 +374,13 @@ impl<const ARITY: usize> OperationClaim<ARITY> {
 	}
 }
 
-impl OperationClaim<INTMUL_ARITY> {
+impl<F: FieldOps> OperationClaim<F, INTMUL_ARITY> {
 	/// Builds the IntMul claim by collapsing its per-bit operand claims to oblong claims.
 	///
 	/// The Lagrange weights fold the per-bit claims at the univariate challenge.
 	/// This gives the oblong form the BitAnd claims already have.
 	/// The IntMul row point splits into an instance part (low) and a constraint part (high).
-	fn from_intmul(
-		intmul_output: IntMulOutput<B128>,
-		lagrange: &[B128],
-		log_instances: usize,
-	) -> Self {
+	fn from_intmul(intmul_output: IntMulOutput<F>, lagrange: &[F], log_instances: usize) -> Self {
 		let IntMulOutput {
 			eval_point: r_out_mul,
 			a_evals,
@@ -381,7 +388,7 @@ impl OperationClaim<INTMUL_ARITY> {
 			c_lo_evals,
 			c_hi_evals,
 		} = intmul_output;
-		let oblong = |evals: Vec<B128>| inner_product(evals, lagrange.iter().copied());
+		let oblong = |evals: Vec<F>| inner_product_scalars(evals, lagrange.iter().cloned());
 		let (r_rho, r_x) = r_out_mul.split_at(log_instances);
 		Self::new(
 			[
@@ -397,14 +404,14 @@ impl OperationClaim<INTMUL_ARITY> {
 }
 
 /// The two operations' claims entering the batched instance re-randomization.
-struct RerandomizedOperations {
+struct RerandomizedOperations<F> {
 	/// The BitAnd operand claims at the AND-check instance point.
-	bitand: OperationClaim<BITAND_ARITY>,
+	bitand: OperationClaim<F, BITAND_ARITY>,
 	/// The IntMul operand claims at the IntMul instance point.
-	intmul: OperationClaim<INTMUL_ARITY>,
+	intmul: OperationClaim<F, INTMUL_ARITY>,
 }
 
-impl RerandomizedOperations {
+impl<F: FieldOps> RerandomizedOperations<F> {
 	/// Verifies the batched sumcheck that unifies the two operations' instance points.
 	///
 	/// - Check the sumcheck transporting every operand claim onto one shared instance point.
@@ -414,20 +421,19 @@ impl RerandomizedOperations {
 	/// # Returns
 	///
 	/// The shared instance point, the BitAnd operand data, and the IntMul operand data.
-	fn verify<Channel>(self, channel: &mut Channel) -> Result<RerandOutput, Error>
+	fn verify<Channel>(self, channel: &mut Channel) -> Result<RerandOutput<F>, Error>
 	where
-		Channel: IOPVerifierChannel<B128, Elem = B128>,
+		Channel: IPVerifierChannel<B128, Elem = F>,
 	{
 		// Both operations reduce over the same instance axis; recover its width from either point.
 		let log_instances = self.bitand.r_rho.len();
 
 		// Verify the batched sumcheck: one multilinear-eval claim per operand, ordered
 		// [BitAnd a, b, c | IntMul a, b, lo, hi].
-		let sums: Vec<B128> = self
+		let sums: Vec<F> = self
 			.bitand
 			.operand_claims
-			.iter()
-			.copied()
+			.into_iter()
 			.chain(self.intmul.operand_claims)
 			.collect();
 		let BatchSumcheckOutput {
@@ -447,10 +453,11 @@ impl RerandomizedOperations {
 		// eq(instance_point, r_rho) weight times its reduced eval, batched by `batch_coeff`.
 		let eq_and = eq_ind(&self.bitand.r_rho, &r_rho);
 		let eq_mul = eq_ind(&self.intmul.r_rho, &r_rho);
-		let expected: Vec<B128> = bitand_evals
-			.map(|eval| eq_and * eval)
+		let expected: Vec<F> = bitand_evals
+			.clone()
+			.map(|eval| eval * &eq_and)
 			.into_iter()
-			.chain(intmul_evals.map(|eval| eq_mul * eval))
+			.chain(intmul_evals.clone().map(|eval| eval * &eq_mul))
 			.collect();
 		channel.assert_zero(evaluate_univariate(&expected, batch_coeff) - eval)?;
 
