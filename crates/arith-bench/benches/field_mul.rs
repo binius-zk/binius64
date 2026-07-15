@@ -668,7 +668,20 @@ fn bench_monbijou_128b(c: &mut Criterion) {
 	))]
 	{
 		use binius_arith_bench::monbijou::aarch64;
-		run_mul_benchmark(&mut group, "aarch64::mul_128b", aarch64::mul_128b, &mut rng, 128);
+		run_mul_benchmark(
+			&mut group,
+			"aarch64::mul_128b_karatsuba",
+			aarch64::mul_128b_karatsuba,
+			&mut rng,
+			128,
+		);
+		run_mul_benchmark(
+			&mut group,
+			"aarch64::mul_128b_schoolbook",
+			aarch64::mul_128b_schoolbook,
+			&mut rng,
+			128,
+		);
 	}
 
 	// Sliced __m128i (a `[__m128i; 2]` holds two GF(2^128) elements)
@@ -1315,19 +1328,36 @@ fn bench_monbijou_128b_inner_product(c: &mut Criterion) {
 	{
 		use binius_arith_bench::monbijou::aarch64;
 
-		// Packed representation (coefficients in the low/high halves of each lane).
+		// Packed representation (coefficients in the low/high halves of each lane), Karatsuba
+		// (three products) vs. schoolbook (four products), reduce-every-term vs. widening.
 		run_inner_product_benchmark(
 			&mut group,
-			"aarch64::mul_128b",
-			aarch64::mul_128b,
+			"aarch64::mul_128b_karatsuba",
+			aarch64::mul_128b_karatsuba,
 			&mut rng,
 			LOG_LEN,
 			128,
 		);
 		run_inner_product_benchmark(
 			&mut group,
-			"aarch64::mul_wide_128b",
-			aarch64::mul_wide_128b,
+			"aarch64::mul_wide_128b_karatsuba",
+			aarch64::mul_wide_128b_karatsuba,
+			&mut rng,
+			LOG_LEN,
+			128,
+		);
+		run_inner_product_benchmark(
+			&mut group,
+			"aarch64::mul_128b_schoolbook",
+			aarch64::mul_128b_schoolbook,
+			&mut rng,
+			LOG_LEN,
+			128,
+		);
+		run_inner_product_benchmark(
+			&mut group,
+			"aarch64::mul_wide_128b_schoolbook",
+			aarch64::mul_wide_128b_schoolbook,
 			&mut rng,
 			LOG_LEN,
 			128,

@@ -98,14 +98,15 @@ pub fn mul(x: poly64x2_t, y: poly64x2_t) -> poly64x2_t {
 	reduce(mul_wide(x, y))
 }
 
-/// Widening (unreduced) degree-2 Monbijou multiply in the *packed* representation: the three raw
-/// base products `[t0, t1, t2] = [x0·y0, (x0+x1)·(y0+y1), x1·y1]`, each a 128-bit carryless product
-/// occupying one register as `[lo, hi]`.
+/// Widening (unreduced) degree-2 Monbijou multiply in the *packed* representation, via
+/// **Karatsuba**: the three raw base products `[t0, t1, t2] = [x0·y0, (x0+x1)·(y0+y1), x1·y1]`,
+/// each a 128-bit carryless product occupying one register as `[lo, hi]`.
 ///
-/// No combination or reduction happens here — those are F2-linear and deferred to [`reduce_128b`],
-/// so an inner product XOR-accumulates the three products and reduces once.
+/// No combination or reduction happens here — those are F2-linear and deferred to
+/// [`reduce_128b_karatsuba`], so an inner product XOR-accumulates the three products and reduces
+/// once. See [`mul_wide_128b_schoolbook`] for the four-product alternative.
 #[inline]
-pub fn mul_wide_128b(x: poly64x2_t, y: poly64x2_t) -> [poly64x2_t; 3] {
+pub fn mul_wide_128b_karatsuba(x: poly64x2_t, y: poly64x2_t) -> [poly64x2_t; 3] {
 	unsafe {
 		let x0 = vgetq_lane_p64::<0>(x);
 		let x1 = vgetq_lane_p64::<1>(x);
@@ -118,14 +119,15 @@ pub fn mul_wide_128b(x: poly64x2_t, y: poly64x2_t) -> [poly64x2_t; 3] {
 	}
 }
 
-/// Reduce the three raw products from [`mul_wide_128b`] into a packed GF(2^128) element.
+/// Reduce the three raw Karatsuba products from [`mul_wide_128b_karatsuba`] into a packed GF(2^128)
+/// element.
 ///
 /// The extension is `Y^2 = XY + 1`, so `coeff 0 = t0 + t2` and `coeff 1 = (t1 + t0 + t2) + X·t2`
 /// (Karatsuba recovers the cross term `x0·y1 + x1·y0` as `t1 + t0 + t2`). The multiply-by-X on the
 /// unreduced `t2` (degree ≤ 126) is a plain 128-bit left shift; all combining stays in NEON
 /// registers. The two coefficient products are reduced together in the two lanes of one [`reduce`].
 #[inline]
-pub fn reduce_128b([t0, t1, t2]: [poly64x2_t; 3]) -> poly64x2_t {
+pub fn reduce_128b_karatsuba([t0, t1, t2]: [poly64x2_t; 3]) -> poly64x2_t {
 	unsafe {
 		let term0 = vaddq_p64(t0, t2);
 		let term1 = vaddq_p64(vaddq_p64(vaddq_p64(t1, t0), t2), mul_x(t2));
@@ -135,11 +137,59 @@ pub fn reduce_128b([t0, t1, t2]: [poly64x2_t; 3]) -> poly64x2_t {
 }
 
 /// Multiplies two elements of GF(2^128), the degree-2 extension of the Monbijou field, in the
-/// *packed* representation (coefficient 0 in the low lane, coefficient 1 in the high lane).
-/// Composes [`mul_wide_128b`] with [`reduce_128b`].
+/// *packed* representation (coefficient 0 in the low lane, coefficient 1 in the high lane), via
+/// Karatsuba. Composes [`mul_wide_128b_karatsuba`] with [`reduce_128b_karatsuba`].
 #[inline]
-pub fn mul_128b(x: poly64x2_t, y: poly64x2_t) -> poly64x2_t {
-	reduce_128b(mul_wide_128b(x, y))
+pub fn mul_128b_karatsuba(x: poly64x2_t, y: poly64x2_t) -> poly64x2_t {
+	reduce_128b_karatsuba(mul_wide_128b_karatsuba(x, y))
+}
+
+/// Widening (unreduced) degree-2 Monbijou multiply in the *packed* representation, via
+/// **schoolbook**: the three raw combinations `[p00, p01 + p10, p11] = [x0·y0, x0·y1 + x1·y0,
+/// x1·y1]`, each held in one register as `[lo, hi]`.
+///
+/// Four `PMULL`s vs. Karatsuba's three, but the cross term `x0·y1 + x1·y0` is formed directly
+/// rather than recovered from `(x0+x1)(y0+y1)`. The two cross products are summed here, so the
+/// widening accumulator is three registers wide like [`mul_wide_128b_karatsuba`]. No reduction here
+/// — it is F2-linear and deferred to [`reduce_128b_schoolbook`], so an inner product
+/// XOR-accumulates the three combinations and reduces once.
+#[inline]
+pub fn mul_wide_128b_schoolbook(x: poly64x2_t, y: poly64x2_t) -> [poly64x2_t; 3] {
+	unsafe {
+		let x0 = vgetq_lane_p64::<0>(x);
+		let x1 = vgetq_lane_p64::<1>(x);
+		let y0 = vgetq_lane_p64::<0>(y);
+		let y1 = vgetq_lane_p64::<1>(y);
+		let p00 = vreinterpretq_p64_p128(vmull_p64(x0, y0));
+		let p01 = vreinterpretq_p64_p128(vmull_p64(x0, y1));
+		let p10 = vreinterpretq_p64_p128(vmull_p64(x1, y0));
+		let p11 = vreinterpretq_p64_p128(vmull_high_p64(x, y)); // x1·y1
+		[p00, vaddq_p64(p01, p10), p11]
+	}
+}
+
+/// Reduce the three raw schoolbook combinations from [`mul_wide_128b_schoolbook`] into a packed
+/// GF(2^128) element.
+///
+/// The extension is `Y^2 = XY + 1`, so `coeff 0 = x0·y0 + x1·y1 = p00 + p11` and `coeff 1 = (x0·y1
+/// + x1·y0) + X·(x1·y1) = cross + X·p11`. The multiply-by-X on the unreduced `p11` (degree ≤ 126)
+/// is a plain 128-bit left shift; the two coefficient products are reduced together in one
+/// [`reduce`].
+#[inline]
+pub fn reduce_128b_schoolbook([p00, cross, p11]: [poly64x2_t; 3]) -> poly64x2_t {
+	unsafe {
+		let term0 = vaddq_p64(p00, p11);
+		let term1 = vaddq_p64(cross, mul_x(p11));
+		reduce([term0, term1])
+	}
+}
+
+/// Multiplies two elements of GF(2^128), the degree-2 extension of the Monbijou field, in the
+/// *packed* representation, via schoolbook. Composes [`mul_wide_128b_schoolbook`] with
+/// [`reduce_128b_schoolbook`].
+#[inline]
+pub fn mul_128b_schoolbook(x: poly64x2_t, y: poly64x2_t) -> poly64x2_t {
+	reduce_128b_schoolbook(mul_wide_128b_schoolbook(x, y))
 }
 
 /// Widening (unreduced) degree-2 Monbijou multiply in the *sliced* representation: the three raw
@@ -270,11 +320,12 @@ mod tests {
 			prop_assert_eq!((z >> 64) as u64, soft64::mul(x1, y1));
 		}
 
-		// The packed 128b multiply agrees with the soft64 reference.
+		// Both packed 128b multiplies (Karatsuba and schoolbook) agree with the soft64 reference.
 		#[test]
 		fn packed_128b_matches_soft64(a in any::<u128>(), b in any::<u128>()) {
-			let z = from_poly(mul_128b(to_poly(a), to_poly(b)));
-			prop_assert_eq!(z, soft64::mul_128b(a, b));
+			let expected = soft64::mul_128b(a, b);
+			prop_assert_eq!(from_poly(mul_128b_karatsuba(to_poly(a), to_poly(b))), expected);
+			prop_assert_eq!(from_poly(mul_128b_schoolbook(to_poly(a), to_poly(b))), expected);
 		}
 
 		// The sliced 128b multiply agrees with the soft64 reference, for both lanes.
@@ -321,11 +372,19 @@ mod tests {
 		fn wide_deferred_reduction_packed_128b(
 			a in any::<u128>(), b in any::<u128>(), c in any::<u128>(), d in any::<u128>(),
 		) {
-			let acc = <[poly64x2_t; 3] as Underlier>::xor(
-				mul_wide_128b(to_poly(a), to_poly(b)),
-				mul_wide_128b(to_poly(c), to_poly(d)),
+			let expected = soft64::mul_128b(a, b) ^ soft64::mul_128b(c, d);
+			// Karatsuba: accumulate the three raw products, reduce once.
+			let acc_k = <[poly64x2_t; 3] as Underlier>::xor(
+				mul_wide_128b_karatsuba(to_poly(a), to_poly(b)),
+				mul_wide_128b_karatsuba(to_poly(c), to_poly(d)),
 			);
-			prop_assert_eq!(from_poly(reduce_128b(acc)), soft64::mul_128b(a, b) ^ soft64::mul_128b(c, d));
+			prop_assert_eq!(from_poly(reduce_128b_karatsuba(acc_k)), expected);
+			// Schoolbook: accumulate the three raw combinations (cross terms pre-summed), reduce once.
+			let acc_s = <[poly64x2_t; 3] as Underlier>::xor(
+				mul_wide_128b_schoolbook(to_poly(a), to_poly(b)),
+				mul_wide_128b_schoolbook(to_poly(c), to_poly(d)),
+			);
+			prop_assert_eq!(from_poly(reduce_128b_schoolbook(acc_s)), expected);
 		}
 
 		#[test]
