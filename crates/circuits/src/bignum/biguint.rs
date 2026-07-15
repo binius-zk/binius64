@@ -49,10 +49,6 @@ impl BigUint {
 
 	/// Checks whether BigUint is zero and returns the check result as a boolean wire.
 	pub fn is_zero(&self, b: &CircuitBuilder) -> Wire {
-		// A BigUint is zero exactly when the bitwise OR of its limbs is zero, so one
-		// comparison suffices. Comparing each limb and folding the booleans costs an
-		// `icmp_eq` and a `band` per limb; folding with `bor` and comparing once costs
-		// a `bor` per limb after the first, plus a single `icmp_eq`.
 		let zero = b.add_constant(Word::ZERO);
 		let any_bit = self
 			.limbs
