@@ -142,6 +142,116 @@ fn gf2_128_shift_reduce<U: Underlier + OpsClmul + PackedUnderlier<u128>>(t1: U) 
 	t0
 }
 
+/// The two raw 64×64 carry-less products of paired slice registers `u`, `v`, kept in the layout
+/// CLMUL emits them — one full 128-bit product per packed element, **not** transposed.
+///
+/// In the *sliced* representation each register packs one 64-bit slice per 64-bit lane, so per
+/// 128-bit lane `clmulepi64::<0x00>` multiplies the low-qword element and `::<0x11>` the high-qword
+/// element. Leaving the products un-transposed lets an inner product XOR-accumulate them cheaply;
+/// the transpose is deferred to [`reduce_sliced_schoolbook`].
+#[inline]
+fn clmul_pair<U: Underlier + OpsClmul>(u: U, v: U) -> [U; 2] {
+	[U::clmulepi64::<0x00>(u, v), U::clmulepi64::<0x11>(u, v)]
+}
+
+/// Widening (unreduced) *sliced* schoolbook GHASH multiply: the three raw carry-less product pairs
+/// `[p00, cross, p11]` of the 256-bit product of `x` and `y`, at weights `X^0`, `X^64`, `X^128`.
+///
+/// Each element is `[U; 2] = [low64, high64]`; each returned pair is a `[U; 2]` of raw
+/// (un-transposed) CLMUL products, one per packed element (see [`clmul_pair`]). Schoolbook forms
+/// four 64×64 products and sums the two cross terms. No transpose or reduction happens here — both
+/// are F2-linear and deferred to [`reduce_sliced_schoolbook`], so an inner product XOR-accumulates
+/// the three pairs and reduces once.
+#[inline]
+pub fn mul_wide_sliced_schoolbook<U: Underlier + OpsClmul>(
+	[x0, x1]: [U; 2],
+	[y0, y1]: [U; 2],
+) -> [[U; 2]; 3] {
+	let p00 = clmul_pair(x0, y0); // x.lo · y.lo
+	let cross = Underlier::xor(clmul_pair(x0, y1), clmul_pair(x1, y0)); // x.lo·y.hi + x.hi·y.lo
+	let p11 = clmul_pair(x1, y1); // x.hi · y.hi
+	[p00, cross, p11]
+}
+
+/// Widening (unreduced) *sliced* Karatsuba GHASH multiply: the three raw carry-less product pairs
+/// `[p00, pm, p11]`, where `pm = (x.lo+x.hi)·(y.lo+y.hi)` is the single extra Karatsuba product
+/// that replaces the two schoolbook cross products.
+///
+/// Unlike [`mul_wide_sliced_schoolbook`] the middle entry is the *raw* Karatsuba product, **not**
+/// the cross term: the recombination `cross = pm - p00 - p11` is deferred to
+/// [`reduce_sliced_karatsuba`], so — like the corner products — `pm` XOR-accumulates across an
+/// inner product and is recombined only once.
+#[inline]
+pub fn mul_wide_sliced_karatsuba<U: Underlier + OpsClmul>(
+	[x0, x1]: [U; 2],
+	[y0, y1]: [U; 2],
+) -> [[U; 2]; 3] {
+	let p00 = clmul_pair(x0, y0); // x.lo · y.lo
+	let p11 = clmul_pair(x1, y1); // x.hi · y.hi
+	// (x.lo+x.hi)·(y.lo+y.hi) = x.lo·y.lo + (x.lo·y.hi + x.hi·y.lo) + x.hi·y.hi
+	let pm = clmul_pair(U::xor(x0, x1), U::xor(y0, y1));
+	[p00, pm, p11]
+}
+
+/// Reduce a *sliced* schoolbook widening product (the three raw product pairs `[p00, cross, p11]`
+/// from [`mul_wide_sliced_schoolbook`], at weights `X^0, X^64, X^128`) to a GHASH field element
+/// `[U; 2] = [low64, high64]`, modulo `X^128 + X^7 + X^2 + X + 1`.
+///
+/// Each [`clmul_pair`] entry is a full un-transposed 128-bit product, so per pair index the triple
+/// `[p00, cross, p11]` is exactly a non-sliced wide product `[t0, t1, t2]`. The two elements are
+/// therefore reduced with the same CLMUL-based [`reduce`] as the packed path — vectorized across
+/// the register's 128-bit lanes — and the two reduced 128-bit results are transposed back into the
+/// sliced `[low64, high64]` layout with `unpacklo`/`unpackhi_epi64`. Being F2-linear, unreduced
+/// products may be XOR-summed and reduced once.
+#[inline]
+pub fn reduce_sliced_schoolbook<U: Underlier + OpsClmul + PackedUnderlier<u128>>(
+	[p00, cross, p11]: [[U; 2]; 3],
+) -> [U; 2] {
+	// Per pair index `[p00, cross, p11]` is a non-sliced `[t0, t1, t2]`; reduce each element with
+	// the packed CLMUL reduction.
+	let r0 = reduce([p00[0], cross[0], p11[0]]);
+	let r1 = reduce([p00[1], cross[1], p11[1]]);
+	// Transpose the two reduced 128-bit results back into the sliced `[low64, high64]` layout.
+	[U::unpacklo_epi64(r0, r1), U::unpackhi_epi64(r0, r1)]
+}
+
+/// Reduce a *sliced* Karatsuba widening product (the three raw product pairs `[p00, pm, p11]` from
+/// [`mul_wide_sliced_karatsuba`]) to a GHASH field element `[U; 2] = [low64, high64]`.
+///
+/// Recovers the middle cross term `cross = pm - p00 - p11` (subtraction is XOR in characteristic 2)
+/// and delegates to [`reduce_sliced_schoolbook`].
+#[inline]
+pub fn reduce_sliced_karatsuba<U: Underlier + OpsClmul + PackedUnderlier<u128>>(
+	[p00, pm, p11]: [[U; 2]; 3],
+) -> [U; 2] {
+	let cross = Underlier::xor(Underlier::xor(pm, p00), p11);
+	reduce_sliced_schoolbook([p00, cross, p11])
+}
+
+/// Multiply two *sliced* GHASH field elements with the schoolbook widening multiply.
+///
+/// Each element is `[U; 2] = [low64, high64]`. Composes [`mul_wide_sliced_schoolbook`] with
+/// [`reduce_sliced_schoolbook`]; both are inlined.
+#[inline]
+pub fn mul_sliced_schoolbook<U: Underlier + OpsClmul + PackedUnderlier<u128>>(
+	x: [U; 2],
+	y: [U; 2],
+) -> [U; 2] {
+	reduce_sliced_schoolbook(mul_wide_sliced_schoolbook(x, y))
+}
+
+/// Multiply two *sliced* GHASH field elements with the Karatsuba widening multiply.
+///
+/// Each element is `[U; 2] = [low64, high64]`. Composes [`mul_wide_sliced_karatsuba`] with
+/// [`reduce_sliced_karatsuba`]; both are inlined.
+#[inline]
+pub fn mul_sliced_karatsuba<U: Underlier + OpsClmul + PackedUnderlier<u128>>(
+	x: [U; 2],
+	y: [U; 2],
+) -> [U; 2] {
+	reduce_sliced_karatsuba(mul_wide_sliced_karatsuba(x, y))
+}
+
 #[cfg(all(
 	test,
 	target_arch = "x86_64",
@@ -162,6 +272,84 @@ mod tests {
 
 	fn from_u(x: __m128i) -> u128 {
 		<__m128i as PackedUnderlier<u128>>::get(x, 0)
+	}
+
+	// Packs two GHASH elements into sliced form across the two 64-bit lanes of `[__m128i; 2]`:
+	// register 0 holds both elements' low 64 bits, register 1 holds both elements' high 64 bits.
+	fn to_sliced(e0: u128, e1: u128) -> [__m128i; 2] {
+		let low = (e0 as u64 as u128) | ((e1 as u64 as u128) << 64);
+		let high = ((e0 >> 64) as u64 as u128) | (((e1 >> 64) as u64 as u128) << 64);
+		unsafe {
+			[
+				std::mem::transmute::<u128, __m128i>(low),
+				std::mem::transmute::<u128, __m128i>(high),
+			]
+		}
+	}
+
+	// Recovers the two GHASH elements from sliced form.
+	fn from_sliced(z: [__m128i; 2]) -> (u128, u128) {
+		let low = unsafe { std::mem::transmute::<__m128i, u128>(z[0]) };
+		let high = unsafe { std::mem::transmute::<__m128i, u128>(z[1]) };
+		let e0 = (low as u64 as u128) | ((high as u64 as u128) << 64);
+		let e1 = ((low >> 64) as u64 as u128) | (((high >> 64) as u64 as u128) << 64);
+		(e0, e1)
+	}
+
+	proptest! {
+		// The sliced schoolbook multiply agrees with the reference software multiply, per lane.
+		#[test]
+		fn test_sliced_schoolbook_matches_soft64(
+			a0 in any::<u128>(), a1 in any::<u128>(),
+			b0 in any::<u128>(), b1 in any::<u128>(),
+		) {
+			let z = mul_sliced_schoolbook::<__m128i>(to_sliced(a0, a1), to_sliced(b0, b1));
+			let (z0, z1) = from_sliced(z);
+			prop_assert_eq!(z0, soft64::mul(a0, b0));
+			prop_assert_eq!(z1, soft64::mul(a1, b1));
+		}
+
+		// The sliced Karatsuba multiply agrees with the reference software multiply, per lane.
+		#[test]
+		fn test_sliced_karatsuba_matches_soft64(
+			a0 in any::<u128>(), a1 in any::<u128>(),
+			b0 in any::<u128>(), b1 in any::<u128>(),
+		) {
+			let z = mul_sliced_karatsuba::<__m128i>(to_sliced(a0, a1), to_sliced(b0, b1));
+			let (z0, z1) = from_sliced(z);
+			prop_assert_eq!(z0, soft64::mul(a0, b0));
+			prop_assert_eq!(z1, soft64::mul(a1, b1));
+		}
+
+		// The schoolbook and Karatsuba sliced multiplies produce identical results.
+		#[test]
+		fn test_sliced_schoolbook_karatsuba_agree(
+			a0 in any::<u128>(), a1 in any::<u128>(),
+			b0 in any::<u128>(), b1 in any::<u128>(),
+		) {
+			let x = to_sliced(a0, a1);
+			let y = to_sliced(b0, b1);
+			let s = from_sliced(mul_sliced_schoolbook::<__m128i>(x, y));
+			let k = from_sliced(mul_sliced_karatsuba::<__m128i>(x, y));
+			prop_assert_eq!(s, k);
+		}
+
+		// The sliced reduction is F2-linear, so accumulating two unreduced products by XOR and
+		// reducing once equals reducing each and summing.
+		#[test]
+		fn test_sliced_wide_deferred_reduction(
+			a0 in any::<u128>(), a1 in any::<u128>(),
+			b0 in any::<u128>(), b1 in any::<u128>(),
+			c0 in any::<u128>(), c1 in any::<u128>(),
+			d0 in any::<u128>(), d1 in any::<u128>(),
+		) {
+			let p = mul_wide_sliced_schoolbook::<__m128i>(to_sliced(a0, a1), to_sliced(b0, b1));
+			let q = mul_wide_sliced_schoolbook::<__m128i>(to_sliced(c0, c1), to_sliced(d0, d1));
+			let acc = reduce_sliced_schoolbook::<__m128i>(Underlier::xor(p, q));
+			let (z0, z1) = from_sliced(acc);
+			prop_assert_eq!(z0, soft64::mul(a0, b0) ^ soft64::mul(c0, d0));
+			prop_assert_eq!(z1, soft64::mul(a1, b1) ^ soft64::mul(c1, d1));
+		}
 	}
 
 	proptest! {

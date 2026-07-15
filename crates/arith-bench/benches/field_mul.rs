@@ -333,6 +333,26 @@ fn bench_ghash(c: &mut Criterion) {
 			&mut rng,
 			128,
 		);
+
+		// 64-bit sliced representation: elements as `[__m128i; 2] = [low64, high64]`, two elements
+		// packed across the 64-bit lanes. The schoolbook and Karatsuba widening multiplies share an
+		// identical per-lane reduction, so the gap between these two isolates the 4-CLMUL
+		// schoolbook vs 3-CLMUL Karatsuba cost.
+		run_mul_benchmark(
+			&mut group,
+			"clmul::mul_sliced_schoolbook::<__m128i>",
+			ghash::clmul::mul_sliced_schoolbook::<__m128i>,
+			&mut rng,
+			128,
+		);
+
+		run_mul_benchmark(
+			&mut group,
+			"clmul::mul_sliced_karatsuba::<__m128i>",
+			ghash::clmul::mul_sliced_karatsuba::<__m128i>,
+			&mut rng,
+			128,
+		);
 	}
 
 	// Benchmark __m256i
@@ -343,6 +363,22 @@ fn bench_ghash(c: &mut Criterion) {
 	))]
 	{
 		run_mul_benchmark(&mut group, "mul_clmul::<__m256i>", mul_clmul::<__m256i>, &mut rng, 128);
+
+		run_mul_benchmark(
+			&mut group,
+			"clmul::mul_sliced_schoolbook::<__m256i>",
+			ghash::clmul::mul_sliced_schoolbook::<__m256i>,
+			&mut rng,
+			128,
+		);
+
+		run_mul_benchmark(
+			&mut group,
+			"clmul::mul_sliced_karatsuba::<__m256i>",
+			ghash::clmul::mul_sliced_karatsuba::<__m256i>,
+			&mut rng,
+			128,
+		);
 	}
 
 	// Benchmark uint64x2_t (AARCH64 NEON)
