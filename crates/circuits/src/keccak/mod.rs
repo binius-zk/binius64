@@ -5,7 +5,7 @@ pub mod permutation;
 
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
-use permutation::Permutation;
+use permutation::keccak_f1600;
 
 use crate::{
 	fixed_byte_vec::ByteVec,
@@ -26,7 +26,7 @@ pub const N_WORDS_PER_BLOCK: usize = RATE_BYTES / 8;
 /// Keccak is a sponge: the message is `pad10*1`-padded (the `0x01` domain byte immediately after
 /// the message, then zeros, with `0x80` set in the final byte of the last rate block), split into
 /// 136-byte (17-word) blocks that are XORed into the 1600-bit state and permuted by
-/// [`Permutation::keccak_f1600`]. Each padded word is *computed* as a derived wire, classified by
+/// [`keccak_f1600`]. Each padded word is *computed* as a derived wire, classified by
 /// its position relative to the runtime boundary word `w_bd = len_bytes >> 3`:
 ///
 ///   1. `word_index <  w_bd` - pure message word,
@@ -148,7 +148,7 @@ pub fn keccak256_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; N
 		for i in 0..N_WORDS_PER_BLOCK {
 			state[i] = builder.bxor(state[i], padded_message[block_no * N_WORDS_PER_BLOCK + i]);
 		}
-		Permutation::keccak_f1600(builder, &mut state);
+		keccak_f1600(builder, &mut state);
 		states.push(state);
 	}
 

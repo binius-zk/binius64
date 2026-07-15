@@ -7,7 +7,7 @@
 
 use std::array;
 
-use binius_circuits::keccak::permutation::Permutation;
+use binius_circuits::keccak::permutation::keccak_f1600;
 use binius_core::word::Word;
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
 use binius_m4_prover::ValueTable;
@@ -30,7 +30,7 @@ fn build_keccak_circuit() -> (Circuit, [Wire; STATE_LANES]) {
 
 	// Permute a copy of the input wires in place; `state` then holds the output wires.
 	let mut state = input;
-	Permutation::keccak_f1600(&builder, &mut state);
+	keccak_f1600(&builder, &mut state);
 
 	// Pin the outputs so dead-code elimination keeps the whole permutation.
 	for wire in state {

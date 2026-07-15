@@ -4,7 +4,7 @@ use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 
 use super::{
-	N_WORDS_PER_BLOCK, N_WORDS_PER_DIGEST, N_WORDS_PER_STATE, RATE_BYTES, permutation::Permutation,
+	N_WORDS_PER_BLOCK, N_WORDS_PER_DIGEST, N_WORDS_PER_STATE, RATE_BYTES, permutation::keccak_f1600,
 };
 
 /// Computes the Keccak-256 hash of a fixed-length message.
@@ -107,7 +107,7 @@ pub fn keccak256(
 		}
 
 		// Apply Keccak-f[1600] permutation
-		Permutation::keccak_f1600(builder, &mut state);
+		keccak_f1600(builder, &mut state);
 	}
 
 	// Return the first 4 words (256 bits) of the state as the digest

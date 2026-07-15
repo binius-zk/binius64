@@ -15,7 +15,7 @@
 
 use std::array;
 
-use binius_circuits::{blake3::blake3_compress_2x, keccak::permutation::Permutation};
+use binius_circuits::{blake3::blake3_compress_2x, keccak::permutation::keccak_f1600};
 use binius_core::word::Word;
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
 use binius_m4_prover::{BatchWitnessFiller, Prover, ValueTable};
@@ -193,7 +193,7 @@ fn build_keccak_circuit() -> (Circuit, [Wire; KECCAK_STATE_LANES]) {
 	// Permute a copy of the input in place.
 	// After the call, `state` holds the output lanes.
 	let mut state = input;
-	Permutation::keccak_f1600(&builder, &mut state);
+	keccak_f1600(&builder, &mut state);
 
 	// Force-commit the output lanes.
 	// This keeps the permutation alive under dead-code elimination.

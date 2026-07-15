@@ -12,7 +12,7 @@
 use anyhow::{Result, ensure};
 use binius_circuits::{
 	blake3::{blake3_compress, ref_compress},
-	keccak::permutation::{Permutation, State as KeccakState},
+	keccak::permutation::keccak_f1600,
 	sha256::{State as Sha256State, populate_message_block, sha256_compress},
 };
 use binius_core::word::Word;
@@ -193,7 +193,7 @@ pub struct IndependentKeccakPermutations {
 }
 
 struct KeccakPermutation {
-	permutation: Permutation,
+	input: [Wire; 25],
 	output: [Wire; 25],
 }
 
@@ -206,17 +206,14 @@ impl ExampleCircuit for IndependentKeccakPermutations {
 
 		let permutations = (0..params.num_primitives)
 			.map(|i| {
-				let words = std::array::from_fn(|_| builder.add_witness());
-				let permutation = Permutation::new(builder, KeccakState { words });
-				let output = std::array::from_fn(|_| builder.add_inout());
-				builder.assert_eq_v(
-					format!("keccak_permutation_out[{i}]"),
-					permutation.output_state.words,
-					output,
-				);
+				let input: [Wire; 25] = std::array::from_fn(|_| builder.add_witness());
+				let mut output = input;
+				keccak_f1600(builder, &mut output);
+				let expected = std::array::from_fn(|_| builder.add_inout());
+				builder.assert_eq_v(format!("keccak_permutation_out[{i}]"), output, expected);
 				KeccakPermutation {
-					permutation,
-					output,
+					input,
+					output: expected,
 				}
 			})
 			.collect();
@@ -228,7 +225,9 @@ impl ExampleCircuit for IndependentKeccakPermutations {
 		let mut rng = StdRng::seed_from_u64(instance.seed.unwrap_or(DEFAULT_RANDOM_SEED));
 		for permutation in &self.permutations {
 			let state: [u64; 25] = std::array::from_fn(|_| rng.next_u64());
-			permutation.permutation.populate_state(w, state);
+			for (wire, value) in permutation.input.iter().zip(state) {
+				w[*wire] = Word(value);
+			}
 
 			let mut expected = state;
 			keccak::Keccak::new().with_f1600(|f1600| f1600(&mut expected));
