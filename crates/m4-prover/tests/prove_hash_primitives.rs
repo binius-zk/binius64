@@ -221,6 +221,37 @@ fn fill_keccak(
 	}
 }
 
+/// Builds a circuit for one 64×64→128-bit integer multiplication and force-commits its output.
+///
+/// Unlike the hash primitives (which are purely bitwise / carry-adder based), this circuit has MUL
+/// constraints, so its M4 proof commits the extra IntMul logup* pushforward oracle — exercising the
+/// MUL branch of `IOPVerifier::oracle_specs`.
+fn build_imul_circuit() -> (Circuit, [Wire; 2]) {
+	let builder = CircuitBuilder::new();
+
+	// Two 64-bit witness factors.
+	let a = builder.add_witness();
+	let b = builder.add_witness();
+
+	// Force-commit the 128-bit product halves so the multiplication survives dead-code elimination.
+	let (hi, lo) = builder.imul(a, b);
+	builder.force_commit(hi);
+	builder.force_commit(lo);
+
+	(builder.build(), [a, b])
+}
+
+/// Fills the multiplication instance's two factor wires with random 64-bit words.
+///
+/// The product is derived from these inputs, so any assignment is valid.
+fn fill_imul(inputs: &[Wire; 2], _instance: usize, w: &mut BatchWitnessFiller<'_, '_>) {
+	let mut rng = StdRng::seed_from_u64(0);
+
+	for &wire in inputs {
+		w[wire] = Word(rng.next_u64());
+	}
+}
+
 // Proves one BLAKE3 compression through M4 and verifies it.
 #[test]
 fn prove_blake3_compression() {
@@ -233,4 +264,15 @@ fn prove_blake3_compression() {
 fn prove_keccak_permutation() {
 	let (circuit, input) = build_keccak_circuit();
 	prove_once("keccak", &circuit, |instance, w| fill_keccak(&input, instance, w));
+}
+
+// Proves one 64×64→128-bit multiplication through M4 and verifies it.
+//
+// This is the only primitive here with MUL constraints, so it covers the IntMul pushforward oracle
+// spec that `IOPVerifier::oracle_specs` derives — a wrong spec list would make the shared
+// prover/verifier compiler disagree and fail the trace opening.
+#[test]
+fn prove_integer_multiplication() {
+	let (circuit, inputs) = build_imul_circuit();
+	prove_once("imul", &circuit, |instance, w| fill_imul(&inputs, instance, w));
 }
