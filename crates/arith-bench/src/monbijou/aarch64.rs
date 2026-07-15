@@ -21,10 +21,10 @@ use core::arch::aarch64::*;
 use crate::Underlier;
 
 /// A widening (unreduced) base-field product `[prod_0, prod_1]`: one 128-bit carryless product per
-/// lane, each held in a register as `[lo, hi]`. `[uint64x2_t; 2]` is itself an [`Underlier`], so
+/// lane, each held in a register as `[lo, hi]`. `[poly64x2_t; 2]` is itself an [`Underlier`], so
 /// widening products XOR-accumulate. The transpose that gathers the limbs for the modular reduction
 /// is deferred to [`reduce`], so an inner product pays it once rather than per term.
-type Wide = [uint64x2_t; 2];
+type Wide = [poly64x2_t; 2];
 
 /// The reduction polynomial's tail: X^64 ≡ X^4 + X^3 + X + 1 = `0x1B`.
 const POLY: u64 = 0x1B;
@@ -38,8 +38,8 @@ const POLY: u64 = 0x1B;
 pub fn mul_wide(x: poly64x2_t, y: poly64x2_t) -> Wide {
 	unsafe {
 		[
-			vreinterpretq_u64_p128(vmull_p64(vgetq_lane_p64::<0>(x), vgetq_lane_p64::<0>(y))),
-			vreinterpretq_u64_p128(vmull_high_p64(x, y)),
+			vreinterpretq_p64_p128(vmull_p64(vgetq_lane_p64::<0>(x), vgetq_lane_p64::<0>(y))),
+			vreinterpretq_p64_p128(vmull_high_p64(x, y)),
 		]
 	}
 }
@@ -57,20 +57,18 @@ pub fn mul_wide(x: poly64x2_t, y: poly64x2_t) -> Wide {
 #[inline]
 pub fn reduce([p0, p1]: Wide) -> poly64x2_t {
 	unsafe {
-		let lo = vzip1q_u64(p0, p1);
-		let hi = vreinterpretq_p64_u64(vzip2q_u64(p0, p1));
-		let poly = vreinterpretq_p64_u64(vdupq_n_u64(POLY));
+		let lo = vzip1q_p64(p0, p1);
+		let hi = vzip2q_p64(p0, p1);
+		let poly = vdupq_n_p64(POLY);
 		// First fold: fr_i = hi_i · 0x1B (lane 0 via PMULL, lane 1 via PMULL2).
-		let fr0 = vreinterpretq_u64_p128(vmull_p64(vgetq_lane_p64::<0>(hi), POLY));
-		let fr1 = vreinterpretq_u64_p128(vmull_high_p64(hi, poly));
-		let acc = veorq_u64(lo, vzip1q_u64(fr0, fr1));
+		let fr0 = vreinterpretq_p64_p128(vmull_p64(vgetq_lane_p64::<0>(hi), POLY));
+		let fr1 = vreinterpretq_p64_p128(vmull_high_p64(hi, poly));
+		let acc = vaddq_p64(lo, vzip1q_p64(fr0, fr1));
 		// Second fold: the bits of fr_i past X^63 (its high limb) folded by ·0x1B; the result fits
 		// in the low 64 bits, so only those are gathered.
-		let fr0 = vreinterpretq_p64_u64(fr0);
-		let fr1 = vreinterpretq_p64_u64(fr1);
-		let sr0 = vreinterpretq_u64_p128(vmull_p64(vgetq_lane_p64::<1>(fr0), POLY));
-		let sr1 = vreinterpretq_u64_p128(vmull_p64(vgetq_lane_p64::<1>(fr1), POLY));
-		vreinterpretq_p64_u64(veorq_u64(acc, vzip1q_u64(sr0, sr1)))
+		let sr0 = vreinterpretq_p64_p128(vmull_p64(vgetq_lane_p64::<1>(fr0), POLY));
+		let sr1 = vreinterpretq_p64_p128(vmull_p64(vgetq_lane_p64::<1>(fr1), POLY));
+		vaddq_p64(acc, vzip1q_p64(sr0, sr1))
 	}
 }
 
@@ -78,11 +76,12 @@ pub fn reduce([p0, p1]: Wide) -> poly64x2_t {
 /// X: a one-bit left shift of the whole 128-bit value, carrying lane 0's top bit into lane 1. The
 /// product's degree ≤ 126 leaves room, so no reduction is needed here.
 #[inline]
-fn mul_x(p: uint64x2_t) -> uint64x2_t {
+fn mul_x(p: poly64x2_t) -> poly64x2_t {
 	unsafe {
+		let p = vreinterpretq_u64_p64(p);
 		// `[0, lo >> 63]`: the bit shifted out of lane 0 lands in lane 1.
 		let carry = vextq_u64(vdupq_n_u64(0), vshrq_n_u64::<63>(p), 1);
-		veorq_u64(vshlq_n_u64::<1>(p), carry)
+		vreinterpretq_p64_u64(veorq_u64(vshlq_n_u64::<1>(p), carry))
 	}
 }
 
@@ -106,15 +105,15 @@ pub fn mul(x: poly64x2_t, y: poly64x2_t) -> poly64x2_t {
 /// No combination or reduction happens here — those are F2-linear and deferred to [`reduce_128b`],
 /// so an inner product XOR-accumulates the three products and reduces once.
 #[inline]
-pub fn mul_wide_128b(x: poly64x2_t, y: poly64x2_t) -> [uint64x2_t; 3] {
+pub fn mul_wide_128b(x: poly64x2_t, y: poly64x2_t) -> [poly64x2_t; 3] {
 	unsafe {
 		let x0 = vgetq_lane_p64::<0>(x);
 		let x1 = vgetq_lane_p64::<1>(x);
 		let y0 = vgetq_lane_p64::<0>(y);
 		let y1 = vgetq_lane_p64::<1>(y);
-		let t0 = vreinterpretq_u64_p128(vmull_p64(x0, y0));
-		let t2 = vreinterpretq_u64_p128(vmull_high_p64(x, y)); // x1·y1
-		let t1 = vreinterpretq_u64_p128(vmull_p64(x0 ^ x1, y0 ^ y1));
+		let t0 = vreinterpretq_p64_p128(vmull_p64(x0, y0));
+		let t2 = vreinterpretq_p64_p128(vmull_high_p64(x, y)); // x1·y1
+		let t1 = vreinterpretq_p64_p128(vmull_p64(x0 ^ x1, y0 ^ y1));
 		[t0, t1, t2]
 	}
 }
@@ -126,10 +125,10 @@ pub fn mul_wide_128b(x: poly64x2_t, y: poly64x2_t) -> [uint64x2_t; 3] {
 /// unreduced `t2` (degree ≤ 126) is a plain 128-bit left shift; all combining stays in NEON
 /// registers. The two coefficient products are reduced together in the two lanes of one [`reduce`].
 #[inline]
-pub fn reduce_128b([t0, t1, t2]: [uint64x2_t; 3]) -> poly64x2_t {
+pub fn reduce_128b([t0, t1, t2]: [poly64x2_t; 3]) -> poly64x2_t {
 	unsafe {
-		let term0 = veorq_u64(t0, t2);
-		let term1 = veorq_u64(veorq_u64(veorq_u64(t1, t0), t2), mul_x(t2));
+		let term0 = vaddq_p64(t0, t2);
+		let term1 = vaddq_p64(vaddq_p64(vaddq_p64(t1, t0), t2), mul_x(t2));
 		// term0 is coefficient 0's product, term1 coefficient 1's; `reduce` gathers their limbs.
 		reduce([term0, term1])
 	}
@@ -322,7 +321,7 @@ mod tests {
 		fn wide_deferred_reduction_packed_128b(
 			a in any::<u128>(), b in any::<u128>(), c in any::<u128>(), d in any::<u128>(),
 		) {
-			let acc = <[uint64x2_t; 3] as Underlier>::xor(
+			let acc = <[poly64x2_t; 3] as Underlier>::xor(
 				mul_wide_128b(to_poly(a), to_poly(b)),
 				mul_wide_128b(to_poly(c), to_poly(d)),
 			);
