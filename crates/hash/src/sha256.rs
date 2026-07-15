@@ -20,6 +20,51 @@ use super::{
 	parallel_digest::{ParallelDigest, ParallelDigestAdapter},
 };
 
+/// Hashes every leaf through the four-way interleaved SHA-256 kernel.
+///
+/// The leaves serialize into one contiguous buffer, then hash four at a time.
+/// The serialize pass is cheap next to the compression work it feeds.
+///
+/// The caller guarantees the leaf count is a nonzero multiple of four.
+/// So every group of four is full.
+#[cfg(all(target_arch = "aarch64", target_feature = "sha2"))]
+fn digest_with_const_len_x4<I: IntoIterator<Item: FixedSizeSerializeBytes>>(
+	n_items_per_input: usize,
+	source: impl IndexedParallelIterator<Item = I>,
+	out: &mut [MaybeUninit<Output<Sha256>>],
+) {
+	use binius_utils::rayon::slice::{ParallelSlice, ParallelSliceMut};
+
+	let leaf_len = n_items_per_input * <I::Item as FixedSizeSerializeBytes>::BYTE_SIZE;
+
+	// Serialize each leaf's bytes into its slot of a contiguous buffer, one leaf per task.
+	let mut leaf_bytes = vec![0u8; out.len() * leaf_len];
+	source
+		.zip(leaf_bytes.par_chunks_mut(leaf_len))
+		.for_each(|(items, dst)| {
+			let mut cursor = &mut dst[..];
+			for item in items {
+				item.serialize(&mut cursor)
+					.expect("pre-condition: items serialize without error");
+			}
+			debug_assert!(cursor.is_empty(), "pre-condition: each leaf serializes to leaf_len");
+		});
+
+	// Hash four adjacent leaves at once, writing the four digests into their output slots.
+	out.par_chunks_mut(4)
+		.zip(leaf_bytes.par_chunks(4 * leaf_len))
+		.for_each(|(out4, bytes4)| {
+			let inputs: [&[u8]; 4] =
+				std::array::from_fn(|i| &bytes4[i * leaf_len..(i + 1) * leaf_len]);
+			let digests = crate::sha256_x4::sha256_x4(inputs);
+			for (slot, digest) in out4.iter_mut().zip(digests) {
+				let mut hash = Output::<Sha256>::default();
+				hash.copy_from_slice(&digest);
+				slot.write(hash);
+			}
+		});
+}
+
 /// SHA-256 initial hash values, used as the starting state for a raw block compression.
 const SHA256_IV: [u32; 8] = [
 	0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -100,6 +145,14 @@ impl ParallelDigest for ParallelSha256Digest {
 		source: impl IndexedParallelIterator<Item = I>,
 		out: &mut [MaybeUninit<Output<Sha256>>],
 	) {
+		// On aarch64 with the SHA extension, hash four leaves at once with the interleaved kernel.
+		// It needs full groups of four, which every power-of-two leaf count of at least four meets.
+		#[cfg(all(target_arch = "aarch64", target_feature = "sha2"))]
+		if out.len() >= 4 && out.len().is_multiple_of(4) {
+			digest_with_const_len_x4(n_items_per_input, source, out);
+			return;
+		}
+
 		let leaf_len = n_items_per_input * <I::Item as FixedSizeSerializeBytes>::BYTE_SIZE;
 		if leaf_len > SINGLE_BLOCK_MAX_LEN {
 			self.digest(source, out);

@@ -15,6 +15,7 @@ pub mod parallel_compression;
 pub mod parallel_digest;
 mod serialization;
 pub mod sha256;
+pub mod sha256_x4;
 
 pub use blake3::{Blake3Compression, Blake3HashSuite};
 pub use compress::CompressionFunction;
