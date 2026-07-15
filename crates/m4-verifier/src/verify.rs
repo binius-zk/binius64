@@ -9,6 +9,7 @@ use binius_iop::{
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	fri::{ConstantArityStrategy, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
+	oracle_setup_channel::OracleSetupChannel,
 };
 use binius_ip::{
 	channel::IPVerifierChannel,
@@ -27,7 +28,7 @@ use binius_verifier::{
 	config::{B1, B128},
 	protocols::{
 		bitand::AndCheckOutput,
-		intmul::{IntMulOutput, common::LIMB_BITS, verify as verify_intmul_reduction},
+		intmul::{IntMulOutput, verify as verify_intmul_reduction},
 		shift::{self, BITAND_ARITY, INTMUL_ARITY, OperatorData},
 	},
 	ring_switch::{self, RingSwitchVerifyOutput},
@@ -91,6 +92,24 @@ impl IOPVerifier {
 	/// Consumes the IOP verifier and returns the inner constraint system.
 	pub fn into_constraint_system(self) -> ConstraintSystem {
 		self.cs
+	}
+
+	/// Returns the oracle specs the prover commits to: the trace, plus the IntMul logup*
+	/// pushforward when the circuit has MUL constraints.
+	///
+	/// The specs are derived by replaying the oracle-receiving sequence against an
+	/// [`OracleSetupChannel`] — which records each `recv_oracle` without doing real verification —
+	/// rather than hand-maintaining the list. M4 commits its oracles without zero-knowledge, so the
+	/// setup channel is constructed with `is_zk = false`.
+	pub fn oracle_specs(&self) -> Vec<OracleSpec> {
+		let mut channel = OracleSetupChannel::new(false);
+		// The setup channel performs no real verification — every `recv_*` / `sample` /
+		// `assert_zero` is a no-op — so `verify` cannot fail here; it only records the
+		// `recv_oracle` calls read back below. An error would mean that invariant broke, so
+		// surface it rather than swallowing it.
+		self.verify(&mut channel)
+			.expect("verifying against the no-op OracleSetupChannel cannot fail");
+		channel.into_oracle_specs()
 	}
 
 	/// Verifies one M4 proof using an IOP channel.
@@ -250,19 +269,11 @@ impl Verifier {
 		let layout = BatchCommitLayout::for_constraint_system(cs, log_instances);
 		let iop_verifier = IOPVerifier::new(cs.clone(), layout);
 
-		// The packed batch witness, committed without zero-knowledge.
-		// ZK-ness is a higher-level choice that M4 does not make here.
-		let mut oracle_specs = vec![OracleSpec::new(layout.log_witness_elems)];
-
-		// With MUL constraints the IntMul check commits one further oracle: its logup* pushforward.
-		// The pushforward spans the generator-power table, so its size is fixed by the table alone.
-		// It is independent of the instance and constraint counts.
-		// It is committed after the trace, so it follows the trace in the spec order.
-		// This spec must stay in sync with the oracle the IntMul check commits
-		// (`logup_star::verify` receives one oracle of `LIMB_BITS` variables).
-		if !cs.mul_constraints.is_empty() {
-			oracle_specs.push(OracleSpec::new(LIMB_BITS));
-		}
+		// The oracle specs the prover commits to — the trace, plus the IntMul logup* pushforward
+		// when the circuit has MUL constraints. Derived by replaying the verifier's
+		// oracle-receiving sequence against an `OracleSetupChannel`, so the list can never drift
+		// out of sync with the oracles the checks actually commit.
+		let oracle_specs = iop_verifier.oracle_specs();
 
 		// Pick the proof-size-optimal FRI fold arity for this codeword length.
 		let log_code_len = layout.log_witness_elems + log_inv_rate;
