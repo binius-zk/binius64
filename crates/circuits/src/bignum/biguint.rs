@@ -49,14 +49,14 @@ impl BigUint {
 
 	/// Checks whether BigUint is zero and returns the check result as a boolean wire.
 	pub fn is_zero(&self, b: &CircuitBuilder) -> Wire {
-		// TODO: it's more efficient to add all-1 BigUint and check carry out (jimpo)
-		//       do this once BigUint addition returning a Wire carry out exists
 		let zero = b.add_constant(Word::ZERO);
-		let msb_one = b.add_constant(Word::MSB_ONE);
-		self.limbs
+		let any_bit = self
+			.limbs
 			.iter()
-			.map(|&limb| b.icmp_eq(limb, zero))
-			.fold(msb_one, |lhs, rhs| b.band(lhs, rhs))
+			.copied()
+			.reduce(|lhs, rhs| b.bor(lhs, rhs))
+			.unwrap_or(zero);
+		b.icmp_eq(any_bit, zero)
 	}
 
 	/// Pads to given limb length with zeros.

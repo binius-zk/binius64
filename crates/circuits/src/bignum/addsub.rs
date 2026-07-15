@@ -72,6 +72,27 @@ pub fn add_with_carry_out(builder: &CircuitBuilder, a: &BigUint, b: &BigUint) ->
 /// # Panics
 /// - Panics if `a` and `b` have different number of limbs
 pub fn sub(builder: &CircuitBuilder, a: &BigUint, b: &BigUint) -> BigUint {
+	let zero = builder.add_constant(Word::ZERO);
+	let (diff, borrow_out) = sub_with_borrow_out(builder, a, b);
+
+	// Assert the final borrow is zero (i.e no underflow).
+	//
+	// It requires checking the MSB of the `borrow_out`
+	let borrow_out_msb = builder.shr(borrow_out, 63);
+	builder.assert_eq("sub_borrow_out", borrow_out_msb, zero);
+
+	diff
+}
+
+/// Subtracts two equally-sized `BigUint`s modulo `2^(64 * limbs)`, returning the final borrow.
+///
+/// Unlike [`sub`], underflow is not rejected: the difference wraps and the returned wire
+/// carries the borrow out of the most significant limb in its MSB.
+pub(super) fn sub_with_borrow_out(
+	builder: &CircuitBuilder,
+	a: &BigUint,
+	b: &BigUint,
+) -> (BigUint, Wire) {
 	assert_eq!(a.limbs.len(), b.limbs.len(), "sub: inputs must have the same number of limbs");
 
 	let zero = builder.add_constant(Word::ZERO);
@@ -86,13 +107,7 @@ pub fn sub(builder: &CircuitBuilder, a: &BigUint, b: &BigUint) -> BigUint {
 		borrow_in = borrow_out;
 	}
 
-	// Assert the final borrow is zero (i.e no underflow).
-	//
-	// It requires checking the MSB of the `borrow_in`
-	let borrow_out_msb = builder.shr(borrow_in, 63);
-	builder.assert_eq("sub_borrow_out", borrow_out_msb, zero);
-
-	BigUint { limbs: diff_limbs }
+	(BigUint { limbs: diff_limbs }, borrow_in)
 }
 
 /// Computes multi-operand addition with carry propagation across limb positions.

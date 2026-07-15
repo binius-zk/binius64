@@ -1,28 +1,28 @@
 ec_msm circuit
 --
 Gates & Instructions
-├─ Number of gates: 225,434
-└─ Number of evaluation instructions: 270,938
+├─ Number of gates: 208,914
+└─ Number of evaluation instructions: 246,270
 
 Constraints
-├─ AND constraints: 174,769 used (66.7% of 2^18)
-│  [▓▓▓▓▓▓░░░░] spare: 87,375
+├─ AND constraints: 160,097 used (61.1% of 2^18)
+│  [▓▓▓▓▓▓░░░░] spare: 102,047
 ├─ MUL constraints: 20,548 used (62.7% of 2^15)
 │  [▓▓▓▓▓▓░░░░] spare: 12,220
-└─ Distinct value indices: 390,322
-   ├─ Distinct shifted value indices: 187,313
-   └─ Distinct unshifted value indices: 203,009
+└─ Distinct value indices: 361,410
+   ├─ Distinct shifted value indices: 171,232
+   └─ Distinct unshifted value indices: 190,178
 
 Value Vector
 ├─ Public Section: 52 used (81.2% of 2^6)
 │  [▓▓▓▓▓▓▓▓░░] spare: 12
 │  ├─ Constants: 20
 │  └─ Inout: 32
-├─ Private Section: 202,962 used (77.4%)
-│  [▓▓▓▓▓▓▓░░░] spare: 59,118
+├─ Private Section: 190,131 used (72.5%)
+│  [▓▓▓▓▓▓▓░░░] spare: 71,949
 │  ├─ Witness: 0
-│  └─ Internal: 202,962
-├─ Total Committed: 203,014 used (77.4% of 2^18)
-│  [▓▓▓▓▓▓▓░░░] spare: 59,130
-└─ Scratch (uncommitted): 207,906
+│  └─ Internal: 190,131
+├─ Total Committed: 190,183 used (72.5% of 2^18)
+│  [▓▓▓▓▓▓▓░░░] spare: 71,961
+└─ Scratch (uncommitted): 189,223
 
