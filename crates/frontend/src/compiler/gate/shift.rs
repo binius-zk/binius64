@@ -89,16 +89,6 @@ pub fn emit_eval_bytecode(
 	let [z] = outputs else { unreachable!() };
 	let [variant, n] = imm else { unreachable!() };
 
-	// Dispatch to the matching witness instruction; the amount fits in a byte.
-	let (z, x, n) = (wire_to_reg(*z), wire_to_reg(*x), *n as u8);
-	match variant_of(*variant) {
-		ShiftVariant::Sll => builder.emit_sll(z, x, n),
-		ShiftVariant::Slr => builder.emit_slr(z, x, n),
-		ShiftVariant::Sar => builder.emit_sar(z, x, n),
-		ShiftVariant::Rotr => builder.emit_rotr(z, x, n),
-		ShiftVariant::Sll32 => builder.emit_sll32(z, x, n),
-		ShiftVariant::Srl32 => builder.emit_srl32(z, x, n),
-		ShiftVariant::Sra32 => builder.emit_sra32(z, x, n),
-		ShiftVariant::Rotr32 => builder.emit_rotr32(z, x, n),
-	}
+	// Emit a single shift instruction carrying the variant and amount.
+	builder.emit_shift(wire_to_reg(*z), wire_to_reg(*x), variant_of(*variant), *n as u8);
 }

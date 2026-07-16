@@ -11,7 +11,7 @@
 //! The single-instance form is then the degenerate case of one instance.
 //! The dispatch loop, the opcode handlers, and the bytecode readers live here once.
 
-use binius_core::Word;
+use binius_core::{Word, constraint_system::ShiftVariant};
 
 use crate::compiler::{hints::HintRegistry, pathspec::PathSpec};
 
@@ -80,9 +80,7 @@ impl<'a> Executor<'a> {
 				0x07 => self.exec_fax(ctx),
 
 				// Shifts
-				0x10 => self.exec_sll(ctx),
-				0x11 => self.exec_slr(ctx),
-				0x12 => self.exec_sar(ctx),
+				0x10 => self.exec_shift(ctx),
 
 				// Arithmetic
 				0x20 => self.exec_iadd_cout(ctx),
@@ -92,11 +90,6 @@ impl<'a> Executor<'a> {
 
 				// 32-bit operations
 				0x40 => self.exec_iadd32_cin_cout(ctx),
-				0x41 => self.exec_rotr32(ctx),
-				0x42 => self.exec_srl32(ctx),
-				0x43 => self.exec_rotr(ctx),
-				0x44 => self.exec_sll32(ctx),
-				0x45 => self.exec_sra32(ctx),
 				0x46 => self.exec_iadd32_cout(ctx),
 
 				// Masks
@@ -192,33 +185,36 @@ impl<'a> Executor<'a> {
 	}
 
 	// Shifts
-	fn exec_sll<C: EvalContext>(&mut self, ctx: &mut C) {
+	fn exec_shift<C: EvalContext>(&mut self, ctx: &mut C) {
 		let dst = self.read_reg();
 		let src = self.read_reg();
-		let shift = self.read_u8() as u32;
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i) << shift;
-			ctx.store(dst, i, val);
+		// The builder only ever emits a valid discriminant, so the decode cannot fail.
+		let variant =
+			ShiftVariant::from_u8(self.read_u8()).expect("bytecode carries a valid shift variant");
+		let amount = self.read_u8() as u32;
+		// The variant is fixed for this instruction, so dispatch on it once, not per word.
+		//
+		// Each arm is then a branch-free tight loop, the shape Keccak's many rotations need.
+		match variant {
+			ShiftVariant::Sll => Self::shift_each(ctx, dst, src, |w| w << amount),
+			ShiftVariant::Slr => Self::shift_each(ctx, dst, src, |w| w >> amount),
+			ShiftVariant::Sar => Self::shift_each(ctx, dst, src, |w| w.sar(amount)),
+			ShiftVariant::Rotr => Self::shift_each(ctx, dst, src, |w| w.rotr(amount)),
+			ShiftVariant::Sll32 => Self::shift_each(ctx, dst, src, |w| w.sll32(amount)),
+			ShiftVariant::Srl32 => Self::shift_each(ctx, dst, src, |w| w.srl32(amount)),
+			ShiftVariant::Sra32 => Self::shift_each(ctx, dst, src, |w| w.sra32(amount)),
+			ShiftVariant::Rotr32 => Self::shift_each(ctx, dst, src, |w| w.rotr32(amount)),
 		}
 	}
 
-	fn exec_slr<C: EvalContext>(&mut self, ctx: &mut C) {
-		let dst = self.read_reg();
-		let src = self.read_reg();
-		let shift = self.read_u8() as u32;
+	/// Applies one fixed word-level shift across every instance.
+	///
+	/// The op is a distinct zero-sized closure per call site.
+	/// So the compiler monomorphizes this into a branch-free tight loop with the shift inlined.
+	#[inline]
+	fn shift_each<C: EvalContext>(ctx: &mut C, dst: u32, src: u32, op: impl Fn(Word) -> Word) {
 		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i) >> shift;
-			ctx.store(dst, i, val);
-		}
-	}
-
-	fn exec_sar<C: EvalContext>(&mut self, ctx: &mut C) {
-		let dst = self.read_reg();
-		let src = self.read_reg();
-		let shift = self.read_u8() as u32;
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i).sar(shift);
-			ctx.store(dst, i, val);
+			ctx.store(dst, i, op(ctx.load(src, i)));
 		}
 	}
 
@@ -302,56 +298,6 @@ impl<'a> Executor<'a> {
 			let (sum, cout) = ctx.load(src1, i).iadd_cout_32(ctx.load(src2, i));
 			ctx.store(dst_sum, i, sum);
 			ctx.store(dst_cout, i, cout);
-		}
-	}
-
-	fn exec_rotr32<C: EvalContext>(&mut self, ctx: &mut C) {
-		let dst = self.read_reg();
-		let src = self.read_reg();
-		let rotate = self.read_u8() as u32;
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i).rotr32(rotate);
-			ctx.store(dst, i, val);
-		}
-	}
-
-	fn exec_srl32<C: EvalContext>(&mut self, ctx: &mut C) {
-		let dst = self.read_reg();
-		let src = self.read_reg();
-		let shift = self.read_u8() as u32;
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i).srl32(shift);
-			ctx.store(dst, i, val);
-		}
-	}
-
-	fn exec_sll32<C: EvalContext>(&mut self, ctx: &mut C) {
-		let dst = self.read_reg();
-		let src = self.read_reg();
-		let shift = self.read_u8() as u32;
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i).sll32(shift);
-			ctx.store(dst, i, val);
-		}
-	}
-
-	fn exec_sra32<C: EvalContext>(&mut self, ctx: &mut C) {
-		let dst = self.read_reg();
-		let src = self.read_reg();
-		let shift = self.read_u8() as u32;
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i).sra32(shift);
-			ctx.store(dst, i, val);
-		}
-	}
-
-	fn exec_rotr<C: EvalContext>(&mut self, ctx: &mut C) {
-		let dst = self.read_reg();
-		let src = self.read_reg();
-		let rotate = self.read_u8() as u32;
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i).rotr(rotate);
-			ctx.store(dst, i, val);
 		}
 	}
 
