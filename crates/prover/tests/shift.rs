@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_circuits::sha256::Sha256;
+use binius_circuits::{fixed_byte_vec::ByteVec, sha256::sha256_varlen};
 use binius_core::{
 	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueVec},
 	verify::verify_constraints,
@@ -41,25 +41,31 @@ pub fn create_sha256_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 		builder.add_inout(),
 		builder.add_inout(),
 	];
-	let message: Vec<Wire> = (0..max_len.div_ceil(8))
+	let data: Vec<Wire> = (0..max_len.div_ceil(8))
 		.map(|_| builder.add_witness())
 		.collect();
 
 	// Create the SHA256 circuit
-	let sha256 = Sha256::new(&builder, len, digest, message);
+	let message = ByteVec::new(data, len);
+	let computed = sha256_varlen(&builder, &message);
+	for i in 0..4 {
+		builder.assert_eq(format!("digest[{i}]"), computed[i], digest[i]);
+	}
 
 	let circuit = builder.build();
 	let mut witness_filler = circuit.new_witness_filler();
 
 	// Populate with concrete message: "abc"
 	let message_bytes = b"abc";
-	sha256.populate_len_bytes(&mut witness_filler, message_bytes.len());
-	sha256.populate_message(&mut witness_filler, message_bytes);
+	message.populate_len_bytes(&mut witness_filler, message_bytes.len());
+	message.populate_data(&mut witness_filler, message_bytes);
 
 	// Calculate SHA256 digest of the message dynamically
 	let hash = Sha256Hasher::digest(message_bytes);
 	let expected_digest: [u8; 32] = hash.into();
-	sha256.populate_digest(&mut witness_filler, expected_digest);
+	for (i, chunk) in expected_digest.chunks(8).enumerate() {
+		witness_filler[digest[i]] = Word(u64::from_be_bytes(chunk.try_into().unwrap()));
+	}
 
 	// Get the witness vector
 	circuit.populate_wire_witness(&mut witness_filler).unwrap();

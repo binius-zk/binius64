@@ -3,7 +3,10 @@
 use std::array;
 
 use anyhow::Result;
-use binius_circuits::sha256::{Sha256, sha256_fixed};
+use binius_circuits::{
+	fixed_byte_vec::ByteVec,
+	sha256::{sha256_fixed, sha256_varlen},
+};
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use sha2::Digest;
@@ -24,7 +27,7 @@ enum Sha256Circuit {
 		digest: [Wire; 8],
 	},
 	/// Variable-length gadget: message length is a runtime witness.
-	Variable(Sha256),
+	Variable { message: ByteVec, digest: [Wire; 4] },
 }
 
 impl ExampleCircuit for Sha256Example {
@@ -49,10 +52,13 @@ impl ExampleCircuit for Sha256Example {
 			// Variable-length: message length is a runtime witness.
 			HasherMode::Variable { max_len_bytes } => {
 				let max_words = max_len_bytes.div_ceil(8);
-				let len_bytes = builder.add_witness();
+				let message = ByteVec::new_inout(builder, max_words);
+				let computed_digest = sha256_varlen(builder, &message);
 				let digest: [Wire; 4] = array::from_fn(|_| builder.add_inout());
-				let message = (0..max_words).map(|_| builder.add_inout()).collect();
-				Sha256Circuit::Variable(Sha256::new(builder, len_bytes, digest, message))
+				for i in 0..4 {
+					builder.assert_eq(format!("digest[{i}]"), computed_digest[i], digest[i]);
+				}
+				Sha256Circuit::Variable { message, digest }
 			}
 		};
 
@@ -80,10 +86,15 @@ impl ExampleCircuit for Sha256Example {
 					w[digest_wires[i]] = Word(u32::from_be_bytes(chunk.try_into().unwrap()) as u64);
 				}
 			}
-			Sha256Circuit::Variable(gadget) => {
-				gadget.populate_len_bytes(w, message.len());
-				gadget.populate_message(w, &message);
-				gadget.populate_digest(w, digest.into());
+			Sha256Circuit::Variable {
+				message: byte_vec,
+				digest: digest_wires,
+			} => {
+				byte_vec.populate_data(w, &message);
+				byte_vec.populate_len_bytes(w, message.len());
+				for (i, chunk) in digest.chunks(8).enumerate() {
+					w[digest_wires[i]] = Word(u64::from_be_bytes(chunk.try_into().unwrap()));
+				}
 			}
 		}
 

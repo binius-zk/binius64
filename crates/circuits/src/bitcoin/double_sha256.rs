@@ -1,24 +1,23 @@
 // Copyright 2025 Irreducible Inc.
 //! The Bitcoin double-SHA256 hash function.
 
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use sha2::Digest;
 
-use crate::sha256::Sha256;
+use crate::{bytes::swap_bytes_32, sha256::sha256_fixed};
 
-/// Stores some intermediate wires of a double-SHA256 computation, so that they can later be
-/// populated with [`Self::populate_inner`].
+/// Retained only so callers can obtain the reference digest via [`Self::populate_inner`].
 ///
 /// (Hopefully this struct is not needed in the future, and only the [`Self::construct_circuit`]
 /// method is needed without any return value.)
-pub struct DoubleSha256 {
-	sha256_0: Sha256,
-	sha256_1: Sha256,
-}
+pub struct DoubleSha256;
 
 impl DoubleSha256 {
 	/// Constructs a circuit that asserts that `digest = SHA256(SHA256(message))`.
 	/// The message length in bytes is fixed at compile time to be `message.len() * 8`.
+	///
+	/// `message` and `digest` are Bitcoin little-endian packed (8 bytes per wire).
 	///
 	/// # Preconditions
 	///
@@ -28,69 +27,44 @@ impl DoubleSha256 {
 		message: Vec<Wire>,
 		digest: [Wire; 4],
 	) -> Self {
-		// first SHA256 circuit
-		let message_0: Vec<Wire> = std::iter::repeat_with(|| builder.add_witness())
-			.take(message.len())
-			.collect();
-		let digest_0: [Wire; 4] = std::array::from_fn(|_| builder.add_witness());
-		let sha256_0 = Sha256::new(
-			builder,
-			builder.add_constant_64(message.len() as u64 * 8),
-			digest_0,
-			message_0,
-		);
+		let mask32 = builder.add_constant(Word::MASK_32);
 
-		// second SHA256 circuit
-		let message_1: Vec<Wire> = std::iter::repeat_with(|| builder.add_witness())
-			.take(4)
-			.collect();
-		let digest_1: [Wire; 4] = std::array::from_fn(|_| builder.add_witness());
-		let sha256_1 = Sha256::new(builder, builder.add_constant_64(32), digest_1, message_1);
-
-		// input of first SHA256 circuit is `message`
-		let message_0_le = sha256_0.message_to_le_wires(builder);
-		for i in 0..message.len() {
-			builder.assert_eq("agreement input", message[i], message_0_le[i]);
+		// First SHA-256. `message` is little-endian 8-byte wires; `sha256_fixed` consumes
+		// big-endian 32-bit schedule words, so byte-swap within each 32-bit half and split each
+		// 64-bit wire into its two schedule words (mirrors `sha256::sha256_varlen`'s input
+		// prologue).
+		let mut message_be: Vec<Wire> = Vec::with_capacity(message.len() * 2);
+		for &w in &message {
+			let swapped = swap_bytes_32(builder, w);
+			message_be.push(builder.band(swapped, mask32));
+			message_be.push(builder.shr(swapped, 32));
 		}
+		let digest_0_be = sha256_fixed(builder, &message_be, message.len() * 8); // [Wire; 8] BE
 
-		// output of first SHA256 circuit is input of second SHA256 circuit
-		let digest_0_le = sha256_0.digest_to_le_wires(builder);
-		let message_1_le = sha256_1.message_to_le_wires(builder);
-		for i in 0..4 {
-			builder.assert_eq("agreement intermediate", digest_0_le[i], message_1_le[i]);
-		}
+		// Second SHA-256 over the 32-byte first digest. Its output words are already the big-endian
+		// 32-bit schedule words the second hash expects, so feed them straight in (no swap).
+		let digest_1_be = sha256_fixed(builder, &digest_0_be, 32); // [Wire; 8] BE
 
-		// output of second SHA256 circuit is `digest`
-		let digest_1_le = sha256_1.digest_to_le_wires(builder);
-		for i in 0..4 {
-			builder.assert_eq("agreement output", digest_1_le[i], digest[i]);
-		}
+		// Repack the big-endian 32-bit output words into little-endian 64-bit wires (the old
+		// `digest_to_le_wires` contract that `merkle_path`/`header_chain` depend on) and assert.
+		let computed: [Wire; 4] = std::array::from_fn(|i| {
+			let lo = swap_bytes_32(builder, digest_1_be[2 * i]);
+			let hi = swap_bytes_32(builder, digest_1_be[2 * i + 1]);
+			builder.bxor(lo, builder.shl(hi, 32))
+		});
+		builder.assert_eq_v("double sha256 digest", computed, digest);
 
-		Self { sha256_0, sha256_1 }
+		Self
 	}
 
-	/// You need to call this with the `message` bytes that you will put in the message wires from
-	/// the [`Self::construct_circuit`].
+	/// Returns `SHA256(SHA256(message))`.
 	///
-	/// **Note:** This does NOT populate the message wires or digest wires that you passed to
-	/// [`Self::construct_circuit`]. You are responsible yourself for populating those wires.
-	/// This method only fills some internal wires needed for the SHA256 computations.
-	///
-	/// Return the digest.
-	///
-	/// (Hopefully this method is not needed in the future.)
-	pub fn populate_inner(&self, filler: &mut WitnessFiller, message: &[u8]) -> [u8; 32] {
-		// don't need to `populate_len(...)` because we passed a constant to the length wires
-		self.sha256_0.populate_message(filler, message);
+	/// The circuit derives every internal wire from the input `message`/`digest` wires, so unlike
+	/// the old struct this populates nothing; it is retained only so callers that chain on the
+	/// returned digest bytes continue to compile.
+	pub fn populate_inner(&self, _filler: &mut WitnessFiller, message: &[u8]) -> [u8; 32] {
 		let digest_0: [u8; 32] = sha2::Sha256::digest(message).into();
-		self.sha256_0.populate_digest(filler, digest_0);
-
-		// don't need to `populate_len(...)` because we passed a constant to the length wires
-		self.sha256_1.populate_message(filler, &digest_0);
-		let digest_1: [u8; 32] = sha2::Sha256::digest(digest_0).into();
-		self.sha256_1.populate_digest(filler, digest_1);
-
-		digest_1
+		sha2::Sha256::digest(digest_0).into()
 	}
 }
 

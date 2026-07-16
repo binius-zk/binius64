@@ -3,11 +3,12 @@ use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD};
 use binius_circuits::{
 	base64::Base64UrlSafe,
+	bytes::swap_bytes,
 	concat::concat,
 	fixed_byte_vec::ByteVec,
 	jwt_claims::{Attribute, JwtClaims},
 	rs256::Rs256Verify,
-	sha256::Sha256 as Sha256Circuit,
+	sha256::sha256_varlen,
 	slice::assert_slice_eq,
 };
 use binius_core::Word;
@@ -81,8 +82,8 @@ pub struct ZkLogin {
 	pub salt: ByteVec,
 	/// The zkaddr (SHA256 hash of concat(sub, aud, iss, salt))
 	pub zkaddr: [Wire; 4],
-	/// The SHA256 circuit for zkaddr verification
-	pub zkaddr_sha256: Sha256Circuit,
+	/// The message ByteVec whose SHA-256 is asserted to equal `zkaddr`
+	pub zkaddr_sha256: ByteVec,
 	/// The subcircuit that verifies the JWT header.
 	pub jwt_claims_header: JwtClaims,
 	/// The subcircuit that verifies the JWT in the payload.
@@ -103,8 +104,8 @@ pub struct ZkLogin {
 	pub jwt_signature: ByteVec,
 	/// The base64 encoded nonce
 	pub base64_jwt_payload_nonce: [Wire; 6],
-	/// The SHA256 circuit for nonce verification
-	pub nonce_sha256: Sha256Circuit,
+	/// The message ByteVec whose SHA-256 is asserted to equal `nonce`
+	pub nonce_sha256: ByteVec,
 	/// The nonce value (32 bytes SHA256 hash)
 	pub nonce: [Wire; 4],
 	/// The vk_u public key (32 bytes)
@@ -185,19 +186,17 @@ impl ZkLogin {
 		let zkaddr_sha256_message: Vec<Wire> = (0..max_len_zkaddr_preimage)
 			.map(|_| b.add_witness())
 			.collect();
-		let zkaddr_sha256 = Sha256Circuit::new(
-			&b.subcircuit("zkaddr_sha256"),
-			zkaddr_preimage.len_bytes,
-			zkaddr,
-			zkaddr_sha256_message,
-		);
+		let zkaddr_sha256 = ByteVec::new(zkaddr_sha256_message, zkaddr_preimage.len_bytes);
+		let zkaddr_computed = sha256_varlen(&b.subcircuit("zkaddr_sha256"), &zkaddr_sha256);
+		for i in 0..4 {
+			b.assert_eq(format!("zkaddr_digest[{i}]"), zkaddr_computed[i], zkaddr[i]);
+		}
 
-		let zkaddr_preimage_le_wires = zkaddr_sha256.message_to_le_wires(b);
 		assert_slice_eq(
 			b,
 			"zkaddr_preimage_eq",
 			zkaddr_preimage.len_bytes,
-			&zkaddr_preimage_le_wires,
+			&zkaddr_sha256.data,
 			&zkaddr_preimage.data,
 		);
 
@@ -220,23 +219,21 @@ impl ZkLogin {
 		let nonce_sha256_message: Vec<Wire> = (0..max_len_nonce_preimage)
 			.map(|_| b.add_witness())
 			.collect();
-		let nonce_sha256 = Sha256Circuit::new(
-			&b.subcircuit("nonce_sha256"),
-			nonce_preimage.len_bytes,
-			nonce,
-			nonce_sha256_message,
-		);
+		let nonce_sha256 = ByteVec::new(nonce_sha256_message, nonce_preimage.len_bytes);
+		let nonce_computed = sha256_varlen(&b.subcircuit("nonce_sha256"), &nonce_sha256);
+		for i in 0..4 {
+			b.assert_eq(format!("nonce_digest[{i}]"), nonce_computed[i], nonce[i]);
+		}
 
-		let nonce_preimage_le_wires = nonce_sha256.message_to_le_wires(b);
 		assert_slice_eq(
 			b,
 			"nonce_preimage_eq",
 			nonce_preimage.len_bytes,
-			&nonce_preimage_le_wires,
+			&nonce_sha256.data,
 			&nonce_preimage.data,
 		);
 
-		let nonce_le = nonce_sha256.digest_to_le_wires(b);
+		let nonce_le = nonce_computed.map(|x| swap_bytes(b, x));
 
 		// Base64 requires 48 bytes (6 wires) for alignment, so add zero padding
 		let zero = b.add_constant(Word::ZERO);
@@ -282,7 +279,7 @@ impl ZkLogin {
 		let jwt_signature_verify =
 			Rs256Verify::new(b, jwt_signing_payload, jwt_signature.clone(), rsa_modulus);
 
-		let jwt_signing_payload_le_wires = jwt_signature_verify.sha256.message_to_le_wires(b);
+		let jwt_signing_payload_le_wires = jwt_signature_verify.message.data.clone();
 		assert_slice_eq(
 			b,
 			"jwt_signing_payload_eq",
@@ -337,13 +334,15 @@ impl ZkLogin {
 	}
 
 	pub fn populate_zkaddr(&self, w: &mut WitnessFiller, zkaddr_hash: &[u8; 32]) {
-		self.zkaddr_sha256.populate_digest(w, *zkaddr_hash);
+		for (i, chunk) in zkaddr_hash.chunks(8).enumerate() {
+			w[self.zkaddr[i]] = Word(u64::from_be_bytes(chunk.try_into().unwrap()));
+		}
 	}
 
 	pub fn populate_zkaddr_preimage(&self, w: &mut WitnessFiller, zkaddr_preimage: &[u8]) {
 		self.zkaddr_sha256
 			.populate_len_bytes(w, zkaddr_preimage.len());
-		self.zkaddr_sha256.populate_message(w, zkaddr_preimage);
+		self.zkaddr_sha256.populate_data(w, zkaddr_preimage);
 	}
 
 	pub fn populate_jwt_header(&self, w: &mut WitnessFiller, header_bytes: &[u8]) {
@@ -384,13 +383,15 @@ impl ZkLogin {
 	}
 
 	pub fn populate_nonce(&self, w: &mut WitnessFiller, nonce_hash: &[u8; 32]) {
-		self.nonce_sha256.populate_digest(w, *nonce_hash);
+		for (i, chunk) in nonce_hash.chunks(8).enumerate() {
+			w[self.nonce[i]] = Word(u64::from_be_bytes(chunk.try_into().unwrap()));
+		}
 	}
 
 	pub fn populate_nonce_preimage(&self, w: &mut WitnessFiller, nonce_preimage: &[u8]) {
 		self.nonce_sha256
 			.populate_len_bytes(w, nonce_preimage.len());
-		self.nonce_sha256.populate_message(w, nonce_preimage);
+		self.nonce_sha256.populate_data(w, nonce_preimage);
 	}
 
 	pub fn populate_vk_u(&self, w: &mut WitnessFiller, vk_u_bytes: &[u8; 32]) {
@@ -647,7 +648,6 @@ impl ExampleCircuit for ZkLoginExample {
 		// Populate JWS signature verification data
 		let message_str = format!("{header_base64}.{payload_base64}");
 		let message = message_str.as_bytes();
-		let hash = Sha256::digest(message);
 		self.zklogin.populate_rsa_modulus(w, &modulus_bytes);
 		self.zklogin
 			.jwt_signature_verify
@@ -655,10 +655,6 @@ impl ExampleCircuit for ZkLoginExample {
 		self.zklogin
 			.jwt_signature_verify
 			.populate_message(w, message);
-		self.zklogin
-			.jwt_signature_verify
-			.sha256
-			.populate_digest(w, hash.into());
 		self.zklogin.jwt_signature_verify.populate_intermediates(
 			w,
 			&signature_bytes,

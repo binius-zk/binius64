@@ -7,7 +7,7 @@
 //!
 //! Guide: https://www.binius.xyz/building/
 
-use binius_circuits::sha256::Sha256;
+use binius_circuits::{fixed_byte_vec::ByteVec, sha256::sha256_varlen};
 use binius_core::{verify::verify_constraints, word::Word};
 use binius_frontend::CircuitBuilder;
 use binius_hash::StdHashSuite;
@@ -23,13 +23,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let nonce: Vec<_> = (0..4).map(|_| builder.add_witness()).collect();
 	let commitment: [_; 4] = core::array::from_fn(|_| builder.add_inout());
 
-	let message: Vec<_> = content.into_iter().chain(nonce).collect();
+	let data: Vec<_> = content.into_iter().chain(nonce).collect();
 	let len_bytes = builder.add_witness();
-	let sha256 = Sha256::new(&builder, len_bytes, commitment, message);
+	let message = ByteVec::new(data, len_bytes);
+	let computed = sha256_varlen(&builder, &message);
+	for i in 0..4 {
+		builder.assert_eq(format!("commitment[{i}]"), computed[i], commitment[i]);
+	}
 	let circuit = builder.build();
 
 	let mut witness = circuit.new_witness_filler();
-	witness[len_bytes] = Word(64); // feed the circuit a wire containing the preimage length, in bytes.
 
 	let mut content_bytes = [0u8; 32];
 	content_bytes[..32].copy_from_slice(&b"A secret, exactly 32 bytes long."[..]);
@@ -37,12 +40,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let mut message_bytes = [0u8; 64];
 	message_bytes[..32].copy_from_slice(&content_bytes);
 	message_bytes[32..].copy_from_slice(&nonce_bytes);
-	sha256.populate_message(&mut witness, &message_bytes);
+	message.populate_data(&mut witness, &message_bytes);
+	message.populate_len_bytes(&mut witness, message_bytes.len());
 
 	let digest = StdSha256::digest(message_bytes);
-	let mut digest_bytes = [0u8; 32];
-	digest_bytes.copy_from_slice(&digest);
-	sha256.populate_digest(&mut witness, digest_bytes);
+	for (i, chunk) in digest.chunks(8).enumerate() {
+		witness[commitment[i]] = Word(u64::from_be_bytes(chunk.try_into().unwrap()));
+	}
 
 	circuit.populate_wire_witness(&mut witness)?;
 

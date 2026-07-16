@@ -7,7 +7,7 @@ use super::fixed_byte_vec::ByteVec;
 use crate::{
 	bignum::{BigUint, ModReduce, assert_eq, optimal_mul, optimal_sqr},
 	bytes::swap_bytes,
-	sha256::Sha256,
+	sha256::sha256_varlen,
 };
 
 /// Convert a FixedByteVec with little-endian wire packing to a BigUint.
@@ -44,8 +44,6 @@ pub struct Rs256Verify {
 	pub modulus: ByteVec,
 	/// Wires associated with intermediate RSA computations
 	pub rsa_intermediates: RsaIntermediates,
-	/// SHA256 circuit for hashing the message
-	pub sha256: Sha256,
 }
 
 impl Rs256Verify {
@@ -100,14 +98,7 @@ impl Rs256Verify {
 		let modulus_bignum = fixedbytevec_le_to_biguint(builder, &modulus);
 		builder.assert_eq("modulus_bytes_len", modulus.len_bytes, builder.add_constant_64(256));
 
-		let sha256_builder = builder.subcircuit("sha256");
-		let expected_hash_wires: [Wire; 4] = std::array::from_fn(|_| sha256_builder.add_witness());
-		let sha256 = Sha256::new(
-			&sha256_builder,
-			message.len_bytes,
-			expected_hash_wires,
-			message.data.clone(),
-		);
+		let expected_hash_wires: [Wire; 4] = sha256_varlen(&builder.subcircuit("sha256"), &message);
 		let expected_hash = BigUint {
 			limbs: expected_hash_wires.to_vec(),
 		};
@@ -197,13 +188,12 @@ impl Rs256Verify {
 			signature,
 			modulus,
 			rsa_intermediates,
-			sha256,
 		}
 	}
 
 	/// Populate the message length
 	pub fn populate_len_bytes(&self, w: &mut WitnessFiller, len_bytes: usize) {
-		self.sha256.populate_len_bytes(w, len_bytes);
+		self.message.populate_len_bytes(w, len_bytes);
 	}
 
 	/// Populate the RSA signature, modulus and intermediate computations
@@ -224,7 +214,7 @@ impl Rs256Verify {
 	/// # Panics
 	/// Panics if message.len() > self.message.len() * 8
 	pub fn populate_message(&self, w: &mut WitnessFiller, message: &[u8]) {
-		self.sha256.populate_message(w, message);
+		self.message.populate_data(w, message);
 	}
 
 	/// Populate the RSA modulus
@@ -464,11 +454,9 @@ mod tests {
 		message_bytes: &[u8],
 		modulus_bytes: &[u8],
 	) {
-		let hash = Sha256::digest(message_bytes);
 		circuit.populate_rsa(w, signature_bytes, modulus_bytes);
 		circuit.populate_len_bytes(w, message_bytes.len());
 		circuit.populate_message(w, message_bytes);
-		circuit.sha256.populate_digest(w, hash.into());
 	}
 
 	fn setup_circuit(builder: &mut CircuitBuilder, max_len: usize) -> Rs256Verify {
