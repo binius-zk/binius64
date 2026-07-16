@@ -33,6 +33,33 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: DerefMut<Target = [P]>>(
 	values.truncate(values.log_len() - 1);
 }
 
+/// Computes the partial evaluation of a multilinear on its highest variable, out of place.
+///
+/// This is the out-of-place counterpart of [`fold_highest_var_inplace`].
+/// It reads `values` and returns a fresh half-size buffer, leaving the input untouched.
+/// Use it when the input is borrowed or must be preserved; otherwise prefer the in-place version.
+///
+/// ## Preconditions
+///
+/// * `values.log_len() >= 1` (buffer must have at least 2 elements)
+pub fn fold_highest_var<P: PackedField, Data: Deref<Target = [P]>>(
+	values: &FieldBuffer<P, Data>,
+	scalar: P::Scalar,
+) -> FieldBuffer<P> {
+	assert!(values.log_len() > 0, "precondition: buffer must have at least one variable");
+
+	// The two halves are the multilinear specialized to 0 and to 1 on the highest variable.
+	let broadcast_scalar = P::broadcast(scalar);
+	let (lo, hi) = values.split_half_ref();
+
+	// Interpolate the line through each (lo, hi) pair at the challenge into a fresh buffer.
+	let folded = (lo.as_ref(), hi.as_ref())
+		.into_par_iter()
+		.map(|(&lo_i, &hi_i)| extrapolate_line_packed(lo_i, hi_i, broadcast_scalar))
+		.collect();
+	FieldBuffer::new(values.log_len() - 1, folded)
+}
+
 /// Computes the fold high of a binary multilinear with a fold tensor.
 ///
 /// Binary multilinear is represented transparently by a boolean sequence.
@@ -120,6 +147,28 @@ mod tests {
 		}
 
 		assert_eq!(multilinear.get(0), eval);
+	}
+
+	#[test]
+	fn test_fold_highest_var_matches_inplace() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		for n_vars in 1..=10 {
+			let multilinear = random_field_buffer::<P>(&mut rng, n_vars);
+			let challenge = random_scalars::<F>(&mut rng, 1)[0];
+
+			// Out-of-place: leaves the input untouched, returns a fresh buffer.
+			let out_of_place = fold_highest_var(&multilinear, challenge);
+
+			// In-place reference: fold a copy and compare.
+			let mut in_place = multilinear;
+			fold_highest_var_inplace(&mut in_place, challenge);
+
+			assert_eq!(
+				out_of_place, in_place,
+				"out-of-place fold must equal in-place (n_vars={n_vars})"
+			);
+		}
 	}
 
 	fn test_binary_fold_high_conforms_to_regular_fold_high_helper(

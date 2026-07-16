@@ -21,8 +21,8 @@
 
 use binius_field::{Field, PackedField};
 use binius_math::{
-	FieldBuffer, FieldSlice, line::extrapolate_line_packed,
-	multilinear::fold::fold_highest_var_inplace,
+	FieldBuffer, FieldSlice,
+	multilinear::fold::{fold_highest_var, fold_highest_var_inplace},
 };
 use binius_utils::rayon::prelude::*;
 
@@ -417,23 +417,4 @@ impl<'b, P: PackedField> ExecuteContext<'b, P> {
 			EvaluationChunk { cols, eqs }
 		})
 	}
-}
-
-/// Computes the partial evaluation of a multilinear on its highest variable, out of place.
-///
-/// This is the out-of-place counterpart of [`fold_highest_var_inplace`], used for the first fold
-/// of a borrowed column.
-fn fold_highest_var<P: PackedField>(
-	values: &FieldSlice<P>,
-	challenge: P::Scalar,
-) -> FieldBuffer<P> {
-	assert!(values.log_len() > 0);
-
-	let challenge_broadcast = P::broadcast(challenge);
-	let (lo, hi) = values.split_half_ref();
-	let out_vals = (lo.as_ref(), hi.as_ref())
-		.into_par_iter()
-		.map(|(&lo_i, &hi_i)| extrapolate_line_packed(lo_i, hi_i, challenge_broadcast))
-		.collect();
-	FieldBuffer::new(values.log_len() - 1, out_vals)
 }
