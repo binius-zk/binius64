@@ -285,17 +285,39 @@ pub fn sha256_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; 4] {
 
 	// ---- Compression chain
 	//
-	// Daisy-chain the compression function over every block, starting from the SHA-256 IV.
+	// Compress two chained blocks per step through one parallel core: `sha256_compress_2x_seq` runs
+	// both in the two 32-bit lanes of a 64-bit word, for ~the AND cost of a single compression. The
+	// paired output packs the state after the first block in the high 32 bits and the state after
+	// the second block in the low 32 bits. `states[k]` therefore ends up being the state after
+	// block `k - 1`, exactly as a single-lane chain would produce, so the digest multiplexer is
+	// unchanged.
 	let mut states = Vec::with_capacity(n_blocks + 1);
 	states.push(State::iv(builder));
-	for block_no in 0..n_blocks {
-		let m: [Wire; 16] = padded_message[block_no << 4..(block_no + 1) << 4]
+	let mk_m = |block_no: usize| -> [Wire; 16] {
+		padded_message[block_no << 4..(block_no + 1) << 4]
 			.try_into()
-			.unwrap();
+			.unwrap()
+	};
+	let mut block_no = 0;
+	while block_no + 1 < n_blocks {
+		let out = sha256_compress_2x_seq(
+			&builder.subcircuit(format!("compress[{block_no}..{}]", block_no + 2)),
+			states[block_no].clone(),
+			[mk_m(block_no), mk_m(block_no + 1)],
+		);
+		// The mask restores the empty high half that the single-lane digest packing relies on.
+		let state_first = State::new(std::array::from_fn(|i| builder.shr(out.0[i], 32)));
+		let state_second = State::new(std::array::from_fn(|i| builder.band(out.0[i], mask32)));
+		states.push(state_first);
+		states.push(state_second);
+		block_no += 2;
+	}
+	// A trailing odd block has no partner, so compress it single-lane.
+	if block_no < n_blocks {
 		let state_out = sha256_compress(
 			&builder.subcircuit(format!("compress[{block_no}]")),
 			states[block_no].clone(),
-			m,
+			mk_m(block_no),
 		);
 		states.push(state_out);
 	}
