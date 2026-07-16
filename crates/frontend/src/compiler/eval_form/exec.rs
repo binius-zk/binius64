@@ -12,8 +12,20 @@
 //! The dispatch loop, the opcode handlers, and the bytecode readers live here once.
 
 use binius_core::{Word, constraint_system::ShiftVariant};
+use binius_field::BinaryField128bGhash;
 
 use crate::compiler::{hints::HintRegistry, pathspec::PathSpec};
+
+/// Multiplies two GHASH field elements ($\mathbb{F}_{2^{128}}$), each carried by a `(lo, hi)` pair
+/// of words — `lo` holds the coefficients of $1, X, \ldots, X^{63}$ and `hi` those of
+/// $X^{64}, \ldots, X^{127}$ — and returns the product in the same `(lo, hi)` form.
+fn ghash_mul(a_lo: Word, a_hi: Word, b_lo: Word, b_hi: Word) -> (Word, Word) {
+	let to_field = |lo: Word, hi: Word| {
+		BinaryField128bGhash::from((lo.as_u64() as u128) | ((hi.as_u64() as u128) << 64))
+	};
+	let product = u128::from(to_field(a_lo, a_hi) * to_field(b_lo, b_hi));
+	(Word::from_u64(product as u64), Word::from_u64((product >> 64) as u64))
+}
 
 /// The values one bytecode program evaluates against.
 ///
@@ -87,6 +99,7 @@ impl<'a> Executor<'a> {
 				0x21 => self.exec_iadd_cin_cout(ctx),
 				0x23 => self.exec_isub_bin_bout(ctx),
 				0x30 => self.exec_imul(ctx),
+				0x31 => self.exec_bmul(ctx),
 
 				// 32-bit operations
 				0x40 => self.exec_iadd32_cin_cout(ctx),
@@ -270,6 +283,30 @@ impl<'a> Executor<'a> {
 			let (hi, lo) = ctx.load(src1, i).imul(ctx.load(src2, i));
 			ctx.store(dst_hi, i, hi);
 			ctx.store(dst_lo, i, lo);
+		}
+	}
+
+	/// GHASH-field multiply: `(c_lo, c_hi) = (a_lo, a_hi) * (b_lo, b_hi)` in
+	/// $\mathbb{F}_{2^{128}}$.
+	///
+	/// Operands are read in the order `dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi`, matching
+	/// [`BytecodeBuilder::emit_bmul`](super::builder::BytecodeBuilder::emit_bmul).
+	fn exec_bmul<C: EvalContext>(&mut self, ctx: &mut C) {
+		let dst_lo = self.read_reg();
+		let dst_hi = self.read_reg();
+		let a_lo = self.read_reg();
+		let a_hi = self.read_reg();
+		let b_lo = self.read_reg();
+		let b_hi = self.read_reg();
+		for i in 0..ctx.n_instances() {
+			let (lo, hi) = ghash_mul(
+				ctx.load(a_lo, i),
+				ctx.load(a_hi, i),
+				ctx.load(b_lo, i),
+				ctx.load(b_hi, i),
+			);
+			ctx.store(dst_lo, i, lo);
+			ctx.store(dst_hi, i, hi);
 		}
 	}
 

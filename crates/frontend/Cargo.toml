@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 binius-core = { path = "../core" }
+binius-field = { path = "../field" }
 binius-utils = { path = "../utils" }
 cranelift-entity = { workspace = true }
 num-bigint = { workspace = true }

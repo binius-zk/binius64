@@ -44,6 +44,21 @@ impl InterpreterTest {
 		self
 	}
 
+	/// Emit a bmul (GHASH-field multiply) instruction
+	fn bmul(
+		mut self,
+		dst_lo: u32,
+		dst_hi: u32,
+		a_lo: u32,
+		a_hi: u32,
+		b_lo: u32,
+		b_hi: u32,
+	) -> Self {
+		self.builder
+			.emit_bmul(dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi);
+		self
+	}
+
 	/// Run the test and expect success (no assertion failures)
 	fn expect_success(self) {
 		let (result, ctx) = self.execute();
@@ -243,4 +258,74 @@ fn test_select_msb_behavior() {
 		])
 		.select(3, 2, 0, 1)
 		.expect_values(vec![(3, Word(100))]);
+}
+
+// BMUL (GHASH-field multiply) tests. Each field element is a `(lo, hi)` word pair with `lo`
+// carrying the coefficients of 1..X^63 and `hi` those of X^64..X^127. Wires 0-3 hold the inputs
+// (a_lo, a_hi, b_lo, b_hi) and wires 4-5 receive the product (c_lo, c_hi). The expected values are
+// field-theory facts, independent of the implementation.
+
+#[test]
+fn test_bmul_identity() {
+	// a * 1 = a, where the field element 1 is (lo=1, hi=0).
+	InterpreterTest::new()
+		.with_values(vec![
+			Word(0x0123456789ABCDEF), // a_lo
+			Word(0xFEDCBA9876543210), // a_hi
+			Word(1),                  // b_lo = 1
+			Word::ZERO,               // b_hi
+			Word::ZERO,               // c_lo (dst)
+			Word::ZERO,               // c_hi (dst)
+		])
+		.bmul(4, 5, 0, 1, 2, 3)
+		.expect_values(vec![(4, Word(0x0123456789ABCDEF)), (5, Word(0xFEDCBA9876543210))]);
+}
+
+#[test]
+fn test_bmul_zero() {
+	// a * 0 = 0.
+	InterpreterTest::new()
+		.with_values(vec![
+			Word(0x0123456789ABCDEF), // a_lo
+			Word(0xFEDCBA9876543210), // a_hi
+			Word::ZERO,               // b_lo = 0
+			Word::ZERO,               // b_hi = 0
+			Word(0xdead),             // c_lo (dst, overwritten)
+			Word(0xbeef),             // c_hi (dst, overwritten)
+		])
+		.bmul(4, 5, 0, 1, 2, 3)
+		.expect_values(vec![(4, Word::ZERO), (5, Word::ZERO)]);
+}
+
+#[test]
+fn test_bmul_x_times_x() {
+	// X * X = X^2 (no reduction needed): X is (lo=2, hi=0), X^2 is (lo=4, hi=0).
+	InterpreterTest::new()
+		.with_values(vec![
+			Word(2),    // a_lo = X
+			Word::ZERO, // a_hi
+			Word(2),    // b_lo = X
+			Word::ZERO, // b_hi
+			Word::ZERO, // c_lo (dst)
+			Word::ZERO, // c_hi (dst)
+		])
+		.bmul(4, 5, 0, 1, 2, 3)
+		.expect_values(vec![(4, Word(4)), (5, Word::ZERO)]);
+}
+
+#[test]
+fn test_bmul_reduction() {
+	// X^127 * X = X^128, which reduces via X^128 + X^7 + X^2 + X + 1 = 0 to
+	// X^7 + X^2 + X + 1 = 0x87 (lo), 0 (hi). X^127 is bit 63 of the hi word.
+	InterpreterTest::new()
+		.with_values(vec![
+			Word::ZERO,               // a_lo
+			Word(0x8000000000000000), // a_hi = X^127
+			Word(2),                  // b_lo = X
+			Word::ZERO,               // b_hi
+			Word::ZERO,               // c_lo (dst)
+			Word::ZERO,               // c_hi (dst)
+		])
+		.bmul(4, 5, 0, 1, 2, 3)
+		.expect_values(vec![(4, Word(0x87)), (5, Word::ZERO)]);
 }

@@ -139,6 +139,31 @@ impl BytecodeBuilder {
 		self.emit_reg(src2);
 	}
 
+	/// GHASH-field multiply: `(dst_lo, dst_hi) = (a_lo, a_hi) * (b_lo, b_hi)` in
+	/// $\mathbb{F}_{2^{128}}$, where each field element is carried by a `(lo, hi)` pair of words.
+	//
+	// The first non-test caller is the BMUL gate (BINIUS-298); until then this is only reached from
+	// tests, so silence the dead-code lint here rather than crate-wide.
+	#[allow(dead_code)]
+	pub fn emit_bmul(
+		&mut self,
+		dst_lo: u32,
+		dst_hi: u32,
+		a_lo: u32,
+		a_hi: u32,
+		b_lo: u32,
+		b_hi: u32,
+	) {
+		self.n_eval_insn += 1;
+		self.emit_u8(0x31);
+		self.emit_reg(dst_lo);
+		self.emit_reg(dst_hi);
+		self.emit_reg(a_lo);
+		self.emit_reg(a_hi);
+		self.emit_reg(b_lo);
+		self.emit_reg(b_hi);
+	}
+
 	// 32-bit operations
 	pub fn emit_iadd32_cin_cout(
 		&mut self,
