@@ -65,6 +65,10 @@ name = "intmul"
 harness = false
 
 [[bench]]
+name = "binmul"
+harness = false
+
+[[bench]]
 name = "fold_words"
 harness = false
 
