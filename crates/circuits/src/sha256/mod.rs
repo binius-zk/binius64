@@ -10,6 +10,7 @@ pub use compress::{
 
 use crate::{
 	bytes::{swap_bytes, swap_bytes_32},
+	fixed_byte_vec::ByteVec,
 	multiplexer::{multi_wire_multiplex, single_wire_multiplex},
 };
 
@@ -651,6 +652,167 @@ pub fn sha256_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 	state.0
 }
 
+/// Computes the SHA-256 hash of a variable-length message.
+///
+/// This gadget consumes a [`ByteVec`] whose actual length is runtime-determined and returns the
+/// 256-bit digest as 4 wires of 64 bits each in big-endian order, matching [`sha256_fixed`]'s
+/// output layout (produced by [`State::pack_4x64b`]).
+///
+/// Internally the gadget *computes* each 32-bit word of the SHA-256 padded message as a derived
+/// wire, classifying every word position with the flags `is_message_word`, `is_boundary_word`, and
+/// `is_length_block`. The word at the message/padding boundary mixes the trailing message bytes
+/// with the `0x80` delimiter; padding words are zero except word 15 of the length block, which
+/// holds the bit length. The compression chain is run over every possible block and the final state
+/// is selected via a multiplexer indexed by the runtime length block.
+///
+/// Unlike the [`Sha256`] checker gadget, this function takes no caller-supplied digest and performs
+/// no digest assertion: the returned digest is a single-valued function of `(data, len_bytes)`, so
+/// a free `len_bytes` can only select which message prefix is hashed, never an arbitrary digest.
+/// The caller remains responsible for constraining `len_bytes` to its intended value.
+///
+/// The input [`ByteVec`] packs bytes little-endian, whereas the compression function consumes
+/// big-endian words, so the data wires are byte-swapped up front. SHA-256's 32-bit schedule words
+/// are half the width of a `ByteVec` word, so each data word yields two consecutive schedule words.
+///
+/// # Arguments
+/// * `builder` - Circuit builder
+/// * `message` - Input message as a [`ByteVec`]. Its `len_bytes` wire holds the actual message
+///   length.
+///
+/// # Returns
+/// * `[Wire; 4]` - The SHA-256 digest as 4 wires of 64 bits each in big-endian order.
+///
+/// # Panics
+/// * If the maximum message bit length cannot be represented in the 32-bit length field.
+pub fn sha256_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; 4] {
+	// ---- 1. Input validation and setup
+	//
+	// Cap the maximum bit length so the 64-bit length field's low 32 bits suffice, compute the
+	// number of compression blocks (accounting for the minimum 9 bytes of padding), and verify the
+	// actual length is within bounds.
+	let len_bytes = message.len_bytes;
+	assert!(
+		message.data.len() << Word::LOG_BITS <= u32::MAX as usize,
+		"length of message in bits must fit within 32 bits"
+	);
+
+	let max_len_bytes = message.data.len() << (Word::LOG_BITS - LOG_BYTE_BITS);
+	let n_blocks = (message.data.len() + 2).div_ceil(8);
+	let n_words: usize = n_blocks << 4; // 16 words per block
+
+	let too_long = builder.icmp_ugt(len_bytes, builder.add_constant_64(max_len_bytes as u64));
+	builder.assert_false("len_check", too_long);
+
+	// `ByteVec` packs bytes little-endian; `sha256_compress` consumes big-endian 32-bit words. Each
+	// 64-bit data word carries two schedule words: `swap_bytes_32` byte-reverses within each 32-bit
+	// half, so the low half becomes the big-endian schedule word for the first four bytes and the
+	// high half the schedule word for the next four. Split each into two low-32 wires.
+	let mask32 = builder.add_constant(Word::MASK_32);
+	let mut message_be: Vec<Wire> = Vec::with_capacity(message.data.len() * 2);
+	for &word in &message.data {
+		let swapped = swap_bytes_32(builder, word);
+		message_be.push(builder.band(swapped, mask32));
+		message_be.push(builder.shr(swapped, 32));
+	}
+
+	// ---- 2a. SHA-256 padding position calculation
+	let zero = builder.add_constant(Word::ZERO);
+	let w_bd = builder.shr(len_bytes, 2);
+	let len_mod_4 = builder.band(len_bytes, builder.add_constant_zx_8(3));
+	let bitlen = builder.shl(len_bytes, 3);
+
+	// end_block_index = floor((len + 8) / 64) using a 64-bit add.
+	let (sum, _carry) = builder.iadd(len_bytes, builder.add_constant_64(8));
+	let end_block_index = builder.shr(sum, 6);
+
+	// ---- Boundary word construction
+	//
+	// The 32-bit word at index `w_bd` mixes the trailing message bytes with the 0x80 delimiter.
+	// Build the four candidate words (keeping `i` leading message bytes and placing the delimiter
+	// at byte `i`) and select the one for `len_mod_4`. When `len_mod_4 == 0` the chosen candidate
+	// is `0x80000000` independent of the (possibly out-of-range) boundary message word, so the
+	// multiplexer's result is irrelevant in that case.
+	let boundary_message_word = single_wire_multiplex(builder, &message_be, w_bd);
+	let candidates: Vec<Wire> = (0..4)
+		.map(|i| {
+			let mask = builder.add_constant_64((0xFFFFFFFFu64 << ((4 - i) << 3)) & 0xFFFFFFFF);
+			let padding_byte = builder.add_constant_64(0x80000000u64 >> (i << 3));
+			let message_low = builder.band(boundary_message_word, mask);
+			builder.bxor(message_low, padding_byte)
+		})
+		.collect();
+	let boundary_word = single_wire_multiplex(builder, &candidates, len_mod_4);
+
+	// ---- Padded message words
+	//
+	// Compute each 32-bit padded word as a derived wire, classifying its position:
+	//
+	//     1. word_index <  w_bd - pure message word
+	//     2. word_index == w_bd - boundary word (message bytes + 0x80 delimiter)
+	//     3. word_index >  w_bd - pure padding, except word 15 of the length block (the bit length)
+	let padded_message: Vec<Wire> = (0..n_words)
+		.map(|word_index| {
+			let block_index = word_index >> 4;
+			let column_index = word_index & 15;
+
+			let is_message_word =
+				builder.icmp_ult(builder.add_constant_64(word_index as u64), w_bd);
+			let is_boundary_word =
+				builder.icmp_eq(builder.add_constant_64(word_index as u64), w_bd);
+			let is_length_block =
+				builder.icmp_eq(builder.add_constant_64(block_index as u64), end_block_index);
+
+			// Pure message words select the corresponding schedule word. This is only ever selected
+			// when word_index < w_bd ≤ max_len_bytes >> 2 == message_be.len(), so the index is in
+			// range; the zero fallback for word_index ≥ message_be.len() is never chosen.
+			let msg_word = if word_index < message_be.len() {
+				message_be[word_index]
+			} else {
+				zero
+			};
+
+			// Padding words are zero, except word 15 of the length block which holds the bit
+			// length. (Word 14 — the high 32 bits of the 64-bit length — stays zero, since only
+			// ≤ 32-bit bit lengths are supported.)
+			let past_word = if column_index == 15 {
+				builder.select(is_length_block, bitlen, zero)
+			} else {
+				zero
+			};
+
+			let boundary_or_past = builder.select(is_boundary_word, boundary_word, past_word);
+			builder.select(is_message_word, msg_word, boundary_or_past)
+		})
+		.collect();
+
+	// ---- Compression chain
+	//
+	// Daisy-chain the compression function over every block, starting from the SHA-256 IV.
+	let mut states = Vec::with_capacity(n_blocks + 1);
+	states.push(State::iv(builder));
+	for block_no in 0..n_blocks {
+		let m: [Wire; 16] = padded_message[block_no << 4..(block_no + 1) << 4]
+			.try_into()
+			.unwrap();
+		let state_out = sha256_compress(
+			&builder.subcircuit(format!("compress[{block_no}]")),
+			states[block_no].clone(),
+			m,
+		);
+		states.push(state_out);
+	}
+
+	// ---- Final digest selection
+	//
+	// The digest is the state after processing the block containing the length field, packed into
+	// four 64-bit big-endian words. No caller-supplied digest is asserted — the packed selected
+	// state IS the return value.
+	let block_digests: Vec<[Wire; 4]> = states[1..].iter().map(|s| s.pack_4x64b(builder)).collect();
+	let inputs: Vec<&[Wire]> = block_digests.iter().map(|d| &d[..]).collect();
+	let final_digest_vec = multi_wire_multiplex(builder, &inputs, end_block_index);
+	final_digest_vec.try_into().unwrap()
+}
+
 #[cfg(test)]
 mod tests {
 	use std::array;
@@ -661,6 +823,114 @@ mod tests {
 	use sha2::Digest;
 
 	use super::*;
+
+	// ---- Tests for sha256_varlen function ----
+
+	/// Builds a circuit with the given `max_len_bytes` capacity, runs `sha256_varlen` on a
+	/// `ByteVec` populated with `message_bytes`, and asserts the computed digest equals
+	/// `expected_digest`.
+	fn test_sha256_varlen_with_input(
+		message_bytes: &[u8],
+		expected_digest: [u8; 32],
+		max_len_bytes: usize,
+	) {
+		assert!(message_bytes.len() <= max_len_bytes);
+
+		let builder = CircuitBuilder::new();
+		let max_len_words = max_len_bytes.div_ceil(8);
+		let input = ByteVec::new_inout(&builder, max_len_words);
+		let expected_digest_wires: [Wire; 4] = array::from_fn(|_| builder.add_witness());
+
+		let computed_digest = sha256_varlen(&builder, &input);
+		for i in 0..4 {
+			builder.assert_eq(format!("digest[{i}]"), computed_digest[i], expected_digest_wires[i]);
+		}
+
+		let circuit = builder.build();
+		let cs = circuit.constraint_system();
+		let mut w = circuit.new_witness_filler();
+
+		input.populate_data(&mut w, message_bytes);
+		input.populate_len_bytes(&mut w, message_bytes.len());
+
+		for (i, bytes) in expected_digest.chunks(8).enumerate() {
+			let word = u64::from_be_bytes(bytes.try_into().unwrap());
+			w[expected_digest_wires[i]] = Word(word);
+		}
+
+		circuit.populate_wire_witness(&mut w).unwrap();
+		verify_constraints(cs, &w.into_value_vec()).unwrap();
+	}
+
+	#[test]
+	fn test_sha256_varlen_empty() {
+		test_sha256_varlen_with_input(
+			b"",
+			hex!("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+			64,
+		);
+	}
+
+	#[test]
+	fn test_sha256_varlen_abc() {
+		test_sha256_varlen_with_input(
+			b"abc",
+			hex!("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
+			64,
+		);
+	}
+
+	#[test]
+	fn test_sha256_varlen_two_block_boundary() {
+		// 56 bytes forces a second block (56 + 1 delimiter + 8 length > 64).
+		test_sha256_varlen_with_input(
+			&[b'a'; 56],
+			hex!("b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a"),
+			128,
+		);
+	}
+
+	#[test]
+	fn test_sha256_varlen_various_sizes() {
+		use rand::prelude::*;
+
+		// Boundary-rich sizes around SHA-256's 64-byte block (word, block, and length-field
+		// boundaries), plus 0.
+		let sizes: Vec<usize> = vec![
+			0, 1, 3, 4, 5, 31, 32, 33, 55, 56, 63, 64, 65, 119, 120, 128, 256,
+		];
+		// Fixed capacity larger than every test message exercises the variable-length path.
+		let max_len_bytes = 320;
+
+		let mut rng = StdRng::seed_from_u64(0);
+		for size in sizes {
+			let mut message = vec![0u8; size];
+			rng.fill(&mut message[..]);
+
+			let expected = sha2::Sha256::digest(&message);
+			let expected_bytes: [u8; 32] = expected.into();
+
+			test_sha256_varlen_with_input(&message, expected_bytes, max_len_bytes);
+		}
+	}
+
+	#[test]
+	fn test_sha256_varlen_length_exceeds_max_rejection() {
+		// A `len_bytes` wire exceeding the ByteVec capacity must be rejected by the in-circuit
+		// `len_check` guard (the gadget bounds `len_bytes <= capacity` from its own data length).
+		let builder = CircuitBuilder::new();
+		let max_len_bytes = 64usize;
+		let max_len_words = max_len_bytes.div_ceil(8);
+		let input = ByteVec::new_inout(&builder, max_len_words);
+		let _ = sha256_varlen(&builder, &input);
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		input.populate_data(&mut w, b"");
+		// Claim a length one byte past the capacity; the `len_check` assertion must fail.
+		w[input.len_bytes] = Word(max_len_bytes as u64 + 1);
+		assert!(circuit.populate_wire_witness(&mut w).is_err());
+	}
 
 	fn mk_circuit(b: &mut CircuitBuilder, max_len: usize) -> Sha256 {
 		let len = b.add_witness();
