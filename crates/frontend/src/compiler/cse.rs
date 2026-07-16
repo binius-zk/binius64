@@ -21,7 +21,7 @@
 //! It allocates almost nothing.
 //!
 //! Before this pass only constants were interned.
-//! An identical non-constant subexpression built twice now costs one AND/MUL constraint, not two.
+//! An identical non-constant subexpression built twice now costs one AND/IMUL constraint, not two.
 
 use std::hash::{Hash, Hasher};
 
@@ -40,7 +40,7 @@ use super::{
 /// - A later gate with that structure is redirected onto the canonical gate and marked dead.
 ///
 /// The caller skips dead gates at emission.
-/// Each collapsed duplicate then costs one fewer AND/MUL constraint and one fewer committed wire.
+/// Each collapsed duplicate then costs one fewer AND/IMUL constraint and one fewer committed wire.
 pub fn dedup_gates(
 	graph: &mut GateGraph,
 	force_committed: &EntitySet<Wire>,

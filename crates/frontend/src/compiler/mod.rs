@@ -105,7 +105,7 @@ pub(crate) struct Shared {
 /// Methods like [`band`] and [`iadd_32`] add gates to the graph and return handles
 /// to output wires.
 ///
-/// During [`build`], the gate graph compiles into AND and MUL constraints
+/// During [`build`], the gate graph compiles into AND and IMUL constraints
 /// that the proof system operates on directly.
 ///
 /// # Wire Types
@@ -138,7 +138,7 @@ pub(crate) struct Shared {
 /// **AND constraints** - Baseline unit of cost. Bitwise operations and comparisons
 /// generate 1-2 AND constraints.
 ///
-/// **MUL constraints** - 64-bit multiplication costs ~3-4× more than AND constraints.
+/// **IMUL constraints** - 64-bit multiplication costs ~3-4× more than AND constraints.
 ///
 /// **Committed values** - Each public input/output and witness adds to proof size
 /// (~0.2× of an AND constraint).
@@ -320,7 +320,7 @@ impl CircuitBuilder {
 		debug_assert_eq!(wire_mapping[all_one], binius_core::ValueIndex(0));
 		debug_assert_eq!(constants.first(), Some(&Word::ALL_ONE));
 
-		let (mut and_constraints, mut mul_constraints) = builder.build(&wire_mapping, all_one);
+		let (mut and_constraints, mut imul_constraints) = builder.build(&wire_mapping, all_one);
 
 		// Filter zero constant terms from all operands. Any shift of Word::ZERO is zero, so
 		// terms referencing a zero constant contribute nothing to an XOR operand.
@@ -337,7 +337,7 @@ impl CircuitBuilder {
 				filter_zeros(&mut c.b);
 				filter_zeros(&mut c.c);
 			}
-			for c in &mut mul_constraints {
+			for c in &mut imul_constraints {
 				filter_zeros(&mut c.a);
 				filter_zeros(&mut c.b);
 				filter_zeros(&mut c.hi);
@@ -346,7 +346,7 @@ impl CircuitBuilder {
 		}
 
 		let cs =
-			ConstraintSystem::new(constants, value_vec_layout, and_constraints, mul_constraints);
+			ConstraintSystem::new(constants, value_vec_layout, and_constraints, imul_constraints);
 		if cfg!(debug_assertions) {
 			// Validate that the resulting constraint system has a good shape.
 			cs.validate().unwrap();
@@ -1031,7 +1031,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// - 1 MUL constraint,
+	/// - 1 IMUL constraint,
 	/// - 1 AND constraint (for security check).
 	pub fn imul(&self, a: Wire, b: Wire) -> (Wire, Wire) {
 		let hi = self.add_internal();

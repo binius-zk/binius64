@@ -2,8 +2,8 @@
 
 //! The batched operand-column witnesses built from a populated batch value table.
 //!
-//! Every AND and MUL constraint is projected to its fixed-arity operand columns (`[A, B, C]` for
-//! AND, `[A, B, HI, LO]` for MUL), one column per operand, stacked over every instance in the
+//! Every AND and IMUL constraint is projected to its fixed-arity operand columns (`[A, B, C]` for
+//! AND, `[A, B, HI, LO]` for IMUL), one column per operand, stacked over every instance in the
 //! batch. [`build_operation_witness`] is the shared arity-generic core: it projects one operand
 //! per constraint into one column. [`BatchAndCheckWitness`] builds the three AND columns and
 //! drives the AND-check zerocheck; [`build_intmul_witness`] builds the four IntMul columns, not
@@ -13,7 +13,7 @@ use std::{iter, mem::MaybeUninit, ptr};
 
 use binius_core::{
 	ValueIndex,
-	constraint_system::{AndConstraint, MulConstraint, Operand, ShiftVariant, ShiftedValueIndex},
+	constraint_system::{AndConstraint, ImulConstraint, Operand, ShiftVariant, ShiftedValueIndex},
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, PackedField};
@@ -457,7 +457,7 @@ fn accum_shifted_values(
 
 /// Builds the batched IntMul operand witness from a populated wire-major batch table.
 ///
-/// Every MUL constraint contributes one row per instance to each of the four operand columns
+/// Every IMUL constraint contributes one row per instance to each of the four operand columns
 /// `A`, `B`, `HI`, `LO`, laid out constraint-major. This delegates to the arity-generic
 /// `build_operation_witness`, projecting each constraint to its four operands.
 ///
@@ -465,7 +465,7 @@ fn accum_shifted_values(
 ///
 /// - `table`: the wire-major batch witness holding every instance's hidden words.
 /// - `constants`: the circuit's constant words, shared by every instance.
-/// - `mul_constraints`: the per-instance MUL constraints, shared by every instance.
+/// - `imul_constraints`: the per-instance IMUL constraints, shared by every instance.
 ///
 /// Pass constraints from a prepared constraint system, so their count is a power of two.
 ///
@@ -475,12 +475,12 @@ fn accum_shifted_values(
 pub fn build_intmul_witness(
 	table: &ValueTable,
 	constants: &[Word],
-	mul_constraints: &[MulConstraint],
+	imul_constraints: &[ImulConstraint],
 ) -> [Vec<Word>; 4] {
-	let a_operand_iter = mul_constraints.par_iter().map(|constraint| &constraint.a);
-	let b_operand_iter = mul_constraints.par_iter().map(|constraint| &constraint.b);
-	let hi_operand_iter = mul_constraints.par_iter().map(|constraint| &constraint.hi);
-	let lo_operand_iter = mul_constraints.par_iter().map(|constraint| &constraint.lo);
+	let a_operand_iter = imul_constraints.par_iter().map(|constraint| &constraint.a);
+	let b_operand_iter = imul_constraints.par_iter().map(|constraint| &constraint.b);
+	let hi_operand_iter = imul_constraints.par_iter().map(|constraint| &constraint.hi);
+	let lo_operand_iter = imul_constraints.par_iter().map(|constraint| &constraint.lo);
 	let ((a, b), (hi, lo)) = rayon::join(
 		|| {
 			rayon::join(
@@ -692,9 +692,9 @@ mod tests {
 	// A circuit computing one unsigned 64×64→128 product, with both result words committed.
 	//
 	//     inputs : x, y   (witness)
-	//     gate   : (hi, lo) = imul(x, y)   → 1 MUL constraint (+ 1 AND security check)
+	//     gate   : (hi, lo) = imul(x, y)   → 1 IMUL constraint (+ 1 AND security check)
 	//
-	// `force_commit` makes `hi` and `lo` hidden words, so the MUL operands read them from the
+	// `force_commit` makes `hi` and `lo` hidden words, so the IMUL operands read them from the
 	// table.
 	struct MulCircuit {
 		circuit: Circuit,
@@ -744,18 +744,18 @@ mod tests {
 		];
 		let table = populate_mul_table(&c, &inputs);
 
-		// The prepared per-instance MUL constraints, padded to a power of two.
+		// The prepared per-instance IMUL constraints, padded to a power of two.
 		let mut cs = c.circuit.constraint_system().clone();
 		cs.validate_and_prepare().unwrap();
-		let mul_constraints = &cs.mul_constraints;
-		assert!(!mul_constraints.is_empty(), "the circuit must emit a MUL constraint");
+		let imul_constraints = &cs.imul_constraints;
+		assert!(!imul_constraints.is_empty(), "the circuit must emit an IMUL constraint");
 
-		let [a, b, hi, lo] = build_intmul_witness(&table, constants, mul_constraints);
+		let [a, b, hi, lo] = build_intmul_witness(&table, constants, imul_constraints);
 
-		// Shape: K * n_mul rows, with K = 4.
-		let n_mul = mul_constraints.len();
+		// Shape: K * n_imul rows, with K = 4.
+		let n_imul = imul_constraints.len();
 		for col in [&a, &b, &hi, &lo] {
-			assert_eq!(col.len(), 4 * n_mul);
+			assert_eq!(col.len(), 4 * n_imul);
 		}
 
 		// Invariant: row `j * n_instances + instance` is constraint `j` of that instance, and each
@@ -763,7 +763,7 @@ mod tests {
 		let n_instances = table.n_instances();
 		for instance in 0..n_instances {
 			let vv = table.instance_value_vec(instance, constants);
-			for (j, con) in mul_constraints.iter().enumerate() {
+			for (j, con) in imul_constraints.iter().enumerate() {
 				let idx = j * n_instances + instance;
 				assert_eq!(a[idx], vv.eval_operand(&con.a));
 				assert_eq!(b[idx], vv.eval_operand(&con.b));

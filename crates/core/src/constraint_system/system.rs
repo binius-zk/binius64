@@ -3,7 +3,7 @@
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
 
-use super::{AndConstraint, MulConstraint, Operand, ShiftVariant, ValueVec, ValueVecLayout};
+use super::{AndConstraint, ImulConstraint, Operand, ShiftVariant, ValueVec, ValueVecLayout};
 use crate::{error::ConstraintSystemError, word::Word};
 
 /// The ConstraintSystem is the core data structure in Binius64 that defines the computational
@@ -25,8 +25,8 @@ pub struct ConstraintSystem {
 	pub constants: Vec<Word>,
 	/// List of AND constraints that must be satisfied by the values vector.
 	pub and_constraints: Vec<AndConstraint>,
-	/// List of MUL constraints that must be satisfied by the values vector.
-	pub mul_constraints: Vec<MulConstraint>,
+	/// List of IMUL constraints that must be satisfied by the values vector.
+	pub imul_constraints: Vec<ImulConstraint>,
 }
 
 impl ConstraintSystem {
@@ -40,14 +40,14 @@ impl ConstraintSystem {
 		constants: Vec<Word>,
 		value_vec_layout: ValueVecLayout,
 		and_constraints: Vec<AndConstraint>,
-		mul_constraints: Vec<MulConstraint>,
+		imul_constraints: Vec<ImulConstraint>,
 	) -> Self {
 		assert_eq!(constants.len(), value_vec_layout.n_const);
 		ConstraintSystem {
 			constants,
 			value_vec_layout,
 			and_constraints,
-			mul_constraints,
+			imul_constraints,
 		}
 	}
 
@@ -71,11 +71,23 @@ impl ConstraintSystem {
 			validate_operand(&self.and_constraints[i].b, &self.value_vec_layout, "and", i, "b")?;
 			validate_operand(&self.and_constraints[i].c, &self.value_vec_layout, "and", i, "c")?;
 		}
-		for i in 0..self.mul_constraints.len() {
-			validate_operand(&self.mul_constraints[i].a, &self.value_vec_layout, "mul", i, "a")?;
-			validate_operand(&self.mul_constraints[i].b, &self.value_vec_layout, "mul", i, "b")?;
-			validate_operand(&self.mul_constraints[i].lo, &self.value_vec_layout, "mul", i, "lo")?;
-			validate_operand(&self.mul_constraints[i].hi, &self.value_vec_layout, "mul", i, "hi")?;
+		for i in 0..self.imul_constraints.len() {
+			validate_operand(&self.imul_constraints[i].a, &self.value_vec_layout, "imul", i, "a")?;
+			validate_operand(&self.imul_constraints[i].b, &self.value_vec_layout, "imul", i, "b")?;
+			validate_operand(
+				&self.imul_constraints[i].lo,
+				&self.value_vec_layout,
+				"imul",
+				i,
+				"lo",
+			)?;
+			validate_operand(
+				&self.imul_constraints[i].hi,
+				&self.value_vec_layout,
+				"imul",
+				i,
+				"hi",
+			)?;
 		}
 
 		return Ok(());
@@ -135,24 +147,25 @@ impl ConstraintSystem {
 	/// This function performs the following:
 	/// 1. Validates the value vector layout (including public input checks)
 	/// 2. Validates the constraints.
-	/// 3. Pads the AND and MUL constraints to the next po2 size
+	/// 3. Pads the AND and IMUL constraints to the next po2 size
 	pub fn validate_and_prepare(&mut self) -> Result<(), ConstraintSystemError> {
 		self.validate()?;
 
-		// Require all constraint types to have a power-of-two count. An empty MUL constraint set is
-		// kept at zero (rather than padded to a single dummy constraint) so the prover and verifier
-		// can skip the IntMul reduction entirely — see `IOPProver::prove` / `IOPVerifier::verify`.
+		// Require all constraint types to have a power-of-two count. An empty IMUL constraint set
+		// is kept at zero (rather than padded to a single dummy constraint) so the prover and
+		// verifier can skip the IntMul reduction entirely — see `IOPProver::prove` /
+		// `IOPVerifier::verify`.
 		let and_target_size = self.and_constraints.len().next_power_of_two();
-		let mul_target_size = if self.mul_constraints.is_empty() {
+		let imul_target_size = if self.imul_constraints.is_empty() {
 			0
 		} else {
-			self.mul_constraints.len().next_power_of_two()
+			self.imul_constraints.len().next_power_of_two()
 		};
 
 		self.and_constraints
 			.resize_with(and_target_size, AndConstraint::default);
-		self.mul_constraints
-			.resize_with(mul_target_size, MulConstraint::default);
+		self.imul_constraints
+			.resize_with(imul_target_size, ImulConstraint::default);
 
 		Ok(())
 	}
@@ -163,8 +176,8 @@ impl ConstraintSystem {
 	}
 
 	#[cfg(test)]
-	fn add_mul_constraint(&mut self, mul_constraint: MulConstraint) {
-		self.mul_constraints.push(mul_constraint);
+	fn add_imul_constraint(&mut self, imul_constraint: ImulConstraint) {
+		self.imul_constraints.push(imul_constraint);
 	}
 
 	/// Returns the number of AND constraints in the system.
@@ -172,9 +185,9 @@ impl ConstraintSystem {
 		self.and_constraints.len()
 	}
 
-	/// Returns the number of MUL  constraints in the system.
-	pub const fn n_mul_constraints(&self) -> usize {
-		self.mul_constraints.len()
+	/// Returns the number of IMUL  constraints in the system.
+	pub const fn n_imul_constraints(&self) -> usize {
+		self.imul_constraints.len()
 	}
 
 	/// The total length of the [`ValueVec`] expected by this constraint system.
@@ -195,7 +208,7 @@ impl SerializeBytes for ConstraintSystem {
 		self.value_vec_layout.serialize(&mut write_buf)?;
 		self.constants.serialize(&mut write_buf)?;
 		self.and_constraints.serialize(&mut write_buf)?;
-		self.mul_constraints.serialize(write_buf)
+		self.imul_constraints.serialize(write_buf)
 	}
 }
 
@@ -214,7 +227,7 @@ impl DeserializeBytes for ConstraintSystem {
 		let value_vec_layout = ValueVecLayout::deserialize(&mut read_buf)?;
 		let constants = Vec::<Word>::deserialize(&mut read_buf)?;
 		let and_constraints = Vec::<AndConstraint>::deserialize(&mut read_buf)?;
-		let mul_constraints = Vec::<MulConstraint>::deserialize(read_buf)?;
+		let imul_constraints = Vec::<ImulConstraint>::deserialize(read_buf)?;
 
 		if constants.len() != value_vec_layout.n_const {
 			return Err(SerializationError::InvalidConstruction {
@@ -226,7 +239,7 @@ impl DeserializeBytes for ConstraintSystem {
 			value_vec_layout,
 			constants,
 			and_constraints,
-			mul_constraints,
+			imul_constraints,
 		})
 	}
 }
@@ -267,14 +280,14 @@ mod tests {
 			),
 		];
 
-		let mul_constraints = vec![MulConstraint {
+		let imul_constraints = vec![ImulConstraint {
 			a: vec![ShiftedValueIndex::plain(ValueIndex(0))],
 			b: vec![ShiftedValueIndex::plain(ValueIndex(1))],
 			hi: vec![ShiftedValueIndex::plain(ValueIndex(2))],
 			lo: vec![ShiftedValueIndex::plain(ValueIndex(3))],
 		}];
 
-		ConstraintSystem::new(constants, value_vec_layout, and_constraints, mul_constraints)
+		ConstraintSystem::new(constants, value_vec_layout, and_constraints, imul_constraints)
 	}
 
 	#[test]
@@ -301,8 +314,8 @@ mod tests {
 		// Check and_constraints
 		assert_eq!(original.and_constraints.len(), deserialized.and_constraints.len());
 
-		// Check mul_constraints
-		assert_eq!(original.mul_constraints.len(), deserialized.mul_constraints.len());
+		// Check imul_constraints
+		assert_eq!(original.imul_constraints.len(), deserialized.imul_constraints.len());
 	}
 
 	#[test]
@@ -337,7 +350,7 @@ mod tests {
 
 		let constants = vec![Word::from_u64(1), Word::from_u64(2)]; // Only 2 constants
 		let and_constraints: Vec<AndConstraint> = vec![];
-		let mul_constraints: Vec<MulConstraint> = vec![];
+		let imul_constraints: Vec<ImulConstraint> = vec![];
 
 		// Serialize components manually
 		let mut buf = Vec::new();
@@ -347,7 +360,7 @@ mod tests {
 		value_vec_layout.serialize(&mut buf).unwrap();
 		constants.serialize(&mut buf).unwrap();
 		and_constraints.serialize(&mut buf).unwrap();
-		mul_constraints.serialize(&mut buf).unwrap();
+		imul_constraints.serialize(&mut buf).unwrap();
 
 		let result = ConstraintSystem::deserialize(&mut buf.as_slice());
 		assert!(result.is_err());
@@ -427,7 +440,7 @@ mod tests {
 		assert_eq!(deserialized.constants[2].as_u64(), 0xDEADBEEF);
 
 		assert_eq!(deserialized.and_constraints.len(), 2);
-		assert_eq!(deserialized.mul_constraints.len(), 1);
+		assert_eq!(deserialized.imul_constraints.len(), 1);
 
 		// Verify that the version is what we expect
 		// This is implicitly checked during deserialization, but we can also verify
@@ -503,7 +516,7 @@ mod tests {
 			vec![ValueIndex(4), ValueIndex(5)], // witness
 		));
 
-		cs.add_mul_constraint(MulConstraint {
+		cs.add_imul_constraint(ImulConstraint {
 			a: vec![ShiftedValueIndex::plain(ValueIndex(6))], // witness
 			b: vec![ShiftedValueIndex::plain(ValueIndex(7))], // witness
 			hi: vec![ShiftedValueIndex::plain(ValueIndex(8))], // internal
@@ -564,7 +577,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_validate_rejects_out_of_range_in_mul_constraint() {
+	fn test_validate_rejects_out_of_range_in_imul_constraint() {
 		let mut cs = ConstraintSystem::new(
 			vec![Word::from_u64(1), Word::from_u64(2)],
 			ValueVecLayout {
@@ -581,8 +594,8 @@ mod tests {
 			vec![],
 		);
 
-		// Add MUL constraint with out-of-range index in 'hi' operand
-		cs.add_mul_constraint(MulConstraint {
+		// Add IMUL constraint with out-of-range index in 'hi' operand
+		cs.add_imul_constraint(ImulConstraint {
 			a: vec![ShiftedValueIndex::plain(ValueIndex(0))], // valid
 			b: vec![ShiftedValueIndex::plain(ValueIndex(1))], // valid
 			hi: vec![ShiftedValueIndex::plain(ValueIndex(100))], // WAY out of range!
@@ -590,7 +603,7 @@ mod tests {
 		});
 
 		let result = cs.validate_and_prepare();
-		assert!(result.is_err(), "Should reject MUL constraint with out-of-range index");
+		assert!(result.is_err(), "Should reject IMUL constraint with out-of-range index");
 
 		match result.unwrap_err() {
 			ConstraintSystemError::OutOfRangeValueIndex {
@@ -600,7 +613,7 @@ mod tests {
 				total_len,
 				..
 			} => {
-				assert_eq!(constraint_type, "mul");
+				assert_eq!(constraint_type, "imul");
 				assert_eq!(operand_name, "hi");
 				assert_eq!(value_index, 100);
 				assert_eq!(total_len, 16);

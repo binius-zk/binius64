@@ -6,7 +6,7 @@ use std::{iter, mem, ops::Range};
 use binius_core::{
 	ShiftVariant,
 	constraint_system::{
-		AndConstraint, ConstraintSystem, MulConstraint, Operand, ShiftedValueIndex,
+		AndConstraint, ConstraintSystem, ImulConstraint, Operand, ShiftedValueIndex,
 	},
 	word::Word,
 };
@@ -27,7 +27,7 @@ use super::{BITAND_ARITY, INTMUL_ARITY, PreparedOperatorData};
 /// # Operation Types
 ///
 /// - **BitwiseAnd**: Corresponds to AND constraints of the form `A & B ^ C = 0`
-/// - **IntegerMul**: Corresponds to MUL constraints of the form `A * B = (HI << 64) | LO`
+/// - **IntegerMul**: Corresponds to IMUL constraints of the form `A * B = (HI << 64) | LO`
 ///
 /// These operations work with shifted value indices to efficiently encode
 /// computations on 64-bit words without requiring separate shift constraints.
@@ -58,7 +58,7 @@ pub enum Operation {
 ///
 /// # Structure
 ///
-/// - **Operation**: Constraint type (AND or MUL)
+/// - **Operation**: Constraint type (AND or IMUL)
 /// - **ID**: Packed encoding of operand index, shift variant, and shift amount
 /// - **Range**: Constraint indices where this shifted word appears
 ///
@@ -330,7 +330,7 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 	// Update the builder keys lists with respect to each operand of each operation
 	let bitand_operand_getters: [fn(&AndConstraint) -> &Operand; BITAND_ARITY] =
 		[|c| &c.a, |c| &c.b, |c| &c.c];
-	let intmul_operand_getters: [fn(&MulConstraint) -> &Operand; INTMUL_ARITY] =
+	let intmul_operand_getters: [fn(&ImulConstraint) -> &Operand; INTMUL_ARITY] =
 		[|c| &c.a, |c| &c.b, |c| &c.lo, |c| &c.hi];
 
 	bitand_operand_getters
@@ -352,7 +352,7 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 			update_with_operand(
 				Operation::IntegerMul,
 				operand_idx,
-				cs.mul_constraints.iter().map(get_operand),
+				cs.imul_constraints.iter().map(get_operand),
 				&mut builder_key_lists,
 			);
 		});

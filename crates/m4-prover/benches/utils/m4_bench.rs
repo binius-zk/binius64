@@ -37,7 +37,7 @@ use criterion::{BenchmarkId, Criterion, Throughput};
 ///
 /// # Panics
 ///
-/// Panics if the circuit has inout wires or MUL constraints.
+/// Panics if the circuit has inout wires or IMUL constraints.
 /// Panics if the correctness gate fails to verify.
 pub fn bench_m4_proving<F>(
 	c: &mut Criterion,

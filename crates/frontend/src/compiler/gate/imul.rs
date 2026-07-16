@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 //! Imul gate implements 64-bit × 64-bit → 128-bit unsigned multiplication.
-//! Uses the MulConstraint: X * Y = (HI << 64) | LO
+//! Uses the ImulConstraint: X * Y = (HI << 64) | LO
 
 use crate::compiler::{
 	constraint_builder::ConstraintBuilder,
@@ -26,8 +26,8 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	let [x, y] = inputs else { unreachable!() };
 	let [hi, lo] = outputs else { unreachable!() };
 
-	// Create MulConstraint: X * Y = (HI << 64) | LO
-	builder.mul().a(*x).b(*y).hi(*hi).lo(*lo).build();
+	// Create ImulConstraint: X * Y = (HI << 64) | LO
+	builder.imul().a(*x).b(*y).hi(*hi).lo(*lo).build();
 }
 
 pub fn emit_eval_bytecode(

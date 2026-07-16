@@ -4,7 +4,7 @@
 //! [value vector][`ValueVec`].
 
 use crate::{
-	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueIndex, ValueVec},
+	constraint_system::{AndConstraint, ConstraintSystem, ImulConstraint, ValueIndex, ValueVec},
 	word::Word,
 };
 
@@ -24,8 +24,11 @@ pub fn verify_and_constraint(witness: &ValueVec, constraint: &AndConstraint) -> 
 	}
 }
 
-/// Verifies that a MUL constraint is satisfied: A * B = (HI << 64) | LO
-pub fn verify_mul_constraint(witness: &ValueVec, constraint: &MulConstraint) -> Result<(), String> {
+/// Verifies that an IMUL constraint is satisfied: A * B = (HI << 64) | LO
+pub fn verify_imul_constraint(
+	witness: &ValueVec,
+	constraint: &ImulConstraint,
+) -> Result<(), String> {
 	let Word(a) = witness.eval_operand(&constraint.a);
 	let Word(b) = witness.eval_operand(&constraint.b);
 	let Word(lo) = witness.eval_operand(&constraint.lo);
@@ -40,7 +43,7 @@ pub fn verify_mul_constraint(witness: &ValueVec, constraint: &MulConstraint) -> 
 
 	if lo != expected_lo || hi != expected_hi {
 		Err(format!(
-			"MUL constraint failed: {a:016x} * {b:016x} = {hi:016x}{lo:016x} (expected {expected_hi:016x}{expected_lo:016x})",
+			"IMUL constraint failed: {a:016x} * {b:016x} = {hi:016x}{lo:016x} (expected {expected_hi:016x}{expected_lo:016x})",
 		))
 	} else {
 		Ok(())
@@ -66,9 +69,9 @@ pub fn verify_constraints(cs: &ConstraintSystem, witness: &ValueVec) -> Result<(
 		verify_and_constraint(witness, constraint)
 			.map_err(|e| format!("AND constraint {i} failed: {e}"))?;
 	}
-	for (i, constraint) in cs.mul_constraints.iter().enumerate() {
-		verify_mul_constraint(witness, constraint)
-			.map_err(|e| format!("MUL constraint {i} failed: {e}"))?;
+	for (i, constraint) in cs.imul_constraints.iter().enumerate() {
+		verify_imul_constraint(witness, constraint)
+			.map_err(|e| format!("IMUL constraint {i} failed: {e}"))?;
 	}
 	Ok(())
 }

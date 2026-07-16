@@ -132,14 +132,14 @@ fn test_prove_verify_sha256_preimage() {
 	prove_verify(cs, witness);
 }
 
-/// A SHA-256 circuit uses only AND constraints, so its constraint system has zero MUL
+/// A SHA-256 circuit uses only AND constraints, so its constraint system has zero IMUL
 /// constraints. This locks in that the prover and verifier skip the IntMul reduction entirely
-/// (rather than padding up to a dummy MUL constraint); see `IOPProver::prove` /
+/// (rather than padding up to a dummy IMUL constraint); see `IOPProver::prove` /
 /// `IOPVerifier::verify`.
 #[test]
-fn test_prove_verify_zero_mul_constraints() {
+fn test_prove_verify_zero_imul_constraints() {
 	let (cs, witness) = sha256_preimage_circuit();
-	assert_eq!(cs.n_mul_constraints(), 0, "SHA-256 circuit should have no MUL constraints");
+	assert_eq!(cs.n_imul_constraints(), 0, "SHA-256 circuit should have no IMUL constraints");
 	prove_verify(cs.clone(), witness.clone());
 	prove_verify_zk(cs, witness);
 }

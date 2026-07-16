@@ -14,7 +14,7 @@ use super::{key_collection::KeyCollection, phase_1::prove_phase_1, phase_2::prov
 ///
 /// Contains evaluation claims and challenge points for an operation.
 ///
-/// Each operator (AND/MUL) has multiple operand positions, each with an oblong evaluation claim.
+/// Each operator (AND/IMUL) has multiple operand positions, each with an oblong evaluation claim.
 /// The `evals` field stores these claim evaluations. The evaluation points consist of:
 /// - `r_zhat_prime`: univariate challenge point (pre-populated)
 /// - `r_x_prime`: multilinear challenge point (pre-populated)
@@ -83,7 +83,7 @@ impl<F: Field> PreparedOperatorData<F> {
 /// - `key_collection`: Prover's key collection representing the constraint system
 /// - `words`: The witness words (must have power-of-2 length)
 /// - `bitand_data`: Operator data for bit multiplication (AND) constraints
-/// - `intmul_data`: Operator data for integer multiplication (MUL) constraints
+/// - `intmul_data`: Operator data for integer multiplication (IMUL) constraints
 /// - `transcript`: The prover's transcript for interactive protocol
 ///
 /// # Returns

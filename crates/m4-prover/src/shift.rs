@@ -107,7 +107,7 @@ pub fn fold_instances<F: BinaryField>(table: &ValueTable, r_rho: &[F]) -> Vec<Fo
 /// - `public_words`: the public (constant) words, shared by every instance.
 /// - `folded_witness`: the hidden witness, folded over the instance axis, one word per entry.
 /// - `bitand_data`: operator data for the bitand (AND) constraints.
-/// - `intmul_data`: operator data for the intmul (MUL) constraints.
+/// - `intmul_data`: operator data for the intmul (IMUL) constraints.
 /// - `domain_subspace`: the univariate evaluation domain.
 /// - `channel`: the prover channel driving the interactive protocol.
 ///
@@ -527,8 +527,8 @@ mod tests {
 		let _offset = table.layout().offset_witness;
 		let public_words = &cs.constants;
 
-		// The bitand operand evals at (r_z, r_x, r_rho); the circuit has no MUL constraints, so the
-		// intmul claim is the zero claim over an empty point.
+		// The bitand operand evals at (r_z, r_x, r_rho); the circuit has no IMUL constraints, so
+		// the intmul claim is the zero claim over an empty point.
 		let bitand_evals = evaluate_and_witness::<P>(
 			&table,
 			public_words,
@@ -653,7 +653,7 @@ mod tests {
 		let hidden_folded = fold_words_over_instances(&table, constants, &r_rho, offset..combined);
 
 		// Prepare the operator data: lambda batches the three operand claims. The circuit has no
-		// MUL constraints, so the intmul claim is empty.
+		// IMUL constraints, so the intmul claim is empty.
 		let prepared_bitand = PreparedOperatorData::new(
 			OperatorData {
 				evals: bitand_evals.to_vec(),

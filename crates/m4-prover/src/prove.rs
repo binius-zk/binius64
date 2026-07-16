@@ -70,7 +70,7 @@ type ProverNtt = NeighborsLastMultiThread<GenericPreExpanded<B128>>;
 ///
 /// The trace oracle is not ZK, so the channel masks nothing and needs no randomness.
 ///
-/// With MUL constraints the reduction commits one further oracle: the IntMul logup* pushforward.
+/// With IMUL constraints the reduction commits one further oracle: the IntMul logup* pushforward.
 /// The IntMul check queues that oracle's opening itself.
 /// The final combined FRI opening covers it alongside the trace, so it needs no handling here.
 pub struct IOPProver {
@@ -132,7 +132,7 @@ impl IOPProver {
 			.reduce_dim(Word::LOG_BITS)
 			.isomorphic::<B128>();
 
-		// Build the IntMul operand columns and run the IntMul check, only when the circuit has MUL
+		// Build the IntMul operand columns and run the IntMul check, only when the circuit has IMUL
 		// constraints.
 		//
 		// SOUNDNESS: the IntMul check runs before the BitAnd check below.
@@ -145,13 +145,13 @@ impl IOPProver {
 		// constraint-major.
 		// They are kept alongside the check output.
 		// The re-randomization re-reads them to build the instance-axis multilinears it transports.
-		let mul = (!cs.mul_constraints.is_empty()).then(|| {
+		let mul = (!cs.imul_constraints.is_empty()).then(|| {
 			let columns = {
 				let _scope = tracing::debug_span!("Assemble IntMul witness").entered();
 				// `build_intmul_witness` yields `[A, B, HI, LO]`; reorder to the `[A, B, LO, HI]`
 				// operand order the IntMul witness and the shift both expect.
 				let [a, b, hi, lo] =
-					build_intmul_witness(table, &cs.constants, &cs.mul_constraints);
+					build_intmul_witness(table, &cs.constants, &cs.imul_constraints);
 				[a, b, lo, hi]
 			};
 			let output = prove_intmul::<P, _>(&columns, channel);
@@ -199,7 +199,7 @@ impl IOPProver {
 				// IntMul is collapsed from its per-bit form.
 				let lagrange = lagrange_evals_scalars::<B128, B128>(&shift_domain, z_challenge);
 				let and_columns = and_columns
-					.expect("AND columns are retained whenever there are MUL constraints");
+					.expect("AND columns are retained whenever there are IMUL constraints");
 				RerandomizedOperations {
 					bitand: Operation::new(
 						&and_columns,
@@ -216,7 +216,7 @@ impl IOPProver {
 				}
 				.prove::<P, _>(&lagrange, z_challenge, channel)
 			}
-			// No MUL constraints: the AND-check instance point is used directly.
+			// No IMUL constraints: the AND-check instance point is used directly.
 			// The IntMul claim is a zero claim at an empty point, contributing nothing to the
 			// shift.
 			None => (
@@ -366,7 +366,7 @@ where
 ///
 /// The four columns are the multiplicands and the low and high product words, in the order
 /// `[A, B, LO, HI]`.
-/// Each is `K * n_mul` rows, laid out constraint-major.
+/// Each is `K * n_imul` rows, laid out constraint-major.
 /// The check reduces the multiplication relation to per-bit evaluation claims on the four columns.
 /// Those claims share a common row point.
 fn prove_intmul<P, Channel>(columns: &[Vec<Word>; 4], channel: &mut Channel) -> IntMulOutput<B128>
@@ -687,9 +687,9 @@ mod tests {
 			.expect("no trailing proof data");
 	}
 
-	// A circuit carrying MUL constraints round-trips through the whole protocol.
+	// A circuit carrying IMUL constraints round-trips through the whole protocol.
 	//
-	// With MUL constraints the proof commits two oracles rather than one:
+	// With IMUL constraints the proof commits two oracles rather than one:
 	//
 	//     trace oracle    : the packed batch witness
 	//     logup* oracle   : the IntMul check's pushforward
@@ -698,7 +698,7 @@ mod tests {
 	// unifies before the witness is folded.
 	//
 	// Fixture: one unsigned 64x64 -> 128 product per instance over 2^6 instances, both product
-	// words force-committed. The `imul` gate emits one MUL constraint and one AND security check.
+	// words force-committed. The `imul` gate emits one IMUL constraint and one AND security check.
 	//
 	// A faithful proof verifies, both oracles open, and no trailing data is left.
 	#[test]
@@ -715,7 +715,7 @@ mod tests {
 		let mut cs = circuit.constraint_system().clone();
 		cs.validate_and_prepare().unwrap();
 		// Confirm the fixture genuinely exercises the IntMul path.
-		assert!(!cs.mul_constraints.is_empty(), "the fixture must emit a MUL constraint");
+		assert!(!cs.imul_constraints.is_empty(), "the fixture must emit an IMUL constraint");
 
 		// Fill each instance's two multiplicands from a per-instance seed; the circuit derives the
 		// two product words.
@@ -810,8 +810,8 @@ mod tests {
 			.expect("no trailing proof data");
 	}
 
-	// Independent AND constraints alongside MUL constraints, so the two operations reduce to
-	// constraint points of different lengths (`log_n_and != log_n_mul`) and to genuinely different
+	// Independent AND constraints alongside IMUL constraints, so the two operations reduce to
+	// constraint points of different lengths (`log_n_and != log_n_imul`) and to genuinely different
 	// instance points that the re-randomization must unify.
 	//
 	// Proving with a width-2 packing exercises the packed lane layout and zero-padding of the
@@ -830,7 +830,7 @@ mod tests {
 			let and = builder.band(pair[0], pair[1]);
 			builder.force_commit(and);
 		}
-		// Two products — fewer MUL constraints than AND constraints.
+		// Two products — fewer IMUL constraints than AND constraints.
 		for pair in inputs.chunks_exact(2).take(2) {
 			let (hi, lo) = builder.imul(pair[0], pair[1]);
 			builder.force_commit(hi);
@@ -843,9 +843,9 @@ mod tests {
 		// Confirm the fixture genuinely exercises the asymmetric case: the two operations have
 		// different constraint-point lengths.
 		let log_n_and = checked_log_2(cs.and_constraints.len());
-		let log_n_mul = checked_log_2(cs.mul_constraints.len());
+		let log_n_imul = checked_log_2(cs.imul_constraints.len());
 		assert_ne!(
-			log_n_and, log_n_mul,
+			log_n_and, log_n_imul,
 			"the fixture must give the operations different r_x lengths"
 		);
 

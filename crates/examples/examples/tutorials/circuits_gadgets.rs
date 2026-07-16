@@ -78,7 +78,7 @@ fn demo_byte_swapping() -> Result<()> {
 	// Show gate usage
 	println!("\nGate usage for byte swapping:");
 	println!("  AND constraints: {}", cs.n_and_constraints());
-	println!("  MUL constraints: {}", cs.n_mul_constraints());
+	println!("  IMUL constraints: {}", cs.n_imul_constraints());
 
 	Ok(())
 }

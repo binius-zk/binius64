@@ -82,12 +82,12 @@ impl DeserializeBytes for AndConstraint {
 	}
 }
 
-/// MUL constraint: `A * B = (HI << 64) | LO`.
+/// IMUL constraint: `A * B = (HI << 64) | LO`.
 ///
 /// 64-bit unsigned integer multiplication producing 128-bit result split into high and low 64-bit
 /// words.
 #[derive(Debug, Clone, Default)]
-pub struct MulConstraint {
+pub struct ImulConstraint {
 	/// A operand.
 	pub a: Operand,
 	/// B operand.
@@ -102,7 +102,7 @@ pub struct MulConstraint {
 	pub lo: Operand,
 }
 
-impl SerializeBytes for MulConstraint {
+impl SerializeBytes for ImulConstraint {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
 		self.a.serialize(&mut write_buf)?;
 		self.b.serialize(&mut write_buf)?;
@@ -111,7 +111,7 @@ impl SerializeBytes for MulConstraint {
 	}
 }
 
-impl DeserializeBytes for MulConstraint {
+impl DeserializeBytes for ImulConstraint {
 	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError>
 	where
 		Self: Sized,
@@ -121,7 +121,7 @@ impl DeserializeBytes for MulConstraint {
 		let hi = Vec::<ShiftedValueIndex>::deserialize(&mut read_buf)?;
 		let lo = Vec::<ShiftedValueIndex>::deserialize(read_buf)?;
 
-		Ok(MulConstraint { a, b, hi, lo })
+		Ok(ImulConstraint { a, b, hi, lo })
 	}
 }
 
@@ -155,8 +155,8 @@ mod tests {
 	}
 
 	#[test]
-	fn test_mul_constraint_serialization_round_trip() {
-		let constraint = MulConstraint {
+	fn test_imul_constraint_serialization_round_trip() {
+		let constraint = ImulConstraint {
 			a: vec![ShiftedValueIndex::plain(ValueIndex(0))],
 			b: vec![ShiftedValueIndex::srl(ValueIndex(1), 32)],
 			hi: vec![ShiftedValueIndex::plain(ValueIndex(2))],
@@ -166,7 +166,7 @@ mod tests {
 		let mut buf = Vec::new();
 		constraint.serialize(&mut buf).unwrap();
 
-		let deserialized = MulConstraint::deserialize(&mut buf.as_slice()).unwrap();
+		let deserialized = ImulConstraint::deserialize(&mut buf.as_slice()).unwrap();
 		assert_eq!(constraint.a.len(), deserialized.a.len());
 		assert_eq!(constraint.b.len(), deserialized.b.len());
 		assert_eq!(constraint.hi.len(), deserialized.hi.len());

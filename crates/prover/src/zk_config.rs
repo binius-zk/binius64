@@ -155,7 +155,7 @@ where
 				"Binius64",
 				n_hidden_words = inner_cs.value_vec_layout.n_hidden_words,
 				n_bitand = inner_cs.and_constraints.len(),
-				n_intmul = inner_cs.mul_constraints.len(),
+				n_intmul = inner_cs.imul_constraints.len(),
 			)
 			.entered();
 

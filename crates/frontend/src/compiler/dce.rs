@@ -7,7 +7,7 @@
 //! - one of its outputs feeds a live gate.
 //!
 //! A dead gate only constrains wires that no assertion or public output transitively reads.
-//! Skipping it at constraint-emission time drops those AND/MUL constraints.
+//! Skipping it at constraint-emission time drops those AND/IMUL constraints.
 //! Its output wire is then referenced by nothing.
 //! An unreferenced internal wire is allocated as scratch, never committed.
 //!

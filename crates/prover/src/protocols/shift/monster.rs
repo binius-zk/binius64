@@ -103,7 +103,7 @@ where
 /// Constructs the "monster multilinear" that combines all shift operations into a single
 /// multilinear.
 ///
-/// This function builds a comprehensive multilinear polynomial that encapsulates both AND and MUL
+/// This function builds a comprehensive multilinear polynomial that encapsulates both AND and IMUL
 /// constraints with their associated shift operations. For each witness word, it computes the
 /// contribution from all constraints involving that word, weighted by the appropriate h-polynomial
 /// evaluations and lambda powers.

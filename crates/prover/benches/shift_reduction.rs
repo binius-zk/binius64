@@ -100,7 +100,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 				.map(F::new)
 				.collect::<Vec<_>>()
 		};
-		// SHA256 has no MUL constraints, so the IntMul operator is the zero claim (four zero evals
+		// SHA256 has no IMUL constraints, so the IntMul operator is the zero claim (four zero evals
 		// at an empty point), exactly as the real prover/verifier synthesize it (`prove.rs` /
 		// `verify.rs` `None` branch). Its `r_x_prime` is therefore empty.
 		let r_x_prime_intmul: Vec<F> = Vec::new();
@@ -203,7 +203,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 	let r_x_prime_bitand = (0..strict_log_2(cs.and_constraints.len()).unwrap() as u128)
 		.map(F::new)
 		.collect::<Vec<_>>();
-	// SHA256 has no MUL constraints, so the IntMul operator is the zero claim at an empty point,
+	// SHA256 has no IMUL constraints, so the IntMul operator is the zero claim at an empty point,
 	// matching the real prover (`prove.rs` `None` branch).
 	let r_x_prime_intmul: Vec<F> = Vec::new();
 	// `r_zhat_prime` is shared across the bitand and intmul operators.

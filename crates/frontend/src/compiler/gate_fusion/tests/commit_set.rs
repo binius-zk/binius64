@@ -176,14 +176,14 @@ fn test_all_or_nothing_across_and_and_mul() {
 	// x = sll(a, 20)
 	// y = x ^ c (OK to inline)
 	// z = srl(x, 5) (incompatible with sll)
-	// Use y in AND and z in MUL -> x must be committed due to mixed uses
+	// Use y in AND and z in IMUL -> x must be committed due to mixed uses
 	test_commit_set(
 		|cb| {
 			cb.linear().rhs(sll(w(0), 20)).dst(w(1)).build(); // x
 			cb.linear().rhs(xor2(w(1), w(2))).dst(w(3)).build(); // y = x ^ c
 			cb.linear().rhs(srl(w(1), 5)).dst(w(4)).build(); // z = x >> 5
 			cb.and().a(w(3)).b(w(5)).c(w(6)).build();
-			cb.mul().a(w(4)).b(w(7)).hi(w(8)).lo(w(9)).build();
+			cb.imul().a(w(4)).b(w(7)).hi(w(8)).lo(w(9)).build();
 		},
 		&[w(1)],       // x must be committed
 		&[w(3), w(4)], // y and z can inline their inputs (subject to x being committed)
@@ -487,15 +487,15 @@ fn test_complex_xor_chain() {
 }
 
 #[test]
-fn test_wire_used_in_mul_constraint() {
+fn test_wire_used_in_imul_constraint() {
 	// Test: y = x ^ a, mul(y, b) = hi:lo
-	// y should be inlinable into the MUL constraint
+	// y should be inlinable into the IMUL constraint
 	test_commit_set(
 		|cb| {
 			// y = x ^ a
 			cb.linear().rhs(xor2(w(0), w(1))).dst(w(2)).build();
 			// mul(y, b) = hi:lo
-			cb.mul().a(w(2)).b(w(3)).hi(w(4)).lo(w(5)).build();
+			cb.imul().a(w(2)).b(w(3)).hi(w(4)).lo(w(5)).build();
 		},
 		&[],     // y can be inlined
 		&[w(2)], // y should not be committed

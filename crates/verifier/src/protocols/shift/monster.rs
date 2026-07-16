@@ -86,7 +86,7 @@ pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SH
 
 /// Evaluates the monster multilinear polynomial for a constraint operation.
 ///
-/// The monster multilinear encodes all constraints of a given type (AND or MUL) into
+/// The monster multilinear encodes all constraints of a given type (AND or IMUL) into
 /// a single polynomial. For an operation with multiple operands, it computes:
 ///
 /// $$

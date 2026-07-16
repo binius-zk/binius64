@@ -7,7 +7,7 @@ Gates & Instructions
 Constraints
 ├─ AND constraints: 160,097 used (61.1% of 2^18)
 │  [▓▓▓▓▓▓░░░░] spare: 102,047
-├─ MUL constraints: 20,548 used (62.7% of 2^15)
+├─ IMUL constraints: 20,548 used (62.7% of 2^15)
 │  [▓▓▓▓▓▓░░░░] spare: 12,220
 └─ Distinct value indices: 361,410
    ├─ Distinct shifted value indices: 171,232

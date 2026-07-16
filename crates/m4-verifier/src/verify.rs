@@ -61,7 +61,7 @@ type Scheme = BinaryMerkleTreeScheme<B128, StdHashSuite>;
 /// 4. The public-input consistency check ties in the shared constants.
 /// 5. The ring-switch opens the committed trace at `r_j || r_rho || r_y`, matching that claim.
 ///
-/// When the circuit has MUL constraints the IntMul check verifies too.
+/// When the circuit has IMUL constraints the IntMul check verifies too.
 /// It yields per-bit operand claims at its own instance point, distinct from the AND-check's.
 /// A batched multilinear-evaluation sumcheck unifies both onto one shared `r_rho`.
 /// Both operand claims at that point then feed the shift.
@@ -95,7 +95,7 @@ impl IOPVerifier {
 	}
 
 	/// Returns the oracle specs the prover commits to: the trace, plus the IntMul logup*
-	/// pushforward when the circuit has MUL constraints.
+	/// pushforward when the circuit has IMUL constraints.
 	///
 	/// The specs are derived by replaying the oracle-receiving sequence against an
 	/// [`OracleSetupChannel`] — which records each `recv_oracle` without doing real verification —
@@ -153,10 +153,10 @@ impl IOPVerifier {
 		// challenge. Do not reorder these, and keep the same order in `IOPProver::prove`.
 		//
 		// The IntMul columns span every instance's constraints.
-		// So the check runs over `log_instances + log_n_mul` row variables.
-		let intmul_output = if cs.n_mul_constraints() > 0 {
-			let log_n_mul = checked_log_2(cs.n_mul_constraints());
-			Some(verify_intmul_reduction::<B128, _>(log_instances + log_n_mul, channel)?)
+		// So the check runs over `log_instances + log_n_imul` row variables.
+		let intmul_output = if cs.n_imul_constraints() > 0 {
+			let log_n_imul = checked_log_2(cs.n_imul_constraints());
+			Some(verify_intmul_reduction::<B128, _>(log_instances + log_n_imul, channel)?)
 		} else {
 			None
 		};
@@ -191,7 +191,7 @@ impl IOPVerifier {
 				}
 				.verify(channel)?
 			}
-			// No MUL constraints: the AND-check instance point is used directly.
+			// No IMUL constraints: the AND-check instance point is used directly.
 			// The IntMul claim is a zero claim at an empty point.
 			None => (
 				r_rho_and.to_vec(),
@@ -270,7 +270,7 @@ impl Verifier {
 		let iop_verifier = IOPVerifier::new(cs.clone(), layout);
 
 		// The oracle specs the prover commits to — the trace, plus the IntMul logup* pushforward
-		// when the circuit has MUL constraints. Derived by replaying the verifier's
+		// when the circuit has IMUL constraints. Derived by replaying the verifier's
 		// oracle-receiving sequence against an `OracleSetupChannel`, so the list can never drift
 		// out of sync with the oracles the checks actually commit.
 		let oracle_specs = iop_verifier.oracle_specs();

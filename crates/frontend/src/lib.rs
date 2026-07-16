@@ -5,7 +5,7 @@
 //!
 //! This crate provides the [`CircuitBuilder`] API for constructing arithmetic circuits
 //! that compile to Binius64 constraint systems. You describe your computation as a graph
-//! of operations on 64-bit words, and the frontend compiles it to AND/MUL constraints.
+//! of operations on 64-bit words, and the frontend compiles it to AND/IMUL constraints.
 //!
 //! # Usage Flow
 //!

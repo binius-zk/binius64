@@ -43,7 +43,7 @@ use crate::{CircuitBuilder, Wire};
 ///
 /// # Cost
 ///
-/// - 1 MUL constraint for the unsigned product.
+/// - 1 IMUL constraint for the unsigned product.
 /// - 1 AND constraint for the unsigned product security check.
 /// - 2 AND constraints for the sign masks.
 /// - 2 AND constraints for the corrections.
@@ -144,7 +144,7 @@ mod tests {
 			// Evaluate the circuit to fill every internal wire.
 			w.circuit.populate_wire_witness(&mut w).unwrap();
 
-			// All AND/MUL constraints must hold for the correct witness.
+			// All AND/IMUL constraints must hold for the correct witness.
 			let cs = circuit.constraint_system();
 			verify_constraints(cs, &w.into_value_vec()).unwrap();
 		}
@@ -259,7 +259,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_smul_constraint_verification() {
+	fn test_simul_constraint_verification() {
 		// Invariant: negative × negative gives a positive product.
 		let builder = CircuitBuilder::new();
 		let x = builder.add_inout();

@@ -152,17 +152,17 @@ impl IOPVerifier {
 		//
 		// [phase] Verify IntMul Reduction - multiplication constraint verification
 		//
-		// Skipped (no transcript reads) when the constraint system has no MUL constraints,
+		// Skipped (no transcript reads) when the constraint system has no IMUL constraints,
 		// mirroring the prover's identical guard so the transcript stays in sync.
-		let intmul_output = if self.constraint_system.n_mul_constraints() > 0 {
+		let intmul_output = if self.constraint_system.n_imul_constraints() > 0 {
 			let intmul_guard = tracing::info_span!(
 				"[phase] Verify IntMul Reduction",
 				phase = "verify_intmul_reduction",
 				perfetto_category = "phase",
-				n_constraints = self.constraint_system.n_mul_constraints()
+				n_constraints = self.constraint_system.n_imul_constraints()
 			)
 			.entered();
-			let log_n_constraints = checked_log_2(self.constraint_system.n_mul_constraints());
+			let log_n_constraints = checked_log_2(self.constraint_system.n_imul_constraints());
 			let intmul_output = verify_intmul_reduction::<B128, _>(log_n_constraints, channel)?;
 			drop(intmul_guard);
 			Some(intmul_output)
@@ -196,7 +196,7 @@ impl IOPVerifier {
 		// ShiftReduction perf and lets the verifier compute `h_op_evals` once for both
 		// operations in `shift::check_eval`. When IntMul was skipped, synthesize a zero claim
 		// (four zero evals at an empty point); it contributes zero to the shift reduction, whose
-		// monster evaluation iterates the (empty) MUL constraints.
+		// monster evaluation iterates the (empty) IMUL constraints.
 		let intmul_claim = match intmul_output {
 			Some(IntMulOutput {
 				a_evals,
@@ -400,7 +400,7 @@ where
 			"Verify",
 			n_hidden_words = cs.value_vec_layout.n_hidden_words,
 			n_bitand = cs.and_constraints.len(),
-			n_intmul = cs.mul_constraints.len(),
+			n_intmul = cs.imul_constraints.len(),
 		)
 		.entered();
 

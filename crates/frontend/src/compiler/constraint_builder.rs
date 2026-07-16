@@ -1,5 +1,7 @@
 // Copyright 2025 Irreducible Inc.
-use binius_core::constraint_system::{AndConstraint, MulConstraint, ShiftedValueIndex, ValueIndex};
+use binius_core::constraint_system::{
+	AndConstraint, ImulConstraint, ShiftedValueIndex, ValueIndex,
+};
 use cranelift_entity::{EntitySet, SecondaryMap};
 use smallvec::{SmallVec, smallvec};
 
@@ -8,7 +10,7 @@ use crate::compiler::Wire;
 /// Builder for creating constraints using Wire references
 pub struct ConstraintBuilder {
 	pub and_constraints: Vec<WireAndConstraint>,
-	pub mul_constraints: Vec<WireMulConstraint>,
+	pub imul_constraints: Vec<WireImulConstraint>,
 	pub linear_constraints: Vec<WireLinearConstraint>,
 }
 
@@ -16,7 +18,7 @@ impl ConstraintBuilder {
 	pub const fn new() -> Self {
 		Self {
 			and_constraints: Vec::new(),
-			mul_constraints: Vec::new(),
+			imul_constraints: Vec::new(),
 			linear_constraints: Vec::new(),
 		}
 	}
@@ -26,9 +28,9 @@ impl ConstraintBuilder {
 		AndConstraintBuilder::new(self)
 	}
 
-	/// Build a MUL constraint: A * B = (HI << 64) | LO
-	pub const fn mul(&mut self) -> MulConstraintBuilder<'_> {
-		MulConstraintBuilder::new(self)
+	/// Build an IMUL constraint: A * B = (HI << 64) | LO
+	pub const fn imul(&mut self) -> ImulConstraintBuilder<'_> {
+		ImulConstraintBuilder::new(self)
 	}
 
 	/// Build a linear constraint: RHS = DST
@@ -43,15 +45,15 @@ impl ConstraintBuilder {
 		self,
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 		all_one: Wire,
-	) -> (Vec<AndConstraint>, Vec<MulConstraint>) {
+	) -> (Vec<AndConstraint>, Vec<ImulConstraint>) {
 		let mut and_constraints = self
 			.and_constraints
 			.into_iter()
 			.map(|c| c.into_constraint(wire_mapping))
 			.collect::<Vec<_>>();
 
-		let mul_constraints = self
-			.mul_constraints
+		let imul_constraints = self
+			.imul_constraints
 			.into_iter()
 			.map(|c| c.into_constraint(wire_mapping))
 			.collect();
@@ -65,7 +67,7 @@ impl ConstraintBuilder {
 			}
 		}
 
-		(and_constraints, mul_constraints)
+		(and_constraints, imul_constraints)
 	}
 
 	pub fn mark_used_wires(&self) -> EntitySet<Wire> {
@@ -73,7 +75,7 @@ impl ConstraintBuilder {
 		for ac in &self.and_constraints {
 			ac.mark_used(&mut used_set);
 		}
-		for mc in &self.mul_constraints {
+		for mc in &self.imul_constraints {
 			mc.mark_used(&mut used_set);
 		}
 		for lc in &self.linear_constraints {
@@ -123,8 +125,8 @@ impl WireAndConstraint {
 	}
 }
 
-/// MUL constraint using Wire references
-pub struct WireMulConstraint {
+/// IMUL constraint using Wire references
+pub struct WireImulConstraint {
 	pub a: WireOperand,
 	pub b: WireOperand,
 	pub hi: WireOperand,
@@ -157,9 +159,9 @@ impl WireLinearConstraint {
 	}
 }
 
-impl WireMulConstraint {
-	fn into_constraint(self, wire_mapping: &SecondaryMap<Wire, ValueIndex>) -> MulConstraint {
-		MulConstraint {
+impl WireImulConstraint {
+	fn into_constraint(self, wire_mapping: &SecondaryMap<Wire, ValueIndex>) -> ImulConstraint {
+		ImulConstraint {
 			a: expand_and_convert_operand(self.a, wire_mapping),
 			b: expand_and_convert_operand(self.b, wire_mapping),
 			hi: expand_and_convert_operand(self.hi, wire_mapping),
@@ -392,7 +394,7 @@ impl<'a> AndConstraintBuilder<'a> {
 	}
 }
 
-pub struct MulConstraintBuilder<'a> {
+pub struct ImulConstraintBuilder<'a> {
 	builder: &'a mut ConstraintBuilder,
 	a: WireOperand,
 	b: WireOperand,
@@ -406,7 +408,7 @@ pub struct LinearConstraintBuilder<'a> {
 	dst: Option<Wire>,
 }
 
-impl<'a> MulConstraintBuilder<'a> {
+impl<'a> ImulConstraintBuilder<'a> {
 	const fn new(builder: &'a mut ConstraintBuilder) -> Self {
 		Self {
 			builder,
@@ -438,7 +440,7 @@ impl<'a> MulConstraintBuilder<'a> {
 	}
 
 	pub fn build(self) {
-		self.builder.mul_constraints.push(WireMulConstraint {
+		self.builder.imul_constraints.push(WireImulConstraint {
 			a: self.a,
 			b: self.b,
 			hi: self.hi,
@@ -659,12 +661,12 @@ mod tests {
 				.dst(wire_c)
 				.build();
 
-			let (and_constraints, mul_constraints) = builder.build(&wire_mapping, all_one_wire);
+			let (and_constraints, imul_constraints) = builder.build(&wire_mapping, all_one_wire);
 
 			// rotr(0) should be optimized to plain wire, so we expect:
 			// (a ⊕ b) & all_one = c
 			assert_eq!(and_constraints.len(), 1);
-			assert_eq!(mul_constraints.len(), 0);
+			assert_eq!(imul_constraints.len(), 0);
 
 			let and_c = &and_constraints[0];
 
@@ -706,10 +708,10 @@ mod tests {
 				.dst(wire_c)
 				.build();
 
-			let (and_constraints, mul_constraints) = builder.build(&wire_mapping, all_one_wire);
+			let (and_constraints, imul_constraints) = builder.build(&wire_mapping, all_one_wire);
 
 			assert_eq!(and_constraints.len(), 1);
-			assert_eq!(mul_constraints.len(), 0);
+			assert_eq!(imul_constraints.len(), 0);
 
 			let and_c = &and_constraints[0];
 
@@ -823,10 +825,10 @@ mod tests {
 			.dst(wire_c)
 			.build();
 
-		let (and_constraints, mul_constraints) = builder.build(&wire_mapping, all_one_wire);
+		let (and_constraints, imul_constraints) = builder.build(&wire_mapping, all_one_wire);
 
 		assert_eq!(and_constraints.len(), 1);
-		assert_eq!(mul_constraints.len(), 0);
+		assert_eq!(imul_constraints.len(), 0);
 
 		let and_c = &and_constraints[0];
 

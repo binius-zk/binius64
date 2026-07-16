@@ -5,7 +5,7 @@ use super::legraph::LeGraph;
 use crate::compiler::{
 	Wire,
 	constraint_builder::{
-		ConstraintBuilder, Shift, ShiftedWire, WireAndConstraint, WireMulConstraint, WireOperand,
+		ConstraintBuilder, Shift, ShiftedWire, WireAndConstraint, WireImulConstraint, WireOperand,
 	},
 	gate_fusion::legraph::ConstraintRef,
 };
@@ -20,12 +20,12 @@ pub struct Patch {
 	/// The constraint set that is going to be replaced with this one.
 	subsumes: Vec<ConstraintRef>,
 	/// The new constraints that is going to be added to the graph.
-	added: AndOrMulConstraint,
+	added: AndOrImulConstraint,
 }
 
-enum AndOrMulConstraint {
+enum AndOrImulConstraint {
 	And(WireAndConstraint),
-	Mul(WireMulConstraint),
+	Imul(WireImulConstraint),
 }
 
 /// Apply the given patches to the constraint builder given.
@@ -33,14 +33,16 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 	let mut subsumes: FxHashSet<ConstraintRef> = FxHashSet::default();
 	subsumes.reserve(patches.len());
 	let mut new_and_constraints = Vec::new();
-	let mut new_mul_constraints = Vec::new();
+	let mut new_imul_constraints = Vec::new();
 
 	// Collect all subsumed constraints and new constraints to add
 	for patch in patches {
 		subsumes.extend(patch.subsumes);
 		match patch.added {
-			AndOrMulConstraint::And(and_constraint) => new_and_constraints.push(and_constraint),
-			AndOrMulConstraint::Mul(mul_constraint) => new_mul_constraints.push(mul_constraint),
+			AndOrImulConstraint::And(and_constraint) => new_and_constraints.push(and_constraint),
+			AndOrImulConstraint::Imul(imul_constraint) => {
+				new_imul_constraints.push(imul_constraint)
+			}
 		}
 	}
 
@@ -59,12 +61,12 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 		})
 		.collect();
 
-	let old_mul_constraints = std::mem::take(&mut cb.mul_constraints);
-	cb.mul_constraints = old_mul_constraints
+	let old_imul_constraints = std::mem::take(&mut cb.imul_constraints);
+	cb.imul_constraints = old_imul_constraints
 		.into_iter()
 		.enumerate()
 		.filter_map(|(index, constraint)| {
-			if subsumes.contains(&ConstraintRef::Mul { index }) {
+			if subsumes.contains(&ConstraintRef::Imul { index }) {
 				None
 			} else {
 				Some(constraint)
@@ -87,7 +89,7 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 
 	// Add the new constraints
 	cb.and_constraints.extend(new_and_constraints);
-	cb.mul_constraints.extend(new_mul_constraints);
+	cb.imul_constraints.extend(new_imul_constraints);
 }
 
 /// Builds a list of patches that would remove the inlined linear definitions and potentially
@@ -133,14 +135,14 @@ fn build_non_lin_patch(
 			let a = process_operand(leg, &mut subsumes, &cb.and_constraints[index].a);
 			let b = process_operand(leg, &mut subsumes, &cb.and_constraints[index].b);
 			let c = process_operand(leg, &mut subsumes, &cb.and_constraints[index].c);
-			AndOrMulConstraint::And(WireAndConstraint { a, b, c })
+			AndOrImulConstraint::And(WireAndConstraint { a, b, c })
 		}
-		ConstraintRef::Mul { index } => {
-			let a = process_operand(leg, &mut subsumes, &cb.mul_constraints[index].a);
-			let b = process_operand(leg, &mut subsumes, &cb.mul_constraints[index].b);
-			let lo = process_operand(leg, &mut subsumes, &cb.mul_constraints[index].lo);
-			let hi = process_operand(leg, &mut subsumes, &cb.mul_constraints[index].hi);
-			AndOrMulConstraint::Mul(WireMulConstraint { a, b, lo, hi })
+		ConstraintRef::Imul { index } => {
+			let a = process_operand(leg, &mut subsumes, &cb.imul_constraints[index].a);
+			let b = process_operand(leg, &mut subsumes, &cb.imul_constraints[index].b);
+			let lo = process_operand(leg, &mut subsumes, &cb.imul_constraints[index].lo);
+			let hi = process_operand(leg, &mut subsumes, &cb.imul_constraints[index].hi);
+			AndOrImulConstraint::Imul(WireImulConstraint { a, b, lo, hi })
 		}
 		ConstraintRef::Linear { .. } => unreachable!(),
 	};
@@ -175,7 +177,7 @@ fn build_committed_lin_def_patch(
 	// Create an AND constraint that enforces: root = new_operand
 	Patch {
 		subsumes,
-		added: AndOrMulConstraint::And(WireAndConstraint {
+		added: AndOrImulConstraint::And(WireAndConstraint {
 			a: new_operand,
 			b: vec![ShiftedWire {
 				wire: all_one,
@@ -358,7 +360,7 @@ mod tests {
 		let all_one = w(9);
 		let patch = super::build_committed_lin_def_patch(&cb_single, &leg, all_one, w(3));
 		match patch.added {
-			AndOrMulConstraint::And(ref andc) => {
+			AndOrImulConstraint::And(ref andc) => {
 				// b must be exactly [all_one]
 				assert_eq!(andc.b.len(), 1);
 				assert_eq!(andc.b[0].wire, all_one);
@@ -383,7 +385,7 @@ mod tests {
 		cb.linear().rhs(xor2(w(4), w(5))).dst(w(12)).build(); // hi_src
 		cb.linear().rhs(xor2(w(6), w(7))).dst(w(13)).build(); // lo_src
 
-		cb.mul().a(w(10)).b(w(11)).hi(w(12)).lo(w(13)).build();
+		cb.imul().a(w(10)).b(w(11)).hi(w(12)).lo(w(13)).build();
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb, &mut stat);
@@ -393,8 +395,8 @@ mod tests {
 		let mut cb2 = cb;
 		super::apply_patches(&mut cb2, patches);
 
-		assert_eq!(cb2.mul_constraints.len(), 1);
-		let m = &cb2.mul_constraints[0];
+		assert_eq!(cb2.imul_constraints.len(), 1);
+		let m = &cb2.imul_constraints[0];
 		assert_eq!(m.a.len(), 2);
 		assert_eq!(m.b.len(), 2);
 		assert_eq!(m.hi.len(), 2);
@@ -739,9 +741,9 @@ mod tests {
 		cb.and().a(w(3)).b(w(4)).c(w(5)).build(); // index 1
 		cb.and().a(w(6)).b(w(7)).c(w(8)).build(); // index 2
 
-		// Add some MUL constraints
-		cb.mul().a(w(9)).b(w(10)).lo(w(11)).hi(w(12)).build(); // index 0
-		cb.mul().a(w(13)).b(w(14)).lo(w(15)).hi(w(16)).build(); // index 1
+		// Add some IMUL constraints
+		cb.imul().a(w(9)).b(w(10)).lo(w(11)).hi(w(12)).build(); // index 0
+		cb.imul().a(w(13)).b(w(14)).lo(w(15)).hi(w(16)).build(); // index 1
 
 		// Add some LINEAR constraints
 		cb.linear().rhs(xor2(w(17), w(18))).dst(w(19)).build(); // index 0
@@ -750,11 +752,11 @@ mod tests {
 		// Create patches that:
 		// 1. Replace AND constraint at index 1 with a new one
 		// 2. Replace LINEAR constraint at index 0 with an AND constraint
-		// 3. Replace MUL constraint at index 0 with a new one
+		// 3. Replace IMUL constraint at index 0 with a new one
 		let patches = vec![
 			Patch {
 				subsumes: vec![ConstraintRef::And { index: 1 }],
-				added: AndOrMulConstraint::And(WireAndConstraint {
+				added: AndOrImulConstraint::And(WireAndConstraint {
 					a: vec![ShiftedWire {
 						wire: w(30),
 						shift: Shift::None,
@@ -771,7 +773,7 @@ mod tests {
 			},
 			Patch {
 				subsumes: vec![ConstraintRef::Linear { index: 0 }],
-				added: AndOrMulConstraint::And(WireAndConstraint {
+				added: AndOrImulConstraint::And(WireAndConstraint {
 					a: vec![ShiftedWire {
 						wire: w(33),
 						shift: Shift::None,
@@ -787,8 +789,8 @@ mod tests {
 				}),
 			},
 			Patch {
-				subsumes: vec![ConstraintRef::Mul { index: 0 }],
-				added: AndOrMulConstraint::Mul(WireMulConstraint {
+				subsumes: vec![ConstraintRef::Imul { index: 0 }],
+				added: AndOrImulConstraint::Imul(WireImulConstraint {
 					a: vec![ShiftedWire {
 						wire: w(36),
 						shift: Shift::None,
@@ -822,12 +824,12 @@ mod tests {
 		assert_eq!(cb.and_constraints[2].a[0].wire, w(30));
 		assert_eq!(cb.and_constraints[3].a[0].wire, w(33));
 
-		// MUL constraints: originally 2, removed index 0, added 1 new one = 2 total
-		assert_eq!(cb.mul_constraints.len(), 2);
+		// IMUL constraints: originally 2, removed index 0, added 1 new one = 2 total
+		assert_eq!(cb.imul_constraints.len(), 2);
 		// Check that original constraint at index 1 is preserved (now at index 0)
-		assert_eq!(cb.mul_constraints[0].a[0].wire, w(13));
+		assert_eq!(cb.imul_constraints[0].a[0].wire, w(13));
 		// Check new constraint is added at the end
-		assert_eq!(cb.mul_constraints[1].a[0].wire, w(36));
+		assert_eq!(cb.imul_constraints[1].a[0].wire, w(36));
 
 		// LINEAR constraints: originally 2, removed index 0 = 1 total
 		assert_eq!(cb.linear_constraints.len(), 1);
@@ -886,9 +888,9 @@ mod tests {
 
 	#[test]
 	fn test_mul_operand_duplicate_inlining() {
-		// Build MUL where the same linear def appears twice in a single operand:
+		// Build IMUL where the same linear def appears twice in a single operand:
 		// y = x ^ c
-		// MUL.a = y ^ y ^ z  (duplicate y)
+		// IMUL.a = y ^ y ^ z  (duplicate y)
 		// After inlining, expect: a = x ^ c ^ x ^ c ^ z (5 terms, preserving duplicates)
 		fn w(id: u32) -> Wire {
 			Wire::from_u32(id)
@@ -897,8 +899,8 @@ mod tests {
 		let mut cb = ConstraintBuilder::new();
 		// y = x ^ c
 		cb.linear().rhs(xor2(w(0), w(1))).dst(w(2)).build();
-		// MUL: a = y ^ y ^ z; b = u; hi, lo are outputs
-		cb.mul()
+		// IMUL: a = y ^ y ^ z; b = u; hi, lo are outputs
+		cb.imul()
 			.a(crate::compiler::constraint_builder::xor3(w(2), w(2), w(3)))
 			.b(w(4))
 			.hi(w(5))
@@ -913,9 +915,9 @@ mod tests {
 		let mut cb2 = cb;
 		super::apply_patches(&mut cb2, patches);
 
-		// Verify results: one MUL remains, and its operand a equals x ^ c ^ x ^ c ^ z
-		assert_eq!(cb2.mul_constraints.len(), 1);
-		let a = &cb2.mul_constraints[0].a;
+		// Verify results: one IMUL remains, and its operand a equals x ^ c ^ x ^ c ^ z
+		assert_eq!(cb2.imul_constraints.len(), 1);
+		let a = &cb2.imul_constraints[0].a;
 		assert_operand_eq(
 			a,
 			vec![
@@ -946,11 +948,11 @@ mod tests {
 
 	#[test]
 	fn test_mul_mixed_inlinable_and_committed() {
-		// Scenario: committed linear feeds one MUL operand; inlinable linear feeds the other.
+		// Scenario: committed linear feeds one IMUL operand; inlinable linear feeds the other.
 		// t_committed = sll(a, 40)
 		// y = sll(t_committed, 30)  // uses committed
 		// u = x ^ c                  // inlinable
-		// MUL: a=y, b=u
+		// IMUL: a=y, b=u
 		fn w(id: u32) -> Wire {
 			Wire::from_u32(id)
 		}
@@ -959,7 +961,7 @@ mod tests {
 		cb.linear().rhs(sll(w(0), 40)).dst(w(1)).build(); // t_committed
 		cb.linear().rhs(sll(w(1), 30)).dst(w(2)).build(); // y
 		cb.linear().rhs(xor2(w(3), w(4))).dst(w(5)).build(); // u
-		cb.mul().a(w(2)).b(w(5)).hi(w(6)).lo(w(7)).build();
+		cb.imul().a(w(2)).b(w(5)).hi(w(6)).lo(w(7)).build();
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb, &mut stat);
@@ -970,8 +972,8 @@ mod tests {
 		let mut cb2 = cb;
 		super::apply_patches(&mut cb2, patches);
 
-		assert_eq!(cb2.mul_constraints.len(), 1);
-		let m = &cb2.mul_constraints[0];
+		assert_eq!(cb2.imul_constraints.len(), 1);
+		let m = &cb2.imul_constraints[0];
 		assert_operand_eq(
 			&m.a,
 			vec![ShiftedWire {
@@ -1009,8 +1011,8 @@ mod tests {
 		cb.linear().rhs(sll(w(1), 20)).dst(w(2)).build(); // hi_src (should commit t)
 		// inlinable lo_src = x ^ c
 		cb.linear().rhs(xor2(w(3), w(4))).dst(w(5)).build();
-		// build MUL: a,b plain; hi=hi_src; lo=lo_src
-		cb.mul().a(w(6)).b(w(7)).hi(w(2)).lo(w(5)).build();
+		// build IMUL: a,b plain; hi=hi_src; lo=lo_src
+		cb.imul().a(w(6)).b(w(7)).hi(w(2)).lo(w(5)).build();
 
 		let mut stat = Stat::default();
 		let mut leg = LeGraph::new(&cb, &mut stat);
@@ -1021,8 +1023,8 @@ mod tests {
 		let mut cb2 = cb;
 		super::apply_patches(&mut cb2, patches);
 
-		assert_eq!(cb2.mul_constraints.len(), 1);
-		let m = &cb2.mul_constraints[0];
+		assert_eq!(cb2.imul_constraints.len(), 1);
+		let m = &cb2.imul_constraints[0];
 		assert_operand_eq(
 			&m.hi,
 			vec![ShiftedWire {

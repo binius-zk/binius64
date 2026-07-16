@@ -21,10 +21,10 @@ pub struct CircuitStat {
 	///
 	/// Affects performance of AND reduction.
 	pub n_and_constraints: usize,
-	/// Number of MUL constraints in the circuit.
+	/// Number of IMUL constraints in the circuit.
 	///
 	/// Affects performance of intmul reduction phase.
-	pub n_mul_constraints: usize,
+	pub n_imul_constraints: usize,
 	/// Number of distinct value indices with non-zero shift in the circuit.
 	///
 	/// Every use of a value with a distinct type and amount is counted here.
@@ -55,8 +55,8 @@ pub struct CircuitStat {
 	pub n_scratch: usize,
 	/// Allocated size for AND constraints (power of 2)
 	pub and_allocated: usize,
-	/// Allocated size for MUL constraints (power of 2)
-	pub mul_allocated: usize,
+	/// Allocated size for IMUL constraints (power of 2)
+	pub imul_allocated: usize,
 	/// Allocated size for public section (power of 2)
 	pub public_allocated: usize,
 	/// Allocated size for private section.
@@ -77,7 +77,7 @@ impl CircuitStat {
 
 		// Store original counts before padding
 		let n_and_constraints = cs.n_and_constraints();
-		let n_mul_constraints = cs.n_mul_constraints();
+		let n_imul_constraints = cs.n_imul_constraints();
 		let (distinct_shifted_value_indices, distinct_unshifted_value_indices) =
 			traverse_constraint_system(&cs);
 
@@ -87,7 +87,7 @@ impl CircuitStat {
 
 		// Now we have the actual allocated sizes after padding
 		let and_allocated = cs.n_and_constraints();
-		let mul_allocated = cs.n_mul_constraints();
+		let imul_allocated = cs.n_imul_constraints();
 
 		// The public section size is already determined by the layout
 		let n_const = cs.value_vec_layout.n_const;
@@ -102,7 +102,7 @@ impl CircuitStat {
 			n_gates: circuit.n_gates(),
 			n_eval_insn: circuit.n_eval_insn(),
 			n_and_constraints,
-			n_mul_constraints,
+			n_imul_constraints,
 			value_vec_len: total_allocated,
 			distinct_shifted_value_indices,
 			distinct_unshifted_value_indices,
@@ -112,7 +112,7 @@ impl CircuitStat {
 			n_internal: cs.value_vec_layout.n_internal,
 			n_scratch: cs.value_vec_layout.n_scratch,
 			and_allocated,
-			mul_allocated,
+			imul_allocated,
 			public_allocated,
 			private_allocated,
 		}
@@ -184,32 +184,32 @@ impl fmt::Display for CircuitStat {
 			fmt_num(and_spare)
 		)?;
 
-		let mul_percent = if self.mul_allocated > 0 {
-			self.n_mul_constraints as f64 / self.mul_allocated as f64 * 100.0
+		let imul_percent = if self.imul_allocated > 0 {
+			self.n_imul_constraints as f64 / self.imul_allocated as f64 * 100.0
 		} else {
 			0.0
 		};
-		let mul_spare = self.mul_allocated - self.n_mul_constraints;
-		// A circuit with no MUL constraints allocates nothing (the IntMul reduction is skipped),
+		let imul_spare = self.imul_allocated - self.n_imul_constraints;
+		// A circuit with no IMUL constraints allocates nothing (the IntMul reduction is skipped),
 		// so there is no power-of-two allocation to report — unlike AND, which is always padded to
 		// at least one.
-		let mul_allocation = if self.mul_allocated == 0 {
+		let imul_allocation = if self.imul_allocated == 0 {
 			"0".to_string()
 		} else {
-			format!("2^{}", log2(self.mul_allocated))
+			format!("2^{}", log2(self.imul_allocated))
 		};
 		writeln!(
 			f,
-			"├─ MUL constraints: {} used ({:.1}% of {})",
-			fmt_num(self.n_mul_constraints),
-			mul_percent,
-			mul_allocation
+			"├─ IMUL constraints: {} used ({:.1}% of {})",
+			fmt_num(self.n_imul_constraints),
+			imul_percent,
+			imul_allocation
 		)?;
 		writeln!(
 			f,
 			"│  {} spare: {}",
-			progress_bar(self.n_mul_constraints, self.mul_allocated),
-			fmt_num(mul_spare)
+			progress_bar(self.n_imul_constraints, self.imul_allocated),
+			fmt_num(imul_spare)
 		)?;
 		writeln!(
 			f,
@@ -306,7 +306,7 @@ fn traverse_constraint_system(cs: &ConstraintSystem) -> (usize, usize) {
 		visit_operand(&and.b, &mut cx);
 		visit_operand(&and.c, &mut cx);
 	}
-	for mul in &cs.mul_constraints {
+	for mul in &cs.imul_constraints {
 		visit_operand(&mul.a, &mut cx);
 		visit_operand(&mul.b, &mut cx);
 		visit_operand(&mul.lo, &mut cx);

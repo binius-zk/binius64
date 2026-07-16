@@ -4,7 +4,7 @@
 use std::{array, iter};
 
 use binius_core::{
-	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, Operand},
+	constraint_system::{AndConstraint, ConstraintSystem, ImulConstraint, Operand},
 	word::Word,
 };
 use binius_field::{BinaryField, field::FieldOps, util::FieldFn};
@@ -102,7 +102,7 @@ impl<F: FieldOps, const ARITY: usize> OperatorData<F, ARITY> {
 pub struct VerifyOutput<F> {
 	/// Random coefficient for batching AND constraint evaluations.
 	bitand_lambda: F,
-	/// Random coefficient for batching MUL constraint evaluations.
+	/// Random coefficient for batching IMUL constraint evaluations.
 	intmul_lambda: F,
 	/// Challenge point for the bit index variables (length `Word::LOG_BITS`).
 	pub r_j: Vec<F>,
@@ -154,11 +154,11 @@ impl<F> VerifyOutput<F> {
 /// 3. **Challenge Splitting**: Splits sumcheck challenges into `r_j` and `r_s` components
 /// 4. **Second Sumcheck**: Verifies the gamma claim over `log_word_count` variables
 /// 5. **Monster Multilinear Verification**: Checks that the claimed evaluations match expected
-///    monster multilinear evaluations for both AND constraints (bitand) and MUL constraints
+///    monster multilinear evaluations for both AND constraints (bitand) and IMUL constraints
 ///    (intmul)
 ///
 /// # Parameters
-/// - `constraint_system`: The constraint system containing AND and MUL constraints (consumed)
+/// - `constraint_system`: The constraint system containing AND and IMUL constraints (consumed)
 /// - `bitand_data`: Operator data for bit multiplication operations
 /// - `intmul_data`: Operator data for integer multiplication operations
 /// - `transcript`: Interactive transcript for challenge sampling and message reading
@@ -230,7 +230,7 @@ where
 ///
 /// After the shift reduction protocol completes, this function checks that the
 /// prover-provided witness evaluation is consistent with the expected values.
-/// It computes the monster multilinear evaluations for both AND and MUL constraints
+/// It computes the monster multilinear evaluations for both AND and IMUL constraints
 /// and verifies the final equation relating the witness and monster evaluations.
 ///
 /// # Protocol Details
@@ -240,7 +240,7 @@ where
 /// eval = trace_eval * monster_eval
 /// ```
 ///
-/// where `monster_eval` is the sum of evaluations for AND and MUL constraint polynomials, and
+/// where `monster_eval` is the sum of evaluations for AND and IMUL constraint polynomials, and
 /// `trace_eval` is the witness evaluation reconstructed from its two segments:
 /// ```text
 /// trace_eval = (1 - r_segment) * prod_{k <= i} (1 - r_y_i) * public_eval + r_segment * witness_eval
@@ -371,7 +371,7 @@ impl<F: BinaryField> FieldFn<F> for PublicWordsEvalFn<'_> {
 struct MonsterEvalFn<'a, F: BinaryField> {
 	/// The evaluation subspace for the Lagrange basis over the word bits.
 	subspace: &'a BinarySubspace<F>,
-	/// The AND and MUL constraints whose monster multilinears are evaluated.
+	/// The AND and IMUL constraints whose monster multilinears are evaluated.
 	constraint_system: &'a ConstraintSystem,
 	/// Length of the BitAnd operator's `r_x_prime` section.
 	bitand_r_x_prime_len: usize,
@@ -466,12 +466,12 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 			eval_op(&[a, b, c], bitand_r_x_prime_v, bitand_lambda_v, &shift_scalars, &r_y_tensor)
 		};
 		// IntMul contribution: operands (a, b, lo, hi) batched by `intmul_lambda`.
-		let intmul_part = if !self.constraint_system.mul_constraints.is_empty() {
+		let intmul_part = if !self.constraint_system.imul_constraints.is_empty() {
 			let (a, b, lo, hi) = self
 				.constraint_system
-				.mul_constraints
+				.imul_constraints
 				.iter()
-				.map(|MulConstraint { a, b, hi, lo }| (a, b, lo, hi))
+				.map(|ImulConstraint { a, b, hi, lo }| (a, b, lo, hi))
 				.multiunzip();
 			eval_op(
 				&[a, b, lo, hi],

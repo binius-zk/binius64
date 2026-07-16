@@ -223,9 +223,9 @@ fn fill_keccak(
 
 /// Builds a circuit for one 64×64→128-bit integer multiplication and force-commits its output.
 ///
-/// Unlike the hash primitives (which are purely bitwise / carry-adder based), this circuit has MUL
+/// Unlike the hash primitives (which are purely bitwise / carry-adder based), this circuit has IMUL
 /// constraints, so its M4 proof commits the extra IntMul logup* pushforward oracle — exercising the
-/// MUL branch of `IOPVerifier::oracle_specs`.
+/// IMUL branch of `IOPVerifier::oracle_specs`.
 fn build_imul_circuit() -> (Circuit, [Wire; 2]) {
 	let builder = CircuitBuilder::new();
 
@@ -268,7 +268,7 @@ fn prove_keccak_permutation() {
 
 // Proves one 64×64→128-bit multiplication through M4 and verifies it.
 //
-// This is the only primitive here with MUL constraints, so it covers the IntMul pushforward oracle
+// This is the only primitive here with IMUL constraints, so it covers the IntMul pushforward oracle
 // spec that `IOPVerifier::oracle_specs` derives — a wrong spec list would make the shared
 // prover/verifier compiler disagree and fail the trace opening.
 #[test]

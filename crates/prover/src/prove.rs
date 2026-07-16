@@ -4,7 +4,7 @@
 use std::marker::PhantomData;
 
 use binius_core::{
-	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueVec},
+	constraint_system::{AndConstraint, ConstraintSystem, ImulConstraint, ValueVec},
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, BinaryField, Divisible, Field, PackedField};
@@ -115,18 +115,18 @@ impl IOPProver {
 
 		// [phase] IntMul Reduction - multiplication constraint reduction
 		//
-		// Skipped entirely (no transcript messages) when the constraint system has no MUL
+		// Skipped entirely (no transcript messages) when the constraint system has no IMUL
 		// constraints. The verifier applies the identical guard, so the transcript stays in sync;
 		// the zero `OperatorData` synthesized below then contributes nothing to the shift
 		// reduction.
-		let intmul_output = if cs.n_mul_constraints() > 0 {
+		let intmul_output = if cs.n_imul_constraints() > 0 {
 			let intmul_guard = tracing::info_span!(
 				"[phase] IntMul check",
-				n_constraints = cs.mul_constraints.len()
+				n_constraints = cs.imul_constraints.len()
 			)
 			.entered();
 			let mul_witness = tracing::debug_span!("Assemble columns")
-				.in_scope(|| build_intmul_witness(&cs.mul_constraints, &witness));
+				.in_scope(|| build_intmul_witness(&cs.imul_constraints, &witness));
 
 			let intmul_output = prove_intmul_reduction::<_, P, _>(mul_witness, &mut *channel)?;
 			drop(intmul_guard);
@@ -161,7 +161,7 @@ impl IOPProver {
 		// Build `OperatorData` for IntMul using the same `r_zhat_prime`
 		// challenge as in BitAnd. Sharing this univariate challenge
 		// improves ShiftReduction perf. When IntMul was skipped, synthesize a zero claim (four
-		// zero evals at an empty point): the shift reduction iterates the (empty) MUL constraints,
+		// zero evals at an empty point): the shift reduction iterates the (empty) IMUL constraints,
 		// so this claim contributes zero to its batched evaluation.
 		//
 		// Build the oblong domain subspace once and pass it into the shift reduction, mirroring
@@ -327,7 +327,7 @@ where
 			"Prove",
 			n_hidden_words = cs.value_vec_layout.n_hidden_words,
 			n_bitand = cs.and_constraints.len(),
-			n_intmul = cs.mul_constraints.len(),
+			n_intmul = cs.imul_constraints.len(),
 		)
 		.entered();
 
@@ -498,8 +498,11 @@ fn build_bitand_witness(and_constraints: &[AndConstraint], witness: &ValueVec) -
 	AndCheckWitness { a, b, c }
 }
 
-fn build_intmul_witness(mul_constraints: &[MulConstraint], witness: &ValueVec) -> MulCheckWitness {
-	let n_constraints = mul_constraints.len();
+fn build_intmul_witness(
+	imul_constraints: &[ImulConstraint],
+	witness: &ValueVec,
+) -> MulCheckWitness {
+	let n_constraints = imul_constraints.len();
 
 	let mut a = Vec::with_capacity(n_constraints);
 	let mut b = Vec::with_capacity(n_constraints);
@@ -507,7 +510,7 @@ fn build_intmul_witness(mul_constraints: &[MulConstraint], witness: &ValueVec) -
 	let mut hi = Vec::with_capacity(n_constraints);
 
 	(
-		mul_constraints,
+		imul_constraints,
 		a.spare_capacity_mut(),
 		b.spare_capacity_mut(),
 		lo.spare_capacity_mut(),

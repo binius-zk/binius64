@@ -14,7 +14,7 @@ use crate::compiler::{
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ConstraintRef {
 	And { index: usize },
-	Mul { index: usize },
+	Imul { index: usize },
 	Linear { index: usize },
 }
 
@@ -24,7 +24,7 @@ pub enum NodeData {
 	/// Root node - represents a use site in a non-linear constraint.
 	///
 	/// These nodes are the "sinks" of the graph where linear expressions flow into
-	/// non-linear constraints (AND/MUL). They have no outgoing edges and represent
+	/// non-linear constraints (AND/IMUL). They have no outgoing edges and represent
 	/// the termination points for inlining decisions.
 	///
 	/// # Example
@@ -64,7 +64,7 @@ pub enum NodeData {
 	/// # Example
 	/// ```text
 	/// x = input()     // Creates an Opaque node for x
-	/// y = a * b       // Creates Opaque nodes for y (MUL output)
+	/// y = a * b       // Creates Opaque nodes for y (IMUL output)
 	/// ```
 	Opaque,
 }
@@ -99,7 +99,7 @@ pub struct EdgeData {
 /// Linear Expression Graph (LeGraph) - the core data structure for gate fusion optimization.
 ///
 /// This graph represents the data flow relationships between linear constraints (XOR and shift
-/// operations) and their uses in non-linear constraints (AND/MUL operations). The graph is used
+/// operations) and their uses in non-linear constraints (AND/IMUL operations). The graph is used
 /// to determine which linear constraints can be inlined into their consumers to reduce the total
 /// number of AND constraints in the final circuit.
 ///
@@ -110,7 +110,7 @@ pub struct EdgeData {
 /// 1. **Linear Definition Nodes** (`LinDef`): Represent linear constraints that define a wire as an
 ///    XOR combination of shifted values. These are candidates for inlining.
 ///
-/// 2. **Root Nodes**: Represent uses of linear definitions in non-linear constraints (AND/MUL).
+/// 2. **Root Nodes**: Represent uses of linear definitions in non-linear constraints (AND/IMUL).
 ///    These are the sinks of the graph where inlining decisions terminate.
 ///
 /// 3. **Opaque Nodes**: Represent wires that are not defined by linear constraints (e.g., inputs or
@@ -298,11 +298,11 @@ fn build_use_def(cb: &ConstraintBuilder, leg: &mut LeGraph, _stat: &mut Stat) {
 		harvest_nonlin_uses(&and.c, leg, ConstraintRef::And { index });
 	}
 
-	for (index, mul) in cb.mul_constraints.iter().enumerate() {
-		harvest_nonlin_uses(&mul.a, leg, ConstraintRef::Mul { index });
-		harvest_nonlin_uses(&mul.b, leg, ConstraintRef::Mul { index });
-		harvest_nonlin_uses(&mul.hi, leg, ConstraintRef::Mul { index });
-		harvest_nonlin_uses(&mul.lo, leg, ConstraintRef::Mul { index });
+	for (index, mul) in cb.imul_constraints.iter().enumerate() {
+		harvest_nonlin_uses(&mul.a, leg, ConstraintRef::Imul { index });
+		harvest_nonlin_uses(&mul.b, leg, ConstraintRef::Imul { index });
+		harvest_nonlin_uses(&mul.hi, leg, ConstraintRef::Imul { index });
+		harvest_nonlin_uses(&mul.lo, leg, ConstraintRef::Imul { index });
 	}
 }
 

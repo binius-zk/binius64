@@ -3,7 +3,7 @@
 
 use binius_circuits::{fixed_byte_vec::ByteVec, sha256::sha256_varlen};
 use binius_core::{
-	constraint_system::{AndConstraint, ConstraintSystem, MulConstraint, ValueVec},
+	constraint_system::{AndConstraint, ConstraintSystem, ImulConstraint, ValueVec},
 	verify::verify_constraints,
 	word::Word,
 };
@@ -150,8 +150,8 @@ pub fn compute_bitand_images(constraints: &[AndConstraint], witness: &ValueVec) 
 	[a_image, b_image, c_image]
 }
 
-// Compute the image of the witness applied to the MUL constraints
-fn compute_intmul_images(constraints: &[MulConstraint], witness: &ValueVec) -> [Vec<Word>; 4] {
+// Compute the image of the witness applied to the IMUL constraints
+fn compute_intmul_images(constraints: &[ImulConstraint], witness: &ValueVec) -> [Vec<Word>; 4] {
 	let (a_image, b_image, hi_image, lo_image) = constraints
 		.iter()
 		.map(|constraint| {
@@ -165,7 +165,7 @@ fn compute_intmul_images(constraints: &[MulConstraint], witness: &ValueVec) -> [
 	[a_image, b_image, hi_image, lo_image]
 }
 
-// Evaluate the image of the witness applied to the AND or MUL constraints
+// Evaluate the image of the witness applied to the AND or IMUL constraints
 // Univariate point is `r_zhat_prime`, multilinear point tensor-expanded is `r_x_prime_tensor`
 fn evaluate_image<F: BinaryField>(
 	subspace: &BinarySubspace<F>,
@@ -225,14 +225,15 @@ fn test_shift_prove_and_verify() {
 				.map(F::new)
 				.collect::<Vec<_>>()
 		};
-		// A constraint system may have zero MUL constraints (e.g. a pure-AND circuit like SHA-256).
-		// The IntMul operator is then empty — an empty challenge point and a zero claim — mirroring
-		// the prover/verifier skip of the IntMul reduction in `binius_prover` / `binius_verifier`.
-		let intmul_is_empty = cs.mul_constraints.is_empty();
+		// A constraint system may have zero IMUL constraints (e.g. a pure-AND circuit like
+		// SHA-256). The IntMul operator is then empty — an empty challenge point and a zero claim
+		// — mirroring the prover/verifier skip of the IntMul reduction in `binius_prover` /
+		// `binius_verifier`.
+		let intmul_is_empty = cs.imul_constraints.is_empty();
 		let r_x_prime_intmul = if intmul_is_empty {
 			Vec::new()
 		} else {
-			let log_intmul_constraint_count = strict_log_2(cs.mul_constraints.len()).unwrap();
+			let log_intmul_constraint_count = strict_log_2(cs.imul_constraints.len()).unwrap();
 			(0..log_intmul_constraint_count as u128)
 				.map(F::new)
 				.collect::<Vec<_>>()
@@ -256,7 +257,7 @@ fn test_shift_prove_and_verify() {
 		let intmul_evals: [F; 4] = if intmul_is_empty {
 			[F::ZERO; 4]
 		} else {
-			compute_intmul_images(&cs.mul_constraints, &value_vec).map(|image| {
+			compute_intmul_images(&cs.imul_constraints, &value_vec).map(|image| {
 				evaluate_image(
 					&subspace,
 					&image,

@@ -44,10 +44,10 @@ fn stringify_constraint_system(cs: &ConstraintSystem) -> String {
 		}
 	}
 
-	// MUL constraints
-	if !cs.mul_constraints.is_empty() {
-		for (i, constraint) in cs.mul_constraints.iter().enumerate() {
-			write!(output, "MUL[{}]: (", i).unwrap();
+	// IMUL constraints
+	if !cs.imul_constraints.is_empty() {
+		for (i, constraint) in cs.imul_constraints.iter().enumerate() {
+			write!(output, "IMUL[{}]: (", i).unwrap();
 			format_operand(&mut output, &constraint.a, cs);
 			write!(output, ") * (").unwrap();
 			format_operand(&mut output, &constraint.b, cs);
@@ -135,12 +135,12 @@ fn compile(circuit_builder: CircuitBuilder) -> ConstraintSystem {
 	circuit.constraint_system().clone()
 }
 
-// =============== MUL tests (placed next to AND tests) ===============
+// =============== IMUL tests (placed next to AND tests) ===============
 
 #[test]
 fn test_mul_inlining_duplicate_linear_in_mul() {
 	// y = x ^ c; then mul(y, y) = (hi, lo)
-	// Expect: y is fully inlined into both a and b operands of MUL (duplicated terms).
+	// Expect: y is fully inlined into both a and b operands of IMUL (duplicated terms).
 	let b = mk_circuit_builder();
 
 	// Inputs
@@ -152,12 +152,12 @@ fn test_mul_inlining_duplicate_linear_in_mul() {
 
 	let cs = compile(b);
 
-	insta::assert_snapshot!(stringify_constraint_system(&cs), @"MUL[0]: (v[2] ⊕ v[3]) * (v[2] ⊕ v[3]) = (HI: v[4], LO: v[5])");
+	insta::assert_snapshot!(stringify_constraint_system(&cs), @"IMUL[0]: (v[2] ⊕ v[3]) * (v[2] ⊕ v[3]) = (HI: v[4], LO: v[5])");
 }
 
 #[test]
 fn test_mul_and_and_shared_linear_uses() {
-	// y = x ^ c; AND uses y and MUL uses y as one operand
+	// y = x ^ c; AND uses y and IMUL uses y as one operand
 	// Expect: y gets inlined into both constraints appropriately
 	let b = mk_circuit_builder();
 
@@ -169,20 +169,20 @@ fn test_mul_and_and_shared_linear_uses() {
 	let w = b.add_witness();
 	let _and_out = b.band(y, w);
 
-	// Use y in MUL
+	// Use y in IMUL
 	let z = b.add_witness();
 	let (_hi, _lo) = b.imul(y, z);
 
 	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @r"
 	AND[0]: (v[2] ⊕ v[3]) ∧ (v[4]) = (v[6])
-	MUL[0]: (v[2] ⊕ v[3]) * (v[5]) = (HI: v[7], LO: v[8])
+	IMUL[0]: (v[2] ⊕ v[3]) * (v[5]) = (HI: v[7], LO: v[8])
 	");
 }
 
 #[test]
 fn test_mul_inlining_into_hi_lo() {
-	// hi and lo are linear defs to be inlined into MUL
+	// hi and lo are linear defs to be inlined into IMUL
 	let b = mk_circuit_builder();
 
 	let a = b.add_witness();
@@ -200,13 +200,13 @@ fn test_mul_inlining_into_hi_lo() {
 	// Now enforce hi_src and lo_src via XOR-to-all-1 & = dst by using them in subsequent
 	// constraints Connect hi_src and lo_src as replacements for the outputs of imul
 	// We cannot directly modify outputs, but using them later in ANDs will keep them alive
-	// The important check is that MUL constraint references should inline hi_src and lo_src
+	// The important check is that IMUL constraint references should inline hi_src and lo_src
 
 	let cs = compile(b);
 	insta::assert_snapshot!(stringify_constraint_system(&cs), @r"
 	AND[0]: (v[2] ⊕ v[3]) ∧ (all-1) = (v[8])
 	AND[1]: (v[4] ⊕ v[5]) ∧ (all-1) = (v[9])
-	MUL[0]: (v[6]) * (v[7]) = (HI: v[10], LO: v[11])
+	IMUL[0]: (v[6]) * (v[7]) = (HI: v[10], LO: v[11])
 	");
 }
 
@@ -230,7 +230,7 @@ fn test_mul_inlining_distinct_linears() {
 	let (_hi, _lo) = b.imul(y1, y2);
 
 	let cs = compile(b);
-	insta::assert_snapshot!(stringify_constraint_system(&cs), @"MUL[0]: (v[2] ⊕ v[3]) * (v[4]≪3 ⊕ v[5]) = (HI: v[6], LO: v[7])");
+	insta::assert_snapshot!(stringify_constraint_system(&cs), @"IMUL[0]: (v[2] ⊕ v[3]) * (v[4]≪3 ⊕ v[5]) = (HI: v[6], LO: v[7])");
 }
 
 #[test]

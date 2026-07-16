@@ -8,10 +8,10 @@
 //! Our AND constraints are powerful construct construct. They can handle a single AND of two XOR
 //! combinations where each of the values could be shifted.
 //!
-//! `ConstraintBuilder` which this pass operates consists of AND, MUL and linear constraints. Linear
-//! constraints are basically are constraints that define a single wire using a XOR combination
-//! and/or shifts. Since our system does not suppose standalone linear combinations they will have
-//! to be promoted to AND constraints.
+//! `ConstraintBuilder` which this pass operates consists of AND, IMUL and linear constraints.
+//! Linear constraints are basically are constraints that define a single wire using a XOR
+//! combination and/or shifts. Since our system does not suppose standalone linear combinations they
+//! will have to be promoted to AND constraints.
 //!
 //! BUT we have a chance of avoiding that if we manage to inline that wire into every consumer
 //! constraint which means we don't have to commit that value and thus we don't need an AND
@@ -38,7 +38,7 @@ pub fn run_pass(cb: &mut ConstraintBuilder, pinned_wires: &EntitySet<Wire>, all_
 	let mut leg = LeGraph::new(cb, &mut stat);
 	commit_set::run_decide_commit_set(&mut leg, &mut stat);
 	// Pin force-committed wires that are linear definitions so their values survive as committed
-	// AND constraints. Pinned wires that are not linear definitions (e.g. AND or MUL outputs) are
+	// AND constraints. Pinned wires that are not linear definitions (e.g. AND or IMUL outputs) are
 	// already committed by their own constraints, so they must be excluded here: `patch::build`
 	// treats every wire in the commit set as a linear definition and would otherwise panic.
 	let pinned_lin_defs = pinned_wires
