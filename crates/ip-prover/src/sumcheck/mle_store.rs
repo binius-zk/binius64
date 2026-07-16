@@ -19,12 +19,16 @@
 //! over the columns is a plain read. A deferred-fold variant that fuses the fold into the next
 //! round's read pass can replace the internals without changing this interface.
 
+use std::iter;
+
 use binius_field::{Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice,
+	line::extrapolate_line_packed,
 	multilinear::fold::{fold_highest_var, fold_highest_var_inplace},
 };
 use binius_utils::rayon;
+use itertools::izip;
 
 use super::gruen32::Gruen32;
 
@@ -347,6 +351,322 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 		};
 		map_reduce_helper(chunk, chunk_vars, &map, &reduce)
 	}
+
+	/// Folds the store with `challenge` and, in the same pass, maps and reduces the resulting
+	/// halved hypercube — equivalent to [`Self::fold`] followed by [`Self::map_reduce`], but
+	/// folding each column and eq expansion into the map's read of it so they are touched once
+	/// instead of twice.
+	///
+	/// `chunk_vars` is capped at `n_vars() - 2` (the folded store's leaf size). For a chunk size
+	/// below `P::LOG_WIDTH` the columns are already cache-resident and the fused pass cannot split
+	/// sub-packing-width leaves, so this falls back to a plain [`Self::fold`] then
+	/// [`Self::map_reduce`].
+	///
+	/// ## Preconditions
+	///
+	/// * `n_vars()` must be greater than 1.
+	pub fn map_reduce_with_fold<T: Send>(
+		&mut self,
+		chunk_vars: usize,
+		challenge: F,
+		map: impl (for<'c> Fn(EvaluationChunk<'c, P>) -> T) + Sync,
+		reduce: impl (Fn(T, T) -> T) + Sync,
+	) -> T {
+		assert!(self.n_vars > 1);
+
+		// Decrement n_vars to reflect the fold.
+		let n_vars = self.n_vars - 1;
+		let chunk_vars = chunk_vars.min(n_vars - 1);
+
+		// Small rounds are cache-resident, so fusing buys nothing, and the raw-slice split cannot
+		// express a sub-packing-width leaf; fold and map-reduce in two clean passes instead.
+		if chunk_vars < P::LOG_WIDTH {
+			self.fold(challenge);
+			return self.map_reduce(chunk_vars, map, reduce);
+		}
+
+		let challenge_broadcast = P::broadcast(challenge);
+
+		// Fresh destination buffers for the borrowed columns, held outside the column borrow so
+		// they can be moved into the store once the fold has written them.
+		let mut dsts = self
+			.columns
+			.iter()
+			.map(|column| match column {
+				Column::Borrowed(_) => Some(FieldBuffer::zeros(n_vars)),
+				_ => None,
+			})
+			.collect::<Vec<_>>();
+
+		// Build one deferred-fold producer per logical column: its low and high halves paired on
+		// the round's highest variable, folding in place (owned/split-half) or into a fresh `dst`
+		// (borrowed).
+		let mut cols = Vec::with_capacity(self.n_cols);
+		for (column, dst) in iter::zip(&mut self.columns, &mut dsts) {
+			match column {
+				Column::Borrowed(src) => {
+					let dst = dst
+						.as_mut()
+						.expect("borrowed columns get a destination buffer")
+						.as_mut();
+					let src = (src as &FieldSlice<'_, P>).as_ref();
+					debug_assert_eq!(src.len(), 1 << (n_vars + 1 - P::LOG_WIDTH));
+
+					let (seg_0, seg_1) = src.split_at(1 << (n_vars - P::LOG_WIDTH));
+					cols.push(PreFoldColumnChunk::OutOfPlace { dst, seg_0, seg_1 });
+				}
+				Column::Owned(buffer) => {
+					let seg = buffer.as_mut();
+					debug_assert_eq!(seg.len(), 1 << (n_vars + 1 - P::LOG_WIDTH));
+
+					let (seg_0, seg_1) = seg.split_at_mut(1 << (n_vars - P::LOG_WIDTH));
+					cols.push(PreFoldColumnChunk::InPlace { seg_0, seg_1 });
+				}
+				Column::SplitHalf(buffer) => {
+					let buffer_log_len = buffer.log_len();
+					let data = buffer.as_mut();
+					let (lo_half, hi_half) =
+						data.split_at_mut(1 << (buffer_log_len - 1 - P::LOG_WIDTH));
+
+					let seg_lo = &mut lo_half[..1 << (n_vars + 1 - P::LOG_WIDTH)];
+					let (seg_lo_0, seg_lo_1) = seg_lo.split_at_mut(1 << (n_vars - P::LOG_WIDTH));
+					cols.push(PreFoldColumnChunk::InPlace {
+						seg_0: seg_lo_0,
+						seg_1: seg_lo_1,
+					});
+
+					let seg_hi = &mut hi_half[..1 << (n_vars + 1 - P::LOG_WIDTH)];
+					let (seg_hi_0, seg_hi_1) = seg_hi.split_at_mut(1 << (n_vars - P::LOG_WIDTH));
+					cols.push(PreFoldColumnChunk::InPlace {
+						seg_0: seg_hi_0,
+						seg_1: seg_hi_1,
+					});
+				}
+			}
+		}
+
+		// Split each producer into the `[low, high]` pair whose outputs are the two halves of the
+		// folded column.
+		let cols = cols.into_iter().map(|col| col.split_half()).collect();
+
+		// Carry each eq expansion as an in-place producer over its low and high halves. The
+		// recursion contracts it into its front half via `fold_eq`; `truncate_one_var` below then
+		// advances each tracker's bookkeeping over the folded-out variable.
+		let eqs = self
+			.eq_trackers
+			.iter_mut()
+			.map(|tracker| {
+				let data = tracker.eq_expansion_mut().as_mut();
+				debug_assert_eq!(data.len(), 1 << (n_vars - P::LOG_WIDTH));
+
+				let (seg_0, seg_1) = data.split_at_mut(1 << (n_vars - 1 - P::LOG_WIDTH));
+				PreFoldColumnChunk::InPlace { seg_0, seg_1 }
+			})
+			.collect::<Vec<_>>();
+
+		let chunk = PreFoldEvaluationChunk {
+			n_vars: n_vars - 1,
+			challenge_broadcast: &challenge_broadcast,
+			cols,
+			eqs,
+		};
+		let result = map_reduce_with_fold_helper(chunk, chunk_vars, &map, &reduce);
+
+		// The fold wrote each column's folded data into the front of its buffer (or into `dst`);
+		// persist it so the store matches a plain `fold`.
+		for (column, dst) in iter::zip(&mut self.columns, &mut dsts) {
+			match column {
+				Column::Borrowed(_) => {
+					*column = Column::Owned(
+						dst.take()
+							.expect("borrowed columns get a destination buffer"),
+					)
+				}
+				Column::Owned(buffer) => buffer.truncate(n_vars),
+				Column::SplitHalf(_) => {}
+			}
+		}
+		for eq_tracker in &mut self.eq_trackers {
+			eq_tracker.truncate_one_var(challenge);
+		}
+		self.n_vars = n_vars;
+
+		result
+	}
+}
+
+/// The deferred fold of one column half or one eq expansion.
+///
+/// A column half folds with [`Self::fold`], interpolating `seg_0` and `seg_1` on the round's
+/// highest variable — in place over `seg_0`, or into a fresh `dst` for a borrowed column. An eq
+/// expansion folds with [`Self::fold_eq`], which contracts (sums) the halves instead of
+/// interpolating them.
+enum PreFoldColumnChunk<'a, P: PackedField> {
+	InPlace {
+		seg_0: &'a mut [P],
+		seg_1: &'a [P],
+	},
+	OutOfPlace {
+		dst: &'a mut [P],
+		seg_0: &'a [P],
+		seg_1: &'a [P],
+	},
+}
+
+impl<'a, P: PackedField> PreFoldColumnChunk<'a, P> {
+	/// Bisects the producer's output on its highest variable, splitting each segment in half.
+	const fn split_half(self) -> [Self; 2] {
+		match self {
+			Self::InPlace { seg_0, seg_1 } => {
+				let (seg_0_lo, seg_0_hi) = seg_0.split_at_mut(seg_0.len() / 2);
+				let (seg_1_lo, seg_1_hi) = seg_1.split_at(seg_1.len() / 2);
+				[
+					Self::InPlace {
+						seg_0: seg_0_lo,
+						seg_1: seg_1_lo,
+					},
+					Self::InPlace {
+						seg_0: seg_0_hi,
+						seg_1: seg_1_hi,
+					},
+				]
+			}
+			Self::OutOfPlace { dst, seg_0, seg_1 } => {
+				let (dst_lo, dst_hi) = dst.split_at_mut(dst.len() / 2);
+				let (seg_0_lo, seg_0_hi) = seg_0.split_at(seg_0.len() / 2);
+				let (seg_1_lo, seg_1_hi) = seg_1.split_at(seg_1.len() / 2);
+				[
+					Self::OutOfPlace {
+						dst: dst_lo,
+						seg_0: seg_0_lo,
+						seg_1: seg_1_lo,
+					},
+					Self::OutOfPlace {
+						dst: dst_hi,
+						seg_0: seg_0_hi,
+						seg_1: seg_1_hi,
+					},
+				]
+			}
+		}
+	}
+
+	/// Folds the segments and returns the folded output slice.
+	fn fold(self, challenge_broadcast: &P) -> &'a [P] {
+		match self {
+			Self::InPlace { seg_0, seg_1 } => {
+				for (out, &hi) in iter::zip(&mut *seg_0, seg_1) {
+					*out = extrapolate_line_packed(*out, hi, *challenge_broadcast);
+				}
+				seg_0
+			}
+			Self::OutOfPlace { dst, seg_0, seg_1 } => {
+				for (out, &lo, &hi) in izip!(&mut *dst, seg_0, seg_1) {
+					*out = extrapolate_line_packed(lo, hi, *challenge_broadcast);
+				}
+				dst
+			}
+		}
+	}
+
+	/// Contracts the eq expansion by summing its halves, and returns the folded output slice.
+	///
+	/// Eq-indicator folding sums the two halves (the [Gruen24] technique's part (3)), rather than
+	/// interpolating them as [`Self::fold`] does for columns.
+	///
+	/// [Gruen24]: <https://eprint.iacr.org/2024/108>
+	fn fold_eq(self) -> &'a [P] {
+		match self {
+			Self::InPlace { seg_0, seg_1 } => {
+				for (out, &hi) in iter::zip(&mut *seg_0, seg_1) {
+					*out += hi;
+				}
+				seg_0
+			}
+			Self::OutOfPlace { dst, seg_0, seg_1 } => {
+				for (out, &lo, &hi) in izip!(&mut *dst, seg_0, seg_1) {
+					*out = lo + hi;
+				}
+				dst
+			}
+		}
+	}
+}
+
+/// A range of the halved hypercube whose values have not yet been folded, the deferred-fold
+/// counterpart of [`EvaluationChunk`]. Each column is a `[low, high]` pair of fold producers and
+/// each eq expansion is a single producer; [`Self::fold`] runs them all to produce an
+/// [`EvaluationChunk`] at a leaf.
+struct PreFoldEvaluationChunk<'a, P: PackedField> {
+	n_vars: usize,
+	challenge_broadcast: &'a P,
+	cols: Vec<[PreFoldColumnChunk<'a, P>; 2]>,
+	eqs: Vec<PreFoldColumnChunk<'a, P>>,
+}
+
+impl<'a, P: PackedField> PreFoldEvaluationChunk<'a, P> {
+	/// Bisects the range on its highest remaining variable, matching
+	/// [`EvaluationChunk::split_half`].
+	fn split_half(self) -> [Self; 2] {
+		let Self {
+			n_vars,
+			challenge_broadcast,
+			cols,
+			eqs,
+		} = self;
+		let n_vars = n_vars - 1;
+		let (cols_0, cols_1) = cols
+			.into_iter()
+			.map(|[lo, hi]| {
+				let [lo_0, lo_1] = lo.split_half();
+				let [hi_0, hi_1] = hi.split_half();
+				([lo_0, hi_0], [lo_1, hi_1])
+			})
+			.unzip();
+		let (eqs_0, eqs_1) = eqs
+			.into_iter()
+			.map(|eq| {
+				let [eq_0, eq_1] = eq.split_half();
+				(eq_0, eq_1)
+			})
+			.unzip();
+		[
+			Self {
+				n_vars,
+				challenge_broadcast,
+				cols: cols_0,
+				eqs: eqs_0,
+			},
+			Self {
+				n_vars,
+				challenge_broadcast,
+				cols: cols_1,
+				eqs: eqs_1,
+			},
+		]
+	}
+
+	/// Folds every column into its low and high halves, producing the leaf [`EvaluationChunk`].
+	fn fold(self) -> EvaluationChunk<'a, P> {
+		let Self {
+			n_vars,
+			challenge_broadcast,
+			cols,
+			eqs,
+		} = self;
+		let cols = cols
+			.into_iter()
+			.map(|[lo, hi]| ColumnChunk {
+				lo: FieldSlice::from_slice(n_vars, lo.fold(challenge_broadcast)),
+				hi: FieldSlice::from_slice(n_vars, hi.fold(challenge_broadcast)),
+			})
+			.collect();
+		let eqs = eqs
+			.into_iter()
+			.map(|eq| FieldSlice::from_slice(n_vars, eq.fold_eq()))
+			.collect();
+		EvaluationChunk { n_vars, cols, eqs }
+	}
 }
 
 /// One column's low and high halves within an [`EvaluationChunk`].
@@ -438,10 +758,29 @@ fn map_reduce_helper<P: PackedField, T: Send>(
 	reduce(ret_0, ret_1)
 }
 
+fn map_reduce_with_fold_helper<P: PackedField, T: Send>(
+	chunk: PreFoldEvaluationChunk<'_, P>,
+	sub_vars: usize,
+	map: &(impl (for<'a> Fn(EvaluationChunk<'a, P>) -> T) + Sync),
+	reduce: &(impl (Fn(T, T) -> T) + Sync),
+) -> T {
+	if sub_vars == chunk.n_vars {
+		return map(chunk.fold());
+	}
+
+	let [chunk_0, chunk_1] = chunk.split_half();
+	let (ret_0, ret_1) = rayon::join(
+		move || map_reduce_with_fold_helper(chunk_0, sub_vars, map, reduce),
+		move || map_reduce_with_fold_helper(chunk_1, sub_vars, map, reduce),
+	);
+	reduce(ret_0, ret_1)
+}
+
 #[cfg(test)]
 mod tests {
 	use binius_field::{Field, FieldOps, PackedField};
 	use binius_math::test_utils::{Packed128b, random_field_buffer, random_scalars};
+	use itertools::Itertools;
 	use rand::{SeedableRng, rngs::StdRng};
 
 	use super::*;
@@ -510,6 +849,111 @@ mod tests {
 				|lhs, rhs| lhs + rhs,
 			);
 			assert_eq!(got, expected, "mismatch at chunk_vars = {chunk_vars}");
+		}
+	}
+
+	#[test]
+	fn map_reduce_with_fold_matches_fold_then_map_reduce() {
+		type P = Packed128b;
+		type F = <P as FieldOps>::Scalar;
+
+		let n_vars = 8;
+		let mut rng = StdRng::seed_from_u64(1);
+
+		// Source data. Borrowed columns are read but never mutated by either path, so both stores
+		// can share them; owned and split-half buffers are folded in place, so each store clones
+		// its own.
+		let borrowed = [
+			random_field_buffer::<P>(&mut rng, n_vars),
+			random_field_buffer::<P>(&mut rng, n_vars),
+		];
+		let owned = random_field_buffer::<P>(&mut rng, n_vars);
+		let split = random_field_buffer::<P>(&mut rng, n_vars + 1);
+		let eq_points = [
+			random_scalars::<F>(&mut rng, n_vars),
+			random_scalars::<F>(&mut rng, n_vars),
+		];
+		let challenge = random_scalars::<F>(&mut rng, 1)[0];
+
+		let build = || {
+			let mut store = MleStore::<P>::new(n_vars);
+			let mut col_ids = borrowed
+				.iter()
+				.map(|col| store.push(col.to_ref()))
+				.collect::<Vec<_>>();
+			col_ids.push(store.push_owned(owned.clone()));
+			col_ids.extend(store.push_split_half(split.clone()));
+			let eq_ids = eq_points
+				.iter()
+				.map(|point| store.register_eq_tracker(point))
+				.collect::<Vec<_>>();
+			(store, col_ids, eq_ids)
+		};
+
+		// The store's folded state: remaining variable count plus every column and eq scalar.
+		let scalars =
+			|slice: &FieldSlice<'_, P>| (0..slice.len()).map(|i| slice.get(i)).collect_vec();
+		let state = |store: &MleStore<'_, P>| {
+			let cols = store.column_slices().iter().flat_map(scalars).collect_vec();
+			let eqs = store
+				.eq_expansions()
+				.iter()
+				.flat_map(|eq| scalars(&eq.to_ref()))
+				.collect_vec();
+			(store.n_vars(), cols, eqs)
+		};
+
+		// chunk_vars below P::LOG_WIDTH takes the fallback path; at or above it takes the fused
+		// path.
+		for chunk_vars in 0..n_vars - 1 {
+			let (mut fold_first, col_ids, eq_ids) = build();
+			fold_first.fold(challenge);
+			let expected = fold_first.map_reduce(
+				chunk_vars,
+				|chunk| chunk_aggregate(&chunk, &col_ids, &eq_ids),
+				|lhs, rhs| lhs + rhs,
+			);
+
+			let (mut fused, col_ids, eq_ids) = build();
+			let got = fused.map_reduce_with_fold(
+				chunk_vars,
+				challenge,
+				|chunk| chunk_aggregate(&chunk, &col_ids, &eq_ids),
+				|lhs, rhs| lhs + rhs,
+			);
+
+			assert_eq!(got, expected, "result mismatch at chunk_vars = {chunk_vars}");
+			assert_eq!(
+				state(&fold_first),
+				state(&fused),
+				"folded-state mismatch at chunk_vars = {chunk_vars}"
+			);
+		}
+
+		// Fold both stores round by round in lockstep, exercising split-half columns once the store
+		// has shrunk below the parent buffer's length.
+		let (mut fold_first, fold_col_ids, fold_eq_ids) = build();
+		let (mut fused, fused_col_ids, fused_eq_ids) = build();
+		let challenges = random_scalars::<F>(&mut rng, n_vars);
+		for (round, &challenge) in challenges.iter().take(n_vars - 1).enumerate() {
+			let n = fused.n_vars();
+			let chunk_vars = (n - 2).min(3);
+
+			fold_first.fold(challenge);
+			let expected = fold_first.map_reduce(
+				chunk_vars,
+				|chunk| chunk_aggregate(&chunk, &fold_col_ids, &fold_eq_ids),
+				|lhs, rhs| lhs + rhs,
+			);
+			let got = fused.map_reduce_with_fold(
+				chunk_vars,
+				challenge,
+				|chunk| chunk_aggregate(&chunk, &fused_col_ids, &fused_eq_ids),
+				|lhs, rhs| lhs + rhs,
+			);
+
+			assert_eq!(got, expected, "result mismatch in round {round}");
+			assert_eq!(state(&fold_first), state(&fused), "folded-state mismatch in round {round}");
 		}
 	}
 }
