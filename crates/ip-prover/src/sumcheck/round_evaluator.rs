@@ -17,7 +17,6 @@ use auto_impl::auto_impl;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::FieldBuffer;
-use binius_utils::rayon::prelude::*;
 
 use super::{
 	MleToSumCheckEvaluator,
@@ -192,24 +191,24 @@ where
 
 		// The store prepares one `EvaluationChunk` per chunk of the halved hypercube — the split
 		// column halves and eq-indicator expansions each evaluator reads.
-		let ctx = self.store.execute_context();
 		let evaluators = &self.evaluators;
-		let new_accum = || -> Vec<<P as WideMul>::Output> { vec![Default::default(); total_slots] };
-		let accum = ctx
-			.par_chunks(chunk_vars)
-			.fold(new_accum, |mut accum, chunk| {
+		let accum = self.store.map_reduce(
+			chunk_vars,
+			|chunk| {
+				let mut accum = vec![Default::default(); total_slots];
 				for (evaluator, window) in iter::zip(evaluators, offsets.windows(2)) {
 					evaluator.accumulate(&chunk, &mut accum[window[0]..window[1]]);
 				}
 				accum
-			})
-			.reduce(new_accum, |mut lhs, rhs| {
+			},
+			|mut lhs, rhs| {
 				// The only merge: sum the workers' slices slot-wise, generic over every evaluator.
 				for (dst, src) in iter::zip(&mut lhs, rhs) {
 					*dst += src;
 				}
 				lhs
-			});
+			},
+		);
 
 		// The store is read (immutably) for the round's point coordinates while the evaluators are
 		// interpolated (mutably); they are disjoint fields, so borrow the store separately.

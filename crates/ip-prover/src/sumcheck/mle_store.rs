@@ -24,7 +24,7 @@ use binius_math::{
 	FieldBuffer, FieldSlice,
 	multilinear::fold::{fold_highest_var, fold_highest_var_inplace},
 };
-use binius_utils::rayon::prelude::*;
+use binius_utils::rayon;
 
 use super::gruen32::Gruen32;
 
@@ -308,37 +308,67 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 			.collect()
 	}
 
-	/// Prepares one round's accumulation pass over the columns and eq trackers.
+	/// Maps every chunk of the halved hypercube through `map` and combines the results with
+	/// `reduce`, driven by a recursive [`rayon::join`] tree.
 	///
-	/// The returned [`ExecuteContext`] borrows the store's expanded column slices and eq-indicator
-	/// expansions and hands each parallel chunk to the round evaluators (see
-	/// [`ExecuteContext::par_chunks`]).
-	pub fn execute_context(&self) -> ExecuteContext<'_, P> {
-		ExecuteContext {
-			n_vars: self.n_vars,
-			cols: self.column_slices(),
-			eqs: self.eq_expansions(),
-		}
+	/// The store's columns are expanded once — a split-half column becomes its two halves — and
+	/// each column is split on the round's highest variable into its low and high halves. The
+	/// recursion peels the remaining variables off both halves, and off every eq-indicator
+	/// expansion, together, so each leaf hands `map` one [`EvaluationChunk`]: the paired column
+	/// halves and the matching eq chunk, at `2^chunk_vars` scalars per half.
+	///
+	/// `chunk_vars` is capped at `n_vars() - 1`, so leaves never exceed the halved hypercube.
+	///
+	/// ## Preconditions
+	///
+	/// * `n_vars()` must be greater than 0.
+	pub fn map_reduce<T: Send>(
+		&self,
+		chunk_vars: usize,
+		map: impl (for<'c> Fn(EvaluationChunk<'c, P>) -> T) + Sync,
+		reduce: impl (Fn(T, T) -> T) + Sync,
+	) -> T {
+		assert!(self.n_vars > 0);
+		let chunk_vars = chunk_vars.min(self.n_vars - 1);
+
+		let col_slices = self.column_slices();
+		let cols = col_slices
+			.iter()
+			.map(|col| {
+				let (lo, hi) = col.split_half_ref();
+				ColumnChunk { lo, hi }
+			})
+			.collect();
+		let eqs = self.eq_expansions().iter().map(|eq| eq.to_ref()).collect();
+		let chunk = EvaluationChunk {
+			n_vars: self.n_vars - 1,
+			cols,
+			eqs,
+		};
+		map_reduce_helper(chunk, chunk_vars, &map, &reduce)
 	}
 }
 
-/// One store column's low and high halves at a single chunk of the halved hypercube.
+/// One column's low and high halves within an [`EvaluationChunk`].
 ///
 /// The column is split on the round's highest variable: `lo` fixes that variable to 0, `hi` to 1.
-/// Both range over the chunk's `2^chunk_vars` scalars.
+/// Both range over the chunk's scalars.
 pub struct ColumnChunk<'c, P: PackedField> {
 	pub lo: FieldSlice<'c, P>,
 	pub hi: FieldSlice<'c, P>,
 }
 
-/// One chunk of the halved hypercube, prepared for the round evaluators.
+/// A range of the halved hypercube, prepared for the round evaluators.
 ///
-/// With `n` variables remaining, each column splits on the highest variable into two halves of
-/// `n - 1` variables, and both halves divide into chunks of `2^chunk_vars` scalars. This holds one
-/// such chunk: the split halves of every logical column and the same chunk of every eq-indicator
-/// expansion. A column read by several evaluators is chunked a single time. Evaluators read their
-/// columns by [`ColId`] and their eq trackers by [`EqId`].
+/// Holds, over `n_vars` variables, the paired low/high halves of every logical column and the
+/// eq-indicator expansion of every tracker. Each column was split on the round's highest variable,
+/// so a [`ColumnChunk`]'s `lo` and `hi` differ only in that variable. The range is bisected — the
+/// highest remaining variable peeled off both halves of every column and off every eq expansion —
+/// down to the leaves that [`MleStore::map_reduce`] hands to its `map` callback. A
+/// column read by several evaluators is split a single time. Evaluators read their columns by
+/// [`ColId`] and their eq trackers by [`EqId`].
 pub struct EvaluationChunk<'c, P: PackedField> {
+	n_vars: usize,
 	cols: Vec<ColumnChunk<'c, P>>,
 	eqs: Vec<FieldSlice<'c, P>>,
 }
@@ -356,65 +386,130 @@ impl<'c, P: PackedField> EvaluationChunk<'c, P> {
 	pub fn eq(&self, id: EqId) -> &FieldSlice<'c, P> {
 		&self.eqs[id.index()]
 	}
+
+	/// Bisects the range into its two halves on the highest remaining variable, splitting both
+	/// halves of every column and every eq expansion. Each returned chunk has one fewer variable.
+	fn split_half(&self) -> [EvaluationChunk<'_, P>; 2] {
+		let Self { n_vars, cols, eqs } = self;
+		let (cols_0, cols_1) = cols
+			.iter()
+			.map(|ColumnChunk { lo, hi }| {
+				let (lo_0, lo_1) = lo.split_half_ref();
+				let (hi_0, hi_1) = hi.split_half_ref();
+				(ColumnChunk { lo: lo_0, hi: hi_0 }, ColumnChunk { lo: lo_1, hi: hi_1 })
+			})
+			.unzip();
+		let (eqs_0, eqs_1) = eqs.iter().map(|col| col.split_half_ref()).unzip();
+		[
+			EvaluationChunk {
+				n_vars: n_vars - 1,
+				cols: cols_0,
+				eqs: eqs_0,
+			},
+			EvaluationChunk {
+				n_vars: n_vars - 1,
+				cols: cols_1,
+				eqs: eqs_1,
+			},
+		]
+	}
 }
 
-/// A round's expanded columns and eq-indicator expansions, borrowed from an [`MleStore`].
+/// Recursively maps and reduces an [`EvaluationChunk`] for [`MleStore::map_reduce`].
 ///
-/// Produced by [`MleStore::execute_context`]. It expands the store's columns once — a split-half
-/// column becomes its two halves — and drives the parallel round pass through
-/// [`Self::par_chunks`], which slices each column and eq expansion per chunk into an
-/// [`EvaluationChunk`].
-pub struct ExecuteContext<'b, P: PackedField> {
-	// The store's remaining variable count; the halved hypercube has `n_vars - 1` variables.
-	n_vars: usize,
-	// One slice per logical column, over all `n_vars` remaining variables, in `ColId` order.
-	cols: Vec<FieldSlice<'b, P>>,
-	// One eq-indicator expansion per registered tracker, over `n_vars - 1` variables, in `EqId`
-	// order.
-	eqs: Vec<&'b FieldBuffer<P>>,
+/// Once the chunk has been narrowed to `sub_vars` variables it is handed to `map`; otherwise it is
+/// bisected with [`EvaluationChunk::split_half`] and the two halves are mapped in parallel and
+/// combined with `reduce`.
+fn map_reduce_helper<P: PackedField, T: Send>(
+	chunk: EvaluationChunk<'_, P>,
+	sub_vars: usize,
+	map: &(impl (for<'a> Fn(EvaluationChunk<'a, P>) -> T) + Sync),
+	reduce: &(impl (Fn(T, T) -> T) + Sync),
+) -> T {
+	if sub_vars == chunk.n_vars {
+		return map(chunk);
+	}
+
+	let [chunk_0, chunk_1] = chunk.split_half();
+	let (ret_0, ret_1) = rayon::join(
+		move || map_reduce_helper(chunk_0, sub_vars, map, reduce),
+		move || map_reduce_helper(chunk_1, sub_vars, map, reduce),
+	);
+	reduce(ret_0, ret_1)
 }
 
-impl<'b, P: PackedField> ExecuteContext<'b, P> {
-	/// Returns a parallel iterator over the chunks of the halved hypercube.
-	///
-	/// Each item is one [`EvaluationChunk`]: the split low/high halves of every column and the
-	/// matching chunk of every eq-indicator expansion, at `2^chunk_vars` scalars per chunk. A
-	/// column's low half is the front chunk `chunk_index` of the full column; its high half is
-	/// chunk `chunk_count + chunk_index`, the corresponding chunk of the back half — so the column
-	/// is sliced without materializing its halves separately.
-	///
-	/// ## Preconditions
-	///
-	/// * `chunk_vars` must be at most `n_vars - 1`.
-	pub fn par_chunks(
-		&self,
-		chunk_vars: usize,
-	) -> impl IndexedParallelIterator<Item = EvaluationChunk<'_, P>> {
-		// precondition
-		assert!(
-			chunk_vars < self.n_vars,
-			"chunk_vars must be at most the halved hypercube's variable count"
-		);
+#[cfg(test)]
+mod tests {
+	use binius_field::{Field, FieldOps, PackedField};
+	use binius_math::test_utils::{Packed128b, random_field_buffer, random_scalars};
+	use rand::{SeedableRng, rngs::StdRng};
 
-		let chunk_count = 1usize << (self.n_vars - 1 - chunk_vars);
-		(0..chunk_count).into_par_iter().map(move |chunk_index| {
-			// The full column at `chunk_vars` holds the low half in its first `chunk_count` chunks
-			// and the high half in the next `chunk_count`, so the two halves of this chunk are the
-			// full column's chunks `chunk_index` and `chunk_count + chunk_index`.
-			let cols = self
-				.cols
-				.iter()
-				.map(|col| ColumnChunk {
-					lo: col.chunk(chunk_vars, chunk_index),
-					hi: col.chunk(chunk_vars, chunk_count + chunk_index),
-				})
-				.collect();
-			let eqs = self
-				.eqs
-				.iter()
-				.map(|eq| eq.chunk(chunk_vars, chunk_index))
-				.collect();
-			EvaluationChunk { cols, eqs }
-		})
+	use super::*;
+
+	// A per-chunk aggregate that is sensitive to both the low/high pairing within a column and the
+	// alignment of each eq expansion with its column, so a wrong recursion pairing changes the sum.
+	fn chunk_aggregate<P: PackedField>(
+		chunk: &EvaluationChunk<'_, P>,
+		col_ids: &[ColId],
+		eq_ids: &[EqId],
+	) -> P::Scalar {
+		let mut acc = P::Scalar::ZERO;
+		for (i, &col_id) in col_ids.iter().enumerate() {
+			let col = chunk.col(col_id);
+			let eq = chunk.eq(eq_ids[i % eq_ids.len()]);
+			for j in 0..col.lo.len() {
+				acc += eq.get(j) * col.lo.get(j) * col.hi.get(j);
+			}
+		}
+		acc
+	}
+
+	#[test]
+	fn map_reduce_pairs_on_highest_variable() {
+		type P = Packed128b;
+		type F = <P as FieldOps>::Scalar;
+
+		let n_vars = 7;
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// A mix of column kinds so `chunk` exercises borrowed, owned, and split-half entries.
+		let borrowed = [
+			random_field_buffer::<P>(&mut rng, n_vars),
+			random_field_buffer::<P>(&mut rng, n_vars),
+		];
+		let mut store = MleStore::<P>::new(n_vars);
+		let mut col_ids = borrowed
+			.iter()
+			.map(|col| store.push(col.to_ref()))
+			.collect::<Vec<_>>();
+		col_ids.push(store.push_owned(random_field_buffer::<P>(&mut rng, n_vars)));
+		col_ids.extend(store.push_split_half(random_field_buffer::<P>(&mut rng, n_vars + 1)));
+
+		let eq_ids = (0..2)
+			.map(|_| store.register_eq_tracker(&random_scalars::<F>(&mut rng, n_vars)))
+			.collect::<Vec<_>>();
+
+		// Independent reference: the aggregate over the whole halved hypercube, pairing each
+		// logical column's front half (highest variable = 0) with its back half (= 1) at the same
+		// index. This is the pairing `map_reduce` must reproduce, whatever the chunking.
+		let cols = store.column_slices();
+		let eqs = store.eq_expansions();
+		let half = 1usize << (n_vars - 1);
+		let mut expected = F::ZERO;
+		for (i, col) in cols.iter().enumerate() {
+			let eq = eqs[i % eqs.len()];
+			for j in 0..half {
+				expected += eq.get(j) * col.get(j) * col.get(half + j);
+			}
+		}
+
+		for chunk_vars in 0..n_vars {
+			let got = store.map_reduce(
+				chunk_vars,
+				|chunk| chunk_aggregate(&chunk, &col_ids, &eq_ids),
+				|lhs, rhs| lhs + rhs,
+			);
+			assert_eq!(got, expected, "mismatch at chunk_vars = {chunk_vars}");
+		}
 	}
 }
