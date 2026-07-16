@@ -8,6 +8,7 @@ use super::{
 	mle_store::{ColId, ColumnChunk, EqId, EvaluationChunk, MleStore},
 	round_evals::RoundEvals2,
 	round_evaluator::{RoundEvaluator, SharedMleCheckProver},
+	round_state::RoundState,
 };
 
 /// MLE-check round evaluator for one quadratic composition over N store columns.
@@ -30,7 +31,7 @@ pub struct QuadraticMleEvaluator<P: PackedField, Composition, InfinityCompositio
 	// Composition restricted to highest-degree terms for the "x = ∞" evaluation (Karatsuba).
 	infinity_composition: InfinityComposition,
 	// State machine storage: last round's eval (interpolate input) or coeffs (fold input).
-	last_coeffs_or_eval: RoundCoeffsOrEval<P::Scalar>,
+	last_coeffs_or_eval: RoundState<RoundCoeffs<P::Scalar>, P::Scalar>,
 }
 
 impl<F, P, Composition, InfinityComposition, const N: usize>
@@ -72,7 +73,7 @@ where
 			eq_tracker,
 			composition,
 			infinity_composition,
-			last_coeffs_or_eval: RoundCoeffsOrEval::Eval(eval_claim),
+			last_coeffs_or_eval: RoundState::Claim(eval_claim),
 		}
 	}
 }
@@ -151,8 +152,8 @@ where
 
 	fn round_claim(&self, store: &MleStore<'_, P>) -> F {
 		match &self.last_coeffs_or_eval {
-			RoundCoeffsOrEval::Eval(eval) => *eval,
-			RoundCoeffsOrEval::Coeffs(coeffs) => {
+			RoundState::Claim(eval) => *eval,
+			RoundState::Coeffs(coeffs) => {
 				let alpha = store.eq_alpha(self.eq_tracker);
 				coeffs.lerp_over_endpoints(alpha)
 			}
@@ -201,12 +202,7 @@ where
 		accum: &[<P as WideMul>::Output],
 	) -> RoundCoeffs<F> {
 		// State machine: interpolate consumes the eval from the previous round and produces coeffs.
-		let last_eval = match &self.last_coeffs_or_eval {
-			RoundCoeffsOrEval::Eval(eval) => *eval,
-			RoundCoeffsOrEval::Coeffs(_) => {
-				panic!("interpolate called out of order; expected fold")
-			}
-		};
+		let last_eval = *self.last_coeffs_or_eval.claim();
 
 		// The store has not yet folded this round, so its remaining-variable count is this round's.
 		let n_vars_remaining = store.n_vars();
@@ -223,29 +219,19 @@ where
 		.interpolate_eq(last_eval, alpha);
 
 		// State transition: interpolate produces coeffs for fold to consume.
-		self.last_coeffs_or_eval = RoundCoeffsOrEval::Coeffs(round_coeffs.clone());
+		self.last_coeffs_or_eval = RoundState::Coeffs(round_coeffs.clone());
 		round_coeffs
 	}
 
 	fn fold(&mut self, challenge: F) {
 		// State machine: fold consumes coeffs and produces the eval at the verifier challenge.
-		let RoundCoeffsOrEval::Coeffs(coeffs) = &self.last_coeffs_or_eval else {
-			panic!("fold called out of order; expected interpolate");
-		};
-
 		// Evaluate the round polynomial at the verifier's challenge to form the next claim. The
 		// store folds the columns and the eq tracker (advancing its remaining count and alpha) with
 		// the same challenge, so this only advances the claim state.
-		let eval = coeffs.evaluate(challenge);
+		let eval = self.last_coeffs_or_eval.coeffs().evaluate(challenge);
 
-		self.last_coeffs_or_eval = RoundCoeffsOrEval::Eval(eval);
+		self.last_coeffs_or_eval = RoundState::Claim(eval);
 	}
-}
-
-#[derive(Debug, Clone)]
-enum RoundCoeffsOrEval<F: Field> {
-	Coeffs(RoundCoeffs<F>),
-	Eval(F),
 }
 
 #[cfg(test)]

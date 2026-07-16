@@ -9,6 +9,7 @@ use super::{
 	mle_store::{ColId, EvaluationChunk, MleStore},
 	round_evals::WideRoundEvals2,
 	round_evaluator::{RoundEvaluator, SharedSumcheckProver},
+	round_state::RoundState,
 };
 
 /// Sumcheck round evaluator for a composite defined as the product of two store columns.
@@ -19,7 +20,7 @@ use super::{
 pub struct BivariateProductEvaluator<P: PackedField> {
 	cols: [ColId; 2],
 	// State machine storage: last round's sum (interpolate input) or coeffs (fold input).
-	last_coeffs_or_sum: RoundCoeffsOrSum<P::Scalar>,
+	last_coeffs_or_sum: RoundState<RoundCoeffs<P::Scalar>, P::Scalar>,
 }
 
 impl<F: Field, P: PackedField<Scalar = F>> BivariateProductEvaluator<P> {
@@ -27,7 +28,7 @@ impl<F: Field, P: PackedField<Scalar = F>> BivariateProductEvaluator<P> {
 	pub const fn new(cols: [ColId; 2], sum: F) -> Self {
 		Self {
 			cols,
-			last_coeffs_or_sum: RoundCoeffsOrSum::Sum(sum),
+			last_coeffs_or_sum: RoundState::Claim(sum),
 		}
 	}
 }
@@ -64,8 +65,8 @@ impl<F: Field, P: PackedField<Scalar = F>> RoundEvaluator<F, P> for BivariatePro
 		// A plain product claim carries no eq factor, so the round claim needs no point
 		// coordinates.
 		match &self.last_coeffs_or_sum {
-			RoundCoeffsOrSum::Sum(sum) => *sum,
-			RoundCoeffsOrSum::Coeffs(coeffs) => coeffs.sum_over_endpoints(),
+			RoundState::Claim(sum) => *sum,
+			RoundState::Coeffs(coeffs) => coeffs.sum_over_endpoints(),
 		}
 	}
 
@@ -102,9 +103,7 @@ impl<F: Field, P: PackedField<Scalar = F>> RoundEvaluator<F, P> for BivariatePro
 		store: &MleStore<'_, P>,
 		accum: &[<P as WideMul>::Output],
 	) -> RoundCoeffs<F> {
-		let RoundCoeffsOrSum::Sum(last_sum) = self.last_coeffs_or_sum else {
-			panic!("interpolate called out of order; expected fold");
-		};
+		let last_sum = *self.last_coeffs_or_sum.claim();
 
 		// The store has not yet folded this round, so its remaining-variable count is this round's.
 		let n_vars_remaining = store.n_vars();
@@ -119,26 +118,16 @@ impl<F: Field, P: PackedField<Scalar = F>> RoundEvaluator<F, P> for BivariatePro
 			.sum_scalars(n_vars_remaining)
 			.interpolate(last_sum);
 
-		self.last_coeffs_or_sum = RoundCoeffsOrSum::Coeffs(round_coeffs.clone());
+		self.last_coeffs_or_sum = RoundState::Coeffs(round_coeffs.clone());
 		round_coeffs
 	}
 
 	fn fold(&mut self, challenge: F) {
-		let RoundCoeffsOrSum::Coeffs(coeffs) = &self.last_coeffs_or_sum else {
-			panic!("fold called out of order; expected interpolate");
-		};
-
 		// The store folds the columns (advancing its remaining count); only the sum claim advances
 		// here.
-		let round_sum = coeffs.evaluate(challenge);
-		self.last_coeffs_or_sum = RoundCoeffsOrSum::Sum(round_sum);
+		let round_sum = self.last_coeffs_or_sum.coeffs().evaluate(challenge);
+		self.last_coeffs_or_sum = RoundState::Claim(round_sum);
 	}
-}
-
-#[derive(Debug, Clone)]
-enum RoundCoeffsOrSum<F: Field> {
-	Coeffs(RoundCoeffs<F>),
-	Sum(F),
 }
 
 #[cfg(test)]
