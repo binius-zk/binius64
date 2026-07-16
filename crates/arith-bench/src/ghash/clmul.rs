@@ -22,6 +22,8 @@
 //! This implementation is derived from:
 //! <https://github.com/google/longfellow-zk/blob/main/lib/gf2k/sysdep.h>
 
+use std::array;
+
 use crate::{PackedUnderlier, Underlier, underlier::OpsClmul};
 
 /// Multiply a packed GHASH field element by X^{-1} using SIMD operations.
@@ -148,7 +150,7 @@ fn gf2_128_shift_reduce<U: Underlier + OpsClmul + PackedUnderlier<u128>>(t1: U) 
 /// In the *sliced* representation each register packs one 64-bit slice per 64-bit lane, so per
 /// 128-bit lane `clmulepi64::<0x00>` multiplies the low-qword element and `::<0x11>` the high-qword
 /// element. Leaving the products un-transposed lets an inner product XOR-accumulate them cheaply;
-/// the transpose is deferred to [`reduce_sliced_schoolbook`].
+/// the transpose is deferred to [`reduce_sliced`].
 #[inline]
 fn clmul_pair<U: Underlier + OpsClmul>(u: U, v: U) -> [U; 2] {
 	[U::clmulepi64::<0x00>(u, v), U::clmulepi64::<0x11>(u, v)]
@@ -158,9 +160,9 @@ fn clmul_pair<U: Underlier + OpsClmul>(u: U, v: U) -> [U; 2] {
 /// `[p00, cross, p11]` of the 256-bit product of `x` and `y`, at weights `X^0`, `X^64`, `X^128`.
 ///
 /// Each element is `[U; 2] = [low64, high64]`; each returned pair is a `[U; 2]` of raw
-/// (un-transposed) CLMUL products, one per packed element (see [`clmul_pair`]). Schoolbook forms
+/// (un-transposed) CLMUL products, one per packed element (see `clmul_pair`). Schoolbook forms
 /// four 64×64 products and sums the two cross terms. No transpose or reduction happens here — both
-/// are F2-linear and deferred to [`reduce_sliced_schoolbook`], so an inner product XOR-accumulates
+/// are F2-linear and deferred to [`reduce_sliced`], so an inner product XOR-accumulates
 /// the three pairs and reduces once.
 #[inline]
 pub fn mul_wide_sliced_schoolbook<U: Underlier + OpsClmul>(
@@ -193,51 +195,69 @@ pub fn mul_wide_sliced_karatsuba<U: Underlier + OpsClmul>(
 	[p00, pm, p11]
 }
 
-/// Reduce a *sliced* schoolbook widening product (the three raw product pairs `[p00, cross, p11]`
-/// from [`mul_wide_sliced_schoolbook`], at weights `X^0, X^64, X^128`) to a GHASH field element
+/// Reduce a *sliced* schoolbook widening product (the three raw product pairs `[t0, t1, t2]` from
+/// [`mul_wide_sliced_schoolbook`], at weights `X^0, X^64, X^128`) to a GHASH field element
 /// `[U; 2] = [low64, high64]`, modulo `X^128 + X^7 + X^2 + X + 1`.
 ///
-/// Each [`clmul_pair`] entry is a full un-transposed 128-bit product, so per pair index the triple
-/// `[p00, cross, p11]` is exactly a non-sliced wide product `[t0, t1, t2]`. The two elements are
-/// therefore reduced with the same CLMUL-based [`reduce`] as the packed path — vectorized across
-/// the register's 128-bit lanes — and the two reduced 128-bit results are transposed back into the
-/// sliced `[low64, high64]` layout with `unpacklo`/`unpackhi_epi64`. Being F2-linear, unreduced
-/// products may be XOR-summed and reduced once.
+/// Each `clmul_pair` entry is a full un-transposed 128-bit product. The two fold steps use the
+/// same CLMUL-by-`0x87` reduction as the packed [`reduce`], but applied to the products in place:
+/// `clmulepi64::<0x01>` folds each product's high 64 bits (weight `X^192`/`X^128`) into the lower
+/// limbs, and `unpacklo`/`unpackhi_epi64` recombine the two elements' overlapping halves only where
+/// needed, so the result lands directly in the sliced `[low64, high64]` layout without a separate
+/// transpose pass. Being F2-linear, unreduced products may be XOR-summed and reduced once.
 #[inline]
-pub fn reduce_sliced_schoolbook<U: Underlier + OpsClmul + PackedUnderlier<u128>>(
-	[p00, cross, p11]: [[U; 2]; 3],
+pub fn reduce_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(
+	[t0, t1, t2]: [[U; 2]; 3],
 ) -> [U; 2] {
-	// Per pair index `[p00, cross, p11]` is a non-sliced `[t0, t1, t2]`; reduce each element with
-	// the packed CLMUL reduction.
-	let r0 = reduce([p00[0], cross[0], p11[0]]);
-	let r1 = reduce([p00[1], cross[1], p11[1]]);
-	// Transpose the two reduced 128-bit results back into the sliced `[low64, high64]` layout.
-	[U::unpacklo_epi64(r0, r1), U::unpackhi_epi64(r0, r1)]
+	// The reduction polynomial x^128 + x^7 + x^2 + x + 1 is represented as 0x87
+	const POLY: u128 = 0x87;
+	let poly = <U as PackedUnderlier<u128>>::broadcast(POLY);
+
+	let t2_hi_times_poly = [
+		U::clmulepi64::<0x01>(t2[0], poly),
+		U::clmulepi64::<0x01>(t2[1], poly),
+	];
+	let t2_lo = U::unpacklo_epi64(t2[0], t2[1]);
+
+	let t1_prime = array::from_fn::<_, 2, _>(|i| U::xor(t1[i], t2_hi_times_poly[i]));
+	let t1_prime_lo = U::unpacklo_epi64(t1_prime[0], t1_prime[1]);
+	let t1_prime_hi = U::xor(U::unpackhi_epi64(t1_prime[0], t1_prime[1]), t2_lo);
+
+	let t1_hi_times_poly = [
+		U::clmulepi64::<0x00>(t1_prime_hi, poly),
+		U::clmulepi64::<0x01>(t1_prime_hi, poly),
+	];
+
+	let t0_prime = array::from_fn::<_, 2, _>(|i| U::xor(t0[i], t1_hi_times_poly[i]));
+	let t0_prime_lo = U::unpacklo_epi64(t0_prime[0], t0_prime[1]);
+	let t0_prime_hi = U::xor(U::unpackhi_epi64(t0_prime[0], t0_prime[1]), t1_prime_lo);
+
+	[t0_prime_lo, t0_prime_hi]
 }
 
 /// Reduce a *sliced* Karatsuba widening product (the three raw product pairs `[p00, pm, p11]` from
 /// [`mul_wide_sliced_karatsuba`]) to a GHASH field element `[U; 2] = [low64, high64]`.
 ///
 /// Recovers the middle cross term `cross = pm - p00 - p11` (subtraction is XOR in characteristic 2)
-/// and delegates to [`reduce_sliced_schoolbook`].
+/// and delegates to [`reduce_sliced`].
 #[inline]
 pub fn reduce_sliced_karatsuba<U: Underlier + OpsClmul + PackedUnderlier<u128>>(
 	[p00, pm, p11]: [[U; 2]; 3],
 ) -> [U; 2] {
 	let cross = Underlier::xor(Underlier::xor(pm, p00), p11);
-	reduce_sliced_schoolbook([p00, cross, p11])
+	reduce_sliced([p00, cross, p11])
 }
 
 /// Multiply two *sliced* GHASH field elements with the schoolbook widening multiply.
 ///
 /// Each element is `[U; 2] = [low64, high64]`. Composes [`mul_wide_sliced_schoolbook`] with
-/// [`reduce_sliced_schoolbook`]; both are inlined.
+/// [`reduce_sliced`]; both are inlined.
 #[inline]
 pub fn mul_sliced_schoolbook<U: Underlier + OpsClmul + PackedUnderlier<u128>>(
 	x: [U; 2],
 	y: [U; 2],
 ) -> [U; 2] {
-	reduce_sliced_schoolbook(mul_wide_sliced_schoolbook(x, y))
+	reduce_sliced(mul_wide_sliced_schoolbook(x, y))
 }
 
 /// Multiply two *sliced* GHASH field elements with the Karatsuba widening multiply.
@@ -345,7 +365,7 @@ mod tests {
 		) {
 			let p = mul_wide_sliced_schoolbook::<__m128i>(to_sliced(a0, a1), to_sliced(b0, b1));
 			let q = mul_wide_sliced_schoolbook::<__m128i>(to_sliced(c0, c1), to_sliced(d0, d1));
-			let acc = reduce_sliced_schoolbook::<__m128i>(Underlier::xor(p, q));
+			let acc = reduce_sliced::<__m128i>(Underlier::xor(p, q));
 			let (z0, z1) = from_sliced(acc);
 			prop_assert_eq!(z0, soft64::mul(a0, b0) ^ soft64::mul(c0, d0));
 			prop_assert_eq!(z1, soft64::mul(a1, b1) ^ soft64::mul(c1, d1));
