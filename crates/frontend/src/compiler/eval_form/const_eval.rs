@@ -208,6 +208,26 @@ mod tests {
 	}
 
 	#[test]
+	fn test_bmul_constant_eval() {
+		// Test BMUL (4 inputs a_lo, a_hi, b_lo, b_hi; 2 outputs c_lo, c_hi). X^127 * X = X^128,
+		// which reduces (X^128 + X^7 + X^2 + X + 1 = 0) to X^7 + X^2 + X + 1 = 0x87.
+		let (graph, gate, constants) = create_test_gate(
+			Opcode::Bmul,
+			&[
+				Word::ZERO,                         // a_lo
+				Word::from_u64(0x8000000000000000), // a_hi = X^127
+				Word::from_u64(2),                  // b_lo = X
+				Word::ZERO,                         // b_hi
+			],
+		);
+
+		let result =
+			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
+		assert_eq!(result[0], Word::from_u64(0x87)); // c_lo
+		assert_eq!(result[1], Word::ZERO); // c_hi
+	}
+
+	#[test]
 	fn test_iadd_cin_cout_constant_eval() {
 		// Test with carry in (MSB = 1 means carry bit is 1)
 		let (graph, gate, constants) = create_test_gate(

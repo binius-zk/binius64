@@ -36,10 +36,6 @@ impl ConstraintBuilder {
 	}
 
 	/// Build a BMUL constraint: (A_LO, A_HI) * (B_LO, B_HI) = (C_LO, C_HI) in the GHASH field
-	//
-	// The first non-test caller is the BMUL gate (BINIUS-298); until then this entry point is only
-	// exercised by tests, so silence the dead-code lint here rather than crate-wide.
-	#[allow(dead_code)]
 	pub const fn bmul(&mut self) -> BmulConstraintBuilder<'_> {
 		BmulConstraintBuilder::new(self)
 	}
@@ -501,9 +497,6 @@ impl<'a> ImulConstraintBuilder<'a> {
 	}
 }
 
-// Constructed via `ConstraintBuilder::bmul`, whose first non-test caller lands with the BMUL gate
-// (BINIUS-298).
-#[allow(dead_code)]
 pub struct BmulConstraintBuilder<'a> {
 	builder: &'a mut ConstraintBuilder,
 	a_lo: WireOperand,
@@ -514,9 +507,6 @@ pub struct BmulConstraintBuilder<'a> {
 	c_hi: WireOperand,
 }
 
-// The operand setters and `build` are only reached through `ConstraintBuilder::bmul`, whose first
-// non-test caller lands with the BMUL gate (BINIUS-298).
-#[allow(dead_code)]
 impl<'a> BmulConstraintBuilder<'a> {
 	const fn new(builder: &'a mut ConstraintBuilder) -> Self {
 		Self {

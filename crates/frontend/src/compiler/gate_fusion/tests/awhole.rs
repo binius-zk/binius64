@@ -25,6 +25,32 @@ fn test_force_commit_non_linear_output_without_inout() {
 	verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
 }
 
+#[test]
+fn test_bmul_gate_end_to_end() {
+	// A single BMUL gate: the eval opcode fills the product wires, and the BMUL constraint checks
+	// the GHASH multiply. Uses the field fact X^127 * X = X^128 = X^7 + X^2 + X + 1 = 0x87 (a
+	// reduction case), so this exercises the whole gate → constraint + eval-bytecode → witness →
+	// verification path. Each field element is a (lo, hi) word pair.
+	let builder = CircuitBuilder::new();
+	let a_lo = builder.add_witness();
+	let a_hi = builder.add_witness();
+	let b_lo = builder.add_witness();
+	let b_hi = builder.add_witness();
+	let (c_lo, c_hi) = builder.bmul(a_lo, a_hi, b_lo, b_hi);
+	let circuit = builder.build();
+
+	let mut w = circuit.new_witness_filler();
+	w[a_lo] = Word::ZERO;
+	w[a_hi] = Word(0x8000_0000_0000_0000); // X^127
+	w[b_lo] = Word(2); // X
+	w[b_hi] = Word::ZERO;
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	assert_eq!(w[c_lo], Word(0x87));
+	assert_eq!(w[c_hi], Word::ZERO);
+	verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
+}
+
 /// Returns a string that represents the given constraint system in a textual form.
 fn stringify_constraint_system(cs: &ConstraintSystem) -> String {
 	use std::fmt::Write;

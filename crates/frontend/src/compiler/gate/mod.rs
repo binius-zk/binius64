@@ -17,6 +17,7 @@ pub mod assert_non_zero;
 pub mod assert_true;
 pub mod assert_zero;
 pub mod band;
+pub mod bmul;
 pub mod bor;
 pub mod bxor;
 pub mod bxor_multi;
@@ -52,6 +53,7 @@ pub fn constrain(gate: Gate, graph: &GateGraph, builder: &mut ConstraintBuilder)
 		Opcode::AssertTrue => assert_true::constrain(gate, data, builder),
 		Opcode::AssertEqCond => assert_eq_cond::constrain(gate, data, builder),
 		Opcode::Imul => imul::constrain(gate, data, builder),
+		Opcode::Bmul => bmul::constrain(gate, data, builder),
 		Opcode::IcmpUlt => icmp_ult::constrain(gate, data, builder),
 		Opcode::IcmpEq => icmp_eq::constrain(gate, data, builder),
 		// Hints do not introduce constraints
@@ -107,6 +109,7 @@ pub fn emit_gate_bytecode(
 			assert_true::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg)
 		}
 		Opcode::Imul => imul::emit_eval_bytecode(gate, data, builder, wire_to_reg),
+		Opcode::Bmul => bmul::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::IcmpUlt => icmp_ult::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 		Opcode::IcmpEq => icmp_eq::emit_eval_bytecode(gate, data, builder, wire_to_reg),
 

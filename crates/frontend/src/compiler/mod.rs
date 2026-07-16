@@ -105,7 +105,7 @@ pub(crate) struct Shared {
 /// Methods like [`band`] and [`iadd_32`] add gates to the graph and return handles
 /// to output wires.
 ///
-/// During [`build`], the gate graph compiles into AND and IMUL constraints
+/// During [`build`], the gate graph compiles into AND, IMUL, and BMUL constraints
 /// that the proof system operates on directly.
 ///
 /// # Wire Types
@@ -1053,6 +1053,25 @@ impl CircuitBuilder {
 		let mut graph = self.graph_mut();
 		graph.emit_gate(self.current_path, Opcode::Imul, [a, b], [hi, lo]);
 		(hi, lo)
+	}
+
+	/// Multiplication in the GHASH field GF(2^128).
+	///
+	/// Multiplies two field elements, each carried by a `(lo, hi)` pair of 64-bit words — `lo`
+	/// holds the coefficients of `1, X, …, X^63` and `hi` those of `X^64, …, X^127`.
+	///
+	/// Returns `(c_lo, c_hi)`, the product `(a_lo, a_hi) * (b_lo, b_hi)` in the same
+	/// representation.
+	///
+	/// # Cost
+	///
+	/// - 1 BMUL constraint.
+	pub fn bmul(&self, a_lo: Wire, a_hi: Wire, b_lo: Wire, b_hi: Wire) -> (Wire, Wire) {
+		let c_lo = self.add_internal();
+		let c_hi = self.add_internal();
+		let mut graph = self.graph_mut();
+		graph.emit_gate(self.current_path, Opcode::Bmul, [a_lo, a_hi, b_lo, b_hi], [c_lo, c_hi]);
+		(c_lo, c_hi)
 	}
 
 	/// Conditional equality assertion.
