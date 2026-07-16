@@ -125,6 +125,61 @@ impl DeserializeBytes for ImulConstraint {
 	}
 }
 
+/// BMUL constraint: `A * B = C` in the GHASH field `GF(2^128)`.
+///
+/// Multiplication of two GHASH binary-field elements. Because a field element spans 128 bits while
+/// a word holds only 64, each operand is carried by a pair of words: the `lo` word supplies the low
+/// 64 coefficients (of `1, X, ..., X^63`) and the `hi` word the high 64 (of `X^64, ..., X^127`).
+#[derive(Debug, Clone, Default)]
+pub struct BmulConstraint {
+	/// Low word of the A operand.
+	pub a_lo: Operand,
+	/// High word of the A operand.
+	pub a_hi: Operand,
+	/// Low word of the B operand.
+	pub b_lo: Operand,
+	/// High word of the B operand.
+	pub b_hi: Operand,
+	/// Low word of the C (product) operand.
+	pub c_lo: Operand,
+	/// High word of the C (product) operand.
+	pub c_hi: Operand,
+}
+
+impl SerializeBytes for BmulConstraint {
+	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
+		self.a_lo.serialize(&mut write_buf)?;
+		self.a_hi.serialize(&mut write_buf)?;
+		self.b_lo.serialize(&mut write_buf)?;
+		self.b_hi.serialize(&mut write_buf)?;
+		self.c_lo.serialize(&mut write_buf)?;
+		self.c_hi.serialize(write_buf)
+	}
+}
+
+impl DeserializeBytes for BmulConstraint {
+	fn deserialize(mut read_buf: impl Buf) -> Result<Self, SerializationError>
+	where
+		Self: Sized,
+	{
+		let a_lo = Vec::<ShiftedValueIndex>::deserialize(&mut read_buf)?;
+		let a_hi = Vec::<ShiftedValueIndex>::deserialize(&mut read_buf)?;
+		let b_lo = Vec::<ShiftedValueIndex>::deserialize(&mut read_buf)?;
+		let b_hi = Vec::<ShiftedValueIndex>::deserialize(&mut read_buf)?;
+		let c_lo = Vec::<ShiftedValueIndex>::deserialize(&mut read_buf)?;
+		let c_hi = Vec::<ShiftedValueIndex>::deserialize(read_buf)?;
+
+		Ok(BmulConstraint {
+			a_lo,
+			a_hi,
+			b_lo,
+			b_hi,
+			c_lo,
+			c_hi,
+		})
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -171,5 +226,31 @@ mod tests {
 		assert_eq!(constraint.b.len(), deserialized.b.len());
 		assert_eq!(constraint.hi.len(), deserialized.hi.len());
 		assert_eq!(constraint.lo.len(), deserialized.lo.len());
+	}
+
+	#[test]
+	fn test_bmul_constraint_serialization_round_trip() {
+		let constraint = BmulConstraint {
+			a_lo: vec![ShiftedValueIndex::plain(ValueIndex(0))],
+			a_hi: vec![ShiftedValueIndex::srl(ValueIndex(1), 32)],
+			b_lo: vec![ShiftedValueIndex::plain(ValueIndex(2))],
+			b_hi: vec![ShiftedValueIndex::sll(ValueIndex(3), 5)],
+			c_lo: vec![ShiftedValueIndex::plain(ValueIndex(4))],
+			c_hi: vec![
+				ShiftedValueIndex::sar(ValueIndex(5), 15),
+				ShiftedValueIndex::plain(ValueIndex(6)),
+			],
+		};
+
+		let mut buf = Vec::new();
+		constraint.serialize(&mut buf).unwrap();
+
+		let deserialized = BmulConstraint::deserialize(&mut buf.as_slice()).unwrap();
+		assert_eq!(constraint.a_lo.len(), deserialized.a_lo.len());
+		assert_eq!(constraint.a_hi.len(), deserialized.a_hi.len());
+		assert_eq!(constraint.b_lo.len(), deserialized.b_lo.len());
+		assert_eq!(constraint.b_hi.len(), deserialized.b_hi.len());
+		assert_eq!(constraint.c_lo.len(), deserialized.c_lo.len());
+		assert_eq!(constraint.c_hi.len(), deserialized.c_hi.len());
 	}
 }

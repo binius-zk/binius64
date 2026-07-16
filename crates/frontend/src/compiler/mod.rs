@@ -320,7 +320,8 @@ impl CircuitBuilder {
 		debug_assert_eq!(wire_mapping[all_one], binius_core::ValueIndex(0));
 		debug_assert_eq!(constants.first(), Some(&Word::ALL_ONE));
 
-		let (mut and_constraints, mut imul_constraints) = builder.build(&wire_mapping, all_one);
+		let (mut and_constraints, mut imul_constraints, mut bmul_constraints) =
+			builder.build(&wire_mapping, all_one);
 
 		// Filter zero constant terms from all operands. Any shift of Word::ZERO is zero, so
 		// terms referencing a zero constant contribute nothing to an XOR operand.
@@ -343,10 +344,23 @@ impl CircuitBuilder {
 				filter_zeros(&mut c.hi);
 				filter_zeros(&mut c.lo);
 			}
+			for c in &mut bmul_constraints {
+				filter_zeros(&mut c.a_lo);
+				filter_zeros(&mut c.a_hi);
+				filter_zeros(&mut c.b_lo);
+				filter_zeros(&mut c.b_hi);
+				filter_zeros(&mut c.c_lo);
+				filter_zeros(&mut c.c_hi);
+			}
 		}
 
-		let cs =
-			ConstraintSystem::new(constants, value_vec_layout, and_constraints, imul_constraints);
+		let cs = ConstraintSystem::new(
+			constants,
+			value_vec_layout,
+			and_constraints,
+			imul_constraints,
+			bmul_constraints,
+		);
 		if cfg!(debug_assertions) {
 			// Validate that the resulting constraint system has a good shape.
 			cs.validate().unwrap();

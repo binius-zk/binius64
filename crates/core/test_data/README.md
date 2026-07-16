@@ -4,7 +4,7 @@ This directory contains binary reference files used for testing serialization fo
 
 ## Files
 
-- `constraint_system_v2.bin`: Reference binary serialization of a `ConstraintSystem` using serialization version 2.
+- `constraint_system_v4.bin`: Reference binary serialization of a `ConstraintSystem` using serialization version 4.
 - `public_witness_v1.bin`: Reference binary serialization of a `PublicWitness` using serialization version 1.
 - `proof_v1.bin`: Reference binary serialization of a `Proof` using serialization version 1.
 
@@ -58,7 +58,8 @@ The binary format uses little-endian encoding and follows this structure:
 2. **ValueVecLayout**: Layout configuration
 3. **Constants**: Vector of `Word` values
 4. **AND constraints**: Vector of `AndConstraint` structures
-5. **MUL constraints**: Vector of `MulConstraint` structures
+5. **IMUL constraints**: Vector of `ImulConstraint` structures
+6. **BMUL constraints**: Vector of `BmulConstraint` structures
 
 ### PublicWitness Format
 1. **Version header** (4 bytes): `u32` serialization version

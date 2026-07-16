@@ -15,6 +15,7 @@ use crate::compiler::{
 pub enum ConstraintRef {
 	And { index: usize },
 	Imul { index: usize },
+	Bmul { index: usize },
 	Linear { index: usize },
 }
 
@@ -303,6 +304,15 @@ fn build_use_def(cb: &ConstraintBuilder, leg: &mut LeGraph, _stat: &mut Stat) {
 		harvest_nonlin_uses(&mul.b, leg, ConstraintRef::Imul { index });
 		harvest_nonlin_uses(&mul.hi, leg, ConstraintRef::Imul { index });
 		harvest_nonlin_uses(&mul.lo, leg, ConstraintRef::Imul { index });
+	}
+
+	for (index, mul) in cb.bmul_constraints.iter().enumerate() {
+		harvest_nonlin_uses(&mul.a_lo, leg, ConstraintRef::Bmul { index });
+		harvest_nonlin_uses(&mul.a_hi, leg, ConstraintRef::Bmul { index });
+		harvest_nonlin_uses(&mul.b_lo, leg, ConstraintRef::Bmul { index });
+		harvest_nonlin_uses(&mul.b_hi, leg, ConstraintRef::Bmul { index });
+		harvest_nonlin_uses(&mul.c_lo, leg, ConstraintRef::Bmul { index });
+		harvest_nonlin_uses(&mul.c_hi, leg, ConstraintRef::Bmul { index });
 	}
 }
 
