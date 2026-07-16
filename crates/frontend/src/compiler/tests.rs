@@ -650,4 +650,22 @@ fn test_zero_constant_not_in_binius64_operands() {
 			}
 		}
 	}
+	for constraint in &cs.bmul_constraints {
+		for operand in [
+			&constraint.a_lo,
+			&constraint.a_hi,
+			&constraint.b_lo,
+			&constraint.b_hi,
+			&constraint.c_lo,
+			&constraint.c_hi,
+		] {
+			for term in operand {
+				assert!(
+					!zero_const_indices.contains(&(term.value_index.0 as usize)),
+					"zero constant at ValueIndex({}) found in BMUL operand",
+					term.value_index.0
+				);
+			}
+		}
+	}
 }

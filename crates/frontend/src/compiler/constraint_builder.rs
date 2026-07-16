@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 use binius_core::constraint_system::{
-	AndConstraint, ImulConstraint, ShiftedValueIndex, ValueIndex,
+	AndConstraint, BmulConstraint, ImulConstraint, ShiftedValueIndex, ValueIndex,
 };
 use cranelift_entity::{EntitySet, SecondaryMap};
 use smallvec::{SmallVec, smallvec};
@@ -11,6 +11,7 @@ use crate::compiler::Wire;
 pub struct ConstraintBuilder {
 	pub and_constraints: Vec<WireAndConstraint>,
 	pub imul_constraints: Vec<WireImulConstraint>,
+	pub bmul_constraints: Vec<WireBmulConstraint>,
 	pub linear_constraints: Vec<WireLinearConstraint>,
 }
 
@@ -19,6 +20,7 @@ impl ConstraintBuilder {
 		Self {
 			and_constraints: Vec::new(),
 			imul_constraints: Vec::new(),
+			bmul_constraints: Vec::new(),
 			linear_constraints: Vec::new(),
 		}
 	}
@@ -33,6 +35,15 @@ impl ConstraintBuilder {
 		ImulConstraintBuilder::new(self)
 	}
 
+	/// Build a BMUL constraint: (A_LO, A_HI) * (B_LO, B_HI) = (C_LO, C_HI) in the GHASH field
+	//
+	// The first non-test caller is the BMUL gate (BINIUS-298); until then this entry point is only
+	// exercised by tests, so silence the dead-code lint here rather than crate-wide.
+	#[allow(dead_code)]
+	pub const fn bmul(&mut self) -> BmulConstraintBuilder<'_> {
+		BmulConstraintBuilder::new(self)
+	}
+
 	/// Build a linear constraint: RHS = DST
 	/// (where RHS is XOR of shifted values and DST is a
 	/// single wire)
@@ -45,7 +56,7 @@ impl ConstraintBuilder {
 		self,
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 		all_one: Wire,
-	) -> (Vec<AndConstraint>, Vec<ImulConstraint>) {
+	) -> (Vec<AndConstraint>, Vec<ImulConstraint>, Vec<BmulConstraint>) {
 		let mut and_constraints = self
 			.and_constraints
 			.into_iter()
@@ -54,6 +65,12 @@ impl ConstraintBuilder {
 
 		let imul_constraints = self
 			.imul_constraints
+			.into_iter()
+			.map(|c| c.into_constraint(wire_mapping))
+			.collect();
+
+		let bmul_constraints = self
+			.bmul_constraints
 			.into_iter()
 			.map(|c| c.into_constraint(wire_mapping))
 			.collect();
@@ -67,7 +84,7 @@ impl ConstraintBuilder {
 			}
 		}
 
-		(and_constraints, imul_constraints)
+		(and_constraints, imul_constraints, bmul_constraints)
 	}
 
 	pub fn mark_used_wires(&self) -> EntitySet<Wire> {
@@ -77,6 +94,9 @@ impl ConstraintBuilder {
 		}
 		for mc in &self.imul_constraints {
 			mc.mark_used(&mut used_set);
+		}
+		for bc in &self.bmul_constraints {
+			bc.mark_used(&mut used_set);
 		}
 		for lc in &self.linear_constraints {
 			lc.mark_used(&mut used_set);
@@ -174,6 +194,38 @@ impl WireImulConstraint {
 		mark_used(&self.b, used_set);
 		mark_used(&self.hi, used_set);
 		mark_used(&self.lo, used_set);
+	}
+}
+
+/// BMUL constraint using Wire references
+pub struct WireBmulConstraint {
+	pub a_lo: WireOperand,
+	pub a_hi: WireOperand,
+	pub b_lo: WireOperand,
+	pub b_hi: WireOperand,
+	pub c_lo: WireOperand,
+	pub c_hi: WireOperand,
+}
+
+impl WireBmulConstraint {
+	fn into_constraint(self, wire_mapping: &SecondaryMap<Wire, ValueIndex>) -> BmulConstraint {
+		BmulConstraint {
+			a_lo: expand_and_convert_operand(self.a_lo, wire_mapping),
+			a_hi: expand_and_convert_operand(self.a_hi, wire_mapping),
+			b_lo: expand_and_convert_operand(self.b_lo, wire_mapping),
+			b_hi: expand_and_convert_operand(self.b_hi, wire_mapping),
+			c_lo: expand_and_convert_operand(self.c_lo, wire_mapping),
+			c_hi: expand_and_convert_operand(self.c_hi, wire_mapping),
+		}
+	}
+
+	fn mark_used(&self, used_set: &mut EntitySet<Wire>) {
+		mark_used(&self.a_lo, used_set);
+		mark_used(&self.a_hi, used_set);
+		mark_used(&self.b_lo, used_set);
+		mark_used(&self.b_hi, used_set);
+		mark_used(&self.c_lo, used_set);
+		mark_used(&self.c_hi, used_set);
 	}
 }
 
@@ -449,6 +501,77 @@ impl<'a> ImulConstraintBuilder<'a> {
 	}
 }
 
+// Constructed via `ConstraintBuilder::bmul`, whose first non-test caller lands with the BMUL gate
+// (BINIUS-298).
+#[allow(dead_code)]
+pub struct BmulConstraintBuilder<'a> {
+	builder: &'a mut ConstraintBuilder,
+	a_lo: WireOperand,
+	a_hi: WireOperand,
+	b_lo: WireOperand,
+	b_hi: WireOperand,
+	c_lo: WireOperand,
+	c_hi: WireOperand,
+}
+
+// The operand setters and `build` are only reached through `ConstraintBuilder::bmul`, whose first
+// non-test caller lands with the BMUL gate (BINIUS-298).
+#[allow(dead_code)]
+impl<'a> BmulConstraintBuilder<'a> {
+	const fn new(builder: &'a mut ConstraintBuilder) -> Self {
+		Self {
+			builder,
+			a_lo: Vec::new(),
+			a_hi: Vec::new(),
+			b_lo: Vec::new(),
+			b_hi: Vec::new(),
+			c_lo: Vec::new(),
+			c_hi: Vec::new(),
+		}
+	}
+
+	pub fn a_lo(mut self, expr: impl Into<WireExpr>) -> Self {
+		self.a_lo = expr.into().to_operand();
+		self
+	}
+
+	pub fn a_hi(mut self, expr: impl Into<WireExpr>) -> Self {
+		self.a_hi = expr.into().to_operand();
+		self
+	}
+
+	pub fn b_lo(mut self, expr: impl Into<WireExpr>) -> Self {
+		self.b_lo = expr.into().to_operand();
+		self
+	}
+
+	pub fn b_hi(mut self, expr: impl Into<WireExpr>) -> Self {
+		self.b_hi = expr.into().to_operand();
+		self
+	}
+
+	pub fn c_lo(mut self, expr: impl Into<WireExpr>) -> Self {
+		self.c_lo = expr.into().to_operand();
+		self
+	}
+
+	pub fn c_hi(mut self, expr: impl Into<WireExpr>) -> Self {
+		self.c_hi = expr.into().to_operand();
+		self
+	}
+
+	pub fn build(self) {
+		self.builder.bmul_constraints.push(WireBmulConstraint {
+			a_lo: self.a_lo,
+			a_hi: self.a_hi,
+			b_lo: self.b_lo,
+			b_hi: self.b_hi,
+			c_lo: self.c_lo,
+			c_hi: self.c_hi,
+		});
+	}
+}
+
 impl<'a> LinearConstraintBuilder<'a> {
 	const fn new(builder: &'a mut ConstraintBuilder) -> Self {
 		Self {
@@ -661,7 +784,8 @@ mod tests {
 				.dst(wire_c)
 				.build();
 
-			let (and_constraints, imul_constraints) = builder.build(&wire_mapping, all_one_wire);
+			let (and_constraints, imul_constraints, _bmul_constraints) =
+				builder.build(&wire_mapping, all_one_wire);
 
 			// rotr(0) should be optimized to plain wire, so we expect:
 			// (a ⊕ b) & all_one = c
@@ -708,7 +832,8 @@ mod tests {
 				.dst(wire_c)
 				.build();
 
-			let (and_constraints, imul_constraints) = builder.build(&wire_mapping, all_one_wire);
+			let (and_constraints, imul_constraints, _bmul_constraints) =
+				builder.build(&wire_mapping, all_one_wire);
 
 			assert_eq!(and_constraints.len(), 1);
 			assert_eq!(imul_constraints.len(), 0);
@@ -757,7 +882,7 @@ mod tests {
 			// Build: a & rotr(b, 0) ⊕ c = 0
 			builder.and().a(wire_a).b(rotr(wire_b, 0)).c(wire_c).build();
 
-			let (and_constraints, _) = builder.build(&wire_mapping, all_one_wire);
+			let (and_constraints, _, _) = builder.build(&wire_mapping, all_one_wire);
 
 			assert_eq!(and_constraints.len(), 1);
 			let and_c = &and_constraints[0];
@@ -785,7 +910,7 @@ mod tests {
 			// Build: a & rotr(b, 8) ⊕ c = 0
 			builder.and().a(wire_a).b(rotr(wire_b, 8)).c(wire_c).build();
 
-			let (and_constraints, _) = builder.build(&wire_mapping, all_one_wire);
+			let (and_constraints, _, _) = builder.build(&wire_mapping, all_one_wire);
 
 			assert_eq!(and_constraints.len(), 1);
 			let and_c = &and_constraints[0];
@@ -825,7 +950,8 @@ mod tests {
 			.dst(wire_c)
 			.build();
 
-		let (and_constraints, imul_constraints) = builder.build(&wire_mapping, all_one_wire);
+		let (and_constraints, imul_constraints, _bmul_constraints) =
+			builder.build(&wire_mapping, all_one_wire);
 
 		assert_eq!(and_constraints.len(), 1);
 		assert_eq!(imul_constraints.len(), 0);
@@ -866,5 +992,56 @@ mod tests {
 			}),
 			"Should have native ror(a, 12)"
 		);
+	}
+
+	#[test]
+	fn test_bmul_constraint_via_builder() {
+		// Build a BMUL constraint (a_lo, a_hi) * (b_lo, b_hi) = (c_lo, c_hi) and verify each of the
+		// six operands lands in the produced core constraint, including a shifted term.
+		let mut wire_mapping = SecondaryMap::new();
+		let wires: Vec<Wire> = (0..7).map(Wire::new).collect();
+		for (i, w) in wires.iter().enumerate() {
+			wire_mapping[*w] = ValueIndex(i as u32);
+		}
+		let all_one_wire = Wire::new(7);
+		wire_mapping[all_one_wire] = ValueIndex(7);
+
+		let mut builder = ConstraintBuilder::new();
+		builder
+			.bmul()
+			.a_lo(wires[0])
+			.a_hi(wires[1])
+			.b_lo(wires[2])
+			.b_hi(wires[3])
+			.c_lo(wires[4])
+			.c_hi(xor2(wires[5], sll(wires[6], 5)))
+			.build();
+
+		let (and_constraints, imul_constraints, bmul_constraints) =
+			builder.build(&wire_mapping, all_one_wire);
+
+		assert_eq!(and_constraints.len(), 0);
+		assert_eq!(imul_constraints.len(), 0);
+		assert_eq!(bmul_constraints.len(), 1);
+
+		let bc = &bmul_constraints[0];
+		assert_eq!(bc.a_lo[0].value_index, ValueIndex(0));
+		assert_eq!(bc.a_hi[0].value_index, ValueIndex(1));
+		assert_eq!(bc.b_lo[0].value_index, ValueIndex(2));
+		assert_eq!(bc.b_hi[0].value_index, ValueIndex(3));
+		assert_eq!(bc.c_lo[0].value_index, ValueIndex(4));
+
+		// c_hi is `wire5 ^ (wire6 << 5)`.
+		assert_eq!(bc.c_hi.len(), 2);
+		assert!(
+			bc.c_hi
+				.iter()
+				.any(|svi| svi.value_index == ValueIndex(5) && svi.amount == 0)
+		);
+		assert!(bc.c_hi.iter().any(|svi| {
+			svi.value_index == ValueIndex(6)
+				&& svi.amount == 5
+				&& matches!(svi.shift_variant, ShiftVariant::Sll)
+		}));
 	}
 }

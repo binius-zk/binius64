@@ -9,6 +9,8 @@ Constraints
 │  [▓▓▓▓▓▓▓▓░░] spare: 2,728
 ├─ IMUL constraints: 0 used (0.0% of 0)
 │  [░░░░░░░░░░] spare: 0
+├─ BMUL constraints: 0 used (0.0% of 0)
+│  [░░░░░░░░░░] spare: 0
 └─ Distinct value indices: 35,718
    ├─ Distinct shifted value indices: 21,916
    └─ Distinct unshifted value indices: 13,802

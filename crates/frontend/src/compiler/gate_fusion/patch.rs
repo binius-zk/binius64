@@ -5,7 +5,8 @@ use super::legraph::LeGraph;
 use crate::compiler::{
 	Wire,
 	constraint_builder::{
-		ConstraintBuilder, Shift, ShiftedWire, WireAndConstraint, WireImulConstraint, WireOperand,
+		ConstraintBuilder, Shift, ShiftedWire, WireAndConstraint, WireBmulConstraint,
+		WireImulConstraint, WireOperand,
 	},
 	gate_fusion::legraph::ConstraintRef,
 };
@@ -20,12 +21,13 @@ pub struct Patch {
 	/// The constraint set that is going to be replaced with this one.
 	subsumes: Vec<ConstraintRef>,
 	/// The new constraints that is going to be added to the graph.
-	added: AndOrImulConstraint,
+	added: NonLinearConstraint,
 }
 
-enum AndOrImulConstraint {
+enum NonLinearConstraint {
 	And(WireAndConstraint),
 	Imul(WireImulConstraint),
+	Bmul(WireBmulConstraint),
 }
 
 /// Apply the given patches to the constraint builder given.
@@ -34,14 +36,18 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 	subsumes.reserve(patches.len());
 	let mut new_and_constraints = Vec::new();
 	let mut new_imul_constraints = Vec::new();
+	let mut new_bmul_constraints = Vec::new();
 
 	// Collect all subsumed constraints and new constraints to add
 	for patch in patches {
 		subsumes.extend(patch.subsumes);
 		match patch.added {
-			AndOrImulConstraint::And(and_constraint) => new_and_constraints.push(and_constraint),
-			AndOrImulConstraint::Imul(imul_constraint) => {
+			NonLinearConstraint::And(and_constraint) => new_and_constraints.push(and_constraint),
+			NonLinearConstraint::Imul(imul_constraint) => {
 				new_imul_constraints.push(imul_constraint)
+			}
+			NonLinearConstraint::Bmul(bmul_constraint) => {
+				new_bmul_constraints.push(bmul_constraint)
 			}
 		}
 	}
@@ -74,6 +80,19 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 		})
 		.collect();
 
+	let old_bmul_constraints = std::mem::take(&mut cb.bmul_constraints);
+	cb.bmul_constraints = old_bmul_constraints
+		.into_iter()
+		.enumerate()
+		.filter_map(|(index, constraint)| {
+			if subsumes.contains(&ConstraintRef::Bmul { index }) {
+				None
+			} else {
+				Some(constraint)
+			}
+		})
+		.collect();
+
 	let old_linear_constraints = std::mem::take(&mut cb.linear_constraints);
 	cb.linear_constraints = old_linear_constraints
 		.into_iter()
@@ -90,6 +109,7 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 	// Add the new constraints
 	cb.and_constraints.extend(new_and_constraints);
 	cb.imul_constraints.extend(new_imul_constraints);
+	cb.bmul_constraints.extend(new_bmul_constraints);
 }
 
 /// Builds a list of patches that would remove the inlined linear definitions and potentially
@@ -135,14 +155,31 @@ fn build_non_lin_patch(
 			let a = process_operand(leg, &mut subsumes, &cb.and_constraints[index].a);
 			let b = process_operand(leg, &mut subsumes, &cb.and_constraints[index].b);
 			let c = process_operand(leg, &mut subsumes, &cb.and_constraints[index].c);
-			AndOrImulConstraint::And(WireAndConstraint { a, b, c })
+			NonLinearConstraint::And(WireAndConstraint { a, b, c })
 		}
 		ConstraintRef::Imul { index } => {
 			let a = process_operand(leg, &mut subsumes, &cb.imul_constraints[index].a);
 			let b = process_operand(leg, &mut subsumes, &cb.imul_constraints[index].b);
 			let lo = process_operand(leg, &mut subsumes, &cb.imul_constraints[index].lo);
 			let hi = process_operand(leg, &mut subsumes, &cb.imul_constraints[index].hi);
-			AndOrImulConstraint::Imul(WireImulConstraint { a, b, lo, hi })
+			NonLinearConstraint::Imul(WireImulConstraint { a, b, lo, hi })
+		}
+		ConstraintRef::Bmul { index } => {
+			let bmul = &cb.bmul_constraints[index];
+			let a_lo = process_operand(leg, &mut subsumes, &bmul.a_lo);
+			let a_hi = process_operand(leg, &mut subsumes, &bmul.a_hi);
+			let b_lo = process_operand(leg, &mut subsumes, &bmul.b_lo);
+			let b_hi = process_operand(leg, &mut subsumes, &bmul.b_hi);
+			let c_lo = process_operand(leg, &mut subsumes, &bmul.c_lo);
+			let c_hi = process_operand(leg, &mut subsumes, &bmul.c_hi);
+			NonLinearConstraint::Bmul(WireBmulConstraint {
+				a_lo,
+				a_hi,
+				b_lo,
+				b_hi,
+				c_lo,
+				c_hi,
+			})
 		}
 		ConstraintRef::Linear { .. } => unreachable!(),
 	};
@@ -177,7 +214,7 @@ fn build_committed_lin_def_patch(
 	// Create an AND constraint that enforces: root = new_operand
 	Patch {
 		subsumes,
-		added: AndOrImulConstraint::And(WireAndConstraint {
+		added: NonLinearConstraint::And(WireAndConstraint {
 			a: new_operand,
 			b: vec![ShiftedWire {
 				wire: all_one,
@@ -360,7 +397,7 @@ mod tests {
 		let all_one = w(9);
 		let patch = super::build_committed_lin_def_patch(&cb_single, &leg, all_one, w(3));
 		match patch.added {
-			AndOrImulConstraint::And(ref andc) => {
+			NonLinearConstraint::And(ref andc) => {
 				// b must be exactly [all_one]
 				assert_eq!(andc.b.len(), 1);
 				assert_eq!(andc.b[0].wire, all_one);
@@ -401,6 +438,54 @@ mod tests {
 		assert_eq!(m.b.len(), 2);
 		assert_eq!(m.hi.len(), 2);
 		assert_eq!(m.lo.len(), 2);
+	}
+
+	#[test]
+	fn test_bmul_distinct_linears_all_fields() {
+		// a_lo, a_hi, b_lo, b_hi, c_lo, c_hi each reference distinct linear defs; all inlinable
+		// (no shifts). This exercises the BMUL path through the legraph use-def harvest and the
+		// patch builder.
+		fn w(id: u32) -> Wire {
+			Wire::from_u32(id)
+		}
+
+		let mut cb = ConstraintBuilder::new();
+		cb.linear().rhs(xor2(w(0), w(1))).dst(w(20)).build(); // a_lo_src
+		cb.linear().rhs(xor2(w(2), w(3))).dst(w(21)).build(); // a_hi_src
+		cb.linear().rhs(xor2(w(4), w(5))).dst(w(22)).build(); // b_lo_src
+		cb.linear().rhs(xor2(w(6), w(7))).dst(w(23)).build(); // b_hi_src
+		cb.linear().rhs(xor2(w(8), w(9))).dst(w(24)).build(); // c_lo_src
+		cb.linear().rhs(xor2(w(10), w(11))).dst(w(25)).build(); // c_hi_src
+
+		cb.bmul()
+			.a_lo(w(20))
+			.a_hi(w(21))
+			.b_lo(w(22))
+			.b_hi(w(23))
+			.c_lo(w(24))
+			.c_hi(w(25))
+			.build();
+
+		let mut stat = Stat::default();
+		let mut leg = LeGraph::new(&cb, &mut stat);
+		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
+
+		let patches = super::build(&cb, &leg, w(40));
+		let mut cb2 = cb;
+		super::apply_patches(&mut cb2, patches);
+
+		// Every linear def is used exactly once (in the BMUL operand), so all six are inlined into
+		// the single BMUL constraint rather than committed as AND constraints. Each operand expands
+		// to its two XOR terms.
+		assert_eq!(cb2.bmul_constraints.len(), 1);
+		assert_eq!(cb2.and_constraints.len(), 0);
+		let m = &cb2.bmul_constraints[0];
+		assert_eq!(m.a_lo.len(), 2);
+		assert_eq!(m.a_hi.len(), 2);
+		assert_eq!(m.b_lo.len(), 2);
+		assert_eq!(m.b_hi.len(), 2);
+		assert_eq!(m.c_lo.len(), 2);
+		assert_eq!(m.c_hi.len(), 2);
 	}
 
 	#[test]
@@ -756,7 +841,7 @@ mod tests {
 		let patches = vec![
 			Patch {
 				subsumes: vec![ConstraintRef::And { index: 1 }],
-				added: AndOrImulConstraint::And(WireAndConstraint {
+				added: NonLinearConstraint::And(WireAndConstraint {
 					a: vec![ShiftedWire {
 						wire: w(30),
 						shift: Shift::None,
@@ -773,7 +858,7 @@ mod tests {
 			},
 			Patch {
 				subsumes: vec![ConstraintRef::Linear { index: 0 }],
-				added: AndOrImulConstraint::And(WireAndConstraint {
+				added: NonLinearConstraint::And(WireAndConstraint {
 					a: vec![ShiftedWire {
 						wire: w(33),
 						shift: Shift::None,
@@ -790,7 +875,7 @@ mod tests {
 			},
 			Patch {
 				subsumes: vec![ConstraintRef::Imul { index: 0 }],
-				added: AndOrImulConstraint::Imul(WireImulConstraint {
+				added: NonLinearConstraint::Imul(WireImulConstraint {
 					a: vec![ShiftedWire {
 						wire: w(36),
 						shift: Shift::None,
