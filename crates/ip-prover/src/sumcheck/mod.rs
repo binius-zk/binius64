@@ -4,7 +4,6 @@
 pub mod batch;
 pub mod bivariate_product_evaluator;
 pub mod bivariate_product_mle;
-pub mod bivariate_product_multi_mle;
 pub mod common;
 pub mod gruen32;
 pub mod mle_store;

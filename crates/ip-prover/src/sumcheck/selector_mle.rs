@@ -279,23 +279,29 @@ mod tests {
 	use std::iter::repeat_with;
 
 	use binius_field::{FieldOps, Random};
+	use binius_ip::sumcheck::verify;
 	use binius_math::{
-		multilinear::evaluate::evaluate as multilinear_evaluate,
+		multilinear::{eq::eq_ind, evaluate::evaluate as multilinear_evaluate},
 		test_utils::{Packed128b, random_scalars},
 	};
+	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 	use itertools::Itertools;
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::sumcheck::{
-		MleToSumCheckDecorator, bivariate_product_multi_mle::BivariateProductMultiMlecheckProver,
-	};
+	use crate::sumcheck::prove::prove_single;
 
 	type P = Packed128b;
 	type F = <P as FieldOps>::Scalar;
+	type StdChallenger = HasherChallenger<sha2::Sha256>;
 
+	// Prove/verify roundtrip: drive the prover through a transcript, verify with the generic
+	// sumcheck verifier, and reconstruct the reduced claim from the returned multilinear
+	// evaluations. This mirrors the verifier's selector-sumcheck check (`verify_phase_3` in
+	// `binius-verifier`'s intmul protocol), which recombines per-selector terms
+	// `(selector·(selected − 1) + 1)·eq(point_i, r)` weighted by an equality tensor.
 	#[test]
-	fn test_bivariate_mlecheck_conformance() {
+	fn test_selector_mlecheck_prove_verify() {
 		let mut rng = StdRng::seed_from_u64(0);
 
 		let n_vars = 8;
@@ -306,102 +312,112 @@ mod tests {
 			.take(1 << n_vars)
 			.collect_vec();
 
-		// Compare the round polynomials of the SelectorMlecheckProver and sum of round
-		// polynomials of two bivariate provers evaluating selector * selected and (1-selector) * 1
 		let selected_scalars = random_scalars::<F>(&mut rng, 1 << n_vars);
 		let selected = FieldBuffer::<P>::from_values(&selected_scalars);
 
-		let ones_scalars = repeat_with(|| F::ONE).take(1 << n_vars).collect_vec();
-		let ones = FieldBuffer::<P>::from_values(&ones_scalars);
-
-		let bivariate_provers_and_claims = (0..selector_count)
+		// The 1-bit selector columns, extracted from the bitmasks.
+		let selector_columns = (0..selector_count)
 			.map(|i| {
-				let mut selector_scalars = bitmasks
+				bitmasks
 					.iter()
 					.map(|b| if (b >> i) & 1 == 1 { F::ONE } else { F::ZERO })
-					.collect_vec();
-				let direct_selector = FieldBuffer::<P>::from_values(&selector_scalars);
-
-				let zeroed_selected_scalars = izip!(&selected_scalars, &selector_scalars)
-					.map(|(&selected, &selector)| selected * selector)
-					.collect_vec();
-				let zeroed_selected = FieldBuffer::<P>::from_values(&zeroed_selected_scalars);
-
-				for scalar in &mut selector_scalars {
-					*scalar += F::ONE;
-				}
-
-				let inverted_selector_scalars = selector_scalars;
-				let inverted_selector = FieldBuffer::<P>::from_values(&inverted_selector_scalars);
-
-				let masked_selected_scalars =
-					izip!(&zeroed_selected_scalars, &inverted_selector_scalars)
-						.map(|(&zeroed_selected, &inverted_selector)| {
-							zeroed_selected + inverted_selector
-						})
-						.collect_vec();
-				let masked_selected = FieldBuffer::<P>::from_values(&masked_selected_scalars);
-
-				let point = random_scalars::<F>(&mut rng, n_vars);
-				let value = multilinear_evaluate(&masked_selected, &point);
-
-				let direct_eval_claim = multilinear_evaluate(&zeroed_selected, &point);
-				let direct_mle_prover = BivariateProductMultiMlecheckProver::new(
-					[[direct_selector, selected.clone()]].to_vec(),
-					&point,
-					vec![direct_eval_claim],
-				);
-				let direct_prover = MleToSumCheckDecorator::new(direct_mle_prover);
-
-				let inverted_eval_claim = multilinear_evaluate(&inverted_selector, &point);
-				let inverted_mle_prover = BivariateProductMultiMlecheckProver::new(
-					[[inverted_selector, ones.clone()]].to_vec(),
-					&point,
-					vec![inverted_eval_claim],
-				);
-				let inverted_prover = MleToSumCheckDecorator::new(inverted_mle_prover);
-
-				let selector_mlecheck_claim = Claim { point, value };
-
-				((direct_prover, inverted_prover), selector_mlecheck_claim)
+					.collect_vec()
 			})
 			.collect_vec();
 
-		let (mut bivariate_provers, claims) = bivariate_provers_and_claims
-			.into_iter()
-			.unzip::<_, _, Vec<_>, Vec<_>>();
+		// One claim per selector: the composition `selected * selector + (1 - selector)` evaluated
+		// at an independent random point.
+		let points = repeat_with(|| random_scalars::<F>(&mut rng, n_vars))
+			.take(selector_count)
+			.collect_vec();
+		let claims = izip!(&selector_columns, &points)
+			.map(|(selector_scalars, point)| {
+				let masked = izip!(&selected_scalars, selector_scalars)
+					.map(|(&selected, &selector)| selected * selector + (F::ONE - selector))
+					.collect_vec();
+				let value = multilinear_evaluate(&FieldBuffer::<P>::from_values(&masked), point);
+				Claim {
+					point: point.clone(),
+					value,
+				}
+			})
+			.collect_vec();
+
+		let weights = random_scalars::<F>(&mut rng, selector_count);
+
+		// The prover reduces the per-selector claims to a single weighted sumcheck claim.
+		let claim: F = izip!(&claims, &weights).map(|(c, &w)| c.value * w).sum();
 
 		let switchover = 0;
-		let weights = random_scalars::<F>(&mut rng, selector_count);
-		let mut selector_prover =
-			SelectorMlecheckProver::new(selected, claims, &bitmasks, weights.clone(), switchover);
+		let prover = SelectorMlecheckProver::new(
+			selected.clone(),
+			claims,
+			&bitmasks,
+			weights.clone(),
+			switchover,
+		);
 
-		for _n_rounds_remaining in (1..=n_vars).rev() {
-			// NB: this is unsound, for test usage only!
-			let challenge = F::random(&mut rng);
+		// Run the prover through the transcript and append the final multilinear evaluations.
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		let output = prove_single(prover, &mut prover_transcript);
+		prover_transcript
+			.message()
+			.write_slice(&output.multilinear_evals);
 
-			let all_selector_coeffs = selector_prover.execute();
-			selector_prover.fold(challenge);
+		// Verify against the generic sumcheck verifier. The composition has degree 3: a degree-2
+		// product (`selected * selector`) times the equality indicator.
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		let sumcheck_output = verify(n_vars, 3, claim, &mut verifier_transcript).unwrap();
 
-			// The prover combines its per-selector round polynomials into the single weighted
-			// polynomial `Σ_i weights[i] · (direct_i + inverted_i)`.
-			assert_eq!(all_selector_coeffs.len(), 1);
-			let mut expected = RoundCoeffs::<F>::default();
-			for (&weight, (direct_prover, inverted_prover)) in
-				izip!(&weights, &mut bivariate_provers)
-			{
-				let direct_coeffs = direct_prover.execute();
-				let inverted_coeffs = inverted_prover.execute();
+		assert_eq!(
+			output.challenges, sumcheck_output.challenges,
+			"prover and verifier challenges must match"
+		);
 
-				direct_prover.fold(challenge);
-				inverted_prover.fold(challenge);
+		// The prover binds variables high-to-low; `evaluate` and `eq_ind` expect low-to-high.
+		let mut reduced_point = sumcheck_output.challenges.clone();
+		reduced_point.reverse();
 
-				assert_eq!(direct_coeffs.len(), 1);
-				assert_eq!(inverted_coeffs.len(), 1);
-				expected += &((direct_coeffs[0].clone() + &inverted_coeffs[0]) * weight);
-			}
-			assert_eq!(all_selector_coeffs[0], expected);
+		// `finish()` returns `[selector_0(r), .., selector_{k-1}(r), selected(r)]`.
+		let multilinear_evals: Vec<F> = verifier_transcript
+			.message()
+			.read_vec(selector_count + 1)
+			.unwrap();
+		let (selector_evals, selected_eval) = multilinear_evals.split_at(selector_count);
+		let selected_eval = selected_eval[0];
+
+		// The claimed evaluations must match direct evaluation of the multilinears at the challenge
+		// point.
+		assert_eq!(
+			selected_eval,
+			multilinear_evaluate(&selected, &reduced_point),
+			"selected evaluation"
+		);
+		for (i, (&selector_eval, selector_scalars)) in
+			izip!(selector_evals, &selector_columns).enumerate()
+		{
+			assert_eq!(
+				selector_eval,
+				multilinear_evaluate(
+					&FieldBuffer::<P>::from_values(selector_scalars),
+					&reduced_point
+				),
+				"selector {i} evaluation"
+			);
 		}
+
+		// Reconstruct the reduced sumcheck claim from the multilinear evaluations:
+		// `Σ_i weights[i] · (selected(r)·selector_i(r) + (1 − selector_i(r))) · eq(point_i, r)`.
+		let expected_eval: F = izip!(selector_evals, &points, &weights)
+			.map(|(&selector_eval, point, &weight)| {
+				let composition = selected_eval * selector_eval + (F::ONE - selector_eval);
+				weight * composition * eq_ind(point, &reduced_point)
+			})
+			.sum();
+		assert_eq!(
+			expected_eval, sumcheck_output.eval,
+			"reduced sumcheck claim must match the composition evaluated at the challenge point"
+		);
 	}
 
 	// `round_claim` must return the same value before and after `execute()`. This prover has a
