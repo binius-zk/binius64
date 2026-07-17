@@ -26,7 +26,7 @@ use super::{
 // This is the number of variables in the g (and h) multilinears of phase 1.
 const LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS;
 
-/// Constructs the "g" multilinear parts for both BITAND and INTMUL operations.
+/// Constructs the "g" multilinear parts for the BITAND, INTMUL and BMUL operations.
 /// Proves the first phase of the shift reduction.
 /// Computes the g and h multilinears and performs the sumcheck.
 #[instrument(skip_all, name = "prover_phase_1")]
@@ -35,6 +35,7 @@ pub fn prove_phase_1<F, P, Channel>(
 	words: &[Word],
 	bitand_data: &PreparedOperatorData<F>,
 	intmul_data: &PreparedOperatorData<F>,
+	binmul_data: &PreparedOperatorData<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
 ) -> SumcheckOutput<F>
@@ -46,17 +47,27 @@ where
 	// Build the g parts for the public and hidden segments separately, then sum them. The public
 	// words are the prefix of `words`, and each segment's key ranges are segment-relative.
 	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
-	let mut g_parts =
-		build_g_parts::<_, P>(public_words, &key_collection.public, bitand_data, intmul_data);
-	let hidden_g_parts =
-		build_g_parts::<_, P>(hidden_words, &key_collection.hidden, bitand_data, intmul_data);
+	let mut g_parts = build_g_parts::<_, P>(
+		public_words,
+		&key_collection.public,
+		bitand_data,
+		intmul_data,
+		binmul_data,
+	);
+	let hidden_g_parts = build_g_parts::<_, P>(
+		hidden_words,
+		&key_collection.hidden,
+		bitand_data,
+		intmul_data,
+		binmul_data,
+	);
 	for (g, hidden_g) in g_parts.iter_mut().zip(&hidden_g_parts) {
 		for (slot, add) in g.as_mut().iter_mut().zip(hidden_g.as_ref()) {
 			*slot += *add;
 		}
 	}
 
-	// BitAnd and IntMul share the same `r_zhat_prime`.
+	// BitAnd, IntMul and BinMul share the same `r_zhat_prime`.
 	let h_parts = build_h_parts(domain_subspace, bitand_data.r_zhat_prime);
 
 	run_phase_1_sumcheck(g_parts, h_parts, channel)
@@ -149,7 +160,8 @@ pub fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPPro
 	}
 }
 
-/// Constructs the "g" multilinear parts for both BITAND and INTMUL operations, for one key segment.
+/// Constructs the "g" multilinear parts for the BITAND, INTMUL and BMUL operations, for one key
+/// segment.
 ///
 /// This builds the g multilinear polynomials used in phase 1 of the shift protocol, over the words
 /// of a single value-vector segment (public or hidden). For each operation (BITAND and INTMUL) it
@@ -181,6 +193,7 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 	segment: &KeySegment,
 	bitand_operator_data: &PreparedOperatorData<F>,
 	intmul_operator_data: &PreparedOperatorData<F>,
+	binmul_operator_data: &PreparedOperatorData<F>,
 ) -> [FieldBuffer<P>; SHIFT_VARIANT_COUNT] {
 	let acc_size: usize = SHIFT_VARIANT_COUNT << (LOG_LEN.saturating_sub(P::LOG_WIDTH));
 
@@ -210,6 +223,7 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 					let operator_data = match key.operation {
 						Operation::BitwiseAnd => bitand_operator_data,
 						Operation::IntegerMul => intmul_operator_data,
+						Operation::BinMul => binmul_operator_data,
 					};
 
 					let acc = key.accumulate(

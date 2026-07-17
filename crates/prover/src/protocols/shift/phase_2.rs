@@ -44,18 +44,21 @@ use crate::fold_word::fold_words;
 /// - `words`: The value vector words
 /// - `bitand_data`: Operator data for bit multiplication constraints
 /// - `intmul_data`: Operator data for integer multiplication constraints
+/// - `binmul_data`: Operator data for GHASH-field multiplication (BMUL) constraints
 /// - `phase_1_output`: Challenges and evaluation from the first phase
 /// - `channel`: The prover's channel
 ///
 /// # Returns
 /// Returns `SumcheckOutput` containing the combined challenges `[r_j, r_y]` and the witness
 /// evaluation, or an error if the protocol fails.
+#[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "prove_phase_2")]
 pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel>(
 	key_collection: &KeyCollection,
 	words: &[Word],
 	bitand_data: &PreparedOperatorData<F>,
 	intmul_data: &PreparedOperatorData<F>,
+	binmul_data: &PreparedOperatorData<F>,
 	domain_subspace: &BinarySubspace<F>,
 	phase_1_output: SumcheckOutput<F>,
 	channel: &mut Channel,
@@ -87,6 +90,7 @@ where
 		key_collection,
 		bitand_data,
 		intmul_data,
+		binmul_data,
 		domain_subspace,
 		&r_j,
 		&r_s,

@@ -26,6 +26,7 @@ use crate::{
 	fri::{ConstantArityStrategy, FRIParams, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
 	protocols::{
+		binmul::{BinMulOutput, verify as verify_binmul_reduction},
 		bitand::{AndCheckOutput, verify_with_channel},
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
 		shift::{self, OperatorData},
@@ -170,6 +171,28 @@ impl IOPVerifier {
 			None
 		};
 
+		// [phase] Verify BinMul Reduction - GHASH-field multiplication constraint verification
+		//
+		// Runs immediately after the IntMul reduction and before BitAnd, so the transcript stays in
+		// sync with the prover. Skipped (no transcript reads) when there are no BMUL constraints,
+		// mirroring the prover's identical guard. The per-bit operand evaluations are collapsed
+		// below with the shared `r_zhat_prime` challenge that BitAnd draws.
+		let binmul_output = if self.constraint_system.n_bmul_constraints() > 0 {
+			let binmul_guard = tracing::info_span!(
+				"[phase] Verify BinMul Reduction",
+				phase = "verify_binmul_reduction",
+				perfetto_category = "phase",
+				n_constraints = self.constraint_system.n_bmul_constraints()
+			)
+			.entered();
+			let log_n_constraints = checked_log_2(self.constraint_system.n_bmul_constraints());
+			let binmul_output = verify_binmul_reduction::<B128, _>(log_n_constraints, channel)?;
+			drop(binmul_guard);
+			Some(binmul_output)
+		} else {
+			None
+		};
+
 		// [phase] Verify BitAnd Reduction - AND constraint verification
 		let bitand_guard = tracing::info_span!(
 			"[phase] Verify BitAnd Reduction",
@@ -221,6 +244,39 @@ impl IOPVerifier {
 			None => OperatorData::new(Vec::new(), std::array::from_fn(|_| Channel::Elem::zero())),
 		};
 
+		// Build `OperatorData` for BinMul. It shares the univariate challenge `r_zhat_prime` with
+		// BitAnd and IntMul (computed above), and its six per-bit operand columns are collapsed
+		// identically to IntMul. When BinMul was skipped, synthesize a zero claim (six zero evals
+		// at an empty point); it contributes zero to the shift reduction, whose monster
+		// evaluation iterates the (empty) BMUL constraints.
+		let binmul_claim = match binmul_output {
+			Some(BinMulOutput {
+				eval_point,
+				a_lo_evals,
+				a_hi_evals,
+				b_lo_evals,
+				b_hi_evals,
+				c_lo_evals,
+				c_hi_evals,
+			}) => {
+				let l_tilde = lagrange_evals_scalars(&domain_subspace, r_zhat_prime.clone());
+				let make_final_claim =
+					|evals| inner_product_scalars(evals, l_tilde.iter().cloned());
+				OperatorData::new(
+					eval_point,
+					[
+						make_final_claim(a_lo_evals),
+						make_final_claim(a_hi_evals),
+						make_final_claim(b_lo_evals),
+						make_final_claim(b_hi_evals),
+						make_final_claim(c_lo_evals),
+						make_final_claim(c_hi_evals),
+					],
+				)
+			}
+			None => OperatorData::new(Vec::new(), std::array::from_fn(|_| Channel::Elem::zero())),
+		};
+
 		// [phase] Verify Shift Reduction - shift operations and constraint validation
 		let constraint_guard = tracing::info_span!(
 			"[phase] Verify Shift Reduction",
@@ -228,8 +284,13 @@ impl IOPVerifier {
 			perfetto_category = "phase"
 		)
 		.entered();
-		let shift_output =
-			shift::verify(self.constraint_system(), &bitand_claim, &intmul_claim, channel)?;
+		let shift_output = shift::verify(
+			self.constraint_system(),
+			&bitand_claim,
+			&intmul_claim,
+			&binmul_claim,
+			channel,
+		)?;
 		drop(constraint_guard);
 
 		// [phase] Verify Public Input - public input verification
@@ -244,6 +305,7 @@ impl IOPVerifier {
 			public,
 			&bitand_claim,
 			&intmul_claim,
+			&binmul_claim,
 			&domain_subspace,
 			r_zhat_prime,
 			&shift_output,

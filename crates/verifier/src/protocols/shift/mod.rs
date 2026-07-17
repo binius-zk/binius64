@@ -4,6 +4,7 @@
 pub const SHIFT_VARIANT_COUNT: usize = 8;
 pub const BITAND_ARITY: usize = 3;
 pub const INTMUL_ARITY: usize = 4;
+pub const BINMUL_ARITY: usize = 6;
 
 mod monster;
 mod shift_ind;

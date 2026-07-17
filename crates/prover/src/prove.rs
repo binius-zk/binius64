@@ -4,7 +4,9 @@
 use std::marker::PhantomData;
 
 use binius_core::{
-	constraint_system::{AndConstraint, ConstraintSystem, ImulConstraint, ValueVec},
+	constraint_system::{
+		AndConstraint, BmulConstraint, ConstraintSystem, ImulConstraint, ValueVec,
+	},
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, BinaryField, Divisible, Field, PackedField};
@@ -22,7 +24,7 @@ use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::pr
 use binius_verifier::{
 	IOPVerifier, Verifier,
 	config::{B128, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
-	protocols::{bitand::AndCheckOutput, intmul::IntMulOutput},
+	protocols::{binmul::BinMulOutput, bitand::AndCheckOutput, intmul::IntMulOutput},
 };
 use digest::Output;
 
@@ -30,6 +32,7 @@ use super::error::Error;
 use crate::{
 	and_reduction::prover::OblongZerocheckProver,
 	protocols::{
+		binmul::{BinMulWitness, prove as prove_binmul},
 		intmul::{prove::IntMulProver, witness::Witness as IntMulWitness},
 		shift::{
 			KeyCollection, OperatorData, build_key_collection, prove as prove_shift_reduction,
@@ -135,6 +138,28 @@ impl IOPProver {
 			None
 		};
 
+		// [phase] BinMul Reduction - GHASH-field multiplication constraint reduction
+		//
+		// Runs immediately after the IntMul reduction and before BitAnd, matching the verifier so
+		// the transcript stays in sync. Skipped entirely (no transcript messages) when there are
+		// no BMUL constraints; the zero `OperatorData` synthesized below then contributes nothing
+		// to the shift reduction.
+		let binmul_output = if cs.n_bmul_constraints() > 0 {
+			let binmul_guard = tracing::info_span!(
+				"[phase] BinMul check",
+				n_constraints = cs.bmul_constraints.len()
+			)
+			.entered();
+			let binmul_witness = tracing::debug_span!("Assemble columns")
+				.in_scope(|| build_binmul_witness(&cs.bmul_constraints, &witness));
+
+			let binmul_output = prove_binmul_reduction::<_, P, _>(binmul_witness, &mut *channel);
+			drop(binmul_guard);
+			Some(binmul_output)
+		} else {
+			None
+		};
+
 		// [phase] BitAnd Reduction - AND constraint reduction
 		let bitand_guard =
 			tracing::info_span!("[phase] BitAnd check", n_constraints = cs.and_constraints.len())
@@ -197,6 +222,44 @@ impl IOPProver {
 			},
 		};
 
+		// Build `OperatorData` for BinMul using the same shared `r_zhat_prime` challenge,
+		// collapsing each of the six per-bit operand columns identically to IntMul. When BinMul
+		// was skipped, synthesize a zero claim (six zero evals at an empty point): the shift
+		// reduction iterates the (empty) BMUL constraints, so this claim contributes zero to its
+		// batched evaluation.
+		let binmul_claim = match binmul_output {
+			Some(BinMulOutput {
+				eval_point,
+				a_lo_evals,
+				a_hi_evals,
+				b_lo_evals,
+				b_hi_evals,
+				c_lo_evals,
+				c_hi_evals,
+			}) => {
+				let r_zhat_prime = bitand_claim.r_zhat_prime;
+				let l_tilde = lagrange_evals(&subspace, r_zhat_prime);
+				let make_final_claim = |evals| inner_product(evals, l_tilde.iter_scalars());
+				OperatorData {
+					evals: vec![
+						make_final_claim(a_lo_evals),
+						make_final_claim(a_hi_evals),
+						make_final_claim(b_lo_evals),
+						make_final_claim(b_hi_evals),
+						make_final_claim(c_lo_evals),
+						make_final_claim(c_hi_evals),
+					],
+					r_zhat_prime,
+					r_x_prime: eval_point,
+				}
+			}
+			None => OperatorData {
+				evals: vec![B128::ZERO; 6],
+				r_zhat_prime: bitand_claim.r_zhat_prime,
+				r_x_prime: Vec::new(),
+			},
+		};
+
 		// [phase] Shift Reduction - shift operations
 		let shift_guard = tracing::info_span!(
 			"[phase] Shift Reduction",
@@ -212,6 +275,7 @@ impl IOPProver {
 			witness.combined_witness(),
 			bitand_claim,
 			intmul_claim,
+			binmul_claim,
 			&subspace,
 			&mut *channel,
 		);
@@ -460,6 +524,38 @@ where
 	Ok(mulcheck_prover.prove(intmul_witness))
 }
 
+fn prove_binmul_reduction<F, P, Channel>(
+	witness: BinMulCheckWitness,
+	channel: &mut Channel,
+) -> BinMulOutput<F>
+where
+	F: BinaryField + From<u128>,
+	P: PackedField<Scalar = F>,
+	Channel: binius_ip_prover::channel::IPProverChannel<F>,
+{
+	// The word slices are borrowed by `BinMulWitness`, so keep the owned `Vec`s alive across the
+	// call.
+	let BinMulCheckWitness {
+		a_lo,
+		a_hi,
+		b_lo,
+		b_hi,
+		c_lo,
+		c_hi,
+	} = witness;
+
+	let binmul_witness = BinMulWitness {
+		a_lo: &a_lo,
+		a_hi: &a_hi,
+		b_lo: &b_lo,
+		b_hi: &b_hi,
+		c_lo: &c_lo,
+		c_hi: &c_hi,
+	};
+
+	prove_binmul::<F, P, _>(&binmul_witness, channel)
+}
+
 struct AndCheckWitness {
 	a: Vec<Word>,
 	b: Vec<Word>,
@@ -471,6 +567,15 @@ struct MulCheckWitness {
 	b: Vec<Word>,
 	lo: Vec<Word>,
 	hi: Vec<Word>,
+}
+
+struct BinMulCheckWitness {
+	a_lo: Vec<Word>,
+	a_hi: Vec<Word>,
+	b_lo: Vec<Word>,
+	b_hi: Vec<Word>,
+	c_lo: Vec<Word>,
+	c_hi: Vec<Word>,
 }
 
 fn build_bitand_witness(and_constraints: &[AndConstraint], witness: &ValueVec) -> AndCheckWitness {
@@ -533,6 +638,58 @@ fn build_intmul_witness(
 	}
 
 	MulCheckWitness { a, b, lo, hi }
+}
+
+fn build_binmul_witness(
+	bmul_constraints: &[BmulConstraint],
+	witness: &ValueVec,
+) -> BinMulCheckWitness {
+	let n_constraints = bmul_constraints.len();
+
+	let mut a_lo = Vec::with_capacity(n_constraints);
+	let mut a_hi = Vec::with_capacity(n_constraints);
+	let mut b_lo = Vec::with_capacity(n_constraints);
+	let mut b_hi = Vec::with_capacity(n_constraints);
+	let mut c_lo = Vec::with_capacity(n_constraints);
+	let mut c_hi = Vec::with_capacity(n_constraints);
+
+	(
+		bmul_constraints,
+		a_lo.spare_capacity_mut(),
+		a_hi.spare_capacity_mut(),
+		b_lo.spare_capacity_mut(),
+		b_hi.spare_capacity_mut(),
+		c_lo.spare_capacity_mut(),
+		c_hi.spare_capacity_mut(),
+	)
+		.into_par_iter()
+		.for_each(|(constraint, a_lo_i, a_hi_i, b_lo_i, b_hi_i, c_lo_i, c_hi_i)| {
+			a_lo_i.write(witness.eval_operand(&constraint.a_lo));
+			a_hi_i.write(witness.eval_operand(&constraint.a_hi));
+			b_lo_i.write(witness.eval_operand(&constraint.b_lo));
+			b_hi_i.write(witness.eval_operand(&constraint.b_hi));
+			c_lo_i.write(witness.eval_operand(&constraint.c_lo));
+			c_hi_i.write(witness.eval_operand(&constraint.c_hi));
+		});
+
+	// Safety: all entries in the six columns are initialized in the parallel loop above.
+	unsafe {
+		a_lo.set_len(n_constraints);
+		a_hi.set_len(n_constraints);
+		b_lo.set_len(n_constraints);
+		b_hi.set_len(n_constraints);
+		c_lo.set_len(n_constraints);
+		c_hi.set_len(n_constraints);
+	}
+
+	BinMulCheckWitness {
+		a_lo,
+		a_hi,
+		b_lo,
+		b_hi,
+		c_lo,
+		c_hi,
+	}
 }
 
 #[cfg(test)]

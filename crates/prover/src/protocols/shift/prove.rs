@@ -84,6 +84,7 @@ impl<F: Field> PreparedOperatorData<F> {
 /// - `words`: The witness words (must have power-of-2 length)
 /// - `bitand_data`: Operator data for bit multiplication (AND) constraints
 /// - `intmul_data`: Operator data for integer multiplication (IMUL) constraints
+/// - `binmul_data`: Operator data for GHASH-field multiplication (BMUL) constraints
 /// - `transcript`: The prover's transcript for interactive protocol
 ///
 /// # Returns
@@ -97,6 +98,7 @@ pub fn prove<F, P, Channel>(
 	words: &[Word],
 	bitand_data: OperatorData<F>,
 	intmul_data: OperatorData<F>,
+	binmul_data: OperatorData<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
 ) -> SumcheckOutput<F>
@@ -108,11 +110,13 @@ where
 	// Sample lambdas, one for each operator.
 	let bitand_lambda = channel.sample();
 	let intmul_lambda = channel.sample();
+	let binmul_lambda = channel.sample();
 
 	// Create prepared operator data with sampled lambdas
 	let expand_scope = tracing::debug_span!("Expand tensor queries").entered();
 	let prepared_bitand_data = PreparedOperatorData::new(bitand_data, bitand_lambda);
 	let prepared_intmul_data = PreparedOperatorData::new(intmul_data, intmul_lambda);
+	let prepared_binmul_data = PreparedOperatorData::new(binmul_data, binmul_lambda);
 	drop(expand_scope);
 
 	// Prove the first phase, receiving a `SumcheckOutput`
@@ -123,6 +127,7 @@ where
 		words,
 		&prepared_bitand_data,
 		&prepared_intmul_data,
+		&prepared_binmul_data,
 		domain_subspace,
 		channel,
 	);
@@ -136,6 +141,7 @@ where
 		words,
 		&prepared_bitand_data,
 		&prepared_intmul_data,
+		&prepared_binmul_data,
 		domain_subspace,
 		phase_1_output,
 		channel,

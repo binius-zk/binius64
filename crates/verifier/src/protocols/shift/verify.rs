@@ -4,7 +4,7 @@
 use std::{array, iter};
 
 use binius_core::{
-	constraint_system::{AndConstraint, ConstraintSystem, ImulConstraint, Operand},
+	constraint_system::{AndConstraint, BmulConstraint, ConstraintSystem, ImulConstraint, Operand},
 	word::Word,
 };
 use binius_field::{BinaryField, field::FieldOps, util::FieldFn};
@@ -24,7 +24,7 @@ use getset::Getters;
 use itertools::Itertools;
 
 use super::{
-	BITAND_ARITY, INTMUL_ARITY, SHIFT_VARIANT_COUNT, error::Error, evaluate_h_op,
+	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, SHIFT_VARIANT_COUNT, error::Error, evaluate_h_op,
 	evaluate_monster_multilinear_for_operation,
 	monster::evaluate_monster_multilinear_for_operation_native,
 };
@@ -104,6 +104,8 @@ pub struct VerifyOutput<F> {
 	bitand_lambda: F,
 	/// Random coefficient for batching IMUL constraint evaluations.
 	intmul_lambda: F,
+	/// Random coefficient for batching BMUL constraint evaluations.
+	binmul_lambda: F,
 	/// Challenge point for the bit index variables (length `Word::LOG_BITS`).
 	pub r_j: Vec<F>,
 	/// Challenge point for the shift variables (length `Word::LOG_BITS`).
@@ -148,19 +150,20 @@ impl<F> VerifyOutput<F> {
 /// Verifies the shift protocol using a two-phase sumcheck approach.
 ///
 /// # Protocol Overview
-/// 1. **Sampling Phase**: Samples random lambda coefficients for batching bitand and intmul
+/// 1. **Sampling Phase**: Samples random lambda coefficients for batching bitand, intmul and binmul
 ///    evaluation claims across operands.
 /// 2. **First Sumcheck**: Verifies the batched evaluation claim over `Word::LOG_BITS * 2` variables
 /// 3. **Challenge Splitting**: Splits sumcheck challenges into `r_j` and `r_s` components
 /// 4. **Second Sumcheck**: Verifies the gamma claim over `log_word_count` variables
 /// 5. **Monster Multilinear Verification**: Checks that the claimed evaluations match expected
-///    monster multilinear evaluations for both AND constraints (bitand) and IMUL constraints
-///    (intmul)
+///    monster multilinear evaluations for AND constraints (bitand), IMUL constraints (intmul) and
+///    BMUL constraints (binmul)
 ///
 /// # Parameters
-/// - `constraint_system`: The constraint system containing AND and IMUL constraints (consumed)
+/// - `constraint_system`: The constraint system containing AND, IMUL and BMUL constraints
 /// - `bitand_data`: Operator data for bit multiplication operations
 /// - `intmul_data`: Operator data for integer multiplication operations
+/// - `binmul_data`: Operator data for GHASH-field multiplication operations
 /// - `transcript`: Interactive transcript for challenge sampling and message reading
 ///
 /// # Returns
@@ -175,6 +178,7 @@ pub fn verify<F, C>(
 	constraint_system: &ConstraintSystem,
 	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
 	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
+	binmul_data: &OperatorData<C::Elem, BINMUL_ARITY>,
 	channel: &mut C,
 ) -> Result<VerifyOutput<C::Elem>, Error>
 where
@@ -183,9 +187,11 @@ where
 {
 	let bitand_lambda = channel.sample();
 	let intmul_lambda = channel.sample();
+	let binmul_lambda = channel.sample();
 
 	let eval = bitand_data.batched_eval(bitand_lambda.clone())
-		+ intmul_data.batched_eval(intmul_lambda.clone());
+		+ intmul_data.batched_eval(intmul_lambda.clone())
+		+ binmul_data.batched_eval(binmul_lambda.clone());
 
 	let SumcheckOutput {
 		eval: gamma,
@@ -217,6 +223,7 @@ where
 	Ok(VerifyOutput {
 		bitand_lambda,
 		intmul_lambda,
+		binmul_lambda,
 		r_j,
 		r_y,
 		r_segment,
@@ -230,7 +237,7 @@ where
 ///
 /// After the shift reduction protocol completes, this function checks that the
 /// prover-provided witness evaluation is consistent with the expected values.
-/// It computes the monster multilinear evaluations for both AND and IMUL constraints
+/// It computes the monster multilinear evaluations for the AND, IMUL and BMUL constraints
 /// and verifies the final equation relating the witness and monster evaluations.
 ///
 /// # Protocol Details
@@ -240,8 +247,8 @@ where
 /// eval = trace_eval * monster_eval
 /// ```
 ///
-/// where `monster_eval` is the sum of evaluations for AND and IMUL constraint polynomials, and
-/// `trace_eval` is the witness evaluation reconstructed from its two segments:
+/// where `monster_eval` is the sum of evaluations for AND, IMUL and BMUL constraint polynomials,
+/// and `trace_eval` is the witness evaluation reconstructed from its two segments:
 /// ```text
 /// trace_eval = (1 - r_segment) * prod_{k <= i} (1 - r_y_i) * public_eval + r_segment * witness_eval
 /// ```
@@ -259,6 +266,7 @@ pub fn check_eval<F, C>(
 	public: &[Word],
 	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
 	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
+	binmul_data: &OperatorData<C::Elem, BINMUL_ARITY>,
 	subspace: &BinarySubspace<F>,
 	r_zhat_prime: C::Elem,
 	output: &VerifyOutput<C::Elem>,
@@ -272,6 +280,7 @@ where
 	let VerifyOutput {
 		bitand_lambda,
 		intmul_lambda,
+		binmul_lambda,
 		eval,
 		r_j,
 		r_s,
@@ -289,6 +298,7 @@ where
 	let monster_eval = {
 		let bitand_r_x_prime_len = bitand_data.r_x_prime.len();
 		let intmul_r_x_prime_len = intmul_data.r_x_prime.len();
+		let binmul_r_x_prime_len = binmul_data.r_x_prime.len();
 		let r_j_len = r_j.len();
 		let r_s_len = r_s.len();
 		let r_y_len = r_y.len();
@@ -296,8 +306,10 @@ where
 		let inputs: Vec<C::Elem> = iter::once(r_zhat_prime)
 			.chain(iter::once(bitand_lambda.clone()))
 			.chain(iter::once(intmul_lambda.clone()))
+			.chain(iter::once(binmul_lambda.clone()))
 			.chain(bitand_data.r_x_prime.iter().cloned())
 			.chain(intmul_data.r_x_prime.iter().cloned())
+			.chain(binmul_data.r_x_prime.iter().cloned())
 			.chain(r_j.iter().cloned())
 			.chain(r_s.iter().cloned())
 			.chain(r_y.iter().cloned())
@@ -309,6 +321,7 @@ where
 			constraint_system,
 			bitand_r_x_prime_len,
 			intmul_r_x_prime_len,
+			binmul_r_x_prime_len,
 			r_j_len,
 			r_s_len,
 			r_y_len,
@@ -364,19 +377,21 @@ impl<F: BinaryField> FieldFn<F> for PublicWordsEvalFn<'_> {
 /// The inputs are the flat concatenation of these sections, in order:
 ///
 /// ```text
-/// r_zhat_prime | bitand_lambda | intmul_lambda | bitand_r_x_prime.. | intmul_r_x_prime.. | r_j.. | r_s.. | r_y..
+/// r_zhat_prime | bitand_lambda | intmul_lambda | binmul_lambda | bitand_r_x_prime.. | intmul_r_x_prime.. | binmul_r_x_prime.. | r_j.. | r_s.. | r_y..
 /// ```
 ///
 /// The stored lengths recover each variable-length section from that flat slice.
 struct MonsterEvalFn<'a, F: BinaryField> {
 	/// The evaluation subspace for the Lagrange basis over the word bits.
 	subspace: &'a BinarySubspace<F>,
-	/// The AND and IMUL constraints whose monster multilinears are evaluated.
+	/// The AND, IMUL and BMUL constraints whose monster multilinears are evaluated.
 	constraint_system: &'a ConstraintSystem,
 	/// Length of the BitAnd operator's `r_x_prime` section.
 	bitand_r_x_prime_len: usize,
 	/// Length of the IntMul operator's `r_x_prime` section.
 	intmul_r_x_prime_len: usize,
+	/// Length of the BinMul operator's `r_x_prime` section.
+	binmul_r_x_prime_len: usize,
 	/// Length of the `r_j` section (the low-order word-bit challenges).
 	r_j_len: usize,
 	/// Length of the `r_s` section (the shift-amount challenges).
@@ -402,11 +417,14 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		let r_zhat_prime_v = vals[0].clone();
 		let bitand_lambda_v = vals[1].clone();
 		let intmul_lambda_v = vals[2].clone();
-		let mut off = 3;
+		let binmul_lambda_v = vals[3].clone();
+		let mut off = 4;
 		let bitand_r_x_prime_v = &vals[off..off + self.bitand_r_x_prime_len];
 		off += self.bitand_r_x_prime_len;
 		let intmul_r_x_prime_v = &vals[off..off + self.intmul_r_x_prime_len];
 		off += self.intmul_r_x_prime_len;
+		let binmul_r_x_prime_v = &vals[off..off + self.binmul_r_x_prime_len];
+		off += self.binmul_r_x_prime_len;
 		let r_j_v = &vals[off..off + self.r_j_len];
 		off += self.r_j_len;
 		let r_s_v = &vals[off..off + self.r_s_len];
@@ -447,7 +465,7 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
 
 		// Tensor the shift-selector evaluations with the shift-amount equality indicator once, so
-		// both the BitAnd and IntMul monster evaluations share it. Indexed by
+		// the BitAnd, IntMul and BinMul monster evaluations share it. Indexed by
 		// `variant * Word::BITS + amount`.
 		let eq_r_s = eq_ind_partial_eval_scalars(r_s_v);
 		let shift_scalars =
@@ -483,8 +501,36 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		} else {
 			E::zero()
 		};
+		// BinMul contribution: operands (a_lo, a_hi, b_lo, b_hi, c_lo, c_hi) batched by
+		// `binmul_lambda`.
+		let binmul_part = if !self.constraint_system.bmul_constraints.is_empty() {
+			let (a_lo, a_hi, b_lo, b_hi, c_lo, c_hi) = self
+				.constraint_system
+				.bmul_constraints
+				.iter()
+				.map(
+					|BmulConstraint {
+					     a_lo,
+					     a_hi,
+					     b_lo,
+					     b_hi,
+					     c_lo,
+					     c_hi,
+					 }| (a_lo, a_hi, b_lo, b_hi, c_lo, c_hi),
+				)
+				.multiunzip();
+			eval_op(
+				&[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi],
+				binmul_r_x_prime_v,
+				binmul_lambda_v,
+				&shift_scalars,
+				&r_y_tensor,
+			)
+		} else {
+			E::zero()
+		};
 
-		bitand_part + intmul_part
+		bitand_part + intmul_part + binmul_part
 	}
 }
 

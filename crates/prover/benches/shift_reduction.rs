@@ -138,6 +138,11 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 					value_vec.combined_witness(),
 					prover_bitand_data,
 					prover_intmul_data,
+					OperatorData {
+						evals: vec![F::ZERO; 6],
+						r_zhat_prime,
+						r_x_prime: Vec::new(),
+					},
 					&subspace,
 					&mut prover_transcript,
 				)
@@ -163,6 +168,11 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			value_vec.combined_witness(),
 			prover_bitand_data,
 			prover_intmul_data,
+			OperatorData {
+				evals: vec![F::ZERO; 6],
+				r_zhat_prime,
+				r_x_prime: Vec::new(),
+			},
 			&subspace,
 			&mut prover_transcript,
 		);
@@ -177,9 +187,16 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 					VerifierOperatorData::new(r_x_prime_bitand.clone(), bitand_evals);
 				let verifier_intmul_data =
 					VerifierOperatorData::new(r_x_prime_intmul.clone(), intmul_evals);
+				let verifier_binmul_data = VerifierOperatorData::new(Vec::new(), [F::ZERO; 6]);
 
-				verify(&cs, &verifier_bitand_data, &verifier_intmul_data, &mut verifier_transcript)
-					.unwrap();
+				verify(
+					&cs,
+					&verifier_bitand_data,
+					&verifier_intmul_data,
+					&verifier_binmul_data,
+					&mut verifier_transcript,
+				)
+				.unwrap();
 			})
 		});
 	}
@@ -233,6 +250,16 @@ fn bench_shift_phases(c: &mut Criterion) {
 		},
 		F::random(&mut rng),
 	);
+	// SHA256 has no BMUL constraints, so the BinMul operator is the zero claim at an empty point,
+	// matching the real prover (`prove.rs` `None` branch).
+	let prepared_bmul = PreparedOperatorData::new(
+		OperatorData {
+			evals: vec![F::ZERO; 6],
+			r_zhat_prime,
+			r_x_prime: Vec::new(),
+		},
+		F::random(&mut rng),
+	);
 
 	// The phases are sequential and stateful: each consumes the previous one's outputs. Rather than
 	// re-deriving predecessors inside each phase's per-iteration setup, advance the protocol once
@@ -248,12 +275,14 @@ fn bench_shift_phases(c: &mut Criterion) {
 			&key_collection.public,
 			&prepared_bitand,
 			&prepared_intmul,
+			&prepared_bmul,
 		);
 		let hidden_g_parts = build_g_parts::<F, P>(
 			hidden_words,
 			&key_collection.hidden,
 			&prepared_bitand,
 			&prepared_intmul,
+			&prepared_bmul,
 		);
 		for (g, hidden_g) in g_parts.iter_mut().zip(&hidden_g_parts) {
 			for (slot, add) in g.as_mut().iter_mut().zip(hidden_g.as_ref()) {
@@ -283,6 +312,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 		&key_collection,
 		&prepared_bitand,
 		&prepared_intmul,
+		&prepared_bmul,
 		&subspace,
 		&r_j,
 		&r_s,
@@ -318,6 +348,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 				&key_collection,
 				&prepared_bitand,
 				&prepared_intmul,
+				&prepared_bmul,
 				&subspace,
 				&r_j,
 				&r_s,

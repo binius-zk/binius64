@@ -200,8 +200,12 @@ impl IOPVerifier {
 			),
 		};
 
+		// M4 has no BMUL constraints: the BinMul claim is a zero claim at an empty point,
+		// contributing nothing to the shift.
+		let binmul = OperatorData::new(Vec::new(), std::array::from_fn(|_| Channel::Elem::zero()));
+
 		// Reduce the operand claims to one witness evaluation.
-		let shift = shift::verify::<B128, _>(cs, &bitand, &intmul, channel)?;
+		let shift = shift::verify::<B128, _>(cs, &bitand, &intmul, &binmul, channel)?;
 
 		// Tie in the shared constants through the public-input consistency check.
 		// The shift evaluates them over the layout's power-of-two word count.
@@ -211,6 +215,7 @@ impl IOPVerifier {
 			&cs.constants,
 			&bitand,
 			&intmul,
+			&binmul,
 			&shift_domain,
 			z_challenge,
 			&shift,

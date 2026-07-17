@@ -257,6 +257,13 @@ impl IOPProver {
 				&folded_witness,
 				bitand_data,
 				intmul_data,
+				// M4 has no BMUL constraints: the BinMul claim is a zero claim at an empty point,
+				// contributing nothing to the shift.
+				OperatorData {
+					evals: vec![B128::ZERO; 6],
+					r_zhat_prime: z_challenge,
+					r_x_prime: Vec::new(),
+				},
 				&shift_domain,
 				channel,
 			)
