@@ -324,7 +324,6 @@ pub fn grind_nonce(
 #[cfg(test)]
 mod tests {
 	use binius_core::{Word, verify::verify_constraints};
-	use binius_frontend::util::pack_bytes_into_wires_le;
 	use rand::prelude::*;
 
 	use super::*;
@@ -384,9 +383,9 @@ mod tests {
 
 		// Pack fixed inputs
 		w[epoch] = Word::from_u64(TEST_EPOCH);
-		pack_bytes_into_wires_le(&mut w, &domain_param, &domain_param_bytes);
-		pack_bytes_into_wires_le(&mut w, &message, &message_bytes);
-		pack_bytes_into_wires_le(&mut w, &nonce, &nonce_bytes);
+		w.pack_bytes_le(&domain_param, &domain_param_bytes);
+		w.pack_bytes_le(&message, &message_bytes);
+		w.pack_bytes_le(&nonce, &nonce_bytes);
 
 		// Prepare signatures and derive each public key as the endpoint after
 		// (chain_len - 1 - x_i) steps starting from sig_i, at positions x_i+1..chain_len-1.
@@ -409,8 +408,8 @@ mod tests {
 			);
 			pk_hashes.push(pk_hash);
 
-			pack_bytes_into_wires_le(&mut w, &signature_hashes[chain_idx], &sig);
-			pack_bytes_into_wires_le(&mut w, &public_key_hashes[chain_idx], &pk_hashes[chain_idx]);
+			w.pack_bytes_le(&signature_hashes[chain_idx], &sig);
+			w.pack_bytes_le(&public_key_hashes[chain_idx], &pk_hashes[chain_idx]);
 		}
 
 		// Every hash is BLAKE3, derived from the inputs, so the evaluator fills all digests here.

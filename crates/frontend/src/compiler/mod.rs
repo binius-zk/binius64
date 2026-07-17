@@ -1233,6 +1233,28 @@ impl CircuitBuilder {
 		self.shr(masked, shift)
 	}
 
+	/// Reverses the byte order of `word`.
+	///
+	/// Extracts each of the 8 bytes and reassembles them in the opposite order.
+	pub fn byteswap(&self, word: Wire) -> Wire {
+		let bytes = (0..8).map(|j| {
+			let byte = self.extract_byte(word, j as u32);
+			self.shl(byte, (56 - 8 * j) as u32)
+		});
+		bytes
+			.reduce(|lhs, rhs| self.bxor(lhs, rhs))
+			.expect("Word::BITS > 0")
+	}
+
+	/// Returns a wire that is all-ones exactly when every wire in `booleans` is all-ones.
+	///
+	/// The fold starts from the all-ones constant, so an empty iterator yields all-ones.
+	pub fn all_true(&self, booleans: impl IntoIterator<Item = Wire>) -> Wire {
+		booleans
+			.into_iter()
+			.fold(self.add_constant(Word::ALL_ONE), |lhs, rhs| self.band(lhs, rhs))
+	}
+
 	/// Select operation.
 	///
 	/// Returns `t` if `cond` is true (MSB-bit set), otherwise returns `f`.

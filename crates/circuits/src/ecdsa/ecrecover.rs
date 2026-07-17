@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
-use binius_frontend::{CircuitBuilder, Wire, util::all_true};
+use binius_frontend::{CircuitBuilder, Wire};
 
 use super::scalar_mul::{MSM_WINDOW, msm_strauss_endo};
 use crate::{
@@ -47,5 +47,5 @@ pub fn ecrecover(
 	let recovered_pk = msm_strauss_endo(b, &curve, MSM_WINDOW, &[u1, u2], &[g, nonce]);
 
 	let conditions = [valid_r, valid_s, nonce_not_pai];
-	recovered_pk.pai_unless(b, all_true(b, conditions))
+	recovered_pk.pai_unless(b, b.all_true(conditions))
 }

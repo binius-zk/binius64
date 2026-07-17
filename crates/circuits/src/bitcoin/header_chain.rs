@@ -153,7 +153,6 @@ fn target(builder: &CircuitBuilder, bits: Wire) -> BigUint {
 #[cfg(test)]
 mod tests {
 	use binius_core::verify::verify_constraints;
-	use binius_frontend::util::pack_bytes_into_wires_le;
 	use hex_literal::hex;
 
 	use super::*;
@@ -226,9 +225,9 @@ mod tests {
 		let latest_digest_value =
 			hex!("228561b085b7524957e515605725901238299ff2793300000000000000000000");
 		for (header, header_value) in headers.iter().zip(&headers_value) {
-			pack_bytes_into_wires_le(&mut filler, header, header_value);
+			filler.pack_bytes_le(header, header_value);
 		}
-		pack_bytes_into_wires_le(&mut filler, &latest_digest, &latest_digest_value);
+		filler.pack_bytes_le(&latest_digest, &latest_digest_value);
 		let headers_value_ref: Vec<&[u8]> = headers_value.iter().map(AsRef::as_ref).collect();
 		header_chain.populate_inner(&mut filler, &headers_value_ref);
 		circuit.populate_wire_witness(&mut filler).unwrap();

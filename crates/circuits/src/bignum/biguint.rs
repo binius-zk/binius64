@@ -180,3 +180,21 @@ pub fn select(builder: &CircuitBuilder, cond: Wire, t: &BigUint, f: &BigUint) ->
 		.collect();
 	BigUint { limbs }
 }
+
+/// Builds a [`num_bigint::BigUint`] from little-endian `u64` limbs.
+///
+/// The limbs are little-endian and each limb is itself little-endian, so their
+/// concatenated little-endian bytes are the value's little-endian byte string.
+pub fn num_biguint_from_u64_limbs<I>(limbs: I) -> num_bigint::BigUint
+where
+	I: IntoIterator,
+	I::Item: std::borrow::Borrow<u64>,
+{
+	use std::borrow::Borrow;
+
+	let bytes: Vec<u8> = limbs
+		.into_iter()
+		.flat_map(|limb| limb.borrow().to_le_bytes())
+		.collect();
+	num_bigint::BigUint::from_bytes_le(&bytes)
+}

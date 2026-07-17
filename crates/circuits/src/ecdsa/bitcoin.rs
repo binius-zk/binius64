@@ -1,6 +1,6 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
-use binius_frontend::{CircuitBuilder, Wire, util::all_true};
+use binius_frontend::{CircuitBuilder, Wire};
 
 use super::scalar_mul::{MSM_WINDOW, msm_strauss_endo};
 use crate::{
@@ -50,5 +50,5 @@ pub fn verify(
 	let r_diff = curve.f_p().sub(b, &nonce.x, r);
 
 	let conditions = [valid_r, valid_s, nonce_not_pai, r_diff.is_zero(b)];
-	all_true(b, conditions)
+	b.all_true(conditions)
 }
