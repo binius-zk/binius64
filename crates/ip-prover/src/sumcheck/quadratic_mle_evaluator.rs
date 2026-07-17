@@ -232,6 +232,18 @@ where
 
 		self.last_coeffs_or_eval = RoundState::Claim(eval);
 	}
+
+	fn n_padding(&self, store: &MleStore<'_, P>) -> usize {
+		// All columns of one composition claim have the same length, so they share one padding.
+		let n_padding = store.col_padding(self.cols[0]);
+		debug_assert!(
+			self.cols
+				.iter()
+				.all(|&col| store.col_padding(col) == n_padding),
+			"a composition claim's columns must share one padding"
+		);
+		n_padding
+	}
 }
 
 #[cfg(test)]

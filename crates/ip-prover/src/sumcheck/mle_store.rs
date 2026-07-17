@@ -18,6 +18,22 @@
 //! Folding is eager: [`MleStore::fold`] advances every column immediately, and the round pass
 //! over the columns is a plain read. A deferred-fold variant that fuses the fold into the next
 //! round's read pass can replace the internals without changing this interface.
+//!
+//! # Padding
+//!
+//! A column may be pushed shorter than the store, which pads it up to the store's variable count.
+//! This lets one store batch sumchecks of unequal length.
+//!
+//! A column with `p` padding variables behaves as follows.
+//! - It sits out the first `p` folds, each decrementing its padding.
+//! - It starts folding only once its padding reaches 0.
+//!
+//! Binding runs high-to-low, so the padding variables are the highest-indexed ones and bind first.
+//! Only zero-padding columns fold, so the active columns always share one variable count.
+//! A padded column is left out of the read pass until it becomes active.
+//!
+//! The store only tracks and folds the padding.
+//! Scaling the padded claims by their equality-to-zero prefix is the driving prover's job.
 
 use std::iter;
 
@@ -72,15 +88,23 @@ enum Column<'a, P: PackedField> {
 	SplitHalf(FieldBuffer<P>),
 }
 
-/// A store of equal-length multilinear columns shared by a group of round evaluators.
+/// A store of multilinear columns shared by a group of round evaluators.
 ///
-/// See the [module documentation](self) for the folding invariant.
+/// The active (zero-padding) columns share one variable count.
+/// A column pushed shorter than the store is padded up to it, and joins the active set only once
+/// its padding is folded away.
+/// See the [module documentation](self) for the folding invariant and the padding rules.
 pub struct MleStore<'a, P: PackedField> {
 	n_vars: usize,
 	columns: Vec<Column<'a, P>>,
-	/// Number of logical columns, counting each [`Column::SplitHalf`] entry as two. This is the
-	/// number of assigned [`ColId`]s and the length of the [`Self::final_evals`] output.
-	n_cols: usize,
+	/// Padding variable count of each logical column, indexed by [`ColId`].
+	///
+	/// A column pushed with `k <= n_vars` variables has `n_vars - k` padding.
+	/// Its first `n_vars - k` folds skip it and decrement this entry.
+	/// It starts folding once this reaches 0.
+	/// A split-half entry contributes two full-length (zero-padding) columns.
+	/// This Vec's length is the number of assigned column ids.
+	col_paddings: Vec<usize>,
 	eq_trackers: Vec<Gruen32<P>>,
 }
 
@@ -90,12 +114,12 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 		Self {
 			n_vars,
 			columns: Vec::new(),
-			n_cols: 0,
+			col_paddings: Vec::new(),
 			eq_trackers: Vec::new(),
 		}
 	}
 
-	/// Returns the number of variables remaining in the columns.
+	/// Returns the store's current variable count, shared by all active (zero-padding) columns.
 	///
 	/// Decrements with each [`Self::fold`] call.
 	pub const fn n_vars(&self) -> usize {
@@ -104,34 +128,42 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 
 	/// Pushes a borrowed column and returns its identifier.
 	///
-	/// The column is not copied; the first [`Self::fold`] writes into a fresh half-size buffer.
+	/// The column is not copied.
+	/// The first fold that binds it writes into a fresh half-size buffer.
+	/// A column shorter than the store is padded up to it (see the [module documentation](self)).
 	pub fn push(&mut self, column: FieldSlice<'a, P>) -> ColId {
-		// precondition
-		assert_eq!(
-			column.log_len(),
-			self.n_vars,
-			"column must have number of variables equal to the store"
-		);
+		let n_padding = self.column_padding(column.log_len());
 		self.columns.push(Column::Borrowed(column));
-		self.next_col_id()
+		self.push_col_id(n_padding)
 	}
 
 	/// Pushes an owned column and returns its identifier.
+	///
+	/// A column shorter than the store is padded up to it (see [`Self::push`]).
 	pub fn push_owned(&mut self, column: FieldBuffer<P>) -> ColId {
-		// precondition
-		assert_eq!(
-			column.log_len(),
-			self.n_vars,
-			"column must have number of variables equal to the store"
-		);
+		let n_padding = self.column_padding(column.log_len());
 		self.columns.push(Column::Owned(column));
-		self.next_col_id()
+		self.push_col_id(n_padding)
 	}
 
-	/// Allocates the identifier for one newly pushed logical column.
-	const fn next_col_id(&mut self) -> ColId {
-		let id = ColId(self.n_cols);
-		self.n_cols += 1;
+	/// Padding of a column with `log_len` variables pushed into this store.
+	///
+	/// A column may be shorter than the store, in which case it is padded up to it.
+	/// A column longer than the store is rejected.
+	fn column_padding(&self, log_len: usize) -> usize {
+		// precondition
+		assert!(
+			log_len <= self.n_vars,
+			"column cannot have more variables ({log_len}) than the store ({})",
+			self.n_vars,
+		);
+		self.n_vars - log_len
+	}
+
+	/// Allocates the identifier for one newly pushed logical column with the given padding.
+	fn push_col_id(&mut self, n_padding: usize) -> ColId {
+		let id = ColId(self.col_paddings.len());
+		self.col_paddings.push(n_padding);
 		id
 	}
 
@@ -142,7 +174,8 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 	/// it as a single split-half entry, so no up-front copy of the full buffer is made.
 	/// Each [`Self::fold`] advances both halves in place within the buffer. `buffer` splits on its
 	/// highest variable, so its low half fixes that variable to 0 and its high half to 1 —
-	/// matching the store's high-to-low fold order.
+	/// matching the store's high-to-low fold order. Split-half columns are always full-length, so
+	/// they carry no padding.
 	pub fn push_split_half(&mut self, buffer: FieldBuffer<P>) -> [ColId; 2] {
 		// precondition
 		assert_eq!(
@@ -151,10 +184,28 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 			"buffer must have one more variable than the store so each half matches it"
 		);
 		self.columns.push(Column::SplitHalf(buffer));
-		let low = ColId(self.n_cols);
-		let high = ColId(self.n_cols + 1);
-		self.n_cols += 2;
+		let low = self.push_col_id(0);
+		let high = self.push_col_id(0);
 		[low, high]
+	}
+
+	/// Returns the number of padding variables the column still carries.
+	///
+	/// A full-length column returns 0.
+	/// A shorter column returns a positive count that decrements by one on each fold, reaching 0
+	/// when the column becomes active.
+	/// The driving prover reads this to tell whether a claim still binds a padding variable this
+	/// round.
+	pub fn col_padding(&self, id: ColId) -> usize {
+		self.col_paddings[id.index()]
+	}
+
+	/// Whether any column is still in its padding phase.
+	///
+	/// The driving prover reads this to choose between the fused fold-and-read fast path (only
+	/// sound when every column folds) and a padding-aware fold-then-read pass.
+	pub fn has_padded_columns(&self) -> bool {
+		self.col_paddings.iter().any(|&padding| padding > 0)
 	}
 
 	/// Registers an equality-indicator tracker for an MLE-check evaluation point.
@@ -235,37 +286,59 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 		self.eq_trackers[id.0].eq_prefix_eval()
 	}
 
-	/// Folds every column and every eq tracker with a verifier challenge.
+	/// Folds every active column and every eq tracker with a verifier challenge.
 	///
-	/// Columns fold on the highest variable, matching the high-to-low binding order of the
-	/// sumcheck provers this store backs.
+	/// A column with positive padding is in a padding round for its claim.
+	/// Its data is left untouched and its padding is decremented, so it joins the active set only
+	/// once its padding reaches 0.
+	/// Active columns fold on the highest variable, matching the high-to-low binding order.
+	/// Trackers are always full-length, so every tracker folds each round.
 	pub fn fold(&mut self, challenge: F) {
 		// precondition
 		assert!(self.n_vars > 0, "fold requires at least one remaining variable");
 
-		// The number of live variables in each column before this fold; a split-half buffer keeps
-		// its full length, so its halves must be truncated to this before folding.
+		// Live-variable count of each active column before this fold; a split-half buffer keeps its
+		// full length, so its halves are truncated to this before folding.
 		let n_vars = self.n_vars;
+		// Walk physical entries while tracking the logical column index that reads its padding.
+		// A single-column entry spans one logical index, a split-half entry two.
+		let mut logical = 0;
 		for column in &mut self.columns {
 			match column {
-				Column::Owned(buffer) => fold_highest_var_inplace(buffer, challenge),
+				Column::Owned(buffer) => {
+					if self.col_paddings[logical] > 0 {
+						// Padding round: spend one padding variable, leave the data untouched.
+						self.col_paddings[logical] -= 1;
+					} else {
+						// Active: bind the highest variable in place.
+						fold_highest_var_inplace(buffer, challenge);
+					}
+					logical += 1;
+				}
 				Column::Borrowed(slice) => {
-					// The first fold of a borrowed column writes into a fresh half-size owned
-					// buffer, avoiding an up-front copy of the full column.
-					*column = Column::Owned(fold_highest_var(slice, challenge));
+					if self.col_paddings[logical] > 0 {
+						// Padding round: spend one padding variable, leave the borrow untouched.
+						self.col_paddings[logical] -= 1;
+					} else {
+						// First active fold: write into a fresh half-size owned buffer, so the full
+						// borrowed column is never copied.
+						*column = Column::Owned(fold_highest_var(slice, challenge));
+					}
+					logical += 1;
 				}
 				Column::SplitHalf(buffer) => {
-					// Fold each half on its own highest variable in place. The two halves are the
-					// two columns, so folding the whole buffer's highest variable would instead
-					// combine them; splitting first binds each column's variable independently. The
-					// buffer keeps its length — the folded columns are the (now shorter) fronts of
-					// its halves — so no copy is made.
+					// A split-half column is always full-length, so it folds every round.
+					// The two halves are the two columns, so folding the whole buffer's highest
+					// variable would combine them; split first to bind each half's variable alone.
 					let mut split = buffer.split_half_mut();
 					let (mut low, mut high) = split.halves();
+					// Drop stale trailing scalars, then bind the highest variable of each half in
+					// place; the folded columns are the shorter fronts, so no copy is made.
 					low.truncate(n_vars);
 					high.truncate(n_vars);
 					fold_highest_var_inplace(&mut low, challenge);
 					fold_highest_var_inplace(&mut high, challenge);
+					logical += 2;
 				}
 			}
 		}
@@ -279,9 +352,10 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 	///
 	/// A split-half entry expands into the front `2^n_vars` scalars of its low and high
 	/// halves, so the returned length is the logical column count — larger than the physical entry
-	/// count whenever a split-half column is present.
+	/// count whenever a split-half column is present. A padded column's slice is shorter than the
+	/// store, so this is a valid full read only once every column is active.
 	pub fn column_slices(&self) -> Vec<FieldSlice<'_, P>> {
-		let mut slices = Vec::with_capacity(self.n_cols);
+		let mut slices = Vec::with_capacity(self.col_paddings.len());
 		for column in &self.columns {
 			match column {
 				Column::Borrowed(slice) => slices.push(slice.to_ref()),
@@ -323,6 +397,10 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 	///
 	/// `chunk_vars` is capped at `n_vars() - 1`, so leaves never exceed the halved hypercube.
 	///
+	/// A padded column is left out of the pass — its claim is in a padding round and does not read
+	/// the store — and its [`ColId`] maps to no chunk, so reading it panics. When no column is
+	/// padded the mapping is the identity and carries no overhead.
+	///
 	/// ## Preconditions
 	///
 	/// * `n_vars()` must be greater than 0.
@@ -335,18 +413,29 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 		assert!(self.n_vars > 0);
 		let chunk_vars = chunk_vars.min(self.n_vars - 1);
 
+		// Build one column chunk per active column, splitting it on the round's highest variable.
+		// A padded column is shorter than the store and cannot split here, so it is excluded and
+		// its id maps to `None`; active ids map to their position among the active columns.
 		let col_slices = self.column_slices();
-		let cols = col_slices
-			.iter()
-			.map(|col| {
-				let (lo, hi) = col.split_half_ref();
-				ColumnChunk { lo, hi }
-			})
-			.collect();
+		let mut cols = Vec::with_capacity(col_slices.len());
+		let mut col_index = Vec::with_capacity(col_slices.len());
+		for (slice, &padding) in iter::zip(&col_slices, &self.col_paddings) {
+			if padding == 0 {
+				col_index.push(Some(cols.len()));
+				let (lo, hi) = slice.split_half_ref();
+				cols.push(ColumnChunk { lo, hi });
+			} else {
+				col_index.push(None);
+			}
+		}
+		// The identity mapping is implicit: skip the indirection when nothing is padded.
+		let col_index = self.has_padded_columns().then_some(col_index.as_slice());
+
 		let eqs = self.eq_expansions().iter().map(|eq| eq.to_ref()).collect();
 		let chunk = EvaluationChunk {
 			n_vars: self.n_vars - 1,
 			cols,
+			col_index,
 			eqs,
 		};
 		map_reduce_helper(chunk, chunk_vars, &map, &reduce)
@@ -365,6 +454,8 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 	/// ## Preconditions
 	///
 	/// * `n_vars()` must be greater than 1.
+	/// * No column may be padded: the fused fold folds every column, so a caller with padded
+	///   columns must fold and read in two padding-aware passes instead.
 	pub fn map_reduce_with_fold<T: Send>(
 		&mut self,
 		chunk_vars: usize,
@@ -373,6 +464,8 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 		reduce: impl (Fn(T, T) -> T) + Sync,
 	) -> T {
 		assert!(self.n_vars > 1);
+		// precondition: the fused fold has no padding-skip path
+		debug_assert!(!self.has_padded_columns(), "fused fold requires every column to be active");
 
 		// Decrement n_vars to reflect the fold.
 		let n_vars = self.n_vars - 1;
@@ -401,7 +494,7 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 		// Build one deferred-fold producer per logical column: its low and high halves paired on
 		// the round's highest variable, folding in place (owned/split-half) or into a fresh `dst`
 		// (borrowed).
-		let mut cols = Vec::with_capacity(self.n_cols);
+		let mut cols = Vec::with_capacity(self.col_paddings.len());
 		for (column, dst) in iter::zip(&mut self.columns, &mut dsts) {
 			match column {
 				Column::Borrowed(src) => {
@@ -665,7 +758,13 @@ impl<'a, P: PackedField> PreFoldEvaluationChunk<'a, P> {
 			.into_iter()
 			.map(|eq| FieldSlice::from_slice(n_vars, eq.fold_eq()))
 			.collect();
-		EvaluationChunk { n_vars, cols, eqs }
+		// The fused fold runs only when every column is active, so ids index `cols` directly.
+		EvaluationChunk {
+			n_vars,
+			cols,
+			col_index: None,
+			eqs,
+		}
 	}
 }
 
@@ -690,13 +789,32 @@ pub struct ColumnChunk<'c, P: PackedField> {
 pub struct EvaluationChunk<'c, P: PackedField> {
 	n_vars: usize,
 	cols: Vec<ColumnChunk<'c, P>>,
+	/// Maps each logical [`ColId`] to its position in `cols`, or `None` if that column is padded
+	/// this round and was left out. `None` for the whole map means no column is padded and every
+	/// id indexes `cols` directly.
+	col_index: Option<&'c [Option<usize>]>,
 	eqs: Vec<FieldSlice<'c, P>>,
 }
 
 impl<'c, P: PackedField> EvaluationChunk<'c, P> {
 	/// Returns the low and high halves of a column at this chunk.
+	///
+	/// # Panics
+	///
+	/// Panics if the column is padded this round.
+	/// A padding-round claim does not read the store, so its columns are not chunked.
 	pub fn col(&self, id: ColId) -> &ColumnChunk<'c, P> {
-		&self.cols[id.index()]
+		match self.col_index {
+			// No column is padded, so the id indexes the columns directly.
+			None => &self.cols[id.index()],
+			// Some columns are padded; map the id to its position among the active columns.
+			Some(index) => {
+				let pos = index[id.index()].expect(
+					"column is padded this round and has no chunk; its claim must not read it",
+				);
+				&self.cols[pos]
+			}
+		}
 	}
 
 	/// Returns the equality-indicator expansion of a registered tracker at this chunk.
@@ -710,7 +828,12 @@ impl<'c, P: PackedField> EvaluationChunk<'c, P> {
 	/// Bisects the range into its two halves on the highest remaining variable, splitting both
 	/// halves of every column and every eq expansion. Each returned chunk has one fewer variable.
 	fn split_half(&self) -> [EvaluationChunk<'_, P>; 2] {
-		let Self { n_vars, cols, eqs } = self;
+		let Self {
+			n_vars,
+			cols,
+			col_index,
+			eqs,
+		} = self;
 		let (cols_0, cols_1) = cols
 			.iter()
 			.map(|ColumnChunk { lo, hi }| {
@@ -720,15 +843,18 @@ impl<'c, P: PackedField> EvaluationChunk<'c, P> {
 			})
 			.unzip();
 		let (eqs_0, eqs_1) = eqs.iter().map(|col| col.split_half_ref()).unzip();
+		// The id mapping is the same for both halves; carry it through unchanged.
 		[
 			EvaluationChunk {
 				n_vars: n_vars - 1,
 				cols: cols_0,
+				col_index: *col_index,
 				eqs: eqs_0,
 			},
 			EvaluationChunk {
 				n_vars: n_vars - 1,
 				cols: cols_1,
+				col_index: *col_index,
 				eqs: eqs_1,
 			},
 		]
@@ -779,7 +905,10 @@ fn map_reduce_with_fold_helper<P: PackedField, T: Send>(
 #[cfg(test)]
 mod tests {
 	use binius_field::{Field, FieldOps, PackedField};
-	use binius_math::test_utils::{Packed128b, random_field_buffer, random_scalars};
+	use binius_math::{
+		multilinear::evaluate::evaluate,
+		test_utils::{Packed128b, random_field_buffer, random_scalars},
+	};
 	use itertools::Itertools;
 	use rand::{SeedableRng, rngs::StdRng};
 
@@ -955,5 +1084,128 @@ mod tests {
 			assert_eq!(got, expected, "result mismatch in round {round}");
 			assert_eq!(state(&fold_first), state(&fused), "folded-state mismatch in round {round}");
 		}
+	}
+
+	#[test]
+	fn col_padding_derived_from_length() {
+		type P = Packed128b;
+		let mut rng = StdRng::seed_from_u64(0);
+		// Store over 8 variables, so each pushed column is padded up to that width.
+		let mut store = MleStore::<P>::new(8);
+
+		// A full-length column carries no padding.
+		let full = store.push_owned(random_field_buffer::<P>(&mut rng, 8));
+		// A 5-variable column is padded by 8 - 5 = 3.
+		let short = store.push_owned(random_field_buffer::<P>(&mut rng, 5));
+		// Borrowing follows the same rule: a 3-variable column is padded by 8 - 3 = 5.
+		let borrowed = random_field_buffer::<P>(&mut rng, 3);
+		let borrowed_id = store.push(borrowed.to_ref());
+		// A split-half of a 9-variable buffer yields two full-length (8-variable) columns.
+		let [low, high] = store.push_split_half(random_field_buffer::<P>(&mut rng, 9));
+
+		assert_eq!(store.col_padding(full), 0);
+		assert_eq!(store.col_padding(short), 3);
+		assert_eq!(store.col_padding(borrowed_id), 5);
+		assert_eq!(store.col_padding(low), 0);
+		assert_eq!(store.col_padding(high), 0);
+	}
+
+	#[test]
+	#[should_panic(expected = "column cannot have more variables")]
+	fn push_column_longer_than_store_panics() {
+		type P = Packed128b;
+		let mut rng = StdRng::seed_from_u64(0);
+		// A 5-variable column is longer than a width-4 store, which is not paddable and is
+		// rejected.
+		let mut store = MleStore::<P>::new(4);
+		store.push_owned(random_field_buffer::<P>(&mut rng, 5));
+	}
+
+	#[test]
+	fn fold_decrements_padding_then_folds() {
+		type P = Packed128b;
+		type F = <P as FieldOps>::Scalar;
+		let max_n = 6;
+		let short_n = 4;
+		let mut rng = StdRng::seed_from_u64(1);
+
+		// One full-length column and one padded by max_n - short_n = 2.
+		let full = random_field_buffer::<P>(&mut rng, max_n);
+		let short = random_field_buffer::<P>(&mut rng, short_n);
+
+		let mut store = MleStore::<P>::new(max_n);
+		let full_id = store.push_owned(full.clone());
+		let short_id = store.push_owned(short.clone());
+
+		let challenges = random_scalars::<F>(&mut rng, max_n);
+		for (round, &challenge) in challenges.iter().enumerate() {
+			// The short column is in a padding round for its first max_n - short_n rounds; its
+			// remaining padding counts down 2, 1, then 0 from round 2 on.
+			let expected_short_padding = (max_n - short_n).saturating_sub(round);
+			assert_eq!(store.col_padding(short_id), expected_short_padding);
+			// The full column is active from the start, so it never carries padding.
+			assert_eq!(store.col_padding(full_id), 0);
+			// Every fold decrements the store width, active or not.
+			assert_eq!(store.n_vars(), max_n - round);
+			store.fold(challenge);
+		}
+		assert_eq!(store.n_vars(), 0);
+
+		// Binding is high-to-low, so reverse the challenges for `evaluate`, which wants
+		// low-to-high.
+		let mut point = challenges;
+		point.reverse();
+		let evals = store.final_evals();
+		// The full column binds every variable, so it evaluates at the whole point.
+		assert_eq!(evals[full_id.index()], evaluate(&full, &point));
+		// The short column binds only its active rounds — the last short_n challenges — which are
+		// the low short_n coordinates of the reversed point.
+		assert_eq!(evals[short_id.index()], evaluate(&short, &point[..short_n]));
+	}
+
+	#[test]
+	#[should_panic(expected = "column is padded this round")]
+	fn map_reduce_padded_column_read_panics() {
+		type P = Packed128b;
+		let mut rng = StdRng::seed_from_u64(2);
+		// One full-length column (active) and one padded by 6 - 3 = 3.
+		let mut store = MleStore::<P>::new(6);
+		store.push_owned(random_field_buffer::<P>(&mut rng, 6));
+		let padded = store.push_owned(random_field_buffer::<P>(&mut rng, 3));
+
+		// The padded column is excluded from the pass, so reading its chunk is out of contract.
+		store.map_reduce(
+			0,
+			|chunk| {
+				let _ = chunk.col(padded);
+				0usize
+			},
+			|lhs, _rhs| lhs,
+		);
+	}
+
+	#[test]
+	fn map_reduce_active_column_readable_while_sibling_padded() {
+		type P = Packed128b;
+		let mut rng = StdRng::seed_from_u64(3);
+		// The active column stays readable through the pass while a sibling is padded out.
+		let mut store = MleStore::<P>::new(6);
+		let active = store.push_owned(random_field_buffer::<P>(&mut rng, 6));
+		let _padded = store.push_owned(random_field_buffer::<P>(&mut rng, 3));
+
+		// Count the leaves and confirm the active column is readable at each.
+		let leaves = store.map_reduce(
+			0,
+			|chunk| {
+				let col = chunk.col(active);
+				// At chunk_vars 0 each half is one scalar.
+				assert_eq!(col.lo.len(), 1);
+				assert_eq!(col.hi.len(), 1);
+				1usize
+			},
+			|lhs, rhs| lhs + rhs,
+		);
+		// The halved hypercube over 6 variables at chunk_vars 0 splits into 2^5 leaves.
+		assert_eq!(leaves, 1 << 5);
 	}
 }
