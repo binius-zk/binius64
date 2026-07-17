@@ -16,7 +16,7 @@ use std::iter;
 use auto_impl::auto_impl;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::FieldBuffer;
+use binius_math::{FieldBuffer, multilinear::eq::eq_one_var};
 
 use super::{
 	MleToSumCheckEvaluator,
@@ -83,6 +83,15 @@ pub trait RoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + Sync {
 	/// The store folds the shared columns and eq trackers; this only updates claim state and
 	/// equality prefix products.
 	fn fold(&mut self, challenge: F);
+
+	/// The number of padding variables this claim's columns still carry.
+	///
+	/// A full-length claim returns 0.
+	/// A shorter claim returns a positive count that the driving prover spends over its leading
+	/// rounds before the claim becomes active.
+	/// All of a claim's columns share one padding, so this reports the padding of any one of them,
+	/// read from the store.
+	fn n_padding(&self, store: &MleStore<'_, P>) -> usize;
 }
 
 /// Maximum log2 chunk size of the parallel round pass.
@@ -94,10 +103,34 @@ const MAX_CHUNK_VARS: usize = 12;
 /// A [`SumcheckProver`] over a shared [`MleStore`] and a list of [`RoundEvaluator`]s, one per
 /// claim.
 ///
-/// Each round makes one parallel pass over the store's column chunks, feeding every evaluator,
-/// and lists the round polynomials in evaluator registration order. [`Self::fold`] folds each
-/// shared column and eq tracker once. [`Self::finish`] emits each store column's evaluation once,
-/// computed a single time by the store no matter how many claims read the column.
+/// Each round makes one parallel pass over the store's active column chunks, feeding every active
+/// evaluator, and lists the round polynomials in evaluator order. Folding folds each shared active
+/// column and eq tracker once. Finishing emits each store column's evaluation once, computed a
+/// single time by the store.
+///
+/// # Padding
+///
+/// A claim whose columns are shorter than the store is padded up to it, so one prover can batch
+/// sumchecks of unequal length.
+/// The store folds only the active (zero-padding) columns each round.
+/// This prover handles the padded claims.
+///
+/// The padding variables are the highest-indexed ones, so they are bound first.
+/// While a claim is still binding one, it is in a padding round, where this prover:
+/// - emits the degree-1 polynomial `v * (1 - X)`, with `v` the padding-scaled round claim,
+/// - leaves that claim's evaluator and columns untouched, and
+/// - multiplies that claim's equality-to-zero prefix by `eq(0, r)`.
+///
+/// Once a claim's padding rounds are done, its prefix is fixed.
+/// Every later round polynomial and round claim is then scaled by it.
+///
+/// The prefix is `prod_k eq(0, r_k)` over the claim's padding challenges `r_k`.
+/// Since `eq(0, .)` sums to 1 over the hypercube, scaling by it keeps the claim's sum unchanged.
+/// So the batch stays sound.
+///
+/// The fused fold-and-read fast path is used whenever no column is padded — every current caller,
+/// and every round of a padded batch once the short claims have caught up. While padding is live
+/// the store is folded in a separate padding-aware pass.
 pub struct SharedSumcheckProver<'a, P: PackedField, Evaluator> {
 	store: MleStore<'a, P>,
 	evaluators: Vec<Evaluator>,
@@ -105,6 +138,11 @@ pub struct SharedSumcheckProver<'a, P: PackedField, Evaluator> {
 	/// can fuse it into that round's read pass (see [`MleStore::map_reduce_with_fold`]). The
 	/// evaluators fold eagerly; only the store's column and eq fold waits here.
 	buffered_challenge: Option<P::Scalar>,
+	/// Accumulated equality-to-zero prefix of each claim, indexed like the evaluators.
+	///
+	/// This is `prod_k eq(0, r_k)` over the padding challenges bound so far.
+	/// It stays `1` for a full-length claim.
+	eq_prefixes: Vec<P::Scalar>,
 }
 
 impl<'a, F, P, Evaluator> SharedSumcheckProver<'a, P, Evaluator>
@@ -114,11 +152,15 @@ where
 	Evaluator: RoundEvaluator<F, P>,
 {
 	/// Creates a prover from a store and the evaluators reading its columns, one per claim.
-	pub const fn new(store: MleStore<'a, P>, evaluators: Vec<Evaluator>) -> Self {
+	pub fn new(store: MleStore<'a, P>, evaluators: Vec<Evaluator>) -> Self {
+		// Every claim starts with the identity prefix; a padded claim grows its own over its
+		// padding rounds.
+		let eq_prefixes = vec![F::ONE; evaluators.len()];
 		Self {
 			store,
 			evaluators,
 			buffered_challenge: None,
+			eq_prefixes,
 		}
 	}
 
@@ -141,18 +183,26 @@ where
 	/// Its round polynomial is appended after the existing evaluators' in [`Self::execute`].
 	pub fn add_evaluator(&mut self, evaluator: Evaluator) {
 		self.evaluators.push(evaluator);
+		self.eq_prefixes.push(F::ONE);
 	}
 
-	/// Prefix sums of each evaluator's [`RoundEvaluator::degree`] slot count.
+	/// Prefix sums of the accumulator-slot counts of the active (non-padded) evaluators.
 	///
-	/// The returned Vec has one more entry than there are evaluators; `offsets[i]..offsets[i + 1]`
-	/// is evaluator `i`'s run in the flat accumulator buffer, and the last entry is its length.
-	fn accum_offsets(&self) -> Vec<usize> {
+	/// The `k`-th active evaluator owns the window from entry `k` to entry `k + 1` of the flat
+	/// accumulator buffer.
+	/// The returned Vec has one more entry than there are active evaluators, the last being the
+	/// buffer's total length.
+	/// A padded evaluator holds no slots this round.
+	fn active_accum_offsets(&self, active: &[bool]) -> Vec<usize> {
 		iter::once(0)
-			.chain(self.evaluators.iter().scan(0, |acc, evaluator| {
-				*acc += evaluator.degree();
-				Some(*acc)
-			}))
+			.chain(
+				iter::zip(&self.evaluators, active)
+					.filter(|(_, is_active)| **is_active)
+					.scan(0, |acc, (evaluator, _)| {
+						*acc += evaluator.degree();
+						Some(*acc)
+					}),
+			)
 			.collect()
 	}
 }
@@ -174,9 +224,11 @@ where
 	}
 
 	fn round_claim(&self) -> Vec<F> {
-		self.evaluators
-			.iter()
-			.map(|evaluator| evaluator.round_claim(&self.store))
+		// Each claim's round claim is its evaluator's claim scaled by the equality-to-zero prefix.
+		// A padded claim's evaluator is untouched, so its claim is the original sum.
+		// A full-length claim has prefix 1, so it passes through.
+		iter::zip(&self.evaluators, &self.eq_prefixes)
+			.map(|(evaluator, &eq_prefix)| evaluator.round_claim(&self.store) * eq_prefix)
 			.collect()
 	}
 
@@ -184,30 +236,50 @@ where
 		let n_vars_remaining = self.n_vars();
 		assert!(n_vars_remaining > 0);
 
-		// One parallel pass over the halved hypercube feeds every evaluator, so shared columns
-		// and eq-indicator chunks are read once per round while they are cache-resident.
-		//
 		// TODO: dynamically choose chunk size based on the number of columns and P byte-size,
 		// based on estimated L1 cache size.
 		let chunk_vars = (n_vars_remaining - 1).min(MAX_CHUNK_VARS.max(P::LOG_WIDTH));
 
-		// Each evaluator owns a contiguous run of `degree` wide slots in one flat per-worker
-		// buffer; `offsets` holds the run boundaries as a prefix sum, so `offsets[i]..offsets[i +
-		// 1]` is evaluator `i`'s slice.
-		let offsets = self.accum_offsets();
-		let total_slots = *offsets
-			.last()
-			.expect("offsets has one entry per evaluator, plus one");
-
-		// The store prepares one `EvaluationChunk` per chunk of the halved hypercube — the split
-		// column halves and eq-indicator expansions each evaluator reads.
+		// The buffered fold can be fused into this round's read only when it folds every column.
+		// With padded columns present, apply it eagerly (padding-aware) first, then read.
 		let buffered_challenge = self.buffered_challenge.take();
+		let fused = buffered_challenge.is_some() && !self.store.has_padded_columns();
+		if let Some(challenge) = buffered_challenge
+			&& !fused
+		{
+			self.store.fold(challenge);
+		}
+
+		// A claim binding a padding variable this round sits out the shared column pass and emits a
+		// synthetic polynomial; the rest are active. On the fused path no column is padded, so all
+		// are active.
+		let active: Vec<bool> = self
+			.evaluators
+			.iter()
+			.map(|evaluator| evaluator.n_padding(&self.store) == 0)
+			.collect();
+
+		// Each active evaluator owns a contiguous slot run in one flat per-worker buffer.
+		let offsets = self.active_accum_offsets(&active);
+		let total_slots = *offsets.last().expect("offsets has the leading zero");
+
+		// One parallel pass over the halved hypercube feeds every active evaluator, so shared
+		// active columns and eq-indicator chunks are read once per round, while resident in
+		// cache.
 		let evaluators = &self.evaluators;
+		let active_ref = &active;
+		let offsets_ref = &offsets;
 		let store = &mut self.store;
 		let map = |chunk: EvaluationChunk<'_, P>| {
 			let mut accum = vec![Default::default(); total_slots];
-			for (evaluator, window) in iter::zip(evaluators, offsets.windows(2)) {
-				evaluator.accumulate(&chunk, &mut accum[window[0]..window[1]]);
+			// Hand each active evaluator its slot run; a padded evaluator holds no slots.
+			let mut slot = 0;
+			for (evaluator, &is_active) in iter::zip(evaluators, active_ref) {
+				if is_active {
+					evaluator
+						.accumulate(&chunk, &mut accum[offsets_ref[slot]..offsets_ref[slot + 1]]);
+					slot += 1;
+				}
 			}
 			accum
 		};
@@ -218,28 +290,63 @@ where
 			}
 			lhs
 		};
-		let accum = match buffered_challenge {
-			// The previous fold deferred its store fold; apply it and this round's read in one
-			// pass.
-			Some(challenge) => store.map_reduce_with_fold(chunk_vars, challenge, map, reduce),
-			None => store.map_reduce(chunk_vars, map, reduce),
+		let accum = if fused {
+			// The buffered fold folds every column and this round's read in one pass.
+			let challenge = buffered_challenge.expect("a fused round has a buffered challenge");
+			store.map_reduce_with_fold(chunk_vars, challenge, map, reduce)
+		} else {
+			// The store already reflects this round; just read it.
+			store.map_reduce(chunk_vars, map, reduce)
 		};
 
-		// The store is read (immutably) for the round's point coordinates while the evaluators are
-		// interpolated (mutably); they are disjoint fields, so borrow the store separately.
+		// Assemble the round polynomials in evaluator order.
+		// The store and prefixes are read while the evaluators are interpolated mutably; they are
+		// disjoint fields, so borrow them separately.
 		let store = &self.store;
-		iter::zip(&mut self.evaluators, offsets.windows(2))
-			.map(|(evaluator, window)| evaluator.interpolate(store, &accum[window[0]..window[1]]))
+		let eq_prefixes = &self.eq_prefixes;
+		let mut slot = 0;
+		iter::zip(&mut self.evaluators, &active)
+			.enumerate()
+			.map(|(i, (evaluator, &is_active))| {
+				if is_active {
+					// Active claim: interpolate from the pass, then scale by the frozen prefix.
+					let coeffs =
+						evaluator.interpolate(store, &accum[offsets[slot]..offsets[slot + 1]]);
+					slot += 1;
+					coeffs * eq_prefixes[i]
+				} else {
+					// Padding round: emit `v * (1 - X)`, with `v` the scaled round claim.
+					// With `eq(0, X) = 1 - X`, its coefficients are `[v, -v]`.
+					// The evaluator and store are left untouched.
+					let v = evaluator.round_claim(store) * eq_prefixes[i];
+					RoundCoeffs(vec![v, -v])
+				}
+			})
 			.collect()
 	}
 
 	fn fold(&mut self, challenge: F) {
-		// The evaluators advance their local bookkeeping (claim state, equality prefix products)
-		// now, but the store's column and eq fold is deferred: the challenge is buffered so the
-		// next execute can fuse it into that round's read pass.
-		for evaluator in &mut self.evaluators {
-			evaluator.fold(challenge);
+		// A claim binding a padding variable this round only grows its equality-to-zero prefix; its
+		// evaluator and columns are untouched. The store reflects this round, so a positive padding
+		// marks a padding round for that claim.
+		let padded: Vec<bool> = self
+			.evaluators
+			.iter()
+			.map(|evaluator| evaluator.n_padding(&self.store) > 0)
+			.collect();
+
+		// `eq(0, challenge) = 1 - challenge` is the factor a padding round contributes.
+		let eq_zero = eq_one_var(F::ZERO, challenge);
+		for (i, evaluator) in self.evaluators.iter_mut().enumerate() {
+			if padded[i] {
+				self.eq_prefixes[i] *= eq_zero;
+			} else {
+				evaluator.fold(challenge);
+			}
 		}
+
+		// The store's column and eq fold is deferred: the challenge is buffered so the next execute
+		// can fuse it (or, with padding live, apply it in a padding-aware pass).
 		debug_assert!(
 			self.buffered_challenge.is_none(),
 			"fold called twice without an intervening execute"
@@ -305,11 +412,13 @@ where
 		Evaluator: 'static,
 	{
 		let Self { inner, eval_point } = self;
-		// Conversion happens before proving starts, so no fold challenge is buffered yet.
+		// Conversion happens before proving starts, so no fold challenge is buffered and every
+		// equality-to-zero prefix is still the identity; the wrapped prover rebuilds them.
 		let SharedSumcheckProver {
 			mut store,
 			evaluators,
 			buffered_challenge: _,
+			eq_prefixes: _,
 		} = inner;
 		// Every claim of an MLE-check prover shares the prover's evaluation point, so its eq
 		// tracker is already registered on the store (by the evaluators reading it). Recover that
@@ -374,23 +483,28 @@ where
 // claims over shared columns).
 #[cfg(test)]
 mod tests {
-	use binius_field::FieldOps;
-	use binius_ip::sumcheck::{batch_verify, batch_verify_mle};
+	use binius_field::{FieldOps, Random};
+	use binius_ip::sumcheck::{RoundCoeffs, batch_verify, batch_verify_mle};
 	use binius_math::{
 		FieldBuffer,
 		inner_product::inner_product_par,
-		multilinear::{eq::eq_ind, evaluate::evaluate},
+		multilinear::{
+			eq::{eq_ind, eq_ind_zero},
+			evaluate::evaluate,
+		},
 		test_utils::{Packed128b, random_field_buffer, random_scalars},
 		univariate::evaluate_univariate,
 	};
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
+	use proptest::prelude::*;
 	use rand::prelude::*;
 
 	use super::*;
 	use crate::sumcheck::{
-		MleToSumCheckEvaluator,
+		MleToSumCheckEvaluator, PaddedSumcheckDecorator,
 		batch::{batch_prove, batch_prove_mle},
-		bivariate_product_evaluator::BivariateProductEvaluator,
+		bivariate_product_evaluator::{BivariateProductEvaluator, bivariate_product_prover},
+		common::SumcheckProver,
 		frac_add_mle,
 	};
 
@@ -617,6 +731,200 @@ mod tests {
 			let mut prover_challenges = output.challenges.clone();
 			prover_challenges.reverse();
 			assert_eq!(prover_challenges, sumcheck_output.challenges);
+		}
+	}
+
+	// One product claim `<a_i, b_i> = s_i` per size, with random columns and honest sums.
+	fn product_instances(
+		sizes: &[usize],
+		rng: &mut StdRng,
+	) -> Vec<(FieldBuffer<P>, FieldBuffer<P>, F)> {
+		sizes
+			.iter()
+			.map(|&n| {
+				let a = random_field_buffer::<P>(&mut *rng, n);
+				let b = random_field_buffer::<P>(&mut *rng, n);
+				let sum = inner_product_par(&a, &b);
+				(a, b, sum)
+			})
+			.collect()
+	}
+
+	// One shared prover over a `max_n` store, holding every claim's columns padded up to `max_n`.
+	fn padded_product_shared(
+		instances: &[(FieldBuffer<P>, FieldBuffer<P>, F)],
+		max_n: usize,
+	) -> SharedSumcheckProver<'_, P, BivariateProductEvaluator<P>> {
+		let mut store = MleStore::new(max_n);
+		let mut evaluators = Vec::with_capacity(instances.len());
+		for (a, b, sum) in instances {
+			// Columns shorter than the store are padded up to it automatically.
+			let a_col = store.push(a.to_ref());
+			let b_col = store.push(b.to_ref());
+			evaluators.push(BivariateProductEvaluator::new([a_col, b_col], *sum));
+		}
+		SharedSumcheckProver::new(store, evaluators)
+	}
+
+	// The reference batch: one `PaddedSumcheckDecorator` per claim, each padding its own bivariate
+	// product prover up to `max_n`.
+	fn padded_product_reference(
+		instances: &[(FieldBuffer<P>, FieldBuffer<P>, F)],
+		max_n: usize,
+	) -> Vec<
+		PaddedSumcheckDecorator<F, SharedSumcheckProver<'static, P, BivariateProductEvaluator<P>>>,
+	> {
+		instances
+			.iter()
+			.map(|(a, b, sum)| {
+				let inner = bivariate_product_prover([a.clone(), b.clone()], *sum);
+				PaddedSumcheckDecorator::new(inner, max_n - a.log_len())
+			})
+			.collect()
+	}
+
+	// The shared padded prover reproduces the `PaddedSumcheckDecorator` batch exactly: identical
+	// round claims, round polynomials, and final evaluations on the same challenge sequence.
+	fn assert_padded_matches_reference(sizes: &[usize], seed: u64) {
+		let mut rng = StdRng::seed_from_u64(seed);
+		let max_n = *sizes.iter().max().expect("at least one claim");
+		let instances = product_instances(sizes, &mut rng);
+
+		let mut reference = padded_product_reference(&instances, max_n);
+		let mut shared = padded_product_shared(&instances, max_n);
+
+		assert_eq!(shared.n_vars(), max_n);
+		assert_eq!(shared.n_claims(), sizes.len());
+
+		let mut challenge_rng = StdRng::seed_from_u64(seed.wrapping_add(1));
+		for _ in 0..max_n {
+			assert_eq!(shared.n_vars(), reference[0].n_vars());
+
+			// Round claims agree, whether read before or (implicitly) after execute.
+			let reference_claims: Vec<F> = reference
+				.iter()
+				.flat_map(|prover| prover.round_claim())
+				.collect();
+			assert_eq!(
+				shared.round_claim(),
+				reference_claims,
+				"round claims must match the reference"
+			);
+
+			// Round polynomials agree, batched in the same claim order.
+			let reference_coeffs: Vec<RoundCoeffs<F>> = reference
+				.iter_mut()
+				.flat_map(|prover| prover.execute())
+				.collect();
+			assert_eq!(
+				shared.execute(),
+				reference_coeffs,
+				"round polynomials must match the reference"
+			);
+
+			let challenge = F::random(&mut challenge_rng);
+			for prover in &mut reference {
+				prover.fold(challenge);
+			}
+			shared.fold(challenge);
+		}
+
+		let reference_evals: Vec<F> = reference
+			.into_iter()
+			.flat_map(|prover| prover.finish())
+			.collect();
+		assert_eq!(shared.finish(), reference_evals, "final evaluations must match the reference");
+	}
+
+	// A full prove/verify roundtrip of the shared padded batch through a real transcript and the
+	// standard batched sumcheck verifier.
+	fn assert_padded_prove_verify(sizes: &[usize], seed: u64) {
+		let mut rng = StdRng::seed_from_u64(seed);
+		let max_n = *sizes.iter().max().expect("at least one claim");
+		let instances = product_instances(sizes, &mut rng);
+		let claims: Vec<F> = instances.iter().map(|(_, _, sum)| *sum).collect();
+
+		let shared = padded_product_shared(&instances, max_n);
+		let mut transcript = ProverTranscript::new(StdChallenger::default());
+		let output = batch_prove(vec![shared], &mut transcript);
+
+		// One shared prover emits every column evaluation once, in push order a_0, b_0, a_1, ...
+		assert_eq!(output.multilinear_evals.len(), 1);
+		let evals = output.multilinear_evals[0].clone();
+		assert_eq!(evals.len(), 2 * sizes.len());
+		transcript.message().write_scalar_slice(&evals);
+
+		// The largest claim is never padded, so every batched round polynomial has degree 2.
+		let mut verifier = transcript.into_verifier();
+		let sumcheck_output = batch_verify(max_n, 2, &claims, &mut verifier).unwrap();
+		let verified_evals: Vec<F> = verifier.message().read_vec(2 * sizes.len()).unwrap();
+		assert_eq!(evals, verified_evals, "prover and verifier column evaluations must match");
+
+		// Binding is high-to-low, so reverse for `evaluate`, which wants low-to-high.
+		let mut point = sumcheck_output.challenges.clone();
+		point.reverse();
+
+		// Each claim's reduced evaluation is its product at the point times its equality-to-zero
+		// padding factor over the high (padding) coordinates.
+		let mut composed = Vec::with_capacity(sizes.len());
+		for (i, (a, b, _)) in instances.iter().enumerate() {
+			let n_i = a.log_len();
+			let a_eval = verified_evals[2 * i];
+			let b_eval = verified_evals[2 * i + 1];
+			// A padded column binds only its active rounds: the low `n_i` coordinates of the point.
+			assert_eq!(evaluate(a, &point[..n_i]), a_eval);
+			assert_eq!(evaluate(b, &point[..n_i]), b_eval);
+			composed.push(a_eval * b_eval * eq_ind_zero(&point[n_i..]));
+		}
+		let expected = evaluate_univariate(&composed, sumcheck_output.batch_coeff);
+		assert_eq!(expected, sumcheck_output.eval, "reduced evaluation must match the batch");
+
+		let mut prover_challenges = output.challenges;
+		prover_challenges.reverse();
+		assert_eq!(prover_challenges, sumcheck_output.challenges);
+	}
+
+	#[test]
+	fn test_padded_batch_matches_decorator_reference() {
+		// A single full-length claim: no padding, a plain passthrough.
+		assert_padded_matches_reference(&[8], 0);
+		// Equal sizes: still no padding, the ordinary shared-prover path.
+		assert_padded_matches_reference(&[6, 6, 6], 1);
+		// One shorter claim padded up to the longer, in both orders.
+		assert_padded_matches_reference(&[5, 8], 2);
+		assert_padded_matches_reference(&[8, 5], 3);
+		// A mix of sizes with the largest active from the first round.
+		assert_padded_matches_reference(&[3, 6, 8], 4);
+		// A claim padded by all but one variable.
+		assert_padded_matches_reference(&[1, 8], 5);
+		// A zero-variable claim, padded every round and never active.
+		assert_padded_matches_reference(&[0, 4, 8], 6);
+		// Several claims at several padding depths at once.
+		assert_padded_matches_reference(&[8, 8, 3, 1], 7);
+	}
+
+	#[test]
+	fn test_padded_batch_prove_verify() {
+		// The same size mixes as the reference test, driven end-to-end through a real transcript.
+		assert_padded_prove_verify(&[8], 10);
+		assert_padded_prove_verify(&[7, 7], 11);
+		assert_padded_prove_verify(&[5, 8], 12);
+		assert_padded_prove_verify(&[3, 6, 8], 13);
+		assert_padded_prove_verify(&[0, 4, 8], 14);
+		assert_padded_prove_verify(&[8, 2, 6, 1], 15);
+	}
+
+	proptest! {
+		#![proptest_config(ProptestConfig::with_cases(24))]
+
+		#[test]
+		fn test_padded_batch_matches_reference_proptest(
+			// Any mix of 1 to 5 claims, each 0 to 7 variables, sharing a common maximum width.
+			sizes in prop::collection::vec(0usize..=7, 1..=5),
+			seed: u64,
+		) {
+			// For every such mix, the shared padded prover must match the decorator batch exactly.
+			assert_padded_matches_reference(&sizes, seed);
 		}
 	}
 }

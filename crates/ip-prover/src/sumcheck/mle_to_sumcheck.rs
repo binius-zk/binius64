@@ -161,4 +161,9 @@ where
 		// wrapper only advances the inner evaluator's claim state.
 		self.inner.fold(challenge)
 	}
+
+	fn n_padding(&self, store: &MleStore<'_, P>) -> usize {
+		// Padding is a property of the wrapped claim's columns, unchanged by the eq factoring.
+		self.inner.n_padding(store)
+	}
 }

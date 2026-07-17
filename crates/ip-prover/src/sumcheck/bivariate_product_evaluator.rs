@@ -128,6 +128,17 @@ impl<F: Field, P: PackedField<Scalar = F>> RoundEvaluator<F, P> for BivariatePro
 		let round_sum = self.last_coeffs_or_sum.coeffs().evaluate(challenge);
 		self.last_coeffs_or_sum = RoundState::Claim(round_sum);
 	}
+
+	fn n_padding(&self, store: &MleStore<'_, P>) -> usize {
+		// Both columns of a product claim have the same length, so they share one padding.
+		let n_padding = store.col_padding(self.cols[0]);
+		debug_assert_eq!(
+			store.col_padding(self.cols[1]),
+			n_padding,
+			"a product claim's two columns must share one padding"
+		);
+		n_padding
+	}
 }
 
 #[cfg(test)]
