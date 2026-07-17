@@ -1,5 +1,7 @@
 // Copyright 2026 The Binius Developers
 
+use std::array;
+
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::FieldBuffer;
@@ -162,22 +164,25 @@ where
 
 	fn accumulate(&self, chunk: &EvaluationChunk<'_, P>, accum: &mut [<P as WideMul>::Output]) {
 		let eq_chunk = chunk.eq(self.eq_tracker);
+		let eq = eq_chunk.as_ref();
 
 		// Each column arrives split into low/high halves for the top variable: the low half
 		// corresponds to x=0, the high half to x=1.
 		let cols: [&ColumnChunk<'_, P>; N] = self.cols.map(|id| chunk.col(id));
+		let los: [&[P]; N] = array::from_fn(|i| cols[i].lo.as_ref());
+		let his: [&[P]; N] = array::from_fn(|i| cols[i].hi.as_ref());
 
-		// The evaluator's run holds `y_1` in slot 0 and `y_inf` in slot 1.
-		let mut y_1 = <P as WideMul>::Output::default();
-		let mut y_inf = <P as WideMul>::Output::default();
-		for (idx, &eq_i) in eq_chunk.as_ref().iter().enumerate() {
-			// Gather the idx-th evaluations of every multilinear at both halves.
+		// Computes the widened (y_1, y_inf) contribution of one element. Called four times per
+		// iteration below, into four independent accumulator pairs, so several independent
+		// carryless-multiply chains stay in flight; a single accumulator pair serializes on one
+		// dependent chain and starves the multiplier pipes.
+		let eval = |j: usize| -> (<P as WideMul>::Output, <P as WideMul>::Output) {
+			// Gather the j-th evaluations of every multilinear at both halves.
 			let mut evals_1 = [P::default(); N];
 			let mut evals_inf = [P::default(); N];
-
 			for i in 0..N {
-				let lo_i = cols[i].lo.as_ref()[idx];
-				let hi_i = cols[i].hi.as_ref()[idx];
+				let lo_i = los[i][j];
+				let hi_i = his[i][j];
 
 				// Compose once with the high half and once with the lo+hi combination.
 				// The lo+hi branch corresponds to evaluation at infinity for multilinears.
@@ -188,12 +193,52 @@ where
 			// Weight the composition by the eq indicator to keep the sumcheck claim aligned to
 			// eval_point. Only this final multiply is widened; the composition products are already
 			// reduced.
-			y_1 += P::wide_mul((self.composition)(evals_1), eq_i);
-			y_inf += P::wide_mul((self.infinity_composition)(evals_inf), eq_i);
+			let eq_j = eq[j];
+			(
+				P::wide_mul((self.composition)(evals_1), eq_j),
+				P::wide_mul((self.infinity_composition)(evals_inf), eq_j),
+			)
+		};
+
+		let len = eq.len();
+
+		// Four independent (y_1, y_inf) accumulator pairs, XOR-merged after the loop.
+		let mut y_1: [<P as WideMul>::Output; 4] =
+			array::from_fn(|_| <P as WideMul>::Output::default());
+		let mut y_inf: [<P as WideMul>::Output; 4] =
+			array::from_fn(|_| <P as WideMul>::Output::default());
+
+		let quads = len / 4 * 4;
+		for idx in (0..quads).step_by(4) {
+			for k in 0..4 {
+				let (a, b) = eval(idx + k);
+				y_1[k] += a;
+				y_inf[k] += b;
+			}
 		}
 
-		accum[0] += y_1;
-		accum[1] += y_inf;
+		let [y_1_0, y_1_rest @ ..] = y_1;
+		let acc_1 = y_1_rest.into_iter().fold(y_1_0, |mut acc, y| {
+			acc += y;
+			acc
+		});
+		let [y_inf_0, y_inf_rest @ ..] = y_inf;
+		let acc_inf = y_inf_rest.into_iter().fold(y_inf_0, |mut acc, y| {
+			acc += y;
+			acc
+		});
+
+		// Tail: fewer than four remaining elements.
+		let (acc_1, acc_inf) = (quads..len).fold((acc_1, acc_inf), |(mut a1, mut ai), idx| {
+			let (a, b) = eval(idx);
+			a1 += a;
+			ai += b;
+			(a1, ai)
+		});
+
+		// The evaluator's run holds `y_1` in slot 0 and `y_inf` in slot 1.
+		accum[0] += acc_1;
+		accum[1] += acc_inf;
 	}
 
 	fn interpolate(
