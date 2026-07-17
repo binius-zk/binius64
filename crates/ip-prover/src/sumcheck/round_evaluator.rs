@@ -17,7 +17,6 @@ use auto_impl::auto_impl;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::FieldBuffer;
-use binius_utils::rayon::prelude::*;
 
 use super::{
 	MleToSumCheckEvaluator,
@@ -102,6 +101,10 @@ const MAX_CHUNK_VARS: usize = 12;
 pub struct SharedSumcheckProver<'a, P: PackedField, Evaluator> {
 	store: MleStore<'a, P>,
 	evaluators: Vec<Evaluator>,
+	/// A fold challenge whose store fold has been deferred so the next [`SumcheckProver::execute`]
+	/// can fuse it into that round's read pass (see [`MleStore::map_reduce_with_fold`]). The
+	/// evaluators fold eagerly; only the store's column and eq fold waits here.
+	buffered_challenge: Option<P::Scalar>,
 }
 
 impl<'a, F, P, Evaluator> SharedSumcheckProver<'a, P, Evaluator>
@@ -112,7 +115,11 @@ where
 {
 	/// Creates a prover from a store and the evaluators reading its columns, one per claim.
 	pub const fn new(store: MleStore<'a, P>, evaluators: Vec<Evaluator>) -> Self {
-		Self { store, evaluators }
+		Self {
+			store,
+			evaluators,
+			buffered_challenge: None,
+		}
 	}
 
 	/// Returns a shared reference to the underlying column store.
@@ -157,7 +164,9 @@ where
 	Evaluator: RoundEvaluator<F, P>,
 {
 	fn n_vars(&self) -> usize {
-		self.store.n_vars()
+		// A buffered challenge is a fold that has not yet reached the store, so the logical
+		// remaining-variable count is one below the store's until the next execute applies it.
+		self.store.n_vars() - self.buffered_challenge.is_some() as usize
 	}
 
 	fn n_claims(&self) -> usize {
@@ -172,7 +181,7 @@ where
 	}
 
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
-		let n_vars_remaining = self.store.n_vars();
+		let n_vars_remaining = self.n_vars();
 		assert!(n_vars_remaining > 0);
 
 		// One parallel pass over the halved hypercube feeds every evaluator, so shared columns
@@ -192,24 +201,29 @@ where
 
 		// The store prepares one `EvaluationChunk` per chunk of the halved hypercube — the split
 		// column halves and eq-indicator expansions each evaluator reads.
-		let ctx = self.store.execute_context();
+		let buffered_challenge = self.buffered_challenge.take();
 		let evaluators = &self.evaluators;
-		let new_accum = || -> Vec<<P as WideMul>::Output> { vec![Default::default(); total_slots] };
-		let accum = ctx
-			.par_chunks(chunk_vars)
-			.fold(new_accum, |mut accum, chunk| {
-				for (evaluator, window) in iter::zip(evaluators, offsets.windows(2)) {
-					evaluator.accumulate(&chunk, &mut accum[window[0]..window[1]]);
-				}
-				accum
-			})
-			.reduce(new_accum, |mut lhs, rhs| {
-				// The only merge: sum the workers' slices slot-wise, generic over every evaluator.
-				for (dst, src) in iter::zip(&mut lhs, rhs) {
-					*dst += src;
-				}
-				lhs
-			});
+		let store = &mut self.store;
+		let map = |chunk: EvaluationChunk<'_, P>| {
+			let mut accum = vec![Default::default(); total_slots];
+			for (evaluator, window) in iter::zip(evaluators, offsets.windows(2)) {
+				evaluator.accumulate(&chunk, &mut accum[window[0]..window[1]]);
+			}
+			accum
+		};
+		let reduce = |mut lhs: Vec<<P as WideMul>::Output>, rhs: Vec<<P as WideMul>::Output>| {
+			// The only merge: sum the workers' slices slot-wise, generic over every evaluator.
+			for (dst, src) in iter::zip(&mut lhs, rhs) {
+				*dst += src;
+			}
+			lhs
+		};
+		let accum = match buffered_challenge {
+			// The previous fold deferred its store fold; apply it and this round's read in one
+			// pass.
+			Some(challenge) => store.map_reduce_with_fold(chunk_vars, challenge, map, reduce),
+			None => store.map_reduce(chunk_vars, map, reduce),
+		};
 
 		// The store is read (immutably) for the round's point coordinates while the evaluators are
 		// interpolated (mutably); they are disjoint fields, so borrow the store separately.
@@ -220,15 +234,25 @@ where
 	}
 
 	fn fold(&mut self, challenge: F) {
-		// The store folds — columns and eq trackers both; evaluators only advance local
-		// bookkeeping such as claim state and equality prefix products.
-		self.store.fold(challenge);
+		// The evaluators advance their local bookkeeping (claim state, equality prefix products)
+		// now, but the store's column and eq fold is deferred: the challenge is buffered so the
+		// next execute can fuse it into that round's read pass.
 		for evaluator in &mut self.evaluators {
 			evaluator.fold(challenge);
 		}
+		debug_assert!(
+			self.buffered_challenge.is_none(),
+			"fold called twice without an intervening execute"
+		);
+		self.buffered_challenge = Some(challenge);
 	}
 
-	fn finish(self) -> Vec<F> {
+	fn finish(mut self) -> Vec<F> {
+		// The last round's fold is still buffered; apply it to the store before reading
+		// evaluations.
+		if let Some(challenge) = self.buffered_challenge.take() {
+			self.store.fold(challenge);
+		}
 		// The store owns each column once and computes its evaluation a single time, no matter how
 		// many claims read it; emit every column's evaluation in store order.
 		self.store.final_evals()
@@ -281,9 +305,11 @@ where
 		Evaluator: 'static,
 	{
 		let Self { inner, eval_point } = self;
+		// Conversion happens before proving starts, so no fold challenge is buffered yet.
 		let SharedSumcheckProver {
 			mut store,
 			evaluators,
+			buffered_challenge: _,
 		} = inner;
 		// Every claim of an MLE-check prover shares the prover's evaluation point, so its eq
 		// tracker is already registered on the store (by the evaluators reading it). Recover that

@@ -81,6 +81,11 @@ impl<F: Field, P: PackedField<Scalar = F>> Gruen32<P> {
 		&self.chunk_eq_expansion
 	}
 
+	pub fn eq_expansion_mut(&mut self) -> &mut FieldBuffer<P> {
+		assert_eq!(self.suffix_eq_expansion.log_len(), 0);
+		&mut self.chunk_eq_expansion
+	}
+
 	pub const fn chunk_eq_expansion(&self) -> &FieldBuffer<P> {
 		&self.chunk_eq_expansion
 	}
@@ -125,6 +130,37 @@ impl<F: Field, P: PackedField<Scalar = F>> Gruen32<P> {
 		} else if self.chunk_eq_expansion.log_len() > 0 {
 			let new_log_len = self.chunk_eq_expansion.log_len() - 1;
 			eq_ind_truncate_low_inplace(&mut self.chunk_eq_expansion, new_log_len);
+		}
+
+		// Update the prefix product (1)
+		let alpha = self.next_coordinate();
+		self.eq_prefix_eval *= eq_one_var(challenge, alpha);
+
+		self.n_vars_remaining -= 1;
+	}
+
+	/// Advances the tracker by one variable, truncating the eq-indicator buffers without
+	/// contracting their values.
+	///
+	/// This is the bookkeeping half of [`Self::fold`] — it drops the folded-out variable and
+	/// updates the prefix product, but leaves the values as-is. It is meant to be called from
+	/// [`super::mle_store::MleStore::map_reduce_with_fold`], which contracts the eq values itself.
+	pub fn truncate_one_var(&mut self, challenge: F) {
+		assert!(self.n_vars_remaining > 0);
+
+		// The caller has already contracted the values in place; here we only drop the folded-out
+		// variable. We are one variable less than the other multilinears.
+		debug_assert_eq!(
+			self.chunk_eq_expansion.log_len() + self.suffix_eq_expansion.log_len(),
+			self.n_vars_remaining - 1
+		);
+		// High-to-low evaluation order means we need to truncate suffix first.
+		if self.suffix_eq_expansion.log_len() > 0 {
+			let new_log_len = self.suffix_eq_expansion.log_len() - 1;
+			self.suffix_eq_expansion.truncate(new_log_len);
+		} else if self.chunk_eq_expansion.log_len() > 0 {
+			let new_log_len = self.chunk_eq_expansion.log_len() - 1;
+			self.chunk_eq_expansion.truncate(new_log_len);
 		}
 
 		// Update the prefix product (1)
