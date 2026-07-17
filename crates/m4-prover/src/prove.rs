@@ -23,6 +23,7 @@ use binius_math::{
 use binius_prover::{
 	fold_word::fold_words,
 	protocols::{
+		binmul::{BinMulWitness, prove as prove_binmul_reduction},
 		intmul::{prove::IntMulProver, witness::Witness as IntMulWitness},
 		shift::{KeyCollection, OperatorData, build_key_collection},
 	},
@@ -33,15 +34,16 @@ use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
 use binius_verifier::{
 	config::B128,
 	protocols::{
+		binmul::BinMulOutput,
 		bitand::AndCheckOutput,
 		intmul::IntMulOutput,
-		shift::{BITAND_ARITY, INTMUL_ARITY},
+		shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY},
 	},
 };
 
 use crate::{
 	BatchAndCheckWitness, ValueTable,
-	operand_witness::build_intmul_witness,
+	operand_witness::{build_binmul_witness, build_intmul_witness},
 	shift::{fold_instances, prove as prove_shift},
 };
 
@@ -158,8 +160,31 @@ impl IOPProver {
 			(columns, output)
 		});
 
+		// Build the BinMul operand columns and run the BinMul check, only when the circuit has BMUL
+		// constraints.
+		//
+		// SOUNDNESS: the BinMul check runs after the IntMul check and before the BitAnd check
+		// below. Its per-bit operand evaluations are bound to the transcript here, before BitAnd
+		// draws the univariate challenge that collapses them. Do not reorder these, and keep the
+		// same order in `IOPVerifier::verify`.
+		//
+		// The six columns are the `(lo, hi)` word pairs of the two multiplicands and the product of
+		// every constraint over every instance, laid out constraint-major. They are kept alongside
+		// the check output; the re-randomization re-reads them to build the instance-axis
+		// multilinears it transports. BinMul commits no oracle, so nothing is added to
+		// `oracle_specs`.
+		let bmul = (!cs.bmul_constraints.is_empty()).then(|| {
+			let columns = {
+				let _scope = tracing::debug_span!("Assemble BinMul witness").entered();
+				build_binmul_witness(table, &cs.constants, &cs.bmul_constraints)
+			};
+			let output = prove_binmul::<P, _>(&columns, channel);
+			(columns, output)
+		});
+
 		// AND-check the `A & B == C` relation over all `K * n_and` rows.
-		// Retain the operand columns when IntMul ran, since the re-randomization re-reads them.
+		// Retain the operand columns when IntMul or BinMul ran, since the re-randomization re-reads
+		// them.
 		let (
 			and_columns,
 			AndCheckOutput {
@@ -176,7 +201,7 @@ impl IOPProver {
 				let _scope = tracing::debug_span!("Assemble BitAnd witness").entered();
 				BatchAndCheckWitness::build(table, &cs.constants, &cs.and_constraints)
 			};
-			let and_columns = mul.is_some().then(|| {
+			let and_columns = (mul.is_some() || bmul.is_some()).then(|| {
 				[
 					and_witness.a().to_vec(),
 					and_witness.b().to_vec(),
@@ -191,35 +216,33 @@ impl IOPProver {
 		let (r_rho_and, r_x_and) = eval_point.split_at(table.log_instances());
 
 		// Reduce to one shared instance point `r_rho` and the operand claims at that point.
-		let (r_rho, bitand_data, intmul_data) = match mul {
-			Some((mul_columns, intmul_output)) => {
-				// Both operations enter the re-randomization as operand columns with their oblong
-				// claims at their own instance point.
-				// BitAnd is already oblong.
-				// IntMul is collapsed from its per-bit form.
-				let lagrange = lagrange_evals_scalars::<B128, B128>(&shift_domain, z_challenge);
-				let and_columns = and_columns
-					.expect("AND columns are retained whenever there are IMUL constraints");
-				RerandomizedOperations {
-					bitand: Operation::new(
-						&and_columns,
-						[a_eval, b_eval, c_eval],
-						r_x_and,
-						r_rho_and,
-					),
-					intmul: Operation::from_intmul(
-						&mul_columns,
-						intmul_output,
-						&lagrange,
-						table.log_instances(),
-					),
-				}
-				.prove::<P, _>(&lagrange, z_challenge, channel)
+		//
+		// The re-randomization runs whenever IntMul or BinMul is present: BitAnd always enters,
+		// plus each present multiplication operation, all unified onto one shared `r_rho`.
+		let (r_rho, bitand_data, intmul_data, binmul_data) = if mul.is_some() || bmul.is_some() {
+			// Every present operation enters the re-randomization as operand columns with their
+			// oblong claims at their own instance point.
+			// BitAnd is already oblong.
+			// IntMul and BinMul are collapsed from their per-bit form.
+			let lagrange = lagrange_evals_scalars::<B128, B128>(&shift_domain, z_challenge);
+			let and_columns = and_columns
+				.expect("AND columns are retained whenever there are IMUL or BMUL constraints");
+			let log_instances = table.log_instances();
+			RerandomizedOperations {
+				bitand: Operation::new(&and_columns, [a_eval, b_eval, c_eval], r_x_and, r_rho_and),
+				intmul: mul.as_ref().map(|(columns, output)| {
+					Operation::from_intmul(columns, output.clone(), &lagrange, log_instances)
+				}),
+				binmul: bmul.as_ref().map(|(columns, output)| {
+					Operation::from_binmul(columns, output.clone(), &lagrange, log_instances)
+				}),
 			}
-			// No IMUL constraints: the AND-check instance point is used directly.
-			// The IntMul claim is a zero claim at an empty point, contributing nothing to the
-			// shift.
-			None => (
+			.prove::<P, _>(&lagrange, z_challenge, channel)
+		} else {
+			// Neither IMUL nor BMUL constraints: the AND-check instance point is used directly.
+			// The IntMul and BinMul claims are zero claims at an empty point, contributing nothing
+			// to the shift.
+			(
 				r_rho_and.to_vec(),
 				OperatorData {
 					evals: vec![a_eval, b_eval, c_eval],
@@ -227,11 +250,16 @@ impl IOPProver {
 					r_x_prime: r_x_and.to_vec(),
 				},
 				OperatorData {
-					evals: vec![B128::ZERO; 4],
+					evals: vec![B128::ZERO; INTMUL_ARITY],
 					r_zhat_prime: z_challenge,
 					r_x_prime: Vec::new(),
 				},
-			),
+				OperatorData {
+					evals: vec![B128::ZERO; BINMUL_ARITY],
+					r_zhat_prime: z_challenge,
+					r_x_prime: Vec::new(),
+				},
+			)
 		};
 
 		// Fold the committed witness over the instance axis at the shared point.
@@ -257,13 +285,7 @@ impl IOPProver {
 				&folded_witness,
 				bitand_data,
 				intmul_data,
-				// M4 has no BMUL constraints: the BinMul claim is a zero claim at an empty point,
-				// contributing nothing to the shift.
-				OperatorData {
-					evals: vec![B128::ZERO; 6],
-					r_zhat_prime: z_challenge,
-					r_x_prime: Vec::new(),
-				},
+				binmul_data,
 				&shift_domain,
 				channel,
 			)
@@ -397,6 +419,35 @@ where
 	prover.prove(witness)
 }
 
+/// Runs the BinMul check over the batched operand columns.
+///
+/// The six columns are the `(lo, hi)` word pairs of the two GHASH-field multiplicands and their
+/// product, in the order `[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi]`.
+/// Each is `K * n_binmul` rows, laid out constraint-major.
+/// The check reduces the GHASH-field multiplication relation to per-bit evaluation claims on the
+/// six columns. Those claims share a common row point.
+fn prove_binmul<P, Channel>(columns: &[Vec<Word>; 6], channel: &mut Channel) -> BinMulOutput<B128>
+where
+	P: PackedField<Scalar = B128>,
+	Channel: IOPProverChannel<P>,
+{
+	let _scope = tracing::debug_span!("BinMul check").entered();
+
+	// The columns are the multiplicands' and product's low and high words, in the order the BinMul
+	// witness expects.
+	let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] = columns;
+	let witness = BinMulWitness {
+		a_lo,
+		a_hi,
+		b_lo,
+		b_hi,
+		c_lo,
+		c_hi,
+	};
+
+	prove_binmul_reduction::<B128, P, _>(&witness, channel)
+}
+
 /// One operation's operand columns, oblong claims, and the points they are claimed at.
 ///
 /// The AND-check and the IntMul check both reduce to this shape.
@@ -497,52 +548,108 @@ impl<'a> Operation<'a, INTMUL_ARITY> {
 	}
 }
 
-/// The two operations entering the batched instance re-randomization.
+impl<'a> Operation<'a, BINMUL_ARITY> {
+	/// Builds the BinMul operation by collapsing its per-bit operand claims to oblong claims.
+	///
+	/// The Lagrange weights fold the per-bit claims at the univariate challenge.
+	/// This gives the oblong form the BitAnd claims already have.
+	/// The BinMul row point splits into an instance part (low) and a constraint part (high).
+	fn from_binmul(
+		columns: &'a [Vec<Word>; BINMUL_ARITY],
+		binmul_output: BinMulOutput<B128>,
+		lagrange: &[B128],
+		log_instances: usize,
+	) -> Self {
+		let BinMulOutput {
+			eval_point: r_out_binmul,
+			a_lo_evals,
+			a_hi_evals,
+			b_lo_evals,
+			b_hi_evals,
+			c_lo_evals,
+			c_hi_evals,
+		} = binmul_output;
+		let oblong =
+			|evals: &[B128]| inner_product(evals.iter().copied(), lagrange.iter().copied());
+		let (r_rho, r_x) = r_out_binmul.split_at(log_instances);
+		Self::new(
+			columns,
+			[
+				oblong(&a_lo_evals),
+				oblong(&a_hi_evals),
+				oblong(&b_lo_evals),
+				oblong(&b_hi_evals),
+				oblong(&c_lo_evals),
+				oblong(&c_hi_evals),
+			],
+			r_x,
+			r_rho,
+		)
+	}
+}
+
+/// The operations entering the batched instance re-randomization.
+///
+/// BitAnd is always present. IntMul and BinMul enter only when the circuit carries their
+/// constraints; an absent operation reduces to a zero claim contributing nothing to the shift.
 struct RerandomizedOperations<'a> {
 	/// The BitAnd operation, at the AND-check instance point.
 	bitand: Operation<'a, BITAND_ARITY>,
-	/// The IntMul operation, at the IntMul instance point.
-	intmul: Operation<'a, INTMUL_ARITY>,
+	/// The IntMul operation, at the IntMul instance point, when the circuit has IMUL constraints.
+	intmul: Option<Operation<'a, INTMUL_ARITY>>,
+	/// The BinMul operation, at the BinMul instance point, when the circuit has BMUL constraints.
+	binmul: Option<Operation<'a, BINMUL_ARITY>>,
 }
 
 impl RerandomizedOperations<'_> {
-	/// Re-randomizes both operations' instance points to one shared point.
+	/// Re-randomizes every present operation's instance point to one shared point.
 	///
 	/// Each operation reduces to operand claims at its own instance point.
 	/// The witness folds over the instance axis only once, so the points must be unified first.
 	///
-	/// - Push both operations' operand multilinears onto one store.
+	/// - Push every present operation's operand multilinears onto one store.
 	/// - Register one equality tracker per operation, so each indicator is expanded once.
 	/// - A batched sumcheck transports every claim to one shared instance point.
 	/// - The reduced evaluations there are the operand claims the shift consumes.
 	///
+	/// The operands are pushed in the order [BitAnd | IntMul (if present) | BinMul (if present)],
+	/// so the reduced evaluations split back into contiguous per-operation segments in that same
+	/// order. An absent operation reduces to a zero claim at an empty point.
+	///
 	/// # Returns
 	///
-	/// The shared instance point, the BitAnd operand data, and the IntMul operand data.
+	/// The shared instance point, the BitAnd operand data, the IntMul operand data, and the BinMul
+	/// operand data.
 	fn prove<P, Channel>(
 		self,
 		lagrange: &[B128],
 		z_challenge: B128,
 		channel: &mut Channel,
-	) -> (Vec<B128>, OperatorData<B128>, OperatorData<B128>)
+	) -> (Vec<B128>, OperatorData<B128>, OperatorData<B128>, OperatorData<B128>)
 	where
 		P: PackedField<Scalar = B128>,
 		Channel: IOPProverChannel<P>,
 	{
 		let _scope = tracing::debug_span!("Re-randomize instances").entered();
 
-		// Both operations reduce over the same instance axis.
-		// Recover its width from either point.
+		// Every operation reduces over the same instance axis.
+		// Recover its width from the BitAnd point.
 		let log_instances = self.bitand.r_rho.len();
 
-		// One shared store over the instance axis holds every operation's operand multilinears.
-		// The evaluators list the operands in order [BitAnd a, b, c | IntMul a, b, lo, hi].
+		// One shared store over the instance axis holds every present operation's operand
+		// multilinears. The evaluators list the operands in push order
+		// [BitAnd a, b, c | IntMul a, b, lo, hi | BinMul a_lo, a_hi, b_lo, b_hi, c_lo, c_hi].
 		// The verifier reads the reduced evaluations back in the same order.
 		let mut store = MleStore::<P>::new(log_instances);
 		let mut evaluators: Vec<Box<dyn RoundEvaluator<B128, P>>> =
-			Vec::with_capacity(BITAND_ARITY + INTMUL_ARITY);
+			Vec::with_capacity(BITAND_ARITY + INTMUL_ARITY + BINMUL_ARITY);
 		self.bitand.push_to(lagrange, &mut store, &mut evaluators);
-		self.intmul.push_to(lagrange, &mut store, &mut evaluators);
+		if let Some(intmul) = &self.intmul {
+			intmul.push_to(lagrange, &mut store, &mut evaluators);
+		}
+		if let Some(binmul) = &self.binmul {
+			binmul.push_to(lagrange, &mut store, &mut evaluators);
+		}
 
 		// One shared prover drives all claims over the store in a single round pass.
 		// Its evaluations are the store's per-column values at the shared instance point, in push
@@ -551,19 +658,48 @@ impl RerandomizedOperations<'_> {
 		let output = batch_prove_and_write_evals(vec![shared], channel);
 		let reduced = &output.multilinear_evals[0];
 
-		// The reduced evaluations split back into the two operations at the operand-count boundary.
-		let split = self.bitand.operand_claims.len();
+		// The reduced evaluations split back into contiguous per-operation segments, in push order.
+		let mut offset = 0;
 		let bitand_data = OperatorData {
-			evals: reduced[..split].to_vec(),
+			evals: reduced[offset..offset + BITAND_ARITY].to_vec(),
 			r_zhat_prime: z_challenge,
 			r_x_prime: self.bitand.r_x,
 		};
-		let intmul_data = OperatorData {
-			evals: reduced[split..].to_vec(),
-			r_zhat_prime: z_challenge,
-			r_x_prime: self.intmul.r_x,
+		offset += BITAND_ARITY;
+
+		// IntMul: the next INTMUL_ARITY reduced evaluations when present, else a zero claim.
+		let intmul_data = match self.intmul {
+			Some(intmul) => {
+				let data = OperatorData {
+					evals: reduced[offset..offset + INTMUL_ARITY].to_vec(),
+					r_zhat_prime: z_challenge,
+					r_x_prime: intmul.r_x,
+				};
+				offset += INTMUL_ARITY;
+				data
+			}
+			None => OperatorData {
+				evals: vec![B128::ZERO; INTMUL_ARITY],
+				r_zhat_prime: z_challenge,
+				r_x_prime: Vec::new(),
+			},
 		};
-		(output.challenges, bitand_data, intmul_data)
+
+		// BinMul: the final BINMUL_ARITY reduced evaluations when present, else a zero claim.
+		let binmul_data = match self.binmul {
+			Some(binmul) => OperatorData {
+				evals: reduced[offset..offset + BINMUL_ARITY].to_vec(),
+				r_zhat_prime: z_challenge,
+				r_x_prime: binmul.r_x,
+			},
+			None => OperatorData {
+				evals: vec![B128::ZERO; BINMUL_ARITY],
+				r_zhat_prime: z_challenge,
+				r_x_prime: Vec::new(),
+			},
+		};
+
+		(output.challenges, bitand_data, intmul_data, binmul_data)
 	}
 }
 
@@ -854,6 +990,133 @@ mod tests {
 		assert_ne!(
 			log_n_and, log_n_imul,
 			"the fixture must give the operations different r_x lengths"
+		);
+
+		let log_instances = 6;
+		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
+			let mut rng = StdRng::seed_from_u64(i as u64);
+			for &wire in &inputs {
+				w[wire] = Word(rng.next_u64());
+			}
+		})
+		.unwrap();
+
+		// Prove with the wide packing; the verifier is packing-agnostic.
+		let verifier = Verifier::setup(&cs, log_instances, 1);
+		let prover = Prover::<WideP>::setup(&verifier);
+
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		prover.prove(&table, &mut prover_transcript);
+
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		verifier
+			.verify(&mut verifier_transcript)
+			.expect("a faithful proof verifies");
+		verifier_transcript
+			.finalize()
+			.expect("no trailing proof data");
+	}
+
+	// A circuit carrying BMUL constraints round-trips through the whole protocol.
+	//
+	// BinMul commits no oracle, so the proof still commits only the trace oracle. The BinMul and
+	// AND checks reduce to different instance points, which the re-randomization unifies before
+	// the witness is folded.
+	//
+	// Fixture: one GHASH-field product `x * x` per instance over 2^6 instances, both product words
+	// force-committed. The `bmul` gate emits one BMUL constraint.
+	//
+	// A faithful proof verifies and no trailing data is left.
+	#[test]
+	fn protocol_round_trips_with_binmul() {
+		// One GHASH-field squaring per instance: `(c_lo, c_hi) = (x_lo, x_hi)^2`, with both result
+		// words committed as hidden words.
+		let builder = CircuitBuilder::new();
+		let x_lo = builder.add_witness();
+		let x_hi = builder.add_witness();
+		let (c_lo, c_hi) = builder.bmul(x_lo, x_hi, x_lo, x_hi);
+		builder.force_commit(c_lo);
+		builder.force_commit(c_hi);
+		let circuit = builder.build();
+
+		let mut cs = circuit.constraint_system().clone();
+		cs.validate_and_prepare().unwrap();
+		// Confirm the fixture genuinely exercises the BinMul path.
+		assert!(!cs.bmul_constraints.is_empty(), "the fixture must emit a BMUL constraint");
+
+		// Fill each instance's multiplicand from a per-instance seed; the circuit derives the two
+		// product words.
+		let log_instances = 6;
+		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
+			let mut rng = StdRng::seed_from_u64(i as u64);
+			w[x_lo] = Word(rng.next_u64());
+			w[x_hi] = Word(rng.next_u64());
+		})
+		.unwrap();
+
+		// Setup once: the verifier fixes the shape and FRI parameters, the prover inherits them.
+		let verifier = Verifier::setup(&cs, log_instances, 1);
+		let prover = Prover::<P>::setup(&verifier);
+
+		// Prover: commit the trace, reduce, and open on a fresh transcript.
+		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+		prover.prove(&table, &mut prover_transcript);
+
+		// Verifier: replay the same transcript end to end.
+		let mut verifier_transcript = prover_transcript.into_verifier();
+		verifier
+			.verify(&mut verifier_transcript)
+			.expect("a faithful proof verifies");
+		verifier_transcript
+			.finalize()
+			.expect("no trailing proof data");
+	}
+
+	// AND, IMUL, and BMUL constraints together, so the three operations reduce to constraint points
+	// of differing lengths and to genuinely different instance points that the re-randomization
+	// must unify onto one shared point.
+	//
+	// Proving with a width-2 packing exercises the packed lane layout and zero-padding of the
+	// instance-axis multilinears, which the width-1 fixtures never reach.
+	#[test]
+	fn protocol_round_trips_with_and_intmul_binmul_and_wide_packing() {
+		use binius_field::PackedBinaryGhash2x128b;
+		use binius_frontend::Wire;
+
+		type WideP = PackedBinaryGhash2x128b;
+
+		let builder = CircuitBuilder::new();
+		let inputs: [Wire; 8] = array::from_fn(|_| builder.add_witness());
+		// Four standalone AND gates on distinct wires.
+		for pair in inputs.chunks_exact(2) {
+			let and = builder.band(pair[0], pair[1]);
+			builder.force_commit(and);
+		}
+		// Two integer products — fewer IMUL constraints than AND constraints.
+		for pair in inputs.chunks_exact(2).take(2) {
+			let (hi, lo) = builder.imul(pair[0], pair[1]);
+			builder.force_commit(hi);
+			builder.force_commit(lo);
+		}
+		// One GHASH-field product — the fewest of the three operations.
+		let (c_lo, c_hi) = builder.bmul(inputs[0], inputs[1], inputs[2], inputs[3]);
+		builder.force_commit(c_lo);
+		builder.force_commit(c_hi);
+		let circuit = builder.build();
+
+		let mut cs = circuit.constraint_system().clone();
+		cs.validate_and_prepare().unwrap();
+		// Confirm the fixture genuinely exercises the asymmetric case: the three operations do not
+		// all reduce to constraint points of the same length.
+		let log_n_and = checked_log_2(cs.and_constraints.len());
+		let log_n_imul = checked_log_2(cs.imul_constraints.len());
+		let log_n_binmul = checked_log_2(cs.bmul_constraints.len());
+		assert!(!cs.imul_constraints.is_empty(), "the fixture must emit IMUL constraints");
+		assert!(!cs.bmul_constraints.is_empty(), "the fixture must emit BMUL constraints");
+		let lengths = [log_n_and, log_n_imul, log_n_binmul];
+		assert!(
+			lengths.iter().any(|&len| len != lengths[0]),
+			"the fixture must give the operations differing r_x lengths"
 		);
 
 		let log_instances = 6;
