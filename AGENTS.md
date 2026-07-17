@@ -9,7 +9,7 @@ cargo build                    # Debug build
 cargo build --release          # Release build
 cargo test                     # Run tests
 cargo test -p <crate>          # Test specific crate
-cargo +nightly-2026-01-01 fmt  # Format code (pinned nightly; see prek.toml)
+cargo +nightly-2026-07-01 fmt  # Format code (pinned nightly; see prek.toml)
 cargo clippy --all --all-features --tests --benches --examples -- -D warnings
 cargo doc --no-deps --document-private-items   # Build rustdoc
 typos                          # Check for typos

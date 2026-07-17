@@ -17,7 +17,7 @@ The codebase is formatted with a nightly version of `cargo fmt` because stable d
 options we use. You can run the formatter and linter with
 
 ```bash
-$ cargo +nightly-2026-01-01 fmt  # see prek.toml for the exact nightly version checked by CI
+$ cargo +nightly-2026-07-01 fmt  # see prek.toml for the exact nightly version checked by CI
 $ cargo clippy --all --all-features --tests --benches --examples -- -D warnings
 ```
 
