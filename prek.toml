@@ -19,7 +19,7 @@ hooks = [
     types = ["rust"],
     # language = "system", not "rust" because we need to pin nightly toolchain
     language = "system",
-    entry = "cargo +nightly-2026-01-01 fmt --check",
+    entry = "cargo +nightly-2026-07-01 fmt --check",
     pass_filenames = false,
     stages = ["pre-commit"]
   },
