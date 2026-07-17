@@ -6,7 +6,7 @@ use binius_core::{
 	constraint_system::{ConstraintSystem, ValueVec},
 	word::Word,
 };
-use binius_field::arch::OptimalPackedB128;
+use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Wire};
 use binius_hash::StdHashSuite;
 use binius_prover::{Prover, zk_config::ZKProver};
@@ -130,6 +130,57 @@ fn sha256_preimage_circuit() -> (ConstraintSystem, ValueVec) {
 fn test_prove_verify_sha256_preimage() {
 	let (cs, witness) = sha256_preimage_circuit();
 	prove_verify(cs, witness);
+}
+
+/// Builds a circuit that computes the 7th power of an input GHASH-field element `x` using four
+/// `bmul` gates, and constrains the result to a public output element. This exercises the BinMul
+/// reduction end-to-end in both the IOP prover and verifier.
+fn binmul_seventh_power_circuit() -> (ConstraintSystem, ValueVec) {
+	let circuit = CircuitBuilder::new();
+	// Input element x = (x_lo, x_hi), a private witness carried by a (lo, hi) word pair.
+	let x_lo = circuit.add_witness();
+	let x_hi = circuit.add_witness();
+	// Public output element y = (y_lo, y_hi).
+	let y_lo = circuit.add_inout();
+	let y_hi = circuit.add_inout();
+
+	// Compute x^7 with four GHASH-field multiplications: x^2, x^3, x^6, x^7.
+	let (x2_lo, x2_hi) = circuit.bmul(x_lo, x_hi, x_lo, x_hi);
+	let (x3_lo, x3_hi) = circuit.bmul(x2_lo, x2_hi, x_lo, x_hi);
+	let (x6_lo, x6_hi) = circuit.bmul(x3_lo, x3_hi, x3_lo, x3_hi);
+	let (x7_lo, x7_hi) = circuit.bmul(x6_lo, x6_hi, x_lo, x_hi);
+
+	circuit.assert_eq("x7_lo", x7_lo, y_lo);
+	circuit.assert_eq("x7_hi", x7_hi, y_hi);
+
+	let circuit = circuit.build();
+	let mut w = circuit.new_witness_filler();
+
+	// A random input element and its 7th power, computed independently via GHASH-field arithmetic.
+	let mut rng = StdRng::seed_from_u64(0);
+	let x = BinaryField128bGhash::random(&mut rng);
+	let x7 = x.pow([7u64]);
+
+	let x_val = u128::from(x);
+	let y_val = u128::from(x7);
+	w[x_lo] = Word(x_val as u64);
+	w[x_hi] = Word((x_val >> 64) as u64);
+	w[y_lo] = Word(y_val as u64);
+	w[y_hi] = Word((y_val >> 64) as u64);
+
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	(circuit.constraint_system().clone(), w.into_value_vec())
+}
+
+/// The 7th-power circuit uses BMUL constraints, exercising the BinMul reduction that the SHA-256
+/// tests (AND-only) never reach.
+#[test]
+fn test_prove_verify_binmul_seventh_power() {
+	let (cs, witness) = binmul_seventh_power_circuit();
+	assert!(cs.n_bmul_constraints() > 0, "circuit should have BMUL constraints");
+	prove_verify(cs.clone(), witness.clone());
+	prove_verify_zk(cs, witness);
 }
 
 /// A SHA-256 circuit uses only AND constraints, so its constraint system has zero IMUL

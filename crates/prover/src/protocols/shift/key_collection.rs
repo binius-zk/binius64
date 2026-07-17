@@ -6,7 +6,7 @@ use std::{iter, mem, ops::Range};
 use binius_core::{
 	ShiftVariant,
 	constraint_system::{
-		AndConstraint, ConstraintSystem, ImulConstraint, Operand, ShiftedValueIndex,
+		AndConstraint, BmulConstraint, ConstraintSystem, ImulConstraint, Operand, ShiftedValueIndex,
 	},
 	word::Word,
 };
@@ -17,17 +17,18 @@ use binius_utils::{
 };
 use bytes::{Buf, BufMut};
 
-use super::{BITAND_ARITY, INTMUL_ARITY, PreparedOperatorData};
+use super::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, PreparedOperatorData};
 
 /// Represents the type of operations handled by the shift protocol.
 ///
-/// The shift protocol supports two fundamental operation types that correspond
+/// The shift protocol supports three fundamental operation types that correspond
 /// to the constraint types in Binius64:
 ///
 /// # Operation Types
 ///
 /// - **BitwiseAnd**: Corresponds to AND constraints of the form `A & B ^ C = 0`
 /// - **IntegerMul**: Corresponds to IMUL constraints of the form `A * B = (HI << 64) | LO`
+/// - **BinMul**: Corresponds to BMUL constraints of the form `A * B = C` in the GHASH field
 ///
 /// These operations work with shifted value indices to efficiently encode
 /// computations on 64-bit words without requiring separate shift constraints.
@@ -36,6 +37,7 @@ use super::{BITAND_ARITY, INTMUL_ARITY, PreparedOperatorData};
 pub enum Operation {
 	BitwiseAnd,
 	IntegerMul,
+	BinMul,
 }
 
 /// A `Key` specifies an operation, an identifier for a 2D matrix, and a range of constraint
@@ -332,6 +334,14 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 		[|c| &c.a, |c| &c.b, |c| &c.c];
 	let intmul_operand_getters: [fn(&ImulConstraint) -> &Operand; INTMUL_ARITY] =
 		[|c| &c.a, |c| &c.b, |c| &c.lo, |c| &c.hi];
+	let binmul_operand_getters: [fn(&BmulConstraint) -> &Operand; BINMUL_ARITY] = [
+		|c| &c.a_lo,
+		|c| &c.a_hi,
+		|c| &c.b_lo,
+		|c| &c.b_hi,
+		|c| &c.c_lo,
+		|c| &c.c_hi,
+	];
 
 	bitand_operand_getters
 		.iter()
@@ -353,6 +363,18 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 				Operation::IntegerMul,
 				operand_idx,
 				cs.imul_constraints.iter().map(get_operand),
+				&mut builder_key_lists,
+			);
+		});
+
+	binmul_operand_getters
+		.iter()
+		.enumerate()
+		.for_each(|(operand_idx, get_operand)| {
+			update_with_operand(
+				Operation::BinMul,
+				operand_idx,
+				cs.bmul_constraints.iter().map(get_operand),
 				&mut builder_key_lists,
 			);
 		});
@@ -414,6 +436,7 @@ impl SerializeBytes for Operation {
 		let val = match self {
 			Operation::BitwiseAnd => 0u8,
 			Operation::IntegerMul => 1u8,
+			Operation::BinMul => 2u8,
 		};
 		val.serialize(write_buf)
 	}
@@ -425,6 +448,7 @@ impl DeserializeBytes for Operation {
 		match val {
 			0 => Ok(Operation::BitwiseAnd),
 			1 => Ok(Operation::IntegerMul),
+			2 => Ok(Operation::BinMul),
 			_ => Err(SerializationError::UnknownEnumVariant {
 				name: "Operation",
 				index: val,

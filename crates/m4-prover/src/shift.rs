@@ -113,12 +113,14 @@ pub fn fold_instances<F: BinaryField>(table: &ValueTable, r_rho: &[F]) -> Vec<Fo
 ///
 /// # Returns
 /// The `SumcheckOutput` with the final challenges and the reduced witness evaluation.
+#[allow(clippy::too_many_arguments)]
 pub fn prove<F, P, Channel>(
 	key_collection: &KeyCollection,
 	public_words: &[Word],
 	folded_witness: &[FoldedWord<F>],
 	bitand_data: OperatorData<F>,
 	intmul_data: OperatorData<F>,
+	binmul_data: OperatorData<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
 ) -> SumcheckOutput<F>
@@ -131,8 +133,10 @@ where
 	// and lambda powers).
 	let bitand_lambda = channel.sample();
 	let intmul_lambda = channel.sample();
+	let binmul_lambda = channel.sample();
 	let prepared_bitand = PreparedOperatorData::new(bitand_data, bitand_lambda);
 	let prepared_intmul = PreparedOperatorData::new(intmul_data, intmul_lambda);
+	let prepared_bmul = PreparedOperatorData::new(binmul_data, binmul_lambda);
 
 	// Phase 1: build the g parts once per key segment, then add them. The public words are
 	// constants shared by every instance, so the single-instance builder folds them directly from
@@ -143,12 +147,14 @@ where
 		&key_collection.public,
 		&prepared_bitand,
 		&prepared_intmul,
+		&prepared_bmul,
 	);
 	let hidden_g_parts = build_g_parts_from_folded_words(
 		folded_witness,
 		&key_collection.hidden,
 		&prepared_bitand,
 		&prepared_intmul,
+		&prepared_bmul,
 	);
 	for (g, hidden_g) in g_parts.iter_mut().zip(&hidden_g_parts) {
 		for (slot, add) in g.as_mut().iter_mut().zip(hidden_g.as_ref()) {
@@ -184,6 +190,7 @@ where
 		key_collection,
 		&prepared_bitand,
 		&prepared_intmul,
+		&prepared_bmul,
 		domain_subspace,
 		&r_j,
 		&r_s,
@@ -228,6 +235,7 @@ pub fn build_g_parts_from_folded_words<F: BinaryField>(
 	segment: &KeySegment,
 	bitand_operator_data: &PreparedOperatorData<F>,
 	intmul_operator_data: &PreparedOperatorData<F>,
+	binmul_operator_data: &PreparedOperatorData<F>,
 ) -> [FieldBuffer<F>; SHIFT_VARIANT_COUNT] {
 	// One flat accumulator holding SHIFT_VARIANT_COUNT multilinears of LOG_LEN variables each, laid
 	// out variant-major. Kept on the heap rather than a stack array: it is thousands of elements.
@@ -241,6 +249,7 @@ pub fn build_g_parts_from_folded_words<F: BinaryField>(
 			let operator_data = match key.operation {
 				Operation::BitwiseAnd => bitand_operator_data,
 				Operation::IntegerMul => intmul_operator_data,
+				Operation::BinMul => binmul_operator_data,
 			};
 
 			// The lambda-weighted partial evaluation tensor for this shifted word.
@@ -556,6 +565,11 @@ mod tests {
 				r_zhat_prime: r_z,
 				r_x_prime: Vec::new(),
 			},
+			OperatorData {
+				evals: vec![B128::ZERO; 6],
+				r_zhat_prime: r_z,
+				r_x_prime: Vec::new(),
+			},
 			&domain_subspace,
 			&mut prover_transcript,
 		);
@@ -564,13 +578,21 @@ mod tests {
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let verifier_bitand = VerifierOperatorData::new(r_x, bitand_evals);
 		let verifier_intmul = VerifierOperatorData::new(Vec::new(), intmul_evals);
-		let verifier_output =
-			verify(&cs, &verifier_bitand, &verifier_intmul, &mut verifier_transcript).unwrap();
+		let verifier_bmul = VerifierOperatorData::new(Vec::new(), [B128::ZERO; 6]);
+		let verifier_output = verify(
+			&cs,
+			&verifier_bitand,
+			&verifier_intmul,
+			&verifier_bmul,
+			&mut verifier_transcript,
+		)
+		.unwrap();
 		check_eval(
 			&cs,
 			public_words,
 			&verifier_bitand,
 			&verifier_intmul,
+			&verifier_bmul,
 			&domain_subspace,
 			r_z,
 			&verifier_output,
@@ -670,6 +692,14 @@ mod tests {
 			},
 			B128::random(&mut rng),
 		);
+		let prepared_bmul = PreparedOperatorData::new(
+			OperatorData {
+				evals: Vec::new(),
+				r_zhat_prime: r_z,
+				r_x_prime: Vec::new(),
+			},
+			B128::random(&mut rng),
+		);
 
 		// The g parts: the public segment folds from raw constant words via the single-instance
 		// builder, the hidden segment from the instance-folded words. Add them. The h parts come
@@ -679,12 +709,14 @@ mod tests {
 			&key_collection.public,
 			&prepared_bitand,
 			&prepared_intmul,
+			&prepared_bmul,
 		);
 		let hidden_g_parts = build_g_parts_from_folded_words(
 			&hidden_folded,
 			&key_collection.hidden,
 			&prepared_bitand,
 			&prepared_intmul,
+			&prepared_bmul,
 		);
 		for (g, hidden_g) in g_parts.iter_mut().zip(&hidden_g_parts) {
 			for (slot, add) in g.as_mut().iter_mut().zip(hidden_g.as_ref()) {

@@ -283,12 +283,20 @@ fn test_shift_prove_and_verify() {
 			r_zhat_prime,
 			r_x_prime: r_x_prime_intmul.clone(),
 		};
+		// These circuits have no BMUL constraints, so the BinMul claim is the zero claim at an
+		// empty point (the prover's skipped-case `None` branch).
+		let prover_binmul_data = OperatorData {
+			evals: vec![F::ZERO; 6],
+			r_zhat_prime,
+			r_x_prime: Vec::new(),
+		};
 
 		let prover_output = prove::<F, P, _>(
 			&key_collection,
 			value_vec.combined_witness(),
 			prover_bitand_data.clone(),
 			prover_intmul_data.clone(),
+			prover_binmul_data.clone(),
 			&subspace,
 			&mut prover_transcript,
 		);
@@ -298,10 +306,16 @@ fn test_shift_prove_and_verify() {
 
 		let verifier_bitand_data = VerifierOperatorData::new(r_x_prime_bitand, bitand_evals);
 		let verifier_intmul_data = VerifierOperatorData::new(r_x_prime_intmul, intmul_evals);
+		let verifier_binmul_data = VerifierOperatorData::new(Vec::new(), [F::ZERO; 6]);
 
-		let verifier_output =
-			verify(&cs, &verifier_bitand_data, &verifier_intmul_data, &mut verifier_transcript)
-				.unwrap();
+		let verifier_output = verify(
+			&cs,
+			&verifier_bitand_data,
+			&verifier_intmul_data,
+			&verifier_binmul_data,
+			&mut verifier_transcript,
+		)
+		.unwrap();
 
 		// Check consistency with verifier output
 		check_eval(
@@ -309,6 +323,7 @@ fn test_shift_prove_and_verify() {
 			value_vec.public(),
 			&verifier_bitand_data,
 			&verifier_intmul_data,
+			&verifier_binmul_data,
 			&subspace,
 			r_zhat_prime,
 			&verifier_output,

@@ -9,7 +9,7 @@ use binius_math::{
 	BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
 };
 use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
-use binius_verifier::protocols::shift::{BITAND_ARITY, INTMUL_ARITY, evaluate_h_op};
+use binius_verifier::protocols::shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, evaluate_h_op};
 use bytemuck::zeroed_vec;
 use tracing::instrument;
 
@@ -103,8 +103,8 @@ where
 /// Constructs the "monster multilinear" that combines all shift operations into a single
 /// multilinear.
 ///
-/// This function builds a comprehensive multilinear polynomial that encapsulates both AND and IMUL
-/// constraints with their associated shift operations. For each witness word, it computes the
+/// This function builds a comprehensive multilinear polynomial that encapsulates the AND, IMUL and
+/// BMUL constraints with their associated shift operations. For each witness word, it computes the
 /// contribution from all constraints involving that word, weighted by the appropriate h-polynomial
 /// evaluations and lambda powers.
 ///
@@ -138,6 +138,7 @@ pub fn build_monster_segments<F, P: PackedField<Scalar = F>>(
 	key_collection: &KeyCollection,
 	bitand_operator_data: &PreparedOperatorData<F>,
 	intmul_operator_data: &PreparedOperatorData<F>,
+	binmul_operator_data: &PreparedOperatorData<F>,
 	domain_subspace: &BinarySubspace<F>,
 	r_j: &[F],
 	r_s: &[F],
@@ -146,9 +147,10 @@ where
 	F: BinaryField,
 {
 	// Compute h evaluations
-	let [bitand_h_ops, intmul_h_ops] = [
+	let [bitand_h_ops, intmul_h_ops, binmul_h_ops] = [
 		bitand_operator_data.r_zhat_prime,
 		intmul_operator_data.r_zhat_prime,
+		binmul_operator_data.r_zhat_prime,
 	]
 	.map(|r_zhat_prime| {
 		let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
@@ -162,6 +164,7 @@ where
 	// [`Key::accumulate`] can index directly by operand index.
 	let mut bitand_scalars = vec![F::ZERO; BITAND_ARITY * SHIFT_VARIANT_COUNT * Word::BITS];
 	let mut intmul_scalars = vec![F::ZERO; INTMUL_ARITY * SHIFT_VARIANT_COUNT * Word::BITS];
+	let mut binmul_scalars = vec![F::ZERO; BINMUL_ARITY * SHIFT_VARIANT_COUNT * Word::BITS];
 
 	let populate_scalars = |scalars: &mut [F], arity: usize, lambda_powers: &[F], h_ops: &[F]| {
 		for op in 0..SHIFT_VARIANT_COUNT {
@@ -188,6 +191,12 @@ where
 		&intmul_operator_data.lambda_powers,
 		&intmul_h_ops,
 	);
+	populate_scalars(
+		&mut binmul_scalars,
+		BINMUL_ARITY,
+		&binmul_operator_data.lambda_powers,
+		&binmul_h_ops,
+	);
 
 	// The scalar for one word of a segment: the accumulated contribution of all its keys. The
 	// per-key wide accumulations are summed unreduced and reduced once at the end.
@@ -199,6 +208,7 @@ where
 				let (operator_data, scalars, arity) = match key.operation {
 					Operation::BitwiseAnd => (bitand_operator_data, &bitand_scalars, BITAND_ARITY),
 					Operation::IntegerMul => (intmul_operator_data, &intmul_scalars, INTMUL_ARITY),
+					Operation::BinMul => (binmul_operator_data, &binmul_scalars, BINMUL_ARITY),
 				};
 				let base = key.id as usize * arity;
 				key.accumulate_wide(
