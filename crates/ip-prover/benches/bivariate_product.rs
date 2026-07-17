@@ -7,7 +7,7 @@
 
 use binius_field::{FieldOps, PackedField, arch::OptimalPackedB128};
 use binius_ip_prover::sumcheck::{
-	batch::{batch_prove, batch_prove_mle},
+	self,
 	bivariate_product_evaluator::BivariateProductEvaluator,
 	mle_store::MleStore,
 	quadratic_mle_evaluator::QuadraticMleEvaluator,
@@ -48,7 +48,7 @@ fn product_eval_claim(a: &FieldBuffer<P>, b: &FieldBuffer<P>, eval_point: &[F]) 
 // `BivariateProductEvaluator` over the two store columns.
 fn bench_shared_sumcheck_bivariate_product(c: &mut Criterion) {
 	let mut group = c.benchmark_group("bivariate_product/shared_sumcheck");
-	let mut rng = StdRng::seed_from_u64(0);
+	let mut rng = rand::rng();
 
 	for n_vars in [12, 16, 20] {
 		group.throughput(Throughput::Elements(1 << n_vars));
@@ -57,18 +57,17 @@ fn bench_shared_sumcheck_bivariate_product(c: &mut Criterion) {
 			let b_multilinear = random_field_buffer::<P>(&mut rng, n_vars);
 			// The plain sum claim is the sum of `a * b` over the hypercube.
 			let sum_claim = inner_product_par(&a, &b_multilinear);
-
-			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			let transcript = ProverTranscript::new(StdChallenger::default());
 
 			b.iter_batched(
-				|| (a.clone(), b_multilinear.clone()),
-				|(a, b_multilinear)| {
+				|| (transcript.clone(), a.clone(), b_multilinear.clone()),
+				|(mut transcript, a, b_multilinear)| {
 					let mut store = MleStore::new(n_vars);
 					let cols = [a, b_multilinear].map(|col| store.push_owned(col));
 					let evaluator = BivariateProductEvaluator::new(cols, sum_claim);
 					let prover = SharedSumcheckProver::new(store, vec![evaluator]);
 
-					batch_prove(vec![prover], &mut transcript)
+					sumcheck::prove_single(prover, &mut transcript)
 				},
 				BatchSize::SmallInput,
 			);
@@ -91,12 +90,11 @@ fn bench_shared_mlecheck_bivariate_product(c: &mut Criterion) {
 			let b_multilinear = random_field_buffer::<P>(&mut rng, n_vars);
 			let eval_point = random_scalars::<F>(&mut rng, n_vars);
 			let eval_claim = product_eval_claim(&a, &b_multilinear, &eval_point);
-
-			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			let transcript = ProverTranscript::new(StdChallenger::default());
 
 			b.iter_batched(
-				|| (a.clone(), b_multilinear.clone(), eval_point.clone()),
-				|(a, b_multilinear, eval_point)| {
+				|| (transcript.clone(), a.clone(), b_multilinear.clone(), eval_point.clone()),
+				|(mut transcript, a, b_multilinear, eval_point)| {
 					let mut store = MleStore::new(n_vars);
 					let cols = [a, b_multilinear].map(|col| store.push_owned(col));
 					// A single-claim evaluator reading the store's columns and one eq tracker
@@ -111,7 +109,7 @@ fn bench_shared_mlecheck_bivariate_product(c: &mut Criterion) {
 					);
 					let prover = SharedMleCheckProver::new(store, vec![evaluator], eval_point);
 
-					batch_prove_mle(vec![prover], &mut transcript)
+					sumcheck::prove_single_mlecheck(prover, &mut transcript)
 				},
 				BatchSize::SmallInput,
 			);
