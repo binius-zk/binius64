@@ -116,23 +116,14 @@ fn bench_batch_quadratic_mlecheck_prove(c: &mut Criterion) {
 					// One single-claim evaluator per composition, sharing the store's columns and
 					// one eq tracker registered for the shared point.
 					let eq_tracker = store.register_eq_tracker(&eval_point);
-					let evaluator_0 = QuadraticMleEvaluator::new(
-						cols,
-						eq_tracker,
-						comp_0::<P>,
-						comp_0_inf::<P>,
-						eval_claims[0],
-					);
-					let evaluator_1 = QuadraticMleEvaluator::new(
-						cols,
-						eq_tracker,
-						comp_1::<P>,
-						comp_1_inf::<P>,
-						eval_claims[1],
-					);
+					let evaluator_0 =
+						QuadraticMleEvaluator::new(cols, eq_tracker, comp_0::<P>, comp_0_inf::<P>);
+					let evaluator_1 =
+						QuadraticMleEvaluator::new(cols, eq_tracker, comp_1::<P>, comp_1_inf::<P>);
 					let evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> =
 						vec![Box::new(evaluator_0), Box::new(evaluator_1)];
-					let prover = SharedMleCheckProver::new(store, evaluators, eval_point);
+					let claims = vec![eval_claims[0], eval_claims[1]];
+					let prover = SharedMleCheckProver::new(store, evaluators, claims, eval_point);
 
 					prove_batch_mlecheck(prover, &mut transcript)
 				},

@@ -19,12 +19,11 @@ pub type FractionalBuffer<P> = (FieldBuffer<P>, FieldBuffer<P>);
 /// one evaluator each — are the fractional-addition numerator `num_a * den_b + num_b * den_a` over
 /// all four columns and the denominator `den_a * den_b` over `[den_a, den_b]`, both weighted by the
 /// equality indicator at `eval_point`. The evaluators share the store's eq tracker for
-/// `eval_point`.
+/// `eval_point`. The two claimed evaluations are held by the driving prover, not the evaluators.
 pub fn evaluators<F, P>(
 	store: &mut MleStore<'_, P>,
 	cols: [ColId; 4],
 	eval_point: Vec<F>,
-	eval_claims: [F; 2],
 ) -> (impl RoundEvaluator<F, P> + 'static, impl RoundEvaluator<F, P> + 'static)
 where
 	F: Field,
@@ -41,14 +40,12 @@ where
 		eq_tracker,
 		|[num_a, num_b, den_a, den_b]: [P; 4]| num_a * den_b + num_b * den_a,
 		|[num_a, num_b, den_a, den_b]: [P; 4]| num_a * den_b + num_b * den_a,
-		eval_claims[0],
 	);
 	let denominator = QuadraticMleEvaluator::new(
 		[den_a, den_b],
 		eq_tracker,
 		|[den_a, den_b]: [P; 2]| den_a * den_b,
 		|[den_a, den_b]: [P; 2]| den_a * den_b,
-		eval_claims[1],
 	);
 	(numerator, denominator)
 }
@@ -199,8 +196,7 @@ mod tests {
 		let mut store = MleStore::new(n_vars);
 		let cols = [num_a.clone(), num_b.clone(), den_a.clone(), den_b.clone()]
 			.map(|col| store.push_owned(col));
-		let (num_evaluator, den_evaluator) =
-			evaluators(&mut store, cols, eval_point.clone(), eval_claims);
+		let (num_evaluator, den_evaluator) = evaluators(&mut store, cols, eval_point.clone());
 
 		// Both evaluators share the point's eq tracker; recover its id for the sumcheck wrappers.
 		let eq_tracker = store.register_eq_tracker(&eval_point);
@@ -209,7 +205,7 @@ mod tests {
 			Box::new(MleToSumCheckEvaluator::new(num_evaluator, eq_tracker)),
 			Box::new(MleToSumCheckEvaluator::new(den_evaluator, eq_tracker)),
 		];
-		let prover = SharedSumcheckProver::new(store, evaluators);
+		let prover = SharedSumcheckProver::new(store, evaluators, eval_claims.to_vec());
 
 		test_frac_add_sumcheck_prove_verify(
 			prover,

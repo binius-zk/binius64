@@ -98,9 +98,8 @@ where
 		eq_tracker,
 		|[a, b]: [P; 2]| a * b,
 		|[a, b]: [P; 2]| a * b,
-		eval_claim,
 	);
-	SharedMleCheckProver::new(store, vec![evaluator], eval_point)
+	SharedMleCheckProver::new(store, vec![evaluator], vec![eval_claim], eval_point)
 }
 
 #[cfg(test)]

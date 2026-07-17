@@ -8,7 +8,6 @@ use super::{
 	mle_store::{ColId, ColumnChunk, EqId, EvaluationChunk, MleStore},
 	round_evals::RoundEvals2,
 	round_evaluator::{RoundEvaluator, SharedMleCheckProver},
-	round_state::RoundState,
 };
 
 /// MLE-check round evaluator for one quadratic composition over N store columns.
@@ -21,7 +20,7 @@ use super::{
 /// The evaluator emits the prime (eq-factored) round polynomial of the MLE-check protocol. Wrap it
 /// in [`MleToSumCheckEvaluator`](super::MleToSumCheckEvaluator) to emit a regular sumcheck round
 /// polynomial.
-pub struct QuadraticMleEvaluator<P: PackedField, Composition, InfinityComposition, const N: usize> {
+pub struct QuadraticMleEvaluator<Composition, InfinityComposition, const N: usize> {
 	// Store columns holding the packed evaluations of the input multilinears.
 	cols: [ColId; N],
 	// The store's (possibly shared) eq-indicator tracker for `eval_point`.
@@ -30,17 +29,10 @@ pub struct QuadraticMleEvaluator<P: PackedField, Composition, InfinityCompositio
 	composition: Composition,
 	// Composition restricted to highest-degree terms for the "x = ∞" evaluation (Karatsuba).
 	infinity_composition: InfinityComposition,
-	// State machine storage: last round's eval (interpolate input) or coeffs (fold input).
-	last_coeffs_or_eval: RoundState<RoundCoeffs<P::Scalar>, P::Scalar>,
 }
 
-impl<F, P, Composition, InfinityComposition, const N: usize>
-	QuadraticMleEvaluator<P, Composition, InfinityComposition, N>
-where
-	F: Field,
-	P: PackedField<Scalar = F>,
-	Composition: Fn([P; N]) -> P + Send + Sync,
-	InfinityComposition: Fn([P; N]) -> P + Send + Sync,
+impl<Composition, InfinityComposition, const N: usize>
+	QuadraticMleEvaluator<Composition, InfinityComposition, N>
 {
 	/// Creates an evaluator over `cols` reading the eq tracker `eq_tracker` from `store`.
 	///
@@ -50,6 +42,9 @@ where
 	/// only the tracker id and queries the store for the round's alpha and remaining-variable count
 	/// as they change — it keeps no copy of the point.
 	///
+	/// The claimed evaluation is held by the driving prover (see [`SharedMleCheckProver`]), not the
+	/// evaluator.
+	///
 	/// # Arguments
 	///
 	/// * `cols` - The N store columns the composition reads.
@@ -57,13 +52,11 @@ where
 	/// * `composition` - Evaluates the quadratic composition of the N column values.
 	/// * `infinity_composition` - The composition restricted to its highest-degree terms, for the
 	///   Karatsuba evaluation at infinity.
-	/// * `eval_claim` - The claimed evaluation of the composition's MLE at the point.
 	pub fn new(
 		cols: [ColId; N],
 		eq_tracker: EqId,
 		composition: Composition,
 		infinity_composition: InfinityComposition,
-		eval_claim: F,
 	) -> Self {
 		// precondition
 		assert!(N > 0);
@@ -73,7 +66,6 @@ where
 			eq_tracker,
 			composition,
 			infinity_composition,
-			last_coeffs_or_eval: RoundState::Claim(eval_claim),
 		}
 	}
 }
@@ -115,12 +107,7 @@ pub fn quadratic_mlecheck_prover<F, P, Composition, InfinityComposition, const N
 	infinity_composition: InfinityComposition,
 	eval_point: Vec<F>,
 	eval_claim: F,
-) -> SharedMleCheckProver<
-	'static,
-	F,
-	P,
-	QuadraticMleEvaluator<P, Composition, InfinityComposition, N>,
->
+) -> SharedMleCheckProver<'static, F, P, QuadraticMleEvaluator<Composition, InfinityComposition, N>>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
@@ -132,13 +119,12 @@ where
 	let cols = multilinears.map(|col| store.push_owned(col));
 	// Register the evaluation point's equality-indicator tracker once for the sole evaluator.
 	let eq_tracker = store.register_eq_tracker(&eval_point);
-	let evaluator =
-		QuadraticMleEvaluator::new(cols, eq_tracker, composition, infinity_composition, eval_claim);
-	SharedMleCheckProver::new(store, vec![evaluator], eval_point)
+	let evaluator = QuadraticMleEvaluator::new(cols, eq_tracker, composition, infinity_composition);
+	SharedMleCheckProver::new(store, vec![evaluator], vec![eval_claim], eval_point)
 }
 
 impl<F, P, Composition, InfinityComposition, const N: usize> RoundEvaluator<F, P>
-	for QuadraticMleEvaluator<P, Composition, InfinityComposition, N>
+	for QuadraticMleEvaluator<Composition, InfinityComposition, N>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
@@ -150,14 +136,11 @@ where
 		2
 	}
 
-	fn round_claim(&self, store: &MleStore<'_, P>) -> F {
-		match &self.last_coeffs_or_eval {
-			RoundState::Claim(eval) => *eval,
-			RoundState::Coeffs(coeffs) => {
-				let alpha = store.eq_alpha(self.eq_tracker);
-				coeffs.lerp_over_endpoints(alpha)
-			}
-		}
+	fn claim_from_coeffs(&self, store: &MleStore<'_, P>, coeffs: &RoundCoeffs<F>) -> F {
+		// The emitted round polynomial is the prime (eq-factored) MLE-check polynomial, so its
+		// claim is the eq-lerp of its endpoints at the round's alpha.
+		let alpha = store.eq_alpha(self.eq_tracker);
+		coeffs.lerp_over_endpoints(alpha)
 	}
 
 	fn accumulate(&self, chunk: &EvaluationChunk<'_, P>, accum: &mut [<P as WideMul>::Output]) {
@@ -197,40 +180,24 @@ where
 	}
 
 	fn interpolate(
-		&mut self,
+		&self,
 		store: &MleStore<'_, P>,
 		accum: &[<P as WideMul>::Output],
+		claim: F,
 	) -> RoundCoeffs<F> {
-		// State machine: interpolate consumes the eval from the previous round and produces coeffs.
-		let last_eval = *self.last_coeffs_or_eval.claim();
-
 		// The store has not yet folded this round, so its remaining-variable count is this round's.
 		let n_vars_remaining = store.n_vars();
 		assert!(n_vars_remaining > 0);
 
-		// Reduce the wide accumulators, sum packed lanes into scalars, then interpolate. The
-		// round's coordinate ties this round's sum to the original evaluation point.
+		// Reduce the wide accumulators, sum packed lanes into scalars, then interpolate. `claim` is
+		// this round's prime eval; the round's coordinate ties it to the original evaluation point.
 		let alpha = store.eq_alpha(self.eq_tracker);
-		let round_coeffs = RoundEvals2 {
+		RoundEvals2 {
 			y_1: P::reduce(accum[0].clone()),
 			y_inf: P::reduce(accum[1].clone()),
 		}
 		.sum_scalars(n_vars_remaining)
-		.interpolate_eq(last_eval, alpha);
-
-		// State transition: interpolate produces coeffs for fold to consume.
-		self.last_coeffs_or_eval = RoundState::Coeffs(round_coeffs.clone());
-		round_coeffs
-	}
-
-	fn fold(&mut self, challenge: F) {
-		// State machine: fold consumes coeffs and produces the eval at the verifier challenge.
-		// Evaluate the round polynomial at the verifier's challenge to form the next claim. The
-		// store folds the columns and the eq tracker (advancing its remaining count and alpha) with
-		// the same challenge, so this only advances the claim state.
-		let eval = self.last_coeffs_or_eval.coeffs().evaluate(challenge);
-
-		self.last_coeffs_or_eval = RoundState::Claim(eval);
+		.interpolate_eq(claim, alpha)
 	}
 }
 

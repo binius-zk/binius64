@@ -143,7 +143,7 @@ mod tests {
 	fn make_inner(
 		rng: &mut impl Rng,
 		n_vars: usize,
-	) -> (SharedSumcheckProver<'static, P, BivariateProductEvaluator<P>>, F) {
+	) -> (SharedSumcheckProver<'static, P, BivariateProductEvaluator>, F) {
 		let a = random_field_buffer::<P>(&mut *rng, n_vars);
 		let b = random_field_buffer::<P>(&mut *rng, n_vars);
 		let sum = inner_product_par(&a, &b);
