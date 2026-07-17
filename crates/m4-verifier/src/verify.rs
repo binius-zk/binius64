@@ -27,9 +27,10 @@ use binius_verifier::{
 	Error,
 	config::{B1, B128},
 	protocols::{
+		binmul::{BinMulOutput, verify as verify_binmul_reduction},
 		bitand::AndCheckOutput,
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
-		shift::{self, BITAND_ARITY, INTMUL_ARITY, OperatorData},
+		shift::{self, BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, OperatorData},
 	},
 	ring_switch::{self, RingSwitchVerifyOutput},
 	verify_bitand_reduction,
@@ -161,6 +162,20 @@ impl IOPVerifier {
 			None
 		};
 
+		// SOUNDNESS: the BinMul check verifies after the IntMul check and before the BitAnd check,
+		// mirroring the prover. Its per-bit operand evaluations are read from the transcript here,
+		// before BitAnd draws the univariate challenge that collapses them. Do not reorder these,
+		// and keep the same order in `IOPProver::prove`.
+		//
+		// The BinMul columns span every instance's constraints.
+		// So the check runs over `log_instances + log_n_binmul` row variables.
+		let binmul_output = if cs.n_bmul_constraints() > 0 {
+			let log_n_binmul = checked_log_2(cs.n_bmul_constraints());
+			Some(verify_binmul_reduction::<B128, _>(log_instances + log_n_binmul, channel)?)
+		} else {
+			None
+		};
+
 		// AND-check over all `K * n_and` rows.
 		let log_n_and = checked_log_2(cs.and_constraints.len());
 		let AndCheckOutput {
@@ -175,34 +190,35 @@ impl IOPVerifier {
 		// index high.
 		let (r_rho_and, r_x_and) = eval_point.split_at(log_instances);
 
-		// Reduce to one shared instance point and both operand claims at it.
-		let (r_rho, bitand, intmul) = match intmul_output {
-			Some(intmul_output) => {
-				// Both operations enter the re-randomization as operand claims at their own
-				// instance point. BitAnd is already oblong; IntMul is collapsed from its
-				// per-bit form.
-				let lagrange = lagrange_evals_scalars::<B128, Channel::Elem>(
-					&shift_domain,
-					z_challenge.clone(),
-				);
-				RerandomizedOperations {
-					bitand: OperationClaim::new([a_eval, b_eval, c_eval], r_x_and, r_rho_and),
-					intmul: OperationClaim::from_intmul(intmul_output, &lagrange, log_instances),
-				}
-				.verify(channel)?
+		// Reduce to one shared instance point and every operand claim at it.
+		//
+		// The re-randomization runs whenever IntMul or BinMul is present: BitAnd always enters,
+		// plus each present multiplication operation, all unified onto one shared `r_rho`.
+		let (r_rho, bitand, intmul, binmul) = if intmul_output.is_some() || binmul_output.is_some()
+		{
+			// Every present operation enters the re-randomization as operand claims at its own
+			// instance point. BitAnd is already oblong; IntMul and BinMul are collapsed from their
+			// per-bit form.
+			let lagrange =
+				lagrange_evals_scalars::<B128, Channel::Elem>(&shift_domain, z_challenge.clone());
+			RerandomizedOperations {
+				bitand: OperationClaim::new([a_eval, b_eval, c_eval], r_x_and, r_rho_and),
+				intmul: intmul_output
+					.map(|output| OperationClaim::from_intmul(output, &lagrange, log_instances)),
+				binmul: binmul_output
+					.map(|output| OperationClaim::from_binmul(output, &lagrange, log_instances)),
 			}
-			// No IMUL constraints: the AND-check instance point is used directly.
-			// The IntMul claim is a zero claim at an empty point.
-			None => (
+			.verify(channel)?
+		} else {
+			// Neither IMUL nor BMUL constraints: the AND-check instance point is used directly.
+			// The IntMul and BinMul claims are zero claims at an empty point.
+			(
 				r_rho_and.to_vec(),
 				OperatorData::new(r_x_and.to_vec(), [a_eval, b_eval, c_eval]),
 				OperatorData::new(Vec::new(), std::array::from_fn(|_| Channel::Elem::zero())),
-			),
+				OperatorData::new(Vec::new(), std::array::from_fn(|_| Channel::Elem::zero())),
+			)
 		};
-
-		// M4 has no BMUL constraints: the BinMul claim is a zero claim at an empty point,
-		// contributing nothing to the shift.
-		let binmul = OperatorData::new(Vec::new(), std::array::from_fn(|_| Channel::Elem::zero()));
 
 		// Reduce the operand claims to one witness evaluation.
 		let shift = shift::verify::<B128, _>(cs, &bitand, &intmul, &binmul, channel)?;
@@ -360,8 +376,13 @@ impl Verifier {
 // TODO: a degree-1 multilinear-eval store evaluator would drop this to 2; none exists yet.
 const RERAND_DEGREE: usize = 3;
 
-/// The shared instance point together with both operations' operand data at that point.
-type RerandOutput<F> = (Vec<F>, OperatorData<F, BITAND_ARITY>, OperatorData<F, INTMUL_ARITY>);
+/// The shared instance point together with every operation's operand data at that point.
+type RerandOutput<F> = (
+	Vec<F>,
+	OperatorData<F, BITAND_ARITY>,
+	OperatorData<F, INTMUL_ARITY>,
+	OperatorData<F, BINMUL_ARITY>,
+);
 
 /// One operation's oblong operand claims and the points they are claimed at.
 ///
@@ -419,39 +440,86 @@ impl<F: FieldOps> OperationClaim<F, INTMUL_ARITY> {
 	}
 }
 
-/// The two operations' claims entering the batched instance re-randomization.
+impl<F: FieldOps> OperationClaim<F, BINMUL_ARITY> {
+	/// Builds the BinMul claim by collapsing its per-bit operand claims to oblong claims.
+	///
+	/// The Lagrange weights fold the per-bit claims at the univariate challenge.
+	/// This gives the oblong form the BitAnd claims already have.
+	/// The BinMul row point splits into an instance part (low) and a constraint part (high).
+	fn from_binmul(binmul_output: BinMulOutput<F>, lagrange: &[F], log_instances: usize) -> Self {
+		let BinMulOutput {
+			eval_point: r_out_binmul,
+			a_lo_evals,
+			a_hi_evals,
+			b_lo_evals,
+			b_hi_evals,
+			c_lo_evals,
+			c_hi_evals,
+		} = binmul_output;
+		let oblong = |evals: Vec<F>| inner_product_scalars(evals, lagrange.iter().cloned());
+		let (r_rho, r_x) = r_out_binmul.split_at(log_instances);
+		Self::new(
+			[
+				oblong(a_lo_evals),
+				oblong(a_hi_evals),
+				oblong(b_lo_evals),
+				oblong(b_hi_evals),
+				oblong(c_lo_evals),
+				oblong(c_hi_evals),
+			],
+			r_x,
+			r_rho,
+		)
+	}
+}
+
+/// The operations' claims entering the batched instance re-randomization.
+///
+/// BitAnd is always present. IntMul and BinMul enter only when the circuit carries their
+/// constraints; an absent operation reduces to a zero claim contributing nothing to the shift.
 struct RerandomizedOperations<F> {
 	/// The BitAnd operand claims at the AND-check instance point.
 	bitand: OperationClaim<F, BITAND_ARITY>,
-	/// The IntMul operand claims at the IntMul instance point.
-	intmul: OperationClaim<F, INTMUL_ARITY>,
+	/// The IntMul operand claims at the IntMul instance point, when the circuit has IMUL
+	/// constraints.
+	intmul: Option<OperationClaim<F, INTMUL_ARITY>>,
+	/// The BinMul operand claims at the BinMul instance point, when the circuit has BMUL
+	/// constraints.
+	binmul: Option<OperationClaim<F, BINMUL_ARITY>>,
 }
 
 impl<F: FieldOps> RerandomizedOperations<F> {
-	/// Verifies the batched sumcheck that unifies the two operations' instance points.
+	/// Verifies the batched sumcheck that unifies every present operation's instance point.
 	///
 	/// - Check the sumcheck transporting every operand claim onto one shared instance point.
 	/// - Read the reduced operand evaluations at that point.
 	/// - Bind them to the sumcheck.
 	///
+	/// The operands are ordered [BitAnd | IntMul (if present) | BinMul (if present)], matching the
+	/// prover's push order, so the sums, the reduced evaluations, and the binding all agree. An
+	/// absent operation reduces to a zero claim at an empty point.
+	///
 	/// # Returns
 	///
-	/// The shared instance point, the BitAnd operand data, and the IntMul operand data.
+	/// The shared instance point, the BitAnd operand data, the IntMul operand data, and the BinMul
+	/// operand data.
 	fn verify<Channel>(self, channel: &mut Channel) -> Result<RerandOutput<F>, Error>
 	where
 		Channel: IPVerifierChannel<B128, Elem = F>,
 	{
-		// Both operations reduce over the same instance axis; recover its width from either point.
+		// Every operation reduces over the same instance axis; recover its width from the BitAnd
+		// point.
 		let log_instances = self.bitand.r_rho.len();
 
-		// Verify the batched sumcheck: one multilinear-eval claim per operand, ordered
-		// [BitAnd a, b, c | IntMul a, b, lo, hi].
-		let sums: Vec<F> = self
-			.bitand
-			.operand_claims
-			.into_iter()
-			.chain(self.intmul.operand_claims)
-			.collect();
+		// Verify the batched sumcheck: one multilinear-eval claim per operand, in push order
+		// [BitAnd a, b, c | IntMul a, b, lo, hi | BinMul a_lo, a_hi, b_lo, b_hi, c_lo, c_hi].
+		let mut sums: Vec<F> = self.bitand.operand_claims.to_vec();
+		if let Some(intmul) = &self.intmul {
+			sums.extend(intmul.operand_claims.iter().cloned());
+		}
+		if let Some(binmul) = &self.binmul {
+			sums.extend(binmul.operand_claims.iter().cloned());
+		}
 		let BatchSumcheckOutput {
 			batch_coeff,
 			eval,
@@ -460,25 +528,47 @@ impl<F: FieldOps> RerandomizedOperations<F> {
 		challenges.reverse();
 		let r_rho = challenges;
 
-		// The prover wrote the reduced operand evaluations at `r_rho`, grouped by operation.
-		// These are the operand claims the shift consumes.
+		// The prover wrote the reduced operand evaluations at `r_rho`, grouped by operation in push
+		// order. These are the operand claims the shift consumes.
 		let bitand_evals = channel.recv_array::<BITAND_ARITY>()?;
-		let intmul_evals = channel.recv_array::<INTMUL_ARITY>()?;
+		let intmul_evals = self
+			.intmul
+			.as_ref()
+			.map(|_| channel.recv_array::<INTMUL_ARITY>())
+			.transpose()?;
+		let binmul_evals = self
+			.binmul
+			.as_ref()
+			.map(|_| channel.recv_array::<BINMUL_ARITY>())
+			.transpose()?;
 
 		// Bind the reduced evals to the sumcheck: each claim's contribution is its
-		// eq(instance_point, r_rho) weight times its reduced eval, batched by `batch_coeff`.
+		// eq(instance_point, r_rho) weight times its reduced eval, batched by `batch_coeff`. The
+		// contributions follow the same push order as `sums`.
 		let eq_and = eq_ind(&self.bitand.r_rho, &r_rho);
-		let eq_mul = eq_ind(&self.intmul.r_rho, &r_rho);
-		let expected: Vec<F> = bitand_evals
-			.clone()
-			.map(|eval| eval * &eq_and)
-			.into_iter()
-			.chain(intmul_evals.clone().map(|eval| eval * &eq_mul))
+		let mut expected: Vec<F> = bitand_evals
+			.iter()
+			.map(|eval| eval.clone() * &eq_and)
 			.collect();
+		if let (Some(intmul), Some(evals)) = (&self.intmul, &intmul_evals) {
+			let eq_mul = eq_ind(&intmul.r_rho, &r_rho);
+			expected.extend(evals.iter().map(|eval| eval.clone() * &eq_mul));
+		}
+		if let (Some(binmul), Some(evals)) = (&self.binmul, &binmul_evals) {
+			let eq_binmul = eq_ind(&binmul.r_rho, &r_rho);
+			expected.extend(evals.iter().map(|eval| eval.clone() * &eq_binmul));
+		}
 		channel.assert_zero(evaluate_univariate(&expected, batch_coeff) - eval)?;
 
 		let bitand_data = OperatorData::new(self.bitand.r_x, bitand_evals);
-		let intmul_data = OperatorData::new(self.intmul.r_x, intmul_evals);
-		Ok((r_rho, bitand_data, intmul_data))
+		let intmul_data = match (self.intmul, intmul_evals) {
+			(Some(intmul), Some(evals)) => OperatorData::new(intmul.r_x, evals),
+			_ => OperatorData::new(Vec::new(), std::array::from_fn(|_| F::zero())),
+		};
+		let binmul_data = match (self.binmul, binmul_evals) {
+			(Some(binmul), Some(evals)) => OperatorData::new(binmul.r_x, evals),
+			_ => OperatorData::new(Vec::new(), std::array::from_fn(|_| F::zero())),
+		};
+		Ok((r_rho, bitand_data, intmul_data, binmul_data))
 	}
 }

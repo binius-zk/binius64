@@ -2,18 +2,21 @@
 
 //! The batched operand-column witnesses built from a populated batch value table.
 //!
-//! Every AND and IMUL constraint is projected to its fixed-arity operand columns (`[A, B, C]` for
-//! AND, `[A, B, HI, LO]` for IMUL), one column per operand, stacked over every instance in the
-//! batch. [`build_operation_witness`] is the shared arity-generic core: it projects one operand
-//! per constraint into one column. [`BatchAndCheckWitness`] builds the three AND columns and
-//! drives the AND-check zerocheck; [`build_intmul_witness`] builds the four IntMul columns, not
-//! yet consumed downstream.
+//! Every AND, IMUL, and BMUL constraint is projected to its fixed-arity operand columns (`[A, B,
+//! C]` for AND, `[A, B, HI, LO]` for IMUL, `[A_LO, A_HI, B_LO, B_HI, C_LO, C_HI]` for BMUL), one
+//! column per operand, stacked over every instance in the batch. [`build_operation_witness`] is the
+//! shared arity-generic core: it projects one operand per constraint into one column.
+//! [`BatchAndCheckWitness`] builds the three AND columns and drives the AND-check zerocheck;
+//! [`build_intmul_witness`] builds the four IntMul columns; [`build_binmul_witness`] builds the six
+//! BinMul columns.
 
 use std::{iter, mem::MaybeUninit, ptr};
 
 use binius_core::{
 	ValueIndex,
-	constraint_system::{AndConstraint, ImulConstraint, Operand, ShiftVariant, ShiftedValueIndex},
+	constraint_system::{
+		AndConstraint, BmulConstraint, ImulConstraint, Operand, ShiftVariant, ShiftedValueIndex,
+	},
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, PackedField};
@@ -498,6 +501,75 @@ pub fn build_intmul_witness(
 	[a, b, hi, lo]
 }
 
+/// Builds the batched BinMul operand witness from a populated wire-major batch table.
+///
+/// Every BMUL constraint contributes one row per instance to each of the six operand columns
+/// `A_LO`, `A_HI`, `B_LO`, `B_HI`, `C_LO`, `C_HI`, laid out constraint-major. This delegates to the
+/// arity-generic `build_operation_witness`, projecting each constraint to its six operands. The
+/// operands are the `(lo, hi)` word pairs carrying the two GHASH-field multiplicands and their
+/// product.
+///
+/// # Arguments
+///
+/// - `table`: the wire-major batch witness holding every instance's hidden words.
+/// - `constants`: the circuit's constant words, shared by every instance.
+/// - `bmul_constraints`: the per-instance BMUL constraints, shared by every instance.
+///
+/// Pass constraints from a prepared constraint system, so their count is a power of two.
+///
+/// # Panics
+///
+/// Panics if the constraint count is not a power of two.
+pub fn build_binmul_witness(
+	table: &ValueTable,
+	constants: &[Word],
+	bmul_constraints: &[BmulConstraint],
+) -> [Vec<Word>; 6] {
+	let a_lo_iter = bmul_constraints
+		.par_iter()
+		.map(|constraint| &constraint.a_lo);
+	let a_hi_iter = bmul_constraints
+		.par_iter()
+		.map(|constraint| &constraint.a_hi);
+	let b_lo_iter = bmul_constraints
+		.par_iter()
+		.map(|constraint| &constraint.b_lo);
+	let b_hi_iter = bmul_constraints
+		.par_iter()
+		.map(|constraint| &constraint.b_hi);
+	let c_lo_iter = bmul_constraints
+		.par_iter()
+		.map(|constraint| &constraint.c_lo);
+	let c_hi_iter = bmul_constraints
+		.par_iter()
+		.map(|constraint| &constraint.c_hi);
+	let (((a_lo, a_hi), (b_lo, b_hi)), (c_lo, c_hi)) = rayon::join(
+		|| {
+			rayon::join(
+				|| {
+					rayon::join(
+						|| build_operation_witness(table, constants, a_lo_iter),
+						|| build_operation_witness(table, constants, a_hi_iter),
+					)
+				},
+				|| {
+					rayon::join(
+						|| build_operation_witness(table, constants, b_lo_iter),
+						|| build_operation_witness(table, constants, b_hi_iter),
+					)
+				},
+			)
+		},
+		|| {
+			rayon::join(
+				|| build_operation_witness(table, constants, c_lo_iter),
+				|| build_operation_witness(table, constants, c_hi_iter),
+			)
+		},
+	);
+	[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi]
+}
+
 #[cfg(test)]
 mod tests {
 	use assert_matches::assert_matches;
@@ -769,6 +841,106 @@ mod tests {
 				assert_eq!(b[idx], vv.eval_operand(&con.b));
 				assert_eq!(hi[idx], vv.eval_operand(&con.hi));
 				assert_eq!(lo[idx], vv.eval_operand(&con.lo));
+			}
+		}
+	}
+
+	// A circuit computing one GHASH-field product `(a_lo, a_hi) * (b_lo, b_hi)`, with both product
+	// words committed.
+	//
+	//     inputs : a_lo, a_hi, b_lo, b_hi   (witness)
+	//     gate   : (c_lo, c_hi) = bmul(a_lo, a_hi, b_lo, b_hi)   → 1 BMUL constraint
+	//
+	// `force_commit` makes `c_lo` and `c_hi` hidden words, so the BMUL operands read them from the
+	// table.
+	struct BinMulCircuit {
+		circuit: Circuit,
+		a_lo: Wire,
+		a_hi: Wire,
+		b_lo: Wire,
+		b_hi: Wire,
+	}
+
+	fn binmul_circuit() -> BinMulCircuit {
+		let builder = CircuitBuilder::new();
+		let a_lo = builder.add_witness();
+		let a_hi = builder.add_witness();
+		let b_lo = builder.add_witness();
+		let b_hi = builder.add_witness();
+		let (c_lo, c_hi) = builder.bmul(a_lo, a_hi, b_lo, b_hi);
+		builder.force_commit(c_lo);
+		builder.force_commit(c_hi);
+		BinMulCircuit {
+			circuit: builder.build(),
+			a_lo,
+			a_hi,
+			b_lo,
+			b_hi,
+		}
+	}
+
+	// Populate one instance per input tuple; the circuit derives the two product words.
+	fn populate_binmul_table(c: &BinMulCircuit, inputs: &[(u64, u64, u64, u64)]) -> ValueTable {
+		let log_instances = inputs.len().ilog2() as usize;
+		ValueTable::populate(&c.circuit, log_instances, |i, filler| {
+			let (a_lo, a_hi, b_lo, b_hi) = inputs[i];
+			filler[c.a_lo] = Word(a_lo);
+			filler[c.a_hi] = Word(a_hi);
+			filler[c.b_lo] = Word(b_lo);
+			filler[c.b_hi] = Word(b_hi);
+		})
+		.unwrap()
+	}
+
+	// The arity-6 BinMul witness lays out its six operand columns [a_lo, a_hi, b_lo, b_hi, c_lo,
+	// c_hi] constraint-major, each row matching the single-instance operand evaluator.
+	#[test]
+	fn binmul_operand_columns_match_the_single_instance_reference() {
+		let c = binmul_circuit();
+		let constants = &c.circuit.constraint_system().constants;
+
+		// Fixture state: 2^2 = 4 instances with distinct GHASH-field operands.
+		let inputs = [
+			(1, 0, 1, 0),
+			(0xFFFF_FFFF_FFFF_FFFF, 0x0123_4567_89AB_CDEF, 0xDEAD_BEEF_CAFE_BABE, 0x1),
+			(0x1234, 0x5678, 0x9ABC, 0xDEF0),
+			(
+				0xAAAA_AAAA_AAAA_AAAA,
+				0x5555_5555_5555_5555,
+				0xF0F0_F0F0_F0F0_F0F0,
+				0x0F0F_0F0F_0F0F_0F0F,
+			),
+		];
+		let table = populate_binmul_table(&c, &inputs);
+
+		// The prepared per-instance BMUL constraints, padded to a power of two.
+		let mut cs = c.circuit.constraint_system().clone();
+		cs.validate_and_prepare().unwrap();
+		let bmul_constraints = &cs.bmul_constraints;
+		assert!(!bmul_constraints.is_empty(), "the circuit must emit a BMUL constraint");
+
+		let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] =
+			build_binmul_witness(&table, constants, bmul_constraints);
+
+		// Shape: K * n_binmul rows, with K = 4.
+		let n_binmul = bmul_constraints.len();
+		for col in [&a_lo, &a_hi, &b_lo, &b_hi, &c_lo, &c_hi] {
+			assert_eq!(col.len(), 4 * n_binmul);
+		}
+
+		// Invariant: row `j * n_instances + instance` is constraint `j` of that instance, and each
+		// of the six columns equals the single-instance reference for its inputs.
+		let n_instances = table.n_instances();
+		for instance in 0..n_instances {
+			let vv = table.instance_value_vec(instance, constants);
+			for (j, con) in bmul_constraints.iter().enumerate() {
+				let idx = j * n_instances + instance;
+				assert_eq!(a_lo[idx], vv.eval_operand(&con.a_lo));
+				assert_eq!(a_hi[idx], vv.eval_operand(&con.a_hi));
+				assert_eq!(b_lo[idx], vv.eval_operand(&con.b_lo));
+				assert_eq!(b_hi[idx], vv.eval_operand(&con.b_hi));
+				assert_eq!(c_lo[idx], vv.eval_operand(&con.c_lo));
+				assert_eq!(c_hi[idx], vv.eval_operand(&con.c_hi));
 			}
 		}
 	}
