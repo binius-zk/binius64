@@ -61,9 +61,11 @@ impl PseudoMersennePrimeField {
 		let (sum, carry) = add_with_carry_out(b, fe1, fe2);
 
 		// A carry means the sum reached `2^(64 * l)`, which is above the modulus, so the
-		// comparison only matters when no carry occurred.
+		// comparison only matters when no carry occurred: with a carry the wrapped sum is
+		// below the modulus. Carry and the comparison are therefore mutually exclusive, so
+		// XOR matches the OR on the MSB that `zero_unless` reads.
 		// TODO: consider nondeterminism
-		let need_reduction = b.bor(carry, b.bnot(biguint_lt(b, &sum, &self.modulus)));
+		let need_reduction = b.bxor(carry, b.bnot(biguint_lt(b, &sum, &self.modulus)));
 
 		// Wrapping subtraction is exact here: without a carry the difference is non-negative,
 		// and with one it borrows out by exactly the `2^(64 * l)` the carry stands for.

@@ -236,7 +236,9 @@ fn strauss_accumulate(
 				let limb = bit_index / Word::BITS;
 				let bit = bit_index % Word::BITS;
 				let bit_val = b.band(b.shr(subscalar[limb], bit as u32), one);
-				sel = b.bor(sel, b.shl(bit_val, j as u32));
+				// Each iteration sets a distinct bit `j`, disjoint from the bits already in
+				// `sel`, so XOR matches the OR.
+				sel = b.bxor(sel, b.shl(bit_val, j as u32));
 			}
 
 			let selected = point_from_wires(&multi_wire_multiplex(b, &table_refs[point_idx], sel));
