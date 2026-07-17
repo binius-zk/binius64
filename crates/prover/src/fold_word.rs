@@ -79,15 +79,162 @@ where
 	let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
 
 	let mut values = Vec::<P>::with_capacity(capacity);
-	words
-		.par_chunks(P::WIDTH)
-		.map(|word_chunk| {
-			P::from_scalars(word_chunk.iter().map(|&word| transform.transform(&word.0)))
-		})
-		.collect_into_vec(&mut values);
+	if P::WIDTH == 1 {
+		// See `fold_words_scalar_fill` for why this is worth special-casing.
+		fold_words_scalar_fill(transform, words, &mut values);
+	} else {
+		words
+			.par_chunks(P::WIDTH)
+			.map(|word_chunk| {
+				P::from_scalars(word_chunk.iter().map(|&word| transform.transform(&word.0)))
+			})
+			.collect_into_vec(&mut values);
+	}
 	values.resize(capacity, P::default());
 
 	FieldBuffer::new(log_n, values.into_boxed_slice())
+}
+
+/// Like [`fold_words_with_transform`], but writes into a caller-provided buffer instead of
+/// allocating a new one.
+///
+/// Allocating and first-touching the output dominates the fold's runtime for large inputs, so a
+/// caller that keeps output buffers around across calls can skip that cost entirely by folding
+/// into them with this function.
+///
+/// ## Preconditions
+/// * `out.log_len() == log2_ceil(words.len())`
+pub fn fold_words_with_transform_into<F, P, T>(
+	transform: &T,
+	words: &[Word],
+	out: &mut FieldBuffer<P>,
+) where
+	F: Field,
+	P: PackedField<Scalar = F>,
+	T: Transformation<u64, F>,
+{
+	let log_n = log2_ceil_usize(words.len());
+	assert_eq!(
+		out.log_len(),
+		log_n,
+		"precondition: out.log_len() must equal log2_ceil(words.len())"
+	);
+
+	fold_words_into_slice(transform, words, out.as_mut());
+}
+
+/// Folds `words` into `out`, where `out.len()` is the ceiling of `words.len() / P::WIDTH`
+/// rounded up to a full packed-element count (i.e. `out` is sized like a `FieldBuffer`'s backing
+/// slice for `log2_ceil(words.len())` elements).
+fn fold_words_into_slice<F, P, T>(transform: &T, words: &[Word], out: &mut [P])
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+	T: Transformation<u64, F>,
+{
+	if P::WIDTH == 1 {
+		let (live, pad) = out.split_at_mut(words.len());
+		fold_words_scalar_unrolled(transform, words, live);
+		pad.fill(P::default());
+	} else {
+		let live_len = words.len().div_ceil(P::WIDTH);
+		let (live, pad) = out.split_at_mut(live_len);
+		words
+			.par_chunks(P::WIDTH)
+			.zip(live.par_iter_mut())
+			.for_each(|(word_chunk, out_i)| {
+				*out_i =
+					P::from_scalars(word_chunk.iter().map(|&word| transform.transform(&word.0)));
+			});
+		pad.fill(P::default());
+	}
+}
+
+/// Writes `P::from_scalars(iter::once(transform.transform(&word.0)))` for each of `words` into
+/// the matching slot of `out`, manually unrolled 4 words at a time.
+///
+/// # Why the manual unroll
+///
+/// Disassembly of the plain one-word-per-iteration loop (aarch64) shows the within-word code is
+/// already optimal -- the transform fully inlines to 8 single-instruction table loads and an
+/// `eor3` XOR tree, with no bounds checks -- but only one word's 8 independent loads are in
+/// flight per loop iteration, and LLVM declines to unroll a body this large. Restating the
+/// computation 4 words at a time, with no loop-carried dependency between them, exposes 32
+/// independent table loads per iteration to the out-of-order scheduler and quarters the
+/// loop-control overhead.
+///
+/// # Preconditions
+/// * `P::WIDTH == 1`
+/// * `out.len() == words.len()`
+fn fold_words_scalar_unrolled<F, P, T>(transform: &T, words: &[Word], out: &mut [P])
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+	T: Transformation<u64, F>,
+{
+	debug_assert_eq!(P::WIDTH, 1);
+	debug_assert_eq!(out.len(), words.len());
+
+	let mut word_chunks = words.chunks_exact(4);
+	let mut out_chunks = out.chunks_exact_mut(4);
+	for (w, o) in (&mut word_chunks).zip(&mut out_chunks) {
+		// Compute all four transforms before writing any of them, so nothing here forces the
+		// four (each internally 8-load, 4-xor) computations to interleave in program order --
+		// the scheduler is free to overlap their independent table loads.
+		let r0 = transform.transform(&w[0].0);
+		let r1 = transform.transform(&w[1].0);
+		let r2 = transform.transform(&w[2].0);
+		let r3 = transform.transform(&w[3].0);
+		o[0] = P::from_scalars(iter::once(r0));
+		o[1] = P::from_scalars(iter::once(r1));
+		o[2] = P::from_scalars(iter::once(r2));
+		o[3] = P::from_scalars(iter::once(r3));
+	}
+	for (&w, o) in iter::zip(word_chunks.remainder(), out_chunks.into_remainder()) {
+		*o = P::from_scalars(iter::once(transform.transform(&w.0)));
+	}
+}
+
+/// Like [`fold_words_scalar_unrolled`], but writes into the spare capacity of a [`Vec`] instead
+/// of an already-initialized slice, and extends the vec's length to cover the newly-written
+/// elements. Used by [`fold_words_with_transform`] to avoid first zero-filling (or otherwise
+/// initializing) the live portion of the output only to immediately overwrite it -- the same
+/// reason the original `collect_into_vec`-based implementation wrote into a `Vec` via `extend`
+/// rather than pre-sizing it.
+///
+/// # Preconditions
+/// * `P::WIDTH == 1`
+/// * `values.capacity() - values.len() >= words.len()`
+fn fold_words_scalar_fill<F, P, T>(transform: &T, words: &[Word], values: &mut Vec<P>)
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+	T: Transformation<u64, F>,
+{
+	debug_assert_eq!(P::WIDTH, 1);
+
+	let base = values.len();
+	let spare = &mut values.spare_capacity_mut()[..words.len()];
+
+	let mut word_chunks = words.chunks_exact(4);
+	let mut spare_chunks = spare.chunks_exact_mut(4);
+	for (w, o) in (&mut word_chunks).zip(&mut spare_chunks) {
+		let r0 = transform.transform(&w[0].0);
+		let r1 = transform.transform(&w[1].0);
+		let r2 = transform.transform(&w[2].0);
+		let r3 = transform.transform(&w[3].0);
+		o[0].write(P::from_scalars(iter::once(r0)));
+		o[1].write(P::from_scalars(iter::once(r1)));
+		o[2].write(P::from_scalars(iter::once(r2)));
+		o[3].write(P::from_scalars(iter::once(r3)));
+	}
+	for (&w, o) in iter::zip(word_chunks.remainder(), spare_chunks.into_remainder()) {
+		o.write(P::from_scalars(iter::once(transform.transform(&w.0))));
+	}
+
+	// Safety: the loop above initialized exactly the first `words.len()` elements of `spare`,
+	// i.e. `values[base..base + words.len()]`.
+	unsafe { values.set_len(base + words.len()) };
 }
 
 /// Folds a slice of words along both axes at once, contracting the matrix to a single scalar.
@@ -469,6 +616,63 @@ mod tests {
 
 		// Compare results
 		assert_eq!(result_optimized, result_naive);
+	}
+
+	#[test]
+	fn test_fold_words_with_transform_unrolled_remainder() {
+		// `fold_words_scalar_fill`/`fold_words_scalar_unrolled` process words 4 at a time; cover
+		// word counts that leave a remainder of 0, 1, 2, and 3 under that unroll, plus lengths
+		// that aren't a power of two (so `fold_words_with_transform` pads with zero words).
+		let mut rng = StdRng::seed_from_u64(1);
+		let vec = random_scalars::<B128>(&mut rng, Word::BITS);
+		let transform =
+			OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+				.create(&vec);
+
+		for n_words in [0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 100] {
+			let words = (0..n_words)
+				.map(|_| Word::from_u64(rng.random::<u64>()))
+				.collect::<Vec<_>>();
+
+			let result_optimized =
+				fold_words_with_transform::<_, OptimalPackedB128, _>(&transform, &words);
+			let result_naive = naive_fold_words::<B128, OptimalPackedB128>(
+				&words
+					.iter()
+					.copied()
+					.chain(iter::repeat_n(
+						Word::ZERO,
+						(1 << log2_ceil_usize(words.len().max(1))) - words.len(),
+					))
+					.collect::<Vec<_>>(),
+				&vec,
+			);
+
+			assert_eq!(result_optimized, result_naive, "mismatch at n_words = {n_words}");
+		}
+	}
+
+	#[test]
+	fn test_fold_words_with_transform_into_matches_allocating() {
+		let mut rng = StdRng::seed_from_u64(2);
+		let vec = random_scalars::<B128>(&mut rng, Word::BITS);
+		let transform =
+			OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+				.create(&vec);
+
+		for n_words in [0, 1, 3, 4, 5, 64, 100] {
+			let words = (0..n_words)
+				.map(|_| Word::from_u64(rng.random::<u64>()))
+				.collect::<Vec<_>>();
+
+			let expected = fold_words_with_transform::<_, OptimalPackedB128, _>(&transform, &words);
+
+			let log_n = log2_ceil_usize(words.len());
+			let mut out = FieldBuffer::<OptimalPackedB128>::zeros(log_n);
+			fold_words_with_transform_into(&transform, &words, &mut out);
+
+			assert_eq!(out, expected, "mismatch at n_words = {n_words}");
+		}
 	}
 
 	fn naive_fold_words_both_axes<F, P>(

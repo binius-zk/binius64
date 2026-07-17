@@ -11,7 +11,7 @@ use binius_field::{
 };
 use binius_ip_prover::sumcheck::{common::SumcheckProver, quadratic_mlecheck_prover};
 use binius_math::{
-	BinarySubspace,
+	BinarySubspace, FieldBuffer,
 	univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
 };
 use binius_prover::{
@@ -19,7 +19,7 @@ use binius_prover::{
 	and_reduction::{
 		NTTLookup, sumcheck_round_messages::univariate_round_message_extension_domain,
 	},
-	fold_word::fold_words_with_transform,
+	fold_word::{fold_words_with_transform, fold_words_with_transform_into},
 };
 use binius_verifier::{
 	config::{B128, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
@@ -89,6 +89,26 @@ fn bench(c: &mut Criterion) {
 
 			[&a_words, &b_words, &c_words]
 				.map(|mlv| fold_words_with_transform::<_, OptimalPackedB128, _>(&transform, mlv))
+		});
+	});
+
+	// Preallocate the three fold output buffers once, outside the timed closure, so the bench
+	// measures only the fold computation (transform construction included, matching the
+	// allocating "univariate fold" bench above) and not the per-call allocation of three
+	// `2^log_words`-element buffers.
+	let mut fold_out_a = FieldBuffer::<OptimalPackedB128>::zeros(log_words);
+	let mut fold_out_b = FieldBuffer::<OptimalPackedB128>::zeros(log_words);
+	let mut fold_out_c = FieldBuffer::<OptimalPackedB128>::zeros(log_words);
+	group.bench_function(format!("univariate fold prealloc 2^{log_words}"), |bench| {
+		bench.iter(|| {
+			let lagrange_evals = lagrange_evals_scalars(&univariate_domain, univariate_challenge);
+			let transform =
+				OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
+					.create(&lagrange_evals);
+
+			fold_words_with_transform_into(&transform, &a_words, &mut fold_out_a);
+			fold_words_with_transform_into(&transform, &b_words, &mut fold_out_b);
+			fold_words_with_transform_into(&transform, &c_words, &mut fold_out_c);
 		});
 	});
 
