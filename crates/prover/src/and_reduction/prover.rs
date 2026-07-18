@@ -2,13 +2,7 @@
 use std::marker::PhantomData;
 
 use binius_core::word::Word;
-use binius_field::{
-	AESTowerField8b as B8, BinaryField, PackedField,
-	linear_transformation::{
-		BytewiseLookupTransformationFactory, LinearTransformationFactory,
-		OutputWrappingTransformationFactory,
-	},
-};
+use binius_field::{AESTowerField8b as B8, BinaryField, PackedField};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
@@ -25,7 +19,7 @@ use binius_verifier::{
 };
 
 use super::sumcheck_round_messages;
-use crate::fold_word::fold_words_with_transform;
+use crate::fold_word::BitAxisFolder;
 
 /// Prover for the AND constraint reduction protocol via oblong univariate zerocheck.
 ///
@@ -161,12 +155,10 @@ where
 	) -> impl MleCheckProver<F> {
 		let univariate_domain = round_message_domain.reduce_dim(round_message_domain.dim() - 1);
 		let lagrange_evals = lagrange_evals_scalars(&univariate_domain, challenge);
-		let transform =
-			OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
-				.create(&lagrange_evals);
+		let folder = BitAxisFolder::new(&lagrange_evals);
 
 		let proving_polys = [&self.first_col, &self.second_col, &self.third_col]
-			.map(|col| fold_words_with_transform::<_, PChallenge, _>(&transform, col));
+			.map(|col| folder.fold::<PChallenge>(col));
 
 		let upcasted_small_field_challenges = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES
 			.iter()
@@ -260,14 +252,7 @@ mod test {
 	use std::{iter, iter::repeat_with};
 
 	use binius_core::word::Word;
-	use binius_field::{
-		AESTowerField8b,
-		arch::OptimalPackedB128,
-		linear_transformation::{
-			BytewiseLookupTransformationFactory, LinearTransformationFactory,
-			OutputWrappingTransformationFactory,
-		},
-	};
+	use binius_field::{AESTowerField8b, arch::OptimalPackedB128};
 	use binius_math::{
 		BinarySubspace, FieldBuffer, multilinear::evaluate::evaluate,
 		univariate::lagrange_evals_scalars,
@@ -280,7 +265,7 @@ mod test {
 	use rand::prelude::*;
 
 	use super::OblongZerocheckProver;
-	use crate::fold_word::fold_words_with_transform;
+	use crate::fold_word::BitAxisFolder;
 
 	fn random_words(log_num_words: usize, mut rng: impl Rng) -> Vec<Word> {
 		repeat_with(|| Word(rng.random()))
@@ -361,12 +346,9 @@ mod test {
 
 		let verifier_lagrange_evals =
 			lagrange_evals_scalars(&verifier_univariate_domain, z_challenge);
-		let verifier_transparent_transform =
-			OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
-				.create(&verifier_lagrange_evals);
+		let folder = BitAxisFolder::new(&verifier_lagrange_evals);
 		for (i, eval) in [a_eval, b_eval, c_eval].iter().enumerate() {
-			let folded: FieldBuffer<B128> =
-				fold_words_with_transform(&verifier_transparent_transform, &one_bit_mlvs[i]);
+			let folded: FieldBuffer<B128> = folder.fold(&one_bit_mlvs[i]);
 			assert_eq!(evaluate(&folded, &eval_point), *eval);
 		}
 	}

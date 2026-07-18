@@ -2,13 +2,7 @@
 use std::{iter, iter::repeat_with};
 
 use binius_core::word::Word;
-use binius_field::{
-	Field, Random,
-	linear_transformation::{
-		BytewiseLookupTransformationFactory, LinearTransformationFactory,
-		OutputWrappingTransformationFactory,
-	},
-};
+use binius_field::{Field, Random};
 use binius_ip_prover::sumcheck::{common::SumcheckProver, quadratic_mlecheck_prover};
 use binius_math::{
 	BinarySubspace,
@@ -19,7 +13,7 @@ use binius_prover::{
 	and_reduction::{
 		NTTLookup, sumcheck_round_messages::univariate_round_message_extension_domain,
 	},
-	fold_word::fold_words_with_transform,
+	fold_word::BitAxisFolder,
 };
 use binius_verifier::{
 	config::{B128, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
@@ -83,20 +77,15 @@ fn bench(c: &mut Criterion) {
 	group.bench_function(format!("univariate fold 2^{log_words}"), |bench| {
 		bench.iter(|| {
 			let lagrange_evals = lagrange_evals_scalars(&univariate_domain, univariate_challenge);
-			let transform =
-				OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
-					.create(&lagrange_evals);
-
-			[&a_words, &b_words, &c_words]
-				.map(|mlv| fold_words_with_transform::<_, OptimalPackedB128, _>(&transform, mlv))
+			let folder = BitAxisFolder::new(&lagrange_evals);
+			[&a_words, &b_words, &c_words].map(|mlv| folder.fold::<OptimalPackedB128>(mlv))
 		});
 	});
 
 	let lagrange_evals = lagrange_evals_scalars(&univariate_domain, univariate_challenge);
-	let transform = OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
-		.create(&lagrange_evals);
-	let proving_polys = [&a_words, &b_words, &c_words]
-		.map(|mlv| fold_words_with_transform::<_, OptimalPackedB128, _>(&transform, mlv));
+	let folder = BitAxisFolder::new(&lagrange_evals);
+	let proving_polys =
+		[&a_words, &b_words, &c_words].map(|mlv| folder.fold::<OptimalPackedB128>(mlv));
 
 	let mut univariate_message_coeffs = vec![B128::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];
 	univariate_message_coeffs[ROWS_PER_HYPERCUBE_VERTEX..2 * ROWS_PER_HYPERCUBE_VERTEX]
