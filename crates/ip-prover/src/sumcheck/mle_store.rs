@@ -3,7 +3,7 @@
 //! Shared multilinear column store for sumcheck round evaluators.
 //!
 //! An [`MleStore`] owns the equal-length multilinear columns that a group of
-//! [`RoundEvaluator`](super::round_evaluator::RoundEvaluator)s reads, along with the deduplicated
+//! [round evaluators](super::round_evaluator) reads, along with the deduplicated
 //! [`Gruen32`] equality-indicator trackers for MLE-check evaluation points. Columns enter the
 //! store either borrowed ([`MleStore::push`]) or owned ([`MleStore::push_owned`]) and are
 //! addressed by the returned [`ColId`], so several evaluators can read — and the store can fold —
