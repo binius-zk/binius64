@@ -132,10 +132,10 @@ where
 		self.inner.degree()
 	}
 
-	fn round_claim(&self, store: &MleStore<'_, P>) -> F {
-		// The sumcheck round claim is the inner MLE-check claim scaled by the accumulated
-		// equality prefix; see [`MleToSumCheckDecorator::round_claim`].
-		self.inner.round_claim(store) * store.eq_prefix(self.eq_tracker)
+	fn claim_from_coeffs(&self, _store: &MleStore<'_, P>, coeffs: &RoundCoeffs<F>) -> F {
+		// The emitted round polynomial is a regular sumcheck polynomial (the inner prime polynomial
+		// already multiplied by the equality factor), so its claim is the sum over the endpoints.
+		coeffs.sum_over_endpoints()
 	}
 
 	fn accumulate(&self, chunk: &EvaluationChunk<'_, P>, accum: &mut [<P as WideMul>::Output]) {
@@ -143,22 +143,23 @@ where
 	}
 
 	fn interpolate(
-		&mut self,
+		&self,
 		store: &MleStore<'_, P>,
 		accum: &[<P as WideMul>::Output],
+		claim: F,
 	) -> RoundCoeffs<F> {
-		let round_coeffs = self.inner.interpolate(store, accum);
+		// `claim` is the sumcheck round claim: the inner MLE-check claim `m` scaled by the
+		// accumulated equality prefix. Recover `m` for the inner evaluator by dividing the prefix
+		// back out. (`invert_or_zero` mirrors the interpolation routines; the prefix is a product
+		// of non-degenerate equality factors for honest challenges.)
+		let eq_prefix = store.eq_prefix(self.eq_tracker);
+		let inner_claim = claim * eq_prefix.invert_or_zero();
+		let round_coeffs = self.inner.interpolate(store, accum, inner_claim);
 
 		// Multiply the round polynomial from the inner MLE-check evaluator by (X - α) and the
 		// equality prefix, both read from the shared eq tracker (the store has not yet folded this
 		// round, so the tracker is at the current round's alpha and prefix).
 		let alpha = store.eq_alpha(self.eq_tracker);
-		round_coeffs_by_eq(&round_coeffs, alpha) * store.eq_prefix(self.eq_tracker)
-	}
-
-	fn fold(&mut self, challenge: F) {
-		// The store folds the shared eq tracker, advancing its alpha and equality prefix, so the
-		// wrapper only advances the inner evaluator's claim state.
-		self.inner.fold(challenge)
+		round_coeffs_by_eq(&round_coeffs, alpha) * eq_prefix
 	}
 }

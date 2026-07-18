@@ -492,6 +492,7 @@ impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 		lagrange: &[B128],
 		store: &mut MleStore<P>,
 		evaluators: &mut Vec<Box<dyn RoundEvaluator<B128, P>>>,
+		claims: &mut Vec<B128>,
 	) where
 		P: PackedField<Scalar = B128>,
 	{
@@ -505,9 +506,10 @@ impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 				eq_tracker,
 				|[operand]: [P; 1]| operand,
 				|[_operand]: [P; 1]| P::zero(),
-				claim,
 			);
 			evaluators.push(Box::new(MleToSumCheckEvaluator::new(evaluator, eq_tracker)));
+			// The driving prover, not the evaluator, holds the claim.
+			claims.push(claim);
 		}
 	}
 }
@@ -643,18 +645,20 @@ impl RerandomizedOperations<'_> {
 		let mut store = MleStore::<P>::new(log_instances);
 		let mut evaluators: Vec<Box<dyn RoundEvaluator<B128, P>>> =
 			Vec::with_capacity(BITAND_ARITY + INTMUL_ARITY + BINMUL_ARITY);
-		self.bitand.push_to(lagrange, &mut store, &mut evaluators);
+		let mut claims: Vec<B128> = Vec::with_capacity(BITAND_ARITY + INTMUL_ARITY + BINMUL_ARITY);
+		self.bitand
+			.push_to(lagrange, &mut store, &mut evaluators, &mut claims);
 		if let Some(intmul) = &self.intmul {
-			intmul.push_to(lagrange, &mut store, &mut evaluators);
+			intmul.push_to(lagrange, &mut store, &mut evaluators, &mut claims);
 		}
 		if let Some(binmul) = &self.binmul {
-			binmul.push_to(lagrange, &mut store, &mut evaluators);
+			binmul.push_to(lagrange, &mut store, &mut evaluators, &mut claims);
 		}
 
 		// One shared prover drives all claims over the store in a single round pass.
 		// Its evaluations are the store's per-column values at the shared instance point, in push
 		// order.
-		let shared = SharedSumcheckProver::new(store, evaluators);
+		let shared = SharedSumcheckProver::new(store, evaluators, claims);
 		let output = batch_prove_and_write_evals(vec![shared], channel);
 		let reduced = &output.multilinear_evals[0];
 

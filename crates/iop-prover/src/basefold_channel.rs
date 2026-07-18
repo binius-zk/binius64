@@ -302,10 +302,11 @@ fn prove_batch_zk_basefold<F, P, NTT, Channel>(
 			let transparent_col = store.push_owned(transparent);
 			let inner = SharedSumcheckProver::new(
 				store,
-				vec![BivariateProductEvaluator::new(
-					[message_col, transparent_col],
-					sum_prime,
-				)],
+				vec![BivariateProductEvaluator::new([
+					message_col,
+					transparent_col,
+				])],
+				vec![sum_prime],
 			);
 			PaddedSumcheckDecorator::new(inner, max_n - n_i)
 		})

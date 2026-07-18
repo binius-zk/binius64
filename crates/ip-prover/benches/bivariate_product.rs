@@ -64,8 +64,8 @@ fn bench_shared_sumcheck_bivariate_product(c: &mut Criterion) {
 				|(mut transcript, a, b_multilinear)| {
 					let mut store = MleStore::new(n_vars);
 					let cols = [a, b_multilinear].map(|col| store.push_owned(col));
-					let evaluator = BivariateProductEvaluator::new(cols, sum_claim);
-					let prover = SharedSumcheckProver::new(store, vec![evaluator]);
+					let evaluator = BivariateProductEvaluator::new(cols);
+					let prover = SharedSumcheckProver::new(store, vec![evaluator], vec![sum_claim]);
 
 					sumcheck::prove_single(prover, &mut transcript)
 				},
@@ -100,14 +100,14 @@ fn bench_shared_mlecheck_bivariate_product(c: &mut Criterion) {
 					// A single-claim evaluator reading the store's columns and one eq tracker
 					// registered for the claim's evaluation point.
 					let eq_tracker = store.register_eq_tracker(&eval_point);
-					let evaluator = QuadraticMleEvaluator::new(
-						cols,
-						eq_tracker,
-						product::<P>,
-						product::<P>,
-						eval_claim,
+					let evaluator =
+						QuadraticMleEvaluator::new(cols, eq_tracker, product::<P>, product::<P>);
+					let prover = SharedMleCheckProver::new(
+						store,
+						vec![evaluator],
+						vec![eval_claim],
+						eval_point,
 					);
-					let prover = SharedMleCheckProver::new(store, vec![evaluator], eval_point);
 
 					sumcheck::prove_single_mlecheck(prover, &mut transcript)
 				},
