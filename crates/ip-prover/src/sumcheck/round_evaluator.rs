@@ -292,8 +292,11 @@ where
 			}
 			accum
 		};
-		let reduce = |mut lhs: Vec<<P as WideMul>::Output>, rhs: Vec<<P as WideMul>::Output>| {
-			// The only merge: sum the workers' slices slot-wise, generic over every evaluator.
+		let reduce = |mut lhs: Vec<<P as WideMul>::Output>,
+		              rhs: Vec<<P as WideMul>::Output>,
+		              _level: usize| {
+			// The only merge: sum the workers' slices slot-wise, generic over every evaluator. Plain
+			// sumcheck has no eq factor, so the reduction level is unused.
 			for (dst, src) in iter::zip(&mut lhs, rhs) {
 				*dst += src;
 			}
@@ -511,7 +514,9 @@ where
 			}
 			accum
 		};
-		let reduce = |mut lhs: Vec<<P as WideMul>::Output>, rhs: Vec<<P as WideMul>::Output>| {
+		let reduce = |mut lhs: Vec<<P as WideMul>::Output>,
+		              rhs: Vec<<P as WideMul>::Output>,
+		              _level: usize| {
 			for (dst, src) in iter::zip(&mut lhs, rhs) {
 				*dst += src;
 			}
