@@ -10,7 +10,7 @@ use binius_ip_prover::sumcheck::{
 	batch::batch_prove_and_write_evals,
 	mle_store::MleStore,
 	quadratic_mle_evaluator::QuadraticMleEvaluator,
-	round_evaluator::{RoundEvaluator, SharedSumcheckProver},
+	round_evaluator::{SharedSumcheckProver, SumcheckRoundEvaluator},
 };
 use binius_m4_verifier::{IOPVerifier, Verifier};
 use binius_math::{
@@ -491,11 +491,13 @@ impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 		&self,
 		lagrange: &[B128],
 		store: &mut MleStore<P>,
-		evaluators: &mut Vec<Box<dyn RoundEvaluator<B128, P>>>,
+		evaluators: &mut Vec<Box<dyn SumcheckRoundEvaluator<B128, P>>>,
 		claims: &mut Vec<B128>,
 	) where
 		P: PackedField<Scalar = B128>,
 	{
+		// The wrappers run under a plain sumcheck prover, so each holds this operation's shared eq
+		// tracker; register it once.
 		let eq_tracker = store.register_eq_tracker(&self.r_rho);
 		// The constraint tensor is the same for every operand of this operation, so expand it once.
 		let r_x_tensor = eq_ind_partial_eval_scalars::<B128>(&self.r_x);
@@ -503,7 +505,6 @@ impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 			let col = store.push_owned(operand_rho_multilinear::<P>(column, lagrange, &r_x_tensor));
 			let evaluator = QuadraticMleEvaluator::new(
 				[col],
-				eq_tracker,
 				|[operand]: [P; 1]| operand,
 				|[_operand]: [P; 1]| P::zero(),
 			);
@@ -643,7 +644,7 @@ impl RerandomizedOperations<'_> {
 		// [BitAnd a, b, c | IntMul a, b, lo, hi | BinMul a_lo, a_hi, b_lo, b_hi, c_lo, c_hi].
 		// The verifier reads the reduced evaluations back in the same order.
 		let mut store = MleStore::<P>::new(log_instances);
-		let mut evaluators: Vec<Box<dyn RoundEvaluator<B128, P>>> =
+		let mut evaluators: Vec<Box<dyn SumcheckRoundEvaluator<B128, P>>> =
 			Vec::with_capacity(BITAND_ARITY + INTMUL_ARITY + BINMUL_ARITY);
 		let mut claims: Vec<B128> = Vec::with_capacity(BITAND_ARITY + INTMUL_ARITY + BINMUL_ARITY);
 		self.bitand

@@ -97,11 +97,7 @@ fn bench_shared_mlecheck_bivariate_product(c: &mut Criterion) {
 				|(mut transcript, a, b_multilinear, eval_point)| {
 					let mut store = MleStore::new(n_vars);
 					let cols = [a, b_multilinear].map(|col| store.push_owned(col));
-					// A single-claim evaluator reading the store's columns and one eq tracker
-					// registered for the claim's evaluation point.
-					let eq_tracker = store.register_eq_tracker(&eval_point);
-					let evaluator =
-						QuadraticMleEvaluator::new(cols, eq_tracker, product::<P>, product::<P>);
+					let evaluator = QuadraticMleEvaluator::new(cols, product::<P>, product::<P>);
 					let prover =
 						SharedMleCheckProver::new(store, [(eval_claim, evaluator)], eval_point);
 
