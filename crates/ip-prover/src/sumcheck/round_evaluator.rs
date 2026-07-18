@@ -130,12 +130,19 @@ where
 	P: PackedField<Scalar = F>,
 	Evaluator: RoundEvaluator<F, P>,
 {
-	/// Creates a prover from a store, the evaluators reading its columns, and the initial claim of
-	/// each evaluator — all three lists in the same order, one entry per claim.
-	pub fn new(store: MleStore<'a, P>, evaluators: Vec<Evaluator>, claims: Vec<F>) -> Self {
-		// precondition
-		assert_eq!(evaluators.len(), claims.len(), "one initial claim per evaluator is required");
-		let round_states = claims.into_iter().map(RoundState::Claim).collect();
+	/// Creates a prover from a store and the evaluators reading its columns, each paired with its
+	/// initial claim — one `(claim, evaluator)` per claim.
+	///
+	/// Taking an [`IntoIterator`] lets callers pass an array of pairs directly, rather than two
+	/// parallel `Vec`s; the pairs are unzipped into the evaluators and their initial round states.
+	pub fn new(
+		store: MleStore<'a, P>,
+		claims_with_evaluators: impl IntoIterator<Item = (F, Evaluator)>,
+	) -> Self {
+		let (round_states, evaluators) = claims_with_evaluators
+			.into_iter()
+			.map(|(claim, evaluator)| (RoundState::Claim(claim), evaluator))
+			.unzip();
 		Self {
 			store,
 			evaluators,
@@ -162,7 +169,7 @@ where
 	/// group.
 	///
 	/// Its round polynomial is appended after the existing evaluators' in [`Self::execute`].
-	pub fn add_evaluator(&mut self, evaluator: Evaluator, claim: F) {
+	pub fn add_evaluator(&mut self, claim: F, evaluator: Evaluator) {
 		self.evaluators.push(evaluator);
 		self.round_states.push(RoundState::Claim(claim));
 	}
@@ -313,12 +320,12 @@ where
 	P: PackedField<Scalar = F>,
 	Evaluator: RoundEvaluator<F, P>,
 {
-	/// Creates a prover from a store, the evaluators reading its columns and their initial claims —
-	/// one per claim — and the evaluation point shared by all of the evaluators' claims.
+	/// Creates a prover from a store, the evaluators reading its columns each paired with its
+	/// initial claim — one `(claim, evaluator)` per claim — and the evaluation point shared by all
+	/// of the evaluators' claims.
 	pub fn new(
 		store: MleStore<'a, P>,
-		evaluators: Vec<Evaluator>,
-		claims: Vec<F>,
+		claims_with_evaluators: impl IntoIterator<Item = (F, Evaluator)>,
 		eval_point: Vec<F>,
 	) -> Self {
 		// precondition
@@ -328,7 +335,7 @@ where
 			"evaluation point length must equal the store's number of variables"
 		);
 		Self {
-			inner: SharedSumcheckProver::new(store, evaluators, claims),
+			inner: SharedSumcheckProver::new(store, claims_with_evaluators),
 			eval_point,
 		}
 	}
@@ -509,9 +516,9 @@ mod tests {
 		let mut store = MleStore::new(eval_point.len());
 		let col_ids = cols.each_ref().map(|col| store.push(col.to_ref()));
 		let (num_ev, den_ev) = frac_add_mle::evaluators(&mut store, col_ids, eval_point.to_vec());
-		let evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> =
-			vec![Box::new(num_ev), Box::new(den_ev)];
-		SharedMleCheckProver::new(store, evaluators, claims.to_vec(), eval_point.to_vec())
+		let claims_with_evaluators: [(F, Box<dyn RoundEvaluator<F, P>>); 2] =
+			[(claims[0], Box::new(num_ev)), (claims[1], Box::new(den_ev))];
+		SharedMleCheckProver::new(store, claims_with_evaluators, eval_point.to_vec())
 	}
 
 	// Prove the two fractional-addition claims through the MLE-check batch driver, then verify.
@@ -616,15 +623,15 @@ mod tests {
 			let product_0 = BivariateProductEvaluator::new([y_0_col, t_0_col]);
 			let product_1 = BivariateProductEvaluator::new([y_1_col, t_1_col]);
 
-			let evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> = vec![
-				Box::new(num_evaluator),
-				Box::new(den_evaluator),
-				Box::new(product_0),
-				Box::new(product_1),
+			// Claims paired with evaluators in order: the two fractional claims, then the two
+			// product sums.
+			let claims_with_evaluators: [(F, Box<dyn RoundEvaluator<F, P>>); 4] = [
+				(frac_claims[0], Box::new(num_evaluator)),
+				(frac_claims[1], Box::new(den_evaluator)),
+				(e_0, Box::new(product_0)),
+				(e_1, Box::new(product_1)),
 			];
-			// Claims in evaluator order: the two fractional claims, then the two product sums.
-			let claims = vec![frac_claims[0], frac_claims[1], e_0, e_1];
-			let shared = SharedSumcheckProver::new(store, evaluators, claims);
+			let shared = SharedSumcheckProver::new(store, claims_with_evaluators);
 
 			// Prove and record the four claim sums in evaluator order.
 			let mut transcript = ProverTranscript::new(StdChallenger::default());

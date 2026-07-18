@@ -131,9 +131,9 @@ where
 	let t_0_col = prover.push_owned_column(t_0);
 	let t_1_col = prover.push_owned_column(t_1);
 	let product_0 = BivariateProductEvaluator::new([y_0_col, t_0_col]);
-	prover.add_evaluator(Box::new(product_0) as Box<dyn RoundEvaluator<F, P>>, e_0);
+	prover.add_evaluator(e_0, Box::new(product_0) as Box<dyn RoundEvaluator<F, P>>);
 	let product_1 = BivariateProductEvaluator::new([y_1_col, t_1_col]);
-	prover.add_evaluator(Box::new(product_1) as Box<dyn RoundEvaluator<F, P>>, e_1);
+	prover.add_evaluator(e_1, Box::new(product_1) as Box<dyn RoundEvaluator<F, P>>);
 
 	// Drive the one shared-store sumcheck.
 	//

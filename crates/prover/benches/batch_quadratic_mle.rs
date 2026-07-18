@@ -120,10 +120,12 @@ fn bench_batch_quadratic_mlecheck_prove(c: &mut Criterion) {
 						QuadraticMleEvaluator::new(cols, eq_tracker, comp_0::<P>, comp_0_inf::<P>);
 					let evaluator_1 =
 						QuadraticMleEvaluator::new(cols, eq_tracker, comp_1::<P>, comp_1_inf::<P>);
-					let evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> =
-						vec![Box::new(evaluator_0), Box::new(evaluator_1)];
-					let claims = vec![eval_claims[0], eval_claims[1]];
-					let prover = SharedMleCheckProver::new(store, evaluators, claims, eval_point);
+					let claims_with_evaluators: [(F, Box<dyn RoundEvaluator<F, P>>); 2] = [
+						(eval_claims[0], Box::new(evaluator_0)),
+						(eval_claims[1], Box::new(evaluator_1)),
+					];
+					let prover =
+						SharedMleCheckProver::new(store, claims_with_evaluators, eval_point);
 
 					prove_batch_mlecheck(prover, &mut transcript)
 				},

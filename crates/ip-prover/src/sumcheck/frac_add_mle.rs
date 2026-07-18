@@ -201,11 +201,11 @@ mod tests {
 		// Both evaluators share the point's eq tracker; recover its id for the sumcheck wrappers.
 		let eq_tracker = store.register_eq_tracker(&eval_point);
 		// Wrap each MLE-check evaluator so it emits sumcheck-compatible round polynomials.
-		let evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> = vec![
-			Box::new(MleToSumCheckEvaluator::new(num_evaluator, eq_tracker)),
-			Box::new(MleToSumCheckEvaluator::new(den_evaluator, eq_tracker)),
+		let claims_with_evaluators: [(F, Box<dyn RoundEvaluator<F, P>>); 2] = [
+			(eval_claims[0], Box::new(MleToSumCheckEvaluator::new(num_evaluator, eq_tracker))),
+			(eval_claims[1], Box::new(MleToSumCheckEvaluator::new(den_evaluator, eq_tracker))),
 		];
-		let prover = SharedSumcheckProver::new(store, evaluators, eval_claims.to_vec());
+		let prover = SharedSumcheckProver::new(store, claims_with_evaluators);
 
 		test_frac_add_sumcheck_prove_verify(
 			prover,

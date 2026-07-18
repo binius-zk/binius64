@@ -48,7 +48,7 @@ pub fn bivariate_product_prover<F: Field, P: PackedField<Scalar = F>>(
 
 	let mut store = MleStore::new(multilinears[0].log_len());
 	let cols = multilinears.map(|col| store.push_owned(col));
-	SharedSumcheckProver::new(store, vec![BivariateProductEvaluator::new(cols)], vec![sum])
+	SharedSumcheckProver::new(store, [(sum, BivariateProductEvaluator::new(cols))])
 }
 
 impl<F: Field, P: PackedField<Scalar = F>> RoundEvaluator<F, P> for BivariateProductEvaluator {

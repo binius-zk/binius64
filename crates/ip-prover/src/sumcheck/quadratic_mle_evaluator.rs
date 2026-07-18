@@ -120,7 +120,7 @@ where
 	// Register the evaluation point's equality-indicator tracker once for the sole evaluator.
 	let eq_tracker = store.register_eq_tracker(&eval_point);
 	let evaluator = QuadraticMleEvaluator::new(cols, eq_tracker, composition, infinity_composition);
-	SharedMleCheckProver::new(store, vec![evaluator], vec![eval_claim], eval_point)
+	SharedMleCheckProver::new(store, [(eval_claim, evaluator)], eval_point)
 }
 
 impl<F, P, Composition, InfinityComposition, const N: usize> RoundEvaluator<F, P>

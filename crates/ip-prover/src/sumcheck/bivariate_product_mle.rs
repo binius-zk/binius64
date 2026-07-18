@@ -99,7 +99,7 @@ where
 		|[a, b]: [P; 2]| a * b,
 		|[a, b]: [P; 2]| a * b,
 	);
-	SharedMleCheckProver::new(store, vec![evaluator], vec![eval_claim], eval_point)
+	SharedMleCheckProver::new(store, [(eval_claim, evaluator)], eval_point)
 }
 
 #[cfg(test)]

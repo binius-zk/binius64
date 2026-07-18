@@ -136,10 +136,15 @@ where
 		let (num_evaluator, den_evaluator) =
 			frac_add_mle::evaluators(&mut store, cols, num_claim.point.clone());
 
-		let evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> =
-			vec![Box::new(num_evaluator), Box::new(den_evaluator)];
-		let claims = vec![num_claim.eval, den_claim.eval];
-		(remaining, SharedMleCheckProver::new(store, evaluators, claims, num_claim.point), cols)
+		let claims_with_evaluators: [(F, Box<dyn RoundEvaluator<F, P>>); 2] = [
+			(num_claim.eval, Box::new(num_evaluator)),
+			(den_claim.eval, Box::new(den_evaluator)),
+		];
+		(
+			remaining,
+			SharedMleCheckProver::new(store, claims_with_evaluators, num_claim.point),
+			cols,
+		)
 	}
 
 	/// Runs the fractional addition check protocol and returns the final evaluation claims.
@@ -531,13 +536,13 @@ where
 	.map(|buffer| selector_store.push_owned(buffer));
 	let (selector_num, selector_den) =
 		frac_add_mle::evaluators(&mut selector_store, selector_cols, outer_coords.to_vec());
-	let selector_evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> =
-		vec![Box::new(selector_num), Box::new(selector_den)];
-	let selector_claims = vec![num_eval, den_eval];
+	let selector_claims_with_evaluators: [(F, Box<dyn RoundEvaluator<F, P>>); 2] = [
+		(num_eval, Box::new(selector_num)),
+		(den_eval, Box::new(selector_den)),
+	];
 	let mut selector_prover = SharedMleCheckProver::new(
 		selector_store,
-		selector_evaluators,
-		selector_claims,
+		selector_claims_with_evaluators,
 		outer_coords.to_vec(),
 	);
 

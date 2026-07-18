@@ -658,7 +658,7 @@ impl RerandomizedOperations<'_> {
 		// One shared prover drives all claims over the store in a single round pass.
 		// Its evaluations are the store's per-column values at the shared instance point, in push
 		// order.
-		let shared = SharedSumcheckProver::new(store, evaluators, claims);
+		let shared = SharedSumcheckProver::new(store, claims.into_iter().zip(evaluators));
 		let output = batch_prove_and_write_evals(vec![shared], channel);
 		let reduced = &output.multilinear_evals[0];
 
