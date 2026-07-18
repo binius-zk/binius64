@@ -1,16 +1,16 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{array, borrow::Cow, hint::assert_unchecked, iter};
+use std::{array, borrow::Cow, hint::assert_unchecked, iter, ops::BitXor};
 
 use binius_core::word::Word;
 use binius_field::{
-	BinaryField, Field, PackedField, WideMul,
+	BinaryField, Divisible, Field, PackedField, UnderlierType, WideMul,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, LinearTransformationFactory,
 		OutputWrappingTransformationFactory, Transformation,
 	},
-	util::expand_subset_sums_array,
+	util::{expand_subset_sums_array, expand_subset_xors},
 };
 use binius_math::{
 	FieldBuffer, FieldSlice,
@@ -48,7 +48,7 @@ where
 	P: PackedField<Scalar = F>,
 {
 	fold_words_with_transform_factory(
-		&OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory),
+		&OutputWrappingTransformationFactory::new(WordBytewiseLookupTransformationFactory),
 		words,
 		vec,
 	)
@@ -111,6 +111,61 @@ where
 	values.resize(capacity, P::default());
 
 	FieldBuffer::new(log_n, values.into_boxed_slice())
+}
+
+/// A [`u64`]-specialized bytewise lookup transformation, folding a word's bits against a fixed
+/// vector of field-element underliers.
+///
+/// Fixing the input to [`u64`] lets the per-byte lookup tables live in a fixed-length array rather
+/// than a heap-allocated [`Vec`], holding one table per byte of the word.
+///
+/// This uses the [Method of Four Russians] to optimize the computation by precomputing a lookup
+/// table for each byte position and combining bitwise chunks of the word.
+///
+/// [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
+#[derive(Debug)]
+pub struct WordBytewiseLookupTransformation<UOut> {
+	lookup: [[UOut; 1 << BITS_PER_BYTE]; Word::BYTES],
+}
+
+impl<UOut: UnderlierType> WordBytewiseLookupTransformation<UOut> {
+	pub fn new(cols: &[UOut]) -> Self {
+		assert_eq!(cols.len(), Word::BITS);
+
+		let lookup = array::from_fn(|byte| {
+			let group: [UOut; BITS_PER_BYTE] = cols
+				[byte * BITS_PER_BYTE..(byte + 1) * BITS_PER_BYTE]
+				.try_into()
+				.expect("cols has Word::BITS = Word::BYTES * BITS_PER_BYTE entries");
+			expand_subset_xors(group)
+		});
+
+		Self { lookup }
+	}
+}
+
+impl<UOut: UnderlierType> Transformation<u64, UOut> for WordBytewiseLookupTransformation<UOut> {
+	#[inline]
+	fn transform(&self, data: &u64) -> UOut {
+		iter::zip(Divisible::<u8>::ref_iter(data), &self.lookup)
+			.map(|(byte, table)| table[byte as usize])
+			.reduce(BitXor::bitxor)
+			.unwrap_or(UOut::ZERO)
+	}
+}
+
+/// Factory for creating [`WordBytewiseLookupTransformation`]s.
+#[derive(Debug)]
+pub struct WordBytewiseLookupTransformationFactory;
+
+impl<UOut: UnderlierType> LinearTransformationFactory<u64, UOut>
+	for WordBytewiseLookupTransformationFactory
+{
+	type Transform = WordBytewiseLookupTransformation<UOut>;
+
+	fn create(&self, cols: &[UOut]) -> Self::Transform {
+		WordBytewiseLookupTransformation::new(cols)
+	}
 }
 
 /// Folds a slice of words along both axes at once, contracting the matrix to a single scalar.
