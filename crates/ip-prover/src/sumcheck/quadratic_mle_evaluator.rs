@@ -166,7 +166,7 @@ where
 	fn interpolate(
 		&self,
 		store: &MleStore<'_, P>,
-		accum: &[<P as WideMul>::Output],
+		accum: &[P],
 		claim: F,
 		alpha: F,
 	) -> RoundCoeffs<F> {
@@ -174,11 +174,12 @@ where
 		let n_vars_remaining = store.n_vars();
 		assert!(n_vars_remaining > 0);
 
-		// Reduce the wide accumulators, sum packed lanes into scalars, then interpolate. `claim` is
-		// this round's prime eval; `alpha`, this round's eq coordinate, ties it to the point.
+		// `accum` is already reduced (the prover's `map` pass reduced the wide accumulators). Sum
+		// the packed lanes into scalars, then interpolate. `claim` is this round's prime eval;
+		// `alpha`, this round's eq coordinate, ties it to the point.
 		RoundEvals2 {
-			y_1: P::reduce(accum[0].clone()),
-			y_inf: P::reduce(accum[1].clone()),
+			y_1: accum[0],
+			y_inf: accum[1],
 		}
 		.sum_scalars(n_vars_remaining)
 		.interpolate_eq(claim, alpha)

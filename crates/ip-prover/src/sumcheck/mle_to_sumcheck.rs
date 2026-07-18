@@ -156,7 +156,13 @@ where
 		let eq_prefix = store.eq_prefix(self.eq_tracker);
 		let alpha = store.eq_alpha(self.eq_tracker);
 		let inner_claim = claim * eq_prefix.invert_or_zero();
-		let round_coeffs = self.inner.interpolate(store, accum, inner_claim, alpha);
+		// The inner MLE-check evaluator now takes a reduced accumulator; the plain sumcheck prover
+		// driving this wrapper leaves the wide accumulators unreduced, so reduce them here.
+		let reduced = accum
+			.iter()
+			.map(|slot| P::reduce(slot.clone()))
+			.collect::<Vec<_>>();
+		let round_coeffs = self.inner.interpolate(store, &reduced, inner_claim, alpha);
 
 		// Multiply the inner MLE-check round polynomial by (X - α) and the equality prefix.
 		round_coeffs_by_eq(&round_coeffs, alpha) * eq_prefix
