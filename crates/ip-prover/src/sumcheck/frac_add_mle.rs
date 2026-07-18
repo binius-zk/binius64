@@ -4,9 +4,8 @@ use binius_field::{Field, PackedField};
 use binius_math::FieldBuffer;
 
 use crate::sumcheck::{
-	mle_store::{ColId, MleStore},
-	quadratic_mle_evaluator::QuadraticMleEvaluator,
-	round_evaluator::RoundEvaluator,
+	mle_store::ColId, quadratic_mle_evaluator::QuadraticMleEvaluator,
+	round_evaluator::MleCheckRoundEvaluator,
 };
 
 /// The numerator and denominator buffers of one fractional-addition layer.
@@ -18,32 +17,27 @@ pub type FractionalBuffer<P> = (FieldBuffer<P>, FieldBuffer<P>);
 /// fraction collections being added, split as either half of one layer buffer. The two claims —
 /// one evaluator each — are the fractional-addition numerator `num_a * den_b + num_b * den_a` over
 /// all four columns and the denominator `den_a * den_b` over `[den_a, den_b]`, both weighted by the
-/// equality indicator at `eval_point`. The evaluators share the store's eq tracker for
-/// `eval_point`. The two claimed evaluations are held by the driving prover, not the evaluators.
+/// equality indicator at the shared evaluation point. The driving [`SharedMleCheckProver`] owns
+/// that point's eq tracker and holds the two claimed evaluations, so the evaluators carry neither.
+///
+/// [`SharedMleCheckProver`]: crate::sumcheck::round_evaluator::SharedMleCheckProver
 pub fn evaluators<F, P>(
-	store: &mut MleStore<'_, P>,
 	cols: [ColId; 4],
-	eval_point: Vec<F>,
-) -> (impl RoundEvaluator<F, P> + 'static, impl RoundEvaluator<F, P> + 'static)
+) -> (impl MleCheckRoundEvaluator<F, P> + 'static, impl MleCheckRoundEvaluator<F, P> + 'static)
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
 	let [num_a, num_b, den_a, den_b] = cols;
-	// Both claims share the point, so register its tracker once and hand both evaluators the same
-	// id; the store then folds that tracker a single time per round.
-	let eq_tracker = store.register_eq_tracker(&eval_point);
 	// The fractional addition formulas are purely quadratic, so each infinity composition matches
 	// its regular composition.
 	let numerator = QuadraticMleEvaluator::new(
 		[num_a, num_b, den_a, den_b],
-		eq_tracker,
 		|[num_a, num_b, den_a, den_b]: [P; 4]| num_a * den_b + num_b * den_a,
 		|[num_a, num_b, den_a, den_b]: [P; 4]| num_a * den_b + num_b * den_a,
 	);
 	let denominator = QuadraticMleEvaluator::new(
 		[den_a, den_b],
-		eq_tracker,
 		|[den_a, den_b]: [P; 2]| den_a * den_b,
 		|[den_a, den_b]: [P; 2]| den_a * den_b,
 	);
@@ -71,7 +65,7 @@ mod tests {
 		batch::batch_prove,
 		common::SumcheckProver,
 		mle_store::MleStore,
-		round_evaluator::{RoundEvaluator, SharedSumcheckProver},
+		round_evaluator::{SharedSumcheckProver, SumcheckRoundEvaluator},
 	};
 
 	fn test_frac_add_sumcheck_prove_verify<F, P>(
@@ -196,12 +190,13 @@ mod tests {
 		let mut store = MleStore::new(n_vars);
 		let cols = [num_a.clone(), num_b.clone(), den_a.clone(), den_b.clone()]
 			.map(|col| store.push_owned(col));
-		let (num_evaluator, den_evaluator) = evaluators(&mut store, cols, eval_point.clone());
+		let (num_evaluator, den_evaluator) = evaluators(cols);
 
-		// Both evaluators share the point's eq tracker; recover its id for the sumcheck wrappers.
+		// Register the shared point's eq tracker for the sumcheck wrappers (a plain sumcheck prover
+		// knows nothing of eq indicators, so the wrappers hold the tracker themselves).
 		let eq_tracker = store.register_eq_tracker(&eval_point);
 		// Wrap each MLE-check evaluator so it emits sumcheck-compatible round polynomials.
-		let claims_with_evaluators: [(F, Box<dyn RoundEvaluator<F, P>>); 2] = [
+		let claims_with_evaluators: [(F, Box<dyn SumcheckRoundEvaluator<F, P>>); 2] = [
 			(eval_claims[0], Box::new(MleToSumCheckEvaluator::new(num_evaluator, eq_tracker))),
 			(eval_claims[1], Box::new(MleToSumCheckEvaluator::new(den_evaluator, eq_tracker))),
 		];

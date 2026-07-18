@@ -8,7 +8,7 @@ use itertools::izip;
 use super::{
 	mle_store::{ColId, EvaluationChunk, MleStore},
 	round_evals::WideRoundEvals2,
-	round_evaluator::{RoundEvaluator, SharedSumcheckProver},
+	round_evaluator::{SharedSumcheckProver, SumcheckRoundEvaluator},
 };
 
 /// Sumcheck round evaluator for a composite defined as the product of two store columns.
@@ -51,16 +51,12 @@ pub fn bivariate_product_prover<F: Field, P: PackedField<Scalar = F>>(
 	SharedSumcheckProver::new(store, [(sum, BivariateProductEvaluator::new(cols))])
 }
 
-impl<F: Field, P: PackedField<Scalar = F>> RoundEvaluator<F, P> for BivariateProductEvaluator {
+impl<F: Field, P: PackedField<Scalar = F>> SumcheckRoundEvaluator<F, P>
+	for BivariateProductEvaluator
+{
 	fn degree(&self) -> usize {
 		// Product of two multilinears: two sampled evaluations, `y_1` and `y_inf`.
 		2
-	}
-
-	fn claim_from_coeffs(&self, _store: &MleStore<'_, P>, coeffs: &RoundCoeffs<F>) -> F {
-		// The emitted round polynomial is a regular sumcheck polynomial, so the round claim is its
-		// sum over the endpoints {0, 1}. A plain product claim carries no eq factor.
-		coeffs.sum_over_endpoints()
 	}
 
 	fn accumulate(&self, chunk: &EvaluationChunk<'_, P>, accum: &mut [<P as WideMul>::Output]) {

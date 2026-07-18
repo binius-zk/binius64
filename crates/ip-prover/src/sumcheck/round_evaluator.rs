@@ -2,38 +2,46 @@
 
 //! Round evaluators over a shared [`MleStore`] and the provers that drive them.
 //!
-//! A [`RoundEvaluator`] holds the per-round-polynomial logic for one composite claim over store
+//! A round evaluator holds the per-round-polynomial logic for one composite claim over store
 //! columns. Evaluators hold [`ColId`]s and receive column data by argument; they hold no mutable
 //! per-round state — they neither fold nor track the round claim. The driving prover owns the
 //! `RoundState` machine (the claim ↔ coeffs alternation) for each evaluator, and the store folds
 //! the columns (see the [`mle_store`](super::mle_store) module documentation).
 //!
-//! [`SharedSumcheckProver`] adapts a store plus a list of evaluators — one per claim — to the
-//! existing [`SumcheckProver`] interface, and [`SharedMleCheckProver`] to the [`MleCheckProver`]
-//! interface, so they batch alongside standalone provers unchanged.
+//! There are two evaluator traits, one per protocol:
+//! - [`SumcheckRoundEvaluator`], driven by [`SharedSumcheckProver`], emits regular sumcheck round
+//!   polynomials.
+//! - [`MleCheckRoundEvaluator`], driven by [`SharedMleCheckProver`], emits the eq-factored prime
+//!   round polynomials of the MLE-check protocol. Its claims all share one evaluation point, so the
+//!   prover — not the evaluator — owns that point's eq-indicator tracker and passes the round's eq
+//!   chunk and coordinate to the evaluator.
+//!
+//! Both provers adapt a store plus a list of evaluators — one per claim — to the [`SumcheckProver`]
+//! interface (and [`SharedMleCheckProver`] additionally to [`MleCheckProver`]), so they batch
+//! alongside standalone provers unchanged.
 
 use std::iter;
 
 use auto_impl::auto_impl;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::FieldBuffer;
+use binius_math::{FieldBuffer, FieldSlice};
 
 use super::{
 	MleToSumCheckEvaluator,
 	common::{MleCheckProver, SumcheckProver},
-	mle_store::{ColId, EvaluationChunk, MleStore},
+	mle_store::{ColId, EqId, EvaluationChunk, MleStore},
 	round_state::RoundState,
 };
 
-/// Per-round-polynomial logic for one composite claim over store columns.
+/// Per-round-polynomial logic for one plain sumcheck claim over store columns.
 ///
-/// The driving prover makes one parallel pass over column chunks per round; the hot loops stay
-/// monomorphized inside each evaluator and only the per-chunk [`Self::accumulate`] entry is
-/// virtual. Within a round the calls are: [`Self::accumulate`] from parallel workers into
+/// The driving [`SharedSumcheckProver`] makes one parallel pass over column chunks per round; the
+/// hot loops stay monomorphized inside each evaluator and only the per-chunk [`Self::accumulate`]
+/// entry is virtual. Within a round the calls are: [`Self::accumulate`] from parallel workers into
 /// per-worker accumulator slices, then [`Self::interpolate`] once on the slot-wise summed slice.
 /// The driving prover, not the evaluator, holds the round claim and reduces the round polynomial
-/// against the verifier challenge; see [`SharedSumcheckProver`].
+/// against the verifier challenge.
 ///
 /// The accumulator is a flat slice of [`Self::degree`] wide (unreduced)
 /// [`WideMul::Output`](WideMul::Output) slots. The driving prover owns the buffer, sizes it from
@@ -42,15 +50,15 @@ use super::{
 /// evaluator's run is private to that evaluator.
 ///
 /// Evaluators are stateless across rounds: they hold no round claim and never fold. The prover
-/// passes the round claim into [`Self::interpolate`] and recovers it back out of an emitted round
-/// polynomial via [`Self::claim_from_coeffs`], so the whole claim ↔ coeffs state machine lives in
-/// the prover's `RoundState`.
+/// passes the round claim into [`Self::interpolate`] and recovers it back out of the emitted round
+/// polynomial itself (as $R(0) + R(1)$), so the whole claim ↔ coeffs state machine lives in the
+/// prover's `RoundState`.
 ///
 /// The `auto_impl(Box)` derive forwards the trait through `Box`, so a heterogeneous group of
-/// evaluators can drive a shared prover as `Vec<Box<dyn RoundEvaluator<F, P>>>` while a homogeneous
-/// group avoids boxing.
+/// evaluators can drive a shared prover as `Vec<Box<dyn SumcheckRoundEvaluator<F, P>>>` while a
+/// homogeneous group avoids boxing.
 #[auto_impl(Box)]
-pub trait RoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + Sync {
+pub trait SumcheckRoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + Sync {
 	/// The number of accumulator slots this evaluator's claim uses.
 	///
 	/// This is the count of sampled round-polynomial evaluations the accumulation pass collects;
@@ -60,22 +68,12 @@ pub trait RoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + Sync {
 	/// the prime degree, not the emitted round-polynomial degree.
 	fn degree(&self) -> usize;
 
-	/// Recovers this round's claim from an emitted round polynomial.
-	///
-	/// The prover holds the round claim directly before [`Self::interpolate`] runs, but once it
-	/// has replaced that claim with the round coefficients it recovers the (unchanged) claim from
-	/// them for [`SumcheckProver::round_claim`]. A regular sumcheck evaluator recovers it as
-	/// $R(0) + R(1)$ ([`RoundCoeffs::sum_over_endpoints`]); an MLE-check evaluator emitting prime
-	/// polynomials recovers it as $(1 - \alpha) R(0) + \alpha R(1)$
-	/// ([`RoundCoeffs::lerp_over_endpoints`]) with $\alpha$ read from the shared `store`.
-	fn claim_from_coeffs(&self, store: &MleStore<'_, P>, coeffs: &RoundCoeffs<F>) -> F;
-
 	/// Accumulates one chunk of the halved hypercube into `accum`.
 	///
 	/// The driving prover prepares `chunk` — the split, per-chunk column halves and eq-indicator
 	/// expansions — so the evaluator only reads its columns by [`ColId`] and eq trackers by
-	/// [`EqId`](super::mle_store::EqId). `accum` is this evaluator's run of [`Self::degree`] wide
-	/// slots, zero-initialized on the first chunk and carried across the worker's chunks.
+	/// [`EqId`]. `accum` is this evaluator's run of [`Self::degree`] wide slots, zero-initialized
+	/// on the first chunk and carried across the worker's chunks.
 	fn accumulate(&self, chunk: &EvaluationChunk<'_, P>, accum: &mut [<P as WideMul>::Output]);
 
 	/// Interpolates this round's polynomial from the slot-wise summed accumulator slice and the
@@ -93,14 +91,74 @@ pub trait RoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + Sync {
 	) -> RoundCoeffs<F>;
 }
 
+/// Per-round-polynomial logic for one MLE-check claim over store columns.
+///
+/// This is the MLE-check counterpart of [`SumcheckRoundEvaluator`], emitting the prime
+/// (eq-factored) round polynomials of the MLE-check protocol. It differs in two ways, both because
+/// every claim of a [`SharedMleCheckProver`] shares one evaluation point whose eq-indicator tracker
+/// the prover — not the evaluator — owns:
+/// - [`Self::accumulate`] receives the round's eq-indicator chunk `eq_ind` as a separate argument,
+///   rather than the evaluator looking it up on the chunk by a stored tracker id.
+/// - [`Self::interpolate`] receives the round's eq coordinate `alpha`.
+///
+/// So the evaluator stores no eq tracker id and holds no copy of the point. Everything else matches
+/// [`SumcheckRoundEvaluator`]: stateless across rounds, degree-sized accumulator slots owned by the
+/// prover, one virtual [`Self::accumulate`] entry per chunk.
+#[auto_impl(Box)]
+pub trait MleCheckRoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + Sync {
+	/// The number of accumulator slots this evaluator's claim uses. See
+	/// [`SumcheckRoundEvaluator::degree`].
+	fn degree(&self) -> usize;
+
+	/// Accumulates one chunk of the halved hypercube into `accum`.
+	///
+	/// `eq_ind` is the round's eq-indicator chunk (the prover looks it up once and hands it to
+	/// every evaluator); the evaluator weights its composition by it. Otherwise as
+	/// [`SumcheckRoundEvaluator::accumulate`].
+	fn accumulate(
+		&self,
+		chunk: &EvaluationChunk<'_, P>,
+		eq_ind: FieldSlice<'_, P>,
+		accum: &mut [<P as WideMul>::Output],
+	);
+
+	/// Interpolates this round's prime polynomial from the accumulator, round claim, and round
+	/// coordinate `alpha`.
+	///
+	/// As [`SumcheckRoundEvaluator::interpolate`], but the round coordinate is passed in as `alpha`
+	/// rather than read from a stored eq tracker; `store` supplies only the remaining-variable
+	/// count.
+	fn interpolate(
+		&self,
+		store: &MleStore<'_, P>,
+		accum: &[<P as WideMul>::Output],
+		claim: F,
+		alpha: F,
+	) -> RoundCoeffs<F>;
+}
+
 /// Maximum log2 chunk size of the parallel round pass.
 ///
 /// Chunked accumulation keeps the equality-indicator chunk resident in L1 cache while all
 /// evaluators read it, mirroring the chunking of the pre-store quadratic prover.
 const MAX_CHUNK_VARS: usize = 12;
 
-/// A [`SumcheckProver`] over a shared [`MleStore`] and a list of [`RoundEvaluator`]s, one per
-/// claim.
+/// Prefix sums of a group of evaluators' accumulator-slot counts.
+///
+/// The returned Vec has one more entry than there are evaluators; `offsets[i]..offsets[i + 1]` is
+/// evaluator `i`'s run in the flat accumulator buffer, and the last entry is its total length. Both
+/// shared provers lay out their per-worker accumulator this way.
+fn accum_offsets(degrees: impl IntoIterator<Item = usize>) -> Vec<usize> {
+	iter::once(0)
+		.chain(degrees.into_iter().scan(0, |acc, degree| {
+			*acc += degree;
+			Some(*acc)
+		}))
+		.collect()
+}
+
+/// A [`SumcheckProver`] over a shared [`MleStore`] and a list of [`SumcheckRoundEvaluator`]s, one
+/// per claim.
 ///
 /// Each round makes one parallel pass over the store's column chunks, feeding every evaluator,
 /// and lists the round polynomials in evaluator registration order. [`Self::fold`] folds each
@@ -113,9 +171,9 @@ pub struct SharedSumcheckProver<'a, P: PackedField, Evaluator> {
 	///
 	/// Holds each evaluator's current round claim before its round polynomial is produced, and the
 	/// produced round coefficients afterwards. The prover — not the evaluator — advances this
-	/// state: [`SumcheckProver::execute`] hands the claim to [`RoundEvaluator::interpolate`] and
-	/// stores the resulting coefficients; [`SumcheckProver::fold`] reduces them against the
-	/// challenge back to a claim.
+	/// state: [`SumcheckProver::execute`] hands the claim to
+	/// [`SumcheckRoundEvaluator::interpolate`] and stores the resulting coefficients;
+	/// [`SumcheckProver::fold`] reduces them against the challenge back to a claim.
 	round_states: Vec<RoundState<RoundCoeffs<P::Scalar>, P::Scalar>>,
 	/// A fold challenge whose store fold has been deferred so the next [`SumcheckProver::execute`]
 	/// can fuse it into that round's read pass (see [`MleStore::map_reduce_with_fold`]). Only the
@@ -128,7 +186,7 @@ impl<'a, F, P, Evaluator> SharedSumcheckProver<'a, P, Evaluator>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	Evaluator: RoundEvaluator<F, P>,
+	Evaluator: SumcheckRoundEvaluator<F, P>,
 {
 	/// Creates a prover from a store and the evaluators reading its columns, each paired with its
 	/// initial claim — one `(claim, evaluator)` per claim.
@@ -173,26 +231,13 @@ where
 		self.evaluators.push(evaluator);
 		self.round_states.push(RoundState::Claim(claim));
 	}
-
-	/// Prefix sums of each evaluator's [`RoundEvaluator::degree`] slot count.
-	///
-	/// The returned Vec has one more entry than there are evaluators; `offsets[i]..offsets[i + 1]`
-	/// is evaluator `i`'s run in the flat accumulator buffer, and the last entry is its length.
-	fn accum_offsets(&self) -> Vec<usize> {
-		iter::once(0)
-			.chain(self.evaluators.iter().scan(0, |acc, evaluator| {
-				*acc += evaluator.degree();
-				Some(*acc)
-			}))
-			.collect()
-	}
 }
 
 impl<F, P, Evaluator> SumcheckProver<F> for SharedSumcheckProver<'_, P, Evaluator>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	Evaluator: RoundEvaluator<F, P>,
+	Evaluator: SumcheckRoundEvaluator<F, P>,
 {
 	fn n_vars(&self) -> usize {
 		// A buffered challenge is a fold that has not yet reached the store, so the logical
@@ -205,12 +250,13 @@ where
 	}
 
 	fn round_claim(&self) -> Vec<F> {
-		// The claim is held directly before this round's polynomial is produced, and recovered from
-		// that polynomial afterwards (each evaluator knows how to invert its own emission).
-		iter::zip(&self.evaluators, &self.round_states)
-			.map(|(evaluator, state)| match state {
+		// The claim is held directly before this round's polynomial is produced, and afterwards
+		// recovered from that (regular sumcheck) polynomial as its sum over the endpoints {0, 1}.
+		self.round_states
+			.iter()
+			.map(|state| match state {
 				RoundState::Claim(claim) => *claim,
-				RoundState::Coeffs(coeffs) => evaluator.claim_from_coeffs(&self.store, coeffs),
+				RoundState::Coeffs(coeffs) => coeffs.sum_over_endpoints(),
 			})
 			.collect()
 	}
@@ -229,7 +275,7 @@ where
 		// Each evaluator owns a contiguous run of `degree` wide slots in one flat per-worker
 		// buffer; `offsets` holds the run boundaries as a prefix sum, so `offsets[i]..offsets[i +
 		// 1]` is evaluator `i`'s slice.
-		let offsets = self.accum_offsets();
+		let offsets = accum_offsets(self.evaluators.iter().map(|evaluator| evaluator.degree()));
 		let total_slots = *offsets
 			.last()
 			.expect("offsets has one entry per evaluator, plus one");
@@ -304,13 +350,26 @@ where
 	}
 }
 
-/// A [`MleCheckProver`] over a shared [`MleStore`] and a group of [`RoundEvaluator`]s.
+/// A [`MleCheckProver`] over a shared [`MleStore`] and a group of [`MleCheckRoundEvaluator`]s.
 ///
-/// This is the MLE-check flavor of [`SharedSumcheckProver`]: every evaluator's claim shares the
-/// prover's evaluation point, and the round polynomials are the eq-factored prime polynomials of
-/// the MLE-check protocol.
+/// This is the MLE-check counterpart of [`SharedSumcheckProver`]: every evaluator's claim shares
+/// the prover's evaluation point, and the round polynomials are the eq-factored prime polynomials
+/// of the MLE-check protocol. Because the point is shared, the prover owns its eq-indicator tracker
+/// and hands the round's eq chunk and coordinate to the evaluators, which therefore store no
+/// tracker id.
 pub struct SharedMleCheckProver<'a, F: Field, P: PackedField<Scalar = F>, Evaluator> {
-	inner: SharedSumcheckProver<'a, P, Evaluator>,
+	store: MleStore<'a, P>,
+	evaluators: Vec<Evaluator>,
+	/// The claim ↔ round-coeffs state machine, one entry per evaluator; see the field of the same
+	/// name on [`SharedSumcheckProver`].
+	round_states: Vec<RoundState<RoundCoeffs<F>, F>>,
+	/// The shared evaluation point's eq-indicator tracker, folded by the store each round. The
+	/// prover reads the round's eq chunk and coordinate `alpha` from it and passes them to the
+	/// evaluators.
+	eq_tracker: EqId,
+	/// A fold challenge whose store fold is deferred; see the field of the same name on
+	/// [`SharedSumcheckProver`].
+	buffered_challenge: Option<F>,
 	eval_point: Vec<F>,
 }
 
@@ -318,13 +377,13 @@ impl<'a, F, P, Evaluator> SharedMleCheckProver<'a, F, P, Evaluator>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	Evaluator: RoundEvaluator<F, P>,
+	Evaluator: MleCheckRoundEvaluator<F, P>,
 {
 	/// Creates a prover from a store, the evaluators reading its columns each paired with its
 	/// initial claim — one `(claim, evaluator)` per claim — and the evaluation point shared by all
 	/// of the evaluators' claims.
 	pub fn new(
-		store: MleStore<'a, P>,
+		mut store: MleStore<'a, P>,
 		claims_with_evaluators: impl IntoIterator<Item = (F, Evaluator)>,
 		eval_point: Vec<F>,
 	) -> Self {
@@ -334,8 +393,19 @@ where
 			store.n_vars(),
 			"evaluation point length must equal the store's number of variables"
 		);
+		// Every claim shares the point, so register its eq-indicator tracker once; the prover owns
+		// it and supplies the round eq chunk and coordinate to each evaluator.
+		let eq_tracker = store.register_eq_tracker(&eval_point);
+		let (round_states, evaluators) = claims_with_evaluators
+			.into_iter()
+			.map(|(claim, evaluator)| (RoundState::Claim(claim), evaluator))
+			.unzip();
 		Self {
-			inner: SharedSumcheckProver::new(store, claims_with_evaluators),
+			store,
+			evaluators,
+			round_states,
+			eq_tracker,
+			buffered_challenge: None,
 			eval_point,
 		}
 	}
@@ -347,37 +417,35 @@ where
 	/// This lets the eq-weighted fractional claims batch in one evaluator group alongside plain
 	/// sumcheck claims over the same store: the logUp* final layer converts the popped table
 	/// layer's prover, then adds its product evaluators to it. The store and its columns carry over
-	/// untouched; only the evaluators are wrapped.
+	/// untouched; only the evaluators are wrapped, sharing this prover's eq tracker.
 	///
 	/// [Gruen24]: <https://eprint.iacr.org/2024/108>
-	pub fn into_shared_sumcheck(self) -> SharedSumcheckProver<'a, P, Box<dyn RoundEvaluator<F, P>>>
+	pub fn into_shared_sumcheck(
+		self,
+	) -> SharedSumcheckProver<'a, P, Box<dyn SumcheckRoundEvaluator<F, P>>>
 	where
 		Evaluator: 'static,
 	{
-		let Self { inner, eval_point } = self;
-		// Conversion happens before proving starts, so no fold challenge is buffered yet and every
-		// round state is still an unreduced initial claim.
-		let SharedSumcheckProver {
-			mut store,
+		let Self {
+			store,
 			evaluators,
 			round_states,
+			eq_tracker,
 			buffered_challenge: _,
-		} = inner;
-		// Every claim of an MLE-check prover shares the prover's evaluation point, so its eq
-		// tracker is already registered on the store (by the evaluators reading it). Recover that
-		// shared id — `register_eq_tracker` deduplicates — and hand it to each wrapper, which
-		// reads the round's alpha and equality prefix from the tracker the store folds.
-		let eq_tracker = store.register_eq_tracker(&eval_point);
+			eval_point: _,
+		} = self;
+		// Wrap each MLE-check evaluator so it emits sumcheck round polynomials, handing it the
+		// shared eq tracker the store folds. Conversion happens before proving starts, so no fold
+		// challenge is buffered yet, and — since no variable has been folded — the equality
+		// prefix is one and each wrapper's sumcheck claim equals the inner MLE-check claim it
+		// carries over unchanged.
 		let evaluators = evaluators
 			.into_iter()
 			.map(|evaluator| {
 				Box::new(MleToSumCheckEvaluator::new(evaluator, eq_tracker))
-					as Box<dyn RoundEvaluator<F, P>>
+					as Box<dyn SumcheckRoundEvaluator<F, P>>
 			})
 			.collect();
-		// The wrappers emit the same claims: at the point of conversion no variable has been
-		// folded, so the equality prefix is one and the sumcheck claim equals the inner MLE-check
-		// claim.
 		SharedSumcheckProver {
 			store,
 			evaluators,
@@ -391,30 +459,105 @@ impl<F, P, Evaluator> SumcheckProver<F> for SharedMleCheckProver<'_, F, P, Evalu
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	Evaluator: RoundEvaluator<F, P>,
+	Evaluator: MleCheckRoundEvaluator<F, P>,
 {
 	fn n_vars(&self) -> usize {
-		self.inner.n_vars()
+		// A buffered challenge is a fold that has not yet reached the store, so the logical
+		// remaining-variable count is one below the store's until the next execute applies it.
+		self.store.n_vars() - self.buffered_challenge.is_some() as usize
 	}
 
 	fn n_claims(&self) -> usize {
-		self.inner.n_claims()
+		self.evaluators.len()
 	}
 
 	fn round_claim(&self) -> Vec<F> {
-		self.inner.round_claim()
+		// The claim is held directly before this round's polynomial is produced, and afterwards
+		// recovered from that prime polynomial as the eq-lerp of its endpoints at the round
+		// coordinate.
+		let alpha = self.store.eq_alpha(self.eq_tracker);
+		self.round_states
+			.iter()
+			.map(|state| match state {
+				RoundState::Claim(claim) => *claim,
+				RoundState::Coeffs(coeffs) => coeffs.lerp_over_endpoints(alpha),
+			})
+			.collect()
 	}
 
 	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
-		self.inner.execute()
+		let n_vars_remaining = self.n_vars();
+		assert!(n_vars_remaining > 0);
+
+		// One parallel pass over the halved hypercube feeds every evaluator; see
+		// [`SharedSumcheckProver::execute`].
+		let chunk_vars = (n_vars_remaining - 1).min(MAX_CHUNK_VARS.max(P::LOG_WIDTH));
+		let offsets = accum_offsets(self.evaluators.iter().map(|evaluator| evaluator.degree()));
+		let total_slots = *offsets
+			.last()
+			.expect("offsets has one entry per evaluator, plus one");
+
+		let buffered_challenge = self.buffered_challenge.take();
+		let evaluators = &self.evaluators;
+		let eq_tracker = self.eq_tracker;
+		let store = &mut self.store;
+		let map = |chunk: EvaluationChunk<'_, P>| {
+			// The eq-indicator chunk is shared by every evaluator: look it up once, then hand each
+			// a borrowing view.
+			let eq_ind = chunk.eq(eq_tracker);
+			let mut accum = vec![Default::default(); total_slots];
+			for (evaluator, window) in iter::zip(evaluators, offsets.windows(2)) {
+				evaluator.accumulate(&chunk, eq_ind.to_ref(), &mut accum[window[0]..window[1]]);
+			}
+			accum
+		};
+		let reduce = |mut lhs: Vec<<P as WideMul>::Output>, rhs: Vec<<P as WideMul>::Output>| {
+			for (dst, src) in iter::zip(&mut lhs, rhs) {
+				*dst += src;
+			}
+			lhs
+		};
+		let accum = match buffered_challenge {
+			Some(challenge) => store.map_reduce_with_fold(chunk_vars, challenge, map, reduce),
+			None => store.map_reduce(chunk_vars, map, reduce),
+		};
+
+		// Each evaluator interpolates its prime round polynomial from its claim and the round
+		// coordinate; the prover then records the coefficients for the coming fold.
+		let store = &self.store;
+		let alpha = store.eq_alpha(self.eq_tracker);
+		let round_coeffs: Vec<RoundCoeffs<F>> =
+			iter::zip(iter::zip(&self.evaluators, &self.round_states), offsets.windows(2))
+				.map(|((evaluator, state), window)| {
+					let claim = *state.claim();
+					evaluator.interpolate(store, &accum[window[0]..window[1]], claim, alpha)
+				})
+				.collect();
+		for (state, coeffs) in iter::zip(&mut self.round_states, &round_coeffs) {
+			*state = RoundState::Coeffs(coeffs.clone());
+		}
+		round_coeffs
 	}
 
 	fn fold(&mut self, challenge: F) {
-		self.inner.fold(challenge)
+		// Reduce each evaluator's prime round polynomial against the challenge to form its next
+		// claim; the store's column and eq fold is deferred to the next execute.
+		for state in &mut self.round_states {
+			let claim = state.coeffs().evaluate(challenge);
+			*state = RoundState::Claim(claim);
+		}
+		debug_assert!(
+			self.buffered_challenge.is_none(),
+			"fold called twice without an intervening execute"
+		);
+		self.buffered_challenge = Some(challenge);
 	}
 
-	fn finish(self) -> Vec<F> {
-		self.inner.finish()
+	fn finish(mut self) -> Vec<F> {
+		if let Some(challenge) = self.buffered_challenge.take() {
+			self.store.fold(challenge);
+		}
+		self.store.final_evals()
 	}
 }
 
@@ -422,10 +565,10 @@ impl<F, P, Evaluator> MleCheckProver<F> for SharedMleCheckProver<'_, F, P, Evalu
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	Evaluator: RoundEvaluator<F, P>,
+	Evaluator: MleCheckRoundEvaluator<F, P>,
 {
 	fn eval_point(&self) -> &[F] {
-		&self.eval_point[..self.inner.n_vars()]
+		&self.eval_point[..self.n_vars()]
 	}
 }
 
@@ -512,11 +655,11 @@ mod tests {
 		cols: &'a [FieldBuffer<P>; 4],
 		eval_point: &[F],
 		claims: [F; 2],
-	) -> SharedMleCheckProver<'a, F, P, Box<dyn RoundEvaluator<F, P>>> {
+	) -> SharedMleCheckProver<'a, F, P, Box<dyn MleCheckRoundEvaluator<F, P>>> {
 		let mut store = MleStore::new(eval_point.len());
 		let col_ids = cols.each_ref().map(|col| store.push(col.to_ref()));
-		let (num_ev, den_ev) = frac_add_mle::evaluators(&mut store, col_ids, eval_point.to_vec());
-		let claims_with_evaluators: [(F, Box<dyn RoundEvaluator<F, P>>); 2] =
+		let (num_ev, den_ev) = frac_add_mle::evaluators(col_ids);
+		let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P>>); 2] =
 			[(claims[0], Box::new(num_ev)), (claims[1], Box::new(den_ev))];
 		SharedMleCheckProver::new(store, claims_with_evaluators, eval_point.to_vec())
 	}
@@ -609,12 +752,10 @@ mod tests {
 				[&y_0, &y_1, &d_0, &d_1, &t_0, &t_1].map(|col| store.push(col.to_ref()));
 
 			// The eq-weighted fractional evaluators, wrapped so they emit sumcheck round
-			// polynomials.
-			let (num_evaluator, den_evaluator) = frac_add_mle::evaluators(
-				&mut store,
-				[y_0_col, y_1_col, d_0_col, d_1_col],
-				z.to_vec(),
-			);
+			// polynomials. The wrappers, driven by a plain sumcheck prover, hold the shared eq
+			// tracker themselves.
+			let (num_evaluator, den_evaluator) =
+				frac_add_mle::evaluators([y_0_col, y_1_col, d_0_col, d_1_col]);
 			let eq_tracker = store.register_eq_tracker(&z);
 			let num_evaluator = MleToSumCheckEvaluator::new(num_evaluator, eq_tracker);
 			let den_evaluator = MleToSumCheckEvaluator::new(den_evaluator, eq_tracker);
@@ -625,7 +766,7 @@ mod tests {
 
 			// Claims paired with evaluators in order: the two fractional claims, then the two
 			// product sums.
-			let claims_with_evaluators: [(F, Box<dyn RoundEvaluator<F, P>>); 4] = [
+			let claims_with_evaluators: [(F, Box<dyn SumcheckRoundEvaluator<F, P>>); 4] = [
 				(frac_claims[0], Box::new(num_evaluator)),
 				(frac_claims[1], Box::new(den_evaluator)),
 				(e_0, Box::new(product_0)),
