@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{array, borrow::Cow, iter};
+use std::{array, borrow::Cow, hint::assert_unchecked, iter};
 
 use binius_core::word::Word;
 use binius_field::{
@@ -79,12 +79,30 @@ where
 	let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
 
 	let mut values = Vec::<P>::with_capacity(capacity);
-	words
+
+	let chunk_size = P::WIDTH;
+	let full_chunks_boundary = words.len() / chunk_size * chunk_size;
+	let (words_aligned, words_remaining) = words.split_at(full_chunks_boundary);
+
+	words_aligned
 		.par_chunks(P::WIDTH)
 		.map(|word_chunk| {
+			// Safety:
+			// - words_aligned has length that is a multiple of P::WIDTH
+			// - words_aligned is split into P::WIDTH chunks
+			unsafe { assert_unchecked(word_chunk.len() == P::WIDTH) };
 			P::from_scalars(word_chunk.iter().map(|&word| transform.transform(&word.0)))
 		})
 		.collect_into_vec(&mut values);
+
+	if !words_remaining.is_empty() {
+		values.push(P::from_scalars(
+			words_remaining
+				.iter()
+				.map(|&word| transform.transform(&word.0)),
+		));
+	}
+
 	values.resize(capacity, P::default());
 
 	FieldBuffer::new(log_n, values.into_boxed_slice())

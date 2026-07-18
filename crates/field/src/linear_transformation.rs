@@ -119,6 +119,7 @@ where
 	UIn: UnderlierType + Divisible<u8>,
 	UOut: UnderlierType,
 {
+	#[inline]
 	fn transform(&self, data: &UIn) -> UOut {
 		Divisible::<u8>::ref_iter(data)
 			.enumerate()
