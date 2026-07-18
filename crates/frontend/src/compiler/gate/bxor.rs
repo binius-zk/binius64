@@ -13,7 +13,7 @@
 //! - `x ⊕ y = z`
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, xor2},
+	constraint_builder::{ConstraintBuilder, expr},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
@@ -39,7 +39,7 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	// Constraint: Bitwise XOR (linear)
 	//
 	// (x ⊕ y) = z
-	builder.linear().rhs(xor2(*x, *y)).dst(*z).build();
+	builder.linear().rhs(expr::xor2(*x, *y)).dst(*z).build();
 }
 
 pub fn emit_eval_bytecode(

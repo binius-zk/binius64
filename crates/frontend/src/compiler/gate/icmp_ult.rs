@@ -23,7 +23,7 @@
 use binius_core::word::Word;
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, sll, xor2, xor3},
+	constraint_builder::{ConstraintBuilder, expr},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
@@ -56,9 +56,9 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	// ((x ⊕ all-1) ⊕ (bout << 1)) ∧ (y ⊕ (bout << 1)) = bout ⊕ (bout << 1)
 	builder
 		.and()
-		.a(xor3(*x, *all_one, sll(*bout, 1)))
-		.b(xor2(*y, sll(*bout, 1)))
-		.c(xor2(*bout, sll(*bout, 1)))
+		.a(expr::xor3(*x, *all_one, expr::sll(*bout, 1)))
+		.b(expr::xor2(*y, expr::sll(*bout, 1)))
+		.c(expr::xor2(*bout, expr::sll(*bout, 1)))
 		.build();
 }
 

@@ -21,7 +21,7 @@
 //! `<<₃₂` denotes a shift that operates independently on each 32-bit half.
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, sll32, xor2, xor3},
+	constraint_builder::{ConstraintBuilder, expr},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
@@ -44,16 +44,16 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	let [x, y] = inputs else { unreachable!() };
 	let [z, cout] = outputs else { unreachable!() };
 
-	let cout_shifted = sll32(*cout, 1);
+	let cout_shifted = expr::sll32(*cout, 1);
 
 	// Constraint 1: Carry propagation
 	//
 	// (x ⊕ (cout <<₃₂ 1)) ∧ (y ⊕ (cout <<₃₂ 1)) = cout ⊕ (cout <<₃₂ 1)
 	builder
 		.and()
-		.a(xor2(*x, cout_shifted))
-		.b(xor2(*y, cout_shifted))
-		.c(xor2(*cout, cout_shifted))
+		.a(expr::xor2(*x, cout_shifted))
+		.b(expr::xor2(*y, cout_shifted))
+		.c(expr::xor2(*cout, cout_shifted))
 		.build();
 
 	// Constraint 2: Result
@@ -62,7 +62,7 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	builder
 		.linear()
 		.dst(*z)
-		.rhs(xor3(*x, *y, cout_shifted))
+		.rhs(expr::xor3(*x, *y, cout_shifted))
 		.build();
 }
 

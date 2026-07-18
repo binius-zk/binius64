@@ -219,11 +219,13 @@ fn build_committed_lin_def_patch(
 			b: vec![ShiftedWire {
 				wire: all_one,
 				shift: Shift::None,
-			}],
+			}]
+			.into(),
 			c: vec![ShiftedWire {
 				wire: root,
 				shift: Shift::None,
-			}],
+			}]
+			.into(),
 		}),
 	}
 }
@@ -285,11 +287,7 @@ mod tests {
 	use std::collections::BTreeMap;
 
 	use super::*;
-	use crate::compiler::{
-		Wire,
-		constraint_builder::{rotr, rotr32, sll, sll32, sra32, srl, srl32, xor2, xor3},
-		gate_fusion::Stat,
-	};
+	use crate::compiler::{Wire, constraint_builder::expr, gate_fusion::Stat};
 
 	/// Test helper to create a Wire with a given ID
 	fn w(id: u32) -> Wire {
@@ -354,9 +352,9 @@ mod tests {
 		// Expect t expands to: a ^ b (no shifts)
 		test_inlining(
 			|cb| {
-				cb.linear().rhs(xor2(w(0), w(1))).dst(w(2)).build(); // y
-				cb.linear().rhs(rotr(w(2), 20)).dst(w(3)).build(); // z
-				cb.linear().rhs(rotr(w(3), 44)).dst(w(4)).build(); // t
+				cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build(); // y
+				cb.linear().rhs(expr::rotr(w(2), 20)).dst(w(3)).build(); // z
+				cb.linear().rhs(expr::rotr(w(3), 44)).dst(w(4)).build(); // t
 				cb.and().a(w(4)).b(w(5)).c(w(6)).build();
 			},
 			&[],
@@ -386,11 +384,15 @@ mod tests {
 		let mut cb = ConstraintBuilder::new();
 		// x = const (opaque wire in this builder-level test)
 		// y = x  (linear def of a single opaque term)
-		cb.linear().rhs(xor2(w(0), w(0))).dst(w(1)).build();
+		cb.linear().rhs(expr::xor2(w(0), w(0))).dst(w(1)).build();
 		// Above uses xor2(w0,w0) which cancels logically, but at builder-level it's two terms.
 		// Use a simpler single-term variant as well
 		let mut cb_single = ConstraintBuilder::new();
-		cb_single.linear().rhs(xor2(w(0), w(2))).dst(w(3)).build();
+		cb_single
+			.linear()
+			.rhs(expr::xor2(w(0), w(2)))
+			.dst(w(3))
+			.build();
 
 		let mut stat = Stat::default();
 		let leg = LeGraph::new(&cb_single, &mut stat);
@@ -417,10 +419,10 @@ mod tests {
 		}
 
 		let mut cb = ConstraintBuilder::new();
-		cb.linear().rhs(xor2(w(0), w(1))).dst(w(10)).build(); // a_src
-		cb.linear().rhs(xor2(w(2), w(3))).dst(w(11)).build(); // b_src
-		cb.linear().rhs(xor2(w(4), w(5))).dst(w(12)).build(); // hi_src
-		cb.linear().rhs(xor2(w(6), w(7))).dst(w(13)).build(); // lo_src
+		cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(10)).build(); // a_src
+		cb.linear().rhs(expr::xor2(w(2), w(3))).dst(w(11)).build(); // b_src
+		cb.linear().rhs(expr::xor2(w(4), w(5))).dst(w(12)).build(); // hi_src
+		cb.linear().rhs(expr::xor2(w(6), w(7))).dst(w(13)).build(); // lo_src
 
 		cb.imul().a(w(10)).b(w(11)).hi(w(12)).lo(w(13)).build();
 
@@ -450,12 +452,12 @@ mod tests {
 		}
 
 		let mut cb = ConstraintBuilder::new();
-		cb.linear().rhs(xor2(w(0), w(1))).dst(w(20)).build(); // a_lo_src
-		cb.linear().rhs(xor2(w(2), w(3))).dst(w(21)).build(); // a_hi_src
-		cb.linear().rhs(xor2(w(4), w(5))).dst(w(22)).build(); // b_lo_src
-		cb.linear().rhs(xor2(w(6), w(7))).dst(w(23)).build(); // b_hi_src
-		cb.linear().rhs(xor2(w(8), w(9))).dst(w(24)).build(); // c_lo_src
-		cb.linear().rhs(xor2(w(10), w(11))).dst(w(25)).build(); // c_hi_src
+		cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(20)).build(); // a_lo_src
+		cb.linear().rhs(expr::xor2(w(2), w(3))).dst(w(21)).build(); // a_hi_src
+		cb.linear().rhs(expr::xor2(w(4), w(5))).dst(w(22)).build(); // b_lo_src
+		cb.linear().rhs(expr::xor2(w(6), w(7))).dst(w(23)).build(); // b_hi_src
+		cb.linear().rhs(expr::xor2(w(8), w(9))).dst(w(24)).build(); // c_lo_src
+		cb.linear().rhs(expr::xor2(w(10), w(11))).dst(w(25)).build(); // c_hi_src
 
 		cb.bmul()
 			.a_lo(w(20))
@@ -513,35 +515,35 @@ mod tests {
 				let mut cb = ConstraintBuilder::new();
 				// y = shift1(x)
 				match s1 {
-					Shift::None => cb.linear().rhs(xor2(w(0), w(1))).dst(w(2)).build(),
-					Shift::Sll(n) => cb.linear().rhs(sll(w(0), *n)).dst(w(2)).build(),
-					Shift::Sll32(n) => cb.linear().rhs(sll32(w(0), *n)).dst(w(2)).build(),
-					Shift::Srl(n) => cb.linear().rhs(srl(w(0), *n)).dst(w(2)).build(),
-					Shift::Srl32(n) => cb.linear().rhs(srl32(w(0), *n)).dst(w(2)).build(),
+					Shift::None => cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build(),
+					Shift::Sll(n) => cb.linear().rhs(expr::sll(w(0), *n)).dst(w(2)).build(),
+					Shift::Sll32(n) => cb.linear().rhs(expr::sll32(w(0), *n)).dst(w(2)).build(),
+					Shift::Srl(n) => cb.linear().rhs(expr::srl(w(0), *n)).dst(w(2)).build(),
+					Shift::Srl32(n) => cb.linear().rhs(expr::srl32(w(0), *n)).dst(w(2)).build(),
 					Shift::Sar(n) => cb
 						.linear()
-						.rhs(crate::compiler::constraint_builder::sar(w(0), *n))
+						.rhs(crate::compiler::constraint_builder::expr::sar(w(0), *n))
 						.dst(w(2))
 						.build(),
-					Shift::Sra32(n) => cb.linear().rhs(sra32(w(0), *n)).dst(w(2)).build(),
-					Shift::Rotr(n) => cb.linear().rhs(rotr(w(0), *n)).dst(w(2)).build(),
-					Shift::Rotr32(n) => cb.linear().rhs(rotr32(w(0), *n)).dst(w(2)).build(),
+					Shift::Sra32(n) => cb.linear().rhs(expr::sra32(w(0), *n)).dst(w(2)).build(),
+					Shift::Rotr(n) => cb.linear().rhs(expr::rotr(w(0), *n)).dst(w(2)).build(),
+					Shift::Rotr32(n) => cb.linear().rhs(expr::rotr32(w(0), *n)).dst(w(2)).build(),
 				}
 				// z = shift2(y)
 				match s2 {
-					Shift::None => cb.linear().rhs(xor2(w(2), w(3))).dst(w(4)).build(),
-					Shift::Sll(n) => cb.linear().rhs(sll(w(2), *n)).dst(w(4)).build(),
-					Shift::Sll32(n) => cb.linear().rhs(sll32(w(2), *n)).dst(w(4)).build(),
-					Shift::Srl(n) => cb.linear().rhs(srl(w(2), *n)).dst(w(4)).build(),
-					Shift::Srl32(n) => cb.linear().rhs(srl32(w(2), *n)).dst(w(4)).build(),
+					Shift::None => cb.linear().rhs(expr::xor2(w(2), w(3))).dst(w(4)).build(),
+					Shift::Sll(n) => cb.linear().rhs(expr::sll(w(2), *n)).dst(w(4)).build(),
+					Shift::Sll32(n) => cb.linear().rhs(expr::sll32(w(2), *n)).dst(w(4)).build(),
+					Shift::Srl(n) => cb.linear().rhs(expr::srl(w(2), *n)).dst(w(4)).build(),
+					Shift::Srl32(n) => cb.linear().rhs(expr::srl32(w(2), *n)).dst(w(4)).build(),
 					Shift::Sar(n) => cb
 						.linear()
-						.rhs(crate::compiler::constraint_builder::sar(w(2), *n))
+						.rhs(crate::compiler::constraint_builder::expr::sar(w(2), *n))
 						.dst(w(4))
 						.build(),
-					Shift::Sra32(n) => cb.linear().rhs(sra32(w(2), *n)).dst(w(4)).build(),
-					Shift::Rotr(n) => cb.linear().rhs(rotr(w(2), *n)).dst(w(4)).build(),
-					Shift::Rotr32(n) => cb.linear().rhs(rotr32(w(2), *n)).dst(w(4)).build(),
+					Shift::Sra32(n) => cb.linear().rhs(expr::sra32(w(2), *n)).dst(w(4)).build(),
+					Shift::Rotr(n) => cb.linear().rhs(expr::rotr(w(2), *n)).dst(w(4)).build(),
+					Shift::Rotr32(n) => cb.linear().rhs(expr::rotr32(w(2), *n)).dst(w(4)).build(),
 				}
 				cb.and().a(w(4)).b(w(5)).c(w(6)).build();
 
@@ -562,9 +564,7 @@ mod tests {
 
 	/// Helper to expand an expression fully (for testing)
 	fn expand_expression(leg: &LeGraph, wire: Wire) -> Vec<ShiftedWire> {
-		use crate::compiler::constraint_builder::WireOperand;
-
-		let mut result = WireOperand::new();
+		let mut result = Vec::new();
 
 		if !leg.is_lin_def(wire) {
 			// Not a linear def - return as is
@@ -630,9 +630,9 @@ mod tests {
 		test_inlining(
 			|cb| {
 				// y = x ^ a
-				cb.linear().rhs(xor2(w(0), w(1))).dst(w(2)).build();
+				cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
 				// z = y ^ b
-				cb.linear().rhs(xor2(w(2), w(3))).dst(w(4)).build();
+				cb.linear().rhs(expr::xor2(w(2), w(3))).dst(w(4)).build();
 				// Use z in AND constraint (creates the root)
 				cb.and().a(w(4)).b(w(5)).c(w(6)).build();
 			},
@@ -681,9 +681,9 @@ mod tests {
 		test_inlining(
 			|cb| {
 				// y = x << 10
-				cb.linear().rhs(sll(w(0), 10)).dst(w(1)).build();
+				cb.linear().rhs(expr::sll(w(0), 10)).dst(w(1)).build();
 				// z = y << 20
-				cb.linear().rhs(sll(w(1), 20)).dst(w(2)).build();
+				cb.linear().rhs(expr::sll(w(1), 20)).dst(w(2)).build();
 				// Use z in an AND constraint so it becomes a root
 				cb.and().a(w(2)).b(w(3)).c(w(4)).build();
 			},
@@ -716,9 +716,9 @@ mod tests {
 		test_inlining(
 			|cb| {
 				// y = a ^ b
-				cb.linear().rhs(xor2(w(0), w(1))).dst(w(2)).build();
+				cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
 				// z = rotr(y, 5)
-				cb.linear().rhs(rotr(w(2), 5)).dst(w(3)).build();
+				cb.linear().rhs(expr::rotr(w(2), 5)).dst(w(3)).build();
 				// Use z in an AND constraint
 				cb.and().a(w(3)).b(w(4)).c(w(5)).build();
 			},
@@ -749,9 +749,9 @@ mod tests {
 		test_inlining(
 			|cb| {
 				// y = x << 10
-				cb.linear().rhs(sll(w(0), 10)).dst(w(1)).build();
+				cb.linear().rhs(expr::sll(w(0), 10)).dst(w(1)).build();
 				// z = y >> 20
-				cb.linear().rhs(srl(w(1), 20)).dst(w(2)).build();
+				cb.linear().rhs(expr::srl(w(1), 20)).dst(w(2)).build();
 				// Use z in an AND constraint
 				cb.and().a(w(2)).b(w(3)).c(w(4)).build();
 			},
@@ -776,9 +776,15 @@ mod tests {
 		test_inlining(
 			|cb| {
 				// y = a ^ b ^ c
-				cb.linear().rhs(xor3(w(0), w(1), w(2))).dst(w(3)).build();
+				cb.linear()
+					.rhs(expr::xor3(w(0), w(1), w(2)))
+					.dst(w(3))
+					.build();
 				// z = y ^ d ^ e
-				cb.linear().rhs(xor3(w(3), w(4), w(5))).dst(w(6)).build();
+				cb.linear()
+					.rhs(expr::xor3(w(3), w(4), w(5)))
+					.dst(w(6))
+					.build();
 				// Use z in AND constraint
 				cb.and().a(w(6)).b(w(7)).c(w(8)).build();
 			},
@@ -831,8 +837,8 @@ mod tests {
 		cb.imul().a(w(13)).b(w(14)).lo(w(15)).hi(w(16)).build(); // index 1
 
 		// Add some LINEAR constraints
-		cb.linear().rhs(xor2(w(17), w(18))).dst(w(19)).build(); // index 0
-		cb.linear().rhs(xor2(w(20), w(21))).dst(w(22)).build(); // index 1
+		cb.linear().rhs(expr::xor2(w(17), w(18))).dst(w(19)).build(); // index 0
+		cb.linear().rhs(expr::xor2(w(20), w(21))).dst(w(22)).build(); // index 1
 
 		// Create patches that:
 		// 1. Replace AND constraint at index 1 with a new one
@@ -845,15 +851,18 @@ mod tests {
 					a: vec![ShiftedWire {
 						wire: w(30),
 						shift: Shift::None,
-					}],
+					}]
+					.into(),
 					b: vec![ShiftedWire {
 						wire: w(31),
 						shift: Shift::None,
-					}],
+					}]
+					.into(),
 					c: vec![ShiftedWire {
 						wire: w(32),
 						shift: Shift::None,
-					}],
+					}]
+					.into(),
 				}),
 			},
 			Patch {
@@ -862,15 +871,18 @@ mod tests {
 					a: vec![ShiftedWire {
 						wire: w(33),
 						shift: Shift::None,
-					}],
+					}]
+					.into(),
 					b: vec![ShiftedWire {
 						wire: w(34),
 						shift: Shift::None,
-					}],
+					}]
+					.into(),
 					c: vec![ShiftedWire {
 						wire: w(35),
 						shift: Shift::None,
-					}],
+					}]
+					.into(),
 				}),
 			},
 			Patch {
@@ -879,19 +891,23 @@ mod tests {
 					a: vec![ShiftedWire {
 						wire: w(36),
 						shift: Shift::None,
-					}],
+					}]
+					.into(),
 					b: vec![ShiftedWire {
 						wire: w(37),
 						shift: Shift::None,
-					}],
+					}]
+					.into(),
 					lo: vec![ShiftedWire {
 						wire: w(38),
 						shift: Shift::None,
-					}],
+					}]
+					.into(),
 					hi: vec![ShiftedWire {
 						wire: w(39),
 						shift: Shift::None,
-					}],
+					}]
+					.into(),
 				}),
 			},
 		];
@@ -940,11 +956,11 @@ mod tests {
 			Wire::from_u32(id)
 		}
 		// t = a ^ b
-		cb.linear().rhs(xor2(w(0), w(1))).dst(w(2)).build();
+		cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
 		// y = srl(t, 10)
-		cb.linear().rhs(srl(w(2), 10)).dst(w(3)).build();
+		cb.linear().rhs(expr::srl(w(2), 10)).dst(w(3)).build();
 		// z = sll(y, 5)
-		cb.linear().rhs(sll(w(3), 5)).dst(w(4)).build();
+		cb.linear().rhs(expr::sll(w(3), 5)).dst(w(4)).build();
 
 		// AND1: use z
 		cb.and().a(w(4)).b(w(5)).c(w(6)).build();
@@ -983,10 +999,10 @@ mod tests {
 
 		let mut cb = ConstraintBuilder::new();
 		// y = x ^ c
-		cb.linear().rhs(xor2(w(0), w(1))).dst(w(2)).build();
+		cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
 		// IMUL: a = y ^ y ^ z; b = u; hi, lo are outputs
 		cb.imul()
-			.a(crate::compiler::constraint_builder::xor3(w(2), w(2), w(3)))
+			.a(crate::compiler::constraint_builder::expr::xor3(w(2), w(2), w(3)))
 			.b(w(4))
 			.hi(w(5))
 			.lo(w(6))
@@ -1043,9 +1059,9 @@ mod tests {
 		}
 
 		let mut cb = ConstraintBuilder::new();
-		cb.linear().rhs(sll(w(0), 40)).dst(w(1)).build(); // t_committed
-		cb.linear().rhs(sll(w(1), 30)).dst(w(2)).build(); // y
-		cb.linear().rhs(xor2(w(3), w(4))).dst(w(5)).build(); // u
+		cb.linear().rhs(expr::sll(w(0), 40)).dst(w(1)).build(); // t_committed
+		cb.linear().rhs(expr::sll(w(1), 30)).dst(w(2)).build(); // y
+		cb.linear().rhs(expr::xor2(w(3), w(4))).dst(w(5)).build(); // u
 		cb.imul().a(w(2)).b(w(5)).hi(w(6)).lo(w(7)).build();
 
 		let mut stat = Stat::default();
@@ -1092,10 +1108,10 @@ mod tests {
 
 		let mut cb = ConstraintBuilder::new();
 		// committed producer
-		cb.linear().rhs(sll(w(0), 48)).dst(w(1)).build(); // t
-		cb.linear().rhs(sll(w(1), 20)).dst(w(2)).build(); // hi_src (should commit t)
+		cb.linear().rhs(expr::sll(w(0), 48)).dst(w(1)).build(); // t
+		cb.linear().rhs(expr::sll(w(1), 20)).dst(w(2)).build(); // hi_src (should commit t)
 		// inlinable lo_src = x ^ c
-		cb.linear().rhs(xor2(w(3), w(4))).dst(w(5)).build();
+		cb.linear().rhs(expr::xor2(w(3), w(4))).dst(w(5)).build();
 		// build IMUL: a,b plain; hi=hi_src; lo=lo_src
 		cb.imul().a(w(6)).b(w(7)).hi(w(2)).lo(w(5)).build();
 

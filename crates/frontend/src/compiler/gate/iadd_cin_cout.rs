@@ -28,7 +28,7 @@
 //! 2. **Sum constraint**: Ensures the sum equals `a ^ b ^ (cout << 1) ^ cin_msb`
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, sll, srl, xor3, xor4},
+	constraint_builder::{ConstraintBuilder, expr},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
@@ -51,17 +51,17 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	let [a, b, cin] = inputs else { unreachable!() };
 	let [sum, cout] = outputs else { unreachable!() };
 
-	let cout_sll_1 = sll(*cout, 1);
-	let cin_msb = srl(*cin, 63);
+	let cout_sll_1 = expr::sll(*cout, 1);
+	let cin_msb = expr::srl(*cin, 63);
 
 	// Constraint 1: Carry propagation
 	//
 	// (a ⊕ (cout << 1) ⊕ cin_msb) ∧ (b ⊕ (cout << 1) ⊕ cin_msb) = cout ⊕ (cout << 1) ⊕ cin_msb
 	builder
 		.and()
-		.a(xor3(*a, cout_sll_1, cin_msb))
-		.b(xor3(*b, cout_sll_1, cin_msb))
-		.c(xor3(*cout, cout_sll_1, cin_msb))
+		.a(expr::xor3(*a, cout_sll_1, cin_msb))
+		.b(expr::xor3(*b, cout_sll_1, cin_msb))
+		.c(expr::xor3(*cout, cout_sll_1, cin_msb))
 		.build();
 
 	// Constraint 2: Sum equality (linear)
@@ -69,7 +69,7 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	// (a ⊕ b ⊕ (cout << 1) ⊕ cin_msb) = sum
 	builder
 		.linear()
-		.rhs(xor4(*a, *b, cout_sll_1, cin_msb))
+		.rhs(expr::xor4(*a, *b, cout_sll_1, cin_msb))
 		.dst(*sum)
 		.build();
 }

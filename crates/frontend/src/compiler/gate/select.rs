@@ -18,7 +18,7 @@
 //! - `(cond >> 63) ∧ (t ⊕ f) = out ⊕ f`
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, sar, xor2},
+	constraint_builder::{ConstraintBuilder, expr},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
@@ -46,9 +46,9 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	// (cond >> 63) ∧ (t ⊕ f) = out ⊕ f
 	builder
 		.and()
-		.a(sar(*cond, 63))
-		.b(xor2(*t, *f))
-		.c(xor2(*out, *f))
+		.a(expr::sar(*cond, 63))
+		.b(expr::xor2(*t, *f))
+		.c(expr::xor2(*out, *f))
 		.build();
 }
 

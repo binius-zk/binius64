@@ -8,7 +8,7 @@ use binius_ip_prover::sumcheck::{
 	common::MleCheckProver,
 	mle_store::MleStore,
 	quadratic_mle_evaluator::QuadraticMleEvaluator,
-	round_evaluator::{RoundEvaluator, SharedMleCheckProver},
+	round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
 };
 use binius_math::{
 	FieldBuffer,
@@ -113,26 +113,18 @@ fn bench_batch_quadratic_mlecheck_prove(c: &mut Criterion) {
 				|(multilinears, eval_point)| {
 					let mut store = MleStore::new(eval_point.len());
 					let cols = multilinears.map(|multilinear| store.push_owned(multilinear));
-					// One single-claim evaluator per composition, sharing the store's columns and
-					// one eq tracker registered for the shared point.
-					let eq_tracker = store.register_eq_tracker(&eval_point);
-					let evaluator_0 = QuadraticMleEvaluator::new(
-						cols,
-						eq_tracker,
-						comp_0::<P>,
-						comp_0_inf::<P>,
-						eval_claims[0],
-					);
-					let evaluator_1 = QuadraticMleEvaluator::new(
-						cols,
-						eq_tracker,
-						comp_1::<P>,
-						comp_1_inf::<P>,
-						eval_claims[1],
-					);
-					let evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> =
-						vec![Box::new(evaluator_0), Box::new(evaluator_1)];
-					let prover = SharedMleCheckProver::new(store, evaluators, eval_point);
+					// One single-claim evaluator per composition, sharing the store's columns; the
+					// prover owns the eq tracker for the shared point.
+					let evaluator_0 =
+						QuadraticMleEvaluator::new(cols, comp_0::<P>, comp_0_inf::<P>);
+					let evaluator_1 =
+						QuadraticMleEvaluator::new(cols, comp_1::<P>, comp_1_inf::<P>);
+					let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P>>); 2] = [
+						(eval_claims[0], Box::new(evaluator_0)),
+						(eval_claims[1], Box::new(evaluator_1)),
+					];
+					let prover =
+						SharedMleCheckProver::new(store, claims_with_evaluators, eval_point);
 
 					prove_batch_mlecheck(prover, &mut transcript)
 				},

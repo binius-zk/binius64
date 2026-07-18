@@ -29,7 +29,7 @@
 use binius_core::word::Word;
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, sar, sll, xor2},
+	constraint_builder::{ConstraintBuilder, expr},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 	pathspec::PathSpec,
@@ -58,15 +58,15 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	let [x] = inputs else { unreachable!() };
 	let [cout] = aux else { unreachable!() };
 
-	let cin = sll(*cout, 1);
+	let cin = expr::sll(*cout, 1);
 
 	// Constraint 1: Constrain carry-out
 	// (x ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout
 	builder
 		.and()
-		.a(xor2(*x, cin))
-		.b(xor2(*all_one, cin))
-		.c(xor2(cin, *cout))
+		.a(expr::xor2(*x, cin))
+		.b(expr::xor2(*all_one, cin))
+		.c(expr::xor2(cin, *cout))
 		.build();
 
 	// Constraint 2 (AND): sar(cout, 63) ∧ all_one = all_one, i.e. MSB(cout) = 1 (x ≠ 0).
@@ -76,7 +76,7 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	// substitute the constant back into Constraint 1, reopening the soundness hole.
 	builder
 		.and()
-		.a(sar(*cout, 63))
+		.a(expr::sar(*cout, 63))
 		.b(*all_one)
 		.c(*all_one)
 		.build();

@@ -2,7 +2,7 @@
 use binius_core::word::Word;
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, sll, srl, xor3, xor4},
+	constraint_builder::{ConstraintBuilder, expr},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
@@ -31,17 +31,17 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 		unreachable!()
 	};
 
-	let bout_sll_1 = sll(*bout, 1);
-	let bin_msb = srl(*bin, 63);
+	let bout_sll_1 = expr::sll(*bout, 1);
+	let bin_msb = expr::srl(*bin, 63);
 
 	// Constraint 1: Borrow propagation
 	//
 	// (¬a ⊕ (bout << 1) ⊕ bin_msb) ∧ (b ⊕ (bout << 1) ⊕ bin_msb) = bout ⊕ (bout << 1) ⊕ bin_msb
 	builder
 		.and()
-		.a(xor4(*all_one, *a, bout_sll_1, bin_msb))
-		.b(xor3(*b, bout_sll_1, bin_msb))
-		.c(xor3(*bout, bout_sll_1, bin_msb))
+		.a(expr::xor4(*all_one, *a, bout_sll_1, bin_msb))
+		.b(expr::xor3(*b, bout_sll_1, bin_msb))
+		.c(expr::xor3(*bout, bout_sll_1, bin_msb))
 		.build();
 
 	// Constraint 2: Diff equality (linear)
@@ -49,7 +49,7 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	// (a ⊕ b ⊕ (bout << 1) ⊕ bin_msb) = diff
 	builder
 		.linear()
-		.rhs(xor4(*a, *b, bout_sll_1, bin_msb))
+		.rhs(expr::xor4(*a, *b, bout_sll_1, bin_msb))
 		.dst(*diff)
 		.build();
 }

@@ -24,7 +24,7 @@
 //! `<<₃₂` and `>>₃₂` denote shifts that operate independently on each 32-bit half.
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, sll32, srl32, xor3, xor4},
+	constraint_builder::{ConstraintBuilder, expr},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
@@ -47,8 +47,8 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	let [x, y, cin] = inputs else { unreachable!() };
 	let [z, cout] = outputs else { unreachable!() };
 
-	let cout_shifted = sll32(*cout, 1);
-	let cin_bit = srl32(*cin, 31);
+	let cout_shifted = expr::sll32(*cout, 1);
+	let cin_bit = expr::srl32(*cin, 31);
 
 	// Constraint 1: Carry propagation
 	//
@@ -56,9 +56,9 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	// where ci = (cout <<₃₂ 1) ⊕ (cin >>₃₂ 31)
 	builder
 		.and()
-		.a(xor3(*x, cout_shifted, cin_bit))
-		.b(xor3(*y, cout_shifted, cin_bit))
-		.c(xor3(*cout, cout_shifted, cin_bit))
+		.a(expr::xor3(*x, cout_shifted, cin_bit))
+		.b(expr::xor3(*y, cout_shifted, cin_bit))
+		.c(expr::xor3(*cout, cout_shifted, cin_bit))
 		.build();
 
 	// Constraint 2: Result
@@ -67,7 +67,7 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	builder
 		.linear()
 		.dst(*z)
-		.rhs(xor4(*x, *y, cout_shifted, cin_bit))
+		.rhs(expr::xor4(*x, *y, cout_shifted, cin_bit))
 		.build();
 }
 

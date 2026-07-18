@@ -36,7 +36,7 @@
 use binius_core::word::Word;
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, sll, xor2, xor3},
+	constraint_builder::{ConstraintBuilder, expr},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
@@ -65,15 +65,15 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	let [x, y] = inputs else { unreachable!() };
 	let [out_wire] = outputs else { unreachable!() };
 
-	let cin = sll(*out_wire, 1);
+	let cin = expr::sll(*out_wire, 1);
 
 	// Constraint 1: Constrain carry-out
 	// (x ⊕ y ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout
 	builder
 		.and()
-		.a(xor3(*x, *y, cin))
-		.b(xor2(*all_one, cin))
-		.c(xor3(cin, *out_wire, *msb_one))
+		.a(expr::xor3(*x, *y, cin))
+		.b(expr::xor2(*all_one, cin))
+		.c(expr::xor3(cin, *out_wire, *msb_one))
 		.build();
 }
 

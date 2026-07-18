@@ -17,7 +17,7 @@ use crate::{
 		common::{MleCheckProver, SumcheckProver},
 		frac_add_mle::{self, FractionalBuffer},
 		mle_store::{ColId, MleStore},
-		round_evaluator::{RoundEvaluator, SharedMleCheckProver},
+		round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
 	},
 };
 
@@ -31,7 +31,8 @@ pub type FracEvalClaim<F> = (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>);
 /// Returned by `FracAddCheckProver::layer_prover`. It owns its four half-columns, so it is
 /// self-contained: a caller can drive it, batch it, or extend its store with more columns and
 /// evaluators (as the logUp* final layer does).
-pub type LayerProver<F, P> = SharedMleCheckProver<'static, F, P, Box<dyn RoundEvaluator<F, P>>>;
+pub type LayerProver<F, P> =
+	SharedMleCheckProver<'static, F, P, Box<dyn MleCheckRoundEvaluator<F, P>>>;
 
 /// Prover for the fractional addition protocol.
 ///
@@ -133,16 +134,17 @@ where
 		let [num_0, num_1] = store.push_split_half(num);
 		let [den_0, den_1] = store.push_split_half(den);
 		let cols = [num_0, num_1, den_0, den_1];
-		let (num_evaluator, den_evaluator) = frac_add_mle::evaluators(
-			&mut store,
-			cols,
-			num_claim.point.clone(),
-			[num_claim.eval, den_claim.eval],
-		);
+		let (num_evaluator, den_evaluator) = frac_add_mle::evaluators(cols);
 
-		let evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> =
-			vec![Box::new(num_evaluator), Box::new(den_evaluator)];
-		(remaining, SharedMleCheckProver::new(store, evaluators, num_claim.point), cols)
+		let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P>>); 2] = [
+			(num_claim.eval, Box::new(num_evaluator)),
+			(den_claim.eval, Box::new(den_evaluator)),
+		];
+		(
+			remaining,
+			SharedMleCheckProver::new(store, claims_with_evaluators, num_claim.point),
+			cols,
+		)
 	}
 
 	/// Runs the fractional addition check protocol and returns the final evaluation claims.
@@ -532,16 +534,16 @@ where
 		FieldBuffer::<P>::from_values(&den_1s),
 	]
 	.map(|buffer| selector_store.push_owned(buffer));
-	let (selector_num, selector_den) = frac_add_mle::evaluators(
-		&mut selector_store,
-		selector_cols,
+	let (selector_num, selector_den) = frac_add_mle::evaluators(selector_cols);
+	let selector_claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P>>); 2] = [
+		(num_eval, Box::new(selector_num)),
+		(den_eval, Box::new(selector_den)),
+	];
+	let mut selector_prover = SharedMleCheckProver::new(
+		selector_store,
+		selector_claims_with_evaluators,
 		outer_coords.to_vec(),
-		[num_eval, den_eval],
 	);
-	let selector_evaluators: Vec<Box<dyn RoundEvaluator<F, P>>> =
-		vec![Box::new(selector_num), Box::new(selector_den)];
-	let mut selector_prover =
-		SharedMleCheckProver::new(selector_store, selector_evaluators, outer_coords.to_vec());
 
 	for _round in 0..k {
 		let round_coeffs = combine_claims(selector_prover.execute(), batch_coeff);

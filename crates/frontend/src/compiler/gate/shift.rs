@@ -18,9 +18,7 @@
 use binius_core::constraint_system::ShiftVariant;
 
 use crate::compiler::{
-	constraint_builder::{
-		ConstraintBuilder, WireExprTerm, rotr, rotr32, sar, sll, sll32, sra32, srl, srl32,
-	},
+	constraint_builder::{ConstraintBuilder, WireExprTerm, expr},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
@@ -46,14 +44,14 @@ const fn variant_of(imm: u32) -> ShiftVariant {
 /// Builds the shifted-operand term for the given variant and amount.
 const fn shifted_term(variant: ShiftVariant, x: Wire, n: u32) -> WireExprTerm {
 	match variant {
-		ShiftVariant::Sll => sll(x, n),
-		ShiftVariant::Slr => srl(x, n),
-		ShiftVariant::Sar => sar(x, n),
-		ShiftVariant::Rotr => rotr(x, n),
-		ShiftVariant::Sll32 => sll32(x, n),
-		ShiftVariant::Srl32 => srl32(x, n),
-		ShiftVariant::Sra32 => sra32(x, n),
-		ShiftVariant::Rotr32 => rotr32(x, n),
+		ShiftVariant::Sll => expr::sll(x, n),
+		ShiftVariant::Slr => expr::srl(x, n),
+		ShiftVariant::Sar => expr::sar(x, n),
+		ShiftVariant::Rotr => expr::rotr(x, n),
+		ShiftVariant::Sll32 => expr::sll32(x, n),
+		ShiftVariant::Srl32 => expr::srl32(x, n),
+		ShiftVariant::Sra32 => expr::sra32(x, n),
+		ShiftVariant::Rotr32 => expr::rotr32(x, n),
 	}
 }
 

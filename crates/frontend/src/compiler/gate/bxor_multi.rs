@@ -9,7 +9,7 @@
 //! - `x0 ⊕ x1 ⊕ ... ⊕ xn = z`
 
 use crate::compiler::{
-	constraint_builder::{ConstraintBuilder, WireExprTerm, xor_multi},
+	constraint_builder::{ConstraintBuilder, WireExprTerm, expr},
 	gate::opcode::OpcodeShape,
 	gate_graph::{Gate, GateData, GateParam, Wire},
 };
@@ -38,7 +38,7 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	//
 	// (x0 ⊕ x1 ⊕ ... ⊕ xn) = z
 	let terms: Vec<WireExprTerm> = inputs.iter().map(|&w| w.into()).collect();
-	builder.linear().rhs(xor_multi(terms)).dst(*z).build();
+	builder.linear().rhs(expr::xor_multi(terms)).dst(*z).build();
 }
 
 pub fn emit_eval_bytecode(

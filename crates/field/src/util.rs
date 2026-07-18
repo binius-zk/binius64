@@ -2,7 +2,7 @@
 
 use std::iter;
 
-use crate::{Field, PackedField, field::FieldOps};
+use crate::{Field, PackedField, UnderlierType, field::FieldOps};
 
 /// An arithmetic function over field elements, generic in the field it evaluates in.
 ///
@@ -78,6 +78,31 @@ pub fn expand_subset_sums_array<P: PackedField, const N: usize, const N_EXP2: us
 		let (lo_half, hi_half) = span.split_at_mut(1 << i);
 		for (lo_half_i, hi_half_i) in iter::zip(lo_half, hi_half) {
 			*hi_half_i = *lo_half_i + elem_i;
+		}
+	}
+	expanded
+}
+
+/// Expands `elems` into all `2^N` subset XOR combinations, indexed by subset bitmask.
+///
+/// Entry `mask` holds the XOR of `elems[i]` over every bit `i` set in `mask`. This is the
+/// bitwise-XOR analogue of [`expand_subset_sums_array`] over raw underliers, used to build Method
+/// of Four Russians lookup tables.
+///
+/// ## Preconditions
+///
+/// * `N_EXP2` must equal `2^N`
+pub fn expand_subset_xors<U: UnderlierType, const N: usize, const N_EXP2: usize>(
+	elems: [U; N],
+) -> [U; N_EXP2] {
+	assert_eq!(N_EXP2, 1 << N);
+
+	let mut expanded = [U::ZERO; N_EXP2];
+	for (i, elem_i) in elems.into_iter().enumerate() {
+		let span = &mut expanded[..1 << (i + 1)];
+		let (lo_half, hi_half) = span.split_at_mut(1 << i);
+		for (lo_half_i, hi_half_i) in iter::zip(lo_half, hi_half) {
+			*hi_half_i = *lo_half_i ^ elem_i;
 		}
 	}
 	expanded

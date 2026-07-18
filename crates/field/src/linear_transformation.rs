@@ -1,12 +1,12 @@
 // Copyright 2024-2025 Irreducible Inc.
 
-use std::{iter, marker::PhantomData, ops::BitXor};
+use std::{marker::PhantomData, ops::BitXor};
 
 use rand::prelude::*;
 
 use crate::{
 	BinaryField, BinaryField1b, ExtensionField, UnderlierType, WithUnderlier,
-	packed::PackedBinaryField, underlier::Divisible,
+	packed::PackedBinaryField, underlier::Divisible, util::expand_subset_xors,
 };
 
 /// Generic transformation trait that is used both for scalars and packed fields
@@ -119,6 +119,7 @@ where
 	UIn: UnderlierType + Divisible<u8>,
 	UOut: UnderlierType,
 {
+	#[inline]
 	fn transform(&self, data: &UIn) -> UOut {
 		Divisible::<u8>::ref_iter(data)
 			.enumerate()
@@ -133,22 +134,6 @@ where
 			.reduce(BitXor::bitxor)
 			.unwrap_or(UOut::ZERO)
 	}
-}
-
-fn expand_subset_xors<U: UnderlierType, const N: usize, const N_EXP2: usize>(
-	elems: [U; N],
-) -> [U; N_EXP2] {
-	assert_eq!(N_EXP2, 1 << N);
-
-	let mut expanded = [U::ZERO; N_EXP2];
-	for (i, elem_i) in elems.into_iter().enumerate() {
-		let span = &mut expanded[..1 << (i + 1)];
-		let (lo_half, hi_half) = span.split_at_mut(1 << i);
-		for (lo_half_i, hi_half_i) in iter::zip(lo_half, hi_half) {
-			*hi_half_i = *lo_half_i ^ elem_i;
-		}
-	}
-	expanded
 }
 
 /// Factory for creating bytewise lookup transformations.

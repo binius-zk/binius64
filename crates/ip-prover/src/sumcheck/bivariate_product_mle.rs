@@ -92,15 +92,9 @@ where
 	let mut store = MleStore::new(eval_point.len());
 	// The store checks that the buffer has exactly one more variable than itself.
 	let cols = store.push_split_half(buffer);
-	let eq_tracker = store.register_eq_tracker(&eval_point);
-	let evaluator = QuadraticMleEvaluator::new(
-		cols,
-		eq_tracker,
-		|[a, b]: [P; 2]| a * b,
-		|[a, b]: [P; 2]| a * b,
-		eval_claim,
-	);
-	SharedMleCheckProver::new(store, vec![evaluator], eval_point)
+	let evaluator =
+		QuadraticMleEvaluator::new(cols, |[a, b]: [P; 2]| a * b, |[a, b]: [P; 2]| a * b);
+	SharedMleCheckProver::new(store, [(eval_claim, evaluator)], eval_point)
 }
 
 #[cfg(test)]
