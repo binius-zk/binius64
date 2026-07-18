@@ -81,19 +81,24 @@ where
 	let mut values = Vec::<P>::with_capacity(capacity);
 
 	let chunk_size = P::WIDTH;
-	let full_chunks_boundary = words.len() / chunk_size * chunk_size;
-	let (words_aligned, words_remaining) = words.split_at(full_chunks_boundary);
+	let n_chunks = words.len() / chunk_size;
+	let (words_aligned, words_remaining) = words.split_at(n_chunks * chunk_size);
 
-	words_aligned
-		.par_chunks(P::WIDTH)
-		.map(|word_chunk| {
+	let values_aligned = &mut values.spare_capacity_mut()[..n_chunks];
+	let word_chunks = words_aligned.par_chunks_exact(P::WIDTH);
+	assert_eq!(values_aligned.len(), word_chunks.len());
+
+	(values_aligned, word_chunks)
+		.into_par_iter()
+		.for_each(|(out, word_chunk)| {
 			// Safety:
 			// - words_aligned has length that is a multiple of P::WIDTH
 			// - words_aligned is split into P::WIDTH chunks
 			unsafe { assert_unchecked(word_chunk.len() == P::WIDTH) };
-			P::from_scalars(word_chunk.iter().map(|&word| transform.transform(&word.0)))
-		})
-		.collect_into_vec(&mut values);
+			out.write(P::from_scalars(word_chunk.iter().map(|&word| transform.transform(&word.0))));
+		});
+
+	unsafe { values.set_len(n_chunks) };
 
 	if !words_remaining.is_empty() {
 		values.push(P::from_scalars(
