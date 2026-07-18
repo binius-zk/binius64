@@ -210,13 +210,7 @@ impl<F: BinaryField + From<B8>> B8ToExtMulMap<F> {
 mod test {
 	use std::iter::repeat_with;
 
-	use binius_field::{
-		BinaryField128bGhash as B128, Field, Random,
-		linear_transformation::{
-			BytewiseLookupTransformationFactory, LinearTransformationFactory,
-			OutputWrappingTransformationFactory,
-		},
-	};
+	use binius_field::{BinaryField128bGhash as B128, Field, Random};
 	use binius_math::{
 		BinarySubspace, FieldBuffer,
 		univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
@@ -225,7 +219,7 @@ mod test {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::fold_word::fold_words_with_transform;
+	use crate::fold_word::BitAxisFolder;
 
 	fn random_words(log_num_words: usize, mut rng: impl Rng) -> Vec<Word> {
 		repeat_with(|| Word(rng.random()))
@@ -300,13 +294,11 @@ mod test {
 
 		let lagrange_evals =
 			lagrange_evals_scalars(&verifier_input_domain, first_sumcheck_challenge);
-		let transform =
-			OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
-				.create(&lagrange_evals);
+		let folder = BitAxisFolder::new(&lagrange_evals);
 
-		let folded_first_mle: FieldBuffer<B128> = fold_words_with_transform(&transform, &mlv_1);
-		let folded_second_mle: FieldBuffer<B128> = fold_words_with_transform(&transform, &mlv_2);
-		let folded_third_mle: FieldBuffer<B128> = fold_words_with_transform(&transform, &mlv_3);
+		let folded_first_mle: FieldBuffer<B128> = folder.fold(&mlv_1);
+		let folded_second_mle: FieldBuffer<B128> = folder.fold(&mlv_2);
+		let folded_third_mle: FieldBuffer<B128> = folder.fold(&mlv_3);
 
 		let upcasted_small_field_challenges: Vec<_> = small_field_zerocheck_challenges
 			.into_iter()

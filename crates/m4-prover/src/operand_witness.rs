@@ -574,19 +574,13 @@ pub fn build_binmul_witness(
 mod tests {
 	use assert_matches::assert_matches;
 	use binius_core::constraint_system::ValueVec;
-	use binius_field::{
-		PackedBinaryGhash1x128b,
-		linear_transformation::{
-			BytewiseLookupTransformationFactory, LinearTransformationFactory,
-			OutputWrappingTransformationFactory,
-		},
-	};
+	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
 	use binius_ip::channel::Error as ChannelError;
 	use binius_math::{
 		FieldBuffer, multilinear::evaluate::evaluate, univariate::lagrange_evals_scalars,
 	};
-	use binius_prover::fold_word::fold_words_with_transform;
+	use binius_prover::fold_word::BitAxisFolder;
 	use binius_transcript::{ProverTranscript, VerifierTranscript};
 	use binius_verifier::{
 		Error as VerifierError, config::StdChallenger, protocols::bitand::SKIPPED_VARS,
@@ -619,10 +613,7 @@ mod tests {
 			.isomorphic::<B128>()
 			.reduce_dim(SKIPPED_VARS);
 		let lagrange = lagrange_evals_scalars(&univariate_domain, z_challenge);
-		let transform =
-			OutputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory)
-				.create(&lagrange);
-		let folded: FieldBuffer<B128> = fold_words_with_transform(&transform, col);
+		let folded: FieldBuffer<B128> = BitAxisFolder::new(&lagrange).fold(col);
 		evaluate(&folded, eval_point)
 	}
 

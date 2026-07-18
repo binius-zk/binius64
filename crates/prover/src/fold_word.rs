@@ -5,10 +5,10 @@ use std::{array, borrow::Cow, hint::assert_unchecked, iter, ops::BitXor};
 
 use binius_core::word::Word;
 use binius_field::{
-	BinaryField, Divisible, Field, PackedField, UnderlierType, WideMul,
+	BinaryField, Divisible, Field, PackedField, UnderlierType, WideMul, WithUnderlier,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, LinearTransformationFactory,
-		OutputWrappingTransformationFactory, Transformation,
+		OutputWrappingTransformation, OutputWrappingTransformationFactory, Transformation,
 	},
 	util::{expand_subset_sums_array, expand_subset_xors},
 };
@@ -47,27 +47,10 @@ where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 {
-	fold_words_with_transform_factory(
-		&OutputWrappingTransformationFactory::new(WordBytewiseLookupTransformationFactory),
-		words,
-		vec,
-	)
+	BitAxisFolder::new(vec).fold(words)
 }
 
-pub fn fold_words_with_transform_factory<F, P, TransformFactory>(
-	transform_factory: &TransformFactory,
-	words: &[Word],
-	vec: &[F],
-) -> FieldBuffer<P>
-where
-	F: Field,
-	P: PackedField<Scalar = F>,
-	TransformFactory: LinearTransformationFactory<u64, F>,
-{
-	fold_words_with_transform(&transform_factory.create(vec), words)
-}
-
-pub fn fold_words_with_transform<F, P, T>(transform: &T, words: &[Word]) -> FieldBuffer<P>
+fn fold_words_with_transform<F, P, T>(transform: &T, words: &[Word]) -> FieldBuffer<P>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
@@ -165,6 +148,46 @@ impl<UOut: UnderlierType> LinearTransformationFactory<u64, UOut>
 
 	fn create(&self, cols: &[UOut]) -> Self::Transform {
 		WordBytewiseLookupTransformation::new(cols)
+	}
+}
+
+/// The concrete transform [`BitAxisFolder`] folds each word through: the [`u64`]-specialized
+/// bytewise lookup, wrapped to output field elements of `F`.
+type BitAxisTransform<F> = OutputWrappingTransformation<
+	WordBytewiseLookupTransformation<<F as WithUnderlier>::Underlier>,
+	u64,
+	F,
+>;
+
+/// A reusable folder over a fixed vector of bit-index scalars, the [`fold_words`] analogue of
+/// [`WordFolder`].
+///
+/// [`fold_words`] rebuilds its Method of Four Russians lookup transform on every call. A caller
+/// folding several word-lists against the same scalar vector can instead build the transform once
+/// with [`new`](Self::new) and reuse it across [`fold`](Self::fold) calls.
+pub struct BitAxisFolder<F: BinaryField> {
+	transform: BitAxisTransform<F>,
+}
+
+impl<F: BinaryField> BitAxisFolder<F> {
+	/// Builds the folding transform for `vec`.
+	///
+	/// ## Preconditions
+	/// * `vec` contains exactly [`Word::BITS`] elements
+	pub fn new(vec: &[F]) -> Self {
+		let transform =
+			OutputWrappingTransformationFactory::new(WordBytewiseLookupTransformationFactory)
+				.create(vec);
+		Self { transform }
+	}
+
+	/// Folds `words` into a [`FieldBuffer`], mapping each word to the inner product of its bits
+	/// with the scalar vector. See [`fold_words`] for the exact contract.
+	pub fn fold<P>(&self, words: &[Word]) -> FieldBuffer<P>
+	where
+		P: PackedField<Scalar = F>,
+	{
+		fold_words_with_transform(&self.transform, words)
 	}
 }
 
