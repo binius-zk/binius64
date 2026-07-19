@@ -25,6 +25,8 @@ pub struct Word(pub u64);
 impl Word {
 	/// The size of a [`Word`] in bytes; the protocol proves constraint systems over 64-bit words.
 	pub const BYTES: usize = size_of::<Word>();
+	/// log2 of [`Word::BYTES`].
+	pub const LOG_BYTES: usize = checked_log_2(Self::BYTES);
 	/// The size of a [`Word`] in bits (mirrors [`u64::BITS`]).
 	pub const BITS: usize = Self::BYTES * 8;
 	/// log2 of [`Word::BITS`].
