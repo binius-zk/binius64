@@ -133,6 +133,27 @@ impl<P: PackedField> FieldBuffer<P> {
 	}
 }
 
+impl<P: PackedField> FieldBuffer<P, Vec<P>> {
+	/// A single-scalar buffer (`log_len` 0) holding `value` in lane 0, with backing-`Vec` capacity
+	/// reserved for `log_capacity` variables.
+	///
+	/// The backing `Vec` reserves `1 << log_capacity.saturating_sub(P::LOG_WIDTH)` packed words, so
+	/// growing the buffer up to `log_capacity` variables never reallocates.
+	pub fn scalar_with_capacity(value: P::Scalar, log_capacity: usize) -> Self {
+		let mut values = Vec::with_capacity(1 << log_capacity.saturating_sub(P::LOG_WIDTH));
+		values.push(P::from_scalars([value]));
+		Self { log_len: 0, values }
+	}
+
+	/// Converts into the canonical boxed-slice-backed [`FieldBuffer`].
+	pub fn into_boxed(self) -> FieldBuffer<P> {
+		FieldBuffer {
+			log_len: self.log_len,
+			values: self.values.into_boxed_slice(),
+		}
+	}
+}
+
 #[allow(clippy::len_without_is_empty)]
 impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// Create a new FieldBuffer from a slice of packed values.
@@ -167,6 +188,11 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 		);
 
 		Self { log_len, values }
+	}
+
+	/// Consumes the buffer and returns its backing data store.
+	pub fn take_data(self) -> Data {
+		self.values
 	}
 
 	/// Returns log2 the number of field elements that the underlying collection may take.
