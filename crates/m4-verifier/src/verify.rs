@@ -5,11 +5,12 @@ use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, ExtensionField, FieldOps};
 use binius_hash::StdHashSuite;
 use binius_iop::{
-	basefold_compiler::BaseFoldVerifierCompiler,
-	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
+	basefold::compiler::BaseFoldVerifierCompiler,
+	channel::{
+		IOPVerifierChannel, OracleLinearRelation, OracleSpec, oracle_setup::OracleSetupChannel,
+	},
 	fri::{ConstantArityStrategy, calculate_n_test_queries},
 	merkle_tree::BinaryMerkleTreeScheme,
-	oracle_setup_channel::OracleSetupChannel,
 };
 use binius_ip::{
 	channel::IPVerifierChannel,

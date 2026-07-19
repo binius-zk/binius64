@@ -39,11 +39,13 @@ use binius_field::{BinaryField, Field, field::FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
 	basefold,
-	basefold_compiler::BaseFoldVerifierCompiler,
-	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
+	basefold::compiler::BaseFoldVerifierCompiler,
+	channel::{
+		IOPVerifierChannel, OracleLinearRelation, OracleSpec,
+		oracle_setup::{DummyElem, OracleSetupChannel},
+	},
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
-	oracle_setup_channel::{DummyElem, OracleSetupChannel},
 };
 use binius_ip::{channel::IPVerifierChannel, mlecheck, sumcheck};
 use binius_math::{multilinear::eq::eq_ind_partial_eval_scalars, univariate::evaluate_univariate};

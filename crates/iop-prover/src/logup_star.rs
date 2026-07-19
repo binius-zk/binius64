@@ -131,7 +131,8 @@ mod tests {
 		arch::{OptimalB128, OptimalPackedB128},
 	};
 	use binius_iop::{
-		channel::OracleSpec, logup_star as verify_logup, naive_channel::NaiveVerifierChannel,
+		channel::{OracleSpec, naive::NaiveVerifierChannel},
+		logup_star as verify_logup,
 	};
 	use binius_ip::logup_star::LookerClaim;
 	use binius_math::{
@@ -143,7 +144,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::naive_channel::NaiveProverChannel;
+	use crate::channel::naive::NaiveProverChannel;
 
 	type F = OptimalB128;
 	type P = OptimalPackedB128;
@@ -358,12 +359,12 @@ mod tests {
 		use binius_field::PackedBinaryGhash1x128b;
 		use binius_hash::{StdDigest, StdHashSuite};
 		use binius_iop::{
-			basefold_compiler::BaseFoldVerifierCompiler, fri::MinProofSizeStrategy,
+			basefold::compiler::BaseFoldVerifierCompiler, fri::MinProofSizeStrategy,
 			merkle_tree::BinaryMerkleTreeScheme,
 		};
 		use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly};
 
-		use crate::basefold_compiler::BaseFoldProverCompiler;
+		use crate::basefold::compiler::BaseFoldProverCompiler;
 
 		// The commitment field is the GHASH 128-bit field; use a single-lane packing for BaseFold.
 		type BP = PackedBinaryGhash1x128b;

@@ -19,7 +19,7 @@ use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::BinaryField128bGhash as B128;
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
-	basefold_compiler::BaseFoldVerifierCompiler,
+	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::OracleSpec,
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,

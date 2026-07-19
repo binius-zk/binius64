@@ -401,11 +401,10 @@ mod tests {
 	#[test]
 	fn test_wiring_prove_verify() {
 		use binius_hash::StdDigest;
-		use binius_iop::{
-			channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
-			naive_channel::NaiveVerifierChannel,
+		use binius_iop::channel::{
+			IOPVerifierChannel, OracleLinearRelation, OracleSpec, naive::NaiveVerifierChannel,
 		};
-		use binius_iop_prover::{channel::IOPProverChannel, naive_channel::NaiveProverChannel};
+		use binius_iop_prover::channel::{IOPProverChannel, naive::NaiveProverChannel};
 		use binius_ip::channel::IPVerifierChannel;
 		use binius_ip_prover::channel::IPProverChannel;
 		use binius_math::{inner_product::inner_product_buffers, test_utils::random_field_buffer};

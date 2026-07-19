@@ -132,8 +132,8 @@ where
 mod tests {
 	use binius_core::word::Word;
 	use binius_field::{BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
-	use binius_iop::{channel::OracleSpec, naive_channel::NaiveVerifierChannel};
-	use binius_iop_prover::naive_channel::NaiveProverChannel;
+	use binius_iop::channel::{OracleSpec, naive::NaiveVerifierChannel};
+	use binius_iop_prover::channel::naive::NaiveProverChannel;
 	use binius_math::{inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval};
 	use binius_transcript::ProverTranscript;
 	use binius_verifier::{

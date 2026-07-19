@@ -1,16 +1,13 @@
 // Copyright 2026 The Binius Developers
 
 //! BaseFold compiler for IOP provers.
-//!
-//! This module provides [`BaseFoldProverCompiler`], which precomputes FRI parameters and can
-//! create prover channel instances.
 
 use std::{borrow::BorrowMut, marker::PhantomData};
 
 use binius_field::{BinaryField, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
-	basefold_compiler::BaseFoldVerifierCompiler, channel::OracleSpec, fri::FRIParams,
+	basefold::compiler::BaseFoldVerifierCompiler, channel::OracleSpec, fri::FRIParams,
 	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_math::ntt::AdditiveNTT;
@@ -20,7 +17,7 @@ use digest::Output;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::{
-	basefold_channel::BaseFoldProverChannel,
+	basefold::channel::BaseFoldProverChannel,
 	merkle_channel::{MerkleIPProverChannel, ProverMerkleTranscriptChannel},
 };
 
