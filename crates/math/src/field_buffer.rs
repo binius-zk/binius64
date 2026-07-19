@@ -11,7 +11,7 @@ use binius_field::{
 	packed::{get_packed_slice_unchecked, set_packed_slice_unchecked},
 };
 use binius_utils::{
-	checked_arithmetics::{checked_log_2, strict_log_2},
+	checked_arithmetics::strict_log_2,
 	rayon::{iter::Either, prelude::*, slice::ParallelSlice},
 };
 use bytemuck::zeroed_vec;
@@ -25,7 +25,7 @@ pub trait AsSlicesMut<P: PackedField, const N: usize> {
 ///
 /// This struct maintains a set of invariants:
 ///  1) `values.len()` is a power of two
-///  2) `values.len() >= 1 << log_len.saturating_sub(P::LOG_WIDTH)`.
+///  2) `values.len() == 1 << log_len.saturating_sub(P::LOG_WIDTH)`.
 #[derive(Debug, Clone, Eq)]
 pub struct FieldBuffer<P: PackedField, Data: Deref<Target = [P]> = Box<[P]>> {
 	/// log2 the number over elements in the buffer.
@@ -36,7 +36,7 @@ pub struct FieldBuffer<P: PackedField, Data: Deref<Target = [P]> = Box<[P]>> {
 
 impl<P: PackedField, Data: Deref<Target = [P]>> PartialEq for FieldBuffer<P, Data> {
 	fn eq(&self, other: &Self) -> bool {
-		// Lanes from the logical length up to the capacity hold arbitrary data.
+		// Lanes past the logical length within the final packed word hold arbitrary data.
 		// Equality compares only the live scalars, never the raw packed backing store.
 		//
 		// Invariant: buffers of different lengths are never equal.
@@ -78,34 +78,13 @@ impl<P: PackedField> FieldBuffer<P> {
 		let log_len =
 			strict_log_2(values.len()).expect("precondition: values.len() must be a power of two");
 
-		Self::from_values_truncated(values, log_len)
-	}
-
-	/// Create a new FieldBuffer from a vector of values.
-	///
-	/// Capacity `log_cap` is bumped to at least `P::LOG_WIDTH`.
-	///
-	/// # Preconditions
-	///
-	/// * `values.len()` must be a power of two.
-	/// * `values.len()` must not exceed `1 << log_cap`.
-	pub fn from_values_truncated(values: &[P::Scalar], log_cap: usize) -> Self {
-		assert!(
-			values.len().is_power_of_two(),
-			"precondition: values.len() must be a power of two"
-		);
-
-		let log_len = values.len().ilog2() as usize;
-		assert!(log_len <= log_cap, "precondition: values.len() must not exceed 1 << log_cap");
-
-		let packed_cap = 1 << log_cap.saturating_sub(P::LOG_WIDTH);
-		let mut packed_values = Vec::with_capacity(packed_cap);
+		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
+		let mut packed_values = Vec::with_capacity(packed_len);
 		packed_values.extend(
 			values
 				.chunks(P::WIDTH)
 				.map(|chunk| P::from_scalars(chunk.iter().copied())),
 		);
-		packed_values.resize(packed_cap, P::zero());
 
 		Self {
 			log_len,
@@ -115,19 +94,7 @@ impl<P: PackedField> FieldBuffer<P> {
 
 	/// Create a new [`FieldBuffer`] of zeros with the given log_len.
 	pub fn zeros(log_len: usize) -> Self {
-		Self::zeros_truncated(log_len, log_len)
-	}
-
-	/// Create a new [`FieldBuffer`] of zeros with the given log_len and capacity log_cap.
-	///
-	/// Capacity `log_cap` is bumped to at least `P::LOG_WIDTH`.
-	///
-	/// # Preconditions
-	///
-	/// * `log_len` must not exceed `log_cap`.
-	pub fn zeros_truncated(log_len: usize, log_cap: usize) -> Self {
-		assert!(log_len <= log_cap, "precondition: log_len must not exceed log_cap");
-		let packed_len = 1 << log_cap.saturating_sub(P::LOG_WIDTH);
+		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 		let values = zeroed_vec(packed_len).into_boxed_slice();
 		Self { log_len, values }
 	}
@@ -167,25 +134,6 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 			values.len() == expected_packed_len,
 			"precondition: values.len() must equal expected packed length"
 		);
-		Self::new_truncated(log_len, values)
-	}
-
-	/// Create a new FieldBuffer from a slice of packed values.
-	///
-	/// # Preconditions
-	///
-	/// * `values.len()` must be at least the minimum packed length for `log_len`.
-	/// * `values.len()` must be a power of two.
-	pub fn new_truncated(log_len: usize, values: Data) -> Self {
-		let min_packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
-		assert!(
-			values.len() >= min_packed_len,
-			"precondition: values.len() must be at least {min_packed_len}"
-		);
-		assert!(
-			values.len().is_power_of_two(),
-			"precondition: values.len() must be a power of two"
-		);
 
 		Self { log_len, values }
 	}
@@ -193,16 +141,6 @@ impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// Consumes the buffer and returns its backing data store.
 	pub fn take_data(self) -> Data {
 		self.values
-	}
-
-	/// Returns log2 the number of field elements that the underlying collection may take.
-	pub fn log_cap(&self) -> usize {
-		checked_log_2(self.values.len()) + P::LOG_WIDTH
-	}
-
-	/// Returns the number of field elements that the underlying collection may take.
-	pub fn cap(&self) -> usize {
-		1 << self.log_cap()
 	}
 
 	/// Returns log2 the number of field elements.
@@ -428,47 +366,6 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// If `new_log_len` is not less than current `log_len()`, this has no effect.
 	pub fn truncate(&mut self, new_log_len: usize) {
 		self.log_len = self.log_len.min(new_log_len);
-	}
-
-	/// Zero extends a field buffer to a longer length.
-	///
-	/// If `new_log_len` is not greater than current `log_len()`, this has no effect.
-	///
-	/// # Preconditions
-	///
-	/// * `new_log_len` must not exceed the buffer's capacity.
-	pub fn zero_extend(&mut self, new_log_len: usize) {
-		if new_log_len <= self.log_len {
-			return;
-		}
-
-		assert!(new_log_len <= self.log_cap(), "precondition: new_log_len must not exceed log_cap");
-
-		if self.log_len < P::LOG_WIDTH {
-			let first_elem = self.values.first_mut().expect("values.len() >= 1");
-			for i in 1 << self.log_len..(1 << new_log_len).min(P::WIDTH) {
-				first_elem.set(i, P::Scalar::ZERO);
-			}
-		}
-
-		let packed_start = 1 << self.log_len.saturating_sub(P::LOG_WIDTH);
-		let packed_end = 1 << new_log_len.saturating_sub(P::LOG_WIDTH);
-		self.values[packed_start..packed_end].fill(P::zero());
-
-		self.log_len = new_log_len;
-	}
-
-	/// Sets the new log length. If the new log length is bigger than the current log length,
-	/// the new values (in case when `self.log_len < new_log_len`) will be filled with
-	/// the values from the existing buffer.
-	///
-	/// # Preconditions
-	///
-	/// * `new_log_len` must not exceed the buffer's capacity.
-	pub fn resize(&mut self, new_log_len: usize) {
-		assert!(new_log_len <= self.log_cap(), "precondition: new_log_len must not exceed log_cap");
-
-		self.log_len = new_log_len;
 	}
 
 	/// Split the buffer into mutable chunks of size `2^log_chunk_size`.
@@ -1223,7 +1120,7 @@ mod tests {
 
 	#[test]
 	fn test_to_ref_to_mut() {
-		let mut buffer = FieldBuffer::<P>::zeros_truncated(3, 5);
+		let mut buffer = FieldBuffer::<P>::zeros(3);
 
 		// Test to_ref
 		let slice_ref = buffer.to_ref();
@@ -1242,8 +1139,7 @@ mod tests {
 	fn test_split_half() {
 		// Test with buffer size > P::WIDTH (multiple packed elements)
 		let values: Vec<F> = (0..16).map(F::new).collect();
-		// Leave spare capacity for 32 elements
-		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 5);
+		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		let (first, second) = buffer.split_half_ref();
 		assert_eq!(first.len(), 8);
@@ -1257,9 +1153,8 @@ mod tests {
 
 		// Test with buffer size = P::WIDTH (single packed element)
 		// P::LOG_WIDTH = 2, so P::WIDTH = 4
-		// Note that underlying collection has two packed fields.
 		let values: Vec<F> = (0..4).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 3);
+		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		let (first, second) = buffer.split_half_ref();
 		assert_eq!(first.len(), 2);
@@ -1283,7 +1178,7 @@ mod tests {
 
 		// Test with buffer size = 2 (less than P::WIDTH)
 		let values: Vec<F> = vec![F::new(10), F::new(20)];
-		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 3);
+		let buffer = FieldBuffer::<P>::from_values(&values);
 
 		let (first, second) = buffer.split_half_ref();
 		assert_eq!(first.len(), 1);
@@ -1309,50 +1204,6 @@ mod tests {
 		let values = vec![F::new(42)];
 		let buffer = FieldBuffer::<P>::from_values(&values);
 		let _ = buffer.split_half_ref();
-	}
-
-	#[test]
-	fn test_zero_extend() {
-		let log_len = 10;
-		let nonzero_scalars = (0..1 << log_len).map(|i| F::new(i + 1)).collect::<Vec<_>>();
-		let mut buffer = FieldBuffer::<P>::from_values(&nonzero_scalars);
-		buffer.truncate(0);
-
-		for i in 0..log_len {
-			buffer.zero_extend(i + 1);
-
-			for j in 1 << i..1 << (i + 1) {
-				assert!(buffer.get(j).is_zero());
-			}
-		}
-	}
-
-	#[test]
-	fn test_resize() {
-		let mut buffer = FieldBuffer::<P>::zeros(4); // 16 elements
-
-		// Fill with test data
-		for i in 0..16 {
-			buffer.set(i, F::new(i as u128));
-		}
-
-		buffer.resize(3);
-		assert_eq!(buffer.log_len(), 3);
-		assert_eq!(buffer.get(7), F::new(7));
-
-		buffer.resize(4);
-		assert_eq!(buffer.log_len(), 4);
-		assert_eq!(buffer.get(15), F::new(15));
-
-		buffer.resize(2);
-		assert_eq!(buffer.log_len(), 2);
-	}
-
-	#[test]
-	#[should_panic(expected = "precondition")]
-	fn test_resize_exceeds_capacity() {
-		let mut buffer = FieldBuffer::<P>::zeros(4); // 16 elements
-		buffer.resize(5);
 	}
 
 	#[test]
@@ -1414,14 +1265,6 @@ mod tests {
 		let collected2: Vec<F> = iter2.collect();
 		assert_eq!(collected1, collected2);
 		assert_eq!(collected1, values);
-
-		// Test with buffer that has extra capacity
-		let values: Vec<F> = (0..8).map(F::new).collect();
-		let buffer = FieldBuffer::<P>::from_values_truncated(&values, 5); // 8 elements, capacity for 32
-
-		let collected: Vec<F> = buffer.iter_scalars().collect();
-		assert_eq!(collected, values);
-		assert_eq!(collected.len(), 8); // Should only iterate over actual elements, not capacity
 	}
 
 	#[test]
