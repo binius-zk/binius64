@@ -46,7 +46,7 @@ where
 				F::from((lo[index].as_u64() as u128) | ((hi[index].as_u64() as u128) << 64))
 			}))
 		})
-		.collect::<Box<[_]>>();
+		.collect::<Vec<_>>();
 
 	FieldBuffer::new(n_vars, values)
 }

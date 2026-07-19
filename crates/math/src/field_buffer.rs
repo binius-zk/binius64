@@ -27,7 +27,7 @@ pub trait AsSlicesMut<P: PackedField, const N: usize> {
 ///  1) `values.len()` is a power of two
 ///  2) `values.len() == 1 << log_len.saturating_sub(P::LOG_WIDTH)`.
 #[derive(Debug, Clone, Eq)]
-pub struct FieldBuffer<P: PackedField, Data: Deref<Target = [P]> = Box<[P]>> {
+pub struct FieldBuffer<P: PackedField, Data: Deref<Target = [P]> = Vec<P>> {
 	/// log2 the number over elements in the buffer.
 	log_len: usize,
 	/// The packed values.
@@ -88,14 +88,14 @@ impl<P: PackedField> FieldBuffer<P> {
 
 		Self {
 			log_len,
-			values: packed_values.into_boxed_slice(),
+			values: packed_values,
 		}
 	}
 
 	/// Create a new [`FieldBuffer`] of zeros with the given log_len.
 	pub fn zeros(log_len: usize) -> Self {
 		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
-		let values = zeroed_vec(packed_len).into_boxed_slice();
+		let values = zeroed_vec(packed_len);
 		Self { log_len, values }
 	}
 }
@@ -111,16 +111,7 @@ impl<P: PackedField> FieldBuffer<P, Vec<P>> {
 		values.push(P::from_scalars([value]));
 		Self { log_len: 0, values }
 	}
-
-	/// Converts into the canonical boxed-slice-backed [`FieldBuffer`].
-	pub fn into_boxed(self) -> FieldBuffer<P> {
-		FieldBuffer {
-			log_len: self.log_len,
-			values: self.values.into_boxed_slice(),
-		}
-	}
 }
-
 #[allow(clippy::len_without_is_empty)]
 impl<P: PackedField, Data: Deref<Target = [P]>> FieldBuffer<P, Data> {
 	/// Create a new FieldBuffer from a slice of packed values.

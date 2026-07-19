@@ -477,7 +477,7 @@ fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
 		elems_iter.chain(zeros_iter).collect::<Vec<_>>()
 	};
 
-	let mut buffer = FieldBuffer::new(log_private, packed.into_boxed_slice());
+	let mut buffer = FieldBuffer::new(log_private, packed);
 
 	// Add blinding values after the actual private wires
 	// Set random values for non-constraint dummy wires

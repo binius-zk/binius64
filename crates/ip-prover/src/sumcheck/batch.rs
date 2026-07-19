@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_field::Field;
 use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
@@ -274,7 +275,7 @@ mod tests {
 			.zip(multilinear_b.as_ref())
 			.map(|(&l, &r)| l * r)
 			.collect::<Vec<_>>();
-		let product_buffer = FieldBuffer::new(n_vars, product.into_boxed_slice());
+		let product_buffer = FieldBuffer::new(n_vars, product);
 		evaluate(&product_buffer, eval_point)
 	}
 

@@ -1,4 +1,5 @@
 // Copyright 2023-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! [Reed–Solomon] codes over binary fields.
 //!
@@ -196,7 +197,7 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 
 			output_data
 		};
-		let mut output = FieldBuffer::new(log_output_len, output_data.into_boxed_slice());
+		let mut output = FieldBuffer::new(log_output_len, output_data);
 
 		ntt.forward_transform(output.to_mut(), self.log_inv_rate, log_batch_size);
 		output

@@ -769,7 +769,7 @@ where
 		})
 		.collect::<Vec<P>>();
 
-	FieldBuffer::new(log_instances, packed.into_boxed_slice())
+	FieldBuffer::new(log_instances, packed)
 }
 
 #[cfg(test)]
