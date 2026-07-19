@@ -3,7 +3,8 @@ use std::{array, iter};
 
 use anyhow::Result;
 use binius_circuits::{
-	bignum::BigUint, ecdsa::ecrecover, fixed_byte_vec::ByteVec, keccak::keccak256_varlen,
+	bignum::BigUint, bytes::swap_bytes, ecdsa::ecrecover, fixed_byte_vec::ByteVec,
+	keccak::keccak256_varlen,
 };
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
@@ -68,7 +69,7 @@ impl ExampleCircuit for EthSignExample {
 					limbs: msg_digest
 						.iter()
 						.rev()
-						.map(|&word| builder.byteswap(word))
+						.map(|&word| swap_bytes(builder, word))
 						.collect(),
 				};
 
@@ -92,7 +93,7 @@ impl ExampleCircuit for EthSignExample {
 
 				let public_key_message = public_key_limbs
 					.into_iter()
-					.map(|word| builder.byteswap(word))
+					.map(|word| swap_bytes(builder, word))
 					.collect::<Vec<_>>();
 
 				// The public key is always 64 bytes; hash it with a constant-length `ByteVec`. Its

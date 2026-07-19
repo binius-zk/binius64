@@ -6,6 +6,7 @@ use super::scalar_mul::{MSM_WINDOW, msm_strauss_endo};
 use crate::{
 	bignum::{BigUint, biguint_lt},
 	secp256k1::{Secp256k1, Secp256k1Affine},
+	util::all_true,
 };
 
 /// "Bitcoin style" verification of ECDSA signatures over secp256k1
@@ -50,5 +51,5 @@ pub fn verify(
 	let r_diff = curve.f_p().sub(b, &nonce.x, r);
 
 	let conditions = [valid_r, valid_s, nonce_not_pai, r_diff.is_zero(b)];
-	b.all_true(conditions)
+	all_true(b, conditions)
 }

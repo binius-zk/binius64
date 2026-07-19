@@ -6,6 +6,7 @@ use super::scalar_mul::{MSM_WINDOW, msm_strauss_endo};
 use crate::{
 	bignum::{BigUint, biguint_lt},
 	secp256k1::{Secp256k1, Secp256k1Affine, coord_zero},
+	util::all_true,
 };
 
 /// EcRecover - an "Ethereum-style" verification of ECDSA signatures over secp256k1.
@@ -47,5 +48,5 @@ pub fn ecrecover(
 	let recovered_pk = msm_strauss_endo(b, &curve, MSM_WINDOW, &[u1, u2], &[g, nonce]);
 
 	let conditions = [valid_r, valid_s, nonce_not_pai];
-	recovered_pk.pai_unless(b, b.all_true(conditions))
+	recovered_pk.pai_unless(b, all_true(b, conditions))
 }
