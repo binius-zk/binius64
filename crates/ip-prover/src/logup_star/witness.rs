@@ -12,8 +12,8 @@
 use std::iter;
 
 use binius_field::{BinaryField, Divisible, Field, PackedField, util::powers};
-use binius_math::{FieldBuffer, multilinear::eq::scaled_eq_ind_partial_eval};
-use binius_utils::rayon::prelude::*;
+use binius_math::{FieldBuffer, multilinear::eq::scaled_eq_ind_partial_eval_into};
+use binius_utils::rayon::{current_num_threads, prelude::*};
 
 use super::prove::Looker;
 
@@ -59,12 +59,16 @@ where
 	// Why fan out: the per-looker expansion is itself parallel.
 	//   But it under-saturates the machine at moderate n.
 	//   Spreading the lookers over the cores fills them.
-	// Invariant: the parallel build writes results back in looker order.
+	// The 2^n buffers are allocated up front on this thread, so the parallel region only fills
+	// them — no allocator traffic inside the rayon closures.
+	// Invariant: the fill writes results back in looker order (the zip is index-aligned).
 	//   So numerator j stays gamma^j * eq_{r_j}.
-	let numerators = (0..lookers.len())
+	let mut numerators = (0..lookers.len())
+		.map(|_| FieldBuffer::<P>::zeros_truncated(0, n))
+		.collect::<Vec<_>>();
+	(numerators.par_iter_mut(), scales.as_slice(), lookers)
 		.into_par_iter()
-		.map(|j| {
-			let looker = &lookers[j];
+		.for_each(|(numerator, &scale, looker)| {
 			assert_eq!(
 				looker.eval_point.len(),
 				n,
@@ -80,9 +84,8 @@ where
 			// Looker j's numerator is gamma^j * eq_{r_j}.
 			// Seeding the expansion with gamma^j folds the scale into the tensor product.
 			// That keeps it to one pass over one 2^n buffer.
-			scaled_eq_ind_partial_eval::<P>(looker.eval_point, scales[j])
-		})
-		.collect::<Vec<_>>();
+			scaled_eq_ind_partial_eval_into(numerator, looker.eval_point, scale);
+		});
 
 	// Scatter every looker's numerator onto the shared table cube, summed into one buffer.
 	let combined = combined_pushforward::<F, P>(&numerators, lookers, table_n_vars);
@@ -129,27 +132,38 @@ where
 {
 	// One accumulator slot per table position.
 	let table_size = 1usize << table_n_vars;
+	let n_lookers = numerators.len();
 
-	let buckets = (0..numerators.len())
+	// One accumulator per worker, allocated up front on this thread rather than inside the
+	// parallel region. Each worker scatters a contiguous chunk of lookers into its own
+	// accumulator; the chunk count is capped at the number of workers (and at the looker count),
+	// so at most one accumulator is allocated per busy core.
+	let n_workers = current_num_threads().clamp(1, n_lookers.max(1));
+	let chunk_size = n_lookers.div_ceil(n_workers).max(1);
+	let mut accumulators = iter::repeat_with(|| vec![F::ZERO; table_size])
+		.take(n_lookers.div_ceil(chunk_size))
+		.collect::<Vec<_>>();
+
+	(
+		accumulators.par_iter_mut(),
+		numerators.par_chunks(chunk_size),
+		lookers.par_chunks(chunk_size),
+	)
 		.into_par_iter()
-		// Each task scatters a contiguous run of lookers into its own accumulator.
-		.fold(
-			|| vec![F::ZERO; table_size],
-			|mut acc, j| {
-				scatter_add(&mut acc, &numerators[j], lookers[j].index);
-				acc
-			},
-		)
-		// Merge the per-task accumulators position by position into one.
-		.reduce(
-			|| vec![F::ZERO; table_size],
-			|mut acc, partial| {
-				for (slot, add) in iter::zip(acc.iter_mut(), partial) {
-					*slot += add;
-				}
-				acc
-			},
-		);
+		.for_each(|(acc, numerator_chunk, looker_chunk)| {
+			for (numerator, looker) in iter::zip(numerator_chunk, looker_chunk) {
+				scatter_add(acc, numerator, looker.index);
+			}
+		});
+
+	// Merge the per-worker accumulators position by position into the first. The merge is a single
+	// pass of `n_workers` sums per slot, negligible against the scatter over every looker row.
+	let mut buckets = accumulators.pop().expect("at least one accumulator");
+	for partial in &accumulators {
+		for (slot, add) in iter::zip(buckets.iter_mut(), partial) {
+			*slot += *add;
+		}
+	}
 
 	// Repack the merged scalar accumulator into the packed table buffer.
 	FieldBuffer::from_values(&buckets)
