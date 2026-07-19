@@ -144,14 +144,25 @@ where
 			.unwrap_or_default();
 		let chunk_count = 1 << (self.n_vars() - 1 - chunk_vars);
 
+		// Per-thread scratchpads for the two binary chunks.
+		// Each scratchpad is fully written before it is read.
+		// The zero init is not load-bearing.
+		let scratchpad_packed_len = 1 << chunk_vars.saturating_sub(P::LOG_WIDTH);
+
 		let packed_prime_evals = (0..chunk_count)
 			.into_par_iter()
 			.fold(
 				|| {
 					(
 						vec![RoundEvals2::default(); sums.len()],
-						FieldBuffer::<P>::zeros(chunk_vars),
-						FieldBuffer::<P>::zeros(chunk_vars),
+						FieldBuffer::new(
+							chunk_vars,
+							vec![P::zero(); scratchpad_packed_len].into_boxed_slice(),
+						),
+						FieldBuffer::new(
+							chunk_vars,
+							vec![P::zero(); scratchpad_packed_len].into_boxed_slice(),
+						),
 					)
 				},
 				|(mut packed_prime_evals, mut binary_chunk_0, mut binary_chunk_1), chunk_index| {

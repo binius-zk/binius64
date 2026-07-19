@@ -198,6 +198,10 @@ where
 	let log_scalar_bit_width = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 	assert_eq!(mat.log_len(), vec.log_len()); // precondition
 
+	// Packed length of the zeroed accumulator that the fold and reduce identities allocate.
+	// Zeros are required because both identity bodies accumulate into the buffer in place.
+	let identity_packed_len = 1 << log_scalar_bit_width.saturating_sub(B128::LOG_WIDTH);
+
 	// Group bits into 4-bit nibbles for the lookups.
 	const LOG_CHUNK_BITS: usize = 2;
 	const CHUNK_BITS: usize = 1 << LOG_CHUNK_BITS;
@@ -205,7 +209,12 @@ where
 	(vec.as_ref().par_chunks(CHUNK_BITS), mat.as_ref().par_chunks(CHUNK_BITS))
 		.into_par_iter()
 		.fold(
-			|| FieldBuffer::zeros(log_scalar_bit_width),
+			|| {
+				FieldBuffer::new(
+					log_scalar_bit_width,
+					vec![B128::ZERO; identity_packed_len].into_boxed_slice(),
+				)
+			},
 			|mut acc, (vec_chunk, mat_chunk)| {
 				let mut vec_chunk_iter = P::iter_slice(vec_chunk);
 				let mut mat_chunk_iter = P::iter_slice(mat_chunk);
@@ -245,7 +254,12 @@ where
 			},
 		)
 		.reduce(
-			|| FieldBuffer::zeros(log_scalar_bit_width),
+			|| {
+				FieldBuffer::new(
+					log_scalar_bit_width,
+					vec![B128::ZERO; identity_packed_len].into_boxed_slice(),
+				)
+			},
 			|mut lhs, rhs| {
 				for (lhs_i, &rhs_i) in izip!(lhs.as_mut(), rhs.as_ref()) {
 					*lhs_i += rhs_i;

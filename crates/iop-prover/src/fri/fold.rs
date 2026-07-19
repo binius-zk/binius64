@@ -488,7 +488,13 @@ impl<F: Field, P: PackedField<Scalar = F>, C> BatchBrakedownFolder<P, C> {
 		let later_challenges = &challenges[max_early + log_n_oracles..];
 		let outer_tensor = eq_ind_partial_eval::<F>(outer_challenges);
 
-		let mut combined_codeword = FieldBuffer::zeros(self.log_code_len);
+		// The folders accumulate into this scalar buffer.
+		// The chunked zip stops at the shorter side, leaving a tail that no folder writes.
+		// That tail must read back as zero.
+		let mut combined_codeword = FieldBuffer::new(
+			self.log_code_len,
+			vec![F::ZERO; 1 << self.log_code_len].into_boxed_slice(),
+		);
 		let mut oracles = Vec::with_capacity(self.folders.len());
 		// TODO: Special cases when outer_challenges.len() = 0 or 1 for computational efficiency (to
 		// reduce # of scaling muls)

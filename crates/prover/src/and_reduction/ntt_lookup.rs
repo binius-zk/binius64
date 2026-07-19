@@ -188,7 +188,12 @@ where
 	///
 	/// The returned buffer holds both halves; the output-domain evaluations are the upper half.
 	fn transform(&self, input: u64) -> FieldBuffer<P> {
-		let mut values = FieldBuffer::<P>::zeros(SKIPPED_VARS + 1);
+		// The low half holds the input evaluations, written below.
+		// The upper half stays as explicit zero padding.
+		// The forward NTT reads that padding as the high-degree coefficients.
+		let packed_len = 1 << (SKIPPED_VARS + 1).saturating_sub(P::LOG_WIDTH);
+		let mut values =
+			FieldBuffer::new(SKIPPED_VARS + 1, vec![P::zero(); packed_len].into_boxed_slice());
 
 		// Inverse NTT the inputs in the first half of the buffer.
 		{

@@ -133,7 +133,13 @@ where
 		let all_folded = (0..self.n_multilinears)
 			.into_par_iter()
 			.map(|bit_offset| {
-				let mut folded = FieldBuffer::<P>::zeros(folded_n_vars);
+				// The binary-chunk fold below fully overwrites this buffer.
+				// It is zeroed only because construction requires initialized data.
+				let mut folded = FieldBuffer::new(
+					folded_n_vars,
+					vec![P::zero(); 1 << folded_n_vars.saturating_sub(P::LOG_WIDTH)]
+						.into_boxed_slice(),
+				);
 				get_binary_chunk(
 					&mut folded,
 					&self.tensor,

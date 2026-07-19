@@ -342,7 +342,11 @@ fn prove_batch_zk_basefold<F, P, NTT, Channel>(
 
 		let eq_tensor = eq_ind_partial_eval_scalars(&outer_challenges);
 
-		let mut combined = FieldBuffer::<P>::zeros(max_n);
+		// Each oracle accumulates into only the low `2^{n_i}` of every lifted chunk.
+		// Positions that no oracle touches must read back as zero.
+		let combined_packed_len = 1 << max_n.saturating_sub(P::LOG_WIDTH);
+		let mut combined =
+			FieldBuffer::new(max_n, vec![P::zero(); combined_packed_len].into_boxed_slice());
 		let mut s_prime = F::ZERO;
 		for (fri_oracle, witness_prime, eq_i, alpha_i) in
 			izip!(fri_params.input_oracles(), witness_primes, eq_tensor, alphas)

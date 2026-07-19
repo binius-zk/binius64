@@ -68,7 +68,10 @@ pub fn expand_libra_eval<P: PackedField>(
 	debug_assert!(degree < 1 << m_d);
 
 	let log_size = m_n + m_d;
-	let mut buffer = FieldBuffer::<P>::zeros(log_size);
+	// The scatter below writes only the `n x (d+1)` submatrix.
+	// The surrounding padding zeros are read back as polynomial coefficients.
+	let packed_len = 1 << log_size.saturating_sub(P::LOG_WIDTH);
+	let mut buffer = FieldBuffer::new(log_size, vec![P::zero(); packed_len].into_boxed_slice());
 	let row_stride = 1 << m_d;
 
 	for (j, &r_j) in challenge_point.iter().enumerate() {
