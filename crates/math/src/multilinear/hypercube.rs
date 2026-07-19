@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 //! Multilinear tensor expansions, generic over the hypercube the coefficients are indexed by.
 //!
@@ -248,14 +249,41 @@ pub fn scaled_eq_ind_partial_eval<Cube: Hypercube, P: PackedField>(
 ) -> FieldBuffer<P> {
 	// The expansion starts from a single value and grows one variable at a time.
 	// Allocate at the final capacity 2^n now, so the growth never reallocates.
-	let log_size = point.len();
-	let mut buffer = FieldBuffer::zeros_truncated(0, log_size);
-
-	// Seed the starting value with the scale.
-	// The expansion multiplies it through, so every coefficient ends up scaled.
-	buffer.set(0, scale);
-	tensor_prod_eq_ind::<Cube, _, _>(&mut buffer, point);
+	let mut buffer = FieldBuffer::zeros_truncated(0, point.len());
+	scaled_eq_ind_partial_eval_into::<Cube, _, _>(&mut buffer, point, scale);
 	buffer
+}
+
+/// Writes the scaled equality indicator expansion of `point` into a caller-supplied buffer.
+///
+/// This is the in-place form of [`scaled_eq_ind_partial_eval`]: the caller owns the output buffer,
+/// so its allocation can be hoisted out of a hot or parallel region and reused. On return `buffer`
+/// has `log_len == point.len()` and holds the tensor product $scale \cdot b(r_0) \otimes \ldots
+/// \otimes b(r_{n-1})$. Any prior contents are overwritten.
+///
+/// ## Preconditions
+///
+/// * `buffer.log_cap()` must be at least `point.len()`.
+pub fn scaled_eq_ind_partial_eval_into<
+	Cube: Hypercube,
+	P: PackedField,
+	Data: DerefMut<Target = [P]>,
+>(
+	buffer: &mut FieldBuffer<P, Data>,
+	point: &[P::Scalar],
+	scale: P::Scalar,
+) {
+	assert!(
+		buffer.log_cap() >= point.len(),
+		"precondition: buffer capacity must be sufficient for expansion"
+	);
+
+	// The expansion starts from a single value and grows one variable at a time, so reset the
+	// buffer to a single scalar seeded with the scale. The expansion multiplies it through, so
+	// every coefficient ends up scaled.
+	buffer.truncate(0);
+	buffer.set(0, scale);
+	tensor_prod_eq_ind::<Cube, _, _>(buffer, point);
 }
 
 /// Truncate the equality indicator expansion to the low indexed variables.

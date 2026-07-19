@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::ops::DerefMut;
 
@@ -60,6 +61,24 @@ pub fn scaled_eq_ind_partial_eval<P: PackedField>(
 	scale: P::Scalar,
 ) -> FieldBuffer<P> {
 	hypercube::scaled_eq_ind_partial_eval::<OneCube, P>(point, scale)
+}
+
+/// Writes the scaled equality indicator expansion of `point` into a caller-supplied buffer.
+///
+/// This is the in-place form of [`scaled_eq_ind_partial_eval`]: the caller owns the output buffer,
+/// so its allocation can be hoisted out of a hot or parallel region. On return `buffer` has
+/// `log_len == point.len()`; any prior contents are overwritten. A scale of one reproduces the
+/// unscaled equality indicator.
+///
+/// ## Preconditions
+///
+/// * `buffer.log_cap()` must be at least `point.len()`.
+pub fn scaled_eq_ind_partial_eval_into<P: PackedField, Data: DerefMut<Target = [P]>>(
+	buffer: &mut FieldBuffer<P, Data>,
+	point: &[P::Scalar],
+	scale: P::Scalar,
+) {
+	hypercube::scaled_eq_ind_partial_eval_into::<OneCube, _, _>(buffer, point, scale)
 }
 
 /// Truncate the equality indicator expansion to the low indexed variables.
@@ -403,6 +422,35 @@ mod tests {
 			assert_eq!(
 				scaled_eq_ind_partial_eval::<P>(&point, F::ONE),
 				eq_ind_partial_eval::<P>(&point),
+				"mismatch at log_n={log_n}"
+			);
+		}
+	}
+
+	#[test]
+	fn scaled_eq_ind_partial_eval_into_matches_allocating() {
+		let mut rng = StdRng::seed_from_u64(2);
+
+		// Invariant: filling a caller-allocated buffer must reproduce the allocating variant
+		// exactly, including for a buffer whose capacity exceeds the point length and whose
+		// prior contents are stale.
+		for log_n in [0, 1, 2, 5, 8] {
+			let point = random_scalars::<F>(&mut rng, log_n);
+			let scale = random_scalars::<F>(&mut rng, 1)[0];
+
+			// Seed the reusable buffer at the maximum capacity and fill it with unrelated data to
+			// confirm `_into` overwrites rather than accumulates.
+			let mut buffer = FieldBuffer::<P>::zeros_truncated(8, 8);
+			for i in 0..buffer.len() {
+				buffer.set(i, scale + F::ONE);
+			}
+
+			scaled_eq_ind_partial_eval_into(&mut buffer, &point, scale);
+
+			assert_eq!(buffer.log_len(), log_n, "wrong length at log_n={log_n}");
+			assert_eq!(
+				buffer,
+				scaled_eq_ind_partial_eval::<P>(&point, scale),
 				"mismatch at log_n={log_n}"
 			);
 		}
