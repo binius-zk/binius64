@@ -120,9 +120,15 @@ where
 			.step_by(LIMB_BITS)
 			.take(2 * N_LIMBS)
 			.collect::<Vec<_>>();
-		let tables = bases
+		// Allocate the table buffers up front on this thread, so the parallel region only fills
+		// them — no allocator traffic inside the rayon closures.
+		let packed_len = 1 << LIMB_BITS.saturating_sub(P::LOG_WIDTH);
+		let buffers = iter::repeat_with(|| Vec::<P>::with_capacity(packed_len))
+			.take(bases.len())
+			.collect::<Vec<_>>();
+		let tables = (bases, buffers)
 			.into_par_iter()
-			.map(|base| power_table::<F, P>(LIMB_BITS, base))
+			.map(|(base, buffer)| power_table_into(LIMB_BITS, base, buffer))
 			.collect::<Vec<_>>();
 		drop(power_table_scope);
 
@@ -191,6 +197,32 @@ where
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
+	let buffer = Vec::with_capacity(1 << log_size.saturating_sub(P::LOG_WIDTH));
+	power_table_into(log_size, base, buffer)
+}
+
+/// Fill `buffer` with the power table of `base` and wrap it as a [`FieldBuffer`] of `2^log_size`
+/// rows: row `i` holds `base^i`.
+///
+/// The caller supplies the backing `Vec`, so its allocation can be hoisted out of a hot or parallel
+/// region; `buffer` is cleared and refilled here without reallocating.
+///
+/// # Preconditions
+///
+/// * `buffer.capacity()` must equal `1 << log_size.saturating_sub(P::LOG_WIDTH)`.
+fn power_table_into<F, P>(log_size: usize, base: F, mut buffer: Vec<P>) -> FieldBuffer<P>
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	let packed_len = 1 << log_size.saturating_sub(P::LOG_WIDTH);
+	assert_eq!(
+		buffer.capacity(),
+		packed_len,
+		"precondition: buffer capacity must match the packed table length"
+	);
+	buffer.clear();
+
 	// The first block spans `2^log_block` scalars = `2^LOG_STRIDE` packed elements.
 	let log_block = P::LOG_WIDTH + LOG_STRIDE;
 
@@ -198,38 +230,33 @@ where
 	// also covers `log_size < P::LOG_WIDTH` (a single partially-filled packed element).
 	if log_size <= log_block {
 		let (scalars, _) = sequential_powers(1 << log_size, base);
-		return FieldBuffer::<P>::from_values(&scalars);
+		buffer.extend(
+			scalars
+				.chunks(P::WIDTH)
+				.map(|chunk| P::from_scalars(chunk.iter().copied())),
+		);
+		return FieldBuffer::new(log_size, buffer.into_boxed_slice());
 	}
 
 	// Build the first block's `2^log_block` sequential powers, packed into `2^LOG_STRIDE` elements;
 	// `incr = base^(2^log_block)` is the per-block increment.
 	let (block_scalars, incr_scalar) = sequential_powers(1 << log_block, base);
 	let incr = P::broadcast(incr_scalar);
-
-	let block_len = 1 << LOG_STRIDE; // packed elements per block
-	let packed_len = 1 << (log_size - P::LOG_WIDTH);
-	let mut table = Vec::<P>::with_capacity(packed_len);
-	table.extend(
+	buffer.extend(
 		block_scalars
 			.chunks(P::WIDTH)
 			.map(|chunk| P::from_scalars(chunk.iter().copied())),
 	);
-	table.resize(packed_len, P::zero());
 
-	// Fill each block from the previous one; the `block_len` multiplies within a block are
-	// independent, so only the block-to-block step carries a dependency.
-	let mut blocks = table.chunks_mut(block_len);
-	let mut prev = blocks
-		.next()
-		.expect("log_size > log_block, so packed_len > block_len");
-	for cur in blocks {
-		for (dst, &src) in cur.iter_mut().zip(prev.iter()) {
-			*dst = src * incr;
-		}
-		prev = cur;
+	// Fill each remaining packed element from the one a block earlier; the `block_len` multiplies
+	// within a block are independent, so only the block-to-block step carries a dependency.
+	let block_len = 1 << LOG_STRIDE; // packed elements per block
+	for i in block_len..packed_len {
+		let next = buffer[i - block_len] * incr;
+		buffer.push(next);
 	}
 
-	FieldBuffer::new(log_size, table.into_boxed_slice())
+	FieldBuffer::new(log_size, buffer.into_boxed_slice())
 }
 
 /// Extract limb `l` of an exponent word as a table row index.
