@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, FieldSlice};
@@ -129,7 +130,7 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 		})
 		.collect::<Vec<_>>();
 
-	FieldBuffer::new(log_size, result.into_boxed_slice())
+	FieldBuffer::new(log_size, result)
 }
 
 /// Witness data for multiplication constraint checking.
@@ -228,9 +229,9 @@ pub fn build_mulcheck_witness<F: Field, P: PackedField<Scalar = F>>(
 	}
 
 	MulCheckWitness {
-		a: FieldBuffer::new(log_n_constraints, a.into_boxed_slice()),
-		b: FieldBuffer::new(log_n_constraints, b.into_boxed_slice()),
-		c: FieldBuffer::new(log_n_constraints, c.into_boxed_slice()),
+		a: FieldBuffer::new(log_n_constraints, a),
+		b: FieldBuffer::new(log_n_constraints, b),
+		c: FieldBuffer::new(log_n_constraints, c),
 	}
 }
 
@@ -401,11 +402,10 @@ mod tests {
 	#[test]
 	fn test_wiring_prove_verify() {
 		use binius_hash::StdDigest;
-		use binius_iop::{
-			channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
-			naive_channel::NaiveVerifierChannel,
+		use binius_iop::channel::{
+			IOPVerifierChannel, OracleLinearRelation, OracleSpec, naive::NaiveVerifierChannel,
 		};
-		use binius_iop_prover::{channel::IOPProverChannel, naive_channel::NaiveProverChannel};
+		use binius_iop_prover::channel::{IOPProverChannel, naive::NaiveProverChannel};
 		use binius_ip::channel::IPVerifierChannel;
 		use binius_ip_prover::channel::IPProverChannel;
 		use binius_math::{inner_product::inner_product_buffers, test_utils::random_field_buffer};

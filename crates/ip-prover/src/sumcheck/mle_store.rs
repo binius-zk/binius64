@@ -402,7 +402,7 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 				// It is zeroed only because construction requires initialized data.
 				Column::Borrowed(_) => Some(FieldBuffer::new(
 					n_vars,
-					vec![P::zero(); 1 << n_vars.saturating_sub(P::LOG_WIDTH)].into_boxed_slice(),
+					vec![P::zero(); 1 << n_vars.saturating_sub(P::LOG_WIDTH)],
 				)),
 				_ => None,
 			})

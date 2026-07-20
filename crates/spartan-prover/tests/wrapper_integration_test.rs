@@ -5,12 +5,12 @@ use std::sync::Arc;
 use binius_field::{BinaryField128bGhash as B128, Field, Random, arch::OptimalPackedB128};
 use binius_hash::StdHashSuite;
 use binius_iop::{
-	basefold_compiler::BaseFoldVerifierCompiler,
+	basefold::compiler::BaseFoldVerifierCompiler,
 	channel::IOPVerifierChannel,
 	fri::{self, MinProofSizeStrategy},
 	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_iop_prover::basefold_compiler::BaseFoldProverCompiler;
+use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
 use binius_ip::channel::IPVerifierChannel;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::ntt::{NeighborsLastSingleThread, domain_context::GenericOnTheFly};

@@ -155,14 +155,8 @@ where
 				|| {
 					(
 						vec![RoundEvals2::default(); sums.len()],
-						FieldBuffer::new(
-							chunk_vars,
-							vec![P::zero(); scratchpad_packed_len].into_boxed_slice(),
-						),
-						FieldBuffer::new(
-							chunk_vars,
-							vec![P::zero(); scratchpad_packed_len].into_boxed_slice(),
-						),
+						FieldBuffer::new(chunk_vars, vec![P::zero(); scratchpad_packed_len]),
+						FieldBuffer::new(chunk_vars, vec![P::zero(); scratchpad_packed_len]),
 					)
 				},
 				|(mut packed_prime_evals, mut binary_chunk_0, mut binary_chunk_1), chunk_index| {

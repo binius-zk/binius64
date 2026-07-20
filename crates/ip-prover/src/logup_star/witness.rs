@@ -59,16 +59,17 @@ where
 	// Why fan out: the per-looker expansion is itself parallel.
 	//   But it under-saturates the machine at moderate n.
 	//   Spreading the lookers over the cores fills them.
-	// The 2^n buffers are allocated up front on this thread, so the parallel region only fills
+	// The 2^n backing Vecs are reserved up front on this thread, so the parallel region only fills
 	// them — no allocator traffic inside the rayon closures.
 	// Invariant: the fill writes results back in looker order (the zip is index-aligned).
 	//   So numerator j stays gamma^j * eq_{r_j}.
-	let mut numerators = (0..lookers.len())
-		.map(|_| FieldBuffer::<P>::zeros_truncated(0, n))
+	let packed_len = 1 << n.saturating_sub(P::LOG_WIDTH);
+	let buffers = iter::repeat_with(|| Vec::<P>::with_capacity(packed_len))
+		.take(lookers.len())
 		.collect::<Vec<_>>();
-	(numerators.par_iter_mut(), scales.as_slice(), lookers)
+	let numerators = (buffers, scales.as_slice(), lookers)
 		.into_par_iter()
-		.for_each(|(numerator, &scale, looker)| {
+		.map(|(buffer, &scale, looker)| {
 			assert_eq!(
 				looker.eval_point.len(),
 				n,
@@ -84,8 +85,9 @@ where
 			// Looker j's numerator is gamma^j * eq_{r_j}.
 			// Seeding the expansion with gamma^j folds the scale into the tensor product.
 			// That keeps it to one pass over one 2^n buffer.
-			scaled_eq_ind_partial_eval_into(numerator, looker.eval_point, scale);
-		});
+			scaled_eq_ind_partial_eval_into(looker.eval_point, scale, buffer)
+		})
+		.collect::<Vec<_>>();
 
 	// Scatter every looker's numerator onto the shared table cube, summed into one buffer.
 	let combined = combined_pushforward::<F, P>(&numerators, lookers, table_n_vars);
@@ -231,7 +233,7 @@ where
 		.map(|chunk| c_packed - P::from_scalars(chunk.iter().copied().map(embed_position::<F>)))
 		.collect::<Vec<_>>();
 
-	FieldBuffer::new(log_len, packed.into_boxed_slice())
+	FieldBuffer::new(log_len, packed)
 }
 
 /// Build the table denominator `c - J` over the `m`-variable table cube.

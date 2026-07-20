@@ -209,12 +209,7 @@ where
 	(vec.as_ref().par_chunks(CHUNK_BITS), mat.as_ref().par_chunks(CHUNK_BITS))
 		.into_par_iter()
 		.fold(
-			|| {
-				FieldBuffer::new(
-					log_scalar_bit_width,
-					vec![B128::ZERO; identity_packed_len].into_boxed_slice(),
-				)
-			},
+			|| FieldBuffer::new(log_scalar_bit_width, vec![B128::ZERO; identity_packed_len]),
 			|mut acc, (vec_chunk, mat_chunk)| {
 				let mut vec_chunk_iter = P::iter_slice(vec_chunk);
 				let mut mat_chunk_iter = P::iter_slice(mat_chunk);
@@ -254,12 +249,7 @@ where
 			},
 		)
 		.reduce(
-			|| {
-				FieldBuffer::new(
-					log_scalar_bit_width,
-					vec![B128::ZERO; identity_packed_len].into_boxed_slice(),
-				)
-			},
+			|| FieldBuffer::new(log_scalar_bit_width, vec![B128::ZERO; identity_packed_len]),
 			|mut lhs, rhs| {
 				for (lhs_i, &rhs_i) in izip!(lhs.as_mut(), rhs.as_ref()) {
 					*lhs_i += rhs_i;

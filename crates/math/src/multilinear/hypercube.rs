@@ -123,19 +123,33 @@ impl Hypercube for InfCube {
 	}
 }
 
+/// Grows a packed backing `Vec` from `log_len` to `log_len + 1` variables, zero-initializing the
+/// newly live region so the store stays fully initialized.
+///
+/// This is a temporary placeholder for the tensor-expansion routines below: it re-initializes the
+/// region the expansion immediately overwrites. A follow-up will split the fill by packing width
+/// and use `spare_capacity_mut`/`set_len` to bump the length without the redundant writes.
+fn grow_packed_backing<P: PackedField>(data: &mut Vec<P>, log_len: usize) {
+	let new_log_len = log_len + 1;
+	// While still narrower than one packed word, zero the newly live lanes of the first word.
+	if log_len < P::LOG_WIDTH {
+		let first = &mut data[0];
+		for i in 1 << log_len..(1 << new_log_len).min(P::WIDTH) {
+			first.set(i, <P::Scalar as Field>::ZERO);
+		}
+	}
+	data.resize(1 << new_log_len.saturating_sub(P::LOG_WIDTH), P::zero());
+}
+
 /// Tensor of values with the equality indicator evaluated at `extra_query_coordinates`.
 ///
-/// Let $n$ be `values.log_len()` and $k$ be the length of `extra_query_coordinates`.
-///
-/// ## Preconditions
-///
-/// * `values` must have enough capacity: `values.log_cap() >= values.log_len() +
-///   extra_query_coordinates.len()`
+/// Let $n$ be `values.log_len()` and $k$ be the length of `extra_query_coordinates`. The returned
+/// buffer grows its backing `Vec` by one variable per coordinate.
 ///
 /// # Formal Definition
 ///
-/// `values` is updated to contain the tensor product of its $2^n$ values with the linear bases of
-/// `Cube` evaluated at $r = (r_0, \ldots, r_{k-1})$:
+/// The result is the tensor product of `values`' $2^n$ values with the linear bases of `Cube`
+/// evaluated at $r = (r_0, \ldots, r_{k-1})$:
 ///
 /// $$
 /// v \otimes b(r_0) \otimes \ldots \otimes b(r_{k-1}),
@@ -145,28 +159,26 @@ impl Hypercube for InfCube {
 ///
 /// # Interpretation
 ///
-/// Let $f$ be the $n$-variate multilinear with coefficients $v$ over `Cube`. Then `values` is
-/// updated to the coefficients of the $(n+k)$-variate multilinear
+/// Let $f$ be the $n$-variate multilinear with coefficients $v$ over `Cube`. Then the result holds
+/// the coefficients of the $(n+k)$-variate multilinear
 ///
 /// $$
 /// g(X_0, \ldots, X_{n+k-1}) = f(X_0, \ldots, X_{n-1}) \cdot
 ///     \widetilde{eq}(X_n, \ldots, X_{n+k-1}, r).
 /// $$
-pub fn tensor_prod_eq_ind<Cube: Hypercube, P: PackedField, Data: DerefMut<Target = [P]>>(
-	values: &mut FieldBuffer<P, Data>,
+pub fn tensor_prod_eq_ind<Cube: Hypercube, P: PackedField>(
+	mut values: FieldBuffer<P, Vec<P>>,
 	extra_query_coordinates: &[P::Scalar],
-) {
-	let new_log_len = values.log_len() + extra_query_coordinates.len();
-
-	assert!(
-		values.log_cap() >= new_log_len,
-		"precondition: values capacity must be sufficient for expansion"
-	);
-
+) -> FieldBuffer<P, Vec<P>> {
 	for &r_i in extra_query_coordinates {
 		let packed_r_i = P::broadcast(r_i);
 
-		values.resize(values.log_len() + 1);
+		// Grow the backing by one variable, then rewrap.
+		let new_log_len = values.log_len() + 1;
+		let mut data = values.take_data();
+		grow_packed_backing::<P>(&mut data, new_log_len - 1);
+		values = FieldBuffer::new(new_log_len, data);
+
 		let mut split = values.split_half_mut();
 		let (mut lo, mut hi) = split.halves();
 
@@ -176,6 +188,7 @@ pub fn tensor_prod_eq_ind<Cube: Hypercube, P: PackedField, Data: DerefMut<Target
 				[*lo_i, *hi_i] = Cube::expand_var(lo_i, &packed_r_i);
 			});
 	}
+	values
 }
 
 /// Left tensor of values with the equality indicator evaluated at `extra_query_coordinates`.
@@ -191,26 +204,19 @@ pub fn tensor_prod_eq_ind<Cube: Hypercube, P: PackedField, Data: DerefMut<Target
 ///
 /// # Implementation
 ///
-/// This operation is inplace, singlethreaded, and not very optimized. Main intent is to use it on
-/// small tensors out of the hot paths.
-///
-/// ## Preconditions
-///
-/// * `values` must have enough capacity: `values.log_cap() >= values.log_len() +
-///   extra_query_coordinates.len()`
-pub fn tensor_prod_eq_ind_prepend<Cube: Hypercube, P: PackedField, Data: DerefMut<Target = [P]>>(
-	values: &mut FieldBuffer<P, Data>,
+/// This operation grows the returned buffer one variable per coordinate, singlethreaded, and is not
+/// very optimized. Main intent is to use it on small tensors out of the hot paths.
+pub fn tensor_prod_eq_ind_prepend<Cube: Hypercube, P: PackedField>(
+	mut values: FieldBuffer<P, Vec<P>>,
 	extra_query_coordinates: &[P::Scalar],
-) {
-	let new_log_len = values.log_len() + extra_query_coordinates.len();
-
-	assert!(
-		values.log_cap() >= new_log_len,
-		"precondition: values capacity must be sufficient for expansion"
-	);
-
+) -> FieldBuffer<P, Vec<P>> {
 	for r_i in extra_query_coordinates.iter().rev() {
-		values.zero_extend(values.log_len() + 1);
+		// Grow the backing by one variable, then rewrap.
+		let new_log_len = values.log_len() + 1;
+		let mut data = values.take_data();
+		grow_packed_backing::<P>(&mut data, new_log_len - 1);
+		values = FieldBuffer::new(new_log_len, data);
+
 		for i in (0..values.len() / 2).rev() {
 			let value = get_packed_slice(values.as_ref(), i);
 			let [lo, hi] = Cube::expand_var(&value, r_i);
@@ -218,6 +224,7 @@ pub fn tensor_prod_eq_ind_prepend<Cube: Hypercube, P: PackedField, Data: DerefMu
 			set_packed_slice(values.as_mut(), 2 * i + 1, hi);
 		}
 	}
+	values
 }
 
 /// Computes the partial evaluation of the equality indicator polynomial.
@@ -247,43 +254,41 @@ pub fn scaled_eq_ind_partial_eval<Cube: Hypercube, P: PackedField>(
 	point: &[P::Scalar],
 	scale: P::Scalar,
 ) -> FieldBuffer<P> {
-	// The expansion starts from a single value and grows one variable at a time.
-	// Allocate at the final capacity 2^n now, so the growth never reallocates.
-	let mut buffer = FieldBuffer::zeros_truncated(0, point.len());
-	scaled_eq_ind_partial_eval_into::<Cube, _, _>(&mut buffer, point, scale);
-	buffer
+	// Reserve the final packed length up front so the per-variable growth never reallocates.
+	let packed_len = 1 << point.len().saturating_sub(P::LOG_WIDTH);
+	scaled_eq_ind_partial_eval_into::<Cube, P>(point, scale, Vec::with_capacity(packed_len))
 }
 
-/// Writes the scaled equality indicator expansion of `point` into a caller-supplied buffer.
+/// Builds the scaled equality indicator expansion of `point` in a caller-supplied backing `Vec`.
 ///
-/// This is the in-place form of [`scaled_eq_ind_partial_eval`]: the caller owns the output buffer,
-/// so its allocation can be hoisted out of a hot or parallel region and reused. On return `buffer`
-/// has `log_len == point.len()` and holds the tensor product $scale \cdot b(r_0) \otimes \ldots
-/// \otimes b(r_{n-1})$. Any prior contents are overwritten.
+/// This is the allocation-hoisting form of [`scaled_eq_ind_partial_eval`]: the caller owns the
+/// backing `Vec`, so its allocation can be reserved on a different thread than the one that fills
+/// it. The `Vec` is cleared, seeded with `scale`, grown one variable at a time into the tensor
+/// product $scale \cdot b(r_0) \otimes \ldots \otimes b(r_{n-1})$, and wrapped into the returned
+/// buffer with `log_len == point.len()`.
 ///
-/// ## Preconditions
+/// # Preconditions
 ///
-/// * `buffer.log_cap()` must be at least `point.len()`.
-pub fn scaled_eq_ind_partial_eval_into<
-	Cube: Hypercube,
-	P: PackedField,
-	Data: DerefMut<Target = [P]>,
->(
-	buffer: &mut FieldBuffer<P, Data>,
+/// * `buffer.capacity()` must equal `1 << point.len().saturating_sub(P::LOG_WIDTH)`, so the growth
+///   never reallocates and the final wrap keeps the same allocation.
+pub fn scaled_eq_ind_partial_eval_into<Cube: Hypercube, P: PackedField>(
 	point: &[P::Scalar],
 	scale: P::Scalar,
-) {
-	assert!(
-		buffer.log_cap() >= point.len(),
-		"precondition: buffer capacity must be sufficient for expansion"
+	mut buffer: Vec<P>,
+) -> FieldBuffer<P> {
+	let packed_len = 1 << point.len().saturating_sub(P::LOG_WIDTH);
+	assert_eq!(
+		buffer.capacity(),
+		packed_len,
+		"precondition: buffer capacity must match the packed expansion length"
 	);
 
-	// The expansion starts from a single value and grows one variable at a time, so reset the
-	// buffer to a single scalar seeded with the scale. The expansion multiplies it through, so
-	// every coefficient ends up scaled.
-	buffer.truncate(0);
-	buffer.set(0, scale);
-	tensor_prod_eq_ind::<Cube, _, _>(buffer, point);
+	// Seed a single-scalar buffer with the scale; the expansion multiplies it through, so every
+	// coefficient ends up scaled.
+	buffer.clear();
+	buffer.push(P::from_scalars(iter::once(scale)));
+	let values = FieldBuffer::new(0, buffer);
+	tensor_prod_eq_ind::<Cube, P>(values, point)
 }
 
 /// Truncate the equality indicator expansion to the low indexed variables.
@@ -592,10 +597,9 @@ mod tests {
 			let point = random_scalars::<F>(&mut rng, log_n);
 			let (prefix, suffix) = point.split_at(log_n / 2);
 
-			let mut prepend = FieldBuffer::<P>::zeros_truncated(0, log_n);
-			prepend.set(0, F::ONE);
-			tensor_prod_eq_ind::<InfCube, _, _>(&mut prepend, suffix);
-			tensor_prod_eq_ind_prepend::<InfCube, _, _>(&mut prepend, prefix);
+			let prepend = FieldBuffer::<P, _>::scalar_with_capacity(F::ONE, log_n);
+			let prepend = tensor_prod_eq_ind::<InfCube, P>(prepend, suffix);
+			let prepend = tensor_prod_eq_ind_prepend::<InfCube, P>(prepend, prefix);
 
 			prop_assert_eq!(prepend, eq_ind_partial_eval::<InfCube, P>(&point));
 		}

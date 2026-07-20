@@ -395,7 +395,7 @@ where
 			},
 		)
 		.collect();
-	FieldBuffer::new(folded_log_len, values.into_boxed_slice())
+	FieldBuffer::new(folded_log_len, values)
 }
 
 pub struct ProxTestFolder<P: PackedField, C> {
@@ -491,10 +491,8 @@ impl<F: Field, P: PackedField<Scalar = F>, C> BatchBrakedownFolder<P, C> {
 		// The folders accumulate into this scalar buffer.
 		// The chunked zip stops at the shorter side, leaving a tail that no folder writes.
 		// That tail must read back as zero.
-		let mut combined_codeword = FieldBuffer::new(
-			self.log_code_len,
-			vec![F::ZERO; 1 << self.log_code_len].into_boxed_slice(),
-		);
+		let mut combined_codeword =
+			FieldBuffer::new(self.log_code_len, vec![F::ZERO; 1 << self.log_code_len]);
 		let mut oracles = Vec::with_capacity(self.folders.len());
 		// TODO: Special cases when outer_challenges.len() = 0 or 1 for computational efficiency (to
 		// reduce # of scaling muls)
@@ -581,7 +579,7 @@ mod tests {
 
 		// Fold the message using regular folding: combine the low `arity` columns of each row
 		// with the eq tensor of the challenges (a partial evaluation of each row at the point).
-		let folded_vals: Box<[B128]> = msg
+		let folded_vals: Vec<B128> = msg
 			.chunks(arity)
 			.map(|row| inner_product_buffers(&row, &query))
 			.collect();

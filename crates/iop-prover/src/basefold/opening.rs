@@ -1,6 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+//! The core BaseFold opening protocol on the prover side.
+
 use binius_field::{BinaryField, PackedField};
 use binius_ip::mlecheck;
 use binius_ip_prover::sumcheck::{common::SumcheckProver, multilinear_eval::MultilinearEvalProver};

@@ -270,7 +270,7 @@ pub fn build_g_parts_from_folded_words<F: BinaryField>(
 	// Split the flat accumulator into one multilinear per shift variant.
 	multilinears
 		.chunks(1 << LOG_LEN)
-		.map(|chunk| FieldBuffer::new(LOG_LEN, chunk.to_vec().into_boxed_slice()))
+		.map(|chunk| FieldBuffer::new(LOG_LEN, chunk.to_vec()))
 		.collect::<Vec<_>>()
 		.try_into()
 		.expect("chunks yield SHIFT_VARIANT_COUNT parts of size 1 << LOG_LEN")

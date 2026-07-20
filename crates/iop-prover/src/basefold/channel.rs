@@ -1,11 +1,6 @@
 // Copyright 2026 The Binius Developers
 
 //! BaseFold ZK implementation of the IOP prover channel.
-//!
-//! This module provides [`BaseFoldProverChannel`], which implements [`IOPProverChannel`]
-//! using FRI commitment and the batched ZK BaseFold opening protocol. ZK oracles are blinded with a
-//! mask generated internally; non-ZK oracles are committed without a mask. All committed oracles
-//! are opened with a single combined FRI.
 
 use binius_field::{BinaryField, PackedField};
 use binius_iop::{channel::OracleSpec, fri::FRIParams};
@@ -128,7 +123,7 @@ where
 	/// shared point `r`, then one combined FRI opening over every committed oracle
 	/// (in oracle-index order). Mirrors [`BaseFoldVerifierChannel::finish`].
 	///
-	/// [`BaseFoldVerifierChannel::finish`]: binius_iop::basefold_channel::BaseFoldVerifierChannel::finish
+	/// [`BaseFoldVerifierChannel::finish`]: binius_iop::basefold::channel::BaseFoldVerifierChannel::finish
 	pub fn finish(self) {
 		let Self {
 			mut channel,
@@ -165,7 +160,7 @@ where
 /// [`BaseFoldProverChannel`] — through its [`MerkleIPProverChannel`] interface: it sends the
 /// masked inner products σ_i, runs one batched sumcheck reducing the masked claims to a shared
 /// point `r`, then opens all committed oracles together with a single combined FRI. Mirrors
-/// [`binius_iop::basefold_channel::BaseFoldVerifierChannel::finish`].
+/// [`binius_iop::basefold::channel::BaseFoldVerifierChannel::finish`].
 ///
 /// The masking inner products and the batched sumcheck process the `relations` in arrival order (so
 /// each reduced eval lines up with its batched-claim coefficient), while the per-oracle evaluations
@@ -345,8 +340,7 @@ fn prove_batch_zk_basefold<F, P, NTT, Channel>(
 		// Each oracle accumulates into only the low `2^{n_i}` of every lifted chunk.
 		// Positions that no oracle touches must read back as zero.
 		let combined_packed_len = 1 << max_n.saturating_sub(P::LOG_WIDTH);
-		let mut combined =
-			FieldBuffer::new(max_n, vec![P::zero(); combined_packed_len].into_boxed_slice());
+		let mut combined = FieldBuffer::new(max_n, vec![P::zero(); combined_packed_len]);
 		let mut s_prime = F::ZERO;
 		for (fri_oracle, witness_prime, eq_i, alpha_i) in
 			izip!(fri_params.input_oracles(), witness_primes, eq_tensor, alphas)
@@ -537,7 +531,7 @@ mod tests {
 	};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
-		basefold_compiler::BaseFoldVerifierCompiler,
+		basefold::compiler::BaseFoldVerifierCompiler,
 		channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 		fri::MinProofSizeStrategy,
 		merkle_tree::BinaryMerkleTreeScheme,
@@ -553,7 +547,7 @@ mod tests {
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::IOPProverChannel;
-	use crate::basefold_compiler::BaseFoldProverCompiler;
+	use crate::basefold::compiler::BaseFoldProverCompiler;
 
 	type StdChallenger = HasherChallenger<StdDigest>;
 

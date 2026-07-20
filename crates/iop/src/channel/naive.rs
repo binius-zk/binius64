@@ -1,10 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-//! Naive implementation of IOP verifier channel for testing.
-//!
-//! This module provides [`NaiveVerifierChannel`], a simple implementation of [`IOPVerifierChannel`]
-//! that reads full polynomial data from the transcript instead of verifying FRI commitments.
-//! This is intended for unit testing of protocols without the overhead of BaseFold/FRI.
+//! Naive [`IOPVerifierChannel`] for testing: reads full polynomials instead of verifying FRI.
 
 use binius_field::{Field, util::FieldFn};
 use binius_ip::channel::IPVerifierChannel;

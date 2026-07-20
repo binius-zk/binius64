@@ -15,7 +15,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use binius_field::{BinaryField, util::FieldFn};
 use binius_iop::{
-	basefold_channel::{BaseFoldOracle, BaseFoldVerifierChannel},
+	basefold::channel::{BaseFoldOracle, BaseFoldVerifierChannel},
 	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 	merkle_channel::MerkleIPVerifierChannel,
 };

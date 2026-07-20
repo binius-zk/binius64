@@ -1,9 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-//! A lightweight [`IOPVerifierChannel`] implementation that counts proof bytes without
-//! performing any actual verification.
-//!
-//! This is useful for estimating proof sizes without running the full protocol.
+//! An [`IOPVerifierChannel`] that counts proof bytes without verifying, for proof-size estimation.
 
 use binius_field::{BinaryField, util::FieldFn};
 use binius_ip::channel::IPVerifierChannel;

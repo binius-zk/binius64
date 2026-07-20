@@ -244,7 +244,7 @@ where
 			));
 		}
 		values.resize(capacity, P::default());
-		FieldBuffer::new(log_len, values.into_boxed_slice())
+		FieldBuffer::new(log_len, values)
 	};
 
 	let log_public_words = checked_log_2(key_collection.public.n_words());

@@ -192,8 +192,7 @@ where
 		// The upper half stays as explicit zero padding.
 		// The forward NTT reads that padding as the high-degree coefficients.
 		let packed_len = 1 << (SKIPPED_VARS + 1).saturating_sub(P::LOG_WIDTH);
-		let mut values =
-			FieldBuffer::new(SKIPPED_VARS + 1, vec![P::zero(); packed_len].into_boxed_slice());
+		let mut values = FieldBuffer::new(SKIPPED_VARS + 1, vec![P::zero(); packed_len]);
 
 		// Inverse NTT the inputs in the first half of the buffer.
 		{

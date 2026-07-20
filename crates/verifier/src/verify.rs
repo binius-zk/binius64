@@ -7,9 +7,10 @@ use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, BinaryField, ExtensionField, FieldOps};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
-	basefold_compiler::BaseFoldVerifierCompiler,
-	channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
-	oracle_setup_channel::OracleSetupChannel,
+	basefold::compiler::BaseFoldVerifierCompiler,
+	channel::{
+		IOPVerifierChannel, OracleLinearRelation, OracleSpec, oracle_setup::OracleSetupChannel,
+	},
 };
 use binius_ip::channel::IPVerifierChannel;
 use binius_math::{
