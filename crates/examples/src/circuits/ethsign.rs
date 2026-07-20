@@ -3,13 +3,11 @@ use std::{array, iter};
 
 use anyhow::Result;
 use binius_circuits::{
-	bignum::BigUint, ecdsa::ecrecover, fixed_byte_vec::ByteVec, keccak::keccak256_varlen,
+	bignum::BigUint, bytes::swap_bytes, ecdsa::ecrecover, fixed_byte_vec::ByteVec,
+	keccak::keccak256_varlen,
 };
 use binius_core::word::Word;
-use binius_frontend::{
-	CircuitBuilder, Wire, WitnessFiller,
-	util::{byteswap, pack_bytes_into_wires_le},
-};
+use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use clap::Args;
 use ethsign::SecretKey;
 use rand::prelude::*;
@@ -71,7 +69,7 @@ impl ExampleCircuit for EthSignExample {
 					limbs: msg_digest
 						.iter()
 						.rev()
-						.map(|&word| byteswap(builder, word))
+						.map(|&word| swap_bytes(builder, word))
 						.collect(),
 				};
 
@@ -95,7 +93,7 @@ impl ExampleCircuit for EthSignExample {
 
 				let public_key_message = public_key_limbs
 					.into_iter()
-					.map(|word| byteswap(builder, word))
+					.map(|word| swap_bytes(builder, word))
 					.collect::<Vec<_>>();
 
 				// The public key is always 64 bytes; hash it with a constant-length `ByteVec`. Its
@@ -161,14 +159,14 @@ impl ExampleCircuit for EthSignExample {
 
 			// ethsign crate returns r & s big endian, byteswap
 			signature.r.reverse();
-			pack_bytes_into_wires_le(w, r, &signature.r);
+			w.pack_bytes_le(r, &signature.r);
 
 			signature.s.reverse();
-			pack_bytes_into_wires_le(w, s, &signature.s);
+			w.pack_bytes_le(s, &signature.s);
 
 			// The public key (and hence the address-hash input) is derived in-circuit from the
 			// recovered signature, so only the expected address wires need populating.
-			pack_bytes_into_wires_le(w, address, public.address());
+			w.pack_bytes_le(address, public.address());
 		}
 
 		Ok(())

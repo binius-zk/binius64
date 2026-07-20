@@ -12,7 +12,7 @@ use binius_circuits::{
 	slice::assert_slice_eq,
 };
 use binius_core::Word;
-use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
+use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use clap::Args;
 use jwt_simple::prelude::*;
 use rand::prelude::*;
@@ -395,7 +395,7 @@ impl ZkLogin {
 	}
 
 	pub fn populate_vk_u(&self, w: &mut WitnessFiller, vk_u_bytes: &[u8; 32]) {
-		pack_bytes_into_wires_le(w, &self.vk_u, vk_u_bytes);
+		w.pack_bytes_le(&self.vk_u, vk_u_bytes);
 	}
 
 	pub fn populate_t_max(&self, w: &mut WitnessFiller, t_max_bytes: &[u8]) {
@@ -410,7 +410,7 @@ impl ZkLogin {
 		// The base64 nonce is 43 characters, but we need to pad to 48 bytes (6 wires)
 		let mut padded = vec![0u8; 48];
 		padded[..base64_nonce.len()].copy_from_slice(&base64_nonce[..base64_nonce.len()]);
-		pack_bytes_into_wires_le(w, &self.base64_jwt_payload_nonce, &padded);
+		w.pack_bytes_le(&self.base64_jwt_payload_nonce, &padded);
 	}
 }
 

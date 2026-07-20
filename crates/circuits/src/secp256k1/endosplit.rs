@@ -19,9 +19,11 @@
 //! `k1 + λ k2 = k (mod n)`.
 
 use binius_core::Word;
-use binius_frontend::{CircuitBuilder, Wire, hints::Hint, util::num_biguint_from_u64_limbs};
+use binius_frontend::{CircuitBuilder, Wire, hints::Hint};
 use hex_literal::hex;
 use num_bigint::BigUint;
+
+use crate::bignum::num_biguint_from_u64_limbs;
 
 pub struct Secp256k1EndosplitHint {
 	minus_b1: BigUint,

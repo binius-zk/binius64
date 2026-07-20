@@ -101,7 +101,6 @@ pub fn create_concat_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 
 pub fn create_slice_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 	use binius_circuits::slice::{assert_slice_eq, slice};
-	use binius_frontend::util::pack_bytes_into_wires_le;
 
 	let builder = CircuitBuilder::new();
 
@@ -126,8 +125,8 @@ pub fn create_slice_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 
 	witness_filler[len_input] = Word(input_data.len() as u64);
 	witness_filler[len_slice] = Word(slice_data.len() as u64);
-	pack_bytes_into_wires_le(&mut witness_filler, &input, input_data);
-	pack_bytes_into_wires_le(&mut witness_filler, &expected, slice_data);
+	witness_filler.pack_bytes_le(&input, input_data);
+	witness_filler.pack_bytes_le(&expected, slice_data);
 	witness_filler[offset] = Word(offset_val);
 
 	// Get the witness vector
