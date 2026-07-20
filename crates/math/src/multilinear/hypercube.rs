@@ -6,7 +6,7 @@
 //! See [`Hypercube`] for the abstraction and [`OneCube`]/[`InfCube`] for the two instances. The
 //! routines here mirror those in [`super::eq`], which specialize them to [`OneCube`].
 
-use std::{iter, ops::DerefMut, slice};
+use std::{iter, slice};
 
 use binius_field::{
 	Field, PackedField,
@@ -15,7 +15,7 @@ use binius_field::{
 };
 use binius_utils::rayon::prelude::*;
 
-use crate::FieldBuffer;
+use crate::{FieldBuffer, field_buffer::BufferData};
 
 /// A hypercube of coefficients for multilinear polynomials.
 ///
@@ -336,11 +336,7 @@ pub fn scaled_eq_ind_partial_eval_into<Cube: Hypercube, P: PackedField>(
 /// ## Preconditions
 ///
 /// * `truncated_log_len` must be at most `values.log_len()`
-pub fn eq_ind_truncate_low_inplace<
-	Cube: Hypercube,
-	P: PackedField,
-	Data: DerefMut<Target = [P]>,
->(
+pub fn eq_ind_truncate_low_inplace<Cube: Hypercube, P: PackedField, Data: BufferData<P>>(
 	values: &mut FieldBuffer<P, Data>,
 	truncated_log_len: usize,
 ) {

@@ -1,12 +1,10 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::ops::DerefMut;
-
 use binius_field::{PackedField, field::FieldOps};
 
 use super::hypercube::{self, Hypercube, OneCube};
-use crate::FieldBuffer;
+use crate::{FieldBuffer, field_buffer::BufferData};
 
 /// Left tensor of values with the eq indicator evaluated at extra_query_coordinates.
 ///
@@ -87,7 +85,7 @@ pub fn scaled_eq_ind_partial_eval_into<P: PackedField>(
 /// ## Preconditions
 ///
 /// * `truncated_log_len` must be at most `values.log_len()`
-pub fn eq_ind_truncate_low_inplace<P: PackedField, Data: DerefMut<Target = [P]>>(
+pub fn eq_ind_truncate_low_inplace<P: PackedField, Data: BufferData<P>>(
 	values: &mut FieldBuffer<P, Data>,
 	truncated_log_len: usize,
 ) {
