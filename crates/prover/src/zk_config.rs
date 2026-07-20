@@ -8,6 +8,7 @@
 
 use std::{marker::PhantomData, sync::Arc};
 
+use binius_compute::BufferPool;
 use binius_core::constraint_system::{ConstraintSystem, ValueVec};
 use binius_field::{BinaryField128bGhash as B128, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
@@ -159,8 +160,10 @@ where
 			)
 			.entered();
 
+			// Working buffers for this proof are drawn from a single pool that lives for the call.
+			let pool = BufferPool::new();
 			self.inner_iop_prover
-				.prove::<P, _>(witness, &mut wrapped_channel)?;
+				.prove::<P, _>(witness, &mut wrapped_channel, &pool)?;
 		}
 
 		// Finish runs the outer spartan proof.

@@ -3,6 +3,7 @@
 
 use std::marker::PhantomData;
 
+use binius_compute::{BufferPool, PoolVec};
 use binius_core::{
 	constraint_system::{
 		AndConstraint, BmulConstraint, ConstraintSystem, ImulConstraint, ValueVec,
@@ -87,7 +88,12 @@ impl IOPProver {
 	///
 	/// This is the core proving logic, independent of the specific IOP compilation strategy.
 	/// For most users, [`Prover::prove`] is the simpler interface.
-	pub fn prove<P, Channel>(&self, witness: ValueVec, channel: &mut Channel) -> Result<(), Error>
+	pub fn prove<P, Channel>(
+		&self,
+		witness: ValueVec,
+		channel: &mut Channel,
+		pool: &BufferPool,
+	) -> Result<(), Error>
 	where
 		P: PackedField<Scalar = B128>,
 		Channel: IOPProverChannel<P>,
@@ -129,7 +135,7 @@ impl IOPProver {
 			)
 			.entered();
 			let mul_witness = tracing::debug_span!("Assemble columns")
-				.in_scope(|| build_intmul_witness(&cs.imul_constraints, &witness));
+				.in_scope(|| build_intmul_witness(&cs.imul_constraints, &witness, pool));
 
 			let intmul_output = prove_intmul_reduction::<_, P, _>(mul_witness, &mut *channel)?;
 			drop(intmul_guard);
@@ -151,7 +157,7 @@ impl IOPProver {
 			)
 			.entered();
 			let binmul_witness = tracing::debug_span!("Assemble columns")
-				.in_scope(|| build_binmul_witness(&cs.bmul_constraints, &witness));
+				.in_scope(|| build_binmul_witness(&cs.bmul_constraints, &witness, pool));
 
 			let binmul_output = prove_binmul_reduction::<_, P, _>(binmul_witness, &mut *channel);
 			drop(binmul_guard);
@@ -166,7 +172,7 @@ impl IOPProver {
 				.entered();
 		let bitand_claim = {
 			let bitand_witness = tracing::debug_span!("Assemble columns")
-				.in_scope(|| build_bitand_witness(&cs.and_constraints, &witness));
+				.in_scope(|| build_bitand_witness(&cs.and_constraints, &witness, pool));
 
 			let AndCheckOutput {
 				a_eval,
@@ -401,7 +407,10 @@ where
 		let mut channel = self
 			.basefold_compiler
 			.create_channel_without_zk_from_transcript::<H, Challenger_, _>(transcript);
-		self.iop_prover.prove::<P, _>(witness, &mut channel)?;
+		// Working buffers for this proof are drawn from a single pool that lives for the call.
+		let pool = BufferPool::new();
+		self.iop_prover
+			.prove::<P, _>(witness, &mut channel, &pool)?;
 		channel.finish();
 		Ok(())
 	}
@@ -476,7 +485,7 @@ pub fn pack_witness<P: PackedField<Scalar = B128>>(
 }
 
 fn prove_bitand_reduction<F, PChallenge, Channel>(
-	witness: AndCheckWitness,
+	witness: AndCheckWitness<'_>,
 	channel: &mut Channel,
 ) -> AndCheckOutput<F>
 where
@@ -493,7 +502,7 @@ where
 		log_constraint_count.saturating_sub(PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
 	let big_field_zerocheck_challenges = channel.sample_many(n_extra_zerocheck_challenges);
 
-	let prover = OblongZerocheckProver::<_, PChallenge>::new(
+	let prover = OblongZerocheckProver::<_, PChallenge, _>::new(
 		log_constraint_count,
 		a,
 		b,
@@ -506,7 +515,7 @@ where
 }
 
 fn prove_intmul_reduction<F, P, Channel>(
-	witness: MulCheckWitness,
+	witness: MulCheckWitness<'_>,
 	channel: &mut Channel,
 ) -> Result<IntMulOutput<F>, Error>
 where
@@ -525,7 +534,7 @@ where
 }
 
 fn prove_binmul_reduction<F, P, Channel>(
-	witness: BinMulCheckWitness,
+	witness: BinMulCheckWitness<'_>,
 	channel: &mut Channel,
 ) -> BinMulOutput<F>
 where
@@ -556,34 +565,38 @@ where
 	prove_binmul::<F, P, _>(&binmul_witness, channel)
 }
 
-struct AndCheckWitness {
-	a: Vec<Word>,
-	b: Vec<Word>,
-	c: Vec<Word>,
+struct AndCheckWitness<'alloc> {
+	a: PoolVec<'alloc, Word>,
+	b: PoolVec<'alloc, Word>,
+	c: PoolVec<'alloc, Word>,
 }
 
-struct MulCheckWitness {
-	a: Vec<Word>,
-	b: Vec<Word>,
-	lo: Vec<Word>,
-	hi: Vec<Word>,
+struct MulCheckWitness<'alloc> {
+	a: PoolVec<'alloc, Word>,
+	b: PoolVec<'alloc, Word>,
+	lo: PoolVec<'alloc, Word>,
+	hi: PoolVec<'alloc, Word>,
 }
 
-struct BinMulCheckWitness {
-	a_lo: Vec<Word>,
-	a_hi: Vec<Word>,
-	b_lo: Vec<Word>,
-	b_hi: Vec<Word>,
-	c_lo: Vec<Word>,
-	c_hi: Vec<Word>,
+struct BinMulCheckWitness<'alloc> {
+	a_lo: PoolVec<'alloc, Word>,
+	a_hi: PoolVec<'alloc, Word>,
+	b_lo: PoolVec<'alloc, Word>,
+	b_hi: PoolVec<'alloc, Word>,
+	c_lo: PoolVec<'alloc, Word>,
+	c_hi: PoolVec<'alloc, Word>,
 }
 
-fn build_bitand_witness(and_constraints: &[AndConstraint], witness: &ValueVec) -> AndCheckWitness {
+fn build_bitand_witness<'alloc>(
+	and_constraints: &[AndConstraint],
+	witness: &ValueVec,
+	pool: &'alloc BufferPool,
+) -> AndCheckWitness<'alloc> {
 	let n_constraints = and_constraints.len();
 
-	let mut a = Vec::with_capacity(n_constraints);
-	let mut b = Vec::with_capacity(n_constraints);
-	let mut c = Vec::with_capacity(n_constraints);
+	let mut a = pool.alloc_vec::<Word>(n_constraints);
+	let mut b = pool.alloc_vec::<Word>(n_constraints);
+	let mut c = pool.alloc_vec::<Word>(n_constraints);
 
 	(and_constraints, a.spare_capacity_mut(), b.spare_capacity_mut(), c.spare_capacity_mut())
 		.into_par_iter()
@@ -603,16 +616,17 @@ fn build_bitand_witness(and_constraints: &[AndConstraint], witness: &ValueVec) -
 	AndCheckWitness { a, b, c }
 }
 
-fn build_intmul_witness(
+fn build_intmul_witness<'alloc>(
 	imul_constraints: &[ImulConstraint],
 	witness: &ValueVec,
-) -> MulCheckWitness {
+	pool: &'alloc BufferPool,
+) -> MulCheckWitness<'alloc> {
 	let n_constraints = imul_constraints.len();
 
-	let mut a = Vec::with_capacity(n_constraints);
-	let mut b = Vec::with_capacity(n_constraints);
-	let mut lo = Vec::with_capacity(n_constraints);
-	let mut hi = Vec::with_capacity(n_constraints);
+	let mut a = pool.alloc_vec::<Word>(n_constraints);
+	let mut b = pool.alloc_vec::<Word>(n_constraints);
+	let mut lo = pool.alloc_vec::<Word>(n_constraints);
+	let mut hi = pool.alloc_vec::<Word>(n_constraints);
 
 	(
 		imul_constraints,
@@ -640,18 +654,19 @@ fn build_intmul_witness(
 	MulCheckWitness { a, b, lo, hi }
 }
 
-fn build_binmul_witness(
+fn build_binmul_witness<'alloc>(
 	bmul_constraints: &[BmulConstraint],
 	witness: &ValueVec,
-) -> BinMulCheckWitness {
+	pool: &'alloc BufferPool,
+) -> BinMulCheckWitness<'alloc> {
 	let n_constraints = bmul_constraints.len();
 
-	let mut a_lo = Vec::with_capacity(n_constraints);
-	let mut a_hi = Vec::with_capacity(n_constraints);
-	let mut b_lo = Vec::with_capacity(n_constraints);
-	let mut b_hi = Vec::with_capacity(n_constraints);
-	let mut c_lo = Vec::with_capacity(n_constraints);
-	let mut c_hi = Vec::with_capacity(n_constraints);
+	let mut a_lo = pool.alloc_vec::<Word>(n_constraints);
+	let mut a_hi = pool.alloc_vec::<Word>(n_constraints);
+	let mut b_lo = pool.alloc_vec::<Word>(n_constraints);
+	let mut b_hi = pool.alloc_vec::<Word>(n_constraints);
+	let mut c_lo = pool.alloc_vec::<Word>(n_constraints);
+	let mut c_hi = pool.alloc_vec::<Word>(n_constraints);
 
 	(
 		bmul_constraints,

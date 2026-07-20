@@ -1,5 +1,5 @@
 // Copyright 2025 Irreducible Inc.
-use std::marker::PhantomData;
+use std::{marker::PhantomData, ops::Deref};
 
 use binius_core::word::Word;
 use binius_field::{AESTowerField8b as B8, BinaryField, PackedField};
@@ -28,24 +28,29 @@ use crate::fold_word::BitAxisFolder;
 /// The type parameter `PChallenge` is the packed field over the challenge field `FChallenge` used
 /// for the multilinear sumcheck rounds that follow the univariate round. Packing these rounds over
 /// a wide field provides SIMD acceleration.
-pub struct OblongZerocheckProver<FChallenge, PChallenge>
+///
+/// The columns are generic over their backing store `Data` (anything that dereferences to
+/// `[Word]`), so callers can supply pooled buffers ([`PoolVec`](binius_compute::PoolVec)) or plain
+/// `Vec<Word>` interchangeably.
+pub struct OblongZerocheckProver<FChallenge, PChallenge, Data>
 where
 	FChallenge: BinaryField,
 {
 	log_words: usize,
-	first_col: Vec<Word>,
-	second_col: Vec<Word>,
-	third_col: Vec<Word>,
+	first_col: Data,
+	second_col: Data,
+	third_col: Data,
 	big_field_zerocheck_challenges: Vec<FChallenge>,
 	univariate_round_message: [FChallenge; ROWS_PER_HYPERCUBE_VERTEX],
 	univariate_round_message_domain: BinarySubspace<FChallenge>,
 	_marker: PhantomData<PChallenge>,
 }
 
-impl<F, PChallenge> OblongZerocheckProver<F, PChallenge>
+impl<F, PChallenge, Data> OblongZerocheckProver<F, PChallenge, Data>
 where
 	F: BinaryField + From<B8>,
 	PChallenge: PackedField<Scalar = F>,
+	Data: Deref<Target = [Word]>,
 {
 	/// Creates a new oblong zerocheck prover for AND constraint reduction.
 	///
@@ -71,9 +76,9 @@ where
 	#[allow(clippy::too_many_arguments)]
 	pub fn new(
 		log_words: usize,
-		first_col: Vec<Word>,
-		second_col: Vec<Word>,
-		third_col: Vec<Word>,
+		first_col: Data,
+		second_col: Data,
+		third_col: Data,
 		big_field_zerocheck_challenges: Vec<F>,
 		prover_message_domain: BinarySubspace<B8>,
 	) -> Self {
@@ -251,6 +256,7 @@ where
 mod test {
 	use std::{iter, iter::repeat_with};
 
+	use binius_compute::{BufferPool, PoolVec};
 	use binius_core::word::Word;
 	use binius_field::{AESTowerField8b, arch::OptimalPackedB128};
 	use binius_math::{
@@ -271,6 +277,13 @@ mod test {
 		repeat_with(|| Word(rng.random()))
 			.take(1 << log_num_words)
 			.collect()
+	}
+
+	/// Copies `src` into a buffer drawn from `pool`.
+	fn pool_words<'a>(pool: &'a BufferPool, src: &[Word]) -> PoolVec<'a, Word> {
+		let mut buffer = pool.alloc_vec::<Word>(src.len());
+		buffer.extend_from_slice(src);
+		buffer
 	}
 
 	#[test]
@@ -297,11 +310,12 @@ mod test {
 		// Prover is instantiated
 		let big_field_zerocheck_challenges = prover_challenger
 			.sample_vec(log_num_rows - PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
-		let prover = OblongZerocheckProver::<_, OptimalPackedB128>::new(
+		let pool = BufferPool::new();
+		let prover = OblongZerocheckProver::<_, OptimalPackedB128, _>::new(
 			log_num_rows,
-			first_mlv.clone(),
-			second_mlv.clone(),
-			third_mlv.clone(),
+			pool_words(&pool, &first_mlv),
+			pool_words(&pool, &second_mlv),
+			pool_words(&pool, &third_mlv),
 			big_field_zerocheck_challenges.to_vec(),
 			prover_message_domain,
 		);

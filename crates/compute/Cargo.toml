@@ -1,0 +1,11 @@
+[package]
+name = "binius-compute"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bytemuck = { workspace = true }

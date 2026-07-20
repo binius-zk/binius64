@@ -203,7 +203,7 @@ impl BatchAndCheckWitness {
 			log_total_constraints.saturating_sub(PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
 		let big_field_zerocheck_challenges = channel.sample_many(n_extra_zerocheck_challenges);
 
-		let prover = OblongZerocheckProver::<_, P>::new(
+		let prover = OblongZerocheckProver::<_, P, _>::new(
 			log_total_constraints,
 			a,
 			b,
