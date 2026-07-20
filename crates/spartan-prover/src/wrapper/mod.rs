@@ -9,7 +9,7 @@
 //! prover.
 //!
 //! [`ZKWrappedVerifierChannel`]: binius_spartan_verifier::wrapper::ZKWrappedVerifierChannel
-//! [`BaseFoldProverChannel`]: binius_iop_prover::basefold_channel::BaseFoldProverChannel
+//! [`BaseFoldProverChannel`]: binius_iop_prover::basefold::channel::BaseFoldProverChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
 
 pub mod replay_channel;

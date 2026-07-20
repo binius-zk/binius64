@@ -1,14 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-//! An [`IOPVerifierChannel`] that records the sequence of oracle specifications an IOP uses,
-//! without performing any actual verification.
-//!
-//! Running an IOP verifier against an `OracleSetupChannel` (a dry run: all `recv_*` methods return
-//! dummy values and `assert_zero` is a no-op, like [`SizeTrackingChannel`]) discovers the
-//! [`OracleSpec`] sequence directly from the `recv_oracle` calls, so the specs need not be
-//! hardcoded and kept in sync with the verification logic by hand.
-//!
-//! [`SizeTrackingChannel`]: crate::size_tracking_channel::SizeTrackingChannel
+//! An [`IOPVerifierChannel`] dry run that records the [`OracleSpec`] sequence an IOP uses.
 
 use std::{
 	iter::{Product, Sum},

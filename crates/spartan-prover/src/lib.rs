@@ -39,7 +39,7 @@ use std::{
 
 use binius_field::{BinaryField, Field, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
-use binius_iop_prover::{basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
+use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{quadratic_mlecheck_prover, zk_mlecheck},
@@ -477,7 +477,7 @@ fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
 		elems_iter.chain(zeros_iter).collect::<Vec<_>>()
 	};
 
-	let mut buffer = FieldBuffer::new(log_private, packed.into_boxed_slice());
+	let mut buffer = FieldBuffer::new(log_private, packed);
 
 	// Add blinding values after the actual private wires
 	// Set random values for non-constraint dummy wires

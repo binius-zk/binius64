@@ -3,10 +3,10 @@ use binius_core::word::Word;
 use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash1x128b};
 use binius_hash::StdHashSuite;
 use binius_iop::{
-	basefold_compiler::BaseFoldVerifierCompiler, channel::OracleSpec, fri::MinProofSizeStrategy,
+	basefold::compiler::BaseFoldVerifierCompiler, channel::OracleSpec, fri::MinProofSizeStrategy,
 	merkle_tree::BinaryMerkleTreeScheme,
 };
-use binius_iop_prover::basefold_compiler::BaseFoldProverCompiler;
+use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
 use binius_ip_prover::{
 	prodcheck::ProdcheckProver,
 	sumcheck::{

@@ -1,12 +1,12 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 use binius_core::word::Word;
-use binius_frontend::{CircuitBuilder, Wire, util::num_biguint_from_u64_limbs};
+use binius_frontend::{CircuitBuilder, Wire};
 
 use super::{
 	BigUint, BigUintDivideHint, ModDivideHint, ModInverseHint, PseudoMersenneModReduce,
 	addsub::{add_with_carry_out, sub_with_borrow_out},
-	biguint_lt, sub, textbook_mul, textbook_square,
+	biguint_lt, num_biguint_from_u64_limbs, sub, textbook_mul, textbook_square,
 };
 
 /// A struct that implements prime field arithmetic over pseudo-Mersenne modulus.

@@ -79,7 +79,6 @@ pub fn hash_message(param: &[u8], epoch: u64, nonce: &[u8], message: &[u8]) -> [
 #[cfg(test)]
 mod tests {
 	use binius_core::{Word, verify::verify_constraints};
-	use binius_frontend::util::pack_bytes_into_wires_le;
 	use proptest::prelude::*;
 
 	use super::*;
@@ -124,13 +123,13 @@ mod tests {
 
 		let circuit = b.build();
 		let mut w = circuit.new_witness_filler();
-		pack_bytes_into_wires_le(&mut w, &param, domain_param_bytes);
+		w.pack_bytes_le(&param, domain_param_bytes);
 		w[epoch_w] = Word::from_u64(epoch);
-		pack_bytes_into_wires_le(&mut w, &nonce, nonce_bytes);
-		pack_bytes_into_wires_le(&mut w, &message, message_bytes);
+		w.pack_bytes_le(&nonce, nonce_bytes);
+		w.pack_bytes_le(&message, message_bytes);
 		// The reference value lets the constraint check pass; the test asserts it matches.
 		let reference = hash_message(domain_param_bytes, epoch, nonce_bytes, message_bytes);
-		pack_bytes_into_wires_le(&mut w, &out, &reference);
+		w.pack_bytes_le(&out, &reference);
 
 		circuit.populate_wire_witness(&mut w).unwrap();
 		verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();

@@ -59,6 +59,35 @@ impl<'a> WitnessFiller<'a> {
 	pub const fn value_vec_mut(&mut self) -> &mut ValueVec {
 		&mut self.value_vec
 	}
+
+	/// Populates the given wires from bytes as little-endian packed 64-bit words.
+	///
+	/// If `bytes` is not a multiple of 8, the last word is zero-padded.
+	/// Any wires past those needed to hold `bytes` are filled with `Word::ZERO`.
+	///
+	/// # Panics
+	/// Panics if `bytes.len()` exceeds `wires.len() * 8`.
+	pub fn pack_bytes_le(&mut self, wires: &[Wire], bytes: &[u8]) {
+		let max_value_size = wires.len() * 8;
+		assert!(
+			bytes.len() <= max_value_size,
+			"bytes length {} exceeds maximum {}",
+			bytes.len(),
+			max_value_size
+		);
+
+		// Pack each 8-byte chunk into one little-endian word.
+		for (&wire, chunk) in std::iter::zip(wires, bytes.chunks(8)) {
+			let mut chunk_arr = [0u8; 8];
+			chunk_arr[..chunk.len()].copy_from_slice(chunk);
+			self[wire] = Word(u64::from_le_bytes(chunk_arr));
+		}
+
+		// Zero any wires the bytes did not reach.
+		for &wire in &wires[bytes.len().div_ceil(8)..] {
+			self[wire] = Word::ZERO;
+		}
+	}
 }
 
 impl<'a> std::ops::Index<Wire> for WitnessFiller<'a> {

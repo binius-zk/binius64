@@ -8,7 +8,7 @@ use binius_circuits::hash_based_sig::{
 	xmss_aggregate::{MultiSigBuilder, circuit_xmss_multisig},
 };
 use binius_core::Word;
-use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
+use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use clap::Args;
 use rand::prelude::*;
 
@@ -110,7 +110,7 @@ impl ExampleCircuit for HashBasedSigExample {
 		// Safe because tree_height is validated to be <= 31 in build()
 		let epoch = rng.next_u32() % (1u32 << self.tree_height);
 
-		pack_bytes_into_wires_le(w, &self.message, &message_bytes);
+		w.pack_bytes_le(&self.message, &message_bytes);
 		w[self.epoch] = Word::from_u64(epoch as u64);
 
 		// Generate a signature for each validator, each with its own domain parameter.
@@ -121,7 +121,7 @@ impl ExampleCircuit for HashBasedSigExample {
 			// Pack this validator's parameter (pad to match wire count)
 			let mut padded_param = vec![0u8; self.validator_params[val_idx].len() * 8];
 			padded_param[..param_bytes.len()].copy_from_slice(&param_bytes);
-			pack_bytes_into_wires_le(w, &self.validator_params[val_idx], &padded_param);
+			w.pack_bytes_le(&self.validator_params[val_idx], &padded_param);
 
 			let validator_data = ValidatorSignatureData::generate(
 				&mut rng,
@@ -132,37 +132,21 @@ impl ExampleCircuit for HashBasedSigExample {
 				self.tree_height,
 			);
 
-			pack_bytes_into_wires_le(w, &self.validator_roots[val_idx], &validator_data.root);
+			w.pack_bytes_le(&self.validator_roots[val_idx], &validator_data.root);
 
 			// The nonce already fills the wire capacity exactly, so pack it directly.
-			pack_bytes_into_wires_le(
-				w,
-				&self.validator_signatures[val_idx].nonce,
-				&validator_data.nonce,
-			);
+			w.pack_bytes_le(&self.validator_signatures[val_idx].nonce, &validator_data.nonce);
 
 			for (i, sig_hash) in validator_data.signature_hashes.iter().enumerate() {
-				pack_bytes_into_wires_le(
-					w,
-					&self.validator_signatures[val_idx].signature_hashes[i],
-					sig_hash,
-				);
+				w.pack_bytes_le(&self.validator_signatures[val_idx].signature_hashes[i], sig_hash);
 			}
 
 			for (i, pk_hash) in validator_data.public_key_hashes.iter().enumerate() {
-				pack_bytes_into_wires_le(
-					w,
-					&self.validator_signatures[val_idx].public_key_hashes[i],
-					pk_hash,
-				);
+				w.pack_bytes_le(&self.validator_signatures[val_idx].public_key_hashes[i], pk_hash);
 			}
 
 			for (i, auth_node) in validator_data.auth_path.iter().enumerate() {
-				pack_bytes_into_wires_le(
-					w,
-					&self.validator_signatures[val_idx].auth_path[i],
-					auth_node,
-				);
+				w.pack_bytes_le(&self.validator_signatures[val_idx].auth_path[i], auth_node);
 			}
 		}
 

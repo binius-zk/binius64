@@ -3,8 +3,8 @@
 use binius_field::BinaryField128bGhash as B128;
 use binius_hash::StdHashSuite;
 use binius_iop::{
-	channel::IOPVerifierChannel, merkle_tree::BinaryMerkleTreeScheme,
-	size_tracking_channel::SizeTrackingChannel,
+	channel::{IOPVerifierChannel, size_tracking::SizeTrackingChannel},
+	merkle_tree::BinaryMerkleTreeScheme,
 };
 use binius_ip::channel::IPVerifierChannel;
 use binius_spartan_frontend::{

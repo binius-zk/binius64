@@ -1,31 +1,15 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-//! Verifier for the BaseFold sumcheck-PIOP to IP compiler.
-//!
-//! [BaseFold] is a generalized polynomial commitment scheme that allows compilation of
-//! sumcheck-PIOP protocols to IOPs. The protocol is an interactive argument for sumcheck claims
-//! of multivariate polynomials defined as the product of a committed multilinear polynomial and a
-//! transparent multilinear polynomial. When the transparent polynomial is a multilinear equality
-//! indicator, this BaseFold instance becomes a multilinear polynomial commitment scheme. The core
-//! idea is to commit the multilinear polynomial using FRI and open the sumcheck claim using an
-//! interleaved instance of sumcheck on the composite polynomial and FRI on the committed codeword,
-//! sharing folding challenges.
-//!
-//! This module implements the version specialized for binary field FRI described in [DP24],
-//! Section 4. Moreover, this module includes the classic [BCS16] compiler for IOPs to IPs that
-//! commits and opens oracle messages using Merkle trees.
-//!
-//! [BaseFold]: <https://link.springer.com/chapter/10.1007/978-3-031-68403-6_5>
-//! [DP24]: <https://eprint.iacr.org/2024/504>
-//! [BCS16]: <https://eprint.iacr.org/2016/116>
+//! The core BaseFold opening protocol on the verifier side.
 
 use binius_field::{BinaryField, Field};
 use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 
+use super::error::Error;
 use crate::{
-	fri::{self, FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier},
+	fri::{FRIFoldVerifier, FRIParams, verify::FRIQueryVerifier},
 	merkle_channel::MerkleIPVerifierChannel,
 };
 
@@ -153,29 +137,4 @@ pub struct ReducedOutput<F> {
 /// value is the same `π'(r)`, so consistency is plain equality.
 pub fn mlecheck_fri_consistency<F: Field>(fri_final_oracle: F, sumcheck_final_claim: F) -> bool {
 	fri_final_oracle == sumcheck_final_claim
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-	#[error("FRI: {0}")]
-	FRI(#[source] fri::Error),
-	#[error("IP channel: {0}")]
-	IPChannel(#[from] binius_ip::channel::Error),
-	#[error("verification error: {0}")]
-	Verification(#[from] VerificationError),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum VerificationError {
-	#[error("FRI: {0}")]
-	FRI(#[from] fri::VerificationError),
-}
-
-impl From<fri::Error> for Error {
-	fn from(err: fri::Error) -> Self {
-		match err {
-			fri::Error::Verification(err) => Error::Verification(err.into()),
-			_ => Error::FRI(err),
-		}
-	}
 }

@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use binius_field::{BinaryField, Field, field::FieldOps};
 use itertools::izip;
@@ -46,7 +47,7 @@ pub fn evaluate_univariate<F: FieldOps>(coeffs: &[F], x: F) -> F {
 /// A vector of Lagrange polynomial evaluations, one for each domain element
 pub fn lagrange_evals<F: BinaryField>(subspace: &BinarySubspace<F>, z: F) -> FieldBuffer<F> {
 	let result = lagrange_evals_scalars(subspace, z);
-	FieldBuffer::new(subspace.dim(), result.into_boxed_slice())
+	FieldBuffer::new(subspace.dim(), result)
 }
 
 /// Scalar variant of [`lagrange_evals`] that returns a `Vec<E>` instead of a `FieldBuffer`.

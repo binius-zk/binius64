@@ -73,7 +73,6 @@ mod tests {
 	use std::array;
 
 	use binius_core::verify::verify_constraints;
-	use binius_frontend::util::pack_bytes_into_wires_le;
 	use hex_literal::hex;
 
 	use super::*;
@@ -95,8 +94,8 @@ mod tests {
 		);
 		let block_hash_value =
 			hex!("228561b085b7524957e515605725901238299ff2793300000000000000000000");
-		pack_bytes_into_wires_le(&mut filler, &block_header, &block_header_value);
-		pack_bytes_into_wires_le(&mut filler, &block_hash, &block_hash_value);
+		filler.pack_bytes_le(&block_header, &block_header_value);
+		filler.pack_bytes_le(&block_hash, &block_hash_value);
 		double_sha_256.populate_inner(&mut filler, &block_header_value);
 		circuit.populate_wire_witness(&mut filler).unwrap();
 
@@ -122,8 +121,8 @@ mod tests {
 		);
 		let block_hash_value =
 			hex!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-		pack_bytes_into_wires_le(&mut filler, &block_header, &block_header_value);
-		pack_bytes_into_wires_le(&mut filler, &block_hash, &block_hash_value);
+		filler.pack_bytes_le(&block_header, &block_header_value);
+		filler.pack_bytes_le(&block_hash, &block_hash_value);
 		double_sha_256.populate_inner(&mut filler, &block_header_value);
 		// should fail because the hash is wrong
 		circuit.populate_wire_witness(&mut filler).unwrap_err();

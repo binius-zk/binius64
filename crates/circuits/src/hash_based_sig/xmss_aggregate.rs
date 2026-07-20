@@ -126,7 +126,6 @@ mod tests {
 	use std::error::Error;
 
 	use binius_core::{Word, verify::verify_constraints};
-	use binius_frontend::util::pack_bytes_into_wires_le;
 	use rand::prelude::*;
 	use rstest::rstest;
 
@@ -271,7 +270,7 @@ mod tests {
 			let circuit = builder.build();
 			let mut w = circuit.new_witness_filler();
 
-			pack_bytes_into_wires_le(&mut w, &message, &self.message_bytes);
+			w.pack_bytes_le(&message, &self.message_bytes);
 			w[epoch_wire] = Word::from_u64(self.epoch as u64);
 
 			for (i, validator) in self.validators.iter().enumerate() {
@@ -279,35 +278,23 @@ mod tests {
 				let mut padded_param = vec![0u8; validator_params[i].len() * 8];
 				padded_param[..self.validator_param_bytes[i].len()]
 					.copy_from_slice(&self.validator_param_bytes[i]);
-				pack_bytes_into_wires_le(&mut w, &validator_params[i], &padded_param);
+				w.pack_bytes_le(&validator_params[i], &padded_param);
 
-				pack_bytes_into_wires_le(&mut w, &validator_roots[i], &validator.root);
+				w.pack_bytes_le(&validator_roots[i], &validator.root);
 
 				// The nonce already fills the wire capacity exactly, so pack it directly.
-				pack_bytes_into_wires_le(&mut w, &validator_signatures[i].nonce, &validator.nonce);
+				w.pack_bytes_le(&validator_signatures[i].nonce, &validator.nonce);
 
 				for (j, sig_hash) in validator.signature_hashes.iter().enumerate() {
-					pack_bytes_into_wires_le(
-						&mut w,
-						&validator_signatures[i].signature_hashes[j],
-						sig_hash,
-					);
+					w.pack_bytes_le(&validator_signatures[i].signature_hashes[j], sig_hash);
 				}
 
 				for (j, pk_hash) in validator.public_key_hashes.iter().enumerate() {
-					pack_bytes_into_wires_le(
-						&mut w,
-						&validator_signatures[i].public_key_hashes[j],
-						pk_hash,
-					);
+					w.pack_bytes_le(&validator_signatures[i].public_key_hashes[j], pk_hash);
 				}
 
 				for (j, auth_node) in validator.auth_path.iter().enumerate() {
-					pack_bytes_into_wires_le(
-						&mut w,
-						&validator_signatures[i].auth_path[j],
-						auth_node,
-					);
+					w.pack_bytes_le(&validator_signatures[i].auth_path[j], auth_node);
 				}
 			}
 

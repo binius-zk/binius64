@@ -1,11 +1,6 @@
 // Copyright 2026 The Binius Developers
 
 //! BaseFold ZK implementation of the IOP prover channel.
-//!
-//! This module provides [`BaseFoldProverChannel`], which implements [`IOPProverChannel`]
-//! using FRI commitment and the batched ZK BaseFold opening protocol. ZK oracles are blinded with a
-//! mask generated internally; non-ZK oracles are committed without a mask. All committed oracles
-//! are opened with a single combined FRI.
 
 use binius_field::{BinaryField, PackedField};
 use binius_iop::{channel::OracleSpec, fri::FRIParams};
@@ -128,7 +123,7 @@ where
 	/// shared point `r`, then one combined FRI opening over every committed oracle
 	/// (in oracle-index order). Mirrors [`BaseFoldVerifierChannel::finish`].
 	///
-	/// [`BaseFoldVerifierChannel::finish`]: binius_iop::basefold_channel::BaseFoldVerifierChannel::finish
+	/// [`BaseFoldVerifierChannel::finish`]: binius_iop::basefold::channel::BaseFoldVerifierChannel::finish
 	pub fn finish(self) {
 		let Self {
 			mut channel,
@@ -165,7 +160,7 @@ where
 /// [`BaseFoldProverChannel`] — through its [`MerkleIPProverChannel`] interface: it sends the
 /// masked inner products σ_i, runs one batched sumcheck reducing the masked claims to a shared
 /// point `r`, then opens all committed oracles together with a single combined FRI. Mirrors
-/// [`binius_iop::basefold_channel::BaseFoldVerifierChannel::finish`].
+/// [`binius_iop::basefold::channel::BaseFoldVerifierChannel::finish`].
 ///
 /// The masking inner products and the batched sumcheck process the `relations` in arrival order (so
 /// each reduced eval lines up with its batched-claim coefficient), while the per-oracle evaluations
@@ -533,7 +528,7 @@ mod tests {
 	};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
-		basefold_compiler::BaseFoldVerifierCompiler,
+		basefold::compiler::BaseFoldVerifierCompiler,
 		channel::{IOPVerifierChannel, OracleLinearRelation, OracleSpec},
 		fri::MinProofSizeStrategy,
 		merkle_tree::BinaryMerkleTreeScheme,
@@ -549,7 +544,7 @@ mod tests {
 	use rand::{Rng, SeedableRng, rngs::StdRng};
 
 	use super::IOPProverChannel;
-	use crate::basefold_compiler::BaseFoldProverCompiler;
+	use crate::basefold::compiler::BaseFoldProverCompiler;
 
 	type StdChallenger = HasherChallenger<StdDigest>;
 

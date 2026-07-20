@@ -396,7 +396,7 @@ mod tests {
 		let prepend = tensor_prod_eq_ind::<OneCube, P>(prepend, suffix);
 		let prepend = tensor_prod_eq_ind_prepend(prepend, prefix);
 
-		assert_eq!(append, prepend.into_boxed());
+		assert_eq!(append, prepend);
 	}
 
 	#[test]

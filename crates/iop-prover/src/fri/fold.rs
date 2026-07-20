@@ -395,7 +395,7 @@ where
 			},
 		)
 		.collect();
-	FieldBuffer::new(folded_log_len, values.into_boxed_slice())
+	FieldBuffer::new(folded_log_len, values)
 }
 
 pub struct ProxTestFolder<P: PackedField, C> {
@@ -575,7 +575,7 @@ mod tests {
 
 		// Fold the message using regular folding: combine the low `arity` columns of each row
 		// with the eq tensor of the challenges (a partial evaluation of each row at the point).
-		let folded_vals: Box<[B128]> = msg
+		let folded_vals: Vec<B128> = msg
 			.chunks(arity)
 			.map(|row| inner_product_buffers(&row, &query))
 			.collect();

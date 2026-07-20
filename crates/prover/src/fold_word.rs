@@ -93,7 +93,7 @@ where
 
 	values.resize(capacity, P::default());
 
-	FieldBuffer::new(log_n, values.into_boxed_slice())
+	FieldBuffer::new(log_n, values)
 }
 
 /// A [`u64`]-specialized bytewise lookup transformation, folding a word's bits against a fixed

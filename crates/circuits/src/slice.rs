@@ -160,7 +160,6 @@ pub fn slice(
 #[cfg(test)]
 mod tests {
 	use binius_core::verify::verify_constraints;
-	use binius_frontend::util::pack_bytes_into_wires_le;
 
 	use super::{CircuitBuilder, Wire, Word, assert_slice_eq, slice};
 
@@ -210,8 +209,8 @@ mod tests {
 		filler[setup.len_input] = Word(len_input_val);
 		filler[setup.len_slice] = Word(len_slice_val);
 		filler[setup.offset] = Word(offset_val);
-		pack_bytes_into_wires_le(&mut filler, &setup.input, input_data);
-		pack_bytes_into_wires_le(&mut filler, &setup.expected, expected_slice_data);
+		filler.pack_bytes_le(&setup.input, input_data);
+		filler.pack_bytes_le(&setup.expected, expected_slice_data);
 
 		circuit.populate_wire_witness(&mut filler).unwrap();
 		let cs = circuit.constraint_system();
@@ -232,8 +231,8 @@ mod tests {
 		filler[setup.len_input] = Word(len_input_val);
 		filler[setup.len_slice] = Word(len_slice_val);
 		filler[setup.offset] = Word(offset_val);
-		pack_bytes_into_wires_le(&mut filler, &setup.input, input_data);
-		pack_bytes_into_wires_le(&mut filler, &setup.expected, expected_slice_data);
+		filler.pack_bytes_le(&setup.input, input_data);
+		filler.pack_bytes_le(&setup.expected, expected_slice_data);
 		assert!(circuit.populate_wire_witness(&mut filler).is_err());
 	}
 
@@ -356,7 +355,7 @@ mod tests {
 		filler[setup.len_input] = Word(20);
 		filler[setup.len_slice] = Word(12);
 		filler[setup.offset] = Word(0);
-		pack_bytes_into_wires_le(&mut filler, &setup.input, &input_data);
+		filler.pack_bytes_le(&setup.input, &input_data);
 		// Word 0 correct, word 1 has garbage 0xffffffff in the upper half (past len_slice).
 		filler[setup.expected[0]] = Word(0x0706050403020100);
 		filler[setup.expected[1]] = Word(0xffffffff0b0a0908);
@@ -372,8 +371,8 @@ mod tests {
 		filler[setup.len_input] = Word(10);
 		filler[setup.len_slice] = Word(5);
 		filler[setup.offset] = Word(1u64 << 32);
-		pack_bytes_into_wires_le(&mut filler, &setup.input, &[0u8; 10]);
-		pack_bytes_into_wires_le(&mut filler, &setup.expected, &[0u8; 5]);
+		filler.pack_bytes_le(&setup.input, &[0u8; 10]);
+		filler.pack_bytes_le(&setup.expected, &[0u8; 5]);
 		assert!(circuit.populate_wire_witness(&mut filler).is_err());
 	}
 
@@ -386,8 +385,8 @@ mod tests {
 		filler[setup.len_input] = Word(10);
 		filler[setup.len_slice] = Word(5);
 		filler[setup.offset] = Word(1u64 << 33);
-		pack_bytes_into_wires_le(&mut filler, &setup.input, &[0u8; 10]);
-		pack_bytes_into_wires_le(&mut filler, &setup.expected, &[0u8; 5]);
+		filler.pack_bytes_le(&setup.input, &[0u8; 10]);
+		filler.pack_bytes_le(&setup.expected, &[0u8; 5]);
 		assert!(circuit.populate_wire_witness(&mut filler).is_err());
 
 		// len_input with upper 32 bits set
@@ -397,8 +396,8 @@ mod tests {
 		filler[setup.len_input] = Word(0xffffffff00000010);
 		filler[setup.len_slice] = Word(5);
 		filler[setup.offset] = Word(0);
-		pack_bytes_into_wires_le(&mut filler, &setup.input, &[0u8; 10]);
-		pack_bytes_into_wires_le(&mut filler, &setup.expected, &[0u8; 5]);
+		filler.pack_bytes_le(&setup.input, &[0u8; 10]);
+		filler.pack_bytes_le(&setup.expected, &[0u8; 5]);
 		assert!(circuit.populate_wire_witness(&mut filler).is_err());
 
 		// len_slice with bit 32 set
@@ -408,8 +407,8 @@ mod tests {
 		filler[setup.len_input] = Word(10);
 		filler[setup.len_slice] = Word(0x100000005);
 		filler[setup.offset] = Word(0);
-		pack_bytes_into_wires_le(&mut filler, &setup.input, &[0u8; 10]);
-		pack_bytes_into_wires_le(&mut filler, &setup.expected, &[0u8; 5]);
+		filler.pack_bytes_le(&setup.input, &[0u8; 10]);
+		filler.pack_bytes_le(&setup.expected, &[0u8; 5]);
 		assert!(circuit.populate_wire_witness(&mut filler).is_err());
 	}
 

@@ -74,7 +74,6 @@ pub fn hash_public_key(param: &[u8], epoch: u64, pk_hashes: &[[u8; 32]]) -> [u8;
 #[cfg(test)]
 mod tests {
 	use binius_core::{Word, verify::verify_constraints};
-	use binius_frontend::util::pack_bytes_into_wires_le;
 	use proptest::prelude::*;
 
 	use super::*;
@@ -99,13 +98,13 @@ mod tests {
 
 		let circuit = b.build();
 		let mut w = circuit.new_witness_filler();
-		pack_bytes_into_wires_le(&mut w, &param, param_bytes);
+		w.pack_bytes_le(&param, param_bytes);
 		w[epoch_w] = Word::from_u64(epoch);
 		for (wires, bytes) in pk_wires.iter().zip(pk_hashes) {
-			pack_bytes_into_wires_le(&mut w, wires, bytes);
+			w.pack_bytes_le(wires, bytes);
 		}
 		let reference = hash_public_key(param_bytes, epoch, pk_hashes);
-		pack_bytes_into_wires_le(&mut w, &out, &reference);
+		w.pack_bytes_le(&out, &reference);
 
 		circuit.populate_wire_witness(&mut w).unwrap();
 		verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();

@@ -2,7 +2,9 @@
 //! BigUint division hint implementation
 
 use binius_core::Word;
-use binius_frontend::{CircuitBuilder, Wire, hints::Hint, util::num_biguint_from_u64_limbs};
+use binius_frontend::{CircuitBuilder, Wire, hints::Hint};
+
+use super::num_biguint_from_u64_limbs;
 
 pub struct BigUintDivideHint;
 

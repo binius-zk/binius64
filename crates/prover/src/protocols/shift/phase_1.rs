@@ -304,7 +304,7 @@ fn build_multilinear_parts<P: PackedField>(
 
 	multilinears
 		.chunks(1 << (LOG_LEN - P::LOG_WIDTH))
-		.map(|chunk| FieldBuffer::new(LOG_LEN, chunk.to_vec().into_boxed_slice()))
+		.map(|chunk| FieldBuffer::new(LOG_LEN, chunk.to_vec()))
 		.collect::<Vec<_>>()
 		.try_into()
 		.expect("chunk has SHIFT_VARIANT_COUNT parts of size 1 << LOG_LEN")

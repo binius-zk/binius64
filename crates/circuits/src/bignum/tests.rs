@@ -3,14 +3,12 @@
 use std::iter::repeat_with;
 
 use binius_core::{verify::verify_constraints, word::Word};
-use binius_frontend::{
-	CircuitBuilder, WitnessFiller, util::num_biguint_from_u64_limbs as from_u64_limbs,
-};
+use binius_frontend::{CircuitBuilder, WitnessFiller};
 use num_integer::Integer;
 use proptest::prelude::*;
 use rand::prelude::*;
 
-use super::*;
+use super::{num_biguint_from_u64_limbs as from_u64_limbs, *};
 
 /// Convert witness BigUint to num_bigint::BigUint for computation.
 ///

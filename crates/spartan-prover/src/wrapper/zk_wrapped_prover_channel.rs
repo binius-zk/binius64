@@ -8,7 +8,7 @@
 //! each value. After the inner proof is run, [`finish`] replays the recorded interaction through
 //! a caller-provided closure to fill the outer witness, then runs the outer IOP prover.
 //!
-//! [`BaseFoldProverChannel`]: binius_iop_prover::basefold_channel::BaseFoldProverChannel
+//! [`BaseFoldProverChannel`]: binius_iop_prover::basefold::channel::BaseFoldProverChannel
 //! [`finish`]: ZKWrappedProverChannel::finish
 
 use std::{iter::repeat_with, sync::Arc};
@@ -16,7 +16,7 @@ use std::{iter::repeat_with, sync::Arc};
 use binius_field::{BinaryField, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_iop_prover::{
-	basefold_channel::{BaseFoldOracle, BaseFoldProverChannel},
+	basefold::channel::{BaseFoldOracle, BaseFoldProverChannel},
 	channel::IOPProverChannel,
 	merkle_channel::MerkleIPProverChannel,
 };

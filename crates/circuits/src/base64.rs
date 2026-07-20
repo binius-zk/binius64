@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 use binius_core::word::Word;
-use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
+use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 
 use crate::multiplexer::single_wire_multiplex;
 
@@ -104,7 +104,7 @@ impl Base64UrlSafe {
 	///
 	/// Panics if `data.len()` exceeds the maximum size specified during construction.
 	pub fn populate_decoded(&self, w: &mut WitnessFiller, data: &[u8]) {
-		pack_bytes_into_wires_le(w, &self.decoded, data);
+		w.pack_bytes_le(&self.decoded, data);
 	}
 
 	/// Populates the encoded base64 array from a byte slice.
@@ -118,7 +118,7 @@ impl Base64UrlSafe {
 	///
 	/// Panics if `data.len()` exceeds the maximum size specified during construction.
 	pub fn populate_encoded(&self, w: &mut WitnessFiller, data: &[u8]) {
-		pack_bytes_into_wires_le(w, &self.encoded, data);
+		w.pack_bytes_le(&self.encoded, data);
 	}
 }
 
