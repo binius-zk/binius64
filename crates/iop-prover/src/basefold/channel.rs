@@ -47,6 +47,22 @@ struct CommittedOracleData<P: PackedField, C> {
 	commitment: C,
 }
 
+/// A committed-oracle relation queued for the single batched opening.
+///
+/// Each entry pairs a committed message with the transparent multilinear it is opened against.
+/// It also records which committed oracle it refers to.
+/// That index reconciles the arrival-order and oracle-index views of the batch.
+struct QueuedRelation<P: PackedField> {
+	/// Index of the committed oracle this relation opens.
+	oracle_index: usize,
+	/// The committed multilinear message `pi_i`.
+	message: FieldBuffer<P>,
+	/// The transparent multilinear `t_i` paired with the message.
+	transparent: FieldBuffer<P>,
+	/// The claimed inner product `s_i = <pi_i, t_i>`.
+	claim: P::Scalar,
+}
+
 /// A prover channel that uses ZK BaseFold for all oracle commitments and openings.
 ///
 /// This channel owns an [`StdRng`] and generates random masks internally during
@@ -78,8 +94,8 @@ where
 	fri_params: FRIParams<F>,
 	committed_oracles: Vec<CommittedOracleData<P, Channel::Commitment>>,
 	/// Oracle relations queued by [`Self::prove_oracle_relations`], opened together in
-	/// [`Self::finish`]. Each entry is `(oracle_index, message π_i, transparent t_i, claim s_i)`.
-	queue: Vec<(usize, FieldBuffer<P>, FieldBuffer<P>, F)>,
+	/// [`Self::finish`].
+	queue: Vec<QueuedRelation<P>>,
 	next_oracle_index: usize,
 	rng: StdRng,
 }
@@ -174,7 +190,7 @@ fn prove_batch_zk_basefold<F, P, NTT, Channel>(
 	oracle_specs: &[OracleSpec],
 	fri_params: &FRIParams<F>,
 	committed_oracles: Vec<CommittedOracleData<P, Channel::Commitment>>,
-	relations: Vec<(usize, FieldBuffer<P>, FieldBuffer<P>, F)>,
+	relations: Vec<QueuedRelation<P>>,
 ) where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -201,18 +217,18 @@ fn prove_batch_zk_basefold<F, P, NTT, Channel>(
 	// oracle is present.
 	let any_zk_openings = relations
 		.iter()
-		.any(|(index, _, _, _)| oracle_specs[*index].is_zk);
+		.any(|rel| oracle_specs[rel.oracle_index].is_zk);
 	let (sigmas, gamma) = if any_zk_openings {
 		let _scope = tracing::debug_span!("Compute ZK mask opening values").entered();
 		let sigmas = relations
 			.iter()
-			.filter(|(index, _, _, _)| oracle_specs[*index].is_zk)
-			.map(|(index, _, transparent, _)| {
-				let mask = committed_oracles[*index]
+			.filter(|rel| oracle_specs[rel.oracle_index].is_zk)
+			.map(|rel| {
+				let mask = committed_oracles[rel.oracle_index]
 					.mask
 					.as_ref()
 					.expect("ZK oracle carries a mask");
-				inner_product_par(mask, transparent)
+				inner_product_par(mask, &rel.transparent)
 			})
 			.collect::<Vec<_>>();
 		channel.send_many(&sigmas);
@@ -233,39 +249,47 @@ fn prove_batch_zk_basefold<F, P, NTT, Channel>(
 	let mut prover_oracle_indices = Vec::with_capacity(n_committed);
 	let relations = relations
 		.into_iter()
-		.map(|(index, mut message, transparent, claim)| {
-			let n_i = oracle_specs[index].log_msg_len;
-			assert_eq!(message.log_len(), n_i); // pre-condition
-			assert_eq!(transparent.log_len(), n_i); // pre-condition
+		.map(
+			|QueuedRelation {
+			     oracle_index: index,
+			     mut message,
+			     transparent,
+			     claim,
+			 }| {
+				let n_i = oracle_specs[index].log_msg_len;
+				assert_eq!(message.log_len(), n_i); // pre-condition
+				assert_eq!(transparent.log_len(), n_i); // pre-condition
 
-			// ZK oracle: blind the message π_i' = (1-γ)π_i + γω_i
-			// Non-ZK oracle: the message passes through unmasked.
-			if oracle_specs[index].is_zk {
-				let mask = committed_oracles[index]
-					.mask
-					.as_ref()
-					.expect("ZK oracle carries a mask");
-				let gamma = gamma.expect("γ sampled when ZK oracles present");
+				// ZK oracle: blind the message π_i' = (1-γ)π_i + γω_i
+				// Non-ZK oracle: the message passes through unmasked.
+				if oracle_specs[index].is_zk {
+					let mask = committed_oracles[index]
+						.mask
+						.as_ref()
+						.expect("ZK oracle carries a mask");
+					let gamma = gamma.expect("γ sampled when ZK oracles present");
 
-				let gamma_broadcast = P::broadcast(gamma);
+					let gamma_broadcast = P::broadcast(gamma);
 
-				{
-					let _scope =
-						tracing::debug_span!("Fold message and ZK mask", log_len = n_i).entered();
-					(message.as_mut(), mask.as_ref()).into_par_iter().for_each(
-						|(message_i, &mask_i)| {
-							*message_i =
-								extrapolate_line_packed(*message_i, mask_i, gamma_broadcast);
-						},
-					);
+					{
+						let _scope =
+							tracing::debug_span!("Fold message and ZK mask", log_len = n_i)
+								.entered();
+						(message.as_mut(), mask.as_ref()).into_par_iter().for_each(
+							|(message_i, &mask_i)| {
+								*message_i =
+									extrapolate_line_packed(*message_i, mask_i, gamma_broadcast);
+							},
+						);
+					}
 				}
-			}
 
-			witness_primes[index] = Some(message);
-			prover_oracle_indices.push(index);
+				witness_primes[index] = Some(message);
+				prover_oracle_indices.push(index);
 
-			(index, transparent, claim)
-		})
+				(index, transparent, claim)
+			},
+		)
 		.collect::<Vec<_>>();
 
 	// Create the sumcheck provers
@@ -516,7 +540,12 @@ where
 				oracle.index,
 				self.committed_oracles.len()
 			);
-			self.queue.push((oracle.index, message, transparent, claim));
+			self.queue.push(QueuedRelation {
+				oracle_index: oracle.index,
+				message,
+				transparent,
+				claim,
+			});
 		}
 	}
 }
