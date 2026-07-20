@@ -6,7 +6,7 @@
 //! See [`Hypercube`] for the abstraction and [`OneCube`]/[`InfCube`] for the two instances. The
 //! routines here mirror those in [`super::eq`], which specialize them to [`OneCube`].
 
-use std::{iter, ops::DerefMut};
+use std::{iter, ops::DerefMut, slice};
 
 use binius_field::{
 	Field, PackedField,
@@ -126,9 +126,9 @@ impl Hypercube for InfCube {
 /// Grows a packed backing `Vec` from `log_len` to `log_len + 1` variables, zero-initializing the
 /// newly live region so the store stays fully initialized.
 ///
-/// This is a temporary placeholder for the tensor-expansion routines below: it re-initializes the
-/// region the expansion immediately overwrites. A follow-up will split the fill by packing width
-/// and use `spare_capacity_mut`/`set_len` to bump the length without the redundant writes.
+/// Used by [`tensor_prod_eq_ind_prepend`], the singlethreaded small-tensor variant, where the
+/// redundant re-initialization of the region the expansion overwrites is not worth optimizing away.
+/// Its sibling [`tensor_prod_eq_ind`] instead grows through spare capacity to skip that write.
 fn grow_packed_backing<P: PackedField>(data: &mut Vec<P>, log_len: usize) {
 	let new_log_len = log_len + 1;
 	// While still narrower than one packed word, zero the newly live lanes of the first word.
@@ -167,28 +167,63 @@ fn grow_packed_backing<P: PackedField>(data: &mut Vec<P>, log_len: usize) {
 ///     \widetilde{eq}(X_n, \ldots, X_{n+k-1}, r).
 /// $$
 pub fn tensor_prod_eq_ind<Cube: Hypercube, P: PackedField>(
-	mut values: FieldBuffer<P, Vec<P>>,
+	values: FieldBuffer<P, Vec<P>>,
 	extra_query_coordinates: &[P::Scalar],
 ) -> FieldBuffer<P, Vec<P>> {
-	for &r_i in extra_query_coordinates {
+	let start_log_len = values.log_len();
+	let final_log_len = start_log_len + extra_query_coordinates.len();
+	let mut data = values.take_data();
+
+	// Reserve the full final capacity once, so no growth step reallocates. Each packed step then
+	// grows the length in place through the reserved spare capacity, writing the new coefficients
+	// directly rather than zero-initializing a region the expansion immediately overwrites.
+	let final_packed_len = 1usize << final_log_len.saturating_sub(P::LOG_WIDTH);
+	data.reserve_exact(final_packed_len.saturating_sub(data.len()));
+
+	// The coordinates split cleanly: while the expansion is narrower than one packed word it lives
+	// entirely in `data[0]`, and once it fills a word every step doubles the packed length.
+	let sub_width_count = extra_query_coordinates
+		.len()
+		.min(P::LOG_WIDTH.saturating_sub(start_log_len));
+	let (sub_width_coords, packed_coords) = extra_query_coordinates.split_at(sub_width_count);
+
+	// Sub-packing-width: the whole buffer is the single word `data[0]`. Split it into the two
+	// `log_len`-variable halves, expand, and interleave the halves back together — the backing
+	// `Vec` stays one element.
+	for (i, &r_i) in sub_width_coords.iter().enumerate() {
+		let log_len = start_log_len + i;
 		let packed_r_i = P::broadcast(r_i);
-
-		// Grow the backing by one variable, then rewrap.
-		let new_log_len = values.log_len() + 1;
-		let mut data = values.take_data();
-		grow_packed_backing::<P>(&mut data, new_log_len - 1);
-		values = FieldBuffer::new(new_log_len, data);
-
-		let mut split = values.split_half_mut();
-		let (mut lo, mut hi) = split.halves();
-
-		(lo.as_mut(), hi.as_mut())
-			.into_par_iter()
-			.for_each(|(lo_i, hi_i)| {
-				[*lo_i, *hi_i] = Cube::expand_var(lo_i, &packed_r_i);
-			});
+		let (lo, _) = data[0].interleave(P::zero(), log_len);
+		let [lo, hi] = Cube::expand_var(&lo, &packed_r_i);
+		data[0] = lo.interleave(hi, log_len).0;
 	}
-	values
+
+	// Packed: the `old_packed` initialized words are the low half of the result. Expand each into
+	// its low word (in place) and its high word (written once into the reserved spare capacity),
+	// then bump the length to cover the newly written high half.
+	for &r_i in packed_coords {
+		let packed_r_i = P::broadcast(r_i);
+		let old_packed = data.len();
+
+		// The high half is written once through the reserved spare capacity; the low half is the
+		// initialized prefix, expanded in place. `spare_capacity_mut` gives the high half directly;
+		// the low half needs `from_raw_parts_mut` because the safe two-slice split
+		// (`Vec::split_at_spare_mut`) is still unstable (rust-lang/rust#81944).
+		let low_ptr = data.as_mut_ptr();
+		let high = &mut data.spare_capacity_mut()[..old_packed];
+		// SAFETY: `[0, old_packed)` is the initialized low half, disjoint from the spare `high`
+		// half `[old_packed, 2 * old_packed)`; the two slices never overlap.
+		let low = unsafe { slice::from_raw_parts_mut(low_ptr, old_packed) };
+		(low, high).into_par_iter().for_each(|(low_i, high_i)| {
+			let [new_low, new_high] = Cube::expand_var(low_i, &packed_r_i);
+			*low_i = new_low;
+			high_i.write(new_high);
+		});
+		// SAFETY: the loop above initialized every one of the `old_packed` spare words.
+		unsafe { data.set_len(2 * old_packed) };
+	}
+
+	FieldBuffer::new(final_log_len, data)
 }
 
 /// Left tensor of values with the equality indicator evaluated at `extra_query_coordinates`.
