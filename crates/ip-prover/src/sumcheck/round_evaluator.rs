@@ -25,12 +25,12 @@ use std::iter;
 use auto_impl::auto_impl;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldBuffer, FieldSlice};
+use binius_math::{FieldBuffer, FieldSlice, multilinear::eq::eq_ind_partial_eval};
 
 use super::{
 	MleToSumCheckEvaluator,
 	common::{MleCheckProver, SumcheckProver},
-	mle_store::{ColId, EqId, EvaluationChunk, MleStore},
+	mle_store::{ColId, EvaluationChunk, MleStore},
 	round_state::RoundState,
 };
 
@@ -72,7 +72,8 @@ pub trait SumcheckRoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + S
 	///
 	/// The driving prover prepares `chunk` — the split, per-chunk column halves and eq-indicator
 	/// expansions — so the evaluator only reads its columns by [`ColId`] and eq trackers by
-	/// [`EqId`]. `accum` is this evaluator's run of [`Self::degree`] wide slots, zero-initialized
+	/// [`EqId`](super::mle_store::EqId). `accum` is this evaluator's run of [`Self::degree`] wide
+	/// slots, zero-initialized
 	/// on the first chunk and carried across the worker's chunks.
 	fn accumulate(&self, chunk: &EvaluationChunk<'_, P>, accum: &mut [<P as WideMul>::Output]);
 
@@ -127,11 +128,13 @@ pub trait MleCheckRoundEvaluator<F: Field, P: PackedField<Scalar = F>>: Send + S
 	///
 	/// As [`SumcheckRoundEvaluator::interpolate`], but the round coordinate is passed in as `alpha`
 	/// rather than read from a stored eq tracker; `store` supplies only the remaining-variable
-	/// count.
+	/// count. Unlike the sumcheck trait, `accum` is already reduced to `P` — the driving
+	/// [`SharedMleCheckProver`] reduces the wide accumulators in its `map` pass so the eq-weighted
+	/// `reduce` can operate on `P`.
 	fn interpolate(
 		&self,
 		store: &MleStore<'_, P>,
-		accum: &[<P as WideMul>::Output],
+		accum: &[P],
 		claim: F,
 		alpha: F,
 	) -> RoundCoeffs<F>;
@@ -292,8 +295,11 @@ where
 			}
 			accum
 		};
-		let reduce = |mut lhs: Vec<<P as WideMul>::Output>, rhs: Vec<<P as WideMul>::Output>| {
+		let reduce = |mut lhs: Vec<<P as WideMul>::Output>,
+		              rhs: Vec<<P as WideMul>::Output>,
+		              _level: usize| {
 			// The only merge: sum the workers' slices slot-wise, generic over every evaluator.
+			// Plain sumcheck has no eq factor, so the reduction level is unused.
 			for (dst, src) in iter::zip(&mut lhs, rhs) {
 				*dst += src;
 			}
@@ -363,13 +369,13 @@ pub struct SharedMleCheckProver<'a, F: Field, P: PackedField<Scalar = F>, Evalua
 	/// The claim ↔ round-coeffs state machine, one entry per evaluator; see the field of the same
 	/// name on [`SharedSumcheckProver`].
 	round_states: Vec<RoundState<RoundCoeffs<F>, F>>,
-	/// The shared evaluation point's eq-indicator tracker, folded by the store each round. The
-	/// prover reads the round's eq chunk and coordinate `alpha` from it and passes them to the
-	/// evaluators.
-	eq_tracker: EqId,
 	/// A fold challenge whose store fold is deferred; see the field of the same name on
 	/// [`SharedSumcheckProver`].
 	buffered_challenge: Option<F>,
+	/// The shared evaluation point of every claim. The prover keeps no eq-indicator tracker: each
+	/// round it expands only a `chunk_vars`-wide prefix of this point as the per-chunk eq
+	/// indicator and folds the higher coordinates through the eq-weighted `reduce` (see
+	/// [`Self::execute`]).
 	eval_point: Vec<F>,
 }
 
@@ -383,7 +389,7 @@ where
 	/// initial claim — one `(claim, evaluator)` per claim — and the evaluation point shared by all
 	/// of the evaluators' claims.
 	pub fn new(
-		mut store: MleStore<'a, P>,
+		store: MleStore<'a, P>,
 		claims_with_evaluators: impl IntoIterator<Item = (F, Evaluator)>,
 		eval_point: Vec<F>,
 	) -> Self {
@@ -393,9 +399,6 @@ where
 			store.n_vars(),
 			"evaluation point length must equal the store's number of variables"
 		);
-		// Every claim shares the point, so register its eq-indicator tracker once; the prover owns
-		// it and supplies the round eq chunk and coordinate to each evaluator.
-		let eq_tracker = store.register_eq_tracker(&eval_point);
 		let (round_states, evaluators) = claims_with_evaluators
 			.into_iter()
 			.map(|(claim, evaluator)| (RoundState::Claim(claim), evaluator))
@@ -404,7 +407,6 @@ where
 			store,
 			evaluators,
 			round_states,
-			eq_tracker,
 			buffered_challenge: None,
 			eval_point,
 		}
@@ -427,13 +429,16 @@ where
 		Evaluator: 'static,
 	{
 		let Self {
-			store,
+			mut store,
 			evaluators,
 			round_states,
-			eq_tracker,
 			buffered_challenge: _,
-			eval_point: _,
+			eval_point,
 		} = self;
+		// The plain sumcheck prover this converts to has no eq machinery, so its wrappers read the
+		// eq indicator from a store tracker. This prover kept none, so register one here for the
+		// shared point.
+		let eq_tracker = store.register_eq_tracker(&eval_point);
 		// Wrap each MLE-check evaluator so it emits sumcheck round polynomials, handing it the
 		// shared eq tracker the store folds. Conversion happens before proving starts, so no fold
 		// challenge is buffered yet, and — since no variable has been folded — the equality
@@ -474,8 +479,8 @@ where
 	fn round_claim(&self) -> Vec<F> {
 		// The claim is held directly before this round's polynomial is produced, and afterwards
 		// recovered from that prime polynomial as the eq-lerp of its endpoints at the round
-		// coordinate.
-		let alpha = self.store.eq_alpha(self.eq_tracker);
+		// coordinate — the highest remaining coordinate of the shared point.
+		let alpha = self.eval_point[self.n_vars() - 1];
 		self.round_states
 			.iter()
 			.map(|state| match state {
@@ -497,23 +502,32 @@ where
 			.last()
 			.expect("offsets has one entry per evaluator, plus one");
 
+		// The eq indicator factors into a chunk part over the low `chunk_vars` coordinates and a
+		// suffix part over the higher ones. Materialize only the chunk part, shared by every chunk
+		// and evaluator; the suffix coordinates are folded in below through `reduce`. The highest
+		// remaining coordinate is this round's `alpha`, folded into the interpolation, not the sum.
+		let alpha = self.eval_point[n_vars_remaining - 1];
+		let eq_chunk = eq_ind_partial_eval::<P>(&self.eval_point[..chunk_vars]);
+
 		let buffered_challenge = self.buffered_challenge.take();
 		let evaluators = &self.evaluators;
-		let eq_tracker = self.eq_tracker;
+		let eval_point = &self.eval_point;
 		let store = &mut self.store;
 		let map = |chunk: EvaluationChunk<'_, P>| {
-			// The eq-indicator chunk is shared by every evaluator: look it up once, then hand each
-			// a borrowing view.
-			let eq_ind = chunk.eq(eq_tracker);
 			let mut accum = vec![Default::default(); total_slots];
 			for (evaluator, window) in iter::zip(evaluators, offsets.windows(2)) {
-				evaluator.accumulate(&chunk, eq_ind.to_ref(), &mut accum[window[0]..window[1]]);
+				evaluator.accumulate(&chunk, eq_chunk.to_ref(), &mut accum[window[0]..window[1]]);
 			}
-			accum
+			// Reduce the wide accumulators so the eq-weighted `reduce` can linearly extrapolate on
+			// P.
+			accum.into_iter().map(P::reduce).collect::<Vec<P>>()
 		};
-		let reduce = |mut lhs: Vec<<P as WideMul>::Output>, rhs: Vec<<P as WideMul>::Output>| {
-			for (dst, src) in iter::zip(&mut lhs, rhs) {
-				*dst += src;
+		let reduce = |mut lhs: Vec<P>, rhs: Vec<P>, level: usize| {
+			// Fold the `level`-th (suffix) coordinate: eq weights the low half by `1 - z` and the
+			// high half by `z`, i.e. the linear extrapolation `lo + z * (hi - lo)`.
+			let z = P::broadcast(eval_point[level]);
+			for (lo, hi) in iter::zip(&mut lhs, rhs) {
+				*lo += z * (hi - *lo);
 			}
 			lhs
 		};
@@ -522,10 +536,10 @@ where
 			None => store.map_reduce(chunk_vars, map, reduce),
 		};
 
-		// Each evaluator interpolates its prime round polynomial from its claim and the round
-		// coordinate; the prover then records the coefficients for the coming fold.
+		// Each evaluator interpolates its prime round polynomial from its (reduced) accumulator,
+		// its claim, and the round coordinate; the prover then records the coefficients for the
+		// fold.
 		let store = &self.store;
-		let alpha = store.eq_alpha(self.eq_tracker);
 		let round_coeffs: Vec<RoundCoeffs<F>> =
 			iter::zip(iter::zip(&self.evaluators, &self.round_states), offsets.windows(2))
 				.map(|((evaluator, state), window)| {
@@ -666,9 +680,14 @@ mod tests {
 
 	// Prove the two fractional-addition claims through the MLE-check batch driver, then verify.
 	// The two claims share one store, so the four columns are folded and evaluated once.
+	//
+	// The 14- and 15-variable cases exceed `MAX_CHUNK_VARS`, so the eq indicator no longer fits in
+	// one chunk prefix: they exercise `SharedMleCheckProver`'s suffix folding, where the higher eq
+	// coordinates are linearly extrapolated in `reduce` — 15 in particular hits that path through
+	// both `map_reduce` (round 0) and the fused `map_reduce_with_fold` (round 1).
 	#[test]
 	fn test_shared_frac_add_prove_verify() {
-		for n_vars in [1, 2, 3, 8] {
+		for n_vars in [1, 2, 3, 8, 14, 15] {
 			let mut rng = StdRng::seed_from_u64(0);
 			let (cols, eval_point, claims) = frac_instance(&mut rng, n_vars);
 

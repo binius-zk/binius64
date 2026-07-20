@@ -1,4 +1,5 @@
 // Copyright 2024-2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::ops::DerefMut;
 
@@ -9,17 +10,13 @@ use crate::FieldBuffer;
 
 /// Left tensor of values with the eq indicator evaluated at extra_query_coordinates.
 ///
-/// This is [`hypercube::tensor_prod_eq_ind_prepend`] over the Boolean hypercube.
-///
-/// ## Preconditions
-///
-/// * `values` must have enough capacity: `values.log_cap() >= values.log_len() +
-///   extra_query_coordinates.len()`
-pub fn tensor_prod_eq_ind_prepend<P: PackedField, Data: DerefMut<Target = [P]>>(
-	values: &mut FieldBuffer<P, Data>,
+/// This is [`hypercube::tensor_prod_eq_ind_prepend`] over the Boolean hypercube. The returned
+/// buffer grows its backing `Vec` by one variable per coordinate.
+pub fn tensor_prod_eq_ind_prepend<P: PackedField>(
+	values: FieldBuffer<P, Vec<P>>,
 	extra_query_coordinates: &[P::Scalar],
-) {
-	hypercube::tensor_prod_eq_ind_prepend::<OneCube, _, _>(values, extra_query_coordinates)
+) -> FieldBuffer<P, Vec<P>> {
+	hypercube::tensor_prod_eq_ind_prepend::<OneCube, P>(values, extra_query_coordinates)
 }
 
 /// Computes the partial evaluation of the equality indicator polynomial.
@@ -60,6 +57,24 @@ pub fn scaled_eq_ind_partial_eval<P: PackedField>(
 	scale: P::Scalar,
 ) -> FieldBuffer<P> {
 	hypercube::scaled_eq_ind_partial_eval::<OneCube, P>(point, scale)
+}
+
+/// Builds the scaled equality indicator expansion of `point` in a caller-supplied backing `Vec`.
+///
+/// This is the allocation-hoisting form of [`scaled_eq_ind_partial_eval`]: the caller owns the
+/// backing `Vec`, so its allocation can be reserved on a different thread than the one that fills
+/// it. Returns a buffer with `log_len == point.len()`. A scale of one reproduces the unscaled
+/// equality indicator.
+///
+/// # Preconditions
+///
+/// * `buffer.capacity()` must equal `1 << point.len().saturating_sub(P::LOG_WIDTH)`.
+pub fn scaled_eq_ind_partial_eval_into<P: PackedField>(
+	point: &[P::Scalar],
+	scale: P::Scalar,
+	buffer: Vec<P>,
+) -> FieldBuffer<P> {
+	hypercube::scaled_eq_ind_partial_eval_into::<OneCube, P>(point, scale, buffer)
 }
 
 /// Truncate the equality indicator expansion to the low indexed variables.
@@ -172,10 +187,8 @@ mod tests {
 		let v0 = F::from(1);
 		let v1 = F::from(2);
 		let query = vec![v0, v1];
-		// log_len = 0, query.len() = 2, so total log_cap = 2
-		let mut result = FieldBuffer::zeros_truncated(0, query.len());
-		result.set(0, F::ONE);
-		tensor_prod_eq_ind::<OneCube, P, _>(&mut result, &query);
+		let result = FieldBuffer::<P, _>::scalar_with_capacity(F::ONE, query.len());
+		let result = tensor_prod_eq_ind::<OneCube, P>(result, &query);
 		let result_vec: Vec<F> = P::iter_slice(result.as_ref()).collect();
 		assert_eq!(
 			result_vec,
@@ -195,13 +208,12 @@ mod tests {
 		let exps = 4;
 		let max_n_vars = exps * (exps + 1) / 2;
 		let mut coords = Vec::with_capacity(max_n_vars);
-		let mut eq_expansion = FieldBuffer::zeros_truncated(0, max_n_vars);
-		eq_expansion.set(0, F::ONE);
+		let mut eq_expansion = FieldBuffer::<P, _>::scalar_with_capacity(F::ONE, max_n_vars);
 
 		for extra_count in 1..=exps {
 			let extra = random_scalars(&mut rng, extra_count);
 
-			tensor_prod_eq_ind::<OneCube, P, _>(&mut eq_expansion, &extra);
+			eq_expansion = tensor_prod_eq_ind::<OneCube, P>(eq_expansion, &extra);
 			coords.extend(&extra);
 
 			assert_eq!(eq_expansion.log_len(), coords.len());
@@ -379,13 +391,12 @@ mod tests {
 
 		let append = eq_ind_partial_eval(&point);
 
-		let mut prepend = FieldBuffer::<P>::zeros_truncated(0, n_vars);
+		let prepend = FieldBuffer::<P, _>::scalar_with_capacity(F::ONE, n_vars);
 		let (prefix, suffix) = point.split_at(n_vars - base_vars);
-		prepend.set(0, F::ONE);
-		tensor_prod_eq_ind::<OneCube, P, _>(&mut prepend, suffix);
-		tensor_prod_eq_ind_prepend(&mut prepend, prefix);
+		let prepend = tensor_prod_eq_ind::<OneCube, P>(prepend, suffix);
+		let prepend = tensor_prod_eq_ind_prepend(prepend, prefix);
 
-		assert_eq!(append, prepend);
+		assert_eq!(append, prepend.into_boxed());
 	}
 
 	#[test]
@@ -403,6 +414,30 @@ mod tests {
 			assert_eq!(
 				scaled_eq_ind_partial_eval::<P>(&point, F::ONE),
 				eq_ind_partial_eval::<P>(&point),
+				"mismatch at log_n={log_n}"
+			);
+		}
+	}
+
+	#[test]
+	fn scaled_eq_ind_partial_eval_into_matches_allocating() {
+		let mut rng = StdRng::seed_from_u64(2);
+
+		// Invariant: filling a caller-reserved backing Vec reproduces the allocating variant
+		// exactly.
+		for log_n in [0, 1, 2, 5, 8] {
+			let point = random_scalars::<F>(&mut rng, log_n);
+			let scale = random_scalars::<F>(&mut rng, 1)[0];
+
+			// Reserve the exact packed capacity the routine requires.
+			let packed_len = 1 << log_n.saturating_sub(P::LOG_WIDTH);
+			let result =
+				scaled_eq_ind_partial_eval_into(&point, scale, Vec::with_capacity(packed_len));
+
+			assert_eq!(result.log_len(), log_n, "wrong length at log_n={log_n}");
+			assert_eq!(
+				result,
+				scaled_eq_ind_partial_eval::<P>(&point, scale),
 				"mismatch at log_n={log_n}"
 			);
 		}

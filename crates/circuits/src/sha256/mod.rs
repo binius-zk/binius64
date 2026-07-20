@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 pub mod compress;
 
-use binius_core::{consts::LOG_BYTE_BITS, word::Word};
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 pub use compress::{
 	State, populate_message_block, ref_compress, sha256_compress, sha256_compress_2x,
@@ -194,7 +194,7 @@ pub fn sha256_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; 4] {
 		"length of message in bits must fit within 32 bits"
 	);
 
-	let max_len_bytes = message.data.len() << (Word::LOG_BITS - LOG_BYTE_BITS);
+	let max_len_bytes = message.data.len() << Word::LOG_BYTES;
 	let n_blocks = (message.data.len() + 2).div_ceil(8);
 	let n_words: usize = n_blocks << 4; // 16 words per block
 

@@ -321,6 +321,11 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 	/// expansion, together, so each leaf hands `map` one [`EvaluationChunk`]: the paired column
 	/// halves and the matching eq chunk, at `2^chunk_vars` scalars per half.
 	///
+	/// `reduce(low, high, level)` combines the two sub-results of a bisection, where `level` is the
+	/// index of the variable that was bisected to produce them (`low` fixes it to 0, `high` to 1).
+	/// A plain sum ignores `level`; an eq-weighted reduction uses it to pick the round's
+	/// coordinate.
+	///
 	/// `chunk_vars` is capped at `n_vars() - 1`, so leaves never exceed the halved hypercube.
 	///
 	/// ## Preconditions
@@ -330,7 +335,7 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 		&self,
 		chunk_vars: usize,
 		map: impl (for<'c> Fn(EvaluationChunk<'c, P>) -> T) + Sync,
-		reduce: impl (Fn(T, T) -> T) + Sync,
+		reduce: impl (Fn(T, T, usize) -> T) + Sync,
 	) -> T {
 		assert!(self.n_vars > 0);
 		let chunk_vars = chunk_vars.min(self.n_vars - 1);
@@ -370,7 +375,7 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 		chunk_vars: usize,
 		challenge: F,
 		map: impl (for<'c> Fn(EvaluationChunk<'c, P>) -> T) + Sync,
-		reduce: impl (Fn(T, T) -> T) + Sync,
+		reduce: impl (Fn(T, T, usize) -> T) + Sync,
 	) -> T {
 		assert!(self.n_vars > 1);
 
@@ -744,36 +749,40 @@ fn map_reduce_helper<P: PackedField, T: Send>(
 	chunk: EvaluationChunk<'_, P>,
 	sub_vars: usize,
 	map: &(impl (for<'a> Fn(EvaluationChunk<'a, P>) -> T) + Sync),
-	reduce: &(impl (Fn(T, T) -> T) + Sync),
+	reduce: &(impl (Fn(T, T, usize) -> T) + Sync),
 ) -> T {
 	if sub_vars == chunk.n_vars {
 		return map(chunk);
 	}
 
+	// The bisection binds the highest remaining variable; its index is the reduction level.
+	let level = chunk.n_vars - 1;
 	let [chunk_0, chunk_1] = chunk.split_half();
 	let (ret_0, ret_1) = rayon::join(
 		move || map_reduce_helper(chunk_0, sub_vars, map, reduce),
 		move || map_reduce_helper(chunk_1, sub_vars, map, reduce),
 	);
-	reduce(ret_0, ret_1)
+	reduce(ret_0, ret_1, level)
 }
 
 fn map_reduce_with_fold_helper<P: PackedField, T: Send>(
 	chunk: PreFoldEvaluationChunk<'_, P>,
 	sub_vars: usize,
 	map: &(impl (for<'a> Fn(EvaluationChunk<'a, P>) -> T) + Sync),
-	reduce: &(impl (Fn(T, T) -> T) + Sync),
+	reduce: &(impl (Fn(T, T, usize) -> T) + Sync),
 ) -> T {
 	if sub_vars == chunk.n_vars {
 		return map(chunk.fold());
 	}
 
+	// The bisection binds the highest remaining variable; its index is the reduction level.
+	let level = chunk.n_vars - 1;
 	let [chunk_0, chunk_1] = chunk.split_half();
 	let (ret_0, ret_1) = rayon::join(
 		move || map_reduce_with_fold_helper(chunk_0, sub_vars, map, reduce),
 		move || map_reduce_with_fold_helper(chunk_1, sub_vars, map, reduce),
 	);
-	reduce(ret_0, ret_1)
+	reduce(ret_0, ret_1, level)
 }
 
 #[cfg(test)]
@@ -846,7 +855,7 @@ mod tests {
 			let got = store.map_reduce(
 				chunk_vars,
 				|chunk| chunk_aggregate(&chunk, &col_ids, &eq_ids),
-				|lhs, rhs| lhs + rhs,
+				|lhs, rhs, _level| lhs + rhs,
 			);
 			assert_eq!(got, expected, "mismatch at chunk_vars = {chunk_vars}");
 		}
@@ -911,7 +920,7 @@ mod tests {
 			let expected = fold_first.map_reduce(
 				chunk_vars,
 				|chunk| chunk_aggregate(&chunk, &col_ids, &eq_ids),
-				|lhs, rhs| lhs + rhs,
+				|lhs, rhs, _level| lhs + rhs,
 			);
 
 			let (mut fused, col_ids, eq_ids) = build();
@@ -919,7 +928,7 @@ mod tests {
 				chunk_vars,
 				challenge,
 				|chunk| chunk_aggregate(&chunk, &col_ids, &eq_ids),
-				|lhs, rhs| lhs + rhs,
+				|lhs, rhs, _level| lhs + rhs,
 			);
 
 			assert_eq!(got, expected, "result mismatch at chunk_vars = {chunk_vars}");
@@ -943,13 +952,13 @@ mod tests {
 			let expected = fold_first.map_reduce(
 				chunk_vars,
 				|chunk| chunk_aggregate(&chunk, &fold_col_ids, &fold_eq_ids),
-				|lhs, rhs| lhs + rhs,
+				|lhs, rhs, _level| lhs + rhs,
 			);
 			let got = fused.map_reduce_with_fold(
 				chunk_vars,
 				challenge,
 				|chunk| chunk_aggregate(&chunk, &fused_col_ids, &fused_eq_ids),
-				|lhs, rhs| lhs + rhs,
+				|lhs, rhs, _level| lhs + rhs,
 			);
 
 			assert_eq!(got, expected, "result mismatch in round {round}");
