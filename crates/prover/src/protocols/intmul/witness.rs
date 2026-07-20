@@ -235,7 +235,7 @@ where
 				.chunks(P::WIDTH)
 				.map(|chunk| P::from_scalars(chunk.iter().copied())),
 		);
-		return FieldBuffer::new(log_size, buffer.into_boxed_slice());
+		return FieldBuffer::new(log_size, buffer);
 	}
 
 	// Build the first block's `2^log_block` sequential powers, packed into `2^LOG_STRIDE` elements;
@@ -256,7 +256,7 @@ where
 		buffer.push(next);
 	}
 
-	FieldBuffer::new(log_size, buffer.into_boxed_slice())
+	FieldBuffer::new(log_size, buffer)
 }
 
 /// Extract limb `l` of an exponent word as a table row index.
@@ -370,7 +370,7 @@ where
 	// SAFETY: All elements initialized in the parallel loop above
 	unsafe { out_vec.set_len(total) };
 
-	FieldBuffer::new(n_vars + Word::LOG_BITS, out_vec.into_boxed_slice())
+	FieldBuffer::new(n_vars + Word::LOG_BITS, out_vec)
 }
 
 /// Compute the per-vertex bivariate product of two equally sized field buffers.
@@ -382,7 +382,7 @@ pub fn buffer_bivariate_product<P: PackedField, Data: Deref<Target = [P]>>(
 	let product = (a.as_ref(), b.as_ref())
 		.into_par_iter()
 		.map(|(&a, &b)| a * b)
-		.collect::<Box<[P]>>();
+		.collect::<Vec<P>>();
 	FieldBuffer::new(a.log_len(), product)
 }
 
@@ -415,7 +415,7 @@ where
 			});
 			P::from_scalars(scalars)
 		})
-		.collect::<Box<[_]>>();
+		.collect::<Vec<_>>();
 
 	FieldBuffer::new(n_vars, values)
 }

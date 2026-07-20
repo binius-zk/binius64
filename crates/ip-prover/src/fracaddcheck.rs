@@ -86,8 +86,8 @@ where
 					.collect::<(Vec<_>, Vec<_>)>();
 
 			let next_layer = (
-				FieldBuffer::new(num.log_len() - 1, next_layer_num.into_boxed_slice()),
-				FieldBuffer::new(den.log_len() - 1, next_layer_den.into_boxed_slice()),
+				FieldBuffer::new(num.log_len() - 1, next_layer_num),
+				FieldBuffer::new(den.log_len() - 1, next_layer_den),
 			);
 
 			layers.push(next_layer);

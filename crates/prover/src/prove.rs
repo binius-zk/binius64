@@ -472,7 +472,7 @@ pub fn pack_witness<P: PackedField<Scalar = B128>>(
 
 	padded_witness_elems.resize(len, P::default());
 
-	Ok(FieldBuffer::new(log_witness_elems, padded_witness_elems.into_boxed_slice()))
+	Ok(FieldBuffer::new(log_witness_elems, padded_witness_elems))
 }
 
 fn prove_bitand_reduction<F, PChallenge, Channel>(

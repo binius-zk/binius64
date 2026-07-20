@@ -288,7 +288,7 @@ pub fn scaled_eq_ind_partial_eval_into<Cube: Hypercube, P: PackedField>(
 	buffer.clear();
 	buffer.push(P::from_scalars(iter::once(scale)));
 	let values = FieldBuffer::new(0, buffer);
-	tensor_prod_eq_ind::<Cube, P>(values, point).into_boxed()
+	tensor_prod_eq_ind::<Cube, P>(values, point)
 }
 
 /// Truncate the equality indicator expansion to the low indexed variables.
@@ -601,7 +601,7 @@ mod tests {
 			let prepend = tensor_prod_eq_ind::<InfCube, P>(prepend, suffix);
 			let prepend = tensor_prod_eq_ind_prepend::<InfCube, P>(prepend, prefix);
 
-			prop_assert_eq!(prepend.into_boxed(), eq_ind_partial_eval::<InfCube, P>(&point));
+			prop_assert_eq!(prepend, eq_ind_partial_eval::<InfCube, P>(&point));
 		}
 
 		/// Truncation strips the trailing variables of an expansion, for either cube.

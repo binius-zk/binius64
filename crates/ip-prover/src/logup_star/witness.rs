@@ -233,7 +233,7 @@ where
 		.map(|chunk| c_packed - P::from_scalars(chunk.iter().copied().map(embed_position::<F>)))
 		.collect::<Vec<_>>();
 
-	FieldBuffer::new(log_len, packed.into_boxed_slice())
+	FieldBuffer::new(log_len, packed)
 }
 
 /// Build the table denominator `c - J` over the `m`-variable table cube.
