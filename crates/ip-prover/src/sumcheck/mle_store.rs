@@ -19,7 +19,7 @@
 //! over the columns is a plain read. A deferred-fold variant that fuses the fold into the next
 //! round's read pass can replace the internals without changing this interface.
 
-use std::iter;
+use std::{array, iter};
 
 use binius_field::{Field, PackedField};
 use binius_math::{
@@ -557,17 +557,40 @@ impl<'a, P: PackedField> PreFoldColumnChunk<'a, P> {
 	}
 
 	/// Folds the segments and returns the folded output slice.
+	///
+	/// The loops process four elements per iteration so several independent `extrapolate_line`
+	/// computations are in flight at once; a plain per-element loop serializes on one dependent
+	/// carryless-multiply chain and starves the multiplier pipes.
 	fn fold(self, challenge_broadcast: &P) -> &'a [P] {
+		let cb = *challenge_broadcast;
 		match self {
 			Self::InPlace { seg_0, seg_1 } => {
-				for (out, &hi) in iter::zip(&mut *seg_0, seg_1) {
-					*out = extrapolate_line_packed(*out, hi, *challenge_broadcast);
+				let mut out_quads = seg_0.chunks_exact_mut(4);
+				let mut hi_quads = seg_1.chunks_exact(4);
+				for (out, hi) in (&mut out_quads).zip(&mut hi_quads) {
+					let folded: [P; 4] =
+						array::from_fn(|k| extrapolate_line_packed(out[k], hi[k], cb));
+					out.copy_from_slice(&folded);
+				}
+				for (out, &hi) in iter::zip(out_quads.into_remainder(), hi_quads.remainder()) {
+					*out = extrapolate_line_packed(*out, hi, cb);
 				}
 				seg_0
 			}
 			Self::OutOfPlace { dst, seg_0, seg_1 } => {
-				for (out, &lo, &hi) in izip!(&mut *dst, seg_0, seg_1) {
-					*out = extrapolate_line_packed(lo, hi, *challenge_broadcast);
+				let mut dst_quads = dst.chunks_exact_mut(4);
+				let mut lo_quads = seg_0.chunks_exact(4);
+				let mut hi_quads = seg_1.chunks_exact(4);
+				for (out, (lo, hi)) in (&mut dst_quads).zip((&mut lo_quads).zip(&mut hi_quads)) {
+					let folded: [P; 4] =
+						array::from_fn(|k| extrapolate_line_packed(lo[k], hi[k], cb));
+					out.copy_from_slice(&folded);
+				}
+				for (out, (&lo, &hi)) in iter::zip(
+					dst_quads.into_remainder(),
+					iter::zip(lo_quads.remainder(), hi_quads.remainder()),
+				) {
+					*out = extrapolate_line_packed(lo, hi, cb);
 				}
 				dst
 			}
