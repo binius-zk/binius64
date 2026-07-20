@@ -222,11 +222,8 @@ where
 		})
 		.sum::<F>();
 
-	let basefold::ReducedOutput {
-		final_fri_value,
-		final_sumcheck_value,
-		..
-	} = basefold::verify_mlecheck_basefold(
+	// The opening routine asserts the final FRI/MLE-check consistency internally.
+	basefold::verify_mlecheck_basefold(
 		fri_params,
 		&oracle_commitments,
 		s_prime,
@@ -235,9 +232,6 @@ where
 		&outer_challenges,
 		channel,
 	)?;
-
-	// The MLE-check internalizes the eq factor, so consistency is plain equality.
-	channel.assert_zero(final_sumcheck_value - final_fri_value)?;
 
 	Ok(())
 }

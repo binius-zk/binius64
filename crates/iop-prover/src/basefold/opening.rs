@@ -38,8 +38,8 @@ use crate::{fri::FRIFoldProver, merkle_channel::MerkleIPProverChannel};
 /// * `channel` - the Merkle channel carrying all prover interaction: round coefficients,
 ///   challenges, commitments, and query openings
 ///
-/// The final FRI value equals the final MLE-check value `𝛑(r)` (see
-/// [`binius_iop::basefold::mlecheck_fri_consistency`]).
+/// The final FRI value equals the final MLE-check value.
+/// The verifier asserts that equality when it runs the matching opening.
 pub fn prove_mlecheck_basefold<F, P, NTT, Channel>(
 	witness: FieldBuffer<P>,
 	eval_point: &[F],
@@ -101,7 +101,7 @@ pub fn prove_mlecheck_basefold<F, P, NTT, Channel>(
 
 #[cfg(test)]
 mod test {
-	use anyhow::{Result, bail};
+	use anyhow::Result;
 	use binius_field::{BinaryField, PackedBinaryGhash1x128b, PackedField};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
@@ -222,11 +222,9 @@ mod test {
 			verifier_channel.recv_merkle_commitment(2, n_vars + LOG_INV_RATE)?;
 		let batch_challenge_v: F = IPVerifierChannel::sample(&mut verifier_channel);
 
-		let verifier_basefold::ReducedOutput {
-			final_fri_value,
-			final_sumcheck_value,
-			..
-		} = verifier_basefold::verify_mlecheck_basefold(
+		// The verifier asserts FRI/MLE-check consistency internally.
+		// A tampered proof therefore surfaces here as an error.
+		verifier_basefold::verify_mlecheck_basefold(
 			&fri_params,
 			&[retrieved_commitment],
 			eval_claim,
@@ -235,10 +233,6 @@ mod test {
 			&[],
 			&mut verifier_channel,
 		)?;
-
-		if !verifier_basefold::mlecheck_fri_consistency(final_fri_value, final_sumcheck_value) {
-			bail!("MLE-check and FRI are inconsistent");
-		}
 
 		Ok(())
 	}

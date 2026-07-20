@@ -3,7 +3,7 @@
 
 //! The core BaseFold opening protocol on the verifier side.
 
-use binius_field::{BinaryField, Field};
+use binius_field::BinaryField;
 use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
 use binius_utils::checked_arithmetics::log2_ceil_usize;
 
@@ -38,8 +38,12 @@ use crate::{
 /// * `channel` - the Merkle channel carrying all prover interaction: round coefficients,
 ///   challenges, commitments, and query openings.
 ///
-/// The returned `challenges` are the FRI fold challenges `[γ] ++ r' ++ fresh_X`. Use
-/// [`mlecheck_fri_consistency`] to check the reduced values.
+/// The final consistency check is asserted internally, so `Ok` means the opening verified.
+///
+/// The MLE-check folds the equality-indicator factor into its round-proof recovery.
+/// So the final reduced value is the plain multilinear evaluation of the combined oracle at `r`.
+/// On an honest opening that value equals the final FRI value.
+/// This routine asserts their equality and rejects on any mismatch.
 pub fn verify_mlecheck_basefold<F, Channel>(
 	fri_params: &FRIParams<F>,
 	codeword_commitments: &[Channel::Commitment],
@@ -48,7 +52,7 @@ pub fn verify_mlecheck_basefold<F, Channel>(
 	batch_challenge: Option<F>,
 	outer_challenges: &[F],
 	channel: &mut Channel,
-) -> Result<ReducedOutput<F>, Error>
+) -> Result<(), Error>
 where
 	F: BinaryField,
 	Channel: MerkleIPVerifierChannel<F, Elem = F>,
@@ -115,26 +119,10 @@ where
 
 	let final_fri_value = fri_verifier.verify(channel)?;
 
-	Ok(ReducedOutput {
-		final_fri_value,
-		final_sumcheck_value: sum,
-		challenges,
-	})
-}
+	// The MLE-check folds the equality-indicator factor into its round-proof recovery.
+	// So the final reduced value is the plain evaluation, identical to the final FRI value.
+	// Reject on any mismatch.
+	channel.assert_zero(sum - final_fri_value)?;
 
-/// Output type of the [`verify_mlecheck_basefold`] function.
-pub struct ReducedOutput<F> {
-	pub final_fri_value: F,
-	pub final_sumcheck_value: F,
-	pub challenges: Vec<F>,
-}
-
-/// Verifies that the final FRI oracle is consistent with the MLE-check from
-/// [`verify_mlecheck_basefold`].
-///
-/// In an MLE-check the equality-indicator factor is folded into the round-proof recovery, so the
-/// final reduced value is the multilinear evaluation `π'(r)` with no extra factor. The final FRI
-/// value is the same `π'(r)`, so consistency is plain equality.
-pub fn mlecheck_fri_consistency<F: Field>(fri_final_oracle: F, sumcheck_final_claim: F) -> bool {
-	fri_final_oracle == sumcheck_final_claim
+	Ok(())
 }
