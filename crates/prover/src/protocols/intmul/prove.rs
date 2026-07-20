@@ -17,7 +17,7 @@ use binius_ip_prover::{
 		MleToSumCheckDecorator,
 		batch::{BatchSumcheckOutput, batch_prove, batch_prove_and_write_evals},
 		bivariate_product_mle,
-		multilinear_eval::MultilinearEvalProver,
+		multilinear_eval::multilinear_eval_prover,
 		quadratic_mlecheck_prover,
 		selector_mle::{Claim, SelectorMlecheckProver},
 	},
@@ -274,7 +274,7 @@ where
 			.collect::<Vec<_>>();
 		let folded_column = FieldBuffer::<P>::from_values(&folded_column_scalars);
 		drop(fold_guard);
-		let index_prover = MleToSumCheckDecorator::new(MultilinearEvalProver::new(
+		let index_prover = MleToSumCheckDecorator::new(multilinear_eval_prover(
 			folded_column,
 			index_content_point,
 			folded_index_claim,
@@ -304,11 +304,8 @@ where
 		assert_eq!(b_exponents.len(), 1 << n_vars);
 		let b_tensor = eq_ind_partial_eval_scalars::<F>(r_ib);
 		let b_folded = fold_words::<_, P>(b_exponents, &b_tensor);
-		let b_sumcheck_prover = MleToSumCheckDecorator::new(MultilinearEvalProver::new(
-			b_folded,
-			b_eval_point,
-			b_recomb,
-		));
+		let b_sumcheck_prover =
+			MleToSumCheckDecorator::new(multilinear_eval_prover(b_folded, b_eval_point, b_recomb));
 
 		let batch_guard = tracing::debug_span!("Final batched sumcheck").entered();
 		let BatchSumcheckOutput {

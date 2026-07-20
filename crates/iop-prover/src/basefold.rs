@@ -3,13 +3,15 @@
 
 use binius_field::{BinaryField, PackedField};
 use binius_ip::mlecheck;
-use binius_ip_prover::sumcheck::{common::SumcheckProver, multilinear_eval::MultilinearEvalProver};
+use binius_ip_prover::sumcheck::{
+	common::SumcheckProver, multilinear_eval::multilinear_eval_prover,
+};
 use binius_math::{FieldBuffer, ntt::AdditiveNTT};
 
 use crate::{fri::FRIFoldProver, merkle_channel::MerkleIPProverChannel};
 
 /// Proves a *combined* multilinear evaluation claim `𝛑(eval_point) = eval_claim` by interleaving a
-/// single [`MultilinearEvalProver`] MLE-check with a single combined FRI over the
+/// single multilinear-evaluation MLE-check with a single combined FRI over the
 /// piecewise-concatenated oracle of the Batched ZK BaseFold construction (whitepaper §7.2 /
 /// §sec:batched-basefold Step 2).
 ///
@@ -74,12 +76,12 @@ pub fn prove_mlecheck_basefold<F, P, NTT, Channel>(
 		fri_folder.receive_challenge(outer_challenge);
 	}
 
-	let mut sumcheck = MultilinearEvalProver::new(witness, eval_point, eval_claim);
+	let mut sumcheck = multilinear_eval_prover(witness, eval_point, eval_claim);
 	for _ in 0..n_vars {
 		let mut round_coeffs_vec = sumcheck.execute();
 		let round_coeffs = round_coeffs_vec
 			.pop()
-			.expect("MultilinearEvalProver proves exactly one claim");
+			.expect("the multilinear-evaluation prover proves exactly one claim");
 
 		// Send the round coefficients first: on a commitment round, `execute_fold_round` commits
 		// the folded codeword and writes its root, which must land after the coefficients.

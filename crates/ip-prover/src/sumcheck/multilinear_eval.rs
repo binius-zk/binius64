@@ -6,7 +6,6 @@ use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::{FieldBuffer, FieldSlice};
 
 use super::{
-	common::{MleCheckProver, SumcheckProver},
 	mle_store::{ColId, EvaluationChunk, MleStore},
 	round_evals::RoundEvals1,
 	round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
@@ -84,7 +83,7 @@ where
 	}
 }
 
-/// An [`MleCheckProver`] for the multilinear extension evaluation of a single multilinear.
+/// Builds an MLE-check prover for the multilinear extension evaluation of a single multilinear.
 ///
 /// The claim is `M(z) = s` for a multilinear `M` over the challenge field.
 /// This proves the equivalent MLE-check relation `s = sum_{v in B_n} M(v) * eq(v, z)`.
@@ -94,64 +93,37 @@ where
 /// Each round expands only a small low-coordinate prefix of the eq indicator.
 /// The higher coordinates are folded in through the prover's reduction step.
 /// The full `2^{n-1}` eq tensor is never materialized, streamed, or folded per round.
-pub struct MultilinearEvalProver<F: Field, P: PackedField<Scalar = F>> {
-	inner: SharedMleCheckProver<'static, F, P, MultilinearEvalEvaluator>,
-}
+///
+/// # Arguments
+///
+/// * `witness` - the multilinear whose extension is evaluated.
+/// * `eval_point` - the point of the evaluation claim.
+/// * `eval_claim` - the claimed value of the multilinear extension at that point.
+///
+/// # Panics
+///
+/// Panics if the witness length does not match the evaluation point length.
+pub fn multilinear_eval_prover<F, P>(
+	witness: FieldBuffer<P>,
+	eval_point: &[F],
+	eval_claim: F,
+) -> SharedMleCheckProver<'static, F, P, MultilinearEvalEvaluator>
+where
+	F: Field,
+	P: PackedField<Scalar = F>,
+{
+	assert_eq!(
+		witness.log_len(),
+		eval_point.len(),
+		"witness must have number of variables equal to the evaluation point length"
+	);
 
-impl<F: Field, P: PackedField<Scalar = F>> MultilinearEvalProver<F, P> {
-	/// Constructs a prover for the multilinear `witness`.
-	/// `eval_point` is the point of the evaluation claim.
-	/// `eval_claim` is the claimed value of the multilinear extension at that point.
-	///
-	/// Panics if the witness length does not match the evaluation point length.
-	pub fn new(witness: FieldBuffer<P>, eval_point: &[F], eval_claim: F) -> Self {
-		assert_eq!(
-			witness.log_len(),
-			eval_point.len(),
-			"witness must have number of variables equal to the evaluation point length"
-		);
-
-		// The store owns the witness as its single column.
-		// With no borrowed data, the shared prover is `'static`.
-		let mut store = MleStore::new(eval_point.len());
-		let col = store.push_owned(witness);
-		let evaluator = MultilinearEvalEvaluator::new(col);
-		Self {
-			inner: SharedMleCheckProver::new(store, [(eval_claim, evaluator)], eval_point.to_vec()),
-		}
-	}
-}
-
-impl<F: Field, P: PackedField<Scalar = F>> SumcheckProver<F> for MultilinearEvalProver<F, P> {
-	fn n_vars(&self) -> usize {
-		self.inner.n_vars()
-	}
-
-	fn n_claims(&self) -> usize {
-		self.inner.n_claims()
-	}
-
-	fn round_claim(&self) -> Vec<F> {
-		self.inner.round_claim()
-	}
-
-	fn execute(&mut self) -> Vec<RoundCoeffs<F>> {
-		self.inner.execute()
-	}
-
-	fn fold(&mut self, challenge: F) {
-		self.inner.fold(challenge)
-	}
-
-	fn finish(self) -> Vec<F> {
-		self.inner.finish()
-	}
-}
-
-impl<F: Field, P: PackedField<Scalar = F>> MleCheckProver<F> for MultilinearEvalProver<F, P> {
-	fn eval_point(&self) -> &[F] {
-		self.inner.eval_point()
-	}
+	// The store owns the witness as its single column.
+	// With no borrowed data, the shared prover is `'static`.
+	let mut store = MleStore::new(eval_point.len());
+	let col = store.push_owned(witness);
+	let evaluator = MultilinearEvalEvaluator::new(col);
+	SharedMleCheckProver::new(store, [(eval_claim, evaluator)], eval_point.to_vec())
 }
 
 #[cfg(test)]
@@ -170,7 +142,8 @@ mod tests {
 
 	use super::*;
 	use crate::sumcheck::{
-		prove_single_mlecheck, quadratic_mle_evaluator::quadratic_mlecheck_prover,
+		common::SumcheckProver, prove_single_mlecheck,
+		quadratic_mle_evaluator::quadratic_mlecheck_prover,
 	};
 
 	type F = OptimalB128;
@@ -191,7 +164,7 @@ mod tests {
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 		let eval_claim = evaluate(&witness, &eval_point);
 
-		let mut eval_prover = MultilinearEvalProver::new(witness.clone(), &eval_point, eval_claim);
+		let mut eval_prover = multilinear_eval_prover(witness.clone(), &eval_point, eval_claim);
 		let mut quadratic_prover = quadratic_mlecheck_prover(
 			[witness],
 			|[a]: [P; 1]| a,
@@ -232,7 +205,7 @@ mod tests {
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 		let eval_claim = evaluate(&witness, &eval_point);
 
-		let prover = MultilinearEvalProver::new(witness.clone(), &eval_point, eval_claim);
+		let prover = multilinear_eval_prover(witness.clone(), &eval_point, eval_claim);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let output = prove_single_mlecheck(prover, &mut prover_transcript);
@@ -266,7 +239,7 @@ mod tests {
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 		let eval_claim = evaluate(&witness, &eval_point);
 
-		let mut prover = MultilinearEvalProver::new(witness, &eval_point, eval_claim);
+		let mut prover = multilinear_eval_prover(witness, &eval_point, eval_claim);
 		assert_eq!(prover.round_claim(), vec![eval_claim]);
 
 		for _ in 0..n_vars {
