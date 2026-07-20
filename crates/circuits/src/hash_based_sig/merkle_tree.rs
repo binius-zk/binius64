@@ -84,7 +84,6 @@ pub fn circuit_merkle_path(
 #[cfg(test)]
 mod tests {
 	use binius_core::{Word, verify::verify_constraints};
-	use binius_frontend::util::pack_bytes_into_wires_le;
 
 	use super::*;
 	use crate::hash_based_sig::hashing::hash_tree_node;
@@ -119,12 +118,12 @@ mod tests {
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();
-		pack_bytes_into_wires_le(&mut w, &param, PARAM);
-		pack_bytes_into_wires_le(&mut w, &leaf_w, leaf);
+		w.pack_bytes_le(&param, PARAM);
+		w.pack_bytes_le(&leaf_w, leaf);
 		w[index_w] = Word::from_u64(leaf_index);
-		pack_bytes_into_wires_le(&mut w, &path[0], sibling0);
-		pack_bytes_into_wires_le(&mut w, &path[1], sibling1);
-		pack_bytes_into_wires_le(&mut w, &root_w, root);
+		w.pack_bytes_le(&path[0], sibling0);
+		w.pack_bytes_le(&path[1], sibling1);
+		w.pack_bytes_le(&root_w, root);
 
 		circuit
 			.populate_wire_witness(&mut w)

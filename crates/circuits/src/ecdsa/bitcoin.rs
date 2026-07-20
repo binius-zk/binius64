@@ -1,11 +1,12 @@
 // Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
-use binius_frontend::{CircuitBuilder, Wire, util::all_true};
+use binius_frontend::{CircuitBuilder, Wire};
 
 use super::scalar_mul::{MSM_WINDOW, msm_strauss_endo};
 use crate::{
 	bignum::{BigUint, biguint_lt},
 	secp256k1::{Secp256k1, Secp256k1Affine},
+	util::all_true,
 };
 
 /// "Bitcoin style" verification of ECDSA signatures over secp256k1

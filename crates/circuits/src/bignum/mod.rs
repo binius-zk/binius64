@@ -22,7 +22,7 @@ mod tests;
 pub use addsub::{add, sub};
 pub use big_uint_divide::BigUintDivideHint;
 pub use big_uint_mod_pow::BigUintModPowHint;
-pub use biguint::{BigUint, assert_eq, select};
+pub use biguint::{BigUint, assert_eq, num_biguint_from_u64_limbs, select};
 pub use cmp::{biguint_eq, biguint_lt};
 pub use mod_divide::ModDivideHint;
 pub use mod_inverse::ModInverseHint;

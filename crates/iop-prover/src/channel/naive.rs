@@ -1,10 +1,6 @@
 // Copyright 2026 The Binius Developers
 
-//! Naive implementation of IOP prover channel for testing.
-//!
-//! This module provides [`NaiveProverChannel`], a simple implementation of [`IOPProverChannel`]
-//! that writes full polynomial data to the transcript instead of using FRI commitments.
-//! This is intended for unit testing of protocols without the overhead of BaseFold/FRI.
+//! Naive [`IOPProverChannel`] for testing: writes full polynomials instead of using FRI.
 
 use binius_field::{Field, PackedField};
 use binius_iop::channel::OracleSpec;

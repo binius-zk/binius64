@@ -106,7 +106,6 @@ pub fn circuit_xmss(
 #[cfg(test)]
 mod tests {
 	use binius_core::{Word, verify::verify_constraints};
-	use binius_frontend::util::pack_bytes_into_wires_le;
 	use rand::prelude::*;
 	use rstest::rstest;
 
@@ -242,26 +241,26 @@ mod tests {
 			// Pack inputs into wires (pad param_bytes to match wire count)
 			let mut padded_param = vec![0u8; param.len() * 8];
 			padded_param[..self.param_bytes.len()].copy_from_slice(&self.param_bytes);
-			pack_bytes_into_wires_le(&mut w, &param, &padded_param);
-			pack_bytes_into_wires_le(&mut w, &message, &self.message_bytes);
+			w.pack_bytes_le(&param, &padded_param);
+			w.pack_bytes_le(&message, &self.message_bytes);
 
 			let mut nonce_padded = vec![0u8; NONCE_LENGTH_BYTES];
 			nonce_padded[..self.nonce_bytes.len()].copy_from_slice(&self.nonce_bytes);
-			pack_bytes_into_wires_le(&mut w, &nonce, &nonce_padded);
+			w.pack_bytes_le(&nonce, &nonce_padded);
 
 			w[epoch] = Word::from_u64(self.epoch);
-			pack_bytes_into_wires_le(&mut w, &root_hash, &self.root_hash);
+			w.pack_bytes_le(&root_hash, &self.root_hash);
 
 			for (i, sig_hash) in self.sig_hashes.iter().enumerate() {
-				pack_bytes_into_wires_le(&mut w, &signature_hashes[i], sig_hash);
+				w.pack_bytes_le(&signature_hashes[i], sig_hash);
 			}
 
 			for (i, pk_hash) in self.pk_hashes.iter().enumerate() {
-				pack_bytes_into_wires_le(&mut w, &public_key_hashes[i], pk_hash);
+				w.pack_bytes_le(&public_key_hashes[i], pk_hash);
 			}
 
 			for (i, auth_node) in self.auth_path.iter().enumerate() {
-				pack_bytes_into_wires_le(&mut w, &auth_path[i], auth_node);
+				w.pack_bytes_le(&auth_path[i], auth_node);
 			}
 
 			// Every digest is BLAKE3, derived from the inputs, so the evaluator fills them all

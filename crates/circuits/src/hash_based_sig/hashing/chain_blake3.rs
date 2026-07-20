@@ -397,7 +397,6 @@ pub fn ref_blake3_th(domain: &[u8], data: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
 	use binius_core::{Word, verify::verify_constraints};
-	use binius_frontend::util::pack_bytes_into_wires_le;
 	use proptest::prelude::*;
 
 	use super::*;
@@ -433,11 +432,11 @@ mod tests {
 			let circuit = b.build();
 			let mut w = circuit.new_witness_filler();
 			let param_bytes = pack_param(param_len);
-			pack_bytes_into_wires_le(&mut w, &param, &param_bytes);
+			w.pack_bytes_le(&param, &param_bytes);
 			w[epoch_w] = Word::from_u64(epoch as u64);
-			pack_bytes_into_wires_le(&mut w, &hash, &prev);
+			w.pack_bytes_le(&hash, &prev);
 			let reference = ref_chain_step_blake3(&param_bytes[..param_len], epoch, chain_index, position, &prev);
-			pack_bytes_into_wires_le(&mut w, &expected, &reference);
+			w.pack_bytes_le(&expected, &reference);
 
 			circuit.populate_wire_witness(&mut w).unwrap();
 			verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();
@@ -465,10 +464,10 @@ mod tests {
 
 			let circuit = b.build();
 			let mut w = circuit.new_witness_filler();
-			pack_bytes_into_wires_le(&mut w, &dom_w, &domain[..domain_len]);
-			pack_bytes_into_wires_le(&mut w, &dat_w, &data[..data_len]);
+			w.pack_bytes_le(&dom_w, &domain[..domain_len]);
+			w.pack_bytes_le(&dat_w, &data[..data_len]);
 			let reference = ref_blake3_th(&domain[..domain_len], &data[..data_len]);
-			pack_bytes_into_wires_le(&mut w, &expected, &reference);
+			w.pack_bytes_le(&expected, &reference);
 
 			circuit.populate_wire_witness(&mut w).unwrap();
 			verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();
@@ -502,14 +501,14 @@ mod tests {
 			let circuit = b.build();
 			let mut w = circuit.new_witness_filler();
 			let param_bytes = pack_param(param_len);
-			pack_bytes_into_wires_le(&mut w, &param, &param_bytes);
+			w.pack_bytes_le(&param, &param_bytes);
 			w[epoch_w] = Word::from_u64(epoch as u64);
-			pack_bytes_into_wires_le(&mut w, &h0, &prev0);
-			pack_bytes_into_wires_le(&mut w, &h1, &prev1);
+			w.pack_bytes_le(&h0, &prev0);
+			w.pack_bytes_le(&h1, &prev1);
 			let r0 = ref_chain_step_blake3(&param_bytes[..param_len], epoch, cidx0, position, &prev0);
 			let r1 = ref_chain_step_blake3(&param_bytes[..param_len], epoch, cidx1, position, &prev1);
-			pack_bytes_into_wires_le(&mut w, &e0, &r0);
-			pack_bytes_into_wires_le(&mut w, &e1, &r1);
+			w.pack_bytes_le(&e0, &r0);
+			w.pack_bytes_le(&e1, &r1);
 
 			circuit.populate_wire_witness(&mut w).unwrap();
 			verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();

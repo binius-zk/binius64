@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 pub mod compress;
 
-use binius_core::{consts::LOG_BYTE_BITS, word::Word};
+use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire};
 pub use compress::{State, compress, pack_message_block};
 
@@ -162,7 +162,7 @@ pub fn sha512_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; 8] {
 		"length of message in bits must fit in 64-bit wire"
 	);
 
-	let max_len_bytes = message.data.len() << (Word::LOG_BITS - LOG_BYTE_BITS);
+	let max_len_bytes = message.data.len() << Word::LOG_BYTES;
 	let n_blocks = (message.data.len() + 3).div_ceil(16);
 	let n_words: usize = n_blocks << 4; // 16 words per block
 

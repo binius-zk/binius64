@@ -142,7 +142,7 @@ where
 		combined_values.extend_from_slice(mask.as_ref());
 		combined_values
 	};
-	let combined = FieldBuffer::new(log_len + 1, combined_values.into_boxed_slice());
+	let combined = FieldBuffer::new(log_len + 1, combined_values);
 
 	let codeword = encode_interleaved(params, oracle_index, ntt, combined.to_ref());
 

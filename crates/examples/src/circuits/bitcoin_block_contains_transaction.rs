@@ -78,7 +78,6 @@ fn join(builder: &CircuitBuilder, b0: Wire, b1: Wire) -> Wire {
 #[cfg(test)]
 mod tests {
 	use binius_core::{Word, verify::verify_constraints};
-	use binius_frontend::util::pack_bytes_into_wires_le;
 	use hex_literal::hex;
 
 	use super::*;
@@ -165,11 +164,11 @@ mod tests {
 				SiblingSide::Right,
 			),
 		];
-		pack_bytes_into_wires_le(&mut filler, &block_header, &block_header_value);
-		pack_bytes_into_wires_le(&mut filler, &block_hash, &block_hash_value);
-		pack_bytes_into_wires_le(&mut filler, &transaction_hash, &transaction_hash_value);
+		filler.pack_bytes_le(&block_header, &block_header_value);
+		filler.pack_bytes_le(&block_hash, &block_hash_value);
+		filler.pack_bytes_le(&transaction_hash, &transaction_hash_value);
 		for i in 0..merkle_path_value.len() {
-			pack_bytes_into_wires_le(&mut filler, &merkle_path[i].0, &merkle_path_value[i].0);
+			filler.pack_bytes_le(&merkle_path[i].0, &merkle_path_value[i].0);
 			filler[merkle_path[i].1] = match merkle_path_value[i].1 {
 				SiblingSide::Left => Word::ZERO,
 				SiblingSide::Right => Word::ALL_ONE,

@@ -84,7 +84,6 @@ pub fn hash_tree_node(
 #[cfg(test)]
 mod tests {
 	use binius_core::{Word, verify::verify_constraints};
-	use binius_frontend::util::pack_bytes_into_wires_le;
 	use proptest::prelude::*;
 
 	use super::*;
@@ -122,13 +121,13 @@ mod tests {
 
 		let circuit = b.build();
 		let mut w = circuit.new_witness_filler();
-		pack_bytes_into_wires_le(&mut w, &param, param_bytes);
-		pack_bytes_into_wires_le(&mut w, &left_w, left);
-		pack_bytes_into_wires_le(&mut w, &right_w, right);
+		w.pack_bytes_le(&param, param_bytes);
+		w.pack_bytes_le(&left_w, left);
+		w.pack_bytes_le(&right_w, right);
 		w[level_w] = Word::from_u64(level as u64);
 		w[index_w] = Word::from_u64(index as u64);
 		let reference = hash_tree_node(param_bytes, left, right, level, index);
-		pack_bytes_into_wires_le(&mut w, &out, &reference);
+		w.pack_bytes_le(&out, &reference);
 
 		circuit.populate_wire_witness(&mut w).unwrap();
 		verify_constraints(circuit.constraint_system(), &w.into_value_vec()).unwrap();

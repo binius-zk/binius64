@@ -4,7 +4,7 @@
 use std::ops::{Range, RangeInclusive};
 
 use binius_core::word::Word;
-use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
+use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 
 /// A variable-length byte vector with fixed capacity determined at circuit construction time.
 ///
@@ -141,7 +141,7 @@ impl ByteVec {
 	/// * If bytes.len() exceeds self.max_len
 	pub fn populate_bytes_le(&self, w: &mut WitnessFiller, bytes: &[u8]) {
 		self.assert_len_in_range(bytes.len());
-		pack_bytes_into_wires_le(w, &self.data, bytes);
+		w.pack_bytes_le(&self.data, bytes);
 		w[self.len_bytes] = Word(bytes.len() as u64);
 	}
 

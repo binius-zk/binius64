@@ -30,8 +30,6 @@ mod compiler;
 pub mod ops;
 pub mod stat;
 
-pub mod util;
-
 pub use compiler::{
 	CircuitBuilder, Wire,
 	circuit::{Circuit, PopulateError, WitnessFiller},

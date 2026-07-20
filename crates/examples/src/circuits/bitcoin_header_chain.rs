@@ -2,7 +2,7 @@
 
 use anyhow::bail;
 use binius_circuits::bitcoin::header_chain::HeaderChain;
-use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
+use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use clap::Args;
 
 use crate::ExampleCircuit;
@@ -64,9 +64,9 @@ impl ExampleCircuit for BitcoinHeaderChainExample {
 		let (headers_value, latest_digest_value) =
 			pull_headers(self.headers.len(), instance.to_block)?;
 		for (header, header_value) in self.headers.iter().zip(&headers_value) {
-			pack_bytes_into_wires_le(filler, header, header_value);
+			filler.pack_bytes_le(header, header_value);
 		}
-		pack_bytes_into_wires_le(filler, &self.latest_digest, &latest_digest_value);
+		filler.pack_bytes_le(&self.latest_digest, &latest_digest_value);
 		let headers_value_ref: Vec<&[u8]> = headers_value.iter().map(AsRef::as_ref).collect();
 		self.header_chain_gadget
 			.populate_inner(filler, &headers_value_ref);

@@ -1,18 +1,10 @@
 // Copyright 2026 The Binius Developers
 
 //! Channel abstraction for interactive oracle protocol (IOP) verifiers.
-//!
-//! An IOP extends the public-coin interactive protocol model with oracle access: the prover can
-//! commit to oracles (e.g., Merkle trees) that the verifier can query at specific positions. This
-//! module provides the [`IOPVerifierChannel`] trait that models the verifier's view of such an
-//! interaction.
-//!
-//! The trait extends [`IPVerifierChannel`] with additional methods for:
-//! - Receiving oracle commitments from the prover
-//! - Querying oracle positions and receiving opening proofs
-//!
-//! This abstraction allows protocol implementations to be generic over the underlying
-//! communication and commitment mechanisms.
+
+pub mod naive;
+pub mod oracle_setup;
+pub mod size_tracking;
 
 use binius_field::Field;
 use binius_ip::channel::IPVerifierChannel;

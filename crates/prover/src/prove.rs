@@ -11,7 +11,7 @@ use binius_core::{
 };
 use binius_field::{AESTowerField8b as B8, BinaryField, Divisible, Field, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
-use binius_iop_prover::{basefold_compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
+use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_math::{
 	BinarySubspace, FieldBuffer,
@@ -472,7 +472,7 @@ pub fn pack_witness<P: PackedField<Scalar = B128>>(
 
 	padded_witness_elems.resize(len, P::default());
 
-	Ok(FieldBuffer::new(log_witness_elems, padded_witness_elems.into_boxed_slice()))
+	Ok(FieldBuffer::new(log_witness_elems, padded_witness_elems))
 }
 
 fn prove_bitand_reduction<F, PChallenge, Channel>(

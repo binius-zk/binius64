@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 //! The merkle proof for a transaction in a Bitcoin block.
 
-use binius_frontend::{CircuitBuilder, Wire, WitnessFiller, util::pack_bytes_into_wires_le};
+use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 
 use super::double_sha256::DoubleSha256;
 
@@ -81,7 +81,7 @@ impl MerklePath {
 			};
 			assert_eq!(message.len(), 64);
 			let digest = pair.0.populate_inner(filler, &message);
-			pack_bytes_into_wires_le(filler, &pair.1, &digest);
+			filler.pack_bytes_le(&pair.1, &digest);
 			leaf = if i < siblings.len() { digest } else { leaf };
 		}
 	}
@@ -126,12 +126,12 @@ mod tests {
 			),
 		];
 		let root_value = hex!("5802c63ef536216cf01a0dd0b32c01f5e31536aa773eb6e1d46fd42f66516eba");
-		pack_bytes_into_wires_le(&mut filler, &leaf, &leaf_value);
-		pack_bytes_into_wires_le(&mut filler, &siblings[0].0, &siblings_value[0].0);
+		filler.pack_bytes_le(&leaf, &leaf_value);
+		filler.pack_bytes_le(&siblings[0].0, &siblings_value[0].0);
 		filler[siblings[0].1] = Word::ALL_ONE;
-		pack_bytes_into_wires_le(&mut filler, &siblings[1].0, &siblings_value[1].0);
+		filler.pack_bytes_le(&siblings[1].0, &siblings_value[1].0);
 		filler[siblings[1].1] = Word::ZERO;
-		pack_bytes_into_wires_le(&mut filler, &root, &root_value);
+		filler.pack_bytes_le(&root, &root_value);
 		filler[length] = Word(2);
 		merkle_path.populate_inner(&mut filler, leaf_value, &siblings_value);
 		circuit.populate_wire_witness(&mut filler).unwrap();
@@ -171,12 +171,12 @@ mod tests {
 			),
 		];
 		let root_value = hex!("5802c63ef536216cf01a0dd0b32c01f5e31536aa773eb6e1d46fd42f66516eba");
-		pack_bytes_into_wires_le(&mut filler, &leaf, &leaf_value);
-		pack_bytes_into_wires_le(&mut filler, &siblings[0].0, &siblings_value[0].0);
+		filler.pack_bytes_le(&leaf, &leaf_value);
+		filler.pack_bytes_le(&siblings[0].0, &siblings_value[0].0);
 		filler[siblings[0].1] = Word::ALL_ONE;
-		pack_bytes_into_wires_le(&mut filler, &siblings[1].0, &siblings_value[1].0);
+		filler.pack_bytes_le(&siblings[1].0, &siblings_value[1].0);
 		filler[siblings[1].1] = Word::ZERO;
-		pack_bytes_into_wires_le(&mut filler, &root, &root_value);
+		filler.pack_bytes_le(&root, &root_value);
 		filler[length] = Word(2);
 		merkle_path.populate_inner(&mut filler, leaf_value, &siblings_value);
 		circuit.populate_wire_witness(&mut filler).unwrap_err();
@@ -212,12 +212,12 @@ mod tests {
 			),
 		];
 		let root_value = hex!("5802c63ef536216cf01a0dd0b32c01f5e31536aa773eb6e1d46fd42f66516eba");
-		pack_bytes_into_wires_le(&mut filler, &leaf, &leaf_value);
-		pack_bytes_into_wires_le(&mut filler, &siblings[0].0, &siblings_value[0].0);
+		filler.pack_bytes_le(&leaf, &leaf_value);
+		filler.pack_bytes_le(&siblings[0].0, &siblings_value[0].0);
 		filler[siblings[0].1] = Word::ALL_ONE;
-		pack_bytes_into_wires_le(&mut filler, &siblings[1].0, &siblings_value[1].0);
+		filler.pack_bytes_le(&siblings[1].0, &siblings_value[1].0);
 		filler[siblings[1].1] = Word::ZERO;
-		pack_bytes_into_wires_le(&mut filler, &root, &root_value);
+		filler.pack_bytes_le(&root, &root_value);
 		filler[length] = Word(2);
 		merkle_path.populate_inner(&mut filler, leaf_value, &siblings_value);
 		circuit.populate_wire_witness(&mut filler).unwrap_err();
@@ -293,15 +293,15 @@ mod tests {
 			),
 		];
 		let root_value = hex!("fc01df2139954b36cebc3fa6fbf6a7160a67d34b67e5c4aa2a7ce46f5bb42a83");
-		pack_bytes_into_wires_le(&mut filler, &leaf, &leaf_value);
+		filler.pack_bytes_le(&leaf, &leaf_value);
 		for i in 0..siblings_value.len() {
-			pack_bytes_into_wires_le(&mut filler, &siblings[i].0, &siblings_value[i].0);
+			filler.pack_bytes_le(&siblings[i].0, &siblings_value[i].0);
 			filler[siblings[i].1] = match siblings_value[i].1 {
 				SiblingSide::Left => Word::ZERO,
 				SiblingSide::Right => Word::ALL_ONE,
 			};
 		}
-		pack_bytes_into_wires_le(&mut filler, &root, &root_value);
+		filler.pack_bytes_le(&root, &root_value);
 		merkle_path.populate_inner(&mut filler, leaf_value, &siblings_value);
 		filler[length] = Word(12);
 		circuit.populate_wire_witness(&mut filler).unwrap();

@@ -11,7 +11,7 @@ use std::{marker::PhantomData, sync::Arc};
 use binius_core::constraint_system::{ConstraintSystem, ValueVec};
 use binius_field::{BinaryField128bGhash as B128, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
-use binius_iop_prover::basefold_compiler::BaseFoldProverCompiler;
+use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
 use binius_math::ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded};
 use binius_spartan_frontend::constraint_system::WitnessLayout;
 use binius_spartan_prover::wrapper::{ReplayChannel, ZKWrappedProverChannel};

@@ -1,9 +1,6 @@
 // Copyright 2026 The Binius Developers
 
 //! BaseFold compiler for IOP verifiers.
-//!
-//! This module provides [`BaseFoldVerifierCompiler`], which precomputes FRI parameters and can
-//! create verifier channel instances.
 
 use std::borrow::BorrowMut;
 
@@ -15,7 +12,7 @@ use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes};
 use digest::Output;
 
 use crate::{
-	basefold_channel::BaseFoldVerifierChannel,
+	basefold::channel::BaseFoldVerifierChannel,
 	channel::OracleSpec,
 	fri::{AritySelectionStrategy, FRIParams},
 	merkle_channel::{MerkleIPVerifierChannel, VerifierMerkleTranscriptChannel},
