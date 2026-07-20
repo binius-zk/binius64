@@ -47,7 +47,7 @@
 //! table footprint by 4x — to `2 * 256 * 64` field elements — adding only a cheap in-register
 //! permute to each lookup.
 
-use std::{array, marker::PhantomData};
+use std::{array, iter, marker::PhantomData};
 
 use binius_core::Word;
 use binius_field::{
@@ -122,8 +122,8 @@ impl NTTLookup {
 	/// permutation of the four 128-bit lanes, `lane[i] <- lane[i ^ (b / 2)]`. The loop is unrolled
 	/// over `b`, so the parity select and lane index are compile-time constants.
 	///
-	/// Used directly only in tests; `univariate_round_message_extension_domain` accesses the tables
-	/// inline to compute three LDE evaluations at once, which is more efficient.
+	/// The round message uses the batched [`ntt3`](Self::ntt3).
+	/// This single-input form is the reference it is checked against, and is otherwise test-only.
 	///
 	/// ## Returns
 	///
@@ -134,17 +134,75 @@ impl NTTLookup {
 		let input_bytes = input.as_u64().to_le_bytes();
 
 		let mut out = Packed64xB8::default();
-		// This will get unrolled, so indexing arithmetic washes away.
+		// Unrolls over the eight byte positions, so the parity and lane shift are constants.
 		for b in 0..8 {
-			let packed = &self.0[b % 2][input_bytes[b] as usize];
-			let bitvec = packed.to_underlier_ref();
-			let dst_bitvec = Divisible::<M128>::from_iter(
-				(0..4).map(|i| Divisible::<M128>::get(bitvec, i ^ (b / 2))),
-			);
-			out += Packed64xB8::from_underlier(dst_bitvec);
+			// Sum in byte `b`'s LDE image from the parity-`b % 2` table, permuted by `b / 2`.
+			accumulate_permuted_lde(&mut out, &self.0[b % 2][input_bytes[b] as usize], b / 2);
 		}
 		out
 	}
+
+	/// Computes the low-degree extensions of three inputs at once.
+	///
+	/// The result equals `[ntt(x0), ntt(x1), ntt(x2)]`.
+	/// Batching changes only how the work is scheduled, not the output.
+	///
+	/// # Performance
+	///
+	/// The loop is bound by table-load latency.
+	/// Each byte position loads one table row that feeds its accumulator.
+	/// A lone extension keeps only one load in flight at a time.
+	/// Running three inputs through the same pass keeps three loads in flight.
+	/// It also runs three independent accumulator chains instead of one.
+	///
+	/// The parity select and lane permute depend only on the byte position, not the data.
+	/// They are decided once per position and shared across the three inputs.
+	#[inline]
+	pub fn ntt3(&self, inputs: [Word; 3]) -> [Packed64xB8; 3] {
+		let bytes = inputs.map(|input| input.as_u64().to_le_bytes());
+
+		let mut out = [Packed64xB8::default(); 3];
+		// Unrolls over the eight byte positions, so the parity and lane shift are constants.
+		for b in 0..8 {
+			let table = &self.0[b % 2];
+
+			// Issue the three table loads for this byte position up front.
+			// They read one table with no aliasing, so the loads overlap in flight.
+			let packed = bytes.map(|input_bytes| &table[input_bytes[b] as usize]);
+
+			// Permute and accumulate each column into its own independent chain.
+			for (out_k, packed_k) in iter::zip(&mut out, packed) {
+				accumulate_permuted_lde(out_k, packed_k, b / 2);
+			}
+		}
+		out
+	}
+}
+
+/// Adds one byte position's low-degree-extension image into a running accumulator.
+///
+/// `packed` is one precomputed row of the parity-`b % 2` table.
+/// Its four 128-bit lanes are permuted before accumulating.
+/// Output lane `i` reads source lane `i ^ lane_shift`.
+/// This is the coset-shift translation of the output domain described in the module docs.
+///
+/// # Performance
+///
+/// Always-inlined because the callers unroll over the byte position.
+/// Once inlined the lane shift is a compile-time constant.
+/// The permute then lowers to free operand selection, not a runtime shuffle.
+#[inline(always)]
+fn accumulate_permuted_lde(out: &mut Packed64xB8, packed: &Packed64xB8, lane_shift: usize) {
+	// The packed row holds the byte's 64 LDE evaluations as four 128-bit lanes.
+	let bitvec = packed.to_underlier_ref();
+
+	// Rebuild the row with lanes translated: output lane `i` takes source lane `i ^ lane_shift`.
+	let permuted = Divisible::<M128>::from_iter(
+		(0..4).map(|i| Divisible::<M128>::get(bitvec, i ^ lane_shift)),
+	);
+
+	// Fold this byte's contribution into the running sum; addition is XOR in this field.
+	*out += Packed64xB8::from_underlier(permuted);
 }
 
 struct LowDegreeExtension<P: PackedField> {
@@ -215,6 +273,30 @@ mod test {
 	use rand::prelude::*;
 
 	use super::*;
+
+	#[test]
+	fn test_ntt3_matches_ntt() {
+		let subspace = BinarySubspace::with_dim(SKIPPED_VARS + 1);
+		let ntt_lookup = NTTLookup::new(&subspace);
+
+		// The batch must equal three independent single-input extensions.
+		// The single-input form is itself pinned to the true LDE by `test_against_ntt`.
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Boundary triple first: all-zero, all-one, and a single set bit.
+		// The three lanes carry different values, so a batch that leaked across lanes would show.
+		let boundary = [Word(0), Word(u64::MAX), Word(1)];
+		let cases = iter::once(boundary)
+			.chain((0..100).map(|_| array::from_fn(|_| Word(rng.random::<u64>()))));
+
+		for inputs in cases {
+			// Same inputs, two code paths: the batch and the reference must agree bit for bit.
+			let batched = ntt_lookup.ntt3(inputs);
+			let reference = inputs.map(|input| ntt_lookup.ntt(input));
+
+			assert_eq!(batched, reference);
+		}
+	}
 
 	#[test]
 	fn test_against_ntt() {

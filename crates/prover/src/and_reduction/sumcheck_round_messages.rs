@@ -146,10 +146,9 @@ where
 				for (&a_i, &b_i, inner_weight) in izip!(a_subchunk, b_subchunk, &eq_ind_small) {
 					let c_i = a_i & b_i;
 
-					// Compute the low-degree extension of each column via the lookup table.
-					let a_lde = ntt_lookup.ntt(a_i);
-					let b_lde = ntt_lookup.ntt(b_i);
-					let c_lde = ntt_lookup.ntt(c_i);
+					// Low-degree-extend the three columns in one batched pass.
+					// Batching keeps the three table loads overlapping in flight.
+					let [a_lde, b_lde, c_lde] = ntt_lookup.ntt3([a_i, b_i, c_i]);
 
 					// Compute the weighted composition of the LDE values.
 					summed_ntt += Packed64xB8::wide_mul(a_lde * b_lde - c_lde, *inner_weight);
