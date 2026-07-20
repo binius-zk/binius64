@@ -8,11 +8,7 @@
 
 use std::{iter, slice};
 
-use binius_field::{
-	Field, PackedField,
-	field::FieldOps,
-	packed::{get_packed_slice, set_packed_slice},
-};
+use binius_field::{Field, PackedField, field::FieldOps};
 use binius_utils::rayon::prelude::*;
 
 use crate::{FieldBuffer, field_buffer::BufferData};
@@ -123,24 +119,6 @@ impl Hypercube for InfCube {
 	}
 }
 
-/// Grows a packed backing `Vec` from `log_len` to `log_len + 1` variables, zero-initializing the
-/// newly live region so the store stays fully initialized.
-///
-/// Used by [`tensor_prod_eq_ind_prepend`], the singlethreaded small-tensor variant, where the
-/// redundant re-initialization of the region the expansion overwrites is not worth optimizing away.
-/// Its sibling [`tensor_prod_eq_ind`] instead grows through spare capacity to skip that write.
-fn grow_packed_backing<P: PackedField>(data: &mut Vec<P>, log_len: usize) {
-	let new_log_len = log_len + 1;
-	// While still narrower than one packed word, zero the newly live lanes of the first word.
-	if log_len < P::LOG_WIDTH {
-		let first = &mut data[0];
-		for i in 1 << log_len..(1 << new_log_len).min(P::WIDTH) {
-			first.set(i, <P::Scalar as Field>::ZERO);
-		}
-	}
-	data.resize(1 << new_log_len.saturating_sub(P::LOG_WIDTH), P::zero());
-}
-
 /// Tensor of values with the equality indicator evaluated at `extra_query_coordinates`.
 ///
 /// Let $n$ be `values.log_len()` and $k$ be the length of `extra_query_coordinates`. The returned
@@ -224,42 +202,6 @@ pub fn tensor_prod_eq_ind<Cube: Hypercube, P: PackedField>(
 	}
 
 	FieldBuffer::new(final_log_len, data)
-}
-
-/// Left tensor of values with the equality indicator evaluated at `extra_query_coordinates`.
-///
-/// # Formal definition
-///
-/// This differs from [`tensor_prod_eq_ind`] in the tensor product being applied on the left and in
-/// reversed order:
-///
-/// $$
-/// b(r_{k-1}) \otimes \ldots \otimes b(r_0) \otimes v
-/// $$
-///
-/// # Implementation
-///
-/// This operation grows the returned buffer one variable per coordinate, singlethreaded, and is not
-/// very optimized. Main intent is to use it on small tensors out of the hot paths.
-pub fn tensor_prod_eq_ind_prepend<Cube: Hypercube, P: PackedField>(
-	mut values: FieldBuffer<P, Vec<P>>,
-	extra_query_coordinates: &[P::Scalar],
-) -> FieldBuffer<P, Vec<P>> {
-	for r_i in extra_query_coordinates.iter().rev() {
-		// Grow the backing by one variable, then rewrap.
-		let new_log_len = values.log_len() + 1;
-		let mut data = values.take_data();
-		grow_packed_backing::<P>(&mut data, new_log_len - 1);
-		values = FieldBuffer::new(new_log_len, data);
-
-		for i in (0..values.len() / 2).rev() {
-			let value = get_packed_slice(values.as_ref(), i);
-			let [lo, hi] = Cube::expand_var(&value, r_i);
-			set_packed_slice(values.as_mut(), 2 * i, lo);
-			set_packed_slice(values.as_mut(), 2 * i + 1, hi);
-		}
-	}
-	values
 }
 
 /// Computes the partial evaluation of the equality indicator polynomial.
@@ -616,23 +558,6 @@ mod tests {
 				eq_ind_partial_eval::<InfCube, P>(&point).iter_scalars().collect::<Vec<_>>(),
 				eq_ind_partial_eval_scalars::<InfCube, F>(&point)
 			);
-		}
-
-		/// Prepending the leading coordinates yields the same expansion as appending all of them.
-		#[test]
-		fn tensor_prod_eq_ind_prepend_conforms_to_append(
-			seed in any::<u64>(),
-			log_n in 1usize..=8,
-		) {
-			let mut rng = StdRng::seed_from_u64(seed);
-			let point = random_scalars::<F>(&mut rng, log_n);
-			let (prefix, suffix) = point.split_at(log_n / 2);
-
-			let prepend = FieldBuffer::<P, _>::scalar_with_capacity(F::ONE, log_n);
-			let prepend = tensor_prod_eq_ind::<InfCube, P>(prepend, suffix);
-			let prepend = tensor_prod_eq_ind_prepend::<InfCube, P>(prepend, prefix);
-
-			prop_assert_eq!(prepend, eq_ind_partial_eval::<InfCube, P>(&point));
 		}
 
 		/// Truncation strips the trailing variables of an expansion, for either cube.

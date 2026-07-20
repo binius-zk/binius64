@@ -6,15 +6,15 @@ use binius_field::{PackedField, field::FieldOps};
 use super::hypercube::{self, Hypercube, OneCube};
 use crate::{FieldBuffer, field_buffer::BufferData};
 
-/// Left tensor of values with the eq indicator evaluated at extra_query_coordinates.
+/// Tensor of values with the eq indicator evaluated at extra_query_coordinates.
 ///
-/// This is [`hypercube::tensor_prod_eq_ind_prepend`] over the Boolean hypercube. The returned
-/// buffer grows its backing `Vec` by one variable per coordinate.
-pub fn tensor_prod_eq_ind_prepend<P: PackedField>(
+/// This is [`hypercube::tensor_prod_eq_ind`] over the Boolean hypercube. The returned buffer grows
+/// its backing `Vec` by one variable per coordinate.
+pub fn tensor_prod_eq_ind<P: PackedField>(
 	values: FieldBuffer<P, Vec<P>>,
 	extra_query_coordinates: &[P::Scalar],
 ) -> FieldBuffer<P, Vec<P>> {
-	hypercube::tensor_prod_eq_ind_prepend::<OneCube, P>(values, extra_query_coordinates)
+	hypercube::tensor_prod_eq_ind::<OneCube, P>(values, extra_query_coordinates)
 }
 
 /// Computes the partial evaluation of the equality indicator polynomial.
@@ -379,22 +379,25 @@ mod tests {
 	}
 
 	#[test]
-	fn test_tensor_prod_eq_prepend_conforms_to_append() {
+	fn test_tensor_prod_eq_prepend_via_bit_reverse() {
+		// `BinarySwitchover` prepends one variable per round as bit-reverse + append + bit-reverse.
+		// Check that this composition, iterated over all coordinates (including the
+		// sub-packing-width early rounds), matches a full eq expansion.
+		use crate::bit_reverse::bit_reverse_packed;
+
 		let mut rng = StdRng::seed_from_u64(0);
 
 		let n_vars = 10;
-		let base_vars = 4;
-
 		let point = random_scalars::<F>(&mut rng, n_vars);
 
-		let append = eq_ind_partial_eval(&point);
+		let mut tensor = FieldBuffer::<P>::from_values(&[F::ONE]);
+		for &r in point.iter().rev() {
+			bit_reverse_packed(tensor.to_mut());
+			tensor = tensor_prod_eq_ind::<OneCube, P>(tensor, &[r]);
+			bit_reverse_packed(tensor.to_mut());
+		}
 
-		let prepend = FieldBuffer::<P, _>::scalar_with_capacity(F::ONE, n_vars);
-		let (prefix, suffix) = point.split_at(n_vars - base_vars);
-		let prepend = tensor_prod_eq_ind::<OneCube, P>(prepend, suffix);
-		let prepend = tensor_prod_eq_ind_prepend(prepend, prefix);
-
-		assert_eq!(append, prepend);
+		assert_eq!(tensor, eq_ind_partial_eval(&point));
 	}
 
 	#[test]
