@@ -1,12 +1,14 @@
 // Copyright 2025 Irreducible Inc.
 use std::{marker::PhantomData, ops::Deref};
 
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{AESTowerField8b as B8, BinaryField, PackedField};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
-		ProveSingleOutput, common::MleCheckProver, prove_single_mlecheck, quadratic_mlecheck_prover,
+		ProveSingleOutput, common::MleCheckProver, mle_store::pooled_copy, prove_single_mlecheck,
+		quadratic_mlecheck_prover,
 	},
 };
 use binius_math::{
@@ -159,11 +161,12 @@ where
 	/// 3. Combines the zerocheck challenges (small field + big field)
 	/// 4. Evaluates the univariate polynomial at the challenge to get the sumcheck claim
 	/// 5. Constructs the AND reduction sumcheck prover with the folded multilinears
-	pub fn fold_and_send_reduced_prover(
+	pub fn fold_and_send_reduced_prover<'alloc, A: Allocator>(
 		self,
 		round_message_domain: BinarySubspace<F>,
 		challenge: F,
-	) -> impl MleCheckProver<F> {
+		alloc: &'alloc A,
+	) -> impl MleCheckProver<F> + 'alloc {
 		let univariate_domain = round_message_domain.reduce_dim(round_message_domain.dim() - 1);
 		let lagrange_evals = lagrange_evals_scalars(&univariate_domain, challenge);
 		let folder = BitAxisFolder::new(&lagrange_evals);
@@ -187,7 +190,8 @@ where
 			.copy_from_slice(&self.univariate_round_message);
 
 		quadratic_mlecheck_prover(
-			proving_polys,
+			alloc,
+			proving_polys.map(|col| pooled_copy(alloc, &col)),
 			|[a, b, c]| a * b - c,
 			|[a, b, _]| a * b,
 			verifier_field_zerocheck_challenges,
@@ -223,7 +227,11 @@ where
 	/// 2. **Challenge**: Sample univariate challenge z via Fiat-Shamir
 	/// 3. **Transition**: Fold oblong multilinears at Z = z
 	/// 4. **Phase 2**: Execute sumcheck protocol on folded multilinears
-	pub fn prove_with_channel(self, channel: &mut impl IPProverChannel<F>) -> AndCheckOutput<F> {
+	pub fn prove_with_channel<A: Allocator>(
+		self,
+		channel: &mut impl IPProverChannel<F>,
+		alloc: &A,
+	) -> AndCheckOutput<F> {
 		let univariate_message_coeffs = self.execute();
 
 		channel.send_many(univariate_message_coeffs);
@@ -234,6 +242,7 @@ where
 			self.fold_and_send_reduced_prover(
 				univariate_round_message_domain,
 				univariate_sumcheck_challenge,
+				alloc,
 			)
 		});
 
@@ -262,6 +271,7 @@ where
 mod test {
 	use std::{iter, iter::repeat_with};
 
+	use binius_compute::GlobalAllocator;
 	use binius_core::word::Word;
 	use binius_field::{AESTowerField8b, arch::OptimalPackedB128};
 	use binius_math::{
@@ -318,7 +328,7 @@ mod test {
 			prover_message_domain,
 		);
 
-		let prove_output = prover.prove_with_channel(&mut prover_challenger);
+		let prove_output = prover.prove_with_channel(&mut prover_challenger, &GlobalAllocator);
 
 		// Verifier is instantiated
 		let mut verifier_challenger = prover_challenger.into_verifier();

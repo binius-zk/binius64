@@ -21,6 +21,7 @@
 
 use std::iter;
 
+use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice,
@@ -31,6 +32,50 @@ use binius_utils::rayon;
 use itertools::izip;
 
 use super::gruen32::Gruen32;
+
+/// A column buffer whose backing store is drawn from an [`Allocator`] `A`.
+///
+/// For `A = &BufferPool` this is a pooled buffer; for `A = GlobalAllocator` it is an ordinary
+/// `Vec`-backed buffer.
+pub type PooledColumn<A, P> = FieldBuffer<P, <A as Allocator>::Vec<P>>;
+
+/// Allocates a zeroed buffer of `log_len` variables from `alloc`.
+pub fn pooled_zeros<A: Allocator, P: PackedField>(alloc: &A, log_len: usize) -> PooledColumn<A, P> {
+	let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
+	let mut data = alloc.alloc::<P>(packed_len);
+	data.resize(packed_len, P::default());
+	FieldBuffer::new(log_len, data)
+}
+
+/// Copies `src` into a buffer freshly allocated from `alloc`.
+///
+/// This is the bridge for a `Vec`-backed buffer built by `binius-math` (e.g. `from_values`): the
+/// live buffer is a genuine allocation from `alloc` (so under a pool it recycles through the free
+/// list), and the source is dropped. Prefer building directly into `alloc` where an allocator-aware
+/// constructor exists.
+pub fn pooled_copy<A: Allocator, P: PackedField, Data: std::ops::Deref<Target = [P]>>(
+	alloc: &A,
+	src: &FieldBuffer<P, Data>,
+) -> PooledColumn<A, P> {
+	let mut data = alloc.alloc::<P>(src.as_ref().len());
+	data.extend_from_slice(src.as_ref());
+	FieldBuffer::new(src.log_len(), data)
+}
+
+/// Folds `values` on its highest variable into a freshly allocated buffer from `alloc`.
+///
+/// The intermediate `Vec` produced by the fold is copied into the allocator's buffer; an
+/// allocator-aware fold would write the result directly into that buffer.
+fn fold_into_pooled<A: Allocator, P: PackedField, Data: std::ops::Deref<Target = [P]>>(
+	alloc: &A,
+	values: &FieldBuffer<P, Data>,
+	scalar: P::Scalar,
+) -> PooledColumn<A, P> {
+	let folded = fold_highest_var(values, scalar);
+	let mut data = alloc.alloc::<P>(folded.as_ref().len());
+	data.extend_from_slice(folded.as_ref());
+	FieldBuffer::new(folded.log_len(), data)
+}
 
 /// Identifier of a column held by an [`MleStore`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,38 +105,41 @@ impl EqId {
 /// A `Borrowed` or `Owned` entry is a single column. A `SplitHalf` entry holds two adjacent
 /// columns — the low and high halves of one parent buffer — in a single allocation, so no copy is
 /// made to separate them.
-enum Column<'a, P: PackedField> {
+enum Column<'a, A: Allocator, P: PackedField> {
 	Borrowed(FieldSlice<'a, P>),
-	Owned(FieldBuffer<P>),
+	Owned(PooledColumn<A, P>),
 	/// A parent buffer whose low and high halves are two adjacent columns.
 	///
 	/// Pushed by [`MleStore::push_split_half`]. The buffer keeps its original length for the life
 	/// of the store; each [`MleStore::fold`] advances both halves in place within it, and the two
 	/// columns are read as the front `2^n_vars` scalars of the low and high halves. This shares one
 	/// allocation between the sibling columns with no copy at any point.
-	SplitHalf(FieldBuffer<P>),
+	SplitHalf(PooledColumn<A, P>),
 }
 
 /// A store of equal-length multilinear columns shared by a group of round evaluators.
 ///
 /// See the [module documentation](self) for the folding invariant.
-pub struct MleStore<'a, P: PackedField> {
+pub struct MleStore<'a, A: Allocator, P: PackedField> {
 	n_vars: usize,
-	columns: Vec<Column<'a, P>>,
+	columns: Vec<Column<'a, A, P>>,
 	/// Number of logical columns, counting each [`Column::SplitHalf`] entry as two. This is the
 	/// number of assigned [`ColId`]s and the length of the [`Self::final_evals`] output.
 	n_cols: usize,
 	eq_trackers: Vec<Gruen32<P>>,
+	/// Allocator the owned/promoted columns are drawn from; borrowed for `'a`.
+	alloc: &'a A,
 }
 
-impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
+impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> {
 	/// Creates an empty store over columns with `n_vars` variables.
-	pub const fn new(n_vars: usize) -> Self {
+	pub const fn new(n_vars: usize, alloc: &'a A) -> Self {
 		Self {
 			n_vars,
 			columns: Vec::new(),
 			n_cols: 0,
 			eq_trackers: Vec::new(),
+			alloc,
 		}
 	}
 
@@ -117,7 +165,7 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 	}
 
 	/// Pushes an owned column and returns its identifier.
-	pub fn push_owned(&mut self, column: FieldBuffer<P>) -> ColId {
+	pub fn push_owned(&mut self, column: PooledColumn<A, P>) -> ColId {
 		// precondition
 		assert_eq!(
 			column.log_len(),
@@ -143,7 +191,7 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 	/// Each [`Self::fold`] advances both halves in place within the buffer. `buffer` splits on its
 	/// highest variable, so its low half fixes that variable to 0 and its high half to 1 —
 	/// matching the store's high-to-low fold order.
-	pub fn push_split_half(&mut self, buffer: FieldBuffer<P>) -> [ColId; 2] {
+	pub fn push_split_half(&mut self, buffer: PooledColumn<A, P>) -> [ColId; 2] {
 		// precondition
 		assert_eq!(
 			buffer.log_len(),
@@ -246,13 +294,14 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 		// The number of live variables in each column before this fold; a split-half buffer keeps
 		// its full length, so its halves must be truncated to this before folding.
 		let n_vars = self.n_vars;
+		let alloc = self.alloc;
 		for column in &mut self.columns {
 			match column {
 				Column::Owned(buffer) => fold_highest_var_inplace(buffer, challenge),
 				Column::Borrowed(slice) => {
 					// The first fold of a borrowed column writes into a fresh half-size owned
 					// buffer, avoiding an up-front copy of the full column.
-					*column = Column::Owned(fold_highest_var(slice, challenge));
+					*column = Column::Owned(fold_into_pooled(alloc, slice, challenge));
 				}
 				Column::SplitHalf(buffer) => {
 					// Fold each half on its own highest variable in place. The two halves are the
@@ -394,11 +443,12 @@ impl<'a, F: Field, P: PackedField<Scalar = F>> MleStore<'a, P> {
 
 		// Fresh destination buffers for the borrowed columns, held outside the column borrow so
 		// they can be moved into the store once the fold has written them.
+		let alloc = self.alloc;
 		let mut dsts = self
 			.columns
 			.iter()
 			.map(|column| match column {
-				Column::Borrowed(_) => Some(FieldBuffer::zeros(n_vars)),
+				Column::Borrowed(_) => Some(pooled_zeros(alloc, n_vars)),
 				_ => None,
 			})
 			.collect::<Vec<_>>();
@@ -787,6 +837,7 @@ fn map_reduce_with_fold_helper<P: PackedField, T: Send>(
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{Field, FieldOps, PackedField};
 	use binius_math::test_utils::{Packed128b, random_field_buffer, random_scalars};
 	use itertools::Itertools;
@@ -819,19 +870,27 @@ mod tests {
 
 		let n_vars = 7;
 		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
 
 		// A mix of column kinds so `chunk` exercises borrowed, owned, and split-half entries.
 		let borrowed = [
 			random_field_buffer::<P>(&mut rng, n_vars),
 			random_field_buffer::<P>(&mut rng, n_vars),
 		];
-		let mut store = MleStore::<P>::new(n_vars);
+		let mut store = MleStore::<GlobalAllocator, P>::new(n_vars, &alloc);
 		let mut col_ids = borrowed
 			.iter()
 			.map(|col| store.push(col.to_ref()))
 			.collect::<Vec<_>>();
-		col_ids.push(store.push_owned(random_field_buffer::<P>(&mut rng, n_vars)));
-		col_ids.extend(store.push_split_half(random_field_buffer::<P>(&mut rng, n_vars + 1)));
+		col_ids.push(
+			store.push_owned(pooled_copy(&alloc, &random_field_buffer::<P>(&mut rng, n_vars))),
+		);
+		col_ids.extend(
+			store.push_split_half(pooled_copy(
+				&alloc,
+				&random_field_buffer::<P>(&mut rng, n_vars + 1),
+			)),
+		);
 
 		let eq_ids = (0..2)
 			.map(|_| store.register_eq_tracker(&random_scalars::<F>(&mut rng, n_vars)))
@@ -883,15 +942,16 @@ mod tests {
 			random_scalars::<F>(&mut rng, n_vars),
 		];
 		let challenge = random_scalars::<F>(&mut rng, 1)[0];
+		let alloc = GlobalAllocator;
 
 		let build = || {
-			let mut store = MleStore::<P>::new(n_vars);
+			let mut store = MleStore::<GlobalAllocator, P>::new(n_vars, &alloc);
 			let mut col_ids = borrowed
 				.iter()
 				.map(|col| store.push(col.to_ref()))
 				.collect::<Vec<_>>();
-			col_ids.push(store.push_owned(owned.clone()));
-			col_ids.extend(store.push_split_half(split.clone()));
+			col_ids.push(store.push_owned(pooled_copy(&alloc, &owned)));
+			col_ids.extend(store.push_split_half(pooled_copy(&alloc, &split)));
 			let eq_ids = eq_points
 				.iter()
 				.map(|point| store.register_eq_tracker(point))
@@ -902,7 +962,7 @@ mod tests {
 		// The store's folded state: remaining variable count plus every column and eq scalar.
 		let scalars =
 			|slice: &FieldSlice<'_, P>| (0..slice.len()).map(|i| slice.get(i)).collect_vec();
-		let state = |store: &MleStore<'_, P>| {
+		let state = |store: &MleStore<'_, GlobalAllocator, P>| {
 			let cols = store.column_slices().iter().flat_map(scalars).collect_vec();
 			let eqs = store
 				.eq_expansions()

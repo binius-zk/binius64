@@ -13,6 +13,7 @@
 
 use std::{iter, mem::MaybeUninit, ptr};
 
+use binius_compute::Allocator;
 use binius_core::{
 	ValueIndex,
 	constraint_system::{
@@ -168,14 +169,16 @@ impl BatchAndCheckWitness {
 	/// - The claimed `A`, `B`, `C` evaluations.
 	/// - The univariate (bit-index) challenge.
 	/// - The multilinear evaluation point reached by the sumcheck.
-	pub fn prove<P, Channel>(
+	pub fn prove<P, Channel, A>(
 		self,
 		prover_message_domain: &BinarySubspace<B8>,
 		channel: &mut Channel,
+		alloc: &A,
 	) -> AndCheckOutput<B128>
 	where
 		P: PackedField<Scalar = B128>,
 		Channel: IPProverChannel<B128>,
+		A: Allocator,
 	{
 		let (a, b) = self.into_columns();
 
@@ -201,7 +204,7 @@ impl BatchAndCheckWitness {
 			prover_message_domain.isomorphic(),
 		);
 
-		prover.prove_with_channel(channel)
+		prover.prove_with_channel(channel, alloc)
 	}
 }
 
@@ -562,6 +565,7 @@ pub fn build_binmul_witness(
 #[cfg(test)]
 mod tests {
 	use assert_matches::assert_matches;
+	use binius_compute::GlobalAllocator;
 	use binius_core::constraint_system::ValueVec;
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
@@ -1058,7 +1062,8 @@ mod tests {
 
 		// Prover and verifier agree on the reduced claim over the batched columns.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prove_output = witness.prove::<P, _>(&message_domain(), &mut prover_transcript);
+		let prove_output =
+			witness.prove::<P, _, _>(&message_domain(), &mut prover_transcript, &GlobalAllocator);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let verify_output = verify_bitand_reduction(
@@ -1089,7 +1094,8 @@ mod tests {
 
 		// Produce a faithful proof.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let _ = witness.prove::<P, _>(&message_domain(), &mut prover_transcript);
+		let _ =
+			witness.prove::<P, _, _>(&message_domain(), &mut prover_transcript, &GlobalAllocator);
 		let mut proof = prover_transcript.finalize();
 
 		// Mutation: flip a bit in the prover's first message, the univariate round evaluations.
@@ -1143,7 +1149,7 @@ mod tests {
 			let log_total = checked_log_2(witness.a().len());
 
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-			let prove_output = witness.prove::<P, _>(&message_domain(), &mut prover_transcript);
+			let prove_output = witness.prove::<P, _, _>(&message_domain(), &mut prover_transcript, &GlobalAllocator);
 
 			let mut verifier_transcript = prover_transcript.into_verifier();
 			let verify_output =

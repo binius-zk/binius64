@@ -13,6 +13,7 @@
 //!
 //! This is the prover mirror of the verifier's final layer in [`binius_ip::logup_star`].
 
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_math::{FieldBuffer, inner_product::inner_product_par, line::extrapolate_line};
 
@@ -21,7 +22,7 @@ use crate::{
 	fracaddcheck::{FracAddCheckProver, FracEvalClaim},
 	sumcheck::{
 		batch::batch_prove, bivariate_product_evaluator::BivariateProductEvaluator,
-		round_evaluator::SumcheckRoundEvaluator,
+		mle_store::pooled_copy, round_evaluator::SumcheckRoundEvaluator,
 	},
 };
 
@@ -74,20 +75,22 @@ pub struct FinalLayerOutput<F> {
 /// * `table` - The table `T` over the `m`-variable cube.
 /// * `channel` - The prover channel.
 #[tracing::instrument(skip_all, level = "debug", name = "logup* final layer")]
-pub fn prove_final_layer<F, P>(
+pub fn prove_final_layer<'a, A, F, P>(
 	eval_claim: F,
-	table_prover: FracAddCheckProver<P>,
+	table_prover: FracAddCheckProver<'a, A, P>,
 	layer1: FracEvalClaim<F>,
 	pushforward: &FieldBuffer<P>,
 	table: &FieldBuffer<P>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> FinalLayerOutput<F>
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
 	// Both layer-1 claims share the point Z.
 	debug_assert_eq!(layer1.0.point, layer1.1.point, "layer-1 claims must share the point");
+	let alloc = table_prover.alloc;
 
 	// S_1, S_2: the fractional-addition numerator/denominator, weighted by eq(.; Z).
 	//
@@ -128,12 +131,12 @@ where
 
 	// S_3a, S_3b: each half is a bivariate product over the shared Y column and the pushed T
 	// column.
-	let t_0_col = prover.push_owned_column(t_0);
-	let t_1_col = prover.push_owned_column(t_1);
+	let t_0_col = prover.push_owned_column(pooled_copy(alloc, &t_0));
+	let t_1_col = prover.push_owned_column(pooled_copy(alloc, &t_1));
 	let product_0 = BivariateProductEvaluator::new([y_0_col, t_0_col]);
-	prover.add_evaluator(e_0, Box::new(product_0) as Box<dyn SumcheckRoundEvaluator<F, P>>);
+	prover.add_evaluator(e_0, Box::new(product_0) as Box<dyn SumcheckRoundEvaluator<A, F, P> + 'a>);
 	let product_1 = BivariateProductEvaluator::new([y_1_col, t_1_col]);
-	prover.add_evaluator(e_1, Box::new(product_1) as Box<dyn SumcheckRoundEvaluator<F, P>>);
+	prover.add_evaluator(e_1, Box::new(product_1) as Box<dyn SumcheckRoundEvaluator<A, F, P> + 'a>);
 
 	// Drive the one shared-store sumcheck.
 	//

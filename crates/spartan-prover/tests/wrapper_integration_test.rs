@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use binius_compute::GlobalAllocator;
 use binius_field::{BinaryField128bGhash as B128, Field, Random, arch::OptimalPackedB128};
 use binius_hash::StdHashSuite;
 use binius_iop::{
@@ -174,12 +175,13 @@ fn test_zk_wrapped_prove_verify() {
 			&mut wrapped_prover_channel,
 		);
 	inner_iop_prover
-		.prove::<OptimalPackedB128, _>(
+		.prove::<OptimalPackedB128, _, _>(
 			inner_witness,
 			inner_precommit_oracle,
 			inner_precommit_packed,
 			&mut rng,
 			&mut wrapped_prover_channel,
+			&GlobalAllocator,
 		)
 		.expect("inner prove failed");
 

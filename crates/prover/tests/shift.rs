@@ -2,6 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_circuits::{fixed_byte_vec::ByteVec, sha256::sha256_varlen};
+use binius_compute::GlobalAllocator;
 use binius_core::{
 	constraint_system::{AndConstraint, ConstraintSystem, ImulConstraint, ValueVec},
 	verify::verify_constraints,
@@ -290,7 +291,7 @@ fn test_shift_prove_and_verify() {
 			r_x_prime: Vec::new(),
 		};
 
-		let prover_output = prove::<F, P, _>(
+		let prover_output = prove::<F, P, _, _>(
 			&key_collection,
 			value_vec.combined_witness(),
 			prover_bitand_data.clone(),
@@ -298,6 +299,7 @@ fn test_shift_prove_and_verify() {
 			prover_binmul_data.clone(),
 			&subspace,
 			&mut prover_transcript,
+			&GlobalAllocator,
 		);
 
 		// Create verifier transcript and call the verifier

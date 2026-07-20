@@ -3,12 +3,13 @@
 
 use std::{iter, ops::Range};
 
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField};
 use binius_ip::sumcheck::{SumcheckOutput, common::RoundCoeffs};
 use binius_ip_prover::{
 	channel::IPProverChannel,
-	sumcheck::{bivariate_product_prover, common::SumcheckProver},
+	sumcheck::{bivariate_product_prover, common::SumcheckProver, mle_store::pooled_copy},
 };
 use binius_math::{BinarySubspace, FieldBuffer, inner_product::inner_product_buffers};
 use binius_utils::rayon::prelude::*;
@@ -30,7 +31,8 @@ const LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS;
 /// Proves the first phase of the shift reduction.
 /// Computes the g and h multilinears and performs the sumcheck.
 #[instrument(skip_all, name = "prover_phase_1")]
-pub fn prove_phase_1<F, P, Channel>(
+#[allow(clippy::too_many_arguments)]
+pub fn prove_phase_1<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	words: &[Word],
 	bitand_data: &PreparedOperatorData<F>,
@@ -38,11 +40,13 @@ pub fn prove_phase_1<F, P, Channel>(
 	binmul_data: &PreparedOperatorData<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
+	alloc: &A,
 ) -> SumcheckOutput<F>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
+	A: Allocator,
 {
 	// Build the g parts for the public and hidden segments separately, then sum them. The public
 	// words are the prefix of `words`, and each segment's key ranges are segment-relative.
@@ -70,7 +74,7 @@ where
 	// BitAnd, IntMul and BinMul share the same `r_zhat_prime`.
 	let h_parts = build_h_parts(domain_subspace, bitand_data.r_zhat_prime);
 
-	run_phase_1_sumcheck(g_parts, h_parts, channel)
+	run_phase_1_sumcheck(g_parts, h_parts, channel, alloc)
 }
 
 /// Runs the phase 1 sumcheck protocol for shift constraint verification.
@@ -99,16 +103,26 @@ where
 ///
 /// `SumcheckOutput` containing the challenge vector and final evaluation `gamma`
 #[instrument(skip_all, name = "run_sumcheck")]
-pub fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>>(
+pub fn run_phase_1_sumcheck<
+	F: Field,
+	P: PackedField<Scalar = F>,
+	Channel: IPProverChannel<F>,
+	A: Allocator,
+>(
 	g_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
 	h_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
 	channel: &mut Channel,
+	alloc: &A,
 ) -> SumcheckOutput<F> {
 	// Build one shared bivariate-product prover per shift variant.
 	let mut provers = iter::zip(g_parts, h_parts)
 		.map(|(g_part, h_part)| {
 			let sum = inner_product_buffers(&g_part, &h_part);
-			bivariate_product_prover([g_part, h_part], sum)
+			bivariate_product_prover(
+				alloc,
+				[pooled_copy(alloc, &g_part), pooled_copy(alloc, &h_part)],
+				sum,
+			)
 		})
 		.collect::<Vec<_>>();
 

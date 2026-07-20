@@ -2,6 +2,7 @@
 
 use std::iter;
 
+use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim, sumcheck::RoundCoeffs};
 use binius_math::{
@@ -17,8 +18,8 @@ use crate::{
 	sumcheck::{
 		batch::batch_prove_mle_and_write_evals,
 		common::{MleCheckProver, SumcheckProver},
-		frac_add_mle::{self, FractionalBuffer},
-		mle_store::{ColId, MleStore},
+		frac_add_mle,
+		mle_store::{ColId, MleStore, PooledColumn, pooled_copy},
 		round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
 	},
 };
@@ -33,20 +34,26 @@ pub type FracEvalClaim<F> = (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>);
 /// Returned by `FracAddCheckProver::layer_prover`. It owns its four half-columns, so it is
 /// self-contained: a caller can drive it, batch it, or extend its store with more columns and
 /// evaluators (as the logUp* final layer does).
-pub type LayerProver<F, P> =
-	SharedMleCheckProver<'static, F, P, Box<dyn MleCheckRoundEvaluator<F, P>>>;
+pub type LayerProver<'a, A, F, P> =
+	SharedMleCheckProver<'a, A, F, P, Box<dyn MleCheckRoundEvaluator<A, F, P> + 'a>>;
+
+/// A numerator/denominator pair of pooled column buffers.
+type PooledFractionalBuffer<A, P> = (PooledColumn<A, P>, PooledColumn<A, P>);
 
 /// Prover for the fractional addition protocol.
 ///
 /// Each layer is a double of the numerator and denominator values of fractional terms. Each layer
 /// represents the addition of siblings with respect to the fractional addition rule:
 /// $$\frac{a_0}{b_0} + \frac{a_1}{b_1} = \frac{a_0b_1 + a_1b_0}{b_0b_1}$
-pub struct FracAddCheckProver<P: PackedField> {
-	layers: Vec<(FieldBuffer<P>, FieldBuffer<P>)>,
+pub struct FracAddCheckProver<'a, A: Allocator, P: PackedField> {
+	layers: Vec<PooledFractionalBuffer<A, P>>,
+	/// Allocator the layer buffers are drawn from.
+	pub(crate) alloc: &'a A,
 }
 
-impl<F, P> FracAddCheckProver<P>
+impl<'a, A, F, P> FracAddCheckProver<'a, A, P>
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
@@ -62,7 +69,11 @@ where
 	///
 	/// # Preconditions
 	/// * `witness.0.log_len() >= k`
-	pub fn new(k: usize, witness: FractionalBuffer<P>) -> (Self, FractionalBuffer<P>) {
+	pub fn new(
+		k: usize,
+		alloc: &'a A,
+		witness: PooledFractionalBuffer<A, P>,
+	) -> (Self, PooledFractionalBuffer<A, P>) {
 		let (witness_num, witness_den) = witness;
 		assert_eq!(
 			witness_num.log_len(),
@@ -78,6 +89,8 @@ where
 			let prev_layer = layers.last().expect("layers is non-empty");
 
 			let (num, den) = prev_layer;
+			let num_log_len = num.log_len() - 1;
+			let den_log_len = den.log_len() - 1;
 			let (num_0, num_1) = num.split_half_ref();
 			let (den_0, den_1) = den.split_half_ref();
 
@@ -87,16 +100,18 @@ where
 					.map(|(&a_0, &b_0, &a_1, &b_1)| (a_0 * b_1 + a_1 * b_0, b_0 * b_1))
 					.collect::<(Vec<_>, Vec<_>)>();
 
-			let next_layer = (
-				FieldBuffer::new(num.log_len() - 1, next_layer_num),
-				FieldBuffer::new(den.log_len() - 1, next_layer_den),
-			);
+			let mut num_data = alloc.alloc::<P>(next_layer_num.len());
+			num_data.extend_from_slice(&next_layer_num);
+			let mut den_data = alloc.alloc::<P>(next_layer_den.len());
+			den_data.extend_from_slice(&next_layer_den);
+			let next_layer =
+				(FieldBuffer::new(num_log_len, num_data), FieldBuffer::new(den_log_len, den_data));
 
 			layers.push(next_layer);
 		}
 
 		let sums = layers.pop().expect("layers has k+1 elements");
-		(Self { layers }, sums)
+		(Self { layers, alloc }, sums)
 	}
 
 	/// Returns the number of remaining layers to prove.
@@ -110,16 +125,18 @@ where
 	/// - `remaining` is `Some(self)` if there are more layers, `None` otherwise
 	/// - `layer_prover` is a sumcheck prover for the popped layer
 	/// - `cols` contains the [`MleStore`] column IDs `[num_0, num_1, den_0, den_1]`
+	#[allow(clippy::type_complexity)]
 	pub fn layer_prover(
 		mut self,
 		claim: FracEvalClaim<F>,
-	) -> (Option<Self>, LayerProver<F, P>, [ColId; 4]) {
+	) -> (Option<Self>, LayerProver<'a, A, F, P>, [ColId; 4]) {
 		let (num_claim, den_claim) = claim;
 		assert_eq!(
 			num_claim.point, den_claim.point,
 			"fractional claims must share the evaluation point"
 		);
 
+		let alloc = self.alloc;
 		let (num, den) = self.layers.pop().expect("layers is non-empty");
 
 		let remaining = if self.layers.is_empty() {
@@ -132,13 +149,13 @@ where
 		// and of the denominator buffer. The store takes ownership of the two popped buffers and
 		// shares each between its halves, so the prover is self-contained with no up-front copy of
 		// the popped layer.
-		let mut store = MleStore::new(num.log_len() - 1);
+		let mut store = MleStore::new(num.log_len() - 1, alloc);
 		let [num_0, num_1] = store.push_split_half(num);
 		let [den_0, den_1] = store.push_split_half(den);
 		let cols = [num_0, num_1, den_0, den_1];
-		let (num_evaluator, den_evaluator) = frac_add_mle::evaluators(cols);
+		let (num_evaluator, den_evaluator) = frac_add_mle::evaluators::<A, F, P>(cols);
 
-		let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P>>); 2] = [
+		let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<A, F, P> + 'a>); 2] = [
 			(num_claim.eval, Box::new(num_evaluator)),
 			(den_claim.eval, Box::new(den_evaluator)),
 		];
@@ -296,19 +313,21 @@ pub struct BatchProveOutput<F> {
 /// * `2^selector_point.len() >= provers.len()`.
 /// * `claimed_fractions.len() == provers.len()`.
 /// * `content_point.len() == witness.log_len() - n_layers` for each prover.
-pub fn batch_prove<F, P>(
-	provers: Vec<FracAddCheckProver<P>>,
+pub fn batch_prove<'a, A, F, P>(
+	provers: Vec<FracAddCheckProver<'a, A, P>>,
 	claimed_fractions: Vec<(F, F)>,
 	selector_point: Vec<F>,
 	content_point: Vec<F>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> BatchProveOutput<F>
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
 	let n = provers.len();
 	let k = selector_point.len();
+	let alloc = provers[0].alloc;
 
 	let BatchProveUntilFinalLayerOutput {
 		eval_point,
@@ -328,7 +347,7 @@ where
 		.map(|(_frac, prover)| prover)
 		.collect();
 	let (mut fractions, eval_point) =
-		reduce_layer::<F, P, _>(layer_provers, eval_point, k, channel);
+		reduce_layer::<A, F, P, _>(alloc, layer_provers, eval_point, k, channel);
 
 	// Drop the padded (2^k) selector slots, keeping one reduced fraction per input prover.
 	fractions.truncate(n);
@@ -366,14 +385,15 @@ pub struct BatchProveUntilFinalLayerOutput<F, MP> {
 /// logUp* final layer splices these provers into another reduction.
 ///
 /// Arguments and preconditions are as for [`batch_prove`].
-pub fn batch_prove_until_final_layer<F, P, Channel>(
-	provers: Vec<FracAddCheckProver<P>>,
+pub fn batch_prove_until_final_layer<'a, A, F, P, Channel>(
+	provers: Vec<FracAddCheckProver<'a, A, P>>,
 	claimed_fractions: Vec<(F, F)>,
 	selector_point: Vec<F>,
 	content_point: Vec<F>,
 	channel: &mut Channel,
-) -> BatchProveUntilFinalLayerOutput<F, LayerProver<F, P>>
+) -> BatchProveUntilFinalLayerOutput<F, LayerProver<'a, A, F, P>>
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
@@ -448,13 +468,16 @@ fn combine_claims<F: Field>(coeffs: Vec<RoundCoeffs<F>>, batch_coeff: F) -> Roun
 /// The two (numerator, denominator) claims of every layer are batched via a single `batch_coeff`
 /// that the verifier's `batch_verify_mle` samples once per layer, before the round polynomials; the
 /// same coefficient is reused for the content and selector rounds.
-fn reduce_layer<F, P, MP>(
+#[allow(clippy::type_complexity)]
+fn reduce_layer<'a, A, F, P, MP>(
+	alloc: &'a A,
 	mut layer_provers: Vec<MP>,
 	eval_point: Vec<F>,
 	k: usize,
 	channel: &mut impl IPProverChannel<F>,
 ) -> (Vec<(F, F)>, Vec<F>)
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 	MP: MleCheckProver<F> + Send,
@@ -537,16 +560,16 @@ where
 	// Selector rounds: fold the selector variables with a single fractional-addition MLE-check over
 	// the packed reduced halves, reusing the same `batch_coeff`. The reduced halves are freshly
 	// packed, so the store owns them directly.
-	let mut selector_store = MleStore::new(k);
+	let mut selector_store = MleStore::new(k, alloc);
 	let selector_cols = [
 		FieldBuffer::<P>::from_values(&num_0s),
 		FieldBuffer::<P>::from_values(&num_1s),
 		FieldBuffer::<P>::from_values(&den_0s),
 		FieldBuffer::<P>::from_values(&den_1s),
 	]
-	.map(|buffer| selector_store.push_owned(buffer));
-	let (selector_num, selector_den) = frac_add_mle::evaluators(selector_cols);
-	let selector_claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P>>); 2] = [
+	.map(|buffer| selector_store.push_owned(pooled_copy(alloc, &buffer)));
+	let (selector_num, selector_den) = frac_add_mle::evaluators::<A, F, P>(selector_cols);
+	let selector_claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<A, F, P> + 'a>); 2] = [
 		(num_eval, Box::new(selector_num)),
 		(den_eval, Box::new(selector_den)),
 	];
@@ -594,19 +617,21 @@ where
 /// Runs one interior batched fracaddcheck layer, returning the remaining provers, the reduced
 /// per-instance fractions (padded to `2^k`), and the next evaluation point.
 #[allow(clippy::type_complexity)]
-fn batch_prove_layer<F, P>(
-	provers: Vec<FracAddCheckProver<P>>,
+fn batch_prove_layer<'a, A, F, P>(
+	provers: Vec<FracAddCheckProver<'a, A, P>>,
 	claimed_fractions: Vec<(F, F)>,
 	eval_point: Vec<F>,
 	k: usize,
 	channel: &mut impl IPProverChannel<F>,
-) -> (Vec<FracAddCheckProver<P>>, Vec<(F, F)>, Vec<F>)
+) -> (Vec<FracAddCheckProver<'a, A, P>>, Vec<(F, F)>, Vec<F>)
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
 	// Build a fractional-addition MLE-check prover per instance, seeded with a claim at the content
 	// coordinates.
+	let alloc = provers[0].alloc;
 	let inner_coords = eval_point[k..].to_vec();
 	let (layer_provers, next_provers): (Vec<_>, Vec<_>) = iter::zip(provers, &claimed_fractions)
 		.map(|(prover, &(num, den))| {
@@ -625,7 +650,7 @@ where
 		.unzip();
 
 	let (next_fractions, next_point) =
-		reduce_layer::<F, P, _>(layer_provers, eval_point, k, channel);
+		reduce_layer::<A, F, P, _>(alloc, layer_provers, eval_point, k, channel);
 
 	let next_provers = next_provers.into_iter().flatten().collect();
 
@@ -645,19 +670,26 @@ mod tests {
 	use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
+	use binius_compute::GlobalAllocator;
 	use rand::prelude::*;
 
 	use super::*;
+	use crate::sumcheck::mle_store::pooled_copy;
 
 	fn test_frac_add_check_prove_verify_helper<P: PackedField>(n: usize, k: usize) {
 		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
 
 		// 1. Create random witness with log_len = n + k
 		let witness_num = random_field_buffer::<P>(&mut rng, n + k);
 		let witness_den = random_field_buffer::<P>(&mut rng, n + k);
 
 		// 2. Create prover (computes fractional-add layers)
-		let (prover, sums) = FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone()));
+		let (prover, sums) = FracAddCheckProver::new(
+			k,
+			&alloc,
+			(pooled_copy(&alloc, &witness_num), pooled_copy(&alloc, &witness_den)),
+		);
 
 		// 3. Generate random n-dimensional challenge point
 		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
@@ -715,14 +747,18 @@ mod tests {
 
 	fn test_frac_add_check_layer_computation_helper<P: PackedField>(n: usize, k: usize) {
 		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
 
 		// Create random witness with log_len = n + k
 		let witness_num = random_field_buffer::<P>(&mut rng, n + k);
 		let witness_den = random_field_buffer::<P>(&mut rng, n + k);
 
 		// Create prover (computes fractional-add layers)
-		let (_prover, sums) =
-			FracAddCheckProver::new(k, (witness_num.clone(), witness_den.clone()));
+		let (_prover, sums) = FracAddCheckProver::new(
+			k,
+			&alloc,
+			(pooled_copy(&alloc, &witness_num), pooled_copy(&alloc, &witness_den)),
+		);
 
 		// For each index i in the sums layer, verify it equals the fractional sum of witness values
 		// at indices i + z * 2^n for z in 0..2^k (strided access, not contiguous)
@@ -790,6 +826,7 @@ mod tests {
 	/// (0-variate).
 	fn test_batch_prove_verify_helper<P: PackedField>(n_layers: usize, n_provers: usize) {
 		let mut rng = StdRng::seed_from_u64(42);
+		let alloc = GlobalAllocator;
 
 		let log_n_provers = log2_ceil_usize(n_provers);
 
@@ -805,7 +842,13 @@ mod tests {
 
 		let (provers, individual_sums): (Vec<_>, Vec<_>) = witnesses
 			.iter()
-			.map(|witness| FracAddCheckProver::new(n_layers, witness.clone()))
+			.map(|witness| {
+				FracAddCheckProver::new(
+					n_layers,
+					&alloc,
+					(pooled_copy(&alloc, &witness.0), pooled_copy(&alloc, &witness.1)),
+				)
+			})
 			.unzip();
 
 		// Fractions are 0-variate (scalars): just get the single (num, den) value.
@@ -916,6 +959,7 @@ mod tests {
 		content_len: usize,
 	) {
 		let mut rng = StdRng::seed_from_u64(7);
+		let alloc = GlobalAllocator;
 
 		let log_n_provers = log2_ceil_usize(n_provers);
 
@@ -932,7 +976,13 @@ mod tests {
 
 		let (provers, individual_sums): (Vec<_>, Vec<_>) = witnesses
 			.iter()
-			.map(|witness| FracAddCheckProver::new(n_layers, witness.clone()))
+			.map(|witness| {
+				FracAddCheckProver::new(
+					n_layers,
+					&alloc,
+					(pooled_copy(&alloc, &witness.0), pooled_copy(&alloc, &witness.1)),
+				)
+			})
 			.unzip();
 
 		// Shared content point; each claimed fraction is its multilinears evaluated there.

@@ -1,7 +1,10 @@
 // Copyright 2025 Irreducible Inc.
 
+use binius_compute::BufferPool;
 use binius_field::{arch::OptimalPackedB128, packed::PackedField};
-use binius_ip_prover::sumcheck::{prove_single_mlecheck, quadratic_mlecheck_prover};
+use binius_ip_prover::sumcheck::{
+	mle_store::pooled_copy, prove_single_mlecheck, quadratic_mlecheck_prover,
+};
 use binius_math::{
 	inner_product::inner_product_par,
 	test_utils::{random_field_buffer, random_scalars},
@@ -31,13 +34,16 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 			let eval_claim = inner_product_par(&multilinear_a, &multilinear_b);
 
 			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			let pool = BufferPool::new();
+			let alloc = &pool;
 
 			// Benchmark only the proving phase
 			b.iter_batched(
 				|| [multilinear_a.clone(), multilinear_b.clone()],
 				|multilinears| {
 					let prover = quadratic_mlecheck_prover(
-						multilinears,
+						&alloc,
+						multilinears.map(|m| pooled_copy(&alloc, &m)),
 						|[a, b]| a * b,
 						|[a, b]| a * b,
 						eval_point.clone(),
@@ -67,6 +73,8 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 					.sum();
 
 			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			let pool = BufferPool::new();
+			let alloc = &pool;
 
 			// Benchmark only the proving phase
 			b.iter_batched(
@@ -79,7 +87,8 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 				},
 				|multilinears| {
 					let prover = quadratic_mlecheck_prover(
-						multilinears,
+						&alloc,
+						multilinears.map(|m| pooled_copy(&alloc, &m)),
 						|[a, b, c]| a * b - c,
 						|[a, b, _c]| a * b,
 						eval_point.clone(),

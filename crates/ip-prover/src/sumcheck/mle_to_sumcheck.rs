@@ -1,6 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
 use binius_math::multilinear::eq::eq_one_var;
@@ -123,11 +124,12 @@ impl<Inner> MleToSumCheckEvaluator<Inner> {
 	}
 }
 
-impl<F, P, Inner> SumcheckRoundEvaluator<F, P> for MleToSumCheckEvaluator<Inner>
+impl<A, F, P, Inner> SumcheckRoundEvaluator<A, F, P> for MleToSumCheckEvaluator<Inner>
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
-	Inner: MleCheckRoundEvaluator<F, P>,
+	Inner: MleCheckRoundEvaluator<A, F, P>,
 {
 	fn degree(&self) -> usize {
 		// The eq factor multiplies the emitted round polynomial, not the accumulator: the wide
@@ -142,7 +144,7 @@ where
 
 	fn interpolate(
 		&self,
-		store: &MleStore<'_, P>,
+		store: &MleStore<'_, A, P>,
 		accum: &[<P as WideMul>::Output],
 		claim: F,
 	) -> RoundCoeffs<F> {

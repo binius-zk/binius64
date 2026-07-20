@@ -254,10 +254,11 @@ mod tests {
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
+	use binius_compute::GlobalAllocator;
 	use rand::prelude::*;
 
 	use super::batch_prove_mle;
-	use crate::sumcheck::bivariate_product_mle;
+	use crate::sumcheck::{bivariate_product_mle, mle_store::pooled_copy};
 
 	fn product_eval_claim<F, P>(
 		multilinear_a: &FieldBuffer<P>,
@@ -286,6 +287,7 @@ mod tests {
 
 		let n_vars = 6;
 		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
 
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 
@@ -298,12 +300,20 @@ mod tests {
 		let eval_claim_1 = product_eval_claim(&multilinear_a_1, &multilinear_b_1, &eval_point);
 
 		let prover_0 = bivariate_product_mle::new(
-			[multilinear_a_0.clone(), multilinear_b_0.clone()],
+			&alloc,
+			[
+				pooled_copy(&alloc, &multilinear_a_0),
+				pooled_copy(&alloc, &multilinear_b_0),
+			],
 			eval_point.clone(),
 			eval_claim_0,
 		);
 		let prover_1 = bivariate_product_mle::new(
-			[multilinear_a_1.clone(), multilinear_b_1.clone()],
+			&alloc,
+			[
+				pooled_copy(&alloc, &multilinear_a_1),
+				pooled_copy(&alloc, &multilinear_b_1),
+			],
 			eval_point.clone(),
 			eval_claim_1,
 		);

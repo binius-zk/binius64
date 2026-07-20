@@ -1,8 +1,9 @@
 // Copyright 2025-2026 The Binius Developers
 
+use binius_compute::BufferPool;
 use binius_field::arch::OptimalPackedB128;
 use binius_ip::prodcheck::MultilinearEvalClaim;
-use binius_ip_prover::prodcheck::ProdcheckProver;
+use binius_ip_prover::{prodcheck::ProdcheckProver, sumcheck::mle_store::pooled_copy};
 use binius_math::{multilinear::evaluate::evaluate, test_utils::random_field_buffer};
 use binius_transcript::ProverTranscript;
 use binius_verifier::config::StdChallenger;
@@ -22,10 +23,12 @@ fn bench_prodcheck_new(c: &mut Criterion) {
 		group.bench_function(format!("n_vars={n_vars}"), |b| {
 			let mut rng = rand::rng();
 			let witness = random_field_buffer::<P>(&mut rng, n_vars);
+			let pool = BufferPool::new();
+			let alloc = &pool;
 
 			b.iter_batched(
 				|| witness.clone(),
-				|witness| ProdcheckProver::<P>::new(k, witness),
+				|witness| ProdcheckProver::<_, P>::new(k, &alloc, pooled_copy(&alloc, &witness)),
 				BatchSize::SmallInput,
 			);
 		});
@@ -46,9 +49,12 @@ fn bench_prodcheck_prove(c: &mut Criterion) {
 		group.bench_function(format!("n_vars={n_vars}"), |b| {
 			let mut rng = rand::rng();
 			let witness = random_field_buffer::<P>(&mut rng, n_vars);
+			let pool = BufferPool::new();
+			let alloc = &pool;
 
 			// Pre-compute the claim (products layer evaluation at empty point)
-			let (_prover, products) = ProdcheckProver::new(k, witness.clone());
+			let (_prover, products) =
+				ProdcheckProver::new(k, &alloc, pooled_copy(&alloc, &witness));
 			let products_eval = evaluate(&products, &[]);
 			let claim = MultilinearEvalClaim {
 				eval: products_eval,
@@ -59,7 +65,8 @@ fn bench_prodcheck_prove(c: &mut Criterion) {
 
 			b.iter_batched(
 				|| {
-					let (prover, _products) = ProdcheckProver::new(k, witness.clone());
+					let (prover, _products) =
+						ProdcheckProver::new(k, &alloc, pooled_copy(&alloc, &witness));
 					(prover, claim.clone())
 				},
 				|(prover, claim)| prover.prove(claim, &mut transcript),

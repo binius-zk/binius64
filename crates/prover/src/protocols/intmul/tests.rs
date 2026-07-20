@@ -1,6 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use binius_compute::GlobalAllocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
 use binius_iop::channel::{OracleSpec, naive::NaiveVerifierChannel};
@@ -59,7 +60,8 @@ fn prove_and_verify() {
 		c_hi.push(Word::from_u64(c_hi_i));
 	}
 
-	let witness = Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap();
+	let alloc = GlobalAllocator;
+	let witness = Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap();
 
 	// The one oracle in the protocol is the logup* pushforward, over the table variables.
 	let oracle_specs = [OracleSpec::new(LIMB_BITS)];
@@ -68,7 +70,7 @@ fn prove_and_verify() {
 	let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 	let mut prover_channel =
 		NaiveProverChannel::<F, _>::new(&mut prover_transcript, oracle_specs.to_vec());
-	let mut prover = IntMulProver::new(0, &mut prover_channel);
+	let mut prover = IntMulProver::new(0, &mut prover_channel, &alloc);
 	let prove_output = prover.prove(witness);
 	prover_channel.finish();
 

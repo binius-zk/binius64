@@ -12,6 +12,7 @@
 //! buffers.
 
 use std::{
+	mem,
 	mem::MaybeUninit,
 	ops::{Deref, DerefMut},
 };
@@ -27,10 +28,54 @@ pub use buffer_pool::{BufferPool, PoolVec};
 /// [`PoolVec`] — a buffer drawn from a recycling pool.
 pub trait Allocator {
 	/// The buffer type this allocator hands out for element type `T`.
-	type Vec<T>: VecLike<T>;
+	///
+	/// It is both a [`VecLike`] (growable) and a [`BufferData`] (shrinkable-in-place) buffer, so an
+	/// allocated buffer can back a `binius_math::FieldBuffer` directly.
+	type Vec<T>: VecLike<T> + BufferData<T>;
 
 	/// Allocates an empty buffer with room for at least `capacity` elements of type `T`.
 	fn alloc<T>(&self, capacity: usize) -> Self::Vec<T>;
+}
+
+/// Backing store of a `binius_math::FieldBuffer` that can be shrunk in place.
+///
+/// This lives here, rather than in `binius-math`, so that it can be a bound on
+/// [`Allocator::Vec`] — that bound is what lets generic allocation code back a `FieldBuffer` with
+/// an allocator's buffer `A::Vec<P>` without threading a `where A::Vec<P>: BufferData<P>` clause
+/// through every signature. `FieldBuffer::truncate` shrinks its backing store to match a smaller
+/// `log_len`, so it is available only for the mutable backings that support that in place: the
+/// growable [`VecLike`] buffers (`Vec<T>` and [`PoolVec`]) and `&mut [T]`.
+///
+/// A single blanket `impl<V: VecLike<T>> BufferData<T> for V` would be nicer, but it collides with
+/// the `&mut [T]` impl (coherence cannot rule out a downstream `VecLike for &mut [T]`), and the
+/// `&mut [T]` backing is required — the sumcheck store folds and truncates slice-backed halves. So
+/// the two `VecLike` backings are enumerated explicitly instead.
+pub trait BufferData<T>: DerefMut<Target = [T]> {
+	/// Shrinks the store in place to its first `len` elements.
+	///
+	/// `len` must be at most the current length.
+	fn truncate(&mut self, len: usize);
+}
+
+impl<T> BufferData<T> for Vec<T> {
+	fn truncate(&mut self, len: usize) {
+		Vec::truncate(self, len);
+	}
+}
+
+impl<T> BufferData<T> for PoolVec<'_, T> {
+	fn truncate(&mut self, len: usize) {
+		PoolVec::truncate(self, len);
+	}
+}
+
+impl<T> BufferData<T> for &mut [T] {
+	fn truncate(&mut self, len: usize) {
+		// A `&'a mut [T]` cannot be re-sliced in place through `&mut self`, so move it out and
+		// slice the owned value back in.
+		let full = mem::take(self);
+		*self = &mut full[..len];
+	}
 }
 
 /// A growable, `Vec`-like buffer.

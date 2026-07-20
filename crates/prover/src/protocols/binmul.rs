@@ -1,10 +1,13 @@
 // Copyright 2026 The Binius Developers
 
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip_prover::{
 	channel::IPProverChannel,
-	sumcheck::{ProveSingleOutput, prove_single_mlecheck, quadratic_mlecheck_prover},
+	sumcheck::{
+		ProveSingleOutput, mle_store::pooled_copy, prove_single_mlecheck, quadratic_mlecheck_prover,
+	},
 };
 use binius_math::field_buffer::FieldBuffer;
 use binius_utils::checked_arithmetics::strict_log_2;
@@ -57,8 +60,13 @@ where
 /// hypercube $\mathbb{B}_\ell$ over the GHASH field, where each element is carried by a `(lo, hi)`
 /// pair of 64-bit words. See [`binius_verifier::protocols::binmul::verify`] for the protocol
 /// description and output shape.
-pub fn prove<F, P, Channel>(witness: &BinMulWitness, channel: &mut Channel) -> BinMulOutput<F>
+pub fn prove<A, F, P, Channel>(
+	witness: &BinMulWitness,
+	channel: &mut Channel,
+	alloc: &A,
+) -> BinMulOutput<F>
 where
+	A: Allocator,
 	F: BinaryField + From<u128>,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
@@ -86,7 +94,12 @@ where
 	// Product zerocheck: 0 = sum_x eq(r_z, x) * (A(x) * B(x) - C(x)). The composition A * B - C has
 	// degree 2; the eq factor is folded internally by the MLE-check.
 	let prover = quadratic_mlecheck_prover(
-		[a, b, c],
+		alloc,
+		[
+			pooled_copy(alloc, &a),
+			pooled_copy(alloc, &b),
+			pooled_copy(alloc, &c),
+		],
 		|[a, b, c]| a * b - c,
 		|[a, b, _c]| a * b,
 		r_z,
@@ -130,6 +143,7 @@ where
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_core::word::Word;
 	use binius_field::{BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
 	use binius_iop::channel::{OracleSpec, naive::NaiveVerifierChannel};
@@ -225,7 +239,7 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 		let mut prover_channel =
 			NaiveProverChannel::<F, _>::new(&mut prover_transcript, oracle_specs.to_vec());
-		let prove_output = prove::<F, P, _>(&witness, &mut prover_channel);
+		let prove_output = prove::<_, F, P, _>(&witness, &mut prover_channel, &GlobalAllocator);
 		prover_channel.finish();
 
 		let BinMulOutput {
@@ -295,7 +309,7 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 		let mut prover_channel =
 			NaiveProverChannel::<F, _>::new(&mut prover_transcript, oracle_specs.to_vec());
-		let _ = prove::<F, P, _>(&witness, &mut prover_channel);
+		let _ = prove::<_, F, P, _>(&witness, &mut prover_channel, &GlobalAllocator);
 		prover_channel.finish();
 
 		let mut verifier_transcript = prover_transcript.into_verifier();

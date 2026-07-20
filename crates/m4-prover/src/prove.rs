@@ -1,6 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use binius_compute::{Allocator, BufferPool};
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
 use binius_hash::StdHashSuite;
@@ -8,7 +9,7 @@ use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOP
 use binius_ip_prover::sumcheck::{
 	MleToSumCheckEvaluator,
 	batch::batch_prove_and_write_evals,
-	mle_store::MleStore,
+	mle_store::{MleStore, pooled_copy},
 	quadratic_mle_evaluator::QuadraticMleEvaluator,
 	round_evaluator::{SharedSumcheckProver, SumcheckRoundEvaluator},
 };
@@ -106,10 +107,11 @@ impl IOPProver {
 	///
 	/// This is the core proving logic, independent of the specific IOP compilation strategy. For
 	/// most users, [`Prover::prove`] is the simpler interface.
-	pub fn prove<P, Channel>(&self, table: &ValueTable, channel: &mut Channel)
+	pub fn prove<P, Channel, A>(&self, table: &ValueTable, channel: &mut Channel, alloc: &A)
 	where
 		P: PackedField<Scalar = B128>,
 		Channel: IOPProverChannel<P>,
+		A: Allocator,
 	{
 		let cs = &self.cs;
 
@@ -156,7 +158,7 @@ impl IOPProver {
 					build_intmul_witness(table, &cs.constants, &cs.imul_constraints);
 				[a, b, lo, hi]
 			};
-			let output = prove_intmul::<P, _>(&columns, channel);
+			let output = prove_intmul::<P, _, _>(&columns, channel, alloc);
 			(columns, output)
 		});
 
@@ -178,7 +180,7 @@ impl IOPProver {
 				let _scope = tracing::debug_span!("Assemble BinMul witness").entered();
 				build_binmul_witness(table, &cs.constants, &cs.bmul_constraints)
 			};
-			let output = prove_binmul::<P, _>(&columns, channel);
+			let output = prove_binmul::<P, _, _>(&columns, channel, alloc);
 			(columns, output)
 		});
 
@@ -212,7 +214,7 @@ impl IOPProver {
 					.collect();
 				[and_witness.a().to_vec(), and_witness.b().to_vec(), c_column]
 			});
-			(and_columns, and_witness.prove::<P, _>(&andcheck_domain, channel))
+			(and_columns, and_witness.prove::<P, _, _>(&andcheck_domain, channel, alloc))
 		};
 
 		// The AND-check row point is `r_rho_and || r_x_and`: the instance index on the low
@@ -241,7 +243,7 @@ impl IOPProver {
 					Operation::from_binmul(columns, output.clone(), &lagrange, log_instances)
 				}),
 			}
-			.prove::<P, _>(&lagrange, z_challenge, channel)
+			.prove::<P, _, _>(&lagrange, z_challenge, channel, alloc)
 		} else {
 			// Neither IMUL nor BMUL constraints: the AND-check instance point is used directly.
 			// The IntMul and BinMul claims are zero claims at an empty point, contributing nothing
@@ -283,7 +285,7 @@ impl IOPProver {
 		// Reduce the operand claims to one witness evaluation.
 		let witness_claim = {
 			let _scope = tracing::debug_span!("Prove shift reduction").entered();
-			prove_shift::<B128, P, _>(
+			prove_shift::<B128, P, _, _>(
 				&self.key_collection,
 				&public_words,
 				&folded_witness,
@@ -292,6 +294,7 @@ impl IOPProver {
 				binmul_data,
 				&shift_domain,
 				channel,
+				alloc,
 			)
 		};
 
@@ -388,10 +391,14 @@ where
 			.basefold_compiler
 			.create_channel_without_zk_from_transcript::<StdHashSuite, Challenger_, _>(transcript);
 
-		self.iop_prover.prove::<P, _>(table, &mut channel);
+		// Working buffers for this proof are drawn from a single pool that lives for the call.
+		let pool = BufferPool::new();
+		let alloc = &pool;
+		self.iop_prover
+			.prove::<P, _, _>(table, &mut channel, &alloc);
 
 		let _scope = tracing::debug_span!("PCS opening").entered();
-		channel.finish();
+		channel.finish(&alloc);
 	}
 }
 
@@ -402,10 +409,15 @@ where
 /// Each is `K * n_imul` rows, laid out constraint-major.
 /// The check reduces the multiplication relation to per-bit evaluation claims on the four columns.
 /// Those claims share a common row point.
-fn prove_intmul<P, Channel>(columns: &[Vec<Word>; 4], channel: &mut Channel) -> IntMulOutput<B128>
+fn prove_intmul<P, Channel, A>(
+	columns: &[Vec<Word>; 4],
+	channel: &mut Channel,
+	alloc: &A,
+) -> IntMulOutput<B128>
 where
 	P: PackedField<Scalar = B128>,
 	Channel: IOPProverChannel<P>,
+	A: Allocator,
 {
 	let _scope = tracing::debug_span!("IntMul check").entered();
 
@@ -415,11 +427,11 @@ where
 
 	// A prepared constraint system pads its constraint and instance counts to powers of two, so the
 	// columns always have a power-of-two length as the witness requires.
-	let witness = IntMulWitness::<P>::new(a, b, lo, hi)
+	let witness = IntMulWitness::<_, P>::new(alloc, a, b, lo, hi)
 		.expect("a prepared constraint system yields power-of-two operand columns");
 
 	// Switchover 0 keeps the exponentiation trees in the small field for every round.
-	let mut prover = IntMulProver::<P, _>::new(0, channel);
+	let mut prover = IntMulProver::<_, P, _>::new(0, channel, alloc);
 	prover.prove(witness)
 }
 
@@ -430,10 +442,15 @@ where
 /// Each is `K * n_binmul` rows, laid out constraint-major.
 /// The check reduces the GHASH-field multiplication relation to per-bit evaluation claims on the
 /// six columns. Those claims share a common row point.
-fn prove_binmul<P, Channel>(columns: &[Vec<Word>; 6], channel: &mut Channel) -> BinMulOutput<B128>
+fn prove_binmul<P, Channel, A>(
+	columns: &[Vec<Word>; 6],
+	channel: &mut Channel,
+	alloc: &A,
+) -> BinMulOutput<B128>
 where
 	P: PackedField<Scalar = B128>,
 	Channel: IOPProverChannel<P>,
+	A: Allocator,
 {
 	let _scope = tracing::debug_span!("BinMul check").entered();
 
@@ -449,7 +466,7 @@ where
 		c_hi,
 	};
 
-	prove_binmul_reduction::<B128, P, _>(&witness, channel)
+	prove_binmul_reduction::<_, B128, P, _>(&witness, channel, alloc)
 }
 
 /// One operation's operand columns, oblong claims, and the points they are claimed at.
@@ -491,13 +508,15 @@ impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 	/// So the store expands that indicator once, not once per operand.
 	/// Each operand's instance-axis multilinear becomes a store column.
 	/// Its evaluator is an identity-composition quadratic MLE-check: a multilinear evaluation.
-	fn push_to<P>(
+	fn push_to<'alloc, A, P>(
 		&self,
 		lagrange: &[B128],
-		store: &mut MleStore<P>,
-		evaluators: &mut Vec<Box<dyn SumcheckRoundEvaluator<B128, P>>>,
+		store: &mut MleStore<'alloc, A, P>,
+		evaluators: &mut Vec<Box<dyn SumcheckRoundEvaluator<A, B128, P> + 'alloc>>,
 		claims: &mut Vec<B128>,
+		alloc: &'alloc A,
 	) where
+		A: Allocator,
 		P: PackedField<Scalar = B128>,
 	{
 		// The wrappers run under a plain sumcheck prover, so each holds this operation's shared eq
@@ -506,7 +525,10 @@ impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 		// The constraint tensor is the same for every operand of this operation, so expand it once.
 		let r_x_tensor = eq_ind_partial_eval_scalars::<B128>(&self.r_x);
 		for (column, &claim) in self.columns.iter().zip(&self.operand_claims) {
-			let col = store.push_owned(operand_rho_multilinear::<P>(column, lagrange, &r_x_tensor));
+			let col = store.push_owned(pooled_copy(
+				alloc,
+				&operand_rho_multilinear::<P>(column, lagrange, &r_x_tensor),
+			));
 			let evaluator = QuadraticMleEvaluator::new(
 				[col],
 				|[operand]: [P; 1]| operand,
@@ -627,15 +649,17 @@ impl RerandomizedOperations<'_> {
 	///
 	/// The shared instance point, the BitAnd operand data, the IntMul operand data, and the BinMul
 	/// operand data.
-	fn prove<P, Channel>(
+	fn prove<'alloc, P, Channel, A>(
 		self,
 		lagrange: &[B128],
 		z_challenge: B128,
 		channel: &mut Channel,
+		alloc: &'alloc A,
 	) -> (Vec<B128>, OperatorData<B128>, OperatorData<B128>, OperatorData<B128>)
 	where
 		P: PackedField<Scalar = B128>,
 		Channel: IOPProverChannel<P>,
+		A: Allocator,
 	{
 		let _scope = tracing::debug_span!("Re-randomize instances").entered();
 
@@ -647,17 +671,17 @@ impl RerandomizedOperations<'_> {
 		// multilinears. The evaluators list the operands in push order
 		// [BitAnd a, b, c | IntMul a, b, lo, hi | BinMul a_lo, a_hi, b_lo, b_hi, c_lo, c_hi].
 		// The verifier reads the reduced evaluations back in the same order.
-		let mut store = MleStore::<P>::new(log_instances);
-		let mut evaluators: Vec<Box<dyn SumcheckRoundEvaluator<B128, P>>> =
+		let mut store = MleStore::<A, P>::new(log_instances, alloc);
+		let mut evaluators: Vec<Box<dyn SumcheckRoundEvaluator<A, B128, P> + 'alloc>> =
 			Vec::with_capacity(BITAND_ARITY + INTMUL_ARITY + BINMUL_ARITY);
 		let mut claims: Vec<B128> = Vec::with_capacity(BITAND_ARITY + INTMUL_ARITY + BINMUL_ARITY);
 		self.bitand
-			.push_to(lagrange, &mut store, &mut evaluators, &mut claims);
+			.push_to(lagrange, &mut store, &mut evaluators, &mut claims, alloc);
 		if let Some(intmul) = &self.intmul {
-			intmul.push_to(lagrange, &mut store, &mut evaluators, &mut claims);
+			intmul.push_to(lagrange, &mut store, &mut evaluators, &mut claims, alloc);
 		}
 		if let Some(binmul) = &self.binmul {
-			binmul.push_to(lagrange, &mut store, &mut evaluators, &mut claims);
+			binmul.push_to(lagrange, &mut store, &mut evaluators, &mut claims, alloc);
 		}
 
 		// One shared prover drives all claims over the store in a single round pass.

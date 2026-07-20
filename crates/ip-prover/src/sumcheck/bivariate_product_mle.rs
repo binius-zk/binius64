@@ -1,10 +1,10 @@
 // Copyright 2023-2025 Irreducible Inc.
 
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
-use binius_math::FieldBuffer;
 
 use super::{
-	mle_store::MleStore,
+	mle_store::{MleStore, PooledColumn},
 	quadratic_mle_evaluator::{QuadraticMleEvaluator, quadratic_mlecheck_prover},
 	round_evaluator::SharedMleCheckProver,
 };
@@ -53,18 +53,27 @@ use crate::sumcheck::common::MleCheckProver;
 /// Note 2: evaluation points are 0 (implicit), 1 and Karatsuba infinity.
 ///
 /// [Gruen24]: <https://eprint.iacr.org/2024/108>
-pub fn new<F, P>(
-	multilinears: [FieldBuffer<P>; 2],
+pub fn new<'alloc, A, F, P>(
+	alloc: &'alloc A,
+	multilinears: [PooledColumn<A, P>; 2],
 	eval_point: Vec<F>,
 	eval_claim: F,
-) -> impl MleCheckProver<F>
+) -> impl MleCheckProver<F> + 'alloc
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
 	// The product is symmetric, so the infinity composition (highest-degree terms) equals the full
 	// composition.
-	quadratic_mlecheck_prover(multilinears, |[a, b]| a * b, |[a, b]| a * b, eval_point, eval_claim)
+	quadratic_mlecheck_prover(
+		alloc,
+		multilinears,
+		|[a, b]| a * b,
+		|[a, b]| a * b,
+		eval_point,
+		eval_claim,
+	)
 }
 
 /// Reduces the product of the two halves of a single buffer, sharing one allocation.
@@ -80,16 +89,18 @@ where
 /// # Returns
 ///
 /// A prover whose reduction emits the low half's evaluation, then the high half's.
-pub fn new_split_half<F, P>(
-	buffer: FieldBuffer<P>,
+pub fn new_split_half<'alloc, A, F, P>(
+	alloc: &'alloc A,
+	buffer: PooledColumn<A, P>,
 	eval_point: Vec<F>,
 	eval_claim: F,
-) -> impl MleCheckProver<F>
+) -> impl MleCheckProver<F> + 'alloc
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
-	let mut store = MleStore::new(eval_point.len());
+	let mut store = MleStore::new(eval_point.len(), alloc);
 	// The store checks that the buffer has exactly one more variable than itself.
 	let cols = store.push_split_half(buffer);
 	let evaluator =
@@ -109,11 +120,14 @@ mod tests {
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
+	use binius_compute::GlobalAllocator;
 	use itertools::{self, Itertools};
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::sumcheck::{MleToSumCheckDecorator, prove::prove_single, prove_single_mlecheck};
+	use crate::sumcheck::{
+		MleToSumCheckDecorator, mle_store::pooled_copy, prove::prove_single, prove_single_mlecheck,
+	};
 
 	fn test_mlecheck_prove_verify<F, P>(
 		prover: impl MleCheckProver<F>,
@@ -257,6 +271,7 @@ mod tests {
 
 		let n_vars = 8;
 		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
 
 		// Generate two random multilinear polynomials
 		let multilinear_a = random_field_buffer::<P>(&mut rng, n_vars);
@@ -272,8 +287,15 @@ mod tests {
 		let eval_claim = evaluate(&product_buffer, &eval_point);
 
 		// Create the prover
-		let mlecheck_prover =
-			new([multilinear_a.clone(), multilinear_b.clone()], eval_point.clone(), eval_claim);
+		let mlecheck_prover = new(
+			&alloc,
+			[
+				pooled_copy(&alloc, &multilinear_a),
+				pooled_copy(&alloc, &multilinear_b),
+			],
+			eval_point.clone(),
+			eval_claim,
+		);
 
 		test_mlecheck_prove_verify(
 			mlecheck_prover,
@@ -284,8 +306,15 @@ mod tests {
 		);
 
 		// Create another prover for the wrapped test
-		let mlecheck_prover =
-			new([multilinear_a.clone(), multilinear_b.clone()], eval_point.clone(), eval_claim);
+		let mlecheck_prover = new(
+			&alloc,
+			[
+				pooled_copy(&alloc, &multilinear_a),
+				pooled_copy(&alloc, &multilinear_b),
+			],
+			eval_point.clone(),
+			eval_claim,
+		);
 
 		test_wrapped_sumcheck_prove_verify(
 			mlecheck_prover,

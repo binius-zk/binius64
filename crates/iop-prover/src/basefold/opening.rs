@@ -3,10 +3,11 @@
 
 //! The core BaseFold opening protocol on the prover side.
 
+use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_ip::mlecheck;
 use binius_ip_prover::sumcheck::{
-	common::SumcheckProver, multilinear_eval::multilinear_eval_prover,
+	common::SumcheckProver, mle_store::pooled_copy, multilinear_eval::multilinear_eval_prover,
 };
 use binius_math::{FieldBuffer, ntt::AdditiveNTT};
 
@@ -40,7 +41,8 @@ use crate::{fri::FRIFoldProver, merkle_channel::MerkleIPProverChannel};
 ///
 /// The final FRI value equals the final MLE-check value.
 /// The verifier asserts that equality when it runs the matching opening.
-pub fn prove_mlecheck_basefold<F, P, NTT, Channel>(
+#[allow(clippy::too_many_arguments)]
+pub fn prove_mlecheck_basefold<A, F, P, NTT, Channel>(
 	witness: FieldBuffer<P>,
 	eval_point: &[F],
 	eval_claim: F,
@@ -48,7 +50,9 @@ pub fn prove_mlecheck_basefold<F, P, NTT, Channel>(
 	outer_challenges: &[F],
 	mut fri_folder: FRIFoldProver<'_, F, P, NTT, Channel::Commitment>,
 	channel: &mut Channel,
+	alloc: &A,
 ) where
+	A: Allocator,
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
@@ -78,7 +82,8 @@ pub fn prove_mlecheck_basefold<F, P, NTT, Channel>(
 		fri_folder.receive_challenge(outer_challenge);
 	}
 
-	let mut sumcheck = multilinear_eval_prover(witness, eval_point, eval_claim);
+	let mut sumcheck =
+		multilinear_eval_prover(alloc, pooled_copy(alloc, &witness), eval_point, eval_claim);
 	for _ in 0..n_vars {
 		let mut round_coeffs_vec = sumcheck.execute();
 		let round_coeffs = round_coeffs_vec
@@ -102,6 +107,7 @@ pub fn prove_mlecheck_basefold<F, P, NTT, Channel>(
 #[cfg(test)]
 mod test {
 	use anyhow::Result;
+	use binius_compute::GlobalAllocator;
 	use binius_field::{BinaryField, PackedBinaryGhash1x128b, PackedField};
 	use binius_hash::{StdDigest, StdHashSuite};
 	use binius_iop::{
@@ -209,6 +215,7 @@ mod test {
 			&[],
 			fri_folder,
 			&mut prover_channel,
+			&GlobalAllocator,
 		);
 		drop(prover_channel);
 

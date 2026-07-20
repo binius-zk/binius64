@@ -12,6 +12,7 @@
 //!
 //! [Soukhanov25]: <https://eprint.iacr.org/2025/946>
 
+use binius_compute::Allocator;
 use binius_field::{BinaryField, Divisible, PackedField};
 pub use binius_ip_prover::logup_star::Looker;
 use binius_ip_prover::logup_star::{self as reduction, witness};
@@ -62,15 +63,17 @@ pub struct LogupProof<F> {
 	name = "logup* (committed)",
 	fields(n_lookers = lookers.len(), table_n_vars = table.log_len())
 )]
-pub fn prove<F, P, Channel>(
+pub fn prove<F, P, Channel, A>(
 	table: &FieldBuffer<P>,
 	lookers: &[Looker<'_, F>],
 	channel: &mut Channel,
+	alloc: &A,
 ) -> LogupProof<F>
 where
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 	Channel: IOPProverChannel<P>,
+	A: Allocator,
 {
 	let m = table.log_len();
 
@@ -95,6 +98,7 @@ where
 
 	// Run the reduction over the committed Y and the numerators, viewing the channel as IP.
 	let output = reduction::prove_reduction(
+		alloc,
 		table,
 		lookers,
 		combined_eval_claim,
@@ -126,6 +130,7 @@ where
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{
 		BinaryField1b, ExtensionField, Field,
 		arch::{OptimalB128, OptimalPackedB128},
@@ -203,7 +208,8 @@ mod tests {
 			eval_point: &eval_point,
 			eval_claim,
 		};
-		let prover_proof = prove::<F, P, _>(&table, &[looker], &mut prover_channel);
+		let prover_proof =
+			prove::<F, P, _, _>(&table, &[looker], &mut prover_channel, &GlobalAllocator);
 
 		prover_channel.finish();
 
@@ -288,7 +294,8 @@ mod tests {
 				eval_claim: eval_claim_1,
 			},
 		];
-		let prover_proof = prove::<F, P, _>(&table, &lookers, &mut prover_channel);
+		let prover_proof =
+			prove::<F, P, _, _>(&table, &lookers, &mut prover_channel, &GlobalAllocator);
 		prover_channel.finish();
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -339,7 +346,8 @@ mod tests {
 			eval_point: &eval_point,
 			eval_claim: wrong_claim,
 		};
-		let _prover_proof = prove::<F, P, _>(&table, &[looker], &mut prover_channel);
+		let _prover_proof =
+			prove::<F, P, _, _>(&table, &[looker], &mut prover_channel, &GlobalAllocator);
 		prover_channel.finish();
 
 		// The reduction's product check must surface the inconsistency as a verification failure.
@@ -408,8 +416,9 @@ mod tests {
 			eval_point: &eval_point,
 			eval_claim,
 		};
-		let prover_proof = prove::<F, BP, _>(&table, &[looker], &mut prover_channel);
-		prover_channel.finish();
+		let alloc = GlobalAllocator;
+		let prover_proof = prove::<F, BP, _, _>(&table, &[looker], &mut prover_channel, &alloc);
+		prover_channel.finish(&alloc);
 
 		// Verify: receive Y, run the reduction, open the pushforward through the real FRI check.
 		let mut verifier_transcript = prover_transcript.into_verifier();

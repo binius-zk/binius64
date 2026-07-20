@@ -2,6 +2,7 @@
 
 //! The batched shift-reduction prover for the data-parallel Binius64 M4 proof system.
 
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip::sumcheck::SumcheckOutput;
@@ -114,7 +115,7 @@ pub fn fold_instances<F: BinaryField>(table: &ValueTable, r_rho: &[F]) -> Vec<Fo
 /// # Returns
 /// The `SumcheckOutput` with the final challenges and the reduced witness evaluation.
 #[allow(clippy::too_many_arguments)]
-pub fn prove<F, P, Channel>(
+pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	public_words: &[Word],
 	folded_witness: &[FoldedWord<F>],
@@ -123,11 +124,13 @@ pub fn prove<F, P, Channel>(
 	binmul_data: OperatorData<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
+	alloc: &A,
 ) -> SumcheckOutput<F>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
+	A: Allocator,
 {
 	// Sample one batching lambda per operator, then prepare the operator data (tensor expansions
 	// and lambda powers).
@@ -162,7 +165,7 @@ where
 		}
 	}
 	let h_parts = build_h_parts::<F, F>(domain_subspace, prepared_bitand.r_zhat_prime);
-	let phase_1_output = run_phase_1_sumcheck::<F, F, _>(g_parts, h_parts, channel);
+	let phase_1_output = run_phase_1_sumcheck::<F, F, _, _>(g_parts, h_parts, channel, alloc);
 
 	// Phase 2: split the phase-1 challenges into the bit half `r_j` and the shift half `r_s`.
 	let SumcheckOutput {
@@ -196,7 +199,7 @@ where
 		&r_s,
 	);
 
-	run_sumcheck::<F, P, _>(
+	run_sumcheck::<F, P, _, _>(
 		public_folded,
 		hidden_folded,
 		public_monster,
@@ -205,6 +208,7 @@ where
 		r_j,
 		gamma,
 		channel,
+		alloc,
 	)
 }
 
@@ -280,6 +284,7 @@ pub fn build_g_parts_from_folded_words<F: BinaryField>(
 mod tests {
 	use std::iter;
 
+	use binius_compute::GlobalAllocator;
 	use binius_core::{constraint_system::AndConstraint, verify::verify_constraints, word::Word};
 	use binius_field::{AESTowerField8b, Field, PackedBinaryGhash1x128b, Random};
 	use binius_math::{
@@ -559,7 +564,7 @@ mod tests {
 
 		// Prove.
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
-		let prover_output = prove::<B128, P, _>(
+		let prover_output = prove::<B128, P, _, _>(
 			&key_collection,
 			public_words,
 			&folded_witness,
@@ -580,6 +585,7 @@ mod tests {
 			},
 			&domain_subspace,
 			&mut prover_transcript,
+			&GlobalAllocator,
 		);
 
 		// Verify against the single-instance shift verifier.

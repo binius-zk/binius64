@@ -3,6 +3,7 @@
 
 use std::marker::PhantomData;
 
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, BinaryField1b, Divisible, ExtensionField, PackedField};
 use binius_iop_prover::{
@@ -17,6 +18,7 @@ use binius_ip_prover::{
 		MleToSumCheckDecorator,
 		batch::{BatchSumcheckOutput, batch_prove, batch_prove_and_write_evals},
 		bivariate_product_mle,
+		mle_store::pooled_copy,
 		multilinear_eval::multilinear_eval_prover,
 		quadratic_mlecheck_prover,
 		selector_mle::{Claim, SelectorMlecheckProver},
@@ -43,25 +45,29 @@ use crate::fold_word::{fold_across_words, fold_words};
 
 /// A helper structure that encapsulates switchover settings and the prover channel for
 /// the integer multiplication protocol.
-pub struct IntMulProver<'a, P, Channel> {
+pub struct IntMulProver<'a, 'alloc, A: Allocator, P, Channel> {
 	_p_marker: PhantomData<P>,
 
 	switchover: usize,
 	channel: &'a mut Channel,
+	/// Pool the GKR working buffers are drawn from.
+	alloc: &'alloc A,
 }
 
-impl<'a, P, Channel> IntMulProver<'a, P, Channel> {
-	pub const fn new(switchover: usize, channel: &'a mut Channel) -> Self {
+impl<'a, 'alloc, A: Allocator, P, Channel> IntMulProver<'a, 'alloc, A, P, Channel> {
+	pub const fn new(switchover: usize, channel: &'a mut Channel, alloc: &'alloc A) -> Self {
 		Self {
 			_p_marker: PhantomData,
 			switchover,
 			channel,
+			alloc,
 		}
 	}
 }
 
-impl<F, P, Channel> IntMulProver<'_, P, Channel>
+impl<'alloc, A, F, P, Channel> IntMulProver<'_, 'alloc, A, P, Channel>
 where
+	A: Allocator,
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 	Channel: IOPProverChannel<P>,
@@ -91,7 +97,7 @@ where
 	/// The output of this protocol is a set of evaluation claims on the `b` selectors representing
 	/// all of `a`, `b`, `c_lo` and `c_hi` as column-major bit matrices, at a common evaluation
 	/// point. The logup* pushforward commitment is opened through the channel inside phase 5.
-	pub fn prove(&mut self, witness: Witness<'_, P>) -> IntMulOutput<F> {
+	pub fn prove(&mut self, witness: Witness<'_, 'alloc, A, P>) -> IntMulOutput<F> {
 		let Witness {
 			a_exponents,
 			a_prodcheck,
@@ -192,6 +198,7 @@ where
 		c_hi_exponents: &[Word],
 		table: &FieldBuffer<P>,
 	) -> IntMulOutput<F> {
+		let alloc = self.alloc;
 		let n_vars = b_eval_point.len();
 		assert_eq!(phase_4_output.eval_point.len(), n_vars);
 
@@ -238,7 +245,7 @@ where
 			})
 			.collect::<Vec<_>>();
 		let log_cols = log2_ceil_usize(N_LIMB_COLUMNS);
-		let logup_proof = logup_star::prove(table, &lookers, self.channel);
+		let logup_proof = logup_star::prove(table, &lookers, self.channel, self.alloc);
 
 		// The index entries are the GF(2)-linear embeddings iota(e) = Σ_u basis(u) · bit_u(e),
 		// materialized by a table of all 2^LIMB_BITS embeddings.
@@ -277,7 +284,8 @@ where
 		let folded_column = FieldBuffer::<P>::from_values(&folded_column_scalars);
 		drop(fold_guard);
 		let index_prover = MleToSumCheckDecorator::new(multilinear_eval_prover(
-			folded_column,
+			alloc,
+			pooled_copy(alloc, &folded_column),
 			index_content_point,
 			folded_index_claim,
 		));
@@ -293,7 +301,12 @@ where
 		// The overflow parity check binds at the Phase-2 constraint point `b_eval_point` (r_2) —
 		// reused for free from the `b` re-randomization.
 		let overflow_prover = MleToSumCheckDecorator::new(quadratic_mlecheck_prover(
-			[a_0, b_0, c_lo_0],
+			alloc,
+			[
+				pooled_copy(alloc, &a_0),
+				pooled_copy(alloc, &b_0),
+				pooled_copy(alloc, &c_lo_0),
+			],
 			|[a, b, c]| a * b - c,
 			|[a, b, _c]| a * b,
 			b_eval_point.to_vec(),
@@ -306,8 +319,12 @@ where
 		assert_eq!(b_exponents.len(), 1 << n_vars);
 		let b_tensor = eq_ind_partial_eval_scalars::<F>(r_ib);
 		let b_folded = fold_words::<_, P>(b_exponents, &b_tensor);
-		let b_sumcheck_prover =
-			MleToSumCheckDecorator::new(multilinear_eval_prover(b_folded, b_eval_point, b_recomb));
+		let b_sumcheck_prover = MleToSumCheckDecorator::new(multilinear_eval_prover(
+			alloc,
+			pooled_copy(alloc, &b_folded),
+			b_eval_point,
+			b_recomb,
+		));
 
 		let batch_guard = tracing::debug_span!("Final batched sumcheck").entered();
 		let BatchSumcheckOutput {
@@ -353,8 +370,9 @@ where
 	}
 }
 
-impl<F, P, Channel> IntMulProver<'_, P, Channel>
+impl<'alloc, A, F, P, Channel> IntMulProver<'_, 'alloc, A, P, Channel>
 where
+	A: Allocator,
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
@@ -363,7 +381,7 @@ where
 	pub fn phase1(
 		&mut self,
 		eval_point: &[F],
-		b_prover: ProdcheckProver<P>,
+		b_prover: ProdcheckProver<'alloc, A, P>,
 		b_leaves: &FieldBuffer<P>,
 		b_root_eval: F,
 	) -> Phase1Output<F> {
@@ -415,6 +433,7 @@ where
 		c_eval_point: &[F],
 		c_root_eval: F,
 	) -> Phase3Output<F> {
+		let alloc = self.alloc;
 		let n_vars = selector.log_len();
 		assert!(
 			twisted_eval_points
@@ -450,8 +469,12 @@ where
 			self.switchover,
 		);
 
-		let c_root_sumcheck_prover =
-			bivariate_product_mle::new(c_lo_hi_roots, c_eval_point.to_vec(), c_root_eval);
+		let c_root_sumcheck_prover = bivariate_product_mle::new(
+			alloc,
+			c_lo_hi_roots.map(|root| pooled_copy(alloc, &root)),
+			c_eval_point.to_vec(),
+			c_root_eval,
+		);
 
 		let c_root_prover = MleToSumCheckDecorator::new(c_root_sumcheck_prover);
 
@@ -498,9 +521,9 @@ where
 	pub fn phase4(
 		&mut self,
 		eval_point: &[F],
-		(a_root_eval, a_prover): (F, ProdcheckProver<P>),
-		(gpow_c_lo_eval, c_lo_prover): (F, ProdcheckProver<P>),
-		(gpow_c_hi_eval, c_hi_prover): (F, ProdcheckProver<P>),
+		(a_root_eval, a_prover): (F, ProdcheckProver<'alloc, A, P>),
+		(gpow_c_lo_eval, c_lo_prover): (F, ProdcheckProver<'alloc, A, P>),
+		(gpow_c_hi_eval, c_hi_prover): (F, ProdcheckProver<'alloc, A, P>),
 		exponents: [&[Word]; 3],
 		tables: &[FieldBuffer<P>],
 	) -> Phase4Output<F> {

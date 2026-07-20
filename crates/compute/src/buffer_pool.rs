@@ -158,6 +158,13 @@ impl<T> PoolVec<'_, T> {
 		self.data.clear();
 	}
 
+	/// Shrinks the buffer to its first `len` elements, retaining its capacity.
+	///
+	/// Has no effect if `len` is at least the current length. Mirrors [`Vec::truncate`].
+	pub fn truncate(&mut self, len: usize) {
+		self.data.truncate(len);
+	}
+
 	/// Returns the spare capacity of the buffer as a slice of `MaybeUninit<T>`.
 	///
 	/// Mirrors [`Vec::spare_capacity_mut`]: used to write into a freshly allocated buffer in place

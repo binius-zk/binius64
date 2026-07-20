@@ -2,6 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_circuits::sha256::sha256_fixed;
+use binius_compute::BufferPool;
 use binius_core::{ValueVec, constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b, BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Wire};
@@ -133,7 +134,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 				let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
-				prove::<F, P, _>(
+				prove::<F, P, _, _>(
 					&key_collection,
 					value_vec.combined_witness(),
 					prover_bitand_data,
@@ -145,6 +146,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 					},
 					&subspace,
 					&mut prover_transcript,
+					&&BufferPool::new(),
 				)
 			})
 		});
@@ -163,7 +165,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
-		prove::<F, P, _>(
+		prove::<F, P, _, _>(
 			&key_collection,
 			value_vec.combined_witness(),
 			prover_bitand_data,
@@ -175,6 +177,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			},
 			&subspace,
 			&mut prover_transcript,
+			&&BufferPool::new(),
 		);
 
 		let setup_verifier_transcript = prover_transcript.into_verifier();
@@ -299,7 +302,12 @@ fn bench_shift_phases(c: &mut Criterion) {
 		eval: gamma,
 	} = {
 		let mut transcript = ProverTranscript::<StdChallenger>::default();
-		run_phase_1_sumcheck::<F, P, _>(g_parts.clone(), h_parts.clone(), &mut transcript)
+		run_phase_1_sumcheck::<F, P, _, _>(
+			g_parts.clone(),
+			h_parts.clone(),
+			&mut transcript,
+			&&BufferPool::new(),
+		)
 	};
 	// Split phase-1 challenges into `r_j` (low) and `r_s` (high) halves.
 	let r_s = r_jr_s.split_off(Word::LOG_BITS);
@@ -334,7 +342,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 			|| (g_parts.clone(), h_parts.clone()),
 			|(g, h)| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
-				run_phase_1_sumcheck::<F, P, _>(g, h, &mut transcript)
+				run_phase_1_sumcheck::<F, P, _, _>(g, h, &mut transcript, &&BufferPool::new())
 			},
 			BatchSize::SmallInput,
 		);
@@ -368,7 +376,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 			},
 			|(public_folded, hidden_folded, public_monster, hidden_monster, r_j)| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
-				run_sumcheck::<F, P, _>(
+				run_sumcheck::<F, P, _, _>(
 					public_folded,
 					hidden_folded,
 					public_monster,
@@ -377,6 +385,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 					r_j,
 					gamma,
 					&mut transcript,
+					&&BufferPool::new(),
 				)
 			},
 			BatchSize::SmallInput,

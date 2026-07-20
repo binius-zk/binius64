@@ -138,7 +138,8 @@ impl IOPProver {
 			let mul_witness = tracing::debug_span!("Assemble columns")
 				.in_scope(|| build_intmul_witness(&cs.imul_constraints, &witness, alloc));
 
-			let intmul_output = prove_intmul_reduction::<_, _, P, _>(mul_witness, &mut *channel)?;
+			let intmul_output =
+				prove_intmul_reduction::<_, _, P, _>(mul_witness, &mut *channel, alloc)?;
 			drop(intmul_guard);
 			Some(intmul_output)
 		} else {
@@ -160,7 +161,8 @@ impl IOPProver {
 			let binmul_witness = tracing::debug_span!("Assemble columns")
 				.in_scope(|| build_binmul_witness(&cs.bmul_constraints, &witness, alloc));
 
-			let binmul_output = prove_binmul_reduction::<_, _, P, _>(binmul_witness, &mut *channel);
+			let binmul_output =
+				prove_binmul_reduction::<_, _, P, _>(binmul_witness, &mut *channel, alloc);
 			drop(binmul_guard);
 			Some(binmul_output)
 		} else {
@@ -181,7 +183,7 @@ impl IOPProver {
 				c_eval,
 				z_challenge,
 				eval_point,
-			} = prove_bitand_reduction::<_, B128, P, _>(bitand_witness, &mut *channel);
+			} = prove_bitand_reduction::<_, B128, P, _>(bitand_witness, &mut *channel, alloc);
 			OperatorData {
 				evals: vec![a_eval, b_eval, c_eval],
 				r_zhat_prime: z_challenge,
@@ -277,7 +279,7 @@ impl IOPProver {
 		let SumcheckOutput {
 			challenges: eval_point,
 			eval: _,
-		} = prove_shift_reduction::<_, P, _>(
+		} = prove_shift_reduction::<_, P, _, _>(
 			&self.key_collection,
 			witness.combined_witness(),
 			bitand_claim,
@@ -285,6 +287,7 @@ impl IOPProver {
 			binmul_claim,
 			&subspace,
 			&mut *channel,
+			alloc,
 		);
 		drop(shift_guard);
 
@@ -414,7 +417,7 @@ where
 		let alloc = &pool;
 		self.iop_prover
 			.prove::<_, P, _>(witness, &mut channel, &alloc)?;
-		channel.finish();
+		channel.finish(&alloc);
 		Ok(())
 	}
 }
@@ -490,6 +493,7 @@ pub fn pack_witness<P: PackedField<Scalar = B128>>(
 fn prove_bitand_reduction<A, F, PChallenge, Channel>(
 	witness: AndCheckWitness<A>,
 	channel: &mut Channel,
+	alloc: &A,
 ) -> AndCheckOutput<F>
 where
 	A: Allocator,
@@ -514,12 +518,13 @@ where
 		prover_message_domain.isomorphic(),
 	);
 
-	prover.prove_with_channel(channel)
+	prover.prove_with_channel(channel, alloc)
 }
 
 fn prove_intmul_reduction<A, F, P, Channel>(
 	witness: MulCheckWitness<A>,
 	channel: &mut Channel,
+	alloc: &A,
 ) -> Result<IntMulOutput<F>, Error>
 where
 	A: Allocator,
@@ -529,10 +534,10 @@ where
 {
 	let MulCheckWitness { a, b, lo, hi } = witness;
 
-	let mut mulcheck_prover = IntMulProver::new(0, channel);
+	let mut mulcheck_prover = IntMulProver::new(0, channel, alloc);
 
 	let intmul_witness = tracing::debug_span!("Build IntMul witness")
-		.in_scope(|| IntMulWitness::<P>::new(&a, &b, &lo, &hi))?;
+		.in_scope(|| IntMulWitness::<_, P>::new(alloc, &a, &b, &lo, &hi))?;
 
 	Ok(mulcheck_prover.prove(intmul_witness))
 }
@@ -540,6 +545,7 @@ where
 fn prove_binmul_reduction<A, F, P, Channel>(
 	witness: BinMulCheckWitness<A>,
 	channel: &mut Channel,
+	alloc: &A,
 ) -> BinMulOutput<F>
 where
 	A: Allocator,
@@ -567,7 +573,7 @@ where
 		c_hi: &c_hi,
 	};
 
-	prove_binmul::<F, P, _>(&binmul_witness, channel)
+	prove_binmul::<_, F, P, _>(&binmul_witness, channel, alloc)
 }
 
 /// The two materialized BitAnd operand columns.

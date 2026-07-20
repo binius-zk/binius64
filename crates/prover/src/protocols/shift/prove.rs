@@ -1,5 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField, util::powers};
 use binius_ip::sumcheck::SumcheckOutput;
@@ -93,7 +94,8 @@ impl<F: Field> PreparedOperatorData<F> {
 ///
 /// # Requirements
 /// - `words` must have power-of-2 length for efficient multilinear operations
-pub fn prove<F, P, Channel>(
+#[allow(clippy::too_many_arguments)]
+pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	words: &[Word],
 	bitand_data: OperatorData<F>,
@@ -101,11 +103,13 @@ pub fn prove<F, P, Channel>(
 	binmul_data: OperatorData<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
+	alloc: &A,
 ) -> SumcheckOutput<F>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
+	A: Allocator,
 {
 	// Sample lambdas, one for each operator.
 	let bitand_lambda = channel.sample();
@@ -122,7 +126,7 @@ where
 	// Prove the first phase, receiving a `SumcheckOutput`
 	// with challenges made of `r_j` and `r_s`,
 	// and eval equal to `gamma` (see paper).
-	let phase_1_output = prove_phase_1::<_, P, _>(
+	let phase_1_output = prove_phase_1::<_, P, _, _>(
 		key_collection,
 		words,
 		&prepared_bitand_data,
@@ -130,13 +134,14 @@ where
 		&prepared_binmul_data,
 		domain_subspace,
 		channel,
+		alloc,
 	);
 
 	// Prove the second phase, receiving a `SumcheckOutput`
 	// with challenges `r_y` and eval the evaluation of
 	// the witness at oblong point had by univariate
 	// variable `r_j` and multilinear variable `r_y`.
-	let SumcheckOutput { challenges, eval } = prove_phase_2::<_, P, _>(
+	let SumcheckOutput { challenges, eval } = prove_phase_2::<_, P, _, _>(
 		key_collection,
 		words,
 		&prepared_bitand_data,
@@ -145,6 +150,7 @@ where
 		domain_subspace,
 		phase_1_output,
 		channel,
+		alloc,
 	);
 
 	// Return evaluation claim on the witness.

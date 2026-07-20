@@ -5,11 +5,12 @@
 //! the hypercube), and a [`SharedMleCheckProver`] driving one [`QuadraticMleEvaluator`] (the
 //! evaluation claim on the product's multilinear extension at a random point).
 
+use binius_compute::BufferPool;
 use binius_field::{FieldOps, PackedField, arch::OptimalPackedB128};
 use binius_ip_prover::sumcheck::{
 	self,
 	bivariate_product_evaluator::BivariateProductEvaluator,
-	mle_store::MleStore,
+	mle_store::{MleStore, pooled_copy},
 	quadratic_mle_evaluator::QuadraticMleEvaluator,
 	round_evaluator::{SharedMleCheckProver, SharedSumcheckProver},
 };
@@ -62,8 +63,11 @@ fn bench_shared_sumcheck_bivariate_product(c: &mut Criterion) {
 			b.iter_batched(
 				|| (transcript.clone(), a.clone(), b_multilinear.clone()),
 				|(mut transcript, a, b_multilinear)| {
-					let mut store = MleStore::new(n_vars);
-					let cols = [a, b_multilinear].map(|col| store.push_owned(col));
+					let pool = BufferPool::new();
+					let alloc = &pool;
+					let mut store = MleStore::new(n_vars, &alloc);
+					let cols =
+						[a, b_multilinear].map(|col| store.push_owned(pooled_copy(&alloc, &col)));
 					let evaluator = BivariateProductEvaluator::new(cols);
 					let prover = SharedSumcheckProver::new(store, [(sum_claim, evaluator)]);
 
@@ -95,8 +99,11 @@ fn bench_shared_mlecheck_bivariate_product(c: &mut Criterion) {
 			b.iter_batched(
 				|| (transcript.clone(), a.clone(), b_multilinear.clone(), eval_point.clone()),
 				|(mut transcript, a, b_multilinear, eval_point)| {
-					let mut store = MleStore::new(n_vars);
-					let cols = [a, b_multilinear].map(|col| store.push_owned(col));
+					let pool = BufferPool::new();
+					let alloc = &pool;
+					let mut store = MleStore::new(n_vars, &alloc);
+					let cols =
+						[a, b_multilinear].map(|col| store.push_owned(pooled_copy(&alloc, &col)));
 					let evaluator = QuadraticMleEvaluator::new(cols, product::<P>, product::<P>);
 					let prover =
 						SharedMleCheckProver::new(store, [(eval_claim, evaluator)], eval_point);

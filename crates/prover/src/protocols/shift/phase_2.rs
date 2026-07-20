@@ -3,13 +3,15 @@
 
 use std::iter;
 
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_ip::sumcheck::{RoundCoeffs, SumcheckOutput};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
-		ProveSingleOutput, bivariate_product_prover, prove_single, round_evals::RoundEvals2,
+		ProveSingleOutput, bivariate_product_prover, mle_store::pooled_copy, prove_single,
+		round_evals::RoundEvals2,
 	},
 };
 use binius_math::{
@@ -53,7 +55,7 @@ use crate::fold_word::fold_words;
 /// evaluation, or an error if the protocol fails.
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "prove_phase_2")]
-pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel>(
+pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel, A>(
 	key_collection: &KeyCollection,
 	words: &[Word],
 	bitand_data: &PreparedOperatorData<F>,
@@ -62,10 +64,12 @@ pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel>(
 	domain_subspace: &BinarySubspace<F>,
 	phase_1_output: SumcheckOutput<F>,
 	channel: &mut Channel,
+	alloc: &A,
 ) -> SumcheckOutput<F>
 where
 	F: BinaryField,
 	Channel: IPProverChannel<F>,
+	A: Allocator,
 {
 	let SumcheckOutput {
 		challenges: mut r_jr_s,
@@ -105,6 +109,7 @@ where
 		r_j,
 		gamma,
 		channel,
+		alloc,
 	)
 }
 
@@ -209,7 +214,7 @@ fn fold_segments<F: Field, P: PackedField<Scalar = F>>(
 /// evaluation.
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "run_sumcheck")]
-pub fn run_sumcheck<F, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>>(
+pub fn run_sumcheck<F, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>, A: Allocator>(
 	public_folded: FieldBuffer<P>,
 	hidden_folded: FieldBuffer<P>,
 	public_monster: FieldBuffer<P>,
@@ -218,6 +223,7 @@ pub fn run_sumcheck<F, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>>(
 	r_j: Vec<F>,
 	gamma: F,
 	channel: &mut Channel,
+	alloc: &A,
 ) -> SumcheckOutput<F>
 where
 	F: BinaryField,
@@ -238,7 +244,14 @@ where
 	// standard prover.
 	let folded_witness = fold_segments(&public_folded, hidden_folded, alpha);
 	let folded_monster = fold_segments(&public_monster, hidden_monster, alpha);
-	let prover = bivariate_product_prover([folded_witness, folded_monster], round_sum);
+	let prover = bivariate_product_prover(
+		alloc,
+		[
+			pooled_copy(alloc, &folded_witness),
+			pooled_copy(alloc, &folded_monster),
+		],
+		round_sum,
+	);
 
 	let ProveSingleOutput {
 		multilinear_evals,

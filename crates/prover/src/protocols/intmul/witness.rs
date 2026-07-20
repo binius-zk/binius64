@@ -3,9 +3,13 @@
 
 use std::{iter, mem::MaybeUninit, ops::Deref};
 
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField};
-use binius_ip_prover::prodcheck::ProdcheckProver;
+use binius_ip_prover::{
+	prodcheck::ProdcheckProver,
+	sumcheck::mle_store::{PooledColumn, pooled_copy},
+};
 use binius_math::field_buffer::FieldBuffer;
 use binius_utils::{
 	checked_arithmetics::{checked_log_2, strict_log_2},
@@ -40,15 +44,15 @@ use super::error::Error;
 /// Protocol proves that ${(G^a)}^b = G^{c\\_lo} \times (G^{2^{2^m}})^{c\\_hi}$, which is equivalent
 /// to $a \times b = c$ modulo $2^{2^{m+1}} - 1$. The special case of `0 * 0 = 1` is handled
 /// separately.
-#[derive(Clone, Getters)]
+#[derive(Getters)]
 #[getset(get = "pub")]
-pub struct Witness<'a, P: PackedField> {
+pub struct Witness<'a, 'alloc, A: Allocator, P: PackedField> {
 	/// The exponents for `a` (needed for the phase 5 lookup indices and parity zerocheck on
 	/// `a_0`).
 	#[getset(skip)]
 	pub a_exponents: &'a [Word],
 	/// Prodcheck prover for the `a` exponentiation tree (leaf layer retained).
-	pub a_prodcheck: ProdcheckProver<P>,
+	pub a_prodcheck: ProdcheckProver<'alloc, A, P>,
 	/// The root of the `a` tree (product of all leaves element-wise); the `b` variable base.
 	pub a_root: FieldBuffer<P>,
 	/// The exponents for `b` (needed for phase 5).
@@ -58,7 +62,7 @@ pub struct Witness<'a, P: PackedField> {
 	/// Has log_len = n_vars + Word::LOG_BITS.
 	pub b_leaves: FieldBuffer<P>,
 	/// The prover for the prodcheck reduction on b_leaves.
-	pub b_prodcheck: ProdcheckProver<P>,
+	pub b_prodcheck: ProdcheckProver<'alloc, A, P>,
 	/// The root of the b tree (product of all leaves element-wise).
 	pub b_root: FieldBuffer<P>,
 	/// The exponents for `c_lo` (needed for the phase 5 lookup indices, parity zerocheck on
@@ -66,7 +70,7 @@ pub struct Witness<'a, P: PackedField> {
 	#[getset(skip)]
 	pub c_lo_exponents: &'a [Word],
 	/// Prodcheck prover for the `c_lo` exponentiation tree (leaf layer retained).
-	pub c_lo_prodcheck: ProdcheckProver<P>,
+	pub c_lo_prodcheck: ProdcheckProver<'alloc, A, P>,
 	/// The root of the `c_lo` tree.
 	pub c_lo_root: FieldBuffer<P>,
 	/// The exponents for `c_hi` (needed for the phase 5 lookup indices and raw per-bit output
@@ -74,7 +78,7 @@ pub struct Witness<'a, P: PackedField> {
 	#[getset(skip)]
 	pub c_hi_exponents: &'a [Word],
 	/// Prodcheck prover for the `c_hi` exponentiation tree (leaf layer retained).
-	pub c_hi_prodcheck: ProdcheckProver<P>,
+	pub c_hi_prodcheck: ProdcheckProver<'alloc, A, P>,
 	/// The root of the `c_hi` tree.
 	pub c_hi_root: FieldBuffer<P>,
 	/// The 2·N_LIMBS twisted power tables: `tables[s][i] = (G^{2^{ws}})^i`. Limb column `(t, l)`
@@ -83,13 +87,17 @@ pub struct Witness<'a, P: PackedField> {
 	pub tables: Vec<FieldBuffer<P>>,
 }
 
-impl<'a, F, P> Witness<'a, P>
+impl<'a, 'alloc, A, F, P> Witness<'a, 'alloc, A, P>
 where
+	A: Allocator,
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 {
 	/// Constructs a new integer multiplication witness from the statement.
+	///
+	/// The GKR prodcheck provers draw their layer buffers from `alloc`.
 	pub fn new(
+		alloc: &'alloc A,
 		a: &'a [Word],
 		b: &'a [Word],
 		c_lo: &'a [Word],
@@ -137,20 +145,28 @@ where
 		let fixed_base_tree_scope =
 			tracing::debug_span!("Compute fixed-base prodcheck layers").entered();
 		let a_leaves = limb_leaves(&tables[..N_LIMBS], a);
-		let (a_prodcheck, a_root) = ProdcheckProver::new(LOG_N_LIMBS, a_leaves);
+		let (a_prodcheck, a_root) =
+			ProdcheckProver::new(LOG_N_LIMBS, alloc, pooled_copy(alloc, &a_leaves));
+		let a_root = unpool::<A, P>(a_root);
 
 		let c_lo_leaves = limb_leaves(&tables[..N_LIMBS], c_lo);
-		let (c_lo_prodcheck, c_lo_root) = ProdcheckProver::new(LOG_N_LIMBS, c_lo_leaves);
+		let (c_lo_prodcheck, c_lo_root) =
+			ProdcheckProver::new(LOG_N_LIMBS, alloc, pooled_copy(alloc, &c_lo_leaves));
+		let c_lo_root = unpool::<A, P>(c_lo_root);
 
 		let c_hi_leaves = limb_leaves(&tables[N_LIMBS..], c_hi);
-		let (c_hi_prodcheck, c_hi_root) = ProdcheckProver::new(LOG_N_LIMBS, c_hi_leaves);
+		let (c_hi_prodcheck, c_hi_root) =
+			ProdcheckProver::new(LOG_N_LIMBS, alloc, pooled_copy(alloc, &c_hi_leaves));
+		let c_hi_root = unpool::<A, P>(c_hi_root);
 		drop(fixed_base_tree_scope);
 
 		// Compute b_leaves as concatenated leaves for prodcheck; the variable base is the `a` root.
 		let variable_base_tree_scope =
 			tracing::debug_span!("Compute variable-base prodcheck layers").entered();
 		let b_leaves = compute_b_leaves(&a_root, b);
-		let (b_prodcheck, b_root) = ProdcheckProver::new(Word::LOG_BITS, b_leaves.clone());
+		let (b_prodcheck, b_root) =
+			ProdcheckProver::new(Word::LOG_BITS, alloc, pooled_copy(alloc, &b_leaves));
+		let b_root = unpool::<A, P>(b_root);
 		drop(variable_base_tree_scope);
 
 		Ok(Self {
@@ -170,6 +186,15 @@ where
 			tables,
 		})
 	}
+}
+
+/// Copies a pooled tree root into a plain `Vec`-backed buffer.
+///
+/// The root fields are consumed by the phase provers as ordinary `FieldBuffer`s; the pooled block
+/// cannot be handed out as a `Vec` directly (its allocation is over-aligned for the free list), so
+/// it is copied out and the pooled block recycled.
+fn unpool<A: Allocator, P: PackedField>(src: PooledColumn<A, P>) -> FieldBuffer<P> {
+	FieldBuffer::new(src.log_len(), src.as_ref().to_vec())
 }
 
 /// Number of packed columns filled as one independent group before chaining to the next block.
@@ -422,13 +447,14 @@ where
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_math::test_utils::Packed128b;
 
 	use super::*;
 
 	type P = Packed128b;
 
-	fn check_consistency<P: PackedField>(witness: &Witness<'_, P>) {
+	fn check_consistency<A: Allocator, P: PackedField>(witness: &Witness<'_, '_, A, P>) {
 		// The variable-base `b`-exponent tree root must equal the full product `c` root
 		// (`c_lo_root * c_hi_root`); this equality is what lets the prover reuse `b_root` in place
 		// of a separately stored `c_root`.
@@ -443,7 +469,8 @@ mod tests {
 		let c_lo = [Word::from_u64(6)]; // 2*3 = 6
 		let c_hi = [Word::from_u64(0)]; // no high bits
 
-		let witness = Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap();
+		let alloc = GlobalAllocator;
+		let witness = Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap();
 		check_consistency(&witness);
 	}
 
@@ -454,7 +481,8 @@ mod tests {
 		let c_lo = [Word::from_u64(0)];
 		let c_hi = [Word::from_u64(2)]; // 2^32 * 2^33 = 2^65, which is 2 in the high 64 bits
 
-		let witness = Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap();
+		let alloc = GlobalAllocator;
+		let witness = Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap();
 		check_consistency(&witness);
 	}
 
@@ -484,7 +512,8 @@ mod tests {
 			c_hi.push(Word::from_u64(c_hi_i));
 		}
 
-		let witness = Witness::<P>::new(&a, &b, &c_lo, &c_hi).unwrap();
+		let alloc = GlobalAllocator;
+		let witness = Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap();
 		check_consistency(&witness);
 	}
 	/// Directly checks `compute_b_leaves` against its specification — leaf `z` holds

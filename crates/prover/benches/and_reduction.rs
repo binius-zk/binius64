@@ -1,9 +1,12 @@
 // Copyright 2025 Irreducible Inc.
 use std::iter::repeat_with;
 
+use binius_compute::BufferPool;
 use binius_core::word::Word;
 use binius_field::{Field, Random};
-use binius_ip_prover::sumcheck::{common::SumcheckProver, quadratic_mlecheck_prover};
+use binius_ip_prover::sumcheck::{
+	common::SumcheckProver, mle_store::pooled_copy, quadratic_mlecheck_prover,
+};
 use binius_math::{
 	BinarySubspace,
 	univariate::{extrapolate_over_subspace, lagrange_evals_scalars},
@@ -91,6 +94,9 @@ fn bench(c: &mut Criterion) {
 		univariate_challenge,
 	);
 
+	let pool = BufferPool::new();
+
+	let alloc = &pool;
 	group.bench_function(format!("remaining zerocheck 2^{log_words}"), |bench| {
 		bench.iter_batched(
 			|| proving_polys.clone(),
@@ -103,7 +109,8 @@ fn bench(c: &mut Criterion) {
 						.collect();
 
 				let mut prover = quadratic_mlecheck_prover(
-					proving_polys,
+					&alloc,
+					proving_polys.map(|c| pooled_copy(&alloc, &c)),
 					|[a, b, c]| a * b - c,
 					|[a, b, _]| a * b,
 					multilinear_zerocheck_challenges,

@@ -2,7 +2,6 @@
 // Copyright 2026 The Binius Developers
 
 use std::{
-	mem,
 	ops::{Deref, DerefMut, Index, IndexMut},
 	slice,
 };
@@ -22,34 +21,11 @@ pub trait AsSlicesMut<P: PackedField, const N: usize> {
 	fn as_slices_mut(&mut self) -> [FieldSliceMut<'_, P>; N];
 }
 
-/// Backing store of a [`FieldBuffer`] that can be shrunk in place.
-///
-/// [`FieldBuffer::truncate`] shrinks its backing store to match the smaller `log_len`, so it is
-/// available only for the mutable backings that support that in place: `Vec<T>` and `&mut [T]`. A
-/// shared `&[T]` view could reslice too, but truncation must also zero the dead lanes of a
-/// sub-packing-width word (see [`FieldBuffer::truncate`]), which a shared borrow cannot do — hence
-/// the [`DerefMut`] bound.
-pub trait BufferData<T>: DerefMut<Target = [T]> {
-	/// Shrinks the store in place to its first `len` elements.
-	///
-	/// `len` must be at most the current length.
-	fn truncate(&mut self, len: usize);
-}
-
-impl<T> BufferData<T> for Vec<T> {
-	fn truncate(&mut self, len: usize) {
-		Vec::truncate(self, len);
-	}
-}
-
-impl<T> BufferData<T> for &mut [T] {
-	fn truncate(&mut self, len: usize) {
-		// A `&'a mut [T]` cannot be re-sliced in place through `&mut self`, so move it out and
-		// slice the owned value back in.
-		let full = mem::take(self);
-		*self = &mut full[..len];
-	}
-}
+// The `BufferData` bound on `FieldBuffer`'s backing store lives in `binius-compute` so that it can
+// bound `Allocator::Vec` (letting an allocator's buffer back a `FieldBuffer` without a
+// `where`-clause on every signature) and so its `PoolVec` can implement it. Re-exported here since
+// it is part of this module's public API.
+pub use binius_compute::BufferData;
 
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.
 ///
