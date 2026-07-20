@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # Rust crate dependencies declared in the workspace Cargo.toml.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Bundle the low-risk patch + minor bumps into a single weekly PR: one CI run,
+    # one review, one merge for the routine sweep. Major (breaking) bumps are left
+    # out of the group on purpose, so each lands as its own PR -- a k256 / num-bigint
+    # style upgrade needs a careful review and must not block the routine batch.
+    groups:
+      cargo:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Third-party GitHub Actions pinned in .github/workflows and .github/actions
+  # (actions/checkout, taiki-e/install-action, wasmerio/setup-wasmer, ...).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
