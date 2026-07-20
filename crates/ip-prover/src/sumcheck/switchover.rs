@@ -1,6 +1,10 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
-use std::ops::{Deref, DerefMut};
+use std::{
+	mem,
+	ops::{Deref, DerefMut},
+};
 
 use binius_field::{Field, PackedField};
 use binius_math::{
@@ -32,7 +36,8 @@ use binius_utils::{
 pub struct BinarySwitchover<'b, P: PackedField, B: Bitwise> {
 	n_multilinears: usize,
 	bitmasks: &'b [B],
-	tensor: FieldBuffer<P>,
+	// The folding tensor grows one variable per pre-switchover round, so it is backed by a `Vec`.
+	tensor: FieldBuffer<P, Vec<P>>,
 	folded: Option<Vec<FieldBuffer<P>>>,
 	switchover: usize,
 }
@@ -57,15 +62,17 @@ where
 
 		let n_vars = checked_log_2(bitmasks.len());
 		let switchover = switchover.min(n_vars).max(1);
-		let mut tensor = FieldBuffer::zeros_truncated(0, switchover);
-		tensor.set(0, F::ONE);
+		// The folding tensor starts as the scalar `1`, with backing reserved for the fully-grown
+		// (`switchover`-variable) tensor so the per-round growth never reallocates.
+		let tensor = FieldBuffer::scalar_with_capacity(F::ONE, switchover);
 
 		Self {
 			n_multilinears,
 			bitmasks,
 			tensor,
 			folded: None,
-			// Store this separately as `log_cap` is rounded up to the packing width
+			// The tensor grows up to this many variables; store it since it can't be recovered from
+			// the buffer once the growth completes.
 			switchover,
 		}
 	}
@@ -114,7 +121,8 @@ where
 		} else {
 			// Pre-switchover: update the folding tensor
 			assert!(self.tensor.log_len() < self.switchover);
-			tensor_prod_eq_ind_prepend(&mut self.tensor, &[challenge]);
+			let tensor = mem::replace(&mut self.tensor, FieldBuffer::new(0, vec![P::zero()]));
+			self.tensor = tensor_prod_eq_ind_prepend(tensor, &[challenge]);
 
 			if self.tensor.log_len() == self.switchover {
 				self.perform();
