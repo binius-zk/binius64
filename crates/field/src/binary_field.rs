@@ -169,7 +169,7 @@ macro_rules! binary_field {
 		}
 
 		// A field element divides into exactly one element of itself. This makes the field a
-		// degenerate packed field of width one (see the blanket `PackedField for Field` impl).
+		// degenerate packed field of width one (see the `PackedField` impl below).
 		impl $crate::Divisible<$name> for $name {
 			const LOG_N: usize = 0;
 
@@ -225,6 +225,41 @@ macro_rules! binary_field {
 			#[inline]
 			fn select(&self, mask: &$typ) -> Self {
 				Self(self.0 & *mask)
+			}
+		}
+
+		impl $crate::PackedField for $name {
+			#[inline]
+			fn iter(&self) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
+				std::iter::once(*self)
+			}
+
+			#[inline]
+			fn into_iter(self) -> impl Iterator<Item = Self::Scalar> + Send + Clone {
+				std::iter::once(self)
+			}
+
+			#[inline]
+			fn iter_slice(slice: &[Self]) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
+				slice.iter().copied()
+			}
+
+			fn interleave(self, _other: Self, _log_block_len: usize) -> (Self, Self) {
+				panic!("cannot interleave when WIDTH = 1");
+			}
+
+			fn unzip(self, _other: Self, _log_block_len: usize) -> (Self, Self) {
+				panic!("cannot transpose when WIDTH = 1");
+			}
+
+			#[inline]
+			fn from_fn(mut f: impl FnMut(usize) -> Self::Scalar) -> Self {
+				f(0)
+			}
+
+			#[inline]
+			unsafe fn spread_unchecked(self, _log_block_len: usize, _block_idx: usize) -> Self {
+				self
 			}
 		}
 

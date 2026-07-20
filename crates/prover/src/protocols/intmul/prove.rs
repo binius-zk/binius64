@@ -4,7 +4,7 @@
 use std::marker::PhantomData;
 
 use binius_core::word::Word;
-use binius_field::{BinaryField, BinaryField1b, Divisible, ExtensionField, FieldOps, PackedField};
+use binius_field::{BinaryField, BinaryField1b, Divisible, ExtensionField, PackedField};
 use binius_iop_prover::{
 	channel::IOPProverChannel,
 	logup_star::{self, Looker},

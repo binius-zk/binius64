@@ -2,18 +2,17 @@
 // Copyright 2026 The Binius Developers
 
 use std::{
-	fmt::{Debug, Display},
+	fmt::Display,
 	hash::Hash,
 	iter::{Product, Sum},
 	ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
 };
 
 use binius_utils::{DeserializeBytes, FixedSizeSerializeBytes, SerializeBytes};
-use bytemuck::Zeroable;
 
 use super::extension::ExtensionField;
 use crate::{
-	Divisible, Maskable, Random, WideMul,
+	PackedField,
 	arithmetic_traits::{InvertOrZero, Square},
 };
 
@@ -23,48 +22,12 @@ use crate::{
 /// [`CHARACTERISTIC`](Self::CHARACTERISTIC) and `k` is the
 /// [`ORDER_EXPONENT`](Self::ORDER_EXPONENT).
 pub trait Field:
-	Sized
-	+ Eq
-	+ Copy
-	+ Clone
-	+ Default
-	+ Send
-	+ Sync
-	+ Debug
+	PackedField<Scalar = Self>
 	+ Display
 	+ Hash
-	+ 'static
-	+ Neg<Output = Self>
-	+ Add<Output = Self>
-	+ Sub<Output = Self>
-	+ Mul<Output = Self>
-	+ for<'a> Add<&'a Self, Output = Self>
-	+ for<'a> Sub<&'a Self, Output = Self>
-	+ for<'a> Mul<&'a Self, Output = Self>
-	+ Sum
-	+ Product
-	+ for<'a> Sum<&'a Self>
-	+ for<'a> Product<&'a Self>
-	+ AddAssign
-	+ SubAssign
-	+ MulAssign
-	+ for<'a> AddAssign<&'a Self>
-	+ for<'a> SubAssign<&'a Self>
-	+ for<'a> MulAssign<&'a Self>
-	+ Square
-	+ InvertOrZero
-	+ Random
-	+ Zeroable
 	+ SerializeBytes
 	+ DeserializeBytes
 	+ FixedSizeSerializeBytes
-	+ WideMul<Output: Debug + Send + Sync + 'static>
-	// A field is a degenerate packed field of width one, so it divides into a single copy of
-	// itself. This mirrors `PackedField: Divisible<Self::Scalar>` for the blanket packed impl.
-	+ Divisible<Self>
-	// A field is maskable as a width-one packed field, mirroring
-	// `PackedField: Maskable<Self::Scalar>`.
-	+ Maskable<Self>
 {
 	/// The zero element of the field, the additive identity.
 	const ZERO: Self;
@@ -113,7 +76,7 @@ pub trait Field:
 ///
 /// This trait abstracts over:
 /// - [`Field`] types (single field elements, which are trivially vectors of length 1)
-/// - [`PackedField`](crate::PackedField) types (SIMD-accelerated vectors of field elements)
+/// - [`PackedField`] types (SIMD-accelerated vectors of field elements)
 /// - Symbolic field types (for constraint system representations)
 ///
 /// Mathematically, instances of this trait represent vectors of field elements where

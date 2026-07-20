@@ -18,7 +18,7 @@ use binius_utils::{
 use bytemuck::Zeroable;
 
 use super::{Random, arithmetic_traits::Square};
-use crate::{BinaryField, Divisible, Field, Maskable, WideMul, field::FieldOps};
+use crate::{BinaryField, Divisible, Maskable, WideMul, field::FieldOps};
 
 /// A packed field represents a vector of underlying field elements.
 ///
@@ -390,45 +390,6 @@ impl<P: PackedField> RandomAccessSequenceMut<P::Scalar> for PackedSliceMut<'_, P
 	}
 }
 
-impl<F: Field> PackedField for F {
-	// LOG_WIDTH defaults to `<Self as Divisible<Self>>::LOG_N`, which is 0 for a scalar field.
-	// Scalar element access (`get_unchecked`/`set_unchecked`) is provided by the reflexive
-	// `Divisible<Self>` impl.
-
-	#[inline]
-	fn iter(&self) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
-		iter::once(*self)
-	}
-
-	#[inline]
-	fn into_iter(self) -> impl Iterator<Item = Self::Scalar> + Send + Clone {
-		iter::once(self)
-	}
-
-	#[inline]
-	fn iter_slice(slice: &[Self]) -> impl Iterator<Item = Self::Scalar> + Send + Clone + '_ {
-		slice.iter().copied()
-	}
-
-	fn interleave(self, _other: Self, _log_block_len: usize) -> (Self, Self) {
-		panic!("cannot interleave when WIDTH = 1");
-	}
-
-	fn unzip(self, _other: Self, _log_block_len: usize) -> (Self, Self) {
-		panic!("cannot transpose when WIDTH = 1");
-	}
-
-	#[inline]
-	fn from_fn(mut f: impl FnMut(usize) -> Self::Scalar) -> Self {
-		f(0)
-	}
-
-	#[inline]
-	unsafe fn spread_unchecked(self, _log_block_len: usize, _block_idx: usize) -> Self {
-		self
-	}
-}
-
 /// A helper trait to make the generic bounds shorter
 pub trait PackedBinaryField: PackedField<Scalar: BinaryField> {}
 
@@ -441,7 +402,7 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		AESTowerField8b, BinaryField1b, BinaryField128bGhash, PackedAESBinaryField1x8b,
+		AESTowerField8b, BinaryField1b, BinaryField128bGhash, Field, PackedAESBinaryField1x8b,
 		PackedAESBinaryField16x8b, PackedAESBinaryField32x8b, PackedAESBinaryField64x8b,
 		PackedBinaryField1x1b, PackedBinaryField2x1b, PackedBinaryField4x1b, PackedBinaryField8x1b,
 		PackedBinaryField16x1b, PackedBinaryField32x1b, PackedBinaryField64x1b,
