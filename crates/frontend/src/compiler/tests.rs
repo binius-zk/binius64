@@ -669,3 +669,74 @@ fn test_zero_constant_not_in_binius64_operands() {
 		}
 	}
 }
+
+#[test]
+fn shift_of_all_one_constants_are_aliased_to_all_one() {
+	use binius_core::constraint_system::ShiftVariant;
+
+	// Invariant: a mask that is a shift of the all-ones word keeps no committed slot.
+	// Each such mask below feeds a masking gate, so it appears in a constraint operand.
+	// After aliasing, that operand must read value index 0 (the all-ones word) shifted.
+	let builder = CircuitBuilder::new();
+	let x = builder.add_inout();
+	let cases = [
+		(Word::MASK_32, ShiftVariant::Slr, 32u8), // 0x0000_0000_FFFF_FFFF
+		(Word::MSB_ONE, ShiftVariant::Sll, 63),   // 0x8000_0000_0000_0000
+		(Word::ONE, ShiftVariant::Slr, 63),       // 0x0000_0000_0000_0001
+		(Word(0xFF), ShiftVariant::Slr, 56),      // low byte
+	];
+	let mut outs = Vec::new();
+	for (i, (mask, _, _)) in cases.iter().enumerate() {
+		let masked = builder.band(x, builder.add_constant(*mask));
+		let out = builder.add_inout();
+		builder.assert_eq(format!("masked[{i}]"), masked, out);
+		outs.push((out, *mask));
+	}
+	let circuit = builder.build();
+	let cs = circuit.constraint_system();
+
+	// The all-ones word is the first constant.
+	// None of the masks survive as constants of their own.
+	assert_eq!(cs.constants[0], Word::ALL_ONE);
+	for (mask, _, _) in &cases {
+		assert!(
+			!cs.constants.contains(mask),
+			"constant {:#018x} should have been aliased away",
+			mask.0
+		);
+	}
+
+	// Each mask must appear as a value-index-0 term carrying its expected shift.
+	let has_term = |variant: ShiftVariant, amount: u8| {
+		cs.and_constraints.iter().any(|c| {
+			[&c.a, &c.b, &c.c].into_iter().any(|op| {
+				op.iter().any(|t| {
+					t.value_index.0 == 0 && t.shift_variant == variant && t.amount == amount
+				})
+			})
+		})
+	};
+	for (mask, variant, amount) in &cases {
+		assert!(
+			has_term(*variant, *amount),
+			"expected an all-one term shifted for mask {:#018x}",
+			mask.0
+		);
+	}
+
+	// The witness must still evaluate correctly end to end.
+	// The refilled scratch values and the aliased operands together reproduce plain masking.
+	let mut rng = StdRng::seed_from_u64(7);
+	for _ in 0..1000 {
+		let mut w = circuit.new_witness_filler();
+		// Random input; each expected output is the input under that case's mask.
+		let v = Word(rng.random::<u64>());
+		w[x] = v;
+		for (out, mask) in &outs {
+			w[*out] = Word(v.0 & mask.0);
+		}
+		// Populate runs the preamble refills, then the gates; verify checks every constraint.
+		w.circuit.populate_wire_witness(&mut w).unwrap();
+		verify_constraints(circuit.constraint_system(), &w.value_vec).unwrap();
+	}
+}

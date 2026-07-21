@@ -108,6 +108,64 @@ impl ConstraintBuilder {
 		(and_constraints, imul_constraints, bmul_constraints)
 	}
 
+	/// Visits every operand of every pending constraint.
+	///
+	/// A linear constraint's destination is a single wire, not an operand.
+	/// It is therefore not visited here.
+	/// A caller that also needs destinations reads the linear-constraint list on its own.
+	pub fn for_each_operand(&self, mut f: impl FnMut(&WireOperand)) {
+		for c in &self.and_constraints {
+			f(&c.a);
+			f(&c.b);
+			f(&c.c);
+		}
+		for c in &self.imul_constraints {
+			f(&c.a);
+			f(&c.b);
+			f(&c.hi);
+			f(&c.lo);
+		}
+		for c in &self.bmul_constraints {
+			f(&c.a_lo);
+			f(&c.a_hi);
+			f(&c.b_lo);
+			f(&c.b_hi);
+			f(&c.c_lo);
+			f(&c.c_hi);
+		}
+		for c in &self.linear_constraints {
+			f(&c.rhs);
+		}
+	}
+
+	/// Visits every operand of every pending constraint mutably.
+	///
+	/// Used to retarget operand terms from one wire to another during constant aliasing.
+	pub fn for_each_operand_mut(&mut self, mut f: impl FnMut(&mut WireOperand)) {
+		for c in &mut self.and_constraints {
+			f(&mut c.a);
+			f(&mut c.b);
+			f(&mut c.c);
+		}
+		for c in &mut self.imul_constraints {
+			f(&mut c.a);
+			f(&mut c.b);
+			f(&mut c.hi);
+			f(&mut c.lo);
+		}
+		for c in &mut self.bmul_constraints {
+			f(&mut c.a_lo);
+			f(&mut c.a_hi);
+			f(&mut c.b_lo);
+			f(&mut c.b_hi);
+			f(&mut c.c_lo);
+			f(&mut c.c_hi);
+		}
+		for c in &mut self.linear_constraints {
+			f(&mut c.rhs);
+		}
+	}
+
 	/// Collects every wire referenced by any pending constraint.
 	///
 	/// Dead-code elimination uses this to keep wires that feed a constraint.

@@ -403,6 +403,42 @@ mod tests {
 	}
 
 	#[test]
+	fn batched_population_rematerializes_shift_of_all_one_constants() {
+		// Invariant: the low-32-bit mask is the all-ones word shifted right by 32.
+		// It is aliased away and refilled by a preamble shift during evaluation.
+		// This drives that preamble through the batched interpreter, not just the single-instance
+		// one.
+		let builder = CircuitBuilder::new();
+		let x = builder.add_witness();
+		// The masking gate emits a constraint over the masked output.
+		// Committing that output makes the constraint checkable for every instance.
+		// Its mask operand is now the all-ones word shifted, not a standalone constant.
+		let masked = builder.band(x, builder.add_constant(Word::MASK_32));
+		builder.force_commit(masked);
+		let circuit = builder.build();
+
+		// The mask left no committed slot of its own.
+		assert!(
+			!circuit
+				.constraint_system()
+				.constants
+				.contains(&Word::MASK_32)
+		);
+
+		let constants = circuit.constraint_system().constants.clone();
+		let table = ValueTable::populate(&circuit, 3, |i, w| {
+			w[x] = Word((i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+		})
+		.unwrap();
+
+		for i in 0..table.n_instances() {
+			let vv = table.instance_value_vec(i, &constants);
+			verify_constraints(circuit.constraint_system(), &vv)
+				.unwrap_or_else(|e| panic!("instance {i} failed verification: {e}"));
+		}
+	}
+
+	#[test]
 	fn single_instance_batch_matches_reference() {
 		let c = mix_circuit();
 		let constants = &c.circuit.constraint_system().constants;

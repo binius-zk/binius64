@@ -10,10 +10,11 @@ use binius_core::{
 	word::Word,
 };
 use cranelift_entity::EntitySet;
+use rustc_hash::FxHashMap;
 
 use crate::compiler::{
 	circuit::Circuit,
-	constraint_builder::ConstraintBuilder,
+	constraint_builder::{ConstraintBuilder, Shift},
 	gate_graph::{GateGraph, WireKind},
 	hints::{Hint, HintRegistry},
 	pathspec::PathSpec,
@@ -273,6 +274,12 @@ impl CircuitBuilder {
 			gate_fusion::run_pass(&mut builder, &shared.force_committed, all_one);
 		}
 
+		// Alias constants that are shifts of the all-ones word onto that word, freeing their slots.
+		// This runs after fusion so it sees the final operand set.
+		// The returned preamble lets the evaluation form refill each aliased constant.
+		let const_shift_preamble =
+			alias_shift_of_all_one_constants(&mut builder, &mut graph, all_one);
+
 		let constrained_wires = builder.mark_used_wires();
 
 		// Allocate a place for each wire in the value vec layout.
@@ -367,7 +374,13 @@ impl CircuitBuilder {
 		}
 
 		// Build evaluation form (consumes the hint registry the user populated via call_hint).
-		let eval_form = eval_form::EvalForm::build(&graph, &wire_mapping, shared.hint_registry);
+		let eval_form = eval_form::EvalForm::build(
+			&graph,
+			&wire_mapping,
+			all_one,
+			&const_shift_preamble,
+			shared.hint_registry,
+		);
 
 		Circuit::new(graph, cs, wire_mapping, eval_form)
 	}
@@ -1301,4 +1314,95 @@ impl CircuitBuilder {
 
 		outputs
 	}
+}
+
+/// Aliases every constant that is a shift of the all-ones word onto that word.
+///
+/// # Overview
+///
+/// The all-ones word is pinned at value index 0.
+/// Constraint operands can carry a per-term shift.
+/// So a low-32-bit mask, which is the all-ones word shifted right by 32, needs no slot of its own.
+/// Every operand reading that mask can read value index 0 shifted right by 32 instead.
+/// Fewer committed words means less prover and verifier work.
+///
+/// # The two readers of a constant
+///
+/// A constant is read in two places, and only one can carry a shift.
+/// - Constraint operands fold the base shift into the term's own shift, so they are retargeted
+///   here.
+/// - Evaluation bytecode reads a flat register and cannot shift.
+///
+/// A flat read cannot see a shifted word.
+/// So each aliased constant is turned into a scratch wire.
+/// The returned preamble fills that wire from the all-ones word once, before any gate runs.
+///
+/// # When a constant is aliased
+///
+/// Both conditions must hold, or the constant keeps its committed slot.
+/// - Every operand term reading it folds its own shift with the base shift into a single shift.
+/// - It never serves as a linear-constraint destination, which is a bare wire with no shift.
+///
+/// # Returns
+///
+/// One entry per aliased constant: the wire to fill, the shift kind, and the shift amount.
+fn alias_shift_of_all_one_constants(
+	builder: &mut ConstraintBuilder,
+	graph: &mut GateGraph,
+	all_one: Wire,
+) -> Vec<(Wire, ShiftVariant, u8)> {
+	// Snapshot the shift table so reclassifying wires later does not clash with these reads.
+	let derived: FxHashMap<Wire, Shift> = graph.const_pool.derived.clone();
+	if derived.is_empty() {
+		return Vec::new();
+	}
+
+	// A constant stays convertible until a use proves it cannot be redirected.
+	let mut convertible: FxHashMap<Wire, bool> = derived.keys().map(|&w| (w, true)).collect();
+
+	// Any operand term whose shift will not fold with the base shift disqualifies the constant.
+	builder.for_each_operand(|operand| {
+		for term in operand.iter() {
+			if let Some(&base) = derived.get(&term.wire)
+				&& Shift::compose(base, term.shift).is_none()
+			{
+				convertible.insert(term.wire, false);
+			}
+		}
+	});
+
+	// A linear destination is a bare wire with no shift, so it cannot be redirected.
+	for lc in &builder.linear_constraints {
+		if derived.contains_key(&lc.dst) {
+			convertible.insert(lc.dst, false);
+		}
+	}
+
+	// Retarget every operand term of a convertible constant onto the all-ones word.
+	builder.for_each_operand_mut(|operand| {
+		for term in operand.iter_mut() {
+			if let Some(&base) = derived.get(&term.wire)
+				&& convertible[&term.wire]
+			{
+				term.shift = Shift::compose(base, term.shift)
+					.expect("composability verified before redirecting");
+				term.wire = all_one;
+			}
+		}
+	});
+
+	// Move each aliased constant into scratch, which drops its committed slot.
+	// Record a preamble entry so evaluation refills it from the all-ones word.
+	let mut preamble = Vec::new();
+	for (&wire, &base) in &derived {
+		if !convertible[&wire] {
+			continue;
+		}
+		let (variant, amount) = base
+			.as_variant_amount()
+			.expect("of_all_one never returns the identity shift");
+		graph.wires[wire].kind = WireKind::Scratch;
+		preamble.push((wire, variant, amount));
+	}
+	preamble
 }

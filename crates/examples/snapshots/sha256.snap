@@ -2,7 +2,7 @@ sha256 circuit
 --
 Gates & Instructions
 ├─ Number of gates: 20,616
-└─ Number of evaluation instructions: 20,616
+└─ Number of evaluation instructions: 20,617
 
 Constraints
 ├─ AND constraints: 8,880 used (54.2% of 2^14)
@@ -12,19 +12,19 @@ Constraints
 ├─ BMUL constraints: 0 used (0.0% of 0)
 │  [░░░░░░░░░░] spare: 0
 └─ Distinct value indices: 21,511
-   ├─ Distinct shifted value indices: 12,563
-   └─ Distinct unshifted value indices: 8,948
+   ├─ Distinct shifted value indices: 12,564
+   └─ Distinct unshifted value indices: 8,947
 
 Value Vector
-├─ Public Section: 405 used (79.1% of 2^9)
-│  [▓▓▓▓▓▓▓░░░] spare: 107
-│  ├─ Constants: 141
+├─ Public Section: 404 used (78.9% of 2^9)
+│  [▓▓▓▓▓▓▓░░░] spare: 108
+│  ├─ Constants: 140
 │  └─ Inout: 264
 ├─ Private Section: 8,808 used (55.5%)
 │  [▓▓▓▓▓░░░░░] spare: 7,064
 │  ├─ Witness: 0
 │  └─ Internal: 8,808
-├─ Total Committed: 9,213 used (56.2% of 2^14)
-│  [▓▓▓▓▓░░░░░] spare: 7,171
-└─ Scratch (uncommitted): 17,128
+├─ Total Committed: 9,212 used (56.2% of 2^14)
+│  [▓▓▓▓▓░░░░░] spare: 7,172
+└─ Scratch (uncommitted): 17,129
 
