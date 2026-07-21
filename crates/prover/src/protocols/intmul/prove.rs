@@ -207,7 +207,9 @@ where
 		];
 
 		let columns_guard = tracing::debug_span!("Gather lookup index columns").entered();
+		// The columns are independent, so they gather in parallel.
 		let index_columns = (0..N_LIMB_COLUMNS)
+			.into_par_iter()
 			.map(|j| {
 				let (tree, limb) = (j / N_LIMBS, j % N_LIMBS);
 				exponents[tree]
@@ -240,7 +242,7 @@ where
 
 		// The index entries are the GF(2)-linear embeddings iota(e) = Σ_u basis(u) · bit_u(e),
 		// materialized by a table of all 2^LIMB_BITS embeddings.
-		let embed_guard = tracing::debug_span!("Embed index columns").entered();
+		let embed_guard = tracing::debug_span!("Build embedding table").entered();
 		let mut iota_table = Vec::with_capacity(1usize << LIMB_BITS);
 		iota_table.push(F::ZERO);
 		for row in 1..1usize << LIMB_BITS {
@@ -248,13 +250,9 @@ where
 				<F as ExtensionField<BinaryField1b>>::basis(row.trailing_zeros() as usize);
 			iota_table.push(iota_table[row & (row - 1)] + low_bit_basis);
 		}
+		drop(embed_guard);
 
 		let index_content_point = logup_proof.index_eval_point.as_slice();
-		let embedded_columns = index_columns
-			.iter()
-			.map(|rows| rows.iter().map(|&row| iota_table[row]).collect::<Vec<_>>())
-			.collect::<Vec<_>>();
-		drop(embed_guard);
 
 		// Collapse the per-column claims into a single claim on the eq(ρ)-folded column V by
 		// sampling ρ, so the final unification runs over the content variables only.
@@ -265,10 +263,14 @@ where
 			evaluate(&FieldBuffer::<P>::from_values(&padded_column_evals), &rho);
 		let rho_tensor = eq_ind_partial_eval_scalars::<F>(&rho);
 		let fold_guard = tracing::debug_span!("Fold index columns by rho").entered();
+		// Each row folds through the embedding table directly, in parallel:
+		//     V[i] = sum_j rho_tensor[j] * iota(index_j[i])
+		// so no embedded column is ever materialized.
 		let folded_column_scalars = (0..1usize << n_vars)
+			.into_par_iter()
 			.map(|i| {
-				izip!(&embedded_columns, &rho_tensor)
-					.map(|(column, &weight)| column[i] * weight)
+				izip!(&index_columns, &rho_tensor)
+					.map(|(column, &weight)| iota_table[column[i]] * weight)
 					.sum::<F>()
 			})
 			.collect::<Vec<_>>();
