@@ -116,3 +116,82 @@ impl<'alloc> Allocator for &'alloc BufferPool {
 		pool.alloc_vec(capacity)
 	}
 }
+
+impl<T> VecLike<T> for Vec<T> {
+	fn capacity(&self) -> usize {
+		Vec::capacity(self)
+	}
+
+	fn push(&mut self, value: T) {
+		Vec::push(self, value);
+	}
+
+	fn clear(&mut self) {
+		Vec::clear(self);
+	}
+
+	fn resize(&mut self, new_len: usize, value: T)
+	where
+		T: Clone,
+	{
+		Vec::resize(self, new_len, value);
+	}
+
+	fn extend_from_slice(&mut self, other: &[T])
+	where
+		T: Clone,
+	{
+		Vec::extend_from_slice(self, other);
+	}
+
+	fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<T>] {
+		Vec::spare_capacity_mut(self)
+	}
+
+	unsafe fn set_len(&mut self, new_len: usize) {
+		unsafe { Vec::set_len(self, new_len) }
+	}
+}
+
+/// An [`Allocator`] that hands out ordinary heap-allocated [`Vec`]s.
+///
+/// The non-pooling counterpart to `&BufferPool`: every [`alloc`](Allocator::alloc) is a plain
+/// [`Vec::with_capacity`], and each buffer is freed to the global allocator on drop.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GlobalAllocator;
+
+impl Allocator for GlobalAllocator {
+	type Vec<T> = Vec<T>;
+
+	fn alloc<T>(&self, capacity: usize) -> Self::Vec<T> {
+		Vec::with_capacity(capacity)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// Fills a buffer through the [`VecLike`] surface, exercising an allocator generically.
+	fn build<A: Allocator>(alloc: &A) -> A::Vec<u64> {
+		let mut buffer = alloc.alloc::<u64>(4);
+		assert!(buffer.capacity() >= 4);
+		buffer.push(1);
+		buffer.extend_from_slice(&[2, 3]);
+		buffer.resize(5, 0);
+		buffer
+	}
+
+	#[test]
+	fn global_allocator_backs_a_plain_vec() {
+		let buffer = build(&GlobalAllocator);
+		assert_eq!(&*buffer, &[1, 2, 3, 0, 0]);
+	}
+
+	#[test]
+	fn buffer_pool_backs_a_pool_vec() {
+		let pool = BufferPool::new();
+		let buffer = build(&&pool);
+		assert_eq!(&*buffer, &[1, 2, 3, 0, 0]);
+	}
+}
