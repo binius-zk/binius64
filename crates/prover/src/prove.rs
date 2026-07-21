@@ -494,7 +494,7 @@ where
 	Channel: binius_ip_prover::channel::IPProverChannel<F>,
 {
 	let prover_message_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1);
-	let AndCheckWitness { a, b, c } = witness;
+	let AndCheckWitness { a, b } = witness;
 
 	let log_constraint_count = checked_log_2(a.len());
 
@@ -506,7 +506,6 @@ where
 		log_constraint_count,
 		a,
 		b,
-		c,
 		big_field_zerocheck_challenges,
 		prover_message_domain.isomorphic(),
 	);
@@ -565,10 +564,14 @@ where
 	prove_binmul::<F, P, _>(&binmul_witness, channel)
 }
 
+/// The two materialized BitAnd operand columns.
+///
+/// The C operand column is not built.
+/// On a satisfying witness `C = A & B` holds word-by-word.
+/// So the AND reduction derives C from these two columns on the fly.
 struct AndCheckWitness<'alloc> {
 	a: PoolVec<'alloc, Word>,
 	b: PoolVec<'alloc, Word>,
-	c: PoolVec<'alloc, Word>,
 }
 
 struct MulCheckWitness<'alloc> {
@@ -596,24 +599,21 @@ fn build_bitand_witness<'alloc>(
 
 	let mut a = pool.alloc_vec::<Word>(n_constraints);
 	let mut b = pool.alloc_vec::<Word>(n_constraints);
-	let mut c = pool.alloc_vec::<Word>(n_constraints);
 
-	(and_constraints, a.spare_capacity_mut(), b.spare_capacity_mut(), c.spare_capacity_mut())
+	(and_constraints, a.spare_capacity_mut(), b.spare_capacity_mut())
 		.into_par_iter()
-		.for_each(|(constraint, a_i, b_i, c_i)| {
+		.for_each(|(constraint, a_i, b_i)| {
 			a_i.write(witness.eval_operand(&constraint.a));
 			b_i.write(witness.eval_operand(&constraint.b));
-			c_i.write(witness.eval_operand(&constraint.c));
 		});
 
-	// Safety: all entries in a, b, c are initialized in the parallel loop above.
+	// Safety: all entries in a and b are initialized in the parallel loop above.
 	unsafe {
 		a.set_len(n_constraints);
 		b.set_len(n_constraints);
-		c.set_len(n_constraints);
 	}
 
-	AndCheckWitness { a, b, c }
+	AndCheckWitness { a, b }
 }
 
 fn build_intmul_witness<'alloc>(

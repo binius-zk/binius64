@@ -202,11 +202,15 @@ impl IOPProver {
 				BatchAndCheckWitness::build(table, &cs.constants, &cs.and_constraints)
 			};
 			let and_columns = (mul.is_some() || bmul.is_some()).then(|| {
-				[
-					and_witness.a().to_vec(),
-					and_witness.b().to_vec(),
-					and_witness.c().to_vec(),
-				]
+				// The re-randomization re-reads the three BitAnd operand columns.
+				// Only `A` and `B` are stored.
+				// On a satisfying witness `C = A & B` holds word-by-word.
+				// So `C` is materialized here, on this multiplication-only path.
+				let c_column = (and_witness.a(), and_witness.b())
+					.into_par_iter()
+					.map(|(&a_i, &b_i)| a_i & b_i)
+					.collect();
+				[and_witness.a().to_vec(), and_witness.b().to_vec(), c_column]
 			});
 			(and_columns, and_witness.prove::<P, _>(&andcheck_domain, channel))
 		};

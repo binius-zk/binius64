@@ -278,6 +278,8 @@ pub fn build_g_parts_from_folded_words<F: BinaryField>(
 
 #[cfg(test)]
 mod tests {
+	use std::iter;
+
 	use binius_core::{constraint_system::AndConstraint, verify::verify_constraints, word::Word};
 	use binius_field::{AESTowerField8b, Field, PackedBinaryGhash1x128b, Random};
 	use binius_math::{
@@ -455,10 +457,16 @@ mod tests {
 			let folded_column = fold_words::<B128, P>(column, &lagrange);
 			evaluate(&folded_column, &row_point)
 		};
+		// The batch witness stores only the `A` and `B` columns.
+		// The reduction reads `C` as the word-by-word AND of the two.
+		// Materialize that same derived column so its evaluation matches the reduction's claim.
+		let c_column: Vec<Word> = iter::zip(witness.a(), witness.b())
+			.map(|(&a, &b)| a & b)
+			.collect();
 		[
 			operand_eval(witness.a()),
 			operand_eval(witness.b()),
-			operand_eval(witness.c()),
+			operand_eval(&c_column),
 		]
 	}
 
