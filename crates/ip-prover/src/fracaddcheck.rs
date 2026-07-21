@@ -28,6 +28,13 @@ use crate::{
 /// Both claims share the same evaluation point, that of the layer they describe.
 pub type FracEvalClaim<F> = (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>);
 
+/// Packed-word count below which a fractional-addition layer builds serially.
+///
+/// One output word is three field multiplies, couples of ns.
+/// A parallel region costs tens of microseconds to dispatch.
+/// Below a few thousand words the dispatch dominates.
+const SERIAL_LAYER_BUILD_CUTOFF: usize = 1 << 13;
+
 /// The store-based MLE-check prover for one fractional-addition layer.
 ///
 /// Returned by `FracAddCheckProver::layer_prover`. It owns its four half-columns, so it is
@@ -81,11 +88,24 @@ where
 			let (num_0, num_1) = num.split_half_ref();
 			let (den_0, den_1) = den.split_half_ref();
 
+			// One packed word of the next layer from the sibling halves:
+			//     a_0/b_0 + a_1/b_1 = (a_0*b_1 + a_1*b_0) / (b_0*b_1)
+			let frac_add =
+				|(&a_0, &b_0, &a_1, &b_1): (&P, &P, &P, &P)| (a_0 * b_1 + a_1 * b_0, b_0 * b_1);
+
+			// Small layers build serially: the dispatch would cost more than the work.
+			let halves = (num_0.as_ref(), den_0.as_ref(), num_1.as_ref(), den_1.as_ref());
 			let (next_layer_num, next_layer_den) =
-				(num_0.as_ref(), den_0.as_ref(), num_1.as_ref(), den_1.as_ref())
-					.into_par_iter()
-					.map(|(&a_0, &b_0, &a_1, &b_1)| (a_0 * b_1 + a_1 * b_0, b_0 * b_1))
-					.collect::<(Vec<_>, Vec<_>)>();
+				if num_0.as_ref().len() < SERIAL_LAYER_BUILD_CUTOFF {
+					izip!(halves.0, halves.1, halves.2, halves.3)
+						.map(frac_add)
+						.collect::<(Vec<_>, Vec<_>)>()
+				} else {
+					halves
+						.into_par_iter()
+						.map(frac_add)
+						.collect::<(Vec<_>, Vec<_>)>()
+				};
 
 			let next_layer = (
 				FieldBuffer::new(num.log_len() - 1, next_layer_num),

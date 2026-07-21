@@ -5,7 +5,7 @@
 use binius_field::{BinaryField, Divisible, Field, PackedField};
 use binius_ip::{MultilinearEvalClaim, logup_star::LogupOutput};
 use binius_math::{FieldBuffer, univariate::evaluate_univariate};
-use binius_utils::checked_arithmetics::log2_ceil_usize;
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
 use super::{
 	final_layer::{FinalLayerOutput, prove_final_layer},
@@ -162,7 +162,10 @@ where
 	//     looker j: gamma^j * eq_{r_j}(i) / (c - I_j(i))   over n variables
 	//     table:    Y(v)                  / (c - v)         over m variables
 	let circuits_guard = tracing::debug_span!("Build fracadd circuits").entered();
-	let (looker_provers, looker_roots): (Vec<_>, Vec<_>) = std::iter::zip(lookers, numerators)
+	// The circuits are independent, so they build in parallel across lookers.
+	// The collect preserves looker order, so circuit j keeps numerator gamma^j.
+	let (looker_provers, looker_roots): (Vec<_>, Vec<_>) = (lookers, numerators)
+		.into_par_iter()
 		.map(|(looker, numerator)| {
 			let den = witness::looker_denominator::<F, P>(c, looker.index);
 			let (prover, root) = FracAddCheckProver::new(n, (numerator, den));
