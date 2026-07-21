@@ -9,11 +9,6 @@ use crate::arch::x86_64::m512::M512;
 
 impl GfniType for M512 {
 	#[inline(always)]
-	fn gf2p8affine_epi64_epi8(x: Self, a: Self) -> Self {
-		unsafe { _mm512_gf2p8affine_epi64_epi8::<0>(x.0, a.0) }.into()
-	}
-
-	#[inline(always)]
 	fn gf2p8mul_epi8(a: Self, b: Self) -> Self {
 		unsafe { _mm512_gf2p8mul_epi8(a.0, b.0) }.into()
 	}
