@@ -161,9 +161,11 @@ where
 			.entered();
 
 			// Working buffers for this proof are drawn from a single pool that lives for the call.
+			// The pool is passed as an `&BufferPool` allocator.
 			let pool = BufferPool::new();
+			let alloc = &pool;
 			self.inner_iop_prover
-				.prove::<P, _>(witness, &mut wrapped_channel, &pool)?;
+				.prove::<_, P, _>(witness, &mut wrapped_channel, &alloc)?;
 		}
 
 		// Finish runs the outer spartan proof.
