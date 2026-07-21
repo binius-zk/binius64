@@ -54,3 +54,7 @@ harness = false
 [[bench]]
 name = "assemble_operation_witness"
 harness = false
+
+[[bench]]
+name = "keccak_protocol"
+harness = false
