@@ -23,8 +23,6 @@ pub const IDENTITY_MAP: i64 = u64::from_le_bytes([
 ]) as i64;
 
 pub(super) trait GfniType: Copy + TowerSimdType {
-	#[allow(unused)]
-	fn gf2p8affine_epi64_epi8(x: Self, a: Self) -> Self;
 	fn gf2p8mul_epi8(a: Self, b: Self) -> Self;
 	fn gf2p8affineinv_epi64_epi8(x: Self, a: Self) -> Self;
 }
