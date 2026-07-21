@@ -7,7 +7,9 @@ use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim, sumcheck::RoundCoeffs
 use binius_math::{
 	FieldBuffer, line::extrapolate_line_packed, multilinear::eq::eq_ind_partial_eval,
 };
-use binius_utils::rayon::iter::{IntoParallelIterator, ParallelIterator};
+use binius_utils::rayon::iter::{
+	IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
+};
 use itertools::izip;
 
 use crate::{
@@ -455,7 +457,7 @@ fn reduce_layer<F, P, MP>(
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	MP: MleCheckProver<F>,
+	MP: MleCheckProver<F> + Send,
 {
 	// Split eval_point into outer (selector) and inner (content) coordinates.
 	let (outer_coords, inner_coords) = eval_point.split_at(k);
@@ -477,8 +479,17 @@ where
 	// Content rounds: fold the content variables of every instance in lockstep, sending the
 	// eq(selector)-weighted sum of the per-instance (num, den)-batched round polynomials.
 	for _round in 0..inner_coords.len() {
-		let real_coeffs: RoundCoeffs<F> = iter::zip(&mut layer_provers, eq_weights.iter_scalars())
-			.map(|(prover, eq_i)| combine_claims(prover.execute(), batch_coeff) * eq_i)
+		// The instances are independent within a round, so their polynomials compute in parallel.
+		//
+		// One instance's round is too small a parallel region to fill the pool alone.
+		let per_instance: Vec<RoundCoeffs<F>> = layer_provers
+			.par_iter_mut()
+			.map(|prover| combine_claims(prover.execute(), batch_coeff))
+			.collect();
+
+		// Weight instance j's polynomial by eq_j and sum, in instance order.
+		let real_coeffs: RoundCoeffs<F> = iter::zip(per_instance, eq_weights.iter_scalars())
+			.map(|(coeffs, eq_i)| coeffs * eq_i)
 			.sum();
 		let round_coeffs = real_coeffs + &RoundCoeffs(vec![pad_eq_sum * batch_coeff]);
 
