@@ -86,21 +86,6 @@ impl BinaryField128bGhash {
 	}
 
 	#[inline]
-	pub fn mul_x(self) -> Self {
-		// These scalar bit manipulations are simplest over `u128`; the underlier is `M128`.
-		let val: u128 = self.to_underlier().into();
-		let shifted = val << 1;
-
-		// GHASH irreducible polynomial: x^128 + x^7 + x^2 + x + 1
-		// When the high bit is set, we need to XOR with the reduction polynomial 0x87
-		// All 1s if the top bit is set, all 0s otherwise
-		let mask = (val >> 127).wrapping_neg();
-		let result = shifted ^ (0x87 & mask);
-
-		Self::new(result)
-	}
-
-	#[inline]
 	pub fn mul_inv_x(self) -> Self {
 		// These scalar bit manipulations are simplest over `u128`; the underlier is `M128`.
 		let val: u128 = self.to_underlier().into();
@@ -515,32 +500,6 @@ mod tests {
 	#[test]
 	fn test_multiplicative_generator() {
 		assert!(is_binary_field_valid_generator::<BinaryField128bGhash>());
-	}
-
-	#[test]
-	fn test_mul_x() {
-		let test_cases = [
-			0x0,                                    // Zero
-			0x1,                                    // One
-			0x2,                                    // Two
-			0x80000000000000000000000000000000u128, // High bit set
-			0x40000000000000000000000000000000u128, // Second highest bit
-			0xffffffffffffffffffffffffffffffffu128, // All bits set
-			0x87u128,                               // GHASH reduction polynomial
-			0x21ac73a21d46a21badd6747bcdfc5d4d,     // Random value
-		];
-
-		for &value in &test_cases {
-			let field_val = BinaryField128bGhash::from(value);
-			let mul_x_result = field_val.mul_x();
-			let regular_mul_result = field_val * BinaryField128bGhash::new(2u128);
-
-			assert_eq!(
-				mul_x_result, regular_mul_result,
-				"mul_x and regular multiplication by 2 differ for value {:#x}",
-				value
-			);
-		}
 	}
 
 	#[test]

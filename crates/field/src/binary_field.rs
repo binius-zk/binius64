@@ -535,17 +535,6 @@ impl BinaryField1b {
 	pub const fn new(value: U1) -> Self {
 		Self(value)
 	}
-
-	/// Creates value without checking that it is within valid range (0 or 1)
-	///
-	/// # Safety
-	/// Value should not exceed 1
-	#[inline]
-	pub unsafe fn new_unchecked(val: u8) -> Self {
-		debug_assert!(val < 2, "val has to be less than 2, but it's {val}");
-
-		Self::new(U1::new_unchecked(val))
-	}
 }
 
 impl From<u8> for BinaryField1b {
@@ -730,12 +719,5 @@ pub(crate) mod tests {
 		assert_eq!(BinaryField1b::deserialize(&mut read_buffer).unwrap(), b1);
 		assert_eq!(AESTowerField8b::deserialize(&mut read_buffer).unwrap(), b8);
 		assert_eq!(BinaryField128bGhash::deserialize(&mut read_buffer).unwrap(), b128);
-	}
-
-	#[test]
-	fn test_gf2_new_unchecked() {
-		for i in 0..2 {
-			assert_eq!(unsafe { BF1::new_unchecked(i) }, BF1::from(i));
-		}
 	}
 }
