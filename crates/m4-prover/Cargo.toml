@@ -48,5 +48,9 @@ name = "blake3_compressions"
 harness = false
 
 [[bench]]
+name = "sha256_compressions"
+harness = false
+
+[[bench]]
 name = "assemble_operation_witness"
 harness = false
