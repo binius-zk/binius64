@@ -54,7 +54,7 @@ impl From<BinaryField128bGhash> for u128 {
 // directly. It relies on every M128 GHASH packing using a deferring wrapper whose `Output` is a
 // concrete `WideGhashProduct` (not the packed type itself): `WideMul` is a supertrait of both
 // `Field` and `PackedField`, and `BinaryField128bGhash` is the `Scalar` of
-// `PackedBinaryGhash1x128b`, so a `TrivialWideMul` fallback (whose `Output` is the packed type,
+// `PackedBinaryGhash1x128b`, so a trivial fallback (whose `Output` is the packed type,
 // bounded `Add + Mul`) would close a trait-resolution cycle through `Field: WideMul`.
 impl WideMul for BinaryField128bGhash {
 	type Output = <GhashWideMul1x<PackedBinaryGhash1x128b> as WideMul>::Output;
