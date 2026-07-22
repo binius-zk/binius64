@@ -7,8 +7,7 @@ use binius_field::{AESTowerField8b as B8, BinaryField, PackedField};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
-		ProveSingleOutput, common::MleCheckProver, mle_store::pooled_copy, prove_single_mlecheck,
-		quadratic_mlecheck_prover,
+		ProveSingleOutput, common::MleCheckProver, prove_single_mlecheck, quadratic_mlecheck_prover,
 	},
 };
 use binius_math::{
@@ -172,7 +171,7 @@ where
 		let folder = BitAxisFolder::new(&lagrange_evals);
 
 		let proving_polys =
-			folder.fold_bitand_operands::<PChallenge>(&self.first_col, &self.second_col);
+			folder.fold_bitand_operands::<PChallenge, _>(alloc, &self.first_col, &self.second_col);
 
 		let upcasted_small_field_challenges = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES
 			.iter()
@@ -191,7 +190,7 @@ where
 
 		quadratic_mlecheck_prover(
 			alloc,
-			proving_polys.map(|col| pooled_copy(alloc, &col)),
+			proving_polys,
 			|[a, b, c]| a * b - c,
 			|[a, b, _]| a * b,
 			verifier_field_zerocheck_challenges,
@@ -370,7 +369,7 @@ mod test {
 			lagrange_evals_scalars(&verifier_univariate_domain, z_challenge);
 		let folder = BitAxisFolder::new(&verifier_lagrange_evals);
 		for (i, eval) in [a_eval, b_eval, c_eval].iter().enumerate() {
-			let folded: FieldBuffer<B128> = folder.fold(&one_bit_mlvs[i]);
+			let folded: FieldBuffer<B128> = folder.fold(&GlobalAllocator, &one_bit_mlvs[i]);
 			assert_eq!(evaluate(&folded, &eval_point), *eval);
 		}
 	}

@@ -26,12 +26,12 @@ use auto_impl::auto_impl;
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldSlice, multilinear::eq::eq_ind_partial_eval};
+use binius_math::{FieldSlice, FieldVec, multilinear::eq::eq_ind_partial_eval};
 
 use super::{
 	MleToSumCheckEvaluator,
 	common::{MleCheckProver, SumcheckProver},
-	mle_store::{ColId, EvaluationChunk, MleStore, PooledColumn},
+	mle_store::{ColId, EvaluationChunk, MleStore},
 	round_state::RoundState,
 };
 
@@ -228,7 +228,7 @@ where
 	/// Lets a caller extend the shared store with a fresh column that a later-added evaluator
 	/// reads: the logUp* final layer pushes the table halves this way before adding its product
 	/// evaluators. See [`MleStore::push_owned`].
-	pub fn push_owned_column(&mut self, column: PooledColumn<A, P>) -> ColId {
+	pub fn push_owned_column(&mut self, column: FieldVec<P, A>) -> ColId {
 		self.store.push_owned(column)
 	}
 

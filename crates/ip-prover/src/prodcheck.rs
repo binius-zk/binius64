@@ -6,7 +6,7 @@ use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim};
 use binius_math::{
-	FieldBuffer, line::extrapolate_line_packed, multilinear::eq::eq_ind_partial_eval,
+	FieldBuffer, FieldVec, line::extrapolate_line_packed, multilinear::eq::eq_ind_partial_eval,
 };
 use binius_utils::rayon::prelude::*;
 use itertools::izip;
@@ -16,7 +16,6 @@ use crate::{
 	sumcheck::{
 		ProveSingleOutput, bivariate_product_mle,
 		common::{MleCheckProver, SumcheckProver},
-		mle_store::{PooledColumn, pooled_copy},
 		prove_single_mlecheck,
 	},
 };
@@ -29,9 +28,24 @@ pub struct ProdcheckProver<'a, A: Allocator, P: PackedField> {
 	/// Product layers from largest (original witness) to second-smallest.
 	/// `layers[0]` is the original witness. The final products layer is returned
 	/// separately from the constructor.
-	layers: Vec<PooledColumn<A, P>>,
+	layers: Vec<FieldVec<P, A>>,
 	/// Allocator the product layers are drawn from.
 	alloc: &'a A,
+}
+
+// A manual `Clone` impl (rather than `#[derive(Clone)]`) so the bound lands on the layer buffer
+// `A::Vec<P>` rather than on `A` and `P`: a derive would require `A: Clone` yet still fail to clone
+// the layers unless `A::Vec<P>: Clone`. Holds for the `Vec`-backed `GlobalAllocator`.
+impl<A: Allocator, P: PackedField> Clone for ProdcheckProver<'_, A, P>
+where
+	A::Vec<P>: Clone,
+{
+	fn clone(&self) -> Self {
+		Self {
+			layers: self.layers.clone(),
+			alloc: self.alloc,
+		}
+	}
 }
 
 impl<'a, A, F, P> ProdcheckProver<'a, A, P>
@@ -52,7 +66,7 @@ where
 	///
 	/// # Preconditions
 	/// * `witness.log_len() >= k`
-	pub fn new(k: usize, alloc: &'a A, witness: PooledColumn<A, P>) -> (Self, PooledColumn<A, P>) {
+	pub fn new(k: usize, alloc: &'a A, witness: FieldVec<P, A>) -> (Self, FieldVec<P, A>) {
 		assert!(witness.log_len() >= k); // precondition
 
 		let mut layers = Vec::with_capacity(k + 1);
@@ -87,7 +101,7 @@ where
 	///
 	/// # Preconditions
 	/// * `self.n_layers() == 1`
-	pub fn into_final_layer(mut self) -> PooledColumn<A, P> {
+	pub fn into_final_layer(mut self) -> FieldVec<P, A> {
 		assert_eq!(self.layers.len(), 1, "precondition: exactly one remaining layer");
 		self.layers.pop().expect("layers has exactly one element")
 	}
@@ -404,13 +418,13 @@ fn batch_prove_layer<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 		.map(|(&v0, &v1, &eq_i)| v0 * v1 * eq_i)
 		.sum();
 
-	// Selector rounds: pack eval pairs into FieldBuffers and use a single prover.
-	let buffer_0 = FieldBuffer::<P>::from_values(&vals_0);
-	let buffer_1 = FieldBuffer::<P>::from_values(&vals_1);
-
+	// Selector rounds: pack eval pairs straight into allocator buffers and use a single prover.
 	let outer_prover = bivariate_product_mle::new(
 		alloc,
-		[pooled_copy(alloc, &buffer_0), pooled_copy(alloc, &buffer_1)],
+		[
+			FieldBuffer::<P>::from_values_in(alloc, &vals_0),
+			FieldBuffer::<P>::from_values_in(alloc, &vals_1),
+		],
 		outer_coords.to_vec(),
 		eval,
 	);
@@ -460,7 +474,6 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::sumcheck::mle_store::pooled_copy;
 
 	/// Combines the per-input-prover evals returned by [`batch_prove`] into the single
 	/// [`MultilinearEvalClaim`] the verifier produces: the eq(selector)-weighted sum over the
@@ -488,7 +501,7 @@ mod tests {
 		let witness = random_field_buffer::<P>(&mut rng, n + k);
 
 		// 2. Create prover (computes product layers)
-		let (prover, products) = ProdcheckProver::new(k, &alloc, pooled_copy(&alloc, &witness));
+		let (prover, products) = ProdcheckProver::new(k, &alloc, witness.clone());
 
 		// 3. Generate random n-dimensional challenge point
 		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
@@ -534,7 +547,7 @@ mod tests {
 		let witness = random_field_buffer::<P>(&mut rng, n + k);
 
 		// Create prover (computes product layers)
-		let (_prover, products) = ProdcheckProver::new(k, &alloc, pooled_copy(&alloc, &witness));
+		let (_prover, products) = ProdcheckProver::new(k, &alloc, witness.clone());
 
 		// For each index i in the products layer, verify it equals the product of witness values
 		// at indices i + z * 2^n for z in 0..2^k (strided access, not contiguous)
@@ -578,7 +591,7 @@ mod tests {
 		// Create ProdcheckProver for each
 		let provers_and_products: Vec<_> = witnesses
 			.iter()
-			.map(|witness| ProdcheckProver::new(n_layers, &alloc, pooled_copy(&alloc, witness)))
+			.map(|witness| ProdcheckProver::new(n_layers, &alloc, witness.clone()))
 			.collect();
 
 		let (provers, individual_products): (Vec<_>, Vec<_>) =
@@ -699,7 +712,7 @@ mod tests {
 
 		let provers_and_products: Vec<_> = witnesses
 			.iter()
-			.map(|witness| ProdcheckProver::new(n_layers, &alloc, pooled_copy(&alloc, witness)))
+			.map(|witness| ProdcheckProver::new(n_layers, &alloc, witness.clone()))
 			.collect();
 
 		let (provers, individual_products): (Vec<_>, Vec<_>) =

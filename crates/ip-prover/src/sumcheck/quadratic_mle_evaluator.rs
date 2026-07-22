@@ -3,10 +3,10 @@
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::FieldSlice;
+use binius_math::{FieldSlice, FieldVec};
 
 use super::{
-	mle_store::{ColId, ColumnChunk, EvaluationChunk, MleStore, PooledColumn},
+	mle_store::{ColId, ColumnChunk, EvaluationChunk, MleStore},
 	round_evals::RoundEvals2,
 	round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
 };
@@ -102,7 +102,7 @@ pub fn quadratic_mlecheck_prover<
 	const N: usize,
 >(
 	alloc: &'alloc A,
-	multilinears: [PooledColumn<A, P>; N],
+	multilinears: [FieldVec<P, A>; N],
 	composition: Composition,
 	infinity_composition: InfinityComposition,
 	eval_point: Vec<F>,
@@ -215,7 +215,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::sumcheck::{common::SumcheckProver, mle_store::pooled_copy, prove_single_mlecheck};
+	use crate::sumcheck::{common::SumcheckProver, prove_single_mlecheck};
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
 
@@ -246,7 +246,7 @@ mod tests {
 
 		let prover = quadratic_mlecheck_prover(
 			&alloc,
-			array::from_fn(|i| pooled_copy(&alloc, &multilinears[i])),
+			multilinears.clone(),
 			composition.clone(),
 			infinity_composition,
 			eval_point.clone(),
@@ -340,7 +340,7 @@ mod tests {
 
 		let mut prover = quadratic_mlecheck_prover(
 			&alloc,
-			array::from_fn(|i| pooled_copy(&alloc, &multilinears[i])),
+			multilinears,
 			composition,
 			composition,
 			eval_point,

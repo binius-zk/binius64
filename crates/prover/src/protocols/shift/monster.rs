@@ -3,10 +3,12 @@
 
 use std::iter;
 
+use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField, WideMul};
 use binius_math::{
-	BinarySubspace, FieldBuffer, multilinear::eq::eq_ind_partial_eval, univariate::lagrange_evals,
+	BinarySubspace, FieldBuffer, FieldVec, multilinear::eq::eq_ind_partial_eval,
+	univariate::lagrange_evals,
 };
 use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
 use binius_verifier::protocols::shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, evaluate_h_op};
@@ -29,59 +31,61 @@ use super::{
 ///
 /// Used in phase 1, thus returning an array of multilinear evaluations.
 #[instrument(skip_all, name = "build_h_parts")]
-pub fn build_h_parts<F, P: PackedField<Scalar = F>>(
+pub fn build_h_parts<F, P: PackedField<Scalar = F>, A: Allocator>(
+	alloc: &A,
 	domain_subspace: &BinarySubspace<F>,
 	r_zhat_prime: F,
-) -> [FieldBuffer<P>; SHIFT_VARIANT_COUNT]
+) -> [FieldVec<P, A>; SHIFT_VARIANT_COUNT]
 where
 	F: BinaryField,
 {
 	let l_tilde = lagrange_evals(domain_subspace, r_zhat_prime);
 	let l_tilde = l_tilde.as_ref();
 
-	fn build_part<F: Field, P: PackedField<Scalar = F>>(
+	fn build_part<F: Field, P: PackedField<Scalar = F>, A: Allocator>(
+		alloc: &A,
 		fill: impl Fn(usize, &mut [F; Word::BITS]),
-	) -> FieldBuffer<P> {
+	) -> FieldVec<P, A> {
 		let mut data = zeroed_vec::<[F; Word::BITS]>(Word::BITS);
 		for (s, chunk) in data.iter_mut().enumerate() {
 			fill(s, chunk);
 		}
-		FieldBuffer::from_values(&data.into_flattened())
+		FieldBuffer::from_values_in(alloc, &data.into_flattened())
 	}
 
-	let sll = build_part(|s, sll_s| {
+	let sll = build_part(alloc, |s, sll_s| {
 		sll_s[..Word::BITS - s].copy_from_slice(&l_tilde[s..]);
 	});
 
-	let srl = build_part(|s, srl_s| {
+	let srl = build_part(alloc, |s, srl_s| {
 		srl_s[s..].copy_from_slice(&l_tilde[..Word::BITS - s]);
 	});
 
-	let sra = build_part(|s, sra_s| {
+	let sra = build_part(alloc, |s, sra_s| {
 		sra_s[s..].copy_from_slice(&l_tilde[..Word::BITS - s]);
 		sra_s[Word::BITS - 1] += l_tilde[Word::BITS - s..].iter().sum::<F>();
 	});
 
-	let rotr = build_part(|s, rotr_s| {
+	let rotr = build_part(alloc, |s, rotr_s| {
 		rotr_s[..s].copy_from_slice(&l_tilde[Word::BITS - s..]);
 		rotr_s[s..].copy_from_slice(&l_tilde[..Word::BITS - s]);
 	});
 
-	let sll32 = build_part(|s, sll32_s| {
+	let sll32 = build_part(alloc, |s, sll32_s| {
 		let s = s % 32;
 		for (l_tilde_i, sll_s_i) in iter::zip(l_tilde.chunks(32), sll32_s.chunks_mut(32)) {
 			sll_s_i[..32 - s].copy_from_slice(&l_tilde_i[s..]);
 		}
 	});
 
-	let srl32 = build_part(|s, srl32_s| {
+	let srl32 = build_part(alloc, |s, srl32_s| {
 		let s = s % 32;
 		for (l_tilde_i, srl32_s_i) in iter::zip(l_tilde.chunks(32), srl32_s.chunks_mut(32)) {
 			srl32_s_i[s..].copy_from_slice(&l_tilde_i[..32 - s]);
 		}
 	});
 
-	let sra32 = build_part(|s, sra32_s| {
+	let sra32 = build_part(alloc, |s, sra32_s| {
 		let s = s % 32;
 		for (l_tilde_i, sra32_s_i) in iter::zip(l_tilde.chunks(32), sra32_s.chunks_mut(32)) {
 			sra32_s_i[s..].copy_from_slice(&l_tilde_i[..32 - s]);
@@ -89,7 +93,7 @@ where
 		}
 	});
 
-	let rotr32 = build_part(|s, rotr32_s| {
+	let rotr32 = build_part(alloc, |s, rotr32_s| {
 		let s = s % 32;
 		for (l_tilde_i, rotr32_s_i) in iter::zip(l_tilde.chunks(32), rotr32_s.chunks_mut(32)) {
 			rotr32_s_i[..s].copy_from_slice(&l_tilde_i[32 - s..]);
@@ -134,7 +138,9 @@ where
 /// hidden piece over `log_witness_words` variables (the hidden words at the base, zeros above).
 /// The sparse first sumcheck round consumes them without materializing the combined buffer.
 #[instrument(skip_all, name = "build_monster_segments")]
-pub fn build_monster_segments<F, P: PackedField<Scalar = F>>(
+#[allow(clippy::too_many_arguments)]
+pub fn build_monster_segments<F, P: PackedField<Scalar = F>, A: Allocator>(
+	alloc: &A,
 	key_collection: &KeyCollection,
 	bitand_operator_data: &PreparedOperatorData<F>,
 	intmul_operator_data: &PreparedOperatorData<F>,
@@ -142,7 +148,7 @@ pub fn build_monster_segments<F, P: PackedField<Scalar = F>>(
 	domain_subspace: &BinarySubspace<F>,
 	r_j: &[F],
 	r_s: &[F],
-) -> (FieldBuffer<P>, FieldBuffer<P>)
+) -> (FieldVec<P, A>, FieldVec<P, A>)
 where
 	F: BinaryField,
 {
@@ -229,14 +235,19 @@ where
 		// Full packed elements: each maps exactly `P::WIDTH` words, so `from_scalars` sees a
 		// statically-sized iterator. The trailing partial element is filled separately below.
 		let n_full = n_words / P::WIDTH;
-		let mut values = Vec::<P>::with_capacity(capacity);
-		(0..n_full)
-			.into_par_iter()
-			.map(|chunk_index| {
+		// Allocate the backing buffer up front from the allocator, then fill the `n_full` aligned
+		// packed elements in parallel through its spare capacity — the single allocation happens
+		// before the parallel region, which only writes.
+		let mut values = alloc.alloc::<P>(capacity);
+		values.spare_capacity_mut()[..n_full]
+			.par_iter_mut()
+			.enumerate()
+			.for_each(|(chunk_index, slot)| {
 				let start = chunk_index * P::WIDTH;
-				P::from_scalars((0..P::WIDTH).map(|i| word_scalar(segment, start + i)))
-			})
-			.collect_into_vec(&mut values);
+				slot.write(P::from_scalars((0..P::WIDTH).map(|i| word_scalar(segment, start + i))));
+			});
+		// Safety: the parallel loop above initialized every one of the `n_full` slots.
+		unsafe { values.set_len(n_full) };
 		if !n_words.is_multiple_of(P::WIDTH) {
 			let start = n_full * P::WIDTH;
 			values.push(P::from_scalars(
@@ -256,6 +267,7 @@ where
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{AESTowerField8b, BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
 	use binius_math::{inner_product::inner_product_buffers, multilinear::eq::eq_ind_partial_eval};
 	use binius_verifier::protocols::shift::evaluate_h_op;
@@ -286,7 +298,7 @@ mod tests {
 			let succinct_evaluations = evaluate_h_op(l_tilde.as_ref(), &r_j, &r_s);
 
 			// Method 2: Direct evaluation via multilinear part
-			let h_parts = build_h_parts(&subspace, r_zhat_prime);
+			let h_parts = build_h_parts(&GlobalAllocator, &subspace, r_zhat_prime);
 			let evaluation_point: Vec<F> = [r_j.clone(), r_s.clone()].concat();
 			let tensor = eq_ind_partial_eval::<P>(&evaluation_point);
 			let direct_evaluations = h_parts.map(|buf| inner_product_buffers(&buf, &tensor));

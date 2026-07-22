@@ -258,7 +258,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::batch_prove_mle;
-	use crate::sumcheck::{bivariate_product_mle, mle_store::pooled_copy};
+	use crate::sumcheck::bivariate_product_mle;
 
 	fn product_eval_claim<F, P>(
 		multilinear_a: &FieldBuffer<P>,
@@ -301,19 +301,13 @@ mod tests {
 
 		let prover_0 = bivariate_product_mle::new(
 			&alloc,
-			[
-				pooled_copy(&alloc, &multilinear_a_0),
-				pooled_copy(&alloc, &multilinear_b_0),
-			],
+			[multilinear_a_0.clone(), multilinear_b_0.clone()],
 			eval_point.clone(),
 			eval_claim_0,
 		);
 		let prover_1 = bivariate_product_mle::new(
 			&alloc,
-			[
-				pooled_copy(&alloc, &multilinear_a_1),
-				pooled_copy(&alloc, &multilinear_b_1),
-			],
+			[multilinear_a_1.clone(), multilinear_b_1.clone()],
 			eval_point.clone(),
 			eval_claim_1,
 		);

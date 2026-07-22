@@ -6,6 +6,7 @@ use std::{
 	slice,
 };
 
+use binius_compute::{Allocator, VecLike};
 use binius_field::{
 	Field, PackedField,
 	packed::{get_packed_slice_unchecked, set_packed_slice_unchecked},
@@ -110,6 +111,46 @@ impl<P: PackedField> FieldBuffer<P> {
 		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 		let values = zeroed_vec(packed_len);
 		Self { log_len, values }
+	}
+}
+
+impl<P: PackedField> FieldBuffer<P> {
+	/// Builds a [`FieldBuffer`] from scalar values directly into a buffer drawn from `alloc`.
+	///
+	/// The allocator-aware counterpart to [`from_values`](Self::from_values): the packed values are
+	/// written straight into the allocator's buffer, avoiding an intermediate `Vec` and copy. Under
+	/// a `BufferPool` the result is a recyclable pooled buffer.
+	///
+	/// # Preconditions
+	///
+	/// * `values.len()` must be a power of two.
+	pub fn from_values_in<A: Allocator>(
+		alloc: &A,
+		values: &[P::Scalar],
+	) -> FieldBuffer<P, A::Vec<P>> {
+		let log_len =
+			strict_log_2(values.len()).expect("precondition: values.len() must be a power of two");
+
+		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
+		let mut packed_values = alloc.alloc::<P>(packed_len);
+		packed_values.extend(
+			values
+				.chunks(P::WIDTH)
+				.map(|chunk| P::from_scalars(chunk.iter().copied())),
+		);
+
+		FieldBuffer::new(log_len, packed_values)
+	}
+
+	/// Builds a zeroed [`FieldBuffer`] of `log_len` variables into a buffer drawn from `alloc`.
+	///
+	/// The allocator-aware counterpart to [`zeros`](Self::zeros). Under a `BufferPool` the result
+	/// is a recyclable pooled buffer.
+	pub fn zeros_in<A: Allocator>(alloc: &A, log_len: usize) -> FieldBuffer<P, A::Vec<P>> {
+		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
+		let mut values = alloc.alloc::<P>(packed_len);
+		values.resize(packed_len, P::default());
+		FieldBuffer::new(log_len, values)
 	}
 }
 
@@ -549,6 +590,12 @@ impl<F: Field, Data: DerefMut<Target = [F]>> IndexMut<usize> for FieldBuffer<F, 
 		&mut self.values[index]
 	}
 }
+
+/// Alias for a field buffer whose backing store is drawn from an [`Allocator`] `A`.
+///
+/// For `A = &BufferPool` this is a pooled buffer; for `A = GlobalAllocator` it is an ordinary
+/// `Vec`-backed buffer.
+pub type FieldVec<P, A> = FieldBuffer<P, <A as Allocator>::Vec<P>>;
 
 /// Alias for a field buffer over a borrowed slice.
 pub type FieldSlice<'a, P> = FieldBuffer<P, FieldSliceData<'a, P>>;

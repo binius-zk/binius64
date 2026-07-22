@@ -6,11 +6,8 @@ use std::{iter, mem::MaybeUninit, ops::Deref};
 use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField};
-use binius_ip_prover::{
-	prodcheck::ProdcheckProver,
-	sumcheck::mle_store::{PooledColumn, pooled_copy},
-};
-use binius_math::field_buffer::FieldBuffer;
+use binius_ip_prover::{prodcheck::ProdcheckProver, sumcheck::mle_store::pooled_copy};
+use binius_math::{FieldVec, field_buffer::FieldBuffer};
 use binius_utils::{
 	checked_arithmetics::{checked_log_2, strict_log_2},
 	rayon::prelude::*,
@@ -72,7 +69,7 @@ pub struct Witness<'a, 'alloc, A: Allocator, P: PackedField> {
 	/// Prodcheck prover for the `c_lo` exponentiation tree (leaf layer retained).
 	pub c_lo_prodcheck: ProdcheckProver<'alloc, A, P>,
 	/// The root of the `c_lo` tree.
-	pub c_lo_root: FieldBuffer<P>,
+	pub c_lo_root: FieldVec<P, A>,
 	/// The exponents for `c_hi` (needed for the phase 5 lookup indices and raw per-bit output
 	/// evaluations).
 	#[getset(skip)]
@@ -80,11 +77,37 @@ pub struct Witness<'a, 'alloc, A: Allocator, P: PackedField> {
 	/// Prodcheck prover for the `c_hi` exponentiation tree (leaf layer retained).
 	pub c_hi_prodcheck: ProdcheckProver<'alloc, A, P>,
 	/// The root of the `c_hi` tree.
-	pub c_hi_root: FieldBuffer<P>,
+	pub c_hi_root: FieldVec<P, A>,
 	/// The 2·N_LIMBS twisted power tables: `tables[s][i] = (G^{2^{ws}})^i`. Limb column `(t, l)`
 	/// is a gather from table `s(t, l)`; `tables[0]` is the shared table read by the Phase 5
 	/// logup* lookup.
 	pub tables: Vec<FieldBuffer<P>>,
+}
+
+// A manual `Clone` impl (rather than `#[derive(Clone)]`) so the bound lands on the pooled buffer
+// `A::Vec<P>` rather than on `A` and `P`. Holds for the `Vec`-backed `GlobalAllocator`.
+impl<A: Allocator, P: PackedField> Clone for Witness<'_, '_, A, P>
+where
+	A::Vec<P>: Clone,
+{
+	fn clone(&self) -> Self {
+		Self {
+			a_exponents: self.a_exponents,
+			a_prodcheck: self.a_prodcheck.clone(),
+			a_root: self.a_root.clone(),
+			b_exponents: self.b_exponents,
+			b_leaves: self.b_leaves.clone(),
+			b_prodcheck: self.b_prodcheck.clone(),
+			b_root: self.b_root.clone(),
+			c_lo_exponents: self.c_lo_exponents,
+			c_lo_prodcheck: self.c_lo_prodcheck.clone(),
+			c_lo_root: self.c_lo_root.clone(),
+			c_hi_exponents: self.c_hi_exponents,
+			c_hi_prodcheck: self.c_hi_prodcheck.clone(),
+			c_hi_root: self.c_hi_root.clone(),
+			tables: self.tables.clone(),
+		}
+	}
 }
 
 impl<'a, 'alloc, A, F, P> Witness<'a, 'alloc, A, P>
@@ -144,20 +167,15 @@ where
 		// layer is the corresponding tree root.
 		let fixed_base_tree_scope =
 			tracing::debug_span!("Compute fixed-base prodcheck layers").entered();
-		let a_leaves = limb_leaves(&tables[..N_LIMBS], a);
-		let (a_prodcheck, a_root) =
-			ProdcheckProver::new(LOG_N_LIMBS, alloc, pooled_copy(alloc, &a_leaves));
+		let a_leaves = limb_leaves::<A, F, P>(alloc, &tables[..N_LIMBS], a);
+		let (a_prodcheck, a_root) = ProdcheckProver::new(LOG_N_LIMBS, alloc, a_leaves);
 		let a_root = unpool::<A, P>(a_root);
 
-		let c_lo_leaves = limb_leaves(&tables[..N_LIMBS], c_lo);
-		let (c_lo_prodcheck, c_lo_root) =
-			ProdcheckProver::new(LOG_N_LIMBS, alloc, pooled_copy(alloc, &c_lo_leaves));
-		let c_lo_root = unpool::<A, P>(c_lo_root);
+		let c_lo_leaves = limb_leaves::<A, F, P>(alloc, &tables[..N_LIMBS], c_lo);
+		let (c_lo_prodcheck, c_lo_root) = ProdcheckProver::new(LOG_N_LIMBS, alloc, c_lo_leaves);
 
-		let c_hi_leaves = limb_leaves(&tables[N_LIMBS..], c_hi);
-		let (c_hi_prodcheck, c_hi_root) =
-			ProdcheckProver::new(LOG_N_LIMBS, alloc, pooled_copy(alloc, &c_hi_leaves));
-		let c_hi_root = unpool::<A, P>(c_hi_root);
+		let c_hi_leaves = limb_leaves::<A, F, P>(alloc, &tables[N_LIMBS..], c_hi);
+		let (c_hi_prodcheck, c_hi_root) = ProdcheckProver::new(LOG_N_LIMBS, alloc, c_hi_leaves);
 		drop(fixed_base_tree_scope);
 
 		// Compute b_leaves as concatenated leaves for prodcheck; the variable base is the `a` root.
@@ -193,7 +211,7 @@ where
 /// The root fields are consumed by the phase provers as ordinary `FieldBuffer`s; the pooled block
 /// cannot be handed out as a `Vec` directly (its allocation is over-aligned for the free list), so
 /// it is copied out and the pooled block recycled.
-fn unpool<A: Allocator, P: PackedField>(src: PooledColumn<A, P>) -> FieldBuffer<P> {
+fn unpool<A: Allocator, P: PackedField>(src: FieldVec<P, A>) -> FieldBuffer<P> {
 	FieldBuffer::new(src.log_len(), src.as_ref().to_vec())
 }
 
@@ -295,8 +313,9 @@ pub(super) const fn limb_index(word: Word, limb: usize) -> usize {
 /// corresponding word. The columns are concatenated into one `(n_vars + LOG_N_LIMBS)`-variate
 /// buffer with the limb index in the high bits, so the prodcheck's node reductions pair column `z`
 /// with column `z + N_LIMBS/2`.
-fn limb_leaves<F, P>(tables: &[FieldBuffer<P>], exponents: &[Word]) -> FieldBuffer<P>
+fn limb_leaves<A, F, P>(alloc: &A, tables: &[FieldBuffer<P>], exponents: &[Word]) -> FieldVec<P, A>
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
@@ -313,7 +332,7 @@ where
 		.collect::<Vec<_>>();
 
 	debug_assert_eq!(scalars.len(), 1 << (n_vars + LOG_N_LIMBS));
-	FieldBuffer::<P>::from_values(&scalars)
+	FieldBuffer::<P>::from_values_in(alloc, &scalars)
 }
 
 /// Compute concatenated b_leaves for prodcheck.
@@ -413,34 +432,36 @@ pub fn buffer_bivariate_product<P: PackedField, Data: Deref<Target = [P]>>(
 
 /// Constructs a field buffer with values selected from `elements` based on the bit values
 /// of `exponents`.
-pub fn two_valued_field_buffer<F, P>(
+pub fn two_valued_field_buffer<A, F, P>(
+	alloc: &A,
 	bit_offset: usize,
 	exponents: &[Word],
 	elements: [F; 2],
-) -> FieldBuffer<P>
+) -> FieldVec<P, A>
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
 	let n_vars = checked_log_2(exponents.len());
 	let p_width = P::WIDTH.min(1 << n_vars);
-	let values = (0..1 << n_vars.saturating_sub(P::LOG_WIDTH))
-		.map(|i| {
-			let scalars = (0..p_width).map(|j| {
-				let index = i << P::LOG_WIDTH | j;
-				// Select `elements[1]` if bit `bit_offset` of `exponents[index]` is set, else
-				// `elements[0]`.
-				unsafe {
-					// Safety:
-					// - `index` is guaranteed to be in-bounds
-					// - `elements` has two values
-					let is_set = exponents.get_unchecked(index).extract_bit(bit_offset);
-					*elements.get_unchecked(is_set as usize)
-				}
-			});
-			P::from_scalars(scalars)
-		})
-		.collect::<Vec<_>>();
+	let packed_len = 1 << n_vars.saturating_sub(P::LOG_WIDTH);
+	let mut values = alloc.alloc::<P>(packed_len);
+	values.extend((0..packed_len).map(|i| {
+		let scalars = (0..p_width).map(|j| {
+			let index = i << P::LOG_WIDTH | j;
+			// Select `elements[1]` if bit `bit_offset` of `exponents[index]` is set, else
+			// `elements[0]`.
+			unsafe {
+				// Safety:
+				// - `index` is guaranteed to be in-bounds
+				// - `elements` has two values
+				let is_set = exponents.get_unchecked(index).extract_bit(bit_offset);
+				*elements.get_unchecked(is_set as usize)
+			}
+		});
+		P::from_scalars(scalars)
+	}));
 
 	FieldBuffer::new(n_vars, values)
 }

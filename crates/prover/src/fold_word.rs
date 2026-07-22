@@ -3,6 +3,7 @@
 
 use std::{array, borrow::Cow, hint::assert_unchecked, iter, ops::BitXor};
 
+use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{
 	BinaryField, Divisible, Field, PackedField, UnderlierType, WideMul, WithUnderlier,
@@ -42,26 +43,32 @@ const BITS_PER_BYTE: usize = Word::BITS / Word::BYTES;
 /// * `vec` contains exactly [`Word::BITS`] elements
 ///
 /// [Method of Four Russians]: <https://en.wikipedia.org/wiki/Method_of_Four_Russians>
-pub fn fold_words<F, P>(words: &[Word], vec: &[F]) -> FieldBuffer<P>
+pub fn fold_words<F, P, A>(alloc: &A, words: &[Word], vec: &[F]) -> FieldBuffer<P, A::Vec<P>>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
+	A: Allocator,
 {
-	BitAxisFolder::new(vec).fold(words)
+	BitAxisFolder::new(vec).fold(alloc, words)
 }
 
-fn fold_words_with_transform<F, P, T>(transform: &T, words: &[Word]) -> FieldBuffer<P>
+fn fold_words_with_transform<F, P, T, A>(
+	alloc: &A,
+	transform: &T,
+	words: &[Word],
+) -> FieldBuffer<P, A::Vec<P>>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
 	T: Transformation<u64, F>,
+	A: Allocator,
 {
 	// `words` need not have a power-of-two length; the high words up to the next power of two are
 	// treated as zero, so the remaining slots after the last real word are zero-filled by resize.
 	let log_n = log2_ceil_usize(words.len());
 	let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
 
-	let mut values = Vec::<P>::with_capacity(capacity);
+	let mut values = alloc.alloc::<P>(capacity);
 
 	let chunk_size = P::WIDTH;
 	let n_chunks = words.len() / chunk_size;
@@ -176,15 +183,17 @@ impl<UOut: UnderlierType> LinearTransformationFactory<u64, UOut>
 /// # Preconditions
 ///
 /// * The two word-lists have equal length.
-fn fold_bitand_operands_with_transform<F, P, T>(
+fn fold_bitand_operands_with_transform<F, P, T, A>(
+	alloc: &A,
 	transform: &T,
 	a_words: &[Word],
 	b_words: &[Word],
-) -> [FieldBuffer<P>; 3]
+) -> [FieldBuffer<P, A::Vec<P>>; 3]
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
 	T: Transformation<u64, F>,
+	A: Allocator,
 {
 	assert_eq!(a_words.len(), b_words.len());
 
@@ -195,9 +204,9 @@ where
 	let capacity = 1 << log_n.saturating_sub(P::LOG_WIDTH);
 
 	// One output buffer per folded column, filled through spare capacity.
-	let mut a_values = Vec::<P>::with_capacity(capacity);
-	let mut b_values = Vec::<P>::with_capacity(capacity);
-	let mut c_values = Vec::<P>::with_capacity(capacity);
+	let mut a_values = alloc.alloc::<P>(capacity);
+	let mut b_values = alloc.alloc::<P>(capacity);
+	let mut c_values = alloc.alloc::<P>(capacity);
 
 	// Phase 1: partition the inputs into full packed-width chunks and a short tail.
 	//
@@ -294,11 +303,12 @@ impl<F: BinaryField> BitAxisFolder<F> {
 
 	/// Folds `words` into a [`FieldBuffer`], mapping each word to the inner product of its bits
 	/// with the scalar vector. See [`fold_words`] for the exact contract.
-	pub fn fold<P>(&self, words: &[Word]) -> FieldBuffer<P>
+	pub fn fold<P, A>(&self, alloc: &A, words: &[Word]) -> FieldBuffer<P, A::Vec<P>>
 	where
 		P: PackedField<Scalar = F>,
+		A: Allocator,
 	{
-		fold_words_with_transform(&self.transform, words)
+		fold_words_with_transform(alloc, &self.transform, words)
 	}
 
 	/// Folds the two stored BitAnd operand columns and their derived AND column in one pass.
@@ -315,11 +325,17 @@ impl<F: BinaryField> BitAxisFolder<F> {
 	/// # Preconditions
 	///
 	/// * The two word-lists have equal length.
-	pub fn fold_bitand_operands<P>(&self, a: &[Word], b: &[Word]) -> [FieldBuffer<P>; 3]
+	pub fn fold_bitand_operands<P, A>(
+		&self,
+		alloc: &A,
+		a: &[Word],
+		b: &[Word],
+	) -> [FieldBuffer<P, A::Vec<P>>; 3]
 	where
 		P: PackedField<Scalar = F>,
+		A: Allocator,
 	{
-		fold_bitand_operands_with_transform(&self.transform, a, b)
+		fold_bitand_operands_with_transform(alloc, &self.transform, a, b)
 	}
 }
 
@@ -646,6 +662,7 @@ pub(crate) fn duplicate_to_fixed_chunks<const N: usize>(words: &[Word]) -> Cow<'
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::arch::OptimalPackedB128;
 	use binius_math::test_utils::{random_field_buffer, random_scalars};
 	use binius_utils::checked_arithmetics::log2_strict_usize;
@@ -697,7 +714,7 @@ mod tests {
 		let vec = random_scalars(&mut rng, Word::BITS);
 
 		// Compute using both methods
-		let result_optimized = fold_words::<B128, B128>(&words, &vec);
+		let result_optimized = fold_words::<B128, B128, _>(&GlobalAllocator, &words, &vec);
 		let result_naive = naive_fold_words::<B128, B128>(&words, &vec);
 
 		// Compare results
@@ -742,12 +759,27 @@ mod tests {
 			let folder = BitAxisFolder::new(&vec);
 
 			// Fold the two stored columns and the derived column in one fused pass.
-			let [a_fused, b_fused, c_fused] =
-				folder.fold_bitand_operands::<OptimalPackedB128>(&a_words, &b_words);
+			let [a_fused, b_fused, c_fused] = folder.fold_bitand_operands::<OptimalPackedB128, _>(
+				&GlobalAllocator,
+				&a_words,
+				&b_words,
+			);
 			// Each fused output must equal the independent single-column fold.
-			assert_eq!(a_fused, folder.fold(&a_words), "a mismatch at n_words = {n_words}");
-			assert_eq!(b_fused, folder.fold(&b_words), "b mismatch at n_words = {n_words}");
-			assert_eq!(c_fused, folder.fold(&c_words), "c mismatch at n_words = {n_words}");
+			assert_eq!(
+				a_fused,
+				folder.fold(&GlobalAllocator, &a_words),
+				"a mismatch at n_words = {n_words}"
+			);
+			assert_eq!(
+				b_fused,
+				folder.fold(&GlobalAllocator, &b_words),
+				"b mismatch at n_words = {n_words}"
+			);
+			assert_eq!(
+				c_fused,
+				folder.fold(&GlobalAllocator, &c_words),
+				"c mismatch at n_words = {n_words}"
+			);
 		}
 	}
 

@@ -26,15 +26,21 @@ pub use buffer_pool::{BufferPool, PoolVec};
 /// Abstracts the allocation seam so callers can be generic over how their working buffers are
 /// backed. The primary implementation is `&BufferPool`, whose [`Vec`](Allocator::Vec) is
 /// [`PoolVec`] — a buffer drawn from a recycling pool.
-pub trait Allocator {
+///
+/// [`Sync`] is required because the prover shares `&impl Allocator` across rayon tasks (e.g. the
+/// parallel fractional-addition GKR reduction); both `&BufferPool` and `GlobalAllocator` are
+/// `Sync`.
+pub trait Allocator: Sync {
 	/// The buffer type this allocator hands out for element type `T`.
 	///
 	/// It is both a [`VecLike`] (growable) and a [`BufferData`] (shrinkable-in-place) buffer, so an
-	/// allocated buffer can back a `binius_math::FieldBuffer` directly.
-	type Vec<T>: VecLike<T> + BufferData<T>;
+	/// allocated buffer can back a `binius_math::FieldBuffer` directly. It is also [`Send`] so the
+	/// prover can move pooled buffers across rayon tasks (e.g. the parallel fractional-addition GKR
+	/// reduction); every element type the prover pools is itself `Send`.
+	type Vec<T: Send>: VecLike<T> + BufferData<T> + Send;
 
 	/// Allocates an empty buffer with room for at least `capacity` elements of type `T`.
-	fn alloc<T>(&self, capacity: usize) -> Self::Vec<T>;
+	fn alloc<T: Send>(&self, capacity: usize) -> Self::Vec<T>;
 }
 
 /// Backing store of a `binius_math::FieldBuffer` that can be shrunk in place.
@@ -152,9 +158,9 @@ impl<T> VecLike<T> for PoolVec<'_, T> {
 }
 
 impl<'alloc> Allocator for &'alloc BufferPool {
-	type Vec<T> = PoolVec<'alloc, T>;
+	type Vec<T: Send> = PoolVec<'alloc, T>;
 
-	fn alloc<T>(&self, capacity: usize) -> Self::Vec<T> {
+	fn alloc<T: Send>(&self, capacity: usize) -> Self::Vec<T> {
 		// Copy the `&'alloc BufferPool` out of `&self` so the returned `PoolVec` borrows the pool
 		// for `'alloc`, not merely for this call's `&self` borrow.
 		let pool: &'alloc BufferPool = self;
@@ -206,9 +212,9 @@ impl<T> VecLike<T> for Vec<T> {
 pub struct GlobalAllocator;
 
 impl Allocator for GlobalAllocator {
-	type Vec<T> = Vec<T>;
+	type Vec<T: Send> = Vec<T>;
 
-	fn alloc<T>(&self, capacity: usize) -> Self::Vec<T> {
+	fn alloc<T: Send>(&self, capacity: usize) -> Self::Vec<T> {
 		Vec::with_capacity(capacity)
 	}
 }

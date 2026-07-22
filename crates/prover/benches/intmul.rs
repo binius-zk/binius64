@@ -12,11 +12,11 @@ use binius_ip_prover::{
 	prodcheck::ProdcheckProver,
 	sumcheck::{
 		batch::batch_prove,
-		mle_store::pooled_copy,
 		selector_mle::{Claim, SelectorMlecheckProver},
 	},
 };
 use binius_math::{
+	FieldBuffer,
 	multilinear::{eq::eq_ind_partial_eval_scalars, evaluate::evaluate},
 	ntt::{NeighborsLastSingleThread, domain_context::GenericPreExpanded},
 	test_utils::random_scalars,
@@ -119,14 +119,14 @@ fn bench_intmul_prove(c: &mut Criterion) {
 	group.bench_with_input(
 		BenchmarkId::new("prove", num_exponents),
 		&witness,
-		|bencher, _witness| {
+		|bencher, witness| {
 			bencher.iter_batched_ref(
 				|| {
 					let channel = compiler
 						.create_channel_without_zk_from_transcript::<StdHashSuite, StdChallenger, _>(
 							ProverTranscript::default(),
 						);
-					(Some(Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap()), channel)
+					(Some(witness.clone()), channel)
 				},
 				|(witness, channel)| {
 					let mut intmul_prover = IntMulProver::new(0, channel, &alloc);
@@ -192,12 +192,14 @@ fn bench_intmul_phases(c: &mut Criterion) {
 	let phase3 = {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover = IntMulProver::<_, P, _>::new(0, &mut transcript, &alloc);
+		// The roots are pooled buffers consumed by phase3; rebuild a witness to source them.
+		let w = Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap();
 		prover.phase3(
 			&phase2.twisted_eval_points,
 			&phase2.twisted_evals,
-			witness.a_root.clone(),
+			w.a_root,
 			witness.b_exponents,
-			[witness.c_lo_root.clone(), witness.c_hi_root.clone()],
+			[w.c_lo_root, w.c_hi_root],
 			&initial_eval_point,
 			exp_eval,
 		)
@@ -222,11 +224,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 
 	group.bench_function("phase1", |bencher| {
 		bencher.iter_batched(
-			|| {
-				Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi)
-					.unwrap()
-					.b_prodcheck
-			},
+			|| witness.b_prodcheck.clone(),
 			|b_prodcheck| {
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
 				let mut prover = IntMulProver::<_, P, _>::new(0, &mut transcript, &alloc);
@@ -265,8 +263,11 @@ fn bench_intmul_phases(c: &mut Criterion) {
 	group.bench_function("phase4", |bencher| {
 		bencher.iter_batched(
 			|| {
-				let w = Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap();
-				(w.a_prodcheck, w.c_lo_prodcheck, w.c_hi_prodcheck)
+				(
+					witness.a_prodcheck.clone(),
+					witness.c_lo_prodcheck.clone(),
+					witness.c_hi_prodcheck.clone(),
+				)
 			},
 			|(a_prodcheck, c_lo_prodcheck, c_hi_prodcheck)| {
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
@@ -342,12 +343,13 @@ fn bench_intmul_components(c: &mut Criterion) {
 	});
 
 	// Computing a product tree over the leaves.
+	let b_leaves_scalars: Vec<F> = witness.b_leaves.iter_scalars().collect();
+	// Build the leaves once; each iteration clones them from the pool.
+	let b_leaves = FieldBuffer::<P>::from_values_in(&alloc, &b_leaves_scalars);
 	group.bench_function("product_tree", |bencher| {
 		bencher.iter_batched(
-			|| witness.b_leaves.clone(),
-			|b_leaves| {
-				ProdcheckProver::<_, P>::new(Word::LOG_BITS, &alloc, pooled_copy(&alloc, &b_leaves))
-			},
+			|| b_leaves.clone(),
+			|b_leaves| ProdcheckProver::<_, P>::new(Word::LOG_BITS, &alloc, b_leaves),
 			BatchSize::SmallInput,
 		);
 	});

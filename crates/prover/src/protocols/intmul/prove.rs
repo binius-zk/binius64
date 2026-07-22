@@ -18,13 +18,13 @@ use binius_ip_prover::{
 		MleToSumCheckDecorator,
 		batch::{BatchSumcheckOutput, batch_prove, batch_prove_and_write_evals},
 		bivariate_product_mle,
-		mle_store::pooled_copy,
 		multilinear_eval::multilinear_eval_prover,
 		quadratic_mlecheck_prover,
 		selector_mle::{Claim, SelectorMlecheckProver},
 	},
 };
 use binius_math::{
+	FieldVec,
 	field_buffer::FieldBuffer,
 	inner_product::inner_product_buffers,
 	multilinear::{
@@ -281,11 +281,11 @@ where
 					.sum::<F>()
 			})
 			.collect::<Vec<_>>();
-		let folded_column = FieldBuffer::<P>::from_values(&folded_column_scalars);
+		let folded_column = FieldBuffer::<P>::from_values_in(alloc, &folded_column_scalars);
 		drop(fold_guard);
 		let index_prover = MleToSumCheckDecorator::new(multilinear_eval_prover(
 			alloc,
-			pooled_copy(alloc, &folded_column),
+			folded_column,
 			index_content_point,
 			folded_index_claim,
 		));
@@ -294,19 +294,15 @@ where
 		let binary_elements = [F::zero(), F::one()];
 
 		// TODO: Use a special 1-bit-optimized MLE-check with switchover to save memory.
-		let a_0: FieldBuffer<P> = two_valued_field_buffer(0, a_exponents, binary_elements);
-		let b_0: FieldBuffer<P> = two_valued_field_buffer(0, b_exponents, binary_elements);
-		let c_lo_0: FieldBuffer<P> = two_valued_field_buffer(0, c_lo_exponents, binary_elements);
+		let a_0 = two_valued_field_buffer::<A, _, P>(alloc, 0, a_exponents, binary_elements);
+		let b_0 = two_valued_field_buffer::<A, _, P>(alloc, 0, b_exponents, binary_elements);
+		let c_lo_0 = two_valued_field_buffer::<A, _, P>(alloc, 0, c_lo_exponents, binary_elements);
 
 		// The overflow parity check binds at the Phase-2 constraint point `b_eval_point` (r_2) —
 		// reused for free from the `b` re-randomization.
 		let overflow_prover = MleToSumCheckDecorator::new(quadratic_mlecheck_prover(
 			alloc,
-			[
-				pooled_copy(alloc, &a_0),
-				pooled_copy(alloc, &b_0),
-				pooled_copy(alloc, &c_lo_0),
-			],
+			[a_0, b_0, c_lo_0],
 			|[a, b, c]| a * b - c,
 			|[a, b, _c]| a * b,
 			b_eval_point.to_vec(),
@@ -318,10 +314,10 @@ where
 		// `b_eval_point` (r_2) to the shared point via a single-claim MLE-eval check.
 		assert_eq!(b_exponents.len(), 1 << n_vars);
 		let b_tensor = eq_ind_partial_eval_scalars::<F>(r_ib);
-		let b_folded = fold_words::<_, P>(b_exponents, &b_tensor);
+		let b_folded = fold_words::<_, P, _>(alloc, b_exponents, &b_tensor);
 		let b_sumcheck_prover = MleToSumCheckDecorator::new(multilinear_eval_prover(
 			alloc,
-			pooled_copy(alloc, &b_folded),
+			b_folded,
 			b_eval_point,
 			b_recomb,
 		));
@@ -429,7 +425,7 @@ where
 		twisted_evals: &[F],
 		selector: FieldBuffer<P>,
 		b_exponents: &[Word],
-		c_lo_hi_roots: [FieldBuffer<P>; 2],
+		c_lo_hi_roots: [FieldVec<P, A>; 2],
 		c_eval_point: &[F],
 		c_root_eval: F,
 	) -> Phase3Output<F> {
@@ -469,12 +465,8 @@ where
 			self.switchover,
 		);
 
-		let c_root_sumcheck_prover = bivariate_product_mle::new(
-			alloc,
-			c_lo_hi_roots.map(|root| pooled_copy(alloc, &root)),
-			c_eval_point.to_vec(),
-			c_root_eval,
-		);
+		let c_root_sumcheck_prover =
+			bivariate_product_mle::new(alloc, c_lo_hi_roots, c_eval_point.to_vec(), c_root_eval);
 
 		let c_root_prover = MleToSumCheckDecorator::new(c_root_sumcheck_prover);
 

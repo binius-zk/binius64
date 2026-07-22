@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::iter;
+use std::{iter, ops::DerefMut};
 
 use binius_compute::Allocator;
 use binius_core::word::Word;
@@ -10,12 +10,11 @@ use binius_ip::sumcheck::{RoundCoeffs, SumcheckOutput};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
-		ProveSingleOutput, bivariate_product_prover, mle_store::pooled_copy, prove_single,
-		round_evals::RoundEvals2,
+		ProveSingleOutput, bivariate_product_prover, prove_single, round_evals::RoundEvals2,
 	},
 };
 use binius_math::{
-	BinarySubspace, FieldBuffer,
+	BinarySubspace, FieldBuffer, FieldVec,
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_zero},
 };
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
@@ -87,10 +86,11 @@ where
 	// zero-pads each fold to `log2_ceil(len)` variables, so the hidden fold already has
 	// `log_witness_words` variables (its word count is the hidden segment length).
 	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
-	let public_folded = fold_words::<_, P>(public_words, r_j_tensor.as_ref());
-	let hidden_folded = fold_words::<_, P>(hidden_words, r_j_tensor.as_ref());
+	let public_folded = fold_words::<_, P, _>(alloc, public_words, r_j_tensor.as_ref());
+	let hidden_folded = fold_words::<_, P, _>(alloc, hidden_words, r_j_tensor.as_ref());
 
 	let (public_monster, hidden_monster) = build_monster_segments(
+		alloc,
 		key_collection,
 		bitand_data,
 		intmul_data,
@@ -126,11 +126,11 @@ where
 /// only. Both corrections run over whole packed elements: past the public length the `P`/`M_p`
 /// entries are zero, so the stray `H * M_h` lane terms cancel between the two sums. The per-point
 /// products accumulate in unreduced (wide) form and reduce once at the end.
-fn first_round_coeffs<F, P: PackedField<Scalar = F>>(
-	public_folded: &FieldBuffer<P>,
-	hidden_folded: &FieldBuffer<P>,
-	public_monster: &FieldBuffer<P>,
-	hidden_monster: &FieldBuffer<P>,
+fn first_round_coeffs<F, P: PackedField<Scalar = F>, Data: std::ops::Deref<Target = [P]>>(
+	public_folded: &FieldBuffer<P, Data>,
+	hidden_folded: &FieldBuffer<P, Data>,
+	public_monster: &FieldBuffer<P, Data>,
+	hidden_monster: &FieldBuffer<P, Data>,
 	gamma: F,
 ) -> RoundCoeffs<F>
 where
@@ -173,11 +173,11 @@ where
 /// Consumes and overwrites `hidden` for memory efficiency, returning
 /// `(1 - alpha) * public_padded + alpha * hidden` — exactly the result of
 /// `fold_highest_var_inplace` on the materialized witness buffer.
-fn fold_segments<F: Field, P: PackedField<Scalar = F>>(
-	public: &FieldBuffer<P>,
-	mut hidden: FieldBuffer<P>,
+fn fold_segments<F: Field, P: PackedField<Scalar = F>, Data: DerefMut<Target = [P]>>(
+	public: &FieldBuffer<P, Data>,
+	mut hidden: FieldBuffer<P, Data>,
 	alpha: F,
-) -> FieldBuffer<P> {
+) -> FieldBuffer<P, Data> {
 	// Scale the dominant hidden segment in place, in parallel.
 	let alpha_broadcast = P::broadcast(alpha);
 	hidden
@@ -215,10 +215,10 @@ fn fold_segments<F: Field, P: PackedField<Scalar = F>>(
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "run_sumcheck")]
 pub fn run_sumcheck<F, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>, A: Allocator>(
-	public_folded: FieldBuffer<P>,
-	hidden_folded: FieldBuffer<P>,
-	public_monster: FieldBuffer<P>,
-	hidden_monster: FieldBuffer<P>,
+	public_folded: FieldVec<P, A>,
+	hidden_folded: FieldVec<P, A>,
+	public_monster: FieldVec<P, A>,
+	hidden_monster: FieldVec<P, A>,
 	public_words: &[Word],
 	r_j: Vec<F>,
 	gamma: F,
@@ -244,14 +244,7 @@ where
 	// standard prover.
 	let folded_witness = fold_segments(&public_folded, hidden_folded, alpha);
 	let folded_monster = fold_segments(&public_monster, hidden_monster, alpha);
-	let prover = bivariate_product_prover(
-		alloc,
-		[
-			pooled_copy(alloc, &folded_witness),
-			pooled_copy(alloc, &folded_monster),
-		],
-		round_sum,
-	);
+	let prover = bivariate_product_prover(alloc, [folded_witness, folded_monster], round_sum);
 
 	let ProveSingleOutput {
 		multilinear_evals,

@@ -7,9 +7,9 @@ use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_ip::mlecheck;
 use binius_ip_prover::sumcheck::{
-	common::SumcheckProver, mle_store::pooled_copy, multilinear_eval::multilinear_eval_prover,
+	common::SumcheckProver, multilinear_eval::multilinear_eval_prover,
 };
-use binius_math::{FieldBuffer, ntt::AdditiveNTT};
+use binius_math::{FieldVec, ntt::AdditiveNTT};
 
 use crate::{fri::FRIFoldProver, merkle_channel::MerkleIPProverChannel};
 
@@ -43,7 +43,7 @@ use crate::{fri::FRIFoldProver, merkle_channel::MerkleIPProverChannel};
 /// The verifier asserts that equality when it runs the matching opening.
 #[allow(clippy::too_many_arguments)]
 pub fn prove_mlecheck_basefold<A, F, P, NTT, Channel>(
-	witness: FieldBuffer<P>,
+	witness: FieldVec<P, A>,
 	eval_point: &[F],
 	eval_claim: F,
 	batch_challenge: Option<F>,
@@ -82,8 +82,7 @@ pub fn prove_mlecheck_basefold<A, F, P, NTT, Channel>(
 		fri_folder.receive_challenge(outer_challenge);
 	}
 
-	let mut sumcheck =
-		multilinear_eval_prover(alloc, pooled_copy(alloc, &witness), eval_point, eval_claim);
+	let mut sumcheck = multilinear_eval_prover(alloc, witness, eval_point, eval_claim);
 	for _ in 0..n_vars {
 		let mut round_coeffs_vec = sumcheck.execute();
 		let round_coeffs = round_coeffs_vec

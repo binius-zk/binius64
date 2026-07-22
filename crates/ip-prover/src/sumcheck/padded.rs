@@ -133,7 +133,6 @@ mod tests {
 	use super::*;
 	use crate::sumcheck::{
 		bivariate_product_evaluator::{BivariateProductEvaluator, bivariate_product_prover},
-		mle_store::pooled_copy,
 		prove::prove_single,
 		round_evaluator::SharedSumcheckProver,
 	};
@@ -150,8 +149,7 @@ mod tests {
 		let a = random_field_buffer::<P>(&mut *rng, n_vars);
 		let b = random_field_buffer::<P>(&mut *rng, n_vars);
 		let sum = inner_product_par(&a, &b);
-		let prover =
-			bivariate_product_prover(alloc, [pooled_copy(alloc, &a), pooled_copy(alloc, &b)], sum);
+		let prover = bivariate_product_prover(alloc, [a, b], sum);
 		(prover, sum)
 	}
 
@@ -238,11 +236,7 @@ mod tests {
 		let a = random_field_buffer::<P>(&mut rng, n_vars);
 		let b = random_field_buffer::<P>(&mut rng, n_vars);
 		let sum = inner_product_par(&a, &b);
-		let inner = bivariate_product_prover(
-			&alloc,
-			[pooled_copy(&alloc, &a), pooled_copy(&alloc, &b)],
-			sum,
-		);
+		let inner = bivariate_product_prover(&alloc, [a.clone(), b.clone()], sum);
 		let padded = PaddedSumcheckDecorator::new(inner, n_extra_vars);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());

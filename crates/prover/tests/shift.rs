@@ -191,7 +191,7 @@ pub fn evaluate_witness<F: BinaryField>(words: &[Word], r_j: &[F], r_y: &[F]) ->
 	let r_j_tensor = eq_ind_partial_eval::<F>(r_j);
 	let r_y_tensor = eq_ind_partial_eval::<F>(r_y);
 
-	let r_j_witness = fold_words::<_, F>(words, r_j_tensor.as_ref());
+	let r_j_witness = fold_words::<_, F, _>(&GlobalAllocator, words, r_j_tensor.as_ref());
 
 	inner_product_buffers(&r_j_witness, &r_y_tensor)
 }

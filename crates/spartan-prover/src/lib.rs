@@ -43,7 +43,7 @@ use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip_prover::{
 	channel::IPProverChannel,
-	sumcheck::{mle_store::pooled_copy, quadratic_mlecheck_prover, zk_mlecheck},
+	sumcheck::{quadratic_mlecheck_prover, zk_mlecheck},
 };
 use binius_math::{
 	FieldBuffer, FieldSlice,
@@ -426,8 +426,13 @@ where
 	Channel: IPProverChannel<F>,
 	A: Allocator,
 {
-	let mulcheck_witness =
-		wiring::build_mulcheck_witness(mul_constraints, public, precommit_packed, private_packed);
+	let mulcheck_witness = wiring::build_mulcheck_witness(
+		alloc,
+		mul_constraints,
+		public,
+		precommit_packed,
+		private_packed,
+	);
 
 	// Sample random evaluation point for mulcheck
 	let r_mulcheck = channel.sample_many(mask.n_vars());
@@ -435,11 +440,7 @@ where
 	// Prove the mul-gate zerocheck a * b - c = 0 over the shared store.
 	let mlecheck_prover = quadratic_mlecheck_prover(
 		alloc,
-		[
-			pooled_copy(alloc, &mulcheck_witness.a),
-			pooled_copy(alloc, &mulcheck_witness.b),
-			pooled_copy(alloc, &mulcheck_witness.c),
-		],
+		[mulcheck_witness.a, mulcheck_witness.b, mulcheck_witness.c],
 		|[a, b, c]| a * b - c, // composition
 		|[a, b, _c]| a * b,    // infinity_composition (quadratic term only)
 		r_mulcheck,

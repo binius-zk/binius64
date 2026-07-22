@@ -2,10 +2,11 @@
 
 use std::ops::{Deref, DerefMut};
 
+use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_utils::{random_access_sequence::RandomAccessSequence, rayon::prelude::*};
 
-use crate::{FieldBuffer, field_buffer::BufferData, line::extrapolate_line_packed};
+use crate::{FieldBuffer, FieldVec, field_buffer::BufferData, line::extrapolate_line_packed};
 
 /// Computes the partial evaluation of a multilinear on its highest variable, inplace.
 ///
@@ -36,28 +37,38 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: BufferData<P>>(
 /// Computes the partial evaluation of a multilinear on its highest variable, out of place.
 ///
 /// This is the out-of-place counterpart of [`fold_highest_var_inplace`].
-/// It reads `values` and returns a fresh half-size buffer, leaving the input untouched.
-/// Use it when the input is borrowed or must be preserved; otherwise prefer the in-place version.
+/// It reads `values` and writes the fresh half-size result directly into a buffer drawn from
+/// `alloc`, leaving the input untouched. Use it when the input is borrowed or must be preserved;
+/// otherwise prefer the in-place version.
 ///
 /// ## Preconditions
 ///
 /// * `values.log_len() >= 1` (buffer must have at least 2 elements)
-pub fn fold_highest_var<P: PackedField, Data: Deref<Target = [P]>>(
+pub fn fold_highest_var<A: Allocator, P: PackedField, Data: Deref<Target = [P]>>(
+	alloc: &A,
 	values: &FieldBuffer<P, Data>,
 	scalar: P::Scalar,
-) -> FieldBuffer<P> {
+) -> FieldVec<P, A> {
 	assert!(values.log_len() > 0, "precondition: buffer must have at least one variable");
 
 	// The two halves are the multilinear specialized to 0 and to 1 on the highest variable.
 	let broadcast_scalar = P::broadcast(scalar);
 	let (lo, hi) = values.split_half_ref();
 
-	// Interpolate the line through each (lo, hi) pair at the challenge into a fresh buffer.
-	let folded = (lo.as_ref(), hi.as_ref())
+	// Interpolate the line through each (lo, hi) pair at the challenge directly into a fresh buffer
+	// drawn from the allocator, writing the uninitialized spare capacity in parallel rather than
+	// zero-filling first.
+	let len = lo.as_ref().len();
+	let mut data = alloc.alloc::<P>(len);
+	let spare = &mut data.spare_capacity_mut()[..len];
+	(spare, lo.as_ref(), hi.as_ref())
 		.into_par_iter()
-		.map(|(&lo_i, &hi_i)| extrapolate_line_packed(lo_i, hi_i, broadcast_scalar))
-		.collect();
-	FieldBuffer::new(values.log_len() - 1, folded)
+		.for_each(|(out, &lo_i, &hi_i)| {
+			out.write(extrapolate_line_packed(lo_i, hi_i, broadcast_scalar));
+		});
+	// SAFETY: the parallel loop initialized all `len` slots.
+	unsafe { data.set_len(len) };
+	FieldBuffer::new(values.log_len() - 1, data)
 }
 
 /// Computes the fold high of a binary multilinear with a fold tensor.
@@ -120,6 +131,7 @@ pub fn binary_fold_high<P, DataOut, DataIn>(
 mod tests {
 	use std::iter::repeat_with;
 
+	use binius_compute::GlobalAllocator;
 	use rand::prelude::*;
 
 	use super::*;
@@ -158,7 +170,7 @@ mod tests {
 			let challenge = random_scalars::<F>(&mut rng, 1)[0];
 
 			// Out-of-place: leaves the input untouched, returns a fresh buffer.
-			let out_of_place = fold_highest_var(&multilinear, challenge);
+			let out_of_place = fold_highest_var(&GlobalAllocator, &multilinear, challenge);
 
 			// In-place reference: fold a copy and compare.
 			let mut in_place = multilinear;

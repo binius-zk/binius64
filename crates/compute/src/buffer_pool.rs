@@ -196,6 +196,18 @@ impl<T: Clone> PoolVec<'_, T> {
 	}
 }
 
+impl<T: Clone> Clone for PoolVec<'_, T> {
+	/// Clones into a fresh block drawn from the same pool, so the clone is itself a genuine pooled
+	/// buffer whose [`Drop`] reclaims correctly. (A `#[derive]`d clone would duplicate the inner
+	/// `Vec` into a plain, non-pool allocation, which the reclaiming `Drop` must never hand back to
+	/// the free list.)
+	fn clone(&self) -> Self {
+		let mut cloned = self.pool.alloc_vec::<T>(self.data.len());
+		cloned.extend_from_slice(&self.data);
+		cloned
+	}
+}
+
 impl<T> Drop for PoolVec<'_, T> {
 	fn drop(&mut self) {
 		let mut data = mem::take(&mut self.data);

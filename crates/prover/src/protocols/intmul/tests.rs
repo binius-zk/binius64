@@ -29,7 +29,8 @@ pub fn evaluate_witness(words: &[Word], eval_point: &[F]) -> F {
 	let prefix_tensor = eq_ind_partial_eval::<F>(prefix);
 	let suffix_tensor = eq_ind_partial_eval::<F>(suffix);
 
-	let partially_folded_witness = fold_words::<_, F>(words, prefix_tensor.as_ref());
+	let partially_folded_witness =
+		fold_words::<_, F, _>(&GlobalAllocator, words, prefix_tensor.as_ref());
 
 	inner_product_buffers(&partially_folded_witness, &suffix_tensor)
 }

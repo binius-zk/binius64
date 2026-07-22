@@ -213,6 +213,7 @@ impl<F: BinaryField + From<B8>> B8ToExtMulMap<F> {
 mod test {
 	use std::iter::repeat_with;
 
+	use binius_compute::GlobalAllocator;
 	use binius_field::{BinaryField128bGhash as B128, Field, Random};
 	use binius_math::{
 		BinarySubspace, FieldBuffer,
@@ -300,9 +301,9 @@ mod test {
 			lagrange_evals_scalars(&verifier_input_domain, first_sumcheck_challenge);
 		let folder = BitAxisFolder::new(&lagrange_evals);
 
-		let folded_first_mle: FieldBuffer<B128> = folder.fold(&mlv_1);
-		let folded_second_mle: FieldBuffer<B128> = folder.fold(&mlv_2);
-		let folded_third_mle: FieldBuffer<B128> = folder.fold(&mlv_3);
+		let folded_first_mle: FieldBuffer<B128> = folder.fold(&GlobalAllocator, &mlv_1);
+		let folded_second_mle: FieldBuffer<B128> = folder.fold(&GlobalAllocator, &mlv_2);
+		let folded_third_mle: FieldBuffer<B128> = folder.fold(&GlobalAllocator, &mlv_3);
 
 		let upcasted_small_field_challenges: Vec<_> = small_field_zerocheck_challenges
 			.into_iter()

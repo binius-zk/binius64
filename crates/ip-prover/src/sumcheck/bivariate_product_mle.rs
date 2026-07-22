@@ -2,9 +2,10 @@
 
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
+use binius_math::FieldVec;
 
 use super::{
-	mle_store::{MleStore, PooledColumn},
+	mle_store::MleStore,
 	quadratic_mle_evaluator::{QuadraticMleEvaluator, quadratic_mlecheck_prover},
 	round_evaluator::SharedMleCheckProver,
 };
@@ -55,7 +56,7 @@ use crate::sumcheck::common::MleCheckProver;
 /// [Gruen24]: <https://eprint.iacr.org/2024/108>
 pub fn new<'alloc, A, F, P>(
 	alloc: &'alloc A,
-	multilinears: [PooledColumn<A, P>; 2],
+	multilinears: [FieldVec<P, A>; 2],
 	eval_point: Vec<F>,
 	eval_claim: F,
 ) -> impl MleCheckProver<F> + 'alloc
@@ -91,7 +92,7 @@ where
 /// A prover whose reduction emits the low half's evaluation, then the high half's.
 pub fn new_split_half<'alloc, A, F, P>(
 	alloc: &'alloc A,
-	buffer: PooledColumn<A, P>,
+	buffer: FieldVec<P, A>,
 	eval_point: Vec<F>,
 	eval_claim: F,
 ) -> impl MleCheckProver<F> + 'alloc
@@ -125,9 +126,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::sumcheck::{
-		MleToSumCheckDecorator, mle_store::pooled_copy, prove::prove_single, prove_single_mlecheck,
-	};
+	use crate::sumcheck::{MleToSumCheckDecorator, prove::prove_single, prove_single_mlecheck};
 
 	fn test_mlecheck_prove_verify<F, P>(
 		prover: impl MleCheckProver<F>,
@@ -289,10 +288,7 @@ mod tests {
 		// Create the prover
 		let mlecheck_prover = new(
 			&alloc,
-			[
-				pooled_copy(&alloc, &multilinear_a),
-				pooled_copy(&alloc, &multilinear_b),
-			],
+			[multilinear_a.clone(), multilinear_b.clone()],
 			eval_point.clone(),
 			eval_claim,
 		);
@@ -308,10 +304,7 @@ mod tests {
 		// Create another prover for the wrapped test
 		let mlecheck_prover = new(
 			&alloc,
-			[
-				pooled_copy(&alloc, &multilinear_a),
-				pooled_copy(&alloc, &multilinear_b),
-			],
+			[multilinear_a.clone(), multilinear_b.clone()],
 			eval_point.clone(),
 			eval_claim,
 		);

@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_compute::{Allocator, BufferPool};
+use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
 use binius_hash::StdHashSuite;
@@ -9,13 +9,13 @@ use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOP
 use binius_ip_prover::sumcheck::{
 	MleToSumCheckEvaluator,
 	batch::batch_prove_and_write_evals,
-	mle_store::{MleStore, pooled_copy},
+	mle_store::MleStore,
 	quadratic_mle_evaluator::QuadraticMleEvaluator,
 	round_evaluator::{SharedSumcheckProver, SumcheckRoundEvaluator},
 };
 use binius_m4_verifier::{IOPVerifier, Verifier};
 use binius_math::{
-	BinarySubspace, FieldBuffer,
+	BinarySubspace, FieldBuffer, FieldVec,
 	inner_product::inner_product,
 	multilinear::eq::eq_ind_partial_eval_scalars,
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
@@ -525,9 +525,11 @@ impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 		// The constraint tensor is the same for every operand of this operation, so expand it once.
 		let r_x_tensor = eq_ind_partial_eval_scalars::<B128>(&self.r_x);
 		for (column, &claim) in self.columns.iter().zip(&self.operand_claims) {
-			let col = store.push_owned(pooled_copy(
+			let col = store.push_owned(operand_rho_multilinear::<A, P>(
 				alloc,
-				&operand_rho_multilinear::<P>(column, lagrange, &r_x_tensor),
+				column,
+				lagrange,
+				&r_x_tensor,
 			));
 			let evaluator = QuadraticMleEvaluator::new(
 				[col],
@@ -753,21 +755,24 @@ impl RerandomizedOperations<'_> {
 ///
 /// Its evaluation at the operation's instance point equals that operation's oblong operand claim.
 /// So the re-randomization sumcheck can transport that claim to a shared instance point.
-fn operand_rho_multilinear<P>(
+fn operand_rho_multilinear<A, P>(
+	alloc: &A,
 	column: &[Word],
 	lagrange: &[B128],
 	r_x_tensor: &[B128],
-) -> FieldBuffer<P>
+) -> FieldVec<P, A>
 where
+	A: Allocator,
 	P: PackedField<Scalar = B128>,
 {
 	// Fold each word's bits at the univariate challenge: one scalar per row, laid out
 	// constraint-major.
 	// Folding into scalars keeps the row indexing flat for the constraint fold.
-	let folded_rows = fold_words::<B128, B128>(column, lagrange);
+	let folded_rows = fold_words::<B128, B128, _>(alloc, column, lagrange);
 	let folded_rows = folded_rows.as_ref();
 
-	// Produce the packed instance-axis multilinear directly, one packed element per parallel task.
+	// Produce the packed instance-axis multilinear directly into the allocator's buffer, one packed
+	// element per parallel task.
 	// Each element's lanes are the constraint folds of consecutive instances.
 	// Lanes past the instance count are the multilinear's zero padding.
 	//
@@ -777,10 +782,14 @@ where
 	let n_instances = folded_rows.len() / n_constraints;
 	let log_instances = checked_log_2(n_instances);
 	let log_packed = log_instances.saturating_sub(P::LOG_WIDTH);
-	let packed = (0..1usize << log_packed)
-		.into_par_iter()
-		.map(|packed_index| {
-			P::from_scalars((0..P::WIDTH).map(|lane| {
+	let packed_len = 1usize << log_packed;
+	let mut packed = alloc.alloc::<P>(packed_len);
+	packed
+		.spare_capacity_mut()
+		.par_iter_mut()
+		.enumerate()
+		.for_each(|(packed_index, slot)| {
+			slot.write(P::from_scalars((0..P::WIDTH).map(|lane| {
 				let instance = (packed_index << P::LOG_WIDTH) | lane;
 				if instance < n_instances {
 					r_x_tensor
@@ -793,9 +802,10 @@ where
 				} else {
 					B128::ZERO
 				}
-			}))
-		})
-		.collect::<Vec<P>>();
+			})));
+		});
+	// Safety: every packed slot is written exactly once by the parallel loop above.
+	unsafe { packed.set_len(packed_len) };
 
 	FieldBuffer::new(log_instances, packed)
 }

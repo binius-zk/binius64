@@ -606,7 +606,7 @@ mod tests {
 			.isomorphic::<B128>()
 			.reduce_dim(SKIPPED_VARS);
 		let lagrange = lagrange_evals_scalars(&univariate_domain, z_challenge);
-		let folded: FieldBuffer<B128> = BitAxisFolder::new(&lagrange).fold(col);
+		let folded: FieldBuffer<B128> = BitAxisFolder::new(&lagrange).fold(&GlobalAllocator, col);
 		evaluate(&folded, eval_point)
 	}
 

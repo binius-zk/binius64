@@ -367,7 +367,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 
 		let eq_tensor = eq_ind_partial_eval_scalars(&outer_challenges);
 
-		let mut combined = FieldBuffer::<P>::zeros(max_n);
+		let mut combined = FieldBuffer::<P>::zeros_in(alloc, max_n);
 		let mut s_prime = F::ZERO;
 		for (fri_oracle, witness_prime, eq_i, alpha_i) in
 			izip!(fri_params.input_oracles(), witness_primes, eq_tensor, alphas)

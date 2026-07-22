@@ -4,10 +4,10 @@
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::FieldSlice;
+use binius_math::{FieldSlice, FieldVec};
 
 use super::{
-	mle_store::{ColId, EvaluationChunk, MleStore, PooledColumn},
+	mle_store::{ColId, EvaluationChunk, MleStore},
 	round_evals::RoundEvals1,
 	round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
 };
@@ -107,7 +107,7 @@ where
 /// Panics if the witness length does not match the evaluation point length.
 pub fn multilinear_eval_prover<'alloc, A, F, P>(
 	alloc: &'alloc A,
-	witness: PooledColumn<A, P>,
+	witness: FieldVec<P, A>,
 	eval_point: &[F],
 	eval_claim: F,
 ) -> SharedMleCheckProver<'alloc, A, F, P, MultilinearEvalEvaluator>
@@ -146,7 +146,7 @@ mod tests {
 
 	use super::*;
 	use crate::sumcheck::{
-		common::SumcheckProver, mle_store::pooled_copy, prove_single_mlecheck,
+		common::SumcheckProver, prove_single_mlecheck,
 		quadratic_mle_evaluator::quadratic_mlecheck_prover,
 	};
 
@@ -170,10 +170,10 @@ mod tests {
 		let eval_claim = evaluate(&witness, &eval_point);
 
 		let mut eval_prover =
-			multilinear_eval_prover(&alloc, pooled_copy(&alloc, &witness), &eval_point, eval_claim);
+			multilinear_eval_prover(&alloc, witness.clone(), &eval_point, eval_claim);
 		let mut quadratic_prover = quadratic_mlecheck_prover(
 			&alloc,
-			[pooled_copy(&alloc, &witness)],
+			[witness],
 			|[a]: [P; 1]| a,
 			|[_a]: [P; 1]| P::zero(),
 			eval_point,
@@ -213,8 +213,7 @@ mod tests {
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 		let eval_claim = evaluate(&witness, &eval_point);
 
-		let prover =
-			multilinear_eval_prover(&alloc, pooled_copy(&alloc, &witness), &eval_point, eval_claim);
+		let prover = multilinear_eval_prover(&alloc, witness.clone(), &eval_point, eval_claim);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let output = prove_single_mlecheck(prover, &mut prover_transcript);
@@ -249,8 +248,7 @@ mod tests {
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 		let eval_claim = evaluate(&witness, &eval_point);
 
-		let mut prover =
-			multilinear_eval_prover(&alloc, pooled_copy(&alloc, &witness), &eval_point, eval_claim);
+		let mut prover = multilinear_eval_prover(&alloc, witness, &eval_point, eval_claim);
 		assert_eq!(prover.round_claim(), vec![eval_claim]);
 
 		for _ in 0..n_vars {

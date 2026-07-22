@@ -3,10 +3,11 @@
 use binius_compute::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
+use binius_math::FieldVec;
 use itertools::izip;
 
 use super::{
-	mle_store::{ColId, EvaluationChunk, MleStore, PooledColumn},
+	mle_store::{ColId, EvaluationChunk, MleStore},
 	round_evals::WideRoundEvals2,
 	round_evaluator::{SharedSumcheckProver, SumcheckRoundEvaluator},
 };
@@ -38,7 +39,7 @@ impl BivariateProductEvaluator {
 /// two evaluations in the given order.
 pub fn bivariate_product_prover<'alloc, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 	alloc: &'alloc A,
-	multilinears: [PooledColumn<A, P>; 2],
+	multilinears: [FieldVec<P, A>; 2],
 	sum: F,
 ) -> SharedSumcheckProver<'alloc, A, P, BivariateProductEvaluator> {
 	assert_eq!(
@@ -123,7 +124,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::sumcheck::{mle_store::pooled_copy, prove::prove_single};
+	use crate::sumcheck::prove::prove_single;
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
 
@@ -145,10 +146,7 @@ mod tests {
 
 		let prover = bivariate_product_prover(
 			&alloc,
-			[
-				pooled_copy(&alloc, &multilinear_a),
-				pooled_copy(&alloc, &multilinear_b),
-			],
+			[multilinear_a.clone(), multilinear_b.clone()],
 			expected_sum,
 		);
 

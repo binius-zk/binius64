@@ -6,7 +6,7 @@ use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim, sumcheck::RoundCoeffs};
 use binius_math::{
-	FieldBuffer, line::extrapolate_line_packed, multilinear::eq::eq_ind_partial_eval,
+	FieldBuffer, FieldVec, line::extrapolate_line_packed, multilinear::eq::eq_ind_partial_eval,
 };
 use binius_utils::rayon::iter::{
 	IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
@@ -19,7 +19,7 @@ use crate::{
 		batch::batch_prove_mle_and_write_evals,
 		common::{MleCheckProver, SumcheckProver},
 		frac_add_mle,
-		mle_store::{ColId, MleStore, PooledColumn, pooled_copy},
+		mle_store::{ColId, MleStore},
 		round_evaluator::{MleCheckRoundEvaluator, SharedMleCheckProver},
 	},
 };
@@ -38,7 +38,7 @@ pub type LayerProver<'a, A, F, P> =
 	SharedMleCheckProver<'a, A, F, P, Box<dyn MleCheckRoundEvaluator<A, F, P> + 'a>>;
 
 /// A numerator/denominator pair of pooled column buffers.
-type PooledFractionalBuffer<A, P> = (PooledColumn<A, P>, PooledColumn<A, P>);
+type PooledFractionalBuffer<A, P> = (FieldVec<P, A>, FieldVec<P, A>);
 
 /// Prover for the fractional addition protocol.
 ///
@@ -49,6 +49,18 @@ pub struct FracAddCheckProver<'a, A: Allocator, P: PackedField> {
 	layers: Vec<PooledFractionalBuffer<A, P>>,
 	/// Allocator the layer buffers are drawn from.
 	pub(crate) alloc: &'a A,
+}
+
+impl<A: Allocator, P: PackedField> Clone for FracAddCheckProver<'_, A, P>
+where
+	A::Vec<P>: Clone,
+{
+	fn clone(&self) -> Self {
+		Self {
+			layers: self.layers.clone(),
+			alloc: self.alloc,
+		}
+	}
 }
 
 impl<'a, A, F, P> FracAddCheckProver<'a, A, P>
@@ -562,12 +574,12 @@ where
 	// packed, so the store owns them directly.
 	let mut selector_store = MleStore::new(k, alloc);
 	let selector_cols = [
-		FieldBuffer::<P>::from_values(&num_0s),
-		FieldBuffer::<P>::from_values(&num_1s),
-		FieldBuffer::<P>::from_values(&den_0s),
-		FieldBuffer::<P>::from_values(&den_1s),
+		FieldBuffer::<P>::from_values_in(alloc, &num_0s),
+		FieldBuffer::<P>::from_values_in(alloc, &num_1s),
+		FieldBuffer::<P>::from_values_in(alloc, &den_0s),
+		FieldBuffer::<P>::from_values_in(alloc, &den_1s),
 	]
-	.map(|buffer| selector_store.push_owned(pooled_copy(alloc, &buffer)));
+	.map(|buffer| selector_store.push_owned(buffer));
 	let (selector_num, selector_den) = frac_add_mle::evaluators::<A, F, P>(selector_cols);
 	let selector_claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<A, F, P> + 'a>); 2] = [
 		(num_eval, Box::new(selector_num)),
@@ -674,7 +686,6 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::sumcheck::mle_store::pooled_copy;
 
 	fn test_frac_add_check_prove_verify_helper<P: PackedField>(n: usize, k: usize) {
 		let mut rng = StdRng::seed_from_u64(0);
@@ -685,11 +696,8 @@ mod tests {
 		let witness_den = random_field_buffer::<P>(&mut rng, n + k);
 
 		// 2. Create prover (computes fractional-add layers)
-		let (prover, sums) = FracAddCheckProver::new(
-			k,
-			&alloc,
-			(pooled_copy(&alloc, &witness_num), pooled_copy(&alloc, &witness_den)),
-		);
+		let (prover, sums) =
+			FracAddCheckProver::new(k, &alloc, (witness_num.clone(), witness_den.clone()));
 
 		// 3. Generate random n-dimensional challenge point
 		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
@@ -754,11 +762,8 @@ mod tests {
 		let witness_den = random_field_buffer::<P>(&mut rng, n + k);
 
 		// Create prover (computes fractional-add layers)
-		let (_prover, sums) = FracAddCheckProver::new(
-			k,
-			&alloc,
-			(pooled_copy(&alloc, &witness_num), pooled_copy(&alloc, &witness_den)),
-		);
+		let (_prover, sums) =
+			FracAddCheckProver::new(k, &alloc, (witness_num.clone(), witness_den.clone()));
 
 		// For each index i in the sums layer, verify it equals the fractional sum of witness values
 		// at indices i + z * 2^n for z in 0..2^k (strided access, not contiguous)
@@ -843,11 +848,7 @@ mod tests {
 		let (provers, individual_sums): (Vec<_>, Vec<_>) = witnesses
 			.iter()
 			.map(|witness| {
-				FracAddCheckProver::new(
-					n_layers,
-					&alloc,
-					(pooled_copy(&alloc, &witness.0), pooled_copy(&alloc, &witness.1)),
-				)
+				FracAddCheckProver::new(n_layers, &alloc, (witness.0.clone(), witness.1.clone()))
 			})
 			.unzip();
 
@@ -977,11 +978,7 @@ mod tests {
 		let (provers, individual_sums): (Vec<_>, Vec<_>) = witnesses
 			.iter()
 			.map(|witness| {
-				FracAddCheckProver::new(
-					n_layers,
-					&alloc,
-					(pooled_copy(&alloc, &witness.0), pooled_copy(&alloc, &witness.1)),
-				)
+				FracAddCheckProver::new(n_layers, &alloc, (witness.0.clone(), witness.1.clone()))
 			})
 			.unzip();
 

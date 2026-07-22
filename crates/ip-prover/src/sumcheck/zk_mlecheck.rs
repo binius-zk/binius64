@@ -669,7 +669,7 @@ mod tests {
 		use binius_ip::{mlecheck::libra_eval, sumcheck::verify};
 		use binius_math::{inner_product::inner_product_par, multilinear::evaluate::evaluate};
 
-		use crate::sumcheck::{bivariate_product_prover, mle_store::pooled_copy, prove_single};
+		use crate::sumcheck::{bivariate_product_prover, prove_single};
 
 		let mut rng = StdRng::seed_from_u64(0);
 		let n_vars = 6;
@@ -692,14 +692,8 @@ mod tests {
 		let claimed_sum = inner_product_par(&mask_buffer, &libra_eval_tensor);
 
 		// Create the bivariate product sumcheck prover
-		let prover = bivariate_product_prover(
-			&alloc,
-			[
-				pooled_copy(&alloc, &mask_buffer),
-				pooled_copy(&alloc, &libra_eval_tensor),
-			],
-			claimed_sum,
-		);
+		let prover =
+			bivariate_product_prover(&alloc, [mask_buffer.clone(), libra_eval_tensor], claimed_sum);
 
 		// Run the proving protocol
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());

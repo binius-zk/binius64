@@ -24,7 +24,7 @@ use std::iter;
 use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_math::{
-	FieldBuffer, FieldSlice,
+	FieldBuffer, FieldSlice, FieldVec,
 	line::extrapolate_line_packed,
 	multilinear::fold::{fold_highest_var, fold_highest_var_inplace},
 };
@@ -32,20 +32,6 @@ use binius_utils::rayon;
 use itertools::izip;
 
 use super::gruen32::Gruen32;
-
-/// A column buffer whose backing store is drawn from an [`Allocator`] `A`.
-///
-/// For `A = &BufferPool` this is a pooled buffer; for `A = GlobalAllocator` it is an ordinary
-/// `Vec`-backed buffer.
-pub type PooledColumn<A, P> = FieldBuffer<P, <A as Allocator>::Vec<P>>;
-
-/// Allocates a zeroed buffer of `log_len` variables from `alloc`.
-pub fn pooled_zeros<A: Allocator, P: PackedField>(alloc: &A, log_len: usize) -> PooledColumn<A, P> {
-	let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
-	let mut data = alloc.alloc::<P>(packed_len);
-	data.resize(packed_len, P::default());
-	FieldBuffer::new(log_len, data)
-}
 
 /// Copies `src` into a buffer freshly allocated from `alloc`.
 ///
@@ -56,25 +42,10 @@ pub fn pooled_zeros<A: Allocator, P: PackedField>(alloc: &A, log_len: usize) -> 
 pub fn pooled_copy<A: Allocator, P: PackedField, Data: std::ops::Deref<Target = [P]>>(
 	alloc: &A,
 	src: &FieldBuffer<P, Data>,
-) -> PooledColumn<A, P> {
+) -> FieldVec<P, A> {
 	let mut data = alloc.alloc::<P>(src.as_ref().len());
 	data.extend_from_slice(src.as_ref());
 	FieldBuffer::new(src.log_len(), data)
-}
-
-/// Folds `values` on its highest variable into a freshly allocated buffer from `alloc`.
-///
-/// The intermediate `Vec` produced by the fold is copied into the allocator's buffer; an
-/// allocator-aware fold would write the result directly into that buffer.
-fn fold_into_pooled<A: Allocator, P: PackedField, Data: std::ops::Deref<Target = [P]>>(
-	alloc: &A,
-	values: &FieldBuffer<P, Data>,
-	scalar: P::Scalar,
-) -> PooledColumn<A, P> {
-	let folded = fold_highest_var(values, scalar);
-	let mut data = alloc.alloc::<P>(folded.as_ref().len());
-	data.extend_from_slice(folded.as_ref());
-	FieldBuffer::new(folded.log_len(), data)
 }
 
 /// Identifier of a column held by an [`MleStore`].
@@ -107,14 +78,14 @@ impl EqId {
 /// made to separate them.
 enum Column<'a, A: Allocator, P: PackedField> {
 	Borrowed(FieldSlice<'a, P>),
-	Owned(PooledColumn<A, P>),
+	Owned(FieldVec<P, A>),
 	/// A parent buffer whose low and high halves are two adjacent columns.
 	///
 	/// Pushed by [`MleStore::push_split_half`]. The buffer keeps its original length for the life
 	/// of the store; each [`MleStore::fold`] advances both halves in place within it, and the two
 	/// columns are read as the front `2^n_vars` scalars of the low and high halves. This shares one
 	/// allocation between the sibling columns with no copy at any point.
-	SplitHalf(PooledColumn<A, P>),
+	SplitHalf(FieldVec<P, A>),
 }
 
 /// A store of equal-length multilinear columns shared by a group of round evaluators.
@@ -165,7 +136,7 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 	}
 
 	/// Pushes an owned column and returns its identifier.
-	pub fn push_owned(&mut self, column: PooledColumn<A, P>) -> ColId {
+	pub fn push_owned(&mut self, column: FieldVec<P, A>) -> ColId {
 		// precondition
 		assert_eq!(
 			column.log_len(),
@@ -191,7 +162,7 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 	/// Each [`Self::fold`] advances both halves in place within the buffer. `buffer` splits on its
 	/// highest variable, so its low half fixes that variable to 0 and its high half to 1 —
 	/// matching the store's high-to-low fold order.
-	pub fn push_split_half(&mut self, buffer: PooledColumn<A, P>) -> [ColId; 2] {
+	pub fn push_split_half(&mut self, buffer: FieldVec<P, A>) -> [ColId; 2] {
 		// precondition
 		assert_eq!(
 			buffer.log_len(),
@@ -301,7 +272,7 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 				Column::Borrowed(slice) => {
 					// The first fold of a borrowed column writes into a fresh half-size owned
 					// buffer, avoiding an up-front copy of the full column.
-					*column = Column::Owned(fold_into_pooled(alloc, slice, challenge));
+					*column = Column::Owned(fold_highest_var(alloc, slice, challenge));
 				}
 				Column::SplitHalf(buffer) => {
 					// Fold each half on its own highest variable in place. The two halves are the
@@ -448,7 +419,7 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 			.columns
 			.iter()
 			.map(|column| match column {
-				Column::Borrowed(_) => Some(pooled_zeros(alloc, n_vars)),
+				Column::Borrowed(_) => Some(FieldBuffer::zeros_in(alloc, n_vars)),
 				_ => None,
 			})
 			.collect::<Vec<_>>();
@@ -882,15 +853,8 @@ mod tests {
 			.iter()
 			.map(|col| store.push(col.to_ref()))
 			.collect::<Vec<_>>();
-		col_ids.push(
-			store.push_owned(pooled_copy(&alloc, &random_field_buffer::<P>(&mut rng, n_vars))),
-		);
-		col_ids.extend(
-			store.push_split_half(pooled_copy(
-				&alloc,
-				&random_field_buffer::<P>(&mut rng, n_vars + 1),
-			)),
-		);
+		col_ids.push(store.push_owned(random_field_buffer::<P>(&mut rng, n_vars)));
+		col_ids.extend(store.push_split_half(random_field_buffer::<P>(&mut rng, n_vars + 1)));
 
 		let eq_ids = (0..2)
 			.map(|_| store.register_eq_tracker(&random_scalars::<F>(&mut rng, n_vars)))
@@ -950,8 +914,8 @@ mod tests {
 				.iter()
 				.map(|col| store.push(col.to_ref()))
 				.collect::<Vec<_>>();
-			col_ids.push(store.push_owned(pooled_copy(&alloc, &owned)));
-			col_ids.extend(store.push_split_half(pooled_copy(&alloc, &split)));
+			col_ids.push(store.push_owned(owned.clone()));
+			col_ids.extend(store.push_split_half(split.clone()));
 			let eq_ids = eq_points
 				.iter()
 				.map(|point| store.register_eq_tracker(point))

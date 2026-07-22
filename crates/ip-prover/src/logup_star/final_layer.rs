@@ -13,16 +13,18 @@
 //!
 //! This is the prover mirror of the verifier's final layer in [`binius_ip::logup_star`].
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
-use binius_math::{FieldBuffer, inner_product::inner_product_par, line::extrapolate_line};
+use binius_math::{
+	FieldBuffer, FieldVec, inner_product::inner_product_par, line::extrapolate_line,
+};
 
 use crate::{
 	channel::IPProverChannel,
 	fracaddcheck::{FracAddCheckProver, FracEvalClaim},
 	sumcheck::{
 		batch::batch_prove, bivariate_product_evaluator::BivariateProductEvaluator,
-		mle_store::pooled_copy, round_evaluator::SumcheckRoundEvaluator,
+		round_evaluator::SumcheckRoundEvaluator,
 	},
 };
 
@@ -118,8 +120,8 @@ where
 	// Y_0, Y_1 are already store columns (the fractional numerator halves), so only the table
 	// halves T_0, T_1 are pushed as new columns. Only Y_0 is needed here, to form e_0; e_1 follows
 	// as e - e_0.
-	let [y_0, _y_1] = split_halves(pushforward);
-	let [t_0, t_1] = split_halves(table);
+	let [y_0, _y_1] = split_halves(alloc, pushforward);
+	let [t_0, t_1] = split_halves(alloc, table);
 
 	// e_0 is the first half's product sum.
 	// Only e_0 is sent, since the verifier recovers e_1 = e - e_0.
@@ -131,8 +133,8 @@ where
 
 	// S_3a, S_3b: each half is a bivariate product over the shared Y column and the pushed T
 	// column.
-	let t_0_col = prover.push_owned_column(pooled_copy(alloc, &t_0));
-	let t_1_col = prover.push_owned_column(pooled_copy(alloc, &t_1));
+	let t_0_col = prover.push_owned_column(t_0);
+	let t_1_col = prover.push_owned_column(t_1);
 	let product_0 = BivariateProductEvaluator::new([y_0_col, t_0_col]);
 	prover.add_evaluator(e_0, Box::new(product_0) as Box<dyn SumcheckRoundEvaluator<A, F, P> + 'a>);
 	let product_1 = BivariateProductEvaluator::new([y_1_col, t_1_col]);
@@ -172,11 +174,20 @@ where
 /// Split a multilinear on its highest variable into owned low and high halves.
 ///
 /// The low half fixes the highest variable to 0, the high half to 1.
-fn split_halves<P: PackedField>(buffer: &FieldBuffer<P>) -> [FieldBuffer<P>; 2] {
-	// split_half_ref borrows the two halves; copy each into an owned buffer for the sub-provers.
+fn split_halves<A: Allocator, P: PackedField>(
+	alloc: &A,
+	buffer: &FieldBuffer<P>,
+) -> [FieldVec<P, A>; 2] {
+	// split_half_ref borrows the two halves; copy each straight into an allocator buffer for the
+	// sub-provers, so the split is a single copy rather than a `Vec` build followed by a pooled
+	// copy.
 	let (low, high) = buffer.split_half_ref();
+	let mut low_data = alloc.alloc::<P>(low.as_ref().len());
+	low_data.extend_from_slice(low.as_ref());
+	let mut high_data = alloc.alloc::<P>(high.as_ref().len());
+	high_data.extend_from_slice(high.as_ref());
 	[
-		FieldBuffer::new(low.log_len(), low.as_ref().into()),
-		FieldBuffer::new(high.log_len(), high.as_ref().into()),
+		FieldBuffer::new(low.log_len(), low_data),
+		FieldBuffer::new(high.log_len(), high_data),
 	]
 }

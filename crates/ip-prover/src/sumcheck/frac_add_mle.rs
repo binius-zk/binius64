@@ -70,7 +70,7 @@ mod tests {
 		MleToSumCheckEvaluator,
 		batch::batch_prove,
 		common::SumcheckProver,
-		mle_store::{MleStore, pooled_copy},
+		mle_store::MleStore,
 		round_evaluator::{SharedSumcheckProver, SumcheckRoundEvaluator},
 	};
 
@@ -197,7 +197,7 @@ mod tests {
 
 		let mut store = MleStore::new(n_vars, &alloc);
 		let cols = [num_a.clone(), num_b.clone(), den_a.clone(), den_b.clone()]
-			.map(|col| store.push_owned(pooled_copy(&alloc, &col)));
+			.map(|col| store.push_owned(col));
 		let (num_evaluator, den_evaluator) = evaluators(cols);
 
 		// Register the shared point's eq tracker for the sumcheck wrappers (a plain sumcheck prover

@@ -170,21 +170,15 @@ where
 	let circuits_guard = tracing::debug_span!("Build fracadd circuits").entered();
 	let (looker_provers, looker_roots): (Vec<_>, Vec<_>) = std::iter::zip(lookers, numerators)
 		.map(|(looker, numerator)| {
-			let den = witness::looker_denominator::<F, P>(c, looker.index);
-			let (prover, root) = FracAddCheckProver::new(
-				n,
-				alloc,
-				(pooled_copy(alloc, &numerator), pooled_copy(alloc, &den)),
-			);
+			let den = witness::looker_denominator::<A, F, P>(alloc, c, looker.index);
+			let (prover, root) =
+				FracAddCheckProver::new(n, alloc, (pooled_copy(alloc, &numerator), den));
 			(prover, (root.0.get(0), root.1.get(0)))
 		})
 		.unzip();
-	let table_den = witness::table_denominator::<F, P>(c, m);
-	let (table_prover, table_root) = FracAddCheckProver::new(
-		m,
-		alloc,
-		(pooled_copy(alloc, pushforward), pooled_copy(alloc, &table_den)),
-	);
+	let table_den = witness::table_denominator::<A, F, P>(alloc, c, m);
+	let (table_prover, table_root) =
+		FracAddCheckProver::new(m, alloc, (pooled_copy(alloc, pushforward), table_den));
 	let num_r = table_root.0.get(0);
 	let den_r = table_root.1.get(0);
 
@@ -206,8 +200,8 @@ where
 		log_lookers,
 		alloc,
 		(
-			pooled_copy(alloc, &FieldBuffer::<P>::from_values(&root_nums)),
-			pooled_copy(alloc, &FieldBuffer::<P>::from_values(&root_dens)),
+			FieldBuffer::<P>::from_values_in(alloc, &root_nums),
+			FieldBuffer::<P>::from_values_in(alloc, &root_dens),
 		),
 	);
 	let num_l = top_root.0.get(0);
