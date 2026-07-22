@@ -21,8 +21,15 @@ thiserror.workspace = true
 trait-set.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
+rand = { workspace = true, features = ["thread_rng"] }
 
 [features]
 default = []
 rayon = ["dep:rayon"]
 platform-diagnostics = ["dep:regex"]
+
+[[bench]]
+name = "par_rand"
+harness = false
+required-features = ["rayon"]
