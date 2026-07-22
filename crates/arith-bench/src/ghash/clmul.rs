@@ -91,7 +91,19 @@ fn shift_left_1<U: Underlier + OpsClmul>(x: U) -> U {
 /// XOR-accumulated products and reduced once.
 #[inline]
 pub fn mul_x_wide<U: Underlier + OpsClmul + PackedUnderlier<u128>>([t0, t1, t2]: [U; 3]) -> [U; 3] {
-	[shift_left_1(t0), shift_left_1(t1), shift_left_1(t2)]
+	let t0_sll = U::slli_epi64::<1>(t0);
+	let t1_sll = U::slli_epi64::<1>(t1);
+	let t2_sll = U::slli_epi64::<1>(t2);
+
+	let t0_srl = U::srli_epi64::<63>(t0);
+	let t1_srl = U::srli_epi64::<63>(t1);
+	let t2_srl = U::srli_epi64::<63>(t2);
+
+	[
+		t0_sll,
+		U::xor(t1_sll, t0_srl),
+		U::xor(U::xor(t2_sll, t1_srl), U::slli_si128::<8>(t2_srl)),
+	]
 }
 
 /// Widening (unreduced) CLMUL GHASH multiply: the schoolbook product as three 128-bit limbs

@@ -62,7 +62,7 @@ pub fn reduce_sliced<U: Underlier, W: Underlier>(
 ) -> [U; 2] {
 	let x_t2 = ghash_mul_x_wide(t2);
 	let z0 = ghash_reduce(W::xor(t0, x_t2));
-	let z1 = ghash_reduce(W::xor(W::xor(W::xor(t1, t0), t2), x_t2));
+	let z1 = U::xor(z0, ghash_reduce(W::xor(t1, t2)));
 	[z0, z1]
 }
 

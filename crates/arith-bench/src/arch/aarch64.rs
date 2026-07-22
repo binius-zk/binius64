@@ -191,9 +191,13 @@ impl crate::underlier::OpsClmul for uint64x2_t {
 	}
 
 	#[inline]
-	fn extract_hi_lo_64(a: Self, b: Self) -> Self {
+	fn alignr_epi8<const IMM8: i32>(a: Self, b: Self) -> Self {
+		// palignr concatenates `a` (high) : `b` (low) and shifts right by IMM8 bytes, which is the
+		// low-first byte extract `vext(b, a, IMM8)`.
 		unsafe {
-			vcombine_u64(vcreate_u64(vgetq_lane_u64(a, 1)), vcreate_u64(vgetq_lane_u64(b, 0)))
+			let a_bytes: uint8x16_t = std::mem::transmute(a);
+			let b_bytes: uint8x16_t = std::mem::transmute(b);
+			std::mem::transmute::<uint8x16_t, uint64x2_t>(vextq_u8::<IMM8>(b_bytes, a_bytes))
 		}
 	}
 

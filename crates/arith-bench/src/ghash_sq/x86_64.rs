@@ -137,7 +137,7 @@ pub fn mul_m256i_hybrid(x: __m256i, y: __m256i) -> __m256i {
 	// Y² = X·Y + X, so z0 = t0 + X·t2 and z1 = (t1 + t0 + t2) + X·t2.
 	let x_t2 = ghash::clmul::mul_x(t2);
 	let z0 = Underlier::xor(t0, x_t2);
-	let z1 = Underlier::xor(Underlier::xor(Underlier::xor(t1, t0), t2), x_t2);
+	let z1 = Underlier::xor(z0, Underlier::xor(t1, t2));
 	unsafe { _mm256_set_m128i(z1, z0) }
 }
 

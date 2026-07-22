@@ -149,7 +149,11 @@ impl crate::underlier::OpsGfni for __m128i {
 	}
 }
 
-#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
+#[cfg(all(
+	target_feature = "pclmulqdq",
+	target_feature = "sse2",
+	target_feature = "ssse3"
+))]
 impl crate::underlier::OpsClmul for __m128i {
 	#[inline]
 	fn clmulepi64<const IMM8: i32>(a: Self, b: Self) -> Self {
@@ -167,10 +171,8 @@ impl crate::underlier::OpsClmul for __m128i {
 	}
 
 	#[inline]
-	fn extract_hi_lo_64(a: Self, b: Self) -> Self {
-		unsafe {
-			_mm_castps_si128(_mm_shuffle_ps::<0x4E>(_mm_castsi128_ps(a), _mm_castsi128_ps(b)))
-		}
+	fn alignr_epi8<const IMM8: i32>(a: Self, b: Self) -> Self {
+		unsafe { _mm_alignr_epi8::<IMM8>(a, b) }
 	}
 
 	#[inline]
@@ -427,13 +429,8 @@ impl crate::underlier::OpsClmul for __m256i {
 	}
 
 	#[inline]
-	fn extract_hi_lo_64(a: Self, b: Self) -> Self {
-		unsafe {
-			_mm256_castps_si256(_mm256_shuffle_ps::<0x4E>(
-				_mm256_castsi256_ps(a),
-				_mm256_castsi256_ps(b),
-			))
-		}
+	fn alignr_epi8<const IMM8: i32>(a: Self, b: Self) -> Self {
+		unsafe { _mm256_alignr_epi8::<IMM8>(a, b) }
 	}
 
 	#[inline]
