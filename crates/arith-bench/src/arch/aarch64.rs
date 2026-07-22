@@ -261,8 +261,8 @@ mod tests {
 	use super::*;
 	use crate::{
 		ghash::{
-			INV_X, ONE, clmul::mul_inv_x as ghash_mul_inv_x, mul_clmul as ghash_mul,
-			square_clmul as ghash_square,
+			INV_X, ONE, X, clmul::mul_inv_x as ghash_mul_inv_x, clmul::mul_x as ghash_mul_x,
+			mul_clmul as ghash_mul, square_clmul as ghash_square,
 		},
 		polyval::{MONTGOMERY_ONE, mul_clmul as polyval_mul},
 		rijndael::vmull::mul as rijndael_mul,
@@ -376,6 +376,13 @@ mod tests {
 			a in arb_uint64x2_t()
 		) {
 			test_mul_by_constant(a, INV_X, ghash_mul, ghash_mul_inv_x, "GHASH");
+		}
+
+		#[test]
+		fn test_uint64x2_t_ghash_mul_x_proptest(
+			a in arb_uint64x2_t()
+		) {
+			test_mul_by_constant(a, X, ghash_mul, ghash_mul_x, "GHASH");
 		}
 
 		#[test]

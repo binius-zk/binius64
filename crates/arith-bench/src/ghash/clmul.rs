@@ -54,6 +54,46 @@ pub fn mul_inv_x<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: U) -> U {
 	U::xor(shifted, U::and(inv_x, lsb_mask))
 }
 
+/// Multiply a packed GHASH field element by X using SIMD operations.
+///
+/// This is equivalent to `mul(x, broadcast(X))` but optimized: per 128-bit lane, left-shift by 1
+/// and conditionally XOR with the reduction polynomial if bit 127 overflowed
+/// (`X^128 ≡ X^7 + X^2 + X + 1 = 0x87`).
+#[inline]
+pub fn mul_x<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: U) -> U {
+	let poly = <U as PackedUnderlier<u128>>::broadcast(0x87);
+
+	// Full 128-bit left shift by one, per 128-bit lane.
+	let shifted = shift_left_1(x);
+
+	// Build a mask from bit 127 of each 128-bit element (bit 63 of the high qword): duplicate the
+	// high qword into both lanes, then broadcast its sign bit.
+	let msb_mask = U::movepi64_mask(U::unpackhi_epi64(x, x));
+
+	// Conditionally fold in the reduction polynomial where bit 127 overflowed.
+	U::xor(shifted, U::and(poly, msb_mask))
+}
+
+/// Left-shift each 128-bit lane by one bit, carrying bit 63 of the low qword into bit 0 of the high
+/// qword. The bit shifted out of the top of each lane (bit 127) is dropped.
+#[inline]
+fn shift_left_1<U: Underlier + OpsClmul>(x: U) -> U {
+	U::xor(U::slli_epi64::<1>(x), U::slli_si128::<8>(U::srli_epi64::<63>(x)))
+}
+
+/// Multiply an unreduced widening product (the three 128-bit limbs `[t0, t1, t2]` from
+/// [`mul_wide`], at weights `X^0, X^64, X^128`) by X: a one-bit left shift of each limb.
+///
+/// Each limb is a carry-less product of two 64-bit halves, so its bit 127 is zero and the per-limb
+/// shift never overflows — no reduction is needed here, keeping it deferred to the single
+/// [`reduce`]. Shifting each limb left by one multiplies the represented 256-bit polynomial by X;
+/// because both this shift and [`reduce`] are F2-linear, the multiply-by-X may be applied to
+/// XOR-accumulated products and reduced once.
+#[inline]
+pub fn mul_x_wide<U: Underlier + OpsClmul + PackedUnderlier<u128>>([t0, t1, t2]: [U; 3]) -> [U; 3] {
+	[shift_left_1(t0), shift_left_1(t1), shift_left_1(t2)]
+}
+
 /// Widening (unreduced) CLMUL GHASH multiply: the schoolbook product as three 128-bit limbs
 /// `[t0, t1, t2]`, without the modular reduction.
 ///
@@ -396,5 +436,17 @@ mod tests {
 			prop_assert_eq!(from_u(acc), soft64::mul(a1, b1) ^ soft64::mul(a2, b2));
 		}
 
+		// The CLMUL multiply-by-X agrees with the soft64 reference.
+		#[test]
+		fn test_clmul_mul_x_matches_soft64(a in any::<u128>()) {
+			prop_assert_eq!(from_u(mul_x(to_u(a))), soft64::mul_x(a));
+		}
+
+		// The CLMUL widening multiply-by-X, reduced, agrees with soft64's `mul_x ∘ reduce`.
+		#[test]
+		fn test_clmul_mul_x_wide_matches_soft64(a in any::<u128>(), b in any::<u128>()) {
+			let wide = mul_wide(to_u(a), to_u(b));
+			prop_assert_eq!(from_u(reduce(mul_x_wide(wide))), soft64::mul_x(soft64::mul(a, b)));
+		}
 	}
 }
