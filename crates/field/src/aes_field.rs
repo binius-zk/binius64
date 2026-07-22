@@ -14,9 +14,7 @@ use binius_utils::{
 use bytemuck::{Pod, Zeroable};
 
 use super::{
-	binary_field::{
-		BinaryField, BinaryField1b, binary_field, impl_arithmetic_via_packed, impl_field_extension,
-	},
+	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
 	mul_by_binary_field_1b,
 };
 use crate::{ExtensionField, Field, underlier::U1};
@@ -101,8 +99,6 @@ unsafe impl Pod for AESTowerField8b {}
 impl_field_extension!(BinaryField1b(U1) < @3 => AESTowerField8b(u8));
 
 mul_by_binary_field_1b!(AESTowerField8b);
-
-impl_arithmetic_via_packed!(AESTowerField8b, u8);
 
 impl SerializeBytes for AESTowerField8b {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {

@@ -42,7 +42,7 @@ use crate::{
 // The multiplicative generator is `Y` (low 128 bits = 0, high 128 bits = 1).
 // `tests::test_multiplicative_generator` verifies it generates GF(2^256)* against the known
 // factorization of 2^256 - 1.
-binary_field!(pub GhashSq256b(M256), m256_from_u128s(0, 1));
+binary_field!(custom_arithmetic pub GhashSq256b(M256), m256_from_u128s(0, 1));
 
 unsafe impl Pod for GhashSq256b {}
 

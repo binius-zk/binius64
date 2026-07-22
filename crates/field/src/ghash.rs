@@ -17,9 +17,7 @@ use binius_utils::{
 use bytemuck::{Pod, Zeroable};
 
 use super::{
-	binary_field::{
-		BinaryField, BinaryField1b, binary_field, impl_arithmetic_via_packed, impl_field_extension,
-	},
+	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
 	extension::ExtensionField,
 };
 use crate::{
@@ -87,8 +85,6 @@ impl BinaryField128bGhash {
 		Self::new(result)
 	}
 }
-
-impl_arithmetic_via_packed!(BinaryField128bGhash, M128);
 
 impl_field_extension!(BinaryField1b(U1) < @7 => BinaryField128bGhash(M128));
 
