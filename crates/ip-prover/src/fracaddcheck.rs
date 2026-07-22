@@ -8,7 +8,7 @@ use binius_math::{
 	FieldBuffer, line::extrapolate_line_packed, multilinear::eq::eq_ind_partial_eval,
 };
 use binius_utils::rayon::iter::{
-	IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
+	IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
 };
 use itertools::izip;
 
@@ -28,12 +28,12 @@ use crate::{
 /// Both claims share the same evaluation point, that of the layer they describe.
 pub type FracEvalClaim<F> = (MultilinearEvalClaim<F>, MultilinearEvalClaim<F>);
 
-/// Packed-word count below which a fractional-addition layer builds serially.
+/// Minimum packed words a worker takes per fractional-addition layer chunk.
 ///
-/// One output word is three field multiplies, couples of ns.
-/// A parallel region costs tens of microseconds to dispatch.
-/// Below a few thousand words the dispatch dominates.
-const SERIAL_LAYER_BUILD_CUTOFF: usize = 1 << 13;
+/// One output word is three field multiplies, a few ns.
+/// Splitting work across workers costs tens of microseconds.
+/// Below a few thousand words per chunk the split dominates.
+const LAYER_BUILD_MIN_CHUNK: usize = 1 << 13;
 
 /// The store-based MLE-check prover for one fractional-addition layer.
 ///
@@ -90,22 +90,12 @@ where
 
 			// One packed word of the next layer from the sibling halves:
 			//     a_0/b_0 + a_1/b_1 = (a_0*b_1 + a_1*b_0) / (b_0*b_1)
-			let frac_add =
-				|(&a_0, &b_0, &a_1, &b_1): (&P, &P, &P, &P)| (a_0 * b_1 + a_1 * b_0, b_0 * b_1);
-
-			// Small layers build serially: the dispatch would cost more than the work.
-			let halves = (num_0.as_ref(), den_0.as_ref(), num_1.as_ref(), den_1.as_ref());
 			let (next_layer_num, next_layer_den) =
-				if num_0.as_ref().len() < SERIAL_LAYER_BUILD_CUTOFF {
-					izip!(halves.0, halves.1, halves.2, halves.3)
-						.map(frac_add)
-						.collect::<(Vec<_>, Vec<_>)>()
-				} else {
-					halves
-						.into_par_iter()
-						.map(frac_add)
-						.collect::<(Vec<_>, Vec<_>)>()
-				};
+				(num_0.as_ref(), den_0.as_ref(), num_1.as_ref(), den_1.as_ref())
+					.into_par_iter()
+					.with_min_len(LAYER_BUILD_MIN_CHUNK)
+					.map(|(&a_0, &b_0, &a_1, &b_1)| (a_0 * b_1 + a_1 * b_0, b_0 * b_1))
+					.collect::<(Vec<_>, Vec<_>)>();
 
 			let next_layer = (
 				FieldBuffer::new(num.log_len() - 1, next_layer_num),
