@@ -39,7 +39,6 @@ where
 	log_words: usize,
 	first_col: Data,
 	second_col: Data,
-	third_col: Data,
 	big_field_zerocheck_challenges: Vec<FChallenge>,
 	univariate_round_message: [FChallenge; ROWS_PER_HYPERCUBE_VERTEX],
 	univariate_round_message_domain: BinarySubspace<FChallenge>,
@@ -58,12 +57,23 @@ where
 	/// that will be sent in the first round. The polynomial encodes the AND constraint verification
 	/// across all values in the oblong dimension.
 	///
+	/// The C operand of the AND constraint `A & B ^ C = 0` is not an input.
+	/// The prover derives it word-by-word as `A & B`.
+	///
+	/// # Why deriving C is sound
+	///
+	/// - A satisfying witness makes `C = A & B` hold on every row.
+	/// - Folding is F2-linear on word bits.
+	/// - Equal words therefore fold to equal field elements.
+	/// - So an honest prover emits the exact same transcript as with an explicit C column.
+	/// - A cheating witness is still rejected.
+	/// - The shift reduction later checks the claimed C evaluation against the committed witness.
+	///
 	/// # Arguments
 	///
 	/// * `log_words` - Base-2 logarithm of the number of words in each column
 	/// * `first_col` - The oblong multilinear polynomial A in the AND constraint A & B ^ C = 0
 	/// * `second_col` - The oblong multilinear polynomial B in the AND constraint
-	/// * `third_col` - The oblong multilinear polynomial C in the AND constraint
 	/// * `big_field_zerocheck_challenges` - Challenges Z_{k+1},...,Zₙ in the large field FChallenge
 	/// * `prover_message_domain` - The domain for evaluating the univariate polynomial
 	///
@@ -73,12 +83,10 @@ where
 	/// 1. Computes the equality indicator polynomial from the big field challenges
 	/// 2. Uses the NTT lookup to efficiently compute the univariate polynomial evaluations
 	/// 3. Caches these evaluations for later use in the execute() method
-	#[allow(clippy::too_many_arguments)]
 	pub fn new(
 		log_words: usize,
 		first_col: Data,
 		second_col: Data,
-		third_col: Data,
 		big_field_zerocheck_challenges: Vec<F>,
 		prover_message_domain: BinarySubspace<B8>,
 	) -> Self {
@@ -88,7 +96,6 @@ where
 					log_words,
 					&first_col,
 					&second_col,
-					&third_col,
 					&big_field_zerocheck_challenges,
 					&prover_message_domain,
 				)
@@ -98,7 +105,6 @@ where
 			log_words,
 			first_col,
 			second_col,
-			third_col,
 			univariate_round_message,
 			big_field_zerocheck_challenges,
 			univariate_round_message_domain: prover_message_domain.isomorphic(),
@@ -149,7 +155,7 @@ where
 	/// # Process
 	///
 	/// 1. Creates a fold lookup table for efficiently folding at the challenge point
-	/// 2. Folds each of the three oblong multilinears (A, B, C) at Z = challenge
+	/// 2. Folds A, B, and the derived C = A & B at Z = challenge, in one fused pass
 	/// 3. Combines the zerocheck challenges (small field + big field)
 	/// 4. Evaluates the univariate polynomial at the challenge to get the sumcheck claim
 	/// 5. Constructs the AND reduction sumcheck prover with the folded multilinears
@@ -162,8 +168,8 @@ where
 		let lagrange_evals = lagrange_evals_scalars(&univariate_domain, challenge);
 		let folder = BitAxisFolder::new(&lagrange_evals);
 
-		let proving_polys = [&self.first_col, &self.second_col, &self.third_col]
-			.map(|col| folder.fold::<PChallenge>(col));
+		let proving_polys =
+			folder.fold_bitand_operands::<PChallenge>(&self.first_col, &self.second_col);
 
 		let upcasted_small_field_challenges = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES
 			.iter()
@@ -291,6 +297,8 @@ mod test {
 		];
 		let first_mlv = random_words(log_num_rows, &mut rng);
 		let second_mlv = random_words(log_num_rows, &mut rng);
+		// The prover receives only the A and B columns.
+		// This materialized C = A & B feeds only the verifier-side fold check at the end.
 		let third_mlv: Vec<Word> = iter::zip(&first_mlv, &second_mlv)
 			.map(|(&a, &b)| a & b)
 			.collect();
@@ -306,7 +314,6 @@ mod test {
 			log_num_rows,
 			first_mlv.clone(),
 			second_mlv.clone(),
-			third_mlv.clone(),
 			big_field_zerocheck_challenges.to_vec(),
 			prover_message_domain,
 		);
