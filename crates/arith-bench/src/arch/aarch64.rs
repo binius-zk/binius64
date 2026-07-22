@@ -261,7 +261,8 @@ mod tests {
 	use super::*;
 	use crate::{
 		ghash::{
-			INV_X, ONE, X, clmul::mul_inv_x as ghash_mul_inv_x, clmul::mul_x as ghash_mul_x,
+			INV_X, ONE, X,
+			clmul::{mul_inv_x as ghash_mul_inv_x, mul_x as ghash_mul_x},
 			mul_clmul as ghash_mul, square_clmul as ghash_square,
 		},
 		polyval::{MONTGOMERY_ONE, mul_clmul as polyval_mul},

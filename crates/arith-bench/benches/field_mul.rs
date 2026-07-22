@@ -544,6 +544,50 @@ fn bench_ghash(c: &mut Criterion) {
 		);
 	}
 
+	// Benchmark mul_x operations (the multiply-by-X used by the GHASH² reduction).
+	run_unary_op_benchmark(&mut group, "soft64::mul_x", ghash::soft64::mul_x, &mut rng, 128);
+
+	#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
+	{
+		run_unary_op_benchmark(
+			&mut group,
+			"mul_x_clmul::<__m128i>",
+			ghash::clmul::mul_x::<__m128i>,
+			&mut rng,
+			128,
+		);
+	}
+
+	#[cfg(all(
+		target_feature = "vpclmulqdq",
+		target_feature = "avx2",
+		target_feature = "sse2"
+	))]
+	{
+		run_unary_op_benchmark(
+			&mut group,
+			"mul_x_clmul::<__m256i>",
+			ghash::clmul::mul_x::<__m256i>,
+			&mut rng,
+			128,
+		);
+	}
+
+	#[cfg(all(
+		target_arch = "aarch64",
+		target_feature = "neon",
+		target_feature = "aes"
+	))]
+	{
+		run_unary_op_benchmark(
+			&mut group,
+			"mul_x_clmul::uint64x2_t",
+			ghash::clmul::mul_x::<uint64x2_t>,
+			&mut rng,
+			128,
+		);
+	}
+
 	group.finish();
 
 	let mut group = c.benchmark_group("ghash_google");

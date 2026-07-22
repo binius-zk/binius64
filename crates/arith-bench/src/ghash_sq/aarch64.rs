@@ -14,7 +14,7 @@ pub fn mul_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: [U; 2], y:
 		y,
 		ghash::clmul::mul_wide,
 		ghash::clmul::reduce,
-		ghash::clmul::mul_inv_x,
+		ghash::clmul::mul_x_wide,
 	)
 }
 
@@ -33,13 +33,13 @@ pub fn mul_wide_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(
 /// arithmetic; see [`super::sliced::reduce_sliced`].
 #[inline]
 pub fn reduce_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(t: [[U; 3]; 3]) -> [U; 2] {
-	super::sliced::reduce_sliced(t, ghash::clmul::reduce, ghash::clmul::mul_inv_x)
+	super::sliced::reduce_sliced(t, ghash::clmul::reduce, ghash::clmul::mul_x_wide)
 }
 
 /// Square packed GHASH² elements in sliced representation using CLMUL arithmetic.
 #[inline]
 pub fn square_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: [U; 2]) -> [U; 2] {
-	super::sliced::square_sliced(x, ghash::clmul::square, ghash::clmul::mul_inv_x)
+	super::sliced::square_sliced(x, ghash::clmul::square, ghash::clmul::mul_x)
 }
 
 /// Multiply a GHASH² element stored as a pair of NEON registers.

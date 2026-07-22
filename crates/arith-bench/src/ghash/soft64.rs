@@ -148,8 +148,8 @@ pub const fn mul_x(x: u128) -> u128 {
 ///
 /// A widening product of two GHASH elements has degree at most 254, so bit 255 is zero and the
 /// shift never overflows the four limbs — no reduction is needed here, keeping it deferred to the
-/// single [`reduce`]. Because both this shift and [`reduce`] are F2-linear, the multiply-by-X may be
-/// applied to XOR-accumulated products and reduced once.
+/// single [`reduce`]. Because both this shift and [`reduce`] are F2-linear, the multiply-by-X may
+/// be applied to XOR-accumulated products and reduced once.
 pub const fn mul_x_wide([v0, v1, v2, v3]: [u64; 4]) -> [u64; 4] {
 	[
 		v0 << 1,

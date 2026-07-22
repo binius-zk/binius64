@@ -15,7 +15,7 @@ pub fn mul_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: [U; 2], y:
 		y,
 		ghash::clmul::mul_wide,
 		ghash::clmul::reduce,
-		ghash::clmul::mul_inv_x,
+		ghash::clmul::mul_x_wide,
 	)
 }
 
@@ -34,13 +34,13 @@ pub fn mul_wide_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(
 /// arithmetic; see [`super::sliced::reduce_sliced`].
 #[inline]
 pub fn reduce_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(t: [[U; 3]; 3]) -> [U; 2] {
-	super::sliced::reduce_sliced(t, ghash::clmul::reduce, ghash::clmul::mul_inv_x)
+	super::sliced::reduce_sliced(t, ghash::clmul::reduce, ghash::clmul::mul_x_wide)
 }
 
 /// Square packed GHASH² elements in sliced representation using CLMUL arithmetic.
 #[inline]
 pub fn square_sliced<U: Underlier + OpsClmul + PackedUnderlier<u128>>(x: [U; 2]) -> [U; 2] {
-	super::sliced::square_sliced(x, ghash::clmul::square, ghash::clmul::mul_inv_x)
+	super::sliced::square_sliced(x, ghash::clmul::square, ghash::clmul::mul_x)
 }
 
 /// Multiply a GHASH² element stored as a pair of 128-bit registers.
@@ -74,17 +74,24 @@ pub fn square_m128i(x: [__m128i; 2]) -> [__m128i; 2] {
 ))]
 #[inline]
 pub fn mul_m256i(x: __m256i, y: __m256i) -> __m256i {
+	// Lane 0 = t0 = x0·y0, lane 1 = t2 = x1·y1 (both reduced).
 	let t0_t2 = ghash::clmul::mul(x, y);
 	let x0_y0 = unsafe { _mm256_permute2x128_si256::<0x20>(x, y) };
 	let x1_y1 = unsafe { _mm256_permute2x128_si256::<0x31>(x, y) };
 	let xxor_yxor = Underlier::xor(x0_y0, x1_y1);
-	let invx = <__m256i as PackedUnderlier<u128>>::broadcast(ghash::INV_X);
+	let x_bcast = <__m256i as PackedUnderlier<u128>>::broadcast(ghash::X);
 
-	let invx_xxor = unsafe { _mm256_permute2x128_si256::<0x20>(invx, xxor_yxor) };
+	// One fused multiply produces both [X·t2, t1]: lane 0 multiplies the broadcast X by t2, lane 1
+	// forms the Karatsuba middle product (x0+x1)·(y0+y1) = t1.
+	let x_xxor = unsafe { _mm256_permute2x128_si256::<0x20>(x_bcast, xxor_yxor) };
 	let t2_yxor = unsafe { _mm256_permute2x128_si256::<0x31>(t0_t2, xxor_yxor) };
-	let t2invx_t1 = ghash::clmul::mul(invx_xxor, t2_yxor);
-	let t0_t0 = unsafe { _mm256_permute2x128_si256::<0x00>(t0_t2, t0_t2) };
-	Underlier::xor(t0_t0, t2invx_t1)
+	let xt2_t1 = ghash::clmul::mul(x_xxor, t2_yxor);
+
+	// c = [t0 + X·t2, t2 + t1] = [z0, t1 + t2].
+	let c = Underlier::xor(t0_t2, xt2_t1);
+	// [0, z0], so the final XOR leaves lane 0 = z0 and sets lane 1 = z0 + t1 + t2 = z1.
+	let zero_z0 = unsafe { _mm256_permute2x128_si256::<0x08>(c, c) };
+	Underlier::xor(c, zero_z0)
 }
 
 /// Multiply packed GHASH² elements in 256-bit registers.
@@ -127,8 +134,10 @@ pub fn mul_m256i_hybrid(x: __m256i, y: __m256i) -> __m256i {
 
 	let t1 = ghash::clmul::mul(Underlier::xor(x0, x1), Underlier::xor(y0, y1));
 
-	let z0 = Underlier::xor(t0, ghash::clmul::mul_inv_x(t2));
-	let z1 = Underlier::xor(t1, t0);
+	// Y² = X·Y + X, so z0 = t0 + X·t2 and z1 = (t1 + t0 + t2) + X·t2.
+	let x_t2 = ghash::clmul::mul_x(t2);
+	let z0 = Underlier::xor(t0, x_t2);
+	let z1 = Underlier::xor(Underlier::xor(Underlier::xor(t1, t0), t2), x_t2);
 	unsafe { _mm256_set_m128i(z1, z0) }
 }
 
