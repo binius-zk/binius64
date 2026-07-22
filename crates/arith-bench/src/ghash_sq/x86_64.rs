@@ -65,7 +65,60 @@ pub fn square_m128i(x: [__m128i; 2]) -> [__m128i; 2] {
 	square_sliced(x)
 }
 
-/// Multiply packed GHASH² elements in 256-bit registers.
+/// Widening (unreduced) schoolbook multiply of two GHASH² elements packed in a 256-bit register.
+///
+/// Returns the raw products as `[corners, cross]`: `corners = [t0, t2]` packs `t0 = x0·y0` in
+/// lane 0 and `t2 = x1·y1` in lane 1 (one 256-bit `mul_wide`), and `cross = [x1·y0, x0·y1]` is a
+/// second `mul_wide` of the lane-swapped `x` against `y`. All four are raw base-field widening
+/// products; the cross-term sum, multiply-by-`X`, and base-field reduction are F2-linear and
+/// deferred to [`reduce_m256i`], so an inner product XOR-accumulates the products and reduces once.
+#[cfg(all(
+	target_arch = "x86_64",
+	target_feature = "vpclmulqdq",
+	target_feature = "avx2",
+	target_feature = "sse2"
+))]
+#[inline]
+pub fn mul_m256i_wide(x: __m256i, y: __m256i) -> [[__m256i; 3]; 2] {
+	// Lane 0 = t0 = x0·y0, lane 1 = t2 = x1·y1 (unreduced).
+	let corners = ghash::clmul::mul_wide(x, y);
+	// Swap the 128-bit lanes of x to [x1, x0], so multiplying by y gives the cross products
+	// lane 0 = x1·y0, lane 1 = x0·y1 (unreduced).
+	let x_swapped = unsafe { _mm256_permute2x128_si256::<0x01>(x, x) };
+	let cross = ghash::clmul::mul_wide(x_swapped, y);
+	[corners, cross]
+}
+
+/// Reduce the raw products from [`mul_m256i_wide`] into a GHASH² element packed in a 256-bit
+/// register.
+#[cfg(all(
+	target_arch = "x86_64",
+	target_feature = "vpclmulqdq",
+	target_feature = "avx2",
+	target_feature = "sse2"
+))]
+#[inline]
+pub fn reduce_m256i([corners, cross]: [[__m256i; 3]; 2]) -> __m256i {
+	// Reduce the corners together (lane 0 = t0, lane 1 = t2), then extract the two base elements.
+	let t0_t2 = ghash::clmul::reduce(corners);
+	let t0 = unsafe { _mm256_extracti128_si256::<0>(t0_t2) };
+	let t2 = unsafe { _mm256_extracti128_si256::<1>(t0_t2) };
+
+	// Sum the two cross products x1·y0 + x0·y1 by extracting and XORing the lanes, then reduce.
+	let cross_lo: [__m128i; 3] =
+		std::array::from_fn(|i| unsafe { _mm256_extracti128_si256::<0>(cross[i]) });
+	let cross_hi: [__m128i; 3] =
+		std::array::from_fn(|i| unsafe { _mm256_extracti128_si256::<1>(cross[i]) });
+	let cross_sum = ghash::clmul::reduce(Underlier::xor(cross_lo, cross_hi));
+
+	// Y² = X·Y + X, so z0 = t0 + X·t2 and z1 = (x0·y1 + x1·y0) + X·t2.
+	let x_t2 = ghash::clmul::mul_x(t2);
+	let z0 = Underlier::xor(t0, x_t2);
+	let z1 = Underlier::xor(cross_sum, x_t2);
+	unsafe { _mm256_set_m128i(z1, z0) }
+}
+
+/// Multiply packed GHASH² elements in 256-bit registers with a schoolbook widening multiply.
 #[cfg(all(
 	target_arch = "x86_64",
 	target_feature = "vpclmulqdq",
@@ -74,27 +127,45 @@ pub fn square_m128i(x: [__m128i; 2]) -> [__m128i; 2] {
 ))]
 #[inline]
 pub fn mul_m256i(x: __m256i, y: __m256i) -> __m256i {
-	// Lane 0 = t0 = x0·y0, lane 1 = t2 = x1·y1 (both reduced).
-	let t0_t2 = ghash::clmul::mul(x, y);
-	let x0_y0 = unsafe { _mm256_permute2x128_si256::<0x20>(x, y) };
-	let x1_y1 = unsafe { _mm256_permute2x128_si256::<0x31>(x, y) };
-	let xxor_yxor = Underlier::xor(x0_y0, x1_y1);
-	let x_bcast = <__m256i as PackedUnderlier<u128>>::broadcast(ghash::X);
-
-	// One fused multiply produces both [X·t2, t1]: lane 0 multiplies the broadcast X by t2, lane 1
-	// forms the Karatsuba middle product (x0+x1)·(y0+y1) = t1.
-	let x_xxor = unsafe { _mm256_permute2x128_si256::<0x20>(x_bcast, xxor_yxor) };
-	let t2_yxor = unsafe { _mm256_permute2x128_si256::<0x31>(t0_t2, xxor_yxor) };
-	let xt2_t1 = ghash::clmul::mul(x_xxor, t2_yxor);
-
-	// c = [t0 + X·t2, t2 + t1] = [z0, t1 + t2].
-	let c = Underlier::xor(t0_t2, xt2_t1);
-	// [0, z0], so the final XOR leaves lane 0 = z0 and sets lane 1 = z0 + t1 + t2 = z1.
-	let zero_z0 = unsafe { _mm256_permute2x128_si256::<0x08>(c, c) };
-	Underlier::xor(c, zero_z0)
+	reduce_m256i(mul_m256i_wide(x, y))
 }
 
-/// Multiply packed GHASH² elements in 256-bit registers.
+/// Widening (unreduced) multiply of two GHASH² elements packed in a 256-bit register, using only
+/// 128-bit CLMUL by extracting the lanes.
+///
+/// Returns the three raw base-field products `[t0, t1, t2]` in sliced form (`[[__m128i; 3]; 3]`);
+/// see [`mul_wide_sliced`]. Reduce with [`reduce_m256i_as_m128i`].
+#[cfg(all(
+	target_arch = "x86_64",
+	target_feature = "pclmulqdq",
+	target_feature = "sse2",
+	target_feature = "avx2"
+))]
+#[inline]
+pub fn mul_m256i_as_m128i_wide(x: __m256i, y: __m256i) -> [[__m128i; 3]; 3] {
+	let x0 = unsafe { _mm256_extracti128_si256::<0>(x) };
+	let x1 = unsafe { _mm256_extracti128_si256::<1>(x) };
+	let y0 = unsafe { _mm256_extracti128_si256::<0>(y) };
+	let y1 = unsafe { _mm256_extracti128_si256::<1>(y) };
+
+	mul_wide_sliced([x0, x1], [y0, y1])
+}
+
+/// Reduce the raw products from [`mul_m256i_as_m128i_wide`] into a GHASH² element packed in a
+/// 256-bit register.
+#[cfg(all(
+	target_arch = "x86_64",
+	target_feature = "pclmulqdq",
+	target_feature = "sse2",
+	target_feature = "avx2"
+))]
+#[inline]
+pub fn reduce_m256i_as_m128i(t: [[__m128i; 3]; 3]) -> __m256i {
+	let [z0, z1] = reduce_sliced(t);
+	unsafe { _mm256_set_m128i(z1, z0) }
+}
+
+/// Multiply packed GHASH² elements in 256-bit registers, using only 128-bit CLMUL.
 #[cfg(all(
 	target_arch = "x86_64",
 	target_feature = "pclmulqdq",
@@ -103,17 +174,64 @@ pub fn mul_m256i(x: __m256i, y: __m256i) -> __m256i {
 ))]
 #[inline]
 pub fn mul_m256i_as_m128i(x: __m256i, y: __m256i) -> __m256i {
+	reduce_m256i_as_m128i(mul_m256i_as_m128i_wide(x, y))
+}
+
+/// Widening (unreduced) multiply of two GHASH² elements packed in a 256-bit register, forming the
+/// corner products `t0`/`t2` with one 256-bit `mul_wide` and the middle product `t1` with a 128-bit
+/// `mul_wide` on the extracted lanes.
+///
+/// Returns `(corners, middle)`: `corners = [t0, t2]` packs `t0 = x0·y0` in lane 0 and `t2 = x1·y1`
+/// in lane 1, and `middle` is `t1 = (x0+x1)·(y0+y1)` as a 128-bit widening product. Both are raw
+/// base-field products; reduce with [`reduce_m256i_hybrid`].
+#[cfg(all(
+	target_arch = "x86_64",
+	target_feature = "pclmulqdq",
+	target_feature = "sse2",
+	target_feature = "vpclmulqdq",
+	target_feature = "avx2",
+))]
+#[inline]
+pub fn mul_m256i_hybrid_wide(x: __m256i, y: __m256i) -> ([__m256i; 3], [__m128i; 3]) {
+	// Lane 0 = t0 = x0·y0, lane 1 = t2 = x1·y1 (unreduced).
+	let corners = ghash::clmul::mul_wide(x, y);
+
 	let x0 = unsafe { _mm256_extracti128_si256::<0>(x) };
 	let x1 = unsafe { _mm256_extracti128_si256::<1>(x) };
 	let y0 = unsafe { _mm256_extracti128_si256::<0>(y) };
 	let y1 = unsafe { _mm256_extracti128_si256::<1>(y) };
 
-	let [z0, z1] = mul_sliced([x0, x1], [y0, y1]);
+	// t1 = (x0+x1)·(y0+y1) (unreduced).
+	let middle = ghash::clmul::mul_wide(Underlier::xor(x0, x1), Underlier::xor(y0, y1));
+	(corners, middle)
+}
 
+/// Reduce the raw products from [`mul_m256i_hybrid_wide`] into a GHASH² element packed in a 256-bit
+/// register.
+#[cfg(all(
+	target_arch = "x86_64",
+	target_feature = "pclmulqdq",
+	target_feature = "sse2",
+	target_feature = "vpclmulqdq",
+	target_feature = "avx2",
+))]
+#[inline]
+pub fn reduce_m256i_hybrid((corners, middle): ([__m256i; 3], [__m128i; 3])) -> __m256i {
+	// Reduce the corners together (lane 0 = t0, lane 1 = t2), then extract the two base elements.
+	let t0_t2 = ghash::clmul::reduce(corners);
+	let t0 = unsafe { _mm256_extracti128_si256::<0>(t0_t2) };
+	let t2 = unsafe { _mm256_extracti128_si256::<1>(t0_t2) };
+	let t1 = ghash::clmul::reduce(middle);
+
+	// Y² = X·Y + X, so z0 = t0 + X·t2 and z1 = (t1 + t0 + t2) + X·t2.
+	let x_t2 = ghash::clmul::mul_x(t2);
+	let z0 = Underlier::xor(t0, x_t2);
+	let z1 = Underlier::xor(z0, Underlier::xor(t1, t2));
 	unsafe { _mm256_set_m128i(z1, z0) }
 }
 
-/// Multiply packed GHASH² elements in 256-bit registers.
+/// Multiply packed GHASH² elements in 256-bit registers, mixing a 256-bit corner multiply with a
+/// 128-bit middle multiply.
 #[cfg(all(
 	target_arch = "x86_64",
 	target_feature = "pclmulqdq",
@@ -123,22 +241,7 @@ pub fn mul_m256i_as_m128i(x: __m256i, y: __m256i) -> __m256i {
 ))]
 #[inline]
 pub fn mul_m256i_hybrid(x: __m256i, y: __m256i) -> __m256i {
-	let t0_t2 = ghash::clmul::mul(x, y);
-
-	let x0 = unsafe { _mm256_extracti128_si256::<0>(x) };
-	let x1 = unsafe { _mm256_extracti128_si256::<1>(x) };
-	let y0 = unsafe { _mm256_extracti128_si256::<0>(y) };
-	let y1 = unsafe { _mm256_extracti128_si256::<1>(y) };
-	let t0 = unsafe { _mm256_extracti128_si256::<0>(t0_t2) };
-	let t2 = unsafe { _mm256_extracti128_si256::<1>(t0_t2) };
-
-	let t1 = ghash::clmul::mul(Underlier::xor(x0, x1), Underlier::xor(y0, y1));
-
-	// Y² = X·Y + X, so z0 = t0 + X·t2 and z1 = (t1 + t0 + t2) + X·t2.
-	let x_t2 = ghash::clmul::mul_x(t2);
-	let z0 = Underlier::xor(t0, x_t2);
-	let z1 = Underlier::xor(z0, Underlier::xor(t1, t2));
-	unsafe { _mm256_set_m128i(z1, z0) }
+	reduce_m256i_hybrid(mul_m256i_hybrid_wide(x, y))
 }
 
 // CLMUL sliced multiply cross-checks that run wherever `pclmulqdq` is available (the tests below
