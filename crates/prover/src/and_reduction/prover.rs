@@ -256,7 +256,6 @@ where
 mod test {
 	use std::{iter, iter::repeat_with};
 
-	use binius_compute::{BufferPool, PoolVec};
 	use binius_core::word::Word;
 	use binius_field::{AESTowerField8b, arch::OptimalPackedB128};
 	use binius_math::{
@@ -277,13 +276,6 @@ mod test {
 		repeat_with(|| Word(rng.random()))
 			.take(1 << log_num_words)
 			.collect()
-	}
-
-	/// Copies `src` into a buffer drawn from `pool`.
-	fn pool_words<'a>(pool: &'a BufferPool, src: &[Word]) -> PoolVec<'a, Word> {
-		let mut buffer = pool.alloc_vec::<Word>(src.len());
-		buffer.extend_from_slice(src);
-		buffer
 	}
 
 	#[test]
@@ -310,12 +302,11 @@ mod test {
 		// Prover is instantiated
 		let big_field_zerocheck_challenges = prover_challenger
 			.sample_vec(log_num_rows - PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
-		let pool = BufferPool::new();
 		let prover = OblongZerocheckProver::<_, OptimalPackedB128, _>::new(
 			log_num_rows,
-			pool_words(&pool, &first_mlv),
-			pool_words(&pool, &second_mlv),
-			pool_words(&pool, &third_mlv),
+			first_mlv.clone(),
+			second_mlv.clone(),
+			third_mlv.clone(),
 			big_field_zerocheck_challenges.to_vec(),
 			prover_message_domain,
 		);

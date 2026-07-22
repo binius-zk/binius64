@@ -30,7 +30,7 @@ use crate::{
 	BinaryField, Divisible, ExtensionField, Field, Maskable, PackedField, WideMul,
 	arithmetic_traits::{InvertOrZero, Square},
 	field::FieldOps,
-	underlier::{NumCast, UnderlierType, WithUnderlier},
+	underlier::{UnderlierType, WithUnderlier},
 };
 
 #[derive(PartialEq, Eq, Clone, Copy, Default, bytemuck::TransparentWrapper)]
@@ -591,56 +591,4 @@ impl<U: UnderlierType, Scalar: BinaryField> Distribution<PackedPrimitiveType<U, 
 	fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> PackedPrimitiveType<U, Scalar> {
 		PackedPrimitiveType::from_underlier(U::random(rng))
 	}
-}
-
-/// Multiply `PT1` values by upcasting to wider `PT2` type with the same scalar.
-/// This is useful for the cases when SIMD multiplication is faster.
-#[allow(dead_code)]
-pub fn mul_as_bigger_type<PT1, PT2>(lhs: PT1, rhs: PT1) -> PT1
-where
-	PT1: PackedField + WithUnderlier,
-	PT2: PackedField<Scalar = PT1::Scalar> + WithUnderlier,
-	PT2::Underlier: From<PT1::Underlier>,
-	PT1::Underlier: NumCast<PT2::Underlier>,
-{
-	let bigger_lhs = PT2::from_underlier(lhs.to_underlier().into());
-	let bigger_rhs = PT2::from_underlier(rhs.to_underlier().into());
-
-	let bigger_result = bigger_lhs * bigger_rhs;
-
-	PT1::from_underlier(PT1::Underlier::num_cast_from(bigger_result.to_underlier()))
-}
-
-/// Square `PT1` values by upcasting to wider `PT2` type with the same scalar.
-/// This is useful for the cases when SIMD square is faster.
-#[allow(dead_code)]
-pub fn square_as_bigger_type<PT1, PT2>(val: PT1) -> PT1
-where
-	PT1: PackedField + WithUnderlier,
-	PT2: PackedField<Scalar = PT1::Scalar> + WithUnderlier,
-	PT2::Underlier: From<PT1::Underlier>,
-	PT1::Underlier: NumCast<PT2::Underlier>,
-{
-	let bigger_val = PT2::from_underlier(val.to_underlier().into());
-
-	let bigger_result = bigger_val.square();
-
-	PT1::from_underlier(PT1::Underlier::num_cast_from(bigger_result.to_underlier()))
-}
-
-/// Invert `PT1` values by upcasting to wider `PT2` type with the same scalar.
-/// This is useful for the cases when SIMD invert is faster.
-#[allow(dead_code)]
-pub fn invert_as_bigger_type<PT1, PT2>(val: PT1) -> PT1
-where
-	PT1: PackedField + WithUnderlier,
-	PT2: PackedField<Scalar = PT1::Scalar> + WithUnderlier,
-	PT2::Underlier: From<PT1::Underlier>,
-	PT1::Underlier: NumCast<PT2::Underlier>,
-{
-	let bigger_val = PT2::from_underlier(val.to_underlier().into());
-
-	let bigger_result = bigger_val.invert_or_zero();
-
-	PT1::from_underlier(PT1::Underlier::num_cast_from(bigger_result.to_underlier()))
 }

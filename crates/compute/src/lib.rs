@@ -2,182 +2,64 @@
 
 //! Buffer pooling for prover working memory.
 //!
-//! The prover allocates many large, short-lived buffers. [`BufferPool`] is the seam through which
-//! those allocations flow, recycling freed blocks instead of returning them to the global
-//! allocator. Buffers are handed out as [`PoolVec`] handles that borrow the pool for `'alloc` and
-//! return their block to it on drop.
+//! The prover allocates many large, short-lived buffers. [`BufferPool`] recycles freed blocks
+//! instead of returning them to the global allocator, handing out [`PoolVec`] buffers that return
+//! their block to the pool on drop. See the [`buffer_pool`] module for the concrete implementation.
 //!
-//! Every pooled block is allocated with a fixed `BUFFER_ALIGN`-byte alignment — wide enough for any
-//! element type the prover uses — and sized to a power-of-two number of bytes. Because the
-//! alignment is uniform, the free list keys purely on byte size: a block freed by one element type
-//! can back a [`PoolVec`] of *any* other type of the same size. Blocks are stored as owned
-//! `Vec<AlignedChunk>`, so the pool frees them through ordinary `Vec` machinery; a [`PoolVec`]
-//! borrows a block's memory as a `Vec<T>` for its lifetime and hands it back on drop.
+//! [`Allocator`] and [`VecLike`] abstract over that machinery: an [`Allocator`] hands out
+//! [`VecLike`] buffers, letting the prover's allocation code be written against `&impl Allocator`
+//! rather than a concrete pool. `&BufferPool` is the primary [`Allocator`], producing [`PoolVec`]
+//! buffers.
 
 use std::{
-	collections::HashMap,
-	fmt,
-	mem::{self, MaybeUninit},
+	mem::MaybeUninit,
 	ops::{Deref, DerefMut},
-	sync::Mutex,
 };
 
-use bytemuck::Pod;
+pub mod buffer_pool;
 
-/// The alignment, in bytes, of every pooled block.
-///
-/// It must be at least the alignment of every element type passed to
-/// [`alloc_vec`](BufferPool::alloc_vec) — 64 bytes covers the widest packed field the prover
-/// allocates. Fixing the alignment is what lets the free list key on byte size alone, so a block is
-/// reusable across element types.
-const BUFFER_ALIGN: usize = 64;
+pub use buffer_pool::{BufferPool, PoolVec};
 
-/// A `BUFFER_ALIGN`-aligned unit of `BUFFER_ALIGN` bytes.
+/// A source of [`VecLike`] buffers.
 ///
-/// Pooled blocks are `Vec<AlignedChunk>`; the type exists only to force the backing allocation to
-/// `BUFFER_ALIGN` alignment while remaining an owned `Vec` the pool can free directly. Its bytes
-/// are never read through this type — a block is always borrowed as a `Vec<T>` while in use.
-#[repr(align(64))]
-struct AlignedChunk(#[allow(dead_code)] [u8; BUFFER_ALIGN]);
+/// Abstracts the allocation seam so callers can be generic over how their working buffers are
+/// backed. The primary implementation is `&BufferPool`, whose [`Vec`](Allocator::Vec) is
+/// [`PoolVec`] — a buffer drawn from a recycling pool.
+pub trait Allocator {
+	/// The buffer type this allocator hands out for element type `T`.
+	type Vec<T>: VecLike<T>;
 
-/// A pool that hands out reusable buffers for prover working memory.
-///
-/// Allocation goes through [`alloc_vec`](Self::alloc_vec). Freed buffers are kept on an internal
-/// free list, keyed by block size (in `AlignedChunk`s), and reused to satisfy later allocations
-/// of the same size. A pool is created once, above the code that uses it, and shared by borrow —
-/// every [`PoolVec`] it produces holds a `&'alloc BufferPool`. The pool is thread-safe: the free
-/// list sits behind a [`Mutex`], so allocation and reclamation may happen from any thread.
-#[derive(Default)]
-pub struct BufferPool {
-	free_list: Mutex<HashMap<usize, Vec<Vec<AlignedChunk>>>>,
+	/// Allocates an empty buffer with room for at least `capacity` elements of type `T`.
+	fn alloc<T>(&self, capacity: usize) -> Self::Vec<T>;
 }
 
-impl BufferPool {
-	/// Creates a new, empty pool.
-	pub fn new() -> Self {
-		Self::default()
-	}
-
-	/// Allocates a [`PoolVec`] with room for at least `capacity` elements.
-	///
-	/// The block size is rounded up to a power-of-two number of bytes. If the free list holds a
-	/// block of that size it is reused; otherwise a fresh block is allocated. The returned buffer
-	/// is empty; fill it through the [`PoolVec`] interface.
-	///
-	/// # Panics
-	///
-	/// Panics at compile time (via a `const` assertion) if `T`'s alignment exceeds `BUFFER_ALIGN`,
-	/// or if `T`'s size is not a power of two — either would break the byte-size keyed reuse.
-	pub fn alloc_vec<T: Pod>(&self, capacity: usize) -> PoolVec<'_, T> {
-		PoolVec {
-			pool: self,
-			data: self.alloc_data(capacity),
-		}
-	}
-
-	fn alloc_data<T: Pod>(&self, capacity: usize) -> Vec<T> {
-		const {
-			assert!(
-				mem::align_of::<T>() <= BUFFER_ALIGN,
-				"element alignment exceeds the pool's buffer alignment"
-			);
-			assert!(
-				mem::size_of::<T>().is_power_of_two() || mem::size_of::<T>() == 0,
-				"element size must be a power of two for byte-size-keyed reuse"
-			);
-		}
-
-		// A zero-sized type never allocates, and a zero-capacity request need not; in both cases
-		// there is no block to pool, so hand back a plain `Vec`.
-		if mem::size_of::<T>() == 0 || capacity == 0 {
-			return Vec::with_capacity(capacity);
-		}
-
-		let byte_len = (capacity * mem::size_of::<T>())
-			.next_power_of_two()
-			.max(BUFFER_ALIGN);
-		let n_chunks = byte_len / BUFFER_ALIGN;
-		let elem_cap = byte_len / mem::size_of::<T>();
-
-		let reused = self
-			.free_list
-			.lock()
-			.expect("free list mutex poisoned")
-			.get_mut(&n_chunks)
-			.and_then(Vec::pop);
-
-		let mut block = reused.unwrap_or_else(|| Vec::with_capacity(n_chunks));
-		let ptr = block.as_mut_ptr().cast::<T>();
-		// The block owns the allocation; forget it so its `Drop` does not free the memory we are
-		// about to hand to the `Vec`.
-		mem::forget(block);
-		// SAFETY: `ptr` comes from a `Vec<AlignedChunk>` with capacity `n_chunks`, i.e. an
-		// allocation of `byte_len` bytes aligned to `BUFFER_ALIGN >= align_of::<T>()`. `T`'s size
-		// divides `byte_len` (both are powers of two and `size_of::<T>() <= byte_len`), so it
-		// holds exactly `elem_cap` elements. The length is zero, so no element needs to be
-		// initialized.
-		unsafe { Vec::from_raw_parts(ptr, 0, elem_cap) }
-	}
-
-	fn reclaim(&self, n_chunks: usize, block: Vec<AlignedChunk>) {
-		self.free_list
-			.lock()
-			.expect("free list mutex poisoned")
-			.entry(n_chunks)
-			.or_default()
-			.push(block);
-	}
-}
-
-impl fmt::Debug for BufferPool {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		f.debug_struct("BufferPool").finish_non_exhaustive()
-	}
-}
-
-/// A `Vec`-like buffer borrowed from a [`BufferPool`] for `'alloc`.
+/// A growable, `Vec`-like buffer.
 ///
-/// Dereferences to `[T]`, so all slice operations are available directly. On drop the buffer's
-/// block is returned to the pool for reuse. Only the growth and mutation methods actually used by
-/// callers are exposed; add more as needed rather than mirroring all of [`Vec`].
-pub struct PoolVec<'alloc, T: Pod> {
-	pool: &'alloc BufferPool,
-	data: Vec<T>,
-}
-
-impl<T: Pod> PoolVec<'_, T> {
+/// Abstracts the buffer surface the prover relies on — a subset of [`Vec`]'s API, plus dereference
+/// to `[T]`. Implemented by [`PoolVec`]; add methods here (and to the implementors) as callers need
+/// them rather than mirroring all of [`Vec`].
+pub trait VecLike<T>: Deref<Target = [T]> + DerefMut + Extend<T> {
 	/// Returns the number of elements the buffer can hold without reallocating.
-	pub const fn capacity(&self) -> usize {
-		self.data.capacity()
-	}
+	fn capacity(&self) -> usize;
 
 	/// Appends an element to the back of the buffer.
-	pub fn push(&mut self, value: T) {
-		self.data.push(value);
-	}
-
-	/// Appends all elements of `other` to the back of the buffer.
-	pub fn extend_from_slice(&mut self, other: &[T]) {
-		self.data.extend_from_slice(other);
-	}
+	fn push(&mut self, value: T);
 
 	/// Clears the buffer, removing all elements while retaining its capacity.
-	pub fn clear(&mut self) {
-		self.data.clear();
-	}
+	fn clear(&mut self);
 
 	/// Resizes the buffer to `new_len`, filling any new slots with `value`.
-	pub fn resize(&mut self, new_len: usize, value: T) {
-		self.data.resize(new_len, value);
-	}
+	fn resize(&mut self, new_len: usize, value: T)
+	where
+		T: Clone;
+
+	/// Appends all elements of `other` to the back of the buffer.
+	fn extend_from_slice(&mut self, other: &[T])
+	where
+		T: Clone;
 
 	/// Returns the spare capacity of the buffer as a slice of `MaybeUninit<T>`.
-	///
-	/// Mirrors [`Vec::spare_capacity_mut`]: used to write into a freshly allocated buffer in place
-	/// (e.g. in parallel) before committing the length with [`set_len`](Self::set_len).
-	pub fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<T>] {
-		self.data.spare_capacity_mut()
-	}
+	fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<T>];
 
 	/// Forces the length of the buffer to `new_len`.
 	///
@@ -185,65 +67,104 @@ impl<T: Pod> PoolVec<'_, T> {
 	///
 	/// Same contract as [`Vec::set_len`]: `new_len` must be at most [`capacity`](Self::capacity)
 	/// and the elements in `0..new_len` must be initialized.
-	pub unsafe fn set_len(&mut self, new_len: usize) {
-		unsafe { self.data.set_len(new_len) }
+	unsafe fn set_len(&mut self, new_len: usize);
+}
+
+impl<T> VecLike<T> for PoolVec<'_, T> {
+	fn capacity(&self) -> usize {
+		PoolVec::capacity(self)
+	}
+
+	fn push(&mut self, value: T) {
+		PoolVec::push(self, value);
+	}
+
+	fn clear(&mut self) {
+		PoolVec::clear(self);
+	}
+
+	fn resize(&mut self, new_len: usize, value: T)
+	where
+		T: Clone,
+	{
+		PoolVec::resize(self, new_len, value);
+	}
+
+	fn extend_from_slice(&mut self, other: &[T])
+	where
+		T: Clone,
+	{
+		PoolVec::extend_from_slice(self, other);
+	}
+
+	fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<T>] {
+		PoolVec::spare_capacity_mut(self)
+	}
+
+	unsafe fn set_len(&mut self, new_len: usize) {
+		unsafe { PoolVec::set_len(self, new_len) }
 	}
 }
 
-impl<T: Pod> Drop for PoolVec<'_, T> {
-	fn drop(&mut self) {
-		let data = mem::take(&mut self.data);
-		let elem_cap = data.capacity();
-		if mem::size_of::<T>() == 0 || elem_cap == 0 {
-			// Nothing was allocated (zero-sized `T` or an empty buffer); let the `Vec` drop.
-			return;
-		}
-		let byte_len = elem_cap * mem::size_of::<T>();
-		// Only the blocks we hand out are `BUFFER_ALIGN`-aligned and a whole number of chunks. If
-		// the `Vec` outgrew its block and reallocated into its own (element-aligned) storage, the
-		// pointer or byte length no longer matches; let such a `Vec` drop normally.
-		if !byte_len.is_multiple_of(BUFFER_ALIGN)
-			|| !(data.as_ptr() as usize).is_multiple_of(BUFFER_ALIGN)
-		{
-			return;
-		}
-		let n_chunks = byte_len / BUFFER_ALIGN;
-		let ptr = data.as_ptr() as *mut AlignedChunk;
-		// Take the allocation away from the `Vec` so it is not freed, then rebuild the owning
-		// block.
-		mem::forget(data);
-		// SAFETY: this memory was handed out from a `Vec<AlignedChunk>` of exactly `n_chunks`
-		// chunks (checked above: `BUFFER_ALIGN`-aligned, `byte_len` a multiple of
-		// `BUFFER_ALIGN`), so reconstructing that `Vec` restores the original owner and frees
-		// with the correct layout.
-		let block = unsafe { Vec::<AlignedChunk>::from_raw_parts(ptr, 0, n_chunks) };
-		self.pool.reclaim(n_chunks, block);
+impl<'alloc> Allocator for &'alloc BufferPool {
+	type Vec<T> = PoolVec<'alloc, T>;
+
+	fn alloc<T>(&self, capacity: usize) -> Self::Vec<T> {
+		// Copy the `&'alloc BufferPool` out of `&self` so the returned `PoolVec` borrows the pool
+		// for `'alloc`, not merely for this call's `&self` borrow.
+		let pool: &'alloc BufferPool = self;
+		pool.alloc_vec(capacity)
 	}
 }
 
-impl<T: Pod> Deref for PoolVec<'_, T> {
-	type Target = [T];
+impl<T> VecLike<T> for Vec<T> {
+	fn capacity(&self) -> usize {
+		Vec::capacity(self)
+	}
 
-	fn deref(&self) -> &[T] {
-		&self.data
+	fn push(&mut self, value: T) {
+		Vec::push(self, value);
+	}
+
+	fn clear(&mut self) {
+		Vec::clear(self);
+	}
+
+	fn resize(&mut self, new_len: usize, value: T)
+	where
+		T: Clone,
+	{
+		Vec::resize(self, new_len, value);
+	}
+
+	fn extend_from_slice(&mut self, other: &[T])
+	where
+		T: Clone,
+	{
+		Vec::extend_from_slice(self, other);
+	}
+
+	fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<T>] {
+		Vec::spare_capacity_mut(self)
+	}
+
+	unsafe fn set_len(&mut self, new_len: usize) {
+		unsafe { Vec::set_len(self, new_len) }
 	}
 }
 
-impl<T: Pod> DerefMut for PoolVec<'_, T> {
-	fn deref_mut(&mut self) -> &mut [T] {
-		&mut self.data
-	}
-}
+/// An [`Allocator`] that hands out ordinary heap-allocated [`Vec`]s.
+///
+/// The non-pooling counterpart to `&BufferPool`: every [`alloc`](Allocator::alloc) is a plain
+/// [`Vec::with_capacity`], and each buffer is freed to the global allocator on drop.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GlobalAllocator;
 
-impl<T: Pod> Extend<T> for PoolVec<'_, T> {
-	fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
-		self.data.extend(iter);
-	}
-}
+impl Allocator for GlobalAllocator {
+	type Vec<T> = Vec<T>;
 
-impl<T: Pod + fmt::Debug> fmt::Debug for PoolVec<'_, T> {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		f.debug_list().entries(self.data.iter()).finish()
+	fn alloc<T>(&self, capacity: usize) -> Self::Vec<T> {
+		Vec::with_capacity(capacity)
 	}
 }
 
@@ -251,102 +172,26 @@ impl<T: Pod + fmt::Debug> fmt::Debug for PoolVec<'_, T> {
 mod tests {
 	use super::*;
 
-	#[test]
-	fn alloc_vec_reserves_capacity_and_starts_empty() {
-		let pool = BufferPool::new();
-		let buffer = pool.alloc_vec::<u64>(16);
-		assert!(buffer.is_empty());
-		assert!(buffer.capacity() >= 16);
-	}
-
-	#[test]
-	fn push_extend_and_deref() {
-		let pool = BufferPool::new();
-		let mut buffer = pool.alloc_vec::<u64>(4);
+	/// Fills a buffer through the [`VecLike`] surface, exercising an allocator generically.
+	fn build<A: Allocator>(alloc: &A) -> A::Vec<u64> {
+		let mut buffer = alloc.alloc::<u64>(4);
+		assert!(buffer.capacity() >= 4);
 		buffer.push(1);
 		buffer.extend_from_slice(&[2, 3]);
-		buffer.extend([4, 5]);
-		assert_eq!(&*buffer, &[1, 2, 3, 4, 5]);
-
-		buffer[0] = 10;
-		assert_eq!(buffer[0], 10);
-
-		buffer.resize(3, 0);
-		assert_eq!(&*buffer, &[10, 2, 3]);
-
-		buffer.clear();
-		assert!(buffer.is_empty());
+		buffer.resize(5, 0);
+		buffer
 	}
 
 	#[test]
-	fn buffers_are_aligned_and_sized_to_a_power_of_two_byte_length() {
-		let pool = BufferPool::new();
-		let buffer = pool.alloc_vec::<u64>(10);
-		// 10 * 8 = 80 bytes rounds up to a 128-byte block: 16 `u64`s.
-		assert_eq!(buffer.capacity(), 16);
-		assert!((buffer.as_ptr() as usize).is_multiple_of(BUFFER_ALIGN));
-		// Small requests still take a whole minimum-size block.
-		assert_eq!(pool.alloc_vec::<u64>(1).capacity(), BUFFER_ALIGN / size_of::<u64>());
+	fn global_allocator_backs_a_plain_vec() {
+		let buffer = build(&GlobalAllocator);
+		assert_eq!(&*buffer, &[1, 2, 3, 0, 0]);
 	}
 
 	#[test]
-	fn freed_block_is_recycled_for_a_matching_request() {
+	fn buffer_pool_backs_a_pool_vec() {
 		let pool = BufferPool::new();
-
-		let addr = {
-			let buffer = pool.alloc_vec::<u64>(10);
-			buffer.as_ptr() as usize
-		};
-		// The freed block backs the next request of the same size, and comes back empty despite
-		// having been filled before.
-		let mut buffer = pool.alloc_vec::<u64>(10);
-		assert_eq!(buffer.as_ptr() as usize, addr);
-		assert!(buffer.is_empty());
-		buffer.extend_from_slice(&[1, 2, 3]);
-		assert_eq!(&*buffer, &[1, 2, 3]);
-	}
-
-	#[test]
-	fn a_block_freed_by_one_type_is_reused_by_another_of_the_same_byte_size() {
-		let pool = BufferPool::new();
-		// A `u64` buffer of 8 elements and a `u8` buffer of 64 elements are both one 64-byte block,
-		// so the freed block is reused across the two element types.
-		let addr = {
-			let buffer = pool.alloc_vec::<u64>(8);
-			buffer.as_ptr() as usize
-		};
-		let buffer = pool.alloc_vec::<u8>(64);
-		assert_eq!(buffer.as_ptr() as usize, addr);
-	}
-
-	#[test]
-	fn distinct_sizes_do_not_share_blocks() {
-		let pool = BufferPool::new();
-		let small = {
-			let buffer = pool.alloc_vec::<u64>(4);
-			buffer.as_ptr() as usize
-		};
-		// A larger request needs a bigger block and cannot reuse the small freed one.
-		let big = pool.alloc_vec::<u64>(64);
-		assert_ne!(big.as_ptr() as usize, small);
-	}
-
-	#[test]
-	fn free_list_holds_multiple_blocks_of_the_same_size() {
-		let pool = BufferPool::new();
-
-		let (addr_a, addr_b) = {
-			let a = pool.alloc_vec::<u64>(8);
-			let b = pool.alloc_vec::<u64>(8);
-			assert_ne!(a.as_ptr() as usize, b.as_ptr() as usize);
-			(a.as_ptr() as usize, b.as_ptr() as usize)
-		};
-
-		// Both freed blocks are available; two fresh allocations reuse exactly them.
-		let c = pool.alloc_vec::<u64>(8);
-		let d = pool.alloc_vec::<u64>(8);
-		let reused = [c.as_ptr() as usize, d.as_ptr() as usize];
-		assert!(reused.contains(&addr_a));
-		assert!(reused.contains(&addr_b));
+		let buffer = build(&&pool);
+		assert_eq!(&*buffer, &[1, 2, 3, 0, 0]);
 	}
 }

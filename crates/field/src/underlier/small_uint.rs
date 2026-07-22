@@ -64,18 +64,6 @@ impl<const N: usize> SmallU<N> {
 	pub const fn val(&self) -> u8 {
 		self.0
 	}
-
-	pub fn checked_add(self, rhs: Self) -> Option<Self> {
-		self.val()
-			.checked_add(rhs.val())
-			.and_then(|value| (value < Self::ONES.0).then_some(Self(value)))
-	}
-
-	pub fn checked_sub(self, rhs: Self) -> Option<Self> {
-		let a = self.val();
-		let b = rhs.val();
-		(b > a).then_some(Self(b - a))
-	}
 }
 
 impl<const N: usize> Debug for SmallU<N> {
