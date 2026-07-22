@@ -21,7 +21,7 @@ use std::{
 
 use crate::{
 	BinaryField128bGhash, Divisible, GhashSq256b, PackedField, WideMul,
-	arch::{M128, M256, PackedPrimitiveType},
+	arch::{M128, M256, M512, PackedPrimitiveType},
 	arithmetic_traits::{InvertOrZero, Square},
 	sliced_packed_field::SlicedPackedField,
 	underlier::{UnderlierType, WithUnderlier},
@@ -32,8 +32,12 @@ type Ghash<U> = PackedPrimitiveType<U, BinaryField128bGhash>;
 
 /// A GHASH² packing whose two GHASH coordinates pack into `PackedPrimitiveType<U, Ghash128b>`.
 pub type SlicedGhashSq256b<U> = SlicedPackedField<GhashSq256b, Ghash<U>, 2>;
+/// Packed `GhashSq256b` holding one extension scalar (the degenerate width-one packing).
+pub type SlicedGhashSq1x256b = SlicedGhashSq256b<M128>;
 /// Packed `GhashSq256b` holding two extension scalars.
 pub type SlicedGhashSq2x256b = SlicedGhashSq256b<M256>;
+/// Packed `GhashSq256b` holding four extension scalars.
+pub type SlicedGhashSq4x256b = SlicedGhashSq256b<M512>;
 
 /// The unreduced widening product of the coordinate GHASH multiply.
 type GhashWide<U> = <Ghash<U> as WideMul>::Output;
@@ -199,7 +203,6 @@ mod tests {
 	use super::*;
 	use crate::{
 		Divisible, Field, PackedField, Random,
-		arch::M512,
 		arithmetic_traits::{InvertOrZero, Square},
 		field::FieldOps,
 	};
@@ -380,7 +383,7 @@ mod tests {
 		};
 	}
 
-	width_tests!(width1, SlicedGhashSq256b<M128>);
+	width_tests!(width1, SlicedGhashSq1x256b);
 	width_tests!(width2, SlicedGhashSq2x256b);
-	width_tests!(width4, SlicedGhashSq256b<M512>);
+	width_tests!(width4, SlicedGhashSq4x256b);
 }

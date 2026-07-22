@@ -279,8 +279,7 @@ mod tests {
 		PackedBinaryField16x1b, PackedBinaryField32x1b, PackedBinaryField64x1b,
 		PackedBinaryField128x1b, PackedBinaryField256x1b, PackedBinaryField512x1b,
 		PackedBinaryGhash1x128b, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b, PackedField,
-		SlicedGhashSq2x256b, SlicedGhashSq256b,
-		arch::{M128, M512},
+		SlicedGhashSq1x256b, SlicedGhashSq2x256b, SlicedGhashSq4x256b,
 	};
 
 	trait PackedFieldTest {
@@ -316,9 +315,9 @@ mod tests {
 		test.run::<PackedBinaryGhash4x128b>();
 
 		// GHASH² in a sliced layout
-		test.run::<SlicedGhashSq256b<M128>>();
+		test.run::<SlicedGhashSq1x256b>();
 		test.run::<SlicedGhashSq2x256b>();
-		test.run::<SlicedGhashSq256b<M512>>();
+		test.run::<SlicedGhashSq4x256b>();
 	}
 
 	fn check_value_iteration<P: PackedField>(mut rng: impl Rng) {
