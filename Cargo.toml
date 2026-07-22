@@ -40,7 +40,7 @@ bytemuck = { version = "1.18.0", features = [
 bytes = "1.7.2"
 cfg-if = "1.0.0"
 clap = { version = "4.5", features = ["derive"] }
-cranelift-entity = "0.132.0"
+cranelift-entity = "0.133.1"
 criterion = { version = "0.8.0", default-features = false }
 derive_more = { version = "2.1.1", features = [
     "add",
@@ -57,14 +57,14 @@ hex = "0.4"
 hex-literal = "1.0.0"
 hmac = "0.13.0"
 hybrid-array = "0.4.7"
-itertools = "0.14.0"
+itertools = "0.15.0"
 jwt-simple = { version = "0.12.16", default-features = false, features = [
     "pure-rust",
 ] }
-k256 = "0.13.4"
+k256 = "0.14.0"
 keccak = "0.2.0"
 lazy_static = "1.5.0"
-num-bigint = "0.4.6"
+num-bigint = "0.5.1"
 num-integer = "0.1.46"
 num-traits = "0.2.19"
 paste = "1.0.15"

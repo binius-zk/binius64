@@ -2,6 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use std::{
+	mem,
 	ops::{Deref, DerefMut, Index, IndexMut},
 	slice,
 };
@@ -21,11 +22,48 @@ pub trait AsSlicesMut<P: PackedField, const N: usize> {
 	fn as_slices_mut(&mut self) -> [FieldSliceMut<'_, P>; N];
 }
 
+/// Backing store of a [`FieldBuffer`] that can be shrunk in place.
+///
+/// [`FieldBuffer::truncate`] shrinks its backing store to match the smaller `log_len`, so it is
+/// available only for the mutable backings that support that in place: `Vec<T>` and `&mut [T]`. A
+/// shared `&[T]` view could reslice too, but truncation must also zero the dead lanes of a
+/// sub-packing-width word (see [`FieldBuffer::truncate`]), which a shared borrow cannot do — hence
+/// the [`DerefMut`] bound.
+pub trait BufferData<T>: DerefMut<Target = [T]> {
+	/// Shrinks the store in place to its first `len` elements.
+	///
+	/// `len` must be at most the current length.
+	fn truncate(&mut self, len: usize);
+}
+
+impl<T> BufferData<T> for Vec<T> {
+	fn truncate(&mut self, len: usize) {
+		Vec::truncate(self, len);
+	}
+}
+
+impl<T> BufferData<T> for &mut [T] {
+	fn truncate(&mut self, len: usize) {
+		// A `&'a mut [T]` cannot be re-sliced in place through `&mut self`, so move it out and
+		// slice the owned value back in.
+		let full = mem::take(self);
+		*self = &mut full[..len];
+	}
+}
+
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.
 ///
-/// This struct maintains a set of invariants:
-///  1) `values.len()` is a power of two
-///  2) `values.len() == 1 << log_len.saturating_sub(P::LOG_WIDTH)`.
+/// The backing store length is fully determined by `log_len`:
+///
+/// ```text
+/// values.len() == 1 << log_len.saturating_sub(P::LOG_WIDTH)
+/// ```
+///
+/// For a sub-packing-width buffer (`log_len < P::LOG_WIDTH`) the single backing word still spans
+/// `P::WIDTH` lanes, so the lanes at and past index `1 << log_len` are not logical elements. They
+/// are never read as such — equality and the split routines only touch the live prefix. Values
+/// produced by [`truncate`](Self::truncate) additionally hold those dead lanes at zero, which the
+/// sumcheck provers rely on; other constructors may leave unrelated data there.
 #[derive(Debug, Clone, Eq)]
 pub struct FieldBuffer<P: PackedField, Data: Deref<Target = [P]> = Vec<P>> {
 	/// log2 the number over elements in the buffer.
@@ -36,14 +74,13 @@ pub struct FieldBuffer<P: PackedField, Data: Deref<Target = [P]> = Vec<P>> {
 
 impl<P: PackedField, Data: Deref<Target = [P]>> PartialEq for FieldBuffer<P, Data> {
 	fn eq(&self, other: &Self) -> bool {
-		// Lanes past the logical length within the final packed word hold arbitrary data.
 		// Equality compares only the live scalars, never the raw packed backing store.
 		//
 		// Invariant: buffers of different lengths are never equal.
 		//
-		// The length-below-width branch compares only a prefix of a single packed word.
-		//   - Shorter and longer buffers sharing that prefix would otherwise compare equal.
-		//   - The shorter buffer's out-of-range lanes are arbitrary and must not be read.
+		// The length-below-width branch compares only the live prefix of a single packed word,
+		// never the dead lanes past it: shorter and longer buffers sharing that prefix would
+		// otherwise compare equal, and the dead lanes may hold unrelated data.
 		if self.log_len != other.log_len {
 			return false;
 		}
@@ -352,13 +389,6 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 		unsafe { set_packed_slice_unchecked(&mut self.values, index, value) };
 	}
 
-	/// Truncates a field buffer to a shorter length.
-	///
-	/// If `new_log_len` is not less than current `log_len()`, this has no effect.
-	pub fn truncate(&mut self, new_log_len: usize) {
-		self.log_len = self.log_len.min(new_log_len);
-	}
-
 	/// Split the buffer into mutable chunks of size `2^log_chunk_size`.
 	///
 	/// # Preconditions
@@ -480,6 +510,31 @@ impl<P: PackedField, Data: DerefMut<Target = [P]>> FieldBuffer<P, Data> {
 	/// * `self.log_len()` must be greater than 0.
 	pub fn split_half_mut(&mut self) -> FieldBufferSplitMut<P, &'_ mut [P]> {
 		self.to_mut().split_half()
+	}
+}
+
+impl<P: PackedField, Data: BufferData<P>> FieldBuffer<P, Data> {
+	/// Truncates the buffer to a shorter length, shrinking the backing store to match.
+	///
+	/// If `new_log_len` is greater than or equal to the current [`log_len`](Self::log_len), this is
+	/// a no-op. When the result is sub-packing-width the dead lanes of the final word are zeroed,
+	/// upholding the invariant that lanes past the logical length are zero.
+	pub fn truncate(&mut self, new_log_len: usize) {
+		if new_log_len >= self.log_len {
+			return;
+		}
+		self.log_len = new_log_len;
+
+		// Zero the lanes past the new logical length in the final word, so a sub-packing-width
+		// result carries no stale scalars. Wider results drop whole words and need no masking.
+		if new_log_len < P::LOG_WIDTH {
+			for i in 1 << new_log_len..P::WIDTH {
+				self.values[0].set(i, <P::Scalar as Field>::ZERO);
+			}
+		}
+
+		self.values
+			.truncate(1 << new_log_len.saturating_sub(P::LOG_WIDTH));
 	}
 }
 
@@ -711,6 +766,7 @@ impl<'a, P: PackedField> Drop for FieldBufferChunkMutInner<'a, P> {
 
 #[cfg(test)]
 mod tests {
+	use binius_field::packed::get_packed_slice;
 	use proptest::prelude::*;
 
 	use super::*;
@@ -1383,6 +1439,59 @@ mod tests {
 
 			assert_eq!(actual, reference, "half mismatch at log_len {log_len}");
 		}
+	}
+
+	#[test]
+	fn test_truncate_vec_backing() {
+		// P::LOG_WIDTH = 2, P::WIDTH = 4.
+		let make = || FieldBuffer::<P>::from_values(&(0..16).map(F::new).collect::<Vec<_>>());
+
+		// Above-width result: the backing Vec shrinks to the new packed length.
+		let mut buffer = make();
+		buffer.truncate(3); // 8 elements -> 2 packed words
+		assert_eq!(buffer.log_len(), 3);
+		assert_eq!(buffer.len(), 8);
+		for i in 0..8 {
+			assert_eq!(buffer.get(i), F::new(i as u128));
+		}
+		assert_eq!(buffer.take_data().len(), 2);
+
+		// Sub-packing-width result: one word retained, live prefix kept, dead lanes zeroed.
+		let mut buffer = make();
+		buffer.truncate(1); // 2 elements
+		assert_eq!(buffer.len(), 2);
+		assert_eq!(buffer.get(0), F::new(0));
+		assert_eq!(buffer.get(1), F::new(1));
+		let data = buffer.take_data();
+		assert_eq!(data.len(), 1);
+		assert_eq!(get_packed_slice(&data[..], 2), F::new(0));
+		assert_eq!(get_packed_slice(&data[..], 3), F::new(0));
+
+		// No-op when the requested length is not smaller.
+		let mut buffer = FieldBuffer::<P>::from_values(&(0..4).map(F::new).collect::<Vec<_>>());
+		buffer.truncate(5);
+		assert_eq!(buffer.log_len(), 2);
+		assert_eq!(buffer.take_data().len(), 1);
+	}
+
+	#[test]
+	fn test_truncate_slice_backing() {
+		// Truncating a `&mut [P]` backing reslices it and zeros the sub-width dead lanes.
+		let mut storage = vec![P::default(); 4]; // 16 elements at log_len 4
+		let mut buffer = FieldSliceMut::from_slice(4, storage.as_mut_slice());
+		for i in 0..16 {
+			buffer.set(i, F::new(i as u128));
+		}
+
+		buffer.truncate(1); // 2 elements, sub-width
+		assert_eq!(buffer.len(), 2);
+		assert_eq!(buffer.get(0), F::new(0));
+		assert_eq!(buffer.get(1), F::new(1));
+
+		let data = buffer.take_data();
+		assert_eq!(data.len(), 1);
+		assert_eq!(get_packed_slice(&data[..], 2), F::new(0));
+		assert_eq!(get_packed_slice(&data[..], 3), F::new(0));
 	}
 
 	proptest! {

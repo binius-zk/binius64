@@ -147,10 +147,7 @@ mod tests {
 	/// Compute compressed SEC1 public key from a 32-byte big-endian private key.
 	/// Panics if the scalar is zero.
 	pub fn compressed_pubkey_from_be_sk(sk_be: [u8; 32]) -> [u8; 33] {
-		use k256::{
-			ProjectivePoint, Scalar,
-			elliptic_curve::{ops::MulByGenerator, sec1::ToEncodedPoint},
-		};
+		use k256::{ProjectivePoint, Scalar, elliptic_curve::sec1::ToSec1Point};
 
 		// Interpret big-endian bytes as scalar mod curve order via Horner's method
 		let mut s = Scalar::from(0u64);
@@ -161,7 +158,7 @@ mod tests {
 		assert!(!bool::from(s.is_zero()), "private key must be non-zero");
 
 		let affine = ProjectivePoint::mul_by_generator(&s).to_affine();
-		let ep = affine.to_encoded_point(true);
+		let ep = affine.to_sec1_point(true);
 		let mut out = [0u8; 33];
 		out.copy_from_slice(ep.as_bytes());
 		out

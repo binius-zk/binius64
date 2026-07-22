@@ -67,16 +67,6 @@ pub(crate) mod portable_macros {
 				}
 			}
 		};
-		// gfni_x86 condition: bigger types are re-exported at $crate root
-		($impl_macro:ident $name:ident, (if gfni_x86 $bigger:tt else $fallback:tt)) => {
-			cfg_if! {
-				if #[cfg(all(target_arch = "x86_64", target_feature = "sse2", target_feature = "gfni"))] {
-					$impl_macro!($name => $crate::$bigger);
-				} else {
-					$impl_macro!($name @ $crate::arch::$fallback);
-				}
-			}
-		};
 		// Path to strategy in caller's scope
 		($impl_macro:ident $name:ident, ($($strategy:tt)*)) => {
 			$impl_macro!($name @ $($strategy)*);

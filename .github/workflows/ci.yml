@@ -23,9 +23,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: Install prek
@@ -74,7 +74,7 @@ jobs:
       RUSTFLAGS: "${{ matrix.arch.rustflags }} -Clink-arg=-fuse-ld=lld"
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
         with:
@@ -107,7 +107,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
         with:
@@ -120,13 +120,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
         with:
           target: wasm32-wasip1
       - name: Set up Wasmer
-        uses: wasmerio/setup-wasmer@v2
+        uses: wasmerio/setup-wasmer@v3
         with:
           version: 'v6.0.1'
       - name: Test on wasm32-wasip1
@@ -137,7 +137,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
       - name: Build documentation (including private items for CI checks)
@@ -152,7 +152,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
       # One job instead of a 9-way matrix: the examples share the same `binius-examples` crate, so

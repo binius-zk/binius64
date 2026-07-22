@@ -282,7 +282,7 @@ mod tests {
 	use binius_frontend::CircuitBuilder;
 	use k256::{
 		ProjectivePoint, Scalar, U256,
-		elliptic_curve::{ops::MulByGenerator, scalar::FromUintUnchecked, sec1::ToEncodedPoint},
+		elliptic_curve::{scalar::FromUintUnchecked, sec1::ToSec1Point},
 	};
 	use rand::prelude::*;
 
@@ -312,7 +312,7 @@ mod tests {
 		let k256_point = ProjectivePoint::mul_by_generator(&k256_scalar).to_affine();
 
 		// Extract coordinates from k256 result
-		let point_bytes = k256_point.to_encoded_point(false).to_bytes();
+		let point_bytes = k256_point.to_sec1_point(false).to_bytes();
 		let x_coord = num_bigint::BigUint::from_bytes_be(&point_bytes[1..33]);
 		let y_coord = num_bigint::BigUint::from_bytes_be(&point_bytes[33..65]);
 
@@ -371,7 +371,7 @@ mod tests {
 				BigUint::new_constant(&builder, &scalar_bigint).zero_extend(&builder, N_LIMBS),
 			);
 
-			let point_bytes = point.to_affine().to_encoded_point(false).to_bytes();
+			let point_bytes = point.to_affine().to_sec1_point(false).to_bytes();
 			let x_coord = num_bigint::BigUint::from_bytes_be(&point_bytes[1..33]);
 			let y_coord = num_bigint::BigUint::from_bytes_be(&point_bytes[33..65]);
 			points.push(Secp256k1Affine {
@@ -383,7 +383,7 @@ mod tests {
 
 		let result = msm_fn(&builder, &curve, window, &scalars, &points);
 
-		let expected_bytes = expected.to_affine().to_encoded_point(false).to_bytes();
+		let expected_bytes = expected.to_affine().to_sec1_point(false).to_bytes();
 		let expected_x = BigUint::new_constant(
 			&builder,
 			&num_bigint::BigUint::from_bytes_be(&expected_bytes[1..33]),

@@ -24,7 +24,7 @@ pub use parallel_digest::{
 	MultiDigest, ParallelDigest, ParallelDigestAdapter, ParallelMultidigestImpl,
 };
 pub use serialization::*;
-pub use sha256::ParallelSha256Digest;
+pub use sha256::{ParallelSha256Compression, ParallelSha256Digest};
 
 /// The standard digest is SHA-256.
 pub type StdDigest = sha2::Sha256;

@@ -12,7 +12,7 @@ use binius_frontend::{CircuitBuilder, WitnessFiller};
 use clap::Args;
 use k256::{
 	ProjectivePoint, Scalar, U256,
-	elliptic_curve::{ops::MulByGenerator, scalar::FromUintUnchecked, sec1::ToEncodedPoint},
+	elliptic_curve::{scalar::FromUintUnchecked, sec1::ToSec1Point},
 };
 use rand::prelude::*;
 
@@ -134,7 +134,7 @@ impl ExampleCircuit for EcMsmExample {
 
 /// Populate the `x` and `y` limb wires from a k256 projective point's affine coordinates.
 fn populate_point(w: &mut WitnessFiller, p: &ProjectivePoint, x: &BigUint, y: &BigUint) {
-	let bytes = p.to_affine().to_encoded_point(false).to_bytes();
+	let bytes = p.to_affine().to_sec1_point(false).to_bytes();
 	// Uncompressed SEC1 encoding: `0x04 || x (32 bytes) || y (32 bytes)`.
 	x.populate_limbs(w, &le_limbs(&num_bigint::BigUint::from_bytes_be(&bytes[1..33])));
 	y.populate_limbs(w, &le_limbs(&num_bigint::BigUint::from_bytes_be(&bytes[33..65])));

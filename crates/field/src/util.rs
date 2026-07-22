@@ -108,47 +108,10 @@ pub fn expand_subset_xors<U: UnderlierType, const N: usize, const N_EXP2: usize>
 	expanded
 }
 
-/// Expands a slice of field elements into all possible subset sums.
-///
-/// For an input slice `[a, b, c]`, this computes all possible sums of subsets:
-/// `[0, a, b, a+b, c, a+c, b+c, a+b+c]`
-///
-/// This is a dynamic version of [`expand_subset_sums_array`] that works with slices
-/// and returns a Vec with length 2^n where n is the input length.
-///
-/// ## Arguments
-///
-/// * `elems` - Input slice of field elements
-///
-/// ## Returns
-///
-/// A Vec containing all possible subset sums of the input elements, with length 2^n
-/// where n is the length of the input slice.
-///
-/// ## Example
-///
-/// ```ignore
-/// let input = vec![F::ONE, F::from(2)];
-/// let sums = expand_subset_sums(&input);
-/// // sums = vec![F::ZERO, F::ONE, F::from(2), F::from(3)]
-/// ```
-pub fn expand_subset_sums<F: Field>(elems: &[F]) -> Vec<F> {
-	let n = elems.len();
-	let n_exp2 = 1 << n;
-
-	let mut expanded = vec![F::ZERO; n_exp2];
-	for (i, &elem_i) in elems.iter().enumerate() {
-		let span = &mut expanded[..1 << (i + 1)];
-		let (lo_half, hi_half) = span.split_at_mut(1 << i);
-		for (lo_half_i, hi_half_i) in iter::zip(lo_half, hi_half) {
-			*hi_half_i = *lo_half_i + elem_i;
-		}
-	}
-	expanded
-}
-
 #[cfg(test)]
 mod tests {
+	use std::array;
+
 	use proptest::prelude::*;
 	use rand::{SeedableRng, rngs::StdRng};
 
@@ -167,73 +130,49 @@ mod tests {
 
 	type F = BinaryField128bGhash;
 
+	/// Expands `N` random elements and asserts that entry `index` of the resulting `2^N`-sized
+	/// lookup table equals the subset sum selected by the set bits of `index`.
+	fn check_subset_sums<const N: usize, const N_EXP2: usize>(seed: u64, index: usize) {
+		let mut rng = StdRng::seed_from_u64(seed);
+		let elems: [F; N] = array::from_fn(|_| F::random(&mut rng));
+
+		let result = expand_subset_sums_array::<_, N, N_EXP2>(elems);
+		assert_eq!(result.len(), N_EXP2);
+
+		// Compute expected sum based on the binary representation of index.
+		let index = index % N_EXP2;
+		let mut expected = F::ZERO;
+		for (bit_pos, &elem) in elems.iter().enumerate() {
+			if (index >> bit_pos) & 1 == 1 {
+				expected += elem;
+			}
+		}
+
+		assert_eq!(
+			result[index], expected,
+			"index {index} should hold the subset sum for its binary representation"
+		);
+	}
+
 	proptest! {
 		#[test]
-		fn test_expand_subset_sums_correctness(
+		fn test_expand_subset_sums_array_correctness(
 			n in 0usize..=8,  // Input length (small to avoid exponential blowup)
 			index in 0usize..256,  // Index to check
 		) {
-			// Truncate index to the correct range
-			let index = index % (1 << n);
-
-			let mut rng = StdRng::seed_from_u64(n as u64);
-
-			// Generate random input elements
-			let elems: Vec<F> = (0..n).map(|_| F::random(&mut rng)).collect();
-
-			// Compute the expansion
-			let result = expand_subset_sums(&elems);
-
-			// Verify the result length
-			prop_assert_eq!(result.len(), 1 << n);
-
-			// Compute expected sum based on binary representation of index
-			let mut expected = F::ZERO;
-			for (bit_pos, &elem) in elems.iter().enumerate() {
-				if (index >> bit_pos) & 1 == 1 {
-					expected += elem;
-				}
-			}
-
-			prop_assert_eq!(
-				result[index],
-				expected,
-				"Index {} should have subset sum corresponding to its binary representation",
-				index
-			);
-		}
-	}
-
-	#[test]
-	fn test_expand_subset_sums_array_slice_consistency() {
-		let mut rng = StdRng::seed_from_u64(0);
-
-		// Helper function to test consistency for a specific size
-		fn check_consistency<const N: usize, const N_EXP2: usize>(elems_vec: &[F]) {
-			assert_eq!(elems_vec.len(), N);
-			assert_eq!(N_EXP2, 1 << N);
-
-			let mut elems_array = [F::ZERO; N];
-			elems_array.copy_from_slice(elems_vec);
-
-			let result_array = expand_subset_sums_array::<_, N, N_EXP2>(elems_array);
-			let result_slice = expand_subset_sums(elems_vec);
-			assert_eq!(result_array.as_ref(), result_slice.as_slice());
-		}
-
-		// Test with different sizes to verify array/slice consistency
-		for n in 0..=4 {
-			// Generate random input elements
-			let elems_vec: Vec<F> = (0..n).map(|_| F::random(&mut rng)).collect();
-
-			// Test with the specific size n
+			// Dispatch to the const-generic helper: `expand_subset_sums_array` needs the output
+			// length `2^n` at compile time.
 			match n {
-				0 => check_consistency::<0, 1>(&elems_vec),
-				1 => check_consistency::<1, 2>(&elems_vec),
-				2 => check_consistency::<2, 4>(&elems_vec),
-				3 => check_consistency::<3, 8>(&elems_vec),
-				4 => check_consistency::<4, 16>(&elems_vec),
-				_ => unreachable!("n is constrained to 0..=4"),
+				0 => check_subset_sums::<0, 1>(n as u64, index),
+				1 => check_subset_sums::<1, 2>(n as u64, index),
+				2 => check_subset_sums::<2, 4>(n as u64, index),
+				3 => check_subset_sums::<3, 8>(n as u64, index),
+				4 => check_subset_sums::<4, 16>(n as u64, index),
+				5 => check_subset_sums::<5, 32>(n as u64, index),
+				6 => check_subset_sums::<6, 64>(n as u64, index),
+				7 => check_subset_sums::<7, 128>(n as u64, index),
+				8 => check_subset_sums::<8, 256>(n as u64, index),
+				_ => unreachable!("n is constrained to 0..=8"),
 			}
 		}
 	}

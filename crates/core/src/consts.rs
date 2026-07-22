@@ -5,6 +5,3 @@
 ///
 /// This is the minimum size requirement for public input segments in the constraint system.
 pub const MIN_WORDS_PER_SEGMENT: usize = 2;
-
-/// The number of bits in a byte.
-pub const BYTE_BITS: usize = 8;

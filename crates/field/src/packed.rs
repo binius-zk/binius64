@@ -284,35 +284,9 @@ pub unsafe fn set_packed_slice_unchecked<P: PackedField>(
 	}
 }
 
-#[inline]
-pub fn set_packed_slice<P: PackedField>(packed: &mut [P], i: usize, scalar: P::Scalar) {
-	assert!(i >> P::LOG_WIDTH < packed.len(), "index out of bounds");
-
-	unsafe { set_packed_slice_unchecked(packed, i, scalar) }
-}
-
 #[inline(always)]
 pub const fn len_packed_slice<P: PackedField>(packed: &[P]) -> usize {
 	packed.len() << P::LOG_WIDTH
-}
-
-/// Construct a packed field element from a function that returns scalar values by index with the
-/// given offset in packed elements. E.g. if `offset` is 2, and `WIDTH` is 4, `f(9)` will be used
-/// to set the scalar at index 1 in the packed element.
-#[inline]
-pub fn packed_from_fn_with_offset<P: PackedField>(
-	offset: usize,
-	mut f: impl FnMut(usize) -> P::Scalar,
-) -> P {
-	P::from_fn(|i| f(i + offset * P::WIDTH))
-}
-
-/// Pack a slice of scalars into a vector of packed field elements.
-pub fn pack_slice<P: PackedField>(scalars: &[P::Scalar]) -> Vec<P> {
-	scalars
-		.chunks(P::WIDTH)
-		.map(|chunk| P::from_scalars(chunk.iter().copied()))
-		.collect()
 }
 
 /// A slice of packed field elements as a collection of scalars.

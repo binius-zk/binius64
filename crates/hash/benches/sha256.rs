@@ -140,5 +140,56 @@ fn bench_const_leaves(c: &mut Criterion) {
 	group.finish();
 }
 
-criterion_group!(benches, bench_sha256, bench_compress, bench_digest, bench_const_leaves);
+/// Compresses one wide Merkle tree layer: pairs of child digests into parent digests.
+///
+/// Compares the per-node scalar path against the interleaved four-way path.
+/// Both run over the same rayon pool.
+/// So the delta isolates how fully each path occupies the SHA pipeline.
+fn bench_merkle_compress(c: &mut Criterion) {
+	use std::mem::MaybeUninit;
+
+	use binius_hash::{
+		ParallelCompressionAdaptor, ParallelPseudoCompression, ParallelSha256Compression,
+		sha256::Sha256Compression,
+	};
+
+	// One layer of 2^15 parent nodes, fed by 2^16 child digests.
+	const N_NODES: usize = 1 << 15;
+	let mut rng = rng();
+	let inputs: Vec<Output<Sha256>> = (0..2 * N_NODES)
+		.map(|_| {
+			let mut digest = Output::<Sha256>::default();
+			rng.fill_bytes(&mut digest);
+			digest
+		})
+		.collect();
+	let mut out: Vec<MaybeUninit<Output<Sha256>>> = Vec::with_capacity(N_NODES);
+	// Every slot is fully written by every compression call below.
+	unsafe { out.set_len(N_NODES) };
+
+	let mut group = c.benchmark_group("sha256_merkle_compress");
+	group.throughput(Throughput::Elements(N_NODES as u64));
+
+	// The per-node reference: each node compresses through one scalar block call.
+	let per_node = ParallelCompressionAdaptor::new(Sha256Compression::default());
+	group.bench_function(BenchmarkId::new("per_node", N_NODES), |b| {
+		b.iter(|| per_node.parallel_compress(black_box(&inputs), &mut out));
+	});
+
+	// The interleaved path: four independent compressions in flight per call.
+	let interleaved = ParallelSha256Compression::default();
+	group.bench_function(BenchmarkId::new("interleaved_x4", N_NODES), |b| {
+		b.iter(|| interleaved.parallel_compress(black_box(&inputs), &mut out));
+	});
+	group.finish();
+}
+
+criterion_group!(
+	benches,
+	bench_sha256,
+	bench_compress,
+	bench_digest,
+	bench_const_leaves,
+	bench_merkle_compress
+);
 criterion_main!(benches);

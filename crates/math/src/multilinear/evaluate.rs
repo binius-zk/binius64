@@ -7,6 +7,7 @@ use binius_utils::rayon::prelude::*;
 
 use crate::{
 	FieldBuffer,
+	field_buffer::BufferData,
 	inner_product::inner_product_buffers,
 	multilinear::{eq::eq_ind_partial_eval, fold::fold_highest_var_inplace},
 };
@@ -91,7 +92,7 @@ pub fn evaluate_inplace<F, P, Data>(mut evals: FieldBuffer<P, Data>, coords: &[F
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
-	Data: DerefMut<Target = [P]>,
+	Data: BufferData<P>,
 {
 	assert_eq!(
 		coords.len(),

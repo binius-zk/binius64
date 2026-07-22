@@ -8,6 +8,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+binius-compute = { path = "../compute" }
 binius-core = { path = "../core" }
 binius-field = { path = "../field" }
 binius-hash = { path = "../hash" }

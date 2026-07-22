@@ -42,12 +42,16 @@ use crate::fold_word::duplicate_to_fixed_chunks;
 /// sends only enough values such that the verifier learns a domain of evaluations of size >
 /// deg(R₀(Z))
 ///
+/// The product constraint column C is not an input.
+/// Each C word is derived in registers as the AND of the matching A and B words.
+/// A satisfying witness makes that derivation exact on every row.
+/// So no third column is ever built or streamed.
+///
 /// # Arguments
 ///
 /// * `log_words` - Base-2 logarithm of the number of words in each column
 /// * `a_words` - First multiplicand (a) as a one-bit oblong multilinear polynomial
 /// * `b_words` - Second multiplicand (b) as a one-bit oblong multilinear polynomial
-/// * `c_words` - Product constraint (c) as a one-bit oblong multilinear polynomial
 /// * `eq_ind_big_field_challenges` - Partial equality indicator evaluations for big field variables
 /// * `prover_message_domain` - The NTT domain subspace (dimension `SKIPPED_VARS + 1`) from which
 ///   the low-degree-extension lookup table is built internally
@@ -65,7 +69,6 @@ pub fn univariate_round_message_extension_domain<F>(
 	log_words: usize,
 	a_words: &[Word],
 	b_words: &[Word],
-	c_words: &[Word],
 	big_field_challenges: &[F],
 	prover_message_domain: &BinarySubspace<B8>,
 ) -> [F; ROWS_PER_HYPERCUBE_VERTEX]
@@ -78,7 +81,7 @@ where
 	const LOG_CHUNK_SIZE: usize = N_FIXED_SMALL_CHALLENGES + N_FIXED_LARGE_CHALLENGES;
 
 	assert_eq!(big_field_challenges.len(), log_words.saturating_sub(N_FIXED_SMALL_CHALLENGES));
-	for col in [a_words, b_words, c_words] {
+	for col in [a_words, b_words] {
 		assert_eq!(col.len(), 1 << log_words);
 	}
 
@@ -256,6 +259,8 @@ mod test {
 		let log_num_words = log_num_rows - SKIPPED_VARS;
 		let mlv_1 = random_words(log_num_words, &mut rng);
 		let mlv_2 = random_words(log_num_words, &mut rng);
+		// The round message derives C = A & B internally.
+		// This materialized copy feeds only the verifier-side transparent fold below.
 		let mlv_3: Vec<Word> = iter::zip(&mlv_1, &mlv_2).map(|(&a, &b)| a & b).collect();
 
 		// Agreed-upon proof parameter
@@ -269,7 +274,6 @@ mod test {
 			log_num_words,
 			&mlv_1,
 			&mlv_2,
-			&mlv_3,
 			&big_field_zerocheck_challenges,
 			&prover_message_domain,
 		);

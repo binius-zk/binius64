@@ -9,8 +9,9 @@ use std::{
 use binius_field::{Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice,
+	bit_reverse::bit_reverse_packed,
 	multilinear::{
-		eq::tensor_prod_eq_ind_prepend,
+		eq::tensor_prod_eq_ind,
 		fold::{binary_fold_high, fold_highest_var_inplace},
 	},
 };
@@ -121,8 +122,14 @@ where
 		} else {
 			// Pre-switchover: update the folding tensor
 			assert!(self.tensor.log_len() < self.switchover);
-			let tensor = mem::replace(&mut self.tensor, FieldBuffer::new(0, vec![P::zero()]));
-			self.tensor = tensor_prod_eq_ind_prepend(tensor, &[challenge]);
+			let mut tensor = mem::replace(&mut self.tensor, FieldBuffer::new(0, vec![P::zero()]));
+			// Prepend the new variable via bit-reverse + append + bit-reverse. This does not need
+			// to be fast: it runs once per pre-switchover round on a small tensor (see
+			// BINIUS-327).
+			bit_reverse_packed(tensor.to_mut());
+			let mut tensor = tensor_prod_eq_ind(tensor, &[challenge]);
+			bit_reverse_packed(tensor.to_mut());
+			self.tensor = tensor;
 
 			if self.tensor.log_len() == self.switchover {
 				self.perform();
