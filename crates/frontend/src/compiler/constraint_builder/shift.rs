@@ -4,7 +4,10 @@
 
 use std::ops::Deref;
 
-use binius_core::constraint_system::{ShiftedValueIndex, ValueIndex};
+use binius_core::{
+	constraint_system::{ShiftVariant, ShiftedValueIndex, ValueIndex},
+	word::Word,
+};
 use cranelift_entity::{EntitySet, SecondaryMap};
 
 use crate::compiler::Wire;
@@ -62,6 +65,14 @@ impl WireOperand {
 	/// Appends a shifted-wire term.
 	pub fn push(&mut self, term: ShiftedWire) {
 		self.0.push(term);
+	}
+
+	/// Mutable iterator over this operand's terms.
+	///
+	/// Lets the compiler retarget a term that reads a shift of the all-ones word.
+	/// The term is pointed at the all-ones word itself, carrying an adjusted shift.
+	pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, ShiftedWire> {
+		self.0.iter_mut()
 	}
 
 	/// Lowers the whole operand to core `ShiftedValueIndex` terms.
@@ -139,6 +150,64 @@ pub enum Shift {
 }
 
 impl Shift {
+	/// Decomposes a word into a single shift of the all-ones word, if one exists.
+	///
+	/// The all-ones word is `0xFFFF_FFFF_FFFF_FFFF`.
+	/// Shifting it yields exactly the words whose set bits form one run anchored at an end.
+	///
+	/// - A low run `0b0...01...1` is the all-ones word shifted right by `k`, with `k` zeros above.
+	/// - A high run `0b1...10...0` is the all-ones word shifted left by `k`, with `k` zeros below.
+	///
+	/// Returns nothing in three cases:
+	/// - the zero word.
+	/// - the all-ones word itself, since a zero-amount shift is the identity, not a useful alias.
+	/// - any word whose set bits are not anchored at an end.
+	pub const fn of_all_one(word: Word) -> Option<Self> {
+		let v = word.0;
+		// The zero word and the all-ones word are not proper (nonzero-amount) shifts of ALL_ONE.
+		if v == 0 || v == u64::MAX {
+			return None;
+		}
+		// Low run: v = 2^n - 1  <=>  v & (v + 1) == 0, with n = popcount(v) ones.
+		// Then v = ALL_ONE >> (64 - n): the top 64 - n bits are shifted out.
+		if v & (v + 1) == 0 {
+			let n = v.count_ones();
+			return Some(Shift::Srl(64 - n));
+		}
+		// High run: !v is a low run, so v = ALL_ONE << trailing_zeros(v).
+		let complement = !v;
+		if complement & (complement + 1) == 0 {
+			return Some(Shift::Sll(v.trailing_zeros()));
+		}
+		None
+	}
+
+	/// The shift kind and bit amount this shift denotes, or nothing for the identity.
+	///
+	/// A zero amount is the identity on every variant, so it maps to nothing.
+	/// The amount is always below 64, so it fits in a byte.
+	pub const fn as_variant_amount(self) -> Option<(ShiftVariant, u8)> {
+		match self {
+			Shift::None
+			| Shift::Sll(0)
+			| Shift::Sll32(0)
+			| Shift::Srl(0)
+			| Shift::Srl32(0)
+			| Shift::Sar(0)
+			| Shift::Sra32(0)
+			| Shift::Rotr(0)
+			| Shift::Rotr32(0) => None,
+			Shift::Sll(n) => Some((ShiftVariant::Sll, n as u8)),
+			Shift::Sll32(n) => Some((ShiftVariant::Sll32, n as u8)),
+			Shift::Srl(n) => Some((ShiftVariant::Slr, n as u8)),
+			Shift::Srl32(n) => Some((ShiftVariant::Srl32, n as u8)),
+			Shift::Sar(n) => Some((ShiftVariant::Sar, n as u8)),
+			Shift::Sra32(n) => Some((ShiftVariant::Sra32, n as u8)),
+			Shift::Rotr(n) => Some((ShiftVariant::Rotr, n as u8)),
+			Shift::Rotr32(n) => Some((ShiftVariant::Rotr32, n as u8)),
+		}
+	}
+
 	/// Folds `rhs` applied after `lhs` into a single equivalent shift.
 	///
 	/// Returns `None` when the two shifts cannot be one shift:
@@ -172,10 +241,72 @@ mod tests {
 	use binius_core::constraint_system::{ShiftVariant, ValueIndex};
 	use cranelift_entity::{EntityRef, SecondaryMap};
 
+	use super::Shift;
 	use crate::compiler::{
 		Wire,
 		constraint_builder::{ConstraintBuilder, expr},
 	};
+
+	#[test]
+	fn of_all_one_detects_end_anchored_runs() {
+		use binius_core::word::Word;
+
+		// The zero word and the all-ones word have no proper shift form.
+		// A zero-amount shift is the identity, which is not a useful alias.
+		assert_eq!(Shift::of_all_one(Word::ZERO), None);
+		assert_eq!(Shift::of_all_one(Word::ALL_ONE), None);
+
+		// Three common single-bit-run constants and their shifts.
+		assert_eq!(Shift::of_all_one(Word::ONE), Some(Shift::Srl(63)));
+		assert_eq!(Shift::of_all_one(Word::MASK_32), Some(Shift::Srl(32)));
+		assert_eq!(Shift::of_all_one(Word::MSB_ONE), Some(Shift::Sll(63)));
+
+		// Low runs of ones are right shifts: k = 64 - popcount.
+		assert_eq!(Shift::of_all_one(Word(0xFF)), Some(Shift::Srl(56)));
+		assert_eq!(Shift::of_all_one(Word(0x7FFF_FFFF_FFFF_FFFF)), Some(Shift::Srl(1)));
+
+		// High runs of ones are left shifts: k = trailing_zeros.
+		assert_eq!(Shift::of_all_one(Word(0xFF00_0000_0000_0000)), Some(Shift::Sll(56)));
+		assert_eq!(Shift::of_all_one(Word(0xFFFF_FFFF_FFFF_FFFE)), Some(Shift::Sll(1)));
+
+		// Ones that are not anchored at an end have no single-shift form.
+		assert_eq!(Shift::of_all_one(Word(0xFF00)), None);
+		assert_eq!(Shift::of_all_one(Word(0x8000_0000)), None);
+		assert_eq!(Shift::of_all_one(Word(0b110)), None);
+	}
+
+	#[test]
+	fn as_variant_amount_maps_nonzero_shifts() {
+		// The identity and every zero-amount shift carry no work.
+		assert_eq!(Shift::None.as_variant_amount(), None);
+		assert_eq!(Shift::Sll(0).as_variant_amount(), None);
+		assert_eq!(Shift::Rotr32(0).as_variant_amount(), None);
+
+		// Nonzero shifts map to their core variant and amount.
+		assert_eq!(Shift::Sll(63).as_variant_amount(), Some((ShiftVariant::Sll, 63)));
+		assert_eq!(Shift::Srl(32).as_variant_amount(), Some((ShiftVariant::Slr, 32)));
+		assert_eq!(Shift::Sar(7).as_variant_amount(), Some((ShiftVariant::Sar, 7)));
+		assert_eq!(Shift::Rotr(5).as_variant_amount(), Some((ShiftVariant::Rotr, 5)));
+		assert_eq!(Shift::Sll32(3).as_variant_amount(), Some((ShiftVariant::Sll32, 3)));
+	}
+
+	#[test]
+	fn of_all_one_round_trips_through_shift_application() {
+		use binius_core::word::Word;
+
+		// Every detected shift, applied to ALL_ONE, must reproduce the original word.
+		for w in [
+			Word::ONE,
+			Word::MASK_32,
+			Word::MSB_ONE,
+			Word(0xFF),
+			Word(0xFF00_0000_0000_0000),
+			Word(0x0000_FFFF_FFFF_FFFF),
+		] {
+			let (variant, amount) = Shift::of_all_one(w).unwrap().as_variant_amount().unwrap();
+			assert_eq!(variant.apply(Word::ALL_ONE, amount as usize), w);
+		}
+	}
 
 	#[test]
 	fn rotr_zero_folds_to_plain_via_linear() {

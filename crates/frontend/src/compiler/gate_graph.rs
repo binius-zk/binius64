@@ -4,6 +4,7 @@ use cranelift_entity::{PrimaryMap, SecondaryMap, entity_impl};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::compiler::{
+	constraint_builder::Shift,
 	gate::opcode::{Opcode, OpcodeShape},
 	hints::{HintId, HintRegistry},
 	pathspec::{PathSpec, PathSpecTree},
@@ -15,6 +16,14 @@ pub struct ConstPool {
 	///
 	/// Keyed by a 64-bit word, so a fast integer hasher beats the default SipHash here.
 	pub pool: FxHashMap<Word, Wire>,
+
+	/// Constants that are a single shift of the all-ones word.
+	///
+	/// Maps such a constant's wire to the shift that turns the all-ones word into that constant.
+	/// The all-ones word is pinned at value index 0.
+	/// So the compiler can retarget every operand that reads such a constant onto index 0 shifted.
+	/// The constant then needs no committed slot of its own.
+	pub derived: FxHashMap<Wire, Shift>,
 }
 
 impl ConstPool {
@@ -281,6 +290,13 @@ impl GateGraph {
 			kind: WireKind::Constant(word),
 		});
 		self.const_pool.insert(word, wire);
+		// A word whose set bits form a run at one end is the all-ones word shifted.
+		// Record that shift so the compiler can later free this constant's committed slot.
+		// The all-ones word and the zero word are not such runs, so the seed constant is left
+		// alone.
+		if let Some(shift) = Shift::of_all_one(word) {
+			self.const_pool.derived.insert(wire, shift);
+		}
 		wire
 	}
 

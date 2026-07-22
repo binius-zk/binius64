@@ -14,7 +14,7 @@ mod interpreter;
 mod tests;
 
 pub use batch_interpreter::{BatchInterpreter, BatchPopulateError};
-use binius_core::{ValueIndex, ValueVec, Word};
+use binius_core::{ValueIndex, ValueVec, Word, constraint_system::ShiftVariant};
 use binius_utils::{rayon::prelude::*, strided_array::StridedArray2DViewMut};
 pub use builder::BytecodeBuilder;
 pub use const_eval::evaluate_gate_constants;
@@ -41,12 +41,18 @@ pub struct EvalForm {
 impl EvalForm {
 	/// Build the evaluation form from the gate graph.
 	///
+	/// A preamble of shift entries runs before any gate.
+	/// Each entry fills one wire from the all-ones word, refilling a constant that was aliased
+	/// away.
+	///
 	/// `hint_registry` already holds every hint the caller registered via
 	/// [`CircuitBuilder::call_hint`](crate::compiler::CircuitBuilder::call_hint); bytecode
 	/// emission only reads from it to resolve `Opcode::Hint` gates.
 	pub(crate) fn build(
 		gate_graph: &GateGraph,
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
+		all_one: Wire,
+		const_shift_preamble: &[(Wire, ShiftVariant, u8)],
 		hint_registry: HintRegistry,
 	) -> Self {
 		let mut builder = BytecodeBuilder::new();
@@ -59,6 +65,13 @@ impl EvalForm {
 				panic!("Wire {wire:?} not mapped");
 			}
 		};
+
+		// Refill constants that were aliased to shifts of the all-ones word.
+		// Each fills its own register from the all-ones register once, before any gate reads it.
+		let all_one_reg = wire_to_reg(all_one);
+		for &(wire, variant, amount) in const_shift_preamble {
+			builder.emit_shift(wire_to_reg(wire), all_one_reg, variant, amount);
+		}
 
 		// Build bytecode for each gate
 		for (gate_id, data) in gate_graph.gates.iter() {
