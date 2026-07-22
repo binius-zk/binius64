@@ -14,6 +14,30 @@
 /// A SHA-256 digest.
 pub type Hash = [u8; 32];
 
+/// Compresses one 64-byte block into each of four independent SHA-256 states, in place.
+///
+/// This is the four-way analogue of the portable single-stream block function.
+/// Each state absorbs its own block through the full 64 rounds plus the Davies-Meyer add.
+/// No padding or length suffix is involved.
+/// The caller owns the block contents.
+///
+/// On aarch64 with the `sha2` feature the four lanes interleave over one SHA unit.
+/// Elsewhere the lanes compress one at a time through the portable block function.
+#[inline]
+pub fn compress256_x4(states: &mut [[u32; 8]; 4], blocks: [&[u8; 64]; 4]) {
+	#[cfg(all(target_arch = "aarch64", target_feature = "sha2"))]
+	{
+		// SAFETY: the `sha2` target feature is statically enabled, so the crypto intrinsics exist.
+		unsafe { neon::compress4_states(states, blocks) }
+	}
+	#[cfg(not(all(target_arch = "aarch64", target_feature = "sha2")))]
+	{
+		for (state, block) in states.iter_mut().zip(blocks) {
+			sha2::block_api::compress256(state, std::slice::from_ref(block));
+		}
+	}
+}
+
 /// Hashes four equal-length byte inputs into four standard SHA-256 digests.
 ///
 /// The inputs hash as four independent streams.
@@ -63,7 +87,7 @@ mod neon {
 	use core::arch::aarch64::{
 		uint32x4_t, vaddq_u32, vdupq_n_u32, vld1q_u8, vld1q_u32, vreinterpretq_u8_u32,
 		vreinterpretq_u32_u8, vrev32q_u8, vsha256h2q_u32, vsha256hq_u32, vsha256su0q_u32,
-		vsha256su1q_u32, vst1q_u8,
+		vsha256su1q_u32, vst1q_u8, vst1q_u32,
 	};
 
 	use super::Hash;
@@ -166,6 +190,37 @@ mod neon {
 		}
 	}
 
+	/// Compresses one 64-byte block into each of four independent word states, in place.
+	///
+	/// The state words load and store in native word order.
+	/// No byte-swap of the state happens on either side, matching the portable block function.
+	/// Only the message block bytes swap to big-endian, inside the shared round kernel.
+	///
+	/// # Safety
+	///
+	/// The caller must enable the `sha2` target feature so the crypto intrinsics are defined.
+	#[inline]
+	pub unsafe fn compress4_states(states: &mut [[u32; 8]; 4], blocks: [&[u8; 64]; 4]) {
+		unsafe {
+			// Split each 8-word state into its (a, b, c, d) and (e, f, g, h) register halves.
+			let mut abcd = [vdupq_n_u32(0); 4];
+			let mut efgh = [vdupq_n_u32(0); 4];
+			for i in 0..4 {
+				abcd[i] = vld1q_u32(states[i].as_ptr());
+				efgh[i] = vld1q_u32(states[i].as_ptr().add(4));
+			}
+
+			// One interleaved 64-round compression, Davies-Meyer add included.
+			compress4(&mut abcd, &mut efgh, blocks.map(|block| block.as_ptr()));
+
+			// Write the advanced states back in native word order.
+			for i in 0..4 {
+				vst1q_u32(states[i].as_mut_ptr(), abcd[i]);
+				vst1q_u32(states[i].as_mut_ptr().add(4), efgh[i]);
+			}
+		}
+	}
+
 	/// Hashes four equal-length inputs with the interleaved NEON compression.
 	///
 	/// # Safety
@@ -236,9 +291,29 @@ mod neon {
 #[cfg(test)]
 mod tests {
 	use proptest::prelude::*;
-	use sha2::{Digest, Sha256};
+	use sha2::{Digest, Sha256, block_api::compress256};
 
-	use super::sha256_x4;
+	use super::{compress256_x4, sha256_x4};
+
+	proptest! {
+		#[test]
+		fn compress256_x4_matches_the_block_reference(
+			states in prop::array::uniform4(prop::array::uniform8(any::<u32>())),
+			blocks in prop::array::uniform4(any::<[u8; 64]>()),
+		) {
+			// Advance four independent random states through the four-way kernel.
+			// Random states pin the raw-compression contract, not just the fixed IV.
+			let mut got = states;
+			compress256_x4(&mut got, [&blocks[0], &blocks[1], &blocks[2], &blocks[3]]);
+
+			// Each lane must equal the portable single-stream block function on its own input.
+			for i in 0..4 {
+				let mut want = states[i];
+				compress256(&mut want, std::slice::from_ref(&blocks[i]));
+				prop_assert_eq!(got[i], want, "mismatch at lane {}", i);
+			}
+		}
+	}
 
 	proptest! {
 		#[test]
