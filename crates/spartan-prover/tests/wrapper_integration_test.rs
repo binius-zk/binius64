@@ -150,6 +150,7 @@ fn test_zk_wrapped_prove_verify() {
 		basefold_channel,
 		&outer_iop_prover,
 		Arc::clone(&outer_layout),
+		&GlobalAllocator,
 		&mut rng,
 		{
 			let inner_iop_verifier = &inner_iop_verifier;

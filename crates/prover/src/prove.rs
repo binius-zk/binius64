@@ -330,6 +330,9 @@ where
 {
 	iop_prover: IOPProver,
 	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>>,
+	/// The pool that recycles this prover's working buffers. It lives for the prover's lifetime,
+	/// so blocks freed by one `prove` call are reused by the next.
+	pool: BufferPool,
 	/// The prover creates its Merkle transcript channels with the hash suite `H`.
 	_hash_marker: PhantomData<H>,
 }
@@ -374,6 +377,7 @@ where
 		Ok(Prover {
 			iop_prover,
 			basefold_compiler,
+			pool: BufferPool::new(),
 			_hash_marker: PhantomData,
 		})
 	}
@@ -411,10 +415,9 @@ where
 		let mut channel = self
 			.basefold_compiler
 			.create_channel_without_zk_from_transcript::<H, Challenger_, _>(transcript);
-		// Working buffers for this proof are drawn from a single pool that lives for the call. The
-		// pool is passed as an `&BufferPool` allocator.
-		let pool = BufferPool::new();
-		let alloc = &pool;
+		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
+		// by earlier proofs. The pool is passed as an `&BufferPool` allocator.
+		let alloc = &self.pool;
 		self.iop_prover
 			.prove::<_, P, _>(witness, &mut channel, &alloc)?;
 		channel.finish(&alloc);
