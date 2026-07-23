@@ -137,8 +137,7 @@ pub fn compress_pubkey(builder: &CircuitBuilder, x: &BigUint, y: &BigUint) -> Ve
 #[cfg(test)]
 mod tests {
 	use binius_core::{verify::verify_constraints, word::Word};
-	use bitcoin::PublicKey;
-	use bitcoin_hashes::Hash;
+	use bitcoin::{PublicKey, hashes::Hash};
 	use rand::prelude::*;
 
 	use super::*;

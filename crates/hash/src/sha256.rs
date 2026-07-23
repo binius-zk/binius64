@@ -16,8 +16,9 @@ use sha2::{Sha256, block_api::compress256, digest::Output};
 use super::{
 	binary_merkle_tree::HashSuite,
 	compress::CompressionFunction,
-	parallel_compression::ParallelCompressionAdaptor,
+	parallel_compression::ParallelPseudoCompression,
 	parallel_digest::{ParallelDigest, ParallelDigestAdapter},
+	sha256_x4::compress256_x4,
 };
 
 /// Hashes every leaf through the four-way interleaved SHA-256 kernel.
@@ -108,7 +109,72 @@ impl HashSuite for Sha256HashSuite {
 	type LeafHash = Sha256;
 	type Compression = Sha256Compression;
 	type ParLeafHash = ParallelSha256Digest;
-	type ParCompression = ParallelCompressionAdaptor<Sha256Compression>;
+	type ParCompression = ParallelSha256Compression;
+}
+
+/// Parallel SHA-256 two-to-one compression for the inner nodes of a Merkle tree.
+///
+/// Groups of four independent compressions run through the interleaved four-way block kernel.
+/// A trailing group smaller than four compresses one node at a time.
+/// Every output byte equals compressing each node on its own with the scalar function.
+#[derive(Debug, Clone, Default)]
+pub struct ParallelSha256Compression {
+	/// The scalar two-to-one compression whose output the grouped path reproduces exactly.
+	compression: Sha256Compression,
+}
+
+impl ParallelPseudoCompression<Output<Sha256>, 2> for ParallelSha256Compression {
+	type Compression = Sha256Compression;
+
+	fn compression(&self) -> &Self::Compression {
+		&self.compression
+	}
+
+	fn parallel_compress(
+		&self,
+		inputs: &[Output<Sha256>],
+		out: &mut [MaybeUninit<Output<Sha256>>],
+	) {
+		use binius_utils::rayon::slice::{ParallelSlice, ParallelSliceMut};
+
+		assert_eq!(inputs.len(), 2 * out.len(), "Input length must be N * output length");
+
+		// Split into full groups of four compressions and a short tail.
+		//
+		//     inputs:  [ 8 digests | 8 digests | ... | tail (< 8) ]
+		//     out:     [ 4 nodes   | 4 nodes   | ... | tail (< 4) ]
+		let n_groups = out.len() / 4;
+		let (input_groups, input_tail) = inputs.split_at(8 * n_groups);
+		let (out_groups, out_tail) = out.split_at_mut(4 * n_groups);
+
+		// Each group packs four sibling pairs into four one-block messages.
+		// One interleaved call then advances all four states at once.
+		input_groups
+			.par_chunks_exact(8)
+			.zip(out_groups.par_chunks_exact_mut(4))
+			.for_each(|(pairs, out4)| {
+				// Pack each sibling pair into one 64-byte message block: left child then right.
+				let mut blocks = [[0u8; 64]; 4];
+				for (block, pair) in blocks.iter_mut().zip(pairs.chunks_exact(2)) {
+					block[..32].copy_from_slice(&pair[0]);
+					block[32..].copy_from_slice(&pair[1]);
+				}
+
+				// All four lanes start from the same fixed initial state.
+				let mut states = [self.compression.initial_state; 4];
+				compress256_x4(&mut states, [&blocks[0], &blocks[1], &blocks[2], &blocks[3]]);
+
+				// Serialize each advanced state in native word order, as the scalar path does.
+				for (slot, state) in out4.iter_mut().zip(states) {
+					slot.write(must_cast::<[u32; 8], [u8; 32]>(state).into());
+				}
+			});
+
+		// The tail (at most three nodes) compresses one pair at a time.
+		for (slot, pair) in out_tail.iter_mut().zip(input_tail.chunks_exact(2)) {
+			slot.write(self.compression.compress([pair[0], pair[1]]));
+		}
+	}
 }
 
 /// A [`ParallelDigest`] for SHA-256 that specializes
@@ -199,9 +265,55 @@ mod tests {
 	use std::iter::repeat_with;
 
 	use binius_utils::rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-	use rand::{RngExt, SeedableRng, rngs::StdRng};
+	use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
 
 	use super::*;
+	use crate::parallel_compression::ParallelCompressionAdaptor;
+
+	#[test]
+	fn test_parallel_sha256_compression_matches_adaptor() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Invariant: the grouped four-way path equals per-node scalar compression byte for byte.
+		//
+		// Node counts crossing every regime of the grouping:
+		//
+		//     1, 2, 3   → tail only (the top Merkle layers)
+		//     4         → exactly one full group
+		//     5, 7      → full group plus tail
+		//     8, 64     → several full groups (64 = a wide tree layer)
+		for n_nodes in [1usize, 2, 3, 4, 5, 7, 8, 64] {
+			// Two random child digests per output node.
+			let inputs: Vec<Output<Sha256>> = repeat_with(|| {
+				let mut digest = Output::<Sha256>::default();
+				rng.fill_bytes(&mut digest);
+				digest
+			})
+			.take(2 * n_nodes)
+			.collect();
+
+			// Compress with the grouped four-way path.
+			let grouped = ParallelSha256Compression::default();
+			let mut got = repeat_with(MaybeUninit::<Output<Sha256>>::uninit)
+				.take(n_nodes)
+				.collect::<Vec<_>>();
+			grouped.parallel_compress(&inputs, &mut got);
+
+			// Compress every node one at a time through the scalar function as the reference.
+			let adaptor = ParallelCompressionAdaptor::new(Sha256Compression::default());
+			let mut want = repeat_with(MaybeUninit::<Output<Sha256>>::uninit)
+				.take(n_nodes)
+				.collect::<Vec<_>>();
+			adaptor.parallel_compress(&inputs, &mut want);
+
+			for (i, (got_i, want_i)) in got.iter().zip(&want).enumerate() {
+				// Safety: the compression calls above initialize every output slot.
+				let (got_i, want_i) =
+					unsafe { (got_i.assume_init_ref(), want_i.assume_init_ref()) };
+				assert_eq!(got_i, want_i, "mismatch at node {i} of {n_nodes}");
+			}
+		}
+	}
 
 	/// Checks that the specialized digest matches `Sha256::digest` over the serialized leaf bytes,
 	/// covering both the single-block fast path and the multi-block fallback.

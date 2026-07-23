@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+use binius_compute::BufferPool;
 use binius_core::word::Word;
 use binius_field::arch::OptimalPackedB128;
 use binius_math::test_utils::random_scalars;
@@ -23,7 +24,9 @@ fn bench_fold_words(c: &mut Criterion) {
 				.collect::<Vec<_>>();
 			let vec = random_scalars::<B128>(&mut rng, Word::BITS);
 
-			b.iter(|| fold_words::<_, OptimalPackedB128>(&words, &vec));
+			let pool = BufferPool::new();
+			let alloc = &pool;
+			b.iter(|| fold_words::<_, OptimalPackedB128, _>(&alloc, &words, &vec));
 		});
 	}
 

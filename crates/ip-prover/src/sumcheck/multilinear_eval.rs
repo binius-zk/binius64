@@ -1,9 +1,10 @@
 // Copyright 2026 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldBuffer, FieldSlice};
+use binius_math::{FieldSlice, FieldVec};
 
 use super::{
 	mle_store::{ColId, EvaluationChunk, MleStore},
@@ -30,8 +31,9 @@ impl MultilinearEvalEvaluator {
 	}
 }
 
-impl<F, P> MleCheckRoundEvaluator<F, P> for MultilinearEvalEvaluator
+impl<A, F, P> MleCheckRoundEvaluator<A, F, P> for MultilinearEvalEvaluator
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
@@ -63,7 +65,7 @@ where
 
 	fn interpolate(
 		&self,
-		store: &MleStore<'_, P>,
+		store: &MleStore<'_, A, P>,
 		accum: &[P],
 		claim: F,
 		alpha: F,
@@ -103,12 +105,14 @@ where
 /// # Panics
 ///
 /// Panics if the witness length does not match the evaluation point length.
-pub fn multilinear_eval_prover<F, P>(
-	witness: FieldBuffer<P>,
+pub fn multilinear_eval_prover<'alloc, A, F, P>(
+	alloc: &'alloc A,
+	witness: FieldVec<P, A>,
 	eval_point: &[F],
 	eval_claim: F,
-) -> SharedMleCheckProver<'static, F, P, MultilinearEvalEvaluator>
+) -> SharedMleCheckProver<'alloc, A, F, P, MultilinearEvalEvaluator>
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
@@ -119,8 +123,7 @@ where
 	);
 
 	// The store owns the witness as its single column.
-	// With no borrowed data, the shared prover is `'static`.
-	let mut store = MleStore::new(eval_point.len());
+	let mut store = MleStore::new(eval_point.len(), alloc);
 	let col = store.push_owned(witness);
 	let evaluator = MultilinearEvalEvaluator::new(col);
 	SharedMleCheckProver::new(store, [(eval_claim, evaluator)], eval_point.to_vec())
@@ -128,6 +131,7 @@ where
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{
 		FieldOps, Random,
 		arch::{OptimalB128, OptimalPackedB128},
@@ -159,13 +163,16 @@ mod tests {
 	fn test_conformance_with_quadratic_mlecheck() {
 		let mut rng = StdRng::seed_from_u64(0);
 		let n_vars = 8;
+		let alloc = GlobalAllocator;
 
 		let witness = random_field_buffer::<P>(&mut rng, n_vars);
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 		let eval_claim = evaluate(&witness, &eval_point);
 
-		let mut eval_prover = multilinear_eval_prover(witness.clone(), &eval_point, eval_claim);
+		let mut eval_prover =
+			multilinear_eval_prover(&alloc, witness.clone(), &eval_point, eval_claim);
 		let mut quadratic_prover = quadratic_mlecheck_prover(
+			&alloc,
 			[witness],
 			|[a]: [P; 1]| a,
 			|[_a]: [P; 1]| P::zero(),
@@ -200,12 +207,13 @@ mod tests {
 	fn test_prove_verify_roundtrip() {
 		let mut rng = StdRng::seed_from_u64(1);
 		let n_vars = 7;
+		let alloc = GlobalAllocator;
 
 		let witness = random_field_buffer::<P>(&mut rng, n_vars);
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 		let eval_claim = evaluate(&witness, &eval_point);
 
-		let prover = multilinear_eval_prover(witness.clone(), &eval_point, eval_claim);
+		let prover = multilinear_eval_prover(&alloc, witness.clone(), &eval_point, eval_claim);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let output = prove_single_mlecheck(prover, &mut prover_transcript);
@@ -234,12 +242,13 @@ mod tests {
 	fn test_round_claim_invariant() {
 		let mut rng = StdRng::seed_from_u64(2);
 		let n_vars = 6;
+		let alloc = GlobalAllocator;
 
 		let witness = random_field_buffer::<P>(&mut rng, n_vars);
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 		let eval_claim = evaluate(&witness, &eval_point);
 
-		let mut prover = multilinear_eval_prover(witness, &eval_point, eval_claim);
+		let mut prover = multilinear_eval_prover(&alloc, witness, &eval_point, eval_claim);
 		assert_eq!(prover.round_claim(), vec![eval_claim]);
 
 		for _ in 0..n_vars {

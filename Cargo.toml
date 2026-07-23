@@ -31,7 +31,6 @@ base64 = "0.22.1"
 blake2 = "0.10.6"
 blake3 = "1"
 bitcoin = "0.32.7"
-bitcoin_hashes = "0.14.0"
 bytemuck = { version = "1.18.0", features = [
     "derive",
     "min_const_generics",

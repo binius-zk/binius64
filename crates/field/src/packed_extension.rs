@@ -11,7 +11,7 @@ use crate::{
 /// scalar type and preserving the order of the smaller elements. This is what makes the reinterpret
 /// casts ([`cast_bases_mut`], [`cast_base_mut`], [`cast_ext`]) sound: the `FSub` scalars of
 /// `cast_bases_mut(exts)` are exactly the scalars yielded by
-/// `exts.iter().flat_map(|ext| ext.into_iter_bases())`.
+/// `exts.iter().flat_map(|ext| ext.iter_bases())`.
 pub type PackedSubfield<P, FSub> = PackedPrimitiveType<<P as WithUnderlier>::Underlier, FSub>;
 
 /// Reinterpret a mutable slice of packed extension field elements as a mutable slice of the

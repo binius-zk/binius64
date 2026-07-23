@@ -2,10 +2,11 @@
 
 //! The top-level logUp* proving routine.
 
+use binius_compute::Allocator;
 use binius_field::{BinaryField, Divisible, Field, PackedField};
 use binius_ip::{MultilinearEvalClaim, logup_star::LogupOutput};
 use binius_math::{FieldBuffer, univariate::evaluate_univariate};
-use binius_utils::checked_arithmetics::log2_ceil_usize;
+use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
 use super::{
 	final_layer::{FinalLayerOutput, prove_final_layer},
@@ -14,6 +15,7 @@ use super::{
 use crate::{
 	channel::IPProverChannel,
 	fracaddcheck::{self, FracAddCheckProver, FracEvalClaim},
+	sumcheck::mle_store::pooled_copy,
 };
 
 /// Prove a logUp* indexed-lookup reduction.
@@ -61,12 +63,14 @@ pub struct Looker<'a, F> {
 	pub eval_claim: F,
 }
 
-pub fn prove<F, P>(
+pub fn prove<A, F, P>(
+	alloc: &A,
 	table: &FieldBuffer<P>,
 	lookers: &[Looker<'_, F>],
 	channel: &mut impl IPProverChannel<F>,
 ) -> LogupOutput<F>
 where
+	A: Allocator,
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 {
@@ -102,7 +106,7 @@ where
 
 	// The self-contained prover commits nothing.
 	// It runs the reduction over the witnesses directly.
-	prove_reduction(table, lookers, combined_eval_claim, numerators, &pushforward, channel)
+	prove_reduction(alloc, table, lookers, combined_eval_claim, numerators, &pushforward, channel)
 }
 
 /// Run the logUp* reduction over the pre-built witnesses `numerators` and pushforward `Y`.
@@ -135,7 +139,8 @@ where
 	name = "logup* reduction",
 	fields(n_lookers = lookers.len(), table_n_vars = table.log_len())
 )]
-pub fn prove_reduction<F, P>(
+pub fn prove_reduction<A, F, P>(
+	alloc: &A,
 	table: &FieldBuffer<P>,
 	lookers: &[Looker<'_, F>],
 	eval_claim: F,
@@ -144,6 +149,7 @@ pub fn prove_reduction<F, P>(
 	channel: &mut impl IPProverChannel<F>,
 ) -> LogupOutput<F>
 where
+	A: Allocator,
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 {
@@ -162,16 +168,20 @@ where
 	//     looker j: gamma^j * eq_{r_j}(i) / (c - I_j(i))   over n variables
 	//     table:    Y(v)                  / (c - v)         over m variables
 	let circuits_guard = tracing::debug_span!("Build fracadd circuits").entered();
-	let (looker_provers, looker_roots): (Vec<_>, Vec<_>) = std::iter::zip(lookers, numerators)
+	// The circuits are independent, so they build in parallel across lookers.
+	// The collect preserves looker order, so circuit j keeps numerator gamma^j.
+	let (looker_provers, looker_roots): (Vec<_>, Vec<_>) = (lookers, numerators)
+		.into_par_iter()
 		.map(|(looker, numerator)| {
-			let den = witness::looker_denominator::<F, P>(c, looker.index);
-			let (prover, root) = FracAddCheckProver::new(n, (numerator, den));
+			let den = witness::looker_denominator::<A, F, P>(alloc, c, looker.index);
+			let (prover, root) =
+				FracAddCheckProver::new(n, alloc, (pooled_copy(alloc, &numerator), den));
 			(prover, (root.0.get(0), root.1.get(0)))
 		})
 		.unzip();
-	let table_den = witness::table_denominator::<F, P>(c, m);
+	let table_den = witness::table_denominator::<A, F, P>(alloc, c, m);
 	let (table_prover, table_root) =
-		FracAddCheckProver::new(m, (FieldBuffer::clone(pushforward), table_den));
+		FracAddCheckProver::new(m, alloc, (pooled_copy(alloc, pushforward), table_den));
 	let num_r = table_root.0.get(0);
 	let den_r = table_root.1.get(0);
 
@@ -191,7 +201,11 @@ where
 	root_dens.resize(1 << log_lookers, F::ONE);
 	let (top_prover, top_root) = FracAddCheckProver::new(
 		log_lookers,
-		(FieldBuffer::<P>::from_values(&root_nums), FieldBuffer::<P>::from_values(&root_dens)),
+		alloc,
+		(
+			FieldBuffer::<P, _>::from_values_in(alloc, &root_nums),
+			FieldBuffer::<P, _>::from_values_in(alloc, &root_dens),
+		),
 	);
 	let num_l = top_root.0.get(0);
 	let den_l = top_root.1.get(0);
@@ -279,6 +293,7 @@ const fn root_claim<F: Field>(num: F, den: F) -> FracEvalClaim<F> {
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{
 		BinaryField1b, ExtensionField, Field,
 		arch::{OptimalB128, OptimalPackedB128},
@@ -333,6 +348,7 @@ mod tests {
 
 	fn check_prove_verify(n: usize, m: usize, seed: u64) {
 		let mut rng = StdRng::seed_from_u64(seed);
+		let alloc = GlobalAllocator;
 		let (table, index, eval_point, eq_r, eval_claim) = random_instance(&mut rng, n, m);
 
 		// Prove, then replay the transcript through the verifier.
@@ -342,7 +358,8 @@ mod tests {
 			eval_point: &eval_point,
 			eval_claim,
 		};
-		let prover_out = prove::<F, P>(&table, &[looker], &mut prover_transcript);
+		let prover_out =
+			prove::<GlobalAllocator, F, P>(&alloc, &table, &[looker], &mut prover_transcript);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let looker_claim = logup_star::LookerClaim {
@@ -413,6 +430,7 @@ mod tests {
 	#[test]
 	fn test_verifier_rejects_wrong_eval_claim() {
 		let mut rng = StdRng::seed_from_u64(3);
+		let alloc = GlobalAllocator;
 		let (table, index, eval_point, _eq_r, eval_claim) = random_instance(&mut rng, 5, 3);
 
 		// Prove a false statement by perturbing the looked-up evaluation.
@@ -423,7 +441,7 @@ mod tests {
 			eval_point: &eval_point,
 			eval_claim: wrong_claim,
 		};
-		prove::<F, P>(&table, &[looker], &mut prover_transcript);
+		prove::<GlobalAllocator, F, P>(&alloc, &table, &[looker], &mut prover_transcript);
 
 		// The product-check inconsistency must surface as a verification failure.
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -444,6 +462,7 @@ mod tests {
 	#[test]
 	fn test_multi_looker_round_trip() {
 		let mut rng = StdRng::seed_from_u64(11);
+		let alloc = GlobalAllocator;
 		let (n, m) = (5, 3);
 		let n_lookers = 3usize;
 
@@ -473,7 +492,8 @@ mod tests {
 				eval_claim: *eval_claim,
 			})
 			.collect::<Vec<_>>();
-		let prover_out = prove::<F, P>(&table, &prover_lookers, &mut prover_transcript);
+		let prover_out =
+			prove::<GlobalAllocator, F, P>(&alloc, &table, &prover_lookers, &mut prover_transcript);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let looker_claims = lookers
@@ -509,6 +529,7 @@ mod tests {
 	#[should_panic(expected = "table must have at least one variable")]
 	fn test_zero_variable_table_panics() {
 		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
 
 		// A zero-variable table has a single entry and no variable for the GKR to split on.
 		// The precondition assertion must fire before any transcript interaction.
@@ -519,13 +540,14 @@ mod tests {
 			eval_point: &[],
 			eval_claim: F::ZERO,
 		};
-		let _ = prove::<F, P>(&table, &[looker], &mut transcript);
+		let _ = prove::<GlobalAllocator, F, P>(&alloc, &table, &[looker], &mut transcript);
 	}
 
 	#[test]
 	#[should_panic(expected = "index column has 3 entries but 16 were expected for 4 variables")]
 	fn test_rejects_index_length_mismatch() {
 		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
 		let table = random_field_buffer::<P>(&mut rng, 3);
 		let eval_point = random_scalars::<F>(&mut rng, 4);
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
@@ -536,13 +558,14 @@ mod tests {
 			eval_point: &eval_point,
 			eval_claim: F::ZERO,
 		};
-		let _ = prove::<F, P>(&table, &[looker], &mut transcript);
+		let _ = prove::<GlobalAllocator, F, P>(&alloc, &table, &[looker], &mut transcript);
 	}
 
 	#[test]
 	#[should_panic(expected = "every index entry must be less than the table size")]
 	fn test_out_of_range_index_panics() {
 		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
 		let table = random_field_buffer::<P>(&mut rng, 2);
 		let eval_point = random_scalars::<F>(&mut rng, 1);
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
@@ -554,6 +577,6 @@ mod tests {
 			eval_point: &eval_point,
 			eval_claim: F::ZERO,
 		};
-		let _ = prove::<F, P>(&table, &[looker], &mut transcript);
+		let _ = prove::<GlobalAllocator, F, P>(&alloc, &table, &[looker], &mut transcript);
 	}
 }

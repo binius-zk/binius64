@@ -1,8 +1,9 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
-use binius_math::{FieldBuffer, FieldSlice};
+use binius_math::{FieldBuffer, FieldSlice, FieldVec};
 use binius_spartan_frontend::constraint_system::{
 	MulConstraint, Operand, WitnessIndex, WitnessSegment,
 };
@@ -137,10 +138,10 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 ///
 /// Contains the evaluated operands a, b, and c for all multiplication constraints,
 /// packed into field buffers for efficient processing.
-pub struct MulCheckWitness<P: PackedField> {
-	pub a: FieldBuffer<P>,
-	pub b: FieldBuffer<P>,
-	pub c: FieldBuffer<P>,
+pub struct MulCheckWitness<A: Allocator, P: PackedField> {
+	pub a: FieldVec<P, A>,
+	pub b: FieldVec<P, A>,
+	pub c: FieldVec<P, A>,
 }
 
 /// Evaluates an operand by XORing witness values at the specified indices.
@@ -167,12 +168,13 @@ fn eval_operand<F: Field, P: PackedField<Scalar = F>>(
 /// This is analogous to `build_bitand_witness` in binius-prover but works with B128
 /// field elements instead of word-level operations.
 #[tracing::instrument(skip_all, level = "debug")]
-pub fn build_mulcheck_witness<F: Field, P: PackedField<Scalar = F>>(
+pub fn build_mulcheck_witness<A: Allocator, F: Field, P: PackedField<Scalar = F>>(
+	alloc: &A,
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	public: &[F],
 	precommit_packed: FieldSlice<P>,
 	private_packed: FieldSlice<P>,
-) -> MulCheckWitness<P> {
+) -> MulCheckWitness<A, P> {
 	const fn get_a(c: &MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex> {
 		&c.a
 	}
@@ -189,9 +191,9 @@ pub fn build_mulcheck_witness<F: Field, P: PackedField<Scalar = F>>(
 	let log_n_constraints = checked_log_2(n_constraints);
 
 	let len = 1 << log_n_constraints.saturating_sub(P::LOG_WIDTH);
-	let mut a = Vec::<P>::with_capacity(len);
-	let mut b = Vec::<P>::with_capacity(len);
-	let mut c = Vec::<P>::with_capacity(len);
+	let mut a = alloc.alloc::<P>(len);
+	let mut b = alloc.alloc::<P>(len);
+	let mut c = alloc.alloc::<P>(len);
 
 	(a.spare_capacity_mut(), b.spare_capacity_mut(), c.spare_capacity_mut())
 		.into_par_iter()
@@ -237,6 +239,7 @@ pub fn build_mulcheck_witness<F: Field, P: PackedField<Scalar = F>>(
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{BinaryField128bGhash as B128, Field, Random};
 	use binius_math::{
 		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
@@ -436,6 +439,7 @@ mod tests {
 
 		// Compute mulcheck witness
 		let mulcheck_witness = build_mulcheck_witness(
+			&GlobalAllocator,
 			&constraints,
 			&public,
 			precommit_buf.to_ref(),

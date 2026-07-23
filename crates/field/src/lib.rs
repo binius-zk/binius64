@@ -16,7 +16,6 @@ pub mod aes_field;
 pub mod arch;
 pub mod arithmetic_traits;
 pub mod binary_field;
-mod binary_field_arithmetic;
 pub mod extension;
 pub mod field;
 pub mod ghash;

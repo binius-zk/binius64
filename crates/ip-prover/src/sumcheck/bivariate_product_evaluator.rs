@@ -1,8 +1,9 @@
 // Copyright 2026 The Binius Developers
 
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::FieldBuffer;
+use binius_math::FieldVec;
 use itertools::izip;
 
 use super::{
@@ -36,22 +37,23 @@ impl BivariateProductEvaluator {
 /// the two columns into a fresh [`MleStore`] and drives a single [`BivariateProductEvaluator`]. The
 /// multilinears must have the same number of variables; the returned prover's `finish` emits their
 /// two evaluations in the given order.
-pub fn bivariate_product_prover<F: Field, P: PackedField<Scalar = F>>(
-	multilinears: [FieldBuffer<P>; 2],
+pub fn bivariate_product_prover<'alloc, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
+	alloc: &'alloc A,
+	multilinears: [FieldVec<P, A>; 2],
 	sum: F,
-) -> SharedSumcheckProver<'static, P, BivariateProductEvaluator> {
+) -> SharedSumcheckProver<'alloc, A, P, BivariateProductEvaluator> {
 	assert_eq!(
 		multilinears[0].log_len(),
 		multilinears[1].log_len(),
 		"multilinears must have equal number of variables"
 	);
 
-	let mut store = MleStore::new(multilinears[0].log_len());
+	let mut store = MleStore::new(multilinears[0].log_len(), alloc);
 	let cols = multilinears.map(|col| store.push_owned(col));
 	SharedSumcheckProver::new(store, [(sum, BivariateProductEvaluator::new(cols))])
 }
 
-impl<F: Field, P: PackedField<Scalar = F>> SumcheckRoundEvaluator<F, P>
+impl<A: Allocator, F: Field, P: PackedField<Scalar = F>> SumcheckRoundEvaluator<A, F, P>
 	for BivariateProductEvaluator
 {
 	fn degree(&self) -> usize {
@@ -89,7 +91,7 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckRoundEvaluator<F, P>
 
 	fn interpolate(
 		&self,
-		store: &MleStore<'_, P>,
+		store: &MleStore<'_, A, P>,
 		accum: &[<P as WideMul>::Output],
 		claim: F,
 	) -> RoundCoeffs<F> {
@@ -111,6 +113,7 @@ impl<F: Field, P: PackedField<Scalar = F>> SumcheckRoundEvaluator<F, P>
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::arch::{OptimalB128, OptimalPackedB128};
 	use binius_ip::sumcheck::verify;
 	use binius_math::{
@@ -135,13 +138,17 @@ mod tests {
 
 		let n_vars = 8;
 		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
 
 		let multilinear_a = random_field_buffer::<P>(&mut rng, n_vars);
 		let multilinear_b = random_field_buffer::<P>(&mut rng, n_vars);
 		let expected_sum = inner_product_par(&multilinear_a, &multilinear_b);
 
-		let prover =
-			bivariate_product_prover([multilinear_a.clone(), multilinear_b.clone()], expected_sum);
+		let prover = bivariate_product_prover(
+			&alloc,
+			[multilinear_a.clone(), multilinear_b.clone()],
+			expected_sum,
+		);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let output = prove_single(prover, &mut prover_transcript);

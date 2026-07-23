@@ -6,7 +6,6 @@
 #![warn(rustdoc::missing_crate_level_docs)]
 
 pub mod constraint_system;
-pub mod consts;
 pub mod error;
 pub mod verify;
 pub mod word;

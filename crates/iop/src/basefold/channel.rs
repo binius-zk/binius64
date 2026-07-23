@@ -321,8 +321,7 @@ where
 
 		let commitment = self
 			.channel
-			.recv_merkle_commitment(1 << fri_oracle.log_batch_size(), depth)
-			.map_err(|_| Error::ProofEmpty)?;
+			.recv_merkle_commitment(1 << fri_oracle.log_batch_size(), depth)?;
 
 		self.oracle_commitments.push(commitment);
 		self.next_oracle_index += 1;

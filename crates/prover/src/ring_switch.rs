@@ -23,36 +23,6 @@ use binius_utils::{
 use binius_verifier::config::{B1, B128};
 use itertools::izip;
 
-/// Compute the multilinear extension of the ring switching equality indicator.
-///
-/// The ring switching equality indicator is the multilinear function $A$ from [DP24],
-/// Construction 3.1. Its multilinear extension is computed by basis decomposing the
-/// field extension elements of the tensor expanded z_vals point, then recombining
-/// the sub field basis elements with the large field tensor expanded row batching
-/// scalars.
-///
-/// ## Arguments
-///
-/// * `batching_challenges` - the scaling elements for row-batching
-/// * `z_vals` - the vertical evaluation point, with $\ell'$ components
-///
-/// ## Pre-conditions
-///
-/// * the length of batching challenges must equal `FE::LOG_DEGREE`
-///
-/// [DP24]: <https://eprint.iacr.org/2024/504>
-pub fn rs_eq_ind<F>(batching_challenges: &[F], z_vals: &[F]) -> FieldBuffer<F>
-where
-	F: BinaryField,
-	F::Underlier: Divisible<u8>,
-{
-	assert_eq!(batching_challenges.len(), F::LOG_DEGREE);
-
-	let z_vals_eq_ind = eq_ind_partial_eval::<F>(z_vals);
-	let row_batching_query = eq_ind_partial_eval::<F>(batching_challenges);
-	fold_elems_inplace(z_vals_eq_ind, &row_batching_query)
-}
-
 /// Transforms a [`FieldBuffer`] by mapping every scalar to the inner product of its B1 components
 /// and a given vector of field elements.
 ///
@@ -408,7 +378,10 @@ mod test {
 
 		let row_batching_expanded_query = eq_ind_partial_eval(&row_batching_challenges);
 
-		let rs_eq = rs_eq_ind::<F>(&row_batching_challenges, &z_vals);
+		// Build the indicator the way the prover does: fold the tensor-expanded z_vals point by
+		// the tensor-expanded row-batching query.
+		let rs_eq =
+			fold_elems_inplace(eq_ind_partial_eval::<F>(&z_vals), &row_batching_expanded_query);
 
 		// test all points points in the boolean hypercube
 		for hypercube_point in 0..1 << 3 {
@@ -437,7 +410,8 @@ mod test {
 		let row_batching_expanded_query: FieldBuffer<F> =
 			eq_ind_partial_eval(&row_batching_challenges);
 
-		let rs_eq = rs_eq_ind::<F>(&row_batching_challenges, &z_vals);
+		let rs_eq =
+			fold_elems_inplace(eq_ind_partial_eval::<F>(&z_vals), &row_batching_expanded_query);
 
 		// out of range eval point
 		let eval_point: Vec<F> = random_scalars(&mut rng, n_vars_big_field);

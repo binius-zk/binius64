@@ -3,6 +3,7 @@
 
 use std::marker::PhantomData;
 
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, BinaryField1b, Divisible, ExtensionField, PackedField};
 use binius_iop_prover::{
@@ -23,6 +24,7 @@ use binius_ip_prover::{
 	},
 };
 use binius_math::{
+	FieldVec,
 	field_buffer::FieldBuffer,
 	inner_product::inner_product_buffers,
 	multilinear::{
@@ -43,25 +45,29 @@ use crate::fold_word::{fold_across_words, fold_words};
 
 /// A helper structure that encapsulates switchover settings and the prover channel for
 /// the integer multiplication protocol.
-pub struct IntMulProver<'a, P, Channel> {
+pub struct IntMulProver<'a, 'alloc, A: Allocator, P, Channel> {
 	_p_marker: PhantomData<P>,
 
 	switchover: usize,
 	channel: &'a mut Channel,
+	/// Pool the GKR working buffers are drawn from.
+	alloc: &'alloc A,
 }
 
-impl<'a, P, Channel> IntMulProver<'a, P, Channel> {
-	pub const fn new(switchover: usize, channel: &'a mut Channel) -> Self {
+impl<'a, 'alloc, A: Allocator, P, Channel> IntMulProver<'a, 'alloc, A, P, Channel> {
+	pub const fn new(switchover: usize, channel: &'a mut Channel, alloc: &'alloc A) -> Self {
 		Self {
 			_p_marker: PhantomData,
 			switchover,
 			channel,
+			alloc,
 		}
 	}
 }
 
-impl<F, P, Channel> IntMulProver<'_, P, Channel>
+impl<'alloc, A, F, P, Channel> IntMulProver<'_, 'alloc, A, P, Channel>
 where
+	A: Allocator,
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 	Channel: IOPProverChannel<P>,
@@ -91,7 +97,7 @@ where
 	/// The output of this protocol is a set of evaluation claims on the `b` selectors representing
 	/// all of `a`, `b`, `c_lo` and `c_hi` as column-major bit matrices, at a common evaluation
 	/// point. The logup* pushforward commitment is opened through the channel inside phase 5.
-	pub fn prove(&mut self, witness: Witness<'_, P>) -> IntMulOutput<F> {
+	pub fn prove(&mut self, witness: Witness<'_, 'alloc, A, P>) -> IntMulOutput<F> {
 		let Witness {
 			a_exponents,
 			a_prodcheck,
@@ -192,6 +198,7 @@ where
 		c_hi_exponents: &[Word],
 		table: &FieldBuffer<P>,
 	) -> IntMulOutput<F> {
+		let alloc = self.alloc;
 		let n_vars = b_eval_point.len();
 		assert_eq!(phase_4_output.eval_point.len(), n_vars);
 
@@ -207,7 +214,9 @@ where
 		];
 
 		let columns_guard = tracing::debug_span!("Gather lookup index columns").entered();
+		// The columns are independent, so they gather in parallel.
 		let index_columns = (0..N_LIMB_COLUMNS)
+			.into_par_iter()
 			.map(|j| {
 				let (tree, limb) = (j / N_LIMBS, j % N_LIMBS);
 				exponents[tree]
@@ -236,11 +245,11 @@ where
 			})
 			.collect::<Vec<_>>();
 		let log_cols = log2_ceil_usize(N_LIMB_COLUMNS);
-		let logup_proof = logup_star::prove(table, &lookers, self.channel);
+		let logup_proof = logup_star::prove(table, &lookers, self.channel, self.alloc);
 
 		// The index entries are the GF(2)-linear embeddings iota(e) = Σ_u basis(u) · bit_u(e),
 		// materialized by a table of all 2^LIMB_BITS embeddings.
-		let embed_guard = tracing::debug_span!("Embed index columns").entered();
+		let embed_guard = tracing::debug_span!("Build embedding table").entered();
 		let mut iota_table = Vec::with_capacity(1usize << LIMB_BITS);
 		iota_table.push(F::ZERO);
 		for row in 1..1usize << LIMB_BITS {
@@ -248,13 +257,9 @@ where
 				<F as ExtensionField<BinaryField1b>>::basis(row.trailing_zeros() as usize);
 			iota_table.push(iota_table[row & (row - 1)] + low_bit_basis);
 		}
+		drop(embed_guard);
 
 		let index_content_point = logup_proof.index_eval_point.as_slice();
-		let embedded_columns = index_columns
-			.iter()
-			.map(|rows| rows.iter().map(|&row| iota_table[row]).collect::<Vec<_>>())
-			.collect::<Vec<_>>();
-		drop(embed_guard);
 
 		// Collapse the per-column claims into a single claim on the eq(ρ)-folded column V by
 		// sampling ρ, so the final unification runs over the content variables only.
@@ -265,16 +270,21 @@ where
 			evaluate(&FieldBuffer::<P>::from_values(&padded_column_evals), &rho);
 		let rho_tensor = eq_ind_partial_eval_scalars::<F>(&rho);
 		let fold_guard = tracing::debug_span!("Fold index columns by rho").entered();
+		// Each row folds through the embedding table directly, in parallel:
+		//     V[i] = sum_j rho_tensor[j] * iota(index_j[i])
+		// so no embedded column is ever materialized.
 		let folded_column_scalars = (0..1usize << n_vars)
+			.into_par_iter()
 			.map(|i| {
-				izip!(&embedded_columns, &rho_tensor)
-					.map(|(column, &weight)| column[i] * weight)
+				izip!(&index_columns, &rho_tensor)
+					.map(|(column, &weight)| iota_table[column[i]] * weight)
 					.sum::<F>()
 			})
 			.collect::<Vec<_>>();
-		let folded_column = FieldBuffer::<P>::from_values(&folded_column_scalars);
+		let folded_column = FieldBuffer::<P, _>::from_values_in(alloc, &folded_column_scalars);
 		drop(fold_guard);
 		let index_prover = MleToSumCheckDecorator::new(multilinear_eval_prover(
+			alloc,
 			folded_column,
 			index_content_point,
 			folded_index_claim,
@@ -284,13 +294,14 @@ where
 		let binary_elements = [F::zero(), F::one()];
 
 		// TODO: Use a special 1-bit-optimized MLE-check with switchover to save memory.
-		let a_0: FieldBuffer<P> = two_valued_field_buffer(0, a_exponents, binary_elements);
-		let b_0: FieldBuffer<P> = two_valued_field_buffer(0, b_exponents, binary_elements);
-		let c_lo_0: FieldBuffer<P> = two_valued_field_buffer(0, c_lo_exponents, binary_elements);
+		let a_0 = two_valued_field_buffer::<A, _, P>(alloc, 0, a_exponents, binary_elements);
+		let b_0 = two_valued_field_buffer::<A, _, P>(alloc, 0, b_exponents, binary_elements);
+		let c_lo_0 = two_valued_field_buffer::<A, _, P>(alloc, 0, c_lo_exponents, binary_elements);
 
 		// The overflow parity check binds at the Phase-2 constraint point `b_eval_point` (r_2) —
 		// reused for free from the `b` re-randomization.
 		let overflow_prover = MleToSumCheckDecorator::new(quadratic_mlecheck_prover(
+			alloc,
 			[a_0, b_0, c_lo_0],
 			|[a, b, c]| a * b - c,
 			|[a, b, _c]| a * b,
@@ -303,13 +314,17 @@ where
 		// `b_eval_point` (r_2) to the shared point via a single-claim MLE-eval check.
 		assert_eq!(b_exponents.len(), 1 << n_vars);
 		let b_tensor = eq_ind_partial_eval_scalars::<F>(r_ib);
-		let b_folded = fold_words::<_, P>(b_exponents, &b_tensor);
-		let b_sumcheck_prover =
-			MleToSumCheckDecorator::new(multilinear_eval_prover(b_folded, b_eval_point, b_recomb));
+		let b_folded = fold_words::<_, P, _>(alloc, b_exponents, &b_tensor);
+		let b_sumcheck_prover = MleToSumCheckDecorator::new(multilinear_eval_prover(
+			alloc,
+			b_folded,
+			b_eval_point,
+			b_recomb,
+		));
 
 		let batch_guard = tracing::debug_span!("Final batched sumcheck").entered();
 		let BatchSumcheckOutput {
-			challenges,
+			mut challenges,
 			multilinear_evals: _,
 		} = batch_prove(
 			vec![
@@ -321,7 +336,9 @@ where
 		);
 		drop(batch_guard);
 
-		// `challenges` (reversed) is the shared output point for all output claims.
+		// `batch_prove` returns binding-order challenges; reversed, they are the shared output
+		// point for all output claims.
+		challenges.reverse();
 		let r_out = challenges.as_slice();
 
 		// Send the raw per-bit output evals at `r_out`, computed directly from the exponents. The
@@ -351,8 +368,9 @@ where
 	}
 }
 
-impl<F, P, Channel> IntMulProver<'_, P, Channel>
+impl<'alloc, A, F, P, Channel> IntMulProver<'_, 'alloc, A, P, Channel>
 where
+	A: Allocator,
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
@@ -361,7 +379,7 @@ where
 	pub fn phase1(
 		&mut self,
 		eval_point: &[F],
-		b_prover: ProdcheckProver<P>,
+		b_prover: ProdcheckProver<'alloc, A, P>,
 		b_leaves: &FieldBuffer<P>,
 		b_root_eval: F,
 	) -> Phase1Output<F> {
@@ -409,10 +427,11 @@ where
 		twisted_evals: &[F],
 		selector: FieldBuffer<P>,
 		b_exponents: &[Word],
-		c_lo_hi_roots: [FieldBuffer<P>; 2],
+		c_lo_hi_roots: [FieldVec<P, A>; 2],
 		c_eval_point: &[F],
 		c_root_eval: F,
 	) -> Phase3Output<F> {
+		let alloc = self.alloc;
 		let n_vars = selector.log_len();
 		assert!(
 			twisted_eval_points
@@ -449,16 +468,19 @@ where
 		);
 
 		let c_root_sumcheck_prover =
-			bivariate_product_mle::new(c_lo_hi_roots, c_eval_point.to_vec(), c_root_eval);
+			bivariate_product_mle::new(alloc, c_lo_hi_roots, c_eval_point.to_vec(), c_root_eval);
 
 		let c_root_prover = MleToSumCheckDecorator::new(c_root_sumcheck_prover);
 
 		let provers = vec![Either::Left(selector_prover), Either::Right(c_root_prover)];
 		let sumcheck_guard = tracing::debug_span!("Batched selector + C-root sumcheck").entered();
 		let BatchSumcheckOutput {
-			challenges,
+			mut challenges,
 			multilinear_evals,
 		} = batch_prove_and_write_evals(provers, self.channel);
+		// `batch_prove` returns binding-order challenges; reverse to variable-indexed to match
+		// the verifier's phase-3 evaluation point.
+		challenges.reverse();
 		drop(sumcheck_guard);
 
 		let [mut selector_prover_evals, c_root_prover_evals] = multilinear_evals
@@ -496,9 +518,9 @@ where
 	pub fn phase4(
 		&mut self,
 		eval_point: &[F],
-		(a_root_eval, a_prover): (F, ProdcheckProver<P>),
-		(gpow_c_lo_eval, c_lo_prover): (F, ProdcheckProver<P>),
-		(gpow_c_hi_eval, c_hi_prover): (F, ProdcheckProver<P>),
+		(a_root_eval, a_prover): (F, ProdcheckProver<'alloc, A, P>),
+		(gpow_c_lo_eval, c_lo_prover): (F, ProdcheckProver<'alloc, A, P>),
+		(gpow_c_hi_eval, c_hi_prover): (F, ProdcheckProver<'alloc, A, P>),
 		exponents: [&[Word]; 3],
 		tables: &[FieldBuffer<P>],
 	) -> Phase4Output<F> {

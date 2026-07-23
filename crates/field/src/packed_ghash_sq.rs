@@ -2,7 +2,7 @@
 
 //! Packed [`GhashSq256b`] in a sliced (struct-of-arrays) layout.
 //!
-//! [`GhashSq256b`] is the degree-two extension `a + b·Y` of the GHASH field, with `Y² = Y + X⁻¹`.
+//! [`GhashSq256b`] is the degree-two extension `a + b·Y` of the GHASH field, with `Y² = X·Y + X`.
 //! The packings here store the `a` and `b` coordinates of every lane in two separate packed GHASH
 //! registers via [`SlicedPackedField`], so a batch multiply runs as three packed GHASH multiplies
 //! over the whole batch (Karatsuba over `Y`) rather than a schoolbook product per element.
@@ -10,8 +10,8 @@
 //! Only the field arithmetic lives here: a widening multiply ([`WideMul`]) with a deferred
 //! reduction, plus [`Square`] and [`InvertOrZero`]. `Mul` and the rest of the [`PackedField`]
 //! surface are provided generically by [`SlicedPackedField`]. The coordinate register is a
-//! [`PackedPrimitiveType`], so the reduction scales by `X⁻¹` with a per-lane bit shift
-//! ([`ghash_mul_inv_x`]) rather than a full field multiply, and the batch costs three GHASH
+//! [`PackedPrimitiveType`], so the reduction scales by `X` with a per-lane bit shift
+//! ([`ghash_mul_x`]) rather than a full field multiply, and the batch costs three GHASH
 //! multiplies, not four.
 
 use std::{
@@ -42,31 +42,31 @@ pub type SlicedGhashSq4x256b = SlicedGhashSq256b<M512>;
 /// The unreduced widening product of the coordinate GHASH multiply.
 type GhashWide<U> = <Ghash<U> as WideMul>::Output;
 
-/// Multiplies every 128-bit GHASH lane of an underlier by `X⁻¹`.
+/// Multiplies every 128-bit GHASH lane of an underlier by `X`.
 ///
-/// `X⁻¹` scaling is `GF(2)`-linear — a per-lane bit shift with a fixed compensation, not a field
+/// `X` scaling is `GF(2)`-linear — a per-lane bit shift with a fixed compensation, not a field
 /// multiply — so this is far cheaper than a CLMUL. It reuses the scalar
-/// [`BinaryField128bGhash::mul_inv_x`] on each 128-bit lane, which every supported underlier
-/// divides into.
+/// [`BinaryField128bGhash::mul_x`] on each 128-bit lane, which every supported underlier divides
+/// into.
 #[inline]
-fn ghash_mul_inv_x<U: Divisible<M128>>(u: U) -> U {
+fn ghash_mul_x<U: Divisible<M128>>(u: U) -> U {
 	U::from_iter(Divisible::<M128>::value_iter(u).map(|lane| {
 		BinaryField128bGhash::from_underlier(lane)
-			.mul_inv_x()
+			.mul_x()
 			.to_underlier()
 	}))
 }
 
-/// Multiplies every GHASH lane of a packed coordinate by `X⁻¹`.
+/// Multiplies every GHASH lane of a packed coordinate by `X`.
 #[inline]
-fn mul_inv_x<U: UnderlierType + Divisible<M128>>(coord: Ghash<U>) -> Ghash<U> {
-	Ghash::<U>::from_underlier(ghash_mul_inv_x(coord.to_underlier()))
+fn mul_x<U: UnderlierType + Divisible<M128>>(coord: Ghash<U>) -> Ghash<U> {
+	Ghash::<U>::from_underlier(ghash_mul_x(coord.to_underlier()))
 }
 
 /// The unreduced product of two GHASH² elements in sliced form.
 ///
 /// Holds the three Karatsuba GHASH widening products, deferring both the GHASH reductions and the
-/// `X⁻¹` scaling. Since those are all `GF(2)`-linear, an inner product over GHASH² accumulates
+/// multiply-by-`X`. Since those are all `GF(2)`-linear, an inner product over GHASH² accumulates
 /// these by XOR and reduces once at the end.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SlicedGhashSqWide<W> {
@@ -149,14 +149,16 @@ where
 		}
 	}
 
-	/// Reduces the three products and folds `Y² = Y + X⁻¹`: `z₀ = t₀ + t₂·X⁻¹`, `z₁ = t₁ + t₀`.
+	/// Reduces the three products and folds `Y² = X·Y + X`. With the Karatsuba cross term recovered
+	/// as `t₁ + t₀ + t₂`: `z₀ = t₀ + X·t₂`, `z₁ = (t₁ + t₀ + t₂) + X·t₂ = z₀ + t₁ + t₂`.
 	#[inline]
 	fn reduce(wide: Self::Output) -> Self {
 		let t0 = <Ghash<U> as WideMul>::reduce(wide.t0);
 		let t2 = <Ghash<U> as WideMul>::reduce(wide.t2);
 		let t1 = <Ghash<U> as WideMul>::reduce(wide.t1);
 
-		Self::from_coords([t0 + mul_inv_x(t2), t1 + t0])
+		let z0 = t0 + mul_x(t2);
+		Self::from_coords([z0, z0 + t1 + t2])
 	}
 }
 
@@ -165,7 +167,8 @@ where
 	U: UnderlierType + Divisible<M128>,
 	Ghash<U>: PackedField<Scalar = BinaryField128bGhash>,
 {
-	/// `(a + b·Y)² = (a² + b²·X⁻¹) + b²·Y` — the cross term vanishes in characteristic two.
+	/// `(a + b·Y)² = (a² + X·b²) + (X·b²)·Y` — the cross term vanishes in characteristic two, and
+	/// `Y² = X·Y + X`.
 	#[inline]
 	fn square(self) -> Self {
 		let [a, b] = self.to_coords();
@@ -173,7 +176,8 @@ where
 		let t0 = Square::square(a);
 		let t2 = Square::square(b);
 
-		Self::from_coords([t0 + mul_inv_x(t2), t2])
+		let x_t2 = mul_x(t2);
+		Self::from_coords([t0 + x_t2, x_t2])
 	}
 }
 
@@ -182,17 +186,18 @@ where
 	U: UnderlierType + Divisible<M128>,
 	Ghash<U>: PackedField<Scalar = BinaryField128bGhash>,
 {
-	/// Inverts through the norm of the degree-two extension. The conjugate of `u = a + b·Y` under
-	/// `Y ↦ Y + 1` is `ū = (a + b) + b·Y`, its norm `N = u·ū = a² + a·b + b²·X⁻¹` lies in GHASH,
-	/// and `u⁻¹ = ū·N⁻¹`. A zero lane has norm zero, so `invert_or_zero` returns zero there.
+	/// Inverts through the norm of the degree-two extension. The conjugate of `u = a + b·Y` sends
+	/// `Y` to the other root of `Y² + X·Y + X` (the roots sum to `X` and multiply to `X`), giving
+	/// `ū = (a + X·b) + b·Y`. Its norm `N = u·ū = a² + X·b·(a + b)` lies in GHASH, and
+	/// `u⁻¹ = ū·N⁻¹`. A zero lane has norm zero, so `invert_or_zero` returns zero there.
 	#[inline]
 	fn invert_or_zero(self) -> Self {
 		let [a, b] = self.to_coords();
 
-		let norm = Square::square(a) + a * b + mul_inv_x(Square::square(b));
+		let norm = Square::square(a) + mul_x(a * b + Square::square(b));
 		let norm_inv = norm.invert_or_zero();
 
-		Self::from_coords([(a + b) * norm_inv, b * norm_inv])
+		Self::from_coords([(a + mul_x(b)) * norm_inv, b * norm_inv])
 	}
 }
 
@@ -239,8 +244,8 @@ mod tests {
 		P: PackedField<Scalar = GhashSq256b> + WideMul,
 	{
 		// The deferred widening form must match the eager product, and accumulating before a single
-		// reduction must match summing the reductions (both `X⁻¹` scaling and the GHASH reduction
-		// are `GF(2)`-linear).
+		// reduction must match summing the reductions (both the multiply-by-`X` and the GHASH
+		// reduction are `GF(2)`-linear).
 		let (a1, b1) = (P::random(&mut rng), P::random(&mut rng));
 		let (a2, b2) = (P::random(&mut rng), P::random(&mut rng));
 

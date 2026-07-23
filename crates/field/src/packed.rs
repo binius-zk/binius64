@@ -89,18 +89,6 @@ pub trait PackedField:
 	/// Construct a packed field element from a function that returns scalar values by index.
 	fn from_fn(f: impl FnMut(usize) -> Self::Scalar) -> Self;
 
-	/// Creates a packed field from a fallible function applied to each index.
-	fn try_from_fn<E>(mut f: impl FnMut(usize) -> Result<Self::Scalar, E>) -> Result<Self, E> {
-		let mut result = Self::default();
-		for i in 0..Self::WIDTH {
-			let scalar = f(i)?;
-			unsafe {
-				result.set_unchecked(i, scalar);
-			};
-		}
-		Ok(result)
-	}
-
 	/// Construct a packed field element from a sequence of scalars.
 	///
 	/// If the number of values in the sequence is less than the packing width, the remaining

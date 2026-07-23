@@ -1,6 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 use std::{marker::PhantomData, ops::Deref};
 
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{AESTowerField8b as B8, BinaryField, PackedField};
 use binius_ip_prover::{
@@ -39,7 +40,6 @@ where
 	log_words: usize,
 	first_col: Data,
 	second_col: Data,
-	third_col: Data,
 	big_field_zerocheck_challenges: Vec<FChallenge>,
 	univariate_round_message: [FChallenge; ROWS_PER_HYPERCUBE_VERTEX],
 	univariate_round_message_domain: BinarySubspace<FChallenge>,
@@ -58,12 +58,23 @@ where
 	/// that will be sent in the first round. The polynomial encodes the AND constraint verification
 	/// across all values in the oblong dimension.
 	///
+	/// The C operand of the AND constraint `A & B ^ C = 0` is not an input.
+	/// The prover derives it word-by-word as `A & B`.
+	///
+	/// # Why deriving C is sound
+	///
+	/// - A satisfying witness makes `C = A & B` hold on every row.
+	/// - Folding is F2-linear on word bits.
+	/// - Equal words therefore fold to equal field elements.
+	/// - So an honest prover emits the exact same transcript as with an explicit C column.
+	/// - A cheating witness is still rejected.
+	/// - The shift reduction later checks the claimed C evaluation against the committed witness.
+	///
 	/// # Arguments
 	///
 	/// * `log_words` - Base-2 logarithm of the number of words in each column
 	/// * `first_col` - The oblong multilinear polynomial A in the AND constraint A & B ^ C = 0
 	/// * `second_col` - The oblong multilinear polynomial B in the AND constraint
-	/// * `third_col` - The oblong multilinear polynomial C in the AND constraint
 	/// * `big_field_zerocheck_challenges` - Challenges Z_{k+1},...,Zₙ in the large field FChallenge
 	/// * `prover_message_domain` - The domain for evaluating the univariate polynomial
 	///
@@ -73,12 +84,10 @@ where
 	/// 1. Computes the equality indicator polynomial from the big field challenges
 	/// 2. Uses the NTT lookup to efficiently compute the univariate polynomial evaluations
 	/// 3. Caches these evaluations for later use in the execute() method
-	#[allow(clippy::too_many_arguments)]
 	pub fn new(
 		log_words: usize,
 		first_col: Data,
 		second_col: Data,
-		third_col: Data,
 		big_field_zerocheck_challenges: Vec<F>,
 		prover_message_domain: BinarySubspace<B8>,
 	) -> Self {
@@ -88,7 +97,6 @@ where
 					log_words,
 					&first_col,
 					&second_col,
-					&third_col,
 					&big_field_zerocheck_challenges,
 					&prover_message_domain,
 				)
@@ -98,7 +106,6 @@ where
 			log_words,
 			first_col,
 			second_col,
-			third_col,
 			univariate_round_message,
 			big_field_zerocheck_challenges,
 			univariate_round_message_domain: prover_message_domain.isomorphic(),
@@ -149,21 +156,22 @@ where
 	/// # Process
 	///
 	/// 1. Creates a fold lookup table for efficiently folding at the challenge point
-	/// 2. Folds each of the three oblong multilinears (A, B, C) at Z = challenge
+	/// 2. Folds A, B, and the derived C = A & B at Z = challenge, in one fused pass
 	/// 3. Combines the zerocheck challenges (small field + big field)
 	/// 4. Evaluates the univariate polynomial at the challenge to get the sumcheck claim
 	/// 5. Constructs the AND reduction sumcheck prover with the folded multilinears
-	pub fn fold_and_send_reduced_prover(
+	pub fn fold_and_send_reduced_prover<'alloc, A: Allocator>(
 		self,
 		round_message_domain: BinarySubspace<F>,
 		challenge: F,
-	) -> impl MleCheckProver<F> {
+		alloc: &'alloc A,
+	) -> impl MleCheckProver<F> + 'alloc {
 		let univariate_domain = round_message_domain.reduce_dim(round_message_domain.dim() - 1);
 		let lagrange_evals = lagrange_evals_scalars(&univariate_domain, challenge);
 		let folder = BitAxisFolder::new(&lagrange_evals);
 
-		let proving_polys = [&self.first_col, &self.second_col, &self.third_col]
-			.map(|col| folder.fold::<PChallenge>(col));
+		let proving_polys =
+			folder.fold_bitand_operands::<PChallenge, _>(alloc, &self.first_col, &self.second_col);
 
 		let upcasted_small_field_challenges = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES
 			.iter()
@@ -181,6 +189,7 @@ where
 			.copy_from_slice(&self.univariate_round_message);
 
 		quadratic_mlecheck_prover(
+			alloc,
 			proving_polys,
 			|[a, b, c]| a * b - c,
 			|[a, b, _]| a * b,
@@ -217,7 +226,11 @@ where
 	/// 2. **Challenge**: Sample univariate challenge z via Fiat-Shamir
 	/// 3. **Transition**: Fold oblong multilinears at Z = z
 	/// 4. **Phase 2**: Execute sumcheck protocol on folded multilinears
-	pub fn prove_with_channel(self, channel: &mut impl IPProverChannel<F>) -> AndCheckOutput<F> {
+	pub fn prove_with_channel<A: Allocator>(
+		self,
+		channel: &mut impl IPProverChannel<F>,
+		alloc: &A,
+	) -> AndCheckOutput<F> {
 		let univariate_message_coeffs = self.execute();
 
 		channel.send_many(univariate_message_coeffs);
@@ -228,6 +241,7 @@ where
 			self.fold_and_send_reduced_prover(
 				univariate_round_message_domain,
 				univariate_sumcheck_challenge,
+				alloc,
 			)
 		});
 
@@ -256,7 +270,7 @@ where
 mod test {
 	use std::{iter, iter::repeat_with};
 
-	use binius_compute::{BufferPool, PoolVec};
+	use binius_compute::GlobalAllocator;
 	use binius_core::word::Word;
 	use binius_field::{AESTowerField8b, arch::OptimalPackedB128};
 	use binius_math::{
@@ -279,13 +293,6 @@ mod test {
 			.collect()
 	}
 
-	/// Copies `src` into a buffer drawn from `pool`.
-	fn pool_words<'a>(pool: &'a BufferPool, src: &[Word]) -> PoolVec<'a, Word> {
-		let mut buffer = pool.alloc_vec::<Word>(src.len());
-		buffer.extend_from_slice(src);
-		buffer
-	}
-
 	#[test]
 	fn test_transcript_prover_verifies() {
 		let mut prover_challenger = ProverTranscript::new(StdChallenger::default());
@@ -299,6 +306,8 @@ mod test {
 		];
 		let first_mlv = random_words(log_num_rows, &mut rng);
 		let second_mlv = random_words(log_num_rows, &mut rng);
+		// The prover receives only the A and B columns.
+		// This materialized C = A & B feeds only the verifier-side fold check at the end.
 		let third_mlv: Vec<Word> = iter::zip(&first_mlv, &second_mlv)
 			.map(|(&a, &b)| a & b)
 			.collect();
@@ -310,17 +319,15 @@ mod test {
 		// Prover is instantiated
 		let big_field_zerocheck_challenges = prover_challenger
 			.sample_vec(log_num_rows - PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
-		let pool = BufferPool::new();
 		let prover = OblongZerocheckProver::<_, OptimalPackedB128, _>::new(
 			log_num_rows,
-			pool_words(&pool, &first_mlv),
-			pool_words(&pool, &second_mlv),
-			pool_words(&pool, &third_mlv),
+			first_mlv.clone(),
+			second_mlv.clone(),
 			big_field_zerocheck_challenges.to_vec(),
 			prover_message_domain,
 		);
 
-		let prove_output = prover.prove_with_channel(&mut prover_challenger);
+		let prove_output = prover.prove_with_channel(&mut prover_challenger, &GlobalAllocator);
 
 		// Verifier is instantiated
 		let mut verifier_challenger = prover_challenger.into_verifier();
@@ -362,7 +369,7 @@ mod test {
 			lagrange_evals_scalars(&verifier_univariate_domain, z_challenge);
 		let folder = BitAxisFolder::new(&verifier_lagrange_evals);
 		for (i, eval) in [a_eval, b_eval, c_eval].iter().enumerate() {
-			let folded: FieldBuffer<B128> = folder.fold(&one_bit_mlvs[i]);
+			let folded: FieldBuffer<B128> = folder.fold(&GlobalAllocator, &one_bit_mlvs[i]);
 			assert_eq!(evaluate(&folded, &eval_point), *eval);
 		}
 	}

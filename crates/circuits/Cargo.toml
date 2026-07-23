@@ -21,7 +21,6 @@ sha3.workspace = true
 [dev-dependencies]
 anyhow.workspace = true
 bitcoin = { workspace = true }
-bitcoin_hashes = { workspace = true }
 blake2 = { workspace = true }
 blake3 = { workspace = true }
 hmac = { workspace = true }

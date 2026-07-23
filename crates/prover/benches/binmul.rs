@@ -1,5 +1,6 @@
 // Copyright 2026 The Binius Developers
 
+use binius_compute::BufferPool;
 use binius_core::word::Word;
 use binius_field::{BinaryField128bGhash, Random, arch::OptimalPackedB128};
 use binius_prover::protocols::binmul::{BinMulWitness, prove};
@@ -59,6 +60,8 @@ fn bench_binmul_prove(c: &mut Criterion) {
 		group.throughput(Throughput::Elements(1 << log_n));
 		group.bench_function(format!("n_vars={log_n}"), |b| {
 			let (a_lo, a_hi, b_lo, b_hi, c_lo, c_hi) = random_witness(&mut rng, log_n);
+			let pool = BufferPool::new();
+			let alloc = &pool;
 
 			b.iter_batched_ref(
 				|| ProverTranscript::new(StdChallenger::default()),
@@ -71,7 +74,7 @@ fn bench_binmul_prove(c: &mut Criterion) {
 						c_lo: &c_lo,
 						c_hi: &c_hi,
 					};
-					prove::<F, P, _>(&witness, transcript)
+					prove::<_, F, P, _>(&witness, transcript, &alloc)
 				},
 				BatchSize::SmallInput,
 			);

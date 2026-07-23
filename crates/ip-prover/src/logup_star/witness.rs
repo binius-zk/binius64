@@ -11,8 +11,9 @@
 
 use std::iter;
 
+use binius_compute::{Allocator, VecLike};
 use binius_field::{BinaryField, Divisible, Field, PackedField, util::powers};
-use binius_math::{FieldBuffer, multilinear::eq::scaled_eq_ind_partial_eval_into};
+use binius_math::{FieldBuffer, FieldVec, multilinear::eq::scaled_eq_ind_partial_eval_into};
 use binius_utils::rayon::{current_num_threads, prelude::*};
 
 use super::prove::Looker;
@@ -217,8 +218,9 @@ where
 /// # Preconditions
 ///
 /// * `index.len()` is a power of two.
-pub fn looker_denominator<F, P>(c: F, index: &[usize]) -> FieldBuffer<P>
+pub fn looker_denominator<A, F, P>(alloc: &A, c: F, index: &[usize]) -> FieldVec<P, A>
 where
+	A: Allocator,
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 {
@@ -226,12 +228,20 @@ where
 	let log_len = index.len().ilog2() as usize;
 
 	// One denominator per row: c minus the row's embedded index value.
-	// Subtract a full word at a time: one packed subtraction per word, built in parallel.
+	// Subtract a full word at a time: one packed subtraction per word, built in parallel straight
+	// into the allocator's buffer.
+	let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 	let c_packed = P::broadcast(c);
-	let packed = index
-		.par_chunks(P::WIDTH)
-		.map(|chunk| c_packed - P::from_scalars(chunk.iter().copied().map(embed_position::<F>)))
-		.collect::<Vec<_>>();
+	let mut packed = alloc.alloc::<P>(packed_len);
+	packed
+		.spare_capacity_mut()
+		.par_iter_mut()
+		.zip(index.par_chunks(P::WIDTH))
+		.for_each(|(slot, chunk)| {
+			slot.write(c_packed - P::from_scalars(chunk.iter().copied().map(embed_position::<F>)));
+		});
+	// Safety: every packed slot is written exactly once by the parallel loop above.
+	unsafe { packed.set_len(packed_len) };
 
 	FieldBuffer::new(log_len, packed)
 }
@@ -239,8 +249,9 @@ where
 /// Build the table denominator `c - J` over the `m`-variable table cube.
 ///
 /// Entry `j` is `c - iota(j)`, the logUp denominator for table position `j`.
-pub fn table_denominator<F, P>(c: F, table_n_vars: usize) -> FieldBuffer<P>
+pub fn table_denominator<A, F, P>(alloc: &A, c: F, table_n_vars: usize) -> FieldVec<P, A>
 where
+	A: Allocator,
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
 {
@@ -248,7 +259,7 @@ where
 	let values = (0..1usize << table_n_vars)
 		.map(|j| c - embed_position::<F>(j))
 		.collect::<Vec<_>>();
-	FieldBuffer::from_values(&values)
+	FieldBuffer::from_values_in(alloc, &values)
 }
 
 /// Build the pushforward `Y = I_* eq_r` over the `m`-variable table cube.
@@ -285,6 +296,7 @@ where
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{
 		Field,
 		arch::{OptimalB128, OptimalPackedB128},
@@ -420,14 +432,14 @@ mod tests {
 		let c = F::new(7);
 
 		// n = 0: a single row, so the packed word carries one meaningful lane.
-		let one_row = looker_denominator::<F, P>(c, &[3])
+		let one_row = looker_denominator::<_, F, P>(&GlobalAllocator, c, &[3])
 			.iter_scalars()
 			.collect::<Vec<_>>();
 		assert_eq!(one_row, denominator_reference(c, &[3]));
 
 		// n = 2: four rows with distinct embedded positions.
 		let index = [0usize, 1, 2, 5];
-		let four_rows = looker_denominator::<F, P>(c, &index)
+		let four_rows = looker_denominator::<_, F, P>(&GlobalAllocator, c, &index)
 			.iter_scalars()
 			.collect::<Vec<_>>();
 		assert_eq!(four_rows, denominator_reference(c, &index));
@@ -446,7 +458,9 @@ mod tests {
 				.map(|_| rng.random_range(0..(1usize << 12)))
 				.collect::<Vec<_>>();
 
-			let got = looker_denominator::<F, P>(c, &index).iter_scalars().collect::<Vec<_>>();
+			let got = looker_denominator::<_, F, P>(&GlobalAllocator, c, &index)
+				.iter_scalars()
+				.collect::<Vec<_>>();
 			prop_assert_eq!(got, denominator_reference(c, &index));
 		}
 	}

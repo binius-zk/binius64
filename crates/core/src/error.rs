@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 //! Hosts error definitions for the core crate.
 
-use crate::consts::MIN_WORDS_PER_SEGMENT;
+use crate::ValueVecLayout;
 
 /// Constraint system related error.
 #[allow(missing_docs)] // errors are self-documenting
@@ -10,7 +10,8 @@ pub enum ConstraintSystemError {
 	#[error("the public input segment must have power of two length")]
 	PublicInputPowerOfTwo,
 	#[error(
-		"the public input segment must be at least {MIN_WORDS_PER_SEGMENT} words, got: {pub_input_size}"
+		"the public input segment must be at least {} words, got: {pub_input_size}",
+		ValueVecLayout::MIN_WORDS_PER_SEGMENT
 	)]
 	PublicInputTooShort { pub_input_size: usize },
 	#[error(

@@ -62,7 +62,7 @@ fn karatsuba2<U: Underlier + OpsClmul>(h: U, m: U, l: U) -> (U, U) {
 	let t = {
 		//   {m0, m1} ^ {l1, h0}
 		// = {m0^l1, m1^h0}
-		let t0 = { U::xor(m, U::extract_hi_lo_64(l, h)) };
+		let t0 = { U::xor(m, U::alignr_epi8::<8>(h, l)) };
 
 		//   {h0, h1} ^ {l0, l1}
 		// = {h0^l0, h1^l1}

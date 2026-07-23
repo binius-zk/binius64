@@ -665,6 +665,7 @@ mod tests {
 
 	#[test]
 	fn test_libra_eval_sumcheck() {
+		use binius_compute::GlobalAllocator;
 		use binius_ip::{mlecheck::libra_eval, sumcheck::verify};
 		use binius_math::{inner_product::inner_product_par, multilinear::evaluate::evaluate};
 
@@ -673,6 +674,7 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 		let n_vars = 6;
 		let degree = 2;
+		let alloc = GlobalAllocator;
 
 		// Create random mask buffer (g')
 		let (m_n, m_d) = mask_buffer_dimensions(n_vars, degree, 0);
@@ -691,7 +693,7 @@ mod tests {
 
 		// Create the bivariate product sumcheck prover
 		let prover =
-			bivariate_product_prover([mask_buffer.clone(), libra_eval_tensor], claimed_sum);
+			bivariate_product_prover(&alloc, [mask_buffer.clone(), libra_eval_tensor], claimed_sum);
 
 		// Run the proving protocol
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());

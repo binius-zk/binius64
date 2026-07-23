@@ -37,6 +37,7 @@ use std::{
 	ops::Deref,
 };
 
+use binius_compute::{Allocator, BufferPool};
 use binius_field::{BinaryField, Field, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
@@ -173,18 +174,20 @@ impl<F: Field> IOPProver<F> {
 	/// * `channel` - The IOP prover channel (public input must be observed on transcript before
 	///   creating the channel; the precommit oracle must already have been committed on it via
 	///   [`Self::commit_precommit`])
-	pub fn prove<P, Channel>(
+	pub fn prove<P, Channel, A>(
 		&self,
 		witness: Witness<F>,
 		precommit_oracle: Channel::Oracle,
 		precommit_packed: FieldBuffer<P>,
 		mut rng: impl CryptoRng,
 		channel: &mut Channel,
+		alloc: &A,
 	) -> Result<(), Error>
 	where
 		F: BinaryField,
 		P: PackedField<Scalar = F>,
 		Channel: IOPProverChannel<P>,
+		A: Allocator,
 	{
 		let _prove_guard =
 			tracing::info_span!("Prove", operation = "prove", perfetto_category = "operation")
@@ -260,13 +263,14 @@ impl<F: Field> IOPProver<F> {
 		let mask_oracle = channel.send_oracle(masks_buffer.to_ref());
 
 		// Prove the multiplication constraints
-		let (mulcheck_evals, mask_eval, r_x) = prove_mulcheck::<F, P, _>(
+		let (mulcheck_evals, mask_eval, r_x) = prove_mulcheck::<F, P, _, _>(
 			cs.mul_constraints(),
 			witness.public(),
 			precommit_packed.to_ref(),
 			private_packed.to_ref(),
 			mulcheck_mask,
 			&mut *channel,
+			alloc,
 		);
 
 		// λ is the batching challenge for the constraint operands
@@ -386,44 +390,56 @@ where
 		let mut channel = self
 			.basefold_compiler
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript, &mut rng);
+		// Working buffers for this proof are drawn from a single pool that lives for the call.
+		let pool = BufferPool::new();
+		let alloc = &pool;
 		let (precommit_oracle, precommit_packed) =
 			self.iop_prover
 				.commit_precommit::<P, _>(&witness, &mut rng, &mut channel);
 		// The IOP prover only queues the oracle relations; `finish` runs the single combined
 		// opening.
-		self.iop_prover.prove::<P, _>(
+		self.iop_prover.prove::<P, _, _>(
 			witness,
 			precommit_oracle,
 			precommit_packed,
 			rng,
 			&mut channel,
+			&alloc,
 		)?;
-		channel.finish();
+		channel.finish(&alloc);
 		Ok(())
 	}
 }
 
-fn prove_mulcheck<F, P, Channel>(
+fn prove_mulcheck<F, P, Channel, A>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	public: &[F],
 	precommit_packed: FieldSlice<P>,
 	private_packed: FieldSlice<P>,
 	mask: zk_mlecheck::Mask<P, impl Deref<Target = [P]>>,
 	channel: &mut Channel,
+	alloc: &A,
 ) -> ([F; 3], F, Vec<F>)
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
+	A: Allocator,
 {
-	let mulcheck_witness =
-		wiring::build_mulcheck_witness(mul_constraints, public, precommit_packed, private_packed);
+	let mulcheck_witness = wiring::build_mulcheck_witness(
+		alloc,
+		mul_constraints,
+		public,
+		precommit_packed,
+		private_packed,
+	);
 
 	// Sample random evaluation point for mulcheck
 	let r_mulcheck = channel.sample_many(mask.n_vars());
 
 	// Prove the mul-gate zerocheck a * b - c = 0 over the shared store.
 	let mlecheck_prover = quadratic_mlecheck_prover(
+		alloc,
 		[mulcheck_witness.a, mulcheck_witness.b, mulcheck_witness.c],
 		|[a, b, c]| a * b - c, // composition
 		|[a, b, _c]| a * b,    // infinity_composition (quadratic term only)

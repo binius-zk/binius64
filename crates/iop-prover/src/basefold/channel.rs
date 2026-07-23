@@ -2,13 +2,16 @@
 
 //! BaseFold ZK implementation of the IOP prover channel.
 
+use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_iop::{channel::OracleSpec, fri::FRIParams};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
-		self, PaddedSumcheckDecorator, batch::BatchSumcheckOutput,
-		bivariate_product_evaluator::BivariateProductEvaluator, mle_store::MleStore,
+		self, PaddedSumcheckDecorator,
+		batch::BatchSumcheckOutput,
+		bivariate_product_evaluator::BivariateProductEvaluator,
+		mle_store::{MleStore, pooled_copy},
 		round_evaluator::SharedSumcheckProver,
 	},
 };
@@ -140,7 +143,7 @@ where
 	/// (in oracle-index order). Mirrors [`BaseFoldVerifierChannel::finish`].
 	///
 	/// [`BaseFoldVerifierChannel::finish`]: binius_iop::basefold::channel::BaseFoldVerifierChannel::finish
-	pub fn finish(self) {
+	pub fn finish<A: Allocator>(self, alloc: &A) {
 		let Self {
 			mut channel,
 			ntt,
@@ -166,6 +169,7 @@ where
 			&fri_params,
 			committed_oracles,
 			queue,
+			alloc,
 		);
 	}
 }
@@ -184,14 +188,16 @@ where
 /// index, so the two orders are reconciled by indexing rather than by sorting the relations; the
 /// per-oracle data (`oracle_specs`, `fri_params`, `committed_oracles`) is all indexed by oracle
 /// index.
-fn prove_batch_zk_basefold<F, P, NTT, Channel>(
+fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	channel: &mut Channel,
 	ntt: &NTT,
 	oracle_specs: &[OracleSpec],
 	fri_params: &FRIParams<F>,
 	committed_oracles: Vec<CommittedOracleData<P, Channel::Commitment>>,
 	relations: Vec<QueuedRelation<P>>,
+	alloc: &A,
 ) where
+	A: Allocator,
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
@@ -316,9 +322,9 @@ fn prove_batch_zk_basefold<F, P, NTT, Channel>(
 				claim
 			};
 
-			let mut store = MleStore::new(n_i);
+			let mut store = MleStore::new(n_i, alloc);
 			let message_col = store.push(message);
-			let transparent_col = store.push_owned(transparent);
+			let transparent_col = store.push_owned(pooled_copy(alloc, &transparent));
 			let inner = SharedSumcheckProver::new(
 				store,
 				[(sum_prime, BivariateProductEvaluator::new([message_col, transparent_col]))],
@@ -337,8 +343,7 @@ fn prove_batch_zk_basefold<F, P, NTT, Channel>(
 	};
 
 	// Reduced oracle evaluations α_i = π_i'(ρ_i) come out in arrival order; scatter them into
-	// oracle-index order to match how the verifier indexes them. `output.challenges` is already
-	// reversed to low-to-high (variable-indexed) order, so ρ_i is its first n_i coords.
+	// oracle-index order to match how the verifier indexes them.
 	//
 	// TODO: This will fail if one oracle isn't opened. For robustness, we should do a regular
 	// multilinear evaluation in that case.
@@ -352,6 +357,10 @@ fn prove_batch_zk_basefold<F, P, NTT, Channel>(
 	// Collapse the oracle-index variables up front at sampled batching challenges `r'`: build the
 	// combined multilinear 𝛑(X) = Σ_i e[i]·π_i^↑(X) with e = eq(·, r') into one 2^𝐧 buffer, and the
 	// combined target s' = 𝛑(r) = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j).
+	// `batch_prove` returns binding-order challenges; reverse to variable-indexed (low-to-high),
+	// so that ρ_i is the first n_i coords.
+	let mut challenges = challenges;
+	challenges.reverse();
 	let point = &challenges;
 	let log_n_oracles = log2_ceil_usize(n_committed);
 	let outer_challenges = channel.sample_many(log_n_oracles);
@@ -361,7 +370,7 @@ fn prove_batch_zk_basefold<F, P, NTT, Channel>(
 
 		let eq_tensor = eq_ind_partial_eval_scalars(&outer_challenges);
 
-		let mut combined = FieldBuffer::<P>::zeros(max_n);
+		let mut combined = FieldBuffer::<P>::zeros_in(alloc, max_n);
 		let mut s_prime = F::ZERO;
 		for (fri_oracle, witness_prime, eq_i, alpha_i) in
 			izip!(fri_params.input_oracles(), witness_primes, eq_tensor, alphas)
@@ -412,6 +421,7 @@ fn prove_batch_zk_basefold<F, P, NTT, Channel>(
 		&outer_challenges,
 		fri_folder,
 		channel,
+		alloc,
 	);
 }
 
@@ -552,6 +562,7 @@ where
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{
 		BinaryField, BinaryField128bGhash, Field, PackedBinaryGhash1x128b, PackedField,
 	};
@@ -655,7 +666,7 @@ mod tests {
 			transparent_poly.clone(),
 			eval_claim,
 		)]);
-		prover_channel.finish();
+		prover_channel.finish(&GlobalAllocator);
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -725,7 +736,7 @@ mod tests {
 			(oracle_1, buffer_1, transparent_poly_1.clone(), eval_claim_1),
 			(oracle_2, buffer_2, transparent_poly_2.clone(), eval_claim_2),
 		]);
-		prover_channel.finish();
+		prover_channel.finish(&GlobalAllocator);
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -813,7 +824,7 @@ mod tests {
 			})
 			.collect();
 		prover_channel.prove_oracle_relations(prover_relations);
-		prover_channel.finish();
+		prover_channel.finish(&GlobalAllocator);
 
 		// === VERIFIER SIDE ===
 		let mut verifier_transcript = prover_transcript.into_verifier();
@@ -909,7 +920,7 @@ mod tests {
 			})
 			.collect();
 		prover_channel.prove_oracle_relations(prover_relations);
-		prover_channel.finish();
+		prover_channel.finish(&GlobalAllocator);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let mut verifier_channel = verifier_compiler

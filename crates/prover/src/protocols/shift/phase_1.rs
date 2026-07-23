@@ -3,6 +3,7 @@
 
 use std::{iter, ops::Range};
 
+use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField};
 use binius_ip::sumcheck::{SumcheckOutput, common::RoundCoeffs};
@@ -10,7 +11,7 @@ use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{bivariate_product_prover, common::SumcheckProver},
 };
-use binius_math::{BinarySubspace, FieldBuffer, inner_product::inner_product_buffers};
+use binius_math::{BinarySubspace, FieldBuffer, FieldVec, inner_product::inner_product_buffers};
 use binius_utils::rayon::prelude::*;
 use binius_verifier::protocols::shift::SHIFT_VARIANT_COUNT;
 use bytemuck::zeroed_vec;
@@ -30,7 +31,8 @@ const LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS;
 /// Proves the first phase of the shift reduction.
 /// Computes the g and h multilinears and performs the sumcheck.
 #[instrument(skip_all, name = "prover_phase_1")]
-pub fn prove_phase_1<F, P, Channel>(
+#[allow(clippy::too_many_arguments)]
+pub fn prove_phase_1<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	words: &[Word],
 	bitand_data: &PreparedOperatorData<F>,
@@ -38,23 +40,27 @@ pub fn prove_phase_1<F, P, Channel>(
 	binmul_data: &PreparedOperatorData<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
+	alloc: &A,
 ) -> SumcheckOutput<F>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
+	A: Allocator,
 {
 	// Build the g parts for the public and hidden segments separately, then sum them. The public
 	// words are the prefix of `words`, and each segment's key ranges are segment-relative.
 	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
-	let mut g_parts = build_g_parts::<_, P>(
+	let mut g_parts = build_g_parts::<_, P, _>(
+		alloc,
 		public_words,
 		&key_collection.public,
 		bitand_data,
 		intmul_data,
 		binmul_data,
 	);
-	let hidden_g_parts = build_g_parts::<_, P>(
+	let hidden_g_parts = build_g_parts::<_, P, _>(
+		alloc,
 		hidden_words,
 		&key_collection.hidden,
 		bitand_data,
@@ -68,9 +74,9 @@ where
 	}
 
 	// BitAnd, IntMul and BinMul share the same `r_zhat_prime`.
-	let h_parts = build_h_parts(domain_subspace, bitand_data.r_zhat_prime);
+	let h_parts = build_h_parts(alloc, domain_subspace, bitand_data.r_zhat_prime);
 
-	run_phase_1_sumcheck(g_parts, h_parts, channel)
+	run_phase_1_sumcheck(g_parts, h_parts, channel, alloc)
 }
 
 /// Runs the phase 1 sumcheck protocol for shift constraint verification.
@@ -99,16 +105,22 @@ where
 ///
 /// `SumcheckOutput` containing the challenge vector and final evaluation `gamma`
 #[instrument(skip_all, name = "run_sumcheck")]
-pub fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>>(
-	g_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
-	h_parts: [FieldBuffer<P>; SHIFT_VARIANT_COUNT],
+pub fn run_phase_1_sumcheck<
+	F: Field,
+	P: PackedField<Scalar = F>,
+	Channel: IPProverChannel<F>,
+	A: Allocator,
+>(
+	g_parts: [FieldVec<P, A>; SHIFT_VARIANT_COUNT],
+	h_parts: [FieldVec<P, A>; SHIFT_VARIANT_COUNT],
 	channel: &mut Channel,
+	alloc: &A,
 ) -> SumcheckOutput<F> {
 	// Build one shared bivariate-product prover per shift variant.
 	let mut provers = iter::zip(g_parts, h_parts)
 		.map(|(g_part, h_part)| {
 			let sum = inner_product_buffers(&g_part, &h_part);
-			bivariate_product_prover([g_part, h_part], sum)
+			bivariate_product_prover(alloc, [g_part, h_part], sum)
 		})
 		.collect::<Vec<_>>();
 
@@ -188,13 +200,14 @@ pub fn run_phase_1_sumcheck<F: Field, P: PackedField<Scalar = F>, Channel: IPPro
 /// Used in phase 1 to construct the constant size g multilinears
 /// that will participate in the phase 1 sumcheck protocol.
 #[instrument(skip_all, name = "build_g_parts")]
-pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
+pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
+	alloc: &A,
 	words: &[Word],
 	segment: &KeySegment,
 	bitand_operator_data: &PreparedOperatorData<F>,
 	intmul_operator_data: &PreparedOperatorData<F>,
 	binmul_operator_data: &PreparedOperatorData<F>,
-) -> [FieldBuffer<P>; SHIFT_VARIANT_COUNT] {
+) -> [FieldVec<P, A>; SHIFT_VARIANT_COUNT] {
 	let acc_size: usize = SHIFT_VARIANT_COUNT << (LOG_LEN.saturating_sub(P::LOG_WIDTH));
 
 	assert!(
@@ -285,7 +298,7 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 			},
 		);
 
-	build_multilinear_parts(&multilinears)
+	build_multilinear_parts(alloc, &multilinears)
 }
 
 /// Builds the multilinear parts for a single operation by combining its operand multilinears.
@@ -294,9 +307,10 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>>(
 /// applies lambda weighting to each operand, and combines them into parts.
 /// Each operand of index `i` gets weighted by λ^(i+1).
 #[instrument(skip_all, name = "build_multilinear_parts")]
-fn build_multilinear_parts<P: PackedField>(
+fn build_multilinear_parts<P: PackedField, A: Allocator>(
+	alloc: &A,
 	multilinears: &[P],
-) -> [FieldBuffer<P>; SHIFT_VARIANT_COUNT] {
+) -> [FieldVec<P, A>; SHIFT_VARIANT_COUNT] {
 	assert!(
 		P::LOG_WIDTH < LOG_LEN,
 		"P::WIDTH is not supposed to exceed 8, so this statement must hold"
@@ -304,8 +318,13 @@ fn build_multilinear_parts<P: PackedField>(
 
 	multilinears
 		.chunks(1 << (LOG_LEN - P::LOG_WIDTH))
-		.map(|chunk| FieldBuffer::new(LOG_LEN, chunk.to_vec()))
+		.map(|chunk| {
+			// Build each part straight into the allocator's buffer rather than into a `Vec` copy.
+			let mut data = alloc.alloc::<P>(chunk.len());
+			data.extend_from_slice(chunk);
+			FieldBuffer::new(LOG_LEN, data)
+		})
 		.collect::<Vec<_>>()
 		.try_into()
-		.expect("chunk has SHIFT_VARIANT_COUNT parts of size 1 << LOG_LEN")
+		.unwrap_or_else(|_| panic!("chunk has SHIFT_VARIANT_COUNT parts of size 1 << LOG_LEN"))
 }

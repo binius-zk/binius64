@@ -2,6 +2,7 @@
 
 use std::array;
 
+use binius_compute::{BufferPool, PoolVec};
 use binius_field::{Field, FieldOps, PackedField, arch::OptimalPackedB128};
 use binius_ip::mlecheck;
 use binius_ip_prover::sumcheck::{
@@ -45,10 +46,11 @@ fn comp_1_inf<Pf: PackedField>([a, b, c]: [Pf; N]) -> Pf {
 	(a + b) * c
 }
 
-fn eval_claims<Ff, Pf>(multilinears: &[FieldBuffer<Pf>; N], eval_point: &[Ff]) -> [Ff; M]
+fn eval_claims<Ff, Pf, D>(multilinears: &[FieldBuffer<Pf, D>; N], eval_point: &[Ff]) -> [Ff; M]
 where
 	Ff: Field,
 	Pf: PackedField<Scalar = Ff>,
+	D: std::ops::Deref<Target = [Pf]>,
 {
 	let n_vars = eval_point.len();
 	let packed_len = 1 << n_vars.saturating_sub(Pf::LOG_WIDTH);
@@ -94,6 +96,7 @@ where
 	prover.finish()
 }
 
+#[allow(clippy::type_complexity)]
 fn bench_batch_quadratic_mlecheck_prove(c: &mut Criterion) {
 	let mut group = c.benchmark_group("mlecheck/batch_quadratic");
 	let mut rng = StdRng::seed_from_u64(0);
@@ -101,17 +104,31 @@ fn bench_batch_quadratic_mlecheck_prove(c: &mut Criterion) {
 	for n_vars in [12, 16, 20] {
 		group.throughput(Throughput::Elements(1 << n_vars));
 		group.bench_function(format!("n_vars={n_vars}/claims={M}"), |b| {
-			let multilinears: [FieldBuffer<P>; N] =
+			// Build the multilinears once; each iteration clones them from the pool.
+			let multilinears: [FieldBuffer<P, _>; N] =
 				array::from_fn(|_| random_field_buffer::<P>(&mut rng, n_vars));
 			let eval_point = random_scalars::<F>(&mut rng, n_vars);
-			let eval_claims = eval_claims::<F, P>(&multilinears, &eval_point);
+			let eval_claims = eval_claims::<F, P, _>(&multilinears, &eval_point);
 
 			let mut transcript = ProverTranscript::new(StdChallenger::default());
 
+			let pool = BufferPool::new();
+			let alloc = &pool;
+
 			b.iter_batched(
-				|| (multilinears.clone(), eval_point.clone()),
-				|(multilinears, eval_point)| {
-					let mut store = MleStore::new(eval_point.len());
+				|| {
+					(
+						multilinears.each_ref().map(|multilin| {
+							FieldBuffer::<_, PoolVec<_>>::clone_from_slice(
+								&alloc,
+								multilin.to_ref(),
+							)
+						}),
+						eval_point.clone(),
+					)
+				},
+				|(multilinears, eval_point): ([FieldBuffer<P, _>; N], _)| {
+					let mut store = MleStore::new(eval_point.len(), &alloc);
 					let cols = multilinears.map(|multilinear| store.push_owned(multilinear));
 					// One single-claim evaluator per composition, sharing the store's columns; the
 					// prover owns the eq tracker for the shared point.
@@ -119,7 +136,10 @@ fn bench_batch_quadratic_mlecheck_prove(c: &mut Criterion) {
 						QuadraticMleEvaluator::new(cols, comp_0::<P>, comp_0_inf::<P>);
 					let evaluator_1 =
 						QuadraticMleEvaluator::new(cols, comp_1::<P>, comp_1_inf::<P>);
-					let claims_with_evaluators: [(F, Box<dyn MleCheckRoundEvaluator<F, P>>); 2] = [
+					let claims_with_evaluators: [(
+						F,
+						Box<dyn MleCheckRoundEvaluator<&BufferPool, F, P> + '_>,
+					); 2] = [
 						(eval_claims[0], Box::new(evaluator_0)),
 						(eval_claims[1], Box::new(evaluator_1)),
 					];

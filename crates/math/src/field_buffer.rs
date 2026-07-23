@@ -2,11 +2,11 @@
 // Copyright 2026 The Binius Developers
 
 use std::{
-	mem,
 	ops::{Deref, DerefMut, Index, IndexMut},
 	slice,
 };
 
+use binius_compute::{Allocator, VecLike};
 use binius_field::{
 	Field, PackedField,
 	packed::{get_packed_slice_unchecked, set_packed_slice_unchecked},
@@ -22,34 +22,11 @@ pub trait AsSlicesMut<P: PackedField, const N: usize> {
 	fn as_slices_mut(&mut self) -> [FieldSliceMut<'_, P>; N];
 }
 
-/// Backing store of a [`FieldBuffer`] that can be shrunk in place.
-///
-/// [`FieldBuffer::truncate`] shrinks its backing store to match the smaller `log_len`, so it is
-/// available only for the mutable backings that support that in place: `Vec<T>` and `&mut [T]`. A
-/// shared `&[T]` view could reslice too, but truncation must also zero the dead lanes of a
-/// sub-packing-width word (see [`FieldBuffer::truncate`]), which a shared borrow cannot do — hence
-/// the [`DerefMut`] bound.
-pub trait BufferData<T>: DerefMut<Target = [T]> {
-	/// Shrinks the store in place to its first `len` elements.
-	///
-	/// `len` must be at most the current length.
-	fn truncate(&mut self, len: usize);
-}
-
-impl<T> BufferData<T> for Vec<T> {
-	fn truncate(&mut self, len: usize) {
-		Vec::truncate(self, len);
-	}
-}
-
-impl<T> BufferData<T> for &mut [T] {
-	fn truncate(&mut self, len: usize) {
-		// A `&'a mut [T]` cannot be re-sliced in place through `&mut self`, so move it out and
-		// slice the owned value back in.
-		let full = mem::take(self);
-		*self = &mut full[..len];
-	}
-}
+// The `BufferData` bound on `FieldBuffer`'s backing store lives in `binius-compute` so that it can
+// bound `Allocator::Vec` (letting an allocator's buffer back a `FieldBuffer` without a
+// `where`-clause on every signature) and so its `PoolVec` can implement it. Re-exported here since
+// it is part of this module's public API.
+pub use binius_compute::BufferData;
 
 /// A power-of-two-sized buffer containing field elements, stored in packed fields.
 ///
@@ -134,6 +111,53 @@ impl<P: PackedField> FieldBuffer<P> {
 		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 		let values = zeroed_vec(packed_len);
 		Self { log_len, values }
+	}
+}
+
+impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
+	/// Builds a [`FieldBuffer`] from scalar values directly into a buffer drawn from `alloc`.
+	///
+	/// The allocator-aware counterpart to [`from_values`](Self::from_values): the packed values are
+	/// written straight into the allocator's buffer, avoiding an intermediate `Vec` and copy. Under
+	/// a `BufferPool` the result is a recyclable pooled buffer.
+	///
+	/// # Preconditions
+	///
+	/// * `values.len()` must be a power of two.
+	pub fn from_values_in<A>(alloc: &A, values: &[P::Scalar]) -> Self
+	where
+		A: Allocator<Vec<P> = Data>,
+	{
+		let log_len =
+			strict_log_2(values.len()).expect("precondition: values.len() must be a power of two");
+
+		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
+		let mut packed_values = alloc.alloc::<P>(packed_len);
+		packed_values.extend(
+			values
+				.chunks(P::WIDTH)
+				.map(|chunk| P::from_scalars(chunk.iter().copied())),
+		);
+
+		FieldBuffer::new(log_len, packed_values)
+	}
+
+	/// Builds a zeroed [`FieldBuffer`] of `log_len` variables into a buffer drawn from `alloc`.
+	///
+	/// The allocator-aware counterpart to [`zeros`](Self::zeros). Under a `BufferPool` the result
+	/// is a recyclable pooled buffer.
+	pub fn zeros_in<A: Allocator>(alloc: &A, log_len: usize) -> FieldVec<P, A> {
+		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
+		let mut values = alloc.alloc::<P>(packed_len);
+		values.resize(packed_len, P::default());
+		FieldBuffer::new(log_len, values)
+	}
+
+	/// Clones a [`FieldSlice`] into an allocated [`FieldVec`].
+	pub fn clone_from_slice<A: Allocator>(alloc: &A, src: FieldSlice<P>) -> FieldVec<P, A> {
+		let mut values = alloc.alloc::<P>(src.as_ref().len());
+		values.extend_from_slice(src.as_ref());
+		FieldBuffer::new(src.log_len(), values)
 	}
 }
 
@@ -573,6 +597,12 @@ impl<F: Field, Data: DerefMut<Target = [F]>> IndexMut<usize> for FieldBuffer<F, 
 		&mut self.values[index]
 	}
 }
+
+/// Alias for a field buffer whose backing store is drawn from an [`Allocator`] `A`.
+///
+/// For `A = &BufferPool` this is a pooled buffer; for `A = GlobalAllocator` it is an ordinary
+/// `Vec`-backed buffer.
+pub type FieldVec<P, A> = FieldBuffer<P, <A as Allocator>::Vec<P>>;
 
 /// Alias for a field buffer over a borrowed slice.
 pub type FieldSlice<'a, P> = FieldBuffer<P, FieldSliceData<'a, P>>;

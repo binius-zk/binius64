@@ -2,16 +2,18 @@
 
 //! The batched operand-column witnesses built from a populated batch value table.
 //!
-//! Every AND, IMUL, and BMUL constraint is projected to its fixed-arity operand columns (`[A, B,
-//! C]` for AND, `[A, B, HI, LO]` for IMUL, `[A_LO, A_HI, B_LO, B_HI, C_LO, C_HI]` for BMUL), one
+//! Every AND, IMUL, and BMUL constraint is projected to its fixed-arity operand columns (`[A, B]`
+//! for AND, `[A, B, HI, LO]` for IMUL, `[A_LO, A_HI, B_LO, B_HI, C_LO, C_HI]` for BMUL), one
 //! column per operand, stacked over every instance in the batch. [`build_operation_witness`] is the
 //! shared arity-generic core: it projects one operand per constraint into one column.
-//! [`BatchAndCheckWitness`] builds the three AND columns and drives the AND-check zerocheck;
+//! [`BatchAndCheckWitness`] builds the two AND columns and drives the AND-check zerocheck.
+//! The AND check's C column is never materialized: the reduction derives `C = A & B` on the fly.
 //! [`build_intmul_witness`] builds the four IntMul columns; [`build_binmul_witness`] builds the six
 //! BinMul columns.
 
 use std::{iter, mem::MaybeUninit, ptr};
 
+use binius_compute::Allocator;
 use binius_core::{
 	ValueIndex,
 	constraint_system::{
@@ -36,10 +38,12 @@ use crate::ValueTable;
 
 /// The operand columns of the BitAnd check for a whole batch of instances.
 ///
-/// The BitAnd check works on three columns of words, one row per AND constraint.
-/// It enforces the bitwise relation `A & B == C` on every row.
+/// The BitAnd check works on the operand columns of `A & B == C`, one row per AND constraint.
+/// Only `A` and `B` are held.
+/// On a satisfying witness `C = A & B` holds word-by-word.
+/// So the reduction derives `C` on the fly and the column is never materialized.
 ///
-/// This holds those three columns for a batch of `K = 2^log_instances` instances at once.
+/// This holds the two columns for a batch of `K = 2^log_instances` instances at once.
 /// The rows are stacked in constraint-major order, with the constraint index on the high
 /// coordinates:
 ///
@@ -47,7 +51,6 @@ use crate::ValueTable;
 ///      constraint 0         constraint 1          constraint n_and-1
 ///   A: [ a_0 .. a_{K-1} ][ a_0 .. a_{K-1} ] ... [ a_0 .. a_{K-1} ]
 ///   B: [ b_0 .. b_{K-1} ][ b_0 .. b_{K-1} ] ... [ b_0 .. b_{K-1} ]
-///   C: [ c_0 .. c_{K-1} ][ c_0 .. c_{K-1} ] ... [ c_0 .. c_{K-1} ]
 ///       \____ K ____/
 /// ```
 ///
@@ -69,16 +72,16 @@ pub struct BatchAndCheckWitness {
 	a: Vec<Word>,
 	/// Operand `B` of every constraint of every instance, constraint-major.
 	b: Vec<Word>,
-	/// Operand `C` of every constraint of every instance, constraint-major.
-	c: Vec<Word>,
 }
 
 impl BatchAndCheckWitness {
 	/// Builds the batched BitAnd witness from a populated wire-major batch table.
 	///
-	/// Every AND constraint contributes one row per instance to each of the three operand
-	/// columns `A`, `B`, `C`, laid out constraint-major. This delegates to the arity-generic
-	/// `build_operation_witness`, projecting each constraint to its three operands.
+	/// Every AND constraint contributes one row per instance to the `A` and `B` columns.
+	/// The rows are laid out constraint-major.
+	/// This delegates to the arity-generic column builder, one call per operand.
+	/// The constraint's `C` operand is never evaluated.
+	/// The reduction derives `C = A & B` instead.
 	///
 	/// # Arguments
 	///
@@ -103,14 +106,7 @@ impl BatchAndCheckWitness {
 			|| build_operation_witness(table, constants, b_operand_iter),
 		);
 
-		// Instead of constructing c from the original word Vec, it's cheaper to compute it from the
-		// constraint relation.
-		let c = (a.as_slice(), b.as_slice())
-			.into_par_iter()
-			.map(|(&a_i, &b_i)| a_i & b_i)
-			.collect();
-
-		Self { a, b, c }
+		Self { a, b }
 	}
 
 	/// Operand `A` column, `K * n_and` rows in constraint-major order.
@@ -123,16 +119,11 @@ impl BatchAndCheckWitness {
 		&self.b
 	}
 
-	/// Operand `C` column, `K * n_and` rows in constraint-major order.
-	pub fn c(&self) -> &[Word] {
-		&self.c
-	}
-
-	/// Consumes the witness into its three operand columns `(A, B, C)`.
+	/// Consumes the witness into its two operand columns `(A, B)`.
 	///
 	/// This is the shape the AND reduction destructures to drive its sumcheck.
-	pub fn into_columns(self) -> (Vec<Word>, Vec<Word>, Vec<Word>) {
-		(self.a, self.b, self.c)
+	pub fn into_columns(self) -> (Vec<Word>, Vec<Word>) {
+		(self.a, self.b)
 	}
 
 	/// Proves the batched BitAnd check: `A & B == C` on every row of every instance.
@@ -158,7 +149,7 @@ impl BatchAndCheckWitness {
 	/// This reuses the single-instance kernel verbatim, only over `K * n_and` rows.
 	/// The block-diagonal batch structure is exploited later, in the lincheck, not here.
 	///
-	/// The reduction folds the three bit-columns into one multilinear evaluation point.
+	/// The reduction folds `A`, `B`, and the derived `C = A & B` to one evaluation point.
 	/// It returns the claimed evaluations of `A`, `B`, `C` at that point.
 	/// A later shift reduction ties those claims back to the committed witness.
 	///
@@ -178,16 +169,18 @@ impl BatchAndCheckWitness {
 	/// - The claimed `A`, `B`, `C` evaluations.
 	/// - The univariate (bit-index) challenge.
 	/// - The multilinear evaluation point reached by the sumcheck.
-	pub fn prove<P, Channel>(
+	pub fn prove<P, Channel, A>(
 		self,
 		prover_message_domain: &BinarySubspace<B8>,
 		channel: &mut Channel,
+		alloc: &A,
 	) -> AndCheckOutput<B128>
 	where
 		P: PackedField<Scalar = B128>,
 		Channel: IPProverChannel<B128>,
+		A: Allocator,
 	{
-		let (a, b, c) = self.into_columns();
+		let (a, b) = self.into_columns();
 
 		// X has `log_instances + log(n_and)` coordinates: the row count is a power of two.
 		let log_total_constraints = checked_log_2(a.len());
@@ -207,12 +200,11 @@ impl BatchAndCheckWitness {
 			log_total_constraints,
 			a,
 			b,
-			c,
 			big_field_zerocheck_challenges,
 			prover_message_domain.isomorphic(),
 		);
 
-		prover.prove_with_channel(channel)
+		prover.prove_with_channel(channel, alloc)
 	}
 }
 
@@ -573,6 +565,7 @@ pub fn build_binmul_witness(
 #[cfg(test)]
 mod tests {
 	use assert_matches::assert_matches;
+	use binius_compute::GlobalAllocator;
 	use binius_core::constraint_system::ValueVec;
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
@@ -613,7 +606,7 @@ mod tests {
 			.isomorphic::<B128>()
 			.reduce_dim(SKIPPED_VARS);
 		let lagrange = lagrange_evals_scalars(&univariate_domain, z_challenge);
-		let folded: FieldBuffer<B128> = BitAxisFolder::new(&lagrange).fold(col);
+		let folded: FieldBuffer<B128> = BitAxisFolder::new(&lagrange).fold(&GlobalAllocator, col);
 		evaluate(&folded, eval_point)
 	}
 
@@ -683,19 +676,16 @@ mod tests {
 
 	// The reference for one instance: the core operand evaluator on its reconstructed value vec.
 	// This is exactly what the single-instance BitAnd witness builder computes.
-	fn reference_rows(
-		and_constraints: &[AndConstraint],
-		vv: &ValueVec,
-	) -> (Vec<Word>, Vec<Word>, Vec<Word>) {
+	// Only the `A` and `B` columns exist.
+	// The batch witness derives `C = A & B` rather than storing it.
+	fn reference_rows(and_constraints: &[AndConstraint], vv: &ValueVec) -> (Vec<Word>, Vec<Word>) {
 		let mut a = Vec::new();
 		let mut b = Vec::new();
-		let mut c = Vec::new();
 		for constraint in and_constraints {
 			a.push(vv.eval_operand(&constraint.a));
 			b.push(vv.eval_operand(&constraint.b));
-			c.push(vv.eval_operand(&constraint.c));
 		}
-		(a, b, c)
+		(a, b)
 	}
 
 	// The reference columns across the whole batch, transposed to the batch witness's
@@ -705,22 +695,20 @@ mod tests {
 		table: &ValueTable,
 		constants: &[Word],
 		and_constraints: &[AndConstraint],
-	) -> (Vec<Word>, Vec<Word>, Vec<Word>) {
+	) -> (Vec<Word>, Vec<Word>) {
 		let n_and = and_constraints.len();
 		let n_instances = table.n_instances();
 		let mut a = vec![Word::ZERO; n_and * n_instances];
 		let mut b = vec![Word::ZERO; n_and * n_instances];
-		let mut c = vec![Word::ZERO; n_and * n_instances];
 		for instance in 0..n_instances {
 			let vv = table.instance_value_vec(instance, constants);
-			let (a_ref, b_ref, c_ref) = reference_rows(and_constraints, &vv);
+			let (a_ref, b_ref) = reference_rows(and_constraints, &vv);
 			for j in 0..n_and {
 				a[j * n_instances + instance] = a_ref[j];
 				b[j * n_instances + instance] = b_ref[j];
-				c[j * n_instances + instance] = c_ref[j];
 			}
 		}
-		(a, b, c)
+		(a, b)
 	}
 
 	#[test]
@@ -743,13 +731,11 @@ mod tests {
 		let n_and = and_constraints.len();
 		assert_eq!(witness.a().len(), 4 * n_and);
 		assert_eq!(witness.b().len(), 4 * n_and);
-		assert_eq!(witness.c().len(), 4 * n_and);
 
 		// Invariant: row `j * n_instances + instance` is constraint `j` of that instance.
-		let (a_ref, b_ref, c_ref) = reference_columns(&table, constants(&c), and_constraints);
+		let (a_ref, b_ref) = reference_columns(&table, constants(&c), and_constraints);
 		assert_eq!(witness.a(), a_ref.as_slice());
 		assert_eq!(witness.b(), b_ref.as_slice());
-		assert_eq!(witness.c(), c_ref.as_slice());
 	}
 
 	// A circuit computing one unsigned 64×64→128 product, with both result words committed.
@@ -937,23 +923,6 @@ mod tests {
 	}
 
 	#[test]
-	fn and_relation_holds_on_every_row() {
-		let c = and_circuit();
-
-		// Fixture state: 4 satisfying instances, each tuple `(x, y, w)`.
-		let table = populate_table(&c, &[(1, 3, 7), (5, 6, 0), (9, 12, 0xFF), (0xF0, 0x0F, 1)]);
-		let witness = BatchAndCheckWitness::build(&table, constants(&c), &table_constraints(&c));
-
-		// The single AND constraint is `and = x & y`, so each row is `A=x`, `B=y`, `C=x&y`.
-		// A satisfying witness therefore makes `A & B == C` hold on every row.
-		//
-		// Padded rows have empty operands, so `0 & 0 == 0` holds there too.
-		for ((a, b), c) in witness.a().iter().zip(witness.b()).zip(witness.c()) {
-			assert_eq!(a.0 & b.0, c.0);
-		}
-	}
-
-	#[test]
 	fn single_instance_batch_matches_the_reference() {
 		let c = and_circuit();
 
@@ -964,10 +933,9 @@ mod tests {
 
 		// The degenerate batch reproduces the single-instance BitAnd columns exactly.
 		let vv = table.instance_value_vec(0, constants(&c));
-		let (a_ref, b_ref, c_ref) = reference_rows(&and_constraints, &vv);
+		let (a_ref, b_ref) = reference_rows(&and_constraints, &vv);
 		assert_eq!(witness.a(), a_ref.as_slice());
 		assert_eq!(witness.b(), b_ref.as_slice());
-		assert_eq!(witness.c(), c_ref.as_slice());
 	}
 
 	#[test]
@@ -995,7 +963,6 @@ mod tests {
 		//     witness[j * n_instances + instance]  ==  eval_operand(instance value vec, constraint j)
 		//
 		// This pins the batched, slice-based evaluator to the core value-vec evaluator.
-		// And since each instance is satisfying, the AND relation `A & B == C` holds on every row.
 		#[test]
 		fn batch_rows_match_single_instance_reference(
 			inputs in prop::collection::vec((any::<u64>(), any::<u64>(), any::<u64>()), 4),
@@ -1006,15 +973,9 @@ mod tests {
 			let and_constraints = table_constraints(&c);
 			let witness = BatchAndCheckWitness::build(&table, constants(&c),&and_constraints);
 
-			let (a_ref, b_ref, c_ref) = reference_columns(&table, constants(&c), &and_constraints);
+			let (a_ref, b_ref) = reference_columns(&table, constants(&c), &and_constraints);
 			prop_assert_eq!(witness.a(), a_ref.as_slice());
 			prop_assert_eq!(witness.b(), b_ref.as_slice());
-			prop_assert_eq!(witness.c(), c_ref.as_slice());
-
-			// The built columns satisfy the AND constraint on every row, padding included.
-			for ((a, b), c) in witness.a().iter().zip(witness.b()).zip(witness.c()) {
-				prop_assert_eq!(a.0 & b.0, c.0);
-			}
 		}
 	}
 
@@ -1035,10 +996,9 @@ mod tests {
 
 		// Every instance's contribution equals its independent single-instance reference.
 		// This includes instances at or beyond STRIPE_WIDTH, which only the second stripe produces.
-		let (a_ref, b_ref, c_ref) = reference_columns(&table, constants(&c), &and_constraints);
+		let (a_ref, b_ref) = reference_columns(&table, constants(&c), &and_constraints);
 		assert_eq!(witness.a(), a_ref.as_slice());
 		assert_eq!(witness.b(), b_ref.as_slice());
-		assert_eq!(witness.c(), c_ref.as_slice());
 	}
 
 	#[test]
@@ -1053,9 +1013,9 @@ mod tests {
 		// The circuit compiler emits unshifted operands here, so the shifted branch of the
 		// accumulator would otherwise go untested by this module.
 		//
-		// The `c` operand is deliberately unrelated to `a & b`: `BatchAndCheckWitness::build`
-		// derives `c` from `a` and `b` rather than evaluating the constraint's `c` operand, so this
-		// fixture need not satisfy the AND relation to exercise `a` and `b`'s shift handling.
+		// The `c` operand is deliberately unrelated to `a & b`.
+		// The batch witness builder never evaluates a constraint's `c` operand.
+		// So this fixture need not satisfy the AND relation to exercise the shift handling.
 		let x = c.circuit.witness_index(c.x);
 		let y = c.circuit.witness_index(c.y);
 		let z = c.circuit.witness_index(c.z);
@@ -1083,14 +1043,9 @@ mod tests {
 		let witness = BatchAndCheckWitness::build(&table, constants(&c), &and_constraints);
 
 		// `a` and `b` equal the shift-aware value-vec reference for the same constraints.
-		let (a_ref, b_ref, _) = reference_columns(&table, constants(&c), &and_constraints);
+		let (a_ref, b_ref) = reference_columns(&table, constants(&c), &and_constraints);
 		assert_eq!(witness.a(), a_ref.as_slice());
 		assert_eq!(witness.b(), b_ref.as_slice());
-
-		// `c` is defined as `a & b`, not evaluated from the constraint's `c` operand.
-		for ((a, b), c) in witness.a().iter().zip(witness.b()).zip(witness.c()) {
-			assert_eq!(a.0 & b.0, c.0);
-		}
 	}
 
 	#[test]
@@ -1107,7 +1062,8 @@ mod tests {
 
 		// Prover and verifier agree on the reduced claim over the batched columns.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let prove_output = witness.prove::<P, _>(&message_domain(), &mut prover_transcript);
+		let prove_output =
+			witness.prove::<P, _, _>(&message_domain(), &mut prover_transcript, &GlobalAllocator);
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
 		let verify_output = verify_bitand_reduction(
@@ -1138,7 +1094,8 @@ mod tests {
 
 		// Produce a faithful proof.
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-		let _ = witness.prove::<P, _>(&message_domain(), &mut prover_transcript);
+		let _ =
+			witness.prove::<P, _, _>(&message_domain(), &mut prover_transcript, &GlobalAllocator);
 		let mut proof = prover_transcript.finalize();
 
 		// Mutation: flip a bit in the prover's first message, the univariate round evaluations.
@@ -1181,13 +1138,18 @@ mod tests {
 			let witness = BatchAndCheckWitness::build(&table, constants(&c),&and_constraints);
 
 			// Keep the columns so the claimed evals can be checked against them.
+			// The witness stores no C column.
+			// Materialize the same derived `a & b` words the reduction folds.
+			// The claimed C evaluation is then pinned to that exact column.
 			let a_cols = witness.a().to_vec();
 			let b_cols = witness.b().to_vec();
-			let c_cols = witness.c().to_vec();
+			let c_cols: Vec<Word> = iter::zip(witness.a(), witness.b())
+				.map(|(&a, &b)| a & b)
+				.collect();
 			let log_total = checked_log_2(witness.a().len());
 
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-			let prove_output = witness.prove::<P, _>(&message_domain(), &mut prover_transcript);
+			let prove_output = witness.prove::<P, _, _>(&message_domain(), &mut prover_transcript, &GlobalAllocator);
 
 			let mut verifier_transcript = prover_transcript.into_verifier();
 			let verify_output =

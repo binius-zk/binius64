@@ -13,6 +13,7 @@
 
 use std::{iter::repeat_with, sync::Arc};
 
+use binius_compute::BufferPool;
 use binius_field::{BinaryField, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_iop_prover::{
@@ -204,17 +205,22 @@ where
 				.expect("outer witness generation should not fail")
 		};
 
+		// Working buffers for this proof are drawn from a single pool that lives for the call.
+		let pool = BufferPool::new();
+		let alloc = &pool;
+
 		// Validate and generate the outer proof.
-		outer_prover.prove::<P, _>(
+		outer_prover.prove::<P, _, _>(
 			witness,
 			precommit_oracle,
 			precommit_packed,
 			rng,
 			&mut inner_channel,
+			&alloc,
 		)?;
 		// Both the inner and outer proofs queued their oracle relations onto `inner_channel`; run
 		// the single combined opening over all committed oracles now.
-		inner_channel.finish();
+		inner_channel.finish(&alloc);
 		Ok(())
 	}
 }

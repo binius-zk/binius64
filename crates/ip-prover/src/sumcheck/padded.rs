@@ -113,6 +113,7 @@ impl<F: Field, Inner: SumcheckProver<F>> SumcheckProver<F> for PaddedSumcheckDec
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{
 		Random,
 		arch::{OptimalB128, OptimalPackedB128},
@@ -140,14 +141,15 @@ mod tests {
 	type P = OptimalPackedB128;
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
 
-	fn make_inner(
+	fn make_inner<'alloc>(
 		rng: &mut impl Rng,
+		alloc: &'alloc GlobalAllocator,
 		n_vars: usize,
-	) -> (SharedSumcheckProver<'static, P, BivariateProductEvaluator>, F) {
+	) -> (SharedSumcheckProver<'alloc, GlobalAllocator, P, BivariateProductEvaluator>, F) {
 		let a = random_field_buffer::<P>(&mut *rng, n_vars);
 		let b = random_field_buffer::<P>(&mut *rng, n_vars);
 		let sum = inner_product_par(&a, &b);
-		let prover = bivariate_product_prover([a, b], sum);
+		let prover = bivariate_product_prover(alloc, [a, b], sum);
 		(prover, sum)
 	}
 
@@ -158,11 +160,12 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(0);
 		let n_vars = 6;
 		let n_extra_vars = 3;
+		let alloc = GlobalAllocator;
 
-		let (inner, sum) = make_inner(&mut rng, n_vars);
+		let (inner, sum) = make_inner(&mut rng, &alloc, n_vars);
 		// A parallel bare inner prover, driven only on the inner-phase challenges, to compare round
 		// polynomials against.
-		let (mut bare_inner, _) = make_inner(&mut StdRng::seed_from_u64(0), n_vars);
+		let (mut bare_inner, _) = make_inner(&mut StdRng::seed_from_u64(0), &alloc, n_vars);
 		let mut padded = PaddedSumcheckDecorator::new(inner, n_extra_vars);
 
 		let challenges = (0..n_vars + n_extra_vars)
@@ -204,8 +207,9 @@ mod tests {
 		let mut rng = StdRng::seed_from_u64(1);
 		let n_vars = 5;
 		let n_extra_vars = 2;
+		let alloc = GlobalAllocator;
 
-		let (inner, _) = make_inner(&mut rng, n_vars);
+		let (inner, _) = make_inner(&mut rng, &alloc, n_vars);
 		let mut padded = PaddedSumcheckDecorator::new(inner, n_extra_vars);
 
 		for _ in 0..n_vars + n_extra_vars {
@@ -227,11 +231,12 @@ mod tests {
 		let n_vars = 7;
 		let n_extra_vars = 4;
 		let total_vars = n_vars + n_extra_vars;
+		let alloc = GlobalAllocator;
 
 		let a = random_field_buffer::<P>(&mut rng, n_vars);
 		let b = random_field_buffer::<P>(&mut rng, n_vars);
 		let sum = inner_product_par(&a, &b);
-		let inner = bivariate_product_prover([a.clone(), b.clone()], sum);
+		let inner = bivariate_product_prover(&alloc, [a.clone(), b.clone()], sum);
 		let padded = PaddedSumcheckDecorator::new(inner, n_extra_vars);
 
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
@@ -280,8 +285,9 @@ mod tests {
 	fn test_no_padding_passthrough() {
 		let mut rng = StdRng::seed_from_u64(3);
 		let n_vars = 6;
+		let alloc = GlobalAllocator;
 
-		let (inner, sum) = make_inner(&mut rng, n_vars);
+		let (inner, sum) = make_inner(&mut rng, &alloc, n_vars);
 		let padded = PaddedSumcheckDecorator::new(inner, 0);
 		assert_eq!(padded.n_vars(), n_vars);
 

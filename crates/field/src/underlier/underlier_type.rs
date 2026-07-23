@@ -129,25 +129,6 @@ pub unsafe trait WithUnderlier:
 	}
 
 	#[inline]
-	fn to_underliers_arr<const N: usize>(val: [Self; N]) -> [Self::Underlier; N] {
-		val.map(Self::to_underlier)
-	}
-
-	#[inline]
-	fn to_underliers_arr_ref<const N: usize>(val: &[Self; N]) -> &[Self::Underlier; N] {
-		Self::to_underliers_ref(val)
-			.try_into()
-			.expect("array size is valid")
-	}
-
-	#[inline]
-	fn to_underliers_arr_ref_mut<const N: usize>(val: &mut [Self; N]) -> &mut [Self::Underlier; N] {
-		Self::to_underliers_ref_mut(val)
-			.try_into()
-			.expect("array size is valid")
-	}
-
-	#[inline]
 	fn from_underlier(val: Self::Underlier) -> Self {
 		Self::wrap(val)
 	}
@@ -170,27 +151,6 @@ pub unsafe trait WithUnderlier:
 	#[inline]
 	fn from_underliers_ref_mut(val: &mut [Self::Underlier]) -> &mut [Self] {
 		Self::wrap_slice_mut(val)
-	}
-
-	#[inline]
-	fn from_underliers_arr<const N: usize>(val: [Self::Underlier; N]) -> [Self; N] {
-		val.map(Self::from_underlier)
-	}
-
-	#[inline]
-	fn from_underliers_arr_ref<const N: usize>(val: &[Self::Underlier; N]) -> &[Self; N] {
-		Self::from_underliers_ref(val)
-			.try_into()
-			.expect("array size is valid")
-	}
-
-	#[inline]
-	fn from_underliers_arr_ref_mut<const N: usize>(
-		val: &mut [Self::Underlier; N],
-	) -> &mut [Self; N] {
-		Self::from_underliers_ref_mut(val)
-			.try_into()
-			.expect("array size is valid")
 	}
 
 	#[inline]

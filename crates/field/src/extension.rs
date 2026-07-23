@@ -61,9 +61,6 @@ pub trait ExtensionField<F: Field>:
 	/// Iterator over base field elements.
 	fn iter_bases(&self) -> impl Iterator<Item = F>;
 
-	/// Convert into an iterator over base field elements.
-	fn into_iter_bases(self) -> impl Iterator<Item = F>;
-
 	/// Returns the i-th base field element.
 	#[inline]
 	fn get_base(&self, i: usize) -> F {
@@ -104,11 +101,6 @@ impl<F: Field> ExtensionField<F> for F {
 	#[inline(always)]
 	fn iter_bases(&self) -> impl Iterator<Item = F> {
 		iter::once(*self)
-	}
-
-	#[inline(always)]
-	fn into_iter_bases(self) -> impl Iterator<Item = F> {
-		iter::once(self)
 	}
 
 	#[inline(always)]

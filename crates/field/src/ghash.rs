@@ -14,17 +14,15 @@ use binius_utils::{
 	DeserializeBytes, FixedSizeSerializeBytes, SerializationError, SerializeBytes,
 	bytes::{Buf, BufMut},
 };
-use bytemuck::{Pod, TransparentWrapper, Zeroable};
+use bytemuck::{Pod, Zeroable};
 
 use super::{
 	binary_field::{BinaryField, BinaryField1b, binary_field, impl_field_extension},
 	extension::ExtensionField,
 };
 use crate::{
-	AESTowerField8b, Field, PackedBinaryGhash1x128b, WideMul,
-	arch::{GhashWideMul1x, M128, invert_b128},
-	arithmetic_traits::{InvertOrZero, Square},
-	binary_field_arithmetic::square_using_packed,
+	AESTowerField8b, Field,
+	arch::M128,
 	mul_by_binary_field_1b,
 	underlier::{U1, WithUnderlier},
 };
@@ -46,36 +44,6 @@ impl From<BinaryField128bGhash> for u128 {
 	}
 }
 
-// Deferred-reduction widening multiply via the optimal `GhashWideMul` wrapper applied to the
-// width-1 `PackedBinaryGhash1x128b` packing. The scalar and the packing share the `M128` underlier,
-// so the conversions are zero-cost reinterprets.
-//
-// This routes the scalar through the packed type's wrapper rather than wrapping the scalar
-// directly. It relies on every M128 GHASH packing using a deferring wrapper whose `Output` is a
-// concrete `WideGhashProduct` (not the packed type itself): `WideMul` is a supertrait of both
-// `Field` and `PackedField`, and `BinaryField128bGhash` is the `Scalar` of
-// `PackedBinaryGhash1x128b`, so a trivial fallback (whose `Output` is the packed type,
-// bounded `Add + Mul`) would close a trait-resolution cycle through `Field: WideMul`.
-impl WideMul for BinaryField128bGhash {
-	type Output = <GhashWideMul1x<PackedBinaryGhash1x128b> as WideMul>::Output;
-
-	#[inline]
-	fn wide_mul(a: Self, b: Self) -> Self::Output {
-		let a = PackedBinaryGhash1x128b::from_underlier(a.to_underlier());
-		let b = PackedBinaryGhash1x128b::from_underlier(b.to_underlier());
-		<GhashWideMul1x<PackedBinaryGhash1x128b> as WideMul>::wide_mul(
-			GhashWideMul1x::wrap(a),
-			GhashWideMul1x::wrap(b),
-		)
-	}
-
-	#[inline]
-	fn reduce(wide: Self::Output) -> Self {
-		let reduced = <GhashWideMul1x<PackedBinaryGhash1x128b> as WideMul>::reduce(wide);
-		Self::from_underlier(GhashWideMul1x::peel(reduced).to_underlier())
-	}
-}
-
 unsafe impl Pod for BinaryField128bGhash {}
 
 impl BinaryField128bGhash {
@@ -83,6 +51,21 @@ impl BinaryField128bGhash {
 	/// ergonomic constructor type, so this converts.
 	pub const fn new(value: u128) -> Self {
 		Self(M128::from_u128(value))
+	}
+
+	#[inline]
+	pub fn mul_x(self) -> Self {
+		// These scalar bit manipulations are simplest over `u128`; the underlier is `M128`.
+		let val: u128 = self.to_underlier().into();
+		let shifted = val << 1;
+
+		// GHASH irreducible polynomial: x^128 + x^7 + x^2 + x + 1
+		// When the high bit is set, we need to XOR with the reduction polynomial 0x87
+		// All 1s if the top bit is set, all 0s otherwise
+		let mask = (val >> 127).wrapping_neg();
+		let result = shifted ^ (0x87 & mask);
+
+		Self::new(result)
 	}
 
 	#[inline]
@@ -100,33 +83,6 @@ impl BinaryField128bGhash {
 		let result = shifted ^ (((1u128 << 127) | 0x43) & mask);
 
 		Self::new(result)
-	}
-}
-
-// Multiplication is `reduce(wide_mul)`, deferring to the scalar's own `WideMul` impl above (which
-// routes through the optimal `GhashWideMul` packing). This keeps the widening multiply as the
-// single source of truth for both `Mul` and `WideMul`.
-impl Mul<BinaryField128bGhash> for BinaryField128bGhash {
-	type Output = Self;
-
-	#[inline]
-	fn mul(self, rhs: Self) -> Self {
-		crate::tracing::trace_multiplication!(BinaryField128bGhash);
-		Self::reduce(Self::wide_mul(self, rhs))
-	}
-}
-
-impl Square for BinaryField128bGhash {
-	#[inline]
-	fn square(self) -> Self {
-		square_using_packed::<PackedBinaryGhash1x128b>(self)
-	}
-}
-
-impl InvertOrZero for BinaryField128bGhash {
-	#[inline]
-	fn invert_or_zero(self) -> Self {
-		invert_b128(self)
 	}
 }
 
@@ -426,7 +382,10 @@ mod tests {
 	use proptest::{prelude::any, proptest};
 
 	use super::*;
-	use crate::{WideMul, binary_field::tests::is_binary_field_valid_generator};
+	use crate::{
+		WideMul, arithmetic_traits::InvertOrZero,
+		binary_field::tests::is_binary_field_valid_generator,
+	};
 
 	#[test]
 	fn test_ghash_mul() {
@@ -500,6 +459,32 @@ mod tests {
 	#[test]
 	fn test_multiplicative_generator() {
 		assert!(is_binary_field_valid_generator::<BinaryField128bGhash>());
+	}
+
+	#[test]
+	fn test_mul_x() {
+		let test_cases = [
+			0x0,                                    // Zero
+			0x1,                                    // One
+			0x2,                                    // Two
+			0x80000000000000000000000000000000u128, // High bit set
+			0x40000000000000000000000000000000u128, // Second highest bit
+			0xffffffffffffffffffffffffffffffffu128, // All bits set
+			0x87u128,                               // GHASH reduction polynomial
+			0x21ac73a21d46a21badd6747bcdfc5d4d,     // Random value
+		];
+
+		for &value in &test_cases {
+			let field_val = BinaryField128bGhash::from(value);
+			let mul_x_result = field_val.mul_x();
+			let regular_mul_result = field_val * BinaryField128bGhash::new(2u128);
+
+			assert_eq!(
+				mul_x_result, regular_mul_result,
+				"mul_x and regular multiplication by 2 differ for value {:#x}",
+				value
+			);
+		}
 	}
 
 	#[test]

@@ -1,12 +1,13 @@
 // Copyright 2026 The Binius Developers
 
+use binius_compute::Allocator;
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{ProveSingleOutput, prove_single_mlecheck, quadratic_mlecheck_prover},
 };
-use binius_math::field_buffer::FieldBuffer;
+use binius_math::{FieldVec, field_buffer::FieldBuffer};
 use binius_utils::checked_arithmetics::strict_log_2;
 pub use binius_verifier::protocols::binmul::BinMulOutput;
 
@@ -31,22 +32,23 @@ pub struct BinMulWitness<'a> {
 ///
 /// The scalar at hypercube index `i` is the field element carried by the pair `(lo[i], hi[i])`:
 /// `lo[i]` supplies the low 64 bits and `hi[i]` the high 64 bits of the 128-bit value.
-fn build_table<F, P>(lo: &[Word], hi: &[Word]) -> FieldBuffer<P>
+fn build_table<A, F, P>(alloc: &A, lo: &[Word], hi: &[Word]) -> FieldVec<P, A>
 where
+	A: Allocator,
 	F: BinaryField + From<u128>,
 	P: PackedField<Scalar = F>,
 {
 	let n_vars = strict_log_2(lo.len())
 		.expect("precondition: the number of constraints must be a power of two");
 	let p_width = P::WIDTH.min(1 << n_vars);
-	let values = (0..1 << n_vars.saturating_sub(P::LOG_WIDTH))
-		.map(|i| {
-			P::from_scalars((0..p_width).map(|j| {
-				let index = i << P::LOG_WIDTH | j;
-				F::from((lo[index].as_u64() as u128) | ((hi[index].as_u64() as u128) << 64))
-			}))
-		})
-		.collect::<Vec<_>>();
+	let packed_len = 1 << n_vars.saturating_sub(P::LOG_WIDTH);
+	let mut values = alloc.alloc::<P>(packed_len);
+	values.extend((0..packed_len).map(|i| {
+		P::from_scalars((0..p_width).map(|j| {
+			let index = i << P::LOG_WIDTH | j;
+			F::from((lo[index].as_u64() as u128) | ((hi[index].as_u64() as u128) << 64))
+		}))
+	}));
 
 	FieldBuffer::new(n_vars, values)
 }
@@ -57,8 +59,13 @@ where
 /// hypercube $\mathbb{B}_\ell$ over the GHASH field, where each element is carried by a `(lo, hi)`
 /// pair of 64-bit words. See [`binius_verifier::protocols::binmul::verify`] for the protocol
 /// description and output shape.
-pub fn prove<F, P, Channel>(witness: &BinMulWitness, channel: &mut Channel) -> BinMulOutput<F>
+pub fn prove<A, F, P, Channel>(
+	witness: &BinMulWitness,
+	channel: &mut Channel,
+	alloc: &A,
+) -> BinMulOutput<F>
 where
+	A: Allocator,
 	F: BinaryField + From<u128>,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
@@ -76,9 +83,9 @@ where
 	}
 
 	// Build the packed GHASH-field multilinear tables A, B, C from the (lo, hi) word pairs.
-	let a = build_table::<F, P>(witness.a_lo, witness.a_hi);
-	let b = build_table::<F, P>(witness.b_lo, witness.b_hi);
-	let c = build_table::<F, P>(witness.c_lo, witness.c_hi);
+	let a = build_table::<A, F, P>(alloc, witness.a_lo, witness.a_hi);
+	let b = build_table::<A, F, P>(alloc, witness.b_lo, witness.b_hi);
+	let c = build_table::<A, F, P>(alloc, witness.c_lo, witness.c_hi);
 
 	// Sample the zerocheck challenge r_z.
 	let r_z = channel.sample_many(n_vars);
@@ -86,6 +93,7 @@ where
 	// Product zerocheck: 0 = sum_x eq(r_z, x) * (A(x) * B(x) - C(x)). The composition A * B - C has
 	// degree 2; the eq factor is folded internally by the MLE-check.
 	let prover = quadratic_mlecheck_prover(
+		alloc,
 		[a, b, c],
 		|[a, b, c]| a * b - c,
 		|[a, b, _c]| a * b,
@@ -130,6 +138,7 @@ where
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_core::word::Word;
 	use binius_field::{BinaryField128bGhash, PackedBinaryGhash2x128b, Random};
 	use binius_iop::channel::{OracleSpec, naive::NaiveVerifierChannel};
@@ -159,8 +168,11 @@ mod tests {
 		let prefix_tensor = eq_ind_partial_eval::<F>(prefix);
 		let suffix_tensor = eq_ind_partial_eval::<F>(suffix);
 
-		let partially_folded_witness =
-			crate::fold_word::fold_words::<_, F>(words, prefix_tensor.as_ref());
+		let partially_folded_witness = crate::fold_word::fold_words::<_, F, _>(
+			&GlobalAllocator,
+			words,
+			prefix_tensor.as_ref(),
+		);
 
 		inner_product_buffers(&partially_folded_witness, &suffix_tensor)
 	}
@@ -225,7 +237,7 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 		let mut prover_channel =
 			NaiveProverChannel::<F, _>::new(&mut prover_transcript, oracle_specs.to_vec());
-		let prove_output = prove::<F, P, _>(&witness, &mut prover_channel);
+		let prove_output = prove::<_, F, P, _>(&witness, &mut prover_channel, &GlobalAllocator);
 		prover_channel.finish();
 
 		let BinMulOutput {
@@ -295,7 +307,7 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 		let mut prover_channel =
 			NaiveProverChannel::<F, _>::new(&mut prover_transcript, oracle_specs.to_vec());
-		let _ = prove::<F, P, _>(&witness, &mut prover_channel);
+		let _ = prove::<_, F, P, _>(&witness, &mut prover_channel, &GlobalAllocator);
 		prover_channel.finish();
 
 		let mut verifier_transcript = prover_transcript.into_verifier();

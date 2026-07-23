@@ -2,12 +2,14 @@
 
 //! The batched shift-reduction prover for the data-parallel Binius64 M4 proof system.
 
+use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	BinarySubspace, FieldBuffer, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
+	BinarySubspace, FieldBuffer, FieldVec, inner_product::inner_product,
+	multilinear::eq::eq_ind_partial_eval,
 };
 use binius_prover::{
 	fold_word::{WordFolder, fold_words},
@@ -114,7 +116,7 @@ pub fn fold_instances<F: BinaryField>(table: &ValueTable, r_rho: &[F]) -> Vec<Fo
 /// # Returns
 /// The `SumcheckOutput` with the final challenges and the reduced witness evaluation.
 #[allow(clippy::too_many_arguments)]
-pub fn prove<F, P, Channel>(
+pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	public_words: &[Word],
 	folded_witness: &[FoldedWord<F>],
@@ -123,11 +125,13 @@ pub fn prove<F, P, Channel>(
 	binmul_data: OperatorData<F>,
 	domain_subspace: &BinarySubspace<F>,
 	channel: &mut Channel,
+	alloc: &A,
 ) -> SumcheckOutput<F>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
+	A: Allocator,
 {
 	// Sample one batching lambda per operator, then prepare the operator data (tensor expansions
 	// and lambda powers).
@@ -142,7 +146,8 @@ where
 	// constants shared by every instance, so the single-instance builder folds them directly from
 	// their bits; the hidden words are already folded over instances. This scalar path drives the
 	// single-instance phase-1 sumcheck.
-	let mut g_parts = build_g_parts::<F, F>(
+	let mut g_parts = build_g_parts::<F, F, _>(
+		alloc,
 		public_words,
 		&key_collection.public,
 		&prepared_bitand,
@@ -150,6 +155,7 @@ where
 		&prepared_bmul,
 	);
 	let hidden_g_parts = build_g_parts_from_folded_words(
+		alloc,
 		folded_witness,
 		&key_collection.hidden,
 		&prepared_bitand,
@@ -161,8 +167,8 @@ where
 			*slot += *add;
 		}
 	}
-	let h_parts = build_h_parts::<F, F>(domain_subspace, prepared_bitand.r_zhat_prime);
-	let phase_1_output = run_phase_1_sumcheck::<F, F, _>(g_parts, h_parts, channel);
+	let h_parts = build_h_parts::<F, F, _>(alloc, domain_subspace, prepared_bitand.r_zhat_prime);
+	let phase_1_output = run_phase_1_sumcheck::<F, F, _, _>(g_parts, h_parts, channel, alloc);
 
 	// Phase 2: split the phase-1 challenges into the bit half `r_j` and the shift half `r_s`.
 	let SumcheckOutput {
@@ -178,15 +184,16 @@ where
 	// folded bits against the `r_j` tensor. The committed word count need not be a power of two, so
 	// the scalars are zero-padded up to the next one, mirroring `fold_words`'s own padding of the
 	// public segment.
-	let public_folded = fold_words::<F, P>(public_words, r_j_tensor.as_ref());
+	let public_folded = fold_words::<F, P, _>(alloc, public_words, r_j_tensor.as_ref());
 	let mut hidden_scalars: Vec<F> = folded_witness
 		.iter()
 		.map(|word| inner_product(word.iter().copied(), r_j_tensor.as_ref().iter().copied()))
 		.collect();
 	hidden_scalars.resize(1 << log2_ceil_usize(hidden_scalars.len()), F::ZERO);
-	let hidden_folded = FieldBuffer::<P>::from_values(&hidden_scalars);
+	let hidden_folded = FieldBuffer::<P, _>::from_values_in(alloc, &hidden_scalars);
 
-	let (public_monster, hidden_monster) = build_monster_segments::<F, P>(
+	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
+		alloc,
 		key_collection,
 		&prepared_bitand,
 		&prepared_intmul,
@@ -196,7 +203,7 @@ where
 		&r_s,
 	);
 
-	run_sumcheck::<F, P, _>(
+	run_sumcheck::<F, P, _, _>(
 		public_folded,
 		hidden_folded,
 		public_monster,
@@ -205,6 +212,7 @@ where
 		r_j,
 		gamma,
 		channel,
+		alloc,
 	)
 }
 
@@ -230,13 +238,14 @@ where
 ///
 /// This scalar implementation ignores the packed-field and parallelism optimizations of the
 /// single-instance builder.
-pub fn build_g_parts_from_folded_words<F: BinaryField>(
+pub fn build_g_parts_from_folded_words<F: BinaryField, A: Allocator>(
+	alloc: &A,
 	folded_words: &[FoldedWord<F>],
 	segment: &KeySegment,
 	bitand_operator_data: &PreparedOperatorData<F>,
 	intmul_operator_data: &PreparedOperatorData<F>,
 	binmul_operator_data: &PreparedOperatorData<F>,
-) -> [FieldBuffer<F>; SHIFT_VARIANT_COUNT] {
+) -> [FieldVec<F, A>; SHIFT_VARIANT_COUNT] {
 	// One flat accumulator holding SHIFT_VARIANT_COUNT multilinears of LOG_LEN variables each, laid
 	// out variant-major. Kept on the heap rather than a stack array: it is thousands of elements.
 	#[allow(clippy::useless_vec)]
@@ -267,17 +276,25 @@ pub fn build_g_parts_from_folded_words<F: BinaryField>(
 		}
 	}
 
-	// Split the flat accumulator into one multilinear per shift variant.
+	// Split the flat accumulator into one multilinear per shift variant, each built straight into
+	// the allocator's buffer rather than into a `Vec` copy.
 	multilinears
 		.chunks(1 << LOG_LEN)
-		.map(|chunk| FieldBuffer::new(LOG_LEN, chunk.to_vec()))
+		.map(|chunk| {
+			let mut data = alloc.alloc::<F>(chunk.len());
+			data.extend_from_slice(chunk);
+			FieldBuffer::new(LOG_LEN, data)
+		})
 		.collect::<Vec<_>>()
 		.try_into()
-		.expect("chunks yield SHIFT_VARIANT_COUNT parts of size 1 << LOG_LEN")
+		.unwrap_or_else(|_| panic!("chunks yield SHIFT_VARIANT_COUNT parts of size 1 << LOG_LEN"))
 }
 
 #[cfg(test)]
 mod tests {
+	use std::iter;
+
+	use binius_compute::GlobalAllocator;
 	use binius_core::{constraint_system::AndConstraint, verify::verify_constraints, word::Word};
 	use binius_field::{AESTowerField8b, Field, PackedBinaryGhash1x128b, Random};
 	use binius_math::{
@@ -423,7 +440,7 @@ mod tests {
 				let vv = table.instance_value_vec(rho, constants);
 				committed.extend_from_slice(&vv.combined_witness()[offset..]);
 			}
-			let folded_words = fold_words::<B128, P>(&committed, &bit_tensor);
+			let folded_words = fold_words::<B128, P, _>(&GlobalAllocator, &committed, &bit_tensor);
 
 			let mut point = r_wire.to_vec();
 			point.extend_from_slice(&r_rho);
@@ -452,13 +469,19 @@ mod tests {
 		let lagrange = lagrange_evals_scalars::<B128, B128>(domain_subspace, r_z);
 		let row_point: Vec<B128> = r_rho.iter().chain(r_x).copied().collect();
 		let operand_eval = |column: &[Word]| {
-			let folded_column = fold_words::<B128, P>(column, &lagrange);
+			let folded_column = fold_words::<B128, P, _>(&GlobalAllocator, column, &lagrange);
 			evaluate(&folded_column, &row_point)
 		};
+		// The batch witness stores only the `A` and `B` columns.
+		// The reduction reads `C` as the word-by-word AND of the two.
+		// Materialize that same derived column so its evaluation matches the reduction's claim.
+		let c_column: Vec<Word> = iter::zip(witness.a(), witness.b())
+			.map(|(&a, &b)| a & b)
+			.collect();
 		[
 			operand_eval(witness.a()),
 			operand_eval(witness.b()),
-			operand_eval(witness.c()),
+			operand_eval(&c_column),
 		]
 	}
 
@@ -551,7 +574,7 @@ mod tests {
 
 		// Prove.
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
-		let prover_output = prove::<B128, P, _>(
+		let prover_output = prove::<B128, P, _, _>(
 			&key_collection,
 			public_words,
 			&folded_witness,
@@ -572,6 +595,7 @@ mod tests {
 			},
 			&domain_subspace,
 			&mut prover_transcript,
+			&GlobalAllocator,
 		);
 
 		// Verify against the single-instance shift verifier.
@@ -704,7 +728,8 @@ mod tests {
 		// The g parts: the public segment folds from raw constant words via the single-instance
 		// builder, the hidden segment from the instance-folded words. Add them. The h parts come
 		// from the single-instance prover.
-		let mut g_parts = build_g_parts::<B128, B128>(
+		let mut g_parts = build_g_parts::<B128, B128, _>(
+			&GlobalAllocator,
 			public_words,
 			&key_collection.public,
 			&prepared_bitand,
@@ -712,6 +737,7 @@ mod tests {
 			&prepared_bmul,
 		);
 		let hidden_g_parts = build_g_parts_from_folded_words(
+			&GlobalAllocator,
 			&hidden_folded,
 			&key_collection.hidden,
 			&prepared_bitand,
@@ -723,7 +749,7 @@ mod tests {
 				*slot += *add;
 			}
 		}
-		let h_parts = build_h_parts::<B128, B128>(&domain_subspace, r_z);
+		let h_parts = build_h_parts::<B128, B128, _>(&GlobalAllocator, &domain_subspace, r_z);
 		let inner_product: B128 = g_parts
 			.iter()
 			.zip(&h_parts)

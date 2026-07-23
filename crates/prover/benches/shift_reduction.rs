@@ -2,6 +2,7 @@
 // Copyright 2026 The Binius Developers
 
 use binius_circuits::sha256::sha256_fixed;
+use binius_compute::{BufferPool, GlobalAllocator};
 use binius_core::{ValueVec, constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b, BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
 use binius_frontend::{CircuitBuilder, Wire};
@@ -119,6 +120,8 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 		group.sample_size(10);
 
 		group.bench_function("prove", |b| {
+			let pool = BufferPool::new();
+			let alloc = &pool;
 			b.iter(|| {
 				let prover_bitand_data = OperatorData {
 					evals: bitand_evals.to_vec(),
@@ -133,7 +136,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 				let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
-				prove::<F, P, _>(
+				prove::<F, P, _, _>(
 					&key_collection,
 					value_vec.combined_witness(),
 					prover_bitand_data,
@@ -145,6 +148,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 					},
 					&subspace,
 					&mut prover_transcript,
+					&alloc,
 				)
 			})
 		});
@@ -163,7 +167,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 
-		prove::<F, P, _>(
+		prove::<F, P, _, _>(
 			&key_collection,
 			value_vec.combined_witness(),
 			prover_bitand_data,
@@ -175,6 +179,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 			},
 			&subspace,
 			&mut prover_transcript,
+			&&BufferPool::new(),
 		);
 
 		let setup_verifier_transcript = prover_transcript.into_verifier();
@@ -270,14 +275,16 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// segment parts.
 	let build_combined_g_parts = || {
 		let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
-		let mut g_parts = build_g_parts::<F, P>(
+		let mut g_parts = build_g_parts::<F, P, _>(
+			&GlobalAllocator,
 			public_words,
 			&key_collection.public,
 			&prepared_bitand,
 			&prepared_intmul,
 			&prepared_bmul,
 		);
-		let hidden_g_parts = build_g_parts::<F, P>(
+		let hidden_g_parts = build_g_parts::<F, P, _>(
+			&GlobalAllocator,
 			hidden_words,
 			&key_collection.hidden,
 			&prepared_bitand,
@@ -293,22 +300,29 @@ fn bench_shift_phases(c: &mut Criterion) {
 	};
 
 	let g_parts = build_combined_g_parts();
-	let h_parts = build_h_parts::<F, P>(&subspace, prepared_bitand.r_zhat_prime);
+	let h_parts =
+		build_h_parts::<F, P, _>(&GlobalAllocator, &subspace, prepared_bitand.r_zhat_prime);
 	let SumcheckOutput {
 		challenges: mut r_jr_s,
 		eval: gamma,
 	} = {
 		let mut transcript = ProverTranscript::<StdChallenger>::default();
-		run_phase_1_sumcheck::<F, P, _>(g_parts.clone(), h_parts.clone(), &mut transcript)
+		run_phase_1_sumcheck::<F, P, _, _>(
+			g_parts.clone(),
+			h_parts.clone(),
+			&mut transcript,
+			&GlobalAllocator,
+		)
 	};
 	// Split phase-1 challenges into `r_j` (low) and `r_s` (high) halves.
 	let r_s = r_jr_s.split_off(Word::LOG_BITS);
 	let r_j = r_jr_s;
 	let r_j_tensor = eq_ind_partial_eval::<F>(&r_j);
 	let (public_words, hidden_words) = words.split_at(key_collection.public.n_words());
-	let public_folded = fold_words::<F, P>(public_words, r_j_tensor.as_ref());
-	let hidden_folded = fold_words::<F, P>(hidden_words, r_j_tensor.as_ref());
-	let (public_monster, hidden_monster) = build_monster_segments::<F, P>(
+	let public_folded = fold_words::<F, P, _>(&GlobalAllocator, public_words, r_j_tensor.as_ref());
+	let hidden_folded = fold_words::<F, P, _>(&GlobalAllocator, hidden_words, r_j_tensor.as_ref());
+	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
+		&GlobalAllocator,
 		&key_collection,
 		&prepared_bitand,
 		&prepared_intmul,
@@ -327,14 +341,16 @@ fn bench_shift_phases(c: &mut Criterion) {
 		b.iter(&build_combined_g_parts);
 	});
 	group.bench_function("phase1_build_h_parts", |b| {
-		b.iter(|| build_h_parts::<F, P>(&subspace, prepared_bitand.r_zhat_prime));
+		b.iter(|| {
+			build_h_parts::<F, P, _>(&GlobalAllocator, &subspace, prepared_bitand.r_zhat_prime)
+		});
 	});
 	group.bench_function("phase1_run_sumcheck", |b| {
 		b.iter_batched(
 			|| (g_parts.clone(), h_parts.clone()),
 			|(g, h)| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
-				run_phase_1_sumcheck::<F, P, _>(g, h, &mut transcript)
+				run_phase_1_sumcheck::<F, P, _, _>(g, h, &mut transcript, &GlobalAllocator)
 			},
 			BatchSize::SmallInput,
 		);
@@ -344,7 +360,8 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// its buffers and `r_j` by value.
 	group.bench_function("phase2_build_monster_segments", |b| {
 		b.iter(|| {
-			build_monster_segments::<F, P>(
+			build_monster_segments::<F, P, _>(
+				&GlobalAllocator,
 				&key_collection,
 				&prepared_bitand,
 				&prepared_intmul,
@@ -368,7 +385,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 			},
 			|(public_folded, hidden_folded, public_monster, hidden_monster, r_j)| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
-				run_sumcheck::<F, P, _>(
+				run_sumcheck::<F, P, _, _>(
 					public_folded,
 					hidden_folded,
 					public_monster,
@@ -377,6 +394,7 @@ fn bench_shift_phases(c: &mut Criterion) {
 					r_j,
 					gamma,
 					&mut transcript,
+					&GlobalAllocator,
 				)
 			},
 			BatchSize::SmallInput,

@@ -1,6 +1,7 @@
 // Copyright 2025 Irreducible Inc.
-use std::{iter, iter::repeat_with};
+use std::iter::repeat_with;
 
+use binius_compute::{BufferPool, GlobalAllocator};
 use binius_core::word::Word;
 use binius_field::{Field, Random};
 use binius_ip_prover::sumcheck::{common::SumcheckProver, quadratic_mlecheck_prover};
@@ -35,9 +36,6 @@ fn bench(c: &mut Criterion) {
 	let b_words: Vec<Word> = repeat_with(|| Word(rng.random()))
 		.take(1 << log_words)
 		.collect();
-	let c_words: Vec<Word> = iter::zip(&a_words, &b_words)
-		.map(|(&a, &b)| a & b)
-		.collect();
 
 	let prover_message_domain = BinarySubspace::with_dim(SKIPPED_VARS + 1);
 
@@ -57,7 +55,6 @@ fn bench(c: &mut Criterion) {
 				log_words,
 				&a_words,
 				&b_words,
-				&c_words,
 				&big_field_zerocheck_challenges,
 				&prover_message_domain,
 			)
@@ -68,7 +65,6 @@ fn bench(c: &mut Criterion) {
 		log_words,
 		&a_words,
 		&b_words,
-		&c_words,
 		&big_field_zerocheck_challenges,
 		&prover_message_domain,
 	);
@@ -78,14 +74,16 @@ fn bench(c: &mut Criterion) {
 		bench.iter(|| {
 			let lagrange_evals = lagrange_evals_scalars(&univariate_domain, univariate_challenge);
 			let folder = BitAxisFolder::new(&lagrange_evals);
-			[&a_words, &b_words, &c_words].map(|mlv| folder.fold::<OptimalPackedB128>(mlv))
+			folder.fold_bitand_operands::<OptimalPackedB128, _>(
+				&GlobalAllocator,
+				&a_words,
+				&b_words,
+			)
 		});
 	});
 
 	let lagrange_evals = lagrange_evals_scalars(&univariate_domain, univariate_challenge);
 	let folder = BitAxisFolder::new(&lagrange_evals);
-	let proving_polys =
-		[&a_words, &b_words, &c_words].map(|mlv| folder.fold::<OptimalPackedB128>(mlv));
 
 	let mut univariate_message_coeffs = vec![B128::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];
 	univariate_message_coeffs[ROWS_PER_HYPERCUBE_VERTEX..2 * ROWS_PER_HYPERCUBE_VERTEX]
@@ -97,6 +95,12 @@ fn bench(c: &mut Criterion) {
 		univariate_challenge,
 	);
 
+	let pool = BufferPool::new();
+
+	let alloc = &pool;
+	// Fold the operands once; each iteration clones the result from the pool.
+	let proving_polys =
+		folder.fold_bitand_operands::<OptimalPackedB128, _>(&alloc, &a_words, &b_words);
 	group.bench_function(format!("remaining zerocheck 2^{log_words}"), |bench| {
 		bench.iter_batched(
 			|| proving_polys.clone(),
@@ -109,6 +113,7 @@ fn bench(c: &mut Criterion) {
 						.collect();
 
 				let mut prover = quadratic_mlecheck_prover(
+					&alloc,
 					proving_polys,
 					|[a, b, c]| a * b - c,
 					|[a, b, _]| a * b,

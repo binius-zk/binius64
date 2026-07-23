@@ -15,9 +15,9 @@ pub struct BatchSumcheckOutput<F: Field> {
 	/// Verifier challenges for each round of the sumcheck protocol.
 	///
 	/// One challenge is generated per variable in the multivariate polynomial,
-	/// with challenges\[i\] corresponding to the i-th round of the protocol.
-	///
-	/// Note: reverse when folding high-to-low to obtain evaluation claim.
+	/// with challenges\[i\] corresponding to the i-th round of the protocol. This binding
+	/// order matches [`prove_single`](super::prove_single) and `batch_verify`; when folding
+	/// high-to-low, reverse to obtain the variable-indexed evaluation point.
 	pub challenges: Vec<F>,
 	/// Evaluation claims on non-transparent multilinears, per prover.
 	///
@@ -91,10 +91,6 @@ where
 			prover.fold(challenge);
 		}
 	}
-
-	// TODO: this differs from prove_single, which doesn't reverse.
-	// Reverse to match high-to-low folding order for evaluation points.
-	challenges.reverse();
 
 	let multilinear_evals = provers
 		.into_iter()
@@ -206,10 +202,6 @@ where
 		}
 	}
 
-	// TODO: this differs from prove_single, which doesn't reverse.
-	// Reverse to match high-to-low folding order for evaluation points.
-	challenges.reverse();
-
 	let multilinear_evals = provers
 		.into_iter()
 		.map(|prover| prover.finish())
@@ -254,6 +246,7 @@ mod tests {
 	use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
+	use binius_compute::GlobalAllocator;
 	use rand::prelude::*;
 
 	use super::batch_prove_mle;
@@ -286,6 +279,7 @@ mod tests {
 
 		let n_vars = 6;
 		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
 
 		let eval_point = random_scalars::<F>(&mut rng, n_vars);
 
@@ -298,11 +292,13 @@ mod tests {
 		let eval_claim_1 = product_eval_claim(&multilinear_a_1, &multilinear_b_1, &eval_point);
 
 		let prover_0 = bivariate_product_mle::new(
+			&alloc,
 			[multilinear_a_0.clone(), multilinear_b_0.clone()],
 			eval_point.clone(),
 			eval_claim_0,
 		);
 		let prover_1 = bivariate_product_mle::new(
+			&alloc,
 			[multilinear_a_1.clone(), multilinear_b_1.clone()],
 			eval_point.clone(),
 			eval_claim_1,
@@ -358,10 +354,8 @@ mod tests {
 			"Batched evaluation should match reduced evaluation"
 		);
 
-		let mut prover_challenges = output.challenges.clone();
-		prover_challenges.reverse();
 		assert_eq!(
-			prover_challenges, sumcheck_output.challenges,
+			output.challenges, sumcheck_output.challenges,
 			"Prover and verifier challenges should match"
 		);
 	}

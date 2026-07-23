@@ -8,8 +8,7 @@ use binius_circuits::{
 	bitcoin::p2pkh_signature::{addr_bytes_to_le_words, build_p2pkh_circuit},
 };
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
-use bitcoin::{Network, PrivateKey, secp256k1::Secp256k1};
-use bitcoin_hashes::Hash;
+use bitcoin::{Network, PrivateKey, hashes::Hash, secp256k1::Secp256k1};
 use clap::Args;
 use rand::prelude::*;
 

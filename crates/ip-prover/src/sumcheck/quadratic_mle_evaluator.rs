@@ -1,8 +1,9 @@
 // Copyright 2026 The Binius Developers
 
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField, WideMul};
 use binius_ip::sumcheck::RoundCoeffs;
-use binius_math::{FieldBuffer, FieldSlice};
+use binius_math::{FieldSlice, FieldVec};
 
 use super::{
 	mle_store::{ColId, ColumnChunk, EvaluationChunk, MleStore},
@@ -91,29 +92,40 @@ impl<Composition, InfinityComposition, const N: usize>
 /// # Panics
 ///
 /// Panics if any multilinear's variable count differs from `eval_point.len()`, or if `N == 0`.
-pub fn quadratic_mlecheck_prover<F, P, Composition, InfinityComposition, const N: usize>(
-	multilinears: [FieldBuffer<P>; N],
+pub fn quadratic_mlecheck_prover<
+	'alloc,
+	A,
+	F,
+	P,
+	Composition,
+	InfinityComposition,
+	const N: usize,
+>(
+	alloc: &'alloc A,
+	multilinears: [FieldVec<P, A>; N],
 	composition: Composition,
 	infinity_composition: InfinityComposition,
 	eval_point: Vec<F>,
 	eval_claim: F,
-) -> SharedMleCheckProver<'static, F, P, QuadraticMleEvaluator<Composition, InfinityComposition, N>>
+) -> SharedMleCheckProver<'alloc, A, F, P, QuadraticMleEvaluator<Composition, InfinityComposition, N>>
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 	Composition: Fn([P; N]) -> P + Send + Sync,
 	InfinityComposition: Fn([P; N]) -> P + Send + Sync,
 {
-	let mut store = MleStore::new(eval_point.len());
+	let mut store = MleStore::new(eval_point.len(), alloc);
 	// Hand each column to the store, which checks its variable count against the point length.
 	let cols = multilinears.map(|col| store.push_owned(col));
 	let evaluator = QuadraticMleEvaluator::new(cols, composition, infinity_composition);
 	SharedMleCheckProver::new(store, [(eval_claim, evaluator)], eval_point)
 }
 
-impl<F, P, Composition, InfinityComposition, const N: usize> MleCheckRoundEvaluator<F, P>
+impl<A, F, P, Composition, InfinityComposition, const N: usize> MleCheckRoundEvaluator<A, F, P>
 	for QuadraticMleEvaluator<Composition, InfinityComposition, N>
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 	Composition: Fn([P; N]) -> P + Send + Sync,
@@ -165,7 +177,7 @@ where
 
 	fn interpolate(
 		&self,
-		store: &MleStore<'_, P>,
+		store: &MleStore<'_, A, P>,
 		accum: &[P],
 		claim: F,
 		alpha: F,
@@ -190,9 +202,11 @@ where
 mod tests {
 	use std::{array, iter};
 
+	use binius_compute::GlobalAllocator;
 	use binius_field::{Random, arch::OptimalPackedB128, field::FieldOps};
 	use binius_ip::mlecheck;
 	use binius_math::{
+		FieldBuffer,
 		multilinear::evaluate::evaluate,
 		test_utils::{random_field_buffer, random_scalars},
 	};
@@ -218,6 +232,7 @@ mod tests {
 	{
 		let n_vars = 8;
 		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
 
 		let multilinears: [_; N] = array::from_fn(|_| random_field_buffer::<P>(&mut rng, n_vars));
 
@@ -230,6 +245,7 @@ mod tests {
 		let eval_claim = evaluate(&composite_vals, &eval_point);
 
 		let prover = quadratic_mlecheck_prover(
+			&alloc,
 			multilinears.clone(),
 			composition.clone(),
 			infinity_composition,
@@ -311,6 +327,7 @@ mod tests {
 
 		let n_vars = 8;
 		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
 
 		let multilinears: [_; 2] = array::from_fn(|_| random_field_buffer::<P>(&mut rng, n_vars));
 		let composition = |[a, b]: [P; 2]| a * b;
@@ -322,6 +339,7 @@ mod tests {
 		let eval_claim = evaluate(&composite_vals, &eval_point);
 
 		let mut prover = quadratic_mlecheck_prover(
+			&alloc,
 			multilinears,
 			composition,
 			composition,

@@ -5,8 +5,9 @@
 //! extension of the GHASH field. Elements are pairs (a, b) representing a + bY, where a and b are
 //! elements of the GHASH field GF(2)\[X\] / (X^128 + X^7 + X^2 + X + 1).
 //!
-//! The extension is defined by the irreducible polynomial Y^2 + Y + X^{-1} over the GHASH field.
+//! The extension is defined by the irreducible polynomial Y^2 + X*Y + X over the GHASH field.
 
+#[cfg(target_arch = "aarch64")]
 pub mod aarch64;
 pub mod sliced;
 pub mod soft64;

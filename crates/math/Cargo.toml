@@ -8,6 +8,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+binius-compute = { path = "../compute" }
 binius-field = { path = "../field", default-features = false }
 binius-utils = { path = "../utils", default-features = false }
 bytemuck = { workspace = true, features = ["extern_crate_alloc"] }

@@ -18,7 +18,6 @@ binius-prover = { path = "../prover", default-features = false }
 binius-transcript = { path = "../transcript" }
 binius-utils = { path = "../utils", features = ["platform-diagnostics"] }
 binius-verifier = { path = "../verifier" }
-bitcoin_hashes.workspace = true
 bitcoin.workspace = true
 blake2.workspace = true
 blake3.workspace = true

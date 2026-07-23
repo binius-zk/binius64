@@ -7,7 +7,7 @@ use binius_utils::{
 use bytes::{Buf, BufMut};
 
 use super::ValueIndex;
-use crate::{consts, error::ConstraintSystemError};
+use crate::error::ConstraintSystemError;
 
 /// Description of a layout of the value vector for a particular circuit.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,6 +39,11 @@ pub struct ValueVecLayout {
 }
 
 impl ValueVecLayout {
+	/// The minimum number of words in the public segment.
+	///
+	/// [`Self::validate`] rejects any layout whose public segment is shorter than this.
+	pub const MIN_WORDS_PER_SEGMENT: usize = 2;
+
 	/// Validates that the value vec layout has a correct shape.
 	///
 	/// Specifically checks that:
@@ -53,7 +58,7 @@ impl ValueVecLayout {
 		}
 
 		let pub_input_size = self.offset_witness;
-		if pub_input_size < consts::MIN_WORDS_PER_SEGMENT {
+		if pub_input_size < Self::MIN_WORDS_PER_SEGMENT {
 			return Err(ConstraintSystemError::PublicInputTooShort { pub_input_size });
 		}
 

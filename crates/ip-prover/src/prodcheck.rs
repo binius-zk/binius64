@@ -2,10 +2,11 @@
 
 use std::iter;
 
+use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim};
 use binius_math::{
-	FieldBuffer, line::extrapolate_line_packed, multilinear::eq::eq_ind_partial_eval,
+	FieldBuffer, FieldVec, line::extrapolate_line_packed, multilinear::eq::eq_ind_partial_eval,
 };
 use binius_utils::rayon::prelude::*;
 use itertools::izip;
@@ -23,16 +24,33 @@ use crate::{
 ///
 /// This prover reduces the claim that a multilinear polynomial evaluates to a product over a
 /// Boolean hypercube to a single multilinear evaluation claim.
-#[derive(Clone)]
-pub struct ProdcheckProver<P: PackedField> {
+pub struct ProdcheckProver<'a, A: Allocator, P: PackedField> {
 	/// Product layers from largest (original witness) to second-smallest.
 	/// `layers[0]` is the original witness. The final products layer is returned
 	/// separately from the constructor.
-	layers: Vec<FieldBuffer<P>>,
+	layers: Vec<FieldVec<P, A>>,
+	/// Allocator the product layers are drawn from.
+	alloc: &'a A,
 }
 
-impl<F, P> ProdcheckProver<P>
+// A manual `Clone` impl (rather than `#[derive(Clone)]`) so the bound lands on the layer buffer
+// `A::Vec<P>` rather than on `A` and `P`: a derive would require `A: Clone` yet still fail to clone
+// the layers unless `A::Vec<P>: Clone`. Holds for the `Vec`-backed `GlobalAllocator`.
+impl<A: Allocator, P: PackedField> Clone for ProdcheckProver<'_, A, P>
 where
+	A::Vec<P>: Clone,
+{
+	fn clone(&self) -> Self {
+		Self {
+			layers: self.layers.clone(),
+			alloc: self.alloc,
+		}
+	}
+}
+
+impl<'a, A, F, P> ProdcheckProver<'a, A, P>
+where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
@@ -48,7 +66,7 @@ where
 	///
 	/// # Preconditions
 	/// * `witness.log_len() >= k`
-	pub fn new(k: usize, witness: FieldBuffer<P>) -> (Self, FieldBuffer<P>) {
+	pub fn new(k: usize, alloc: &'a A, witness: FieldVec<P, A>) -> (Self, FieldVec<P, A>) {
 		assert!(witness.log_len() >= k); // precondition
 
 		let mut layers = Vec::with_capacity(k + 1);
@@ -56,19 +74,22 @@ where
 
 		for _ in 0..k {
 			let prev_layer = layers.last().expect("layers is non-empty");
+			let next_log_len = prev_layer.log_len() - 1;
 			let (half_0, half_1) = prev_layer.split_half_ref();
 
-			let next_layer_evals = (half_0.as_ref(), half_1.as_ref())
+			let next_layer_evals: Vec<P> = (half_0.as_ref(), half_1.as_ref())
 				.into_par_iter()
 				.map(|(v0, v1)| *v0 * *v1)
 				.collect();
-			let next_layer = FieldBuffer::new(prev_layer.log_len() - 1, next_layer_evals);
+			let mut next_data = alloc.alloc::<P>(next_layer_evals.len());
+			next_data.extend_from_slice(&next_layer_evals);
+			let next_layer = FieldBuffer::new(next_log_len, next_data);
 
 			layers.push(next_layer);
 		}
 
 		let products = layers.pop().expect("layers has k+1 elements");
-		(Self { layers }, products)
+		(Self { layers, alloc }, products)
 	}
 
 	/// Returns the number of remaining layers to prove.
@@ -80,7 +101,7 @@ where
 	///
 	/// # Preconditions
 	/// * `self.n_layers() == 1`
-	pub fn into_final_layer(mut self) -> FieldBuffer<P> {
+	pub fn into_final_layer(mut self) -> FieldVec<P, A> {
 		assert_eq!(self.layers.len(), 1, "precondition: exactly one remaining layer");
 		self.layers.pop().expect("layers has exactly one element")
 	}
@@ -93,7 +114,8 @@ where
 	pub fn layer_prover(
 		mut self,
 		claim: MultilinearEvalClaim<F>,
-	) -> (impl MleCheckProver<F>, Option<Self>) {
+	) -> (impl MleCheckProver<F> + 'a, Option<Self>) {
+		let alloc = self.alloc;
 		let layer = self.layers.pop().expect("layers is non-empty");
 
 		let remaining = if self.layers.is_empty() {
@@ -105,7 +127,7 @@ where
 		// The layer has one more variable than the claim point.
 		// Its low and high halves are the two multilinears whose product this layer reduces.
 		// Sharing the buffer between the halves avoids copying this (largest) layer.
-		let prover = bivariate_product_mle::new_split_half(layer, claim.point, claim.eval);
+		let prover = bivariate_product_mle::new_split_half(alloc, layer, claim.point, claim.eval);
 
 		(prover, remaining)
 	}
@@ -177,11 +199,11 @@ pub struct BatchProveOutput<F> {
 ///
 /// After running `n_layers - 1` reduction layers, each prover retains its final (widest) layer.
 /// `provers` pairs each remaining prover with its reduced evaluation at `eval_point`.
-pub struct BatchProveUntilFinalLayerOutput<P: PackedField> {
+pub struct BatchProveUntilFinalLayerOutput<'a, A: Allocator, P: PackedField> {
 	/// The reduced evaluation point shared by all remaining provers.
 	pub eval_point: Vec<P::Scalar>,
 	/// Each remaining prover (with its final layer) paired with its reduced eval at `eval_point`.
-	pub provers: Vec<(P::Scalar, ProdcheckProver<P>)>,
+	pub provers: Vec<(P::Scalar, ProdcheckProver<'a, A, P>)>,
 }
 
 /// Runs a batched product check protocol for multiple independent prodcheck provers.
@@ -238,8 +260,8 @@ pub struct BatchProveUntilFinalLayerOutput<P: PackedField> {
 /// $$
 /// \hat{f}(Y_0, \ldots, Y_{k-1}, X_0, \ldots, X_{m-1}) = \sum_{i \in B_k} \textsf{eq}(i; Y) f_i(X).
 /// $$
-pub fn batch_prove<F: Field, P: PackedField<Scalar = F>>(
-	provers: Vec<ProdcheckProver<P>>,
+pub fn batch_prove<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
+	provers: Vec<ProdcheckProver<'a, A, P>>,
 	claimed_products: Vec<F>,
 	selector_point: Vec<F>,
 	content_point: Vec<F>,
@@ -280,13 +302,13 @@ pub fn batch_prove<F: Field, P: PackedField<Scalar = F>>(
 /// caller splices the retained layers into another reduction.
 ///
 /// Arguments and preconditions are as for [`batch_prove`].
-pub fn batch_prove_until_final_layer<F: Field, P: PackedField<Scalar = F>>(
-	provers: Vec<ProdcheckProver<P>>,
+pub fn batch_prove_until_final_layer<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
+	provers: Vec<ProdcheckProver<'a, A, P>>,
 	claimed_products: Vec<F>,
 	selector_point: Vec<F>,
 	content_point: Vec<F>,
 	channel: &mut impl IPProverChannel<F>,
-) -> BatchProveUntilFinalLayerOutput<P> {
+) -> BatchProveUntilFinalLayerOutput<'a, A, P> {
 	assert!(!provers.is_empty()); // precondition
 	assert_eq!(claimed_products.len(), provers.len()); // precondition
 
@@ -321,14 +343,15 @@ pub fn batch_prove_until_final_layer<F: Field, P: PackedField<Scalar = F>>(
 }
 
 #[allow(clippy::type_complexity)]
-fn batch_prove_layer<F: Field, P: PackedField<Scalar = F>>(
-	provers: Vec<ProdcheckProver<P>>,
+fn batch_prove_layer<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
+	provers: Vec<ProdcheckProver<'a, A, P>>,
 	claimed_products: Vec<F>,
 	eval_point: Vec<F>,
 	k: usize,
 	channel: &mut impl IPProverChannel<F>,
-) -> (Vec<ProdcheckProver<P>>, Vec<F>, Vec<F>) {
+) -> (Vec<ProdcheckProver<'a, A, P>>, Vec<F>, Vec<F>) {
 	// Split eval_point into outer (selector) and inner (content) coordinates.
+	let alloc = provers[0].alloc;
 	let (outer_coords, inner_coords) = eval_point.split_at(k);
 
 	let (mut layer_provers, next_provers): (Vec<_>, Vec<_>) = iter::zip(provers, claimed_products)
@@ -395,12 +418,16 @@ fn batch_prove_layer<F: Field, P: PackedField<Scalar = F>>(
 		.map(|(&v0, &v1, &eq_i)| v0 * v1 * eq_i)
 		.sum();
 
-	// Selector rounds: pack eval pairs into FieldBuffers and use a single prover.
-	let buffer_0 = FieldBuffer::<P>::from_values(&vals_0);
-	let buffer_1 = FieldBuffer::<P>::from_values(&vals_1);
-
-	let outer_prover =
-		bivariate_product_mle::new([buffer_0, buffer_1], outer_coords.to_vec(), eval);
+	// Selector rounds: pack eval pairs straight into allocator buffers and use a single prover.
+	let outer_prover = bivariate_product_mle::new(
+		alloc,
+		[
+			FieldBuffer::<P, _>::from_values_in(alloc, &vals_0),
+			FieldBuffer::<P, _>::from_values_in(alloc, &vals_1),
+		],
+		outer_coords.to_vec(),
+		eval,
+	);
 
 	let ProveSingleOutput {
 		multilinear_evals: outer_evals,
@@ -443,6 +470,7 @@ mod tests {
 	use binius_utils::checked_arithmetics::log2_ceil_usize;
 
 	type StdChallenger = HasherChallenger<sha2::Sha256>;
+	use binius_compute::GlobalAllocator;
 	use rand::prelude::*;
 
 	use super::*;
@@ -467,12 +495,13 @@ mod tests {
 
 	fn test_prodcheck_prove_verify_helper<P: PackedField>(n: usize, k: usize) {
 		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
 
 		// 1. Create random witness with log_len = n + k
 		let witness = random_field_buffer::<P>(&mut rng, n + k);
 
 		// 2. Create prover (computes product layers)
-		let (prover, products) = ProdcheckProver::new(k, witness.clone());
+		let (prover, products) = ProdcheckProver::new(k, &alloc, witness.clone());
 
 		// 3. Generate random n-dimensional challenge point
 		let eval_point = random_scalars::<P::Scalar>(&mut rng, n);
@@ -512,12 +541,13 @@ mod tests {
 
 	fn test_prodcheck_layer_computation_helper<P: PackedField>(n: usize, k: usize) {
 		let mut rng = StdRng::seed_from_u64(0);
+		let alloc = GlobalAllocator;
 
 		// Create random witness with log_len = n + k
 		let witness = random_field_buffer::<P>(&mut rng, n + k);
 
 		// Create prover (computes product layers)
-		let (_prover, products) = ProdcheckProver::new(k, witness.clone());
+		let (_prover, products) = ProdcheckProver::new(k, &alloc, witness.clone());
 
 		// For each index i in the products layer, verify it equals the product of witness values
 		// at indices i + z * 2^n for z in 0..2^k (strided access, not contiguous)
@@ -549,6 +579,7 @@ mod tests {
 	/// * `n_provers` - Number of provers to batch
 	fn test_batch_prove_verify_helper<P: PackedField>(n_layers: usize, n_provers: usize) {
 		let mut rng = StdRng::seed_from_u64(42);
+		let alloc = GlobalAllocator;
 
 		let log_n_provers = log2_ceil_usize(n_provers);
 
@@ -558,9 +589,9 @@ mod tests {
 			.collect();
 
 		// Create ProdcheckProver for each
-		let provers_and_products: Vec<(ProdcheckProver<P>, FieldBuffer<P>)> = witnesses
+		let provers_and_products: Vec<_> = witnesses
 			.iter()
-			.map(|witness| ProdcheckProver::new(n_layers, witness.clone()))
+			.map(|witness| ProdcheckProver::new(n_layers, &alloc, witness.clone()))
 			.collect();
 
 		let (provers, individual_products): (Vec<_>, Vec<_>) =
@@ -670,6 +701,7 @@ mod tests {
 		content_len: usize,
 	) {
 		let mut rng = StdRng::seed_from_u64(7);
+		let alloc = GlobalAllocator;
 
 		let log_n_provers = log2_ceil_usize(n_provers);
 
@@ -678,9 +710,9 @@ mod tests {
 			.map(|_| random_field_buffer::<P>(&mut rng, content_len + n_layers))
 			.collect();
 
-		let provers_and_products: Vec<(ProdcheckProver<P>, FieldBuffer<P>)> = witnesses
+		let provers_and_products: Vec<_> = witnesses
 			.iter()
-			.map(|witness| ProdcheckProver::new(n_layers, witness.clone()))
+			.map(|witness| ProdcheckProver::new(n_layers, &alloc, witness.clone()))
 			.collect();
 
 		let (provers, individual_products): (Vec<_>, Vec<_>) =

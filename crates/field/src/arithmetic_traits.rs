@@ -39,26 +39,6 @@ pub trait WideMul: Sized {
 	fn reduce(wide: Self::Output) -> Self;
 }
 
-macro_rules! impl_trivial_wide_mul {
-	($name:ty) => {
-		impl $crate::arithmetic_traits::WideMul for $name {
-			type Output = Self;
-
-			#[inline]
-			fn wide_mul(a: Self, b: Self) -> Self {
-				a * b
-			}
-
-			#[inline]
-			fn reduce(wide: Self) -> Self {
-				wide
-			}
-		}
-	};
-}
-
-pub(crate) use impl_trivial_wide_mul;
-
 /// Value that can be inverted
 pub trait InvertOrZero {
 	/// Returns the inverted value or zero in case when `self` is zero
