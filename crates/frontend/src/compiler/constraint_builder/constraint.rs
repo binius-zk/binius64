@@ -25,11 +25,11 @@ impl WireAndConstraint {
 		self,
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 	) -> AndConstraint {
-		AndConstraint {
-			a: self.a.into_value_indices(wire_mapping),
-			b: self.b.into_value_indices(wire_mapping),
-			c: self.c.into_value_indices(wire_mapping),
-		}
+		AndConstraint([
+			self.a.into_value_indices(wire_mapping),
+			self.b.into_value_indices(wire_mapping),
+			self.c.into_value_indices(wire_mapping),
+		])
 	}
 
 	pub(super) fn mark_used(&self, used_set: &mut EntitySet<Wire>) {
@@ -56,12 +56,12 @@ impl WireImulConstraint {
 		self,
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 	) -> ImulConstraint {
-		ImulConstraint {
-			a: self.a.into_value_indices(wire_mapping),
-			b: self.b.into_value_indices(wire_mapping),
-			hi: self.hi.into_value_indices(wire_mapping),
-			lo: self.lo.into_value_indices(wire_mapping),
-		}
+		ImulConstraint([
+			self.a.into_value_indices(wire_mapping),
+			self.b.into_value_indices(wire_mapping),
+			self.hi.into_value_indices(wire_mapping),
+			self.lo.into_value_indices(wire_mapping),
+		])
 	}
 
 	pub(super) fn mark_used(&self, used_set: &mut EntitySet<Wire>) {
@@ -93,14 +93,14 @@ impl WireBmulConstraint {
 		self,
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 	) -> BmulConstraint {
-		BmulConstraint {
-			a_lo: self.a_lo.into_value_indices(wire_mapping),
-			a_hi: self.a_hi.into_value_indices(wire_mapping),
-			b_lo: self.b_lo.into_value_indices(wire_mapping),
-			b_hi: self.b_hi.into_value_indices(wire_mapping),
-			c_lo: self.c_lo.into_value_indices(wire_mapping),
-			c_hi: self.c_hi.into_value_indices(wire_mapping),
-		}
+		BmulConstraint([
+			self.a_lo.into_value_indices(wire_mapping),
+			self.a_hi.into_value_indices(wire_mapping),
+			self.b_lo.into_value_indices(wire_mapping),
+			self.b_hi.into_value_indices(wire_mapping),
+			self.c_lo.into_value_indices(wire_mapping),
+			self.c_hi.into_value_indices(wire_mapping),
+		])
 	}
 
 	pub(super) fn mark_used(&self, used_set: &mut EntitySet<Wire>) {
@@ -132,11 +132,11 @@ impl WireLinearConstraint {
 		all_ones: ValueIndex,
 	) -> AndConstraint {
 		let dst = wire_mapping[self.dst];
-		AndConstraint {
-			a: self.rhs.into_value_indices(wire_mapping),
-			b: vec![ShiftedValueIndex::plain(all_ones)],
-			c: vec![ShiftedValueIndex::plain(dst)],
-		}
+		AndConstraint([
+			self.rhs.into_value_indices(wire_mapping),
+			vec![ShiftedValueIndex::plain(all_ones)],
+			vec![ShiftedValueIndex::plain(dst)],
+		])
 	}
 
 	pub(super) fn mark_used(&self, used_set: &mut EntitySet<Wire>) {
@@ -186,20 +186,20 @@ mod tests {
 		assert_eq!(bmul_constraints.len(), 1);
 
 		let bc = &bmul_constraints[0];
-		assert_eq!(bc.a_lo[0].value_index, ValueIndex(0));
-		assert_eq!(bc.a_hi[0].value_index, ValueIndex(1));
-		assert_eq!(bc.b_lo[0].value_index, ValueIndex(2));
-		assert_eq!(bc.b_hi[0].value_index, ValueIndex(3));
-		assert_eq!(bc.c_lo[0].value_index, ValueIndex(4));
+		assert_eq!(bc.a_lo()[0].value_index, ValueIndex(0));
+		assert_eq!(bc.a_hi()[0].value_index, ValueIndex(1));
+		assert_eq!(bc.b_lo()[0].value_index, ValueIndex(2));
+		assert_eq!(bc.b_hi()[0].value_index, ValueIndex(3));
+		assert_eq!(bc.c_lo()[0].value_index, ValueIndex(4));
 
 		// c_hi is `wire5 ^ (wire6 << 5)`.
-		assert_eq!(bc.c_hi.len(), 2);
+		assert_eq!(bc.c_hi().len(), 2);
 		assert!(
-			bc.c_hi
+			bc.c_hi()
 				.iter()
 				.any(|svi| svi.value_index == ValueIndex(5) && svi.amount == 0)
 		);
-		assert!(bc.c_hi.iter().any(|svi| {
+		assert!(bc.c_hi().iter().any(|svi| {
 			svi.value_index == ValueIndex(6)
 				&& svi.amount == 5
 				&& matches!(svi.shift_variant, ShiftVariant::Sll)

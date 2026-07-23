@@ -6,6 +6,7 @@
 use std::fmt;
 
 use binius_core::{ConstraintSystem, Operand, ShiftedValueIndex};
+use itertools::chain;
 
 use crate::compiler::circuit::Circuit;
 
@@ -339,24 +340,13 @@ fn traverse_constraint_system(cs: &ConstraintSystem) -> (usize, usize) {
 		shifted_terms: FxHashSet::default(),
 		unshifted_terms: FxHashSet::default(),
 	};
-	for and in &cs.and_constraints {
-		visit_operand(&and.a, &mut cx);
-		visit_operand(&and.b, &mut cx);
-		visit_operand(&and.c, &mut cx);
-	}
-	for mul in &cs.imul_constraints {
-		visit_operand(&mul.a, &mut cx);
-		visit_operand(&mul.b, &mut cx);
-		visit_operand(&mul.lo, &mut cx);
-		visit_operand(&mul.hi, &mut cx);
-	}
-	for mul in &cs.bmul_constraints {
-		visit_operand(&mul.a_lo, &mut cx);
-		visit_operand(&mul.a_hi, &mut cx);
-		visit_operand(&mul.b_lo, &mut cx);
-		visit_operand(&mul.b_hi, &mut cx);
-		visit_operand(&mul.c_lo, &mut cx);
-		visit_operand(&mul.c_hi, &mut cx);
+	let operands = chain!(
+		cs.and_constraints.iter().flat_map(|c| &c.0),
+		cs.imul_constraints.iter().flat_map(|c| &c.0),
+		cs.bmul_constraints.iter().flat_map(|c| &c.0),
+	);
+	for operand in operands {
+		visit_operand(operand, &mut cx);
 	}
 	return (cx.shifted_terms.len(), cx.unshifted_terms.len());
 

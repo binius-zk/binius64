@@ -618,8 +618,8 @@ fn build_bitand_witness<A: Allocator>(
 	(and_constraints, a.spare_capacity_mut(), b.spare_capacity_mut())
 		.into_par_iter()
 		.for_each(|(constraint, a_i, b_i)| {
-			a_i.write(witness.eval_operand(&constraint.a));
-			b_i.write(witness.eval_operand(&constraint.b));
+			a_i.write(witness.eval_operand(constraint.a()));
+			b_i.write(witness.eval_operand(constraint.b()));
 		});
 
 	// Safety: all entries in a and b are initialized in the parallel loop above.
@@ -652,10 +652,10 @@ fn build_intmul_witness<A: Allocator>(
 	)
 		.into_par_iter()
 		.for_each(|(constraint, a_i, b_i, lo_i, hi_i)| {
-			a_i.write(witness.eval_operand(&constraint.a));
-			b_i.write(witness.eval_operand(&constraint.b));
-			lo_i.write(witness.eval_operand(&constraint.lo));
-			hi_i.write(witness.eval_operand(&constraint.hi));
+			a_i.write(witness.eval_operand(constraint.a()));
+			b_i.write(witness.eval_operand(constraint.b()));
+			lo_i.write(witness.eval_operand(constraint.lo()));
+			hi_i.write(witness.eval_operand(constraint.hi()));
 		});
 
 	// Safety: all entries in a, b, lo, hi are initialized in the parallel loop above.
@@ -694,12 +694,12 @@ fn build_binmul_witness<A: Allocator>(
 	)
 		.into_par_iter()
 		.for_each(|(constraint, a_lo_i, a_hi_i, b_lo_i, b_hi_i, c_lo_i, c_hi_i)| {
-			a_lo_i.write(witness.eval_operand(&constraint.a_lo));
-			a_hi_i.write(witness.eval_operand(&constraint.a_hi));
-			b_lo_i.write(witness.eval_operand(&constraint.b_lo));
-			b_hi_i.write(witness.eval_operand(&constraint.b_hi));
-			c_lo_i.write(witness.eval_operand(&constraint.c_lo));
-			c_hi_i.write(witness.eval_operand(&constraint.c_hi));
+			a_lo_i.write(witness.eval_operand(constraint.a_lo()));
+			a_hi_i.write(witness.eval_operand(constraint.a_hi()));
+			b_lo_i.write(witness.eval_operand(constraint.b_lo()));
+			b_hi_i.write(witness.eval_operand(constraint.b_hi()));
+			c_lo_i.write(witness.eval_operand(constraint.c_lo()));
+			c_hi_i.write(witness.eval_operand(constraint.c_hi()));
 		});
 
 	// Safety: all entries in the six columns are initialized in the parallel loop above.

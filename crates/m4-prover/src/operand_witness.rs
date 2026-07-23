@@ -99,8 +99,8 @@ impl BatchAndCheckWitness {
 		constants: &[Word],
 		and_constraints: &[AndConstraint],
 	) -> Self {
-		let a_operand_iter = and_constraints.par_iter().map(|constraint| &constraint.a);
-		let b_operand_iter = and_constraints.par_iter().map(|constraint| &constraint.b);
+		let a_operand_iter = and_constraints.par_iter().map(|constraint| constraint.a());
+		let b_operand_iter = and_constraints.par_iter().map(|constraint| constraint.b());
 		let (a, b) = rayon::join(
 			|| build_operation_witness(table, constants, a_operand_iter),
 			|| build_operation_witness(table, constants, b_operand_iter),
@@ -472,10 +472,14 @@ pub fn build_intmul_witness(
 	constants: &[Word],
 	imul_constraints: &[ImulConstraint],
 ) -> [Vec<Word>; 4] {
-	let a_operand_iter = imul_constraints.par_iter().map(|constraint| &constraint.a);
-	let b_operand_iter = imul_constraints.par_iter().map(|constraint| &constraint.b);
-	let hi_operand_iter = imul_constraints.par_iter().map(|constraint| &constraint.hi);
-	let lo_operand_iter = imul_constraints.par_iter().map(|constraint| &constraint.lo);
+	let a_operand_iter = imul_constraints.par_iter().map(|constraint| constraint.a());
+	let b_operand_iter = imul_constraints.par_iter().map(|constraint| constraint.b());
+	let hi_operand_iter = imul_constraints
+		.par_iter()
+		.map(|constraint| constraint.hi());
+	let lo_operand_iter = imul_constraints
+		.par_iter()
+		.map(|constraint| constraint.lo());
 	let ((a, b), (hi, lo)) = rayon::join(
 		|| {
 			rayon::join(
@@ -519,22 +523,22 @@ pub fn build_binmul_witness(
 ) -> [Vec<Word>; 6] {
 	let a_lo_iter = bmul_constraints
 		.par_iter()
-		.map(|constraint| &constraint.a_lo);
+		.map(|constraint| constraint.a_lo());
 	let a_hi_iter = bmul_constraints
 		.par_iter()
-		.map(|constraint| &constraint.a_hi);
+		.map(|constraint| constraint.a_hi());
 	let b_lo_iter = bmul_constraints
 		.par_iter()
-		.map(|constraint| &constraint.b_lo);
+		.map(|constraint| constraint.b_lo());
 	let b_hi_iter = bmul_constraints
 		.par_iter()
-		.map(|constraint| &constraint.b_hi);
+		.map(|constraint| constraint.b_hi());
 	let c_lo_iter = bmul_constraints
 		.par_iter()
-		.map(|constraint| &constraint.c_lo);
+		.map(|constraint| constraint.c_lo());
 	let c_hi_iter = bmul_constraints
 		.par_iter()
-		.map(|constraint| &constraint.c_hi);
+		.map(|constraint| constraint.c_hi());
 	let (((a_lo, a_hi), (b_lo, b_hi)), (c_lo, c_hi)) = rayon::join(
 		|| {
 			rayon::join(
@@ -682,8 +686,8 @@ mod tests {
 		let mut a = Vec::new();
 		let mut b = Vec::new();
 		for constraint in and_constraints {
-			a.push(vv.eval_operand(&constraint.a));
-			b.push(vv.eval_operand(&constraint.b));
+			a.push(vv.eval_operand(constraint.a()));
+			b.push(vv.eval_operand(constraint.b()));
 		}
 		(a, b)
 	}
@@ -814,10 +818,10 @@ mod tests {
 			let vv = table.instance_value_vec(instance, constants);
 			for (j, con) in imul_constraints.iter().enumerate() {
 				let idx = j * n_instances + instance;
-				assert_eq!(a[idx], vv.eval_operand(&con.a));
-				assert_eq!(b[idx], vv.eval_operand(&con.b));
-				assert_eq!(hi[idx], vv.eval_operand(&con.hi));
-				assert_eq!(lo[idx], vv.eval_operand(&con.lo));
+				assert_eq!(a[idx], vv.eval_operand(con.a()));
+				assert_eq!(b[idx], vv.eval_operand(con.b()));
+				assert_eq!(hi[idx], vv.eval_operand(con.hi()));
+				assert_eq!(lo[idx], vv.eval_operand(con.lo()));
 			}
 		}
 	}
@@ -912,12 +916,12 @@ mod tests {
 			let vv = table.instance_value_vec(instance, constants);
 			for (j, con) in bmul_constraints.iter().enumerate() {
 				let idx = j * n_instances + instance;
-				assert_eq!(a_lo[idx], vv.eval_operand(&con.a_lo));
-				assert_eq!(a_hi[idx], vv.eval_operand(&con.a_hi));
-				assert_eq!(b_lo[idx], vv.eval_operand(&con.b_lo));
-				assert_eq!(b_hi[idx], vv.eval_operand(&con.b_hi));
-				assert_eq!(c_lo[idx], vv.eval_operand(&con.c_lo));
-				assert_eq!(c_hi[idx], vv.eval_operand(&con.c_hi));
+				assert_eq!(a_lo[idx], vv.eval_operand(con.a_lo()));
+				assert_eq!(a_hi[idx], vv.eval_operand(con.a_hi()));
+				assert_eq!(b_lo[idx], vv.eval_operand(con.b_lo()));
+				assert_eq!(b_hi[idx], vv.eval_operand(con.b_hi()));
+				assert_eq!(c_lo[idx], vv.eval_operand(con.c_lo()));
+				assert_eq!(c_hi[idx], vv.eval_operand(con.c_hi()));
 			}
 		}
 	}
@@ -1020,12 +1024,12 @@ mod tests {
 		let y = c.circuit.witness_index(c.y);
 		let z = c.circuit.witness_index(c.z);
 		let and_constraints = vec![
-			AndConstraint {
+			AndConstraint([
 				// A mixes a shifted and an unshifted term, exercising both accumulator paths.
-				a: vec![ShiftedValueIndex::sll(x, 3), ShiftedValueIndex::plain(y)],
-				b: vec![ShiftedValueIndex::srl(y, 5)],
-				c: vec![ShiftedValueIndex::sar(z, 7)],
-			},
+				vec![ShiftedValueIndex::sll(x, 3), ShiftedValueIndex::plain(y)],
+				vec![ShiftedValueIndex::srl(y, 5)],
+				vec![ShiftedValueIndex::sar(z, 7)],
+			]),
 			// An empty operand set: its column must stay at the zeroed initial value.
 			AndConstraint::default(),
 		];
@@ -1033,7 +1037,7 @@ mod tests {
 		// Sanity: at least one operand term really is shifted, so the else-branch runs.
 		let shifted = and_constraints
 			.iter()
-			.flat_map(|con| [&con.a, &con.b])
+			.flat_map(|con| [con.a(), con.b()])
 			.any(|op| {
 				op.iter()
 					.any(|sv| sv.shift_variant != ShiftVariant::Sll || sv.amount != 0)

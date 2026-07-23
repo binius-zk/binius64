@@ -173,17 +173,17 @@ mod tests {
 		assert_eq!(imul_constraints.len(), 0);
 
 		let and_c = &and_constraints[0];
-		assert_eq!(and_c.a.len(), 3);
+		assert_eq!(and_c.a().len(), 3);
 
 		assert!(
 			and_c
-				.a
+				.a()
 				.iter()
 				.any(|svi| svi.value_index == ValueIndex(0) && svi.amount == 0),
 			"plain(a) from rotr(a, 0)"
 		);
 		assert!(
-			and_c.a.iter().any(|svi| {
+			and_c.a().iter().any(|svi| {
 				svi.value_index == ValueIndex(1)
 					&& svi.amount == 5
 					&& matches!(svi.shift_variant, ShiftVariant::Sll)
@@ -191,7 +191,7 @@ mod tests {
 			"native sll(b, 5)"
 		);
 		assert!(
-			and_c.a.iter().any(|svi| {
+			and_c.a().iter().any(|svi| {
 				svi.value_index == ValueIndex(0)
 					&& svi.amount == 12
 					&& matches!(svi.shift_variant, ShiftVariant::Rotr)

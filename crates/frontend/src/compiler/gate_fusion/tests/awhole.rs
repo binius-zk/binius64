@@ -61,11 +61,11 @@ fn stringify_constraint_system(cs: &ConstraintSystem) -> String {
 	if !cs.and_constraints.is_empty() {
 		for (i, constraint) in cs.and_constraints.iter().enumerate() {
 			write!(output, "AND[{}]: (", i).unwrap();
-			format_operand(&mut output, &constraint.a, cs);
+			format_operand(&mut output, constraint.a(), cs);
 			write!(output, ") ∧ (").unwrap();
-			format_operand(&mut output, &constraint.b, cs);
+			format_operand(&mut output, constraint.b(), cs);
 			write!(output, ") = (").unwrap();
-			format_operand(&mut output, &constraint.c, cs);
+			format_operand(&mut output, constraint.c(), cs);
 			writeln!(output, ")").unwrap();
 		}
 	}
@@ -74,13 +74,13 @@ fn stringify_constraint_system(cs: &ConstraintSystem) -> String {
 	if !cs.imul_constraints.is_empty() {
 		for (i, constraint) in cs.imul_constraints.iter().enumerate() {
 			write!(output, "IMUL[{}]: (", i).unwrap();
-			format_operand(&mut output, &constraint.a, cs);
+			format_operand(&mut output, constraint.a(), cs);
 			write!(output, ") * (").unwrap();
-			format_operand(&mut output, &constraint.b, cs);
+			format_operand(&mut output, constraint.b(), cs);
 			write!(output, ") = (HI: ").unwrap();
-			format_operand(&mut output, &constraint.hi, cs);
+			format_operand(&mut output, constraint.hi(), cs);
 			write!(output, ", LO: ").unwrap();
-			format_operand(&mut output, &constraint.lo, cs);
+			format_operand(&mut output, constraint.lo(), cs);
 			writeln!(output, ")").unwrap();
 		}
 	}

@@ -331,16 +331,20 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 
 	// Update the builder keys lists with respect to each operand of each operation
 	let bitand_operand_getters: [fn(&AndConstraint) -> &Operand; BITAND_ARITY] =
-		[|c| &c.a, |c| &c.b, |c| &c.c];
-	let intmul_operand_getters: [fn(&ImulConstraint) -> &Operand; INTMUL_ARITY] =
-		[|c| &c.a, |c| &c.b, |c| &c.lo, |c| &c.hi];
+		[AndConstraint::a, AndConstraint::b, AndConstraint::c];
+	let intmul_operand_getters: [fn(&ImulConstraint) -> &Operand; INTMUL_ARITY] = [
+		ImulConstraint::a,
+		ImulConstraint::b,
+		ImulConstraint::lo,
+		ImulConstraint::hi,
+	];
 	let binmul_operand_getters: [fn(&BmulConstraint) -> &Operand; BINMUL_ARITY] = [
-		|c| &c.a_lo,
-		|c| &c.a_hi,
-		|c| &c.b_lo,
-		|c| &c.b_hi,
-		|c| &c.c_lo,
-		|c| &c.c_hi,
+		BmulConstraint::a_lo,
+		BmulConstraint::a_hi,
+		BmulConstraint::b_lo,
+		BmulConstraint::b_hi,
+		BmulConstraint::c_lo,
+		BmulConstraint::c_hi,
 	];
 
 	bitand_operand_getters

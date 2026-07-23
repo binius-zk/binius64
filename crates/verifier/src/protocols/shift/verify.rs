@@ -4,7 +4,7 @@
 use std::{array, iter};
 
 use binius_core::{
-	constraint_system::{AndConstraint, BmulConstraint, ConstraintSystem, ImulConstraint, Operand},
+	constraint_system::{ConstraintSystem, Operand},
 	word::Word,
 };
 use binius_field::{BinaryField, field::FieldOps, util::FieldFn};
@@ -479,7 +479,7 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 				.constraint_system
 				.and_constraints
 				.iter()
-				.map(|AndConstraint { a, b, c }| (a, b, c))
+				.map(|constraint| (constraint.a(), constraint.b(), constraint.c()))
 				.multiunzip();
 			eval_op(&[a, b, c], bitand_r_x_prime_v, bitand_lambda_v, &shift_scalars, &r_y_tensor)
 		};
@@ -489,7 +489,9 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 				.constraint_system
 				.imul_constraints
 				.iter()
-				.map(|ImulConstraint { a, b, hi, lo }| (a, b, lo, hi))
+				.map(|constraint| {
+					(constraint.a(), constraint.b(), constraint.lo(), constraint.hi())
+				})
 				.multiunzip();
 			eval_op(
 				&[a, b, lo, hi],
@@ -508,16 +510,16 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 				.constraint_system
 				.bmul_constraints
 				.iter()
-				.map(
-					|BmulConstraint {
-					     a_lo,
-					     a_hi,
-					     b_lo,
-					     b_hi,
-					     c_lo,
-					     c_hi,
-					 }| (a_lo, a_hi, b_lo, b_hi, c_lo, c_hi),
-				)
+				.map(|constraint| {
+					(
+						constraint.a_lo(),
+						constraint.a_hi(),
+						constraint.b_lo(),
+						constraint.b_hi(),
+						constraint.c_lo(),
+						constraint.c_hi(),
+					)
+				})
 				.multiunzip();
 			eval_op(
 				&[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi],

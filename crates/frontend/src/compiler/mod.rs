@@ -10,6 +10,7 @@ use binius_core::{
 	word::Word,
 };
 use cranelift_entity::EntitySet;
+use itertools::chain;
 
 use crate::compiler::{
 	circuit::Circuit,
@@ -327,30 +328,16 @@ impl CircuitBuilder {
 		// terms referencing a zero constant contribute nothing to an XOR operand.
 		let n_const = value_vec_layout.n_const;
 		{
-			let filter_zeros = |operand: &mut Vec<_>| {
+			let operands = chain!(
+				and_constraints.iter_mut().flat_map(|c| &mut c.0),
+				imul_constraints.iter_mut().flat_map(|c| &mut c.0),
+				bmul_constraints.iter_mut().flat_map(|c| &mut c.0),
+			);
+			for operand in operands {
 				operand.retain(|term: &binius_core::constraint_system::ShiftedValueIndex| {
 					let idx = term.value_index.0 as usize;
 					idx >= n_const || constants[idx] != Word::ZERO
 				});
-			};
-			for c in &mut and_constraints {
-				filter_zeros(&mut c.a);
-				filter_zeros(&mut c.b);
-				filter_zeros(&mut c.c);
-			}
-			for c in &mut imul_constraints {
-				filter_zeros(&mut c.a);
-				filter_zeros(&mut c.b);
-				filter_zeros(&mut c.hi);
-				filter_zeros(&mut c.lo);
-			}
-			for c in &mut bmul_constraints {
-				filter_zeros(&mut c.a_lo);
-				filter_zeros(&mut c.a_hi);
-				filter_zeros(&mut c.b_lo);
-				filter_zeros(&mut c.b_hi);
-				filter_zeros(&mut c.c_lo);
-				filter_zeros(&mut c.c_hi);
 			}
 		}
 

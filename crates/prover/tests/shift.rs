@@ -141,9 +141,9 @@ pub fn compute_bitand_images(constraints: &[AndConstraint], witness: &ValueVec) 
 	let (a_image, b_image, c_image) = constraints
 		.iter()
 		.map(|constraint| {
-			let a = witness.eval_operand(&constraint.a);
-			let b = witness.eval_operand(&constraint.b);
-			let c = witness.eval_operand(&constraint.c);
+			let a = witness.eval_operand(constraint.a());
+			let b = witness.eval_operand(constraint.b());
+			let c = witness.eval_operand(constraint.c());
 			(a, b, c)
 		})
 		.multiunzip();
@@ -155,10 +155,10 @@ fn compute_intmul_images(constraints: &[ImulConstraint], witness: &ValueVec) -> 
 	let (a_image, b_image, hi_image, lo_image) = constraints
 		.iter()
 		.map(|constraint| {
-			let a = witness.eval_operand(&constraint.a);
-			let b = witness.eval_operand(&constraint.b);
-			let hi = witness.eval_operand(&constraint.hi);
-			let lo = witness.eval_operand(&constraint.lo);
+			let a = witness.eval_operand(constraint.a());
+			let b = witness.eval_operand(constraint.b());
+			let hi = witness.eval_operand(constraint.hi());
+			let lo = witness.eval_operand(constraint.lo());
 			(a, b, hi, lo)
 		})
 		.multiunzip();
