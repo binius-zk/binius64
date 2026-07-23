@@ -179,7 +179,10 @@ fn assert_const_slice_eq(
 		let e = input[k];
 		if k + 1 == n_words && final_bytes != 0 {
 			let mask = b.add_constant_64((1u64 << (final_bytes * 8)) - 1);
-			b.assert_eq(format!("{name}[{k}]"), b.band(a, mask), b.band(e, mask));
+			// (a & mask) == (e & mask) is ((a ^ e) & mask) == 0: the XOR is free and
+			// drops one of the two masking ANDs.
+			let diff = b.band(b.bxor(a, e), mask);
+			b.assert_eq(format!("{name}[{k}]"), diff, b.add_constant(Word::ZERO));
 		} else {
 			b.assert_eq(format!("{name}[{k}]"), a, e);
 		}
