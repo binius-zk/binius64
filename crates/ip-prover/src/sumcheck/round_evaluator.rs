@@ -751,10 +751,7 @@ mod tests {
 			let expected = evaluate_univariate(&composed, sumcheck_output.batch_coeff);
 			assert_eq!(expected, sumcheck_output.eval, "reduced evaluation must match the batch");
 
-			// Prover challenges, reversed, match the verifier's.
-			let mut prover_challenges = output.challenges.clone();
-			prover_challenges.reverse();
-			assert_eq!(prover_challenges, sumcheck_output.challenges);
+			assert_eq!(output.challenges, sumcheck_output.challenges);
 		}
 	}
 
@@ -865,10 +862,7 @@ mod tests {
 			let expected = evaluate_univariate(&reduced, sumcheck_output.batch_coeff);
 			assert_eq!(expected, sumcheck_output.eval, "reduced evaluation must match the batch");
 
-			// Prover challenges, reversed, match the verifier's.
-			let mut prover_challenges = output.challenges.clone();
-			prover_challenges.reverse();
-			assert_eq!(prover_challenges, sumcheck_output.challenges);
+			assert_eq!(output.challenges, sumcheck_output.challenges);
 		}
 	}
 }

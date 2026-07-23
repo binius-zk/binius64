@@ -160,8 +160,10 @@ where
 	let pushforward_eval_claim = extrapolate_line(y_0_eval, y_1_eval, r);
 	let table_eval_claim = extrapolate_line(t_0_eval, t_1_eval, r);
 
-	// batch_prove returns challenges low-to-high; the folded variable is the highest coordinate.
+	// `batch_prove` returns binding-order challenges; reverse to variable-indexed (low-to-high).
+	// The folded variable is the highest coordinate.
 	let mut table_eval_point = output.challenges;
+	table_eval_point.reverse();
 	table_eval_point.push(r);
 
 	FinalLayerOutput {

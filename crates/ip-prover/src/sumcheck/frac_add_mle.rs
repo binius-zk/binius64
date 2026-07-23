@@ -152,11 +152,8 @@ mod tests {
 			"Batched evaluation should equal the reduced evaluation"
 		);
 
-		// Also verify the challenges match what the prover saw
-		let mut prover_challenges = output.challenges;
-		prover_challenges.reverse();
 		assert_eq!(
-			prover_challenges, sumcheck_output.challenges,
+			output.challenges, sumcheck_output.challenges,
 			"Prover and verifier challenges should match"
 		);
 	}

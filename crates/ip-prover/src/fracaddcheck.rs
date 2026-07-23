@@ -266,7 +266,9 @@ where
 			let next_num = extrapolate_line_packed(num_0, num_1, r);
 			let next_den = extrapolate_line_packed(den_0, den_1, r);
 
+			// Sumcheck binds variables high-to-low; reverse to low-to-high for the claim point.
 			let mut next_point = output.challenges;
+			next_point.reverse();
 			next_point.push(r);
 
 			let num_claim = MultilinearEvalClaim {

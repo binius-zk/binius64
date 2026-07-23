@@ -343,8 +343,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	};
 
 	// Reduced oracle evaluations α_i = π_i'(ρ_i) come out in arrival order; scatter them into
-	// oracle-index order to match how the verifier indexes them. `output.challenges` is already
-	// reversed to low-to-high (variable-indexed) order, so ρ_i is its first n_i coords.
+	// oracle-index order to match how the verifier indexes them.
 	//
 	// TODO: This will fail if one oracle isn't opened. For robustness, we should do a regular
 	// multilinear evaluation in that case.
@@ -358,6 +357,10 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	// Collapse the oracle-index variables up front at sampled batching challenges `r'`: build the
 	// combined multilinear 𝛑(X) = Σ_i e[i]·π_i^↑(X) with e = eq(·, r') into one 2^𝐧 buffer, and the
 	// combined target s' = 𝛑(r) = Σ_i e[i]·α_i·∏_{j≥n_i}(1 - r_j).
+	// `batch_prove` returns binding-order challenges; reverse to variable-indexed (low-to-high),
+	// so that ρ_i is the first n_i coords.
+	let mut challenges = challenges;
+	challenges.reverse();
 	let point = &challenges;
 	let log_n_oracles = log2_ceil_usize(n_committed);
 	let outer_challenges = channel.sample_many(log_n_oracles);

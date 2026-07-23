@@ -734,7 +734,11 @@ impl RerandomizedOperations<'_> {
 			},
 		};
 
-		(output.challenges, bitand_data, intmul_data, binmul_data)
+		// `batch_prove` returns binding-order challenges; reverse to variable-indexed to match
+		// the verifier's `r_rho`.
+		let mut r_rho = output.challenges;
+		r_rho.reverse();
+		(r_rho, bitand_data, intmul_data, binmul_data)
 	}
 }
 

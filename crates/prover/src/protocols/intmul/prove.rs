@@ -324,7 +324,7 @@ where
 
 		let batch_guard = tracing::debug_span!("Final batched sumcheck").entered();
 		let BatchSumcheckOutput {
-			challenges,
+			mut challenges,
 			multilinear_evals: _,
 		} = batch_prove(
 			vec![
@@ -336,7 +336,9 @@ where
 		);
 		drop(batch_guard);
 
-		// `challenges` (reversed) is the shared output point for all output claims.
+		// `batch_prove` returns binding-order challenges; reversed, they are the shared output
+		// point for all output claims.
+		challenges.reverse();
 		let r_out = challenges.as_slice();
 
 		// Send the raw per-bit output evals at `r_out`, computed directly from the exponents. The
@@ -473,9 +475,12 @@ where
 		let provers = vec![Either::Left(selector_prover), Either::Right(c_root_prover)];
 		let sumcheck_guard = tracing::debug_span!("Batched selector + C-root sumcheck").entered();
 		let BatchSumcheckOutput {
-			challenges,
+			mut challenges,
 			multilinear_evals,
 		} = batch_prove_and_write_evals(provers, self.channel);
+		// `batch_prove` returns binding-order challenges; reverse to variable-indexed to match
+		// the verifier's phase-3 evaluation point.
+		challenges.reverse();
 		drop(sumcheck_guard);
 
 		let [mut selector_prover_evals, c_root_prover_evals] = multilinear_evals

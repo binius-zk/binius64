@@ -15,9 +15,9 @@ pub struct BatchSumcheckOutput<F: Field> {
 	/// Verifier challenges for each round of the sumcheck protocol.
 	///
 	/// One challenge is generated per variable in the multivariate polynomial,
-	/// with challenges\[i\] corresponding to the i-th round of the protocol.
-	///
-	/// Note: reverse when folding high-to-low to obtain evaluation claim.
+	/// with challenges\[i\] corresponding to the i-th round of the protocol. This binding
+	/// order matches [`prove_single`](super::prove_single) and `batch_verify`; when folding
+	/// high-to-low, reverse to obtain the variable-indexed evaluation point.
 	pub challenges: Vec<F>,
 	/// Evaluation claims on non-transparent multilinears, per prover.
 	///
@@ -91,10 +91,6 @@ where
 			prover.fold(challenge);
 		}
 	}
-
-	// TODO: this differs from prove_single, which doesn't reverse.
-	// Reverse to match high-to-low folding order for evaluation points.
-	challenges.reverse();
 
 	let multilinear_evals = provers
 		.into_iter()
@@ -205,10 +201,6 @@ where
 			prover.fold(challenge);
 		}
 	}
-
-	// TODO: this differs from prove_single, which doesn't reverse.
-	// Reverse to match high-to-low folding order for evaluation points.
-	challenges.reverse();
 
 	let multilinear_evals = provers
 		.into_iter()
@@ -362,10 +354,8 @@ mod tests {
 			"Batched evaluation should match reduced evaluation"
 		);
 
-		let mut prover_challenges = output.challenges.clone();
-		prover_challenges.reverse();
 		assert_eq!(
-			prover_challenges, sumcheck_output.challenges,
+			output.challenges, sumcheck_output.challenges,
 			"Prover and verifier challenges should match"
 		);
 	}
