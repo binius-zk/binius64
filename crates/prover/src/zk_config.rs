@@ -47,6 +47,10 @@ where
 	/// bump.
 	outer_layout: Arc<WitnessLayout<B128>>,
 	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<B128>>,
+	/// The pool that recycles this prover's working buffers. It lives for the prover's lifetime,
+	/// so blocks freed by one `prove` call are reused by the next. The inner IOP proof and the
+	/// outer wrapper proof share it, since they run sequentially.
+	pool: BufferPool,
 	/// The prover creates its Merkle transcript channels with the hash suite `H`.
 	_hash_marker: PhantomData<H>,
 }
@@ -106,6 +110,7 @@ where
 			outer_iop_prover,
 			outer_layout,
 			basefold_compiler,
+			pool: BufferPool::new(),
 			_hash_marker: PhantomData,
 		})
 	}
@@ -130,6 +135,11 @@ where
 		// Clone public words before moving witness into prove().
 		let public_words = witness.public().to_vec();
 
+		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
+		// by earlier proofs. The inner IOP proof and the outer wrapper proof (run inside
+		// `finish`) share it via the `A = &BufferPool` allocator.
+		let alloc = &self.pool;
+
 		// Create BaseFold prover channel and wrap with outer prover.
 		let basefold_channel = self
 			.basefold_compiler
@@ -138,6 +148,7 @@ where
 			basefold_channel,
 			&self.outer_iop_prover,
 			Arc::clone(&self.outer_layout),
+			&alloc,
 			&mut rng,
 			{
 				let inner_iop_verifier = &self.inner_iop_verifier;
@@ -160,10 +171,6 @@ where
 			)
 			.entered();
 
-			// Working buffers for this proof are drawn from a single pool that lives for the call.
-			// The pool is passed as an `&BufferPool` allocator.
-			let pool = BufferPool::new();
-			let alloc = &pool;
 			self.inner_iop_prover
 				.prove::<_, P, _>(witness, &mut wrapped_channel, &alloc)?;
 		}

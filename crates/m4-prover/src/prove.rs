@@ -337,6 +337,9 @@ where
 	iop_prover: IOPProver,
 	/// The precomputed BaseFold prover, holding the NTT and the FRI parameters.
 	basefold_compiler: BaseFoldProverCompiler<P, ProverNtt>,
+	/// The pool that recycles this prover's working buffers. It lives for the prover's lifetime,
+	/// so blocks freed by one `prove` call are reused by the next.
+	pool: BufferPool,
 }
 
 impl<P> Prover<P>
@@ -368,6 +371,7 @@ where
 		Self {
 			iop_prover,
 			basefold_compiler,
+			pool: BufferPool::new(),
 		}
 	}
 
@@ -391,9 +395,9 @@ where
 			.basefold_compiler
 			.create_channel_without_zk_from_transcript::<StdHashSuite, Challenger_, _>(transcript);
 
-		// Working buffers for this proof are drawn from a single pool that lives for the call.
-		let pool = BufferPool::new();
-		let alloc = &pool;
+		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
+		// by earlier proofs.
+		let alloc = &self.pool;
 		self.iop_prover
 			.prove::<P, _, _>(table, &mut channel, &alloc);
 

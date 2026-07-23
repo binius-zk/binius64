@@ -13,7 +13,7 @@
 
 use std::{iter::repeat_with, sync::Arc};
 
-use binius_compute::BufferPool;
+use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_iop_prover::{
@@ -40,7 +40,7 @@ use crate::{Error, IOPProver, pack_and_blind_witness, wrapper::ReplayChannel};
 /// The `ReplayFn` closure is called during [`finish`](Self::finish) with a [`ReplayChannel`] to
 /// replay the inner verification and fill the outer witness. This allows the channel to be generic
 /// over different inner verification protocols.
-pub struct ZKWrappedProverChannel<'a, P, NTT, Channel, ReplayFn>
+pub struct ZKWrappedProverChannel<'a, P, NTT, Channel, ReplayFn, A>
 where
 	P: PackedField<Scalar: BinaryField>,
 	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
@@ -48,6 +48,9 @@ where
 {
 	inner_channel: BaseFoldProverChannel<'a, P::Scalar, P, NTT, Channel>,
 	outer_prover: &'a IOPProver<P::Scalar>,
+	/// Allocator for the outer proof's working buffers, borrowed from the owning prover so it
+	/// outlives this per-proof channel. Used in [`Self::finish`].
+	alloc: &'a A,
 	outer_layout: Arc<WitnessLayout<P::Scalar>>,
 	replay_fn: ReplayFn,
 	keys: Vec<P::Scalar>,
@@ -64,7 +67,7 @@ where
 	n_outer_suffix_oracles: usize,
 }
 
-impl<'a, F, P, NTT, Channel, ReplayFn> ZKWrappedProverChannel<'a, P, NTT, Channel, ReplayFn>
+impl<'a, F, P, NTT, Channel, ReplayFn, A> ZKWrappedProverChannel<'a, P, NTT, Channel, ReplayFn, A>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -87,6 +90,7 @@ where
 	///   proofs
 	/// * `outer_prover` - The IOP prover for the outer (wrapper) constraint system
 	/// * `outer_layout` - The witness layout for the outer constraint system
+	/// * `alloc` - Allocator for the outer proof's working buffers, borrowed from the owning prover
 	/// * `rng` - RNG used to generate the random precommit buffer (the future OTP key)
 	/// * `replay_fn` - Closure called during [`finish`](Self::finish) with a [`ReplayChannel`] to
 	///   replay the inner verification and fill the outer witness
@@ -94,6 +98,7 @@ where
 		mut inner_channel: BaseFoldProverChannel<'a, F, P, NTT, Channel>,
 		outer_prover: &'a IOPProver<F>,
 		outer_layout: Arc<WitnessLayout<F>>,
+		alloc: &'a A,
 		rng: impl CryptoRng,
 		replay_fn: ReplayFn,
 	) -> Self {
@@ -125,6 +130,7 @@ where
 		Self {
 			inner_channel,
 			outer_prover,
+			alloc,
 			outer_layout,
 			replay_fn,
 			keys,
@@ -182,10 +188,12 @@ where
 	pub fn finish(self, rng: impl CryptoRng) -> Result<(), Error>
 	where
 		ReplayFn: FnOnce(&mut ReplayChannel<F>),
+		A: Allocator,
 	{
 		let Self {
 			mut inner_channel,
 			outer_prover,
+			alloc,
 			outer_layout,
 			replay_fn,
 			keys,
@@ -205,10 +213,6 @@ where
 				.expect("outer witness generation should not fail")
 		};
 
-		// Working buffers for this proof are drawn from a single pool that lives for the call.
-		let pool = BufferPool::new();
-		let alloc = &pool;
-
 		// Validate and generate the outer proof.
 		outer_prover.prove::<P, _, _>(
 			witness,
@@ -216,17 +220,17 @@ where
 			precommit_packed,
 			rng,
 			&mut inner_channel,
-			&alloc,
+			alloc,
 		)?;
 		// Both the inner and outer proofs queued their oracle relations onto `inner_channel`; run
 		// the single combined opening over all committed oracles now.
-		inner_channel.finish(&alloc);
+		inner_channel.finish(alloc);
 		Ok(())
 	}
 }
 
-impl<F, P, NTT, Channel, ReplayFn> IPProverChannel<F>
-	for ZKWrappedProverChannel<'_, P, NTT, Channel, ReplayFn>
+impl<F, P, NTT, Channel, ReplayFn, A> IPProverChannel<F>
+	for ZKWrappedProverChannel<'_, P, NTT, Channel, ReplayFn, A>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
@@ -255,8 +259,8 @@ where
 	}
 }
 
-impl<F, P, NTT, Channel, ReplayFn> IOPProverChannel<P>
-	for ZKWrappedProverChannel<'_, P, NTT, Channel, ReplayFn>
+impl<F, P, NTT, Channel, ReplayFn, A> IOPProverChannel<P>
+	for ZKWrappedProverChannel<'_, P, NTT, Channel, ReplayFn, A>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,

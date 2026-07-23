@@ -98,6 +98,9 @@ where
 {
 	iop_prover: IOPProver<P::Scalar>,
 	basefold_compiler: BaseFoldProverCompiler<P, ProverNTT<P::Scalar>>,
+	/// The pool that recycles this prover's working buffers. It lives for the prover's lifetime,
+	/// so blocks freed by one `prove` call are reused by the next.
+	pool: BufferPool,
 	/// The prover creates its Merkle transcript channels with the hash suite `H`.
 	_hash_marker: PhantomData<H>,
 }
@@ -350,6 +353,7 @@ where
 		Ok(Prover {
 			iop_prover,
 			basefold_compiler,
+			pool: BufferPool::new(),
 			_hash_marker: PhantomData,
 		})
 	}
@@ -390,9 +394,9 @@ where
 		let mut channel = self
 			.basefold_compiler
 			.create_channel_from_transcript::<H, Challenger_, _>(transcript, &mut rng);
-		// Working buffers for this proof are drawn from a single pool that lives for the call.
-		let pool = BufferPool::new();
-		let alloc = &pool;
+		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
+		// by earlier proofs.
+		let alloc = &self.pool;
 		let (precommit_oracle, precommit_packed) =
 			self.iop_prover
 				.commit_precommit::<P, _>(&witness, &mut rng, &mut channel);
