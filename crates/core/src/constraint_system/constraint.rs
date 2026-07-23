@@ -107,6 +107,12 @@ impl AndConstraint {
 	}
 }
 
+impl AsRef<[Operand; AND_ARITY]> for AndConstraint {
+	fn as_ref(&self) -> &[Operand; AND_ARITY] {
+		&self.0
+	}
+}
+
 impl SerializeBytes for AndConstraint {
 	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
 		serialize_operands(&self.0, write_buf)
@@ -159,6 +165,12 @@ impl ImulConstraint {
 	/// The low 64 bits of the result of the multiplication.
 	pub const fn lo(&self) -> &Operand {
 		&self.0[3]
+	}
+}
+
+impl AsRef<[Operand; IMUL_ARITY]> for ImulConstraint {
+	fn as_ref(&self) -> &[Operand; IMUL_ARITY] {
+		&self.0
 	}
 }
 
@@ -222,6 +234,12 @@ impl BmulConstraint {
 	/// High word of the C (product) operand.
 	pub const fn c_hi(&self) -> &Operand {
 		&self.0[5]
+	}
+}
+
+impl AsRef<[Operand; BMUL_ARITY]> for BmulConstraint {
+	fn as_ref(&self) -> &[Operand; BMUL_ARITY] {
+		&self.0
 	}
 }
 
