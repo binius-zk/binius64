@@ -35,7 +35,6 @@ use super::{
 use crate::{
 	BinaryField128bGhash, Divisible, Field, PackedBinaryGhash2x128b, PackedField,
 	arch::{M128, M256, m256_from_u128s},
-	arithmetic_traits::{InvertOrZero, Square, WideMul},
 	mul_by_binary_field_1b,
 	underlier::U1,
 };
@@ -43,7 +42,11 @@ use crate::{
 // The multiplicative generator is `Y` (low 128 bits = 0, high 128 bits = 1).
 // `tests::test_multiplicative_generator` verifies it generates GF(2^256)* against the known
 // factorization of 2^256 - 1.
-binary_field!(custom_arithmetic pub GhashSq256b(M256), m256_from_u128s(0, 1));
+//
+// The field's `Mul`/`Square`/`InvertOrZero`/`WideMul` are the width-one packing's arithmetic,
+// derived by the `binary_field!` macro from [`PackedGhashSq1x256b`] (`PackedPrimitiveType<M256,
+// GhashSq256b>`), whose implementation lives in `packed_ghash_sq`.
+binary_field!(pub GhashSq256b(M256), m256_from_u128s(0, 1));
 
 unsafe impl Pod for GhashSq256b {}
 
@@ -61,172 +64,6 @@ impl GhashSq256b {
 	#[inline]
 	fn from_coeffs(coeffs: [BinaryField128bGhash; 2]) -> Self {
 		Self(PackedBinaryGhash2x128b::from_scalars(coeffs).to_underlier())
-	}
-}
-
-/// The two unreduced GHASH products `[x_0·y_0, x_1·y_1]` batched into one packed widening multiply.
-type DiagWide = <PackedBinaryGhash2x128b as WideMul>::Output;
-
-/// The single unreduced GHASH product `(x_0+x_1)·(y_0+y_1)` from a scalar widening multiply.
-type CrossWide = <BinaryField128bGhash as WideMul>::Output;
-
-/// The unreduced product of two GHASH^2 elements.
-///
-/// Holds the three GHASH widening products of the Karatsuba decomposition, before any reduction.
-///
-/// Take `x = x_0 + x_1·Y` and `y = y_0 + y_1·Y` over GHASH, with `Y^2 = X·Y + X`.
-/// Then `z = x·y` has coordinates:
-/// - `z_0 = x_0·y_0 + X·(x_1·y_1)`
-/// - `z_1 = (x_0·y_1 + x_1·y_0) + X·(x_1·y_1)`
-///
-/// The three scalar products it defers are:
-/// - `x_0·y_0` and `x_1·y_1`, computed together as one packed [`PackedBinaryGhash2x128b`] multiply.
-/// - `(x_0+x_1)·(y_0+y_1)`, the Karatsuba cross term, a scalar GHASH multiply, which recovers the
-///   cross term `x_0·y_1 + x_1·y_0` as `(x_0+x_1)·(y_0+y_1) + x_0·y_0 + x_1·y_1`.
-///
-/// Both the GHASH reduction and the multiply-by-`X` are GF(2)-linear.
-/// So a sum of products reduces to the reduction of the XOR of their unreduced forms.
-/// An inner product over GHASH^2 then accumulates by XOR and reduces only once at the end.
-#[derive(Clone, Copy, Default, Debug)]
-pub struct WideGhashSqProduct {
-	/// Unreduced `[x_0·y_0, x_1·y_1]`, the diagonal Karatsuba products in their two packed lanes.
-	diag: DiagWide,
-	/// Unreduced `(x_0+x_1)·(y_0+y_1)`, the Karatsuba cross product.
-	cross: CrossWide,
-}
-
-impl Add for WideGhashSqProduct {
-	type Output = Self;
-
-	#[inline]
-	fn add(self, rhs: Self) -> Self {
-		Self {
-			diag: self.diag + rhs.diag,
-			cross: self.cross + rhs.cross,
-		}
-	}
-}
-
-impl AddAssign for WideGhashSqProduct {
-	#[inline]
-	fn add_assign(&mut self, rhs: Self) {
-		self.diag += rhs.diag;
-		self.cross += rhs.cross;
-	}
-}
-
-impl Sub for WideGhashSqProduct {
-	type Output = Self;
-
-	#[inline]
-	fn sub(self, rhs: Self) -> Self {
-		Self {
-			diag: self.diag - rhs.diag,
-			cross: self.cross - rhs.cross,
-		}
-	}
-}
-
-impl SubAssign for WideGhashSqProduct {
-	#[inline]
-	fn sub_assign(&mut self, rhs: Self) {
-		self.diag -= rhs.diag;
-		self.cross -= rhs.cross;
-	}
-}
-
-impl Sum for WideGhashSqProduct {
-	#[inline]
-	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-		iter.fold(Self::default(), |acc, x| acc + x)
-	}
-}
-
-impl WideMul for GhashSq256b {
-	type Output = WideGhashSqProduct;
-
-	#[inline]
-	fn wide_mul(a: Self, b: Self) -> Self::Output {
-		let [x0, x1] = a.to_coeffs();
-		let [y0, y1] = b.to_coeffs();
-
-		// Diagonal `[x_0·y_0, x_1·y_1]` as one two-lane packed widening multiply.
-		// On AVX2 this is a single `vpclmulqdq` over both lanes — the `mul_m256i_hybrid` algorithm.
-		let diag = <PackedBinaryGhash2x128b as WideMul>::wide_mul(
-			PackedBinaryGhash2x128b::from_scalars([x0, x1]),
-			PackedBinaryGhash2x128b::from_scalars([y0, y1]),
-		);
-		// Karatsuba cross product `(x_0+x_1)·(y_0+y_1)` as a scalar widening multiply.
-		let cross = <BinaryField128bGhash as WideMul>::wide_mul(x0 + x1, y0 + y1);
-
-		WideGhashSqProduct { diag, cross }
-	}
-
-	#[inline]
-	fn reduce(wide: Self::Output) -> Self {
-		// Reduce the batched diagonal back to its two GHASH lanes: `t_0 = x_0·y_0`, `t_2 =
-		// x_1·y_1`.
-		let diag = <PackedBinaryGhash2x128b as WideMul>::reduce(wide.diag);
-		let t0 = diag.get(0);
-		let t2 = diag.get(1);
-		// Reduce the cross product: `t_1 = (x_0+x_1)·(y_0+y_1)`.
-		let t1 = <BinaryField128bGhash as WideMul>::reduce(wide.cross);
-
-		// Fold `Y^2 = X·Y + X` into the basis. With the Karatsuba cross term recovered as
-		// `t_1 + t_0 + t_2`: `z_0 = t_0 + X·t_2`, `z_1 = (t_1 + t_0 + t_2) + X·t_2 = z_0 + t_1 +
-		// t_2`.
-		let z0 = t0 + t2.mul_x();
-		Self::from_coeffs([z0, z0 + t1 + t2])
-	}
-}
-
-/// Squares a GHASH² element.
-///
-/// For `x = x₀ + x₁·Y`: `(x₀ + x₁·Y)² = (x₀² + X·x₁²) + (X·x₁²)·Y` (the cross term vanishes in
-/// characteristic two, and `Y² = X·Y + X`). The squares `x₀²` and `x₁²` are computed with a single
-/// packed square.
-#[inline]
-fn square(x: [BinaryField128bGhash; 2]) -> [BinaryField128bGhash; 2] {
-	let t0_t2 = Square::square(PackedBinaryGhash2x128b::from_scalars(x));
-	let t0 = t0_t2.get(0);
-	let t2 = t0_t2.get(1);
-
-	let x_t2 = t2.mul_x();
-	[t0 + x_t2, x_t2]
-}
-
-impl Mul<GhashSq256b> for GhashSq256b {
-	type Output = Self;
-
-	#[inline]
-	fn mul(self, rhs: Self) -> Self {
-		crate::tracing::trace_multiplication!(GhashSq256b);
-		Self::reduce(Self::wide_mul(self, rhs))
-	}
-}
-
-impl Square for GhashSq256b {
-	#[inline]
-	fn square(self) -> Self {
-		Self::from_coeffs(square(self.to_coeffs()))
-	}
-}
-
-impl InvertOrZero for GhashSq256b {
-	#[inline]
-	fn invert_or_zero(self) -> Self {
-		// For `u = a + b·Y`, the nontrivial automorphism sends `Y` to the other root of
-		// `Y² + X·Y + X`. The two roots sum to `X` and multiply to `X`, so the conjugate is
-		// `ū = (a + b·X) + b·Y`. The norm `N = u·ū = a² + X·b·(a + b)` lies in GHASH, and
-		// `u⁻¹ = ū·N⁻¹`.
-		let [a, b] = self.to_coeffs();
-
-		let norm = Square::square(a) + (a * b + Square::square(b)).mul_x();
-		let norm_inv = norm.invert_or_zero();
-
-		let inv_a = (a + b.mul_x()) * norm_inv;
-		let inv_b = b * norm_inv;
-		Self::from_coeffs([inv_a, inv_b])
 	}
 }
 
@@ -275,6 +112,7 @@ mod tests {
 	use proptest::prelude::*;
 
 	use super::*;
+	use crate::arithmetic_traits::{InvertOrZero, Square, WideMul};
 
 	/// `X`, the generator of the GHASH field in the standard polynomial basis.
 	const GHASH_X: u128 = 0x02;

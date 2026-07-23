@@ -38,6 +38,16 @@ where
 	PackedSubfield::<P, FSub>::from_underlier_ref_mut(packed.to_underlier_ref_mut())
 }
 
+/// Reinterpret a packed extension field element as the corresponding packed subfield element.
+pub fn cast_base<FSub, P>(ext: P) -> PackedSubfield<P, FSub>
+where
+	FSub: BinaryField,
+	P: PackedField<Scalar: ExtensionField<FSub>> + WithUnderlier,
+	PackedSubfield<P, FSub>: PackedField<Scalar = FSub>,
+{
+	PackedSubfield::<P, FSub>::from_underlier(ext.to_underlier())
+}
+
 /// Reinterpret a packed subfield element as the corresponding packed extension field element.
 pub fn cast_ext<FSub, P>(base: PackedSubfield<P, FSub>) -> P
 where

@@ -19,7 +19,10 @@ use super::m128::{M128, m128i_from_u128};
 use crate::{
 	BinaryField,
 	arch::portable::packed::PackedPrimitiveType,
-	underlier::{Divisible, NumCast, SmallU, UnderlierType, impl_divisible_bitmask, mapget},
+	underlier::{
+		Divisible, NumCast, SmallU, UnderlierType, impl_divisible_bitmask, impl_divisible_self,
+		mapget,
+	},
 };
 
 const fn u128_from_m128i(x: __m128i) -> u128 {
@@ -539,6 +542,10 @@ unsafe fn interleave_bits_imm<const BLOCK_LEN: i32>(
 }
 
 // Divisible implementations using SIMD extract/insert intrinsics
+
+// Reflexive `Divisible<Self>`, needed by the width-one `PackedPrimitiveType<M256, _>` packing whose
+// scalar (e.g. `GhashSq256b`) is itself `M256`-backed.
+impl_divisible_self!(M256);
 
 impl Divisible<M128> for M256 {
 	const LOG_N: usize = 1;
