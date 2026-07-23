@@ -332,7 +332,7 @@ where
 		.collect::<Vec<_>>();
 
 	debug_assert_eq!(scalars.len(), 1 << (n_vars + LOG_N_LIMBS));
-	FieldBuffer::<P>::from_values_in(alloc, &scalars)
+	FieldBuffer::from_values_in(alloc, &scalars)
 }
 
 /// Compute concatenated b_leaves for prodcheck.

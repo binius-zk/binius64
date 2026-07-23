@@ -422,8 +422,8 @@ fn batch_prove_layer<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 	let outer_prover = bivariate_product_mle::new(
 		alloc,
 		[
-			FieldBuffer::<P>::from_values_in(alloc, &vals_0),
-			FieldBuffer::<P>::from_values_in(alloc, &vals_1),
+			FieldBuffer::<P, _>::from_values_in(alloc, &vals_0),
+			FieldBuffer::<P, _>::from_values_in(alloc, &vals_1),
 		],
 		outer_coords.to_vec(),
 		eval,

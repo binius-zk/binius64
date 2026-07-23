@@ -114,7 +114,7 @@ impl<P: PackedField> FieldBuffer<P> {
 	}
 }
 
-impl<P: PackedField> FieldBuffer<P> {
+impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 	/// Builds a [`FieldBuffer`] from scalar values directly into a buffer drawn from `alloc`.
 	///
 	/// The allocator-aware counterpart to [`from_values`](Self::from_values): the packed values are
@@ -124,7 +124,10 @@ impl<P: PackedField> FieldBuffer<P> {
 	/// # Preconditions
 	///
 	/// * `values.len()` must be a power of two.
-	pub fn from_values_in<A: Allocator>(alloc: &A, values: &[P::Scalar]) -> FieldVec<P, A> {
+	pub fn from_values_in<A>(alloc: &A, values: &[P::Scalar]) -> Self
+	where
+		A: Allocator<Vec<P> = Data>,
+	{
 		let log_len =
 			strict_log_2(values.len()).expect("precondition: values.len() must be a power of two");
 

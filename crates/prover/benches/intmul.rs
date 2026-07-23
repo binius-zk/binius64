@@ -1,5 +1,5 @@
 // Copyright 2025-2026 The Binius Developers
-use binius_compute::BufferPool;
+use binius_compute::{BufferPool, PoolVec};
 use binius_core::word::Word;
 use binius_field::{BinaryField128bGhash, Field, PackedBinaryGhash1x128b};
 use binius_hash::StdHashSuite;
@@ -343,12 +343,9 @@ fn bench_intmul_components(c: &mut Criterion) {
 	});
 
 	// Computing a product tree over the leaves.
-	let b_leaves_scalars: Vec<F> = witness.b_leaves.iter_scalars().collect();
-	// Build the leaves once; each iteration clones them from the pool.
-	let b_leaves = FieldBuffer::<P>::from_values_in(&alloc, &b_leaves_scalars);
 	group.bench_function("product_tree", |bencher| {
 		bencher.iter_batched(
-			|| b_leaves.clone(),
+			|| FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, witness.b_leaves.to_ref()),
 			|b_leaves| ProdcheckProver::<_, P>::new(Word::LOG_BITS, &alloc, b_leaves),
 			BatchSize::SmallInput,
 		);

@@ -419,7 +419,7 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 			.columns
 			.iter()
 			.map(|column| match column {
-				Column::Borrowed(_) => Some(FieldBuffer::zeros_in(alloc, n_vars)),
+				Column::Borrowed(_) => Some(FieldVec::<P, A>::zeros_in(alloc, n_vars)),
 				_ => None,
 			})
 			.collect::<Vec<_>>();

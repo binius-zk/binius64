@@ -281,7 +281,7 @@ where
 					.sum::<F>()
 			})
 			.collect::<Vec<_>>();
-		let folded_column = FieldBuffer::<P>::from_values_in(alloc, &folded_column_scalars);
+		let folded_column = FieldBuffer::<P, _>::from_values_in(alloc, &folded_column_scalars);
 		drop(fold_guard);
 		let index_prover = MleToSumCheckDecorator::new(multilinear_eval_prover(
 			alloc,

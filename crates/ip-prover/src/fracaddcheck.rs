@@ -586,10 +586,10 @@ where
 	// packed, so the store owns them directly.
 	let mut selector_store = MleStore::new(k, alloc);
 	let selector_cols = [
-		FieldBuffer::<P>::from_values_in(alloc, &num_0s),
-		FieldBuffer::<P>::from_values_in(alloc, &num_1s),
-		FieldBuffer::<P>::from_values_in(alloc, &den_0s),
-		FieldBuffer::<P>::from_values_in(alloc, &den_1s),
+		FieldBuffer::from_values_in(alloc, &num_0s),
+		FieldBuffer::from_values_in(alloc, &num_1s),
+		FieldBuffer::from_values_in(alloc, &den_0s),
+		FieldBuffer::from_values_in(alloc, &den_1s),
 	]
 	.map(|buffer| selector_store.push_owned(buffer));
 	let (selector_num, selector_den) = frac_add_mle::evaluators::<A, F, P>(selector_cols);

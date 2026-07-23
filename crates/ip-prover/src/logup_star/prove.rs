@@ -203,8 +203,8 @@ where
 		log_lookers,
 		alloc,
 		(
-			FieldBuffer::<P>::from_values_in(alloc, &root_nums),
-			FieldBuffer::<P>::from_values_in(alloc, &root_dens),
+			FieldBuffer::<P, _>::from_values_in(alloc, &root_nums),
+			FieldBuffer::<P, _>::from_values_in(alloc, &root_dens),
 		),
 	);
 	let num_l = top_root.0.get(0);

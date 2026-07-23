@@ -1,10 +1,14 @@
 // Copyright 2025-2026 The Binius Developers
 
-use binius_compute::BufferPool;
+use binius_compute::{BufferPool, PoolVec};
 use binius_field::{FieldOps, arch::OptimalPackedB128};
 use binius_ip::prodcheck::MultilinearEvalClaim;
 use binius_ip_prover::fracaddcheck::FracAddCheckProver;
-use binius_math::{FieldBuffer, multilinear::evaluate::evaluate, test_utils::random_scalars};
+use binius_math::{
+	FieldBuffer,
+	multilinear::evaluate::evaluate,
+	test_utils::{random_field_buffer, random_scalars},
+};
 use binius_transcript::ProverTranscript;
 use binius_verifier::config::StdChallenger;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
@@ -23,16 +27,19 @@ fn bench_fracaddcheck_new(c: &mut Criterion) {
 		group.throughput(Throughput::Elements(1 << n_vars));
 		group.bench_function(format!("n_vars={n_vars}"), |b| {
 			let mut rng = rand::rng();
-			let num_scalars = random_scalars::<F>(&mut rng, 1 << n_vars);
-			let den_scalars = random_scalars::<F>(&mut rng, 1 << n_vars);
+			let num_buffer = random_field_buffer::<P>(&mut rng, n_vars);
+			let den_buffer = random_field_buffer::<P>(&mut rng, n_vars);
+
 			let pool = BufferPool::new();
 			let alloc = &pool;
-			// Build the witness pair once; each iteration clones it from the pool.
-			let witness_num = FieldBuffer::<P>::from_values_in(&alloc, &num_scalars);
-			let witness_den = FieldBuffer::<P>::from_values_in(&alloc, &den_scalars);
 
 			b.iter_batched(
-				|| (witness_num.clone(), witness_den.clone()),
+				|| {
+					(
+						FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, num_buffer.to_ref()),
+						FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, den_buffer.to_ref()),
+					)
+				},
 				|(witness_num, witness_den)| {
 					FracAddCheckProver::<_, P>::new(k, &alloc, (witness_num, witness_den))
 				},
@@ -65,8 +72,8 @@ fn bench_fracaddcheck_prove(c: &mut Criterion) {
 				k,
 				&alloc,
 				(
-					FieldBuffer::<P>::from_values_in(&alloc, &num_scalars),
-					FieldBuffer::<P>::from_values_in(&alloc, &den_scalars),
+					FieldBuffer::<P, _>::from_values_in(&alloc, &num_scalars),
+					FieldBuffer::<P, _>::from_values_in(&alloc, &den_scalars),
 				),
 			);
 			let sum_num_eval = evaluate(&sums.0, &[]);

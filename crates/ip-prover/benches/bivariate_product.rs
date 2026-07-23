@@ -5,7 +5,7 @@
 //! the hypercube), and a [`SharedMleCheckProver`] driving one [`QuadraticMleEvaluator`] (the
 //! evaluation claim on the product's multilinear extension at a random point).
 
-use binius_compute::BufferPool;
+use binius_compute::{BufferPool, PoolVec};
 use binius_field::{FieldOps, PackedField, arch::OptimalPackedB128};
 use binius_ip_prover::sumcheck::{
 	self,
@@ -62,8 +62,8 @@ fn bench_shared_sumcheck_bivariate_product(c: &mut Criterion) {
 	for n_vars in [12, 16, 20] {
 		group.throughput(Throughput::Elements(1 << n_vars));
 		group.bench_function(format!("n_vars={n_vars}"), |b| {
-			let a_buffer = random_field_buffer::<P>(&mut rng, 1 << n_vars);
-			let b_buffer = random_field_buffer::<P>(&mut rng, 1 << n_vars);
+			let a_buffer = random_field_buffer::<P>(&mut rng, n_vars);
+			let b_buffer = random_field_buffer::<P>(&mut rng, n_vars);
 
 			// The plain sum claim is the sum of `a * b` over the hypercube.
 			let sum_claim = inner_product_par(&a_buffer, &b_buffer);
@@ -76,8 +76,8 @@ fn bench_shared_sumcheck_bivariate_product(c: &mut Criterion) {
 				|| {
 					(
 						transcript.clone(),
-						FieldBuffer::clone_from_slice(&alloc, a_buffer.to_ref()),
-						FieldBuffer::clone_from_slice(&alloc, b_buffer.to_ref()),
+						FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, a_buffer.to_ref()),
+						FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, b_buffer.to_ref()),
 					)
 				},
 				|(mut transcript, a, b)| {
@@ -105,22 +105,29 @@ fn bench_shared_mlecheck_bivariate_product(c: &mut Criterion) {
 	for n_vars in [12, 16, 20] {
 		group.throughput(Throughput::Elements(1 << n_vars));
 		group.bench_function(format!("n_vars={n_vars}"), |b| {
-			let a_scalars = random_scalars::<F>(&mut rng, 1 << n_vars);
-			let b_scalars = random_scalars::<F>(&mut rng, 1 << n_vars);
-			let pool = BufferPool::new();
-			let alloc = &pool;
-			// Build the two multilinears once; each iteration clones them from the pool.
-			let a = FieldBuffer::<P>::from_values_in(&alloc, &a_scalars);
-			let b_multilinear = FieldBuffer::<P>::from_values_in(&alloc, &b_scalars);
+			let a_buffer = random_field_buffer::<P>(&mut rng, n_vars);
+			let b_buffer = random_field_buffer::<P>(&mut rng, n_vars);
+
+			// The plain sum claim is the sum of `a * b` over the hypercube.
 			let eval_point = random_scalars::<F>(&mut rng, n_vars);
-			let eval_claim = product_eval_claim(&a, &b_multilinear, &eval_point);
+			let eval_claim = product_eval_claim(&a_buffer, &b_buffer, &eval_point);
 			let transcript = ProverTranscript::new(StdChallenger::default());
 
+			let pool = BufferPool::new();
+			let alloc = &pool;
+
 			b.iter_batched(
-				|| (transcript.clone(), a.clone(), b_multilinear.clone(), eval_point.clone()),
-				|(mut transcript, a, b_multilinear, eval_point)| {
+				|| {
+					(
+						transcript.clone(),
+						FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, a_buffer.to_ref()),
+						FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, b_buffer.to_ref()),
+						eval_point.clone(),
+					)
+				},
+				|(mut transcript, a, b, eval_point)| {
 					let mut store = MleStore::new(n_vars, &alloc);
-					let cols = [a, b_multilinear].map(|col| store.push_owned(col));
+					let cols = [a, b].map(|col| store.push_owned(col));
 					let evaluator = QuadraticMleEvaluator::new(cols, product::<P>, product::<P>);
 					let prover =
 						SharedMleCheckProver::new(store, [(eval_claim, evaluator)], eval_point);

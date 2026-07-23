@@ -190,7 +190,7 @@ where
 		.map(|word| inner_product(word.iter().copied(), r_j_tensor.as_ref().iter().copied()))
 		.collect();
 	hidden_scalars.resize(1 << log2_ceil_usize(hidden_scalars.len()), F::ZERO);
-	let hidden_folded = FieldBuffer::<P>::from_values_in(alloc, &hidden_scalars);
+	let hidden_folded = FieldBuffer::<P, _>::from_values_in(alloc, &hidden_scalars);
 
 	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
 		alloc,
