@@ -11,7 +11,7 @@ pub fn mul_sliced(x: [u128; 2], y: [u128; 2]) -> [u128; 2] {
 		y,
 		ghash::soft64::mul_wide,
 		ghash::soft64::reduce,
-		ghash::soft64::mul_inv_x,
+		ghash::soft64::mul_x_wide,
 	)
 }
 
@@ -27,13 +27,13 @@ pub fn mul_wide_sliced(x: [u128; 2], y: [u128; 2]) -> [[u64; 4]; 3] {
 /// arithmetic; see [`super::sliced::reduce_sliced`].
 #[inline]
 pub fn reduce_sliced(t: [[u64; 4]; 3]) -> [u128; 2] {
-	super::sliced::reduce_sliced(t, ghash::soft64::reduce, ghash::soft64::mul_inv_x)
+	super::sliced::reduce_sliced(t, ghash::soft64::reduce, ghash::soft64::mul_x_wide)
 }
 
 /// Square packed GHASH² elements in sliced representation using soft64 arithmetic.
 #[inline]
 pub fn square_sliced(x: [u128; 2]) -> [u128; 2] {
-	super::sliced::square_sliced(x, ghash::soft64::square, ghash::soft64::mul_inv_x)
+	super::sliced::square_sliced(x, ghash::soft64::square, ghash::soft64::mul_x)
 }
 
 #[cfg(test)]
@@ -100,7 +100,7 @@ mod tests {
 
 		// Deferred reduction: accumulating the three raw products by XOR and calling reduce_sliced
 		// once equals summing the reduced products — the F2-linear property the inner-product
-		// benchmark relies on (the multiply-by-X⁻¹ is likewise deferred into reduce_sliced).
+		// benchmark relies on (the multiply-by-X is likewise deferred into reduce_sliced).
 		#[test]
 		fn test_ghash_sq_soft64_wide_deferred_reduction(
 			a1 in any::<[u128; 2]>(), b1 in any::<[u128; 2]>(),

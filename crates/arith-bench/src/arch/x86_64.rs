@@ -149,7 +149,11 @@ impl crate::underlier::OpsGfni for __m128i {
 	}
 }
 
-#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
+#[cfg(all(
+	target_feature = "pclmulqdq",
+	target_feature = "sse2",
+	target_feature = "ssse3"
+))]
 impl crate::underlier::OpsClmul for __m128i {
 	#[inline]
 	fn clmulepi64<const IMM8: i32>(a: Self, b: Self) -> Self {
@@ -167,10 +171,8 @@ impl crate::underlier::OpsClmul for __m128i {
 	}
 
 	#[inline]
-	fn extract_hi_lo_64(a: Self, b: Self) -> Self {
-		unsafe {
-			_mm_castps_si128(_mm_shuffle_ps::<0x4E>(_mm_castsi128_ps(a), _mm_castsi128_ps(b)))
-		}
+	fn alignr_epi8<const IMM8: i32>(a: Self, b: Self) -> Self {
+		unsafe { _mm_alignr_epi8::<IMM8>(a, b) }
 	}
 
 	#[inline]
@@ -427,13 +429,8 @@ impl crate::underlier::OpsClmul for __m256i {
 	}
 
 	#[inline]
-	fn extract_hi_lo_64(a: Self, b: Self) -> Self {
-		unsafe {
-			_mm256_castps_si256(_mm256_shuffle_ps::<0x4E>(
-				_mm256_castsi256_ps(a),
-				_mm256_castsi256_ps(b),
-			))
-		}
+	fn alignr_epi8<const IMM8: i32>(a: Self, b: Self) -> Self {
+		unsafe { _mm256_alignr_epi8::<IMM8>(a, b) }
 	}
 
 	#[inline]
@@ -543,8 +540,8 @@ mod tests {
 		)
 	))]
 	use crate::ghash::{
-		INV_X, ONE, clmul::mul_inv_x as ghash_mul_inv_x, mul_clmul as ghash_mul,
-		square_clmul as ghash_square,
+		INV_X, ONE, X, clmul::mul_inv_x as ghash_mul_inv_x, clmul::mul_x as ghash_mul_x,
+		mul_clmul as ghash_mul, square_clmul as ghash_square,
 	};
 	#[cfg(any(
 		all(target_feature = "pclmulqdq", target_feature = "sse2"),
@@ -878,6 +875,14 @@ mod tests {
 
 		#[test]
 		#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
+		fn test_m128i_ghash_mul_x_proptest(
+			a in arb_m128i()
+		) {
+			test_mul_by_constant(a, X, ghash_mul, ghash_mul_x, "GHASH");
+		}
+
+		#[test]
+		#[cfg(all(target_feature = "pclmulqdq", target_feature = "sse2"))]
 		fn test_m128i_ghash_square_proptest(
 			a in arb_m128i()
 		) {
@@ -928,6 +933,14 @@ mod tests {
 			a in arb_m256i()
 		) {
 			test_mul_by_constant(a, INV_X, ghash_mul, ghash_mul_inv_x, "GHASH");
+		}
+
+		#[test]
+		#[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx2", target_feature = "sse2"))]
+		fn test_m256i_ghash_mul_x_proptest(
+			a in arb_m256i()
+		) {
+			test_mul_by_constant(a, X, ghash_mul, ghash_mul_x, "GHASH");
 		}
 
 		#[test]

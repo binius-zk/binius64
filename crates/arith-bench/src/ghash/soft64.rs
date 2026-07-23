@@ -132,13 +132,40 @@ pub const fn mul_inv_x(x: u128) -> u128 {
 	shifted ^ (super::INV_X & (lsb.wrapping_neg()))
 }
 
+/// Multiply a GHASH field element by X.
+///
+/// This is equivalent to `mul(x, X)` but optimized: left-shift by 1 and conditionally fold in the
+/// reduction polynomial if bit 127 overflowed. `X^128 ≡ X^7 + X^2 + X + 1 = 0x87`.
+pub const fn mul_x(x: u128) -> u128 {
+	let msb = x >> 127;
+	let shifted = x << 1;
+	// If bit 127 was set, XOR with 0x87; the mask is all-ones when msb=1, all-zeros when msb=0.
+	shifted ^ (0x87 & msb.wrapping_neg())
+}
+
+/// Multiply an unreduced widening product (the four 64-bit limbs `[v0, v1, v2, v3]` of a 256-bit
+/// value, as returned by [`mul_wide`]) by X: a one-bit left shift of the whole 256-bit value.
+///
+/// A widening product of two GHASH elements has degree at most 254, so bit 255 is zero and the
+/// shift never overflows the four limbs — no reduction is needed here, keeping it deferred to the
+/// single [`reduce`]. Because both this shift and [`reduce`] are F2-linear, the multiply-by-X may
+/// be applied to XOR-accumulated products and reduced once.
+pub const fn mul_x_wide([v0, v1, v2, v3]: [u64; 4]) -> [u64; 4] {
+	[
+		v0 << 1,
+		(v1 << 1) | (v0 >> 63),
+		(v2 << 1) | (v1 >> 63),
+		(v3 << 1) | (v2 >> 63),
+	]
+}
+
 #[cfg(test)]
 mod tests {
 	use proptest::prelude::*;
 
 	use super::*;
 	use crate::{
-		ghash::{INV_X, ONE},
+		ghash::{INV_X, ONE, X},
 		test_utils::multiplication_tests::{
 			test_mul_associative, test_mul_commutative, test_mul_distributive,
 			test_square_equals_mul,
@@ -184,6 +211,24 @@ mod tests {
 			a in any::<u128>(),
 		) {
 			prop_assert_eq!(mul_inv_x(a), mul(a, INV_X), "mul_inv_x does not match mul by INV_X");
+		}
+
+		#[test]
+		fn test_ghash_soft64_mul_x(
+			a in any::<u128>(),
+		) {
+			prop_assert_eq!(mul_x(a), mul(a, X), "mul_x does not match mul by X");
+		}
+
+		// `mul_x_wide` on an unreduced product then `reduce` equals `mul_x` after `reduce`: both
+		// paths compute X times the represented field element (the multiply-by-X commutes with the
+		// F2-linear reduction).
+		#[test]
+		fn test_ghash_soft64_mul_x_wide(
+			a in any::<u128>(), b in any::<u128>(),
+		) {
+			let wide = mul_wide(a, b);
+			prop_assert_eq!(reduce(mul_x_wide(wide)), mul_x(reduce(wide)));
 		}
 
 

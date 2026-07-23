@@ -155,7 +155,11 @@ pub trait OpsClmul {
 	fn duplicate_hi_64(a: Self) -> Self;
 	fn swap_hi_lo_64(a: Self) -> Self;
 
-	fn extract_hi_lo_64(a: Self, b: Self) -> Self;
+	/// Concatenates `a` (high half) and `b` (low half) into a 256-bit intermediate, shifts it right
+	/// by `IMM8` bytes, and returns the low 128 bits — the `palignr` operation.
+	///
+	/// For 256-bit values, this operates on each 128-bit lane independently.
+	fn alignr_epi8<const IMM8: i32>(a: Self, b: Self) -> Self;
 
 	fn unpacklo_epi64(a: Self, b: Self) -> Self;
 

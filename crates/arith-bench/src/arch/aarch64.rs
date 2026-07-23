@@ -191,9 +191,13 @@ impl crate::underlier::OpsClmul for uint64x2_t {
 	}
 
 	#[inline]
-	fn extract_hi_lo_64(a: Self, b: Self) -> Self {
+	fn alignr_epi8<const IMM8: i32>(a: Self, b: Self) -> Self {
+		// palignr concatenates `a` (high) : `b` (low) and shifts right by IMM8 bytes, which is the
+		// low-first byte extract `vext(b, a, IMM8)`.
 		unsafe {
-			vcombine_u64(vcreate_u64(vgetq_lane_u64(a, 1)), vcreate_u64(vgetq_lane_u64(b, 0)))
+			let a_bytes: uint8x16_t = std::mem::transmute(a);
+			let b_bytes: uint8x16_t = std::mem::transmute(b);
+			std::mem::transmute::<uint8x16_t, uint64x2_t>(vextq_u8::<IMM8>(b_bytes, a_bytes))
 		}
 	}
 
@@ -261,8 +265,9 @@ mod tests {
 	use super::*;
 	use crate::{
 		ghash::{
-			INV_X, ONE, clmul::mul_inv_x as ghash_mul_inv_x, mul_clmul as ghash_mul,
-			square_clmul as ghash_square,
+			INV_X, ONE, X,
+			clmul::{mul_inv_x as ghash_mul_inv_x, mul_x as ghash_mul_x},
+			mul_clmul as ghash_mul, square_clmul as ghash_square,
 		},
 		polyval::{MONTGOMERY_ONE, mul_clmul as polyval_mul},
 		rijndael::vmull::mul as rijndael_mul,
@@ -376,6 +381,13 @@ mod tests {
 			a in arb_uint64x2_t()
 		) {
 			test_mul_by_constant(a, INV_X, ghash_mul, ghash_mul_inv_x, "GHASH");
+		}
+
+		#[test]
+		fn test_uint64x2_t_ghash_mul_x_proptest(
+			a in arb_uint64x2_t()
+		) {
+			test_mul_by_constant(a, X, ghash_mul, ghash_mul_x, "GHASH");
 		}
 
 		#[test]
