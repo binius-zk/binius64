@@ -39,6 +39,18 @@ pub trait WideMul: Sized {
 	fn reduce(wide: Self::Output) -> Self;
 }
 
+/// An unreduced widening product (a [`WideMul::Output`]) that can be scaled by the field element
+/// `X` while still unreduced.
+///
+/// Scaling by `X` and the modular reduction are both `GF(2)`-linear, and they commute:
+/// `reduce(wide.mul_x_wide()) == reduce(wide).mul_x()`. Doing the scaling on the unreduced product
+/// lets an extension-field multiply fold the `X` of its irreducible polynomial into a product it is
+/// going to reduce anyway, saving a reduction over scaling the reduced coordinate.
+pub trait MulXWide {
+	/// Returns the unreduced product scaled by `X`.
+	fn mul_x_wide(self) -> Self;
+}
+
 /// Value that can be inverted
 pub trait InvertOrZero {
 	/// Returns the inverted value or zero in case when `self` is zero

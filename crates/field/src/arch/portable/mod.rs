@@ -22,6 +22,7 @@ pub mod packed_aes_8;
 pub mod packed_ghash_128;
 pub mod packed_ghash_256;
 pub mod packed_ghash_512;
+pub mod packed_ghash_sq_256;
 
 pub(crate) mod univariate_mul_utils_128;
 

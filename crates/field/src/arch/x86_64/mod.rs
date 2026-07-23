@@ -3,6 +3,7 @@
 use cfg_if::cfg_if;
 
 pub mod arithmetic;
+pub mod packed_ghash_sq_256;
 
 #[cfg(target_feature = "gfni")]
 mod gfni;

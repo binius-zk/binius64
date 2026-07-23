@@ -12,8 +12,9 @@ use bytemuck::TransparentWrapper;
 
 use super::super::univariate_mul_utils_128::{Underlier64bLanes, Underlier128bLanes, bmul64};
 use crate::{
-	BinaryField128bGhash as GhashB128, WideMul, arch::PackedPrimitiveType,
-	arithmetic_traits::Square,
+	BinaryField128bGhash as GhashB128, WideMul,
+	arch::PackedPrimitiveType,
+	arithmetic_traits::{MulXWide, Square},
 };
 
 /// Multiply two GHASH field elements using software implementation.
@@ -116,6 +117,23 @@ impl<U: Underlier128bLanes> WideGhashProduct<U> {
 	#[inline]
 	pub fn reduce(self) -> U {
 		reduce_64(self.v0, self.v1, self.v2, self.v3)
+	}
+}
+
+impl<U: Underlier128bLanes> MulXWide for WideGhashProduct<U> {
+	/// Shifts the 256-bit schoolbook product left by one bit, carrying between the four 64-bit
+	/// limbs.
+	///
+	/// The product of two 128-bit polynomials has degree at most 254, and XOR-accumulating such
+	/// products preserves that, so the top bit of `v3` is always clear and nothing is shifted out.
+	#[inline]
+	fn mul_x_wide(self) -> Self {
+		Self {
+			v0: self.v0.shl_64(1),
+			v1: self.v1.shl_64(1) ^ self.v0.shr_64(63),
+			v2: self.v2.shl_64(1) ^ self.v1.shr_64(63),
+			v3: self.v3.shl_64(1) ^ self.v2.shr_64(63),
+		}
 	}
 }
 
@@ -222,7 +240,7 @@ impl<U: Underlier128bLanes> Square for GhashSoftMul<PackedPrimitiveType<U, Ghash
 mod tests {
 	use proptest::{prelude::any, proptest};
 
-	use super::{super::super::m128::M128, ghash_mul, ghash_wide_mul};
+	use super::{super::super::m128::M128, MulXWide, ghash_mul, ghash_wide_mul};
 
 	// Exercises the deferred wide-mul building blocks (`ghash_wide_mul` + `WideGhashProduct`) that
 	// `GhashWideMul` wraps, directly on the portable `M128`. This runs on every host, whereas the
@@ -246,6 +264,15 @@ mod tests {
 			let (a2, b2) = (M128::from(a2), M128::from(b2));
 			let acc = ghash_wide_mul(a1, b1) + ghash_wide_mul(a2, b2);
 			assert_eq!(acc.reduce(), ghash_mul(a1, b1) ^ ghash_mul(a2, b2));
+		}
+
+		// Scaling by X commutes with the reduction: scaling the unreduced product matches
+		// multiplying the reduced product by X (the field element 2).
+		#[test]
+		fn mul_x_wide_commutes_with_reduce(a in any::<u128>(), b in any::<u128>()) {
+			let (a, b) = (M128::from(a), M128::from(b));
+			let wide = ghash_wide_mul(a, b);
+			assert_eq!(wide.mul_x_wide().reduce(), ghash_mul(wide.reduce(), M128::from(2u128)));
 		}
 	}
 }

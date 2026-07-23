@@ -55,4 +55,14 @@ impl ghash::ClMulUnderlier for M512 {
 		}
 		.into()
 	}
+
+	#[inline]
+	fn shl_1_epi64(a: Self) -> Self {
+		unsafe { std::arch::x86_64::_mm512_slli_epi64::<1>(a.into()) }.into()
+	}
+
+	#[inline]
+	fn shr_63_epi64(a: Self) -> Self {
+		unsafe { std::arch::x86_64::_mm512_srli_epi64::<63>(a.into()) }.into()
+	}
 }

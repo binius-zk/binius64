@@ -76,4 +76,14 @@ impl ghash::ClMulUnderlier for M128 {
 	fn move_64_to_hi(a: Self) -> Self {
 		unsafe { std::arch::x86_64::_mm_slli_si128::<8>(a.into()) }.into()
 	}
+
+	#[inline]
+	fn shl_1_epi64(a: Self) -> Self {
+		unsafe { std::arch::x86_64::_mm_slli_epi64::<1>(a.into()) }.into()
+	}
+
+	#[inline]
+	fn shr_63_epi64(a: Self) -> Self {
+		unsafe { std::arch::x86_64::_mm_srli_epi64::<63>(a.into()) }.into()
+	}
 }

@@ -18,8 +18,9 @@ use bytemuck::TransparentWrapper;
 
 use super::super::m128::M128;
 use crate::{
-	BinaryField128bGhash as GhashB128, WideMul, arch::PackedPrimitiveType,
-	arithmetic_traits::Square,
+	BinaryField128bGhash as GhashB128, WideMul,
+	arch::PackedPrimitiveType,
+	arithmetic_traits::{MulXWide, Square},
 };
 
 // The reduction polynomial x^128 + x^7 + x^2 + x + 1 is represented as 0x87.
@@ -144,6 +145,37 @@ impl WideGhashProduct {
 	}
 }
 
+impl MulXWide for WideGhashProduct {
+	/// Shifts the represented 256-bit polynomial `lo + mid·X^64 + hi·X^128` left by one bit.
+	///
+	/// Each 64-bit lane shifts up by one; the bit leaving the top of a lane belongs 64 bit
+	/// positions higher, which — since consecutive limbs overlap by 64 bits — is the corresponding
+	/// lane of the next limb. `hi` has no limb above it, so its low lane's carry goes to its own
+	/// high lane, where rotating the lanes puts it.
+	///
+	/// Every limb is a carry-less product of 64-bit halves, so it has degree at most 126, and
+	/// XOR-accumulating such products preserves that. Bit 127 of `hi` is therefore clear, and the
+	/// bit the rotation wraps back into the low lane is zero.
+	#[inline]
+	fn mul_x_wide(self) -> Self {
+		let (v0, v1, v2): (uint64x2_t, uint64x2_t, uint64x2_t) =
+			(self.lo.into(), self.mid.into(), self.hi.into());
+
+		unsafe {
+			let (sll0, sll1, sll2) =
+				(vshlq_n_u64::<1>(v0), vshlq_n_u64::<1>(v1), vshlq_n_u64::<1>(v2));
+			let (srl0, srl1, srl2) =
+				(vshrq_n_u64::<63>(v0), vshrq_n_u64::<63>(v1), vshrq_n_u64::<63>(v2));
+
+			Self {
+				lo: sll0.into(),
+				mid: veorq_u64(sll1, srl0).into(),
+				hi: veorq_u64(veorq_u64(sll2, srl1), vextq_u64::<1>(srl2, srl2)).into(),
+			}
+		}
+	}
+}
+
 impl Add for WideGhashProduct {
 	type Output = Self;
 
@@ -212,5 +244,24 @@ impl WideMul for GhashClMulWideMul<PackedPrimitiveType<M128, GhashB128>> {
 
 	fn reduce(wide: Self::Output) -> Self {
 		Self::wrap(PackedPrimitiveType::wrap(wide.reduce()))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use proptest::{prelude::any, proptest};
+
+	use super::{M128, MulXWide, WideGhashProduct};
+
+	proptest! {
+		// Scaling by X commutes with the reduction: scaling the unreduced product matches
+		// multiplying the reduced product by X (the field element 2).
+		#[test]
+		fn mul_x_wide_commutes_with_reduce(a in any::<u128>(), b in any::<u128>()) {
+			let wide = WideGhashProduct::wide_mul(M128::from_u128(a), M128::from_u128(b));
+			let mul_x = WideGhashProduct::wide_mul(wide.reduce(), M128::from_u128(2)).reduce();
+
+			assert_eq!(wide.mul_x_wide().reduce(), mul_x);
+		}
 	}
 }

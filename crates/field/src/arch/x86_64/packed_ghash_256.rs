@@ -48,5 +48,15 @@ mod vpclmulqdq {
 		fn move_64_to_hi(a: Self) -> Self {
 			unsafe { std::arch::x86_64::_mm256_slli_si256::<8>(a.into()) }.into()
 		}
+
+		#[inline]
+		fn shl_1_epi64(a: Self) -> Self {
+			unsafe { std::arch::x86_64::_mm256_slli_epi64::<1>(a.into()) }.into()
+		}
+
+		#[inline]
+		fn shr_63_epi64(a: Self) -> Self {
+			unsafe { std::arch::x86_64::_mm256_srli_epi64::<63>(a.into()) }.into()
+		}
 	}
 }

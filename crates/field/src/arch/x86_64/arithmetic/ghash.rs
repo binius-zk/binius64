@@ -14,8 +14,10 @@ use std::{
 use bytemuck::TransparentWrapper;
 
 use crate::{
-	BinaryField128bGhash as GhashB128, Divisible, WideMul, arch::PackedPrimitiveType,
-	arithmetic_traits::Square, underlier::UnderlierType,
+	BinaryField128bGhash as GhashB128, Divisible, WideMul,
+	arch::PackedPrimitiveType,
+	arithmetic_traits::{MulXWide, Square},
+	underlier::UnderlierType,
 };
 
 /// Trait for underliers that support CLMUL operations which are needed for the
@@ -31,6 +33,13 @@ pub trait ClMulUnderlier: UnderlierType + Divisible<u128> {
 	/// For each 128-bit lane, shifts the lower 64 bits to the upper 64 bits and zeroes the lower
 	/// 64-bit.
 	fn move_64_to_hi(a: Self) -> Self;
+
+	/// For each 64-bit lane, shifts the value left by one bit.
+	fn shl_1_epi64(a: Self) -> Self;
+
+	/// For each 64-bit lane, shifts the value right by 63 bits, leaving the lane's top bit as its
+	/// low bit.
+	fn shr_63_epi64(a: Self) -> Self;
 }
 
 /// The version of the multiplication for optimized suqare operation.
@@ -134,6 +143,32 @@ impl<U: ClMulUnderlier> WideGhashProduct<U> {
 	}
 }
 
+impl<U: ClMulUnderlier> MulXWide for WideGhashProduct<U> {
+	/// Shifts the represented 256-bit polynomial `lo + mid·X^64 + hi·X^128` left by one bit.
+	///
+	/// Each 64-bit lane shifts up by one; the bit leaving the top of a lane belongs 64 bit
+	/// positions higher, which — since consecutive limbs overlap by 64 bits — is the corresponding
+	/// lane of the next limb. `hi` has no limb above it, so its low lane's carry moves to its own
+	/// high lane.
+	///
+	/// Every limb is a carry-less product of 64-bit halves, so it has degree at most 126, and
+	/// XOR-accumulating such products preserves that. Bit 127 of `hi` is therefore clear and
+	/// nothing is shifted out of the top.
+	#[inline]
+	fn mul_x_wide(self) -> Self {
+		let (shl_lo, shl_mid, shl_hi) =
+			(U::shl_1_epi64(self.lo), U::shl_1_epi64(self.mid), U::shl_1_epi64(self.hi));
+		let (carry_lo, carry_mid, carry_hi) =
+			(U::shr_63_epi64(self.lo), U::shr_63_epi64(self.mid), U::shr_63_epi64(self.hi));
+
+		Self {
+			lo: shl_lo,
+			mid: shl_mid ^ carry_lo,
+			hi: shl_hi ^ carry_mid ^ U::move_64_to_hi(carry_hi),
+		}
+	}
+}
+
 impl<U: ClMulUnderlier> Add for WideGhashProduct<U> {
 	type Output = Self;
 
@@ -207,9 +242,40 @@ impl<U: ClMulUnderlier> WideMul for GhashClMulWideMul<PackedPrimitiveType<U, Gha
 
 #[cfg(test)]
 mod tests {
-	use rand::{SeedableRng, rngs::StdRng};
+	use rand::{Rng, SeedableRng, rngs::StdRng};
 
-	use crate::{Random, WideMul, arch::OptimalPackedB128};
+	use super::{ClMulUnderlier, WideGhashProduct};
+	use crate::{Divisible, Random, WideMul, arch::OptimalPackedB128, arithmetic_traits::MulXWide};
+
+	/// Scaling by X commutes with the reduction: scaling the unreduced product matches multiplying
+	/// the reduced product by X (the field element 2) in every 128-bit lane.
+	#[allow(dead_code)]
+	fn check_mul_x_wide<U: ClMulUnderlier>(mut rng: impl Rng) {
+		let x = <U as Divisible<u128>>::broadcast(2);
+
+		for _ in 0..64 {
+			let wide = WideGhashProduct::wide_mul(U::random(&mut rng), U::random(&mut rng));
+
+			assert_eq!(
+				wide.mul_x_wide().reduce(),
+				WideGhashProduct::wide_mul(wide.reduce(), x).reduce()
+			);
+		}
+	}
+
+	// Covers every CLMUL underlier width the target supports, since the `MulXWide` impl is shared
+	// but its per-lane shift is not.
+	#[cfg(target_feature = "pclmulqdq")]
+	#[test]
+	fn mul_x_wide_commutes_with_reduce() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		check_mul_x_wide::<crate::arch::x86_64::m128::M128>(&mut rng);
+		#[cfg(all(target_feature = "avx2", target_feature = "vpclmulqdq"))]
+		check_mul_x_wide::<crate::arch::x86_64::m256::M256>(&mut rng);
+		#[cfg(all(target_feature = "avx512f", target_feature = "vpclmulqdq"))]
+		check_mul_x_wide::<crate::arch::x86_64::m512::M512>(&mut rng);
+	}
 
 	/// Stress-test accumulation of many widening products. Correctness / linearity for each
 	/// individual packed width is covered by the proptest suite in `packed_ghash.rs`.
