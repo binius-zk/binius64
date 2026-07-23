@@ -1,8 +1,7 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
-
-use crate::multiplexer::single_wire_multiplex;
 
 /// Base64 encoding (URL-safe, without trailing padding characters) encoding verification.
 ///
@@ -146,7 +145,6 @@ fn verify_base64_group(
 	len_bytes: Wire,
 	group_idx: usize,
 ) {
-	let char_lookup_table = build_base64_char_lookup_table(builder);
 	let base_byte_idx = group_idx * 3;
 	let base_char_idx = group_idx * 4;
 
@@ -171,10 +169,10 @@ fn verify_base64_group(
 	let val3 = extract_6bit_value_3(builder, byte2);
 
 	// Convert 6-bit values to base64 encoded chars
-	let expected_char0 = compute_expected_base64_char(builder, val0, &char_lookup_table);
-	let expected_char1 = compute_expected_base64_char(builder, val1, &char_lookup_table);
-	let expected_char2 = compute_expected_base64_char(builder, val2, &char_lookup_table);
-	let expected_char3 = compute_expected_base64_char(builder, val3, &char_lookup_table);
+	let expected_char0 = compute_expected_base64_char(builder, val0);
+	let expected_char1 = compute_expected_base64_char(builder, val1);
+	let expected_char2 = compute_expected_base64_char(builder, val2);
+	let expected_char3 = compute_expected_base64_char(builder, val3);
 
 	// Extract 4 base64 characters
 	let actual_char0 = extract_byte(builder, encoded, base_char_idx);
@@ -251,7 +249,7 @@ fn verify_base64_char(
 	);
 }
 
-/// Builds a character lookup table for base64 URL-safe encoding.
+/// Computes the expected base64 URL-safe character for a 6-bit value.
 ///
 /// # Base64 URL-Safe Mapping
 ///
@@ -260,35 +258,49 @@ fn verify_base64_char(
 /// - 52-61: '0'-'9' (48-57)
 /// - 62: '-' (45) [URL-safe variant]
 /// - 63: '_' (95) [URL-safe variant]
-fn build_base64_char_lookup_table(builder: &CircuitBuilder) -> Vec<Wire> {
-	(0..64u64)
-		.map(|i| {
-			let char_val = match i {
-				0..=25 => b'A' + i as u8,
-				26..=51 => b'a' + (i - 26) as u8,
-				52..=61 => b'0' + (i - 52) as u8,
-				62 => b'-', // URL-safe: minus instead of plus
-				63 => b'_', // URL-safe: underscore instead of slash
-				_ => unreachable!(),
-			};
-			builder.add_constant_64(char_val as u64)
-		})
-		.collect()
-}
-
-/// Computes the expected base64 character for a 6-bit value using the provided lookup table.
 ///
 /// # Arguments
 ///
 /// * `builder` - Circuit builder
 /// * `six_bit_val` - The 6-bit value to encode (0-63)
-/// * `char_lookup_table` - base64 character encoding lookup table
-fn compute_expected_base64_char(
-	builder: &CircuitBuilder,
-	six_bit_val: Wire,
-	char_lookup_table: &[Wire],
-) -> Wire {
-	single_wire_multiplex(builder, char_lookup_table, six_bit_val)
+///
+/// # Preconditions
+///
+/// `six_bit_val` must be at most 63. Every caller derives it by masking or shifting a byte, so
+/// the range holds by construction; a wider value would run off the end of the alphabet.
+///
+/// # Implementation Details
+///
+/// The alphabet is affine on each of its ranges, so the character follows from three range
+/// checks and one addition, costing 11 AND constraints. Reading the mapping out of a 64-entry
+/// constant table with a multiplexer instead costs 70.
+fn compute_expected_base64_char(builder: &CircuitBuilder, six_bit_val: Wire) -> Wire {
+	let is_lowercase = builder.icmp_uge(six_bit_val, builder.add_constant_64(26));
+	let is_digit = builder.icmp_uge(six_bit_val, builder.add_constant_64(52));
+	let is_symbol = builder.icmp_uge(six_bit_val, builder.add_constant_64(62));
+
+	// Each range adds a fixed offset to the value. The digit offset is the byte-sized
+	// representation of -4, so its sum carries out of the low byte and is truncated below.
+	let offset = builder.select(
+		is_lowercase,
+		builder.add_constant_64(b'a' as u64 - 26),
+		builder.add_constant_64(b'A' as u64),
+	);
+	let offset = builder.select(is_digit, builder.add_constant_64(0xfc), offset);
+
+	// The digit offset carries out of the low byte, so the sum is masked back down to one.
+	let sum = builder.iadd_32(six_bit_val, offset);
+	let alphanumeric = builder.band(sum, builder.add_constant_64(0xff));
+
+	// The two symbols are told apart by the low bit of the value, moved into the MSB that
+	// `select` reads as its condition.
+	let symbol = builder.select(
+		builder.shl(six_bit_val, 63),
+		builder.add_constant_64(b'_' as u64),
+		builder.add_constant_64(b'-' as u64),
+	);
+
+	builder.select(is_symbol, symbol, alphanumeric)
 }
 
 #[cfg(test)]
@@ -404,6 +416,49 @@ mod tests {
 		let input = b"ABC";
 		let invalid_base64 = b"XXXX"; // Invalid base64 for "ABC"
 		assert_base64_failure(input, invalid_base64, 15);
+	}
+
+	/// Packs `0..64` as consecutive 6-bit groups, most significant bit first, so that the base64
+	/// encoding of the result is the alphabet in order.
+	fn all_six_bit_values() -> Vec<u8> {
+		let mut bytes = vec![0u8; 48];
+		for value in 0..64usize {
+			for k in 0..6 {
+				if (value >> (5 - k)) & 1 == 1 {
+					let bit_index = value * 6 + k;
+					bytes[bit_index / 8] |= 1 << (7 - bit_index % 8);
+				}
+			}
+		}
+		bytes
+	}
+
+	#[test]
+	fn test_every_alphabet_index() {
+		const BASE64_CHARS: &[u8] =
+			b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+		let input = all_six_bit_values();
+		let encoded = encode_base64(&input);
+		assert_eq!(encoded, BASE64_CHARS, "fixture must cover every alphabet index");
+
+		// The circuit derives each character from the decoded bytes and asserts it against the
+		// encoded ones, so this accepts only if all 64 indices map to the right character.
+		check_base64_encoding(&input, &encoded, 48).unwrap();
+	}
+
+	#[test]
+	fn test_every_alphabet_index_rejects_wrong_character() {
+		let input = all_six_bit_values();
+		let encoded = encode_base64(&input);
+
+		// Corrupting one character at a time proves no index is left unchecked.
+		for position in 0..encoded.len() {
+			let mut corrupted = encoded.clone();
+			// Flipping the low bit always lands on a different character.
+			corrupted[position] ^= 1;
+			assert_base64_failure(&input, &corrupted, 48);
+		}
 	}
 
 	#[test]
