@@ -1,28 +1,40 @@
 // Copyright 2026 The Binius Developers
 
-//! Packed [`GhashSq256b`] in a sliced (struct-of-arrays) layout.
+//! Packed [`GhashSq256b`] in two layouts: sliced (struct-of-arrays) and interleaved
+//! (array-of-structs).
 //!
 //! [`GhashSq256b`] is the degree-two extension `a + b·Y` of the GHASH field, with `Y² = X·Y + X`.
-//! The packings here store the `a` and `b` coordinates of every lane in two separate packed GHASH
-//! registers via [`SlicedPackedField`], so a batch multiply runs as three packed GHASH multiplies
-//! over the whole batch (Karatsuba over `Y`) rather than a schoolbook product per element.
+//! Both layouts reduce a batch multiply to three packed GHASH multiplies (Karatsuba over `Y`)
+//! rather than a schoolbook product per element, and both defer the GHASH reductions and the
+//! multiply-by-`X` — all `GF(2)`-linear — so an inner product reduces once at the end.
 //!
-//! Only the field arithmetic lives here: a widening multiply ([`WideMul`]) with a deferred
-//! reduction, plus [`Square`] and [`InvertOrZero`]. `Mul` and the rest of the [`PackedField`]
-//! surface are provided generically by [`SlicedPackedField`]. The coordinate register is a
-//! [`PackedPrimitiveType`], so the reduction scales by `X` with a per-lane bit shift
-//! ([`ghash_mul_x`]) rather than a full field multiply, and the batch costs three GHASH
-//! multiplies, not four.
+//! - The **sliced** packings ([`SlicedGhashSq256b`]) store the `a` and `b` coordinates of every
+//!   lane in two separate packed GHASH registers via [`SlicedPackedField`]; `Mul` and the rest of
+//!   the [`PackedField`] surface come generically from [`SlicedPackedField`].
+//! - The **interleaved** packings ([`PackedGhashSq1x256b`] / [`PackedGhashSq2x256b`], i.e.
+//!   `PackedPrimitiveType<M256/M512, GhashSq256b>`) store each scalar as one contiguous 256-bit
+//!   value — the same layout as the scalar field. The width-one packing carries the field
+//!   arithmetic (and the scalar [`GhashSq256b`] derives its own from it), while the width-two
+//!   packing divides into two width-one lanes.
+//!
+//! In both, the coordinate register is a [`PackedPrimitiveType`], so the multiply-by-`X` in the
+//! reduction is a per-lane bit shift ([`ghash_mul_x`]) rather than a full field multiply.
 
 use std::{
 	iter::Sum,
 	ops::{Add, AddAssign, Sub, SubAssign},
 };
 
+use bytemuck::TransparentWrapper;
+
 use crate::{
-	BinaryField128bGhash, Divisible, GhashSq256b, PackedField, WideMul,
-	arch::{M128, M256, M512, PackedPrimitiveType},
+	BinaryField128bGhash, Divisible, GhashSq256b, PackedBinaryGhash2x128b, PackedField, WideMul,
+	arch::{
+		Divide, M128, M256, M512, MulFromWideMul, PackedPrimitiveType,
+		portable::packed_macros::{portable_macros::*, *},
+	},
 	arithmetic_traits::{InvertOrZero, Square},
+	cast_base, cast_ext,
 	sliced_packed_field::SlicedPackedField,
 	underlier::{UnderlierType, WithUnderlier},
 };
@@ -200,6 +212,187 @@ where
 		Self::from_coords([(a + mul_x(b)) * norm_inv, b * norm_inv])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Interleaved (array-of-structs) packings: `PackedPrimitiveType<M256/M512, GhashSq256b>`.
+//
+// Unlike the sliced packings above, these store each GHASH² scalar as one contiguous 256-bit value
+// (low 128 bits = coefficient of `1`, high 128 bits = coefficient of `Y`) — the same layout as the
+// scalar `GhashSq256b`. The width-one M256 packing carries the field arithmetic (the scalar field
+// derives its own `Mul`/`Square`/`InvertOrZero`/`WideMul` from it via `binary_field!`); the
+// width-two M512 packing divides into two independent M256 lanes.
+// ---------------------------------------------------------------------------
+
+/// The two unreduced GHASH products `[a·e, b·f]` batched into one packed widening multiply.
+type DiagWide = <PackedBinaryGhash2x128b as WideMul>::Output;
+/// The single unreduced GHASH cross product `(a+b)·(e+f)` from a scalar widening multiply.
+type CrossWide = <BinaryField128bGhash as WideMul>::Output;
+
+/// The unreduced product of two [`PackedGhashSq1x256b`] elements.
+///
+/// Holds the three GHASH widening products of the Karatsuba decomposition over `Y`, deferring both
+/// the GHASH reductions and the multiply-by-`X` — all `GF(2)`-linear — so an inner product over
+/// GHASH² accumulates these by XOR and reduces only once at the end.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct WideGhashSqProduct {
+	/// Unreduced `[a·e, b·f]`, the diagonal Karatsuba products in their two packed GHASH lanes.
+	diag: DiagWide,
+	/// Unreduced `(a+b)·(e+f)`, the Karatsuba cross product.
+	cross: CrossWide,
+}
+
+impl Add for WideGhashSqProduct {
+	type Output = Self;
+
+	#[inline]
+	fn add(self, rhs: Self) -> Self {
+		Self {
+			diag: self.diag + rhs.diag,
+			cross: self.cross + rhs.cross,
+		}
+	}
+}
+
+impl AddAssign for WideGhashSqProduct {
+	#[inline]
+	fn add_assign(&mut self, rhs: Self) {
+		self.diag += rhs.diag;
+		self.cross += rhs.cross;
+	}
+}
+
+impl Sub for WideGhashSqProduct {
+	type Output = Self;
+
+	#[inline]
+	fn sub(self, rhs: Self) -> Self {
+		Self {
+			diag: self.diag - rhs.diag,
+			cross: self.cross - rhs.cross,
+		}
+	}
+}
+
+impl SubAssign for WideGhashSqProduct {
+	#[inline]
+	fn sub_assign(&mut self, rhs: Self) {
+		self.diag -= rhs.diag;
+		self.cross -= rhs.cross;
+	}
+}
+
+impl Sum for WideGhashSqProduct {
+	#[inline]
+	fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+		iter.fold(Self::default(), |acc, x| acc + x)
+	}
+}
+
+/// [`WideMul`] strategy for [`PackedGhashSq1x256b`]: the `mul_m256i_hybrid` algorithm.
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct GhashSqWideMul<T>(T);
+
+impl WideMul for GhashSqWideMul<PackedGhashSq1x256b> {
+	type Output = WideGhashSqProduct;
+
+	#[inline]
+	fn wide_mul(a: Self, b: Self) -> Self::Output {
+		let a = cast_base::<BinaryField128bGhash, _>(Self::peel(a));
+		let b = cast_base::<BinaryField128bGhash, _>(Self::peel(b));
+
+		// Diagonal `[a·e, b·f]` as one two-lane packed widening multiply — a single 256-bit
+		// VPCLMUL on AVX2, two 128-bit PMULL on aarch64 via the scaled `M256`.
+		let diag = PackedBinaryGhash2x128b::wide_mul(a, b);
+		// Karatsuba cross product `(a+b)·(e+f)` as a scalar widening multiply.
+		let cross = BinaryField128bGhash::wide_mul(a.get(0) + a.get(1), b.get(0) + b.get(1));
+
+		WideGhashSqProduct { diag, cross }
+	}
+
+	#[inline]
+	fn reduce(wide: Self::Output) -> Self {
+		// Reduce the batched diagonal back to `t_0 = a·e`, `t_2 = b·f`, and the cross to `t_1`.
+		let diag = PackedBinaryGhash2x128b::reduce(wide.diag);
+		let t0 = diag.get(0);
+		let t2 = diag.get(1);
+		let t1 = BinaryField128bGhash::reduce(wide.cross);
+
+		// Fold `Y² = X·Y + X`, recovering the cross term as `t_1 + t_0 + t_2`:
+		// `z_0 = t_0 + X·t_2`, `z_1 = (t_1 + t_0 + t_2) + X·t_2 = z_0 + t_1 + t_2`.
+		let z0 = t0 + t2.mul_x();
+		Self::wrap(cast_ext::<BinaryField128bGhash, _>(PackedBinaryGhash2x128b::from_scalars([
+			z0,
+			z0 + t1 + t2,
+		])))
+	}
+}
+
+/// [`Square`] strategy for [`PackedGhashSq1x256b`].
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct GhashSqSquare<T>(T);
+
+impl Square for GhashSqSquare<PackedGhashSq1x256b> {
+	/// `(a + b·Y)² = (a² + X·b²) + (X·b²)·Y` — the cross term vanishes in characteristic two.
+	#[inline]
+	fn square(self) -> Self {
+		let sq = Square::square(cast_base::<BinaryField128bGhash, _>(Self::peel(self)));
+
+		let x_t2 = sq.get(1).mul_x();
+		Self::wrap(cast_ext::<BinaryField128bGhash, _>(PackedBinaryGhash2x128b::from_scalars([
+			sq.get(0) + x_t2,
+			x_t2,
+		])))
+	}
+}
+
+/// [`InvertOrZero`] strategy for [`PackedGhashSq1x256b`].
+#[repr(transparent)]
+#[derive(TransparentWrapper)]
+pub struct GhashSqInvert<T>(T);
+
+impl InvertOrZero for GhashSqInvert<PackedGhashSq1x256b> {
+	/// Inverts through the norm: conjugate `ū = (a + X·b) + b·Y` (the roots of `Y² + X·Y + X` sum
+	/// to `X` and multiply to `X`), norm `N = a² + X·b·(a + b)`, and `u⁻¹ = ū·N⁻¹`.
+	#[inline]
+	fn invert_or_zero(self) -> Self {
+		let coords = cast_base::<BinaryField128bGhash, _>(Self::peel(self));
+		let a = coords.get(0);
+		let b = coords.get(1);
+
+		let norm = Square::square(a) + (a * b + Square::square(b)).mul_x();
+		let norm_inv = norm.invert_or_zero();
+
+		Self::wrap(cast_ext::<BinaryField128bGhash, _>(PackedBinaryGhash2x128b::from_scalars([
+			(a + b.mul_x()) * norm_inv,
+			b * norm_inv,
+		])))
+	}
+}
+
+/// [`Divide`] strategy specializing the width-two M512 packing into two width-one M256 lanes.
+type GhashSqDivide2x<T> = Divide<M256, T, 2>;
+
+define_packed_binary_field!(
+	PackedGhashSq1x256b,
+	GhashSq256b,
+	M256,
+	(MulFromWideMul),
+	(GhashSqSquare),
+	(GhashSqInvert),
+	(GhashSqWideMul)
+);
+
+define_packed_binary_field!(
+	PackedGhashSq2x256b,
+	GhashSq256b,
+	M512,
+	(MulFromWideMul),
+	(GhashSqDivide2x),
+	(GhashSqDivide2x),
+	(GhashSqDivide2x)
+);
 
 #[cfg(test)]
 mod tests {
@@ -391,4 +584,9 @@ mod tests {
 	width_tests!(width1, SlicedGhashSq1x256b);
 	width_tests!(width2, SlicedGhashSq2x256b);
 	width_tests!(width4, SlicedGhashSq4x256b);
+
+	// The interleaved `PackedPrimitiveType` packings must agree lane-by-lane with the same scalar
+	// reference field as the sliced packings above.
+	width_tests!(packed_width1, PackedGhashSq1x256b);
+	width_tests!(packed_width2, PackedGhashSq2x256b);
 }
