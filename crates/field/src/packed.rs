@@ -11,10 +11,7 @@ use std::{
 	ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign},
 };
 
-use binius_utils::{
-	iter::IterExtensions,
-	random_access_sequence::{RandomAccessSequence, RandomAccessSequenceMut},
-};
+use binius_utils::iter::IterExtensions;
 use bytemuck::Zeroable;
 
 use super::{Random, arithmetic_traits::Square};
@@ -208,24 +205,6 @@ pub trait PackedField:
 	}
 }
 
-/// Iterate over scalar values in a packed field slice.
-///
-/// The iterator skips the first `offset` elements. This is more efficient than skipping elements of
-/// the iterator returned.
-#[inline]
-pub fn iter_packed_slice_with_offset<P: PackedField>(
-	packed: &[P],
-	offset: usize,
-) -> impl Iterator<Item = P::Scalar> + '_ + Send {
-	let (packed, offset): (&[P], usize) = if offset < packed.len() * P::WIDTH {
-		(&packed[(offset / P::WIDTH)..], offset % P::WIDTH)
-	} else {
-		(&[], 0)
-	};
-
-	P::iter_slice(packed).skip(offset)
-}
-
 #[inline(always)]
 pub fn get_packed_slice<P: PackedField>(packed: &[P], i: usize) -> P::Scalar {
 	assert!(i >> P::LOG_WIDTH < packed.len(), "index out of bounds");
@@ -241,8 +220,8 @@ pub unsafe fn get_packed_slice_unchecked<P: PackedField>(packed: &[P], i: usize)
 	// TODO: Consider putting a get_in_slice method on Divisible
 
 	// Safety:
-	// - `i / P::WIDTH` is within the bounds of `packed` if `i` is less than
-	//   `len_packed_slice(packed)`
+	// - `i / P::WIDTH` is within the bounds of `packed` if `i` is less than `P::WIDTH *
+	//   packed.len()`
 	// - `i % P::WIDTH` is always less than `P::WIDTH
 	unsafe {
 		packed
@@ -262,93 +241,13 @@ pub unsafe fn set_packed_slice_unchecked<P: PackedField>(
 ) {
 	// TODO: Consider putting a set_in_slice method on Divisible
 
-	// Safety: if `i` is less than `len_packed_slice(packed)`, then
+	// Safety: if `i` is less than `P::WIDTH * packed.len()`, then
 	// - `i / P::WIDTH` is within the bounds of `packed`
 	// - `i % P::WIDTH` is always less than `P::WIDTH
 	unsafe {
 		packed
 			.get_unchecked_mut(i >> P::LOG_WIDTH)
 			.set_unchecked(i % P::WIDTH, scalar)
-	}
-}
-
-#[inline(always)]
-pub const fn len_packed_slice<P: PackedField>(packed: &[P]) -> usize {
-	packed.len() << P::LOG_WIDTH
-}
-
-/// A slice of packed field elements as a collection of scalars.
-#[derive(Clone)]
-pub struct PackedSlice<'a, P: PackedField> {
-	slice: &'a [P],
-	len: usize,
-}
-
-impl<'a, P: PackedField> PackedSlice<'a, P> {
-	#[inline(always)]
-	pub const fn new(slice: &'a [P]) -> Self {
-		Self {
-			slice,
-			len: len_packed_slice(slice),
-		}
-	}
-
-	#[inline(always)]
-	pub fn new_with_len(slice: &'a [P], len: usize) -> Self {
-		assert!(len <= len_packed_slice(slice));
-
-		Self { slice, len }
-	}
-}
-
-impl<P: PackedField> RandomAccessSequence<P::Scalar> for PackedSlice<'_, P> {
-	#[inline(always)]
-	fn len(&self) -> usize {
-		self.len
-	}
-
-	#[inline(always)]
-	unsafe fn get_unchecked(&self, index: usize) -> P::Scalar {
-		unsafe { get_packed_slice_unchecked(self.slice, index) }
-	}
-}
-
-/// A mutable slice of packed field elements as a collection of scalars.
-pub struct PackedSliceMut<'a, P: PackedField> {
-	slice: &'a mut [P],
-	len: usize,
-}
-
-impl<'a, P: PackedField> PackedSliceMut<'a, P> {
-	#[inline(always)]
-	pub const fn new(slice: &'a mut [P]) -> Self {
-		let len = len_packed_slice(slice);
-		Self { slice, len }
-	}
-
-	#[inline(always)]
-	pub fn new_with_len(slice: &'a mut [P], len: usize) -> Self {
-		assert!(len <= len_packed_slice(slice));
-
-		Self { slice, len }
-	}
-}
-
-impl<P: PackedField> RandomAccessSequence<P::Scalar> for PackedSliceMut<'_, P> {
-	#[inline(always)]
-	fn len(&self) -> usize {
-		self.len
-	}
-
-	#[inline(always)]
-	unsafe fn get_unchecked(&self, index: usize) -> P::Scalar {
-		unsafe { get_packed_slice_unchecked(self.slice, index) }
-	}
-}
-impl<P: PackedField> RandomAccessSequenceMut<P::Scalar> for PackedSliceMut<'_, P> {
-	#[inline(always)]
-	unsafe fn set_unchecked(&mut self, index: usize, value: P::Scalar) {
-		unsafe { set_packed_slice_unchecked(self.slice, index, value) }
 	}
 }
 
@@ -359,12 +258,10 @@ impl<PT> PackedBinaryField for PT where PT: PackedField<Scalar: BinaryField> {}
 
 #[cfg(test)]
 mod tests {
-	use itertools::Itertools;
 	use rand::prelude::*;
 
-	use super::*;
 	use crate::{
-		AESTowerField8b, BinaryField1b, BinaryField128bGhash, Field, PackedAESBinaryField1x8b,
+		AESTowerField8b, BinaryField1b, BinaryField128bGhash, PackedAESBinaryField1x8b,
 		PackedAESBinaryField16x8b, PackedAESBinaryField32x8b, PackedAESBinaryField64x8b,
 		PackedBinaryField1x1b, PackedBinaryField2x1b, PackedBinaryField4x1b, PackedBinaryField8x1b,
 		PackedBinaryField16x1b, PackedBinaryField32x1b, PackedBinaryField64x1b,
@@ -429,30 +326,6 @@ mod tests {
 		assert!(iter.next().is_none());
 	}
 
-	fn check_slice_iteration<P: PackedField>(mut rng: impl Rng) {
-		for len in [0, 1, 5] {
-			let packed = std::iter::repeat_with(|| P::random(&mut rng))
-				.take(len)
-				.collect::<Vec<_>>();
-
-			let elements_count = len * P::WIDTH;
-			for offset in [
-				0,
-				1,
-				rng.random_range(0..elements_count.max(1)),
-				elements_count.saturating_sub(1),
-				elements_count,
-			] {
-				let actual = iter_packed_slice_with_offset(&packed, offset).collect::<Vec<_>>();
-				let expected = (offset..elements_count)
-					.map(|i| get_packed_slice(&packed, i))
-					.collect::<Vec<_>>();
-
-				assert_eq!(actual, expected);
-			}
-		}
-	}
-
 	struct PackedFieldIterationTest;
 
 	impl PackedFieldTest for PackedFieldIterationTest {
@@ -461,80 +334,11 @@ mod tests {
 
 			check_value_iteration::<P>(&mut rng);
 			check_ref_iteration::<P>(&mut rng);
-			check_slice_iteration::<P>(&mut rng);
 		}
 	}
 
 	#[test]
 	fn test_iteration() {
 		run_for_all_packed_fields(&PackedFieldIterationTest);
-	}
-
-	fn check_collection<F: Field>(collection: &impl RandomAccessSequence<F>, expected: &[F]) {
-		assert_eq!(collection.len(), expected.len());
-
-		for (i, v) in expected.iter().enumerate() {
-			assert_eq!(&collection.get(i), v);
-			assert_eq!(&unsafe { collection.get_unchecked(i) }, v);
-		}
-	}
-
-	fn check_collection_get_set<F: Field>(
-		collection: &mut impl RandomAccessSequenceMut<F>,
-		random: &mut impl FnMut() -> F,
-	) {
-		for i in 0..collection.len() {
-			let value = random();
-			collection.set(i, value);
-			assert_eq!(collection.get(i), value);
-			assert_eq!(unsafe { collection.get_unchecked(i) }, value);
-		}
-	}
-
-	#[test]
-	fn check_packed_slice() {
-		let slice: &[PackedAESBinaryField16x8b] = &[];
-		let packed_slice = PackedSlice::new(slice);
-		check_collection(&packed_slice, &[]);
-		let packed_slice = PackedSlice::new_with_len(slice, 0);
-		check_collection(&packed_slice, &[]);
-
-		let mut rng = StdRng::seed_from_u64(0);
-		let slice: &[PackedAESBinaryField16x8b] = &[
-			PackedAESBinaryField16x8b::random(&mut rng),
-			PackedAESBinaryField16x8b::random(&mut rng),
-		];
-		let packed_slice = PackedSlice::new(slice);
-		check_collection(&packed_slice, &PackedField::iter_slice(slice).collect_vec());
-
-		let packed_slice = PackedSlice::new_with_len(slice, 3);
-		check_collection(&packed_slice, &PackedField::iter_slice(slice).take(3).collect_vec());
-	}
-
-	#[test]
-	fn check_packed_slice_mut() {
-		let mut rng = StdRng::seed_from_u64(0);
-		let mut random = || AESTowerField8b::random(&mut rng);
-
-		let slice: &mut [PackedAESBinaryField16x8b] = &mut [];
-		let packed_slice = PackedSliceMut::new(slice);
-		check_collection(&packed_slice, &[]);
-		let packed_slice = PackedSliceMut::new_with_len(slice, 0);
-		check_collection(&packed_slice, &[]);
-
-		let mut rng = StdRng::seed_from_u64(0);
-		let slice: &mut [PackedAESBinaryField16x8b] = &mut [
-			PackedAESBinaryField16x8b::random(&mut rng),
-			PackedAESBinaryField16x8b::random(&mut rng),
-		];
-		let values = PackedField::iter_slice(slice).collect_vec();
-		let mut packed_slice = PackedSliceMut::new(slice);
-		check_collection(&packed_slice, &values);
-		check_collection_get_set(&mut packed_slice, &mut random);
-
-		let values = PackedField::iter_slice(slice).collect_vec();
-		let mut packed_slice = PackedSliceMut::new_with_len(slice, 3);
-		check_collection(&packed_slice, &values[..3]);
-		check_collection_get_set(&mut packed_slice, &mut random);
 	}
 }
