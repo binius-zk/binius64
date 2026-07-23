@@ -72,8 +72,10 @@ pub fn float64_add(builder: &CircuitBuilder, a: Wire, b: Wire) -> Wire {
 	// Subnormal regime if:
 	//   - we were below 1 (exp_lt_1), OR
 	//   - base exponent == 1 and the integer bit (bit 63) is 0 (no hidden 1)
-	let msb01 = bit_lsb(builder, sig_round_base, 63); // 0/1
-	let msb_is_zero = builder.icmp_eq(msb01, zero(builder)); // MSB-bool
+	// `bnot` already carries the negated integer bit in the MSB, and every consumer
+	// below reads only the MSB, so extracting bit 63 and comparing it against zero
+	// would spend two AND constraints for nothing.
+	let msb_is_zero = builder.bnot(sig_round_base); // MSB-bool
 	let base_is_one = builder.icmp_eq(exp_round_base, one(builder));
 	let in_sub_regime = builder.bor(exp_lt_1, builder.band(base_is_one, msb_is_zero));
 	let stayed_sub_mask = builder.band(in_sub_regime, builder.bnot(mant_overflow_mask));
@@ -158,10 +160,9 @@ fn fp64_order_by_exp(
 fn fp64_align_with_sticky(b: &CircuitBuilder, sig_b: Wire, d: Wire) -> Wire {
 	let (mut v, sticky) = var_shr_with_sticky(b, sig_b, d, true);
 
-	let one_const = one(b);
-	let keep = b.bnot(one_const); // ~1 = clear bit0
-	let bit0 = b.bor(b.band(v, one_const), b.band(sticky, one_const));
-	v = b.bor(b.band(v, keep), bit0);
+	// (v & ~1) | (v & 1) | (sticky & 1) == v | (sticky & 1): the fold only ever
+	// sets bit 0, so clearing it first is dead work.
+	v = b.bor(v, b.band(sticky, one(b)));
 	v
 }
 
