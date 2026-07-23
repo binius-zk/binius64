@@ -7,6 +7,7 @@
 //!
 //! The extension is defined by the irreducible polynomial Y^2 + X*Y + X over the GHASH field.
 
+#[cfg(target_arch = "aarch64")]
 pub mod aarch64;
 pub mod sliced;
 pub mod soft64;

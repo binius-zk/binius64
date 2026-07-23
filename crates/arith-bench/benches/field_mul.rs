@@ -976,7 +976,7 @@ fn bench_ghash_sq(c: &mut Criterion) {
 		);
 	}
 
-	// Benchmark uint64x2_t (AARCH64 NEON)
+	// Benchmark poly64x2_t (AARCH64 NEON)
 	#[cfg(all(
 		target_arch = "aarch64",
 		target_feature = "neon",
@@ -985,8 +985,8 @@ fn bench_ghash_sq(c: &mut Criterion) {
 	{
 		run_mul_benchmark(
 			&mut group,
-			"aarch64::mul_sliced::uint64x2_t",
-			ghash_sq::aarch64::mul_sliced::<uint64x2_t>,
+			"aarch64::mul_sliced",
+			ghash_sq::aarch64::mul_sliced,
 			&mut rng,
 			256,
 		);
@@ -1146,8 +1146,8 @@ fn bench_ghash_sq_inner_product(c: &mut Criterion) {
 	{
 		run_inner_product_benchmark(
 			&mut group,
-			"aarch64::mul_sliced::<uint64x2_t>",
-			ghash_sq::aarch64::mul_sliced::<uint64x2_t>,
+			"aarch64::mul_sliced",
+			ghash_sq::aarch64::mul_sliced,
 			&mut rng,
 			LOG_LEN,
 			128,
@@ -1155,8 +1155,8 @@ fn bench_ghash_sq_inner_product(c: &mut Criterion) {
 
 		run_inner_product_benchmark(
 			&mut group,
-			"aarch64::mul_wide_sliced::<uint64x2_t>",
-			ghash_sq::aarch64::mul_wide_sliced::<uint64x2_t>,
+			"aarch64::mul_wide_sliced",
+			ghash_sq::aarch64::mul_wide_sliced,
 			&mut rng,
 			LOG_LEN,
 			128,
