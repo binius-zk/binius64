@@ -4,16 +4,17 @@
 //!
 //! Elements are pairs `(a, b)` representing `a + b·Y`, where `a` and `b` are elements of
 //! [`BinaryField128bGhash`]. The extension is defined by the irreducible polynomial
-//! `Y² + Y + X⁻¹` over GHASH, so that `Y² = Y + X⁻¹`.
+//! `Y² + X·Y + X` over GHASH, so that `Y² = X·Y + X`.
 //!
 //! The field is backed by [`M256`], with the low 128 bits holding the coefficient of `1` (`a`) and
 //! the high 128 bits holding the coefficient of `Y` (`b`). This is the same layout as
 //! [`PackedBinaryGhash2x128b`] (two GHASH lanes in an `M256`) and matches the `{1, Y}` basis used
 //! by the `ExtensionField<BinaryField128bGhash>` implementation.
 //!
-//! Multiplication uses the `mul_m256i_hybrid` algorithm from the `binius_arith_bench::ghash_sq`
-//! module: the two GHASH products that share the AVX2 256-bit CLMUL are batched into a single
-//! [`PackedBinaryGhash2x128b`] multiply.
+//! Reducing with `Y² = X·Y + X` multiplies by `X` (a left shift) rather than by `X⁻¹`, and the
+//! multiply-by-`X` folds into the reduction. Multiplication batches the two GHASH products that
+//! share the AVX2 256-bit CLMUL into a single [`PackedBinaryGhash2x128b`] multiply (the
+//! `mul_m256i_hybrid` algorithm).
 
 use std::{
 	fmt::{Debug, Display, Formatter},
@@ -73,16 +74,17 @@ type CrossWide = <BinaryField128bGhash as WideMul>::Output;
 ///
 /// Holds the three GHASH widening products of the Karatsuba decomposition, before any reduction.
 ///
-/// Take `x = x_0 + x_1·Y` and `y = y_0 + y_1·Y` over GHASH, with `Y^2 = Y + X^-1`.
+/// Take `x = x_0 + x_1·Y` and `y = y_0 + y_1·Y` over GHASH, with `Y^2 = X·Y + X`.
 /// Then `z = x·y` has coordinates:
-/// - `z_0 = x_0·y_0 + (x_1·y_1)·X^-1`
-/// - `z_1 = (x_0+x_1)·(y_0+y_1) + x_0·y_0`
+/// - `z_0 = x_0·y_0 + X·(x_1·y_1)`
+/// - `z_1 = (x_0·y_1 + x_1·y_0) + X·(x_1·y_1)`
 ///
 /// The three scalar products it defers are:
 /// - `x_0·y_0` and `x_1·y_1`, computed together as one packed [`PackedBinaryGhash2x128b`] multiply.
-/// - `(x_0+x_1)·(y_0+y_1)`, the Karatsuba cross term, a scalar GHASH multiply.
+/// - `(x_0+x_1)·(y_0+y_1)`, the Karatsuba cross term, a scalar GHASH multiply, which recovers the
+///   cross term `x_0·y_1 + x_1·y_0` as `(x_0+x_1)·(y_0+y_1) + x_0·y_0 + x_1·y_1`.
 ///
-/// Both the GHASH reduction and the `X^-1` scaling are GF(2)-linear.
+/// Both the GHASH reduction and the multiply-by-`X` are GF(2)-linear.
 /// So a sum of products reduces to the reduction of the XOR of their unreduced forms.
 /// An inner product over GHASH^2 then accumulates by XOR and reduces only once at the end.
 #[derive(Clone, Copy, Default, Debug)]
@@ -170,22 +172,27 @@ impl WideMul for GhashSq256b {
 		// Reduce the cross product: `t_1 = (x_0+x_1)·(y_0+y_1)`.
 		let t1 = <BinaryField128bGhash as WideMul>::reduce(wide.cross);
 
-		// Fold `Y^2 = Y + X^-1` into the basis: `z_0 = t_0 + t_2·X^-1`, `z_1 = t_1 + t_0`.
-		Self::from_coeffs([t0 + t2.mul_inv_x(), t1 + t0])
+		// Fold `Y^2 = X·Y + X` into the basis. With the Karatsuba cross term recovered as
+		// `t_1 + t_0 + t_2`: `z_0 = t_0 + X·t_2`, `z_1 = (t_1 + t_0 + t_2) + X·t_2 = z_0 + t_1 +
+		// t_2`.
+		let z0 = t0 + t2.mul_x();
+		Self::from_coeffs([z0, z0 + t1 + t2])
 	}
 }
 
 /// Squares a GHASH² element.
 ///
-/// For `x = x₀ + x₁·Y`: `(x₀ + x₁·Y)² = (x₀² + x₁²·X⁻¹) + x₁²·Y` (the cross term vanishes in
-/// characteristic two). The squares `x₀²` and `x₁²` are computed with a single packed square.
+/// For `x = x₀ + x₁·Y`: `(x₀ + x₁·Y)² = (x₀² + X·x₁²) + (X·x₁²)·Y` (the cross term vanishes in
+/// characteristic two, and `Y² = X·Y + X`). The squares `x₀²` and `x₁²` are computed with a single
+/// packed square.
 #[inline]
 fn square(x: [BinaryField128bGhash; 2]) -> [BinaryField128bGhash; 2] {
 	let t0_t2 = Square::square(PackedBinaryGhash2x128b::from_scalars(x));
 	let t0 = t0_t2.get(0);
 	let t2 = t0_t2.get(1);
 
-	[t0 + t2.mul_inv_x(), t2]
+	let x_t2 = t2.mul_x();
+	[t0 + x_t2, x_t2]
 }
 
 impl Mul<GhashSq256b> for GhashSq256b {
@@ -208,15 +215,16 @@ impl Square for GhashSq256b {
 impl InvertOrZero for GhashSq256b {
 	#[inline]
 	fn invert_or_zero(self) -> Self {
-		// For `u = a + b·Y`, the nontrivial automorphism sends `Y -> Y + 1` (the other root of
-		// `Y² + Y + X⁻¹`), so the conjugate is `ū = (a + b) + b·Y`. The norm
-		// `N = u·ū = a² + a·b + b²·X⁻¹` lies in GHASH, and `u⁻¹ = ū·N⁻¹`.
+		// For `u = a + b·Y`, the nontrivial automorphism sends `Y` to the other root of
+		// `Y² + X·Y + X`. The two roots sum to `X` and multiply to `X`, so the conjugate is
+		// `ū = (a + b·X) + b·Y`. The norm `N = u·ū = a² + X·b·(a + b)` lies in GHASH, and
+		// `u⁻¹ = ū·N⁻¹`.
 		let [a, b] = self.to_coeffs();
 
-		let norm = Square::square(a) + a * b + Square::square(b).mul_inv_x();
+		let norm = Square::square(a) + (a * b + Square::square(b)).mul_x();
 		let norm_inv = norm.invert_or_zero();
 
-		let inv_a = (a + b) * norm_inv;
+		let inv_a = (a + b.mul_x()) * norm_inv;
 		let inv_b = b * norm_inv;
 		Self::from_coeffs([inv_a, inv_b])
 	}
@@ -268,8 +276,8 @@ mod tests {
 
 	use super::*;
 
-	/// `X⁻¹` in the GHASH field, i.e. `0x43 + x^127`. Equals `Y² + Y`.
-	const GHASH_INV_X: u128 = 0x80000000000000000000000000000043;
+	/// `X`, the generator of the GHASH field in the standard polynomial basis.
+	const GHASH_X: u128 = 0x02;
 
 	/// Prime factorization of `2²⁵⁶ - 1` (the multiplicative group order). These are the
 	/// Fermat-number factors `F₀..F₇`: `2²⁵⁶ - 1 = ∏_{k=0}^{7} (2^{2^k} + 1)`.
@@ -347,9 +355,10 @@ mod tests {
 
 	#[test]
 	fn test_quadratic_relation() {
-		// The extension is defined by `Y² + Y + X⁻¹ = 0`, i.e. `Y² = Y + X⁻¹`.
+		// The extension is defined by `Y² + X·Y + X = 0`, i.e. `Y² = X·Y + X`, whose coordinates in
+		// the `{1, Y}` basis are `(X, X)`.
 		let y = ghash_sq(0, 1);
-		assert_eq!(y * y, y + ghash_sq(GHASH_INV_X, 0));
+		assert_eq!(y * y, ghash_sq(GHASH_X, GHASH_X));
 	}
 
 	#[test]
@@ -422,7 +431,7 @@ mod tests {
 			//     eager:    sum_i reduce(wide_mul(a_i, b_i))  =  sum_i a_i * b_i
 			//     deferred: reduce( sum_i wide_mul(a_i, b_i) )
 			//
-			// This holds because the GHASH reduction and the `X^-1` scaling are both GF(2)-linear.
+			// This holds because the GHASH reduction and the multiply-by-`X` are both GF(2)-linear.
 			// So a sum of products costs one reduction, not one per term.
 			let eager: GhashSq256b = pairs.iter().map(|&(a, b)| a * b).sum();
 			let deferred = GhashSq256b::reduce(
