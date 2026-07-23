@@ -15,8 +15,10 @@ use binius_ip_prover::sumcheck::{
 	round_evaluator::{SharedMleCheckProver, SharedSumcheckProver},
 };
 use binius_math::{
-	FieldBuffer, inner_product::inner_product_par, multilinear::evaluate::evaluate_inplace,
-	test_utils::random_scalars,
+	FieldBuffer,
+	inner_product::inner_product_par,
+	multilinear::evaluate::evaluate_inplace,
+	test_utils::{random_field_buffer, random_scalars},
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::HasherChallenger};
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
@@ -60,22 +62,27 @@ fn bench_shared_sumcheck_bivariate_product(c: &mut Criterion) {
 	for n_vars in [12, 16, 20] {
 		group.throughput(Throughput::Elements(1 << n_vars));
 		group.bench_function(format!("n_vars={n_vars}"), |b| {
-			let a_scalars = random_scalars::<F>(&mut rng, 1 << n_vars);
-			let b_scalars = random_scalars::<F>(&mut rng, 1 << n_vars);
-			let pool = BufferPool::new();
-			let alloc = &pool;
-			// Build the two multilinears once; each iteration clones them from the pool.
-			let a = FieldBuffer::<P>::from_values_in(&alloc, &a_scalars);
-			let b_multilinear = FieldBuffer::<P>::from_values_in(&alloc, &b_scalars);
+			let a_buffer = random_field_buffer::<P>(&mut rng, 1 << n_vars);
+			let b_buffer = random_field_buffer::<P>(&mut rng, 1 << n_vars);
+
 			// The plain sum claim is the sum of `a * b` over the hypercube.
-			let sum_claim = inner_product_par(&a, &b_multilinear);
+			let sum_claim = inner_product_par(&a_buffer, &b_buffer);
 			let transcript = ProverTranscript::new(StdChallenger::default());
 
+			let pool = BufferPool::new();
+			let alloc = &pool;
+
 			b.iter_batched(
-				|| (transcript.clone(), a.clone(), b_multilinear.clone()),
-				|(mut transcript, a, b_multilinear)| {
+				|| {
+					(
+						transcript.clone(),
+						FieldBuffer::clone_from_slice(&alloc, a_buffer.to_ref()),
+						FieldBuffer::clone_from_slice(&alloc, b_buffer.to_ref()),
+					)
+				},
+				|(mut transcript, a, b)| {
 					let mut store = MleStore::new(n_vars, &alloc);
-					let cols = [a, b_multilinear].map(|col| store.push_owned(col));
+					let cols = [a, b].map(|col| store.push_owned(col));
 					let evaluator = BivariateProductEvaluator::new(cols);
 					let prover = SharedSumcheckProver::new(store, [(sum_claim, evaluator)]);
 

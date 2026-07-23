@@ -124,10 +124,7 @@ impl<P: PackedField> FieldBuffer<P> {
 	/// # Preconditions
 	///
 	/// * `values.len()` must be a power of two.
-	pub fn from_values_in<A: Allocator>(
-		alloc: &A,
-		values: &[P::Scalar],
-	) -> FieldBuffer<P, A::Vec<P>> {
+	pub fn from_values_in<A: Allocator>(alloc: &A, values: &[P::Scalar]) -> FieldVec<P, A> {
 		let log_len =
 			strict_log_2(values.len()).expect("precondition: values.len() must be a power of two");
 
@@ -146,11 +143,18 @@ impl<P: PackedField> FieldBuffer<P> {
 	///
 	/// The allocator-aware counterpart to [`zeros`](Self::zeros). Under a `BufferPool` the result
 	/// is a recyclable pooled buffer.
-	pub fn zeros_in<A: Allocator>(alloc: &A, log_len: usize) -> FieldBuffer<P, A::Vec<P>> {
+	pub fn zeros_in<A: Allocator>(alloc: &A, log_len: usize) -> FieldVec<P, A> {
 		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 		let mut values = alloc.alloc::<P>(packed_len);
 		values.resize(packed_len, P::default());
 		FieldBuffer::new(log_len, values)
+	}
+
+	/// Clones a [`FieldSlice`] into an allocated [`FieldVec`].
+	pub fn clone_from_slice<A: Allocator>(alloc: &A, src: FieldSlice<P>) -> FieldVec<P, A> {
+		let mut values = alloc.alloc::<P>(src.as_ref().len());
+		values.extend_from_slice(src.as_ref());
+		FieldBuffer::new(src.log_len(), values)
 	}
 }
 
