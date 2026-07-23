@@ -318,6 +318,31 @@ impl IOPProver {
 	}
 }
 
+/// Warns once per process if the CPU supports carryless multiply but this build does not use it.
+///
+/// The GHASH field arithmetic is selected at compile time, so a default-target x86_64 build runs
+/// the software multiply even on CPUs with PCLMULQDQ, silently costing an order of magnitude in
+/// prover throughput (see issue #1800). Building with `-C target-cpu=native` or
+/// `-C target-feature=+pclmulqdq` selects the hardware path.
+#[cfg(target_arch = "x86_64")]
+fn warn_on_software_field_arithmetic() {
+	use std::{arch::is_x86_feature_detected, sync::Once};
+
+	static ONCE: Once = Once::new();
+	ONCE.call_once(|| {
+		if !cfg!(target_feature = "pclmulqdq") && is_x86_feature_detected!("pclmulqdq") {
+			tracing::warn!(
+				"this CPU supports carryless multiply (PCLMULQDQ), but the build does not \
+				 enable it, so field arithmetic will run in software; rebuild with \
+				 `-C target-cpu=native` or `-C target-feature=+pclmulqdq`"
+			);
+		}
+	});
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+const fn warn_on_software_field_arithmetic() {}
+
 /// Struct for proving instances of a particular constraint system.
 ///
 /// The [`Self::setup`] constructor pre-processes reusable structures for proving instances of the
@@ -356,6 +381,8 @@ where
 		verifier: Verifier<H>,
 		key_collection: KeyCollection,
 	) -> Result<Self, Error> {
+		warn_on_software_field_arithmetic();
+
 		// Get max subspace from verifier's IOP compiler (reuses FRI params)
 		let subspace = verifier.iop_compiler().max_subspace();
 		let domain_context = GenericPreExpanded::generate_from_subspace(subspace);
