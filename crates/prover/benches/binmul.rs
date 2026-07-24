@@ -3,7 +3,7 @@
 use binius_compute::BufferPool;
 use binius_core::word::Word;
 use binius_field::{BinaryField128bGhash, Random, arch::OptimalPackedB128};
-use binius_prover::protocols::binmul::{BinMulWitness, prove};
+use binius_prover::protocols::binmul::prove;
 use binius_transcript::ProverTranscript;
 use binius_verifier::config::StdChallenger;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
@@ -66,15 +66,11 @@ fn bench_binmul_prove(c: &mut Criterion) {
 			b.iter_batched_ref(
 				|| ProverTranscript::new(StdChallenger::default()),
 				|transcript| {
-					let witness = BinMulWitness {
-						a_lo: &a_lo,
-						a_hi: &a_hi,
-						b_lo: &b_lo,
-						b_hi: &b_hi,
-						c_lo: &c_lo,
-						c_hi: &c_hi,
-					};
-					prove::<_, F, P, _>(&witness, transcript, &alloc)
+					prove::<_, F, P, _>(
+						[&a_lo, &a_hi, &b_lo, &b_hi, &c_lo, &c_hi],
+						transcript,
+						&alloc,
+					)
 				},
 				BatchSize::SmallInput,
 			);

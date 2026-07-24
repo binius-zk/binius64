@@ -13,21 +13,6 @@ pub use binius_verifier::protocols::binmul::BinMulOutput;
 
 use crate::fold_word::WordFolder;
 
-/// A witness for the BinMul reduction.
-///
-/// Each of the six word columns has length $2^\ell$, where $\ell$ is the log2 of the number of
-/// constraints. The GHASH-field element for constraint $x$ is $\langle\langle z_{\textsf{lo}},
-/// z_{\textsf{hi}} \rangle\rangle = \sum_{i=0}^{63} z_{\textsf{lo},x,i} \cdot X^i +
-/// \sum_{i=0}^{63} z_{\textsf{hi},x,i} \cdot X^{64+i}$ for each of $z \in \{a, b, c\}$.
-pub struct BinMulWitness<'a> {
-	pub a_lo: &'a [Word],
-	pub a_hi: &'a [Word],
-	pub b_lo: &'a [Word],
-	pub b_hi: &'a [Word],
-	pub c_lo: &'a [Word],
-	pub c_hi: &'a [Word],
-}
-
 /// Build a packed GHASH-field multilinear table from a `(lo, hi)` pair of word columns.
 ///
 /// The scalar at hypercube index `i` is the field element carried by the pair `(lo[i], hi[i])`:
@@ -59,8 +44,15 @@ where
 /// hypercube $\mathbb{B}_\ell$ over the GHASH field, where each element is carried by a `(lo, hi)`
 /// pair of 64-bit words. See [`binius_verifier::protocols::binmul::verify`] for the protocol
 /// description and output shape.
+///
+/// The six `columns` are the `(lo, hi)` word pairs of the two multiplicands and the product, in the
+/// order `[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi]`. Each has length $2^\ell$, where $\ell$ is the log2
+/// of the number of constraints. The GHASH-field element for constraint $x$ is
+/// $\langle\langle z_{\textsf{lo}}, z_{\textsf{hi}} \rangle\rangle = \sum_{i=0}^{63}
+/// z_{\textsf{lo},x,i} \cdot X^i + \sum_{i=0}^{63} z_{\textsf{hi},x,i} \cdot X^{64+i}$ for each of
+/// $z \in \{a, b, c\}$.
 pub fn prove<A, F, P, Channel>(
-	witness: &BinMulWitness,
+	columns: [&[Word]; 6],
 	channel: &mut Channel,
 	alloc: &A,
 ) -> BinMulOutput<F>
@@ -70,22 +62,18 @@ where
 	P: PackedField<Scalar = F>,
 	Channel: IPProverChannel<F>,
 {
-	let n_vars = strict_log_2(witness.a_lo.len())
+	let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] = columns;
+
+	let n_vars = strict_log_2(a_lo.len())
 		.expect("precondition: the number of constraints must be a power of two");
-	for column in [
-		witness.a_hi,
-		witness.b_lo,
-		witness.b_hi,
-		witness.c_lo,
-		witness.c_hi,
-	] {
-		assert_eq!(column.len(), witness.a_lo.len());
+	for column in [a_hi, b_lo, b_hi, c_lo, c_hi] {
+		assert_eq!(column.len(), a_lo.len());
 	}
 
 	// Build the packed GHASH-field multilinear tables A, B, C from the (lo, hi) word pairs.
-	let a = build_table::<A, F, P>(alloc, witness.a_lo, witness.a_hi);
-	let b = build_table::<A, F, P>(alloc, witness.b_lo, witness.b_hi);
-	let c = build_table::<A, F, P>(alloc, witness.c_lo, witness.c_hi);
+	let a = build_table::<A, F, P>(alloc, a_lo, a_hi);
+	let b = build_table::<A, F, P>(alloc, b_lo, b_hi);
+	let c = build_table::<A, F, P>(alloc, c_lo, c_hi);
 
 	// Sample the zerocheck challenge r_z.
 	let r_z = channel.sample_many(n_vars);
@@ -111,12 +99,12 @@ where
 	// Send the raw per-bit output evaluations of each word column at r_x. One folder is built for
 	// the shared point and reused across all six columns.
 	let folder = WordFolder::<F>::new(&eval_point);
-	let a_lo_evals = folder.fold(witness.a_lo).to_vec();
-	let a_hi_evals = folder.fold(witness.a_hi).to_vec();
-	let b_lo_evals = folder.fold(witness.b_lo).to_vec();
-	let b_hi_evals = folder.fold(witness.b_hi).to_vec();
-	let c_lo_evals = folder.fold(witness.c_lo).to_vec();
-	let c_hi_evals = folder.fold(witness.c_hi).to_vec();
+	let a_lo_evals = folder.fold(a_lo).to_vec();
+	let a_hi_evals = folder.fold(a_hi).to_vec();
+	let b_lo_evals = folder.fold(b_lo).to_vec();
+	let b_hi_evals = folder.fold(b_hi).to_vec();
+	let c_lo_evals = folder.fold(c_lo).to_vec();
+	let c_hi_evals = folder.fold(c_hi).to_vec();
 
 	channel.send_many(&a_lo_evals);
 	channel.send_many(&a_hi_evals);
@@ -152,7 +140,7 @@ mod tests {
 	use itertools::izip;
 	use rand::prelude::*;
 
-	use super::{BinMulWitness, prove};
+	use super::prove;
 
 	type F = BinaryField128bGhash;
 	type P = PackedBinaryGhash2x128b;
@@ -221,15 +209,6 @@ mod tests {
 		const LOG_N: usize = 5;
 		let (a_lo, a_hi, b_lo, b_hi, c_lo, c_hi) = random_witness(&mut rng, LOG_N);
 
-		let witness = BinMulWitness {
-			a_lo: &a_lo,
-			a_hi: &a_hi,
-			b_lo: &b_lo,
-			b_hi: &b_hi,
-			c_lo: &c_lo,
-			c_hi: &c_hi,
-		};
-
 		// BinMul commits no oracles.
 		let oracle_specs: [OracleSpec; 0] = [];
 
@@ -237,7 +216,11 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 		let mut prover_channel =
 			NaiveProverChannel::<F, _>::new(&mut prover_transcript, oracle_specs.to_vec());
-		let prove_output = prove::<_, F, P, _>(&witness, &mut prover_channel, &GlobalAllocator);
+		let prove_output = prove::<_, F, P, _>(
+			[&a_lo, &a_hi, &b_lo, &b_hi, &c_lo, &c_hi],
+			&mut prover_channel,
+			&GlobalAllocator,
+		);
 		prover_channel.finish();
 
 		let BinMulOutput {
@@ -293,21 +276,16 @@ mod tests {
 		// Corrupt one c_lo word so the constraint no longer holds.
 		c_lo[3] = Word::from_u64(c_lo[3].as_u64() ^ 1);
 
-		let witness = BinMulWitness {
-			a_lo: &a_lo,
-			a_hi: &a_hi,
-			b_lo: &b_lo,
-			b_hi: &b_hi,
-			c_lo: &c_lo,
-			c_hi: &c_hi,
-		};
-
 		let oracle_specs: [OracleSpec; 0] = [];
 
 		let mut prover_transcript = ProverTranscript::<StdChallenger>::default();
 		let mut prover_channel =
 			NaiveProverChannel::<F, _>::new(&mut prover_transcript, oracle_specs.to_vec());
-		let _ = prove::<_, F, P, _>(&witness, &mut prover_channel, &GlobalAllocator);
+		let _ = prove::<_, F, P, _>(
+			[&a_lo, &a_hi, &b_lo, &b_hi, &c_lo, &c_hi],
+			&mut prover_channel,
+			&GlobalAllocator,
+		);
 		prover_channel.finish();
 
 		let mut verifier_transcript = prover_transcript.into_verifier();
