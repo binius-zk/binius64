@@ -2,7 +2,7 @@
 //! Benchmark for assembling a batched per-operation witness — the operand-column layout an
 //! operation reduction consumes.
 //!
-//! Currently covers the BitAnd operation via [`BatchAndCheckWitness::build`]; the IntMul
+//! Currently covers the BitAnd operation via [`build_operation_columns`]; the IntMul
 //! equivalent will be added alongside its protocol. Uses the Keccak-f1600 permutation circuit
 //! (see the `keccak_witness_gen` bench) as a realistic, AND-heavy constraint system: the circuit
 //! applies one permutation to a 25-word state, the state words are witness inputs and the permuted
@@ -14,7 +14,7 @@ use std::array;
 use binius_circuits::keccak::permutation::keccak_f1600;
 use binius_core::word::Word;
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
-use binius_m4_prover::{BatchAndCheckWitness, ValueTable};
+use binius_m4_prover::{ValueTable, build_operation_columns};
 use criterion::{Criterion, criterion_group, criterion_main};
 
 /// The base-2 logarithm of the instance count: 2^13 = 8192 instances.
@@ -64,7 +64,7 @@ fn bench_assemble_operation_witness(c: &mut Criterion) {
 	let constants = circuit.constraint_system().constants.clone();
 
 	// The per-instance AND constraints, prepared so their count is a power of two (a precondition
-	// of `BatchAndCheckWitness::build`).
+	// of `build_operation_columns`).
 	let and_constraints = {
 		let mut cs = circuit.constraint_system().clone();
 		cs.validate_and_prepare().unwrap();
@@ -73,7 +73,9 @@ fn bench_assemble_operation_witness(c: &mut Criterion) {
 
 	let mut group = c.benchmark_group("assemble_operation_witness");
 	group.bench_function("bitand_keccak_f1600", |b| {
-		b.iter(|| BatchAndCheckWitness::build(&table, &constants, &and_constraints));
+		b.iter(|| -> [Vec<Word>; 2] {
+			build_operation_columns(&table, &constants, &and_constraints)
+		});
 	});
 
 	group.finish();

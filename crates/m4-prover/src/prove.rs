@@ -22,10 +22,10 @@ use binius_math::{
 	univariate::lagrange_evals_scalars,
 };
 use binius_prover::{
+	and_reduction,
 	fold_word::fold_words,
 	protocols::{
-		binmul::{BinMulWitness, prove as prove_binmul_reduction},
-		intmul::{prove::IntMulProver, witness::Witness as IntMulWitness},
+		binmul, intmul,
 		shift::{KeyCollection, OperatorData, build_key_collection},
 	},
 	ring_switch::{self, RingSwitchOutput},
@@ -43,8 +43,8 @@ use binius_verifier::{
 };
 
 use crate::{
-	BatchAndCheckWitness, ValueTable,
-	operand_witness::{build_binmul_witness, build_intmul_witness},
+	ValueTable,
+	operand_witness::build_operation_columns,
 	shift::{fold_instances, prove as prove_shift},
 };
 
@@ -152,9 +152,13 @@ impl IOPProver {
 		let mul = (!cs.imul_constraints.is_empty()).then(|| {
 			let columns = {
 				let _scope = tracing::debug_span!("Assemble IntMul witness").entered();
-				build_intmul_witness(table, &cs.constants, &cs.imul_constraints)
+				build_operation_columns(table, &cs.constants, &cs.imul_constraints)
 			};
-			let output = prove_intmul::<P, _, _>(&columns, channel, alloc);
+			// A prepared constraint system pads its constraint and instance counts to powers of
+			// two, so the columns always have a power-of-two length as the witness requires.
+			let [a, b, lo, hi] = &columns;
+			let output = intmul::prove::<_, _, P, _>([a, b, lo, hi], channel, alloc)
+				.expect("a prepared constraint system yields power-of-two operand columns");
 			(columns, output)
 		});
 
@@ -174,9 +178,14 @@ impl IOPProver {
 		let bmul = (!cs.bmul_constraints.is_empty()).then(|| {
 			let columns = {
 				let _scope = tracing::debug_span!("Assemble BinMul witness").entered();
-				build_binmul_witness(table, &cs.constants, &cs.bmul_constraints)
+				build_operation_columns(table, &cs.constants, &cs.bmul_constraints)
 			};
-			let output = prove_binmul::<P, _, _>(&columns, channel, alloc);
+			let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] = &columns;
+			let output = binmul::prove::<_, B128, P, _>(
+				[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi],
+				channel,
+				alloc,
+			);
 			(columns, output)
 		});
 
@@ -195,22 +204,30 @@ impl IOPProver {
 		) = {
 			let _scope = tracing::debug_span!("BitAnd check").entered();
 
-			let and_witness = {
+			let [a, b] = {
 				let _scope = tracing::debug_span!("Assemble BitAnd witness").entered();
-				BatchAndCheckWitness::build(table, &cs.constants, &cs.and_constraints)
+				build_operation_columns(table, &cs.constants, &cs.and_constraints)
 			};
+			// Reduce over borrowed columns so the owned `a`/`b` can be moved into `and_columns`
+			// afterward, avoiding a full clone. Nothing touches the channel between the reduction
+			// and building `and_columns`, so the transcript is unchanged.
+			let output = and_reduction::prove::<_, B128, P, _, _>(
+				[a.as_slice(), b.as_slice()],
+				channel,
+				alloc,
+			);
 			let and_columns = (mul.is_some() || bmul.is_some()).then(|| {
 				// The re-randomization re-reads the three BitAnd operand columns.
 				// Only `A` and `B` are stored.
 				// On a satisfying witness `C = A & B` holds word-by-word.
 				// So `C` is materialized here, on this multiplication-only path.
-				let c_column = (and_witness.a(), and_witness.b())
+				let c_column = (a.as_slice(), b.as_slice())
 					.into_par_iter()
 					.map(|(&a_i, &b_i)| a_i & b_i)
 					.collect();
-				[and_witness.a().to_vec(), and_witness.b().to_vec(), c_column]
+				[a, b, c_column]
 			});
-			(and_columns, and_witness.prove::<P, _, _>(&andcheck_domain, channel, alloc))
+			(and_columns, output)
 		};
 
 		// The AND-check row point is `r_rho_and || r_x_and`: the instance index on the low
@@ -400,73 +417,6 @@ where
 		let _scope = tracing::debug_span!("PCS opening").entered();
 		channel.finish(&alloc);
 	}
-}
-
-/// Runs the IntMul check over the batched operand columns.
-///
-/// The four columns are the multiplicands and the low and high product words, in the order
-/// `[A, B, LO, HI]`.
-/// Each is `K * n_imul` rows, laid out constraint-major.
-/// The check reduces the multiplication relation to per-bit evaluation claims on the four columns.
-/// Those claims share a common row point.
-fn prove_intmul<P, Channel, A>(
-	columns: &[Vec<Word>; 4],
-	channel: &mut Channel,
-	alloc: &A,
-) -> IntMulOutput<B128>
-where
-	P: PackedField<Scalar = B128>,
-	Channel: IOPProverChannel<P>,
-	A: Allocator,
-{
-	let _scope = tracing::debug_span!("IntMul check").entered();
-
-	// The columns are the multiplicand `a`, the multiplicand `b`, and the product's low and high
-	// words, in the order the IntMul witness expects.
-	let [a, b, lo, hi] = columns;
-
-	// A prepared constraint system pads its constraint and instance counts to powers of two, so the
-	// columns always have a power-of-two length as the witness requires.
-	let witness = IntMulWitness::<_, P>::new(alloc, a, b, lo, hi)
-		.expect("a prepared constraint system yields power-of-two operand columns");
-
-	// Switchover 0 keeps the exponentiation trees in the small field for every round.
-	let mut prover = IntMulProver::<_, P, _>::new(0, channel, alloc);
-	prover.prove(witness)
-}
-
-/// Runs the BinMul check over the batched operand columns.
-///
-/// The six columns are the `(lo, hi)` word pairs of the two GHASH-field multiplicands and their
-/// product, in the order `[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi]`.
-/// Each is `K * n_binmul` rows, laid out constraint-major.
-/// The check reduces the GHASH-field multiplication relation to per-bit evaluation claims on the
-/// six columns. Those claims share a common row point.
-fn prove_binmul<P, Channel, A>(
-	columns: &[Vec<Word>; 6],
-	channel: &mut Channel,
-	alloc: &A,
-) -> BinMulOutput<B128>
-where
-	P: PackedField<Scalar = B128>,
-	Channel: IOPProverChannel<P>,
-	A: Allocator,
-{
-	let _scope = tracing::debug_span!("BinMul check").entered();
-
-	// The columns are the multiplicands' and product's low and high words, in the order the BinMul
-	// witness expects.
-	let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] = columns;
-	let witness = BinMulWitness {
-		a_lo,
-		a_hi,
-		b_lo,
-		b_hi,
-		c_lo,
-		c_hi,
-	};
-
-	prove_binmul_reduction::<_, B128, P, _>(&witness, channel, alloc)
 }
 
 /// One operation's operand columns, oblong claims, and the points they are claimed at.

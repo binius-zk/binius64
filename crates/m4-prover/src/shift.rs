@@ -316,7 +316,7 @@ mod tests {
 	use rand::prelude::*;
 
 	use super::*;
-	use crate::{BatchAndCheckWitness, test_utils::*};
+	use crate::{operand_witness::build_operation_columns, test_utils::*};
 
 	#[test]
 	fn circuit_matches_reference() {
@@ -465,7 +465,7 @@ mod tests {
 		r_x: &[B128],
 		r_rho: &[B128],
 	) -> [B128; 3] {
-		let witness = BatchAndCheckWitness::build(table, constants, and_constraints);
+		let [a, b] = build_operation_columns(table, constants, and_constraints);
 		let lagrange = lagrange_evals_scalars::<B128, B128>(domain_subspace, r_z);
 		let row_point: Vec<B128> = r_rho.iter().chain(r_x).copied().collect();
 		let operand_eval = |column: &[Word]| {
@@ -475,14 +475,8 @@ mod tests {
 		// The batch witness stores only the `A` and `B` columns.
 		// The reduction reads `C` as the word-by-word AND of the two.
 		// Materialize that same derived column so its evaluation matches the reduction's claim.
-		let c_column: Vec<Word> = iter::zip(witness.a(), witness.b())
-			.map(|(&a, &b)| a & b)
-			.collect();
-		[
-			operand_eval(witness.a()),
-			operand_eval(witness.b()),
-			operand_eval(&c_column),
-		]
+		let c_column: Vec<Word> = iter::zip(&a, &b).map(|(&a, &b)| a & b).collect();
+		[operand_eval(&a), operand_eval(&b), operand_eval(&c_column)]
 	}
 
 	// Folds a contiguous run of value-vector words over the instance axis, one FoldedWord per word.

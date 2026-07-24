@@ -8,7 +8,7 @@ use binius_core::{
 	constraint_system::{ConstraintSystem, Operand, ValueVec},
 	word::Word,
 };
-use binius_field::{AESTowerField8b as B8, BinaryField, Divisible, Field, PackedField};
+use binius_field::{AESTowerField8b as B8, Field, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip::sumcheck::SumcheckOutput;
@@ -19,20 +19,19 @@ use binius_math::{
 	univariate::lagrange_evals,
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
-use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_utils::{SerializeBytes, rayon::prelude::*};
 use binius_verifier::{
 	IOPVerifier, Verifier,
-	config::{B128, LOG_WORDS_PER_ELEM, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
+	config::{B128, LOG_WORDS_PER_ELEM},
 	protocols::{binmul::BinMulOutput, bitand::AndCheckOutput, intmul::IntMulOutput},
 };
 use digest::Output;
 
 use super::error::Error;
 use crate::{
-	and_reduction::prover::OblongZerocheckProver,
+	and_reduction,
 	protocols::{
-		binmul::{BinMulWitness, prove as prove_binmul},
-		intmul::{prove::IntMulProver, witness::Witness as IntMulWitness},
+		binmul, intmul,
 		shift::{
 			KeyCollection, OperatorData, build_key_collection, prove as prove_shift_reduction,
 		},
@@ -136,8 +135,8 @@ impl IOPProver {
 			let mul_columns = tracing::debug_span!("Assemble columns")
 				.in_scope(|| build_operation_columns(&cs.imul_constraints, &witness, alloc));
 
-			let intmul_output =
-				prove_intmul_reduction::<_, _, P, _>(mul_columns, &mut *channel, alloc)?;
+			let [a, b, lo, hi] = &mul_columns;
+			let intmul_output = intmul::prove::<_, _, P, _>([a, b, lo, hi], &mut *channel, alloc)?;
 			drop(intmul_guard);
 			Some(intmul_output)
 		} else {
@@ -159,8 +158,12 @@ impl IOPProver {
 			let binmul_columns = tracing::debug_span!("Assemble columns")
 				.in_scope(|| build_operation_columns(&cs.bmul_constraints, &witness, alloc));
 
-			let binmul_output =
-				prove_binmul_reduction::<_, _, P, _>(binmul_columns, &mut *channel, alloc);
+			let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] = &binmul_columns;
+			let binmul_output = binmul::prove::<_, _, P, _>(
+				[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi],
+				&mut *channel,
+				alloc,
+			);
 			drop(binmul_guard);
 			Some(binmul_output)
 		} else {
@@ -182,7 +185,7 @@ impl IOPProver {
 				c_eval,
 				z_challenge,
 				eval_point,
-			} = prove_bitand_reduction::<_, B128, P, _>(bitand_columns, &mut *channel, alloc);
+			} = and_reduction::prove::<_, B128, P, _, _>(bitand_columns, &mut *channel, alloc);
 			OperatorData {
 				evals: vec![a_eval, b_eval, c_eval],
 				r_zhat_prime: z_challenge,
@@ -517,85 +520,6 @@ pub fn pack_witness<P: PackedField<Scalar = B128>>(
 	padded_witness_elems.resize(len, P::default());
 
 	Ok(FieldBuffer::new(log_witness_elems, padded_witness_elems))
-}
-
-fn prove_bitand_reduction<A, F, PChallenge, Channel>(
-	columns: [A::Vec<Word>; 2],
-	channel: &mut Channel,
-	alloc: &A,
-) -> AndCheckOutput<F>
-where
-	A: Allocator,
-	F: BinaryField + From<B8>,
-	PChallenge: PackedField<Scalar = F>,
-	Channel: binius_ip_prover::channel::IPProverChannel<F>,
-{
-	let prover_message_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1);
-	let [a, b] = columns;
-
-	let log_constraint_count = checked_log_2(a.len());
-
-	let n_extra_zerocheck_challenges =
-		log_constraint_count.saturating_sub(PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len());
-	let big_field_zerocheck_challenges = channel.sample_many(n_extra_zerocheck_challenges);
-
-	let prover = OblongZerocheckProver::<_, PChallenge, _>::new(
-		log_constraint_count,
-		a,
-		b,
-		big_field_zerocheck_challenges,
-		prover_message_domain.isomorphic(),
-	);
-
-	prover.prove_with_channel(channel, alloc)
-}
-
-fn prove_intmul_reduction<A, F, P, Channel>(
-	columns: [A::Vec<Word>; 4],
-	channel: &mut Channel,
-	alloc: &A,
-) -> Result<IntMulOutput<F>, Error>
-where
-	A: Allocator,
-	F: BinaryField<Underlier: Divisible<u64>>,
-	P: PackedField<Scalar = F>,
-	Channel: IOPProverChannel<P>,
-{
-	let [a, b, lo, hi] = columns;
-
-	let mut mulcheck_prover = IntMulProver::new(0, channel, alloc);
-
-	let intmul_witness = tracing::debug_span!("Build IntMul witness")
-		.in_scope(|| IntMulWitness::<_, P>::new(alloc, &a, &b, &lo, &hi))?;
-
-	Ok(mulcheck_prover.prove(intmul_witness))
-}
-
-fn prove_binmul_reduction<A, F, P, Channel>(
-	columns: [A::Vec<Word>; 6],
-	channel: &mut Channel,
-	alloc: &A,
-) -> BinMulOutput<F>
-where
-	A: Allocator,
-	F: BinaryField + From<u128>,
-	P: PackedField<Scalar = F>,
-	Channel: binius_ip_prover::channel::IPProverChannel<F>,
-{
-	// The word slices are borrowed by `BinMulWitness`, so keep the owned `Vec`s alive across the
-	// call.
-	let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] = columns;
-
-	let binmul_witness = BinMulWitness {
-		a_lo: &a_lo,
-		a_hi: &a_hi,
-		b_lo: &b_lo,
-		b_hi: &b_hi,
-		c_lo: &c_lo,
-		c_hi: &c_hi,
-	};
-
-	prove_binmul::<_, F, P, _>(&binmul_witness, channel, alloc)
 }
 
 /// Evaluates the leading `N_COLS` operands of every constraint against the witness, one
