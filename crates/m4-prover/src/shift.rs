@@ -465,7 +465,7 @@ mod tests {
 		r_x: &[B128],
 		r_rho: &[B128],
 	) -> [B128; 3] {
-		let [a, b] = build_operation_columns(table, constants, and_constraints);
+		let [a, b] = build_operation_columns(table, constants, and_constraints, &GlobalAllocator);
 		let lagrange = lagrange_evals_scalars::<B128, B128>(domain_subspace, r_z);
 		let row_point: Vec<B128> = r_rho.iter().chain(r_x).copied().collect();
 		let operand_eval = |column: &[Word]| {

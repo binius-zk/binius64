@@ -15,6 +15,7 @@
 
 use std::{iter, mem::MaybeUninit, ptr};
 
+use binius_compute::{Allocator, VecLike};
 use binius_core::{
 	ValueIndex,
 	constraint_system::{Operand, ShiftVariant, ShiftedValueIndex},
@@ -40,17 +41,20 @@ use crate::ValueTable;
 /// - `constants`: the circuit's constant words, shared by every instance.
 /// - `constraints`: the per-instance constraints, shared by every instance. Pass constraints from a
 ///   prepared constraint system, so their count is a power of two.
+/// - `alloc`: the allocator backing the returned columns.
 ///
 /// # Panics
 ///
 /// Panics if `N_COLS` exceeds `ARITY`, or if the constraint count is not a power of two.
-pub fn build_operation_columns<C, const ARITY: usize, const N_COLS: usize>(
+pub fn build_operation_columns<C, A, const ARITY: usize, const N_COLS: usize>(
 	table: &ValueTable,
 	constants: &[Word],
 	constraints: &[C],
-) -> [Vec<Word>; N_COLS]
+	alloc: &A,
+) -> [A::Vec<Word>; N_COLS]
 where
 	C: AsRef<[Operand; ARITY]> + Sync,
+	A: Allocator,
 {
 	assert!(N_COLS <= ARITY, "N_COLS must not exceed the constraint arity");
 
@@ -63,11 +67,12 @@ where
 				constraints
 					.par_iter()
 					.map(move |constraint| &constraint.as_ref()[op_idx]),
+				alloc,
 			)
 		})
 		.collect::<Vec<_>>()
 		.try_into()
-		.expect("source iterator has N_COLS elements")
+		.unwrap_or_else(|_| unreachable!("source iterator has N_COLS elements"))
 }
 
 /// Builds the operand-column witness of a batched fixed-arity operation over every instance.
@@ -101,15 +106,17 @@ where
 /// - `constants`: the circuit's constant words, shared by every instance.
 /// - `operands`: one operand per constraint, in order; the returned column follows that same order.
 ///   Pass operands from a prepared constraint system, so their count is a power of two.
+/// - `alloc`: the allocator backing the returned column.
 ///
 /// # Panics
 ///
 /// Panics if the constraint count is not a power of two.
-pub fn build_operation_witness<'a>(
+pub fn build_operation_witness<'a, A: Allocator>(
 	table: &ValueTable,
 	constants: &[Word],
 	operands: impl IndexedParallelIterator<Item = &'a Operand>,
-) -> Vec<Word> {
+	alloc: &A,
+) -> A::Vec<Word> {
 	// Rows per instance, and total rows across the batch.
 	let log_constraints = log2_strict_usize(operands.len());
 	let log_instances = table.log_instances();
@@ -117,7 +124,7 @@ pub fn build_operation_witness<'a>(
 	let table_words = table.as_words();
 	let witness_offset = ValueIndex(table.layout().offset_witness as u32);
 
-	let mut out = Vec::<Word>::with_capacity(1 << (log_instances + log_constraints));
+	let mut out = alloc.alloc::<Word>(1 << (log_instances + log_constraints));
 
 	operands
 		.zip(out.spare_capacity_mut().par_chunks_mut(1 << log_instances))
@@ -154,10 +161,12 @@ pub fn build_operation_witness<'a>(
 			}
 		});
 
-	// The stripes partition `[0, total)` and each zeroed its whole range.
-	// So all `total` elements of every column are initialized.
-	//
-	// SAFETY: every element in `0..total` of every column was written above.
+	// SAFETY: the stripes partition `[0, total)` and each writes its whole range — the operand's
+	// first term initializes every cell, later terms XOR in place, and an empty operand zeroes the
+	// stripe. So all `total` elements are initialized. `alloc` may hand back more capacity than
+	// requested (the pool rounds the block up to a power-of-two byte count, minimum 64 bytes), so
+	// `spare_capacity_mut` can be longer than `total`; the zip against the operands truncates to
+	// `total`, and nothing past it is ever claimed by `set_len`.
 	unsafe { out.set_len(1 << (log_instances + log_constraints)) };
 	out
 }
@@ -315,7 +324,7 @@ fn accum_shifted_values(
 #[cfg(test)]
 mod tests {
 	use assert_matches::assert_matches;
-	use binius_compute::GlobalAllocator;
+	use binius_compute::{BufferPool, GlobalAllocator};
 	use binius_core::constraint_system::{AndConstraint, ValueVec};
 	use binius_field::{AESTowerField8b as B8, PackedBinaryGhash1x128b};
 	use binius_frontend::{Circuit, CircuitBuilder, Wire};
@@ -479,7 +488,8 @@ mod tests {
 		let table = populate_table(&c, &inputs);
 
 		let and_constraints = &table_constraints(&c);
-		let [a, b] = build_operation_columns(&table, constants(&c), and_constraints);
+		let [a, b] =
+			build_operation_columns(&table, constants(&c), and_constraints, &GlobalAllocator);
 
 		// Shape: K * n_and rows, with K = 4.
 		let n_and = and_constraints.len();
@@ -553,7 +563,8 @@ mod tests {
 		let imul_constraints = &cs.imul_constraints;
 		assert!(!imul_constraints.is_empty(), "the circuit must emit an IMUL constraint");
 
-		let [a, b, lo, hi] = build_operation_columns(&table, constants, imul_constraints);
+		let [a, b, lo, hi] =
+			build_operation_columns(&table, constants, imul_constraints, &GlobalAllocator);
 
 		// Shape: K * n_imul rows, with K = 4.
 		let n_imul = imul_constraints.len();
@@ -651,7 +662,7 @@ mod tests {
 		assert!(!bmul_constraints.is_empty(), "the circuit must emit a BMUL constraint");
 
 		let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] =
-			build_operation_columns(&table, constants, bmul_constraints);
+			build_operation_columns(&table, constants, bmul_constraints, &GlobalAllocator);
 
 		// Shape: K * n_binmul rows, with K = 4.
 		let n_binmul = bmul_constraints.len();
@@ -683,7 +694,8 @@ mod tests {
 		// Fixture state: log_instances = 0 → exactly one instance (K = 1).
 		let table = populate_table(&c, &[(0xABCD, 0x0F0F, 0x55)]);
 		let and_constraints = table_constraints(&c);
-		let [a, b] = build_operation_columns(&table, constants(&c), &and_constraints);
+		let [a, b] =
+			build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
 
 		// The degenerate batch reproduces the single-instance BitAnd columns exactly.
 		let vv = table.instance_value_vec(0, constants(&c));
@@ -708,7 +720,8 @@ mod tests {
 		//
 		// The operands are empty, so the panic is the count check, never an out-of-range index.
 		let three = vec![AndConstraint::default(); 3];
-		let _: [Vec<Word>; 2] = build_operation_columns(&table, constants(&c), &three);
+		let _: [Vec<Word>; 2] =
+			build_operation_columns(&table, constants(&c), &three, &GlobalAllocator);
 	}
 
 	proptest! {
@@ -717,6 +730,9 @@ mod tests {
 		//     witness[j * n_instances + instance]  ==  eval_operand(instance value vec, constraint j)
 		//
 		// This pins the batched, slice-based evaluator to the core value-vec evaluator.
+		//
+		// The columns are drawn from a `BufferPool`, so this is the case that covers the
+		// `A::Vec = PoolVec` instantiation; the rest of the module's tests use `GlobalAllocator`.
 		#[test]
 		fn batch_rows_match_single_instance_reference(
 			inputs in prop::collection::vec((any::<u64>(), any::<u64>(), any::<u64>()), 4),
@@ -724,12 +740,13 @@ mod tests {
 			let c = and_circuit();
 			let table = populate_table(&c, &inputs);
 
+			let pool = BufferPool::new();
 			let and_constraints = table_constraints(&c);
-			let [a, b] = build_operation_columns(&table, constants(&c), &and_constraints);
+			let [a, b] = build_operation_columns(&table, constants(&c), &and_constraints, &&pool);
 
 			let (a_ref, b_ref) = reference_columns(&table, constants(&c), &and_constraints);
-			prop_assert_eq!(a, a_ref);
-			prop_assert_eq!(b, b_ref);
+			prop_assert_eq!(&*a, &a_ref[..]);
+			prop_assert_eq!(&*b, &b_ref[..]);
 		}
 	}
 
@@ -746,7 +763,8 @@ mod tests {
 			.collect();
 		let table = populate_table(&c, &inputs);
 		let and_constraints = table_constraints(&c);
-		let [a, b] = build_operation_columns(&table, constants(&c), &and_constraints);
+		let [a, b] =
+			build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
 
 		// Every instance's contribution equals its independent single-instance reference.
 		// This includes instances at or beyond STRIPE_WIDTH, which only the second stripe produces.
@@ -794,7 +812,8 @@ mod tests {
 			});
 		assert!(shifted, "fixture must contain a shifted operand");
 
-		let [a, b] = build_operation_columns(&table, constants(&c), &and_constraints);
+		let [a, b] =
+			build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
 
 		// `a` and `b` equal the shift-aware value-vec reference for the same constraints.
 		let (a_ref, b_ref) = reference_columns(&table, constants(&c), &and_constraints);
@@ -811,7 +830,8 @@ mod tests {
 		// So every coordinate is pinned and no large-field challenge is drawn.
 		let table = populate_table(&c, &[(1, 3, 7), (5, 6, 0), (9, 12, 0xFF), (0xF0, 0x0F, 1)]);
 		let and_constraints = table_constraints(&c);
-		let [a, b] = build_operation_columns(&table, constants(&c), &and_constraints);
+		let [a, b] =
+			build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
 		let log_total = checked_log_2(a.len());
 
 		// Prover and verifier agree on the reduced claim over the batched columns.
@@ -846,7 +866,8 @@ mod tests {
 			.collect();
 		let table = populate_table(&c, &inputs);
 		let and_constraints = table_constraints(&c);
-		let [a, b] = build_operation_columns(&table, constants(&c), &and_constraints);
+		let [a, b] =
+			build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
 		let log_total = checked_log_2(a.len());
 
 		// Produce a faithful proof.
@@ -895,7 +916,7 @@ mod tests {
 			let c = and_circuit();
 			let table = populate_table(&c, &inputs);
 			let and_constraints = table_constraints(&c);
-			let [a, b] = build_operation_columns(&table, constants(&c), &and_constraints);
+			let [a, b] = build_operation_columns(&table, constants(&c), &and_constraints, &GlobalAllocator);
 
 			// Keep the columns so the claimed evals can be checked against them.
 			// The witness stores no C column.
