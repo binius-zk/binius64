@@ -5,9 +5,7 @@ use std::marker::PhantomData;
 
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_core::{
-	constraint_system::{
-		AndConstraint, BmulConstraint, ConstraintSystem, ImulConstraint, ValueVec,
-	},
+	constraint_system::{ConstraintSystem, Operand, ValueVec},
 	word::Word,
 };
 use binius_field::{AESTowerField8b as B8, BinaryField, Divisible, Field, PackedField};
@@ -135,11 +133,11 @@ impl IOPProver {
 				n_constraints = cs.imul_constraints.len()
 			)
 			.entered();
-			let mul_witness = tracing::debug_span!("Assemble columns")
-				.in_scope(|| build_intmul_witness(&cs.imul_constraints, &witness, alloc));
+			let mul_columns = tracing::debug_span!("Assemble columns")
+				.in_scope(|| build_operation_columns(&cs.imul_constraints, &witness, alloc));
 
 			let intmul_output =
-				prove_intmul_reduction::<_, _, P, _>(mul_witness, &mut *channel, alloc)?;
+				prove_intmul_reduction::<_, _, P, _>(mul_columns, &mut *channel, alloc)?;
 			drop(intmul_guard);
 			Some(intmul_output)
 		} else {
@@ -158,11 +156,11 @@ impl IOPProver {
 				n_constraints = cs.bmul_constraints.len()
 			)
 			.entered();
-			let binmul_witness = tracing::debug_span!("Assemble columns")
-				.in_scope(|| build_binmul_witness(&cs.bmul_constraints, &witness, alloc));
+			let binmul_columns = tracing::debug_span!("Assemble columns")
+				.in_scope(|| build_operation_columns(&cs.bmul_constraints, &witness, alloc));
 
 			let binmul_output =
-				prove_binmul_reduction::<_, _, P, _>(binmul_witness, &mut *channel, alloc);
+				prove_binmul_reduction::<_, _, P, _>(binmul_columns, &mut *channel, alloc);
 			drop(binmul_guard);
 			Some(binmul_output)
 		} else {
@@ -174,8 +172,9 @@ impl IOPProver {
 			tracing::info_span!("[phase] BitAnd check", n_constraints = cs.and_constraints.len())
 				.entered();
 		let bitand_claim = {
-			let bitand_witness = tracing::debug_span!("Assemble columns")
-				.in_scope(|| build_bitand_witness(&cs.and_constraints, &witness, alloc));
+			// Only the `A` and `B` columns are built; the reduction derives `C = A & B`.
+			let bitand_columns = tracing::debug_span!("Assemble columns")
+				.in_scope(|| build_operation_columns(&cs.and_constraints, &witness, alloc));
 
 			let AndCheckOutput {
 				a_eval,
@@ -183,7 +182,7 @@ impl IOPProver {
 				c_eval,
 				z_challenge,
 				eval_point,
-			} = prove_bitand_reduction::<_, B128, P, _>(bitand_witness, &mut *channel, alloc);
+			} = prove_bitand_reduction::<_, B128, P, _>(bitand_columns, &mut *channel, alloc);
 			OperatorData {
 				evals: vec![a_eval, b_eval, c_eval],
 				r_zhat_prime: z_challenge,
@@ -494,7 +493,7 @@ pub fn pack_witness<P: PackedField<Scalar = B128>>(
 }
 
 fn prove_bitand_reduction<A, F, PChallenge, Channel>(
-	witness: AndCheckWitness<A>,
+	columns: [A::Vec<Word>; 2],
 	channel: &mut Channel,
 	alloc: &A,
 ) -> AndCheckOutput<F>
@@ -505,7 +504,7 @@ where
 	Channel: binius_ip_prover::channel::IPProverChannel<F>,
 {
 	let prover_message_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1);
-	let AndCheckWitness { a, b } = witness;
+	let [a, b] = columns;
 
 	let log_constraint_count = checked_log_2(a.len());
 
@@ -525,7 +524,7 @@ where
 }
 
 fn prove_intmul_reduction<A, F, P, Channel>(
-	witness: MulCheckWitness<A>,
+	columns: [A::Vec<Word>; 4],
 	channel: &mut Channel,
 	alloc: &A,
 ) -> Result<IntMulOutput<F>, Error>
@@ -535,7 +534,7 @@ where
 	P: PackedField<Scalar = F>,
 	Channel: IOPProverChannel<P>,
 {
-	let MulCheckWitness { a, b, lo, hi } = witness;
+	let [a, b, lo, hi] = columns;
 
 	let mut mulcheck_prover = IntMulProver::new(0, channel, alloc);
 
@@ -546,7 +545,7 @@ where
 }
 
 fn prove_binmul_reduction<A, F, P, Channel>(
-	witness: BinMulCheckWitness<A>,
+	columns: [A::Vec<Word>; 6],
 	channel: &mut Channel,
 	alloc: &A,
 ) -> BinMulOutput<F>
@@ -558,14 +557,7 @@ where
 {
 	// The word slices are borrowed by `BinMulWitness`, so keep the owned `Vec`s alive across the
 	// call.
-	let BinMulCheckWitness {
-		a_lo,
-		a_hi,
-		b_lo,
-		b_hi,
-		c_lo,
-		c_hi,
-	} = witness;
+	let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] = columns;
 
 	let binmul_witness = BinMulWitness {
 		a_lo: &a_lo,
@@ -579,147 +571,44 @@ where
 	prove_binmul::<_, F, P, _>(&binmul_witness, channel, alloc)
 }
 
-/// The two materialized BitAnd operand columns.
+/// Evaluates the leading `N_COLS` operands of every constraint against the witness, one
+/// materialized column per operand.
 ///
-/// The C operand column is not built.
-/// On a satisfying witness `C = A & B` holds word-by-word.
-/// So the AND reduction derives C from these two columns on the fly.
-struct AndCheckWitness<A: Allocator> {
-	a: A::Vec<Word>,
-	b: A::Vec<Word>,
-}
-
-struct MulCheckWitness<A: Allocator> {
-	a: A::Vec<Word>,
-	b: A::Vec<Word>,
-	lo: A::Vec<Word>,
-	hi: A::Vec<Word>,
-}
-
-struct BinMulCheckWitness<A: Allocator> {
-	a_lo: A::Vec<Word>,
-	a_hi: A::Vec<Word>,
-	b_lo: A::Vec<Word>,
-	b_hi: A::Vec<Word>,
-	c_lo: A::Vec<Word>,
-	c_hi: A::Vec<Word>,
-}
-
-fn build_bitand_witness<A: Allocator>(
-	and_constraints: &[AndConstraint],
+/// Column `i` holds operand `i` of every constraint, in the constraint type's storage order — the
+/// order the shift reduction batches operands in. Each column has one row per constraint, in the
+/// same order.
+///
+/// `N_COLS` may be smaller than `ARITY`, in which case the trailing operands are not evaluated. The
+/// BitAnd check uses that to skip its `C` column: on a satisfying witness `C = A & B` holds
+/// word-by-word, so the reduction derives it from the `A` and `B` columns instead.
+fn build_operation_columns<C, A, const ARITY: usize, const N_COLS: usize>(
+	constraints: &[C],
 	witness: &ValueVec,
 	alloc: &A,
-) -> AndCheckWitness<A> {
-	let n_constraints = and_constraints.len();
+) -> [A::Vec<Word>; N_COLS]
+where
+	C: AsRef<[Operand; ARITY]> + Sync,
+	A: Allocator,
+{
+	assert!(N_COLS <= ARITY, "N_COLS must not exceed the constraint arity");
 
-	let mut a = alloc.alloc::<Word>(n_constraints);
-	let mut b = alloc.alloc::<Word>(n_constraints);
-
-	(and_constraints, a.spare_capacity_mut(), b.spare_capacity_mut())
+	let n_constraints = constraints.len();
+	(0..N_COLS)
 		.into_par_iter()
-		.for_each(|(constraint, a_i, b_i)| {
-			a_i.write(witness.eval_operand(constraint.a()));
-			b_i.write(witness.eval_operand(constraint.b()));
-		});
-
-	// Safety: all entries in a and b are initialized in the parallel loop above.
-	unsafe {
-		a.set_len(n_constraints);
-		b.set_len(n_constraints);
-	}
-
-	AndCheckWitness { a, b }
-}
-
-fn build_intmul_witness<A: Allocator>(
-	imul_constraints: &[ImulConstraint],
-	witness: &ValueVec,
-	alloc: &A,
-) -> MulCheckWitness<A> {
-	let n_constraints = imul_constraints.len();
-
-	let mut a = alloc.alloc::<Word>(n_constraints);
-	let mut b = alloc.alloc::<Word>(n_constraints);
-	let mut lo = alloc.alloc::<Word>(n_constraints);
-	let mut hi = alloc.alloc::<Word>(n_constraints);
-
-	(
-		imul_constraints,
-		a.spare_capacity_mut(),
-		b.spare_capacity_mut(),
-		lo.spare_capacity_mut(),
-		hi.spare_capacity_mut(),
-	)
-		.into_par_iter()
-		.for_each(|(constraint, a_i, b_i, lo_i, hi_i)| {
-			a_i.write(witness.eval_operand(constraint.a()));
-			b_i.write(witness.eval_operand(constraint.b()));
-			lo_i.write(witness.eval_operand(constraint.lo()));
-			hi_i.write(witness.eval_operand(constraint.hi()));
-		});
-
-	// Safety: all entries in a, b, lo, hi are initialized in the parallel loop above.
-	unsafe {
-		a.set_len(n_constraints);
-		b.set_len(n_constraints);
-		lo.set_len(n_constraints);
-		hi.set_len(n_constraints);
-	}
-
-	MulCheckWitness { a, b, lo, hi }
-}
-
-fn build_binmul_witness<A: Allocator>(
-	bmul_constraints: &[BmulConstraint],
-	witness: &ValueVec,
-	alloc: &A,
-) -> BinMulCheckWitness<A> {
-	let n_constraints = bmul_constraints.len();
-
-	let mut a_lo = alloc.alloc::<Word>(n_constraints);
-	let mut a_hi = alloc.alloc::<Word>(n_constraints);
-	let mut b_lo = alloc.alloc::<Word>(n_constraints);
-	let mut b_hi = alloc.alloc::<Word>(n_constraints);
-	let mut c_lo = alloc.alloc::<Word>(n_constraints);
-	let mut c_hi = alloc.alloc::<Word>(n_constraints);
-
-	(
-		bmul_constraints,
-		a_lo.spare_capacity_mut(),
-		a_hi.spare_capacity_mut(),
-		b_lo.spare_capacity_mut(),
-		b_hi.spare_capacity_mut(),
-		c_lo.spare_capacity_mut(),
-		c_hi.spare_capacity_mut(),
-	)
-		.into_par_iter()
-		.for_each(|(constraint, a_lo_i, a_hi_i, b_lo_i, b_hi_i, c_lo_i, c_hi_i)| {
-			a_lo_i.write(witness.eval_operand(constraint.a_lo()));
-			a_hi_i.write(witness.eval_operand(constraint.a_hi()));
-			b_lo_i.write(witness.eval_operand(constraint.b_lo()));
-			b_hi_i.write(witness.eval_operand(constraint.b_hi()));
-			c_lo_i.write(witness.eval_operand(constraint.c_lo()));
-			c_hi_i.write(witness.eval_operand(constraint.c_hi()));
-		});
-
-	// Safety: all entries in the six columns are initialized in the parallel loop above.
-	unsafe {
-		a_lo.set_len(n_constraints);
-		a_hi.set_len(n_constraints);
-		b_lo.set_len(n_constraints);
-		b_hi.set_len(n_constraints);
-		c_lo.set_len(n_constraints);
-		c_hi.set_len(n_constraints);
-	}
-
-	BinMulCheckWitness {
-		a_lo,
-		a_hi,
-		b_lo,
-		b_hi,
-		c_lo,
-		c_hi,
-	}
+		.map(|op_idx| {
+			let mut column = alloc.alloc::<Word>(n_constraints);
+			(constraints, column.spare_capacity_mut())
+				.into_par_iter()
+				.for_each(|(constraint, out)| {
+					out.write(witness.eval_operand(&constraint.as_ref()[op_idx]));
+				});
+			// Safety: every entry of `column` is written exactly once in the parallel loop above.
+			unsafe { column.set_len(n_constraints) };
+			column
+		})
+		.collect::<Vec<_>>()
+		.try_into()
+		.unwrap_or_else(|_| unreachable!("source iterator has N_COLS elements"))
 }
 
 #[cfg(test)]
