@@ -8,8 +8,9 @@ use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim, sumcheck::RoundCoeffs
 use binius_math::{
 	FieldBuffer, FieldVec, line::extrapolate_line_packed, multilinear::eq::eq_ind_partial_eval,
 };
-use binius_utils::rayon::iter::{
-	IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
+use binius_utils::rayon::{
+	iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator},
+	slice::{ParallelSlice, ParallelSliceMut},
 };
 use itertools::izip;
 
@@ -113,19 +114,36 @@ where
 			let (num_0, num_1) = num.split_half_ref();
 			let (den_0, den_1) = den.split_half_ref();
 
-			// One packed word of the next layer from the sibling halves:
+			// One packed word of the next layer from the sibling halves, written straight into
+			// the pooled buffers:
 			//     a_0/b_0 + a_1/b_1 = (a_0*b_1 + a_1*b_0) / (b_0*b_1)
-			let (next_layer_num, next_layer_den) =
-				(num_0.as_ref(), den_0.as_ref(), num_1.as_ref(), den_1.as_ref())
-					.into_par_iter()
-					.with_min_len(LAYER_BUILD_MIN_CHUNK)
-					.map(|(&a_0, &b_0, &a_1, &b_1)| (a_0 * b_1 + a_1 * b_0, b_0 * b_1))
-					.collect::<(Vec<_>, Vec<_>)>();
-
-			let mut num_data = alloc.alloc::<P>(next_layer_num.len());
-			num_data.extend_from_slice(&next_layer_num);
-			let mut den_data = alloc.alloc::<P>(next_layer_den.len());
-			den_data.extend_from_slice(&next_layer_den);
+			// Chunks fan out across workers; each chunk is a tight serial loop.
+			let out_len = num_0.as_ref().len();
+			let mut num_data = alloc.alloc::<P>(out_len);
+			let mut den_data = alloc.alloc::<P>(out_len);
+			(
+				num_data.spare_capacity_mut()[..out_len].par_chunks_mut(LAYER_BUILD_MIN_CHUNK),
+				den_data.spare_capacity_mut()[..out_len].par_chunks_mut(LAYER_BUILD_MIN_CHUNK),
+				num_0.as_ref().par_chunks(LAYER_BUILD_MIN_CHUNK),
+				den_0.as_ref().par_chunks(LAYER_BUILD_MIN_CHUNK),
+				num_1.as_ref().par_chunks(LAYER_BUILD_MIN_CHUNK),
+				den_1.as_ref().par_chunks(LAYER_BUILD_MIN_CHUNK),
+			)
+				.into_par_iter()
+				.for_each(|(num_out, den_out, num_0, den_0, num_1, den_1)| {
+					for (num_slot, den_slot, &a_0, &b_0, &a_1, &b_1) in
+						izip!(num_out, den_out, num_0, den_0, num_1, den_1)
+					{
+						num_slot.write(a_0 * b_1 + a_1 * b_0);
+						den_slot.write(b_0 * b_1);
+					}
+				});
+			// Safety: the chunked zip writes every slot of both length-out_len spare prefixes
+			// exactly once.
+			unsafe {
+				num_data.set_len(out_len);
+				den_data.set_len(out_len);
+			}
 			let next_layer =
 				(FieldBuffer::new(num_log_len, num_data), FieldBuffer::new(den_log_len, den_data));
 
