@@ -3,7 +3,10 @@
 use std::iter;
 
 use binius_core::{constraint_system::Operand, word::Word};
-use binius_field::{BinaryField, FieldOps, WideMul, util::powers};
+use binius_field::{
+	BinaryField, FieldOps, WideMul,
+	util::{FieldFn, powers},
+};
 use binius_math::{
 	inner_product::inner_product_scalars, multilinear::eq::eq_ind_partial_eval_scalars,
 };
@@ -84,10 +87,10 @@ pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SH
 	[sll, srl, sra, rotr, sll32, srl32, sra32, rotr32]
 }
 
-/// Evaluates the monster multilinear polynomial for a constraint operation.
+/// A [`FieldFn`] evaluating one operation's monster multilinear polynomial.
 ///
-/// The monster multilinear encodes all constraints of a given type (AND or IMUL) into
-/// a single polynomial. For an operation with multiple operands, it computes:
+/// The monster multilinear encodes all `ARITY`-operand constraints of a single operation (BitAnd,
+/// IntMul or BinMul) into one polynomial:
 ///
 /// $$
 /// \sum_{\text{m_idx} \in \text{enumerate(operands)}}
@@ -95,62 +98,135 @@ pub fn evaluate_h_op<E: FieldOps>(l_tilde: &[E], r_j: &[E], r_s: &[E]) -> [E; SH
 ///     \sum_{\text{op}} h_{\text{op}}(r_j, r_s) \cdot M_{\text{m}, \text{op}}(r_x', r_y, r_s)
 /// $$
 ///
-/// where:
-/// - `m_idx` indexes the operand position (0 to `operand_vecs.len() - 1`)
-/// - `op` ranges over the shift variants (logical/arithmetic shifts)
-/// - `h_op` is the shift selector polynomial
-/// - `M_m,op` is the multilinear extension of the operand values
+/// where `m_idx` indexes the operand position (0 to `ARITY - 1`), `op` ranges over the shift
+/// variants, `h_op` is the shift selector polynomial, and `M_{m,op}` is the multilinear extension
+/// of the operand values.
 ///
-/// # Arguments
+/// The `FieldFn` input is the flat slice built by [`encode_operation_input`]: the constraint
+/// challenge `r_x'`, then the batching coefficient `lambda`, then the shared shift scalars, then
+/// the word-index tensor `r_y`. [`FieldFn::call`] evaluates generically over any `E`;
+/// [`FieldFn::call_native`] takes the `WideMul`-accelerated base-field path.
+pub struct OperationEvalFn<'a, C, const ARITY: usize> {
+	/// The operation's constraints, each exposing its `ARITY` operands as an array in storage
+	/// order.
+	constraints: &'a [C],
+}
+
+impl<'a, C, const ARITY: usize> OperationEvalFn<'a, C, ARITY> {
+	/// Wraps an operation's constraints for monster-multilinear evaluation.
+	pub const fn new(constraints: &'a [C]) -> Self {
+		Self { constraints }
+	}
+
+	/// Splits the flat [`FieldFn`] input into `(r_x_prime, lambda, shift_scalars, r_y_tensor)`.
+	///
+	/// The `r_x'` section has `log2(constraints.len())` entries — the constraint counts handed to
+	/// the shift reduction are powers of two — so the split needs no state beyond the constraints.
+	fn split_input<'i, E>(
+		&self,
+		input: &'i [E],
+	) -> (&'i [E], &'i E, &'i [E; SHIFT_VARIANT_COUNT * Word::BITS], &'i [E]) {
+		debug_assert!(self.constraints.len().is_power_of_two());
+		let n_vars = self.constraints.len().ilog2() as usize;
+		let (r_x_prime, rest) = input.split_at(n_vars);
+		let (lambda, rest) = rest.split_first().expect("input encodes lambda");
+		let (shift_scalars, r_y_tensor) = rest.split_at(SHIFT_VARIANT_COUNT * Word::BITS);
+		let shift_scalars = shift_scalars
+			.try_into()
+			.expect("input encodes the shift scalars");
+		(r_x_prime, lambda, shift_scalars, r_y_tensor)
+	}
+}
+
+impl<F, C, const ARITY: usize> FieldFn<F> for OperationEvalFn<'_, C, ARITY>
+where
+	F: BinaryField,
+	C: AsRef<[Operand; ARITY]> + Sync,
+{
+	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, input: &[E]) -> E {
+		let (r_x_prime, lambda, shift_scalars, r_y_tensor) = self.split_input(input);
+
+		let r_x_prime_tensor = eq_ind_partial_eval_scalars(r_x_prime);
+		let operand_shift_scalars =
+			operand_shift_scalar_table(shift_scalars, lambda.clone(), ARITY);
+
+		// Accumulate one contribution per constraint. Within a constraint, each shifted-value term
+		// over all operands is weighted by its operand shift scalar and the word-index tensor
+		// entry; the running sum is then scaled by the constraint-index tensor entry.
+		let mut eval = E::zero();
+		for (constraint, r_x_prime_entry) in r_x_prime_tensor.iter().enumerate() {
+			let mut constraint_eval = E::zero();
+			for (operand_id, operand) in self.constraints[constraint].as_ref().iter().enumerate() {
+				for svi in operand {
+					let variant = svi.shift_variant as usize;
+					let index = (variant * Word::BITS + svi.amount as usize) * ARITY + operand_id;
+					constraint_eval += operand_shift_scalars[index].clone()
+						* &r_y_tensor[svi.value_index.0 as usize];
+				}
+			}
+			eval += constraint_eval * r_x_prime_entry;
+		}
+
+		eval
+	}
+
+	/// Native fast path over the base field `F`.
+	///
+	/// Produces the identical result, but defers the `GF(2^128)` reductions: the per-constraint
+	/// contributions accumulate into a single *unreduced* wide element, reduced exactly once at the
+	/// end (reduction is `F`-linear, so this equals reducing each per-constraint product and
+	/// summing). The generic [`call`](FieldFn::call) can't do this because `E: FieldOps` does not
+	/// imply `WideMul`.
+	fn call_native(&self, input: &[F]) -> F {
+		let (r_x_prime, lambda, shift_scalars, r_y_tensor) = self.split_input(input);
+
+		let r_x_prime_tensor = eq_ind_partial_eval_scalars(r_x_prime);
+		let operand_shift_scalars = operand_shift_scalar_table(shift_scalars, *lambda, ARITY);
+
+		// One unreduced wide product per constraint. The constraints partition cleanly across
+		// rayon: each produces a single wide element and they are summed, so there is no large
+		// per-task accumulator. The single final reduction is `F`-linear.
+		let eval = r_x_prime_tensor
+			.par_iter()
+			.enumerate()
+			.map(|(constraint, &r_x_prime_entry)| {
+				let mut constraint_eval = F::ZERO;
+				for (operand_id, operand) in
+					self.constraints[constraint].as_ref().iter().enumerate()
+				{
+					for svi in operand {
+						let variant = svi.shift_variant as usize;
+						let index =
+							(variant * Word::BITS + svi.amount as usize) * ARITY + operand_id;
+						constraint_eval +=
+							operand_shift_scalars[index] * r_y_tensor[svi.value_index.0 as usize];
+					}
+				}
+				F::wide_mul(constraint_eval, r_x_prime_entry)
+			})
+			.sum::<<F as WideMul>::Output>();
+		F::reduce(eval)
+	}
+}
+
+/// Builds the flat [`FieldFn`] input consumed by [`OperationEvalFn`].
 ///
-/// * `operand_vecs` - Vector of operand vectors, one per operand position in the constraint
-/// * `r_x_prime` - The constraint challenge `r_x'`; its equality indicator tensor is expanded here.
-/// * `lambda` - Random coefficient for batching operand evaluations
-/// * `shift_scalars` - Tensor product of the shift-selector evaluations `h_op` and the shift-amount
-///   equality indicator `eq(r_s)`, indexed by `variant * Word::BITS + amount`. Shared across
-///   operations.
-/// * `r_y_tensor` - Equality indicator tensor expansion of the word index challenge `r_y`
-///
-/// # Returns
-///
-/// The evaluation of the monster multilinear at the given challenge points.
-pub fn evaluate_monster_multilinear_for_operation<F, E>(
-	operand_vecs: &[Vec<&Operand>],
+/// Concatenates `r_x_prime ++ [lambda] ++ shift_scalars ++ r_y_tensor`.
+/// `OperationEvalFn::split_input` is the inverse; it recovers the `r_x'` length from the constraint
+/// count, so only `lambda` and the fixed-length shift scalars need a known position.
+pub fn encode_operation_input<E: Clone>(
 	r_x_prime: &[E],
 	lambda: E,
 	shift_scalars: &[E; SHIFT_VARIANT_COUNT * Word::BITS],
 	r_y_tensor: &[E],
-) -> E
-where
-	F: BinaryField,
-	E: FieldOps<Scalar = F> + From<F>,
-{
-	let arity = operand_vecs.len();
-	for operands in operand_vecs {
-		assert_eq!(operands.len(), (1 << r_x_prime.len()));
-	}
-
-	let r_x_prime_tensor = eq_ind_partial_eval_scalars(r_x_prime);
-	let operand_shift_scalars = operand_shift_scalar_table(shift_scalars, lambda, arity);
-
-	// Accumulate one contribution per constraint. Within a constraint, each shifted-value term over
-	// all operands is weighted by its operand shift scalar and the word-index tensor entry; the
-	// running sum is then scaled by the constraint-index tensor entry.
-	let mut eval = E::zero();
-	for (constraint, r_x_prime_entry) in r_x_prime_tensor.iter().enumerate() {
-		let mut constraint_eval = E::zero();
-		for (operand_id, operand_vec) in operand_vecs.iter().enumerate() {
-			for svi in operand_vec[constraint] {
-				let variant = svi.shift_variant as usize;
-				let index = (variant * Word::BITS + svi.amount as usize) * arity + operand_id;
-				constraint_eval +=
-					operand_shift_scalars[index].clone() * &r_y_tensor[svi.value_index.0 as usize];
-			}
-		}
-		eval += constraint_eval * r_x_prime_entry;
-	}
-
-	eval
+) -> Vec<E> {
+	let mut input =
+		Vec::with_capacity(r_x_prime.len() + 1 + shift_scalars.len() + r_y_tensor.len());
+	input.extend_from_slice(r_x_prime);
+	input.push(lambda);
+	input.extend_from_slice(shift_scalars);
+	input.extend_from_slice(r_y_tensor);
+	input
 }
 
 /// Folds the operand batching coefficients (λ powers) into the shared shift scalars, producing a
@@ -172,50 +248,6 @@ fn operand_shift_scalar_table<E: FieldOps>(
 	table
 }
 
-/// Native, `WideMul`-accelerated variant of [`evaluate_monster_multilinear_for_operation`] over the
-/// base field `F`.
-///
-/// Produces the identical result, but defers the `GF(2^128)` reductions: the per-constraint
-/// contributions accumulate into a single *unreduced* wide element, reduced exactly once at the end
-/// (reduction is `F`-linear, so this equals reducing each per-constraint product and summing). The
-/// generic path can't do this because `E: FieldOps` does not imply `WideMul`.
-pub(crate) fn evaluate_monster_multilinear_for_operation_native<F: BinaryField>(
-	operand_vecs: &[Vec<&Operand>],
-	r_x_prime: &[F],
-	lambda: F,
-	shift_scalars: &[F; SHIFT_VARIANT_COUNT * Word::BITS],
-	r_y_tensor: &[F],
-) -> F {
-	let arity = operand_vecs.len();
-	for operands in operand_vecs {
-		assert_eq!(operands.len(), 1 << r_x_prime.len());
-	}
-
-	let r_x_prime_tensor = eq_ind_partial_eval_scalars(r_x_prime);
-	let operand_shift_scalars = operand_shift_scalar_table(shift_scalars, lambda, arity);
-
-	// One unreduced wide product per constraint. The constraints partition cleanly across rayon:
-	// each produces a single wide element and they are summed, so there is no large per-task
-	// accumulator. The single final reduction is `F`-linear.
-	let eval = r_x_prime_tensor
-		.par_iter()
-		.enumerate()
-		.map(|(constraint, &r_x_prime_entry)| {
-			let mut constraint_eval = F::ZERO;
-			for (operand_id, operand_vec) in operand_vecs.iter().enumerate() {
-				for svi in operand_vec[constraint] {
-					let variant = svi.shift_variant as usize;
-					let index = (variant * Word::BITS + svi.amount as usize) * arity + operand_id;
-					constraint_eval +=
-						operand_shift_scalars[index] * r_y_tensor[svi.value_index.0 as usize];
-				}
-			}
-			F::wide_mul(constraint_eval, r_x_prime_entry)
-		})
-		.sum::<<F as WideMul>::Output>();
-	F::reduce(eval)
-}
-
 #[cfg(test)]
 mod tests {
 	use binius_field::{BinaryField128bGhash, Field, Random};
@@ -234,7 +266,7 @@ mod tests {
 	fn evaluate_monster_native_matches_generic() {
 		use binius_core::{
 			ShiftVariant,
-			constraint_system::{ShiftedValueIndex, ValueIndex},
+			constraint_system::{AndConstraint, ShiftedValueIndex, ValueIndex},
 		};
 
 		type F = BinaryField128bGhash;
@@ -253,25 +285,22 @@ mod tests {
 		let n_words = 40usize;
 		let log_constraints = 6usize;
 		let n_constraints = 1usize << log_constraints;
-		let arity = 3usize;
 
-		let owned: Vec<Vec<Operand>> = (0..arity)
+		// Arity-3 constraints (like `AndConstraint`), constraint-major: one array of operands per
+		// constraint.
+		let constraints: Vec<AndConstraint> = (0..n_constraints)
 			.map(|_| {
-				(0..n_constraints)
-					.map(|_| {
-						(0..rng.random_range(0..=3))
-							.map(|_| ShiftedValueIndex {
-								value_index: ValueIndex(rng.random_range(0..n_words) as u32),
-								shift_variant: shift_variants
-									[rng.random_range(0..SHIFT_VARIANT_COUNT)],
-								amount: rng.random_range(0..Word::BITS) as u8,
-							})
-							.collect()
-					})
-					.collect()
+				AndConstraint(std::array::from_fn(|_| {
+					(0..rng.random_range(0..=3))
+						.map(|_| ShiftedValueIndex {
+							value_index: ValueIndex(rng.random_range(0..n_words) as u32),
+							shift_variant: shift_variants[rng.random_range(0..SHIFT_VARIANT_COUNT)],
+							amount: rng.random_range(0..Word::BITS) as u8,
+						})
+						.collect()
+				}))
 			})
 			.collect();
-		let operand_vecs: Vec<Vec<&Operand>> = owned.iter().map(|v| v.iter().collect()).collect();
 
 		let r_x_prime = random_scalars::<F>(&mut rng, log_constraints);
 		let lambda = F::random(&mut rng);
@@ -279,20 +308,10 @@ mod tests {
 			std::array::from_fn(|_| F::random(&mut rng));
 		let r_y_tensor = random_scalars::<F>(&mut rng, n_words);
 
-		let generic = evaluate_monster_multilinear_for_operation::<F, F>(
-			&operand_vecs,
-			&r_x_prime,
-			lambda,
-			&shift_scalars,
-			&r_y_tensor,
-		);
-		let native = evaluate_monster_multilinear_for_operation_native::<F>(
-			&operand_vecs,
-			&r_x_prime,
-			lambda,
-			&shift_scalars,
-			&r_y_tensor,
-		);
+		let eval_fn = OperationEvalFn::new(&constraints);
+		let input = encode_operation_input(&r_x_prime, lambda, &shift_scalars, &r_y_tensor);
+		let generic = eval_fn.call::<F>(&input);
+		let native = eval_fn.call_native(&input);
 		assert_eq!(generic, native);
 	}
 
