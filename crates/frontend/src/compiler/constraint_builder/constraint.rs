@@ -59,8 +59,8 @@ impl WireImulConstraint {
 		ImulConstraint([
 			self.a.into_value_indices(wire_mapping),
 			self.b.into_value_indices(wire_mapping),
-			self.hi.into_value_indices(wire_mapping),
 			self.lo.into_value_indices(wire_mapping),
+			self.hi.into_value_indices(wire_mapping),
 		])
 	}
 

@@ -3,7 +3,7 @@
 //! The batched operand-column witnesses built from a populated batch value table.
 //!
 //! Every AND, IMUL, and BMUL constraint is projected to its fixed-arity operand columns (`[A, B]`
-//! for AND, `[A, B, HI, LO]` for IMUL, `[A_LO, A_HI, B_LO, B_HI, C_LO, C_HI]` for BMUL), one
+//! for AND, `[A, B, LO, HI]` for IMUL, `[A_LO, A_HI, B_LO, B_HI, C_LO, C_HI]` for BMUL), one
 //! column per operand, stacked over every instance in the batch. [`build_operation_witness`] is the
 //! shared arity-generic core: it projects one operand per constraint into one column.
 //! [`build_operation_columns`] wraps it for any constraint type that exposes a fixed-arity operand
@@ -253,7 +253,7 @@ where
 /// Builds the operand-column witness of a batched fixed-arity operation over every instance.
 ///
 /// This is the arity-generic core shared by every per-operation witness: BitAnd projects each
-/// constraint to its three operands `[A, B, C]`; IntMul projects to its four `[A, B, HI, LO]`.
+/// constraint to its three operands `[A, B, C]`; IntMul projects to its four `[A, B, LO, HI]`.
 /// Every constraint contributes one row per instance to each operand column, laid out
 /// constraint-major exactly as [`BatchAndCheckWitness`] documents:
 ///
@@ -495,7 +495,7 @@ fn accum_shifted_values(
 /// Builds the batched IntMul operand witness from a populated wire-major batch table.
 ///
 /// Every IMUL constraint contributes one row per instance to each of the four operand columns
-/// `A`, `B`, `HI`, `LO`, laid out constraint-major. This delegates to the constraint-generic
+/// `A`, `B`, `LO`, `HI`, laid out constraint-major. This delegates to the constraint-generic
 /// [`build_operation_columns`], which projects each constraint to its four operands.
 ///
 /// # Arguments
@@ -758,7 +758,7 @@ mod tests {
 		.unwrap()
 	}
 
-	// The arity-4 IntMul witness lays out its four operand columns [A, B, HI, LO] constraint-major,
+	// The arity-4 IntMul witness lays out its four operand columns [A, B, LO, HI] constraint-major,
 	// each row matching the single-instance operand evaluator. This is the batched IntMul witness
 	// the reduction will consume once the IntMul check is wired in.
 	#[test]
@@ -781,7 +781,7 @@ mod tests {
 		let imul_constraints = &cs.imul_constraints;
 		assert!(!imul_constraints.is_empty(), "the circuit must emit an IMUL constraint");
 
-		let [a, b, hi, lo] = build_intmul_witness(&table, constants, imul_constraints);
+		let [a, b, lo, hi] = build_intmul_witness(&table, constants, imul_constraints);
 
 		// Shape: K * n_imul rows, with K = 4.
 		let n_imul = imul_constraints.len();

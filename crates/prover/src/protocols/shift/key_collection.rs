@@ -5,9 +5,7 @@ use std::{iter, mem, ops::Range};
 
 use binius_core::{
 	ShiftVariant,
-	constraint_system::{
-		AndConstraint, BmulConstraint, ConstraintSystem, ImulConstraint, Operand, ShiftedValueIndex,
-	},
+	constraint_system::{ConstraintSystem, Operand, ShiftedValueIndex},
 	word::Word,
 };
 use binius_field::{Field, WideMul};
@@ -17,7 +15,7 @@ use binius_utils::{
 };
 use bytes::{Buf, BufMut};
 
-use super::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, PreparedOperatorData};
+use super::PreparedOperatorData;
 
 /// Represents the type of operations handled by the shift protocol.
 ///
@@ -322,6 +320,30 @@ fn update_with_operand(
 	}
 }
 
+/// Updates the list of `BuilderKey` objects with respect to every operand of every constraint of
+/// one operation.
+///
+/// Operands are indexed by their position in the constraint's operand array, which is the order
+/// the shift reduction batches them in.
+fn update_with_constraints<C, const ARITY: usize>(
+	operation: Operation,
+	constraints: &[C],
+	builder_key_lists: &mut [Vec<BuilderKey>],
+) where
+	C: AsRef<[Operand; ARITY]>,
+{
+	for operand_index in 0..ARITY {
+		update_with_operand(
+			operation,
+			operand_index,
+			constraints
+				.iter()
+				.map(|constraint| &constraint.as_ref()[operand_index]),
+			builder_key_lists,
+		);
+	}
+}
+
 /// Constructs a `KeyCollection` from a constraint system.
 pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 	// Initialize a temporary list of builder keys lists, one for each committed word.
@@ -329,59 +351,10 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 		.map(|_| Vec::new())
 		.collect();
 
-	// Update the builder keys lists with respect to each operand of each operation
-	let bitand_operand_getters: [fn(&AndConstraint) -> &Operand; BITAND_ARITY] =
-		[AndConstraint::a, AndConstraint::b, AndConstraint::c];
-	let intmul_operand_getters: [fn(&ImulConstraint) -> &Operand; INTMUL_ARITY] = [
-		ImulConstraint::a,
-		ImulConstraint::b,
-		ImulConstraint::lo,
-		ImulConstraint::hi,
-	];
-	let binmul_operand_getters: [fn(&BmulConstraint) -> &Operand; BINMUL_ARITY] = [
-		BmulConstraint::a_lo,
-		BmulConstraint::a_hi,
-		BmulConstraint::b_lo,
-		BmulConstraint::b_hi,
-		BmulConstraint::c_lo,
-		BmulConstraint::c_hi,
-	];
-
-	bitand_operand_getters
-		.iter()
-		.enumerate()
-		.for_each(|(operand_idx, get_operand)| {
-			update_with_operand(
-				Operation::BitwiseAnd,
-				operand_idx,
-				cs.and_constraints.iter().map(get_operand),
-				&mut builder_key_lists,
-			);
-		});
-
-	intmul_operand_getters
-		.iter()
-		.enumerate()
-		.for_each(|(operand_idx, get_operand)| {
-			update_with_operand(
-				Operation::IntegerMul,
-				operand_idx,
-				cs.imul_constraints.iter().map(get_operand),
-				&mut builder_key_lists,
-			);
-		});
-
-	binmul_operand_getters
-		.iter()
-		.enumerate()
-		.for_each(|(operand_idx, get_operand)| {
-			update_with_operand(
-				Operation::BinMul,
-				operand_idx,
-				cs.bmul_constraints.iter().map(get_operand),
-				&mut builder_key_lists,
-			);
-		});
+	// Update the builder keys lists with respect to each operand of each operation.
+	update_with_constraints(Operation::BitwiseAnd, &cs.and_constraints, &mut builder_key_lists);
+	update_with_constraints(Operation::IntegerMul, &cs.imul_constraints, &mut builder_key_lists);
+	update_with_constraints(Operation::BinMul, &cs.bmul_constraints, &mut builder_key_lists);
 
 	// Split the builder keys lists at the public segment boundary and build one `KeySegment`
 	// per half.

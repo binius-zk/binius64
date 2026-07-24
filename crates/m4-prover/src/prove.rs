@@ -152,11 +152,7 @@ impl IOPProver {
 		let mul = (!cs.imul_constraints.is_empty()).then(|| {
 			let columns = {
 				let _scope = tracing::debug_span!("Assemble IntMul witness").entered();
-				// `build_intmul_witness` yields `[A, B, HI, LO]`; reorder to the `[A, B, LO, HI]`
-				// operand order the IntMul witness and the shift both expect.
-				let [a, b, hi, lo] =
-					build_intmul_witness(table, &cs.constants, &cs.imul_constraints);
-				[a, b, lo, hi]
+				build_intmul_witness(table, &cs.constants, &cs.imul_constraints)
 			};
 			let output = prove_intmul::<P, _, _>(&columns, channel, alloc);
 			(columns, output)

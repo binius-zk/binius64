@@ -37,7 +37,7 @@ pub struct ConstraintSystem {
 
 impl ConstraintSystem {
 	/// Serialization format version for compatibility checking
-	pub const SERIALIZATION_VERSION: u32 = 4;
+	pub const SERIALIZATION_VERSION: u32 = 5;
 }
 
 impl ConstraintSystem {
@@ -335,7 +335,7 @@ mod tests {
 		let deserialized = ConstraintSystem::deserialize(&mut buf.as_slice()).unwrap();
 
 		// Check version
-		assert_eq!(ConstraintSystem::SERIALIZATION_VERSION, 4);
+		assert_eq!(ConstraintSystem::SERIALIZATION_VERSION, 5);
 
 		// Check value_vec_layout
 		assert_eq!(original.value_vec_layout, deserialized.value_vec_layout);
@@ -442,7 +442,7 @@ mod tests {
 		constraint_system.serialize(&mut buf).unwrap();
 
 		// Write to reference file.
-		let test_data_path = std::path::Path::new("test_data/constraint_system_v4.bin");
+		let test_data_path = std::path::Path::new("test_data/constraint_system_v5.bin");
 
 		// Create directory if it doesn't exist
 		if let Some(parent) = test_data_path.parent() {
@@ -459,9 +459,9 @@ mod tests {
 	/// This test will fail if breaking changes are made without incrementing the version.
 	#[test]
 	fn test_deserialize_from_reference_binary_file() {
-		// The v4 format adds the BMUL constraint list; the v3 format counts `n_hidden_words`
-		// without the public segment. Older files are no longer compatible.
-		let binary_data = include_bytes!("../../test_data/constraint_system_v4.bin");
+		// The v5 format stores IMUL operands as `(a, b, lo, hi)`; the v4 format ordered them
+		// `(a, b, hi, lo)`. Older files are no longer compatible.
+		let binary_data = include_bytes!("../../test_data/constraint_system_v5.bin");
 
 		let deserialized = ConstraintSystem::deserialize(&mut binary_data.as_slice()).unwrap();
 
@@ -487,7 +487,7 @@ mod tests {
 		// This is implicitly checked during deserialization, but we can also verify
 		// the file starts with the correct version bytes
 		let version_bytes = &binary_data[0..4]; // First 4 bytes should be version
-		let expected_version_bytes = 4u32.to_le_bytes(); // Version 4 in little-endian
+		let expected_version_bytes = 5u32.to_le_bytes(); // Version 5 in little-endian
 		assert_eq!(
 			version_bytes, expected_version_bytes,
 			"Binary file version mismatch. If you made breaking changes, increment ConstraintSystem::SERIALIZATION_VERSION"
@@ -562,8 +562,8 @@ mod tests {
 		cs.add_imul_constraint(ImulConstraint([
 			vec![ShiftedValueIndex::plain(ValueIndex(6))], // a: witness
 			vec![ShiftedValueIndex::plain(ValueIndex(7))], // b: witness
-			vec![ShiftedValueIndex::plain(ValueIndex(8))], // hi: internal
-			vec![ShiftedValueIndex::plain(ValueIndex(9))], // lo: internal
+			vec![ShiftedValueIndex::plain(ValueIndex(8))], // lo: internal
+			vec![ShiftedValueIndex::plain(ValueIndex(9))], // hi: internal
 		]));
 
 		let result = cs.validate_and_prepare();
@@ -643,8 +643,8 @@ mod tests {
 		cs.add_imul_constraint(ImulConstraint([
 			vec![ShiftedValueIndex::plain(ValueIndex(0))], // a: valid
 			vec![ShiftedValueIndex::plain(ValueIndex(1))], // b: valid
-			vec![ShiftedValueIndex::plain(ValueIndex(100))], // hi: WAY out of range!
 			vec![ShiftedValueIndex::plain(ValueIndex(3))], // lo: valid
+			vec![ShiftedValueIndex::plain(ValueIndex(100))], // hi: WAY out of range!
 		]));
 
 		let result = cs.validate_and_prepare();

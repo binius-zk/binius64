@@ -141,7 +141,7 @@ impl ImulConstraint {
 	/// Number of operands.
 	pub const ARITY: usize = IMUL_ARITY;
 	/// Names of the operands, in storage order.
-	pub const OPERAND_NAMES: [&'static str; IMUL_ARITY] = ["a", "b", "hi", "lo"];
+	pub const OPERAND_NAMES: [&'static str; IMUL_ARITY] = ["a", "b", "lo", "hi"];
 
 	/// A operand.
 	pub const fn a(&self) -> &Operand {
@@ -153,17 +153,17 @@ impl ImulConstraint {
 		&self.0[1]
 	}
 
-	/// HI operand.
-	///
-	/// The high 64 bits of the result of the multiplication.
-	pub const fn hi(&self) -> &Operand {
-		&self.0[2]
-	}
-
 	/// LO operand.
 	///
 	/// The low 64 bits of the result of the multiplication.
 	pub const fn lo(&self) -> &Operand {
+		&self.0[2]
+	}
+
+	/// HI operand.
+	///
+	/// The high 64 bits of the result of the multiplication.
+	pub const fn hi(&self) -> &Operand {
 		&self.0[3]
 	}
 }
@@ -302,8 +302,8 @@ mod tests {
 		let deserialized = ImulConstraint::deserialize(&mut buf.as_slice()).unwrap();
 		assert_eq!(constraint.a().len(), deserialized.a().len());
 		assert_eq!(constraint.b().len(), deserialized.b().len());
-		assert_eq!(constraint.hi().len(), deserialized.hi().len());
 		assert_eq!(constraint.lo().len(), deserialized.lo().len());
+		assert_eq!(constraint.hi().len(), deserialized.hi().len());
 	}
 
 	#[test]
