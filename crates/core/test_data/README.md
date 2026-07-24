@@ -4,7 +4,7 @@ This directory contains binary reference files used for testing serialization fo
 
 ## Files
 
-- `constraint_system_v4.bin`: Reference binary serialization of a `ConstraintSystem` using serialization version 4.
+- `constraint_system_v5.bin`: Reference binary serialization of a `ConstraintSystem` using serialization version 5.
 - `public_witness_v1.bin`: Reference binary serialization of a `PublicWitness` using serialization version 1.
 - `proof_v1.bin`: Reference binary serialization of a `Proof` using serialization version 1.
 

@@ -141,9 +141,9 @@ pub fn compute_bitand_images(constraints: &[AndConstraint], witness: &ValueVec) 
 	let (a_image, b_image, c_image) = constraints
 		.iter()
 		.map(|constraint| {
-			let a = witness.eval_operand(&constraint.a);
-			let b = witness.eval_operand(&constraint.b);
-			let c = witness.eval_operand(&constraint.c);
+			let a = witness.eval_operand(constraint.a());
+			let b = witness.eval_operand(constraint.b());
+			let c = witness.eval_operand(constraint.c());
 			(a, b, c)
 		})
 		.multiunzip();
@@ -152,17 +152,17 @@ pub fn compute_bitand_images(constraints: &[AndConstraint], witness: &ValueVec) 
 
 // Compute the image of the witness applied to the IMUL constraints
 fn compute_intmul_images(constraints: &[ImulConstraint], witness: &ValueVec) -> [Vec<Word>; 4] {
-	let (a_image, b_image, hi_image, lo_image) = constraints
+	let (a_image, b_image, lo_image, hi_image) = constraints
 		.iter()
 		.map(|constraint| {
-			let a = witness.eval_operand(&constraint.a);
-			let b = witness.eval_operand(&constraint.b);
-			let hi = witness.eval_operand(&constraint.hi);
-			let lo = witness.eval_operand(&constraint.lo);
-			(a, b, hi, lo)
+			let a = witness.eval_operand(constraint.a());
+			let b = witness.eval_operand(constraint.b());
+			let lo = witness.eval_operand(constraint.lo());
+			let hi = witness.eval_operand(constraint.hi());
+			(a, b, lo, hi)
 		})
 		.multiunzip();
-	[a_image, b_image, hi_image, lo_image]
+	[a_image, b_image, lo_image, hi_image]
 }
 
 // Evaluate the image of the witness applied to the AND or IMUL constraints

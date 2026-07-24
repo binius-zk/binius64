@@ -1,5 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
+use std::iter;
+
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
 use bytes::{Buf, BufMut};
 
@@ -35,7 +37,7 @@ pub struct ConstraintSystem {
 
 impl ConstraintSystem {
 	/// Serialization format version for compatibility checking
-	pub const SERIALIZATION_VERSION: u32 = 4;
+	pub const SERIALIZATION_VERSION: u32 = 5;
 }
 
 impl ConstraintSystem {
@@ -72,39 +74,18 @@ impl ConstraintSystem {
 		// Validate the value vector layout
 		self.value_vec_layout.validate()?;
 
-		for i in 0..self.and_constraints.len() {
-			validate_operand(&self.and_constraints[i].a, &self.value_vec_layout, "and", i, "a")?;
-			validate_operand(&self.and_constraints[i].b, &self.value_vec_layout, "and", i, "b")?;
-			validate_operand(&self.and_constraints[i].c, &self.value_vec_layout, "and", i, "c")?;
+		for (i, and) in self.and_constraints.iter().enumerate() {
+			for (operand, name) in iter::zip(&and.0, AndConstraint::OPERAND_NAMES) {
+				validate_operand(operand, &self.value_vec_layout, "and", i, name)?;
+			}
 		}
-		for i in 0..self.imul_constraints.len() {
-			validate_operand(&self.imul_constraints[i].a, &self.value_vec_layout, "imul", i, "a")?;
-			validate_operand(&self.imul_constraints[i].b, &self.value_vec_layout, "imul", i, "b")?;
-			validate_operand(
-				&self.imul_constraints[i].lo,
-				&self.value_vec_layout,
-				"imul",
-				i,
-				"lo",
-			)?;
-			validate_operand(
-				&self.imul_constraints[i].hi,
-				&self.value_vec_layout,
-				"imul",
-				i,
-				"hi",
-			)?;
+		for (i, imul) in self.imul_constraints.iter().enumerate() {
+			for (operand, name) in iter::zip(&imul.0, ImulConstraint::OPERAND_NAMES) {
+				validate_operand(operand, &self.value_vec_layout, "imul", i, name)?;
+			}
 		}
-		for i in 0..self.bmul_constraints.len() {
-			let bmul = &self.bmul_constraints[i];
-			for (operand, name) in [
-				(&bmul.a_lo, "a_lo"),
-				(&bmul.a_hi, "a_hi"),
-				(&bmul.b_lo, "b_lo"),
-				(&bmul.b_hi, "b_hi"),
-				(&bmul.c_lo, "c_lo"),
-				(&bmul.c_hi, "c_hi"),
-			] {
+		for (i, bmul) in self.bmul_constraints.iter().enumerate() {
+			for (operand, name) in iter::zip(&bmul.0, BmulConstraint::OPERAND_NAMES) {
 				validate_operand(operand, &self.value_vec_layout, "bmul", i, name)?;
 			}
 		}
@@ -319,21 +300,21 @@ mod tests {
 			),
 		];
 
-		let imul_constraints = vec![ImulConstraint {
-			a: vec![ShiftedValueIndex::plain(ValueIndex(0))],
-			b: vec![ShiftedValueIndex::plain(ValueIndex(1))],
-			hi: vec![ShiftedValueIndex::plain(ValueIndex(2))],
-			lo: vec![ShiftedValueIndex::plain(ValueIndex(3))],
-		}];
+		let imul_constraints = vec![ImulConstraint([
+			vec![ShiftedValueIndex::plain(ValueIndex(0))],
+			vec![ShiftedValueIndex::plain(ValueIndex(1))],
+			vec![ShiftedValueIndex::plain(ValueIndex(2))],
+			vec![ShiftedValueIndex::plain(ValueIndex(3))],
+		])];
 
-		let bmul_constraints = vec![BmulConstraint {
-			a_lo: vec![ShiftedValueIndex::plain(ValueIndex(0))],
-			a_hi: vec![ShiftedValueIndex::plain(ValueIndex(1))],
-			b_lo: vec![ShiftedValueIndex::plain(ValueIndex(2))],
-			b_hi: vec![ShiftedValueIndex::plain(ValueIndex(3))],
-			c_lo: vec![ShiftedValueIndex::plain(ValueIndex(4))],
-			c_hi: vec![ShiftedValueIndex::sll(ValueIndex(0), 5)],
-		}];
+		let bmul_constraints = vec![BmulConstraint([
+			vec![ShiftedValueIndex::plain(ValueIndex(0))],
+			vec![ShiftedValueIndex::plain(ValueIndex(1))],
+			vec![ShiftedValueIndex::plain(ValueIndex(2))],
+			vec![ShiftedValueIndex::plain(ValueIndex(3))],
+			vec![ShiftedValueIndex::plain(ValueIndex(4))],
+			vec![ShiftedValueIndex::sll(ValueIndex(0), 5)],
+		])];
 
 		ConstraintSystem::new(
 			constants,
@@ -354,7 +335,7 @@ mod tests {
 		let deserialized = ConstraintSystem::deserialize(&mut buf.as_slice()).unwrap();
 
 		// Check version
-		assert_eq!(ConstraintSystem::SERIALIZATION_VERSION, 4);
+		assert_eq!(ConstraintSystem::SERIALIZATION_VERSION, 5);
 
 		// Check value_vec_layout
 		assert_eq!(original.value_vec_layout, deserialized.value_vec_layout);
@@ -461,7 +442,7 @@ mod tests {
 		constraint_system.serialize(&mut buf).unwrap();
 
 		// Write to reference file.
-		let test_data_path = std::path::Path::new("test_data/constraint_system_v4.bin");
+		let test_data_path = std::path::Path::new("test_data/constraint_system_v5.bin");
 
 		// Create directory if it doesn't exist
 		if let Some(parent) = test_data_path.parent() {
@@ -478,9 +459,9 @@ mod tests {
 	/// This test will fail if breaking changes are made without incrementing the version.
 	#[test]
 	fn test_deserialize_from_reference_binary_file() {
-		// The v4 format adds the BMUL constraint list; the v3 format counts `n_hidden_words`
-		// without the public segment. Older files are no longer compatible.
-		let binary_data = include_bytes!("../../test_data/constraint_system_v4.bin");
+		// The v5 format stores IMUL operands as `(a, b, lo, hi)`; the v4 format ordered them
+		// `(a, b, hi, lo)`. Older files are no longer compatible.
+		let binary_data = include_bytes!("../../test_data/constraint_system_v5.bin");
 
 		let deserialized = ConstraintSystem::deserialize(&mut binary_data.as_slice()).unwrap();
 
@@ -506,7 +487,7 @@ mod tests {
 		// This is implicitly checked during deserialization, but we can also verify
 		// the file starts with the correct version bytes
 		let version_bytes = &binary_data[0..4]; // First 4 bytes should be version
-		let expected_version_bytes = 4u32.to_le_bytes(); // Version 4 in little-endian
+		let expected_version_bytes = 5u32.to_le_bytes(); // Version 5 in little-endian
 		assert_eq!(
 			version_bytes, expected_version_bytes,
 			"Binary file version mismatch. If you made breaking changes, increment ConstraintSystem::SERIALIZATION_VERSION"
@@ -578,12 +559,12 @@ mod tests {
 			vec![ValueIndex(4), ValueIndex(5)], // witness
 		));
 
-		cs.add_imul_constraint(ImulConstraint {
-			a: vec![ShiftedValueIndex::plain(ValueIndex(6))], // witness
-			b: vec![ShiftedValueIndex::plain(ValueIndex(7))], // witness
-			hi: vec![ShiftedValueIndex::plain(ValueIndex(8))], // internal
-			lo: vec![ShiftedValueIndex::plain(ValueIndex(9))], // internal
-		});
+		cs.add_imul_constraint(ImulConstraint([
+			vec![ShiftedValueIndex::plain(ValueIndex(6))], // a: witness
+			vec![ShiftedValueIndex::plain(ValueIndex(7))], // b: witness
+			vec![ShiftedValueIndex::plain(ValueIndex(8))], // lo: internal
+			vec![ShiftedValueIndex::plain(ValueIndex(9))], // hi: internal
+		]));
 
 		let result = cs.validate_and_prepare();
 		assert!(
@@ -659,12 +640,12 @@ mod tests {
 		);
 
 		// Add IMUL constraint with out-of-range index in 'hi' operand
-		cs.add_imul_constraint(ImulConstraint {
-			a: vec![ShiftedValueIndex::plain(ValueIndex(0))], // valid
-			b: vec![ShiftedValueIndex::plain(ValueIndex(1))], // valid
-			hi: vec![ShiftedValueIndex::plain(ValueIndex(100))], // WAY out of range!
-			lo: vec![ShiftedValueIndex::plain(ValueIndex(3))], // valid
-		});
+		cs.add_imul_constraint(ImulConstraint([
+			vec![ShiftedValueIndex::plain(ValueIndex(0))], // a: valid
+			vec![ShiftedValueIndex::plain(ValueIndex(1))], // b: valid
+			vec![ShiftedValueIndex::plain(ValueIndex(3))], // lo: valid
+			vec![ShiftedValueIndex::plain(ValueIndex(100))], // hi: WAY out of range!
+		]));
 
 		let result = cs.validate_and_prepare();
 		assert!(result.is_err(), "Should reject IMUL constraint with out-of-range index");
@@ -706,14 +687,14 @@ mod tests {
 		);
 
 		// Add BMUL constraint with out-of-range index in 'c_hi' operand
-		cs.add_bmul_constraint(BmulConstraint {
-			a_lo: vec![ShiftedValueIndex::plain(ValueIndex(0))], // valid const
-			a_hi: vec![ShiftedValueIndex::plain(ValueIndex(2))], // valid inout
-			b_lo: vec![ShiftedValueIndex::plain(ValueIndex(3))], // valid inout
-			b_hi: vec![ShiftedValueIndex::plain(ValueIndex(4))], // valid witness
-			c_lo: vec![ShiftedValueIndex::plain(ValueIndex(5))], // valid witness
-			c_hi: vec![ShiftedValueIndex::plain(ValueIndex(100))], // WAY out of range!
-		});
+		cs.add_bmul_constraint(BmulConstraint([
+			vec![ShiftedValueIndex::plain(ValueIndex(0))], // a_lo: valid const
+			vec![ShiftedValueIndex::plain(ValueIndex(2))], // a_hi: valid inout
+			vec![ShiftedValueIndex::plain(ValueIndex(3))], // b_lo: valid inout
+			vec![ShiftedValueIndex::plain(ValueIndex(4))], // b_hi: valid witness
+			vec![ShiftedValueIndex::plain(ValueIndex(5))], // c_lo: valid witness
+			vec![ShiftedValueIndex::plain(ValueIndex(100))], // c_hi: WAY out of range!
+		]));
 
 		let result = cs.validate_and_prepare();
 		assert!(result.is_err(), "Should reject BMUL constraint with out-of-range index");

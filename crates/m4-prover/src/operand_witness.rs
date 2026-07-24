@@ -3,9 +3,11 @@
 //! The batched operand-column witnesses built from a populated batch value table.
 //!
 //! Every AND, IMUL, and BMUL constraint is projected to its fixed-arity operand columns (`[A, B]`
-//! for AND, `[A, B, HI, LO]` for IMUL, `[A_LO, A_HI, B_LO, B_HI, C_LO, C_HI]` for BMUL), one
+//! for AND, `[A, B, LO, HI]` for IMUL, `[A_LO, A_HI, B_LO, B_HI, C_LO, C_HI]` for BMUL), one
 //! column per operand, stacked over every instance in the batch. [`build_operation_witness`] is the
 //! shared arity-generic core: it projects one operand per constraint into one column.
+//! [`build_operation_columns`] wraps it for any constraint type that exposes a fixed-arity operand
+//! array, building the leading columns of the array in parallel.
 //! [`BatchAndCheckWitness`] builds the two AND columns and drives the AND-check zerocheck.
 //! The AND check's C column is never materialized: the reduction derives `C = A & B` on the fly.
 //! [`build_intmul_witness`] builds the four IntMul columns; [`build_binmul_witness`] builds the six
@@ -27,7 +29,7 @@ use binius_math::BinarySubspace;
 use binius_prover::and_reduction::prover::OblongZerocheckProver;
 use binius_utils::{
 	checked_arithmetics::{checked_log_2, log2_strict_usize},
-	rayon::{self, prelude::*},
+	rayon::prelude::*,
 };
 use binius_verifier::{
 	config::{B128, PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES},
@@ -99,13 +101,7 @@ impl BatchAndCheckWitness {
 		constants: &[Word],
 		and_constraints: &[AndConstraint],
 	) -> Self {
-		let a_operand_iter = and_constraints.par_iter().map(|constraint| &constraint.a);
-		let b_operand_iter = and_constraints.par_iter().map(|constraint| &constraint.b);
-		let (a, b) = rayon::join(
-			|| build_operation_witness(table, constants, a_operand_iter),
-			|| build_operation_witness(table, constants, b_operand_iter),
-		);
-
+		let [a, b] = build_operation_columns(table, constants, and_constraints);
 		Self { a, b }
 	}
 
@@ -208,10 +204,56 @@ impl BatchAndCheckWitness {
 	}
 }
 
+/// Builds the leading `N_COLS` operand columns of a batched fixed-arity operation.
+///
+/// This is the constraint-generic entry point to [`build_operation_witness`]: it projects every
+/// constraint to its operand array and builds one column per operand position, all in parallel.
+/// The columns follow the constraint type's storage order, so column `i` holds operand `i` of
+/// every constraint.
+///
+/// `N_COLS` may be smaller than `ARITY`, in which case the trailing operands are never evaluated.
+/// BitAnd uses that to skip its `C` operand: the reduction derives `C = A & B` instead.
+///
+/// # Arguments
+///
+/// - `table`: the wire-major batch witness holding every instance's hidden words.
+/// - `constants`: the circuit's constant words, shared by every instance.
+/// - `constraints`: the per-instance constraints, shared by every instance. Pass constraints from a
+///   prepared constraint system, so their count is a power of two.
+///
+/// # Panics
+///
+/// Panics if `N_COLS` exceeds `ARITY`, or if the constraint count is not a power of two.
+fn build_operation_columns<C, const ARITY: usize, const N_COLS: usize>(
+	table: &ValueTable,
+	constants: &[Word],
+	constraints: &[C],
+) -> [Vec<Word>; N_COLS]
+where
+	C: AsRef<[Operand; ARITY]> + Sync,
+{
+	assert!(N_COLS <= ARITY, "N_COLS must not exceed the constraint arity");
+
+	(0..N_COLS)
+		.into_par_iter()
+		.map(|op_idx| {
+			build_operation_witness(
+				table,
+				constants,
+				constraints
+					.par_iter()
+					.map(move |constraint| &constraint.as_ref()[op_idx]),
+			)
+		})
+		.collect::<Vec<_>>()
+		.try_into()
+		.expect("source iterator has N_COLS elements")
+}
+
 /// Builds the operand-column witness of a batched fixed-arity operation over every instance.
 ///
 /// This is the arity-generic core shared by every per-operation witness: BitAnd projects each
-/// constraint to its three operands `[A, B, C]`; IntMul projects to its four `[A, B, HI, LO]`.
+/// constraint to its three operands `[A, B, C]`; IntMul projects to its four `[A, B, LO, HI]`.
 /// Every constraint contributes one row per instance to each operand column, laid out
 /// constraint-major exactly as [`BatchAndCheckWitness`] documents:
 ///
@@ -453,8 +495,8 @@ fn accum_shifted_values(
 /// Builds the batched IntMul operand witness from a populated wire-major batch table.
 ///
 /// Every IMUL constraint contributes one row per instance to each of the four operand columns
-/// `A`, `B`, `HI`, `LO`, laid out constraint-major. This delegates to the arity-generic
-/// `build_operation_witness`, projecting each constraint to its four operands.
+/// `A`, `B`, `LO`, `HI`, laid out constraint-major. This delegates to the constraint-generic
+/// [`build_operation_columns`], which projects each constraint to its four operands.
 ///
 /// # Arguments
 ///
@@ -472,34 +514,16 @@ pub fn build_intmul_witness(
 	constants: &[Word],
 	imul_constraints: &[ImulConstraint],
 ) -> [Vec<Word>; 4] {
-	let a_operand_iter = imul_constraints.par_iter().map(|constraint| &constraint.a);
-	let b_operand_iter = imul_constraints.par_iter().map(|constraint| &constraint.b);
-	let hi_operand_iter = imul_constraints.par_iter().map(|constraint| &constraint.hi);
-	let lo_operand_iter = imul_constraints.par_iter().map(|constraint| &constraint.lo);
-	let ((a, b), (hi, lo)) = rayon::join(
-		|| {
-			rayon::join(
-				|| build_operation_witness(table, constants, a_operand_iter),
-				|| build_operation_witness(table, constants, b_operand_iter),
-			)
-		},
-		|| {
-			rayon::join(
-				|| build_operation_witness(table, constants, hi_operand_iter),
-				|| build_operation_witness(table, constants, lo_operand_iter),
-			)
-		},
-	);
-	[a, b, hi, lo]
+	build_operation_columns(table, constants, imul_constraints)
 }
 
 /// Builds the batched BinMul operand witness from a populated wire-major batch table.
 ///
 /// Every BMUL constraint contributes one row per instance to each of the six operand columns
 /// `A_LO`, `A_HI`, `B_LO`, `B_HI`, `C_LO`, `C_HI`, laid out constraint-major. This delegates to the
-/// arity-generic `build_operation_witness`, projecting each constraint to its six operands. The
-/// operands are the `(lo, hi)` word pairs carrying the two GHASH-field multiplicands and their
-/// product.
+/// constraint-generic [`build_operation_columns`], which projects each constraint to its six
+/// operands. The operands are the `(lo, hi)` word pairs carrying the two GHASH-field multiplicands
+/// and their product.
 ///
 /// # Arguments
 ///
@@ -517,49 +541,7 @@ pub fn build_binmul_witness(
 	constants: &[Word],
 	bmul_constraints: &[BmulConstraint],
 ) -> [Vec<Word>; 6] {
-	let a_lo_iter = bmul_constraints
-		.par_iter()
-		.map(|constraint| &constraint.a_lo);
-	let a_hi_iter = bmul_constraints
-		.par_iter()
-		.map(|constraint| &constraint.a_hi);
-	let b_lo_iter = bmul_constraints
-		.par_iter()
-		.map(|constraint| &constraint.b_lo);
-	let b_hi_iter = bmul_constraints
-		.par_iter()
-		.map(|constraint| &constraint.b_hi);
-	let c_lo_iter = bmul_constraints
-		.par_iter()
-		.map(|constraint| &constraint.c_lo);
-	let c_hi_iter = bmul_constraints
-		.par_iter()
-		.map(|constraint| &constraint.c_hi);
-	let (((a_lo, a_hi), (b_lo, b_hi)), (c_lo, c_hi)) = rayon::join(
-		|| {
-			rayon::join(
-				|| {
-					rayon::join(
-						|| build_operation_witness(table, constants, a_lo_iter),
-						|| build_operation_witness(table, constants, a_hi_iter),
-					)
-				},
-				|| {
-					rayon::join(
-						|| build_operation_witness(table, constants, b_lo_iter),
-						|| build_operation_witness(table, constants, b_hi_iter),
-					)
-				},
-			)
-		},
-		|| {
-			rayon::join(
-				|| build_operation_witness(table, constants, c_lo_iter),
-				|| build_operation_witness(table, constants, c_hi_iter),
-			)
-		},
-	);
-	[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi]
+	build_operation_columns(table, constants, bmul_constraints)
 }
 
 #[cfg(test)]
@@ -682,8 +664,8 @@ mod tests {
 		let mut a = Vec::new();
 		let mut b = Vec::new();
 		for constraint in and_constraints {
-			a.push(vv.eval_operand(&constraint.a));
-			b.push(vv.eval_operand(&constraint.b));
+			a.push(vv.eval_operand(constraint.a()));
+			b.push(vv.eval_operand(constraint.b()));
 		}
 		(a, b)
 	}
@@ -776,7 +758,7 @@ mod tests {
 		.unwrap()
 	}
 
-	// The arity-4 IntMul witness lays out its four operand columns [A, B, HI, LO] constraint-major,
+	// The arity-4 IntMul witness lays out its four operand columns [A, B, LO, HI] constraint-major,
 	// each row matching the single-instance operand evaluator. This is the batched IntMul witness
 	// the reduction will consume once the IntMul check is wired in.
 	#[test]
@@ -799,7 +781,7 @@ mod tests {
 		let imul_constraints = &cs.imul_constraints;
 		assert!(!imul_constraints.is_empty(), "the circuit must emit an IMUL constraint");
 
-		let [a, b, hi, lo] = build_intmul_witness(&table, constants, imul_constraints);
+		let [a, b, lo, hi] = build_intmul_witness(&table, constants, imul_constraints);
 
 		// Shape: K * n_imul rows, with K = 4.
 		let n_imul = imul_constraints.len();
@@ -814,10 +796,10 @@ mod tests {
 			let vv = table.instance_value_vec(instance, constants);
 			for (j, con) in imul_constraints.iter().enumerate() {
 				let idx = j * n_instances + instance;
-				assert_eq!(a[idx], vv.eval_operand(&con.a));
-				assert_eq!(b[idx], vv.eval_operand(&con.b));
-				assert_eq!(hi[idx], vv.eval_operand(&con.hi));
-				assert_eq!(lo[idx], vv.eval_operand(&con.lo));
+				assert_eq!(a[idx], vv.eval_operand(con.a()));
+				assert_eq!(b[idx], vv.eval_operand(con.b()));
+				assert_eq!(hi[idx], vv.eval_operand(con.hi()));
+				assert_eq!(lo[idx], vv.eval_operand(con.lo()));
 			}
 		}
 	}
@@ -912,12 +894,12 @@ mod tests {
 			let vv = table.instance_value_vec(instance, constants);
 			for (j, con) in bmul_constraints.iter().enumerate() {
 				let idx = j * n_instances + instance;
-				assert_eq!(a_lo[idx], vv.eval_operand(&con.a_lo));
-				assert_eq!(a_hi[idx], vv.eval_operand(&con.a_hi));
-				assert_eq!(b_lo[idx], vv.eval_operand(&con.b_lo));
-				assert_eq!(b_hi[idx], vv.eval_operand(&con.b_hi));
-				assert_eq!(c_lo[idx], vv.eval_operand(&con.c_lo));
-				assert_eq!(c_hi[idx], vv.eval_operand(&con.c_hi));
+				assert_eq!(a_lo[idx], vv.eval_operand(con.a_lo()));
+				assert_eq!(a_hi[idx], vv.eval_operand(con.a_hi()));
+				assert_eq!(b_lo[idx], vv.eval_operand(con.b_lo()));
+				assert_eq!(b_hi[idx], vv.eval_operand(con.b_hi()));
+				assert_eq!(c_lo[idx], vv.eval_operand(con.c_lo()));
+				assert_eq!(c_hi[idx], vv.eval_operand(con.c_hi()));
 			}
 		}
 	}
@@ -1020,12 +1002,12 @@ mod tests {
 		let y = c.circuit.witness_index(c.y);
 		let z = c.circuit.witness_index(c.z);
 		let and_constraints = vec![
-			AndConstraint {
+			AndConstraint([
 				// A mixes a shifted and an unshifted term, exercising both accumulator paths.
-				a: vec![ShiftedValueIndex::sll(x, 3), ShiftedValueIndex::plain(y)],
-				b: vec![ShiftedValueIndex::srl(y, 5)],
-				c: vec![ShiftedValueIndex::sar(z, 7)],
-			},
+				vec![ShiftedValueIndex::sll(x, 3), ShiftedValueIndex::plain(y)],
+				vec![ShiftedValueIndex::srl(y, 5)],
+				vec![ShiftedValueIndex::sar(z, 7)],
+			]),
 			// An empty operand set: its column must stay at the zeroed initial value.
 			AndConstraint::default(),
 		];
@@ -1033,7 +1015,7 @@ mod tests {
 		// Sanity: at least one operand term really is shifted, so the else-branch runs.
 		let shifted = and_constraints
 			.iter()
-			.flat_map(|con| [&con.a, &con.b])
+			.flat_map(|con| [con.a(), con.b()])
 			.any(|op| {
 				op.iter()
 					.any(|sv| sv.shift_variant != ShiftVariant::Sll || sv.amount != 0)

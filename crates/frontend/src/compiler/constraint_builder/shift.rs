@@ -209,27 +209,27 @@ mod tests {
 
 			let and_c = &and_constraints[0];
 
-			assert_eq!(and_c.a.len(), 2);
+			assert_eq!(and_c.a().len(), 2);
 			assert!(
 				and_c
-					.a
+					.a()
 					.iter()
 					.any(|svi| svi.value_index == ValueIndex(0) && svi.amount == 0)
 			);
 			assert!(
 				and_c
-					.a
+					.a()
 					.iter()
 					.any(|svi| svi.value_index == ValueIndex(1) && svi.amount == 0)
 			);
 
-			assert_eq!(and_c.b.len(), 1);
-			assert_eq!(and_c.b[0].value_index, ValueIndex(3));
-			assert_eq!(and_c.b[0].amount, 0);
+			assert_eq!(and_c.b().len(), 1);
+			assert_eq!(and_c.b()[0].value_index, ValueIndex(3));
+			assert_eq!(and_c.b()[0].amount, 0);
 
-			assert_eq!(and_c.c.len(), 1);
-			assert_eq!(and_c.c[0].value_index, ValueIndex(2));
-			assert_eq!(and_c.c[0].amount, 0);
+			assert_eq!(and_c.c().len(), 1);
+			assert_eq!(and_c.c()[0].value_index, ValueIndex(2));
+			assert_eq!(and_c.c()[0].amount, 0);
 		}
 
 		// c = rotr(a, 5) ^ b  ->  native rotr(a, 5).
@@ -248,15 +248,15 @@ mod tests {
 			assert_eq!(imul_constraints.len(), 0);
 
 			let and_c = &and_constraints[0];
-			assert_eq!(and_c.a.len(), 2);
-			assert!(and_c.a.iter().any(|svi| {
+			assert_eq!(and_c.a().len(), 2);
+			assert!(and_c.a().iter().any(|svi| {
 				svi.value_index == ValueIndex(0)
 					&& svi.amount == 5
 					&& matches!(svi.shift_variant, ShiftVariant::Rotr)
 			}));
 			assert!(
 				and_c
-					.a
+					.a()
 					.iter()
 					.any(|svi| svi.value_index == ValueIndex(1) && svi.amount == 0)
 			);
@@ -292,17 +292,17 @@ mod tests {
 			assert_eq!(and_constraints.len(), 1);
 			let and_c = &and_constraints[0];
 
-			assert_eq!(and_c.a.len(), 1);
-			assert_eq!(and_c.a[0].value_index, ValueIndex(0));
-			assert_eq!(and_c.a[0].amount, 0);
+			assert_eq!(and_c.a().len(), 1);
+			assert_eq!(and_c.a()[0].value_index, ValueIndex(0));
+			assert_eq!(and_c.a()[0].amount, 0);
 
-			assert_eq!(and_c.b.len(), 1);
-			assert_eq!(and_c.b[0].value_index, ValueIndex(1));
-			assert_eq!(and_c.b[0].amount, 0);
+			assert_eq!(and_c.b().len(), 1);
+			assert_eq!(and_c.b()[0].value_index, ValueIndex(1));
+			assert_eq!(and_c.b()[0].amount, 0);
 
-			assert_eq!(and_c.c.len(), 1);
-			assert_eq!(and_c.c[0].value_index, ValueIndex(2));
-			assert_eq!(and_c.c[0].amount, 0);
+			assert_eq!(and_c.c().len(), 1);
+			assert_eq!(and_c.c()[0].value_index, ValueIndex(2));
+			assert_eq!(and_c.c()[0].amount, 0);
 		}
 
 		// a & rotr(b, 8) = c  ->  b keeps native rotr(8).
@@ -319,8 +319,8 @@ mod tests {
 
 			assert_eq!(and_constraints.len(), 1);
 			let and_c = &and_constraints[0];
-			assert_eq!(and_c.b.len(), 1);
-			assert!(and_c.b.iter().any(|svi| {
+			assert_eq!(and_c.b().len(), 1);
+			assert!(and_c.b().iter().any(|svi| {
 				svi.value_index == ValueIndex(1)
 					&& svi.amount == 8
 					&& matches!(svi.shift_variant, ShiftVariant::Rotr)

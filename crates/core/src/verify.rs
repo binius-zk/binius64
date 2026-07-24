@@ -10,9 +10,9 @@ use crate::{
 
 /// Verifies that an AND constraint is satisfied: (A & B) ^ C = 0
 pub fn verify_and_constraint(witness: &ValueVec, constraint: &AndConstraint) -> Result<(), String> {
-	let Word(a) = witness.eval_operand(&constraint.a);
-	let Word(b) = witness.eval_operand(&constraint.b);
-	let Word(c) = witness.eval_operand(&constraint.c);
+	let Word(a) = witness.eval_operand(constraint.a());
+	let Word(b) = witness.eval_operand(constraint.b());
+	let Word(c) = witness.eval_operand(constraint.c());
 
 	let result = (a & b) ^ c;
 	if result != 0 {
@@ -29,10 +29,10 @@ pub fn verify_imul_constraint(
 	witness: &ValueVec,
 	constraint: &ImulConstraint,
 ) -> Result<(), String> {
-	let Word(a) = witness.eval_operand(&constraint.a);
-	let Word(b) = witness.eval_operand(&constraint.b);
-	let Word(lo) = witness.eval_operand(&constraint.lo);
-	let Word(hi) = witness.eval_operand(&constraint.hi);
+	let Word(a) = witness.eval_operand(constraint.a());
+	let Word(b) = witness.eval_operand(constraint.b());
+	let Word(lo) = witness.eval_operand(constraint.lo());
+	let Word(hi) = witness.eval_operand(constraint.hi());
 
 	let a_val = a as u128;
 	let b_val = b as u128;
