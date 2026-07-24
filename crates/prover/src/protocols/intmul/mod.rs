@@ -5,6 +5,7 @@ pub mod prove;
 pub mod witness;
 
 pub use error::Error;
+pub use prove::prove;
 
 #[cfg(test)]
 mod tests;

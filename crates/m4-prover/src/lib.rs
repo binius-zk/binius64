@@ -10,6 +10,6 @@ mod shift;
 mod test_utils;
 mod value_table;
 
-pub use operand_witness::BatchAndCheckWitness;
+pub use operand_witness::build_operation_columns;
 pub use prove::{IOPProver, Prover};
 pub use value_table::{BatchWitnessFiller, ValueTable};

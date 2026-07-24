@@ -40,8 +40,43 @@ use binius_verifier::protocols::intmul::common::{
 use either::Either;
 use itertools::izip;
 
-use super::witness::{Witness, limb_index, two_valued_field_buffer};
+use super::{
+	error::Error,
+	witness::{Witness, limb_index, two_valued_field_buffer},
+};
 use crate::fold_word::{fold_across_words, fold_words};
+
+/// Proves the integer multiplication (IntMul) reduction over the four operand columns.
+///
+/// The four `columns` are the multiplicand `a`, the multiplicand `b`, and the product's low and
+/// high words, in the order `[a, b, lo, hi]`, each of power-of-two length. This builds the
+/// [`Witness`], drives an [`IntMulProver`], and reduces the multiplication relation to per-bit
+/// evaluation claims on the four columns at a common point. See [`IntMulProver::prove`] for the
+/// protocol description and [`IntMulOutput`] for the output shape.
+///
+/// # Errors
+///
+/// Returns an error when the operand columns do not have a power-of-two length or their lengths
+/// disagree.
+pub fn prove<A, F, P, Channel>(
+	columns: [&[Word]; 4],
+	channel: &mut Channel,
+	alloc: &A,
+) -> Result<IntMulOutput<F>, Error>
+where
+	A: Allocator,
+	F: BinaryField<Underlier: Divisible<u64>>,
+	P: PackedField<Scalar = F>,
+	Channel: IOPProverChannel<P>,
+{
+	let [a, b, lo, hi] = columns;
+
+	let witness = tracing::debug_span!("Build IntMul witness")
+		.in_scope(|| Witness::<_, P>::new(alloc, a, b, lo, hi))?;
+
+	let mut prover = IntMulProver::new(0, channel, alloc);
+	Ok(prover.prove(witness))
+}
 
 /// A helper structure that encapsulates switchover settings and the prover channel for
 /// the integer multiplication protocol.
