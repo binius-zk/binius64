@@ -73,21 +73,38 @@ pub type FoldedWord<F> = [F; Word::BITS];
 /// # Panics
 ///
 /// Panics if `r_rho.len()` does not equal the batch dimension.
-pub fn fold_instances<F: BinaryField>(table: &ValueTable, r_rho: &[F]) -> Vec<FoldedWord<F>> {
+pub fn fold_instances<F: BinaryField, A: Allocator>(
+	table: &ValueTable,
+	r_rho: &[F],
+	alloc: &A,
+) -> A::Vec<FoldedWord<F>> {
 	assert_eq!(r_rho.len(), table.log_instances(), "r_rho must match the batch dimension");
 
 	// Build the instance-fold tables once; the lookups and weights depend only on r_rho.
 	let folder = WordFolder::<F>::new(r_rho);
 
-	// Each output chunk holds one committed word position:
-	//     out[w * Word::BITS + b] = sum_rho eq(r_rho, rho) * bit_b(word[rho][w]).
-	// The word positions are independent, so fold them in parallel.
-	// Positions beyond the committed count keep their zero padding.
+	// Each output element holds one committed word position:
+	//     out[w][b] = sum_rho eq(r_rho, rho) * bit_b(word[rho][w]).
+	// The word positions are independent, so fold them in parallel, one output element per task.
+	//
+	// The table stores exactly `n_hidden_words << log_instances` words, so chunking it by the
+	// instance count yields exactly one chunk per output element. `zip` truncates to the shorter
+	// side, so this equality is what makes the loop below cover every element; assert it rather
+	// than rely on a `ValueTable` invariant stated in another module.
+	let n_words = table.n_hidden_words();
+	debug_assert_eq!(table.as_words().len(), n_words << table.log_instances());
+	let mut folded = alloc.alloc::<FoldedWord<F>>(n_words);
 	table
 		.as_words()
 		.par_chunks(1 << table.log_instances())
-		.map(|instance_words| folder.fold(instance_words))
-		.collect()
+		.zip(folded.spare_capacity_mut())
+		.for_each(|(instance_words, out)| {
+			out.write(folder.fold(instance_words));
+		});
+	// SAFETY: the chunks and the output elements are in one-to-one correspondence by the length
+	// equality asserted above, so the loop writes each of the `n_words` elements exactly once.
+	unsafe { folded.set_len(n_words) };
+	folded
 }
 
 /// Proves the batched shift-reduction, reducing the bitand and intmul evaluation claims to a single
@@ -425,7 +442,7 @@ mod tests {
 
 			// Route A: fold the instance axis, giving one FoldedWord per committed word, then
 			// evaluate that (bit, word) multilinear at r.
-			let folded = fold_instances::<B128>(&table, &r_rho);
+			let folded = fold_instances::<B128, _>(&table, &r_rho, &GlobalAllocator);
 			let (r_bit, r_wire) = r.split_at(Word::LOG_BITS);
 			let lhs = evaluate_folded_witness(&folded, r_bit, r_wire);
 
@@ -549,7 +566,7 @@ mod tests {
 
 		// The hidden witness folded over instances (one FoldedWord per committed word), and the
 		// public constants.
-		let folded_witness = fold_instances::<B128>(&table, &r_rho);
+		let folded_witness = fold_instances::<B128, _>(&table, &r_rho, &GlobalAllocator);
 		let _offset = table.layout().offset_witness;
 		let public_words = &cs.constants;
 

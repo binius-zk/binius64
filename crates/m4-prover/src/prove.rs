@@ -299,7 +299,7 @@ impl IOPProver {
 		// Fold the committed witness over the instance axis at the shared point.
 		let folded_witness = {
 			let _scope = tracing::debug_span!("Fold instances").entered();
-			fold_instances::<B128>(table, &r_rho)
+			fold_instances::<B128, _>(table, &r_rho, alloc)
 		};
 
 		// The public segment is the shared constants, padded with zeros to the layout's
@@ -307,8 +307,16 @@ impl IOPProver {
 		// The shift folds it against the monster's public part, which is sized to that padded
 		// count. The padding makes the two lengths agree, and matches the zeros the verifier
 		// assumes.
-		let mut public_words = cs.constants.clone();
-		public_words.resize(cs.value_vec_layout.n_public_words(), Word::ZERO);
+		let n_public_words = cs.value_vec_layout.n_public_words();
+		// Growing a pooled buffer past the block it was handed would reallocate and free that block
+		// at the element's alignment rather than the pool's, so the fill below must fit exactly.
+		assert!(
+			cs.constants.len() <= n_public_words,
+			"the public segment is padded to at least the constant count"
+		);
+		let mut public_words = alloc.alloc::<Word>(n_public_words);
+		public_words.extend_from_slice(&cs.constants);
+		public_words.resize(n_public_words, Word::ZERO);
 
 		// Reduce the operand claims to one witness evaluation.
 		let witness_claim = {
