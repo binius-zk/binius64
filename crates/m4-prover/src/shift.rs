@@ -2,6 +2,8 @@
 
 //! The batched shift-reduction prover for the data-parallel Binius64 M4 proof system.
 
+use std::{array, iter};
+
 use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
@@ -202,11 +204,14 @@ where
 	// the scalars are zero-padded up to the next one, mirroring `fold_words`'s own padding of the
 	// public segment.
 	let public_folded = fold_words::<F, P, _>(alloc, public_words, r_j_tensor.as_ref());
-	let mut hidden_scalars: Vec<F> = folded_witness
-		.iter()
-		.map(|word| inner_product(word.iter().copied(), r_j_tensor.as_ref().iter().copied()))
-		.collect();
-	hidden_scalars.resize(1 << log2_ceil_usize(hidden_scalars.len()), F::ZERO);
+	let padded_len = 1 << log2_ceil_usize(folded_witness.len());
+	let mut hidden_scalars = alloc.alloc::<F>(padded_len);
+	hidden_scalars.extend(
+		folded_witness
+			.iter()
+			.map(|word| inner_product(word.iter().copied(), r_j_tensor.as_ref().iter().copied())),
+	);
+	hidden_scalars.resize(padded_len, F::ZERO);
 	let hidden_folded = FieldBuffer::<P, _>::from_values_in(alloc, &hidden_scalars);
 
 	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
@@ -247,11 +252,11 @@ where
 /// results to obtain the complete g parts. `folded_words` is paired with `segment.key_ranges` in
 /// order, so any power-of-two padding beyond the segment's word count is ignored.
 ///
-/// The result is a flat accumulator split into `SHIFT_VARIANT_COUNT` multilinears of [`LOG_LEN`]
-/// variables each. Each multilinear is indexed by `(shift amount, bit position)`: for shift key
-/// `id = (variant << Word::LOG_BITS) | amount`, the slot at `id * Word::BITS + bit`
-/// accumulates, over every word carrying that key, the word's folded bit times the key's
-/// lambda-weighted partial evaluation tensor.
+/// The result is `SHIFT_VARIANT_COUNT` multilinears of [`LOG_LEN`] variables each, one per shift
+/// variant. Each multilinear is indexed by `(shift amount, bit position)`: shift key
+/// `id = (variant << Word::LOG_BITS) | amount` selects multilinear `variant`, whose slot at
+/// `amount * Word::BITS + bit` accumulates, over every word carrying that key, the word's folded
+/// bit times the key's lambda-weighted partial evaluation tensor.
 ///
 /// This scalar implementation ignores the packed-field and parallelism optimizations of the
 /// single-instance builder.
@@ -263,10 +268,11 @@ pub fn build_g_parts_from_folded_words<F: BinaryField, A: Allocator>(
 	intmul_operator_data: &PreparedOperatorData<F>,
 	binmul_operator_data: &PreparedOperatorData<F>,
 ) -> [FieldVec<F, A>; SHIFT_VARIANT_COUNT] {
-	// One flat accumulator holding SHIFT_VARIANT_COUNT multilinears of LOG_LEN variables each, laid
-	// out variant-major. Kept on the heap rather than a stack array: it is thousands of elements.
-	#[allow(clippy::useless_vec)]
-	let mut multilinears = vec![F::ZERO; SHIFT_VARIANT_COUNT << LOG_LEN];
+	// One zeroed multilinear of LOG_LEN variables per shift variant, drawn from the allocator. A
+	// key belongs to exactly one variant, so the scatter below accumulates straight into these
+	// buffers.
+	let mut multilinears =
+		array::from_fn::<_, SHIFT_VARIANT_COUNT, _>(|_| FieldVec::<F, A>::zeros_in(alloc, LOG_LEN));
 
 	// Each folded word carries the keys named by the segment-relative range at its position.
 	for (word, range) in folded_words.iter().zip(&segment.key_ranges) {
@@ -285,26 +291,20 @@ pub fn build_g_parts_from_folded_words<F: BinaryField, A: Allocator>(
 				&operator_data.lambda_powers,
 			);
 
+			// The key id is `(variant << Word::LOG_BITS) | amount`, so its variant selects the
+			// multilinear and its shift amount the bit slots within that multilinear.
+			let variant = key.id as usize >> Word::LOG_BITS;
+			let amount_base = (key.id as usize & (Word::BITS - 1)) * Word::BITS;
+			let slots = &mut multilinears[variant].as_mut()[amount_base..amount_base + Word::BITS];
+
 			// Scatter the accumulator across this key's bit slots, scaling each by the folded bit.
-			let bit_base = key.id as usize * Word::BITS;
-			for (bit, &folded_bit) in word.iter().enumerate() {
-				multilinears[bit_base + bit] += acc * folded_bit;
+			for (slot, &folded_bit) in iter::zip(slots, word) {
+				*slot += acc * folded_bit;
 			}
 		}
 	}
 
-	// Split the flat accumulator into one multilinear per shift variant, each built straight into
-	// the allocator's buffer rather than into a `Vec` copy.
 	multilinears
-		.chunks(1 << LOG_LEN)
-		.map(|chunk| {
-			let mut data = alloc.alloc::<F>(chunk.len());
-			data.extend_from_slice(chunk);
-			FieldBuffer::new(LOG_LEN, data)
-		})
-		.collect::<Vec<_>>()
-		.try_into()
-		.unwrap_or_else(|_| panic!("chunks yield SHIFT_VARIANT_COUNT parts of size 1 << LOG_LEN"))
 }
 
 #[cfg(test)]
