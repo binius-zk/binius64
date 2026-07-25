@@ -20,7 +20,7 @@ fn test_commit_set(
 	build_constraints(&mut cb);
 
 	let mut stat = Stat::default();
-	let mut leg = LeGraph::new(&cb, &mut stat);
+	let mut leg = LeGraph::new(&cb);
 	commit_set::run_decide_commit_set(&mut leg, &mut stat);
 	let commit_set = leg.commit_set();
 

@@ -71,10 +71,14 @@ fn extract_outputs(value_vec: &ValueVec, shape: &OpcodeShape) -> Vec<Word> {
 		.collect()
 }
 
-/// Convenience function to evaluate a gate with constant inputs.
+/// Evaluate a gate with constant inputs, reusing the gate's own eval bytecode.
 ///
-/// This is a cleaner alternative to `evaluate_constant_gate` that eliminates
-/// parameter redundancy by looking up gate data internally.
+/// Constant folding and the witness pass run the same bytecode, so the two cannot drift apart.
+///
+/// `hint_registry` must contain any hint referenced by the gate. For
+/// [`Opcode::Hint`](gate::opcode::Opcode::Hint) gates this is the registry populated by
+/// [`CircuitBuilder::call_hint`](crate::compiler::CircuitBuilder::call_hint); for other
+/// gates an empty registry is fine.
 pub fn evaluate_gate_constants(
 	graph: &GateGraph,
 	gate: Gate,
@@ -84,16 +88,7 @@ pub fn evaluate_gate_constants(
 	evaluate_constant_gate(gate, &graph.gates[gate], graph, constants, hint_registry)
 }
 
-/// Evaluate a gate with constant inputs using the existing interpreter logic.
-///
-/// This function reuses the `emit_eval_bytecode` logic from each gate module
-/// to ensure consistency between runtime evaluation and constant propagation.
-///
-/// `hint_registry` must contain any hint referenced by the gate. For
-/// [`Opcode::Hint`](gate::opcode::Opcode::Hint) gates this is the registry populated by
-/// [`CircuitBuilder::call_hint`](crate::compiler::CircuitBuilder::call_hint); for other
-/// gates an empty registry is fine.
-pub fn evaluate_constant_gate(
+fn evaluate_constant_gate(
 	gate: Gate,
 	data: &GateData,
 	graph: &GateGraph,

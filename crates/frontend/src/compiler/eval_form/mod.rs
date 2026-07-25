@@ -138,9 +138,4 @@ impl EvalForm {
 	pub const fn n_eval_insn(&self) -> usize {
 		self.n_eval_insn
 	}
-
-	/// Returns the compiled evaluation bytecode.
-	pub fn bytecode(&self) -> &[u8] {
-		&self.bytecode
-	}
 }

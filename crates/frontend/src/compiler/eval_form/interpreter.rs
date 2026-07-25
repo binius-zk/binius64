@@ -123,7 +123,7 @@ impl<'a> Interpreter<'a> {
 		path_spec_tree: Option<&PathSpecTree>,
 	) -> Result<(), PopulateError> {
 		let mut ctx = ExecutionContext::new(value_vec);
-		self.run(&mut ctx)?;
+		self.run(&mut ctx);
 		ctx.check_assertions(path_spec_tree)
 	}
 
@@ -131,8 +131,7 @@ impl<'a> Interpreter<'a> {
 	///
 	/// Assertion failures are recorded on the context.
 	/// Call the context's assertion check to turn them into an error.
-	pub fn run(&mut self, ctx: &mut ExecutionContext<'_>) -> Result<(), PopulateError> {
+	pub fn run(&mut self, ctx: &mut ExecutionContext<'_>) {
 		self.executor.run(ctx);
-		Ok(())
 	}
 }

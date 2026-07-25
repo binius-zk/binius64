@@ -48,7 +48,7 @@ use crate::{CircuitBuilder, Wire};
 /// - 2 AND constraints for the sign masks.
 /// - 2 AND constraints for the corrections.
 /// - 2 AND constraints for the two high-word subtractions.
-pub fn smul64(builder: &CircuitBuilder, a: Wire, b: Wire) -> (Wire, Wire) {
+fn smul64(builder: &CircuitBuilder, a: Wire, b: Wire) -> (Wire, Wire) {
 	// Unsigned 128-bit product of the raw bit patterns.
 	// Only the high word needs a signed correction; the low word is already final.
 	let (hi_u, lo) = builder.imul(a, b);
@@ -101,8 +101,6 @@ impl CircuitBuilder {
 	/// Returns `(hi, lo)` where the signed product equals `(hi << 64) | lo`.
 	///
 	/// The high word is the sign extension of the product.
-	///
-	/// Thin wrapper over [`smul64`].
 	pub fn smul(&self, a: Wire, b: Wire) -> (Wire, Wire) {
 		smul64(self, a, b)
 	}
