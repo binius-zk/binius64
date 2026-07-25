@@ -112,10 +112,6 @@ impl<'a> Executor<'a> {
 				EvalOpcode::Iadd32CinCout => self.exec_iadd32_cin_cout(ctx),
 				EvalOpcode::Iadd32Cout => self.exec_iadd32_cout(ctx),
 
-				// Masks
-				EvalOpcode::MaskLow => self.exec_mask_low(ctx),
-				EvalOpcode::MaskHigh => self.exec_mask_high(ctx),
-
 				// Assertions
 				EvalOpcode::AssertEq => self.exec_assert_eq(ctx),
 				EvalOpcode::AssertEqCond => self.exec_assert_eq_cond(ctx),
@@ -343,39 +339,6 @@ impl<'a> Executor<'a> {
 			let (sum, cout) = ctx.load(src1, i).iadd_cout_32(ctx.load(src2, i));
 			ctx.store(dst_sum, i, sum);
 			ctx.store(dst_cout, i, cout);
-		}
-	}
-
-	// Mask operations
-	fn exec_mask_low<C: EvalContext>(&mut self, ctx: &mut C) {
-		let dst = self.read_reg();
-		let src = self.read_reg();
-		let n_bits = self.read_u8();
-		// The mask depends only on the immediate, so build it once for the whole batch.
-		let mask = if n_bits >= 64 {
-			Word::ALL_ONE
-		} else {
-			Word::from_u64((1u64 << n_bits) - 1)
-		};
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i) & mask;
-			ctx.store(dst, i, val);
-		}
-	}
-
-	fn exec_mask_high<C: EvalContext>(&mut self, ctx: &mut C) {
-		let dst = self.read_reg();
-		let src = self.read_reg();
-		let n_bits = self.read_u8();
-		// The mask depends only on the immediate, so build it once for the whole batch.
-		let mask = if n_bits >= 64 {
-			Word::ALL_ONE
-		} else {
-			Word::from_u64(!((1u64 << (64 - n_bits)) - 1))
-		};
-		for i in 0..ctx.n_instances() {
-			let val = ctx.load(src, i) & mask;
-			ctx.store(dst, i, val);
 		}
 	}
 

@@ -34,10 +34,6 @@ pub enum EvalOpcode {
 	Iadd32CinCout = 0x40,
 	Iadd32Cout = 0x46,
 
-	// Masks.
-	MaskLow = 0x50,
-	MaskHigh = 0x51,
-
 	// Assertions.
 	AssertEq = 0x60,
 	AssertEqCond = 0x61,
@@ -71,8 +67,6 @@ impl EvalOpcode {
 			0x31 => Self::Bmul,
 			0x40 => Self::Iadd32CinCout,
 			0x46 => Self::Iadd32Cout,
-			0x50 => Self::MaskLow,
-			0x51 => Self::MaskHigh,
 			0x60 => Self::AssertEq,
 			0x61 => Self::AssertEqCond,
 			0x62 => Self::AssertZero,
@@ -107,8 +101,6 @@ mod tests {
 		EvalOpcode::Bmul,
 		EvalOpcode::Iadd32CinCout,
 		EvalOpcode::Iadd32Cout,
-		EvalOpcode::MaskLow,
-		EvalOpcode::MaskHigh,
 		EvalOpcode::AssertEq,
 		EvalOpcode::AssertEqCond,
 		EvalOpcode::AssertZero,
