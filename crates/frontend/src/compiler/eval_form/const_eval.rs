@@ -5,7 +5,7 @@
 use binius_core::{ValueIndex, ValueVec, ValueVecLayout, Word};
 use rustc_hash::FxHashMap;
 
-use super::{BytecodeBuilder, interpreter::Interpreter};
+use super::{BytecodeBuilder, exec::Executor, scalar::ExecutionContext};
 use crate::compiler::{
 	gate::{self, opcode::OpcodeShape},
 	gate_graph::{Gate, GateData, GateGraph, GateParam, Wire},
@@ -120,9 +120,9 @@ pub fn evaluate_constant_gate(
 	let (bytecode, _) = builder.finalize();
 
 	// Run evaluation
-	let mut interpreter = Interpreter::new(&bytecode, hint_registry);
-	interpreter
-		.run_with_value_vec(&mut value_vec, None)
+	let mut ctx = ExecutionContext::new(&mut value_vec);
+	Executor::new(&bytecode, hint_registry).run(&mut ctx);
+	ctx.check_assertions(None)
 		.map_err(|e| format!("Constant evaluation failed: {:?}", e))?;
 
 	// Extract and return output values

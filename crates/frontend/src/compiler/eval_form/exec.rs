@@ -53,8 +53,8 @@ pub trait EvalContext {
 /// A bytecode program together with a cursor into it.
 ///
 /// The cursor advances as the dispatch loop consumes opcodes and operands.
-/// One executor drives one pass over the bytecode.
-/// The interpreters build a fresh executor per run, so the cursor starts at the first instruction.
+/// One executor drives one pass over the bytecode, and [`Self::run`] consumes it.
+/// So a cursor left at the end of the program can never be run a second time.
 pub struct Executor<'a> {
 	bytecode: &'a [u8],
 	hints: &'a HintRegistry,
@@ -79,7 +79,7 @@ impl<'a> Executor<'a> {
 	/// # Panics
 	///
 	/// Panics on an unknown opcode, which can only happen if the bytecode is malformed.
-	pub fn run<C: EvalContext>(&mut self, ctx: &mut C) {
+	pub fn run<C: EvalContext>(mut self, ctx: &mut C) {
 		while self.pc < self.bytecode.len() {
 			let opcode = self.read_u8();
 			match opcode {
