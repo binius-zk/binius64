@@ -115,6 +115,57 @@ pub fn single_wire_multiplex(b: &CircuitBuilder, inputs: &[Wire], sel: Wire) -> 
 	current_level[0]
 }
 
+/// Rotates `words` left by a dynamic word count, returning the first `n_out` positions.
+///
+/// `out[i]` is `words[(shift + i) % words.len()]`. A caller that only needs a prefix reads the
+/// wrap-around at positions past its own validity bound, so it must treat those as unconstrained.
+///
+/// # Arguments
+/// * `b` - Circuit builder
+/// * `words` - The array to rotate
+/// * `shift` - Rotate amount in words (only `ceil(log2(len))` LSB bits are used)
+/// * `n_out` - Number of leading positions to return
+///
+/// # Implementation Details
+///
+/// One barrel stage per bit of `shift`, largest stage first so the working window shrinks as the
+/// stages are applied. That costs one select per position per stage, where a multiplexer per
+/// output position would instead cost `words.len() - 1` selects each.
+///
+/// # Panics
+/// * If `words` is empty
+/// * If `n_out` exceeds `words.len()`
+pub fn rotate_left_dynamic(
+	b: &CircuitBuilder,
+	words: &[Wire],
+	shift: Wire,
+	n_out: usize,
+) -> Vec<Wire> {
+	let n = words.len();
+	assert!(n > 0, "words must not be empty");
+	assert!(n_out <= n, "n_out ({n_out}) must not exceed words.len() ({n})");
+
+	let n_bits = log2_ceil_usize(n);
+
+	// Width the window must have before each stage, derived back from `n_out`: a stage rotating by
+	// `2^bit` reads positions `i` and `i + 2^bit`, and indices wrap, so the width caps at `n`.
+	let mut widths = vec![n_out];
+	for bit in 0..n_bits {
+		widths.push(n.min(widths[widths.len() - 1] + (1 << bit)));
+	}
+
+	let mut current = words[..widths[n_bits]].to_vec();
+	for bit in (0..n_bits).rev() {
+		let shift_bit = b.shl(shift, (Word::BITS - 1 - bit) as u32);
+		let amount = 1usize << bit;
+		current = (0..widths[bit])
+			.map(|i| b.select(shift_bit, current[(i + amount) % current.len()], current[i]))
+			.collect();
+	}
+
+	current
+}
+
 #[inline]
 const fn log2_ceil_usize(n: usize) -> usize {
 	if n <= 1 {
@@ -129,6 +180,75 @@ mod tests {
 	use binius_core::{verify::verify_constraints, word::Word};
 
 	use super::*;
+
+	/// Exhaustively checks `rotate_left_dynamic` against `words[(shift + i) % n]` for every shift
+	/// the rotate can express, at sizes on both sides of a power of two.
+	fn verify_rotate(n: usize, n_out: usize) {
+		let builder = CircuitBuilder::new();
+		let input: Vec<Wire> = (0..n).map(|_| builder.add_inout()).collect();
+		let shift = builder.add_inout();
+		let out = rotate_left_dynamic(&builder, &input, shift, n_out);
+		let expected: Vec<Wire> = (0..n_out).map(|_| builder.add_inout()).collect();
+		for (i, (got, want)) in out.iter().zip(&expected).enumerate() {
+			builder.assert_eq(format!("rot[{i}]"), *got, *want);
+		}
+		let circuit = builder.build();
+
+		// The rotate reads `ceil(log2(n))` bits of the shift, so that range covers every distinct
+		// permutation it can produce.
+		let n_shifts = 1usize << log2_ceil_usize(n);
+		for sh in 0..n_shifts {
+			let mut w = circuit.new_witness_filler();
+			for (i, wire) in input.iter().enumerate() {
+				// Distinct per position so a wrong index cannot pass by coincidence.
+				w[*wire] = Word(0x1000 + i as u64);
+			}
+			w[shift] = Word(sh as u64);
+			for (i, wire) in expected.iter().enumerate() {
+				w[*wire] = Word(0x1000 + ((sh + i) % n) as u64);
+			}
+			circuit
+				.populate_wire_witness(&mut w)
+				.unwrap_or_else(|e| panic!("n={n} n_out={n_out} shift={sh}: {e}"));
+			verify_constraints(circuit.constraint_system(), &w.into_value_vec())
+				.unwrap_or_else(|e| panic!("n={n} n_out={n_out} shift={sh}: {e}"));
+		}
+	}
+
+	#[test]
+	fn rotate_matches_modular_index() {
+		// Powers of two, just under, just over, and a prefix much shorter than the array.
+		for (n, n_out) in [
+			(8, 8),
+			(8, 3),
+			(7, 7),
+			(9, 9),
+			(9, 2),
+			(16, 16),
+			(5, 5),
+			(1, 1),
+			(2, 2),
+		] {
+			verify_rotate(n, n_out);
+		}
+	}
+
+	#[test]
+	#[should_panic(expected = "words must not be empty")]
+	fn rotate_rejects_empty() {
+		let builder = CircuitBuilder::new();
+		let shift = builder.add_inout();
+		rotate_left_dynamic(&builder, &[], shift, 0);
+	}
+
+	#[test]
+	#[should_panic(expected = "must not exceed")]
+	fn rotate_rejects_oversized_prefix() {
+		let builder = CircuitBuilder::new();
+		let input: Vec<Wire> = (0..4).map(|_| builder.add_inout()).collect();
+		let shift = builder.add_inout();
+		rotate_left_dynamic(&builder, &input, shift, 5);
+	}
 
 	/// Helper function to verify single-wire multiplexer behavior
 	/// Takes input values and test cases as (selector, expected_output) pairs
