@@ -224,6 +224,11 @@ mod tests {
 
 		let mut state_wires = input_wires;
 		circuit_fn(&builder, &mut state_wires);
+		// Pin the output state, which nothing else reads.
+		// Otherwise the whole component is dropped and the comparison checks uncomputed words.
+		for wire in state_wires {
+			builder.force_commit(wire);
+		}
 		let circuit = builder.build();
 
 		let mut expected_output = input_state;

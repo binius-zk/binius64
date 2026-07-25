@@ -107,6 +107,10 @@ mod tests {
 		let m = builder.add_constant_64(u64::MAX - 4);
 
 		let (q, r) = BigUintDivideHint::call(&builder, &[d0, d1], &[m]);
+		// Pin the hint outputs, so the hint gate is evaluated rather than dropped as unread.
+		for wire in q.iter().chain(&r) {
+			builder.force_commit(*wire);
+		}
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();
@@ -131,6 +135,10 @@ mod tests {
 		let m1 = builder.add_constant_64(0);
 
 		let (q, r) = BigUintDivideHint::call(&builder, &[d0, d1], &[m0, m1]);
+		// Pin the hint outputs, so the hint gate is evaluated rather than dropped as unread.
+		for wire in q.iter().chain(&r) {
+			builder.force_commit(*wire);
+		}
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();

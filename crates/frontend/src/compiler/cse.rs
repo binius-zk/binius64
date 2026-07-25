@@ -55,18 +55,23 @@ pub fn dedup_gates(
 	// Gate ids are collected up front so the graph can be mutated inside the loop.
 	let gate_ids: Vec<Gate> = graph.gates.keys().collect();
 	for gate in gate_ids {
-		// Hint gates carry their shape in the registry and are rarely duplicated, so skip them.
-		if matches!(graph.gate_data(gate).opcode, Opcode::Hint) {
-			continue;
-		}
-
 		// Rewrite this gate's wires to their canonical form.
 		// An input that fed an earlier duplicate is remapped.
 		// Output, aux, and scratch wires are never keys in the map, so they pass through unchanged.
+		//
+		// Every gate is rewritten, hints included.
+		// A collapsed duplicate no longer emits a constraint.
+		// So a reader left pointing at its output would read a wire nothing defines.
 		for wire in graph.gates[gate].wires.iter_mut() {
 			if let Some(&canon) = remap.get(wire) {
 				*wire = canon;
 			}
+		}
+
+		// Hint gates carry their shape in the registry and are rarely duplicated.
+		// So one is never collapsed, and never becomes a canonical target either.
+		if matches!(graph.gate_data(gate).opcode, Opcode::Hint) {
+			continue;
 		}
 
 		let hash = structural_hash(graph, gate, hint_registry);
@@ -147,8 +152,10 @@ fn structurally_equal(graph: &GateGraph, a: Gate, b: Gate, hint_registry: &HintR
 
 #[cfg(test)]
 mod tests {
+	use binius_core::word::Word;
+
 	use super::*;
-	use crate::compiler::gate_graph::GateGraph;
+	use crate::compiler::{gate_graph::GateGraph, hints::Hint};
 
 	#[test]
 	fn duplicate_and_gate_is_collapsed() {
@@ -183,6 +190,65 @@ mod tests {
 		// The reader now consumes the canonical output, not the dead duplicate's.
 		let reader_inputs = graph.gate_data(reader).gate_param().inputs.to_vec();
 		assert_eq!(reader_inputs, vec![o1], "reader must be redirected to the canonical wire");
+	}
+
+	#[test]
+	fn a_hint_reading_a_duplicate_is_redirected() {
+		// Invariant: every reader of a collapsed duplicate is rewritten onto the canonical wire,
+		// including a hint. A hint is never itself collapsed, but it still has to be rewritten:
+		// the duplicate stops emitting a constraint, so its output is defined by nothing.
+		//
+		// Fixture: two identical ANDs, with the duplicate's output feeding a hint.
+		//
+		//   g1: x & y -> o1   (canonical)
+		//   g2: x & y -> o2   (duplicate -> dead)
+		//   hint(o2)          -> must be rewritten to hint(o1)
+		struct IdentityHint;
+
+		impl Hint for IdentityHint {
+			const NAME: &'static str = "test::cse_identity";
+
+			fn shape(&self, _dimensions: &[usize]) -> (usize, usize) {
+				(1, 1)
+			}
+
+			fn execute(&self, _dimensions: &[usize], inputs: &[Word], outputs: &mut [Word]) {
+				outputs[0] = inputs[0];
+			}
+		}
+
+		let mut graph = GateGraph::new();
+		let root = graph.path_spec_tree.root();
+		let mut registry = HintRegistry::new();
+		let hint_id = registry.register(IdentityHint);
+
+		let x = graph.add_inout();
+		let y = graph.add_inout();
+
+		let o1 = graph.add_internal();
+		let g1 = graph.emit_gate(root, Opcode::Band, vec![x, y], vec![o1]);
+		let o2 = graph.add_internal();
+		let g2 = graph.emit_gate(root, Opcode::Band, vec![x, y], vec![o2]);
+
+		// The hint consumes the duplicate's output.
+		let hint_out = graph.add_internal();
+		let hint_gate = graph.emit_hint_gate(root, hint_id, &[], vec![o2], vec![hint_out]);
+
+		let dead = dedup_gates(&mut graph, &EntitySet::new(), &registry);
+
+		// The duplicate still collapses; a hint reader does not prevent that.
+		assert!(!dead.contains(g1));
+		assert!(dead.contains(g2));
+		// The hint is never collapsed itself.
+		assert!(!dead.contains(hint_gate));
+
+		// The hint now reads the canonical output, so it reads a wire a surviving gate defines.
+		let hint_inputs = graph
+			.gate_data(hint_gate)
+			.gate_param_with_registry(&registry)
+			.inputs
+			.to_vec();
+		assert_eq!(hint_inputs, vec![o1], "the hint must be redirected onto the canonical wire");
 	}
 
 	#[test]

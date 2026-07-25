@@ -2,7 +2,7 @@ bitcoin_headers circuit
 --
 Gates & Instructions
 ├─ Number of gates: 47,258
-└─ Number of evaluation instructions: 47,378
+└─ Number of evaluation instructions: 46,302
 
 Constraints
 ├─ AND constraints: 20,221 used (61.7% of 2^15)

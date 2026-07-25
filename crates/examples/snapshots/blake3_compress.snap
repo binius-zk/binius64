@@ -2,7 +2,7 @@ blake3_compress circuit
 --
 Gates & Instructions
 ├─ Number of gates: 6,336
-└─ Number of evaluation instructions: 6,336
+└─ Number of evaluation instructions: 0
 
 Constraints
 ├─ AND constraints: 0 used (0.0% of 2^0)

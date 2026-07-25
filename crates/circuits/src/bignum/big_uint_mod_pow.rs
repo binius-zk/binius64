@@ -83,6 +83,10 @@ mod tests {
 
 		let c = builder.add_constant_64(0x123456789abcdef0);
 		let modpow = BigUintModPowHint::call(&builder, &[c], &[c, c], &[c, c, c]);
+		// Pin the hint outputs, so the hint gate is evaluated rather than dropped as unread.
+		for wire in &modpow {
+			builder.force_commit(*wire);
+		}
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();

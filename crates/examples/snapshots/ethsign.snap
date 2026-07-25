@@ -2,7 +2,7 @@ ethsign circuit
 --
 Gates & Instructions
 ├─ Number of gates: 214,965
-└─ Number of evaluation instructions: 252,550
+└─ Number of evaluation instructions: 232,559
 
 Constraints
 ├─ AND constraints: 160,106 used (61.1% of 2^18)

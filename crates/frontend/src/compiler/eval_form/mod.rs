@@ -18,12 +18,12 @@ use binius_core::{ValueIndex, ValueVec, Word};
 use binius_utils::{rayon::prelude::*, strided_array::StridedArray2DViewMut};
 pub use builder::BytecodeBuilder;
 pub use const_eval::evaluate_gate_constants;
-use cranelift_entity::SecondaryMap;
+use cranelift_entity::{EntitySet, SecondaryMap};
 
 use crate::compiler::{
 	circuit::PopulateError,
 	gate,
-	gate_graph::{GateGraph, Wire},
+	gate_graph::{Gate, GateGraph, Wire},
 	hints::HintRegistry,
 	pathspec::PathSpecTree,
 };
@@ -44,10 +44,14 @@ impl EvalForm {
 	/// `hint_registry` already holds every hint the caller registered via
 	/// [`CircuitBuilder::call_hint`](crate::compiler::CircuitBuilder::call_hint); bytecode
 	/// emission only reads from it to resolve `Opcode::Hint` gates.
+	///
+	/// `evaluated` selects the gates to compile.
+	/// A gate left out writes only values that no remaining gate reads, so its slots stay zero.
 	pub(crate) fn build(
 		gate_graph: &GateGraph,
 		wire_mapping: &SecondaryMap<Wire, ValueIndex>,
 		hint_registry: HintRegistry,
+		evaluated: &EntitySet<Gate>,
 	) -> Self {
 		let mut builder = BytecodeBuilder::new();
 
@@ -60,11 +64,11 @@ impl EvalForm {
 			}
 		};
 
-		// Build bytecode for each gate
-		for (gate_id, data) in gate_graph.gates.iter() {
+		// Build bytecode for each gate that still has to be evaluated.
+		for gate_id in evaluated.iter() {
 			gate::emit_gate_bytecode(
 				gate_id,
-				data,
+				&gate_graph.gates[gate_id],
 				gate_graph,
 				&mut builder,
 				wire_to_reg,

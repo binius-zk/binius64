@@ -33,6 +33,8 @@ pub fn test_bitcoin_ecdsa_test_vector() {
 	};
 
 	let signature_valid = bitcoin_verify(&builder, pk, &z, &r, &s);
+	// Pin the validity flag, so the verification is constrained.
+	builder.force_commit(signature_valid);
 
 	let cs = builder.build();
 	let mut w = cs.new_witness_filler();

@@ -109,6 +109,10 @@ mod tests {
 		let m1 = builder.add_constant_64((1u64 << 63) - 1);
 
 		let (quotient, inverse) = ModInverseHint::call(&builder, &[b], &[m0, m1]);
+		// Pin the hint outputs, so the hint gate is evaluated rather than dropped as unread.
+		for wire in quotient.iter().chain(&inverse) {
+			builder.force_commit(*wire);
+		}
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();
@@ -134,6 +138,10 @@ mod tests {
 		let m1 = builder.add_constant_64(0x3ffff7ffffffffff);
 
 		let (quotient, inverse) = ModInverseHint::call(&builder, &[b], &[m0, m1]);
+		// Pin the hint outputs, so the hint gate is evaluated rather than dropped as unread.
+		for wire in quotient.iter().chain(&inverse) {
+			builder.force_commit(*wire);
+		}
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();

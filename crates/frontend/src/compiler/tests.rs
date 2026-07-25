@@ -89,6 +89,9 @@ fn test_iadd_cin_cout_max_values() {
 	let b = builder.add_constant_64(0xFFFFFFFFFFFFFFFF);
 	let cin_wire = builder.add_constant(Word::ZERO);
 	let (sum_wire, cout_wire) = builder.iadd_cin_cout(a, b, cin_wire);
+	// Pin both outputs, so the addition is constrained and not merely evaluated.
+	builder.force_commit(sum_wire);
+	builder.force_commit(cout_wire);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -106,6 +109,11 @@ fn test_iadd_cin_cout_zero() {
 	let b = builder.add_constant_64(0);
 	let cin_wire = builder.add_constant(Word::ZERO);
 	let (sum_wire, cout_wire) = builder.iadd_cin_cout(a, b, cin_wire);
+	// Pin both outputs.
+	// An all-zero value vector satisfies the assertions below, so without this the test would
+	// pass without the addition ever being checked.
+	builder.force_commit(sum_wire);
+	builder.force_commit(cout_wire);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -123,6 +131,9 @@ fn test_isub_bin_bout_from_zero() {
 	let b = builder.add_constant_64(u64::MAX);
 	let bin_wire = builder.add_constant(Word::ONE << 63);
 	let (diff_wire, bout_wire) = builder.isub_bin_bout(a, b, bin_wire);
+	// Pin both outputs, so the subtraction is constrained and not merely evaluated.
+	builder.force_commit(diff_wire);
+	builder.force_commit(bout_wire);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -180,6 +191,9 @@ fn test_call_hint_user_registered() {
 	let out2 = builder.call_hint(XorAllHint, &[inputs.len()], &inputs);
 	assert_eq!(out1.len(), 1);
 	assert_eq!(out2.len(), 1);
+	// Pin both hint outputs, so the hint gates are evaluated rather than dropped as unread.
+	builder.force_commit(out1[0]);
+	builder.force_commit(out2[0]);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -195,6 +209,8 @@ fn prop_check_icmp_ult(a: u64, b: u64, expected_result: Word) {
 	let a_wire = builder.add_constant_64(a);
 	let b_wire = builder.add_constant_64(b);
 	let result_wire = builder.icmp_ult(a_wire, b_wire);
+	// Pin the result, so the comparison is constrained and not merely evaluated.
+	builder.force_commit(result_wire);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -211,6 +227,8 @@ fn prop_check_icmp_eq(a: u64, b: u64, expected_result: Word) {
 	let a_wire = builder.add_constant_64(a);
 	let b_wire = builder.add_constant_64(b);
 	let result_wire = builder.icmp_eq(a_wire, b_wire);
+	// Pin the result, so the comparison is constrained and not merely evaluated.
+	builder.force_commit(result_wire);
 
 	let circuit = builder.build();
 	let mut w = circuit.new_witness_filler();
@@ -237,6 +255,11 @@ proptest! {
 		let a2_wire = builder.add_constant_64(a2);
 		let b2_wire = builder.add_constant_64(b2);
 		let (sum2_wire, cout2_wire) = builder.iadd_cin_cout(a2_wire, b2_wire, cout1_wire);
+		// Pin every value this test reads, so both additions are constrained.
+		builder.force_commit(sum1_wire);
+		builder.force_commit(cout1_wire);
+		builder.force_commit(sum2_wire);
+		builder.force_commit(cout2_wire);
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();
@@ -322,6 +345,8 @@ fn test_bxor_linear_constraint() {
 
 	// bxor internally creates a linear constraint
 	let c = builder.bxor(a, b);
+	// Pin the result, so its linear cone survives dead-code elimination.
+	builder.force_commit(c);
 
 	let circuit = builder.build();
 
@@ -355,6 +380,10 @@ fn test_shift_operations_with_linear_constraints() {
 	let shr_result = builder.shr(b, 16);
 	// Combine with XOR
 	let combined = builder.bxor(shl_result, shr_result);
+	// Pin every value this test reads, so each one is constrained rather than only evaluated.
+	builder.force_commit(shl_result);
+	builder.force_commit(shr_result);
+	builder.force_commit(combined);
 
 	let circuit = builder.build();
 
@@ -384,6 +413,11 @@ fn test_32bit_half_shift_operations() {
 	let srl32_result = builder.srl32(a, 4);
 	let sra32_result = builder.sra32(a, 4);
 	let rotr32_result = builder.rotr32(a, 4);
+	// Pin every result, so each lane-local shift is constrained rather than only evaluated.
+	builder.force_commit(sll32_result);
+	builder.force_commit(srl32_result);
+	builder.force_commit(sra32_result);
+	builder.force_commit(rotr32_result);
 
 	let circuit = builder.build();
 
@@ -426,6 +460,9 @@ fn test_rotr_operation_expansion() {
 	// rotr internally expands to: (a >> 12) XOR (a << 52)
 	let rotr_result = builder.rotr(a, 12);
 	let combined = builder.bxor(rotr_result, b);
+	// Pin both values this test reads, so each is constrained rather than only evaluated.
+	builder.force_commit(rotr_result);
+	builder.force_commit(combined);
 
 	let circuit = builder.build();
 
@@ -461,6 +498,10 @@ fn test_multiple_xor_operations() {
 	let result2 = builder.bxor(c, d);
 	// Chain XOR operations
 	let final_result = builder.bxor(result1, result2);
+	// Pin every intermediate this test reads, so each is constrained rather than only evaluated.
+	builder.force_commit(result1);
+	builder.force_commit(result2);
+	builder.force_commit(final_result);
 
 	let circuit = builder.build();
 
@@ -507,8 +548,15 @@ fn test_linear_constraint_conversion_to_and() {
 	let combined2 = builder.bxor(sar_result, rotr_result);
 	let final_result = builder.bxor(combined1, combined2);
 
-	// Pin the result as committed so its linear cone survives dead-code elimination.
-	// A computation read by nothing is otherwise dropped, leaving no AND constraint to check.
+	// Pin every value this test reads.
+	// A computation nothing reads is dropped, leaving no constraint and no instruction.
+	builder.force_commit(xor_result);
+	builder.force_commit(shift_left);
+	builder.force_commit(shift_right);
+	builder.force_commit(sar_result);
+	builder.force_commit(rotr_result);
+	builder.force_commit(combined1);
+	builder.force_commit(combined2);
 	builder.force_commit(final_result);
 
 	let circuit = builder.build();
@@ -566,6 +614,8 @@ proptest! {
 
 		// XOR the shifted values
 		let result = builder.bxor(shifted_a, shifted_b);
+		// Pin the result, so its linear cone survives dead-code elimination.
+		builder.force_commit(result);
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();
@@ -590,6 +640,8 @@ proptest! {
 
 		let wire_value = builder.add_constant_64(value);
 		let rotr_result = builder.rotr(wire_value, shift);
+		// Pin the result, so its linear cone survives dead-code elimination.
+		builder.force_commit(rotr_result);
 
 		let circuit = builder.build();
 		let mut w = circuit.new_witness_filler();

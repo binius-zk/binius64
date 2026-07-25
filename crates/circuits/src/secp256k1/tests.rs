@@ -27,6 +27,8 @@ fn test_secp256k1_group_order() {
 			acc = curve.add(&builder, &acc, &generator);
 		}
 	}
+	// Pin the accumulator, so the whole scalar ladder is constrained and not merely evaluated.
+	acc.force_commit(&builder);
 
 	let cs = builder.build();
 	let mut w = cs.new_witness_filler();
@@ -49,6 +51,8 @@ fn test_secp256k1_pow2pow137() {
 		acc = curve.double(&builder, &acc);
 		acc = curve.add(&builder, &generator, &acc);
 	}
+	// Pin the accumulator, so the whole ladder is constrained and not merely evaluated.
+	acc.force_commit(&builder);
 
 	let cs = builder.build();
 	let mut w = cs.new_witness_filler();
@@ -76,6 +80,9 @@ fn test_secp256k1_generator_double_and_add() {
 	let generator = Secp256k1Affine::generator(&builder);
 	let double = curve.double(&builder, &generator);
 	let triple = curve.add(&builder, &double, &generator);
+	// Pin both results, so the doubling and the addition are constrained.
+	double.force_commit(&builder);
+	triple.force_commit(&builder);
 
 	let cs = builder.build();
 	let mut w = cs.new_witness_filler();

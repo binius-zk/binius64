@@ -26,6 +26,16 @@ pub fn biguint_to_num_biguint(w: &WitnessFiller, biguint: &BigUint) -> num_bigin
 	from_u64_limbs(&limb_vals)
 }
 
+/// Pins every limb of a value the caller reads back out of the witness.
+///
+/// A value nothing else reads is dropped as unread.
+/// It would then be neither constrained nor computed.
+fn force_commit_biguint(builder: &CircuitBuilder, value: &BigUint) {
+	for &limb in &value.limbs {
+		builder.force_commit(limb);
+	}
+}
+
 #[test]
 fn test_add_overflow_detection_via_final_carry() {
 	// This test demonstrates that the final carry check catches overflow
@@ -320,6 +330,7 @@ proptest! {
 		let b = BigUint::new_inout(&builder, b_limbs.len());
 
 		let result = textbook_mul(&builder, &a, &b);
+		force_commit_biguint(&builder, &result);
 
 		let cs = builder.build();
 		let mut w = cs.new_witness_filler();
@@ -353,6 +364,7 @@ proptest! {
 
 		let a = BigUint::new_witness(&builder, a_limbs.len());
 		let result = textbook_square(&builder, &a);
+		force_commit_biguint(&builder, &result);
 
 		let cs = builder.build();
 
@@ -393,6 +405,8 @@ proptest! {
 
 		let lt_flag = biguint_lt(&builder, &a, &b);
 		let eq_flag = biguint_eq(&builder, &a, &b);
+		builder.force_commit(lt_flag);
+		builder.force_commit(eq_flag);
 
 		let cs = builder.build();
 		let mut w = cs.new_witness_filler();
@@ -421,6 +435,8 @@ proptest! {
 
 		let square_result = textbook_square(&builder, &a);
 		let mul_result = textbook_mul(&builder, &a, &a);
+		force_commit_biguint(&builder, &square_result);
+		force_commit_biguint(&builder, &mul_result);
 
 		let cs = builder.build();
 		let mut w = cs.new_witness_filler();

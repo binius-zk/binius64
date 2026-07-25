@@ -2,7 +2,7 @@ keccak circuit
 --
 Gates & Instructions
 ├─ Number of gates: 22,189
-└─ Number of evaluation instructions: 22,189
+└─ Number of evaluation instructions: 22,107
 
 Constraints
 ├─ AND constraints: 5,750 used (70.2% of 2^13)

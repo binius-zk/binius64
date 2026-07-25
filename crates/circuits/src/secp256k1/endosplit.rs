@@ -199,6 +199,13 @@ mod tests {
 			let (k1_neg, k2_neg, k1_abs, k2_abs) =
 				Secp256k1EndosplitHint::call(&builder, &k);
 
+			// Pin every output, so the split is constrained and not merely evaluated.
+			builder.force_commit(k1_neg);
+			builder.force_commit(k2_neg);
+			for &limb in k1_abs.iter().chain(&k2_abs) {
+				builder.force_commit(limb);
+			}
+
 			let circuit = builder.build();
 			let mut w = circuit.new_witness_filler();
 			circuit.populate_wire_witness(&mut w).unwrap();

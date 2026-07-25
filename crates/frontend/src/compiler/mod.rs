@@ -252,20 +252,37 @@ impl CircuitBuilder {
 			.enable_dead_code_elimination
 			.then(|| dce::live_gates(&mut graph, &shared.force_committed, &shared.hint_registry));
 
+		// Split the gates into the two sets the rest of compilation works from.
+		//
+		// A gate is redundant when either pass ruled it out:
+		// - a collapsed duplicate, whose outputs are now read through the canonical gate,
+		// - a gate no assertion and no observable wire transitively reads.
+		//
+		// Both kinds constrain only wires that nothing reads, so neither emits a constraint.
+		// Neither needs its value computed either, with one exception.
+		// An assertion writes no value, and its instruction is what reports a failing witness.
+		// So it is still evaluated even when its constraint is redundant.
+		let mut constrained_gates = EntitySet::new();
+		let mut evaluated_gates = EntitySet::new();
+		for (gate_id, data) in graph.gates.iter() {
+			let collapsed = dead_gates
+				.as_ref()
+				.is_some_and(|dead| dead.contains(gate_id));
+			let unread = live_gates
+				.as_ref()
+				.is_some_and(|live| !live.contains(gate_id));
+			let needed = !collapsed && !unread;
+
+			if needed {
+				constrained_gates.insert(gate_id);
+			}
+			if needed || data.shape(&shared.hint_registry).n_out == 0 {
+				evaluated_gates.insert(gate_id);
+			}
+		}
+
 		let mut builder = ConstraintBuilder::new();
-		for (gate_id, _) in graph.gates.iter() {
-			// Drop collapsed duplicates: their outputs are now read through the canonical gate.
-			if let Some(dead_gates) = &dead_gates
-				&& dead_gates.contains(gate_id)
-			{
-				continue;
-			}
-			// Drop dead gates: they would only add constraints on wires that nothing reads.
-			if let Some(live_gates) = &live_gates
-				&& !live_gates.contains(gate_id)
-			{
-				continue;
-			}
+		for gate_id in constrained_gates.iter() {
 			gate::constrain(gate_id, &graph, &mut builder);
 		}
 
@@ -354,7 +371,12 @@ impl CircuitBuilder {
 		}
 
 		// Build evaluation form (consumes the hint registry the user populated via call_hint).
-		let eval_form = eval_form::EvalForm::build(&graph, &wire_mapping, shared.hint_registry);
+		let eval_form = eval_form::EvalForm::build(
+			&graph,
+			&wire_mapping,
+			shared.hint_registry,
+			&evaluated_gates,
+		);
 
 		Circuit::new(graph, cs, wire_mapping, eval_form)
 	}

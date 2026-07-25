@@ -25,6 +25,17 @@ impl Secp256k1Affine {
 		}
 	}
 
+	/// Pins both coordinates and the infinity flag as committed.
+	///
+	/// A value nothing else reads is dropped as unread, so it is neither constrained nor computed.
+	/// Pinning a point makes it an output of the circuit in its own right.
+	pub fn force_commit(&self, b: &CircuitBuilder) {
+		for &limb in self.x.limbs.iter().chain(&self.y.limbs) {
+			b.force_commit(limb);
+		}
+		b.force_commit(self.is_point_at_infinity);
+	}
+
 	/// Generator basepoint.
 	pub fn generator(b: &CircuitBuilder) -> Self {
 		let (x, y) = coords_gen(b);

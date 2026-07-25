@@ -2,7 +2,7 @@ ec_msm circuit
 --
 Gates & Instructions
 ├─ Number of gates: 208,914
-└─ Number of evaluation instructions: 246,270
+└─ Number of evaluation instructions: 226,510
 
 Constraints
 ├─ AND constraints: 158,253 used (60.4% of 2^18)

@@ -2,7 +2,7 @@ sha256 circuit
 --
 Gates & Instructions
 ├─ Number of gates: 20,616
-└─ Number of evaluation instructions: 20,616
+└─ Number of evaluation instructions: 20,535
 
 Constraints
 ├─ AND constraints: 8,880 used (54.2% of 2^14)
