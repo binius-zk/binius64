@@ -2,6 +2,8 @@
 
 //! The batched shift-reduction prover for the data-parallel Binius64 M4 proof system.
 
+use std::{array, iter};
+
 use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, PackedField};
@@ -73,21 +75,38 @@ pub type FoldedWord<F> = [F; Word::BITS];
 /// # Panics
 ///
 /// Panics if `r_rho.len()` does not equal the batch dimension.
-pub fn fold_instances<F: BinaryField>(table: &ValueTable, r_rho: &[F]) -> Vec<FoldedWord<F>> {
+pub fn fold_instances<F: BinaryField, A: Allocator>(
+	table: &ValueTable,
+	r_rho: &[F],
+	alloc: &A,
+) -> A::Vec<FoldedWord<F>> {
 	assert_eq!(r_rho.len(), table.log_instances(), "r_rho must match the batch dimension");
 
 	// Build the instance-fold tables once; the lookups and weights depend only on r_rho.
 	let folder = WordFolder::<F>::new(r_rho);
 
-	// Each output chunk holds one committed word position:
-	//     out[w * Word::BITS + b] = sum_rho eq(r_rho, rho) * bit_b(word[rho][w]).
-	// The word positions are independent, so fold them in parallel.
-	// Positions beyond the committed count keep their zero padding.
+	// Each output element holds one committed word position:
+	//     out[w][b] = sum_rho eq(r_rho, rho) * bit_b(word[rho][w]).
+	// The word positions are independent, so fold them in parallel, one output element per task.
+	//
+	// The table stores exactly `n_hidden_words << log_instances` words, so chunking it by the
+	// instance count yields exactly one chunk per output element. `zip` truncates to the shorter
+	// side, so this equality is what makes the loop below cover every element; assert it rather
+	// than rely on a `ValueTable` invariant stated in another module.
+	let n_words = table.n_hidden_words();
+	debug_assert_eq!(table.as_words().len(), n_words << table.log_instances());
+	let mut folded = alloc.alloc::<FoldedWord<F>>(n_words);
 	table
 		.as_words()
 		.par_chunks(1 << table.log_instances())
-		.map(|instance_words| folder.fold(instance_words))
-		.collect()
+		.zip(folded.spare_capacity_mut())
+		.for_each(|(instance_words, out)| {
+			out.write(folder.fold(instance_words));
+		});
+	// SAFETY: the chunks and the output elements are in one-to-one correspondence by the length
+	// equality asserted above, so the loop writes each of the `n_words` elements exactly once.
+	unsafe { folded.set_len(n_words) };
+	folded
 }
 
 /// Proves the batched shift-reduction, reducing the bitand and intmul evaluation claims to a single
@@ -185,11 +204,14 @@ where
 	// the scalars are zero-padded up to the next one, mirroring `fold_words`'s own padding of the
 	// public segment.
 	let public_folded = fold_words::<F, P, _>(alloc, public_words, r_j_tensor.as_ref());
-	let mut hidden_scalars: Vec<F> = folded_witness
-		.iter()
-		.map(|word| inner_product(word.iter().copied(), r_j_tensor.as_ref().iter().copied()))
-		.collect();
-	hidden_scalars.resize(1 << log2_ceil_usize(hidden_scalars.len()), F::ZERO);
+	let padded_len = 1 << log2_ceil_usize(folded_witness.len());
+	let mut hidden_scalars = alloc.alloc::<F>(padded_len);
+	hidden_scalars.extend(
+		folded_witness
+			.iter()
+			.map(|word| inner_product(word.iter().copied(), r_j_tensor.as_ref().iter().copied())),
+	);
+	hidden_scalars.resize(padded_len, F::ZERO);
 	let hidden_folded = FieldBuffer::<P, _>::from_values_in(alloc, &hidden_scalars);
 
 	let (public_monster, hidden_monster) = build_monster_segments::<F, P, _>(
@@ -230,11 +252,11 @@ where
 /// results to obtain the complete g parts. `folded_words` is paired with `segment.key_ranges` in
 /// order, so any power-of-two padding beyond the segment's word count is ignored.
 ///
-/// The result is a flat accumulator split into `SHIFT_VARIANT_COUNT` multilinears of [`LOG_LEN`]
-/// variables each. Each multilinear is indexed by `(shift amount, bit position)`: for shift key
-/// `id = (variant << Word::LOG_BITS) | amount`, the slot at `id * Word::BITS + bit`
-/// accumulates, over every word carrying that key, the word's folded bit times the key's
-/// lambda-weighted partial evaluation tensor.
+/// The result is `SHIFT_VARIANT_COUNT` multilinears of [`LOG_LEN`] variables each, one per shift
+/// variant. Each multilinear is indexed by `(shift amount, bit position)`: shift key
+/// `id = (variant << Word::LOG_BITS) | amount` selects multilinear `variant`, whose slot at
+/// `amount * Word::BITS + bit` accumulates, over every word carrying that key, the word's folded
+/// bit times the key's lambda-weighted partial evaluation tensor.
 ///
 /// This scalar implementation ignores the packed-field and parallelism optimizations of the
 /// single-instance builder.
@@ -246,10 +268,11 @@ pub fn build_g_parts_from_folded_words<F: BinaryField, A: Allocator>(
 	intmul_operator_data: &PreparedOperatorData<F>,
 	binmul_operator_data: &PreparedOperatorData<F>,
 ) -> [FieldVec<F, A>; SHIFT_VARIANT_COUNT] {
-	// One flat accumulator holding SHIFT_VARIANT_COUNT multilinears of LOG_LEN variables each, laid
-	// out variant-major. Kept on the heap rather than a stack array: it is thousands of elements.
-	#[allow(clippy::useless_vec)]
-	let mut multilinears = vec![F::ZERO; SHIFT_VARIANT_COUNT << LOG_LEN];
+	// One zeroed multilinear of LOG_LEN variables per shift variant, drawn from the allocator. A
+	// key belongs to exactly one variant, so the scatter below accumulates straight into these
+	// buffers.
+	let mut multilinears =
+		array::from_fn::<_, SHIFT_VARIANT_COUNT, _>(|_| FieldVec::<F, A>::zeros_in(alloc, LOG_LEN));
 
 	// Each folded word carries the keys named by the segment-relative range at its position.
 	for (word, range) in folded_words.iter().zip(&segment.key_ranges) {
@@ -268,26 +291,20 @@ pub fn build_g_parts_from_folded_words<F: BinaryField, A: Allocator>(
 				&operator_data.lambda_powers,
 			);
 
+			// The key id is `(variant << Word::LOG_BITS) | amount`, so its variant selects the
+			// multilinear and its shift amount the bit slots within that multilinear.
+			let variant = key.id as usize >> Word::LOG_BITS;
+			let amount_base = (key.id as usize & (Word::BITS - 1)) * Word::BITS;
+			let slots = &mut multilinears[variant].as_mut()[amount_base..amount_base + Word::BITS];
+
 			// Scatter the accumulator across this key's bit slots, scaling each by the folded bit.
-			let bit_base = key.id as usize * Word::BITS;
-			for (bit, &folded_bit) in word.iter().enumerate() {
-				multilinears[bit_base + bit] += acc * folded_bit;
+			for (slot, &folded_bit) in iter::zip(slots, word) {
+				*slot += acc * folded_bit;
 			}
 		}
 	}
 
-	// Split the flat accumulator into one multilinear per shift variant, each built straight into
-	// the allocator's buffer rather than into a `Vec` copy.
 	multilinears
-		.chunks(1 << LOG_LEN)
-		.map(|chunk| {
-			let mut data = alloc.alloc::<F>(chunk.len());
-			data.extend_from_slice(chunk);
-			FieldBuffer::new(LOG_LEN, data)
-		})
-		.collect::<Vec<_>>()
-		.try_into()
-		.unwrap_or_else(|_| panic!("chunks yield SHIFT_VARIANT_COUNT parts of size 1 << LOG_LEN"))
 }
 
 #[cfg(test)]
@@ -425,7 +442,7 @@ mod tests {
 
 			// Route A: fold the instance axis, giving one FoldedWord per committed word, then
 			// evaluate that (bit, word) multilinear at r.
-			let folded = fold_instances::<B128>(&table, &r_rho);
+			let folded = fold_instances::<B128, _>(&table, &r_rho, &GlobalAllocator);
 			let (r_bit, r_wire) = r.split_at(Word::LOG_BITS);
 			let lhs = evaluate_folded_witness(&folded, r_bit, r_wire);
 
@@ -465,7 +482,7 @@ mod tests {
 		r_x: &[B128],
 		r_rho: &[B128],
 	) -> [B128; 3] {
-		let [a, b] = build_operation_columns(table, constants, and_constraints);
+		let [a, b] = build_operation_columns(table, constants, and_constraints, &GlobalAllocator);
 		let lagrange = lagrange_evals_scalars::<B128, B128>(domain_subspace, r_z);
 		let row_point: Vec<B128> = r_rho.iter().chain(r_x).copied().collect();
 		let operand_eval = |column: &[Word]| {
@@ -549,7 +566,7 @@ mod tests {
 
 		// The hidden witness folded over instances (one FoldedWord per committed word), and the
 		// public constants.
-		let folded_witness = fold_instances::<B128>(&table, &r_rho);
+		let folded_witness = fold_instances::<B128, _>(&table, &r_rho, &GlobalAllocator);
 		let _offset = table.layout().offset_witness;
 		let public_words = &cs.constants;
 

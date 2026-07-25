@@ -12,6 +12,7 @@
 use std::array;
 
 use binius_circuits::keccak::permutation::keccak_f1600;
+use binius_compute::{BufferPool, PoolVec};
 use binius_core::word::Word;
 use binius_frontend::{Circuit, CircuitBuilder, Wire};
 use binius_m4_prover::{ValueTable, build_operation_columns};
@@ -71,10 +72,21 @@ fn bench_assemble_operation_witness(c: &mut Criterion) {
 		cs.and_constraints
 	};
 
+	// The columns are drawn from a pool that lives across the timed iterations, matching how the
+	// prover recycles its working buffers between proofs.
+	//
+	// So this benchmark measures assembly onto recycled blocks, not onto fresh ones: every
+	// iteration after the first reuses the blocks its predecessor freed. Comparing it against a
+	// revision that allocated a fresh `Vec` per call therefore measures the allocator, not the
+	// assembly algorithm — the per-word work is unchanged. Read a delta here as "cost of the
+	// allocation strategy", never as an algorithmic speedup.
+	let pool = BufferPool::new();
+	let alloc = &pool;
+
 	let mut group = c.benchmark_group("assemble_operation_witness");
 	group.bench_function("bitand_keccak_f1600", |b| {
-		b.iter(|| -> [Vec<Word>; 2] {
-			build_operation_columns(&table, &constants, &and_constraints)
+		b.iter(|| -> [PoolVec<'_, Word>; 2] {
+			build_operation_columns(&table, &constants, &and_constraints, &alloc)
 		});
 	});
 

@@ -1,6 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::ops::Deref;
+
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_core::{constraint_system::ConstraintSystem, word::Word};
 use binius_field::{AESTowerField8b as B8, Field, PackedField};
@@ -152,12 +154,11 @@ impl IOPProver {
 		let mul = (!cs.imul_constraints.is_empty()).then(|| {
 			let columns = {
 				let _scope = tracing::debug_span!("Assemble IntMul witness").entered();
-				build_operation_columns(table, &cs.constants, &cs.imul_constraints)
+				build_operation_columns(table, &cs.constants, &cs.imul_constraints, alloc)
 			};
 			// A prepared constraint system pads its constraint and instance counts to powers of
 			// two, so the columns always have a power-of-two length as the witness requires.
-			let [a, b, lo, hi] = &columns;
-			let output = intmul::prove::<_, _, P, _>([a, b, lo, hi], channel, alloc)
+			let output = intmul::prove::<_, _, P, _>(column_slices(&columns), channel, alloc)
 				.expect("a prepared constraint system yields power-of-two operand columns");
 			(columns, output)
 		});
@@ -178,14 +179,9 @@ impl IOPProver {
 		let bmul = (!cs.bmul_constraints.is_empty()).then(|| {
 			let columns = {
 				let _scope = tracing::debug_span!("Assemble BinMul witness").entered();
-				build_operation_columns(table, &cs.constants, &cs.bmul_constraints)
+				build_operation_columns(table, &cs.constants, &cs.bmul_constraints, alloc)
 			};
-			let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] = &columns;
-			let output = binmul::prove::<_, B128, P, _>(
-				[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi],
-				channel,
-				alloc,
-			);
+			let output = binmul::prove::<_, B128, P, _>(column_slices(&columns), channel, alloc);
 			(columns, output)
 		});
 
@@ -206,25 +202,29 @@ impl IOPProver {
 
 			let [a, b] = {
 				let _scope = tracing::debug_span!("Assemble BitAnd witness").entered();
-				build_operation_columns(table, &cs.constants, &cs.and_constraints)
+				build_operation_columns(table, &cs.constants, &cs.and_constraints, alloc)
 			};
 			// Reduce over borrowed columns so the owned `a`/`b` can be moved into `and_columns`
 			// afterward, avoiding a full clone. Nothing touches the channel between the reduction
 			// and building `and_columns`, so the transcript is unchanged.
-			let output = and_reduction::prove::<_, B128, P, _, _>(
-				[a.as_slice(), b.as_slice()],
-				channel,
-				alloc,
-			);
+			let output = and_reduction::prove::<_, B128, P, _, _>([&a[..], &b[..]], channel, alloc);
 			let and_columns = (mul.is_some() || bmul.is_some()).then(|| {
 				// The re-randomization re-reads the three BitAnd operand columns.
 				// Only `A` and `B` are stored.
 				// On a satisfying witness `C = A & B` holds word-by-word.
 				// So `C` is materialized here, on this multiplication-only path.
-				let c_column = (a.as_slice(), b.as_slice())
+				// The multizip truncates to the shortest of its three sides, so `set_len(n_rows)`
+				// below is sound only because the two source columns have equal length.
+				debug_assert_eq!(a.len(), b.len());
+				let n_rows = a.len();
+				let mut c_column = alloc.alloc::<Word>(n_rows);
+				(&a[..], &b[..], c_column.spare_capacity_mut())
 					.into_par_iter()
-					.map(|(&a_i, &b_i)| a_i & b_i)
-					.collect();
+					.for_each(|(&a_i, &b_i, out)| {
+						out.write(a_i & b_i);
+					});
+				// Safety: every entry of `c_column` is written exactly once in the loop above.
+				unsafe { c_column.set_len(n_rows) };
 				[a, b, c_column]
 			});
 			(and_columns, output)
@@ -248,12 +248,27 @@ impl IOPProver {
 				.expect("AND columns are retained whenever there are IMUL or BMUL constraints");
 			let log_instances = table.log_instances();
 			RerandomizedOperations {
-				bitand: Operation::new(&and_columns, [a_eval, b_eval, c_eval], r_x_and, r_rho_and),
+				bitand: Operation::new(
+					column_slices(&and_columns),
+					[a_eval, b_eval, c_eval],
+					r_x_and,
+					r_rho_and,
+				),
 				intmul: mul.as_ref().map(|(columns, output)| {
-					Operation::from_intmul(columns, output.clone(), &lagrange, log_instances)
+					Operation::from_intmul(
+						column_slices(columns),
+						output.clone(),
+						&lagrange,
+						log_instances,
+					)
 				}),
 				binmul: bmul.as_ref().map(|(columns, output)| {
-					Operation::from_binmul(columns, output.clone(), &lagrange, log_instances)
+					Operation::from_binmul(
+						column_slices(columns),
+						output.clone(),
+						&lagrange,
+						log_instances,
+					)
 				}),
 			}
 			.prove::<P, _, _>(&lagrange, z_challenge, channel, alloc)
@@ -284,7 +299,7 @@ impl IOPProver {
 		// Fold the committed witness over the instance axis at the shared point.
 		let folded_witness = {
 			let _scope = tracing::debug_span!("Fold instances").entered();
-			fold_instances::<B128>(table, &r_rho)
+			fold_instances::<B128, _>(table, &r_rho, alloc)
 		};
 
 		// The public segment is the shared constants, padded with zeros to the layout's
@@ -292,8 +307,16 @@ impl IOPProver {
 		// The shift folds it against the monster's public part, which is sized to that padded
 		// count. The padding makes the two lengths agree, and matches the zeros the verifier
 		// assumes.
-		let mut public_words = cs.constants.clone();
-		public_words.resize(cs.value_vec_layout.n_public_words(), Word::ZERO);
+		let n_public_words = cs.value_vec_layout.n_public_words();
+		// Growing a pooled buffer past the block it was handed would reallocate and free that block
+		// at the element's alignment rather than the pool's, so the fill below must fit exactly.
+		assert!(
+			cs.constants.len() <= n_public_words,
+			"the public segment is padded to at least the constant count"
+		);
+		let mut public_words = alloc.alloc::<Word>(n_public_words);
+		public_words.extend_from_slice(&cs.constants);
+		public_words.resize(n_public_words, Word::ZERO);
 
 		// Reduce the operand claims to one witness evaluation.
 		let witness_claim = {
@@ -419,6 +442,17 @@ where
 	}
 }
 
+/// Borrows an operation's allocator-backed operand columns as plain word slices.
+///
+/// The reductions and [`Operation`] read the columns without caring which allocator produced them,
+/// so this drops the buffer type at the seam rather than propagating it through their signatures.
+fn column_slices<Data, const N: usize>(columns: &[Data; N]) -> [&[Word]; N]
+where
+	Data: Deref<Target = [Word]>,
+{
+	columns.each_ref().map(|column| &**column)
+}
+
 /// One operation's operand columns, oblong claims, and the points they are claimed at.
 ///
 /// The AND-check and the IntMul check both reduce to this shape.
@@ -426,7 +460,7 @@ where
 /// It then transports the claims to the instance point shared by both operations.
 struct Operation<'a, const ARITY: usize> {
 	/// The operand columns, constraint-major, one per operand.
-	columns: &'a [Vec<Word>; ARITY],
+	columns: [&'a [Word]; ARITY],
 	/// The oblong operand claim per operand: its multilinear-eval claim at the instance point.
 	operand_claims: [B128; ARITY],
 	/// The constraint-index point the operands are claimed at.
@@ -439,7 +473,7 @@ impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 	/// The operand columns with their claims at the constraint point `r_x` and instance point
 	/// `r_rho`.
 	fn new(
-		columns: &'a [Vec<Word>; ARITY],
+		columns: [&'a [Word]; ARITY],
 		operand_claims: [B128; ARITY],
 		r_x: &[B128],
 		r_rho: &[B128],
@@ -474,7 +508,7 @@ impl<'a, const ARITY: usize> Operation<'a, ARITY> {
 		let eq_tracker = store.register_eq_tracker(&self.r_rho);
 		// The constraint tensor is the same for every operand of this operation, so expand it once.
 		let r_x_tensor = eq_ind_partial_eval_scalars::<B128>(&self.r_x);
-		for (column, &claim) in self.columns.iter().zip(&self.operand_claims) {
+		for (&column, &claim) in self.columns.iter().zip(&self.operand_claims) {
 			let col = store.push_owned(operand_rho_multilinear::<A, P>(
 				alloc,
 				column,
@@ -500,7 +534,7 @@ impl<'a> Operation<'a, INTMUL_ARITY> {
 	/// This gives the oblong form the BitAnd claims already have.
 	/// The IntMul row point splits into an instance part (low) and a constraint part (high).
 	fn from_intmul(
-		columns: &'a [Vec<Word>; INTMUL_ARITY],
+		columns: [&'a [Word]; INTMUL_ARITY],
 		intmul_output: IntMulOutput<B128>,
 		lagrange: &[B128],
 		log_instances: usize,
@@ -536,7 +570,7 @@ impl<'a> Operation<'a, BINMUL_ARITY> {
 	/// This gives the oblong form the BitAnd claims already have.
 	/// The BinMul row point splits into an instance part (low) and a constraint part (high).
 	fn from_binmul(
-		columns: &'a [Vec<Word>; BINMUL_ARITY],
+		columns: [&'a [Word]; BINMUL_ARITY],
 		binmul_output: BinMulOutput<B128>,
 		lagrange: &[B128],
 		log_instances: usize,
@@ -799,6 +833,80 @@ mod tests {
 		let mut cs = c.circuit.constraint_system().clone();
 		cs.validate_and_prepare().unwrap();
 		(cs, table)
+	}
+
+	// Two proofs from one `Prover` are byte-identical, and both verify.
+	//
+	// A `Prover` owns its `BufferPool` for its whole lifetime, so the second proof draws blocks the
+	// first one freed. Within a single proof the pool already recycles — each reduction returns its
+	// working buffers as it finishes, and later allocations land on them — so a round trip does
+	// exercise dirty memory. What only a second proof reaches is reuse of the blocks held for the
+	// *whole* of the first: the operand columns and the instance-folded witness, which are live
+	// until the proof ends and so are recycled nowhere else.
+	//
+	// The byte-for-byte equality is the part no other test asserts. It surfaces a slot a pooled
+	// buffer leaves unwritten when the first proof reads it fresh and the second reads the first's
+	// leftovers, without having to predict which buffer or which block that is. It is not a
+	// superset of the round-trip tests: a slot that happens to read the same both times yields two
+	// identically-wrong proofs, and the verification below is what catches those.
+	//
+	// The fixture carries AND, IMUL, and BMUL constraints so every operation's pooled buffers are
+	// live, rather than only the AND path a mul-free circuit reaches.
+	#[test]
+	fn two_proofs_from_one_prover_are_byte_identical() {
+		use binius_frontend::Wire;
+
+		let builder = CircuitBuilder::new();
+		let inputs: [Wire; 4] = array::from_fn(|_| builder.add_witness());
+		let and = builder.band(inputs[0], inputs[1]);
+		builder.force_commit(and);
+		let (hi, lo) = builder.imul(inputs[0], inputs[1]);
+		builder.force_commit(hi);
+		builder.force_commit(lo);
+		let (c_lo, c_hi) = builder.bmul(inputs[0], inputs[1], inputs[2], inputs[3]);
+		builder.force_commit(c_lo);
+		builder.force_commit(c_hi);
+		let circuit = builder.build();
+
+		let mut cs = circuit.constraint_system().clone();
+		cs.validate_and_prepare().unwrap();
+		// Confirm the fixture reaches all three operations, so the recycled buffers really do span
+		// every operand-column shape.
+		assert!(!cs.imul_constraints.is_empty(), "the fixture must emit IMUL constraints");
+		assert!(!cs.bmul_constraints.is_empty(), "the fixture must emit BMUL constraints");
+
+		let log_instances = 6;
+		let table = ValueTable::populate(&circuit, log_instances, |i, w| {
+			let mut rng = StdRng::seed_from_u64(i as u64);
+			for &wire in &inputs {
+				w[wire] = Word(rng.next_u64());
+			}
+		})
+		.unwrap();
+
+		let verifier = Verifier::setup(&cs, log_instances, 1);
+		let prover = Prover::<P>::setup(&verifier);
+
+		// One prover, two proofs of the same table: the second reuses the first's freed blocks.
+		let prove_once = || {
+			let mut transcript = ProverTranscript::new(StdChallenger::default());
+			prover.prove(&table, &mut transcript);
+			transcript.finalize()
+		};
+		let first = prove_once();
+		let second = prove_once();
+		assert_eq!(first, second, "a second proof from the same prover must reproduce the first");
+
+		// Both proofs stand on their own against the verifier.
+		for proof in [first, second] {
+			let mut verifier_transcript = VerifierTranscript::new(StdChallenger::default(), proof);
+			verifier
+				.verify(&mut verifier_transcript)
+				.expect("a faithful proof verifies");
+			verifier_transcript
+				.finalize()
+				.expect("no trailing proof data");
+		}
 	}
 
 	// The prover and verifier run the whole protocol on one transcript.
