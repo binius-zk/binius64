@@ -160,11 +160,10 @@ mod tests {
 		wire_mapping[all_one_wire] = ValueIndex(3);
 
 		let mut builder = ConstraintBuilder::new();
-		builder
-			.linear()
-			.rhs(expr::xor3(expr::rotr(wire_a, 0), expr::sll(wire_b, 5), expr::rotr(wire_a, 12)))
-			.dst(wire_c)
-			.build();
+		builder.linear(
+			expr::xor3(expr::rotr(wire_a, 0), expr::sll(wire_b, 5), expr::rotr(wire_a, 12)),
+			wire_c,
+		);
 
 		let (and_constraints, imul_constraints, _bmul_constraints) =
 			builder.build(&wire_mapping, all_one_wire);

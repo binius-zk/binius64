@@ -41,7 +41,7 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	//
 	// x & y = t, where t ^ w = z
 	// This can be written as: x & y ^ w = z
-	builder.and().a(*x).b(*y).c(expr::xor2(*z, *w)).build();
+	builder.and(*x, *y, expr::xor2(*z, *w));
 }
 
 pub fn emit_eval_bytecode(

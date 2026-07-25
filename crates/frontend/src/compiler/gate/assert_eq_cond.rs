@@ -40,12 +40,7 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 
 	// Constraint: (x ⊕ y) ∧ (cond ~>> 63) = 0
 	let mask = expr::sar(*cond, 63);
-	builder
-		.and()
-		.a(expr::xor2(*x, *y))
-		.b(mask)
-		.c(expr::empty())
-		.build();
+	builder.and(expr::xor2(*x, *y), mask, expr::empty());
 }
 
 pub fn emit_eval_bytecode(

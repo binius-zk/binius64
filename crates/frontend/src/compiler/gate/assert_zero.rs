@@ -40,7 +40,7 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	let [x] = inputs else { unreachable!() };
 
 	// Constraint: x ∧ all-1 = 0
-	builder.and().a(*x).b(*all_one).c(expr::empty()).build();
+	builder.and(*x, *all_one, expr::empty());
 }
 
 pub fn emit_eval_bytecode(

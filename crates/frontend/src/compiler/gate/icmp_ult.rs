@@ -54,12 +54,11 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 
 	// Constraint 1: Carry propagation for comparison
 	// ((x ⊕ all-1) ⊕ (bout << 1)) ∧ (y ⊕ (bout << 1)) = bout ⊕ (bout << 1)
-	builder
-		.and()
-		.a(expr::xor3(*x, *all_one, expr::sll(*bout, 1)))
-		.b(expr::xor2(*y, expr::sll(*bout, 1)))
-		.c(expr::xor2(*bout, expr::sll(*bout, 1)))
-		.build();
+	builder.and(
+		expr::xor3(*x, *all_one, expr::sll(*bout, 1)),
+		expr::xor2(*y, expr::sll(*bout, 1)),
+		expr::xor2(*bout, expr::sll(*bout, 1)),
+	);
 }
 
 pub fn emit_eval_bytecode(

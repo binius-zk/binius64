@@ -27,7 +27,7 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	let [hi, lo] = outputs else { unreachable!() };
 
 	// Create ImulConstraint: X * Y = (HI << 64) | LO
-	builder.imul().a(*x).b(*y).hi(*hi).lo(*lo).build();
+	builder.imul(*x, *y, *hi, *lo);
 }
 
 pub fn emit_eval_bytecode(

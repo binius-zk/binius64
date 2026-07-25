@@ -57,21 +57,16 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	// Constraint 1: Carry propagation
 	//
 	// (a ⊕ (cout << 1) ⊕ cin_msb) ∧ (b ⊕ (cout << 1) ⊕ cin_msb) = cout ⊕ (cout << 1) ⊕ cin_msb
-	builder
-		.and()
-		.a(expr::xor3(*a, cout_sll_1, cin_msb))
-		.b(expr::xor3(*b, cout_sll_1, cin_msb))
-		.c(expr::xor3(*cout, cout_sll_1, cin_msb))
-		.build();
+	builder.and(
+		expr::xor3(*a, cout_sll_1, cin_msb),
+		expr::xor3(*b, cout_sll_1, cin_msb),
+		expr::xor3(*cout, cout_sll_1, cin_msb),
+	);
 
 	// Constraint 2: Sum equality (linear)
 	//
 	// (a ⊕ b ⊕ (cout << 1) ⊕ cin_msb) = sum
-	builder
-		.linear()
-		.rhs(expr::xor4(*a, *b, cout_sll_1, cin_msb))
-		.dst(*sum)
-		.build();
+	builder.linear(expr::xor4(*a, *b, cout_sll_1, cin_msb), *sum);
 }
 
 pub fn emit_eval_bytecode(

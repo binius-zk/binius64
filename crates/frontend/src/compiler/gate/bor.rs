@@ -40,7 +40,7 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	// Constraint: Bitwise OR
 	//
 	// x ∧ y = x ⊕ y ⊕ z
-	builder.and().a(*x).b(*y).c(expr::xor3(*x, *y, *z)).build();
+	builder.and(*x, *y, expr::xor3(*x, *y, *z));
 }
 
 pub fn emit_eval_bytecode(

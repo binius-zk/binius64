@@ -62,24 +62,14 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 
 	// Constraint 1: Constrain carry-out
 	// (x ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout
-	builder
-		.and()
-		.a(expr::xor2(*x, cin))
-		.b(expr::xor2(*all_one, cin))
-		.c(expr::xor2(cin, *cout))
-		.build();
+	builder.and(expr::xor2(*x, cin), expr::xor2(*all_one, cin), expr::xor2(cin, *cout));
 
 	// Constraint 2 (AND): sar(cout, 63) ∧ all_one = all_one, i.e. MSB(cout) = 1 (x ≠ 0).
 	// sar(cout, 63) sign-extends the MSB across all 64 bits, so it equals all_one iff
 	// MSB(cout) = 1; the AND with all_one then equals all_one iff MSB(cout) = 1. This is
 	// emitted as an AND (which defines no wire) so gate fusion cannot inline it and
 	// substitute the constant back into Constraint 1, reopening the soundness hole.
-	builder
-		.and()
-		.a(expr::sar(*cout, 63))
-		.b(*all_one)
-		.c(*all_one)
-		.build();
+	builder.and(expr::sar(*cout, 63), *all_one, *all_one);
 }
 
 pub fn emit_eval_bytecode(
