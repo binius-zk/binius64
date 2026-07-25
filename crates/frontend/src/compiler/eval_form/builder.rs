@@ -4,6 +4,8 @@
 
 use binius_core::constraint_system::ShiftVariant;
 
+use super::opcode::EvalOpcode;
+
 /// Builder for constructing bytecode during circuit compilation
 pub struct BytecodeBuilder {
 	bytecode: Vec<u8>,
@@ -21,7 +23,7 @@ impl BytecodeBuilder {
 	// Bitwise operations
 	pub fn emit_band(&mut self, dst: u32, src1: u32, src2: u32) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x01);
+		self.emit_opcode(EvalOpcode::Band);
 		self.emit_reg(dst);
 		self.emit_reg(src1);
 		self.emit_reg(src2);
@@ -29,7 +31,7 @@ impl BytecodeBuilder {
 
 	pub fn emit_bor(&mut self, dst: u32, src1: u32, src2: u32) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x02);
+		self.emit_opcode(EvalOpcode::Bor);
 		self.emit_reg(dst);
 		self.emit_reg(src1);
 		self.emit_reg(src2);
@@ -37,7 +39,7 @@ impl BytecodeBuilder {
 
 	pub fn emit_bxor(&mut self, dst: u32, src1: u32, src2: u32) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x03);
+		self.emit_opcode(EvalOpcode::Bxor);
 		self.emit_reg(dst);
 		self.emit_reg(src1);
 		self.emit_reg(src2);
@@ -45,7 +47,7 @@ impl BytecodeBuilder {
 
 	pub fn emit_bxor_multi(&mut self, dst: u32, srcs: &[u32]) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x06); // Opcode for multi-way XOR
+		self.emit_opcode(EvalOpcode::BxorMulti);
 		self.emit_reg(dst);
 		self.emit_u32(srcs.len() as u32);
 		for &src in srcs {
@@ -55,7 +57,7 @@ impl BytecodeBuilder {
 
 	pub fn emit_fax(&mut self, dst: u32, src1: u32, src2: u32, src3: u32) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x07);
+		self.emit_opcode(EvalOpcode::Fax);
 		self.emit_reg(dst);
 		self.emit_reg(src1);
 		self.emit_reg(src2);
@@ -64,7 +66,7 @@ impl BytecodeBuilder {
 
 	pub fn emit_select(&mut self, dst: u32, cond: u32, t: u32, f: u32) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x05);
+		self.emit_opcode(EvalOpcode::Select);
 		self.emit_reg(dst);
 		self.emit_reg(cond);
 		self.emit_reg(t);
@@ -73,12 +75,12 @@ impl BytecodeBuilder {
 
 	/// One instruction covering every shift and rotate variant.
 	///
-	/// Layout: `[0x10][dst reg][src reg][variant u8][amount u8]`.
+	/// Layout: `[Shift][dst reg][src reg][variant u8][amount u8]`.
 	/// The variant byte selects the shift operation.
 	/// The amount byte is the shift count in bits.
 	pub fn emit_shift(&mut self, dst: u32, src: u32, variant: ShiftVariant, amount: u8) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x10);
+		self.emit_opcode(EvalOpcode::Shift);
 		self.emit_reg(dst);
 		self.emit_reg(src);
 		self.emit_u8(variant as u8);
@@ -88,7 +90,7 @@ impl BytecodeBuilder {
 	// Arithmetic with carry
 	pub fn emit_iadd_cout(&mut self, dst_sum: u32, dst_cout: u32, src1: u32, src2: u32) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x20);
+		self.emit_opcode(EvalOpcode::IaddCout);
 		self.emit_reg(dst_sum);
 		self.emit_reg(dst_cout);
 		self.emit_reg(src1);
@@ -104,7 +106,7 @@ impl BytecodeBuilder {
 		cin: u32,
 	) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x21);
+		self.emit_opcode(EvalOpcode::IaddCinCout);
 		self.emit_reg(dst_sum);
 		self.emit_reg(dst_cout);
 		self.emit_reg(src1);
@@ -121,7 +123,7 @@ impl BytecodeBuilder {
 		bin: u32,
 	) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x23);
+		self.emit_opcode(EvalOpcode::IsubBinBout);
 		self.emit_reg(dst_diff);
 		self.emit_reg(dst_bout);
 		self.emit_reg(src1);
@@ -132,7 +134,7 @@ impl BytecodeBuilder {
 	// Multiply
 	pub fn emit_imul(&mut self, dst_hi: u32, dst_lo: u32, src1: u32, src2: u32) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x30);
+		self.emit_opcode(EvalOpcode::Imul);
 		self.emit_reg(dst_hi);
 		self.emit_reg(dst_lo);
 		self.emit_reg(src1);
@@ -151,7 +153,7 @@ impl BytecodeBuilder {
 		b_hi: u32,
 	) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x31);
+		self.emit_opcode(EvalOpcode::Bmul);
 		self.emit_reg(dst_lo);
 		self.emit_reg(dst_hi);
 		self.emit_reg(a_lo);
@@ -170,7 +172,7 @@ impl BytecodeBuilder {
 		cin: u32,
 	) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x40);
+		self.emit_opcode(EvalOpcode::Iadd32CinCout);
 		self.emit_reg(dst_sum);
 		self.emit_reg(dst_cout);
 		self.emit_reg(src1);
@@ -180,7 +182,7 @@ impl BytecodeBuilder {
 
 	pub fn emit_iadd32_cout(&mut self, dst_sum: u32, dst_cout: u32, src1: u32, src2: u32) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x46);
+		self.emit_opcode(EvalOpcode::Iadd32Cout);
 		self.emit_reg(dst_sum);
 		self.emit_reg(dst_cout);
 		self.emit_reg(src1);
@@ -190,7 +192,7 @@ impl BytecodeBuilder {
 	// Assertions
 	pub fn emit_assert_eq(&mut self, src1: u32, src2: u32, error_id: u32) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x60);
+		self.emit_opcode(EvalOpcode::AssertEq);
 		self.emit_reg(src1);
 		self.emit_reg(src2);
 		self.emit_u32(error_id);
@@ -198,7 +200,7 @@ impl BytecodeBuilder {
 
 	pub fn emit_assert_eq_cond(&mut self, cond: u32, src1: u32, src2: u32, error_id: u32) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x61);
+		self.emit_opcode(EvalOpcode::AssertEqCond);
 		self.emit_reg(cond);
 		self.emit_reg(src1);
 		self.emit_reg(src2);
@@ -207,28 +209,28 @@ impl BytecodeBuilder {
 
 	pub fn emit_assert_zero(&mut self, src: u32, error_id: u32) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x62);
+		self.emit_opcode(EvalOpcode::AssertZero);
 		self.emit_reg(src);
 		self.emit_u32(error_id);
 	}
 
 	pub fn emit_assert_non_zero(&mut self, src: u32, error_id: u32) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x63);
+		self.emit_opcode(EvalOpcode::AssertNonZero);
 		self.emit_reg(src);
 		self.emit_u32(error_id);
 	}
 
 	pub fn emit_assert_false(&mut self, src: u32, error_id: u32) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x64);
+		self.emit_opcode(EvalOpcode::AssertFalse);
 		self.emit_reg(src);
 		self.emit_u32(error_id);
 	}
 
 	pub fn emit_assert_true(&mut self, src: u32, error_id: u32) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x65);
+		self.emit_opcode(EvalOpcode::AssertTrue);
 		self.emit_reg(src);
 		self.emit_u32(error_id);
 	}
@@ -242,7 +244,7 @@ impl BytecodeBuilder {
 		outputs: &[u32],
 	) {
 		self.n_eval_insn += 1;
-		self.emit_u8(0x80);
+		self.emit_opcode(EvalOpcode::Hint);
 		self.emit_u32(hint_id);
 		self.emit_u16(dimensions.len() as u16);
 		for &dim in dimensions {
@@ -259,6 +261,10 @@ impl BytecodeBuilder {
 	}
 
 	// Low-level emitters
+	fn emit_opcode(&mut self, opcode: EvalOpcode) {
+		self.emit_u8(opcode as u8);
+	}
+
 	fn emit_u8(&mut self, val: u8) {
 		self.bytecode.push(val);
 	}

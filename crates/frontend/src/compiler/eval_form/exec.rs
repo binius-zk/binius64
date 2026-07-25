@@ -15,6 +15,7 @@ use binius_core::{Word, constraint_system::ShiftVariant};
 use binius_field::BinaryField128bGhash;
 use smallvec::{SmallVec, smallvec};
 
+use super::opcode::EvalOpcode;
 use crate::compiler::{hints::HintRegistry, pathspec::PathSpec};
 
 /// Multiplies two GHASH field elements ($\mathbb{F}_{2^{128}}$), each carried by a `(lo, hi)` pair
@@ -82,46 +83,49 @@ impl<'a> Executor<'a> {
 	/// Panics on an unknown opcode, which can only happen if the bytecode is malformed.
 	pub fn run<C: EvalContext>(&mut self, ctx: &mut C) {
 		while self.pc < self.bytecode.len() {
-			let opcode = self.read_u8();
+			let byte = self.read_u8();
+			let opcode = EvalOpcode::from_byte(byte)
+				.unwrap_or_else(|| panic!("Unknown opcode: {byte:#x} at pc={}", self.pc - 1));
+
+			// Matching the enum rather than the byte makes the dispatch exhaustive.
+			// So a new opcode without a handler here does not compile.
 			match opcode {
 				// Bitwise operations
-				0x01 => self.exec_band(ctx),
-				0x02 => self.exec_bor(ctx),
-				0x03 => self.exec_bxor(ctx),
-				0x05 => self.exec_select(ctx),
-				0x06 => self.exec_bxor_multi(ctx),
-				0x07 => self.exec_fax(ctx),
+				EvalOpcode::Band => self.exec_band(ctx),
+				EvalOpcode::Bor => self.exec_bor(ctx),
+				EvalOpcode::Bxor => self.exec_bxor(ctx),
+				EvalOpcode::Select => self.exec_select(ctx),
+				EvalOpcode::BxorMulti => self.exec_bxor_multi(ctx),
+				EvalOpcode::Fax => self.exec_fax(ctx),
 
 				// Shifts
-				0x10 => self.exec_shift(ctx),
+				EvalOpcode::Shift => self.exec_shift(ctx),
 
 				// Arithmetic
-				0x20 => self.exec_iadd_cout(ctx),
-				0x21 => self.exec_iadd_cin_cout(ctx),
-				0x23 => self.exec_isub_bin_bout(ctx),
-				0x30 => self.exec_imul(ctx),
-				0x31 => self.exec_bmul(ctx),
+				EvalOpcode::IaddCout => self.exec_iadd_cout(ctx),
+				EvalOpcode::IaddCinCout => self.exec_iadd_cin_cout(ctx),
+				EvalOpcode::IsubBinBout => self.exec_isub_bin_bout(ctx),
+				EvalOpcode::Imul => self.exec_imul(ctx),
+				EvalOpcode::Bmul => self.exec_bmul(ctx),
 
 				// 32-bit operations
-				0x40 => self.exec_iadd32_cin_cout(ctx),
-				0x46 => self.exec_iadd32_cout(ctx),
+				EvalOpcode::Iadd32CinCout => self.exec_iadd32_cin_cout(ctx),
+				EvalOpcode::Iadd32Cout => self.exec_iadd32_cout(ctx),
 
 				// Masks
-				0x50 => self.exec_mask_low(ctx),
-				0x51 => self.exec_mask_high(ctx),
+				EvalOpcode::MaskLow => self.exec_mask_low(ctx),
+				EvalOpcode::MaskHigh => self.exec_mask_high(ctx),
 
 				// Assertions
-				0x60 => self.exec_assert_eq(ctx),
-				0x61 => self.exec_assert_eq_cond(ctx),
-				0x62 => self.exec_assert_zero(ctx),
-				0x63 => self.exec_assert_non_zero(ctx),
-				0x64 => self.exec_assert_false(ctx),
-				0x65 => self.exec_assert_true(ctx),
+				EvalOpcode::AssertEq => self.exec_assert_eq(ctx),
+				EvalOpcode::AssertEqCond => self.exec_assert_eq_cond(ctx),
+				EvalOpcode::AssertZero => self.exec_assert_zero(ctx),
+				EvalOpcode::AssertNonZero => self.exec_assert_non_zero(ctx),
+				EvalOpcode::AssertFalse => self.exec_assert_false(ctx),
+				EvalOpcode::AssertTrue => self.exec_assert_true(ctx),
 
 				// Hint calls
-				0x80 => self.exec_hint(ctx),
-
-				_ => panic!("Unknown opcode: {:#x} at pc={}", opcode, self.pc - 1),
+				EvalOpcode::Hint => self.exec_hint(ctx),
 			}
 		}
 	}
