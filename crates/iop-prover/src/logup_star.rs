@@ -103,7 +103,7 @@ where
 		lookers,
 		combined_eval_claim,
 		numerators,
-		&pushforward,
+		pushforward.to_ref(),
 		channel,
 	);
 
