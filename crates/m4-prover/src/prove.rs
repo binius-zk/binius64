@@ -353,7 +353,7 @@ impl IOPProver {
 			// The point is `r_j || r_rho || r_y`.
 			// Its instance coordinates fold the trace at `r_rho`.
 			let trace_point = [r_j, r_rho.as_slice(), r_y].concat();
-			ring_switch::prove(&trace_packed, &trace_point, channel)
+			ring_switch::prove(trace_packed.to_ref(), &trace_point, channel)
 		};
 
 		// Queue the trace opening against the ring-switch's transparent multilinear.
