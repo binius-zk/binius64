@@ -44,10 +44,10 @@ use crate::{CircuitBuilder, Wire};
 /// # Cost
 ///
 /// - 1 IMUL constraint for the unsigned product.
-/// - 1 AND constraint for the unsigned product security check.
-/// - 2 AND constraints for the sign masks.
 /// - 2 AND constraints for the corrections.
 /// - 2 AND constraints for the two high-word subtractions.
+///
+/// The two sign masks cost nothing of their own, since a shift folds into whatever reads it.
 fn smul64(builder: &CircuitBuilder, a: Wire, b: Wire) -> (Wire, Wire) {
 	// Unsigned 128-bit product of the raw bit patterns.
 	// Only the high word needs a signed correction; the low word is already final.

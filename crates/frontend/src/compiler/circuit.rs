@@ -17,7 +17,7 @@ use crate::compiler::{
 /// Error returned when populating wire witness fails due to assertion failures.
 #[derive(Debug)]
 pub struct PopulateError {
-	/// List of assertion failure messages (limited to MAX_ASSERTION_MESSAGES).
+	/// List of assertion failure messages (limited to MAX_ASSERTION_FAILURES).
 	pub messages: Vec<String>,
 	/// Total count of assertion failures (may exceed messages.len()).
 	pub total_count: usize,

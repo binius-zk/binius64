@@ -11,7 +11,7 @@
 //! # Constraints
 //!
 //! The gate generates 1 AND constraint:
-//! - `x ∧ 0x8000000000000000 = 0`
+//! - `x ∧ 0x8000000000000000 = 0x8000000000000000`
 
 use binius_core::word::Word;
 

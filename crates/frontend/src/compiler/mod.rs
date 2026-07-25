@@ -1073,8 +1073,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// - 1 IMUL constraint,
-	/// - 1 AND constraint (for security check).
+	/// 1 IMUL constraint.
 	pub fn imul(&self, a: Wire, b: Wire) -> (Wire, Wire) {
 		let hi = self.add_internal();
 		let lo = self.add_internal();
