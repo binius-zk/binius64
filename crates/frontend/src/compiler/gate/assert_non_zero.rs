@@ -43,7 +43,7 @@ pub const fn shape() -> OpcodeShape {
 		n_in: 1,
 		n_out: 0,
 		n_aux: 1,
-		n_scratch: 1,
+		n_scratch: 0,
 		n_imm: 0,
 	}
 }
@@ -93,23 +93,15 @@ pub fn emit_eval_bytecode(
 		constants,
 		inputs,
 		aux,
-		scratch,
 		..
 	} = data.gate_param();
 	let [all_one] = constants else { unreachable!() };
 	let [x] = inputs else { unreachable!() };
 	let [cout] = aux else { unreachable!() };
-	let [scratch_sum_unused] = scratch else {
-		unreachable!()
-	};
 
-	// Compute carry bits from all_one + x (cin = 0 implicit)
-	builder.emit_iadd_cout(
-		wire_to_reg(*scratch_sum_unused), // sum (unused)
-		wire_to_reg(*cout),               // cout
-		wire_to_reg(*all_one),            // all_one
-		wire_to_reg(*x),                  // x
-	);
+	// Carry bits of all_one + x.
+	// Only the carries matter, so the sum is not stored.
+	builder.emit_iadd_carry(wire_to_reg(*cout), wire_to_reg(*all_one), wire_to_reg(*x));
 
 	builder.emit_assert_non_zero(wire_to_reg(*cout), assertion_path.as_u32());
 }
