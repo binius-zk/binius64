@@ -37,7 +37,7 @@ use std::{
 	ops::Deref,
 };
 
-use binius_compute::{Allocator, BufferPool};
+use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_field::{BinaryField, Field, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
@@ -46,7 +46,7 @@ use binius_ip_prover::{
 	sumcheck::{quadratic_mlecheck_prover, zk_mlecheck},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice,
+	FieldBuffer, FieldSlice, FieldVec,
 	multilinear::eq::eq_ind_partial_eval,
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
 	univariate::evaluate_univariate,
@@ -60,11 +60,7 @@ use binius_spartan_verifier::{
 	wiring::evaluate_wiring_mle_public,
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
-use binius_utils::{
-	SerializeBytes,
-	checked_arithmetics::checked_log_2,
-	rayon::{self, prelude::*},
-};
+use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2, rayon::prelude::*};
 use digest::Output;
 pub use error::*;
 use itertools::chain;
@@ -135,16 +131,18 @@ impl<F: Field> IOPProver<F> {
 	/// buffer must be passed into `prove`. Callers that wrap the IOP (e.g. the ZK wrapper) can
 	/// invoke this separately so the precommit oracle handle is available before the rest of
 	/// the protocol runs.
-	pub fn commit_precommit<P, Channel>(
+	pub fn commit_precommit<P, Channel, A>(
 		&self,
 		witness: &Witness<F>,
 		rng: &mut impl CryptoRng,
 		channel: &mut Channel,
-	) -> (Channel::Oracle, FieldBuffer<P>)
+		alloc: &A,
+	) -> (Channel::Oracle, FieldVec<P, A>)
 	where
 		F: BinaryField,
 		P: PackedField<Scalar = F>,
-		Channel: IOPProverChannel<P>,
+		Channel: IOPProverChannel<P, A>,
+		A: Allocator,
 	{
 		let cs = &self.constraint_system;
 		// Precommit segment has no dummy mul-constraint blinding (see ConstraintSystemPadded).
@@ -152,7 +150,8 @@ impl<F: Field> IOPProver<F> {
 			n_dummy_wires: cs.blinding_info().n_dummy_wires,
 			n_dummy_constraints: 0,
 		};
-		let precommit_packed = pack_and_blind_witness::<_, P>(
+		let precommit_packed = pack_and_blind_witness::<_, _, P>(
+			alloc,
 			cs.log_precommit() as usize,
 			witness.precommit(),
 			cs.n_precommit() as usize,
@@ -181,7 +180,7 @@ impl<F: Field> IOPProver<F> {
 		&self,
 		witness: Witness<F>,
 		precommit_oracle: Channel::Oracle,
-		precommit_packed: FieldBuffer<P>,
+		precommit_packed: FieldVec<P, A>,
 		mut rng: impl CryptoRng,
 		channel: &mut Channel,
 		alloc: &A,
@@ -189,7 +188,7 @@ impl<F: Field> IOPProver<F> {
 	where
 		F: BinaryField,
 		P: PackedField<Scalar = F>,
-		Channel: IOPProverChannel<P>,
+		Channel: IOPProverChannel<P, A>,
 		A: Allocator,
 	{
 		let _prove_guard =
@@ -240,19 +239,23 @@ impl<F: Field> IOPProver<F> {
 		let mask_degree = 2; // quadratic composition
 		let log_masks_buffer_size = m_n + m_d;
 
-		let masks_buffer = FieldBuffer::<P>::new(
-			log_masks_buffer_size,
-			repeat_with(|| P::random(&mut rng))
-				.take(1 << log_masks_buffer_size.saturating_sub(P::LOG_WIDTH))
-				.collect(),
-		);
+		let masks_buffer = {
+			// Growing a pooled buffer past the block it was handed would reallocate and free that
+			// block at the element's alignment rather than the pool's, so the fill below takes
+			// exactly the allocated count.
+			let packed_len = 1 << log_masks_buffer_size.saturating_sub(P::LOG_WIDTH);
+			let mut values = alloc.alloc::<P>(packed_len);
+			values.extend(repeat_with(|| P::random(&mut rng)).take(packed_len));
+			FieldBuffer::new(log_masks_buffer_size, values)
+		};
 
 		let mulcheck_mask =
 			zk_mlecheck::Mask::new(log_mul_constraints, mask_degree, masks_buffer.to_ref());
 
 		// Pack private witness into field elements and add blinding
 		let blinding_info = cs.blinding_info();
-		let private_packed = pack_and_blind_witness::<_, P>(
+		let private_packed = pack_and_blind_witness::<_, _, P>(
+			alloc,
 			cs.log_private() as usize,
 			witness.private(),
 			cs.n_private() as usize,
@@ -393,13 +396,13 @@ where
 		// and delegate to the IOP prover.
 		let mut channel = self
 			.basefold_compiler
-			.create_channel_from_transcript::<H, Challenger_, _>(transcript, &mut rng);
+			.create_channel_from_transcript::<H, Challenger_, _, _>(transcript, &mut rng);
 		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
 		// by earlier proofs.
 		let alloc = &self.pool;
 		let (precommit_oracle, precommit_packed) =
 			self.iop_prover
-				.commit_precommit::<P, _>(&witness, &mut rng, &mut channel);
+				.commit_precommit::<P, _, _>(&witness, &mut rng, &mut channel, &alloc);
 		// The IOP prover only queues the oracle relations; `finish` runs the single combined
 		// opening.
 		self.iop_prover.prove::<P, _, _>(
@@ -473,29 +476,37 @@ where
 }
 
 /// Packs witness values into a [`FieldBuffer`] and adds blinding values for dummy wires.
-fn pack_and_blind_witness<F: Field, P: PackedField<Scalar = F>>(
+fn pack_and_blind_witness<A: Allocator, F: Field, P: PackedField<Scalar = F>>(
+	alloc: &A,
 	log_private: usize,
 	private: &[F],
 	n_private: usize,
 	blinding_info: &BlindingInfo,
 	mut rng: impl CryptoRng,
-) -> FieldBuffer<P> {
-	let packed = if log_private < P::LOG_WIDTH {
+) -> FieldVec<P, A> {
+	// Growing a pooled buffer past the block it was handed would reallocate and free that block at
+	// the element's alignment rather than the pool's, so the fill below must fit exactly.
+	let packed_len = 1 << log_private.saturating_sub(P::LOG_WIDTH);
+	let mut packed = alloc.alloc::<P>(packed_len);
+	if log_private < P::LOG_WIDTH {
+		// The whole segment lives in one packed element's low lanes.
+		debug_assert_eq!(packed_len, 1);
 		let elems_iter = private.iter().copied();
 		let zeros_iter = repeat_n(F::ZERO, (1 << log_private) - private.len());
 
-		let elems = P::from_scalars(chain!(elems_iter, zeros_iter));
-		vec![elems]
+		packed.push(P::from_scalars(chain!(elems_iter, zeros_iter)));
 	} else {
-		let packed_len = 1 << (log_private - P::LOG_WIDTH);
-
-		let elems_iter = private
+		// Zero the block once, then overwrite the prefix holding real scalars. The zip stops at the
+		// last real chunk, so the zero tail is the padding the buffer wants anyway. Collecting into
+		// a `Vec` first and copying that in would cost a second allocation and a full memcpy — the
+		// very thing pooling is here to remove.
+		debug_assert!(private.len() <= 1 << log_private);
+		packed.resize(packed_len, P::zero());
+		private
 			.par_chunks(P::WIDTH)
-			.map(|chunk| P::from_scalars(chunk.iter().copied()));
-		let zeros_iter = rayon::iter::repeat_n(P::zero(), packed_len - elems_iter.len());
-
-		elems_iter.chain(zeros_iter).collect::<Vec<_>>()
-	};
+			.zip(packed.par_iter_mut())
+			.for_each(|(chunk, out)| *out = P::from_scalars(chunk.iter().copied()));
+	}
 
 	let mut buffer = FieldBuffer::new(log_private, packed);
 

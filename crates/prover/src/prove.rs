@@ -13,7 +13,7 @@ use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop_prover::{basefold::compiler::BaseFoldProverCompiler, channel::IOPProverChannel};
 use binius_ip::sumcheck::SumcheckOutput;
 use binius_math::{
-	BinarySubspace, FieldBuffer,
+	BinarySubspace, FieldBuffer, FieldVec,
 	inner_product::inner_product,
 	ntt::{NeighborsLastMultiThread, domain_context::GenericPreExpanded},
 	univariate::lagrange_evals,
@@ -94,7 +94,7 @@ impl IOPProver {
 	where
 		A: Allocator,
 		P: PackedField<Scalar = B128>,
-		Channel: IOPProverChannel<P>,
+		Channel: IOPProverChannel<P, A>,
 	{
 		let cs = &self.constraint_system;
 
@@ -103,13 +103,20 @@ impl IOPProver {
 		// Only the non-public words are committed as the trace oracle; the public segment is a
 		// verifier-known polynomial.
 		let setup_guard = tracing::debug_span!("Prepare witness").entered();
-		let witness_packed = pack_witness::<P>(self.log_witness_elems, witness.non_public())?;
+		let witness_packed =
+			pack_witness::<P, _>(alloc, self.log_witness_elems, witness.non_public())?;
 		drop(setup_guard);
 
-		// Observe the public input as B128 elements (includes it in Fiat-Shamir).
-		let public_packed =
-			pack_witness::<P>(self.log_public_words - LOG_WORDS_PER_ELEM, witness.public())?;
-		let public_elems = public_packed.iter_scalars().collect::<Vec<_>>();
+		// Observe the public input as B128 elements (includes it in Fiat-Shamir). The packed buffer
+		// is a temporary of this statement, so its pool block is returned immediately rather than
+		// held for the rest of the proof.
+		let public_elems = pack_witness::<P, _>(
+			alloc,
+			self.log_public_words - LOG_WORDS_PER_ELEM,
+			witness.public(),
+		)?
+		.iter_scalars()
+		.collect::<Vec<_>>();
 		channel.observe_many(&public_elems);
 
 		// [phase] Witness Commit - witness generation and commitment
@@ -443,7 +450,7 @@ where
 		// oracle is non-ZK, so no masks are drawn and the rng is never consumed.
 		let mut channel = self
 			.basefold_compiler
-			.create_channel_without_zk_from_transcript::<H, Challenger_, _>(transcript);
+			.create_channel_without_zk_from_transcript::<H, Challenger_, _, _>(transcript);
 		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
 		// by earlier proofs. The pool is passed as an `&BufferPool` allocator.
 		let alloc = &self.pool;
@@ -461,6 +468,7 @@ where
 ///
 /// # Arguments
 ///
+/// - `alloc`: the allocator the packed buffer is drawn from.
 /// - `log_witness_elems`: base-2 logarithm of the committed field-element count.
 /// - `witness`: the committed witness words, in value-vector order.
 ///
@@ -471,10 +479,11 @@ where
 /// # Errors
 ///
 /// Returns an error when the words do not fit in `2^log_witness_elems` field elements.
-pub fn pack_witness<P: PackedField<Scalar = B128>>(
+pub fn pack_witness<P: PackedField<Scalar = B128>, A: Allocator>(
+	alloc: &A,
 	log_witness_elems: usize,
 	witness: &[Word],
-) -> Result<FieldBuffer<P>, Error> {
+) -> Result<FieldVec<P, A>, Error> {
 	// The number of field elements that constitute the packed witness.
 	let n_witness_elems = witness.len().div_ceil(1 << LOG_WORDS_PER_ELEM);
 	if n_witness_elems > 1 << log_witness_elems {
@@ -485,23 +494,34 @@ pub fn pack_witness<P: PackedField<Scalar = B128>>(
 	}
 
 	let len = 1 << log_witness_elems.saturating_sub(P::LOG_WIDTH);
-	let mut padded_witness_elems = Vec::<P>::with_capacity(len);
+	let mut padded_witness_elems = alloc.alloc::<P>(len);
 
 	// Pack word pairs into B128 elements (2 words per field element), then group into P.
 	// Zero-pad up to the power-of-two witness polynomial length after the real words.
 	let (pairs, word_remaining) = witness.as_chunks::<2>();
 	let aligned_len = pairs.len() / P::WIDTH * P::WIDTH;
 	let (pairs_aligned, word_pair_remaining) = pairs.split_at(aligned_len);
-	pairs_aligned
-		.par_chunks(P::WIDTH)
-		.map(|word_pairs| {
-			P::from_scalars(
+	// `collect_into_vec` needs a `&mut Vec`, which the generic buffer is not, so the aligned groups
+	// are written straight into the buffer's spare capacity instead.
+	let n_aligned_elems = aligned_len / P::WIDTH;
+	(
+		pairs_aligned.par_chunks(P::WIDTH),
+		padded_witness_elems.spare_capacity_mut()[..n_aligned_elems].par_iter_mut(),
+	)
+		.into_par_iter()
+		.for_each(|(word_pairs, out)| {
+			out.write(P::from_scalars(
 				word_pairs
 					.iter()
 					.map(|[w0, w1]| B128::new(((w1.0 as u128) << 64) | (w0.0 as u128))),
-			)
-		})
-		.collect_into_vec(&mut padded_witness_elems);
+			));
+		});
+	// Safety: `aligned_len` is an exact multiple of `P::WIDTH`, so the chunk iterator yields
+	// exactly `n_aligned_elems` items — the same length as the spare-capacity slice it is zipped
+	// with. That equal length is what makes this sound: rayon's zip silently truncates to the
+	// shorter side, so a mismatch would leave slots uninitialized. With the lengths equal, the loop
+	// above writes each of the first `n_aligned_elems` slots exactly once.
+	unsafe { padded_witness_elems.set_len(n_aligned_elems) };
 
 	// The trailing partial group: any leftover word pairs (fewer than `P::WIDTH` of them) together
 	// with a final unpaired word are packed into a single `P` element. This keeps the zero padding
@@ -564,6 +584,7 @@ where
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{Field, PackedBinaryGhash2x128b};
 
 	use super::{B128, Word, pack_witness};
@@ -593,7 +614,7 @@ mod tests {
 		let words: Vec<Word> = (1..=7u64).map(Word).collect();
 		let log_witness_elems = 3; // 8 field elements: 4 real, 4 zero-padding.
 
-		let packed = pack_witness::<P>(log_witness_elems, &words).unwrap();
+		let packed = pack_witness::<P, _>(&GlobalAllocator, log_witness_elems, &words).unwrap();
 		let got: Vec<B128> = packed.iter_scalars().collect();
 
 		assert_eq!(got, expected_scalars(&words, 1 << log_witness_elems));
@@ -611,7 +632,7 @@ mod tests {
 			// Round up to a power of two, and to at least one full packed element.
 			let log_witness_elems = n_elems.max(P::WIDTH).next_power_of_two().ilog2() as usize;
 
-			let packed = pack_witness::<P>(log_witness_elems, &words).unwrap();
+			let packed = pack_witness::<P, _>(&GlobalAllocator, log_witness_elems, &words).unwrap();
 			let got: Vec<B128> = packed.iter_scalars().collect();
 
 			assert_eq!(

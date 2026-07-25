@@ -29,6 +29,10 @@ use super::prove::Looker;
 ///     Y = sum_j gamma^j * (I_j)_* eq_{r_j}
 /// ```
 ///
+/// The combined pushforward is drawn from `alloc`: a committing caller hands it to the channel,
+/// which owns it until the opening runs. The per-looker numerators stay `Vec`-backed — they are
+/// consumed by the reduction in this crate and never cross a channel boundary.
+///
 /// # Preconditions
 ///
 /// * `lookers` is non-empty, every looker has the same evaluation point length `n`, every index
@@ -39,12 +43,14 @@ use super::prove::Looker;
 	name = "Build logup* witnesses",
 	fields(n_lookers = lookers.len(), table_n_vars)
 )]
-pub fn combined_lookers<F, P>(
+pub fn combined_lookers<A, F, P>(
+	alloc: &A,
 	lookers: &[Looker<'_, F>],
 	gamma: F,
 	table_n_vars: usize,
-) -> (Vec<FieldBuffer<P>>, FieldBuffer<P>)
+) -> (Vec<FieldBuffer<P>>, FieldVec<P, A>)
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
@@ -91,7 +97,7 @@ where
 		.collect::<Vec<_>>();
 
 	// Scatter every looker's numerator onto the shared table cube, summed into one buffer.
-	let combined = combined_pushforward::<F, P>(&numerators, lookers, table_n_vars);
+	let combined = combined_pushforward::<A, F, P>(alloc, &numerators, lookers, table_n_vars);
 
 	(numerators, combined)
 }
@@ -124,12 +130,14 @@ where
 /// * `numerators` and `lookers` have equal length.
 /// * Each numerator has one entry per row of its looker's index column.
 /// * Every index entry is less than `2^table_n_vars`.
-fn combined_pushforward<F, P>(
+fn combined_pushforward<A, F, P>(
+	alloc: &A,
 	numerators: &[FieldBuffer<P>],
 	lookers: &[Looker<'_, F>],
 	table_n_vars: usize,
-) -> FieldBuffer<P>
+) -> FieldVec<P, A>
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
@@ -169,7 +177,7 @@ where
 	}
 
 	// Repack the merged scalar accumulator into the packed table buffer.
-	FieldBuffer::from_values(&buckets)
+	FieldBuffer::from_values_in(alloc, &buckets)
 }
 
 /// Scatter-add one looker's numerator onto the table accumulator in row order.
@@ -391,7 +399,7 @@ mod tests {
 			})
 			.collect::<Vec<_>>();
 
-		let got = combined_pushforward::<F, P>(&numerators, &lookers, m)
+		let got = combined_pushforward::<_, F, P>(&GlobalAllocator, &numerators, &lookers, m)
 			.iter_scalars()
 			.collect::<Vec<_>>();
 		assert_eq!(got, combined_reference(&numerators, &indices, m));

@@ -67,7 +67,7 @@ where
 	A: Allocator,
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
-	Channel: IOPProverChannel<P>,
+	Channel: IOPProverChannel<P, A>,
 {
 	let [a, b, lo, hi] = columns;
 
@@ -105,7 +105,7 @@ where
 	A: Allocator,
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
-	Channel: IOPProverChannel<P>,
+	Channel: IOPProverChannel<P, A>,
 {
 	/// Prove an integer multiplication statement.
 	///

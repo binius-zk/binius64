@@ -2,6 +2,8 @@
 
 //! BaseFold ZK implementation of the IOP prover channel.
 
+use std::ops::Deref;
+
 use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_iop::{channel::OracleSpec, fri::FRIParams};
@@ -16,7 +18,7 @@ use binius_ip_prover::{
 	},
 };
 use binius_math::{
-	FieldBuffer, FieldSlice, FieldSliceMut,
+	FieldBuffer, FieldSlice, FieldSliceMut, FieldVec,
 	inner_product::inner_product_par,
 	line::{extrapolate_line, extrapolate_line_packed},
 	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
@@ -55,11 +57,11 @@ struct CommittedOracleData<P: PackedField, C> {
 /// Each entry pairs a committed message with the transparent multilinear it is opened against.
 /// It also records which committed oracle it refers to.
 /// That index reconciles the arrival-order and oracle-index views of the batch.
-struct QueuedRelation<P: PackedField> {
+struct QueuedRelation<P: PackedField, Data: Deref<Target = [P]>> {
 	/// Index of the committed oracle this relation opens.
 	oracle_index: usize,
-	/// The committed multilinear message `pi_i`.
-	message: FieldBuffer<P>,
+	/// The committed multilinear message `pi_i`, backed by the caller's allocator.
+	message: FieldBuffer<P, Data>,
 	/// The transparent multilinear `t_i` paired with the message.
 	transparent: FieldBuffer<P>,
 	/// The claimed inner product `s_i = <pi_i, t_i>`.
@@ -81,12 +83,15 @@ struct QueuedRelation<P: PackedField> {
 /// - `P`: The packed field type with `Scalar = F`
 /// - `NTT`: The additive NTT for Reed-Solomon encoding
 /// - `Channel`: The Merkle channel carrying all prover interaction
-pub struct BaseFoldProverChannel<'a, F, P, NTT, Channel>
+/// - `A`: The allocator the queued messages are drawn from, and the one [`Self::finish`] runs the
+///   opening with
+pub struct BaseFoldProverChannel<'a, F, P, NTT, Channel, A>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	Channel: MerkleIPProverChannel<F>,
+	A: Allocator,
 {
 	/// The Merkle channel carrying all prover interaction: field elements, challenges,
 	/// commitments, and openings.
@@ -98,17 +103,18 @@ where
 	committed_oracles: Vec<CommittedOracleData<P, Channel::Commitment>>,
 	/// Oracle relations queued by [`Self::prove_oracle_relations`], opened together in
 	/// [`Self::finish`].
-	queue: Vec<QueuedRelation<P>>,
+	queue: Vec<QueuedRelation<P, A::Vec<P>>>,
 	next_oracle_index: usize,
 	rng: StdRng,
 }
 
-impl<'a, F, P, NTT, Channel> BaseFoldProverChannel<'a, F, P, NTT, Channel>
+impl<'a, F, P, NTT, Channel, A> BaseFoldProverChannel<'a, F, P, NTT, Channel, A>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	Channel: MerkleIPProverChannel<F>,
+	A: Allocator,
 {
 	/// Creates a new BaseFold ZK prover channel over a Merkle channel from precomputed FRI
 	/// parameters.
@@ -143,7 +149,7 @@ where
 	/// (in oracle-index order). Mirrors [`BaseFoldVerifierChannel::finish`].
 	///
 	/// [`BaseFoldVerifierChannel::finish`]: binius_iop::basefold::channel::BaseFoldVerifierChannel::finish
-	pub fn finish<A: Allocator>(self, alloc: &A) {
+	pub fn finish(self, alloc: &A) {
 		let Self {
 			mut channel,
 			ntt,
@@ -194,7 +200,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	oracle_specs: &[OracleSpec],
 	fri_params: &FRIParams<F>,
 	committed_oracles: Vec<CommittedOracleData<P, Channel::Commitment>>,
-	relations: Vec<QueuedRelation<P>>,
+	relations: Vec<QueuedRelation<P, A::Vec<P>>>,
 	alloc: &A,
 ) where
 	A: Allocator,
@@ -251,7 +257,11 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 	// B keyed by oracle index, and pad each prover to `max_n`. `prover_oracle_indices` records the
 	// oracle index behind each (arrival-order) prover so the reduced evals can be scattered back
 	// into oracle-index order.
-	let mut witness_primes = vec![None; n_committed];
+	// Built element by element rather than with `vec![None; n]`, which needs `Clone`:
+	// `Allocator::Vec<T>` declares no `Clone` bound. Adding one would be the wrong fix — `PoolVec`
+	// does implement `Clone`, but by drawing a fresh block from the pool, so a `Clone` bound would
+	// make `vec![buffer; n]` quietly allocate `n` blocks.
+	let mut witness_primes = (0..n_committed).map(|_| None).collect::<Vec<_>>();
 	let mut prover_oracle_indices = Vec::with_capacity(n_committed);
 	let relations = relations
 		.into_iter()
@@ -444,12 +454,14 @@ fn accumulate_scaled_buffer<P: PackedField>(
 	}
 }
 
-impl<'a, F, P, NTT, Channel> IPProverChannel<F> for BaseFoldProverChannel<'a, F, P, NTT, Channel>
+impl<'a, F, P, NTT, Channel, A> IPProverChannel<F>
+	for BaseFoldProverChannel<'a, F, P, NTT, Channel, A>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	Channel: MerkleIPProverChannel<F>,
+	A: Allocator,
 {
 	fn send_one(&mut self, elem: F) {
 		self.channel.send_one(elem);
@@ -472,12 +484,14 @@ where
 	}
 }
 
-impl<'a, F, P, NTT, Channel> IOPProverChannel<P> for BaseFoldProverChannel<'a, F, P, NTT, Channel>
+impl<'a, F, P, NTT, Channel, A> IOPProverChannel<P, A>
+	for BaseFoldProverChannel<'a, F, P, NTT, Channel, A>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	Channel: MerkleIPProverChannel<F>,
+	A: Allocator,
 {
 	type Oracle = BaseFoldOracle;
 
@@ -538,7 +552,7 @@ where
 	fn prove_oracle_relations(
 		&mut self,
 		oracle_relations: impl IntoIterator<
-			Item = (Self::Oracle, FieldBuffer<P>, FieldBuffer<P>, P::Scalar),
+			Item = (Self::Oracle, FieldVec<P, A>, FieldBuffer<P>, P::Scalar),
 		>,
 	) {
 		// Queue the relations; the actual opening (masking + sumcheck + combined FRI) happens once,
@@ -652,7 +666,7 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_rng = StdRng::seed_from_u64(1);
 		let mut prover_channel = prover_compiler
-			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 				&mut prover_transcript,
 				prover_rng,
 			);
@@ -724,7 +738,7 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_rng = StdRng::seed_from_u64(1);
 		let mut prover_channel = prover_compiler
-			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 				&mut prover_transcript,
 				prover_rng,
 			);
@@ -807,7 +821,7 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_rng = StdRng::seed_from_u64(1);
 		let mut prover_channel = prover_compiler
-			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 				&mut prover_transcript,
 				prover_rng,
 			);
@@ -903,7 +917,7 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 		let prover_rng = StdRng::seed_from_u64(1);
 		let mut prover_channel = prover_compiler
-			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+			.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 				&mut prover_transcript,
 				prover_rng,
 			);

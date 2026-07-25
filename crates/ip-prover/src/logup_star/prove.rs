@@ -95,7 +95,7 @@ where
 	//     gamma^j * eq_{r_j} = the per-looker scaled numerators
 	//     Y = sum_j gamma^j * (I_j)_* eq_{r_j}     the combined pushforward
 	let gamma = channel.sample();
-	let (numerators, pushforward) = witness::combined_lookers::<F, P>(lookers, gamma, m);
+	let (numerators, pushforward) = witness::combined_lookers::<A, F, P>(alloc, lookers, gamma, m);
 
 	// The product check binds <T, Y> to the gamma-combination of the looker claims.
 	let claims = lookers
