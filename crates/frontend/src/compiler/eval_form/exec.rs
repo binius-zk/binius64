@@ -13,6 +13,7 @@
 
 use binius_core::{Word, constraint_system::ShiftVariant};
 use binius_field::BinaryField128bGhash;
+use smallvec::{SmallVec, smallvec};
 
 use crate::compiler::{hints::HintRegistry, pathspec::PathSpec};
 
@@ -176,7 +177,10 @@ impl<'a> Executor<'a> {
 		let dst = self.read_reg();
 		let n = self.read_u32() as usize;
 		// Read the source registers once; they are shared across every instance.
-		let srcs = (0..n).map(|_| self.read_reg()).collect::<Vec<_>>();
+		// Most multi-way exclusive-ors are narrow, so the common case stays on the stack.
+		let srcs = (0..n)
+			.map(|_| self.read_reg())
+			.collect::<SmallVec<[u32; 8]>>();
 		for i in 0..ctx.n_instances() {
 			let mut val = Word::ZERO;
 			for &src in &srcs {
@@ -467,7 +471,7 @@ impl<'a> Executor<'a> {
 
 		// Read dimensions
 		let n_dimensions = self.read_u16() as usize;
-		let mut dimensions = Vec::with_capacity(n_dimensions);
+		let mut dimensions: SmallVec<[usize; 4]> = SmallVec::with_capacity(n_dimensions);
 		for _ in 0..n_dimensions {
 			dimensions.push(self.read_u32() as usize);
 		}
@@ -476,11 +480,15 @@ impl<'a> Executor<'a> {
 		let n_outputs = self.read_u16() as usize;
 
 		// Read the input and output registers once; they are shared across every instance.
-		let input_regs = (0..n_inputs).map(|_| self.read_reg()).collect::<Vec<_>>();
-		let output_regs = (0..n_outputs).map(|_| self.read_reg()).collect::<Vec<_>>();
+		let input_regs = (0..n_inputs)
+			.map(|_| self.read_reg())
+			.collect::<SmallVec<[u32; 8]>>();
+		let output_regs = (0..n_outputs)
+			.map(|_| self.read_reg())
+			.collect::<SmallVec<[u32; 8]>>();
 
-		let mut inputs = vec![Word::ZERO; n_inputs];
-		let mut outputs = vec![Word::ZERO; n_outputs];
+		let mut inputs: SmallVec<[Word; 8]> = smallvec![Word::ZERO; n_inputs];
+		let mut outputs: SmallVec<[Word; 8]> = smallvec![Word::ZERO; n_outputs];
 		for i in 0..ctx.n_instances() {
 			for (input, &reg) in inputs.iter_mut().zip(&input_regs) {
 				*input = ctx.load(reg, i);
@@ -493,28 +501,34 @@ impl<'a> Executor<'a> {
 		}
 	}
 
-	// Bytecode reading helpers
+	// Bytecode reading helpers.
+	//
+	// Each takes its bytes as one slice.
+	// So a multi-byte value costs a single bounds check, not one per byte.
+	//
+	// This is the innermost decode of witness filling.
 	fn read_u8(&mut self) -> u8 {
 		let val = self.bytecode[self.pc];
 		self.pc += 1;
 		val
 	}
 
+	/// Reads the next `N` bytes as an array, advancing the cursor past them.
+	#[inline]
+	fn read_bytes<const N: usize>(&mut self) -> [u8; N] {
+		let bytes: [u8; N] = self.bytecode[self.pc..self.pc + N]
+			.try_into()
+			.expect("the slice is exactly N bytes long");
+		self.pc += N;
+		bytes
+	}
+
 	fn read_u16(&mut self) -> u16 {
-		let val = u16::from_le_bytes([self.bytecode[self.pc], self.bytecode[self.pc + 1]]);
-		self.pc += 2;
-		val
+		u16::from_le_bytes(self.read_bytes())
 	}
 
 	fn read_u32(&mut self) -> u32 {
-		let val = u32::from_le_bytes([
-			self.bytecode[self.pc],
-			self.bytecode[self.pc + 1],
-			self.bytecode[self.pc + 2],
-			self.bytecode[self.pc + 3],
-		]);
-		self.pc += 4;
-		val
+		u32::from_le_bytes(self.read_bytes())
 	}
 
 	fn read_reg(&mut self) -> u32 {
