@@ -23,10 +23,8 @@
 //! Before this pass only constants were interned.
 //! An identical non-constant subexpression built twice now costs one AND/IMUL constraint, not two.
 
-use std::hash::{Hash, Hasher};
-
 use cranelift_entity::EntitySet;
-use rustc_hash::{FxHashMap, FxHasher};
+use rustc_hash::FxHashMap;
 
 use super::{
 	gate::opcode::Opcode,
@@ -48,8 +46,11 @@ pub fn dedup_gates(
 ) -> EntitySet<Gate> {
 	// Maps a collapsed duplicate's output wire to the canonical wire that replaces it.
 	let mut remap: FxHashMap<Wire, Wire> = FxHashMap::default();
-	// Maps a structural hash to the first (canonical) gate seen with that hash.
-	let mut canonical: FxHashMap<u64, Gate> = FxHashMap::default();
+	// Maps a gate's structure to the first gate seen with it.
+	//
+	// Keyed on the structure itself rather than a hash of it.
+	// So a collision cannot arise, and no second comparison is needed to reject one.
+	let mut canonical: FxHashMap<GateStructure, Gate> = FxHashMap::default();
 	let mut dead = EntitySet::new();
 
 	// Gate ids are collected up front so the graph can be mutated inside the loop.
@@ -69,7 +70,7 @@ pub fn dedup_gates(
 			}
 		}
 
-		let hash = structural_hash(graph, gate, hint_registry);
+		let structure = structure_of(graph, gate, hint_registry);
 
 		// A public output or force-committed wire must stay exactly where it is.
 		// A gate producing one is never collapsed, though it can still be a canonical target.
@@ -83,11 +84,10 @@ pub fn dedup_gates(
 					|| force_committed.contains(wire)
 			});
 
-		// A structural match is a duplicate only if it is truly identical, not a hash collision.
+		// A gate producing an observable wire is never collapsed, though it can still be canonical.
 		let duplicate_of = (!produces_observable)
-			.then(|| canonical.get(&hash).copied())
-			.flatten()
-			.filter(|&canon| structurally_equal(graph, gate, canon, hint_registry));
+			.then(|| canonical.get(&structure).copied())
+			.flatten();
 
 		match duplicate_of {
 			// Map each output of the duplicate onto the canonical gate's matching output.
@@ -105,10 +105,10 @@ pub fn dedup_gates(
 				}
 				dead.insert(gate);
 			}
-			// Reached for a first-of-its-hash gate, an observable gate, or a rare collision.
-			// Record it as canonical, keeping any earlier entry for this hash.
+			// Reached for the first gate with this structure, or for an observable one.
+			// Record it as canonical, keeping any earlier entry.
 			None => {
-				canonical.entry(hash).or_insert(gate);
+				canonical.entry(structure).or_insert(gate);
 			}
 		}
 	}
@@ -116,33 +116,34 @@ pub fn dedup_gates(
 	dead
 }
 
-/// Hashes a gate's structural identity: opcode, constant and input wires, immediates, dimensions.
+/// A gate's structural identity: opcode, constant and input wires, immediates, dimensions.
 ///
 /// Output, auxiliary, and scratch wires are excluded.
-/// They are freshly allocated per gate, so keeping them would make identical gates hash apart.
-fn structural_hash(graph: &GateGraph, gate: Gate, hint_registry: &HintRegistry) -> u64 {
-	let data = graph.gate_data(gate);
-	let param = data.gate_param_with_registry(hint_registry);
-	let mut hasher = FxHasher::default();
-	data.opcode.hash(&mut hasher);
-	param.constants.hash(&mut hasher);
-	param.inputs.hash(&mut hasher);
-	data.immediates.hash(&mut hasher);
-	data.dimensions.hash(&mut hasher);
-	hasher.finish()
+/// They are freshly allocated per gate, so including them would make identical gates differ.
+#[derive(PartialEq, Eq, Hash)]
+struct GateStructure {
+	opcode: Opcode,
+	/// The constant and input wires, in order, which is what the gate reads.
+	reads: Vec<Wire>,
+	immediates: Vec<u32>,
+	dimensions: Vec<usize>,
 }
 
-/// Reports whether two gates have the same structural identity, comparing the fields directly.
-///
-/// This is the exact check behind [`structural_hash`], used to reject hash collisions.
-fn structurally_equal(graph: &GateGraph, a: Gate, b: Gate, hint_registry: &HintRegistry) -> bool {
-	let (da, db) = (graph.gate_data(a), graph.gate_data(b));
-	if da.opcode != db.opcode || da.immediates != db.immediates || da.dimensions != db.dimensions {
-		return false;
+/// Extracts the structural identity of a gate.
+fn structure_of(graph: &GateGraph, gate: Gate, hint_registry: &HintRegistry) -> GateStructure {
+	let data = graph.gate_data(gate);
+	let param = data.gate_param_with_registry(hint_registry);
+	GateStructure {
+		opcode: data.opcode,
+		reads: param
+			.constants
+			.iter()
+			.chain(param.inputs)
+			.copied()
+			.collect(),
+		immediates: data.immediates.clone(),
+		dimensions: data.dimensions.clone(),
 	}
-	let (pa, pb) =
-		(da.gate_param_with_registry(hint_registry), db.gate_param_with_registry(hint_registry));
-	pa.constants == pb.constants && pa.inputs == pb.inputs
 }
 
 #[cfg(test)]

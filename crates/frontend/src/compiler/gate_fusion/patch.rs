@@ -1,5 +1,4 @@
 // Copyright 2025 Irreducible Inc.
-use rustc_hash::FxHashSet;
 
 use super::legraph::LeGraph;
 use crate::compiler::{
@@ -32,15 +31,28 @@ enum NonLinearConstraint {
 
 /// Apply the given patches to the constraint builder given.
 pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
-	let mut subsumes: FxHashSet<ConstraintRef> = FxHashSet::default();
-	subsumes.reserve(patches.len());
+	// One flag per existing constraint, per kind.
+	// A patch names constraints by position, so subsumption is answered by indexing, not hashing.
+	let mut subsumed_and = vec![false; cb.and_constraints.len()];
+	let mut subsumed_imul = vec![false; cb.imul_constraints.len()];
+	let mut subsumed_bmul = vec![false; cb.bmul_constraints.len()];
+	let mut subsumed_linear = vec![false; cb.linear_constraints.len()];
+
 	let mut new_and_constraints = Vec::new();
 	let mut new_imul_constraints = Vec::new();
 	let mut new_bmul_constraints = Vec::new();
 
-	// Collect all subsumed constraints and new constraints to add
+	// Collect all subsumed constraints and new constraints to add.
+	// Patches may name the same constraint more than once, which sets the same flag twice.
 	for patch in patches {
-		subsumes.extend(patch.subsumes);
+		for subsumed in patch.subsumes {
+			match subsumed {
+				ConstraintRef::And { index } => subsumed_and[index] = true,
+				ConstraintRef::Imul { index } => subsumed_imul[index] = true,
+				ConstraintRef::Bmul { index } => subsumed_bmul[index] = true,
+				ConstraintRef::Linear { index } => subsumed_linear[index] = true,
+			}
+		}
 		match patch.added {
 			NonLinearConstraint::And(and_constraint) => new_and_constraints.push(and_constraint),
 			NonLinearConstraint::Imul(imul_constraint) => {
@@ -52,64 +64,26 @@ pub fn apply_patches(cb: &mut ConstraintBuilder, patches: Vec<Patch>) {
 		}
 	}
 
-	// Filter out subsumed constraints from each vector
-	// Use std::mem::take to take ownership of the vectors
-	let old_and_constraints = std::mem::take(&mut cb.and_constraints);
-	cb.and_constraints = old_and_constraints
-		.into_iter()
-		.enumerate()
-		.filter_map(|(index, constraint)| {
-			if subsumes.contains(&ConstraintRef::And { index }) {
-				None
-			} else {
-				Some(constraint)
-			}
-		})
-		.collect();
-
-	let old_imul_constraints = std::mem::take(&mut cb.imul_constraints);
-	cb.imul_constraints = old_imul_constraints
-		.into_iter()
-		.enumerate()
-		.filter_map(|(index, constraint)| {
-			if subsumes.contains(&ConstraintRef::Imul { index }) {
-				None
-			} else {
-				Some(constraint)
-			}
-		})
-		.collect();
-
-	let old_bmul_constraints = std::mem::take(&mut cb.bmul_constraints);
-	cb.bmul_constraints = old_bmul_constraints
-		.into_iter()
-		.enumerate()
-		.filter_map(|(index, constraint)| {
-			if subsumes.contains(&ConstraintRef::Bmul { index }) {
-				None
-			} else {
-				Some(constraint)
-			}
-		})
-		.collect();
-
-	let old_linear_constraints = std::mem::take(&mut cb.linear_constraints);
-	cb.linear_constraints = old_linear_constraints
-		.into_iter()
-		.enumerate()
-		.filter_map(|(index, constraint)| {
-			if subsumes.contains(&ConstraintRef::Linear { index }) {
-				None
-			} else {
-				Some(constraint)
-			}
-		})
-		.collect();
+	// Drop the subsumed constraints in place, keeping the survivors in their original order.
+	retain_unsubsumed(&mut cb.and_constraints, &subsumed_and);
+	retain_unsubsumed(&mut cb.imul_constraints, &subsumed_imul);
+	retain_unsubsumed(&mut cb.bmul_constraints, &subsumed_bmul);
+	retain_unsubsumed(&mut cb.linear_constraints, &subsumed_linear);
 
 	// Add the new constraints
 	cb.and_constraints.extend(new_and_constraints);
 	cb.imul_constraints.extend(new_imul_constraints);
 	cb.bmul_constraints.extend(new_bmul_constraints);
+}
+
+/// Removes the constraints flagged as subsumed, preserving the order of the rest.
+fn retain_unsubsumed<T>(constraints: &mut Vec<T>, subsumed: &[bool]) {
+	let mut position = 0;
+	constraints.retain(|_| {
+		let keep = !subsumed[position];
+		position += 1;
+		keep
+	});
 }
 
 /// Builds a list of patches that would remove the inlined linear definitions and potentially
@@ -152,26 +126,26 @@ fn build_non_lin_patch(
 
 	let new_constraint = match constraint_ref {
 		ConstraintRef::And { index } => {
-			let a = process_operand(leg, &mut subsumes, &cb.and_constraints[index].a);
-			let b = process_operand(leg, &mut subsumes, &cb.and_constraints[index].b);
-			let c = process_operand(leg, &mut subsumes, &cb.and_constraints[index].c);
+			let a = process_operand(cb, leg, &mut subsumes, &cb.and_constraints[index].a);
+			let b = process_operand(cb, leg, &mut subsumes, &cb.and_constraints[index].b);
+			let c = process_operand(cb, leg, &mut subsumes, &cb.and_constraints[index].c);
 			NonLinearConstraint::And(WireAndConstraint { a, b, c })
 		}
 		ConstraintRef::Imul { index } => {
-			let a = process_operand(leg, &mut subsumes, &cb.imul_constraints[index].a);
-			let b = process_operand(leg, &mut subsumes, &cb.imul_constraints[index].b);
-			let lo = process_operand(leg, &mut subsumes, &cb.imul_constraints[index].lo);
-			let hi = process_operand(leg, &mut subsumes, &cb.imul_constraints[index].hi);
+			let a = process_operand(cb, leg, &mut subsumes, &cb.imul_constraints[index].a);
+			let b = process_operand(cb, leg, &mut subsumes, &cb.imul_constraints[index].b);
+			let lo = process_operand(cb, leg, &mut subsumes, &cb.imul_constraints[index].lo);
+			let hi = process_operand(cb, leg, &mut subsumes, &cb.imul_constraints[index].hi);
 			NonLinearConstraint::Imul(WireImulConstraint { a, b, lo, hi })
 		}
 		ConstraintRef::Bmul { index } => {
 			let bmul = &cb.bmul_constraints[index];
-			let a_lo = process_operand(leg, &mut subsumes, &bmul.a_lo);
-			let a_hi = process_operand(leg, &mut subsumes, &bmul.a_hi);
-			let b_lo = process_operand(leg, &mut subsumes, &bmul.b_lo);
-			let b_hi = process_operand(leg, &mut subsumes, &bmul.b_hi);
-			let c_lo = process_operand(leg, &mut subsumes, &bmul.c_lo);
-			let c_hi = process_operand(leg, &mut subsumes, &bmul.c_hi);
+			let a_lo = process_operand(cb, leg, &mut subsumes, &bmul.a_lo);
+			let a_hi = process_operand(cb, leg, &mut subsumes, &bmul.a_hi);
+			let b_lo = process_operand(cb, leg, &mut subsumes, &bmul.b_lo);
+			let b_hi = process_operand(cb, leg, &mut subsumes, &bmul.b_hi);
+			let c_lo = process_operand(cb, leg, &mut subsumes, &bmul.c_lo);
+			let c_hi = process_operand(cb, leg, &mut subsumes, &bmul.c_hi);
 			NonLinearConstraint::Bmul(WireBmulConstraint {
 				a_lo,
 				a_hi,
@@ -199,7 +173,7 @@ fn build_non_lin_patch(
 /// definition and all definitions that could be inlined into it. Therefore, the returned
 /// patch will replace the given linear definition and the cone of linear definitions it used.
 fn build_committed_lin_def_patch(
-	_cb: &ConstraintBuilder,
+	cb: &ConstraintBuilder,
 	leg: &LeGraph,
 	all_one: Wire,
 	root: Wire,
@@ -208,8 +182,8 @@ fn build_committed_lin_def_patch(
 	// The first redundant constraint is the linear definition that's being committed.
 	let mut subsumes = vec![leg.lin_def_constraint_ref(root)];
 
-	let old_operand = leg.lin_def(root);
-	let new_operand = process_operand(leg, &mut subsumes, old_operand);
+	let old_operand = leg.lin_def(cb, root);
+	let new_operand = process_operand(cb, leg, &mut subsumes, old_operand);
 
 	// Create an AND constraint that enforces: root = new_operand
 	Patch {
@@ -231,19 +205,21 @@ fn build_committed_lin_def_patch(
 }
 
 fn process_operand(
+	cb: &ConstraintBuilder,
 	leg: &LeGraph,
 	subsumes: &mut Vec<ConstraintRef>,
 	old_operand: &WireOperand,
 ) -> WireOperand {
 	let mut new_operand = WireOperand::new();
 	for term in old_operand {
-		process_term(leg, &mut new_operand, subsumes, term.wire, term.shift);
+		process_term(cb, leg, &mut new_operand, subsumes, term.wire, term.shift);
 	}
 	new_operand
 }
 
 /// Recursively process a term, inlining non-committed linear definitions.
 fn process_term(
+	cb: &ConstraintBuilder,
 	leg: &LeGraph,
 	new_operand: &mut WireOperand,
 	subsumes: &mut Vec<ConstraintRef>,
@@ -256,7 +232,7 @@ fn process_term(
 		new_operand.push(ShiftedWire { wire, shift });
 	} else {
 		// This is a non-committed linear def - we need to inline it!
-		let inner_operand = leg.lin_def(wire);
+		let inner_operand = leg.lin_def(cb, wire);
 		let constraint_ref = leg.lin_def_constraint_ref(wire);
 		subsumes.push(constraint_ref);
 
@@ -268,7 +244,7 @@ fn process_term(
 			match Shift::compose(inner_term.shift, shift) {
 				Some(composed_shift) => {
 					// Recursively process this term with the composed shift
-					process_term(leg, new_operand, subsumes, inner_term.wire, composed_shift);
+					process_term(cb, leg, new_operand, subsumes, inner_term.wire, composed_shift);
 				}
 				None => {
 					// Incompatible shifts - this shouldn't happen if commit set is correct
@@ -319,7 +295,7 @@ mod tests {
 
 		// Verify expressions expand correctly
 		for &(wire, ref expected_expansion) in expected_expressions {
-			let actual = expand_expression(&leg, wire);
+			let actual = expand_expression(&cb, &leg, wire);
 
 			// Convert to BTreeMap for easier comparison (order-independent)
 			let expected_map: BTreeMap<(Wire, Shift), usize> =
@@ -563,7 +539,7 @@ mod tests {
 	}
 
 	/// Helper to expand an expression fully (for testing)
-	fn expand_expression(leg: &LeGraph, wire: Wire) -> Vec<ShiftedWire> {
+	fn expand_expression(cb: &ConstraintBuilder, leg: &LeGraph, wire: Wire) -> Vec<ShiftedWire> {
 		let mut result = Vec::new();
 
 		if !leg.is_lin_def(wire) {
@@ -575,14 +551,15 @@ mod tests {
 			return result;
 		}
 
-		let operand = leg.lin_def(wire);
+		let operand = leg.lin_def(cb, wire);
 		for term in operand {
-			expand_term_recursive(leg, &mut result, term.wire, term.shift);
+			expand_term_recursive(cb, leg, &mut result, term.wire, term.shift);
 		}
 		result
 	}
 
 	fn expand_term_recursive(
+		cb: &ConstraintBuilder,
 		leg: &LeGraph,
 		result: &mut Vec<ShiftedWire>,
 		wire: Wire,
@@ -594,10 +571,10 @@ mod tests {
 			result.push(ShiftedWire { wire, shift });
 		} else {
 			// This is a non-committed linear def - expand recursively
-			let inner = leg.lin_def(wire);
+			let inner = leg.lin_def(cb, wire);
 			for term in inner {
 				let composed = Shift::compose(term.shift, shift).unwrap();
-				expand_term_recursive(leg, result, term.wire, composed);
+				expand_term_recursive(cb, leg, result, term.wire, composed);
 			}
 		}
 	}

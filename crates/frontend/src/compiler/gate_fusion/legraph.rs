@@ -1,9 +1,8 @@
 // Copyright 2025 Irreducible Inc.
 //! linear expression graph.
 
-use cranelift_entity::EntitySet;
+use cranelift_entity::{EntitySet, SecondaryMap};
 use petgraph::graph::{DiGraph, NodeIndex};
-use rustc_hash::FxHashMap;
 
 use super::Stat;
 use crate::compiler::{
@@ -50,9 +49,10 @@ pub enum NodeData {
 	LinDef {
 		/// The wire being defined by this linear constraint.
 		dst: Wire,
-		/// The XOR combination of shifted values that defines dst.
-		operand: WireOperand,
 		/// Index in the linear constraint list.
+		///
+		/// The operand itself stays in the constraint builder rather than being copied here.
+		/// Copying it would allocate once per linear constraint, and there is one per fused wire.
 		index: usize,
 	},
 
@@ -138,7 +138,10 @@ pub struct EdgeData {
 /// resulting in `w = ((a ^ b) >> 5) & c` without intermediate wire commitments.
 pub struct LeGraph {
 	pub pg: DiGraph<NodeData, EdgeData>,
-	pub wire_to_node: FxHashMap<Wire, NodeIndex>,
+	/// Node holding each wire, for the wires that have one.
+	///
+	/// Wire identifiers are dense, so this indexes directly instead of hashing.
+	pub wire_to_node: SecondaryMap<Wire, Option<NodeIndex>>,
 	pub lin_def: EntitySet<Wire>,
 	pub lin_committed: EntitySet<Wire>,
 	pub roots: Vec<NodeIndex>,
@@ -160,7 +163,7 @@ impl LeGraph {
 	pub fn new(cb: &ConstraintBuilder, stat: &mut Stat) -> Self {
 		let mut leg = Self {
 			pg: DiGraph::new(),
-			wire_to_node: FxHashMap::default(),
+			wire_to_node: SecondaryMap::new(),
 			lin_committed: EntitySet::new(),
 			lin_def: EntitySet::new(),
 			roots: Vec::new(),
@@ -185,17 +188,37 @@ impl LeGraph {
 		&self.lin_committed
 	}
 
-	/// Returns the operand (RHS) of a linear definition for the given wire.
+	/// Returns the operand of the linear constraint defining the given wire.
+	///
+	/// The operand lives in `cb`; this only resolves which constraint to read.
 	///
 	/// # Panics
 	///
 	/// Panics if the wire is not defined by a linear constraint.
-	pub fn lin_def(&self, wire: Wire) -> &WireOperand {
-		let node = self.wire_to_node[&wire];
+	pub fn lin_def<'a>(&self, cb: &'a ConstraintBuilder, wire: Wire) -> &'a WireOperand {
+		&cb.linear_constraints[self.lin_def_index(wire)].rhs
+	}
+
+	/// Returns the position of the linear constraint defining the given wire.
+	///
+	/// # Panics
+	///
+	/// Panics if the wire is not defined by a linear constraint.
+	fn lin_def_index(&self, wire: Wire) -> usize {
+		let node = self.node_of(wire);
 		match self.pg.node_weight(node).unwrap() {
-			NodeData::LinDef { operand, .. } => operand,
-			_ => panic!("supposed to be a linear def"),
+			NodeData::LinDef { index, .. } => *index,
+			_ => panic!("{wire:?} is not defined by a linear constraint"),
 		}
+	}
+
+	/// Returns the node holding the given wire.
+	///
+	/// # Panics
+	///
+	/// Panics if the wire has no node.
+	fn node_of(&self, wire: Wire) -> NodeIndex {
+		self.wire_to_node[wire].unwrap_or_else(|| panic!("{wire:?} has no node in the graph"))
 	}
 
 	pub fn lin_dst(&self, node: NodeIndex) -> Wire {
@@ -206,10 +229,8 @@ impl LeGraph {
 	}
 
 	pub fn lin_def_constraint_ref(&self, wire: Wire) -> ConstraintRef {
-		let node = self.wire_to_node[&wire];
-		match self.pg.node_weight(node).unwrap() {
-			NodeData::LinDef { index, .. } => ConstraintRef::Linear { index: *index },
-			_ => panic!("supposed to be a linear def"),
+		ConstraintRef::Linear {
+			index: self.lin_def_index(wire),
 		}
 	}
 
@@ -232,13 +253,9 @@ impl LeGraph {
 	///
 	/// Creates a new node representing a linear constraint that defines `dst` as
 	/// the XOR combination specified by `operand`.
-	fn add_lin_def(&mut self, dst: Wire, operand: WireOperand, index: usize) {
-		let lin_node = self.pg.add_node(NodeData::LinDef {
-			dst,
-			operand,
-			index,
-		});
-		let prev = self.wire_to_node.insert(dst, lin_node);
+	fn add_lin_def(&mut self, dst: Wire, index: usize) {
+		let lin_node = self.pg.add_node(NodeData::LinDef { dst, index });
+		let prev = self.wire_to_node[dst].replace(lin_node);
 		assert!(prev.is_none(), "wire already has a node");
 		self.lin_def.insert(dst);
 	}
@@ -253,24 +270,28 @@ impl LeGraph {
 	/// 2. a single consumer possibly can refer the same producer multiple times. In that case there
 	///    are going to be multiple edges.
 	fn note_lin_use(&mut self, producer: Wire, shift: Shift, consumer: Wire) {
-		let node_c = self.wire_to_node[&consumer];
+		let node_c = self.node_of(consumer);
 		if self.is_lin_def(producer) {
-			let node_p = self.wire_to_node[&producer];
+			let node_p = self.node_of(producer);
 			self.pg.add_edge(node_p, node_c, EdgeData { shift });
 		} else {
 			// This is a use of a wire that is not defined by a linear. That means it's opaque!
-			let opaque_node = *self.wire_to_node.entry(producer).or_insert_with(|| {
-				let t = self.pg.add_node(NodeData::Opaque);
-				self.opaque.push(t);
-				t
-			});
+			let opaque_node = match self.wire_to_node[producer] {
+				Some(node) => node,
+				None => {
+					let node = self.pg.add_node(NodeData::Opaque);
+					self.opaque.push(node);
+					self.wire_to_node[producer] = Some(node);
+					node
+				}
+			};
 			self.pg.add_edge(opaque_node, node_c, EdgeData { shift });
 		}
 	}
 
 	/// Notes a use of a wire of a linear producer by a non-linear user.
 	fn note_nonlinear_use(&mut self, producer: Wire, shift: Shift, constraint: ConstraintRef) {
-		let node_p = self.wire_to_node[&producer];
+		let node_p = self.node_of(producer);
 		let root_node = self.pg.add_node(NodeData::Root { constraint });
 		self.roots.push(root_node);
 		self.pg.add_edge(node_p, root_node, EdgeData { shift });
@@ -283,7 +304,7 @@ fn build_use_def(cb: &ConstraintBuilder, leg: &mut LeGraph, _stat: &mut Stat) {
 	// Linear constraints are simple definitions. We assert that this is the case here.
 	// In future we should actually define `linear_constraints`.
 	for (index, lin) in cb.linear_constraints.iter().enumerate() {
-		leg.add_lin_def(lin.dst, lin.rhs.clone(), index);
+		leg.add_lin_def(lin.dst, index);
 	}
 
 	for lin in &cb.linear_constraints {
