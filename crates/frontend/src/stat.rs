@@ -58,6 +58,11 @@ pub struct CircuitStat {
 	///
 	/// Those values are not committed, those only exist during witness generation.
 	pub n_scratch: usize,
+	/// Smallest scratch segment this circuit could run with.
+	///
+	/// This is the largest number of uncommitted values alive at the same time.
+	/// It equals the segment length when slots are shared, and is a lower bound on it otherwise.
+	pub scratch_peak_live: usize,
 	/// Allocated size for AND constraints (power of 2)
 	pub and_allocated: usize,
 	/// Allocated size for IMUL constraints (power of 2)
@@ -121,6 +126,7 @@ impl CircuitStat {
 			n_witness: cs.value_vec_layout.n_witness,
 			n_internal: cs.value_vec_layout.n_internal,
 			n_scratch: cs.value_vec_layout.n_scratch,
+			scratch_peak_live: circuit.scratch_peak_live(),
 			and_allocated,
 			imul_allocated,
 			bmul_allocated,
@@ -324,8 +330,14 @@ impl fmt::Display for CircuitStat {
 			fmt_num(total_spare)
 		)?;
 
-		// Scratch
-		writeln!(f, "└─ Scratch (uncommitted): {}", fmt_num(self.n_scratch))?;
+		// Report the segment length alongside the floor it could reach if its slots were shared.
+		// Recording both pins the lifetime analysis, so a regression in it shows up here.
+		writeln!(
+			f,
+			"└─ Scratch (uncommitted): {} (peak live: {})",
+			fmt_num(self.n_scratch),
+			fmt_num(self.scratch_peak_live)
+		)?;
 		writeln!(f)?;
 
 		Ok(())

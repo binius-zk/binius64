@@ -113,6 +113,7 @@ pub struct Circuit {
 	constraint_system: ConstraintSystem,
 	wire_mapping: SecondaryMap<Wire, ValueIndex>,
 	eval_form: EvalForm,
+	scratch_peak_live: usize,
 }
 
 impl Circuit {
@@ -123,6 +124,7 @@ impl Circuit {
 		constraint_system: ConstraintSystem,
 		wire_mapping: SecondaryMap<Wire, ValueIndex>,
 		eval_form: EvalForm,
+		scratch_peak_live: usize,
 	) -> Self {
 		assert!(constraint_system.value_vec_layout.validate().is_ok());
 		Self {
@@ -130,7 +132,17 @@ impl Circuit {
 			constraint_system,
 			wire_mapping,
 			eval_form,
+			scratch_peak_live,
 		}
+	}
+
+	/// Returns the smallest scratch segment this circuit could run with.
+	///
+	/// This is the largest number of uncommitted temporaries alive at the same time.
+	/// It is what the segment shrinks to once slots are shared.
+	/// It is reported whether or not sharing is on, so the unused headroom stays visible.
+	pub const fn scratch_peak_live(&self) -> usize {
+		self.scratch_peak_live
 	}
 
 	/// For the given wire, returns its index in the witness vector.
