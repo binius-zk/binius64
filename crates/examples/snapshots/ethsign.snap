@@ -2,7 +2,7 @@ ethsign circuit
 --
 Gates & Instructions
 ├─ Number of gates: 214,965
-└─ Number of evaluation instructions: 252,550
+└─ Number of evaluation instructions: 250,294
 
 Constraints
 ├─ AND constraints: 159,866 used (61.0% of 2^18)
@@ -26,5 +26,5 @@ Value Vector
 │  └─ Internal: 189,918
 ├─ Total Committed: 190,032 used (72.5% of 2^18)
 │  [▓▓▓▓▓▓▓░░░] spare: 72,112
-└─ Scratch (uncommitted): 175,646 (peak live: 192)
+└─ Scratch (uncommitted): 173,390 (peak live: 192)
 
