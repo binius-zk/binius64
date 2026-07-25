@@ -152,6 +152,8 @@ fn mk_circuit_builder() -> CircuitBuilder {
 		enable_common_subexpression_elimination: false,
 		enable_dead_code_elimination: false,
 		enable_algebraic_folding: false,
+		// Scratch pooling only moves uncommitted slots, so it cannot affect these snapshots.
+		enable_scratch_pooling: false,
 	};
 	CircuitBuilder::with_opts(opts)
 }

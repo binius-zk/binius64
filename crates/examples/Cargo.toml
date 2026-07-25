@@ -44,6 +44,10 @@ criterion.workspace = true
 hex-literal.workspace = true
 
 [[bench]]
+name = "scratch_pooling"
+harness = false
+
+[[bench]]
 name = "blake2b"
 harness = false
 

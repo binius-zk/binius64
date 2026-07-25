@@ -1,5 +1,6 @@
 // Copyright 2025 Irreducible Inc.
-use binius_core::{verify::verify_constraints, word::Word};
+use binius_core::{constraint_system::ShiftedValueIndex, verify::verify_constraints, word::Word};
+use binius_utils::strided_array::StridedArray2DViewMut;
 use proptest::prelude::*;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 
@@ -602,6 +603,246 @@ proptest! {
 		// Verify constraints are satisfied
 		let cs = circuit.constraint_system();
 		verify_constraints(cs, &w.value_vec).unwrap();
+	}
+}
+
+/// Rotate distance used by one round of the fixture chain below.
+///
+/// Staying in the range 1 to 63 keeps every round a real rotation rather than the identity.
+const fn chain_rot(i: u32) -> u32 {
+	i % 63 + 1
+}
+
+/// Left-shift distance used by one round of the fixture chain below.
+///
+/// Staying in the range 1 to 31 keeps every round a real shift and never discards the whole word.
+const fn chain_shl(i: u32) -> u32 {
+	i % 31 + 1
+}
+
+/// Rounds in the fixture chain.
+///
+/// Long enough that many temporaries are written and die before the end.
+/// That is what makes slot sharing observable.
+const CHAIN_ROUNDS: u32 = 48;
+
+/// Builds a chain of rotates, shifts and exclusive-ors, pinned by an equality assertion.
+///
+/// Every intermediate result is linear, so gate fusion inlines it and leaves it uncommitted.
+/// Each one dies a gate or two after it is written, which is the shape slot sharing exploits.
+///
+/// # Returns
+///
+/// The input value, and the value holding the expected result.
+fn build_chain(builder: &CircuitBuilder) -> (Wire, Wire) {
+	// Both ends are public, so they stay committed under either layout policy.
+	let x = builder.add_inout();
+	let expected = builder.add_inout();
+
+	// Each round reads the running value twice and produces a new one.
+	// The two operands are alive together while the previous value is already dead.
+	let mut acc = x;
+	for i in 0..CHAIN_ROUNDS {
+		let r = builder.rotr(acc, chain_rot(i));
+		let s = builder.shl(acc, chain_shl(i));
+		acc = builder.bxor(r, s);
+	}
+
+	// The assertion anchors the chain, without which dead-code elimination would drop all of it.
+	builder.assert_eq("chain", acc, expected);
+	(x, expected)
+}
+
+/// Evaluates natively what the fixture chain computes, as an independent reference.
+fn chain_reference(x: u64) -> u64 {
+	let mut acc = x;
+	// Mirror the circuit round for round, using the same two distance schedules.
+	for i in 0..CHAIN_ROUNDS {
+		acc = acc.rotate_right(chain_rot(i)) ^ (acc << chain_shl(i));
+	}
+	acc
+}
+
+#[test]
+fn test_scratch_pooling_preserves_the_committed_witness() {
+	// Invariant: sharing slots changes where uncommitted values are stored, nothing else.
+	// The constraint system and every committed word must come out identical.
+	//
+	// Fixture state: the same 48-round chain compiled twice, once per layout policy.
+	//
+	//   unpooled:  one slot per uncommitted value
+	//   pooled:    slots reused once a value's last reader has run
+	let unpooled = CircuitBuilder::new();
+	let (x_unpooled, expected_unpooled) = build_chain(&unpooled);
+	let unpooled = unpooled.build();
+
+	let pooled = CircuitBuilder::new();
+	pooled.enable_scratch_pooling();
+	let (x_pooled, expected_pooled) = build_chain(&pooled);
+	let pooled = pooled.build();
+
+	// The fixture has to produce values that can actually share, or everything below is vacuous.
+	let unpooled_layout = &unpooled.constraint_system().value_vec_layout;
+	let pooled_layout = &pooled.constraint_system().value_vec_layout;
+	assert!(
+		pooled_layout.n_scratch < unpooled_layout.n_scratch,
+		"pooling should shrink the scratch segment, got {} vs {}",
+		pooled_layout.n_scratch,
+		unpooled_layout.n_scratch
+	);
+	// Under sharing the segment is exactly the peak, since that is what the layout targets.
+	assert_eq!(pooled_layout.n_scratch, pooled.scratch_peak_live());
+	// The peak describes the graph, not the policy, so both builds must report the same figure.
+	assert_eq!(unpooled.scratch_peak_live(), pooled.scratch_peak_live());
+
+	// Every other part of the layout has to be untouched.
+	// An uncommitted value appears in no constraint operand, so the proof cannot see it.
+	assert_eq!(unpooled_layout.n_const, pooled_layout.n_const);
+	assert_eq!(unpooled_layout.n_inout, pooled_layout.n_inout);
+	assert_eq!(unpooled_layout.n_witness, pooled_layout.n_witness);
+	assert_eq!(unpooled_layout.n_internal, pooled_layout.n_internal);
+	assert_eq!(unpooled_layout.offset_inout, pooled_layout.offset_inout);
+	assert_eq!(unpooled_layout.offset_witness, pooled_layout.offset_witness);
+	assert_eq!(unpooled_layout.n_hidden_words, pooled_layout.n_hidden_words);
+	assert_eq!(unpooled.constraint_system().constants, pooled.constraint_system().constants);
+
+	// Flatten every operand of every constraint into one ordered list.
+	// Comparing the lists checks the contents, the ordering and the counts in a single assertion.
+	let operands = |cs: &ConstraintSystem| -> Vec<Vec<ShiftedValueIndex>> {
+		chain!(
+			cs.and_constraints.iter().flat_map(|c| c.0.iter()),
+			cs.imul_constraints.iter().flat_map(|c| c.0.iter()),
+			cs.bmul_constraints.iter().flat_map(|c| c.0.iter()),
+		)
+		.cloned()
+		.collect()
+	};
+	assert_eq!(operands(pooled.constraint_system()), operands(unpooled.constraint_system()));
+
+	// Boundary inputs: all zeros, the lowest bit, all ones, a mixed pattern, the sign bit.
+	// Together they exercise the rotate and shift schedules across every bit position.
+	for x_val in [
+		0u64,
+		1,
+		u64::MAX,
+		0x0123_4567_89ab_cdef,
+		0x8000_0000_0000_0000,
+	] {
+		// Fill both builds with the same input and the same independently computed expectation.
+		let mut w_unpooled = unpooled.new_witness_filler();
+		w_unpooled[x_unpooled] = Word(x_val);
+		w_unpooled[expected_unpooled] = Word(chain_reference(x_val));
+		unpooled.populate_wire_witness(&mut w_unpooled).unwrap();
+
+		let mut w_pooled = pooled.new_witness_filler();
+		w_pooled[x_pooled] = Word(x_val);
+		w_pooled[expected_pooled] = Word(chain_reference(x_val));
+		pooled.populate_wire_witness(&mut w_pooled).unwrap();
+
+		// The committed prefix is what the proof is built from, so it must agree word for word.
+		assert_eq!(
+			w_pooled.value_vec().combined_witness(),
+			w_unpooled.value_vec().combined_witness(),
+			"committed witness differs for x = {x_val:#018x}"
+		);
+
+		// Both assignments must still satisfy every constraint, not merely match each other.
+		verify_constraints(unpooled.constraint_system(), &w_unpooled.value_vec).unwrap();
+		verify_constraints(pooled.constraint_system(), &w_pooled.value_vec).unwrap();
+	}
+}
+
+#[test]
+fn test_scratch_pooling_rejects_a_bad_assignment() {
+	// Invariant: reusing storage must not weaken what the circuit enforces.
+	// A wrong assignment is rejected exactly as it would be under one slot per value.
+	//
+	// Fixture state: the 48-round chain, compiled with slots shared.
+	let builder = CircuitBuilder::new();
+	builder.enable_scratch_pooling();
+	let (x, expected) = build_chain(&builder);
+	let circuit = builder.build();
+
+	// Mutation: flip the lowest bit of the correct result, the smallest possible perturbation.
+	//
+	//   input:    0x1234_5678_9abc_def0
+	//   expected: correct result ^ 1     -> the equality assertion cannot hold
+	let mut w = circuit.new_witness_filler();
+	w[x] = Word(0x1234_5678_9abc_def0);
+	w[expected] = Word(chain_reference(0x1234_5678_9abc_def0) ^ 1);
+
+	let err = circuit
+		.populate_wire_witness(&mut w)
+		.expect_err("a perturbed expected value must fail the chain assertion");
+	// Exactly one assertion exists in the fixture, so exactly one failure is reported.
+	assert_eq!(err.total_count, 1);
+	assert_eq!(err.messages.len(), 1);
+	// The message is prefixed with the path of the assertion that failed, naming the chain.
+	assert!(err.messages[0].starts_with(".chain: "), "unexpected message: {}", err.messages[0]);
+}
+
+#[test]
+fn test_scratch_pooling_matches_scalar_per_instance_batched() {
+	// Invariant: the batched fill and the one-at-a-time fill must agree for every instance.
+	// This is where shared slots are most at risk.
+	// One buffer holds many instances, so a reused slot is written far more often.
+	//
+	// Fixture state: eight instances of the 48-round chain, laid out one column each.
+	//
+	//   row = value index, column = instance
+	//
+	//     value 0  [ inst0 | inst1 | ... | inst7 ]
+	//     value 1  [ inst0 | inst1 | ... | inst7 ]
+	let builder = CircuitBuilder::new();
+	builder.enable_scratch_pooling();
+	let (x, expected) = build_chain(&builder);
+	let circuit = builder.build();
+
+	// The buffer spans the committed prefix plus the shared tail, one row per value index.
+	let layout = circuit.constraint_system().value_vec_layout.clone();
+	let combined = layout.combined_len();
+	let full_len = combined + layout.n_scratch;
+	let n = 8usize;
+
+	// Distinct inputs per instance, so a slot leaking across columns would change a result.
+	let inputs: Vec<u64> = (0..n as u64)
+		.map(|i| i.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0xdead_beef)
+		.collect();
+
+	// Reference: fill each instance on its own, which is the already-trusted path.
+	let scalar: Vec<Vec<Word>> = inputs
+		.iter()
+		.map(|&x_val| {
+			let mut w = circuit.new_witness_filler();
+			w[x] = Word(x_val);
+			w[expected] = Word(chain_reference(x_val));
+			circuit.populate_wire_witness(&mut w).unwrap();
+			w.value_vec().combined_witness().to_vec()
+		})
+		.collect();
+
+	// Locate the two public rows, then seed every instance's column before evaluating.
+	let x_row = circuit.witness_index(x).0 as usize;
+	let expected_row = circuit.witness_index(expected).0 as usize;
+	let mut data = vec![Word::ZERO; full_len * n];
+	let mut view = StridedArray2DViewMut::without_stride(&mut data, full_len, n).unwrap();
+	for (instance, &x_val) in inputs.iter().enumerate() {
+		view[(x_row, instance)] = Word(x_val);
+		view[(expected_row, instance)] = Word(chain_reference(x_val));
+	}
+	// One pass fills every instance's remaining values.
+	circuit.populate_wire_witness_batched(&mut view).unwrap();
+
+	// Compare only the committed prefix.
+	// The tail beyond it is shared storage with no defined contents after evaluation.
+	for instance in 0..n {
+		for row in 0..combined {
+			assert_eq!(
+				view[(row, instance)],
+				scalar[instance][row],
+				"mismatch at row {row}, instance {instance}"
+			);
+		}
 	}
 }
 
