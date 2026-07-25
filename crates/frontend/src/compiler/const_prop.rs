@@ -23,7 +23,7 @@ use super::{
 ///
 /// Returns the number of wires that were replaced with constants.
 pub fn constant_propagation(graph: &mut GateGraph, hint_registry: &HintRegistry) -> usize {
-	// First rebuild use-def chains to ensure they're up to date
+	// This pass reads both halves: readers to seed the worklist, definitions to follow the graph.
 	graph.rebuild_use_def_chains(hint_registry);
 
 	// Initialize worklist with all gates that might be evaluable
@@ -33,11 +33,9 @@ pub fn constant_propagation(graph: &mut GateGraph, hint_registry: &HintRegistry)
 
 	// Add all gates that use constant wires to the initial worklist.
 	//
-	// Note that wire uses are sorted. This is to ensure that the pass is deterministic.
+	// The index yields readers in gate order, which is what keeps this pass deterministic.
 	for (wire, _) in graph.iter_const_wires() {
-		let mut gates_using_wire: Vec<Gate> = graph.get_wire_uses(wire).iter().copied().collect();
-		gates_using_wire.sort();
-		for gate in gates_using_wire {
+		for gate in graph.get_wire_uses(wire).collect::<Vec<_>>() {
 			if in_worklist.insert(gate) {
 				worklist.push_back(gate);
 			}
