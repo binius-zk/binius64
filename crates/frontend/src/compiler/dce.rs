@@ -34,8 +34,9 @@ pub fn live_gates(
 	force_committed: &EntitySet<Wire>,
 	hint_registry: &HintRegistry,
 ) -> EntitySet<Gate> {
-	// Earlier passes rewire gate inputs, so refresh the def and use links before walking them.
-	graph.rebuild_use_def_chains(hint_registry);
+	// Earlier passes rewire gate inputs, so refresh the definitions before walking them.
+	// Only definitions are needed here: liveness flows from a gate to whatever defines its inputs.
+	graph.rebuild_wire_defs(hint_registry);
 
 	let mut live = EntitySet::new();
 	let mut work: Vec<Gate> = Vec::new();
