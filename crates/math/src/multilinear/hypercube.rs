@@ -8,11 +8,11 @@
 
 use std::{iter, slice};
 
-use binius_compute::VecLike;
+use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField, field::FieldOps};
 use binius_utils::rayon::prelude::*;
 
-use crate::{FieldBuffer, field_buffer::BufferData};
+use crate::{FieldBuffer, FieldVec, field_buffer::BufferData};
 
 /// A hypercube of coefficients for multilinear polynomials.
 ///
@@ -245,6 +245,22 @@ fn tensor_prod_eq_ind_reserved<Cube: Hypercube, P: PackedField, Data: VecLike<P>
 pub fn eq_ind_partial_eval<Cube: Hypercube, P: PackedField>(point: &[P::Scalar]) -> FieldBuffer<P> {
 	// The unscaled indicator is the scaled indicator with a scale of one.
 	scaled_eq_ind_partial_eval::<Cube, P>(point, P::Scalar::ONE)
+}
+
+/// Builds the equality indicator expansion of `point` into a buffer drawn from `alloc`.
+///
+/// The allocator-aware counterpart to [`eq_ind_partial_eval`]: under a `BufferPool` the expansion
+/// is a recyclable pooled buffer rather than a fresh `Vec`.
+pub fn eq_ind_partial_eval_in<Cube: Hypercube, A: Allocator, P: PackedField>(
+	alloc: &A,
+	point: &[P::Scalar],
+) -> FieldVec<P, A> {
+	let packed_len = 1 << point.len().saturating_sub(P::LOG_WIDTH);
+	scaled_eq_ind_partial_eval_into::<Cube, P, _>(
+		point,
+		P::Scalar::ONE,
+		alloc.alloc::<P>(packed_len),
+	)
 }
 
 /// Computes the partial evaluation of the equality indicator polynomial, scaled by a constant.

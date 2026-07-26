@@ -299,7 +299,7 @@ impl<F: Field> IOPProver<F> {
 		// Compute the precommit segment's contribution to the wiring check.
 		// The prover sends this as a scalar; the oracle relation then verifies it.
 		let precommit_wiring_poly =
-			fold_constraints(&self.precommit_wiring_transpose, lambda, r_x_tensor.as_ref());
+			fold_constraints(alloc, &self.precommit_wiring_transpose, lambda, r_x_tensor.as_ref());
 		let precommit_claim = binius_math::inner_product::inner_product_buffers(
 			&precommit_packed.to_ref(),
 			&precommit_wiring_poly,
@@ -310,12 +310,12 @@ impl<F: Field> IOPProver<F> {
 
 		// Fold private wiring constraints
 		let private_wiring_poly =
-			fold_constraints(&self.private_wiring_transpose, lambda, r_x_tensor.as_ref());
+			fold_constraints(alloc, &self.private_wiring_transpose, lambda, r_x_tensor.as_ref());
 
 		// Compute the mask folding polynomial (libra_eval tensor)
 		let n_vars = r_x.len();
 		let libra_eval_tensor =
-			zk_mlecheck::expand_libra_eval::<P>(&r_x, n_vars, mask_degree, m_n, m_d);
+			zk_mlecheck::expand_libra_eval::<A, P>(alloc, &r_x, n_vars, mask_degree, m_n, m_d);
 
 		// Prove all oracle relations.
 		channel.prove_oracle_relations([

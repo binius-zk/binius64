@@ -315,7 +315,7 @@ impl IOPProver {
 		let ring_switch::RingSwitchOutput {
 			rs_eq_ind,
 			sumcheck_claim,
-		} = ring_switch::prove(witness_packed.to_ref(), witness_point, &mut *channel);
+		} = ring_switch::prove(alloc, witness_packed.to_ref(), witness_point, &mut *channel);
 
 		// Prove oracle relations via channel (runs BaseFold internally). The intmul pushforward
 		// relation, when the IntMul reduction ran, was already queued inside phase 5.

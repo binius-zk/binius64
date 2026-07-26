@@ -1,11 +1,11 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use binius_compute::VecLike;
+use binius_compute::{Allocator, VecLike};
 use binius_field::{PackedField, field::FieldOps};
 
 use super::hypercube::{self, Hypercube, OneCube};
-use crate::{FieldBuffer, field_buffer::BufferData};
+use crate::{FieldBuffer, FieldVec, field_buffer::BufferData};
 
 /// Tensor of values with the eq indicator evaluated at extra_query_coordinates.
 ///
@@ -35,6 +35,17 @@ pub fn tensor_prod_eq_ind<P: PackedField>(
 /// [DP23]: <https://eprint.iacr.org/2023/1784>
 pub fn eq_ind_partial_eval<P: PackedField>(point: &[P::Scalar]) -> FieldBuffer<P> {
 	hypercube::eq_ind_partial_eval::<OneCube, P>(point)
+}
+
+/// Builds the equality indicator expansion of `point` into a buffer drawn from `alloc`.
+///
+/// The allocator-aware counterpart to [`eq_ind_partial_eval`]: under a `BufferPool` the expansion
+/// is a recyclable pooled buffer rather than a fresh `Vec`.
+pub fn eq_ind_partial_eval_in<A: Allocator, P: PackedField>(
+	alloc: &A,
+	point: &[P::Scalar],
+) -> FieldVec<P, A> {
+	hypercube::eq_ind_partial_eval_in::<OneCube, A, P>(alloc, point)
 }
 
 /// Computes the partial evaluation of the equality indicator polynomial, scaled by a constant.
