@@ -37,7 +37,10 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	// Constraint: N-way Bitwise XOR (linear)
 	//
 	// (x0 ⊕ x1 ⊕ ... ⊕ xn) = z
-	let terms: Vec<WireExprTerm> = inputs.iter().map(|&w| w.into()).collect();
+	//
+	// The terms are handed over as an iterator, since the operand collects them itself.
+	// A vector to carry them across would only be allocated to be dropped.
+	let terms = inputs.iter().map(|&wire| WireExprTerm::from(wire));
 	builder.linear().rhs(expr::xor_multi(terms)).dst(*z).build();
 }
 

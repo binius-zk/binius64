@@ -52,13 +52,10 @@ impl EvalForm {
 		let mut builder = BytecodeBuilder::new();
 
 		// Combined wire to register mapping
-		let wire_to_reg = |wire: Wire| -> u32 {
-			if let Some(&ValueIndex(idx)) = wire_mapping.get(wire) {
-				idx // ValueVec index
-			} else {
-				panic!("Wire {wire:?} not mapped");
-			}
-		};
+		// The mapping is dense over wires, so index it rather than probing for an entry.
+		//
+		// Invariant: every wire the graph holds was given a value index before this runs.
+		let wire_to_reg = |wire: Wire| -> u32 { wire_mapping[wire].0 };
 
 		// Build bytecode for each gate
 		for (gate_id, data) in gate_graph.gates.iter() {
