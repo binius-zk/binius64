@@ -58,10 +58,9 @@ impl EvalForm {
 		let wire_to_reg = |wire: Wire| -> u32 { wire_mapping[wire].0 };
 
 		// Build bytecode for each gate
-		for (gate_id, data) in gate_graph.gates.iter() {
+		for gate_id in gate_graph.gates.keys() {
 			gate::emit_gate_bytecode(
 				gate_id,
-				data,
 				gate_graph,
 				&mut builder,
 				wire_to_reg,

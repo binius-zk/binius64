@@ -20,7 +20,7 @@ use binius_core::constraint_system::ShiftVariant;
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, WireExprTerm, expr},
 	gate::opcode::OpcodeShape,
-	gate_graph::{Gate, GateData, GateParam, Wire},
+	gate_graph::{GateData, GateParam, Wire},
 };
 
 pub const fn shape() -> OpcodeShape {
@@ -55,7 +55,7 @@ const fn shifted_term(variant: ShiftVariant, x: Wire, n: u32) -> WireExprTerm {
 	}
 }
 
-pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) {
+pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	let GateParam {
 		inputs,
 		outputs,
@@ -72,7 +72,6 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 }
 
 pub fn emit_eval_bytecode(
-	_gate: Gate,
 	data: &GateData,
 	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,

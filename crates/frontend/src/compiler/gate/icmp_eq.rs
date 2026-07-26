@@ -38,7 +38,7 @@ use binius_core::word::Word;
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, expr},
 	gate::opcode::OpcodeShape,
-	gate_graph::{Gate, GateData, GateParam, Wire},
+	gate_graph::{GateData, GateParam, Wire},
 };
 
 pub const fn shape() -> OpcodeShape {
@@ -52,7 +52,7 @@ pub const fn shape() -> OpcodeShape {
 	}
 }
 
-pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) {
+pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	let GateParam {
 		constants,
 		inputs,
@@ -78,7 +78,6 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 }
 
 pub fn emit_eval_bytecode(
-	_gate: Gate,
 	data: &GateData,
 	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
