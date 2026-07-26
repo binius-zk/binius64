@@ -2,126 +2,178 @@
 // Copyright 2026 The Binius Developers
 //! Constant evaluation support for gates.
 
-use binius_core::{ValueIndex, ValueVec, ValueVecLayout, Word};
-use rustc_hash::FxHashMap;
+use binius_core::{Word, constraint_system::ShiftVariant};
 
-use super::{BytecodeBuilder, interpreter::Interpreter};
+use super::exec::ghash_mul;
 use crate::compiler::{
-	gate::{self, opcode::OpcodeShape},
-	gate_graph::{Gate, GateData, GateGraph, GateParam, Wire},
+	gate::Opcode,
+	gate_graph::{Gate, GateGraph},
 	hints::HintRegistry,
 };
 
-/// Creates a wire mapping from gate wires to sequential register indices.
-/// Returns the mapping and the total number of registers used.
-fn create_wire_mapping(gate_param: &GateParam) -> (FxHashMap<Wire, u32>, u32) {
-	// Wire ids are small integers, so a fast integer hasher beats the default SipHash here.
-	let mut wire_mapping = FxHashMap::default();
-	let mut wire_index = 0u32;
-
-	// Helper to map a slice of wires sequentially
-	let mut map_wires = |wires: &[Wire]| {
-		for &wire in wires {
-			wire_mapping.insert(wire, wire_index);
-			wire_index += 1;
-		}
-	};
-
-	// Map all wire types in order
-	map_wires(gate_param.constants);
-	map_wires(gate_param.inputs);
-	map_wires(gate_param.outputs);
-	map_wires(gate_param.aux);
-
-	(wire_mapping, wire_index)
-}
-
-/// Sets up a ValueVec with the gate's constants loaded.
-fn setup_value_vec(shape: &OpcodeShape, concrete_inputs: &[Word], wire_count: u32) -> ValueVec {
-	let layout = ValueVecLayout {
-		n_const: shape.const_in.len(),
-		n_inout: 0,
-		n_witness: 0,
-		n_internal: wire_count as usize,
-		offset_inout: shape.const_in.len(),
-		offset_witness: shape.const_in.len(),
-		n_hidden_words: wire_count as usize - shape.const_in.len(),
-		n_scratch: 0,
-	};
-	let mut value_vec = ValueVec::new(layout);
-
-	// Load gate's built-in constants and provided input constants
-	for (i, &const_val) in shape
-		.const_in
-		.iter()
-		.chain(concrete_inputs.iter())
-		.enumerate()
-	{
-		value_vec[ValueIndex(i as u32)] = const_val;
-	}
-
-	value_vec
-}
-
-/// Extracts output values from the ValueVec after evaluation.
-fn extract_outputs(value_vec: &ValueVec, shape: &OpcodeShape) -> Vec<Word> {
-	let output_start = shape.const_in.len() + shape.n_in;
-	(output_start..output_start + shape.n_out)
-		.map(|i| value_vec[ValueIndex(i as u32)])
-		.collect()
-}
-
-/// Evaluate a gate with constant inputs, reusing the gate's own eval bytecode.
+/// Evaluates a gate whose inputs are all constant, returning the values of its output wires.
 ///
-/// Constant folding and the witness pass run the same bytecode, so the two cannot drift apart.
+/// `constants` holds the values of the gate's input wires, in order. `hint_registry` must contain
+/// any hint referenced by the gate. For [`Opcode::Hint`] gates this is the registry populated by
+/// [`CircuitBuilder::call_hint`](crate::compiler::CircuitBuilder::call_hint); for other gates an
+/// empty registry is fine.
 ///
-/// `hint_registry` must contain any hint referenced by the gate. For
-/// [`Opcode::Hint`](gate::opcode::Opcode::Hint) gates this is the registry populated by
-/// [`CircuitBuilder::call_hint`](crate::compiler::CircuitBuilder::call_hint); for other
-/// gates an empty registry is fine.
+/// Assertion gates have no outputs. They return an empty vector when the constant inputs satisfy
+/// the assertion, and the violation message otherwise.
 pub fn evaluate_gate_constants(
 	graph: &GateGraph,
 	gate: Gate,
 	constants: &[Word],
 	hint_registry: &HintRegistry,
 ) -> Result<Vec<Word>, String> {
-	evaluate_constant_gate(gate, &graph.gates[gate], graph, constants, hint_registry)
-}
-
-fn evaluate_constant_gate(
-	gate: Gate,
-	data: &GateData,
-	graph: &GateGraph,
-	concrete_inputs: &[Word],
-	hint_registry: &HintRegistry,
-) -> Result<Vec<Word>, String> {
-	let shape = data.shape(hint_registry);
-	let gate_param = data.gate_param_with_registry(hint_registry);
-
-	// Set up wire mapping and value vector
-	let (wire_mapping, wire_count) = create_wire_mapping(&gate_param);
-	let mut value_vec = setup_value_vec(&shape, concrete_inputs, wire_count);
-
-	// Create wire-to-register lookup function
-	let wire_to_reg = |wire: Wire| -> u32 {
-		*wire_mapping
-			.get(&wire)
-			.unwrap_or_else(|| panic!("Wire {:?} not mapped", wire))
-	};
-
-	// Generate bytecode for this gate
-	let mut builder = BytecodeBuilder::new();
-	gate::emit_gate_bytecode(gate, graph, &mut builder, wire_to_reg, hint_registry);
-	let (bytecode, _) = builder.finalize();
-
-	// Run evaluation
-	let mut interpreter = Interpreter::new(&bytecode, hint_registry);
-	interpreter
-		.run_with_value_vec(&mut value_vec, None)
-		.map_err(|e| format!("Constant evaluation failed: {:?}", e))?;
-
-	// Extract and return output values
-	Ok(extract_outputs(&value_vec, &shape))
+	let data = &graph.gates[gate];
+	match data.opcode {
+		Opcode::Band => {
+			let [x, y] = constants else { unreachable!() };
+			Ok(vec![*x & *y])
+		}
+		Opcode::Bor => {
+			let [x, y] = constants else { unreachable!() };
+			Ok(vec![*x | *y])
+		}
+		Opcode::Bxor => {
+			let [x, y] = constants else { unreachable!() };
+			Ok(vec![*x ^ *y])
+		}
+		Opcode::BxorMulti => Ok(vec![constants.iter().fold(Word::ZERO, |acc, &x| acc ^ x)]),
+		Opcode::Fax => {
+			let [x, y, w] = constants else { unreachable!() };
+			Ok(vec![(*x & *y) ^ *w])
+		}
+		Opcode::Select => {
+			let [cond, t, f] = constants else {
+				unreachable!()
+			};
+			Ok(vec![if cond.is_msb_true() { *t } else { *f }])
+		}
+		Opcode::Shift => {
+			let [x] = constants else { unreachable!() };
+			let [variant, n] = data.immediates[..] else {
+				unreachable!()
+			};
+			let variant = ShiftVariant::from_u8(variant as u8)
+				.expect("shift gate carries a valid ShiftVariant discriminant");
+			Ok(vec![match variant {
+				ShiftVariant::Sll => *x << n,
+				ShiftVariant::Slr => *x >> n,
+				ShiftVariant::Sar => x.sar(n),
+				ShiftVariant::Rotr => x.rotr(n),
+				ShiftVariant::Sll32 => x.sll32(n),
+				ShiftVariant::Srl32 => x.srl32(n),
+				ShiftVariant::Sra32 => x.sra32(n),
+				ShiftVariant::Rotr32 => x.rotr32(n),
+			}])
+		}
+		Opcode::IaddCinCout => {
+			// The carry in is carried in the MSB.
+			let [a, b, cin] = constants else {
+				unreachable!()
+			};
+			let (sum, cout) = a.iadd_cin_cout(*b, *cin >> 63);
+			Ok(vec![sum, cout])
+		}
+		Opcode::Iadd32 => {
+			let [a, b] = constants else { unreachable!() };
+			let (sum, cout) = a.iadd_cout_32(*b);
+			Ok(vec![sum, cout])
+		}
+		Opcode::Iadd32CinCout => {
+			let [a, b, cin] = constants else {
+				unreachable!()
+			};
+			let (sum, cout) = a.iadd32_cin_cout(*b, *cin);
+			Ok(vec![sum, cout])
+		}
+		Opcode::IsubBinBout => {
+			// The borrow in is carried in the MSB.
+			let [a, b, bin] = constants else {
+				unreachable!()
+			};
+			let (diff, bout) = a.isub_bin_bout(*b, *bin >> 63);
+			Ok(vec![diff, bout])
+		}
+		Opcode::Imul => {
+			let [x, y] = constants else { unreachable!() };
+			let (hi, lo) = x.imul(*y);
+			Ok(vec![hi, lo])
+		}
+		Opcode::Bmul => {
+			let [a_lo, a_hi, b_lo, b_hi] = constants else {
+				unreachable!()
+			};
+			let (c_lo, c_hi) = ghash_mul(*a_lo, *a_hi, *b_lo, *b_hi);
+			Ok(vec![c_lo, c_hi])
+		}
+		Opcode::IcmpUlt => {
+			// The borrow word of `¬x + y`: its MSB is set exactly when `x < y`.
+			let [x, y] = constants else { unreachable!() };
+			let (_sum, bout) = (*x ^ Word::ALL_ONE).iadd_cin_cout(*y, Word::ZERO);
+			Ok(vec![bout])
+		}
+		Opcode::IcmpEq => {
+			// `ALL_ONE + (x ^ y)` carries out of the top bit exactly when the operands differ, so
+			// inverting the MSB of the carry word yields the equality flag.
+			let [x, y] = constants else { unreachable!() };
+			let (_sum, cout) = Word::ALL_ONE.iadd_cin_cout(*x ^ *y, Word::ZERO);
+			Ok(vec![cout ^ Word::MSB_ONE])
+		}
+		Opcode::AssertEq => {
+			let [x, y] = constants else { unreachable!() };
+			if x != y {
+				return Err(format!("{x:?} != {y:?}"));
+			}
+			Ok(Vec::new())
+		}
+		Opcode::AssertEqCond => {
+			let [x, y, cond] = constants else {
+				unreachable!()
+			};
+			if cond.is_msb_true() && x != y {
+				return Err(format!("conditional assert: {x:?} != {y:?}"));
+			}
+			Ok(Vec::new())
+		}
+		Opcode::AssertZero => {
+			let [x] = constants else { unreachable!() };
+			if *x != Word::ZERO {
+				return Err(format!("{x:?} != 0"));
+			}
+			Ok(Vec::new())
+		}
+		Opcode::AssertNonZero => {
+			let [x] = constants else { unreachable!() };
+			if *x == Word::ZERO {
+				return Err(format!("{x:?} == 0"));
+			}
+			Ok(Vec::new())
+		}
+		Opcode::AssertFalse => {
+			let [x] = constants else { unreachable!() };
+			if x.is_msb_true() {
+				return Err(format!("{x:?} MSB is true"));
+			}
+			Ok(Vec::new())
+		}
+		Opcode::AssertTrue => {
+			let [x] = constants else { unreachable!() };
+			if x.is_msb_false() {
+				return Err(format!("{x:?} MSB is false"));
+			}
+			Ok(Vec::new())
+		}
+		Opcode::Hint => {
+			let hint_id = data.immediates[0];
+			let (_n_in, n_out) = hint_registry.shape(hint_id, &data.dimensions);
+			let mut outputs = vec![Word::ZERO; n_out];
+			hint_registry.execute(hint_id, &data.dimensions, constants, &mut outputs);
+			Ok(outputs)
+		}
+	}
 }
 
 #[cfg(test)]
@@ -129,7 +181,6 @@ mod tests {
 	use binius_core::Word;
 
 	use super::*;
-	use crate::compiler::{gate::opcode::Opcode, gate_graph::GateGraph};
 
 	/// Helper to create a gate with constant inputs for testing
 	fn create_test_gate(opcode: Opcode, input_values: &[Word]) -> (GateGraph, Gate, Vec<Word>) {
@@ -152,52 +203,219 @@ mod tests {
 		(graph, gate, input_values.to_vec())
 	}
 
+	fn eval(opcode: Opcode, input_values: &[Word]) -> Result<Vec<Word>, String> {
+		let (graph, gate, constants) = create_test_gate(opcode, input_values);
+		evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new())
+	}
+
+	/// Evaluates a single gate by compiling it to bytecode and running the interpreter.
+	///
+	/// This is the oracle for the differential tests below: [`evaluate_gate_constants`] and the
+	/// bytecode emitters are independent statements of the same gate semantics, so the two must
+	/// agree on every input.
+	fn eval_via_interpreter(
+		graph: &GateGraph,
+		gate: Gate,
+		constants: &[Word],
+		hints: &HintRegistry,
+	) -> Result<Vec<Word>, String> {
+		use binius_core::{ValueIndex, ValueVec, ValueVecLayout};
+
+		use crate::compiler::{
+			eval_form::{BytecodeBuilder, interpreter::Interpreter},
+			gate,
+			gate_graph::Wire,
+		};
+
+		let data = &graph.gates[gate];
+		let shape = data.shape(hints);
+		let wire_count = data.wires.len();
+		let layout = ValueVecLayout {
+			n_const: shape.const_in.len(),
+			n_inout: 0,
+			n_witness: 0,
+			n_internal: wire_count,
+			offset_inout: shape.const_in.len(),
+			offset_witness: shape.const_in.len(),
+			n_hidden_words: wire_count - shape.const_in.len(),
+			n_scratch: 0,
+		};
+		let mut value_vec = ValueVec::new(layout);
+		for (i, &v) in shape.const_in.iter().chain(constants.iter()).enumerate() {
+			value_vec[ValueIndex(i as u32)] = v;
+		}
+		let wire_to_reg =
+			|wire: Wire| -> u32 { data.wires.iter().position(|&w| w == wire).unwrap() as u32 };
+		let mut builder = BytecodeBuilder::new();
+		gate::emit_gate_bytecode(gate, graph, &mut builder, wire_to_reg, hints);
+		let (bytecode, _) = builder.finalize();
+		let mut interpreter = Interpreter::new(&bytecode, hints);
+		interpreter
+			.run_with_value_vec(&mut value_vec, None)
+			.map_err(|e| format!("{e:?}"))?;
+		let start = shape.const_in.len() + shape.n_in;
+		Ok((start..start + shape.n_out)
+			.map(|i| value_vec[ValueIndex(i as u32)])
+			.collect())
+	}
+
+	#[test]
+	fn differential_against_interpreter() {
+		let vals = [
+			Word::ZERO,
+			Word::ALL_ONE,
+			Word::MSB_ONE,
+			Word::from_u64(1),
+			Word::from_u64(0x8000000000000000),
+			Word::from_u64(0x123456789ABCDEF0),
+			Word::from_u64(0xFFFFFFFF),
+			Word::from_u64(0x5),
+			Word::from_u64(0x9),
+		];
+		let opcodes = [
+			(Opcode::Band, 2),
+			(Opcode::Bor, 2),
+			(Opcode::Bxor, 2),
+			(Opcode::Fax, 3),
+			(Opcode::Select, 3),
+			(Opcode::IaddCinCout, 3),
+			(Opcode::Iadd32, 2),
+			(Opcode::Iadd32CinCout, 3),
+			(Opcode::IsubBinBout, 3),
+			(Opcode::Imul, 2),
+			(Opcode::Bmul, 4),
+			(Opcode::IcmpUlt, 2),
+			(Opcode::IcmpEq, 2),
+			(Opcode::AssertEq, 2),
+			(Opcode::AssertEqCond, 3),
+			(Opcode::AssertZero, 1),
+			(Opcode::AssertNonZero, 1),
+			(Opcode::AssertFalse, 1),
+			(Opcode::AssertTrue, 1),
+		];
+		let mut checked = 0;
+		for (opcode, n_in) in opcodes {
+			// Enumerate every combination of `vals` of length `n_in`.
+			let total = vals.len().pow(n_in as u32);
+			for mut k in 0..total {
+				let inputs: Vec<Word> = (0..n_in)
+					.map(|_| {
+						let v = vals[k % vals.len()];
+						k /= vals.len();
+						v
+					})
+					.collect();
+				let (graph, gate, constants) = create_test_gate(opcode, &inputs);
+				let hints = HintRegistry::new();
+				let want = eval_via_interpreter(&graph, gate, &constants, &hints);
+				let got = evaluate_gate_constants(&graph, gate, &constants, &hints);
+				assert_eq!(
+					want.is_ok(),
+					got.is_ok(),
+					"{opcode:?} {inputs:?}: ok mismatch, interpreter={want:?} match={got:?}"
+				);
+				if let (Ok(want), Ok(got)) = (want, got) {
+					assert_eq!(want, got, "{opcode:?} {inputs:?}");
+				}
+				checked += 1;
+			}
+		}
+		println!("differential: {checked} cases checked");
+	}
+
+	#[test]
+	fn differential_shift_and_bxor_multi() {
+		let vals = [
+			Word::ZERO,
+			Word::ALL_ONE,
+			Word::MSB_ONE,
+			Word::from_u64(1),
+			Word::from_u64(0x123456789ABCDEF0),
+			Word::from_u64(0xFFFFFFFF),
+		];
+		let hints = HintRegistry::new();
+		let mut checked = 0;
+
+		for variant in 0..8u32 {
+			for n in [0u32, 1, 7, 31, 32, 63] {
+				for &x in &vals {
+					let mut graph = GateGraph::new();
+					let root = graph.path_spec_tree.root();
+					let input = graph.add_constant(x);
+					let out = graph.add_witness();
+					let gate = graph.emit_gate_generic(
+						root,
+						Opcode::Shift,
+						[input],
+						[out],
+						&[],
+						&[variant, n],
+					);
+					let want = eval_via_interpreter(&graph, gate, &[x], &hints);
+					let got = evaluate_gate_constants(&graph, gate, &[x], &hints);
+					assert_eq!(want, got, "shift variant={variant} n={n} x={x:?}");
+					checked += 1;
+				}
+			}
+		}
+
+		for n_in in 1..=5usize {
+			for mut k in 0..vals.len().pow(n_in as u32) {
+				let inputs: Vec<Word> = (0..n_in)
+					.map(|_| {
+						let v = vals[k % vals.len()];
+						k /= vals.len();
+						v
+					})
+					.collect();
+				let mut graph = GateGraph::new();
+				let root = graph.path_spec_tree.root();
+				let input_wires: Vec<_> = inputs.iter().map(|&v| graph.add_constant(v)).collect();
+				let out = graph.add_witness();
+				let gate = graph.emit_gate_generic(
+					root,
+					Opcode::BxorMulti,
+					input_wires,
+					[out],
+					&[n_in],
+					&[],
+				);
+				let want = eval_via_interpreter(&graph, gate, &inputs, &hints);
+				let got = evaluate_gate_constants(&graph, gate, &inputs, &hints);
+				assert_eq!(want, got, "bxor_multi {inputs:?}");
+				checked += 1;
+			}
+		}
+		println!("differential shift/bxor_multi: {checked} cases checked");
+	}
+
 	#[test]
 	fn test_band_constant_eval() {
-		let (graph, gate, constants) = create_test_gate(
-			Opcode::Band,
-			&[Word::from_u64(0xFF00FF00), Word::from_u64(0x0F0F0F0F)],
-		);
-
 		let result =
-			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
+			eval(Opcode::Band, &[Word::from_u64(0xFF00FF00), Word::from_u64(0x0F0F0F0F)]).unwrap();
 		assert_eq!(result[0], Word::from_u64(0x0F000F00));
 	}
 
 	#[test]
 	fn test_bxor_constant_eval() {
-		let (graph, gate, constants) = create_test_gate(
-			Opcode::Bxor,
-			&[Word::from_u64(0xFF00FF00), Word::from_u64(0x0F0F0F0F)],
-		);
-
 		let result =
-			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
+			eval(Opcode::Bxor, &[Word::from_u64(0xFF00FF00), Word::from_u64(0x0F0F0F0F)]).unwrap();
 		assert_eq!(result[0], Word::from_u64(0xF00FF00F));
 	}
 
 	#[test]
 	fn test_bor_constant_eval() {
-		let (graph, gate, constants) = create_test_gate(
-			Opcode::Bor,
-			&[Word::from_u64(0xFF00FF00), Word::from_u64(0x0F0F0F0F)],
-		);
-
 		let result =
-			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
+			eval(Opcode::Bor, &[Word::from_u64(0xFF00FF00), Word::from_u64(0x0F0F0F0F)]).unwrap();
 		assert_eq!(result[0], Word::from_u64(0xFF0FFF0F));
 	}
 
 	#[test]
 	fn test_imul_constant_eval() {
 		// Test IMUL (has 2 outputs: hi, lo)
-		let (graph, gate, constants) = create_test_gate(
-			Opcode::Imul,
-			&[Word::from_u64(0x123456789ABCDEF0), Word::from_u64(0x10)],
-		);
-
 		let result =
-			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
+			eval(Opcode::Imul, &[Word::from_u64(0x123456789ABCDEF0), Word::from_u64(0x10)])
+				.unwrap();
 		assert_eq!(result[1], Word::from_u64(0x23456789ABCDEF00)); // lo
 		assert_eq!(result[0], Word::from_u64(0x1)); // hi
 	}
@@ -206,7 +424,7 @@ mod tests {
 	fn test_bmul_constant_eval() {
 		// Test BMUL (4 inputs a_lo, a_hi, b_lo, b_hi; 2 outputs c_lo, c_hi). X^127 * X = X^128,
 		// which reduces (X^128 + X^7 + X^2 + X + 1 = 0) to X^7 + X^2 + X + 1 = 0x87.
-		let (graph, gate, constants) = create_test_gate(
+		let result = eval(
 			Opcode::Bmul,
 			&[
 				Word::ZERO,                         // a_lo
@@ -214,10 +432,8 @@ mod tests {
 				Word::from_u64(2),                  // b_lo = X
 				Word::ZERO,                         // b_hi
 			],
-		);
-
-		let result =
-			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
+		)
+		.unwrap();
 		assert_eq!(result[0], Word::from_u64(0x87)); // c_lo
 		assert_eq!(result[1], Word::ZERO); // c_hi
 	}
@@ -225,17 +441,15 @@ mod tests {
 	#[test]
 	fn test_iadd_cin_cout_constant_eval() {
 		// Test with carry in (MSB = 1 means carry bit is 1)
-		let (graph, gate, constants) = create_test_gate(
+		let result = eval(
 			Opcode::IaddCinCout,
 			&[
 				Word::from_u64(0xFFFFFFFFFFFFFFFF),
 				Word::from_u64(0x1),
 				Word::from_u64(0x8000000000000000), // carry in (MSB = 1)
 			],
-		);
-
-		let result =
-			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
+		)
+		.unwrap();
 		assert_eq!(result[0], Word::from_u64(0x1)); // sum: 0xFF...FF + 1 + 1 = 1 (with overflow)
 		// Carry out shows carries at all bit positions
 		assert_eq!(result[1], Word::from_u64(0xFFFFFFFFFFFFFFFF));
@@ -244,19 +458,78 @@ mod tests {
 	#[test]
 	fn test_isub_bin_bout_constant_eval() {
 		// Test subtraction: 0x10 - 0x5 = 0xB
-		let (graph, gate, constants) = create_test_gate(
+		let result = eval(
 			Opcode::IsubBinBout,
 			&[
 				Word::from_u64(0x10),
 				Word::from_u64(0x5),
 				Word::from_u64(0x0), // no borrow in
 			],
-		);
-
-		let result =
-			evaluate_gate_constants(&graph, gate, &constants, &HintRegistry::new()).unwrap();
+		)
+		.unwrap();
 		assert_eq!(result[0], Word::from_u64(0xB)); // diff: 0x10 - 0x5 = 0xB
 		// Borrow out shows borrows at bit positions - for 0x10 - 0x5, borrows occur at bits 0-3
 		assert_eq!(result[1], Word::from_u64(0xF)); // borrow out at bits 0-3
+	}
+
+	#[test]
+	fn test_icmp_eq_constant_eval() {
+		let equal = eval(Opcode::IcmpEq, &[Word::from_u64(0x7), Word::from_u64(0x7)]).unwrap();
+		assert!(equal[0].is_msb_true());
+
+		let differ = eval(Opcode::IcmpEq, &[Word::from_u64(0x7), Word::from_u64(0x8)]).unwrap();
+		assert!(differ[0].is_msb_false());
+	}
+
+	#[test]
+	fn test_icmp_ult_constant_eval() {
+		let less = eval(Opcode::IcmpUlt, &[Word::from_u64(0x5), Word::from_u64(0x9)]).unwrap();
+		assert!(less[0].is_msb_true());
+
+		let greater = eval(Opcode::IcmpUlt, &[Word::from_u64(0x9), Word::from_u64(0x5)]).unwrap();
+		assert!(greater[0].is_msb_false());
+
+		let equal = eval(Opcode::IcmpUlt, &[Word::from_u64(0x9), Word::from_u64(0x9)]).unwrap();
+		assert!(equal[0].is_msb_false());
+	}
+
+	#[test]
+	fn test_select_constant_eval() {
+		let taken =
+			eval(Opcode::Select, &[Word::MSB_ONE, Word::from_u64(0xAA), Word::from_u64(0xBB)])
+				.unwrap();
+		assert_eq!(taken[0], Word::from_u64(0xAA));
+
+		let not_taken =
+			eval(Opcode::Select, &[Word::ZERO, Word::from_u64(0xAA), Word::from_u64(0xBB)])
+				.unwrap();
+		assert_eq!(not_taken[0], Word::from_u64(0xBB));
+	}
+
+	#[test]
+	fn test_assert_gates_constant_eval() {
+		assert!(eval(Opcode::AssertEq, &[Word::from_u64(7), Word::from_u64(7)]).is_ok());
+		assert!(eval(Opcode::AssertEq, &[Word::from_u64(7), Word::from_u64(8)]).is_err());
+
+		assert!(eval(Opcode::AssertZero, &[Word::ZERO]).is_ok());
+		assert!(eval(Opcode::AssertZero, &[Word::from_u64(1)]).is_err());
+
+		assert!(eval(Opcode::AssertNonZero, &[Word::from_u64(1)]).is_ok());
+		assert!(eval(Opcode::AssertNonZero, &[Word::ZERO]).is_err());
+
+		assert!(eval(Opcode::AssertTrue, &[Word::MSB_ONE]).is_ok());
+		assert!(eval(Opcode::AssertTrue, &[Word::ZERO]).is_err());
+
+		assert!(eval(Opcode::AssertFalse, &[Word::ZERO]).is_ok());
+		assert!(eval(Opcode::AssertFalse, &[Word::MSB_ONE]).is_err());
+
+		// The condition is the third input; a false condition suppresses the check.
+		assert!(
+			eval(Opcode::AssertEqCond, &[Word::from_u64(7), Word::from_u64(8), Word::ZERO]).is_ok()
+		);
+		assert!(
+			eval(Opcode::AssertEqCond, &[Word::from_u64(7), Word::from_u64(8), Word::MSB_ONE])
+				.is_err()
+		);
 	}
 }
