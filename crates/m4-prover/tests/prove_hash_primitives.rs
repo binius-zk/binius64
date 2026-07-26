@@ -17,14 +17,14 @@ use std::array;
 
 use binius_circuits::{blake3::blake3_compress_2x, keccak::permutation::keccak_f1600};
 use binius_core::word::Word;
-use binius_frontend::{Circuit, CircuitBuilder, Wire};
+use binius_frontend::{Circuit, CircuitBuilder, CircuitStat, Wire};
 use binius_m4_prover::{BatchWitnessFiller, Prover, ValueTable};
 use binius_m4_verifier::Verifier;
 use binius_prover::OptimalPackedB128;
 use binius_transcript::ProverTranscript;
 use binius_verifier::config::StdChallenger;
 use rand::prelude::*;
-use tracing::{info_span, level_filters::LevelFilter};
+use tracing::{debug, info_span, level_filters::LevelFilter};
 use tracing_forest::ForestLayer;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -60,8 +60,8 @@ fn init_tracing() {
 /// Proves one instance of `circuit` through M4 and verifies it.
 ///
 /// Witness generation runs in one span.
-/// Proving runs in another.
-/// The prover's internal spans nest beneath the proving span.
+/// Proving runs twice: a warmup run whose proof is discarded, then the run that is kept.
+/// Each proving run gets its own span, and the prover's internal spans nest beneath it.
 ///
 /// # Panics
 ///
@@ -72,6 +72,10 @@ where
 	F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
 {
 	init_tracing();
+
+	// Report the circuit's constraint counts and value-vector occupancy.
+	// The spare-capacity lines show how much of each padded section is wasted.
+	debug!("{name} circuit stats:\n{}", CircuitStat::collect(circuit));
 
 	// Generate the single-instance witness in its own span.
 	let table = info_span!("witness_generation", primitive = name)
@@ -85,6 +89,13 @@ where
 	// Build the prover from it, sharing its FRI parameters.
 	let verifier = Verifier::setup(&cs, LOG_INSTANCES, LOG_INV_RATE);
 	let prover = Prover::<OptimalPackedB128>::setup(&verifier);
+
+	// Warm up first, discarding the proof.
+	// This pays the one-time costs — thread-pool spin-up, lazily built tables, page faults on the
+	// prover's scratch buffers — so the timed run below measures steady-state proving.
+	let mut warmup_transcript = ProverTranscript::new(StdChallenger::default());
+	info_span!("prove_warmup", primitive = name)
+		.in_scope(|| prover.prove(&table, &mut warmup_transcript));
 
 	// Prove in a span.
 	// The prover's commit, reduction, and opening spans nest beneath it.
@@ -183,40 +194,47 @@ fn fill_blake3(inputs: &Blake3Inputs, _instance: usize, w: &mut BatchWitnessFill
 	w[inputs.flags] = pack_lanes(rng.next_u32(), rng.next_u32());
 }
 
-/// Builds a circuit for one Keccak-f1600 permutation and force-commits its output state.
-fn build_keccak_circuit() -> (Circuit, [Wire; KECCAK_STATE_LANES]) {
+/// Builds a circuit for `N` independent Keccak-f1600 permutations, force-committing every output
+/// state.
+///
+/// The permutations share no wires.
+/// Packing several into one circuit fills the value vector more densely, so less of it is padding.
+fn build_keccak_circuit<const N: usize>() -> (Circuit, [[Wire; KECCAK_STATE_LANES]; N]) {
 	let builder = CircuitBuilder::new();
 
-	// The 25-lane input state is witness input.
-	let input: [Wire; KECCAK_STATE_LANES] = array::from_fn(|_| builder.add_witness());
+	// Each permutation gets its own 25-lane witness input state.
+	let inputs: [[Wire; KECCAK_STATE_LANES]; N] =
+		array::from_fn(|_| array::from_fn(|_| builder.add_witness()));
 
-	// Permute a copy of the input in place.
-	// After the call, `state` holds the output lanes.
-	let mut state = input;
-	keccak_f1600(&builder, &mut state);
+	for input in inputs {
+		// Permute a copy of the input in place.
+		// After the call, `state` holds the output lanes.
+		let mut state = input;
+		keccak_f1600(&builder, &mut state);
 
-	// Force-commit the output lanes.
-	// This keeps the permutation alive under dead-code elimination.
-	for wire in state {
-		builder.force_commit(wire);
+		// Force-commit the output lanes.
+		// This keeps the permutation alive under dead-code elimination.
+		for wire in state {
+			builder.force_commit(wire);
+		}
 	}
 
-	(builder.build(), input)
+	(builder.build(), inputs)
 }
 
-/// Fills the Keccak instance's 25 input state lanes with random 64-bit words.
+/// Fills every Keccak input state lane with a random 64-bit word.
 ///
 /// Keccak proving is data-independent.
 /// So any state is valid.
-fn fill_keccak(
-	input: &[Wire; KECCAK_STATE_LANES],
+fn fill_keccak<const N: usize>(
+	inputs: &[[Wire; KECCAK_STATE_LANES]; N],
 	_instance: usize,
 	w: &mut BatchWitnessFiller<'_, '_>,
 ) {
 	let mut rng = StdRng::seed_from_u64(0);
 
-	// One random 64-bit word per state lane.
-	for &wire in input {
+	// One random 64-bit word per state lane, across all permutations.
+	for &wire in inputs.iter().flatten() {
 		w[wire] = Word(rng.next_u64());
 	}
 }
@@ -262,8 +280,18 @@ fn prove_blake3_compression() {
 // Proves one Keccak-f1600 permutation through M4 and verifies it.
 #[test]
 fn prove_keccak_permutation() {
-	let (circuit, input) = build_keccak_circuit();
-	prove_once("keccak", &circuit, |instance, w| fill_keccak(&input, instance, w));
+	let (circuit, inputs) = build_keccak_circuit::<1>();
+	prove_once("keccak", &circuit, |instance, w| fill_keccak(&inputs, instance, w));
+}
+
+// Proves three independent Keccak-f1600 permutations through M4 and verifies them.
+//
+// Three permutations per instance pack the value vector more densely than one, so a smaller share
+// of the committed trace is padding.
+#[test]
+fn prove_keccak_permutation_3x() {
+	let (circuit, inputs) = build_keccak_circuit::<3>();
+	prove_once("keccak_3x", &circuit, |instance, w| fill_keccak(&inputs, instance, w));
 }
 
 // Proves one 64×64→128-bit multiplication through M4 and verifies it.
