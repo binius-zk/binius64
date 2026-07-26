@@ -10,10 +10,8 @@ use binius_iop::{channel::OracleSpec, fri::FRIParams};
 use binius_ip_prover::{
 	channel::IPProverChannel,
 	sumcheck::{
-		self, PaddedSumcheckDecorator,
-		batch::BatchSumcheckOutput,
-		bivariate_product_evaluator::BivariateProductEvaluator,
-		mle_store::{MleStore, pooled_copy},
+		self, PaddedSumcheckDecorator, batch::BatchSumcheckOutput,
+		bivariate_product_evaluator::BivariateProductEvaluator, mle_store::MleStore,
 		round_evaluator::SharedSumcheckProver,
 	},
 };
@@ -62,8 +60,9 @@ struct QueuedRelation<P: PackedField, Data: Deref<Target = [P]>> {
 	oracle_index: usize,
 	/// The committed multilinear message `pi_i`, backed by the caller's allocator.
 	message: FieldBuffer<P, Data>,
-	/// The transparent multilinear `t_i` paired with the message.
-	transparent: FieldBuffer<P>,
+	/// The transparent multilinear `t_i` paired with the message, backed by the caller's
+	/// allocator.
+	transparent: FieldBuffer<P, Data>,
 	/// The claimed inner product `s_i = <pi_i, t_i>`.
 	claim: P::Scalar,
 }
@@ -334,7 +333,7 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 
 			let mut store = MleStore::new(n_i, alloc);
 			let message_col = store.push(message);
-			let transparent_col = store.push_owned(pooled_copy(alloc, &transparent));
+			let transparent_col = store.push_owned(transparent);
 			let inner = SharedSumcheckProver::new(
 				store,
 				[(sum_prime, BivariateProductEvaluator::new([message_col, transparent_col]))],
@@ -552,7 +551,7 @@ where
 	fn prove_oracle_relations(
 		&mut self,
 		oracle_relations: impl IntoIterator<
-			Item = (Self::Oracle, FieldVec<P, A>, FieldBuffer<P>, P::Scalar),
+			Item = (Self::Oracle, FieldVec<P, A>, FieldVec<P, A>, P::Scalar),
 		>,
 	) {
 		// Queue the relations; the actual opening (masking + sumcheck + combined FRI) happens once,

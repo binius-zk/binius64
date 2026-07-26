@@ -186,7 +186,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover = IntMulProver::<_, P, _>::new(0, &mut transcript, &alloc);
 		let w = Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap();
-		prover.phase1(&initial_eval_point, w.b_prodcheck, &witness.b_leaves, exp_eval)
+		prover.phase1(&initial_eval_point, w.b_prodcheck, witness.b_leaves.to_ref(), exp_eval)
 	};
 	let phase2 = frobenius_twist(Word::LOG_BITS, &phase1.eval_point, &phase1.b_leaves_evals);
 	let phase3 = {
@@ -228,7 +228,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 			|b_prodcheck| {
 				let mut transcript = ProverTranscript::new(StdChallenger::default());
 				let mut prover = IntMulProver::<_, P, _>::new(0, &mut transcript, &alloc);
-				prover.phase1(&initial_eval_point, b_prodcheck, &witness.b_leaves, exp_eval)
+				prover.phase1(&initial_eval_point, b_prodcheck, witness.b_leaves.to_ref(), exp_eval)
 			},
 			BatchSize::SmallInput,
 		);
@@ -339,7 +339,7 @@ fn bench_intmul_components(c: &mut Criterion) {
 	// Computing the leaves of the variable-base exponentiation tree (`a` root as base, `b` as
 	// exponents).
 	group.bench_function("b_leaves", |bencher| {
-		bencher.iter(|| compute_b_leaves::<F, P>(&witness.a_root, witness.b_exponents));
+		bencher.iter(|| compute_b_leaves::<_, F, P>(&alloc, &witness.a_root, witness.b_exponents));
 	});
 
 	// Computing a product tree over the leaves.
@@ -363,7 +363,7 @@ fn bench_intmul_components(c: &mut Criterion) {
 		let mut transcript = ProverTranscript::new(StdChallenger::default());
 		let mut prover = IntMulProver::<_, P, _>::new(0, &mut transcript, &alloc);
 		let w = Witness::<_, P>::new(&alloc, &a, &b, &c_lo, &c_hi).unwrap();
-		prover.phase1(&initial_eval_point, w.b_prodcheck, &witness.b_leaves, exp_eval)
+		prover.phase1(&initial_eval_point, w.b_prodcheck, witness.b_leaves.to_ref(), exp_eval)
 	};
 	let phase2 = frobenius_twist(Word::LOG_BITS, &phase1.eval_point, &phase1.b_leaves_evals);
 

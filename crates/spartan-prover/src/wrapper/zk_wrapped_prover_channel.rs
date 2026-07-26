@@ -22,7 +22,7 @@ use binius_iop_prover::{
 	merkle_channel::MerkleIPProverChannel,
 };
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{FieldBuffer, FieldSlice, FieldVec, ntt::AdditiveNTT};
+use binius_math::{FieldSlice, FieldVec, ntt::AdditiveNTT};
 use binius_spartan_frontend::constraint_system::{BlindingInfo, WitnessLayout};
 use binius_spartan_verifier::IOPVerifier;
 use rand::CryptoRng;
@@ -79,9 +79,9 @@ where
 	/// Creates a new ZK-wrapped prover channel.
 	///
 	/// Commits the outer prover's precommit oracle on the inner channel as part of construction:
-	/// a random [`FieldBuffer<P>`] the size of the outer precommit oracle segment is sent to
-	/// the channel and kept for use in [`Self::finish`]. This random buffer is the one-time-pad
-	/// encryption key for the (future) outer encrypted transcript.
+	/// a random [`FieldBuffer<P>`](binius_math::FieldBuffer) the size of the outer precommit oracle
+	/// segment is sent to the channel and kept for use in [`Self::finish`]. This random buffer is
+	/// the one-time-pad encryption key for the (future) outer encrypted transcript.
 	///
 	/// The inner channel's oracle specs are expected to be laid out as
 	/// `[outer_precommit, inner..., outer_private, outer_mask]`.
@@ -291,7 +291,7 @@ where
 	fn prove_oracle_relations(
 		&mut self,
 		oracle_relations: impl IntoIterator<
-			Item = (Self::Oracle, FieldVec<P, A>, FieldBuffer<P>, P::Scalar),
+			Item = (Self::Oracle, FieldVec<P, A>, FieldVec<P, A>, P::Scalar),
 		>,
 	) {
 		let oracle_relations = oracle_relations.into_iter().collect::<Vec<_>>();

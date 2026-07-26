@@ -1,8 +1,12 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{iter, ops::Deref};
+use std::{
+	iter,
+	ops::{Deref, DerefMut},
+};
 
+use binius_compute::Allocator;
 use binius_field::{
 	BinaryField, Divisible, ExtensionField, Field, PackedField, cast_base_mut,
 	linear_transformation::{
@@ -13,7 +17,9 @@ use binius_field::{
 };
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	FieldBuffer, FieldSlice, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
+	FieldBuffer, FieldSlice, FieldVec,
+	inner_product::inner_product,
+	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_in},
 	tensor_algebra::TensorAlgebra,
 };
 use binius_utils::{
@@ -90,12 +96,13 @@ where
 /// ## Preconditions
 ///
 /// * `vec` must have log length equal to B128's extension degree over B1 (7)
-pub fn fold_b128_elems_inplace<P>(
-	mut elems: FieldBuffer<P>,
+pub fn fold_b128_elems_inplace<P, Data>(
+	mut elems: FieldBuffer<P, Data>,
 	vec: &FieldBuffer<B128>,
-) -> FieldBuffer<P>
+) -> FieldBuffer<P, Data>
 where
 	P: PackedField<Scalar = B128>,
+	Data: DerefMut<Target = [P]>,
 {
 	assert_eq!(vec.len(), B128::N_BITS); // precondition
 
@@ -157,13 +164,14 @@ where
 /// ## Preconditions
 ///
 /// * `mat` and `vec` must have the same log length
-pub fn fold_1b_rows_for_b128<P, Data>(
-	mat: &FieldBuffer<P, Data>,
-	vec: &FieldBuffer<P>,
+pub fn fold_1b_rows_for_b128<P, MatData, VecData>(
+	mat: &FieldBuffer<P, MatData>,
+	vec: &FieldBuffer<P, VecData>,
 ) -> FieldBuffer<B128>
 where
 	P: PackedField<Scalar = B128>,
-	Data: Deref<Target = [P]>,
+	MatData: Deref<Target = [P]>,
+	VecData: Deref<Target = [P]>,
 {
 	let log_scalar_bit_width = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 	assert_eq!(mat.log_len(), vec.log_len()); // precondition
@@ -275,9 +283,9 @@ fn square_transpose_const_size<P: PackedField, const LOG_N: usize, const S: usiz
 }
 
 /// Output of ring-switching prover.
-pub struct RingSwitchOutput<P: PackedField> {
+pub struct RingSwitchOutput<A: Allocator, P: PackedField> {
 	/// The ring-switching equality indicator MLE (transparent poly for BaseFold).
-	pub rs_eq_ind: FieldBuffer<P>,
+	pub rs_eq_ind: FieldVec<P, A>,
 	/// The sumcheck claim.
 	pub sumcheck_claim: P::Scalar,
 }
@@ -294,6 +302,7 @@ pub struct RingSwitchOutput<P: PackedField> {
 ///
 /// ## Arguments
 ///
+/// * `alloc` - the allocator the ring-switching equality indicator is drawn from
 /// * `packed_witness` - the packed witness buffer (B1 polynomial packed into P elements)
 /// * `eval_point` - the evaluation point from shift reduction
 /// * `channel` - the prover channel for sending/sampling
@@ -302,12 +311,14 @@ pub struct RingSwitchOutput<P: PackedField> {
 ///
 /// * `packed_witness.log_len() + log_packing == eval_point.len()` where log_packing is the base-2
 ///   log of the extension degree of B128 over B1 (= 7)
-pub fn prove<P, Channel>(
+pub fn prove<A, P, Channel>(
+	alloc: &A,
 	packed_witness: FieldSlice<P>,
 	eval_point: &[B128],
 	channel: &mut Channel,
-) -> RingSwitchOutput<P>
+) -> RingSwitchOutput<A, P>
 where
+	A: Allocator,
 	P: PackedField<Scalar = B128>,
 	Channel: IPProverChannel<B128>,
 {
@@ -317,7 +328,7 @@ where
 	// Expand evaluation suffix with eq_ind
 	let eval_point_suffix = &eval_point[log_packing..];
 	let suffix_tensor = tracing::debug_span!("Expand evaluation suffix query")
-		.in_scope(|| eq_ind_partial_eval::<P>(eval_point_suffix));
+		.in_scope(|| eq_ind_partial_eval_in::<A, P>(alloc, eval_point_suffix));
 
 	// Ring-switching partial evaluations (Method of Four Russians)
 	let s_hat_v = tracing::debug_span!("Compute ring-switching partial evaluations")

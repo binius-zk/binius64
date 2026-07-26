@@ -13,7 +13,9 @@ use std::iter;
 
 use binius_compute::{Allocator, VecLike};
 use binius_field::{BinaryField, Divisible, Field, PackedField, util::powers};
-use binius_math::{FieldBuffer, FieldVec, multilinear::eq::scaled_eq_ind_partial_eval_into};
+use binius_math::{
+	FieldBuffer, FieldSlice, FieldVec, multilinear::eq::scaled_eq_ind_partial_eval_into,
+};
 use binius_utils::rayon::{current_num_threads, prelude::*};
 
 use super::prove::Looker;
@@ -29,9 +31,9 @@ use super::prove::Looker;
 ///     Y = sum_j gamma^j * (I_j)_* eq_{r_j}
 /// ```
 ///
-/// The combined pushforward is drawn from `alloc`: a committing caller hands it to the channel,
-/// which owns it until the opening runs. The per-looker numerators stay `Vec`-backed — they are
-/// consumed by the reduction in this crate and never cross a channel boundary.
+/// Both the per-looker numerators and the combined pushforward are drawn from `alloc`: the
+/// numerators become the leaf layers of the per-looker fractional-addition circuits, and a
+/// committing caller hands the pushforward to the channel, which owns it until the opening runs.
 ///
 /// # Preconditions
 ///
@@ -48,7 +50,7 @@ pub fn combined_lookers<A, F, P>(
 	lookers: &[Looker<'_, F>],
 	gamma: F,
 	table_n_vars: usize,
-) -> (Vec<FieldBuffer<P>>, FieldVec<P, A>)
+) -> (Vec<FieldVec<P, A>>, FieldVec<P, A>)
 where
 	A: Allocator,
 	F: Field,
@@ -66,12 +68,12 @@ where
 	// Why fan out: the per-looker expansion is itself parallel.
 	//   But it under-saturates the machine at moderate n.
 	//   Spreading the lookers over the cores fills them.
-	// The 2^n backing Vecs are reserved up front on this thread, so the parallel region only fills
-	// them — no allocator traffic inside the rayon closures.
+	// The 2^n backing buffers are drawn from `alloc` up front on this thread, so the parallel
+	// region only fills them — no allocator traffic inside the rayon closures.
 	// Invariant: the fill writes results back in looker order (the zip is index-aligned).
 	//   So numerator j stays gamma^j * eq_{r_j}.
 	let packed_len = 1 << n.saturating_sub(P::LOG_WIDTH);
-	let buffers = iter::repeat_with(|| Vec::<P>::with_capacity(packed_len))
+	let buffers = iter::repeat_with(|| alloc.alloc::<P>(packed_len))
 		.take(lookers.len())
 		.collect::<Vec<_>>();
 	let numerators = (buffers, scales.as_slice(), lookers)
@@ -96,8 +98,14 @@ where
 		})
 		.collect::<Vec<_>>();
 
-	// Scatter every looker's numerator onto the shared table cube, summed into one buffer.
-	let combined = combined_pushforward::<A, F, P>(alloc, &numerators, lookers, table_n_vars);
+	// Scatter every looker's numerator onto the shared table cube, summed into one buffer. The
+	// scatter reads the numerators from rayon tasks, so it borrows them as slices: `Allocator::Vec`
+	// is declared only `Send`, so a numerator cannot be shared across tasks by reference.
+	let numerator_slices = numerators
+		.iter()
+		.map(FieldBuffer::to_ref)
+		.collect::<Vec<_>>();
+	let combined = combined_pushforward::<A, F, P>(alloc, &numerator_slices, lookers, table_n_vars);
 
 	(numerators, combined)
 }
@@ -132,7 +140,7 @@ where
 /// * Every index entry is less than `2^table_n_vars`.
 fn combined_pushforward<A, F, P>(
 	alloc: &A,
-	numerators: &[FieldBuffer<P>],
+	numerators: &[FieldSlice<'_, P>],
 	lookers: &[Looker<'_, F>],
 	table_n_vars: usize,
 ) -> FieldVec<P, A>
@@ -188,7 +196,7 @@ where
 ///
 /// The numerator is read sequentially, so each row is a lane read, not an indexed lookup.
 #[inline]
-fn scatter_add<F, P>(acc: &mut [F], numerator: &FieldBuffer<P>, index: &[usize])
+fn scatter_add<F, P>(acc: &mut [F], numerator: &FieldSlice<'_, P>, index: &[usize])
 where
 	F: Field,
 	P: PackedField<Scalar = F>,
@@ -297,7 +305,7 @@ where
 	// One accumulator slot per table position, all starting empty.
 	let mut buckets = vec![F::ZERO; 1usize << table_n_vars];
 	// Add each row's numerator value into the position it indexes into.
-	scatter_add(&mut buckets, eq_r, index);
+	scatter_add(&mut buckets, &eq_r.to_ref(), index);
 	// Repack the scalar accumulator into the packed table buffer.
 	FieldBuffer::from_values(&buckets)
 }
@@ -399,7 +407,11 @@ mod tests {
 			})
 			.collect::<Vec<_>>();
 
-		let got = combined_pushforward::<_, F, P>(&GlobalAllocator, &numerators, &lookers, m)
+		let numerator_slices = numerators
+			.iter()
+			.map(FieldBuffer::to_ref)
+			.collect::<Vec<_>>();
+		let got = combined_pushforward::<_, F, P>(&GlobalAllocator, &numerator_slices, &lookers, m)
 			.iter_scalars()
 			.collect::<Vec<_>>();
 		assert_eq!(got, combined_reference(&numerators, &indices, m));

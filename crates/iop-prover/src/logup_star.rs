@@ -17,7 +17,7 @@ use binius_field::{BinaryField, Divisible, PackedField};
 pub use binius_ip_prover::logup_star::Looker;
 use binius_ip_prover::logup_star::{self as reduction, witness};
 use binius_math::{
-	FieldBuffer, multilinear::eq::eq_ind_partial_eval, univariate::evaluate_univariate,
+	FieldBuffer, multilinear::eq::eq_ind_partial_eval_in, univariate::evaluate_univariate,
 };
 
 use crate::channel::IOPProverChannel;
@@ -112,7 +112,7 @@ where
 	//
 	//     <Y, eq_r'> = Y(r') = pushforward_eval_claim
 	let _open_guard = tracing::debug_span!("Open pushforward relation").entered();
-	let transparent = eq_ind_partial_eval::<P>(&output.table_eval_point);
+	let transparent = eq_ind_partial_eval_in::<A, P>(alloc, &output.table_eval_point);
 	channel.prove_oracle_relations([(
 		oracle,
 		pushforward,

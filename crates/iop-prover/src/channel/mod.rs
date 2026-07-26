@@ -8,7 +8,7 @@ use binius_compute::Allocator;
 use binius_field::PackedField;
 use binius_iop::channel::OracleSpec;
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{FieldBuffer, FieldSlice, FieldVec};
+use binius_math::{FieldSlice, FieldVec};
 
 /// Channel for IOP provers that extends the IP prover channel with oracle operations.
 ///
@@ -45,10 +45,9 @@ pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Sca
 	/// the same buffer that was passed to `send_oracle()` for this oracle. Callers provide
 	/// the message here so the channel does not need to store it internally.
 	///
-	/// The channel owns each message until the opening runs, so the message is drawn from the
-	/// caller's allocator `A` — a pooled message stays pooled all the way through the opening.
-	/// The transparent multilinear is `Vec`-backed: every producer of one builds it from a
-	/// `binius-math` tensor expansion that takes no allocator.
+	/// The channel owns each message and transparent multilinear until the opening runs, so both
+	/// are drawn from the caller's allocator `A` — a pooled buffer stays pooled all the way
+	/// through the opening.
 	///
 	/// # Preconditions
 	///
@@ -59,7 +58,7 @@ pub trait IOPProverChannel<P: PackedField, A: Allocator>: IPProverChannel<P::Sca
 	fn prove_oracle_relations(
 		&mut self,
 		oracle_relations: impl IntoIterator<
-			Item = (Self::Oracle, FieldVec<P, A>, FieldBuffer<P>, P::Scalar),
+			Item = (Self::Oracle, FieldVec<P, A>, FieldVec<P, A>, P::Scalar),
 		>,
 	);
 }
