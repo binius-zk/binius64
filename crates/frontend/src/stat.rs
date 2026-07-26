@@ -7,6 +7,7 @@ use std::fmt;
 
 use binius_core::{ConstraintSystem, Operand, ShiftedValueIndex};
 use itertools::chain;
+use rustc_hash::FxHashSet;
 
 use crate::compiler::circuit::Circuit;
 
@@ -348,32 +349,33 @@ impl fmt::Display for CircuitStat {
 /// Traverses the constraint system and returns the number of distinct value indices that
 /// are shifted and unshifted, respectively.
 fn traverse_constraint_system(cs: &ConstraintSystem) -> (usize, usize) {
-	use rustc_hash::FxHashSet;
-	let mut cx = Cx {
-		shifted_terms: FxHashSet::default(),
-		unshifted_terms: FxHashSet::default(),
-	};
+	let mut cx = Cx::default();
 	let operands = chain!(
 		cs.and_constraints.iter().flat_map(|c| &c.0),
 		cs.imul_constraints.iter().flat_map(|c| &c.0),
 		cs.bmul_constraints.iter().flat_map(|c| &c.0),
 	);
 	for operand in operands {
-		visit_operand(operand, &mut cx);
+		cx.visit_operand(operand);
 	}
-	return (cx.shifted_terms.len(), cx.unshifted_terms.len());
+	(cx.shifted_terms.len(), cx.unshifted_terms.len())
+}
 
-	struct Cx {
-		shifted_terms: FxHashSet<ShiftedValueIndex>,
-		unshifted_terms: FxHashSet<ShiftedValueIndex>,
-	}
+/// The distinct terms seen so far, split by whether they carry a shift.
+#[derive(Default)]
+struct Cx {
+	shifted_terms: FxHashSet<ShiftedValueIndex>,
+	unshifted_terms: FxHashSet<ShiftedValueIndex>,
+}
 
-	fn visit_operand(operand: &Operand, cx: &mut Cx) {
+impl Cx {
+	/// Records every term of one operand.
+	fn visit_operand(&mut self, operand: &Operand) {
 		for term in operand {
 			if term.amount == 0 {
-				cx.unshifted_terms.insert(*term);
+				self.unshifted_terms.insert(*term);
 			} else {
-				cx.shifted_terms.insert(*term);
+				self.shifted_terms.insert(*term);
 			}
 		}
 	}

@@ -82,7 +82,7 @@ pub struct OpcodeShape {
 }
 
 impl Opcode {
-	pub fn shape(&self, dimensions: &[usize]) -> OpcodeShape {
+	pub fn shape(self, dimensions: &[usize]) -> OpcodeShape {
 		assert_eq!(self.is_const_shape(), dimensions.is_empty());
 
 		match self {
@@ -127,7 +127,7 @@ impl Opcode {
 		}
 	}
 
-	pub const fn is_const_shape(&self) -> bool {
+	pub const fn is_const_shape(self) -> bool {
 		#[allow(clippy::match_like_matches_macro)]
 		match self {
 			Opcode::BxorMulti => false,

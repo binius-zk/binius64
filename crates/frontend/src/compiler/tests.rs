@@ -1,4 +1,6 @@
 // Copyright 2025 Irreducible Inc.
+use std::collections::HashSet;
+
 use binius_core::{constraint_system::ShiftedValueIndex, verify::verify_constraints, word::Word};
 use binius_utils::strided_array::StridedArray2DViewMut;
 use proptest::prelude::*;
@@ -862,7 +864,7 @@ fn test_zero_constant_not_in_binius64_operands() {
 	let cs = circuit.constraint_system();
 	let constants = &cs.constants;
 
-	let zero_const_indices: std::collections::HashSet<usize> = constants
+	let zero_const_indices: HashSet<usize> = constants
 		.iter()
 		.enumerate()
 		.filter(|&(_, v)| *v == Word::ZERO)
