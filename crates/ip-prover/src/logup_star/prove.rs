@@ -15,7 +15,6 @@ use super::{
 use crate::{
 	channel::IPProverChannel,
 	fracaddcheck::{self, FracAddCheckProver, FracEvalClaim},
-	sumcheck::mle_store::pooled_copy,
 };
 
 /// Prove a logUp* indexed-lookup reduction.
@@ -187,8 +186,13 @@ where
 		})
 		.unzip();
 	let table_den = witness::table_denominator::<A, F, P>(alloc, c, m);
-	let (table_prover, table_root) =
-		FracAddCheckProver::new(m, alloc, (pooled_copy(alloc, &pushforward), table_den));
+	// The pushforward is borrowed — a committing caller keeps it for the oracle opening — so the
+	// table circuit's leaf layer, which it folds in place, is a clone drawn from `alloc`.
+	let (table_prover, table_root) = FracAddCheckProver::new(
+		m,
+		alloc,
+		(FieldVec::<P, A>::clone_from_slice(alloc, pushforward.to_ref()), table_den),
+	);
 	let num_r = table_root.0.get(0);
 	let den_r = table_root.1.get(0);
 
