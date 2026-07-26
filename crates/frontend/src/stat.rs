@@ -105,12 +105,13 @@ impl CircuitStat {
 		let bmul_allocated = pad_or_skip(n_bmul_constraints);
 
 		// The public section size is already determined by the layout
-		let n_const = cs.value_vec_layout.n_const;
-		let n_inout = cs.value_vec_layout.n_inout;
-		let public_allocated = cs.value_vec_layout.offset_witness;
+		let layout = circuit.value_vec_layout();
+		let n_const = layout.n_const;
+		let n_inout = layout.n_inout;
+		let public_allocated = layout.offset_witness;
 		// The committed values are not padded to a power of two in the layout, but the prover
 		// commits to a power-of-two-length witness polynomial, so report that padded size.
-		let total_allocated = cs.value_vec_layout.combined_len().next_power_of_two();
+		let total_allocated = layout.combined_len().next_power_of_two();
 		let private_allocated = total_allocated - public_allocated;
 
 		Self {
@@ -124,9 +125,9 @@ impl CircuitStat {
 			distinct_unshifted_value_indices,
 			n_const,
 			n_inout,
-			n_witness: cs.value_vec_layout.n_witness,
-			n_internal: cs.value_vec_layout.n_internal,
-			n_scratch: cs.value_vec_layout.n_scratch,
+			n_witness: layout.n_witness,
+			n_internal: layout.n_internal,
+			n_scratch: layout.n_scratch,
 			scratch_peak_live: circuit.scratch_peak_live(),
 			and_allocated,
 			imul_allocated,

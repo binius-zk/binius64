@@ -347,13 +347,12 @@ impl CircuitBuilder {
 			}
 		}
 
-		let cs = ConstraintSystem::new(
-			constants,
-			value_vec_layout,
+		let cs = ConstraintSystem {
 			and_constraints,
 			imul_constraints,
 			bmul_constraints,
-		);
+			..value_vec_layout.constraint_system_shape(constants)
+		};
 		if cfg!(debug_assertions) {
 			// Validate that the resulting constraint system has a good shape.
 			cs.validate().unwrap();
@@ -362,7 +361,14 @@ impl CircuitBuilder {
 		// Build evaluation form (consumes the hint registry the user populated via call_hint).
 		let eval_form = eval_form::EvalForm::build(&graph, &wire_mapping, shared.hint_registry);
 
-		Circuit::new(graph, cs, wire_mapping, eval_form, scratch_alloc.peak_live())
+		Circuit::new(
+			graph,
+			cs,
+			value_vec_layout,
+			wire_mapping,
+			eval_form,
+			scratch_alloc.peak_live(),
+		)
 	}
 
 	/// Creates a reference to the same underlying circuit builder that is namespaced to the

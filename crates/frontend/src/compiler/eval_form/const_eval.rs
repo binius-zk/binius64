@@ -240,7 +240,7 @@ mod tests {
 			n_hidden_words: wire_count - shape.const_in.len(),
 			n_scratch: 0,
 		};
-		let mut value_vec = ValueVec::new(layout);
+		let mut value_vec = ValueVec::new(&layout);
 		for (i, &v) in shape.const_in.iter().chain(constants.iter()).enumerate() {
 			value_vec[ValueIndex(i as u32)] = v;
 		}

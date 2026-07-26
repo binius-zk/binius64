@@ -439,7 +439,7 @@ where
 
 		let _prove_guard = tracing::info_span!(
 			"Prove",
-			n_hidden_words = cs.value_vec_layout.n_hidden_words,
+			n_hidden_words = cs.n_hidden_words(),
 			n_bitand = cs.and_constraints.len(),
 			n_intmul = cs.imul_constraints.len(),
 		)

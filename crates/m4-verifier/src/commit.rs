@@ -82,7 +82,7 @@ impl BatchCommitLayout {
 	pub fn for_constraint_system(cs: &ConstraintSystem, log_instances: usize) -> Self {
 		// Only the hidden segment is committed.
 		// The shared constants are known to the verifier, so they stay off the oracle.
-		Self::new(cs.value_vec_layout.n_hidden_words, log_instances)
+		Self::new(cs.n_hidden_words(), log_instances)
 	}
 
 	/// The number of hidden-word rows one instance occupies after power-of-two padding.

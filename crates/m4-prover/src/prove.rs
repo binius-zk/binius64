@@ -307,7 +307,7 @@ impl IOPProver {
 		// The shift folds it against the monster's public part, which is sized to that padded
 		// count. The padding makes the two lengths agree, and matches the zeros the verifier
 		// assumes.
-		let n_public_words = cs.value_vec_layout.n_public_words();
+		let n_public_words = cs.n_public_words();
 		// Growing a pooled buffer past the block it was handed would reallocate and free that block
 		// at the element's alignment rather than the pool's, so the fill below must fit exactly.
 		assert!(

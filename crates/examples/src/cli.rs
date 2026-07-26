@@ -846,9 +846,6 @@ where
 		tracing::info!("Constraint system loaded from '{}'", cs_path);
 		drop(cs_load_scope);
 
-		// Get the layout from the constraint system
-		let layout = cs.value_vec_layout.clone();
-
 		// Load pre-built KeyCollection if path provided
 		let maybe_key_collection = key_collection_path
 			.map(|kc_path| -> Result<_> {
@@ -868,12 +865,9 @@ where
 		let non_pub_data: ValuesData = read_deserialized(non_pub_data_path)?;
 		tracing::info!("Non-public data loaded from '{}'", non_pub_data_path);
 
-		// Reconstruct the full witness using the layout
-		let witness = ValueVec::new_from_data(
-			layout,
-			pub_witness_data.into_owned(),
-			non_pub_data.into_owned(),
-		)?;
+		// Reconstruct the full witness from its two segments
+		let witness =
+			ValueVec::new_from_data(pub_witness_data.into_owned(), non_pub_data.into_owned());
 		drop(witness_load_scope);
 
 		match hash_suite {

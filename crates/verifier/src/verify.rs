@@ -80,7 +80,7 @@ impl IOPVerifier {
 	/// The trace oracle commits only the witness's hidden segment, padded to the segment
 	/// length; the public segment is a verifier-known polynomial.
 	pub const fn log_witness_elems(&self) -> usize {
-		let log_witness_words = self.constraint_system.value_vec_layout.log_witness_words();
+		let log_witness_words = self.constraint_system.log_witness_words();
 		log_witness_words - LOG_WORDS_PER_ELEM
 	}
 
@@ -379,7 +379,7 @@ where
 
 		// The validated layout guarantees a power-of-two public segment of at least one full
 		// element.
-		let log_public_words = constraint_system.value_vec_layout.log_public_words();
+		let log_public_words = constraint_system.log_public_words();
 		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
 
 		let iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
@@ -461,7 +461,7 @@ where
 
 		let _verify_scope = tracing::info_span!(
 			"Verify",
-			n_hidden_words = cs.value_vec_layout.n_hidden_words,
+			n_hidden_words = cs.n_hidden_words(),
 			n_bitand = cs.and_constraints.len(),
 			n_intmul = cs.imul_constraints.len(),
 		)

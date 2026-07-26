@@ -381,11 +381,7 @@ mod tests {
 		let constants = &c.circuit.constraint_system().constants;
 
 		// Shape: 2^10 instances, one hidden-word row per committed word.
-		let n_hidden_words = c
-			.circuit
-			.constraint_system()
-			.value_vec_layout
-			.n_hidden_words;
+		let n_hidden_words = c.circuit.value_vec_layout().n_hidden_words;
 		assert_eq!(table.log_instances(), log_instances);
 		assert_eq!(table.n_instances(), n_instances);
 		assert_eq!(table.n_hidden_words(), n_hidden_words);

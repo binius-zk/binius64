@@ -52,9 +52,8 @@ pub fn verify_imul_constraint(
 
 /// Verifies all constraints in a constraint system are satisfied by the witness
 pub fn verify_constraints(cs: &ConstraintSystem, witness: &ValueVec) -> Result<(), String> {
-	cs.value_vec_layout
-		.validate()
-		.map_err(|e| format!("ValueVec layout validation failed: {e}"))?;
+	cs.validate_shape()
+		.map_err(|e| format!("ValueVec shape validation failed: {e}"))?;
 
 	// First check that the witness correctly populated the constants section.
 	for (index, constant) in cs.constants.iter().enumerate() {

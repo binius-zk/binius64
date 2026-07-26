@@ -3,7 +3,7 @@
 use std::{error, fmt};
 
 use binius_core::{
-	constraint_system::{ConstraintSystem, ValueIndex, ValueVec},
+	constraint_system::{ConstraintSystem, ValueIndex, ValueVec, ValueVecLayout},
 	word::Word,
 };
 use binius_utils::strided_array::StridedArray2DViewMut;
@@ -111,6 +111,7 @@ impl<'a> std::ops::IndexMut<Wire> for WitnessFiller<'a> {
 pub struct Circuit {
 	gate_graph: GateGraph,
 	constraint_system: ConstraintSystem,
+	value_vec_layout: ValueVecLayout,
 	wire_mapping: SecondaryMap<Wire, ValueIndex>,
 	eval_form: EvalForm,
 	scratch_peak_live: usize,
@@ -122,14 +123,16 @@ impl Circuit {
 	pub(super) fn new(
 		gate_graph: GateGraph,
 		constraint_system: ConstraintSystem,
+		value_vec_layout: ValueVecLayout,
 		wire_mapping: SecondaryMap<Wire, ValueIndex>,
 		eval_form: EvalForm,
 		scratch_peak_live: usize,
 	) -> Self {
-		assert!(constraint_system.value_vec_layout.validate().is_ok());
+		assert!(constraint_system.validate_shape().is_ok());
 		Self {
 			gate_graph,
 			constraint_system,
+			value_vec_layout,
 			wire_mapping,
 			eval_form,
 			scratch_peak_live,
@@ -155,7 +158,7 @@ impl Circuit {
 	pub fn new_witness_filler(&self) -> WitnessFiller<'_> {
 		WitnessFiller {
 			circuit: self,
-			value_vec: ValueVec::new(self.constraint_system.value_vec_layout.clone()),
+			value_vec: ValueVec::new(&self.value_vec_layout),
 		}
 	}
 
@@ -266,6 +269,11 @@ impl Circuit {
 	/// Returns the constraint system for this circuit.
 	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		&self.constraint_system
+	}
+
+	/// Returns the layout of the value vector this circuit fills.
+	pub const fn value_vec_layout(&self) -> &ValueVecLayout {
+		&self.value_vec_layout
 	}
 
 	/// Returns the number of gates in this circuit.
