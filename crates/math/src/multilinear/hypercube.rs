@@ -8,6 +8,7 @@
 
 use std::{iter, slice};
 
+use binius_compute::VecLike;
 use binius_field::{Field, PackedField, field::FieldOps};
 use binius_utils::rayon::prelude::*;
 
@@ -158,6 +159,34 @@ pub fn tensor_prod_eq_ind<Cube: Hypercube, P: PackedField>(
 	let final_packed_len = 1usize << final_log_len.saturating_sub(P::LOG_WIDTH);
 	data.reserve_exact(final_packed_len.saturating_sub(data.len()));
 
+	tensor_prod_eq_ind_reserved::<Cube, P, _>(
+		FieldBuffer::new(start_log_len, data),
+		extra_query_coordinates,
+	)
+}
+
+/// [`tensor_prod_eq_ind`] over a backing store that already has room for the expansion.
+///
+/// The public entry point reserves the final capacity on its `Vec` before calling here. The
+/// allocator-backed callers ([`scaled_eq_ind_partial_eval_into`]) pass a buffer drawn at the final
+/// size, which cannot grow, so the reservation is their precondition rather than a step of the
+/// expansion.
+///
+/// # Preconditions
+///
+/// * `values.capacity()` must be at least `1 << (values.log_len() +
+///   extra_query_coordinates.len()).saturating_sub(P::LOG_WIDTH)`.
+fn tensor_prod_eq_ind_reserved<Cube: Hypercube, P: PackedField, Data: VecLike<P>>(
+	values: FieldBuffer<P, Data>,
+	extra_query_coordinates: &[P::Scalar],
+) -> FieldBuffer<P, Data> {
+	let start_log_len = values.log_len();
+	let final_log_len = start_log_len + extra_query_coordinates.len();
+	let mut data = values.take_data();
+
+	// precondition
+	debug_assert!(data.capacity() >= 1usize << final_log_len.saturating_sub(P::LOG_WIDTH));
+
 	// The coordinates split cleanly: while the expansion is narrower than one packed word it lives
 	// entirely in `data[0]`, and once it fills a word every step doubles the packed length.
 	let sub_width_count = extra_query_coordinates
@@ -233,31 +262,30 @@ pub fn scaled_eq_ind_partial_eval<Cube: Hypercube, P: PackedField>(
 ) -> FieldBuffer<P> {
 	// Reserve the final packed length up front so the per-variable growth never reallocates.
 	let packed_len = 1 << point.len().saturating_sub(P::LOG_WIDTH);
-	scaled_eq_ind_partial_eval_into::<Cube, P>(point, scale, Vec::with_capacity(packed_len))
+	scaled_eq_ind_partial_eval_into::<Cube, P, _>(point, scale, Vec::with_capacity(packed_len))
 }
 
-/// Builds the scaled equality indicator expansion of `point` in a caller-supplied backing `Vec`.
+/// Builds the scaled equality indicator expansion of `point` in a caller-supplied backing buffer.
 ///
 /// This is the allocation-hoisting form of [`scaled_eq_ind_partial_eval`]: the caller owns the
-/// backing `Vec`, so its allocation can be reserved on a different thread than the one that fills
-/// it. The `Vec` is cleared, seeded with `scale`, grown one variable at a time into the tensor
-/// product $scale \cdot b(r_0) \otimes \ldots \otimes b(r_{n-1})$, and wrapped into the returned
-/// buffer with `log_len == point.len()`.
+/// backing buffer, so its allocation can be drawn from a pool, or reserved on a different thread
+/// than the one that fills it. The buffer is cleared, seeded with `scale`, grown one variable at a
+/// time into the tensor product $scale \cdot b(r_0) \otimes \ldots \otimes b(r_{n-1})$, and wrapped
+/// into the returned buffer with `log_len == point.len()`.
 ///
 /// # Preconditions
 ///
-/// * `buffer.capacity()` must equal `1 << point.len().saturating_sub(P::LOG_WIDTH)`, so the growth
-///   never reallocates and the final wrap keeps the same allocation.
-pub fn scaled_eq_ind_partial_eval_into<Cube: Hypercube, P: PackedField>(
+/// * `buffer.capacity()` must be at least `1 << point.len().saturating_sub(P::LOG_WIDTH)`, so the
+///   growth never reallocates and the final wrap keeps the same allocation.
+pub fn scaled_eq_ind_partial_eval_into<Cube: Hypercube, P: PackedField, Data: VecLike<P>>(
 	point: &[P::Scalar],
 	scale: P::Scalar,
-	mut buffer: Vec<P>,
-) -> FieldBuffer<P> {
-	let packed_len = 1 << point.len().saturating_sub(P::LOG_WIDTH);
-	assert_eq!(
-		buffer.capacity(),
-		packed_len,
-		"precondition: buffer capacity must match the packed expansion length"
+	mut buffer: Data,
+) -> FieldBuffer<P, Data> {
+	let packed_len = 1usize << point.len().saturating_sub(P::LOG_WIDTH);
+	assert!(
+		buffer.capacity() >= packed_len,
+		"precondition: buffer capacity must cover the packed expansion length"
 	);
 
 	// Seed a single-scalar buffer with the scale; the expansion multiplies it through, so every
@@ -265,7 +293,7 @@ pub fn scaled_eq_ind_partial_eval_into<Cube: Hypercube, P: PackedField>(
 	buffer.clear();
 	buffer.push(P::from_scalars(iter::once(scale)));
 	let values = FieldBuffer::new(0, buffer);
-	tensor_prod_eq_ind::<Cube, P>(values, point)
+	tensor_prod_eq_ind_reserved::<Cube, P, Data>(values, point)
 }
 
 /// Truncate the equality indicator expansion to the low indexed variables.

@@ -5,7 +5,7 @@
 use binius_compute::Allocator;
 use binius_field::{BinaryField, Divisible, Field, PackedField};
 use binius_ip::{MultilinearEvalClaim, logup_star::LogupOutput};
-use binius_math::{FieldBuffer, FieldSlice, univariate::evaluate_univariate};
+use binius_math::{FieldBuffer, FieldSlice, FieldVec, univariate::evaluate_univariate};
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
 use super::{
@@ -152,7 +152,7 @@ pub fn prove_reduction<A, F, P>(
 	table: &FieldBuffer<P>,
 	lookers: &[Looker<'_, F>],
 	eval_claim: F,
-	numerators: Vec<FieldBuffer<P>>,
+	numerators: Vec<FieldVec<P, A>>,
 	pushforward: FieldSlice<P>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> LogupOutput<F>
@@ -182,8 +182,7 @@ where
 		.into_par_iter()
 		.map(|(looker, numerator)| {
 			let den = witness::looker_denominator::<A, F, P>(alloc, c, looker.index);
-			let (prover, root) =
-				FracAddCheckProver::new(n, alloc, (pooled_copy(alloc, &numerator), den));
+			let (prover, root) = FracAddCheckProver::new(n, alloc, (numerator, den));
 			(prover, (root.0.get(0), root.1.get(0)))
 		})
 		.unzip();

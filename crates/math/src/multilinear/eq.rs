@@ -1,6 +1,7 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use binius_compute::VecLike;
 use binius_field::{PackedField, field::FieldOps};
 
 use super::hypercube::{self, Hypercube, OneCube};
@@ -57,22 +58,22 @@ pub fn scaled_eq_ind_partial_eval<P: PackedField>(
 	hypercube::scaled_eq_ind_partial_eval::<OneCube, P>(point, scale)
 }
 
-/// Builds the scaled equality indicator expansion of `point` in a caller-supplied backing `Vec`.
+/// Builds the scaled equality indicator expansion of `point` in a caller-supplied backing buffer.
 ///
 /// This is the allocation-hoisting form of [`scaled_eq_ind_partial_eval`]: the caller owns the
-/// backing `Vec`, so its allocation can be reserved on a different thread than the one that fills
-/// it. Returns a buffer with `log_len == point.len()`. A scale of one reproduces the unscaled
-/// equality indicator.
+/// backing buffer, so its allocation can be drawn from a pool, or reserved on a different thread
+/// than the one that fills it. Returns a buffer with `log_len == point.len()`. A scale of one
+/// reproduces the unscaled equality indicator.
 ///
 /// # Preconditions
 ///
-/// * `buffer.capacity()` must equal `1 << point.len().saturating_sub(P::LOG_WIDTH)`.
-pub fn scaled_eq_ind_partial_eval_into<P: PackedField>(
+/// * `buffer.capacity()` must be at least `1 << point.len().saturating_sub(P::LOG_WIDTH)`.
+pub fn scaled_eq_ind_partial_eval_into<P: PackedField, Data: VecLike<P>>(
 	point: &[P::Scalar],
 	scale: P::Scalar,
-	buffer: Vec<P>,
-) -> FieldBuffer<P> {
-	hypercube::scaled_eq_ind_partial_eval_into::<OneCube, P>(point, scale, buffer)
+	buffer: Data,
+) -> FieldBuffer<P, Data> {
+	hypercube::scaled_eq_ind_partial_eval_into::<OneCube, P, Data>(point, scale, buffer)
 }
 
 /// Truncate the equality indicator expansion to the low indexed variables.
