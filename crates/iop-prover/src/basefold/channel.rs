@@ -400,6 +400,9 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 			);
 			let scalar_broadcast = P::broadcast(eq_i);
 			let chunk_packed = 1usize << (n_i + log_lift - P::LOG_WIDTH);
+			// Borrow as a slice before the closure: the allocator's buffer type is only `Send`, so
+			// a closure capturing the owned buffer would not be `Sync` as `for_each` requires.
+			let witness_prime = witness_prime.to_ref();
 			combined
 				.as_mut()
 				.par_chunks_mut(chunk_packed)
