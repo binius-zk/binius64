@@ -1,7 +1,10 @@
 // Copyright 2025 Irreducible Inc.
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::ser::SerializeStruct;
+
 use crate::compiler::{
+	gate::opcode::Opcode,
 	gate_graph::{Gate, GateGraph},
 	pathspec::PathSpec,
 };
@@ -28,10 +31,10 @@ impl PathSpecData {
 	}
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone)]
 struct GateBreakdown {
 	/// Shows how many opcodes of every type there is.
-	by_opcode: BTreeMap<String, usize>,
+	by_opcode: BTreeMap<Opcode, usize>,
 }
 
 impl GateBreakdown {
@@ -40,17 +43,37 @@ impl GateBreakdown {
 			by_opcode: BTreeMap::new(),
 		};
 		for gate in gates {
-			let opcode = format!("{:?}", gg.gates[*gate].opcode);
-			*breakdown.by_opcode.entry(opcode).or_insert(0) += 1;
+			*breakdown
+				.by_opcode
+				.entry(gg.gates[*gate].opcode)
+				.or_insert(0) += 1;
 		}
 		breakdown
 	}
 
 	fn merge(mut self, other: &GateBreakdown) -> GateBreakdown {
-		for (opcode, count) in &other.by_opcode {
-			*self.by_opcode.entry(opcode.clone()).or_insert(0) += count;
+		for (&opcode, count) in &other.by_opcode {
+			*self.by_opcode.entry(opcode).or_insert(0) += count;
 		}
 		self
+	}
+}
+
+impl serde::Serialize for GateBreakdown {
+	/// Serializes the counts under opcode names.
+	///
+	/// Names are rendered here rather than while counting.
+	/// So a circuit with a million gates names each opcode once, not once per gate.
+	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		let by_name: BTreeMap<String, usize> = self
+			.by_opcode
+			.iter()
+			.map(|(opcode, count)| (format!("{opcode:?}"), *count))
+			.collect();
+
+		let mut breakdown = serializer.serialize_struct("GateBreakdown", 1)?;
+		breakdown.serialize_field("by_opcode", &by_name)?;
+		breakdown.end()
 	}
 }
 
@@ -163,15 +186,22 @@ impl Cx {
 	/// Traverses the paths in the post order and computes the cumulative gate breakdowns for
 	/// each path.
 	fn compute_cum_breakdowns(&mut self) {
-		for &path_spec in &self.post_order {
-			let data = self.data.get(&path_spec).unwrap();
-			let mut cum_breakdown = data.breakdown.as_ref().unwrap().clone();
-			for &child in &data.children.clone() {
-				if let Some(child_cum) = self.data[&child].cum_breakdown.as_ref() {
+		// Children are visited before their parent, so each child total is ready when read.
+		for path_spec in self.post_order.clone() {
+			// The child list is taken out rather than copied, so the map can be read while
+			// accumulating and the list handed straight back.
+			let children = std::mem::take(&mut self.data.get_mut(&path_spec).unwrap().children);
+
+			let mut cum_breakdown = self.data[&path_spec].breakdown.as_ref().unwrap().clone();
+			for child in &children {
+				if let Some(child_cum) = self.data[child].cum_breakdown.as_ref() {
 					cum_breakdown = cum_breakdown.merge(child_cum);
 				}
 			}
-			self.data.get_mut(&path_spec).unwrap().cum_breakdown = Some(cum_breakdown);
+
+			let data = self.data.get_mut(&path_spec).unwrap();
+			data.children = children;
+			data.cum_breakdown = Some(cum_breakdown);
 		}
 	}
 

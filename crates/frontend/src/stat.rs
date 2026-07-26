@@ -84,24 +84,25 @@ pub struct CircuitStat {
 impl CircuitStat {
 	/// Creates a new `CircuitStat` instance by collecting statistics from the given circuit.
 	pub fn collect(circuit: &Circuit) -> Self {
-		// Clone the constraint system so we can prepare it
-		let mut cs = circuit.constraint_system().clone();
+		let cs = circuit.constraint_system();
 
-		// Store original counts before padding
+		// Counts as the circuit compiled them, before the prover pads anything.
 		let n_and_constraints = cs.n_and_constraints();
 		let n_imul_constraints = cs.n_imul_constraints();
 		let n_bmul_constraints = cs.n_bmul_constraints();
 		let (distinct_shifted_value_indices, distinct_unshifted_value_indices) =
-			traverse_constraint_system(&cs);
+			traverse_constraint_system(cs);
 
-		// validate_and_prepare will pad constraints to power of 2
-		cs.validate_and_prepare()
-			.expect("constraint system should be valid");
-
-		// Now we have the actual allocated sizes after padding
-		let and_allocated = cs.n_and_constraints();
-		let imul_allocated = cs.n_imul_constraints();
-		let bmul_allocated = cs.n_bmul_constraints();
+		// Sizes the prover pads each constraint set to before proving.
+		//
+		// - Every set is rounded up to a power of two.
+		// - Rounding up from zero gives one, so an empty AND set still occupies a single slot.
+		// - An empty multiply set instead stays at zero, letting its reduction be skipped whole.
+		let pad = |n: usize| n.next_power_of_two();
+		let pad_or_skip = |n: usize| if n == 0 { 0 } else { pad(n) };
+		let and_allocated = pad(n_and_constraints);
+		let imul_allocated = pad_or_skip(n_imul_constraints);
+		let bmul_allocated = pad_or_skip(n_bmul_constraints);
 
 		// The public section size is already determined by the layout
 		let n_const = cs.value_vec_layout.n_const;
