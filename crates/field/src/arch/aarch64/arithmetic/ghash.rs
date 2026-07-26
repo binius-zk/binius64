@@ -203,6 +203,9 @@ pub struct GhashClMulWideMul<T>(T);
 impl WideMul for GhashClMulWideMul<PackedPrimitiveType<M128, GhashB128>> {
 	type Output = WideGhashProduct;
 
+	// Why always inline: every packed multiply funnels through this wrapper.
+	// Left out of line, callers pay a function call and stack traffic per element.
+	#[inline(always)]
 	fn wide_mul(a: Self, b: Self) -> Self::Output {
 		WideGhashProduct::wide_mul(
 			PackedPrimitiveType::peel(Self::peel(a)),
@@ -210,6 +213,9 @@ impl WideMul for GhashClMulWideMul<PackedPrimitiveType<M128, GhashB128>> {
 		)
 	}
 
+	// Why always inline: the reduction is a handful of instructions.
+	// A call here costs more than the arithmetic it performs.
+	#[inline(always)]
 	fn reduce(wide: Self::Output) -> Self {
 		Self::wrap(PackedPrimitiveType::wrap(wide.reduce()))
 	}

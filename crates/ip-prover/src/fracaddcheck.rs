@@ -8,9 +8,8 @@ use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim, sumcheck::RoundCoeffs
 use binius_math::{
 	FieldBuffer, FieldVec, line::extrapolate_line_packed, multilinear::eq::eq_ind_partial_eval,
 };
-use binius_utils::rayon::{
-	iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator},
-	slice::{ParallelSlice, ParallelSliceMut},
+use binius_utils::rayon::iter::{
+	IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
 };
 use itertools::izip;
 
@@ -117,29 +116,29 @@ where
 			// One packed word of the next layer from the sibling halves, written straight into
 			// the pooled buffers:
 			//     a_0/b_0 + a_1/b_1 = (a_0*b_1 + a_1*b_0) / (b_0*b_1)
-			// Chunks fan out across workers; each chunk is a tight serial loop.
+			// Workers each take a contiguous run of words.
+			// A floor on the run length keeps tasks coarse enough to amortize the split.
 			let out_len = num_0.as_ref().len();
 			let mut num_data = alloc.alloc::<P>(out_len);
 			let mut den_data = alloc.alloc::<P>(out_len);
 			(
-				num_data.spare_capacity_mut()[..out_len].par_chunks_mut(LAYER_BUILD_MIN_CHUNK),
-				den_data.spare_capacity_mut()[..out_len].par_chunks_mut(LAYER_BUILD_MIN_CHUNK),
-				num_0.as_ref().par_chunks(LAYER_BUILD_MIN_CHUNK),
-				den_0.as_ref().par_chunks(LAYER_BUILD_MIN_CHUNK),
-				num_1.as_ref().par_chunks(LAYER_BUILD_MIN_CHUNK),
-				den_1.as_ref().par_chunks(LAYER_BUILD_MIN_CHUNK),
+				num_data.spare_capacity_mut(),
+				den_data.spare_capacity_mut(),
+				num_0.as_ref(),
+				den_0.as_ref(),
+				num_1.as_ref(),
+				den_1.as_ref(),
 			)
 				.into_par_iter()
-				.for_each(|(num_out, den_out, num_0, den_0, num_1, den_1)| {
-					for (num_slot, den_slot, &a_0, &b_0, &a_1, &b_1) in
-						izip!(num_out, den_out, num_0, den_0, num_1, den_1)
-					{
-						num_slot.write(a_0 * b_1 + a_1 * b_0);
-						den_slot.write(b_0 * b_1);
-					}
+				.with_min_len(LAYER_BUILD_MIN_CHUNK)
+				.for_each(|(num_out, den_out, &num_0, &den_0, &num_1, &den_1)| {
+					num_out.write(num_0 * den_1 + num_1 * den_0);
+					den_out.write(den_0 * den_1);
 				});
-			// Safety: the chunked zip writes every slot of both length-out_len spare prefixes
-			// exactly once.
+			// Safety: the length claims below cover only slots this loop initialized.
+			// - A parallel zip yields as many items as its shortest input holds.
+			// - The sibling halves each hold exactly one word per claimed slot.
+			// - Each item initializes one numerator slot and one denominator slot.
 			unsafe {
 				num_data.set_len(out_len);
 				den_data.set_len(out_len);
