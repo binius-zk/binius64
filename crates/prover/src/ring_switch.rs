@@ -13,7 +13,7 @@ use binius_field::{
 };
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	FieldBuffer, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
+	FieldBuffer, FieldSlice, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
 	tensor_algebra::TensorAlgebra,
 };
 use binius_utils::{
@@ -303,7 +303,7 @@ pub struct RingSwitchOutput<P: PackedField> {
 /// * `packed_witness.log_len() + log_packing == eval_point.len()` where log_packing is the base-2
 ///   log of the extension degree of B128 over B1 (= 7)
 pub fn prove<P, Channel>(
-	packed_witness: &FieldBuffer<P>,
+	packed_witness: FieldSlice<P>,
 	eval_point: &[B128],
 	channel: &mut Channel,
 ) -> RingSwitchOutput<P>
@@ -321,7 +321,7 @@ where
 
 	// Ring-switching partial evaluations (Method of Four Russians)
 	let s_hat_v = tracing::debug_span!("Compute ring-switching partial evaluations")
-		.in_scope(|| fold_1b_rows_for_b128(packed_witness, &suffix_tensor));
+		.in_scope(|| fold_1b_rows_for_b128(&packed_witness, &suffix_tensor));
 	channel.send_many(s_hat_v.as_ref());
 
 	// Basis transpose

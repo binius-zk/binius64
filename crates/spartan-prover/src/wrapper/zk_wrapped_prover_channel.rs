@@ -22,7 +22,7 @@ use binius_iop_prover::{
 	merkle_channel::MerkleIPProverChannel,
 };
 use binius_ip_prover::channel::IPProverChannel;
-use binius_math::{FieldBuffer, FieldSlice, ntt::AdditiveNTT};
+use binius_math::{FieldBuffer, FieldSlice, FieldVec, ntt::AdditiveNTT};
 use binius_spartan_frontend::constraint_system::{BlindingInfo, WitnessLayout};
 use binius_spartan_verifier::IOPVerifier;
 use rand::CryptoRng;
@@ -45,8 +45,9 @@ where
 	P: PackedField<Scalar: BinaryField>,
 	NTT: AdditiveNTT<Field = P::Scalar> + Sync,
 	Channel: MerkleIPProverChannel<P::Scalar>,
+	A: Allocator,
 {
-	inner_channel: BaseFoldProverChannel<'a, P::Scalar, P, NTT, Channel>,
+	inner_channel: BaseFoldProverChannel<'a, P::Scalar, P, NTT, Channel, A>,
 	outer_prover: &'a IOPProver<P::Scalar>,
 	/// Allocator for the outer proof's working buffers, borrowed from the owning prover so it
 	/// outlives this per-proof channel. Used in [`Self::finish`].
@@ -61,7 +62,7 @@ where
 	/// outer encrypted transcript (to be wired up in a follow-up; for now the outer circuit has
 	/// no precommit wires that reference it).
 	precommit_oracle: BaseFoldOracle,
-	precommit_packed: FieldBuffer<P>,
+	precommit_packed: FieldVec<P, A>,
 	/// Number of outer oracles still to be committed on `inner_channel` during `finish` (the
 	/// outer prover's non-precommit oracles — private and mask).
 	n_outer_suffix_oracles: usize,
@@ -73,6 +74,7 @@ where
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	Channel: MerkleIPProverChannel<F>,
+	A: Allocator,
 {
 	/// Creates a new ZK-wrapped prover channel.
 	///
@@ -95,7 +97,7 @@ where
 	/// * `replay_fn` - Closure called during [`finish`](Self::finish) with a [`ReplayChannel`] to
 	///   replay the inner verification and fill the outer witness
 	pub fn new(
-		mut inner_channel: BaseFoldProverChannel<'a, F, P, NTT, Channel>,
+		mut inner_channel: BaseFoldProverChannel<'a, F, P, NTT, Channel, A>,
 		outer_prover: &'a IOPProver<F>,
 		outer_layout: Arc<WitnessLayout<F>>,
 		alloc: &'a A,
@@ -124,7 +126,7 @@ where
 
 		let (keys, precommit_oracle, precommit_packed) = {
 			let _scope = tracing::debug_span!("Commit Transcript Mask").entered();
-			Self::commit_transcript_mask(&mut inner_channel, outer_prover, rng)
+			Self::commit_transcript_mask(&mut inner_channel, outer_prover, alloc, rng)
 		};
 
 		Self {
@@ -147,10 +149,11 @@ where
 	/// inner verifier) contains a matching precommit wire per key that the outer proof uses to
 	/// decrypt.
 	fn commit_transcript_mask(
-		inner_channel: &mut BaseFoldProverChannel<'a, F, P, NTT, Channel>,
+		inner_channel: &mut BaseFoldProverChannel<'a, F, P, NTT, Channel, A>,
 		outer_prover: &IOPProver<F>,
+		alloc: &A,
 		mut rng: impl CryptoRng,
-	) -> (Vec<F>, BaseFoldOracle, FieldBuffer<P>) {
+	) -> (Vec<F>, BaseFoldOracle, FieldVec<P, A>) {
 		let cs = outer_prover.constraint_system();
 		let keys = repeat_with(|| F::random(&mut rng))
 			.take(cs.n_precommit() as usize)
@@ -161,7 +164,8 @@ where
 			n_dummy_wires: cs.blinding_info().n_dummy_wires,
 			n_dummy_constraints: 0,
 		};
-		let precommit_packed = pack_and_blind_witness::<_, P>(
+		let precommit_packed = pack_and_blind_witness::<_, _, P>(
+			alloc,
 			cs.log_precommit() as usize,
 			&keys,
 			cs.n_precommit() as usize,
@@ -188,7 +192,6 @@ where
 	pub fn finish(self, rng: impl CryptoRng) -> Result<(), Error>
 	where
 		ReplayFn: FnOnce(&mut ReplayChannel<F>),
-		A: Allocator,
 	{
 		let Self {
 			mut inner_channel,
@@ -236,6 +239,7 @@ where
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	Channel: MerkleIPProverChannel<F>,
+	A: Allocator,
 {
 	fn send_one(&mut self, elem: F) {
 		let key = self.next_key();
@@ -259,13 +263,14 @@ where
 	}
 }
 
-impl<F, P, NTT, Channel, ReplayFn, A> IOPProverChannel<P>
+impl<F, P, NTT, Channel, ReplayFn, A> IOPProverChannel<P, A>
 	for ZKWrappedProverChannel<'_, P, NTT, Channel, ReplayFn, A>
 where
 	F: BinaryField,
 	P: PackedField<Scalar = F>,
 	NTT: AdditiveNTT<Field = F> + Sync,
 	Channel: MerkleIPProverChannel<F>,
+	A: Allocator,
 {
 	type Oracle = BaseFoldOracle;
 
@@ -286,7 +291,7 @@ where
 	fn prove_oracle_relations(
 		&mut self,
 		oracle_relations: impl IntoIterator<
-			Item = (Self::Oracle, FieldBuffer<P>, FieldBuffer<P>, P::Scalar),
+			Item = (Self::Oracle, FieldVec<P, A>, FieldBuffer<P>, P::Scalar),
 		>,
 	) {
 		let oracle_relations = oracle_relations.into_iter().collect::<Vec<_>>();

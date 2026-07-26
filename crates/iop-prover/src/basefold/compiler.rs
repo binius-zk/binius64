@@ -4,6 +4,7 @@
 
 use std::{borrow::BorrowMut, marker::PhantomData};
 
+use binius_compute::Allocator;
 use binius_field::{BinaryField, PackedField};
 use binius_hash::binary_merkle_tree::HashSuite;
 use binius_iop::{
@@ -120,13 +121,14 @@ where
 	/// oracles with this compiler's NTT, oracle specs, and combined FRI parameters. The caller
 	/// constructs the Merkle channel, so it decides how commitments are produced. The `rng` is used
 	/// to seed an internal `StdRng` for mask generation.
-	pub fn create_channel<Channel>(
+	pub fn create_channel<Channel, A>(
 		&self,
 		channel: Channel,
 		rng: impl Rng,
-	) -> BaseFoldProverChannel<'_, F, P, NTT, Channel>
+	) -> BaseFoldProverChannel<'_, F, P, NTT, Channel, A>
 	where
 		Channel: MerkleIPProverChannel<F>,
+		A: Allocator,
 	{
 		BaseFoldProverChannel::new(
 			channel,
@@ -148,12 +150,13 @@ where
 	/// Panics if any configured oracle is ZK.
 	/// A ZK oracle would draw its mask from the fixed seed, which destroys the hiding property.
 	/// So this constructor refuses to build a channel that could mask deterministically.
-	pub fn create_channel_without_zk<Channel>(
+	pub fn create_channel_without_zk<Channel, A>(
 		&self,
 		channel: Channel,
-	) -> BaseFoldProverChannel<'_, F, P, NTT, Channel>
+	) -> BaseFoldProverChannel<'_, F, P, NTT, Channel, A>
 	where
 		Channel: MerkleIPProverChannel<F>,
+		A: Allocator,
 	{
 		// A ZK oracle masks with the RNG, so a fixed seed here would silently break hiding.
 		assert!(
@@ -170,16 +173,17 @@ where
 	/// The transcript (owned or mutably borrowed) is wrapped in a
 	/// [`ProverMerkleTranscriptChannel`] with a non-hiding Merkle tree prover for the given hash
 	/// suite, then passed to [`Self::create_channel`].
-	pub fn create_channel_from_transcript<H, Challenger_, T>(
+	pub fn create_channel_from_transcript<H, Challenger_, T, A>(
 		&self,
 		transcript: T,
 		rng: impl Rng,
-	) -> BaseFoldProverChannel<'_, F, P, NTT, ProverMerkleTranscriptChannel<T, Challenger_, F, H>>
+	) -> BaseFoldProverChannel<'_, F, P, NTT, ProverMerkleTranscriptChannel<T, Challenger_, F, H>, A>
 	where
 		H: HashSuite,
 		Challenger_: Challenger,
 		T: BorrowMut<ProverTranscript<Challenger_>>,
 		Output<H::LeafHash>: SerializeBytes,
+		A: Allocator,
 	{
 		self.create_channel(ProverMerkleTranscriptChannel::new(transcript), rng)
 	}
@@ -188,15 +192,16 @@ where
 	///
 	/// The transcript handling matches [`Self::create_channel_from_transcript`]; the channel is
 	/// built with [`Self::create_channel_without_zk`] and panics under the same conditions.
-	pub fn create_channel_without_zk_from_transcript<H, Challenger_, T>(
+	pub fn create_channel_without_zk_from_transcript<H, Challenger_, T, A>(
 		&self,
 		transcript: T,
-	) -> BaseFoldProverChannel<'_, F, P, NTT, ProverMerkleTranscriptChannel<T, Challenger_, F, H>>
+	) -> BaseFoldProverChannel<'_, F, P, NTT, ProverMerkleTranscriptChannel<T, Challenger_, F, H>, A>
 	where
 		H: HashSuite,
 		Challenger_: Challenger,
 		T: BorrowMut<ProverTranscript<Challenger_>>,
 		Output<H::LeafHash>: SerializeBytes,
+		A: Allocator,
 	{
 		self.create_channel_without_zk(ProverMerkleTranscriptChannel::new(transcript))
 	}

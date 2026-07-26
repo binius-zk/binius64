@@ -123,7 +123,7 @@ fn bench_intmul_prove(c: &mut Criterion) {
 			bencher.iter_batched_ref(
 				|| {
 					let channel = compiler
-						.create_channel_without_zk_from_transcript::<StdHashSuite, StdChallenger, _>(
+						.create_channel_without_zk_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 							ProverTranscript::default(),
 						);
 					(Some(witness.clone()), channel)
@@ -145,7 +145,7 @@ fn bench_intmul_prove(c: &mut Criterion) {
 			bencher.iter_batched_ref(
 				|| {
 					compiler
-						.create_channel_without_zk_from_transcript::<StdHashSuite, StdChallenger, _>(
+						.create_channel_without_zk_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 							ProverTranscript::default(),
 						)
 				},
@@ -294,7 +294,7 @@ fn bench_intmul_phases(c: &mut Criterion) {
 		bencher.iter_batched_ref(
 			|| {
 				compiler
-					.create_channel_without_zk_from_transcript::<StdHashSuite, StdChallenger, _>(
+					.create_channel_without_zk_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 						ProverTranscript::default(),
 					)
 			},

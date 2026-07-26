@@ -2,6 +2,7 @@
 
 //! Naive [`IOPProverChannel`] for testing: writes full polynomials instead of using FRI.
 
+use binius_compute::GlobalAllocator;
 use binius_field::{Field, PackedField};
 use binius_iop::channel::OracleSpec;
 use binius_ip_prover::channel::IPProverChannel;
@@ -107,7 +108,11 @@ where
 	}
 }
 
-impl<F, P, Challenger_> IOPProverChannel<P> for NaiveProverChannel<'_, F, Challenger_>
+// Pinned to [`GlobalAllocator`], whose `Vec<P>` is a plain `Vec<P>`: this channel writes every
+// buffer straight to the transcript and never draws from a pool, so being generic over the
+// allocator would only force call sites to name one.
+impl<F, P, Challenger_> IOPProverChannel<P, GlobalAllocator>
+	for NaiveProverChannel<'_, F, Challenger_>
 where
 	F: Field,
 	P: PackedField<Scalar = F>,

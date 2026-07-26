@@ -5,7 +5,7 @@
 use binius_compute::Allocator;
 use binius_field::{BinaryField, Divisible, Field, PackedField};
 use binius_ip::{MultilinearEvalClaim, logup_star::LogupOutput};
-use binius_math::{FieldBuffer, univariate::evaluate_univariate};
+use binius_math::{FieldBuffer, FieldSlice, univariate::evaluate_univariate};
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
 use super::{
@@ -95,7 +95,7 @@ where
 	//     gamma^j * eq_{r_j} = the per-looker scaled numerators
 	//     Y = sum_j gamma^j * (I_j)_* eq_{r_j}     the combined pushforward
 	let gamma = channel.sample();
-	let (numerators, pushforward) = witness::combined_lookers::<F, P>(lookers, gamma, m);
+	let (numerators, pushforward) = witness::combined_lookers::<A, F, P>(alloc, lookers, gamma, m);
 
 	// The product check binds <T, Y> to the gamma-combination of the looker claims.
 	let claims = lookers
@@ -106,7 +106,15 @@ where
 
 	// The self-contained prover commits nothing.
 	// It runs the reduction over the witnesses directly.
-	prove_reduction(alloc, table, lookers, combined_eval_claim, numerators, &pushforward, channel)
+	prove_reduction(
+		alloc,
+		table,
+		lookers,
+		combined_eval_claim,
+		numerators,
+		pushforward.to_ref(),
+		channel,
+	)
 }
 
 /// Run the logUp* reduction over the pre-built witnesses `numerators` and pushforward `Y`.
@@ -145,7 +153,7 @@ pub fn prove_reduction<A, F, P>(
 	lookers: &[Looker<'_, F>],
 	eval_claim: F,
 	numerators: Vec<FieldBuffer<P>>,
-	pushforward: &FieldBuffer<P>,
+	pushforward: FieldSlice<P>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> LogupOutput<F>
 where
@@ -181,7 +189,7 @@ where
 		.unzip();
 	let table_den = witness::table_denominator::<A, F, P>(alloc, c, m);
 	let (table_prover, table_root) =
-		FracAddCheckProver::new(m, alloc, (pooled_copy(alloc, pushforward), table_den));
+		FracAddCheckProver::new(m, alloc, (pooled_copy(alloc, &pushforward), table_den));
 	let num_r = table_root.0.get(0);
 	let den_r = table_root.1.get(0);
 

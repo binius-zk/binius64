@@ -2,6 +2,7 @@
 
 use std::ops::{Index, IndexMut};
 
+use binius_compute::Allocator;
 use binius_core::{
 	constraint_system::{ValueVec, ValueVecLayout},
 	word::Word,
@@ -9,7 +10,7 @@ use binius_core::{
 use binius_field::PackedField;
 use binius_frontend::{BatchPopulateError, Circuit, Wire};
 use binius_m4_verifier::BatchCommitLayout;
-use binius_math::FieldBuffer;
+use binius_math::FieldVec;
 use binius_utils::strided_array::StridedArray2DViewMut;
 use binius_verifier::config::B128;
 
@@ -280,14 +281,16 @@ impl ValueTable {
 	/// The element sequence is zero-padded up to the committed element count.
 	/// The instance index occupies the low coordinates, the hidden-word index the high coordinates.
 	/// Only the hidden segment is committed; the shared constants are not part of the oracle.
-	pub fn pack<P>(&self) -> FieldBuffer<P>
+	/// The packed buffer is drawn from `alloc`.
+	pub fn pack<P, A>(&self, alloc: &A) -> FieldVec<P, A>
 	where
 		P: PackedField<Scalar = B128>,
+		A: Allocator,
 	{
 		// The stored buffer is already the committed word sequence, wire-major.
 		// The base packer zero-pads it up to `2^log_witness_elems` elements.
 		let layout = self.commit_layout();
-		binius_prover::pack_witness::<P>(layout.log_witness_elems, self.as_words())
+		binius_prover::pack_witness::<P, A>(alloc, layout.log_witness_elems, self.as_words())
 			.expect("the hidden buffer fits in 2^log_witness_elems field elements by construction")
 	}
 }
@@ -319,6 +322,7 @@ impl IndexMut<Wire> for BatchWitnessFiller<'_, '_> {
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_core::verify::verify_constraints;
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::{CircuitBuilder, Wire};
@@ -590,7 +594,10 @@ mod tests {
 		.unwrap();
 
 		let layout = table.commit_layout();
-		let packed: Vec<B128> = table.pack::<P>().iter_scalars().collect();
+		let packed: Vec<B128> = table
+			.pack::<P, _>(&GlobalAllocator)
+			.iter_scalars()
+			.collect();
 
 		// The committed scalars are the wire-major buffer taken two little-endian words per
 		// element. Indices past the stored words are the commitment's zero padding.

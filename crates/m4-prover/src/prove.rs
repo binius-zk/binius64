@@ -112,7 +112,7 @@ impl IOPProver {
 	pub fn prove<P, Channel, A>(&self, table: &ValueTable, channel: &mut Channel, alloc: &A)
 	where
 		P: PackedField<Scalar = B128>,
-		Channel: IOPProverChannel<P>,
+		Channel: IOPProverChannel<P, A>,
 		A: Allocator,
 	{
 		let cs = &self.cs;
@@ -120,7 +120,7 @@ impl IOPProver {
 		// Pack the 2-D table into one multilinear and commit it as the trace oracle.
 		let trace_packed = {
 			let _scope = tracing::debug_span!("Prepare trace").entered();
-			table.pack::<P>()
+			table.pack::<P, _>(alloc)
 		};
 		let trace_oracle = {
 			let _scope = tracing::debug_span!("Commit trace").entered();
@@ -353,7 +353,7 @@ impl IOPProver {
 			// The point is `r_j || r_rho || r_y`.
 			// Its instance coordinates fold the trace at `r_rho`.
 			let trace_point = [r_j, r_rho.as_slice(), r_y].concat();
-			ring_switch::prove(&trace_packed, &trace_point, channel)
+			ring_switch::prove(trace_packed.to_ref(), &trace_point, channel)
 		};
 
 		// Queue the trace opening against the ring-switch's transparent multilinear.
@@ -429,7 +429,9 @@ where
 	{
 		let mut channel = self
 			.basefold_compiler
-			.create_channel_without_zk_from_transcript::<StdHashSuite, Challenger_, _>(transcript);
+			.create_channel_without_zk_from_transcript::<StdHashSuite, Challenger_, _, _>(
+				transcript,
+			);
 
 		// Working buffers for this proof are drawn from the prover's pool, recycling blocks freed
 		// by earlier proofs.
@@ -644,7 +646,7 @@ impl RerandomizedOperations<'_> {
 	) -> (Vec<B128>, OperatorData<B128>, OperatorData<B128>, OperatorData<B128>)
 	where
 		P: PackedField<Scalar = B128>,
-		Channel: IOPProverChannel<P>,
+		Channel: IOPProverChannel<P, A>,
 		A: Allocator,
 	{
 		let _scope = tracing::debug_span!("Re-randomize instances").entered();
