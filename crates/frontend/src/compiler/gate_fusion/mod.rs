@@ -35,7 +35,7 @@ use stat::Stat;
 pub fn run_pass(cb: &mut ConstraintBuilder, pinned_wires: &EntitySet<Wire>, all_one: Wire) {
 	let mut stat = Stat::new(cb);
 
-	let mut leg = LeGraph::new(cb, &mut stat);
+	let mut leg = LeGraph::new(cb);
 	commit_set::run_decide_commit_set(&mut leg, &mut stat);
 	// Pin force-committed wires that are linear definitions so their values survive as committed
 	// AND constraints. Pinned wires that are not linear definitions (e.g. AND or IMUL outputs) are

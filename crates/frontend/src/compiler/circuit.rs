@@ -268,11 +268,6 @@ impl Circuit {
 		&self.constraint_system
 	}
 
-	/// Returns the evaluation form (witness-filling bytecode) for this circuit.
-	pub const fn eval_form(&self) -> &EvalForm {
-		&self.eval_form
-	}
-
 	/// Returns the number of gates in this circuit.
 	///
 	/// Depending on what type of gates this circuit uses, the number of constraints might be
