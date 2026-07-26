@@ -203,7 +203,7 @@ where
 	// The second sumcheck runs over the witness: the public segment in the low half-cube and
 	// the hidden segment in the high half-cube, selected by the top word-index variable. This
 	// matches the prover, which zero-pads each segment to the half size.
-	let log_word_count = constraint_system.value_vec_layout.log_witness_words() + 1;
+	let log_word_count = constraint_system.log_witness_words() + 1;
 
 	let SumcheckOutput {
 		eval,
@@ -326,7 +326,7 @@ where
 
 	// The public-half evaluation is a function of the verifier's public words (plaintext) and
 	// public-channel-derived challenges, so it is computed the same way as `monster_eval`.
-	let log_public_words = constraint_system.value_vec_layout.log_public_words();
+	let log_public_words = constraint_system.log_public_words();
 	let public_eval = {
 		let inputs: Vec<C::Elem> = r_j
 			.iter()
@@ -440,9 +440,9 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		//     that prefix of the address space) scaled by `(1 - r_segment)` and the eq-zero padding
 		//     over the unused `r_y` coordinates — the same `padded_public_eval` factor that
 		//     `check_eval` reconstructs the witness evaluation with.
-		let layout = &self.constraint_system.value_vec_layout;
-		let n_public_words = layout.n_public_words();
-		let log_public_words = layout.log_public_words();
+		let cs = &self.constraint_system;
+		let n_public_words = cs.n_public_words();
+		let log_public_words = cs.log_public_words();
 
 		let public_scale =
 			eq_one_var(r_segment.clone(), E::zero()) * eq_ind_zero(&r_y_v[log_public_words..]);
@@ -452,9 +452,9 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 
 		// `n_public_words` is a power of two, so the public prefix indicator has exactly that many
 		// entries; the hidden portion fills the remainder of the value vector.
-		let mut r_y_tensor = Vec::with_capacity(layout.combined_len());
+		let mut r_y_tensor = Vec::with_capacity(cs.value_vec_len());
 		r_y_tensor.extend_from_slice(&public_tensor);
-		r_y_tensor.extend_from_slice(&hidden_tensor[..layout.combined_len() - n_public_words]);
+		r_y_tensor.extend_from_slice(&hidden_tensor[..cs.value_vec_len() - n_public_words]);
 		let l_tilde = lagrange_evals_scalars(self.subspace, r_zhat_prime_v);
 		let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
 

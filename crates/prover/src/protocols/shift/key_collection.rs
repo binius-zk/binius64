@@ -239,10 +239,10 @@ impl KeyCollection {
 	/// The base-2 logarithm of the hidden segment length in words, rounded up to a power of
 	/// two.
 	///
-	/// Matches [`ValueVecLayout::log_witness_words`] for the layout the collection was built
-	/// from; the layout guarantees this is at least the public segment's logarithm.
+	/// Matches [`ConstraintSystem::log_witness_words`] for the system the collection was built
+	/// from; that system guarantees this is at least the public segment's logarithm.
 	///
-	/// [`ValueVecLayout::log_witness_words`]: binius_core::constraint_system::ValueVecLayout::log_witness_words
+	/// [`ConstraintSystem::log_witness_words`]: binius_core::constraint_system::ConstraintSystem::log_witness_words
 	pub const fn log_witness_words(&self) -> usize {
 		log2_ceil_usize(self.hidden.n_words())
 	}
@@ -347,9 +347,8 @@ fn update_with_constraints<C, const ARITY: usize>(
 /// Constructs a `KeyCollection` from a constraint system.
 pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 	// Initialize a temporary list of builder keys lists, one for each committed word.
-	let mut builder_key_lists: Vec<Vec<BuilderKey>> = (0..cs.value_vec_layout.combined_len())
-		.map(|_| Vec::new())
-		.collect();
+	let mut builder_key_lists: Vec<Vec<BuilderKey>> =
+		(0..cs.value_vec_len()).map(|_| Vec::new()).collect();
 
 	// Update the builder keys lists with respect to each operand of each operation.
 	update_with_constraints(Operation::BitwiseAnd, &cs.and_constraints, &mut builder_key_lists);
@@ -358,7 +357,7 @@ pub fn build_key_collection(cs: &ConstraintSystem) -> KeyCollection {
 
 	// Split the builder keys lists at the public segment boundary and build one `KeySegment`
 	// per half.
-	let hidden_lists = builder_key_lists.split_off(cs.value_vec_layout.n_public_words());
+	let hidden_lists = builder_key_lists.split_off(cs.n_public_words());
 	KeyCollection {
 		public: build_key_segment(builder_key_lists),
 		hidden: build_key_segment(hidden_lists),

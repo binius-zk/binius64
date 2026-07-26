@@ -73,7 +73,7 @@ where
 
 		// The validated layout guarantees a power-of-two public segment of at least one full
 		// element.
-		let log_public_words = constraint_system.value_vec_layout.log_public_words();
+		let log_public_words = constraint_system.log_public_words();
 		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
 
 		let inner_iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
@@ -206,7 +206,7 @@ where
 			let inner_cs = self.inner_iop_verifier.constraint_system();
 			let _scope = tracing::debug_span!(
 				"Binius64",
-				n_hidden_words = inner_cs.value_vec_layout.n_hidden_words,
+				n_hidden_words = inner_cs.n_hidden_words(),
 				n_bitand = inner_cs.and_constraints.len(),
 				n_intmul = inner_cs.imul_constraints.len(),
 			)
