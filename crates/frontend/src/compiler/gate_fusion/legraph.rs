@@ -189,11 +189,16 @@ impl LeGraph {
 	/// # Panics
 	///
 	/// Panics if the wire is not defined by a linear constraint.
-	pub fn lin_def(&self, wire: Wire) -> &WireOperand {
+	/// The operand of the linear definition that assigns `wire`.
+	///
+	/// # Panics
+	///
+	/// Panics if `wire` is not assigned by a linear definition.
+	pub fn lin_def_operand(&self, wire: Wire) -> &WireOperand {
 		let node = self.wire_to_node[&wire];
 		match self.pg.node_weight(node).unwrap() {
 			NodeData::LinDef { operand, .. } => operand,
-			_ => panic!("supposed to be a linear def"),
+			_ => panic!("{wire:?} is not assigned by a linear definition"),
 		}
 	}
 
@@ -208,7 +213,7 @@ impl LeGraph {
 		let node = self.wire_to_node[&wire];
 		match self.pg.node_weight(node).unwrap() {
 			NodeData::LinDef { index, .. } => ConstraintRef::Linear { index: *index },
-			_ => panic!("supposed to be a linear def"),
+			_ => panic!("{wire:?} is not assigned by a linear definition"),
 		}
 	}
 

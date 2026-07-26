@@ -2,7 +2,7 @@
 
 //! The shift algebra shared by operands: a [`Shift`] applied to a [`Wire`].
 
-use std::ops::Deref;
+use std::ops::Index;
 
 use binius_core::constraint_system::{ShiftedValueIndex, ValueIndex};
 use cranelift_entity::{EntitySet, SecondaryMap};
@@ -64,6 +64,23 @@ impl WireOperand {
 		self.0.push(term);
 	}
 
+	/// The terms this operand XORs together.
+	pub fn as_slice(&self) -> &[ShiftedWire] {
+		&self.0
+	}
+
+	/// The number of terms.
+	pub const fn len(&self) -> usize {
+		self.0.len()
+	}
+
+	/// Whether the operand has no terms.
+	///
+	/// An empty XOR is the constant zero, so such an operand contributes nothing.
+	pub const fn is_empty(&self) -> bool {
+		self.0.is_empty()
+	}
+
 	/// Lowers the whole operand to core `ShiftedValueIndex` terms.
 	pub(super) fn into_value_indices(
 		self,
@@ -83,11 +100,11 @@ impl WireOperand {
 	}
 }
 
-impl Deref for WireOperand {
-	type Target = [ShiftedWire];
+impl Index<usize> for WireOperand {
+	type Output = ShiftedWire;
 
-	fn deref(&self) -> &Self::Target {
-		&self.0
+	fn index(&self, term: usize) -> &Self::Output {
+		&self.0[term]
 	}
 }
 

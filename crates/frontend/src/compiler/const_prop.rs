@@ -67,16 +67,12 @@ pub fn constant_propagation(graph: &mut GateGraph, hint_registry: &HintRegistry)
 						// affected.
 						//
 						// Perform sorting to ensure deterministic order.
-						let (_const_wire, num_updates, mut affected_gates) = graph
-							.replace_wire_with_constant(
-								output_wire,
-								output_values[i],
-								hint_registry,
-							);
-						affected_gates.sort();
-						if num_updates > 0 {
-							total_replaced += num_updates;
-							for user_gate in affected_gates {
+						let mut replacement =
+							graph.replace_wire_with_constant(output_wire, output_values[i]);
+						replacement.affected_gates.sort();
+						if replacement.n_slots_rewritten > 0 {
+							total_replaced += replacement.n_slots_rewritten;
+							for user_gate in replacement.affected_gates {
 								if in_worklist.insert(user_gate) {
 									worklist.push_back(user_gate);
 								}

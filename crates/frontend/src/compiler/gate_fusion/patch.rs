@@ -208,7 +208,7 @@ fn build_committed_lin_def_patch(
 	// The first redundant constraint is the linear definition that's being committed.
 	let mut subsumes = vec![leg.lin_def_constraint_ref(root)];
 
-	let old_operand = leg.lin_def(root);
+	let old_operand = leg.lin_def_operand(root);
 	let new_operand = process_operand(leg, &mut subsumes, old_operand);
 
 	// Create an AND constraint that enforces: root = new_operand
@@ -256,7 +256,7 @@ fn process_term(
 		new_operand.push(ShiftedWire { wire, shift });
 	} else {
 		// This is a non-committed linear def - we need to inline it!
-		let inner_operand = leg.lin_def(wire);
+		let inner_operand = leg.lin_def_operand(wire);
 		let constraint_ref = leg.lin_def_constraint_ref(wire);
 		subsumes.push(constraint_ref);
 
@@ -574,7 +574,7 @@ mod tests {
 			return result;
 		}
 
-		let operand = leg.lin_def(wire);
+		let operand = leg.lin_def_operand(wire);
 		for term in operand {
 			expand_term_recursive(leg, &mut result, term.wire, term.shift);
 		}
@@ -593,7 +593,7 @@ mod tests {
 			result.push(ShiftedWire { wire, shift });
 		} else {
 			// This is a non-committed linear def - expand recursively
-			let inner = leg.lin_def(wire);
+			let inner = leg.lin_def_operand(wire);
 			for term in inner {
 				let composed = Shift::compose(term.shift, shift).unwrap();
 				expand_term_recursive(leg, result, term.wire, composed);
@@ -610,8 +610,8 @@ mod tests {
 		map
 	}
 
-	fn assert_operand_eq(actual: &[ShiftedWire], expected: Vec<ShiftedWire>, ctx: &str) {
-		let am = operand_count_map(actual);
+	fn assert_operand_eq(actual: &WireOperand, expected: Vec<ShiftedWire>, ctx: &str) {
+		let am = operand_count_map(actual.as_slice());
 		let em = operand_count_map(&expected);
 		assert_eq!(
 			am, em,
