@@ -20,7 +20,7 @@ use crate::compiler::{hints::HintRegistry, pathspec::PathSpec};
 /// Multiplies two GHASH field elements ($\mathbb{F}_{2^{128}}$), each carried by a `(lo, hi)` pair
 /// of words — `lo` holds the coefficients of $1, X, \ldots, X^{63}$ and `hi` those of
 /// $X^{64}, \ldots, X^{127}$ — and returns the product in the same `(lo, hi)` form.
-fn ghash_mul(a_lo: Word, a_hi: Word, b_lo: Word, b_hi: Word) -> (Word, Word) {
+pub(super) fn ghash_mul(a_lo: Word, a_hi: Word, b_lo: Word, b_hi: Word) -> (Word, Word) {
 	let to_field = |lo: Word, hi: Word| {
 		BinaryField128bGhash::from((lo.as_u64() as u128) | ((hi.as_u64() as u128) << 64))
 	};
