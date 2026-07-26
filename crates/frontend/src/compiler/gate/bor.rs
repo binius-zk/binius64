@@ -5,8 +5,8 @@
 //!
 //! # Algorithm
 //!
-//! Computes the bitwise OR using De Morgan's law: `x | y = ¬(¬x ∧ ¬y)`.
-//! This is implemented as `x ∧ y = (x ⊕ y ⊕ z)`.
+//! Computes the bitwise OR from the identity `x | y = (x ∧ y) ⊕ x ⊕ y`.
+//! Rearranged so the AND stands alone, that identity is the constraint below.
 //!
 //! # Constraints
 //!
