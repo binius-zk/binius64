@@ -2,7 +2,7 @@
 use crate::compiler::{
 	constraint_builder::ConstraintBuilder,
 	eval_form::BytecodeBuilder,
-	gate_graph::{Gate, GateData, GateGraph},
+	gate_graph::{Gate, GateGraph},
 	hints::HintRegistry,
 };
 
@@ -35,27 +35,27 @@ pub mod shift;
 pub fn constrain(gate: Gate, graph: &GateGraph, builder: &mut ConstraintBuilder) {
 	let data = &graph.gates[gate];
 	match data.opcode {
-		Opcode::Band => band::constrain(gate, data, builder),
-		Opcode::Bxor => bxor::constrain(gate, data, builder),
-		Opcode::BxorMulti => bxor_multi::constrain(gate, data, builder),
-		Opcode::Bor => bor::constrain(gate, data, builder),
-		Opcode::Fax => fax::constrain(gate, data, builder),
-		Opcode::Select => select::constrain(gate, data, builder),
-		Opcode::IaddCinCout => iadd_cin_cout::constrain(gate, data, builder),
-		Opcode::Iadd32 => iadd32::constrain(gate, data, builder),
-		Opcode::Iadd32CinCout => iadd32_cin_cout::constrain(gate, data, builder),
-		Opcode::IsubBinBout => isub_bin_bout::constrain(gate, data, builder),
-		Opcode::Shift => shift::constrain(gate, data, builder),
-		Opcode::AssertEq => assert_eq::constrain(gate, data, builder),
-		Opcode::AssertZero => assert_zero::constrain(gate, data, builder),
-		Opcode::AssertNonZero => assert_non_zero::constrain(gate, data, builder),
-		Opcode::AssertFalse => assert_false::constrain(gate, data, builder),
-		Opcode::AssertTrue => assert_true::constrain(gate, data, builder),
-		Opcode::AssertEqCond => assert_eq_cond::constrain(gate, data, builder),
-		Opcode::Imul => imul::constrain(gate, data, builder),
-		Opcode::Bmul => bmul::constrain(gate, data, builder),
-		Opcode::IcmpUlt => icmp_ult::constrain(gate, data, builder),
-		Opcode::IcmpEq => icmp_eq::constrain(gate, data, builder),
+		Opcode::Band => band::constrain(data, builder),
+		Opcode::Bxor => bxor::constrain(data, builder),
+		Opcode::BxorMulti => bxor_multi::constrain(data, builder),
+		Opcode::Bor => bor::constrain(data, builder),
+		Opcode::Fax => fax::constrain(data, builder),
+		Opcode::Select => select::constrain(data, builder),
+		Opcode::IaddCinCout => iadd_cin_cout::constrain(data, builder),
+		Opcode::Iadd32 => iadd32::constrain(data, builder),
+		Opcode::Iadd32CinCout => iadd32_cin_cout::constrain(data, builder),
+		Opcode::IsubBinBout => isub_bin_bout::constrain(data, builder),
+		Opcode::Shift => shift::constrain(data, builder),
+		Opcode::AssertEq => assert_eq::constrain(data, builder),
+		Opcode::AssertZero => assert_zero::constrain(data, builder),
+		Opcode::AssertNonZero => assert_non_zero::constrain(data, builder),
+		Opcode::AssertFalse => assert_false::constrain(data, builder),
+		Opcode::AssertTrue => assert_true::constrain(data, builder),
+		Opcode::AssertEqCond => assert_eq_cond::constrain(data, builder),
+		Opcode::Imul => imul::constrain(data, builder),
+		Opcode::Bmul => bmul::constrain(data, builder),
+		Opcode::IcmpUlt => icmp_ult::constrain(data, builder),
+		Opcode::IcmpEq => icmp_eq::constrain(data, builder),
 		// Hints do not introduce constraints
 		Opcode::Hint => (),
 	}
@@ -64,54 +64,52 @@ pub fn constrain(gate: Gate, graph: &GateGraph, builder: &mut ConstraintBuilder)
 /// Emit bytecode for a single gate
 pub fn emit_gate_bytecode(
 	gate: Gate,
-	data: &GateData,
 	graph: &GateGraph,
 	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(crate::compiler::gate_graph::Wire) -> u32 + Copy,
 	hint_registry: &HintRegistry,
 ) {
+	let data = &graph.gates[gate];
 	match data.opcode {
-		Opcode::Band => band::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Bxor => bxor::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::BxorMulti => bxor_multi::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Bor => bor::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Fax => fax::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Select => select::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::IaddCinCout => iadd_cin_cout::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Iadd32 => iadd32::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Iadd32CinCout => {
-			iadd32_cin_cout::emit_eval_bytecode(gate, data, builder, wire_to_reg)
-		}
-		Opcode::IsubBinBout => isub_bin_bout::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Shift => shift::emit_eval_bytecode(gate, data, builder, wire_to_reg),
+		Opcode::Band => band::emit_eval_bytecode(data, builder, wire_to_reg),
+		Opcode::Bxor => bxor::emit_eval_bytecode(data, builder, wire_to_reg),
+		Opcode::BxorMulti => bxor_multi::emit_eval_bytecode(data, builder, wire_to_reg),
+		Opcode::Bor => bor::emit_eval_bytecode(data, builder, wire_to_reg),
+		Opcode::Fax => fax::emit_eval_bytecode(data, builder, wire_to_reg),
+		Opcode::Select => select::emit_eval_bytecode(data, builder, wire_to_reg),
+		Opcode::IaddCinCout => iadd_cin_cout::emit_eval_bytecode(data, builder, wire_to_reg),
+		Opcode::Iadd32 => iadd32::emit_eval_bytecode(data, builder, wire_to_reg),
+		Opcode::Iadd32CinCout => iadd32_cin_cout::emit_eval_bytecode(data, builder, wire_to_reg),
+		Opcode::IsubBinBout => isub_bin_bout::emit_eval_bytecode(data, builder, wire_to_reg),
+		Opcode::Shift => shift::emit_eval_bytecode(data, builder, wire_to_reg),
 		Opcode::AssertEq => {
 			let assertion_path = graph.assertion_names[gate];
-			assert_eq::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg)
+			assert_eq::emit_eval_bytecode(data, assertion_path, builder, wire_to_reg)
 		}
 		Opcode::AssertZero => {
 			let assertion_path = graph.assertion_names[gate];
-			assert_zero::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg)
+			assert_zero::emit_eval_bytecode(data, assertion_path, builder, wire_to_reg)
 		}
 		Opcode::AssertNonZero => {
 			let assertion_path = graph.assertion_names[gate];
-			assert_non_zero::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg)
+			assert_non_zero::emit_eval_bytecode(data, assertion_path, builder, wire_to_reg)
 		}
 		Opcode::AssertEqCond => {
 			let assertion_path = graph.assertion_names[gate];
-			assert_eq_cond::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg)
+			assert_eq_cond::emit_eval_bytecode(data, assertion_path, builder, wire_to_reg)
 		}
 		Opcode::AssertFalse => {
 			let assertion_path = graph.assertion_names[gate];
-			assert_false::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg)
+			assert_false::emit_eval_bytecode(data, assertion_path, builder, wire_to_reg)
 		}
 		Opcode::AssertTrue => {
 			let assertion_path = graph.assertion_names[gate];
-			assert_true::emit_eval_bytecode(gate, data, assertion_path, builder, wire_to_reg)
+			assert_true::emit_eval_bytecode(data, assertion_path, builder, wire_to_reg)
 		}
-		Opcode::Imul => imul::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::Bmul => bmul::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::IcmpUlt => icmp_ult::emit_eval_bytecode(gate, data, builder, wire_to_reg),
-		Opcode::IcmpEq => icmp_eq::emit_eval_bytecode(gate, data, builder, wire_to_reg),
+		Opcode::Imul => imul::emit_eval_bytecode(data, builder, wire_to_reg),
+		Opcode::Bmul => bmul::emit_eval_bytecode(data, builder, wire_to_reg),
+		Opcode::IcmpUlt => icmp_ult::emit_eval_bytecode(data, builder, wire_to_reg),
+		Opcode::IcmpEq => icmp_eq::emit_eval_bytecode(data, builder, wire_to_reg),
 
 		Opcode::Hint => {
 			// Generic hint: hint already lives in the registry from `CircuitBuilder::call_hint`,

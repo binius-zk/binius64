@@ -116,7 +116,7 @@ pub fn evaluate_constant_gate(
 
 	// Generate bytecode for this gate
 	let mut builder = BytecodeBuilder::new();
-	gate::emit_gate_bytecode(gate, data, graph, &mut builder, wire_to_reg, hint_registry);
+	gate::emit_gate_bytecode(gate, graph, &mut builder, wire_to_reg, hint_registry);
 	let (bytecode, _) = builder.finalize();
 
 	// Run evaluation
