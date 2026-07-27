@@ -621,8 +621,8 @@ pub(crate) mod tests {
 
 	use super::BinaryField1b as BF1;
 	use crate::{
-		AESTowerField8b, BinaryField, BinaryField1b, BinaryField128bGhash, Field,
-		arithmetic_traits::InvertOrZero,
+		AESTowerField8b, BinaryField, BinaryField1b, BinaryField128bGhash, ExtensionField, Field,
+		GhashSq256b, arithmetic_traits::InvertOrZero,
 	};
 
 	#[test]
@@ -757,6 +757,37 @@ pub(crate) mod tests {
 			let x_inverse = unsafe { x.invert() };
 			assert_eq!(x * x_inverse, BinaryField128bGhash::ONE);
 		}
+	}
+
+	/// Checks the `TryFrom` conversion narrowing an extension field element to its subfield:
+	/// elements embedded from the subfield must round-trip, and elements with a nonzero
+	/// coefficient outside the subfield must be rejected.
+	fn assert_subfield_extraction<FSub: Field, F: ExtensionField<FSub>>() {
+		assert_eq!(TryInto::<FSub>::try_into(F::from(FSub::ZERO)).ok(), Some(FSub::ZERO));
+
+		// `BinaryField1b` has a trivial multiplicative group, so for the three pairs with that
+		// subfield this sweeps `ONE` alone, which together with `ZERO` is already the whole field.
+		// Only `BinaryField128bGhash` in `GhashSq256b` walks non-trivial subfield values.
+		let mut elem = FSub::ONE;
+		for _ in 0..4 {
+			assert_eq!(TryInto::<FSub>::try_into(F::from(elem)).ok(), Some(elem));
+			elem *= FSub::MULTIPLICATIVE_GENERATOR;
+		}
+
+		// `basis(i)` for `i > 0` has a zero coefficient of `1` and a nonzero higher coefficient,
+		// so it lies outside the subfield - with or without a subfield part added on.
+		for i in 1..F::DEGREE {
+			assert!(TryInto::<FSub>::try_into(F::basis(i)).is_err());
+			assert!(TryInto::<FSub>::try_into(F::basis(i) + F::ONE).is_err());
+		}
+	}
+
+	#[test]
+	fn test_subfield_extraction() {
+		assert_subfield_extraction::<BinaryField1b, BinaryField128bGhash>();
+		assert_subfield_extraction::<BinaryField1b, AESTowerField8b>();
+		assert_subfield_extraction::<BinaryField128bGhash, GhashSq256b>();
+		assert_subfield_extraction::<BinaryField1b, GhashSq256b>();
 	}
 
 	#[test]
