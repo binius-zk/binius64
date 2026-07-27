@@ -1,6 +1,9 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-use std::{error, fmt};
+use std::{
+	error, fmt,
+	ops::{Index, IndexMut},
+};
 
 use binius_core::{
 	constraint_system::{ConstraintSystem, ValueIndex, ValueVec, ValueVecLayout},
@@ -10,6 +13,7 @@ use binius_utils::strided_array::StridedArray2DViewMut;
 use cranelift_entity::SecondaryMap;
 
 use crate::compiler::{
+	dump::dump_composition,
 	eval_form::{BatchPopulateError, EvalForm},
 	gate_graph::{GateGraph, Wire},
 };
@@ -44,7 +48,7 @@ pub struct WitnessFiller<'a> {
 	pub(crate) value_vec: ValueVec,
 }
 
-impl<'a> WitnessFiller<'a> {
+impl WitnessFiller<'_> {
 	/// Destruct the witness filler and extracts the underlying value vector.
 	pub fn into_value_vec(self) -> ValueVec {
 		self.value_vec
@@ -90,7 +94,7 @@ impl<'a> WitnessFiller<'a> {
 	}
 }
 
-impl<'a> std::ops::Index<Wire> for WitnessFiller<'a> {
+impl Index<Wire> for WitnessFiller<'_> {
 	type Output = Word;
 
 	fn index(&self, wire: Wire) -> &Self::Output {
@@ -98,7 +102,7 @@ impl<'a> std::ops::Index<Wire> for WitnessFiller<'a> {
 	}
 }
 
-impl<'a> std::ops::IndexMut<Wire> for WitnessFiller<'a> {
+impl IndexMut<Wire> for WitnessFiller<'_> {
 	fn index_mut(&mut self, wire: Wire) -> &mut Self::Output {
 		&mut self.value_vec[self.circuit.witness_index(wire)]
 	}
@@ -291,6 +295,6 @@ impl Circuit {
 
 	/// Returns a string with a JSON dump that is useful to profile the circuit.
 	pub fn simple_json_dump(&self) -> String {
-		crate::compiler::dump::dump_composition(&self.gate_graph)
+		dump_composition(&self.gate_graph)
 	}
 }

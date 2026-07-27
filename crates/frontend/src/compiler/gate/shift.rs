@@ -19,6 +19,7 @@ use binius_core::constraint_system::ShiftVariant;
 
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, WireExprTerm, expr},
+	eval_form::BytecodeBuilder,
 	gate::opcode::OpcodeShape,
 	gate_graph::{GateData, GateParam, Wire},
 };
@@ -73,7 +74,7 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 
 pub fn emit_eval_bytecode(
 	data: &GateData,
-	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
+	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
 	let GateParam {

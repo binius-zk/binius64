@@ -55,8 +55,6 @@ pub(crate) struct Options {
 	enable_scratch_pooling: bool,
 }
 
-// Shut up clippy since this is just so happens to be derivable for now.
-#[allow(clippy::derivable_impls)]
 impl Default for Options {
 	fn default() -> Self {
 		Self {
