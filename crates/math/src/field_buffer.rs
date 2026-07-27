@@ -112,6 +112,27 @@ impl<P: PackedField> FieldBuffer<P> {
 		let values = zeroed_vec(packed_len);
 		Self { log_len, values }
 	}
+
+	/// Builds a zeroed buffer of `2^log_len` elements, backed by memory drawn from `alloc`.
+	///
+	/// The allocator-aware counterpart to [`zeros`](Self::zeros).
+	/// Under a pool the result is a recyclable pooled buffer.
+	pub fn zeros_in<A: Allocator>(alloc: &A, log_len: usize) -> FieldVec<P, A> {
+		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
+		// An allocator hands out an empty buffer, so the words are both created and zeroed here.
+		let mut values = alloc.alloc::<P>(packed_len);
+		values.resize(packed_len, P::default());
+		FieldBuffer::new(log_len, values)
+	}
+
+	/// Copies a borrowed buffer into memory drawn from `alloc`.
+	///
+	/// Whole packed words are copied, dead lanes and all, so the copy is bit-identical.
+	pub fn clone_from_slice<A: Allocator>(alloc: &A, src: FieldSlice<P>) -> FieldVec<P, A> {
+		let mut values = alloc.alloc::<P>(src.as_ref().len());
+		values.extend_from_slice(src.as_ref());
+		FieldBuffer::new(src.log_len(), values)
+	}
 }
 
 impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
@@ -140,24 +161,6 @@ impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 		);
 
 		FieldBuffer::new(log_len, packed_values)
-	}
-
-	/// Builds a zeroed [`FieldBuffer`] of `log_len` variables into a buffer drawn from `alloc`.
-	///
-	/// The allocator-aware counterpart to [`zeros`](Self::zeros). Under a `BufferPool` the result
-	/// is a recyclable pooled buffer.
-	pub fn zeros_in<A: Allocator>(alloc: &A, log_len: usize) -> FieldVec<P, A> {
-		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
-		let mut values = alloc.alloc::<P>(packed_len);
-		values.resize(packed_len, P::default());
-		FieldBuffer::new(log_len, values)
-	}
-
-	/// Clones a [`FieldSlice`] into an allocated [`FieldVec`].
-	pub fn clone_from_slice<A: Allocator>(alloc: &A, src: FieldSlice<P>) -> FieldVec<P, A> {
-		let mut values = alloc.alloc::<P>(src.as_ref().len());
-		values.extend_from_slice(src.as_ref());
-		FieldBuffer::new(src.log_len(), values)
 	}
 }
 
@@ -796,6 +799,7 @@ impl<'a, P: PackedField> Drop for FieldBufferChunkMutInner<'a, P> {
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::{BufferPool, GlobalAllocator};
 	use binius_field::packed::get_packed_slice;
 	use proptest::prelude::*;
 
@@ -827,6 +831,56 @@ mod tests {
 		for i in 0..2 {
 			assert_eq!(buffer.get(i), F::ZERO);
 		}
+	}
+
+	/// Runs the two allocator-backed constructors against one allocator.
+	///
+	/// Both a plain heap allocator and a recycling pool must satisfy the same contract.
+	fn check_alloc_constructors<A: Allocator>(alloc: &A) {
+		// Fixture state: a packed word holds 4 lanes, so lengths map to backing words as
+		//
+		//     16 scalars -> log_len 4 -> 4 packed words, every lane live
+		//      2 scalars -> log_len 1 -> 1 packed word,  2 lanes live and 2 dead
+		let scalars: Vec<F> = (0..16).map(F::new).collect();
+		let src = FieldBuffer::<P>::from_values(&scalars);
+
+		// A copy drawn from the allocator carries over both the length and the scalars.
+		let cloned: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, src.to_ref());
+		assert_eq!(cloned.log_len(), 4);
+		assert_eq!(cloned.to_ref(), src.to_ref());
+
+		// Copying a source shorter than one packed word keeps the two live lanes, not four.
+		let small = FieldBuffer::<P>::from_values(&scalars[..2]);
+		let cloned_small: FieldVec<P, A> = FieldBuffer::clone_from_slice(alloc, small.to_ref());
+		assert_eq!(cloned_small.log_len(), 1);
+		assert_eq!(cloned_small.to_ref(), small.to_ref());
+
+		// 32 elements requested, 32 zeros readable: the buffer arrives at full length, not empty.
+		let mut zeros: FieldVec<P, A> = FieldBuffer::zeros_in(alloc, 5);
+		assert_eq!(zeros.log_len(), 5);
+		assert!(zeros.iter_scalars().all(|scalar| scalar == F::ZERO));
+
+		// Index 31 is the last live element, so writing it stays inside the allocated words.
+		zeros.set(31, F::new(7));
+		assert_eq!(zeros.get(31), F::new(7));
+
+		// Two elements still need the one word that spans them, rounded up from half a word.
+		let zeros_small: FieldVec<P, A> = FieldBuffer::zeros_in(alloc, 1);
+		assert_eq!(zeros_small.as_ref().len(), 1);
+		assert!(zeros_small.iter_scalars().all(|scalar| scalar == F::ZERO));
+	}
+
+	#[test]
+	fn test_alloc_constructors_global() {
+		// Every allocation is an independent heap buffer, freed on drop.
+		check_alloc_constructors(&GlobalAllocator);
+	}
+
+	#[test]
+	fn test_alloc_constructors_pooled() {
+		// A pool reuses freed blocks, so a buffer may start life on memory a prior buffer dirtied.
+		let pool = BufferPool::new();
+		check_alloc_constructors(&&pool);
 	}
 
 	#[test]

@@ -272,7 +272,7 @@ pub fn build_g_parts_from_folded_words<F: BinaryField, A: Allocator>(
 	// key belongs to exactly one variant, so the scatter below accumulates straight into these
 	// buffers.
 	let mut multilinears =
-		array::from_fn::<_, SHIFT_VARIANT_COUNT, _>(|_| FieldVec::<F, A>::zeros_in(alloc, LOG_LEN));
+		array::from_fn::<_, SHIFT_VARIANT_COUNT, _>(|_| FieldBuffer::zeros_in(alloc, LOG_LEN));
 
 	// Each folded word carries the keys named by the segment-relative range at its position.
 	for (word, range) in folded_words.iter().zip(&segment.key_ranges) {

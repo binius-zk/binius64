@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 
-use binius_compute::{BufferPool, PoolVec};
+use binius_compute::BufferPool;
 use binius_field::{arch::OptimalPackedB128, packed::PackedField};
 use binius_ip_prover::sumcheck::{prove_single_mlecheck, quadratic_mlecheck_prover};
 use binius_math::{
@@ -40,9 +40,8 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 			// Benchmark only the proving phase
 			b.iter_batched(
 				|| {
-					[multilinear_a.to_ref(), multilinear_b.to_ref()].map(|multilin| {
-						FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, multilin)
-					})
+					[multilinear_a.to_ref(), multilinear_b.to_ref()]
+						.map(|multilin| FieldBuffer::clone_from_slice(&alloc, multilin))
 				},
 				|multilinears| {
 					let prover = quadratic_mlecheck_prover(
@@ -89,9 +88,7 @@ fn bench_mlecheck_prove(c: &mut Criterion) {
 						multilinear_b.to_ref(),
 						multilinear_c.to_ref(),
 					]
-					.map(|multilin| {
-						FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, multilin)
-					})
+					.map(|multilin| FieldBuffer::clone_from_slice(&alloc, multilin))
 				},
 				|multilinears| {
 					let prover = quadratic_mlecheck_prover(

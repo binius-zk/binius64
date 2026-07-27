@@ -191,7 +191,7 @@ where
 	let (table_prover, table_root) = FracAddCheckProver::new(
 		m,
 		alloc,
-		(FieldVec::<P, A>::clone_from_slice(alloc, pushforward.to_ref()), table_den),
+		(FieldBuffer::clone_from_slice(alloc, pushforward.to_ref()), table_den),
 	);
 	let num_r = table_root.0.get(0);
 	let den_r = table_root.1.get(0);
