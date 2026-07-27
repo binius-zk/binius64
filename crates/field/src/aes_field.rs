@@ -41,13 +41,13 @@ pub(crate) fn aes_mul_8b(lhs: u8, rhs: u8) -> u8 {
 	if lhs != 0 && rhs != 0 {
 		let log_index = AES_LOG_TABLE[lhs as usize] as usize + AES_LOG_TABLE[rhs as usize] as usize;
 		// Each log table value is at most 254, so the sum is at most 508; subtracting 255 when it
-		// exceeds 254 keeps the index in `0..=253`.
+		// exceeds 254 keeps the index in `0..=254`.
 		let log_index = if log_index > 254 {
 			log_index - 255
 		} else {
 			log_index
 		};
-		// Safety: `log_index <= 253 < 256` by the bound above.
+		// Safety: `log_index <= 254 < 256` by the bound above.
 		unsafe { *AES_EXP_TABLE.get_unchecked(log_index) }
 	} else {
 		0
