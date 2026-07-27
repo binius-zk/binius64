@@ -101,6 +101,7 @@ ureq = "3.1"
 [workspace.lints.clippy]
 needless_range_loop = "allow"
 missing_const_for_fn = "warn"
+needless_collect = "warn"
 redundant_clone = "warn"
 
 [workspace.metadata.typos]
