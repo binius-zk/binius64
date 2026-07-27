@@ -22,6 +22,7 @@ binius-prover = { path = "../prover" }
 binius-transcript = { path = "../transcript" }
 binius-utils = { path = "../utils" }
 binius-verifier = { path = "../verifier" }
+bytemuck.workspace = true
 itertools.workspace = true
 tracing.workspace = true
 

@@ -156,10 +156,11 @@ impl IOPProver {
 				let _scope = tracing::debug_span!("Assemble IntMul witness").entered();
 				build_operation_columns(table, &cs.constants, &cs.imul_constraints, alloc)
 			};
-			// A prepared constraint system pads its constraint and instance counts to powers of
-			// two, so the columns always have a power-of-two length as the witness requires.
+			// `build_operation_columns` rounds the constraint axis up to a power of two and
+			// zero-fills the tail, and the table holds `2^log_instances` instances, so every column
+			// has the power-of-two length the IntMul witness requires.
 			let output = intmul::prove::<_, _, P, _>(column_slices(&columns), channel, alloc)
-				.expect("a prepared constraint system yields power-of-two operand columns");
+				.expect("the operand columns are equal-length and power-of-two length");
 			(columns, output)
 		});
 
@@ -1092,8 +1093,9 @@ mod tests {
 		cs.validate_and_prepare().unwrap();
 		// Confirm the fixture genuinely exercises the asymmetric case: the two operations have
 		// different constraint-point lengths.
-		let log_n_and = checked_log_2(cs.and_constraints.len());
-		let log_n_imul = checked_log_2(cs.imul_constraints.len());
+		// An absent operation contributes an empty `r_x`, as does an AND set of one row.
+		let log_n_and = cs.log_and_constraints().unwrap_or(0);
+		let log_n_imul = cs.log_imul_constraints().unwrap_or(0);
 		assert_ne!(
 			log_n_and, log_n_imul,
 			"the fixture must give the operations different r_x lengths"
@@ -1215,9 +1217,10 @@ mod tests {
 		cs.validate_and_prepare().unwrap();
 		// Confirm the fixture genuinely exercises the asymmetric case: the three operations do not
 		// all reduce to constraint points of the same length.
-		let log_n_and = checked_log_2(cs.and_constraints.len());
-		let log_n_imul = checked_log_2(cs.imul_constraints.len());
-		let log_n_binmul = checked_log_2(cs.bmul_constraints.len());
+		// An absent operation contributes an empty `r_x`, as does an AND set of one row.
+		let log_n_and = cs.log_and_constraints().unwrap_or(0);
+		let log_n_imul = cs.log_imul_constraints().unwrap_or(0);
+		let log_n_binmul = cs.log_bmul_constraints().unwrap_or(0);
 		assert!(!cs.imul_constraints.is_empty(), "the fixture must emit IMUL constraints");
 		assert!(!cs.bmul_constraints.is_empty(), "the fixture must emit BMUL constraints");
 		let lengths = [log_n_and, log_n_imul, log_n_binmul];

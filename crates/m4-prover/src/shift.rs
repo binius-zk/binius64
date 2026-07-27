@@ -557,7 +557,7 @@ mod tests {
 		let domain_subspace =
 			BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 		let r_z = B128::random(&mut rng);
-		let r_x = random_scalars::<B128>(&mut rng, checked_log_2(cs.n_and_constraints()));
+		let r_x = random_scalars::<B128>(&mut rng, cs.log_and_constraints().unwrap_or(0));
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 
 		// The hidden witness folded over instances (one FoldedWord per committed word), and the
@@ -685,7 +685,7 @@ mod tests {
 		let domain_subspace =
 			BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 		let r_z = B128::random(&mut rng);
-		let r_x = random_scalars::<B128>(&mut rng, checked_log_2(cs.n_and_constraints()));
+		let r_x = random_scalars::<B128>(&mut rng, cs.log_and_constraints().unwrap_or(0));
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 
 		// The batched AND-check operand evals at (r_z, r_x, r_rho), and the full folded witness at

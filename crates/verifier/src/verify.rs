@@ -17,7 +17,7 @@ use binius_math::{
 	BinarySubspace, inner_product::inner_product_scalars, univariate::lagrange_evals_scalars,
 };
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
-use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
+use binius_utils::DeserializeBytes;
 use digest::Output;
 use itertools::chain;
 
@@ -156,21 +156,21 @@ impl IOPVerifier {
 		//
 		// Skipped (no transcript reads) when the constraint system has no IMUL constraints,
 		// mirroring the prover's identical guard so the transcript stays in sync.
-		let intmul_output = if self.constraint_system.n_imul_constraints() > 0 {
-			let intmul_guard = tracing::info_span!(
-				"[phase] Verify IntMul Reduction",
-				phase = "verify_intmul_reduction",
-				perfetto_category = "phase",
-				n_constraints = self.constraint_system.n_imul_constraints()
-			)
-			.entered();
-			let log_n_constraints = checked_log_2(self.constraint_system.n_imul_constraints());
-			let intmul_output = verify_intmul_reduction::<B128, _>(log_n_constraints, channel)?;
-			drop(intmul_guard);
-			Some(intmul_output)
-		} else {
-			None
-		};
+		let intmul_output =
+			if let Some(log_n_constraints) = self.constraint_system.log_imul_constraints() {
+				let intmul_guard = tracing::info_span!(
+					"[phase] Verify IntMul Reduction",
+					phase = "verify_intmul_reduction",
+					perfetto_category = "phase",
+					n_constraints = self.constraint_system.n_imul_constraints()
+				)
+				.entered();
+				let intmul_output = verify_intmul_reduction::<B128, _>(log_n_constraints, channel)?;
+				drop(intmul_guard);
+				Some(intmul_output)
+			} else {
+				None
+			};
 
 		// [phase] Verify BinMul Reduction - GHASH-field multiplication constraint verification
 		//
@@ -178,21 +178,21 @@ impl IOPVerifier {
 		// sync with the prover. Skipped (no transcript reads) when there are no BMUL constraints,
 		// mirroring the prover's identical guard. The per-bit operand evaluations are collapsed
 		// below with the shared `r_zhat_prime` challenge that BitAnd draws.
-		let binmul_output = if self.constraint_system.n_bmul_constraints() > 0 {
-			let binmul_guard = tracing::info_span!(
-				"[phase] Verify BinMul Reduction",
-				phase = "verify_binmul_reduction",
-				perfetto_category = "phase",
-				n_constraints = self.constraint_system.n_bmul_constraints()
-			)
-			.entered();
-			let log_n_constraints = checked_log_2(self.constraint_system.n_bmul_constraints());
-			let binmul_output = verify_binmul_reduction::<B128, _>(log_n_constraints, channel)?;
-			drop(binmul_guard);
-			Some(binmul_output)
-		} else {
-			None
-		};
+		let binmul_output =
+			if let Some(log_n_constraints) = self.constraint_system.log_bmul_constraints() {
+				let binmul_guard = tracing::info_span!(
+					"[phase] Verify BinMul Reduction",
+					phase = "verify_binmul_reduction",
+					perfetto_category = "phase",
+					n_constraints = self.constraint_system.n_bmul_constraints()
+				)
+				.entered();
+				let binmul_output = verify_binmul_reduction::<B128, _>(log_n_constraints, channel)?;
+				drop(binmul_guard);
+				Some(binmul_output)
+			} else {
+				None
+			};
 
 		// [phase] Verify BitAnd Reduction - AND constraint verification
 		let bitand_guard = tracing::info_span!(
@@ -203,7 +203,9 @@ impl IOPVerifier {
 		)
 		.entered();
 		let (r_zhat_prime, bitand_claim) = {
-			let log_n_constraints = checked_log_2(self.constraint_system.n_and_constraints());
+			// The BitAnd reduction has no skip branch: an empty AND set still reduces, over the
+			// single all-zero padding row, so `None` is zero variables here.
+			let log_n_constraints = self.constraint_system.log_and_constraints().unwrap_or(0);
 			let AndCheckOutput {
 				a_eval,
 				b_eval,

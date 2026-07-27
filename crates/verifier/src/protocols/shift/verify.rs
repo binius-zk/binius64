@@ -407,6 +407,25 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 	where
 		E: FieldOps<Scalar = F> + From<F>,
 	{
+		// Each operation's `r_x'` section is as long as its reduction has constraint variables, and
+		// [`OperationEvalFn::split_input`] re-derives that length from the constraint count alone.
+		// The two derivations must agree or both sides mis-split the same input. An absent IntMul
+		// (resp. BinMul) reduction contributes an empty point, which matches the `None` the
+		// accessor reports for an empty constraint set; so does the BitAnd reduction's single
+		// all-zero padding row.
+		debug_assert_eq!(
+			self.bitand_r_x_prime_len,
+			self.constraint_system.log_and_constraints().unwrap_or(0)
+		);
+		debug_assert_eq!(
+			self.intmul_r_x_prime_len,
+			self.constraint_system.log_imul_constraints().unwrap_or(0)
+		);
+		debug_assert_eq!(
+			self.binmul_r_x_prime_len,
+			self.constraint_system.log_bmul_constraints().unwrap_or(0)
+		);
+
 		// Split the flat input back into its sections, in the order they were concatenated.
 		let r_zhat_prime_v = vals[0].clone();
 		let bitand_lambda_v = vals[1].clone();

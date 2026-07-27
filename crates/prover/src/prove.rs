@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::marker::PhantomData;
+use std::{marker::PhantomData, mem::MaybeUninit};
 
 use binius_compute::{Allocator, BufferPool, VecLike};
 use binius_core::{
@@ -547,7 +547,9 @@ pub fn pack_witness<P: PackedField<Scalar = B128>, A: Allocator>(
 ///
 /// Column `i` holds operand `i` of every constraint, in the constraint type's storage order — the
 /// order the shift reduction batches operands in. Each column has one row per constraint, in the
-/// same order.
+/// same order, followed by zero rows up to `constraints.len().next_power_of_two()`: the reductions
+/// consume power-of-two-length columns, and a zero row satisfies every constraint type. An empty
+/// constraint slice still yields one zero row, since that is the smallest power-of-two length.
 ///
 /// `N_COLS` may be smaller than `ARITY`, in which case the trailing operands are not evaluated. The
 /// BitAnd check uses that to skip its `C` column: on a satisfying witness `C = A & B` holds
@@ -564,17 +566,25 @@ where
 	assert!(N_COLS <= ARITY, "N_COLS must not exceed the constraint arity");
 
 	let n_constraints = constraints.len();
+	let n_rows = n_constraints.next_power_of_two();
 	(0..N_COLS)
 		.into_par_iter()
 		.map(|op_idx| {
-			let mut column = alloc.alloc::<Word>(n_constraints);
-			(constraints, column.spare_capacity_mut())
+			let mut column = alloc.alloc::<Word>(n_rows);
+			// The allocator may hand back more capacity than requested, so bound the spare slice to
+			// the row count before splitting it into the constraint rows and the zero padding.
+			let (constraint_rows, padding_rows) =
+				column.spare_capacity_mut()[..n_rows].split_at_mut(n_constraints);
+			(constraints, &mut *constraint_rows)
 				.into_par_iter()
 				.for_each(|(constraint, out)| {
 					out.write(witness.eval_operand(&constraint.as_ref()[op_idx]));
 				});
-			// Safety: every entry of `column` is written exactly once in the parallel loop above.
-			unsafe { column.set_len(n_constraints) };
+			padding_rows.fill(MaybeUninit::new(Word::ZERO));
+			// Safety: the two halves partition the first `n_rows` entries of `column`; the parallel
+			// loop writes each constraint row exactly once (the zip is over equal-length sides) and
+			// the loop above writes each padding row exactly once.
+			unsafe { column.set_len(n_rows) };
 			column
 		})
 		.collect::<Vec<_>>()
