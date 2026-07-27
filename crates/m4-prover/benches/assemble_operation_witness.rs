@@ -1,94 +1,207 @@
 // Copyright 2026 The Binius Developers
-//! Benchmark for assembling a batched per-operation witness — the operand-column layout an
-//! operation reduction consumes.
+//! Benchmark for assembling one batched operation-witness column from sparse operands.
 //!
-//! Currently covers the BitAnd operation's two columns; the IntMul
-//! equivalent will be added alongside its protocol. Uses the Keccak-f1600 permutation circuit
-//! (see the `keccak_witness_gen` bench) as a realistic, AND-heavy constraint system: the circuit
-//! applies one permutation to a 25-word state, the state words are witness inputs and the permuted
-//! outputs are force-committed. Populating the batch table and preparing the constants/constraints
-//! are done once as setup; only the witness assembly is timed, over 8192 instances.
+//! This targets [`OperandColumns::build`] directly. Setup constructs a minimal witness-only
+//! [`ValueTable`] and generates random [`Operand`]s with varied sparse row structure: number of
+//! shifted value indices, value indices, shift amounts, and shift variants. Only the column
+//! assembly is timed.
 
-use std::array;
-
-use binius_circuits::keccak::permutation::keccak_f1600;
 use binius_compute::BufferPool;
-use binius_core::word::Word;
-use binius_frontend::{Circuit, CircuitBuilder, Wire};
-use binius_m4_prover::OperandColumns;
-use criterion::{Criterion, criterion_group, criterion_main};
+use binius_core::{
+	ValueIndex,
+	constraint_system::{Operand, ShiftVariant, ShiftedValueIndex, ZeroConstraint},
+	word::Word,
+};
+use binius_frontend::{CircuitBuilder, Wire};
+use binius_m4_prover::{OperandColumns, ValueTable};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use rand::prelude::*;
 
 /// The base-2 logarithm of the instance count: 2^13 = 8192 instances.
 const LOG_INSTANCES: usize = 13;
 
-/// The number of 64-bit lanes in a Keccak-f1600 state.
-const STATE_LANES: usize = 25;
+/// Witness rows available for generated operands to read from.
+const N_WITNESS_VALUES: usize = 1024;
 
-/// Builds a circuit that applies one Keccak-f1600 permutation to a public input state and promotes
-/// the permuted lanes to public outputs. Returns the circuit and the 25 input state wires.
-fn build_keccak_circuit() -> (Circuit, [Wire; STATE_LANES]) {
-	let builder = CircuitBuilder::new();
-	let input: [Wire; STATE_LANES] = array::from_fn(|_| builder.add_inout());
+/// Constants available for generated operands to read from.
+const N_CONSTANTS: usize = 16;
 
-	// Permute a copy of the input wires in place; `state` then holds the output wires.
-	let mut state = input;
-	keccak_f1600(&builder, &mut state);
+/// Number of operands in each benchmark case.
+const N_OPERANDS: usize = 1024;
 
-	// Promoting the permuted state keeps the whole permutation alive under dead-code elimination.
-	for wire in state {
-		builder.mark_inout(wire);
-	}
+const SHIFT_VARIANTS: [ShiftVariant; 8] = [
+	ShiftVariant::Sll,
+	ShiftVariant::Slr,
+	ShiftVariant::Sar,
+	ShiftVariant::Rotr,
+	ShiftVariant::Sll32,
+	ShiftVariant::Srl32,
+	ShiftVariant::Sra32,
+	ShiftVariant::Rotr32,
+];
 
-	(builder.build(), input)
+struct OperandCase {
+	name: &'static str,
+	min_terms: usize,
+	max_terms: usize,
+	seed: u64,
 }
 
-/// A deterministic, instance- and lane-dependent input word. Keccak's timing is data-independent,
-/// so the exact values only need to be non-degenerate.
-const fn input_word(instance: usize, lane: usize) -> Word {
-	let mixed = (instance as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
-		^ (lane as u64).wrapping_mul(0x0100_0000_01b3);
+const CASES: [OperandCase; 3] = [
+	OperandCase {
+		name: "sparse_0_to_2_terms",
+		min_terms: 0,
+		max_terms: 2,
+		seed: 0,
+	},
+	OperandCase {
+		name: "mixed_0_to_4_terms",
+		min_terms: 0,
+		max_terms: 4,
+		seed: 1,
+	},
+	OperandCase {
+		name: "dense_1_to_8_terms",
+		min_terms: 1,
+		max_terms: 8,
+		seed: 2,
+	},
+];
+
+fn build_table_fixture() -> (ValueTable, Vec<Word>) {
+	let builder = CircuitBuilder::new();
+
+	for i in 0..N_CONSTANTS {
+		builder.add_constant(fixture_constant_word(i));
+	}
+
+	let witnesses: Vec<Wire> = (0..N_WITNESS_VALUES)
+		.map(|_| {
+			let wire = builder.add_witness();
+			builder.force_commit(wire);
+			wire
+		})
+		.collect();
+
+	let circuit = builder.build();
+	let table = ValueTable::populate(&circuit, LOG_INSTANCES, |instance, w| {
+		for (index, &wire) in witnesses.iter().enumerate() {
+			w[wire] = fixture_witness_word(instance, index);
+		}
+	})
+	.unwrap();
+
+	let constants = circuit.constraint_system().constants.clone();
+	assert!(constants.len() >= N_CONSTANTS);
+	assert!(table.n_hidden_words() >= N_WITNESS_VALUES);
+
+	(table, constants)
+}
+
+const fn fixture_constant_word(index: usize) -> Word {
+	Word((index as u64).wrapping_mul(0xd6e8_feb8_6659_fd93) ^ 0xa076_1d64_78bd_642f)
+}
+
+const fn fixture_witness_word(instance: usize, index: usize) -> Word {
+	let mixed = (instance as u64)
+		.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+		.rotate_left((index % Word::BITS) as u32)
+		^ (index as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9);
 	Word(mixed)
 }
 
-fn bench_assemble_operation_witness(c: &mut Criterion) {
-	let (circuit, input) = build_keccak_circuit();
-
-	// Setup (not timed): populate the wire-major batch table for every instance.
-	let table = circuit
-		.populate_batch(LOG_INSTANCES, |instance, w| {
-			for lane in 0..STATE_LANES {
-				w[input[lane]] = input_word(instance, lane);
-			}
+fn generate_constraints(
+	case: &OperandCase,
+	constants_len: usize,
+	witness_offset: usize,
+) -> (Vec<ZeroConstraint>, usize) {
+	let mut rng = StdRng::seed_from_u64(case.seed);
+	let constraints = (0..N_OPERANDS)
+		.map(|_| {
+			ZeroConstraint([random_operand(
+				&mut rng,
+				case,
+				constants_len,
+				witness_offset,
+			)])
 		})
-		.unwrap();
+		.collect::<Vec<_>>();
+	let total_shifted_indices = constraints
+		.iter()
+		.map(|constraint| constraint.val().len())
+		.sum();
 
-	// The circuit's constants, shared by every instance.
-	let constants = circuit.constraint_system().constants.clone();
+	assert!(
+		total_shifted_indices > 0,
+		"benchmark fixture must have at least one shifted value index"
+	);
 
-	// The per-instance AND constraints, at their true (unpadded) count.
-	let and_constraints = {
-		let cs = circuit.constraint_system().clone();
-		cs.validate().unwrap();
-		cs.and_constraints
-	};
+	(constraints, total_shifted_indices)
+}
 
-	// The columns are drawn from a pool that lives across the timed iterations, matching how the
-	// prover recycles its working buffers between proofs.
-	//
-	// So this benchmark measures assembly onto recycled blocks, not onto fresh ones: every
-	// iteration after the first reuses the blocks its predecessor freed. Comparing it against a
-	// revision that allocated a fresh `Vec` per call therefore measures the allocator, not the
-	// assembly algorithm — the per-word work is unchanged. Read a delta here as "cost of the
-	// allocation strategy", never as an algorithmic speedup.
+fn random_operand(
+	rng: &mut impl Rng,
+	case: &OperandCase,
+	constants_len: usize,
+	witness_offset: usize,
+) -> Operand {
+	let n_terms = rng.random_range(case.min_terms..=case.max_terms);
+	(0..n_terms)
+		.map(|_| random_shifted_value_index(rng, constants_len, witness_offset))
+		.collect()
+}
+
+fn random_shifted_value_index(
+	rng: &mut impl Rng,
+	constants_len: usize,
+	witness_offset: usize,
+) -> ShiftedValueIndex {
+	let value_index = random_value_index(rng, constants_len, witness_offset);
+	let shift_variant = SHIFT_VARIANTS[rng.random_range(0..SHIFT_VARIANTS.len())];
+	let amount = rng.random_range(0..shift_variant.max_amount()) as u8;
+
+	ShiftedValueIndex {
+		value_index,
+		shift_variant,
+		amount,
+	}
+}
+
+fn random_value_index(
+	rng: &mut impl Rng,
+	constants_len: usize,
+	witness_offset: usize,
+) -> ValueIndex {
+	if rng.random_range(0..8) == 0 {
+		ValueIndex(rng.random_range(0..constants_len) as u32)
+	} else {
+		ValueIndex((witness_offset + rng.random_range(0..N_WITNESS_VALUES)) as u32)
+	}
+}
+
+fn bench_assemble_operation_witness(c: &mut Criterion) {
+	let (table, constants) = build_table_fixture();
+	let witness_offset = table.layout().offset_witness;
 	let pool = BufferPool::new();
 	let alloc = &pool;
 
 	let mut group = c.benchmark_group("assemble_operation_witness");
-	group.bench_function("bitand_keccak_f1600", |b| {
-		b.iter(|| -> OperandColumns<&BufferPool, 2> {
-			OperandColumns::<_, 2>::build(&table, &constants, &and_constraints, &alloc)
-		});
-	});
+
+	for case in CASES {
+		let (constraints, total_shifted_indices) =
+			generate_constraints(&case, constants.len(), witness_offset);
+
+		group.throughput(Throughput::Elements(total_shifted_indices as u64));
+		group.bench_with_input(
+			BenchmarkId::from_parameter(case.name),
+			&constraints,
+			|b, constraints| {
+				b.iter(|| -> OperandColumns<&BufferPool, 1> {
+					OperandColumns::<_, 1>::build(&table, &constants, constraints, &alloc)
+				});
+			},
+		);
+	}
 
 	group.finish();
 }
