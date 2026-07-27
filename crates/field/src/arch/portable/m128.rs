@@ -18,7 +18,7 @@ use crate::{
 	BinaryField,
 	arch::portable::packed::PackedPrimitiveType,
 	underlier::{
-		Divisible, NumCast, SmallU, UnderlierType, impl_divisible_bitmask, impl_divisible_memcast,
+		Divisible, SmallU, UnderlierType, impl_divisible_bitmask, impl_divisible_memcast,
 		impl_divisible_self,
 	},
 };
@@ -69,13 +69,6 @@ impl<const N: usize> From<SmallU<N>> for M128 {
 	#[inline(always)]
 	fn from(value: SmallU<N>) -> Self {
 		Self(value.val() as u128)
-	}
-}
-
-impl<U: NumCast<u128>> NumCast<M128> for U {
-	#[inline(always)]
-	fn num_cast_from(val: M128) -> Self {
-		Self::num_cast_from(val.0)
 	}
 }
 
