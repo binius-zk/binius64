@@ -19,8 +19,11 @@ use sha2::{Digest, Sha256 as StdSha256};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let builder = CircuitBuilder::new();
 
-	let content: Vec<_> = (0..4).map(|_| builder.add_witness()).collect();
-	let nonce: Vec<_> = (0..4).map(|_| builder.add_witness()).collect();
+	// 4 witness words: the message the prover keeps secret.
+	let content: [_; 4] = core::array::from_fn(|_| builder.add_witness());
+	// 4 witness words: the nonce that blinds the content inside the hash.
+	let nonce: [_; 4] = core::array::from_fn(|_| builder.add_witness());
+	// 4 public words: the digest that prover and verifier both know.
 	let commitment: [_; 4] = core::array::from_fn(|_| builder.add_inout());
 
 	let data: Vec<_> = content.into_iter().chain(nonce).collect();

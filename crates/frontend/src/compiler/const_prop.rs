@@ -35,7 +35,7 @@ pub fn constant_propagation(graph: &mut GateGraph, hint_registry: &HintRegistry)
 	//
 	// The index yields readers in gate order, which is what keeps this pass deterministic.
 	for (wire, _) in graph.iter_const_wires() {
-		for gate in graph.get_wire_uses(wire).collect::<Vec<_>>() {
+		for gate in graph.get_wire_uses(wire) {
 			if in_worklist.insert(gate) {
 				worklist.push_back(gate);
 			}
