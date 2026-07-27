@@ -76,11 +76,10 @@ pub fn fp64_mul_make_round_base(b: &CircuitBuilder, m_a: Wire, m_b: Wire) -> (Wi
 	let y = b.select(top105_sel, y42, y41);
 	let sticky01 = b.select(top105_sel, sticky42, sticky41);
 
-	// Fold sticky into bit 0: new_bit0 = (y&1) | sticky01
-	let one_const = one(b);
-	let keep = b.bnot(one_const); // clear bit0
-	let new_b0 = b.bor(b.band(y, one_const), sticky01);
-	let sig_round_base = b.bor(b.band(y, keep), new_b0);
+	// Fold sticky into bit 0.
+	// (y & ~1) | (y & 1) | sticky01 == y | sticky01: `sticky01` is 0 or 1 and the
+	// fold only ever sets bit 0, so clearing it first is dead work.
+	let sig_round_base = b.bor(y, sticky01);
 
 	(sig_round_base, top105_bit01) // the bit is 0/1 for exponent bump
 }
