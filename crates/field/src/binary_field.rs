@@ -395,7 +395,7 @@ macro_rules! impl_field_extension {
 
 			#[inline]
 			fn try_from(elem: $name) -> Result<Self, Self::Error> {
-				use $crate::underlier::{Divisible, NumCast, UnderlierType};
+				use $crate::underlier::{Divisible, UnderlierType};
 
 				// `elem` lies in the subfield iff every subfield-underlier limb above the
 				// least-significant one is zero (equivalent to `elem >> N_BITS == 0`).
@@ -403,7 +403,7 @@ macro_rules! impl_field_extension {
 					.skip(1)
 					.all(|limb| limb == <$subfield_typ as UnderlierType>::ZERO);
 				if in_subfield {
-					Ok($subfield_name(<$subfield_typ>::num_cast_from(elem.val())))
+					Ok($subfield_name(Divisible::<$subfield_typ>::get(&elem.0, 0)))
 				} else {
 					Err(())
 				}

@@ -21,7 +21,7 @@ use super::super::portable::{
 use crate::{
 	BinaryField,
 	underlier::{
-		NumCast, SmallU, UnderlierType,
+		SmallU, UnderlierType,
 		divisible::{Divisible, mapget},
 		impl_divisible_bitmask, impl_divisible_self,
 	},
@@ -738,12 +738,6 @@ impl<Scalar: BinaryField> From<u128> for PackedPrimitiveType<M128, Scalar> {
 impl<Scalar: BinaryField> From<PackedPrimitiveType<M128, Scalar>> for u128 {
 	fn from(value: PackedPrimitiveType<M128, Scalar>) -> Self {
 		value.to_underlier().into()
-	}
-}
-
-impl<U: NumCast<u128>> NumCast<M128> for U {
-	fn num_cast_from(val: M128) -> Self {
-		Self::num_cast_from(val.into())
 	}
 }
 
