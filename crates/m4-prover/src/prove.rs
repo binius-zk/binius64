@@ -79,7 +79,7 @@ type ProverNtt = NeighborsLastMultiThread<GenericPreExpanded<B128>>;
 /// The IntMul check queues that oracle's opening itself.
 /// The final combined FRI opening covers it alongside the trace, so it needs no handling here.
 pub struct IOPProver {
-	/// The prepared single-instance constraint system shared by every instance.
+	/// The validated single-instance constraint system shared by every instance.
 	cs: ConstraintSystem,
 	/// The shift keys for the constraint system, built once and reused across proofs.
 	key_collection: KeyCollection,

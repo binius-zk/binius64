@@ -482,7 +482,10 @@ where
 ///
 /// # Arguments
 ///
-/// - `log_constraint_count`: base-2 logarithm of the row count.
+/// - `log_constraint_count`: base-2 logarithm of the row count — the operand column length, which
+///   the prover zero-pads up to a power of two. The single-instance verifier passes `ceil(log2(n))`
+///   for `n` AND constraints; the batched M4 verifier adds its log instance count, since one row
+///   there is an (instance, constraint) pair.
 /// - `eval_domain`: the univariate-skip domain, one dimension above the 64-bit word, already lifted
 ///   to `F`. The caller passes it so it matches the shift reduction's domain by construction.
 /// - `channel`: the verifier channel that reads messages and redraws Fiat-Shamir challenges.

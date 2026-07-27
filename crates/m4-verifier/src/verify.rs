@@ -68,7 +68,7 @@ type Scheme = BinaryMerkleTreeScheme<B128, StdHashSuite>;
 /// Both operand claims at that point then feed the shift.
 #[derive(Debug, Clone)]
 pub struct IOPVerifier {
-	/// The prepared single-instance constraint system shared by every instance.
+	/// The validated single-instance constraint system shared by every instance.
 	cs: ConstraintSystem,
 	/// The committed-multilinear shape of the batch.
 	layout: BatchCommitLayout,
@@ -80,7 +80,7 @@ impl IOPVerifier {
 		Self { cs, layout }
 	}
 
-	/// The prepared constraint system this verifier checks against.
+	/// The validated constraint system this verifier checks against.
 	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		&self.cs
 	}
@@ -281,7 +281,7 @@ impl Verifier {
 	///
 	/// # Arguments
 	///
-	/// - `cs`: the prepared single-instance constraint system shared by every instance.
+	/// - `cs`: the validated single-instance constraint system shared by every instance.
 	/// - `log_instances`: base-2 logarithm of the instance count.
 	/// - `log_inv_rate`: base-2 logarithm of the inverse Reed-Solomon rate.
 	pub fn setup(cs: &ConstraintSystem, log_instances: usize, log_inv_rate: usize) -> Self {
@@ -319,7 +319,7 @@ impl Verifier {
 		}
 	}
 
-	/// The prepared constraint system this verifier checks against.
+	/// The validated constraint system this verifier checks against.
 	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		self.iop_verifier.constraint_system()
 	}

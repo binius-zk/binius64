@@ -64,8 +64,7 @@ fn bench_assemble_operation_witness(c: &mut Criterion) {
 	// The circuit's constants, shared by every instance.
 	let constants = circuit.constraint_system().constants.clone();
 
-	// The per-instance AND constraints, prepared so their count is a power of two (a precondition
-	// of `build_operation_columns`).
+	// The per-instance AND constraints, at their true (unpadded) count.
 	let and_constraints = {
 		let cs = circuit.constraint_system().clone();
 		cs.validate().unwrap();
