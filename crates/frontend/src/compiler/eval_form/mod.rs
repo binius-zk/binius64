@@ -10,6 +10,7 @@ mod builder;
 mod const_eval;
 mod exec;
 mod interpreter;
+mod opcode;
 #[cfg(test)]
 mod tests;
 

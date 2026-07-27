@@ -1,8 +1,9 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 use crate::compiler::{
 	constraint_builder::ConstraintBuilder,
 	eval_form::BytecodeBuilder,
-	gate_graph::{Gate, GateGraph},
+	gate_graph::{Gate, GateData, GateGraph, Wire},
 	hints::HintRegistry,
 };
 
@@ -66,10 +67,13 @@ pub fn emit_gate_bytecode(
 	gate: Gate,
 	graph: &GateGraph,
 	builder: &mut BytecodeBuilder,
-	wire_to_reg: impl Fn(crate::compiler::gate_graph::Wire) -> u32 + Copy,
+	wire_to_reg: impl Fn(Wire) -> u32 + Copy,
 	hint_registry: &HintRegistry,
 ) {
 	let data = &graph.gates[gate];
+
+	// The assertion gates take the path their failure is reported under; the rest do not.
+	let path = graph.assertion_names[gate];
 	match data.opcode {
 		Opcode::Band => band::emit_eval_bytecode(data, builder, wire_to_reg),
 		Opcode::Bxor => bxor::emit_eval_bytecode(data, builder, wire_to_reg),
@@ -82,47 +86,43 @@ pub fn emit_gate_bytecode(
 		Opcode::Iadd32CinCout => iadd32_cin_cout::emit_eval_bytecode(data, builder, wire_to_reg),
 		Opcode::IsubBinBout => isub_bin_bout::emit_eval_bytecode(data, builder, wire_to_reg),
 		Opcode::Shift => shift::emit_eval_bytecode(data, builder, wire_to_reg),
-		Opcode::AssertEq => {
-			let assertion_path = graph.assertion_names[gate];
-			assert_eq::emit_eval_bytecode(data, assertion_path, builder, wire_to_reg)
-		}
-		Opcode::AssertZero => {
-			let assertion_path = graph.assertion_names[gate];
-			assert_zero::emit_eval_bytecode(data, assertion_path, builder, wire_to_reg)
-		}
-		Opcode::AssertNonZero => {
-			let assertion_path = graph.assertion_names[gate];
-			assert_non_zero::emit_eval_bytecode(data, assertion_path, builder, wire_to_reg)
-		}
-		Opcode::AssertEqCond => {
-			let assertion_path = graph.assertion_names[gate];
-			assert_eq_cond::emit_eval_bytecode(data, assertion_path, builder, wire_to_reg)
-		}
-		Opcode::AssertFalse => {
-			let assertion_path = graph.assertion_names[gate];
-			assert_false::emit_eval_bytecode(data, assertion_path, builder, wire_to_reg)
-		}
-		Opcode::AssertTrue => {
-			let assertion_path = graph.assertion_names[gate];
-			assert_true::emit_eval_bytecode(data, assertion_path, builder, wire_to_reg)
-		}
 		Opcode::Imul => imul::emit_eval_bytecode(data, builder, wire_to_reg),
 		Opcode::Bmul => bmul::emit_eval_bytecode(data, builder, wire_to_reg),
 		Opcode::IcmpUlt => icmp_ult::emit_eval_bytecode(data, builder, wire_to_reg),
 		Opcode::IcmpEq => icmp_eq::emit_eval_bytecode(data, builder, wire_to_reg),
-
-		Opcode::Hint => {
-			// Generic hint: hint already lives in the registry from `CircuitBuilder::call_hint`,
-			// the gate carries the id in `imms[0]` and the user dimensions are `&data.dimensions`.
-			// `gate_param()` would panic for hints, so slice the wires directly using the
-			// shape we read back from the registry.
-			let hint_id = data.immediates[0];
-			let (n_in, n_out) = hint_registry.shape(hint_id, &data.dimensions);
-			let inputs = &data.wires[..n_in];
-			let outputs = &data.wires[n_in..n_in + n_out];
-			let input_regs: Vec<u32> = inputs.iter().map(|&wire| wire_to_reg(wire)).collect();
-			let output_regs: Vec<u32> = outputs.iter().map(|&wire| wire_to_reg(wire)).collect();
-			builder.emit_hint(hint_id, &data.dimensions, &input_regs, &output_regs);
+		Opcode::AssertEq => assert_eq::emit_eval_bytecode(data, path, builder, wire_to_reg),
+		Opcode::AssertZero => assert_zero::emit_eval_bytecode(data, path, builder, wire_to_reg),
+		Opcode::AssertNonZero => {
+			assert_non_zero::emit_eval_bytecode(data, path, builder, wire_to_reg)
 		}
+		Opcode::AssertEqCond => {
+			assert_eq_cond::emit_eval_bytecode(data, path, builder, wire_to_reg)
+		}
+		Opcode::AssertFalse => assert_false::emit_eval_bytecode(data, path, builder, wire_to_reg),
+		Opcode::AssertTrue => assert_true::emit_eval_bytecode(data, path, builder, wire_to_reg),
+		Opcode::Hint => emit_hint(data, builder, wire_to_reg, hint_registry),
 	}
+}
+
+/// Emits a hint call, the one gate with no module of its own.
+///
+/// The hint itself already lives in the registry, put there by `CircuitBuilder::call_hint`.
+/// The gate carries only its id, in `immediates[0]`, plus the user dimensions in `dimensions`.
+///
+/// `gate_param()` would panic for a hint, since its shape is not known statically.
+/// So the wires are sliced directly, using the shape read back from the registry.
+fn emit_hint(
+	data: &GateData,
+	builder: &mut BytecodeBuilder,
+	wire_to_reg: impl Fn(Wire) -> u32,
+	hint_registry: &HintRegistry,
+) {
+	let hint_id = data.immediates[0];
+	let (n_in, n_out) = hint_registry.shape(hint_id, &data.dimensions);
+	let input_regs: Vec<u32> = data.wires[..n_in].iter().map(|&w| wire_to_reg(w)).collect();
+	let output_regs: Vec<u32> = data.wires[n_in..n_in + n_out]
+		.iter()
+		.map(|&w| wire_to_reg(w))
+		.collect();
+	builder.emit_hint(hint_id, &data.dimensions, &input_regs, &output_regs);
 }
