@@ -73,11 +73,7 @@ cfg_if::cfg_if! {
 				write!(f, "ThreadPoolBuildError")
 			}
 		}
-		impl std::error::Error for ThreadPoolBuildError {
-			fn description(&self) -> &str {
-				"Error building thread pool"
-			}
-		}
+		impl std::error::Error for ThreadPoolBuildError {}
 
 		#[inline(always)]
 		pub const fn current_num_threads() -> usize {
