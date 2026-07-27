@@ -63,6 +63,41 @@ fn bench_fold_elems_inplace(c: &mut Criterion) {
 	group.finish();
 }
 
+/// The row fold alone, against a materialized tensor versus against its two factors.
+///
+/// Both routes are handed their inputs already expanded, so this isolates the two kernels.
+/// `dense` rebuilds a nibble table every 4 rows and streams the `2^n` tensor alongside the matrix.
+/// `split` builds byte tables once and streams the matrix alone.
+fn bench_fold_1b_rows_split(c: &mut Criterion) {
+	let mut group = c.benchmark_group("ring_switch/fold_1b_rows_split");
+	group.sample_size(10);
+
+	type P = OptimalPackedB128;
+
+	for log_len in [16, 20, 22] {
+		let elem_bytes = (1usize << log_len) * size_of::<P>();
+		group.throughput(Throughput::Bytes(elem_bytes as u64));
+
+		let mut rng = rand::rng();
+		let mat = random_field_buffer::<P>(&mut rng, log_len);
+		let suffix: Vec<B128> = random_scalars(&mut rng, log_len);
+
+		let tensor = eq_ind_partial_eval::<P>(&suffix);
+		let (suffix_lo, suffix_hi) = suffix.split_at(LOG_SPLIT_BLOCK.min(log_len));
+		let eq_lo = eq_ind_partial_eval::<B128>(suffix_lo);
+		let eq_hi = eq_ind_partial_eval::<B128>(suffix_hi);
+
+		group.bench_function(format!("dense/log_len={log_len}"), |b| {
+			b.iter(|| fold_1b_rows_for_b128(&mat, &tensor));
+		});
+		group.bench_function(format!("split/log_len={log_len}"), |b| {
+			b.iter(|| fold_1b_rows_for_b128_split(&mat, &eq_lo, &eq_hi));
+		});
+	}
+
+	group.finish();
+}
+
 /// The two suffix-tensor pipelines, whole:
 ///
 /// - `dense`: expand the full tensor, fold the matrix against it, transform it in place.
@@ -122,6 +157,7 @@ criterion_group!(
 	ring_switch,
 	bench_fold_1b_rows_for_b128,
 	bench_fold_elems_inplace,
+	bench_fold_1b_rows_split,
 	bench_suffix_tensor_pipeline
 );
 criterion_main!(ring_switch);
