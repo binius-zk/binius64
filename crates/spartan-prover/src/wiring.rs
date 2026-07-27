@@ -203,7 +203,13 @@ pub fn build_mulcheck_witness<A: Allocator, F: Field, P: PackedField<Scalar = F>
 	let mut b = alloc.alloc::<P>(len);
 	let mut c = alloc.alloc::<P>(len);
 
-	(a.spare_capacity_mut(), b.spare_capacity_mut(), c.spare_capacity_mut())
+	// Fill the packed words in parallel through the allocated buffers' spare capacity, then commit
+	// the lengths once every word has been written.
+	(
+		&mut a.spare_capacity_mut()[..len],
+		&mut b.spare_capacity_mut()[..len],
+		&mut c.spare_capacity_mut()[..len],
+	)
 		.into_par_iter()
 		.enumerate()
 		.for_each(|(i, (a_i, b_i, c_i))| {
@@ -231,7 +237,7 @@ pub fn build_mulcheck_witness<A: Allocator, F: Field, P: PackedField<Scalar = F>
 			}
 		});
 
-	// Safety: all entries in a, b, c are initialized in the parallel loop above.
+	// SAFETY: the loop above initialized every one of the `len` spare words of each buffer.
 	unsafe {
 		a.set_len(len);
 		b.set_len(len);
