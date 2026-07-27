@@ -112,12 +112,17 @@ impl<P: PackedField> FieldBuffer<P> {
 		let values = zeroed_vec(packed_len);
 		Self { log_len, values }
 	}
+}
 
+impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 	/// Builds a zeroed buffer of `2^log_len` elements, backed by memory drawn from `alloc`.
 	///
 	/// The allocator-aware counterpart to [`zeros`](Self::zeros).
 	/// Under a pool the result is a recyclable pooled buffer.
-	pub fn zeros_in<A: Allocator>(alloc: &A, log_len: usize) -> FieldVec<P, A> {
+	pub fn zeros_in<A>(alloc: &A, log_len: usize) -> Self
+	where
+		A: Allocator<Vec<P> = Data>,
+	{
 		let packed_len = 1 << log_len.saturating_sub(P::LOG_WIDTH);
 		// An allocator hands out an empty buffer, so the words are both created and zeroed here.
 		let mut values = alloc.alloc::<P>(packed_len);
@@ -128,14 +133,15 @@ impl<P: PackedField> FieldBuffer<P> {
 	/// Copies a borrowed buffer into memory drawn from `alloc`.
 	///
 	/// Whole packed words are copied, dead lanes and all, so the copy is bit-identical.
-	pub fn clone_from_slice<A: Allocator>(alloc: &A, src: FieldSlice<P>) -> FieldVec<P, A> {
+	pub fn clone_from_slice<A>(alloc: &A, src: FieldSlice<P>) -> Self
+	where
+		A: Allocator<Vec<P> = Data>,
+	{
 		let mut values = alloc.alloc::<P>(src.as_ref().len());
 		values.extend_from_slice(src.as_ref());
 		FieldBuffer::new(src.log_len(), values)
 	}
-}
 
-impl<P: PackedField, Data: VecLike<P>> FieldBuffer<P, Data> {
 	/// Builds a [`FieldBuffer`] from scalar values directly into a buffer drawn from `alloc`.
 	///
 	/// The allocator-aware counterpart to [`from_values`](Self::from_values): the packed values are
