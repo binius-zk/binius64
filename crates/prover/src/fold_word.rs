@@ -665,7 +665,7 @@ mod tests {
 	use binius_compute::GlobalAllocator;
 	use binius_field::arch::OptimalPackedB128;
 	use binius_math::test_utils::{random_field_buffer, random_scalars};
-	use binius_utils::checked_arithmetics::log2_strict_usize;
+	use binius_utils::checked_arithmetics::checked_log_2;
 	use binius_verifier::config::B128;
 	use rand::prelude::*;
 
@@ -679,7 +679,7 @@ mod tests {
 		assert_eq!(vec.len(), Word::BITS);
 		assert!(words.len().is_power_of_two());
 
-		let log_n = log2_strict_usize(words.len());
+		let log_n = checked_log_2(words.len());
 
 		let values = words
 			.par_chunks(P::WIDTH)

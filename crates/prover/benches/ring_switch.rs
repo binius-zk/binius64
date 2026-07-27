@@ -5,14 +5,14 @@ use std::mem::size_of;
 use binius_field::{BinaryField, ExtensionField, arch::OptimalPackedB128};
 use binius_math::test_utils::random_field_buffer;
 use binius_prover::ring_switch::{fold_1b_rows_for_b128, fold_elems_inplace};
-use binius_utils::checked_arithmetics::log2_strict_usize;
+use binius_utils::checked_arithmetics::checked_log_2;
 use binius_verifier::config::{B1, B128};
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 
 fn bench_fold_1b_rows_for_b128(c: &mut Criterion) {
 	let mut group = c.benchmark_group("fold_1b_rows_for_b128");
 
-	let log_bits = log2_strict_usize(B128::N_BITS);
+	let log_bits = checked_log_2(B128::N_BITS);
 	for log_len in [12, 16] {
 		const LOG_BITS_PER_BYTE: usize = 3;
 		group.throughput(Throughput::Bytes((1 << (log_len + log_bits - LOG_BITS_PER_BYTE)) as u64));
