@@ -480,7 +480,7 @@ impl Divisible<u8> for M128 {
 
 	#[inline]
 	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u8> + Send + Clone + '_ {
-		mapget::slice_iter(slice)
+		crate::underlier::memcast::slice_iter::<Self, u8>(slice)
 	}
 
 	#[inline]
