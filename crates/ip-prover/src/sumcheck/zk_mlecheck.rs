@@ -72,7 +72,7 @@ pub fn expand_libra_eval<A: Allocator, P: PackedField>(
 	debug_assert!(degree < 1 << m_d);
 
 	let log_size = m_n + m_d;
-	let mut buffer = FieldVec::<P, A>::zeros_in(alloc, log_size);
+	let mut buffer = FieldBuffer::zeros_in(alloc, log_size);
 	let row_stride = 1 << m_d;
 
 	for (j, &r_j) in challenge_point.iter().enumerate() {

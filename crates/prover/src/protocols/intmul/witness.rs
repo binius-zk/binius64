@@ -187,7 +187,7 @@ where
 		let (b_prodcheck, b_root) = ProdcheckProver::new(
 			Word::LOG_BITS,
 			alloc,
-			FieldVec::<P, A>::clone_from_slice(alloc, b_leaves.to_ref()),
+			FieldBuffer::clone_from_slice(alloc, b_leaves.to_ref()),
 		);
 		let b_root = unpool::<A, P>(b_root);
 		drop(variable_base_tree_scope);
@@ -366,7 +366,7 @@ where
 	}
 
 	// Fallback: bases is too small to parallelize (n_vars < P::LOG_WIDTH)
-	let mut out = FieldVec::<P, A>::zeros_in(alloc, n_vars + Word::LOG_BITS);
+	let mut out = FieldBuffer::zeros_in(alloc, n_vars + Word::LOG_BITS);
 	let n_elems = 1 << n_vars;
 
 	for (i, (mut base, &exp)) in iter::zip(bases.iter_scalars(), exponents).enumerate() {
