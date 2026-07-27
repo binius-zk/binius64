@@ -67,8 +67,8 @@ fn bench_assemble_operation_witness(c: &mut Criterion) {
 	// The per-instance AND constraints, prepared so their count is a power of two (a precondition
 	// of `build_operation_columns`).
 	let and_constraints = {
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		cs.and_constraints
 	};
 

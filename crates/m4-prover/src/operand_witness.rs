@@ -381,8 +381,8 @@ mod tests {
 	// The prepared per-instance AND constraints, at their true (unpadded) count.
 	// This mirrors how the prover feeds constraints downstream.
 	fn table_constraints(c: &AndCircuit) -> Vec<AndConstraint> {
-		let mut cs = c.circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = c.circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		cs.and_constraints
 	}
 
@@ -578,8 +578,8 @@ mod tests {
 		let table = populate_mul_table(&c, &inputs);
 
 		// The prepared per-instance IMUL constraints, at their true (unpadded) count.
-		let mut cs = c.circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = c.circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		let imul_constraints = &cs.imul_constraints;
 		assert!(!imul_constraints.is_empty(), "the circuit must emit an IMUL constraint");
 
@@ -676,8 +676,8 @@ mod tests {
 		let table = populate_binmul_table(&c, &inputs);
 
 		// The prepared per-instance BMUL constraints, at their true (unpadded) count.
-		let mut cs = c.circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = c.circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		let bmul_constraints = &cs.bmul_constraints;
 		assert!(!bmul_constraints.is_empty(), "the circuit must emit a BMUL constraint");
 

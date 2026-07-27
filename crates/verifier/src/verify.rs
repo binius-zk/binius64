@@ -51,8 +51,7 @@ pub struct IOPVerifier {
 impl IOPVerifier {
 	/// Constructs an IOP verifier for a constraint system.
 	///
-	/// The constraint system must already be validated via
-	/// [`ConstraintSystem::validate_and_prepare`].
+	/// The constraint system must already be validated via [`ConstraintSystem::validate`].
 	pub const fn new(constraint_system: ConstraintSystem, log_public_words: usize) -> Self {
 		Self {
 			constraint_system,
@@ -373,11 +372,8 @@ where
 	/// Constructs a verifier for a constraint system.
 	///
 	/// See [`Verifier`] struct documentation for details.
-	pub fn setup(
-		mut constraint_system: ConstraintSystem,
-		log_inv_rate: usize,
-	) -> Result<Self, Error> {
-		constraint_system.validate_and_prepare()?;
+	pub fn setup(constraint_system: ConstraintSystem, log_inv_rate: usize) -> Result<Self, Error> {
+		constraint_system.validate()?;
 
 		// The validated layout guarantees a power-of-two public segment of at least one full
 		// element.

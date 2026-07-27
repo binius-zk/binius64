@@ -833,8 +833,8 @@ mod tests {
 			.collect();
 		let table = populate_crc64_witness(&c, &inputs);
 
-		let mut cs = c.circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = c.circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		(cs, table)
 	}
 
@@ -871,8 +871,8 @@ mod tests {
 		builder.force_commit(c_hi);
 		let circuit = builder.build();
 
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		// Confirm the fixture reaches all three operations, so the recycled buffers really do span
 		// every operand-column shape.
 		assert!(!cs.imul_constraints.is_empty(), "the fixture must emit IMUL constraints");
@@ -963,8 +963,8 @@ mod tests {
 		builder.force_commit(lo);
 		let circuit = builder.build();
 
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		// Confirm the fixture genuinely exercises the IntMul path.
 		assert!(!cs.imul_constraints.is_empty(), "the fixture must emit an IMUL constraint");
 
@@ -1020,8 +1020,8 @@ mod tests {
 		}
 		let circuit = builder.build();
 
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		// Confirm the fixture is genuine: the constant count is not a power of two.
 		assert!(!cs.constants.len().is_power_of_two());
 
@@ -1089,8 +1089,8 @@ mod tests {
 		}
 		let circuit = builder.build();
 
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		// Confirm the fixture genuinely exercises the asymmetric case: the two operations have
 		// different constraint-point lengths.
 		// An absent operation contributes an empty `r_x`, as does an AND set of one row.
@@ -1148,8 +1148,8 @@ mod tests {
 		builder.force_commit(c_hi);
 		let circuit = builder.build();
 
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		// Confirm the fixture genuinely exercises the BinMul path.
 		assert!(!cs.bmul_constraints.is_empty(), "the fixture must emit a BMUL constraint");
 
@@ -1213,8 +1213,8 @@ mod tests {
 		builder.force_commit(c_hi);
 		let circuit = builder.build();
 
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		// Confirm the fixture genuinely exercises the asymmetric case: the three operations do not
 		// all reduce to constraint points of the same length.
 		// An absent operation contributes an empty `r_x`, as does an AND set of one row.
@@ -1297,8 +1297,8 @@ mod tests {
 		builder.force_commit(lo);
 		let circuit = builder.build();
 
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 
 		let log_instances = 6;
 		let table = ValueTable::populate(&circuit, log_instances, |i, w| {

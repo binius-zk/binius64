@@ -249,15 +249,6 @@ impl ConstraintSystem {
 		Ok(())
 	}
 
-	/// [Validates][`Self::validate`] and prepares this constraint system for proving/verifying.
-	///
-	/// This function performs the following:
-	/// 1. Validates the value vector layout (including public input checks)
-	/// 2. Validates the constraints.
-	pub fn validate_and_prepare(&mut self) -> Result<(), ConstraintSystemError> {
-		self.validate()
-	}
-
 	/// Returns the number of AND constraints in the system.
 	pub const fn n_and_constraints(&self) -> usize {
 		self.and_constraints.len()
@@ -650,7 +641,7 @@ mod tests {
 			vec![ValueIndex(8)], // valid private value
 		));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err(), "Should reject constraint referencing padding");
 
 		match result.unwrap_err() {
@@ -681,7 +672,7 @@ mod tests {
 			vec![ShiftedValueIndex::plain(ValueIndex(13))], // hi
 		]));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(
 			result.is_ok(),
 			"Should accept constraints with only valid references: {:?}",
@@ -690,11 +681,11 @@ mod tests {
 	}
 
 	#[test]
-	fn test_validate_and_prepare_keeps_true_constraint_counts() {
-		let mut cs = create_test_constraint_system();
+	fn test_validate_keeps_true_constraint_counts() {
+		let cs = create_test_constraint_system();
 		let (n_and, n_imul, n_bmul) =
 			(cs.n_and_constraints(), cs.n_imul_constraints(), cs.n_bmul_constraints());
-		cs.validate_and_prepare().unwrap();
+		cs.validate().unwrap();
 		assert_eq!(cs.n_and_constraints(), n_and);
 		assert_eq!(cs.n_imul_constraints(), n_imul);
 		assert_eq!(cs.n_bmul_constraints(), n_bmul);
@@ -726,7 +717,7 @@ mod tests {
 			vec![ValueIndex(8)],  // valid private value
 		));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err(), "Should reject constraint with out-of-range index");
 
 		match result.unwrap_err() {
@@ -758,7 +749,7 @@ mod tests {
 			vec![ShiftedValueIndex::plain(ValueIndex(100))], // hi: WAY out of range!
 		]));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err(), "Should reject IMUL constraint with out-of-range index");
 
 		match result.unwrap_err() {
@@ -792,7 +783,7 @@ mod tests {
 			vec![ShiftedValueIndex::plain(ValueIndex(100))], // c_hi: WAY out of range!
 		]));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err(), "Should reject BMUL constraint with out-of-range index");
 
 		match result.unwrap_err() {
@@ -827,7 +818,7 @@ mod tests {
 			vec![ValueIndex(8)],
 		));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err());
 
 		// Should get OutOfRangeValueIndex, not PaddingValueIndex
@@ -858,7 +849,7 @@ mod tests {
 			vec![ShiftedValueIndex::plain(ValueIndex(8))],
 		));
 
-		match cs.validate_and_prepare().unwrap_err() {
+		match cs.validate().unwrap_err() {
 			ConstraintSystemError::ShiftAmountTooLarge {
 				constraint_type,
 				constraint_index,

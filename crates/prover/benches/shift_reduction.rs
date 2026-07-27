@@ -90,8 +90,8 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 	for &log_message_len_bytes in &log_message_lengths_bytes {
 		let message_len_bytes = 1 << log_message_len_bytes;
-		let (mut cs, value_vec) = create_sha256_cs_with_witness(log_message_len_bytes, &mut rng);
-		cs.validate_and_prepare().unwrap();
+		let (cs, value_vec) = create_sha256_cs_with_witness(log_message_len_bytes, &mut rng);
+		cs.validate().unwrap();
 
 		// Sample multilinear eval points
 		let r_x_prime_bitand = {
@@ -219,8 +219,8 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// benches share one setup and stay quick.
 	const LOG_MESSAGE_LEN_BYTES: usize = 14;
 
-	let (mut cs, value_vec) = create_sha256_cs_with_witness(LOG_MESSAGE_LEN_BYTES, &mut rng);
-	cs.validate_and_prepare().unwrap();
+	let (cs, value_vec) = create_sha256_cs_with_witness(LOG_MESSAGE_LEN_BYTES, &mut rng);
+	cs.validate().unwrap();
 
 	// The BitAnd reduction always runs; `None` is its single all-zero padding row.
 	let r_x_prime_bitand = (0..cs.log_and_constraints().unwrap_or(0) as u128)

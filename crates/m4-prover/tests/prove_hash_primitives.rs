@@ -82,8 +82,8 @@ where
 		.in_scope(|| ValueTable::populate(circuit, LOG_INSTANCES, fill).unwrap());
 
 	// Prepare the shared constraint system.
-	let mut cs = circuit.constraint_system().clone();
-	cs.validate_and_prepare().unwrap();
+	let cs = circuit.constraint_system().clone();
+	cs.validate().unwrap();
 
 	// Set up the verifier.
 	// Build the prover from it, sharing its FRI parameters.

@@ -549,8 +549,8 @@ mod tests {
 			.collect();
 		let table = populate_crc64_witness(&c, &inputs);
 
-		let mut cs = c.circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = c.circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		let key_collection = build_key_collection(&cs);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
@@ -677,8 +677,8 @@ mod tests {
 		let table = populate_crc64_witness(&c, &inputs);
 		let constants = &c.circuit.constraint_system().constants;
 
-		let mut cs = c.circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = c.circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		let key_collection = build_key_collection(&cs);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.

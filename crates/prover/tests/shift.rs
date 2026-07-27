@@ -215,13 +215,13 @@ fn test_shift_prove_and_verify() {
 	type P = PackedBinaryGhash2x128b;
 	let mut rng = StdRng::seed_from_u64(0);
 
-	let mut constraint_systems_to_test = vec![
+	let constraint_systems_to_test = vec![
 		create_sha256_cs_with_witness(),
 		create_slice_cs_with_witness(),
 		create_concat_cs_with_witness(),
 	];
-	for (constraint_system, _) in constraint_systems_to_test.iter_mut() {
-		constraint_system.validate_and_prepare().unwrap();
+	for (constraint_system, _) in constraint_systems_to_test.iter() {
+		constraint_system.validate().unwrap();
 	}
 
 	for (cs, value_vec) in constraint_systems_to_test.into_iter() {
