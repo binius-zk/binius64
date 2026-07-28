@@ -4,10 +4,7 @@
 use binius_core::{ValueIndex, ValueVec, ValueVecLayout, word::Word};
 
 use crate::compiler::{
-	eval_form::{
-		BytecodeBuilder,
-		interpreter::{ExecutionContext, Interpreter},
-	},
+	eval_form::{BytecodeBuilder, exec::Executor, scalar::ExecutionContext},
 	hints::HintRegistry,
 };
 
@@ -93,10 +90,8 @@ impl InterpreterTest {
 		}
 
 		let hint_registry = HintRegistry::new();
-		let mut interpreter = Interpreter::new(&bytecode, &hint_registry);
 		let mut ctx = ExecutionContext::new(&mut value_vec);
-
-		interpreter.run(&mut ctx);
+		Executor::new(&bytecode, &hint_registry).run(&mut ctx);
 
 		// Check the expected values
 		for (idx, expected_value) in expected {
@@ -132,13 +127,12 @@ impl InterpreterTest {
 		}
 
 		let hint_registry = HintRegistry::new();
-		let mut interpreter = Interpreter::new(&bytecode, &hint_registry);
 
 		// Leak the value_vec to get 'static lifetime - this is ok in tests
 		let value_vec = Box::leak(Box::new(value_vec));
 		let mut ctx = ExecutionContext::new(value_vec);
 
-		interpreter.run(&mut ctx);
+		Executor::new(&bytecode, &hint_registry).run(&mut ctx);
 		ctx
 	}
 }
