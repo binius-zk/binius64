@@ -52,7 +52,3 @@ harness = false
 [[bench]]
 name = "eq_ind_partial_eval"
 harness = false
-
-[[bench]]
-name = "task_size"
-harness = false
