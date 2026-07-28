@@ -10,7 +10,10 @@ use binius_ip_prover::prodcheck::ProdcheckProver;
 use binius_math::{FieldVec, field_buffer::FieldBuffer};
 use binius_utils::{
 	checked_arithmetics::{checked_log_2, strict_log_2},
-	rayon::prelude::*,
+	rayon::{
+		prelude::*,
+		task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	},
 	strided_array::StridedArray2DViewMut,
 };
 use binius_verifier::protocols::intmul::common::{LIMB_BITS, LOG_N_LIMBS, N_LIMBS};
@@ -445,6 +448,7 @@ pub fn buffer_bivariate_product<P: PackedField, Data: Deref<Target = [P]>>(
 	assert_eq!(a.len(), b.len());
 	let product = (a.as_ref(), b.as_ref())
 		.into_par_iter()
+		.with_min_task(WorkPerItem::FieldMuls)
 		.map(|(&a, &b)| a * b)
 		.collect::<Vec<P>>();
 	FieldBuffer::new(a.log_len(), product)

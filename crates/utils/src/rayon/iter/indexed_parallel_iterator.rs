@@ -172,6 +172,10 @@ impl<L: IndexedParallelIteratorInner, R: IndexedParallelIteratorInner> IndexedPa
 	for std::iter::Zip<L, R>
 {
 }
+impl<L: IndexedParallelIteratorInner, R: IndexedParallelIteratorInner> IndexedParallelIteratorInner
+	for itertools::ZipEq<L, R>
+{
+}
 impl<I: IndexedParallelIteratorInner> IndexedParallelIteratorInner for std::iter::Enumerate<I> {}
 impl<I: IndexedParallelIteratorInner> IndexedParallelIteratorInner for std::iter::StepBy<I> {}
 impl<I: IndexedParallelIteratorInner, R, F: FnMut(I::Item) -> R> IndexedParallelIteratorInner

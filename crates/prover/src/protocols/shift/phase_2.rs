@@ -17,7 +17,13 @@ use binius_math::{
 	BinarySubspace, FieldBuffer, FieldVec,
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_zero},
 };
-use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_utils::{
+	checked_arithmetics::log2_ceil_usize,
+	rayon::{
+		prelude::*,
+		task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	},
+};
 use binius_verifier::protocols::shift::evaluate_words_mle;
 use tracing::instrument;
 
@@ -139,6 +145,7 @@ where
 	// The dense hidden-segment pass.
 	let wide_dense = (hidden_folded.as_ref(), hidden_monster.as_ref())
 		.into_par_iter()
+		.with_min_task(WorkPerItem::FieldMuls)
 		.map(|(&hidden_i, &monster_i)| P::wide_mul(hidden_i, monster_i))
 		.reduce(<P as WideMul>::Output::default, |lhs, rhs| lhs + rhs);
 
@@ -183,6 +190,7 @@ fn fold_segments<F: Field, P: PackedField<Scalar = F>, Data: DerefMut<Target = [
 	hidden
 		.as_mut()
 		.par_iter_mut()
+		.with_min_task(WorkPerItem::FieldMuls)
 		.for_each(|hidden_i| *hidden_i *= alpha_broadcast);
 
 	// Add the small public prefix sequentially. Its trailing partial packed element carries zero

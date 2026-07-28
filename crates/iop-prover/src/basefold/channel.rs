@@ -22,7 +22,13 @@ use binius_math::{
 	multilinear::eq::{eq_ind_partial_eval_scalars, eq_ind_zero},
 	ntt::AdditiveNTT,
 };
-use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
+use binius_utils::{
+	checked_arithmetics::log2_ceil_usize,
+	rayon::{
+		prelude::*,
+		task_size::{IndexedParallelIteratorExt, WorkPerItem},
+	},
+};
 use itertools::izip;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
@@ -290,12 +296,13 @@ fn prove_batch_zk_basefold<A, F, P, NTT, Channel>(
 						let _scope =
 							tracing::debug_span!("Fold message and ZK mask", log_len = n_i)
 								.entered();
-						(message.as_mut(), mask.as_ref()).into_par_iter().for_each(
-							|(message_i, &mask_i)| {
+						(message.as_mut(), mask.as_ref())
+							.into_par_iter()
+							.with_min_task(WorkPerItem::FieldMuls)
+							.for_each(|(message_i, &mask_i)| {
 								*message_i =
 									extrapolate_line_packed(*message_i, mask_i, gamma_broadcast);
-							},
-						);
+							});
 					}
 				}
 
@@ -444,9 +451,12 @@ fn accumulate_scaled_buffer<P: PackedField>(
 ) {
 	if src.log_len() >= P::LOG_WIDTH {
 		let src = src.as_ref();
+		// This accumulation already runs inside a parallel loop over chunks.
+		// One chunk is small, so a second split here would only add handoff cost.
 		dst.as_mut()
 			.par_iter_mut()
 			.zip(src.as_ref())
+			.with_min_task(WorkPerItem::FieldMuls)
 			.for_each(|(dst_i, src_i)| {
 				*dst_i += scalar_broadcast * *src_i;
 			});

@@ -8,7 +8,10 @@ use binius_ip::{mlecheck, prodcheck::MultilinearEvalClaim};
 use binius_math::{
 	FieldBuffer, FieldVec, line::extrapolate_line_packed, multilinear::eq::eq_ind_partial_eval,
 };
-use binius_utils::rayon::prelude::*;
+use binius_utils::rayon::{
+	prelude::*,
+	task_size::{IndexedParallelIteratorExt, WorkPerItem},
+};
 use itertools::izip;
 
 use crate::{
@@ -77,8 +80,11 @@ where
 			let next_log_len = prev_layer.log_len() - 1;
 			let (half_0, half_1) = prev_layer.split_half_ref();
 
+			// Each layer is half the width of the one below it, down to a single word.
+			// The last layers are too small to be worth splitting.
 			let next_layer_evals: Vec<P> = (half_0.as_ref(), half_1.as_ref())
 				.into_par_iter()
+				.with_min_task(WorkPerItem::FieldMuls)
 				.map(|(v0, v1)| *v0 * *v1)
 				.collect();
 			let mut next_data = alloc.alloc::<P>(next_layer_evals.len());
