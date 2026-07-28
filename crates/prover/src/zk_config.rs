@@ -143,7 +143,7 @@ where
 		// Create BaseFold prover channel and wrap with outer prover.
 		let basefold_channel = self
 			.basefold_compiler
-			.create_channel_from_transcript::<H, Challenger_, _>(transcript, &mut rng);
+			.create_channel_from_transcript::<H, Challenger_, _, _>(transcript, &mut rng);
 		let mut wrapped_channel = ZKWrappedProverChannel::new(
 			basefold_channel,
 			&self.outer_iop_prover,
@@ -165,7 +165,7 @@ where
 			let inner_cs = self.inner_iop_prover.constraint_system();
 			let _scope = tracing::debug_span!(
 				"Binius64",
-				n_hidden_words = inner_cs.value_vec_layout.n_hidden_words,
+				n_hidden_words = inner_cs.n_hidden_words(),
 				n_bitand = inner_cs.and_constraints.len(),
 				n_intmul = inner_cs.imul_constraints.len(),
 			)

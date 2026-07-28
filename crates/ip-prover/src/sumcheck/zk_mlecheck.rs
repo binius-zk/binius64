@@ -10,10 +10,12 @@
 
 use std::{iter, ops::Deref};
 
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField, util::powers};
 use binius_ip::{mlecheck, sumcheck::RoundCoeffs};
 use binius_math::{
-	field_buffer::FieldBuffer, line::extrapolate_line_packed, univariate::evaluate_univariate,
+	FieldVec, field_buffer::FieldBuffer, line::extrapolate_line_packed,
+	univariate::evaluate_univariate,
 };
 
 use super::{
@@ -47,6 +49,7 @@ pub struct ProveZKOutput<F: Field> {
 ///
 /// # Arguments
 ///
+/// * `alloc` - The allocator the expansion is drawn from
 /// * `challenge_point` - The challenge point `r` from sumcheck (length `n_vars`)
 /// * `n_vars` - Number of variables in the mask polynomial
 /// * `degree` - Degree of each univariate in the mask polynomial
@@ -56,19 +59,20 @@ pub struct ProveZKOutput<F: Field> {
 /// # Panics
 ///
 /// Panics (in debug mode) if `n_vars > 2^m_n` or `degree + 1 > 2^m_d`.
-pub fn expand_libra_eval<P: PackedField>(
+pub fn expand_libra_eval<A: Allocator, P: PackedField>(
+	alloc: &A,
 	challenge_point: &[P::Scalar],
 	n_vars: usize,
 	degree: usize,
 	m_n: usize,
 	m_d: usize,
-) -> FieldBuffer<P> {
+) -> FieldVec<P, A> {
 	debug_assert!(challenge_point.len() == n_vars);
 	debug_assert!(n_vars <= 1 << m_n);
 	debug_assert!(degree < 1 << m_d);
 
 	let log_size = m_n + m_d;
-	let mut buffer = FieldBuffer::<P>::zeros(log_size);
+	let mut buffer = FieldBuffer::zeros_in(alloc, log_size);
 	let row_stride = 1 << m_d;
 
 	for (j, &r_j) in challenge_point.iter().enumerate() {
@@ -633,6 +637,7 @@ mod tests {
 
 	#[test]
 	fn test_libra_eval_inner_product_equals_mask_eval() {
+		use binius_compute::GlobalAllocator;
 		use binius_math::inner_product::inner_product_buffers;
 
 		let mut rng = StdRng::seed_from_u64(0);
@@ -653,8 +658,14 @@ mod tests {
 			.sum();
 
 		// Compute <g', libra_eval_r> using inner product
-		let libra_eval_tensor =
-			expand_libra_eval::<B128>(&challenge_point, n_vars, degree, m_n, m_d);
+		let libra_eval_tensor = expand_libra_eval::<_, B128>(
+			&GlobalAllocator,
+			&challenge_point,
+			n_vars,
+			degree,
+			m_n,
+			m_d,
+		);
 		let inner_product_eval = inner_product_buffers(&mask_buffer, &libra_eval_tensor);
 
 		assert_eq!(
@@ -685,8 +696,14 @@ mod tests {
 		let challenge_point: Vec<B128> = random_scalars(&mut rng, n_vars);
 
 		// Generate libra_eval tensor
-		let libra_eval_tensor =
-			expand_libra_eval::<B128>(&challenge_point, n_vars, degree, m_n, m_d);
+		let libra_eval_tensor = expand_libra_eval::<_, B128>(
+			&GlobalAllocator,
+			&challenge_point,
+			n_vars,
+			degree,
+			m_n,
+			m_d,
+		);
 
 		// Compute the claimed sum: <g', libra_eval_r> = g(r)
 		let claimed_sum = inner_product_par(&mask_buffer, &libra_eval_tensor);

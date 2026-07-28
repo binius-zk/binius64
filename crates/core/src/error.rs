@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 //! Hosts error definitions for the core crate.
 
-use crate::ValueVecLayout;
+use crate::ConstraintSystem;
 
 /// Constraint system related error.
 #[allow(missing_docs)] // errors are self-documenting
@@ -11,7 +11,7 @@ pub enum ConstraintSystemError {
 	PublicInputPowerOfTwo,
 	#[error(
 		"the public input segment must be at least {} words, got: {pub_input_size}",
-		ValueVecLayout::MIN_WORDS_PER_SEGMENT
+		ConstraintSystem::MIN_WORDS_PER_SEGMENT
 	)]
 	PublicInputTooShort { pub_input_size: usize },
 	#[error(
@@ -21,8 +21,6 @@ pub enum ConstraintSystemError {
 		public_len: usize,
 		hidden_len: usize,
 	},
-	#[error("the data length doesn't match layout. Expected: {expected}, Actual: {actual}")]
-	ValueVecLenMismatch { expected: usize, actual: usize },
 	#[error(
 		"{constraint_type} #{constraint_index} uses non canonical shift in its {operand_name} operand"
 	)]

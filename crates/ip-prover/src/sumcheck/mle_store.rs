@@ -21,7 +21,7 @@
 
 use std::iter;
 
-use binius_compute::{Allocator, VecLike};
+use binius_compute::Allocator;
 use binius_field::{Field, PackedField};
 use binius_math::{
 	FieldBuffer, FieldSlice, FieldVec,
@@ -32,21 +32,6 @@ use binius_utils::rayon;
 use itertools::izip;
 
 use super::gruen32::Gruen32;
-
-/// Copies `src` into a buffer freshly allocated from `alloc`.
-///
-/// This is the bridge for a `Vec`-backed buffer built by `binius-math` (e.g. `from_values`): the
-/// live buffer is a genuine allocation from `alloc` (so under a pool it recycles through the free
-/// list), and the source is dropped. Prefer building directly into `alloc` where an allocator-aware
-/// constructor exists.
-pub fn pooled_copy<A: Allocator, P: PackedField, Data: std::ops::Deref<Target = [P]>>(
-	alloc: &A,
-	src: &FieldBuffer<P, Data>,
-) -> FieldVec<P, A> {
-	let mut data = alloc.alloc::<P>(src.as_ref().len());
-	data.extend_from_slice(src.as_ref());
-	FieldBuffer::new(src.log_len(), data)
-}
 
 /// Identifier of a column held by an [`MleStore`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -419,7 +404,7 @@ impl<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>> MleStore<'a, A, P> 
 			.columns
 			.iter()
 			.map(|column| match column {
-				Column::Borrowed(_) => Some(FieldVec::<P, A>::zeros_in(alloc, n_vars)),
+				Column::Borrowed(_) => Some(FieldBuffer::zeros_in(alloc, n_vars)),
 				_ => None,
 			})
 			.collect::<Vec<_>>();

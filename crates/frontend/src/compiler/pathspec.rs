@@ -41,8 +41,11 @@ impl PathSpecTree {
 
 	/// Writes a string representation of the given path spec into a given string buffer.
 	///
-	/// Note that the string buffer is not reset, which allows appending to the existing contents
-	/// of the string but poses a string of mangling of the string.
+	/// Every component is written with a leading `'.'`, including the first.
+	/// So a path one level below the root renders as `.name`, not `name`.
+	///
+	/// The buffer is appended to rather than reset.
+	/// A caller that reuses a buffer therefore has to clear it first.
 	pub fn stringify(&self, ls: PathSpec, out: &mut String) {
 		fn stringify_rec(
 			root: PathSpec,

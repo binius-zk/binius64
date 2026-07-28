@@ -171,7 +171,7 @@ mod tests {
 		builder.force_commit(f);
 		let circuit = builder.build();
 
-		let layout = circuit.constraint_system().value_vec_layout.clone();
+		let layout = circuit.value_vec_layout().clone();
 		assert_eq!(layout.n_inout, 0, "fixture should have no inout wires");
 		let combined = layout.combined_len();
 		let full_len = combined + layout.n_scratch;
@@ -230,7 +230,7 @@ mod tests {
 		builder.assert_eq("a_eq_b", a, b);
 		let circuit = builder.build();
 
-		let layout = circuit.constraint_system().value_vec_layout.clone();
+		let layout = circuit.value_vec_layout().clone();
 		let full_len = layout.combined_len() + layout.n_scratch;
 		let n = 4usize;
 

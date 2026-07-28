@@ -133,6 +133,20 @@ where
 	(a_col_chunks.as_ref(), b_col_chunks.as_ref())
 		.into_par_iter()
 		.map(|(a_chunk, b_chunk)| {
+			// Skip zero-padding windows: their chunks add nothing to the round message.
+			//
+			// Invariant: C is derived as C = A & B.
+			//   A = 0 forces C = 0, so the term A*B - C vanishes.
+			//   B = 0 forces C = 0, so the term A*B - C vanishes.
+			//   A chunk all-zero in either operand sums to exactly 0 over the window.
+			//
+			// A populated chunk stops the scan at its first non-zero word.
+			// Dense inputs therefore pay only a couple of word comparisons.
+			if a_chunk.iter().all(|w| *w == Word::ZERO) || b_chunk.iter().all(|w| *w == Word::ZERO)
+			{
+				return [F::ZERO; ROWS_PER_HYPERCUBE_VERTEX];
+			}
+
 			// Reshape the chunk arrays into arrays of arrays
 			let [a_subchunks, b_subchunks] = [a_chunk, b_chunk].map(|chunk| {
 				bytemuck::must_cast_ref::<
@@ -245,24 +259,67 @@ mod test {
 
 	#[test]
 	fn test_first_round_message_matches_next_round_sum_claim() {
-		// Setup
-		let log_num_rows = 10;
+		// Fixed seed keeps the random witness reproducible across runs.
 		let mut rng = StdRng::from_seed([0; 32]);
+
+		// 2^10 rows total; each 64-bit word packs 2^SKIPPED_VARS rows, leaving this many words.
+		let log_num_words = 10 - SKIPPED_VARS;
+
+		// Every word is random and non-zero, so no window is skipped.
+		// This pins the dense path, where the skip must leave the result unchanged.
+		let mlv_1 = random_words(log_num_words, &mut rng);
+		let mlv_2 = random_words(log_num_words, &mut rng);
+
+		assert_round_message_consistent(&mlv_1, &mlv_2, &mut rng);
+	}
+
+	#[test]
+	fn test_first_round_message_with_zero_padding_windows() {
+		// Different seed from the dense test, so the two exercise different witnesses.
+		let mut rng = StdRng::from_seed([1; 32]);
+
+		// The round message groups words into fixed windows of 2^(3 + 4) = 128 words.
+		// Size the columns to 2^10 = 1024 words, exactly 8 whole windows.
+		let log_chunk_size = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES.len() + 4;
+		let log_num_words = log_chunk_size + 3;
+
+		let mut mlv_1 = random_words(log_num_words, &mut rng);
+		let mut mlv_2 = random_words(log_num_words, &mut rng);
+
+		// Zero the top 512 words in both operands: the last 4 windows become all-zero.
+		// This is the padding a non-power-of-two AND count leaves after rounding up.
+		//
+		//     words:   [ 0 .. 512 random | 512 .. 1024 zero      ]
+		//     windows: [ w0 w1 w2 w3     | w4 w5 w6 w7 (skipped)  ]
+		let padding_start = (1 << log_num_words) / 2;
+		for words in [&mut mlv_1, &mut mlv_2] {
+			words[padding_start..].fill(Word::ZERO);
+		}
+
+		// The skipped windows must contribute exactly zero.
+		// The verifier-side fold recomputes the claim independently.
+		// A window skipped in error would break the equality inside the helper.
+		assert_round_message_consistent(&mlv_1, &mlv_2, &mut rng);
+	}
+
+	/// Asserts the first-round univariate message agrees with the next-round sum claim.
+	///
+	/// The check mirrors the verifier at one random challenge:
+	/// - Extrapolate the round message at the challenge to get the expected next-round sum.
+	/// - Fold A, B, and C = A & B at the same challenge, then form the sum claim directly.
+	/// - The two values must be equal.
+	fn assert_round_message_consistent(mlv_1: &[Word], mlv_2: &[Word], mut rng: impl Rng) {
+		assert_eq!(mlv_1.len(), mlv_2.len());
+		let log_num_words = mlv_1.len().ilog2() as usize;
 
 		let small_field_zerocheck_challenges = PROVER_SMALL_FIELD_ZEROCHECK_CHALLENGES;
 
 		let big_field_zerocheck_challenges =
-			vec![
-				B128::random(&mut rng);
-				log_num_rows - SKIPPED_VARS - small_field_zerocheck_challenges.len()
-			];
+			vec![B128::random(&mut rng); log_num_words - small_field_zerocheck_challenges.len()];
 
-		let log_num_words = log_num_rows - SKIPPED_VARS;
-		let mlv_1 = random_words(log_num_words, &mut rng);
-		let mlv_2 = random_words(log_num_words, &mut rng);
 		// The round message derives C = A & B internally.
 		// This materialized copy feeds only the verifier-side transparent fold below.
-		let mlv_3: Vec<Word> = iter::zip(&mlv_1, &mlv_2).map(|(&a, &b)| a & b).collect();
+		let mlv_3: Vec<Word> = iter::zip(mlv_1, mlv_2).map(|(&a, &b)| a & b).collect();
 
 		// Agreed-upon proof parameter
 
@@ -273,8 +330,8 @@ mod test {
 		// Prover generates first round message
 		let first_round_message_on_ext_domain = univariate_round_message_extension_domain::<B128>(
 			log_num_words,
-			&mlv_1,
-			&mlv_2,
+			mlv_1,
+			mlv_2,
 			&big_field_zerocheck_challenges,
 			&prover_message_domain,
 		);
@@ -301,8 +358,8 @@ mod test {
 			lagrange_evals_scalars(&verifier_input_domain, first_sumcheck_challenge);
 		let folder = BitAxisFolder::new(&lagrange_evals);
 
-		let folded_first_mle: FieldBuffer<B128> = folder.fold(&GlobalAllocator, &mlv_1);
-		let folded_second_mle: FieldBuffer<B128> = folder.fold(&GlobalAllocator, &mlv_2);
+		let folded_first_mle: FieldBuffer<B128> = folder.fold(&GlobalAllocator, mlv_1);
+		let folded_second_mle: FieldBuffer<B128> = folder.fold(&GlobalAllocator, mlv_2);
 		let folded_third_mle: FieldBuffer<B128> = folder.fold(&GlobalAllocator, &mlv_3);
 
 		let upcasted_small_field_challenges: Vec<_> = small_field_zerocheck_challenges

@@ -979,9 +979,8 @@ mod tests {
 		assert_eq!(Divisible::<U4>::get(&val, 1), U4::new(0xF));
 		assert_eq!(Divisible::<U4>::get(&val, 15), U4::new(0x1));
 
-		// Test ref_iter
-		let parts: Vec<U4> = Divisible::<U4>::ref_iter(&val).collect();
-		assert_eq!(parts.len(), 16);
+		// Iterating a u64 as nibbles yields 64 / 4 = 16 parts.
+		assert_eq!(Divisible::<U4>::ref_iter(&val).count(), 16);
 	}
 
 	#[test]

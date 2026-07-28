@@ -62,8 +62,7 @@ pub fn keccak_f1600(b: &CircuitBuilder, state: &mut [Wire; 25]) {
 pub fn keccak_permutation_round(b: &CircuitBuilder, state: &mut [Wire; 25], round: usize) {
 	theta(b, state);
 	rho_pi(b, state);
-	chi(b, state);
-	iota(b, state, round);
+	chi_iota(b, state, round);
 }
 
 fn theta(b: &CircuitBuilder, state: &mut [Wire; 25]) {
@@ -80,15 +79,6 @@ fn theta(b: &CircuitBuilder, state: &mut [Wire; 25]) {
 	let d3 = b.bxor(c2, b.rotl(c4, 1));
 	let d4 = b.bxor(c3, b.rotl(c0, 1));
 
-	// Fusing every linear expression into its AND leads to too many distinct shifted value
-	// indices and that slows down the shift reduction phase. Empirically we found out that
-	// preventing committing those here leads to better performance.
-	b.force_commit(d0);
-	b.force_commit(d1);
-	b.force_commit(d2);
-	b.force_commit(d3);
-	b.force_commit(d4);
-
 	// A'[x,y] = A[x,y] ^ D[x]
 	for y in 0..5 {
 		state[idx(0, y)] = b.bxor(state[idx(0, y)], d0);
@@ -99,7 +89,9 @@ fn theta(b: &CircuitBuilder, state: &mut [Wire; 25]) {
 	}
 }
 
-fn chi(b: &CircuitBuilder, state: &mut [Wire; 25]) {
+fn chi_iota(b: &CircuitBuilder, state: &mut [Wire; 25], round: usize) {
+	let rc = b.add_constant(Word(RC[round]));
+
 	for y in 0..5 {
 		let a0 = state[idx(0, y)];
 		let a1 = state[idx(1, y)];
@@ -107,7 +99,11 @@ fn chi(b: &CircuitBuilder, state: &mut [Wire; 25]) {
 		let a3 = state[idx(3, y)];
 		let a4 = state[idx(4, y)];
 
-		state[idx(0, y)] = b.fax(b.bnot(a1), a2, a0);
+		// For the state element at (0, 0), the output state has the round constant accumulated in.
+		// For circuit efficiency, we do this as part of the fused AND-XOR.
+		let a0_iota = if y == 0 { b.bxor(a0, rc) } else { a0 };
+
+		state[idx(0, y)] = b.fax(b.bnot(a1), a2, a0_iota);
 		state[idx(1, y)] = b.fax(b.bnot(a2), a3, a1);
 		state[idx(2, y)] = b.fax(b.bnot(a3), a4, a2);
 		state[idx(3, y)] = b.fax(b.bnot(a4), a0, a3);
@@ -127,11 +123,6 @@ fn rho_pi(b: &CircuitBuilder, state: &mut [Wire; 25]) {
 		}
 	}
 	*state = temp;
-}
-
-fn iota(b: &CircuitBuilder, state: &mut [Wire; 25], round: usize) {
-	let rc_wire = b.add_constant(Word(RC[round]));
-	state[0] = b.bxor(state[0], rc_wire);
 }
 
 #[cfg(test)]
@@ -287,21 +278,21 @@ mod tests {
 	}
 
 	#[test]
-	fn test_chi() {
+	fn test_chi_iota() {
 		let mut rng = StdRng::seed_from_u64(0);
 		let input_state = rng.random::<[u64; 25]>();
 
-		validate_circuit_component(chi, reference::chi, input_state);
-	}
-
-	#[test]
-	fn test_iota() {
-		let mut rng = StdRng::seed_from_u64(0);
-		let input_state = rng.random::<[u64; 25]>();
+		// The circuit fuses χ and ι into one pass, so it is checked against the two reference
+		// steps run back to back. Round 6 has a round constant with bits spread across all four
+		// 16-bit halves, so a misplaced constant shows up in the output.
+		const ROUND: usize = 6;
 
 		validate_circuit_component(
-			|b, state| iota(b, state, 0),
-			|state| reference::iota(state, 0),
+			|b, state| chi_iota(b, state, ROUND),
+			|state| {
+				reference::chi(state);
+				reference::iota(state, ROUND);
+			},
 			input_state,
 		);
 	}

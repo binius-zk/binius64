@@ -381,15 +381,15 @@ pub fn fp64_underflow_shift(
 	res_exp: Wire,
 ) -> (Wire, Wire, Wire) {
 	let c1 = one(b);
-	let keep = b.bnot(c1);
 
 	let exp_lt_1 = b.icmp_ult(res_exp, c1);
 	let k = isub(b, c1, res_exp); // 1 - exp
 	let k_use = b.select(exp_lt_1, k, zero(b));
 
 	let (mut sig_u, st) = var_shr_with_sticky(b, res_sig, k_use, true);
-	let bit0 = b.bor(b.band(sig_u, c1), b.band(st, c1));
-	sig_u = b.bor(b.band(sig_u, keep), bit0);
+	// (sig_u & ~1) | (sig_u & 1) | (st & 1) == sig_u | (st & 1): the sticky fold
+	// only ever sets bit 0, so clearing it first is dead work.
+	sig_u = b.bor(sig_u, b.band(st, c1));
 
 	let sig_round_base = b.select(exp_lt_1, sig_u, res_sig);
 	let exp_round_base = b.select(exp_lt_1, c1, res_exp);

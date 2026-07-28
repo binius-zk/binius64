@@ -96,11 +96,15 @@ impl WiringTranspose {
 /// `r_x_tensor` is the eq-indicator partial evaluation at r_x, i.e.
 /// `eq_ind_partial_eval(r_x)`. Accepting it as a parameter avoids redundant
 /// computation when folding multiple segments with the same r_x.
-pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
+///
+/// The folded polynomial is drawn from `alloc`: it is the transparent multilinear of an oracle
+/// relation, which the channel owns until the opening runs.
+pub fn fold_constraints<A: Allocator, F: Field, P: PackedField<Scalar = F>>(
+	alloc: &A,
 	transposed: &WiringTranspose,
 	lambda: F,
 	r_x_tensor: &[F],
-) -> FieldBuffer<P> {
+) -> FieldVec<P, A> {
 	// Batching powers for the three operands
 	let lambda_powers = [F::ONE, lambda, lambda.square()];
 
@@ -108,13 +112,16 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 	let log_size = transposed.log_size();
 	let len = 1 << log_size.saturating_sub(P::LOG_WIDTH);
 
-	// Process in parallel over chunks of P::WIDTH indices
-	let result = (0..len)
-		.into_par_iter()
-		.map(|packed_idx| {
+	// Fill the packed words in parallel through the allocated buffer's spare capacity, then commit
+	// the length once every word has been written.
+	let mut result = alloc.alloc::<P>(len);
+	result.spare_capacity_mut()[..len]
+		.par_iter_mut()
+		.enumerate()
+		.for_each(|(packed_idx, slot)| {
 			let base_idx = packed_idx << P::LOG_WIDTH;
 
-			P::from_fn(|scalar_idx| {
+			slot.write(P::from_fn(|scalar_idx| {
 				let idx = base_idx + scalar_idx;
 				if idx >= segment_size {
 					return F::ZERO;
@@ -127,9 +134,10 @@ pub fn fold_constraints<F: Field, P: PackedField<Scalar = F>>(
 					acc += r_x_weight * lambda_weight;
 				}
 				acc
-			})
-		})
-		.collect::<Vec<_>>();
+			}));
+		});
+	// SAFETY: the loop above initialized every one of the `len` spare words.
+	unsafe { result.set_len(len) };
 
 	FieldBuffer::new(log_size, result)
 }
@@ -195,35 +203,34 @@ pub fn build_mulcheck_witness<A: Allocator, F: Field, P: PackedField<Scalar = F>
 	let mut b = alloc.alloc::<P>(len);
 	let mut c = alloc.alloc::<P>(len);
 
-	(a.spare_capacity_mut(), b.spare_capacity_mut(), c.spare_capacity_mut())
+	// Fill the packed words in parallel through the allocated buffers' spare capacity, then commit
+	// the lengths once every word has been written.
+	(
+		mul_constraints.par_chunks(P::WIDTH),
+		a.spare_capacity_mut(),
+		b.spare_capacity_mut(),
+		c.spare_capacity_mut(),
+	)
 		.into_par_iter()
-		.enumerate()
-		.for_each(|(i, (a_i, b_i, c_i))| {
-			let offset = i << P::LOG_WIDTH;
-
+		.for_each(|(constraints_chunk, a_i, b_i, c_i)| {
 			for (dst, get_operand) in [
 				(a_i, get_a as fn(&MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex>),
 				(b_i, get_b as fn(&MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex>),
 				(c_i, get_c as fn(&MulConstraint<WitnessIndex>) -> &Operand<WitnessIndex>),
 			] {
-				let val = P::from_fn(|j| {
-					let constraint_idx = offset + j;
-					if constraint_idx < n_constraints {
-						eval_operand(
-							public,
-							&precommit_packed,
-							&private_packed,
-							get_operand(&mul_constraints[constraint_idx]),
-						)
-					} else {
-						F::ZERO
-					}
-				});
+				let val = P::from_iter(constraints_chunk.iter().map(|constraint| {
+					eval_operand(
+						public,
+						&precommit_packed,
+						&private_packed,
+						get_operand(constraint),
+					)
+				}));
 				dst.write(val);
 			}
 		});
 
-	// Safety: all entries in a, b, c are initialized in the parallel loop above.
+	// SAFETY: the loop above initialized every one of the `len` spare words of each buffer.
 	unsafe {
 		a.set_len(len);
 		b.set_len(len);
@@ -393,7 +400,12 @@ mod tests {
 		// Method 2: Use fold_constraints then evaluate at r_y
 		let transposed =
 			WiringTranspose::transpose(WitnessSegment::Private, private_size, &constraints);
-		let folded = fold_constraints::<_, Packed128b>(&transposed, lambda, r_x_tensor.as_ref());
+		let folded = fold_constraints::<_, _, Packed128b>(
+			&GlobalAllocator,
+			&transposed,
+			lambda,
+			r_x_tensor.as_ref(),
+		);
 		let actual = evaluate(&folded, &r_y);
 
 		assert_eq!(
@@ -484,8 +496,12 @@ mod tests {
 		let trace_claim = batched_sum - public_eval;
 
 		// Fold constraints to get the private wiring polynomial
-		let wiring_poly =
-			fold_constraints::<_, Packed128b>(&wiring_transpose, lambda, r_x_tensor.as_ref());
+		let wiring_poly = fold_constraints::<_, _, Packed128b>(
+			&GlobalAllocator,
+			&wiring_transpose,
+			lambda,
+			r_x_tensor.as_ref(),
+		);
 
 		// Finish the IOP with the oracle relation
 		prover_channel.prove_oracle_relations([(

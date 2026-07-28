@@ -5,7 +5,7 @@
 //! the hypercube), and a [`SharedMleCheckProver`] driving one [`QuadraticMleEvaluator`] (the
 //! evaluation claim on the product's multilinear extension at a random point).
 
-use binius_compute::{BufferPool, PoolVec};
+use binius_compute::BufferPool;
 use binius_field::{FieldOps, PackedField, arch::OptimalPackedB128};
 use binius_ip_prover::sumcheck::{
 	self,
@@ -76,8 +76,8 @@ fn bench_shared_sumcheck_bivariate_product(c: &mut Criterion) {
 				|| {
 					(
 						transcript.clone(),
-						FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, a_buffer.to_ref()),
-						FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, b_buffer.to_ref()),
+						FieldBuffer::clone_from_slice(&alloc, a_buffer.to_ref()),
+						FieldBuffer::clone_from_slice(&alloc, b_buffer.to_ref()),
 					)
 				},
 				|(mut transcript, a, b)| {
@@ -120,8 +120,8 @@ fn bench_shared_mlecheck_bivariate_product(c: &mut Criterion) {
 				|| {
 					(
 						transcript.clone(),
-						FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, a_buffer.to_ref()),
-						FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, b_buffer.to_ref()),
+						FieldBuffer::clone_from_slice(&alloc, a_buffer.to_ref()),
+						FieldBuffer::clone_from_slice(&alloc, b_buffer.to_ref()),
 						eval_point.clone(),
 					)
 				},

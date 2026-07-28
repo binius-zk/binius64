@@ -42,7 +42,10 @@ mod value_vec_alloc;
 pub use gate_graph::Wire;
 use scratch_alloc::{ScratchAlloc, ScratchPolicy};
 
-/// Options for the compiler.
+/// Which compiler passes run.
+///
+/// This is the only knob: a circuit compiles the same way whatever the process environment holds.
+/// A caller that wants a non-default pass set builds through [`CircuitBuilder::with_opts`].
 pub(crate) struct Options {
 	enable_gate_fusion: bool,
 	enable_constant_propagation: bool,
@@ -52,8 +55,6 @@ pub(crate) struct Options {
 	enable_scratch_pooling: bool,
 }
 
-// Shut up clippy since this is just so happens to be derivable for now.
-#[allow(clippy::derivable_impls)]
 impl Default for Options {
 	fn default() -> Self {
 		Self {
@@ -66,29 +67,6 @@ impl Default for Options {
 			// A caller that inspects one has to opt in knowingly.
 			enable_scratch_pooling: false,
 		}
-	}
-}
-
-impl Options {
-	fn from_env() -> Self {
-		// This is a very temporary solution for now.
-		//
-		// We do not expect those feature sets to soak here for too long neither we expect that
-		// the features are going to be detected using the environment variables.
-		let mut opts = Self::default();
-		if std::env::var("MONBIJOU_CONSTPROP").is_ok() {
-			opts.enable_constant_propagation = true;
-		}
-		if std::env::var("BINIUS_DISABLE_CSE").is_ok() {
-			opts.enable_common_subexpression_elimination = false;
-		}
-		if std::env::var("BINIUS_DISABLE_DCE").is_ok() {
-			opts.enable_dead_code_elimination = false;
-		}
-		if std::env::var("BINIUS_DISABLE_ALGEBRAIC_FOLDING").is_ok() {
-			opts.enable_algebraic_folding = false;
-		}
-		opts
 	}
 }
 
@@ -196,8 +174,7 @@ impl Default for CircuitBuilder {
 impl CircuitBuilder {
 	/// Create a new circuit builder with default options.
 	pub fn new() -> Self {
-		let opts = Options::from_env();
-		Self::with_opts(opts)
+		Self::with_opts(Options::default())
 	}
 
 	pub(crate) fn with_opts(opts: Options) -> Self {
@@ -237,10 +214,7 @@ impl CircuitBuilder {
 
 		// Run constant propagation optimization
 		if shared.opts.enable_constant_propagation {
-			let replaced = const_prop::constant_propagation(&mut graph, &shared.hint_registry);
-			if replaced > 0 {
-				eprintln!("Constant propagation: replaced {} wires with constants", replaced);
-			}
+			const_prop::constant_propagation(&mut graph, &shared.hint_registry);
 		}
 
 		// Common-subexpression elimination: collapse structurally-identical gates.
@@ -371,13 +345,12 @@ impl CircuitBuilder {
 			}
 		}
 
-		let cs = ConstraintSystem::new(
-			constants,
-			value_vec_layout,
+		let cs = ConstraintSystem {
 			and_constraints,
 			imul_constraints,
 			bmul_constraints,
-		);
+			..value_vec_layout.constraint_system_shape(constants)
+		};
 		if cfg!(debug_assertions) {
 			// Validate that the resulting constraint system has a good shape.
 			cs.validate().unwrap();
@@ -386,7 +359,14 @@ impl CircuitBuilder {
 		// Build evaluation form (consumes the hint registry the user populated via call_hint).
 		let eval_form = eval_form::EvalForm::build(&graph, &wire_mapping, shared.hint_registry);
 
-		Circuit::new(graph, cs, wire_mapping, eval_form, scratch_alloc.peak_live())
+		Circuit::new(
+			graph,
+			cs,
+			value_vec_layout,
+			wire_mapping,
+			eval_form,
+			scratch_alloc.peak_live(),
+		)
 	}
 
 	/// Creates a reference to the same underlying circuit builder that is namespaced to the
@@ -1097,8 +1077,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// - 1 IMUL constraint,
-	/// - 1 AND constraint (for security check).
+	/// 1 IMUL constraint.
 	pub fn imul(&self, a: Wire, b: Wire) -> (Wire, Wire) {
 		let hi = self.add_internal();
 		let lo = self.add_internal();

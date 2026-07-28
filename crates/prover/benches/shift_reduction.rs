@@ -19,7 +19,6 @@ use binius_prover::{
 	},
 };
 use binius_transcript::ProverTranscript;
-use binius_utils::checked_arithmetics::strict_log_2;
 use binius_verifier::{
 	config::StdChallenger,
 	protocols::shift::{OperatorData as VerifierOperatorData, verify},
@@ -91,12 +90,13 @@ fn bench_prove_and_verify(c: &mut Criterion) {
 
 	for &log_message_len_bytes in &log_message_lengths_bytes {
 		let message_len_bytes = 1 << log_message_len_bytes;
-		let (mut cs, value_vec) = create_sha256_cs_with_witness(log_message_len_bytes, &mut rng);
-		cs.validate_and_prepare().unwrap();
+		let (cs, value_vec) = create_sha256_cs_with_witness(log_message_len_bytes, &mut rng);
+		cs.validate().unwrap();
 
 		// Sample multilinear eval points
 		let r_x_prime_bitand = {
-			let log_bitand_constraint_count = strict_log_2(cs.and_constraints.len()).unwrap();
+			// The BitAnd reduction always runs; `None` is its single all-zero padding row.
+			let log_bitand_constraint_count = cs.log_and_constraints().unwrap_or(0);
 			(0..log_bitand_constraint_count as u128)
 				.map(F::new)
 				.collect::<Vec<_>>()
@@ -219,10 +219,11 @@ fn bench_shift_phases(c: &mut Criterion) {
 	// benches share one setup and stay quick.
 	const LOG_MESSAGE_LEN_BYTES: usize = 14;
 
-	let (mut cs, value_vec) = create_sha256_cs_with_witness(LOG_MESSAGE_LEN_BYTES, &mut rng);
-	cs.validate_and_prepare().unwrap();
+	let (cs, value_vec) = create_sha256_cs_with_witness(LOG_MESSAGE_LEN_BYTES, &mut rng);
+	cs.validate().unwrap();
 
-	let r_x_prime_bitand = (0..strict_log_2(cs.and_constraints.len()).unwrap() as u128)
+	// The BitAnd reduction always runs; `None` is its single all-zero padding row.
+	let r_x_prime_bitand = (0..cs.log_and_constraints().unwrap_or(0) as u128)
 		.map(F::new)
 		.collect::<Vec<_>>();
 	// SHA256 has no IMUL constraints, so the IntMul operator is the zero claim at an empty point,

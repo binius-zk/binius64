@@ -69,8 +69,7 @@ fn main() -> Result<()> {
 	// Take ownership of the underlying vectors without extra copies
 	let public: Vec<_> = public.into();
 	let non_public: Vec<_> = non_public.into();
-	let witness = ValueVec::new_from_data(cs.value_vec_layout.clone(), public, non_public)
-		.context("Failed to reconstruct ValueVec from provided values")?;
+	let witness = ValueVec::new_from_data(public, non_public);
 
 	// Setup prover (verifier is not used here)
 	let (_verifier, prover) = setup::<StdHashSuite>(cs, args.log_inv_rate as usize, None)?;

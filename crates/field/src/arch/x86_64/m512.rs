@@ -21,7 +21,7 @@ use crate::{
 		portable::packed::PackedPrimitiveType,
 		x86_64::{m128::M128, m256::M256},
 	},
-	underlier::{Divisible, NumCast, SmallU, UnderlierType, impl_divisible_bitmask, mapget},
+	underlier::{Divisible, SmallU, UnderlierType, impl_divisible_bitmask, mapget},
 };
 
 /// 512-bit value that is used for 512-bit SIMD operations
@@ -107,12 +107,6 @@ impl From<M512> for __m512i {
 	#[inline(always)]
 	fn from(value: M512) -> Self {
 		value.0
-	}
-}
-impl<U: NumCast<u128>> NumCast<M512> for U {
-	fn num_cast_from(val: M512) -> Self {
-		let [low, _, _, _] = val.into();
-		Self::num_cast_from(low)
 	}
 }
 

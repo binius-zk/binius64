@@ -10,6 +10,7 @@ mod batch;
 mod builder;
 mod const_eval;
 mod exec;
+mod opcode;
 mod scalar;
 #[cfg(test)]
 mod tests;
@@ -56,19 +57,15 @@ impl EvalForm {
 		let mut builder = BytecodeBuilder::new();
 
 		// Combined wire to register mapping
-		let wire_to_reg = |wire: Wire| -> u32 {
-			if let Some(&ValueIndex(idx)) = wire_mapping.get(wire) {
-				idx // ValueVec index
-			} else {
-				panic!("Wire {wire:?} not mapped");
-			}
-		};
+		// The mapping is dense over wires, so index it rather than probing for an entry.
+		//
+		// Invariant: every wire the graph holds was given a value index before this runs.
+		let wire_to_reg = |wire: Wire| -> u32 { wire_mapping[wire].0 };
 
 		// Build bytecode for each gate
-		for (gate_id, data) in gate_graph.gates.iter() {
+		for gate_id in gate_graph.gates.keys() {
 			gate::emit_gate_bytecode(
 				gate_id,
-				data,
 				gate_graph,
 				&mut builder,
 				wire_to_reg,
@@ -152,10 +149,5 @@ impl EvalForm {
 	/// Get the number of evaluation instructions
 	pub const fn n_eval_insn(&self) -> usize {
 		self.n_eval_insn
-	}
-
-	/// Returns the compiled evaluation bytecode.
-	pub fn bytecode(&self) -> &[u8] {
-		&self.bytecode
 	}
 }

@@ -2,17 +2,42 @@
 // Copyright 2026 The Binius Developers
 use std::iter;
 
-use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
+use binius_utils::{
+	checked_arithmetics::log2_ceil_usize,
+	serialization::{DeserializeBytes, SerializationError, SerializeBytes},
+};
 use bytes::{Buf, BufMut};
 
-use super::{
-	AndConstraint, BmulConstraint, ImulConstraint, Operand, ShiftVariant, ValueVec, ValueVecLayout,
-};
+#[cfg(doc)]
+use super::ValueVec;
+use super::{AndConstraint, BmulConstraint, ImulConstraint, Operand, ShiftVariant, ValueIndex};
 use crate::{error::ConstraintSystemError, word::Word};
 
 /// The ConstraintSystem is the core data structure in Binius64 that defines the computational
 /// constraints to be proven in zero-knowledge. It represents a system of equations over 64-bit
 /// words that must be satisfied by a valid values vector [`ValueVec`].
+///
+/// # Value vector shape
+///
+/// The constraints reference words of a value vector partitioned into two segments. The public
+/// segment holds the constants and the inout values; the hidden segment holds the private values.
+/// Each group of values is followed by padding, so the value vector runs
+///
+/// ```text
+/// [ constants | const pad | inout | inout pad ][ private | private pad ]
+///  \------------- public segment -----------/  \----- hidden segment -/
+/// ```
+///
+/// A constraint may reference any value word, but not a padding word.
+///
+/// # Constraint counts
+///
+/// The AND, IMUL and BMUL constraint counts are the true counts; none of them is rounded up to a
+/// power of two. The reductions run over power-of-two-sized operand columns, so the prover rounds
+/// each count up to a power of two and zero-fills the tail when it materializes the column;
+/// [`Self::log_and_constraints`] and its IMUL and BMUL siblings report the resulting variable
+/// count. Zero is a valid padding row for every constraint type: an empty operand evaluates to
+/// [`Word::ZERO`], and `0 & 0 ^ 0 = 0` and `0 * 0 = 0 || 0` both hold.
 ///
 /// # Clone
 ///
@@ -20,13 +45,21 @@ use crate::{error::ConstraintSystemError, word::Word};
 /// can have millions of constraints.
 #[derive(Debug, Clone)]
 pub struct ConstraintSystem {
-	/// Description of the value vector layout expected by this constraint system.
-	pub value_vec_layout: ValueVecLayout,
 	/// The constants that this constraint system defines.
 	///
 	/// Those constants will be going to be available for constraints in the value vector. Those
 	/// are known to both prover and verifier.
 	pub constants: Vec<Word>,
+	/// The number of padding words between the constants and the inout values.
+	pub n_const_pad: usize,
+	/// The number of input/output values, which are public but chosen per instance.
+	pub n_inout: usize,
+	/// The number of padding words between the inout values and the end of the public segment.
+	pub n_inout_pad: usize,
+	/// The number of private values, which only the prover knows.
+	pub n_private: usize,
+	/// The number of padding words between the private values and the end of the hidden segment.
+	pub n_private_pad: usize,
 	/// List of AND constraints that must be satisfied by the values vector.
 	pub and_constraints: Vec<AndConstraint>,
 	/// List of IMUL constraints that must be satisfied by the values vector.
@@ -37,33 +70,107 @@ pub struct ConstraintSystem {
 
 impl ConstraintSystem {
 	/// Serialization format version for compatibility checking
-	pub const SERIALIZATION_VERSION: u32 = 5;
+	pub const SERIALIZATION_VERSION: u32 = 6;
+
+	/// The minimum number of words in the public segment.
+	///
+	/// [`Self::validate_shape`] rejects any system whose public segment is shorter than this.
+	pub const MIN_WORDS_PER_SEGMENT: usize = 2;
 }
 
 impl ConstraintSystem {
-	/// Creates a new constraint system.
-	pub fn new(
-		constants: Vec<Word>,
-		value_vec_layout: ValueVecLayout,
-		and_constraints: Vec<AndConstraint>,
-		imul_constraints: Vec<ImulConstraint>,
-		bmul_constraints: Vec<BmulConstraint>,
-	) -> Self {
-		assert_eq!(constants.len(), value_vec_layout.n_const);
-		ConstraintSystem {
-			constants,
-			value_vec_layout,
-			and_constraints,
-			imul_constraints,
-			bmul_constraints,
+	/// Returns the number of constants.
+	pub const fn n_const(&self) -> usize {
+		self.constants.len()
+	}
+
+	/// Returns the index of the first inout value.
+	pub const fn offset_inout(&self) -> usize {
+		self.n_const() + self.n_const_pad
+	}
+
+	/// Returns the number of words in the public segment: the constants and inout values,
+	/// including padding up to the power-of-two segment length.
+	pub const fn n_public_words(&self) -> usize {
+		self.offset_inout() + self.n_inout + self.n_inout_pad
+	}
+
+	/// Returns the base-2 logarithm of the public segment length in words.
+	///
+	/// [`Self::validate_shape`] guarantees that the public segment length is a power of two.
+	pub const fn log_public_words(&self) -> usize {
+		self.n_public_words().trailing_zeros() as usize
+	}
+
+	/// Returns the number of words in the hidden segment: the private values and their padding.
+	pub const fn n_hidden_words(&self) -> usize {
+		self.n_private + self.n_private_pad
+	}
+
+	/// Returns the base-2 logarithm of the hidden segment length in words, rounded up to a
+	/// power of two.
+	///
+	/// [`Self::validate_shape`] guarantees this is at least [`Self::log_public_words`].
+	pub const fn log_witness_words(&self) -> usize {
+		log2_ceil_usize(self.n_hidden_words())
+	}
+
+	/// Ensures that the value vector shape of this constraint system is well-formed.
+	///
+	/// Specifically checks that:
+	///
+	/// - the public segment (constants and inout values) is padded to the power of two.
+	/// - the public segment is not less than the minimum size.
+	/// - the hidden segment is at least as long as the public segment, so
+	///   [`Self::log_witness_words`] is at least [`Self::log_public_words`].
+	pub const fn validate_shape(&self) -> Result<(), ConstraintSystemError> {
+		let pub_input_size = self.n_public_words();
+		if !pub_input_size.is_power_of_two() {
+			return Err(ConstraintSystemError::PublicInputPowerOfTwo);
 		}
+		if pub_input_size < Self::MIN_WORDS_PER_SEGMENT {
+			return Err(ConstraintSystemError::PublicInputTooShort { pub_input_size });
+		}
+
+		if self.n_hidden_words() < pub_input_size {
+			return Err(ConstraintSystemError::HiddenSegmentTooShort {
+				public_len: pub_input_size,
+				hidden_len: self.n_hidden_words(),
+			});
+		}
+
+		Ok(())
+	}
+
+	/// Returns true if the given index points to an area that is considered to be padding.
+	const fn is_padding(&self, index: ValueIndex) -> bool {
+		let idx = index.0 as usize;
+
+		// padding 1: between constants and inout section
+		if idx >= self.n_const() && idx < self.offset_inout() {
+			return true;
+		}
+
+		// padding 2: between the end of inout section and the end of the public segment
+		let end_of_inout = self.offset_inout() + self.n_inout;
+		if idx >= end_of_inout && idx < self.n_public_words() {
+			return true;
+		}
+
+		// padding 3: between the last private value and the end of the hidden segment
+		let end_of_private = self.n_public_words() + self.n_private;
+		if idx >= end_of_private && idx < self.value_vec_len() {
+			return true;
+		}
+
+		false
 	}
 
 	/// Ensures that this constraint system is well-formed and ready for proving.
 	///
 	/// Specifically checks that:
 	///
-	/// - the value vec layout is [valid][`ValueVecLayout::validate`].
+	/// - the value vector shape is [valid][`Self::validate_shape`].
 	/// - every [shifted value index][super::ShiftedValueIndex] is canonical.
 	/// - referenced values indices are in the range.
 	/// - constraints do not reference values in the padding area.
@@ -71,125 +178,75 @@ impl ConstraintSystem {
 	pub fn validate(&self) -> Result<(), ConstraintSystemError> {
 		tracing::debug_span!("Validating constraint system");
 
-		// Validate the value vector layout
-		self.value_vec_layout.validate()?;
+		self.validate_shape()?;
 
 		for (i, and) in self.and_constraints.iter().enumerate() {
 			for (operand, name) in iter::zip(&and.0, AndConstraint::OPERAND_NAMES) {
-				validate_operand(operand, &self.value_vec_layout, "and", i, name)?;
+				self.validate_operand(operand, "and", i, name)?;
 			}
 		}
 		for (i, imul) in self.imul_constraints.iter().enumerate() {
 			for (operand, name) in iter::zip(&imul.0, ImulConstraint::OPERAND_NAMES) {
-				validate_operand(operand, &self.value_vec_layout, "imul", i, name)?;
+				self.validate_operand(operand, "imul", i, name)?;
 			}
 		}
 		for (i, bmul) in self.bmul_constraints.iter().enumerate() {
 			for (operand, name) in iter::zip(&bmul.0, BmulConstraint::OPERAND_NAMES) {
-				validate_operand(operand, &self.value_vec_layout, "bmul", i, name)?;
+				self.validate_operand(operand, "bmul", i, name)?;
 			}
 		}
-
-		return Ok(());
-
-		fn validate_operand(
-			operand: &Operand,
-			value_vec_layout: &ValueVecLayout,
-			constraint_type: &'static str,
-			constraint_index: usize,
-			operand_name: &'static str,
-		) -> Result<(), ConstraintSystemError> {
-			for term in operand {
-				// check canonicity. SLL is the canonical form of the operand.
-				if term.amount == 0 && term.shift_variant != ShiftVariant::Sll {
-					return Err(ConstraintSystemError::NonCanonicalShift {
-						constraint_type,
-						constraint_index,
-						operand_name,
-					});
-				}
-				// Half-word (*32) variants cap at 32, full-width at 64.
-				let max_amount = term.shift_variant.max_amount();
-				if usize::from(term.amount) >= max_amount {
-					return Err(ConstraintSystemError::ShiftAmountTooLarge {
-						constraint_type,
-						constraint_index,
-						operand_name,
-						shift_amount: term.amount as usize,
-						max_amount,
-					});
-				}
-				// Check if the value index is out of bounds.
-				if value_vec_layout.is_committed_oob(term.value_index) {
-					return Err(ConstraintSystemError::OutOfRangeValueIndex {
-						constraint_type,
-						constraint_index,
-						operand_name,
-						value_index: term.value_index.0,
-						total_len: value_vec_layout.combined_len(),
-					});
-				}
-				// No value should refer to padding.
-				if value_vec_layout.is_padding(term.value_index) {
-					return Err(ConstraintSystemError::PaddingValueIndex {
-						constraint_type,
-						constraint_index,
-						operand_name,
-					});
-				}
-			}
-			Ok(())
-		}
-	}
-
-	/// [Validates][`Self::validate`] and prepares this constraint system for proving/verifying.
-	///
-	/// This function performs the following:
-	/// 1. Validates the value vector layout (including public input checks)
-	/// 2. Validates the constraints.
-	/// 3. Pads the AND, IMUL, and BMUL constraints to the next po2 size
-	pub fn validate_and_prepare(&mut self) -> Result<(), ConstraintSystemError> {
-		self.validate()?;
-
-		// Require all constraint types to have a power-of-two count. An empty IMUL (resp. BMUL)
-		// constraint set is kept at zero (rather than padded to a single dummy constraint) so the
-		// prover and verifier can skip the IntMul (resp. BinMul) reduction entirely — see
-		// `IOPProver::prove` / `IOPVerifier::verify`.
-		let and_target_size = self.and_constraints.len().next_power_of_two();
-		let imul_target_size = if self.imul_constraints.is_empty() {
-			0
-		} else {
-			self.imul_constraints.len().next_power_of_two()
-		};
-		let bmul_target_size = if self.bmul_constraints.is_empty() {
-			0
-		} else {
-			self.bmul_constraints.len().next_power_of_two()
-		};
-
-		self.and_constraints
-			.resize_with(and_target_size, AndConstraint::default);
-		self.imul_constraints
-			.resize_with(imul_target_size, ImulConstraint::default);
-		self.bmul_constraints
-			.resize_with(bmul_target_size, BmulConstraint::default);
 
 		Ok(())
 	}
 
-	#[cfg(test)]
-	fn add_and_constraint(&mut self, and_constraint: AndConstraint) {
-		self.and_constraints.push(and_constraint);
-	}
-
-	#[cfg(test)]
-	fn add_imul_constraint(&mut self, imul_constraint: ImulConstraint) {
-		self.imul_constraints.push(imul_constraint);
-	}
-
-	#[cfg(test)]
-	fn add_bmul_constraint(&mut self, bmul_constraint: BmulConstraint) {
-		self.bmul_constraints.push(bmul_constraint);
+	/// Checks that every term of an operand is canonical and references a value word.
+	fn validate_operand(
+		&self,
+		operand: &Operand,
+		constraint_type: &'static str,
+		constraint_index: usize,
+		operand_name: &'static str,
+	) -> Result<(), ConstraintSystemError> {
+		for term in operand {
+			// check canonicity. SLL is the canonical form of the operand.
+			if term.amount == 0 && term.shift_variant != ShiftVariant::Sll {
+				return Err(ConstraintSystemError::NonCanonicalShift {
+					constraint_type,
+					constraint_index,
+					operand_name,
+				});
+			}
+			// Half-word (*32) variants cap at 32, full-width at 64.
+			let max_amount = term.shift_variant.max_amount();
+			if usize::from(term.amount) >= max_amount {
+				return Err(ConstraintSystemError::ShiftAmountTooLarge {
+					constraint_type,
+					constraint_index,
+					operand_name,
+					shift_amount: term.amount as usize,
+					max_amount,
+				});
+			}
+			// Check if the value index is out of bounds.
+			if term.value_index.0 as usize >= self.value_vec_len() {
+				return Err(ConstraintSystemError::OutOfRangeValueIndex {
+					constraint_type,
+					constraint_index,
+					operand_name,
+					value_index: term.value_index.0,
+					total_len: self.value_vec_len(),
+				});
+			}
+			// No value should refer to padding.
+			if self.is_padding(term.value_index) {
+				return Err(ConstraintSystemError::PaddingValueIndex {
+					constraint_type,
+					constraint_index,
+					operand_name,
+				});
+			}
+		}
+		Ok(())
 	}
 
 	/// Returns the number of AND constraints in the system.
@@ -207,14 +264,51 @@ impl ConstraintSystem {
 		self.bmul_constraints.len()
 	}
 
-	/// The total length of the [`ValueVec`] expected by this constraint system.
-	pub const fn value_vec_len(&self) -> usize {
-		self.value_vec_layout.combined_len()
+	/// Returns the number of variables the BitAnd reduction runs over, or `None` when the system
+	/// has no AND constraints.
+	///
+	/// The reduction operates on operand columns with one row per AND constraint, zero-padded up
+	/// to a power of two, so it has `ceil(log2(n_and_constraints))` variables. Unlike the two
+	/// multiplication reductions, the BitAnd reduction always runs: a system with no AND
+	/// constraints still gets a single all-zero row, which every constraint type satisfies. Such a
+	/// system reduces over zero variables, so its callers read `None` as zero.
+	pub const fn log_and_constraints(&self) -> Option<usize> {
+		match self.n_and_constraints() {
+			0 => None,
+			n => Some(log2_ceil_usize(n)),
+		}
 	}
 
-	/// Create a new [`ValueVec`] with the size expected by this constraint system.
-	pub fn new_value_vec(&self) -> ValueVec {
-		ValueVec::new(self.value_vec_layout.clone())
+	/// Returns the number of variables the IntMul reduction runs over, or `None` when the system
+	/// has no IMUL constraints.
+	///
+	/// This is `ceil(log2(n_imul_constraints))`, matching the zero-padded operand columns the
+	/// reduction consumes. `None` is the skip signal: an empty IMUL set makes the prover and
+	/// verifier skip the IntMul reduction entirely, rather than run it over a single dummy
+	/// constraint.
+	pub const fn log_imul_constraints(&self) -> Option<usize> {
+		match self.n_imul_constraints() {
+			0 => None,
+			n => Some(log2_ceil_usize(n)),
+		}
+	}
+
+	/// Returns the number of variables the BinMul reduction runs over, or `None` when the system
+	/// has no BMUL constraints.
+	///
+	/// This is `ceil(log2(n_bmul_constraints))`, matching the zero-padded operand columns the
+	/// reduction consumes. As with [`Self::log_imul_constraints`], `None` is the skip signal; both
+	/// sides skip the BinMul reduction for an empty BMUL set.
+	pub const fn log_bmul_constraints(&self) -> Option<usize> {
+		match self.n_bmul_constraints() {
+			0 => None,
+			n => Some(log2_ceil_usize(n)),
+		}
+	}
+
+	/// The total length of the [`ValueVec`] expected by this constraint system.
+	pub const fn value_vec_len(&self) -> usize {
+		self.n_public_words() + self.n_hidden_words()
 	}
 }
 
@@ -222,8 +316,12 @@ impl SerializeBytes for ConstraintSystem {
 	fn serialize(&self, mut write_buf: impl BufMut) -> Result<(), SerializationError> {
 		Self::SERIALIZATION_VERSION.serialize(&mut write_buf)?;
 
-		self.value_vec_layout.serialize(&mut write_buf)?;
 		self.constants.serialize(&mut write_buf)?;
+		self.n_const_pad.serialize(&mut write_buf)?;
+		self.n_inout.serialize(&mut write_buf)?;
+		self.n_inout_pad.serialize(&mut write_buf)?;
+		self.n_private.serialize(&mut write_buf)?;
+		self.n_private_pad.serialize(&mut write_buf)?;
 		self.and_constraints.serialize(&mut write_buf)?;
 		self.imul_constraints.serialize(&mut write_buf)?;
 		self.bmul_constraints.serialize(write_buf)
@@ -242,21 +340,23 @@ impl DeserializeBytes for ConstraintSystem {
 			});
 		}
 
-		let value_vec_layout = ValueVecLayout::deserialize(&mut read_buf)?;
 		let constants = Vec::<Word>::deserialize(&mut read_buf)?;
+		let n_const_pad = usize::deserialize(&mut read_buf)?;
+		let n_inout = usize::deserialize(&mut read_buf)?;
+		let n_inout_pad = usize::deserialize(&mut read_buf)?;
+		let n_private = usize::deserialize(&mut read_buf)?;
+		let n_private_pad = usize::deserialize(&mut read_buf)?;
 		let and_constraints = Vec::<AndConstraint>::deserialize(&mut read_buf)?;
 		let imul_constraints = Vec::<ImulConstraint>::deserialize(&mut read_buf)?;
 		let bmul_constraints = Vec::<BmulConstraint>::deserialize(read_buf)?;
 
-		if constants.len() != value_vec_layout.n_const {
-			return Err(SerializationError::InvalidConstruction {
-				name: "ConstraintSystem::constants",
-			});
-		}
-
 		Ok(ConstraintSystem {
-			value_vec_layout,
 			constants,
+			n_const_pad,
+			n_inout,
+			n_inout_pad,
+			n_private,
+			n_private_pad,
 			and_constraints,
 			imul_constraints,
 			bmul_constraints,
@@ -267,62 +367,61 @@ impl DeserializeBytes for ConstraintSystem {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::constraint_system::{ShiftedValueIndex, ValueIndex, ValuesData};
+	use crate::constraint_system::{ShiftedValueIndex, ValueVec, ValuesData};
+
+	/// A shape with one padding word after the constants and two after the inout values, so the
+	/// public segment is 8 words, followed by a hidden segment of 6 values and 2 padding words.
+	///
+	///     [ c c c _ | i i _ _ ][ p p p p p p _ _ ]
+	///       0 1 2 3   4 5 6 7   8 ...      13
+	fn test_shape() -> ConstraintSystem {
+		ConstraintSystem {
+			constants: vec![
+				Word::from_u64(1),
+				Word::from_u64(42),
+				Word::from_u64(0xDEADBEEF),
+			],
+			n_const_pad: 1,
+			n_inout: 2,
+			n_inout_pad: 2,
+			n_private: 6,
+			n_private_pad: 2,
+			and_constraints: vec![],
+			imul_constraints: vec![],
+			bmul_constraints: vec![],
+		}
+	}
 
 	pub(crate) fn create_test_constraint_system() -> ConstraintSystem {
-		let constants = vec![
-			Word::from_u64(1),
-			Word::from_u64(42),
-			Word::from_u64(0xDEADBEEF),
-		];
-
-		let value_vec_layout = ValueVecLayout {
-			n_const: 3,
-			n_inout: 2,
-			n_witness: 10,
-			n_internal: 3,
-			offset_inout: 4,   // Must be power of 2 and >= n_const
-			offset_witness: 8, // Must be power of 2 and >= offset_inout + n_inout
-			n_hidden_words: 8, // Must be power of 2 and >= offset_witness + n_witness
-			n_scratch: 0,
-		};
-
-		let and_constraints = vec![
-			AndConstraint::plain_abc(
-				vec![ValueIndex(0), ValueIndex(1)],
-				vec![ValueIndex(2)],
-				vec![ValueIndex(3), ValueIndex(4)],
-			),
-			AndConstraint::abc(
+		ConstraintSystem {
+			and_constraints: vec![
+				AndConstraint::plain_abc(
+					vec![ValueIndex(0), ValueIndex(1)],
+					vec![ValueIndex(2)],
+					vec![ValueIndex(4), ValueIndex(5)],
+				),
+				AndConstraint::abc(
+					vec![ShiftedValueIndex::sll(ValueIndex(0), 5)],
+					vec![ShiftedValueIndex::srl(ValueIndex(1), 10)],
+					vec![ShiftedValueIndex::sar(ValueIndex(2), 15)],
+				),
+			],
+			imul_constraints: vec![ImulConstraint([
+				vec![ShiftedValueIndex::plain(ValueIndex(0))],
+				vec![ShiftedValueIndex::plain(ValueIndex(1))],
+				vec![ShiftedValueIndex::plain(ValueIndex(2))],
+				vec![ShiftedValueIndex::plain(ValueIndex(8))],
+			])],
+			bmul_constraints: vec![BmulConstraint([
+				vec![ShiftedValueIndex::plain(ValueIndex(0))],
+				vec![ShiftedValueIndex::plain(ValueIndex(1))],
+				vec![ShiftedValueIndex::plain(ValueIndex(2))],
+				vec![ShiftedValueIndex::plain(ValueIndex(4))],
+				vec![ShiftedValueIndex::plain(ValueIndex(5))],
 				vec![ShiftedValueIndex::sll(ValueIndex(0), 5)],
-				vec![ShiftedValueIndex::srl(ValueIndex(1), 10)],
-				vec![ShiftedValueIndex::sar(ValueIndex(2), 15)],
-			),
-		];
-
-		let imul_constraints = vec![ImulConstraint([
-			vec![ShiftedValueIndex::plain(ValueIndex(0))],
-			vec![ShiftedValueIndex::plain(ValueIndex(1))],
-			vec![ShiftedValueIndex::plain(ValueIndex(2))],
-			vec![ShiftedValueIndex::plain(ValueIndex(3))],
-		])];
-
-		let bmul_constraints = vec![BmulConstraint([
-			vec![ShiftedValueIndex::plain(ValueIndex(0))],
-			vec![ShiftedValueIndex::plain(ValueIndex(1))],
-			vec![ShiftedValueIndex::plain(ValueIndex(2))],
-			vec![ShiftedValueIndex::plain(ValueIndex(3))],
-			vec![ShiftedValueIndex::plain(ValueIndex(4))],
-			vec![ShiftedValueIndex::sll(ValueIndex(0), 5)],
-		])];
-
-		ConstraintSystem::new(
-			constants,
-			value_vec_layout,
-			and_constraints,
-			imul_constraints,
-			bmul_constraints,
-		)
+			])],
+			..test_shape()
+		}
 	}
 
 	#[test]
@@ -335,16 +434,15 @@ mod tests {
 		let deserialized = ConstraintSystem::deserialize(&mut buf.as_slice()).unwrap();
 
 		// Check version
-		assert_eq!(ConstraintSystem::SERIALIZATION_VERSION, 5);
+		assert_eq!(ConstraintSystem::SERIALIZATION_VERSION, 6);
 
-		// Check value_vec_layout
-		assert_eq!(original.value_vec_layout, deserialized.value_vec_layout);
-
-		// Check constants
-		assert_eq!(original.constants.len(), deserialized.constants.len());
-		for (orig, deser) in original.constants.iter().zip(deserialized.constants.iter()) {
-			assert_eq!(orig, deser);
-		}
+		// Check the value vector shape
+		assert_eq!(original.constants, deserialized.constants);
+		assert_eq!(original.n_const_pad, deserialized.n_const_pad);
+		assert_eq!(original.n_inout, deserialized.n_inout);
+		assert_eq!(original.n_inout_pad, deserialized.n_inout_pad);
+		assert_eq!(original.n_private, deserialized.n_private);
+		assert_eq!(original.n_private_pad, deserialized.n_private_pad);
 
 		// Check and_constraints
 		assert_eq!(original.and_constraints.len(), deserialized.and_constraints.len());
@@ -367,46 +465,6 @@ mod tests {
 		match result.unwrap_err() {
 			SerializationError::InvalidConstruction { name } => {
 				assert_eq!(name, "ConstraintSystem::version");
-			}
-			_ => panic!("Expected InvalidConstruction error"),
-		}
-	}
-
-	#[test]
-	fn test_constraint_system_constants_length_mismatch() {
-		// Create valid components but with mismatched constants length
-		let value_vec_layout = ValueVecLayout {
-			n_const: 5, // Expect 5 constants
-			n_inout: 2,
-			n_witness: 10,
-			n_internal: 3,
-			offset_inout: 8,
-			offset_witness: 16,
-			n_hidden_words: 16,
-			n_scratch: 0,
-		};
-
-		let constants = vec![Word::from_u64(1), Word::from_u64(2)]; // Only 2 constants
-		let and_constraints: Vec<AndConstraint> = vec![];
-		let imul_constraints: Vec<ImulConstraint> = vec![];
-		let bmul_constraints: Vec<BmulConstraint> = vec![];
-
-		// Serialize components manually
-		let mut buf = Vec::new();
-		ConstraintSystem::SERIALIZATION_VERSION
-			.serialize(&mut buf)
-			.unwrap();
-		value_vec_layout.serialize(&mut buf).unwrap();
-		constants.serialize(&mut buf).unwrap();
-		and_constraints.serialize(&mut buf).unwrap();
-		imul_constraints.serialize(&mut buf).unwrap();
-		bmul_constraints.serialize(&mut buf).unwrap();
-
-		let result = ConstraintSystem::deserialize(&mut buf.as_slice());
-		assert!(result.is_err());
-		match result.unwrap_err() {
-			SerializationError::InvalidConstruction { name } => {
-				assert_eq!(name, "ConstraintSystem::constants");
 			}
 			_ => panic!("Expected InvalidConstruction error"),
 		}
@@ -442,7 +500,7 @@ mod tests {
 		constraint_system.serialize(&mut buf).unwrap();
 
 		// Write to reference file.
-		let test_data_path = std::path::Path::new("test_data/constraint_system_v5.bin");
+		let test_data_path = std::path::Path::new("test_data/constraint_system_v6.bin");
 
 		// Create directory if it doesn't exist
 		if let Some(parent) = test_data_path.parent() {
@@ -459,22 +517,19 @@ mod tests {
 	/// This test will fail if breaking changes are made without incrementing the version.
 	#[test]
 	fn test_deserialize_from_reference_binary_file() {
-		// The v5 format stores IMUL operands as `(a, b, lo, hi)`; the v4 format ordered them
-		// `(a, b, hi, lo)`. Older files are no longer compatible.
-		let binary_data = include_bytes!("../../test_data/constraint_system_v5.bin");
+		// The v6 format replaces the embedded `ValueVecLayout` with the section counts of the
+		// value vector. Older files are no longer compatible.
+		let binary_data = include_bytes!("../../test_data/constraint_system_v6.bin");
 
 		let deserialized = ConstraintSystem::deserialize(&mut binary_data.as_slice()).unwrap();
 
-		assert_eq!(deserialized.value_vec_layout.n_const, 3);
-		assert_eq!(deserialized.value_vec_layout.n_inout, 2);
-		assert_eq!(deserialized.value_vec_layout.n_witness, 10);
-		assert_eq!(deserialized.value_vec_layout.n_internal, 3);
-		assert_eq!(deserialized.value_vec_layout.offset_inout, 4);
-		assert_eq!(deserialized.value_vec_layout.offset_witness, 8);
-		assert_eq!(deserialized.value_vec_layout.n_hidden_words, 8);
-		assert_eq!(deserialized.value_vec_layout.n_scratch, 0);
+		assert_eq!(deserialized.n_const(), 3);
+		assert_eq!(deserialized.n_const_pad, 1);
+		assert_eq!(deserialized.n_inout, 2);
+		assert_eq!(deserialized.n_inout_pad, 2);
+		assert_eq!(deserialized.n_private, 6);
+		assert_eq!(deserialized.n_private_pad, 2);
 
-		assert_eq!(deserialized.constants.len(), 3);
 		assert_eq!(deserialized.constants[0].as_u64(), 1);
 		assert_eq!(deserialized.constants[1].as_u64(), 42);
 		assert_eq!(deserialized.constants[2].as_u64(), 0xDEADBEEF);
@@ -487,7 +542,7 @@ mod tests {
 		// This is implicitly checked during deserialization, but we can also verify
 		// the file starts with the correct version bytes
 		let version_bytes = &binary_data[0..4]; // First 4 bytes should be version
-		let expected_version_bytes = 5u32.to_le_bytes(); // Version 5 in little-endian
+		let expected_version_bytes = 6u32.to_le_bytes(); // Version 6 in little-endian
 		assert_eq!(
 			version_bytes, expected_version_bytes,
 			"Binary file version mismatch. If you made breaking changes, increment ConstraintSystem::SERIALIZATION_VERSION"
@@ -495,32 +550,98 @@ mod tests {
 	}
 
 	#[test]
-	fn test_validate_rejects_padding_references() {
-		let mut cs = ConstraintSystem::new(
-			vec![Word::from_u64(1)],
-			ValueVecLayout {
-				n_const: 1,
-				n_inout: 1,
-				n_witness: 2,
-				n_internal: 2,
-				offset_inout: 4,
-				offset_witness: 8,
-				n_hidden_words: 8,
-				n_scratch: 0,
-			},
-			vec![],
-			vec![],
-			vec![],
-		);
+	fn test_log_witness_words() {
+		let cs = |n_private: usize, n_private_pad: usize| ConstraintSystem {
+			n_private,
+			n_private_pad,
+			..test_shape()
+		};
+		// Typical: more hidden words than public words.
+		assert_eq!(cs(60, 4).log_witness_words(), 6);
+		// Exact power-of-two hidden count.
+		assert_eq!(cs(30, 2).log_witness_words(), 5);
+	}
 
-		// Add constraint that references padding (index 2 is padding between const and inout)
-		cs.add_and_constraint(AndConstraint::plain_abc(
+	#[test]
+	fn test_validate_shape_rejects_short_hidden_segment() {
+		// The hidden segment (4 words) is shorter than the public segment (8 words).
+		let cs = ConstraintSystem {
+			n_private: 4,
+			n_private_pad: 0,
+			..test_shape()
+		};
+		assert!(matches!(
+			cs.validate_shape(),
+			Err(ConstraintSystemError::HiddenSegmentTooShort {
+				public_len: 8,
+				hidden_len: 4,
+			})
+		));
+	}
+
+	#[test]
+	fn test_validate_shape_rejects_non_power_of_two_public_segment() {
+		// Nine public words: the segment must be padded to a power of two.
+		let cs = ConstraintSystem {
+			n_inout_pad: 3,
+			..test_shape()
+		};
+		assert!(matches!(cs.validate_shape(), Err(ConstraintSystemError::PublicInputPowerOfTwo)));
+	}
+
+	#[test]
+	fn test_is_padding_covers_every_gap() {
+		//     [ c c | _ _ _ _ _ _ | i i | _ _ _ _ _ _ ][ p p p p p p p p | _ _ _ _ _ _ _ _ ]
+		//       0 1   2 ...     7   8 9   10 ...   15    16 ...      23   24 ...       31
+		let cs = ConstraintSystem {
+			constants: vec![Word::ONE, Word::ALL_ONE],
+			n_const_pad: 6,
+			n_inout: 2,
+			n_inout_pad: 6,
+			n_private: 8,
+			n_private_pad: 8,
+			..test_shape()
+		};
+		cs.validate_shape().unwrap();
+
+		let padding = (0..cs.value_vec_len())
+			.filter(|&i| cs.is_padding(ValueIndex(i as u32)))
+			.collect::<Vec<_>>();
+		let expected = (2..8).chain(10..16).chain(24..32).collect::<Vec<_>>();
+		assert_eq!(padding, expected);
+	}
+
+	#[test]
+	fn test_is_padding_gapless_shape_has_no_padding() {
+		//     [ c c c c | i i i i ][ p p p p p p p p ]
+		let cs = ConstraintSystem {
+			constants: vec![Word::ONE; 4],
+			n_const_pad: 0,
+			n_inout: 4,
+			n_inout_pad: 0,
+			n_private: 8,
+			n_private_pad: 0,
+			..test_shape()
+		};
+		cs.validate_shape().unwrap();
+
+		for i in 0..cs.value_vec_len() {
+			assert!(!cs.is_padding(ValueIndex(i as u32)), "index {i} should not be padding");
+		}
+	}
+
+	#[test]
+	fn test_validate_rejects_padding_references() {
+		let mut cs = test_shape();
+
+		// Index 3 is the padding word between the constants and the inout values.
+		cs.and_constraints.push(AndConstraint::plain_abc(
 			vec![ValueIndex(0)], // valid constant
-			vec![ValueIndex(2)], // PADDING!
-			vec![ValueIndex(8)], // valid witness
+			vec![ValueIndex(3)], // PADDING!
+			vec![ValueIndex(8)], // valid private value
 		));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err(), "Should reject constraint referencing padding");
 
 		match result.unwrap_err() {
@@ -535,38 +656,23 @@ mod tests {
 
 	#[test]
 	fn test_validate_accepts_non_padding_references() {
-		let mut cs = ConstraintSystem::new(
-			vec![Word::from_u64(1), Word::from_u64(2)],
-			ValueVecLayout {
-				n_const: 2,
-				n_inout: 2,
-				n_witness: 4,
-				n_internal: 4,
-				offset_inout: 2,
-				offset_witness: 4,
-				n_hidden_words: 12,
-				n_scratch: 0,
-			},
-			vec![],
-			vec![],
-			vec![],
-		);
+		let mut cs = test_shape();
 
-		// Add constraint that only references valid non-padding indices
-		cs.add_and_constraint(AndConstraint::plain_abc(
+		// Add constraints that only reference valid non-padding indices
+		cs.and_constraints.push(AndConstraint::plain_abc(
 			vec![ValueIndex(0), ValueIndex(1)], // constants
-			vec![ValueIndex(2), ValueIndex(3)], // inout
-			vec![ValueIndex(4), ValueIndex(5)], // witness
+			vec![ValueIndex(4), ValueIndex(5)], // inout
+			vec![ValueIndex(8), ValueIndex(9)], // private
 		));
 
-		cs.add_imul_constraint(ImulConstraint([
-			vec![ShiftedValueIndex::plain(ValueIndex(6))], // a: witness
-			vec![ShiftedValueIndex::plain(ValueIndex(7))], // b: witness
-			vec![ShiftedValueIndex::plain(ValueIndex(8))], // lo: internal
-			vec![ShiftedValueIndex::plain(ValueIndex(9))], // hi: internal
+		cs.imul_constraints.push(ImulConstraint([
+			vec![ShiftedValueIndex::plain(ValueIndex(10))], // a
+			vec![ShiftedValueIndex::plain(ValueIndex(11))], // b
+			vec![ShiftedValueIndex::plain(ValueIndex(12))], // lo
+			vec![ShiftedValueIndex::plain(ValueIndex(13))], // hi
 		]));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(
 			result.is_ok(),
 			"Should accept constraints with only valid references: {:?}",
@@ -575,32 +681,43 @@ mod tests {
 	}
 
 	#[test]
+	fn test_validate_keeps_true_constraint_counts() {
+		let cs = create_test_constraint_system();
+		let (n_and, n_imul, n_bmul) =
+			(cs.n_and_constraints(), cs.n_imul_constraints(), cs.n_bmul_constraints());
+		cs.validate().unwrap();
+		assert_eq!(cs.n_and_constraints(), n_and);
+		assert_eq!(cs.n_imul_constraints(), n_imul);
+		assert_eq!(cs.n_bmul_constraints(), n_bmul);
+	}
+
+	#[test]
+	fn test_log_constraint_counts_round_up() {
+		let mut cs = test_shape();
+		// An empty set reports `None`; the BitAnd reduction reads that as its single all-zero
+		// padding row, i.e. zero variables.
+		assert_eq!(cs.log_and_constraints(), None);
+
+		let and =
+			AndConstraint::plain_abc(vec![ValueIndex(0)], vec![ValueIndex(4)], vec![ValueIndex(8)]);
+		cs.and_constraints = vec![and; 3];
+		assert_eq!(cs.log_and_constraints(), Some(2));
+		cs.and_constraints.push(cs.and_constraints[0].clone());
+		assert_eq!(cs.log_and_constraints(), Some(2));
+	}
+
+	#[test]
 	fn test_validate_rejects_out_of_range_indices() {
-		let mut cs = ConstraintSystem::new(
-			vec![Word::from_u64(1)],
-			ValueVecLayout {
-				n_const: 1,
-				n_inout: 1,
-				n_witness: 2,
-				n_internal: 2,
-				offset_inout: 4,
-				offset_witness: 8,
-				n_hidden_words: 8,
-				n_scratch: 0,
-			},
-			vec![],
-			vec![],
-			vec![],
-		);
+		let mut cs = test_shape();
 
 		// Add AND constraint that references an out-of-range index
-		cs.add_and_constraint(AndConstraint::plain_abc(
+		cs.and_constraints.push(AndConstraint::plain_abc(
 			vec![ValueIndex(0)],  // valid constant
 			vec![ValueIndex(16)], // OUT OF RANGE! (total_len is 16, so max valid index is 15)
-			vec![ValueIndex(8)],  // valid witness
+			vec![ValueIndex(8)],  // valid private value
 		));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err(), "Should reject constraint with out-of-range index");
 
 		match result.unwrap_err() {
@@ -622,32 +739,17 @@ mod tests {
 
 	#[test]
 	fn test_validate_rejects_out_of_range_in_imul_constraint() {
-		let mut cs = ConstraintSystem::new(
-			vec![Word::from_u64(1), Word::from_u64(2)],
-			ValueVecLayout {
-				n_const: 2,
-				n_inout: 2,
-				n_witness: 4,
-				n_internal: 4,
-				offset_inout: 2,
-				offset_witness: 4,
-				n_hidden_words: 12,
-				n_scratch: 0,
-			},
-			vec![],
-			vec![],
-			vec![],
-		);
+		let mut cs = test_shape();
 
 		// Add IMUL constraint with out-of-range index in 'hi' operand
-		cs.add_imul_constraint(ImulConstraint([
+		cs.imul_constraints.push(ImulConstraint([
 			vec![ShiftedValueIndex::plain(ValueIndex(0))], // a: valid
 			vec![ShiftedValueIndex::plain(ValueIndex(1))], // b: valid
-			vec![ShiftedValueIndex::plain(ValueIndex(3))], // lo: valid
+			vec![ShiftedValueIndex::plain(ValueIndex(8))], // lo: valid
 			vec![ShiftedValueIndex::plain(ValueIndex(100))], // hi: WAY out of range!
 		]));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err(), "Should reject IMUL constraint with out-of-range index");
 
 		match result.unwrap_err() {
@@ -669,34 +771,19 @@ mod tests {
 
 	#[test]
 	fn test_validate_rejects_out_of_range_in_bmul_constraint() {
-		let mut cs = ConstraintSystem::new(
-			vec![Word::from_u64(1)],
-			ValueVecLayout {
-				n_const: 1,
-				n_inout: 2,
-				n_witness: 4,
-				n_internal: 4,
-				offset_inout: 2,
-				offset_witness: 4,
-				n_hidden_words: 12,
-				n_scratch: 0,
-			},
-			vec![],
-			vec![],
-			vec![],
-		);
+		let mut cs = test_shape();
 
 		// Add BMUL constraint with out-of-range index in 'c_hi' operand
-		cs.add_bmul_constraint(BmulConstraint([
+		cs.bmul_constraints.push(BmulConstraint([
 			vec![ShiftedValueIndex::plain(ValueIndex(0))], // a_lo: valid const
-			vec![ShiftedValueIndex::plain(ValueIndex(2))], // a_hi: valid inout
-			vec![ShiftedValueIndex::plain(ValueIndex(3))], // b_lo: valid inout
-			vec![ShiftedValueIndex::plain(ValueIndex(4))], // b_hi: valid witness
-			vec![ShiftedValueIndex::plain(ValueIndex(5))], // c_lo: valid witness
+			vec![ShiftedValueIndex::plain(ValueIndex(4))], // a_hi: valid inout
+			vec![ShiftedValueIndex::plain(ValueIndex(5))], // b_lo: valid inout
+			vec![ShiftedValueIndex::plain(ValueIndex(8))], // b_hi: valid private
+			vec![ShiftedValueIndex::plain(ValueIndex(9))], // c_lo: valid private
 			vec![ShiftedValueIndex::plain(ValueIndex(100))], // c_hi: WAY out of range!
 		]));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err(), "Should reject BMUL constraint with out-of-range index");
 
 		match result.unwrap_err() {
@@ -721,32 +808,17 @@ mod tests {
 		// This test verifies that out-of-range checking happens before padding checking
 		// by using an index that is both out-of-range AND would be in a padding area if it were
 		// valid
-		let mut cs = ConstraintSystem::new(
-			vec![Word::from_u64(1)],
-			ValueVecLayout {
-				n_const: 1,
-				n_inout: 1,
-				n_witness: 2,
-				n_internal: 2,
-				offset_inout: 4,
-				offset_witness: 8,
-				n_hidden_words: 8,
-				n_scratch: 0,
-			},
-			vec![],
-			vec![],
-			vec![],
-		);
+		let mut cs = test_shape();
 
-		// Index 20 is out of range (>= 16)
-		// If it were in range, indices 2-3 and 6-7 would be padding
-		cs.add_and_constraint(AndConstraint::plain_abc(
+		// Index 19 is out of range (>= 16)
+		// If it were in range, indices 3 and 6-7 would be padding
+		cs.and_constraints.push(AndConstraint::plain_abc(
 			vec![ValueIndex(0)],
-			vec![ValueIndex(20)], // out of range
+			vec![ValueIndex(19)], // out of range
 			vec![ValueIndex(8)],
 		));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err());
 
 		// Should get OutOfRangeValueIndex, not PaddingValueIndex
@@ -763,26 +835,11 @@ mod tests {
 
 	#[test]
 	fn test_validate_rejects_half_word_shift_amount_out_of_range() {
-		let mut cs = ConstraintSystem::new(
-			vec![Word::from_u64(1)],
-			ValueVecLayout {
-				n_const: 1,
-				n_inout: 1,
-				n_witness: 2,
-				n_internal: 2,
-				offset_inout: 4,
-				offset_witness: 8,
-				n_hidden_words: 8,
-				n_scratch: 0,
-			},
-			vec![],
-			vec![],
-			vec![],
-		);
+		let mut cs = test_shape();
 
 		// A half-word (*32) shift may only use amounts < 32.
 		// 32 is out of range even though it is below the full-width bound of 64.
-		cs.add_and_constraint(AndConstraint::abc(
+		cs.and_constraints.push(AndConstraint::abc(
 			vec![ShiftedValueIndex {
 				value_index: ValueIndex(0),
 				shift_variant: ShiftVariant::Sll32,
@@ -792,7 +849,7 @@ mod tests {
 			vec![ShiftedValueIndex::plain(ValueIndex(8))],
 		));
 
-		match cs.validate_and_prepare().unwrap_err() {
+		match cs.validate().unwrap_err() {
 			ConstraintSystemError::ShiftAmountTooLarge {
 				constraint_type,
 				constraint_index,
@@ -811,30 +868,17 @@ mod tests {
 	}
 
 	#[test]
-	fn test_roundtrip_cs_and_witnesses_reconstruct_valuevec_with_scratch() {
-		// Layout with non-zero scratch. Public = 8, total committed = 16, scratch = 5
-		let layout = ValueVecLayout {
-			n_const: 2,
-			n_inout: 3,
-			n_witness: 4,
-			n_internal: 3,
-			offset_inout: 4,   // >= n_const and power of two
-			offset_witness: 8, // >= offset_inout + n_inout and power of two
-			n_hidden_words: 8,
-			n_scratch: 5, // non-zero scratch
-		};
+	fn test_roundtrip_cs_and_witnesses_reconstruct_valuevec() {
+		let cs = test_shape();
 
-		let constants = vec![Word::from_u64(11), Word::from_u64(22)];
-		let cs = ConstraintSystem::new(constants, layout.clone(), vec![], vec![], vec![]);
-
-		// Build a ValueVec and fill both committed and scratch with non-zero data
-		let mut values = cs.new_value_vec();
-		let full_len = layout.combined_len() + layout.n_scratch;
-		for i in 0..full_len {
-			// Deterministic pattern
-			let val = Word::from_u64(0xA5A5_5A5A ^ (i as u64 * 0x9E37_79B9));
-			values[ValueIndex(i as u32)] = val;
-		}
+		// Build a value vector and fill every word with a deterministic pattern.
+		let public = (0..cs.n_public_words())
+			.map(|i| Word::from_u64(0xA5A5_5A5A ^ (i as u64 * 0x9E37_79B9)))
+			.collect::<Vec<_>>();
+		let private = (0..cs.n_hidden_words())
+			.map(|i| Word::from_u64(0x5A5A_A5A5 ^ (i as u64 * 0x9E37_79B9)))
+			.collect::<Vec<_>>();
+		let values = ValueVec::new_from_data(public, private);
 
 		// Split into public and non-public witnesses and serialize all artifacts
 		let public_data = ValuesData::from(values.public());
@@ -853,24 +897,12 @@ mod tests {
 		let cs2 = ConstraintSystem::deserialize(&mut buf_cs.as_slice()).unwrap();
 		let pub2 = ValuesData::deserialize(&mut buf_pub.as_slice()).unwrap();
 		let non_pub2 = ValuesData::deserialize(&mut buf_non_pub.as_slice()).unwrap();
+		assert_eq!(cs2.n_public_words(), pub2.len());
+		assert_eq!(cs2.n_hidden_words(), non_pub2.len());
 
 		// Reconstruct ValueVec from deserialized pieces
-		let reconstructed =
-			ValueVec::new_from_data(cs2.value_vec_layout, pub2.into_owned(), non_pub2.into_owned())
-				.unwrap();
+		let reconstructed = ValueVec::new_from_data(pub2.into_owned(), non_pub2.into_owned());
 
-		// Ensure committed part matches exactly
 		assert_eq!(reconstructed.combined_witness(), values.combined_witness());
-
-		// Scratch is not serialized; reconstructed scratch should be zero-filled
-		let scratch_start = layout.combined_len();
-		let scratch_end = scratch_start + layout.n_scratch;
-		for i in scratch_start..scratch_end {
-			assert_eq!(
-				reconstructed[ValueIndex(i as u32)],
-				Word::ZERO,
-				"scratch index {i} should be zero"
-			);
-		}
 	}
 }

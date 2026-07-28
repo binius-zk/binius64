@@ -17,7 +17,7 @@ use binius_field::{BinaryField, Divisible, PackedField};
 pub use binius_ip_prover::logup_star::Looker;
 use binius_ip_prover::logup_star::{self as reduction, witness};
 use binius_math::{
-	FieldBuffer, multilinear::eq::eq_ind_partial_eval, univariate::evaluate_univariate,
+	FieldBuffer, multilinear::eq::eq_ind_partial_eval_in, univariate::evaluate_univariate,
 };
 
 use crate::channel::IOPProverChannel;
@@ -72,7 +72,7 @@ pub fn prove<F, P, Channel, A>(
 where
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
-	Channel: IOPProverChannel<P>,
+	Channel: IOPProverChannel<P, A>,
 	A: Allocator,
 {
 	let m = table.log_len();
@@ -83,7 +83,7 @@ where
 	//     gamma^j * eq_{r_j} = the per-looker scaled numerators
 	//     Y = sum_j gamma^j * (I_j)_* eq_{r_j}     the combined pushforward
 	let gamma = channel.sample();
-	let (numerators, pushforward) = witness::combined_lookers::<F, P>(lookers, gamma, m);
+	let (numerators, pushforward) = witness::combined_lookers::<A, F, P>(alloc, lookers, gamma, m);
 
 	// Commit Y before the reduction, so the logUp challenge binds the commitment.
 	let oracle = tracing::debug_span!("Commit pushforward")
@@ -103,7 +103,7 @@ where
 		lookers,
 		combined_eval_claim,
 		numerators,
-		&pushforward,
+		pushforward.to_ref(),
 		channel,
 	);
 
@@ -112,7 +112,7 @@ where
 	//
 	//     <Y, eq_r'> = Y(r') = pushforward_eval_claim
 	let _open_guard = tracing::debug_span!("Open pushforward relation").entered();
-	let transparent = eq_ind_partial_eval::<P>(&output.table_eval_point);
+	let transparent = eq_ind_partial_eval_in::<A, P>(alloc, &output.table_eval_point);
 	channel.prove_oracle_relations([(
 		oracle,
 		pushforward,
@@ -406,7 +406,7 @@ mod tests {
 		let mut prover_transcript = ProverTranscript::new(Chal::default());
 		let prover_channel_rng = StdRng::seed_from_u64(8);
 		let mut prover_channel = prover_compiler
-			.create_channel_from_transcript::<StdHashSuite, Chal, _>(
+			.create_channel_from_transcript::<StdHashSuite, Chal, _, _>(
 				&mut prover_transcript,
 				prover_channel_rng,
 			);

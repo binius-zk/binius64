@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-use binius_core::{ValueIndex, ValueVecLayout, Word};
+use binius_core::{ConstraintSystem, ValueIndex, ValueVecLayout, Word};
 use cranelift_entity::SecondaryMap;
 
 use crate::compiler::Wire;
@@ -114,7 +114,7 @@ impl Alloc {
 			cur_index += 1;
 		}
 		// Ensure the public section meets the minimum size requirement
-		cur_index = cur_index.max(ValueVecLayout::MIN_WORDS_PER_SEGMENT as u32);
+		cur_index = cur_index.max(ConstraintSystem::MIN_WORDS_PER_SEGMENT as u32);
 		cur_index = cur_index.next_power_of_two();
 		let offset_witness = cur_index as usize;
 		for wire in self.w_witness.into_iter().chain(self.w_internal) {
@@ -123,7 +123,7 @@ impl Alloc {
 		}
 
 		// Pad the hidden segment to at least the public segment length, so
-		// `log_witness_words >= log_public_words` (see `ValueVecLayout::validate`).
+		// `log_witness_words >= log_public_words` (see `ConstraintSystem::validate_shape`).
 		cur_index = cur_index.max(2 * offset_witness as u32);
 
 		let n_hidden_words = cur_index as usize - offset_witness;
@@ -149,8 +149,6 @@ impl Alloc {
 			n_hidden_words,
 			n_scratch,
 		};
-
-		value_vec_layout.validate().unwrap();
 
 		Assignment {
 			wire_mapping,
@@ -268,7 +266,7 @@ mod tests {
 		// Even with just one constant, the witness should start at MIN_WORDS_PER_SEGMENT
 		// (which should be a power of 2)
 		let witness_idx = assignment.wire_mapping[witness1];
-		assert!(witness_idx.0 >= ValueVecLayout::MIN_WORDS_PER_SEGMENT as u32);
+		assert!(witness_idx.0 >= ConstraintSystem::MIN_WORDS_PER_SEGMENT as u32);
 		assert!(witness_idx.0.is_power_of_two());
 	}
 }

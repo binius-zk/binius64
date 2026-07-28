@@ -5,7 +5,7 @@
 use binius_compute::Allocator;
 use binius_field::{BinaryField, Divisible, Field, PackedField};
 use binius_ip::{MultilinearEvalClaim, logup_star::LogupOutput};
-use binius_math::{FieldBuffer, univariate::evaluate_univariate};
+use binius_math::{FieldBuffer, FieldSlice, FieldVec, univariate::evaluate_univariate};
 use binius_utils::{checked_arithmetics::log2_ceil_usize, rayon::prelude::*};
 
 use super::{
@@ -15,7 +15,6 @@ use super::{
 use crate::{
 	channel::IPProverChannel,
 	fracaddcheck::{self, FracAddCheckProver, FracEvalClaim},
-	sumcheck::mle_store::pooled_copy,
 };
 
 /// Prove a logUp* indexed-lookup reduction.
@@ -95,7 +94,7 @@ where
 	//     gamma^j * eq_{r_j} = the per-looker scaled numerators
 	//     Y = sum_j gamma^j * (I_j)_* eq_{r_j}     the combined pushforward
 	let gamma = channel.sample();
-	let (numerators, pushforward) = witness::combined_lookers::<F, P>(lookers, gamma, m);
+	let (numerators, pushforward) = witness::combined_lookers::<A, F, P>(alloc, lookers, gamma, m);
 
 	// The product check binds <T, Y> to the gamma-combination of the looker claims.
 	let claims = lookers
@@ -106,7 +105,15 @@ where
 
 	// The self-contained prover commits nothing.
 	// It runs the reduction over the witnesses directly.
-	prove_reduction(alloc, table, lookers, combined_eval_claim, numerators, &pushforward, channel)
+	prove_reduction(
+		alloc,
+		table,
+		lookers,
+		combined_eval_claim,
+		numerators,
+		pushforward.to_ref(),
+		channel,
+	)
 }
 
 /// Run the logUp* reduction over the pre-built witnesses `numerators` and pushforward `Y`.
@@ -144,8 +151,8 @@ pub fn prove_reduction<A, F, P>(
 	table: &FieldBuffer<P>,
 	lookers: &[Looker<'_, F>],
 	eval_claim: F,
-	numerators: Vec<FieldBuffer<P>>,
-	pushforward: &FieldBuffer<P>,
+	numerators: Vec<FieldVec<P, A>>,
+	pushforward: FieldSlice<P>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> LogupOutput<F>
 where
@@ -174,14 +181,18 @@ where
 		.into_par_iter()
 		.map(|(looker, numerator)| {
 			let den = witness::looker_denominator::<A, F, P>(alloc, c, looker.index);
-			let (prover, root) =
-				FracAddCheckProver::new(n, alloc, (pooled_copy(alloc, &numerator), den));
+			let (prover, root) = FracAddCheckProver::new(n, alloc, (numerator, den));
 			(prover, (root.0.get(0), root.1.get(0)))
 		})
 		.unzip();
 	let table_den = witness::table_denominator::<A, F, P>(alloc, c, m);
-	let (table_prover, table_root) =
-		FracAddCheckProver::new(m, alloc, (pooled_copy(alloc, pushforward), table_den));
+	// The pushforward is borrowed — a committing caller keeps it for the oracle opening — so the
+	// table circuit's leaf layer, which it folds in place, is a clone drawn from `alloc`.
+	let (table_prover, table_root) = FracAddCheckProver::new(
+		m,
+		alloc,
+		(FieldBuffer::clone_from_slice(alloc, pushforward.to_ref()), table_den),
+	);
 	let num_r = table_root.0.get(0);
 	let den_r = table_root.1.get(0);
 

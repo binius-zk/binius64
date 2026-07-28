@@ -13,13 +13,15 @@
 
 use binius_core::{Word, constraint_system::ShiftVariant};
 use binius_field::BinaryField128bGhash;
+use smallvec::{SmallVec, smallvec};
 
+use super::opcode::EvalOpcode;
 use crate::compiler::{hints::HintRegistry, pathspec::PathSpec};
 
 /// Multiplies two GHASH field elements ($\mathbb{F}_{2^{128}}$), each carried by a `(lo, hi)` pair
 /// of words — `lo` holds the coefficients of $1, X, \ldots, X^{63}$ and `hi` those of
 /// $X^{64}, \ldots, X^{127}$ — and returns the product in the same `(lo, hi)` form.
-fn ghash_mul(a_lo: Word, a_hi: Word, b_lo: Word, b_hi: Word) -> (Word, Word) {
+pub(super) fn ghash_mul(a_lo: Word, a_hi: Word, b_lo: Word, b_hi: Word) -> (Word, Word) {
 	let to_field = |lo: Word, hi: Word| {
 		BinaryField128bGhash::from((lo.as_u64() as u128) | ((hi.as_u64() as u128) << 64))
 	};
@@ -81,46 +83,49 @@ impl<'a> Executor<'a> {
 	/// Panics on an unknown opcode, which can only happen if the bytecode is malformed.
 	pub fn run<C: EvalContext>(mut self, ctx: &mut C) {
 		while self.pc < self.bytecode.len() {
-			let opcode = self.read_u8();
+			let byte = self.read_u8();
+			let opcode = EvalOpcode::from_byte(byte)
+				.unwrap_or_else(|| panic!("Unknown opcode: {byte:#x} at pc={}", self.pc - 1));
+
+			// Matching the enum rather than the byte makes the dispatch exhaustive.
+			// So a new opcode without a handler here does not compile.
 			match opcode {
 				// Bitwise operations
-				0x01 => self.exec_band(ctx),
-				0x02 => self.exec_bor(ctx),
-				0x03 => self.exec_bxor(ctx),
-				0x05 => self.exec_select(ctx),
-				0x06 => self.exec_bxor_multi(ctx),
-				0x07 => self.exec_fax(ctx),
+				EvalOpcode::Band => self.exec_band(ctx),
+				EvalOpcode::Bor => self.exec_bor(ctx),
+				EvalOpcode::Bxor => self.exec_bxor(ctx),
+				EvalOpcode::Select => self.exec_select(ctx),
+				EvalOpcode::BxorMulti => self.exec_bxor_multi(ctx),
+				EvalOpcode::Fax => self.exec_fax(ctx),
 
 				// Shifts
-				0x10 => self.exec_shift(ctx),
+				EvalOpcode::Shift => self.exec_shift(ctx),
 
 				// Arithmetic
-				0x20 => self.exec_iadd_cout(ctx),
-				0x21 => self.exec_iadd_cin_cout(ctx),
-				0x23 => self.exec_isub_bin_bout(ctx),
-				0x30 => self.exec_imul(ctx),
-				0x31 => self.exec_bmul(ctx),
+				EvalOpcode::IaddCinCout => self.exec_iadd_cin_cout(ctx),
+				EvalOpcode::IaddCarry => self.exec_iadd_carry(ctx),
+				EvalOpcode::IsubBinBout => self.exec_isub_bin_bout(ctx),
+				EvalOpcode::Imul => self.exec_imul(ctx),
+				EvalOpcode::Bmul => self.exec_bmul(ctx),
 
 				// 32-bit operations
-				0x40 => self.exec_iadd32_cin_cout(ctx),
-				0x46 => self.exec_iadd32_cout(ctx),
+				EvalOpcode::Iadd32CinCout => self.exec_iadd32_cin_cout(ctx),
+				EvalOpcode::Iadd32Cout => self.exec_iadd32_cout(ctx),
 
 				// Masks
-				0x50 => self.exec_mask_low(ctx),
-				0x51 => self.exec_mask_high(ctx),
+				EvalOpcode::MaskLow => self.exec_mask_low(ctx),
+				EvalOpcode::MaskHigh => self.exec_mask_high(ctx),
 
 				// Assertions
-				0x60 => self.exec_assert_eq(ctx),
-				0x61 => self.exec_assert_eq_cond(ctx),
-				0x62 => self.exec_assert_zero(ctx),
-				0x63 => self.exec_assert_non_zero(ctx),
-				0x64 => self.exec_assert_false(ctx),
-				0x65 => self.exec_assert_true(ctx),
+				EvalOpcode::AssertEq => self.exec_assert_eq(ctx),
+				EvalOpcode::AssertEqCond => self.exec_assert_eq_cond(ctx),
+				EvalOpcode::AssertZero => self.exec_assert_zero(ctx),
+				EvalOpcode::AssertNonZero => self.exec_assert_non_zero(ctx),
+				EvalOpcode::AssertFalse => self.exec_assert_false(ctx),
+				EvalOpcode::AssertTrue => self.exec_assert_true(ctx),
 
 				// Hint calls
-				0x80 => self.exec_hint(ctx),
-
-				_ => panic!("Unknown opcode: {:#x} at pc={}", opcode, self.pc - 1),
+				EvalOpcode::Hint => self.exec_hint(ctx),
 			}
 		}
 	}
@@ -176,7 +181,10 @@ impl<'a> Executor<'a> {
 		let dst = self.read_reg();
 		let n = self.read_u32() as usize;
 		// Read the source registers once; they are shared across every instance.
-		let srcs = (0..n).map(|_| self.read_reg()).collect::<Vec<_>>();
+		// Most multi-way exclusive-ors are narrow, so the common case stays on the stack.
+		let srcs = (0..n)
+			.map(|_| self.read_reg())
+			.collect::<SmallVec<[u32; 8]>>();
 		for i in 0..ctx.n_instances() {
 			let mut val = Word::ZERO;
 			for &src in &srcs {
@@ -232,20 +240,6 @@ impl<'a> Executor<'a> {
 	}
 
 	// Arithmetic operations
-	fn exec_iadd_cout<C: EvalContext>(&mut self, ctx: &mut C) {
-		let dst_sum = self.read_reg();
-		let dst_cout = self.read_reg();
-		let src1 = self.read_reg();
-		let src2 = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			let (sum, cout) = ctx
-				.load(src1, i)
-				.iadd_cin_cout(ctx.load(src2, i), Word::ZERO);
-			ctx.store(dst_sum, i, sum);
-			ctx.store(dst_cout, i, cout);
-		}
-	}
-
 	fn exec_iadd_cin_cout<C: EvalContext>(&mut self, ctx: &mut C) {
 		let dst_sum = self.read_reg();
 		let dst_cout = self.read_reg();
@@ -256,6 +250,20 @@ impl<'a> Executor<'a> {
 			let cin_bit = ctx.load(cin, i) >> 63; // Use MSB as carry bit
 			let (sum, cout) = ctx.load(src1, i).iadd_cin_cout(ctx.load(src2, i), cin_bit);
 			ctx.store(dst_sum, i, sum);
+			ctx.store(dst_cout, i, cout);
+		}
+	}
+
+	/// Carry word of `src1 + src2`, discarding the sum.
+	fn exec_iadd_carry<C: EvalContext>(&mut self, ctx: &mut C) {
+		let dst_cout = self.read_reg();
+		let src1 = self.read_reg();
+		let src2 = self.read_reg();
+		for i in 0..ctx.n_instances() {
+			// No carry in, and the sum is dropped rather than stored.
+			let (_sum, cout) = ctx
+				.load(src1, i)
+				.iadd_cin_cout(ctx.load(src2, i), Word::ZERO);
 			ctx.store(dst_cout, i, cout);
 		}
 	}
@@ -467,7 +475,7 @@ impl<'a> Executor<'a> {
 
 		// Read dimensions
 		let n_dimensions = self.read_u16() as usize;
-		let mut dimensions = Vec::with_capacity(n_dimensions);
+		let mut dimensions: SmallVec<[usize; 4]> = SmallVec::with_capacity(n_dimensions);
 		for _ in 0..n_dimensions {
 			dimensions.push(self.read_u32() as usize);
 		}
@@ -476,11 +484,15 @@ impl<'a> Executor<'a> {
 		let n_outputs = self.read_u16() as usize;
 
 		// Read the input and output registers once; they are shared across every instance.
-		let input_regs = (0..n_inputs).map(|_| self.read_reg()).collect::<Vec<_>>();
-		let output_regs = (0..n_outputs).map(|_| self.read_reg()).collect::<Vec<_>>();
+		let input_regs = (0..n_inputs)
+			.map(|_| self.read_reg())
+			.collect::<SmallVec<[u32; 8]>>();
+		let output_regs = (0..n_outputs)
+			.map(|_| self.read_reg())
+			.collect::<SmallVec<[u32; 8]>>();
 
-		let mut inputs = vec![Word::ZERO; n_inputs];
-		let mut outputs = vec![Word::ZERO; n_outputs];
+		let mut inputs: SmallVec<[Word; 8]> = smallvec![Word::ZERO; n_inputs];
+		let mut outputs: SmallVec<[Word; 8]> = smallvec![Word::ZERO; n_outputs];
 		for i in 0..ctx.n_instances() {
 			for (input, &reg) in inputs.iter_mut().zip(&input_regs) {
 				*input = ctx.load(reg, i);
@@ -493,28 +505,34 @@ impl<'a> Executor<'a> {
 		}
 	}
 
-	// Bytecode reading helpers
+	// Bytecode reading helpers.
+	//
+	// Each takes its bytes as one slice.
+	// So a multi-byte value costs a single bounds check, not one per byte.
+	//
+	// This is the innermost decode of witness filling.
 	fn read_u8(&mut self) -> u8 {
 		let val = self.bytecode[self.pc];
 		self.pc += 1;
 		val
 	}
 
+	/// Reads the next `N` bytes as an array, advancing the cursor past them.
+	#[inline]
+	fn read_bytes<const N: usize>(&mut self) -> [u8; N] {
+		let bytes: [u8; N] = self.bytecode[self.pc..self.pc + N]
+			.try_into()
+			.expect("the slice is exactly N bytes long");
+		self.pc += N;
+		bytes
+	}
+
 	fn read_u16(&mut self) -> u16 {
-		let val = u16::from_le_bytes([self.bytecode[self.pc], self.bytecode[self.pc + 1]]);
-		self.pc += 2;
-		val
+		u16::from_le_bytes(self.read_bytes())
 	}
 
 	fn read_u32(&mut self) -> u32 {
-		let val = u32::from_le_bytes([
-			self.bytecode[self.pc],
-			self.bytecode[self.pc + 1],
-			self.bytecode[self.pc + 2],
-			self.bytecode[self.pc + 3],
-		]);
-		self.pc += 4;
-		val
+		u32::from_le_bytes(self.read_bytes())
 	}
 
 	fn read_reg(&mut self) -> u32 {

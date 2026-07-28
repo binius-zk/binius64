@@ -5,7 +5,6 @@ use cranelift_entity::EntitySet;
 use petgraph::graph::{DiGraph, NodeIndex};
 use rustc_hash::FxHashMap;
 
-use super::Stat;
 use crate::compiler::{
 	Wire,
 	constraint_builder::{ConstraintBuilder, Shift, WireOperand},
@@ -157,7 +156,7 @@ impl LeGraph {
 	/// 2. Tracks uses of linear definitions in other linear constraints
 	/// 3. Identifies "root" uses where linear definitions flow into non-linear constraints
 	/// 4. Builds edges with appropriate shift annotations
-	pub fn new(cb: &ConstraintBuilder, stat: &mut Stat) -> Self {
+	pub fn new(cb: &ConstraintBuilder) -> Self {
 		let mut leg = Self {
 			pg: DiGraph::new(),
 			wire_to_node: FxHashMap::default(),
@@ -166,7 +165,7 @@ impl LeGraph {
 			roots: Vec::new(),
 			opaque: Vec::new(),
 		};
-		build_use_def(cb, &mut leg, stat);
+		build_use_def(cb, &mut leg);
 		leg
 	}
 
@@ -190,11 +189,16 @@ impl LeGraph {
 	/// # Panics
 	///
 	/// Panics if the wire is not defined by a linear constraint.
-	pub fn lin_def(&self, wire: Wire) -> &WireOperand {
+	/// The operand of the linear definition that assigns `wire`.
+	///
+	/// # Panics
+	///
+	/// Panics if `wire` is not assigned by a linear definition.
+	pub fn lin_def_operand(&self, wire: Wire) -> &WireOperand {
 		let node = self.wire_to_node[&wire];
 		match self.pg.node_weight(node).unwrap() {
 			NodeData::LinDef { operand, .. } => operand,
-			_ => panic!("supposed to be a linear def"),
+			_ => panic!("{wire:?} is not assigned by a linear definition"),
 		}
 	}
 
@@ -209,7 +213,7 @@ impl LeGraph {
 		let node = self.wire_to_node[&wire];
 		match self.pg.node_weight(node).unwrap() {
 			NodeData::LinDef { index, .. } => ConstraintRef::Linear { index: *index },
-			_ => panic!("supposed to be a linear def"),
+			_ => panic!("{wire:?} is not assigned by a linear definition"),
 		}
 	}
 
@@ -277,7 +281,7 @@ impl LeGraph {
 	}
 }
 
-fn build_use_def(cb: &ConstraintBuilder, leg: &mut LeGraph, _stat: &mut Stat) {
+fn build_use_def(cb: &ConstraintBuilder, leg: &mut LeGraph) {
 	// Collect defs from linear constraints.
 	//
 	// Linear constraints are simple definitions. We assert that this is the case here.

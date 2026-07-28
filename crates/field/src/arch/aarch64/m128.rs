@@ -21,7 +21,7 @@ use super::super::portable::{
 use crate::{
 	BinaryField,
 	underlier::{
-		NumCast, SmallU, UnderlierType,
+		SmallU, UnderlierType,
 		divisible::{Divisible, mapget},
 		impl_divisible_bitmask, impl_divisible_self,
 	},
@@ -462,19 +462,25 @@ impl Divisible<u16> for M128 {
 impl Divisible<u8> for M128 {
 	const LOG_N: usize = 4;
 
+	/// Iterates bytes by way of `u128` rather than NEON lane extracts.
+	///
+	/// `u128` occupies a general-purpose register pair, so a value loaded from memory becomes a
+	/// single `ldp` and each byte a bitfield extract. Extracting the bytes out of the vector type
+	/// instead lets LLVM split the load into one narrow load per byte, which doubles the memory
+	/// operations of a bytewise lookup loop.
 	#[inline]
 	fn value_iter(value: Self) -> impl ExactSizeIterator<Item = u8> + Send + Clone {
-		mapget::value_iter(value)
+		u128::from(value).to_le_bytes().into_iter()
 	}
 
 	#[inline]
 	fn ref_iter(value: &Self) -> impl ExactSizeIterator<Item = u8> + Send + Clone + '_ {
-		mapget::value_iter(*value)
+		<Self as Divisible<u8>>::value_iter(*value)
 	}
 
 	#[inline]
 	fn slice_iter(slice: &[Self]) -> impl ExactSizeIterator<Item = u8> + Send + Clone + '_ {
-		mapget::slice_iter(slice)
+		crate::underlier::memcast::slice_iter::<Self, u8>(slice)
 	}
 
 	#[inline]
@@ -732,12 +738,6 @@ impl<Scalar: BinaryField> From<u128> for PackedPrimitiveType<M128, Scalar> {
 impl<Scalar: BinaryField> From<PackedPrimitiveType<M128, Scalar>> for u128 {
 	fn from(value: PackedPrimitiveType<M128, Scalar>) -> Self {
 		value.to_underlier().into()
-	}
-}
-
-impl<U: NumCast<u128>> NumCast<M128> for U {
-	fn num_cast_from(val: M128) -> Self {
-		Self::num_cast_from(val.into())
 	}
 }
 

@@ -5,10 +5,7 @@
 //!
 //! See [`ReedSolomonCode`] for details.
 
-use std::ptr;
-
 use binius_field::{BinaryField, PackedField};
-use binius_utils::rayon::prelude::*;
 use getset::{CopyGetters, Getters};
 
 use super::{
@@ -161,7 +158,8 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 			let elem_0 = P::from_scalars(scalars.into_iter().cycle());
 			vec![elem_0; 1 << log_output_len.saturating_sub(P::LOG_WIDTH)]
 		} else {
-			let mut output_data = Vec::with_capacity(1 << (log_output_len - P::LOG_WIDTH));
+			let output_packed_len = 1 << (log_output_len - P::LOG_WIDTH);
+			let mut output_data = Vec::with_capacity(output_packed_len);
 
 			output_data.extend_from_slice(data.as_ref());
 
@@ -171,28 +169,19 @@ impl<F: BinaryField> ReedSolomonCode<F> {
 				output_data.as_mut_slice(),
 			));
 
-			let log_msg_len_packed = data.log_len() - P::LOG_WIDTH;
-			output_data
-				.spare_capacity_mut()
-				.par_chunks_exact_mut(1 << log_msg_len_packed)
-				.enumerate()
-				.for_each(|(i, output_chunk)| unsafe {
-					let dst_ptr = output_chunk.as_mut_ptr();
-
-					// TODO(https://github.com/rust-lang/rust/issues/81944):
-					// Improve unsafe code with Vec::split_at_spare_mut when stable
-
-					// Safety:
-					// - log_output_len == log_msg_len_packed + self.log_inv_rate
-					// - i + 1 is in the range 1..1 << self.log_inv_rate
-					// - dst_ptr is disjoint from src_ptr and within the Vec capacity
-					let src_ptr = dst_ptr.sub((i + 1) << log_msg_len_packed);
-					ptr::copy_nonoverlapping(src_ptr, dst_ptr, 1 << log_msg_len_packed);
-				});
-
-			unsafe {
-				// Safety: the vec's spare capacity is fully initialized above.
-				output_data.set_len(1 << (log_output_len - P::LOG_WIDTH));
+			// Fill the codeword buffer by repeatedly doubling the initialized prefix.
+			// Each pass appends one copy of everything written so far.
+			//
+			//     [msg] -> [msg|msg] -> [msg|msg|msg|msg] -> ...
+			//
+			// The forward transform below skips its first `log_inv_rate` layers.
+			// Each skipped layer would butterfly a coefficient with a zero pad:
+			//
+			//     u += v * twiddle; v += u;   with v = 0   =>   (c, 0) -> (c, c)
+			//
+			// That is one doubling per layer, so the doublings reproduce the skipped work.
+			while output_data.len() < output_packed_len {
+				output_data.extend_from_within(..);
 			}
 
 			output_data

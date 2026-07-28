@@ -183,6 +183,112 @@ fn test_prove_verify_binmul_seventh_power() {
 	prove_verify_zk(cs, witness);
 }
 
+/// Builds a circuit whose AND, IMUL and BMUL constraint counts are all non-powers of two, so every
+/// reduction runs over operand columns whose tail rows are zero padding.
+///
+/// Each asserted `band` contributes two AND constraints (the `band` itself and the equality), each
+/// `imul` gate one IMUL constraint, and each `bmul` gate one BMUL constraint — 6, 3 and 3 in total.
+/// The caller asserts those counts are not powers of two rather than relying on it silently.
+fn non_power_of_two_constraint_circuit() -> (ConstraintSystem, ValueVec) {
+	const N_AND_GATES: usize = 3;
+	const N_IMUL_GATES: usize = 3;
+	const N_BMUL_GATES: usize = 3;
+
+	let circuit = CircuitBuilder::new();
+
+	// `z == x & y`, with all three words private.
+	let and_wires = (0..N_AND_GATES)
+		.map(|i| {
+			let x = circuit.add_witness();
+			let y = circuit.add_witness();
+			let z = circuit.add_witness();
+			circuit.assert_eq(format!("and_{i}"), circuit.band(x, y), z);
+			(x, y, z)
+		})
+		.collect::<Vec<_>>();
+
+	// `(hi, lo) = a * b`. `force_commit` makes both product words hidden, so the IMUL operands read
+	// them from the witness rather than folding them away.
+	let imul_wires = (0..N_IMUL_GATES)
+		.map(|_| {
+			let a = circuit.add_witness();
+			let b = circuit.add_witness();
+			let (hi, lo) = circuit.imul(a, b);
+			circuit.force_commit(hi);
+			circuit.force_commit(lo);
+			(a, b)
+		})
+		.collect::<Vec<_>>();
+
+	// GHASH-field products `(c_lo, c_hi) = (a_lo, a_hi) * (b_lo, b_hi)`, likewise committed.
+	let bmul_wires = (0..N_BMUL_GATES)
+		.map(|_| {
+			let a_lo = circuit.add_witness();
+			let a_hi = circuit.add_witness();
+			let b_lo = circuit.add_witness();
+			let b_hi = circuit.add_witness();
+			let (c_lo, c_hi) = circuit.bmul(a_lo, a_hi, b_lo, b_hi);
+			circuit.force_commit(c_lo);
+			circuit.force_commit(c_hi);
+			[a_lo, a_hi, b_lo, b_hi]
+		})
+		.collect::<Vec<_>>();
+
+	let circuit = circuit.build();
+	let mut w = circuit.new_witness_filler();
+
+	for (i, &(x, y, z)) in and_wires.iter().enumerate() {
+		let x_val = Word(0x0123_4567_89AB_CDEF ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+		let y_val = Word(0xFEDC_BA98_7654_3210 ^ (i as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F));
+		w[x] = x_val;
+		w[y] = y_val;
+		w[z] = x_val & y_val;
+	}
+
+	for (i, &(a, b)) in imul_wires.iter().enumerate() {
+		w[a] = Word(0xDEAD_BEEF_CAFE_BABE ^ (i as u64).wrapping_mul(0x1234_5678_9ABC_DEF0));
+		w[b] = Word(0x0F0F_0F0F_0F0F_0F0F ^ (i as u64).wrapping_mul(0xA5A5_A5A5_A5A5_A5A5));
+	}
+
+	let mut rng = StdRng::seed_from_u64(0);
+	for &[a_lo, a_hi, b_lo, b_hi] in &bmul_wires {
+		let a = u128::from(BinaryField128bGhash::random(&mut rng));
+		let b = u128::from(BinaryField128bGhash::random(&mut rng));
+		w[a_lo] = Word(a as u64);
+		w[a_hi] = Word((a >> 64) as u64);
+		w[b_lo] = Word(b as u64);
+		w[b_hi] = Word((b >> 64) as u64);
+	}
+
+	// The gates derive the AND, product and GHASH-product outputs, so the filled witness satisfies
+	// every constraint.
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	(circuit.constraint_system().clone(), w.into_value_vec())
+}
+
+/// A circuit whose AND, IMUL and BMUL constraint counts are all non-powers of two proves and
+/// verifies. The constraint system keeps those true counts; the prover zero-pads each operand
+/// column up to a power of two, and both sides derive their sumcheck variable counts by rounding
+/// the same true count up.
+#[test]
+fn test_prove_verify_non_power_of_two_constraint_counts() {
+	let (cs, witness) = non_power_of_two_constraint_circuit();
+	for (name, n_constraints) in [
+		("AND", cs.n_and_constraints()),
+		("IMUL", cs.n_imul_constraints()),
+		("BMUL", cs.n_bmul_constraints()),
+	] {
+		assert!(
+			n_constraints > 0 && !n_constraints.is_power_of_two(),
+			"{name} constraint count is {n_constraints}, which must be non-zero and not a power \
+			 of two for this test to exercise padding"
+		);
+	}
+	prove_verify(cs.clone(), witness.clone());
+	prove_verify_zk(cs, witness);
+}
+
 /// A SHA-256 circuit uses only AND constraints, so its constraint system has zero IMUL
 /// constraints. This locks in that the prover and verifier skip the IntMul reduction entirely
 /// (rather than padding up to a dummy IMUL constraint); see `IOPProver::prove` /

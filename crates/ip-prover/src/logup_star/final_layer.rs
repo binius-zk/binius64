@@ -16,7 +16,7 @@
 use binius_compute::{Allocator, VecLike};
 use binius_field::{Field, PackedField};
 use binius_math::{
-	FieldBuffer, FieldVec, inner_product::inner_product_par, line::extrapolate_line,
+	FieldBuffer, FieldSlice, FieldVec, inner_product::inner_product_par, line::extrapolate_line,
 };
 
 use crate::{
@@ -81,7 +81,7 @@ pub fn prove_final_layer<'a, A, F, P>(
 	eval_claim: F,
 	table_prover: FracAddCheckProver<'a, A, P>,
 	layer1: FracEvalClaim<F>,
-	pushforward: &FieldBuffer<P>,
+	pushforward: FieldSlice<P>,
 	table: &FieldBuffer<P>,
 	channel: &mut impl IPProverChannel<F>,
 ) -> FinalLayerOutput<F>
@@ -121,7 +121,7 @@ where
 	// halves T_0, T_1 are pushed as new columns. Only Y_0 is needed here, to form e_0; e_1 follows
 	// as e - e_0.
 	let [y_0, _y_1] = split_halves(alloc, pushforward);
-	let [t_0, t_1] = split_halves(alloc, table);
+	let [t_0, t_1] = split_halves(alloc, table.to_ref());
 
 	// e_0 is the first half's product sum.
 	// Only e_0 is sent, since the verifier recovers e_1 = e - e_0.
@@ -178,7 +178,7 @@ where
 /// The low half fixes the highest variable to 0, the high half to 1.
 fn split_halves<A: Allocator, P: PackedField>(
 	alloc: &A,
-	buffer: &FieldBuffer<P>,
+	buffer: FieldSlice<P>,
 ) -> [FieldVec<P, A>; 2] {
 	// split_half_ref borrows the two halves; copy each straight into an allocator buffer for the
 	// sub-provers, so the split is a single copy rather than a `Vec` build followed by a pooled

@@ -3,8 +3,9 @@ use binius_core::word::Word;
 
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, expr},
+	eval_form::BytecodeBuilder,
 	gate::opcode::OpcodeShape,
-	gate_graph::{Gate, GateData, GateParam, Wire},
+	gate_graph::{GateData, GateParam, Wire},
 };
 
 pub const fn shape() -> OpcodeShape {
@@ -12,13 +13,13 @@ pub const fn shape() -> OpcodeShape {
 		const_in: &[Word::ALL_ONE],
 		n_in: 3,
 		n_out: 2,
-		n_aux: 1,
+		n_aux: 0,
 		n_scratch: 0,
 		n_imm: 0,
 	}
 }
 
-pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) {
+pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	let GateParam {
 		constants,
 		inputs,
@@ -37,27 +38,21 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	// Constraint 1: Borrow propagation
 	//
 	// (¬a ⊕ (bout << 1) ⊕ bin_msb) ∧ (b ⊕ (bout << 1) ⊕ bin_msb) = bout ⊕ (bout << 1) ⊕ bin_msb
-	builder
-		.and()
-		.a(expr::xor4(*all_one, *a, bout_sll_1, bin_msb))
-		.b(expr::xor3(*b, bout_sll_1, bin_msb))
-		.c(expr::xor3(*bout, bout_sll_1, bin_msb))
-		.build();
+	builder.and(
+		expr::xor4(*all_one, *a, bout_sll_1, bin_msb),
+		expr::xor3(*b, bout_sll_1, bin_msb),
+		expr::xor3(*bout, bout_sll_1, bin_msb),
+	);
 
 	// Constraint 2: Diff equality (linear)
 	//
 	// (a ⊕ b ⊕ (bout << 1) ⊕ bin_msb) = diff
-	builder
-		.linear()
-		.rhs(expr::xor4(*a, *b, bout_sll_1, bin_msb))
-		.dst(*diff)
-		.build();
+	builder.linear(expr::xor4(*a, *b, bout_sll_1, bin_msb), *diff);
 }
 
 pub fn emit_eval_bytecode(
-	_gate: Gate,
 	data: &GateData,
-	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
+	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
 	let GateParam {

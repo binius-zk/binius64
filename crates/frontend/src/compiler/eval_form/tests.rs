@@ -73,7 +73,7 @@ impl InterpreterTest {
 
 		// Create value vec with the right size
 		let n_witness = self.values.len();
-		let mut value_vec = ValueVec::new(ValueVecLayout {
+		let mut value_vec = ValueVec::new(&ValueVecLayout {
 			n_const: 0,
 			n_inout: 0,
 			n_witness,
@@ -110,7 +110,7 @@ impl InterpreterTest {
 
 		// Create value vec with the right size
 		let n_witness = self.values.len();
-		let mut value_vec = ValueVec::new(ValueVecLayout {
+		let mut value_vec = ValueVec::new(&ValueVecLayout {
 			n_const: 0,
 			n_inout: 0,
 			n_witness,

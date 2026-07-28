@@ -142,7 +142,7 @@ fn test_zk_wrapped_prove_verify() {
 	prover_transcript.observe().write_slice(&public);
 
 	let basefold_channel = zk_basefold_prover
-		.create_channel_from_transcript::<StdHashSuite, StdChallenger, _>(
+		.create_channel_from_transcript::<StdHashSuite, StdChallenger, _, _>(
 			&mut prover_transcript,
 			&mut rng,
 		);
@@ -170,10 +170,11 @@ fn test_zk_wrapped_prove_verify() {
 
 	// Commit the inner precommit oracle on the wrapped channel, then run the inner proof.
 	let (inner_precommit_oracle, inner_precommit_packed) = inner_iop_prover
-		.commit_precommit::<OptimalPackedB128, _>(
+		.commit_precommit::<OptimalPackedB128, _, _>(
 			&inner_witness,
 			&mut rng,
 			&mut wrapped_prover_channel,
+			&GlobalAllocator,
 		);
 	inner_iop_prover
 		.prove::<OptimalPackedB128, _, _>(

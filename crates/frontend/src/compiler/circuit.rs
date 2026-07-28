@@ -1,15 +1,19 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-use std::{error, fmt};
+use std::{
+	error, fmt,
+	ops::{Index, IndexMut},
+};
 
 use binius_core::{
-	constraint_system::{ConstraintSystem, ValueIndex, ValueVec},
+	constraint_system::{ConstraintSystem, ValueIndex, ValueVec, ValueVecLayout},
 	word::Word,
 };
 use binius_utils::strided_array::StridedArray2DViewMut;
 use cranelift_entity::SecondaryMap;
 
 use crate::compiler::{
+	dump::dump_composition,
 	eval_form::{BatchPopulateError, EvalForm},
 	gate_graph::{GateGraph, Wire},
 };
@@ -17,7 +21,7 @@ use crate::compiler::{
 /// Error returned when populating wire witness fails due to assertion failures.
 #[derive(Debug)]
 pub struct PopulateError {
-	/// List of assertion failure messages (limited to MAX_ASSERTION_MESSAGES).
+	/// List of assertion failure messages (limited to MAX_ASSERTION_FAILURES).
 	pub messages: Vec<String>,
 	/// Total count of assertion failures (may exceed messages.len()).
 	pub total_count: usize,
@@ -44,7 +48,7 @@ pub struct WitnessFiller<'a> {
 	pub(crate) value_vec: ValueVec,
 }
 
-impl<'a> WitnessFiller<'a> {
+impl WitnessFiller<'_> {
 	/// Destruct the witness filler and extracts the underlying value vector.
 	pub fn into_value_vec(self) -> ValueVec {
 		self.value_vec
@@ -90,7 +94,7 @@ impl<'a> WitnessFiller<'a> {
 	}
 }
 
-impl<'a> std::ops::Index<Wire> for WitnessFiller<'a> {
+impl Index<Wire> for WitnessFiller<'_> {
 	type Output = Word;
 
 	fn index(&self, wire: Wire) -> &Self::Output {
@@ -98,7 +102,7 @@ impl<'a> std::ops::Index<Wire> for WitnessFiller<'a> {
 	}
 }
 
-impl<'a> std::ops::IndexMut<Wire> for WitnessFiller<'a> {
+impl IndexMut<Wire> for WitnessFiller<'_> {
 	fn index_mut(&mut self, wire: Wire) -> &mut Self::Output {
 		&mut self.value_vec[self.circuit.witness_index(wire)]
 	}
@@ -111,6 +115,7 @@ impl<'a> std::ops::IndexMut<Wire> for WitnessFiller<'a> {
 pub struct Circuit {
 	gate_graph: GateGraph,
 	constraint_system: ConstraintSystem,
+	value_vec_layout: ValueVecLayout,
 	wire_mapping: SecondaryMap<Wire, ValueIndex>,
 	eval_form: EvalForm,
 	scratch_peak_live: usize,
@@ -122,14 +127,16 @@ impl Circuit {
 	pub(super) fn new(
 		gate_graph: GateGraph,
 		constraint_system: ConstraintSystem,
+		value_vec_layout: ValueVecLayout,
 		wire_mapping: SecondaryMap<Wire, ValueIndex>,
 		eval_form: EvalForm,
 		scratch_peak_live: usize,
 	) -> Self {
-		assert!(constraint_system.value_vec_layout.validate().is_ok());
+		assert!(constraint_system.validate_shape().is_ok());
 		Self {
 			gate_graph,
 			constraint_system,
+			value_vec_layout,
 			wire_mapping,
 			eval_form,
 			scratch_peak_live,
@@ -155,7 +162,7 @@ impl Circuit {
 	pub fn new_witness_filler(&self) -> WitnessFiller<'_> {
 		WitnessFiller {
 			circuit: self,
-			value_vec: ValueVec::new(self.constraint_system.value_vec_layout.clone()),
+			value_vec: ValueVec::new(&self.value_vec_layout),
 		}
 	}
 
@@ -268,9 +275,9 @@ impl Circuit {
 		&self.constraint_system
 	}
 
-	/// Returns the evaluation form (witness-filling bytecode) for this circuit.
-	pub const fn eval_form(&self) -> &EvalForm {
-		&self.eval_form
+	/// Returns the layout of the value vector this circuit fills.
+	pub const fn value_vec_layout(&self) -> &ValueVecLayout {
+		&self.value_vec_layout
 	}
 
 	/// Returns the number of gates in this circuit.
@@ -288,6 +295,6 @@ impl Circuit {
 
 	/// Returns a string with a JSON dump that is useful to profile the circuit.
 	pub fn simple_json_dump(&self) -> String {
-		crate::compiler::dump::dump_composition(&self.gate_graph)
+		dump_composition(&self.gate_graph)
 	}
 }
