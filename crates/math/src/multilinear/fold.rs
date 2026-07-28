@@ -8,6 +8,9 @@ use binius_utils::{random_access_sequence::RandomAccessSequence, rayon::prelude:
 
 use crate::{FieldBuffer, FieldVec, field_buffer::BufferData, line::extrapolate_line_packed};
 
+/// Minimum packed words a worker takes per fold chunk.
+const FOLD_MIN_CHUNK: usize = 1 << 14;
+
 /// Computes the partial evaluation of a multilinear on its highest variable, inplace.
 ///
 /// Each scalar of the result requires one multiplication to compute. Multilinear evaluations
@@ -26,6 +29,7 @@ pub fn fold_highest_var_inplace<P: PackedField, Data: BufferData<P>>(
 		let (mut lo, mut hi) = split.halves();
 		(lo.as_mut(), hi.as_mut())
 			.into_par_iter()
+			.with_min_len(FOLD_MIN_CHUNK)
 			.for_each(|(lo_i, hi_i)| {
 				*lo_i = extrapolate_line_packed(*lo_i, *hi_i, broadcast_scalar)
 			});
@@ -63,6 +67,7 @@ pub fn fold_highest_var<A: Allocator, P: PackedField, Data: Deref<Target = [P]>>
 	let spare = &mut data.spare_capacity_mut()[..len];
 	(spare, lo.as_ref(), hi.as_ref())
 		.into_par_iter()
+		.with_min_len(FOLD_MIN_CHUNK)
 		.for_each(|(out, &lo_i, &hi_i)| {
 			out.write(extrapolate_line_packed(lo_i, hi_i, broadcast_scalar));
 		});
@@ -136,6 +141,7 @@ mod tests {
 
 	use super::*;
 	use crate::{
+		line::extrapolate_line,
 		multilinear::{eq::eq_ind_partial_eval, evaluate::evaluate},
 		test_utils::{B128, Packed128b, random_field_buffer, random_scalars},
 	};
@@ -159,6 +165,33 @@ mod tests {
 		}
 
 		assert_eq!(multilinear.get(0), eval);
+	}
+
+	#[test]
+	fn test_fold_highest_var_inplace_above_split_threshold() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// The parallel fold splits only when the half exceeds the minimum chunk size.
+		//
+		// Fixture state: n_vars = 18 -> half = 2^17 scalars = 2^15 packed words (width 4).
+		//
+		//     2^15 words / FOLD_MIN_CHUNK (2^14) = 2 minimum chunks -> a rayon build splits
+		//
+		// So this size pins the split path to the scalar reference; smaller tests run inline.
+		let n_vars = 18;
+		let half = 1 << (n_vars - 1);
+		let original = random_field_buffer::<P>(&mut rng, n_vars);
+		let challenge = random_scalars::<F>(&mut rng, 1)[0];
+
+		let mut folded = original.clone();
+		fold_highest_var_inplace(&mut folded, challenge);
+		assert_eq!(folded.log_len(), n_vars - 1);
+
+		// Scalar reference: each output interpolates one (lo, hi) pair at the challenge.
+		for i in 0..half {
+			let expected = extrapolate_line(original.get(i), original.get(i | half), challenge);
+			assert_eq!(folded.get(i), expected, "mismatch at index {i}");
+		}
 	}
 
 	#[test]
