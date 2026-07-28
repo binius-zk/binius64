@@ -255,7 +255,7 @@ mod tests {
 				RoundProof(RoundCoeffs(verifier_transcript.recv_many(degree).unwrap()));
 			let challenge = verifier_transcript.sample();
 			let round_coeffs = round_proof.recover(running_sum);
-			running_sum = round_coeffs.evaluate(challenge);
+			running_sum = round_coeffs.evaluate(&challenge);
 			challenges.push(challenge);
 		}
 		let reduced_eval = running_sum;

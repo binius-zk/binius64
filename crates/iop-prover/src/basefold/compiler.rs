@@ -53,7 +53,7 @@ where
 	/// flexible batch size.
 	pub fn new<H>(
 		ntt: NTT,
-		merkle_scheme: BinaryMerkleTreeScheme<F, H>,
+		merkle_scheme: &BinaryMerkleTreeScheme<F, H>,
 		oracle_specs: Vec<OracleSpec>,
 		log_inv_rate: usize,
 		n_test_queries: usize,
@@ -71,7 +71,7 @@ where
 		// equal-length mask); non-ZK oracles take a flexible batch size.
 		let (fri_params, _) = FRIParams::optimal_for_batch(
 			ntt.domain_context(),
-			&merkle_scheme,
+			merkle_scheme,
 			&oracle_specs,
 			log_inv_rate,
 			n_test_queries,

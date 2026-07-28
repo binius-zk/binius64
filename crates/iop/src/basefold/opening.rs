@@ -103,7 +103,7 @@ where
 		let alpha = eval_point[n_vars - 1 - round];
 		let round_coeffs = round_proof.recover(sum, alpha);
 		let challenge = channel.sample();
-		sum = round_coeffs.evaluate(challenge);
+		sum = round_coeffs.evaluate(&challenge);
 		challenges.push(challenge);
 	}
 

@@ -47,6 +47,7 @@ pub enum Opcode {
 
 /// The shape of an opcode is a description of it's inputs and outputs. It allows treating a gate as
 /// a black box, correctly identifying its inputs or outputs.
+#[derive(Clone, Copy)]
 pub struct OpcodeShape {
 	/// The constants the gate with this opcode expects.
 	pub const_in: &'static [Word],

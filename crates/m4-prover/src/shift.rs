@@ -226,9 +226,9 @@ where
 	);
 
 	run_sumcheck::<F, P, _, _>(
-		public_folded,
+		&public_folded,
 		hidden_folded,
-		public_monster,
+		&public_monster,
 		hidden_monster,
 		public_words,
 		r_j,
@@ -479,7 +479,7 @@ mod tests {
 		r_rho: &[B128],
 	) -> [B128; 3] {
 		let [a, b] = build_operation_columns(table, constants, and_constraints, &GlobalAllocator);
-		let lagrange = lagrange_evals_scalars::<B128, B128>(domain_subspace, r_z);
+		let lagrange = lagrange_evals_scalars::<B128, B128>(domain_subspace, &r_z);
 		let row_point: Vec<B128> = r_rho.iter().chain(r_x).copied().collect();
 		let operand_eval = |column: &[Word]| {
 			let folded_column = fold_words::<B128, P, _>(&GlobalAllocator, column, &lagrange);

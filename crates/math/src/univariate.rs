@@ -11,7 +11,7 @@ use super::{BinarySubspace, FieldBuffer};
 /// # Arguments
 /// * `coeffs` - Slice of coefficients ordered from low-degree terms to high-degree terms
 /// * `x` - Point at which to evaluate the polynomial
-pub fn evaluate_univariate<F: FieldOps>(coeffs: &[F], x: F) -> F {
+pub fn evaluate_univariate<F: FieldOps>(coeffs: &[F], x: &F) -> F {
 	let Some((highest_degree, rest)) = coeffs.split_last() else {
 		return F::zero();
 	};
@@ -19,7 +19,7 @@ pub fn evaluate_univariate<F: FieldOps>(coeffs: &[F], x: F) -> F {
 	// Evaluate using Horner's method
 	rest.iter()
 		.rev()
-		.fold(highest_degree.clone(), |acc, coeff| acc * &x + coeff)
+		.fold(highest_degree.clone(), |acc, coeff| acc * x + coeff)
 }
 
 /// Optimized Lagrange evaluation for power-of-2 domains in binary fields.
@@ -46,7 +46,7 @@ pub fn evaluate_univariate<F: FieldOps>(coeffs: &[F], x: F) -> F {
 /// # Returns
 /// A vector of Lagrange polynomial evaluations, one for each domain element
 pub fn lagrange_evals<F: BinaryField>(subspace: &BinarySubspace<F>, z: F) -> FieldBuffer<F> {
-	let result = lagrange_evals_scalars(subspace, z);
+	let result = lagrange_evals_scalars(subspace, &z);
 	FieldBuffer::new(subspace.dim(), result)
 }
 
@@ -63,7 +63,7 @@ pub fn lagrange_evals<F: BinaryField>(subspace: &BinarySubspace<F>, z: F) -> Fie
 /// A vector of Lagrange polynomial evaluations, one for each domain element
 pub fn lagrange_evals_scalars<F: BinaryField, E: FieldOps + From<F>>(
 	subspace: &BinarySubspace<F>,
-	z: E,
+	z: &E,
 ) -> Vec<E> {
 	let domain: Vec<E> = subspace.iter().map(E::from).collect();
 	let n = domain.len();
@@ -113,7 +113,7 @@ pub fn lagrange_evals_scalars<F: BinaryField, E: FieldOps + From<F>>(
 pub fn extrapolate_over_subspace<F: BinaryField, E: FieldOps + From<F>>(
 	subspace: &BinarySubspace<F>,
 	values: &[E],
-	z: E,
+	z: &E,
 ) -> E {
 	let n = 1 << subspace.dim();
 	assert_eq!(values.len(), n);
@@ -271,7 +271,7 @@ mod tests {
 			let coeffs = random_scalars(&mut rng, n_coeffs);
 			let x = F::random(&mut rng);
 			assert_eq!(
-				evaluate_univariate(&coeffs, x),
+				evaluate_univariate(&coeffs, &x),
 				evaluate_univariate_with_powers(&coeffs, x)
 			);
 		}
@@ -320,7 +320,7 @@ mod tests {
 		// Evaluate polynomial at domain points
 		let domain_evals: Vec<F> = domain
 			.iter()
-			.map(|&point| evaluate_univariate(&coeffs, point))
+			.map(|&point| evaluate_univariate(&coeffs, &point))
 			.collect();
 
 		// Test interpolation at random point
@@ -328,7 +328,7 @@ mod tests {
 		let lagrange_coeffs = lagrange_evals(&subspace, test_point);
 		let interpolated =
 			inner_product(domain_evals.iter().copied(), lagrange_coeffs.iter_scalars());
-		let direct = evaluate_univariate(&coeffs, test_point);
+		let direct = evaluate_univariate(&coeffs, &test_point);
 
 		assert_eq!(interpolated, direct, "Polynomial interpolation accuracy failed");
 	}
@@ -345,11 +345,11 @@ mod tests {
 		let values = domain
 			.points()
 			.iter()
-			.map(|&x| evaluate_univariate(&coeffs, x))
+			.map(|&x| evaluate_univariate(&coeffs, &x))
 			.collect::<Vec<_>>();
 
 		let x = B128::random(&mut rng);
-		let expected_y = evaluate_univariate(&coeffs, x);
+		let expected_y = evaluate_univariate(&coeffs, &x);
 		assert_eq!(domain.extrapolate(&values, x), expected_y);
 	}
 
@@ -379,13 +379,13 @@ mod tests {
 			// Evaluate at all domain points
 			let values: Vec<F> = subspace
 				.iter()
-				.map(|point| evaluate_univariate(&coeffs, point))
+				.map(|point| evaluate_univariate(&coeffs, &point))
 				.collect();
 
 			// Extrapolate at a random point
 			let z = F::random(&mut rng);
-			let extrapolated = extrapolate_over_subspace(&subspace, &values, z);
-			let expected = evaluate_univariate(&coeffs, z);
+			let extrapolated = extrapolate_over_subspace(&subspace, &values, &z);
+			let expected = evaluate_univariate(&coeffs, &z);
 
 			assert_eq!(extrapolated, expected, "Mismatch for log_domain_size={log_domain_size}");
 		}
@@ -403,8 +403,8 @@ mod tests {
 			let values: Vec<F> = random_scalars(&mut rng, n);
 
 			let z = F::random(&mut rng);
-			let extrapolated = extrapolate_over_subspace(&subspace, &values, z);
-			let lagrange = lagrange_evals_scalars(&subspace, z);
+			let extrapolated = extrapolate_over_subspace(&subspace, &values, &z);
+			let lagrange = lagrange_evals_scalars(&subspace, &z);
 			let expected = inner_product(values.iter().copied(), lagrange);
 
 			assert_eq!(extrapolated, expected, "Mismatch for log_domain_size={log_domain_size}");

@@ -199,7 +199,7 @@ impl IOPVerifier {
 			// instance point. BitAnd is already oblong; IntMul and BinMul are collapsed from their
 			// per-bit form.
 			let lagrange =
-				lagrange_evals_scalars::<B128, Channel::Elem>(&shift_domain, z_challenge.clone());
+				lagrange_evals_scalars::<B128, Channel::Elem>(&shift_domain, &z_challenge);
 			RerandomizedOperations {
 				bitand: OperationClaim::new([a_eval, b_eval, c_eval], r_x_and, r_rho_and),
 				intmul: intmul_output
@@ -306,7 +306,7 @@ impl Verifier {
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
 
 		let iop_compiler = BaseFoldVerifierCompiler::new(
-			merkle_scheme,
+			&merkle_scheme,
 			oracle_specs,
 			log_inv_rate,
 			n_test_queries,
@@ -557,7 +557,7 @@ impl<F: FieldOps> RerandomizedOperations<F> {
 			let eq_binmul = eq_ind(&binmul.r_rho, &r_rho);
 			expected.extend(evals.iter().map(|eval| eval.clone() * &eq_binmul));
 		}
-		channel.assert_zero(evaluate_univariate(&expected, batch_coeff) - eval)?;
+		channel.assert_zero(evaluate_univariate(&expected, &batch_coeff) - eval)?;
 
 		let bitand_data = OperatorData::new(self.bitand.r_x, bitand_evals);
 		let intmul_data = match (self.intmul, intmul_evals) {

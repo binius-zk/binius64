@@ -373,7 +373,7 @@ mod tests {
 		let univariate_domain = BinarySubspace::<B8>::with_dim(Word::LOG_BITS + 1)
 			.isomorphic::<B128>()
 			.reduce_dim(SKIPPED_VARS);
-		let lagrange = lagrange_evals_scalars(&univariate_domain, z_challenge);
+		let lagrange = lagrange_evals_scalars(&univariate_domain, &z_challenge);
 		let folded: FieldBuffer<B128> = BitAxisFolder::new(&lagrange).fold(&GlobalAllocator, col);
 		evaluate(&folded, eval_point)
 	}

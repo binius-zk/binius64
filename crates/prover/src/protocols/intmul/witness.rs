@@ -216,6 +216,8 @@ where
 /// The root fields are consumed by the phase provers as ordinary `FieldBuffer`s; the pooled block
 /// cannot be handed out as a `Vec` directly (its allocation is over-aligned for the free list), so
 /// it is copied out and the pooled block recycled.
+// Takes `src` by value so the pooled block returns to the free list here, not at the caller.
+#[allow(clippy::needless_pass_by_value)]
 fn unpool<A: Allocator, P: PackedField>(src: FieldVec<P, A>) -> FieldBuffer<P> {
 	FieldBuffer::new(src.log_len(), src.as_ref().to_vec())
 }

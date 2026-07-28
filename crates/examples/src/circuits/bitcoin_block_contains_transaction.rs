@@ -47,8 +47,7 @@ impl BlockContainsTransaction {
 		);
 
 		// `block_header` hashes to `block_hash`
-		let block_header =
-			DoubleSha256::construct_circuit(builder, block_header.to_vec(), block_hash);
+		let block_header = DoubleSha256::construct_circuit(builder, &block_header, block_hash);
 
 		Self {
 			merkle_path,

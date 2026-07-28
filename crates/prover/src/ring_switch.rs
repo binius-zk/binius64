@@ -187,6 +187,8 @@ where
 /// * `S` must be a power of two
 /// * `LOG_N` must be less than or equal to `P::LOG_WIDTH`
 /// * `LOG_N` must be less than or equal to `log2(S)`
+// The array of `&mut` lanes is itself a cheap borrow bundle; passing it by value is the point.
+#[allow(clippy::needless_pass_by_value)]
 fn square_transpose_const_size<P: PackedField, const LOG_N: usize, const S: usize>(
 	elems: [&mut P; S],
 ) {

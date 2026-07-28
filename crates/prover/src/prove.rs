@@ -87,7 +87,7 @@ impl IOPProver {
 	/// For most users, [`Prover::prove`] is the simpler interface.
 	pub fn prove<A, P, Channel>(
 		&self,
-		witness: ValueVec,
+		witness: &ValueVec,
 		channel: &mut Channel,
 		alloc: &A,
 	) -> Result<(), Error>
@@ -140,7 +140,7 @@ impl IOPProver {
 			)
 			.entered();
 			let mul_columns = tracing::debug_span!("Assemble columns")
-				.in_scope(|| build_operation_columns(&cs.imul_constraints, &witness, alloc));
+				.in_scope(|| build_operation_columns(&cs.imul_constraints, witness, alloc));
 
 			let [a, b, lo, hi] = &mul_columns;
 			let intmul_output = intmul::prove::<_, _, P, _>([a, b, lo, hi], &mut *channel, alloc)?;
@@ -163,7 +163,7 @@ impl IOPProver {
 			)
 			.entered();
 			let binmul_columns = tracing::debug_span!("Assemble columns")
-				.in_scope(|| build_operation_columns(&cs.bmul_constraints, &witness, alloc));
+				.in_scope(|| build_operation_columns(&cs.bmul_constraints, witness, alloc));
 
 			let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] = &binmul_columns;
 			let binmul_output = binmul::prove::<_, _, P, _>(
@@ -184,7 +184,7 @@ impl IOPProver {
 		let bitand_claim = {
 			// Only the `A` and `B` columns are built; the reduction derives `C = A & B`.
 			let bitand_columns = tracing::debug_span!("Assemble columns")
-				.in_scope(|| build_operation_columns(&cs.and_constraints, &witness, alloc));
+				.in_scope(|| build_operation_columns(&cs.and_constraints, witness, alloc));
 
 			let AndCheckOutput {
 				a_eval,
@@ -432,7 +432,7 @@ where
 
 	pub fn prove<Challenger_: Challenger>(
 		&self,
-		witness: ValueVec,
+		witness: &ValueVec,
 		transcript: &mut ProverTranscript<Challenger_>,
 	) -> Result<(), Error> {
 		let cs = self.iop_prover.constraint_system();

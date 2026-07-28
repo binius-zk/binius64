@@ -42,7 +42,7 @@ impl<F> RoundCoeffs<F> {
 
 impl<F: FieldOps> RoundCoeffs<F> {
 	/// Evaluate the polynomial at a point.
-	pub fn evaluate(&self, x: F) -> F {
+	pub fn evaluate(&self, x: &F) -> F {
 		// Horner's method over the monomial coefficients.
 		evaluate_univariate(&self.0, x)
 	}
@@ -261,7 +261,7 @@ mod tests {
 			let recovered = coeffs.truncate().recover(sum);
 
 			// Evaluate the recovered polynomial at both endpoints and confirm they sum to s.
-			assert_eq!(recovered.evaluate(B128::ZERO) + recovered.evaluate(B128::ONE), sum);
+			assert_eq!(recovered.evaluate(&B128::ZERO) + recovered.evaluate(&B128::ONE), sum);
 		}
 	}
 
@@ -272,7 +272,7 @@ mod tests {
 		for degree in DEGREES {
 			let coeffs = RoundCoeffs(random_scalars::<B128>(&mut rng, degree + 1));
 			// Direct evaluation at the two endpoints.
-			let expected = coeffs.evaluate(B128::ZERO) + coeffs.evaluate(B128::ONE);
+			let expected = coeffs.evaluate(&B128::ZERO) + coeffs.evaluate(&B128::ONE);
 			// The shortcut must agree with direct evaluation.
 			assert_eq!(coeffs.sum_over_endpoints(), expected);
 		}
@@ -288,8 +288,8 @@ mod tests {
 			let alpha = B128::random(&mut rng);
 
 			// The two endpoint values that define the line.
-			let r_0 = coeffs.evaluate(B128::ZERO);
-			let r_1 = coeffs.evaluate(B128::ONE);
+			let r_0 = coeffs.evaluate(&B128::ZERO);
+			let r_1 = coeffs.evaluate(&B128::ONE);
 			// The point on that line at alpha: R(0) + alpha * (R(1) - R(0)).
 			let expected = r_0 + alpha * (r_1 - r_0);
 
@@ -318,9 +318,9 @@ mod tests {
 		let x = B128::random(&mut rng);
 
 		// Longer accumulator, shorter addend: the accumulator keeps its high-degree tail.
-		assert_eq!((long.clone() + &short).evaluate(x), long.evaluate(x) + short.evaluate(x));
+		assert_eq!((long.clone() + &short).evaluate(&x), long.evaluate(&x) + short.evaluate(&x));
 		// Shorter accumulator, longer addend: the accumulator is padded up to the larger degree.
-		assert_eq!((short.clone() + &long).evaluate(x), short.evaluate(x) + long.evaluate(x));
+		assert_eq!((short.clone() + &long).evaluate(&x), short.evaluate(&x) + long.evaluate(&x));
 	}
 
 	#[test]
@@ -332,7 +332,7 @@ mod tests {
 		let x = B128::random(&mut rng);
 
 		// (c * R)(x) must equal c * R(x).
-		assert_eq!((coeffs.clone() * scalar).evaluate(x), coeffs.evaluate(x) * scalar);
+		assert_eq!((coeffs.clone() * scalar).evaluate(&x), coeffs.evaluate(&x) * scalar);
 	}
 
 	#[test]
@@ -348,9 +348,9 @@ mod tests {
 		// Fold the polynomials together with the iterator sum.
 		let total: RoundCoeffs<B128> = parts.iter().cloned().sum();
 		// Reference: add the individual evaluations at x.
-		let expected: B128 = parts.iter().map(|c| c.evaluate(x)).sum();
+		let expected: B128 = parts.iter().map(|c| c.evaluate(&x)).sum();
 
-		assert_eq!(total.evaluate(x), expected);
+		assert_eq!(total.evaluate(&x), expected);
 	}
 
 	#[test]
@@ -358,7 +358,7 @@ mod tests {
 		// A polynomial with no coefficients is the zero polynomial.
 		let coeffs = RoundCoeffs::<B128>(vec![]);
 		// It evaluates to zero everywhere.
-		assert_eq!(coeffs.evaluate(B128::random(rng())), B128::ZERO);
+		assert_eq!(coeffs.evaluate(&B128::random(rng())), B128::ZERO);
 		// Both endpoints are zero, so their sum is zero.
 		assert_eq!(coeffs.sum_over_endpoints(), B128::ZERO);
 		// The line through (0, 0) and (1, 0) is zero at every alpha.

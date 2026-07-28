@@ -101,9 +101,9 @@ where
 	);
 
 	run_sumcheck(
-		public_folded,
+		&public_folded,
 		hidden_folded,
-		public_monster,
+		&public_monster,
 		hidden_monster,
 		public_words,
 		r_j,
@@ -215,9 +215,9 @@ fn fold_segments<F: Field, P: PackedField<Scalar = F>, Data: DerefMut<Target = [
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all, name = "run_sumcheck")]
 pub fn run_sumcheck<F, P: PackedField<Scalar = F>, Channel: IPProverChannel<F>, A: Allocator>(
-	public_folded: FieldVec<P, A>,
+	public_folded: &FieldVec<P, A>,
 	hidden_folded: FieldVec<P, A>,
-	public_monster: FieldVec<P, A>,
+	public_monster: &FieldVec<P, A>,
 	hidden_monster: FieldVec<P, A>,
 	public_words: &[Word],
 	r_j: Vec<F>,
@@ -235,15 +235,15 @@ where
 
 	// Round 1: bind the segment selector.
 	let round_coeffs =
-		first_round_coeffs(&public_folded, &hidden_folded, &public_monster, &hidden_monster, gamma);
+		first_round_coeffs(public_folded, &hidden_folded, public_monster, &hidden_monster, gamma);
 	channel.send_many(round_coeffs.clone().truncate().coeffs());
 	let alpha = channel.sample();
-	let round_sum = round_coeffs.evaluate(alpha);
+	let round_sum = round_coeffs.evaluate(&alpha);
 
 	// Fold the segment pairs at the selector challenge and run the remaining rounds with the
 	// standard prover.
-	let folded_witness = fold_segments(&public_folded, hidden_folded, alpha);
-	let folded_monster = fold_segments(&public_monster, hidden_monster, alpha);
+	let folded_witness = fold_segments(public_folded, hidden_folded, alpha);
+	let folded_monster = fold_segments(public_monster, hidden_monster, alpha);
 	let prover = bivariate_product_prover(alloc, [folded_witness, folded_monster], round_sum);
 
 	let ProveSingleOutput {

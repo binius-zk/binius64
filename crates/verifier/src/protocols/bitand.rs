@@ -114,7 +114,7 @@ where
 	let sumcheck_claim = extrapolate_over_subspace(
 		round_message_univariate_domain,
 		&univariate_message_coeffs,
-		univariate_sumcheck_challenge.clone(),
+		&univariate_sumcheck_challenge,
 	);
 
 	let SumcheckOutput {

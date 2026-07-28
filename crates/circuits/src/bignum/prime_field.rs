@@ -90,7 +90,7 @@ impl PseudoMersennePrimeField {
 	/// Equivalent formula: `(fe ** 2) % modulus`
 	pub fn square(&self, b: &CircuitBuilder, fe: &BigUint) -> BigUint {
 		assert!(fe.limbs.len() == self.limbs_len());
-		self.reduce_product(b, textbook_square(b, fe))
+		self.reduce_product(b, &textbook_square(b, fe))
 	}
 
 	/// Field multiplication.
@@ -99,10 +99,10 @@ impl PseudoMersennePrimeField {
 	/// Note: Both fe1 and fe2 may be greater or equal to modulus.
 	pub fn mul(&self, b: &CircuitBuilder, fe1: &BigUint, fe2: &BigUint) -> BigUint {
 		assert!(fe1.limbs.len() == self.limbs_len() && fe2.limbs.len() == self.limbs_len());
-		self.reduce_product(b, textbook_mul(b, fe1, fe2))
+		self.reduce_product(b, &textbook_mul(b, fe1, fe2))
 	}
 
-	fn reduce_product(&self, b: &CircuitBuilder, product: BigUint) -> BigUint {
+	fn reduce_product(&self, b: &CircuitBuilder, product: &BigUint) -> BigUint {
 		let (quotient, remainder) = BigUintDivideHint::call(b, &product.limbs, &self.modulus.limbs);
 
 		let zero = b.add_constant(Word::ZERO);
@@ -115,7 +115,7 @@ impl PseudoMersennePrimeField {
 		// constraint: product == remainder + quotient * modulus
 		PseudoMersenneModReduce::new(
 			b,
-			&product,
+			product,
 			self.modulus_po2,
 			&self.modulus_subtrahend,
 			&quotient,

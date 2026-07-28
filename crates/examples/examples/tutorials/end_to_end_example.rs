@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let challenger = StdChallenger::default();
 	let mut prover_transcript = ProverTranscript::new(challenger.clone());
 	let public_words = witness_vec.public().to_vec();
-	prover.prove(witness_vec, &mut prover_transcript)?;
+	prover.prove(&witness_vec, &mut prover_transcript)?;
 	let proof = prover_transcript.finalize();
 
 	let mut verifier_transcript = VerifierTranscript::new(challenger, proof);
