@@ -42,7 +42,7 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	let [x] = inputs else { unreachable!() };
 
 	// Constraint: x ∧ msb_one = msb_one
-	builder.and().a(*x).b(*msb_one).c(expr::empty()).build();
+	builder.and(*x, *msb_one, expr::empty());
 }
 
 pub fn emit_eval_bytecode(

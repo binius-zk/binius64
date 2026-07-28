@@ -70,12 +70,11 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 
 	// Constraint 1: Constrain carry-out
 	// (x ⊕ y ⊕ cin) ∧ (all-1 ⊕ cin) = cin ⊕ cout
-	builder
-		.and()
-		.a(expr::xor3(*x, *y, cin))
-		.b(expr::xor2(*all_one, cin))
-		.c(expr::xor3(cin, *out_wire, *msb_one))
-		.build();
+	builder.and(
+		expr::xor3(*x, *y, cin),
+		expr::xor2(*all_one, cin),
+		expr::xor3(cin, *out_wire, *msb_one),
+	);
 }
 
 pub fn emit_eval_bytecode(

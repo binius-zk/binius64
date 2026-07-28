@@ -55,21 +55,16 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	//
 	// (x ⊕ ci) ∧ (y ⊕ ci) = cout ⊕ ci
 	// where ci = (cout <<₃₂ 1) ⊕ (cin >>₃₂ 31)
-	builder
-		.and()
-		.a(expr::xor3(*x, cout_shifted, cin_bit))
-		.b(expr::xor3(*y, cout_shifted, cin_bit))
-		.c(expr::xor3(*cout, cout_shifted, cin_bit))
-		.build();
+	builder.and(
+		expr::xor3(*x, cout_shifted, cin_bit),
+		expr::xor3(*y, cout_shifted, cin_bit),
+		expr::xor3(*cout, cout_shifted, cin_bit),
+	);
 
 	// Constraint 2: Result
 	//
 	// z = x ⊕ y ⊕ ci
-	builder
-		.linear()
-		.dst(*z)
-		.rhs(expr::xor4(*x, *y, cout_shifted, cin_bit))
-		.build();
+	builder.linear(expr::xor4(*x, *y, cout_shifted, cin_bit), *z);
 }
 
 pub fn emit_eval_bytecode(

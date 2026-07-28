@@ -42,7 +42,7 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	// The terms are handed over as an iterator, since the operand collects them itself.
 	// A vector to carry them across would only be allocated to be dropped.
 	let terms = inputs.iter().map(|&wire| WireExprTerm::from(wire));
-	builder.linear().rhs(expr::xor_multi(terms)).dst(*z).build();
+	builder.linear(expr::xor_multi(terms), *z);
 }
 
 pub fn emit_eval_bytecode(

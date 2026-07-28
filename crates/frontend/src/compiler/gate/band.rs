@@ -40,7 +40,7 @@ pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	// Constraint: Bitwise AND
 	//
 	// x ∧ y = z
-	builder.and().a(*x).b(*y).c(*z).build();
+	builder.and(*x, *y, *z);
 }
 
 pub fn emit_eval_bytecode(
