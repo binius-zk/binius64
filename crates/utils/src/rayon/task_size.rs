@@ -2,31 +2,25 @@
 
 //! Minimum task sizes for parallel loops.
 //!
-//! Handing a slice of a loop to another worker costs on the order of a microsecond.
-//! A task that runs for much less than that loses more to the handoff than it gains.
-//! Every floor here is therefore derived from a budget rather than hardcoded:
+//! Handing a slice of work to another worker costs about a microsecond.
+//! A task shorter than that loses more to the handoff than it gains.
 //!
 //! ```text
 //!     min items per task = budget per task / estimated cost per item
 //! ```
 //!
-//! Two cost models cover the loops in this codebase:
-//!
 //! - Loops bound by memory traffic charge one item by the bytes it moves.
 //! - Loops bound by arithmetic charge one item by a coarse work class.
 //!
-//! Deriving the floor is what keeps it correct as the packing parameter changes.
-//! Doubling the scalars held in one packed element halves the items a task needs.
-//! A hardcoded item count silently drifts instead.
+//! Charging by bytes is what keeps a floor correct across packing widths.
+//! Doubling the scalars in a packed element halves the items a task needs.
 //!
 //! # Environment overrides
 //!
 //! - `BINIUS_TASK_TARGET_NS` sets the time budget per task, in nanoseconds.
 //! - `BINIUS_MIN_TASK_BYTES` sets the byte budget per task of a memory-bound loop.
 //!
-//! Setting both to `1` floors every loop at a single item.
-//! That reproduces the behavior of an unfloored loop, which makes an A/B measurement
-//! possible without recompiling.
+//! Setting both to `1` floors every loop at one item, which disables the floors for an A/B run.
 //!
 //! # Examples
 //!
@@ -36,10 +30,10 @@
 //!
 //! let data = vec![1u64; 1 << 10];
 //!
-//! // Memory-bound: the floor is sized so one task moves the byte budget.
+//! // Memory-bound: one task moves at least the byte budget.
 //! let sum: u64 = data.par_iter().with_min_task_bytes::<u64>().sum();
 //!
-//! // Arithmetic-bound: the floor is sized so one task runs for the time budget.
+//! // Arithmetic-bound: one task runs for at least the time budget.
 //! let max = data.par_iter().with_min_task(WorkPerItem::FieldMuls).max();
 //!
 //! assert_eq!((sum, max), (1 << 10, Some(&1)));
@@ -71,8 +65,7 @@ const DEFAULT_MIN_TASK_BYTES: usize = 1 << 20;
 fn env_or<T: Copy + std::str::FromStr>(name: &str, default: T) -> T {
 	std::env::var(name)
 		.ok()
-		// A malformed override falls back rather than panicking.
-		// A budget is a tuning knob, so a typo must not take the process down.
+		// A budget is a tuning knob, so a typo falls back instead of taking the process down.
 		.and_then(|v| v.parse().ok())
 		.unwrap_or(default)
 }
@@ -98,8 +91,7 @@ fn min_task_bytes() -> usize {
 
 /// Estimated cost of processing one item of a loop bound by arithmetic.
 ///
-/// The classes are deliberately coarse.
-/// A floor only has to land within an order of magnitude of the truth.
+/// A floor only has to land within an order of magnitude, so the classes are coarse.
 /// Guessing low leaves about a microsecond of handoff overhead per surplus task.
 /// Guessing high delays the split until a somewhat larger input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,8 +129,7 @@ impl WorkPerItem {
 
 /// Items per task that together move at least the given byte budget.
 ///
-/// Kept separate from the public entry point so the arithmetic can be pinned
-/// against explicit budgets rather than the process-wide ones.
+/// Split from the public entry point so tests can pin the arithmetic directly.
 fn min_len_for_bytes_with(min_task_bytes: usize, item_bytes: usize) -> usize {
 	// A zero-sized item is charged one byte, since dividing by its size would trap.
 	let per_item = item_bytes.max(1);
@@ -149,8 +140,7 @@ fn min_len_for_bytes_with(min_task_bytes: usize, item_bytes: usize) -> usize {
 
 /// Items per task that together run for at least the given time budget.
 ///
-/// Kept separate from the public entry point so the arithmetic can be pinned
-/// against explicit budgets rather than the process-wide ones.
+/// Split from the public entry point so tests can pin the arithmetic directly.
 fn min_len_for_work_with(task_target_ns: u64, ns_per_item: u64) -> usize {
 	// An item slower than the whole budget still yields one item per task.
 	(task_target_ns / ns_per_item).max(1) as usize
@@ -159,8 +149,8 @@ fn min_len_for_work_with(task_target_ns: u64, ns_per_item: u64) -> usize {
 /// Minimum items per task for a loop whose cost is the bytes it moves.
 ///
 /// The type parameter is the element the loop streams, usually the packed field type.
-/// A loop zipping several streams counts all of them by passing an array type:
-/// a three-element array charges one item for three words.
+/// A loop zipping several streams names an array type to count all of them.
+/// A three-element array charges one item for three words.
 ///
 /// # Returns
 ///
