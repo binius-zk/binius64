@@ -563,6 +563,12 @@ where
 	/// Run the circuit with parsed ArgMatches (implementation).
 	#[allow(unused_variables)]
 	fn run_with_matches_impl(matches: clap::ArgMatches, circuit_name: &str) -> Result<()> {
+		// Honour `RAYON_NUM_THREADS=1` by pinning the pool to this thread, which keeps profiles
+		// free of worker frames. This must run before anything else touches the pool, because the
+		// first use builds it and it can only be built once — `current_num_threads` below is one
+		// such use. The outcome is reported once tracing is up.
+		let thread_pool_result = binius_utils::rayon::config::adjust_thread_pool();
+
 		// Initialize tracing once at the beginning for all commands. In perfetto mode the
 		// returned guard must be held for the duration of the program to flush the trace.
 		#[cfg(feature = "perfetto")]
@@ -593,6 +599,11 @@ where
 		};
 		#[cfg(not(feature = "perfetto"))]
 		crate::init_tracing();
+
+		// A failure costs only the cleaner call stacks, so it is not fatal.
+		if let Err(err) = thread_pool_result {
+			tracing::warn!("could not pin the rayon thread pool to one thread: {err}");
+		}
 
 		// Check if a subcommand was used
 		match matches.subcommand() {
