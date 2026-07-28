@@ -7,7 +7,7 @@ use binius_hash::{CompressionFunction, binary_merkle_tree::HashSuite, hash_seria
 use binius_transcript::{Buf, TranscriptReader};
 use binius_utils::{
 	FixedSizeSerializeBytes,
-	checked_arithmetics::{log2_ceil_usize, log2_strict_usize},
+	checked_arithmetics::{checked_log_2, log2_ceil_usize},
 };
 use digest::{Digest, Output};
 use getset::CopyGetters;
@@ -81,7 +81,7 @@ where
 	fn proof_size(&self, len: usize, n_queries: usize, layer_depth: usize) -> usize {
 		assert!(len.is_power_of_two(), "precondition: len must be a power of two");
 
-		let log_len = log2_strict_usize(len);
+		let log_len = checked_log_2(len);
 
 		assert!(layer_depth <= log_len, "precondition: layer_depth must be at most log2(len)");
 
@@ -174,7 +174,7 @@ where
 	C: CompressionFunction<D, 2>,
 	D: Clone + Default + Send + Sync + Debug,
 {
-	let log_len = log2_strict_usize(digests.len()); // pre-condition
+	let log_len = checked_log_2(digests.len()); // pre-condition
 	for layer in (0..log_len).rev() {
 		for i in 0..1 << layer {
 			digests[i] = compression.compress(array::from_fn(|j| digests[2 * i + j].clone()));

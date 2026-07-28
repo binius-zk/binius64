@@ -3,10 +3,10 @@
 
 use std::{iter, mem::MaybeUninit, ops::Deref};
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_core::word::Word;
 use binius_field::{BinaryField, Field, PackedField};
-use binius_ip_prover::{prodcheck::ProdcheckProver, sumcheck::mle_store::pooled_copy};
+use binius_ip_prover::prodcheck::ProdcheckProver;
 use binius_math::{FieldVec, field_buffer::FieldBuffer};
 use binius_utils::{
 	checked_arithmetics::{checked_log_2, strict_log_2},
@@ -57,7 +57,7 @@ pub struct Witness<'a, 'alloc, A: Allocator, P: PackedField> {
 	pub b_exponents: &'a [Word],
 	/// Concatenated b leaves for prodcheck: [L_0, L_1, ..., L_{2^k-1}].
 	/// Has log_len = n_vars + Word::LOG_BITS.
-	pub b_leaves: FieldBuffer<P>,
+	pub b_leaves: FieldVec<P, A>,
 	/// The prover for the prodcheck reduction on b_leaves.
 	pub b_prodcheck: ProdcheckProver<'alloc, A, P>,
 	/// The root of the b tree (product of all leaves element-wise).
@@ -181,9 +181,14 @@ where
 		// Compute b_leaves as concatenated leaves for prodcheck; the variable base is the `a` root.
 		let variable_base_tree_scope =
 			tracing::debug_span!("Compute variable-base prodcheck layers").entered();
-		let b_leaves = compute_b_leaves(&a_root, b);
-		let (b_prodcheck, b_root) =
-			ProdcheckProver::new(Word::LOG_BITS, alloc, pooled_copy(alloc, &b_leaves));
+		let b_leaves = compute_b_leaves(alloc, &a_root, b);
+		// The prodcheck prover folds its leaf layer in place, and phase 1 reads the leaves again
+		// afterwards, so the prover gets a clone.
+		let (b_prodcheck, b_root) = ProdcheckProver::new(
+			Word::LOG_BITS,
+			alloc,
+			FieldBuffer::clone_from_slice(alloc, b_leaves.to_ref()),
+		);
 		let b_root = unpool::<A, P>(b_root);
 		drop(variable_base_tree_scope);
 
@@ -339,9 +344,17 @@ where
 ///
 /// Each leaf `L_z` contains: if bit z of `exponents[i]` is set then `bases[i]^{2^z}` else 1
 /// The leaves are concatenated: `[L_0, L_1, ..., L_{2^k-1}]`
+///
+/// The leaves are drawn from `alloc`: the prodcheck prover folds them in place, so they are a
+/// working buffer for the whole reduction.
 #[doc(hidden)] // exposed for benchmarking (`benches/intmul.rs`), not a stable API
-pub fn compute_b_leaves<F, P>(bases: &FieldBuffer<P>, exponents: &[Word]) -> FieldBuffer<P>
+pub fn compute_b_leaves<A, F, P>(
+	alloc: &A,
+	bases: &FieldBuffer<P>,
+	exponents: &[Word],
+) -> FieldVec<P, A>
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
@@ -349,11 +362,11 @@ where
 
 	if P::LOG_WIDTH <= n_vars {
 		// Parallel optimized path
-		return compute_b_leaves_parallel(bases, exponents);
+		return compute_b_leaves_parallel(alloc, bases, exponents);
 	}
 
 	// Fallback: bases is too small to parallelize (n_vars < P::LOG_WIDTH)
-	let mut out = FieldBuffer::zeros(n_vars + Word::LOG_BITS);
+	let mut out = FieldBuffer::zeros_in(alloc, n_vars + Word::LOG_BITS);
 	let n_elems = 1 << n_vars;
 
 	for (i, (mut base, &exp)) in iter::zip(bases.iter_scalars(), exponents).enumerate() {
@@ -372,8 +385,13 @@ where
 }
 
 /// Parallel implementation of compute_b_leaves for when bases is large enough to parallelize.
-fn compute_b_leaves_parallel<F, P>(bases: &FieldBuffer<P>, exponents: &[Word]) -> FieldBuffer<P>
+fn compute_b_leaves_parallel<A, F, P>(
+	alloc: &A,
+	bases: &FieldBuffer<P>,
+	exponents: &[Word],
+) -> FieldVec<P, A>
 where
+	A: Allocator,
 	F: Field,
 	P: PackedField<Scalar = F>,
 {
@@ -382,10 +400,12 @@ where
 	let height = Word::BITS;
 	let total = n_packed * height;
 
-	let mut out_vec: Vec<P> = Vec::with_capacity(total);
+	let mut out_vec = alloc.alloc::<P>(total);
 
 	{
-		let spare: &mut [MaybeUninit<P>] = out_vec.spare_capacity_mut();
+		// An allocator may hand back more capacity than requested, so take exactly the packed
+		// length the strided view expects.
+		let spare: &mut [MaybeUninit<P>] = &mut out_vec.spare_capacity_mut()[..total];
 
 		let mut strided = StridedArray2DViewMut::without_stride(spare, height, n_packed)
 			.expect("dimensions match capacity");
@@ -560,7 +580,7 @@ mod tests {
 				.map(|_| Word::from_u64(rng.random()))
 				.collect::<Vec<_>>();
 
-			let leaves = compute_b_leaves::<F, P>(&bases, &exponents);
+			let leaves = compute_b_leaves::<_, F, P>(&GlobalAllocator, &bases, &exponents);
 
 			for (i, &base0) in base_scalars.iter().enumerate() {
 				let mut base = base0;

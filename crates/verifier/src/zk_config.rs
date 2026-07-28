@@ -63,17 +63,14 @@ where
 	Output<H::LeafHash>: DeserializeBytes,
 {
 	/// Constructs a ZK verifier for a constraint system.
-	pub fn setup(
-		mut constraint_system: ConstraintSystem,
-		log_inv_rate: usize,
-	) -> Result<Self, Error> {
+	pub fn setup(constraint_system: ConstraintSystem, log_inv_rate: usize) -> Result<Self, Error> {
 		let _setup_guard = tracing::debug_span!("Setup ZK verifier").entered();
 
-		constraint_system.validate_and_prepare()?;
+		constraint_system.validate()?;
 
 		// The validated layout guarantees a power-of-two public segment of at least one full
 		// element.
-		let log_public_words = constraint_system.value_vec_layout.log_public_words();
+		let log_public_words = constraint_system.log_public_words();
 		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
 
 		let inner_iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
@@ -206,7 +203,7 @@ where
 			let inner_cs = self.inner_iop_verifier.constraint_system();
 			let _scope = tracing::debug_span!(
 				"Binius64",
-				n_hidden_words = inner_cs.value_vec_layout.n_hidden_words,
+				n_hidden_words = inner_cs.n_hidden_words(),
 				n_bitand = inner_cs.and_constraints.len(),
 				n_intmul = inner_cs.imul_constraints.len(),
 			)

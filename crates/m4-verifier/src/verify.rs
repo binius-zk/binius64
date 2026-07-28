@@ -23,7 +23,6 @@ use binius_math::{
 	univariate::{evaluate_univariate, lagrange_evals_scalars},
 };
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
-use binius_utils::checked_arithmetics::checked_log_2;
 use binius_verifier::{
 	Error,
 	config::{B1, B128},
@@ -69,7 +68,7 @@ type Scheme = BinaryMerkleTreeScheme<B128, StdHashSuite>;
 /// Both operand claims at that point then feed the shift.
 #[derive(Debug, Clone)]
 pub struct IOPVerifier {
-	/// The prepared single-instance constraint system shared by every instance.
+	/// The validated single-instance constraint system shared by every instance.
 	cs: ConstraintSystem,
 	/// The committed-multilinear shape of the batch.
 	layout: BatchCommitLayout,
@@ -81,7 +80,7 @@ impl IOPVerifier {
 		Self { cs, layout }
 	}
 
-	/// The prepared constraint system this verifier checks against.
+	/// The validated constraint system this verifier checks against.
 	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		&self.cs
 	}
@@ -156,8 +155,7 @@ impl IOPVerifier {
 		//
 		// The IntMul columns span every instance's constraints.
 		// So the check runs over `log_instances + log_n_imul` row variables.
-		let intmul_output = if cs.n_imul_constraints() > 0 {
-			let log_n_imul = checked_log_2(cs.n_imul_constraints());
+		let intmul_output = if let Some(log_n_imul) = cs.log_imul_constraints() {
 			Some(verify_intmul_reduction::<B128, _>(log_instances + log_n_imul, channel)?)
 		} else {
 			None
@@ -170,15 +168,15 @@ impl IOPVerifier {
 		//
 		// The BinMul columns span every instance's constraints.
 		// So the check runs over `log_instances + log_n_binmul` row variables.
-		let binmul_output = if cs.n_bmul_constraints() > 0 {
-			let log_n_binmul = checked_log_2(cs.n_bmul_constraints());
+		let binmul_output = if let Some(log_n_binmul) = cs.log_bmul_constraints() {
 			Some(verify_binmul_reduction::<B128, _>(log_instances + log_n_binmul, channel)?)
 		} else {
 			None
 		};
 
-		// AND-check over all `K * n_and` rows.
-		let log_n_and = checked_log_2(cs.and_constraints.len());
+		// AND-check over all `K * n_and` rows. The check has no skip branch: an empty AND set still
+		// reduces, over the single all-zero padding row, so `None` is zero constraint variables.
+		let log_n_and = cs.log_and_constraints().unwrap_or(0);
 		let AndCheckOutput {
 			a_eval,
 			b_eval,
@@ -283,7 +281,7 @@ impl Verifier {
 	///
 	/// # Arguments
 	///
-	/// - `cs`: the prepared single-instance constraint system shared by every instance.
+	/// - `cs`: the validated single-instance constraint system shared by every instance.
 	/// - `log_instances`: base-2 logarithm of the instance count.
 	/// - `log_inv_rate`: base-2 logarithm of the inverse Reed-Solomon rate.
 	pub fn setup(cs: &ConstraintSystem, log_instances: usize, log_inv_rate: usize) -> Self {
@@ -321,7 +319,7 @@ impl Verifier {
 		}
 	}
 
-	/// The prepared constraint system this verifier checks against.
+	/// The validated constraint system this verifier checks against.
 	pub const fn constraint_system(&self) -> &ConstraintSystem {
 		self.iop_verifier.constraint_system()
 	}

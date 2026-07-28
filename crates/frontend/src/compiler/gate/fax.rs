@@ -15,8 +15,9 @@
 
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, expr},
+	eval_form::BytecodeBuilder,
 	gate::opcode::OpcodeShape,
-	gate_graph::{Gate, GateData, GateParam, Wire},
+	gate_graph::{GateData, GateParam, Wire},
 };
 
 pub const fn shape() -> OpcodeShape {
@@ -30,7 +31,7 @@ pub const fn shape() -> OpcodeShape {
 	}
 }
 
-pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) {
+pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	let GateParam {
 		inputs, outputs, ..
 	} = data.gate_param();
@@ -41,13 +42,12 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	//
 	// x & y = t, where t ^ w = z
 	// This can be written as: x & y ^ w = z
-	builder.and().a(*x).b(*y).c(expr::xor2(*z, *w)).build();
+	builder.and(*x, *y, expr::xor2(*z, *w));
 }
 
 pub fn emit_eval_bytecode(
-	_gate: Gate,
 	data: &GateData,
-	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
+	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
 	let GateParam {

@@ -2,14 +2,15 @@
 
 use std::ops::{Index, IndexMut};
 
+use binius_compute::Allocator;
 use binius_core::{
-	constraint_system::{ValueVec, ValueVecLayout},
+	constraint_system::{ValueIndex, ValueVec, ValueVecLayout},
 	word::Word,
 };
 use binius_field::PackedField;
 use binius_frontend::{BatchPopulateError, Circuit, Wire};
 use binius_m4_verifier::BatchCommitLayout;
-use binius_math::FieldBuffer;
+use binius_math::FieldVec;
 use binius_utils::strided_array::StridedArray2DViewMut;
 use binius_verifier::config::B128;
 
@@ -153,7 +154,7 @@ impl ValueTable {
 	where
 		F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
 	{
-		let layout = circuit.constraint_system().value_vec_layout.clone();
+		let layout = circuit.value_vec_layout().clone();
 		assert_eq!(
 			layout.n_inout, 0,
 			"ValueTable requires a constraint system with no inout wires; \
@@ -252,18 +253,20 @@ impl ValueTable {
 			"constants length must match the layout's constant count"
 		);
 
-		// The public segment holds the constants at the front, then zero padding up to its
-		// power-of-two length. There are no inout wires.
-		let mut public = vec![Word::ZERO; self.layout.offset_witness];
-		public[..constants.len()].copy_from_slice(constants);
+		// The public segment holds the constants at the front; the rest of it is the zero
+		// padding a fresh value vector already carries. There are no inout wires.
+		let mut values = ValueVec::new(&self.layout);
+		for (i, &constant) in constants.iter().enumerate() {
+			values[ValueIndex(i as u32)] = constant;
+		}
 
 		// Gather this instance's column of hidden words across every row.
-		let private = (0..self.n_hidden_words())
-			.map(|row| self.data[(row << self.log_instances) + instance])
-			.collect::<Vec<_>>();
+		for row in 0..self.n_hidden_words() {
+			values[ValueIndex((self.layout.offset_witness + row) as u32)] =
+				self.data[(row << self.log_instances) + instance];
+		}
 
-		ValueVec::new_from_data(self.layout.clone(), public, private)
-			.expect("public and private lengths match the layout by construction")
+		values
 	}
 
 	/// The committed-multilinear layout for this batch.
@@ -280,14 +283,16 @@ impl ValueTable {
 	/// The element sequence is zero-padded up to the committed element count.
 	/// The instance index occupies the low coordinates, the hidden-word index the high coordinates.
 	/// Only the hidden segment is committed; the shared constants are not part of the oracle.
-	pub fn pack<P>(&self) -> FieldBuffer<P>
+	/// The packed buffer is drawn from `alloc`.
+	pub fn pack<P, A>(&self, alloc: &A) -> FieldVec<P, A>
 	where
 		P: PackedField<Scalar = B128>,
+		A: Allocator,
 	{
 		// The stored buffer is already the committed word sequence, wire-major.
 		// The base packer zero-pads it up to `2^log_witness_elems` elements.
 		let layout = self.commit_layout();
-		binius_prover::pack_witness::<P>(layout.log_witness_elems, self.as_words())
+		binius_prover::pack_witness::<P, A>(alloc, layout.log_witness_elems, self.as_words())
 			.expect("the hidden buffer fits in 2^log_witness_elems field elements by construction")
 	}
 }
@@ -319,6 +324,7 @@ impl IndexMut<Wire> for BatchWitnessFiller<'_, '_> {
 
 #[cfg(test)]
 mod tests {
+	use binius_compute::GlobalAllocator;
 	use binius_core::verify::verify_constraints;
 	use binius_field::PackedBinaryGhash1x128b;
 	use binius_frontend::{CircuitBuilder, Wire};
@@ -377,7 +383,7 @@ mod tests {
 		})
 		.unwrap();
 
-		let layout = &c.circuit.constraint_system().value_vec_layout;
+		let layout = c.circuit.value_vec_layout();
 		assert_eq!(table.log_instances(), log_instances);
 		assert_eq!(table.n_instances(), 8);
 		assert_eq!(table.n_hidden_words(), layout.n_hidden_words);
@@ -590,7 +596,10 @@ mod tests {
 		.unwrap();
 
 		let layout = table.commit_layout();
-		let packed: Vec<B128> = table.pack::<P>().iter_scalars().collect();
+		let packed: Vec<B128> = table
+			.pack::<P, _>(&GlobalAllocator)
+			.iter_scalars()
+			.collect();
 
 		// The committed scalars are the wire-major buffer taken two little-endian words per
 		// element. Indices past the stored words are the commitment's zero padding.

@@ -2,27 +2,30 @@
 
 //! Wire-level constraint DSL and its lowering to core `ValueIndex` constraints.
 
-mod builder;
 mod constraint;
 pub mod expr;
 mod shift;
 
 use binius_core::constraint_system::{AndConstraint, BmulConstraint, ImulConstraint, ValueIndex};
-pub use builder::{
-	AndConstraintBuilder, BmulConstraintBuilder, ImulConstraintBuilder, LinearConstraintBuilder,
-};
 pub use constraint::{
 	WireAndConstraint, WireBmulConstraint, WireImulConstraint, WireLinearConstraint,
 };
 use cranelift_entity::{EntitySet, SecondaryMap};
+use expr::WireExpr;
 pub use expr::WireExprTerm;
-pub use shift::{Shift, ShiftedWire, WireOperand};
+pub use shift::{Shift, ShiftKind, ShiftedWire, WireOperand};
 
 use crate::compiler::Wire;
 
 /// Accumulates the constraints a circuit emits, expressed over [`Wire`]s.
 ///
-/// Gates push into the four typed buckets through the fluent builders.
+/// Gates push into the four typed buckets, one method per constraint shape.
+///
+/// Every operand is a parameter of that method:
+///
+/// - leaving one out is a compile error rather than a silent zero;
+/// - an operand that is meant to be zero says so with [`expr::empty`].
+///
 /// [`build`](Self::build) then converts every wire to its [`ValueIndex`] and
 /// produces the core constraint lists the prover and verifier consume.
 pub struct ConstraintBuilder {
@@ -47,26 +50,59 @@ impl ConstraintBuilder {
 		}
 	}
 
-	/// Starts an AND constraint `A & B == C`.
-	pub const fn and(&mut self) -> AndConstraintBuilder<'_> {
-		AndConstraintBuilder::new(self)
+	/// Appends an AND constraint `a & b == c`.
+	pub fn and(&mut self, a: impl Into<WireExpr>, b: impl Into<WireExpr>, c: impl Into<WireExpr>) {
+		self.and_constraints.push(WireAndConstraint {
+			a: a.into().into_operand(),
+			b: b.into().into_operand(),
+			c: c.into().into_operand(),
+		});
 	}
 
-	/// Starts an IMUL constraint `A * B == (HI << 64) | LO`.
-	pub const fn imul(&mut self) -> ImulConstraintBuilder<'_> {
-		ImulConstraintBuilder::new(self)
+	/// Appends an IMUL constraint `a * b == (hi << 64) | lo`.
+	pub fn imul(
+		&mut self,
+		a: impl Into<WireExpr>,
+		b: impl Into<WireExpr>,
+		hi: impl Into<WireExpr>,
+		lo: impl Into<WireExpr>,
+	) {
+		self.imul_constraints.push(WireImulConstraint {
+			a: a.into().into_operand(),
+			b: b.into().into_operand(),
+			hi: hi.into().into_operand(),
+			lo: lo.into().into_operand(),
+		});
 	}
 
-	/// Starts a BMUL constraint `(A_LO, A_HI) * (B_LO, B_HI) == (C_LO, C_HI)` in the GHASH field.
-	pub const fn bmul(&mut self) -> BmulConstraintBuilder<'_> {
-		BmulConstraintBuilder::new(self)
+	/// Appends a BMUL constraint `(a_lo, a_hi) * (b_lo, b_hi) == (c_lo, c_hi)` in the GHASH field.
+	pub fn bmul(
+		&mut self,
+		a_lo: impl Into<WireExpr>,
+		a_hi: impl Into<WireExpr>,
+		b_lo: impl Into<WireExpr>,
+		b_hi: impl Into<WireExpr>,
+		c_lo: impl Into<WireExpr>,
+		c_hi: impl Into<WireExpr>,
+	) {
+		self.bmul_constraints.push(WireBmulConstraint {
+			a_lo: a_lo.into().into_operand(),
+			a_hi: a_hi.into().into_operand(),
+			b_lo: b_lo.into().into_operand(),
+			b_hi: b_hi.into().into_operand(),
+			c_lo: c_lo.into().into_operand(),
+			c_hi: c_hi.into().into_operand(),
+		});
 	}
 
-	/// Starts a linear constraint `RHS == DST`.
+	/// Appends a linear constraint `rhs == dst`.
 	///
-	/// `RHS` is an XOR of shifted values; `DST` is a single wire.
-	pub const fn linear(&mut self) -> LinearConstraintBuilder<'_> {
-		LinearConstraintBuilder::new(self)
+	/// `rhs` is an XOR of shifted values; `dst` is a single wire.
+	pub fn linear(&mut self, rhs: impl Into<WireExpr>, dst: Wire) {
+		self.linear_constraints.push(WireLinearConstraint {
+			rhs: rhs.into().into_operand(),
+			dst,
+		});
 	}
 
 	/// Lowers every wire-level constraint to its core `ValueIndex` form.

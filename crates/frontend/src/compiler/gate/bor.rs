@@ -5,8 +5,8 @@
 //!
 //! # Algorithm
 //!
-//! Computes the bitwise OR using De Morgan's law: `x | y = ¬(¬x ∧ ¬y)`.
-//! This is implemented as `x ∧ y = (x ⊕ y ⊕ z)`.
+//! Computes the bitwise OR from the identity `x | y = (x ∧ y) ⊕ x ⊕ y`.
+//! Rearranged so the AND stands alone, that identity is the constraint below.
 //!
 //! # Constraints
 //!
@@ -15,8 +15,9 @@
 
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, expr},
+	eval_form::BytecodeBuilder,
 	gate::opcode::OpcodeShape,
-	gate_graph::{Gate, GateData, GateParam, Wire},
+	gate_graph::{GateData, GateParam, Wire},
 };
 
 pub const fn shape() -> OpcodeShape {
@@ -30,7 +31,7 @@ pub const fn shape() -> OpcodeShape {
 	}
 }
 
-pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) {
+pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	let GateParam {
 		inputs, outputs, ..
 	} = data.gate_param();
@@ -40,13 +41,12 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	// Constraint: Bitwise OR
 	//
 	// x ∧ y = x ⊕ y ⊕ z
-	builder.and().a(*x).b(*y).c(expr::xor3(*x, *y, *z)).build();
+	builder.and(*x, *y, expr::xor3(*x, *y, *z));
 }
 
 pub fn emit_eval_bytecode(
-	_gate: Gate,
 	data: &GateData,
-	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
+	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
 	let GateParam {

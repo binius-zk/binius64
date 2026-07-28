@@ -182,7 +182,7 @@ fn build_committed_lin_def_patch(
 	// The first redundant constraint is the linear definition that's being committed.
 	let mut subsumes = vec![leg.lin_def_constraint_ref(root)];
 
-	let old_operand = leg.lin_def(cb, root);
+	let old_operand = leg.lin_def_operand(cb, root);
 	let new_operand = process_operand(cb, leg, &mut subsumes, old_operand);
 
 	// Create an AND constraint that enforces: root = new_operand
@@ -232,7 +232,7 @@ fn process_term(
 		new_operand.push(ShiftedWire { wire, shift });
 	} else {
 		// This is a non-committed linear def - we need to inline it!
-		let inner_operand = leg.lin_def(cb, wire);
+		let inner_operand = leg.lin_def_operand(cb, wire);
 		let constraint_ref = leg.lin_def_constraint_ref(wire);
 		subsumes.push(constraint_ref);
 
@@ -280,7 +280,7 @@ mod tests {
 		build_constraints(&mut cb);
 
 		let mut stat = Stat::default();
-		let mut leg = LeGraph::new(&cb, &mut stat);
+		let mut leg = LeGraph::new(&cb);
 		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
 
 		// Verify commit set
@@ -328,10 +328,10 @@ mod tests {
 		// Expect t expands to: a ^ b (no shifts)
 		test_inlining(
 			|cb| {
-				cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build(); // y
-				cb.linear().rhs(expr::rotr(w(2), 20)).dst(w(3)).build(); // z
-				cb.linear().rhs(expr::rotr(w(3), 44)).dst(w(4)).build(); // t
-				cb.and().a(w(4)).b(w(5)).c(w(6)).build();
+				cb.linear(expr::xor2(w(0), w(1)), w(2)); // y
+				cb.linear(expr::rotr(w(2), 20), w(3)); // z
+				cb.linear(expr::rotr(w(3), 44), w(4)); // t
+				cb.and(w(4), w(5), w(6));
 			},
 			&[],
 			&[(
@@ -360,18 +360,13 @@ mod tests {
 		let mut cb = ConstraintBuilder::new();
 		// x = const (opaque wire in this builder-level test)
 		// y = x  (linear def of a single opaque term)
-		cb.linear().rhs(expr::xor2(w(0), w(0))).dst(w(1)).build();
+		cb.linear(expr::xor2(w(0), w(0)), w(1));
 		// Above uses xor2(w0,w0) which cancels logically, but at builder-level it's two terms.
 		// Use a simpler single-term variant as well
 		let mut cb_single = ConstraintBuilder::new();
-		cb_single
-			.linear()
-			.rhs(expr::xor2(w(0), w(2)))
-			.dst(w(3))
-			.build();
+		cb_single.linear(expr::xor2(w(0), w(2)), w(3));
 
-		let mut stat = Stat::default();
-		let leg = LeGraph::new(&cb_single, &mut stat);
+		let leg = LeGraph::new(&cb_single);
 		let all_one = w(9);
 		let patch = super::build_committed_lin_def_patch(&cb_single, &leg, all_one, w(3));
 		match patch.added {
@@ -395,15 +390,15 @@ mod tests {
 		}
 
 		let mut cb = ConstraintBuilder::new();
-		cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(10)).build(); // a_src
-		cb.linear().rhs(expr::xor2(w(2), w(3))).dst(w(11)).build(); // b_src
-		cb.linear().rhs(expr::xor2(w(4), w(5))).dst(w(12)).build(); // hi_src
-		cb.linear().rhs(expr::xor2(w(6), w(7))).dst(w(13)).build(); // lo_src
+		cb.linear(expr::xor2(w(0), w(1)), w(10)); // a_src
+		cb.linear(expr::xor2(w(2), w(3)), w(11)); // b_src
+		cb.linear(expr::xor2(w(4), w(5)), w(12)); // hi_src
+		cb.linear(expr::xor2(w(6), w(7)), w(13)); // lo_src
 
-		cb.imul().a(w(10)).b(w(11)).hi(w(12)).lo(w(13)).build();
+		cb.imul(w(10), w(11), w(12), w(13));
 
 		let mut stat = Stat::default();
-		let mut leg = LeGraph::new(&cb, &mut stat);
+		let mut leg = LeGraph::new(&cb);
 		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
 
 		let patches = super::build(&cb, &leg, w(9));
@@ -428,24 +423,17 @@ mod tests {
 		}
 
 		let mut cb = ConstraintBuilder::new();
-		cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(20)).build(); // a_lo_src
-		cb.linear().rhs(expr::xor2(w(2), w(3))).dst(w(21)).build(); // a_hi_src
-		cb.linear().rhs(expr::xor2(w(4), w(5))).dst(w(22)).build(); // b_lo_src
-		cb.linear().rhs(expr::xor2(w(6), w(7))).dst(w(23)).build(); // b_hi_src
-		cb.linear().rhs(expr::xor2(w(8), w(9))).dst(w(24)).build(); // c_lo_src
-		cb.linear().rhs(expr::xor2(w(10), w(11))).dst(w(25)).build(); // c_hi_src
+		cb.linear(expr::xor2(w(0), w(1)), w(20)); // a_lo_src
+		cb.linear(expr::xor2(w(2), w(3)), w(21)); // a_hi_src
+		cb.linear(expr::xor2(w(4), w(5)), w(22)); // b_lo_src
+		cb.linear(expr::xor2(w(6), w(7)), w(23)); // b_hi_src
+		cb.linear(expr::xor2(w(8), w(9)), w(24)); // c_lo_src
+		cb.linear(expr::xor2(w(10), w(11)), w(25)); // c_hi_src
 
-		cb.bmul()
-			.a_lo(w(20))
-			.a_hi(w(21))
-			.b_lo(w(22))
-			.b_hi(w(23))
-			.c_lo(w(24))
-			.c_hi(w(25))
-			.build();
+		cb.bmul(w(20), w(21), w(22), w(23), w(24), w(25));
 
 		let mut stat = Stat::default();
-		let mut leg = LeGraph::new(&cb, &mut stat);
+		let mut leg = LeGraph::new(&cb);
 		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
 
 		let patches = super::build(&cb, &leg, w(40));
@@ -491,40 +479,36 @@ mod tests {
 				let mut cb = ConstraintBuilder::new();
 				// y = shift1(x)
 				match s1 {
-					Shift::None => cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build(),
-					Shift::Sll(n) => cb.linear().rhs(expr::sll(w(0), *n)).dst(w(2)).build(),
-					Shift::Sll32(n) => cb.linear().rhs(expr::sll32(w(0), *n)).dst(w(2)).build(),
-					Shift::Srl(n) => cb.linear().rhs(expr::srl(w(0), *n)).dst(w(2)).build(),
-					Shift::Srl32(n) => cb.linear().rhs(expr::srl32(w(0), *n)).dst(w(2)).build(),
-					Shift::Sar(n) => cb
-						.linear()
-						.rhs(crate::compiler::constraint_builder::expr::sar(w(0), *n))
-						.dst(w(2))
-						.build(),
-					Shift::Sra32(n) => cb.linear().rhs(expr::sra32(w(0), *n)).dst(w(2)).build(),
-					Shift::Rotr(n) => cb.linear().rhs(expr::rotr(w(0), *n)).dst(w(2)).build(),
-					Shift::Rotr32(n) => cb.linear().rhs(expr::rotr32(w(0), *n)).dst(w(2)).build(),
+					Shift::None => cb.linear(expr::xor2(w(0), w(1)), w(2)),
+					Shift::Sll(n) => cb.linear(expr::sll(w(0), *n), w(2)),
+					Shift::Sll32(n) => cb.linear(expr::sll32(w(0), *n), w(2)),
+					Shift::Srl(n) => cb.linear(expr::srl(w(0), *n), w(2)),
+					Shift::Srl32(n) => cb.linear(expr::srl32(w(0), *n), w(2)),
+					Shift::Sar(n) => {
+						cb.linear(crate::compiler::constraint_builder::expr::sar(w(0), *n), w(2))
+					}
+					Shift::Sra32(n) => cb.linear(expr::sra32(w(0), *n), w(2)),
+					Shift::Rotr(n) => cb.linear(expr::rotr(w(0), *n), w(2)),
+					Shift::Rotr32(n) => cb.linear(expr::rotr32(w(0), *n), w(2)),
 				}
 				// z = shift2(y)
 				match s2 {
-					Shift::None => cb.linear().rhs(expr::xor2(w(2), w(3))).dst(w(4)).build(),
-					Shift::Sll(n) => cb.linear().rhs(expr::sll(w(2), *n)).dst(w(4)).build(),
-					Shift::Sll32(n) => cb.linear().rhs(expr::sll32(w(2), *n)).dst(w(4)).build(),
-					Shift::Srl(n) => cb.linear().rhs(expr::srl(w(2), *n)).dst(w(4)).build(),
-					Shift::Srl32(n) => cb.linear().rhs(expr::srl32(w(2), *n)).dst(w(4)).build(),
-					Shift::Sar(n) => cb
-						.linear()
-						.rhs(crate::compiler::constraint_builder::expr::sar(w(2), *n))
-						.dst(w(4))
-						.build(),
-					Shift::Sra32(n) => cb.linear().rhs(expr::sra32(w(2), *n)).dst(w(4)).build(),
-					Shift::Rotr(n) => cb.linear().rhs(expr::rotr(w(2), *n)).dst(w(4)).build(),
-					Shift::Rotr32(n) => cb.linear().rhs(expr::rotr32(w(2), *n)).dst(w(4)).build(),
+					Shift::None => cb.linear(expr::xor2(w(2), w(3)), w(4)),
+					Shift::Sll(n) => cb.linear(expr::sll(w(2), *n), w(4)),
+					Shift::Sll32(n) => cb.linear(expr::sll32(w(2), *n), w(4)),
+					Shift::Srl(n) => cb.linear(expr::srl(w(2), *n), w(4)),
+					Shift::Srl32(n) => cb.linear(expr::srl32(w(2), *n), w(4)),
+					Shift::Sar(n) => {
+						cb.linear(crate::compiler::constraint_builder::expr::sar(w(2), *n), w(4))
+					}
+					Shift::Sra32(n) => cb.linear(expr::sra32(w(2), *n), w(4)),
+					Shift::Rotr(n) => cb.linear(expr::rotr(w(2), *n), w(4)),
+					Shift::Rotr32(n) => cb.linear(expr::rotr32(w(2), *n), w(4)),
 				}
-				cb.and().a(w(4)).b(w(5)).c(w(6)).build();
+				cb.and(w(4), w(5), w(6));
 
 				let mut stat = Stat::default();
-				let mut leg = LeGraph::new(&cb, &mut stat);
+				let mut leg = LeGraph::new(&cb);
 				crate::compiler::gate_fusion::commit_set::run_decide_commit_set(
 					&mut leg, &mut stat,
 				);
@@ -551,7 +535,7 @@ mod tests {
 			return result;
 		}
 
-		let operand = leg.lin_def(cb, wire);
+		let operand = leg.lin_def_operand(cb, wire);
 		for term in operand {
 			expand_term_recursive(cb, leg, &mut result, term.wire, term.shift);
 		}
@@ -571,7 +555,7 @@ mod tests {
 			result.push(ShiftedWire { wire, shift });
 		} else {
 			// This is a non-committed linear def - expand recursively
-			let inner = leg.lin_def(cb, wire);
+			let inner = leg.lin_def_operand(cb, wire);
 			for term in inner {
 				let composed = Shift::compose(term.shift, shift).unwrap();
 				expand_term_recursive(cb, leg, result, term.wire, composed);
@@ -588,8 +572,8 @@ mod tests {
 		map
 	}
 
-	fn assert_operand_eq(actual: &[ShiftedWire], expected: Vec<ShiftedWire>, ctx: &str) {
-		let am = operand_count_map(actual);
+	fn assert_operand_eq(actual: &WireOperand, expected: Vec<ShiftedWire>, ctx: &str) {
+		let am = operand_count_map(actual.as_slice());
 		let em = operand_count_map(&expected);
 		assert_eq!(
 			am, em,
@@ -607,11 +591,11 @@ mod tests {
 		test_inlining(
 			|cb| {
 				// y = x ^ a
-				cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
+				cb.linear(expr::xor2(w(0), w(1)), w(2));
 				// z = y ^ b
-				cb.linear().rhs(expr::xor2(w(2), w(3))).dst(w(4)).build();
+				cb.linear(expr::xor2(w(2), w(3)), w(4));
 				// Use z in AND constraint (creates the root)
-				cb.and().a(w(4)).b(w(5)).c(w(6)).build();
+				cb.and(w(4), w(5), w(6));
 			},
 			&[],
 			&[
@@ -658,11 +642,11 @@ mod tests {
 		test_inlining(
 			|cb| {
 				// y = x << 10
-				cb.linear().rhs(expr::sll(w(0), 10)).dst(w(1)).build();
+				cb.linear(expr::sll(w(0), 10), w(1));
 				// z = y << 20
-				cb.linear().rhs(expr::sll(w(1), 20)).dst(w(2)).build();
+				cb.linear(expr::sll(w(1), 20), w(2));
 				// Use z in an AND constraint so it becomes a root
-				cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+				cb.and(w(2), w(3), w(4));
 			},
 			&[],
 			&[
@@ -693,11 +677,11 @@ mod tests {
 		test_inlining(
 			|cb| {
 				// y = a ^ b
-				cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
+				cb.linear(expr::xor2(w(0), w(1)), w(2));
 				// z = rotr(y, 5)
-				cb.linear().rhs(expr::rotr(w(2), 5)).dst(w(3)).build();
+				cb.linear(expr::rotr(w(2), 5), w(3));
 				// Use z in an AND constraint
-				cb.and().a(w(3)).b(w(4)).c(w(5)).build();
+				cb.and(w(3), w(4), w(5));
 			},
 			&[],
 			&[
@@ -726,11 +710,11 @@ mod tests {
 		test_inlining(
 			|cb| {
 				// y = x << 10
-				cb.linear().rhs(expr::sll(w(0), 10)).dst(w(1)).build();
+				cb.linear(expr::sll(w(0), 10), w(1));
 				// z = y >> 20
-				cb.linear().rhs(expr::srl(w(1), 20)).dst(w(2)).build();
+				cb.linear(expr::srl(w(1), 20), w(2));
 				// Use z in an AND constraint
-				cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+				cb.and(w(2), w(3), w(4));
 			},
 			&[w(1)], // y must be committed (incompatible shifts)
 			&[
@@ -753,17 +737,11 @@ mod tests {
 		test_inlining(
 			|cb| {
 				// y = a ^ b ^ c
-				cb.linear()
-					.rhs(expr::xor3(w(0), w(1), w(2)))
-					.dst(w(3))
-					.build();
+				cb.linear(expr::xor3(w(0), w(1), w(2)), w(3));
 				// z = y ^ d ^ e
-				cb.linear()
-					.rhs(expr::xor3(w(3), w(4), w(5)))
-					.dst(w(6))
-					.build();
+				cb.linear(expr::xor3(w(3), w(4), w(5)), w(6));
 				// Use z in AND constraint
-				cb.and().a(w(6)).b(w(7)).c(w(8)).build();
+				cb.and(w(6), w(7), w(8));
 			},
 			&[],
 			&[
@@ -805,17 +783,17 @@ mod tests {
 		let mut cb = ConstraintBuilder::new();
 
 		// Add some AND constraints
-		cb.and().a(w(0)).b(w(1)).c(w(2)).build(); // index 0
-		cb.and().a(w(3)).b(w(4)).c(w(5)).build(); // index 1
-		cb.and().a(w(6)).b(w(7)).c(w(8)).build(); // index 2
+		cb.and(w(0), w(1), w(2)); // index 0
+		cb.and(w(3), w(4), w(5)); // index 1
+		cb.and(w(6), w(7), w(8)); // index 2
 
 		// Add some IMUL constraints
-		cb.imul().a(w(9)).b(w(10)).lo(w(11)).hi(w(12)).build(); // index 0
-		cb.imul().a(w(13)).b(w(14)).lo(w(15)).hi(w(16)).build(); // index 1
+		cb.imul(w(9), w(10), w(12), w(11)); // index 0
+		cb.imul(w(13), w(14), w(16), w(15)); // index 1
 
 		// Add some LINEAR constraints
-		cb.linear().rhs(expr::xor2(w(17), w(18))).dst(w(19)).build(); // index 0
-		cb.linear().rhs(expr::xor2(w(20), w(21))).dst(w(22)).build(); // index 1
+		cb.linear(expr::xor2(w(17), w(18)), w(19)); // index 0
+		cb.linear(expr::xor2(w(20), w(21)), w(22)); // index 1
 
 		// Create patches that:
 		// 1. Replace AND constraint at index 1 with a new one
@@ -933,19 +911,19 @@ mod tests {
 			Wire::from_u32(id)
 		}
 		// t = a ^ b
-		cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
+		cb.linear(expr::xor2(w(0), w(1)), w(2));
 		// y = srl(t, 10)
-		cb.linear().rhs(expr::srl(w(2), 10)).dst(w(3)).build();
+		cb.linear(expr::srl(w(2), 10), w(3));
 		// z = sll(y, 5)
-		cb.linear().rhs(expr::sll(w(3), 5)).dst(w(4)).build();
+		cb.linear(expr::sll(w(3), 5), w(4));
 
 		// AND1: use z
-		cb.and().a(w(4)).b(w(5)).c(w(6)).build();
+		cb.and(w(4), w(5), w(6));
 		// AND2: use t
-		cb.and().a(w(2)).b(w(7)).c(w(8)).build();
+		cb.and(w(2), w(7), w(8));
 
 		let mut stat = Stat::default();
-		let mut leg = LeGraph::new(&cb, &mut stat);
+		let mut leg = LeGraph::new(&cb);
 		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
 
 		// Sanity: y should be committed; t and z should not be
@@ -976,17 +954,17 @@ mod tests {
 
 		let mut cb = ConstraintBuilder::new();
 		// y = x ^ c
-		cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
+		cb.linear(expr::xor2(w(0), w(1)), w(2));
 		// IMUL: a = y ^ y ^ z; b = u; hi, lo are outputs
-		cb.imul()
-			.a(crate::compiler::constraint_builder::expr::xor3(w(2), w(2), w(3)))
-			.b(w(4))
-			.hi(w(5))
-			.lo(w(6))
-			.build();
+		cb.imul(
+			crate::compiler::constraint_builder::expr::xor3(w(2), w(2), w(3)),
+			w(4),
+			w(5),
+			w(6),
+		);
 
 		let mut stat = Stat::default();
-		let mut leg = LeGraph::new(&cb, &mut stat);
+		let mut leg = LeGraph::new(&cb);
 		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
 
 		let patches = super::build(&cb, &leg, w(7));
@@ -1036,13 +1014,13 @@ mod tests {
 		}
 
 		let mut cb = ConstraintBuilder::new();
-		cb.linear().rhs(expr::sll(w(0), 40)).dst(w(1)).build(); // t_committed
-		cb.linear().rhs(expr::sll(w(1), 30)).dst(w(2)).build(); // y
-		cb.linear().rhs(expr::xor2(w(3), w(4))).dst(w(5)).build(); // u
-		cb.imul().a(w(2)).b(w(5)).hi(w(6)).lo(w(7)).build();
+		cb.linear(expr::sll(w(0), 40), w(1)); // t_committed
+		cb.linear(expr::sll(w(1), 30), w(2)); // y
+		cb.linear(expr::xor2(w(3), w(4)), w(5)); // u
+		cb.imul(w(2), w(5), w(6), w(7));
 
 		let mut stat = Stat::default();
-		let mut leg = LeGraph::new(&cb, &mut stat);
+		let mut leg = LeGraph::new(&cb);
 		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
 
 		assert!(leg.commit_set().contains(w(1)), "t_committed should be committed");
@@ -1085,15 +1063,15 @@ mod tests {
 
 		let mut cb = ConstraintBuilder::new();
 		// committed producer
-		cb.linear().rhs(expr::sll(w(0), 48)).dst(w(1)).build(); // t
-		cb.linear().rhs(expr::sll(w(1), 20)).dst(w(2)).build(); // hi_src (should commit t)
+		cb.linear(expr::sll(w(0), 48), w(1)); // t
+		cb.linear(expr::sll(w(1), 20), w(2)); // hi_src (should commit t)
 		// inlinable lo_src = x ^ c
-		cb.linear().rhs(expr::xor2(w(3), w(4))).dst(w(5)).build();
+		cb.linear(expr::xor2(w(3), w(4)), w(5));
 		// build IMUL: a,b plain; hi=hi_src; lo=lo_src
-		cb.imul().a(w(6)).b(w(7)).hi(w(2)).lo(w(5)).build();
+		cb.imul(w(6), w(7), w(2), w(5));
 
 		let mut stat = Stat::default();
-		let mut leg = LeGraph::new(&cb, &mut stat);
+		let mut leg = LeGraph::new(&cb);
 		crate::compiler::gate_fusion::commit_set::run_decide_commit_set(&mut leg, &mut stat);
 
 		assert!(leg.commit_set().contains(w(1)), "inner t should be committed");

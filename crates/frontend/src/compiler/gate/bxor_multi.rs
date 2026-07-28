@@ -10,8 +10,9 @@
 
 use crate::compiler::{
 	constraint_builder::{ConstraintBuilder, WireExprTerm, expr},
+	eval_form::BytecodeBuilder,
 	gate::opcode::OpcodeShape,
-	gate_graph::{Gate, GateData, GateParam, Wire},
+	gate_graph::{GateData, GateParam, Wire},
 };
 
 pub fn shape(dimensions: &[usize]) -> OpcodeShape {
@@ -28,7 +29,7 @@ pub fn shape(dimensions: &[usize]) -> OpcodeShape {
 	}
 }
 
-pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) {
+pub fn constrain(data: &GateData, builder: &mut ConstraintBuilder) {
 	let GateParam {
 		inputs, outputs, ..
 	} = data.gate_param();
@@ -37,14 +38,16 @@ pub fn constrain(_gate: Gate, data: &GateData, builder: &mut ConstraintBuilder) 
 	// Constraint: N-way Bitwise XOR (linear)
 	//
 	// (x0 ⊕ x1 ⊕ ... ⊕ xn) = z
-	let terms: Vec<WireExprTerm> = inputs.iter().map(|&w| w.into()).collect();
-	builder.linear().rhs(expr::xor_multi(terms)).dst(*z).build();
+	//
+	// The terms are handed over as an iterator, since the operand collects them itself.
+	// A vector to carry them across would only be allocated to be dropped.
+	let terms = inputs.iter().map(|&wire| WireExprTerm::from(wire));
+	builder.linear(expr::xor_multi(terms), *z);
 }
 
 pub fn emit_eval_bytecode(
-	_gate: Gate,
 	data: &GateData,
-	builder: &mut crate::compiler::eval_form::BytecodeBuilder,
+	builder: &mut BytecodeBuilder,
 	wire_to_reg: impl Fn(Wire) -> u32,
 ) {
 	let GateParam {

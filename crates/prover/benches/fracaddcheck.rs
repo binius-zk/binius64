@@ -1,6 +1,6 @@
 // Copyright 2025-2026 The Binius Developers
 
-use binius_compute::{BufferPool, PoolVec};
+use binius_compute::BufferPool;
 use binius_field::{FieldOps, arch::OptimalPackedB128};
 use binius_ip::prodcheck::MultilinearEvalClaim;
 use binius_ip_prover::fracaddcheck::FracAddCheckProver;
@@ -36,8 +36,8 @@ fn bench_fracaddcheck_new(c: &mut Criterion) {
 			b.iter_batched(
 				|| {
 					(
-						FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, num_buffer.to_ref()),
-						FieldBuffer::<_, PoolVec<_>>::clone_from_slice(&alloc, den_buffer.to_ref()),
+						FieldBuffer::clone_from_slice(&alloc, num_buffer.to_ref()),
+						FieldBuffer::clone_from_slice(&alloc, den_buffer.to_ref()),
 					)
 				},
 				|(witness_num, witness_den)| {

@@ -17,7 +17,7 @@ use binius_math::{
 	BinarySubspace, inner_product::inner_product_scalars, univariate::lagrange_evals_scalars,
 };
 use binius_transcript::{VerifierTranscript, fiat_shamir::Challenger};
-use binius_utils::{DeserializeBytes, checked_arithmetics::checked_log_2};
+use binius_utils::DeserializeBytes;
 use digest::Output;
 use itertools::chain;
 
@@ -51,8 +51,7 @@ pub struct IOPVerifier {
 impl IOPVerifier {
 	/// Constructs an IOP verifier for a constraint system.
 	///
-	/// The constraint system must already be validated via
-	/// [`ConstraintSystem::validate_and_prepare`].
+	/// The constraint system must already be validated via [`ConstraintSystem::validate`].
 	pub const fn new(constraint_system: ConstraintSystem, log_public_words: usize) -> Self {
 		Self {
 			constraint_system,
@@ -80,7 +79,7 @@ impl IOPVerifier {
 	/// The trace oracle commits only the witness's hidden segment, padded to the segment
 	/// length; the public segment is a verifier-known polynomial.
 	pub const fn log_witness_elems(&self) -> usize {
-		let log_witness_words = self.constraint_system.value_vec_layout.log_witness_words();
+		let log_witness_words = self.constraint_system.log_witness_words();
 		log_witness_words - LOG_WORDS_PER_ELEM
 	}
 
@@ -156,21 +155,21 @@ impl IOPVerifier {
 		//
 		// Skipped (no transcript reads) when the constraint system has no IMUL constraints,
 		// mirroring the prover's identical guard so the transcript stays in sync.
-		let intmul_output = if self.constraint_system.n_imul_constraints() > 0 {
-			let intmul_guard = tracing::info_span!(
-				"[phase] Verify IntMul Reduction",
-				phase = "verify_intmul_reduction",
-				perfetto_category = "phase",
-				n_constraints = self.constraint_system.n_imul_constraints()
-			)
-			.entered();
-			let log_n_constraints = checked_log_2(self.constraint_system.n_imul_constraints());
-			let intmul_output = verify_intmul_reduction::<B128, _>(log_n_constraints, channel)?;
-			drop(intmul_guard);
-			Some(intmul_output)
-		} else {
-			None
-		};
+		let intmul_output =
+			if let Some(log_n_constraints) = self.constraint_system.log_imul_constraints() {
+				let intmul_guard = tracing::info_span!(
+					"[phase] Verify IntMul Reduction",
+					phase = "verify_intmul_reduction",
+					perfetto_category = "phase",
+					n_constraints = self.constraint_system.n_imul_constraints()
+				)
+				.entered();
+				let intmul_output = verify_intmul_reduction::<B128, _>(log_n_constraints, channel)?;
+				drop(intmul_guard);
+				Some(intmul_output)
+			} else {
+				None
+			};
 
 		// [phase] Verify BinMul Reduction - GHASH-field multiplication constraint verification
 		//
@@ -178,21 +177,21 @@ impl IOPVerifier {
 		// sync with the prover. Skipped (no transcript reads) when there are no BMUL constraints,
 		// mirroring the prover's identical guard. The per-bit operand evaluations are collapsed
 		// below with the shared `r_zhat_prime` challenge that BitAnd draws.
-		let binmul_output = if self.constraint_system.n_bmul_constraints() > 0 {
-			let binmul_guard = tracing::info_span!(
-				"[phase] Verify BinMul Reduction",
-				phase = "verify_binmul_reduction",
-				perfetto_category = "phase",
-				n_constraints = self.constraint_system.n_bmul_constraints()
-			)
-			.entered();
-			let log_n_constraints = checked_log_2(self.constraint_system.n_bmul_constraints());
-			let binmul_output = verify_binmul_reduction::<B128, _>(log_n_constraints, channel)?;
-			drop(binmul_guard);
-			Some(binmul_output)
-		} else {
-			None
-		};
+		let binmul_output =
+			if let Some(log_n_constraints) = self.constraint_system.log_bmul_constraints() {
+				let binmul_guard = tracing::info_span!(
+					"[phase] Verify BinMul Reduction",
+					phase = "verify_binmul_reduction",
+					perfetto_category = "phase",
+					n_constraints = self.constraint_system.n_bmul_constraints()
+				)
+				.entered();
+				let binmul_output = verify_binmul_reduction::<B128, _>(log_n_constraints, channel)?;
+				drop(binmul_guard);
+				Some(binmul_output)
+			} else {
+				None
+			};
 
 		// [phase] Verify BitAnd Reduction - AND constraint verification
 		let bitand_guard = tracing::info_span!(
@@ -203,7 +202,9 @@ impl IOPVerifier {
 		)
 		.entered();
 		let (r_zhat_prime, bitand_claim) = {
-			let log_n_constraints = checked_log_2(self.constraint_system.n_and_constraints());
+			// The BitAnd reduction has no skip branch: an empty AND set still reduces, over the
+			// single all-zero padding row, so `None` is zero variables here.
+			let log_n_constraints = self.constraint_system.log_and_constraints().unwrap_or(0);
 			let AndCheckOutput {
 				a_eval,
 				b_eval,
@@ -371,15 +372,12 @@ where
 	/// Constructs a verifier for a constraint system.
 	///
 	/// See [`Verifier`] struct documentation for details.
-	pub fn setup(
-		mut constraint_system: ConstraintSystem,
-		log_inv_rate: usize,
-	) -> Result<Self, Error> {
-		constraint_system.validate_and_prepare()?;
+	pub fn setup(constraint_system: ConstraintSystem, log_inv_rate: usize) -> Result<Self, Error> {
+		constraint_system.validate()?;
 
 		// The validated layout guarantees a power-of-two public segment of at least one full
 		// element.
-		let log_public_words = constraint_system.value_vec_layout.log_public_words();
+		let log_public_words = constraint_system.log_public_words();
 		assert!(log_public_words >= LOG_WORDS_PER_ELEM);
 
 		let iop_verifier = IOPVerifier::new(constraint_system, log_public_words);
@@ -461,7 +459,7 @@ where
 
 		let _verify_scope = tracing::info_span!(
 			"Verify",
-			n_hidden_words = cs.value_vec_layout.n_hidden_words,
+			n_hidden_words = cs.n_hidden_words(),
 			n_bitand = cs.and_constraints.len(),
 			n_intmul = cs.imul_constraints.len(),
 		)
@@ -484,7 +482,10 @@ where
 ///
 /// # Arguments
 ///
-/// - `log_constraint_count`: base-2 logarithm of the row count.
+/// - `log_constraint_count`: base-2 logarithm of the row count — the operand column length, which
+///   the prover zero-pads up to a power of two. The single-instance verifier passes `ceil(log2(n))`
+///   for `n` AND constraints; the batched M4 verifier adds its log instance count, since one row
+///   there is an (instance, constraint) pair.
 /// - `eval_domain`: the univariate-skip domain, one dimension above the 64-bit word, already lifted
 ///   to `F`. The caller passes it so it matches the shift reduction's domain by construction.
 /// - `channel`: the verifier channel that reads messages and redraws Fiat-Shamir challenges.

@@ -50,9 +50,9 @@ pub fn bench_m4_proving<F>(
 ) where
 	F: Fn(usize, &mut BatchWitnessFiller<'_, '_>),
 {
-	// Prepare the shared single-instance constraint system once.
-	let mut cs = circuit.constraint_system().clone();
-	cs.validate_and_prepare()
+	// Clone and validate the shared single-instance constraint system once.
+	let cs = circuit.constraint_system().clone();
+	cs.validate()
 		.expect("circuit produces a valid constraint system");
 
 	// The verifier fixes the shape and FRI parameters; the prover inherits them.

@@ -23,7 +23,7 @@ use super::{
 ///
 /// Returns the number of wires that were replaced with constants.
 pub fn constant_propagation(graph: &mut GateGraph, hint_registry: &HintRegistry) -> usize {
-	// First rebuild use-def chains to ensure they're up to date
+	// This pass reads both halves: readers to seed the worklist, definitions to follow the graph.
 	graph.rebuild_use_def_chains(hint_registry);
 
 	// Initialize worklist with all gates that might be evaluable
@@ -33,11 +33,9 @@ pub fn constant_propagation(graph: &mut GateGraph, hint_registry: &HintRegistry)
 
 	// Add all gates that use constant wires to the initial worklist.
 	//
-	// Note that wire uses are sorted. This is to ensure that the pass is deterministic.
+	// The index yields readers in gate order, which is what keeps this pass deterministic.
 	for (wire, _) in graph.iter_const_wires() {
-		let mut gates_using_wire: Vec<Gate> = graph.get_wire_uses(wire).iter().copied().collect();
-		gates_using_wire.sort();
-		for gate in gates_using_wire {
+		for gate in graph.get_wire_uses(wire) {
 			if in_worklist.insert(gate) {
 				worklist.push_back(gate);
 			}
@@ -69,16 +67,12 @@ pub fn constant_propagation(graph: &mut GateGraph, hint_registry: &HintRegistry)
 						// affected.
 						//
 						// Perform sorting to ensure deterministic order.
-						let (_const_wire, num_updates, mut affected_gates) = graph
-							.replace_wire_with_constant(
-								output_wire,
-								output_values[i],
-								hint_registry,
-							);
-						affected_gates.sort();
-						if num_updates > 0 {
-							total_replaced += num_updates;
-							for user_gate in affected_gates {
+						let mut replacement =
+							graph.replace_wire_with_constant(output_wire, output_values[i]);
+						replacement.affected_gates.sort();
+						if replacement.n_slots_rewritten > 0 {
+							total_replaced += replacement.n_slots_rewritten;
+							for user_gate in replacement.affected_gates {
 								if in_worklist.insert(user_gate) {
 									worklist.push_back(user_gate);
 								}

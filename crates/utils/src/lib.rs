@@ -8,7 +8,6 @@ pub mod bitwise;
 pub mod checked_arithmetics;
 pub mod env;
 pub mod iter;
-pub mod mem;
 #[cfg(feature = "platform-diagnostics")]
 pub mod platform_diagnostics;
 pub mod rand;

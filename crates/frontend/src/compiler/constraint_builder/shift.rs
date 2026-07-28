@@ -2,7 +2,7 @@
 
 //! The shift algebra shared by operands: a [`Shift`] applied to a [`Wire`].
 
-use std::ops::Deref;
+use std::ops::Index;
 
 use binius_core::constraint_system::{ShiftedValueIndex, ValueIndex};
 use cranelift_entity::{EntitySet, SecondaryMap};
@@ -64,6 +64,23 @@ impl WireOperand {
 		self.0.push(term);
 	}
 
+	/// The terms this operand XORs together.
+	pub fn as_slice(&self) -> &[ShiftedWire] {
+		&self.0
+	}
+
+	/// The number of terms.
+	pub const fn len(&self) -> usize {
+		self.0.len()
+	}
+
+	/// Whether the operand has no terms.
+	///
+	/// An empty XOR is the constant zero, so such an operand contributes nothing.
+	pub const fn is_empty(&self) -> bool {
+		self.0.is_empty()
+	}
+
 	/// Lowers the whole operand to core `ShiftedValueIndex` terms.
 	pub(super) fn into_value_indices(
 		self,
@@ -83,11 +100,11 @@ impl WireOperand {
 	}
 }
 
-impl Deref for WireOperand {
-	type Target = [ShiftedWire];
+impl Index<usize> for WireOperand {
+	type Output = ShiftedWire;
 
-	fn deref(&self) -> &Self::Target {
-		&self.0
+	fn index(&self, term: usize) -> &Self::Output {
+		&self.0[term]
 	}
 }
 
@@ -109,6 +126,51 @@ impl FromIterator<ShiftedWire> for WireOperand {
 impl From<Vec<ShiftedWire>> for WireOperand {
 	fn from(terms: Vec<ShiftedWire>) -> Self {
 		Self(terms)
+	}
+}
+
+/// The operation a shift performs, without its distance.
+///
+/// The `*32` kinds act half-wise on the two 32-bit lanes of a 64-bit word.
+/// The others act on the whole word.
+///
+/// The discriminant is fixed, so a caller can index by kind with one slot or bit per variant.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum ShiftKind {
+	/// Logical left shift of the whole word.
+	Sll = 0,
+	/// Half-wise logical left shift of each 32-bit lane.
+	Sll32 = 1,
+	/// Logical right shift of the whole word.
+	Srl = 2,
+	/// Half-wise logical right shift of each 32-bit lane.
+	Srl32 = 3,
+	/// Arithmetic right shift of the whole word.
+	Sar = 4,
+	/// Half-wise arithmetic right shift of each 32-bit lane.
+	Sra32 = 5,
+	/// Rotate-right of the whole word.
+	Rotr = 6,
+	/// Half-wise rotate-right of each 32-bit lane.
+	Rotr32 = 7,
+}
+
+impl ShiftKind {
+	/// The width this kind operates over: the whole word, or one 32-bit lane.
+	pub const fn width(self) -> u32 {
+		match self {
+			ShiftKind::Sll32 | ShiftKind::Srl32 | ShiftKind::Sra32 | ShiftKind::Rotr32 => 32,
+			_ => 64,
+		}
+	}
+
+	/// Whether this kind wraps what it moves out, rather than discarding it.
+	///
+	/// A cyclic kind loses nothing.
+	/// So any two of them compose, however far they move.
+	pub const fn is_cyclic(self) -> bool {
+		matches!(self, ShiftKind::Rotr | ShiftKind::Rotr32)
 	}
 }
 
@@ -139,6 +201,21 @@ pub enum Shift {
 }
 
 impl Shift {
+	/// The operation and distance of this shift, or `None` for the identity.
+	pub const fn kind_and_amount(self) -> Option<(ShiftKind, u32)> {
+		match self {
+			Shift::None => None,
+			Shift::Sll(n) => Some((ShiftKind::Sll, n)),
+			Shift::Sll32(n) => Some((ShiftKind::Sll32, n)),
+			Shift::Srl(n) => Some((ShiftKind::Srl, n)),
+			Shift::Srl32(n) => Some((ShiftKind::Srl32, n)),
+			Shift::Sar(n) => Some((ShiftKind::Sar, n)),
+			Shift::Sra32(n) => Some((ShiftKind::Sra32, n)),
+			Shift::Rotr(n) => Some((ShiftKind::Rotr, n)),
+			Shift::Rotr32(n) => Some((ShiftKind::Rotr32, n)),
+		}
+	}
+
 	/// Folds `rhs` applied after `lhs` into a single equivalent shift.
 	///
 	/// Returns `None` when the two shifts cannot be one shift:
@@ -194,11 +271,7 @@ mod tests {
 		// c = rotr(a, 0) ^ b  ->  rotr(0) collapses to plain(a).
 		{
 			let mut builder = ConstraintBuilder::new();
-			builder
-				.linear()
-				.rhs(expr::xor2(expr::rotr(wire_a, 0), wire_b))
-				.dst(wire_c)
-				.build();
+			builder.linear(expr::xor2(expr::rotr(wire_a, 0), wire_b), wire_c);
 
 			let (and_constraints, imul_constraints, _bmul_constraints) =
 				builder.build(&wire_mapping, all_one_wire);
@@ -235,11 +308,7 @@ mod tests {
 		// c = rotr(a, 5) ^ b  ->  native rotr(a, 5).
 		{
 			let mut builder = ConstraintBuilder::new();
-			builder
-				.linear()
-				.rhs(expr::xor2(expr::rotr(wire_a, 5), wire_b))
-				.dst(wire_c)
-				.build();
+			builder.linear(expr::xor2(expr::rotr(wire_a, 5), wire_b), wire_c);
 
 			let (and_constraints, imul_constraints, _bmul_constraints) =
 				builder.build(&wire_mapping, all_one_wire);
@@ -280,12 +349,7 @@ mod tests {
 		// a & rotr(b, 0) = c  ->  b stays plain.
 		{
 			let mut builder = ConstraintBuilder::new();
-			builder
-				.and()
-				.a(wire_a)
-				.b(expr::rotr(wire_b, 0))
-				.c(wire_c)
-				.build();
+			builder.and(wire_a, expr::rotr(wire_b, 0), wire_c);
 
 			let (and_constraints, _, _) = builder.build(&wire_mapping, all_one_wire);
 
@@ -308,12 +372,7 @@ mod tests {
 		// a & rotr(b, 8) = c  ->  b keeps native rotr(8).
 		{
 			let mut builder = ConstraintBuilder::new();
-			builder
-				.and()
-				.a(wire_a)
-				.b(expr::rotr(wire_b, 8))
-				.c(wire_c)
-				.build();
+			builder.and(wire_a, expr::rotr(wire_b, 8), wire_c);
 
 			let (and_constraints, _, _) = builder.build(&wire_mapping, all_one_wire);
 

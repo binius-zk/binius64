@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 use binius_core::word::Word;
-use cranelift_entity::{PrimaryMap, SecondaryMap, entity_impl};
-use rustc_hash::{FxHashMap, FxHashSet};
+use cranelift_entity::{EntityRef, PrimaryMap, SecondaryMap, entity_impl};
+use rustc_hash::FxHashMap;
 
 use crate::compiler::{
 	gate::opcode::{Opcode, OpcodeShape},
@@ -206,10 +206,15 @@ pub struct GateGraph {
 	// Use-def analysis
 	/// Maps each wire to the gate that defines it (if any)
 	pub wire_def: SecondaryMap<Wire, Option<Gate>>,
-	/// Maps each wire to the set of gates that use it.
+	/// The gates that read each wire, as one flat edge list.
 	///
-	/// Gate ids are small integers, so a fast integer hasher beats the default SipHash here.
-	wire_uses: SecondaryMap<Wire, FxHashSet<Gate>>,
+	/// A wire's readers occupy the run `use_edges[use_offsets[w]..use_offsets[w + 1]]`.
+	/// One allocation holds every edge, rather than one container per wire.
+	use_edges: Vec<Gate>,
+	/// Start of each wire's run in [`Self::use_edges`], with a final entry for the total.
+	///
+	/// Empty until the index is built, which reads as no wire having any reader.
+	use_offsets: Vec<u32>,
 }
 
 impl GateGraph {
@@ -228,7 +233,8 @@ impl GateGraph {
 			// Placeholder; overwritten by the seeding call below before any other wire exists.
 			all_one: Wire::from_u32(0),
 			wire_def: SecondaryMap::new(),
-			wire_uses: SecondaryMap::new(),
+			use_edges: Vec::new(),
+			use_offsets: Vec::new(),
 		};
 		// Seed the all-one constant before anything else is added.
 		// This makes it Wire 0 and the first constant in the value vector's constants segment.
@@ -374,56 +380,106 @@ impl GateGraph {
 		gate
 	}
 
-	/// Updates use-def information for a newly added gate
-	fn update_use_def_for_gate(&mut self, gate: Gate, hint_registry: &HintRegistry) {
-		let gate_data = &self.gates[gate];
-		let gate_param = gate_data.gate_param_with_registry(hint_registry);
-
-		// Record this gate as defining its outputs
-		for &output_wire in gate_param.outputs {
-			self.wire_def[output_wire] = Some(gate);
-		}
-
-		// Record this gate as defining its internal wires
-		for &aux_wire in gate_param.aux {
-			self.wire_def[aux_wire] = Some(gate);
-		}
-
-		// Record this gate as using its inputs
-		for &input_wire in gate_param.inputs {
-			self.wire_uses[input_wire].insert(gate);
-		}
-
-		// Record this gate as using its constants
-		for &const_wire in gate_param.constants {
-			self.wire_uses[const_wire].insert(gate);
-		}
-	}
-
-	/// Rebuilds the use-def chains from scratch by analyzing all gates.
+	/// Rebuilds the record of which gate defines each wire.
 	///
-	/// `hint_registry` must contain all [`Opcode::Hint`] gates' hints.
-	pub fn rebuild_use_def_chains(&mut self, hint_registry: &HintRegistry) {
-		// Clear existing use-def information
+	/// A gate defines its outputs and its auxiliary wires.
+	///
+	/// `hint_registry` must contain the hint of every [`Opcode::Hint`] gate.
+	pub fn rebuild_wire_defs(&mut self, hint_registry: &HintRegistry) {
 		self.wire_def.clear();
-		self.wire_uses.clear();
-
-		// Rebuild from all gates
-		for gate in self.gates.keys() {
-			self.update_use_def_for_gate(gate, hint_registry);
+		for (gate, data) in self.gates.iter() {
+			let param = data.gate_param_with_registry(hint_registry);
+			for &wire in param.outputs.iter().chain(param.aux) {
+				self.wire_def[wire] = Some(gate);
+			}
 		}
 	}
 
-	/// Returns all gates that use the given wire
-	pub fn get_wire_uses(&self, wire: Wire) -> &FxHashSet<Gate> {
-		&self.wire_uses[wire]
+	/// Rebuilds the record of which gates read each wire.
+	///
+	/// A gate reads its constant and input wires.
+	///
+	/// # Algorithm
+	///
+	/// A counting sort over wires, so the whole index is three linear passes and two allocations:
+	///
+	/// ```text
+	///   pass 1: count readers per wire      -> [0, 2, 1, 0, 3, ...]
+	///   pass 2: prefix-sum into run starts  -> [0, 0, 2, 3, 3, 6, ...]
+	///   pass 3: place each reader in its run
+	/// ```
+	///
+	/// Gates are visited in order in pass 3, so every run comes out sorted by gate.
+	/// A gate that reads one wire more than once is recorded against it only once.
+	///
+	/// The result describes the graph as it stands. Rewiring a gate afterwards leaves it stale,
+	/// so a pass that mutates and then re-reads has to rebuild.
+	pub fn rebuild_wire_uses(&mut self, hint_registry: &HintRegistry) {
+		let n_wires = self.wires.len();
+
+		// Marks the last gate counted against a wire, so a repeated read is counted once.
+		let mut last_seen: SecondaryMap<Wire, Option<Gate>> = SecondaryMap::new();
+
+		// Pass 1: count each wire's readers, one slot to the right so the counts can be
+		// prefix-summed in place into run starts.
+		let mut offsets = vec![0u32; n_wires + 1];
+		for (gate, data) in self.gates.iter() {
+			let param = data.gate_param_with_registry(hint_registry);
+			for &wire in param.constants.iter().chain(param.inputs) {
+				if last_seen[wire] != Some(gate) {
+					last_seen[wire] = Some(gate);
+					offsets[wire.index() + 1] += 1;
+				}
+			}
+		}
+
+		// Pass 2: accumulate the counts into the start offset of each wire's run.
+		for i in 0..n_wires {
+			offsets[i + 1] += offsets[i];
+		}
+
+		// Pass 3: fill the runs, advancing a cursor per wire.
+		let mut edges = vec![Gate::from_u32(0); offsets[n_wires] as usize];
+		let mut cursor = offsets.clone();
+		last_seen.clear();
+		for (gate, data) in self.gates.iter() {
+			let param = data.gate_param_with_registry(hint_registry);
+			for &wire in param.constants.iter().chain(param.inputs) {
+				if last_seen[wire] != Some(gate) {
+					last_seen[wire] = Some(gate);
+					edges[cursor[wire.index()] as usize] = gate;
+					cursor[wire.index()] += 1;
+				}
+			}
+		}
+
+		self.use_edges = edges;
+		self.use_offsets = offsets;
+	}
+
+	/// Rebuilds both halves of the use-def analysis.
+	///
+	/// `hint_registry` must contain the hint of every [`Opcode::Hint`] gate.
+	pub fn rebuild_use_def_chains(&mut self, hint_registry: &HintRegistry) {
+		self.rebuild_wire_defs(hint_registry);
+		self.rebuild_wire_uses(hint_registry);
+	}
+
+	/// Returns the gates that read the given wire, in increasing gate order.
+	///
+	/// Yields nothing for a wire created after the index was last built.
+	pub fn get_wire_uses(&self, wire: Wire) -> impl Iterator<Item = Gate> + '_ {
+		// A missing entry means the index predates this wire, or was never built.
+		let run = match self.use_offsets.get(wire.index() + 1) {
+			Some(&end) => self.use_offsets[wire.index()] as usize..end as usize,
+			None => 0..0,
+		};
+		self.use_edges[run].iter().copied()
 	}
 
 	/// Returns an iterator over all constant wires and their data
 	pub fn iter_const_wires(&self) -> impl Iterator<Item = (Wire, &WireData)> {
-		self.wires
-			.iter()
-			.filter(|(wire, _)| self.wire_data(*wire).kind.is_const())
+		self.wires.iter().filter(|(_, data)| data.kind.is_const())
 	}
 
 	/// Gets wire data by reference
@@ -437,61 +493,60 @@ impl GateGraph {
 	}
 
 	/// Replaces all occurrences of a wire in a gate with another wire
-	pub fn replace_gate_wire(&mut self, gate: Gate, old_wire: Wire, new_wire: Wire) {
+	/// Returns the number of wire slots rewritten.
+	pub fn replace_gate_wire(&mut self, gate: Gate, old_wire: Wire, new_wire: Wire) -> usize {
 		let gate_data = &mut self.gates[gate];
+		let mut rewritten = 0;
 		for wire in &mut gate_data.wires {
 			if *wire == old_wire {
 				*wire = new_wire;
+				rewritten += 1;
 			}
 		}
+		rewritten
 	}
 
-	/// Updates use-def chains when replacing a wire use
-	pub fn update_wire_use(&mut self, old_wire: Wire, new_wire: Wire, gate: Gate) {
-		self.wire_uses[old_wire].remove(&gate);
-		self.wire_uses[new_wire].insert(gate);
-	}
-
-	/// Replaces all uses of old_wire with a constant wire containing the given value.
-	///
-	/// Returns the constant wire that was used, the number of individual wire replacements,
-	/// and the list of gates that were actually affected by this replacement.
-	/// This encapsulates both wire replacement and use-def chain updates.
+	/// Replaces every use of `old_wire` with a constant wire holding `value`.
 	pub fn replace_wire_with_constant(
 		&mut self,
 		old_wire: Wire,
 		value: Word,
-		hint_registry: &HintRegistry,
-	) -> (Wire, usize, Vec<Gate>) {
+	) -> ConstantReplacement {
 		let const_wire = self.add_constant(value);
 
 		if const_wire == old_wire {
-			return (const_wire, 0, Vec::new());
+			return ConstantReplacement {
+				n_slots_rewritten: 0,
+				affected_gates: Vec::new(),
+			};
 		}
 
-		// Get all users of the old wire (clone to avoid borrow conflicts)
-		let users: Vec<Gate> = self.get_wire_uses(old_wire).iter().copied().collect();
-		let mut total_replacements = 0;
+		// Collected up front: the index borrows the graph, which is about to be rewritten.
+		//
+		// The index is not updated to match. Every gate that reads `old_wire` is in this list, and
+		// a replacement only ever introduces a constant wire, so no reader can appear later.
+		let affected_gates: Vec<Gate> = self.get_wire_uses(old_wire).collect();
 
-		// Replace wire references in all user gates
-		for user_gate in &users {
-			// Count how many times this wire appears in this gate before replacing
-			let gate_data = self.gate_data(*user_gate);
-			let gate_param = gate_data.gate_param_with_registry(hint_registry);
-			let replacements_in_gate = gate_param.inputs.iter().filter(|&&w| w == old_wire).count()
-				+ gate_param
-					.outputs
-					.iter()
-					.filter(|&&w| w == old_wire)
-					.count();
-			total_replacements += replacements_in_gate;
+		// The count comes from the rewrite itself, so it covers every slot the rewrite touched.
+		// Tallying inputs and outputs separately would miss a wire held only in an aux slot.
+		let n_slots_rewritten = affected_gates
+			.iter()
+			.map(|&gate| self.replace_gate_wire(gate, old_wire, const_wire))
+			.sum();
 
-			self.replace_gate_wire(*user_gate, old_wire, const_wire);
-			self.update_wire_use(old_wire, const_wire, *user_gate);
+		ConstantReplacement {
+			n_slots_rewritten,
+			affected_gates,
 		}
-
-		(const_wire, total_replacements, users)
 	}
+}
+
+/// What replacing one wire with a constant changed.
+pub struct ConstantReplacement {
+	/// How many wire slots were rewritten, across every affected gate.
+	pub n_slots_rewritten: usize,
+	/// The gates whose wires were rewritten.
+	pub affected_gates: Vec<Gate>,
 }
 
 impl Default for GateGraph {
@@ -511,19 +566,18 @@ mod tests {
 	}
 
 	fn wire_use_count(graph: &GateGraph, wire: Wire) -> usize {
-		graph.wire_uses[wire].len()
+		graph.get_wire_uses(wire).count()
 	}
 
 	fn is_wire_single_use(graph: &GateGraph, wire: Wire) -> bool {
-		graph.wire_uses[wire].len() == 1
+		wire_use_count(graph, wire) == 1
 	}
 
 	fn get_wire_single_use(graph: &GateGraph, wire: Wire) -> Option<Gate> {
-		let uses = &graph.wire_uses[wire];
-		if uses.len() == 1 {
-			uses.iter().next().copied()
-		} else {
-			None
+		let mut uses = graph.get_wire_uses(wire);
+		match (uses.next(), uses.next()) {
+			(Some(only), None) => Some(only),
+			_ => None,
 		}
 	}
 
@@ -573,11 +627,11 @@ mod tests {
 		assert_eq!(get_wire_def(&graph, out2), Some(gate2));
 
 		// Check that in1 and in2 are used by gate1
-		assert!(graph.get_wire_uses(in1).contains(&gate1));
-		assert!(graph.get_wire_uses(in2).contains(&gate1));
+		assert!(graph.get_wire_uses(in1).any(|g| g == gate1));
+		assert!(graph.get_wire_uses(in2).any(|g| g == gate1));
 
 		// Check that out1 is used by gate2
-		assert!(graph.get_wire_uses(out1).contains(&gate2));
+		assert!(graph.get_wire_uses(out1).any(|g| g == gate2));
 
 		// Check wire use counts
 		assert_eq!(wire_use_count(&graph, in1), 2); // Used by gate1 and gate2
@@ -595,6 +649,52 @@ mod tests {
 		assert_eq!(get_wire_single_use(&graph, in1), None); // Used twice
 		assert_eq!(get_wire_single_use(&graph, out1), Some(gate2));
 		assert_eq!(get_wire_single_use(&graph, out2), None); // No uses
+	}
+
+	#[test]
+	fn wire_uses_are_ordered_and_deduplicated() {
+		// Invariant: readers come back in increasing gate order, and a gate that reads one wire
+		// twice is reported against it once. Constant propagation seeds its worklist from this
+		// order, so it is what keeps that pass deterministic.
+		//
+		// Fixture: one wire read by three gates, the middle one reading it twice.
+		//
+		//   g0: x & y      -> reads x once
+		//   g1: x ^ x      -> reads x twice, counts once
+		//   g2: x & y      -> reads x once
+		let mut graph = GateGraph::new();
+		let root = graph.path_spec_tree.root();
+
+		let x = graph.add_inout();
+		let y = graph.add_inout();
+
+		let o0 = graph.add_internal();
+		let g0 = graph.emit_gate(root, Opcode::Band, vec![x, y], vec![o0]);
+		let o1 = graph.add_internal();
+		let g1 = graph.emit_gate(root, Opcode::Bxor, vec![x, x], vec![o1]);
+		let o2 = graph.add_internal();
+		let g2 = graph.emit_gate(root, Opcode::Band, vec![x, y], vec![o2]);
+
+		graph.rebuild_use_def_chains(&HintRegistry::new());
+
+		// Sorted, and the doubled read contributes a single entry.
+		let readers: Vec<Gate> = graph.get_wire_uses(x).collect();
+		assert_eq!(readers, vec![g0, g1, g2]);
+
+		// A wire only one gate reads.
+		assert_eq!(graph.get_wire_uses(o0).collect::<Vec<_>>(), Vec::new());
+		assert_eq!(graph.get_wire_uses(y).collect::<Vec<_>>(), vec![g0, g2]);
+	}
+
+	#[test]
+	fn wire_uses_are_empty_for_a_wire_added_after_the_rebuild() {
+		// Invariant: the index describes the graph as it stood when built. A wire created later
+		// has no run in it, and reads as having no readers rather than panicking.
+		let mut graph = GateGraph::new();
+		graph.rebuild_use_def_chains(&HintRegistry::new());
+
+		let late = graph.add_inout();
+		assert_eq!(graph.get_wire_uses(late).count(), 0);
 	}
 
 	#[test]
@@ -617,7 +717,7 @@ mod tests {
 		assert_eq!(get_wire_def(&graph, const_wire), None);
 
 		// But they should be tracked as used
-		assert!(graph.get_wire_uses(const_wire).contains(&gate));
+		assert!(graph.get_wire_uses(const_wire).any(|g| g == gate));
 		assert_eq!(wire_use_count(&graph, const_wire), 1);
 	}
 
@@ -633,21 +733,22 @@ mod tests {
 
 		graph.emit_gate(root, Opcode::Bxor, vec![in1, in2], vec![out]);
 
-		// Clear use-def info manually (simulating corruption)
+		// Clear the analysis by hand, standing in for a pass that rewired the graph.
 		graph.wire_def.clear();
-		graph.wire_uses.clear();
+		graph.use_edges.clear();
+		graph.use_offsets.clear();
 
 		// Verify it's cleared
 		assert_eq!(get_wire_def(&graph, out), None);
-		assert!(graph.get_wire_uses(in1).is_empty());
+		assert!(graph.get_wire_uses(in1).next().is_none());
 
 		// Rebuild
 		graph.rebuild_use_def_chains(&HintRegistry::new());
 
 		// Verify it's restored
 		assert!(get_wire_def(&graph, out).is_some());
-		assert!(!graph.get_wire_uses(in1).is_empty());
-		assert!(!graph.get_wire_uses(in2).is_empty());
+		assert!(!graph.get_wire_uses(in1).next().is_none());
+		assert!(!graph.get_wire_uses(in2).next().is_none());
 	}
 
 	#[test]

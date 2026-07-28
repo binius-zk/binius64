@@ -34,23 +34,27 @@ mod gate_fusion;
 mod gate_graph;
 pub mod hints;
 mod pathspec;
+mod scratch_alloc;
 #[cfg(test)]
 mod tests;
 mod value_vec_alloc;
 
 pub use gate_graph::Wire;
+use scratch_alloc::{ScratchAlloc, ScratchPolicy};
 
-/// Options for the compiler.
+/// Which compiler passes run.
+///
+/// This is the only knob: a circuit compiles the same way whatever the process environment holds.
+/// A caller that wants a non-default pass set builds through [`CircuitBuilder::with_opts`].
 pub(crate) struct Options {
 	enable_gate_fusion: bool,
 	enable_constant_propagation: bool,
 	enable_common_subexpression_elimination: bool,
 	enable_dead_code_elimination: bool,
 	enable_algebraic_folding: bool,
+	enable_scratch_pooling: bool,
 }
 
-// Shut up clippy since this is just so happens to be derivable for now.
-#[allow(clippy::derivable_impls)]
 impl Default for Options {
 	fn default() -> Self {
 		Self {
@@ -59,30 +63,10 @@ impl Default for Options {
 			enable_common_subexpression_elimination: true,
 			enable_dead_code_elimination: true,
 			enable_algebraic_folding: true,
+			// Why off: sharing slots stops an uncommitted value from being readable afterwards.
+			// A caller that inspects one has to opt in knowingly.
+			enable_scratch_pooling: false,
 		}
-	}
-}
-
-impl Options {
-	fn from_env() -> Self {
-		// This is a very temporary solution for now.
-		//
-		// We do not expect those feature sets to soak here for too long neither we expect that
-		// the features are going to be detected using the environment variables.
-		let mut opts = Self::default();
-		if std::env::var("MONBIJOU_CONSTPROP").is_ok() {
-			opts.enable_constant_propagation = true;
-		}
-		if std::env::var("BINIUS_DISABLE_CSE").is_ok() {
-			opts.enable_common_subexpression_elimination = false;
-		}
-		if std::env::var("BINIUS_DISABLE_DCE").is_ok() {
-			opts.enable_dead_code_elimination = false;
-		}
-		if std::env::var("BINIUS_DISABLE_ALGEBRAIC_FOLDING").is_ok() {
-			opts.enable_algebraic_folding = false;
-		}
-		opts
 	}
 }
 
@@ -190,8 +174,7 @@ impl Default for CircuitBuilder {
 impl CircuitBuilder {
 	/// Create a new circuit builder with default options.
 	pub fn new() -> Self {
-		let opts = Options::from_env();
-		Self::with_opts(opts)
+		Self::with_opts(Options::default())
 	}
 
 	pub(crate) fn with_opts(opts: Options) -> Self {
@@ -231,10 +214,7 @@ impl CircuitBuilder {
 
 		// Run constant propagation optimization
 		if shared.opts.enable_constant_propagation {
-			let replaced = const_prop::constant_propagation(&mut graph, &shared.hint_registry);
-			if replaced > 0 {
-				eprintln!("Constant propagation: replaced {} wires with constants", replaced);
-			}
+			const_prop::constant_propagation(&mut graph, &shared.hint_registry);
 		}
 
 		// Common-subexpression elimination: collapse structurally-identical gates.
@@ -276,6 +256,30 @@ impl CircuitBuilder {
 
 		let constrained_wires = builder.mark_used_wires();
 
+		// Collect the values no constraint operand mentions.
+		//
+		// Only a value the user declared is committed on its own account.
+		// Anything a gate produced is committed only if a constraint references it.
+		// Gate fusion is what decides that.
+		// The rest exist purely during witness evaluation, so they form the scratch segment.
+		let mut scratch_wires = EntitySet::new();
+		for (wire, wire_data) in graph.wires.iter() {
+			if matches!(wire_data.kind, WireKind::Internal | WireKind::Scratch)
+				&& !constrained_wires.contains(wire)
+			{
+				scratch_wires.insert(wire);
+			}
+		}
+
+		// Lay the segment out under the selected policy.
+		// Slots are either one per value, or shared between disjoint lifetimes.
+		let scratch_policy = if shared.opts.enable_scratch_pooling {
+			ScratchPolicy::Pooled
+		} else {
+			ScratchPolicy::PerWire
+		};
+		let scratch_alloc = ScratchAlloc::new(&graph, &scratch_wires, scratch_policy);
+
 		// Allocate a place for each wire in the value vec layout.
 		//
 		// This gives us mappings from wires into the value indices, as well as the constant
@@ -285,7 +289,7 @@ impl CircuitBuilder {
 			value_vec_layout,
 			constants,
 		} = {
-			let mut value_vec_alloc = value_vec_alloc::Alloc::new();
+			let mut value_vec_alloc = value_vec_alloc::Alloc::new(scratch_alloc.n_slots());
 			for (wire, wire_data) in graph.wires.iter() {
 				match wire_data.kind {
 					WireKind::Constant(ref value) => {
@@ -308,7 +312,7 @@ impl CircuitBuilder {
 						if constrained_wires.contains(wire) {
 							value_vec_alloc.add_internal(wire);
 						} else {
-							value_vec_alloc.add_scratch(wire);
+							value_vec_alloc.add_scratch(wire, scratch_alloc.slot(wire));
 						}
 					}
 				}
@@ -341,13 +345,12 @@ impl CircuitBuilder {
 			}
 		}
 
-		let cs = ConstraintSystem::new(
-			constants,
-			value_vec_layout,
+		let cs = ConstraintSystem {
 			and_constraints,
 			imul_constraints,
 			bmul_constraints,
-		);
+			..value_vec_layout.constraint_system_shape(constants)
+		};
 		if cfg!(debug_assertions) {
 			// Validate that the resulting constraint system has a good shape.
 			cs.validate().unwrap();
@@ -356,7 +359,14 @@ impl CircuitBuilder {
 		// Build evaluation form (consumes the hint registry the user populated via call_hint).
 		let eval_form = eval_form::EvalForm::build(&graph, &wire_mapping, shared.hint_registry);
 
-		Circuit::new(graph, cs, wire_mapping, eval_form)
+		Circuit::new(
+			graph,
+			cs,
+			value_vec_layout,
+			wire_mapping,
+			eval_form,
+			scratch_alloc.peak_live(),
+		)
 	}
 
 	/// Creates a reference to the same underlying circuit builder that is namespaced to the
@@ -388,6 +398,41 @@ impl CircuitBuilder {
 			.unwrap()
 			.force_committed
 			.insert(wire);
+	}
+
+	/// Shares the value-vector slots of values the constraint system never references.
+	///
+	/// # Overview
+	///
+	/// Gate fusion inlines a linear operation into its consumers, leaving its result uncommitted.
+	/// Such a result only has to survive until the gate that last reads it.
+	///
+	/// - Without sharing, each one holds a slot for the whole run.
+	/// - With sharing, the segment shrinks to the largest number of them alive at once.
+	///
+	/// The batched witness buffer holds one column per instance.
+	/// So each slot dropped is saved once per instance.
+	///
+	/// No constraint changes.
+	/// An uncommitted value appears in no constraint operand.
+	/// Only the recorded length of the segment moves.
+	///
+	/// # Reading values back
+	///
+	/// Slots stop being one-to-one with values.
+	/// Looking one up afterwards yields whatever now occupies its slot.
+	///
+	/// Only committed values read back meaningfully:
+	/// - public inputs and outputs,
+	/// - private witnesses,
+	/// - anything pinned with [`force_commit`](Self::force_commit).
+	pub fn enable_scratch_pooling(&self) {
+		self.shared
+			.borrow_mut()
+			.as_mut()
+			.expect("CircuitBuilder used after build")
+			.opts
+			.enable_scratch_pooling = true;
 	}
 
 	fn graph_mut(&self) -> RefMut<'_, GateGraph> {
@@ -1032,8 +1077,7 @@ impl CircuitBuilder {
 	///
 	/// # Cost
 	///
-	/// - 1 IMUL constraint,
-	/// - 1 AND constraint (for security check).
+	/// 1 IMUL constraint.
 	pub fn imul(&self, a: Wire, b: Wire) -> (Wire, Wire) {
 		let hi = self.add_internal();
 		let lo = self.add_internal();

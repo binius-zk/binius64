@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 
 use std::{
 	arch::wasm32::*,
@@ -18,7 +19,7 @@ use crate::{
 	BinaryField, Random,
 	arch::portable::{packed::PackedPrimitiveType, packed_arithmetic::interleave_mask_even},
 	underlier::{
-		NumCast, SmallU, U1, U2, U4, UnderlierType, WithUnderlier, impl_divisible_bitmask,
+		SmallU, U1, U2, U4, UnderlierType, WithUnderlier, impl_divisible_bitmask,
 		impl_divisible_memcast,
 	},
 };
@@ -134,13 +135,6 @@ impl<const N: usize> From<SmallU<N>> for M128 {
 	#[inline]
 	fn from(value: SmallU<N>) -> Self {
 		Self::from(value.val() as u64)
-	}
-}
-
-impl<U: NumCast<u128>> NumCast<M128> for U {
-	#[inline]
-	fn num_cast_from(val: M128) -> Self {
-		Self::num_cast_from(val.into())
 	}
 }
 

@@ -588,14 +588,11 @@ mod tests {
 			.map(|_| random_field_buffer::<P>(&mut rng, n_layers))
 			.collect();
 
-		// Create ProdcheckProver for each
-		let provers_and_products: Vec<_> = witnesses
+		// One prover per witness, each paired with the products of its own layers.
+		let (provers, individual_products): (Vec<_>, Vec<_>) = witnesses
 			.iter()
 			.map(|witness| ProdcheckProver::new(n_layers, &alloc, witness.clone()))
-			.collect();
-
-		let (provers, individual_products): (Vec<_>, Vec<_>) =
-			provers_and_products.into_iter().unzip();
+			.unzip();
 
 		// Products are 0-variate (scalars): just get the single value
 		let claimed_products: Vec<P::Scalar> = individual_products
@@ -710,13 +707,10 @@ mod tests {
 			.map(|_| random_field_buffer::<P>(&mut rng, content_len + n_layers))
 			.collect();
 
-		let provers_and_products: Vec<_> = witnesses
+		let (provers, individual_products): (Vec<_>, Vec<_>) = witnesses
 			.iter()
 			.map(|witness| ProdcheckProver::new(n_layers, &alloc, witness.clone()))
-			.collect();
-
-		let (provers, individual_products): (Vec<_>, Vec<_>) =
-			provers_and_products.into_iter().unzip();
+			.unzip();
 
 		// Shared content point; each claimed product is its multilinear evaluated there.
 		let content_point = random_scalars::<P::Scalar>(&mut rng, content_len);

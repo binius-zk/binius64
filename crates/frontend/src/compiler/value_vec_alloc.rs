@@ -1,6 +1,6 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
-use binius_core::{ValueIndex, ValueVecLayout, Word};
+use binius_core::{ConstraintSystem, ValueIndex, ValueVecLayout, Word};
 use cranelift_entity::SecondaryMap;
 
 use crate::compiler::Wire;
@@ -18,18 +18,26 @@ pub struct Alloc {
 	w_inout: Vec<Wire>,
 	w_witness: Vec<Wire>,
 	w_internal: Vec<Wire>,
-	w_scratch: Vec<Wire>,
+	/// Uncommitted values, each paired with the slot it occupies within the scratch segment.
+	///
+	/// Two values whose lifetimes do not overlap may be given the same slot.
+	w_scratch: Vec<(Wire, u32)>,
+	/// Length of the scratch segment.
+	///
+	/// This is at most the number of values placed in it, and less whenever slots are shared.
+	n_scratch_slots: usize,
 }
 
 impl Alloc {
-	/// Creates a new [`Alloc`] instance.
-	pub const fn new() -> Self {
+	/// Creates an allocator whose scratch segment is the given number of words long.
+	pub const fn new(n_scratch_slots: usize) -> Self {
 		Self {
 			w_const: Vec::new(),
 			w_inout: Vec::new(),
 			w_witness: Vec::new(),
 			w_internal: Vec::new(),
 			w_scratch: Vec::new(),
+			n_scratch_slots,
 		}
 	}
 
@@ -49,8 +57,16 @@ impl Alloc {
 		self.w_internal.push(wire);
 	}
 
-	pub fn add_scratch(&mut self, wire: Wire) {
-		self.w_scratch.push(wire);
+	/// Places an uncommitted value at the given slot of the scratch segment.
+	///
+	/// # Arguments
+	///
+	/// * `wire` - the value to place.
+	/// * `slot` - its index within the segment, which another value may also hold.
+	pub fn add_scratch(&mut self, wire: Wire, slot: u32) {
+		// A slot past the declared length would place the value outside the value vector.
+		debug_assert!((slot as usize) < self.n_scratch_slots);
+		self.w_scratch.push((wire, slot));
 	}
 
 	pub fn into_assignment(self) -> Assignment {
@@ -70,7 +86,7 @@ impl Alloc {
 		let n_inout = self.w_inout.len();
 		let n_witness = self.w_witness.len();
 		let n_internal = self.w_internal.len();
-		let n_scratch = self.w_scratch.len();
+		let n_scratch = self.n_scratch_slots;
 
 		// Constants keep the order in which they were added, which is wire-creation order.
 		// The gate graph seeds the all-one constant first (see `GateGraph::new`).
@@ -98,7 +114,7 @@ impl Alloc {
 			cur_index += 1;
 		}
 		// Ensure the public section meets the minimum size requirement
-		cur_index = cur_index.max(ValueVecLayout::MIN_WORDS_PER_SEGMENT as u32);
+		cur_index = cur_index.max(ConstraintSystem::MIN_WORDS_PER_SEGMENT as u32);
 		cur_index = cur_index.next_power_of_two();
 		let offset_witness = cur_index as usize;
 		for wire in self.w_witness.into_iter().chain(self.w_internal) {
@@ -107,14 +123,20 @@ impl Alloc {
 		}
 
 		// Pad the hidden segment to at least the public segment length, so
-		// `log_witness_words >= log_public_words` (see `ValueVecLayout::validate`).
+		// `log_witness_words >= log_public_words` (see `ConstraintSystem::validate_shape`).
 		cur_index = cur_index.max(2 * offset_witness as u32);
 
 		let n_hidden_words = cur_index as usize - offset_witness;
 
-		for wire in self.w_scratch {
-			wire_mapping[wire] = ValueIndex(cur_index);
-			cur_index += 1;
+		// Each uncommitted value lands at its own slot within the segment.
+		// Two values given the same slot share one index.
+		// That is sound only because their lifetimes do not overlap.
+		//
+		// The segment is the tail of the value vector.
+		// So the running index is not advanced past it.
+		let scratch_base = cur_index;
+		for (wire, slot) in self.w_scratch {
+			wire_mapping[wire] = ValueIndex(scratch_base + slot);
 		}
 
 		let value_vec_layout = ValueVecLayout {
@@ -127,8 +149,6 @@ impl Alloc {
 			n_hidden_words,
 			n_scratch,
 		};
-
-		value_vec_layout.validate().unwrap();
 
 		Assignment {
 			wire_mapping,
@@ -151,7 +171,7 @@ mod tests {
 		// 4. internal
 		// 5. scratch (handled separately)
 
-		let mut alloc = Alloc::new();
+		let mut alloc = Alloc::new(2);
 
 		// Add wires in a deliberately mixed order to test section ordering.
 		let witness1 = Wire::from_u32(0);
@@ -176,8 +196,8 @@ mod tests {
 		alloc.add_inout(inout2);
 		alloc.add_witness(witness3);
 		alloc.add_constant(const3, Word(200));
-		alloc.add_scratch(scratch1);
-		alloc.add_scratch(scratch2);
+		alloc.add_scratch(scratch1, 0);
+		alloc.add_scratch(scratch2, 1);
 
 		// Build the assignment
 		let assignment = alloc.into_assignment();
@@ -231,7 +251,7 @@ mod tests {
 	#[test]
 	fn test_minimum_segment_size() {
 		// Test that the public section meets the minimum size requirement
-		let mut alloc = Alloc::new();
+		let mut alloc = Alloc::new(0);
 
 		// Add just one constant
 		let const1 = Wire::from_u32(0);
@@ -246,7 +266,7 @@ mod tests {
 		// Even with just one constant, the witness should start at MIN_WORDS_PER_SEGMENT
 		// (which should be a power of 2)
 		let witness_idx = assignment.wire_mapping[witness1];
-		assert!(witness_idx.0 >= ValueVecLayout::MIN_WORDS_PER_SEGMENT as u32);
+		assert!(witness_idx.0 >= ConstraintSystem::MIN_WORDS_PER_SEGMENT as u32);
 		assert!(witness_idx.0.is_power_of_two());
 	}
 }

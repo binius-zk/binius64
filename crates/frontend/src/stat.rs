@@ -7,6 +7,7 @@ use std::fmt;
 
 use binius_core::{ConstraintSystem, Operand, ShiftedValueIndex};
 use itertools::chain;
+use rustc_hash::FxHashSet;
 
 use crate::compiler::circuit::Circuit;
 
@@ -58,6 +59,11 @@ pub struct CircuitStat {
 	///
 	/// Those values are not committed, those only exist during witness generation.
 	pub n_scratch: usize,
+	/// Smallest scratch segment this circuit could run with.
+	///
+	/// This is the largest number of uncommitted values alive at the same time.
+	/// It equals the segment length when slots are shared, and is a lower bound on it otherwise.
+	pub scratch_peak_live: usize,
 	/// Allocated size for AND constraints (power of 2)
 	pub and_allocated: usize,
 	/// Allocated size for IMUL constraints (power of 2)
@@ -79,32 +85,34 @@ pub struct CircuitStat {
 impl CircuitStat {
 	/// Creates a new `CircuitStat` instance by collecting statistics from the given circuit.
 	pub fn collect(circuit: &Circuit) -> Self {
-		// Clone the constraint system so we can prepare it
-		let mut cs = circuit.constraint_system().clone();
+		let cs = circuit.constraint_system();
 
-		// Store original counts before padding
+		// Counts as the circuit compiled them, before the prover pads anything.
 		let n_and_constraints = cs.n_and_constraints();
 		let n_imul_constraints = cs.n_imul_constraints();
 		let n_bmul_constraints = cs.n_bmul_constraints();
 		let (distinct_shifted_value_indices, distinct_unshifted_value_indices) =
-			traverse_constraint_system(&cs);
+			traverse_constraint_system(cs);
 
-		// validate_and_prepare will pad constraints to power of 2
-		cs.validate_and_prepare()
-			.expect("constraint system should be valid");
-
-		// Now we have the actual allocated sizes after padding
-		let and_allocated = cs.n_and_constraints();
-		let imul_allocated = cs.n_imul_constraints();
-		let bmul_allocated = cs.n_bmul_constraints();
+		// Sizes the prover pads each constraint set to before proving.
+		//
+		// - Every set is rounded up to a power of two.
+		// - Rounding up from zero gives one, so an empty AND set still occupies a single slot.
+		// - An empty multiply set instead stays at zero, letting its reduction be skipped whole.
+		let pad = |n: usize| n.next_power_of_two();
+		let pad_or_skip = |n: usize| if n == 0 { 0 } else { pad(n) };
+		let and_allocated = pad(n_and_constraints);
+		let imul_allocated = pad_or_skip(n_imul_constraints);
+		let bmul_allocated = pad_or_skip(n_bmul_constraints);
 
 		// The public section size is already determined by the layout
-		let n_const = cs.value_vec_layout.n_const;
-		let n_inout = cs.value_vec_layout.n_inout;
-		let public_allocated = cs.value_vec_layout.offset_witness;
+		let layout = circuit.value_vec_layout();
+		let n_const = layout.n_const;
+		let n_inout = layout.n_inout;
+		let public_allocated = layout.offset_witness;
 		// The committed values are not padded to a power of two in the layout, but the prover
 		// commits to a power-of-two-length witness polynomial, so report that padded size.
-		let total_allocated = cs.value_vec_layout.combined_len().next_power_of_two();
+		let total_allocated = layout.combined_len().next_power_of_two();
 		let private_allocated = total_allocated - public_allocated;
 
 		Self {
@@ -118,9 +126,10 @@ impl CircuitStat {
 			distinct_unshifted_value_indices,
 			n_const,
 			n_inout,
-			n_witness: cs.value_vec_layout.n_witness,
-			n_internal: cs.value_vec_layout.n_internal,
-			n_scratch: cs.value_vec_layout.n_scratch,
+			n_witness: layout.n_witness,
+			n_internal: layout.n_internal,
+			n_scratch: layout.n_scratch,
+			scratch_peak_live: circuit.scratch_peak_live(),
 			and_allocated,
 			imul_allocated,
 			bmul_allocated,
@@ -324,8 +333,14 @@ impl fmt::Display for CircuitStat {
 			fmt_num(total_spare)
 		)?;
 
-		// Scratch
-		writeln!(f, "└─ Scratch (uncommitted): {}", fmt_num(self.n_scratch))?;
+		// Report the segment length alongside the floor it could reach if its slots were shared.
+		// Recording both pins the lifetime analysis, so a regression in it shows up here.
+		writeln!(
+			f,
+			"└─ Scratch (uncommitted): {} (peak live: {})",
+			fmt_num(self.n_scratch),
+			fmt_num(self.scratch_peak_live)
+		)?;
 		writeln!(f)?;
 
 		Ok(())
@@ -335,32 +350,33 @@ impl fmt::Display for CircuitStat {
 /// Traverses the constraint system and returns the number of distinct value indices that
 /// are shifted and unshifted, respectively.
 fn traverse_constraint_system(cs: &ConstraintSystem) -> (usize, usize) {
-	use rustc_hash::FxHashSet;
-	let mut cx = Cx {
-		shifted_terms: FxHashSet::default(),
-		unshifted_terms: FxHashSet::default(),
-	};
+	let mut cx = Cx::default();
 	let operands = chain!(
 		cs.and_constraints.iter().flat_map(|c| &c.0),
 		cs.imul_constraints.iter().flat_map(|c| &c.0),
 		cs.bmul_constraints.iter().flat_map(|c| &c.0),
 	);
 	for operand in operands {
-		visit_operand(operand, &mut cx);
+		cx.visit_operand(operand);
 	}
-	return (cx.shifted_terms.len(), cx.unshifted_terms.len());
+	(cx.shifted_terms.len(), cx.unshifted_terms.len())
+}
 
-	struct Cx {
-		shifted_terms: FxHashSet<ShiftedValueIndex>,
-		unshifted_terms: FxHashSet<ShiftedValueIndex>,
-	}
+/// The distinct terms seen so far, split by whether they carry a shift.
+#[derive(Default)]
+struct Cx {
+	shifted_terms: FxHashSet<ShiftedValueIndex>,
+	unshifted_terms: FxHashSet<ShiftedValueIndex>,
+}
 
-	fn visit_operand(operand: &Operand, cx: &mut Cx) {
+impl Cx {
+	/// Records every term of one operand.
+	fn visit_operand(&mut self, operand: &Operand) {
 		for term in operand {
 			if term.amount == 0 {
-				cx.unshifted_terms.insert(*term);
+				self.unshifted_terms.insert(*term);
 			} else {
-				cx.shifted_terms.insert(*term);
+				self.shifted_terms.insert(*term);
 			}
 		}
 	}

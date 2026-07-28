@@ -1,8 +1,12 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
-use std::{iter, ops::Deref};
+use std::{
+	iter,
+	ops::{Deref, DerefMut},
+};
 
+use binius_compute::Allocator;
 use binius_field::{
 	BinaryField, Divisible, ExtensionField, Field, PackedField, cast_base_mut,
 	linear_transformation::{
@@ -13,13 +17,12 @@ use binius_field::{
 };
 use binius_ip_prover::channel::IPProverChannel;
 use binius_math::{
-	FieldBuffer, inner_product::inner_product, multilinear::eq::eq_ind_partial_eval,
+	FieldBuffer, FieldSlice, FieldVec,
+	inner_product::inner_product,
+	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_in},
 	tensor_algebra::TensorAlgebra,
 };
-use binius_utils::{
-	checked_arithmetics::{checked_int_div, checked_log_2},
-	rayon::prelude::*,
-};
+use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
 use binius_verifier::config::{B1, B128};
 use itertools::izip;
 
@@ -38,11 +41,15 @@ use itertools::izip;
 /// ## Preconditions
 ///
 /// * `vec` has length equal to the extension degree of `F` over `B1`
-pub fn fold_elems_inplace<F, P>(mut elems: FieldBuffer<P>, vec: &FieldBuffer<F>) -> FieldBuffer<P>
+pub fn fold_elems_inplace<F, P, Data>(
+	mut elems: FieldBuffer<P, Data>,
+	vec: &FieldBuffer<F>,
+) -> FieldBuffer<P, Data>
 where
 	F: BinaryField,
 	F::Underlier: Divisible<u8>,
 	P: PackedField<Scalar = F>,
+	Data: DerefMut<Target = [P]>,
 {
 	assert_eq!(vec.log_len(), F::LOG_DEGREE); // precondition
 
@@ -61,73 +68,6 @@ where
 				.into_iter()
 				.map(|scalar| transform.transform(&scalar)),
 		);
-	});
-
-	elems
-}
-
-/// Optimized version of [`fold_elems_inplace`] specifically for B128 fields.
-///
-/// This function transforms a [`FieldBuffer`] by mapping every B128 scalar to the inner product
-/// of its B1 components and a given vector of B128 field elements. It implements the same
-/// computation as [`fold_elems_inplace`] but uses direct byte iteration and lookup tables
-/// for better performance with B128 fields.
-///
-/// The optimization works by:
-/// 1. Creating 8-bit lookup tables (256 entries) for each byte position in B128
-/// 2. Directly iterating over the bytes of B128 elements
-/// 3. Using lookup tables to compute partial sums without the ByteIteratorCallback abstraction
-///
-/// ## Arguments
-///
-/// * `elems` - the buffer of B128 elements to transform
-/// * `vec` - the vector of B128 field elements (must have length 128 = B128 extension degree)
-///
-/// ## Returns
-///
-/// The transformed buffer with each element replaced by its inner product result
-///
-/// ## Preconditions
-///
-/// * `vec` must have log length equal to B128's extension degree over B1 (7)
-pub fn fold_b128_elems_inplace<P>(
-	mut elems: FieldBuffer<P>,
-	vec: &FieldBuffer<B128>,
-) -> FieldBuffer<P>
-where
-	P: PackedField<Scalar = B128>,
-{
-	assert_eq!(vec.len(), B128::N_BITS); // precondition
-
-	// Create lookup tables for 8-bit chunks
-	const CHUNK_BITS: usize = 8;
-
-	// Build lookup tables for each byte position
-	// Each table has 256 entries for all possible 8-bit values
-	let lookup_tables = vec
-		.as_ref()
-		.chunks(CHUNK_BITS)
-		.map(|chunk| {
-			let chunk = <[B128; CHUNK_BITS]>::try_from(chunk)
-				.expect("vec.len() == 128; thus, chunks must be exact CHUNK_BITS in size");
-			expand_subset_sums_array::<_, CHUNK_BITS, { 1 << CHUNK_BITS }>(chunk)
-		})
-		.collect::<Vec<_>>();
-
-	assert_eq!(lookup_tables.len(), checked_int_div(B128::N_BITS, CHUNK_BITS));
-
-	elems.as_mut().par_iter_mut().for_each(|packed_elem| {
-		*packed_elem = P::from_scalars(packed_elem.into_iter().map(|scalar| {
-			let bytes = u128::from(scalar.val()).to_le_bytes();
-			bytes
-				.into_iter()
-				.enumerate()
-				.map(|(i, byte)| {
-					// Safety: i is in the range 0..16, and byte is in range 0..256
-					unsafe { lookup_tables.get_unchecked(i).get_unchecked(byte as usize) }
-				})
-				.sum()
-		}));
 	});
 
 	elems
@@ -157,13 +97,14 @@ where
 /// ## Preconditions
 ///
 /// * `mat` and `vec` must have the same log length
-pub fn fold_1b_rows_for_b128<P, Data>(
-	mat: &FieldBuffer<P, Data>,
-	vec: &FieldBuffer<P>,
+pub fn fold_1b_rows_for_b128<P, MatData, VecData>(
+	mat: &FieldBuffer<P, MatData>,
+	vec: &FieldBuffer<P, VecData>,
 ) -> FieldBuffer<B128>
 where
 	P: PackedField<Scalar = B128>,
-	Data: Deref<Target = [P]>,
+	MatData: Deref<Target = [P]>,
+	VecData: Deref<Target = [P]>,
 {
 	let log_scalar_bit_width = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 	assert_eq!(mat.log_len(), vec.log_len()); // precondition
@@ -275,9 +216,9 @@ fn square_transpose_const_size<P: PackedField, const LOG_N: usize, const S: usiz
 }
 
 /// Output of ring-switching prover.
-pub struct RingSwitchOutput<P: PackedField> {
+pub struct RingSwitchOutput<A: Allocator, P: PackedField> {
 	/// The ring-switching equality indicator MLE (transparent poly for BaseFold).
-	pub rs_eq_ind: FieldBuffer<P>,
+	pub rs_eq_ind: FieldVec<P, A>,
 	/// The sumcheck claim.
 	pub sumcheck_claim: P::Scalar,
 }
@@ -294,6 +235,7 @@ pub struct RingSwitchOutput<P: PackedField> {
 ///
 /// ## Arguments
 ///
+/// * `alloc` - the allocator the ring-switching equality indicator is drawn from
 /// * `packed_witness` - the packed witness buffer (B1 polynomial packed into P elements)
 /// * `eval_point` - the evaluation point from shift reduction
 /// * `channel` - the prover channel for sending/sampling
@@ -302,12 +244,14 @@ pub struct RingSwitchOutput<P: PackedField> {
 ///
 /// * `packed_witness.log_len() + log_packing == eval_point.len()` where log_packing is the base-2
 ///   log of the extension degree of B128 over B1 (= 7)
-pub fn prove<P, Channel>(
-	packed_witness: &FieldBuffer<P>,
+pub fn prove<A, P, Channel>(
+	alloc: &A,
+	packed_witness: FieldSlice<P>,
 	eval_point: &[B128],
 	channel: &mut Channel,
-) -> RingSwitchOutput<P>
+) -> RingSwitchOutput<A, P>
 where
+	A: Allocator,
 	P: PackedField<Scalar = B128>,
 	Channel: IPProverChannel<B128>,
 {
@@ -317,11 +261,11 @@ where
 	// Expand evaluation suffix with eq_ind
 	let eval_point_suffix = &eval_point[log_packing..];
 	let suffix_tensor = tracing::debug_span!("Expand evaluation suffix query")
-		.in_scope(|| eq_ind_partial_eval::<P>(eval_point_suffix));
+		.in_scope(|| eq_ind_partial_eval_in::<A, P>(alloc, eval_point_suffix));
 
 	// Ring-switching partial evaluations (Method of Four Russians)
 	let s_hat_v = tracing::debug_span!("Compute ring-switching partial evaluations")
-		.in_scope(|| fold_1b_rows_for_b128(packed_witness, &suffix_tensor));
+		.in_scope(|| fold_1b_rows_for_b128(&packed_witness, &suffix_tensor));
 	channel.send_many(s_hat_v.as_ref());
 
 	// Basis transpose
@@ -338,7 +282,7 @@ where
 
 	// Compute ring-switching equality indicator (transparent poly)
 	let rs_eq_ind = tracing::debug_span!("Compute ring-switching equality indicator")
-		.in_scope(|| fold_b128_elems_inplace(suffix_tensor, &eq_r_double_prime));
+		.in_scope(|| fold_elems_inplace(suffix_tensor, &eq_r_double_prime));
 
 	RingSwitchOutput {
 		rs_eq_ind,
@@ -349,8 +293,8 @@ where
 #[cfg(test)]
 mod test {
 	use binius_field::{
-		BinaryField128bGhash, ExtensionField, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
-		PackedField, PackedSubfield, cast_ext,
+		BinaryField128bGhash, ExtensionField, PackedBinaryGhash2x128b, PackedField, PackedSubfield,
+		cast_ext,
 	};
 	use binius_math::{
 		FieldBuffer,
@@ -455,7 +399,7 @@ mod test {
 
 		// Method 2: Tensor expand prefix, call fold_elems_inplace, then evaluate_inplace on suffix
 		let prefix_tensor = eq_ind_partial_eval::<F>(prefix);
-		let bit_matrix_packed = FieldBuffer::new(
+		let bit_matrix_packed = FieldBuffer::<P>::new(
 			n,
 			bit_matrix
 				.as_ref()
@@ -468,35 +412,5 @@ mod test {
 
 		// Compare all three results
 		assert_eq!(reference_result, method2_result, "Method 2 does not match reference");
-	}
-
-	#[test]
-	fn test_fold_b128_elems_consistency() {
-		let mut rng = StdRng::seed_from_u64(0);
-		type P = PackedBinaryGhash4x128b;
-
-		// Parameters - test with various sizes
-		for n in [4, 6, 8, 10] {
-			// Generate a random buffer of B128 elements
-			let elems = random_field_buffer::<P>(&mut rng, n);
-
-			// Generate a random vector of 128 B128 field elements (for the inner product)
-			let vec =
-				random_field_buffer::<B128>(&mut rng, <B128 as ExtensionField<B1>>::LOG_DEGREE);
-
-			// Call the generic fold_elems_inplace function
-			let result_generic = fold_elems_inplace(elems.clone(), &vec);
-
-			// Call the specialized fold_b128_elems_inplace function
-			let result_specialized = fold_b128_elems_inplace(elems.clone(), &vec);
-
-			// Both results should be identical
-			assert_eq!(
-				result_generic.as_ref(),
-				result_specialized.as_ref(),
-				"fold_b128_elems_inplace does not match fold_elems_inplace for n = {}",
-				n
-			);
-		}
 	}
 }

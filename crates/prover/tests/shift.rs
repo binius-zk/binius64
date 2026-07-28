@@ -21,7 +21,7 @@ use binius_prover::{
 	protocols::shift::{OperatorData, build_key_collection, prove},
 };
 use binius_transcript::ProverTranscript;
-use binius_utils::checked_arithmetics::{log2_ceil_usize, strict_log_2};
+use binius_utils::checked_arithmetics::log2_ceil_usize;
 use binius_verifier::{
 	config::StdChallenger,
 	protocols::shift::{OperatorData as VerifierOperatorData, check_eval, verify},
@@ -137,6 +137,9 @@ pub fn create_slice_cs_with_witness() -> (ConstraintSystem, ValueVec) {
 }
 
 // Compute the image of the witness applied to the AND constraints
+//
+// Each image is zero-padded to a power-of-two length, matching the operand columns the prover
+// materializes.
 pub fn compute_bitand_images(constraints: &[AndConstraint], witness: &ValueVec) -> [Vec<Word>; 3] {
 	let (a_image, b_image, c_image) = constraints
 		.iter()
@@ -146,11 +149,20 @@ pub fn compute_bitand_images(constraints: &[AndConstraint], witness: &ValueVec) 
 			let c = witness.eval_operand(constraint.c());
 			(a, b, c)
 		})
-		.multiunzip();
-	[a_image, b_image, c_image]
+		.multiunzip::<(Vec<_>, Vec<_>, Vec<_>)>();
+	[a_image, b_image, c_image].map(|image| pad_image(image, constraints.len()))
+}
+
+// Zero-pad a per-constraint image up to the power-of-two row count the reductions run over.
+fn pad_image(mut image: Vec<Word>, n_constraints: usize) -> Vec<Word> {
+	image.resize(n_constraints.next_power_of_two(), Word::ZERO);
+	image
 }
 
 // Compute the image of the witness applied to the IMUL constraints
+//
+// Each image is zero-padded to a power-of-two length, matching the operand columns the prover
+// materializes.
 fn compute_intmul_images(constraints: &[ImulConstraint], witness: &ValueVec) -> [Vec<Word>; 4] {
 	let (a_image, b_image, lo_image, hi_image) = constraints
 		.iter()
@@ -161,8 +173,8 @@ fn compute_intmul_images(constraints: &[ImulConstraint], witness: &ValueVec) -> 
 			let hi = witness.eval_operand(constraint.hi());
 			(a, b, lo, hi)
 		})
-		.multiunzip();
-	[a_image, b_image, lo_image, hi_image]
+		.multiunzip::<(Vec<_>, Vec<_>, Vec<_>, Vec<_>)>();
+	[a_image, b_image, lo_image, hi_image].map(|image| pad_image(image, constraints.len()))
 }
 
 // Evaluate the image of the witness applied to the AND or IMUL constraints
@@ -203,13 +215,13 @@ fn test_shift_prove_and_verify() {
 	type P = PackedBinaryGhash2x128b;
 	let mut rng = StdRng::seed_from_u64(0);
 
-	let mut constraint_systems_to_test = vec![
+	let constraint_systems_to_test = vec![
 		create_sha256_cs_with_witness(),
 		create_slice_cs_with_witness(),
 		create_concat_cs_with_witness(),
 	];
-	for (constraint_system, _) in constraint_systems_to_test.iter_mut() {
-		constraint_system.validate_and_prepare().unwrap();
+	for (constraint_system, _) in constraint_systems_to_test.iter() {
+		constraint_system.validate().unwrap();
 	}
 
 	for (cs, value_vec) in constraint_systems_to_test.into_iter() {
@@ -220,7 +232,9 @@ fn test_shift_prove_and_verify() {
 
 		// Sample multilinear challenge point
 		let r_x_prime_bitand = {
-			let log_bitand_constraint_count = strict_log_2(cs.and_constraints.len()).unwrap();
+			// The BitAnd reduction always runs; an empty AND set reduces over its single all-zero
+			// padding row, i.e. an empty point.
+			let log_bitand_constraint_count = cs.log_and_constraints().unwrap_or(0);
 			(0..log_bitand_constraint_count as u128)
 				.map(F::new)
 				.collect::<Vec<_>>()
@@ -230,13 +244,13 @@ fn test_shift_prove_and_verify() {
 		// — mirroring the prover/verifier skip of the IntMul reduction in `binius_prover` /
 		// `binius_verifier`.
 		let intmul_is_empty = cs.imul_constraints.is_empty();
-		let r_x_prime_intmul = if intmul_is_empty {
-			Vec::new()
-		} else {
-			let log_intmul_constraint_count = strict_log_2(cs.imul_constraints.len()).unwrap();
+		let r_x_prime_intmul = if let Some(log_intmul_constraint_count) = cs.log_imul_constraints()
+		{
 			(0..log_intmul_constraint_count as u128)
 				.map(F::new)
 				.collect::<Vec<_>>()
+		} else {
+			Vec::new()
 		};
 
 		// Sample univariate eval point — the bitand and intmul operators share

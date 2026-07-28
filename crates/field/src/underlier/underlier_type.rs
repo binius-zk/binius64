@@ -158,16 +158,3 @@ pub unsafe trait WithUnderlier:
 		Self::from_underlier(f(self.to_underlier()))
 	}
 }
-
-/// A trait that represents potentially lossy numeric cast.
-/// Is a drop-in replacement of `as _` in a generic code.
-pub trait NumCast<From> {
-	fn num_cast_from(val: From) -> Self;
-}
-
-impl<U: UnderlierType> NumCast<U> for U {
-	#[inline(always)]
-	fn num_cast_from(val: U) -> Self {
-		val
-	}
-}

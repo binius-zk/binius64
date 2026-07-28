@@ -24,7 +24,7 @@ use binius_ip_prover::{
 	},
 };
 use binius_math::{
-	FieldVec,
+	FieldSlice, FieldVec,
 	field_buffer::FieldBuffer,
 	inner_product::inner_product_buffers,
 	multilinear::{
@@ -67,7 +67,7 @@ where
 	A: Allocator,
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
-	Channel: IOPProverChannel<P>,
+	Channel: IOPProverChannel<P, A>,
 {
 	let [a, b, lo, hi] = columns;
 
@@ -105,7 +105,7 @@ where
 	A: Allocator,
 	F: BinaryField<Underlier: Divisible<u64>>,
 	P: PackedField<Scalar = F>,
-	Channel: IOPProverChannel<P>,
+	Channel: IOPProverChannel<P, A>,
 {
 	/// Prove an integer multiplication statement.
 	///
@@ -166,7 +166,7 @@ where
 		let Phase1Output {
 			eval_point: phase1_eval_point,
 			b_leaves_evals,
-		} = self.phase1(&initial_eval_point, b_prodcheck, &b_leaves, exp_eval);
+		} = self.phase1(&initial_eval_point, b_prodcheck, b_leaves.to_ref(), exp_eval);
 
 		// Phase 2
 		let Phase2Output {
@@ -415,7 +415,7 @@ where
 		&mut self,
 		eval_point: &[F],
 		b_prover: ProdcheckProver<'alloc, A, P>,
-		b_leaves: &FieldBuffer<P>,
+		b_leaves: FieldSlice<P>,
 		b_root_eval: F,
 	) -> Phase1Output<F> {
 		let n_vars = eval_point.len();
