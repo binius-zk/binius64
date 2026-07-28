@@ -30,6 +30,15 @@ use crate::{error::ConstraintSystemError, word::Word};
 ///
 /// A constraint may reference any value word, but not a padding word.
 ///
+/// # Constraint counts
+///
+/// The AND, IMUL and BMUL constraint counts are the true counts; none of them is rounded up to a
+/// power of two. The reductions run over power-of-two-sized operand columns, so the prover rounds
+/// each count up to a power of two and zero-fills the tail when it materializes the column;
+/// [`Self::log_and_constraints`] and its IMUL and BMUL siblings report the resulting variable
+/// count. Zero is a valid padding row for every constraint type: an empty operand evaluates to
+/// [`Word::ZERO`], and `0 & 0 ^ 0 = 0` and `0 * 0 = 0 || 0` both hold.
+///
 /// # Clone
 ///
 /// While this type is cloneable it may be expensive to do so since the constraint systems often
@@ -240,41 +249,6 @@ impl ConstraintSystem {
 		Ok(())
 	}
 
-	/// [Validates][`Self::validate`] and prepares this constraint system for proving/verifying.
-	///
-	/// This function performs the following:
-	/// 1. Validates the value vector layout (including public input checks)
-	/// 2. Validates the constraints.
-	/// 3. Pads the AND, IMUL, and BMUL constraints to the next po2 size
-	pub fn validate_and_prepare(&mut self) -> Result<(), ConstraintSystemError> {
-		self.validate()?;
-
-		// Require all constraint types to have a power-of-two count. An empty IMUL (resp. BMUL)
-		// constraint set is kept at zero (rather than padded to a single dummy constraint) so the
-		// prover and verifier can skip the IntMul (resp. BinMul) reduction entirely — see
-		// `IOPProver::prove` / `IOPVerifier::verify`.
-		let and_target_size = self.and_constraints.len().next_power_of_two();
-		let imul_target_size = if self.imul_constraints.is_empty() {
-			0
-		} else {
-			self.imul_constraints.len().next_power_of_two()
-		};
-		let bmul_target_size = if self.bmul_constraints.is_empty() {
-			0
-		} else {
-			self.bmul_constraints.len().next_power_of_two()
-		};
-
-		self.and_constraints
-			.resize_with(and_target_size, AndConstraint::default);
-		self.imul_constraints
-			.resize_with(imul_target_size, ImulConstraint::default);
-		self.bmul_constraints
-			.resize_with(bmul_target_size, BmulConstraint::default);
-
-		Ok(())
-	}
-
 	/// Returns the number of AND constraints in the system.
 	pub const fn n_and_constraints(&self) -> usize {
 		self.and_constraints.len()
@@ -288,6 +262,48 @@ impl ConstraintSystem {
 	/// Returns the number of BMUL constraints in the system.
 	pub const fn n_bmul_constraints(&self) -> usize {
 		self.bmul_constraints.len()
+	}
+
+	/// Returns the number of variables the BitAnd reduction runs over, or `None` when the system
+	/// has no AND constraints.
+	///
+	/// The reduction operates on operand columns with one row per AND constraint, zero-padded up
+	/// to a power of two, so it has `ceil(log2(n_and_constraints))` variables. Unlike the two
+	/// multiplication reductions, the BitAnd reduction always runs: a system with no AND
+	/// constraints still gets a single all-zero row, which every constraint type satisfies. Such a
+	/// system reduces over zero variables, so its callers read `None` as zero.
+	pub const fn log_and_constraints(&self) -> Option<usize> {
+		match self.n_and_constraints() {
+			0 => None,
+			n => Some(log2_ceil_usize(n)),
+		}
+	}
+
+	/// Returns the number of variables the IntMul reduction runs over, or `None` when the system
+	/// has no IMUL constraints.
+	///
+	/// This is `ceil(log2(n_imul_constraints))`, matching the zero-padded operand columns the
+	/// reduction consumes. `None` is the skip signal: an empty IMUL set makes the prover and
+	/// verifier skip the IntMul reduction entirely, rather than run it over a single dummy
+	/// constraint.
+	pub const fn log_imul_constraints(&self) -> Option<usize> {
+		match self.n_imul_constraints() {
+			0 => None,
+			n => Some(log2_ceil_usize(n)),
+		}
+	}
+
+	/// Returns the number of variables the BinMul reduction runs over, or `None` when the system
+	/// has no BMUL constraints.
+	///
+	/// This is `ceil(log2(n_bmul_constraints))`, matching the zero-padded operand columns the
+	/// reduction consumes. As with [`Self::log_imul_constraints`], `None` is the skip signal; both
+	/// sides skip the BinMul reduction for an empty BMUL set.
+	pub const fn log_bmul_constraints(&self) -> Option<usize> {
+		match self.n_bmul_constraints() {
+			0 => None,
+			n => Some(log2_ceil_usize(n)),
+		}
 	}
 
 	/// The total length of the [`ValueVec`] expected by this constraint system.
@@ -625,7 +641,7 @@ mod tests {
 			vec![ValueIndex(8)], // valid private value
 		));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err(), "Should reject constraint referencing padding");
 
 		match result.unwrap_err() {
@@ -656,12 +672,38 @@ mod tests {
 			vec![ShiftedValueIndex::plain(ValueIndex(13))], // hi
 		]));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(
 			result.is_ok(),
 			"Should accept constraints with only valid references: {:?}",
 			result
 		);
+	}
+
+	#[test]
+	fn test_validate_keeps_true_constraint_counts() {
+		let cs = create_test_constraint_system();
+		let (n_and, n_imul, n_bmul) =
+			(cs.n_and_constraints(), cs.n_imul_constraints(), cs.n_bmul_constraints());
+		cs.validate().unwrap();
+		assert_eq!(cs.n_and_constraints(), n_and);
+		assert_eq!(cs.n_imul_constraints(), n_imul);
+		assert_eq!(cs.n_bmul_constraints(), n_bmul);
+	}
+
+	#[test]
+	fn test_log_constraint_counts_round_up() {
+		let mut cs = test_shape();
+		// An empty set reports `None`; the BitAnd reduction reads that as its single all-zero
+		// padding row, i.e. zero variables.
+		assert_eq!(cs.log_and_constraints(), None);
+
+		let and =
+			AndConstraint::plain_abc(vec![ValueIndex(0)], vec![ValueIndex(4)], vec![ValueIndex(8)]);
+		cs.and_constraints = vec![and; 3];
+		assert_eq!(cs.log_and_constraints(), Some(2));
+		cs.and_constraints.push(cs.and_constraints[0].clone());
+		assert_eq!(cs.log_and_constraints(), Some(2));
 	}
 
 	#[test]
@@ -675,7 +717,7 @@ mod tests {
 			vec![ValueIndex(8)],  // valid private value
 		));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err(), "Should reject constraint with out-of-range index");
 
 		match result.unwrap_err() {
@@ -707,7 +749,7 @@ mod tests {
 			vec![ShiftedValueIndex::plain(ValueIndex(100))], // hi: WAY out of range!
 		]));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err(), "Should reject IMUL constraint with out-of-range index");
 
 		match result.unwrap_err() {
@@ -741,7 +783,7 @@ mod tests {
 			vec![ShiftedValueIndex::plain(ValueIndex(100))], // c_hi: WAY out of range!
 		]));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err(), "Should reject BMUL constraint with out-of-range index");
 
 		match result.unwrap_err() {
@@ -776,7 +818,7 @@ mod tests {
 			vec![ValueIndex(8)],
 		));
 
-		let result = cs.validate_and_prepare();
+		let result = cs.validate();
 		assert!(result.is_err());
 
 		// Should get OutOfRangeValueIndex, not PaddingValueIndex
@@ -807,7 +849,7 @@ mod tests {
 			vec![ShiftedValueIndex::plain(ValueIndex(8))],
 		));
 
-		match cs.validate_and_prepare().unwrap_err() {
+		match cs.validate().unwrap_err() {
 			ConstraintSystemError::ShiftAmountTooLarge {
 				constraint_type,
 				constraint_index,

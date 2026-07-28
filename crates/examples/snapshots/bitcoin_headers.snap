@@ -26,5 +26,5 @@ Value Vector
 │  └─ Internal: 20,091
 ├─ Total Committed: 20,352 used (62.1% of 2^15)
 │  [▓▓▓▓▓▓░░░░] spare: 12,416
-└─ Scratch (uncommitted): 39,237 (peak live: 76)
+└─ Scratch (uncommitted): 39,157 (peak live: 76)
 

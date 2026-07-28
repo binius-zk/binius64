@@ -135,7 +135,6 @@ struct LLVMConfig {
 #[derive(Debug)]
 struct CodeFeatures {
 	compile_time_features: Vec<String>,
-	runtime_detected_features: BTreeMap<&'static str, bool>,
 }
 
 #[derive(Debug)]
@@ -368,11 +367,8 @@ impl PlatformDiagnostics {
 			.map(|s| s.to_string())
 			.collect();
 
-		let runtime_detected_features = Self::detect_os_runtime().runtime_features;
-
 		CodeFeatures {
 			compile_time_features,
-			runtime_detected_features,
 		}
 	}
 
@@ -821,22 +817,6 @@ impl PlatformDiagnostics {
 		}
 	}
 
-	#[must_use]
-	pub fn get_summary(&self) -> PlatformSummary {
-		let has_mismatches =
-			self.code_features.compile_time_features.iter().any(|f| {
-				self.code_features.runtime_detected_features.get(f.as_str()) == Some(&false)
-			});
-
-		PlatformSummary {
-			platform: format!("{} on {}", self.hardware.vendor, self.hardware.architecture),
-			cpu: self.hardware.cpu_model.clone(),
-			target: self.llvm_config.target_triple.clone(),
-			target_cpu: self.llvm_config.target_cpu.clone(),
-			has_feature_mismatches: has_mismatches,
-		}
-	}
-
 	/// Generate a feature suffix for benchmark names based on platform diagnostics
 	#[must_use]
 	pub fn get_feature_suffix(&self) -> String {
@@ -875,14 +855,6 @@ impl PlatformDiagnostics {
 	}
 }
 
-pub struct PlatformSummary {
-	pub platform: String,
-	pub cpu: String,
-	pub target: String,
-	pub target_cpu: String,
-	pub has_feature_mismatches: bool,
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -891,12 +863,6 @@ mod tests {
 	fn test_platform_diagnostics() {
 		let diag = PlatformDiagnostics::gather();
 		diag.print();
-
-		// Also test the summary
-		let summary = diag.get_summary();
-		assert!(!summary.platform.is_empty());
-		assert!(!summary.cpu.is_empty());
-		assert!(!summary.target.is_empty());
 	}
 
 	#[test]
@@ -932,13 +898,6 @@ mod tests {
 					.all(|f| !f.is_empty()),
 			"All feature names should be non-empty"
 		);
-
-		// Test summary generation
-		let summary = diag.get_summary();
-		assert!(!summary.platform.is_empty(), "Summary platform should not be empty");
-		assert!(!summary.cpu.is_empty(), "Summary CPU should not be empty");
-		assert!(!summary.target.is_empty(), "Summary target should not be empty");
-		assert!(!summary.target_cpu.is_empty(), "Summary target CPU should not be empty");
 
 		// Test that print() doesn't panic
 		// Redirect output to avoid cluttering test output

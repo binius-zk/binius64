@@ -52,11 +52,11 @@ fn test_simple_xor_inlining() {
 	test_commit_set(
 		|cb| {
 			// y = x ^ a
-			cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
+			cb.linear(expr::xor2(w(0), w(1)), w(2));
 			// z = y ^ b
-			cb.linear().rhs(expr::xor2(w(2), w(3))).dst(w(4)).build();
+			cb.linear(expr::xor2(w(2), w(3)), w(4));
 			// Use z in AND constraint (creates the root)
-			cb.and().a(w(4)).b(w(5)).c(w(6)).build();
+			cb.and(w(4), w(5), w(6));
 		},
 		&[],           // Nothing should be committed
 		&[w(2), w(4)], // Both linear defs can be inlined
@@ -70,9 +70,9 @@ fn test_xor_used_in_and_constraint() {
 	test_commit_set(
 		|cb| {
 			// y = x ^ a
-			cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
+			cb.linear(expr::xor2(w(0), w(1)), w(2));
 			// and(y, b, c)
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.and(w(2), w(3), w(4));
 		},
 		&[],     // y can be inlined
 		&[w(2)], // y should not be committed
@@ -86,11 +86,11 @@ fn test_shift_composition_same_type() {
 	test_commit_set(
 		|cb| {
 			// y = x << 10
-			cb.linear().rhs(expr::sll(w(0), 10)).dst(w(1)).build();
+			cb.linear(expr::sll(w(0), 10), w(1));
 			// z = y << 20
-			cb.linear().rhs(expr::sll(w(1), 20)).dst(w(2)).build();
+			cb.linear(expr::sll(w(1), 20), w(2));
 			// Use z in an AND constraint so it becomes a root
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.and(w(2), w(3), w(4));
 		},
 		&[], // Both shifts can be composed and inlined
 		&[w(1), w(2)],
@@ -104,11 +104,11 @@ fn test_srl_composition() {
 	test_commit_set(
 		|cb| {
 			// y = x >> 10
-			cb.linear().rhs(expr::srl(w(0), 10)).dst(w(1)).build();
+			cb.linear(expr::srl(w(0), 10), w(1));
 			// z = y >> 20
-			cb.linear().rhs(expr::srl(w(1), 20)).dst(w(2)).build();
+			cb.linear(expr::srl(w(1), 20), w(2));
 			// Use z in an AND constraint so it becomes a root
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.and(w(2), w(3), w(4));
 		},
 		&[], // Both shifts can be composed and inlined
 		&[w(1), w(2)],
@@ -120,9 +120,9 @@ fn test_sar_composition() {
 	// y = sar(x, 31), z = sar(y, 1) -> compose to sar(x, 32), within range
 	test_commit_set(
 		|cb| {
-			cb.linear().rhs(expr::sar(w(0), 31)).dst(w(1)).build();
-			cb.linear().rhs(expr::sar(w(1), 1)).dst(w(2)).build();
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.linear(expr::sar(w(0), 31), w(1));
+			cb.linear(expr::sar(w(1), 1), w(2));
+			cb.and(w(2), w(3), w(4));
 		},
 		&[], // inlinable
 		&[w(1), w(2)],
@@ -134,9 +134,9 @@ fn test_sar_incompatible_with_srl() {
 	// y = sar(x, 7), z = srl(y, 1) -> incompatible; y must be committed
 	test_commit_set(
 		|cb| {
-			cb.linear().rhs(expr::sar(w(0), 7)).dst(w(1)).build();
-			cb.linear().rhs(expr::srl(w(1), 1)).dst(w(2)).build();
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.linear(expr::sar(w(0), 7), w(1));
+			cb.linear(expr::srl(w(1), 1), w(2));
+			cb.and(w(2), w(3), w(4));
 		},
 		&[w(1)], // commit producer
 		&[w(2)], // z can inline its (now committed) input
@@ -148,9 +148,9 @@ fn test_sar_incompatible_with_sll() {
 	// y = sar(x, 5), z = sll(y, 2) -> incompatible; y must be committed
 	test_commit_set(
 		|cb| {
-			cb.linear().rhs(expr::sar(w(0), 5)).dst(w(1)).build();
-			cb.linear().rhs(expr::sll(w(1), 2)).dst(w(2)).build();
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.linear(expr::sar(w(0), 5), w(1));
+			cb.linear(expr::sll(w(1), 2), w(2));
+			cb.and(w(2), w(3), w(4));
 		},
 		&[w(1)], // commit producer
 		&[w(2)],
@@ -162,9 +162,9 @@ fn test_sar_incompatible_with_rotr() {
 	// y = sar(x, 5), z = rotr(y, 10) -> incompatible types; y must be committed
 	test_commit_set(
 		|cb| {
-			cb.linear().rhs(expr::sar(w(0), 5)).dst(w(1)).build();
-			cb.linear().rhs(expr::rotr(w(1), 10)).dst(w(2)).build();
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.linear(expr::sar(w(0), 5), w(1));
+			cb.linear(expr::rotr(w(1), 10), w(2));
+			cb.and(w(2), w(3), w(4));
 		},
 		&[w(1)],
 		&[w(2)],
@@ -179,11 +179,11 @@ fn test_all_or_nothing_across_and_and_mul() {
 	// Use y in AND and z in IMUL -> x must be committed due to mixed uses
 	test_commit_set(
 		|cb| {
-			cb.linear().rhs(expr::sll(w(0), 20)).dst(w(1)).build(); // x
-			cb.linear().rhs(expr::xor2(w(1), w(2))).dst(w(3)).build(); // y = x ^ c
-			cb.linear().rhs(expr::srl(w(1), 5)).dst(w(4)).build(); // z = x >> 5
-			cb.and().a(w(3)).b(w(5)).c(w(6)).build();
-			cb.imul().a(w(4)).b(w(7)).hi(w(8)).lo(w(9)).build();
+			cb.linear(expr::sll(w(0), 20), w(1)); // x
+			cb.linear(expr::xor2(w(1), w(2)), w(3)); // y = x ^ c
+			cb.linear(expr::srl(w(1), 5), w(4)); // z = x >> 5
+			cb.and(w(3), w(5), w(6));
+			cb.imul(w(4), w(7), w(8), w(9));
 		},
 		&[w(1)],       // x must be committed
 		&[w(3), w(4)], // y and z can inline their inputs (subject to x being committed)
@@ -196,9 +196,9 @@ fn test_sll_boundary_63_vs_64() {
 	// Case 1: 32 + 31 = 63
 	test_commit_set(
 		|cb| {
-			cb.linear().rhs(expr::sll(w(0), 32)).dst(w(1)).build();
-			cb.linear().rhs(expr::sll(w(1), 31)).dst(w(2)).build();
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.linear(expr::sll(w(0), 32), w(1));
+			cb.linear(expr::sll(w(1), 31), w(2));
+			cb.and(w(2), w(3), w(4));
 		},
 		&[],
 		&[w(1), w(2)],
@@ -207,9 +207,9 @@ fn test_sll_boundary_63_vs_64() {
 	// Case 2: 32 + 32 = 64 -> commit first
 	test_commit_set(
 		|cb| {
-			cb.linear().rhs(expr::sll(w(0), 32)).dst(w(5)).build();
-			cb.linear().rhs(expr::sll(w(5), 32)).dst(w(6)).build();
-			cb.and().a(w(6)).b(w(7)).c(w(8)).build();
+			cb.linear(expr::sll(w(0), 32), w(5));
+			cb.linear(expr::sll(w(5), 32), w(6));
+			cb.and(w(6), w(7), w(8));
 		},
 		&[w(5)],
 		&[w(6)],
@@ -221,9 +221,9 @@ fn test_srl_boundary_63_vs_64() {
 	// Case 1: 16 + 47 = 63 -> OK
 	test_commit_set(
 		|cb| {
-			cb.linear().rhs(expr::srl(w(0), 16)).dst(w(1)).build();
-			cb.linear().rhs(expr::srl(w(1), 47)).dst(w(2)).build();
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.linear(expr::srl(w(0), 16), w(1));
+			cb.linear(expr::srl(w(1), 47), w(2));
+			cb.and(w(2), w(3), w(4));
 		},
 		&[],
 		&[w(1), w(2)],
@@ -232,9 +232,9 @@ fn test_srl_boundary_63_vs_64() {
 	// Case 2: 48 + 16 = 64 -> commit first
 	test_commit_set(
 		|cb| {
-			cb.linear().rhs(expr::srl(w(0), 48)).dst(w(5)).build();
-			cb.linear().rhs(expr::srl(w(5), 16)).dst(w(6)).build();
-			cb.and().a(w(6)).b(w(7)).c(w(8)).build();
+			cb.linear(expr::srl(w(0), 48), w(5));
+			cb.linear(expr::srl(w(5), 16), w(6));
+			cb.and(w(6), w(7), w(8));
 		},
 		&[w(5)],
 		&[w(6)],
@@ -246,9 +246,9 @@ fn test_sar_boundary_63_vs_64() {
 	// Case 1: 40 + 23 = 63 -> OK
 	test_commit_set(
 		|cb| {
-			cb.linear().rhs(expr::sar(w(0), 40)).dst(w(1)).build();
-			cb.linear().rhs(expr::sar(w(1), 23)).dst(w(2)).build();
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.linear(expr::sar(w(0), 40), w(1));
+			cb.linear(expr::sar(w(1), 23), w(2));
+			cb.and(w(2), w(3), w(4));
 		},
 		&[],
 		&[w(1), w(2)],
@@ -257,9 +257,9 @@ fn test_sar_boundary_63_vs_64() {
 	// Case 2: 32 + 32 = 64 -> commit first
 	test_commit_set(
 		|cb| {
-			cb.linear().rhs(expr::sar(w(0), 32)).dst(w(5)).build();
-			cb.linear().rhs(expr::sar(w(5), 32)).dst(w(6)).build();
-			cb.and().a(w(6)).b(w(7)).c(w(8)).build();
+			cb.linear(expr::sar(w(0), 32), w(5));
+			cb.linear(expr::sar(w(5), 32), w(6));
+			cb.and(w(6), w(7), w(8));
 		},
 		&[w(5)],
 		&[w(6)],
@@ -272,10 +272,10 @@ fn test_zero_shift_composition() {
 	test_commit_set(
 		|cb| {
 			// y = sll(x, 0)
-			cb.linear().rhs(expr::sll(w(0), 0)).dst(w(1)).build();
+			cb.linear(expr::sll(w(0), 0), w(1));
 			// z = srl(y, 0)
-			cb.linear().rhs(expr::srl(w(1), 0)).dst(w(2)).build();
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.linear(expr::srl(w(1), 0), w(2));
+			cb.and(w(2), w(3), w(4));
 		},
 		&[w(1)], // y must be committed (Sll vs Srl are incompatible)
 		&[w(2)],
@@ -285,10 +285,10 @@ fn test_zero_shift_composition() {
 	test_commit_set(
 		|cb| {
 			// y = srl(x, 0)
-			cb.linear().rhs(expr::srl(w(0), 0)).dst(w(1)).build();
+			cb.linear(expr::srl(w(0), 0), w(1));
 			// z = srl(y, 0)
-			cb.linear().rhs(expr::srl(w(1), 0)).dst(w(2)).build();
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.linear(expr::srl(w(1), 0), w(2));
+			cb.and(w(2), w(3), w(4));
 		},
 		&[],
 		&[w(1), w(2)],
@@ -300,9 +300,9 @@ fn test_rotr_zero_inlining() {
 	// y = a ^ b; z = rotr(y, 0); use z in AND. Both y and z should be inlinable.
 	test_commit_set(
 		|cb| {
-			cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build(); // y
-			cb.linear().rhs(expr::rotr(w(2), 0)).dst(w(3)).build(); // z
-			cb.and().a(w(3)).b(w(4)).c(w(5)).build();
+			cb.linear(expr::xor2(w(0), w(1)), w(2)); // y
+			cb.linear(expr::rotr(w(2), 0), w(3)); // z
+			cb.and(w(3), w(4), w(5));
 		},
 		&[],
 		&[w(2), w(3)],
@@ -318,11 +318,11 @@ fn test_diamond_fanout_inlining() {
 	// Use S in AND -> Expect P,Q,R,S all inlinable (no shifts)
 	test_commit_set(
 		|cb| {
-			cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build(); // P
-			cb.linear().rhs(expr::xor2(w(2), w(3))).dst(w(4)).build(); // Q
-			cb.linear().rhs(expr::xor2(w(2), w(5))).dst(w(6)).build(); // R
-			cb.linear().rhs(expr::xor2(w(4), w(6))).dst(w(7)).build(); // S
-			cb.and().a(w(7)).b(w(8)).c(w(9)).build();
+			cb.linear(expr::xor2(w(0), w(1)), w(2)); // P
+			cb.linear(expr::xor2(w(2), w(3)), w(4)); // Q
+			cb.linear(expr::xor2(w(2), w(5)), w(6)); // R
+			cb.linear(expr::xor2(w(4), w(6)), w(7)); // S
+			cb.and(w(7), w(8), w(9));
 		},
 		&[],
 		&[w(2), w(4), w(6), w(7)],
@@ -336,11 +336,11 @@ fn test_shift_composition_different_types() {
 	test_commit_set(
 		|cb| {
 			// y = x << 10
-			cb.linear().rhs(expr::sll(w(0), 10)).dst(w(1)).build();
+			cb.linear(expr::sll(w(0), 10), w(1));
 			// z = y >> 20
-			cb.linear().rhs(expr::srl(w(1), 20)).dst(w(2)).build();
+			cb.linear(expr::srl(w(1), 20), w(2));
 			// Use z in an AND constraint
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.and(w(2), w(3), w(4));
 		},
 		&[w(1)], // y must be committed (incompatible shifts)
 		&[w(2)], // z can still be inlined
@@ -354,11 +354,11 @@ fn test_rotr_distributes_over_xor() {
 	test_commit_set(
 		|cb| {
 			// y = a ^ b
-			cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
+			cb.linear(expr::xor2(w(0), w(1)), w(2));
 			// z = rotr(y, 5)
-			cb.linear().rhs(expr::rotr(w(2), 5)).dst(w(3)).build();
+			cb.linear(expr::rotr(w(2), 5), w(3));
 			// Use z in an AND constraint
-			cb.and().a(w(3)).b(w(4)).c(w(5)).build();
+			cb.and(w(3), w(4), w(5));
 		},
 		&[], // Both can be inlined (rotr distributes over xor)
 		&[w(2), w(3)],
@@ -372,14 +372,11 @@ fn test_rotr_distributes_over_multi_xor() {
 	test_commit_set(
 		|cb| {
 			// y = a ^ b ^ c
-			cb.linear()
-				.rhs(expr::xor3(w(0), w(1), w(2)))
-				.dst(w(3))
-				.build();
+			cb.linear(expr::xor3(w(0), w(1), w(2)), w(3));
 			// z = rotr(y, 7)
-			cb.linear().rhs(expr::rotr(w(3), 7)).dst(w(4)).build();
+			cb.linear(expr::rotr(w(3), 7), w(4));
 			// Use z in an AND constraint
-			cb.and().a(w(4)).b(w(5)).c(w(6)).build();
+			cb.and(w(4), w(5), w(6));
 		},
 		&[], // Both can be inlined (rotr distributes over xor)
 		&[w(3), w(4)],
@@ -393,11 +390,11 @@ fn test_incompatible_shift_sequence() {
 	test_commit_set(
 		|cb| {
 			// y = a >> 10
-			cb.linear().rhs(expr::srl(w(0), 10)).dst(w(2)).build();
+			cb.linear(expr::srl(w(0), 10), w(2));
 			// z = y << 5
-			cb.linear().rhs(expr::sll(w(2), 5)).dst(w(3)).build();
+			cb.linear(expr::sll(w(2), 5), w(3));
 			// Use z in an AND constraint
-			cb.and().a(w(3)).b(w(4)).c(w(5)).build();
+			cb.and(w(3), w(4), w(5));
 		},
 		&[w(2)], // y must be committed (incompatible shift sequence)
 		&[w(3)], // z can still be inlined
@@ -413,14 +410,14 @@ fn test_multiple_uses_all_or_nothing() {
 	test_commit_set(
 		|cb| {
 			// x = a << 20
-			cb.linear().rhs(expr::sll(w(0), 20)).dst(w(2)).build();
+			cb.linear(expr::sll(w(0), 20), w(2));
 			// y = x ^ c (composable - shift can distribute over XOR)
-			cb.linear().rhs(expr::xor2(w(2), w(3))).dst(w(4)).build();
+			cb.linear(expr::xor2(w(2), w(3)), w(4));
 			// z = x >> 5 (incompatible - can't compose sll with srl)
-			cb.linear().rhs(expr::srl(w(2), 5)).dst(w(5)).build();
+			cb.linear(expr::srl(w(2), 5), w(5));
 			// Use y and z in AND constraints
-			cb.and().a(w(4)).b(w(6)).c(w(7)).build();
-			cb.and().a(w(5)).b(w(8)).c(w(9)).build();
+			cb.and(w(4), w(6), w(7));
+			cb.and(w(5), w(8), w(9));
 		},
 		&[w(2)],       // x must be committed (incompatible shift types)
 		&[w(4), w(5)], // y and z can be inlined
@@ -437,16 +434,16 @@ fn test_fixed_point_iteration() {
 	test_commit_set(
 		|cb| {
 			// a = input1 ^ input2
-			cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
+			cb.linear(expr::xor2(w(0), w(1)), w(2));
 			// b = a >> 10
-			cb.linear().rhs(expr::srl(w(2), 10)).dst(w(4)).build();
+			cb.linear(expr::srl(w(2), 10), w(4));
 			// c = b ^ input4
-			cb.linear().rhs(expr::xor2(w(4), w(5))).dst(w(6)).build();
+			cb.linear(expr::xor2(w(4), w(5)), w(6));
 			// d = b << 5 (incompatible - can't compose srl with sll)
-			cb.linear().rhs(expr::sll(w(4), 5)).dst(w(7)).build();
+			cb.linear(expr::sll(w(4), 5), w(7));
 			// Use c and d in AND constraints
-			cb.and().a(w(6)).b(w(8)).c(w(9)).build();
-			cb.and().a(w(7)).b(w(10)).c(w(11)).build();
+			cb.and(w(6), w(8), w(9));
+			cb.and(w(7), w(10), w(11));
 		},
 		&[w(4)],             // b must be committed (incompatible shift types)
 		&[w(2), w(6), w(7)], // a, c, and d can be inlined
@@ -460,11 +457,11 @@ fn test_rotr_composition() {
 	test_commit_set(
 		|cb| {
 			// y = rotr(x, 10)
-			cb.linear().rhs(expr::rotr(w(0), 10)).dst(w(1)).build();
+			cb.linear(expr::rotr(w(0), 10), w(1));
 			// z = rotr(y, 15)
-			cb.linear().rhs(expr::rotr(w(1), 15)).dst(w(2)).build();
+			cb.linear(expr::rotr(w(1), 15), w(2));
 			// Use z in AND constraint
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.and(w(2), w(3), w(4));
 		},
 		&[], // Both rotations can compose
 		&[w(1), w(2)],
@@ -478,17 +475,11 @@ fn test_complex_xor_chain() {
 	test_commit_set(
 		|cb| {
 			// y = a ^ b ^ c
-			cb.linear()
-				.rhs(expr::xor3(w(0), w(1), w(2)))
-				.dst(w(3))
-				.build();
+			cb.linear(expr::xor3(w(0), w(1), w(2)), w(3));
 			// z = y ^ d ^ e
-			cb.linear()
-				.rhs(expr::xor3(w(3), w(4), w(5)))
-				.dst(w(6))
-				.build();
+			cb.linear(expr::xor3(w(3), w(4), w(5)), w(6));
 			// Use z in AND constraint
-			cb.and().a(w(6)).b(w(7)).c(w(8)).build();
+			cb.and(w(6), w(7), w(8));
 		},
 		&[], // All can be inlined
 		&[w(3), w(6)],
@@ -502,9 +493,9 @@ fn test_wire_used_in_imul_constraint() {
 	test_commit_set(
 		|cb| {
 			// y = x ^ a
-			cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
+			cb.linear(expr::xor2(w(0), w(1)), w(2));
 			// mul(y, b) = hi:lo
-			cb.imul().a(w(2)).b(w(3)).hi(w(4)).lo(w(5)).build();
+			cb.imul(w(2), w(3), w(4), w(5));
 		},
 		&[],     // y can be inlined
 		&[w(2)], // y should not be committed
@@ -519,9 +510,9 @@ fn test_shifted_wire_in_non_linear_use() {
 	test_commit_set(
 		|cb| {
 			// y = x >> 5
-			cb.linear().rhs(expr::srl(w(0), 5)).dst(w(1)).build();
+			cb.linear(expr::srl(w(0), 5), w(1));
 			// and(y, a, b)
-			cb.and().a(w(1)).b(w(2)).c(w(3)).build();
+			cb.and(w(1), w(2), w(3));
 		},
 		&[], // Simple shift can be inlined
 		&[w(1)],
@@ -535,11 +526,11 @@ fn test_multiple_non_linear_uses() {
 	test_commit_set(
 		|cb| {
 			// y = x ^ a
-			cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
+			cb.linear(expr::xor2(w(0), w(1)), w(2));
 			// and(y, b, c)
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.and(w(2), w(3), w(4));
 			// and(y, d, e)
-			cb.and().a(w(2)).b(w(5)).c(w(6)).build();
+			cb.and(w(2), w(5), w(6));
 		},
 		&[], // y can be inlined into both AND constraints
 		&[w(2)],
@@ -556,13 +547,13 @@ fn test_deep_xor_tree() {
 	test_commit_set(
 		|cb| {
 			// a = x ^ y
-			cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
+			cb.linear(expr::xor2(w(0), w(1)), w(2));
 			// b = z ^ w
-			cb.linear().rhs(expr::xor2(w(3), w(4))).dst(w(5)).build();
+			cb.linear(expr::xor2(w(3), w(4)), w(5));
 			// c = a ^ b
-			cb.linear().rhs(expr::xor2(w(2), w(5))).dst(w(6)).build();
+			cb.linear(expr::xor2(w(2), w(5)), w(6));
 			// Use c in AND constraint
-			cb.and().a(w(6)).b(w(7)).c(w(8)).build();
+			cb.and(w(6), w(7), w(8));
 		},
 		&[], // All can be inlined
 		&[w(2), w(5), w(6)],
@@ -577,11 +568,11 @@ fn test_shift_overflow_prevention() {
 	test_commit_set(
 		|cb| {
 			// y = x << 40
-			cb.linear().rhs(expr::sll(w(0), 40)).dst(w(1)).build();
+			cb.linear(expr::sll(w(0), 40), w(1));
 			// z = y << 30
-			cb.linear().rhs(expr::sll(w(1), 30)).dst(w(2)).build();
+			cb.linear(expr::sll(w(1), 30), w(2));
 			// Use z in AND constraint
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.and(w(2), w(3), w(4));
 		},
 		&[w(1)], // y must be committed (shift overflow)
 		&[w(2)], // z can still be inlined
@@ -596,11 +587,11 @@ fn test_rotr_wraps_correctly() {
 	test_commit_set(
 		|cb| {
 			// y = rotr(x, 50)
-			cb.linear().rhs(expr::rotr(w(0), 50)).dst(w(1)).build();
+			cb.linear(expr::rotr(w(0), 50), w(1));
 			// z = rotr(y, 30)
-			cb.linear().rhs(expr::rotr(w(1), 30)).dst(w(2)).build();
+			cb.linear(expr::rotr(w(1), 30), w(2));
 			// Use z in AND constraint
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.and(w(2), w(3), w(4));
 		},
 		&[], // Both can be composed (rotation wraps)
 		&[w(1), w(2)],
@@ -615,11 +606,11 @@ fn test_rotr_large_composition() {
 	test_commit_set(
 		|cb| {
 			// y = rotr(x, 63)
-			cb.linear().rhs(expr::rotr(w(0), 63)).dst(w(1)).build();
+			cb.linear(expr::rotr(w(0), 63), w(1));
 			// z = rotr(y, 63)
-			cb.linear().rhs(expr::rotr(w(1), 63)).dst(w(2)).build();
+			cb.linear(expr::rotr(w(1), 63), w(2));
 			// Use z in AND constraint
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.and(w(2), w(3), w(4));
 		},
 		&[], // Both can be composed (rotation wraps at 64)
 		&[w(1), w(2)],
@@ -632,8 +623,8 @@ fn test_no_linear_defs() {
 	test_commit_set(
 		|cb| {
 			// Just AND constraints, no linear defs
-			cb.and().a(w(0)).b(w(1)).c(w(2)).build();
-			cb.and().a(w(3)).b(w(4)).c(w(5)).build();
+			cb.and(w(0), w(1), w(2));
+			cb.and(w(3), w(4), w(5));
 		},
 		&[], // Nothing to commit
 		&[], // No linear defs to inline
@@ -647,9 +638,9 @@ fn test_linear_def_no_uses() {
 	test_commit_set(
 		|cb| {
 			// y = x ^ a (unused)
-			cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
+			cb.linear(expr::xor2(w(0), w(1)), w(2));
 			// Some other AND constraint
-			cb.and().a(w(3)).b(w(4)).c(w(5)).build();
+			cb.and(w(3), w(4), w(5));
 		},
 		&[],     // Unused def doesn't need committing
 		&[w(2)], // Not committed
@@ -663,12 +654,9 @@ fn test_mixed_shift_in_xor() {
 	test_commit_set(
 		|cb| {
 			// y = (x << 5) ^ (z >> 3)
-			cb.linear()
-				.rhs(expr::xor2(expr::sll(w(0), 5), expr::srl(w(1), 3)))
-				.dst(w(2))
-				.build();
+			cb.linear(expr::xor2(expr::sll(w(0), 5), expr::srl(w(1), 3)), w(2));
 			// and(y, a, b)
-			cb.and().a(w(2)).b(w(3)).c(w(4)).build();
+			cb.and(w(2), w(3), w(4));
 		},
 		&[], // Can be inlined (shifts are on individual terms)
 		&[w(2)],
@@ -684,16 +672,16 @@ fn test_recursive_commit_propagation() {
 	test_commit_set(
 		|cb| {
 			// a = input >> 15
-			cb.linear().rhs(expr::srl(w(0), 15)).dst(w(2)).build();
+			cb.linear(expr::srl(w(0), 15), w(2));
 			// b = a ^ input3
-			cb.linear().rhs(expr::xor2(w(2), w(3))).dst(w(4)).build();
+			cb.linear(expr::xor2(w(2), w(3)), w(4));
 			// c = a << 10 (incompatible - can't compose srl with sll)
-			cb.linear().rhs(expr::sll(w(2), 10)).dst(w(5)).build();
+			cb.linear(expr::sll(w(2), 10), w(5));
 			// d = b ^ input4
-			cb.linear().rhs(expr::xor2(w(4), w(6))).dst(w(7)).build();
+			cb.linear(expr::xor2(w(4), w(6)), w(7));
 			// Use c and d in AND constraints
-			cb.and().a(w(5)).b(w(8)).c(w(9)).build();
-			cb.and().a(w(7)).b(w(10)).c(w(11)).build();
+			cb.and(w(5), w(8), w(9));
+			cb.and(w(7), w(10), w(11));
 		},
 		&[w(2)],             // a must be committed (incompatible uses)
 		&[w(4), w(5), w(7)], // b, c, and d can be inlined
@@ -707,11 +695,11 @@ fn test_rotr_with_unshifted_xor_terms() {
 	test_commit_set(
 		|cb| {
 			// y = a ^ b (both unshifted)
-			cb.linear().rhs(expr::xor2(w(0), w(1))).dst(w(2)).build();
+			cb.linear(expr::xor2(w(0), w(1)), w(2));
 			// z = rotr(y, 63)
-			cb.linear().rhs(expr::rotr(w(2), 63)).dst(w(3)).build();
+			cb.linear(expr::rotr(w(2), 63), w(3));
 			// Use z in an AND constraint
-			cb.and().a(w(3)).b(w(4)).c(w(5)).build();
+			cb.and(w(3), w(4), w(5));
 		},
 		&[], // Everything should be inlinable - rotr distributes over unshifted XOR
 		&[w(2), w(3)],
@@ -725,13 +713,13 @@ fn test_rotr_with_mixed_shift_xor() {
 	test_commit_set(
 		|cb| {
 			// b_shifted = b << 5
-			cb.linear().rhs(expr::sll(w(1), 5)).dst(w(6)).build();
+			cb.linear(expr::sll(w(1), 5), w(6));
 			// y = a ^ b_shifted (a is unshifted, b_shifted has Sll)
-			cb.linear().rhs(expr::xor2(w(0), w(6))).dst(w(2)).build();
+			cb.linear(expr::xor2(w(0), w(6)), w(2));
 			// z = rotr(y, 10)
-			cb.linear().rhs(expr::rotr(w(2), 10)).dst(w(3)).build();
+			cb.linear(expr::rotr(w(2), 10), w(3));
 			// Use z in an AND constraint
-			cb.and().a(w(3)).b(w(4)).c(w(5)).build();
+			cb.and(w(3), w(4), w(5));
 		},
 		&[w(6)],       // b_shifted must be committed (can't compose Rotr with Sll)
 		&[w(2), w(3)], // y and z can still be inlined

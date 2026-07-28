@@ -1,7 +1,7 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{PackedField, square_transpose};
-use binius_utils::{checked_arithmetics::log2_strict_usize, rayon::prelude::*};
+use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
 use bytemuck::zeroed_vec;
 
 use crate::field_buffer::FieldSliceMut;
@@ -114,7 +114,7 @@ fn bit_reverse_packed_naive<P: PackedField>(mut buffer: FieldSliceMut<P>) {
 ///
 /// Panics if the buffer length is not a power of two.
 pub fn bit_reverse_indices<T>(buffer: &mut [T]) {
-	let bits = log2_strict_usize(buffer.len()) as u32;
+	let bits = checked_log_2(buffer.len()) as u32;
 
 	// We need to use UnsafeCell-like semantics here to get proper Sync behavior.
 	// Creating a raw pointer from the slice inside the closure avoids Sync issues.

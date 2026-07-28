@@ -22,7 +22,7 @@ use binius_transcript::{
 	ProverTranscript,
 	fiat_shamir::{CanSampleBits, Challenger},
 };
-use binius_utils::{SerializeBytes, checked_arithmetics::log2_strict_usize};
+use binius_utils::{SerializeBytes, checked_arithmetics::checked_log_2};
 use digest::Output;
 use rand::CryptoRng;
 
@@ -176,7 +176,7 @@ where
 		leaf_size: usize,
 	) -> Self::Commitment {
 		assert!(leaf_size.is_power_of_two(), "precondition: leaf_size must be a power of two");
-		let log_leaf_size = log2_strict_usize(leaf_size);
+		let log_leaf_size = checked_log_2(leaf_size);
 		let (commitment, committed) = commit_field_buffer(&self.merkle_prover, data, log_leaf_size);
 		self.transcript
 			.borrow_mut()

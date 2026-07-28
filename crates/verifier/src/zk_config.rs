@@ -63,13 +63,10 @@ where
 	Output<H::LeafHash>: DeserializeBytes,
 {
 	/// Constructs a ZK verifier for a constraint system.
-	pub fn setup(
-		mut constraint_system: ConstraintSystem,
-		log_inv_rate: usize,
-	) -> Result<Self, Error> {
+	pub fn setup(constraint_system: ConstraintSystem, log_inv_rate: usize) -> Result<Self, Error> {
 		let _setup_guard = tracing::debug_span!("Setup ZK verifier").entered();
 
-		constraint_system.validate_and_prepare()?;
+		constraint_system.validate()?;
 
 		// The validated layout guarantees a power-of-two public segment of at least one full
 		// element.
