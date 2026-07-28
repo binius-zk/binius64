@@ -88,15 +88,6 @@ impl BytecodeBuilder {
 	}
 
 	// Arithmetic with carry
-	pub fn emit_iadd_cout(&mut self, dst_sum: u32, dst_cout: u32, src1: u32, src2: u32) {
-		self.n_eval_insn += 1;
-		self.emit_opcode(EvalOpcode::IaddCout);
-		self.emit_reg(dst_sum);
-		self.emit_reg(dst_cout);
-		self.emit_reg(src1);
-		self.emit_reg(src2);
-	}
-
 	pub fn emit_iadd_cin_cout(
 		&mut self,
 		dst_sum: u32,
@@ -112,6 +103,22 @@ impl BytecodeBuilder {
 		self.emit_reg(src1);
 		self.emit_reg(src2);
 		self.emit_reg(cin);
+	}
+
+	/// Carry word of `src1 + src2`, without storing the sum.
+	///
+	/// The comparison and non-zero gates need only the carries.
+	///
+	/// Emitting the sum would cost two things:
+	///
+	/// - a store per instance, into a word nothing reads;
+	/// - a value-vector slot to hold it.
+	pub fn emit_iadd_carry(&mut self, dst_cout: u32, src1: u32, src2: u32) {
+		self.n_eval_insn += 1;
+		self.emit_opcode(EvalOpcode::IaddCarry);
+		self.emit_reg(dst_cout);
+		self.emit_reg(src1);
+		self.emit_reg(src2);
 	}
 
 	pub fn emit_isub_bin_bout(

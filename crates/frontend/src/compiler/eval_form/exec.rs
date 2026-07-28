@@ -102,8 +102,8 @@ impl<'a> Executor<'a> {
 				EvalOpcode::Shift => self.exec_shift(ctx),
 
 				// Arithmetic
-				EvalOpcode::IaddCout => self.exec_iadd_cout(ctx),
 				EvalOpcode::IaddCinCout => self.exec_iadd_cin_cout(ctx),
+				EvalOpcode::IaddCarry => self.exec_iadd_carry(ctx),
 				EvalOpcode::IsubBinBout => self.exec_isub_bin_bout(ctx),
 				EvalOpcode::Imul => self.exec_imul(ctx),
 				EvalOpcode::Bmul => self.exec_bmul(ctx),
@@ -240,20 +240,6 @@ impl<'a> Executor<'a> {
 	}
 
 	// Arithmetic operations
-	fn exec_iadd_cout<C: EvalContext>(&mut self, ctx: &mut C) {
-		let dst_sum = self.read_reg();
-		let dst_cout = self.read_reg();
-		let src1 = self.read_reg();
-		let src2 = self.read_reg();
-		for i in 0..ctx.n_instances() {
-			let (sum, cout) = ctx
-				.load(src1, i)
-				.iadd_cin_cout(ctx.load(src2, i), Word::ZERO);
-			ctx.store(dst_sum, i, sum);
-			ctx.store(dst_cout, i, cout);
-		}
-	}
-
 	fn exec_iadd_cin_cout<C: EvalContext>(&mut self, ctx: &mut C) {
 		let dst_sum = self.read_reg();
 		let dst_cout = self.read_reg();
@@ -264,6 +250,20 @@ impl<'a> Executor<'a> {
 			let cin_bit = ctx.load(cin, i) >> 63; // Use MSB as carry bit
 			let (sum, cout) = ctx.load(src1, i).iadd_cin_cout(ctx.load(src2, i), cin_bit);
 			ctx.store(dst_sum, i, sum);
+			ctx.store(dst_cout, i, cout);
+		}
+	}
+
+	/// Carry word of `src1 + src2`, discarding the sum.
+	fn exec_iadd_carry<C: EvalContext>(&mut self, ctx: &mut C) {
+		let dst_cout = self.read_reg();
+		let src1 = self.read_reg();
+		let src2 = self.read_reg();
+		for i in 0..ctx.n_instances() {
+			// No carry in, and the sum is dropped rather than stored.
+			let (_sum, cout) = ctx
+				.load(src1, i)
+				.iadd_cin_cout(ctx.load(src2, i), Word::ZERO);
 			ctx.store(dst_cout, i, cout);
 		}
 	}
