@@ -24,7 +24,7 @@ where
 	P: PackedField<Scalar = F>,
 {
 	let n_vars = strict_log_2(lo.len())
-		.expect("precondition: the number of constraints must be a power of two");
+		.expect("precondition: the operand columns have a power-of-two length");
 	let p_width = P::WIDTH.min(1 << n_vars);
 	let packed_len = 1 << n_vars.saturating_sub(P::LOG_WIDTH);
 	let mut values = alloc.alloc::<P>(packed_len);
@@ -46,8 +46,8 @@ where
 /// description and output shape.
 ///
 /// The six `columns` are the `(lo, hi)` word pairs of the two multiplicands and the product, in the
-/// order `[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi]`. Each has length $2^\ell$, where $\ell$ is the log2
-/// of the number of constraints. The GHASH-field element for constraint $x$ is
+/// order `[a_lo, a_hi, b_lo, b_hi, c_lo, c_hi]`, each of power-of-two length $2^\ell$ and all of
+/// equal length. The GHASH-field element for row $x$ is
 /// $\langle\langle z_{\textsf{lo}}, z_{\textsf{hi}} \rangle\rangle = \sum_{i=0}^{63}
 /// z_{\textsf{lo},x,i} \cdot X^i + \sum_{i=0}^{63} z_{\textsf{hi},x,i} \cdot X^{64+i}$ for each of
 /// $z \in \{a, b, c\}$.
@@ -65,7 +65,7 @@ where
 	let [a_lo, a_hi, b_lo, b_hi, c_lo, c_hi] = columns;
 
 	let n_vars = strict_log_2(a_lo.len())
-		.expect("precondition: the number of constraints must be a power of two");
+		.expect("precondition: the operand columns have a power-of-two length");
 	for column in [a_hi, b_lo, b_hi, c_lo, c_hi] {
 		assert_eq!(column.len(), a_lo.len());
 	}

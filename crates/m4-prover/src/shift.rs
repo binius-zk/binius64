@@ -549,15 +549,15 @@ mod tests {
 			.collect();
 		let table = populate_crc64_witness(&c, &inputs);
 
-		let mut cs = c.circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = c.circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		let key_collection = build_key_collection(&cs);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace =
 			BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 		let r_z = B128::random(&mut rng);
-		let r_x = random_scalars::<B128>(&mut rng, checked_log_2(cs.n_and_constraints()));
+		let r_x = random_scalars::<B128>(&mut rng, cs.log_and_constraints().unwrap_or(0));
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 
 		// The hidden witness folded over instances (one FoldedWord per committed word), and the
@@ -677,15 +677,15 @@ mod tests {
 		let table = populate_crc64_witness(&c, &inputs);
 		let constants = &c.circuit.constraint_system().constants;
 
-		let mut cs = c.circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = c.circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		let key_collection = build_key_collection(&cs);
 
 		// The univariate bit challenge, the constraint challenge, and the instance challenge.
 		let domain_subspace =
 			BinarySubspace::<AESTowerField8b>::with_dim(Word::LOG_BITS).isomorphic();
 		let r_z = B128::random(&mut rng);
-		let r_x = random_scalars::<B128>(&mut rng, checked_log_2(cs.n_and_constraints()));
+		let r_x = random_scalars::<B128>(&mut rng, cs.log_and_constraints().unwrap_or(0));
 		let r_rho = random_scalars::<B128>(&mut rng, log_instances);
 
 		// The batched AND-check operand evals at (r_z, r_x, r_rho), and the full folded witness at

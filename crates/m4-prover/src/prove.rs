@@ -79,7 +79,7 @@ type ProverNtt = NeighborsLastMultiThread<GenericPreExpanded<B128>>;
 /// The IntMul check queues that oracle's opening itself.
 /// The final combined FRI opening covers it alongside the trace, so it needs no handling here.
 pub struct IOPProver {
-	/// The prepared single-instance constraint system shared by every instance.
+	/// The validated single-instance constraint system shared by every instance.
 	cs: ConstraintSystem,
 	/// The shift keys for the constraint system, built once and reused across proofs.
 	key_collection: KeyCollection,
@@ -156,10 +156,11 @@ impl IOPProver {
 				let _scope = tracing::debug_span!("Assemble IntMul witness").entered();
 				build_operation_columns(table, &cs.constants, &cs.imul_constraints, alloc)
 			};
-			// A prepared constraint system pads its constraint and instance counts to powers of
-			// two, so the columns always have a power-of-two length as the witness requires.
+			// `build_operation_columns` rounds the constraint axis up to a power of two and
+			// zero-fills the tail, and the table holds `2^log_instances` instances, so every column
+			// has the power-of-two length the IntMul witness requires.
 			let output = intmul::prove::<_, _, P, _>(column_slices(&columns), channel, alloc)
-				.expect("a prepared constraint system yields power-of-two operand columns");
+				.expect("the operand columns are equal-length and power-of-two length");
 			(columns, output)
 		});
 
@@ -832,8 +833,8 @@ mod tests {
 			.collect();
 		let table = populate_crc64_witness(&c, &inputs);
 
-		let mut cs = c.circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = c.circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		(cs, table)
 	}
 
@@ -870,8 +871,8 @@ mod tests {
 		builder.force_commit(c_hi);
 		let circuit = builder.build();
 
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		// Confirm the fixture reaches all three operations, so the recycled buffers really do span
 		// every operand-column shape.
 		assert!(!cs.imul_constraints.is_empty(), "the fixture must emit IMUL constraints");
@@ -962,8 +963,8 @@ mod tests {
 		builder.force_commit(lo);
 		let circuit = builder.build();
 
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		// Confirm the fixture genuinely exercises the IntMul path.
 		assert!(!cs.imul_constraints.is_empty(), "the fixture must emit an IMUL constraint");
 
@@ -1019,8 +1020,8 @@ mod tests {
 		}
 		let circuit = builder.build();
 
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		// Confirm the fixture is genuine: the constant count is not a power of two.
 		assert!(!cs.constants.len().is_power_of_two());
 
@@ -1088,12 +1089,13 @@ mod tests {
 		}
 		let circuit = builder.build();
 
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		// Confirm the fixture genuinely exercises the asymmetric case: the two operations have
 		// different constraint-point lengths.
-		let log_n_and = checked_log_2(cs.and_constraints.len());
-		let log_n_imul = checked_log_2(cs.imul_constraints.len());
+		// An absent operation contributes an empty `r_x`, as does an AND set of one row.
+		let log_n_and = cs.log_and_constraints().unwrap_or(0);
+		let log_n_imul = cs.log_imul_constraints().unwrap_or(0);
 		assert_ne!(
 			log_n_and, log_n_imul,
 			"the fixture must give the operations different r_x lengths"
@@ -1146,8 +1148,8 @@ mod tests {
 		builder.force_commit(c_hi);
 		let circuit = builder.build();
 
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		// Confirm the fixture genuinely exercises the BinMul path.
 		assert!(!cs.bmul_constraints.is_empty(), "the fixture must emit a BMUL constraint");
 
@@ -1211,13 +1213,14 @@ mod tests {
 		builder.force_commit(c_hi);
 		let circuit = builder.build();
 
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 		// Confirm the fixture genuinely exercises the asymmetric case: the three operations do not
 		// all reduce to constraint points of the same length.
-		let log_n_and = checked_log_2(cs.and_constraints.len());
-		let log_n_imul = checked_log_2(cs.imul_constraints.len());
-		let log_n_binmul = checked_log_2(cs.bmul_constraints.len());
+		// An absent operation contributes an empty `r_x`, as does an AND set of one row.
+		let log_n_and = cs.log_and_constraints().unwrap_or(0);
+		let log_n_imul = cs.log_imul_constraints().unwrap_or(0);
+		let log_n_binmul = cs.log_bmul_constraints().unwrap_or(0);
 		assert!(!cs.imul_constraints.is_empty(), "the fixture must emit IMUL constraints");
 		assert!(!cs.bmul_constraints.is_empty(), "the fixture must emit BMUL constraints");
 		let lengths = [log_n_and, log_n_imul, log_n_binmul];
@@ -1294,8 +1297,8 @@ mod tests {
 		builder.force_commit(lo);
 		let circuit = builder.build();
 
-		let mut cs = circuit.constraint_system().clone();
-		cs.validate_and_prepare().unwrap();
+		let cs = circuit.constraint_system().clone();
+		cs.validate().unwrap();
 
 		let log_instances = 6;
 		let table = ValueTable::populate(&circuit, log_instances, |i, w| {

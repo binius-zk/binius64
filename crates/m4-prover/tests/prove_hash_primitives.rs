@@ -81,9 +81,9 @@ where
 	let table = info_span!("witness_generation", primitive = name)
 		.in_scope(|| ValueTable::populate(circuit, LOG_INSTANCES, fill).unwrap());
 
-	// Prepare the shared constraint system.
-	let mut cs = circuit.constraint_system().clone();
-	cs.validate_and_prepare().unwrap();
+	// Clone and validate the shared single-instance constraint system.
+	let cs = circuit.constraint_system().clone();
+	cs.validate().unwrap();
 
 	// Set up the verifier.
 	// Build the prover from it, sharing its FRI parameters.

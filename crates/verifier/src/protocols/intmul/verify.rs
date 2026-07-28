@@ -466,8 +466,10 @@ where
 ///
 /// ### Parameters
 ///
-/// - `n_vars`: Number of variables in the row dimension (i.e., $\log_2$ of the number of
-///   multiplication constraints).
+/// - `n_vars`: Number of variables in the row dimension — the $\log_2$ of the operand column
+///   length, which the prover zero-pads up to a power of two. The single-instance verifier passes
+///   $\lceil \log_2 n \rceil$ for $n$ IMUL constraints; the batched M4 verifier adds its $\log_2$
+///   instance count.
 ///
 /// The integer operands are fixed at the `Word::BITS` bit width.
 pub fn verify<F, C>(n_vars: usize, channel: &mut C) -> Result<IntMulOutput<C::Elem>, Error>
