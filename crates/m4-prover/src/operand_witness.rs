@@ -21,7 +21,7 @@ use binius_core::{
 	constraint_system::{Operand, ShiftVariant, ShiftedValueIndex},
 	word::Word,
 };
-use binius_utils::{checked_arithmetics::log2_strict_usize, rayon::prelude::*};
+use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
 
 use crate::ValueTable;
 
@@ -118,7 +118,7 @@ pub fn build_operation_witness<'a, A: Allocator>(
 	alloc: &A,
 ) -> A::Vec<Word> {
 	// Rows per instance, and total rows across the batch.
-	let log_constraints = log2_strict_usize(operands.len());
+	let log_constraints = checked_log_2(operands.len());
 	let log_instances = table.log_instances();
 
 	let table_words = table.as_words();
@@ -705,7 +705,7 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "Not a power of two")]
+	#[should_panic(expected = "value is not a power of two")]
 	fn build_rejects_non_power_of_two_constraint_count() {
 		let c = and_circuit();
 
