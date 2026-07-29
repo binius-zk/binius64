@@ -42,8 +42,7 @@ pub fn blake3_compress(
 	flags: Wire,
 ) -> [Wire; 8] {
 	// Split the counter into 32-bit halves.
-	let mask_lo32 = builder.add_constant(Word(0xFFFF_FFFF));
-	let t_low = builder.band(counter, mask_lo32);
+	let t_low = clear_high_bits(builder, counter, 32);
 	let t_high = builder.shr(counter, 32);
 
 	let v: [Wire; 16] = [

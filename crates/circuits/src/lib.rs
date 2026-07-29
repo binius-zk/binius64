@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 
 //! Standard library of circuit gadgets for Binius64.
@@ -43,4 +44,4 @@ pub mod sha512;
 pub mod shift;
 pub mod skein512;
 pub mod slice;
-mod util;
+pub mod util;

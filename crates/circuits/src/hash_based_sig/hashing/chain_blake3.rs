@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 //! BLAKE3 chain hash for Winternitz hash chains.
 //!
@@ -23,6 +24,7 @@ use crate::{
 	blake3::{blake3_compress, blake3_compress_2x, ref_compress},
 	concat::concat,
 	fixed_byte_vec::ByteVec,
+	util::clear_high_bits,
 };
 
 /// Tweak separator byte for chain hashing.
@@ -39,8 +41,8 @@ const EPOCH_BYTES: usize = 4;
 const CHAIN_INDEX_BYTES: usize = 1;
 const POSITION_BYTES: usize = 1;
 
-/// Mask selecting the low 32 bits of a 64-bit word.
-const LOW32_MASK: u64 = 0xFFFF_FFFF;
+/// Mask selecting the high 32 bits of a 64-bit word.
+const HIGH32_MASK: u64 = 0xFFFF_FFFF_0000_0000;
 
 /// BLAKE3 block size in bytes (one compression).
 const BLOCK_BYTES: usize = 64;
@@ -59,13 +61,12 @@ pub const fn chain_tweak_len(param_len: usize) -> usize {
 ///
 /// Returns exactly `num_words` words.
 fn split_u32_words(builder: &CircuitBuilder, data: &[Wire], num_words: usize) -> Vec<Wire> {
-	let mask = builder.add_constant_64(LOW32_MASK);
 	let mut words = Vec::with_capacity(num_words);
 	for &w in data {
 		if words.len() >= num_words {
 			break;
 		}
-		words.push(builder.band(w, mask));
+		words.push(clear_high_bits(builder, w, 32));
 		if words.len() >= num_words {
 			break;
 		}
@@ -183,15 +184,14 @@ fn interleave_cv_2x(
 	hash0: [Wire; 4],
 	hash1: [Wire; 4],
 ) -> [Wire; CV_WORDS] {
-	let low = builder.add_constant_64(LOW32_MASK);
-	let high = builder.add_constant_64(!LOW32_MASK);
+	let high = builder.add_constant_64(HIGH32_MASK);
 	std::array::from_fn(|i| {
 		// Two output words come from one input wire, so the wire index advances at half the rate.
 		let k = i / 2;
 		if i % 2 == 0 {
 			// An even word is each value's lower half.
 			// The first value already sits there; the second lifts into the upper half.
-			builder.bxor(builder.band(hash0[k], low), builder.shl(hash1[k], 32))
+			builder.bxor(clear_high_bits(builder, hash0[k], 32), builder.shl(hash1[k], 32))
 		} else {
 			// An odd word is each value's upper half.
 			// The first value drops into the lower half; the second already sits in place.
@@ -208,11 +208,10 @@ fn interleave_cv_2x(
 /// - The second is built from the high halves.
 /// - Each 64-bit result wire consumes two consecutive output words.
 fn deinterleave_cv_2x(builder: &CircuitBuilder, out: &[Wire; CV_WORDS]) -> ([Wire; 4], [Wire; 4]) {
-	let low = builder.add_constant_64(LOW32_MASK);
-	let high = builder.add_constant_64(!LOW32_MASK);
+	let high = builder.add_constant_64(HIGH32_MASK);
 	// Low halves: the even word stays put, the odd word lifts into the upper half.
 	let lane0 = std::array::from_fn(|k| {
-		builder.bxor(builder.band(out[2 * k], low), builder.shl(out[2 * k + 1], 32))
+		builder.bxor(clear_high_bits(builder, out[2 * k], 32), builder.shl(out[2 * k + 1], 32))
 	});
 	// High halves: the even word drops down, the odd word already sits in the upper half.
 	let lane1 = std::array::from_fn(|k| {
