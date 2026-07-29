@@ -158,6 +158,69 @@ fn cv8_to_hash4(builder: &CircuitBuilder, cv: &[Wire; CV_WORDS]) -> [Wire; 4] {
 	})
 }
 
+/// Interleaves two 32-byte chain values into the 8 two-lane words a paired core consumes.
+///
+/// # Memory Layout
+///
+/// Each chain value arrives as four 64-bit wires holding eight 32-bit words:
+///
+/// ```text
+///     first  value: [ a0 | a1 ] [ a2 | a3 ] [ a4 | a5 ] [ a6 | a7 ]
+///     second value: [ b0 | b1 ] [ b2 | b3 ] [ b4 | b5 ] [ b6 | b7 ]
+/// ```
+///
+/// The core wants one wire per word index, first value low, second value high:
+///
+/// ```text
+///     word 0: [ b0 | a0 ]   word 1: [ b1 | a1 ]   ...   word 7: [ b7 | a7 ]
+/// ```
+///
+/// Every output word is one masked half of each input word.
+///
+/// So the two-lane layout is reached directly, with no single-lane split in between.
+fn interleave_cv_2x(
+	builder: &CircuitBuilder,
+	hash0: [Wire; 4],
+	hash1: [Wire; 4],
+) -> [Wire; CV_WORDS] {
+	let low = builder.add_constant_64(LOW32_MASK);
+	let high = builder.add_constant_64(!LOW32_MASK);
+	std::array::from_fn(|i| {
+		// Two output words come from one input wire, so the wire index advances at half the rate.
+		let k = i / 2;
+		if i % 2 == 0 {
+			// An even word is each value's lower half.
+			// The first value already sits there; the second lifts into the upper half.
+			builder.bxor(builder.band(hash0[k], low), builder.shl(hash1[k], 32))
+		} else {
+			// An odd word is each value's upper half.
+			// The first value drops into the lower half; the second already sits in place.
+			builder.bxor(builder.shr(hash0[k], 32), builder.band(hash1[k], high))
+		}
+	})
+}
+
+/// Splits a paired core's output back into the two 32-byte chain values it carries.
+///
+/// The exact inverse of the interleaving above.
+///
+/// - The first chain value is built from the low halves.
+/// - The second is built from the high halves.
+/// - Each 64-bit result wire consumes two consecutive output words.
+fn deinterleave_cv_2x(builder: &CircuitBuilder, out: &[Wire; CV_WORDS]) -> ([Wire; 4], [Wire; 4]) {
+	let low = builder.add_constant_64(LOW32_MASK);
+	let high = builder.add_constant_64(!LOW32_MASK);
+	// Low halves: the even word stays put, the odd word lifts into the upper half.
+	let lane0 = std::array::from_fn(|k| {
+		builder.bxor(builder.band(out[2 * k], low), builder.shl(out[2 * k + 1], 32))
+	});
+	// High halves: the even word drops down, the odd word already sits in the upper half.
+	let lane1 = std::array::from_fn(|k| {
+		builder.bxor(builder.shr(out[2 * k], 32), builder.band(out[2 * k + 1], high))
+	});
+	(lane0, lane1)
+}
+
 /// Computes one Winternitz chain step with a single BLAKE3 compression.
 ///
 /// - Returns the 32-byte digest as four 64-bit little-endian wires.
@@ -217,15 +280,15 @@ pub fn circuit_chain_step_2x_blake3(
 	let msg_len = chain_tweak_len(param_len);
 	assert!(msg_len <= BLOCK_BYTES, "chain tweak ({msg_len} bytes) exceeds one BLAKE3 block");
 
-	let cv0 = hash4_to_cv8(builder, hash0);
-	let cv1 = hash4_to_cv8(builder, hash1);
+	// Interleave the two chain values straight into the two-lane layout.
+	// Splitting each into single-lane words first would mask the same halves twice.
+	let cv = interleave_cv_2x(builder, hash0, hash1);
 	let block0 = tweak_block(builder, domain_param_wires, param_len, epoch, chain_index0, position);
 	let block1 = tweak_block(builder, domain_param_wires, param_len, epoch, chain_index1, position);
 
 	// Pack lane 0 into the low 32 bits and lane 1 into the high 32 bits of each word.
-	// Inputs already have their high 32 bits clear, so `lo ^ (hi << 32)` equals the OR.
+	// The tweak words are built already masked, so the exclusive-or acts as a disjoint merge.
 	let pack = |lo: Wire, hi: Wire| builder.bxor(lo, builder.shl(hi, 32));
-	let cv: [Wire; CV_WORDS] = std::array::from_fn(|i| pack(cv0[i], cv1[i]));
 	let block: [Wire; BLOCK_WORDS] = std::array::from_fn(|i| pack(block0[i], block1[i]));
 
 	let zero = builder.add_constant_64(0);
@@ -233,11 +296,7 @@ pub fn circuit_chain_step_2x_blake3(
 
 	let out = blake3_compress_2x(builder, cv, block, zero, zero, block_len, zero);
 
-	// Unpack: lane 0 from the low halves, lane 1 from the high halves.
-	let mask = builder.add_constant_64(LOW32_MASK);
-	let out0: [Wire; CV_WORDS] = std::array::from_fn(|i| builder.band(out[i], mask));
-	let out1: [Wire; CV_WORDS] = std::array::from_fn(|i| builder.shr(out[i], 32));
-	(cv8_to_hash4(builder, &out0), cv8_to_hash4(builder, &out1))
+	deinterleave_cv_2x(builder, &out)
 }
 
 /// Reference (out-of-circuit) tweak block bytes, matching the circuit layout, padded to 64 bytes.

@@ -93,12 +93,9 @@ pub fn blake3_chunk(
 		block_lens.len(),
 	);
 
-	let zero = builder.add_constant(Word::ZERO);
 	let counter = builder.add_constant_64(counter);
 
-	let mut blocks = blocks.to_vec();
-	let mut block_lens = block_lens.to_vec();
-	let mut flags: Vec<Wire> = (0..n_blocks)
+	let flags: Vec<Wire> = (0..n_blocks)
 		.map(|j| {
 			let start = if j == 0 { CHUNK_START } else { 0 };
 			let end = if j + 1 == n_blocks {
@@ -110,23 +107,24 @@ pub fn blake3_chunk(
 		})
 		.collect();
 
-	// Pad to an even block count with one unused dummy block so the blocks pair up uniformly.
-	let odd = n_blocks % 2 == 1;
-	if odd {
-		blocks.push([zero; 16]);
-		block_lens.push(zero);
-		flags.push(zero);
-	}
-
 	// Initial chaining value = IV.
 	let mut cv: [Wire; 8] = std::array::from_fn(|i| builder.add_constant(Word(IV[i] as u64)));
 
 	// Compress two blocks at a time: `blake3_compress_2x_seq` chains two sequential block
 	// compressions through a single parallel core, roughly halving the per-block cost.
-	let n_pairs = blocks.len() / 2;
+	//
+	// The threaded chaining value carries the pair's first compression in its high half, and
+	// that half is left as it is rather than masked off. Nothing downstream reads it:
+	//
+	// - A compression never lets a carry or a rotate cross bit 32, so the halves stay apart.
+	// - The paired core takes an input chaining value's low half only, through a left shift.
+	//
+	// So the low half of a result depends on the low halves of its inputs alone.
+	let n_pairs = n_blocks / 2;
 	for pair in 0..n_pairs {
 		let (lo, hi) = (2 * pair, 2 * pair + 1);
-		let out = blake3_compress_2x_seq(
+		// The chaining value after the pair is the second compression's output, in the low half.
+		cv = blake3_compress_2x_seq(
 			&builder.subcircuit(format!("blake3_chunk_compress[{pair}]")),
 			cv,
 			[blocks[lo], blocks[hi]],
@@ -134,20 +132,36 @@ pub fn blake3_chunk(
 			[block_lens[lo], block_lens[hi]],
 			[flags[lo], flags[hi]],
 		);
-		// The chaining value after the pair is the second compression's output, in the low 32 bits
-		// of each word. On a trailing odd block the second lane is the unused dummy, so the chunk's
-		// chaining value is instead the first compression's output, in the high 32 bits.
-		let last_odd = odd && pair + 1 == n_pairs;
-		cv = std::array::from_fn(|i| {
-			if last_odd {
-				builder.shr(out[i], 32)
-			} else {
-				clear_high_bits(builder, out[i], 32)
-			}
-		});
 	}
 
-	cv
+	// A trailing block with no partner runs through the one-lane core.
+	//
+	//     6 blocks: [0,1] [2,3] [4,5]              -> 3 paired cores
+	//     7 blocks: [0,1] [2,3] [4,5] then 6 alone -> 3 paired cores + 1 one-lane core
+	//
+	// Why not pad to an even count with a dummy block:
+	// - The paired core costs a chaining-value binding on top of its mixing rounds.
+	// - It also packs a second lane's counter, length and flags.
+	// - All of that would be spent producing a result nothing reads.
+	// - The one-lane core is cheaper even though it leaves half of each word idle.
+	if n_blocks % 2 == 1 {
+		let last = n_blocks - 1;
+		cv = blake3_compress(
+			&builder.subcircuit("blake3_chunk_compress[last]"),
+			cv,
+			blocks[last],
+			counter,
+			block_lens[last],
+			flags[last],
+		);
+	}
+
+	// The escaping value is the one place a clean high half is required, so mask once here
+	// rather than after every pair. Callers do read those bits:
+	//
+	// - A parent node merges two children with a left shift and an exclusive-or.
+	// - A digest is compared over all 64 bits of each word.
+	std::array::from_fn(|i| clear_high_bits(builder, cv[i], 32))
 }
 
 /// One BLAKE3 parent-node compression: combines two child chaining values into one.
@@ -355,6 +369,9 @@ pub fn blake3_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 
 #[cfg(test)]
 mod tests {
+	use hex_literal::hex;
+	use proptest::prelude::*;
+
 	use super::*;
 
 	/// Convert a byte slice into the 32-bit LE word encoding expected by [`blake3_fixed`].
@@ -370,6 +387,83 @@ mod tests {
 				u32::from_le_bytes(buf) as u64
 			})
 			.collect()
+	}
+
+	/// Hashes `input` in-circuit and asserts the digest equals `expected`.
+	///
+	/// The digest wires are public inputs, so filling them with the expected bytes turns the
+	/// in-circuit equality into the assertion under test.
+	///
+	/// A disagreement therefore surfaces as a failure to populate the witness.
+	fn check_digest(input: &[u8], expected: [u8; 32]) {
+		let builder = CircuitBuilder::new();
+		// The message is private, one 32-bit little-endian word per wire.
+		let message: Vec<Wire> = (0..input.len().div_ceil(4))
+			.map(|_| builder.add_witness())
+			.collect();
+		let digest = blake3_fixed(&builder, &message, input.len());
+		// The expected digest is public, and pinned word for word against the computed one.
+		let digest_out: [Wire; 8] = std::array::from_fn(|_| builder.add_inout());
+		for i in 0..8 {
+			builder.assert_eq("digest_match", digest[i], digest_out[i]);
+		}
+
+		let circuit = builder.build();
+		let mut w = circuit.new_witness_filler();
+		for (wire, word) in message.iter().zip(bytes_to_le_words(input)) {
+			w[*wire] = Word(word);
+		}
+		// Read the vector back in the same little-endian word order the circuit produces.
+		for i in 0..8 {
+			let bytes: [u8; 4] = expected[i * 4..i * 4 + 4].try_into().unwrap();
+			w[digest_out[i]] = Word(u32::from_le_bytes(bytes) as u64);
+		}
+		circuit
+			.populate_wire_witness(&mut w)
+			.unwrap_or_else(|e| panic!("digest disagreed with the specification vector: {e:?}"));
+	}
+
+	#[test]
+	fn draft_b1_digest_matches_spec() {
+		// Fixture state: Appendix B.1 of the specification draft.
+		// A 4-byte message is one block, one chunk, and its own tree root.
+		check_digest(
+			b"IETF",
+			hex!("83a2de1ee6f4e6ab686889248f4ec0cf4cc5709446a682ffd1cbb4d6165181e2"),
+		);
+	}
+
+	#[test]
+	fn draft_b2_digest_matches_spec() {
+		// Fixture state: Appendix B.2 of the specification draft.
+		// Two full chunks, so 32 block compressions folded through one parent node.
+		//
+		//     chunk 0: 1024 bytes of 0xaa --\
+		//                                    >-- parent (root) --> digest
+		//     chunk 1: 1024 bytes of 0xbb --/
+		//
+		// The trace is unkeyed despite its section title.
+		// - Its chaining value is the standard initial value, not a key.
+		// - Its flags carry no keyed-hash bit.
+		let mut input = vec![0xaau8; CHUNK_BYTES];
+		input.extend_from_slice(&[0xbbu8; CHUNK_BYTES]);
+		check_digest(
+			&input,
+			hex!("e79d2838915accd3b21bb0ba76b5edf8dc08d3d78d0db65b713f0f37ec58c346"),
+		);
+	}
+
+	proptest! {
+		// Every case compiles a whole hashing circuit, so the sample stays small.
+		// The length range spans 0 to 10 blocks, which covers both parities.
+		// Odd block counts are what reach the one-lane trailing compression.
+		#![proptest_config(ProptestConfig::with_cases(12))]
+
+		#[test]
+		fn fixed_matches_blake3_crate(input in prop::collection::vec(any::<u8>(), 0..=600)) {
+			// Random content at a random length, checked against the reference crate.
+			check(&input);
+		}
 	}
 
 	/// Run `blake3_fixed` over `input` and assert it matches `blake3::hash(input)`.
