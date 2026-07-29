@@ -46,19 +46,35 @@ use scratch_alloc::{ScratchAlloc, ScratchPolicy};
 /// Which compiler passes run, and how linear constraints are lowered.
 ///
 /// This is the only knob: a circuit compiles the same way whatever the process environment holds.
-/// A caller that wants a non-default pass set builds through [`CircuitBuilder::with_opts`].
-pub(crate) struct Options {
-	enable_gate_fusion: bool,
-	enable_constant_propagation: bool,
-	enable_common_subexpression_elimination: bool,
-	enable_dead_code_elimination: bool,
-	enable_algebraic_folding: bool,
-	enable_scratch_pooling: bool,
+/// A caller that wants a non-default pass set builds through [`CircuitBuilder::with_opts`],
+/// overriding the fields it cares about:
+///
+/// ```
+/// use binius_frontend::{CircuitBuilder, Options};
+///
+/// let builder = CircuitBuilder::with_opts(Options {
+///     enable_zero_constraints: true,
+///     ..Options::default()
+/// });
+/// ```
+pub struct Options {
+	/// Inline linear definitions into the non-linear gates that consume them.
+	pub enable_gate_fusion: bool,
+	/// Fold gates whose inputs are all constants.
+	pub enable_constant_propagation: bool,
+	/// Collapse structurally identical gates.
+	pub enable_common_subexpression_elimination: bool,
+	/// Drop gates that cannot affect the constraint system.
+	pub enable_dead_code_elimination: bool,
+	/// Apply algebraic identities that let a gate return one of its operands.
+	pub enable_algebraic_folding: bool,
+	/// Share scratch slots between values whose lifetimes do not overlap.
+	pub enable_scratch_pooling: bool,
 	/// Lower linear constraints to Zero constraints instead of AND constraints against the
 	/// all-ones constant.
-	enable_zero_constraints: bool,
+	pub enable_zero_constraints: bool,
 	/// Forward past the gates a zero operand turns into the identity.
-	enable_zero_propagation: bool,
+	pub enable_zero_propagation: bool,
 }
 
 impl Default for Options {
@@ -72,8 +88,8 @@ impl Default for Options {
 			// Why off: sharing slots stops an uncommitted value from being readable afterwards.
 			// A caller that inspects one has to opt in knowingly.
 			enable_scratch_pooling: false,
-			// Why off: no proof system reduces Zero constraints yet, so a circuit that emits them
-			// is unprovable.
+			// Why off: both proof systems reduce Zero constraints, but the AND lowering stays the
+			// default until the two are compared.
 			enable_zero_constraints: false,
 			enable_zero_propagation: true,
 		}
@@ -187,7 +203,8 @@ impl CircuitBuilder {
 		Self::with_opts(Options::default())
 	}
 
-	pub(crate) fn with_opts(opts: Options) -> Self {
+	/// Create a new circuit builder with the given options.
+	pub fn with_opts(opts: Options) -> Self {
 		let graph = GateGraph::new();
 		let root = graph.path_spec_tree.root();
 		CircuitBuilder {

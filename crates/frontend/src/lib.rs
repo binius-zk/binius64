@@ -31,7 +31,7 @@ pub mod ops;
 pub mod stat;
 
 pub use compiler::{
-	CircuitBuilder, Wire,
+	CircuitBuilder, Options, Wire,
 	circuit::{Circuit, PopulateError, WitnessFiller},
 	eval_form::BatchPopulateError,
 	hints::{self, Hint},
