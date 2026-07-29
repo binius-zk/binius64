@@ -1,12 +1,29 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 //! Routines for checking whether the
 //! [constraint system][`crate::constraint_system::ConstraintSystem`] is satisfied with the given
 //! [value vector][`ValueVec`].
 
 use crate::{
-	constraint_system::{AndConstraint, ConstraintSystem, ImulConstraint, ValueIndex, ValueVec},
+	constraint_system::{
+		AndConstraint, ConstraintSystem, ImulConstraint, ValueIndex, ValueVec, ZeroConstraint,
+	},
 	word::Word,
 };
+
+/// Verifies that a ZERO constraint is satisfied: VAL = 0
+pub fn verify_zero_constraint(
+	witness: &ValueVec,
+	constraint: &ZeroConstraint,
+) -> Result<(), String> {
+	let Word(val) = witness.eval_operand(constraint.val());
+
+	if val != 0 {
+		Err(format!("ZERO constraint failed: {val:016x} (expected 0)"))
+	} else {
+		Ok(())
+	}
+}
 
 /// Verifies that an AND constraint is satisfied: (A & B) ^ C = 0
 pub fn verify_and_constraint(witness: &ValueVec, constraint: &AndConstraint) -> Result<(), String> {
@@ -63,6 +80,10 @@ pub fn verify_constraints(cs: &ConstraintSystem, witness: &ValueVec) -> Result<(
 				constant.as_u64()
 			));
 		}
+	}
+	for (i, constraint) in cs.zero_constraints.iter().enumerate() {
+		verify_zero_constraint(witness, constraint)
+			.map_err(|e| format!("ZERO constraint {i} failed: {e}"))?;
 	}
 	for (i, constraint) in cs.and_constraints.iter().enumerate() {
 		verify_and_constraint(witness, constraint)

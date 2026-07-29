@@ -1,4 +1,5 @@
 // Copyright 2025 Irreducible Inc.
+// Copyright 2026 The Binius Developers
 use std::array;
 
 use binius_utils::serialization::{DeserializeBytes, SerializationError, SerializeBytes};
@@ -21,6 +22,8 @@ use super::{ShiftedValueIndex, ValueIndex};
 /// ```
 pub type Operand = Vec<ShiftedValueIndex>;
 
+/// Number of operands of a [`ZeroConstraint`].
+const ZERO_ARITY: usize = 1;
 /// Number of operands of an [`AndConstraint`].
 const AND_ARITY: usize = 3;
 /// Number of operands of an [`ImulConstraint`].
@@ -48,6 +51,60 @@ fn deserialize_operands<const ARITY: usize>(
 		*operand = Vec::<ShiftedValueIndex>::deserialize(&mut read_buf)?;
 	}
 	Ok(operands)
+}
+
+/// Zero constraint: `VAL = 0`.
+///
+/// This constraint verifies that a single operand vanishes, where the operand is the XOR of
+/// multiple shifted values from the value vector. It expresses an arbitrary `F_2`-linear relation
+/// among shifted words: a two-term operand constrains two shifted values to be equal, and a
+/// three-term operand `[x, y, z]` forces `z = x ^ y`.
+///
+/// The operands are stored in the order given by [`ZeroConstraint::OPERAND_NAMES`].
+#[derive(Debug, Clone, Default)]
+pub struct ZeroConstraint(pub [Operand; ZERO_ARITY]);
+
+impl ZeroConstraint {
+	/// Number of operands.
+	pub const ARITY: usize = ZERO_ARITY;
+	/// Names of the operands, in storage order.
+	pub const OPERAND_NAMES: [&'static str; ZERO_ARITY] = ["val"];
+
+	/// Creates a new Zero constraint from an XOR combination of the given unshifted values.
+	pub fn plain(val: impl IntoIterator<Item = ValueIndex>) -> ZeroConstraint {
+		ZeroConstraint::new(val.into_iter().map(ShiftedValueIndex::plain))
+	}
+
+	/// Creates a new Zero constraint from an XOR combination of the given shifted values.
+	pub fn new(val: impl IntoIterator<Item = ShiftedValueIndex>) -> ZeroConstraint {
+		ZeroConstraint([val.into_iter().collect()])
+	}
+
+	/// Operand VAL.
+	pub const fn val(&self) -> &Operand {
+		&self.0[0]
+	}
+}
+
+impl AsRef<[Operand; ZERO_ARITY]> for ZeroConstraint {
+	fn as_ref(&self) -> &[Operand; ZERO_ARITY] {
+		&self.0
+	}
+}
+
+impl SerializeBytes for ZeroConstraint {
+	fn serialize(&self, write_buf: impl BufMut) -> Result<(), SerializationError> {
+		serialize_operands(&self.0, write_buf)
+	}
+}
+
+impl DeserializeBytes for ZeroConstraint {
+	fn deserialize(read_buf: impl Buf) -> Result<Self, SerializationError>
+	where
+		Self: Sized,
+	{
+		Ok(ZeroConstraint(deserialize_operands(read_buf)?))
+	}
 }
 
 /// AND constraint: `A & B = C`.
@@ -261,6 +318,27 @@ impl DeserializeBytes for BmulConstraint {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn test_zero_constraint_serialization_round_trip() {
+		let constraint = ZeroConstraint::new([
+			ShiftedValueIndex::sll(ValueIndex(1), 5),
+			ShiftedValueIndex::srl(ValueIndex(2), 10),
+			ShiftedValueIndex::plain(ValueIndex(3)),
+		]);
+
+		let mut buf = Vec::new();
+		constraint.serialize(&mut buf).unwrap();
+
+		let deserialized = ZeroConstraint::deserialize(&mut buf.as_slice()).unwrap();
+		assert_eq!(constraint.val().len(), deserialized.val().len());
+
+		for (orig, deser) in constraint.val().iter().zip(deserialized.val().iter()) {
+			assert_eq!(orig.value_index, deser.value_index);
+			assert_eq!(orig.shift_variant, deser.shift_variant);
+			assert_eq!(orig.amount, deser.amount);
+		}
+	}
 
 	#[test]
 	fn test_and_constraint_serialization_round_trip() {
