@@ -140,6 +140,49 @@ fn test_zero_constraints_replace_the_linear_and_constraints() {
 	verify_constraints(cs, &filler.value_vec).unwrap();
 }
 
+/// Builds `((x << 32) >> 32) & y == z` with gate fusion left on.
+///
+/// A left-then-right shift pair is not expressible as one shifted operand, so fusion cannot
+/// inline the intermediate into the `band` and has to commit it. That committed definition is the
+/// one the option has to reach.
+fn build_committed_lin_def_circuit(enable_zero_constraints: bool) -> (Circuit, Wire, Wire, Wire) {
+	let builder = CircuitBuilder::with_opts(Options {
+		enable_zero_constraints,
+		..Options::default()
+	});
+	let x = builder.add_inout();
+	let y = builder.add_inout();
+	let z = builder.add_inout();
+	let low = builder.shr(builder.shl(x, 32), 32);
+	builder.assert_eq("and", builder.band(low, y), z);
+	(builder.build(), x, y, z)
+}
+
+#[test]
+fn test_zero_constraints_reach_a_fused_committed_lin_def() {
+	let (and_circuit, ..) = build_committed_lin_def_circuit(false);
+	let (zero_circuit, x, y, z) = build_committed_lin_def_circuit(true);
+	let and_cs = and_circuit.constraint_system();
+	let zero_cs = zero_circuit.constraint_system();
+
+	// With the option off every committed definition is an AND against all-ones.
+	assert_eq!(and_cs.n_zero_constraints(), 0);
+
+	// With it on they move to the ZERO set, one for one, and nothing else changes.
+	assert!(zero_cs.n_zero_constraints() > 0);
+	assert_eq!(
+		zero_cs.n_zero_constraints(),
+		and_cs.n_and_constraints() - zero_cs.n_and_constraints()
+	);
+
+	let mut filler = zero_circuit.new_witness_filler();
+	filler[x] = Word(0x1234_5678_9abc_def0);
+	filler[y] = Word(0x0fed_cba9_8765_4321);
+	filler[z] = Word(0x9abc_def0 & 0x0fed_cba9_8765_4321);
+	zero_circuit.populate_wire_witness(&mut filler).unwrap();
+	verify_constraints(zero_cs, &filler.value_vec).unwrap();
+}
+
 #[test]
 fn test_iadd_cin_cout_max_values() {
 	let builder = CircuitBuilder::new();
