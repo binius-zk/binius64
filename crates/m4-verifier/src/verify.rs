@@ -31,6 +31,7 @@ use binius_verifier::{
 		bitand::AndCheckOutput,
 		intmul::{IntMulOutput, verify as verify_intmul_reduction},
 		shift::{self, BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, OperatorData},
+		zero,
 	},
 	ring_switch::{self, RingSwitchVerifyOutput},
 	verify_bitand_reduction,
@@ -189,6 +190,19 @@ impl IOPVerifier {
 		// index high.
 		let (r_rho_and, r_x_and) = eval_point.split_at(log_instances);
 
+		// The Zero reduction reads nothing from the transcript and runs no sumcheck: a ZERO
+		// constraint is linear, so its oblong multilinearization vanishing at one unpredictable
+		// point certifies it. It takes the constraint half of the AND-check output point, extended
+		// when the ZERO set has more rows; the prover draws the same extension at the same place.
+		// Like BitAnd, an empty ZERO set still reduces, over the single all-zero padding row.
+		//
+		// Unlike IntMul and BinMul, the claim skips the instance re-randomization below. That step
+		// transports operand claims onto one shared instance point, and a ZERO constraint array
+		// vanishes identically, so its fold at any instance point is still identically zero.
+		let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
+		let zero_point = zero::reduction_point(r_x_and, log_n_zero, || channel.sample());
+		let zero = OperatorData::new(zero_point, [Channel::Elem::zero()]);
+
 		// Reduce to one shared instance point and every operand claim at it.
 		//
 		// The re-randomization runs whenever IntMul or BinMul is present: BitAnd always enters,
@@ -218,10 +232,6 @@ impl IOPVerifier {
 				OperatorData::new(Vec::new(), std::array::from_fn(|_| Channel::Elem::zero())),
 			)
 		};
-
-		// M4 does not reduce Zero constraints yet, so the Zero claim is empty; it contributes zero
-		// to the shift reduction's batched evaluation.
-		let zero = OperatorData::new(Vec::new(), [Channel::Elem::zero()]);
 
 		// Reduce the operand claims to one witness evaluation.
 		let shift = shift::verify::<B128, _>(cs, &zero, &bitand, &intmul, &binmul, channel)?;

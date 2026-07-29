@@ -127,6 +127,7 @@ pub fn fold_instances<F: BinaryField, A: Allocator>(
 /// - `key_collection`: the prover's key collection for the constraint system.
 /// - `public_words`: the public (constant) words, shared by every instance.
 /// - `folded_witness`: the hidden witness, folded over the instance axis, one word per entry.
+/// - `zero_data`: operator data for the zero (ZERO) constraints.
 /// - `bitand_data`: operator data for the bitand (AND) constraints.
 /// - `intmul_data`: operator data for the intmul (IMUL) constraints.
 /// - `domain_subspace`: the univariate evaluation domain.
@@ -139,6 +140,7 @@ pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	public_words: &[Word],
 	folded_witness: &[FoldedWord<F>],
+	zero_data: OperatorData<F>,
 	bitand_data: OperatorData<F>,
 	intmul_data: OperatorData<F>,
 	binmul_data: OperatorData<F>,
@@ -154,21 +156,11 @@ where
 {
 	// Sample one batching lambda per operator, then prepare the operator data (tensor expansions
 	// and lambda powers).
-	// M4 does not reduce Zero constraints yet, but the shift reduction batches a Zero claim, so its
-	// lambda is sampled here to keep the transcript in step with `shift::verify`. The claim itself
-	// is empty and contributes zero to the batched evaluation.
 	let zero_lambda = channel.sample();
 	let bitand_lambda = channel.sample();
 	let intmul_lambda = channel.sample();
 	let binmul_lambda = channel.sample();
-	let prepared_zero = PreparedOperatorData::new(
-		OperatorData {
-			evals: vec![F::ZERO],
-			r_zhat_prime: bitand_data.r_zhat_prime,
-			r_x_prime: Vec::new(),
-		},
-		zero_lambda,
-	);
+	let prepared_zero = PreparedOperatorData::new(zero_data, zero_lambda);
 	let prepared_bitand = PreparedOperatorData::new(bitand_data, bitand_lambda);
 	let prepared_intmul = PreparedOperatorData::new(intmul_data, intmul_lambda);
 	let prepared_bmul = PreparedOperatorData::new(binmul_data, binmul_lambda);
@@ -602,6 +594,11 @@ mod tests {
 			&key_collection,
 			public_words,
 			&folded_witness,
+			OperatorData {
+				evals: vec![B128::ZERO],
+				r_zhat_prime: r_z,
+				r_x_prime: Vec::new(),
+			},
 			OperatorData {
 				evals: bitand_evals.to_vec(),
 				r_zhat_prime: r_z,

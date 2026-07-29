@@ -1,16 +1,16 @@
 // Copyright 2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::collections::HashSet;
+
 use binius_circuits::sha256::{State, populate_message_block, sha256_compress};
 use binius_core::{
-	constraint_system::{
-		AndConstraint, ConstraintSystem, ShiftedValueIndex, ValueIndex, ValueVec, ZeroConstraint,
-	},
+	constraint_system::{ConstraintSystem, ValueIndex, ValueVec},
 	verify::verify_constraints,
 	word::Word,
 };
 use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
-use binius_frontend::{CircuitBuilder, Wire};
+use binius_frontend::{CircuitBuilder, Options, Wire};
 use binius_hash::StdHashSuite;
 use binius_prover::{Prover, zk_config::ZKProver};
 use binius_transcript::ProverTranscript;
@@ -300,80 +300,65 @@ fn test_prove_verify_zero_imul_constraints() {
 	prove_verify_zk(cs, &witness);
 }
 
-/// A constraint system exercising the Zero reduction, built directly rather than through the
-/// circuit compiler (whose Zero lowering is off by default).
+/// Builds a circuit whose linear constraints lower to ZERO constraints: `n_xor` from `bxor` gates,
+/// `n_rotr` from `rotr` gates (whose ZERO constraints carry a *shifted* operand), and `n_and` AND
+/// constraints from `band` gates.
 ///
-/// The value vector is
-///
-/// ```text
-/// [ all-1 | pad | i0 i1 ][ p0 .. p9 | pad ]
-///     0      1     2  3     4 .. 13
-/// ```
-///
-/// with five ZERO constraints — XOR, shifts in both directions, a NOT against the all-ones
-/// constant, and one mixing in a public word — and three AND constraints. Neither count is a power
-/// of two, and the ZERO set is the larger of the two, so the Zero reduction's constraint point runs
-/// past the BitAnd zerocheck challenges and draws a fresh one.
-fn zero_constraint_system() -> (ConstraintSystem, ValueVec) {
-	const ALL_ONE: ValueIndex = ValueIndex(0);
-	const I0: ValueIndex = ValueIndex(2);
-	let p = |i: u32| ValueIndex(4 + i);
+/// Gate fusion is off: it inlines a linear definition into the gate that consumes it, which would
+/// leave no linear constraint for the option to lower. The remaining passes are off so the counts
+/// are exactly what the gates emit.
+fn zero_constraint_circuit(
+	n_xor: usize,
+	n_rotr: usize,
+	n_and: usize,
+) -> (ConstraintSystem, ValueVec) {
+	let builder = CircuitBuilder::with_opts(Options {
+		enable_zero_constraints: true,
+		enable_gate_fusion: false,
+		enable_common_subexpression_elimination: false,
+		enable_dead_code_elimination: false,
+		enable_algebraic_folding: false,
+		..Options::default()
+	});
+	let a = builder.add_witness();
+	let b = builder.add_witness();
 
-	let cs = ConstraintSystem {
-		constants: vec![Word::ALL_ONE],
-		n_const_pad: 1,
-		n_inout: 2,
-		n_inout_pad: 0,
-		n_private: 10,
-		n_private_pad: 6,
-		zero_constraints: vec![
-			// p2 = p0 ^ p1
-			ZeroConstraint::plain([p(0), p(1), p(2)]),
-			// p3 = p0 << 5
-			ZeroConstraint::new([
-				ShiftedValueIndex::sll(p(0), 5),
-				ShiftedValueIndex::plain(p(3)),
-			]),
-			// p4 = ~p0
-			ZeroConstraint::plain([p(0), ALL_ONE, p(4)]),
-			// p5 = p1 >> 7
-			ZeroConstraint::new([
-				ShiftedValueIndex::srl(p(1), 7),
-				ShiftedValueIndex::plain(p(5)),
-			]),
-			// p6 = p0 ^ i0, mixing a public word into a ZERO constraint
-			ZeroConstraint::plain([p(0), I0, p(6)]),
-		],
-		and_constraints: vec![
-			AndConstraint::plain_abc([p(0)], [p(1)], [p(7)]),
-			AndConstraint::plain_abc([p(0)], [p(2)], [p(8)]),
-			AndConstraint::plain_abc([p(1)], [p(2)], [p(9)]),
-		],
-		imul_constraints: vec![],
-		bmul_constraints: vec![],
-	};
-	cs.validate().unwrap();
+	// Each `bxor` emits one linear constraint, which the option lowers to a ZERO constraint.
+	let mut acc = a;
+	for _ in 0..n_xor {
+		acc = builder.bxor(acc, b);
+		builder.force_commit(acc);
+	}
 
-	let i0 = Word(0x5555_5555_AAAA_AAAA);
-	let i1 = Word(0x0F0F_0F0F_F0F0_F0F0);
-	let p0 = Word(0x0123_4567_89AB_CDEF);
-	let p1 = Word(0xFEDC_BA98_7654_3210);
-	let public = vec![Word::ALL_ONE, Word::ZERO, i0, i1];
-	let mut private = vec![
-		p0,
-		p1,
-		p0 ^ p1,
-		p0 << 5,
-		p0 ^ Word::ALL_ONE,
-		p1 >> 7,
-		p0 ^ i0,
-		p0 & p1,
-		p0 & (p0 ^ p1),
-		p1 & (p0 ^ p1),
-	];
-	private.resize(cs.n_hidden_words(), Word::ZERO);
+	// Each `rotr` likewise emits one linear constraint, whose ZERO constraint names a shifted
+	// value rather than a plain one.
+	for i in 0..n_rotr {
+		let rotated = builder.rotr(acc, 5 + i as u32);
+		builder.force_commit(rotated);
+	}
 
-	let witness = ValueVec::new_from_data(&public, &private);
+	// Each `band` emits one AND constraint.
+	for _ in 0..n_and {
+		let and_out = builder.band(a, b);
+		builder.force_commit(and_out);
+	}
+
+	let circuit = builder.build();
+	let mut w = circuit.new_witness_filler();
+	w[a] = Word(0x0123_4567_89AB_CDEF);
+	w[b] = Word(0xFEDC_BA98_7654_3210);
+	circuit.populate_wire_witness(&mut w).unwrap();
+
+	let cs = circuit.constraint_system().clone();
+	assert_eq!(cs.n_zero_constraints(), n_xor + n_rotr);
+	assert_eq!(cs.n_and_constraints(), n_and);
+	assert!(
+		cs.zero_constraints
+			.iter()
+			.any(|c| c.val().iter().any(|svi| svi.amount != 0)),
+		"the fixture must emit a ZERO constraint with a shifted operand"
+	);
+	let witness = w.into_value_vec();
 	verify_constraints(&cs, &witness).unwrap();
 	(cs, witness)
 }
@@ -381,24 +366,25 @@ fn zero_constraint_system() -> (ConstraintSystem, ValueVec) {
 /// The Zero reduction discharges ZERO constraints end to end. The reduction sends nothing itself;
 /// its claim rides along in the shift reduction's batch, so this exercises the whole path from the
 /// constraint system through the key collection to the final evaluation check.
+///
+/// The ZERO set is the larger of the two, so the reduction's constraint point runs past the BitAnd
+/// output point and draws a fresh challenge. Neither count is a power of two.
 #[test]
 fn test_prove_verify_zero_constraints() {
-	let (cs, witness) = zero_constraint_system();
+	let (cs, witness) = zero_constraint_circuit(3, 2, 3);
 	assert_eq!(cs.log_zero_constraints(), Some(3));
 	assert_eq!(cs.log_and_constraints(), Some(2));
 	prove_verify(cs.clone(), &witness);
 	prove_verify_zk(cs, &witness);
 }
 
-/// The same system with the ZERO set cut below the AND set, so the reduction's constraint point is
-/// a strict prefix of the BitAnd zerocheck challenges and draws nothing of its own. Dropping
-/// constraints only weakens the system, so the witness still satisfies it.
+/// The ZERO set smaller than the AND set, so the reduction's constraint point is a strict prefix
+/// of the BitAnd output point and draws nothing of its own.
 #[test]
 fn test_prove_verify_fewer_zero_than_and_constraints() {
-	let (mut cs, witness) = zero_constraint_system();
-	cs.zero_constraints.truncate(2);
+	let (cs, witness) = zero_constraint_circuit(1, 1, 5);
 	assert_eq!(cs.log_zero_constraints(), Some(1));
-	assert_eq!(cs.log_and_constraints(), Some(2));
+	assert_eq!(cs.log_and_constraints(), Some(3));
 	prove_verify(cs, &witness);
 }
 
@@ -409,12 +395,28 @@ fn test_prove_verify_fewer_zero_than_and_constraints() {
 fn test_prove_verify_rejects_violated_zero_constraint() {
 	const LOG_INV_RATE: usize = 1;
 
-	let (cs, witness) = zero_constraint_system();
+	let (cs, witness) = zero_constraint_circuit(3, 2, 3);
 
-	// Flip a bit of `p3`, breaking `p3 = p0 << 5`. No AND constraint reads `p3`, so a ZERO
-	// constraint is the only thing standing between this witness and a valid proof.
+	// Corrupt a word that only the ZERO constraints read, so a ZERO constraint is the only thing
+	// standing between this witness and a valid proof.
+	let and_words = cs
+		.and_constraints
+		.iter()
+		.flat_map(|c| &c.0)
+		.flatten()
+		.map(|svi| svi.value_index)
+		.collect::<HashSet<_>>();
+	let victim = cs
+		.zero_constraints
+		.iter()
+		.flat_map(|c| &c.0)
+		.flatten()
+		.map(|svi| svi.value_index)
+		.find(|index| !and_words.contains(index) && *index != ValueIndex(0))
+		.expect("some ZERO constraint reads a word no AND constraint does");
+
 	let mut words = witness.combined_witness().to_vec();
-	words[7] = words[7] ^ Word::ONE;
+	words[victim.0 as usize] = words[victim.0 as usize] ^ Word::ONE;
 	let corrupted =
 		ValueVec::new_from_data(&words[..cs.n_public_words()], &words[cs.n_public_words()..]);
 	assert!(verify_constraints(&cs, &corrupted).is_err());

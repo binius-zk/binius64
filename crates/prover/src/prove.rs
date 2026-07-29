@@ -280,12 +280,8 @@ impl IOPProver {
 
 		// [phase] Zero Reduction - linear constraint reduction
 		//
-		// The reduction writes nothing to the transcript and runs no sumcheck: a ZERO constraint is
-		// linear, so its oblong multilinearization vanishing at one unpredictable point certifies
-		// it, and the claimed value is the constant zero. The point is the one the BitAnd sumcheck
-		// just output, extended when the ZERO set has more rows; the verifier draws the same
-		// extension at the same place. Like BitAnd, an empty ZERO set still reduces, over the
-		// single all-zero padding row.
+		// The reduction's claim, at the point the BitAnd sumcheck just output. See
+		// `IOPVerifier::verify` for why it carries no message.
 		let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
 		let zero_claim = OperatorData {
 			evals: vec![B128::ZERO],
