@@ -17,6 +17,7 @@
 //! - [`MultilinearEvalClaim`] - A claim that a multilinear polynomial evaluates to a value
 //! - [`sumcheck`] - Sumcheck protocol verification
 //! - [`prodcheck`] - Product check protocol verification
+//! - [`spark`] - Spark compiler for sparse multilinear polynomials
 //! - [`channel`] - IP verifier channel traits
 //!
 //! # Related crates
@@ -31,6 +32,7 @@ pub mod fracaddcheck;
 pub mod logup_star;
 pub mod mlecheck;
 pub mod prodcheck;
+pub mod spark;
 pub mod sumcheck;
 
 /// A claim that a multilinear polynomial evaluates to a specific value at a point.
