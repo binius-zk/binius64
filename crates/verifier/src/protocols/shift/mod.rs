@@ -8,8 +8,10 @@ pub const BINMUL_ARITY: usize = 6;
 
 mod monster;
 mod shift_ind;
+mod spark;
 
 pub use monster::*;
+pub use spark::*;
 mod error;
 mod verify;
 

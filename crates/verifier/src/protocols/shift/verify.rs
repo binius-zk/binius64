@@ -545,12 +545,19 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 
 #[cfg(test)]
 mod tests {
-	use binius_field::Field;
+	use binius_core::constraint_system::{
+		AndConstraint, BmulConstraint, ImulConstraint, Operand, ShiftVariant, ShiftedValueIndex,
+		ValueIndex, ValueVecLayout,
+	};
+	use binius_field::{Field, Random};
 	use binius_math::test_utils::random_scalars;
 	use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 	use super::*;
-	use crate::config::B128;
+	use crate::{
+		config::B128,
+		protocols::shift::{DenseMonster, N_OPERATIONS, N_SHIFT_IDS, operand_scalars},
+	};
 
 	#[test]
 	fn test_evaluate_words_mle_matches_naive() {
@@ -576,5 +583,129 @@ mod tests {
 		}
 
 		assert_eq!(evaluate_words_mle::<B128, B128>(&words, &r_j, &r_y), expected);
+	}
+
+	/// The shift variants, in discriminant order.
+	const SHIFT_VARIANTS: [ShiftVariant; SHIFT_VARIANT_COUNT] = [
+		ShiftVariant::Sll,
+		ShiftVariant::Slr,
+		ShiftVariant::Sar,
+		ShiftVariant::Rotr,
+		ShiftVariant::Sll32,
+		ShiftVariant::Srl32,
+		ShiftVariant::Sra32,
+		ShiftVariant::Rotr32,
+	];
+
+	/// Builds one constraint's worth of random operands over the first `n_words` words.
+	fn random_operands<const ARITY: usize>(rng: &mut StdRng, n_words: usize) -> [Operand; ARITY] {
+		array::from_fn(|_| {
+			(0..rng.random_range(0..=3))
+				.map(|_| ShiftedValueIndex {
+					value_index: ValueIndex(rng.random_range(0..n_words) as u32),
+					shift_variant: SHIFT_VARIANTS[rng.random_range(0..SHIFT_VARIANT_COUNT)],
+					amount: rng.random_range(0..Word::BITS) as u8,
+				})
+				.collect()
+		})
+	}
+
+	/// A constraint system over 8 public and 16 hidden words, with random constraints of every
+	/// operation.
+	fn random_constraint_system(
+		rng: &mut StdRng,
+		n_and: usize,
+		n_imul: usize,
+		n_bmul: usize,
+	) -> ConstraintSystem {
+		let layout = ValueVecLayout {
+			n_const: 2,
+			n_inout: 2,
+			n_witness: 8,
+			n_internal: 8,
+			offset_inout: 4,
+			offset_witness: 8,
+			n_hidden_words: 16,
+			n_scratch: 0,
+		};
+		let n_words = layout.combined_len();
+
+		let mut constraint_system = layout.constraint_system_shape(vec![Word::ZERO; 2]);
+		constraint_system.and_constraints = (0..n_and)
+			.map(|_| AndConstraint(random_operands(rng, n_words)))
+			.collect();
+		constraint_system.imul_constraints = (0..n_imul)
+			.map(|_| ImulConstraint(random_operands(rng, n_words)))
+			.collect();
+		constraint_system.bmul_constraints = (0..n_bmul)
+			.map(|_| BmulConstraint(random_operands(rng, n_words)))
+			.collect();
+		constraint_system.validate_shape().unwrap();
+		constraint_system
+	}
+
+	/// Summing the dense terms must reproduce the transparent monster evaluation exactly. This is
+	/// what pins the term order, the two address mappings and the split of the per-term scalar into
+	/// a shift factor and an operand factor.
+	#[test]
+	fn dense_monster_evaluation_matches_the_transparent_evaluation() {
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// The non-power-of-two constraint counts exercise the padding rows of the row memory, and
+		// the empty IMUL set the reduction the verifier skips entirely.
+		for (n_and, n_imul, n_bmul) in [(21, 5, 3), (16, 0, 1)] {
+			let constraint_system = random_constraint_system(&mut rng, n_and, n_imul, n_bmul);
+
+			let subspace = BinarySubspace::<B128>::with_dim(Word::LOG_BITS);
+			let r_zhat_prime = B128::random(&mut rng);
+			let lambdas: [B128; N_OPERATIONS] = array::from_fn(|_| B128::random(&mut rng));
+			let r_x_primes = [
+				constraint_system.log_and_constraints(),
+				constraint_system.log_imul_constraints(),
+				constraint_system.log_bmul_constraints(),
+			]
+			.map(|log_constraints| random_scalars::<B128>(&mut rng, log_constraints.unwrap_or(0)));
+			let r_j = random_scalars::<B128>(&mut rng, Word::LOG_BITS);
+			let r_s = random_scalars::<B128>(&mut rng, Word::LOG_BITS);
+			let r_y = random_scalars::<B128>(&mut rng, constraint_system.log_witness_words());
+			let r_segment = B128::random(&mut rng);
+
+			let transparent = MonsterEvalFn {
+				subspace: &subspace,
+				constraint_system: &constraint_system,
+				bitand_r_x_prime_len: r_x_primes[0].len(),
+				intmul_r_x_prime_len: r_x_primes[1].len(),
+				binmul_r_x_prime_len: r_x_primes[2].len(),
+				r_j_len: r_j.len(),
+				r_s_len: r_s.len(),
+				r_y_len: r_y.len(),
+			}
+			.call_native(
+				&iter::once(r_zhat_prime)
+					.chain(lambdas)
+					.chain(r_x_primes.iter().flatten().copied())
+					.chain(r_j.iter().chain(&r_s).chain(&r_y).copied())
+					.chain(iter::once(r_segment))
+					.collect::<Vec<_>>(),
+			);
+
+			// The shift scalars are the same table the transparent evaluation tensors internally.
+			let l_tilde = lagrange_evals_scalars(&subspace, &r_zhat_prime);
+			let h_op_evals = evaluate_h_op(&l_tilde, &r_j, &r_s);
+			let eq_r_s = eq_ind_partial_eval_scalars::<B128>(&r_s);
+			let shift_scalars = array::from_fn::<_, N_SHIFT_IDS, _>(|shift_id| {
+				h_op_evals[shift_id / Word::BITS] * eq_r_s[shift_id % Word::BITS]
+			});
+
+			let dense = DenseMonster::new(&constraint_system);
+			let row_memory = dense.row_memory(array::from_fn(|operation| &*r_x_primes[operation]));
+			let col_memory = dense.col_memory(&r_y, r_segment);
+
+			assert_eq!(
+				dense.evaluate(&row_memory, &col_memory, &shift_scalars, &operand_scalars(lambdas)),
+				transparent,
+				"n_and = {n_and}, n_imul = {n_imul}, n_bmul = {n_bmul}"
+			);
+		}
 	}
 }
