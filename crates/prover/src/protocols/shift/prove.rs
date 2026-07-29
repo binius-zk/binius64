@@ -98,6 +98,7 @@ impl<F: Field> PreparedOperatorData<F> {
 pub fn prove<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	words: &[Word],
+	zero_data: OperatorData<F>,
 	bitand_data: OperatorData<F>,
 	intmul_data: OperatorData<F>,
 	binmul_data: OperatorData<F>,
@@ -112,12 +113,14 @@ where
 	A: Allocator,
 {
 	// Sample lambdas, one for each operator.
+	let zero_lambda = channel.sample();
 	let bitand_lambda = channel.sample();
 	let intmul_lambda = channel.sample();
 	let binmul_lambda = channel.sample();
 
 	// Create prepared operator data with sampled lambdas
 	let expand_scope = tracing::debug_span!("Expand tensor queries").entered();
+	let prepared_zero_data = PreparedOperatorData::new(zero_data, zero_lambda);
 	let prepared_bitand_data = PreparedOperatorData::new(bitand_data, bitand_lambda);
 	let prepared_intmul_data = PreparedOperatorData::new(intmul_data, intmul_lambda);
 	let prepared_binmul_data = PreparedOperatorData::new(binmul_data, binmul_lambda);
@@ -129,6 +132,7 @@ where
 	let phase_1_output = prove_phase_1::<_, P, _, _>(
 		key_collection,
 		words,
+		&prepared_zero_data,
 		&prepared_bitand_data,
 		&prepared_intmul_data,
 		&prepared_binmul_data,
@@ -144,6 +148,7 @@ where
 	let SumcheckOutput { challenges, eval } = prove_phase_2::<_, P, _, _>(
 		key_collection,
 		words,
+		&prepared_zero_data,
 		&prepared_bitand_data,
 		&prepared_intmul_data,
 		&prepared_binmul_data,

@@ -11,7 +11,9 @@ use binius_math::{
 	univariate::lagrange_evals,
 };
 use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
-use binius_verifier::protocols::shift::{BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, evaluate_h_op};
+use binius_verifier::protocols::shift::{
+	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, ZERO_ARITY, evaluate_h_op,
+};
 use bytemuck::zeroed_vec;
 use tracing::instrument;
 
@@ -142,6 +144,7 @@ where
 pub fn build_monster_segments<F, P: PackedField<Scalar = F>, A: Allocator>(
 	alloc: &A,
 	key_collection: &KeyCollection,
+	zero_operator_data: &PreparedOperatorData<F>,
 	bitand_operator_data: &PreparedOperatorData<F>,
 	intmul_operator_data: &PreparedOperatorData<F>,
 	binmul_operator_data: &PreparedOperatorData<F>,
@@ -153,7 +156,8 @@ where
 	F: BinaryField,
 {
 	// Compute h evaluations
-	let [bitand_h_ops, intmul_h_ops, binmul_h_ops] = [
+	let [zero_h_ops, bitand_h_ops, intmul_h_ops, binmul_h_ops] = [
+		zero_operator_data.r_zhat_prime,
 		bitand_operator_data.r_zhat_prime,
 		intmul_operator_data.r_zhat_prime,
 		binmul_operator_data.r_zhat_prime,
@@ -168,6 +172,7 @@ where
 	// Allocate and populate the scalars, laid out with the operand index innermost so that the
 	// `arity` weights for one `key.id` (= `op * Word::BITS + s`) form a contiguous chunk that
 	// [`Key::accumulate`] can index directly by operand index.
+	let mut zero_scalars = vec![F::ZERO; ZERO_ARITY * SHIFT_VARIANT_COUNT * Word::BITS];
 	let mut bitand_scalars = vec![F::ZERO; BITAND_ARITY * SHIFT_VARIANT_COUNT * Word::BITS];
 	let mut intmul_scalars = vec![F::ZERO; INTMUL_ARITY * SHIFT_VARIANT_COUNT * Word::BITS];
 	let mut binmul_scalars = vec![F::ZERO; BINMUL_ARITY * SHIFT_VARIANT_COUNT * Word::BITS];
@@ -185,6 +190,12 @@ where
 		}
 	};
 
+	populate_scalars(
+		&mut zero_scalars,
+		ZERO_ARITY,
+		&zero_operator_data.lambda_powers,
+		&zero_h_ops,
+	);
 	populate_scalars(
 		&mut bitand_scalars,
 		BITAND_ARITY,
@@ -212,6 +223,7 @@ where
 			.iter()
 			.map(|key| {
 				let (operator_data, scalars, arity) = match key.operation {
+					Operation::Zero => (zero_operator_data, &zero_scalars, ZERO_ARITY),
 					Operation::BitwiseAnd => (bitand_operator_data, &bitand_scalars, BITAND_ARITY),
 					Operation::IntegerMul => (intmul_operator_data, &intmul_scalars, INTMUL_ARITY),
 					Operation::BinMul => (binmul_operator_data, &binmul_scalars, BINMUL_ARITY),

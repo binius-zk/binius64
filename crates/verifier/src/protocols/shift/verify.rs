@@ -20,7 +20,7 @@ use binius_math::{
 use getset::Getters;
 
 use super::{
-	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, OperationEvalFn, SHIFT_VARIANT_COUNT,
+	BINMUL_ARITY, BITAND_ARITY, INTMUL_ARITY, OperationEvalFn, SHIFT_VARIANT_COUNT, ZERO_ARITY,
 	encode_operation_input, error::Error, evaluate_h_op,
 };
 
@@ -95,6 +95,8 @@ impl<F: FieldOps, const ARITY: usize> OperatorData<F, ARITY> {
 /// verification steps including PCS verification.
 #[derive(Debug, Getters)]
 pub struct VerifyOutput<F> {
+	/// Random coefficient for batching ZERO constraint evaluations.
+	zero_lambda: F,
 	/// Random coefficient for batching AND constraint evaluations.
 	bitand_lambda: F,
 	/// Random coefficient for batching IMUL constraint evaluations.
@@ -171,6 +173,7 @@ impl<F> VerifyOutput<F> {
 /// - Propagates sumcheck verification errors
 pub fn verify<F, C>(
 	constraint_system: &ConstraintSystem,
+	zero_data: &OperatorData<C::Elem, ZERO_ARITY>,
 	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
 	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
 	binmul_data: &OperatorData<C::Elem, BINMUL_ARITY>,
@@ -180,11 +183,13 @@ where
 	F: BinaryField,
 	C: IPVerifierChannel<F>,
 {
+	let zero_lambda = channel.sample();
 	let bitand_lambda = channel.sample();
 	let intmul_lambda = channel.sample();
 	let binmul_lambda = channel.sample();
 
-	let eval = bitand_data.batched_eval(bitand_lambda.clone())
+	let eval = zero_data.batched_eval(zero_lambda.clone())
+		+ bitand_data.batched_eval(bitand_lambda.clone())
 		+ intmul_data.batched_eval(intmul_lambda.clone())
 		+ binmul_data.batched_eval(binmul_lambda.clone());
 
@@ -216,6 +221,7 @@ where
 	let witness_eval = channel.recv_one()?;
 
 	Ok(VerifyOutput {
+		zero_lambda,
 		bitand_lambda,
 		intmul_lambda,
 		binmul_lambda,
@@ -259,6 +265,7 @@ where
 pub fn check_eval<F, C>(
 	constraint_system: &ConstraintSystem,
 	public: &[Word],
+	zero_data: &OperatorData<C::Elem, ZERO_ARITY>,
 	bitand_data: &OperatorData<C::Elem, BITAND_ARITY>,
 	intmul_data: &OperatorData<C::Elem, INTMUL_ARITY>,
 	binmul_data: &OperatorData<C::Elem, BINMUL_ARITY>,
@@ -273,6 +280,7 @@ where
 	C::Elem: FieldOps<Scalar = F> + From<F>,
 {
 	let VerifyOutput {
+		zero_lambda,
 		bitand_lambda,
 		intmul_lambda,
 		binmul_lambda,
@@ -291,6 +299,7 @@ where
 	// materialize the result as a single inout wire instead of building the entire
 	// sub-circuit in wrapper channels.
 	let monster_eval = {
+		let zero_r_x_prime_len = zero_data.r_x_prime.len();
 		let bitand_r_x_prime_len = bitand_data.r_x_prime.len();
 		let intmul_r_x_prime_len = intmul_data.r_x_prime.len();
 		let binmul_r_x_prime_len = binmul_data.r_x_prime.len();
@@ -299,9 +308,11 @@ where
 		let r_y_len = r_y.len();
 
 		let inputs: Vec<C::Elem> = iter::once(r_zhat_prime)
+			.chain(iter::once(zero_lambda.clone()))
 			.chain(iter::once(bitand_lambda.clone()))
 			.chain(iter::once(intmul_lambda.clone()))
 			.chain(iter::once(binmul_lambda.clone()))
+			.chain(zero_data.r_x_prime.iter().cloned())
 			.chain(bitand_data.r_x_prime.iter().cloned())
 			.chain(intmul_data.r_x_prime.iter().cloned())
 			.chain(binmul_data.r_x_prime.iter().cloned())
@@ -314,6 +325,7 @@ where
 		let eval_fn = MonsterEvalFn {
 			subspace,
 			constraint_system,
+			zero_r_x_prime_len,
 			bitand_r_x_prime_len,
 			intmul_r_x_prime_len,
 			binmul_r_x_prime_len,
@@ -372,7 +384,7 @@ impl<F: BinaryField> FieldFn<F> for PublicWordsEvalFn<'_> {
 /// The inputs are the flat concatenation of these sections, in order:
 ///
 /// ```text
-/// r_zhat_prime | bitand_lambda | intmul_lambda | binmul_lambda | bitand_r_x_prime.. | intmul_r_x_prime.. | binmul_r_x_prime.. | r_j.. | r_s.. | r_y..
+/// r_zhat_prime | zero_lambda | bitand_lambda | intmul_lambda | binmul_lambda | zero_r_x_prime.. | bitand_r_x_prime.. | intmul_r_x_prime.. | binmul_r_x_prime.. | r_j.. | r_s.. | r_y..
 /// ```
 ///
 /// The stored lengths recover each variable-length section from that flat slice.
@@ -381,6 +393,8 @@ struct MonsterEvalFn<'a, F: BinaryField> {
 	subspace: &'a BinarySubspace<F>,
 	/// The AND, IMUL and BMUL constraints whose monster multilinears are evaluated.
 	constraint_system: &'a ConstraintSystem,
+	/// Length of the Zero operator's `r_x_prime` section.
+	zero_r_x_prime_len: usize,
 	/// Length of the BitAnd operator's `r_x_prime` section.
 	bitand_r_x_prime_len: usize,
 	/// Length of the IntMul operator's `r_x_prime` section.
@@ -403,7 +417,10 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 	///
 	/// Returns the BitAnd input (always present) and the IntMul and BinMul inputs, each `None` when
 	/// that operation has no constraints and is skipped.
-	fn operation_inputs<E>(&self, vals: &[E]) -> (Vec<E>, Option<Vec<E>>, Option<Vec<E>>)
+	fn operation_inputs<E>(
+		&self,
+		vals: &[E],
+	) -> (Option<Vec<E>>, Vec<E>, Option<Vec<E>>, Option<Vec<E>>)
 	where
 		E: FieldOps<Scalar = F> + From<F>,
 	{
@@ -413,6 +430,10 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		// (resp. BinMul) reduction contributes an empty point, which matches the `None` the
 		// accessor reports for an empty constraint set; so does the BitAnd reduction's single
 		// all-zero padding row.
+		debug_assert_eq!(
+			self.zero_r_x_prime_len,
+			self.constraint_system.log_zero_constraints().unwrap_or(0)
+		);
 		debug_assert_eq!(
 			self.bitand_r_x_prime_len,
 			self.constraint_system.log_and_constraints().unwrap_or(0)
@@ -428,10 +449,13 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 
 		// Split the flat input back into its sections, in the order they were concatenated.
 		let r_zhat_prime_v = vals[0].clone();
-		let bitand_lambda_v = vals[1].clone();
-		let intmul_lambda_v = vals[2].clone();
-		let binmul_lambda_v = vals[3].clone();
-		let mut off = 4;
+		let zero_lambda_v = vals[1].clone();
+		let bitand_lambda_v = vals[2].clone();
+		let intmul_lambda_v = vals[3].clone();
+		let binmul_lambda_v = vals[4].clone();
+		let mut off = 5;
+		let zero_r_x_prime_v = &vals[off..off + self.zero_r_x_prime_len];
+		off += self.zero_r_x_prime_len;
 		let bitand_r_x_prime_v = &vals[off..off + self.bitand_r_x_prime_len];
 		off += self.bitand_r_x_prime_len;
 		let intmul_r_x_prime_v = &vals[off..off + self.intmul_r_x_prime_len];
@@ -488,6 +512,9 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 
 		// Re-encode the shared tensors with each operation's `r_x'` and `lambda`. IntMul and BinMul
 		// are skipped (no input built) when they have no constraints.
+		let zero_input = (!self.constraint_system.zero_constraints.is_empty()).then(|| {
+			encode_operation_input(zero_r_x_prime_v, zero_lambda_v, &shift_scalars, &r_y_tensor)
+		});
 		let bitand_input = encode_operation_input(
 			bitand_r_x_prime_v,
 			bitand_lambda_v,
@@ -501,15 +528,19 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 			encode_operation_input(binmul_r_x_prime_v, binmul_lambda_v, &shift_scalars, &r_y_tensor)
 		});
 
-		(bitand_input, intmul_input, binmul_input)
+		(zero_input, bitand_input, intmul_input, binmul_input)
 	}
 }
 
 impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
-		let (bitand_input, intmul_input, binmul_input) = self.operation_inputs(vals);
+		let (zero_input, bitand_input, intmul_input, binmul_input) = self.operation_inputs(vals);
 		let cs = &self.constraint_system;
 
+		let zero = match zero_input {
+			Some(input) => OperationEvalFn::new(&cs.zero_constraints).call::<E>(&input),
+			None => E::zero(),
+		};
 		let bitand = OperationEvalFn::new(&cs.and_constraints).call::<E>(&bitand_input);
 		let intmul = match intmul_input {
 			Some(input) => OperationEvalFn::new(&cs.imul_constraints).call::<E>(&input),
@@ -520,15 +551,19 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 			None => E::zero(),
 		};
 
-		bitand + intmul + binmul
+		zero + bitand + intmul + binmul
 	}
 
 	/// Native fast path: each operation's evaluation defers `WideMul` reductions (see
 	/// [`OperationEvalFn`]'s `call_native`).
 	fn call_native(&self, vals: &[F]) -> F {
-		let (bitand_input, intmul_input, binmul_input) = self.operation_inputs(vals);
+		let (zero_input, bitand_input, intmul_input, binmul_input) = self.operation_inputs(vals);
 		let cs = &self.constraint_system;
 
+		let zero = match zero_input {
+			Some(input) => OperationEvalFn::new(&cs.zero_constraints).call_native(&input),
+			None => F::ZERO,
+		};
 		let bitand = OperationEvalFn::new(&cs.and_constraints).call_native(&bitand_input);
 		let intmul = match intmul_input {
 			Some(input) => OperationEvalFn::new(&cs.imul_constraints).call_native(&input),
@@ -539,7 +574,7 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 			None => F::ZERO,
 		};
 
-		bitand + intmul + binmul
+		zero + bitand + intmul + binmul
 	}
 }
 

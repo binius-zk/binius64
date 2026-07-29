@@ -219,8 +219,12 @@ impl IOPVerifier {
 			)
 		};
 
+		// M4 does not reduce Zero constraints yet, so the Zero claim is empty; it contributes zero
+		// to the shift reduction's batched evaluation.
+		let zero = OperatorData::new(Vec::new(), [Channel::Elem::zero()]);
+
 		// Reduce the operand claims to one witness evaluation.
-		let shift = shift::verify::<B128, _>(cs, &bitand, &intmul, &binmul, channel)?;
+		let shift = shift::verify::<B128, _>(cs, &zero, &bitand, &intmul, &binmul, channel)?;
 
 		// Tie in the shared constants through the public-input consistency check.
 		// The shift evaluates them over the layout's power-of-two word count.
@@ -228,6 +232,7 @@ impl IOPVerifier {
 		shift::check_eval::<B128, _>(
 			cs,
 			&cs.constants,
+			&zero,
 			&bitand,
 			&intmul,
 			&binmul,

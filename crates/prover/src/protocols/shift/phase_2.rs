@@ -63,6 +63,7 @@ use crate::fold_word::fold_words;
 pub fn prove_phase_2<F, P: PackedField<Scalar = F>, Channel, A>(
 	key_collection: &KeyCollection,
 	words: &[Word],
+	zero_data: &PreparedOperatorData<F>,
 	bitand_data: &PreparedOperatorData<F>,
 	intmul_data: &PreparedOperatorData<F>,
 	binmul_data: &PreparedOperatorData<F>,
@@ -98,6 +99,7 @@ where
 	let (public_monster, hidden_monster) = build_monster_segments(
 		alloc,
 		key_collection,
+		zero_data,
 		bitand_data,
 		intmul_data,
 		binmul_data,

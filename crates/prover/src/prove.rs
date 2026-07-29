@@ -278,6 +278,15 @@ impl IOPProver {
 			},
 		};
 
+		// The Zero reduction contributes no prover message; its claim is the constant zero at the
+		// point the reduction closes at. Nothing produces one yet, so it is an empty claim, which
+		// contributes zero to the shift reduction's batched evaluation.
+		let zero_claim = OperatorData {
+			evals: vec![B128::ZERO],
+			r_zhat_prime: bitand_claim.r_zhat_prime,
+			r_x_prime: Vec::new(),
+		};
+
 		// [phase] Shift Reduction - shift operations
 		let shift_guard = tracing::info_span!(
 			"[phase] Shift Reduction",
@@ -291,6 +300,7 @@ impl IOPProver {
 		} = prove_shift_reduction::<_, P, _, _>(
 			&self.key_collection,
 			witness.combined_witness(),
+			zero_claim,
 			bitand_claim,
 			intmul_claim,
 			binmul_claim,

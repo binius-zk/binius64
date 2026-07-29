@@ -279,6 +279,11 @@ impl IOPVerifier {
 			None => OperatorData::new(Vec::new(), std::array::from_fn(|_| Channel::Elem::zero())),
 		};
 
+		// The Zero reduction contributes no prover message; its claim is the constant zero at the
+		// point the reduction closes at. Nothing produces one yet, so it is an empty claim, which
+		// contributes zero to the shift reduction's batched evaluation.
+		let zero_claim = OperatorData::new(Vec::new(), [Channel::Elem::zero()]);
+
 		// [phase] Verify Shift Reduction - shift operations and constraint validation
 		let constraint_guard = tracing::info_span!(
 			"[phase] Verify Shift Reduction",
@@ -288,6 +293,7 @@ impl IOPVerifier {
 		.entered();
 		let shift_output = shift::verify(
 			self.constraint_system(),
+			&zero_claim,
 			&bitand_claim,
 			&intmul_claim,
 			&binmul_claim,
@@ -305,6 +311,7 @@ impl IOPVerifier {
 		shift::check_eval(
 			self.constraint_system(),
 			public,
+			&zero_claim,
 			&bitand_claim,
 			&intmul_claim,
 			&binmul_claim,
