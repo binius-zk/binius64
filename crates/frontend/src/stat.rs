@@ -19,6 +19,11 @@ pub struct CircuitStat {
 	///
 	/// Directly proportional to performance of witness filling.
 	pub n_eval_insn: usize,
+	/// Number of ZERO constraints in the circuit.
+	///
+	/// Affects performance of the shift reduction only: the Zero reduction itself carries no
+	/// sumcheck.
+	pub n_zero_constraints: usize,
 	/// Number of AND constraints in the circuit.
 	///
 	/// Affects performance of AND reduction.
@@ -64,6 +69,8 @@ pub struct CircuitStat {
 	/// This is the largest number of uncommitted values alive at the same time.
 	/// It equals the segment length when slots are shared, and is a lower bound on it otherwise.
 	pub scratch_peak_live: usize,
+	/// Allocated size for ZERO constraints (power of 2, or zero when there are none)
+	pub zero_allocated: usize,
 	/// Allocated size for AND constraints (power of 2)
 	pub and_allocated: usize,
 	/// Allocated size for IMUL constraints (power of 2)
@@ -88,6 +95,7 @@ impl CircuitStat {
 		let cs = circuit.constraint_system();
 
 		// Counts as the circuit compiled them, before the prover pads anything.
+		let n_zero_constraints = cs.n_zero_constraints();
 		let n_and_constraints = cs.n_and_constraints();
 		let n_imul_constraints = cs.n_imul_constraints();
 		let n_bmul_constraints = cs.n_bmul_constraints();
@@ -98,9 +106,11 @@ impl CircuitStat {
 		//
 		// - Every set is rounded up to a power of two.
 		// - Rounding up from zero gives one, so an empty AND set still occupies a single slot.
-		// - An empty multiply set instead stays at zero, letting its reduction be skipped whole.
+		// - An empty ZERO or multiply set instead stays at zero, letting its reduction be skipped
+		//   whole.
 		let pad = |n: usize| n.next_power_of_two();
 		let pad_or_skip = |n: usize| if n == 0 { 0 } else { pad(n) };
+		let zero_allocated = pad_or_skip(n_zero_constraints);
 		let and_allocated = pad(n_and_constraints);
 		let imul_allocated = pad_or_skip(n_imul_constraints);
 		let bmul_allocated = pad_or_skip(n_bmul_constraints);
@@ -118,6 +128,7 @@ impl CircuitStat {
 		Self {
 			n_gates: circuit.n_gates(),
 			n_eval_insn: circuit.n_eval_insn(),
+			n_zero_constraints,
 			n_and_constraints,
 			n_imul_constraints,
 			n_bmul_constraints,
@@ -130,6 +141,7 @@ impl CircuitStat {
 			n_internal: layout.n_internal,
 			n_scratch: layout.n_scratch,
 			scratch_peak_live: circuit.scratch_peak_live(),
+			zero_allocated,
 			and_allocated,
 			imul_allocated,
 			bmul_allocated,
@@ -186,79 +198,40 @@ impl fmt::Display for CircuitStat {
 		writeln!(f, "└─ Number of evaluation instructions: {}", fmt_num(self.n_eval_insn))?;
 		writeln!(f)?;
 
+		// Reports one constraint set: how many rows it uses out of the power of two the prover pads
+		// it to. A set whose reduction is skipped when empty allocates nothing, so it reports an
+		// allocation of `0` rather than a power of two — unlike AND, which is always padded to at
+		// least one row.
+		fn constraint_line(
+			f: &mut fmt::Formatter,
+			name: &str,
+			used: usize,
+			allocated: usize,
+		) -> fmt::Result {
+			let percent = if allocated > 0 {
+				used as f64 / allocated as f64 * 100.0
+			} else {
+				0.0
+			};
+			let allocation = if allocated == 0 {
+				"0".to_string()
+			} else {
+				format!("2^{}", log2(allocated))
+			};
+			writeln!(
+				f,
+				"├─ {name} constraints: {} used ({percent:.1}% of {allocation})",
+				fmt_num(used)
+			)?;
+			writeln!(f, "│  {} spare: {}", progress_bar(used, allocated), fmt_num(allocated - used))
+		}
+
 		// Constraints
 		writeln!(f, "Constraints")?;
-		let and_percent = self.n_and_constraints as f64 / self.and_allocated as f64 * 100.0;
-		let and_spare = self.and_allocated - self.n_and_constraints;
-		writeln!(
-			f,
-			"├─ AND constraints: {} used ({:.1}% of 2^{})",
-			fmt_num(self.n_and_constraints),
-			and_percent,
-			log2(self.and_allocated)
-		)?;
-		writeln!(
-			f,
-			"│  {} spare: {}",
-			progress_bar(self.n_and_constraints, self.and_allocated),
-			fmt_num(and_spare)
-		)?;
-
-		let imul_percent = if self.imul_allocated > 0 {
-			self.n_imul_constraints as f64 / self.imul_allocated as f64 * 100.0
-		} else {
-			0.0
-		};
-		let imul_spare = self.imul_allocated - self.n_imul_constraints;
-		// A circuit with no IMUL constraints allocates nothing (the IntMul reduction is skipped),
-		// so there is no power-of-two allocation to report — unlike AND, which is always padded to
-		// at least one.
-		let imul_allocation = if self.imul_allocated == 0 {
-			"0".to_string()
-		} else {
-			format!("2^{}", log2(self.imul_allocated))
-		};
-		writeln!(
-			f,
-			"├─ IMUL constraints: {} used ({:.1}% of {})",
-			fmt_num(self.n_imul_constraints),
-			imul_percent,
-			imul_allocation
-		)?;
-		writeln!(
-			f,
-			"│  {} spare: {}",
-			progress_bar(self.n_imul_constraints, self.imul_allocated),
-			fmt_num(imul_spare)
-		)?;
-
-		let bmul_percent = if self.bmul_allocated > 0 {
-			self.n_bmul_constraints as f64 / self.bmul_allocated as f64 * 100.0
-		} else {
-			0.0
-		};
-		let bmul_spare = self.bmul_allocated - self.n_bmul_constraints;
-		// A circuit with no BMUL constraints allocates nothing (the BinMul reduction is skipped),
-		// so there is no power-of-two allocation to report — unlike AND, which is always padded to
-		// at least one.
-		let bmul_allocation = if self.bmul_allocated == 0 {
-			"0".to_string()
-		} else {
-			format!("2^{}", log2(self.bmul_allocated))
-		};
-		writeln!(
-			f,
-			"├─ BMUL constraints: {} used ({:.1}% of {})",
-			fmt_num(self.n_bmul_constraints),
-			bmul_percent,
-			bmul_allocation
-		)?;
-		writeln!(
-			f,
-			"│  {} spare: {}",
-			progress_bar(self.n_bmul_constraints, self.bmul_allocated),
-			fmt_num(bmul_spare)
-		)?;
+		constraint_line(f, "ZERO", self.n_zero_constraints, self.zero_allocated)?;
+		constraint_line(f, "AND", self.n_and_constraints, self.and_allocated)?;
+		constraint_line(f, "IMUL", self.n_imul_constraints, self.imul_allocated)?;
+		constraint_line(f, "BMUL", self.n_bmul_constraints, self.bmul_allocated)?;
 		writeln!(
 			f,
 			"└─ Distinct value indices: {}",
@@ -352,6 +325,7 @@ impl fmt::Display for CircuitStat {
 fn traverse_constraint_system(cs: &ConstraintSystem) -> (usize, usize) {
 	let mut cx = Cx::default();
 	let operands = chain!(
+		cs.zero_constraints.iter().flat_map(|c| &c.0),
 		cs.and_constraints.iter().flat_map(|c| &c.0),
 		cs.imul_constraints.iter().flat_map(|c| &c.0),
 		cs.bmul_constraints.iter().flat_map(|c| &c.0),

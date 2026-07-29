@@ -42,7 +42,7 @@ mod value_vec_alloc;
 pub use gate_graph::Wire;
 use scratch_alloc::{ScratchAlloc, ScratchPolicy};
 
-/// Which compiler passes run.
+/// Which compiler passes run, and how linear constraints are lowered.
 ///
 /// This is the only knob: a circuit compiles the same way whatever the process environment holds.
 /// A caller that wants a non-default pass set builds through [`CircuitBuilder::with_opts`].
@@ -53,6 +53,9 @@ pub(crate) struct Options {
 	enable_dead_code_elimination: bool,
 	enable_algebraic_folding: bool,
 	enable_scratch_pooling: bool,
+	/// Lower linear constraints to Zero constraints instead of AND constraints against the
+	/// all-ones constant.
+	enable_zero_constraints: bool,
 }
 
 impl Default for Options {
@@ -66,6 +69,9 @@ impl Default for Options {
 			// Why off: sharing slots stops an uncommitted value from being readable afterwards.
 			// A caller that inspects one has to opt in knowingly.
 			enable_scratch_pooling: false,
+			// Why off: no proof system reduces Zero constraints yet, so a circuit that emits them
+			// is unprovable.
+			enable_zero_constraints: false,
 		}
 	}
 }
@@ -325,14 +331,15 @@ impl CircuitBuilder {
 		debug_assert_eq!(wire_mapping[all_one], binius_core::ValueIndex(0));
 		debug_assert_eq!(constants.first(), Some(&Word::ALL_ONE));
 
-		let (mut and_constraints, mut imul_constraints, mut bmul_constraints) =
-			builder.build(&wire_mapping, all_one);
+		let (mut zero_constraints, mut and_constraints, mut imul_constraints, mut bmul_constraints) =
+			builder.build(&wire_mapping, all_one, shared.opts.enable_zero_constraints);
 
 		// Filter zero constant terms from all operands. Any shift of Word::ZERO is zero, so
 		// terms referencing a zero constant contribute nothing to an XOR operand.
 		let n_const = value_vec_layout.n_const;
 		{
 			let operands = chain!(
+				zero_constraints.iter_mut().flat_map(|c| &mut c.0),
 				and_constraints.iter_mut().flat_map(|c| &mut c.0),
 				imul_constraints.iter_mut().flat_map(|c| &mut c.0),
 				bmul_constraints.iter_mut().flat_map(|c| &mut c.0),
@@ -346,6 +353,7 @@ impl CircuitBuilder {
 		}
 
 		let cs = ConstraintSystem {
+			zero_constraints,
 			and_constraints,
 			imul_constraints,
 			bmul_constraints,
