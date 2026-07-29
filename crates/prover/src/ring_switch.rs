@@ -6,9 +6,10 @@ use std::{
 	ops::{Deref, DerefMut},
 };
 
-use binius_compute::Allocator;
+use binius_compute::{Allocator, VecLike};
 use binius_field::{
-	BinaryField, Divisible, ExtensionField, Field, PackedField, cast_base_mut,
+	BinaryField, Divisible, ExtensionField, Field, PackedBinaryField128x1b, PackedField, cast_base,
+	cast_bases_mut,
 	linear_transformation::{
 		BytewiseLookupTransformationFactory, InputWrappingTransformationFactory,
 		LinearTransformationFactory, OutputWrappingTransformationFactory, Transformation,
@@ -22,9 +23,11 @@ use binius_math::{
 	multilinear::eq::{eq_ind_partial_eval, eq_ind_partial_eval_in},
 	tensor_algebra::TensorAlgebra,
 };
-use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_utils::rayon::prelude::*;
 use binius_verifier::config::{B1, B128};
 use itertools::izip;
+
+use crate::fold_word::{fold_row_group, row_fold_tables, square_transpose_const_size};
 
 /// Transforms a [`FieldBuffer`] by mapping every scalar to the inner product of its B1 components
 /// and a given vector of field elements.
@@ -73,6 +76,26 @@ where
 	elems
 }
 
+/// Base-2 log of the row group one subset-sum table covers.
+///
+/// Eight rows is the widest group whose lookup index still fits one byte.
+/// One table load then replaces eight conditional additions.
+const LOG_SPLIT_CHUNK_BITS: usize = 3;
+
+/// Base-2 log of the low-factor length the tensor split targets.
+///
+/// The row fold consumes a chunk of as many rows as a row has columns.
+/// So the low factor spans exactly that many rows.
+/// For 128 columns that is 16 tables of 256 field elements, or 64 KiB.
+/// That footprint stays resident in a performance core's L1 data cache across every hi-block.
+/// A wider factor needs proportionally more tables and starts missing that cache.
+pub const LOG_SPLIT_BLOCK: usize = <B128 as ExtensionField<B1>>::LOG_DEGREE;
+
+/// Number of subset-sum tables one chunk of the split fold uses.
+const N_ROW_TABLES: usize = 1 << (LOG_SPLIT_BLOCK - LOG_SPLIT_CHUNK_BITS);
+/// Rows one subset-sum table covers.
+const ROW_GROUP: usize = 1 << LOG_SPLIT_CHUNK_BITS;
+
 /// Optimized version of folding 1-bit rows specifically for B128 fields.
 ///
 /// This function computes the linear combination of the rows of a B1 matrix by B128 extension
@@ -110,6 +133,8 @@ where
 	assert_eq!(mat.log_len(), vec.log_len()); // precondition
 
 	// Group bits into 4-bit nibbles for the lookups.
+	// This fold rebuilds its table for every group, so a wider group would cost more to build than
+	// the lookups it saves.
 	const LOG_CHUNK_BITS: usize = 2;
 	const CHUNK_BITS: usize = 1 << LOG_CHUNK_BITS;
 
@@ -136,8 +161,13 @@ where
 					let lookup =
 						expand_subset_sums_array::<_, CHUNK_BITS, { 1 << CHUNK_BITS }>(vec_scalars);
 
+					// Viewing each element as its 128 single-bit components is a reinterpretation,
+					// so the transpose runs on the same memory.
+					let mat_bits = cast_bases_mut::<B1, _>(&mut mat_scalars);
 					square_transpose_const_size::<_, LOG_CHUNK_BITS, CHUNK_BITS>(
-						mat_scalars.each_mut().map(cast_base_mut::<B1, _>),
+						mat_bits
+							.try_into()
+							.expect("cast preserves the array length"),
 					);
 
 					{
@@ -166,54 +196,225 @@ where
 		)
 }
 
-/// Transpose square blocks of elements within packed field elements in place.
+/// Folds the 1-bit rows of a matrix against an equality tensor supplied as two factors.
 ///
-/// This is similar to [`binius_field::transpose::square_transpose`] but uses const generic
-/// parameters for the array size and block dimension. The const generics enable the compiler
-/// to unroll loops and optimize the transpose operation more aggressively.
+/// # Overview
 ///
-/// ## Type Parameters
+/// The equality tensor over `n_lo + n_hi` coordinates factors along any coordinate split:
 ///
-/// * `P` - The packed field type
-/// * `LOG_N` - Base-2 logarithm of the dimension of the square blocks to transpose
-/// * `S` - Size of the array (must be a power of 2)
+/// ```text
+///     tensor[hi << n_lo | lo] = eq_lo[lo] * eq_hi[hi]
+/// ```
+///
+/// Multiplication distributes over the sum, so the fold regroups exactly:
+///
+/// ```text
+///     sum_x tensor[x] * row[x]
+///       = sum_hi eq_hi[hi] * ( sum_lo eq_lo[lo] * row[hi, lo] )
+/// ```
+///
+/// Each block of the matrix folds against the low factor alone.
+/// Its result is then scaled once by that block's high-factor entry and merged.
+/// Field addition and multiplication are exact.
+/// So the result is bit-identical to folding against the materialized tensor.
+///
+/// # Why the factored form is faster
+///
+/// Both effects follow from the tables covering only the low factor, so being built once.
+///
+/// Memory traffic:
+///
+/// - The full tensor is never written or read, so only the matrix streams through.
+/// - Folding against a materialized tensor reads one tensor entry per row alongside it.
+/// - That doubles the stream for the same arithmetic.
+///
+/// Lookup count:
+///
+/// - A table built once costs nothing per row, so it can cover eight rows instead of four.
+/// - Eight-row groups halve the lookups and accumulator updates.
+/// - Those updates are what the fold is bound on, not arithmetic or bandwidth.
+/// - A table rebuilt per group cannot widen: 256 entries per group costs more than it saves.
+///
+/// The price is one multiply per row, to scale each block by its high-factor entry.
+///
+/// # Preconditions
+///
+/// * The matrix must have as many rows as the two factors have entries together.
+/// * The low factor must span at least one packed element, so blocks align to packed boundaries.
+/// * The low factor must span at most one row fold chunk, which is 128 rows.
+pub fn fold_1b_rows_for_b128_split<P, Data>(
+	mat: &FieldBuffer<P, Data>,
+	eq_lo: &FieldBuffer<B128>,
+	eq_hi: &FieldBuffer<B128>,
+) -> FieldBuffer<B128>
+where
+	P: PackedField<Scalar = B128>,
+	Data: Deref<Target = [P]>,
+{
+	let log_scalar_bit_width = <B128 as ExtensionField<B1>>::LOG_DEGREE;
+	assert_eq!(mat.log_len(), eq_lo.log_len() + eq_hi.log_len()); // precondition
+	assert!(eq_lo.log_len() >= P::LOG_WIDTH); // precondition
+	assert!(eq_lo.log_len() <= LOG_SPLIT_BLOCK); // precondition
+
+	// One subset-sum table per group of eight rows, built once and reused by every hi-block.
+	// A low factor shorter than a full block leaves the trailing tables zero.
+	// Those pair with rows past the end of the block, which read as zero, so nothing is added.
+	let lo_tables = row_fold_tables::<B128, N_ROW_TABLES>(eq_lo.as_ref());
+
+	let block_packed_len = eq_lo.len() >> P::LOG_WIDTH;
+
+	(mat.as_ref().par_chunks(block_packed_len), eq_hi.as_ref().par_iter())
+		.into_par_iter()
+		.fold(
+			|| FieldBuffer::zeros(log_scalar_bit_width),
+			|mut acc, (mat_block, &eq_hi_val)| {
+				// Fold this block against the low factor alone:
+				//
+				//     block[col] = sum_lo eq_lo[lo] * bit_col(mat_block[lo])
+				//
+				// A matrix row is 128 single-bit columns, which is one full-width packed row.
+				let mut rows = P::iter_slice(mat_block);
+				let mut columns = [[B128::ZERO; ROW_GROUP]; N_ROW_TABLES];
+
+				for table in &lo_tables {
+					// Gather this group's rows out of the packed elements they sit in.
+					// Rows past the end of the block stay zero and contribute nothing.
+					// A field element and a 128-bit row of single-bit scalars share one underlier,
+					// so each view is free.
+					let mut group = [PackedBinaryField128x1b::default(); ROW_GROUP];
+					iter::zip(&mut group, &mut rows)
+						.for_each(|(dst, src)| *dst = cast_base::<B1, _>(src));
+
+					fold_row_group(&group, table, &mut columns);
+				}
+
+				// Scale by this block's high-factor entry and merge, unpacking the nesting into
+				// bit-position order.
+				// That is 128 multiplies per block, one per row.
+				{
+					let acc = acc.as_mut();
+					for (i, group) in columns.iter().enumerate() {
+						for (j, &column) in group.iter().enumerate() {
+							acc[(i << LOG_SPLIT_CHUNK_BITS) | j] += eq_hi_val * column;
+						}
+					}
+				}
+				acc
+			},
+		)
+		.reduce(
+			|| FieldBuffer::zeros(log_scalar_bit_width),
+			|mut lhs, rhs| {
+				for (lhs_i, &rhs_i) in izip!(lhs.as_mut(), rhs.as_ref()) {
+					*lhs_i += rhs_i;
+				}
+				lhs
+			},
+		)
+}
+
+/// Builds the ring-switching equality indicator directly from the tensor's two factors.
+///
+/// # Overview
+///
+/// The indicator is the suffix equality tensor, folded bitwise by the row-batching query.
+/// The dense route writes the `2^n` tensor, then [`fold_elems_inplace`] reads and rewrites it.
+/// This route produces each entry in one pass, through the same bitwise fold:
+///
+/// ```text
+///     out[hi << n_lo | lo] = fold(eq_lo[lo] * eq_hi[hi])
+/// ```
+///
+/// The tensor expansion already costs one multiply per entry.
+/// So the fused product changes no operation count.
+/// It removes one full read pass and one full write pass over the `2^n` buffer.
+/// The output is bit-identical to the dense route.
 ///
 /// ## Arguments
 ///
-/// * `elems` - Array of packed field elements to transpose in place
+/// * `alloc` - the allocator the returned indicator is drawn from
+/// * `eq_lo` - the low tensor factor
+/// * `eq_hi` - the high tensor factor
+/// * `row_batch_query` - the vector every entry is folded bitwise by
 ///
 /// ## Preconditions
 ///
-/// * `S` must be a power of two
-/// * `LOG_N` must be less than or equal to `P::LOG_WIDTH`
-/// * `LOG_N` must be less than or equal to `log2(S)`
-// The array of `&mut` lanes is itself a cheap borrow bundle; passing it by value is the point.
-#[allow(clippy::needless_pass_by_value)]
-fn square_transpose_const_size<P: PackedField, const LOG_N: usize, const S: usize>(
-	elems: [&mut P; S],
-) {
-	let log_size = checked_log_2(S);
+/// * `row_batch_query.len()` must equal 128, the extension degree of B128 over B1
+/// * `eq_lo.log_len()` must be at least `P::LOG_WIDTH`
+pub fn rs_eq_ind_from_factors<A, P>(
+	alloc: &A,
+	eq_lo: &FieldBuffer<B128>,
+	eq_hi: &FieldBuffer<B128>,
+	row_batch_query: &FieldBuffer<B128>,
+) -> FieldVec<P, A>
+where
+	A: Allocator,
+	P: PackedField<Scalar = B128>,
+{
+	assert!(eq_lo.log_len() >= P::LOG_WIDTH); // precondition
+	assert_eq!(row_batch_query.log_len(), <B128 as ExtensionField<B1>>::LOG_DEGREE); // precondition
 
-	assert!(LOG_N <= P::LOG_WIDTH);
-	assert!(LOG_N <= log_size);
+	// The same bitwise fold [`fold_elems_inplace`] applies, built once and shared by every block.
+	let transform = OutputWrappingTransformationFactory::new(
+		InputWrappingTransformationFactory::new(BytewiseLookupTransformationFactory),
+	)
+	.create(row_batch_query.as_ref());
 
-	let log_w = log_size - LOG_N;
+	let log_len = eq_lo.log_len() + eq_hi.log_len();
+	let packed_len = 1usize << (log_len - P::LOG_WIDTH);
+	let block_packed_len = eq_lo.len() >> P::LOG_WIDTH;
 
-	// See Hacker's Delight, Section 7-3.
-	// https://dl.acm.org/doi/10.5555/2462741
-	for i in 0..LOG_N {
-		for j in 0..1 << (LOG_N - i - 1) {
-			for k in 0..1 << (log_w + i) {
-				let idx0 = (j << (log_w + i + 1)) | k;
-				let idx1 = idx0 | (1 << (log_w + i));
-
-				let v0 = *elems[idx0];
-				let v1 = *elems[idx1];
-				let (v0, v1) = v0.interleave(v1, i);
-				*elems[idx0] = v0;
-				*elems[idx1] = v1;
+	// The buffer is written exactly once, block by block, so it starts uninitialized.
+	let mut out = alloc.alloc::<P>(packed_len);
+	(
+		out.spare_capacity_mut()[..packed_len].par_chunks_mut(block_packed_len),
+		eq_hi.as_ref().par_iter(),
+	)
+		.into_par_iter()
+		.for_each(|(out_block, &eq_hi_val)| {
+			// Each slot holds P::WIDTH consecutive entries of this hi-block.
+			// Every entry is one product of the two factors, folded and written once.
+			let lo_chunks = eq_lo.as_ref().chunks(P::WIDTH);
+			for (slot, lo_chunk) in iter::zip(out_block, lo_chunks) {
+				slot.write(P::from_scalars(
+					lo_chunk
+						.iter()
+						.map(|&lo| transform.transform(&(lo * eq_hi_val))),
+				));
 			}
+		});
+	// SAFETY: the block partition covers all `packed_len` slots and every slot was written.
+	unsafe { out.set_len(packed_len) };
+
+	FieldBuffer::new(log_len, out)
+}
+
+/// The suffix equality tensor, held in whichever form the fold and the indicator can consume.
+///
+/// Both consumers prefer the two factors: neither then reads or writes the `2^n` expansion.
+/// The factored form needs a low factor spanning one lookup group and one packed element.
+/// A suffix shorter than that floor cannot supply one, so it is expanded in full instead.
+enum SuffixTensor<A: Allocator, P: PackedField> {
+	/// The low and high factors of the tensor, in that order.
+	Factored(FieldBuffer<B128>, FieldBuffer<B128>),
+	/// The full `2^n`-entry expansion.
+	Dense(FieldVec<P, A>),
+}
+
+impl<A: Allocator, P: PackedField<Scalar = B128>> SuffixTensor<A, P> {
+	/// Expands `point` into the form the fold and the indicator will consume.
+	///
+	/// The low factor spans one row fold chunk.
+	/// It is floored at one packed element, so every block covers a whole number of them.
+	/// A point too short to reach that floor cannot be split, so it is expanded in full.
+	fn expand(alloc: &A, point: &[B128]) -> Self {
+		if point.len() < P::LOG_WIDTH {
+			return Self::Dense(eq_ind_partial_eval_in::<A, P>(alloc, point));
 		}
+
+		let split_at = point.len().min(LOG_SPLIT_BLOCK).max(P::LOG_WIDTH);
+		let (point_lo, point_hi) = point.split_at(split_at);
+		Self::Factored(eq_ind_partial_eval::<B128>(point_lo), eq_ind_partial_eval::<B128>(point_hi))
 	}
 }
 
@@ -260,14 +461,20 @@ where
 	let log_packing = <B128 as ExtensionField<B1>>::LOG_DEGREE;
 	assert_eq!(packed_witness.log_len() + log_packing, eval_point.len());
 
-	// Expand evaluation suffix with eq_ind
 	let eval_point_suffix = &eval_point[log_packing..];
 	let suffix_tensor = tracing::debug_span!("Expand evaluation suffix query")
-		.in_scope(|| eq_ind_partial_eval_in::<A, P>(alloc, eval_point_suffix));
+		.in_scope(|| SuffixTensor::<A, P>::expand(alloc, eval_point_suffix));
 
 	// Ring-switching partial evaluations (Method of Four Russians)
-	let s_hat_v = tracing::debug_span!("Compute ring-switching partial evaluations")
-		.in_scope(|| fold_1b_rows_for_b128(&packed_witness, &suffix_tensor));
+	let s_hat_v =
+		tracing::debug_span!("Compute ring-switching partial evaluations").in_scope(|| {
+			match &suffix_tensor {
+				SuffixTensor::Factored(eq_lo, eq_hi) => {
+					fold_1b_rows_for_b128_split(&packed_witness, eq_lo, eq_hi)
+				}
+				SuffixTensor::Dense(tensor) => fold_1b_rows_for_b128(&packed_witness, tensor),
+			}
+		});
 	channel.send_many(s_hat_v.as_ref());
 
 	// Basis transpose
@@ -283,8 +490,15 @@ where
 	let sumcheck_claim = inner_product(s_hat_u, eq_r_double_prime.as_ref().iter().copied());
 
 	// Compute ring-switching equality indicator (transparent poly)
-	let rs_eq_ind = tracing::debug_span!("Compute ring-switching equality indicator")
-		.in_scope(|| fold_elems_inplace(suffix_tensor, &eq_r_double_prime));
+	let rs_eq_ind =
+		tracing::debug_span!("Compute ring-switching equality indicator").in_scope(|| {
+			match suffix_tensor {
+				SuffixTensor::Factored(eq_lo, eq_hi) => {
+					rs_eq_ind_from_factors::<A, P>(alloc, &eq_lo, &eq_hi, &eq_r_double_prime)
+				}
+				SuffixTensor::Dense(tensor) => fold_elems_inplace(tensor, &eq_r_double_prime),
+			}
+		});
 
 	RingSwitchOutput {
 		rs_eq_ind,
@@ -294,9 +508,10 @@ where
 
 #[cfg(test)]
 mod test {
+	use binius_compute::GlobalAllocator;
 	use binius_field::{
-		BinaryField128bGhash, ExtensionField, PackedBinaryGhash2x128b, PackedField, PackedSubfield,
-		cast_ext,
+		BinaryField128bGhash, ExtensionField, PackedBinaryGhash2x128b, PackedBinaryGhash4x128b,
+		PackedField, PackedSubfield, cast_ext,
 	};
 	use binius_math::{
 		FieldBuffer,
@@ -310,6 +525,74 @@ mod test {
 	use super::*;
 
 	type F = BinaryField128bGhash;
+
+	// The split fold must reproduce the dense fold bit for bit.
+	//
+	//     dense:  fold(mat, eq(full suffix))
+	//     split:  fold(mat, eq(lo), eq(hi)) with the tensor never materialized
+	//
+	// Field addition and multiplication are exact, so any split position must agree.
+	fn check_split_fold_matches_dense<P: PackedField<Scalar = F>>(log_len: usize, seed: u64) {
+		let mut rng = StdRng::seed_from_u64(seed);
+		let mat = random_field_buffer::<P>(&mut rng, log_len);
+		let suffix: Vec<F> = random_scalars(&mut rng, log_len);
+
+		let full_tensor = eq_ind_partial_eval::<P>(&suffix);
+		let dense = fold_1b_rows_for_b128(&mat, &full_tensor);
+
+		// Sweep every legal low-factor width.
+		// The floor is one packed element, so every block covers a whole number of them.
+		// The ceiling is one row's worth of rows, which is the chunk the row fold consumes.
+		for split_at in P::LOG_WIDTH..=log_len.min(LOG_SPLIT_BLOCK) {
+			let (suffix_lo, suffix_hi) = suffix.split_at(split_at);
+			let eq_lo = eq_ind_partial_eval::<F>(suffix_lo);
+			let eq_hi = eq_ind_partial_eval::<F>(suffix_hi);
+
+			let split = fold_1b_rows_for_b128_split(&mat, &eq_lo, &eq_hi);
+			assert_eq!(split.as_ref(), dense.as_ref(), "split_at={split_at}");
+		}
+	}
+
+	#[test]
+	fn test_split_fold_matches_dense() {
+		check_split_fold_matches_dense::<F>(6, 0);
+		check_split_fold_matches_dense::<PackedBinaryGhash2x128b>(7, 1);
+		check_split_fold_matches_dense::<PackedBinaryGhash4x128b>(8, 2);
+	}
+
+	// The factored indicator must reproduce the dense expand-then-fold route bit for bit.
+	//
+	//     dense:    fold_elems(eq(full suffix), q)     two passes over 2^n entries
+	//     factored: fold(eq_lo[lo] * eq_hi[hi], q)     one pass, tensor never materialized
+	fn check_rs_eq_ind_from_factors_matches_dense<P: PackedField<Scalar = F>>(
+		log_len: usize,
+		seed: u64,
+	) {
+		let mut rng = StdRng::seed_from_u64(seed);
+		let suffix: Vec<F> = random_scalars(&mut rng, log_len);
+		let row_batching_challenges: Vec<F> =
+			random_scalars(&mut rng, <F as ExtensionField<B1>>::LOG_DEGREE);
+		let row_batch_query = eq_ind_partial_eval::<F>(&row_batching_challenges);
+
+		let dense = fold_elems_inplace(eq_ind_partial_eval::<P>(&suffix), &row_batch_query);
+
+		for split_at in P::LOG_WIDTH..=log_len {
+			let (suffix_lo, suffix_hi) = suffix.split_at(split_at);
+			let eq_lo = eq_ind_partial_eval::<F>(suffix_lo);
+			let eq_hi = eq_ind_partial_eval::<F>(suffix_hi);
+
+			let factored =
+				rs_eq_ind_from_factors::<_, P>(&GlobalAllocator, &eq_lo, &eq_hi, &row_batch_query);
+			assert_eq!(factored.as_ref(), dense.as_ref(), "split_at={split_at}");
+		}
+	}
+
+	#[test]
+	fn test_rs_eq_ind_from_factors_matches_dense() {
+		check_rs_eq_ind_from_factors_matches_dense::<F>(6, 3);
+		check_rs_eq_ind_from_factors_matches_dense::<PackedBinaryGhash2x128b>(7, 4);
+		check_rs_eq_ind_from_factors_matches_dense::<PackedBinaryGhash4x128b>(8, 5);
+	}
 
 	#[test]
 	fn test_consistent_with_tensor_alg() {
