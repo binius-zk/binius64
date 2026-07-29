@@ -33,7 +33,10 @@ use binius_prover::{
 	ring_switch::{self, RingSwitchOutput},
 };
 use binius_transcript::{ProverTranscript, fiat_shamir::Challenger};
-use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_utils::{
+	checked_arithmetics::checked_log_2,
+	rayon::{prelude::*, task_size::IndexedParallelIteratorExt},
+};
 use binius_verifier::{
 	config::B128,
 	protocols::{
@@ -219,8 +222,11 @@ impl IOPProver {
 				debug_assert_eq!(a.len(), b.len());
 				let n_rows = a.len();
 				let mut c_column = alloc.alloc::<Word>(n_rows);
+				// One conjunction per item is a single instruction.
+				// The cost is streaming three word columns, two read and one written.
 				(&a[..], &b[..], c_column.spare_capacity_mut())
 					.into_par_iter()
+					.with_min_task_bytes::<[Word; 3]>()
 					.for_each(|(&a_i, &b_i, out)| {
 						out.write(a_i & b_i);
 					});

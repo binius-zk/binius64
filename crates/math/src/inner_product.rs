@@ -4,7 +4,10 @@
 use std::{iter, ops::Deref};
 
 use binius_field::{ExtensionField, Field, FieldOps, PackedField, WideMul};
-use binius_utils::rayon::prelude::*;
+use binius_utils::rayon::{
+	prelude::*,
+	task_size::{IndexedParallelIteratorExt, WorkPerItem},
+};
 
 use crate::FieldBuffer;
 
@@ -56,6 +59,7 @@ where
 		.as_ref()
 		.par_iter()
 		.zip_eq(b.as_ref().par_iter())
+		.with_min_task(WorkPerItem::FieldMuls)
 		.map(|(&a_i, &b_i)| P::wide_mul(a_i, b_i))
 		.sum::<<P as WideMul>::Output>();
 	P::reduce(wide_sum).into_iter().take(n).sum()

@@ -1,7 +1,13 @@
 // Copyright 2025 Irreducible Inc.
 
 use binius_field::{PackedField, square_transpose};
-use binius_utils::{checked_arithmetics::checked_log_2, rayon::prelude::*};
+use binius_utils::{
+	checked_arithmetics::checked_log_2,
+	rayon::{
+		prelude::*,
+		task_size::{IndexedParallelIteratorExt, min_len_for_bytes},
+	},
+};
 use bytemuck::zeroed_vec;
 
 use crate::field_buffer::FieldSliceMut;
@@ -45,8 +51,16 @@ pub fn bit_reverse_packed<P: PackedField>(mut buffer: FieldSliceMut<P>) {
 	// Phase 1: Process submatrices in parallel
 	// Each iteration accesses disjoint memory locations, so parallelization is safe
 	let data_ptr = data.as_mut_ptr() as usize;
+	// One iteration gathers a square submatrix and scatters it back.
+	// It therefore touches two words per row of that submatrix:
+	//
+	//     words moved per iteration = 2 * (rows per submatrix)
+	//
+	// The byte budget counts single words, so divide it by that factor.
+	let min_len = (min_len_for_bytes::<P>() >> (P::LOG_WIDTH + 1)).max(1);
 	(0..1 << (log_len - 2 * P::LOG_WIDTH))
 		.into_par_iter()
+		.with_min_len(min_len)
 		.for_each_init(
 			|| zeroed_vec::<P>(P::WIDTH),
 			|tmp, i| {
@@ -120,23 +134,29 @@ pub fn bit_reverse_indices<T>(buffer: &mut [T]) {
 	// Creating a raw pointer from the slice inside the closure avoids Sync issues.
 	let buffer_ptr = buffer.as_mut_ptr() as usize;
 
-	(0..buffer.len()).into_par_iter().for_each(|i| {
-		let i_rev = reverse_bits(i, bits);
-		if i < i_rev {
-			// SAFETY: The i < i_rev condition guarantees that:
-			// 1. Each (i, i_rev) pair is processed by exactly one thread (the one with i < i_rev)
-			// 2. Since bit-reversal is bijective, no two threads access the same pair
-			// 3. Therefore, ptr.add(i) and ptr.add(i_rev) point to disjoint memory locations
-			// 4. No data races can occur
-			// 5. buffer_ptr is valid for the lifetime of this closure
-			unsafe {
-				let ptr = buffer_ptr as *mut T;
-				let ptr_i = ptr.add(i);
-				let ptr_i_rev = ptr.add(i_rev);
-				std::ptr::swap_nonoverlapping(ptr_i, ptr_i_rev, 1);
+	// One iteration swaps at most a single pair of elements.
+	// The cost is the memory it moves, not the index arithmetic around it.
+	(0..buffer.len())
+		.into_par_iter()
+		.with_min_task_bytes::<T>()
+		.for_each(|i| {
+			let i_rev = reverse_bits(i, bits);
+			if i < i_rev {
+				// SAFETY: The i < i_rev condition guarantees that:
+				// 1. Each (i, i_rev) pair is processed by exactly one thread (the one with i <
+				//    i_rev)
+				// 2. Since bit-reversal is bijective, no two threads access the same pair
+				// 3. Therefore, ptr.add(i) and ptr.add(i_rev) point to disjoint memory locations
+				// 4. No data races can occur
+				// 5. buffer_ptr is valid for the lifetime of this closure
+				unsafe {
+					let ptr = buffer_ptr as *mut T;
+					let ptr_i = ptr.add(i);
+					let ptr_i_rev = ptr.add(i_rev);
+					std::ptr::swap_nonoverlapping(ptr_i, ptr_i_rev, 1);
+				}
 			}
-		}
-	});
+		});
 }
 
 #[cfg(test)]

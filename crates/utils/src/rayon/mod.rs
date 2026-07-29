@@ -122,3 +122,4 @@ cfg_if::cfg_if! {
 }
 
 pub mod config;
+pub mod task_size;
