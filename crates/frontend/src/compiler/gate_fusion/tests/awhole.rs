@@ -154,6 +154,8 @@ fn mk_circuit_builder() -> CircuitBuilder {
 		enable_algebraic_folding: false,
 		// Scratch pooling only moves uncommitted slots, so it cannot affect these snapshots.
 		enable_scratch_pooling: false,
+		// The snapshots record the AND constraints linear constraints lower to.
+		enable_zero_constraints: false,
 	};
 	CircuitBuilder::with_opts(opts)
 }
