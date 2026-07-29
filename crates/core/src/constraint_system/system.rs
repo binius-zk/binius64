@@ -10,7 +10,10 @@ use bytes::{Buf, BufMut};
 
 #[cfg(doc)]
 use super::ValueVec;
-use super::{AndConstraint, BmulConstraint, ImulConstraint, Operand, ShiftVariant, ValueIndex};
+use super::{
+	AndConstraint, BmulConstraint, ImulConstraint, Operand, ShiftVariant, ValueIndex,
+	ZeroConstraint,
+};
 use crate::{error::ConstraintSystemError, word::Word};
 
 /// The ConstraintSystem is the core data structure in Binius64 that defines the computational
@@ -32,12 +35,12 @@ use crate::{error::ConstraintSystemError, word::Word};
 ///
 /// # Constraint counts
 ///
-/// The AND, IMUL and BMUL constraint counts are the true counts; none of them is rounded up to a
-/// power of two. The reductions run over power-of-two-sized operand columns, so the prover rounds
-/// each count up to a power of two and zero-fills the tail when it materializes the column;
-/// [`Self::log_and_constraints`] and its IMUL and BMUL siblings report the resulting variable
+/// The ZERO, AND, IMUL and BMUL constraint counts are the true counts; none of them is rounded up
+/// to a power of two. The reductions run over power-of-two-sized operand columns, so the prover
+/// rounds each count up to a power of two and zero-fills the tail when it materializes the column;
+/// [`Self::log_and_constraints`] and its ZERO, IMUL and BMUL siblings report the resulting variable
 /// count. Zero is a valid padding row for every constraint type: an empty operand evaluates to
-/// [`Word::ZERO`], and `0 & 0 ^ 0 = 0` and `0 * 0 = 0 || 0` both hold.
+/// [`Word::ZERO`], and `0 = 0`, `0 & 0 ^ 0 = 0` and `0 * 0 = 0 || 0` all hold.
 ///
 /// # Clone
 ///
@@ -60,6 +63,8 @@ pub struct ConstraintSystem {
 	pub n_private: usize,
 	/// The number of padding words between the private values and the end of the hidden segment.
 	pub n_private_pad: usize,
+	/// List of ZERO constraints that must be satisfied by the values vector.
+	pub zero_constraints: Vec<ZeroConstraint>,
 	/// List of AND constraints that must be satisfied by the values vector.
 	pub and_constraints: Vec<AndConstraint>,
 	/// List of IMUL constraints that must be satisfied by the values vector.
@@ -70,7 +75,7 @@ pub struct ConstraintSystem {
 
 impl ConstraintSystem {
 	/// Serialization format version for compatibility checking
-	pub const SERIALIZATION_VERSION: u32 = 6;
+	pub const SERIALIZATION_VERSION: u32 = 7;
 
 	/// The minimum number of words in the public segment.
 	///
@@ -180,6 +185,11 @@ impl ConstraintSystem {
 
 		self.validate_shape()?;
 
+		for (i, zero) in self.zero_constraints.iter().enumerate() {
+			for (operand, name) in iter::zip(&zero.0, ZeroConstraint::OPERAND_NAMES) {
+				self.validate_operand(operand, "zero", i, name)?;
+			}
+		}
 		for (i, and) in self.and_constraints.iter().enumerate() {
 			for (operand, name) in iter::zip(&and.0, AndConstraint::OPERAND_NAMES) {
 				self.validate_operand(operand, "and", i, name)?;
@@ -249,6 +259,11 @@ impl ConstraintSystem {
 		Ok(())
 	}
 
+	/// Returns the number of ZERO constraints in the system.
+	pub const fn n_zero_constraints(&self) -> usize {
+		self.zero_constraints.len()
+	}
+
 	/// Returns the number of AND constraints in the system.
 	pub const fn n_and_constraints(&self) -> usize {
 		self.and_constraints.len()
@@ -262,6 +277,19 @@ impl ConstraintSystem {
 	/// Returns the number of BMUL constraints in the system.
 	pub const fn n_bmul_constraints(&self) -> usize {
 		self.bmul_constraints.len()
+	}
+
+	/// Returns the number of variables the Zero reduction runs over, or `None` when the system has
+	/// no ZERO constraints.
+	///
+	/// This is `ceil(log2(n_zero_constraints))`, matching the zero-padded operand column the
+	/// reduction consumes. As with [`Self::log_imul_constraints`], `None` is the skip signal; both
+	/// sides skip the Zero reduction for an empty ZERO set.
+	pub const fn log_zero_constraints(&self) -> Option<usize> {
+		match self.n_zero_constraints() {
+			0 => None,
+			n => Some(log2_ceil_usize(n)),
+		}
 	}
 
 	/// Returns the number of variables the BitAnd reduction runs over, or `None` when the system
@@ -322,6 +350,7 @@ impl SerializeBytes for ConstraintSystem {
 		self.n_inout_pad.serialize(&mut write_buf)?;
 		self.n_private.serialize(&mut write_buf)?;
 		self.n_private_pad.serialize(&mut write_buf)?;
+		self.zero_constraints.serialize(&mut write_buf)?;
 		self.and_constraints.serialize(&mut write_buf)?;
 		self.imul_constraints.serialize(&mut write_buf)?;
 		self.bmul_constraints.serialize(write_buf)
@@ -346,6 +375,7 @@ impl DeserializeBytes for ConstraintSystem {
 		let n_inout_pad = usize::deserialize(&mut read_buf)?;
 		let n_private = usize::deserialize(&mut read_buf)?;
 		let n_private_pad = usize::deserialize(&mut read_buf)?;
+		let zero_constraints = Vec::<ZeroConstraint>::deserialize(&mut read_buf)?;
 		let and_constraints = Vec::<AndConstraint>::deserialize(&mut read_buf)?;
 		let imul_constraints = Vec::<ImulConstraint>::deserialize(&mut read_buf)?;
 		let bmul_constraints = Vec::<BmulConstraint>::deserialize(read_buf)?;
@@ -357,6 +387,7 @@ impl DeserializeBytes for ConstraintSystem {
 			n_inout_pad,
 			n_private,
 			n_private_pad,
+			zero_constraints,
 			and_constraints,
 			imul_constraints,
 			bmul_constraints,
@@ -386,6 +417,7 @@ mod tests {
 			n_inout_pad: 2,
 			n_private: 6,
 			n_private_pad: 2,
+			zero_constraints: vec![],
 			and_constraints: vec![],
 			imul_constraints: vec![],
 			bmul_constraints: vec![],
@@ -394,6 +426,11 @@ mod tests {
 
 	pub(crate) fn create_test_constraint_system() -> ConstraintSystem {
 		ConstraintSystem {
+			zero_constraints: vec![ZeroConstraint::plain([
+				ValueIndex(0),
+				ValueIndex(4),
+				ValueIndex(8),
+			])],
 			and_constraints: vec![
 				AndConstraint::plain_abc(
 					vec![ValueIndex(0), ValueIndex(1)],
@@ -434,7 +471,7 @@ mod tests {
 		let deserialized = ConstraintSystem::deserialize(&mut buf.as_slice()).unwrap();
 
 		// Check version
-		assert_eq!(ConstraintSystem::SERIALIZATION_VERSION, 6);
+		assert_eq!(ConstraintSystem::SERIALIZATION_VERSION, 7);
 
 		// Check the value vector shape
 		assert_eq!(original.constants, deserialized.constants);
@@ -443,6 +480,9 @@ mod tests {
 		assert_eq!(original.n_inout_pad, deserialized.n_inout_pad);
 		assert_eq!(original.n_private, deserialized.n_private);
 		assert_eq!(original.n_private_pad, deserialized.n_private_pad);
+
+		// Check zero_constraints
+		assert_eq!(original.zero_constraints.len(), deserialized.zero_constraints.len());
 
 		// Check and_constraints
 		assert_eq!(original.and_constraints.len(), deserialized.and_constraints.len());
@@ -500,7 +540,7 @@ mod tests {
 		constraint_system.serialize(&mut buf).unwrap();
 
 		// Write to reference file.
-		let test_data_path = std::path::Path::new("test_data/constraint_system_v6.bin");
+		let test_data_path = std::path::Path::new("test_data/constraint_system_v7.bin");
 
 		// Create directory if it doesn't exist
 		if let Some(parent) = test_data_path.parent() {
@@ -517,9 +557,9 @@ mod tests {
 	/// This test will fail if breaking changes are made without incrementing the version.
 	#[test]
 	fn test_deserialize_from_reference_binary_file() {
-		// The v6 format replaces the embedded `ValueVecLayout` with the section counts of the
-		// value vector. Older files are no longer compatible.
-		let binary_data = include_bytes!("../../test_data/constraint_system_v6.bin");
+		// The v7 format adds the ZERO constraints ahead of the AND constraints. Older files are no
+		// longer compatible.
+		let binary_data = include_bytes!("../../test_data/constraint_system_v7.bin");
 
 		let deserialized = ConstraintSystem::deserialize(&mut binary_data.as_slice()).unwrap();
 
@@ -534,6 +574,7 @@ mod tests {
 		assert_eq!(deserialized.constants[1].as_u64(), 42);
 		assert_eq!(deserialized.constants[2].as_u64(), 0xDEADBEEF);
 
+		assert_eq!(deserialized.zero_constraints.len(), 1);
 		assert_eq!(deserialized.and_constraints.len(), 2);
 		assert_eq!(deserialized.imul_constraints.len(), 1);
 		assert_eq!(deserialized.bmul_constraints.len(), 1);
@@ -542,7 +583,7 @@ mod tests {
 		// This is implicitly checked during deserialization, but we can also verify
 		// the file starts with the correct version bytes
 		let version_bytes = &binary_data[0..4]; // First 4 bytes should be version
-		let expected_version_bytes = 6u32.to_le_bytes(); // Version 6 in little-endian
+		let expected_version_bytes = 7u32.to_le_bytes(); // Version 7 in little-endian
 		assert_eq!(
 			version_bytes, expected_version_bytes,
 			"Binary file version mismatch. If you made breaking changes, increment ConstraintSystem::SERIALIZATION_VERSION"
@@ -683,12 +724,41 @@ mod tests {
 	#[test]
 	fn test_validate_keeps_true_constraint_counts() {
 		let cs = create_test_constraint_system();
-		let (n_and, n_imul, n_bmul) =
-			(cs.n_and_constraints(), cs.n_imul_constraints(), cs.n_bmul_constraints());
+		let (n_zero, n_and, n_imul, n_bmul) = (
+			cs.n_zero_constraints(),
+			cs.n_and_constraints(),
+			cs.n_imul_constraints(),
+			cs.n_bmul_constraints(),
+		);
 		cs.validate().unwrap();
+		assert_eq!(cs.n_zero_constraints(), n_zero);
 		assert_eq!(cs.n_and_constraints(), n_and);
 		assert_eq!(cs.n_imul_constraints(), n_imul);
 		assert_eq!(cs.n_bmul_constraints(), n_bmul);
+	}
+
+	#[test]
+	fn test_validate_rejects_out_of_range_in_zero_constraint() {
+		let mut cs = test_shape();
+
+		cs.zero_constraints
+			.push(ZeroConstraint::plain([ValueIndex(0), ValueIndex(100)]));
+
+		match cs.validate().unwrap_err() {
+			ConstraintSystemError::OutOfRangeValueIndex {
+				constraint_type,
+				operand_name,
+				value_index,
+				total_len,
+				..
+			} => {
+				assert_eq!(constraint_type, "zero");
+				assert_eq!(operand_name, "val");
+				assert_eq!(value_index, 100);
+				assert_eq!(total_len, 16);
+			}
+			other => panic!("Expected OutOfRangeValueIndex error, got: {:?}", other),
+		}
 	}
 
 	#[test]
@@ -697,6 +767,10 @@ mod tests {
 		// An empty set reports `None`; the BitAnd reduction reads that as its single all-zero
 		// padding row, i.e. zero variables.
 		assert_eq!(cs.log_and_constraints(), None);
+		assert_eq!(cs.log_zero_constraints(), None);
+
+		cs.zero_constraints = vec![ZeroConstraint::plain([ValueIndex(0), ValueIndex(8)]); 3];
+		assert_eq!(cs.log_zero_constraints(), Some(2));
 
 		let and =
 			AndConstraint::plain_abc(vec![ValueIndex(0)], vec![ValueIndex(4)], vec![ValueIndex(8)]);

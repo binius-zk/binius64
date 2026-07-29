@@ -64,6 +64,7 @@ impl ValueVecLayout {
 			n_inout_pad: self.offset_witness - self.offset_inout - self.n_inout,
 			n_private: self.n_witness + self.n_internal,
 			n_private_pad: self.n_hidden_words - self.n_witness - self.n_internal,
+			zero_constraints: Vec::new(),
 			and_constraints: Vec::new(),
 			imul_constraints: Vec::new(),
 			bmul_constraints: Vec::new(),
