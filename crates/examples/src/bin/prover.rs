@@ -66,10 +66,7 @@ fn main() -> Result<()> {
 		.context("Failed to deserialize non-public ValuesData")?;
 
 	// Reconstruct the full ValueVec
-	// Take ownership of the underlying vectors without extra copies
-	let public: Vec<_> = public.into();
-	let non_public: Vec<_> = non_public.into();
-	let witness = ValueVec::new_from_data(public, non_public);
+	let witness = ValueVec::new_from_data(&public, &non_public);
 
 	// Setup prover (verifier is not used here)
 	let (_verifier, prover) = setup::<StdHashSuite>(cs, args.log_inv_rate as usize, None)?;
@@ -77,7 +74,7 @@ fn main() -> Result<()> {
 	// Prove
 	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
 	prover
-		.prove(witness, &mut prover_transcript)
+		.prove(&witness, &mut prover_transcript)
 		.context("Proving failed")?;
 	let transcript = prover_transcript.finalize();
 

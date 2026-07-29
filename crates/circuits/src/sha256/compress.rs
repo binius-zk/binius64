@@ -27,7 +27,7 @@ const K: [u32; 64] = [
 /// 4 x 64-bit words.
 ///
 /// The elements are referred to as a–h or H0–H7.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct State(pub [Wire; 8]);
 
 impl State {
@@ -323,7 +323,7 @@ fn compress_inner(
 	}
 
 	let w: &[Wire; 64] = (&*w).try_into().unwrap();
-	let mut state = state_in.clone();
+	let mut state = state_in;
 	for t in 0..64 {
 		state = round(builder, k[t], w[t], state);
 	}

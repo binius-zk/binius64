@@ -302,7 +302,7 @@ pub fn sha256_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; 4] {
 	while block_no + 1 < n_blocks {
 		let out = sha256_compress_2x_seq(
 			&builder.subcircuit(format!("compress[{block_no}..{}]", block_no + 2)),
-			states[block_no].clone(),
+			states[block_no],
 			[mk_m(block_no), mk_m(block_no + 1)],
 		);
 		// The mask restores the empty high half that the single-lane digest packing relies on.
@@ -316,7 +316,7 @@ pub fn sha256_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; 4] {
 	if block_no < n_blocks {
 		let state_out = sha256_compress(
 			&builder.subcircuit(format!("compress[{block_no}]")),
-			states[block_no].clone(),
+			states[block_no],
 			mk_m(block_no),
 		);
 		states.push(state_out);

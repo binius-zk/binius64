@@ -255,11 +255,8 @@ pub fn sha512_varlen(builder: &CircuitBuilder, message: &ByteVec) -> [Wire; 8] {
 		let m: [Wire; 16] = padded_message[block_no << 4..(block_no + 1) << 4]
 			.try_into()
 			.unwrap();
-		let state_out = compress(
-			&builder.subcircuit(format!("compress[{block_no}]")),
-			states[block_no].clone(),
-			m,
-		);
+		let state_out =
+			compress(&builder.subcircuit(format!("compress[{block_no}]")), states[block_no], m);
 		states.push(state_out);
 	}
 

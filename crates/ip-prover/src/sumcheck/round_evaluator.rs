@@ -341,7 +341,7 @@ where
 		// The store's column and eq fold is deferred: the challenge is buffered so the next
 		// execute can fuse it into that round's read pass.
 		for state in &mut self.round_states {
-			let claim = state.coeffs().evaluate(challenge);
+			let claim = state.coeffs().evaluate(&challenge);
 			*state = RoundState::Claim(claim);
 		}
 		debug_assert!(
@@ -571,7 +571,7 @@ where
 		// Reduce each evaluator's prime round polynomial against the challenge to form its next
 		// claim; the store's column and eq fold is deferred to the next execute.
 		for state in &mut self.round_states {
-			let claim = state.coeffs().evaluate(challenge);
+			let claim = state.coeffs().evaluate(&challenge);
 			*state = RoundState::Claim(claim);
 		}
 		debug_assert!(
@@ -748,7 +748,7 @@ mod tests {
 			let packed = std::array::from_fn(|i| P::broadcast(verified_evals[i]));
 			let composed = [comp_num, comp_den]
 				.map(|comp| comp(packed).iter().next().expect("packed field has a lane"));
-			let expected = evaluate_univariate(&composed, sumcheck_output.batch_coeff);
+			let expected = evaluate_univariate(&composed, &sumcheck_output.batch_coeff);
 			assert_eq!(expected, sumcheck_output.eval, "reduced evaluation must match the batch");
 
 			assert_eq!(output.challenges, sumcheck_output.challenges);
@@ -859,7 +859,7 @@ mod tests {
 				<[F; 6]>::try_from(verified_evals).expect("six column evaluations");
 			let eq = eq_ind(&z, &point);
 			let reduced = [(y0 * d1 + y1 * d0) * eq, (d0 * d1) * eq, y0 * t0, y1 * t1];
-			let expected = evaluate_univariate(&reduced, sumcheck_output.batch_coeff);
+			let expected = evaluate_univariate(&reduced, &sumcheck_output.batch_coeff);
 			assert_eq!(expected, sumcheck_output.eval, "reduced evaluation must match the batch");
 
 			assert_eq!(output.challenges, sumcheck_output.challenges);

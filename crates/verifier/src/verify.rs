@@ -230,7 +230,7 @@ impl IOPVerifier {
 				c_hi_evals,
 				eval_point,
 			}) => {
-				let l_tilde = lagrange_evals_scalars(&domain_subspace, r_zhat_prime.clone());
+				let l_tilde = lagrange_evals_scalars(&domain_subspace, &r_zhat_prime);
 				let make_final_claim =
 					|evals| inner_product_scalars(evals, l_tilde.iter().cloned());
 				OperatorData::new(
@@ -261,7 +261,7 @@ impl IOPVerifier {
 				c_lo_evals,
 				c_hi_evals,
 			}) => {
-				let l_tilde = lagrange_evals_scalars(&domain_subspace, r_zhat_prime.clone());
+				let l_tilde = lagrange_evals_scalars(&domain_subspace, &r_zhat_prime);
 				let make_final_claim =
 					|evals| inner_product_scalars(evals, l_tilde.iter().cloned());
 				OperatorData::new(
@@ -396,7 +396,7 @@ where
 		let n_test_queries = calculate_n_test_queries(SECURITY_BITS, log_inv_rate);
 
 		let iop_compiler = BaseFoldVerifierCompiler::new(
-			merkle_scheme,
+			&merkle_scheme,
 			oracle_specs,
 			log_inv_rate,
 			n_test_queries,

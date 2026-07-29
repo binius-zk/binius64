@@ -49,6 +49,8 @@ pub struct FieldBuffer<P: PackedField, Data: Deref<Target = [P]> = Vec<P>> {
 	values: Data,
 }
 
+impl<P: PackedField, Data: Deref<Target = [P]> + Copy> Copy for FieldBuffer<P, Data> {}
+
 impl<P: PackedField, Data: Deref<Target = [P]>> PartialEq for FieldBuffer<P, Data> {
 	fn eq(&self, other: &Self) -> bool {
 		// Equality compares only the live scalars, never the raw packed backing store.
@@ -657,7 +659,7 @@ impl<'a, P: PackedField, Data: DerefMut<Target = [P]>> From<&'a mut FieldBuffer<
 	}
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum FieldSliceData<'a, P> {
 	Single(P),
 	Slice(&'a [P]),

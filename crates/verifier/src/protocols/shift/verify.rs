@@ -83,8 +83,8 @@ impl<F: FieldOps, const ARITY: usize> OperatorData<F, ARITY> {
 	// evaluation claim can be added to other batched evaluation claims
 	// without further random scaling.
 	fn batched_eval(&self, lambda: F) -> F {
-		let lambda_clone = lambda.clone();
-		lambda_clone * evaluate_univariate(&self.evals, lambda)
+		let eval = evaluate_univariate(&self.evals, &lambda);
+		lambda * eval
 	}
 }
 
@@ -474,7 +474,7 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		let mut r_y_tensor = Vec::with_capacity(cs.value_vec_len());
 		r_y_tensor.extend_from_slice(&public_tensor);
 		r_y_tensor.extend_from_slice(&hidden_tensor[..cs.value_vec_len() - n_public_words]);
-		let l_tilde = lagrange_evals_scalars(self.subspace, r_zhat_prime_v);
+		let l_tilde = lagrange_evals_scalars(self.subspace, &r_zhat_prime_v);
 		let h_op_evals = evaluate_h_op(&l_tilde, r_j_v, r_s_v);
 
 		// Tensor the shift-selector evaluations with the shift-amount equality indicator once, so

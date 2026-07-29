@@ -351,11 +351,11 @@ mod test {
 		let expected_next_round_sum = extrapolate_over_subspace(
 			&verifier_message_domain,
 			&first_round_message_coeffs,
-			first_sumcheck_challenge,
+			&first_sumcheck_challenge,
 		);
 
 		let lagrange_evals =
-			lagrange_evals_scalars(&verifier_input_domain, first_sumcheck_challenge);
+			lagrange_evals_scalars(&verifier_input_domain, &first_sumcheck_challenge);
 		let folder = BitAxisFolder::new(&lagrange_evals);
 
 		let folded_first_mle: FieldBuffer<B128> = folder.fold(&GlobalAllocator, mlv_1);

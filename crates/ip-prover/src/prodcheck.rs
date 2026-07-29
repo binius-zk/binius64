@@ -290,7 +290,7 @@ pub fn batch_prove<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 	// Finish the retained final layer: run it exactly as an interior reduction layer does.
 	let (claimed_products, provers): (Vec<_>, Vec<_>) = provers.into_iter().unzip();
 	let (provers, mut evals, eval_point) =
-		batch_prove_layer(provers, claimed_products, eval_point, k, channel);
+		batch_prove_layer(provers, claimed_products, &eval_point, k, channel);
 	debug_assert!(provers.is_empty(), "the final layer leaves no provers");
 
 	// Drop the padded (2^k) selector slots, keeping one reduced eval per input prover.
@@ -335,7 +335,7 @@ pub fn batch_prove_until_final_layer<'a, A: Allocator, F: Field, P: PackedField<
 	let (provers, claimed_products, eval_point) = (0..n_layers - 1).fold(
 		(provers, claimed_products, eval_point),
 		|(provers, claimed_products, eval_point), _| {
-			batch_prove_layer(provers, claimed_products, eval_point, k, channel)
+			batch_prove_layer(provers, claimed_products, &eval_point, k, channel)
 		},
 	);
 
@@ -352,7 +352,7 @@ pub fn batch_prove_until_final_layer<'a, A: Allocator, F: Field, P: PackedField<
 fn batch_prove_layer<'a, A: Allocator, F: Field, P: PackedField<Scalar = F>>(
 	provers: Vec<ProdcheckProver<'a, A, P>>,
 	claimed_products: Vec<F>,
-	eval_point: Vec<F>,
+	eval_point: &[F],
 	k: usize,
 	channel: &mut impl IPProverChannel<F>,
 ) -> (Vec<ProdcheckProver<'a, A, P>>, Vec<F>, Vec<F>) {

@@ -132,8 +132,8 @@ mod tests {
 		prover: impl MleCheckProver<F>,
 		eval_claim: F,
 		eval_point: &[F],
-		multilinear_a: FieldBuffer<P>,
-		multilinear_b: FieldBuffer<P>,
+		multilinear_a: &FieldBuffer<P>,
+		multilinear_b: &FieldBuffer<P>,
 	) where
 		F: Field,
 		P: PackedField<Scalar = F>,
@@ -173,8 +173,8 @@ mod tests {
 		// Check that the original multilinears evaluate to the claimed values at the challenge
 		// point The prover binds variables from high to low, but evaluate expects them from low
 		// to high
-		let eval_a = evaluate(&multilinear_a, &reduced_eval_point);
-		let eval_b = evaluate(&multilinear_b, &reduced_eval_point);
+		let eval_a = evaluate(multilinear_a, &reduced_eval_point);
+		let eval_b = evaluate(multilinear_b, &reduced_eval_point);
 
 		assert_eq!(
 			eval_a, multilinear_evals[0],
@@ -196,8 +196,8 @@ mod tests {
 		mlecheck_prover: impl MleCheckProver<F>,
 		eval_claim: F,
 		eval_point: &[F],
-		multilinear_a: FieldBuffer<P>,
-		multilinear_b: FieldBuffer<P>,
+		multilinear_a: &FieldBuffer<P>,
+		multilinear_b: &FieldBuffer<P>,
 	) where
 		F: Field,
 		P: PackedField<Scalar = F>,
@@ -244,8 +244,8 @@ mod tests {
 
 		// Check that the original multilinears evaluate to the claimed values at the challenge
 		// point
-		let eval_a = evaluate(&multilinear_a, &reduced_eval_point);
-		let eval_b = evaluate(&multilinear_b, &reduced_eval_point);
+		let eval_a = evaluate(multilinear_a, &reduced_eval_point);
+		let eval_b = evaluate(multilinear_b, &reduced_eval_point);
 
 		assert_eq!(
 			eval_a, multilinear_evals[0],
@@ -297,8 +297,8 @@ mod tests {
 			mlecheck_prover,
 			eval_claim,
 			&eval_point,
-			multilinear_a.clone(),
-			multilinear_b.clone(),
+			&multilinear_a,
+			&multilinear_b,
 		);
 
 		// Create another prover for the wrapped test
@@ -313,8 +313,8 @@ mod tests {
 			mlecheck_prover,
 			eval_claim,
 			&eval_point,
-			multilinear_a,
-			multilinear_b,
+			&multilinear_a,
+			&multilinear_b,
 		);
 	}
 }

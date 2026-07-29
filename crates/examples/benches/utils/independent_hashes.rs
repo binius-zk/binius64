@@ -130,7 +130,7 @@ pub fn run_independent_hash_benchmark<E>(
 	let benchmark = IndependentHashBenchmark::<E>::new(primitive);
 	run_cs_benchmark_with_extra_groups(
 		c,
-		benchmark,
+		&benchmark,
 		primitive.group_prefix(),
 		peak_alloc,
 		bench_witness_generation_and_proving,
@@ -160,7 +160,7 @@ fn bench_witness_generation_and_proving<B>(
 			ctx.circuit.populate_wire_witness(&mut filler).unwrap();
 			let witness = filler.into_value_vec();
 			let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
-			ctx.prover.prove(witness, &mut prover_transcript).unwrap();
+			ctx.prover.prove(&witness, &mut prover_transcript).unwrap();
 			prover_transcript
 		})
 	});

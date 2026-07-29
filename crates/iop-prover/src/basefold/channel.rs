@@ -663,7 +663,7 @@ mod tests {
 		let oracle_specs = vec![OracleSpec::new_zk(n_vars)];
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
-			make_merkle_scheme(),
+			&make_merkle_scheme(),
 			oracle_specs,
 			LOG_INV_RATE,
 			n_test_queries,
@@ -735,7 +735,7 @@ mod tests {
 		let oracle_specs = vec![OracleSpec::new_zk(n_vars_1), OracleSpec::new_zk(n_vars_2)];
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
-			make_merkle_scheme(),
+			&make_merkle_scheme(),
 			oracle_specs,
 			LOG_INV_RATE,
 			n_test_queries,
@@ -818,7 +818,7 @@ mod tests {
 			n_vars_list.iter().map(|&n| OracleSpec::new_zk(n)).collect();
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
-			make_merkle_scheme(),
+			&make_merkle_scheme(),
 			oracle_specs,
 			LOG_INV_RATE,
 			n_test_queries,
@@ -915,7 +915,7 @@ mod tests {
 			.collect();
 
 		let verifier_compiler = BaseFoldVerifierCompiler::new(
-			make_merkle_scheme(),
+			&make_merkle_scheme(),
 			oracle_specs,
 			LOG_INV_RATE,
 			n_test_queries,

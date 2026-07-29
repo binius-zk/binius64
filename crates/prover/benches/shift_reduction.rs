@@ -387,9 +387,9 @@ fn bench_shift_phases(c: &mut Criterion) {
 			|(public_folded, hidden_folded, public_monster, hidden_monster, r_j)| {
 				let mut transcript = ProverTranscript::<StdChallenger>::default();
 				run_sumcheck::<F, P, _, _>(
-					public_folded,
+					&public_folded,
 					hidden_folded,
-					public_monster,
+					&public_monster,
 					hidden_monster,
 					public_words,
 					r_j,

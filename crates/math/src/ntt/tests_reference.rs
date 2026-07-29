@@ -185,7 +185,7 @@ impl<F: BinaryField> NTTFactory<F> for NeighborsLastMultiThreadFactory {
 	NeighborsLastMultiThreadFactory { log_base_len: 3, log_num_shares: 1000 }
 )]
 fn test_forward_transform_is_identity(#[case] ntt_factory: impl NTTFactory<B128>) {
-	fn test_forward_transform_is_identity_helper<F, P>(ntt_factory: impl NTTFactory<F>)
+	fn test_forward_transform_is_identity_helper<F, P>(ntt_factory: &impl NTTFactory<F>)
 	where
 		F: BinaryField,
 		P: PackedField<Scalar = F>,
@@ -204,7 +204,7 @@ fn test_forward_transform_is_identity(#[case] ntt_factory: impl NTTFactory<B128>
 		assert_eq!(data, data_clone);
 	}
 
-	test_forward_transform_is_identity_helper::<_, Packed128b>(ntt_factory);
+	test_forward_transform_is_identity_helper::<_, Packed128b>(&ntt_factory);
 }
 
 fn test_equivalence_ntts_domain_contexts<P: PackedField>()

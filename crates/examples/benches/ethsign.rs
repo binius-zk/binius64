@@ -79,7 +79,7 @@ impl ExampleBenchmark for EthSignBenchmark {
 
 fn bench_ethsign_signatures(c: &mut Criterion) {
 	let benchmark = EthSignBenchmark::new();
-	run_cs_benchmark(c, benchmark, "ethsign", &ETHSIGN_PEAK_ALLOC);
+	run_cs_benchmark(c, &benchmark, "ethsign", &ETHSIGN_PEAK_ALLOC);
 }
 
 criterion_group!(ethsign, bench_ethsign_signatures);

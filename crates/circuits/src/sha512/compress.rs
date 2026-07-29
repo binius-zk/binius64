@@ -101,7 +101,7 @@ const K: [u64; 80] = [
 /// The state size is 512 bits.
 ///
 /// The elements are referred to as a–h or H0–H7.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct State(pub [Wire; 8]);
 
 impl State {
@@ -151,7 +151,7 @@ pub fn compress(builder: &CircuitBuilder, state_in: State, m: [Wire; 16]) -> Sta
 	}
 
 	let w: &[Wire; 80] = (&*w).try_into().unwrap();
-	let mut state = state_in.clone();
+	let mut state = state_in;
 	for t in 0..80 {
 		state = round(builder, t, state, w);
 	}

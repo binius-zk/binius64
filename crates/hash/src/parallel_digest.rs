@@ -323,7 +323,7 @@ mod tests {
 	fn check_parallel_digest_consistency<
 		D: ParallelDigest<Digest: BlockSizeUser + Send + Sync + Clone>,
 	>(
-		data: Vec<Vec<u8>>,
+		data: &[Vec<u8>],
 	) {
 		let parallel_digest = D::new();
 		let mut parallel_results = repeat_with(MaybeUninit::<Output<D::Digest>>::uninit)
@@ -341,14 +341,14 @@ mod tests {
 	#[test]
 	fn test_empty_data() {
 		let data = generate_mock_data(0, 16);
-		check_parallel_digest_consistency::<ParallelMultidigestImpl<MockMultiDigest, 4>>(data);
+		check_parallel_digest_consistency::<ParallelMultidigestImpl<MockMultiDigest, 4>>(&data);
 	}
 
 	#[test]
 	fn test_non_empty_data() {
 		for n_hashes in [1, 2, 4, 8, 9] {
 			let data = generate_mock_data(n_hashes, 16);
-			check_parallel_digest_consistency::<ParallelMultidigestImpl<MockMultiDigest, 4>>(data);
+			check_parallel_digest_consistency::<ParallelMultidigestImpl<MockMultiDigest, 4>>(&data);
 		}
 	}
 

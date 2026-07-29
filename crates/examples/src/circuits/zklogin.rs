@@ -117,7 +117,7 @@ pub struct ZkLogin {
 }
 
 impl ZkLogin {
-	pub fn new(b: &mut CircuitBuilder, config: Config) -> Self {
+	pub fn new(b: &mut CircuitBuilder, config: &Config) -> Self {
 		let sub = ByteVec::new_inout(b, config.max_len_jwt_sub);
 		let aud = ByteVec::new_inout(b, config.max_len_jwt_aud);
 		let iss = ByteVec::new_inout(b, config.max_len_jwt_iss);
@@ -570,7 +570,7 @@ impl ExampleCircuit for ZkLoginExample {
 
 	fn build(params: Params, builder: &mut CircuitBuilder) -> Result<Self> {
 		let config = params.config.unwrap_or_default();
-		let zklogin = ZkLogin::new(builder, config);
+		let zklogin = ZkLogin::new(builder, &config);
 
 		Ok(Self { zklogin })
 	}

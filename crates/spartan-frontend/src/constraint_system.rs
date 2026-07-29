@@ -350,7 +350,7 @@ impl<F: Field> ConstraintSystem<F> {
 	}
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct BlindingInfo {
 	/// The number of random dummy wires that must be added.
 	pub n_dummy_wires: usize,

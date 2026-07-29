@@ -101,7 +101,7 @@ where
 		.iter()
 		.map(|looker| looker.eval_claim)
 		.collect::<Vec<_>>();
-	let combined_eval_claim = evaluate_univariate(&claims, gamma);
+	let combined_eval_claim = evaluate_univariate(&claims, &gamma);
 
 	// The self-contained prover commits nothing.
 	// It runs the reduction over the witnesses directly.
@@ -379,7 +379,7 @@ mod tests {
 		};
 		let gamma = IPVerifierChannel::<F>::sample(&mut verifier_transcript);
 		let verifier_out = logup_star::verify_reduction::<F, _>(
-			gamma,
+			&gamma,
 			m,
 			&[looker_claim],
 			&mut verifier_transcript,
@@ -462,7 +462,7 @@ mod tests {
 		};
 		let gamma = IPVerifierChannel::<F>::sample(&mut verifier_transcript);
 		let result = logup_star::verify_reduction::<F, _>(
-			gamma,
+			&gamma,
 			table.log_len(),
 			&[looker_claim],
 			&mut verifier_transcript,
@@ -516,7 +516,7 @@ mod tests {
 			.collect::<Vec<_>>();
 		let gamma = IPVerifierChannel::<F>::sample(&mut verifier_transcript);
 		let verifier_out = logup_star::verify_reduction::<F, _>(
-			gamma,
+			&gamma,
 			m,
 			&looker_claims,
 			&mut verifier_transcript,

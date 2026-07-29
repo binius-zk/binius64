@@ -383,7 +383,7 @@ where
 		.map(|(_frac, prover)| prover)
 		.collect();
 	let (mut fractions, eval_point) =
-		reduce_layer::<A, F, P, _>(alloc, layer_provers, eval_point, k, channel);
+		reduce_layer::<A, F, P, _>(alloc, layer_provers, &eval_point, k, channel);
 
 	// Drop the padded (2^k) selector slots, keeping one reduced fraction per input prover.
 	fractions.truncate(n);
@@ -454,7 +454,7 @@ where
 	let (provers, claimed_fractions, eval_point) = (0..n_layers - 1).fold(
 		(provers, claimed_fractions, eval_point),
 		|(provers, claimed_fractions, eval_point), _| {
-			batch_prove_layer(provers, claimed_fractions, eval_point, k, channel)
+			batch_prove_layer(provers, &claimed_fractions, &eval_point, k, channel)
 		},
 	);
 
@@ -508,7 +508,7 @@ fn combine_claims<F: Field>(coeffs: Vec<RoundCoeffs<F>>, batch_coeff: F) -> Roun
 fn reduce_layer<'a, A, F, P, MP>(
 	alloc: &'a A,
 	mut layer_provers: Vec<MP>,
-	eval_point: Vec<F>,
+	eval_point: &[F],
 	k: usize,
 	channel: &mut impl IPProverChannel<F>,
 ) -> (Vec<(F, F)>, Vec<F>)
@@ -655,8 +655,8 @@ where
 #[allow(clippy::type_complexity)]
 fn batch_prove_layer<'a, A, F, P>(
 	provers: Vec<FracAddCheckProver<'a, A, P>>,
-	claimed_fractions: Vec<(F, F)>,
-	eval_point: Vec<F>,
+	claimed_fractions: &[(F, F)],
+	eval_point: &[F],
 	k: usize,
 	channel: &mut impl IPProverChannel<F>,
 ) -> (Vec<FracAddCheckProver<'a, A, P>>, Vec<(F, F)>, Vec<F>)
@@ -669,7 +669,7 @@ where
 	// coordinates.
 	let alloc = provers[0].alloc;
 	let inner_coords = eval_point[k..].to_vec();
-	let (layer_provers, next_provers): (Vec<_>, Vec<_>) = iter::zip(provers, &claimed_fractions)
+	let (layer_provers, next_provers): (Vec<_>, Vec<_>) = iter::zip(provers, claimed_fractions)
 		.map(|(prover, &(num, den))| {
 			let (remaining, layer_prover, _cols) = prover.layer_prover((
 				MultilinearEvalClaim {

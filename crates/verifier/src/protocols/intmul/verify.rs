@@ -144,7 +144,7 @@ where
 		gpow_c_lo_eval.clone() * gpow_c_hi_eval.clone() * eq_ind(c_eval_point, &eval_point);
 
 	let expected_terms = [expected_selected_agg, expected_c_prod_eval];
-	let expected_batched_eval = evaluate_univariate(&expected_terms, batch_coeff);
+	let expected_batched_eval = evaluate_univariate(&expected_terms, &batch_coeff);
 
 	channel.assert_zero(expected_batched_eval - eval)?;
 
@@ -365,7 +365,7 @@ where
 		expected_overflow_eval,
 		expected_b_rerand_eval,
 	];
-	let expected_batched_eval = evaluate_univariate(&expected_unbatched_evals, batch_coeff);
+	let expected_batched_eval = evaluate_univariate(&expected_unbatched_evals, &batch_coeff);
 
 	// Compare expected evaluation against given evaluation `eval`.
 	channel.assert_zero(expected_batched_eval - eval)?;

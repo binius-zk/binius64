@@ -317,7 +317,7 @@ mod tests {
 			}
 		}
 
-		evaluate_univariate(&acc, lambda)
+		evaluate_univariate(&acc, &lambda)
 	}
 
 	#[test]
@@ -348,7 +348,7 @@ mod tests {
 		let expected = evaluate_segment_wiring_mle(
 			&constraints,
 			WitnessSegment::Private,
-			lambda,
+			&lambda,
 			r_x_tensor.as_ref(),
 			&r_y,
 		);
@@ -392,7 +392,7 @@ mod tests {
 		let expected = evaluate_segment_wiring_mle(
 			&constraints,
 			WitnessSegment::Private,
-			lambda,
+			&lambda,
 			r_x_tensor.as_ref(),
 			&r_y,
 		);
@@ -490,9 +490,9 @@ mod tests {
 		let r_x_tensor = eq_ind_partial_eval::<B128>(&r_x);
 
 		// Compute the batched sum and public contribution
-		let batched_sum = evaluate_univariate(&mulcheck_evals, lambda);
+		let batched_sum = evaluate_univariate(&mulcheck_evals, &lambda);
 		let public_eval =
-			evaluate_wiring_mle_public(&constraints, &public, lambda, r_x_tensor.as_ref());
+			evaluate_wiring_mle_public(&constraints, &public, &lambda, r_x_tensor.as_ref());
 		let trace_claim = batched_sum - public_eval;
 
 		// Fold constraints to get the private wiring polynomial
@@ -525,12 +525,12 @@ mod tests {
 		let verifier_lambda: B128 = verifier_channel.sample();
 
 		// Compute the same claim on the verifier side
-		let verifier_batched_sum = evaluate_univariate(&mulcheck_evals, verifier_lambda);
+		let verifier_batched_sum = evaluate_univariate(&mulcheck_evals, &verifier_lambda);
 		let verifier_r_x_tensor = eq_ind_partial_eval::<B128>(&r_x);
 		let verifier_public_eval = evaluate_wiring_mle_public(
 			&constraints,
 			&public,
-			verifier_lambda,
+			&verifier_lambda,
 			verifier_r_x_tensor.as_ref(),
 		);
 		let verifier_trace_claim = verifier_batched_sum - verifier_public_eval;

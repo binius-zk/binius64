@@ -952,7 +952,7 @@ mod tests {
 		let private = (0..cs.n_hidden_words())
 			.map(|i| Word::from_u64(0x5A5A_A5A5 ^ (i as u64 * 0x9E37_79B9)))
 			.collect::<Vec<_>>();
-		let values = ValueVec::new_from_data(public, private);
+		let values = ValueVec::new_from_data(&public, &private);
 
 		// Split into public and non-public witnesses and serialize all artifacts
 		let public_data = ValuesData::from(values.public());
@@ -975,7 +975,7 @@ mod tests {
 		assert_eq!(cs2.n_hidden_words(), non_pub2.len());
 
 		// Reconstruct ValueVec from deserialized pieces
-		let reconstructed = ValueVec::new_from_data(pub2.into_owned(), non_pub2.into_owned());
+		let reconstructed = ValueVec::new_from_data(&pub2, &non_pub2);
 
 		assert_eq!(reconstructed.combined_witness(), values.combined_witness());
 	}

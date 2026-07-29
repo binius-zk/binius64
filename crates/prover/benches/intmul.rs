@@ -55,7 +55,7 @@ const N_TEST_QUERIES: usize = 1;
 fn basefold_compiler() -> BaseFoldProverCompiler<P, NeighborsLastSingleThread<GenericPreExpanded<F>>>
 {
 	let verifier_compiler = BaseFoldVerifierCompiler::new(
-		BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
+		&BinaryMerkleTreeScheme::<F, StdHashSuite>::new(),
 		vec![OracleSpec::new(LIMB_BITS)],
 		LOG_INV_RATE,
 		N_TEST_QUERIES,

@@ -20,7 +20,7 @@ pub fn eval_transparent<F: FieldOps + 'static>(
 	lambda: F,
 ) -> binius_iop::channel::TransparentEvalFn<F> {
 	Box::new(move |r_y: &[F]| {
-		evaluate_segment_wiring_mle(&mul_constraints, segment, lambda.clone(), &r_x_tensor, r_y)
+		evaluate_segment_wiring_mle(&mul_constraints, segment, &lambda, &r_x_tensor, r_y)
 	})
 }
 
@@ -32,7 +32,7 @@ pub fn eval_transparent<F: FieldOps + 'static>(
 pub fn evaluate_segment_wiring_mle<F: FieldOps>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	segment: WitnessSegment,
-	lambda: F,
+	lambda: &F,
 	r_x_tensor: &[F],
 	r_y: &[F],
 ) -> F {
@@ -65,7 +65,7 @@ pub fn evaluate_segment_wiring_mle<F: FieldOps>(
 pub fn evaluate_wiring_mle_public<F: FieldOps>(
 	mul_constraints: &[MulConstraint<WitnessIndex>],
 	public: &[F],
-	lambda: F,
+	lambda: &F,
 	r_x_tensor: &[F],
 ) -> F {
 	let mut acc = [F::zero(), F::zero(), F::zero()];
@@ -119,7 +119,7 @@ impl<F: Field> FieldFn<F> for PublicWiringEvalFn<'_> {
 	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, inputs: &[E]) -> E {
 		// Split the flat input back into its three parts.
 		let public = &inputs[..self.public_len];
-		let lambda = inputs[self.public_len].clone();
+		let lambda = &inputs[self.public_len];
 		let r_x_tensor = &inputs[self.public_len + 1..];
 
 		evaluate_wiring_mle_public(self.mul_constraints, public, lambda, r_x_tensor)

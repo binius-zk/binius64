@@ -96,7 +96,7 @@ fn bench(c: &mut Criterion) {
 
 	group.bench_function(format!("univariate fold 2^{log_words}"), |bench| {
 		bench.iter(|| {
-			let lagrange_evals = lagrange_evals_scalars(&univariate_domain, univariate_challenge);
+			let lagrange_evals = lagrange_evals_scalars(&univariate_domain, &univariate_challenge);
 			let folder = BitAxisFolder::new(&lagrange_evals);
 			folder.fold_bitand_operands::<OptimalPackedB128, _>(
 				&GlobalAllocator,
@@ -106,7 +106,7 @@ fn bench(c: &mut Criterion) {
 		});
 	});
 
-	let lagrange_evals = lagrange_evals_scalars(&univariate_domain, univariate_challenge);
+	let lagrange_evals = lagrange_evals_scalars(&univariate_domain, &univariate_challenge);
 	let folder = BitAxisFolder::new(&lagrange_evals);
 
 	let mut univariate_message_coeffs = vec![B128::ZERO; 2 * ROWS_PER_HYPERCUBE_VERTEX];
@@ -116,7 +116,7 @@ fn bench(c: &mut Criterion) {
 	let next_round_claim = extrapolate_over_subspace(
 		&prover_message_domain.clone().isomorphic::<B128>(),
 		&univariate_message_coeffs,
-		univariate_challenge,
+		&univariate_challenge,
 	);
 
 	let pool = BufferPool::new();
