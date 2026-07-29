@@ -38,6 +38,7 @@ mod scratch_alloc;
 #[cfg(test)]
 mod tests;
 mod value_vec_alloc;
+mod zero_fold;
 
 pub use gate_graph::Wire;
 use scratch_alloc::{ScratchAlloc, ScratchPolicy};
@@ -56,6 +57,8 @@ pub(crate) struct Options {
 	/// Lower linear constraints to Zero constraints instead of AND constraints against the
 	/// all-ones constant.
 	enable_zero_constraints: bool,
+	/// Forward past the gates a zero operand turns into the identity.
+	enable_zero_propagation: bool,
 }
 
 impl Default for Options {
@@ -72,6 +75,7 @@ impl Default for Options {
 			// Why off: no proof system reduces Zero constraints yet, so a circuit that emits them
 			// is unprovable.
 			enable_zero_constraints: false,
+			enable_zero_propagation: true,
 		}
 	}
 }
@@ -221,6 +225,12 @@ impl CircuitBuilder {
 		// Run constant propagation optimization
 		if shared.opts.enable_constant_propagation {
 			const_prop::constant_propagation(&mut graph, &shared.hint_registry);
+		}
+
+		// Zero propagation: drop the gates a zero operand turns into the identity.
+		// This runs before the dead-code pass, which is what removes the gates it strands.
+		if shared.opts.enable_zero_propagation {
+			zero_fold::zero_propagation(&mut graph, &shared.force_committed, &shared.hint_registry);
 		}
 
 		// Common-subexpression elimination: collapse structurally-identical gates.
