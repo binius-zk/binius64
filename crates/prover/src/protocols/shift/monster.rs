@@ -190,12 +190,7 @@ where
 		}
 	};
 
-	populate_scalars(
-		&mut zero_scalars,
-		ZERO_ARITY,
-		&zero_operator_data.lambda_powers,
-		&zero_h_ops,
-	);
+	populate_scalars(&mut zero_scalars, ZERO_ARITY, &zero_operator_data.lambda_powers, &zero_h_ops);
 	populate_scalars(
 		&mut bitand_scalars,
 		BITAND_ARITY,

@@ -409,18 +409,25 @@ struct MonsterEvalFn<'a, F: BinaryField> {
 	r_y_len: usize,
 }
 
+/// The per-operation [`OperationEvalFn`] inputs [`MonsterEvalFn::operation_inputs`] splits out of
+/// its flat input slice. A `None` marks an operation with no constraints, whose reduction is
+/// skipped.
+struct OperationInputs<E> {
+	zero: Vec<E>,
+	bitand: Vec<E>,
+	intmul: Option<Vec<E>>,
+	binmul: Option<Vec<E>>,
+}
+
 impl<F: BinaryField> MonsterEvalFn<'_, F> {
 	/// Shared setup for [`FieldFn::call`] and [`FieldFn::call_native`]: splits the flat `vals`
 	/// slice, builds the shared shift-scalar and word-index tensors, and re-encodes them (with each
 	/// operation's `r_x'` and `lambda`) into the per-operation [`OperationEvalFn`] input via
 	/// [`encode_operation_input`].
 	///
-	/// Returns the BitAnd input (always present) and the IntMul and BinMul inputs, each `None` when
+	/// The Zero and BitAnd inputs are always present; the IntMul and BinMul inputs are `None` when
 	/// that operation has no constraints and is skipped.
-	fn operation_inputs<E>(
-		&self,
-		vals: &[E],
-	) -> (Option<Vec<E>>, Vec<E>, Option<Vec<E>>, Option<Vec<E>>)
+	fn operation_inputs<E>(&self, vals: &[E]) -> OperationInputs<E>
 	where
 		E: FieldOps<Scalar = F> + From<F>,
 	{
@@ -428,8 +435,8 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 		// [`OperationEvalFn::split_input`] re-derives that length from the constraint count alone.
 		// The two derivations must agree or both sides mis-split the same input. An absent IntMul
 		// (resp. BinMul) reduction contributes an empty point, which matches the `None` the
-		// accessor reports for an empty constraint set; so does the BitAnd reduction's single
-		// all-zero padding row.
+		// accessor reports for an empty constraint set; so do the Zero and BitAnd reductions'
+		// single all-zero padding rows.
 		debug_assert_eq!(
 			self.zero_r_x_prime_len,
 			self.constraint_system.log_zero_constraints().unwrap_or(0)
@@ -512,9 +519,8 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 
 		// Re-encode the shared tensors with each operation's `r_x'` and `lambda`. IntMul and BinMul
 		// are skipped (no input built) when they have no constraints.
-		let zero_input = (!self.constraint_system.zero_constraints.is_empty()).then(|| {
-			encode_operation_input(zero_r_x_prime_v, zero_lambda_v, &shift_scalars, &r_y_tensor)
-		});
+		let zero_input =
+			encode_operation_input(zero_r_x_prime_v, zero_lambda_v, &shift_scalars, &r_y_tensor);
 		let bitand_input = encode_operation_input(
 			bitand_r_x_prime_v,
 			bitand_lambda_v,
@@ -528,19 +534,26 @@ impl<F: BinaryField> MonsterEvalFn<'_, F> {
 			encode_operation_input(binmul_r_x_prime_v, binmul_lambda_v, &shift_scalars, &r_y_tensor)
 		});
 
-		(zero_input, bitand_input, intmul_input, binmul_input)
+		OperationInputs {
+			zero: zero_input,
+			bitand: bitand_input,
+			intmul: intmul_input,
+			binmul: binmul_input,
+		}
 	}
 }
 
 impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 	fn call<E: FieldOps<Scalar = F> + From<F>>(&self, vals: &[E]) -> E {
-		let (zero_input, bitand_input, intmul_input, binmul_input) = self.operation_inputs(vals);
+		let OperationInputs {
+			zero: zero_input,
+			bitand: bitand_input,
+			intmul: intmul_input,
+			binmul: binmul_input,
+		} = self.operation_inputs(vals);
 		let cs = &self.constraint_system;
 
-		let zero = match zero_input {
-			Some(input) => OperationEvalFn::new(&cs.zero_constraints).call::<E>(&input),
-			None => E::zero(),
-		};
+		let zero = OperationEvalFn::new(&cs.zero_constraints).call::<E>(&zero_input);
 		let bitand = OperationEvalFn::new(&cs.and_constraints).call::<E>(&bitand_input);
 		let intmul = match intmul_input {
 			Some(input) => OperationEvalFn::new(&cs.imul_constraints).call::<E>(&input),
@@ -557,13 +570,15 @@ impl<F: BinaryField> FieldFn<F> for MonsterEvalFn<'_, F> {
 	/// Native fast path: each operation's evaluation defers `WideMul` reductions (see
 	/// [`OperationEvalFn`]'s `call_native`).
 	fn call_native(&self, vals: &[F]) -> F {
-		let (zero_input, bitand_input, intmul_input, binmul_input) = self.operation_inputs(vals);
+		let OperationInputs {
+			zero: zero_input,
+			bitand: bitand_input,
+			intmul: intmul_input,
+			binmul: binmul_input,
+		} = self.operation_inputs(vals);
 		let cs = &self.constraint_system;
 
-		let zero = match zero_input {
-			Some(input) => OperationEvalFn::new(&cs.zero_constraints).call_native(&input),
-			None => F::ZERO,
-		};
+		let zero = OperationEvalFn::new(&cs.zero_constraints).call_native(&zero_input);
 		let bitand = OperationEvalFn::new(&cs.and_constraints).call_native(&bitand_input);
 		let intmul = match intmul_input {
 			Some(input) => OperationEvalFn::new(&cs.imul_constraints).call_native(&input),
