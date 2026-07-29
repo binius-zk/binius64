@@ -297,6 +297,13 @@ fn test_shift_prove_and_verify() {
 			r_zhat_prime,
 			r_x_prime: r_x_prime_intmul.clone(),
 		};
+		// These circuits have no ZERO constraints, so the Zero claim is the zero claim at an empty
+		// point, exactly as the prover synthesizes it.
+		let prover_zero_data = OperatorData {
+			evals: vec![F::ZERO],
+			r_zhat_prime,
+			r_x_prime: Vec::new(),
+		};
 		// These circuits have no BMUL constraints, so the BinMul claim is the zero claim at an
 		// empty point (the prover's skipped-case `None` branch).
 		let prover_binmul_data = OperatorData {
@@ -308,6 +315,7 @@ fn test_shift_prove_and_verify() {
 		let prover_output = prove::<F, P, _, _>(
 			&key_collection,
 			value_vec.combined_witness(),
+			prover_zero_data.clone(),
 			prover_bitand_data.clone(),
 			prover_intmul_data.clone(),
 			prover_binmul_data.clone(),
@@ -319,12 +327,14 @@ fn test_shift_prove_and_verify() {
 		// Create verifier transcript and call the verifier
 		let mut verifier_transcript = prover_transcript.into_verifier();
 
+		let verifier_zero_data = VerifierOperatorData::new(Vec::new(), [F::ZERO]);
 		let verifier_bitand_data = VerifierOperatorData::new(r_x_prime_bitand, bitand_evals);
 		let verifier_intmul_data = VerifierOperatorData::new(r_x_prime_intmul, intmul_evals);
 		let verifier_binmul_data = VerifierOperatorData::new(Vec::new(), [F::ZERO; 6]);
 
 		let verifier_output = verify(
 			&cs,
+			&verifier_zero_data,
 			&verifier_bitand_data,
 			&verifier_intmul_data,
 			&verifier_binmul_data,
@@ -336,6 +346,7 @@ fn test_shift_prove_and_verify() {
 		check_eval(
 			&cs,
 			value_vec.public(),
+			&verifier_zero_data,
 			&verifier_bitand_data,
 			&verifier_intmul_data,
 			&verifier_binmul_data,

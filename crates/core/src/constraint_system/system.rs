@@ -283,8 +283,10 @@ impl ConstraintSystem {
 	/// no ZERO constraints.
 	///
 	/// This is `ceil(log2(n_zero_constraints))`, matching the zero-padded operand column the
-	/// reduction consumes. As with [`Self::log_imul_constraints`], `None` is the skip signal; both
-	/// sides skip the Zero reduction for an empty ZERO set.
+	/// reduction consumes. As with [`Self::log_and_constraints`], the Zero reduction always runs: a
+	/// system with no ZERO constraints still gets a single all-zero row, which the constraint
+	/// vacuously satisfies. Such a system reduces over zero variables, so its callers read `None`
+	/// as zero.
 	pub const fn log_zero_constraints(&self) -> Option<usize> {
 		match self.n_zero_constraints() {
 			0 => None,

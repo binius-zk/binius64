@@ -23,7 +23,7 @@ use binius_utils::{SerializeBytes, rayon::prelude::*};
 use binius_verifier::{
 	IOPVerifier, Verifier,
 	config::{B128, LOG_WORDS_PER_ELEM},
-	protocols::{binmul::BinMulOutput, bitand::AndCheckOutput, intmul::IntMulOutput},
+	protocols::{binmul::BinMulOutput, bitand::AndCheckOutput, intmul::IntMulOutput, zero},
 };
 use digest::Output;
 
@@ -278,6 +278,23 @@ impl IOPProver {
 			},
 		};
 
+		// [phase] Zero Reduction - linear constraint reduction
+		//
+		// The reduction writes nothing to the transcript and runs no sumcheck: a ZERO constraint is
+		// linear, so its oblong multilinearization vanishing at one unpredictable point certifies
+		// it, and the claimed value is the constant zero. The point is the one the BitAnd sumcheck
+		// just output, extended when the ZERO set has more rows; the verifier draws the same
+		// extension at the same place. Like BitAnd, an empty ZERO set still reduces, over the
+		// single all-zero padding row.
+		let log_n_zero = cs.log_zero_constraints().unwrap_or(0);
+		let zero_claim = OperatorData {
+			evals: vec![B128::ZERO],
+			r_zhat_prime: bitand_claim.r_zhat_prime,
+			r_x_prime: zero::reduction_point(&bitand_claim.r_x_prime, log_n_zero, || {
+				channel.sample()
+			}),
+		};
+
 		// [phase] Shift Reduction - shift operations
 		let shift_guard = tracing::info_span!(
 			"[phase] Shift Reduction",
@@ -291,6 +308,7 @@ impl IOPProver {
 		} = prove_shift_reduction::<_, P, _, _>(
 			&self.key_collection,
 			witness.combined_witness(),
+			zero_claim,
 			bitand_claim,
 			intmul_claim,
 			binmul_claim,

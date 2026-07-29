@@ -35,6 +35,7 @@ const LOG_LEN: usize = Word::LOG_BITS + Word::LOG_BITS;
 pub fn prove_phase_1<F, P, Channel, A>(
 	key_collection: &KeyCollection,
 	words: &[Word],
+	zero_data: &PreparedOperatorData<F>,
 	bitand_data: &PreparedOperatorData<F>,
 	intmul_data: &PreparedOperatorData<F>,
 	binmul_data: &PreparedOperatorData<F>,
@@ -55,6 +56,7 @@ where
 		alloc,
 		public_words,
 		&key_collection.public,
+		zero_data,
 		bitand_data,
 		intmul_data,
 		binmul_data,
@@ -63,6 +65,7 @@ where
 		alloc,
 		hidden_words,
 		&key_collection.hidden,
+		zero_data,
 		bitand_data,
 		intmul_data,
 		binmul_data,
@@ -204,6 +207,7 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 	alloc: &A,
 	words: &[Word],
 	segment: &KeySegment,
+	zero_operator_data: &PreparedOperatorData<F>,
 	bitand_operator_data: &PreparedOperatorData<F>,
 	intmul_operator_data: &PreparedOperatorData<F>,
 	binmul_operator_data: &PreparedOperatorData<F>,
@@ -234,6 +238,7 @@ pub fn build_g_parts<F: BinaryField, P: PackedField<Scalar = F>, A: Allocator>(
 
 				for key in keys {
 					let operator_data = match key.operation {
+						Operation::Zero => zero_operator_data,
 						Operation::BitwiseAnd => bitand_operator_data,
 						Operation::IntegerMul => intmul_operator_data,
 						Operation::BinMul => binmul_operator_data,

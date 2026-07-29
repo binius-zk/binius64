@@ -3,7 +3,10 @@
 
 use binius_circuits::sha256::{State, populate_message_block, sha256_compress};
 use binius_core::{
-	constraint_system::{ConstraintSystem, ValueVec},
+	constraint_system::{
+		AndConstraint, ConstraintSystem, ShiftedValueIndex, ValueIndex, ValueVec, ZeroConstraint,
+	},
+	verify::verify_constraints,
 	word::Word,
 };
 use binius_field::{BinaryField128bGhash, Field, Random, arch::OptimalPackedB128};
@@ -295,6 +298,140 @@ fn test_prove_verify_zero_imul_constraints() {
 	assert_eq!(cs.n_imul_constraints(), 0, "SHA-256 circuit should have no IMUL constraints");
 	prove_verify(cs.clone(), &witness);
 	prove_verify_zk(cs, &witness);
+}
+
+/// A constraint system exercising the Zero reduction, built directly rather than through the
+/// circuit compiler (whose Zero lowering is off by default).
+///
+/// The value vector is
+///
+/// ```text
+/// [ all-1 | pad | i0 i1 ][ p0 .. p9 | pad ]
+///     0      1     2  3     4 .. 13
+/// ```
+///
+/// with five ZERO constraints — XOR, shifts in both directions, a NOT against the all-ones
+/// constant, and one mixing in a public word — and three AND constraints. Neither count is a power
+/// of two, and the ZERO set is the larger of the two, so the Zero reduction's constraint point runs
+/// past the BitAnd zerocheck challenges and draws a fresh one.
+fn zero_constraint_system() -> (ConstraintSystem, ValueVec) {
+	const ALL_ONE: ValueIndex = ValueIndex(0);
+	const I0: ValueIndex = ValueIndex(2);
+	let p = |i: u32| ValueIndex(4 + i);
+
+	let cs = ConstraintSystem {
+		constants: vec![Word::ALL_ONE],
+		n_const_pad: 1,
+		n_inout: 2,
+		n_inout_pad: 0,
+		n_private: 10,
+		n_private_pad: 6,
+		zero_constraints: vec![
+			// p2 = p0 ^ p1
+			ZeroConstraint::plain([p(0), p(1), p(2)]),
+			// p3 = p0 << 5
+			ZeroConstraint::new([
+				ShiftedValueIndex::sll(p(0), 5),
+				ShiftedValueIndex::plain(p(3)),
+			]),
+			// p4 = ~p0
+			ZeroConstraint::plain([p(0), ALL_ONE, p(4)]),
+			// p5 = p1 >> 7
+			ZeroConstraint::new([
+				ShiftedValueIndex::srl(p(1), 7),
+				ShiftedValueIndex::plain(p(5)),
+			]),
+			// p6 = p0 ^ i0, mixing a public word into a ZERO constraint
+			ZeroConstraint::plain([p(0), I0, p(6)]),
+		],
+		and_constraints: vec![
+			AndConstraint::plain_abc([p(0)], [p(1)], [p(7)]),
+			AndConstraint::plain_abc([p(0)], [p(2)], [p(8)]),
+			AndConstraint::plain_abc([p(1)], [p(2)], [p(9)]),
+		],
+		imul_constraints: vec![],
+		bmul_constraints: vec![],
+	};
+	cs.validate().unwrap();
+
+	let i0 = Word(0x5555_5555_AAAA_AAAA);
+	let i1 = Word(0x0F0F_0F0F_F0F0_F0F0);
+	let p0 = Word(0x0123_4567_89AB_CDEF);
+	let p1 = Word(0xFEDC_BA98_7654_3210);
+	let public = vec![Word::ALL_ONE, Word::ZERO, i0, i1];
+	let mut private = vec![
+		p0,
+		p1,
+		p0 ^ p1,
+		p0 << 5,
+		p0 ^ Word::ALL_ONE,
+		p1 >> 7,
+		p0 ^ i0,
+		p0 & p1,
+		p0 & (p0 ^ p1),
+		p1 & (p0 ^ p1),
+	];
+	private.resize(cs.n_hidden_words(), Word::ZERO);
+
+	let witness = ValueVec::new_from_data(&public, &private);
+	verify_constraints(&cs, &witness).unwrap();
+	(cs, witness)
+}
+
+/// The Zero reduction discharges ZERO constraints end to end. The reduction sends nothing itself;
+/// its claim rides along in the shift reduction's batch, so this exercises the whole path from the
+/// constraint system through the key collection to the final evaluation check.
+#[test]
+fn test_prove_verify_zero_constraints() {
+	let (cs, witness) = zero_constraint_system();
+	assert_eq!(cs.log_zero_constraints(), Some(3));
+	assert_eq!(cs.log_and_constraints(), Some(2));
+	prove_verify(cs.clone(), &witness);
+	prove_verify_zk(cs, &witness);
+}
+
+/// The same system with the ZERO set cut below the AND set, so the reduction's constraint point is
+/// a strict prefix of the BitAnd zerocheck challenges and draws nothing of its own. Dropping
+/// constraints only weakens the system, so the witness still satisfies it.
+#[test]
+fn test_prove_verify_fewer_zero_than_and_constraints() {
+	let (mut cs, witness) = zero_constraint_system();
+	cs.zero_constraints.truncate(2);
+	assert_eq!(cs.log_zero_constraints(), Some(1));
+	assert_eq!(cs.log_and_constraints(), Some(2));
+	prove_verify(cs, &witness);
+}
+
+/// A witness violating one ZERO constraint is rejected. The prover has nothing to send for the
+/// Zero reduction, so it claims the constant zero regardless; the shift reduction, running against
+/// the committed witness, is what catches the discrepancy.
+#[test]
+fn test_prove_verify_rejects_violated_zero_constraint() {
+	const LOG_INV_RATE: usize = 1;
+
+	let (cs, witness) = zero_constraint_system();
+
+	// Flip a bit of `p3`, breaking `p3 = p0 << 5`. No AND constraint reads `p3`, so a ZERO
+	// constraint is the only thing standing between this witness and a valid proof.
+	let mut words = witness.combined_witness().to_vec();
+	words[7] = words[7] ^ Word::ONE;
+	let corrupted =
+		ValueVec::new_from_data(&words[..cs.n_public_words()], &words[cs.n_public_words()..]);
+	assert!(verify_constraints(&cs, &corrupted).is_err());
+
+	let verifier = Verifier::<StdHashSuite>::setup(cs, LOG_INV_RATE).unwrap();
+	let prover = Prover::<OptimalPackedB128, StdHashSuite>::setup(verifier.clone()).unwrap();
+
+	let mut prover_transcript = ProverTranscript::new(StdChallenger::default());
+	prover.prove(&corrupted, &mut prover_transcript).unwrap();
+
+	let mut verifier_transcript = prover_transcript.into_verifier();
+	assert!(
+		verifier
+			.verify(corrupted.public(), &mut verifier_transcript)
+			.is_err(),
+		"a violated ZERO constraint must not verify"
+	);
 }
 
 #[test]
