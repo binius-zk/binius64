@@ -284,7 +284,7 @@ impl CircuitBuilder {
 
 		// Perform fusion if the corresponding feature flag is turned on.
 		if shared.opts.enable_gate_fusion {
-			gate_fusion::run_pass(&mut builder, &shared.force_committed, all_one);
+			gate_fusion::run_pass(&mut builder, &shared.force_committed);
 		}
 
 		let constrained_wires = builder.mark_used_wires();
