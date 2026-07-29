@@ -156,6 +156,8 @@ fn mk_circuit_builder() -> CircuitBuilder {
 		enable_scratch_pooling: false,
 		// The snapshots record the AND constraints linear constraints lower to.
 		enable_zero_constraints: false,
+		// Zero propagation would forward past the gates these snapshots assert on.
+		enable_zero_propagation: false,
 	};
 	CircuitBuilder::with_opts(opts)
 }

@@ -55,6 +55,14 @@ impl WireKind {
 	pub const fn is_const(&self) -> bool {
 		matches!(self, WireKind::Constant(_))
 	}
+
+	/// The word this wire holds, when it is a constant.
+	pub const fn const_value(&self) -> Option<Word> {
+		match self {
+			WireKind::Constant(word) => Some(*word),
+			_ => None,
+		}
+	}
 }
 
 #[derive(Copy, Clone)]
@@ -507,42 +515,51 @@ impl GateGraph {
 	}
 
 	/// Replaces every use of `old_wire` with a constant wire holding `value`.
-	pub fn replace_wire_with_constant(
-		&mut self,
-		old_wire: Wire,
-		value: Word,
-	) -> ConstantReplacement {
+	pub fn replace_wire_with_constant(&mut self, old_wire: Wire, value: Word) -> WireReplacement {
 		let const_wire = self.add_constant(value);
+		self.replace_wire_with_wire(old_wire, const_wire)
+	}
 
-		if const_wire == old_wire {
-			return ConstantReplacement {
+	/// Replaces every use of `old_wire` with `new_wire`.
+	///
+	/// The defining gate keeps `old_wire` as its output, so it is left unread and the dead-code
+	/// pass is what actually removes it.
+	///
+	/// The use-def index is not updated, and forwarding to an ordinary wire grows that wire's set
+	/// of readers. A caller that forwards again has to rebuild the index in between, or it will
+	/// miss the readers this call moved.
+	pub fn replace_wire_with_wire(&mut self, old_wire: Wire, new_wire: Wire) -> WireReplacement {
+		if new_wire == old_wire {
+			return WireReplacement {
 				n_slots_rewritten: 0,
 				affected_gates: Vec::new(),
 			};
 		}
 
 		// Collected up front: the index borrows the graph, which is about to be rewritten.
-		//
-		// The index is not updated to match. Every gate that reads `old_wire` is in this list, and
-		// a replacement only ever introduces a constant wire, so no reader can appear later.
 		let affected_gates: Vec<Gate> = self.get_wire_uses(old_wire).collect();
 
 		// The count comes from the rewrite itself, so it covers every slot the rewrite touched.
 		// Tallying inputs and outputs separately would miss a wire held only in an aux slot.
 		let n_slots_rewritten = affected_gates
 			.iter()
-			.map(|&gate| self.replace_gate_wire(gate, old_wire, const_wire))
+			.map(|&gate| self.replace_gate_wire(gate, old_wire, new_wire))
 			.sum();
 
-		ConstantReplacement {
+		WireReplacement {
 			n_slots_rewritten,
 			affected_gates,
 		}
 	}
+
+	/// Returns every gate in the graph, in construction order.
+	pub fn gates(&self) -> impl Iterator<Item = Gate> + '_ {
+		self.gates.iter().map(|(gate, _)| gate)
+	}
 }
 
-/// What replacing one wire with a constant changed.
-pub struct ConstantReplacement {
+/// What replacing one wire with another changed.
+pub struct WireReplacement {
 	/// How many wire slots were rewritten, across every affected gate.
 	pub n_slots_rewritten: usize,
 	/// The gates whose wires were rewritten.
