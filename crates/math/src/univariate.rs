@@ -1,6 +1,8 @@
 // Copyright 2024-2025 Irreducible Inc.
 // Copyright 2026 The Binius Developers
 
+use std::{iter, mem};
+
 use binius_field::{BinaryField, Field, field::FieldOps};
 use itertools::izip;
 
@@ -36,8 +38,8 @@ pub fn evaluate_univariate<F: FieldOps>(coeffs: &[F], x: &F) -> F {
 /// 3. Replace inversions with multiplications for better performance
 ///
 /// # Complexity
-/// - Time: O(n) where n = subspace size, using 4n - 2 multiplications and 1 inversion
-/// - Space: O(n) for prefix/suffix arrays
+/// - Time: O(n) where n = subspace size, using about 4n multiplications and 1 inversion
+/// - Space: O(n) — the output vector is the only allocation
 ///
 /// # Parameters
 /// - `subspace`: The binary subspace defining the evaluation domain
@@ -65,31 +67,37 @@ pub fn lagrange_evals_scalars<F: BinaryField, E: FieldOps + From<F>>(
 	subspace: &BinarySubspace<F>,
 	z: &E,
 ) -> Vec<E> {
-	let domain: Vec<E> = subspace.iter().map(E::from).collect();
-	let n = domain.len();
-
-	// Compute single barycentric weight for the additive subgroup
-	let w = domain[1..]
+	// The shared barycentric weight of an additive subgroup: w = 1 / prod_{j >= 1} d_j.
+	let w = subspace
 		.iter()
+		.skip(1)
+		.map(E::from)
 		.fold(E::one(), |acc, d| acc * d)
 		.invert_or_zero();
 
-	// Compute prefix products: prefix[i] = ∏_{j=0}^{i-1} (z - domain[j])
-	let mut prefixes = vec![E::one(); n];
-	for i in 1..n {
-		prefixes[i] = prefixes[i - 1].clone() * (z.clone() - domain[i - 1].clone());
+	// Seed the output with the linear terms t_i = z - d_i.
+	let mut result: Vec<E> = subspace.iter().map(|d| z.clone() - E::from(d)).collect();
+
+	// Backward sweep: replace t_i with w * prod_{j > i} t_j.
+	// Seeding the accumulator with the weight absorbs the multiply-by-w pass.
+	let mut suffix = w;
+	for r_i in result.iter_mut().rev() {
+		let t_i = mem::replace(r_i, suffix.clone());
+		suffix *= t_i;
 	}
 
-	// Compute suffix products: suffix[i] = ∏_{j=i+1}^{n-1} (z - domain[j])
-	let mut suffixes = vec![E::one(); n];
-	for i in (0..n - 1).rev() {
-		suffixes[i] = suffixes[i + 1].clone() * (z.clone() - domain[i + 1].clone());
+	// Forward sweep: multiply in prefix_i = prod_{j < i} t_j, completing
+	//
+	//     L_i(z) = w * prod_{j > i} t_j * prod_{j < i} t_j = w * prod_{j != i} (z - d_j).
+	//
+	// The terms are recomputed on the fly; iterating the subspace is a cheap XOR walk.
+	let mut prefix = E::one();
+	for (r_i, d) in iter::zip(&mut result, subspace.iter()) {
+		*r_i *= prefix.clone();
+		prefix *= z.clone() - E::from(d);
 	}
 
-	// Combine prefix, suffix, and weight: L_i(z) = prefix[i] * suffix[i] * w
-	izip!(prefixes, suffixes)
-		.map(|(p, s)| p * s * w.clone())
-		.collect()
+	result
 }
 
 /// Extrapolate a polynomial from its evaluations over a binary subspace to a point.
