@@ -144,7 +144,9 @@ pub fn sha256_compress_2x(builder: &CircuitBuilder, state_in: State, m: [Wire; 1
 /// # Preconditions
 ///
 /// - Every input wire holds a valid 32-bit value in its low 32 bits.
-/// - High halves need not be empty; they are cleared internally where it matters.
+/// - High halves need not be empty.
+///   - A block word's high half is masked off.
+///   - A state word's is discarded by the shift that lifts it into the high lane.
 ///
 /// # Returns
 ///
@@ -174,23 +176,31 @@ pub fn sha256_compress_2x_seq(
 	let pack = |lo: Wire, hi: Wire| builder.bxor(lo, builder.shl(hi, 32));
 	let clear = |w: Wire| clear_high_bits(builder, w, 32);
 
-	// Bind the high half of each merged word to the real input state.
-	// The high half is the first compression's claimed input.
-	// This proves the high lane compresses the genuine state.
-	for (m, s) in iter::zip(merged, state_in.0) {
-		builder.assert_eq("sha256_compress_2x_seq.state_in", builder.shr(m, 32), clear(s));
-	}
-
 	// Merged block: low lane = second block, high lane = first block.
 	let merged_block: [Wire; 16] = array::from_fn(|i| pack(clear(blocks[1][i]), blocks[0][i]));
 
 	let out = sha256_compress_2x(builder, State::new(merged), merged_block);
 
-	// Bind the hint's honesty by equating the two derivations of the first output:
-	// - first compression's in-circuit output = high lane of the result
-	// - value the hint fed as the second input = low half of each merged word
-	for (m, o) in iter::zip(merged, out.0) {
-		builder.assert_eq("sha256_compress_2x_seq.s1_out", clear(m), builder.shr(o, 32));
+	// Bind the hinted state, one 64-bit equality per word.
+	// A single equality pins both halves, since they never overlap.
+	//
+	//     bits 32..64 <- the first compression's declared input, shifted up
+	//     bits  0..32 <- the first compression's in-circuit output, shifted down
+	//
+	//     hinted word:  [ high lane = input state | low lane = S1 output ]
+	//                          must equal                must equal
+	//                     input state << 32       ^     result >> 32
+	//
+	// Consequences, which together leave the hint no freedom:
+	// - The high lane provably compresses the caller's own state.
+	// - The low lane provably chains from what the first compression really produced.
+	//
+	// Each side is one shift of a committed word, so no masking is needed:
+	// - Shifting up discards the input's own high bits.
+	// - Shifting down discards the result's low bits.
+	for (m, (s, o)) in iter::zip(merged, iter::zip(state_in.0, out.0)) {
+		let expected = builder.bxor(builder.shl(s, 32), builder.shr(o, 32));
+		builder.assert_eq("sha256_compress_2x_seq.merged_state", m, expected);
 	}
 
 	out
@@ -733,8 +743,26 @@ mod tests {
 			0x19db_06c1,
 		];
 
+		// The chaining value the first block hands to the second, published with the same vector.
+		//
+		// Why anchor the boundary and not only the digest:
+		// - The high lane must reproduce exactly this value.
+		// - The low lane must chain from it.
+		// - So this is what pins the hinted state carried between the two lanes.
+		let expected_s1: [u32; 8] = [
+			0x85e6_55d6,
+			0x417a_1795,
+			0x3363_376a,
+			0x624c_de5c,
+			0x76e0_9589,
+			0xcac5_f811,
+			0xcc4b_32c1,
+			0xf20e_533a,
+		];
+
 		// The second compression's output is the message digest; anchor it to the RFC vector.
 		let s1 = ref_compress(IV, block0);
+		assert_eq!(s1, expected_s1);
 		let s2 = ref_compress(s1, block1);
 		assert_eq!(s2, expected);
 

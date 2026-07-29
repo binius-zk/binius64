@@ -126,15 +126,20 @@ pub fn sha256_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 	let mask32 = builder.add_constant(Word::MASK_32);
 	let mut state = State::iv(builder);
 	let mut block_idx = 0;
+	// The threaded state carries the pair's first compression in its high half.
+	// That half is left as it is rather than masked off, since nothing downstream reads it:
+	//
+	// - A compression never lets a carry or a rotate cross bit 32, so the halves stay apart.
+	// - The paired core takes an input state's low half only, through a left shift.
+	//
+	// So the low half of a result depends on the low halves of its inputs alone.
 	while block_idx + 1 < n_blocks {
-		let out = sha256_compress_2x_seq(
+		// The chaining state after the pair is the second compression's output, in the low half.
+		state = sha256_compress_2x_seq(
 			&builder.subcircuit(format!("sha256_fixed_compress[{block_idx}..{}]", block_idx + 2)),
 			state,
 			[blocks[block_idx], blocks[block_idx + 1]],
 		);
-		// The chaining state after the pair is the second compression's output.
-		// It sits in the low 32 bits of each word; the mask restores the empty high half.
-		state = State::new(std::array::from_fn(|i| builder.band(out.0[i], mask32)));
 		block_idx += 2;
 	}
 	if block_idx < n_blocks {
@@ -145,8 +150,16 @@ pub fn sha256_fixed(builder: &CircuitBuilder, message: &[Wire], len_bytes: usize
 		);
 	}
 
-	// Return the final state as 8 32-bit words
-	state.0
+	// The escaping digest is the one place a clean high half is required.
+	// So mask once here rather than after every pair, since a caller compares all 64 bits.
+	//
+	// Why a single-block message skips it:
+	// - Such a message never enters the paired core.
+	// - The one-lane core maps an empty high half to an empty high half.
+	if n_blocks < 2 {
+		return state.0;
+	}
+	std::array::from_fn(|i| builder.band(state.0[i], mask32))
 }
 
 /// Computes the SHA-256 hash of a variable-length message.
