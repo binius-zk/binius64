@@ -1,11 +1,11 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 //! The Bitcoin double-SHA256 hash function.
 
-use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use sha2::Digest;
 
-use crate::{bytes::swap_bytes_32, sha256::sha256_fixed};
+use crate::{bytes::swap_bytes_32, sha256::sha256_fixed, util::clear_high_bits};
 
 /// Retained only so callers can obtain the reference digest via [`Self::populate_inner`].
 ///
@@ -27,8 +27,6 @@ impl DoubleSha256 {
 		message: &[Wire],
 		digest: [Wire; 4],
 	) -> Self {
-		let mask32 = builder.add_constant(Word::MASK_32);
-
 		// First SHA-256. `message` is little-endian 8-byte wires; `sha256_fixed` consumes
 		// big-endian 32-bit schedule words, so byte-swap within each 32-bit half and split each
 		// 64-bit wire into its two schedule words (mirrors `sha256::sha256_varlen`'s input
@@ -36,7 +34,7 @@ impl DoubleSha256 {
 		let mut message_be: Vec<Wire> = Vec::with_capacity(message.len() * 2);
 		for &w in message {
 			let swapped = swap_bytes_32(builder, w);
-			message_be.push(builder.band(swapped, mask32));
+			message_be.push(clear_high_bits(builder, swapped, 32));
 			message_be.push(builder.shr(swapped, 32));
 		}
 		let digest_0_be = sha256_fixed(builder, &message_be, message.len() * 8); // [Wire; 8] BE

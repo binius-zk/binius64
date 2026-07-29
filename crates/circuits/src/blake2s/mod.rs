@@ -1,3 +1,4 @@
+// Copyright 2026 The Binius Developers
 // Copyright 2025 Irreducible Inc.
 //! Blake2s hash function circuit implementation
 //!
@@ -46,6 +47,8 @@ mod tests;
 use binius_core::word::Word;
 use binius_frontend::{CircuitBuilder, Wire, WitnessFiller};
 use constants::{IV, SIGMA};
+
+use crate::util::clear_high_bits;
 
 /// Blake2s G mixing function - the core cryptographic primitive.
 ///
@@ -345,7 +348,7 @@ impl Blake2s {
 
 				// Select low or high dword from the qword
 				let message_dword = if word_idx % 2 == 0 {
-					builder.band(message_qword, builder.add_constant_64(0xFFFF_FFFF))
+					clear_high_bits(builder, message_qword, 32)
 				} else {
 					builder.shr(message_qword, 32)
 				};
