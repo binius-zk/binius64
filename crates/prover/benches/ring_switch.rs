@@ -2,7 +2,7 @@
 
 use std::mem::size_of;
 
-use binius_compute::GlobalAllocator;
+use binius_compute::BufferPool;
 use binius_field::{BinaryField, ExtensionField, arch::OptimalPackedB128};
 use binius_math::{
 	multilinear::eq::eq_ind_partial_eval,
@@ -133,18 +133,19 @@ fn bench_suffix_tensor_pipeline(c: &mut Criterion) {
 		group.bench_function(format!("split/log_len={log_len}"), |b| {
 			// The prover caps the low factor here so its fold tables stay cache-resident.
 			let (suffix_lo, suffix_hi) = suffix.split_at(LOG_SPLIT_BLOCK.min(log_len));
+
+			// The prover draws the indicator from a pool, so the bench does too.
+			// One pool spans every iteration, which is the steady state being measured:
+			// the first iteration allocates a block and the rest reuse it.
+			let pool = BufferPool::new();
+			let alloc = &pool;
+
 			b.iter(|| {
 				let eq_lo = eq_ind_partial_eval::<B128>(suffix_lo);
 				let eq_hi = eq_ind_partial_eval::<B128>(suffix_hi);
 				let s_hat_v = fold_1b_rows_for_b128_split(&mat, &eq_lo, &eq_hi);
-				// The dense route's tensor is `Vec`-backed, so the factored route allocates the
-				// same way for the two times to compare.
-				let rs_eq_ind = rs_eq_ind_from_factors::<_, P>(
-					&GlobalAllocator,
-					&eq_lo,
-					&eq_hi,
-					&row_batch_query,
-				);
+				let rs_eq_ind =
+					rs_eq_ind_from_factors::<_, P>(&alloc, &eq_lo, &eq_hi, &row_batch_query);
 				(s_hat_v, rs_eq_ind)
 			});
 		});
